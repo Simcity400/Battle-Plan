@@ -142,7 +142,7 @@ fn state_cores_read_the_state_s_and_its_provinces_strategic_locations() {
     province(&mut m, 0, 0x4644_0000, 31, STATE_A, &[801]);
     province(&mut m, 1, 0x4645_0000, 32, STATE_A, &[802, 803]);
     let run = |m: &Mem| {
-        let mut rows = [CoreRow::default(); 2];
+        let mut rows = vec![CoreRow::default(); 2];
         let mut links = vec![0; 16];
         let mut required = 0;
         let outcome = state_cores(
@@ -189,7 +189,7 @@ fn state_cores_read_each_selected_states_list_in_stored_order() {
     m.u32(0x4641_0004, 42);
     let census = [1, 2];
     let run = |m: &Mem, selected: &dyn Fn(u32) -> bool, links: usize| {
-        let mut rows = [CoreRow::default(); 2];
+        let mut rows = vec![CoreRow::default(); 2];
         let mut buffer = vec![0; links];
         let mut required = 0;
         let outcome = state_cores(
@@ -238,15 +238,9 @@ fn state_cores_read_each_selected_states_list_in_stored_order() {
         (outcome, rows[0].state, required),
         (Outcome::Rows { len: 1 }, 2, 2)
     );
-    // A list that does not fit is counted, and the demand still reported.
+    // Short storage grows, and the demand is still reported.
     let (outcome, rows, _, required) = run(&m, &|_| true, 2);
-    assert_eq!(
-        outcome,
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 1
-        }
-    );
+    assert_eq!(outcome, Outcome::Rows { len: 2 });
     assert_eq!((rows[0].state, required), (1, 4));
     // An unreadable claim list refuses the read.
     m.array(STATE_B + cstate::CLAIMS, 0x4642_0000, 1);
@@ -552,7 +546,7 @@ fn no_route_value_and_no_origin_leave_the_factors_unread() {
 }
 
 #[test]
-fn short_buffers_truncate_and_report_live_sizes() {
+fn short_buffers_grow_and_report_live_sizes() {
     let m = fixture();
     let small = Capacity {
         token_bytes: 4,
@@ -561,25 +555,15 @@ fn short_buffers_truncate_and_report_live_sizes() {
     };
     let mut buffers = Buffers::new(&small).unwrap();
     let first = walk(&m, 0, GS, &mut buffers, Selection::ALL);
-    let truncated = Outcome::Truncated {
-        len: 0,
-        unread_rows: 1,
-    };
-    assert_eq!(first.outcomes[2], truncated);
-    assert_eq!(first.outcomes[3], truncated);
-    assert_eq!(
-        (first.required.token_bytes, first.required.override_rows),
-        (8, 2)
-    );
-    let mut grown = small;
-    grown.raise(&first.required);
-    let mut buffers = Buffers::new(&grown).unwrap();
-    let second = walk(&m, 0, GS, &mut buffers, Selection::ALL);
     assert!(
-        second
+        first
             .outcomes
             .iter()
             .all(|outcome| matches!(outcome, Outcome::Rows { .. }))
+    );
+    assert_eq!(
+        (first.required.token_bytes, first.required.override_rows),
+        (8, 2)
     );
 }
 
@@ -602,7 +586,7 @@ fn growing_walk_fills_the_first_pass_and_keeps_the_first_native_fault() {
         copies: RefCell::new(Vec::new()),
     };
     let mut buffers = Buffers::empty();
-    let captured = walk_growing(&traced, 0, GS, &mut buffers, Selection::ALL);
+    let captured = walk(&traced, 0, GS, &mut buffers, Selection::ALL);
     assert_eq!(
         captured.outcomes,
         [
@@ -632,17 +616,10 @@ fn growing_walk_fills_the_first_pass_and_keeps_the_first_native_fault() {
     }
     assert_eq!(&buffers.tokens[..captured.token_bytes], b"refinery");
     assert_eq!(buffers.read_countries, [1]);
-    let fixed = walk(&memory, 0, GS, &mut Buffers::empty(), Selection::ALL);
-    assert!(
-        fixed
-            .outcomes
-            .iter()
-            .all(|outcome| matches!(outcome, Outcome::Truncated { .. }))
-    );
     memory.u64(STATE_A, 7);
     memory.0.remove(&(GS + cgame_state::COUNTRIES));
     assert_eq!(
-        walk_growing(&memory, 0, GS, &mut Buffers::empty(), Selection::ALL).outcomes,
+        walk(&memory, 0, GS, &mut Buffers::empty(), Selection::ALL).outcomes,
         [Outcome::Unavailable {
             reason: "state vtable mismatch"
         }; 4]
@@ -682,11 +659,7 @@ fn growing_resource_database_and_name_dictionary_follow_mod_demand() {
     }
     let (mut descriptors, mut keys, mut bytes) = (Vec::new(), Vec::new(), Vec::new());
     assert_eq!(
-        resource_database(&memory, 0, &mut descriptors, &mut keys, &mut bytes, false),
-        Ok(Err(count as usize))
-    );
-    assert_eq!(
-        resource_database(&memory, 0, &mut descriptors, &mut keys, &mut bytes, true),
+        resource_database(&memory, 0, &mut descriptors, &mut keys, &mut bytes),
         Ok(Ok(count as usize))
     );
     assert_eq!(descriptors[count as usize - 1].token, count + 99);
@@ -697,7 +670,6 @@ fn growing_resource_database_and_name_dictionary_follow_mod_demand() {
         used: 0,
         entries: 0,
         limit: 0,
-        growing: true,
     };
     let mut required = Capacity::zero();
     for index in 0..2_201 {

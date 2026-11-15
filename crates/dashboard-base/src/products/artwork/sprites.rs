@@ -516,12 +516,12 @@ mod tests {
         );
     }
 
-    /// A product's interface picks sprite A in the recording and B in a selected mod, which
-    /// cannot draw its B (the recording's B would draw): the recording's own choice, A, is
-    /// drawn and named, never the mod's choice patched with the recording's B. Where the
-    /// selection could not make its own choice, the recording's is drawn alone, named by the
-    /// product that chose it. A recorded-facts key the mod breaks is the recording's of that
-    /// name; without a selection every key is drawn as it is.
+    /// A product asks for sprite B, naming A as the recording's own choice, and the selected
+    /// mod's art for B does not load (the recording's B would draw): the recording's own choice,
+    /// A, is drawn and named, never B patched with the recording's art. Where the selection made
+    /// no choice of its own, the recording's is drawn alone, named by the product that chose it.
+    /// A recorded-facts key whose art the mod breaks is the recording's of that name; without a
+    /// selection every key is drawn as it is.
     #[test]
     fn a_sprite_the_mod_chose_and_cannot_draw_is_the_recordings_own_choice() {
         use crate::test_fixtures::visual_mods::{
@@ -534,13 +534,7 @@ mod tests {
         );
         machine.write("gfx/a.png", &png(RED));
         machine.write("gfx/b.png", &png(GREEN));
-        // The mod's declarations replace the recording's file: its B does not load.
-        machine.write_mod(
-            "broken",
-            "interface/art.gfx",
-            b"spriteTypes = { spriteType = { name = GFX_a textureFile = gfx/a.png }               spriteType = { name = GFX_b textureFile = gfx/broken.png } }",
-        );
-        machine.write_mod("broken", "gfx/broken.png", b"not a png");
+        machine.write_mod("broken", "gfx/b.png", b"not a png");
         let (source, mut options) = machine.open();
         let ask = |options: &crate::products::ContentOptions, asked: SpriteFrame| {
             let catalogue = catalogue::catalogue(&source, options).unwrap();

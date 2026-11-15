@@ -1,15 +1,27 @@
 import { contentTitle } from '../../dashboard/contentTitles.ts';
-import { NATIONAL_SPIRIT_TYPE } from '../national-spirits/spiritsData.ts';
 import type { Run } from '../../charts/series';
 import { runAt } from '../../charts/series.ts';
 import type { TooltipRow } from '../../charts/tooltip';
 import { fixedNumber, formatFixed } from '../../charts/valueAxis.ts';
-import type { BreakdownLine, FixedRun, FormulaBreakdown, ModifierBreakdown, StabilityBreakdown } from '../../generated/dashboard';
+import type { FixedRun } from './types';
+import type { ChartSummary } from '../../charts/chartSummary';
+import { rawOf, summaryEnd } from '../country-measure/measureData.ts';
+import type { BreakdownLine, FormulaBreakdown, HourSpan, ModifierBreakdown, StabilityBreakdown, StabilityReadsReply } from '../../generated/dashboard';
+
+/** The content type of a national spirit's idea category. */
+const NATIONAL_SPIRIT_TYPE = 'national_spirit';
 
 /** Stability and war support: the displayed values, in percent, from the
  * `country-stability` product, and the breakdown behind one of them. */
 
 export type Measure = 'stability' | 'warSupport';
+
+/** A line's end label where it ends at `end` (the last hour drawn): its value as plotted (a fraction) and as raw fixed
+ * point; null where the line holds none there. */
+export function stabilityEnd(summary: ChartSummary | undefined, end: number, decimals: number): { value: number; raw: string } | null {
+  const value = summaryEnd(summary, end);
+  return value == null ? null : { value, raw: rawOf(value, decimals) };
+}
 
 /** A fraction in fixed point (100000 = 100%) as plotting percent. */
 export function percentRuns(runs: readonly FixedRun[], decimals: number): Run[] {
@@ -148,4 +160,24 @@ export function breakdownRows(breakdown: StabilityBreakdown, measure: Measure, d
   if (formula.clampRaw != null && formula.clampRaw !== '0') rows.push({ label: 'Limited to the allowed range', value: formatPercent(formula.clampRaw, decimals, true), tone: 'muted' });
   rows.push({ label: 'Total', value: formula.valueRaw == null ? 'Not recorded' : formatPercent(formula.valueRaw, decimals), strong: true, tone: formula.valueRaw == null ? 'muted' : undefined });
   return { rows, recorded, unavailable };
+}
+
+/** The stability inputs' read hours over a span (`stability-reads`). */
+export function validateStabilityReads(value: unknown): StabilityReadsReply {
+  const reply = value as StabilityReadsReply;
+  if (typeof reply !== 'object' || reply === null || !Array.isArray(reply.reads) || !Array.isArray(reply.warnings)
+    || !reply.reads.every((span, index) => Number.isSafeInteger(span.firstHour) && Number.isSafeInteger(span.lastHour) && span.firstHour <= span.lastHour
+      && (index === 0 || reply.reads[index - 1].lastHour < span.firstHour))) throw new Error('The stability reads reply is malformed.');
+  return reply;
+}
+
+/** The hour of the read behind `hour`'s values: the hour itself when the inputs were read then, else the last read
+ * before it; null before the first read. */
+export function readHourOf(reads: readonly HourSpan[], hour: number): number | null {
+  let low = 0, high = reads.length - 1, found = -1;
+  while (low <= high) {
+    const middle = (low + high) >> 1;
+    if (reads[middle].firstHour <= hour) { found = middle; low = middle + 1; } else high = middle - 1;
+  }
+  return found < 0 ? null : Math.min(hour, reads[found].lastHour);
 }

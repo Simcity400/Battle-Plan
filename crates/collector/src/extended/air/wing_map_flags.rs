@@ -67,12 +67,19 @@ impl Store {
         address: usize,
         wing: u64,
         mut certificate: impl FnMut(usize) -> Option<(u64, u64)>,
+        mut quiet: impl FnMut() -> Option<(u64, u64)>,
         read: impl FnOnce(usize) -> Option<u8>,
     ) -> Option<bool> {
         if self.current.len() == self.current.capacity() {
             return None;
         }
-        let before = certificate(address)?;
+        let Some(before) = certificate(address) else {
+            // No receiver certified (no table before the first walk's offer
+            // installs): a read no observed writer crossed, kept for no carry.
+            let token = quiet()?;
+            let value = read(address)?;
+            return (quiet() == Some(token)).then_some(value != 0);
+        };
         let held = self
             .previous
             .binary_search_by_key(&address, |entry| entry.address)
@@ -118,6 +125,7 @@ impl Store {
             stop_mask,
             coverage,
             crate::wing_changes::map_sequence,
+            crate::wing_changes::map_quiet,
             |at| engine_native::read::<u8>(memory, at),
         );
         if let Some(value) = self.raid.capture(
@@ -153,6 +161,7 @@ impl Store {
         mask: u32,
         attached: bool,
         mut certificate: impl FnMut(usize) -> Option<(u64, u64)>,
+        mut quiet: impl FnMut() -> Option<(u64, u64)>,
         mut read: impl FnMut(usize) -> Option<u8>,
     ) -> u32 {
         let mut packed = 0;
@@ -165,7 +174,7 @@ impl Store {
             }
             if let Some(value) = pointer
                 .checked_add(offset)
-                .and_then(|at| self.flag(at, wing, &mut certificate, &mut read))
+                .and_then(|at| self.flag(at, wing, &mut certificate, &mut quiet, &mut read))
             {
                 packed |= (1 | (u32::from(value) << 1)) << bit;
             }
@@ -197,15 +206,19 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::watch_registry::WatchRegistry;
+    fn no_quiet() -> Option<(u64, u64)> {
+        panic!("a certified flag took the quiet token")
+    }
     #[test]
     fn refused_flags_carry_as_unknown_and_unstorable_flags_do_not_read() {
         let mut store = Store::default();
         assert_eq!(
-            store.flag(0x1000, 1, |_| Some((1, 0)), |_| panic!("no storage")),
+            store.flag(0x1000, 1, |_| Some((1, 0)), no_quiet, |_| panic!("no storage")),
             None
         );
         store.begin(1, true);
-        assert_eq!(store.flag(0x1000, 1, |_| Some((1, 0)), |_| None), None);
+        assert_eq!(store.flag(0x1000, 1, |_| Some((1, 0)), no_quiet, |_| None), None);
         store.finish();
         store.begin(1, false);
         assert_eq!(
@@ -213,6 +226,7 @@ mod tests {
                 0x1000,
                 1,
                 |_| Some((1, 0)),
+                no_quiet,
                 |_| panic!("quiet refused byte reread")
             ),
             None
@@ -220,9 +234,71 @@ mod tests {
         store.finish();
         store.begin(1, false);
         assert_eq!(
-            store.flag(0x1000, 1, |_| Some((2, 0)), |_| Some(1)),
+            store.flag(0x1000, 1, |_| Some((2, 0)), no_quiet, |_| Some(1)),
             Some(true)
         );
+    }
+    /// The attach hour: the wing writers are observed, but the registry has
+    /// no table until the first walk's offer installs, so no receiver is
+    /// certified. The game holds the stop byte.
+    #[test]
+    fn an_observed_registry_without_a_table_reads_flags_between_quiet_tokens() {
+        let registry = WatchRegistry::new();
+        registry.set_enabled(true);
+        let stop = 0x1000 + TRAINING_STOP;
+        assert_eq!(registry.sequence(stop), None, "no table certifies a receiver");
+        let mut store = Store::default();
+        store.begin(1, true);
+        assert_eq!(
+            store.flag(stop, 1, |at| registry.sequence(at), || registry.quiet(), |_| Some(1)),
+            Some(true)
+        );
+        assert_eq!(
+            store.flag(stop, 1, |at| registry.sequence(at), || registry.quiet(), |_| Some(0)),
+            Some(false)
+        );
+        {
+            let _running = registry.notify(stop);
+            assert_eq!(
+                store.flag(
+                    stop,
+                    1,
+                    |at| registry.sequence(at),
+                    || registry.quiet(),
+                    |_| panic!("read beside a running writer")
+                ),
+                None
+            );
+        }
+        let calls = std::cell::Cell::new(0);
+        let crossed = || {
+            calls.set(calls.get() + 1);
+            if calls.get() == 2 {
+                drop(registry.notify(0));
+            }
+            registry.quiet()
+        };
+        assert_eq!(
+            store.flag(stop, 1, |at| registry.sequence(at), crossed, |_| Some(1)),
+            None,
+            "a writer between the tokens"
+        );
+        assert_eq!(
+            store.flag(stop, 1, |at| registry.sequence(at), || registry.quiet(), |_| None),
+            None
+        );
+        let unobserved = WatchRegistry::new();
+        assert_eq!(
+            store.flag(
+                stop,
+                1,
+                |at| unobserved.sequence(at),
+                || unobserved.quiet(),
+                |_| panic!("unobserved read")
+            ),
+            None
+        );
+        assert!(store.current.is_empty(), "an uncertified read carries nothing");
     }
     #[test]
     fn stop_demand_covers_later_possible_members_and_resets_at_each_census() {
@@ -272,6 +348,7 @@ mod tests {
                     0x800,
                     true,
                     |_| Some((1, 0)),
+                    no_quiet,
                     |_| Some(1)
                 ),
                 15
@@ -287,13 +364,14 @@ mod tests {
                     0x800,
                     true,
                     |_| Some((1, 0)),
+                    no_quiet,
                     |_| panic!("quiet flag read")
                 ),
                 15
             );
         }
         assert_eq!(
-            store.capture_with(0x1000, 1, 0, false, |_| panic!(), |_| panic!()),
+            store.capture_with(0x1000, 1, 0, false, |_| panic!(), no_quiet, |_| panic!()),
             0
         );
         store.finish();
@@ -303,7 +381,7 @@ mod tests {
         let mut store = Store::default();
         store.begin(2, false);
         assert_eq!(
-            store.capture_with(0x1000, 1, 0x800, true, |_| Some((1, 0)), |_| Some(1)),
+            store.capture_with(0x1000, 1, 0x800, true, |_| Some((1, 0)), no_quiet, |_| Some(1)),
             15
         );
         store.finish();
@@ -315,6 +393,7 @@ mod tests {
                 0x800,
                 true,
                 |at| Some((1, u64::from(at == 0x1000 + TRAINING_STOP))),
+                no_quiet,
                 |at| {
                     assert_eq!(at, 0x1000 + TRAINING_STOP);
                     Some(0)
@@ -325,7 +404,7 @@ mod tests {
         store.finish();
         store.begin(2, false);
         assert_eq!(
-            store.capture_with(0x1000, 2, 0x800, true, |_| Some((2, 0)), |_| Some(0)),
+            store.capture_with(0x1000, 2, 0x800, true, |_| Some((2, 0)), no_quiet, |_| Some(0)),
             5
         );
         store.finish();
@@ -337,7 +416,8 @@ mod tests {
                 0x800,
                 true,
                 |_| None,
-                |_| panic!("uncertified polling")
+                || None,
+                |_| panic!("unobserved polling")
             ),
             0
         );
@@ -350,6 +430,7 @@ mod tests {
                     calls += 1;
                     Some((1, calls))
                 },
+                no_quiet,
                 |_| Some(1)
             ),
             None

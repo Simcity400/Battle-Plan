@@ -1,7 +1,6 @@
 import type { ChartLayer } from './TimeChart';
 import type { ChartTokens } from './tokens';
 import type { PlotFrame } from './frame';
-import { dayLabel } from './draw.ts';
 
 /** Inclusive recorded hours, as replies carry `approximate` and `pending` spans. */
 export interface Span { firstHour: number; lastHour: number }
@@ -63,16 +62,4 @@ export function pendingLayer(pending: readonly Span[] | undefined): ChartLayer {
     for (const [from, to] of spanRanges(pending, frame.x[0], frame.x[1], state.playhead))
       fillPendingBand(ctx, tokens, frame.toX(from), frame.toX(to), frame.plotTop, frame.plotHeight);
   } };
-}
-
-/** The status a list or log shows above its rows while its reply is answered
- * from a prepared prefix: the prepared days, and the newest days a proven
- * window answers exactly from `exactFrom`; null once coverage is complete
- * (or when the reply carries none). */
-export function preparedRangeText(coverage: { firstHour: number; lastHour: number; complete: boolean } | null | undefined,
-  exactFrom: number | null = null): string | null {
-  if (coverage === undefined || coverage?.complete) return null;
-  const exact = exactFrom == null ? '' : `Newest days exact from ${dayLabel(exactFrom)}`;
-  if (!coverage || coverage.lastHour < coverage.firstHour) return exact ? `${exact}; the rest is still being prepared.` : 'This range is still being prepared.';
-  return `${exact ? `${exact}. ` : ''}Prepared ${dayLabel(coverage.firstHour)} to ${dayLabel(coverage.lastHour)}; the rest is still being prepared.`;
 }

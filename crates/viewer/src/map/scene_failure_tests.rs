@@ -57,7 +57,7 @@ impl Fixture {
         let serial = test_support_serial();
         let state = pollster::block_on(async {
             let instance =
-                wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+                shader_pipeline::gpu::instance();
             let available_adapters = instance.enumerate_adapters(wgpu::Backends::all()).await;
             let adapter = select_adapter(&available_adapters, None)?;
             eprintln!("Scene failure GPU: {:?}", adapter.get_info());
@@ -566,5 +566,35 @@ fn near_names_fade_in_as_the_country_names_fade_out() -> io::Result<()> {
     };
     assert!(drawn(0.)? > 0, "the near names are not drawn close in");
     assert_eq!(drawn(1.)?, 0, "the near names stay drawn far out");
+    Ok(())
+}
+
+/// A window's scene, whose names only an install prepares, takes the names layer's install, then
+/// draws frames handed no names (the layer away composing: the factions flight with the layers
+/// only), then the frame the layer hands its names again: the installed names are still prepared,
+/// and drawn. Before, a frame handed no names prepared that empty set over the installed ones, and
+/// the frame that handed them back was refused: "country names reached their frame without their
+/// glyph buffers prepared".
+#[test]
+#[ignore = "verified replay/content and GPU; requires BATTLE_PLAN_SCENE_FAILURE_INPUT"]
+fn installed_names_handed_nothing_for_frames_are_drawn_when_handed_again() -> io::Result<()> {
+    use viewer_foundation::map::name_draw::next_generation;
+    let fixture = Fixture::load("names-handed-nothing")?;
+    let mut scene = fixture.scene()?;
+    scene.build_names_in_upload(false);
+    let names = Placements { generation: next_generation(), ..fixture.names.clone() };
+    assert!(!names.country.is_empty());
+    scene.set_hour_layers(&fixture.state.device, &fixture.state.queue, HourLayers { names: Some(&names), ..Default::default() })?;
+    let nothing = Placements::default();
+    let mut draw = |handed: &Placements| -> io::Result<()> {
+        let mut request = fixture.request([256, 144]);
+        request.overlay = Overlay { names: Some(handed), ..request.overlay };
+        fixture.render(&mut scene, request)
+    };
+    for frame in 0..3 {
+        draw(&nothing).map_err(|error| io::Error::other(format!("frame {frame} handed no names: {error}")))?;
+    }
+    draw(&names).map_err(|error| io::Error::other(format!("the installed names handed again: {error}")))?;
+    assert!(scene.holds_country_names(&names), "the installed names are still prepared");
     Ok(())
 }

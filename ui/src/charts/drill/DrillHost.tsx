@@ -11,7 +11,7 @@ import './drill.css';
  * breakdown opens in a panel next to the widget that closes with ×, Esc or a click
  * elsewhere. Both share the header: the day shown, Follow playback and Pin as widget. */
 export default function DrillHost({ mode, open, title, day, following, canFollow, onClose, onFollow, onPause, onPin, anchor, returnFocus, main, children }: {
-  mode: 'inline' | 'popout'; open: boolean; title: string; day: string; following: boolean; canFollow: boolean;
+  mode: 'inline' | 'popout'; open: boolean; title: string; day: import('react').ReactNode; following: boolean; canFollow: boolean;
   onClose: () => void; onFollow: () => void; onPause?: () => void; onPin?: () => void;
   /** The widget body the pop-out panel sits beside. */
   anchor: RefObject<HTMLElement | null>;

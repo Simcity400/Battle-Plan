@@ -148,11 +148,7 @@ fn collaboration_owned_nonempty_relations_keep_exact_fields_aliases_and_signed_p
                 base: 0,
                 game_state: kit::BASE,
             };
-            let report = if capacity == 0 {
-                copy_construction_rest_refresh_growing(&memory, ctx, &mut job)
-            } else {
-                copy_construction_rest_refresh(&memory, ctx, &mut job)
-            };
+            let report = copy_construction_rest_refresh(&memory, ctx, &mut job);
             assert!(report.raw_ok);
             assert!(!job.log.fault[9]);
             for (address, len) in [
@@ -172,20 +168,8 @@ fn collaboration_owned_nonempty_relations_keep_exact_fields_aliases_and_signed_p
             }
             let mut captured = Captured::with_capacities(&capacities);
             captured.decode_construction_rest_payload(0, kit::BASE, &job, &mut [0; 10]);
-            if capacity == 1 {
-                let expected = kit::direct(&memory, &capacities);
-                assert_eq!(captured.tables()[11], expected.tables()[11]);
-                assert_eq!(
-                    captured.collaboration.outcome,
-                    Outcome::Truncated {
-                        len: 1,
-                        unread_rows: 1
-                    }
-                );
-            } else {
-                assert_rows(&captured, progress);
-                assert_eq!(captured.tables()[11], direct.tables()[11]);
-            }
+            assert_rows(&captured, progress);
+            assert_eq!(captured.tables()[11], direct.tables()[11]);
         }
     }
 }
@@ -382,7 +366,7 @@ fn collaboration_owned_captures_only_demanded_aliases_and_every_decoder_read_exa
             demanded: &demanded,
             reads: RefCell::default(),
         };
-        let mut rows = [ccountry_collaboration_data::Row::default(); 8];
+        let mut rows = vec![ccountry_collaboration_data::Row::default(); 8];
         assert_eq!(
             ccountry_collaboration_status::walk(&memory, 0, kit::BASE, &mut rows),
             Outcome::Rows { len: 2 },
@@ -761,13 +745,13 @@ fn collaboration_owned_grows_to_fifteen_hundred_countries_with_outgoing_and_inco
     };
     let mut direct = Vec::new();
     assert_eq!(
-        ccountry_collaboration_status::walk_growing(&memory, 0, kit::BASE, &mut direct),
+        ccountry_collaboration_status::walk(&memory, 0, kit::BASE, &mut direct),
         Outcome::Rows { len: COUNTRIES }
     );
     assert_eq!(&direct[..COUNTRIES], &expected);
     let mut job = ConstructionRestJob::new();
     assert!(
-        copy_construction_rest_refresh_growing(
+        copy_construction_rest_refresh(
             &memory,
             ConstructionRestCopyContext {
                 base: 0,
@@ -824,7 +808,7 @@ fn collaboration_owned_captures_reserved_authentication_only_for_physical_zero_i
         reads: RefCell::default(),
     };
     assert_eq!(
-        ccountry_collaboration_status::walk(&memory, 0, kit::BASE, &mut []),
+        ccountry_collaboration_status::walk(&memory, 0, kit::BASE, &mut Vec::new()),
         Outcome::Rows { len: 0 }
     );
     let decoder_reads = memory.reads.take();
@@ -865,7 +849,7 @@ fn collaboration_owned_captures_reserved_authentication_only_for_physical_zero_i
             address: 0x2000,
             len: if failed { 8 } else { 0 },
         };
-        let mut direct = [];
+        let mut direct = vec![];
         let expected = ccountry_collaboration_status::walk(&memory, 0, kit::BASE, &mut direct);
         assert!(
             copy_construction_rest_refresh(

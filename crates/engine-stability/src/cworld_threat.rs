@@ -139,7 +139,7 @@ impl Reader {
                 .filter(|pointer| *pointer != 0)
                 .ok_or("threat source pointer unreadable or null")?;
             let (_, _, wanted) =
-                cthreat_source::read_row(memory, base, ordinal, pointer, &mut [], 0)?;
+                cthreat_source::count_row(memory, base, ordinal, pointer)?;
             bytes = bytes
                 .checked_add(wanted)
                 .ok_or("threat source reason demand overflow")?;
@@ -152,16 +152,6 @@ impl Reader {
     /// A row whose reason does not fit the arena is omitted and counted, like a
     /// row that does not fit `output`; `required` always reports the full need.
     pub fn sources(
-        &self,
-        memory: &impl Memory,
-        base: usize,
-        output: &mut [SourceRow],
-        reasons: &mut [u8],
-    ) -> SourceOutcome {
-        self.sources_buffer(memory, base, Buffer::Fixed(output), Buffer::Fixed(reasons))
-    }
-
-    pub fn sources_growing(
         &self,
         memory: &impl Memory,
         base: usize,
@@ -359,8 +349,8 @@ mod tests {
                 unread_rows: 1
             }
         );
-        let mut sources = [SourceRow::default(); 4];
-        let mut reasons = [0; 32];
+        let mut sources = vec![SourceRow::default(); 4];
+        let mut reasons = vec![0; 32];
         let result = reader.sources(&memory, 0, &mut sources, &mut reasons);
         assert_eq!(
             result,
@@ -412,67 +402,25 @@ mod tests {
     }
 
     #[test]
-    fn capacity_and_null_slots_are_reported_not_hidden() {
+    fn short_storage_grows_and_null_slots_are_reported_not_hidden() {
         let bytes = fixture();
         let memory = SliceMemory {
             base: BASE,
             bytes: &bytes,
         };
         let reader = Reader::new(&memory, 0, BASE).unwrap();
-        let mut sources = [SourceRow::default(); 1];
+        let mut sources = vec![SourceRow::default(); 1];
         assert_eq!(
             reader
-                .sources(&memory, 0, &mut sources, &mut [0; 32])
+                .sources(&memory, 0, &mut sources, &mut Vec::new())
                 .outcome,
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            }
+            Outcome::Rows { len: 2 }
         );
         assert_eq!(
             reader.aggregates(&memory, &mut [AggregateRow::default(); 1]),
             Outcome::Truncated {
                 len: 1,
                 unread_rows: 2
-            }
-        );
-        // An arena too small for a reason omits that row and still reports it.
-        assert_eq!(
-            reader.sources(&memory, 0, &mut [SourceRow::default(); 4], &mut []),
-            SourceOutcome {
-                outcome: Outcome::Truncated {
-                    len: 1,
-                    unread_rows: 1
-                },
-                bytes_len: 0,
-                required_bytes: 5,
-            }
-        );
-        // Arena omissions and a full row buffer add up instead of replacing each
-        // other: source 0 needs five arena bytes it cannot have, source 1 has an
-        // empty reason and is published, and the third source finds no room.
-        let mut three = bytes.clone();
-        put(&mut three, MANAGER + SOURCES + 12, &3_u32.to_le_bytes());
-        put(&mut three, MANAGER + SOURCES + 8, &3_u32.to_le_bytes());
-        put(
-            &mut three,
-            SOURCE_ARRAY + 16,
-            &(SECOND as u64).to_le_bytes(),
-        );
-        let memory = SliceMemory {
-            base: BASE,
-            bytes: &three,
-        };
-        let reader = Reader::new(&memory, 0, BASE).unwrap();
-        assert_eq!(
-            reader.sources(&memory, 0, &mut [SourceRow::default(); 1], &mut []),
-            SourceOutcome {
-                outcome: Outcome::Truncated {
-                    len: 1,
-                    unread_rows: 2
-                },
-                bytes_len: 0,
-                required_bytes: 5,
             }
         );
 
@@ -485,7 +433,7 @@ mod tests {
         let reader = Reader::new(&memory, 0, BASE).unwrap();
         assert_eq!(
             reader
-                .sources(&memory, 0, &mut [SourceRow::default(); 4], &mut [0; 32])
+                .sources(&memory, 0, &mut vec![SourceRow::default(); 4], &mut vec![0; 32])
                 .outcome,
             Outcome::Unavailable {
                 reason: "threat source pointer unreadable or null"

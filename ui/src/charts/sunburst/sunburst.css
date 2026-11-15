@@ -43,3 +43,4 @@
   .sunburst:not(.no-legend) .sunburst-plot { flex: 1 1 60%; }
   .sunburst-legend { width: auto; flex: 0 1 40%; padding: var(--space-2) var(--space-3); }
 }
+.sunburst-footnote:has(> span:only-child:empty) { display: none; }

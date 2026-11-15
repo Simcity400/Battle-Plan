@@ -43,6 +43,11 @@ impl Index {
     pub fn capacity(&self) -> usize {
         (self.slots.len() / 2).max(self.countries.len())
     }
+    /// Whether `insert` would find the pointer index full; `prepare` must
+    /// grow it first.
+    fn needs_room(&self) -> bool {
+        self.live >= self.slots.len() / 2
+    }
     pub fn covers(&self, other: &Self) -> bool {
         self.slots.len() >= other.slots.len() && self.countries.len() >= other.countries.len()
     }
@@ -236,17 +241,16 @@ impl Store {
         hour: i32,
         owner: CountryIdentity,
         row: native::Delayed,
-        growing: bool,
     ) -> Result<(), &'static str> {
         self.observation(generation)?;
-        if self.grows(growing) && self.delayed.live.saturating_add(1) > self.delayed.capacity() {
+        if self.delayed.needs_room() {
             self.prepare_delayed(
                 self.delayed
                     .live
                     .saturating_add(1)
-                    .max(self.delayed.capacity().saturating_mul(2)),
+                    .max(self.delayed.slots.len()),
             )
-            .map_err(|_| "delayed-event baseline identity allocation failed")?;
+            .map_err(|_| "delayed-event identity allocation failed")?;
         }
         let id = self.delayed.insert(row.pointer, owner.id)?;
         let (native_event, token) =
@@ -269,7 +273,7 @@ impl Store {
                 ..Default::default()
             },
         };
-        self.script_mode(memory, base, generation, hour, fact, growing)
+        self.script_known(memory, base, generation, hour, fact)
     }
     /// A native delayed-event retirement. `pass` is the authenticated
     /// iteration owner and the world its pass was anchored in.
@@ -330,7 +334,6 @@ impl Store {
                 Some(slot),
                 UNCERTIFIED_RETIREMENT,
                 true,
-                false,
             );
         };
         let mut fact = super::registry::marker(
@@ -367,7 +370,6 @@ impl Store {
         slot: Option<usize>,
         reason: &'static str,
         count: bool,
-        growing: bool,
     ) -> Result<(), &'static str> {
         let entry = slot
             .and_then(|slot| self.delayed.countries.get_mut(slot))
@@ -390,7 +392,7 @@ impl Store {
         }
         let mut marker = super::registry::marker_for(memory, Change::DelayedRefused, None);
         marker.target = owner;
-        self.script_text(memory, base, generation, hour, marker, reason, growing)
+        self.script_text(memory, base, generation, hour, marker, reason)
     }
     /// Retry uncertified owners at each census boundary.
     pub(crate) fn recover_delayed(
@@ -415,9 +417,10 @@ impl Store {
         if seen.is_some_and(|seen| seen.ready) {
             return;
         }
-        // Recovery allocates nothing under the lease, its refusal markers
-        // included: only presize grows the census table.
-        let recorded = slot < self.delayed.countries.len();
+        // A census slot past the prepared table grows it; only a failed
+        // allocation leaves the slot unrecorded.
+        let recorded = slot < self.delayed.countries.len()
+            || self.prepare_delayed(slot.saturating_add(1)).is_ok();
         if recorded {
             // Keep a repeated refusal suppressed until a baseline succeeds.
             self.delayed.countries[slot] = Country {
@@ -450,8 +453,7 @@ impl Store {
             if !recorded {
                 // Raise the census table's demand; retried at the next visit.
                 store.delayed.demand = store.delayed.demand.max(slot.saturating_add(1));
-                store.short();
-                return Err(super::OWNER_STORAGE);
+                return Err("delayed-event census table allocation failed");
             }
             store.delayed_owner_baseline(memory, base, generation, state, hour, country, owner, cut)
         });
@@ -485,7 +487,6 @@ impl Store {
                     recorded.then_some(slot),
                     refusal.reason,
                     !refusal.counted,
-                    false,
                 );
             }
             // Crossed, and its surrender target unreadable: retried, unnamed.
@@ -524,12 +525,12 @@ impl Store {
             Self::certifies(cut)?;
             let mut marker = super::registry::marker_for(memory, Change::DelayedEmpty, None);
             marker.target = owner;
-            return self.script_growing(memory, base, generation, hour, marker);
+            return self.script_known(memory, base, generation, hour, marker);
         }
         let world = World::new(memory, base)?;
         let mut marker = super::registry::marker_for(memory, Change::DelayedBaseline, None);
         marker.target = owner;
-        self.script_growing(memory, base, generation, hour, marker)?;
+        self.script_known(memory, base, generation, hour, marker)?;
         for ordinal in 0..array.count {
             self.delayed_stored(
                 &world,
@@ -539,7 +540,6 @@ impl Store {
                 hour,
                 owner,
                 native::delayed_at(memory, base, array, ordinal)?,
-                true,
             )?;
         }
         if native::delayed_array(memory, country.pointer)? != array {
@@ -548,7 +548,7 @@ impl Store {
         Self::certifies(cut)?;
         let mut marker = super::registry::marker_for(memory, Change::DelayedReady, None);
         marker.target = owner;
-        self.script_growing(memory, base, generation, hour, marker)
+        self.script_known(memory, base, generation, hour, marker)
     }
     pub fn invalidate_delayed_country(&mut self, pointer: usize) {
         for country in &mut self.delayed.countries {
@@ -618,6 +618,7 @@ mod tests {
     use super::*;
     #[test]
     fn delayed_colliding_certificates_survive_wrapped_retirement_and_storage_pressure() {
+        let _globals = crate::event_feed_observer::test_globals();
         let mut index = Index::default();
         index.prepare(4).unwrap();
         index.reset(7);
@@ -657,6 +658,7 @@ mod tests {
     }
     #[test]
     fn delayed_pointer_certificates_need_no_callback_allocation() {
+        let _globals = crate::event_feed_observer::test_globals();
         let mut index = Index::default();
         index.prepare(20).unwrap();
         index.reset(7);
@@ -693,6 +695,7 @@ mod tests {
     }
     #[test]
     fn delayed_labels_outlive_a_same_world_loss_and_restart_only_for_a_new_world() {
+        let _globals = crate::event_feed_observer::test_globals();
         let owner = CountryIdentity {
             reference: 3,
             id: 3,
@@ -750,6 +753,7 @@ mod tests {
     }
     #[test]
     fn delayed_label_exhaustion_stays_checked_across_a_same_world_loss() {
+        let _globals = crate::event_feed_observer::test_globals();
         let owner = CountryIdentity {
             reference: 1,
             id: 1,
@@ -772,6 +776,7 @@ mod tests {
     }
     #[test]
     fn surrender_target_changes_keep_timer_labels_but_country_reuse_does_not() {
+        let _globals = crate::event_feed_observer::test_globals();
         let mut index = Index::default();
         index.prepare(1500).unwrap();
         index.reset(1);

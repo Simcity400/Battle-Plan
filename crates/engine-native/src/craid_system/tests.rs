@@ -185,25 +185,25 @@ fn fixture() -> Vec<u8> {
 
 fn read_fixture(
     bytes: &[u8],
-    parents: &mut [ccountry_raid_status::Row],
-    children: &mut [craid_instance::Row],
+    parents: &mut Vec<ccountry_raid_status::Row>,
+    children: &mut Vec<craid_instance::Row>,
 ) -> (Outcome, Outcome) {
     let walk = run(
         &SliceMemory { base: 0, bytes },
         parents,
         children,
-        &mut [0; 8],
-        &mut [0; 8],
+        &mut vec![0; 8],
+        &mut vec![0; 8],
     );
     (walk.parents, walk.instances)
 }
 
 fn run(
     memory: &impl Memory,
-    parents: &mut [ccountry_raid_status::Row],
-    instances: &mut [craid_instance::Row],
-    type_tokens: &mut [u32],
-    show_for: &mut [u32],
+    parents: &mut Vec<ccountry_raid_status::Row>,
+    instances: &mut Vec<craid_instance::Row>,
+    type_tokens: &mut Vec<u32>,
+    show_for: &mut Vec<u32>,
 ) -> Walk {
     walk(
         memory,
@@ -214,7 +214,7 @@ fn run(
             type_tokens,
             instances,
             show_for,
-            cooldowns: &mut [],
+            cooldowns: &mut Vec::new(),
             type_memo: &mut ccountry_raid_status::TypeTokens::with_definitions(8),
         },
     )
@@ -223,9 +223,9 @@ fn run(
 #[test]
 fn native_values_aliases_and_dummy_parents_survive() {
     let bytes = fixture();
-    let mut parents = [ccountry_raid_status::Row::default(); 2];
-    let mut children = [craid_instance::Row::default(); 1];
-    let (mut tokens, mut shown) = ([0; 3], [0; 2]);
+    let mut parents = vec![ccountry_raid_status::Row::default(); 2];
+    let mut children = vec![craid_instance::Row::default(); 1];
+    let (mut tokens, mut shown) = (vec![0; 3], vec![0; 2]);
     let result = run(
         &SliceMemory {
             base: 0,
@@ -295,14 +295,14 @@ fn absent_source_kind_does_not_read_its_payload() {
         INSTANCE + craid_instance::SOURCE + craid_source::KIND_PRESENT,
         &[0],
     );
-    let mut parents = [ccountry_raid_status::Row::default(); 2];
-    let mut children = [craid_instance::Row::default(); 1];
+    let mut parents = vec![ccountry_raid_status::Row::default(); 2];
+    let mut children = vec![craid_instance::Row::default(); 1];
     let result = run(
         &WithoutKind { bytes: &bytes },
         &mut parents,
         &mut children,
-        &mut [0; 3],
-        &mut [0; 2],
+        &mut vec![0; 3],
+        &mut vec![0; 2],
     );
     assert_eq!(
         (result.parents, result.instances),
@@ -311,38 +311,6 @@ fn absent_source_kind_does_not_read_its_payload() {
     assert_eq!(children[0].source.kind, None);
     assert_eq!(children[0].source.kind_present, 0);
     assert_eq!(children[0].source.province, 450);
-}
-
-#[test]
-fn capacities_are_independent_and_omitted_fields_are_not_read() {
-    let mut bytes = fixture();
-    put(&mut bytes, CHILDREN, &1_u64.to_le_bytes());
-    let mut parents = [ccountry_raid_status::Row::default(); 1];
-    assert_eq!(
-        read_fixture(&bytes, &mut parents, &mut []),
-        (
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            },
-            Outcome::Truncated {
-                len: 0,
-                unread_rows: 1
-            },
-        )
-    );
-    let bytes = fixture();
-    let mut children = [craid_instance::Row::default(); 1];
-    assert_eq!(
-        read_fixture(&bytes, &mut [], &mut children),
-        (
-            Outcome::Truncated {
-                len: 0,
-                unread_rows: 2
-            },
-            Outcome::Rows { len: 1 },
-        )
-    );
 }
 
 #[test]
@@ -358,8 +326,8 @@ fn bad_children_do_not_erase_readable_parent_state() {
     ] {
         let mut bytes = fixture();
         put(&mut bytes, INSTANCE + offset, &value.to_le_bytes());
-        let mut parents = [ccountry_raid_status::Row::default(); 2];
-        let mut children = [craid_instance::Row::default(); 1];
+        let mut parents = vec![ccountry_raid_status::Row::default(); 2];
+        let mut children = vec![craid_instance::Row::default(); 1];
         let (parent, child) = read_fixture(&bytes, &mut parents, &mut children);
         assert_eq!(parent, Outcome::Rows { len: 2 });
         assert!(
@@ -371,8 +339,8 @@ fn bad_children_do_not_erase_readable_parent_state() {
 
 #[test]
 fn wrong_parent_slot_duplicate_reference_and_invalid_geometry_are_refused() {
-    let mut parents = [ccountry_raid_status::Row::default(); 2];
-    let mut children = [craid_instance::Row::default(); 2];
+    let mut parents = vec![ccountry_raid_status::Row::default(); 2];
+    let mut children = vec![craid_instance::Row::default(); 2];
     let mut bytes = fixture();
     put(
         &mut bytes,
@@ -416,53 +384,18 @@ fn authenticated_empty_root_needs_no_country_roster() {
     header(&mut bytes, ROOT + COUNTRY_STATUSES, 0, 0);
     header(&mut bytes, GS + cgame_state::COUNTRIES, 0, 0);
     assert_eq!(
-        read_fixture(&bytes, &mut [], &mut []),
+        read_fixture(&bytes, &mut Vec::new(), &mut Vec::new()),
         (Outcome::Rows { len: 0 }, Outcome::Rows { len: 0 })
     );
     put(&mut bytes, ROOT, &0_u64.to_le_bytes());
     assert!(matches!(
-        read_fixture(&bytes, &mut [], &mut []).0,
+        read_fixture(&bytes, &mut Vec::new(), &mut Vec::new()).0,
         Outcome::Unavailable { .. }
     ));
 }
 
 #[test]
-fn a_row_whose_list_does_not_fit_is_counted_with_its_demand() {
-    let bytes = fixture();
-    let mut parents = [ccountry_raid_status::Row::default(); 2];
-    let mut children = [craid_instance::Row::default(); 1];
-    let result = run(
-        &SliceMemory {
-            base: 0,
-            bytes: &bytes,
-        },
-        &mut parents,
-        &mut children,
-        &mut [0; 2],
-        &mut [0; 1],
-    );
-    assert_eq!(
-        result.parents,
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 1
-        }
-    );
-    assert_eq!(
-        result.instances,
-        Outcome::Truncated {
-            len: 0,
-            unread_rows: 1
-        }
-    );
-    assert_eq!(
-        (result.required_type_tokens, result.required_show_for),
-        (3, 2)
-    );
-}
-
-#[test]
-fn cooldowns_keep_owner_order_and_type_and_truncate_with_demand() {
+fn cooldowns_keep_owner_order_and_type_and_grow_with_demand() {
     const COOLDOWNS: usize = 0x8b00;
     let mut bytes = fixture();
     let parent = PARENTS + ccountry_raid_status::STRIDE;
@@ -494,27 +427,21 @@ fn cooldowns_keep_owner_order_and_type_and_truncate_with_demand() {
         base: 0,
         bytes: &bytes,
     };
-    let mut cooldowns = [CooldownRow::default(); 1];
+    let mut cooldowns = vec![CooldownRow::default(); 1];
     let result = walk(
         &memory,
         0,
         GS,
         Buffers {
-            parents: &mut [ccountry_raid_status::Row::default(); 2],
-            type_tokens: &mut [0; 8],
-            instances: &mut [craid_instance::Row::default(); 1],
-            show_for: &mut [0; 8],
+            parents: &mut vec![ccountry_raid_status::Row::default(); 2],
+            type_tokens: &mut vec![0; 8],
+            instances: &mut vec![craid_instance::Row::default(); 1],
+            show_for: &mut vec![0; 8],
             cooldowns: &mut cooldowns,
             type_memo: &mut ccountry_raid_status::TypeTokens::with_definitions(8),
         },
     );
-    assert_eq!(
-        result.cooldowns,
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 1
-        }
-    );
+    assert_eq!(result.cooldowns, Outcome::Rows { len: 2 });
     assert_eq!(
         (
             cooldowns[0].owner_slot,
@@ -699,7 +626,7 @@ fn scaled(countries: usize) -> Vec<u8> {
 /// A short type-token arena must not omit parents after the observed
 /// demand sizes storage for the complete hour.
 #[test]
-fn the_type_token_demand_sizes_a_first_hour_past_the_default_arena() {
+fn a_first_hour_past_the_default_type_token_arena_grows_to_its_demand() {
     let countries = 600;
     let bytes = scaled(countries);
     let memory = SliceMemory {
@@ -729,7 +656,9 @@ fn the_type_token_demand_sizes_a_first_hour_past_the_default_arena() {
             },
         )
     };
-    assert!(matches!(run(4096).parents, Outcome::Truncated { .. }));
+    let grown = run(4096);
+    assert_eq!(grown.parents, Outcome::Rows { len: slots });
+    assert_eq!(grown.required_type_tokens, demand);
     let sized = run(demand);
     assert_eq!(sized.parents, Outcome::Rows { len: slots });
     assert_eq!(sized.required_type_tokens, demand);

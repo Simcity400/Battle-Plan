@@ -16,6 +16,9 @@ export function canvasCountryFlag(flag: CountryFlagLook, wake: () => void): Coun
 }
 
 /** Missing native flags keep the same neutral filled slot; generic art opts out. */
+/** The placeholder's fill of each theme's tokens: mixed once, not for every flag of every frame. */
+const placeholders = new WeakMap<object, string>();
+
 export function drawCountryFlag(context: CanvasRenderingContext2D, flag: CountryFlagLook | undefined,
   x: number, y: number, width: number, height: number, tokens: Pick<ChartTokens, 'surface' | 'muted' | 'border' | 'lineWidth'>,
   wake: () => void): void {
@@ -27,7 +30,9 @@ export function drawCountryFlag(context: CanvasRenderingContext2D, flag: Country
     return;
   }
   context.save();
-  context.fillStyle = mix(tokens.surface, tokens.muted, 0.25);
+  let fill = placeholders.get(tokens);
+  if (fill === undefined) placeholders.set(tokens, fill = mix(tokens.surface, tokens.muted, 0.25));
+  context.fillStyle = fill;
   context.fillRect(x, y, width, height);
   context.strokeStyle = tokens.border; context.lineWidth = tokens.lineWidth.grid;
   context.strokeRect(x + context.lineWidth / 2, y + context.lineWidth / 2, Math.max(0, width - context.lineWidth), Math.max(0, height - context.lineWidth));

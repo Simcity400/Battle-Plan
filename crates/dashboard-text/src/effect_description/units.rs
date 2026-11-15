@@ -39,7 +39,7 @@ fn integer_field(items: &[Item], name: &str, default: i32) -> i32 {
 fn variant_version(variant: &VariantDefinitionRow) -> Result<u8, String> {
     variant
         .version
-        .require("VariantDefinitions.version")
+        .require("version of variant definitions")
         .copied()
 }
 
@@ -89,7 +89,7 @@ impl Renderer<'_, '_, '_> {
             0 // Only raw zero maps directly to reserved country zero.
         } else {
             world.slot(owner).ok_or_else(|| {
-                format!("CountryLinks lacks change-division-template logical owner {owner}")
+                format!("country links lacks change-division-template logical owner {owner}")
             })?
         };
         if country == 0 {
@@ -210,7 +210,7 @@ impl Renderer<'_, '_, '_> {
                 .world()?
                 .token(token)
                 .map_err(|why| why.to_string())?
-                .ok_or_else(|| format!("LexicalTokens lacks equipment variable token {token}"))?;
+                .ok_or_else(|| format!("lexical tokens lacks equipment variable token {token}"))?;
             return Ok(database.get(literal));
         }
         Ok(cached) // Resolve the token using signed division.
@@ -481,12 +481,12 @@ impl Renderer<'_, '_, '_> {
             let held = self.units_available_variants(country)?;
             for variant in held.iter().map(Option::as_deref) {
                 let variant = variant.ok_or(
-                    "AvailableEquipmentVariants references an absent VariantDefinitions row",
+                    "available equipment variants references an absent variant definitions row",
                 )?;
                 let token = world
                     .token(variant.equipment_token)
                     .map_err(|why| why.to_string())?
-                    .ok_or("LexicalTokens lacks the available variant equipment token")?;
+                    .ok_or("lexical tokens lacks the available variant equipment token")?;
                 if database.get(token) == Some(index) {
                     selected = Some(variant);
                     break;
@@ -605,7 +605,7 @@ impl Renderer<'_, '_, '_> {
                 world
                     .slot(raw)
                     .map(|slot| slot as i32)
-                    .ok_or_else(|| format!("CountryLinks lacks equipment pool country {raw}"))
+                    .ok_or_else(|| format!("country links lacks equipment pool country {raw}"))
             }
         };
         let creator = slot(left.creator_link)?.cmp(&slot(right.creator_link)?);
@@ -684,12 +684,12 @@ impl Renderer<'_, '_, '_> {
             }
             for variant in roster {
                 let variant = variant.ok_or(
-                    "AvailableEquipmentVariants references an absent VariantDefinitions row",
+                    "available equipment variants references an absent variant definitions row",
                 )?;
                 let token = world
                     .token(variant.equipment_token)
                     .map_err(|why| why.to_string())?
-                    .ok_or("LexicalTokens lacks the available variant equipment token")?;
+                    .ok_or("lexical tokens lacks the available variant equipment token")?;
                 let at = database
                     .get(token)
                     .ok_or("available variant equipment is absent from recorded content")?;
@@ -921,7 +921,7 @@ impl Renderer<'_, '_, '_> {
                 self.context
                     .world()?
                     .slot(row.owner)
-                    .ok_or("CountryLinks lacks equipment-variant state owner")?
+                    .ok_or("country links lacks equipment-variant state owner")?
             }
             _ => return Ok(String::new()),
         };
@@ -936,12 +936,12 @@ impl Renderer<'_, '_, '_> {
             let held = self.units_available_variants(country)?;
             for variant in held.iter().map(Option::as_deref) {
                 let variant = variant.ok_or(
-                    "AvailableEquipmentVariants references an absent VariantDefinitions row",
+                    "available equipment variants references an absent variant definitions row",
                 )?;
                 let token = world
                     .token(variant.equipment_token)
                     .map_err(|why| why.to_string())?
-                    .ok_or("LexicalTokens lacks the available variant equipment token")?;
+                    .ok_or("lexical tokens lacks the available variant equipment token")?;
                 if database.get(token) != Some(kind.family) || variant_version(variant)? != 0 {
                     continue;
                 }
@@ -952,7 +952,7 @@ impl Renderer<'_, '_, '_> {
                     || (variant.creator_link != 0
                         && world
                             .slot(variant.creator_link)
-                            .ok_or("CountryLinks lacks equipment-variant creator")?
+                            .ok_or("country links lacks equipment-variant creator")?
                             == country);
                 if same_creator && (variant.origin_link as i32) < 1 {
                     found = true;
@@ -1541,7 +1541,7 @@ impl Renderer<'_, '_, '_> {
         let country = |raw| {
             world
                 .slot(raw)
-                .ok_or_else(|| format!("CountryLinks lacks province controller {raw}"))
+                .ok_or_else(|| format!("country links lacks province controller {raw}"))
         };
         let war = |controller| -> Result<bool, String> {
             for row in frame
@@ -1640,7 +1640,7 @@ impl Renderer<'_, '_, '_> {
                     }
                 }
                 let occupants = occupants
-                    .ok_or_else(|| format!("ProvinceUnitOrder lacks province {}", province.id))?;
+                    .ok_or_else(|| format!("province unit order lacks province {}", province.id))?;
                 Ok(occupants.mixed.len() == occupants.naval.len())
                 // Mixed unit counts include land, naval and railway units.
             };

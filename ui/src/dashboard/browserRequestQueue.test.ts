@@ -9,11 +9,12 @@ const deferred = <T>() => {
   return { promise, resolve, reject };
 };
 
-test('long histories cannot take interactive or release connections, and queued histories all complete', async () => {
+test('long histories cannot take replaying, interactive or release connections, and queued histories all complete', async () => {
   const queue = new BrowserRequestQueue(), jobs = Array.from({ length: 5 }, () => deferred<number>()), starts: number[] = [];
   const histories = jobs.map((job, index) => queue.run('history', () => { starts.push(index); return job.promise; }));
   await tick();
-  assert.deepEqual(starts, [0, 1, 2]);
+  assert.deepEqual(starts, [0, 1]);
+  assert.equal(await queue.run('replays', async () => 11), 11);
   assert.equal(await queue.run('interactive', async () => 9), 9);
   assert.equal(await queue.run('control', async () => 10), 10);
   for (const [index, job] of jobs.entries()) { job.resolve(index); await tick(); }
@@ -22,7 +23,7 @@ test('long histories cannot take interactive or release connections, and queued 
 });
 
 test('queued abort never runs and inflight abort holds admission until the operation settles', async () => {
-  const queue = new BrowserRequestQueue(), jobs = Array.from({ length: 3 }, () => deferred<number>()), controllers = jobs.map(() => new AbortController());
+  const queue = new BrowserRequestQueue(), jobs = Array.from({ length: 2 }, () => deferred<number>()), controllers = jobs.map(() => new AbortController());
   const signals: AbortSignal[] = [];
   const running = jobs.map((job, index) => queue.run('history', signal => { signals.push(signal); return job.promise; }, { signal: controllers[index].signal }));
   const queuedController = new AbortController();
@@ -42,12 +43,12 @@ test('queued abort never runs and inflight abort holds admission until the opera
   jobs[0].resolve(0);
   await activeFailure;
   assert.equal(await next, 8);
-  jobs[1].resolve(1); jobs[2].resolve(2);
-  assert.deepEqual(await Promise.all(running.slice(1)), [1, 2]);
+  jobs[1].resolve(1);
+  assert.deepEqual(await Promise.all(running.slice(1)), [1]);
 });
 
 test('source cancellation isolates leases, queued sources and fresh retry ownership', async () => {
-  const queue = new BrowserRequestQueue(), jobs = Array.from({ length: 3 }, () => deferred<number>());
+  const queue = new BrowserRequestQueue(), jobs = Array.from({ length: 2 }, () => deferred<number>());
   const started: string[] = [];
   const running = jobs.map((job, index) => queue.run('history', signal => {
     started.push(`${index}:${signal.aborted}`); return job.promise;
@@ -61,9 +62,9 @@ test('source cancellation isolates leases, queued sources and fresh retry owners
   assert.equal(oldStarts, 0);
   jobs[0].resolve(0); await activeFailure;
   assert.equal(await queue.run('history', async () => 4, { sourceId: 'fresh' }), 4);
-  jobs[1].resolve(1); jobs[2].resolve(2);
-  assert.deepEqual(await Promise.all(running.slice(1)), [1, 2]);
-  assert.deepEqual(started, ['0:false', '1:false', '2:false']);
+  jobs[1].resolve(1);
+  assert.deepEqual(await Promise.all(running.slice(1)), [1]);
+  assert.deepEqual(started, ['0:false', '1:false']);
 });
 
 test('rejection frees only its lane and subsequent reads retain their own result', async () => {

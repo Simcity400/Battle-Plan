@@ -632,6 +632,10 @@ pub struct Instance {
     dt: f32,
     /// Ticked since it was made: a new instance is pending its first (`dt = 0`) tick.
     ticked: bool,
+    /// A call changed it since its last tick's draws.
+    written: bool,
+    /// The frame being ticked found it idle at its clocks ([`Self::idle`]).
+    idle_tick: bool,
     /// Whether a draw that keeps the previous draw's program still changes on the clock, as the
     /// last tick resolved it in draw order ([`Self::kept_changes`]).
     kept: bool,
@@ -1400,6 +1404,8 @@ impl Instance {
             time: 0.0,
             dt: 0.0,
             ticked: false,
+            written: false,
+            idle_tick: false,
             kept: false,
             held: Vec::new(),
             pointed: None,
@@ -1549,9 +1555,10 @@ impl Instance {
         point: [i32; 2],
     ) -> Result<(), String> {
         let index = self.index(root, element)?;
-        if self.nodes[index].window.is_none() {
+        let Some(window) = self.nodes[index].window else {
             return Err(format!("{} is not a containerWindowType", element.path));
-        }
+        };
+        self.written |= window.position != point;
         self.window_position(element, index, point);
         Ok(())
     }
@@ -1577,6 +1584,7 @@ impl Instance {
         pixels: [i32; 2],
         resources: &dyn Resources,
     ) -> Result<(), Refusals> {
+        self.written = true;
         let missing = |why| vec![Refusal::new(&element.path, RefusalKind::MissingInput, why)];
         let index = self.index(root, element).map_err(missing)?;
         let container = element
@@ -1671,6 +1679,7 @@ impl Instance {
         element: &Element,
         authored: &mut CallElements<'a>,
     ) -> Result<(), String> {
+        self.written = true;
         let index = self.index(root, element)?;
         let elements = authored.get(&self.tree, root);
         if self.nodes[index].kind == Kind::Window {
@@ -1710,6 +1719,7 @@ impl Instance {
         element: &Element,
         authored: &mut CallElements<'a>,
     ) -> Result<(), String> {
+        self.written = true;
         let index = self.index(root, element)?;
         let elements = authored.get(&self.tree, root);
         self.gui_show_at(elements, index)
@@ -1762,6 +1772,7 @@ impl Instance {
         element: &Element,
         authored: &mut CallElements<'a>,
     ) -> Result<(), String> {
+        self.written = true;
         let index = self.index(root, element)?;
         let elements = authored.get(&self.tree, root);
         self.hide_at(elements, index)
@@ -1820,6 +1831,7 @@ impl Instance {
         element: &Element,
         authored: &mut CallElements<'a>,
     ) -> Result<(), String> {
+        self.written = true;
         let index = self.index(root, element)?;
         let elements = authored.get(&self.tree, root);
         let Some(window) = self.nodes[index].window else {
@@ -1856,6 +1868,7 @@ impl Instance {
         element: &Element,
         hide: bool,
     ) -> Result<(), String> {
+        self.written = true;
         let index = self.index(root, element)?;
         self.nodes[index].shown.hide = hide;
         Ok(())
@@ -1867,6 +1880,7 @@ impl Instance {
     /// visibility, opacity, positions of windows and every clock are the instance's own and are
     /// not taken from here.
     pub fn control(&mut self, root: &Element, element: &Element) -> Result<&mut Bound, String> {
+        self.written = true;
         let index = self.index(root, element)?;
         self.flush(index);
         Ok(&mut self.nodes[index].control)
@@ -1880,6 +1894,7 @@ impl Instance {
         holder: &Holder,
         items: &[&Element],
     ) -> Result<GridLayout, Refusals> {
+        self.written = true;
         self.finalize_grid_with(root, grid, holder, |parent, viewport, position| {
             super::finalize_grid(grid, parent, viewport, items, position)
         })
@@ -1893,6 +1908,7 @@ impl Instance {
         holder: &Holder,
         items: &[([i32; 2], [i32; 2])],
     ) -> Result<GridLayout, Refusals> {
+        self.written = true;
         self.finalize_grid_with(root, grid, holder, |parent, _, position| {
             super::finalize_grid_resolved(grid, parent, items, position)
         })
@@ -1934,6 +1950,7 @@ impl Instance {
         resources: &dyn Resources,
         include_hidden: bool,
     ) -> Result<(), Refusals> {
+        self.written = true;
         let missing = |why| vec![Refusal::new(&element.path, RefusalKind::MissingInput, why)];
         let index = self.index(root, element).map_err(missing)?;
         let container = element
@@ -2034,6 +2051,7 @@ impl Instance {
         value: f32,
         resources: &dyn Resources,
     ) -> Result<(), Refusals> {
+        self.written = true;
         self.with_scrollbar(root, element, vertical, resources, |bar, template| {
             bar.set_target(template, widgets::fixed(value), true);
         })
@@ -2048,6 +2066,7 @@ impl Instance {
         direction: i32,
         resources: &dyn Resources,
     ) -> Result<(), Refusals> {
+        self.written = true;
         if !matches!(direction, -1 | 1) {
             return Err(vec![Refusal::new(
                 &element.path,
@@ -2080,6 +2099,7 @@ impl Instance {
         delta: i32,
         resources: &dyn Resources,
     ) -> Result<(), Refusals> {
+        self.written = true;
         let container = element.container().ok_or_else(|| {
             vec![Refusal::new(
                 &element.path,
@@ -2114,6 +2134,7 @@ impl Instance {
         target: impl FnOnce([i32; 2]) -> Option<i32>,
         resources: &dyn Resources,
     ) -> Result<Option<([i32; 2], i32)>, Refusals> {
+        self.written = true;
         let mut reached = None;
         self.with_scrollbar(root, element, vertical, resources, |bar, template| {
             if !bar.state.shown {
@@ -2203,6 +2224,7 @@ impl Instance {
         {
             return Ok(());
         }
+        self.written = true;
         self.flush(index);
         self.nodes[index]
             .events
@@ -2219,6 +2241,7 @@ impl Instance {
         element: &Element,
         frame: i32,
     ) -> Result<(), String> {
+        self.written = true;
         let index = self.index(root, element)?;
         self.flush(index);
         self.nodes[index].control.progress_float = None;
@@ -2235,6 +2258,7 @@ impl Instance {
         element: &Element,
         value: i32,
     ) -> Result<(), String> {
+        self.written = true;
         let index = self.index(root, element)?;
         self.flush(index);
         self.nodes[index].events.push(Event::ProgressFloat(value));
@@ -2264,6 +2288,7 @@ impl Instance {
         resources: &dyn Resources,
         authored: &mut CallElements<'a>,
     ) -> Result<(), String> {
+        self.written = true;
         let index = self.index(root, element)?;
         match &mut self.nodes[index].control.text {
             Some(written) => text.clone_into(written),
@@ -2325,6 +2350,7 @@ impl Instance {
         lines: usize,
         resources: &dyn Resources,
     ) -> Result<(), String> {
+        self.written = true;
         if lines == 0 {
             return Ok(());
         }
@@ -2351,6 +2377,7 @@ impl Instance {
         wheel: bool,
         resources: &dyn Resources,
     ) -> Result<(), String> {
+        self.written = true;
         self.with_text_scrollbar(root, element, resources, |plain, scroll| {
             plain.input(direction, wheel);
             let high = plain.range.max as f32 / 100_000.0;
@@ -2467,6 +2494,7 @@ impl Instance {
         value: f32,
         children: bool,
     ) -> Result<(), String> {
+        self.written = true;
         let index = self.index(root, element)?;
         if self.nodes[index].window.is_none() {
             return Err(format!("{} is not a containerWindowType", element.path));
@@ -2479,6 +2507,7 @@ impl Instance {
     /// stopped; a drawable without frame animation remains unchanged.
     #[cfg(any(test, feature = "test-support"))]
     pub fn play(&mut self, root: &Element, element: &Element) -> Result<(), String> {
+        self.written = true;
         let index = self.index(root, element)?;
         self.flush(index);
         self.nodes[index].events.push(Event::Play);
@@ -2952,6 +2981,7 @@ impl Instance {
 
     /// The state the last pointer layout drew, whose change the next tick restarts the clock of.
     pub fn point(&mut self, pointed: Option<super::Pointed>, boxes: &[String]) {
+        self.written = true;
         self.pointed = pointed;
         self.boxes.clear();
         self.boxes.extend_from_slice(boxes);
@@ -2989,11 +3019,21 @@ impl Instance {
         resources: &dyn Resources,
         tick: Tick,
     ) -> Result<(), String> {
+        self.check(root)?;
+        self.idle_tick = self.idle();
+        if self.idle_tick {
+            self.time = tick.time;
+            self.dt = tick.dt;
+            for node in &mut self.nodes {
+                node.played = false;
+            }
+            self.phase = Phase::Clocked;
+            return Ok(());
+        }
         let empty = Bindings {
             viewport: Some(self.viewport),
             ..Bindings::default()
         };
-        self.check(root)?;
         let sprite_calls = self.nodes.iter().take(self.count).any(|node| {
             node.control.sprite.is_some()
                 || node
@@ -3213,6 +3253,10 @@ impl Instance {
                 self.template
             ));
         }
+        if self.idle_tick && !self.written {
+            self.phase = Phase::Drawn;
+            return Ok(());
+        }
         // No draw reaches a hidden root window. Its child drawables' own clocks have
         // already ticked, and transitions have run, so only the unused draw traversal
         // can be omitted. Copied/registry-built graphs and invalid text writes still
@@ -3229,6 +3273,7 @@ impl Instance {
             })
         {
             self.ticked = true;
+            self.written = false;
             self.phase = Phase::Drawn;
             self.kept = false;
             return Ok(());
@@ -3292,6 +3337,7 @@ impl Instance {
             }
         }
         self.ticked = true;
+        self.written = false;
         self.phase = Phase::Drawn;
         let keeps = objects.iter().enumerate().any(|(index, _)| {
             self.reached(index)
@@ -3342,6 +3388,19 @@ impl Instance {
             }
         }
         false
+    }
+
+    /// Whether a call changed it since its last tick.
+    pub fn written(&self) -> bool {
+        self.written
+    }
+
+    /// Whether a tick would change nothing of it but its clock's `Time`, which nothing it draws
+    /// reads while it is settled ([`super::Shading::changing`]): it was ticked, no call changed it
+    /// since, and it does not change on its own ([`Self::active`]). Its tick then only stamps
+    /// the frame's clock.
+    pub fn idle(&self) -> bool {
+        self.ticked && !self.written && !self.active()
     }
 
     /// Whether a window of the instance is in a transition: it fades, moves, or is due to be
@@ -3758,6 +3817,13 @@ impl MapIconPool {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SlotId(usize);
 
+impl SlotId {
+    /// The slot's place in its pool.
+    pub fn index(self) -> usize {
+        self.0
+    }
+}
+
 /// What the manager's pass finds of a live icon, as the icon type's own virtuals decide it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Admission {
@@ -3973,6 +4039,51 @@ impl<K: Clone + Eq + std::hash::Hash> Pool<K> {
         self.tick_draws(template, resources)
     }
 
+    /// [`Self::tick`] of the windows in `slots` alone (ascending), each phase across them in the
+    /// pool's order, for a caller that keeps the others: a window that is not
+    /// [`Instance::active`] and was not written since its last tick does not change on a tick but
+    /// for its clock's `Time`, which its kept layout does not read. A growth that waits is
+    /// completed first, as [`Self::tick_clocks`] does, and the windows it built are appended to
+    /// `slots` and ticked with them.
+    pub fn tick_slots(
+        &mut self,
+        template: &Element,
+        resources: &dyn Resources,
+        tick: Tick,
+        slots: &mut Vec<SlotId>,
+    ) -> Result<(), String> {
+        let _profile = crate::profiling::span("dc_pool_tick");
+        self.retrying = std::mem::take(&mut self.missed);
+        if std::mem::take(&mut self.growing) {
+            let from = self.slots.len();
+            self.add(template, self.growth, resources)?;
+            self.growths += 1;
+            self.grown += 1;
+            slots.extend((from..self.slots.len()).map(SlotId));
+        }
+        for slot in slots.iter() {
+            self.slots[slot.0]
+                .instance
+                .tick_clocks(template, resources, tick)?;
+        }
+        for slot in slots.iter().rev() {
+            self.slots[slot.0].instance.tick_transitions(template)?;
+        }
+        for slot in slots.iter() {
+            self.slots[slot.0].instance.tick_draws(template, resources)?;
+        }
+        Ok(())
+    }
+
+    /// The slots, live or free, whose window changes on its own ([`Instance::active`]).
+    pub fn active_slots(&self) -> impl Iterator<Item = SlotId> + '_ {
+        self.slots
+            .iter()
+            .enumerate()
+            .filter(|(_, slot)| slot.instance.active())
+            .map(|(index, _)| SlotId(index))
+    }
+
     /// The frame's first phase for every window of the pool ([`Instance::tick_clocks`]); a
     /// growth an exhausted request started is completed first. The frame on which the game's
     /// worker task completes it is not in any recording; the earliest is the frame after the
@@ -4038,6 +4149,11 @@ impl<K: Clone + Eq + std::hash::Hash> Pool<K> {
             slot.instance.tick_draws(template, resources)?;
         }
         Ok(())
+    }
+
+    /// Whether a request of this frame went ungranted or a growth waits: its tick grows the pool.
+    pub fn requests_pending(&self) -> bool {
+        self.growing || self.missed > 0
     }
 
     /// Whether any window of the pool changes on its own ([`Instance::active`]), or a growth
@@ -5170,6 +5286,62 @@ mod clock_pruning_tests {
             assert_eq!(instance.nodes[1].control.progress_float, None);
             instance.tick_transitions(root).unwrap();
             instance.tick_draws(root, &resources).unwrap();
+        }
+    }
+
+    #[test]
+    fn an_idle_window_s_tick_stamps_its_clock_alone_and_lays_out_as_a_full_tick() {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let fixture = fixture();
+        let resources = Metadata {
+            fixture: &fixture,
+            borrowed: true,
+            lookups: Cell::new(0),
+        };
+        let gui = native::read(
+            br#"guiTypes={containerWindowType={name=root
+            size={width=100 height=50} iconType={name=icon spriteType=GFX_even}}}"#,
+        );
+        let root = gui.template("root").unwrap();
+        let icon = root.path_named("icon").unwrap();
+        // One window left alone between ticks, one written the same every frame (a full tick).
+        let mut idle = Instance::construct(root, [800, 600], &resources).unwrap();
+        let mut written = Instance::construct(root, [800, 600], &resources).unwrap();
+        for instance in [&mut idle, &mut written] {
+            instance.gui_show(root, root).unwrap();
+            instance.set_frame(root, icon, 2).unwrap();
+        }
+        // (the window's position, idle before the frame's tick)
+        let frames = [
+            ([10, 20], false),
+            ([10, 20], true),
+            ([10, 20], true),
+            ([30, 20], false),
+            ([30, 20], true),
+        ];
+        for (frame, (position, expected)) in frames.into_iter().enumerate() {
+            idle.set_position(root, root, position).unwrap();
+            written.set_position(root, root, position).unwrap();
+            written.set_frame(root, icon, 2).unwrap();
+            assert_eq!(idle.idle(), expected, "frame {frame}");
+            assert!(!written.idle(), "frame {frame}: a written window is never idle");
+            let tick = Tick {
+                time: 1.0 + frame as f32 / 60.0,
+                dt: 1.0 / 60.0,
+            };
+            resources.lookups.set(0);
+            idle.tick(root, &resources, tick).unwrap();
+            if expected {
+                assert_eq!(resources.lookups.get(), 0, "frame {frame}: an idle tick resolves no drawable");
+            }
+            written.tick(root, &resources, tick).unwrap();
+            assert!(idle.idle(), "frame {frame}: settled after its tick");
+            assert_eq!(
+                idle.layout_with_regions(root, &resources, None, true).unwrap(),
+                written.layout_with_regions(root, &resources, None, true).unwrap(),
+                "frame {frame}"
+            );
         }
     }
 

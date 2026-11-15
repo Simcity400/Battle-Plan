@@ -1,0 +1,320 @@
+/** Real replies served to widgets in browser fixtures: what the acceptance sweep recorded from the app on the 13-year
+ * recording (`tools/e2e/replies.mjs`), served by request, and followed messages played as the app received them. A file
+ * recorded with another recording format is refused, naming the tables that differ: such replies are not this tree's. */
+import type { DashboardClient, DashboardSource, ProductReply, ProductRequest } from '../dashboard/client';
+import { queryFailure } from '../dashboard/queryError.ts';
+import type { QueryError, SourceReply } from '../generated/dashboard';
+import { isCellsId } from '../dashboard/follow/liveCells.ts';
+import { busy, busyPreparing } from '../shell/busy.ts';
+
+export const RECORDED_KIND = 'battle-plan recorded replies';
+export const RECORDED_VERSION = 1;
+
+export interface RecordedHeader { kind: string; version: number; formatDigest: string; format: string[]; app: { revision: string }; recordedAt: string }
+export interface RecordedBox { x: number; y: number; width: number; height: number }
+export interface RecordedLayout {
+  viewport: { width: number; height: number; dpr: number };
+  grid: RecordedBox | null;
+  scroll: RecordedBox | null;
+  widgets: (RecordedBox & { id: string; kind: string | null })[];
+}
+interface Query { sourceId: string; revision: string; product: string; params: unknown }
+export type RecordedEntry =
+  | { t: 'open'; at: number; head: number | null; ok: boolean; reply: unknown }
+  | { t: 'product'; at: number; ms: number; head: number | null; args: { query: Query } | null; ok: boolean; reply: unknown }
+  | { t: 'follow'; at: number; head: number | null; channel: number; index: number; bytes: string }
+  | { t: 'mark'; at: number; head: number | null; label: string; page?: string; speed?: number; trace?: boolean; layout?: RecordedLayout };
+export type RecordedMark = Extract<RecordedEntry, { t: 'mark' }>;
+type FollowEntry = Extract<RecordedEntry, { t: 'follow' }>;
+type ReplyEntry = Extract<RecordedEntry, { t: 'product' }>;
+export interface RecordedFormat { file: string | null; formatFile: string; digest: string; lines: string[] }
+
+/** Why replies recorded under `header` cannot be served in a tree whose format is `tree`, the tables that differ named;
+ * null when they can. */
+export function recordedRefusal(file: string, header: Partial<RecordedHeader>, tree: RecordedFormat): string | null {
+  if (header.kind !== RECORDED_KIND || header.version !== RECORDED_VERSION)
+    return `${file} is not recorded replies of version ${RECORDED_VERSION} (it says ${JSON.stringify(header.kind ?? null)} version ${JSON.stringify(header.version ?? null)})`;
+  if (header.formatDigest === tree.digest) return null;
+  const table = (line: string) => line.split(' ').slice(0, 2).join(' ');
+  const was = new Map((header.format ?? []).map(line => [table(line), line])), now = new Map(tree.lines.map(line => [table(line), line]));
+  const added = [...now.keys()].filter(name => !was.has(name)), removed = [...was.keys()].filter(name => !now.has(name));
+  const changed = [...now.keys()].filter(name => was.has(name) && was.get(name) !== now.get(name));
+  const named = (label: string, names: string[]) => names.length ? [`${label} ${names.slice(0, 8).join(', ')}${names.length > 8 ? ` and ${names.length - 8} more` : ''}`] : [];
+  const differences = [...named('added', added), ...named('removed', removed), ...named('changed', changed)];
+  return `${file} was recorded by app ${header.app?.revision?.slice(0, 10) ?? 'unknown'} with another recording format than this tree's `
+    + `(${tree.formatFile}: ${differences.join('; ') || 'the same tables in another order'}): record the replies again from the current format's 13-year recording`;
+}
+
+/** Recorded replies the test server serves (`tools/native-page.ts`), refused by name when another format's. */
+export async function loadRecorded(url = '/recorded-replies'): Promise<Recorded> {
+  const formatReply = await fetch(`${url}/format`);
+  if (!formatReply.ok) throw new Error(await formatReply.text());
+  const tree = await formatReply.json() as RecordedFormat;
+  const body = await fetch(url);
+  if (!body.ok || !body.body) throw new Error(await body.text());
+  const entries: RecordedEntry[] = [];
+  let header: RecordedHeader | null = null, rest = '';
+  const reader = body.body.pipeThrough(new DecompressionStream('gzip')).pipeThrough(new TextDecoderStream()).getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    const text = rest + (value ?? '');
+    const lines = text.split('\n');
+    rest = done ? '' : lines.pop()!;
+    for (const line of lines) {
+      if (!line) continue;
+      if (header) { entries.push(JSON.parse(line) as RecordedEntry); continue; }
+      header = JSON.parse(line) as RecordedHeader;
+      const refused = recordedRefusal(tree.file ?? url, header, tree);
+      if (refused) { void reader.cancel(); throw new Error(refused); }
+    }
+    if (done) break;
+  }
+  if (!header) throw new Error(`${tree.file ?? url} holds no recorded replies`);
+  return new Recorded(tree.file ?? url, header, entries);
+}
+
+const FOLLOW_MAGIC = 0x314c4f46;
+const PANEL_MAGIC = 0x314c4e50;
+const encoder = new TextEncoder(), decoder = new TextDecoder();
+
+function bytesOf(base64: string): Uint8Array {
+  const text = atob(base64), bytes = new Uint8Array(text.length);
+  for (let at = 0; at < text.length; at++) bytes[at] = text.charCodeAt(at);
+  return bytes;
+}
+
+/** The hour a followed message is of: its step's, or its panels' latest. */
+export function messageHour(bytes: Uint8Array): number | null {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (bytes.byteLength < 4) return null;
+  const magic = view.getUint32(0, true);
+  if (magic === FOLLOW_MAGIC && bytes.byteLength >= 16) return view.getInt32(8, true);
+  if (magic !== PANEL_MAGIC) return null;
+  const { panels } = JSON.parse(decoder.decode(bytes.subarray(4))) as { panels: { hour: number }[] };
+  return panels.length ? Math.max(...panels.map(panel => panel.hour)) : null;
+}
+
+/** `bytes` with each id the app followed under turned into the id this page follows the same query under; answers and
+ * panels of queries this page does not follow are left out (null when nothing is left). The service's own ids (live
+ * cells) are the recording's on both sides and stay. */
+export function remapMessage(bytes: Uint8Array, idOf: (recorded: number) => number | undefined): Uint8Array | null {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (bytes.byteLength < 4) return bytes;
+  const magic = view.getUint32(0, true);
+  const mapped = (id: number) => isCellsId(id) ? id : idOf(id);
+  if (magic === PANEL_MAGIC) {
+    const body = JSON.parse(decoder.decode(bytes.subarray(4))) as { panels: { id: number }[] };
+    const panels = body.panels.flatMap(panel => { const id = mapped(panel.id); return id === undefined ? [] : [{ ...panel, id }]; });
+    if (!panels.length) return null;
+    const json = encoder.encode(JSON.stringify({ ...body, panels }));
+    const out = new Uint8Array(4 + json.byteLength);
+    out.set(bytes.subarray(0, 4));
+    out.set(json, 4);
+    return out;
+  }
+  if (magic !== FOLLOW_MAGIC) return bytes;
+  const kept: [number, number, number][] = [];
+  for (let at = 16, count = view.getUint32(12, true), answer = 0; answer < count; answer++) {
+    const end = at + 16 + view.getUint32(at + 8, true);
+    const id = mapped(view.getUint32(at, true));
+    if (id !== undefined) kept.push([at, end, id]);
+    at = end;
+  }
+  if (!kept.length) return null;
+  const out = new Uint8Array(16 + kept.reduce((sum, [start, end]) => sum + end - start, 0));
+  const written = new DataView(out.buffer);
+  out.set(bytes.subarray(0, 16));
+  written.setUint32(12, kept.length, true);
+  let at = 16;
+  for (const [start, end, id] of kept) {
+    out.set(bytes.subarray(start, end), at);
+    written.setUint32(at, id, true);
+    at += end - start;
+  }
+  return out;
+}
+
+/** `value` as JSON with every object's keys sorted: one text for one request however its params were built. */
+const stableJson = (value: unknown): string => JSON.stringify(value, (_key, item: unknown) => item && typeof item === 'object' && !Array.isArray(item)
+  ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) : item);
+/** Products whose request lists items each answered for itself in the reply, batched by when a widget wanted them: an
+ * item is answered as the app's reply answered it, in whatever batch. An answer names its item by its place in the list
+ * (`place`) or by the item itself (`item`). */
+const ITEMIZED: Record<string, { asks: string; answers: string[]; place?: string; item?: string }> = {
+  'country-flags': { asks: 'flags', answers: ['flags', 'unavailable'], place: 'flag' },
+  'unit-leader-portraits': { asks: 'references', answers: ['portraits'], item: 'reference' },
+};
+type Itemized = { reply: { data: Record<string, unknown> }; at: number; item: unknown };
+
+const productKey = (product: string, params: unknown) => `${product}\u0000${stableJson(params)}`;
+const followKey = (params: unknown) => { const { branchId, query } = params as { branchId?: unknown; query?: unknown }; return stableJson({ branchId, query }); };
+
+/** A request a fixture's widgets made of the recorded client. */
+export interface RecordedAsk { product: string; params: unknown; asksFrom?: number; served: boolean; at: number; lane: boolean; head: number | null }
+
+/** A dashboard client answering from recorded replies: a request the app made is answered as the app was; one it never
+ * made fails by name and is counted (`misses`). */
+export class RecordedClient implements DashboardClient {
+  readonly available = true;
+  readonly asked: RecordedAsk[] = [];
+  /** The messages the app received around the moment shown: a query followed here is answered from them, in order, as the
+   * service answers a new follow with what it holds at the head. */
+  window: readonly Uint8Array[] = [];
+  /** The clock's hour, stamped on each ask (the head it was sent at). */
+  hourOf: () => number | null = () => null;
+  private readonly replies = new Map<string, ReplyEntry>();
+  private readonly items = new Map<string, Itemized>();
+  private readonly follows = new Map<string, { ids: Set<number>; entry: ReplyEntry }>();
+  private readonly control = new Map<string, ReplyEntry>();
+  private readonly ids = new Map<number, number>();
+  private readonly receivers = new Set<(bytes: ArrayBuffer) => void>();
+
+  constructor(entries: readonly RecordedEntry[]) {
+    for (const entry of entries) {
+      if (entry.t !== 'product' || !entry.args) continue;
+      const { product, params } = entry.args.query;
+      if (product === 'follow') {
+        const key = followKey(params), id = (params as { id: number }).id;
+        const held = this.follows.get(key);
+        if (held) held.ids.add(id); else this.follows.set(key, { ids: new Set([id]), entry });
+      } else if (product === 'unfollow' || product === 'follow-clock') this.control.set(product, entry);
+      else if (ITEMIZED[product]) {
+        if (!entry.ok) continue;
+        const { asks } = ITEMIZED[product];
+        const { [asks]: listed, ...rest } = params as Record<string, unknown>;
+        (listed as unknown[]).forEach((item, at) => {
+          const key = productKey(product, { ...rest, [asks]: item });
+          if (!this.items.has(key)) this.items.set(key, { reply: entry.reply as { data: Record<string, unknown> }, at, item });
+        });
+      } else {
+        const key = productKey(product, params), held = this.replies.get(key);
+        // An answer is kept over a refusal of the same request (one cancelled as the app moved on).
+        if (!held || (!held.ok && entry.ok)) this.replies.set(key, entry);
+      }
+    }
+  }
+
+  get misses(): RecordedAsk[] { return this.asked.filter(ask => !ask.served); }
+
+  /** In flight from the ask until answered, as the native client counts it; one the prepare lane sends unseen counts as
+   * the lane's (`lane`), apart from what the page shown asks. */
+  async product<T>(request: ProductRequest, signal: AbortSignal): Promise<ProductReply<T>> {
+    const before = busyPreparing(), done = busy('requests');
+    try { return await this.answer<T>(request, signal, busyPreparing() > before); } finally { done(); }
+  }
+
+  private async answer<T>(request: ProductRequest, signal: AbortSignal, lane: boolean): Promise<ProductReply<T>> {
+    const { product, params, asksFrom } = request;
+    let entry: ReplyEntry | undefined;
+    if (product === 'follow') {
+      const held = this.follows.get(followKey(params));
+      if (held) {
+        for (const id of held.ids) this.ids.set(id, (params as { id: number }).id);
+        // Once the follow's reply is taken, as the service's first push comes after it.
+        setTimeout(() => this.replay(held.ids), 0);
+      }
+      entry = held?.entry;
+    } else if (ITEMIZED[product]) {
+      const itemized = this.itemized<T>(request);
+      this.asked.push({ product, params, ...(asksFrom === undefined ? {} : { asksFrom }), served: itemized !== null, at: performance.now(), lane, head: this.hourOf() });
+      await Promise.resolve();
+      if (signal.aborted) throw new DOMException('Request cancelled', 'AbortError');
+      if (!itemized) throw new Error(`Not recorded: ${product} ${stableJson(params).slice(0, 400)}`);
+      return itemized;
+    } else entry = product === 'unfollow' || product === 'follow-clock' ? this.control.get(product) : this.replies.get(productKey(product, params));
+    this.asked.push({ product, params, ...(asksFrom === undefined ? {} : { asksFrom }), served: entry !== undefined, at: performance.now(), lane, head: this.hourOf() });
+    await Promise.resolve();
+    if (signal.aborted) throw new DOMException('Request cancelled', 'AbortError');
+    if (!entry) throw new Error(`Not recorded: ${product} ${stableJson(params).slice(0, 400)}`);
+    if (!entry.ok) throw queryFailure(entry.reply as QueryError);
+    return { ...(entry.reply as ProductReply<T>), sourceId: request.sourceId, revision: request.revision };
+  }
+
+  /** An itemized request answered item by item from the replies that answered each, renumbered to its place here; null
+   * when an item was never asked. */
+  private itemized<T>(request: ProductRequest): ProductReply<T> | null {
+    const { asks, answers, place, item: named } = ITEMIZED[request.product]!;
+    const { [asks]: listed, ...rest } = request.params as Record<string, unknown>;
+    const data: Record<string, unknown> = {};
+    const warnings = new Set<string>();
+    for (const [at, item] of (listed as unknown[]).entries()) {
+      const held = this.items.get(productKey(request.product, { ...rest, [asks]: item }));
+      if (!held) return null;
+      for (const [name, value] of Object.entries(held.reply.data)) {
+        if (answers.includes(name)) {
+          const mine = (value as Record<string, unknown>[]).flatMap(answer => place !== undefined
+            ? answer[place] === held.at ? [{ ...answer, [place]: at }] : []
+            : stableJson(answer[named!]) === stableJson(held.item) ? [answer] : []);
+          data[name] = [...(data[name] as unknown[] | undefined ?? []), ...mine];
+        } else if (name === 'warnings') for (const warning of value as string[]) warnings.add(warning);
+        else data[name] = value;
+      }
+    }
+    for (const name of answers) data[name] ??= [];
+    data.warnings = [...warnings];
+    return { sourceId: request.sourceId, revision: request.revision, product: request.product, data: data as T };
+  }
+
+  async onFollowMessages(receive: (bytes: ArrayBuffer) => void): Promise<() => void> {
+    this.receivers.add(receive);
+    return () => { this.receivers.delete(receive); };
+  }
+
+  /** The window's messages for the app's follows `ids`, under this page's ids, in order. */
+  private replay(ids: ReadonlySet<number>): void {
+    for (const bytes of this.window) {
+      const mapped = remapMessage(bytes, id => ids.has(id) ? this.ids.get(id) : undefined);
+      if (mapped) for (const receive of this.receivers) receive(mapped.slice().buffer);
+    }
+  }
+
+  /** Hands a recorded message to the page as its channel would, under this page's follow ids; false when it held
+   * nothing this page follows. */
+  deliver(bytes: Uint8Array): boolean {
+    const mapped = remapMessage(bytes, id => this.ids.get(id));
+    if (!mapped) return false;
+    for (const receive of this.receivers) receive(mapped.slice().buffer);
+    return true;
+  }
+
+  async openSource(): Promise<DashboardSource> { throw new Error('A recorded client opens nothing: its source is the recording\'s'); }
+  async releaseSource(): Promise<void> {}
+  async setMapViews(): Promise<void> {}
+  async onMapStates(): Promise<() => void> { return () => {}; }
+}
+
+/** One recorded run: its source, its marks and replies. */
+export class Recorded {
+  readonly file: string;
+  readonly header: RecordedHeader;
+  readonly entries: readonly RecordedEntry[];
+  constructor(file: string, header: RecordedHeader, entries: readonly RecordedEntry[]) { this.file = file; this.header = header; this.entries = entries; }
+
+  /** The recording as the app opened it. */
+  get source(): DashboardSource {
+    const open = this.entries.find((entry): entry is Extract<RecordedEntry, { t: 'open' }> => entry.t === 'open' && entry.ok);
+    if (!open) throw new Error(`${this.file} holds no opened recording`);
+    const source = open.reply as SourceReply;
+    return { id: source.id, path: source.path, revision: source.revision, metadata: { ...source.metadata, revision: source.revision } };
+  }
+
+  marks(label: string, page?: string): RecordedMark[] {
+    return this.entries.filter((entry): entry is RecordedMark => entry.t === 'mark' && entry.label === label && (page === undefined || entry.page === page));
+  }
+
+  /** The first mark `label` of `page`, refused by name when the run made none. */
+  mark(label: string, page: string, where: (mark: RecordedMark) => boolean = () => true): RecordedMark {
+    const found = this.marks(label, page).find(where);
+    if (!found) throw new Error(`${this.file} holds no "${label}" of ${page}: record the replies again with the quick tier's glance and playback`);
+    return found;
+  }
+
+  client(): RecordedClient { return new RecordedClient(this.entries); }
+
+  /** The followed messages received from `from` to `to` (marks), in the channel's order, each with its hour. */
+  messages(from: RecordedMark, to: RecordedMark): { hour: number | null; bytes: Uint8Array }[] {
+    return this.entries.filter((entry): entry is FollowEntry => entry.t === 'follow' && entry.at >= from.at && entry.at <= to.at)
+      .sort((a, b) => a.channel - b.channel || a.index - b.index)
+      .map(entry => { const bytes = bytesOf(entry.bytes); return { hour: messageHour(bytes), bytes }; });
+  }
+}

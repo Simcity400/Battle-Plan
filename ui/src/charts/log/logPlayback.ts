@@ -21,7 +21,7 @@ export function logPlaybackIndex<T>(rows: readonly LogRow<T>[], reveal?: (row: L
 }
 
 /** A binary read cutoff preserves the last slice until a read is crossed. Only
- * a changed cutoff needs to select rows; it never changes their prepared order. */
+ * a changed cutoff needs to select rows; it never changes their order. */
 export function logPlaybackAt<T>(index: LogPlaybackIndex<T>, hour: number | null,
   held?: LogPlaybackSlice<T>): LogPlaybackSlice<T> {
   if (held?.index === index && (hour === null ? held.count === 0

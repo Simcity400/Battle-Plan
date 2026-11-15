@@ -64,7 +64,7 @@ pub fn idea_name(
     }
     let Some(look) = country.look else {
         return Err(format!(
-            "whether {} is a dynamic country (CountryAppearance.name_tag) is not recorded for this hour",
+            "whether {} is a dynamic country (name tag of country appearance) is not recorded for this hour",
             country.tag
         ));
     };

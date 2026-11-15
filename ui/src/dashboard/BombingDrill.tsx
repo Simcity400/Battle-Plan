@@ -3,6 +3,8 @@ import DateTimePicker from '../components/DateTimePicker';
 import WidgetState from '../components/WidgetState';
 import { useContextMenu } from '../components/ContextMenu';
 import DrillParts from '../charts/drill/DrillParts';
+import type { LiveDrillParts } from '../charts/drill/DrillParts';
+import { liveAt, mapLive } from '../charts/live';
 import { drawBands, drawPlayhead } from '../charts/draw';
 import { jumpItem } from '../charts/jump';
 import { lineStyles } from '../charts/palette';
@@ -17,13 +19,18 @@ import { contentTitle } from './contentTitles';
 import type { WidgetRuntime } from './definitions';
 import type { BoundTrack } from './model';
 import { usePlaybackMotion } from './playback';
-import { BOMBING_GAP_NOTE, ledgerCountryAt, ledgerFormat, ledgerRuns, ledgerScale, ledgerShare, ledgerTotals, militaryAirIndex, partAmount } from './militaryAirLedger';
-import type { MilitaryAirPart, MilitaryAirReply } from '../generated/dashboard';
+import { BOMBING_GAP_NOTE, ledgerCountryAt, ledgerFormat, ledgerLabel, ledgerRuns, ledgerScale, ledgerShare, ledgerTotals, militaryAirIndex, partAmount } from './militaryAirLedger';
+import type { MilitaryAirPart } from '../generated/dashboard';
+import type { MilitaryAirLedger } from './militaryAirLedger';
 
 /** The approved parts-and-history drill, from a reply breaking the holder's damage down by building and state. */
-export default function BombingDrill({ data, runtime, track, tag, identity, from, hour, end, dealt, active, onPick, pickOwner }: {
-  data: MilitaryAirReply; runtime: WidgetRuntime; track: BoundTrack; tag: string; identity: string; from: number; hour: number; end: number;
+/** With `headAt` (following the playhead) the parts, the total and the history's head are read at the head each frame:
+ * it renders only when its caller's structure does. */
+export default function BombingDrill({ data, runtime, track, tag, identity, from, hour, end, dealt, active, onPick, pickOwner, headAt }: {
+  data: MilitaryAirLedger; runtime: WidgetRuntime; track: BoundTrack; tag: string; identity: string; from: number; hour: number; end: number;
   dealt: boolean; active: boolean; onPick: (hour: number) => void; pickOwner: unknown;
+  /** The track hour at a clock position while following the playhead; null outside the recording. */
+  headAt?: ((position: number) => number | null) | null;
 }) {
   const tokens = useChartTokens(), hoursPerSecond = usePlaybackMotion(runtime.clock);
   const menu = useContextMenu('Bombing damage history actions');
@@ -45,7 +52,7 @@ export default function BombingDrill({ data, runtime, track, tag, identity, from
       .sort((a, b) => a.final === b.final ? a.key < b.key ? -1 : a.key > b.key ? 1 : 0 : a.final > b.final ? -1 : 1);
     const styles = lineStyles(groupsByFinal.map(({ key }, preferred) => ({ key, preferred })), tokens.categories);
     return groupsByFinal.map(({ key, parts }) => ({ key, parts, label: named.get(key) ?? 'Building type not recorded', ...styles.get(key)!,
-      runs: ledgerRuns({ country, parts, points: ledgerTotals(parts) }, from, end, dealt, ledgerScale('bombing')) }));
+      runs: ledgerRuns({ country, parts, points: ledgerTotals(parts), openings: [] }, from, end, dealt, ledgerScale('bombing')) }));
   }, [data, index, identity, dealt, from, end, tokens]);
   const selectionOwner = useMemo(() => ({ pickOwner, client: runtime.client, identity, dealt }), [pickOwner, runtime.client, identity, dealt]);
   const ownerRef = useRef({ owner: selectionOwner, active });
@@ -54,6 +61,12 @@ export default function BombingDrill({ data, runtime, track, tag, identity, from
   const selectedId = selected?.owner === selectionOwner && model.some(part => part.key === selected.id) ? selected.id : null;
   const shown = useMemo(() => selectedId == null ? model : model.filter(part => part.key === selectedId), [model, selectedId]);
   const stack = useMemo(() => buildStack(shown.map(part => part.runs.map(run => ({ ...run, value: Math.max(0, run.value) })))), [shown]);
+  const live = useMemo(() => headAt ? liveAt(runtime.clock, position => headAt(position) ?? hour, at => at) : null,
+    // The head's hour is read each frame; `hour` is only where it starts.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [headAt, runtime.clock]);
+  const reach = useRef(() => hour);
+  reach.current = () => Math.min(live?.hour() ?? hour, end);
   const until = Math.min(hour, end);
   const layers = useMemo<ChartLayer[]>(() => [{
     draw: (ctx, frame, chartTokens, state) => {
@@ -61,42 +74,53 @@ export default function BombingDrill({ data, runtime, track, tag, identity, from
       for (const segment of countryRaceSegments(stack, frame.x[0], Math.min(frame.x[1], state.playhead ?? frame.x[1]), hoursPerPixel, true))
         drawBands(ctx, frame, chartTokens, segment.hours, segment.bands, shown.map(part => part.color));
     },
-    extent: range => stackExtent(stack, range[0], Math.min(range[1], until)),
+    extent: range => stackExtent(stack, range[0], Math.min(range[1], reach.current())),
   }], [shown, stack, until]);
   const historyOwner = useMemo(() => ({ selectionOwner, selectedId }), [selectionOwner, selectedId]);
-  const total = row ? dealt ? row.dealt : row.taken : null;
+  // The parts and their total at an hour: what a render shows, and what the head paints.
+  const partsAt = (at: number) => {
+    const held = at >= from && at <= end ? ledgerCountryAt(index, tag, from, at, identity) : null;
+    const sum = held ? dealt ? held.dealt : held.taken : null;
+    return { total: sum, parts: model.map(part => {
+      const raw = held ? part.parts.reduce((amount, item) => amount + partAmount(item, from, at), 0n) : null;
+      return { id: part.key, label: part.label, color: part.color, raw, value: raw == null ? null : Number(raw) / ledgerScale('bombing'),
+        text: ledgerLabel(raw, 'bombing'), shareText: raw == null || sum == null ? undefined : ledgerShare(raw, sum) };
+    }) };
+  };
+  const { parts, total } = partsAt(hour);
+  const build = useRef(partsAt);
+  build.current = partsAt;
+  const liveParts = useMemo<LiveDrillParts | undefined>(() => live ? mapLive(live, at => {
+    const made = build.current(at);
+    return { parts: made.parts, totalText: ledgerLabel(made.total, 'bombing') };
+  }) : undefined, [live, model, index, tag, identity, from, end, dealt]);
   const pickDay = (at: number) => {
     if (!ownerRef.current.active || ownerRef.current.owner !== selectionOwner) return;
     at = Math.floor(at);
     if (at >= from && at <= end) onPick(at);
   };
-  const parts = model.map(part => {
-    const raw = row ? part.parts.reduce((sum, item) => sum + partAmount(item, from, hour), 0n) : null;
-    return { id: part.key, label: part.label, color: part.color, raw, value: raw == null ? null : Number(raw) / ledgerScale('bombing'),
-      text: ledgerFormat(raw, 'bombing'), shareText: raw == null || total == null ? undefined : ledgerShare(raw, total) };
-  });
   return <div className="military-air-ledger bombing-drill">
     {!row && <>
       <WidgetState kind="unavailable" message="This country or bombing interval was not recorded at this moment." />
       <DateTimePicker label="Choose breakdown day" value={hour} min={from} max={end} otherValue={null} disabled={!active} describedBy="" onChange={pickDay} />
     </>}
-    <DrillParts parts={parts} virtual active={active} positiveBars signedShares format={String} showShares={row?.complete ?? false}
+    <DrillParts parts={parts} live={liveParts} virtual active={active} positiveBars signedShares format={String} showShares={row?.complete ?? false}
       onPick={id => { if (ownerRef.current.active && ownerRef.current.owner === selectionOwner && model.some(part => part.key === id))
         setSelected(before => before?.owner === selectionOwner && before.id === id ? null : { owner: selectionOwner, id }); }}
-      totalRow={{ label: dealt ? 'Damage inflicted' : 'Damage suffered', value: ledgerFormat(total, 'bombing') }} />
+      totalRow={{ label: dealt ? 'Damage inflicted' : 'Damage suffered', value: ledgerLabel(total, 'bombing') }} />
     <p className="chart-line-key">{selectedId == null ? 'All building types' : <>
       History: {model.find(part => part.key === selectedId)?.label}. <button type="button" className="button small"
         onClick={() => { if (ownerRef.current.active && ownerRef.current.owner === selectionOwner) setSelected(null); }}>Show all building types</button>
     </>}</p>
-    <TimeChart label="Bombing damage by building type over time" extent={[from, end]} playhead={hour} playback="cursor" afterPlayhead={false}
+    <TimeChart label="Bombing damage by building type over time" extent={[from, end]} playhead={hour} liveHead={live ?? undefined} playback="cursor" afterPlayhead={false}
       hoursPerSecond={hoursPerSecond} axes={{ xFrom: null, xTo: null, yMin: null, yMax: null, log: false }} branchStart={track.branch.firstHour}
-      active={active} layers={layers} revision={stack} pickOwner={historyOwner} overlay={(ctx, frame, chartTokens) => drawPlayhead(ctx, frame, chartTokens, hour)}
+      active={active} layers={layers} revision={stack} pickOwner={historyOwner} overlay={live ? undefined : (ctx, frame, chartTokens) => drawPlayhead(ctx, frame, chartTokens, hour)}
       keyHours={[...new Set(shown.flatMap(part => part.runs.map(run => run.firstHour)))].sort((a, b) => a - b)}
       onPick={pickDay} onContextMenu={(at, x, y) => { if (ownerRef.current.active && ownerRef.current.owner === selectionOwner) menu.open(x, y, [jumpItem(runtime, track.id, at)]); }}
       tooltip={at => {
         at = Math.floor(at);
         const current = ledgerCountryAt(index, tag, from, at, identity);
-        if (at < from || at > until || !current) return null;
+        if (at < from || at > reach.current() || !current) return null;
         return { title: formatDateTime(at), rows: shown.map(part => ({ label: part.label, swatch: part.color,
           value: runAt(part.runs, at) ? ledgerFormat(part.parts.reduce((sum, item) => sum + partAmount(item, from, at), 0n), 'bombing') : 'Not recorded' })),
           note: current.complete ? undefined : BOMBING_GAP_NOTE };

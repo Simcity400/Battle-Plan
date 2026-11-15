@@ -21,6 +21,7 @@ CLAIM = ROOT / 'claim'
 STRANDED = ROOT / 'stranded'
 MANIFEST = ROOT / 'source-manifest.json'
 TARGET = 'x86_64-pc-windows-msvc'
+TEST_TARGET = ROOT / 'target-test'
 
 
 METADATA = ROOT / 'cache-mtimes.json.gz'
@@ -35,7 +36,7 @@ SCCACHE_ENV = {'SCCACHE_DIR': str(SCCACHE_HOME / 'cache'), 'SCCACHE_CACHE_SIZE':
 
 def checkpoint():
     mtimes = {}
-    for root in (SRC, ROOT / 'target', Path('/usr/local/cargo/registry/src')):
+    for root in (SRC, ROOT / 'target', TEST_TARGET, Path('/usr/local/cargo/registry/src')):
         for base, dirs, files in os.walk(root, followlinks=False):
             if root == SRC:
                 dirs[:] = [name for name in dirs if name not in {'.git', 'node_modules', '.cargo-target'}]
@@ -56,8 +57,7 @@ def prune_incremental():
     if usage.used < usage.total * 0.7:
         return
     failed = []
-    target = ROOT / 'target'
-    for incremental in [*target.glob('*/incremental'), *target.glob('*/*/incremental')]:
+    for incremental in [path for target in (ROOT / 'target', TEST_TARGET) for path in (*target.glob('*/incremental'), *target.glob('*/*/incremental'))]:
         shutil.rmtree(incremental, onerror=lambda function, path, error: failed.append(path))
     after = shutil.disk_usage(ROOT)
     note = f'; {len(failed)} paths could not be removed' if failed else ''
@@ -305,6 +305,26 @@ def apply(incoming):
     temporary.replace(MANIFEST)
     print(f'Source synchronized: {len(changed)} changed, {len(old.keys() - new.keys())} deleted, {len(new)} total', file=sys.stderr, flush=True)
 
+def test_programs(events, packages, wanted, pdb):
+    """From Cargo's messages and `cargo metadata` packages by id: the test programs, each with the package facts a test run sets; the binaries tests name; the files to send."""
+    scripts = {event['package_id']: event.get('env', []) for event in events if event['reason'] == 'build-script-executed'}
+    built = [event for event in events if event['reason'] == 'compiler-artifact' and event.get('executable')]
+    programs = [event for event in built if event['profile'].get('test')]
+    binaries = [event for event in built if not event['profile'].get('test') and 'bin' in event['target']['kind']]
+
+    def package(event):
+        found = packages[event['package_id']]
+        facts = {key: found.get(key) for key in ('name', 'version', 'authors', 'description', 'homepage', 'repository', 'license', 'license_file', 'rust_version', 'readme')}
+        return {**facts, 'manifest': Path(found['manifest_path']).relative_to(SRC).as_posix(), 'env': scripts.get(event['package_id'], [])}
+
+    tests = [{'package': package(event), 'target': event['target']['name'], 'kind': event['target']['kind'], 'executable': Path(event['executable']).name, 'path': event['executable']} for event in programs]
+    named = [{'package': packages[event['package_id']]['name'], 'name': event['target']['name'], 'executable': Path(event['executable']).name, 'path': event['executable']} for event in binaries]
+    named = [binary for binary in named if f"{binary['package']}/{binary['name']}" in wanted]
+    files = [item['path'] for item in tests + named]
+    if pdb:
+        files += [str(Path(name).with_suffix('.pdb')) for name in files if Path(name).with_suffix('.pdb').exists()]
+    return files, tests, named
+
 def safe_path(name):
     p = SRC / name
     if not name or name.startswith('/') or '..' in Path(name).parts or p.is_symlink():
@@ -393,7 +413,7 @@ elif mode == 'outcome':
         print('The job ended without leaving its outcome', file=sys.stderr)
         sys.exit(1)
     print(path.read_text())
-elif mode in {'check', 'build', 'ui'}:
+elif mode in {'check', 'build', 'test', 'ui'}:
     token, job = sys.argv[2], sys.argv[3]
     leave(job, 'started', {'pid': os.getpid(), 'start': process_start(os.getpid()), 'boot': boot_id()})
     assert owned(token)
@@ -401,10 +421,23 @@ elif mode in {'check', 'build', 'ui'}:
     source = None
     if args[:1] == ['--sync']:
         source, args = args[1], args[2:]
+    wanted, pdb, warm = set(), False, False
+    if mode == 'test':
+        options, args = args[:args.index('--')], args[args.index('--') + 1:]
+        pdb = '--pdb' in options
+        # An image's warm-up compiles only: it has nothing to deliver.
+        warm = '--warm' in options
+        wanted = {option.split('=', 1)[1] for option in options if option.startswith('--bin-exe=')}
+        # Workspace crates keep Cargo's incremental default, as in checks: a test program is a binary the
+        # cache never keeps, and replay-columnar's took 160 s again without a session and 2 s with one (12 Nov).
+        # Apart from target, where older runners build tests without sessions: each turn would void the other's.
+        os.environ['CARGO_TARGET_DIR'] = str(TEST_TARGET)
+        # A cache of their own: the release builds' cache was full (16 GiB), and test objects would push theirs out.
+        SCCACHE_ENV.update(SCCACHE_DIR=str(SCCACHE_HOME / 'cache-test'), SCCACHE_CACHE_SIZE='8G')
     memory_gib = os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES') / (1024 ** 3)
     # Releasing recorder, collector and viewer with 8 jobs left 1.2 of 15.6 GiB free on a large VM, so builds run 7;
     # a workspace check with 7 left 8.3 GiB free (28 Oct), so checks run one per vCPU.
-    os.environ['CARGO_BUILD_JOBS'] = str(max(1, min(os.cpu_count() or 1, int(memory_gib / (2.2 if mode == 'build' else 1.2)))))
+    os.environ['CARGO_BUILD_JOBS'] = str(max(1, min(os.cpu_count() or 1, int(memory_gib / (2.2 if mode in {'build', 'test'} else 1.2)))))
     with (ROOT / 'running.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         result = None
@@ -456,18 +489,18 @@ elif mode in {'check', 'build', 'ui'}:
             if mode != 'ui':
                 prune_incremental()
                 command = ['cargo', 'xwin', *args, '--target', TARGET]
-                if mode == 'build':
+                if mode in {'build', 'test'}:
                     command.append('--message-format=json-render-diagnostics')
                     # Checks compile workspace crates incrementally, which the cache passes through.
                     cache_started = True
                     cache = start_cache(token)
             print('Remote command: ' + ' '.join(command), file=sys.stderr, flush=True)
-            if mode != 'build':
+            if mode not in {'build', 'test'}:
                 launched = True
                 result = subprocess.Popen(command, cwd=SRC, start_new_session=True)
                 result.wait()
             else:
-                artifacts = []
+                artifacts, events = [], []
                 launched = True
                 environment = {**cache, 'RUSTC_WRAPPER': str(SCCACHE)} if cache else None
                 result = subprocess.Popen(command, cwd=SRC, stdout=subprocess.PIPE, text=True, start_new_session=True, env=environment)
@@ -479,6 +512,8 @@ elif mode in {'check', 'build', 'ui'}:
                         continue
                     if event.get('reason') == 'compiler-message':
                         print(event['message'].get('rendered', ''), end='', flush=True)
+                    elif mode == 'test' and event.get('reason') in {'compiler-artifact', 'build-script-executed'}:
+                        events.append(event)
                     elif event.get('reason') == 'compiler-artifact':
                         has_debug = event.get('profile', {}).get('debuginfo') not in (None, 0, False, 'none')
                         for name in event.get('filenames', []):
@@ -494,7 +529,11 @@ elif mode in {'check', 'build', 'ui'}:
                             if path.exists():
                                 artifacts.append(str(path))
                 result.wait()
-                if result.returncode == 0:
+                if result.returncode == 0 and not warm:
+                    if mode == 'test':
+                        listing = subprocess.run(['cargo', 'metadata', '--format-version', '1', '--no-deps', '--offline'], cwd=SRC, capture_output=True, text=True, check=True)
+                        packages = {package['id']: package for package in json.loads(listing.stdout)['packages']}
+                        artifacts, outcome['tests'], outcome['binaries'] = test_programs(events, packages, wanted, pdb)
                     out = []
                     for name in sorted(set(artifacts)):
                         path = Path(name)

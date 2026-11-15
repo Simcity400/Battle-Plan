@@ -420,13 +420,7 @@ pub fn direct(memory: &impl engine_native::Memory, capacities: &Capacities) -> C
     captured.names.len = first.bytes_len;
     captured.names.required = first.required_bytes;
     captured.required_candidates = first.required_candidates;
-    let (projects, histories) = nproject_cproject::walk_with_history(
-        memory,
-        BASE,
-        GAME_STATE,
-        &mut captured.projects.rows,
-        &mut captured.history.rows,
-    );
+    let (projects, histories) = nproject_cproject::walk_with_history_buffer(memory, BASE, GAME_STATE, engine_native::walk::Buffer::Growing(&mut captured.projects.rows), engine_native::walk::Buffer::Growing(&mut captured.history.rows));
     captured.projects.outcome = bounded(projects, captured.projects.rows.len());
     captured.history.outcome = bounded(histories, captured.history.rows.len());
     captured.breakthroughs.outcome = bounded(
@@ -443,7 +437,6 @@ pub fn direct(memory: &impl engine_native::Memory, capacities: &Capacities) -> C
 
 pub fn job() -> ProjectsJob {
     let mut job = ProjectsJob::new();
-    job.worker_growth = false;
     job.log = crate::raw::RawLog::new(8_192, 1 << 20);
     job.census.reserve_exact(16);
     job.statuses.reserve_exact(16);

@@ -288,12 +288,13 @@ impl Captured {
         Self::new(c, false)
     }
     fn new(c: &Capacities, placeholder: bool) -> Self {
-        let mut capture = Self {
+        Self {
             plans: CaptureRows::new(c.plans),
             colors: CaptureRows::new(c.groups),
             fronts: Fronts::new(c),
             invasions: CaptureRows::new(c.invasions),
-            memo: DefinitionMemo::with_capacity(if placeholder { 0 } else { 3 }),
+            memo: DefinitionMemo::try_with_capacity(if placeholder { 0 } else { 3 })
+                .unwrap_or_default(),
             assigned: Arena::new(c.assigned),
             child_sections: Arena::new(c.child_sections),
             child_scratch: Default::default(),
@@ -331,13 +332,7 @@ impl Captured {
                 )
                 .unwrap_or_default()
             },
-        };
-        if !placeholder {
-            capture.execution.enable_worker_growth();
-            capture.assigned_hosts.enable_worker_growth();
-            capture.execution_countries.enable_worker_growth();
         }
-        capture
     }
     pub fn reset(&mut self) {
         self.plans.reset();
@@ -607,9 +602,6 @@ impl Captured {
     ) -> u64 {
         self.supplied = true;
         self.child_walk = None;
-        self.execution.enable_worker_growth();
-        self.assigned_hosts.enable_worker_growth();
-        self.execution_countries.enable_worker_growth();
         self.execution_countries.reset(base, game_state);
         let begin_all = qpc();
         let before = self.ticks.iter().sum::<u64>();
@@ -739,7 +731,7 @@ impl Captured {
         self.ticks[2] += qpc().saturating_sub(begin).max(0) as u64;
         read_phase.select(TABLES[3]);
         let begin = qpc();
-        let invasions = invasion_preparations::walk_growing(
+        let invasions = invasion_preparations::walk(
             memory,
             base,
             game_state,
@@ -785,9 +777,19 @@ impl Captured {
         // Indexing the OOB copy costs a pass over all of it: build it only
         // when an owner's operands are demanded. Without that demand the
         // walk never consults the source, so its absence changes nothing.
-        let group_source = group_source
+        let group_source = match group_source
             .filter(|_| self.child_scratch.needs_group_source())
-            .map(super::naval_history::OrderGroupSource::new);
+            .map(super::naval_history::OrderGroupSource::new)
+            .transpose()
+        {
+            Ok(source) => source,
+            Err(_) => {
+                self.fail_child_fronts();
+                let ticks = qpc().saturating_sub(begin).max(0) as u64;
+                self.ticks[0] += ticks;
+                return ticks;
+            }
+        };
         let children = corder_instance::child_fronts::walk_groups(
             memory,
             base,
@@ -1233,7 +1235,7 @@ mod tests {
     /// The Orders job's census and plans, without the ChildFronts job's
     /// group phase; returns the roots of its census.
     fn orders_pass(m: &impl Memory, c: &mut Captured) -> Vec<corders_group::Root> {
-        let mut groups = [corders_group::Root::default(); 4];
+        let mut groups = vec![corders_group::Root::default(); 4];
         let mut visits = vec![corder_instance::Visit::default(); 8];
         let mut successors = corder_instance::SuccessorLists::default();
         let mut orders = vec![corder_instance::Row::default(); 4];
@@ -1412,8 +1414,8 @@ mod tests {
         let observed = |orders: &Orders, plans: &mut Captured| {
             let mut naval = super::super::naval_history::NavalJob::new();
             if nonempty {
-                naval.capture_roots_growing(orders.roots(), orders.root_outcome);
-                let report = super::super::naval_history::copy_naval_refresh_growing(
+                naval.capture_roots(orders.roots(), orders.root_outcome);
+                let report = super::super::naval_history::copy_naval_refresh(
                     &memory,
                     super::super::naval_history::NavalCopyContext {
                         base: world.base,
@@ -1468,7 +1470,7 @@ mod tests {
             )
         };
         let mut single = Orders::for_test(&MapCapacities::default());
-        single.walk_roots_growing(&memory, world.base);
+        single.walk_roots(&memory, world.base);
         single.walk(&memory, world.base);
         assert_eq!(
             single.rows.outcome,
@@ -1502,7 +1504,7 @@ mod tests {
             // The nonempty fixture repeats with retained destinations and part
             // storage, and acquires parts in opposite orders on the second pass.
             for repeat in 0..if nonempty { 2 } else { 1 } {
-                orders.walk_roots_growing(&memory, world.base);
+                orders.walk_roots(&memory, world.base);
                 orders.begin_parts(Split::even(parts, orders.roots()), 10_000_000);
                 orders.prepare_parts();
                 assert_eq!(orders.part_count(), parts);
@@ -1624,7 +1626,7 @@ mod tests {
     #[test]
     fn live_country_bound_presizes_aliases_and_retains_reserved_success_and_failure_across_views() {
         use crate::sampling::wars_test_kit as kit;
-        use std::{cell::Cell, sync::Arc};
+        use std::cell::Cell;
         struct Counted<'a> {
             bytes: &'a [u8],
             calls: Cell<usize>,
@@ -1649,8 +1651,10 @@ mod tests {
                 bytes: &bytes,
                 calls: Cell::new(0),
             };
-            let mut storage =
-                Arc::new(engine_native::country_memory::Cache::try_with_capacity(64).unwrap());
+            let mut storage = engine_allocation::shared(
+                engine_native::country_memory::Cache::try_with_capacity(64).unwrap(),
+            )
+            .unwrap();
             let countries = engine_native::country_memory::Cache::prepare_shared(
                 &mut storage,
                 &memory,
@@ -1827,7 +1831,6 @@ mod tests {
     fn completed_plans_survive_late_success_panic_stop_and_admission_rejection() {
         use crate::acquisition::{Failure, SubmitError};
         use crate::acquisition_jobs::{Job, LateReport, Report};
-        use std::sync::Arc;
         for mode in 0..4 {
             let image = execution_image();
             let mut captured =
@@ -1841,8 +1844,10 @@ mod tests {
             orders.walk(&image, 0);
             let orders_outcome = orders.rows.outcome;
             let order_storage = orders.geometry.as_ptr();
-            let countries =
-                Arc::new(engine_native::country_memory::Cache::try_with_capacity(0).unwrap());
+            let countries = engine_allocation::shared(
+                engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+            )
+            .unwrap();
             let bytes = captured.allocated_bytes() + orders.allocated_bytes();
             let pool = crate::acquisition::Pool::start(0, 1, move |job: &mut Job| {
                 let Job::Late(request) = job else {
@@ -1859,7 +1864,7 @@ mod tests {
                 pool.shutdown().unwrap();
             }
             let request = captured.take_late_request(&countries, &mut orders, true, 0, 0, 1, false);
-            assert!(Arc::ptr_eq(&request.countries, &countries));
+            assert!(engine_allocation::SharedBox::ptr_eq(&request.countries, &countries));
             assert_eq!(
                 captured.plans.allocated_bytes(),
                 0,
@@ -1909,7 +1914,7 @@ mod tests {
             assert_eq!(orders.rows.outcome, orders_outcome);
             assert_eq!(orders.geometry.as_ptr(), order_storage);
             assert_eq!(captured.allocated_bytes() + orders.allocated_bytes(), bytes);
-            assert_eq!(Arc::strong_count(&countries), 1);
+            assert_eq!(engine_allocation::SharedBox::strong_count(&countries), 1);
             assert!(matches!(
                 captured.division_presentation.order_transport_storage().1,
                 Outcome::Unavailable { .. }

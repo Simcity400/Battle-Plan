@@ -171,13 +171,18 @@ fn catalogue_checked_allocation_failures_propagate_instead_of_becoming_success()
         ATTEMPTS.set(attempt);
         FAIL_AT.get() == Some(attempt)
     }
-    let replay = Arc::new(
-        Replay::from_records(
-            CAMPAIGN.into(),
-            &[records(1, vec![source(1, 100, Some(1))])],
-        )
-        .unwrap(),
-    );
+    let mut segment = records(1, vec![source(1, 100, Some(1))]);
+    // Content the recorder did not verify: the one warning the healthy read gives.
+    for record in &mut segment {
+        if let replay::spool::Record::SessionStart(session) = record {
+            session.identity.verification = replay_data::identity::Verification::Unverified {
+                reason: "synthetic launcher roster".into(),
+                launcher: Default::default(),
+                memory: Default::default(),
+            };
+        }
+    }
+    let replay = Arc::new(Replay::from_records(CAMPAIGN.into(), &[segment]).unwrap());
     let read = || {
         super::read_resident(
             &replay,
@@ -192,7 +197,10 @@ fn catalogue_checked_allocation_failures_propagate_instead_of_becoming_success()
     assert_eq!(healthy.branches.len(), 1);
     assert_eq!(healthy.branches[0].catalogue_hour, Some(100));
     assert!(healthy.refusals.is_empty());
-    assert!(!healthy.warnings.is_empty());
+    assert_eq!(
+        healthy.warnings,
+        ["The recorder did not verify the content identity. The dashboard reads recorded values only and does not verify local game assets."]
+    );
     let expected_refusals = serde_json::json!({
         "warnings": healthy.warnings,
         "reasons": healthy.damaged.as_ref().map_or(&[][..], |damage| damage.reasons.as_slice()),
@@ -558,7 +566,7 @@ fn metadata_skips_an_unavailable_first_census_warns_on_bad_links_and_stops_when_
         metadata
             .warnings
             .iter()
-            .any(|warning| warning.contains("CountryLinks"))
+            .any(|warning| warning.contains("missing or conflicting country links mappings"))
     );
 }
 
@@ -1119,7 +1127,8 @@ fn malformed_table_after_the_catalogue_is_found_by_playback_not_by_opening() {
     )
     .unwrap();
     // Opening reads only the catalogue's first hours, as before; the table
-    // fails where playback reaches it, and the rest of that hour stays exact.
+    // fails where playback reaches it, the tables derived from it say so, and
+    // the rest of that hour stays exact.
     assert!(metadata.damaged.is_none());
     assert!(metadata.branches[0].gaps.is_empty());
     let replay::campaign::SeekResult::Frame(actual) = replay.seek(1, 101).unwrap() else {
@@ -1131,9 +1140,27 @@ fn malformed_table_after_the_catalogue_is_found_by_playback_not_by_opening() {
     assert!(
         matches!(&*actual.tables[TableId::Countries.index()], TableView::Unavailable { reason } if reason.contains("baseline"))
     );
+    let derived = recorder_derive::writers().derived_from(TableId::Countries);
+    let TableView::Complete(TableRows::TagHolders(holders)) =
+        &*actual.tables[TableId::TagHolders.index()]
+    else {
+        panic!("tag holders: {:?}", actual.tables[TableId::TagHolders.index()]);
+    };
+    assert_eq!(
+        holders,
+        &[replay_data::rows::TagHolderRow {
+            number: replay_data::rows::TagHolderRow::UNKNOWN,
+            epoch: 1,
+            slot: 0,
+            id: replay_data::rows::TagHolderRow::NONE,
+            tag: replay_data::rows::TagHolderRow::REASONS[0].as_bytes().to_vec(),
+        }],
+        "the holder before is not carried over hours its countries were not read"
+    );
+    assert!(derived.contains(&TableId::TagHolders.index()));
     for table in TableId::ALL
         .into_iter()
-        .filter(|table| *table != TableId::Countries)
+        .filter(|table| *table != TableId::Countries && !derived.contains(&table.index()))
     {
         assert_eq!(
             actual.tables[table.index()],
@@ -1282,7 +1309,7 @@ fn filtered_metadata_country_joins_record_their_source_once() {
         assert!(super::LinkTags::default().get(999).is_none());
     });
     assert_eq!(refusals.len(), 1);
-    assert!(refusals.first().unwrap().contains("CountryLinks"));
+    assert!(refusals.first().unwrap().names("CountryLinks"));
 }
 
 /// The independent scalar rule: a timed slot mate dates the slot except for
@@ -1428,6 +1455,17 @@ fn every_wire_vector_string_and_summary_copy_fails_by_name_under_real_denied_gro
     resident.value.branches[0].fork = Some(crate::BranchFork {
         branch_id: "parent".into(),
         hour: 100,
+    });
+    resident.value.branches[0].joins.push(crate::BranchJoin {
+        hour: 101,
+        segment_id: "segment".into(),
+        parent_id: "earlier".into(),
+        evidence: crate::JoinEvidence::Unconfirmed,
+        choices: vec![crate::JoinChoice {
+            segment_id: "choice".into(),
+            first_hour: 90,
+            last_hour: 100,
+        }],
     });
     resident.value.branches[0].gaps.push(crate::RecordingGap {
         first_hour: 101,

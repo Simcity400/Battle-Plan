@@ -491,13 +491,13 @@ impl Renderer<'_, '_, '_> {
                         .unit_leader(original.character_id).map_err(|why| why.to_string())? {
                         Some(crate::character_scope::UnitLeader::Direct(row)) => {
                             let country = if row.owner == 0 { 0 } else {
-                                world.slot(row.owner).ok_or("state_event current leader country lacks CountryLinks")?
+                                world.slot(row.owner).ok_or("state_event current leader country lacks country links")?
                             };
                             let leader = u64::from(row.id) << 32 | u64::from(row.reference_type);
                             EventObject::CountryUnitLeader { country, leader }
                         }
                         Some(crate::character_scope::UnitLeader::Referenced(_)) => {
-                            return Err("state_event current operative role's leader character reference is not recorded by CharacterOperatives".into());
+                            return Err("state_event current operative role's leader character reference is not recorded by character operatives".into());
                         }
                         None => match object {
                             EventObject::CountryUnitLeader { country, .. } => EventObject::Country(country),
@@ -615,7 +615,7 @@ impl Renderer<'_, '_, '_> {
                 .world()?
                 .token(row.token)
                 .map_err(|why| why.to_string())?
-                .ok_or("LexicalTokens lacks MIO template token")?
+                .ok_or("lexical tokens lacks MIO template token")?
                 .to_vec()
         } else {
             operand.to_vec()
@@ -756,7 +756,7 @@ impl Renderer<'_, '_, '_> {
                         .map_err(|why| why.to_string())?
                         .owner,
                 )
-                .ok_or("CountryLinks lacks policy MIO owner")?
+                .ok_or("country links lacks policy MIO owner")?
         } else {
             self.current_country(scopes)?
         };
@@ -769,19 +769,19 @@ impl Renderer<'_, '_, '_> {
                 .next()
                 .transpose()
                 .map_err(built)?
-                .ok_or("CountryCounterInputs lacks MIO policy roster")?;
+                .ok_or("country counter inputs lacks MIO policy roster")?;
             let policies = row
                 .mio_policies
-                .require("CountryCounterInputs.mio_policies")?
+                .require("mio policies of country counter inputs")?
                 .as_ref()
-                .ok_or("CountryCounterInputs.mio_policies capture refused")?;
+                .ok_or("mio policies of country counter inputs capture refused")?;
             if let Some(token) = world.token_of(operand).map_err(|why| why.to_string())?
                 && policies.contains(&token)
             {
                 let spelling = world
                     .token(token)
                     .map_err(|why| why.to_string())?
-                    .ok_or("LexicalTokens lacks MIO policy spelling")?;
+                    .ok_or("lexical tokens lacks MIO policy spelling")?;
                 Some(
                     self.context
                         .content
@@ -842,12 +842,12 @@ impl Renderer<'_, '_, '_> {
         }
         let features = self.complete::<tables::SimulationFeatures>(INSTANT)?;
         let (1, Some(features)) = (features.len(), each(features).next().transpose()?) else {
-            return Err("SimulationFeatures lacks instant_decisions".into());
+            return Err("simulation features lacks instant_decisions".into());
         };
         let instant = features
             .instant_decisions
-            .require("SimulationFeatures.instant_decisions")?
-            .ok_or("SimulationFeatures.instant_decisions capture refused")?;
+            .require("instant decisions of simulation features")?
+            .ok_or("instant decisions of simulation features capture refused")?;
         Ok(if instant != 0 { 1 } else { days })
     }
 

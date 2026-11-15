@@ -4,7 +4,7 @@
 use crate::{
     read_accounting,
     sampling::qpc,
-    table_capture::{Arena, CaptureRows, bounded, grow_capacity, grow_vec},
+    table_capture::{Arena, CaptureRows, bounded, grow_capacity},
 };
 use engine_allocation::{copy_vec, owned_vec, reserve, resize};
 use engine_map_air::radar_group;
@@ -60,34 +60,24 @@ impl Capacities {
                 failure.get_or_insert(reason);
             }
         };
-        let radar = radar_group::walk(memory, base, state, &mut [], &mut []);
+        let radar = radar_group::count(memory, base, state);
         accept(&mut self.rows[0], radar.outcome);
         raise(&mut self.radar_provinces, radar.required_provinces);
         accept(
             &mut self.rows[1],
-            ccountry::walk_volunteer_hosts(memory, base, state, &mut []),
+            ccountry::count_volunteer_hosts(memory, base, state),
         );
         accept(
             &mut self.rows[6],
-            ccountry::walk_sent_volunteers(memory, base, state, &mut []),
+            ccountry::count_sent_volunteers(memory, base, state),
         );
-        let stationed = ctheatre::walk_stationed(
-            memory,
-            base,
-            state,
-            ctheatre::StationedBuffers {
-                areas_active: true,
-                areas: &mut [],
-                area_provinces: &mut [],
-                units: &mut [],
-            },
-        );
+        let stationed = ctheatre::count_stationed(memory, base, state, true);
         accept(&mut self.rows[2], stationed.areas);
         accept(&mut self.rows[3], stationed.units);
         raise(&mut self.area_provinces, stationed.required_provinces);
         accept(
             &mut self.rows[4],
-            unit_viewer_entry::walk(memory, base, state, &mut []),
+            unit_viewer_entry::count(memory, base, state),
         );
         let registrations = cair_base::walk_registrations(
             memory,
@@ -261,9 +251,7 @@ impl Captured {
             TABLES.map(|table| replay_data::cadence::should_walk(table, hour, force_full));
     }
 
-    /// Fixed fixture readers preserve capacity refusals. Areas and stationed
-    /// units share one theatre traversal; times are raw QPC ticks.
-    #[cfg(test)]
+    /// Worker-only storage growth continues from the original native headers.
     pub fn capture(
         &mut self,
         memory: &impl Memory,
@@ -272,19 +260,7 @@ impl Captured {
         hour: i32,
         force_full: bool,
     ) -> [u64; N] {
-        self.capture_storage(memory, base, game_state, hour, force_full, false)
-    }
-
-    /// Worker-only storage growth continues from the original native headers.
-    pub fn capture_growing(
-        &mut self,
-        memory: &impl Memory,
-        base: usize,
-        game_state: usize,
-        hour: i32,
-        force_full: bool,
-    ) -> [u64; N] {
-        self.capture_storage(memory, base, game_state, hour, force_full, true)
+        self.capture_storage(memory, base, game_state, hour, force_full)
     }
 
     fn capture_storage(
@@ -294,7 +270,6 @@ impl Captured {
         game_state: usize,
         hour: i32,
         force_full: bool,
-        growing: bool,
     ) -> [u64; N] {
         self.prepare_hour(hour, force_full);
         self.reset();
@@ -311,15 +286,7 @@ impl Captured {
         } else {
             let _reads = read_accounting::table(TableId::RadarCoverage);
             let begin = qpc();
-            let first = if growing {
-                radar_group::walk_growing(
-                    memory,
-                    base,
-                    game_state,
-                    &mut self.radar.rows,
-                    &mut self.radar_provinces.first,
-                )
-            } else {
+            let first = {
                 radar_group::walk(
                     memory,
                     base,
@@ -345,11 +312,7 @@ impl Captured {
                 memory,
                 base,
                 game_state,
-                if growing {
-                    engine_native::walk::Buffer::Growing(&mut self.volunteers.rows)
-                } else {
-                    engine_native::walk::Buffer::Fixed(&mut self.volunteers.rows)
-                },
+                engine_native::walk::Buffer::Growing(&mut self.volunteers.rows),
                 true,
             ),
             self.volunteers.rows.len(),
@@ -364,11 +327,7 @@ impl Captured {
                 memory,
                 base,
                 game_state,
-                if growing {
-                    engine_native::walk::Buffer::Growing(rows)
-                } else {
-                    engine_native::walk::Buffer::Fixed(rows)
-                },
+                engine_native::walk::Buffer::Growing(rows),
             ),
             self.sent_volunteers.rows.len(),
         );
@@ -394,21 +353,9 @@ impl Captured {
                 game_state,
                 ctheatre::StationedStorage {
                     areas_active: self.active[2],
-                    areas: if growing {
-                        engine_native::walk::Buffer::Growing(&mut self.areas.rows)
-                    } else {
-                        engine_native::walk::Buffer::Fixed(&mut self.areas.rows)
-                    },
-                    area_provinces: if growing {
-                        engine_native::walk::Buffer::Growing(&mut self.area_provinces.first)
-                    } else {
-                        engine_native::walk::Buffer::Fixed(&mut self.area_provinces.first)
-                    },
-                    units: if growing {
-                        engine_native::walk::Buffer::Growing(&mut self.units.rows)
-                    } else {
-                        engine_native::walk::Buffer::Fixed(&mut self.units.rows)
-                    },
+                    areas: engine_native::walk::Buffer::Growing(&mut self.areas.rows),
+                    area_provinces: engine_native::walk::Buffer::Growing(&mut self.area_provinces.first),
+                    units: engine_native::walk::Buffer::Growing(&mut self.units.rows),
                 },
             )
         });
@@ -442,11 +389,7 @@ impl Captured {
                     memory,
                     base,
                     game_state,
-                    if growing {
-                        engine_native::walk::Buffer::Growing(&mut self.intel.rows)
-                    } else {
-                        engine_native::walk::Buffer::Fixed(&mut self.intel.rows)
-                    },
+                    engine_native::walk::Buffer::Growing(&mut self.intel.rows),
                     None,
                 ),
                 self.intel.rows.len(),
@@ -697,19 +640,18 @@ impl Captured {
 
     /// Reserve complete storage from counts already observed by acquisition.
     /// This hint never replaces the owned walk's validation or outcome.
-    pub(crate) fn prepare_registrations_payload(&mut self, job: &super::air::AirBasesJob) {
+    fn prepare_registrations_payload(
+        &mut self,
+        job: &super::air::AirBasesJob,
+    ) -> Result<(), &'static str> {
         if !self.registrations_raw_mode || job.log.overflowed || job.log.fault[1] {
-            return;
+            return Ok(());
         }
         let Some([rows, wings]) = job.registration_demand else {
-            return;
+            return Ok(());
         };
-        let mut rows_capacity = self.registrations.rows.len();
-        grow_capacity(&mut rows_capacity, rows);
-        grow_vec(&mut self.registrations.rows, rows_capacity);
-        let mut wings_capacity = self.wings.first.len();
-        grow_capacity(&mut wings_capacity, wings);
-        grow_vec(&mut self.wings.first, wings_capacity);
+        super::air::carrier::prepare(&mut self.registrations.rows, rows)?;
+        super::air::carrier::prepare(&mut self.wings.first, wings)
     }
 
     /// Decode-worker interpretation of the shared bases payload's
@@ -735,23 +677,7 @@ impl Captured {
         );
     }
 
-    pub(crate) fn prepare_carrier_payload(
-        &mut self,
-        job: &super::air::AirBasesJob,
-        bases: &mut super::air::carrier::Bases,
-    ) {
-        let demand = job.carrier.demand;
-        bases.prepare(demand);
-        bases.prepare_states(job);
-        self.carrier.prepare(demand);
-        self.carrier_scratch.prepare(demand);
-    }
-
-    /// The optional observer shares this exact mandatory pass. Every optional
-    /// read is served by the separate owned carrier log, including failures;
-    /// no live memory is available to the decoder. `reuse` appends the rows of
-    /// state bases whose held segment it walked before
-    /// ([`super::air::DecodedRegistrations`]).
+    #[cfg(test)]
     pub(crate) fn decode_registrations_with_carrier_payload(
         &mut self,
         base: usize,
@@ -759,10 +685,66 @@ impl Captured {
         base_rows: &[cair_base::Row],
         carrier_bases: &mut super::air::carrier::Bases,
         decode_ticks: &mut [u64; super::air::AIR_BASES_N],
-        mut reuse: Option<&mut (dyn cair_base::RegistrationReuse + '_)>,
+        reuse: Option<&mut (dyn cair_base::RegistrationReuse + '_)>,
     ) {
+        let prepared = self.prepare_decode(job, carrier_bases);
+        let _ = self.decode_registrations_prepared(
+            base,
+            job,
+            base_rows,
+            carrier_bases,
+            decode_ticks,
+            reuse,
+            prepared,
+        );
+    }
+
+    /// All storage the registrations decode and its carrier observer write,
+    /// sized from this hour's owned demand before the walk.
+    pub(crate) fn prepare_decode(
+        &mut self,
+        job: &super::air::AirBasesJob,
+        bases: &mut super::air::carrier::Bases,
+    ) -> Result<(), &'static str> {
+        let demand = job.carrier.demand;
+        self.prepare_registrations_payload(job)?;
+        bases.prepare(demand)?;
+        bases.prepare_states(job)?;
+        self.carrier.prepare(demand)?;
+        self.carrier_scratch.prepare(demand)
+    }
+
+    /// The optional observer shares this exact mandatory pass. Every optional
+    /// read is served by the separate owned carrier log, including failures;
+    /// no live memory is available to the decoder. `reuse` appends the rows of
+    /// state bases whose held segment it walked before
+    /// ([`super::air::DecodedRegistrations`]). A refused `prepared` refuses
+    /// this table and is returned: `carrier_bases` then holds no rows either.
+    #[allow(clippy::too_many_arguments, reason = "one decode's borrowed parts")]
+    pub(crate) fn decode_registrations_prepared(
+        &mut self,
+        base: usize,
+        job: &super::air::AirBasesJob,
+        base_rows: &[cair_base::Row],
+        carrier_bases: &mut super::air::carrier::Bases,
+        decode_ticks: &mut [u64; super::air::AIR_BASES_N],
+        mut reuse: Option<&mut (dyn cair_base::RegistrationReuse + '_)>,
+        prepared: Result<(), &'static str>,
+    ) -> Result<(), &'static str> {
         use crate::raw::Recorded;
-        let log = Recorded::build(&job.log);
+        if let Err(reason) = prepared {
+            carrier_bases.reset();
+            self.fail_registrations_capture(reason);
+            return Err(reason);
+        }
+        let log = match Recorded::build(&job.log) {
+            Ok(log) => log,
+            Err(reason) => {
+                carrier_bases.reset();
+                self.fail_registrations_capture(reason);
+                return Err(reason);
+            }
+        };
         // The census took the callback's roster when it had one.
         let recorded = crate::extended::roster_replay::RosterReplay::new(
             &log,
@@ -773,14 +755,16 @@ impl Captured {
         let carrier_log = job.carrier.log.borrow();
         let optional = Recorded::build(&carrier_log);
         let started = qpc();
-        self.prepare_registrations_payload(job);
-        self.prepare_carrier_payload(job, carrier_bases);
         carrier_bases.reset();
         self.carrier.reset();
         let optional_countries = job
             .carrier
             .seed
-            .and_then(|()| ccountry::Reader::new(&optional, base, job.game_state));
+            .and_then(|()| optional.as_ref().map_err(|reason| *reason))
+            .and_then(|optional| {
+                ccountry::Reader::new(optional, base, job.game_state)
+                    .map(|countries| (optional, countries))
+            });
         let refusal = optional_countries.as_ref().err().copied();
         // The slots this pass's acquisition took ([`crate::air_base_changes`]).
         let slots = cair_base::SlotMode {
@@ -791,7 +775,7 @@ impl Captured {
             wings: &mut self.wings.first,
             resolved: &mut self.resolved,
         };
-        let first = if let Ok(countries) = optional_countries {
+        let first = if let Ok((optional, countries)) = optional_countries {
             let (first, lengths, demand) = {
                 let buffers = super::air::carrier::buffers(
                     carrier_bases,
@@ -799,7 +783,7 @@ impl Captured {
                     &mut self.carrier_scratch,
                 );
                 let mut carrier = cair_base::CarrierCapture::new(
-                    &optional,
+                    optional,
                     base,
                     job.game_state,
                     &countries,
@@ -859,8 +843,13 @@ impl Captured {
                 reuse,
             )
         };
-        carrier_bases.decode_states(job, base, base_rows, &mut self.resolved);
-        self.carrier.install_states(&job.state_fuel);
+        if let Err(reason) = carrier_bases.decode_states(job, base, base_rows, &mut self.resolved)
+        {
+            carrier_bases.reset();
+            self.fail_registrations_capture(reason);
+            return Err(reason);
+        }
+        let states = self.carrier.install_states(&job.state_fuel);
         self.required_links = first.required_links;
         arena_first(
             &mut self.registrations,
@@ -870,7 +859,11 @@ impl Captured {
             first.required_wings,
         );
         self.registrations_raw_mode = false;
+        if let Err(reason) = states {
+            self.fail_registrations_capture(reason);
+        }
         decode_ticks[1] += elapsed(started);
+        Ok(())
     }
 }
 
@@ -1087,11 +1080,8 @@ mod owned;
 
 pub(crate) use owned::{
     IntelCopyContext, IntelCopyReport, OwnedFogJob, RadarCopyContext, RadarCopyReport,
-    copy_intel_refresh_with_divisions_growing, copy_radar_refresh_growing,
+    copy_intel_refresh_with_divisions, copy_radar_refresh,
 };
-
-#[cfg(test)]
-pub(crate) use owned::{copy_intel_refresh_with_divisions, copy_radar_refresh};
 
 pub(crate) type RadarJob = OwnedFogJob<radar_group::Row>;
 pub(crate) type IntelJob = OwnedFogJob<unit_viewer_entry::Row>;

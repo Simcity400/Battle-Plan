@@ -21,17 +21,25 @@ pub fn volunteer_host(division: &DivisionRow) -> u32 {
 pub fn volunteer_list<'a>(
     lists: impl IntoIterator<Item = &'a [SentVolunteerRow]>,
 ) -> Result<&'a [SentVolunteerRow], String> {
+    volunteer_list_by(lists, |row| row.ordinal)
+}
+
+/// [`volunteer_list`] over any entries, each with its `ordinal`.
+pub fn volunteer_list_by<'a, T>(
+    lists: impl IntoIterator<Item = &'a [T]>,
+    ordinal: impl Fn(&T) -> u32,
+) -> Result<&'a [T], String> {
     let mut lists = lists.into_iter().filter(|list| !list.is_empty());
     let list = lists.next().unwrap_or_default();
     if lists.next().is_some() {
-        return Err("SentVolunteers holds two lists for the sender".into());
+        return Err("sent volunteers holds two lists for the sender".into());
     }
     if list
         .iter()
         .enumerate()
-        .any(|(at, row)| row.ordinal as usize != at)
+        .any(|(at, row)| ordinal(row) as usize != at)
     {
-        return Err("SentVolunteers ordinals are not contiguous".into());
+        return Err("sent volunteers ordinals are not contiguous".into());
     }
     Ok(list)
 }

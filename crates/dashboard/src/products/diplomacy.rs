@@ -1,0 +1,499 @@
+//! Diplomacy from the recording's own tables: every chosen country's opinion of every other at an
+//! hour (`diplomatic-relations`, rows at an hour, followed as a panel at the head), a pair's
+//! opinions over time (the declared `relation-opinions` series, by (owner, target) parts, read key
+//! by key from the table's tracks: no summary holds every pair), and a
+//! country's agreements over the timeline (`diplomatic-pacts`).
+//!
+//! Opinions and relations are read in slices: a country's rows hold what its last read listed,
+//! and `SliceReads` dates that read. A country with neither rows nor a read is not known, never
+//! "no opinions". The numbers that move with the playhead are live cells, never in the reply: a
+//! known owner's opinion of each other chosen country (row its tag, column the target's; no row is
+//! exactly zero) and the hour its opinions were read (`readHour`).
+
+use super::{
+    LoadContext, Product,
+    at_hour::{At, AtHour, Keys, Owner, Read, ReadsAt},
+    country_ids::{Names, RunLinks},
+};
+use crate::{
+    Source,
+    catalogue::{self, Catalogue},
+    span::HourSpan,
+};
+use dashboard_base::products::validate_tag;
+use dashboard_query::{
+    identity::{Holder, Holders},
+    read,
+    timeline::{Join, Stretch},
+};
+use replay::{columnar_frames::Recording, lanes, points::Cell};
+use replay_columnar::manifest::Status;
+use replay_data::rows::{TableId, tables};
+use replay_frame::frame::DecodedFrame;
+use serde::{Deserialize, Serialize};
+use dashboard_follow::live::{Cells, Source as LiveSource};
+use std::{
+    collections::{BTreeMap, HashMap, HashSet},
+    io,
+    sync::{Arc, atomic::AtomicBool},
+};
+use ts_rs::TS;
+
+/// The holder (canonical slot, raw id) of each of `tags` at `hour`, when one holds it.
+fn holder_ids<'t>(holders: &Holders, tags: &'t [String], hour: i32) -> Vec<(&'t str, Option<(u32, u32)>)> {
+    tags.iter()
+        .map(|tag| {
+            let id = match holders.at(tag, hour).map(|run| run.holder) {
+                Some(Holder::Found { slot, id }) => Some((slot, id)),
+                _ => None,
+            };
+            (tag.as_str(), id)
+        })
+        .collect()
+}
+
+/// Every raw id of the chosen holders, by the slot it resolves to: each link to a chosen slot, and
+/// each holder's own id. Without complete links a holder is its own id alone.
+fn aliases(frame: &DecodedFrame, ids: &[(&str, Option<(u32, u32)>)]) -> HashMap<u32, u32> {
+    let slots: HashSet<u32> = ids.iter().filter_map(|&(_, id)| id.map(|(slot, _)| slot)).collect();
+    let mut by_raw: HashMap<u32, u32> = ids.iter().filter_map(|&(_, id)| id.map(|(slot, raw)| (raw, slot))).collect();
+    if let Ok(links) = frame.complete::<tables::CountryLinks>() {
+        by_raw.extend(links.iter().filter(|link| slots.contains(&link.canonical_slot)).map(|link| (link.id, link.canonical_slot)));
+    }
+    by_raw
+}
+
+pub struct DiplomaticRelations;
+
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DiplomaticRelationsParams {
+    pub branch_id: String,
+    pub tags: Vec<String>,
+}
+
+/// One chosen country whose opinions of the other chosen countries are its live cells.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct OpinionOwner {
+    pub tag: String,
+    /// Its holder's raw id at the hour (the part a pair's `relation-opinions` line names it by);
+    /// null where no country holds the tag then.
+    pub country_id: Option<u32>,
+    /// Whether its opinions were read: a known owner's opinion with no row is exactly zero.
+    pub known: bool,
+    /// Why it is not known.
+    pub reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct DiplomaticRelationsReply {
+    pub owners: Vec<OpinionOwner>,
+    pub warnings: Vec<String>,
+}
+
+dashboard_base::reply_warnings!(DiplomaticRelationsReply);
+
+/// The owners among `ids` (tag, holder slot and raw id) in `frame`, each known owner's opinions of
+/// the others and its read hour named in `live`. The game's rows name countries by raw engine
+/// references: a pair's cell follows the row listing it under any raw ids of the two countries;
+/// with none, the holders' own key, where no row is exactly zero.
+pub(crate) fn opinions(frame: &DecodedFrame, ids: &[(&str, Option<(u32, u32)>)], live: &Cells) -> io::Result<Vec<OpinionOwner>> {
+    let rows = frame.complete::<tables::RelationOpinions>()?;
+    let reads = frame.complete::<tables::SliceReads>()?;
+    let table = TableId::RelationOpinions.index() as u32;
+    let opinion = dashboard_declare::field(TableId::RelationOpinions, "opinion")?;
+    let sample = dashboard_declare::field(TableId::SliceReads, "sample_hour")?;
+    let slot_of = aliases(frame, ids);
+    let mut pairs: HashMap<(u32, u32), u128> = HashMap::new();
+    for row in rows {
+        if let (Some(&owner), Some(&target)) = (slot_of.get(&row.owner_country), slot_of.get(&row.target_country)) {
+            pairs.insert((owner, target), u128::from(row.owner_country) << 32 | u128::from(row.target_country));
+        }
+    }
+    let listed: HashSet<u32> = pairs.keys().map(|&(owner, _)| owner).collect();
+    let mut read: HashMap<u32, (i32, u32)> = HashMap::new();
+    for row in reads.iter().filter(|row| row.table == table) {
+        if let Some(&slot) = slot_of.get(&row.owner) {
+            let latest = read.entry(slot).or_insert((row.sample_hour, row.owner));
+            if row.sample_hour > latest.0 {
+                *latest = (row.sample_hour, row.owner);
+            }
+        }
+    }
+    Ok(ids
+        .iter()
+        .map(|&(tag, id)| {
+            let Some((slot, id)) = id else {
+                return OpinionOwner { tag: tag.to_owned(), country_id: None, known: false, reason: Some("No country holds this tag at this hour".into()) };
+            };
+            let known = read.contains_key(&slot) || listed.contains(&slot);
+            if known {
+                let stamp = read.get(&slot).map_or(id, |&(_, raw)| raw);
+                live.value(tag, "readHour", LiveSource { table: TableId::SliceReads, column: sample, key: u128::from(table) << 32 | u128::from(stamp) }, 1.0);
+                for &(target, target_id) in ids {
+                    if let Some((target_slot, target_id)) = target_id {
+                        let key = pairs.get(&(slot, target_slot)).copied().unwrap_or(u128::from(id) << 32 | u128::from(target_id));
+                        live.value(tag, target, LiveSource { table: TableId::RelationOpinions, column: opinion, key }, 1.0);
+                    }
+                }
+            }
+            let reason = (!known).then(|| "This country's opinions have not been read".to_owned());
+            OpinionOwner { tag: tag.to_owned(), country_id: Some(id), known, reason }
+        })
+        .collect())
+}
+
+impl AtHour for DiplomaticRelations {
+    const KEY: &'static str = "diplomatic-relations";
+    const TITLE: &'static str = "Diplomatic relations";
+    const CONTENT_DEPENDENT: bool = false;
+    type Params = DiplomaticRelationsParams;
+    type Reply = DiplomaticRelationsReply;
+    type Context = ();
+
+    fn types() -> Vec<String> {
+        vec![DiplomaticRelationsParams::decl(), OpinionOwner::decl(), DiplomaticRelationsReply::decl()]
+    }
+
+    fn validate(params: &Self::Params) -> Result<(), &'static str> {
+        if params.branch_id.parse::<u64>().is_err() {
+            return Err("Invalid branch");
+        }
+        params.tags.iter().try_for_each(|tag| validate_tag(tag))
+    }
+
+    fn tables(_params: &Self::Params) -> Vec<TableId> {
+        vec![TableId::RelationOpinions, TableId::SliceReads, TableId::CountryLinks]
+    }
+
+    /// The links first; then the opinion rows and reads of every raw id of the chosen holders.
+    fn reads_in(params: &Self::Params, _owner: Option<Owner>, step: usize, held: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> Vec<Read> {
+        match step {
+            0 => return vec![Read::all(TableId::CountryLinks)],
+            1 => {}
+            _ => return Vec::new(),
+        }
+        let mut ids: Vec<u32> = aliases(held, &holder_ids(at.holders, &params.tags, at.hour)).into_keys().collect();
+        ids.sort_unstable();
+        ids.dedup();
+        let owners = |id: u32| (u128::from(id) << 32, u128::from(id) << 32 | u128::from(u32::MAX));
+        let table = u128::from(TableId::RelationOpinions.index() as u32) << 32;
+        vec![
+            Read { table: TableId::RelationOpinions, keys: Keys::Ranges(ids.iter().map(|&id| owners(id)).collect()) },
+            Read::these(TableId::SliceReads, ids.iter().map(|&id| table | u128::from(id))),
+        ]
+    }
+
+    fn context(_source: &Source, _load: &LoadContext) -> io::Result<Self::Context> {
+        Ok(())
+    }
+
+    fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
+        let ids = holder_ids(at.holders, &params.tags, at.hour);
+        let owners = opinions(frame, &ids, at.live)?;
+        let unresolved = owners.iter().filter(|owner| owner.country_id.is_none()).count();
+        let warnings = if unresolved > 0 { vec![format!("{unresolved} chosen countries have no holder at this hour; their opinions are not known.")] } else { Vec::new() };
+        Ok(DiplomaticRelationsReply { owners, warnings })
+    }
+}
+
+/// RelationTuples' `first_country`, `second_country`, `start_hour` and `end_hour`, ascending.
+const FIRST: usize = 0;
+const SECOND: usize = 1;
+const START: usize = 2;
+const END: usize = 3;
+
+/// One relation row's stretch of one value: its first and last hour held, its endpoints' raw ids
+/// and its start and end hours as the game dates them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PactRun {
+    pub(crate) first: i32,
+    pub(crate) last: i32,
+    pub(crate) endpoints: (u32, u32),
+    pub(crate) dates: (i32, i32),
+}
+
+/// One run's relations of some owners: each RelationTuples key's runs, each relation kind's
+/// spelling, and the hours the table was not complete (a row missing then is not proved gone).
+#[derive(Default)]
+pub struct RunPacts {
+    pub(crate) rows: Vec<(u128, Vec<PactRun>)>,
+    pub(crate) kinds: HashMap<u32, String>,
+    pub(crate) unproven: Vec<(i32, i32)>,
+}
+
+/// One key's steps as runs of its endpoints and dates, equal neighbours joined; none where the row
+/// is not shown or a cell is not recorded.
+fn pact_runs(steps: &[lanes::Step], to: i32) -> Vec<PactRun> {
+    let number = |cell: &Cell| match cell {
+        Cell::Number(value) => Some(*value),
+        _ => None,
+    };
+    let mut out: Vec<PactRun> = Vec::new();
+    for (at, step) in steps.iter().enumerate() {
+        let last = steps.get(at + 1).map_or(to, |next| next.hour - 1);
+        let Some(cells) = &step.cells else { continue };
+        let (Some(first), Some(second), Some(start), Some(end)) = (number(&cells[0]), number(&cells[1]), number(&cells[2]), number(&cells[3])) else { continue };
+        let run = PactRun { first: step.hour, last, endpoints: (first as u32, second as u32), dates: (start as i32, end as i32) };
+        match out.last_mut() {
+            Some(held) if (held.endpoints, held.dates) == (run.endpoints, run.dates) && i64::from(held.last) + 1 == i64::from(run.first) => held.last = last,
+            _ => out.push(run),
+        }
+    }
+    out
+}
+
+/// Run `run`'s relations, read once: each RelationTuples row's endpoints and dates as runs
+/// ([`lanes::history`] of the four columns: the rows' changes, one pass of the run's blocks), and
+/// the spelling of each relation kind at the run's last hour.
+pub fn run_pacts(recording: &Recording, run: u32) -> io::Result<RunPacts> {
+    let held = recording.run(run)?;
+    let (first, last) = (held.first_hour, held.first_hour + held.ordinals as i32 - 1);
+    let history = dashboard_query::cost::storage(|| lanes::history(recording, run, TableId::RelationTuples, &[FIRST, SECOND, START, END], lanes::Keys::All, first, last))?;
+    let rows: Vec<(u128, Vec<PactRun>)> = history.keys.iter().map(|(key, steps)| (*key, pact_runs(steps, history.to))).filter(|(_, runs)| !runs.is_empty()).collect();
+    let mut types: Vec<u128> = rows.iter().map(|(key, _)| u128::from((key >> 16) as u32)).collect();
+    types.sort_unstable();
+    types.dedup();
+    let mut kinds = HashMap::new();
+    if !types.is_empty() {
+        let reads = [read::Read { table: TableId::LexicalTokens, columns: None, keys: read::Keys::These(&types) }];
+        let held = dashboard_query::cost::storage(|| read::at(recording, run, &reads, last))?;
+        let view = held[0].view();
+        for &(key, slot) in &held[0].rows {
+            if let Some(text) = read::text(&view, 0, slot).and_then(|bytes| std::str::from_utf8(bytes).ok()) {
+                kinds.insert(key as u32, text.to_owned());
+            }
+        }
+    }
+    let unproven = dashboard_query::cost::storage(|| lanes::statuses(recording, run, TableId::RelationTuples, first, last))?
+        .into_iter()
+        .filter(|held| held.status != Status::Complete)
+        .map(|held| (held.first, held.last))
+        .collect();
+    Ok(RunPacts { rows, kinds, unproven })
+}
+
+pub struct DiplomaticPacts;
+
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DiplomaticPactsParams {
+    pub branch_id: String,
+    pub tag: String,
+}
+
+/// A relation kind a reply's agreements name.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct DiplomacyKind {
+    /// The relation's id as the game spells it.
+    pub kind: String,
+    pub count: u32,
+    /// Its name as the game shows it; null when not read, with why.
+    pub name: Option<String>,
+    pub reason: Option<String>,
+}
+
+/// One relation of the chosen country's over consecutive hours its row was held with one start.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct DiplomacyPact {
+    pub kind: String,
+    /// Its endpoints as the game orders them; null where no tag names the country then.
+    pub first: Option<String>,
+    pub second: Option<String>,
+    /// The hours the relation began and ends as the game dates them; null where not written.
+    pub start_hour: Option<i32>,
+    pub end_hour: Option<i32>,
+    /// The first and last hour the chosen country's row held it.
+    pub first_seen: i32,
+    pub last_seen: i32,
+    /// The hour its row was gone: a read of the chosen country no longer listed it.
+    pub gone_by: Option<i32>,
+    /// Held at the timeline's last hour.
+    pub present_at_end: bool,
+    /// Its row's hours ended at a gap in the recording: whether it ended then is not known.
+    pub ended_by: bool,
+}
+
+#[derive(Clone, Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct DiplomacyPactsReply {
+    pub kinds: Vec<DiplomacyKind>,
+    pub pacts: Vec<DiplomacyPact>,
+    pub unobserved: Vec<HourSpan>,
+    pub warnings: Vec<String>,
+}
+
+dashboard_base::reply_warnings!(DiplomacyPactsReply);
+
+/// `tag`'s holder raw ids over the timeline, each with the hours it held the tag.
+fn tag_ids(holders: &Holders, tag: &str) -> Vec<(u32, i32, i32)> {
+    holders
+        .tags
+        .get(tag)
+        .into_iter()
+        .flatten()
+        .filter_map(|run| match run.holder {
+            Holder::Found { id, .. } => Some((id, run.first, run.last)),
+            Holder::Unresolved => None,
+        })
+        .collect()
+}
+
+/// `tag`'s agreements over `stretches`: each relation row of a raw id holding the tag, while it
+/// held it, as one pact per start hour, its endpoints named at its last hour held.
+pub(crate) fn pacts(stretches: &[Stretch], held: &HashMap<u32, (Arc<RunPacts>, Arc<RunLinks>)>, names: &Names, ids: &[(u32, i32, i32)], timeline_last: i32) -> (Vec<DiplomacyPact>, BTreeMap<String, u32>) {
+    let mut out: Vec<DiplomacyPact> = Vec::new();
+    for (index, stretch) in stretches.iter().enumerate() {
+        let Some((pacts, links)) = held.get(&stretch.run) else { continue };
+        let next_breaks = stretches.get(index + 1).is_none_or(|next| next.join == Join::Break);
+        for &(id, held_first, held_last) in ids {
+            let (from, to) = (held_first.max(stretch.first), held_last.min(stretch.last));
+            if from > to {
+                continue;
+            }
+            // A relation is the country's when its row is the country's (owner) or names it as target.
+            let mine = |key: u128| (key >> 80) as u32 == id || (key >> 48) as u32 == id;
+            for (key, runs) in pacts.rows.iter().filter(|(key, _)| mine(*key)) {
+                let Some(kind) = pacts.kinds.get(&((key >> 16) as u32)) else { continue };
+                for run in runs {
+                    let (a, b) = (run.first.max(from), run.last.min(to));
+                    if a > b {
+                        continue;
+                    }
+                    let start_hour = (run.dates.0 > 0).then_some(run.dates.0);
+                    let end_hour = (run.dates.1 > run.dates.0).then_some(run.dates.1);
+                    let at_end = b == stretch.last;
+                    let present_at_end = at_end && b == timeline_last;
+                    let ended_by = at_end && !present_at_end && next_breaks;
+                    // Gone only where a complete read proves it: a table not read whole hides rows it holds.
+                    let proved = !pacts.unproven.iter().any(|&(first, last)| first <= b + 1 && b + 1 <= last);
+                    let gone_by = (b == run.last && b < stretch.last && proved).then_some(b + 1);
+                    let first = names.tag_at(links, run.endpoints.0, b).map(str::to_owned);
+                    let second = names.tag_at(links, run.endpoints.1, b).map(str::to_owned);
+                    out.push(DiplomacyPact { kind: kind.clone(), first, second, start_hour, end_hour, first_seen: a, last_seen: b, gone_by, present_at_end, ended_by });
+                }
+            }
+        }
+    }
+    // One relation across a load into a recorded hour, across a change of tag holder, or held in
+    // both its countries' rows, is one pact.
+    out.sort_by(|a, b| (&a.kind, &a.first, &a.second, a.start_hour, a.first_seen).cmp(&(&b.kind, &b.first, &b.second, b.start_hour, b.first_seen)));
+    let mut joined: Vec<DiplomacyPact> = Vec::with_capacity(out.len());
+    for pact in out {
+        match joined.last_mut() {
+            Some(held) if (&held.kind, &held.first, &held.second, held.start_hour) == (&pact.kind, &pact.first, &pact.second, pact.start_hour) && pact.last_seen <= held.last_seen => {}
+            Some(held)
+                if (&held.kind, &held.first, &held.second, held.start_hour) == (&pact.kind, &pact.first, &pact.second, pact.start_hour)
+                    && i64::from(held.last_seen) + 1 >= i64::from(pact.first_seen) =>
+            {
+                held.last_seen = pact.last_seen;
+                held.end_hour = pact.end_hour;
+                held.gone_by = pact.gone_by;
+                held.present_at_end = pact.present_at_end;
+                held.ended_by = pact.ended_by;
+            }
+            _ => joined.push(pact),
+        }
+    }
+    let mut counts: BTreeMap<String, u32> = BTreeMap::new();
+    for pact in &joined {
+        *counts.entry(pact.kind.clone()).or_default() += 1;
+    }
+    let mut out = joined;
+    out.sort_by(|a, b| (a.first_seen, &a.kind, &a.first, &a.second).cmp(&(b.first_seen, &b.kind, &b.first, &b.second)));
+    (out, counts)
+}
+
+/// The hours of `stretches` their runs' relation table was not complete: what it lists then is not known whole.
+pub(crate) fn unproven(stretches: &[Stretch], held: &HashMap<u32, (Arc<RunPacts>, Arc<RunLinks>)>) -> Vec<HourSpan> {
+    let mut out = Vec::new();
+    for stretch in stretches {
+        let Some((pacts, _)) = held.get(&stretch.run) else { continue };
+        for &(first, last) in &pacts.unproven {
+            let (first, last) = (first.max(stretch.first), last.min(stretch.last));
+            if first <= last {
+                out.push(HourSpan { first_hour: first, last_hour: last });
+            }
+        }
+    }
+    out
+}
+
+/// Each relation kind of `counts` named as the game titles it, through the recording's content:
+/// `tokens` the relation type word of each spelling. A kind the content cannot name keeps its id,
+/// with why, and a warning.
+pub(crate) fn kind_titles(counts: BTreeMap<String, u32>, tokens: &HashMap<&str, u32>, catalogue: Result<Option<&Catalogue>, String>) -> (Vec<DiplomacyKind>, Vec<String>) {
+    let mut warnings = Vec::new();
+    let kinds = counts
+        .into_iter()
+        .map(|(kind, count)| {
+            let token = tokens.get(kind.as_str()).copied().unwrap_or(0);
+            let named = installed_content_core::diplomacy::relation_title_key(token, &kind)
+                .map_err(|reason| reason.replace("(count: 1)", &format!("(count: {count})")))
+                .and_then(|key| match &catalogue {
+                    Ok(Some(catalogue)) => catalogue.localised(key, catalogue::View::Plain).ok_or_else(|| format!("Relation {kind}: title {key} is unavailable (count: {count})")),
+                    Ok(None) => Err(format!("Relation {kind}: recorded content is not configured (count: {count})")),
+                    Err(error) => Err(format!("Relation {kind}: {error} (count: {count})")),
+                });
+            let (name, reason) = match named {
+                Ok(name) => (Some(name), None),
+                Err(reason) => {
+                    warnings.push(format!("Relation title unavailable for {count} occurrences: {reason}"));
+                    (None, Some(reason))
+                }
+            };
+            DiplomacyKind { kind, count, name, reason }
+        })
+        .collect();
+    (kinds, warnings)
+}
+
+impl Product for DiplomaticPacts {
+    const KEY: &'static str = "diplomatic-pacts";
+    const CONTENT_DEPENDENT: bool = true;
+    type Params = DiplomaticPactsParams;
+    type Reply = DiplomacyPactsReply;
+
+    fn types() -> Vec<String> {
+        vec![DiplomaticPactsParams::decl(), DiplomacyKind::decl(), DiplomacyPact::decl(), DiplomacyPactsReply::decl()]
+    }
+
+    fn validate(params: &Self::Params) -> Result<(), &'static str> {
+        if params.branch_id.parse::<u64>().is_err() {
+            return Err("Invalid branch");
+        }
+        validate_tag(&params.tag)
+    }
+
+    fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
+        let branch = params.branch_id.parse::<u64>().map_err(|_| crate::invalid("Invalid branch"))?;
+        let query = crate::answer::query(source, branch)?;
+        let names = Names::new(&query.holders);
+        let mut held = HashMap::new();
+        for stretch in &query.timeline.stretches {
+            crate::metadata::check_cancel(cancelled)?;
+            if !held.contains_key(&stretch.run) {
+                held.insert(stretch.run, (crate::answer::pacts(source, stretch.run)?, crate::answer::links(source, stretch.run)?));
+            }
+        }
+        let ids = tag_ids(&query.holders, &params.tag);
+        let (pacts, counts) = pacts(&query.timeline.stretches, &held, &names, &ids, query.timeline.last);
+        let tokens: HashMap<&str, u32> = held.values().flat_map(|(run, _)| run.kinds.iter().map(|(token, kind)| (kind.as_str(), *token))).collect();
+        let catalogue = context.content.as_ref().map(|options| catalogue::catalogue(source, options)).transpose().map_err(|error| error.to_string());
+        let (kinds, mut warnings) = kind_titles(counts, &tokens, catalogue.as_ref().map(|held| held.as_deref()).map_err(Clone::clone));
+        if let Ok(Some(catalogue)) = &catalogue {
+            warnings.extend(catalogue.refusal_lines());
+        }
+        let mut unobserved = super::subjects::unknown_hours(&query);
+        unobserved.extend(unproven(&query.timeline.stretches, &held));
+        let unobserved = super::subjects::settle(unobserved);
+        Ok(DiplomacyPactsReply { kinds, pacts, unobserved, warnings })
+    }
+}
+
+#[cfg(test)]
+mod tests;

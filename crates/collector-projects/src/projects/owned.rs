@@ -42,7 +42,6 @@ pub struct ProjectsJob {
     pub(super) statuses: Vec<usize>,
     pub(super) pointers: Vec<usize>,
     pub(super) assignment_references: Vec<u64>,
-    pub(super) worker_growth: bool,
     pub(super) capacity_charge: crate::raw_memory::Charge,
 }
 
@@ -84,7 +83,6 @@ impl ProjectsJob {
             statuses: Vec::new(),
             pointers: Vec::new(),
             assignment_references: Vec::new(),
-            worker_growth: true,
             capacity_charge: crate::raw_memory::Charge::default(),
         };
         job.update_capacity_charge();
@@ -469,8 +467,7 @@ fn copy_pass(memory: &impl Memory, base: usize, game_state: usize, job: &mut Pro
     if job.log.overflowed {
         return;
     }
-    if job.worker_growth && engine_allocation::reserve(&mut job.statuses, job.census.len()).is_err()
-    {
+    if engine_allocation::reserve(&mut job.statuses, job.census.len()).is_err() {
         job.log.overflowed = true;
         return;
     }
@@ -550,9 +547,7 @@ fn copy_census(
         return None;
     }
     let vtable = engine_sites::at(base, ccountry::VTABLE_RVA)? as u64;
-    if log.worker_growth_enabled()
-        && engine_allocation::reserve(census, countries.count as usize).is_err()
-    {
+    if engine_allocation::reserve(census, countries.count as usize).is_err() {
         log.overflowed = true;
         return None;
     }
@@ -686,9 +681,6 @@ pub fn copy_projects_refresh(
     job: &mut ProjectsJob,
 ) -> ProjectsCopyReport {
     job.clear();
-    if job.worker_growth {
-        job.log.enable_worker_growth();
-    }
     job.active = ctx.active;
     if !ctx.active {
         return ProjectsCopyReport {
@@ -698,9 +690,7 @@ pub fn copy_projects_refresh(
     }
     let started = qpc();
     copy_pass(memory, ctx.base, ctx.game_state, job);
-    if job.worker_growth {
-        job.update_capacity_charge();
-    }
+    job.update_capacity_charge();
     ProjectsCopyReport {
         raw_ok: !job.log.overflowed,
         copy_ticks: [elapsed(started), 0],
@@ -741,14 +731,20 @@ impl Captured {
             return;
         }
         let started = qpc();
-        let recorded = crate::raw::Recorded::build(&job.log);
+        let recorded = match crate::raw::Recorded::build(&job.log) {
+            Ok(recorded) => recorded,
+            Err(reason) => {
+                self.fail_projects_capture(true, reason);
+                return;
+            }
+        };
         let first = nproject_cprogram::walk_buffer(
             &recorded,
             base,
             job.game_state,
-            engine_native::walk::Buffer::for_worker(&mut self.candidates, job.worker_growth),
-            engine_native::walk::Buffer::for_worker(&mut self.programs.rows, job.worker_growth),
-            engine_native::walk::Buffer::for_worker(&mut self.names.first, job.worker_growth),
+            engine_native::walk::Buffer::Growing(&mut self.candidates),
+            engine_native::walk::Buffer::Growing(&mut self.programs.rows),
+            engine_native::walk::Buffer::Growing(&mut self.names.first),
         );
         self.programs.outcome = program_outcome(first, &self.programs.rows, &self.names.first);
         self.names.len = first.bytes_len;
@@ -759,10 +755,7 @@ impl Captured {
                 &recorded,
                 base,
                 job.game_state,
-                engine_native::walk::Buffer::for_worker(
-                    &mut self.breakthroughs.rows,
-                    job.worker_growth,
-                ),
+                engine_native::walk::Buffer::Growing(&mut self.breakthroughs.rows),
             ),
             self.breakthroughs.rows.len(),
         );
@@ -1027,12 +1020,8 @@ pub(super) fn copy_program_row(
     references.clear();
     let assignments = nproject_cprogram::assignments(&copy, pointer, primary, |assignment| {
         if references.len() == references.capacity() {
-            if copy.log.borrow().worker_growth_enabled() {
-                engine_allocation::reserve(references, 1)
-                    .map_err(|_| "program reference scratch allocation failed")?;
-            } else {
-                return Err("program reference scratch insufficient");
-            }
+            engine_allocation::reserve(references, 1)
+                .map_err(|_| "program reference scratch allocation failed")?;
         }
         references.push(assignment.scientist);
         Ok(())
@@ -1126,9 +1115,7 @@ fn copy_programs(
         let Some(array) = Array::from_header(raw, 8) else {
             return;
         };
-        if log.worker_growth_enabled()
-            && engine_allocation::reserve(pointers, array.count as usize).is_err()
-        {
+        if engine_allocation::reserve(pointers, array.count as usize).is_err() {
             log.overflowed = true;
             return;
         }

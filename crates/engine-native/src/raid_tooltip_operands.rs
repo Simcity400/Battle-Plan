@@ -618,11 +618,7 @@ fn operands(
     Ok(())
 }
 
-pub fn walk(memory: &impl Memory, base: usize, game: usize, rows: &mut [Row]) -> Outcome {
-    walk_buffer(memory, base, game, crate::walk::Buffer::Fixed(rows))
-}
-
-pub fn walk_growing(
+pub fn walk(
     memory: &impl Memory,
     base: usize,
     game: usize,
@@ -689,9 +685,9 @@ mod tests {
             bytes[64 + i * 16..68 + i * 16].copy_from_slice(&key.to_le_bytes());
             bytes[72 + i * 16..80 + i * 16].copy_from_slice(&raw.to_le_bytes());
         }
-        let mut rows = [Row::default(); 4];
+        let mut rows = vec![Row::default(); 4];
         let mut sink = Sink {
-            rows: crate::walk::Buffer::Fixed(&mut rows),
+            rows: crate::walk::Buffer::Growing(&mut rows),
             required: 0,
             raid: 3,
             ordinal: 0,
@@ -713,7 +709,7 @@ mod tests {
         .unwrap();
         assert_eq!(sink.required, 4);
         assert_eq!(
-            rows.map(|r| (r.key, r.raw)),
+            rows.iter().map(|r| (r.key, r.raw)).collect::<Vec<_>>(),
             [
                 (keys::AIR_DEFENCE_FACTOR, 7),
                 (keys::AIR_DEFENCE_FACTOR, 9),
@@ -730,13 +726,13 @@ mod tests {
         bytes[pointer + 0x983] = 255;
         bytes[pointer + 0x390 + 0x2f * 8..pointer + 0x398 + 0x2f * 8]
             .copy_from_slice(&987i64.to_le_bytes());
-        let mut rows = [Row::default(); 6];
-        let run = |bytes: &[u8], rows: &mut [Row]| {
+        let mut rows = vec![Row::default(); 6];
+        let run = |bytes: &[u8], rows: &mut Vec<Row>| {
             wing_stats(
                 &SliceMemory { base: 0, bytes },
                 pointer,
                 &mut Sink {
-                    rows: crate::walk::Buffer::Fixed(rows),
+                    rows: crate::walk::Buffer::Growing(rows),
                     required: 0,
                     raid: 77,
                     ordinal: 0,
@@ -767,7 +763,7 @@ mod tests {
                 &SliceMemory { base: 0, bytes },
                 pointer,
                 &mut Sink {
-                    rows: crate::walk::Buffer::Fixed(&mut [Row::default(); 6]),
+                    rows: crate::walk::Buffer::Growing(&mut vec![Row::default(); 6]),
                     required: 0,
                     raid: 77,
                     ordinal: 0,
@@ -808,9 +804,9 @@ mod tests {
             base: 0,
             bytes: &bytes,
         };
-        let mut rows = [Row::default(); 8];
+        let mut rows = vec![Row::default(); 8];
         let mut sink = Sink {
-            rows: crate::walk::Buffer::Fixed(&mut rows),
+            rows: crate::walk::Buffer::Growing(&mut rows),
             required: 0,
             raid: 77,
             ordinal: 0,
@@ -822,7 +818,7 @@ mod tests {
             [3, -4, i64::from(i32::MAX)]
         );
         let mut sink = Sink {
-            rows: crate::walk::Buffer::Fixed(&mut rows[..1]),
+            rows: crate::walk::Buffer::Count,
             required: 0,
             raid: 77,
             ordinal: 0,

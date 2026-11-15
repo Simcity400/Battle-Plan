@@ -75,6 +75,17 @@ test('wheel, pan and box zoom stay inside the data, and resets clear only their 
   assert.deepEqual(reduceView(boxed, { type: 'reset' }, CONTEXT), EMPTY_VIEW);
 });
 
+test('a recent window paused or after a seek ends at the playhead, never past it; playing it holds its first length', () => {
+  const fortnight = 14 * 24, year = 365 * 24, extent = [0, 10 * year] as const;
+  assert.deepEqual(playbackDomain('window', extent, 0, year, fortnight, true), [0, 1]);
+  assert.deepEqual(playbackDomain('window', extent, 50, year, fortnight, true), [0, 50]);
+  assert.deepEqual(playbackDomain('window', extent, 2 * year, year, fortnight, true), [year, 2 * year]);
+  assert.deepEqual(playbackDomain('window', extent, 50, 0, fortnight, true), [0, 50]);
+  assert.deepEqual(playbackDomain('window', extent, 50, year, fortnight), [0, year]);
+  assert.deepEqual(playbackDomain('window', extent, 2 * year, year, fortnight), [year, 2 * year]);
+  assert.deepEqual(playbackDomain('draw-in', extent, 50, year, fortnight, true), [0, fortnight]);
+});
+
 test('playback domains: draw-in grows, cursor holds, window slides; zoom wins over playback', () => {
   assert.deepEqual(playbackDomain('draw-in', [0, 1000], 600, 0, 100), [0, 600]);
   assert.deepEqual(playbackDomain('draw-in', [0, 1000], 10, 0, 100), [0, 100]);

@@ -160,11 +160,11 @@ fn source_faults_capacity_and_empty_primary_census_remain_explicit() {
         unread_rows: 3,
     });
     capture.capture_owned(&memory, CaptureContext::new(0));
+    // Seed storage grows; the unreadable source refuses by name.
     assert_eq!(
         capture.outcomes(),
-        [Outcome::Truncated {
-            len: 0,
-            unread_rows: 4
+        [Outcome::Unavailable {
+            reason: "ship model fields unreadable"
         }]
     );
     capture.grow(&mut capacity);
@@ -200,13 +200,13 @@ fn owned_seed_handoff_preserves_order_demand_and_clears_callback_pointers() {
         );
     }
     capture.finish_sources(Outcome::Rows { len: 3 });
-    assert_eq!(capture.seed_len, 2);
+    assert_eq!(capture.seed_len, 3);
     assert_eq!(
-        capture.seeds[..2]
+        capture.seeds[..3]
             .iter()
             .map(|s| (s.pointer, s.row.id))
             .collect::<Vec<_>>(),
-        [(0x1100, 11), (0x2200, 22)]
+        [(0x1100, 11), (0x2200, 22), (0x3300, 33)]
     );
     assert_eq!(capture.required_rows, 3);
     let allocated = capture.allocated_bytes();
@@ -472,47 +472,6 @@ fn an_interrupted_later_part_is_terminal_for_the_family() {
 }
 
 #[test]
-fn every_part_is_bounded_by_the_whole_read_ceiling() {
-    // One expensive ship in the last range would exceed a quarter of the
-    // copy ceiling but fits the whole one, as it did unsplit.
-    struct Free;
-    impl Memory for Free {
-        fn copy(&self, _: usize, _: &mut [u8]) -> bool {
-            true
-        }
-    }
-    let mut large = vec![0_u8; COPY_LIMIT / MAX_PARTS + 1];
-    let mut capture = census(2049, 2049);
-    assert_eq!(capture.split_details(4), 4);
-    let mut parts: Vec<_> = (0..3).map(|index| capture.take_part(index)).collect();
-    run(&mut capture, None);
-    for part in &mut parts {
-        part.capture_with(
-            |this, seed| {
-                this.record(|this| {
-                    if seed.row.id == 2049 {
-                        let bounded = BoundedMemory {
-                            inner: &Free,
-                            used: &this.copied,
-                        };
-                        if !bounded.copy(0, &mut large) {
-                            return Err(BUDGET_EXCEEDED);
-                        }
-                    }
-                    Ok(model(&seed))
-                })
-            },
-            |_| {},
-        );
-    }
-    for (index, part) in parts.into_iter().enumerate() {
-        capture.restore_part(index, part);
-    }
-    capture.finish_split();
-    assert_eq!(capture.outcomes(), [Outcome::Rows { len: 2049 }]);
-}
-
-#[test]
 fn model_conversion_preserves_primary_handles_text_and_counter_operands() {
     let mut capture = Captured::with_capacities(&Capacities {
         rows: 1,
@@ -689,7 +648,7 @@ fn growing_ship_census_keeps_the_first_mod_population_and_prepares_every_split()
     for ships in [5_000_u64, 12_001] {
         capture.begin_sources();
         for id in 1..=ships {
-            capture.visit_source_growing(
+            capture.visit_source(
                 id as usize,
                 &cship::Row {
                     id,
@@ -734,7 +693,7 @@ fn cold_ship_models_use_only_original_census_and_later_population_demand() {
         capture.begin_sources();
         for index in 0..count {
             let id = (index as u64 + 1) << 32 | u64::from(cship::HANDLE_TYPE);
-            capture.visit_source_growing(
+            capture.visit_source(
                 0x1000 + index,
                 &cship::Row {
                     id,

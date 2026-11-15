@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { DivisionEquipmentReply, EquipmentType } from '../../generated/dashboard';
 import { fill, share, typeFill, typeKey, typeName, typeTooltip, validateDivisionEquipment } from './divisionEquipmentData.ts';
+import type { DivisionEquipmentReply, EquipmentType } from '../../generated/dashboard';
 
 const type = (extra: Partial<EquipmentType> = {}): EquipmentType => ({ archetype: 'rifle', name: 'Rifles', nameMissing: null, heldRaw: '150000000',
   neededRaw: '200000000', filledRaw: '140000000', missingRaw: '60000000', divisionsShort: 2, unknownDivisions: 0, stockpileRaw: '900000000', stockpileHour: 40, variants: [], ...extra });
-const reply = (types: EquipmentType[]): DivisionEquipmentReply => validateDivisionEquipment({ branchId: '1', hour: 50, tag: 'GER', countFor: 'owner',
-  absent: false, poolHour: 48, divisions: 3, divisionsShort: 2, unknownDivisions: 0, types, templates: [], warnings: [] });
+const reply = (types: EquipmentType[]): DivisionEquipmentReply => validateDivisionEquipment({ tag: 'GER', countFor: 'owner',
+  missing: null, poolHour: 48, divisions: 3, divisionsShort: 2, unknownDivisions: 0, types, templates: [], divisionRows: null, pool: null, warnings: [] });
 
 test('fill counts holdings only up to the need and an unknown need is no fill', () => {
   assert.equal(fill('150000000', '200000000'), 0.75);
@@ -38,4 +38,13 @@ test('a type fills by each division’s capped fulfilment, never by aggregate ho
   assert.equal(typeFill(row), 0.75, 'not 100%');
   assert.equal(typeFill(type({ filledRaw: null, neededRaw: null })), null);
   assert.equal(typeTooltip(row, reply([row])).rows.find(tip => tip.label === 'Filled')?.value, '150');
+});
+
+test('counts the recording does not hold read as not recorded, never as zero', () => {
+  const unknown = type({ heldRaw: null, divisionsShort: null, unknownDivisions: null });
+  const tip = typeTooltip(unknown, reply([unknown]));
+  assert.equal(tip.rows.find(row => row.label === 'In divisions')?.value, 'Not recorded');
+  assert.equal(tip.rows.find(row => row.label === 'Divisions short')?.value, 'Not recorded');
+  assert.equal(tip.rows.find(row => row.label === 'Divisions not recorded')?.value, 'Not recorded');
+  assert.throws(() => validateDivisionEquipment({ tag: 'GER', types: [{ archetype: null, heldRaw: 5, variants: [] }], templates: [], warnings: [], missing: null }));
 });

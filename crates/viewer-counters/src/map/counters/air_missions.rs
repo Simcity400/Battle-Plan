@@ -6,7 +6,7 @@ use replay_data::rows::AirRegionalMissionRow;
 use replay_data::rows::AirWingRow;
 #[cfg(test)]
 use replay_derive::air_mission_counts::count;
-use replay_derive::air_mission_counts::{MISSIONS, RegionalWings, regional_counts};
+use replay_derive::air_mission_counts::{Counts, MISSIONS, RegionalWings, regional_counts};
 use std::collections::HashMap;
 use viewer_foundation::map::{
     gui_resources::{count_noted, count_refused, hit_rectangle},
@@ -23,6 +23,36 @@ const AIR_SUPPLY: usize = 10;
 
 const SUPPLY_REFUSAL: &str = "regional Air supply totals were not captured";
 const SUPPLY_UNRECORDED: &str = "regional Air supply totals were not recorded";
+
+/// Why the supply entry of a region counting no Air supply is withheld: whether the recording
+/// holds no Ground Crews supply column.
+pub fn supply_refusal(unrecorded: bool) -> &'static str {
+    if unrecorded { SUPPLY_UNRECORDED } else { SUPPLY_REFUSAL }
+}
+
+/// A region's supply summary entered in its counts: a low or very low summary counts the
+/// Air supply entry, with no other mission.
+pub fn supplied(counts: &mut Option<Counts>, supply: &replay_data::rows::AirSupplySummary) {
+    if supply.severity < 2 {
+        let counts = counts.get_or_insert([-1; MISSIONS]);
+        counts[AIR_SUPPLY] = counts[AIR_SUPPLY].max(0);
+    }
+}
+
+/// The window's refusal when the counts cannot be made, by reason.
+pub fn counts_withheld(reason: &str) -> String {
+    format!("{WINDOW} counts withheld: {reason}")
+}
+
+/// A mission entry's refusal, by reason.
+pub fn fragment_withheld(reason: &str) -> String {
+    format!("{ENTRY} fragment withheld: {reason}")
+}
+
+/// A region's Ground Crews control refused, by reason.
+pub fn ground_withheld(reason: &str) -> String {
+    format!("{WINDOW} Ground Crews withheld: {reason}")
+}
 
 #[derive(Default)]
 pub(super) struct Prepared {
@@ -41,9 +71,16 @@ pub(super) struct Prepared {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Ground {
-    frame: i32,
-    enabled: bool,
+pub struct Ground {
+    pub frame: i32,
+    pub enabled: bool,
+}
+
+/// A region's Ground Crews control from values: the content's cost, then its flag (`active`:
+/// zero without a row), then the country's command power.
+pub fn ground_of(cost: Result<i64, String>, active: impl FnOnce() -> Result<u32, String>, power: Option<i64>) -> Result<Ground, String> {
+    let cost = cost?;
+    ground(active()?, power, cost)
 }
 
 fn ground(active: u32, power: Option<i64>, cost: i64) -> Result<Ground, String> {
@@ -116,6 +153,7 @@ const TIMEOUT_UNKNOWN: &str = "NGame.AIR_LOG_TIMEOUT_HOURS is unavailable";
 /// pass can have pruned a record the window reaches: an earlier one removed only records dated
 /// before its own hour, at least a day ago, where the newest-first scan stops anyway. So the
 /// row decides unless pruning it by that pass changes the answer; then the roster does.
+#[cfg(test)]
 fn interception_received(
     holder: &replay_data::rows::AirRegionCombatRow,
     hour: replay_data::Hour,
@@ -123,17 +161,29 @@ fn interception_received(
     pass_visited: impl FnOnce(replay_data::Hour) -> Option<Result<bool, String>>,
     timeout: Result<i32, &'static str>,
 ) -> Result<bool, &'static str> {
-    use replay_derive::air_region_derive::{self as derive, Retained};
+    let read = replay_derive::air_region_derive::Retained { own: &holder.own, foreign: &holder.foreign };
+    interception_received_of(read, hour, filter, pass_visited, timeout)
+}
+
+/// [`interception_received`] from the holder's two record vectors as read.
+pub fn interception_received_of(
+    read: replay_derive::air_region_derive::Retained<'_>,
+    hour: replay_data::Hour,
+    filter: replay_derive::air_region_derive::Filter,
+    pass_visited: impl FnOnce(replay_data::Hour) -> Option<Result<bool, String>>,
+    timeout: Result<i32, &'static str>,
+) -> Result<bool, &'static str> {
+    use replay_derive::air_region_derive as derive;
     let alerts = |retained| {
         derive::received(retained, hour, false, filter)
             .map(|sum| sum.amounts[9] > 0)
             .map_err(|_| "the regional interception aggregate cannot be derived")
     };
-    let raw = alerts(Retained { own: &holder.own, foreign: &holder.foreign })?;
+    let raw = alerts(read)?;
     let Some(pass) = derive::last_pass(hour) else {
         return Ok(raw);
     };
-    let pruned = alerts(derive::retained_through(holder, Some(pass), timeout?))?;
+    let pruned = alerts(derive::retained_of(read, Some(pass), timeout?))?;
     if pruned == raw {
         return Ok(raw);
     }
@@ -141,6 +191,112 @@ fn interception_received(
         Some(Ok(true)) => Ok(pruned),
         Some(Ok(false)) => Ok(raw),
         _ => Err(PASS_UNKNOWN),
+    }
+}
+
+/// A wing's interception-alert gate as its mission records it; `None` when unknown.
+pub fn interception_gate(gate: &replay_data::rows::Recorded<Option<u32>>) -> Option<bool> {
+    match gate {
+        replay_data::rows::Recorded::Value(Some(0)) => Some(false),
+        replay_data::rows::Recorded::Value(Some(1)) => Some(true),
+        _ => None,
+    }
+}
+
+/// One region's mission entries: the kinds whose interception alert is proved (a bit per kind),
+/// and each withheld entry's reason, in kind order.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RegionAlerts {
+    pub alerts: u32,
+    pub uncertain: Vec<(usize, &'static str)>,
+}
+
+/// [`RegionAlerts`] of a region from its counts and its registered wings (id and mission mask,
+/// in registration order). `received(kind, classification)` is the holder's interception
+/// aggregate for a kind's missions of that classification, asked at most once each.
+pub fn region_alerts(
+    counts: &Counts,
+    wings: &[(u64, u32)],
+    gate: impl Fn(u64) -> Option<bool>,
+    mut received: impl FnMut(usize, u8) -> Result<bool, &'static str>,
+    supply_complete: bool,
+    supply_refusal: &'static str,
+) -> RegionAlerts {
+    let mut out = RegionAlerts::default();
+    for (kind, &count) in counts.iter().enumerate().filter(|(_, count)| **count >= 0) {
+        let mut damage = [None; 2];
+        let alert = interception_alert(wings.iter().filter(|(_, mask)| mask & (1 << kind) != 0).map(|&(id, mask)| {
+            let gate = gate(id);
+            if gate == Some(false) {
+                return (gate, Ok(false));
+            }
+            let classification = u8::from(mask & 0x1f7fa != 0);
+            let received = *damage[classification as usize].get_or_insert_with(|| received(kind, classification));
+            (gate, received)
+        }));
+        if alert == Ok(true) {
+            out.alerts |= 1 << kind;
+        }
+        let reason = alert.err().or((kind == AIR_SUPPLY && count == 0 && !supply_complete).then_some(supply_refusal));
+        if let Some(reason) = reason {
+            out.uncertain.push((kind, reason));
+        }
+    }
+    out
+}
+
+/// The regional Air mission part a layer decided, as values: today's [`Prepared`] without its
+/// hovers, which the window makes from them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AirValues {
+    /// The window's counts withheld, in today's words ([`counts_withheld`]).
+    pub withheld: Option<String>,
+    pub regions: BTreeMap<u32, Counts>,
+    pub alerts: BTreeSet<(u32, usize)>,
+    pub uncertain: BTreeMap<(u32, usize), &'static str>,
+    pub supply: BTreeMap<u32, replay_data::rows::AirSupplySummary>,
+    pub supply_complete: bool,
+    pub supply_unrecorded: bool,
+    /// Each region counting a mission: its Ground Crews control, or why it is refused.
+    pub ground: BTreeMap<u32, Result<Ground, String>>,
+}
+
+/// Today's regional Air mission part of an hour as values.
+pub struct TodayAir {
+    pub regions: BTreeMap<u32, Counts>,
+    pub alerts: BTreeSet<(u32, usize)>,
+    pub uncertain: BTreeMap<(u32, usize), &'static str>,
+    pub refused: BTreeMap<String, usize>,
+    pub supply: BTreeMap<u32, replay_data::rows::AirSupplySummary>,
+    pub supply_complete: bool,
+    pub supply_unrecorded: bool,
+    pub ground: BTreeMap<u32, Ground>,
+}
+
+impl HourTables {
+    pub fn air_values(&self) -> TodayAir {
+        let Some(air) = self.air_missions.made() else {
+            return TodayAir {
+                regions: BTreeMap::new(),
+                alerts: BTreeSet::new(),
+                uncertain: BTreeMap::new(),
+                refused: BTreeMap::from([("the hour's air missions were deferred and no layout in the air mode read them".to_owned(), 1)]),
+                supply: BTreeMap::new(),
+                supply_complete: false,
+                supply_unrecorded: false,
+                ground: BTreeMap::new(),
+            };
+        };
+        TodayAir {
+            regions: air.regions.clone(),
+            alerts: air.alerts.clone(),
+            uncertain: air.uncertain.clone(),
+            refused: air.refused.clone(),
+            supply: air.supply.clone(),
+            supply_complete: air.supply_complete,
+            supply_unrecorded: air.supply_unrecorded,
+            ground: air.ground.clone(),
+        }
     }
 }
 
@@ -207,57 +363,35 @@ impl Prepared {
                     .ok()
                     .into_iter()
                     .flatten()
-                    .map(|row| {
-                        (
-                            row.wing,
-                            match row.interception_alert_gate {
-                                replay_data::rows::Recorded::Value(Some(0)) => Some(false),
-                                replay_data::rows::Recorded::Value(Some(1)) => Some(true),
-                                _ => None,
-                            },
-                        )
-                    })
+                    .map(|row| (row.wing, interception_gate(&row.interception_alert_gate)))
                     .collect();
                 for (&region, counts) in &prepared.regions {
                     let holder = holders.get(&region).copied();
-                    for (kind, &count) in
-                        counts.iter().enumerate().filter(|(_, count)| **count >= 0)
-                    {
-                        let mut damage = [None; 2];
-                        let alert = interception_alert(regional_wings.get(&region).into_iter().flatten().filter(|wing| {
-                            wing.mission_mask & (1 << kind) != 0
-                        }).map(|wing| {
-                            let gate = gates.get(&wing.id).copied().flatten();
-                            if gate == Some(false) { return (gate, Ok(false)); }
-                            let classification = u8::from(wing.mission_mask & 0x1f7fa != 0);
-                            let received = *damage[classification as usize].get_or_insert_with(|| {
-                                if combat.is_err() { return Err("the regional combat census is incomplete"); }
-                                let Some(holder) = holder else { return Ok(false); };
-                                interception_received(
-                                    holder,
-                                    frame.hour,
-                                    replay_derive::air_region_derive::Filter { missions: 1 << kind, window: 24, classification },
-                                    |pass| inputs.passes.map(|passes| passes.visited(frame.branch, pass, vision.ours())),
-                                    inputs.content.air_log_timeout.as_ref().map(|&timeout| timeout).map_err(|_| TIMEOUT_UNKNOWN),
-                                )
-                            });
-                            (gate, received)
-                        }));
-                        if alert == Ok(true) {
-                            prepared.alerts.insert((region, kind));
-                        }
-                        let reason = alert.err();
-                        let reason = reason.or((kind == AIR_SUPPLY
-                            && count == 0
-                            && !prepared.supply_complete)
-                            .then_some(prepared.supply_refusal()));
-                        if let Some(reason) = reason {
-                            prepared.uncertain.insert((region, kind), reason);
-                            *prepared
-                                .refused
-                                .entry(format!("{ENTRY} fragment withheld: {reason}"))
-                                .or_default() += 1;
-                        }
+                    let wings: Vec<(u64, u32)> = regional_wings.get(&region).into_iter().flatten().map(|wing| (wing.id, wing.mission_mask)).collect();
+                    let entries = region_alerts(
+                        counts,
+                        &wings,
+                        |wing| gates.get(&wing).copied().flatten(),
+                        |kind, classification| {
+                            if combat.is_err() { return Err("the regional combat census is incomplete"); }
+                            let Some(holder) = holder else { return Ok(false); };
+                            interception_received_of(
+                                replay_derive::air_region_derive::Retained { own: &holder.own, foreign: &holder.foreign },
+                                frame.hour,
+                                replay_derive::air_region_derive::Filter { missions: 1 << kind, window: 24, classification },
+                                |pass| inputs.passes.map(|passes| passes.visited(frame.branch, pass, vision.ours())),
+                                inputs.content.air_log_timeout.as_ref().map(|&timeout| timeout).map_err(|_| TIMEOUT_UNKNOWN),
+                            )
+                        },
+                        prepared.supply_complete,
+                        prepared.supply_refusal(),
+                    );
+                    for kind in (0..MISSIONS).filter(|kind| entries.alerts & (1 << kind) != 0) {
+                        prepared.alerts.insert((region, kind));
+                    }
+                    for (kind, reason) in entries.uncertain {
+                        prepared.uncertain.insert((region, kind), reason);
+                        *prepared.refused.entry(fragment_withheld(reason)).or_default() += 1;
                     }
                 }
                 prepared.prepare_hovers(inputs, frame, &regional_wings);
@@ -265,11 +399,107 @@ impl Prepared {
                 prepared
             }
             Err(reason) => Self {
-                refused: BTreeMap::from([(format!("{WINDOW} counts withheld: {reason}"), 1)]),
+                refused: BTreeMap::from([(counts_withheld(&reason), 1)]),
                 ..Default::default()
             },
         })
     }
+
+    /// A layer's values with today's hovers made from them; each mission hover's wing
+    /// efficiencies read from `frame`, the hour on screen, for country `ours`.
+    pub(super) fn of_values(values: &AirValues, inputs: &HourInputs<'_>, frame: &DecodedFrame, ours: u32) -> Self {
+        if let Some(withheld) = &values.withheld {
+            return Self { refused: BTreeMap::from([(withheld.clone(), 1)]), ..Default::default() };
+        }
+        let mut prepared = Self {
+            supply: values.supply.clone(),
+            supply_complete: values.supply_complete,
+            supply_unrecorded: values.supply_unrecorded,
+            regions: values.regions.clone(),
+            alerts: values.alerts.clone(),
+            uncertain: values.uncertain.clone(),
+            ..Default::default()
+        };
+        for reason in values.uncertain.values() {
+            *prepared.refused.entry(fragment_withheld(reason)).or_default() += 1;
+        }
+        if prepared.supply_complete {
+            prepared.supply_hovers(inputs);
+        }
+        let wings = (|| {
+            let links = frame.complete::<tables::CountryLinks>().ok()?;
+            let links: HashMap<_, _> = links.iter().map(|link| (link.id, link.canonical_slot)).collect();
+            let wings = frame.complete::<tables::AirWings>().ok()?;
+            let registrations = frame.complete::<tables::AirRegionalMissions>().ok()?;
+            regional_counts(registrations, wings, ours, |raw| links.get(&raw).copied()).ok().map(|(_, wings)| wings)
+        })()
+        .unwrap_or_default();
+        prepared.prepare_hovers(inputs, frame, &wings);
+        for (&region, ground) in &values.ground {
+            let made = ground.clone().and_then(|state| Ok((state, ground_hover(inputs, region, u32::from(state.frame == 3), state)?)));
+            match made {
+                Ok((state, hover)) => {
+                    prepared.ground.insert(region, state);
+                    prepared.ground_hovers.insert(region, hover);
+                }
+                Err(reason) => *prepared.refused.entry(ground_withheld(&reason)).or_default() += 1,
+            }
+        }
+        prepared
+    }
+}
+
+/// A region's Ground Crews hover, its flag `active` and control `state` decided.
+fn ground_hover(inputs: &HourInputs<'_>, region: u32, active: u32, state: Ground) -> Result<Arc<viewer_foundation::tooltip_text::Tooltip>, String> {
+    use installed_content_localisation::localisation::Argument;
+    use viewer_foundation::tooltip_text::Tooltip;
+    let (cost, boost) = *inputs.content.ground_crew_defines.as_ref().map_err(Clone::clone)?;
+    let loc = inputs.localisation;
+    let name = loc
+        .localise(
+            inputs
+                .content
+                .region_names
+                .get(&region)
+                .ok_or("strategic region name is unavailable")?
+                .as_bytes(),
+        )
+        .map_err(|error| error.to_string())?;
+    let mut tooltip = Tooltip::default();
+    tooltip.line(
+        false,
+        0,
+        "ground crews",
+        loc.localise(b"AIR_MORE_GROUND_CREWS")
+            .and_then(|name| {
+                loc.localise_with(b"HEADER", &[("KEY", Argument::Text(&name))])
+            })
+            .map_err(|error| error.to_string()),
+    );
+    tooltip.body = if active != 0 {
+        loc.localise_with(
+            b"AIR_MORE_GROUND_CREWS_CANCEL_DESC",
+            &[("NAME", Argument::Text(&name))],
+        )
+    } else {
+        loc.localise_with(
+            b"AIR_MORE_GROUND_CREWS_DESC",
+            &[
+                ("NAME", Argument::Text(&name)),
+                ("VALUE", Argument::Fixed5(cost)),
+                ("VAL", Argument::Fixed5(boost)),
+            ],
+        )
+    }
+    .map_err(|error| error.to_string())?;
+    if !state.enabled {
+        tooltip.body.push('\n');
+        tooltip.body.push_str(
+            &loc.localise(b"AIR_MORE_GROUND_CREWS_NOT_ENOUGH")
+                .map_err(|error| error.to_string())?,
+        );
+    }
+    Ok(Arc::new(tooltip))
 }
 
 /// The hover averages current sortie efficiencies weighted by each selected
@@ -307,11 +537,7 @@ const EMPTY_SUPPLY: replay_data::rows::AirSupplySummary = replay_data::rows::Air
 
 impl Prepared {
     fn supply_refusal(&self) -> &'static str {
-        if self.supply_unrecorded {
-            SUPPLY_UNRECORDED
-        } else {
-            SUPPLY_REFUSAL
-        }
+        supply_refusal(self.supply_unrecorded)
     }
 
     fn supply(&self, region: u32) -> Option<replay_data::rows::AirSupplySummary> {
@@ -320,7 +546,6 @@ impl Prepared {
     }
 
     fn prepare_supply(&mut self, inputs: &HourInputs<'_>, frame: &DecodedFrame, viewer: u32) {
-        use installed_content_localisation::localisation::Argument;
         let Ok(rows) = frame.complete::<tables::AirGroundCrews>() else {
             return;
         };
@@ -345,11 +570,18 @@ impl Prepared {
                 continue;
             };
             self.supply.insert(row.region, supply);
-            if supply.severity < 2 {
-                let counts = self.regions.entry(row.region).or_insert([-1; MISSIONS]);
-                counts[AIR_SUPPLY] = counts[AIR_SUPPLY].max(0);
+            let mut counts = self.regions.get(&row.region).copied();
+            supplied(&mut counts, &supply);
+            if let Some(counts) = counts {
+                self.regions.insert(row.region, counts);
             }
         }
+        self.supply_hovers(inputs);
+    }
+
+    /// Every named region's supply hover, from the supply summaries.
+    fn supply_hovers(&mut self, inputs: &HourInputs<'_>) {
+        use installed_content_localisation::localisation::Argument;
         for &region in inputs.content.region_names.keys() {
             let supply = self.supply(region).unwrap();
             let key = match supply.severity {
@@ -379,7 +611,6 @@ impl Prepared {
     }
 
     fn prepare_ground(&mut self, inputs: &HourInputs<'_>, frame: &DecodedFrame, viewer: u32) {
-        use installed_content_localisation::localisation::Argument;
         use viewer_foundation::tooltip_text::Tooltip;
         let flags = frame.complete::<tables::AirGroundCrews>();
         let power = frame
@@ -392,67 +623,21 @@ impl Prepared {
                 continue;
             }
             let result = (|| -> Result<(Ground, Arc<Tooltip>), String> {
-                let (cost, boost) = *inputs
-                    .content
-                    .ground_crew_defines
-                    .as_ref()
-                    .map_err(Clone::clone)?;
-                let flags = flags.as_ref().map_err(|error| error.to_string())?;
-                let active = match flags
-                    .binary_search_by_key(&(viewer, region), |row| (row.country, row.region))
-                {
-                    Ok(at) => flags[at].enabled.ok_or(
-                        "Ground Crews writer certificate or enabled-byte read is unavailable",
-                    )?,
-                    Err(_) => 0,
-                };
-                let state = ground(active, power, cost)?;
-                let loc = inputs.localisation;
-                let name = loc
-                    .localise(
-                        inputs
-                            .content
-                            .region_names
-                            .get(&region)
-                            .ok_or("strategic region name is unavailable")?
-                            .as_bytes(),
-                    )
-                    .map_err(|error| error.to_string())?;
-                let mut tooltip = Tooltip::default();
-                tooltip.line(
-                    false,
-                    0,
-                    "ground crews",
-                    loc.localise(b"AIR_MORE_GROUND_CREWS")
-                        .and_then(|name| {
-                            loc.localise_with(b"HEADER", &[("KEY", Argument::Text(&name))])
-                        })
-                        .map_err(|error| error.to_string()),
-                );
-                tooltip.body = if active != 0 {
-                    loc.localise_with(
-                        b"AIR_MORE_GROUND_CREWS_CANCEL_DESC",
-                        &[("NAME", Argument::Text(&name))],
-                    )
-                } else {
-                    loc.localise_with(
-                        b"AIR_MORE_GROUND_CREWS_DESC",
-                        &[
-                            ("NAME", Argument::Text(&name)),
-                            ("VALUE", Argument::Fixed5(cost)),
-                            ("VAL", Argument::Fixed5(boost)),
-                        ],
-                    )
-                }
-                .map_err(|error| error.to_string())?;
-                if !state.enabled {
-                    tooltip.body.push('\n');
-                    tooltip.body.push_str(
-                        &loc.localise(b"AIR_MORE_GROUND_CREWS_NOT_ENOUGH")
-                            .map_err(|error| error.to_string())?,
-                    );
-                }
-                Ok((state, Arc::new(tooltip)))
+                let defines = inputs.content.ground_crew_defines.as_ref().map_err(Clone::clone);
+                let mut active = 0;
+                let state = ground_of(
+                    defines.clone().map(|defines| defines.0),
+                    || {
+                        let flags = flags.as_ref().map_err(|error| error.to_string())?;
+                        active = match flags.binary_search_by_key(&(viewer, region), |row| (row.country, row.region)) {
+                            Ok(at) => flags[at].enabled.ok_or("Ground Crews writer certificate or enabled-byte read is unavailable")?,
+                            Err(_) => 0,
+                        };
+                        Ok(active)
+                    },
+                    power,
+                )?;
+                Ok((state, ground_hover(inputs, region, active, state)?))
             })();
             match result {
                 Ok((state, hover)) => {
@@ -460,10 +645,7 @@ impl Prepared {
                     self.ground_hovers.insert(region, hover);
                 }
                 Err(reason) => {
-                    *self
-                        .refused
-                        .entry(format!("{WINDOW} Ground Crews withheld: {reason}"))
-                        .or_default() += 1;
+                    *self.refused.entry(ground_withheld(&reason)).or_default() += 1;
                 }
             }
         }
@@ -626,6 +808,12 @@ impl View {
     pub(super) fn retry(&self) -> Option<Retry> {
         self.pool.retry()
     }
+    pub(super) fn set_quiet(&mut self, quiet: bool) {
+        self.pool.set_quiet(quiet);
+    }
+    pub(super) fn running_visibly(&self) -> bool {
+        self.active || self.pool.running_visibly()
+    }
     pub(super) fn take_active(&mut self) -> bool {
         let pool = self.pool.take_running();
         std::mem::take(&mut self.active) || pool
@@ -716,6 +904,7 @@ impl Prepared {
                 }
             }
         }
+        view.pool.set_cleaning(placed.values().any(|&(first, _, _)| schedule.cleans(first)));
         let mut owners: Vec<_> = placed
             .iter()
             .map(|(&id, &(first, _, screen))| {
@@ -734,7 +923,7 @@ impl Prepared {
         let root = inputs.windows.gui_type(WINDOW.as_bytes());
         let item = inputs.windows.gui_type(ENTRY.as_bytes());
         let tick = viewer_foundation::map::icon_windows::frame(&mut view.last, time);
-        let drawn = view.pool.present(
+        view.pool.present_recorded(
             &context,
             &Plan {
                 name: WINDOW,
@@ -848,8 +1037,19 @@ impl Prepared {
                 }
                 instance.show(root, named(root, native::Kind::List, "missions_list")?)
             },
+            |&region| {
+                let kinds: [(bool, bool); MISSIONS] = std::array::from_fn(|kind| {
+                    (self.alerts.contains(&(region, kind)), self.uncertain.contains_key(&(region, kind)))
+                });
+                (self.regions.get(&region).copied(), self.ground.get(&region).copied(), kinds, self.supply(region))
+            },
+            false,
             &mut report.icon_gui_notes,
         );
+        if view.pool.quiet() {
+            return;
+        }
+        let drawn: Vec<_> = view.pool.drawn().collect();
         let slots: HashMap<_, _> = view.pool.live().into_iter().collect();
         let (Some(root), Some(item)) = (root, item) else {
             return;

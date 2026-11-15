@@ -4,7 +4,12 @@
 //! [`SpriteSet::lookup`] distinguishes refused declarations from absent names, preventing
 //! silent fallback past a refusal.
 
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, OnceLock},
+};
+
+use installed_content_core::kept::{Input, Table, put_bytes, put_texts};
 
 use crate::{
     ResolvedLayers,
@@ -84,7 +89,7 @@ impl SpriteType {
 pub struct SpriteSet {
     /// By name exactly as declared. Lookup compares hash, length and then bytes without case
     /// folding, so `GFX_Tank` and `GFX_tank` identify separate sprites.
-    sprites: BTreeMap<String, SpriteType>,
+    sprites: Declared,
     /// Each name whose latest declaration is refused, and why. It hides an earlier declaration
     /// of its name, as the game's lookup finds it first.
     refused_names: BTreeMap<String, String>,
@@ -94,18 +99,112 @@ pub struct SpriteSet {
     pub refused: Vec<String>,
 }
 
+/// How a kept declaration ([`SpriteSet::keep`]) is read back, given its name.
+pub type Decode = fn(&str, &[u8]) -> Result<SpriteType, String>;
+
+/// The drawable declarations: as the files were read, or kept, each decoded on its first lookup
+/// ([`SpriteSet::from_kept`]).
+#[derive(Clone)]
+enum Declared {
+    Read(BTreeMap<String, SpriteType>),
+    Kept(Kept),
+}
+
+#[derive(Clone)]
+struct Kept {
+    table: Table,
+    decode: Decode,
+    decoded: Arc<[OnceLock<Result<SpriteType, String>>]>,
+}
+
+impl Kept {
+    fn damaged() -> String {
+        "the kept sprites are damaged".to_owned()
+    }
+
+    fn decoded(&self, index: usize) -> Result<&SpriteType, String> {
+        let cell = self.decoded.get(index).ok_or_else(Self::damaged)?;
+        cell.get_or_init(|| {
+            let name = self
+                .table
+                .key(index)
+                .and_then(|name| std::str::from_utf8(name).ok())
+                .ok_or_else(Self::damaged)?;
+            let body = self.table.value(index).ok_or_else(Self::damaged)?;
+            (self.decode)(name, body)
+        })
+        .as_ref()
+        .map_err(|why| format!("its kept declaration cannot be read: {why}"))
+    }
+}
+
+impl Default for Declared {
+    fn default() -> Self {
+        Self::Read(BTreeMap::new())
+    }
+}
+
+impl PartialEq for Declared {
+    fn eq(&self, other: &Self) -> bool {
+        self.len() == other.len() && self.iter().eq(other.iter())
+    }
+}
+
+impl std::fmt::Debug for Declared {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_map().entries(self.iter()).finish()
+    }
+}
+
+impl Declared {
+    fn len(&self) -> usize {
+        match self {
+            Self::Read(sprites) => sprites.len(),
+            Self::Kept(kept) => kept.table.len(),
+        }
+    }
+
+    fn contains(&self, name: &str) -> bool {
+        match self {
+            Self::Read(sprites) => sprites.contains_key(name),
+            Self::Kept(kept) => kept.table.find(name.as_bytes()).is_some(),
+        }
+    }
+
+    /// `name`'s declaration, or why its kept form cannot be read; `None` when none is declared.
+    fn get(&self, name: &str) -> Option<Result<&SpriteType, String>> {
+        match self {
+            Self::Read(sprites) => sprites.get(name).map(Ok),
+            Self::Kept(kept) => Some(kept.decoded(kept.table.find(name.as_bytes())?)),
+        }
+    }
+
+    fn iter(&self) -> Box<dyn Iterator<Item = (&String, &SpriteType)> + '_> {
+        match self {
+            Self::Read(sprites) => Box::new(sprites.iter()),
+            Self::Kept(kept) => Box::new(
+                (0..kept.table.len())
+                    .filter_map(move |index| kept.decoded(index).ok())
+                    .map(|sprite| (&sprite.name, sprite)),
+            ),
+        }
+    }
+}
+
 impl SpriteSet {
     /// The sprites of files read in the game's load order.
     pub fn new(files: &[(String, Sprites)]) -> Self {
-        let mut set = Self::default();
+        let mut sprites = BTreeMap::new();
+        let mut refused_names = BTreeMap::new();
+        let mut refused = Vec::new();
         for (path, file) in files {
-            set.refused.extend(
+            refused.extend(
                 file.refusals
                     .iter()
                     .map(|refusal| format!("{path}: {refusal}")),
             );
             for facts in &file.sprites {
-                let refused = if facts.refusals.is_empty() {
+                let read = if facts.refusals.is_empty() {
                     SpriteType::new(facts)
                 } else {
                     Err(facts
@@ -115,42 +214,103 @@ impl SpriteSet {
                         .collect::<Vec<_>>()
                         .join("; "))
                 };
-                match refused {
+                match read {
                     Ok(sprite) => {
-                        set.refused_names.remove(&sprite.name);
-                        set.sprites.insert(sprite.name.clone(), sprite);
+                        refused_names.remove(&sprite.name);
+                        sprites.insert(sprite.name.clone(), sprite);
                     }
                     Err(reason) => {
                         let name = String::from_utf8_lossy(&facts.name);
-                        set.refused
-                            .push(format!("{path}: sprite {name:?} is refused: {reason}"));
+                        refused.push(format!("{path}: sprite {name:?} is refused: {reason}"));
                         // A name that is not UTF-8 is no key here, so it hides none.
                         if let Ok(name) = std::str::from_utf8(&facts.name) {
-                            set.sprites.remove(name);
-                            set.refused_names
-                                .insert(name.to_owned(), format!("{path}: {reason}"));
+                            sprites.remove(name);
+                            refused_names.insert(name.to_owned(), format!("{path}: {reason}"));
                         }
                     }
                 }
             }
         }
-        set
+        Self {
+            sprites: Declared::Read(sprites),
+            refused_names,
+            refused,
+        }
+    }
+
+    /// Appends this set in the form [`Self::from_kept`] reads in place, each drawable
+    /// declaration as `encode` writes it.
+    pub fn keep(
+        &self,
+        out: &mut Vec<u8>,
+        encode: impl Fn(&SpriteType) -> Result<Vec<u8>, String>,
+    ) -> Result<(), String> {
+        out.extend((self.refused_names.len() as u64).to_le_bytes());
+        for (name, reason) in &self.refused_names {
+            put_bytes(out, name.as_bytes());
+            put_bytes(out, reason.as_bytes());
+        }
+        put_texts(out, &self.refused);
+        let declared = self
+            .iter()
+            .map(|(name, sprite)| Ok((name.as_bytes(), encode(sprite)?)))
+            .collect::<Result<Vec<_>, String>>()?;
+        Table::write(out, declared.into_iter());
+        Ok(())
+    }
+
+    /// The set [`Self::keep`] put at `at` in `bytes`, each declaration read back by `decode` on
+    /// its first lookup, and where it ends.
+    pub fn from_kept(
+        bytes: &Arc<Vec<u8>>,
+        at: usize,
+        decode: Decode,
+    ) -> std::io::Result<(Self, usize)> {
+        let mut input = Input::new(bytes, at);
+        let names = input.u64()?;
+        let mut refused_names = BTreeMap::new();
+        for _ in 0..names {
+            let name = input.text()?;
+            refused_names.insert(name, input.text()?);
+        }
+        let refused = input.texts()?;
+        let (table, end) = Table::read(bytes, input.at())?;
+        let decoded = (0..table.len()).map(|_| OnceLock::new()).collect();
+        Ok((
+            Self {
+                sprites: Declared::Kept(Kept {
+                    table,
+                    decode,
+                    decoded,
+                }),
+                refused_names,
+                refused,
+            },
+            end,
+        ))
     }
 
     /// The latest declaration of `name`, or why there is none a consumer can draw: no file
     /// declares it, or its latest declaration is refused.
     pub fn lookup(&self, name: &str) -> Result<&SpriteType, String> {
-        self.sprites.get(name).ok_or_else(|| {
-            self.refusal(name)
-                .unwrap_or_else(|| format!("interface/*.gfx declares no sprite {name}"))
-        })
+        match self.sprites.get(name) {
+            Some(Ok(sprite)) => Ok(sprite),
+            Some(Err(why)) => Err(format!("sprite {name} is unavailable: {why}")),
+            None => Err(self
+                .refusal(name)
+                .unwrap_or_else(|| format!("interface/*.gfx declares no sprite {name}"))),
+        }
     }
 
     /// `name`'s latest declaration, `None` when no file declares it, or why it is refused.
     pub fn find(&self, name: &str) -> Result<Option<&SpriteType>, String> {
-        match self.refusal(name) {
-            Some(why) => Err(why),
-            None => Ok(self.sprites.get(name)),
+        if let Some(why) = self.refusal(name) {
+            return Err(why);
+        }
+        match self.sprites.get(name) {
+            Some(Ok(sprite)) => Ok(Some(sprite)),
+            Some(Err(why)) => Err(format!("sprite {name} is unavailable: {why}")),
+            None => Ok(None),
         }
     }
 
@@ -163,7 +323,7 @@ impl SpriteSet {
 
     /// Whether `name`'s latest declaration is one a consumer can draw.
     pub fn contains(&self, name: &str) -> bool {
-        self.sprites.contains_key(name)
+        self.sprites.contains(name)
     }
 
     /// Each name whose latest declaration is refused, with why. The game's registry still holds
@@ -227,17 +387,17 @@ mod tests {
                     noOfFrames = 3 }
             }"#,
         )]);
-        let a = &set.sprites["GFX_a"];
+        let a = set.lookup("GFX_a").unwrap();
         assert_eq!(a.texture.as_deref(), Some("gfx/interface/a.dds"));
         assert_eq!(a.frames, 1);
         // Every key is folded, as the lexer folds a keyword.
-        let b = &set.sprites["GFX_b"];
+        let b = set.lookup("GFX_b").unwrap();
         assert_eq!(b.frames, 14);
         assert!(matches!(
             &b.facts.kind,
             SpriteKind::Plain(plain) if plain.always_transparent
         ));
-        let tile = &set.sprites["GFX_tile"];
+        let tile = set.lookup("GFX_tile").unwrap();
         assert_eq!(
             (tile.texture.as_deref(), tile.frames),
             (Some("gfx/t.dds"), 2)
@@ -247,13 +407,13 @@ mod tests {
             SpriteKind::CorneredTile(tile) if tile.border == [2, 2] && tile.size == [8, 8]
         ));
         // A progress bar has two textures of its own and no one texture.
-        let bar = &set.sprites["GFX_bar"];
+        let bar = set.lookup("GFX_bar").unwrap();
         assert_eq!((bar.texture.as_deref(), bar.frames), (None, 1));
         assert!(matches!(
             &bar.facts.kind,
             SpriteKind::Progress(progress) if progress.texture1 == b"gfx/p.dds"
         ));
-        assert_eq!(set.sprites["GFX_anim"].frames, 3);
+        assert_eq!(set.lookup("GFX_anim").unwrap().frames, 3);
         assert!(set.refused.is_empty(), "{:?}", set.refused);
     }
 
@@ -281,9 +441,9 @@ mod tests {
             ),
         ]);
         for name in ["GFX_closed", "GFX_partial", "GFX_color_tail"] {
-            assert!(set.sprites.contains_key(name), "{name}: {set:?}");
+            assert!(set.contains(name), "{name}: {set:?}");
         }
-        assert!(!set.sprites.contains_key("GFX_unread"));
+        assert!(!set.contains("GFX_unread"));
         assert!(set.refused.is_empty(), "{:?}", set.refused);
     }
 
@@ -307,10 +467,10 @@ mod tests {
                     spriteType = { name = \"GFX_\x80\" texturefile = \"n.dds\" } }",
             ),
         ]);
-        assert_eq!(set.sprites["GFX_x"].texture.as_deref(), Some("second.dds"));
-        assert!(!set.sprites.contains_key("GFX_y"));
-        assert!(!set.sprites.contains_key("GFX_z"));
-        assert_eq!(set.sprites.len(), 1);
+        assert_eq!(set.lookup("GFX_x").unwrap().texture.as_deref(), Some("second.dds"));
+        assert!(!set.contains("GFX_y"));
+        assert!(!set.contains("GFX_z"));
+        assert_eq!(set.iter().count(), 1);
         // A consumer asking for a refused name is told why, not that nothing declares it.
         let why = set.lookup("GFX_y").unwrap_err();
         assert!(
@@ -341,8 +501,8 @@ mod tests {
                 corneredTileSpriteType = { name = "GFX_bad" texturefile = "a.dds"
                     size = { x = y y = 1 } } }"#,
         )]);
-        assert!(set.sprites.contains_key("GFX_ok"));
-        assert!(!set.sprites.contains_key("GFX_bad"));
+        assert!(set.contains("GFX_ok"));
+        assert!(!set.contains("GFX_bad"));
         assert_eq!(set.refused.len(), 1, "{:?}", set.refused);
         assert!(set.refused[0].starts_with("interface/a.gfx: sprite \"GFX_bad\" is refused"));
     }

@@ -251,7 +251,7 @@ fn batched_naming_heap_faults_equal_serial_and_one_shot_never_refuses_more() {
         // A lasting fault refuses row 20's cached name. Met once, it is spent
         // by the heap string's one-copy read, and the string reader's own
         // fallback (cname_group_member::copy_fitting_string, then
-        // copy_string_buffer) reads the bytes again and recovers the name,
+        // copy_string) reads the bytes again and recovers the name,
         // in the serial walk as in the batched one (`same` above).
         assert_eq!(actual.naming.first[20].cached_name.is_none(), !once);
         assert!(actual.naming.first[21].cached_name.is_some());

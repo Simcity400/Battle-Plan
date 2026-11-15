@@ -1,6 +1,6 @@
-//! One presentation per source: catalogues, artwork and game-look text follow the source's own
-//! visual mods, a change rebinds them, recorded facts never follow, and what the mods cannot
-//! supply is drawn from the recording and named on the reply that drew it.
+//! One presentation per source: catalogues and artwork follow the source's own visual mods, a
+//! change rebinds them, recorded facts (declarations, text, scripts) never follow, and art the
+//! mods cannot supply is drawn from the recording and named on the reply that drew it.
 
 use super::*;
 use crate::{
@@ -169,7 +169,7 @@ fn the_gui_registry_is_read_ahead_in_the_mode_shields_read_it() {
     assert!(catalogue.content.layers.presentation().shows_visual_mods());
     crate::products::read_ahead::warm_guis(&catalogue);
     let loads = catalogue.content_loads();
-    drop(installed_content_core::content::strict(|| catalogue.guis().is_ok()));
+    let _ = installed_content_core::content::strict(|| catalogue.guis().is_ok());
     assert_eq!(catalogue.content_loads(), loads);
 }
 
@@ -239,8 +239,8 @@ fn text(layers: &installed_content_core::ResolvedLayers, path: &str) -> String {
 }
 
 /// Two sources over the same recording: each draws its own campaign's visual mods, and neither
-/// leaks into the other. Artwork and native-window text follow the mods; recorded scripts and
-/// analytics labels never do.
+/// leaks into the other. Artwork follows the mods; text and scripts are recorded facts, so the
+/// mod's own text and script are never read, not even by the presentation stack.
 #[test]
 fn each_source_shows_its_own_visual_mods_and_recorded_facts_stay_recorded() {
     let (machine, styled, mut options) = machine("two_sources");
@@ -261,7 +261,8 @@ fn each_source_shows_its_own_visual_mods_and_recorded_facts_stay_recorded() {
     assert_eq!(drawn(&recorded, "GFX_icon"), (RED, None));
     assert_eq!(
         shown.presentation_localisation().unwrap().get("NAME"),
-        Some("Styled")
+        Some("Recorded"),
+        "the mod's text is not read"
     );
     assert_eq!(shown.localisation.get("NAME"), Some("Recorded"));
     assert_eq!(
@@ -480,20 +481,47 @@ fn prepared_artwork_is_the_recordings_and_named() {
     ));
 }
 
-/// A sprite the visual mods redeclare with artwork that does not load is drawn as the recording
-/// declares it, not by retrying the mods' declaration against the recording's files.
+/// A sprite the visual mods redeclare is a recorded fact's and is never read: it is drawn as the
+/// recording declares it, with nothing to name, though the mods' declaration would draw.
 #[test]
-fn a_redeclared_sprite_falls_back_to_the_recordings_own_declaration() {
+fn a_redeclared_sprite_is_not_read_and_the_recordings_own_declaration_is_drawn() {
     let (machine, source, mut options) = machine("redeclared");
-    let broken = machine.mods.join("broken");
+    let redeclared = machine.mods.join("redeclared");
     write(
-        &broken,
+        &redeclared,
         "interface/art.gfx",
         br#"spriteTypes = {
-            spriteType = { name = GFX_icon textureFile = "gfx/broken_only.png" }
+            spriteType = { name = GFX_icon textureFile = "gfx/redeclared_only.png" }
         }"#,
     );
-    write(&broken, "gfx/broken_only.png", b"not a png");
+    write(&redeclared, "gfx/redeclared_only.png", &png(BLUE));
+    install(&machine.root, "redeclared.mod", "Redeclared", &redeclared);
+    assert!(present(
+        &source,
+        &mut options,
+        &[choice("mod/redeclared.mod", "Redeclared")]
+    ));
+    let catalogue = catalogue::catalogue(&source, &options).unwrap();
+    assert_eq!(
+        catalogue
+            .sprites
+            .find("GFX_icon")
+            .unwrap()
+            .unwrap()
+            .texture
+            .as_deref(),
+        Some("gfx/icon.png")
+    );
+    assert_eq!(drawn(&catalogue, "GFX_icon"), (RED, None));
+}
+
+/// A sprite whose art the visual mods replace with art that does not load is drawn from the
+/// recording's own art, and named.
+#[test]
+fn a_sprite_the_mods_art_cannot_draw_falls_back_to_the_recordings_art() {
+    let (machine, source, mut options) = machine("broken_art");
+    let broken = machine.mods.join("broken");
+    write(&broken, "gfx/icon.png", b"not a png");
     install(&machine.root, "broken.mod", "Broken", &broken);
     assert!(present(
         &source,
@@ -565,14 +593,7 @@ fn a_selections_identity_depends_on_the_recordings_own_mods() {
 fn a_memoised_portrait_names_its_fallback_on_every_request() {
     let (machine, source, mut options) = machine("portrait_memo");
     let broken = machine.mods.join("broken");
-    write(
-        &broken,
-        "interface/art.gfx",
-        br#"spriteTypes = {
-            spriteType = { name = GFX_icon textureFile = "gfx/broken_only.png" }
-        }"#,
-    );
-    write(&broken, "gfx/broken_only.png", b"not a png");
+    write(&broken, "gfx/icon.png", b"not a png");
     install(&machine.root, "broken.mod", "Broken", &broken);
     assert!(present(
         &source,

@@ -1,303 +1,96 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createElement } from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
-import { createServer } from 'vite';
-import type { WidgetProps } from '../../dashboard/definitions';
-import type { SunburstProps } from '../../charts/sunburst/Sunburst';
-import type { CountryGroupReply, TerritoryBreakdownReply } from '../../generated/dashboard';
-import { breakdownItems as itemsAt, breakdownModel, breakdownWhole, validateBreakdownReply } from './breakdownData.ts';
-import type { BreakdownLooks } from './breakdownData.ts';
-import type { TerritoryMeasure, TerritoryRule } from '../../generated/dashboard';
-import { groupTree, listed } from '../../charts/sunburst/layout.ts';
-import { worldFilter } from '../../dashboard/groups.ts';
-import { breakdownSelectedWhole, mergeBreakdownReplies } from './breakdownData.ts';
-const breakdownItems = (data: TerritoryBreakdownReply, groups: CountryGroupReply, hour: number, end: number,
-  measure: TerritoryMeasure, rule: TerritoryRule, looks: BreakdownLooks) => itemsAt(breakdownModel(data, measure, rule), groups, hour, end, looks);
-const groups: CountryGroupReply = { branchId: '1', humans: [], factions: [], wars: [], warStarts: [], capitulations: [], identityChanges: [],
-  countryIdentities: [],
-  unobserved: { humans: [], factions: [], wars: [] }, warnings: [] };
-const data: TerritoryBreakdownReply = { branchId: '1', regions: [{ id: 12, name: 'Modded region', missing: null }],
-  observed: Array.from({ length: 8 }, () => [{ firstHour: 10, lastHour: 20 }]),
-  areaUnit: null, areaReason: 'No raster', warnings: [],
-  countries: [{ tag: 'opaque', runs: [{ firstHour: 10, lastHour: 20, startsSegment: true, values: [1, 1, 7, null, 1, 1, 7, null, null, null, null, null] }], segments: [{ firstHour: 10, lastHour: 20 }], membership: null }],
-  worldTotals: [{ firstHour: 10, lastHour: 20, startsSegment: true, values: [1, 1, 7, null, 1, 1, 7, null, null, null, null, null] }],
-  series: [{ tag: 'opaque', region: 12, missing: null, runs: [{ firstHour: 10, lastHour: 20, startsSegment: true,
-    values: ['1', '7', null, '1', '7', null], stateShares: [[{ numerator: '1', denominator: 1 }], [{ numerator: '1', denominator: 1 }]] }] }] };
-const looks = { country: (tag: string, hour: number) => ({ name: `${tag}@${hour}` }), faction: () => ({ name: null, reason: null }),
-  colour: () => undefined, selected: () => true };
-test('the whole is independent, labels are dated, and a gap never borrows a value', () => {
-  assert.equal(validateBreakdownReply(data), data);
-  const shape = breakdownItems(data, groups, 12, 20, 'states', 'controlled', looks);
-  assert.equal(shape.items[0].exact, 1n);
-  assert.equal(shape.items[0].path[1].label, 'opaque@12');
-  assert.equal(shape.items[1].path[1].label, 'opaque@20');
-  assert.equal(shape.items[1].present, false);
-  assert.equal(breakdownItems(data, groups, 9, 20, 'states', 'controlled', looks).items[0].unknownValue, true);
-  assert.equal(breakdownWhole(data, 9, 20, 'states', 'controlled').unknownValue, true);
+import { liveKey, valuesOf } from '../../charts/live.ts';
+import { NO_ROW, NOT_RECORDED } from '../../dashboard/follow/liveCells.ts';
+import type { CountryGroupReply } from '../../generated/dashboard';
+import { affiliation, affiliationEpochs, breakdownItems, epochOf, rowAmount, validateBreakdownReply, withFinals } from './breakdownData.ts';
+import type { TerritoryBreakdownReply } from './types';
+
+const reply: TerritoryBreakdownReply = {
+  measure: 'states', rule: 'owned',
+  regions: [{ id: 7, name: 'North', missing: null }, { id: 8, name: null, missing: 'localisation missing' }],
+  rows: [
+    { key: 'ger7', tag: 'GER', slot: 1, region: 7 },
+    { key: 'ita8', tag: 'ITA', slot: 2, region: 8 },
+    { key: 'none', tag: null, slot: null, region: null },
+    { key: 'sov7', tag: 'SOV', slot: 3, region: 7 },
+    { key: 'gone', tag: 'FRA', slot: 4, region: 7 },
+  ],
+  missing: null, areaReason: null, warnings: [],
+};
+
+/** The cells as a followed group leaves them: GER owns 5/3 states, ITA's are not recorded, the land no country holds is
+ * one whole state, SOV holds none, and FRA's row is gone from the table before the structure without it lands. */
+const cells = new Map([
+  [liveKey('ger7', 'value'), 5], [liveKey('ger7', 'denominator'), 3],
+  [liveKey('none', 'value'), 1], [liveKey('none', 'denominator'), 1],
+  [liveKey('sov7', 'value'), 0], [liveKey('sov7', 'denominator'), 1],
+]);
+const values = valuesOf(cells, key => key.startsWith('gone') ? NO_ROW : NOT_RECORDED);
+
+const groups = { factions: [{ id: '9', firstHour: 0, lastHour: 100, members: [{ tag: 'GER', firstHour: 20, lastHour: 100 }], incomplete: [] }],
+  unobserved: { humans: [], factions: [], wars: [] } } as unknown as CountryGroupReply;
+
+const looks = {
+  country: (tag: string) => ({ name: `Country ${tag}`, flag: undefined, flagPending: false, flagReason: undefined }),
+  faction: () => 'Axis', colour: (id: string) => id === '9' ? '#aa0000' : undefined, selected: () => true,
+};
+
+test('a row\'s states are its cells\' exact fraction, the other measures whole; a row gone is none, a cell not read is unknown', () => {
+  assert.deepEqual(rowAmount(values, 'ger7', 'states'), { value: 5 / 3, exact: 5n, denominator: 3n });
+  assert.deepEqual(rowAmount(valuesOf(new Map([[liveKey('ger7', 'value'), 40]]), NOT_RECORDED), 'ger7', 'area'), { value: 40, exact: 40n, denominator: 1n });
+  assert.equal(rowAmount(values, 'ita8', 'provinces'), null, 'not recorded is no amount, never zero');
+  assert.equal(rowAmount(valuesOf(new Map([[liveKey('ger7', 'value'), 5]]), NOT_RECORDED), 'ger7', 'states'), null, 'states without their denominator are not known');
+  assert.deepEqual(rowAmount(values, 'gone', 'states'), { value: 0, exact: 0n, denominator: 1n }, 'the table holds no row of the key any more: it holds nothing');
 });
 
-test('missing region labels stay readable and tooltip notes omit backend reasons', () => {
-  for (const region of [null, 12]) {
-    const missing: TerritoryBreakdownReply = { ...data, regions: [{ id: 12, name: null, missing: 'Unresolved content token' }],
-      series: [{ ...data.series[0], region, missing: 'State province roster absent' }] };
-    const shape = breakdownItems(missing, groups, 12, 20, 'states', 'controlled', looks);
-    assert.equal(shape.items[0].path[2].label, region === null ? 'Unknown region' : 'Region 12');
-    assert.ok(shape.items.every(item => item.note === undefined));
-    assert.equal(shape.items[0].exact, 1n);
+test('rows become faction, country and region slices of their cells; a holding not known is unknown, none is left out', () => {
+  const items = breakdownItems(reply, values, 'states', affiliation(groups, 30), looks);
+  assert.deepEqual(items.map(item => [item.path.map(key => key.label), item.value, item.unknownValue ?? false]), [
+    [['Axis', 'Country GER', 'North'], 5 / 3, false],
+    [['Non-aligned', 'Country ITA', 'Region 8'], null, true],
+    [['Unassigned territory', 'Unassigned territory', 'Unknown region'], 1, false],
+  ]);
+  assert.equal(items[0].path[0].colour, '#aa0000');
+  assert.equal(items[0].exactDenominator, 3n);
+  assert.equal(items[2].exactDenominator, undefined, 'a whole state has no denominator to show');
+  const chosen = breakdownItems(reply, values, 'states', affiliation(groups, 30), { ...looks, selected: tag => tag === 'ITA' });
+  assert.deepEqual(chosen.map(item => item.path[1].label), ['Country ITA']);
+});
+
+test('the reply holds rows and names only; one carrying amounts in its rows is the old shape and refused', () => {
+  assert.equal(validateBreakdownReply(reply), reply);
+  const old = { ...reply, rows: [{ tag: 'GER', slot: 1, region: 7, controlled: { provinces: 1, victoryPoints: 0, area: null, states: [] }, owned: null }], countries: [] };
+  assert.throws(() => validateBreakdownReply(old), /malformed/);
+});
+
+test('a faction is not known while memberships were not read or a country is in two', () => {
+  const unread = { ...groups, unobserved: { humans: [], factions: [{ firstHour: 5, lastHour: 25 }], wars: [] } } as unknown as CountryGroupReply;
+  assert.equal(affiliation(unread, 22)('GER').unknown, true);
+  assert.equal(affiliation(unread, 30)('GER').faction?.id, '9');
+  const twice = { ...groups, factions: [...groups.factions, { ...groups.factions[0], id: '10' }] } as unknown as CountryGroupReply;
+  assert.deepEqual(affiliation(twice, 30)('GER'), { faction: undefined, unknown: true });
+});
+
+test('hours in one stretch between memberships\' edges are affiliated alike, so the slices are made again only past an edge', () => {
+  const epochs = affiliationEpochs(groups);
+  assert.deepEqual(epochs, [0, 20, 101]);
+  assert.equal(epochOf(epochs, 21), epochOf(epochs, 99));
+  assert.notEqual(epochOf(epochs, 19), epochOf(epochs, 20), 'GER joins at 20');
+  assert.notEqual(epochOf(epochs, 100), epochOf(epochs, 101), 'the faction ends after 100');
+  for (const hour of [-5, 0, 19, 20, 50, 100, 101, 400]) {
+    const same = [hour, ...epochs].filter(other => epochOf(epochs, other) === epochOf(epochs, hour));
+    for (const other of same) assert.deepEqual(affiliation(groups, other)('GER'), affiliation(groups, hour)('GER'), `${hour} and ${other}`);
   }
 });
 
-test('selected territory uses its native catalogue for aliases, reused tags and identity gaps', () => {
-  const chosen: TerritoryBreakdownReply = { ...data,
-    countries: [{ ...data.countries[0], tag: 'X', identities: [{ firstHour: 10, lastHour: 11, slot: 1, countryId: 10 }, { firstHour: 20, lastHour: 20, slot: 1, countryId: 20 }],
-      segments: [{ firstHour: 10, lastHour: 11 }, { firstHour: 15, lastHour: 20 }], runs: [
-        { ...data.countries[0].runs[0], lastHour: 11 },
-        { ...data.countries[0].runs[0], firstHour: 12, lastHour: 14, values: [0, 0, 0, null, 0, 0, 0, null, null, null, null, null] },
-        { ...data.countries[0].runs[0], firstHour: 15 },
-      ] },
-      { ...data.countries[0], tag: 'Y', identities: [{ firstHour: 12, lastHour: 14, slot: 1, countryId: 10 }, { firstHour: 16, lastHour: 20, slot: 2, countryId: 30 }] }],
-    series: ['X', 'Y'].map(tag => ({ ...data.series[0], tag })) };
-  const model = breakdownModel(chosen, 'states', 'controlled');
-  const selected = (tag: string | null, hour: number) => {
-    const filter = worldFilter({ kind: 'tags', tags: ['X'] }, [], groups, hour, 20, model.identities);
-    const key = tag === null ? null : model.identities.keyAt(tag, hour);
-    return key !== null && filter.countryIds?.has(key) === true;
-  };
-  const at = itemsAt(model, groups, 12, 20, { ...looks, selected });
-  assert.deepEqual(at.items.map(item => [item.path[1].label, item.present, item.final]), [['Y@12', true, 0], ['X@20', false, 1]]);
-  assert.equal(breakdownSelectedWhole(chosen, 12, 20, 'states', 'controlled', selected, model.identities).exact, 1n);
-  const gap = breakdownSelectedWhole(chosen, 15, 20, 'states', 'controlled', selected, model.identities);
-  assert.equal(chosen.countries[0].runs.at(-1)?.values[0], 1, 'the unknown gap retains its positive territory evidence');
-  assert.equal(gap.exact, null);
-  assert.equal(gap.unknownValue, true);
-  assert.equal(gap.final, 1);
-  const finalGap = breakdownSelectedWhole(chosen, 12, 15, 'states', 'controlled', selected, model.identities);
-  assert.equal(finalGap.exact, 1n);
-  assert.equal(finalGap.final, null);
-  assert.equal(finalGap.finalUnknown, true);
-});
-
-test('selected territory distinguishes proved absent zero, active identity gaps and missing measure reads', () => {
-  const absent: TerritoryBreakdownReply = { ...data, countries: [{ ...data.countries[0], tag: 'X',
-    identities: [{ firstHour: 20, lastHour: 20, slot: 1, countryId: 10 }], segments: [{ firstHour: 20, lastHour: 20 }],
-    runs: [{ ...data.countries[0].runs[0], lastHour: 19, values: [0, 0, 0, null, 0, 0, 0, null, null, null, null, null] },
-      { ...data.countries[0].runs[0], firstHour: 20 }] }] };
-  const identities = breakdownModel(absent, 'states', 'controlled').identities;
-  const selected = (tag: string | null, hour: number) => tag !== null && identities.keyAt(tag, hour) !== null;
-  const total = breakdownSelectedWhole(absent, 15, 20, 'states', 'controlled', selected, identities);
-  assert.equal(total.exact, 0n);
-  assert.equal(total.unknownValue, false);
-  assert.equal(total.final, 1);
-  const active = { ...absent, countries: [{ ...absent.countries[0], segments: [{ firstHour: 10, lastHour: 20 }] }] };
-  assert.equal(breakdownSelectedWhole(active, 15, 20, 'states', 'controlled', selected, identities).unknownValue, true);
-  const unread = { ...absent, observed: absent.observed.map(() => []) };
-  assert.equal(breakdownSelectedWhole(unread, 15, 20, 'states', 'controlled', selected, identities).exact, null);
-  assert.equal(breakdownSelectedWhole({ ...data, countries: [] }, 9, 20, 'states', 'controlled', selected, identities).unknownValue, true);
-});
-
-test('actual Territory breakdown forwards unknown current and final selection totals instead of empty zero', async () => {
-  const unresolved: TerritoryBreakdownReply = { ...data, countries: [{ ...data.countries[0], tag: 'X',
-    identities: [{ firstHour: 10, lastHour: 11, slot: 1, countryId: 10 }, { firstHour: 20, lastHour: 20, slot: 1, countryId: 10 }] }],
-    series: [{ ...data.series[0], tag: 'X' }] };
-  const fixture: { data: TerritoryBreakdownReply; sunburst?: SunburstProps } = { data: unresolved };
-  const host = globalThis as typeof globalThis & { __breakdownR2?: typeof fixture };
-  host.__breakdownR2 = fixture;
-  const replacements: Record<string, string> = {
-    '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__breakdownR2.data }); export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
-    '/dashboard/useCountryGroups.ts': `export const useCountryGroups = () => ({ data: ${JSON.stringify(groups)} });`,
-    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
-    '/dashboard/countryLooks.ts': 'export const useCountryLooks = () => ({ name: tag => tag, flag: () => undefined, flagPending: () => false, flagReason: () => undefined });',
-    '/dashboard/FactionColours.tsx': 'export const useFactionColours = () => ({ names: () => ({ name: null, reason: null }), colours: new Map(), warnings: [], loading: false });',
-    '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ menu: null });',
-    '/charts/sunburst/Sunburst.tsx': 'export default props => { globalThis.__breakdownR2.sunburst = props; return null; };',
-  };
-  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true }, server: { middlewareMode: true, watch: null, hmr: false, ws: false },
-    plugins: [{ name: 'breakdown-native-unknown', enforce: 'pre', transform(_code, id) {
-      const path = id.replaceAll('\\', '/'); return Object.entries(replacements).find(([suffix]) => path.endsWith(suffix))?.[1];
-    } }] });
-  try {
-    const { default: Widget } = await vite.ssrLoadModule('/ui/src/widgets/territory-breakdown/TerritoryBreakdownWidget.tsx');
-    const props = { widget: { id: 'territory', kind: 'territory-breakdown', trackIds: ['main'], countries: { kind: 'tags', tags: ['X'] }, time: { mode: 'follow' }, options: {} },
-      runtime: { tracks: [{ id: 'main', source: { id: 'source', revision: '1', metadata: { countries: [] } }, branch: { id: '1', firstHour: 10, lastHour: 20 }, axisOffset: 0 }],
-        clock: { getHour: () => 15, getSnapshot: () => ({ hoursPerSecond: 0 }) }, client: {} }, active: true, onDiagnostics() {} } as unknown as WidgetProps;
-    const render = () => { fixture.sunburst = undefined; renderToStaticMarkup(createElement(Widget, props)); return fixture.sunburst!; };
-    const gap = render();
-    assert.equal(gap.authoritativeTotal?.exact, null);
-    assert.equal(gap.authoritativeTotal?.unknownValue, true);
-    assert.equal(gap.authoritativeTotal?.final, 1);
-    assert.ok(gap.unavailableReason);
-    props.widget.time = { mode: 'range', firstOffset: 0, lastOffset: 5 };
-    const finalGap = render();
-    assert.equal(finalGap.authoritativeTotal?.final, null);
-    assert.equal(finalGap.authoritativeTotal?.finalUnknown, true);
-    fixture.data = { ...unresolved, countries: [{ ...unresolved.countries[0], segments: [{ firstHour: 20, lastHour: 20 }],
-      runs: [{ ...unresolved.countries[0].runs[0], lastHour: 19, values: [0, 0, 0, null, 0, 0, 0, null, null, null, null, null] },
-        { ...unresolved.countries[0].runs[0], firstHour: 20 }] }] };
-    props.widget.time = { mode: 'follow' };
-    const absent = render();
-    assert.equal(absent.authoritativeTotal?.exact, 0n);
-    assert.equal(absent.authoritativeTotal?.unknownValue, false);
-    assert.equal(absent.unavailableReason, undefined, 'complete absence evidence still permits a known empty chart');
-  } finally { delete host.__breakdownR2; await vite.close(); }
-});
-test('missing rosters cannot prove nonalignment, while signed negatives stay exact', () => {
-  const gap = { ...groups, unobserved: { ...groups.unobserved, factions: [{ firstHour: 10, lastHour: 15 }] } };
-  assert.equal(breakdownItems(data, gap, 12, 20, 'states', 'controlled', looks).items[0].path[0].label, 'Faction not recorded');
-  const signed = structuredClone(data); signed.series[0].runs[0].values[1] = '-7';
-  const shape = breakdownItems(signed, groups, 12, 20, 'victoryPoints', 'controlled', looks);
-  assert.equal(shape.items[0].exact, -7n);
-  assert.equal(shape.items[0].present, true);
-  assert.equal(shape.items[1].final, -7);
-  const region = groupTree(shape.items, { id: 'world', label: 'World' }).children[0].children[0].children[0];
-  assert.equal(region.exact, -7n);
-  assert.equal(listed(region), true);
-});
-test('every one of 5,000 recorded holders retains a slice and its exact amount', () => {
-  const many = { ...data, series: Array.from({ length: 5_000 }, (_, i) => ({ ...data.series[0], tag: `realm ${i}` })) };
-  const shape = breakdownItems(many, groups, 12, 20, 'states', 'controlled', looks);
-  assert.equal(shape.items.filter(item => item.present).length, 5_000);
-  assert.equal(shape.items.filter(item => item.present).reduce((sum, item) => sum + item.exact!, 0n), 5_000n);
-});
-test('duplicate parts and malformed signed values refuse instead of repairing history', () => {
-  assert.throws(() => validateBreakdownReply({ ...data, series: [...data.series, data.series[0]] }), /malformed/);
-  const broken = structuredClone(data); broken.series[0].runs[0].values[1] = '9223372036854775808';
-  assert.throws(() => validateBreakdownReply(broken), /malformed/);
-});
-
-test('value changes glide within a stretch and a future region is a proven zero', () => {
-  const changed = structuredClone(data);
-  changed.series[0].runs = [
-    { ...changed.series[0].runs[0], lastHour: 14 },
-    { ...changed.series[0].runs[0], firstHour: 15, startsSegment: false },
-  ];
-  assert.equal(breakdownItems(changed, groups, 16, 20, 'states', 'controlled', looks).items[0].path[1].stretch, 10);
-  changed.series[0].runs = [{ ...changed.series[0].runs[0], firstHour: 15, lastHour: 20 }];
-  assert.equal(breakdownItems(changed, groups, 12, 20, 'states', 'controlled', looks).items[0].exact, 0n);
-});
-
-test('a missing measure breaks region motion even when identity and adjacent hours continue', () => {
-  const gap = structuredClone(data);
-  gap.series[0].runs = [
-    { ...gap.series[0].runs[0], lastHour: 12 },
-    { ...gap.series[0].runs[0], firstHour: 13, lastHour: 14, startsSegment: false, values: [null, null, null, null, null, null], stateShares: [null, null] },
-    { ...gap.series[0].runs[0], firstHour: 15, startsSegment: false },
-  ];
-  assert.equal(breakdownItems(gap, groups, 13, 20, 'states', 'controlled', looks).items[0].unknownValue, true);
-  assert.equal(breakdownItems(gap, groups, 16, 20, 'states', 'controlled', looks).items[0].path[2].stretch, 15);
-});
-
-test('regional state fractions sum exactly while independent country and world totals stay integral', () => {
-  const split = structuredClone(data);
-  split.regions.push({ id: 13, name: 'Other region', missing: null });
-  split.series[0].runs[0].stateShares[0] = [{ numerator: '1', denominator: 3 }];
-  split.series.push({ ...structuredClone(split.series[0]), region: 13,
-    runs: [{ ...split.series[0].runs[0], stateShares: [[{ numerator: '2', denominator: 3 }], []] }] });
-  assert.equal(validateBreakdownReply(split), split);
-  const shape = breakdownItems(split, groups, 12, 20, 'states', 'controlled', looks);
-  const tree = groupTree(shape.items, { id: 'world', label: 'World' }, [], breakdownWhole(split, 12, 20, 'states', 'controlled'));
-  assert.equal(tree.exact, 1n);
-  assert.equal(tree.children[0].children[0].exact, 1n);
-  assert.equal(tree.children[0].children[0].exactDenominator, undefined);
-  const third = tree.children[0].children[0].children.find(region => region.key === '12')!;
-  assert.equal(third.exact, 1n); assert.equal(third.exactDenominator, 3n);
-});
-
-test('future and ended holders are absent, but a missing roster remains unknown', () => {
-  const changing = structuredClone(data);
-  const future = { ...structuredClone(changing.countries[0]), tag: 'future',
-    segments: [{ firstHour: 15, lastHour: 20 }], runs: [
-      { ...changing.countries[0].runs[0], lastHour: 14, values: [0, 0, 0, null, 0, 0, 0, null, null, null, null, null] },
-      { ...changing.countries[0].runs[0], firstHour: 15 },
-    ] };
-  changing.countries.push(future);
-  changing.series.push({ ...structuredClone(changing.series[0]), tag: 'future',
-    runs: [{ ...changing.series[0].runs[0], firstHour: 15 }] });
-  changing.countries[0].segments[0].lastHour = 14;
-  changing.countries[0].runs = [
-    { ...changing.countries[0].runs[0], lastHour: 14 },
-    { ...changing.countries[0].runs[0], firstHour: 15, values: [0, 0, 0, null, 0, 0, 0, null, null, null, null, null] },
-  ];
-  changing.series[0].runs[0].lastHour = 14;
-  assert.equal(breakdownItems(changing, groups, 12, 20, 'states', 'controlled', looks).items[1].present, false);
-  assert.equal(breakdownItems(changing, groups, 18, 20, 'states', 'controlled', looks).items[0].present, false);
-  assert.equal(breakdownItems(changing, groups, 9, 20, 'states', 'controlled', looks).items[0].unknownValue, true);
-});
-
-test('opaque holder tags cannot collide with anonymous holder keys after hiding the faction level', () => {
-  const collisions = structuredClone(data);
-  collisions.series = ['unassigned', 'holder-unknown'].map(tag => ({ ...structuredClone(data.series[0]), tag }));
-  collisions.series.push({ ...structuredClone(data.series[0]), tag: null, missing: null });
-  collisions.series.push({ ...structuredClone(data.series[0]), tag: null, missing: 'Country holder not recorded or ambiguous' });
-  const tree = groupTree(breakdownItems(collisions, groups, 12, 20, 'states', 'controlled', looks).items,
-    { id: 'world', label: 'World' }, [false, true, true]);
-  assert.equal(tree.children.length, 4);
-});
-
-test('unheld territory has a separate parent from known non-aligned countries', () => {
-  const unheld = { ...data, series: [{ ...data.series[0], tag: null }, data.series[0]] };
-  const tree = groupTree(breakdownItems(unheld, groups, 12, 20, 'states', 'controlled', looks).items,
-    { id: 'world', label: 'World' });
-  assert.deepEqual(new Set(tree.children.map(node => node.label)), new Set(['Unassigned territory', 'Non-aligned']));
-});
-
-test('state-share denominators are positive, ordered and unique; fractions are never coerced', () => {
-  for (const terms of [[{ numerator: '1', denominator: 0 }], [{ numerator: '-1', denominator: 2 }],
-    [{ numerator: '1', denominator: 3 }, { numerator: '1', denominator: 2 }],
-    [{ numerator: '1', denominator: 2 }, { numerator: '1', denominator: 2 }]]) {
-    const malformed = structuredClone(data);
-    malformed.series[0].runs[0].stateShares[0] = terms;
-    assert.throws(() => validateBreakdownReply(malformed), /malformed/);
-  }
-});
-
-test('country flag failures stay dated and anonymous holders, factions and regions remain flagless', () => {
-  const pending = { name: 'Country at 12', flagPending: true };
-  const failed = { name: 'Country at 20', flagReason: 'Flag unavailable at 20' };
-  const withAnonymous = { ...data, series: [data.series[0], { ...data.series[0], tag: null }] };
-  const shape = breakdownItems(withAnonymous, groups, 12, 20, 'states', 'controlled', {
-    ...looks, country: (_tag, hour) => hour === 12 ? pending : failed,
-  });
-  assert.equal(shape.items[0].path[1].countryFlag, pending);
-  assert.equal(shape.items[2].path[1].countryFlag, failed);
-  assert.equal(shape.items[0].exact, 1n);
-  assert.equal(shape.items[0].unknownValue, false);
-  for (const item of shape.items) {
-    assert.equal(item.path[0].countryFlag, undefined);
-    assert.equal(item.path[2].countryFlag, undefined);
-  }
-  assert.equal(shape.items[1].path[1].countryFlag, undefined);
-  assert.equal(shape.items[3].path[1].countryFlag, undefined);
-  const tree = groupTree(shape.items, { id: 'world', label: 'World' }, [false, true, false]);
-  assert.equal(tree.children.find(node => node.label === pending.name)?.countryFlag, pending);
-});
-
-
-test('occupied territory cannot silently read a controlled regional column', () => {
-  assert.throws(() => breakdownModel(data, 'states', 'occupied'), /no regional breakdown/);
-});
-
-test('the end read merged in keeps the current read’s tail identity, presence and values without holding an hour twice', () => {
-  const run = (firstHour: number, lastHour: number, value: number) => ({ firstHour, lastHour, startsSegment: false,
-    values: [value, value, 7, null, value, value, 7, null, null, null, null, null] });
-  const span = (firstHour: number, lastHour: number) => ({ firstHour, lastHour });
-  const identity = (firstHour: number, lastHour: number) => ({ firstHour, lastHour, slot: 1, countryId: 10 });
-  const read = (prefix: number, tail: number, value: number): TerritoryBreakdownReply => ({ ...data, series: [],
-    observed: Array.from({ length: 8 }, () => [span(10, prefix), span(tail, tail + 1)]),
-    countries: [{ tag: 'X', runs: [run(10, prefix, 1), run(tail, tail + 1, value)], identities: [identity(10, prefix), identity(tail, tail + 1)],
-      segments: [span(10, prefix), span(tail, tail + 1)], membership: null }] });
-  const merged = mergeBreakdownReplies(read(20, 30, 2), read(22, 50, 3));
-  assert.doesNotThrow(() => validateBreakdownReply(merged));
-  const [line] = merged.countries;
-  assert.deepEqual(line.runs.map(item => [item.firstHour, item.lastHour, item.values[0]]), [[10, 22, 1], [30, 31, 2], [50, 51, 3]]);
-  assert.deepEqual(line.identities?.map(item => [item.firstHour, item.lastHour]), [[10, 22], [30, 31], [50, 51]]);
-  assert.deepEqual(line.segments, [span(10, 22), span(30, 31), span(50, 51)]);
-  assert.deepEqual(merged.observed[0], [span(10, 22), span(30, 31), span(50, 51)]);
-  const model = breakdownModel(merged, 'states', 'controlled');
-  assert.notEqual(model.identities.keyAt('X', 30), null, 'the current hour keeps its native holder');
-  const selected = (tag: string | null, hour: number) => tag !== null && model.identities.keyAt(tag, hour) !== null;
-  const whole = breakdownSelectedWhole(merged, 30, 50, 'states', 'controlled', selected, model.identities);
-  assert.equal(whole.unknownValue, false);
-  assert.equal(whole.exact, 2n);
-  assert.equal(whole.final, 3);
+test('Fill gives each slice its amount at the view’s end, lists what only the end holds at none now, and never takes an unknown end for zero', () => {
+  const key = (id: string) => ({ id, label: id });
+  const now = [{ path: [key('axis'), key('GER')], value: 3, exact: 3n }, { path: [key('axis'), key('ITA')], value: 2, exact: 2n }];
+  const end = [{ path: [key('axis'), key('GER')], value: 5, exact: 5n }, { path: [key('allies'), key('ENG')], value: 4, exact: 4n },
+    { path: [key('axis'), key('ITA')], value: null, exact: null, unknownValue: true }];
+  const filled = withFinals(now, end);
+  assert.deepEqual(filled.map(item => [item.path.map(part => part.id).join('/'), item.value, item.final ?? null, item.finalUnknown ?? false]), [
+    ['axis/GER', 3, 5, false], ['axis/ITA', 2, null, true], ['allies/ENG', 0, 4, false]]);
+  assert.equal(withFinals(now, [])[1].final, 0, 'held now and not at the end: it empties');
 });

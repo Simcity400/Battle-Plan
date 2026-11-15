@@ -7,35 +7,25 @@
 #[global_allocator]
 static TEST_ALLOCATOR: engine_heap::Heap = engine_heap::Heap;
 
+pub mod answer;
 pub mod content_check;
-pub mod prepared;
-pub mod prepared_focus;
 pub mod products;
-pub mod readiness;
+pub mod reply_check;
 mod reply_dto;
 pub mod service;
 
-pub use dashboard_base::{
-    catalogue, content, prepared_chart, prepared_measure, prepared_production, presentation,
-    ranking, read_runs, research_dto::*, source,
-};
+pub use dashboard_base::{catalogue, content, presentation, ranking, read_runs, source, span};
 pub(crate) use dashboard_core::invalid;
 pub use dashboard_core::{
-    QueryError, background, blocks, config, dto::*, map_display, map_settings, protocol, refusal,
-    refused, transport,
+    QueryError, blocks, config, dto::*, map_display, map_settings, protocol, refusal, refused,
+    transport,
 };
-pub(crate) use dashboard_text::party_names;
 pub use dashboard_text::{
     artwork, character_scope, cryptology, effect_description, flag_choices, identity, metadata,
     modifier_text, naval_battle_name, scope, scripted_text, state_resources, triggers, unit_names,
 };
 
 pub use config::Config;
-#[cfg(test)]
-pub(crate) use products::{
-    land_owners::land_owners,
-    national_focus::{FocusCache, focus_branch, focus_history, focus_order},
-};
 pub use reply_dto::*;
 pub use service::Service;
 pub use source::{Source, SourceKey};
@@ -61,33 +51,11 @@ pub fn typescript_contract() -> String {
         CountryMetadata::decl(),
         Artwork::decl(),
         FocusDatabase::decl(),
-        LandOwners::decl(),
         FocusEntry::decl(),
         FocusOrder::decl(),
         FocusSegment::decl(),
         FocusProgress::decl(),
         FocusHistory::decl(),
-        ResearchCoverage::decl(),
-        ResearchOutcome::decl(),
-        ResearchEntry::decl(),
-        ResearchSlotState::decl(),
-        ResearchDetails::decl(),
-        ResearchModifiers::decl(),
-        ResearchModifier::decl(),
-        ResearchModifierSource::decl(),
-        ResearchBonus::decl(),
-        ResearchSlotHistory::decl(),
-        ResearchProgress::decl(),
-        ResearchHistory::decl(),
-        ResearchFolder::decl(),
-        ResearchTechnologyFolder::decl(),
-        ResearchDefinitionText::decl(),
-        products::research::query::ResearchStateSlot::decl(),
-        products::research::query::ResearchState::decl(),
-        products::research::query::ResearchStateReply::decl(),
-        products::research::grants::GrantRestriction::decl(),
-        products::research::grants::ResearchGrant::decl(),
-        products::research::grants::GrantInventory::decl(),
         protocol::MapAudio::decl(),
         protocol::MapGraphics::decl(),
         protocol::MapGraphicsOverrides::decl(),
@@ -102,44 +70,35 @@ pub fn typescript_contract() -> String {
         protocol::ResolvedMapSettings::decl(),
         map_settings::Reply::decl(),
         transport::SourceReply::decl(),
-        prepared::State::decl(),
-        prepared::PauseReason::decl(),
-        prepared::Action::decl(),
-        prepared::Section::decl(),
-        prepared::Reply::decl(),
-        prepared::pipeline::Coverage::decl(),
-        prepared::prefix::Prefix::decl(),
-        prepared::coverage::Unavailable::decl(),
-        prepared::coverage::Hole::decl(),
-        prepared::Preferences::decl(),
-        prepared_focus::PresentedFocus::decl(),
-        prepared_focus::Pages::decl(),
-        prepared_focus::Hour::decl(),
-        prepared_focus::HourReply::decl(),
-        prepared_focus::TableRefusal::decl(),
-        prepared_focus::UnavailableHour::decl(),
-        prepared_focus::UnavailableReply::decl(),
-        prepared_chart::ChartBucket::decl(),
-        prepared_chart::ChartColumns::decl(),
-        prepared_chart::ChartRun::decl(),
-        prepared_chart::ChartSummary::decl(),
-        prepared_chart::MarkCluster::decl(),
-        prepared_chart::MarkSummary::decl(),
-        prepared_measure::MeasureRun::decl(),
-        prepared_measure::MeasureActor::decl(),
-        prepared_measure::query::MeasureKey::decl(),
-        prepared_measure::query::MeasureRead::decl(),
-        prepared_measure::query::MeasureState::decl(),
-        prepared_measure::query::MeasureStateReply::decl(),
-        prepared_measure::query::MeasureSummaryLine::decl(),
-        prepared_measure::query::MeasureSummaryReply::decl(),
-        prepared_measure::query::MeasureKeyReply::decl(),
-        prepared_measure::query::MeasureDropReply::decl(),
-        prepared_measure::query::MeasureEvent::decl(),
-        prepared_measure::query::MeasureMarkReply::decl(),
-        prepared_production::SelectedValue::decl(),
-        prepared_production::SelectedCountry::decl(),
-        prepared_production::SelectionPage::decl(),
+        dashboard_query::chart::ChartBucket::decl(),
+        dashboard_query::chart::ChartColumns::decl(),
+        dashboard_query::chart::ChartRun::decl(),
+        dashboard_query::chart::ChartSummary::decl(),
+        dashboard_query::chart::MarkCluster::decl(),
+        dashboard_query::chart::MarkSummary::decl(),
+        dashboard_query::series::MissingSpan::decl(),
+        dashboard_query::series::SeriesRun::decl(),
+        dashboard_query::series::SeriesDrop::decl(),
+        dashboard_query::series::SeriesState::decl(),
+        dashboard_query::series::SeriesStateReply::decl(),
+        dashboard_query::series::SeriesKeyReply::decl(),
+        dashboard_query::series::SeriesEvent::decl(),
+        dashboard_query::series::SeriesEventPage::decl(),
+        dashboard_query::tile::TilePart::decl(),
+        dashboard_query::tile::TileMarks::decl(),
+        dashboard_query::tile::TileLine::decl(),
+        dashboard_query::tile::SeriesTileReply::decl(),
+        dashboard_query::series::NavigationKey::decl(),
+        dashboard_query::series::SeriesRead::decl(),
+        dashboard_query::series::SeriesLineAsk::decl(),
+        dashboard_query::series::SeriesPartLife::decl(),
+        dashboard_query::series::SeriesOwnerParts::decl(),
+        dashboard_query::series::SeriesPartsReply::decl(),
+        dashboard_query::series::ranked::RankedSpan::decl(),
+        dashboard_query::series::ranked::SeriesRankedLine::decl(),
+        dashboard_query::series::ranked::SeriesRankedReply::decl(),
+        products::army::ArmyChartLine::decl(),
+        products::army::ArmyChartReply::decl(),
     ];
     for product in products::PRODUCTS {
         declarations.extend((product.types)());
@@ -227,9 +186,14 @@ pub fn typescript_contract() -> String {
     text.push_str(&format!(
         "/** Products served separately from whole-branch history reads. */\nexport const INTERACTIVE_PRODUCTS = [{interactive_products}] as const;\n"
     ));
+    let replay_products = products::PRODUCTS
+        .iter()
+        .filter(|product| product.replays)
+        .map(|product| format!("{:?}", product.key))
+        .collect::<Vec<_>>()
+        .join(", ");
     text.push_str(&format!(
-        "/** How a country-colours reply past the product byte budget is refused: ask for fewer hours. */\nexport const COUNTRY_COLOURS_OVER_BUDGET = {:?};\n",
-        products::country_colours::OVER_BUDGET
+        "/** Pages that replay recorded tables to their rows' hours: served apart, so no other request waits behind them. */\nexport const REPLAY_PRODUCTS = [{replay_products}] as const;\n"
     ));
     {
         use map_display::option_defaults as defaults;
@@ -248,9 +212,5 @@ pub fn typescript_contract() -> String {
 
 #[cfg(test)]
 mod contract_tests;
-#[cfg(test)]
-mod mod_fixtures;
-#[cfg(test)]
-mod native_fixtures;
 #[cfg(test)]
 pub(crate) use dashboard_base::test_fixtures;

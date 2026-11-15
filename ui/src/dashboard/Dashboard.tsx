@@ -30,7 +30,10 @@ import { useSourceRoles } from './sources';
 import { PlaybackCountryPicker, PlaybackStrip } from './controls';
 import ReplayLibraryMenu from './ReplayLibraryMenu';
 import type { ReplayLibraryState } from './replayLibrary';
-import DashboardGrid from './DashboardGrid';
+import DashboardGrid, { bodiesWaiting } from './DashboardGrid';
+import PreparedPages from './PreparedPages';
+import type { PreparedPage } from './PreparedPages';
+import { preparingClient } from './prepare.ts';
 import './dashboard.css';
 import WidgetPicker from './WidgetPicker';
 import { campaignSlots, defaultAfterOpen, defaultAfterUnload, includeCampaigns, recordingKey, sameCampaignPath } from './campaigns';
@@ -38,7 +41,6 @@ import { hasMapOverlay, isMapOverlay } from '../shell/mapOverlays';
 import type { Campaign, Relocation } from './campaigns';
 import { recordingFilename } from './recordingNames';
 import { followMapPlayback, mapCommands } from './mapPlayback';
-import type { ParityHost } from './parityFixture';
 import { LiveMotion } from '../charts/liveMotion.ts';
 import { commitZone } from '../shell/commitCount';
 
@@ -612,18 +614,27 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
   const runtime = useMemo(() => ({ onMapBranch, tracks, clock, maps, client, campaignTracks: template.tracks, defaultRoleId, alignment: template.alignment, nativeHidden,
     campaigns, recordings, assignCampaign, requestSeek, addWidgetBelow }),
     [onMapBranch, tracks, clock, maps, client, template.tracks, template.alignment, defaultRoleId, nativeHidden, campaigns, recordings, assignCampaign, requestSeek, addWidgetBelow]);
-  if (import.meta.env.MODE === 'parity') {
-    // The build mode is fixed for this component's lifetime and removed from a
-    // production bundle together with its hooks and fixture import.
-    const parityHost = useRef<ParityHost | null>(null);
-    parityHost.current = { client, template, runtime, setTemplate, openCampaign };
-    useEffect(() => {
-      let current = true, cleanup: (() => void) | undefined;
-      const ready = import('./parityFixture').then(module => { if (current) cleanup = module.installParityFixture(() => parityHost.current!); });
-      window.__hoi4ParityReady = ready;
-      return () => { current = false; cleanup?.(); if (window.__hoi4ParityReady === ready) delete window.__hoi4ParityReady; };
-    }, [client]);
-  }
+
+  // The prepare lane: the page shown (its rows below the fold), then every other page from the next, each laid out with its
+  // own layout and asked through the lane's client.
+  const laneClient = useMemo(() => preparingClient(client), [client]);
+  const [viewportBox, setViewportBox] = useState<HTMLDivElement | null>(null);
+  useLayoutEffect(() => setViewportBox(viewport.current), []);
+  const pageOrder = useMemo(() => {
+    const ids = pageList?.split('\n') ?? [shownPage];
+    const at = Math.max(0, ids.indexOf(shownPage));
+    return [...ids.slice(at), ...ids.slice(0, at)].filter((id, index) => index === 0 || id !== shownPage) as PageId[];
+  }, [pageList, shownPage]);
+  const preparedPages = useMemo<PreparedPage[]>(() => pageOrder.map(id => {
+    const kept = id === shownPage ? draftTemplate : pageStates.current.get(id)?.template ?? (() => {
+      const { library: loaded } = loadLayouts(undefined, id);
+      return loaded.layouts.find(entry => entry.id === loaded.activeId)!.template;
+    })();
+    const merged = includeCampaigns(kept, campaigns);
+    const paged = { ...merged, roles: merged.roles.map(role => ({ ...role, selectedTag: selectedCountries[role.id] ?? null })) };
+    const bound = bindTracks(paged, sourceMap, selectedBranches);
+    return { id, template: paged, runtime: { ...runtime, client: laneClient, tracks: bound, campaignTracks: paged.tracks, alignment: paged.alignment } };
+  }), [pageOrder, shownPage, draftTemplate, campaigns, selectedCountries, sourceMap, selectedBranches, runtime, laneClient]);
 
   /** Opens a campaign's recording again, found by its folder and campaign first. */
   const reconnect = async (campaign: Campaign) => {
@@ -646,7 +657,7 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     }} countries={defaultSource?.metadata.countries ?? []} playerCountryId={defaultSource?.metadata.playerCountryId ?? null}
       selectedTag={template.roles.find((role) => role.id === defaultRoleId)?.selectedTag ?? null}
       onChange={(tag) => { if (defaultRoleId) setSelectedCountries((previous) => ({ ...previous, [defaultRoleId]: tag })); }} />
-    <PlaybackStrip client={client} clock={clock} tracks={tracks} alignment={template.alignment} defaultRoleId={defaultRoleId} />
+    <PlaybackStrip clock={clock} tracks={tracks} alignment={template.alignment} defaultRoleId={defaultRoleId} />
     <div className="header-workspace-tools">
     {mapActive && mapReady && desktopAvailable && <CameraModeControl value={cameraMode} onChange={chooseCameraMode} overlays={cameraOverlays} onOverlaysChange={chooseOverlays} />}
     {mapActive && mapReady && desktopAvailable && cameraMode === 'fly' && <AircraftPicker client={client} source={defaultSource ?? null} chosen={aircraft} status={flyAircraft} onChoose={chooseAircraft} host={sideHost} prompt />}
@@ -706,9 +717,15 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     {saved && savedVisible && <div className="layout-saved" role="status"><Icon name="check" />{saved}</div>}
     <div className={`dash-grid-scroll${editing ? ' is-editing' : ''}`} ref={viewport}>
       {active && <LiveMotion.Provider value={clock.getMotion}><DashboardGrid template={template} runtime={runtime} editing={editing} onLayouts={layoutsChanged} onApply={applyWidget} onRemove={removeWidget} /></LiveMotion.Provider>}
+      <PreparedPages pages={preparedPages} clock={clock} client={client} viewport={viewportBox}
+        enabled={active && !editing && !saving && client.available && campaigns.some(campaign => !campaign.loading)} draw={drawPrepared} mounting={bodiesWaiting} />
       {template.widgets.length === 0 && <div className="dash-empty dash-empty-dashboard"><span className="empty-icon"><Icon name="grid" /></span><strong>Make room for your campaign</strong><p>Choose Edit, then add widgets, or reset this page to its default arrangement.</p></div>}
     </div>
   </div>;
 }
 
 commitZone(Dashboard, 'dashboard');
+
+const noop = () => {};
+const drawPrepared = (page: PreparedPage) =>
+  <DashboardGrid prepared template={page.template} runtime={page.runtime} editing={false} onLayouts={noop} onApply={noop} onRemove={noop} />;

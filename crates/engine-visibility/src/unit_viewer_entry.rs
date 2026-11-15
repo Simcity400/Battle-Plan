@@ -74,22 +74,12 @@ pub struct DivisionSources<'a> {
 /// dereference these unconditionally, so a hole is a torn read rather than a
 /// state. Capacity omits whole entries and reports the remaining demand. Nothing
 /// here allocates, retries or calls the engine.
-pub fn walk(memory: &impl Memory, base: usize, game_state: usize, output: &mut [Row]) -> Outcome {
-    walk_with_divisions(memory, base, game_state, output, None)
+pub fn walk(memory: &impl Memory, base: usize, game_state: usize, output: &mut Vec<Row>) -> Outcome {
+    walk_with_divisions_buffer(memory, base, game_state, Buffer::Growing(output), None)
 }
 
-/// Read viewer inputs from a shared native division census without repeating
-/// any country division-vector header or pointer reads. Fleet and railway-gun
-/// inputs retain their independent authentication and their native position
-/// after divisions within each country.
-pub fn walk_with_divisions(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut [Row],
-    divisions: Option<DivisionSources<'_>>,
-) -> Outcome {
-    walk_with_divisions_buffer(memory, base, game_state, Buffer::Fixed(output), divisions)
+pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
+    walk_with_divisions_buffer(memory, base, game_state, Buffer::Count, None)
 }
 
 pub fn walk_with_divisions_buffer(

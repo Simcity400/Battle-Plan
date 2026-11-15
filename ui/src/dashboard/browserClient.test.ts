@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+/** The bytes of `value` as JSON, the body the bridge sends. */
+const jsonBytes = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).buffer;
+
 test('a page going away names itself, the owner of everything it opened or imported, so the bridge lets go of it all', async () => {
   const handlers = new Map<string, (event: { persisted: boolean }) => void>(), beacons: Blob[] = [];
   const owners: unknown[] = [];
@@ -19,7 +22,7 @@ test('a page going away names itself, the owner of everything it opened or impor
     const body = JSON.parse(String(init.body));
     if (body.type === 'open') owners.push(body.page);
     const reply = body.type === 'open' ? { id: `lease-${body.path}`, revision: 'r', metadata: {} } : {};
-    return { ok: true, text: async () => JSON.stringify(reply) };
+    return { ok: true, arrayBuffer: async () => jsonBytes(reply) };
   }) as unknown as typeof fetch;
   const { browserDashboardClient: client } = await import('./browserClient.ts');
   assert.ok(!handlers.has('pagehide'), 'a page that never used the bridge (the desktop app) says nothing as it goes');
@@ -49,13 +52,13 @@ function pendingTransport() {
   const previous = globalThis.fetch, requests: PendingHttp[] = [];
   globalThis.fetch = (async (_url: string, init: RequestInit) => {
     const body = JSON.parse(String(init.body));
-    let resolve!: (text: string) => void, reject!: (error: Error) => void;
-    const text = new Promise<string>((yes, no) => { resolve = yes; reject = no; });
-    const response = { ok: true, text: () => text };
+    let resolve!: (bytes: ArrayBuffer) => void, reject!: (error: Error) => void;
+    const bytes = new Promise<ArrayBuffer>((yes, no) => { resolve = yes; reject = no; });
+    const response = { ok: true, arrayBuffer: () => bytes };
     const request: PendingHttp = { body, signal: init.signal as AbortSignal, done: false,
       finish: (data = {}, ok = true) => {
         request.done = true; response.ok = ok;
-        resolve(JSON.stringify((body.type === 'product' || body.type === 'preparedQuery') && ok ? { ...body.request, data } : data));
+        resolve(jsonBytes(body.type === 'product' && ok ? { ...body.request, data } : data));
       },
       fail: error => { request.done = true; reject(error); },
     };
@@ -78,7 +81,8 @@ test('actual browser transport reserves focus capacity while five histories wait
   const histories = Array.from({ length: 5 }, () => client.product(query('national-focus'), new AbortController().signal));
   try {
     await tick();
-    assert.equal(transport.requests.length, 3, 'ordinary reads leave the interactive connections free before fetch');
+    // Histories hold two of the six connections (one waits for replaying pages, two for dated facts, one for control).
+    assert.equal(transport.requests.length, 2, 'ordinary reads leave the interactive connections free before fetch');
     const focus = client.product<{ name: string }>(query('focus-artwork'), new AbortController().signal);
     await tick();
     const http = transport.requests.find(request => request.body.request?.product === 'focus-artwork')!;
@@ -101,13 +105,13 @@ test('actual transport cancels queued reads without fetch, holds an aborted body
   try {
     await tick();
     controllers[3].abort(); await queuedFailure;
-    assert.equal(transport.requests.length, 3);
+    assert.equal(transport.requests.length, 2);
     const next = client.product(query('national-focus'), new AbortController().signal);
     controllers[0].abort(); await tick();
     assert.equal(transport.requests[0].signal.aborted, true);
-    assert.equal(transport.requests.length, 3, 'cancellation alone does not overbook the still-unsettled HTTP body');
+    assert.equal(transport.requests.length, 2, 'cancellation alone does not overbook the still-unsettled HTTP body');
     transport.requests[0].finish(); await activeFailure; await tick();
-    assert.equal(transport.requests.length, 4);
+    assert.equal(transport.requests.length, 3);
     const text = client.product<{ name: string }>(query('focus-artwork'), new AbortController().signal);
     const image = client.product(query('technology-artwork'), new AbortController().signal);
     const imageFailure = assert.rejects(image, /Synthetic image refusal/);
@@ -133,7 +137,7 @@ test('source release bypasses histories and cancels only its queued and active r
     const command = transport.requests.find(request => request.body.type === 'release')!;
     assert.ok(command, 'release reaches the reserved control connection');
     assert.equal(command.body.sourceId, 'released-source');
-    assert.equal(transport.requests.filter(request => request.body.request?.sourceId === 'released-source').length, 3);
+    assert.equal(transport.requests.filter(request => request.body.request?.sourceId === 'released-source').length, 2);
     assert.ok(transport.requests.filter(request => request.body.request?.sourceId === 'released-source').every(request => request.signal.aborted));
     const independent = transport.requests.find(request => request.body.request?.sourceId === 'other-source')!;
     assert.equal(independent.signal.aborted, false);
@@ -156,59 +160,6 @@ test('an open cancelled after its body begins releases the late lease on the con
     assert.equal(lateRelease.body.sourceId, 'late-lease');
     lateRelease.finish(); await failure;
   } finally { await transport.drain(); transport.restore(); }
-});
-
-test('prepared pages use reserved query capacity, preserve exact values, and reject another revision', async () => {
-  const { browserDashboardClient: client } = await import('./browserClient.ts');
-  const transport = pendingTransport();
-  const source = { id: 'prepared-source', revision: 'v1', path: 'synthetic.battleplan', metadata: {} } as import('./client').DashboardSource;
-  const histories = Array.from({ length: 3 }, () => client.product(query('national-focus'), new AbortController().signal));
-  try {
-    await tick();
-    const page = client.preparedQuery!<{ raw: string }>(source, 'focus-hour', { branchId: '1', tag: 'Synthetic country', hour: 100 }, { signal: new AbortController().signal });
-    await tick();
-    const http = transport.requests.find(request => request.body.type === 'preparedQuery')!;
-    assert.ok(http, 'prepared-page queries do not wait for whole-history responses');
-    assert.equal(http.body.refresh, false);
-    http.finish({ raw: '9007199254740993' });
-    assert.deepEqual(await page, { raw: '9007199254740993' });
-    const stale = client.preparedQuery!(source, 'focus-hour', {}, { signal: new AbortController().signal, refresh: true });
-    const refused = assert.rejects(stale, /reply does not match this recording and product/);
-    await tick();
-    const staleHttp = transport.requests.filter(request => request.body.type === 'preparedQuery').at(-1)!;
-    assert.equal(staleHttp.body.refresh, true);
-    staleHttp.body.request = { ...staleHttp.body.request!, revision: 'previous-revision' };
-    staleHttp.finish({ raw: '1' });
-    await refused;
-    await transport.drain();
-    await Promise.all(histories);
-  } finally { await transport.drain(); transport.restore(); }
-});
-
-test('preparation commands echo their request identity and preserve decimal counts', async () => {
-  const { browserDashboardClient: client } = await import('./browserClient.ts');
-  const previous = globalThis.fetch;
-  const bodies: Record<string, unknown>[] = [];
-  globalThis.fetch = (async (_url: string, init: RequestInit) => {
-    const body = JSON.parse(String(init.body));
-    bodies.push(body);
-    const reply = {
-      sourceId: body.sourceId, revision: body.revision, requestId: body.id, state: 'ready',
-      sections: [{ id: 'focus', label: 'National focus', state: 'ready', done: '9007199254740993', total: '9007199254740993', error: null }],
-      bytes: '9007199254740993', error: null,
-      backgroundEnabled: true,
-    };
-    if (body.id === 'stale-progress') reply.requestId = 'previous-progress';
-    return { ok: true, text: async () => JSON.stringify(reply) };
-  }) as unknown as typeof fetch;
-  try {
-    const identity = { sourceId: 'prepared-source', revision: 'v1', requestId: 'exact-progress' };
-    const reply = await client.preparationStatus!(identity, new AbortController().signal);
-    assert.equal(reply.bytes, '9007199254740993');
-    assert.equal(reply.sections[0].done, '9007199254740993');
-    assert.deepEqual(bodies[0], { type: 'preparation', id: 'exact-progress', sourceId: 'prepared-source', revision: 'v1', action: 'status' });
-    await assert.rejects(client.preparationStatus!({ ...identity, requestId: 'stale-progress' }, new AbortController().signal), /does not match this recording and request/);
-  } finally { globalThis.fetch = previous; }
 });
 
 test('browser product errors keep named refusals distinct from technical failures', async () => {

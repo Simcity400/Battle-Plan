@@ -107,7 +107,7 @@ fn unrecorded_subjects_refuse_country_and_all_subjects() {
     let TableView::Complete(TableRows::CountryAppearance(rows)) =
         &mut *f.tables[TableId::CountryAppearance.index()]
     else {
-        panic!("the fixture records CountryAppearance");
+        panic!("the fixture records country appearance");
     };
     rows[0].subjects = replay_data::rows::Recorded::NotRecorded;
     with_world(&f, "", Err("none"), |world| {
@@ -123,7 +123,7 @@ fn unrecorded_subjects_refuse_country_and_all_subjects() {
             panic!("unrecorded subjects refuse");
         };
         assert!(
-            error.contains("CountryAppearance.subjects not recorded"),
+            error.contains("subjects of country appearance not recorded"),
             "{error}"
         );
     });
@@ -217,7 +217,7 @@ fn format98_collections_select_first_passing_owned_and_controlled_state() {
             evaluator
                 .collection_representative(&spec, caller)
                 .unwrap_err()
-                .contains("CountryCounterInputs.owned_states")
+                .contains("owned states of country counter inputs")
         );
     });
 }

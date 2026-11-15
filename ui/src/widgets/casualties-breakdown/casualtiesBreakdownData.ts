@@ -1,3 +1,4 @@
+import { liveKey } from '../../charts/live.ts';
 import { usNumber } from '../../charts/numberFormat.ts';
 import { isOrderedSpans, runAt, spansCovered } from '../../charts/series.ts';
 import { CATEGORY_LIMIT } from '../../charts/palette.ts';
@@ -5,7 +6,8 @@ import { stackEdges } from '../../charts/stack.ts';
 import type { StackModel } from '../../charts/stack';
 import type { SunburstItem } from '../../charts/sunburst/Sunburst';
 import { int, object, opaqueTag, signed32, signed64, unsigned64 } from '../../dashboard/validation.ts';
-import type { CasualtyBreakdownReply, HourSpan } from '../../generated/dashboard';
+import type { HourSpan } from '../../generated/dashboard';
+import type { CasualtyBreakdownReply } from '../../generated/dashboard';
 
 const text = (value: unknown): value is string => typeof value === 'string';
 const maybeText = (value: unknown) => value === null || text(value);
@@ -77,11 +79,25 @@ export function lossesAt(reply: CasualtyBreakdownReply, hour: number): LossSnaps
       reason: run.reason,
       value: BigInt(run.value), readHour: run.hourly ? at : run.readHour, groupingHour, incomplete: country.incomplete || run.incomplete });
   }
+  // A holder with no losses read and none missing shows the empty state, as one with no lifetimes did on main.
+  if (!rows.length && !country.incomplete) return null;
   return { identity: country.identity, rows, total: rows.reduce((sum, row) => sum + row.value, 0n),
     incomplete: country.incomplete || rows.some(row => row.incomplete) };
 }
 export const exactLosses = (value: bigint) => usNumber.format(value);
-export const lossText = (row: LossRow) => `${row.incomplete ? 'Recorded subtotal: ' : ''}${row.value < 0n ? 'Correction: ' : ''}${exactLosses(row.value)}`;
+export const lossText = (row: Pick<LossRow, 'value' | 'incomplete'>) => `${row.incomplete ? 'Recorded subtotal: ' : ''}${row.value < 0n ? 'Correction: ' : ''}${exactLosses(row.value)}`;
+/** A following drill at `hour` of `reply` (none where the window is not loaded or not recorded): its rows with their
+ * subtotal marks (`rows`, the drill's structure), each row's losses keyed as its table paints them, and the total line. */
+export function lossDrillAt(reply: CasualtyBreakdownReply | undefined, hour: number): { rows: string; values: Map<string, bigint>; incomplete: Set<string>; total: string } {
+  const now = reply ? lossesAt(reply, hour) : null;
+  const values = new Map<string, bigint>(), incomplete = new Set<string>();
+  for (const row of now?.rows ?? []) {
+    values.set(liveKey(row.id, 'losses'), row.value);
+    if (row.incomplete) incomplete.add(row.id);
+  }
+  return { rows: (now?.rows ?? []).map(row => `${row.id}${row.incomplete ? '!' : ''}`).sort().join(','), values, incomplete,
+    total: now ? `${now.incomplete ? 'Recorded subtotal' : 'Losses taken'}: ${exactLosses(now.total)}` : '' };
+}
 export const warKey = (row: Pick<LossRow, 'warId'>) => row.warId ?? '\u0001unidentified';
 
 /** Positive amounts alone set geometry and percentages. Signed totals and every

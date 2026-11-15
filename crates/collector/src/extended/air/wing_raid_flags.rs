@@ -14,7 +14,9 @@ fn demanded(row: &cair_wing::Row) -> bool {
 struct Entry {
     pointer: usize,
     wing: u64,
-    certificate: (u64, u64),
+    /// `None`: read between two quiet tokens with no receiver certified, so
+    /// it carries nothing into the next census.
+    certificate: Option<(u64, u64)>,
     raw: Option<u64>,
     lifetime: Option<(usize, (u64, u64))>,
     value: Option<bool>,
@@ -132,19 +134,20 @@ impl Store {
             return None;
         }
         let receiver = pointer.checked_add(sites::RAID_REFERENCE)?;
-        let certificate = sequence(receiver)?;
-        let held = self
-            .previous
-            .binary_search_by_key(&pointer, |row| row.pointer)
-            .ok()
-            .map(|at| self.previous[at])
-            .filter(|row| row.wing == wing && row.certificate == certificate);
+        let certificate = sequence(receiver);
+        let held = certificate.and_then(|certificate| {
+            self.previous
+                .binary_search_by_key(&pointer, |row| row.pointer)
+                .ok()
+                .map(|at| self.previous[at])
+                .filter(|row| row.wing == wing && row.certificate == Some(certificate))
+        });
         if let Some(held) = held {
             let same = match held.lifetime {
                 None => true,
                 Some((key, held)) => sequence(key).map(|now| now == held)?,
             };
-            if same && sequence(receiver) == Some(certificate) {
+            if same && sequence(receiver) == certificate {
                 self.current.push(held);
                 return held.value;
             }
@@ -160,6 +163,9 @@ impl Store {
             Some(raw) => match resolve(raw) {
                 None => (None, None),
                 Some(None) => (Some(false), None),
+                // Uncertified, the quiet token alone covers the raid's
+                // retirement across this read.
+                Some(Some(_)) if certificate.is_none() => (Some(true), None),
                 Some(Some(pointer)) => match pointer
                     .checked_add(sites::RAID_LIFETIME_KEY)
                     .and_then(|key| sequence(key).map(|certificate| (key, certificate)))
@@ -169,7 +175,7 @@ impl Store {
                 },
             },
         };
-        if sequence(receiver) != Some(certificate)
+        if sequence(receiver) != certificate
             || quiet() != Some(token)
             || lifetime.is_some_and(|(key, held)| sequence(key) != Some(held))
         {
@@ -342,8 +348,9 @@ mod tests {
         );
         store.begin(1, true);
         assert_eq!(
-            store.capture_with(0x1000, 1, |_| None, || panic!(), || panic!(), |_| panic!()),
-            None
+            store.capture_with(0x1000, 1, |_| None, || None, || panic!(), |_| panic!()),
+            None,
+            "unobserved"
         );
         let mut revisions = 0;
         assert_eq!(
@@ -361,5 +368,77 @@ mod tests {
             None
         );
         assert!(store.current.is_empty());
+    }
+    /// The attach hour: the wing writers are observed, but the registry has
+    /// no table until the first walk's offer installs, so no receiver is
+    /// certified. The game holds the reference.
+    #[test]
+    fn an_observed_registry_without_a_table_reads_references_between_quiet_tokens() {
+        let registry = crate::watch_registry::WatchRegistry::new();
+        registry.set_enabled(true);
+        let mut store = Store::default();
+        store.begin(3, true);
+        assert_eq!(
+            store.capture_with(
+                0x1000,
+                1,
+                |at| registry.sequence(at),
+                || registry.quiet(),
+                || Some(0),
+                |_| panic!("no raid to resolve")
+            ),
+            Some(false)
+        );
+        assert_eq!(
+            store.reference(0x1000, 1),
+            Some(cair_wing::transport_operands::RaidReference {
+                raw: 0,
+                resolves: false
+            })
+        );
+        assert_eq!(
+            store.capture_with(
+                0x2000,
+                2,
+                |at| registry.sequence(at),
+                || registry.quiet(),
+                || Some(77),
+                |_| Some(Some(0x9000))
+            ),
+            Some(true)
+        );
+        let calls = std::cell::Cell::new(0);
+        assert_eq!(
+            store.capture_with(
+                0x3000,
+                3,
+                |at| registry.sequence(at),
+                || {
+                    calls.set(calls.get() + 1);
+                    if calls.get() == 2 {
+                        drop(registry.notify(0));
+                    }
+                    registry.quiet()
+                },
+                || Some(77),
+                |_| Some(Some(0x9000))
+            ),
+            None,
+            "a writer between the tokens"
+        );
+        store.finish();
+        store.begin(3, false);
+        assert_eq!(
+            store.capture_with(
+                0x1000,
+                1,
+                |_| Some((1, 0)),
+                || Some((1, 0)),
+                || Some(77),
+                |_| Some(Some(0x9000))
+            ),
+            Some(true),
+            "an uncertified read is read again, never carried"
+        );
     }
 }

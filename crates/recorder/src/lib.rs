@@ -1,6 +1,7 @@
 //! Passive recording, finalization and offline inspection. The `recorder`
 //! binary is the command line; [`controller`] is the small API the tray
 //! recorder drives in-process.
+mod clock;
 #[cfg(test)]
 mod command_tests;
 pub mod controller;
@@ -13,7 +14,6 @@ use recorder_movement_oracle::movement_oracle;
 use recorder_oracle::oracle;
 use recorder_platform::directories;
 mod player_commands;
-pub mod preparation;
 pub mod recording;
 mod ship_name_witness;
 use recorder_platform::windows;

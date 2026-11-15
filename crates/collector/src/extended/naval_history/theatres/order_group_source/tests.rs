@@ -34,7 +34,7 @@ fn staged(own_flag: Option<u8>) -> NavalJob {
 fn own_flag_success_or_fault_is_independent_of_parent_occurrences_and_cursors() {
     for own in [Some(0), Some(1), None] {
         let job = staged(own);
-        let source = OrderGroupSource::new(&job);
+        let source = OrderGroupSource::new(&job).unwrap();
         let mut byte = [9];
         assert!(source.recorded.copy(FLAG, &mut byte));
         assert_eq!(byte, [1]);
@@ -77,7 +77,7 @@ fn range_prefix_suffix_and_empty_cannot_supply_a_missing_own_batch() {
 fn ambiguous_anchor_or_wrong_predecessor_refuses_without_a_scan() {
     let mut job = staged(Some(1));
     take(&mut job.log, MOTOR, &[0], 1);
-    let source = OrderGroupSource::new(&job);
+    let source = OrderGroupSource::new(&job).unwrap();
     assert!(!source.copy(FLAG, &mut [0]));
     for _ in 0..3 {
         assert!(source.recorded.copy(MOTOR, &mut [0]));
@@ -88,7 +88,7 @@ fn ambiguous_anchor_or_wrong_predecessor_refuses_without_a_scan() {
     drop(source);
     let mut job = staged(Some(1));
     job.log.spans[1].mask = 1;
-    let source = OrderGroupSource::new(&job);
+    let source = OrderGroupSource::new(&job).unwrap();
     assert!(!source.copy(FLAG, &mut [0]));
 }
 
@@ -96,7 +96,7 @@ fn ambiguous_anchor_or_wrong_predecessor_refuses_without_a_scan() {
 fn consumed_repeated_header_never_becomes_a_unique_observation() {
     let mut job = staged(Some(1));
     take(&mut job.log, HEADER, &[0; 16], 16);
-    let source = OrderGroupSource::new(&job);
+    let source = OrderGroupSource::new(&job).unwrap();
     assert!(!source.copy(HEADER, &mut [0; 16]));
     for _ in 0..3 {
         assert!(source.recorded.copy(HEADER, &mut [0; 16]));
@@ -125,7 +125,7 @@ fn exact_header_failure_is_not_healed_by_readable_count_or_bulk_bytes() {
         bytes: &enclosing,
     };
     assert!(job.log.take_bulk(&memory, base, 18, OOB_MASK).is_some());
-    let source = OrderGroupSource::new(&job);
+    let source = OrderGroupSource::new(&job).unwrap();
     assert!(!source.copy(HEADER, &mut [0; 16]));
     assert!(!source.copy(GROUP + carmy_group::MEMBER_COUNT, &mut [0; 4]));
     assert!(source.copy(FLAG, &mut [0]));
@@ -135,7 +135,7 @@ fn exact_header_failure_is_not_healed_by_readable_count_or_bulk_bytes() {
 fn failed_motorization_anchor_still_selects_the_successful_own_flag() {
     let mut job = staged(Some(0));
     job.log.spans[2].ok = false;
-    let source = OrderGroupSource::new(&job);
+    let source = OrderGroupSource::new(&job).unwrap();
     let mut byte = [9];
     assert!(source.copy(FLAG, &mut byte));
     assert_eq!(byte, [0]);

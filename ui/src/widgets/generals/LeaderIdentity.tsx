@@ -1,12 +1,11 @@
 import ArtFallback from '../../components/ArtFallback';
 import { CountryCell } from '../../charts/table/Table';
 import type { CountryLabel } from '../../dashboard/countryFlagsAt';
-import type { LeaderRow } from './generalsData';
-import { leaderName } from './generalsData';
-import type { UnitLeaderPortrait } from '../../generated/dashboard';
+import type { UnitLeaderPortrait } from './types';
 import { useLayoutEffect, useRef, useState } from 'react';
 import { compactSkill } from './skillDisplay';
 import type { ReactNode } from 'react';
+import type { LeaderRole } from '../../generated/dashboard';
 
 export function SkillStars({ level, maximum }: { level: number | null; maximum: number | null }) {
   const element = useRef<HTMLSpanElement>(null);
@@ -39,16 +38,22 @@ export function SkillStars({ level, maximum }: { level: number | null; maximum: 
 
 export function LeaderPortrait({ art }: { art?: Pick<UnitLeaderPortrait, 'image' | 'missing'> | Error }) {
   const portrait = art instanceof Error ? undefined : art?.image;
+  // A picture that does not load is the placeholder, never an empty box.
+  const [failed, setFailed] = useState<string>();
+  const broken = !!portrait && failed === portrait;
   return <span className="leader-portrait" data-detail={art instanceof Error ? undefined : art?.missing ?? undefined}>
-    {portrait ? <img src={portrait} alt="" /> : <ArtFallback icon="helmet" failure={art instanceof Error ? art : undefined}
-      reason={art instanceof Error || art?.missing == null ? undefined : 'Portrait unavailable.'} />}
+    {portrait && !broken ? <img src={portrait} alt="" onError={() => setFailed(portrait)} /> : <ArtFallback icon="helmet" failure={art instanceof Error ? art : undefined}
+      reason={broken ? 'Portrait could not be drawn.' : art instanceof Error || art?.missing == null ? undefined : 'Portrait unavailable.'} />}
   </span>;
 }
 
-export function leaderIdentityProps(row: LeaderRow, country: ReturnType<CountryLabel>) {
+/** What identifies a leader: its name, its role and its skill at the hour shown. */
+export interface Identified { name: string; role: LeaderRole; skill: number | null }
+
+export function leaderIdentityProps(row: Identified, country: ReturnType<CountryLabel>) {
   // Only a rank the content does not name falls back; a defined empty one stays empty.
-  const rank = row.value.rank ?? `Rank ${row.value.category}`;
-  return { name: leaderName(row), rank, hasOwner: !!row.value.owner, level: row.value.skill, maximum: row.value.maximumSkill,
+  const rank = row.role.rank ?? `Rank ${row.role.category}`;
+  return { name: row.name, rank, hasOwner: !!row.role.owner, level: row.skill, maximum: row.role.maximumSkill,
     countryName: country.name, nameFailure: country.nameFailure, flag: country.flag, flagReason: country.flagReason,
     flagDetail: country.flagDetail, flagPending: country.flagPending };
 }

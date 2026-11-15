@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { CountryGroupReply, SubjectLevel, SubjectReply } from '../../generated/dashboard';
-import { laneCountries, levelColours, levelName, overlordTagAt, overlordViews, subjectLanes, subjectTagAt, validateSubjectReply } from './subjectsData.ts';
+import { changeHours, laneCountries, levelColours, levelName, overlordTagAt, overlordViews, subjectLanes, subjectTagAt, validateSubjectReply } from './subjectsData.ts';
 import { Lineage } from '../../dashboard/identity.ts';
 import type { LaneOptions } from './subjectsData';
 import { worldFilter } from '../../dashboard/groups.ts';
 import { laneRequests } from '../../charts/timeline/laneRequests.ts';
+import { changesBy } from '../../charts/timeline/runState.ts';
 import { countryIdentityIndex } from '../../dashboard/countryIdentity.ts';
 
 /** A modded campaign: a mod's own levels (one the content does not order, one with
@@ -104,13 +105,6 @@ test('a subjects reply is validated, down to steps covering their run and naming
   unlisted.runs[0].steps[0].level = 'autonomy_not_listed';
   assert.throws(() => validateSubjectReply(unlisted), /malformed/);
   assert.throws(() => validateSubjectReply({ ...reply, levels: undefined }), /malformed/);
-  // A prefix reply: its coverage, pending hours and the keyframe-sampled hours after it.
-  const prefix = { ...reply, coverage: { schema: 24, firstHour: 0, lastHour: 3, complete: false },
-    pending: [{ firstHour: 8, lastHour: 9 }], approximate: [{ firstHour: 4, lastHour: 7 }] };
-  assert.equal(validateSubjectReply(prefix).approximate?.length, 1);
-  assert.throws(() => validateSubjectReply({ ...prefix, approximate: [{ firstHour: 7, lastHour: 4 }] }), /malformed/);
-  assert.throws(() => validateSubjectReply({ ...prefix, approximate: [{ firstHour: 4, lastHour: 5 }, { firstHour: 5, lastHour: 7 }] }), /malformed/);
-  assert.throws(() => validateSubjectReply({ ...prefix, pending: 'later' }), /malformed/);
 });
 
 test('level colours follow the content order, never a level name, and fold past the palette', () => {
@@ -376,4 +370,15 @@ test('overlord and subject lanes reserve native flags without an available URL',
     assert.equal(lane.identity?.countryFlag?.flagPending, true);
     assert.equal(lane.identity?.countryFlag?.flag, undefined);
   }
+});
+
+test('the timeline renders only where a relation, a level, a stretch not recorded or an identity changes', () => {
+  const hours = changeHours(reply, [{ hour: 120 }]);
+  assert.ok(hours.every((hour, index) => index === 0 || hours[index - 1] < hour), 'ascending and distinct');
+  for (const hour of [100, 120, 150, 200, 300, 310]) assert.ok(hours.includes(hour), `${hour} is a change`);
+  // Inside one level of one relation the structure holds, however the hour moves.
+  assert.equal(changesBy(hours, 101), changesBy(hours, 119));
+  assert.notEqual(changesBy(hours, 119), changesBy(hours, 120));
+  assert.equal(changesBy(hours, 0), 0);
+  assert.equal(changesBy(hours, 1_000_000), hours.length);
 });

@@ -34,71 +34,52 @@ use pump::{Signal, run_pump};
 
 const MAX_PENDING: usize = crate::transport::MAX_PENDING_REQUESTS;
 
-#[cfg(test)]
-type ServiceHook = Box<dyn FnOnce(&Service)>;
-
-#[cfg(test)]
-thread_local! {
-    /// Run by the library scan right after it orders retained work, so tests
-    /// can change what the user holds before the admissions.
-    static TEST_AFTER_PARTITION: std::cell::RefCell<Option<ServiceHook>> =
-        const { std::cell::RefCell::new(None) };
-}
-
 const MAX_SERIALIZED_BYTES: usize = MAX_REPLY_BYTES * 2;
 const MAX_CANCELLED: usize = MAX_PENDING * 2;
-/// The fewest whole-recording and sampled-read loaders on any machine.
-const MIN_LOADER_THREADS: usize = 3;
+/// The fewest whole-recording loaders on any machine.
+const MIN_LOADER_THREADS: usize = 2;
 /// Threads for `Product::INTERACTIVE` reads, apart from the scans.
 const INTERACTIVE_THREADS: usize = 2;
-/// The fewest threads answering prepared queries from prepared pages alone.
-const MIN_PREPARED_THREADS: usize = 2;
+/// The fewest threads answering through the query layer.
+const MIN_REPLY_THREADS: usize = 2;
+/// The fewest threads for `Product::REPLAYS` pages.
+const MIN_REPLAY_THREADS: usize = 2;
 
 /// Where a job waits. Each lane has its own threads and its own bound of
 /// [`MAX_PENDING`] queued jobs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Lane {
-    /// Whole-recording products, opening, map settings and preparation refreshes.
+    /// Opening, map settings, and products that read a whole branch of recorded frames.
     History,
-    /// Hover and label reads, the history cache's size and preparation actions.
+    /// Hover and label reads at one hour, and history choices.
     Interactive,
-    /// Every prepared query first, answered without decoding recorded blocks;
-    /// one that needs a block decode moves to [`Lane::Sampled`].
-    Prepared,
-    /// Prepared queries that sample recorded blocks.
-    Sampled,
+    /// Replies read through the query layer: bounded by what they ask.
+    Replies,
+    /// Pages that replay recorded tables to their rows' hours (`Product::REPLAYS`): seconds a
+    /// page at mid-war, so they never take a thread a reply waits for.
+    Replays,
 }
 
 impl Lane {
-    const ALL: [Self; 4] = [
-        Self::History,
-        Self::Interactive,
-        Self::Prepared,
-        Self::Sampled,
-    ];
+    const ALL: [Self; 4] = [Self::History, Self::Interactive, Self::Replies, Self::Replays];
 
     fn name(self) -> &'static str {
         match self {
             Self::History => "loader",
             Self::Interactive => "interactive",
-            Self::Prepared => "prepared",
-            Self::Sampled => "sampled",
+            Self::Replies => "replies",
+            Self::Replays => "replays",
         }
     }
 
-    /// Threads serving this lane on a machine with `parallelism` hardware
-    /// threads. Sampled reads take half of them, whole-recording loads a
-    /// quarter, each at least [`MIN_LOADER_THREADS`]; prepared queries take half,
-    /// at least [`MIN_PREPARED_THREADS`], so one slow product doesn't hold up a
-    /// page's other reads; hovers keep a fixed two.
-    /// A sampled read holds one block's selected frames and the few read ahead
-    /// of it, so memory grows with this count, not with the recording.
+    /// Threads serving this lane on a machine with `parallelism` hardware threads.
     pub(super) fn threads(self, parallelism: usize) -> usize {
         match self {
             Self::History => (parallelism / 4).max(MIN_LOADER_THREADS),
-            Self::Sampled => (parallelism / 2).max(MIN_LOADER_THREADS),
             Self::Interactive => INTERACTIVE_THREADS,
-            Self::Prepared => (parallelism / 2).max(MIN_PREPARED_THREADS),
+            Self::Replies => (parallelism / 2).max(MIN_REPLY_THREADS),
+            // Each page reads its tables on rayon's shared pool too: few pages at once leave it to the replies.
+            Self::Replays => (parallelism / 8).max(MIN_REPLAY_THREADS),
         }
     }
 }
@@ -112,12 +93,8 @@ fn parallelism() -> usize {
 struct Lanes {
     history: SyncSender<LoadJob>,
     interactive: SyncSender<LoadJob>,
-    prepared: SyncSender<LoadJob>,
-    sampled: SyncSender<LoadJob>,
-    refreshes: std::collections::BTreeMap<crate::SourceKey, Arc<AtomicBool>>,
-    /// Restarts a rebind could not queue while the history queue was full, queued as soon as
-    /// it has room ([`Inner::queue_deferred`]).
-    deferred: std::collections::BTreeMap<crate::SourceKey, Arc<Source>>,
+    replies: SyncSender<LoadJob>,
+    replays: SyncSender<LoadJob>,
 }
 
 impl Lanes {
@@ -125,8 +102,8 @@ impl Lanes {
         match lane {
             Lane::History => &self.history,
             Lane::Interactive => &self.interactive,
-            Lane::Prepared => &self.prepared,
-            Lane::Sampled => &self.sampled,
+            Lane::Replies => &self.replies,
+            Lane::Replays => &self.replays,
         }
     }
 }
@@ -155,33 +132,9 @@ struct Inner {
     loader: Mutex<Option<Lanes>>,
     signal: Arc<Signal>,
     closed: Arc<AtomicBool>,
-    preparation: crate::prepared::runner::Runner,
-    preparation_actions: Mutex<()>,
-    /// The user folder and the `settings.txt` stamp preparations were last bound to, so a
-    /// change reaches recordings no source holds open.
-    game_settings: Mutex<Option<(PathBuf, Option<crate::prepared::SettingsStamp>)>>,
-    background_preparation: AtomicBool,
-    /// The volume's room as the library scan last measured it.
-    room: Mutex<jobs::Room>,
-    /// Volume measurements, and those taken under the admission lock.
-    #[cfg(test)]
-    test_measures: std::sync::atomic::AtomicU64,
-    #[cfg(test)]
-    test_measures_locked: std::sync::atomic::AtomicU64,
-    /// Recording revision reads, and those taken under the admission lock.
-    #[cfg(test)]
-    test_revisions: std::sync::atomic::AtomicU64,
-    #[cfg(test)]
-    test_revisions_locked: std::sync::atomic::AtomicU64,
-    /// Run by a refresh between its store check and its admission.
-    #[cfg(test)]
-    test_refresh_checked: Mutex<Option<RefreshHook>>,
     /// Run once by a rebind between deriving a binding and installing it.
     #[cfg(test)]
     test_rebind_derived: Mutex<Option<RefreshHook>>,
-    /// Refreshes that reached their admission decision.
-    #[cfg(test)]
-    test_refreshes: std::sync::atomic::AtomicU64,
 }
 
 pub struct Service {
@@ -200,12 +153,12 @@ impl Drop for ThreadExit {
 
 impl Service {
     pub fn new(emit: Arc<dyn Fn(DataEvent) -> bool + Send + Sync>) -> io::Result<Arc<Self>> {
-        crate::prepared::pipeline::install_gates();
-        let (history, history_jobs) = channel::<LoadJob>(MAX_PENDING);
-        let (interactive, interactive_jobs) = channel::<LoadJob>(MAX_PENDING);
-        let (prepared, prepared_jobs) = channel::<LoadJob>(MAX_PENDING);
-        let (sampled, sampled_jobs) = channel::<LoadJob>(MAX_PENDING);
         let parallelism = parallelism();
+        let lane = |lane: Lane| channel::<LoadJob>(MAX_PENDING, queue::share(lane.threads(parallelism)));
+        let (history, history_jobs) = lane(Lane::History);
+        let (interactive, interactive_jobs) = lane(Lane::Interactive);
+        let (replies, replies_jobs) = lane(Lane::Replies);
+        let (replays, replays_jobs) = lane(Lane::Replays);
         let inner = Arc::new(Inner {
             lease_namespace: uuid::Uuid::new_v4(),
             map_settings: Mutex::new(map_settings::Store::open()),
@@ -214,57 +167,26 @@ impl Service {
             presentation_generation: std::sync::atomic::AtomicU64::new(0),
             sources: Mutex::new(Sources::default()),
             pending: Mutex::new(Pending::default()),
-            loader: Mutex::new(Some(Lanes {
-                history,
-                interactive,
-                prepared,
-                sampled,
-                refreshes: std::collections::BTreeMap::new(),
-                deferred: std::collections::BTreeMap::new(),
-            })),
+            loader: Mutex::new(Some(Lanes { history, interactive, replies, replays })),
             signal: Arc::new(Signal::default()),
             closed: Arc::new(AtomicBool::new(false)),
-            preparation: crate::prepared::runner::Runner::new()?,
-            preparation_actions: Mutex::new(()),
-            game_settings: Mutex::new(None),
-            background_preparation: AtomicBool::new(true),
-            room: Mutex::new(jobs::Room::default()),
-            #[cfg(test)]
-            test_measures: std::sync::atomic::AtomicU64::new(0),
-            #[cfg(test)]
-            test_measures_locked: std::sync::atomic::AtomicU64::new(0),
-            #[cfg(test)]
-            test_revisions: std::sync::atomic::AtomicU64::new(0),
-            #[cfg(test)]
-            test_revisions_locked: std::sync::atomic::AtomicU64::new(0),
-            #[cfg(test)]
-            test_refresh_checked: Mutex::new(None),
             #[cfg(test)]
             test_rebind_derived: Mutex::new(None),
-            #[cfg(test)]
-            test_refreshes: std::sync::atomic::AtomicU64::new(0),
         });
         let mut threads = Vec::new();
         let spawn_result = (|| -> io::Result<()> {
-            for (lane, jobs) in Lane::ALL.into_iter().zip([
-                history_jobs,
-                interactive_jobs,
-                prepared_jobs,
-                sampled_jobs,
-            ]) {
+            for (lane, jobs) in Lane::ALL.into_iter().zip([history_jobs, interactive_jobs, replies_jobs, replays_jobs]) {
                 let jobs = Arc::new(Mutex::new(jobs));
                 for index in 0..lane.threads(parallelism) {
                     let load_inner = Arc::clone(&inner);
                     let jobs = Arc::clone(&jobs);
                     threads.push(
-                        crate::prepared::runner::worker_thread(format!(
-                            "dashboard {} {index}",
-                            lane.name()
-                        ))
-                        .spawn_carried(move || {
-                            let _exit = ThreadExit(Arc::clone(&load_inner));
-                            load_inner.run_loader(&jobs, lane);
-                        })?,
+                        thread::Builder::new()
+                            .name(format!("dashboard {} {index}", lane.name()))
+                            .spawn_carried(move || {
+                                let _exit = ThreadExit(Arc::clone(&load_inner));
+                                load_inner.run_loader(&jobs, lane);
+                            })?,
                     );
                 }
             }
@@ -291,9 +213,7 @@ impl Service {
         }))
     }
 
-    /// Game and user folders for products that read artwork or localisation. The preparation
-    /// choice is its own preference ([`Self::apply_saved_preparation`]): a folder change
-    /// leaves it as it is.
+    /// Game and user folders for products that read artwork or localisation.
     pub fn configure_content(&self, config: &Config, allow_unverified: bool) -> io::Result<()> {
         // A recording plays back from its own facts; without folders its art shows placeholders.
         let options = match config.resolve_options() {
@@ -336,13 +256,6 @@ impl Service {
     }
 
     fn replace_content(&self, content: Option<ContentOptions>) {
-        // A rebind invalidates every store check, under the admission lock, so
-        // no admission acts on a check read for the old binding.
-        let admission = self
-            .inner
-            .preparation_actions
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
         let key = |value: Option<&ContentOptions>| {
             value.map(|value| {
                 (
@@ -363,181 +276,6 @@ impl Service {
         // whole; without folders the sources are unbound. Only the service closing stops the
         // catch-up: its rebinds retry only while the configuration keeps changing.
         let _ = self.inner.catch_up();
-        self.inner.reprepare(admission);
-    }
-
-    pub fn preparation_preferences(&self) -> crate::prepared::Preferences {
-        self.inner.preparation_preferences()
-    }
-
-    pub fn set_background_preparation(&self, enabled: bool) {
-        self.inner.set_background_preparation(enabled);
-    }
-
-    /// Runs with the saved preparation choice. Read and applied under the lock each save
-    /// applies under ([`Config::save_background_preparation`]), so a choice saved meanwhile is
-    /// not overtaken by this read.
-    pub fn apply_saved_preparation(&self) -> io::Result<()> {
-        Config::apply_background_preparation(|enabled| self.set_background_preparation(enabled))
-    }
-
-    /// Changes only for worker completion or a changed preparation condition.
-    /// Hosts use it to end no-progress admission polling until something changes.
-    pub fn preparation_revision(&self) -> u64 {
-        self.inner.preparation.revision()
-    }
-
-    /// The whole GiB free on the volume holding prepared data, None when it cannot be
-    /// measured: a host asks for library admission again once it changes
-    /// ([`crate::prepared::space`]).
-    pub fn background_space(&self) -> Option<u64> {
-        crate::prepared::space::free().map(|free| free >> 30)
-    }
-
-    /// Prepare the library ahead of the user through the same runner and store
-    /// as opening: every recording among `paths` and the library work already
-    /// admitted whose store is behind, one at a time, most recently modified
-    /// first. Every session's finalization replaces the recording it saved
-    /// into, so the latest sessions come first. A recording further back is
-    /// admitted only once every newer one is prepared, and newer work pauses
-    /// older library work. Library work waits while preparation the user asked
-    /// for is queued or running; a recording is admitted only while free space
-    /// covers what its store is estimated to need, and running work pauses
-    /// below the margin ([`crate::prepared::space`]). Retained recordings the
-    /// user holds resume first, whatever their age. Busy workers leave the path eligible for the
-    /// next library scan. Newest-first is enforced after every library
-    /// admission and at the end of every pass, however the pass ends.
-    pub fn prepare_library(&self, paths: &[PathBuf]) -> io::Result<()> {
-        let result = self.library_pass(paths);
-        self.inner.enforce_newest_first();
-        result
-    }
-
-    /// Library work never admits the recording at canonical `path` again in this service.
-    pub fn leave_library(&self, path: &Path) {
-        let mut sources = self
-            .inner
-            .sources
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        sources.library.remove(path);
-        sources.suppressed.insert(path.to_owned());
-    }
-
-    fn library_pass(&self, paths: &[PathBuf]) -> io::Result<()> {
-        use crate::prepared::Progress;
-        let retained: Vec<_> = self
-            .inner
-            .sources
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .library
-            .iter()
-            .map(|(path, source)| (path.clone(), Arc::clone(source)))
-            .collect();
-        // Recordings the user holds now resume first. This only orders the
-        // work: each admission decides whose it is when it is made.
-        let (opened, library): (Vec<_>, Vec<_>) = retained
-            .into_iter()
-            .partition(|(_, source)| self.inner.held(source));
-        #[cfg(test)]
-        if let Some(hook) = TEST_AFTER_PARTITION.with(|hook| hook.borrow_mut().take()) {
-            hook(self);
-        }
-        let mut newest: std::collections::BTreeSet<_> = paths
-            .iter()
-            .filter_map(|path| path.canonicalize().ok())
-            .collect();
-        newest.extend(library.iter().map(|(path, _)| path.clone()));
-        let mut newest: Vec<_> = newest.into_iter().collect();
-        newest.sort_by_cached_key(|path| {
-            (
-                std::cmp::Reverse(std::fs::metadata(path).and_then(|m| m.modified()).ok()),
-                path.clone(),
-            )
-        });
-        // Library work running now, whatever the partition said: a recording
-        // the user stopped holding after the partition is library work too.
-        let running = |source: &Source| {
-            let progress = source.state::<Progress>();
-            let progress = progress.lock().unwrap_or_else(|e| e.into_inner());
-            progress.running && progress.background.load(Ordering::Acquire)
-        };
-        let working = || -> Vec<Arc<Source>> {
-            let held: Vec<_> = self
-                .inner
-                .sources
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .library
-                .values()
-                .map(Arc::clone)
-                .collect();
-            held.into_iter().filter(|source| running(source)).collect()
-        };
-        let pause = |work: Vec<Arc<Source>>, reason| {
-            self.inner.pause_library(&work, reason);
-        };
-        // Measured once, before any admission takes the lock.
-        let free = self.inner.space_for_scan();
-        let room = crate::prepared::space::keeps(free);
-        if !room {
-            pause(working(), crate::prepared::PauseReason::DiskSpace);
-        }
-        let stopped = || {
-            self.inner.closed.load(Ordering::Acquire)
-                || !self.inner.background_preparation.load(Ordering::Acquire)
-        };
-        // Each library admission enforces newest-first itself.
-        let admit = |path: &Path| {
-            let result = self.inner.prepare_recording(path, free);
-            match result {
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => Err(error),
-                Err(error) => {
-                    // A damaged or unavailable recording must not starve the others.
-                    eprintln!("Background preparation of {}: {error}", path.display());
-                    Ok(())
-                }
-                Ok(()) => Ok(()),
-            }
-        };
-        for (path, _) in opened {
-            if stopped() {
-                return Ok(());
-            }
-            admit(&path)?;
-        }
-        if !room {
-            return Ok(());
-        }
-        if self.inner.interactive_preparation() {
-            // Library work admitted while the user's started yields now.
-            pause(working(), crate::prepared::PauseReason::Requested);
-            return Ok(());
-        }
-        let library_job = |path: &Path| {
-            self.inner
-                .sources
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .library
-                .get(path)
-                .cloned()
-                .is_some_and(|source| running(&source))
-        };
-        for path in newest {
-            if stopped() {
-                break;
-            }
-            let was_working = library_job(&path);
-            admit(&path)?;
-            // The newest recording behind its store is being prepared; the
-            // admission enforced newest-first over the rest.
-            if was_working || library_job(&path) {
-                break;
-            }
-        }
-        Ok(())
     }
 
     /// Read the map preferences the desktop host saved since this process last read them.
@@ -727,7 +465,9 @@ impl Service {
                     self.inner.error(request, error.into());
                     return;
                 }
-                if products::find(&body.product).is_none() {
+                if products::find(&body.product).is_none()
+                    && !crate::answer::answers(&body.product, &body.params)
+                {
                     self.inner.error(
                         request,
                         format!("Unknown data product: {}", body.product).into(),
@@ -746,66 +486,6 @@ impl Service {
                     body,
                 };
                 self.inner.submit(request, job);
-            }
-            DataCommand::PreparedQuery {
-                id,
-                request: body,
-                refresh,
-            } => {
-                let Some(request) = self.inner.begin(id) else {
-                    return;
-                };
-                if let Err(error) = body.validate() {
-                    self.inner.error(request, error.into());
-                    return;
-                }
-                let Some(source) =
-                    self.leased_source(&request, &body.source_id, &body.revision, "Prepared query")
-                else {
-                    return;
-                };
-                request.refresh.store(refresh, Ordering::Release);
-                self.inner.submit(
-                    Arc::clone(&request),
-                    LoadJob::PreparedQuery {
-                        request,
-                        source,
-                        body,
-                    },
-                );
-            }
-            DataCommand::Preparation {
-                id,
-                source_id,
-                revision,
-                action,
-            } => {
-                let Some(request) = self.inner.begin(id) else {
-                    return;
-                };
-                let Some(source) =
-                    self.leased_source(&request, &source_id, &revision, "Preparation")
-                else {
-                    return;
-                };
-                self.inner.submit(
-                    Arc::clone(&request),
-                    LoadJob::Preparation {
-                        request,
-                        source,
-                        source_id,
-                        action,
-                    },
-                );
-            }
-            DataCommand::PreparationPreferences { id, enabled } => {
-                let Some(request) = self.inner.begin(id) else {
-                    return;
-                };
-                self.inner.submit(
-                    Arc::clone(&request),
-                    LoadJob::PreparationPreferences { request, enabled },
-                );
             }
             DataCommand::HistoryChoice {
                 id,
@@ -856,7 +536,6 @@ impl Service {
 
     pub fn shutdown(&self) {
         self.inner.stop();
-        self.inner.preparation.shutdown();
         // A service thread only requests stop. Keep its handle for the owner's
         // subsequent retirement. Check before locking: another caller may hold
         // the join lock while it waits for this very callback to return.
@@ -879,5 +558,3 @@ impl Drop for Service {
     }
 }
 
-#[cfg(test)]
-mod tests;

@@ -158,34 +158,46 @@ fn mission(bytes: &mut [u8], variant: u32, implementation_vtable: usize) {
 }
 
 /// The walk with the root-out factor's key supplied directly.
-fn read(bytes: &[u8], rows: &mut [Row], arena: &mut [u8]) -> Walk {
+fn read(bytes: &[u8], rows: &mut Vec<Row>, arena: &mut Vec<u8>) -> Walk {
     walk_keyed(
         &World(bytes.to_vec()),
         0,
         STATE,
-        crate::walk::Buffer::Fixed(rows),
-        crate::walk::Buffer::Fixed(arena),
+        crate::walk::Buffer::Growing(rows),
+        crate::walk::Buffer::Growing(arena),
+        &mut || Ok(KEY),
+    )
+}
+
+/// The count-only probe with the root-out factor's key supplied directly.
+fn count(bytes: &[u8]) -> Walk {
+    walk_keyed(
+        &World(bytes.to_vec()),
+        0,
+        STATE,
+        crate::walk::Buffer::Count,
+        crate::walk::Buffer::Count,
         &mut || Ok(KEY),
     )
 }
 
 fn row(bytes: &[u8]) -> Row {
-    let mut rows = [Row::default(); 1];
-    let read = read(bytes, &mut rows, &mut [0; 64]);
+    let mut rows = vec![Row::default(); 1];
+    let read = read(bytes, &mut rows, &mut vec![0; 64]);
     assert_eq!(read.outcome, Outcome::Rows { len: 1 });
     rows[0]
 }
 
 fn refusal(bytes: &[u8]) -> (Outcome, Option<(u64, u32)>) {
-    let read = read(bytes, &mut [Row::default(); 2], &mut [0; 64]);
+    let read = read(bytes, &mut vec![Row::default(); 2], &mut vec![0; 64]);
     (read.outcome, read.failed_operative)
 }
 
 #[test]
 fn active_roster_identity_order_owner_assignment_and_portrait_are_read() {
     let bytes = two_operatives();
-    let mut rows = [Row::default(); 2];
-    let mut arena = [0; 14];
+    let mut rows = vec![Row::default(); 2];
+    let mut arena = vec![0; 14];
     let read = read(&bytes, &mut rows, &mut arena);
     assert_eq!(read.outcome, Outcome::Rows { len: 2 });
     assert_eq!((read.bytes_len, read.required_bytes), (14, 14));
@@ -560,8 +572,8 @@ fn portrait_strings_refuse_invalid_headers_terminators_and_lengths() {
     put(&mut bytes, portrait, (heap as u64).to_le_bytes());
     put(&mut bytes, portrait + 16, 20_u64.to_le_bytes());
     put(&mut bytes, portrait + 24, 31_u64.to_le_bytes());
-    let mut rows = [Row::default(); 1];
-    let mut arena = [0; 20];
+    let mut rows = vec![Row::default(); 1];
+    let mut arena = vec![0; 20];
     assert_eq!(
         read(&bytes, &mut rows, &mut arena).outcome,
         Outcome::Rows { len: 1 }
@@ -577,28 +589,9 @@ fn portrait_strings_refuse_invalid_headers_terminators_and_lengths() {
 }
 
 #[test]
-fn row_and_byte_capacity_truncate_with_exact_native_demand() {
+fn the_count_probe_reports_exact_native_demand() {
     let bytes = two_operatives();
-    let mut rows = [Row::default(); 2];
-    let short_rows = read(&bytes, &mut rows[..1], &mut [0; 14]);
-    assert_eq!(
-        short_rows.outcome,
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 1
-        }
-    );
-    assert_eq!((short_rows.bytes_len, short_rows.required_bytes), (7, 14));
-    let short_bytes = read(&bytes, &mut rows, &mut [0; 13]);
-    assert_eq!(
-        short_bytes.outcome,
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 1
-        }
-    );
-    assert_eq!(short_bytes.required_bytes, 14);
-    let sizing = read(&bytes, &mut [], &mut []);
+    let sizing = count(&bytes);
     assert_eq!(
         sizing.outcome,
         Outcome::Truncated {
@@ -643,8 +636,8 @@ fn a_boost_ideology_mission_copies_its_group_name_before_the_portrait() {
     let mut bytes = fixture();
     group(&mut bytes, ACTIVE_GROUP, b"fascism");
     boost_ideology(&mut bytes, ACTIVE_GROUP);
-    let mut rows = [Row::default(); 1];
-    let mut arena = [0; 14];
+    let mut rows = vec![Row::default(); 1];
+    let mut arena = vec![0; 14];
     let read = read(&bytes, &mut rows, &mut arena);
     assert_eq!(read.outcome, Outcome::Rows { len: 1 });
     assert_eq!((read.bytes_len, read.required_bytes), (14, 14));
@@ -665,23 +658,6 @@ fn a_boost_ideology_mission_copies_its_group_name_before_the_portrait() {
         )
     );
     assert_eq!(&arena, b"fascismGFX_spy");
-    // The group name counts toward the byte demand: one byte short omits the row.
-    let short = read_short(&bytes);
-    assert_eq!(
-        short,
-        (
-            Outcome::Truncated {
-                len: 0,
-                unread_rows: 1
-            },
-            14
-        )
-    );
-}
-
-fn read_short(bytes: &[u8]) -> (Outcome, usize) {
-    let read = read(bytes, &mut [Row::default(); 1], &mut [0; 13]);
-    (read.outcome, read.required_bytes)
 }
 
 #[test]
@@ -722,8 +698,8 @@ fn a_pending_missions_group_is_copied_after_the_active_one() {
         pending + operative_action::PENDING_IDEOLOGY,
         (PENDING_GROUP as u64).to_le_bytes(),
     );
-    let mut rows = [Row::default(); 1];
-    let mut arena = [0; 23];
+    let mut rows = vec![Row::default(); 1];
+    let mut arena = vec![0; 23];
     let read = read(&bytes, &mut rows, &mut arena);
     assert_eq!(read.outcome, Outcome::Rows { len: 1 });
     assert_eq!(
@@ -963,7 +939,7 @@ fn the_root_out_key_is_resolved_by_name_only_for_root_out_missions() {
     let bytes = root_out(1, 0, 0, &[]);
     let memory = World(bytes.clone());
     // No registered definition table: the name cannot resolve.
-    let read = walk(&memory, 0, STATE, &mut [Row::default(); 1], &mut [0; 64]);
+    let read = walk(&memory, 0, STATE, &mut vec![Row::default(); 1], &mut vec![0; 64], &mut root_out_key());
     assert_eq!(
         (read.outcome, read.failed_operative),
         (
@@ -984,8 +960,9 @@ fn the_root_out_key_is_resolved_by_name_only_for_root_out_missions() {
         &World(other),
         0,
         STATE,
-        &mut [Row::default(); 1],
-        &mut [0; 64],
+        &mut vec![Row::default(); 1],
+        &mut vec![0; 64],
+        &mut root_out_key(),
     );
     assert_eq!(read.outcome, Outcome::Rows { len: 1 });
     // A resolver failure is the walk's refusal.
@@ -994,8 +971,8 @@ fn the_root_out_key_is_resolved_by_name_only_for_root_out_missions() {
         &memory,
         0,
         STATE,
-        crate::walk::Buffer::Fixed(&mut [Row::default(); 1]),
-        crate::walk::Buffer::Fixed(&mut [0; 64]),
+        crate::walk::Buffer::Growing(&mut vec![Row::default(); 1]),
+        crate::walk::Buffer::Growing(&mut vec![0; 64]),
         &mut || {
             asked += 1;
             Err("root out resistance factor modifier is not registered")

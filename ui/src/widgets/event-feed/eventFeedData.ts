@@ -1,25 +1,23 @@
-import { preparedPrefix } from '../../dashboard/preparedPrefix.ts';
-import type { PreparedPrefixFields } from '../../dashboard/preparedPrefix';
-import type { LogRow } from '../../charts/log/logData';
-import { newestFirst } from '../../charts/log/logData.ts';
+import type { LogPage, LogRow } from '../../charts/log/logData';
+import type { LogReplyRow } from '../../charts/log/logSource';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import { drawableIcon } from '../../dashboard/artwork.ts';
+import type { ProductRequest } from '../../dashboard/client';
 import { formatDate, formatDateTime, gameDate } from '../../dashboard/calendar.ts';
-import { ideaInfo, localisedText, modifierFormat } from '../../dashboard/ideaContent.ts';
-import { ideaTooltip, ideaTooltipSources } from '../../dashboard/ideaTooltip.ts';
 import { int, object, opaqueTag } from '../../dashboard/validation.ts';
-import type { EventFeedItem, EventFeedReply, EventFeedRow, EventFeedStrike, EventFeedWindow } from '../../generated/dashboard';
-import { CATEGORIES } from './definition.ts';
+import type { EventFeedItem, EventFeedRow, EventFeedSpanReply, EventFeedStrike, EventFeedUnavailable, FacetFilter, FeedKindCode } from '../../generated/dashboard';
+import { plainScripted, reasonRows } from './scriptedGaps.ts';
 
-const SCRIPT_KINDS = new Set(['scriptEventFired', 'newsEventFired', 'eventOptionSelected', 'decisionSelected',
-  'decisionRemoved', 'decisionCancelled', 'decisionTimedOut', 'decisionActivated', 'decisionCompleted', 'decisionReenabled', 'decisionRemovalEffect', 'decisionCancellationEffect', 'decisionCompletionEffect', 'decisionTimeoutEffect', 'decisionDurationChanged']);
+export const SCRIPT_KINDS = new Set(['scriptEventFired', 'newsEventFired', 'eventOptionSelected', 'decisionSelected', 'decisionRemoved', 'decisionCancelled',
+  'decisionTimedOut', 'decisionActivated', 'decisionCompleted', 'decisionReenabled', 'decisionRemovalEffect', 'decisionCancellationEffect',
+  'decisionCompletionEffect', 'decisionTimeoutEffect', 'decisionDurationChanged']);
 const NATIVE_KINDS = new Set([...SCRIPT_KINDS, 'warDeclared', 'warJoined', 'civilWarWarTransferred', 'annexed', 'warEnded', 'released',
   'stateTransferred', 'peaceConferenceStarted', 'nuclearStrike']);
-/** Native events of the event history, which record their cause; strikes have their own ledger. */
+/** Native events of the event history, which record their cause; strikes have their own log. */
 const CAUSED_KINDS = new Set([...NATIVE_KINDS].filter(kind => kind !== 'nuclearStrike'));
-const KINDS = new Set([...NATIVE_KINDS, 'warStarted', 'peace', 'capitulated', 'ceasedToExist', 'factionJoined', 'factionLeft',
-  'becameSubject', 'guaranteeGranted', 'rulingPartyChanged', 'lawChanged', 'advisorHired', 'focusCompleted',
-  'projectFinished', 'nukesIncreased']);
+const KINDS = new Set([...NATIVE_KINDS, 'warStarted', 'peace', 'capitulated', 'ceasedToExist', 'factionJoined', 'factionLeft', 'becameSubject',
+  'guaranteeGranted', 'rulingPartyChanged', 'lawChanged', 'advisorHired', 'focusCompleted', 'projectFinished', 'nukesIncreased', 'nuclearStrike']);
+const CATEGORY_NAMES = new Set(['warsPeace', 'diplomacy', 'politics', 'milestones']);
 const text = (value: unknown): value is string | null => value === null || typeof value === 'string';
 const amount = (value: unknown): value is number | null => value === null || (typeof value === 'number' && Number.isFinite(value));
 /** Only a nuclear strike carries its target and outcome totals. */
@@ -31,140 +29,166 @@ const strike = (row: Record<string, unknown>): boolean => {
     && amount(value.manpowerLost) && amount(value.equipmentLost)
     && Array.isArray(value.notRecorded) && value.notRecorded.every(reason => typeof reason === 'string');
 };
+
+const optionalText = (value: unknown) => value === undefined || typeof value === 'string';
+const item = (value: unknown): value is EventFeedItem => object(value) && text(value.token) && text(value.name) && text(value.icon) && text(value.description)
+  && optionalText(value.nameMissing) && optionalText(value.gaps)
+  && (value.options === undefined || (Array.isArray(value.options) && value.options.every(option => object(option) && int(option.ordinal) && text(option.name))));
 const roles = (row: Record<string, unknown>): boolean => {
-  if (!NATIVE_KINDS.has(row.kind as string)) return row.participants === undefined || row.participants === null;
-  return row.exact === true && row.category === (SCRIPT_KINDS.has(row.kind as string) ? 'politics' : 'warsPeace') && Array.isArray(row.participants)
-    && row.participants.length === 2 && row.participants.every(value => value === null || opaqueTag(value))
+  if (!NATIVE_KINDS.has(row.kind as string)) return row.participants === undefined;
+  return row.exact === true && Array.isArray(row.participants) && row.participants.length === 2 && row.participants.every(value => value === null || opaqueTag(value))
     && JSON.stringify(row.participants.filter(value => value !== null)) === JSON.stringify(row.tags);
 };
 const cause = (row: Record<string, unknown>): boolean => {
   const value = row.cause;
-  if (value === undefined || value === null) return true;
-  return CAUSED_KINDS.has(row.kind as string) && object(value) && text(value.how) && text(value.within)
-    && text(value.conference) && text(value.reason) && (value.state === null || (int(value.state) && value.state > 0))
-    && (value.ally === null || opaqueTag(value.ally))
+  if (value === undefined) return true;
+  return CAUSED_KINDS.has(row.kind as string) && object(value) && text(value.how) && text(value.within) && text(value.conference) && text(value.reason)
+    && (value.state === null || (int(value.state) && value.state > 0)) && (value.ally === null || opaqueTag(value.ally))
     && Array.isArray(value.notes) && value.notes.every(note => typeof note === 'string');
 };
-const span = (value: unknown): value is EventFeedWindow => {
-  if (!object(value) || !int(value.firstHour) || !int(value.lastHour) || value.firstHour > value.lastHour
-    || !int(value.count) || value.count <= 0 || !object(value.categoryCounts)) return false;
-  const counts = value.categoryCounts;
-  return CATEGORIES.every(category => { const count = counts[category.value]; return int(count) && count >= 0; })
-    && CATEGORIES.reduce((sum, category) => sum + (counts[category.value] as number), 0) === value.count;
-};
 
-/** Validate identities, dates, item references and tooltip content before drawing. */
-export function validateEventFeedReply(value: unknown): EventFeedReply {
-  const categories = new Set<string>(CATEGORIES.map(category => category.value));
-  const first = object(value) && int(value.firstHour) ? value.firstHour : null;
-  const last = object(value) && int(value.lastHour) ? value.lastHour : null;
-  const items = object(value) && Array.isArray(value.items) ? value.items : null;
-  if (!object(value) || typeof value.branchId !== 'string' || !int(value.firstHour) || !int(value.lastHour)
-    || value.firstHour > value.lastHour || !Array.isArray(value.windows) || !value.windows.every(span)
-    || !value.windows.every((window, index, all) => !index || all[index - 1].lastHour < window.firstHour)
-    || !Array.isArray(value.items) || !value.items.every(item => object(item) && text(item.token) && text(item.name)
-      && text(item.description) && 'icon' in item && (item.idea === null || ideaInfo(item.idea)))
-    || !Array.isArray(value.rows) || !value.rows.every(row => object(row) && typeof row.id === 'string' && row.id.length > 0
-      && int(row.hour) && int(row.readHour) && int(row.nameHour) && row.hour <= row.readHour
-      && row.nameHour <= row.hour && first !== null && last !== null && row.hour >= first && row.hour <= last
-      && typeof row.exact === 'boolean' && typeof row.category === 'string' && categories.has(row.category)
-      && typeof row.kind === 'string' && KINDS.has(row.kind) && Array.isArray(row.tags)
-      && (NATIVE_KINDS.has(row.kind) || row.tags.length > 0) && row.tags.every(opaqueTag) && roles(row) && cause(row) && strike(row)
-      && (row.item === null || (int(row.item) && row.item >= 0 && items !== null && row.item < items.length))
-      && (row.amount === null || (int(row.amount) && row.amount > 0)))
-    || new Set(value.rows.filter(row => !NATIVE_KINDS.has(row.kind)).map(row => row.id)).size !== value.rows.filter(row => !NATIVE_KINDS.has(row.kind)).length
-    || !Array.isArray(value.unavailable) || !value.unavailable.every(item => object(item) && typeof item.kind === 'string'
-      && typeof item.label === 'string' && typeof item.reason === 'string' && (item.count === null || (int(item.count) && item.count >= 0)))
-    || !Array.isArray(value.modifiers) || !value.modifiers.every(modifierFormat)
-    || !Array.isArray(value.texts) || !value.texts.every(localisedText)
+/** A feed row as a page or the span sends it: identities, dates, roles, cause and its item checked; an icon the dashboard
+ * cannot draw dropped. */
+export function validateFeedRow(value: unknown): EventFeedRow {
+  if (!object(value) || typeof value.id !== 'string' || value.id.length === 0 || !int(value.hour) || !int(value.readHour) || !int(value.nameHour)
+    || value.hour > value.readHour || typeof value.exact !== 'boolean' || typeof value.category !== 'string' || !CATEGORY_NAMES.has(value.category)
+    || typeof value.kind !== 'string' || !KINDS.has(value.kind) || !Array.isArray(value.tags) || !value.tags.every(opaqueTag)
+    || (!NATIVE_KINDS.has(value.kind) && value.tags.length === 0) || !roles(value) || !cause(value) || !strike(value)
+    || !(value.item === null || item(value.item)) || !(value.amount === null || (int(value.amount) && value.amount > 0))) {
+    throw new Error('The event feed row is malformed.');
+  }
+  const row = value as unknown as EventFeedRow;
+  const icon = row.item ? drawableIcon(row.item.icon) : null;
+  return row.item && icon !== row.item.icon ? { ...row, item: { ...row.item, icon } } : row;
+}
+
+/** Rows a feed page asks: about a screenful, as main's first page. Every scripted row of a page is worded at the reply (its
+ * content's text read at the row's own hour), so a page's cost is its rows: a seek shows the head within a page of them. */
+export const FEED_PAGE_SIZE = 64;
+
+export interface FeedEvent { event: EventFeedRow; item: EventFeedItem | null }
+
+export const feedLogRow = (event: EventFeedRow, key: string): LogRow<FeedEvent> =>
+  ({ key, id: event.id, hour: event.hour, revealedHour: event.readHour, by: false, item: { event, item: event.item } });
+
+/** A row of an `event-feed` page: its named row, shown at its own hour from the read that revealed it. */
+export function feedRow(reply: LogReplyRow): LogRow<FeedEvent> {
+  return feedLogRow(validateFeedRow(reply.fields.row), reply.key);
+}
+
+/** The request for the kinds' codes alone (`event-feed-span`, `kindsOnly`): what a list's facets need before its
+ * first page, answered without reading the span, so no page waits on the span's walk of its reads. */
+export function kindsRequest(track: { source: { id: string; revision: string }; branch: { id: string } }): ProductRequest {
+  return { sourceId: track.source.id, revision: track.source.revision, product: 'event-feed-span',
+    params: { branchId: track.branch.id, categories: [], kindsOnly: true } };
+}
+
+/** The span reply (`event-feed-span`): each kind's code, the other families' rows by hour, the notes. */
+export function validateSpan(value: unknown): EventFeedSpanReply {
+  if (!object(value) || typeof value.branchId !== 'string' || !int(value.firstHour) || !int(value.lastHour) || !Array.isArray(value.kinds)
+    || !value.kinds.every(kind => object(kind) && typeof kind.kind === 'string' && KINDS.has(kind.kind) && int(kind.code) && typeof kind.category === 'string'
+      && CATEGORY_NAMES.has(kind.category)) || !Array.isArray(value.rows) || !Array.isArray(value.unavailable)
+    || !value.unavailable.every(note => object(note) && typeof note.kind === 'string' && typeof note.label === 'string' && typeof note.reason === 'string'
+      && (note.count === null || (int(note.count) && note.count >= 0)))
     || !Array.isArray(value.warnings) || !value.warnings.every(warning => typeof warning === 'string')) {
-    throw new Error('The event feed reply is malformed.');
+    throw new Error('The event feed span reply is malformed.');
   }
-  const reply = value as unknown as EventFeedReply;
-  let sanitized: EventFeedItem[] | undefined;
-  for (let index = 0; index < reply.items.length; index++) {
-    const item = reply.items[index], icon = drawableIcon(item.icon);
-    if (icon !== item.icon) {
-      sanitized ??= reply.items.slice();
-      sanitized[index] = { ...item, icon };
-    }
-  }
-  return sanitized ? { ...reply, items: sanitized } : reply;
+  const rows = value.rows.map(validateFeedRow);
+  if (rows.some((row, at) => at > 0 && row.hour < rows[at - 1].hour)) throw new Error('The event feed span reply is malformed.');
+  return { ...(value as unknown as EventFeedSpanReply), rows };
 }
 
-/** Feed-only cursor envelope; source IDs stay internal to this reader. */
-/** A page of the feed; `prefix` while it is answered from its gates' prepared
- * prefix, backwards from that prefix's last hour. With `after`, it holds only the rows
- * read after that hour, every one dated after it, for a page answered through it to prepend. */
-export interface PreparedFeedPage { reply: EventFeedReply; nextCursor: string | null; prefix?: PreparedPrefixFields | null; after?: number }
-export function validateEventFeedPage(value: unknown): PreparedFeedPage {
-  if (!object(value) || !(value.nextCursor === null || typeof value.nextCursor === 'string')
-    || !(value.after === undefined || (int(value.after) && value.nextCursor === null))) {
-    throw new Error('The prepared event feed page is malformed.');
+/** A facet filter as sent. */
+export type Facet = FacetFilter;
+
+/** The page facets for the chosen categories: each kind the log holds, by its code; null when no chosen category holds
+ * a kind of the log (milestones come only through the span), so the log is not asked. Countries are matched in the rows,
+ * through any country a row names at its own hour, as a group's members are. */
+export function feedFacets(kinds: readonly FeedKindCode[], categories: ReadonlySet<string>): Facet[] | null {
+  const values = kinds.filter(kind => categories.has(kind.category)).map(kind => kind.code);
+  return values.length ? [{ name: 'kind', values, tags: [] }] : null;
+}
+
+/** Country matching for a removed member uses the identity of its last recorded membership. */
+export const eventCountryHour = (event: EventFeedRow): number =>
+  event.kind === 'ceasedToExist' || event.kind === 'factionLeft' ? event.nameHour : event.hour;
+
+/** Whether a row names a chosen country at its own hour (any participant or a join's ally). */
+export const rowMatches = (event: EventFeedRow, country: (tag: string, hour: number) => boolean): boolean =>
+  eventTags(event).some(tag => country(tag, eventCountryHour(event)));
+
+/** The other families' rows the widget shows: in the chosen categories, from the range's first hour, naming a chosen country. */
+export function familyRows(span: EventFeedSpanReply, categories: ReadonlySet<string>, firstHour: number | null,
+  country: ((tag: string, hour: number) => boolean) | null): LogRow<FeedEvent>[] {
+  return span.rows.filter(row => categories.has(row.category) && (firstHour === null || row.hour >= firstHour) && (!country || rowMatches(row, country)))
+    .map(row => feedLogRow(row, `family:${row.id}`));
+}
+
+/** The hours the head reads `rows` at, ascending: where a follow block of the other families' rows alone ends (`aheadEnd`). */
+export const familyReveals = (rows: readonly LogRow<FeedEvent>[]): number[] => rows.map(row => row.revealedHour ?? row.hour).sort((a, b) => a - b);
+
+/** How many of `rows` (by hour) the head at `hour` has read; all for null. */
+export const familyShown = (rows: readonly LogRow<FeedEvent>[], hour: number | null): number =>
+  hour === null ? rows.length : rows.filter(row => (row.revealedHour ?? row.hour) <= hour).length;
+
+/** The pages with the other families' rows each falls among: a loaded page takes those dated from its first row to the next
+ * page's first row (to its own last row while the next is not loaded, every later one when it is the newest), so a row
+ * waits only for a page it could belong to. `shown` rows (oldest first) are those the head has read. Rows with no page to
+ * fall in make one of their own. */
+export function withFamilyRows<T>(pages: readonly LogPage<T>[], family: readonly LogRow<T>[], shown: number): readonly LogPage<T>[] {
+  const rows = family.slice(0, shown);
+  if (!rows.length) return pages;
+  if (!pages.length) return [{ key: 'family', start: 0, end: 0, count: rows.length, rows }];
+  return pages.map((page, index) => {
+    if (!page.rows) return page;
+    const first = index === 0 ? -Infinity : page.rows[0]?.hour ?? Infinity;
+    const next = pages[index + 1];
+    const end = !next ? Infinity : next.rows ? next.rows[0]?.hour ?? Infinity : (page.rows.at(-1)?.hour ?? -Infinity) + 1;
+    const taken = rows.filter(row => row.hour >= first && row.hour < end);
+    return taken.length ? { ...page, rows: [...page.rows, ...taken], count: page.count + taken.length } : page;
+  });
+}
+
+/** The notes the span gives: what was not recorded, each counted, and its warnings. */
+export function spanNotes(span: EventFeedSpanReply): string[] {
+  return [...span.warnings, ...notRecorded(span.unavailable)];
+}
+
+const isNote = (note: unknown): note is EventFeedUnavailable => object(note) && typeof note.kind === 'string' && typeof note.label === 'string'
+  && typeof note.reason === 'string' && (note.count === null || Number.isSafeInteger(note.count));
+
+/** What an `event-feed` page says beside its rows: its warnings (as notes with no count), and what its rows could not
+ * show. */
+export function pageNotes(page: unknown): EventFeedUnavailable[] {
+  if (!object(page) || !Array.isArray(page.unavailable) || !page.unavailable.every(isNote) || !Array.isArray(page.warnings)
+    || !page.warnings.every(warning => typeof warning === 'string')) throw new Error('The event feed page reply is malformed.');
+  return [...(page.warnings as string[]).map(reason => ({ kind: 'warning', label: '', reason, count: null })), ...page.unavailable];
+}
+
+/** The notes of every page held as the diagnostics list them: one line a note, the counts of a note several pages
+ * hold added. */
+export function pagesNoted(notes: readonly EventFeedUnavailable[]): string[] {
+  const merged = new Map<string, EventFeedUnavailable>();
+  for (const note of notes) {
+    const key = JSON.stringify([note.kind, note.label, note.reason]), held = merged.get(key);
+    merged.set(key, held ? { ...held, count: held.count === null || note.count === null ? null : held.count + note.count } : note);
   }
-  const reply = validateEventFeedReply(value.reply);
-  if (reply.windows.length) throw new Error('The prepared event feed page contains a window manifest.');
-  // Live validation may remove every obsolete project candidate. The hook
-  // checks this continuation against the request and earlier page cursors.
-  if (value.nextCursor === '') throw new Error('The event feed page made no progress.');
-  const after = int(value.after) ? value.after : undefined;
-  if (after !== undefined && reply.rows.some(row => row.hour <= after)) throw new Error('The event feed rows read after an hour date by it.');
-  return { reply, nextCursor: value.nextCursor, prefix: preparedPrefix(value), ...(after === undefined ? {} : { after }) };
-}
-
-/** The feed's notes as its newest reply gives them, with those an older one gave of rows it
- * still shows: every warning once, and each refusal once, counted as its newest reply counts it. */
-export function feedNotes(newest: EventFeedReply, older: readonly EventFeedReply[]): EventFeedReply {
-  if (!older.length) return newest;
-  const refusal = (item: EventFeedReply['unavailable'][number]) => JSON.stringify([item.kind, item.label, item.reason]);
-  const seen = new Set(newest.unavailable.map(refusal));
-  const unavailable = [...newest.unavailable];
-  for (const reply of older) for (const item of reply.unavailable) if (!seen.has(refusal(item))) { seen.add(refusal(item)); unavailable.push(item); }
-  const warnings = [...new Set([...newest.warnings, ...older.flatMap(reply => reply.warnings)])];
-  return { ...newest, unavailable, warnings };
-}
-
-export interface FeedEvent { event: EventFeedRow; item: EventFeedItem | null; reply: EventFeedReply }
-export interface FeedFilter {
-  categories: ReadonlySet<string>;
-  country: (tag: string, hour: number) => boolean;
-  firstHour: number | null;
-  allCountries?: boolean;
+  const all = [...merged.values()];
+  return [...all.filter(note => note.kind === 'warning').map(note => note.reason), ...notRecorded(all.filter(note => note.kind !== 'warning'))];
 }
 
 export const eventCountryName = (tag: string, label: { name: string; known?: boolean; nameFailed?: boolean }): string =>
   label.nameFailed ? `${tag} (name not recorded)` : label.known === undefined ? `${tag} (loading name…)`
     : label.known ? label.name : `${tag} (name not known)`;
 
-/** Country/group matching for a removed member uses the identity supplying its
- * last recorded membership, rather than the hour it was already absent. */
-export const eventCountryHour = (event: EventFeedRow): number =>
-  event.kind === 'ceasedToExist' || event.kind === 'factionLeft' ? event.nameHour : event.hour;
-
-/** Prepare each page/filter once. Playback only cuts this ordered result by its
- * supplying reads; it never repeats country matching or sorting on each tick. */
-export function filteredEventRows(reply: EventFeedReply, filter: FeedFilter): ReadonlyArray<LogRow<FeedEvent>> {
-  const occurrences = new Map<string, number>();
-  return newestFirst(reply.rows.filter(event => (filter.firstHour === null || event.hour >= filter.firstHour)
-    && filter.categories.has(event.category)
-    && (filter.allCountries === true || event.tags.some(tag => filter.country(tag, eventCountryHour(event)))))
-    // Every listed event is dated to its day: by the game, or by consecutive reads either side of it.
-    .map(event => {
-      const key = JSON.stringify([event.id, event.readHour]);
-      const occurrence = occurrences.get(key) ?? 0; occurrences.set(key, occurrence + 1);
-      return { key: `${key}:${occurrence}`, id: `${key}:${occurrence}`, hour: event.hour, by: false,
-        revealedHour: event.readHour, item: { event, item: event.item === null ? null : reply.items[event.item], reply } };
-    }));
-}
-
 /** The countries a row names: its participants and a join's ally. */
 export const eventTags = (event: EventFeedRow): string[] => event.cause?.ally ? [...event.tags, event.cause.ally] : event.tags;
 
-/** A state's name at an hour from the place-names product; null when not recorded. */
+/** A state's name at an hour; null when not recorded. */
 export type StateName = (hour: number, state: number) => string | null;
 const stateNumber: StateName = () => null;
 
-/** Sentence parts retain each country's own flag beside its name. */
+/** Sentence parts keep each country's own flag beside its name. */
 export type SentencePart = { text: string } | { tag: string };
 export function eventSentence(at: FeedEvent, stateName: StateName = stateNumber): SentencePart[] {
   const parts = actionSentence(at, stateName);
@@ -184,9 +208,6 @@ function actionSentence(at: FeedEvent, stateName: StateName): SentencePart[] {
   const other = role(1);
   const named = item?.name ?? 'an item whose name is unavailable';
   const words = (before: string, after = ''): SentencePart[] => [country, { text: before }, other, ...(after ? [{ text: after }] : [])];
-  const counterparts = (before: string): SentencePart[] => [country, { text: before }, ...
-    (event.tags.length < 2 ? [{ text: 'a country not known' }] : event.tags.slice(1).flatMap((tag, index, tags): SentencePart[] =>
-      [...(index ? [{ text: index === tags.length - 1 ? ' and ' : ', ' }] : []), { tag }]))];
   const single = (action: string): SentencePart[] => [country, { text: action }];
   switch (event.kind) {
     case 'scriptEventFired': return [country, { text: ` triggered ${named} for ` }, other];
@@ -213,8 +234,8 @@ function actionSentence(at: FeedEvent, stateName: StateName): SentencePart[] {
     case 'stateTransferred': return event.cause?.state == null ? words(' took a state from ')
       : words(` took ${stateName(event.hour, event.cause.state) ?? `state ${event.cause.state}`} from `);
     case 'peaceConferenceStarted': return [{ text: 'A peace conference began between ' }, country, { text: ' and ' }, other];
-    case 'warStarted': return counterparts(' became at war with ');
-    case 'peace': return counterparts(' was no longer at war with ');
+    case 'warStarted': return words(' became at war with ');
+    case 'peace': return words(' was no longer at war with ');
     case 'capitulated': return single(' capitulated');
     case 'ceasedToExist': return single(' ceased to exist');
     case 'factionJoined': return single(` joined ${named}`);
@@ -236,12 +257,12 @@ function actionSentence(at: FeedEvent, stateName: StateName): SentencePart[] {
 }
 
 export function eventDescription(at: FeedEvent, name: (tag: string) => string, stateName?: StateName): string {
-  return eventSentence(at, stateName).map(part => 'tag' in part ? name(part.tag) : part.text).join('');
+  return eventSentence(at, stateName).map(part => 'tag' in part ? name(part.tag) : plainScripted(part.text)).join('');
 }
 
-/** Missing captures and unsupported forms have one explicit presentation adapter. */
-export function notRecorded(reply: Pick<EventFeedReply, 'unavailable'>): string[] {
-  return reply.unavailable.map(item => `${item.label}: Not recorded — ${item.reason}${item.count === null ? '' : ` (${item.count.toLocaleString()} counted)`}`);
+/** Missing captures and unsupported forms, each with its reason and count. */
+export function notRecorded(unavailable: readonly EventFeedUnavailable[]): string[] {
+  return unavailable.map(item => `${item.label}: Not recorded — ${item.reason}${item.count === null ? '' : ` (${item.count.toLocaleString()} counted)`}`);
 }
 
 const notFullyRecorded = 'Not fully recorded';
@@ -267,19 +288,21 @@ function strikeRows(strike: EventFeedStrike, hour: number, stateName?: StateName
 const dayOf = (hour: number) => { const date = gameDate(hour); return date ? formatDate(date) : formatDateTime(hour); };
 
 export function eventTooltip(at: FeedEvent, name: (tag: string) => string, stateName?: StateName): TooltipContent[] {
-  const { event, item, reply } = at;
+  const { event, item } = at;
   const title = eventDescription(at, name, stateName);
   const rows: TooltipRow[] = [
     { label: 'Date', value: SCRIPT_KINDS.has(event.kind) ? formatDateTime(event.hour) : dayOf(event.hour) },
     ...(SCRIPT_KINDS.has(event.kind) && item?.token ? [{ label: 'Content identity', value: item.token }] : []),
-    ...(event.strike ? strikeRows(event.strike, event.hour, stateName) : []),
   ];
+  const struck = event.strike;
+  if (struck) rows.push(...strikeRows(struck, event.hour, stateName));
   const cause = event.cause;
   if (cause) {
     rows.push({ label: 'How', value: cause.how ?? 'No observed operation' });
     if (cause.within) rows.push({ label: 'During', value: cause.within });
     if (cause.reason) rows.push({ label: 'Hostility reason', value: cause.reason });
     if (cause.conference) rows.push({ label: 'Peace conference', value: cause.conference });
+    if (cause.state !== null) rows.push({ label: 'State', value: stateName?.(event.hour, cause.state) ?? `State ${cause.state} (name not recorded)` });
     for (const note of cause.notes) rows.push({ label: note });
   } else if (CAUSED_KINDS.has(event.kind)) {
     rows.push({ label: 'Cause', value: 'Not recorded in this recording', tone: 'muted' });
@@ -288,8 +311,7 @@ export function eventTooltip(at: FeedEvent, name: (tag: string) => string, state
     event.kind === 'ceasedToExist' ? 'Lost all owned states.' : '',
     event.kind === 'nukesIncreased' ? 'Stockpile increase.' : '',
     event.kind === 'nuclearStrike' ? 'Totals cover what the impact did before its scripted on_nuke_drop effects.' : ''].filter(Boolean).join(' ');
-  if (item?.idea) return [ideaTooltip({ title, icon: item.icon }, item.idea, ideaTooltipSources(reply, name),
-    item.description, rows, note, event.nameHour)];
-  if (item?.description) rows.push({ label: item.description });
+  rows.push(...reasonRows(item));
+  if (item?.description) rows.push({ label: plainScripted(item.description) });
   return [{ title, icon: item?.icon ?? undefined, rows, note: note || undefined }];
 }

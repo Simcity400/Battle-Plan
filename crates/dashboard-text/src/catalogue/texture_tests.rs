@@ -185,7 +185,7 @@ fn batched_icons_replay_only_their_own_reads_and_shader_notes_in_either_order() 
         let layers =
             ResolvedLayers::from_folders(&[(&folders[0].0, &[][..]), (&folders[1].0, &[][..])])
                 .unwrap();
-        layers.report_uncovered_reads();
+        let _ = layers.report_uncovered_reads();
         layers
     };
     let sprites = [
@@ -686,7 +686,7 @@ fn frame_animated_sprites_render_native_strip_frames() {
                         source.pixels[at..at + 4].iter().copied()
                     })
                 })
-                .collect(),
+                .collect::<Vec<u8>>(),
         };
         for frame in 0..3 {
             let image = sprite_frame_png(
@@ -1014,9 +1014,13 @@ fn artwork_shader_source_warnings_survive_lazy_reads() {
     );
     let layers = &catalogue.content.layers;
     let reads = layers.report_uncovered_reads();
-    let program =
-        installed_content_core::pdxshader::program::read_reported(layers, b"outside/test.lua").unwrap();
-    let warnings = catalogue.reader_warning_lines();
+    // A reply's reads are reported from its own diagnostics scope.
+    let ((program, warnings), _) = installed_content_core::content::diagnostics::capture(|| {
+        let program =
+            installed_content_core::pdxshader::program::read_reported(layers, b"outside/test.lua")
+                .unwrap();
+        (program, catalogue.reader_warning_lines())
+    });
     assert!(warnings.contains(&reads.warning().unwrap()));
     for warning in program
         .warnings

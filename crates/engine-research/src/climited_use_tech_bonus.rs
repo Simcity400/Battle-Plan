@@ -26,13 +26,12 @@ pub(crate) fn value(
     memory: &impl Memory,
     pointer: usize,
     id: i32,
-    growing: bool,
 ) -> Result<Value, &'static str> {
     let descriptor = crate::msvc_string::Descriptor::read(
         memory,
         pointer.checked_add(NAME).ok_or("bonus address overflow")?,
     )?;
-    let name = Text::from_descriptor(memory, descriptor, growing)?;
+    let name = Text::from_descriptor(memory, descriptor)?;
     let operands = read::<[u8; 16]>(
         memory,
         pointer

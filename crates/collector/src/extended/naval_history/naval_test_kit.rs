@@ -2,24 +2,19 @@ use super::{Capacities, Captured, NavalCopyContext, NavalCopyReport, NavalJob};
 use engine_native::{Memory, memory::SliceMemory, walk::Outcome};
 
 pub(crate) fn stage_wings(memory: &impl Memory, job: &mut NavalJob) {
-    let mut wings = wing_census(memory, job);
+    let mut wings = wing_census(memory);
     job.install_wings(&mut wings);
 }
 
-/// The wing census bounded by `job`'s membership capacity, not installed.
-pub(crate) fn wing_census(
-    memory: &impl Memory,
-    job: &NavalJob,
-) -> crate::extended::air::AirWingJob {
+/// The wing census, not installed.
+pub(crate) fn wing_census(memory: &impl Memory) -> crate::extended::air::AirWingJob {
     let mut wings = crate::extended::air::AirWingJob::fixture();
     let context = crate::extended::air::AirWingCopyContext {
         hour: 0,
         force_full: true,
         base: BASE,
         game_state: GAME_STATE,
-
         limits: [0; 3],
-        naval_limit: job.wing_limit(),
         game_score: false,
     };
     assert!(crate::extended::air::copy_air_refresh(memory, context, &mut wings).raw_ok);
@@ -932,7 +927,7 @@ fn oob_root_fields_in_one_copy_log_the_per_field_spans() {
         // The typed reference walks the order of battle only over a
         // complete registry census; where that fails, the decode reports
         // the failure instead, with or without the gathered copy.
-        let mut roots = [corders_group::Root::default(); 8];
+        let mut roots = vec![corders_group::Root::default(); 8];
         if matches!(
             corders_group::walk_roots(&memory, BASE, &mut roots),
             Outcome::Rows { .. }

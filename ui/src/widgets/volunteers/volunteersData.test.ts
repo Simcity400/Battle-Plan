@@ -133,10 +133,8 @@ test('when a tag passes to another country, the diagram fades one holder out and
   assert.ok(frame.nodes.find(box => box.id === next.nodes.find(node => node.side === 'source')!.id)!.alpha < 1, 'the later holder’s node fades in');
 });
 
-test('with no tag to ask for, unknown membership, an empty group and preparation read differently', () => {
-  assert.deepEqual(withoutRequest({ known: true, hourly: true, membershipUnobserved: true }), { kind: 'unavailable', message: 'This group’s membership was not recorded at this date.' });
-  assert.deepEqual(withoutRequest({ known: true, hourly: true, membershipUnobserved: false }), { kind: 'empty', message: 'This group has no members at this date.' });
-  assert.deepEqual(withoutRequest({ known: false, hourly: true, membershipUnobserved: false }), { kind: 'loading', message: 'This range is still being prepared.' });
-  assert.equal(withoutRequest({ known: true, hourly: false, membershipUnobserved: false }).message, 'The countries chosen are not in this campaign.');
-  assert.equal(emptyMessage('land', { aidUnobserved: false, membershipUnobserved: false, membershipPending: true, unknown: 0 }), 'This range is still being prepared.');
+test('with no tag to ask for, unrecorded membership, an empty group and countries not in the campaign read differently', () => {
+  assert.deepEqual(withoutRequest({ hourly: true, membershipUnobserved: true }), { kind: 'unavailable', message: 'This group’s membership was not recorded at this date.' });
+  assert.deepEqual(withoutRequest({ hourly: true, membershipUnobserved: false }), { kind: 'empty', message: 'This group has no members at this date.' });
+  assert.equal(withoutRequest({ hourly: false, membershipUnobserved: false }).message, 'The countries chosen are not in this campaign.');
 });

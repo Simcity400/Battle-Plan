@@ -190,14 +190,11 @@ fn quiet_pass(memory: &impl Memory, ctx: CharactersCopyContext, job: &mut Charac
     // The payload holds this hour's census and unit reads, as a census role
     // job's does.
     job.log.clear();
-    if job.worker_growing {
-        job.log.enable_worker_growth();
-    }
     job.leader_rows = 0;
     job.advisor_demand = AdvisorDemand::default();
     job.appended_overflowed = false;
     job.active = ctx.active;
-    job.traits.begin(ctx, job.worker_growing);
+    job.traits.begin();
     job.game_state = ctx.game_state;
     job.advisor_section_complete = false;
     job.census_visited.clear();
@@ -526,35 +523,23 @@ pub(super) fn fresh_leaders_unchanged<M: Memory>(
     job: &CharactersJob,
 ) -> bool {
     let carry = &job.unit_carry;
-    let mut row = [LeaderRow::default()];
     let mut bytes = Vec::new();
     for at in 0..carry.visit_count() {
         let Some((pointer, character)) = carry.fresh_visit(at) else {
             continue;
         };
-        let read = loop {
-            let read = read_unit_selected(
-                memory,
-                base,
-                pointer,
-                character,
-                &mut row,
-                &mut bytes,
-                job.active[5],
-            );
-            match read.outcome {
-                Outcome::Rows { .. } | Outcome::Truncated { .. }
-                    if read.required_bytes > bytes.len() =>
-                {
-                    bytes.resize(read.required_bytes, 0);
-                }
-                _ => break read,
-            }
-        };
-        let Outcome::Rows { len: 1 } = read.outcome else {
+        let Ok(read) = read_unit_selected(
+            memory,
+            base,
+            pointer,
+            character,
+            &mut bytes,
+            0,
+            job.active[5],
+        ) else {
             return false;
         };
-        if !carry.held_equals(at, &row, &bytes[..read.bytes_len]) {
+        if !carry.held_equals(at, &[read.row], &bytes[..read.bytes_len]) {
             return false;
         }
     }

@@ -131,8 +131,31 @@ impl ResidentMetadata {
                     first_hour: branch.first_hour,
                     last_hour: branch.last_hour,
                     main: branch.main,
-                    fork: branch.fork.clone(),
-                    joins: branch.joins.clone(),
+                    fork: branch
+                        .fork
+                        .as_ref()
+                        .map(|fork| {
+                            Ok::<_, io::Error>(BranchFork {
+                                branch_id: text(&fork.branch_id)?,
+                                hour: fork.hour,
+                            })
+                        })
+                        .transpose()?,
+                    joins: copy_vec(&branch.joins, |join| {
+                        Ok(BranchJoin {
+                            hour: join.hour,
+                            segment_id: text(&join.segment_id)?,
+                            parent_id: text(&join.parent_id)?,
+                            evidence: join.evidence,
+                            choices: copy_vec(&join.choices, |choice| {
+                                Ok(JoinChoice {
+                                    segment_id: text(&choice.segment_id)?,
+                                    first_hour: choice.first_hour,
+                                    last_hour: choice.last_hour,
+                                })
+                            })?,
+                        })
+                    })?,
                     sample_boundary: text(&branch.sample_boundary)?,
                     gaps: copy_vec(&branch.gaps, |gap| {
                         Ok(RecordingGap {
@@ -350,7 +373,7 @@ fn read_from(
             let mut player_country_id = None;
             let mut observed = None;
             // Only the tables the catalogue reads, up to its first complete country table.
-            let read = replay.visit_blocks(&[block], &CATALOGUE_TABLES, None, |_, _, decoded| {
+            let read = replay.visit_blocks(&[block], &CATALOGUE_TABLES, |_, _, decoded| {
                 check_cancel(cancelled)?;
                 validate_campaign(decoded, replay)?;
                 let (rows, links) = match country_tables(decoded) {
@@ -514,10 +537,10 @@ pub fn country_tables(
 
 pub fn mapped_slot(row: &CountryRow, links: &[CountryLinkRow]) -> io::Result<u32> {
     let slot = link_slot(links, row.id)
-        .ok_or_else(|| invalid("Country has no recorded CountryLinks mapping"))?;
+        .ok_or_else(|| invalid("Country has no recorded country links mapping"))?;
     if slot != row.canonical_slot {
         return Err(invalid(
-            "Countries and CountryLinks disagree on the canonical slot",
+            "Countries and country links disagree on the canonical slot",
         ));
     }
     Ok(slot)
@@ -546,7 +569,7 @@ pub fn link_slot_in(
             TableId::CountryLinks,
             "canonical_slot",
             None,
-            format!("raw country {raw} has no CountryLinks row"),
+            format!("raw country {raw} has no country links row"),
         )
         .resolution_failed();
     }
@@ -1067,7 +1090,7 @@ pub fn tagged_countries_indexed<'a>(
                 TableId::CountryLinks,
                 "canonical_slot",
                 None,
-                format!("raw country {} has no CountryLinks mapping", country.id),
+                format!("raw country {} has no country links mapping", country.id),
             )
             .resolution_failed();
         }
@@ -1122,9 +1145,7 @@ pub fn validate_campaign(frame: &DecodedFrame, replay: &Replay) -> io::Result<()
 /// Whether this hour's frame read a daily table: its slot hour by the cadence
 /// (`replay_data::cadence::is_refresh`), or any hour where a walk of a table of its
 /// slot was timed, which covers full hours (branch start, load, gap, refresh)
-/// and a shared read that times only its anchor (as the fresh-save oracle dates
-/// daily tables, `recorder::oracle::last_read_hours`). Timing alone is not
-/// enough: a shared read may be charged to a table outside the slot, as the
+/// and a shared read that times only its anchor. Timing alone is not enough: a shared read may be charged to a table outside the slot, as the
 /// economy-rest raw copy charges its daily tables' read to the hourly
 /// ProvinceSupply, so their slot hours show no timing. CountryIntel's walk can
 /// move off its slot alone, so only its own timing dates it; it and the other
@@ -1532,7 +1553,7 @@ impl Catalogue {
 
     pub(crate) fn finish(mut self, warnings: &mut Warnings) -> io::Result<Vec<CountryMetadata>> {
         if self.bad_mapping {
-            warnings.warn("Some country rows have missing or conflicting CountryLinks mappings and are excluded from the catalogue.")?;
+            warnings.warn("Some country rows have missing or conflicting country links mappings and are excluded from the catalogue.")?;
         }
         // Canonical slot IDs are decimal without leading zeroes.
         self.rows
@@ -1628,7 +1649,7 @@ mod local_player_tests {
 
 /// Why [`recorded_rows`] refuses `table` at `hour`: the recording's mode leaves it out.
 pub fn not_recorded(hour: i32, table: TableId, mode: impl std::fmt::Display) -> String {
-    format!("hour {hour} {table:?} is not recorded in a {mode} recording")
+    format!("{} is not recorded at hour {hour} in a {mode} recording", table.words())
 }
 
 /// The rows a table holds this hour, complete or truncated; an unavailable table
@@ -1640,11 +1661,7 @@ pub fn recorded_rows<T: replay_data::rows::TableSchema>(
     match frame.view(T::ID.index()) {
         TableView::Complete(rows) | TableView::Truncated { rows, .. } => {
             rows.rows::<T>().ok_or_else(|| {
-                crate::invalid(format!(
-                    "hour {} {:?} contains another table's rows",
-                    frame.hour(),
-                    T::ID
-                ))
+                crate::invalid(format!("{} holds rows of another kind", T::ID.words()))
             })
         }
         TableView::Unavailable { .. } => Ok(&[]),
@@ -1662,11 +1679,7 @@ pub fn recorded_rows_in<T: replay_data::rows::TableSchema>(
     use replay_frame::frame::{OperandStatus, Rowset};
     match frame.status(T::ID) {
         OperandStatus::WrongLayout | OperandStatus::TruncatedWrongLayout(_) => {
-            Err(crate::invalid(format!(
-                "hour {} {:?} contains another table's rows",
-                frame.hour(),
-                T::ID
-            )))
+            Err(crate::invalid(format!("{} holds rows of another kind", T::ID.words())))
         }
         OperandStatus::Unavailable(_) => Ok(Rowset::Decoded(&[])),
         OperandStatus::NotRecorded(mode) => {

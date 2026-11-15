@@ -4,9 +4,10 @@ import { countryMatchChangeHours } from '../../dashboard/groups.ts';
 import { formatDateTime, isEngineHour } from '../../dashboard/calendar.ts';
 import { int, object } from '../../dashboard/validation.ts';
 import { formatFixed } from '../../charts/valueAxis.ts';
-import type { BattleWindow, LandBattleHistory, LandBattlesReply, LandBattlesManifestReply, LandBattlesRankingReply } from '../../generated/dashboard';
-import type { BattleRow, BattleValue, BattleWarning } from '../battles/battleRows';
-import { battleMeasure, battleValueText, isBattleValue } from '../battles/battleRows.ts';
+import type { BattleChanges, BattleRow, BattleValue, BattleWarning } from '../battles/battleRows';
+import { battleChanges, battleMeasure, battleValueText, isBattleValue } from '../battles/battleRows.ts';
+import { placeKey } from '../../dashboard/placeNamesData.ts';
+import type { BattleWindow, LandBattleHistory, LandBattlesManifestReply, LandBattlesRankingReply, LandBattlesReply } from '../../generated/dashboard';
 
 /** A loss read as shown: each side's manpower and equipment total; the raw is that total's exact fixed5. */
 export interface LandLossRead { hour: number; terminal: boolean; sides: [BattleValue[], BattleValue[]]; equipmentRaw?: [string | null, string | null] }
@@ -158,6 +159,81 @@ const rowPlaybacks = new WeakMap<Windows, WeakMap<CountryMatch, Map<string, Play
 const matchAll: CountryMatch = () => true;
 const rankedWindows = new WeakMap<LandBattlesRanking, Windows>();
 
+/** The hours at which the land battle rows' structure changes: any battle where a block or census span begins; a battle
+ * where it begins, its sides' countries change, its census stops, it ends or is decided, or which of its losses are known
+ * changes. Its sizes and losses between are painted. */
+export function landBattleChanges(windows: Windows): BattleChanges {
+  const whole: number[] = [];
+  const battles: [string, number[]][] = [];
+  for (const window of windows.values()) {
+    whole.push(window.interval.firstHour);
+    for (const [first] of window.observed) whole.push(first);
+    for (const history of window.rows) {
+      const hours: number[] = [];
+      let previous: LandBattle['runs'][number] | undefined;
+      for (const run of history.runs) {
+        if (!previous || previous.lastHour + 1 !== run.firstHour || previous.rosterUnknown !== run.rosterUnknown
+          || JSON.stringify([previous.countries, previous.countriesUnknown]) !== JSON.stringify([run.countries, run.countriesUnknown])) hours.push(run.firstHour);
+        previous = run;
+      }
+      if (previous) hours.push(previous.lastHour + 1);
+      if (history.result) hours.push(history.result.hour);
+      if (history.end && 'hour' in history.end) hours.push(history.end.hour);
+      if (history.endUnknownHour != null) hours.push(history.endUnknownHour);
+      history.losses.forEach((loss, at) => { if (!at || !sameKnownLosses(history.losses[at - 1], loss)) hours.push(loss.hour); });
+      battles.push([history.id, hours]);
+    }
+  }
+  return battleChanges(whole, battles);
+}
+
+/** Whether two loss reads name the same losses, each known or unknown alike: what a row renders of them beside the
+ * painted numbers. */
+function sameKnownLosses(a: LandLossRead, b: LandLossRead): boolean {
+  return a.sides.every((side, index) => {
+    const other = b.sides[index];
+    return side.length === other.length && side.every((value, at) => {
+      const next = other[at];
+      if (value.label !== next.label) return false;
+      return value.value === null ? next.value === null && value.unknown === next.unknown : next.value !== null;
+    });
+  });
+}
+
+const battleEntries = new WeakMap<Windows, Map<string, { history: LandBattle; index: number; firstHour: number }[]>>();
+
+/** The row of the battle `id` at `at`, as `landBattleRows` lists it; null where it is not listed. */
+export function landBattleRow(windows: Windows, id: string, at: number, matches: CountryMatch, all: boolean, from: number | null = null): LandBattleRow | null {
+  let entries = battleEntries.get(windows);
+  if (!entries) {
+    entries = new Map();
+    for (const [index, window] of [...windows].sort(([a], [b]) => a - b)) for (const history of window.rows) {
+      const held = entries.get(history.id), entry = { history, index, firstHour: window.interval.firstHour };
+      if (held) held.push(entry); else entries.set(history.id, [entry]);
+    }
+    battleEntries.set(windows, entries);
+  }
+  let found: { history: LandBattle; index: number } | undefined;
+  for (const entry of entries.get(id) ?? []) if (entry.firstHour <= at && entry.history.runs.some(run => run.firstHour <= at)) found = entry;
+  return found ? landRowAt(found.history, found.index, at, matches, all, from) : null;
+}
+
+/** Every battle's place in the windows: its province at its start, the hour its name is read at; each once, in hour
+ * order. Asked as the windows land, so a battle coming into view while playing asks nothing. */
+export function landWindowPlaces(windows: Windows): { provinceId: number; hour: number }[] {
+  const places = new Map<string, { provinceId: number; hour: number }>();
+  for (const window of windows.values()) for (const history of window.rows) {
+    places.set(placeKey(history.provinceId, history.start.hour), { provinceId: history.provinceId, hour: history.start.hour });
+  }
+  return [...places.values()].sort((a, b) => a.hour - b.hour || a.provinceId - b.provinceId);
+}
+
+/** Each side's manpower lost as a row shows it, or null where either is not known. */
+export function landManpowerLost(row: LandBattleRow): [number, number] | null {
+  const values = row.sides.map(side => side.losses.find(value => value.label === MANPOWER) ?? null);
+  return values.every(value => value !== null && value.value !== null) ? values.map(value => value!.value as number) as [number, number] : null;
+}
+
 export function landBattleRows(windows: Windows, at: number, matches: CountryMatch, all: boolean, from: number | null = null): ReadonlyArray<LandBattleRow> {
   let byMatch = rowPlaybacks.get(windows);
   if (!byMatch) rowPlaybacks.set(windows, byMatch = new WeakMap());
@@ -199,55 +275,60 @@ function readLandBattleRows(windows: ReadonlyMap<number, LandBattlesWindow>, at:
     }
   }
   const rows: LandBattleRow[] = [];
-  for (const { history: h, index } of histories.values()) {
-    const runs = h.runs.filter(run => run.firstHour <= at);
-    const run = runs.at(-1);
-    if (!run) continue;
-    const read = Math.min(at, run.lastHour);
-    const result = h.result && h.result.hour <= at ? h.result : null;
-    const participants = [0, 1].map(index => result && resultSide(result, run, index)
-      ? { tags: result.countries[index], hour: result.hour, unknown: result.countriesUnknown[index] }
-      : { tags: run.countries[index], hour: read, unknown: run.countriesUnknown[index] });
-    const countries = participants.map(side => side.tags.map(tag => ({ tag, hour: side.hour })));
-    const countriesUnknown = participants.map(side => side.unknown);
-    if (!all && !countriesUnknown.some(Boolean) && !countries.some(side => side.some(country => matches(country.tag, country.hour)))) continue;
-    let end: BattleRow['end'] = h.end && ('hour' in h.end ? h.end.hour <= at : h.endUnknownHour !== null && h.endUnknownHour <= at) ? h.end : null;
-    const endedAt = h.end && 'hour' in h.end ? h.end.hour : h.endUnknownHour;
-    if (from !== null && read < from && !(endedAt !== null && endedAt >= from && endedAt <= at)) continue;
-    if (end === null && read < at) end = { unknown: 'Ending not recorded' };
-    let peak = h.priorPeak ?? { value: 0, hour: h.start.hour };
-    let peakUnknown = h.priorPeak === null;
-    const sides: [LandPeak | null, LandPeak | null] | null = h.priorSidePeaks && [h.priorSidePeaks[0], h.priorSidePeaks[1]];
-    for (const run of runs) {
-      if (run.rosterUnknown) continue;
-      peakUnknown = false;
-      const value = run.counts[0] + run.counts[1];
-      if (value > peak.value || value === peak.value && run.firstHour < peak.hour) peak = { value, hour: run.firstHour };
-      if (sides) for (const side of [0, 1]) {
-        const best = sides[side];
-        if (!best || run.counts[side] > best.value) sides[side] = { value: run.counts[side], hour: run.firstHour };
-      }
-    }
-    const duration = result?.duration ?? run.duration + read - run.firstHour;
-    let loss: LandLossRead | undefined;
-    for (let index = h.losses.length - 1; index >= 0; index--) {
-      if (h.losses[index].hour <= at) { loss = h.losses[index]; break; }
-    }
-    const row: LandBattleRow = { id: h.id, provinceId: h.provinceId, windowIndex: index, readHour: read, start: h.start, end, place: { name: null, hour: h.start.hour }, peak, peakUnknown,
-      sidePeaks: sides,
-      lossRead: loss ? { hour: loss.hour, terminal: loss.terminal, equipmentRaw: loss.equipmentRaw } : null,
-      // Only a battle under way when its recorded stretch began has a length that is a minimum.
-      length: { label: 'Length', value: Math.max((result?.hour ?? read) - h.start.hour, duration - h.counterBase, 0), atLeast: h.start.bound === 'by' },
-      casualties: { label: 'Casualties', value: null, unknown: 'Not in this recording' },
-      sides: ['Attackers', 'Defenders'].map((label, index) => ({ label, countries: countries[index],
-        ...(countriesUnknown[index] ? { countriesUnknown: 'Countries not recorded' } : {}),
-        counts: [run.rosterUnknown ? { label: 'Divisions (incl. reserves)', value: null, unknown: 'Roster not recorded' }
-          : { label: 'Divisions (incl. reserves)', value: run.counts[index] }], losses: loss?.sides[index] ?? [] })),
-      winner: result?.winner ?? { unknown: 'Result not recorded' } };
-    row.casualties = { ...battleMeasure(row, 'Manpower lost', 'Not in this recording'), label: 'Casualties' };
-    rows.push(row);
+  for (const { history, index } of histories.values()) {
+    const row = landRowAt(history, index, at, matches, all, from);
+    if (row) rows.push(row);
   }
   return rows;
+}
+
+function landRowAt(h: LandBattle, index: number, at: number, matches: CountryMatch, all: boolean, from: number | null): LandBattleRow | null {
+  const runs = h.runs.filter(run => run.firstHour <= at);
+  const run = runs.at(-1);
+  if (!run) return null;
+  const read = Math.min(at, run.lastHour);
+  const result = h.result && h.result.hour <= at ? h.result : null;
+  const participants = [0, 1].map(index => result && resultSide(result, run, index)
+    ? { tags: result.countries[index], hour: result.hour, unknown: result.countriesUnknown[index] }
+    : { tags: run.countries[index], hour: read, unknown: run.countriesUnknown[index] });
+  const countries = participants.map(side => side.tags.map(tag => ({ tag, hour: side.hour })));
+  const countriesUnknown = participants.map(side => side.unknown);
+  if (!all && !countriesUnknown.some(Boolean) && !countries.some(side => side.some(country => matches(country.tag, country.hour)))) return null;
+  let end: BattleRow['end'] = h.end && ('hour' in h.end ? h.end.hour <= at : h.endUnknownHour !== null && h.endUnknownHour <= at) ? h.end : null;
+  const endedAt = h.end && 'hour' in h.end ? h.end.hour : h.endUnknownHour;
+  if (from !== null && read < from && !(endedAt !== null && endedAt >= from && endedAt <= at)) return null;
+  if (end === null && read < at) end = { unknown: 'Ending not recorded' };
+  let peak = h.priorPeak ?? { value: 0, hour: h.start.hour };
+  let peakUnknown = h.priorPeak === null;
+  const sides: [LandPeak | null, LandPeak | null] | null = h.priorSidePeaks && [h.priorSidePeaks[0], h.priorSidePeaks[1]];
+  for (const run of runs) {
+    if (run.rosterUnknown) continue;
+    peakUnknown = false;
+    const value = run.counts[0] + run.counts[1];
+    if (value > peak.value || value === peak.value && run.firstHour < peak.hour) peak = { value, hour: run.firstHour };
+    if (sides) for (const side of [0, 1]) {
+      const best = sides[side];
+      if (!best || run.counts[side] > best.value) sides[side] = { value: run.counts[side], hour: run.firstHour };
+    }
+  }
+  const duration = result?.duration ?? run.duration + read - run.firstHour;
+  let loss: LandLossRead | undefined;
+  for (let index = h.losses.length - 1; index >= 0; index--) {
+    if (h.losses[index].hour <= at) { loss = h.losses[index]; break; }
+  }
+  const row: LandBattleRow = { id: h.id, provinceId: h.provinceId, windowIndex: index, readHour: read, start: h.start, end, place: { name: null, hour: h.start.hour }, peak, peakUnknown,
+    sidePeaks: sides,
+    lossRead: loss ? { hour: loss.hour, terminal: loss.terminal, equipmentRaw: loss.equipmentRaw } : null,
+    // Only a battle under way when its recorded stretch began has a length that is a minimum.
+    length: { label: 'Length', value: Math.max((result?.hour ?? read) - h.start.hour, duration - h.counterBase, 0), atLeast: h.start.bound === 'by' },
+    casualties: { label: 'Casualties', value: null, unknown: 'Not in this recording' },
+    sides: ['Attackers', 'Defenders'].map((label, index) => ({ label, countries: countries[index],
+      ...(countriesUnknown[index] ? { countriesUnknown: 'Countries not recorded' } : {}),
+      counts: [run.rosterUnknown ? { label: 'Divisions (incl. reserves)', value: null, unknown: 'Roster not recorded' }
+        : { label: 'Divisions (incl. reserves)', value: run.counts[index] }], losses: loss?.sides[index] ?? [] })),
+    winner: result?.winner ?? { unknown: 'Result not recorded' } };
+  row.casualties = { ...battleMeasure(row, 'Manpower lost', 'Not in this recording'), label: 'Casualties' };
+  return row;
 }
 export function landCasualtyText(value: BattleValue, row: LandBattleRow, tooltip = false): string {
   const text = battleValueText(value);

@@ -708,6 +708,9 @@ fn base_destruction_uses_only_the_prepared_binding_and_clock_without_shifting_or
 
 #[test]
 fn variant_rejected_writer_rechecks_saved_membership_after_an_admitted_move() {
+    if !isolated() {
+        return;
+    }
     use std::sync::Barrier;
 
     unsafe extern "system-unwind" fn move_design(
@@ -1382,21 +1385,7 @@ fn membership_projection_refuses_intermediate_unknown_and_incomplete_occurrences
 
 #[test]
 fn cold_storage_warmup_keeps_the_serial_census_capacity_and_certificate_decision() {
-    const NAME: &str =
-        "cold_storage_warmup_keeps_the_serial_census_capacity_and_certificate_decision";
-    const ENV: &str = "BATTLE_PLAN_COLD_WARMUP_TEST";
-    if std::env::var(ENV).ok().as_deref() != Some(NAME) {
-        assert!(
-            std::process::Command::new(std::env::current_exe().unwrap())
-                .args([
-                    "--exact",
-                    &format!("production::design_changes::tests::{NAME}")
-                ])
-                .env(ENV, NAME)
-                .status()
-                .unwrap()
-                .success()
-        );
+    if !isolated() {
         return;
     }
     for count in [67, 1500] {
@@ -1493,4 +1482,40 @@ fn cold_storage_warmup_keeps_the_serial_census_capacity_and_certificate_decision
             }
         }
     }
+}
+
+#[test]
+fn events_and_watches_past_prepared_storage_grow_where_they_are_written() {
+    let mut batch = Batch::empty();
+    for pointer in 1..=3 {
+        batch.room().unwrap();
+        batch.events.push(Event {
+            kind: Kind::Design,
+            sequence: pointer as u64,
+            hour: 0,
+            pointer,
+            variant: 0,
+            removed: true,
+            start: 0,
+            end: 0,
+        });
+    }
+    assert_eq!(batch.events.len(), 3);
+    assert_eq!(batch.required_events, 3);
+    let full = batch.events.capacity() - batch.events.len();
+    for _ in 0..full {
+        batch.events.push(batch.events[0]);
+    }
+    assert_eq!(
+        collector_test_support::with_allocations_denied(|| batch.room()),
+        Err(STORAGE_FAILED)
+    );
+    let mut interests = sources::Interests::default();
+    for pointer in 1..=3 {
+        interests.insert(sources::Key::Direct(pointer), 7).unwrap();
+        interests.organisation(pointer as u64, Some(pointer)).unwrap();
+    }
+    assert_eq!(interests.entries.len(), 3);
+    assert_eq!(interests.organisations.len(), 3);
+    assert_eq!(interests.organisation_pointers.len(), 3);
 }

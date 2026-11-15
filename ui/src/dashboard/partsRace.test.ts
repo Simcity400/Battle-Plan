@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { buildStack } from '../charts/stack.ts';
 import { partsRaceAt, partsRaceLineRuns, partsRaceMixBands, partsRaceModel, partsRacePartName, partsRaceEntries, partsRaceSegmentAt,
-  partsRaceTooltips, partsRaceNumbers, hasPartsRaceValues, rankPartsRace, validatePartsRaceReply } from './partsRace.ts';
+  partsRaceTooltips, partsRaceNumbers, hasPartsRaceValues, partsRaceAllZero, rankPartsRace, validatePartsRaceReply } from './partsRace.ts';
 import type { PartsRaceReply } from './partsRace';
 
 const reply = (): PartsRaceReply => ({ branchId: 'branch',
@@ -150,4 +150,15 @@ test('force numeric ownership strips only content decorations and preserves nati
   const changed = structuredClone(native);
   changed.series[0].runs[0].referenceTotal = 18;
   assert.notDeepEqual(partsRaceNumbers(changed), projected);
+});
+
+test('a tally ranked positive holds no country at zero, and all zero is told from unknown', () => {
+  const data = reply();
+  data.series.push({ ...structuredClone(data.series[0]), tag: 'AAA', runs: [{ firstHour: 10, lastHour: 20, startsSegment: true, total: 0, values: [0, 0] }] });
+  const model = partsRaceModel(data);
+  assert.deepEqual(rankPartsRace(model, model.tags, 10, 10, true).map(row => row.tag), ['tag with , separators']);
+  assert.deepEqual(rankPartsRace(model, model.tags, 16, 10, true), [], 'zeros never fill a top N in tag order');
+  assert.equal(partsRaceAllZero(model, model.tags, 16), true);
+  assert.equal(partsRaceAllZero(model, model.tags, 10), false);
+  assert.equal(partsRaceAllZero(model, ['tag with , separators'], 12), false, 'an unknown total is not a zero');
 });

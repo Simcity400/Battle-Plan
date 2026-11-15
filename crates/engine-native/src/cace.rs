@@ -105,27 +105,15 @@ pub struct NameWalk {
     pub required_bytes: usize,
 }
 
+pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> NameWalk {
+    walk_buffer(memory, base, game_state, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
+}
+
 /// Reads each canonical country's current ace roster into caller-owned storage.
 /// The names arena contains exact bytes, including empty or non-UTF-8 strings.
 /// Capacity omits whole rows and counts them; it never shortens a name. This
 /// primary read has no retry, allocation, engine call, pointer cache or I/O.
 pub fn walk(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut [Row],
-    names: &mut [u8],
-) -> NameWalk {
-    walk_buffer(
-        memory,
-        base,
-        game_state,
-        crate::walk::Buffer::Fixed(output),
-        crate::walk::Buffer::Fixed(names),
-    )
-}
-
-pub fn walk_growing(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -625,8 +613,8 @@ mod tests {
     #[test]
     fn canonical_roster_preserves_complete_references_unknown_death_and_exact_names() {
         let memory = fixture();
-        let mut rows = [Row::default(); 2];
-        let mut names = [0_u8; 64];
+        let mut rows = vec![Row::default(); 2];
+        let mut names = vec![0_u8; 64];
         let result = walk(&memory, 0, GS, &mut rows, &mut names);
         assert_eq!(result.outcome, Outcome::Rows { len: 2 });
         assert_eq!(result.bytes_len, 48);
@@ -659,31 +647,9 @@ mod tests {
     }
 
     #[test]
-    fn row_and_name_capacity_omit_whole_rows_with_exact_growth_counts() {
+    fn the_count_probe_reports_exact_growth_counts() {
         let memory = fixture();
-        let mut rows = [Row::default(); 2];
-        let mut names = [0_u8; 64];
-        for (row_capacity, name_capacity) in [(1, 64), (2, 5)] {
-            let result = walk(
-                &memory,
-                0,
-                GS,
-                &mut rows[..row_capacity],
-                &mut names[..name_capacity],
-            );
-            assert_eq!(
-                result.outcome,
-                Outcome::Truncated {
-                    len: 1,
-                    unread_rows: 1
-                }
-            );
-            assert_eq!(result.bytes_len, 5);
-            assert_eq!(result.required_bytes, 48);
-            assert_eq!(rows[0].id, IDS[0]);
-            assert_eq!(&names[..5], &[b'J', 0xff, b'O', b'n', b'e']);
-        }
-        let result = walk(&memory, 0, GS, &mut [], &mut []);
+        let result = count(&memory, 0, GS);
         assert_eq!(
             result.outcome,
             Outcome::Truncated {
@@ -704,7 +670,7 @@ mod tests {
         ] {
             let mut memory = fixture();
             memory.0.remove(&address);
-            let result = walk(&memory, 0, GS, &mut [Row::default(); 2], &mut [0; 64]);
+            let result = walk(&memory, 0, GS, &mut vec![Row::default(); 2], &mut vec![0; 64]);
             assert!(matches!(result.outcome, Outcome::Unavailable { .. }));
             assert_eq!(result.bytes_len, 0);
         }
@@ -719,7 +685,7 @@ mod tests {
             let mut memory = fixture();
             memory.bytes(address, &bytes);
             assert!(matches!(
-                walk(&memory, 0, GS, &mut [Row::default(); 2], &mut [0; 64]).outcome,
+                walk(&memory, 0, GS, &mut vec![Row::default(); 2], &mut vec![0; 64]).outcome,
                 Outcome::Unavailable { .. }
             ));
         }
@@ -730,21 +696,21 @@ mod tests {
         let mut memory = fixture();
         memory.array(COUNTRY + ccountry::ACES, 0, 0);
         assert_eq!(
-            walk(&memory, 0, GS, &mut [], &mut []).outcome,
+            walk(&memory, 0, GS, &mut Vec::new(), &mut Vec::new()).outcome,
             Outcome::Rows { len: 0 }
         );
         let mut memory = fixture();
         memory.u64(ROSTER + 8, ACE[0] as u64);
-        let mut rows = [Row::default(); 2];
+        let mut rows = vec![Row::default(); 2];
         assert_eq!(
-            walk(&memory, 0, GS, &mut rows, &mut [0; 64]).outcome,
+            walk(&memory, 0, GS, &mut rows, &mut vec![0; 64]).outcome,
             Outcome::Rows { len: 2 }
         );
         assert_eq!([rows[0].id, rows[1].id], [IDS[0], IDS[0]]);
         assert_eq!([rows[0].ordinal, rows[1].ordinal], [0, 1]);
         memory.u64(ROSTER + 8, 0);
         assert!(matches!(
-            walk(&memory, 0, GS, &mut rows, &mut [0; 64]).outcome,
+            walk(&memory, 0, GS, &mut rows, &mut vec![0; 64]).outcome,
             Outcome::Unavailable { .. }
         ));
     }
@@ -767,8 +733,8 @@ mod tests {
         memory.inline(STRINGS + msvc_string::STRIDE, b"GFX_stale_ace");
         // Raw country id is 2; the retained pool is indexed by canonical slot 1.
         // No culture bytes exist: a nonempty retained pool must not refresh them.
-        let mut rows = [Row::default(); 1];
-        let mut names = [0; 64];
+        let mut rows = vec![Row::default(); 1];
+        let mut names = vec![0; 64];
         let result = walk(&memory, 0, GS, &mut rows, &mut names);
         assert_eq!(result.outcome, Outcome::Rows { len: 1 });
         let fields = rows[0].presentation.unwrap();
@@ -791,17 +757,13 @@ mod tests {
             &[0xff; 32]
         );
         assert_eq!(result.required_bytes, 5 + 32 + 13);
-        // A missing extension or a short metadata arena keeps the old fields.
-        for remove in [false, true] {
-            let mut memory = Synthetic(memory.0.clone());
-            if remove {
-                memory.0.remove(&(DEFINITION + TYPE_NAME + 16));
-            }
-            let result = walk(&memory, 0, GS, &mut rows, &mut names[..5]);
-            assert_eq!(result.outcome, Outcome::Rows { len: 1 });
-            assert_eq!(rows[0].presentation, None);
-            assert_eq!(rows[0].id, IDS[0]);
-        }
+        // A missing extension keeps the old fields.
+        let mut memory = Synthetic(memory.0.clone());
+        memory.0.remove(&(DEFINITION + TYPE_NAME + 16));
+        let result = walk(&memory, 0, GS, &mut rows, &mut names);
+        assert_eq!(result.outcome, Outcome::Rows { len: 1 });
+        assert_eq!(rows[0].presentation, None);
+        assert_eq!(rows[0].id, IDS[0]);
     }
 
     #[test]
@@ -824,16 +786,7 @@ mod tests {
                 memory.u64(pointer + REFERENCE, ((index as u64 + 1) << 32) | 10);
                 memory.u64(0x80000 + index * 8, pointer as u64);
             }
-            let mut fixed = [Row::default(); 1];
-            let mut fixed_names = [0_u8; 5];
-            assert_eq!(
-                walk(&memory, 0, GS, &mut fixed, &mut fixed_names).outcome,
-                Outcome::Truncated {
-                    len: 1,
-                    unread_rows: count - 1
-                }
-            );
-            let walked = walk_growing(&memory, 0, GS, &mut rows, &mut names);
+            let walked = walk(&memory, 0, GS, &mut rows, &mut names);
             assert_eq!(
                 walked.outcome,
                 Outcome::Rows {

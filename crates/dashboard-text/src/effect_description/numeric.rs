@@ -147,7 +147,7 @@ impl Renderer<'_, '_, '_> {
         scopes: Scopes,
     ) -> Result<String, String> {
         let Some(features) = self.features(DLC_MASK)? else {
-            return Err("SimulationFeatures lacks the collaboration feature mask".into());
+            return Err("simulation features lacks the collaboration feature mask".into());
         };
         if features.dlc_mask & (1 << 5) == 0 {
             return Ok(String::new());

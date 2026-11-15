@@ -106,14 +106,14 @@ pub fn walk(
     memory: &impl crate::Memory,
     base: usize,
     game_state: usize,
-    output: &mut [Row],
+    mut output: crate::walk::Buffer<'_, Row>,
 ) -> crate::walk::Outcome {
     use crate::{ccharacter_manager, walk::Outcome};
     let result = (|| {
         let mut len = 0;
         let mut unread_rows = 0_u32;
         ccharacter_manager::visit(memory, base, game_state, |entry| {
-            match walk_entry(memory, base, entry, &mut output[len..]) {
+            match walk_entry(memory, base, entry, output.suffix(len)) {
                 Outcome::Rows { len: added } => len += added,
                 Outcome::Truncated {
                     len: added,
@@ -142,7 +142,7 @@ pub fn walk_entry(
     memory: &impl crate::Memory,
     base: usize,
     entry: crate::ccharacter_manager::Entry,
-    output: &mut [Row],
+    mut output: crate::walk::Buffer<'_, Row>,
 ) -> crate::walk::Outcome {
     use crate::{
         ccharacter::{self, at},
@@ -158,6 +158,7 @@ pub fn walk_entry(
         {
             let (character_pointer, character, country) = (entry.pointer, entry.id, entry.country);
             let mut tree = RoleTree::read(memory, character_pointer, ccharacter::LEADER_MAP_HEAD)?;
+            output.ensure(tree.count() as usize)?;
             if len == output.len() {
                 return Ok(if tree.count() == 0 {
                     Outcome::Rows { len: 0 }
@@ -261,7 +262,7 @@ mod tests {
                 },
                 0,
                 entry,
-                &mut rows
+                crate::walk::Buffer::Exact(&mut rows)
             ),
             crate::walk::Outcome::Rows { len: 1 }
         );
@@ -281,7 +282,7 @@ mod tests {
                 },
                 0,
                 entry,
-                &mut rows
+                crate::walk::Buffer::Exact(&mut rows)
             ),
             crate::walk::Outcome::Rows { len: 1 }
         );
@@ -298,7 +299,7 @@ mod tests {
                 },
                 0,
                 entry,
-                &mut rows
+                crate::walk::Buffer::Exact(&mut rows)
             ),
             crate::walk::Outcome::Rows { len: 1 }
         );

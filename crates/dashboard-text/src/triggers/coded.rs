@@ -101,7 +101,7 @@ impl Evaluator<'_, '_> {
                 format!("Countries lacks country slot {slot}").into()
             })?;
             if world.slot(raw) != Some(slot) {
-                return Err(world.unlinked("Countries", raw));
+                return Err(world.unlinked("countries", raw));
             }
             return Ok(Some(match name {
                 "has_country_flag" => self.flag_trigger(item, 1, Some(raw), scopes)?,
@@ -135,7 +135,7 @@ impl Evaluator<'_, '_> {
                         self.ideology_specifier(item.value.scalar(), scopes, declared)?;
                     let actual = world
                         .government(slot)?
-                        .ok_or("PoliticalParties lacks ruling ideology")?;
+                        .ok_or("political parties lacks ruling ideology")?;
                     Eval::from_bool(actual == wanted)
                 }
                 _ => {
@@ -841,7 +841,7 @@ impl Evaluator<'_, '_> {
                             None => {
                                 undecided += 1;
                                 let why = format!(
-                                    "state {} {} {raw} has no CountryLinks row",
+                                    "state {} {} {raw} has no country links row",
                                     state.id,
                                     if controlled { "controller" } else { "owner" }
                                 );
@@ -1041,7 +1041,7 @@ impl Evaluator<'_, '_> {
             LeaderVisibility::Conditioned(index) => world.role_visible(index),
         };
         let Some(slot) = world.slot(row.owner) else {
-            return Eval::unknown(world.unlinked("UnitLeaders", row.owner));
+            return Eval::unknown(world.unlinked("unit leaders", row.owner));
         };
         let frame = format!("unit leader {}'s role", row.id).into_bytes();
         if let Some(why) = self.enter_frame(frame) {
@@ -1289,10 +1289,9 @@ impl Evaluator<'_, '_> {
                 Some(_) => {}
                 None => {
                     result = result.or(|| {
-                        Eval::unknown(format!(
-                            "a UnitLeaders row's country {} has no CountryLinks row",
-                            row.owner
-                        ))
+                        Eval::unknown(
+                            "unit leaders names a country that no recorded country link holds",
+                        )
                     });
                 }
             }

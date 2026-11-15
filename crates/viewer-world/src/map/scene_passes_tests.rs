@@ -292,7 +292,7 @@ fn shader_initialization_refuses_only_actually_read_unknown_bytes() -> io::Resul
 /// A preflight refusal leaves the single encoder usable for an independent draw.
 #[test]
 fn preflight_fault_skips_water_and_independent_pass_renders() {
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let instance = shader_pipeline::gpu::instance();
     let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
     let (device, queue) = pollster::block_on(adapter.request_device(&Default::default())).unwrap();
     let descriptor = wgpu::TextureDescriptor {

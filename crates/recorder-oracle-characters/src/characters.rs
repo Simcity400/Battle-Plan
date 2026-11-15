@@ -99,6 +99,68 @@ fn membership<T: std::fmt::Debug>(report: &mut Report, table: &str, key: T, pres
     report.difference(format!("{table} {key:?} membership"), present, !present);
 }
 
+/// What the save's character roster is compared as, when it holds characters
+/// loading destroys ([`saved::Character::survives_load`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SavedRoster {
+    /// The frame's memory wrote the save and holds every saved character.
+    Written { unloadable: usize },
+    /// The frame's memory loaded the save, which destroyed them.
+    Loaded { unloadable: usize },
+}
+
+/// Fits the saved roster, which every character-keyed comparison reads, to
+/// the memory the frame sampled. At a load hour that memory loaded the save.
+/// At any other hour it either wrote the save, holding every unloadable
+/// character, or loaded it, holding none of them and its later characters
+/// one roster position earlier for each destroyed before them; the frame's
+/// Characters table tells which. A frame holding some of them is compared
+/// as written, so each one it lacks is a difference.
+pub fn fit_saved_roster(
+    frame: &DecodedFrame,
+    manager: &mut saved::Manager,
+    load_hour: bool,
+) -> Option<SavedRoster> {
+    let unloadable: Vec<u64> = manager
+        .characters
+        .values()
+        .filter(|character| !character.survives_load())
+        .map(|character| character.id)
+        .collect();
+    if unloadable.is_empty() {
+        return None;
+    }
+    let loaded = load_hour
+        || complete::<tables::Characters>(frame).is_ok_and(|rows| {
+            let recorded: BTreeSet<u64> = rows.iter().map(|row| handle(73, row.id)).collect();
+            unloadable.iter().all(|id| !recorded.contains(id))
+        });
+    let unloadable = unloadable.len();
+    Some(if loaded {
+        *manager = manager.loaded();
+        SavedRoster::Loaded { unloadable }
+    } else {
+        SavedRoster::Written { unloadable }
+    })
+}
+
+pub fn note_saved_roster(report: &mut Report, roster: SavedRoster) {
+    let (reason, unloadable) = match roster {
+        SavedRoster::Written { unloadable } => (
+            "the save holds characters without a name, which loading destroys; the frame holds them, so its memory wrote the save and every saved character is compared",
+            unloadable,
+        ),
+        SavedRoster::Loaded { unloadable } => (
+            "the save holds characters without a name, which loading destroys; the frame's memory loaded the save (a load hour, or the frame holds none of them), so they and their roles are not expected and later roster positions close up",
+            unloadable,
+        ),
+    };
+    report.limitation(
+        reason,
+        format!("Characters and every character-keyed table: {unloadable} characters"),
+    );
+}
+
 pub fn compare(
     frame: &DecodedFrame,
     pack: &saved::Pack,
@@ -122,7 +184,13 @@ pub fn compare(
         });
         let mut unrepresented = None;
         complete &= report.attempt("UnitLeaders", |report| {
-            unrepresented = Some(compare_leaders(frame, manager, links, report)?);
+            unrepresented = Some(compare_leaders(
+                frame,
+                manager,
+                &pack.character_status,
+                links,
+                report,
+            )?);
             Ok(())
         });
         complete &= report.attempt("UnitLeaderTraits", |report| {
@@ -956,9 +1024,24 @@ fn codename(
 fn compare_leaders(
     frame: &DecodedFrame,
     manager: &saved::Manager,
+    rosters: &BTreeMap<Vec<u8>, Vec<saved::CharacterStatus>>,
     links: &BTreeMap<u32, &CountryRow>,
     report: &mut Report,
 ) -> io::Result<BTreeSet<u64>> {
+    // `None`: listed on several rosters, whose load order the save does not keep.
+    let mut rostered = BTreeMap::<u64, Option<&[u8]>>::new();
+    for (tag, statuses) in rosters {
+        for status in statuses {
+            rostered
+                .entry(status.character)
+                .and_modify(|owner| {
+                    if *owner != Some(tag.as_slice()) {
+                        *owner = None;
+                    }
+                })
+                .or_insert(Some(tag.as_slice()));
+        }
+    }
     let mut seen = BTreeSet::new();
     let mut parents = BTreeSet::new();
     let mut unrepresented = BTreeSet::new();
@@ -1065,23 +1148,28 @@ fn compare_leaders(
                 report.limitation("nonpositive exile-country references are omitted by the game; only the absent-tag predicate is certified", format!("{label}.exile_country"));
             }
         }
-        // The leader's own country is not saved; the role's character writes its country,
-        // which Capture leaves unchanged, as the owner is.
-        match manager
-            .characters
-            .get(&character)
-            .and_then(|saved| saved.country.as_deref())
-        {
-            Some(tag) => equal(
-                report,
-                format!("{label}.owner"),
-                country(row.owner, links)?,
-                Some(tag),
-            ),
-            None => report.limitation(
-                "the saved character has no country to compare the leader owner with",
+        // The leader's owner is not saved. Loading sets it, to that country, only when
+        // a country's active roster lists the saved leader's own character.
+        let owner = country(row.owner, links)?;
+        match rostered.get(&expected.character) {
+            Some(Some(tag)) => equal(report, format!("{label}.owner"), owner, Some(*tag)),
+            Some(None) => report.limitation(
+                "the leader's character is on several countries' rosters; the roster loaded last sets the owner, and the save does not keep their load order",
                 format!("{label}.owner"),
             ),
+            None if owner.is_some()
+                && owner
+                    == manager
+                        .characters
+                        .get(&expected.character)
+                        .and_then(|saved| saved.country.as_deref()) =>
+            {
+                report.limitation(
+                    "a leader built in this run takes its off-roster character's country, which loading leaves without an owner; the save cannot tell the two apart",
+                    format!("{label}.owner"),
+                );
+            }
+            None => equal(report, format!("{label}.owner"), owner, None),
         }
     }
     for id in manager.unit_leaders.keys().filter(|id| !seen.contains(id)) {

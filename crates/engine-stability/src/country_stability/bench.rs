@@ -14,7 +14,7 @@ use super::{
     DYNAMIC_CONSTANT, DYNAMIC_VALUE_ROW_STRIDE, DYNAMIC_VALUE_ROWS, IDEA_MODIFIER,
     IDEOLOGY_GROUP_MODIFIER, InputRow, Keys, Kind, LEADER_MODIFIER, LineRow, MODIFIER_CHILDREN,
     Memo, RING, RING_DATA, RING_SIZE, STATIC_DATABASE_RVA, STATIC_NAME, STATIC_SLOTS, Scratch,
-    TRACKED, walk_country_growing_memo,
+    TRACKED, walk_country_memo,
 };
 use crate::{
     cadvisor, ccharacter, ccountry, ccountry_characters, ccountry_leader, cdiplomacy_status,
@@ -573,7 +573,7 @@ impl Run {
             } else {
                 (0, 0)
             };
-            let walked = walk_country_growing_memo(
+            let walked = walk_country_memo(
                 memory,
                 fixture.arena.base(),
                 countries,

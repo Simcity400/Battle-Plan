@@ -19,10 +19,9 @@ use crate::{
 };
 use engine_allocation as allocation;
 use engine_native::{Memory, ccountry, country_memory::Cache, cwar_relation, walk::Outcome};
-use std::sync::Arc;
 
 pub(crate) struct Request {
-    pub countries: Arc<Cache>,
+    pub countries: engine_allocation::SharedBox<Cache>,
     pub table: acquisition_gather::Request<Vec<cwar_relation::Row>>,
     pub snapshot: cwar_relation::OwnedSnapshotScratch,
     pub snapshot_sampled: bool,
@@ -141,7 +140,7 @@ impl WarStore {
             };
             return (Outcome::Rows { len }, counts);
         }
-        let outcome = cwar_relation::walk_owned_growing(
+        let outcome = cwar_relation::walk_owned(
             memory,
             countries,
             base,
@@ -182,16 +181,11 @@ impl Report {
     }
 }
 impl Request {
-    #[cfg(test)]
     pub(crate) fn run(&mut self, memory: &impl Memory) -> Report {
-        self.run_with(memory, false)
+        self.run_with(memory)
     }
 
-    pub(crate) fn run_growing(&mut self, memory: &impl Memory) -> Report {
-        self.run_with(memory, true)
-    }
-
-    fn run_with(&mut self, memory: &impl Memory, growing: bool) -> Report {
+    fn run_with(&mut self, memory: &impl Memory) -> Report {
         let _reads = crate::read_accounting::table(replay_data::rows::TableId::WarRelations);
         let Self {
             countries,
@@ -204,8 +198,8 @@ impl Request {
         let (base, game_state) = (table.base, table.game_state);
         let begin = sampling::qpc();
         *snapshot_sampled = true;
-        let table = table.run(|rows| match (growing, store.as_deref_mut()) {
-            (true, Some(store)) => {
+        let table = table.run(|rows| match store.as_deref_mut() {
+            Some(store) => {
                 let (outcome, counts) = store.capture(
                     memory,
                     &cached,
@@ -218,12 +212,9 @@ impl Request {
                 crate::war_changes::record(&counts);
                 outcome
             }
-            (true, None) => cwar_relation::walk_owned_growing(
+            None => cwar_relation::walk_owned(
                 memory, &cached, base, game_state, rows, snapshot, None,
             ),
-            (false, _) => {
-                cwar_relation::walk_owned(memory, &cached, base, game_state, rows, snapshot)
-            }
         });
         // One conference can end every live war relation in an hour.
         match table.result {
@@ -261,12 +252,13 @@ mod tests {
             &memory,
             kit::BASE,
             kit::GAME_STATE,
-            &mut [cwar_relation::Row::default(); 4],
+            &mut vec![cwar_relation::Row::default(); 4],
             &mut snapshot,
+            None,
         );
         snapshot.grow(5).unwrap();
         Request {
-            countries: Arc::new(countries),
+            countries: engine_allocation::shared(countries).unwrap(),
             table: acquisition_gather::Request {
                 base: kit::BASE,
                 game_state: kit::GAME_STATE,
@@ -285,7 +277,7 @@ mod tests {
     }
 
     #[test]
-    fn single_owned_wars_preserve_primary_rows_and_storage_at_every_capacity() {
+    fn single_owned_wars_preserve_primary_rows_from_every_starting_capacity() {
         let bytes = kit::fixture();
         for capacity in [0, 1, 2, 4] {
             let memory = kit::memory(&bytes);
@@ -297,12 +289,10 @@ mod tests {
                 kit::GAME_STATE,
                 &mut expected,
             );
-            let pointer = request.table.payload.as_ptr();
             let snapshot_capacity = request.snapshot.capacity();
             let report = request.run(&memory);
             assert_eq!(report.table.result, baseline);
             assert_eq!(request.table.payload, expected);
-            assert_eq!(request.table.payload.as_ptr(), pointer);
             assert_eq!(request.snapshot.capacity(), snapshot_capacity);
             assert!(request.snapshot_sampled);
             if capacity >= 2 {
@@ -315,16 +305,9 @@ mod tests {
     fn growing_owned_wars_fill_the_first_empty_row_buffer() {
         let bytes = kit::fixture();
         let memory = kit::memory(&bytes);
-        assert_eq!(
-            request(&bytes, 0).run(&memory).table.result,
-            Outcome::Truncated {
-                len: 0,
-                unread_rows: 2
-            }
-        );
         let mut request = request(&bytes, 0);
         let expected = kit::direct(&memory, 2);
-        let report = request.run_growing(&memory);
+        let report = request.run(&memory);
         assert_eq!(report.table.result, Outcome::Rows { len: 2 });
         assert_eq!(report.table.result, expected.owned_outcome);
         assert_eq!(&request.table.payload[..2], &expected.owned);

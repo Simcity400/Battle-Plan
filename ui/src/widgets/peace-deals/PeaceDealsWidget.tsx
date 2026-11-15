@@ -1,11 +1,13 @@
 import { countryNameDetails } from '../../charts/tooltip.ts';
 import { failureDetails } from '../../dashboard/queryError.ts';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ChipSet } from '../../components/ChipSet';
 import { CountryFlagUrl, countryFlagUnavailable } from '../../components/CountryFlag';
 import { Icon } from '../../components/Icons';
 import WidgetState from '../../components/WidgetState';
-import LogList, { PreparedLogCoverage } from '../../charts/log/LogList';
+import LogList from '../../charts/log/LogList';
+import LiveText from '../../charts/LiveText';
+import type { LiveTexts } from '../../charts/LiveText';
 import FittedList from '../../charts/FittedList';
 import { logSettings } from '../../charts/log/logOptions';
 import { jumpItem } from '../../charts/jump';
@@ -14,18 +16,19 @@ import type { TooltipContent } from '../../charts/tooltip';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
 import { contentKey, contentSet, resolveOptions, storableToken, toggleContentSet, UNSTORABLE } from '../../dashboard/options';
-import { usePlaybackHour } from '../../dashboard/playback';
-import { useParityRows } from '../../dashboard/parityRows';
+import { useAheadHour } from '../../dashboard/aheadHour';
+import { aheadEnd, useRevealClock } from '../../charts/reveal';
 import { usePeaceDeals } from '../../dashboard/usePeaceDeals';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { useStateNamesAt } from '../../dashboard/useStateNamesAt';
-import { preparedPrefix } from '../../dashboard/preparedPrefix';
 import { formatDateTime } from '../../dashboard/calendar';
 import { chipsByValue, conferenceLabel, derivedNote, filterPeaceLog, peaceActionChoices, peaceActionName, peaceActionTotals, peaceDescription, peaceGapHint,
-  peaceGapsIn, peaceRowHeight, peacePlayback, peaceTooltipRows, peaceWanted, preparePeaceLog, WAR_END_NOTE } from './peaceData.ts';
+  peaceBlockRows, peaceChangeHours, peaceGapsIn, peaceRowHeight, peacePlayback, peaceTooltipRows, peaceWanted, preparePeaceLog, WAR_END_NOTE } from './peaceData.ts';
 import type { PeaceActionRow, PeaceCard, PeaceChip, PeaceRow } from './peaceData';
 import { OPTIONS } from './definition';
 import './peaceDeals.css';
+import { useShownEachFrame } from '../../dashboard/widgetPerf';
+import { trackHourOf } from '../../dashboard/settledHour';
 
 const NO_ROWS: readonly PeaceRow[] = [];
 const NO_WARNINGS: string[] = [];
@@ -36,29 +39,67 @@ const chipKey = (item: PeaceChip) => item.key;
 const plural = (count: number, word: string) => `${usNumber.format(count)} ${word}${count === 1 ? '' : 's'}`;
 
 export default function PeaceDealsWidget({ widget, runtime, active, onDiagnostics, setOption }: WidgetProps) {
-  const parity = useRef<HTMLDivElement>(null);
   const live = widget.time.mode === 'follow';
-  const playbackHour = usePlaybackHour(runtime.clock, active && live);
   const options = resolveOptions(OPTIONS, widget.options);
   const settings = logSettings(options);
   const actions = typeof options.actions === 'string' ? options.actions : '';
-  const { track, data, error, retry, preparing } = usePeaceDeals(widget, runtime, active);
-  // Before preparation covers the branch, the deals of its prepared prefix.
-  const prefix = useMemo(() => preparedPrefix(data), [data]);
-  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
-  const hour = window?.lastHour;
+  const { track, data, error, retry } = usePeaceDeals(widget, runtime, active);
+useShownEachFrame(runtime.clock, () => data && track ? trackHourOf(widget, track, runtime.tracks, runtime.clock.getHour()) : null);
   const log = useMemo(() => data ? preparePeaceLog(data) : null, [data]);
   const filtered = useMemo(() => log ? filterPeaceLog(log, contentSet(actions).map(contentKey)) : null, [log, actions]);
+  // Following, the list renders a block at once: each conference's states through the block's end, hidden until the
+  // clock reaches them (`reveal`), and the missing-hours note as of the block's first hour. It renders again only when
+  // the clock leaves the block, never for a card revealed inside it.
+  const following = active && live;
+  const trackHour = useCallback((clockHour: number) => Math.floor((track && resolveWindow(widget, track, runtime.tracks, clockHour)?.lastHour) ?? clockHour),
+    [widget, track, runtime.tracks]);
+  const changes = useMemo(() => {
+    if (!filtered) return [];
+    const gaps = log ? log.gaps.flatMap(gap => [gap.firstHour, gap.lastHour + 1]) : [];
+    return [...new Set([...peaceChangeHours(filtered, -Infinity), ...gaps])].sort((a, b) => a - b);
+  }, [filtered, log]);
+  const end = useCallback((clockHour: number) => {
+    const base = trackHour(clockHour), { hoursPerSecond, playing } = runtime.clock.getSnapshot();
+    return Math.floor(clockHour) + aheadEnd(changes, base, hoursPerSecond, playing) - base;
+  }, [trackHour, runtime.clock, changes]);
+  const block = useAheadHour(runtime.clock, following, end);
+  const window = track && resolveWindow(widget, track, runtime.tracks, block.hour);
+  const hour = window?.lastHour;
   const from = widget.time.mode === 'range' ? window?.firstHour ?? Infinity : -Infinity;
-  const rowPlayback = useMemo(() => filtered ? peacePlayback(filtered, from) : null, [filtered, from]);
-  const rows = hour != null ? rowPlayback?.at(hour) ?? NO_ROWS : NO_ROWS;
-  if (import.meta.env.MODE === 'parity') useParityRows(parity, () => ({ kind: 'log', label: 'Peace deal values', complete: true, total: rows.length,
-    rows: rows.map((row, index) => ({ index, key: row.key, item: row.item })) }));
+  const reveal = useRevealClock(runtime.clock, following, trackHour);
+  const blockLast = hour == null ? null : hour + block.until - 1 - Math.floor(block.hour);
+  const rowPlayback = useMemo(() => filtered && !reveal ? peacePlayback(filtered, from) : null, [filtered, from, reveal]);
+  const blockRows = useMemo(() => filtered && reveal && hour != null && blockLast != null ? peaceBlockRows(filtered, from, hour, blockLast, changes) : null,
+    [filtered, reveal, hour, blockLast, from, changes]);
+  const rows = blockRows ?? (hour != null ? rowPlayback?.at(hour) ?? NO_ROWS : NO_ROWS);
   const gapHint = useMemo(() => log && hour != null ? peaceGapHint(peaceGapsIn(log.gaps, hour, from)) : null, [log, hour, from]);
   const chips = useMemo(() => peaceActionChoices(log).map(choice => ({ ...choice, unavailable: storableToken(choice.value) ? undefined : UNSTORABLE })), [log]);
   const summary = useMemo(() => peaceSummary(rows), [rows]);
+  // Revealed by the clock, the counts are of the cards it shows, painted each frame: the block holds cards ahead.
+  const summaryLive = useMemo<LiveTexts | null>(() => {
+    if (!reveal) return null;
+    let held: { hour: number; count: number; states: number; quiet: number } | null = null;
+    const at = () => {
+      const hour = reveal.hour();
+      if (held?.hour === hour) return held;
+      const shown = rows.filter(row => Math.max(row.hour, row.revealedHour ?? row.hour) <= hour && (row.leftHour === undefined || row.leftHour > hour));
+      return held = { hour, count: shown.length, ...peaceSummary(shown) };
+    };
+    return { subscribe: reveal.subscribe, text: key => {
+      const now = at();
+      switch (key) {
+        case 'count': return usNumber.format(now.count);
+        case 'conferences': return now.count === 1 ? 'conference' : 'conferences';
+        case 'states': return usNumber.format(now.states);
+        case 'statesNoun': return `${now.states === 1 ? 'state' : 'states'} in their outcomes`;
+        case 'quiet': return now.quiet > 0 ? usNumber.format(now.quiet) : '';
+        default: return now.quiet > 0 ? 'with no actions recorded' : '';
+      }
+    } };
+  }, [reveal, rows]);
   const [visible, setVisible] = useState<readonly PeaceRow[]>(NO_ROWS);
-  const wanted = useMemo(() => peaceWanted(visible), [visible]);
+  // Revealed by the clock, every card the block draws is named with it, never as cards come into view.
+  const wanted = useMemo(() => peaceWanted(reveal ? rows : visible), [reveal, rows, visible]);
   const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted.countries, active && !!data, Infinity);
   const stateAt = useStateNamesAt(runtime.client, track, wanted.states, active && !!data);
   useEffect(() => { onDiagnostics(data?.warnings ?? NO_WARNINGS); return () => onDiagnostics(NO_WARNINGS); }, [data, onDiagnostics]);
@@ -85,7 +126,7 @@ export default function PeaceDealsWidget({ widget, runtime, active, onDiagnostic
 
   if (!track) return <WidgetState kind="empty" icon="history" message="Load a campaign to see its peace conferences." />;
   if (error && !data) return <WidgetState kind="error" failure={error} onRetry={retry} />;
-  if (!data) return preparing ? <PreparedLogCoverage coverage={null} /> : <WidgetState kind="loading" label="Loading peace conferences…" />;
+  if (!data) return <WidgetState kind="loading" label="Loading peace conferences…" />;
   if (hour == null || hour < track.branch.firstHour || hour > track.branch.lastHour) return <>{error && <WidgetState kind="error" failure={error} onRetry={retry} />}<WidgetState kind="unavailable" message="This time is outside the recording." /></>;
 
   const flag = (tag: string, at: number) => {
@@ -116,7 +157,7 @@ export default function PeaceDealsWidget({ widget, runtime, active, onDiagnostic
       <div className="peace-take-head">
         {action.winner == null ? <span className="peace-muted">Taker not recorded</span>
           : <span className="peace-taker">{flag(action.winner, at)}<b>{labelAt(at)(action.winner).name}</b></span>}
-        <em>{peaceActionName(action)}</em>
+        <em>{peaceActionName(action, name => labelAt(name.hour)(name.tag).name)}</em>
         <span className="peace-nums">
           {totals.states > 0 && <span><b>{usNumber.format(totals.states)}</b> {totals.states === 1 ? 'state' : 'states'}</span>}
           {totals.vp != null && <span><b>{usNumber.format(totals.vp)}</b> VP</span>}
@@ -132,7 +173,6 @@ export default function PeaceDealsWidget({ widget, runtime, active, onDiagnostic
   const renderRow = ({ item: card }: PeaceRow) => {
     const { deal } = card;
     const captured = deal.captured;
-    const outcomePending = deal.preparing.includes('outcome');
     const estimate = deal.observation === 'recordedConference' ? null
       : deal.observation === 'conferenceNotRecorded' ? 'Estimated from war end' : 'Conference unknown';
     const date = <time>{card.by && 'by '}{formatDateTime(card.hour)}</time>;
@@ -141,13 +181,11 @@ export default function PeaceDealsWidget({ widget, runtime, active, onDiagnostic
       {side(deal.winners, card.hour, captured?.winners.length ?? null, 'winner')}
       <Icon name="arrow" />
       {side(deal.losers, card.hour, captured?.losers.length ?? null, 'loser')}
-      <span className="peace-quiet-note">{outcomePending ? 'Outcome still being prepared'
-        : derivedNote(deal) || (captured ? 'No actions recorded' : 'Outcomes not recorded')}</span>
+      <span className="peace-quiet-note">{derivedNote(deal) || (captured ? 'No actions recorded' : 'Outcomes not recorded')}</span>
     </article>;
     return <article className="peace-deal">
       <div className="peace-meta">{date}<span className="peace-spacer" />
-        {estimate && <span className="peace-tag is-estimate" data-tooltip={derivedNote(deal) || undefined}><Icon name="clock" />{estimate}</span>}
-        {outcomePending && <span className="peace-tag">Outcome still being prepared</span>}</div>
+        {estimate && <span className="peace-tag is-estimate" data-tooltip={derivedNote(deal) || undefined}><Icon name="clock" />{estimate}</span>}</div>
       <div className="peace-sides">
         {side(deal.winners, card.hour, captured?.winners.length ?? null, 'winner')}
         <span className="peace-defeated">defeated</span>
@@ -159,8 +197,13 @@ export default function PeaceDealsWidget({ widget, runtime, active, onDiagnostic
   };
   const chosen = contentSet(actions);
   const empty = chosen.length ? 'No peace conferences match these settings yet.' : 'No peace conferences yet.';
-  return <div data-detail={failureDetails(wanted.states.map(read => stateAt(read.hour, read.state).failure))} className="peace-deals" ref={parity}>
-    {rows.length > 0 && <div className="peace-summary">
+  return <div data-detail={failureDetails(wanted.states.map(read => stateAt(read.hour, read.state).failure))} className="peace-deals">
+    {rows.length > 0 && summaryLive && <div className="peace-summary">
+      <span><b><LiveText live={summaryLive} at="count" /></b> <LiveText live={summaryLive} at="conferences" /></span>
+      <span><b><LiveText live={summaryLive} at="states" /></b> <LiveText live={summaryLive} at="statesNoun" /></span>
+      <span><b><LiveText live={summaryLive} at="quiet" /></b> <LiveText live={summaryLive} at="quietNoun" /></span>
+    </div>}
+    {rows.length > 0 && !summaryLive && <div className="peace-summary">
       <span><b>{usNumber.format(rows.length)}</b> {rows.length === 1 ? 'conference' : 'conferences'}</span>
       <span><b>{usNumber.format(summary.states)}</b> {summary.states === 1 ? 'state' : 'states'} in their outcomes</span>
       {summary.quiet > 0 && <span><b>{usNumber.format(summary.quiet)}</b> with no actions recorded</span>}
@@ -173,9 +216,8 @@ export default function PeaceDealsWidget({ widget, runtime, active, onDiagnostic
     {error && <WidgetState kind="error" failure={error} onRetry={retry} />}
     {gapHint && <p className="peace-note" data-tooltip={gapHint}>Some conferences may be missing.</p>}
     <LogList key={JSON.stringify([track.source.id, track.source.revision, track.branch.id])} rows={rows} label="Peace conferences" layout="card" density={settings.density} months={settings.months}
-    preparedCoverage={prefix?.coverage}
     animate={live && settings.animate} rowHeight={peaceRowHeight} renderRow={renderRow} describe={describe} tooltip={tooltip}
-    menu={row => [jumpItem(runtime, track.id, row.hour)]} onVisible={setVisible} empty={empty} /></div>;
+    playhead={reveal ? hour : undefined} reveal={reveal} menu={row => [jumpItem(runtime, track.id, row.hour)]} onVisible={reveal ? undefined : setVisible} empty={empty} /></div>;
 }
 
 /** The shown conferences' states (each state once per conference) and how many record no actions. */

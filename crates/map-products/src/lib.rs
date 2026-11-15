@@ -131,6 +131,49 @@ impl ProductContent {
 
 pub use map_display_data::Header;
 
+/// The line for a perspective table the hour truncated: `UnitIntel` or `CountryIntel`.
+pub fn note_truncated_perspective(out: &mut Limitations, table: &str) {
+    out.note_field(
+        &format!("{table} (perspective)"),
+        if table == "UnitIntel" {
+            "the rows this hour did not reach may hold any unit's detection, so a foreign \
+             unit without a recorded row is drawn in full, as with fog of war off, \
+             including where the game hid it or drew its question mark"
+        } else {
+            "the rows this hour did not reach are not read as an absent value, so the \
+             intel they would decide is withheld"
+        },
+    );
+}
+
+/// The line for the provinces, ascending, whose recorded name this port cannot lay out; none
+/// when there are none.
+pub fn note_unreadable_names(out: &mut Limitations, unreadable: &[u32]) {
+    if unreadable.is_empty() {
+        return;
+    }
+    out.note_field(
+        "ProvinceNames.name",
+        &format!(
+            "the recorded name of {} {} ({}) is not text this port can lay out, so {} \
+             keeps the static localised name of its province",
+            unreadable.len(),
+            if unreadable.len() == 1 {
+                "province"
+            } else {
+                "provinces"
+            },
+            unreadable
+                .iter()
+                .take(8)
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(", "),
+            if unreadable.len() == 1 { "it" } else { "each" },
+        ),
+    );
+}
+
 #[derive(Clone)]
 pub struct FogProduct {
     pub intel: Arc<IntelMap>,
@@ -271,24 +314,13 @@ impl<'a> ProductHour<'a> {
         vision: &perspective::Vision,
     ) -> viewer_world::map::animated_map_text::events::Prepared {
         let _cost = replay_frame::cpu::scope("viewer", Some("engagement/strikes/text"));
-        use viewer_world::map::animated_map_text::events::{Context, Prepared};
-        let view = vision.ours();
-        match viewer_foundation::table_access::rows::<replay_data::rows::tables::MapEvents>(
+        events::Prepared::read(
             self.frame,
-        ) {
-            Ok(intervals) => Prepared::new(
-                &Context::new(
-                    self.frame,
-                    vision,
-                    &self.content.map_text,
-                    &self.content.localisation,
-                ),
-                intervals.rows(),
-                intervals.is_complete(),
-                |province| self.content.impact_place(province),
-            ),
-            Err(error) => Prepared::unavailable(view, format!("map text table malformed: {error}")),
-        }
+            vision,
+            &self.content.map_text,
+            &self.content.localisation,
+            |province| self.content.impact_place(province),
+        )
     }
 
     pub fn limitations(&self, perspective: &perspective::Choice) -> io::Result<Limitations> {
@@ -348,41 +380,9 @@ impl<'a> ProductHour<'a> {
             out.note_fog_of_war(intel.fogged_texels(), self.hour_fraction);
         }
         for table in vision.truncated() {
-            out.note_field(
-                &format!("{table} (perspective)"),
-                if *table == "UnitIntel" {
-                    "the rows this hour did not reach may hold any unit's detection, so a foreign \
-                     unit without a recorded row is drawn in full, as with fog of war off, \
-                     including where the game hid it or drew its question mark"
-                } else {
-                    "the rows this hour did not reach are not read as an absent value, so the \
-                     intel they would decide is withheld"
-                },
-            );
+            note_truncated_perspective(&mut out, table);
         }
-        let unreadable = labels::unreadable_overrides(frame)?;
-        if !unreadable.is_empty() {
-            out.note_field(
-                "ProvinceNames.name",
-                &format!(
-                    "the recorded name of {} {} ({}) is not text this port can lay out, so {} \
-                     keeps the static localised name of its province",
-                    unreadable.len(),
-                    if unreadable.len() == 1 {
-                        "province"
-                    } else {
-                        "provinces"
-                    },
-                    unreadable
-                        .iter()
-                        .take(8)
-                        .map(u32::to_string)
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                    if unreadable.len() == 1 { "it" } else { "each" },
-                ),
-            );
-        }
+        note_unreadable_names(&mut out, &labels::unreadable_overrides(frame)?);
         labels::note_withheld_capitals(&mut out, frame, &links)?;
         Ok(out)
     }
@@ -489,22 +489,12 @@ impl<'a> ProductHour<'a> {
                 return Some(Vec::new());
             }
             let grids = templates.get(&template)?;
-            grids
-                .ambience_slots()
-                .filter(|subunit| subunit.token != 0)
-                .map(|subunit| {
-                    Some((
-                        name(subunit.token)?,
-                        usize::try_from(subunit.count).unwrap_or(0),
-                    ))
-                })
-                .collect()
+            viewer_audio::battle::composition(
+                grids.ambience_slots().map(|subunit| (subunit.token, subunit.count)),
+                &name,
+            )
         });
-        if unknown > 0 {
-            refusals.push(format!(
-                "{unknown} combat divisions have no recorded template composition or sub-unit name, so their sub-units do not count toward battle layers"
-            ));
-        }
+        refusals.extend(viewer_audio::battle::unknown_refusal(unknown));
         Some(viewer_audio::Battles { battles, refusals })
     }
 
@@ -543,9 +533,25 @@ impl<'a> ProductHour<'a> {
         memos: &FogMemos,
         spans: &mut BuilderSpans,
     ) -> io::Result<Arc<FogProduct>> {
+        self.fog_with(choice, memos, spans, true)
+    }
+
+    /// [`Self::fog`], the intel texture built only with `intel`; without it the all-clear grid
+    /// stands in (the map draws the texture from its intel layer).
+    pub fn fog_with(
+        &self,
+        choice: &perspective::Choice,
+        memos: &FogMemos,
+        spans: &mut BuilderSpans,
+        intel: bool,
+    ) -> io::Result<Arc<FogProduct>> {
         let vision = spans.measure("fog.vision", |_| self.vision(choice))?;
         let visibility = vision.shared_province_fog();
+        let built = intel;
         let intel = spans.measure("fog.intel_patch", |_| -> io::Result<_> {
+            if !built {
+                return Ok(Arc::new(textures::clear_intel_map(&self.content.map)?));
+            }
             // Taken out of the memo, so views of other perspectives patch theirs meanwhile.
             let previous = memos.intel(choice);
             if let Some((old, intel)) = &previous {
@@ -622,64 +628,39 @@ fn recorded_battles(
     layers: bool,
     composition: impl Fn(u64) -> Option<Vec<(String, usize)>>,
 ) -> (Vec<viewer_audio::battle::Battle>, usize) {
-    #[derive(Default)]
-    struct Front {
-        divisions: usize,
-        sub_units: BTreeMap<String, usize>,
-        unknown: usize,
-    }
+    use viewer_audio::battle::{self, Front};
     let mut fronts: BTreeMap<u32, Front> = BTreeMap::new();
     for combat in combats {
-        let front = fronts.entry(combat.province).or_default();
-        front.divisions += combat.attackers.len() + combat.defenders.len();
-        if !layers {
-            continue;
-        }
-        let members = combat
-            .attackers
-            .iter()
-            .zip(&combat.attacker_classes)
-            .chain(combat.defenders.iter().zip(&combat.defender_classes));
-        for (&division, _) in members.filter(|(_, class)| **class == DIVISION_CLASS) {
-            match composition(division) {
-                Some(units) => {
-                    for (unit, count) in units {
-                        *front.sub_units.entry(unit).or_default() += count;
-                    }
-                }
-                None => front.unknown += 1,
-            }
-        }
+        let members = battle::divisions(
+            &combat.attackers,
+            &combat.attacker_classes,
+            &combat.defenders,
+            &combat.defender_classes,
+        );
+        fronts.entry(combat.province).or_default().add(
+            combat.attackers.len() + combat.defenders.len(),
+            members,
+            layers,
+            &composition,
+        );
     }
     let mut unknown = 0;
     let battles = recorded
         .iter()
         .map(|row| {
-            let mut battle = viewer_audio::battle::Battle {
-                key: row.object,
-                provinces: row.provinces.clone(),
-                center: [f32::from_bits(row.center_x), f32::from_bits(row.center_z)],
-                radius: f32::from_bits(row.radius),
-                divisions: 0,
-                sub_units: BTreeMap::new(),
-            };
-            for province in &row.provinces {
-                let Some(front) = fronts.get(province) else {
-                    continue;
-                };
-                battle.divisions += front.divisions;
-                unknown += front.unknown;
-                for (unit, count) in &front.sub_units {
-                    *battle.sub_units.entry(unit.clone()).or_default() += count;
-                }
-            }
-            battle
+            battle::battle(
+                row.object,
+                row.provinces.clone(),
+                [f32::from_bits(row.center_x), f32::from_bits(row.center_z)],
+                f32::from_bits(row.radius),
+                |province| fronts.get(&province),
+                String::clone,
+                &mut unknown,
+            )
         })
         .collect();
     (battles, unknown)
 }
-
-const DIVISION_CLASS: u32 = 0;
 const MUSIC_CHANCE_ONE: f64 = 100_000.0;
 
 const _: fn() = || {

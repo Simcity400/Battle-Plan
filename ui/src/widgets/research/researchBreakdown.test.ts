@@ -1,14 +1,15 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { ResearchEntry, ResearchSlotHistory, ResearchSlotState } from '../../generated/dashboard';
+import type { ResearchSlotHistory } from './types';
 import { researchAt, researchRateAt } from './researchData.ts';
 import { researchBreakdown, researchNumber, researchSplit, researchWork } from './researchBreakdown.ts';
 import { researchJourney, researchTimeSplit } from './researchJourney.ts';
+import type { ResearchEntry, ResearchSlotState } from '../../generated/dashboard';
 
 const start = 43_800_000 + 1938 * 8760;
 const assignment: ResearchEntry = {
   token: 'radio', technologyHandle: 1, databaseIndex: 1, continuityStartHour: start, level: 0, firstObservedHour: start, startedAfterHour: start - 1,
-  lastObservedHour: start + 150 * 24 - 1, endedByHour: start + 150 * 24, outcome: 'completed',
+  lastObservedHour: start + 150 * 24 - 1, endedByHour: start + 150 * 24, outcomeObservedHour: null, outcome: 'completed',
 };
 function state(from: number, to: number, bonus: string): ResearchSlotState {
   return {

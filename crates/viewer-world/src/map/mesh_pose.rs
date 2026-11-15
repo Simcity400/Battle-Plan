@@ -116,6 +116,18 @@ pub(super) fn actors_uncached(
     player: Option<&super::entity_animation::Player>,
     frozen_animation: bool,
 ) -> Vec<Actor> {
+    match player {
+        Some(player) => actors_with(rig, frozen_animation, Some(&|index| player.native_locals(rig, index))),
+        None => actors_with(rig, frozen_animation, None),
+    }
+}
+
+/// [`actors_uncached`] with each node's played local poses from `locals` (none: frozen or none).
+pub(super) fn actors_with(
+    rig: &super::entity_animation::Rig,
+    frozen_animation: bool,
+    locals: Option<&dyn Fn(usize) -> io::Result<Option<Locals>>>,
+) -> Vec<Actor> {
     let mut actors: Vec<Actor> = Vec::with_capacity(rig.nodes.len());
     for (index, node) in rig.nodes.iter().enumerate() {
         let Some(source) = node.native.as_ref() else {
@@ -131,22 +143,20 @@ pub(super) fn actors_uncached(
         let pose = if source.skeleton.is_empty() {
             Ok(Pose::default())
         } else {
-            let locals = player.map_or_else(
-                || {
-                    source
-                        .frozen
-                        .as_ref()
-                        .filter(|_| frozen_animation)
-                        .map(|a| {
-                            sample(a, 0., false).map(|poses| Locals {
-                                poses,
-                                crossfade: false,
-                            })
+            let locals = match locals {
+                Some(played) => played(index),
+                None => source
+                    .frozen
+                    .as_ref()
+                    .filter(|_| frozen_animation)
+                    .map(|a| {
+                        sample(a, 0., false).map(|poses| Locals {
+                            poses,
+                            crossfade: false,
                         })
-                        .transpose()
-                },
-                |p| p.native_locals(rig, index),
-            );
+                    })
+                    .transpose(),
+            };
             locals
                 .and_then(|locals| {
                     let locals = locals.ok_or_else(|| {

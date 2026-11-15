@@ -455,6 +455,33 @@ fn receiver(receiver: Receiver, first: usize) -> usize {
     }
 }
 
+/// The receiver a `kind` site names from its first two arguments; `None` revokes every template.
+fn selected_receiver(
+    memory: &impl Memory,
+    base: usize,
+    kind: Receiver,
+    first: usize,
+    second: usize,
+) -> Option<usize> {
+    match kind {
+        Receiver::Every => None,
+        Receiver::OccupationGroup => first
+            .checked_add(engine_mutations::template_mutations::OCCUPATION_PARENT)
+            .and_then(|at| engine_native::read::<u64>(memory, at))
+            .and_then(|at| usize::try_from(at).ok())
+            .filter(|&at| at != 0),
+        Receiver::ScopeCountry | Receiver::CommandCountry => (if kind == Receiver::CommandCountry {
+            first.checked_add(engine_mutations::template_mutations::COMMAND_COUNTRY)
+        } else {
+            second.checked_add(engine_mutations::template_mutations::EFFECT_SCOPE_COUNTRY)
+        })
+        .and_then(|at| engine_native::read::<u32>(memory, at))
+        .and_then(|raw| engine_mutations::country_input_mutations::of_link(memory, base, raw))
+        .map(|country| country as usize),
+        _ => Some(receiver(kind, first)).filter(|&at| at != 0),
+    }
+}
+
 /// The notification `site`'s writer gives `watches`, and its occupation holder's.
 pub(crate) fn native_notification(
     watches: &Watches,
@@ -462,39 +489,27 @@ pub(crate) fn native_notification(
     first: usize,
     second: usize,
 ) -> (Notification<'_>, Option<Notification<'static>>) {
-    let kind = MUTATIONS[site].1;
-    let selected = match kind {
-        Receiver::Every => None,
-        Receiver::OccupationGroup | Receiver::ScopeCountry | Receiver::CommandCountry => {
-            // SAFETY: all reads are guarded on the native calling thread.
-            let memory = unsafe { engine_native::memory::LiveMemory::new() };
-            match kind {
-                Receiver::OccupationGroup => first
-                    .checked_add(engine_mutations::template_mutations::OCCUPATION_PARENT)
-                    .and_then(|at| engine_native::read::<u64>(&memory, at))
-                    .and_then(|at| usize::try_from(at).ok())
-                    .filter(|&at| at != 0),
-                Receiver::ScopeCountry | Receiver::CommandCountry => (if kind
-                    == Receiver::CommandCountry
-                {
-                    first.checked_add(engine_mutations::template_mutations::COMMAND_COUNTRY)
-                } else {
-                    second.checked_add(engine_mutations::template_mutations::EFFECT_SCOPE_COUNTRY)
-                })
-                .and_then(|at| engine_native::read::<u32>(&memory, at))
-                .and_then(|raw| {
-                    engine_mutations::country_input_mutations::of_link(
-                        &memory,
-                        BASE.load(Ordering::Acquire),
-                        raw,
-                    )
-                })
-                .map(|country| country as usize),
-                _ => unreachable!(),
-            }
-        }
-        _ => Some(receiver(kind, first)).filter(|&at| at != 0),
-    };
+    // SAFETY: all reads are guarded on the native calling thread.
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    notification(
+        watches,
+        &memory,
+        BASE.load(Ordering::Acquire),
+        site,
+        first,
+        second,
+    )
+}
+
+fn notification<'a>(
+    watches: &'a Watches,
+    memory: &impl Memory,
+    base: usize,
+    site: usize,
+    first: usize,
+    second: usize,
+) -> (Notification<'a>, Option<Notification<'static>>) {
+    let selected = selected_receiver(memory, base, MUTATIONS[site].1, first, second);
     let occupation = (38..=41)
         .contains(&site)
         .then(|| collector_observers::occupation_changes::holder_changed(selected));
@@ -1259,5 +1274,76 @@ mod tests {
         assert_ne!(Changes::quiet(&watches), Some(quiet));
         assert_eq!(watches.calls[site].load(Ordering::Relaxed), 1);
         assert!(!watches.poisoned());
+    }
+
+    /// A scripted template addition appends to its scope country's roster and renames only a
+    /// template of that roster: it revokes that country's templates through their owner
+    /// certificate and leaves every other template and country carried. A scope whose country
+    /// cannot be resolved revokes every template.
+    #[test]
+    fn scripted_template_additions_revoke_only_their_scope_countrys_templates() {
+        use engine_mutations::template_mutations::EFFECT_SCOPE_COUNTRY;
+        use engine_native::{ccountry, cgame_state, memory::SliceMemory};
+        const START: usize = 0x1000_0000;
+        let base = START - cgame_state::SINGLETON_RVA.0;
+        let state = START + 0x100;
+        let countries = START + 0x800;
+        let links = START + 0x900;
+        let country = START + 0x1000;
+        let scope = START + 0x2000;
+        let unlinked = START + 0x2100;
+        let mut bytes = vec![0_u8; 0x3000];
+        let mut put = |address: usize, value: &[u8]| {
+            let at = address - START;
+            bytes[at..at + value.len()].copy_from_slice(value);
+        };
+        let mut array = |address: usize, data: usize, count: u32| {
+            put(address, &(data as u64).to_le_bytes());
+            put(address + 8, &count.to_le_bytes());
+            put(address + 12, &count.to_le_bytes());
+        };
+        array(state + cgame_state::COUNTRIES, countries, 2);
+        array(state + cgame_state::COUNTRY_LINKS, links, 16);
+        put(START, &(state as u64).to_le_bytes());
+        put(countries + 8, &(country as u64).to_le_bytes());
+        put(links + 7 * 4, &1_u32.to_le_bytes());
+        put(country + ccountry::ID, &7_u32.to_le_bytes());
+        put(scope + EFFECT_SCOPE_COUNTRY, &7_u32.to_le_bytes());
+        put(unlinked + EFFECT_SCOPE_COUNTRY, &11_u32.to_le_bytes());
+        let memory = SliceMemory {
+            base: START,
+            bytes: &bytes,
+        };
+        for name in ["add_template_effect", "add_colonial_template_effect"] {
+            let site = MUTATIONS
+                .iter()
+                .position(|(site, _)| site.name == name)
+                .unwrap();
+            assert_eq!(MUTATIONS[site].1, Receiver::ScopeCountry, "{name}");
+            let watches = Watches::enabled(16);
+            // Country 7's owner certificate, another country's, and a template of each.
+            let receivers = [7, 9, 0x5000, 0x6000];
+            let before = receivers.map(|receiver| Changes::sequence(&watches, receiver).unwrap());
+            let (running, occupation) = notification(&watches, &memory, base, site, 0xe0, scope);
+            assert!(occupation.is_none());
+            assert!(Changes::sequence(&watches, 7).is_none(), "{name}");
+            drop(running);
+            let after = receivers.map(|receiver| Changes::sequence(&watches, receiver));
+            assert_ne!(after[0], Some(before[0]), "{name}");
+            for index in 1..receivers.len() {
+                assert_eq!(after[index], Some(before[index]), "{name}");
+            }
+            assert_eq!(watches.calls[site].load(Ordering::Relaxed), 1);
+            drop(notification(&watches, &memory, base, site, 0xe0, unlinked));
+            assert!(
+                receivers[1..]
+                    .iter()
+                    .zip(&before[1..])
+                    .all(|(&receiver, &before)| Changes::sequence(&watches, receiver)
+                        != Some(before)),
+                "{name}"
+            );
+            assert!(!watches.poisoned());
+        }
     }
 }

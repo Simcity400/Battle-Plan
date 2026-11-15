@@ -1,8 +1,6 @@
 import { contentTitle } from '../../dashboard/contentTitles.ts';
 import { artworkUrlValue } from '../../dashboard/payload.ts';
 import { runAt } from '../../charts/series.ts';
-import type { ChartSummary } from '../../charts/chartSummary';
-import { chartSummaryRecord } from '../../charts/chartSummary.ts';
 import type { Span } from '../../charts/series';
 import type { TooltipRow } from '../../charts/tooltip';
 import { formatAmount, rescale, rescaleSum } from '../../charts/valueAxis.ts';
@@ -21,20 +19,6 @@ import type { CountrySelection } from '../../dashboard/model';
  * fixed-point integers; the diagram draws with numbers and every label and tooltip
  * reads the exact integers. */
 
-export interface PreparedTradeReply extends TradeFlowsReply {
-  summaries?: Record<string, ChartSummary>;
-  prefixes?: Record<string, Record<string, string[]>>;
-  coverageCounts?: Record<string, [number, number]>;
-  bounds?: Record<string, Record<string, [number | null, number | null]>>;
-  exactHours?: number[];
-  basis?: number;
-  scoped?: boolean;
-  coverage?: { firstHour: number; lastHour: number; complete: boolean };
-  /** Prepared runs ahead of the identity history naming their holders; the next prefix catches up. */
-  holdersPending?: boolean;
-  cumulativePending?: boolean;
-}
-
 const HOUR = signed32;
 const COUNT = unsigned32;
 const IDENTITY = /^\[(0|[1-9]\d*),(0|[1-9]\d*)\]$/;
@@ -46,10 +30,10 @@ const ordered = (spans: readonly { firstHour: number; lastHour: number }[]) =>
 /** Checks the reply's shape: resources by ascending native index, countries sorted
  * in the data service's byte order (`compareTags`), each flow's parallel run arrays
  * of one length with runs in hour order that never overlap and exact raw amounts,
- * and reads and known hours in ascending order. */
+ * and known hours in ascending order. */
 export function validateTradeFlowsReply(data: unknown): TradeFlowsReply {
   const reply = data as TradeFlowsReply;
-  const ok = typeof reply === 'object' && reply != null && typeof reply.branchId === 'string'
+  const ok = typeof reply === 'object' && reply != null && typeof reply.branchId === 'string' && HOUR(reply.firstHour) && HOUR(reply.lastHour)
     && Number.isInteger(reply.decimals) && reply.decimals >= 0 && reply.decimals <= 12
     && Array.isArray(reply.resources) && reply.resources.every((item, index) => Number.isInteger(item.id) && typeof item.token === 'string' && item.token.length > 0
       && Number.isInteger(item.ordinal) && item.ordinal >= 1 && (index === 0 || reply.resources[index - 1].id < item.id)
@@ -59,35 +43,29 @@ export function validateTradeFlowsReply(data: unknown): TradeFlowsReply {
       && (index === 0 || compareTags(reply.countryIdentities[index - 1].tag, country.tag) < 0)
       && Array.isArray(country.runs) && country.runs.every(run => run != null && HOUR(run.firstHour) && HOUR(run.lastHour)
         && COUNT(run.slot) && COUNT(run.countryId)) && ordered(country.runs))
-    && Array.isArray(reply.reads) && reply.reads.every((hour, index) => HOUR(hour) && (index === 0 || reply.reads[index - 1] < hour))
     && Array.isArray(reply.known) && reply.known.every(span => HOUR(span.firstHour) && HOUR(span.lastHour)) && ordered(reply.known)
     && Array.isArray(reply.partial) && reply.partial.every(span => HOUR(span.firstHour) && HOUR(span.lastHour) && COUNT(span.deals) && span.deals > 0) && ordered(reply.partial)
     && Array.isArray(reply.flows) && reply.flows.every(flow => {
       const runs = flow.firstHours?.length;
-      return Number.isInteger(runs) && (runs > 0 || !!(reply as PreparedTradeReply).prefixes || !!(reply as PreparedTradeReply).summaries) && COUNT(flow.seller) && flow.seller < reply.countries.length && COUNT(flow.buyer) && flow.buyer < reply.countries.length
+      return Number.isInteger(runs) && runs > 0 && COUNT(flow.seller) && flow.seller < reply.countries.length && COUNT(flow.buyer) && flow.buyer < reply.countries.length
         && nativeIdentity(flow.sellerIdentity) && nativeIdentity(flow.buyerIdentity)
         && reply.resources.some(item => item.id === flow.resource)
         && [flow.sellerTags, flow.buyerTags, flow.lastHours, flow.deliveredRaw, flow.factories, flow.convoysAssigned, flow.convoysRequired, flow.deals].every(list => Array.isArray(list) && list.length === runs)
         && flow.firstHours.every((first, index) => HOUR(first) && HOUR(flow.lastHours[index]) && first <= flow.lastHours[index] && (index === 0 || flow.lastHours[index - 1] < first))
         && flow.deliveredRaw.every(raw => signed64(raw))
         && flow.sellerTags.every(tag => COUNT(tag) && tag < reply.countries.length) && flow.buyerTags.every(tag => COUNT(tag) && tag < reply.countries.length)
-        && flow.factories.every(HOUR) && flow.convoysAssigned.every(HOUR) && flow.convoysRequired.every(HOUR) && flow.deals.every(COUNT);
+        && flow.factories.every(Number.isSafeInteger) && flow.convoysAssigned.every(Number.isSafeInteger) && flow.convoysRequired.every(Number.isSafeInteger) && flow.deals.every(Number.isSafeInteger);
     })
     && Array.isArray(reply.warnings) && reply.warnings.every(warning => typeof warning === 'string');
-  const wire = (reply as PreparedTradeReply).summaries;
-  const summaries = wire === undefined ? undefined : chartSummaryRecord(wire);
-  if (!ok || summaries === null) throw new Error('The trade flows reply is malformed.');
-  const shown = summaries ? { ...reply, summaries } as PreparedTradeReply : reply;
+  if (!ok) throw new Error('The trade flows reply is malformed.');
   // Indexing also refuses contradictory holder aliases. Every numeric run must
   // name the same exact native holder in the shared census at its supplying read.
-  const trade = decodeTrade(shown);
+  const trade = decodeTrade(reply);
   const outrun = trade.flows.some(flow => flow.runs.some(run => (['seller', 'buyer'] as const).some(side => {
     const fact = runAt(flow[side === 'seller' ? 'sellerFacts' : 'buyerFacts'], run.firstHour);
     return !fact || fact.tag !== run[side === 'seller' ? 'sellerTag' : 'buyerTag'] || fact.lastHour < run.lastHour;
   })));
-  if (!outrun) return shown;
-  // A prefix can hold runs ahead of the identity history that names their holders.
-  if ((shown as PreparedTradeReply).coverage?.complete === false) return { ...shown, holdersPending: true } as PreparedTradeReply;
+  if (!outrun) return reply;
   throw new Error('The trade flow names a holder outside its recorded identity.');
 }
 
@@ -111,9 +89,6 @@ export interface Flow {
   runs: FlowRun[];
   /** Amount × hours and hours before each run, for totals. */
   amountBefore: Float64Array; hoursBefore: Float64Array;
-  resourceDecimals?: number;
-  prepared?: { prefixes: Record<string, string[]>; bounds?: Record<string, [number | null, number | null]>; summary?: ChartSummary; scoped: boolean; cumulativePending?: boolean };
-
 }
 
 function withSums(flow: Omit<Flow, 'runs' | 'amountBefore' | 'hoursBefore'>, runs: FlowRun[]): Flow {
@@ -122,8 +97,6 @@ function withSums(flow: Omit<Flow, 'runs' | 'amountBefore' | 'hoursBefore'>, run
   let amount = 0;
   let hours = 0;
   runs.forEach((run, index) => {
-    const prefix = flow.prepared?.prefixes[run.firstHour - 1];
-    if (prefix) { amount = Number(prefix[0]) / 10 ** flow.resourceDecimals!; hours = Number(prefix[5]); }
     amountBefore[index] = amount;
     hoursBefore[index] = hours;
     const length = run.lastHour - run.firstHour + 1;
@@ -193,11 +166,7 @@ export function decodeTrade(reply: TradeFlowsReply): TradeData {
     });
     return withSums({ key: flowKey(flow.sellerIdentity, flow.buyerIdentity, flow.resource), seller, buyer,
       sellerIdentity: flow.sellerIdentity, buyerIdentity: flow.buyerIdentity,
-      sellerFacts: countryFacts.get(flow.sellerIdentity) ?? [], buyerFacts: countryFacts.get(flow.buyerIdentity) ?? [], resource: resources.get(flow.resource)!,
-      ...((reply as PreparedTradeReply).prefixes || (reply as PreparedTradeReply).summaries ? { resourceDecimals: reply.decimals, prepared: { prefixes: (reply as PreparedTradeReply).prefixes?.[flowKey(flow.sellerIdentity, flow.buyerIdentity, flow.resource)] ?? {},
-        bounds: (reply as PreparedTradeReply).bounds?.[flowKey(flow.sellerIdentity, flow.buyerIdentity, flow.resource)],
-        summary: (reply as PreparedTradeReply).summaries?.[flowKey(flow.sellerIdentity, flow.buyerIdentity, flow.resource)], scoped: (reply as PreparedTradeReply).scoped === true,
-        cumulativePending: (reply as PreparedTradeReply).cumulativePending } } : {}) }, runs);
+      sellerFacts: countryFacts.get(flow.sellerIdentity) ?? [], buyerFacts: countryFacts.get(flow.buyerIdentity) ?? [], resource: resources.get(flow.resource)! }, runs);
   });
   data = { reply, flows, countryFacts, identitiesByTag, resourceOrder: new Map(reply.resources.map((item, index) => [item.id, index])) };
   decoded.set(reply, data);
@@ -280,7 +249,7 @@ export function selectFlows(data: TradeData, scope: TradeScope, resources: Reado
     if (!wantedResource(flow)) continue;
     const [seller, buyer] = [chosen.has(flow.sellerIdentity), chosen.has(flow.buyerIdentity)];
     if (scope.between ? !(seller && buyer) : !(seller || buyer)) continue;
-    if (!scope.membership || flow.prepared?.scoped) { selected.push(flow); continue; }
+    if (!scope.membership) { selected.push(flow); continue; }
     const runs = clip(flow.runs, combine(membership.get(flow.sellerIdentity) ?? [], membership.get(flow.buyerIdentity) ?? [], scope.between));
     if (runs.length) selected.push(withSums(flow, runs));
   }
@@ -319,22 +288,8 @@ export function tradeScope(data: TradeData, selection: CountrySelection, resolve
 
 export type Measure = 'current' | 'total' | 'average';
 
-/** Prepared prefixes are exact; sparse chart samples never establish a total. */
-function preparedPrefix(flow: Flow, hour: number): bigint[] | null {
-  if (!flow.prepared) return null;
-  const exact = flow.prepared.prefixes[hour];
-  if (exact) return exact.map(BigInt);
-  const run = runAt(flow.runs, hour), before = run && flow.prepared.prefixes[run.firstHour - 1];
-  if (!run || !before) return null;
-  const duration = BigInt(Math.min(hour, run.lastHour) - run.firstHour + 1);
-  return before.map((raw, index) => BigInt(raw) + duration * [run.raw, BigInt(run.factories), BigInt(run.convoysAssigned), BigInt(run.convoysRequired), BigInt(run.deals), 1n][index]);
-}
-
 /** Amount × hours and hours of a flow up to and including `hour`. */
 export function flowPrefix(flow: Flow, hour: number): [number, number] {
-  if (flow.prepared?.cumulativePending) return [NaN, NaN];
-  const prepared = preparedPrefix(flow, hour);
-  if (prepared) return [Number(prepared[0]) / 10 ** flow.resourceDecimals!, Number(prepared[5])];
   const runs = flow.runs;
   let low = 0;
   let high = runs.length - 1;
@@ -355,12 +310,6 @@ export function flowPrefix(flow: Flow, hour: number): [number, number] {
  * `exactFlow` gives the numbers shown. `basis` may reuse flowPrefix(flow, from - 1). */
 export function flowValue(flow: Flow, measure: Measure, from: number, hour: number, basis?: readonly [number, number]): number {
   if (measure === 'current') return runAt(flow.runs, hour)?.amount ?? 0;
-  const preparedEnd = preparedPrefix(flow, hour), preparedStart = preparedPrefix(flow, from - 1);
-  if (preparedEnd && preparedStart) {
-    const amount = Number(preparedEnd[0] - preparedStart[0]) / 10 ** flow.resourceDecimals!;
-    const hours = Number(preparedEnd[5] - preparedStart[5]);
-    return hours <= 0 ? 0 : measure === 'total' ? amount / 24 : amount / hours;
-  }
   const [amountEnd, hoursEnd] = flowPrefix(flow, hour);
   const [amountStart, hoursStart] = basis ?? flowPrefix(flow, from - 1);
   const amount = amountEnd - amountStart;
@@ -375,23 +324,8 @@ export function flowValue(flow: Flow, measure: Measure, from: number, hour: numb
 export interface FlowSums { amountHours: bigint; factoryHours: bigint; assignedHours: bigint; requiredHours: bigint; hours: number; first: number | null; last: number | null }
 
 export function exactSums(flows: readonly Flow[], from: number, hour: number): FlowSums {
-  if (flows.some(flow => flow.prepared?.cumulativePending)) throw new Error('Trade totals are still being prepared.');
   const sums: FlowSums = { amountHours: 0n, factoryHours: 0n, assignedHours: 0n, requiredHours: 0n, hours: 0, first: null, last: null };
   for (const flow of flows) {
-    const end = preparedPrefix(flow, hour), before = preparedPrefix(flow, from - 1);
-    if (end && before) {
-      sums.amountHours += end[0] - before[0]; sums.factoryHours += end[1] - before[1];
-      sums.assignedHours += end[2] - before[2]; sums.requiredHours += end[3] - before[3]; sums.hours += Number(end[5] - before[5]);
-      const dates = flow.prepared?.bounds?.[hour];
-      if (dates) {
-        if (dates[0] !== null) sums.first = Math.min(sums.first ?? Infinity, dates[0]);
-        if (dates[1] !== null) sums.last = Math.max(sums.last ?? -Infinity, dates[1]);
-        continue;
-      }
-      const runs = flow.runs.filter(run => run.firstHour <= hour && run.lastHour >= from);
-      if (runs.length) { sums.first = Math.min(sums.first ?? Infinity, Math.max(from, runs[0].firstHour)); sums.last = Math.max(sums.last ?? -Infinity, Math.min(hour, runs.at(-1)!.lastHour)); }
-      continue;
-    }
     for (const run of flow.runs) {
       const first = Math.max(from, run.firstHour);
       const last = Math.min(hour, run.lastHour);
@@ -461,11 +395,8 @@ export function coverageNote(reply: Pick<TradeFlowsReply, 'known' | 'partial'>, 
     const left = leftOutAt(reply.partial, hour);
     return left ? `${usNumber.format(left)} trades could not be identified.` : undefined;
   }
-  const prepared = reply as PreparedTradeReply;
-  const count = prepared.basis === from ? prepared.coverageCounts?.[hour] : undefined;
-  const partial = count?.[1] ?? partialHours(reply.partial, from, hour);
-  const missing = count ? Math.max(0, hour - from + 1 - count[0]) : null;
-  return [missing === null ? unknownNote(reply.known, from, hour) : missing >= 1 ? `Trade data is missing for ${formatDays(missing)}.` : undefined,
+  const partial = partialHours(reply.partial, from, hour);
+  return [unknownNote(reply.known, from, hour),
     partial >= 1 ? `Some trades are missing for ${formatDays(partial)}.` : undefined]
     .filter(Boolean).join(' ') || undefined;
 }
@@ -586,7 +517,7 @@ export function sideRanks(flows: readonly Flow[], from: number, to: number): { s
   const sellers = new Map<string, number>(), buyers = new Map<string, number>();
   const facts = new Map<string, TradeCountryFact>();
   for (const flow of flows) {
-    const total = flow.prepared?.cumulativePending ? 0 : flowValue(flow, 'total', from, to);
+    const total = flowValue(flow, 'total', from, to);
     sellers.set(flow.sellerIdentity, (sellers.get(flow.sellerIdentity) ?? 0) + total);
     buyers.set(flow.buyerIdentity, (buyers.get(flow.buyerIdentity) ?? 0) + total);
     for (const side of ['seller', 'buyer'] as const) {
@@ -604,17 +535,10 @@ export function sideRanks(flows: readonly Flow[], from: number, to: number): { s
  * amounts at once (current), or the sum of each flow's highest positive total (total) or
  * running average (average). */
 export function campaignScale(flows: readonly Flow[], measure: Measure, from: number, to: number): number {
-  if (flows.some(flow => flow.prepared?.summary && (flow.prepared.summary.runs === undefined || !!flow.prepared.summary.approximate?.length))) {
-    if (measure !== 'current') return flows.reduce((sum, flow) => sum + Math.max(0, ...(flow.prepared?.summary?.buckets.flatMap(bucket => bucket ? [bucket.maxValue] : []) ?? [])), 0);
-    const columns = Math.max(0, ...flows.map(flow => flow.prepared?.summary?.buckets.length ?? 0));
-    let largest = 0;
-    for (let column = 0; column < columns; column++) largest = Math.max(largest, flows.reduce((sum, flow) => sum + Math.max(0, flow.prepared?.summary?.buckets[column]?.maxValue ?? 0), 0));
-    return largest;
-  }
   if (measure === 'current') {
     // The largest sum of positive daily amounts at any hour: a sweep over where runs start and end.
     const events: [number, number][] = [];
-    for (const flow of flows) for (const run of flow.prepared?.summary?.runs?.map(run => ({ ...run, amount: run.value })) ?? flow.runs) {
+    for (const flow of flows) for (const run of flow.runs) {
       if (run.lastHour < from || run.firstHour > to || !(run.amount > 0)) continue;
       events.push([Math.max(from, run.firstHour), run.amount], [Math.min(to, run.lastHour) + 1, -run.amount]);
     }
@@ -684,7 +608,6 @@ export const formatDays = (hours: number) => {
  * [from, hour] (the total, or the average per day over the days traded), with the
  * civilian factories paid and convoys used then (on average, over time). */
 export function measureRows(flows: readonly Flow[], measure: Measure, from: number, hour: number, decimals: number): TooltipRow[] {
-  if (measure !== 'current' && flows.some(flow => flow.prepared?.cumulativePending)) return [{ label: 'Trade totals and averages are still being prepared.', tone: 'muted' }];
   if (measure === 'current') {
     const terms = termsAt(flows, hour);
     return [
@@ -772,66 +695,58 @@ export function compareFlows(a: TradeFlow, b: TradeFlow): number {
     || compareTags(a.sellerIdentity, b.sellerIdentity) || compareTags(a.buyerIdentity, b.buyerIdentity);
 }
 
-/** Exact point requests add dated facts while the accepted viewport keeps drawing. */
-export function mergePreparedTrade(a: PreparedTradeReply, b: PreparedTradeReply): PreparedTradeReply {
-  if (a.branchId !== b.branchId) throw new Error('Trade pages belong to different branches.');
-  const countries = [...new Set([...a.countries, ...b.countries])].sort(compareTags), index = new Map(countries.map((tag, index) => [tag, index]));
-  const reindex = (reply: PreparedTradeReply) => reply.flows.map(flow => ({ ...flow, seller: index.get(reply.countries[flow.seller])!, buyer: index.get(reply.countries[flow.buyer])!,
-    sellerTags: flow.sellerTags.map(tag => index.get(reply.countries[tag])!), buyerTags: flow.buyerTags.map(tag => index.get(reply.countries[tag])!) }));
-  const fields = ['firstHours', 'lastHours', 'sellerTags', 'buyerTags', 'deliveredRaw', 'factories', 'convoysAssigned', 'convoysRequired', 'deals'] as const;
-  const extra = new Map(reindex(b).map(flow => [flowKey(flow.sellerIdentity, flow.buyerIdentity, flow.resource), flow]));
-  const flows = reindex(a).map(flow => {
-    const next = extra.get(flowKey(flow.sellerIdentity, flow.buyerIdentity, flow.resource));
-    if (!next) return flow;
-    extra.delete(flowKey(flow.sellerIdentity, flow.buyerIdentity, flow.resource));
-    const rows = (source: typeof flow) => source.firstHours.map((firstHour, index) => ({ firstHour, lastHour: source.lastHours[index],
-      values: fields.slice(2).map(field => source[field][index]) }));
-    const joined = joinTradeSpans(rows(flow), rows(next), (x, y) => x.values.every((value, index) => value === y.values[index]));
-    return { ...flow, firstHours: joined.map(row => row.firstHour), lastHours: joined.map(row => row.lastHour),
-      ...Object.fromEntries(fields.slice(2).map((field, index) => [field, joined.map(row => row.values[index])])) };
-  });
-  flows.push(...extra.values());
-  flows.sort((a, b) => a.seller - b.seller || a.buyer - b.buyer || a.resource - b.resource || a.sellerIdentity.localeCompare(b.sellerIdentity) || a.buyerIdentity.localeCompare(b.buyerIdentity));
-  // Reuse the same authoritative point overlay for native slots, then regroup aliases.
-  const census = (reply: PreparedTradeReply) => {
-    const slots = new Map<number, { tag: string; slot: number; countryId: number; firstHour: number; lastHour: number }[]>();
-    for (const country of reply.countryIdentities) for (const run of country.runs) {
-      const rows = slots.get(run.slot) ?? []; rows.push({ ...run, tag: country.tag }); slots.set(run.slot, rows);
-    }
-    for (const rows of slots.values()) rows.sort((a, b) => a.firstHour - b.firstHour);
-    return slots;
-  };
-  const first = census(a), second = census(b), aliases = new Map<string, TradeFlowsReply['countryIdentities'][number]['runs']>();
-  for (const slot of new Set([...first.keys(), ...second.keys()])) {
-    for (const row of joinTradeSpans(first.get(slot) ?? [], second.get(slot) ?? [], (a, b) => a.countryId === b.countryId && a.tag === b.tag)) {
-      const runs = aliases.get(row.tag) ?? []; const { tag: _tag, ...run } = row; runs.push(run); aliases.set(row.tag, runs);
-    }
+/** Hour spans joined where one continues the one before with the same value (`same`). */
+function joinSpans<T extends { firstHour: number; lastHour: number }>(spans: T[], next: readonly T[], same: (a: T, b: T) => boolean = () => true): void {
+  for (const span of next) {
+    const open = spans.at(-1);
+    if (open && open.lastHour + 1 === span.firstHour && same(open, span)) spans[spans.length - 1] = { ...open, lastHour: span.lastHour };
+    else spans.push({ ...span });
   }
-  const pages = <T>(first: Record<string, Record<string, T>> | undefined, second: Record<string, Record<string, T>> | undefined) =>
-    Object.fromEntries([...new Set([...Object.keys(first ?? {}), ...Object.keys(second ?? {})])].map(key => [key, { ...first?.[key], ...second?.[key] }]));
-  return { ...a, ...(a.holdersPending || b.holdersPending ? { holdersPending: true } : {}), flows, countries, resources: [...new Map([...a.resources, ...b.resources].map(resource => [resource.id, resource])).values()].sort((a, b) => a.id - b.id),
-    countryIdentities: [...aliases].sort((a, b) => compareTags(a[0], b[0])).map(([tag, runs]) => ({ tag, runs: runs.sort((a, b) => a.firstHour - b.firstHour) })),
-    reads: [...new Set([...a.reads, ...b.reads])].sort((a, b) => a - b),
-    known: joinTradeSpans(a.known, b.known, () => true), partial: joinTradeSpans(a.partial, b.partial, (x, y) => x.deals === y.deals),
-    prefixes: pages(a.prefixes, b.prefixes), bounds: pages(a.bounds, b.bounds), coverageCounts: { ...a.coverageCounts, ...b.coverageCounts },
-    exactHours: [...new Set([...(a.exactHours ?? []), ...(b.exactHours ?? [])])] };
 }
 
-/** Point pages may overlap a fine viewport's complete runs. Keep one ordered
- * interval per fact, with gaps and the point's authoritative values preserved. */
-function joinTradeSpans<T extends HourSpan>(first: readonly T[], second: readonly T[], same: (a: T, b: T) => boolean): T[] {
-  const boundaries = [...new Set([...first, ...second].flatMap(row => [row.firstHour, row.lastHour + 1]))].sort((a, b) => a - b);
-  const result: T[] = [];
-  let a = 0, b = 0;
-  for (let index = 0; index + 1 < boundaries.length; index++) {
-    const hour = boundaries[index];
-    while (a < first.length && first[a].lastHour < hour) a++;
-    while (b < second.length && second[b].lastHour < hour) b++;
-    const row = second[b]?.firstHour <= hour ? second[b] : first[a]?.firstHour <= hour ? first[a] : undefined;
-    if (!row) continue;
-    const previous = result.at(-1), lastHour = boundaries[index + 1] - 1;
-    if (previous && previous.lastHour + 1 === hour && same(previous, row)) previous.lastHour = lastHour;
-    else result.push({ ...row, firstHour: hour, lastHour });
+/** The windows held (`../../dashboard/heldWindows.ts`), joined in hour order into the reply of their hours together: each
+ * flow's runs after its runs of the windows before, a run continuing one with the same terms and tags joined to it;
+ * countries indexed again in tag order. Null while none is held. */
+export function mergeTrade(replies: readonly TradeFlowsReply[]): TradeFlowsReply | null {
+  const held = [...replies].sort((a, b) => a.firstHour - b.firstHour);
+  if (!held.length) return null;
+  const countries = [...new Set(held.flatMap(reply => reply.countries))].sort(compareTags);
+  const index = new Map(countries.map((tag, at) => [tag, at]));
+  const flows = new Map<string, TradeFlow>();
+  const identities = new Map<string, TradeFlowsReply['countryIdentities'][number]>();
+  const known: HourSpan[] = [], partial: PartialSpan[] = [], warnings = new Set<string>();
+  for (const reply of held) {
+    const tag = (at: number) => index.get(reply.countries[at])!;
+    for (const flow of reply.flows) {
+      const key = JSON.stringify([flow.sellerIdentity, flow.buyerIdentity, flow.resource]);
+      let into = flows.get(key);
+      if (!into) flows.set(key, into = { ...flow, seller: tag(flow.seller), buyer: tag(flow.buyer), sellerTags: [], buyerTags: [], firstHours: [], lastHours: [],
+        deliveredRaw: [], factories: [], convoysAssigned: [], convoysRequired: [], deals: [] });
+      const joined = into;
+      flow.firstHours.forEach((firstHour, run) => {
+        const [seller, buyer] = [tag(flow.sellerTags[run]), tag(flow.buyerTags[run])];
+        const open = joined.firstHours.length - 1;
+        if (open >= 0 && joined.lastHours[open] + 1 === firstHour && joined.sellerTags[open] === seller && joined.buyerTags[open] === buyer
+          && joined.deliveredRaw[open] === flow.deliveredRaw[run] && joined.factories[open] === flow.factories[run]
+          && joined.convoysAssigned[open] === flow.convoysAssigned[run] && joined.convoysRequired[open] === flow.convoysRequired[run]
+          && joined.deals[open] === flow.deals[run]) {
+          joined.lastHours[open] = flow.lastHours[run];
+          return;
+        }
+        joined.firstHours.push(firstHour); joined.lastHours.push(flow.lastHours[run]); joined.sellerTags.push(seller); joined.buyerTags.push(buyer);
+        joined.deliveredRaw.push(flow.deliveredRaw[run]); joined.factories.push(flow.factories[run]); joined.convoysAssigned.push(flow.convoysAssigned[run]);
+        joined.convoysRequired.push(flow.convoysRequired[run]); joined.deals.push(flow.deals[run]);
+      });
+    }
+    for (const country of reply.countryIdentities) {
+      let into = identities.get(country.tag);
+      if (!into) identities.set(country.tag, into = { tag: country.tag, runs: [] });
+      joinSpans(into.runs, country.runs, (a, b) => a.slot === b.slot && a.countryId === b.countryId);
+    }
+    joinSpans(known, reply.known);
+    joinSpans(partial, reply.partial, (a, b) => a.deals === b.deals);
+    for (const warning of reply.warnings) warnings.add(warning);
   }
-  return result;
+  return { ...held[0], lastHour: Math.max(...held.map(reply => reply.lastHour)), countries,
+    countryIdentities: [...identities.values()].sort((a, b) => compareTags(a.tag, b.tag)), known, partial, flows: [...flows.values()], warnings: [...warnings] };
 }

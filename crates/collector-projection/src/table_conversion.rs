@@ -47,6 +47,18 @@ impl RowOrder {
         key: impl Fn(&T) -> u128,
         convert: impl Fn(&T) -> S::Row,
     ) -> TableView {
+        crate::table_clock::timed(S::ID, || {
+            self.ordered_rows::<S, T>(outcome, source, key, convert)
+        })
+    }
+
+    fn ordered_rows<S: TableSchema, T>(
+        &mut self,
+        outcome: Outcome,
+        source: &[T],
+        key: impl Fn(&T) -> u128,
+        convert: impl Fn(&T) -> S::Row,
+    ) -> TableView {
         let Some(source) = source.get(..outcome.len()) else {
             return unavailable("walker row count exceeds allocated buffer");
         };
@@ -119,6 +131,14 @@ impl RowOrder {
 
 /// Convert borrowed rows without first materializing a parallel reference list.
 pub fn table_iter<S: TableSchema, T>(
+    outcome: Outcome,
+    source: impl Iterator<Item = T>,
+    convert: impl Fn(T) -> S::Row,
+) -> TableView {
+    crate::table_clock::timed(S::ID, || iter_rows::<S, T>(outcome, source, convert))
+}
+
+fn iter_rows<S: TableSchema, T>(
     outcome: Outcome,
     source: impl Iterator<Item = T>,
     convert: impl Fn(T) -> S::Row,

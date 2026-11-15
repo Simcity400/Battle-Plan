@@ -518,7 +518,7 @@ impl Store {
         }
         if self.before.is_none() {
             self.failure
-                .fill(Some("faction pool scalar observation unavailable"));
+                .fill(Some("faction pools could not be followed in the game"));
             return;
         }
         if self.scalar_before.is_none() {

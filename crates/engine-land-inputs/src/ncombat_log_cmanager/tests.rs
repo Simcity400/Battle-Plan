@@ -326,7 +326,7 @@ fn row(group: u32, kind: u8, date: i32, variant: u32, amount_raw: i64) -> Row {
 #[test]
 fn reads_every_group_and_month_in_native_order() {
     let (f, _) = standard();
-    let mut rows = [Row::default(); 16];
+    let mut rows = vec![Row::default(); 16];
     assert_eq!(
         walk(
             &f,
@@ -334,7 +334,7 @@ fn reads_every_group_and_month_in_native_order() {
             GAME,
             |_| Some(Months::All),
             &mut rows,
-            &mut VariantMemo::try_new().unwrap()
+            &mut VariantMemo::default()
         ),
         Outcome::Rows { len: 6 }
     );
@@ -373,14 +373,15 @@ fn each_pool_reads_in_variant_order_and_a_repeat_anywhere_in_it_is_refused() {
         .0
     };
     let f = pool(&[(30, 3), (10, 1), (40, 4), (20, 2)]);
-    for mut memo in [VariantMemo::try_new().unwrap(), VariantMemo::vacant()] {
-        let mut rows = [Row::default(); 4];
+    {
+        let mut memo = VariantMemo::default();
+        let mut rows = vec![Row::default(); 4];
         assert_eq!(
             walk(&f, BASE, GAME, |_| Some(Months::All), &mut rows, &mut memo),
             Outcome::Rows { len: 4 }
         );
         assert_eq!(
-            rows.map(|row| (row.variant, row.amount_raw)),
+            rows.iter().map(|row| (row.variant, row.amount_raw)).collect::<Vec<_>>(),
             [(10, 1), (20, 2), (30, 3), (40, 4)]
         );
     }
@@ -391,7 +392,7 @@ fn each_pool_reads_in_variant_order_and_a_repeat_anywhere_in_it_is_refused() {
 #[test]
 fn empty_logs_are_a_complete_empty_table() {
     let (f, _) = Fixture::new(&[]);
-    let mut rows = [Row::default(); 4];
+    let mut rows = vec![Row::default(); 4];
     assert_eq!(
         walk(
             &f,
@@ -399,14 +400,14 @@ fn empty_logs_are_a_complete_empty_table() {
             GAME,
             |_| Some(Months::All),
             &mut rows,
-            &mut VariantMemo::try_new().unwrap()
+            &mut VariantMemo::default()
         ),
         Outcome::Rows { len: 0 }
     );
 }
 
 #[test]
-fn a_country_that_does_not_fit_is_counted_unread_whole() {
+fn a_country_whose_rows_start_short_grows_whole() {
     let (mut f, _) = standard();
     // A second country (slot 2) whose one row still fits after country 7's six.
     let other = f.manager(
@@ -427,7 +428,7 @@ fn a_country_that_does_not_fit_is_counted_unread_whole() {
         )],
     );
     f.pointer(MANAGERS + 16, other);
-    let mut rows = [Row::default(); 7];
+    let mut rows = vec![Row::default(); 7];
     assert_eq!(
         walk(
             &f,
@@ -435,13 +436,12 @@ fn a_country_that_does_not_fit_is_counted_unread_whole() {
             GAME,
             |_| Some(Months::All),
             &mut rows,
-            &mut VariantMemo::try_new().unwrap()
+            &mut VariantMemo::default()
         ),
         Outcome::Rows { len: 7 }
     );
-    // Country 7's first two pools fit (2 + 1 rows) but the rest do not: all
-    // six of its rows are counted, and so is every later country's.
-    let mut rows = [Row::default(); 3];
+    // Storage that starts short grows to every country's rows.
+    let mut rows = vec![Row::default(); 3];
     assert_eq!(
         walk(
             &f,
@@ -449,15 +449,12 @@ fn a_country_that_does_not_fit_is_counted_unread_whole() {
             GAME,
             |_| Some(Months::All),
             &mut rows,
-            &mut VariantMemo::try_new().unwrap()
+            &mut VariantMemo::default()
         ),
-        Outcome::Truncated {
-            len: 0,
-            unread_rows: 7
-        }
+        Outcome::Rows { len: 7 }
     );
     // Selecting only the second country reads it whole.
-    let mut rows = [Row::default(); 1];
+    let mut rows = vec![Row::default(); 1];
     assert_eq!(
         walk(
             &f,
@@ -465,12 +462,12 @@ fn a_country_that_does_not_fit_is_counted_unread_whole() {
             GAME,
             |country| (country == 8).then_some(Months::All),
             &mut rows,
-            &mut VariantMemo::try_new().unwrap()
+            &mut VariantMemo::default()
         ),
         Outcome::Rows { len: 1 }
     );
     let (f, _) = standard();
-    let mut rows = [Row::default(); 1];
+    let mut rows = vec![Row::default(); 1];
     assert_eq!(
         walk(
             &f,
@@ -478,24 +475,21 @@ fn a_country_that_does_not_fit_is_counted_unread_whole() {
             GAME,
             |_| Some(Months::All),
             &mut rows,
-            &mut VariantMemo::try_new().unwrap()
+            &mut VariantMemo::default()
         ),
-        Outcome::Truncated {
-            len: 0,
-            unread_rows: 6
-        }
+        Outcome::Rows { len: 6 }
     );
 }
 
 fn unavailable(f: &Fixture) -> &'static str {
-    let mut rows = [Row::default(); 16];
+    let mut rows = vec![Row::default(); 16];
     match walk(
         f,
         BASE,
         GAME,
         |_| Some(Months::All),
         &mut rows,
-        &mut VariantMemo::try_new().unwrap(),
+        &mut VariantMemo::default(),
     ) {
         Outcome::Unavailable { reason } => reason,
         other => panic!("expected unavailable, got {other:?}"),
@@ -604,7 +598,7 @@ fn the_recovered_array_keeps_whatever_reason_it_was_built_with() {
     let entries = read::<u64>(&f, group + logs::RECOVERED).unwrap() as usize;
     let entry = read::<u64>(&f, entries).unwrap() as usize;
     f.put(entry + loss::REASON, &4_i32.to_le_bytes());
-    let mut rows = [Row::default(); 16];
+    let mut rows = vec![Row::default(); 16];
     assert_eq!(
         walk(
             &f,
@@ -612,7 +606,7 @@ fn the_recovered_array_keeps_whatever_reason_it_was_built_with() {
             GAME,
             |_| Some(Months::All),
             &mut rows,
-            &mut VariantMemo::try_new().unwrap()
+            &mut VariantMemo::default()
         ),
         Outcome::Rows { len: 6 }
     );
@@ -648,7 +642,7 @@ fn many_groups_and_months_cross_batch_boundaries() {
             GAME,
             |_| Some(Months::All),
             &mut rows,
-            &mut VariantMemo::try_new().unwrap()
+            &mut VariantMemo::default()
         ),
         Outcome::Rows { len: 70 * 70 * 70 }
     );
@@ -699,7 +693,7 @@ fn combat_log_scale() {
     let arrays = countries * groups as usize * 4;
     let rows = arrays * 12 * variants as usize;
     let mut output = vec![Row::default(); rows];
-    let mut memo = VariantMemo::try_new().unwrap();
+    let mut memo = VariantMemo::default();
     let memory = crate::memory::SliceMemory {
         base: 0,
         bytes: &f.bytes,
@@ -718,7 +712,7 @@ fn combat_log_scale() {
             best.as_secs_f64() * 1e3
         );
     };
-    let full = |output: &mut [Row], memo: &mut VariantMemo| {
+    let full = |output: &mut Vec<Row>, memo: &mut VariantMemo| {
         walk(&memory, BASE, GAME, |_| Some(Months::All), output, memo).len()
     };
     time("full hour", &mut || full(&mut output, &mut memo), rows);
@@ -782,14 +776,14 @@ fn a_window_read_keeps_each_arrays_last_two_months() {
         })
         .collect();
     let (f, _) = Fixture::new(&[(9, [&three[..], NONE, NONE, NONE, &three[..1]])]);
-    let mut rows = [Row::default(); 8];
+    let mut rows = vec![Row::default(); 8];
     let outcome = walk(
         &f,
         BASE,
         GAME,
         |_| Some(Months::Window),
         &mut rows,
-        &mut VariantMemo::try_new().unwrap(),
+        &mut VariantMemo::default(),
     );
     assert_eq!(outcome, Outcome::Rows { len: 3 });
     assert_eq!(
@@ -809,7 +803,7 @@ fn a_window_read_keeps_each_arrays_last_two_months() {
         GAME,
         |_| Some(Months::All),
         &mut rows,
-        &mut VariantMemo::try_new().unwrap(),
+        &mut VariantMemo::default(),
     );
     assert_eq!(outcome, Outcome::Rows { len: 4 });
 }
@@ -827,7 +821,7 @@ fn each_country_is_read_with_the_months_its_selector_chooses() {
     let (mut f, _) = Fixture::new(&[(9, [&three[..], NONE, NONE, NONE, NONE])]);
     let other = f.manager(8, &[(10, [&three[..], NONE, NONE, NONE, NONE])]);
     f.pointer(MANAGERS + 16, other);
-    let mut rows = [Row::default(); 8];
+    let mut rows = vec![Row::default(); 8];
     let mut asked = Vec::new();
     let outcome = walk(
         &f,
@@ -842,7 +836,7 @@ fn each_country_is_read_with_the_months_its_selector_chooses() {
             })
         },
         &mut rows,
-        &mut VariantMemo::try_new().unwrap(),
+        &mut VariantMemo::default(),
     );
     assert_eq!(outcome, Outcome::Rows { len: 5 });
     // Country 3's manager holds no group log and is not asked.
@@ -872,7 +866,7 @@ fn only_selected_countries_are_followed_past_their_header() {
     // An unselected country's broken log is never read.
     let (group, _) = first_group(&f, manager);
     f.pointer(group, BASE + 8);
-    let mut rows = [Row::default(); 8];
+    let mut rows = vec![Row::default(); 8];
     assert_eq!(
         walk(
             &f,
@@ -880,7 +874,7 @@ fn only_selected_countries_are_followed_past_their_header() {
             GAME,
             |country| (country != 7).then_some(Months::All),
             &mut rows,
-            &mut VariantMemo::try_new().unwrap(),
+            &mut VariantMemo::default(),
         ),
         Outcome::Rows { len: 0 }
     );
@@ -893,7 +887,7 @@ fn only_selected_countries_are_followed_past_their_header() {
             GAME,
             |_| None,
             &mut rows,
-            &mut VariantMemo::try_new().unwrap(),
+            &mut VariantMemo::default(),
         ),
         Outcome::Unavailable { .. }
     ));
@@ -969,9 +963,9 @@ fn a_deleted_log_count_without_room_is_what_a_read_with_room_returns() {
 #[test]
 fn the_variant_memo_changes_no_row_and_no_failure() {
     let (f, _) = standard();
-    let mut remembered = [Row::default(); 16];
-    let mut unremembered = [Row::default(); 16];
-    let mut memo = VariantMemo::try_new().unwrap();
+    let mut remembered = vec![Row::default(); 16];
+    let mut unremembered = vec![Row::default(); 16];
+    let mut memo = VariantMemo::default();
     // Twice with the same memo: it is cleared at the start of each walk.
     for _ in 0..2 {
         assert_eq!(
@@ -987,13 +981,16 @@ fn the_variant_memo_changes_no_row_and_no_failure() {
         );
     }
     assert_eq!(
-        walk(
+        walk_prepared_buffer(
             &f,
             BASE,
             GAME,
-            |_| Some(Months::All),
-            &mut unremembered,
-            &mut VariantMemo::vacant()
+            &mut (),
+            |_, _| Ok(()),
+            |_, _| Ok(Some(Months::All)),
+            Buffer::Growing(&mut unremembered),
+            None,
+            &mut |_, _, _, _| Ok(()),
         ),
         Outcome::Rows { len: 6 }
     );
@@ -1023,7 +1020,7 @@ fn the_variant_memo_changes_no_row_and_no_failure() {
         }
     );
     // Later unique identities grow the original memo and retain earlier entries.
-    let mut full = VariantMemo::try_new().unwrap();
+    let mut full = VariantMemo::default();
     for pointer in 1..=10_000 {
         full.reserve(1).unwrap();
         full.insert(pointer << 4, pointer as u32);
@@ -1050,8 +1047,8 @@ fn prepared_selection_failure_does_not_attempt_manager_reads() {
             *selected += 1;
             Ok(Some(Months::All))
         },
-        &mut [Row::default(); 16],
-        &mut VariantMemo::vacant(),
+        &mut vec![Row::default(); 16],
+        &mut VariantMemo::default(),
     );
     assert_eq!(
         outcome,
@@ -1078,8 +1075,8 @@ fn prepared_selection_failure_at_visitor_does_not_attempt_group_reads() {
             *selected += 1;
             Err("collector allocation failed")
         },
-        &mut [Row::default(); 16],
-        &mut VariantMemo::vacant(),
+        &mut vec![Row::default(); 16],
+        &mut VariantMemo::default(),
     );
     assert_eq!(
         outcome,
@@ -1092,7 +1089,7 @@ fn prepared_selection_failure_at_visitor_does_not_attempt_group_reads() {
 }
 
 #[test]
-fn growing_combat_log_uses_the_same_original_read_trace_as_prepared_fixed_storage() {
+fn growing_combat_log_uses_the_same_original_read_trace_as_prepared_rows() {
     struct Traced<'a> {
         inner: &'a Fixture,
         reads: std::cell::RefCell<Vec<(usize, usize)>>,
@@ -1116,7 +1113,7 @@ fn growing_combat_log_uses_the_same_original_read_trace_as_prepared_fixed_storag
     };
     let fixed = trace();
     let growing = trace();
-    let mut fixed_rows = [Row::default(); 2];
+    let mut fixed_rows = vec![Row::default(); 2];
     let mut rows = Vec::new();
     assert_eq!(
         walk(
@@ -1125,12 +1122,12 @@ fn growing_combat_log_uses_the_same_original_read_trace_as_prepared_fixed_storag
             GAME,
             |_| Some(Months::All),
             &mut fixed_rows,
-            &mut VariantMemo::vacant()
+            &mut VariantMemo::default()
         ),
         Outcome::Rows { len: 2 }
     );
     assert_eq!(
-        walk_prepared_growing(
+        walk_prepared(
             &growing,
             BASE,
             GAME,
@@ -1138,7 +1135,7 @@ fn growing_combat_log_uses_the_same_original_read_trace_as_prepared_fixed_storag
             |_, _| Ok(()),
             |_, _| Ok(Some(Months::All)),
             &mut rows,
-            &mut VariantMemo::vacant()
+            &mut VariantMemo::default()
         ),
         Outcome::Rows { len: 2 }
     );
@@ -1180,8 +1177,8 @@ fn later_month_reuses_ten_thousand_original_variant_authentications() {
         reads: Default::default(),
     };
     let mut rows = Vec::new();
-    let mut memo = VariantMemo::try_new().unwrap();
-    let outcome = walk_prepared_growing(
+    let mut memo = VariantMemo::default();
+    let outcome = walk_prepared(
         &source,
         BASE,
         GAME,

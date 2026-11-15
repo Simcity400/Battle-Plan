@@ -4,6 +4,8 @@ import WidgetState from '../components/WidgetState';
 import DateTimePicker from '../components/DateTimePicker';
 import { useContextMenu } from '../components/ContextMenu';
 import DrillParts from '../charts/drill/DrillParts';
+import type { LiveDrillParts } from '../charts/drill/DrillParts';
+import { liveAt, mapLive } from '../charts/live';
 import { drawBands, drawPlayhead } from '../charts/draw';
 import { jumpItem } from '../charts/jump';
 import { lineStyles } from '../charts/palette';
@@ -21,13 +23,17 @@ import DatedCountryChip from './DatedCountryChip';
 import type { WidgetRuntime } from './definitions';
 import type { BoundTrack } from './model';
 import { usePlaybackMotion } from './playback';
-import { AIR_LEDGER_NOTE, LEDGER_GAP_NOTE, airLossParts, ledgerCountryAt, ledgerFormat, ledgerScale, ledgerShare, ledgerSegmentAt, militaryAirTooltip } from './militaryAirLedger';
+import { AIR_LEDGER_NOTE, LEDGER_GAP_NOTE, airLossParts, ledgerCountryAt, ledgerLabel, ledgerScale, ledgerShare, ledgerSegmentAt, militaryAirTooltip } from './militaryAirLedger';
 import type { LedgerIndex } from './militaryAirLedger';
 
-export default function AirLossDrill({ index, runtime, track, tag, identity, countrySlot, headerSelection, from, hour, end, dealt, active, afterPlayhead, onPick, pickOwner }: {
+/** A holder's aircraft losses by cause at `hour`, and their history. With `headAt` (following the playhead) the parts,
+ * the total and the history's head are read at the head each frame: it renders only when its caller's structure does. */
+export default function AirLossDrill({ index, runtime, track, tag, identity, countrySlot, headerSelection, from, hour, end, dealt, active, afterPlayhead, onPick, pickOwner, headAt }: {
   index: LedgerIndex; runtime: WidgetRuntime; track: BoundTrack; tag: string; identity: string; from: number; hour: number; end: number;
   countrySlot?: HTMLElement | null; headerSelection?: { tag: string; identity: string } | null;
   dealt: boolean; active: boolean; afterPlayhead: boolean; onPick: (hour: number) => void; pickOwner: unknown;
+  /** The track hour at a clock position while following the playhead; null outside the recording. */
+  headAt?: ((position: number) => number | null) | null;
 }) {
   const tokens = useChartTokens(), hoursPerSecond = usePlaybackMotion(runtime.clock);
   const menu = useContextMenu('Aircraft loss history actions');
@@ -41,6 +47,12 @@ export default function AirLossDrill({ index, runtime, track, tag, identity, cou
   const selectedId = selected?.owner === selectionOwner && model.some(part => part.id === selected.id) ? selected.id : null;
   const shown = useMemo(() => selectedId == null ? model : model.filter(part => part.id === selectedId), [model, selectedId]);
   const stack = useMemo(() => buildStack(shown.map(part => part.runs.map(run => ({ ...run, value: Math.max(0, run.value) })))), [shown]);
+  const live = useMemo(() => headAt ? liveAt(runtime.clock, position => headAt(position) ?? hour, at => at) : null,
+    // The head's hour is read each frame; `hour` is only where it starts.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [headAt, runtime.clock]);
+  const reach = useRef(() => hour);
+  reach.current = () => live?.hour() ?? hour;
   const until = afterPlayhead ? end : Math.min(hour, end);
   const layers = useMemo<ChartLayer[]>(() => [{
     draw: (ctx, frame, chartTokens, state) => {
@@ -48,8 +60,8 @@ export default function AirLossDrill({ index, runtime, track, tag, identity, cou
       for (const segment of countryRaceSegments(stack, frame.x[0], Math.min(frame.x[1], state.playhead ?? frame.x[1]), hoursPerPixel, true))
         drawBands(ctx, frame, chartTokens, segment.hours, segment.bands, shown.map(part => styles.get(part.id)!.color));
     },
-    extent: range => stackExtent(stack, range[0], Math.min(range[1], until)),
-  }], [shown, styles, stack, until]);
+    extent: range => stackExtent(stack, range[0], Math.min(range[1], afterPlayhead ? end : Math.min(reach.current(), end))),
+  }], [shown, styles, stack, until, afterPlayhead, end]);
   const segmentAt = useMemo(() => ledgerSegmentAt(index), [index]);
   const tags = useMemo(() => row ? [row.tag] : [], [row?.tag]);
   const dates = useMemo(() => new Map(tags.map(tag => [tag, hour])), [tags, hour]);
@@ -60,15 +72,27 @@ export default function AirLossDrill({ index, runtime, track, tag, identity, cou
     && index.byTag.get(row.tag)?.filter(series => runAt(series.country.present, hour)).length === 1 ? row : null;
   const wanted = useMemo(() => countrySlot && headerRow ? [{ tag: headerRow.tag, hour }] : [], [countrySlot, headerRow?.tag, hour]);
   const labels = useCountryLabelsAt(runtime.client, track, wanted, active && !!countrySlot);
-  const header = countrySlot && createPortal(<DatedCountryChip label={headerRow ? labels.labelAt(hour)(headerRow.tag) : null} hour={hour}
+  const liveDate = useMemo(() => live ? { read: live.hour, subscribe: live.subscribe } : undefined, [live]);
+  const header = countrySlot && createPortal(<DatedCountryChip label={headerRow ? labels.labelAt(hour)(headerRow.tag) : null} hour={hour} live={liveDate}
     reason={!headerSelection || !headerRow ? 'Selected country unavailable.' : null} />, countrySlot);
   const historyOwner = useMemo(() => ({ selectionOwner, selectedId }), [selectionOwner, selectedId]);
-  const values = row ? airLossParts(row, from, hour) : null, total = row ? dealt ? row.dealt : row.taken : null;
-  const parts = model.map(part => {
-    const raw = values ? values.causes.get(part.cause)?.[dealt ? 'dealt' : 'taken'] ?? 0n : null;
-    return { id: part.id, label: part.label, color: styles.get(part.id)!.color, raw, value: raw == null ? null : Number(raw) / ledgerScale('airLosses'),
-      text: ledgerFormat(raw, 'airLosses'), shareText: raw == null || total == null ? undefined : ledgerShare(raw, total) };
-  });
+  // The parts and their total at an hour: what a render shows, and what the head paints.
+  const partsAt = (at: number) => {
+    const held = at >= from && at <= end ? ledgerCountryAt(index, tag, from, at, identity) : null;
+    const values = held ? airLossParts(held, from, at) : null, total = held ? dealt ? held.dealt : held.taken : null;
+    return { total, parts: model.map(part => {
+      const raw = values ? values.causes.get(part.cause)?.[dealt ? 'dealt' : 'taken'] ?? 0n : null;
+      return { id: part.id, label: part.label, color: styles.get(part.id)!.color, raw, value: raw == null ? null : Number(raw) / ledgerScale('airLosses'),
+        text: ledgerLabel(raw, 'airLosses'), shareText: raw == null || total == null ? undefined : ledgerShare(raw, total) };
+    }) };
+  };
+  const { parts, total } = partsAt(hour);
+  const build = useRef(partsAt);
+  build.current = partsAt;
+  const liveParts = useMemo<LiveDrillParts | undefined>(() => live ? mapLive(live, at => {
+    const made = build.current(at);
+    return { parts: made.parts, totalText: ledgerLabel(made.total, 'airLosses') };
+  }) : undefined, [live, model, styles, index, tag, identity, from, end, dealt]);
   const pickDay = (at: number) => {
     if (!ownerRef.current.active || ownerRef.current.owner !== selectionOwner) return;
     at = Math.floor(at);
@@ -81,22 +105,22 @@ export default function AirLossDrill({ index, runtime, track, tag, identity, cou
       <WidgetState kind="unavailable" message="This country or aircraft-loss interval was not recorded at this moment." />
       <DateTimePicker label="Choose breakdown day" value={hour} min={from} max={end} otherValue={null} disabled={!active} describedBy="" onChange={pickDay} />
     </>}
-    <DrillParts parts={parts} virtual active={active} positiveBars signedShares showShares={row?.complete ?? false} format={String}
+    <DrillParts parts={parts} live={liveParts} virtual active={active} positiveBars signedShares showShares={row?.complete ?? false} format={String}
       onPick={id => { if (ownerRef.current.active && ownerRef.current.owner === selectionOwner && model.some(part => part.id === id))
         setSelected(before => before?.owner === selectionOwner && before.id === id ? null : { owner: selectionOwner, id }); }}
-      totalRow={{ label: dealt ? 'Enemy losses' : 'Own losses', value: ledgerFormat(total, 'airLosses') }} />
+      totalRow={{ label: dealt ? 'Enemy losses' : 'Own losses', value: ledgerLabel(total, 'airLosses') }} />
     <p className="chart-line-key">{selectedId == null ? 'All causes' : <>
       History: {model.find(part => part.id === selectedId)?.label}. <button type="button" className="button small"
         onClick={() => { if (ownerRef.current.active && ownerRef.current.owner === selectionOwner) setSelected(null); }}>Show all causes</button>
     </>}</p>
-    <TimeChart label="Aircraft loss causes over time" extent={[from, end]} playhead={hour} playback="cursor" afterPlayhead={afterPlayhead}
+    <TimeChart label="Aircraft loss causes over time" extent={[from, end]} playhead={hour} liveHead={live ?? undefined} playback="cursor" afterPlayhead={afterPlayhead}
       hoursPerSecond={hoursPerSecond} axes={{ xFrom: null, xTo: null, yMin: null, yMax: null, log: false }} branchStart={track.branch.firstHour}
-      active={active} layers={layers} revision={stack} pickOwner={historyOwner} overlay={(ctx, frame, chartTokens) => drawPlayhead(ctx, frame, chartTokens, hour)}
+      active={active} layers={layers} revision={stack} pickOwner={historyOwner} overlay={live ? undefined : (ctx, frame, chartTokens) => drawPlayhead(ctx, frame, chartTokens, hour)}
       keyHours={[...new Set(shown.flatMap(part => part.runs.map(run => run.firstHour)))].sort((a, b) => a - b)}
       onPick={pickDay} onContextMenu={(at, x, y) => { if (ownerRef.current.active && ownerRef.current.owner === selectionOwner) menu.open(x, y, [jumpItem(runtime, track.id, at)]); }}
       tooltip={at => {
         at = Math.floor(at);
-        if (at < from || at > until) return null;
+        if (at < from || at > (afterPlayhead ? end : Math.min(reach.current(), end))) return null;
         const current = ledgerCountryAt(index, tag, from, at, identity);
         if (!current) return null;
         return militaryAirTooltip(current, from, 'airLosses', formatDateTime(at));

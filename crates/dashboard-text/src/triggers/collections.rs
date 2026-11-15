@@ -182,7 +182,7 @@ impl Evaluator<'_, '_> {
                 for &raw in world
                     .appearance(country)?
                     .subjects
-                    .require("CountryAppearance.subjects")
+                    .require("subjects of country appearance")
                     .map_err(|why| {
                         Failure::input(
                             replay_data::rows::TableId::CountryAppearance,

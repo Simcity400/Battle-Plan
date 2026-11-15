@@ -125,6 +125,19 @@ pub struct LandMarker {
     pub(super) bombardment: bool,
 }
 
+impl LandMarker {
+    pub fn province(&self) -> u32 {
+        self.province
+    }
+}
+
+impl HourTables {
+    /// The hour's land combat markers, their gaps and limitations.
+    pub fn land_markers(&self) -> &LandMarkers {
+        &self.land_combats
+    }
+}
+
 /// Undecided combat icons or parts of them: cause, then the combats it affects.
 pub type Gaps = BTreeMap<String, BTreeSet<u64>>;
 
@@ -132,23 +145,321 @@ fn gap(gaps: &mut Gaps, cause: String, combat: u64) {
     gaps.entry(cause).or_default().insert(combat);
 }
 
-/// How `table` lacks the row for `key` this hour.
-fn missing<T: replay_data::rows::TableSchema>(
-    table: &Available<'_, T>,
-    name: &str,
-    key: impl std::fmt::Display,
-) -> String {
-    match table {
-        Available::Complete(_) => format!("the {name} table has no row for {key}"),
-        Available::Truncated { .. } => {
+/// How a table holds its rows this hour, for the wording of a row it lacks.
+#[derive(Clone, Copy, Debug)]
+pub enum Held<'a> {
+    Complete,
+    /// With the rows the walk did not reach.
+    Truncated(u32),
+    Unavailable(&'a str),
+    NotRecorded(replay_data::scope::CaptureMode),
+}
+
+impl<'a> Held<'a> {
+    fn of<T: replay_data::rows::TableSchema>(table: &Available<'a, T>) -> Self {
+        match table {
+            Available::Complete(_) => Self::Complete,
+            Available::Truncated { missing, .. } => Self::Truncated(*missing),
+            Available::Unavailable { reason } => Self::Unavailable(reason),
+            Available::NotRecorded { mode } => Self::NotRecorded(*mode),
+        }
+    }
+}
+
+/// How a table held as `held` lacks the row for `key` this hour.
+pub fn missing_of(held: Held<'_>, name: &str, key: impl std::fmt::Display) -> String {
+    match held {
+        Held::Complete => format!("the {name} table has no row for {key}"),
+        Held::Truncated(_) => {
             format!("the truncated {name} table did not reach {key}")
         }
-        Available::Unavailable { reason } => {
+        Held::Unavailable(reason) => {
             format!("the {name} table is unavailable ({reason}), so {key} is unknown")
         }
-        Available::NotRecorded { mode } => {
+        Held::NotRecorded(mode) => {
             format!("the {name} table is not recorded in a {mode} recording, so {key} is unknown")
         }
+    }
+}
+
+/// Why a table held as `held` is not whole this hour, if it is not.
+pub fn whole_of(held: Held<'_>, name: &str) -> Option<String> {
+    match held {
+        Held::Complete => None,
+        Held::Truncated(missing) => Some(format!("the {name} table is truncated ({missing} rows unread)")),
+        Held::Unavailable(reason) => Some(format!("the {name} table is unavailable ({reason})")),
+        Held::NotRecorded(mode) => Some(format!("the {name} table is not recorded in a {mode} recording")),
+    }
+}
+
+/// One `LandCombats` row's values.
+#[derive(Clone, Copy, Debug)]
+pub struct CombatFields<'a> {
+    pub id: u64,
+    pub province: u32,
+    pub attackers: &'a [u64],
+    pub defenders: &'a [u64],
+}
+
+/// One `LandCombatSides` row's values.
+#[derive(Clone, Debug, Default)]
+pub struct SideFields {
+    pub indicator: u8,
+    pub flags: [u32; 2],
+    pub attacker_primary: Vec<u32>,
+    pub defender_primary: Vec<u32>,
+    pub defender_secondary: Vec<u32>,
+}
+
+impl SideFields {
+    fn of(row: &replay_data::rows::LandCombatSideRow) -> Self {
+        Self {
+            indicator: row.indicator,
+            flags: row.flags,
+            attacker_primary: row.attacker_primary.clone(),
+            defender_primary: row.defender_primary.clone(),
+            defender_secondary: row.defender_secondary.clone(),
+        }
+    }
+}
+
+/// How the tables the survival estimate reads are held, for its gaps' wording.
+#[derive(Clone, Copy, Debug)]
+pub struct TintHeld<'a> {
+    pub details: Held<'a>,
+    pub divisions: Held<'a>,
+    pub panels: Held<'a>,
+    pub members: Held<'a>,
+}
+
+/// The plate and wedge colour from the survival estimate (`None` without the combat's detail
+/// row), or the operand it lacks by the table that lacks it.
+pub fn marker_tint(
+    scores: Option<Result<[i64; 2], ScoreGap>>,
+    defending: bool,
+    defines: &LandCombatDefines,
+    held: TintHeld<'_>,
+) -> (Option<[f32; 4]>, Option<String>) {
+    match scores {
+        None => (None, Some(missing_of(held.details, "LandCombatDetails", "the combat"))),
+        Some(Ok(scores)) => (Some(combat_tint(scores, defending, &defines.colors)), None),
+        Some(Err(ScoreGap::Division(id))) => (
+            None,
+            Some(missing_of(held.divisions, "Divisions", format!("division {id}"))),
+        ),
+        Some(Err(ScoreGap::MaximumStrength(id))) => (
+            None,
+            Some(missing_of(
+                held.panels,
+                "DivisionPanelStats",
+                format!(
+                    "committed division {id}, whose maximum hit points the early damage estimate reads"
+                ),
+            )),
+        ),
+        Some(Err(ScoreGap::Member { side, division })) => (
+            None,
+            Some(missing_of(
+                held.members,
+                "LandCombatDivisions",
+                format!("committed division {division} on side {side}"),
+            )),
+        ),
+        Some(Err(gap @ ScoreGap::Numbers { .. })) => (None, Some(gap.reason())),
+    }
+}
+
+/// What one combat's marker reads besides its own row.
+pub trait MarkerJoins {
+    /// Its sides row, or how the sides table lacks it.
+    fn sides(&self, combat: u64) -> Result<SideFields, String>;
+    fn first_attacker(&self, attackers: &[u64]) -> Result<Option<(u32, u32)>, &'static str>;
+    fn flag(&self, combat: u64) -> Engaged;
+    fn kept(&self, combat: u64) -> Kept;
+    fn defending(&self, sides: &SideFields) -> Result<bool, SharingUnknown>;
+    fn tint(&self, combat: &CombatFields<'_>, defending: bool) -> (Option<[f32; 4]>, Option<String>);
+    /// The attacker's progress, or the first ordered member with no `Divisions` row.
+    fn progress(&self, combat: &CombatFields<'_>) -> Result<i64, u64>;
+    /// How `Divisions` lacks `division`.
+    fn missing_division(&self, division: u64) -> String;
+}
+
+/// One combat's marker, when it has one, and the gaps and limitations it is named in.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MarkerOutcome {
+    pub marker: Option<LandMarker>,
+    pub gaps: Vec<String>,
+    pub limits: Vec<String>,
+}
+
+/// One land combat's marker for the viewing country, decided from values.
+pub fn land_marker(combat: CombatFields<'_>, joins: &impl MarkerJoins) -> MarkerOutcome {
+    let marker = (|| {
+        let sides = joins
+            .sides(combat.id)
+            .map_err(|missing| format!("{NO_SIDE_ROW}: {missing}"))?;
+        // The game erases (or never takes) the icon of a combat
+        // with an empty side: the game shows nothing, as here.
+        if sides.attacker_primary.is_empty() || sides.defender_primary.is_empty() {
+            return Ok(None);
+        }
+        let attacker = joins
+            .first_attacker(combat.attackers)
+            .map_err(|reason| format!("icon omitted: {reason}"))?;
+        // The game branches on the cached engaged flag; the unseen
+        // branch leaves the frame child as the last seen hour set it.
+        let seen = match joins.flag(combat.id) {
+            Engaged::Yes => true,
+            Engaged::No => false,
+            Engaged::Ambiguous(cause) => {
+                return Err(format!("icon omitted: {}", cause.reason()));
+            }
+            // Either cause: the samples keep no finer one.
+            Engaged::Unknown => {
+                return Err(
+                    "icon omitted: engaged flag unknown (no refresh seen since the branch joined a running game or skipped hours, or an input the test reads is unrecorded)"
+                        .to_owned(),
+                );
+            }
+        };
+        if !seen {
+            return Ok(Some((
+                LandMarker {
+                    id: combat.id,
+                    province: combat.province,
+                    attacker,
+                    seen,
+                    progress: None,
+                    tint: Some([1.0; 4]),
+                    frame: match joins.kept(combat.id) {
+                        Kept::Frame(frame) => Some(frame),
+                        _ => None,
+                    },
+                    bombardment: false,
+                },
+                None,
+            )));
+        }
+        let defending = joins
+            .defending(&sides)
+            .map_err(|cause| format!("icon omitted: {}", progress::undefended(cause)))?;
+        let (tint, tint_gap) = joins.tint(&combat, defending);
+        Ok(Some((
+            LandMarker {
+                id: combat.id,
+                province: combat.province,
+                attacker,
+                seen,
+                // Pass the side's fraction times 100 as
+                // fixed point, `VAL` of COMBAT_ICON_PROGRESS.
+                progress: joins.progress(&combat).ok().map(|attacker| {
+                    let side = if defending {
+                        FIXED - attacker
+                    } else {
+                        attacker
+                    };
+                    side.wrapping_mul(10_000_000) / FIXED
+                }),
+                tint,
+                frame: Some(u32::from(sides.indicator != 0)),
+                bombardment: (sides.flags[0] | sides.flags[1]) & BOMBARDMENT != 0,
+            },
+            tint_gap,
+        )))
+    })();
+    let mut out = MarkerOutcome::default();
+    match marker {
+        Ok(None) => {}
+        Ok(Some((marker, tint_gap))) => {
+            if marker.seen {
+                // Sum every ordered member's organisation:
+                // the percentage is unknown exactly when a member is
+                // unrecorded.
+                if let Err(division) = joins.progress(&combat) {
+                    out.gaps.push(format!(
+                        "percentage shows '?' (progress): {}",
+                        joins.missing_division(division)
+                    ));
+                }
+                if let Some(cause) = tint_gap {
+                    out.gaps
+                        .push(format!("plate and wedge omitted (survival estimate): {cause}"));
+                }
+            } else {
+                out.limits
+                    .push(joins.kept(combat.id).limitation(icon_frames::LAND_NO_HISTORY));
+            }
+            out.marker = Some(marker);
+        }
+        Err(cause) => out.gaps.push(cause),
+    }
+    out
+}
+
+/// Today's joins: the hour's rows.
+struct HourJoins<'a, R> {
+    vision: &'a Vision,
+    resolve: &'a R,
+    engaged: &'a BTreeMap<u64, Engaged>,
+    kept: &'a BTreeMap<u64, Kept>,
+    sides: &'a BTreeMap<u64, &'a replay_data::rows::LandCombatSideRow>,
+    sides_held: Held<'a>,
+    provinces: &'a BTreeMap<u64, u32>,
+    kinds: &'a BTreeMap<u64, (Option<u32>, bool)>,
+    details: &'a BTreeMap<u64, &'a replay_data::rows::LandCombatDetailsRow>,
+    members: &'a BTreeMap<u64, Vec<replay_data::rows::LandCombatMember<'a>>>,
+    conditions: &'a viewer_foundation::land_combat_math::Conditions,
+    progresses: &'a progress::Progresses,
+    defines: &'a LandCombatDefines,
+    held: TintHeld<'a>,
+}
+
+impl<R: Fn(u32) -> Option<u32>> MarkerJoins for HourJoins<'_, R> {
+    fn sides(&self, combat: u64) -> Result<SideFields, String> {
+        self.sides
+            .get(&combat)
+            .map(|row| SideFields::of(row))
+            .ok_or_else(|| missing_of(self.sides_held, "LandCombatSides", "the combat"))
+    }
+
+    fn first_attacker(&self, attackers: &[u64]) -> Result<Option<(u32, u32)>, &'static str> {
+        first_attacker(attackers, self.provinces, self.kinds)
+    }
+
+    fn flag(&self, combat: u64) -> Engaged {
+        self.engaged.get(&combat).copied().unwrap_or(Engaged::Unknown)
+    }
+
+    fn kept(&self, combat: u64) -> Kept {
+        self.kept.get(&combat).copied().unwrap_or(Kept::Undecided)
+    }
+
+    fn defending(&self, sides: &SideFields) -> Result<bool, SharingUnknown> {
+        progress::defending_of(&sides.defender_primary, &sides.defender_secondary, self.vision, self.resolve)
+    }
+
+    fn tint(&self, combat: &CombatFields<'_>, defending: bool) -> (Option<[f32; 4]>, Option<String>) {
+        let scores = self.details.get(&combat.id).map(|detail| {
+            side_scores(
+                detail,
+                self.members.get(&combat.id).into_iter().flatten().copied(),
+                self.conditions,
+                [combat.attackers, combat.defenders],
+                self.defines.scores,
+            )
+        });
+        marker_tint(scores, defending, self.defines, self.held)
+    }
+
+    fn progress(&self, combat: &CombatFields<'_>) -> Result<i64, u64> {
+        match self.progresses.attacker(combat.id) {
+            Some(attacker) => Ok(attacker),
+            None => Err(self.progresses.unrecorded(combat.id).unwrap_or(0)),
+        }
+    }
+
+    fn missing_division(&self, division: u64) -> String {
+        missing_of(self.held.divisions, "Divisions", format!("division {division}"))
     }
 }
 
@@ -222,160 +533,42 @@ impl LandMarkers {
             out.limits
                 .insert(limit.to_owned(), combats.iter().map(|c| c.id).collect());
         }
+        let joins = HourJoins {
+            vision,
+            resolve: &resolve,
+            engaged,
+            kept,
+            sides: &sides,
+            sides_held: Held::of(&sides_table),
+            provinces: &provinces,
+            kinds: &kinds,
+            details: &details,
+            members: &members_by_combat,
+            conditions: &conditions,
+            progresses: &progresses,
+            defines,
+            held: TintHeld {
+                details: Held::of(&details_table),
+                divisions: Held::of(&divisions),
+                panels: Held::of(&panels),
+                members: Held::of(&members),
+            },
+        };
         for combat in combats {
-            let marker = (|| {
-                let sides = sides.get(&combat.id).ok_or_else(|| {
-                    format!(
-                        "{NO_SIDE_ROW}: {}",
-                        missing(&sides_table, "LandCombatSides", "the combat")
-                    )
-                })?;
-                // The game erases (or never takes) the icon of a combat
-                // with an empty side: the game shows nothing, as here.
-                if sides.attacker_primary.is_empty() || sides.defender_primary.is_empty() {
-                    return Ok(None);
-                }
-                let attacker = first_attacker(&combat.attackers, &provinces, &kinds)
-                    .map_err(|reason| format!("icon omitted: {reason}"))?;
-                // The game branches on the cached engaged flag; the unseen
-                // branch leaves the frame child as the last seen hour set it.
-                let seen = match engaged.get(&combat.id).copied().unwrap_or(Engaged::Unknown) {
-                    Engaged::Yes => true,
-                    Engaged::No => false,
-                    Engaged::Ambiguous(cause) => {
-                        return Err(format!("icon omitted: {}", cause.reason()));
-                    }
-                    // Either cause: the samples keep no finer one.
-                    Engaged::Unknown => {
-                        return Err(
-                            "icon omitted: engaged flag unknown (no refresh seen since the branch joined a running game or skipped hours, or an input the test reads is unrecorded)"
-                                .to_owned(),
-                        );
-                    }
-                };
-                if !seen {
-                    let kept = kept.get(&combat.id).copied().unwrap_or(Kept::Undecided);
-                    return Ok(Some((
-                        LandMarker {
-                            id: combat.id,
-                            province: combat.province,
-                            attacker,
-                            seen,
-                            progress: None,
-                            tint: Some([1.0; 4]),
-                            frame: match kept {
-                                Kept::Frame(frame) => Some(frame),
-                                _ => None,
-                            },
-                            bombardment: false,
-                        },
-                        None,
-                    )));
-                }
-                let defending = progress::defending(sides, vision, &resolve)
-                    .map_err(|cause| format!("icon omitted: {}", progress::undefended(cause)))?;
-                // The estimate, or the operand it lacks by the table
-                // that lacks it.
-                let (tint, tint_gap) = match details.get(&combat.id) {
-                    None => (
-                        None,
-                        Some(missing(&details_table, "LandCombatDetails", "the combat")),
-                    ),
-                    Some(detail) => match side_scores(
-                        detail,
-                        members_by_combat
-                            .get(&combat.id)
-                            .into_iter()
-                            .flatten()
-                            .copied(),
-                        &conditions,
-                        [&combat.attackers, &combat.defenders],
-                        defines.scores,
-                    ) {
-                        Ok(scores) => (Some(combat_tint(scores, defending, &defines.colors)), None),
-                        Err(ScoreGap::Division(id)) => (
-                            None,
-                            Some(missing(&divisions, "Divisions", format!("division {id}"))),
-                        ),
-                        Err(ScoreGap::MaximumStrength(id)) => (
-                            None,
-                            Some(missing(
-                                &panels,
-                                "DivisionPanelStats",
-                                format!(
-                                    "committed division {id}, whose maximum hit points the early damage estimate reads"
-                                ),
-                            )),
-                        ),
-                        Err(ScoreGap::Member { side, division }) => (
-                            None,
-                            Some(missing(
-                                &members,
-                                "LandCombatDivisions",
-                                format!("committed division {division} on side {side}"),
-                            )),
-                        ),
-                        Err(gap @ ScoreGap::Numbers { .. }) => (None, Some(gap.reason())),
-                    },
-                };
-                Ok(Some((
-                    LandMarker {
-                        id: combat.id,
-                        province: combat.province,
-                        attacker,
-                        seen,
-                        // Pass the side's fraction times 100 as
-                        // fixed point, `VAL` of COMBAT_ICON_PROGRESS.
-                        progress: progresses.attacker(combat.id).map(|attacker| {
-                            let side = if defending {
-                                FIXED - attacker
-                            } else {
-                                attacker
-                            };
-                            side.wrapping_mul(10_000_000) / FIXED
-                        }),
-                        tint,
-                        frame: Some(u32::from(sides.indicator != 0)),
-                        bombardment: (sides.flags[0] | sides.flags[1]) & BOMBARDMENT != 0,
-                    },
-                    tint_gap,
-                )))
-            })();
-            match marker {
-                Ok(None) => {}
-                Ok(Some((marker, tint_gap))) => {
-                    if marker.seen {
-                        // Sum every ordered member's organisation:
-                        // the percentage is unknown exactly when a member is
-                        // unrecorded.
-                        if let Some(division) = progresses.unrecorded(combat.id) {
-                            let cause =
-                                missing(&divisions, "Divisions", format!("division {division}"));
-                            gap(
-                                &mut out.gaps,
-                                format!("percentage shows '?' (progress): {cause}"),
-                                combat.id,
-                            );
-                        }
-                        if let Some(cause) = tint_gap {
-                            gap(
-                                &mut out.gaps,
-                                format!("plate and wedge omitted (survival estimate): {cause}"),
-                                combat.id,
-                            );
-                        }
-                    } else {
-                        let limit = kept
-                            .get(&combat.id)
-                            .copied()
-                            .unwrap_or(Kept::Undecided)
-                            .limitation(icon_frames::LAND_NO_HISTORY);
-                        gap(&mut out.limits, limit, combat.id);
-                    }
-                    out.markers.push(marker);
-                }
-                Err(cause) => gap(&mut out.gaps, cause, combat.id),
+            let fields = CombatFields {
+                id: combat.id,
+                province: combat.province,
+                attackers: &combat.attackers,
+                defenders: &combat.defenders,
+            };
+            let outcome = land_marker(fields, &joins);
+            for cause in outcome.gaps {
+                gap(&mut out.gaps, cause, combat.id);
             }
+            for limit in outcome.limits {
+                gap(&mut out.limits, limit, combat.id);
+            }
+            out.markers.extend(outcome.marker);
         }
         Ok(out)
     }

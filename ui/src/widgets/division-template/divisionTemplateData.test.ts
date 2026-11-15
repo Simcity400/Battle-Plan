@@ -1,15 +1,15 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { DivisionTemplatesReply, TemplateEntry } from '../../generated/dashboard';
 import { sortRows } from '../../charts/table/logic.ts';
 import { battalionCount, battalionSummary, priorityLabel, templateRows, templateTooltip, validateDivisionTemplates } from './divisionTemplateData.ts';
+import type { DivisionTemplatesReply, TemplateEntry } from '../../generated/dashboard';
 
 const entry = (template: string, extra: Partial<TemplateEntry> = {}): TemplateEntry => ({ template, name: `Template ${template}`, nameMissing: null, icon: null,
   iconMissing: 'no artwork', rosterOrdinal: Number(template), fielded: 0, units: [], unitsMissing: null, baseWidthRaw: '1800000', priority: 2, priorityName: null, priorityMissing: 'no proved name', locked: false,
   obsolete: false, obsoleteHour: null, designer: 'ordinary', forceRecruiting: false, newEquipment: true, foreignEquipment: false, manpower: 10_000,
   trainingDays: 90, settingsMissing: null, ...extra });
-const reply = (templates: TemplateEntry[]): DivisionTemplatesReply => validateDivisionTemplates({ branchId: '1', hour: 60_000_000, tag: 'GER', countFor: 'owner',
-  absent: false, templates, fieldedMissing: null, warnings: [] });
+const reply = (templates: TemplateEntry[]): DivisionTemplatesReply => validateDivisionTemplates({ tag: 'GER', countFor: 'owner',
+  templates, fieldedMissing: null, warnings: [] });
 
 test('obsolete templates gather in one closed group after the current roster, in roster order', () => {
   const rows = templateRows(reply([entry('1'), entry('2', { obsolete: true, obsoleteHour: 59_000_000 }), entry('3'), entry('4', { obsolete: true })]));
@@ -49,5 +49,5 @@ test('a stored priority shows only as the game’s name for it, never as its num
 });
 
 test('invalid replies are refused', () => {
-  assert.throws(() => validateDivisionTemplates({ branchId: '1', hour: 1.5, tag: 'GER', absent: false, templates: [], warnings: [] }));
+  assert.throws(() => validateDivisionTemplates({ tag: 'GER', countFor: 'both', templates: [], fieldedMissing: null, warnings: [] }));
 });

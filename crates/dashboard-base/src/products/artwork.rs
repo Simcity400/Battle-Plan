@@ -484,8 +484,6 @@ pub enum FocusProjection {
 pub struct FocusFrame<'a> {
     pub frame: replay_frame::frame::HourFrame<'a>,
     catalogue: &'a Catalogue,
-    /// The walk's lexer folds, given to the text context built.
-    lexicon: Option<&'a dashboard_world::Lexicon>,
     /// The hour's text context, with what building it noted.
     text: OnceLock<(
         Result<crate::scripted_text::ScriptedText<'a>, String>,
@@ -507,7 +505,6 @@ impl<'a> FocusFrame<'a> {
         Self {
             frame: frame.into(),
             catalogue,
-            lexicon: None,
             text: OnceLock::new(),
             rereads: Default::default(),
             #[cfg(any(test, feature = "test-support"))]
@@ -515,12 +512,6 @@ impl<'a> FocusFrame<'a> {
         }
     }
 
-    /// These inputs on a walk's frame, finding tokens by the walk's lexer folds
-    /// ([`crate::scripted_text::ScriptedText::with_lexicon`]).
-    pub fn with_lexicon(mut self, lexicon: Option<&'a dashboard_world::Lexicon>) -> Self {
-        self.lexicon = lexicon;
-        self
-    }
 
     /// The digest a recorded query reads this hour ([`crate::triggers::inputs`]).
     pub fn reread(&self, key: &crate::triggers::inputs::Key) -> Option<u64> {
@@ -544,7 +535,6 @@ impl<'a> FocusFrame<'a> {
     fn text(&self) -> Result<&crate::scripted_text::ScriptedText<'a>, String> {
         let shown = self.catalogue;
         let frame = self.frame;
-        let lexicon = self.lexicon;
         let mut built = false;
         let (text, noted) = self.text.get_or_init(|| {
             built = true;
@@ -559,7 +549,6 @@ impl<'a> FocusFrame<'a> {
                             content,
                             0,
                         )
-                        .with_lexicon(lexicon)
                     })
                 })
             })
@@ -742,7 +731,7 @@ impl Context {
                 Err(reason) => unplaced.push(reason),
             }
         }
-        let (shown, notes) = super::research::shown_folders(
+        let (shown, notes) = shown_folders(
             &available,
             &placed,
             uses.iter()
@@ -1395,11 +1384,10 @@ impl Context {
         &mut self,
         requests: &[(&str, &str)],
         frame: replay_frame::frame::HourFrame<'f>,
-        lexicon: Option<&'f dashboard_world::Lexicon>,
         collect: impl FnOnce(&mut dyn Iterator<Item = ChosenArt>) -> T,
     ) -> T {
         let catalogue = Arc::clone(&self.catalogue);
-        let inputs = FocusFrame::new(frame, &catalogue).with_lexicon(lexicon);
+        let inputs = FocusFrame::new(frame, &catalogue);
         self.focus_items(requests, &inputs, false, FocusProjection::Full, false, |items| {
             let mut chosen = items.map(FocusItem::chosen);
             collect(&mut chosen)
@@ -3239,97 +3227,6 @@ mod tests {
     }
 }
 
-// Focus artwork text and resource titles over a catalogue whose interface reads refuse.
-#[cfg(test)]
-mod catalogue_reads {
-    use crate::catalogue::{Catalogue, tests::folder_catalogue};
-    use installed_content_core::ResolvedLayers;
-    use std::collections::{BTreeMap, BTreeSet};
-    use std::sync::Arc;
-
-    #[test]
-    fn refused_gui_reads_keep_focus_and_resource_titles_and_retry_on_a_fresh_stack() {
-        use crate::products::{artwork, resources};
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        use std::sync::atomic::AtomicBool;
-
-        let gui_path = "interface/synthetic.gui";
-        let (_, folder) = folder_catalogue(&[
-            (
-                gui_path,
-                "guiTypes={containerWindowType={name=synthetic_window}}",
-            ),
-            (
-                "common/national_focus/synthetic.txt",
-                "focus_tree={focus={id=synthetic_focus text=synthetic_title}}",
-            ),
-            (
-                "localisation/synthetic_l_english.yml",
-                "\u{feff}l_english:\n synthetic_title:0 \"Localized focus\"\n synthetic_title_desc:0 \"Localized description\"\n PRODUCTION_MATERIALS_SYNTHETIC:0 \"Localized resource\"\n",
-            ),
-        ]);
-        let layers = ResolvedLayers::from_folders(&[(&folder.0, &[][..])]).unwrap();
-        std::fs::remove_file(folder.0.join(gui_path)).unwrap();
-        // A reached GUI read will fail, but constructing a text catalogue must not read it.
-        let catalogue = Arc::new(Catalogue::of_layers(layers, "english").unwrap());
-        assert!(!catalogue.guis_loaded());
-        let focus = artwork::Context::load(
-            Arc::clone(&catalogue),
-            artwork::Kind::Focus(crate::FocusDatabase::National),
-        )
-        .unwrap();
-        let (titles, _) = focus
-            .text_catalogue(BTreeSet::from(["synthetic_focus"]), &AtomicBool::new(false))
-            .unwrap();
-        assert_eq!(titles[0].name.as_deref(), Some("Localized focus"));
-        assert_eq!(
-            titles[0].description.as_deref(),
-            Some("Localized description")
-        );
-        assert!(!catalogue.guis_loaded());
-
-        let refused = catalogue.guis().unwrap_err().to_string();
-        assert!(refused.contains(gui_path), "{refused}");
-        assert_eq!(
-            artwork::nuke_icon(&catalogue).unwrap_err().to_string(),
-            refused
-        );
-        let mut cached = BTreeMap::new();
-        let mut warnings = Vec::new();
-        resources::resource_content(
-            &resources::ContentView::of(&catalogue),
-            &[("synthetic".into(), 1)],
-            &mut cached,
-            &mut warnings,
-            &AtomicBool::new(false),
-        )
-        .unwrap();
-        assert_eq!(
-            cached[&("synthetic".into(), 1)].get().name.as_deref(),
-            Some("Localized resource")
-        );
-        assert!(cached[&("synthetic".into(), 1)].get().icon.is_none());
-        assert!(
-            warnings.iter().any(|warning| warning.contains(gui_path)),
-            "{warnings:?}"
-        );
-
-        std::fs::write(
-            folder.0.join(gui_path),
-            "guiTypes={containerWindowType={name=replacement_window}}",
-        )
-        .unwrap();
-        assert_eq!(catalogue.guis().unwrap_err().to_string(), refused);
-        let fresh_layers = ResolvedLayers::from_folders(&[(&folder.0, &[][..])]).unwrap();
-        let fresh = Catalogue::of_layers(fresh_layers, "english").unwrap();
-        let first = fresh.guis().unwrap();
-        assert!(first.template("replacement_window").is_some());
-        assert!(first.template("synthetic_window").is_none());
-        assert!(std::ptr::eq(first, fresh.guis().unwrap()));
-    }
-}
-
 // A focus text reply over interface files with refusals keeps their summary.
 #[cfg(test)]
 mod interface_refusals {
@@ -3387,7 +3284,7 @@ mod presentation {
     use super::{Context, Kind};
     use crate::catalogue;
     use crate::test_fixtures::visual_mods::{
-        BLUE, Machine, RED, fallback_line, first_pixel, png, select,
+        BLUE, GREEN, Machine, RED, fallback_line, first_pixel, png, select,
     };
     use std::collections::BTreeSet;
     use std::sync::atomic::AtomicBool;
@@ -3405,12 +3302,13 @@ mod presentation {
         }
     }
 
-    /// The recording's focus draws its definition's icon (A); a mod declares the tree's
-    /// country override (B), which comes first. Where the mod's B draws it is shown; where it
-    /// does not, the recording's own choice, A, is drawn, never the mod's choice patched, and
-    /// named on the first reply and on the memoised second one. Without a selection, A as it is.
+    /// The recording's focus draws its definition's icon (A). A mod's declaration of the
+    /// tree's country override (B), which would come first, is a recorded fact's and is never
+    /// read: A is drawn, in the mod's art where it loads. Where the mod's art for A does not
+    /// load, the recording's own A is drawn and named on the first reply and on the memoised
+    /// second one. Without a selection, A as it is.
     #[test]
-    fn a_focus_tree_override_the_mod_cannot_draw_makes_the_recordings_own_choice_again() {
+    fn a_mods_focus_tree_override_is_not_read_and_its_art_that_cannot_draw_is_the_recordings() {
         let machine = Machine::new("focus_override");
         machine.write(
             "common/national_focus/tree.txt",
@@ -3421,18 +3319,16 @@ mod presentation {
             b"spriteTypes={spriteType={name=GFX_f_one_icon textureFile=gfx/a.png}}",
         );
         machine.write("gfx/a.png", &png(RED));
-        machine.write_mod(
-            "art",
-            "interface/override.gfx",
-            b"spriteTypes={spriteType={name=GFX_TAG_f_one textureFile=gfx/b.png}}",
-        );
-        machine.write_mod("art", "gfx/b.png", &png(BLUE));
-        machine.write_mod(
-            "broken",
-            "interface/override.gfx",
-            b"spriteTypes={spriteType={name=GFX_TAG_f_one textureFile=gfx/broken.png}}",
-        );
-        machine.write_mod("broken", "gfx/broken.png", b"not a png");
+        for (name, art) in [("art", png(GREEN)), ("broken", b"not a png".to_vec())] {
+            // Read, the override would draw blue.
+            machine.write_mod(
+                name,
+                "interface/override.gfx",
+                b"spriteTypes={spriteType={name=GFX_TAG_f_one textureFile=gfx/b.png}}",
+            );
+            machine.write_mod(name, "gfx/b.png", &png(BLUE));
+            machine.write_mod(name, "gfx/a.png", &art);
+        }
         let (source, mut options) = machine.open();
         let frame = empty_frame();
         let shown = |options: &crate::products::ContentOptions| {
@@ -3457,7 +3353,7 @@ mod presentation {
         select(&source, &mut options, &[]);
         assert_eq!(shown(&options), vec![(RED, None), (RED, None)]);
         select(&source, &mut options, &["art"]);
-        assert_eq!(shown(&options), vec![(BLUE, None), (BLUE, None)]);
+        assert_eq!(shown(&options), vec![(GREEN, None), (GREEN, None)]);
         select(&source, &mut options, &["broken"]);
         for (colour, line) in shown(&options) {
             assert_eq!(colour, RED, "the recording's own choice");
@@ -3468,8 +3364,9 @@ mod presentation {
         }
     }
 
-    /// A focus's own icon redeclared by a mod with art that does not load is the recording's,
-    /// named, in the catalogue reply and its memo; without a selection it is drawn as it is.
+    /// A focus's own icon whose art a mod replaces with art that does not load is the
+    /// recording's, named, in the catalogue reply and its memo; without a selection it is drawn
+    /// as it is.
     #[test]
     fn a_focus_icon_the_mod_cannot_draw_is_the_recordings_in_the_catalogue_reply() {
         let machine = Machine::new("focus_catalogue_icon");
@@ -3482,12 +3379,7 @@ mod presentation {
             b"spriteTypes={spriteType={name=GFX_f_one_icon textureFile=gfx/a.png}}",
         );
         machine.write("gfx/a.png", &png(RED));
-        machine.write_mod(
-            "broken",
-            "interface/focus.gfx",
-            b"spriteTypes={spriteType={name=GFX_f_one_icon textureFile=gfx/broken.png}}",
-        );
-        machine.write_mod("broken", "gfx/broken.png", b"not a png");
+        machine.write_mod("broken", "gfx/a.png", b"not a png");
         let (source, mut options) = machine.open();
         let reply = |options: &crate::products::ContentOptions| {
             let mut context = Context::load(
@@ -3518,9 +3410,10 @@ mod presentation {
         }
     }
 
-    /// What a tree icon's draw reads is planned for the recording's own catalogue too, which a
-    /// draw falls back to: a mod's override over a conditional recorded icon still needs the
-    /// hour, and a country override the mod hides still makes the icon the country's own.
+    /// What a tree icon's draw reads is planned from the recording's own declarations, which a
+    /// mod's interface file never replaces: its file hiding the German override and declaring a
+    /// generic one is not read, so the conditional recorded icon needs the hour and the German
+    /// override still makes the icon the country's own.
     #[test]
     fn tree_icon_plans_cover_the_recordings_own_choice() {
         let machine = Machine::new("focus_plans");
@@ -3533,8 +3426,8 @@ mod presentation {
             b"spriteTypes={spriteType={name=GFX_f_one_icon textureFile=gfx/a.png}               spriteType={name=GFX_GER_f_one textureFile=gfx/a.png}}",
         );
         machine.write("gfx/a.png", &png(RED));
-        // The mod's file replaces the recording's: it hides the German override and declares
-        // a generic one it cannot draw.
+        // Read, the mod's file would replace the recording's: hide the German override and
+        // declare a generic one.
         machine.write_mod(
             "override",
             "interface/focus.gfx",
@@ -3545,13 +3438,84 @@ mod presentation {
         let (source, mut options) = machine.open();
         select(&source, &mut options, &["override"]);
         let shown = catalogue::catalogue(&source, &options).unwrap();
-        assert!(shown.sprites.find("GFX_GER_f_one").unwrap().is_none());
+        assert!(!shown.presentation.is_empty());
+        assert!(shown.sprites.find("GFX_GER_f_one").unwrap().is_some());
+        assert!(shown.sprites.find("GFX_f_one").unwrap().is_none());
         let context = Context::load(shown, Kind::Focus(crate::FocusDatabase::National)).unwrap();
-        // The selection declares an override; the recording, for a country without one, the
-        // conditional icon.
+        // For a country without an override, the recording's conditional icon.
         assert!(context.requested_tree_focus_needs_frame("f_one", "ITA", super::FocusProjection::Icons));
-        // The recording's German override, which the mod hides, is German art.
+        // The recording's German override, which the mod's file does not hide, is German art.
         assert!(context.focus_country_icon_override("f_one", "GER"));
         assert!(!context.focus_country_icon_override("f_one", "ITA"));
     }
+}
+
+/// The folder each token is shown in: the first folder it is placed in whose
+/// tab is available, as the game's technology screen shows it in each available
+/// tab. A token placed only in unavailable folders is shown in none. One placed
+/// in a folder whose availability cannot be decided from content, before any
+/// available folder, stays unknown: that folder may be the one shown. A folder
+/// `technology_folders` does not define is never available. Unknown folders and
+/// undefined folders are named and counted.
+pub(crate) fn shown_folders<'a>(
+    definitions: &[(&str, Option<bool>)],
+    placed: &BTreeMap<(String, Option<u32>), Vec<String>>,
+    tokens: impl IntoIterator<Item = (&'a str, Option<u32>)>,
+) -> (Vec<crate::ResearchTechnologyFolder>, Vec<String>) {
+    let mut undecided: Vec<&str> = Vec::new();
+    let mut undefined: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    let mut shown = Vec::new();
+    for (token, database_index) in tokens {
+        let mut folder = None;
+        let mut unknown = false;
+        for key in placed
+            .get(&(token.to_owned(), database_index))
+            .into_iter()
+            .flatten()
+        {
+            match definitions
+                .iter()
+                .find(|(defined, _)| *defined == key.as_str())
+            {
+                Some((_, Some(true))) => {
+                    folder = Some(key.clone());
+                    break;
+                }
+                Some((_, Some(false))) => {}
+                Some((_, None)) => {
+                    unknown = true;
+                    break;
+                }
+                None => undefined.entry(key.as_str()).or_default().push(token),
+            }
+        }
+        if unknown {
+            undecided.push(token);
+        }
+        shown.push(crate::ResearchTechnologyFolder {
+            token: token.to_owned(),
+            database_index,
+            folder,
+        });
+    }
+    let mut notes = Vec::new();
+    if !undecided.is_empty() {
+        let one = undecided.len() == 1;
+        notes.push(format!(
+            "{} {} placed in a research folder whose availability cannot be decided from content before any available folder, so {} folder is unknown: {}.",
+            undecided.len(),
+            if one { "technology is" } else { "technologies are" },
+            if one { "its" } else { "their" },
+            undecided.join(", ")
+        ));
+    }
+    for (key, tokens) in undefined {
+        notes.push(format!(
+            "Research folder {key} is not defined in common/technology_tags, so {} {} placed in it cannot be shown there: {}.",
+            tokens.len(),
+            if tokens.len() == 1 { "technology" } else { "technologies" },
+            tokens.join(", ")
+        ));
+    }
+    (shown, notes)
 }

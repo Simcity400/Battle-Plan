@@ -7,16 +7,16 @@ import { createServer } from 'vite';
 import type { ButterflyItem, ButterflyProps } from '../charts/butterfly';
 import { tokensFromValues } from '../charts/tokens.ts';
 import type { WidgetProps } from './definitions';
-import type { MilitaryAirReply } from '../generated/dashboard';
 import type { LedgerRow } from './militaryAirLedger';
 import { validateMilitaryAirReply } from './militaryAirLedger.ts';
 import { OPTIONS } from '../widgets/bombing-damage/definition.ts';
 import { partOf } from './militaryAirParts.fixture.ts';
 import type { Leaf } from './militaryAirParts.fixture';
+import type { MilitaryAirLedger } from './militaryAirLedger';
 
 type Item = ButterflyItem & { row: LedgerRow };
 const span = (firstHour: number, lastHour = firstHour) => ({ firstHour, lastHour });
-const data: MilitaryAirReply = { family: 'bombing', firstHour: 10, lastHour: 12, available: true,
+const data: MilitaryAirLedger = { family: 'bombing', firstHour: 10, lastHour: 12, available: true,
   observed: [span(10, 12)], incomplete: [], countries: [
     { tag: 'OLD', identity: '3:9', present: [span(10)], membership: null },
     { tag: 'NEW', identity: '3:9', present: [span(11, 12)], membership: null },
@@ -40,7 +40,7 @@ test('actual bombing adapter forwards dated native flag status without labelling
   const replacements: Record<string, string> = {
     '/dashboard/useMilitaryAirLedger.ts': 'export const useMilitaryAirLedger = () => ({ data: globalThis.__militaryFlags.data, track: globalThis.__militaryFlags.track, retry() {} });',
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ retry() {} });',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour(); export const usePlaybackMotion = () => 24;',
+    '/dashboard/playback.ts': 'export const usePlaybackMotion = () => 24;',
     '/dashboard/countryLooks.ts': `export const useCountryLooks = (_client, _track, _tags, _hour, _active, _segment, dates, exact) => {
       globalThis.__militaryFlags.wanted = [...dates]; globalThis.__militaryFlags.exact = exact;
       return { name: (tag, hour) => tag + ' at ' + hour, color: () => null,

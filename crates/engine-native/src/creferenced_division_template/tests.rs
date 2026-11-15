@@ -86,7 +86,7 @@ fn fixture() -> Fixture {
 #[test]
 fn unused_template_retains_historical_naming_group_and_refuses_a_broken_group() {
     let mut memory = fixture();
-    let mut rows = [IconRow::default(); 1];
+    let mut rows = vec![IconRow::default(); 1];
     memory.word(
         0x5000 + crate::cname_group_member::TEMPLATE_NAME_GROUP,
         0xa000,
@@ -116,23 +116,14 @@ fn template_extension_fault_preserves_existing_icon_and_model_inputs() {
             address != 0x5000 + GRID_DIMENSIONS && self.0.copy(address, output)
         }
     }
-    let mut healthy = [IconRow::default(); 1];
+    let mut healthy = vec![IconRow::default(); 1];
     let (expected, _, _, _) = icons_all(&fixture(), &mut healthy);
     let memory = ExtensionFault(fixture());
-    let mut rows = [IconRow::default(); 1];
-    let mut bytes = [0; 64];
-    let mut counts = [SubunitCount::default(); 64];
-    let mut variants = [0; 8];
-    let walked = walk_icons(
-        &memory,
-        0,
-        0x1000,
-        &mut rows,
-        &mut bytes,
-        &mut counts,
-        &mut variants,
-        TestSlots::default().slots(),
-    );
+    let mut rows = vec![IconRow::default(); 1];
+    let mut bytes = vec![0; 64];
+    let mut counts = vec![SubunitCount::default(); 64];
+    let mut variants = vec![0; 8];
+    let walked = walk_icons_inner(&memory, 0, 0x1000, crate::walk::Buffer::Growing(&mut rows), crate::walk::Buffer::Growing(&mut bytes), crate::walk::Buffer::Growing(&mut counts), crate::walk::Buffer::Growing(&mut variants), TestSlots::default().slots(), None, None, None, None);
     assert_eq!(walked.outcome, expected.outcome);
     assert!(!rows[0].details_fresh);
     assert_eq!(
@@ -156,7 +147,7 @@ fn template_extension_demand_skips_prefix_tail_forbidden_payload_and_spatial_cop
     let mut database = vec![0; 4];
     let mut globals = vec![GlobalSlot::default(); 8];
     let mut locals = vec![LocalSlot::default(); 8];
-    let walked = walk_icons_with_selected_details_growing(
+    let walked = walk_icons_with_selected_details(
         &memory,
         0,
         0x1000,
@@ -208,28 +199,19 @@ impl TestSlots {
 
 type IconAll = (IconWalk, Vec<u8>, Vec<SubunitCount>, Vec<u64>);
 
-fn icons_all(memory: &Fixture, rows: &mut [IconRow]) -> IconAll {
+fn icons_all(memory: &Fixture, rows: &mut Vec<IconRow>) -> IconAll {
     let (mut bytes, mut counts, mut variants) =
         (vec![0; 64], vec![Default::default(); 64], vec![0; 8]);
-    let walk = walk_icons(
-        memory,
-        0,
-        0x1000,
-        rows,
-        &mut bytes,
-        &mut counts,
-        &mut variants,
-        TestSlots::default().slots(),
-    );
+    let walk = walk_icons_inner(memory, 0, 0x1000, crate::walk::Buffer::Growing(rows), crate::walk::Buffer::Growing(&mut bytes), crate::walk::Buffer::Growing(&mut counts), crate::walk::Buffer::Growing(&mut variants), TestSlots::default().slots(), None, None, None, None);
     bytes.truncate(walk.bytes_len);
     counts.truncate(walk.counts_len);
     variants.truncate(walk.variants_len);
     (walk, bytes, counts, variants)
 }
 
-fn daily_all(memory: &Fixture, rows: &mut [Row]) -> (Walk, Vec<u8>) {
+fn daily_all(memory: &Fixture, rows: &mut Vec<Row>) -> (Walk, Vec<u8>) {
     let mut bytes = vec![0; 64];
-    let walk = walk(memory, 0, 0x1000, rows, &mut bytes, &mut [(0, 0); 16]);
+    let walk = walk(memory, 0, 0x1000, rows, &mut bytes, &mut vec![(0, 0); 16]);
     bytes.truncate(walk.bytes_len);
     (walk, bytes)
 }
@@ -250,7 +232,7 @@ fn hourly_rows_keep_the_counter_choice_and_the_stored_model_results() {
     memory.word(0x8100, 0x8200);
     memory.word(0x8200, crate::cequipment_variant::VTABLE_RVA.0 as u64);
     memory.word(0x8208, 0x0000_0009_0000_0046);
-    let mut rows = [IconRow::default(); 2];
+    let mut rows = vec![IconRow::default(); 2];
     let (walk, bytes, counts, variants) = icons_all(&memory, &mut rows);
     assert_eq!(walk.outcome, Outcome::Rows { len: 1 });
     // The fixed icon fields come in two spans, with two additional demanded
@@ -349,7 +331,7 @@ fn every_grid_is_read_and_counted_per_cell() {
     // Regimental support: the global once.
     memory.array(0x5000 + REGIMENTAL_SUPPORT_DATA, 0x6200, 1);
     memory.word(0x6200, 0x7000);
-    let mut rows = [IconRow::default(); 1];
+    let mut rows = vec![IconRow::default(); 1];
     let (walk, _, counts, _) = icons_all(&memory, &mut rows);
     assert_eq!(walk.outcome, Outcome::Rows { len: 1 });
     assert_eq!(rows[0].model_failure, None);
@@ -393,7 +375,7 @@ fn daily_rows_keep_names_and_the_category_without_the_model_inputs() {
     let mut memory = fixture();
     memory.array(0x5000 + SUBUNIT_COUNTS, 0x8000, 1);
     memory.word(0x8000, 0x7000);
-    let mut rows = [Row::default(); 2];
+    let mut rows = vec![Row::default(); 2];
     let (walk, bytes) = daily_all(&memory, &mut rows);
     assert_eq!(walk.outcome, Outcome::Rows { len: 1 });
     assert_eq!(
@@ -422,9 +404,9 @@ fn daily_rows_keep_names_and_the_category_without_the_model_inputs() {
 #[test]
 fn icon_rows_carry_the_dictionary_unit_type_owner_and_object() {
     let mut memory = fixture();
-    let mut daily = [Row::default(); 1];
+    let mut daily = vec![Row::default(); 1];
     daily_all(&memory, &mut daily);
-    let mut rows = [IconRow::default(); 1];
+    let mut rows = vec![IconRow::default(); 1];
     assert_eq!(
         icons_all(&memory, &mut rows).0.outcome,
         Outcome::Rows { len: 1 }
@@ -450,18 +432,18 @@ fn icon_rows_carry_the_dictionary_unit_type_owner_and_object() {
     );
 }
 
-/// `copy_names_growing` copies a template's literal and key as `walk` does.
+/// `copy_names` copies a template's literal and key as `walk` does.
 #[test]
 fn names_copy_as_the_full_walk_copies_them() {
     let memory = fixture();
     let mut bytes = b"xy".to_vec();
-    let [name, key] = copy_names_growing(&memory, 0x5000, &mut bytes, 2).unwrap();
+    let [name, key] = copy_names(&memory, 0x5000, &mut bytes, 2).unwrap();
     assert_eq!(bytes, b"xyA\0\xfffallback");
     assert_eq!(
         (name, key),
         (Span { start: 2, len: 3 }, Span { start: 5, len: 8 })
     );
-    let mut daily = [Row::default(); 1];
+    let mut daily = vec![Row::default(); 1];
     let (_, names) = daily_all(&memory, &mut daily);
     assert_eq!(names, bytes[2..]);
 }
@@ -469,7 +451,7 @@ fn names_copy_as_the_full_walk_copies_them() {
 #[test]
 fn the_representative_falls_back_to_the_priority_unit_and_an_absent_category_stays_absent() {
     let memory = fixture();
-    let mut rows = [IconRow::default(); 1];
+    let mut rows = vec![IconRow::default(); 1];
     let (walk, bytes, counts, variants) = icons_all(&memory, &mut rows);
     assert_eq!(walk.outcome, Outcome::Rows { len: 1 });
     assert_eq!(
@@ -507,40 +489,23 @@ fn the_representative_falls_back_to_the_priority_unit_and_an_absent_category_sta
 }
 
 #[test]
-fn capacity_omits_whole_rows_and_bad_identity_never_becomes_empty() {
+fn the_count_probe_counts_whole_rows_and_bad_identity_never_becomes_empty() {
     let mut memory = fixture();
     memory.array(0x5000 + SUBUNIT_COUNTS, 0x8000, 1);
     memory.word(0x8000, 0x7000);
-    for (rows, text, counts) in [(0, 64, 8), (2, 2, 8), (2, 64, 0)] {
-        let result = walk_icons(
-            &memory,
-            0,
-            0x1000,
-            &mut vec![IconRow::default(); rows],
-            &mut vec![0; text],
-            &mut vec![SubunitCount::default(); counts],
-            &mut [0; 8],
-            TestSlots::default().slots(),
-        );
-        assert_eq!(
-            result.outcome,
-            Outcome::Truncated {
-                len: 0,
-                unread_rows: 1
-            }
-        );
-        assert_eq!((result.bytes_len, result.counts_len), (0, 0));
-        // One grouped entry and the regiment grid's two cells.
-        assert_eq!((result.required_bytes, result.required_counts), (8, 5));
-    }
-    let result = walk(
-        &memory,
-        0,
-        0x1000,
-        &mut [Row::default(); 1],
-        &mut [0; 2],
-        &mut [],
+    // The count probe: no row stored, every demand counted.
+    let result = walk_icons_inner(&memory, 0, 0x1000, crate::walk::Buffer::Count, crate::walk::Buffer::Count, crate::walk::Buffer::Count, crate::walk::Buffer::Growing(&mut vec![0; 8]), TestSlots::default().slots(), None, None, None, None);
+    assert_eq!(
+        result.outcome,
+        Outcome::Truncated {
+            len: 0,
+            unread_rows: 1
+        }
     );
+    assert_eq!((result.bytes_len, result.counts_len), (0, 0));
+    // One grouped entry and the regiment grid's two cells.
+    assert_eq!((result.required_bytes, result.required_counts), (8, 5));
+    let result = count(&memory, 0, 0x1000);
     assert_eq!(
         (result.outcome, result.required_bytes),
         (
@@ -554,7 +519,7 @@ fn capacity_omits_whole_rows_and_bad_identity_never_becomes_empty() {
     // An index naming no database entry is a fault, not a global
     // definition: the model fields fail, and the counter keeps its icon.
     memory.put(0x7000 + subunit::DATABASE_INDEX, &2_i32.to_le_bytes());
-    let mut rows = [IconRow::default(); 1];
+    let mut rows = vec![IconRow::default(); 1];
     let (walk, bytes, counts, _) = icons_all(&memory, &mut rows);
     assert_eq!(walk.outcome, Outcome::Rows { len: 1 });
     assert_eq!(rows[0].priority_unit, 777);
@@ -567,17 +532,17 @@ fn capacity_omits_whole_rows_and_bad_identity_never_becomes_empty() {
     let mut memory = fixture();
     memory.word(0x5000, 0);
     assert!(matches!(
-        icons_all(&memory, &mut [IconRow::default(); 1]).0.outcome,
+        icons_all(&memory, &mut vec![IconRow::default(); 1]).0.outcome,
         Outcome::Unavailable { .. }
     ));
     assert!(matches!(
-        daily_all(&memory, &mut [Row::default(); 1]).0.outcome,
+        daily_all(&memory, &mut vec![Row::default(); 1]).0.outcome,
         Outcome::Unavailable { .. }
     ));
     let mut memory = fixture();
     memory.word(0x5000 + PRIORITY_UNIT, 0x7000);
     memory.put(0x5000 + UNIT_TYPE_OVERRIDE, &123_i32.to_le_bytes());
-    let mut rows = [Row::default(); 1];
+    let mut rows = vec![Row::default(); 1];
     assert_eq!(
         daily_all(&memory, &mut rows).0.outcome,
         Outcome::Rows { len: 1 }
@@ -594,19 +559,10 @@ fn fallback_preserves_native_real_count_wrap_and_rejects_zero_tokens() {
         for index in 0..count as usize {
             memory.word(0x10000 + index * 8, 0x7000);
         }
-        let mut rows = [IconRow::default(); 1];
+        let mut rows = vec![IconRow::default(); 1];
         // The row's grid entries are budgeted at one a cell.
         let mut counts = vec![SubunitCount::default(); count as usize * 2];
-        let walk = walk_icons(
-            &memory,
-            0,
-            0x1000,
-            &mut rows,
-            &mut [0; 64],
-            &mut counts,
-            &mut [0; 8],
-            TestSlots::default().slots(),
-        );
+        let walk = walk_icons_inner(&memory, 0, 0x1000, crate::walk::Buffer::Growing(&mut rows), crate::walk::Buffer::Growing(&mut vec![0; 64]), crate::walk::Buffer::Growing(&mut counts), crate::walk::Buffer::Growing(&mut vec![0; 8]), TestSlots::default().slots(), None, None, None, None);
         assert_eq!(walk.outcome, Outcome::Rows { len: 1 });
         let expected = if count == 65_536 { 0 } else { 777 };
         assert_eq!(rows[0].representative.token, expected);
@@ -625,7 +581,7 @@ fn fallback_preserves_native_real_count_wrap_and_rejects_zero_tokens() {
     let mut memory = fixture();
     memory.put(0x7000 + subunit::TOKEN, &0_u32.to_le_bytes());
     assert_eq!(
-        icons_all(&memory, &mut [IconRow::default(); 1]).0.outcome,
+        icons_all(&memory, &mut vec![IconRow::default(); 1]).0.outcome,
         Outcome::Unavailable {
             reason: "real template subunit has unsupported zero token"
         }
@@ -649,23 +605,14 @@ fn model_fixture() -> Fixture {
 }
 
 fn icons_with(memory: &Fixture, database: usize, locals: usize) -> (IconAll, IconRow) {
-    let mut rows = [IconRow::default(); 1];
+    let mut rows = vec![IconRow::default(); 1];
     let (mut bytes, mut counts, mut variants) =
         (vec![0; 64], vec![SubunitCount::default(); 64], vec![0; 8]);
-    let walk = walk_icons(
-        memory,
-        0,
-        0x1000,
-        &mut rows,
-        &mut bytes,
-        &mut counts,
-        &mut variants,
-        DefinitionSlots {
+    let walk = walk_icons_inner(memory, 0, 0x1000, crate::walk::Buffer::Growing(&mut rows), crate::walk::Buffer::Growing(&mut bytes), crate::walk::Buffer::Growing(&mut counts), crate::walk::Buffer::Growing(&mut variants), DefinitionSlots {
             database: &mut vec![0; database],
             globals: &mut vec![GlobalSlot::default(); database],
             locals: &mut vec![LocalSlot::default(); locals],
-        },
-    );
+        }, None, None, None, None);
     bytes.truncate(walk.bytes_len);
     counts.truncate(walk.counts_len);
     variants.truncate(walk.variants_len);
@@ -741,19 +688,10 @@ fn a_failed_row_rolls_back_and_the_next_row_starts_where_it_began() {
     // The first template's exclusion names no variant.
     memory.array(0x5000 + EXCLUDED_VARIANT_DATA, 0x8300, 1);
     memory.word(0x8300, 0x7000);
-    let mut rows = [IconRow::default(); 2];
+    let mut rows = vec![IconRow::default(); 2];
     let (mut bytes, mut counts, mut variants) =
         (vec![0; 64], vec![SubunitCount::default(); 64], vec![0; 8]);
-    let walk = walk_icons(
-        &memory,
-        0,
-        0x1000,
-        &mut rows,
-        &mut bytes,
-        &mut counts,
-        &mut variants,
-        TestSlots::default().slots(),
-    );
+    let walk = walk_icons_inner(&memory, 0, 0x1000, crate::walk::Buffer::Growing(&mut rows), crate::walk::Buffer::Growing(&mut bytes), crate::walk::Buffer::Growing(&mut counts), crate::walk::Buffer::Growing(&mut variants), TestSlots::default().slots(), None, None, None, None);
     assert_eq!(walk.outcome, Outcome::Rows { len: 2 });
     let failed = rows[0];
     assert!(failed.model_failure.is_some());
@@ -780,16 +718,7 @@ fn a_failed_row_rolls_back_and_the_next_row_starts_where_it_began() {
 #[test]
 fn a_row_without_room_still_asks_for_its_model_inputs() {
     let memory = model_fixture();
-    let walk = walk_icons(
-        &memory,
-        0,
-        0x1000,
-        &mut [],
-        &mut [0; 64],
-        &mut [SubunitCount::default(); 8],
-        &mut [0; 8],
-        TestSlots::default().slots(),
-    );
+    let walk = walk_icons_inner(&memory, 0, 0x1000, crate::walk::Buffer::Count, crate::walk::Buffer::Growing(&mut vec![0; 64]), crate::walk::Buffer::Growing(&mut vec![SubunitCount::default(); 8]), crate::walk::Buffer::Growing(&mut vec![0; 8]), TestSlots::default().slots(), None, None, None, None);
     assert_eq!(
         walk.outcome,
         Outcome::Truncated {
@@ -860,7 +789,7 @@ fn a_bad_exclusion_or_model_string_fails_only_that_row_s_model() {
 #[test]
 fn formation_count_reuses_the_authenticated_hourly_span_and_keeps_signed_words() {
     let mut memory = fixture();
-    let mut rows = [IconRow::default(); 1];
+    let mut rows = vec![IconRow::default(); 1];
     for count in [i32::MIN, -7, -1, 0, 1, i32::MAX] {
         memory.put(0x5000 + FORMATION_DIVISION_COUNT, &count.to_le_bytes());
         memory.1.borrow_mut().clear();
@@ -885,7 +814,7 @@ fn formation_count_reuses_the_authenticated_hourly_span_and_keeps_signed_words()
 #[test]
 fn icon_rows_do_not_read_the_template_name_and_gather_every_grid_header() {
     let memory = fixture();
-    let mut rows = [IconRow::default(); 2];
+    let mut rows = vec![IconRow::default(); 2];
     let (walk, bytes, _, _) = icons_all(&memory, &mut rows);
     assert_eq!(walk.outcome, Outcome::Rows { len: 1 });
     assert_eq!(bytes, b"infantry");
@@ -948,7 +877,7 @@ fn a_walk_reads_a_shared_priority_name_once_and_gathers_literal_headers() {
     let mut memory = fixture();
     second_template(&mut memory);
     let (mut rows, mut bytes, mut counts, mut variants, mut names) = (
-        [IconRow::default(); 2],
+        vec![IconRow::default(); 2],
         vec![0; 64],
         vec![Default::default(); 64],
         vec![0; 8],
@@ -1001,7 +930,7 @@ fn manpower_exile_predicate_reuses_the_icon_record_and_survives_model_refusal() 
         let mut memory = fixture();
         memory.put(0x5000 + ORIGIN_TYPE, &origin.to_le_bytes());
         memory.1.borrow_mut().clear();
-        let mut rows = [IconRow::default(); 1];
+        let mut rows = vec![IconRow::default(); 1];
         assert_eq!(
             icons_all(&memory, &mut rows).0.outcome,
             Outcome::Rows { len: 1 }
@@ -1051,7 +980,7 @@ fn spatial_cells_keep_holes_dimensions_null_objects_and_native_settings() {
     memory.word(0x8108, 0x8200);
     memory.word(0x8200, crate::cequipment_type::VTABLE_RVA.0 as u64);
     memory.put(0x8208, &4294967294_u32.to_le_bytes());
-    let mut rows = [IconRow::default(); 1];
+    let mut rows = vec![IconRow::default(); 1];
     let (walk, _, counts, variants) = icons_all(&memory, &mut rows);
     assert_eq!(walk.outcome, Outcome::Rows { len: 1 });
     let row = rows[0];

@@ -164,7 +164,7 @@ fn equipment_types_resolve_their_token_under_the_lexers_fold() {
     );
     assert_eq!(
         refused(105),
-        "variant 1 equipment type: token 105 is not in LexicalTokens"
+        "variant 1 equipment type: token 105 is not in lexical tokens"
     );
     // A later key equal under the fold redefines the same type
     // (lookup uses its hash and case-insensitive name), which keeps its
@@ -393,7 +393,7 @@ fn sub_unit_and_requirement_tokens_resolve_under_the_lexers_fold() {
             .template(&row((3, 0), &[]), &folded(&[]))
             .unwrap_err()
             .to_string(),
-        "sub-unit: token 3 is not in LexicalTokens"
+        "sub-unit: token 3 is not in lexical tokens"
     );
     // Case-only redeclarations reuse the first spelling in both databases.
     let redeclared = content_with(

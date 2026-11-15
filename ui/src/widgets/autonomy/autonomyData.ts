@@ -1,263 +1,105 @@
-import { clipToSpans, runAt } from '../../charts/series.ts';
-import type { Run, Span } from '../../charts/series';
-import { inSpans } from '../../charts/timeline/layout.ts';
-import type { TimelineSpan } from '../../charts/timeline/layout';
 import { formatFixed } from '../../charts/valueAxis.ts';
 import { contentTitle } from '../../dashboard/contentTitles.ts';
-import { preparationCoverage } from '../../dashboard/preparedPrefix.ts';
-import type { CountryIdentityIndex } from '../../dashboard/countryIdentity.ts';
-import type { AutonomyLevel, AutonomyReply, AutonomyRun, AutonomySubject } from '../../generated/dashboard';
+import type { HourSpan, SubjectLevel, SubjectReply, SubjectRun } from '../../generated/dashboard';
 
-/** Subjects' autonomy (the `autonomy` product): each subject's level spans, its
- * progress between the move-down and move-up scores, and where its level changed.
- * Values stay the recorded integers; progress is a plotting number only. */
+/** The Autonomy widget's data: one lane per subject from the `subjects` reply, its level as
+ * coloured stretches, and the hours it was a subject, over which the declared `autonomy` series
+ * draws its progress between the score it moves down below and the one it moves up at. */
 
-const RAW = /^-?\d{1,20}$/;
-
-/** Decimal places of a power-of-ten scale, or null for any other scale. */
-function decimalsOf(scale: number): number | null {
-  const digits = Math.log10(scale);
-  return Number.isInteger(digits) && digits >= 0 && 10 ** digits === scale ? digits : null;
-}
-
-/** Checks the reply's shape: levels are listed once, each run names one, raw values
- * are integers and runs are in hour order without overlap. */
-export function validateAutonomyReply(data: unknown): AutonomyReply {
-  const reply = data as AutonomyReply;
-  const levels = Array.isArray(reply?.levels) ? reply.levels.length : 0;
-  const run = (item: AutonomyRun, index: number, runs: readonly AutonomyRun[]) => Number.isInteger(item.firstHour) && Number.isInteger(item.lastHour)
-    && item.firstHour <= item.lastHour && (index === 0 || runs[index - 1].lastHour < item.firstHour)
-    && Number.isInteger(item.level) && item.level >= 0 && item.level < levels
-    && RAW.test(item.scoreRaw) && RAW.test(item.lowerRaw) && RAW.test(item.upperRaw) && (item.ratioRaw == null || RAW.test(item.ratioRaw))
-    && (item.overlord == null || typeof item.overlord === 'string');
-  const ordered = (spans: unknown) => Array.isArray(spans) && spans.every((span: Span, index) => Number.isInteger(span.firstHour)
-    && Number.isInteger(span.lastHour) && span.firstHour <= span.lastHour && (index === 0 || spans[index - 1].lastHour < span.firstHour));
-  const ok = typeof reply === 'object' && reply != null && decimalsOf(reply.scoreScale) != null
-    && reply.levels.every((level: AutonomyLevel) => typeof level.id === 'string' && (level.name == null || typeof level.name === 'string'))
-    && new Set(reply.levels.map(level => level.id)).size === levels
-    && Array.isArray(reply.subjects) && reply.subjects.every((subject: AutonomySubject) => typeof subject.tag === 'string' && Array.isArray(subject.runs) && subject.runs.every(run))
-    && ordered(reply.recorded) && ordered(reply.unidentified)
-    && Array.isArray(reply.warnings);
-  if (!ok) throw new Error('The autonomy reply is malformed.');
-  return reply;
-}
-
-/** An unavailable localized name stays distinct from a recorded level key. */
-export const levelName = (level: AutonomyLevel | undefined) => level
-  ? contentTitle(level.name, level.id, 'Level name unavailable') : 'Unknown level';
-
-/** Where a subject's score sits between its move-down (0) and move-up (1) scores;
- * null when the two are equal, as then there is no span to sit in. Past either
- * score (a subject at the top level can pass its upper bound) it is below 0 or above 1. */
-export function progressOf(run: AutonomyRun): number | null {
-  const lower = BigInt(run.lowerRaw);
-  const span = BigInt(run.upperRaw) - lower;
-  if (span === 0n) return null;
-  // Exact to 1e-9 before the one division into a plotting number.
-  return Number((BigInt(run.scoreRaw) - lower) * 1_000_000_000n / span) / 1e9;
-}
-
-/** Progress as a percentage for labels, one decimal. */
-export function formatProgress(run: AutonomyRun): string {
-  const progress = progressOf(run);
-  return progress == null ? 'Progress unavailable' : `${(Math.round(progress * 1000) / 10).toFixed(1)}%`;
-}
-
-/** A score as the game counts it, with one decimal. */
-export function formatScore(reply: AutonomyReply, raw: string): string {
-  return formatFixed(raw, decimalsOf(reply.scoreScale)!, 1);
-}
-
-/** One subject, ready to draw. */
-export interface SubjectLane {
-  id: string;
+/** One subject's lane: every run of it under any overlord, in hour order. */
+export interface AutonomyLane {
   tag: string;
-  runs: readonly AutonomyRun[];
-  /** Each stretch at one level, unbroken: the lane's background bands. */
-  spans: TimelineSpan[];
-  /** Level index of each span, by span id. */
-  spanLevels: ReadonlyMap<string, number>;
-  /** Progress as runs, for the kit's curves: hours with no defined progress are gaps. */
-  progress: Run[];
-  /** Unbroken recorded stretches: the dashed threshold edges run along them. */
-  stretches: { firstHour: number; lastHour: number }[];
-  /** Hours where the level changed from the hour before (never across a gap). */
+  runs: SubjectRun[];
+  /** Its stretches of one recorded level: `level` the token, null where not recorded. */
+  spans: { id: string; firstHour: number; lastHour: number; level: string | null }[];
+  /** The hours it was a subject, joined where runs touch: where its progress is drawn. */
+  within: HourSpan[];
+  /** Hours its level changed inside a run. */
   changes: number[];
 }
 
-/** A lane: its level spans each stop the keyboard at every recorded change inside
- * them (score, thresholds or overlord: each run's start, `TimelineSpan.stops`), so
- * every value the tooltip shows is reachable, not only the level's start. */
-export function subjectLane(subject: AutonomySubject & { countryId?: string }, levels: readonly AutonomyLevel[]): SubjectLane {
-  const spans: (TimelineSpan & { stops: number[] })[] = [];
-  const spanLevels = new Map<string, number>();
-  const progress: Run[] = [];
-  const stretches: { firstHour: number; lastHour: number }[] = [];
-  const changes: number[] = [];
-  subject.runs.forEach((run, index) => {
-    const previous = subject.runs[index - 1];
-    const continues = previous != null && !run.startsSegment && previous.lastHour + 1 === run.firstHour;
-    const last = spans.at(-1);
-    if (continues && last && spanLevels.get(last.id) === run.level) { last.lastHour = run.lastHour; last.stops.push(run.firstHour); }
-    else {
-      const id = `${subject.countryId ?? subject.tag}\u0000${run.firstHour}`;
-      spans.push({ id, firstHour: run.firstHour, lastHour: run.lastHour, label: levelName(levels[run.level]), stops: [] });
-      spanLevels.set(id, run.level);
-      if (continues && previous.level !== run.level) changes.push(run.firstHour);
+/** Each subject's lane in order of first run, then tag: those whose subject (`bySubject`) or
+ * whose overlord at some hour is one of `chosen`, every subject when `chosen` is null. */
+export function autonomyLanes(reply: SubjectReply, chosen: ReadonlySet<string> | null, bySubject: boolean): AutonomyLane[] {
+  const bySubjectTag = new Map<string, SubjectRun[]>();
+  for (const run of reply.runs) {
+    const held = bySubjectTag.get(run.subject);
+    if (held) held.push(run); else bySubjectTag.set(run.subject, [run]);
+  }
+  const lanes: AutonomyLane[] = [];
+  for (const [tag, runs] of bySubjectTag) {
+    if (chosen && !(bySubject ? chosen.has(tag) : runs.some(run => chosen.has(run.overlord)))) continue;
+    runs.sort((a, b) => a.firstHour - b.firstHour);
+    const spans = runs.flatMap(run => run.steps.map(step => ({ id: `${run.overlord}@${run.startHour}@${step.firstHour}`, firstHour: step.firstHour, lastHour: step.lastHour, level: step.level })));
+    const within: HourSpan[] = [];
+    for (const run of runs) {
+      const last = within.at(-1);
+      if (last && run.firstHour <= last.lastHour + 1) last.lastHour = Math.max(last.lastHour, run.lastHour);
+      else within.push({ firstHour: run.firstHour, lastHour: run.lastHour });
     }
-    const stretch = stretches.at(-1);
-    if (continues && stretch) stretch.lastHour = run.lastHour; else stretches.push({ firstHour: run.firstHour, lastHour: run.lastHour });
-    const value = progressOf(run);
-    if (value != null) progress.push({ firstHour: run.firstHour, lastHour: run.lastHour, value, breakBefore: !continues || progress.at(-1)?.lastHour !== run.firstHour - 1 });
-  });
-  return { id: subject.countryId ?? subject.tag, tag: subject.tag, runs: subject.runs, spans, spanLevels, progress, stretches, changes };
-}
-
-/** One subject country across its recorded tags, with overlord tag changes split
- * too. A known rename continues its line; a gap or another country still breaks it. */
-export function autonomyViews(reply: AutonomyReply, identities: CountryIdentityIndex): (AutonomySubject & { countryId: string })[] {
-  const holders = new Map<string, { tag: string; countryId: string; runs: (AutonomyRun & { tag: string })[] }>();
-  for (const subject of reply.subjects) {
-    const spans = identities.membershipRuns(subject.runs.map(run => ({ tag: subject.tag, firstHour: run.firstHour, lastHour: run.lastHour })));
-    for (const span of spans) {
-      const source = runAt(subject.runs, span.firstHour)!;
-      const countryId = identities.keyAt(subject.tag, span.firstHour)!;
-      let holder = holders.get(countryId);
-      if (!holder) { holder = { tag: subject.tag, countryId, runs: [] }; holders.set(countryId, holder); }
-      // Overlord lifetime changes split the operands, even if the tag stays the same.
-      const overlords = source.overlord === null ? [] : identities.membershipRuns([{ ...span, tag: source.overlord }]);
-      const cuts = [...new Set([span.firstHour, span.lastHour + 1, ...overlords.flatMap(part => [part.firstHour, part.lastHour + 1])])].sort((a, b) => a - b);
-      for (let index = 0; index + 1 < cuts.length; index++) holder.runs.push({ ...source, tag: subject.tag,
-        firstHour: cuts[index], lastHour: cuts[index + 1] - 1,
-        startsSegment: source.startsSegment && cuts[index] === source.firstHour });
-    }
+    const changes = runs.flatMap(run => run.steps.slice(1).filter((step, at) => step.level !== run.steps[at].level).map(step => step.firstHour));
+    lanes.push({ tag, runs, spans, within, changes });
   }
-  for (const holder of holders.values()) {
-    holder.runs.sort((a, b) => a.firstHour - b.firstHour);
-  }
-  return [...holders.values()].map(holder => ({ ...holder, runs: holder.runs.map(({ tag, ...run }, index) => {
-    const previous = holder.runs[index - 1];
-    const continues = previous?.lastHour === run.firstHour - 1;
-    return { ...run, startsSegment: !continues || run.startsSegment && previous?.tag === tag };
-  }) }));
+  return lanes.sort((a, b) => a.runs[0].firstHour - b.runs[0].firstHour || (a.tag < b.tag ? -1 : a.tag > b.tag ? 1 : 0));
 }
 
-/** The chosen subject countries or subjects of chosen overlord countries. A
- * country keeps its whole history across renames; a reused tag names its new holder. */
-export function chosenViews(views: readonly (AutonomySubject & { countryId: string })[], countryIds: ReadonlySet<string>, bySubject: boolean,
-  identities: CountryIdentityIndex): (AutonomySubject & { countryId: string })[] {
-  return views.filter(subject => bySubject ? countryIds.has(subject.countryId)
-    : subject.runs.some(run => run.overlord != null && countryIds.has(identities.keyAt(run.overlord, run.firstHour) ?? '')));
+/** The run of a lane holding `hour`. */
+export const runAt = (lane: AutonomyLane, hour: number) => lane.runs.find(run => run.firstHour <= hour && hour <= run.lastHour) ?? null;
+
+/** The level a lane's subject held at `hour`: undefined when it was no subject then, null when not recorded. */
+export function levelAt(lane: AutonomyLane, hour: number): string | null | undefined {
+  const run = runAt(lane, hour);
+  return run ? run.steps.find(step => step.firstHour <= hour && hour <= step.lastHour)?.level ?? null : undefined;
 }
 
-/** An unresolved overlord cannot prove a known subject falls outside the selection. */
-export function overlordIdentityUnknownFor(subject: AutonomySubject, identities: CountryIdentityIndex): boolean {
-  return subject.runs.some(run => run.overlord !== null && identities.keyAt(run.overlord, run.firstHour) === null);
+/** Each level's place in the content's order (least free first), and whether it is the first or last of them. */
+export function levelOrder(levels: readonly SubjectLevel[]): Map<string, { index: number; lowest: boolean; highest: boolean }> {
+  const ordered = levels.filter(level => level.ordered);
+  return new Map(levels.map((level, index) => [level.token, {
+    index, lowest: level.ordered && ordered[0]?.token === level.token, highest: level.ordered && ordered.at(-1)?.token === level.token,
+  }]));
 }
 
-/** The recorded run at an hour, or null. */
-export const runOf = (lane: SubjectLane, hour: number) => runAt(lane.runs, Math.floor(hour));
+export const levelName = (levels: readonly SubjectLevel[], token: string | null | undefined) =>
+  token == null ? 'Level not recorded' : contentTitle(levels.find(level => level.token === token)?.name, token, 'Autonomy level name unavailable');
 
-/** A subject's runs cut to the hours it is shown for a smart group counted at each
- * hour (`membership`, by native key, null for none): as a chosen subject (`bySubject`), while
- * it is a member itself; else while its overlord at that hour is one (a run without an
- * overlord then shows nowhere). Hours whose membership was not recorded
- * (`unobserved`) are cut out too, as unknown, but only then: a group counted at one
- * moment (no `membership`) chose its countries there, and its gaps elsewhere cut
- * nothing. A cut starts a new line where hours are missing between the pieces. */
-export function clipSubject<S extends AutonomySubject & { countryId?: string }>(subject: S, bySubject: boolean, membership: ReadonlyMap<string, readonly Span[]> | null,
-  unobserved: readonly Span[], identities?: CountryIdentityIndex): S {
-  let runs: AutonomyRun[] = subject.runs.slice();
-  if (membership) {
-    if (bySubject) runs = clipToSpans(runs, membership.get(subject.countryId ?? '') ?? []);
-    else {
-      // Each overlord's runs are cut by its membership in one pass (`clipToSpans` is
-      // linear), never once per run: a membership counted at each hour can hold tens
-      // of thousands of spans. The pieces are put back in hour order.
-      const byOverlord = new Map<string, AutonomyRun[]>();
-      for (const run of runs) {
-        if (run.overlord == null) continue;
-        const overlord = identities?.keyAt(run.overlord, run.firstHour) ?? null;
-        if (overlord === null) continue;
-        const held = byOverlord.get(overlord);
-        if (held) held.push(run); else byOverlord.set(overlord, [run]);
-      }
-      runs = [...byOverlord].flatMap(([overlord, held]) => clipToSpans(held, membership.get(overlord) ?? []));
-      if (byOverlord.size > 1) runs.sort((a, b) => a.firstHour - b.firstHour);
-    }
-  }
-  if (membership && unobserved.length && runs.length) {
-    // The hours around the unobserved ones, over this subject's own hours.
-    const known: Span[] = [];
-    let from = runs[0].firstHour;
-    for (const span of [...unobserved].sort((a, b) => a.firstHour - b.firstHour)) {
-      if (span.firstHour > from) known.push({ firstHour: from, lastHour: span.firstHour - 1 });
-      from = Math.max(from, span.lastHour + 1);
-    }
-    known.push({ firstHour: from, lastHour: runs.at(-1)!.lastHour });
-    runs = clipToSpans(runs, known.filter(span => span.firstHour <= span.lastHour));
-  }
-  return runs.length === subject.runs.length && runs.every((run, index) => run === subject.runs[index]) ? subject : { ...subject, runs };
+/** A progress value as a share: fixed5, so 100,000 is the score it moves up at. */
+export function formatProgress(raw: string | null | undefined): string {
+  if (raw == null) return 'Not recorded';
+  return `${(Number(raw) / 1000).toFixed(1)}%`;
 }
 
-/** Whether some hour of `within` was recorded with a subject or overlord the
- * recording does not name: then a country without a lane may be one of them. */
-export const partlyIdentified = (reply: AutonomyReply, within: Span) =>
-  reply.unidentified.some(span => span.firstHour <= within.lastHour && span.lastHour >= within.firstHour);
-
-/** What is known of a lane at an hour it has no run: never "not a subject" where
- * the group's membership, the tables or a country's identity were not recorded.
- * `text` is the tooltip's wording, `short` the level pill's. */
-export function absentAt(reply: AutonomyReply, hour: number, unobserved: readonly Span[]): { text: string; short: string } {
-  if (inSpans(unobserved, hour)) return { text: 'Group membership not recorded', short: 'Membership not recorded' };
-  if (!inSpans(reply.recorded, hour)) return { text: 'Not recorded', short: 'Not recorded' };
-  if (inSpans(reply.unidentified, hour)) return { text: 'Subject status unknown', short: 'Not known' };
-  return { text: 'Not a subject shown here', short: 'Not a subject here' };
+/** A score as the game counts it, with one decimal: `decimals` the series' fixed-point places. */
+export function formatScore(raw: string | null | undefined, decimals: number | undefined, missing: string | null | undefined): string {
+  if (raw == null || decimals === undefined) return missing ?? 'Not recorded';
+  return formatFixed(raw, decimals, 1);
 }
 
-/** A lane's labels at an hour: its level, else what is known of its absence, as the
- * tooltip says it. */
-export function laneLabels(reply: AutonomyReply, lane: SubjectLane, hour: number, unobserved: readonly Span[], identityRecorded = true): { label: string; pill: string; description: string } {
-  if (!identityRecorded) return { label: 'Country unavailable at this time.', pill: 'Not recorded', description: 'Country unavailable at this time.' };
-  const run = runOf(lane, hour);
-  if (run) {
-    const label = levelName(reply.levels[run.level]);
-    return { label, pill: label, description: `${label}, progress ${formatProgress(run)}` };
-  }
-  const absent = absentAt(reply, hour, unobserved);
-  return { label: absent.text, pill: absent.short, description: absent.text };
+/** What the lanes show at `hour` as a key: each lane's pill. The widget renders only when it changes. */
+export function headKey(lanes: readonly AutonomyLane[], levels: readonly SubjectLevel[], hour: number, unobserved: readonly HourSpan[]): string {
+  return lanes.map(lane => laneLabel(lane, levels, hour, unobserved).pill).join('|');
 }
 
-/** Whether a group's unknown membership (`unobserved`) cut any hour a lane could
- * have shown: a chosen subject's run (`bySubject`), else a run with an overlord.
- * Then a missing lane may be one the group held, not one it lacked. Linear in the
- * runs and spans. */
-export function membershipUnknownFor(subjects: readonly AutonomySubject[], bySubject: boolean, unobserved: readonly Span[]): boolean {
-  if (!unobserved.length) return false;
-  const spans = [...unobserved].sort((a, b) => a.firstHour - b.firstHour);
-  return subjects.some(subject => {
-    let at = 0;
-    return subject.runs.some(run => {
-      if (!bySubject && run.overlord == null) return false;
-      while (at < spans.length && spans[at].lastHour < run.firstHour) at++;
-      return at < spans.length && spans[at].firstHour <= run.lastHour;
-    });
-  });
+/** The lane's label at `hour`: its level and how it stands, or why it has none. */
+export function laneLabel(lane: AutonomyLane, levels: readonly SubjectLevel[], hour: number, unobserved: readonly HourSpan[]): { label: string; pill: string } {
+  const level = levelAt(lane, hour);
+  if (level !== undefined) return { label: levelName(levels, level), pill: levelName(levels, level) };
+  if (unobserved.some(span => span.firstHour <= hour && hour <= span.lastHour)) return { label: 'Not recorded at this hour', pill: 'Not recorded' };
+  return lane.runs[0].firstHour > hour ? { label: 'Not yet a subject', pill: 'Not a subject' } : { label: 'No longer a subject', pill: 'Not a subject' };
 }
 
-type PreparationSpans = { approximate?: readonly Span[]; pending?: readonly Span[] };
-
-/** Only a prepared census of the whole displayed range establishes absence. */
-export function autonomyUnprepared(reply: PreparationSpans, within: Span): boolean {
-  const coverage = preparationCoverage(reply);
-  return !coverage || coverage.firstHour > within.firstHour || coverage.lastHour < within.lastHour
-    || [reply.approximate, reply.pending].some(spans => spans?.some(span =>
-    span.firstHour <= within.lastHour && within.firstHour <= span.lastHour));
+/** Where `tag`'s current holder began holding it, from the recording's tag holders (`countryIdentities`): null
+ * when no country holds it at `hour`, undefined while the holders are not known. Bounds a lane's name to its
+ * holder at the hour shown. */
+export function holderSince(holders: ReadonlyMap<string, readonly HourSpan[]> | null, tag: string, hour: number): number | null | undefined {
+  if (!holders) return undefined;
+  return holders.get(tag)?.find(run => run.firstHour <= hour && hour <= run.lastHour)?.firstHour ?? null;
 }
 
-/** Missing identities, membership or preparation cannot establish no subjects. */
-export function noLanesMessage(reply: AutonomyReply & PreparationSpans, branch: Span, membershipUnknown = false): string {
-  if (autonomyUnprepared(reply, branch)) return 'Subject data is still being prepared.';
-  return membershipUnknown || partlyIdentified(reply, branch)
-    ? 'Subject data is incomplete for these countries.' : 'No subjects found for these countries.';
+/** A lane's name and flag at the hour shown: its country's as read there, or, where no country holds the lane's tag
+ * then (a subject before it existed), the tag alone with why it has no flag, never another holder's name. */
+export function laneIdentity<L extends { name: string }>(tag: string, since: number | null | undefined, named: L): { label: string; countryFlag: L | { flagReason: string } } {
+  return since === null ? { label: tag, countryFlag: { flagReason: UNHELD } } : { label: named.name, countryFlag: named };
 }
+
+const UNHELD = 'Country unavailable at this time.';

@@ -60,35 +60,35 @@ fn reference_capture(
     image: &EtaFixture,
     hour: Option<i32>,
     enabled: bool,
-    entries: &mut [cunit::MapCombatReference],
+    entries: &mut Vec<cunit::MapCombatReference>,
 ) -> (Walk, Row, usize, usize) {
-    let mut rows = [Row::default(); 1];
-    let mut paths = [0; 3];
-    let mut roots = [(0, 0); 1];
-    let mut observations = [FreshEtaObservations::default(); 1];
+    let mut rows = vec![Row::default(); 1];
+    let mut paths = vec![0; 3];
+    let mut roots = vec![(0, 0); 1];
+    let mut observations = vec![FreshEtaObservations::default(); 1];
     let mut names = NameArena {
-        bytes: crate::walk::Buffer::Fixed(&mut []),
+        bytes: crate::walk::Buffer::Count,
         used: 0,
         required: 0,
         failures: 0,
     };
     let mut layout = None;
     let mut scratch = TooltipScratch {
-        guns: crate::walk::Buffer::Fixed(&mut roots),
-        fresh_observations: crate::walk::Buffer::Fixed(&mut observations),
+        guns: crate::walk::Buffer::Growing(&mut roots),
+        fresh_observations: crate::walk::Buffer::Growing(&mut observations),
         sample_hour: hour,
         named: crate::railway_gun_speed::NamedBonuses {
-            pointers: crate::walk::Buffer::Fixed(&mut []),
+            pointers: crate::walk::Buffer::Count,
             required: 0,
         },
         layout: &mut layout,
         layout_buffer: &mut [],
-        supply_origins: crate::walk::Buffer::Fixed(&mut []),
+        supply_origins: crate::walk::Buffer::Count,
         supply_origins_len: 0,
         required_supply_origins: 0,
     };
     let mut arena = CombatReferencesArena {
-        entries: Buffer::Fixed(entries),
+        entries: Buffer::Growing(entries),
         used: 0,
         required: 0,
     };
@@ -105,16 +105,7 @@ fn reference_capture(
             &mut arena,
         )
     } else {
-        walk_with_tooltip_inputs(
-            image,
-            0,
-            STATE,
-            &mut rows,
-            &mut paths,
-            &mut cunit::FirstCombatMemo::new(1),
-            &mut names,
-            &mut scratch,
-        )
+        walk_impl(image, 0, STATE, crate::walk::Buffer::Growing(&mut rows), crate::walk::Buffer::Growing(&mut paths), &mut cunit::FirstCombatMemo::new(1), Some(&mut names), Some(&mut scratch), None)
     };
     (walk, rows[0], arena.used, arena.required)
 }
@@ -122,9 +113,9 @@ fn reference_capture(
 #[test]
 fn railway_full_references_share_motion_prefix_without_later_role_demands() {
     let image = full_reference_fixture();
-    let (expected_walk, expected_row, _, _) = reference_capture(&image, Some(15), false, &mut []);
+    let (expected_walk, expected_row, _, _) = reference_capture(&image, Some(15), false, &mut Vec::new());
     image.reads.borrow_mut().clear();
-    let mut entries = [cunit::MapCombatReference::default(); 4];
+    let mut entries = Vec::new();
     let (walk, mut row, used, required) = reference_capture(&image, Some(15), true, &mut entries);
     assert_eq!(walk, expected_walk);
     assert_eq!(walk.outcome, Outcome::Rows { len: 1 });
@@ -138,7 +129,7 @@ fn railway_full_references_share_motion_prefix_without_later_role_demands() {
         (Some((0, 4)), None, 4, 4)
     );
     assert_eq!(
-        entries.map(|entry| (entry.combat, entry.kind)),
+        entries.iter().map(|entry| (entry.combat, entry.kind)).collect::<Vec<_>>(),
         [
             (LAND_REFERENCE, cunit::COMBAT_LAND),
             (BORDER_REFERENCE, cunit::COMBAT_BORDER_WAR),
@@ -169,15 +160,15 @@ fn railway_full_references_share_motion_prefix_without_later_role_demands() {
 }
 
 #[test]
-fn railway_tail_fault_and_short_arena_preserve_every_existing_field() {
-    for (capacity, fault) in [(3, None), (4, Some(COMBATS + 8)), (4, Some(COMBAT_TWO))] {
+fn railway_tail_fault_preserves_every_existing_field() {
+    for fault in [Some(COMBATS + 8), Some(COMBAT_TWO)] {
         let mut image = full_reference_fixture();
         image.memory.fault = fault;
         let (expected_walk, expected_row, _, _) =
-            reference_capture(&image, Some(15), false, &mut []);
-        let mut entries = [cunit::MapCombatReference::default(); 4];
+            reference_capture(&image, Some(15), false, &mut Vec::new());
+        let mut entries = Vec::new();
         let (walk, mut row, used, required) =
-            reference_capture(&image, Some(15), true, &mut entries[..capacity]);
+            reference_capture(&image, Some(15), true, &mut entries);
         assert_eq!(walk, expected_walk);
         assert_eq!(walk.outcome, Outcome::Rows { len: 1 });
         assert_eq!((row.combat_references, used, required), (None, 0, 4));
@@ -195,7 +186,7 @@ fn railway_missing_hour_and_authenticated_empty_are_distinct() {
         },
         reads: Default::default(),
     };
-    let (_, missing, used, required) = reference_capture(&image, None, true, &mut []);
+    let (_, missing, used, required) = reference_capture(&image, None, true, &mut Vec::new());
     assert_eq!(
         (
             missing.combat_references,
@@ -205,7 +196,7 @@ fn railway_missing_hour_and_authenticated_empty_are_distinct() {
         ),
         (None, None, 0, 0)
     );
-    let (walk, empty, used, required) = reference_capture(&image, Some(i32::MIN), true, &mut []);
+    let (walk, empty, used, required) = reference_capture(&image, Some(i32::MIN), true, &mut Vec::new());
     assert_eq!(walk.outcome, Outcome::Rows { len: 1 });
     assert_eq!(
         (

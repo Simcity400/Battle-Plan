@@ -133,6 +133,8 @@ fn callback_help_contains_panics_and_preserves_the_cancelled_completion() {
     assert_eq!(pool.finish(second).unwrap().report, Err(Failure::Stopped));
     drop(held);
     assert_eq!(pool.finish(hold).unwrap().report, Ok(HOLD));
+    // The worker publishes the held job before it retires its active claim.
+    pool.settle();
     assert_eq!(pool.calibration().callback_help_executed, 1);
     assert_eq!(pool.calibration().active, 0);
     assert_eq!(pool.calibration().uncollected, 0);

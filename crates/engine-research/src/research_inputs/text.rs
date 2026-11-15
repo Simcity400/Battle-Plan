@@ -1,11 +1,15 @@
-//! Research text retains fixed fixture reads and exact worker-owned payloads.
+//! Research text: short text inline, longer text owned at its whole length.
 use crate::{Memory, allocation, msvc_string, read_slice};
 
+const INLINE: usize = 512;
+
 #[derive(Debug, PartialEq, Eq)]
-// Fixed readers retain allocation-free inline text; workers own longer payloads.
-#[allow(clippy::large_enum_variant)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Short text stays inline so the common row allocates nothing."
+)]
 pub enum Text {
-    Inline(msvc_string::Text<512>),
+    Inline(msvc_string::Text<INLINE>),
     Owned(Vec<u8>),
 }
 
@@ -39,40 +43,27 @@ impl Text {
         }
     }
 
-    fn inline(len: usize) -> Result<Self, &'static str> {
-        if len <= 512 {
-            Ok(Self::Inline(msvc_string::Text {
-                len,
-                ..Default::default()
-            }))
-        } else {
-            Err("string output too short")
-        }
-    }
-
-    fn bytes_mut(&mut self) -> &mut [u8] {
-        match self {
-            Self::Inline(value) => &mut value.bytes[..value.len],
-            Self::Owned(bytes) => bytes,
+    fn inline(len: usize) -> msvc_string::Text<INLINE> {
+        msvc_string::Text {
+            len,
+            ..Default::default()
         }
     }
 
     pub(crate) fn from_descriptor(
         memory: &impl Memory,
         descriptor: msvc_string::Descriptor,
-        growing: bool,
     ) -> Result<Self, &'static str> {
-        if descriptor.len > 512 && growing {
+        if descriptor.len > INLINE {
             let mut bytes = Vec::new();
-            // Text consumers use the original stored string length.
-            // Acquire payload chunks before growth so an invalid source keeps
-            // its original read failure ahead of any allocation failure.
+            // Payload chunks are acquired before growth so an invalid source
+            // keeps its read failure ahead of any allocation failure.
             descriptor.copy_buffer(memory, &mut crate::walk::Buffer::Growing(&mut bytes), 0)?;
             return Ok(Self::Owned(bytes));
         }
-        let mut value = Self::inline(descriptor.len)?;
-        descriptor.copy(memory, value.bytes_mut())?;
-        Ok(value)
+        let mut value = Self::inline(descriptor.len);
+        descriptor.copy(memory, &mut value.bytes[..value.len])?;
+        Ok(Self::Inline(value))
     }
 
     pub(crate) fn from_source(
@@ -80,9 +71,8 @@ impl Text {
         source: usize,
         len: usize,
         inline: Option<&[u8]>,
-        growing: bool,
     ) -> Result<Self, &'static str> {
-        if len > 512 && growing {
+        if len > INLINE {
             let mut bytes = Vec::new();
             msvc_string::copy_growing(
                 memory,
@@ -95,12 +85,13 @@ impl Text {
             )?;
             return Ok(Self::Owned(bytes));
         }
-        let mut value = Self::inline(len).map_err(|_| "technology token too long")?;
+        let mut value = Self::inline(len);
+        let output = &mut value.bytes[..len];
         if let Some(bytes) = inline {
-            value.bytes_mut().copy_from_slice(&bytes[..len]);
-        } else if !read_slice(memory, source, value.bytes_mut()) {
+            output.copy_from_slice(&bytes[..len]);
+        } else if !read_slice(memory, source, output) {
             return Err("technology token unreadable");
         }
-        Ok(value)
+        Ok(Self::Inline(value))
     }
 }

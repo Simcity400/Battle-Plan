@@ -48,8 +48,16 @@ pub(crate) struct SpoolConversion<'a, 'cache> {
     pub(crate) lexical: Option<&'a mut LexicalConversion<'cache>>,
     pub(crate) intel: Option<&'a mut IntelConversion<'cache>>,
     pub(crate) projection: Option<&'a mut Projection<'cache>>,
-    /// The conversion helpers and the spool thread's backlog verdict.
-    pub(crate) helper: Option<crate::spool_helper::Helpers<'a>>,
+    /// The conversion helpers and the hour's plan for them.
+    pub(crate) helper: Option<HelperSplit<'a>>,
+}
+
+/// The conversion helpers, with the spool thread's backlog verdict, and the
+/// hour's plan for them.
+#[derive(Clone, Copy)]
+pub(crate) struct HelperSplit<'a> {
+    pub(crate) helpers: crate::spool_helper::Helpers<'a>,
+    pub(crate) plan: crate::pack_conversion::Plan,
 }
 
 /// One hour's sliced read: the merged complete rows, or an update of the
@@ -564,7 +572,7 @@ impl Campaign {
         id: &str,
         session: &SessionStart,
         spool: crate::spool_writer::Output,
-        durability: &std::sync::Arc<crate::columnar::Durability>,
+        journal_thread: &std::sync::Arc<crate::columnar::JournalThread>,
     ) -> io::Result<Self> {
         let directory = root.join(id);
         // An attach has its own root. Reusing an unfinalized root would conceal
@@ -584,7 +592,7 @@ impl Campaign {
         }
         let world_generation = history.campaign_world_generation(id);
         let (tracker, history_file) = history.take(id, session)?;
-        let columnar = crate::columnar::Columnar::open(&directory, id, session, durability);
+        let columnar = crate::columnar::Columnar::open(&directory, id, session, journal_thread);
         Ok(Self {
             validation_refusals: ValidationRefusals::default(),
             directory,
@@ -1023,7 +1031,8 @@ impl<B: SegmentBackend> Campaign<B> {
         );
     }
 
-    // Spool-internal carry-forward keeps format-neutral byte-identical output.
+    // Spool-internal carry-forward keeps format-neutral byte-identical output. The hour's
+    // tables are final here but for refusals, so each table's read is marked ([`mark_reads`]).
     fn try_apply_staggered_inputs(
         &mut self,
         source: &mut FrameInput,
@@ -1062,13 +1071,28 @@ impl<B: SegmentBackend> Campaign<B> {
                     );
                     continue;
                 }
+                let restarting = !self.spool.is_open();
+                let cached = self.staggered_cache.get(&table);
                 if self
                     .encoder
-                    .can_carry(table, source.branch, source.hour, !self.spool.is_open())
+                    .can_carry(table, source.branch, source.hour, restarting)
                 {
                     // Keep the small marker. The encoder already owns a
                     // validated complete baseline; no row clone or recheck.
-                } else if let Some(cached) = self.staggered_cache.get(&table) {
+                } else if let Some(cached @ CachedTable::Complete(_)) = cached {
+                    *input = cached.input()?;
+                } else if let Some(rows) = self.encoder.keyframe_carry(
+                    table,
+                    source.branch,
+                    source.hour,
+                    restarting,
+                ) {
+                    // A compared refresh cached no rows; its baseline holds them.
+                    let rows = Arc::new(rows.try_clone()?);
+                    self.staggered_cache
+                        .insert(table, CachedTable::Complete(Arc::clone(&rows)));
+                    *input = TableInput::SharedComplete(rows);
+                } else if let Some(cached) = cached {
                     *input = cached.input()?;
                 } else {
                     *input = TableInput::Sampled(TableView::Unavailable {
@@ -1123,6 +1147,7 @@ impl<B: SegmentBackend> Campaign<B> {
                 self.staggered_cache.insert(table, cached);
             }
         }
+        mark_reads(source, &skipped);
         Ok(skipped)
     }
 
@@ -1713,6 +1738,7 @@ struct Statistics {
     total_ns: u64,
     callback: Distribution,
     callback_tail: crate::slow_hours::Recorder,
+    conversion: crate::pack_conversion::Conversion,
     dropped_frames: u64,
     truncated_tables: usize,
     pool_bytes: u64,
@@ -1736,6 +1762,7 @@ impl Default for Statistics {
             total_ns: 0,
             callback: Distribution::default(),
             callback_tail: crate::slow_hours::Recorder::default(),
+            conversion: crate::pack_conversion::Conversion::default(),
             dropped_frames: 0,
             truncated_tables: 0,
             pool_bytes: 0,
@@ -1947,18 +1974,16 @@ pub struct Processor {
     /// Sliced families a conversion withheld; the runtime has the collector
     /// forget their fingerprint stores.
     unpublished_families: u32,
-    /// Converts map tables and lane-0 helper packs beside this thread, and
-    /// lane 1 too when the second helper is absent.
-    helper: Option<crate::spool_helper::SpoolHelper>,
-    /// Converts lane-1 helper packs beside this thread and the first helper.
-    second_helper: Option<crate::spool_helper::SpoolHelper>,
+    /// Convert the map tables and the movable packs beside this thread, and
+    /// share the comparison and the encoding.
+    helpers: Vec<crate::spool_helper::SpoolHelper>,
     /// The spool thread's latest backlog verdict, which the helper follows.
     backlogged: bool,
     /// Decisions of the comparison before encoding.
     comparison: Box<crate::spool_compare::Counters>,
     writer: crate::spool_writer::Writer,
-    /// Makes the campaigns' ended journal segments durable.
-    durability: std::sync::Arc<crate::columnar::Durability>,
+    /// Writes the campaigns' journals.
+    journal_thread: std::sync::Arc<crate::columnar::JournalThread>,
     queued: std::collections::VecDeque<Box<QueuedFrame>>,
     flight: Option<(String, BranchId)>,
     writer_error: Option<io::ErrorKind>,
@@ -1997,7 +2022,10 @@ impl Drop for Processor {
 }
 
 impl Processor {
-    pub(crate) fn account_writer(&self, counter: Arc<std::sync::atomic::AtomicU64>) {
+    pub(crate) fn account_writer(
+        &self,
+        counter: engine_allocation::SharedBox<std::sync::atomic::AtomicU64>,
+    ) {
         self.writer.account_to(counter);
         self.account_ledger();
     }
@@ -2082,7 +2110,7 @@ impl Processor {
         session.validate()?;
         fs::create_dir_all(root).map_err(engine_allocation::allocation_error)?;
         let writer = crate::spool_writer::Writer::start(root.into())?;
-        let durability = crate::columnar::Durability::start()?;
+        let journal_thread = crate::columnar::JournalThread::start()?;
         Ok(Self {
             root: root.into(),
             history,
@@ -2094,12 +2122,11 @@ impl Processor {
             suppress_origin: false,
             retry_full: false,
             unpublished_families: 0,
-            helper: None,
-            second_helper: None,
+            helpers: Vec::new(),
             backlogged: false,
             comparison: Box::default(),
             writer,
-            durability,
+            journal_thread,
             queued: std::collections::VecDeque::new(),
             flight: None,
             writer_error: None,
@@ -2115,15 +2142,15 @@ impl Processor {
         })
     }
 
-    /// Hand a conversion helper to this processor: the first converts the map
-    /// tables and both helper lanes, a second takes lane 1. Without one, the
-    /// spool thread converts every table itself with identical output.
-    pub(crate) fn set_helper(&mut self, helper: crate::spool_helper::SpoolHelper) {
-        if self.helper.is_none() {
-            self.helper = Some(helper);
-        } else {
-            self.second_helper = Some(helper);
+    /// Add a conversion helper to this processor's pool; false if it could
+    /// not be kept. Without any, the spool thread converts every table itself
+    /// with identical output.
+    pub(crate) fn set_helper(&mut self, helper: crate::spool_helper::SpoolHelper) -> bool {
+        if engine_allocation::reserve(&mut self.helpers, 1).is_err() {
+            return false;
         }
+        self.helpers.push(helper);
+        true
     }
 
     /// The capture-buffer backlog verdict for the next conversion.
@@ -2161,7 +2188,7 @@ impl Processor {
                     id,
                     &self.session,
                     output,
-                    &self.durability,
+                    &self.journal_thread,
                 )?;
             campaign.validation_refusals = self.stats.validation_refusals.clone();
             self.campaigns
@@ -2432,14 +2459,13 @@ impl Processor {
         let suppress = self.suppress_origin;
         let unknown = self.unknown_pending;
         self.campaign(&id)?;
-        let helper = self
-            .helper
-            .as_ref()
-            .map(|first| crate::spool_helper::Helpers {
-                first,
-                second: self.second_helper.as_ref(),
+        let helper = (!self.helpers.is_empty()).then(|| HelperSplit {
+            helpers: crate::spool_helper::Helpers {
+                pool: &self.helpers,
                 backlogged: self.backlogged,
-            });
+            },
+            plan: self.stats.conversion.plan(self.helpers.len()),
+        });
         let campaign = self
             .campaigns
             .get_mut(&id)
@@ -2483,13 +2509,16 @@ impl Processor {
                 (qpc, clock.hour, clock.play_session_started_at),
             );
         }
+        // Keyed updates edit the shared baseline its complete conversions leave.
         let variables_baseline = campaign
             .encoder
-            .comparison_baseline::<tables::ScriptVariables>(
+            .slice_baseline(
+                TableId::ScriptVariables,
                 branch,
                 clock.hour,
                 !campaign.spool.is_open(),
-            );
+            )
+            .and_then(|(token, rows)| Some((token, rows.rows::<tables::ScriptVariables>()?)));
         if captured.force_full {
             for (_, table) in REPUBLISHING {
                 campaign.projection_scratch.forget(table);
@@ -2513,7 +2542,7 @@ impl Processor {
             &campaign.projection_scratch,
         );
         span.finish();
-        let (mut source, _pack_ticks) = decoded_with_costs(
+        let (mut source, mut costs) = decoded_with_costs(
             captured,
             clock.borrowed(),
             branch,
@@ -2527,8 +2556,8 @@ impl Processor {
                 helper,
             },
         );
-        #[cfg(feature = "phase_cpu")]
-        crate::spool_phases::add_pack_ticks(&_pack_ticks);
+        costs.script_variables = campaign.variables_scratch.take_work();
+        self.stats.conversion.record(&costs);
         let span = crate::spool_phases::SPOOL.span(crate::spool_phases::Phase::Merge);
         if crate::allocation::failed() {
             return Err(io::ErrorKind::OutOfMemory.into());
@@ -2667,14 +2696,10 @@ impl Processor {
             return self.drain_writer();
         }
         // Compare before encoding with the same restart verdict the write uses.
-        let helpers = self
-            .helper
-            .as_ref()
-            .map(|first| crate::spool_helper::Helpers {
-                first,
-                second: self.second_helper.as_ref(),
-                backlogged: self.backlogged,
-            });
+        let helpers = (!self.helpers.is_empty()).then(|| crate::spool_helper::Helpers {
+            pool: &self.helpers,
+            backlogged: self.backlogged,
+        });
         crate::hook_failures::apply(&mut source)?;
         crate::site_withholding::apply(&mut source)?;
         crate::spool_compare::compare_frame(
@@ -3230,6 +3255,15 @@ impl Processor {
         }
     }
 
+    /// Waits until the journal thread wrote everything queued so far, as a recorder reading the
+    /// journals would find it.
+    #[cfg(test)]
+    fn settle_journals(&self) {
+        for campaign in self.campaigns.values() {
+            campaign.columnar.settle();
+        }
+    }
+
     /// Hold a campaign's history file again, as the recorder saved it.
     #[cfg(test)]
     pub(crate) fn retake_history(&mut self, id: &str) -> io::Result<()> {
@@ -3571,11 +3605,22 @@ impl Processor {
         retired
     }
 
-    pub(crate) fn slow_spool_frame(
+    /// Ends a spool frame, over budget or not: an over-budget frame of an hour
+    /// carries that hour's costliest conversion.
+    pub(crate) fn end_spool_frame(
         &mut self,
-        frame: crate::slow_hours::SpoolFrame,
+        frame: Option<crate::slow_hours::SpoolFrame>,
     ) -> io::Result<()> {
-        self.stats.callback_tail.record_spool(frame)
+        let conversion = self.stats.conversion.take_latest();
+        match frame {
+            Some(mut frame) => {
+                if frame.hour.is_some() {
+                    frame.conversion = conversion;
+                }
+                self.stats.callback_tail.record_spool(frame)
+            }
+            None => Ok(()),
+        }
     }
 
     pub fn take_retry_full(&mut self) -> bool {
@@ -3612,6 +3657,11 @@ impl Processor {
     }
 
     #[cfg(test)]
+    pub(crate) fn lockstep_writer(&self) {
+        self.writer.lockstep();
+    }
+
+    #[cfg(test)]
     pub(crate) fn allocation_failure_publication_state(
         &self,
         last_hour: i32,
@@ -3636,7 +3686,7 @@ impl Processor {
         let stats = &self.stats;
         let callback = stats.callback.try_percentiles()?;
         let callback_work = stats.callback.status()?;
-        Ok(status!({
+        let fields = status!({
             "campaign": &stats.campaign, "hours": stats.hours, "last_hour": stats.last_hour,
             "player": &stats.player,
             "total_ns": stats.total_ns, "p95_ns": callback.p95_ns,
@@ -3653,7 +3703,14 @@ impl Processor {
                 "columnar": self.campaigns.values().filter_map(|campaign| campaign.columnar.status()).collect::<Vec<_>>(),
                 "columnar_finished": crate::columnar::finished_status(),
             },
-        }))
+            "spool_conversion": stats.conversion.status(),
+            "script_variables_conversion": stats.conversion.script_variables_status(),
+        });
+        #[cfg(feature = "conversion_check")]
+        let fields = fields.join(status!({
+            "conversion_check": crate::extended::intel::conversion_check::status(),
+        }));
+        Ok(fields)
     }
 
     #[cfg(test)]
@@ -3860,13 +3917,31 @@ fn decoded(
     ))
 }
 
+/// Each table's time as the read it names: a table the hour read with no time of its own (charged
+/// to a sibling of its walk, or assembled after the timing pass) is read without a time, and one
+/// the hour skipped carries none. A refusal is read only where its walk was timed.
+fn mark_reads(source: &mut FrameInput, skipped: &[bool; TABLE_COUNT]) {
+    for ((input, ns), &skipped) in source.tables.iter().zip(&mut source.metrics.table_ns).zip(skipped) {
+        let read = !skipped
+            && match input {
+                TableInput::Sampled(TableView::Unavailable { .. } | TableView::NotRecorded { .. }) => *ns != 0,
+                _ => true,
+            };
+        if !read {
+            *ns = 0;
+        } else if *ns == 0 {
+            *ns = replay_frame::frame::READ_TIME_NOT_RECORDED;
+        }
+    }
+}
+
 fn decoded_with_costs(
     captured: &Captured,
     clock: Clock<&[u8]>,
     branch: BranchId,
     conversion: &mut SpoolConversion<'_, '_>,
-) -> (FrameInput, [Option<i64>; crate::extended::PACK_NAMES.len()]) {
-    let mut pack_ticks = [None; crate::extended::PACK_NAMES.len()];
+) -> (FrameInput, crate::pack_conversion::HourCosts) {
+    let mut costs = crate::pack_conversion::HourCosts::EMPTY;
     let metrics = Metrics {
         total_ns: captured.total_ns,
         table_ns: captured.table_ns,
@@ -3881,9 +3956,10 @@ fn decoded_with_costs(
     let tables = if let Some(reason) = failure {
         unavailable_tables(reason)
     } else {
-        let mut tables = unavailable_tables("table was not acquired");
+        let mut tables = unavailable_tables(NOT_ACQUIRED);
         match conversion.helper {
             None => {
+                let started = std::time::Instant::now();
                 let map = crate::map_spool::table_inputs(
                     &captured.map,
                     conversion.projection.as_deref_mut(),
@@ -3894,14 +3970,25 @@ fn decoded_with_costs(
                 }
                 tables[TableId::BorderConflicts.index()] = border_conflicts_table(captured).into();
                 let _packs = span.switch(crate::spool_phases::Phase::ConvertPacks);
-                pack_ticks = captured
-                    .extended
-                    .insert_tables(clock.hour, &mut tables, conversion, false)
-                    .map(Some);
+                captured.extended.insert_tables(
+                    clock.hour,
+                    &mut tables,
+                    conversion,
+                    false,
+                    &mut costs,
+                );
+                costs.thread(started);
             }
-            Some(helpers) => {
-                pack_ticks =
-                    convert_with_helper(captured, &clock, conversion, helpers, &mut tables, span);
+            Some(split) => {
+                convert_with_helper(
+                    captured,
+                    &clock,
+                    conversion,
+                    split,
+                    &mut tables,
+                    &mut costs,
+                    span,
+                );
             }
         }
         tables[TableId::StateResistance.index()] = captured
@@ -3940,7 +4027,7 @@ fn decoded_with_costs(
     // a table still shared with its producer's cache is rounded only while
     // this hour holds its sole reference, and the encoder rounds the rest.
     input.round_to_display();
-    (input, pack_ticks)
+    (input, costs)
 }
 
 /// Clock through FactionMembers: the core tables before the map tables.
@@ -4132,31 +4219,52 @@ fn core_tables(
     ]
 }
 
-/// One hour's map tables and the helper packs converted by the helpers while
-/// this thread converts the core tables and the other packs: the first helper
-/// converts the map tables and lane 0, the second lane 1, or the first both
-/// lanes when it is alone. Every table lands in the slot the serial order
-/// fills, and the ordinary-job refusal is applied after every share merged,
-/// so the frame is the serial one.
+/// One hour's map tables and helper packs, converted beside this thread's core
+/// tables and own packs: the first helper converts the map tables, then every
+/// thread (this one after its own share, and the plan's helpers) takes the
+/// movable packs from one queue in the plan's order until it is empty. Every
+/// table lands in the slot the serial order fills, whichever thread converted
+/// it, and the ordinary-job refusal is applied after every share merged, so
+/// the frame is the serial one.
 fn convert_with_helper(
     captured: &Captured,
     clock: &Clock<&[u8]>,
     conversion: &mut SpoolConversion<'_, '_>,
-    helpers: crate::spool_helper::Helpers<'_>,
+    split: HelperSplit<'_>,
     tables: &mut [TableInput; TABLE_COUNT],
+    costs: &mut crate::pack_conversion::HourCosts,
     span: crate::spool_phases::Span<'static>,
-) -> [Option<i64>; crate::extended::PACK_NAMES.len()] {
+) {
     use crate::spool_phases::{HELPER, Phase};
-    struct HelperOutput {
+    /// What the threads converted from the queue, and the map tables.
+    struct Converted {
         map: Option<[TableInput; 10]>,
         packs: [Option<TableInput>; TABLE_COUNT],
-        costs: [i64; crate::extended::PACK_NAMES.len()],
+        costs: crate::pack_conversion::HourCosts,
     }
-    const EMPTY_OUTPUT: HelperOutput = HelperOutput {
-        map: None,
-        packs: [const { None }; TABLE_COUNT],
-        costs: [0; crate::extended::PACK_NAMES.len()],
-    };
+    /// Moves one thread's conversion into the hour's. Each slot is filled by
+    /// one pack, so the order the threads finish in changes nothing.
+    fn take_in(
+        converted: &std::sync::Mutex<Converted>,
+        map: Option<[TableInput; 10]>,
+        packs: &mut [Option<TableInput>; TABLE_COUNT],
+        costs: Option<&crate::pack_conversion::HourCosts>,
+    ) {
+        let mut converted = converted
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if map.is_some() {
+            converted.map = map;
+        }
+        for (destination, value) in converted.packs.iter_mut().zip(packs) {
+            if let Some(value) = value.take() {
+                *destination = Some(value);
+            }
+        }
+        if let Some(costs) = costs {
+            converted.costs.merge(costs);
+        }
+    }
     let projection = conversion
         .projection
         .as_ref()
@@ -4165,9 +4273,9 @@ fn convert_with_helper(
     let view = captured.extended.helper_view();
     let map = &captured.map;
     let context = crate::allocation::context();
-    // The characters and intel packs convert on a helper lane with the spool
-    // caches lent for this join; the spool thread converts the rest with its
-    // other caches.
+    // The characters and intel packs convert with the spool caches lent for
+    // this join to whichever thread takes them; this thread converts its own
+    // packs with its other caches.
     let SpoolConversion {
         variables_baseline,
         variables_scratch,
@@ -4193,53 +4301,29 @@ fn convert_with_helper(
         projection: own_projection.as_deref_mut(),
         helper: None,
     };
-    let lane = |lanes: u8, with_map: bool, output: &std::sync::Mutex<HelperOutput>| {
+    let converted = std::sync::Mutex::new(Converted {
+        map: None,
+        packs: [const { None }; TABLE_COUNT],
+        costs: crate::pack_conversion::HourCosts::EMPTY,
+    });
+    let queue = split.plan.queue();
+    let helper = |index: usize| {
+        let started = std::time::Instant::now();
         let _phase = crate::allocation::enter(crate::allocation::Phase::Spool);
         crate::allocation::set_context(context);
-        let caches = {
-            let mut lent = lent
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let lane_a = lanes & 0b01 != 0;
-            crate::extended::LentCaches {
-                characters: if lanes & 0b10 != 0 {
-                    lent.characters.take()
-                } else {
-                    None
-                },
-                intel: if lane_a { lent.intel.take() } else { None },
-                variables_baseline: if lane_a {
-                    lent.variables_baseline
-                } else {
-                    None
-                },
-                variables_scratch: if lane_a {
-                    lent.variables_scratch.take()
-                } else {
-                    None
-                },
-            }
-        };
         let mut projection = projection;
-        // Fill the caller's output slot directly, so the complete pack array
-        // is never copied through another helper-frame aggregate.
-        let mut output = output
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut costs = crate::pack_conversion::HourCosts::of(index + 1);
+        let mut packs = [const { None }; TABLE_COUNT];
         let span = HELPER.span(Phase::ConvertCore);
-        output.map = with_map.then(|| crate::map_spool::table_inputs(map, projection.as_mut()));
+        let map = (index == 0).then(|| crate::map_spool::table_inputs(map, projection.as_mut()));
         let span = span.switch(Phase::ConvertPacks);
-        let HelperOutput { packs, costs, .. } = &mut *output;
-        view.tables(hour, lanes, projection.as_mut(), caches, packs, costs);
+        view.convert_queued(&queue, hour, projection.as_mut(), &lent, &mut packs, &mut costs);
+        costs.thread(started);
         span.finish();
+        take_in(&converted, map, &mut packs, Some(&costs));
     };
-    let first = std::sync::Mutex::new(EMPTY_OUTPUT);
-    let second = helpers.second.map(|_| std::sync::Mutex::new(EMPTY_OUTPUT));
-    let first_lanes = if helpers.second.is_some() { 0b01 } else { 0b11 };
-    let first_job = || lane(first_lanes, true, &first);
-    let second_job = || lane(0b10, false, second.as_ref().expect("second helper output"));
-    let mut pack_ticks = [None; crate::extended::PACK_NAMES.len()];
     let own = || {
+        let started = std::time::Instant::now();
         let conversion = &mut conversion;
         let core = core_tables(captured, clock, conversion.projection.as_deref_mut());
         for (destination, value) in tables.iter_mut().zip(core) {
@@ -4247,41 +4331,45 @@ fn convert_with_helper(
         }
         tables[TableId::BorderConflicts.index()] = border_conflicts_table(captured).into();
         let span = span.switch(Phase::ConvertPacks);
-        pack_ticks = captured
+        captured
             .extended
-            .insert_tables(clock.hour, tables, conversion, true)
-            .map(Some);
+            .insert_tables(clock.hour, tables, conversion, true, costs);
+        let mut packs = [const { None }; TABLE_COUNT];
+        view.convert_queued(
+            &queue,
+            hour,
+            conversion.projection.as_deref_mut(),
+            &lent,
+            &mut packs,
+            costs,
+        );
+        costs.thread(started);
+        take_in(&converted, None, &mut packs, None);
         span.switch(Phase::HelperWait)
     };
-    let wait = match helpers.second {
-        Some(second_helper) => helpers.first.join(helpers.backlogged, &first_job, || {
-            second_helper.join(helpers.backlogged, &second_job, own)
-        }),
-        None => helpers.first.join(helpers.backlogged, &first_job, own),
-    };
-    wait.finish();
-    for output in [Some(first), second].into_iter().flatten() {
-        let HelperOutput { map, packs, costs } = output
-            .into_inner()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(map) = map {
-            for (destination, value) in tables[TableId::Players.index()..].iter_mut().zip(map) {
-                *destination = value;
-            }
-        }
-        for (destination, value) in tables.iter_mut().zip(packs) {
-            if let Some(value) = value {
-                *destination = value;
-            }
-        }
-        for (ticks, cost) in pack_ticks.iter_mut().zip(costs) {
-            if cost != 0 {
-                *ticks = Some(cost);
-            }
+    split
+        .helpers
+        .join_some(split.plan.helpers(), &helper, own)
+        .finish();
+    let Converted {
+        map,
+        packs,
+        costs: helper_costs,
+    } = converted
+        .into_inner()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(map) = map {
+        for (destination, value) in tables[TableId::Players.index()..].iter_mut().zip(map) {
+            *destination = value;
         }
     }
+    for (destination, value) in tables.iter_mut().zip(packs) {
+        if let Some(value) = value {
+            *destination = value;
+        }
+    }
+    costs.merge(&helper_costs);
     captured.extended.refuse_failed_ordinary(tables);
-    pack_ticks
 }
 
 /// The BorderConflicts outcome after a Provinces walk: unavailable with it,
@@ -4326,6 +4414,9 @@ fn border_conflicts_table(captured: &Captured) -> TableView {
         groups: engine_allocation::owned_vec(engine_allocation::copy_vec(list(r).unwrap())),
     })
 }
+
+/// What a frame holds for a table no producer filled, a derived table among them.
+const NOT_ACQUIRED: &str = "table was not acquired";
 
 fn unavailable_tables(reason: &'static str) -> [TableInput; TABLE_COUNT] {
     std::array::from_fn(|index| {
@@ -4403,7 +4494,7 @@ mod slice_reads_tests;
 
 #[cfg(test)]
 #[path = "spooling/write_behind_tests.rs"]
-mod write_behind_tests;
+pub(crate) mod write_behind_tests;
 
 #[cfg(test)]
 mod tests {
@@ -4660,7 +4751,7 @@ mod tests {
                 .unwrap();
             assert_eq!(resumed.current_branch(), Some(command_branch));
             drop((prepared, resumed, lease));
-            for path in [row_path, campaign.join("columnar.0.h4col")] {
+            for path in [row_path] {
                 let recording = Recording::open_path(&path).unwrap();
                 let commands: Vec<_> = recording
                     .controls
@@ -4726,7 +4817,7 @@ mod tests {
         let replay = replay::campaign::Replay::from_recovered(ID.to_vec(), &segments).unwrap();
         let row_path = directory.join("reactivated.battleplan");
         replay.write_atomic(&row_path).unwrap();
-        for path in [row_path, campaign.join("columnar.0.h4col")] {
+        for path in [row_path] {
             let recording = Recording::open_path(&path).unwrap();
             assert_eq!(recording.branches.len(), 1);
             let packets: Vec<_> = recording
@@ -4851,9 +4942,6 @@ mod tests {
             assert!(row.recorded_hours(past).unwrap().is_empty());
             let history = row.into_history().unwrap();
             assert_eq!(history.session_tail(session().id).unwrap().branch, current);
-            let columns =
-                replay::commands::Recording::open_path(&campaign.join("columnar.0.h4col")).unwrap();
-            assert_eq!(columns.branches.len(), 2);
             fs::remove_dir_all(directory).unwrap();
         }
     }
@@ -5014,17 +5102,6 @@ mod tests {
             .collect()
     }
 
-    fn loss(campaign: &[u8], signal: i64, hour: i32) -> LostObservation {
-        LostObservation {
-            campaign_id: owned_text(campaign),
-            first_hour: hour,
-            last_hour: hour,
-            count: 1,
-            load_signal: Some(signal),
-            ..Default::default()
-        }
-    }
-
     const OTHER: &[u8] = b"21b7cc84-3028-4f65-8e0d-adf2f37ca1a7";
 
     #[test]
@@ -5067,23 +5144,23 @@ mod tests {
             );
             processor.detach().unwrap();
             drop(processor);
-            let (staged, _) = replay_io::save_campaign(
+            let ended = replay_io::finalize_session_ahead(
                 &folder,
                 &target,
-                name,
-                true,
                 &|| Ok(()),
-                &mut replay_io::Ahead::default(),
+                replay_io::Live::default(),
                 naming,
+                &|_| replay_io::Destination::Unsaved,
             )
             .unwrap();
-            assert_eq!(staged.as_deref(), Some(unsaved.as_path()));
+            assert!(ended.errors.is_empty(), "{:?}", ended.errors);
+            assert_eq!(ended.unsaved, [unsaved.clone()]);
             assert_eq!(recording(), None, "nothing is saved");
         }
         // The restarted capture continued the first one's branches.
         assert_ne!(branches[0], branches[1]);
         // Save: both captures, as one recording.
-        let saved = replay_io::publish_unsaved(&target, name, naming).unwrap();
+        let saved = replay_io::save_waiting(&target, name, naming).unwrap();
         let recording = recording().unwrap();
         assert_eq!(saved, Some(recording.clone()));
         assert!(!unsaved.exists());
@@ -5120,20 +5197,25 @@ mod tests {
         let name = std::str::from_utf8(ID).unwrap();
         let other = std::str::from_utf8(OTHER).unwrap();
         let settings = root.join("settings.json");
-        let save = |folder: &Path| {
-            replay_io::save_campaign(
-                folder,
-                &target,
-                name,
-                false,
-                &|| Ok(()),
-                &mut replay_io::Ahead::default(),
-                replay_io::Naming {
-                    localisation: None,
-                    settings: &settings,
-                    report: None,
-                },
-            )
+        let naming = replay_io::Naming {
+            localisation: None,
+            settings: &settings,
+            report: None,
+        };
+        // An ended session's journals are written to their end and its recordings saved.
+        let end = |writers: replay_io::Live, folder: &Path| {
+            let ended = replay_io::finalize_session_ahead(folder, &target, &|| Ok(()), writers, naming, &|_| {
+                replay_io::Destination::Recording
+            })
+            .unwrap();
+            assert!(ended.errors.is_empty(), "{:?}", ended.errors);
+            ended.replays[0].clone()
+        };
+        // What a running session's journal holds of the campaign so far is written, and Save asked.
+        let save = |writers: &mut replay_io::Live, folder: &Path| -> Result<Option<PathBuf>, String> {
+            writers.retry();
+            writers.advance(folder, &target, &|_| false, naming, &|| false)?;
+            writers.save(folder, &target, name, naming)
         };
         // An earlier game process saved the campaign.
         let earlier = root.join("sessions").join("1");
@@ -5146,7 +5228,7 @@ mod tests {
         }
         processor.detach().unwrap();
         drop(processor);
-        let recording = save(&earlier).unwrap().0.unwrap();
+        let recording = end(replay_io::Live::default(), &earlier);
         // This process holds that recording as the campaign's history.
         let session = SessionStart {
             id: 2,
@@ -5164,15 +5246,18 @@ mod tests {
         processor
             .frame(&crate::spooling::campaign_frame(OTHER, 9012, 30))
             .unwrap();
+        // Before its journal is on disk the recorder sees nothing to write, and saves as it was.
+        processor.settle_journals();
         let held = fs::read(&recording).unwrap();
         let conflict = fs::OpenOptions::new()
             .read(true)
             .share_mode(windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ)
             .open(&recording)
             .unwrap();
+        let mut writers = replay_io::Live::default();
         assert!(
-            save(&folder).is_err(),
-            "the restrictive reader prevents replacement"
+            save(&mut writers, &folder).is_err(),
+            "the restrictive reader keeps the writer out"
         );
         assert_eq!(fs::read(&recording).unwrap(), held);
         drop(conflict);
@@ -5215,7 +5300,10 @@ mod tests {
             processor.history_request(&format!("2 release {name}")),
             "2 ok"
         );
-        let recording = save(&folder).unwrap().0.unwrap();
+        // The collector holds the campaign's journal until it detaches: its hours are written
+        // into the recording now, and saved with the session's end.
+        let deferred = save(&mut writers, &folder).unwrap_err();
+        assert!(deferred.contains("saved when recording stops"), "{deferred}");
         assert_eq!(
             processor.history_request(&format!("3 retake {name}")),
             "3 ok"
@@ -5240,6 +5328,7 @@ mod tests {
         );
         processor.detach().unwrap();
         drop(processor);
+        assert_eq!(end(writers, &folder), recording);
         let frames = recorded_frames(&recording);
         assert_eq!(
             frames.iter().map(|(_, hour)| *hour).collect::<Vec<_>>(),
@@ -5249,96 +5338,6 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
-    #[test]
-    fn saving_a_campaign_each_time_the_game_leaves_it_writes_what_one_save_at_the_end_would() {
-        use recorder_replay::replay_io;
-        let root = scratch_root("set-aside-bytes");
-        let target = root.join("recordings");
-        let name = std::str::from_utf8(ID).unwrap();
-        let folder = root.join("sessions").join("1");
-        let mut processor =
-            Processor::new(&folder, PreparedCampaigns::default(), session()).unwrap();
-        let settings = root.join("settings.json");
-        let save = || {
-            replay_io::save_campaign(
-                &folder,
-                &target,
-                name,
-                false,
-                &|| Ok(()),
-                &mut replay_io::Ahead::default(),
-                replay_io::Naming {
-                    localisation: None,
-                    settings: &settings,
-                    report: None,
-                },
-            )
-            .unwrap()
-        };
-        for hour in 10..=11 {
-            processor
-                .frame(&crate::spooling::campaign_frame(ID, 1234, hour))
-                .unwrap();
-        }
-        // An hour lost while leaving: its gap is written when the campaign is set aside.
-        processor.lost(&loss(ID, 1234, 12)).unwrap();
-        processor
-            .frame(&crate::spooling::campaign_frame(OTHER, 9012, 30))
-            .unwrap();
-        save();
-        // Loaded again, then left again: the save appends.
-        for hour in 40..=41 {
-            processor
-                .frame(&crate::spooling::campaign_frame(ID, 5678, hour))
-                .unwrap();
-        }
-        processor
-            .frame(&crate::spooling::campaign_frame(OTHER, 9012, 31))
-            .unwrap();
-        save();
-        processor.detach().unwrap();
-        drop(processor);
-        let once = root.join("once");
-        replay_io::finalize_session(&folder, &once).unwrap();
-        let opened = |folder: &Path| {
-            let recording = replay::recording_files::recording_of(folder, ID).unwrap();
-            replay::campaign::Replay::open(fs::read(recording.unwrap()).unwrap()).unwrap()
-        };
-        // Each save adds a revision, so compare what the recordings hold.
-        let held = |folder: &Path| {
-            let replay = opened(folder);
-            let mut hours = Vec::new();
-            let blocks: Vec<_> = replay.index.iter().collect();
-            replay
-                .visit_blocks(
-                    &blocks,
-                    &TableId::ALL,
-                    None,
-                    |_, _, frame| {
-                        hours.push(frame.clone());
-                        Ok(true)
-                    },
-                    || Ok(()),
-                )
-                .unwrap();
-            let records = format!(
-                "{:?}",
-                (&replay.sessions, &replay.branches, &replay.gaps, &replay.controls)
-            );
-            (records, hours)
-        };
-        assert_eq!(held(&target), held(&once));
-        let replay = opened(&target);
-        assert_eq!(
-            replay
-                .gaps
-                .iter()
-                .map(|gap| gap.first_hour)
-                .collect::<Vec<_>>(),
-            [12]
-        );
-        fs::remove_dir_all(root).unwrap();
-    }
 
     /// Once the native capture halts, every later hour is a gap, without the write failure's full
     /// refresh, and the rows hold no hour the native capture lacks.
@@ -5380,7 +5379,10 @@ mod tests {
             }
         }
         assert_eq!(hours, [10]);
-        assert_eq!(gaps, [(11, 12, "columnar recording stopped".to_owned())]);
+        assert_eq!(
+            gaps,
+            [(11, 12, "the columnar recording could not be opened".to_owned())]
+        );
         drop(processor);
         fs::remove_dir_all(directory).unwrap();
     }
@@ -5465,6 +5467,8 @@ mod tests {
             );
             return;
         }
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("capture tests require BATTLE_PLAN_GAME_DIR with the supported installation");
         let exclusive_roles = [
             Role::World,
             Role::Presentation,
@@ -5824,13 +5828,12 @@ mod tests {
             suppress_origin: false,
             retry_full: false,
             unpublished_families: 0,
-            helper: None,
-            second_helper: None,
+            helpers: Vec::new(),
             backlogged: false,
             comparison: Box::default(),
             writer: crate::spool_writer::Writer::start(PathBuf::new())
                 .unwrap(),
-            durability: crate::columnar::Durability::start().unwrap(),
+            journal_thread: crate::columnar::JournalThread::start().unwrap(),
             queued: std::collections::VecDeque::new(),
             flight: None,
             writer_error: None,
@@ -7069,13 +7072,12 @@ mod tests {
             suppress_origin: false,
             retry_full: false,
             unpublished_families: 0,
-            helper: None,
-            second_helper: None,
+            helpers: Vec::new(),
             backlogged: false,
             comparison: Box::default(),
             writer: crate::spool_writer::Writer::start(PathBuf::new())
                 .unwrap(),
-            durability: crate::columnar::Durability::start().unwrap(),
+            journal_thread: crate::columnar::JournalThread::start().unwrap(),
             queued: std::collections::VecDeque::new(),
             flight: None,
             writer_error: None,
@@ -8066,12 +8068,17 @@ mod tests {
     }
 
     fn staggered_frame(branch: BranchId, hour: i32, skip: bool) -> DecodedFrame {
-        use replay_data::{
-            rows::CampaignRow, rows::ClockRow, rows::SunkShipsRow, rows::TableId, rows::TableRows,
-            rows::WorldTensionRow,
-        };
-        let mut tables =
-            std::array::from_fn(|index| TableView::Complete(TableRows::empty(TableId::ALL[index])));
+        use replay_data::{rows::CampaignRow, rows::ClockRow, rows::TableId, rows::TableRows};
+        let mut tables = std::array::from_fn(|index| {
+            let table = TableId::ALL[index];
+            if table.is_derived() {
+                unavailable(super::NOT_ACQUIRED)
+            } else if table.key_bits() == 0 {
+                TableView::Complete(TableRows::one_default(table))
+            } else {
+                TableView::Complete(TableRows::empty(table))
+            }
+        });
         tables[TableId::Clock.index()] = TableView::Complete(TableRows::Clock(vec![ClockRow {
             hour,
             ..Default::default()
@@ -8080,32 +8087,6 @@ mod tests {
             TableView::Complete(TableRows::Campaign(vec![CampaignRow {
                 id: b"test".to_vec(),
             }]));
-        tables[TableId::SunkShips.index()] =
-            TableView::Complete(TableRows::SunkShips(vec![SunkShipsRow::default()]));
-        tables[TableId::WorldTension.index()] =
-            TableView::Complete(TableRows::WorldTension(vec![WorldTensionRow::default()]));
-        tables[TableId::LocalPlayer.index()] =
-            TableView::Complete(TableRows::LocalPlayer(vec![Default::default()]));
-        tables[TableId::SimulationFeatures.index()] =
-            TableView::Complete(TableRows::SimulationFeatures(vec![
-                replay_data::rows::SimulationFeatureRow::default(),
-            ]));
-        tables[TableId::CombatLogState.index()] =
-            TableView::Complete(TableRows::CombatLogState(vec![
-                replay_data::rows::CombatLogStateRow::default(),
-            ]));
-        tables[TableId::AirSortieModifierMetadata.index()] =
-            TableView::Complete(TableRows::AirSortieModifierMetadata(vec![
-                replay_data::rows::AirSortieModifierMetadataRow::default(),
-            ]));
-        tables[TableId::ReservedCountryNaming.index()] =
-            TableView::Complete(TableRows::ReservedCountryNaming(vec![
-                replay_data::rows::ReservedCountryNamingRow::default(),
-            ]));
-        tables[TableId::MapEvents.index()] =
-            TableView::Complete(TableRows::MapEvents(vec![Default::default()]));
-        tables[TableId::DesignObserverContext.index()] =
-            TableView::Complete(TableRows::DesignObserverContext(vec![Default::default()]));
         tables[TableId::GameScoreMultipliers.index()] = TableView::Unavailable {
             reason: "score multipliers outside staggered fixture".into(),
         };
@@ -8777,7 +8758,7 @@ mod tests {
             invalid.tables,
             unavailable_tables("clock unreadable at hook entry")
         );
-        assert!(packs.iter().all(Option::is_none));
+        assert!(packs.converted_by().all(|pack| pack.is_none()));
         assert_eq!(campaign.lexical_conversion, before);
     }
 
@@ -8962,7 +8943,7 @@ mod tests {
             (after.replay_capacity_bytes, after.hits, after.misses),
             (before.replay_capacity_bytes, before.hits, before.misses)
         );
-        assert!(costs.iter().all(Option::is_none));
+        assert!(costs.converted_by().all(|pack| pack.is_none()));
         let next = intel_frame(&mut campaign, 1, 1, 10);
         assert!(Arc::ptr_eq(&old, intel_allocation(&next, table)));
     }
@@ -9172,6 +9153,7 @@ mod tests {
             };
             let skipped = campaign.apply_staggered_inputs(&mut input);
             assert_eq!(skipped[table.index()], refresh.is_none());
+            expected.metrics = input.metrics.clone();
             if let TableInput::SharedComplete(rows) = &input.tables[table.index()] {
                 assert!(Arc::ptr_eq(rows, cached_complete(&campaign, table)));
                 if let Some(pointer) = sampled_literal {
@@ -9225,6 +9207,42 @@ mod tests {
                 })
                 .unwrap();
             assert_eq!(actual, &reference_frame, "hour {hour}");
+        }
+    }
+
+    /// A refresh compared with its baseline caches no rows, so a periodic keyframe before the
+    /// next slot carried a refusal there and the hours after it (VariantDefinitions).
+    #[test]
+    fn a_compared_refresh_carries_its_rows_through_a_periodic_keyframe() {
+        crate::spooling::keep_every_table();
+        let (mut campaign, _) = campaign();
+        let table = DAILY;
+        let keyframe = replay_frame::KEYFRAME_INTERVAL as i32;
+        for hour in 0..=keyframe + 1 {
+            let branch = campaign.observe(None, hour, Some(1)).unwrap();
+            let mut input: FrameInput = staggered_frame(branch, hour, hour > 1).into();
+            if hour == 0 {
+                input.tables[table.index()] = TableView::Complete(daily_rows(1)).into();
+            } else if hour == 1 {
+                let (token, _) = campaign
+                    .encoder
+                    .comparison_baseline::<tables::AirAces>(branch, hour, false)
+                    .unwrap();
+                input.tables[table.index()] = TableInput::ComparedEqual(token);
+            }
+            campaign.apply_staggered_inputs(&mut input);
+            if hour == keyframe {
+                let TableInput::SharedComplete(rows) = &input.tables[table.index()] else {
+                    panic!("the keyframe carries the compared rows");
+                };
+                assert_eq!(**rows, daily_rows(1));
+            }
+            campaign
+                .write(input, 1000 + i64::from(hour), Some(1), 0, &mut WorkSample::default())
+                .unwrap();
+            if hour == keyframe + 1 {
+                assert!(campaign.encoder.can_carry(table, branch, hour + 1, false));
+            }
         }
     }
 
@@ -9323,11 +9341,11 @@ mod tests {
             encoded.tables[DAILY.index()],
             TableUpdate::Unchanged { baseline: 0 }
         );
-        assert_eq!(decoder.apply(&encoded).unwrap(), first.clone_with_hour(1));
+        assert_eq!(decoder.apply(&encoded).unwrap(), first.carried_to(1));
         campaign.spool.finish_segment().unwrap();
         let mut third = staggered_frame(branch, 2, true);
         campaign.apply_staggered_cache(&mut third);
-        assert_eq!(third, first.clone_with_hour(2));
+        assert_eq!(third, first.carried_to(2));
         assert!(campaign.encoder.encode(third, true).unwrap().keyframe);
     }
 
@@ -9352,7 +9370,7 @@ mod tests {
         let skipped = campaign.apply_staggered_cache(&mut second);
         assert!(skipped[DAILY.index()]);
         assert!(!skipped[TableId::Clock.index()]);
-        assert_eq!(second, first.clone_with_hour(1));
+        assert_eq!(second, first.carried_to(1));
         let frame = encoder.encode(second.clone(), false).unwrap();
         assert_eq!(
             frame.tables[DAILY.index()],
@@ -9362,11 +9380,13 @@ mod tests {
     }
 
     trait WithHour {
-        fn clone_with_hour(&self, hour: i32) -> Self;
+        fn carried_to(&self, hour: i32) -> Self;
     }
 
     impl WithHour for DecodedFrame {
-        fn clone_with_hour(&self, hour: i32) -> Self {
+        /// The frame of a later hour that skipped every staggered table: the same views, and
+        /// no staggered table read.
+        fn carried_to(&self, hour: i32) -> Self {
             let mut next = self.clone();
             next.hour = hour;
             if let TableView::Complete(TableRows::Clock(rows)) =
@@ -9374,7 +9394,75 @@ mod tests {
             {
                 rows[0].hour = hour;
             }
+            for table in replay_data::rows::TableId::ALL {
+                if replay_data::cadence::is_staggered(table) {
+                    next.metrics.table_ns[table.index()] = 0;
+                }
+            }
             next
+        }
+    }
+
+    /// A daily table the hour read with no time of its own (the economy rest copy charges its
+    /// walk to another table), and one assembled after the timing pass, are marked read in the
+    /// hours they were read and sampled there; an hour that skipped them marks neither, even
+    /// when a time was charged to them, and keeps their sample.
+    #[test]
+    fn a_table_read_with_no_time_of_its_own_is_marked_read_and_a_skipped_one_is_not() {
+        use replay::native_frame::FrameWriter;
+        use replay_data::rows::{CountryFuelRow, ProductionLineOutputRow, TableId};
+        let (fuel, output, anchor) = (
+            TableId::CountryFuel,
+            TableId::ProductionLineOutput,
+            TableId::Countries,
+        );
+        let (mut campaign, _) = campaign();
+        let branch = campaign.observe(None, 0, Some(1)).unwrap();
+        let mut writer = FrameWriter::new().unwrap();
+        for (hour, skip) in [(0, false), (1, true), (2, false)] {
+            let mut input: FrameInput = staggered_frame(branch, hour, skip).into();
+            input.metrics.table_ns[anchor.index()] = 5;
+            if skip {
+                input.metrics.table_ns[fuel.index()] = 9;
+            } else {
+                input.tables[fuel.index()] =
+                    TableInput::Sampled(TableView::Complete(TableRows::CountryFuel(vec![
+                        CountryFuelRow {
+                            country: 7,
+                            current_raw: i64::from(hour) + 1,
+                            ..Default::default()
+                        },
+                    ])));
+                input.tables[output.index()] = TableInput::Sampled(TableView::Complete(
+                    TableRows::ProductionLineOutput(vec![ProductionLineOutputRow {
+                        line: 3,
+                        country: 7,
+                        units: i64::from(hour),
+                        ..Default::default()
+                    }]),
+                ));
+            }
+            campaign.apply_staggered_inputs(&mut input);
+            for table in [fuel, output] {
+                assert_eq!(
+                    input.metrics.table_ns[table.index()] != 0,
+                    !skip,
+                    "{table:?} at hour {hour}"
+                );
+            }
+            assert_eq!(input.metrics.table_ns[anchor.index()], 5);
+            let prepared = writer.hour(&input).unwrap();
+            let read = |table: TableId| prepared.read()[table.index() / 64] >> (table.index() % 64) & 1 != 0;
+            assert_eq!((read(fuel), read(output)), (!skip, !skip), "hour {hour}");
+            writer.commit(prepared).unwrap();
+            let sampled = if skip { 0 } else { hour };
+            for table in [fuel, output] {
+                assert_eq!(
+                    writer.tables()[table.index()].acquisition().last_read,
+                    Some(sampled),
+                    "{table:?} at hour {hour}"
+                );
+            }
         }
     }
 

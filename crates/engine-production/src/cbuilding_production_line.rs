@@ -46,12 +46,6 @@ pub struct Row {
 }
 
 pub struct Buffers<'a> {
-    pub buildings: &'a mut [Row],
-    pub railways: &'a mut [crailway_production_line::Row],
-    pub route_provinces: &'a mut [u32],
-}
-
-pub struct GrowingBuffers<'a> {
     pub buildings: &'a mut Vec<Row>,
     pub railways: &'a mut Vec<crailway_production_line::Row>,
     pub route_provinces: &'a mut Vec<u32>,
@@ -65,16 +59,6 @@ pub struct BuffersBuffer<'a> {
 
 impl<'a> From<Buffers<'a>> for BuffersBuffer<'a> {
     fn from(value: Buffers<'a>) -> Self {
-        Self {
-            buildings: crate::walk::Buffer::Fixed(value.buildings),
-            railways: crate::walk::Buffer::Fixed(value.railways),
-            route_provinces: crate::walk::Buffer::Fixed(value.route_provinces),
-        }
-    }
-}
-
-impl<'a> From<GrowingBuffers<'a>> for BuffersBuffer<'a> {
-    fn from(value: GrowingBuffers<'a>) -> Self {
         Self {
             buildings: crate::walk::Buffer::Growing(value.buildings),
             railways: crate::walk::Buffer::Growing(value.railways),
@@ -123,17 +107,26 @@ impl Census {
 /// Visits the mixed construction vector once, preserving its shared queue
 /// ordinals across building and railway lines. Each family has its own outcome;
 /// a corrupt shared country/manager/census invalidates both families.
-pub fn walk(memory: &impl Memory, base: usize, game_state: usize, buffers: Buffers<'_>) -> Walk {
-    walk_buffer(memory, base, game_state, buffers.into())
-}
-
-pub fn walk_growing(
+pub fn walk(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    buffers: GrowingBuffers<'_>,
+    buffers: Buffers<'_>,
 ) -> Walk {
     walk_buffer(memory, base, game_state, buffers.into())
+}
+
+pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Walk {
+    walk_buffer(
+        memory,
+        base,
+        game_state,
+        BuffersBuffer {
+            buildings: crate::walk::Buffer::Count,
+            railways: crate::walk::Buffer::Count,
+            route_provinces: crate::walk::Buffer::Count,
+        },
+    )
 }
 
 pub fn walk_buffer(
@@ -657,9 +650,9 @@ mod tests {
     #[test]
     fn mixed_queue_preserves_full_handles_signed_fixed_fields_and_route_order() {
         let bytes = fixture();
-        let mut buildings = [Row::default(); 2];
-        let mut railways = [crailway_production_line::Row::default(); 2];
-        let mut routes = [0; 8];
+        let mut buildings = vec![Row::default(); 2];
+        let mut railways = vec![crailway_production_line::Row::default(); 2];
+        let mut routes = vec![0; 8];
         let result = walk(
             &SliceMemory {
                 base: 0x1000,
@@ -722,9 +715,9 @@ mod tests {
             0x2c00,
             (0x1000 + RAILWAY_GUN_REPAIR_VTABLE_RVA.0 as u64).to_le_bytes(),
         );
-        let mut buildings = [Row::default(); 2];
-        let mut railways = [crailway_production_line::Row::default(); 2];
-        let mut routes = [0; 8];
+        let mut buildings = vec![Row::default(); 2];
+        let mut railways = vec![crailway_production_line::Row::default(); 2];
+        let mut routes = vec![0; 8];
         let result = walk(
             &SliceMemory {
                 base: 0x1000,
@@ -747,11 +740,11 @@ mod tests {
     }
 
     #[test]
-    fn route_capacity_omits_whole_lines_and_target_failure_is_family_local() {
+    fn route_growth_keeps_whole_lines_and_target_failure_is_family_local() {
         let mut bytes = fixture();
-        let mut buildings = [Row::default(); 2];
-        let mut railways = [crailway_production_line::Row::default(); 2];
-        let mut routes = [0; 8];
+        let mut buildings = vec![Row::default(); 2];
+        let mut railways = vec![crailway_production_line::Row::default(); 2];
+        let mut routes = vec![0; 8];
         let result = walk(
             &SliceMemory {
                 base: 0x1000,
@@ -762,18 +755,15 @@ mod tests {
             Buffers {
                 buildings: &mut buildings,
                 railways: &mut railways,
-                route_provinces: &mut routes[..2],
+                route_provinces: &mut routes,
             },
         );
         assert_eq!(
             result,
             Walk {
                 buildings: Outcome::Rows { len: 1 },
-                railways: Outcome::Truncated {
-                    len: 0,
-                    unread_rows: 1
-                },
-                route_len: 0,
+                railways: Outcome::Rows { len: 1 },
+                route_len: 3,
                 required_route_len: 3
             }
         );

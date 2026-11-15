@@ -494,15 +494,14 @@ fn raw_nonboolean_and_extreme_progress_survive_later_preparation_refusal() {
 }
 
 #[test]
-fn worker_scalar_growth_retains_original_successes_and_faults() {
+fn scalar_growth_retains_original_successes_and_faults() {
     let mut image = Image::default();
     for index in 0..50usize {
         if !index.is_multiple_of(10) {
             image.word(0x10_0000 + index * 16, index as u64);
         }
     }
-    let mut prepared = Prepared::try_new(Capacity::default()).unwrap();
-    prepared.enable_worker_growth();
+    let prepared = Prepared::try_new(Capacity::default()).unwrap();
     let mut bytes = [0u8; 8];
     for _ in 0..2 {
         for index in 0..50usize {
@@ -520,7 +519,6 @@ fn worker_scalar_growth_retains_original_successes_and_faults() {
     assert_eq!(image.reads.borrow().len(), 50);
     assert_eq!(prepared.work().scalar_reads, 50);
     assert_eq!(prepared.work().scalar_failed, 5);
-    assert_eq!(prepared.work().scalar_capacity, 0);
     assert_eq!(prepared.required_capacity().scalar_observations, 50);
     assert!(prepared.capacity().scalar_observations >= 50);
 }
@@ -558,7 +556,6 @@ fn cold_paradrop_terms_grow_from_original_scalars_and_modifier_headers() {
     memo.reset(BASE, STATE);
     let countries = memo.view(&image, BASE, STATE);
     let mut packet = Prepared::vacant();
-    packet.enable_worker_growth();
     packet.capture_orders(
         &image,
         BASE,
@@ -578,7 +575,6 @@ fn cold_paradrop_terms_grow_from_original_scalars_and_modifier_headers() {
             days_term: 0,
         })
     );
-    assert_eq!(packet.work().scalar_capacity, 0);
     assert_eq!(packet.required_capacity().scalar_observations, 1);
     assert_eq!(packet.required_capacity().modifiers.nodes, 1);
     assert_eq!(
@@ -602,16 +598,21 @@ fn cold_paradrop_terms_grow_from_original_scalars_and_modifier_headers() {
 }
 
 #[test]
-fn failed_scalar_is_observed_once_and_short_storage_never_reads_a_fallback() {
+fn failed_scalar_is_observed_once_and_short_storage_grows_to_observe_the_next_once() {
     let mut image = Image::default();
     image.put(20, &[5]);
     let scalars = Scalars::new(1).unwrap();
     let mut output = [0; 1];
     assert!(!scalars.copy(&image, 10, &mut output));
     assert!(!scalars.copy(&image, 10, &mut output));
-    assert!(!scalars.copy(&image, 20, &mut output));
-    assert_eq!(&*image.reads.borrow(), &[(10, 1)]);
-    assert_eq!(scalars.0.borrow().required, 2);
+    assert!(scalars.copy(&image, 20, &mut output));
+    assert_eq!(output, [5]);
+    output = [0];
+    assert!(scalars.copy(&image, 20, &mut output));
+    assert_eq!(output, [5]);
+    assert_eq!(&*image.reads.borrow(), &[(10, 1), (20, 1)]);
+    let state = scalars.0.borrow();
+    assert_eq!((state.required, state.failed), (2, 1));
 }
 
 #[test]
@@ -1125,7 +1126,7 @@ fn mid_read_panic_restores_buffers_and_same_capacity_next_pass_recovers() {
     }));
     assert!(panic.is_err());
     assert_eq!(prepared.allocated_bytes(), before);
-    assert_eq!(prepared.attempted.len(), c.units);
+    assert_eq!(prepared.attempted.len(), seeds.len());
     prepared.fail_units("parent worker panic");
     assert!(matches!(
         prepared.units.outcome(),
@@ -1220,7 +1221,6 @@ fn execution_modifier_demand_excludes_allocator_spare_capacity() {
     }
     image.put(data as usize, &entries);
     let mut prepared = Prepared::try_new(Capacity::default()).unwrap();
-    prepared.enable_worker_growth();
     prepared
         .snapshots
         .get_mut()

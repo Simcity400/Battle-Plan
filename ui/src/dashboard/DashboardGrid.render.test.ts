@@ -10,12 +10,11 @@ const replacements: Record<string, string> = {
   '/dashboard/widgets.tsx': `import { useContext } from 'react'; import { HeldFailuresContext } from './heldFailures.ts';
     export const WidgetBody = () => { globalThis.__frameFailures = useContext(HeldFailuresContext); return null; };`,
   '/dashboard/WidgetSettingsMenu.tsx': 'export default props => { globalThis.__frameReset = props.onReset; return null; };',
-  '/dashboard/definitions.ts': `export const widgetDefinition = kind => ({ icon: 'grid', data: kind !== 'decoration', version: 1, title: 'Synthetic',
+  '/dashboard/definitions.ts': `export const registerWidgets = () => {}; export const widgetDefinition = kind => ({ icon: 'grid', data: kind !== 'decoration', version: 1, title: 'Synthetic',
     history: true, countrySelection: false, timeModes: ['follow', 'campaign'], defaultTime: 'follow', defaultCountries: { kind: 'tags', tags: [] } });`,
-  '/dashboard/campaignSettings.ts': 'export const useCampaignSettings = () => ({ campaigns: {} });',
+  '/dashboard/campaignSettings.ts': "export const useCampaignSettings = () => ({ campaigns: {} }); export const useFactionStylesKey = () => '';",
   '/dashboard/useCountryGroups.ts': `export const useCountryGroups = () => ({ data: { factions: [{ id: '42', name: null,
     nameReason: 'Synthetic native naming refusal', names: [{ firstHour: 0, lastHour: 100, name: null, reason: 'Synthetic native naming refusal' }] }] } });`,
-  '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
 };
 const frameServer = () => createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
   server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'frame-render', enforce: 'pre',

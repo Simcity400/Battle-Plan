@@ -15,6 +15,9 @@ default = ["opinion_changes", "flag_changes", "variable_changes"]
 flag_changes = []
 opinion_changes = []
 variable_changes = []
+# Verification only, off in the product: convert ScriptVariables both ways every hour and
+# count and name their differences in status.json's `conversion_check`.
+conversion_check = []
 
 [dependencies]
 engine-sites.workspace = true
@@ -66,4 +69,5 @@ replay-derive = { workspace = true, features = ["test-support"] }
 replay-frame = { workspace = true, features = ["test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
+unify-crossbeam-utils = { workspace = true }
 unify-windows-sys-0-52 = { workspace = true }

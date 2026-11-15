@@ -41,7 +41,7 @@ impl CombatRequest {
             self.progress.begin();
         }
         report.progress_ticks = elapsed(progress_begin);
-        let land = cland_combat::walk_with_growing(
+        let land = cland_combat::walk_with(
             memory,
             self.base,
             self.state,
@@ -75,7 +75,7 @@ impl CombatRequest {
 
         let tables = [TableId::NavalCombats, TableId::NavalCombatParticipants];
         reads.select(tables[0]);
-        let naval = cnaval_combat::walk_timed_growing(
+        let naval = cnaval_combat::walk_timed(
             memory,
             self.base,
             self.state,

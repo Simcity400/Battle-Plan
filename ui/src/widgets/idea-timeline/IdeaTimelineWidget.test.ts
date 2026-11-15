@@ -8,14 +8,14 @@ import { registerWidgets } from '../../dashboard/definitions.ts';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { bindTracks, clockBounds, createWidget, resolveWindow } from '../../dashboard/model.ts';
 import { PlaybackController } from '../../dashboard/playback.ts';
-import type { IdeaHistoryReply, IdeaInfo } from '../../generated/dashboard';
 import type { TimelineLane } from '../../charts/timeline/layout';
 import { definition } from './definition.ts';
 import { definition as spiritsDefinition } from '../spirit-history/definition.ts';
+import type { IdeaHistoryReply, IdeaInfo } from '../../generated/dashboard';
 
 registerWidgets([definition, spiritsDefinition]);
 const info = (token: string, category: string, slot: string | null): IdeaInfo => ({ token, category, slot, law: false, designer: false,
-  effects: [], targeted: [], equipment: [], research: [], traits: [], tooltips: [], effectsKnown: true, unknown: null });
+  effects: [], targeted: [], equipment: [], research: [], traits: [], tooltips: [], effectsKnown: true, unknown: null, nameMissing: null });
 const data: IdeaHistoryReply = { branchId: '1', tag: 'mod_country', unobserved: [], identityStarts: [100], modifiers: [], texts: [], warnings: [],
   categories: [
     { token: 'mod_laws', name: 'Mod laws', kind: null, hidden: false, politicsTab: true,
@@ -44,7 +44,7 @@ test('Idea and spirit history growth uses each resolved track hour, preserving h
   host.__politicsHistory = { track: tracks[0], tag: data.tag, data };
   // Exercise both actual renderers and the clock model; replace only data, artwork and canvas leaves.
   const replacements: Record<string, string> = {
-    '/dashboard/ideaHistory.ts': 'export const useIdeaHistory = () => globalThis.__politicsHistory;',
+    '/dashboard/ideaHistory.ts': `import { resolveWindow } from '/ui/src/dashboard/model.ts'; export const useIdeaHour = (widget, runtime, track) => { const hour = track ? resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour())?.lastHour : undefined; return hour === undefined || hour < track.branch.firstHour || hour > track.branch.lastHour ? null : Math.floor(hour); }; export const useIdeaHistory = () => globalThis.__politicsHistory;`,
     '/dashboard/useIdeaTooltips.ts': 'export const useIdeaTooltips = () => undefined;',
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open() {}, menu: null });',
     '/charts/timeline/Timeline.tsx': 'export default props => { globalThis.__politicsTimeline = props; return null; };',

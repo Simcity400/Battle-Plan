@@ -231,6 +231,7 @@ pub struct IconRow {
 }
 
 /// [`walk_icons`]'s arena use and demand.
+#[derive(Debug, Clone, Copy)]
 pub struct IconWalk {
     pub outcome: Outcome,
     pub name_bytes_len: usize,
@@ -918,7 +919,9 @@ pub enum Acquire {
 /// header; batch preparation precedes every identity, and the demand sees the
 /// authenticated identity before anything else of the template is read.
 pub trait DetailPolicy {
-    fn before_country(&mut self, _country: u32) {}
+    /// `deployment` is the country's deployment status, whose clone vector holds
+    /// the local definitions its templates name; `None` when unreadable or null.
+    fn before_country(&mut self, _country: u32, _deployment: Option<usize>) {}
     fn before_records(&mut self, _templates: &[usize]) {}
     fn demand(&mut self, country: u32, pointer: usize, template: u64, ordinal: u32) -> Acquire;
     /// The row [`Acquire::Held`] named.
@@ -935,6 +938,16 @@ pub trait DetailPolicy {
         _names: &[u8],
     ) {
     }
+    /// A row placed, held or read: the walk's `[bytes, counts, variants, names]` lengths after it.
+    fn placed(&mut self, _ends: [usize; 4]) {}
+}
+
+/// The countries and roster occurrences a walk visits.
+enum Scope {
+    All,
+    Slots(std::ops::Range<u32>),
+    /// One roster occurrence: the template at `ordinal` of the country in `slot`.
+    Occurrence { slot: u32, ordinal: u32 },
 }
 
 /// A held row. Its spans are relative to these slices, its display name and
@@ -1019,6 +1032,7 @@ fn visit_templates(
     base: usize,
     state: usize,
     layout: &RecordLayout<'_>,
+    scope: Scope,
     mut country_visit: Option<&mut dyn FnMut(ccountry::Country)>,
     mut details: Option<(&mut dyn DetailPolicy, &RecordLayout<'_>)>,
     mut prepare: impl FnMut(&[u8], usize),
@@ -1040,13 +1054,24 @@ fn visit_templates(
     let mut identities = [0_u8; BATCH * IDENTITY];
     let mut acquired = [Acquire::Read { details: true }; BATCH];
     let mut read = [0_usize; BATCH];
-    for slot in 1..countries.count() {
+    let (first_slot, end_slot) = match &scope {
+        Scope::All => (1, countries.count()),
+        Scope::Slots(range) => (range.start.max(1), range.end.min(countries.count())),
+        Scope::Occurrence { slot, .. } => (*slot, slot.saturating_add(1).min(countries.count())),
+    };
+    for slot in first_slot..end_slot {
         let Some(country) = countries.at(slot)? else {
             continue;
         };
         found_country = true;
         if let Some((details, _)) = details.as_mut() {
-            details.before_country(country.id);
+            let deployment = country
+                .pointer
+                .checked_add(ccountry::DEPLOYMENT_MANAGER)
+                .and_then(|at| crate::read::<u64>(memory, at))
+                .and_then(|at| usize::try_from(at).ok())
+                .filter(|&at| at != 0);
+            details.before_country(country.id, deployment);
         }
         if let Some(visit) = country_visit.as_mut() {
             visit(country);
@@ -1056,8 +1081,15 @@ fn visit_templates(
             .checked_add(ccountry::DIVISION_TEMPLATES)
             .ok_or("template roster overflow")?;
         let roster = Array::read(memory, root, 8).ok_or("template roster invalid")?;
-        for first in (0..roster.count).step_by(BATCH) {
-            let batch = ((roster.count - first) as usize).min(BATCH);
+        let ordinals = match scope {
+            Scope::Occurrence { ordinal, .. } if ordinal >= roster.count => {
+                return Err("template roster occurrence missing");
+            }
+            Scope::Occurrence { ordinal, .. } => ordinal..ordinal + 1,
+            _ => 0..roster.count,
+        };
+        for first in ordinals.clone().step_by(BATCH) {
+            let batch = ((ordinals.end - first) as usize).min(BATCH);
             pointers(memory, roster, first, &mut templates[..batch])?;
             let templates = &templates[..batch];
             let (fields, reads) = match details.as_mut() {
@@ -1135,8 +1167,43 @@ fn visit_templates(
             }
         }
     }
-    if !found_country {
-        return Err("template census contains no countries");
+    // A range of slots may hold no country; only the whole census must.
+    match scope {
+        Scope::All if !found_country => return Err("template census contains no countries"),
+        Scope::Occurrence { .. } if !found_country => {
+            return Err("template occurrence country missing");
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Each country slot's roster length, in slot order: `None` for a slot without a country. The
+/// census [`walk_icons_range`]'s caller balances its ranges by; it reads only the roster
+/// headers, and the first failure is the walk's own.
+pub fn roster_lengths(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+    mut visit: impl FnMut(u32, Option<u32>),
+) -> Result<(), &'static str> {
+    let countries = ccountry::Reader::new(memory, base, state)?;
+    for slot in 1..countries.count() {
+        let templates = match countries.at(slot)? {
+            Some(country) => {
+                let root = country
+                    .pointer
+                    .checked_add(ccountry::DIVISION_TEMPLATES)
+                    .ok_or("template roster overflow")?;
+                Some(
+                    Array::read(memory, root, 8)
+                        .ok_or("template roster invalid")?
+                        .count,
+                )
+            }
+            None => None,
+        };
+        visit(slot, templates);
     }
     Ok(())
 }
@@ -1168,7 +1235,7 @@ fn outcome(len: usize, missing: u32) -> Outcome {
 
 /// Complete country template rosters, including unused templates: exact names
 /// and the unit_type category. Capture derives these hourly from
-/// [`walk_icons`] and [`copy_names_growing`]; this full walk sizes them.
+/// [`walk_icons`] and [`copy_names`]; this full walk sizes them.
 /// Capacity omits a WHOLE template and grows the caller's arena off-thread. No
 /// engine getters are invoked. Each roster batch is gathered in three spans a
 /// template; the sub-unit behind a zero category is authenticated once a walk.
@@ -1176,18 +1243,22 @@ pub fn walk(
     memory: &impl Memory,
     base: usize,
     state: usize,
-    rows: &mut [Row],
-    bytes: &mut [u8],
+    rows: &mut Vec<Row>,
+    bytes: &mut Vec<u8>,
     memo: &mut [MemoSlot],
 ) -> Walk {
     walk_inner(
         memory,
         base,
         state,
-        Buffer::Fixed(rows),
-        Buffer::Fixed(bytes),
+        Buffer::Growing(rows),
+        Buffer::Growing(bytes),
         memo,
     )
+}
+
+pub fn count(memory: &impl Memory, base: usize, state: usize) -> Walk {
+    walk_inner(memory, base, state, Buffer::Count, Buffer::Count, &mut [])
 }
 
 fn walk_inner(
@@ -1212,6 +1283,7 @@ fn walk_inner(
         base,
         state,
         &DAILY_LAYOUT,
+        Scope::All,
         None,
         None,
         |_, _| {},
@@ -1261,7 +1333,7 @@ fn walk_inner(
                 .checked_add(name.len)
                 .and_then(|n| n.checked_add(name_key.len))
                 .ok_or("template byte arena overflow")?;
-            if !rows.ensure(len + 1)? || (matches!(bytes, Buffer::Fixed(_)) && end > bytes.len()) {
+            if !rows.ensure(len + 1)? || (!bytes.is_growing() && end > bytes.len()) {
                 missing = missing
                     .checked_add(1)
                     .ok_or("template row count overflow")?;
@@ -1301,7 +1373,7 @@ fn walk_inner(
 /// A template's literal name and fallback key, copied as [`walk`] copies them into `bytes` from
 /// `start`, for a caller holding the rest of its dictionary row from this hour's [`walk_icons`]
 /// ([`IconRow`]).
-pub fn copy_names_growing(
+pub fn copy_names(
     memory: &impl Memory,
     template: usize,
     bytes: &mut Vec<u8>,
@@ -1326,82 +1398,9 @@ pub fn copy_names_growing(
     Ok(spans)
 }
 
-/// Every country template's hourly inputs ([`IconRow`]), roster by roster in
-/// the order [`walk`] visits them: what the counter draws and the stored
-/// results the 3D model selectors read (the representative, the grouped
-/// (definition, count) entries and the saved model choices), and each of the
-/// three grids' (definition, cell count) entries. A player's edit reaches all
-/// of them within the hour. Capacity omits a WHOLE row, as in [`walk`]; a
-/// row's grid entries are budgeted at one per cell. A fault in a template's
-/// model inputs (its grouped entries, grids, exclusions, model string or a
-/// definition's clone flag) fails only that row's model fields, so every
-/// counter keeps its icon; a sub-unit database too large for its slots is
-/// read live and the slots grow.
-/// Each roster batch is gathered in two spans a template (identity and one
-/// contiguous span from the grid headers through the model entity), the
-/// grouped entries and each grid's cells in one more each, and definitions
-/// resolve through `Definitions`.
-#[allow(clippy::too_many_arguments)]
-pub fn walk_icons(
-    memory: &impl Memory,
-    base: usize,
-    state: usize,
-    rows: &mut [IconRow],
-    bytes: &mut [u8],
-    counts: &mut [SubunitCount],
-    variants: &mut [u64],
-    slots: DefinitionSlots<'_>,
-) -> IconWalk {
-    walk_icons_inner(
-        memory,
-        base,
-        state,
-        Buffer::Fixed(rows),
-        Buffer::Fixed(bytes),
-        Buffer::Fixed(counts),
-        Buffer::Fixed(variants),
-        slots,
-        None,
-        None,
-        None,
-    )
-}
-
-/// Same authenticated hourly roster, with each template's exact display name;
-/// its literal's header comes with the record. A text fault or shortage
-/// refuses only the optional name, never counter/model facts. The caller grows
-/// the separate name arena off-thread from observed demand.
-#[allow(clippy::too_many_arguments)]
-#[cfg(test)]
-pub fn walk_icons_with_names(
-    memory: &impl Memory,
-    base: usize,
-    state: usize,
-    rows: &mut [IconRow],
-    bytes: &mut [u8],
-    counts: &mut [SubunitCount],
-    variants: &mut [u64],
-    slots: DefinitionSlots<'_>,
-    names: &mut [u8],
-) -> IconWalk {
-    walk_icons_inner(
-        memory,
-        base,
-        state,
-        Buffer::Fixed(rows),
-        Buffer::Fixed(bytes),
-        Buffer::Fixed(counts),
-        Buffer::Fixed(variants),
-        slots,
-        Some(Buffer::Fixed(names)),
-        None,
-        None,
-    )
-}
-
 /// Worker-only acquisition grows each arena from the already acquired record.
 #[allow(clippy::too_many_arguments)]
-pub fn walk_icons_with_names_growing(
+pub fn walk_icons_with_names(
     memory: &impl Memory,
     base: usize,
     state: usize,
@@ -1424,6 +1423,7 @@ pub fn walk_icons_with_names_growing(
         Some(Buffer::Growing(names)),
         None,
         None,
+        None,
     )
 }
 
@@ -1431,7 +1431,7 @@ pub fn walk_icons_with_names_growing(
 /// A held occurrence reads nothing past its identity; a read without details
 /// performs no extension prefix/tail or forbidden-type payload read.
 #[allow(clippy::too_many_arguments)]
-pub fn walk_icons_with_selected_details_growing(
+pub fn walk_icons_with_selected_details(
     memory: &impl Memory,
     base: usize,
     state: usize,
@@ -1454,6 +1454,44 @@ pub fn walk_icons_with_selected_details_growing(
         Buffer::Growing(variants),
         slots,
         Some(Buffer::Growing(names)),
+        None,
+        Some(countries),
+        Some(details),
+    )
+}
+
+/// [`walk_icons_with_selected_details`] over the countries of slots `range` only, into
+/// arenas of the range's own: each row's spans start from zero, and the caller joins the ranges
+/// in slot order, shifting them. A range with no country is no failure.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the selected walk's arenas, slots and callbacks, and its range"
+)]
+pub fn walk_icons_range(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+    range: std::ops::Range<u32>,
+    rows: &mut Vec<IconRow>,
+    bytes: &mut Vec<u8>,
+    counts: &mut Vec<SubunitCount>,
+    variants: &mut Vec<u64>,
+    slots: DefinitionSlots<'_>,
+    names: &mut Vec<u8>,
+    countries: &mut dyn FnMut(ccountry::Country),
+    details: &mut dyn DetailPolicy,
+) -> IconWalk {
+    walk_icons_inner(
+        memory,
+        base,
+        state,
+        Buffer::Growing(rows),
+        Buffer::Growing(bytes),
+        Buffer::Growing(counts),
+        Buffer::Growing(variants),
+        slots,
+        Some(Buffer::Growing(names)),
+        Some(range),
         Some(countries),
         Some(details),
     )
@@ -1466,15 +1504,16 @@ pub fn icon_capacity(memory: &impl Memory, base: usize, state: usize) -> IconWal
         memory,
         base,
         state,
-        Buffer::Fixed(&mut []),
-        Buffer::Fixed(&mut []),
-        Buffer::Fixed(&mut []),
-        Buffer::Fixed(&mut []),
+        Buffer::Count,
+        Buffer::Count,
+        Buffer::Count,
+        Buffer::Count,
         DefinitionSlots {
             database: &mut [],
             globals: &mut [],
             locals: &mut [],
         },
+        None,
         None,
         None,
         Some(&mut |_: u32, _: usize, _: u64, _: u32| false),
@@ -1495,7 +1534,7 @@ pub struct DisplayName {
 fn display_name(
     memory: &impl Memory,
     wrapper: usize,
-    bytes: &mut [u8],
+    bytes: &mut Vec<u8>,
     used: &mut usize,
     required: &mut usize,
 ) -> Result<DisplayName, &'static str> {
@@ -1507,7 +1546,7 @@ fn display_name(
         memory,
         wrapper,
         header,
-        &mut Buffer::Fixed(bytes),
+        &mut Buffer::Growing(bytes),
         used,
         required,
     )
@@ -1550,7 +1589,7 @@ fn display_name_buffer(
     let end = start
         .checked_add(demand)
         .ok_or("template display name arena overflow")?;
-    if matches!(bytes, Buffer::Fixed(_)) && end > bytes.len() {
+    if !bytes.is_growing() && end > bytes.len() {
         return Err("template display name arena shortage");
     }
     literal.copy_buffer(memory, bytes, start)?;
@@ -1593,7 +1632,7 @@ fn name_key_buffer(
     let end = start
         .checked_add(key.len)
         .ok_or("template display name arena overflow")?;
-    if matches!(bytes, Buffer::Fixed(_)) && end > bytes.len() {
+    if !bytes.is_growing() && end > bytes.len() {
         return Err("template display name arena shortage");
     }
     key.copy_buffer(memory, bytes, start)?;
@@ -1645,7 +1684,82 @@ struct Headers {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn walk_icons_inner(
+pub fn walk_icons_inner(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+    rows: Buffer<'_, IconRow>,
+    bytes: Buffer<'_, u8>,
+    counts: Buffer<'_, SubunitCount>,
+    variants: Buffer<'_, u64>,
+    slots: DefinitionSlots<'_>,
+    display_bytes: Option<Buffer<'_, u8>>,
+    range: Option<std::ops::Range<u32>>,
+    country_visit: Option<&mut dyn FnMut(ccountry::Country)>,
+    detail_policy: Option<&mut dyn DetailPolicy>,
+) -> IconWalk {
+    walk_icons_scoped(
+        memory,
+        base,
+        state,
+        rows,
+        bytes,
+        counts,
+        variants,
+        slots,
+        display_bytes,
+        range.map_or(Scope::All, Scope::Slots),
+        country_visit,
+        detail_policy,
+    )
+}
+
+/// One roster occurrence read as [`walk_icons_range`] reads it when its policy demands
+/// `details`: the template at `ordinal` of the country in `slot`, into arenas of its own from
+/// zero. Its one row is the walk's row for that occurrence with every span shifted to zero.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the selected walk's arenas and the occurrence it reads"
+)]
+pub fn read_icon_occurrence(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+    slot: u32,
+    ordinal: u32,
+    details: bool,
+    rows: &mut Vec<IconRow>,
+    bytes: &mut Vec<u8>,
+    counts: &mut Vec<SubunitCount>,
+    variants: &mut Vec<u64>,
+    names: &mut Vec<u8>,
+) -> IconWalk {
+    walk_icons_scoped(
+        memory,
+        base,
+        state,
+        Buffer::Growing(rows),
+        Buffer::Growing(bytes),
+        Buffer::Growing(counts),
+        Buffer::Growing(variants),
+        // Without slots every definition is looked up live, as in a walk whose slots are short.
+        DefinitionSlots {
+            database: &mut [],
+            globals: &mut [],
+            locals: &mut [],
+        },
+        Some(Buffer::Growing(names)),
+        Scope::Occurrence { slot, ordinal },
+        None,
+        Some(&mut |_: u32, _: usize, _: u64, _: u32| details),
+    )
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the selected walk's arenas, slots and callbacks, and its scope"
+)]
+fn walk_icons_scoped(
     memory: &impl Memory,
     base: usize,
     state: usize,
@@ -1655,6 +1769,7 @@ fn walk_icons_inner(
     mut variants: Buffer<'_, u64>,
     slots: DefinitionSlots<'_>,
     mut display_bytes: Option<Buffer<'_, u8>>,
+    scope: Scope,
     country_visit: Option<&mut dyn FnMut(ccountry::Country)>,
     detail_policy: Option<&mut dyn DetailPolicy>,
 ) -> IconWalk {
@@ -1705,6 +1820,7 @@ fn walk_icons_inner(
         base,
         state,
         layout,
+        scope,
         country_visit,
         detail_policy.map(|policy| (policy, rest)),
         hint,
@@ -1800,6 +1916,14 @@ fn walk_icons_inner(
                     }
                     rows[len] = row;
                     len += 1;
+                    if let Some(policy) = policy.as_mut() {
+                        policy.placed([
+                            result.bytes_len,
+                            result.counts_len,
+                            result.variants_len,
+                            result.name_bytes_len,
+                        ]);
+                    }
                     return Ok(());
                 }
             };
@@ -1939,7 +2063,7 @@ fn walk_icons_inner(
                 .checked_add(name_len)
                 .ok_or("template byte arena overflow")?;
             if !rows.ensure(len + 1)?
-                || (matches!(bytes, Buffer::Fixed(_)) && name_end > bytes.len())
+                || (!bytes.is_growing() && name_end > bytes.len())
             {
                 missing = missing
                     .checked_add(1)
@@ -2030,7 +2154,7 @@ fn walk_icons_inner(
                     .variants_len
                     .checked_add(exclusions.count as usize)
                     .ok_or("template variant arena overflow")?;
-                if (matches!(bytes, Buffer::Fixed(_)) && bytes_end > bytes.len())
+                if (!bytes.is_growing() && bytes_end > bytes.len())
                     || !counts.ensure(counts_end)?
                     || !variants.ensure(variants_end)?
                 {
@@ -2285,6 +2409,8 @@ fn walk_icons_inner(
                         result.bytes_len = start;
                         row.details_fresh = false;
                         row.details_failure = Some(reason);
+                        // Cells are a fresh extension's; a refused one keeps none.
+                        row.cells = Default::default();
                     }
                 }
             }
@@ -2327,6 +2453,14 @@ fn walk_icons_inner(
             }
             rows[len] = row;
             len += 1;
+            if let Some(policy) = policy.as_mut() {
+                policy.placed([
+                    result.bytes_len,
+                    result.counts_len,
+                    result.variants_len,
+                    result.name_bytes_len,
+                ]);
+            }
             Ok(())
         },
     );

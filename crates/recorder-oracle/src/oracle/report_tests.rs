@@ -152,77 +152,6 @@ fn carried_daily_groups_are_listed_not_compared_at_a_non_full_hour() {
     assert!(unscoped.carried.is_empty());
 }
 
-/// A daily table is read at its slot hour although the shared read was
-/// charged to an hourly anchor (part Q: every Daily(17) table timed zero
-/// at slot 17, the economy-rest copy charged to ProvinceSupply); off the
-/// slot only a timed table of the slot proves a read; CountryIntel only by
-/// its own walk.
-#[test]
-fn a_daily_read_is_dated_by_its_slot_not_by_its_charged_timing() {
-    let slot = match replay_data::cadence::cadence(TableId::CountryFuel) {
-        replay_data::cadence::Cadence::Daily(slot) => slot as Hour,
-        other => panic!("CountryFuel is {other:?}"),
-    };
-    let frame = |hour, timed: &[TableId]| {
-        let mut frame = DecodedFrame {
-            branch: 1,
-            hour,
-            metrics: Default::default(),
-            tables: std::array::from_fn(|index| {
-                TableView::Complete(TableRows::empty(TableId::ALL[index]))
-            })
-            .map(Into::into),
-        };
-        for table in timed {
-            frame.metrics.table_ns[table.index()] = 1;
-        }
-        frame
-    };
-    let read = |frame: &DecodedFrame, table| daily_read(frame.hour, &frame.metrics, table);
-    let hour = 24 * 1000 + slot;
-    assert!(read(
-        &frame(hour, &[TableId::ProvinceSupply]),
-        TableId::CountryFuel
-    ));
-    assert!(read(&frame(hour, &[]), TableId::CountryFuelConsumers));
-    assert!(!read(
-        &frame(hour + 1, &[TableId::ProvinceSupply]),
-        TableId::CountryFuel
-    ));
-    assert!(read(
-        &frame(hour + 1, &[TableId::CountryFuelConsumers]),
-        TableId::CountryFuel
-    ));
-    let lend_slot = match replay_data::cadence::cadence(TableId::LendLeaseEquipment) {
-        replay_data::cadence::Cadence::Daily(slot) => 24 * 1000 + slot as Hour,
-        other => panic!("LendLeaseEquipment is {other:?}"),
-    };
-    assert!(read(
-        &frame(lend_slot, &[TableId::Divisions]),
-        TableId::LendLeaseEquipment
-    ));
-    assert!(!read(
-        &frame(lend_slot + 1, &[TableId::Divisions]),
-        TableId::LendLeaseEquipment
-    ));
-    let intel = match replay_data::cadence::cadence(TableId::CountryIntel) {
-        replay_data::cadence::Cadence::Daily(slot) => 24 * 1000 + slot as Hour,
-        other => panic!("CountryIntel is {other:?}"),
-    };
-    assert!(!read(
-        &frame(intel, &[TableId::LogisticsEquipment]),
-        TableId::CountryIntel
-    ));
-    assert!(read(
-        &frame(intel + 1, &[TableId::CountryIntel]),
-        TableId::CountryIntel
-    ));
-    assert!(!read(
-        &frame(intel + 1, &[TableId::CountryIntel]),
-        TableId::LogisticsEquipment
-    ));
-}
-
 /// LogisticsEquipment shares CountryIntel's slot. A deferred CountryIntel
 /// walk leaves CountryIntel carried on the slot hour although LogisticsEquipment
 /// was walked, and its retry at the next hour does not make the carried
@@ -374,14 +303,14 @@ fn field_limitations_aggregate_counts_without_duplicate_subjects() {
             );
             report.recorded(&row.raw_mud, "WeatherProvinces.raw_mud", row.id.to_string());
         }
-        // Only the first row holds all the anchored temperature words.
+        // Only the first row holds all the anchored temperature words; gaps take codec names.
         assert_eq!(report.limitations.len(), 5);
         for (field, count) in [
-            ("temperature", 13_412),
+            ("temperature.temperature", 13_412),
             ("raw_mud", 13_413),
-            ("temperature_drift", 13_412),
-            ("temperature_staged", 13_412),
-            ("temperature_working", 13_412),
+            ("temperature.drift", 13_412),
+            ("temperature.staged", 13_412),
+            ("temperature.working", 13_412),
         ] {
             assert_eq!(
                 report.limitations[&format!("WeatherProvinces.{field} not recorded")],

@@ -12,7 +12,7 @@ import { definition, normaliseArmyOptions, OPTIONS } from './definition.ts';
 import { mergeArmyWindows, validateArmySizeReply } from './armySizeData.ts';
 
 const reply: ArmySizeReply = { branchId: 'synthetic', window: 0, windows: [], interval: { firstHour: 100, lastHour: 105 },
-  available: true, measures: ['battalions', 'strength'], unknownMeasures: [], warnings: [], types: [
+  available: true, measures: ['battalions', 'strength'], warnings: [], types: [
     { key: 'group:mod', name: 'mod group' }, { key: 'unknown:orphan', name: 'orphan (unknown-group)' },
   ], series: [{ tag: 'A', segments: [{ firstHour: 100, lastHour: 105 }], membership: null,
     runs: [[100, Number('9007199254740995'), 105, '9007199254740995']],

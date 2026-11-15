@@ -103,27 +103,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn refusal_survives_family_and_dated_driver_wrappers() {
-        for error in [
-            replay::segments::family_failure(refused("Synthetic capability refusal")),
-            replay::segments::refused(17, refused("Synthetic capability refusal")),
-        ] {
-            assert_eq!(
-                QueryError::from(error),
-                QueryError::Refused {
-                    text: "Synthetic capability refusal".into(),
-                }
-            );
-        }
-        assert!(matches!(
-            QueryError::from(replay::segments::family_failure(io::Error::other(
-                "Synthetic decoder failure"
-            ))),
-            QueryError::Failed { .. }
-        ));
-    }
-
-    #[test]
     fn only_typed_refusals_are_public() {
         let error = refused("Synthetic data was not recorded");
         assert_eq!(error.kind(), io::ErrorKind::Other);

@@ -555,7 +555,7 @@ fn map_scripts_daily_callbacks_refuse_stale_values_and_invalidate_reuse() {
         assert!(
             read(world)
                 .unwrap_err()
-                .contains("no current-hour read or writer certificate")
+                .contains("not read this hour, so the values carried from an earlier hour cannot answer this exactly")
         );
         assert!(!dependencies.confirm(&later, |key| match key {
             super::super::inputs::Key::World(query) => Some(world.reread(query)),
@@ -641,7 +641,7 @@ fn map_scripts_tech_sharing_uses_the_certified_country_roster_not_global_members
                 .in_tech_sharing_group(1, name)
                 .unwrap_err();
             assert!(
-                why.contains("ResearchModifiers") && why.contains("witness"),
+                why.contains("research modifiers sharing-roster witness unavailable"),
                 "{why}"
             );
         }

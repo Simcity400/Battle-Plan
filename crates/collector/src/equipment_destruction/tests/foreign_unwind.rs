@@ -100,7 +100,7 @@ unsafe extern "system" fn land_damage(
 ) {
     NATIVE_CALLS.fetch_add(1, Ordering::SeqCst);
     assert_eq!(ACTIVE[SiteId::Land as usize].load(Ordering::SeqCst), 1);
-    assert!(OBSERVING.load(Ordering::SeqCst));
+    assert!(OBSERVING.get());
     unsafe { land_removal(a, b, c, d, e, f, g, h) };
 }
 struct DamageInvocation {
@@ -119,11 +119,9 @@ unsafe extern "system" fn credit(reserves: usize, pool: usize) {
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let handle = native::army_identity(&memory, BASE.load(Ordering::Relaxed), army).unwrap();
     assert_eq!(ACTIVE[SiteId::HqReturn as usize].load(Ordering::SeqCst), 1);
-    assert!(OBSERVING.load(Ordering::SeqCst));
+    assert!(OBSERVING.get());
     assert_eq!(
-        STORE
-            .lock()
-            .unwrap()
+        folded()
             .credits
             .state(handle, army, 4999)
             .unwrap_err(),
@@ -148,7 +146,7 @@ fn registered(address: usize) -> bool {
 #[test]
 #[ignore = "parent-only actual Land detour C++/SEH; requires shared probe and reviewed Hook"]
 fn production_land_detour_foreign_unwind() {
-    let _probe_guard = probe::SERIAL.lock().unwrap();
+    let _probe_guard = probe::SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let _serial = serial();
     let probe = probe::Probe::load();
     let site = land_foreign_damage_target as *const () as usize;
@@ -209,7 +207,7 @@ fn production_land_detour_foreign_unwind() {
             Ordering::SeqCst,
         );
         let refusals = SITE_REFUSALS[SiteId::Land as usize].load(Ordering::Relaxed);
-        let capacity = STORE.lock().unwrap().owned_capacity();
+        let capacity = folded().owned_capacity();
         assert!(Hook::set_enabled_batch(&mut [&mut hook], true).unwrap());
         unsafe {
             probe.run(
@@ -234,14 +232,13 @@ fn production_land_detour_foreign_unwind() {
             (1, normal, normal)
         );
         assert_eq!(active(), 1 - normal);
-        assert!(!OBSERVING.load(Ordering::SeqCst));
-        assert_eq!(BOUNDARY_ADMISSION.load(Ordering::SeqCst), 0);
-        assert_eq!(POISONED.load(Ordering::SeqCst), normal == 0);
+        assert!(!OBSERVING.get());
+        assert_eq!(folded().poisoned, normal == 0);
         assert_eq!(
             SITE_REFUSALS[SiteId::Land as usize].load(Ordering::Relaxed),
             refusals + u64::from(normal == 0)
         );
-        assert_eq!(STORE.lock().unwrap().owned_capacity(), capacity);
+        assert_eq!(folded().owned_capacity(), capacity);
         assert!(release().is_err());
         if normal != 0 {
             let mut rows = [Entry::default(); 8];
@@ -261,8 +258,7 @@ fn production_land_detour_foreign_unwind() {
         boundary(clock(10, 2));
         boundary(clock(11, 2));
         assert_eq!(active(), 1 - normal);
-        assert!(!OBSERVING.load(Ordering::SeqCst));
-        assert_eq!(BOUNDARY_ADMISSION.load(Ordering::SeqCst), 0);
+        assert!(!OBSERVING.get());
         ENABLED.store(false, Ordering::SeqCst);
         SUPPLEMENTAL_ENABLED.store(false, Ordering::SeqCst);
         if normal == 0 {
@@ -282,7 +278,7 @@ fn production_land_detour_foreign_unwind() {
 #[test]
 #[ignore = "parent-only actual foreign C++/SEH; requires BATTLE_PLAN_TAP_UNWIND_PROBE and reviewed shared Hook"]
 fn production_return_call_foreign_unwind() {
-    let _probe_guard = probe::SERIAL.lock().unwrap();
+    let _probe_guard = probe::SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let _serial = serial();
     let probe = probe::Probe::load();
     let site = land_foreign_return_site as *const () as usize;
@@ -320,7 +316,7 @@ fn production_return_call_foreign_unwind() {
         let handle = context_rebased(&world, base, native::Cause::Unknown).handle;
         ORIGINAL[SiteId::HqReturn as usize].store(original as *const () as usize, Ordering::SeqCst);
         let expected_capacity = {
-            let mut store = STORE.lock().unwrap();
+            let mut store = folded();
             let capacity = store.owned_capacity();
             store._charge = crate::raw_memory::Charge::empty_on(&TRACKER);
             store._charge.set(capacity);
@@ -357,9 +353,8 @@ fn production_return_call_foreign_unwind() {
         );
         assert_eq!(reserve.world.storage[(0x600 + 8) / 8], 100000);
         assert_eq!(active(), 1 - normal);
-        assert!(!OBSERVING.load(Ordering::SeqCst));
-        assert_eq!(BOUNDARY_ADMISSION.load(Ordering::SeqCst), 0);
-        assert_eq!(POISONED.load(Ordering::SeqCst), normal == 0);
+        assert!(!OBSERVING.get());
+        assert_eq!(folded().poisoned, normal == 0);
         assert_eq!(
             SITE_REFUSALS[SiteId::HqReturn as usize].load(Ordering::Relaxed),
             refusals + u64::from(normal == 0)
@@ -368,26 +363,22 @@ fn production_return_call_foreign_unwind() {
         assert!(release().is_err());
         if normal == 0 {
             assert_eq!(
-                STORE
-                    .lock()
-                    .unwrap()
+                folded()
                     .credits
                     .state(handle, world.army(), 4999)
                     .unwrap_err(),
                 "equipment returned source lifetime incomplete"
             );
             boundary(clock(20, 1));
-            boundary(clock(21, 1));
             assert!(
-                POISONED.load(Ordering::SeqCst),
+                folded().poisoned,
                 "foreign mutation remains unavailable across a gap"
             );
+            boundary(clock(21, 1));
             assert!(drain(&mut [Entry::default(); 8]).is_err());
         } else {
             assert_eq!(
-                STORE
-                    .lock()
-                    .unwrap()
+                folded()
                     .credits
                     .state(handle, world.army(), 4999)
                     .unwrap(),
@@ -403,10 +394,9 @@ fn production_return_call_foreign_unwind() {
         boundary(clock(22, 2));
         boundary(clock(23, 2));
         boundary(clock(24, 2));
-        assert_eq!(POISONED.load(Ordering::SeqCst), normal == 0);
+        assert!(!folded().poisoned);
         assert_eq!(active(), 1 - normal);
-        assert!(!OBSERVING.load(Ordering::SeqCst));
-        assert_eq!(BOUNDARY_ADMISSION.load(Ordering::SeqCst), 0);
+        assert!(!OBSERVING.get());
         ENABLED.store(false, Ordering::SeqCst);
         SUPPLEMENTAL_ENABLED.store(false, Ordering::SeqCst);
         if normal == 0 {

@@ -74,8 +74,11 @@ fn native_saved_raid_instance_reaches_full_reference_comparison() {
         "fixture wing",
         &mut report,
     );
-    assert_eq!(report.differences.len(), 1);
-    assert!(report.differences[0].contains("guarded read or registry/memo refusal"));
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert_eq!(
+        report.limitations[RAID_NOT_RECORDED],
+        ["fixture wing.raid_reference"]
+    );
 }
 
 fn run(
@@ -348,7 +351,7 @@ fn pool_fault_unknown_index_and_content_failure_do_not_erase_live_raid_differenc
 }
 
 #[test]
-fn admitted_raid_capture_absence_fails_even_when_save_omits_the_link() {
+fn an_unrecorded_admitted_raid_reference_is_a_limitation_whatever_the_save_holds() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let content = content();
@@ -356,8 +359,13 @@ fn admitted_raid_capture_absence_fails_even_when_save_omits_the_link() {
         let mut actual = wing();
         actual.raid_reference = Recorded::Value(None);
         let report = run(actual, saved(b"ModTransport", expected), Ok(&content));
-        assert_eq!(report.differences.len(), 1);
-        assert!(report.differences[0].contains("guarded read or registry/memo refusal"));
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        assert!(
+            !report
+                .compared_tables
+                .contains_key("AirWings.raid_reference")
+        );
+        assert_eq!(report.limitations[RAID_NOT_RECORDED].len(), 1);
     }
 }
 
@@ -369,7 +377,10 @@ fn pool_backed_active_fighters_compare_certified_nonresolution_without_a_raw_pac
         (Some(16), None, 0),
         (Some(16), Some(RAID), 1),
         (Some(48), Some(RAID), 1),
-        (Some(0), None, 1),
+        (Some(48), None, 1),
+        (Some(0), None, 0),
+        (Some(0), Some(RAID), 0),
+        (None, Some(RAID), 0),
     ] {
         let mut actual = wing();
         actual.air_base = 17;
@@ -390,6 +401,18 @@ fn pool_backed_active_fighters_compare_certified_nonresolution_without_a_raw_pac
                 .limitations
                 .keys()
                 .any(|reason| reason.contains("outside that capture demand"))
+        );
+        let certified = flags.is_some_and(|flags| flags & 16 != 0);
+        assert_eq!(
+            report.limitations.contains_key(RAID_NOT_RECORDED),
+            !certified
+        );
+        assert_eq!(
+            report
+                .compared_tables
+                .get("AirWings.raid_reference")
+                .copied(),
+            certified.then_some(1)
         );
     }
 }

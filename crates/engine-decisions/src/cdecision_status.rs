@@ -103,27 +103,13 @@ pub struct RandomItemWalk {
     pub required_bytes: usize,
 }
 
-/// Stored random-count item order and signed words. This roster includes
-/// entries absent from today's Decisions.
-pub fn walk_random_items(
-    memory: &impl Memory,
-    base: usize,
-    state: usize,
-    output: &mut [RandomItemRow],
-    tokens: &mut [u8],
-) -> RandomItemWalk {
-    walk_random_items_with(
-        memory,
-        base,
-        state,
-        Buffer::Fixed(output),
-        Buffer::Fixed(tokens),
-    )
+pub fn count_random_items(memory: &impl Memory, base: usize, state: usize) -> RandomItemWalk {
+    walk_random_items_with(memory, base, state, Buffer::Count, Buffer::Count)
 }
 
 /// Worker acquisition grows from each original array header, preserving
 /// stored order and duplicate entries.
-pub fn walk_random_items_growing(
+pub fn walk_random_items(
     memory: &impl Memory,
     base: usize,
     state: usize,
@@ -234,7 +220,7 @@ pub fn random_item_demand(
     base: usize,
     state: usize,
 ) -> Result<RandomItemDemand, &'static str> {
-    let walk = walk_random_items(memory, base, state, &mut [], &mut []);
+    let walk = count_random_items(memory, base, state);
     match walk.outcome {
         Outcome::Unavailable { reason } => Err(reason),
         Outcome::Rows { len } => Ok(RandomItemDemand {
@@ -283,6 +269,10 @@ pub struct Walk {
     pub required_bytes: usize,
 }
 
+pub fn count(memory: &impl Memory, base: usize, country: usize) -> Walk {
+    walk_buffer(memory, base, country, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
+}
+
 /// Reads all current decision-state vectors for an already-rostered country.
 /// Authenticates the country, status backlink, record and definition vtables.
 /// A proved empty vector remains empty; missing status is unavailable. No
@@ -290,22 +280,6 @@ pub struct Walk {
 /// Insufficient row/token storage omits whole rows and reports their count;
 /// required_bytes includes every valid token so storage can grow off-thread.
 pub fn walk(
-    memory: &impl Memory,
-    base: usize,
-    country: usize,
-    output: &mut [Row],
-    tokens: &mut [u8],
-) -> Walk {
-    walk_buffer(
-        memory,
-        base,
-        country,
-        crate::walk::Buffer::Fixed(output),
-        crate::walk::Buffer::Fixed(tokens),
-    )
-}
-
-pub fn walk_growing(
     memory: &impl Memory,
     base: usize,
     country: usize,
@@ -329,29 +303,6 @@ pub fn walk_buffer(
     tokens: crate::walk::Buffer<'_, u8>,
 ) -> Walk {
     walk_inner(memory, base, country, output, tokens, None)
-}
-
-/// Same decision census, adding seeds only for targeted rows named by the
-/// active border events' conservative native effect-tree union.
-#[cfg(test)]
-pub fn walk_with_description_demand(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    country: usize,
-    output: &mut [Row],
-    tokens: &mut [u8],
-    demand: crate::border_effect_demand::Demand<'_>,
-) -> Walk {
-    walk_with_description_demand_buffer(
-        memory,
-        base,
-        game_state,
-        country,
-        crate::walk::Buffer::Fixed(output),
-        crate::walk::Buffer::Fixed(tokens),
-        demand,
-    )
 }
 
 pub fn walk_with_description_demand_buffer(

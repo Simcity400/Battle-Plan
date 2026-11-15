@@ -139,7 +139,7 @@ test('the Stop prompt asks about this session and says what Discard deletes', ()
 });
 
 test('campaign choices follow the global default until set', () => {
-  const settings: RecorderSettings = { recordEveryCampaign: true, autoSave: true, startWithWindows: false, startWithReplay: true, captureMode: 'full',
+  const settings: RecorderSettings = { recordEveryCampaign: true, autoSave: true, startWithWindows: false, startWithReplay: true, captureMode: 'full', liveCompression: 'low', autoCompress: true,
     campaigns: { [CAMPAIGN]: { record: false, next: 'newFile' } }, effectiveSaveFolder: 'C:\\r' };
   assert.equal(recordsAutomatically(settings, CAMPAIGN), false);
   assert.equal(nextLoad(settings, CAMPAIGN), 'newFile');

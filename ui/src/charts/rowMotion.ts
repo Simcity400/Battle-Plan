@@ -73,3 +73,10 @@ export function commitRows<T>(history: RowHistory<T>, items: readonly { key: str
   const rows = unfaded(history.rows, cutoff, leaveMs);
   return rows.length === history.rows.length ? history : { items, rows };
 }
+
+/** `rows` without each row fading out where another row now stands: a gone row fades only where
+ * nothing took its place, never drawn under (or over) a row that is there. */
+export function untakenRows<T extends { phase: MovingRow<unknown>['phase']; slot: number }>(rows: readonly T[]): T[] {
+  const taken = new Set(rows.flatMap(row => row.phase === 'leaving' ? [] : [row.slot]));
+  return rows.filter(row => row.phase !== 'leaving' || !taken.has(row.slot));
+}

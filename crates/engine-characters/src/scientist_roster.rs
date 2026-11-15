@@ -47,14 +47,8 @@ pub struct SkillRow {
     pub experience_raw: i64,
 }
 
-/// Caller-owned row storage; the walk never allocates.
+/// Worker-owned rows and names, grown from each roster header.
 pub struct Buffers<'a> {
-    pub scientists: &'a mut [Row],
-    pub skills: &'a mut [SkillRow],
-    pub names: &'a mut [u8],
-}
-
-pub struct GrowingBuffers<'a> {
     pub scientists: &'a mut Vec<Row>,
     pub skills: &'a mut Vec<SkillRow>,
     pub names: &'a mut Vec<u8>,
@@ -68,16 +62,6 @@ pub struct BuffersBuffer<'a> {
 
 impl<'a> From<Buffers<'a>> for BuffersBuffer<'a> {
     fn from(value: Buffers<'a>) -> Self {
-        Self {
-            scientists: crate::walk::Buffer::Fixed(value.scientists),
-            skills: crate::walk::Buffer::Fixed(value.skills),
-            names: crate::walk::Buffer::Fixed(value.names),
-        }
-    }
-}
-
-impl<'a> From<GrowingBuffers<'a>> for BuffersBuffer<'a> {
-    fn from(value: GrowingBuffers<'a>) -> Self {
         Self {
             scientists: crate::walk::Buffer::Growing(value.scientists),
             skills: crate::walk::Buffer::Growing(value.skills),
@@ -143,20 +127,6 @@ pub fn walk(
     output: &mut Buffers<'_>,
 ) -> Walk {
     let mut buffers = BuffersBuffer {
-        scientists: crate::walk::Buffer::Fixed(&mut *output.scientists),
-        skills: crate::walk::Buffer::Fixed(&mut *output.skills),
-        names: crate::walk::Buffer::Fixed(&mut *output.names),
-    };
-    walk_buffer(memory, base, game_state, &mut buffers)
-}
-
-pub fn walk_growing(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut GrowingBuffers<'_>,
-) -> Walk {
-    let mut buffers = BuffersBuffer {
         scientists: crate::walk::Buffer::Growing(&mut *output.scientists),
         skills: crate::walk::Buffer::Growing(&mut *output.skills),
         names: crate::walk::Buffer::Growing(&mut *output.names),
@@ -174,11 +144,11 @@ pub fn walk_buffer(
 }
 
 /// Existing roster acquisition, with injury operands demanded only at a daily supplying read.
-pub fn walk_growing_with_injury(
+pub fn walk_with_injury(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    output: &mut GrowingBuffers<'_>,
+    output: &mut Buffers<'_>,
     injury: bool,
 ) -> Walk {
     let mut buffers = BuffersBuffer {
@@ -472,7 +442,7 @@ mod tests {
             &mut Buffers {
                 scientists: &mut scientists,
                 skills: &mut skills,
-                names: &mut [],
+                names: &mut Vec::new(),
             },
         );
         (result, scientists, skills)
@@ -500,7 +470,7 @@ mod tests {
         let mut scientists = Vec::new();
         let mut skills = Vec::new();
         let mut names = Vec::new();
-        let mut output = GrowingBuffers {
+        let mut output = Buffers {
             scientists: &mut scientists,
             skills: &mut skills,
             names: &mut names,
@@ -512,7 +482,7 @@ mod tests {
             },
             std::cell::Cell::new(0),
         );
-        let walk = walk_growing_with_injury(&memory, 0, GS, &mut output, false);
+        let walk = walk_with_injury(&memory, 0, GS, &mut output, false);
         assert!(matches!(walk.scientists, Outcome::Rows { len: 2 }));
         assert!(
             output.scientists[..2]
@@ -520,7 +490,7 @@ mod tests {
                 .all(|row| row.injury_days.is_none())
         );
         assert_eq!(memory.1.get(), 0);
-        let walk = walk_growing_with_injury(&memory, 0, GS, &mut output, true);
+        let walk = walk_with_injury(&memory, 0, GS, &mut output, true);
         assert!(matches!(walk.scientists, Outcome::Rows { len: 2 }));
         assert!(
             output.scientists[..2]
@@ -600,8 +570,8 @@ mod tests {
         }
         let bytes = fixture();
         let (_, expected, expected_skills) = run(&bytes, [2, 4]);
-        let mut scientists = [Row::default(); 2];
-        let mut skills = [SkillRow::default(); 4];
+        let mut scientists = vec![Row::default(); 2];
+        let mut skills = vec![SkillRow::default(); 4];
         let result = walk(
             &ActivityFault(&bytes),
             0,
@@ -609,7 +579,7 @@ mod tests {
             &mut Buffers {
                 scientists: &mut scientists,
                 skills: &mut skills,
-                names: &mut [],
+                names: &mut Vec::new(),
             },
         );
         assert_eq!(result.scientists, Outcome::Rows { len: 2 });
@@ -697,28 +667,6 @@ mod tests {
     }
 
     #[test]
-    fn each_buffer_truncates_independently_and_counts_omitted_rows() {
-        let bytes = fixture();
-        let (result, scientists, skills) = run(&bytes, [1, 2]);
-        assert_eq!(
-            result.scientists,
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            }
-        );
-        assert_eq!(
-            result.skills,
-            Outcome::Truncated {
-                len: 2,
-                unread_rows: 2
-            }
-        );
-        assert_eq!(scientists[0].character, 265);
-        assert_eq!(skills[1].ordinal, 1);
-    }
-
-    #[test]
     fn an_unreadable_world_yields_no_prefix() {
         struct Unreadable;
         impl Memory for Unreadable {
@@ -726,8 +674,8 @@ mod tests {
                 false
             }
         }
-        let mut scientists = [Row::default(); 2];
-        let mut skills = [SkillRow::default(); 2];
+        let mut scientists = vec![Row::default(); 2];
+        let mut skills = vec![SkillRow::default(); 2];
         let result = walk(
             &Unreadable,
             0,
@@ -735,7 +683,7 @@ mod tests {
             &mut Buffers {
                 scientists: &mut scientists,
                 skills: &mut skills,
-                names: &mut [],
+                names: &mut Vec::new(),
             },
         );
         assert!(matches!(result.scientists, Outcome::Unavailable { .. }));

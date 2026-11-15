@@ -87,7 +87,7 @@ use crate::ResolvedLayers;
 
 /// Why part of a document is not read as the game reads it: the element's full path, the key,
 /// and what the game itself does there.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Refusal {
     /// The element's path from its template: `window.child.grandchild`; empty for the file's own
     /// level.
@@ -101,7 +101,7 @@ pub struct Refusal {
 }
 
 /// What a refusal records.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Cause {
     /// A field the game stores from an invalid or undefined read, or an element whose post-load
     /// walk never ends or crashes: the field or element is refused.

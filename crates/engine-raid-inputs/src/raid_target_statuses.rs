@@ -172,27 +172,9 @@ fn identified<'b>(
     Ok(out)
 }
 
-/// Every target status in native order, with its scope, `valid` byte and
-/// detection bytes. Capacity shortfalls truncate and report demand.
-pub fn walk(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    rows: &mut [Row],
-    detected: &mut [u8],
-) -> Walk {
-    walk_buffer(
-        memory,
-        base,
-        game_state,
-        Buffer::Fixed(rows),
-        Buffer::Fixed(detected),
-    )
-}
-
 /// Every target and its detection vector are serialized. Worker storage grows from each original
 /// header before row publication.
-pub fn walk_growing(
+pub fn walk(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -542,14 +524,14 @@ mod tests {
         );
         bytes
     }
-    fn run(bytes: &[u8], rows: &mut [Row], detected: &mut [u8]) -> Walk {
+    fn run(bytes: &[u8], rows: &mut Vec<Row>, detected: &mut Vec<u8>) -> Walk {
         walk(&SliceMemory { base: 0, bytes }, 0, STATE, rows, detected)
     }
 
     #[test]
     fn every_target_keeps_its_ordinal_scope_valid_byte_and_bits() {
-        let mut rows = [Row::default(); 2];
-        let mut detected = [0; 2];
+        let mut rows = vec![Row::default(); 2];
+        let mut detected = vec![0; 2];
         let result = run(&fixture(), &mut rows, &mut detected);
         assert_eq!(result.outcome, Outcome::Rows { len: 2 });
         assert_eq!((rows[0].valid, rows[0].scope.province), (0, 6521));
@@ -566,15 +548,9 @@ mod tests {
     }
 
     #[test]
-    fn row_and_byte_shortfalls_truncate_with_demand() {
-        let result = run(&fixture(), &mut [Row::default(); 2], &mut [0; 1]);
-        assert_eq!(
-            result.outcome,
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            }
-        );
+    fn row_and_byte_shortfalls_grow_to_the_demand() {
+        let result = run(&fixture(), &mut vec![Row::default(); 1], &mut vec![0; 1]);
+        assert_eq!(result.outcome, Outcome::Rows { len: 2 });
         assert_eq!((result.required_rows, result.required_detected), (2, 2));
     }
 
@@ -582,14 +558,14 @@ mod tests {
     fn a_foreign_arm_or_short_bits_fail_the_table() {
         let mut bytes = fixture();
         put(&mut bytes, STATUS_AT, &3_u64.to_le_bytes());
-        let result = run(&bytes, &mut [Row::default(); 2], &mut [0; 2]);
+        let result = run(&bytes, &mut vec![Row::default(); 2], &mut vec![0; 2]);
         assert!(matches!(result.outcome, Outcome::Unavailable { .. }));
         let mut bytes = fixture();
         put(&mut bytes, PROVINCE_AT, &3_u64.to_le_bytes());
-        let result = run(&bytes, &mut [Row::default(); 2], &mut [0; 2]);
+        let result = run(&bytes, &mut vec![Row::default(); 2], &mut vec![0; 2]);
         assert!(matches!(result.outcome, Outcome::Unavailable { .. }));
         let bytes = fixture();
-        let result = run(&bytes[..BITS + 1], &mut [Row::default(); 2], &mut [0; 2]);
+        let result = run(&bytes[..BITS + 1], &mut vec![Row::default(); 2], &mut vec![0; 2]);
         assert!(matches!(result.outcome, Outcome::Unavailable { .. }));
     }
 

@@ -640,20 +640,11 @@ pub(crate) mod tests {
     fn province_roster_keeps_native_order_and_rejects_backlink_and_whole_row_capacity_failures() {
         use crate::{cprovince as p, cunit, walk::Outcome};
         let (mut f, ids) = province_roster_fixture(51);
-        let mut rows = [p::UnitOrderRow::default(); 1];
-        let mut refs = [0; 2];
+        let mut rows = vec![p::UnitOrderRow::default(); 1];
+        let mut refs = vec![0; 2];
         let result = p::walk_unit_order(&f, 0, 0x4000, &mut rows, &mut refs);
         assert_eq!(result.outcome, Outcome::Rows { len: 1 });
         assert_eq!(refs, ids);
-        let result = p::walk_unit_order(&f, 0, 0x4000, &mut rows, &mut refs[..1]);
-        assert_eq!(
-            result.outcome,
-            Outcome::Truncated {
-                len: 0,
-                unread_rows: 1
-            }
-        );
-        assert_eq!(result.required, 2);
         f.put(0x7000 + cunit::LOCATION, &0u64.to_le_bytes());
         assert!(matches!(
             p::walk_unit_order(&f, 0, 0x4000, &mut rows, &mut refs).outcome,
@@ -666,8 +657,8 @@ pub(crate) mod tests {
     fn province_roster_accepts_dynamic_reference_type_divisions() {
         use crate::{cprovince as p, walk::Outcome};
         let (f, ids) = province_roster_fixture(4713);
-        let mut rows = [p::UnitOrderRow::default(); 1];
-        let mut refs = [0; 2];
+        let mut rows = vec![p::UnitOrderRow::default(); 1];
+        let mut refs = vec![0; 2];
         let result = p::walk_unit_order(&f, 0, 0x4000, &mut rows, &mut refs);
         assert_eq!(result.outcome, Outcome::Rows { len: 1 });
         assert_eq!(refs, ids);

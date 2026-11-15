@@ -1,17 +1,31 @@
-"""Battle Plan's acceptance suite: the release desktop app on a prepared copy of a real recording.
+"""Battle Plan's acceptance suite: the release desktop app on a copy of a real recording.
 
-    python tools/e2e/suite.py build --out <app dir>
-    python tools/e2e/suite.py run --app <app dir> --fixture <folder> --game-dir <the game folder> --out <report dir>
-        [--state <dir>] [--stages prepare,sweep,report] [--phases pages,...] [--cases id,...]
+    python tools/e2e/suite.py build --out <app dir> [--shell]
+    python tools/e2e/suite.py run --app <app dir> | --shell <shell dir> --ui <bundle dir>
+        --fixture <folder> --game-dir <the game folder> --out <report dir>
+        [--tier full|quick] [--history <file>] [--pin all|product] [--record-replies <file>]
+        [--state <dir>] [--stages copy,sweep,report] [--phases pages,...] [--cases id,...] [--pages page,...] [--pages-at <fraction>]
     python tools/e2e/suite.py accept --run <report dir> --reason "<the change it accepts>" [--state <dir>]
+    python tools/e2e/suite.py playback map|harness|dashboard ...   (tools/e2e/playback.py: the playback phase)
 
-`build` compiles replay-desktop and viewer with the UI embedded on Boat. `run` copies the fixture's
-recording into a fresh profile, prepares it in the app (wall time, CPU and peak commit of the app's
-whole process tree), then starts the app again on that profile and runs tools/e2e/sweep.mjs over
-it, and writes e2e.md: a table per area, failures with screenshots, and the visual check's
-differences from the baseline `accept` last made, with diff images. Each app runs in a Job on a
-desktop of its own, so it never takes the user's input or focus, at a fixed window size. Exits 0
-when everything passed, 1 when anything failed, 2 when the suite itself could not run.
+`build` compiles replay-desktop with the UI embedded on Boat; `--shell` builds the measuring shell instead,
+the same release app serving its UI from a production bundle on disk, so a UI change is measured by rebuilding only
+the bundle (`npx.cmd vite build --config ui/vite.config.ts`, into ui/dist) and running the shell on it with
+`run --shell <shell dir> --ui ui/dist`; a shell is built once and serves any later bundle. `run` copies the fixture's
+recording into a fresh profile, then starts the app on that profile for each session and runs
+tools/e2e/sweep.mjs over it, and writes e2e.md: a table per area, failures with screenshots, and the visual check's
+differences from the baseline `accept` last made, with diff images. `--pages-at` adds a session that seeks to that
+share of the timeline and visits and scrolls every page there, into sweep-pages-at.json. Each app runs in a Job on a
+desktop of its own, so it never takes the user's input or focus, at a fixed window size. `--tier quick` is one cold
+session for iterating: every page at mid-recording, the heaviest pages played at 1,440 h/s under the trace, the slowest
+catalogue cards and one setting of each widget kind. `--history` (by default in the state folder) holds every step that
+ever failed, each marked as the product's or the suite's own; the report adds this run's, and no case in it is left out
+as a repeat (with `--pin product`, no case the product failed). The header records the machine's CPU and memory load
+before the first app starts and before the last one closes, beside the Battle Plan apps running then: this run's, other
+suite runs' (each notes the app it started) and every replay-desktop process on the machine, so a number taken beside
+other apps is read as such. `--record-replies` has the sweep record every reply and followed message the page receives to
+that file (one file a session, named for it when more than one runs). Exits 0 when everything passed, 1 when anything
+failed, 2 when the suite itself could not run.
 """
 
 import argparse
@@ -23,6 +37,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from ctypes import wintypes as w
@@ -35,8 +50,8 @@ DEFAULT_STATE = Path(os.environ.get("BATTLE_PLAN_CAPTURES", os.environ.get("HOI4
 WINDOW = (1920, 1080)
 BOAT_FAILED = 75
 CLOSE_SECONDS = 60
-STAGES = ("prepare", "sweep", "report")
-# Each session is a fresh app on the prepared profile with every cache emptied, so what it times first is cold.
+STAGES = ("copy", "sweep", "report")
+# Each session is a fresh app on the profile with every cache emptied, so what it times first is cold.
 SESSIONS = (
     ("pages", "pages", {}),
     ("seeks", "seeks", {}),
@@ -44,12 +59,22 @@ SESSIONS = (
     ("map uncapped", "mapfps", {"BATTLE_PLAN_VIEWER_NO_VSYNC": "1"}),
     ("catalogue", "catalogue", {}),
     ("controls", "controls", {}),
+    # Only with --pages-at.
+    ("pages at", "pages-at", {}),
+)
+# The quick tier: one cold session, so opening is judged cold and everything after it shares the app.
+QUICK_SESSIONS = (
+    ("quick", "glance,playback,catalogue,controls", {}),
 )
 # Under the fresh profile: emptied before every session.
 CACHES = ("local/HOI4Replay/viewer", "local/HOI4Replay/shader-cache", "local/HOI4Replay/artwork", "local/Microsoft",
           "roaming", "webview")
-# What preparation made, kept: the prepared store, the recording, and the artwork it drew (restored from a copy).
-PREPARED = ("local/HOI4Replay/prepared", "local/HOI4Replay/captures", "local/HOI4Replay/artwork")
+# What every session keeps: the recording.
+KEPT = ("local/HOI4Replay/captures",)
+# Each suite run's app while it runs, as `<pid>-<creation time>.json`, so runs on one machine count each other.
+APPS = Path(tempfile.gettempdir()) / "battle-plan-e2e" / "apps"
+APP_EXE = "replay-desktop.exe"
+SHELL_FEATURE = "replay-desktop/served-ui"
 
 k = c.WinDLL("kernel32", use_last_error=True)
 u = c.WinDLL("user32", use_last_error=True)
@@ -105,6 +130,17 @@ class ProcessInfo(c.Structure):
     _fields_ = [("process", w.HANDLE), ("thread", w.HANDLE), ("pid", w.DWORD), ("tid", w.DWORD)]
 
 
+class MemoryStatus(c.Structure):
+    _fields_ = [("length", w.DWORD), ("load", w.DWORD)] + [
+        (name, c.c_uint64) for name in ("phys", "phys_free", "page", "page_free", "virtual", "virtual_free", "extended")]
+
+
+class ProcessEntry(c.Structure):
+    _fields_ = [("size", w.DWORD), ("usage", w.DWORD), ("pid", w.DWORD), ("heap", c.c_size_t), ("module", w.DWORD),
+                ("threads", w.DWORD), ("parent", w.DWORD), ("priority", c.c_long), ("flags", w.DWORD),
+                ("exe", c.c_wchar * 260)]
+
+
 k.CreateJobObjectW.argtypes = [c.c_void_p, w.LPCWSTR]
 k.CreateJobObjectW.restype = w.HANDLE
 k.SetInformationJobObject.argtypes = [w.HANDLE, c.c_int, c.c_void_p, w.DWORD]
@@ -117,6 +153,15 @@ k.ResumeThread.argtypes = [w.HANDLE]
 k.WaitForSingleObject.argtypes = [w.HANDLE, w.DWORD]
 k.GetExitCodeProcess.argtypes = [w.HANDLE, c.POINTER(w.DWORD)]
 k.CloseHandle.argtypes = [w.HANDLE]
+k.GetSystemTimes.argtypes = [c.POINTER(c.c_uint64)] * 3
+k.GlobalMemoryStatusEx.argtypes = [c.POINTER(MemoryStatus)]
+k.CreateToolhelp32Snapshot.argtypes = [w.DWORD, w.DWORD]
+k.CreateToolhelp32Snapshot.restype = w.HANDLE
+k.Process32FirstW.argtypes = [w.HANDLE, c.POINTER(ProcessEntry)]
+k.Process32NextW.argtypes = [w.HANDLE, c.POINTER(ProcessEntry)]
+k.OpenProcess.argtypes = [w.DWORD, w.BOOL, w.DWORD]
+k.OpenProcess.restype = w.HANDLE
+k.GetProcessTimes.argtypes = [w.HANDLE] + [c.POINTER(c.c_uint64)] * 4
 u.CreateDesktopW.argtypes = [w.LPCWSTR, w.LPCWSTR, c.c_void_p, w.DWORD, w.DWORD, c.c_void_p]
 u.CreateDesktopW.restype = w.HANDLE
 u.CloseDesktop.argtypes = [w.HANDLE]
@@ -168,6 +213,7 @@ class App:
             raise c.WinError(c.get_last_error())
         null.close()
         self.started = time.monotonic()
+        self.noted = note_app(self.info.process, self.info.pid)
 
     def usage(self):
         """CPU seconds and peak commit bytes of every process the app's tree has run."""
@@ -238,7 +284,118 @@ class App:
             k.CloseHandle(self.job)
             u.CloseDesktop(self.desktop)
             self.log.close()
+            if self.noted:
+                self.noted.unlink(missing_ok=True)
         return code
+
+
+def created(process):
+    """A process's creation time, which tells it from a later process given the same id."""
+    times = [c.c_uint64() for _ in range(4)]
+    checked(k.GetProcessTimes(process, *map(c.byref, times)))
+    return times[0].value
+
+
+def note_app(process, pid):
+    """Notes an app this run started where other suite runs count it; the note, or None when it could not be written."""
+    try:
+        APPS.mkdir(parents=True, exist_ok=True)
+        note = APPS / f"{pid}-{created(process)}.json"
+        note.write_text(json.dumps({"pid": pid, "suite": os.getpid()}), encoding="utf-8")
+        return note
+    except OSError:
+        return None
+
+
+def alive(pid, creation):
+    process = k.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not process:
+        return False
+    try:
+        code = w.DWORD()
+        return bool(k.GetExitCodeProcess(process, c.byref(code)) and code.value == STILL_ACTIVE
+                    and created(process) == creation)
+    except OSError:
+        return False
+    finally:
+        k.CloseHandle(process)
+
+
+def running_apps(own):
+    """Battle Plan apps running now: this run's, other suite runs' (by their notes) and every replay-desktop process
+    on the machine (counted by name, only read)."""
+    noted = 0
+    for note in APPS.glob("*.json") if APPS.is_dir() else ():
+        pid, _, creation = note.stem.partition("-")
+        if pid.isdigit() and creation.isdigit() and alive(int(pid), int(creation)):
+            noted += 1
+    machine = None
+    snapshot = k.CreateToolhelp32Snapshot(0x2, 0)  # TH32CS_SNAPPROCESS
+    if snapshot and snapshot != c.c_void_p(-1).value:
+        try:
+            machine = 0
+            entry = ProcessEntry()
+            entry.size = c.sizeof(entry)
+            more = k.Process32FirstW(snapshot, c.byref(entry))
+            while more:
+                machine += entry.exe.lower() == APP_EXE
+                more = k.Process32NextW(snapshot, c.byref(entry))
+        finally:
+            k.CloseHandle(snapshot)
+    return {"thisRun": own, "otherRuns": max(0, noted - own), "machine": machine}
+
+
+def machine_load(own, seconds=1.0):
+    """The share of all logical CPUs busy over `seconds`, the share of memory in use, and the apps running."""
+    def times():
+        idle, kernel, user = c.c_uint64(), c.c_uint64(), c.c_uint64()
+        checked(k.GetSystemTimes(c.byref(idle), c.byref(kernel), c.byref(user)))
+        # Kernel time includes idle time.
+        return idle.value, kernel.value + user.value
+    idle, total = times()
+    time.sleep(seconds)
+    idle_after, total_after = times()
+    memory = MemoryStatus()
+    memory.length = c.sizeof(memory)
+    checked(k.GlobalMemoryStatusEx(c.byref(memory)))
+    busy = 1 - (idle_after - idle) / (total_after - total) if total_after > total else None
+    return {"at": datetime.datetime.now().isoformat(timespec="seconds"),
+            "cpuPercent": None if busy is None else round(100 * busy, 1), "memoryPercent": memory.load,
+            "apps": running_apps(own)}
+
+
+def shell_build(folder):
+    """What built a measuring shell, or why the folder holds none."""
+    try:
+        built = json.loads((Path(folder) / "boat-artifacts.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise RuntimeError(f"{folder} holds no Boat build record ({error}): build the shell with `suite.py build --shell`")
+    arguments = next((item.get("cargo_arguments", []) for item in built.get("artifacts", [])
+                      if Path(item.get("path", "")).name == APP_EXE), [])
+    if not any(SHELL_FEATURE in argument for argument in arguments):
+        raise RuntimeError(f"{folder}'s {APP_EXE} is not a measuring shell (built without {SHELL_FEATURE}): "
+                           "build one with `suite.py build --shell`, or pass the folder as --app")
+    return {"folder": str(folder), "revision": built.get("revision"), "cargoArguments": arguments}
+
+
+def ui_bundle(folder):
+    """A production bundle's entry page and size, or why the folder is not one (the shell refuses it too)."""
+    entry = Path(folder) / "index.html"
+    if not entry.is_file():
+        raise RuntimeError(f"{folder} holds no index.html: give the folder `vite build` wrote (ui/dist)")
+    if "/src/main.tsx" in entry.read_text(encoding="utf-8", errors="replace"):
+        raise RuntimeError(f"{folder} is the UI's source, not a production bundle: give the folder `vite build` wrote")
+    files = [path for path in Path(folder).rglob("*") if path.is_file()]
+    return {"folder": str(folder), "built": datetime.datetime.fromtimestamp(entry.stat().st_mtime).isoformat(timespec="seconds"),
+            "files": len(files), "bytes": sum(path.stat().st_size for path in files)}
+
+
+def recorded_replies(path, slug, sessions):
+    """The reply file of one session: the given file, or one named for the session when several run."""
+    if sessions == 1:
+        return path
+    path = Path(path)
+    return str(path.with_name(f"{path.stem}-{slug}{path.suffix}"))
 
 
 def msvcrt_handle(stream):
@@ -258,7 +415,7 @@ def refresh_hz():
 
 def user_folder(given):
     """The Paradox user folder: given, else where the recorder finds it (the Documents shell folder, then
-    OneDrive's and the profile's Documents). Its settings.txt sets the language prepared text is made in."""
+    OneDrive's and the profile's Documents)."""
     if given:
         return Path(given)
     import winreg
@@ -296,13 +453,18 @@ def fixture_recording(folder):
     return recordings[0]
 
 
-def shader_compiler(state):
-    """The pinned shader compiler the viewer needs, installed once into the suite's state."""
-    dxc = state / "shader-tools" / "dxc"
-    if not (dxc / "dxc.exe").is_file():
+SHADER_COMPILER = ("dxcompiler.dll", "dxil.dll")
+
+
+def shader_compiler(state, app):
+    """The pinned shader compiler beside the app, whose maps load it from there: fetched once into the suite's state."""
+    copy = state / "shader-compiler"
+    if not all((copy / name).is_file() for name in SHADER_COMPILER):
         subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-                        str(ROOT / "tools" / "install-shader-compiler.ps1"), "-Destination", str(dxc)], check=True)
-    return dxc / "dxc.exe"
+                        str(ROOT / "tools" / "install-shader-compiler.ps1"), "-Destination", str(copy)], check=True)
+    for name in SHADER_COMPILER:
+        if not (app / name).is_file():
+            shutil.copy2(copy / name, app / name)
 
 
 def app_environment(profile, port, extra):
@@ -322,7 +484,9 @@ def launch(args, work, label, extra=None):
     """The app on the suite's fresh profile, with the user's own game and Paradox user folders, which it only reads."""
     profile = work / "profile"
     port = free_port()
-    environment = app_environment(profile, port, {"BATTLE_PLAN_SHADER_COMPILER": str(args.dxc), **(extra or {})})
+    environment = app_environment(profile, port, dict(extra or {}))
+    if args.ui:
+        environment["BATTLE_PLAN_UI_DIST"] = args.ui
     app_args = ["--game-dir", args.game_dir, "--user-dir", str(args.user_folder)]
     app = App(Path(args.app) / "replay-desktop.exe", app_args, environment, args.out / f"app-{label}.log", port)
     try:
@@ -334,7 +498,7 @@ def launch(args, work, label, extra=None):
 
 
 def cold_profile(work):
-    """Empties every cache under the fresh profile and puts back the artwork preparation drew; what is left is said."""
+    """Empties every cache under the fresh profile; what is left is said."""
     profile = work / "profile"
     for cache in CACHES:
         # The last app's processes release their files a moment after its Job ends.
@@ -345,12 +509,11 @@ def cold_profile(work):
                 if time.monotonic() > deadline:
                     raise RuntimeError(f"could not empty {profile / cache} within 30 s")
                 time.sleep(1)
-    shutil.copytree(work / "prepared-artwork", profile / "local" / "HOI4Replay" / "artwork")
     left = sorted(str(path.relative_to(profile)).replace("\\", "/") for path in (profile / "local" / "HOI4Replay").iterdir())
-    expected = sorted(PREPARED)
+    expected = sorted(KEPT)
     if left != expected or any((profile / name).exists() for name in ("roaming", "webview", "local/Microsoft")):
         raise RuntimeError(f"the profile is not cold: it holds {left}")
-    return {"emptied": list(CACHES), "kept": list(PREPARED)}
+    return {"emptied": list(CACHES), "kept": list(KEPT)}
 
 
 def driver(script, log, *arguments, seconds):
@@ -366,34 +529,17 @@ def driver(script, log, *arguments, seconds):
             return None
 
 
-def prepare(args, work, recording):
-    """Prepares the copied recording in a fresh app and measures that app's tree."""
-    app = launch(args, work, "prepare")
-    result = {}
+def state_lock(state):
+    """Holds `state` for this run: the copy stage empties its work folder, so two runs never share one."""
+    import msvcrt
+    state.mkdir(parents=True, exist_ok=True)
+    lock = open(state / "run.lock", "a+b")
     try:
-        out = work / "prepare.json"
-        log = args.out / "prepare.log"
-        with open(log, "wb") as output:
-            process = subprocess.Popen([node(), str(HERE / "prepare.mjs"), "--port", str(app.port), "--recording", str(recording),
-                                        "--out", str(out)], cwd=ROOT, stdout=subprocess.PIPE, stderr=output,
-                                       creationflags=subprocess.CREATE_NO_WINDOW)
-            ended = None
-            for line in process.stdout:
-                output.write(line)
-                event = json.loads(line) if line.startswith(b"{") else {}
-                if event.get("event") == "ended":
-                    ended = (time.monotonic(), *app.usage())
-            code = process.wait()
-        if code != 0 or not out.is_file() or ended is None:
-            raise RuntimeError(f"prepare.mjs failed (exit {code}); see {log}")
-        result = json.loads(out.read_text(encoding="utf-8"))
-        # From launch: an app with a recording in its library may start preparing it before it is asked.
-        result["wallSeconds"] = ended[0] - app.started
-        result["cpuSeconds"] = ended[1]
-        result["peakCommitGb"] = ended[2] / 2**30
-    finally:
-        result["exitCode"] = app.close()
-    return result
+        msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+    except OSError:
+        lock.close()
+        raise RuntimeError(f"another suite run is using --state {state}: give each run a state folder of its own")
+    return lock
 
 
 def run(args):
@@ -401,65 +547,66 @@ def run(args):
     args.out = Path(args.out).resolve()
     args.out.mkdir(parents=True, exist_ok=True)
     state = Path(args.state).resolve()
+    with state_lock(state):
+        return run_locked(args, started, state)
+
+
+def run_locked(args, started, state):
     work = state / "work"
     stages = args.stages.split(",")
     phases = {}
     record = {"commit": git_head(), "started": datetime.datetime.now().isoformat(timespec="seconds"), "phases": phases,
-              "refreshHz": refresh_hz()}
+              "refreshHz": refresh_hz(), "tier": args.tier, "requested": [],
+              "machine": {"logicalCpus": os.cpu_count(), "start": None, "end": None}}
+    if args.ui:
+        record["shell"] = {**shell_build(args.app), "ui": ui_bundle(args.ui)}
+    history = Path(args.history).resolve() if args.history else state / "history.json"
     if not (Path(args.game_dir) / "hoi4.exe").is_file():
         raise RuntimeError(f"{args.game_dir} holds no hoi4.exe")
-    for name in ("replay-desktop.exe", "viewer.exe"):
-        if not (Path(args.app) / name).is_file():
-            raise RuntimeError(f"{args.app} holds no {name}")
+    if not (Path(args.app) / "replay-desktop.exe").is_file():
+        raise RuntimeError(f"{args.app} holds no replay-desktop.exe")
     source = fixture_recording(args.fixture)
     args.user_folder = user_folder(args.user_dir)
     record["userFolder"] = str(args.user_folder)
     # Baselines are of one fixture: its name and size tell a swapped fixture from tonight's.
     record["fixture"] = {"name": source.name, "bytes": source.stat().st_size}
-    args.dxc = shader_compiler(state)
+    shader_compiler(state, Path(args.app))
     # In the fresh profile's own library, where the app lists it, as a recording the user saved.
     recording = work / "profile" / "local" / "HOI4Replay" / "captures" / source.name
-    if "prepare" in stages:
+    if "copy" in stages:
         began = time.monotonic()
-        # Every night from nothing: the copied recording, a fresh profile, no prepared data.
+        # Every night from nothing: the copied recording in a fresh profile.
         if work.exists():
             shutil.rmtree(work)
         recording.parent.mkdir(parents=True)
         shutil.copy2(source, recording)
         phases["copy"] = time.monotonic() - began
-        began = time.monotonic()
-        try:
-            prep = prepare(args, work, recording)
-        except Exception as error:
-            prep = {"state": "not run", "error": str(error)}
-        (args.out / "prep.json").write_text(json.dumps(prep, indent=1), encoding="utf-8")
-        phases["prepare"] = time.monotonic() - began
-        artwork = work / "profile" / "local" / "HOI4Replay" / "artwork"
-        if artwork.is_dir():
-            shutil.copytree(artwork, work / "prepared-artwork")
     elif not recording.is_file():
-        raise RuntimeError(f"no prepared work in {work}: run the prepare stage first")
-    prepared = json.loads((args.out / "prep.json").read_text(encoding="utf-8")) if (args.out / "prep.json").is_file() else None
-    if "sweep" in stages and prepared is not None and prepared.get("state") != "ready":
-        # Nothing can be measured on a recording that is not prepared; the report says why, once.
-        record["sweepNotRun"] = f"the fixture was not prepared: {prepared.get('error') or prepared.get('state')}"
-    elif "sweep" in stages:
-        if not (work / "prepared-artwork").is_dir():
-            raise RuntimeError(f"no copy of the prepared artwork in {work}: run the prepare stage first")
+        raise RuntimeError(f"no copied recording in {work}: run the copy stage first")
+    if "sweep" in stages:
         record["sessions"] = []
         wanted = args.phases.split(",") if args.phases else None
-        for name, session_phases, environment in SESSIONS:
-            chosen = [phase for phase in session_phases.split(",") if wanted is None or phase in wanted]
-            if not chosen:
-                continue
+        planned = []
+        for name, session_phases, environment in (QUICK_SESSIONS if args.tier == "quick" else SESSIONS):
+            chosen = [phase for phase in session_phases.split(",") if (wanted is None or phase in wanted)
+                      and (phase != "pages-at" or args.pages_at is not None)]
+            if chosen:
+                planned.append((name, chosen, environment))
+        for name, chosen, environment in planned:
+            # Asked for, whether or not its session starts: the report judges each phase asked for, and only those.
+            record["requested"] += chosen
             began = time.monotonic()
-            session = {"name": name, "phases": chosen, "emptied": list(CACHES), "kept": list(PREPARED)}
+            session = {"name": name, "phases": chosen, "emptied": list(CACHES), "kept": list(KEPT)}
             slug = name.replace(" ", "-")
             # A session that cannot start is a failure of its own; the next still runs, and the report is written.
-            # The viewer's suite input channel, for pointer and key input to the native map: suite sessions only.
+            # The map's suite input channel, for pointer and key input to the native map: suite sessions only.
             input_address = f"127.0.0.1:{free_port()}"
+            if args.record_replies:
+                session["recordedReplies"] = recorded_replies(args.record_replies, slug, len(planned))
             try:
                 cold_profile(work)
+                session["machine"] = {"before": machine_load(0)}
+                record["machine"]["start"] = record["machine"]["start"] or session["machine"]["before"]
                 app = launch(args, work, f"sweep-{slug}", {"BATTLE_PLAN_PERF_LOG": str(work / f"perf-{slug}.jsonl"),
                                                            "BATTLE_PLAN_E2E_INPUT": input_address, "BATTLE_PLAN_E2E_CAPTURE_CLOCK": "0",
                                                            **environment})
@@ -471,10 +618,17 @@ def run(args):
                 session["sweepExit"] = driver("sweep.mjs", args.out / f"sweep-{slug}.log", "--port", app.port, "--out", args.out,
                                               "--work", work, "--session", slug, "--desktop", app.desktop_name, "--app-pid", app.info.pid,
                                               "--input", input_address,
-                                              "--phases", ",".join(chosen), *(["--cases", args.cases] if args.cases else []),
+                                              "--phases", ",".join(chosen), "--tier", args.tier, "--history", history, "--pin", args.pin,
+                                              *(["--cases", args.cases] if args.cases else []),
+                                              *(["--pages", args.pages] if args.pages else []),
+                                              *(["--pages-at", args.pages_at] if args.pages_at is not None else []),
+                                              *(["--record-replies", session["recordedReplies"]] if args.record_replies else []),
                                               seconds=3 * 3600)
             finally:
-                session["appExit"] = app.close()
+                try:
+                    session["machine"]["after"] = record["machine"]["end"] = machine_load(int(app.running()))
+                finally:
+                    session["appExit"] = app.close()
             session["seconds"] = time.monotonic() - began
             record["sessions"].append(session)
             phases[f"sweep: {name}"] = session["seconds"]
@@ -483,11 +637,7 @@ def run(args):
     if "report" not in stages:
         return 0
     arguments = ["--run", args.out / "run.json", "--sweeps", args.out, "--perf", work, "--out", args.out,
-                 "--history", state / "prep-history.jsonl", "--baseline", state / "visual-baseline"]
-    if (args.out / "prep.json").is_file():
-        arguments += ["--prep", args.out / "prep.json"]
-    if "prepare" in stages:
-        arguments.append("--record")
+                 "--baseline", state / "visual-baseline", "--history", history]
     code = driver("report.mjs", args.out / "report.log", *arguments, seconds=1800)
     if code not in (0, 1):
         raise RuntimeError(f"report.mjs failed (exit {code}); see {args.out / 'report.log'}")
@@ -527,9 +677,11 @@ def accept(args):
 
 
 def build(args):
-    """The release app with the UI embedded, compiled on Boat; a Boat failure is retried once, as Boat asks."""
+    """The release app with the UI embedded, or the measuring shell, compiled on Boat; a Boat failure is retried once,
+    as Boat asks."""
+    features = "replay-desktop/custom-protocol" + (f",{SHELL_FEATURE}" if args.shell else "")
     command = [sys.executable, str(ROOT / "tools" / "boat.py"), "build", "--out", str(Path(args.out).resolve()), "--release",
-               "-p", "replay-desktop", "-p", "viewer", "--features", "replay-desktop/custom-protocol"]
+               "-p", "replay-desktop", "--features", features]
     for attempt in (1, 2):
         code = subprocess.run(command, cwd=ROOT).returncode
         if code != BOAT_FAILED:
@@ -543,33 +695,67 @@ def parse(argv):
     commands = parser.add_subparsers(dest="command", required=True)
     build_command = commands.add_parser("build")
     build_command.add_argument("--out", required=True)
+    build_command.add_argument("--shell", action="store_true",
+                               help="the measuring shell: the release app serving its UI from the bundle `run --ui` names")
     accept_command = commands.add_parser("accept", help="make a run's captures the visual baseline")
     accept_command.add_argument("--run", required=True, help="the run's report folder")
     accept_command.add_argument("--reason", required=True, help="the change this baseline accepts")
     accept_command.add_argument("--state", default=str(DEFAULT_STATE))
     run_command = commands.add_parser("run")
-    run_command.add_argument("--app", required=True, help="folder holding replay-desktop.exe and viewer.exe")
+    app = run_command.add_mutually_exclusive_group(required=True)
+    app.add_argument("--app", help="folder holding replay-desktop.exe; the pinned shader compiler is put beside it")
+    app.add_argument("--shell", help="folder holding the measuring shell (`build --shell`); needs --ui")
+    run_command.add_argument("--ui", help="the production bundle the shell serves (`vite build` output, ui/dist); builds nothing")
+    run_command.add_argument("--record-replies", help="file the sweep records every reply and followed message the page receives to (tools/e2e/replies.mjs)")
     run_command.add_argument("--fixture", default=os.environ.get("BATTLE_PLAN_E2E_FIXTURE", os.environ.get("HOI4_E2E_FIXTURE")), required=not os.environ.get("BATTLE_PLAN_E2E_FIXTURE", os.environ.get("HOI4_E2E_FIXTURE")))
     run_command.add_argument("--game-dir", default=os.environ.get("BATTLE_PLAN_GAME_DIR", os.environ.get("HOI4_GAME_DIR")), required=not os.environ.get("BATTLE_PLAN_GAME_DIR", os.environ.get("HOI4_GAME_DIR")))
     run_command.add_argument("--user-dir", default=os.environ.get("BATTLE_PLAN_USER_DIR", os.environ.get("HOI4_USER_DIR")), help="the Paradox user folder, else found as the recorder finds it")
     run_command.add_argument("--out", required=True)
     run_command.add_argument("--state", default=str(DEFAULT_STATE), help="baseline history, shader compiler and the last run's work")
+    run_command.add_argument("--tier", choices=("full", "quick"), default="full", help="quick: one session for iterating, every page once")
+    run_command.add_argument("--history", help="every step that ever failed (JSON), read and extended by each run; <state>/history.json by default")
+    run_command.add_argument("--pin", choices=("all", "product"), default="all",
+                             help="which earlier failures keep a case from being left out as a repeat: all, or only the product's")
     run_command.add_argument("--stages", default=",".join(STAGES))
     run_command.add_argument("--phases", help="sweep phases to run, all by default")
     run_command.add_argument("--cases", help="control case ids to run, all by default")
+    run_command.add_argument("--pages", help="pages the control cases visit, all by default (a long controls phase in parts)")
+    run_command.add_argument("--pages-at", type=float, help="share of the timeline (0 to 1) the pages-at phase visits every page at")
     args = parser.parse_args(argv)
     if args.command == "run":
+        if bool(args.shell) != bool(args.ui):
+            parser.error("--ui goes with --shell, and --shell needs --ui")
+        args.app = args.app or args.shell
         for name in ("app", "fixture", "game_dir", "out", "state"):
             path = Path(getattr(args, name)).resolve()
             if name in ("out", "state") and (path == ROOT or ROOT in path.parents):
                 parser.error(f"--{name.replace('_', '-')} must be outside the repository")
             setattr(args, name, str(path))
+        if args.history:
+            history = Path(args.history).resolve()
+            if history == ROOT or ROOT in history.parents:
+                parser.error("--history must be outside the repository")
+            args.history = str(history)
+        if args.ui:
+            args.ui = str(Path(args.ui).resolve())
+        if args.record_replies:
+            replies = Path(args.record_replies).resolve()
+            if ROOT in replies.parents:
+                parser.error("--record-replies must be outside the repository")
+            args.record_replies = str(replies)
         if any(stage not in STAGES for stage in args.stages.split(",")):
             parser.error(f"--stages takes {', '.join(STAGES)}")
+        if args.pages_at is not None and not 0 <= args.pages_at <= 1:
+            parser.error("--pages-at takes a share of the timeline from 0 to 1")
+        if args.phases and "pages-at" in args.phases.split(",") and args.pages_at is None:
+            parser.error("--phases pages-at needs --pages-at <fraction>")
     return args
 
 
 def main(argv):
+    if argv[:1] == ["playback"]:
+        import playback
+        return playback.main(argv[1:])
     args = parse(argv)
     if args.command == "build":
         return build(args)

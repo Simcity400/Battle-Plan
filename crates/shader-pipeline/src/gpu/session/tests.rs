@@ -56,7 +56,7 @@ fn ordered_sessions_preserve_group_retirement_release_buffers_and_refusal_prefix
     use crate::{Compiled, Shader, TextureKind};
     crate::tests::initialize_runtime_tables();
     let instance =
-        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+        crate::gpu::instance();
     let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
     let mut descriptor = wgpu::DeviceDescriptor::default();
     descriptor.required_limits.max_buffer_size = 4 << 20;

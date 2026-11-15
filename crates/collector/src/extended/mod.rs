@@ -12,13 +12,12 @@ use crate::{
 };
 use collector_extended_support::outcomes::{MISSING, elapsed, failed_capture, truncated_source};
 use engine_allocation::{filled, owned_vec};
-use engine_native::{Memory, cair_wing, cequipment_variant_pool::DivisionSource, walk::Outcome};
+use engine_native::{Memory, cequipment_variant_pool::DivisionSource, walk::Outcome};
 use replay_data::rows::TABLE_COUNT;
 use replay_data::rows::TableId;
 use replay_data::scope::CaptureMode;
 use replay_frame::frame::TableInput;
 use std::mem::size_of;
-use std::sync::Arc;
 
 /// The refusal of a pack its session's capture mode leaves out; the spool
 /// replaces it with NotRecorded before the frame is written.
@@ -165,119 +164,103 @@ macro_rules! spool_inputs {
     };
 }
 
-/// One pack's conversion on the spool thread. A pack with any helper marker
-/// (`@helper`, `@helper_b`, `@helper_appearance`, `@helper_exclusive`,
-/// `@helper_cached_a`, `@helper_cached_b`) is skipped there while the
-/// conversion helpers convert it.
+/// One pack's conversion on the spool thread. A pack with a helper marker
+/// (`@helper`, `@helper_appearance`, `@helper_exclusive`, `@helper_cached`) is
+/// skipped there while the hour's queue hands it to a thread.
 macro_rules! spool_pack {
-    ($all:expr, $pack:ident; $skip:expr, $destination:ident, $conversion:ident, $hour:ident, $slots:ident, $costs:ident) => {
-        spool_pack!(@convert $all, $pack; $destination, $conversion, $hour, $slots, $costs)
+    ($all:expr, $pack:ident; $skip:expr, $destination:ident, $conversion:ident, $hour:ident, $slots:ident) => {
+        spool_pack!(@convert $all, $pack; $destination, $conversion, $hour, $slots)
     };
-    ($all:expr, $pack:ident, $marker:ident; $skip:expr, $destination:ident, $conversion:ident, $hour:ident, $slots:ident, $costs:ident) => {
+    ($all:expr, $pack:ident, $marker:ident; $skip:expr, $destination:ident, $conversion:ident, $hour:ident, $slots:ident) => {
         if $skip {
-            $slots.next();
+            $slots.skip();
         } else {
-            spool_pack!(@convert $all, $pack; $destination, $conversion, $hour, $slots, $costs)
+            spool_pack!(@convert $all, $pack; $destination, $conversion, $hour, $slots)
         }
     };
-    (@convert $all:expr, $pack:ident; $destination:ident, $conversion:ident, $hour:ident, $slots:ident, $costs:ident) => {{
+    (@convert $all:expr, $pack:ident; $destination:ident, $conversion:ident, $hour:ident, $slots:ident) => {{
         crate::tick_gate::wait();
-        let started = qpc();
-        if crate::allocation::failed() { return $costs; }
+        let started = std::time::Instant::now();
+        if crate::allocation::failed() { return; }
         for (id, view) in $pack::TABLES.into_iter().zip(spool_inputs!($pack, $all.$pack, $conversion, $all, $hour)) { $destination[id.index()] = view; }
-        let (_, slot) = $slots.next().unwrap();
-        *slot = qpc() - started;
+        $slots.converted(started);
     }};
 }
 
-/// One pack's conversion on a helper lane: lane 0 holds `@helper`,
-/// `@helper_exclusive` and `@helper_cached_a`, lane 1 `@helper_b`,
-/// `@helper_appearance` and `@helper_cached_b`; a helper converts the lanes set
-/// in `$lanes`. `@helper_cached_*` packs (characters, intel, character
-/// portraits) need not be `Sync`: characters and intel convert with the spool
-/// conversion caches the spool thread lends their lane for the join
-/// ([`HelperConversion`]), and like the exclusive pack no other pack reads
-/// them, so their lane has sole use while it converts.
-/// `@helper` and `@helper_b` packs are statically `Sync` through
-/// [`HelperView::sync_pack`] and see only themselves. `@helper_appearance`
+/// One helper pack's conversion on the thread that took it from the hour's
+/// queue. `@helper` packs are statically `Sync` through
+/// [`HelperView::sync_pack`] and see only themselves; `@helper_appearance`
 /// (country appearance) also reads the air pack through `sync_pack`.
-/// `@helper_exclusive` packs need not be `Sync`: while lane 0 converts, it is
-/// their only user (see [`HelperView`]). They convert through the owner arm,
-/// which supplies the frame's hour.
+/// `@helper_cached` packs (characters, intel, character portraits) and the
+/// `@helper_exclusive` pack (division presentation) need not be `Sync`: the
+/// queue hands each to one thread, which has sole use of it (see
+/// [`HelperView`]). Characters and intel convert with the spool conversion
+/// caches lent for the join, which only that thread takes (`lend!`); the
+/// exclusive pack converts through the owner arm, which supplies the hour.
 macro_rules! helper_pack {
-    ($view:expr, $pack:ident; $conversion:ident, $out:ident, $slots:ident, $hour:ident, $lanes:ident) => {
-        $slots.next();
+    ($view:expr, $pack:ident; $($rest:tt)*) => {};
+    ($view:expr, $pack:ident, helper; $conversion:ident, $lent:ident, $out:ident, $costs:ident, $index:ident, $hour:ident) => {
+        helper_pack!(@convert $out, $costs, $index, $pack, spool_inputs!($pack, HelperView::sync_pack(&$view.0.$pack), $conversion))
     };
-    ($view:expr, $pack:ident, helper; $conversion:ident, $out:ident, $slots:ident, $hour:ident, $lanes:ident) => {
-        helper_pack!(@lane 0, $lanes, $out, $slots, $pack, spool_inputs!($pack, HelperView::sync_pack(&$view.0.$pack), $conversion))
-    };
-    ($view:expr, $pack:ident, helper_b; $conversion:ident, $out:ident, $slots:ident, $hour:ident, $lanes:ident) => {
-        helper_pack!(@lane 1, $lanes, $out, $slots, $pack, spool_inputs!($pack, HelperView::sync_pack(&$view.0.$pack), $conversion))
-    };
-    ($view:expr, $pack:ident, helper_appearance; $conversion:ident, $out:ident, $slots:ident, $hour:ident, $lanes:ident) => {
-        helper_pack!(@lane 1, $lanes, $out, $slots, $pack, HelperView::sync_pack(&$view.0.$pack)
+    ($view:expr, $pack:ident, helper_appearance; $conversion:ident, $lent:ident, $out:ident, $costs:ident, $index:ident, $hour:ident) => {
+        helper_pack!(@convert $out, $costs, $index, $pack, HelperView::sync_pack(&$view.0.$pack)
             .tables_at(Some($hour))
             .map(TableInput::Sampled))
     };
-    ($view:expr, $pack:ident, helper_exclusive; $conversion:ident, $out:ident, $slots:ident, $hour:ident, $lanes:ident) => {
-        helper_pack!(@lane 0, $lanes, $out, $slots, $pack, spool_inputs!($pack, &$view.0.$pack, $conversion, $view.0, $hour))
+    ($view:expr, $pack:ident, helper_exclusive; $conversion:ident, $lent:ident, $out:ident, $costs:ident, $index:ident, $hour:ident) => {
+        helper_pack!(@convert $out, $costs, $index, $pack, spool_inputs!($pack, &$view.0.$pack, $conversion, $view.0, $hour))
     };
-    ($view:expr, $pack:ident, helper_cached_a; $conversion:ident, $out:ident, $slots:ident, $hour:ident, $lanes:ident) => {
-        helper_pack!(@lane 0, $lanes, $out, $slots, $pack, spool_inputs!($pack, &$view.0.$pack, $conversion))
-    };
-    ($view:expr, $pack:ident, helper_cached_b; $conversion:ident, $out:ident, $slots:ident, $hour:ident, $lanes:ident) => {
-        helper_pack!(@lane 1, $lanes, $out, $slots, $pack, spool_inputs!($pack, &$view.0.$pack, $conversion))
-    };
-    (@lane $lane:literal, $lanes:ident, $out:ident, $slots:ident, $pack:ident, $inputs:expr) => {
-        if $lanes & (1 << $lane) == 0 {
-            $slots.next();
-        } else {
-            helper_pack!(@convert $out, $slots, $pack, $inputs)
-        }
-    };
-    (@convert $out:ident, $slots:ident, $pack:ident, $inputs:expr) => {{
+    ($view:expr, $pack:ident, helper_cached; $conversion:ident, $lent:ident, $out:ident, $costs:ident, $index:ident, $hour:ident) => {{
+        lend!($pack, $lent, $conversion);
+        helper_pack!(@convert $out, $costs, $index, $pack, spool_inputs!($pack, &$view.0.$pack, $conversion))
+    }};
+    (@convert $out:ident, $costs:ident, $index:ident, $pack:ident, $inputs:expr) => {{
         crate::tick_gate::wait();
-        let started = qpc();
-        let (_, slot) = $slots.next().unwrap();
+        let started = std::time::Instant::now();
         if !crate::allocation::failed() {
             for (id, view) in $pack::TABLES.into_iter().zip($inputs) {
                 $out[id.index()] = Some(view);
             }
-            *slot = qpc() - started;
+            $costs.converted($index, started);
         }
     }};
 }
 
-/// The helper lane a pack marker names.
-#[cfg(test)]
-macro_rules! helper_lane {
+/// Moves into `$conversion` the lent spool caches `$pack` converts with; the
+/// one thread converting the pack takes them.
+macro_rules! lend {
+    (intel, $lent:ident, $conversion:ident) => {{
+        let mut lent = $lent.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        $conversion.intel = lent.intel.take();
+        $conversion.variables_baseline = lent.variables_baseline;
+        if let Some(scratch) = lent.variables_scratch.take() {
+            $conversion.variables_scratch = scratch;
+        }
+    }};
+    (characters, $lent:ident, $conversion:ident) => {{
+        $conversion.characters = $lent
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .characters
+            .take();
+    }};
+    ($pack:ident, $lent:ident, $conversion:ident) => {};
+}
+
+/// Whether a pack has a helper marker.
+macro_rules! helper_marked {
     () => {
-        None
+        false
     };
-    (helper) => {
-        Some(0)
-    };
-    (helper_exclusive) => {
-        Some(0)
-    };
-    (helper_cached_a) => {
-        Some(0)
-    };
-    (helper_b) => {
-        Some(1)
-    };
-    (helper_appearance) => {
-        Some(1)
-    };
-    (helper_cached_b) => {
-        Some(1)
+    ($marker:ident) => {
+        true
     };
 }
 
-/// What a helper lane converts with: the projection, and on the lane of the
-/// characters or intel pack the spool caches it needs, lent by the spool
-/// thread for the join. Packs needing any other spool conversion cache cannot
-/// compile as helper packs.
+/// What a helper pack converts with: the projection, and for the characters
+/// or intel pack the spool caches it needs, lent by the spool thread for the
+/// join. Packs needing any other spool conversion cache cannot compile as
+/// helper packs.
 pub(crate) struct HelperConversion<'a, 'cache> {
     pub(crate) projection: Option<&'a mut crate::projection::Projection<'cache>>,
     pub(crate) characters: Option<&'a mut characters::CharacterConversion<'cache>>,
@@ -290,7 +273,7 @@ pub(crate) struct HelperConversion<'a, 'cache> {
 }
 
 /// The spool conversion caches the characters and intel packs convert with,
-/// lent to a helper lane for one join.
+/// lent for one join to whichever thread converts each.
 #[derive(Default)]
 pub(crate) struct LentCaches<'a, 'cache> {
     pub(crate) characters: Option<&'a mut characters::CharacterConversion<'cache>>,
@@ -311,13 +294,29 @@ macro_rules! merge_pack_capacity {
     };
 }
 
+// The packs whose stores every frame shares are built without them.
+macro_rules! pack_frame {
+    (intel, $capacity:expr) => {
+        intel::Captured::without_home($capacity)
+    };
+    (division_templates, $capacity:expr) => {
+        division_templates::Captured::without_home($capacity)
+    };
+    (naval_combat_sources, $capacity:expr) => {
+        naval_combat_sources::Captured::without_home($capacity)
+    };
+    ($pack:ident, $capacity:expr) => {
+        $pack::Captured::with_capacities($capacity)
+    };
+}
+
 macro_rules! packs {
     ($($pack:ident $(@ $helper:ident)?),+ $(,)?) => {
         pub const PACK_NAMES: &[&str] = &[$(stringify!($pack)),+];
-        /// Each pack's helper lane: `None` for the spool thread's packs.
-        #[cfg(test)]
-        pub(crate) const HELPER_LANES: [Option<u8>; PACK_NAMES.len()] =
-            [$(helper_lane!($($helper)?)),+];
+        /// Whether each pack has a helper marker: any one thread may convert
+        /// it, the others being the spool thread's.
+        pub(crate) const HELPER_PACKS: [bool; PACK_NAMES.len()] =
+            [$(helper_marked!($($helper)?)),+];
         pub const PACK_N: usize = 0 $(+ $pack::N)+;
         pub const N: usize = PACK_N + FACTION_PROVIDER_TABLES.len() + collector_naval_management::forces::TABLES.len();
         pub const TABLES: [TableId; N] = {
@@ -371,11 +370,13 @@ macro_rules! packs {
             fuel_awards: fuel_awards::Captured,
             divisions: Divisions,
             final_inputs_ticks: Option<FinalInputsReport>,
-            unit_inputs: Option<Arc<UnitInputs>>,
+            unit_inputs: Option<engine_allocation::SharedBox<UnitInputs>>,
             governance_report: Option<governance::CaptureReport>,
             variants_ticks: Option<[u64; production::N]>,
             presentation_report: Option<division_presentation::CaptureReport>,
             intel_residual_report: Option<intel::CaptureReport>,
+            /// The separate ScriptVariables walk's ticks, joined after the final borrowers.
+            script_variables_ticks: Option<u64>,
             supply_trains_report: Option<supply_trains::CaptureReport>,
             character_portraits_report: Option<character_portraits::CaptureReport>,
             province_unit_order_report: Option<province_unit_order::CaptureReport>,
@@ -411,7 +412,6 @@ macro_rules! packs {
             gated_spare: Option<Box<GatedPacks>>,
             character_inputs_ticks: Option<[u64; character_inputs::N]>,
             registry: Registry,
-            air_root: Option<Outcome>,
             overhead: [u64; TABLE_COUNT],
             capture_mode: CaptureMode,
         }
@@ -431,9 +431,19 @@ impl Captured {
                 self.intel = intel::intel_shadow_fixture(value);
             }
 
+            /// A frame with homes of its own, for tests.
+            #[cfg(test)]
             pub fn with_capacities(capacity: &Capacities) -> Self {
+                let mut captured = Self::frame(capacity);
+                captured.share_homes(&Homes::new(capacity).expect("test homes"));
+                captured
+            }
+
+            /// A frame with no home: the pool shares its own into it ([`Homes`]). Every
+            /// allocation is checked: a refused one is the collector's allocation failure.
+            pub fn frame(capacity: &Capacities) -> Self {
                 let mut captured = Self {
-                    $($pack: $pack::Captured::with_capacities(&capacity.$pack),)+
+                    $($pack: pack_frame!($pack, &capacity.$pack),)+
                     fuel_awards: fuel_awards::Captured::with_capacities(&capacity.fuel_awards),
                     divisions: Divisions::new(capacity.division_sources),
                     final_inputs_ticks: None,
@@ -442,6 +452,7 @@ impl Captured {
                     variants_ticks: None,
                     presentation_report: None,
                     intel_residual_report: None,
+                    script_variables_ticks: None,
                     supply_trains_report: None,
                     character_portraits_report: None,
                     province_unit_order_report: None,
@@ -469,13 +480,13 @@ impl Captured {
                     late_ticks: None,
                     late_spare: LatePacks::spare(),
                     scores_rails_spare: ScoresRailsParts::spare(),
-                    air_supply_spare: if crate::allocation::failed() { None } else { Some(Box::default()) },
-                    missions_spare: if crate::allocation::failed() { None } else { Some(Box::new(air::Captured::vacant())) },
+                    air_supply_spare: engine_allocation::boxed(Default::default()).ok(),
+                    missions_spare: engine_allocation::boxed(air::Captured::vacant()).ok(),
                     gated_ticks: None,
                     gated_spare: GatedPacks::spare(),
                     character_inputs_ticks: None,
                     registry: Registry::new(capacity.variant_registry),
-                    air_root: None, overhead: [0; TABLE_COUNT],
+                    overhead: [0; TABLE_COUNT],
                     capture_mode: CaptureMode::Full,
                 };
                 captured.division_presentation.reserve_sources(capacity.division_sources);
@@ -491,6 +502,7 @@ impl Captured {
                 self.release_unit_inputs(); self.governance_report = None; self.presentation_report = None;
                 self.variants_ticks = None;
                 self.intel_residual_report = None;
+                self.script_variables_ticks = None;
                 self.supply_trains_report = None; self.character_portraits_report = None; self.province_unit_order_report = None; self.ship_models_report = None;
                 self.ordinary_ticks = None;
                 self.ordinary_failure = None;
@@ -506,7 +518,7 @@ impl Captured {
                 self.late_ticks = None;
                 self.gated_ticks = None;
                 self.character_inputs_ticks = None;
-                self.air_root = None; self.overhead = [0; TABLE_COUNT];
+                self.overhead = [0; TABLE_COUNT];
             }
             pub fn allocated_bytes(&self) -> usize {
                 0 $(+ self.$pack.allocated_bytes())+ + self.fuel_awards.allocated_bytes() + self.divisions.allocated_bytes() + self.registry.allocated_bytes() + self.spare_bytes()
@@ -540,23 +552,25 @@ impl Captured {
             }
             /// Spool-thread conversion only. Existing core slots survive. With
             /// `helper_converts`, packs with a helper marker are left to the
-            /// helpers ([`Self::helper_view`]) and the caller applies the ordinary-job
-            /// refusal ([`Self::refuse_failed_ordinary`]) after merging them.
+            /// hour's queue ([`Self::helper_view`]) and the caller applies the
+            /// ordinary-job refusal ([`Self::refuse_failed_ordinary`]) after
+            /// merging them. The packs converted here land in `costs`.
             pub(crate) fn insert_tables(
                 &self,
                 hour: i32,
                 destination: &mut [TableInput; TABLE_COUNT],
                 conversion: &mut crate::spooling::SpoolConversion<'_, '_>,
                 helper_converts: bool,
-            ) -> [i64; PACK_NAMES.len()] {
+                costs: &mut crate::pack_conversion::HourCosts,
+            ) {
                 let _allocation_phase = crate::allocation::enter(crate::allocation::Phase::Extended);
-                let mut costs = [0; PACK_NAMES.len()];
-                let mut slots = costs.iter_mut().enumerate();
-                $(spool_pack!(self, $pack $(, $helper)?; helper_converts, destination, conversion, hour, slots, costs);)+
+                let clock = collector_projection::table_clock::arm();
+                let mut slots = costs.packs();
+                $(spool_pack!(self, $pack $(, $helper)?; helper_converts, destination, conversion, hour, slots);)+
+                drop(clock);
                 if !helper_converts {
                     self.refuse_failed_ordinary(destination);
                 }
-                costs
             }
             /// A failed ordinary job refuses every ordinary pack table, after
             /// all of them were converted.
@@ -568,58 +582,65 @@ impl Captured {
                     }
                 }
             }
-            /// The packs with a helper marker, shareable with the conversion helpers.
+            /// The packs with a helper marker, shareable by the threads that convert them.
             pub(crate) fn helper_view(&self) -> HelperView<'_> {
                 HelperView(self)
             }
         }
-        /// The conversion helpers' view of one hour's packs.
+        /// The converting threads' view of one hour's helper packs.
         pub(crate) struct HelperView<'a>(&'a Captured);
-        // SAFETY: helpers convert through this view only while the spool
-        // thread is inside `SpoolHelper::join`, which orders each helper's
-        // accesses with the spool thread's through its mutex. `@helper`,
-        // `@helper_b` and `@helper_appearance` packs, and what the latter
-        // reads (the air pack), are reached through `sync_pack`, whose bound
-        // proves them `Sync`, so the spool thread and both helpers may read
-        // them at once. The `@helper_cached_*` packs (characters, intel,
-        // character portraits) need not be `Sync`: one lane converts each, the
-        // spool thread skips them while helpers convert, and no other pack
-        // reads them. The `@helper_exclusive` pack (division presentation)
-        // need not be `Sync`: it is on lane 0, which one helper converts, and
-        // during the join no spool-thread code touches it. Its observers
-        // (`observe_*`) run before conversion and outcomes, slice selections
-        // and merging after the join. That helper therefore has exclusive use,
-        // as if it held `&mut`. No other pack is reachable through the view.
+        // SAFETY: threads convert through this view only while the spool
+        // thread is inside `Helpers::join_some`, which orders each helper's
+        // accesses with the spool thread's through its mutex. `@helper` and
+        // `@helper_appearance` packs, and what the latter reads (the air
+        // pack), are reached through `sync_pack`, whose bound proves them
+        // `Sync`, so any threads may read them at once. The `@helper_cached`
+        // packs (characters, intel, character portraits) and the
+        // `@helper_exclusive` pack (division presentation) need not be `Sync`:
+        // the hour's queue (`pack_conversion::Queue`) hands each to exactly
+        // one thread, the spool thread's own packs skip them while the queue
+        // runs, and no other pack reads them. The exclusive pack's observers
+        // (`observe_*`) run before conversion, and outcomes, slice selections
+        // and merging after the join. The thread that takes one of these
+        // packs therefore has exclusive use, as if it held `&mut`. No other
+        // pack is reachable through the view.
         unsafe impl Sync for HelperView<'_> {}
         unsafe impl Send for HelperView<'_> {}
         impl<'a> HelperView<'a> {
             fn sync_pack<T: Sync>(pack: &'a T) -> &'a T {
                 pack
             }
-            /// Convert the helper packs of the lanes set in `lanes` (bit 0:
-            /// lane 0, bit 1: lane 1) into `out`; their per-pack costs land in
-            /// `costs` at their `PACK_NAMES` index. One thread at a time
-            /// converts lane 0.
-            pub(crate) fn tables<'lent, 'cache>(
+            /// Convert the packs taken from `queue` until it is empty into
+            /// `out`; their costs land in `costs`.
+            pub(crate) fn convert_queued<'cache>(
                 &self,
+                queue: &crate::pack_conversion::Queue<'_>,
                 hour: i32,
-                lanes: u8,
-                projection: Option<&'lent mut crate::projection::Projection<'cache>>,
-                caches: LentCaches<'lent, 'cache>,
+                mut projection: Option<&mut crate::projection::Projection<'cache>>,
+                lent: &std::sync::Mutex<LentCaches<'_, 'cache>>,
                 out: &mut [Option<TableInput>; TABLE_COUNT],
-                costs: &mut [i64; PACK_NAMES.len()],
+                costs: &mut crate::pack_conversion::HourCosts,
             ) {
                 let _allocation_phase = crate::allocation::enter(crate::allocation::Phase::Extended);
+                let _clock = collector_projection::table_clock::arm();
                 let mut spare = intel::ScriptVariableComparison::default();
-                let conversion = &mut HelperConversion {
-                    projection,
-                    characters: caches.characters,
-                    intel: caches.intel,
-                    variables_baseline: caches.variables_baseline,
-                    variables_scratch: caches.variables_scratch.unwrap_or(&mut spare),
-                };
-                let mut slots = costs.iter_mut().enumerate();
-                $(helper_pack!(self, $pack $(, $helper)?; conversion, out, slots, hour, lanes);)+
+                while let Some(index) = queue.take() {
+                    let conversion = &mut HelperConversion {
+                        projection: projection.as_deref_mut(),
+                        characters: None,
+                        intel: None,
+                        variables_baseline: None,
+                        variables_scratch: &mut spare,
+                    };
+                    let mut pack = 0;
+                    $(
+                        if pack == index {
+                            helper_pack!(self, $pack $(, $helper)?; conversion, lent, out, costs, index, hour);
+                        }
+                        pack += 1;
+                    )+
+                    let _ = pack;
+                }
             }
         }
         impl Captured {
@@ -758,10 +779,10 @@ packs!(
     naval_bases @helper,
     map_facilities,
     naval_combat_sources @helper,
-    character_portraits @helper_cached_b,
+    character_portraits @helper_cached,
     leader_portraits,
     supply_trains @helper,
-    characters @helper_cached_b,
+    characters @helper_cached,
     combat_progress @helper,
     combat_details @helper,
     naval_details @helper,
@@ -772,8 +793,8 @@ packs!(
     division_templates,
     economy @helper,
     fog @helper,
-    governance @helper_b,
-    intel @helper_cached_a,
+    governance @helper,
+    intel @helper_cached,
     operation_outcomes,
     map_events,
     lexical,
@@ -793,8 +814,8 @@ packs!(
     faction_theatres,
     model_inputs,
     modifier_definitions,
-    hired_advisors @helper_b,
-    character_inputs @helper_b,
+    hired_advisors @helper,
+    character_inputs @helper,
     logistics,
     combat_log,
     division_counts,
@@ -1055,34 +1076,66 @@ impl Captured {
     }
 }
 
+/// The stores every frame of a pool shares, made once at attach. A frame is built without
+/// them ([`Captured::frame`]), so building one never allocates a shared pointer, whose
+/// allocation cannot be refused.
+pub(crate) struct Homes {
+    pub(crate) country_intel: daily_intel::Home,
+    pub(crate) templates: division_templates::Home,
+    pub(crate) naval_combat: naval_combat_sources::Home,
+}
+
+impl Homes {
+    pub(crate) fn new(capacity: &Capacities) -> std::io::Result<Self> {
+        Ok(Self {
+            country_intel: daily_intel::Home::try_new(
+                capacity.intel.rows[15],
+                capacity.intel.intel_scratch,
+            )?,
+            templates: division_templates::new_home()?,
+            naval_combat: naval_combat_sources::new_home()?,
+        })
+    }
+}
+
 impl Captured {
     /// The CountryIntel buffer this frame uses; `None` only while the intel
     /// pack is out on a residual job.
+    #[cfg(test)]
     pub(crate) fn country_intel_home(&self) -> Option<daily_intel::Home> {
         self.intel.country_intel_home().cloned()
     }
 
+    #[cfg(test)]
     pub(crate) fn naval_combat_home(&self) -> Option<naval_combat_sources::Home> {
         self.naval_combat_sources.home()
     }
 
-    /// Take the province combat walk from the pool's home instead of this frame's own.
+    /// Take the province combat walk from the pool's home.
     pub(crate) fn share_naval_combat_home(&mut self, home: &naval_combat_sources::Home) {
         self.naval_combat_sources.share_home(home);
     }
 
+    #[cfg(test)]
     pub(crate) fn template_home(&self) -> Option<division_templates::Home> {
         self.division_templates.home()
     }
 
-    /// Take the division template stores from the pool's home instead of this frame's own.
+    /// Take the division template stores from the pool's home.
     pub(crate) fn share_template_home(&mut self, home: &division_templates::Home) {
         self.division_templates.share_home(home);
     }
 
-    /// Use the pool's CountryIntel buffer instead of this frame's own.
+    /// Use the pool's CountryIntel buffer.
     pub(crate) fn share_country_intel(&mut self, home: &daily_intel::Home) {
         self.intel.share_country_intel(home);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn share_homes(&mut self, homes: &Homes) {
+        self.share_country_intel(&homes.country_intel);
+        self.share_template_home(&homes.templates);
+        self.share_naval_combat_home(&homes.naval_combat);
     }
 
     /// [`Self::reset`] off the game thread: every verdict is cleared, but the
@@ -1250,7 +1303,10 @@ impl Captured {
     /// Leases the same immutable native input packet to movement, status and
     /// the other division borrowers. The owning census accounts for its
     /// allocation once.
-    pub(crate) fn install_unit_inputs(&mut self, inputs: Option<Arc<UnitInputs>>) {
+    pub(crate) fn install_unit_inputs(
+        &mut self,
+        inputs: Option<engine_allocation::SharedBox<UnitInputs>>,
+    ) {
         self.unit_inputs = inputs;
     }
 
@@ -1373,7 +1429,7 @@ impl Captured {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn take_presentation_request(
         &mut self,
-        countries: &Arc<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
         base: usize,
         state: usize,
         hour: i32,
@@ -1385,7 +1441,7 @@ impl Captured {
         }
         crate::acquisition_jobs::PresentationRequest {
             dispatch: Default::default(),
-            countries: Arc::clone(countries),
+            countries: engine_allocation::SharedBox::clone(countries),
             army_stats,
             context: division_presentation::CaptureContext {
                 base,
@@ -1463,7 +1519,7 @@ impl Captured {
     /// Take before the family itself; restore after the family is restored.
     pub(crate) fn take_research_request(
         &mut self,
-        countries: &Arc<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
         base: usize,
         state: usize,
         hour: i32,
@@ -1472,7 +1528,7 @@ impl Captured {
     ) -> crate::acquisition_jobs::ResearchRequest {
         crate::acquisition_jobs::ResearchRequest {
             fingerprints,
-            countries: Arc::clone(countries),
+            countries: engine_allocation::SharedBox::clone(countries),
             context: governance::CaptureContext {
                 base,
                 game_state: state,
@@ -1580,7 +1636,7 @@ impl Captured {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn take_governance_request(
         &mut self,
-        countries: &Arc<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
         base: usize,
         state: usize,
         hour: i32,
@@ -1602,7 +1658,7 @@ impl Captured {
             building_store,
             leader_store,
             party_store,
-            countries: Arc::clone(countries),
+            countries: engine_allocation::SharedBox::clone(countries),
             context: governance::CaptureContext {
                 base,
                 game_state: state,
@@ -1732,7 +1788,7 @@ impl Captured {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn take_supply_trains_request(
         &mut self,
-        countries: &Arc<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
         base: usize,
         state: usize,
         hour: i32,
@@ -1744,7 +1800,7 @@ impl Captured {
             self.supply_trains_report = None;
         }
         crate::acquisition_jobs::SupplyTrainsRequest {
-            countries: Arc::clone(countries),
+            countries: engine_allocation::SharedBox::clone(countries),
             context: supply_trains::CaptureContext {
                 base,
                 game_state: state,
@@ -1900,7 +1956,7 @@ impl Captured {
         &mut self,
         base: usize,
         state: usize,
-        inputs: Option<Arc<crate::division_census::UnitInputs>>,
+        inputs: Option<engine_allocation::SharedBox<crate::division_census::UnitInputs>>,
     ) -> crate::acquisition_jobs::DivisionModelInputsRequest {
         crate::acquisition_jobs::DivisionModelInputsRequest {
             base,
@@ -1938,7 +1994,7 @@ impl Captured {
         &mut self,
         base: usize,
         state: usize,
-        inputs: Option<Arc<crate::division_census::UnitInputs>>,
+        inputs: Option<engine_allocation::SharedBox<crate::division_census::UnitInputs>>,
         store: Option<Box<province_unit_order::ProvinceUnitStore>>,
     ) -> crate::acquisition_jobs::ProvinceUnitOrderRequest {
         self.province_unit_order_report = None;
@@ -2066,13 +2122,13 @@ impl Captured {
     /// Loan one part of the AirCountryRelations copies to its job.
     pub(crate) fn take_air_relations_request(
         &mut self,
-        countries: &Arc<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
         base: usize,
         state: usize,
         part: usize,
     ) -> crate::acquisition_jobs::AirRelationsRequest {
         crate::acquisition_jobs::AirRelationsRequest {
-            countries: Arc::clone(countries),
+            countries: engine_allocation::SharedBox::clone(countries),
             base,
             game_state: state,
             part,
@@ -2095,12 +2151,11 @@ impl Captured {
     }
 
     /// Loan the air pack, every history part and the held registrations to
-    /// the AirMissions job. Before the map sample it runs on the owned
-    /// census's identities; after it, on the typed visitor's, whose census
-    /// is `air_root`. It borrows nothing an Ordinary part holds.
+    /// the AirMissions job, which runs on the owned census's identities. It
+    /// borrows nothing an Ordinary part holds.
     pub(crate) fn take_air_missions_request(
         &mut self,
-        countries: &Arc<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
         base: usize,
         state: usize,
         mission_store: Option<Box<air::MissionStore>>,
@@ -2108,10 +2163,10 @@ impl Captured {
         let mut pack = self.missions_spare.take().expect("missions spare present");
         std::mem::swap(&mut self.air, &mut pack);
         crate::acquisition_jobs::AirMissionsRequest {
-            countries: Arc::clone(countries),
+            countries: engine_allocation::SharedBox::clone(countries),
             base,
             game_state: state,
-            parent: self.air_root.unwrap_or(MISSING),
+            parent: MISSING,
             pack,
             histories: self.air_histories.take_parts(),
             mission_store,
@@ -2144,13 +2199,13 @@ impl Captured {
     /// Loan one part of the naval-patrol history copies to its job.
     pub(crate) fn take_air_histories_request(
         &mut self,
-        countries: &Arc<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
         base: usize,
         state: usize,
         part: usize,
     ) -> crate::acquisition_jobs::AirHistoriesRequest {
         crate::acquisition_jobs::AirHistoriesRequest {
-            countries: Arc::clone(countries),
+            countries: engine_allocation::SharedBox::clone(countries),
             base,
             game_state: state,
             part,
@@ -2224,13 +2279,13 @@ impl Captured {
     /// them on to the ChildFronts job.
     pub(crate) fn take_orders_request(
         &mut self,
-        countries: &Arc<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
         orders: &mut Orders,
         base: usize,
         game_state: usize,
     ) -> crate::acquisition_jobs::OrdersRequest {
         crate::acquisition_jobs::OrdersRequest {
-            countries: Arc::clone(countries),
+            countries: engine_allocation::SharedBox::clone(countries),
             base,
             game_state,
             orders: std::mem::replace(orders, Orders::vacant()),
@@ -2265,14 +2320,14 @@ impl Captured {
     /// model details.
     pub(crate) fn take_ship_models_request(
         &mut self,
-        countries: &Arc<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
         base: usize,
         state: usize,
         census: ShipCensus,
     ) -> crate::acquisition_jobs::ShipModelsRequest {
         self.ship_models_report = None;
         crate::acquisition_jobs::ShipModelsRequest {
-            countries: Arc::clone(countries),
+            countries: engine_allocation::SharedBox::clone(countries),
             context: ship_models::CaptureContext::new(base),
             game_state: state,
             captured: std::mem::replace(&mut self.ship_models, ship_models::Captured::vacant()),
@@ -2309,7 +2364,7 @@ impl Captured {
     /// failed census lends nothing. Allocation-free.
     pub(crate) fn take_ship_model_parts(
         &mut self,
-        countries: &Arc<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
         base: usize,
     ) -> [Option<crate::acquisition_jobs::ShipModelDetailsRequest>; ship_models::MAX_PARTS] {
         if self.ship_models_report.is_some() || self.ship_models.has_terminal_failure() {
@@ -2366,47 +2421,85 @@ impl Captured {
     }
 
     /// Loan Intel's residual tables until the independent raw-job reports are
-    /// ready. The callback restores this family before applying those reports.
+    /// ready, and ScriptVariables to its own job, joined only when the pack is
+    /// published ([`Self::restore_script_variables`]). The callback restores this
+    /// family before applying those reports.
     pub(crate) fn take_intel_residual_request(
         &mut self,
-        countries: &Arc<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
         context: intel::CaptureContext,
         flags: Option<Box<intel::FlagStore>>,
         variables: Option<Box<intel::VariableStore>>,
-    ) -> crate::acquisition_jobs::IntelResidualRequest {
+    ) -> (
+        crate::acquisition_jobs::IntelResidualRequest,
+        crate::acquisition_jobs::ScriptVariablesRequest,
+    ) {
         self.intel_residual_report = None;
+        self.script_variables_ticks = None;
         let mut captured = std::mem::replace(&mut self.intel, intel::Captured::vacant());
         captured.leave_out(
             intel::TABLES.map(|table| !replay_data::scope::records(self.capture_mode, table)),
         );
-        crate::acquisition_jobs::IntelResidualRequest {
-            countries: Arc::clone(countries),
-            context,
-            captured,
-            flags,
-            variables,
-        }
+        let part = captured.take_variables();
+        (
+            crate::acquisition_jobs::IntelResidualRequest {
+                countries: engine_allocation::SharedBox::clone(countries),
+                context,
+                captured,
+                flags,
+            },
+            crate::acquisition_jobs::ScriptVariablesRequest {
+                countries: engine_allocation::SharedBox::clone(countries),
+                context,
+                part,
+                store: variables,
+            },
+        )
     }
 
-    /// Returns the held ScriptFlags and ScriptVariables stores; a failed job
-    /// forgets each.
+    /// Returns ScriptVariables to the Intel pack, once the final borrowers have
+    /// returned it, and the held store; a failed job refuses the table by name
+    /// and forgets the store.
+    pub(crate) fn restore_script_variables(
+        &mut self,
+        mut request: crate::acquisition_jobs::ScriptVariablesRequest,
+        report: Result<u64, crate::acquisition::Failure>,
+    ) -> Option<Box<intel::VariableStore>> {
+        let mut store = request.store.take();
+        match report {
+            Ok(ticks) => self.script_variables_ticks = Some(ticks),
+            Err(failure) => {
+                if let Some(store) = store.as_deref_mut() {
+                    store.forget();
+                }
+                request.part.fail(
+                    request.context,
+                    match failure {
+                        crate::acquisition::Failure::Panicked => {
+                            "script variable acquisition panicked"
+                        }
+                        crate::acquisition::Failure::Stopped => {
+                            "script variable acquisition stopped before reading"
+                        }
+                    },
+                );
+            }
+        }
+        self.intel.restore_variables(request.part);
+        store
+    }
+
+    /// Returns the held ScriptFlags store; a failed job forgets it.
     pub(crate) fn restore_intel_residual_request(
         &mut self,
         mut request: crate::acquisition_jobs::IntelResidualRequest,
         report: Result<intel::CaptureReport, crate::acquisition::Failure>,
-    ) -> (
-        Option<Box<intel::FlagStore>>,
-        Option<Box<intel::VariableStore>>,
-    ) {
+    ) -> Option<Box<intel::FlagStore>> {
         let mut flags = request.flags.take();
-        let mut variables = request.variables.take();
-        if report.is_err() {
-            if let Some(store) = flags.as_deref_mut() {
-                store.forget();
-            }
-            if let Some(store) = variables.as_deref_mut() {
-                store.forget();
-            }
+        if report.is_err()
+            && let Some(store) = flags.as_deref_mut()
+        {
+            store.forget();
         }
         self.intel_residual_report = Some(match report {
             Ok(report) => report,
@@ -2421,7 +2514,7 @@ impl Captured {
             ),
         });
         self.intel = request.captured;
-        (flags, variables)
+        flags
     }
     /// Resolve the hour's residual Intel report now, exactly as
     /// `capture_tables` would, so the final borrowers can take the intel pack
@@ -2767,9 +2860,6 @@ impl Captured {
         self.divisions.required = outcome.len();
         self.divisions.outcome = outcome;
     }
-    pub(crate) fn visit_division_source(&mut self, source: DivisionSource) {
-        self.divisions.visit_source(source);
-    }
     #[cfg(test)]
     pub(crate) fn test_division_presentation_tables(
         &self,
@@ -2783,23 +2873,11 @@ impl Captured {
         self.division_counts.fail(reason);
     }
 
-    pub fn finish_divisions(&mut self, outcome: Outcome) -> u64 {
-        self.divisions.finish(outcome);
-        0
-    }
-    pub fn sources<'a, M: Memory>(
-        &'a mut self,
-        memory: &'a M,
-        base: usize,
-        air_raw: bool,
-        naval_raw: bool,
-    ) -> Sources<'a, M> {
+    pub fn sources<'a, M: Memory>(&'a mut self, memory: &'a M, base: usize) -> Sources<'a, M> {
         Sources {
             captured: self,
             memory,
             base,
-            air_raw,
-            naval_raw,
         }
     }
     /// Run after root division acquisition and map.sample. Returned arrays use
@@ -2817,8 +2895,10 @@ impl Captured {
         // Synthetic direct-walk fixtures supply the same typed request that a
         // worker owns in production. Production assembly never acquires it.
         if self.ordinary_ticks.is_none() && self.ordinary_failure.is_none() {
-            let countries =
-                Arc::new(engine_native::country_memory::Cache::try_with_capacity(0).unwrap());
+            let countries = engine_allocation::shared(
+                engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+            )
+            .unwrap();
             self.capture_ordinary_inline(
                 &countries,
                 memory,
@@ -2843,8 +2923,10 @@ impl Captured {
                 unit_sources(&self.unit_inputs),
             ));
         }
-        let countries =
-            Arc::new(engine_native::country_memory::Cache::try_with_capacity(0).unwrap());
+        let countries = engine_allocation::shared(
+            engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+        )
+        .unwrap();
         if self.intel_residual_report.is_none() {
             self.intel_residual_report = Some(self.intel.capture_residual(
                 memory,
@@ -3024,7 +3106,7 @@ impl Captured {
                 );
                 scatter(
                     &visibility::TABLES,
-                    self.visibility.capture_growing(
+                    self.visibility.capture(
                         memory,
                         base,
                         game_state,
@@ -3123,7 +3205,11 @@ impl Captured {
         } else {
             #[cfg(test)]
             {
-                staggered!(raid_state_inputs, resource_map);
+                staggered!(raid_state_inputs);
+                let cost = self
+                    .resource_map
+                    .capture(memory, base, game_state, current_hour, force_full, None);
+                scatter(&resource_map::TABLES, cost, &mut ticks);
             }
             #[cfg(not(test))]
             {
@@ -3181,7 +3267,7 @@ impl Captured {
                 scatter(
                     &fog::TABLES,
                     self.fog
-                        .capture_growing(memory, base, game_state, current_hour, force_full),
+                        .capture(memory, base, game_state, current_hour, force_full),
                     &mut ticks,
                 );
                 staggered!(construction, projects);
@@ -3280,6 +3366,9 @@ impl Captured {
         ticks: &mut [u64; TABLE_COUNT],
     ) {
         let _allocation_phase = crate::allocation::enter(crate::allocation::Phase::Extended);
+        if let Some(cost) = self.script_variables_ticks.take() {
+            ticks[intel::TABLES[8].index()] += cost;
+        }
         if let Some(done) = self.late_ticks.replace([0; TABLE_COUNT]) {
             for (total, cost) in ticks.iter_mut().zip(done) {
                 *total += cost;
@@ -3395,14 +3484,8 @@ pub struct Sources<'a, M: Memory> {
     captured: &'a mut Captured,
     memory: &'a M,
     base: usize,
-    air_raw: bool,
-    naval_raw: bool,
 }
 impl<M: Memory> Sources<'_, M> {
-    fn wing_ticks(&self) -> u64 {
-        self.captured.air.wing_ticks().into_iter().sum::<u64>()
-            + self.captured.naval_history.source_ticks()[1]
-    }
     fn attribute_overhead(&mut self, table: TableId, begin: i64, separately_measured: u64) -> u64 {
         let total = elapsed(begin);
         self.captured.overhead[table.index()] = self.captured.overhead[table.index()]
@@ -3431,86 +3514,6 @@ impl<M: Memory> MapSources for Sources<'_, M> {
             .lost_casualty_reads(self.captured.combat_progress.lost_reads());
         self.attribute_overhead(TableId::LandCombatProgress, begin, 0)
     }
-    fn begin_air(&mut self) -> u64 {
-        if self.air_raw {
-            return 0;
-        }
-        let begin = qpc();
-        self.captured.air.begin_wings();
-        self.captured.game_score.begin_air();
-        self.attribute_overhead(TableId::WingEquipment, begin, 0)
-    }
-    fn air(&mut self, pointer: usize, pool: usize, row: &cair_wing::Row) -> u64 {
-        if self.air_raw && self.naval_raw {
-            return 0;
-        }
-        let begin = qpc();
-        let before = self.wing_ticks();
-        if !self.air_raw {
-            self.captured.air.visit_wing(
-                self.memory,
-                self.base,
-                air::WingSource { pointer, pool, row },
-            );
-        }
-        if !self.naval_raw {
-            self.captured
-                .naval_history
-                .visit_wing(self.memory, pointer, row);
-        }
-        let charged = self.wing_ticks().saturating_sub(before);
-        self.attribute_overhead(TableId::WingEquipment, begin, charged)
-    }
-    fn air_score_limit(&self) -> Option<usize> {
-        if self.air_raw {
-            None
-        } else {
-            self.captured.game_score.wing_limit()
-        }
-    }
-    fn air_score(&mut self, pointer: usize, row: &cair_wing::ScoreLeaf) -> u64 {
-        if self.air_raw {
-            return 0;
-        }
-        let _reads = crate::read_accounting::table(TableId::AirWingGameScoreStats);
-        let started = qpc();
-        self.captured.game_score.wing(self.memory, pointer, row);
-        self.attribute_overhead(TableId::AirWingGameScoreStats, started, 0)
-    }
-    fn finish_air_score(&mut self, outcome: Outcome) -> u64 {
-        if self.air_raw {
-            return 0;
-        }
-        let started = qpc();
-        self.captured.game_score.finish_air(outcome);
-        self.attribute_overhead(TableId::AirWingGameScoreStats, started, 0)
-    }
-    fn air_owner(&mut self, slot: u32, entry: Option<usize>) -> u64 {
-        if self.air_raw {
-            return 0;
-        }
-        let _reads = crate::read_accounting::table(TableId::CountryGameScoreInputs);
-        let begin = qpc();
-        self.captured
-            .game_score
-            .owner(self.memory, self.base, slot, entry);
-        self.attribute_overhead(TableId::CountryGameScoreInputs, begin, 0)
-    }
-    fn finish_air(&mut self, outcome: Outcome) -> u64 {
-        if self.air_raw && self.naval_raw {
-            return 0;
-        }
-        let begin = qpc();
-        let before = self.wing_ticks();
-        if !self.air_raw {
-            self.captured.air_root = Some(outcome);
-        }
-        if !self.naval_raw {
-            self.captured.naval_history.finish_wings(outcome);
-        }
-        let charged = self.wing_ticks().saturating_sub(before);
-        self.attribute_overhead(TableId::WingEquipment, begin, charged)
-    }
 }
 
 /// Whether a table was selected but not published (skipped is not a read).
@@ -3523,7 +3526,7 @@ fn unpublished(outcomes: &[Outcome]) -> bool {
 
 #[cfg(test)]
 fn unit_sources(
-    inputs: &Option<Arc<UnitInputs>>,
+    inputs: &Option<engine_allocation::SharedBox<UnitInputs>>,
 ) -> production::Sources<'_, engine_native::carmy::DivisionSeed> {
     let inputs = inputs.as_deref();
     production::Sources {
@@ -3561,32 +3564,6 @@ impl Divisions {
         self.seen = 0;
         self.outcome = MISSING;
         self.required = 0;
-    }
-    fn visit_source(&mut self, source: DivisionSource) {
-        if let Some(slot) = self.first.get_mut(self.seen) {
-            *slot = source;
-        }
-        self.seen = self.seen.saturating_add(1);
-        self.required = self.required.max(self.seen);
-    }
-    fn finish(&mut self, outcome: Outcome) {
-        let capacity = self.first.len();
-        self.outcome = match outcome {
-            Outcome::Rows { len } if len != self.seen => Outcome::Unavailable {
-                reason: "division visitor and source row count disagree",
-            },
-            Outcome::Rows { len } if len > capacity => truncated_source(capacity, len - capacity),
-            Outcome::Truncated { len, unread_rows } => {
-                self.required = self.required.max(len.saturating_add(unread_rows as usize));
-                let stored = len.min(capacity);
-                truncated_source(
-                    stored,
-                    len.saturating_sub(stored)
-                        .saturating_add(unread_rows as usize),
-                )
-            }
-            _ => outcome,
-        };
     }
     pub(crate) fn sources(&self) -> production::Sources<'_, DivisionSource> {
         production::Sources {

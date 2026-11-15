@@ -92,7 +92,7 @@ pub fn capture(
         crate::advisor_pool_changes::record(Table::CharacterRecords, &counts, None);
         return [&held.active, &held.retired].map(|held| Outcome::Rows { len: held.len() });
     }
-    let outcomes = native::walk_records_growing(memory, base, game_state, active, retired);
+    let outcomes = native::walk_records(memory, base, game_state, active, retired);
     counts.read = 1;
     counts.read_rows = rows(outcomes[0].len(), outcomes[1].len());
     let complete = match outcomes {

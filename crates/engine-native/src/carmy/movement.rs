@@ -1,9 +1,7 @@
 use super::*;
 
-/// Pooled owned movement inputs. Workers grow from retained seed headers before
-/// the payload; fixed readers refuse a complete unit on a route shortage.
+/// Pooled owned movement inputs, grown from retained seed headers before the payload.
 pub struct MovementPacket {
-    growing: bool,
     pub(super) units: Vec<MovementRow>,
     pub(super) paths: Vec<u32>,
     pub(super) combats: MovementCombats,
@@ -24,7 +22,6 @@ impl MovementPacket {
         let paths = crate::allocation::vec(path_capacity)?;
         let bytes = Self::route_byte_capacity(path_capacity)?;
         Ok(Self {
-            growing: false,
             units: crate::allocation::vec(unit_capacity)?,
             paths,
             combats: MovementCombats::try_new(unit_capacity)?,
@@ -47,7 +44,6 @@ impl MovementPacket {
 
     pub fn vacant() -> Self {
         Self {
-            growing: false,
             units: Vec::new(),
             paths: Vec::new(),
             combats: MovementCombats::default(),
@@ -73,10 +69,6 @@ impl MovementPacket {
         path_capacity
             .checked_mul(size_of::<u32>())
             .ok_or_else(crate::allocation::oom)
-    }
-
-    pub fn enable_growth(&mut self) {
-        self.growing = true;
     }
 
     /// Keep copied route bytes in native order. Only the first ordinary word
@@ -272,8 +264,6 @@ pub fn capture_movement_inputs(
     game_state: usize,
     seeds: &[DivisionSeed],
     source_outcome: Outcome,
-    row_capacity: usize,
-    path_capacity: usize,
     geometry: &mut crate::cprovince::GeometryPacket,
     packet: &mut MovementPacket,
 ) -> MovementWalk {
@@ -283,8 +273,6 @@ pub fn capture_movement_inputs(
         game_state,
         seeds,
         source_outcome,
-        row_capacity,
-        path_capacity,
         geometry,
         packet,
         None,
@@ -300,8 +288,6 @@ pub fn capture_movement_inputs_with_combat_references(
     game_state: usize,
     seeds: &[DivisionSeed],
     source_outcome: Outcome,
-    row_capacity: usize,
-    path_capacity: usize,
     geometry: &mut crate::cprovince::GeometryPacket,
     packet: &mut MovementPacket,
     sample_hour: Option<i32>,
@@ -312,8 +298,6 @@ pub fn capture_movement_inputs_with_combat_references(
         game_state,
         seeds,
         source_outcome,
-        row_capacity,
-        path_capacity,
         geometry,
         packet,
         sample_hour,
@@ -329,8 +313,6 @@ pub fn capture_movement_inputs_with_extra(
     game_state: usize,
     seeds: &[DivisionSeed],
     source_outcome: Outcome,
-    row_capacity: usize,
-    path_capacity: usize,
     geometry: &mut crate::cprovince::GeometryPacket,
     packet: &mut MovementPacket,
     sample_hour: Option<i32>,
@@ -347,11 +329,9 @@ pub fn capture_movement_inputs_with_extra(
         if source_outcome.len() != seeds.len() {
             return Err("division movement source length invalid");
         }
-        if packet.growing {
-            packet
-                .reserve(seeds.len(), 0)
-                .map_err(|_| "movement seed allocation failed")?;
-        }
+        packet
+            .reserve(seeds.len(), 0)
+            .map_err(|_| "movement seed allocation failed")?;
         // Preserve independent root availability even with a shared country
         // census. Geometry admits its own current province roster in begin().
         for (offset, stride) in [(cgame_state::COUNTRIES, 8), (cgame_state::COUNTRY_LINKS, 4)] {
@@ -367,7 +347,7 @@ pub fn capture_movement_inputs_with_extra(
             prefetch_movement_seed(memory, seed);
         }
         let mut len = 0usize;
-        let mut missing = match source_outcome {
+        let missing = match source_outcome {
             Outcome::Truncated { unread_rows, .. } => unread_rows,
             _ => 0,
         };
@@ -422,14 +402,11 @@ pub fn capture_movement_inputs_with_extra(
             required_paths = required_paths
                 .checked_add(needed)
                 .ok_or("route arena overflow")?;
-            if packet.growing {
-                packet
-                    .reserve(seeds.len(), required_paths)
-                    .map_err(|_| "movement route allocation failed")?;
-            }
-            // Pressure reuses the already-owned seed header, even if an old
-            // row/route capacity gap omits this unit. An invalid optional hint
-            // supplies no demand; the established reader retains its own error.
+            packet
+                .reserve(seeds.len(), required_paths)
+                .map_err(|_| "movement route allocation failed")?;
+            // Pressure reuses the already-owned seed header. An invalid optional
+            // hint supplies no demand; the established reader retains its own error.
             let mut reference_demand_overflow = false;
             if sample_hour.is_some()
                 && let Some(combat) = seed.combat.and_then(|header| Array::from_header(header, 8))
@@ -444,27 +421,6 @@ pub fn capture_movement_inputs_with_extra(
                         reference_demand_overflow = true;
                     }
                 }
-            }
-            if len
-                == (if packet.growing {
-                    seeds.len()
-                } else {
-                    row_capacity
-                })
-                .min(packet.units.capacity())
-                || (if packet.growing {
-                    packet.paths.capacity()
-                } else {
-                    path_capacity
-                })
-                .min(packet.paths.capacity())
-                .saturating_sub(paths_len)
-                    < needed
-            {
-                missing = missing
-                    .checked_add(1)
-                    .ok_or("movement missing count overflow")?;
-                continue;
             }
             let numerator = movement_seed_value(seed.movement_numerator)?;
             let path_start = paths_len;
@@ -535,40 +491,24 @@ pub fn capture_movement_inputs_with_extra(
             if sample_hour.is_some() {
                 if !reference_demand_overflow {
                     let start = packet.combat_references.len();
-                    let count = combat.count as usize;
-                    if packet.growing {
-                        packet
-                            .reserve_combat_references(
-                                start
-                                    .checked_add(count)
-                                    .ok_or("combat-reference demand overflow")?,
-                            )
-                            .map_err(|_| "combat-reference allocation failed")?;
-                    }
-                    let available = packet.combat_references.capacity() - start;
-                    if count <= available {
-                        // Capacity was prepared off-thread; resize cannot grow.
-                        packet
-                            .combat_references
-                            .resize(start + count, Default::default());
-                        match cunit::read_unit_combat_references(
-                            memory,
-                            base,
-                            seed.pointer,
-                            seed.combat.expect("validated same source header"),
-                            first_combat,
-                            &mut packet.combat_references[start..],
-                            &mut packet.combat_identities,
-                        ) {
-                            Ok(count) => combat_references = Some((start, count)),
-                            Err(reason) => {
-                                packet.combat_references.truncate(start);
-                                combat_references_failure = Some(reason);
-                            }
+                    match cunit::read_unit_combat_references(
+                        memory,
+                        base,
+                        seed.pointer,
+                        seed.combat.expect("validated same source header"),
+                        first_combat,
+                        &mut packet.combat_references,
+                        start,
+                        &mut packet.combat_identities,
+                    ) {
+                        Ok(count) => {
+                            packet.combat_references.truncate(start + count);
+                            combat_references = Some((start, count));
                         }
-                    } else {
-                        combat_references_failure =
-                            Some("unit combat-reference arena capacity exceeded");
+                        Err(reason) => {
+                            packet.combat_references.truncate(start);
+                            combat_references_failure = Some(reason);
+                        }
                     }
                 } else {
                     combat_references_failure = Some("unit combat-reference demand overflow");

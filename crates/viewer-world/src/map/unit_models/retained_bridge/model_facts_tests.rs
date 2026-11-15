@@ -1,4 +1,5 @@
 use super::*;
+use replay_data::rows::VariantDefinitionRow;
 
 #[test]
 fn held_model_facts_keep_the_original_census_and_refusal_order_across_hours() {

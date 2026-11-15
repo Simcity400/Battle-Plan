@@ -495,7 +495,6 @@ pub fn compare_events(
         replay.visit_blocks(
             &[&b],
             &SELECTED,
-            None,
             |_, _, hour_frame| {
             if hour_frame.hour > frame.hour {
                 return Ok(false);

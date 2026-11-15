@@ -227,50 +227,10 @@ fn entries_keep_their_source_targets_grants_and_labels_in_stored_order() {
     );
 }
 
-/// An entry that does not fit is withdrawn whole and counted with its demand;
-/// a later one that fits is stored.
+/// The demand probe counts every entry and stores none.
 #[test]
-fn an_entry_that_does_not_fit_is_counted_never_stored_partially() {
+fn the_demand_probe_counts_every_entry() {
     let memory = fixture();
-    let (mut rows, mut targets, mut grants, mut stats, mut labels) = (
-        [Row::default(); 2],
-        [Target::default(); 1],
-        [Grant::default(); 4],
-        [Stat::default(); 8],
-        [0_u8; 32],
-    );
-    let walk = walk(
-        &memory,
-        0,
-        0x1000,
-        Buffers {
-            rows: Buffer::Fixed(&mut rows),
-            targets: Buffer::Fixed(&mut targets),
-            grants: Buffer::Fixed(&mut grants),
-            stats: Buffer::Fixed(&mut stats),
-            labels: Buffer::Fixed(&mut labels),
-        },
-    );
-    assert_eq!(
-        walk.outcome,
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 1
-        }
-    );
-    assert_eq!(walk.required, DEMAND);
-    assert_eq!(
-        walk.written,
-        Counts {
-            rows: 1,
-            targets: 0,
-            grants: 0,
-            stats: 0,
-            label_bytes: HEAP_LABEL.len(),
-        }
-    );
-    assert_eq!((rows[0].ordinal, rows[0].label.start), (1, 0));
-    assert_eq!(&labels[..HEAP_LABEL.len()], HEAP_LABEL);
     let demand = walk_demand(&memory);
     assert_eq!(
         demand.outcome,

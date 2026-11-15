@@ -1,8 +1,5 @@
-import { PreparedKey } from '../../charts/PreparedKey';
-import { pendingReplyAt, preparedPrefix } from '../../dashboard/preparedPrefix';
-import { useParityRows } from '../../dashboard/parityRows';
-import { useCallback, useMemo, useRef, useState } from 'react';
-import { flushSync } from 'react-dom';
+import { useCallback, useLayoutEffect, useMemo, useRef } from 'react';
+import type { CSSProperties } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { useContextMenu } from '../../components/ContextMenu';
 import Legend from '../../charts/Legend';
@@ -10,92 +7,212 @@ import WindowedRows from '../../charts/WindowedRows';
 import { hatchStyle } from '../../charts/hatch';
 import { jumpItem } from '../../charts/jump';
 import { useRowTooltips } from '../../charts/useRowTooltips';
-import { tooltipText } from '../../charts/tooltip';
+import { fitTooltip, showTooltip, tooltipText } from '../../charts/tooltip';
+import { useViewportHeight } from '../../charts/useChartTokens';
+import { easeTau } from '../../charts/easing';
 import { mix, parseColor, readableText } from '../../shell/appearance/color';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveOptions } from '../../dashboard/options';
-import { airPercent, airState, airTooltip, inSpans, orderedRegions } from '../../dashboard/airSuperiority';
-import { useAir } from '../../dashboard/useAirSuperiority';
+import { usePlaybackMotion } from '../../dashboard/playback';
+import { useShownHour, useWhyCommit } from '../../dashboard/widgetPerf';
+import { useStructureState } from '../../dashboard/structurePace';
+import { airPercent, airState, airSummaryTooltip, airTooltip, momentViews, orderedRegions } from '../../dashboard/airSuperiority';
+import type { AirRegionView, AirView } from '../../dashboard/airSuperiority';
+import { useAirChoicesReply, useAirMoment } from '../../dashboard/useAirSuperiority';
 import { OPTIONS } from './definition';
 import './airSuperiorityRegion.css';
 
 /** Pixels a segment must exceed to show its share, and to be set off from the next by a seam. */
 const LABEL_MIN = 34, SEAM_MIN = 3;
 
+type Order = 'name' | 'active' | 'contested';
+
+/** The rows shown and their order, as one key: what a structural render changes. */
+const rowsKey = (rows: readonly AirRegionView[]) => rows.map(row => row.region.id).join(',');
+const sameAdopted = (held: { source: unknown; key: string }, next: { source: unknown; key: string }) => held.source === next.source && held.key === next.key;
+
+/** Each region's bar at the moment shown: its structure (which regions, which sides) renders when it changes; its
+ * shares, labels and wings are painted from the followed values each frame, and the order by activity or contest
+ * changes at most four times a second while they move. */
 export default function AirSuperiorityRegionWidget(props: WidgetProps) {
-  const options = resolveOptions(OPTIONS, props.widget.options);
-  const air = useAir(props, options, true);
+  const { widget, runtime, active } = props;
+  const options = resolveOptions(OPTIONS, widget.options);
+  const order: Order = options.order === 'name' ? 'name' : options.order === 'active' ? 'active' : 'contested';
+  const air = useAirMoment(props, options);
+  const choices = useAirChoicesReply(runtime, widget, active && order === 'name');
   const menu = useContextMenu('Air superiority region');
-  const order = options.order === 'name' ? 'name' : options.order === 'active' ? 'active' : 'contested';
-  const rows = useMemo(() => orderedRegions(air.projectedMoment, order).map(row => ({ key: String(row.region.id), item: row })), [air.projectedMoment, order]);
-  const tooltip = useCallback((region: number) => air.tooltip(region, air.readHour), [air.tooltip, air.readHour]);
+  const shown = useShownHour();
+  const viewport = useViewportHeight();
+  const hoursPerSecond = usePlaybackMotion(runtime.clock);
+  const { data, live, looks, tokens } = air;
+  // By name, every region is listed (the chosen ones only, when regions are chosen), as main's choices gave them.
+  const chosenRegions = air.mode.regions;
+  const choiceRegions = useMemo(() => order === 'name' ? choices.data?.regions.map(region => ({ id: Number(region.id), name: region.name }))
+    .filter(region => !chosenRegions.length || chosenRegions.includes(region.id)) : undefined, [order, choices.data, chosenRegions]);
+  // Painted from the newest push: a region's activity, wings and shares move without a render.
+  const current = air.current;
+  const viewsAt = useCallback(() => { const now = current(); return now ? momentViews(now, live.read(), looks, choiceRegions) : []; }, [current, live, looks, choiceRegions]);
+  // The rows and their order, adopted from the values at most once a slot of the page's structure pace while playing.
+  const [adopted, setAdopted] = useStructureState<{ source: unknown; key: string }>(runtime.clock, { source: null, key: '' }, sameAdopted);
+  useWhyCommit('AirSuperiorityRegionWidget', { data, looks, adopted, choiceRegions, read: air.read, at: air.at });
+  const source = useMemo(() => [data, looks, choiceRegions, order], [data, looks, choiceRegions, order]);
+  const fresh = adopted.source !== source ? rowsKey(orderedRegions(viewsAt(), order)) : adopted.key;
+  const rowIds = useMemo(() => fresh ? fresh.split(',').map(Number) : [], [fresh]);
+  const regionsById = useMemo(() => new Map((data?.regions ?? []).map(region => [region.id, region])), [data]);
+  const items = useMemo(() => rowIds.map(id => ({ key: String(id), item: id })), [rowIds]);
+  const viewOf = useCallback((id: number) => viewsAt().find(row => row.region.id === id), [viewsAt]);
+  const tooltip = useCallback((id: number) => {
+    const row = viewOf(id);
+    if (!row) return null;
+    const full = airTooltip(row.region, row.view, air.mode.mode === 'viewpoint', air.country, !!air.mode.sides.length, air.faction);
+    return fitTooltip([airSummaryTooltip(full, row.view)], viewport, { keep: row.view.wings == null ? 1 : 2, full });
+  }, [viewOf, air.mode.mode, air.mode.sides.length, air.country, air.faction, viewport]);
   const onMenu = useCallback((_: number, x: number, y: number) => {
-    if (air.track && air.readHour != null) menu.open(x, y, [jumpItem(props.runtime, air.track.id, air.readHour)]);
-  }, [air.track, air.readHour, menu.open, props.runtime]);
-  const tips = useRowTooltips({ owner: `air-regions:${props.widget.id}`, active: props.active, content: tooltip,
-    revision: `${air.readHour}:${air.hoverRevision}`, onMenu });
-  const inactive = mix(air.tokens.surface, air.tokens.text, 0.1);
+    const hour = air.shownAt() ?? air.at;
+    if (air.track && hour != null) menu.open(x, y, [jumpItem(runtime, air.track.id, hour)]);
+  }, [air.track, air.shownAt, air.at, menu.open, runtime]); // eslint-disable-line react-hooks/exhaustive-deps
+  const owner = `air-regions:${widget.id}`;
+  const tips = useRowTooltips({ owner, active, content: tooltip, revision: `${air.at}`, onMenu });
+  const pointer = useRef<{ id: number; x: number; y: number } | null>(null);
+  const inactive = mix(tokens.surface, tokens.text, 0.1);
   const textOn = useMemo(() => {
     const known = new Map<string, string>();
     return (colour: string) => {
       let text = known.get(colour);
-      if (text === undefined) { text = readableText(parseColor(colour) ?? parseColor(air.tokens.surface)!); known.set(colour, text); }
+      if (text === undefined) { text = readableText(parseColor(colour) ?? parseColor(tokens.surface)!); known.set(colour, text); }
       return text;
     };
-  }, [air.tokens.surface]);
-  // One observer measures every bar, before paint, so labels and seams follow each share
-  // without a container query evaluated on every frame of a gliding width.
-  const [widths, setWidths] = useState<ReadonlyMap<number, number>>(new Map());
-  const measure = useMemo(() => {
-    if (typeof ResizeObserver === 'undefined') return undefined;
-    const observer = new ResizeObserver(entries => flushSync(() => setWidths(before => {
-      const next = new Map(before);
-      for (const { target, contentRect } of entries) next.set(Number((target as HTMLElement).dataset.region), contentRect.width);
-      return next;
-    })));
-    return (element: HTMLDivElement | null) => {
-      if (!element) return;
-      observer.observe(element);
-      return () => observer.unobserve(element);
-    };
+  }, [tokens.surface]);
+  // Bar widths, kept for the painter: a label shows only where its segment has room.
+  const widths = useRef(new Map<number, number>());
+  const bars = useRef(new Map<number, HTMLDivElement>());
+  const wingsCells = useRef(new Map<number, HTMLSpanElement>());
+  // A bar measured or resized is painted again at once: its labels follow its width, not the next value to land.
+  const repaint = useRef<(() => void) | null>(null);
+  const observer = useMemo(() => typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(entries => {
+    let moved = false;
+    for (const { target, contentRect } of entries) {
+      const id = Number((target as HTMLElement).dataset.region);
+      if (widths.current.get(id) !== contentRect.width) { widths.current.set(id, contentRect.width); moved = true; }
+    }
+    if (moved) repaint.current?.();
+  }), []);
+  const bar = useCallback((id: number) => (element: HTMLDivElement | null) => {
+    const held = bars.current.get(id);
+    if (held && held !== element) observer?.unobserve(held);
+    if (element) { bars.current.set(id, element); observer?.observe(element); } else bars.current.delete(id);
+  }, [observer]);
+  const wingsCell = useCallback((id: number) => (element: HTMLSpanElement | null) => {
+    if (element) wingsCells.current.set(id, element); else wingsCells.current.delete(id);
   }, []);
-  const legend = air.legend;
-  const root = useRef<HTMLDivElement>(null);
-  useParityRows(root, () => ({ kind: 'chart', label: 'Air superiority region values', complete: !!air.data,
-    hour: air.hour, total: air.data?.view === 'moment' ? air.data.regions.length : 0,
-    rows: air.data?.view === 'moment' ? air.data.regions : [] }));
+  const root = useRef<HTMLDivElement | null>(null);
+  const attachRoot = air.root;
+  const attach = useCallback((element: HTMLDivElement | null) => { root.current = element; attachRoot(element); }, [attachRoot]);
+  const glide = Math.round(3 * easeTau(tokens.motion, hoursPerSecond, tokens.reducedMotion));
+  const painted = useRef({ source, rowsKey: fresh, viewsAt, tooltip, inactive, textOn, shownAt: air.shownAt, hatch: hatchStyle(tokens) });
+  painted.current = { source, rowsKey: fresh, viewsAt, tooltip, inactive, textOn, shownAt: air.shownAt, hatch: hatchStyle(tokens) };
+  useLayoutEffect(() => {
+    if (!data) return undefined;
+    const paint = () => {
+      const now = painted.current;
+      const views = now.viewsAt();
+      const ordered = orderedRegions(views, order);
+      const key = rowsKey(ordered);
+      if (key !== now.rowsKey) setAdopted({ source: now.source, key });
+      const byId = new Map(views.map(row => [row.region.id, row]));
+      for (const [id, element] of bars.current) {
+        const row = byId.get(id);
+        if (row) paintBar(element, row.view, widths.current.get(id), now.inactive, now.textOn, now.hatch);
+      }
+      for (const [id, element] of wingsCells.current) {
+        const wings = byId.get(id)?.view.wings;
+        const text = wings == null ? 'Wings unknown' : `${wings} ${wings === 1 ? 'wing' : 'wings'}`;
+        if (element.textContent !== text) element.textContent = text;
+      }
+      if (root.current) root.current.dataset.glide = String(runtime.clock.getSnapshot().playing);
+      const held = pointer.current;
+      if (held && active) {
+        const content = now.tooltip(held.id);
+        if (content) showTooltip(owner, content, held.x, held.y, `${held.id}:${now.shownAt() ?? ''}`);
+      }
+      shown(now.shownAt());
+    };
+    paint();
+    repaint.current = paint;
+    const stops = [live.subscribe(paint), runtime.clock.subscribeFrame(() => { if (root.current) root.current.dataset.glide = String(runtime.clock.getSnapshot().playing); })];
+    return () => { for (const stop of stops) stop(); if (repaint.current === paint) repaint.current = null; };
+  }, [data, live, order, items, runtime.clock, active, owner, shown, setAdopted]);
+  useLayoutEffect(() => () => observer?.disconnect(), [observer]);
   if (air.needsViewpoint) return <WidgetState kind="empty" icon="plane" message="Choose a dashboard country or a viewpoint in the widget settings." />;
   if (!air.track) return <WidgetState kind="empty" icon="plane" message="Load a campaign to see its air superiority." />;
-  if (!air.window) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  if (pendingReplyAt(air.data, air.hour)) return <WidgetState kind="loading" label="This range is still being prepared." />;
-  if (air.data?.available === false) return <WidgetState kind="unavailable" />;
-  if (air.error) return <WidgetState kind="error" failure={air.error} onRetry={air.retry} />;
-  if (!air.data) return <WidgetState kind="loading" label="Loading air superiority…" />;
-  if (order === 'name' && !air.choices) return <WidgetState kind="loading" label="Loading air regions…" />;
-  if (air.readHour == null) return <WidgetState kind="unavailable" message="Not recorded at this time." />;
-  const knownEmpty = air.data.view === 'moment' && inSpans(air.data.complete, air.readHour) && inSpans(air.data.wingsKnown, air.readHour);
-  return <div ref={root} className="air-regions" data-glide={air.glides} style={air.glideStyle}>
-    <PreparedKey pending={preparedPrefix(air.data)?.pending} approximate={preparedPrefix(air.data)?.approximate} />
-    <Legend label="Air superiority sides" items={legend} always windowed />
-    <WindowedRows items={rows} rowHeight={38} fit minRowHeight={16} className="air-region-scroll" label="Air superiority by region"
+  if (air.read === 'off' && !data) return <div ref={attach}><WidgetState kind="unavailable" message="This time is outside the recording." /></div>;
+  if (air.error) return <div ref={attach}><WidgetState kind="error" failure={air.error} onRetry={air.retry} /></div>;
+  if (!data) return <div ref={attach}><WidgetState kind="loading" label="Loading air superiority…" /></div>;
+  if (order === 'name' && !choices.data && !choices.error) return <div ref={attach}><WidgetState kind="loading" label="Loading air regions…" /></div>;
+  if (data.missing) return <div ref={attach}><WidgetState kind="unavailable" message={data.missing} /></div>;
+  const newest = current() ?? data;
+  const knownEmpty = newest.fallback.kind !== 'reason' && newest.regions.every(region => region.wings !== 'unknown');
+  return <div ref={attach} className="air-regions" data-glide="false" style={{ '--air-glide': `${glide}ms` } as CSSProperties}
+    onPointerMove={event => { const row = (event.target as HTMLElement).closest<HTMLElement>('[data-row]'); pointer.current = row ? { id: Number(row.dataset.row), x: event.clientX, y: event.clientY } : null; }}
+    onPointerLeave={() => { pointer.current = null; }}>
+    <Legend label="Air superiority sides" items={air.legend} always windowed />
+    <WindowedRows items={items} rowHeight={38} fit minRowHeight={16} className="air-region-scroll" label="Air superiority by region"
       empty={<WidgetState kind="empty" message={knownEmpty ? 'No regions have a score or assigned wings at this time.' : 'Air activity is unknown at this time.'} />}>
-      {({ item: { region, view } }) => {
-        const width = widths.get(region.id);
-        return <div className="air-region-row" {...tips.rowProps(region.id)}>
-          {/* Only the row hovered or focused, which its description is read for, is described. */}
-          {tips.hovered === region.id && <span id={tips.descriptionId(region.id)} className="sr-only">{tooltipText(airTooltip(region, { ...view, hour: air.readHour }, air.mode.mode === 'viewpoint', air.country, !!air.mode.sides.length, air.factionNames))}</span>}
-          <span className="air-region-name">{region.name}</span>
-          <div className="air-region-bar" ref={measure} data-region={region.id}
-            style={{ backgroundColor: inactive, ...(view.state === 'unknown' ? hatchStyle(air.tokens) : {}) }}>
-            {view.state === 'known' ? view.parts.map((part, index) => <span key={part.id} className="air-region-segment"
-              style={{ width: `${part.share * 100}%`, background: part.color, color: textOn(part.color) }}>
-              {(width === undefined || part.share * width > LABEL_MIN) && <b>{airPercent(part.score, view.total)}</b>}
-              {index < view.parts.length - 1 && (width === undefined || part.share * width > SEAM_MIN) && <i className="air-region-seam" aria-hidden />}</span>) : <span className="air-region-state">{airState(view)}</span>}
-          </div>
-          <span className="air-region-wings">{view.wings == null ? 'Wings unknown' : `${view.wings} ${view.wings === 1 ? 'wing' : 'wings'}`}</span>
+      {({ item: id }) => {
+        const region = regionsById.get(id);
+        const name = region ? region.name ?? `Region ${id}` : choiceRegions?.find(choice => choice.id === id)?.name ?? `Region ${id}`;
+        const description = tips.hovered === id ? tooltip(id) : null;
+        return <div className="air-region-row" data-row={id} {...tips.rowProps(id)}>
+          {description && <span id={tips.descriptionId(id)} className="sr-only">{tooltipText(description)}</span>}
+          <span className="air-region-name" title={region?.nameMissing ?? undefined}>{name}</span>
+          <div className="air-region-bar" ref={bar(id)} data-region={id} style={{ backgroundColor: inactive }} />
+          <span className="air-region-wings" ref={wingsCell(id)} />
         </div>;
       }}
     </WindowedRows>
     {menu.menu}
   </div>;
+}
+
+/** Writes a region's bar at its view: one segment a part, its share as its width and label, or the state named. */
+function paintBar(element: HTMLDivElement, view: AirView, width: number | undefined, inactive: string, textOn: (colour: string) => string, hatch: CSSProperties) {
+  const parts = view.state === 'known' ? view.parts : [];
+  const signature = view.state === 'known' ? parts.map(part => `${part.id}|${part.color}`).join(';') : `state:${airState(view)}:${view.state}`;
+  if (element.dataset.parts !== signature) {
+    element.dataset.parts = signature;
+    element.replaceChildren();
+    element.style.backgroundColor = inactive;
+    element.style.backgroundImage = view.state === 'unknown' ? String(hatch.backgroundImage ?? '') : '';
+    element.style.backgroundSize = view.state === 'unknown' ? String(hatch.backgroundSize ?? '') : '';
+    if (view.state === 'known') {
+      for (const part of parts) {
+        const segment = document.createElement('span');
+        segment.className = 'air-region-segment';
+        segment.style.background = part.color;
+        segment.style.color = textOn(part.color);
+        segment.append(document.createElement('b'));
+        const seam = document.createElement('i');
+        seam.className = 'air-region-seam';
+        seam.setAttribute('aria-hidden', 'true');
+        segment.append(seam);
+        element.append(segment);
+      }
+    } else {
+      const state = document.createElement('span');
+      state.className = 'air-region-state';
+      state.textContent = airState(view);
+      element.append(state);
+    }
+  }
+  if (view.state !== 'known') return;
+  parts.forEach((part, index) => {
+    const segment = element.children[index] as HTMLElement | undefined;
+    if (!segment) return;
+    const share = `${part.share * 100}%`;
+    if (segment.style.width !== share) segment.style.width = share;
+    const label = segment.firstElementChild as HTMLElement;
+    const text = width === undefined || part.share * width > LABEL_MIN ? airPercent(part.score, view.total) : '';
+    if (label.textContent !== text) label.textContent = text;
+    (segment.lastElementChild as HTMLElement).hidden = !(index < parts.length - 1 && (width === undefined || part.share * width > SEAM_MIN));
+  });
 }

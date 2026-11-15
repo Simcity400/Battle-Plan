@@ -313,7 +313,7 @@ impl Captured {
             }
             let mut input = native::InputRow::default();
             let start = lines.len();
-            let walk = native::walk_country_growing_memo_timed(
+            let walk = native::walk_country_memo_timed(
                 memory,
                 base,
                 &countries,

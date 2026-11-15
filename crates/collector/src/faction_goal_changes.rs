@@ -39,24 +39,36 @@ pub fn active() -> usize {
     WATCHES.active()
 }
 pub fn boundary(invalidate: bool) {
+    #[cfg(test)]
+    let _exclusive = tests::exclusive();
     WATCHES.boundary(invalidate);
 }
 pub fn presize() {
+    #[cfg(test)]
+    let _exclusive = tests::exclusive();
     WATCHES.offer(DEMAND.load(Ordering::Relaxed).max(WATCHES.registered()));
 }
 pub fn collect() {
+    #[cfg(test)]
+    let _exclusive = tests::exclusive();
     WATCHES.collect();
 }
 pub(crate) fn demand(owners: usize) {
+    #[cfg(test)]
+    let _exclusive = tests::exclusive();
     DEMAND.fetch_max(owners, Ordering::Relaxed);
 }
 pub(crate) fn prime() {
+    #[cfg(test)]
+    let _exclusive = tests::exclusive();
     presize();
     WATCHES.boundary(false);
 }
 /// # Safety
 /// The worker owns the Factions lease and is this domain's only capture.
 pub(crate) unsafe fn install_growth() {
+    #[cfg(test)]
+    let _exclusive = tests::exclusive();
     unsafe {
         WATCHES.install_growth_quiescent();
     }
@@ -157,10 +169,12 @@ impl Hooks {
         Ok(Self { hooks })
     }
     pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
+        #[cfg(test)]
+        let _exclusive = tests::exclusive();
         if !enabled {
             WATCHES.set_enabled(false);
         }
-        if !Hook::set_enabled_iter_attach_tracking_busy(
+        if !Hook::set_enabled_iter_tracking_busy(
             self.hooks.iter_mut().map(OwnedHook::hook),
             enabled,
         )
@@ -190,6 +204,8 @@ impl Hooks {
 }
 impl Drop for Hooks {
     fn drop(&mut self) {
+        #[cfg(test)]
+        let _exclusive = tests::exclusive();
         // SAFETY: runtime owns these hooks until restoration and flight drainage.
         unsafe { WATCHES.release() };
     }
@@ -296,11 +312,101 @@ unsafe extern "system-unwind" fn pending(registers: &Registers, site: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{cell::Cell, sync::Mutex};
+
+    static TEST: Mutex<()> = Mutex::new(());
+    thread_local! {
+        static HELD: Cell<bool> = const { Cell::new(false) };
+    }
+    /// The watch table is process-wide: this module's tests and other modules' paths that
+    /// change it (the hourly observer boundary, sizing, attach) take turns.
+    pub(super) struct Exclusive(Option<std::sync::MutexGuard<'static, ()>>);
+    impl Drop for Exclusive {
+        fn drop(&mut self) {
+            if self.0.is_some() {
+                HELD.set(false);
+            }
+        }
+    }
+    pub(super) fn exclusive() -> Exclusive {
+        if HELD.get() {
+            return Exclusive(None);
+        }
+        let turn = TEST
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        HELD.set(true);
+        Exclusive(Some(turn))
+    }
+    /// A test puts back the originals it swapped and disables the table, even when it fails.
+    struct Serial {
+        original: [usize; SITES],
+        _turn: Exclusive,
+    }
+    fn serial() -> Serial {
+        let turn = exclusive();
+        Serial {
+            original: ORIGINAL.each_ref().map(|site| site.load(Ordering::Acquire)),
+            _turn: turn,
+        }
+    }
+    impl Drop for Serial {
+        fn drop(&mut self) {
+            WATCHES.set_enabled(false);
+            for (site, original) in ORIGINAL.iter().zip(self.original) {
+                site.store(original, Ordering::Release);
+            }
+        }
+    }
+
+    unsafe extern "system" fn busy_original() -> usize {
+        7
+    }
+    unsafe extern "system" fn busy_callback() -> usize {
+        19
+    }
+
+    /// A call in flight through a site holds its publication back. The family reports that
+    /// as not ready, never as an error, so attach retries it: on its own, and from an attach
+    /// round, whose collect pass goes on past the publication and whose report says busy.
     #[test]
     fn busy_attach_publication_remains_retryable() {
-        let _round = crate::hook::shared::Round::collect_attach().expect("own attach round");
-        let mut hooks = ManuallyDrop::new(Hooks { hooks: Vec::new() });
+        static FLIGHT: AtomicUsize = AtomicUsize::new(1);
+        let _guard = crate::hook::FAMILY_TEST
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let code = crate::hook::TestCode::new();
+        let (site, bytes) = code.stub(0, busy_original as *const () as usize);
+        let callback = busy_callback as *const () as usize;
+        let hook = unsafe {
+            Hook::new_with_safety(
+                site,
+                callback,
+                bytes,
+                crate::hook::TapSafety {
+                    in_flight: &FLIGHT,
+                    stub: callback..callback + 1,
+                },
+            )
+        }
+        .unwrap();
+        let mut hooks = ManuallyDrop::new(Hooks {
+            hooks: vec![OwnedHook::Entry(hook)],
+        });
         assert_eq!(hooks.set_enabled(true), Ok(false));
+        assert_eq!(hooks.busy_sites(), [MUTATIONS[0].0.name]);
+        {
+            let mut round = crate::hook::shared::Round::collect_attach().expect("own attach round");
+            crate::hook::publication::select_family(Some("faction_goals"));
+            assert_eq!(hooks.set_enabled(true), Ok(true), "collect records it and goes on");
+            round.publish();
+            assert_eq!(hooks.set_enabled(true), Ok(false), "the round held it back");
+        }
+        crate::hook::publication::select_family(None);
+        assert!(!hooks.hooks[0].hook().is_enabled());
+        FLIGHT.store(0, Ordering::SeqCst);
+        assert_eq!(hooks.set_enabled(true), Ok(true));
+        assert_eq!(hooks.set_enabled(false), Ok(true));
     }
 
     static ARGUMENTS: [AtomicUsize; 4] = [const { AtomicUsize::new(0) }; 4];
@@ -317,6 +423,7 @@ mod tests {
     }
     #[test]
     fn faction_goal_progress_call_preserves_target_operands_and_return() {
+        let _serial = serial();
         let mut goal = [0_u8; native::GOAL_STRIDE];
         goal[native::GOAL_PROGRESS..native::GOAL_PROGRESS + 8]
             .copy_from_slice(&(-7_i64).to_le_bytes());
@@ -326,11 +433,10 @@ mod tests {
         WATCHES.set_enabled(true);
         let structural = WATCHES.sequence(owner(0x1000)).unwrap();
         let cache = WATCHES.sequence(first).unwrap();
-        let previous = ORIGINAL[10].swap(update as *const () as usize, Ordering::AcqRel);
+        ORIGINAL[10].store(update as *const () as usize, Ordering::Release);
         // SAFETY: the callback receives a stable synthetic goal cache and an
         // original with the same native operands.
         let result = unsafe { progress(first, 123, 0, 0) };
-        ORIGINAL[10].store(previous, Ordering::Release);
         assert_eq!(result, 19);
         assert_eq!(
             ARGUMENTS.each_ref().map(|arg| arg.load(Ordering::Relaxed)),
@@ -339,7 +445,6 @@ mod tests {
         assert_eq!(WATCHES.sequence(owner(0x1000)), Some(structural));
         assert_ne!(WATCHES.sequence(first), Some(cache));
         assert_eq!(WATCHES.active(), 0);
-        WATCHES.set_enabled(false);
     }
     #[test]
     fn faction_goal_progress_change_uses_the_cache_not_modifier_change_flags() {

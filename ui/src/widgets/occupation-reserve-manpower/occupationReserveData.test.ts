@@ -1,109 +1,94 @@
-import test from 'node:test';
+import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { holderBands, holderKeyAt, holderSourceBands, reservesAt, sourceParts, sourceWitnesses, validateOccupationReserve } from './occupationReserveData.ts';
+import { liveKey, valuesOf } from '../../charts/live.ts';
+import type { OccupationReserveReply, ReserveHistoryReply } from '../../generated/dashboard';
+import { holderBands, holderOf, holderToken, historySources, holderTooltip, raceEntries, raceHolders, reserveOf, reserveStructure, segmentParts, sourceParts,
+  sourceTagAt, validateOccupationReserve, validateReserveHistory } from './occupationReserveData.ts';
 
-const reply = validateOccupationReserve({
-  window: { firstHour: 0, lastHour: 100, known: [{ firstHour: 0, lastHour: 60 }], reads: [[0, 23, 0], [24, 60, 24]], series: [
-    { name: 'GER@7|0|amount', runs: [[0, 60, '1000', true]] },
-    { name: 'GER@7|0|source', runs: [[0, 60, '1', true]] },
-    { name: 'GER@7|1|amount', runs: [[0, 23, '500', true], [24, 60, '700', false]] },
-    { name: 'GER@7|1|source', runs: [[0, 60, '1', true]] },
-    { name: 'GER@7|2|amount', runs: [[24, 60, '-300', true]] },
-    { name: 'GER@7|2|source', runs: [[24, 60, '2', true]] },
-    { name: 'GER@7|3|amount', runs: [[24, 60, '0', true]] },
-    { name: 'GER@7|3|source', runs: [[24, 60, '9', true]] },
-  ] },
-  holders: [{ tag: 'GER', slot: 7 }],
-  sources: { 1: 'POL@20', 2: 'FRA@9' },
+const country = (id: number, tag: string | null = `T${id}`) => ({ id, tag });
+const reply: OccupationReserveReply = { holders: [
+  { country: country(1), admitted: true, entries: [] },
+  { country: country(2), admitted: true, entries: [{ ordinal: 0, source: country(8) }, { ordinal: 1, source: country(9) }, { ordinal: 2, source: country(9) }] },
+  { country: country(3), admitted: false, entries: [{ ordinal: 0, source: country(9, null) }] },
+  { country: country(4), admitted: false, entries: [] },
+  { country: country(5, null), admitted: true, entries: [] },
+], readHour: 100, missing: null, warnings: [] };
+const values = (cells: Record<string, number>) => valuesOf(new Map(Object.entries(cells).map(([key, value]) => {
+  const [row, column] = key.split('/');
+  return [liveKey(row, column), value];
+})), 'Not read yet');
+const amounts = values({ '2:0/amount': -50, '2:1/amount': 300, '2:2/amount': 200, '3:0/amount': 700 });
+
+test('a holder holds the sum of its positive entries, by source largest first; a negative one is kept apart, signed', () => {
+  const reserve = reserveOf(reply.holders[1], amounts);
+  assert.equal(reserve.positive, 500);
+  assert.deepEqual(sourceParts(reserve), [{ source: 'T9', amount: 500 }]);
+  assert.deepEqual(reserve.negative.map(entry => entry.amount), [-50]);
+  // An amount not read yet leaves the total unknown, never zero.
+  assert.equal(reserveOf(reply.holders[1], values({ '2:0/amount': 5 })).positive, null);
+  assert.equal(reserveOf(reply.holders[0], amounts).positive, 0);
+});
+
+test('the race shows holders admitted or holding entries that a tag names, most held first, the top N when asked', () => {
+  const shown = raceHolders(reply, () => true);
+  assert.deepEqual(shown.map(holder => holder.country.id), [1, 2, 3]);
+  const race = raceEntries(shown, amounts, null, source => `c-${source}`, 10);
+  assert.deepEqual(race.map(entry => [entry.tag, entry.value]), [['T3', 700], ['T2', 500], ['T1', 0]]);
+  assert.deepEqual(race[0].parts, [{ id: 'unresolved', value: 700, color: 'c-unresolved' }]);
+  assert.deepEqual(raceEntries(shown, amounts, 1, () => '', 10).map(entry => entry.tag), ['T3']);
+  assert.deepEqual(raceHolders(reply, tag => tag === 'T2').map(holder => holder.country.id), [2]);
+});
+
+test('no list of zeros: a top N ranks only holders above zero, and with no entry anywhere nothing is listed', () => {
+  assert.deepEqual(raceHolders(reply, () => true, true).map(holder => holder.country.id), [2, 3], 'a holder with no entry holds a proven zero');
+  const zero = values({ '2:0/amount': 0, '2:1/amount': 0, '2:2/amount': 0, '3:0/amount': 700 });
+  assert.deepEqual(raceEntries(raceHolders(reply, () => true, true), zero, 10, () => '', 10).map(entry => entry.tag), ['T3']);
+  const unread = values({ '3:0/amount': 700 });
+  assert.deepEqual(raceEntries(raceHolders(reply, () => true, true), unread, 10, () => '', 10).map(entry => [entry.tag, entry.label]), [['T3', '700'], ['T2', 'Not read']],
+    'an amount not read is never taken for a zero');
+  const none: OccupationReserveReply = { ...reply, holders: reply.holders.map(holder => ({ ...holder, entries: [] })) };
+  assert.deepEqual(raceHolders(none, () => true), [], 'every country at zero is said as none held, not listed in tag order');
+});
+
+test('amounts are not structure: a moving reserve renders nothing, a source arriving does', () => {
+  assert.equal(reserveStructure(reply), reserveStructure(validateOccupationReserve(JSON.parse(JSON.stringify({ ...reply, readHour: 124 })))));
+  const more = { ...reply, holders: [...reply.holders.slice(0, 4), { ...reply.holders[4], entries: [{ ordinal: 0, source: country(8) }] }] };
+  assert.notEqual(reserveStructure(reply), reserveStructure(more));
+});
+
+test('the tooltip lists each entry, the negative ones apart, and the read date', () => {
+  const tip = holderTooltip(reserveOf(reply.holders[1], amounts), 'Germany', source => source.tag ?? 'Source country unavailable', () => 'red', '1 Jan 1940');
+  assert.deepEqual(tip.rows.map(row => [row.label, row.value]), [['Reserve manpower held', '500'], ['T9', '300'], ['T9', '200'], ['Negative entries', undefined],
+    ['T8', '-50'], ['As of', '1 Jan 1940']]);
+});
+
+const history: ReserveHistoryReply = {
+  segments: [
+    { firstHour: 0, lastHour: 9, admitted: true, entries: [{ source: 8, amount: 100 }], unknown: null },
+    { firstHour: 10, lastHour: 19, admitted: true, entries: [{ source: 8, amount: 100 }, { source: 9, amount: 400 }, { source: 9, amount: -20 }], unknown: null },
+    { firstHour: 20, lastHour: 29, admitted: false, entries: null, unknown: 'The reserve was not recorded at these hours' },
+    { firstHour: 40, lastHour: 49, admitted: true, entries: [], unknown: null },
+  ],
+  sources: [{ id: 8, tags: [{ tag: 'GER', firstHour: 0, lastHour: 49 }] }, { id: 9, tags: [{ tag: null, firstHour: 10, lastHour: 14 }, { tag: 'ITA', firstHour: 15, lastHour: 19 }] }],
   warnings: [],
+};
+
+test('the holder drill stacks each source over time, an admitted holder at zero from a source it has none from, unknown hours a gap', () => {
+  assert.equal(validateReserveHistory(history), history);
+  const sources = historySources(history);
+  assert.deepEqual(sources, [9, 8]);
+  assert.deepEqual(segmentParts(history.segments[0], sources), [0, 100]);
+  assert.deepEqual(segmentParts(history.segments[2], sources), [undefined, undefined]);
+  const bands = holderBands(history, sources);
+  assert.deepEqual(bands[0], [{ firstHour: 0, lastHour: 9, value: 0, breakBefore: true }, { firstHour: 10, lastHour: 19, value: 400, breakBefore: false },
+    { firstHour: 40, lastHour: 49, value: 0, breakBefore: true }]);
+  assert.deepEqual(bands[1], [{ firstHour: 0, lastHour: 19, value: 100, breakBefore: true }, { firstHour: 40, lastHour: 49, value: 0, breakBefore: true }]);
+  assert.equal(sourceTagAt(history, 9, 12), null);
+  assert.equal(sourceTagAt(history, 9, 16), 'ITA');
+  assert.throws(() => validateReserveHistory({ ...history, segments: [history.segments[1], history.segments[0]] }));
 });
 
-test('repeated sources stay separate entries and negatives never subtract from the bar', () => {
-  const [holder] = reservesAt(reply, 30)!.holders;
-  assert.deepEqual(holder.entries.map(entry => [entry.ordinal, entry.source, entry.amount]), [[0, 'POL@20', 1000n], [1, 'POL@20', 700n], [2, 'FRA@9', -300n], [3, null, 0n]]);
-  assert.equal(holder.positive, 1700n);
-  assert.deepEqual(holder.negative.map(entry => entry.amount), [-300n]);
-  assert.deepEqual(sourceParts(holder), [{ source: 'POL@20', amount: 1700n }]);
-});
-
-test('unrecorded hours are unknown', () => {
-  assert.equal(reservesAt(reply, 80), null);
-});
-
-test('a holder\'s bands hold each source between its changes', () => {
-  const [poland] = holderBands(reply, 'GER@7', ['POL@20']);
-  assert.deepEqual(poland.map(run => [run.firstHour, run.lastHour, run.value]), [[0, 23, 1500], [24, 60, 1700]]);
-});
-
-test('the holder drill keeps unresolved positive amounts in their own band, by dated segment', () => {
-  // Entry 4's source resolves only for hours 0-4; its amount at 5-10 is unresolved there.
-  const partial = validateOccupationReserve({ window: { firstHour: 0, lastHour: 10, known: [{ firstHour: 0, lastHour: 10 }], reads: [[0, 10, 0]], series: [
-    { name: 'GER@7|4|amount', runs: [[0, 10, '1000', true]] },
-    { name: 'GER@7|4|source', runs: [[0, 4, '1', true]] },
-  ] }, holders: [{ tag: 'GER', slot: 7 }], sources: { 1: 'POL@20' }, warnings: [] });
-  const drill = holderSourceBands(partial, 'GER@7');
-  assert.deepEqual(drill.sources, ['POL@20', null]);
-  assert.deepEqual(drill.bands.map(band => band.map(run => [run.firstHour, run.lastHour, run.value])), [[[0, 4, 1000]], [[5, 10, 1000]]]);
-  // A holder whose sources all resolve has no unresolved band.
-  assert.deepEqual(holderSourceBands(reply, 'ITA@8').sources, ['POL@20', 'FRA@9']);
-  // FRA's only entry is negative, so its band is empty rather than drawn.
-  assert.deepEqual(holderBands(reply, 'GER@7', ['POL@20', 'FRA@9', null])[1], []);
-});
-
-test('each source is looked up where its own entries prove it held its tag, so a later holder of the tag lends nothing', () => {
-  // A second POL holder (slot 21) sends reserve after the first stops; FRA throughout from hour 30.
-  const reused = validateOccupationReserve({ window: { firstHour: 0, lastHour: 90, known: [{ firstHour: 0, lastHour: 90 }], reads: [[0, 90, 0]], series: [
-    { name: 'GER@7|holder', runs: [[0, 90, '1', true]] },
-    { name: 'GER@7|0|amount', runs: [[0, 40, '100', true]] }, { name: 'GER@7|0|source', runs: [[0, 40, '1', true]] },
-    { name: 'GER@7|1|amount', runs: [[50, 90, '200', true]] }, { name: 'GER@7|1|source', runs: [[50, 90, '2', true]] },
-    { name: 'GER@7|2|amount', runs: [[30, 90, '300', true]] }, { name: 'GER@7|2|source', runs: [[30, 90, '3', true]] },
-    { name: 'ITA@8|0|source', runs: [[0, 90, '1', true]] },
-  ] }, holders: [{ tag: 'GER', slot: 7 }], sources: { 1: 'POL@20', 2: 'POL@21', 3: 'FRA@9' }, warnings: [] });
-  const at = (hour: number, sample: number) => Object.fromEntries(sourceWitnesses(reused, 'GER@7', hour, sample).map(witness => [witness.key, [witness.tag, witness.hour]]));
-  assert.deepEqual(at(80, 72), { 'POL@20': ['POL', 40], 'POL@21': ['POL', 72], 'FRA@9': ['FRA', 72] }, 'the shown hour\'s look while named then, else as last named');
-  assert.deepEqual(at(20, 0), { 'POL@20': ['POL', 0], 'POL@21': ['POL', 50], 'FRA@9': ['FRA', 30] }, 'a source not named yet is looked up as first named');
-  assert.deepEqual(at(35, 0)['FRA@9'], ['FRA', 30], 'named at the hour shown but not at the look hour: its first hour of that naming');
-});
-
-/** GER holds POL's reserve from hour 10; both are admitted holders through hour 30. */
-const admitted = validateOccupationReserve({ window: { firstHour: 0, lastHour: 40, known: [{ firstHour: 0, lastHour: 30 }], reads: [[0, 30, 0]], series: [
-  { name: 'GER@7|holder', runs: [[0, 30, '1', true]] },
-  { name: 'ITA@8|holder', runs: [[0, 30, '1', true]] },
-  { name: 'GER@7|0|amount', runs: [[10, 30, '400', true]] },
-  { name: 'GER@7|0|source', runs: [[10, 30, '1', true]] },
-] }, holders: [{ tag: 'GER', slot: 7 }, { tag: 'ITA', slot: 8 }], sources: { 1: 'POL@20' }, warnings: [] });
-
-test('an admitted holder without entries holds no reserve, and only a known hour says so', () => {
-  const italy = reservesAt(admitted, 20)!.holders.find(holder => holder.holder === 'ITA@8')!;
-  assert.deepEqual([italy.admitted, italy.entries, italy.positive], [true, [], 0n]);
-  assert.equal(reservesAt(admitted, 35), null);
-  // Without the admission the same reply proves nothing about a holder missing from it.
-  assert.equal(reservesAt(reply, 30)!.holders.find(holder => holder.holder === 'ITA@8'), undefined);
-  assert.equal(reservesAt(reply, 30)!.holders[0].admitted, false);
-});
-
-test('an admitted holder\'s bands are zero before its first entry, never a gap, with no unresolved band', () => {
-  const drill = holderSourceBands(admitted, 'GER@7');
-  assert.deepEqual(drill.sources, ['POL@20']);
-  assert.deepEqual(drill.bands[0].map(run => [run.firstHour, run.lastHour, run.value]), [[0, 9, 0], [10, 30, 400]]);
-  assert.deepEqual(holderSourceBands(admitted, 'ITA@8'), { sources: ['POL@20'], bands: [[{ firstHour: 0, lastHour: 30, value: 0, breakBefore: true }]] });
-});
-
-test('a renamed holder keeps the history it had under its earlier tag', () => {
-  // Slot 4 is OLD through hour 9 and NEW from 10; OLD@4's entries stop where NEW@4's begin.
-  const renamed = validateOccupationReserve({ window: { firstHour: 0, lastHour: 30, known: [{ firstHour: 0, lastHour: 30 }], reads: [[0, 30, 0]], series: [
-    { name: 'OLD@4|holder', runs: [[0, 9, '1', true]] }, { name: 'NEW@4|holder', runs: [[10, 30, '1', true]] },
-    { name: 'OLD@4|0|amount', runs: [[0, 9, '100', true]] }, { name: 'OLD@4|0|source', runs: [[0, 9, '1', true]] },
-    { name: 'NEW@4|0|amount', runs: [[10, 30, '250', true]] }, { name: 'NEW@4|0|source', runs: [[10, 30, '1', true]] },
-  ] }, holders: [{ tag: 'OLD', slot: 4 }, { tag: 'NEW', slot: 4 }], sources: { 1: 'POL@20' }, warnings: [] });
-  const aliases = [{ key: 'OLD@4', firstHour: 0, lastHour: 9 }, { key: 'NEW@4', firstHour: 10, lastHour: 30 }];
-  assert.equal(holderKeyAt(aliases, 5), 'OLD@4');
-  assert.equal(holderKeyAt(aliases, 15), 'NEW@4');
-  const drill = holderSourceBands(renamed, aliases);
-  assert.deepEqual(drill.sources, ['POL@20']);
-  assert.deepEqual(drill.bands[0].map(run => [run.firstHour, run.lastHour, run.value]), [[0, 9, 100], [10, 30, 250]]);
-  // One tag's key alone loses the other alias's hours.
-  assert.deepEqual(holderSourceBands(renamed, 'NEW@4').bands[0].map(run => [run.firstHour, run.lastHour]), [[10, 30]]);
-  // POL is named where either alias's entries prove it, each only within its own hours.
-  assert.deepEqual(sourceWitnesses(renamed, aliases, 5, 5).map(witness => [witness.key, witness.hour]), [['POL@20', 5]]);
+test('a pinned holder keeps its tag and raw id', () => {
+  assert.deepEqual(holderOf(holderToken({ tag: 'GER', id: 7 })), { tag: 'GER', id: 7 });
+  assert.equal(holderOf('GER'), null);
 });

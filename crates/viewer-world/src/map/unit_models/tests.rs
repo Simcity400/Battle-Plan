@@ -1,3 +1,4 @@
+use replay_data::rows::VariantDefinitionRow;
 use std::sync::Arc;
 use viewer_foundation::movement_timing::Etas;
 #[test]
@@ -27,6 +28,7 @@ fn raid_units_bypass_the_unit_history_and_move_by_the_playback_fraction() {
     let hour = track.place(&heights, 0.0).unwrap();
     let mut prepared = PreparedModels {
         staged_field: Mutex::new(None),
+        naval: true,
         targets: None,
         placed: vec![(
             target(5, 1, Kind::Land),
@@ -161,6 +163,7 @@ fn convoys_sail_only_where_they_show_and_name_entities_that_do_not_bake() {
     };
     let mut prepared = PreparedModels {
         staged_field: Mutex::new(None),
+        naval: true,
         targets: None,
         ships: NavalSources::default(),
         raid: Vec::new(),
@@ -202,6 +205,7 @@ fn convoys_sail_only_where_they_show_and_name_entities_that_do_not_bake() {
     ));
     let mut next = PreparedModels {
         staged_field: Mutex::new(None),
+        naval: true,
         targets: None,
         ships: NavalSources::default(),
         raid: Vec::new(),
@@ -269,6 +273,7 @@ fn hourly_mesh_upload_preserves_the_inherited_convoy_clock() {
     let make = || {
         let mut prepared = PreparedModels {
             staged_field: Mutex::new(None),
+            naval: true,
             targets: None,
             ships: NavalSources::default(),
             raid: Vec::new(),
@@ -544,11 +549,8 @@ fn new_divisions_join_the_daily_census_and_absence_is_empty_only_when_both_are_c
         division,
         ..Default::default()
     };
-    let (daily, new) = (row(1), row(2));
-    let equipment = |new_complete| Equipment {
-        by_division: [(1, vec![&daily]), (2, vec![&new])].into(),
-        new_complete,
-    };
+    let (daily, new) = ([row(1)], [row(2)]);
+    let equipment = |new_complete| Equipment::join(&daily, &new, new_complete);
     assert_eq!(equipment(true).of(2).unwrap().len(), 1);
     assert!(equipment(true).of(3).unwrap().is_empty());
     assert!(equipment(false).of(3).is_err());
@@ -791,6 +793,416 @@ fn an_hour_selects_the_designer_model_and_its_snow_camouflage_per_stack() {
     );
 }
 
+/// Every stack of an hour, chosen alone in a session of its own on assets that kept nothing,
+/// takes what the whole hour's maker takes for it: the same entity, or the same reason it has none.
+#[test]
+fn a_stack_chosen_alone_takes_what_the_whole_hour_takes() {
+    let divisions = vec![
+        division(1, 9, 50),
+        division(2, 8, 51),
+        division(3, 7, 50),
+        division(4, 6, 50),
+    ];
+    // A designer model on snow, an unrecorded template, an unreadable camouflage and no status.
+    let frame = hour_frame(
+        divisions.clone(),
+        vec![status(1, true), status(3, false)],
+        9,
+    );
+    let whole = prepare(&camouflaged_assets(), &frame);
+    let mut alone = ModelReport::default();
+    let mut entities = BTreeMap::new();
+    for division in &divisions {
+        let assets = camouflaged_assets();
+        let key = SelectionKey {
+            transport: false,
+            template: division.template,
+            oldest: division.id,
+            roster_owner: division.roster_owner,
+            expeditionary_owner: division.expeditionary_owner,
+        };
+        let model = equipment_graphics::test_support::with_world(&frame, &[], |limits| {
+            assets
+                .land_models(
+                    SelectInputs {
+                        frame: &frame,
+                        limits,
+                        ours: Vision::default().ours(),
+                        terrain: &BTreeMap::new(),
+                        localisation: &installed_content_localisation::localisation::Localisation::default(),
+                        divisions: None,
+                        lap: None,
+                    },
+                    &KeptChoices::default(),
+                    &Told::default(),
+                    |models| models.choose(division.province, key),
+                )
+                .unwrap()
+        });
+        match model {
+            StackModel::Chosen(model) => {
+                assets.ensure(std::slice::from_ref(&model.entity));
+                if let Err(reason) = assets.chosen_slot(&assets.library(), &model.entity) {
+                    alone.error(reason);
+                }
+                entities.insert(division.id, (model.level, model.entity));
+            }
+            StackModel::UnknownIdentity => alone.unknown_identity += 1,
+            StackModel::Untemplated => alone.untemplated += 1,
+            StackModel::Withheld(reason) => alone.error(reason),
+        }
+    }
+    assert_eq!(
+        entities,
+        BTreeMap::from([(1, (Level::Template, "GER_custom_entity_snow".to_owned()))])
+    );
+    assert_eq!(
+        (alone.selection_errors, alone.untemplated, alone.unknown_identity),
+        (whole.selection_errors, whole.untemplated, whole.unknown_identity)
+    );
+}
+
+/// One session's stacks: what it made, whether each stack's kept model stood before it was asked,
+/// and each stack's model.
+struct Session {
+    made: Made,
+    stood: Vec<bool>,
+    chosen: Vec<Result<String, String>>,
+}
+
+/// Stacks `(province, oldest, template)` of roster owner 100 chosen over hours, one session an hour
+/// on the same assets and kept answers.
+fn sessions(
+    assets: &UnitModelAssets,
+    frames: &[DecodedFrame],
+    stacks: &[(u32, u64, u64)],
+) -> Vec<Session> {
+    let told: Vec<_> = frames
+        .iter()
+        .map(|frame| (frame.clone(), Told::default()))
+        .collect();
+    told_sessions(assets, &told, stacks)
+}
+
+/// [`sessions`], each hour told the rows made anew since the hour before.
+fn told_sessions(
+    assets: &UnitModelAssets,
+    frames: &[(DecodedFrame, Told)],
+    stacks: &[(u32, u64, u64)],
+) -> Vec<Session> {
+    let kept = KeptChoices::default();
+    frames
+        .iter()
+        .map(|(frame, told)| {
+            equipment_graphics::test_support::with_world(frame, &[], |limits| {
+                assets
+                    .land_models(
+                        SelectInputs {
+                            frame,
+                            limits,
+                            ours: Vision::default().ours(),
+                            terrain: &BTreeMap::new(),
+                            localisation:
+                                &installed_content_localisation::localisation::Localisation::default(),
+                            divisions: None,
+                        lap: None,
+                        },
+                        &kept,
+                        told,
+                        |models| {
+                            let keys: Vec<_> = stacks
+                                .iter()
+                                .map(|&(province, oldest, template)| {
+                                    let key = SelectionKey {
+                                        transport: false,
+                                        template,
+                                        oldest,
+                                        roster_owner: 100,
+                                        expeditionary_owner: 0,
+                                    };
+                                    (province, key)
+                                })
+                                .collect();
+                            let stood = keys
+                                .iter()
+                                .map(|&(province, key)| models.stands(province, key))
+                                .collect();
+                            let chosen = keys
+                                .iter()
+                                .map(|&(province, key)| match models.choose(province, key) {
+                                    StackModel::Chosen(model) => Ok(model.entity),
+                                    other => Err(format!("{other:?}")),
+                                })
+                                .collect();
+                            Session {
+                                made: models.made(),
+                                stood,
+                                chosen,
+                            }
+                        },
+                    )
+                    .unwrap()
+            })
+        })
+        .collect()
+}
+
+/// The kept selections are indexed by the rows they read: a template row one stack's selection
+/// read changing makes that selection again and no other, and the stack it did not reach keeps
+/// its model unasked.
+#[test]
+fn a_row_a_kept_selection_read_drops_that_selection_and_no_other() {
+    use replay_data::rows::{TableId, TableRows};
+    use replay_frame::frame::TableView;
+    let templates = |second: &[u8]| {
+        TableView::Complete(TableRows::DivisionTemplateIcons(vec![
+            DivisionTemplateIconRow {
+                template: 50,
+                model_entity: b"GER_custom_entity".to_vec(),
+                ..Default::default()
+            },
+            DivisionTemplateIconRow {
+                template: 52,
+                model_entity: second.to_vec(),
+                ..Default::default()
+            },
+        ]))
+        .into()
+    };
+    let mut first = hour_frame(
+        vec![division(1, 1, 50), division(3, 4, 52)],
+        vec![status(1, true), status(3, true)],
+        9,
+    );
+    first.tables[TableId::DivisionTemplateIcons.index()] = templates(b"GER_other_entity");
+    let mut second = first.clone();
+    second.tables[TableId::DivisionTemplateIcons.index()] = templates(b"GER_custom_entity");
+    let third = second.clone();
+    let mut assets = camouflaged_assets();
+    assets.registered.insert("GER_other_entity".to_owned());
+    let stacks = [(1, 1, 50), (4, 3, 52)];
+    let hours = sessions(&assets, &[first, second, third], &stacks);
+    let made: Vec<_> = hours.iter().map(|session| session.made).collect();
+    assert_eq!(
+        made,
+        [
+            Made {
+                selections: 2,
+                camouflages: 2,
+                contexts: 1
+            },
+            Made {
+                selections: 1,
+                ..Made::default()
+            },
+            Made::default(),
+        ]
+    );
+    let stood: Vec<_> = hours.iter().map(|session| session.stood.clone()).collect();
+    assert_eq!(stood, [[false, false], [true, false], [true, true]]);
+    let snow = Ok("GER_custom_entity_snow".to_owned());
+    assert_eq!(
+        hours[0].chosen,
+        [snow.clone(), Ok("GER_other_entity".to_owned())]
+    );
+    assert_eq!(hours[1].chosen, [snow.clone(), snow.clone()]);
+    assert_eq!(hours[2].chosen, [snow.clone(), snow]);
+}
+
+/// A stack's camouflage is its own: a province's weather changing makes again the camouflage of
+/// the stack that read that province's snow and no other, a status changing only its division's,
+/// and each made again is what a session that kept nothing makes.
+#[test]
+fn a_weather_or_status_change_makes_again_the_camouflage_that_read_it_and_no_other() {
+    use replay_data::rows::{ProvinceRow, TableId, TableRows, WeatherProvinceRow};
+    use replay_frame::frame::TableView;
+    // Provinces 1 to 3 are state 1, 4 to 6 state 2, 7 to 9 no state; all snowy but province 4,
+    // whose stack takes its snow from its state's share (5 and 6 of 4 to 6).
+    let weather = |dry: &[u32]| {
+        TableView::Complete(TableRows::WeatherProvinces(
+            (0..=9)
+                .map(|id| WeatherProvinceRow {
+                    id,
+                    snow: i64::from(!dry.contains(&id)),
+                    ..Default::default()
+                })
+                .collect(),
+        ))
+        .into()
+    };
+    let mut first = hour_frame(
+        vec![division(1, 1, 50), division(3, 4, 50), division(5, 7, 50)],
+        vec![status(1, true), status(3, true), status(5, true)],
+        9,
+    );
+    first.tables[TableId::Provinces.index()] = TableView::Complete(TableRows::Provinces(
+        (1..=9)
+            .map(|id| ProvinceRow {
+                id,
+                state: [1, 1, 1, 2, 2, 2, 0, 0, 0][id as usize - 1],
+                ..Default::default()
+            })
+            .collect(),
+    ))
+    .into();
+    first.tables[TableId::WeatherProvinces.index()] = weather(&[4]);
+    // Province 6 dries: state 2's share falls to one of three.
+    let mut second = first.clone();
+    second.tables[TableId::WeatherProvinces.index()] = weather(&[4, 6]);
+    // Division 5's camouflage becomes unreadable.
+    let mut third = second.clone();
+    third.tables[TableId::DivisionStatus.index()] =
+        TableView::Complete(TableRows::DivisionStatus(vec![
+            status(1, true),
+            status(3, true),
+            status(5, false),
+        ]))
+        .into();
+    let stacks = [(1, 1, 50), (4, 3, 50), (7, 5, 50)];
+    let frames = [first, second, third];
+    let kept = sessions(&camouflaged_assets(), &frames, &stacks);
+    let made: Vec<_> = kept.iter().map(|session| session.made).collect();
+    assert_eq!(
+        made,
+        [
+            Made {
+                selections: 3,
+                camouflages: 3,
+                contexts: 1
+            },
+            Made {
+                camouflages: 1,
+                ..Made::default()
+            },
+            Made {
+                camouflages: 1,
+                ..Made::default()
+            },
+        ]
+    );
+    let snow = Ok("GER_custom_entity_snow".to_owned());
+    assert_eq!(kept[0].chosen, [snow.clone(), snow.clone(), snow.clone()]);
+    assert_eq!(
+        kept[1].chosen,
+        [snow.clone(), Ok("GER_custom_entity".to_owned()), snow.clone()]
+    );
+    for (hour, frame) in frames.iter().enumerate() {
+        let alone = sessions(&camouflaged_assets(), std::slice::from_ref(frame), &stacks);
+        assert_eq!(kept[hour].chosen, alone[0].chosen, "hour {hour}");
+    }
+    assert!(
+        kept[2].chosen[2]
+            .as_ref()
+            .is_err_and(|why| why.contains("division camouflage is unavailable this hour")),
+        "{:?}",
+        kept[2].chosen
+    );
+}
+
+/// A session told which rows were made anew since its answers' frame takes them and compares no
+/// table: a template row told changed makes again the selection that read it though it reads the
+/// same, and the other stands. Told from a frame it did not keep its answers at, it compares the
+/// tables and finds the row that did change. Its country context stands while the views it was
+/// read from are the frame's and is read again once one is made anew, its answers standing while
+/// the countries read the same. Each hour's models are what a session that kept nothing makes.
+#[test]
+fn a_session_told_the_rows_made_anew_takes_them_and_compares_no_table() {
+    use replay_data::rows::{CountryRow, TableId, TableRows};
+    use replay_frame::frame::{SharedView, TableView};
+    let templates = |second: &[u8]| -> SharedView {
+        TableView::Complete(TableRows::DivisionTemplateIcons(vec![
+            DivisionTemplateIconRow {
+                template: 50,
+                model_entity: b"GER_custom_entity".to_vec(),
+                ..Default::default()
+            },
+            DivisionTemplateIconRow {
+                template: 52,
+                model_entity: second.to_vec(),
+                ..Default::default()
+            },
+        ]))
+        .into()
+    };
+    let at = TableId::DivisionTemplateIcons.index();
+    let mut first = hour_frame(
+        vec![division(1, 1, 50), division(3, 4, 52)],
+        vec![status(1, true), status(3, true)],
+        9,
+    );
+    first.tables[at] = templates(b"GER_other_entity");
+    // The same rows made anew, template 50's told changed.
+    let mut second = first.clone();
+    second.tables[at] = templates(b"GER_other_entity");
+    let told_second = Told::new(vec![(
+        TableId::DivisionTemplateIcons,
+        first.tables[at].clone(),
+        vec![(50, u64::MAX)],
+    )]);
+    // Template 52's model changes, told from the first hour's view: compared instead.
+    let mut third = second.clone();
+    third.tables[at] = templates(b"GER_custom_entity");
+    let told_third = Told::new(vec![(
+        TableId::DivisionTemplateIcons,
+        first.tables[at].clone(),
+        Vec::new(),
+    )]);
+    // The countries made anew with the same rows.
+    let mut fourth = third.clone();
+    fourth.tables[TableId::Countries.index()] =
+        TableView::Complete(TableRows::Countries(vec![CountryRow {
+            id: 100,
+            canonical_slot: 1,
+            tag: b"GER".to_vec(),
+            ..Default::default()
+        }]))
+        .into();
+    let hours = [
+        (first, Told::default()),
+        (second, told_second),
+        (third, told_third),
+        (fourth, Told::default()),
+    ];
+    let mut assets = camouflaged_assets();
+    assets.registered.insert("GER_other_entity".to_owned());
+    let stacks = [(1, 1, 50), (4, 3, 52)];
+    let kept = told_sessions(&assets, &hours, &stacks);
+    let made: Vec<_> = kept.iter().map(|session| session.made).collect();
+    assert_eq!(
+        made,
+        [
+            Made {
+                selections: 2,
+                camouflages: 2,
+                contexts: 1
+            },
+            Made {
+                selections: 1,
+                ..Made::default()
+            },
+            Made {
+                selections: 1,
+                ..Made::default()
+            },
+            Made {
+                contexts: 1,
+                ..Made::default()
+            },
+        ]
+    );
+    let stood: Vec<_> = kept.iter().map(|session| session.stood.clone()).collect();
+    assert_eq!(
+        stood,
+        [[false, false], [false, true], [true, false], [true, true]]
+    );
+    let snow = Ok("GER_custom_entity_snow".to_owned());
+    assert_eq!(kept[2].chosen, [snow.clone(), snow]);
+    for (hour, (frame, _)) in hours.iter().enumerate() {
+        let alone = sessions(&assets, std::slice::from_ref(frame), &stacks);
+        assert_eq!(kept[hour].chosen, alone[0].chosen, "hour {hour}");
+    }
+}
+
 #[test]
 fn a_content_failure_turns_off_only_the_model_layer_and_says_so() {
     let mut warnings = Vec::new();
@@ -950,6 +1362,122 @@ fn a_division_in_both_equipment_tables_takes_the_hourly_rows_once() {
         .collect();
     assert_eq!(first, [99]);
     assert_eq!(equipment.of(2).unwrap().len(), 1);
+}
+
+/// Each keyed lookup the selection makes (a division's equipment and status, a template, a
+/// variant) takes the rows the whole-table join it replaces took for that key, absent keys
+/// included.
+#[test]
+fn a_keyed_lookup_takes_what_the_whole_join_took() {
+    use replay_data::rows::{DivisionEquipmentRow, DivisionModelInputRow, TableId, TableRows};
+    let equipment = |division, ordinal, amount_raw| DivisionEquipmentRow {
+        division,
+        ordinal,
+        amount_raw,
+        ..Default::default()
+    };
+    // Ascending by division, then ordinal, as a frame holds them.
+    let daily = [
+        equipment(1, 0, 10),
+        equipment(1, 1, 11),
+        equipment(2, 0, 20),
+        equipment(4, 0, 40),
+        equipment(4, 1, 41),
+    ];
+    let new = [equipment(1, 0, 99), equipment(3, 0, 30), equipment(3, 1, 31)];
+    // The join the hour made of every division before.
+    let mut joined: BTreeMap<u64, Vec<&DivisionEquipmentRow>> = BTreeMap::new();
+    for row in &new {
+        joined.entry(row.division).or_default().push(row);
+    }
+    let hourly: BTreeSet<u64> = joined.keys().copied().collect();
+    for row in daily.iter().filter(|row| !hourly.contains(&row.division)) {
+        joined.entry(row.division).or_default().push(row);
+    }
+    let amounts = |rows: &[DivisionEquipmentRow]| -> Vec<i64> { rows.iter().map(|row| row.amount_raw).collect() };
+    for new_complete in [true, false] {
+        let lookup = Equipment::join(&daily, &new, new_complete);
+        for division in 0..=5 {
+            let was: Result<Vec<i64>, String> = match joined.get(&division) {
+                Some(rows) => Ok(rows.iter().map(|row| row.amount_raw).collect()),
+                None if new_complete => Ok(Vec::new()),
+                None => Err("division equipment unknown until the next daily refresh".to_owned()),
+            };
+            assert_eq!(lookup.of(division).map(amounts), was, "division {division}");
+        }
+    }
+
+    let statuses = [status(2, true), status(5, false), status(9, true)];
+    let witnesses = [2, 7].map(|division| DivisionModelInputRow {
+        division,
+        model_number: Some(division as i32),
+        ..Default::default()
+    });
+    for (lookup, joined) in [
+        (
+            Statuses::Status(&statuses),
+            statuses
+                .iter()
+                .map(|row| (row.division, ModelStatus::Status(row)))
+                .collect::<BTreeMap<_, _>>(),
+        ),
+        (
+            Statuses::Witness(&witnesses),
+            witnesses
+                .iter()
+                .map(|row| (row.division, ModelStatus::Witness(row)))
+                .collect(),
+        ),
+    ] {
+        for division in 0..=10 {
+            let read = |status: ModelStatus<'_>| (status.division(), status.model_number());
+            assert_eq!(
+                lookup.get(division).map(read),
+                joined.get(&division).copied().map(read),
+                "division {division}"
+            );
+        }
+    }
+
+    let variants: Vec<_> = [3, 10, 11, 40]
+        .map(|id| VariantDefinitionRow {
+            id,
+            equipment_token: id as u32 + 100,
+            ..Default::default()
+        })
+        .into();
+    let joined: BTreeMap<_, _> = variants.iter().map(|row| (row.id, row)).collect();
+    let lookup = model_selection::Variants::new(&variants);
+    for id in 0..=41 {
+        assert_eq!(lookup.get(id), joined.get(&id).copied(), "variant {id}");
+    }
+
+    let mut frame = prepare_frame();
+    let templates: Vec<_> = [10, 50, 70]
+        .map(|template| DivisionTemplateIconRow {
+            template,
+            priority_unit: template as u32,
+            ..Default::default()
+        })
+        .into();
+    let joined: BTreeMap<_, _> = templates.iter().map(|row| (row.template, row)).collect();
+    *frame.tables[TableId::DivisionTemplateIcons.index()] =
+        replay_frame::frame::TableView::Complete(TableRows::DivisionTemplateIcons(
+            templates.clone(),
+        ));
+    let assets = camouflaged_assets();
+    let terrain = BTreeMap::new();
+    let localisation = installed_content_localisation::localisation::Localisation::default();
+    equipment_graphics::test_support::with_world(&frame, &[], |limits| {
+        let hour = Hour::read(&assets, &frame, &terrain, limits, &localisation).unwrap();
+        for template in 0..=80 {
+            assert_eq!(
+                hour.template(template),
+                joined.get(&template).copied(),
+                "template {template}"
+            );
+        }
+    });
 }
 
 #[test]
@@ -1438,4 +1966,92 @@ fn concurrent_demand_schedules_keep_stable_groups_events_and_sound_creation_orde
             reference = Some(observed);
         }
     }
+}
+
+/// The hour's models with ships, or without them for the ships layer: the land is the same.
+fn prepared(assets: &UnitModelAssets, frame: &DecodedFrame, naval: bool) -> PreparedModels {
+    equipment_graphics::test_support::with_world(frame, &[], |limits| {
+        let places = ShipPlaces {
+            motions: &viewer_foundation::map::task_force_visual::TaskForceMotions::default(),
+            movement: None,
+            land: &|_| true,
+            missions: &Default::default(),
+            region: &|_| None,
+            scale: &|_, _| 1.0,
+        };
+        let inputs = PrepareInputs {
+            frame,
+            limits,
+            vision: &Vision::default(),
+            etas: &Etas::default(),
+            anchor: &|_, _| Some([0.0; 3]),
+            world: None,
+            terrain: &BTreeMap::new(),
+            routes: None,
+            ships: &places,
+            localisation: &installed_content_localisation::localisation::Localisation::default(),
+        };
+        assets.prepare_naval_or_not(inputs, naval, &mut |_| {}, &mut BuilderSpans::new(false)).unwrap()
+    })
+}
+
+#[test]
+fn models_made_without_ships_say_so_and_take_the_ships_layers_beside_their_own_land() {
+    let (assets, frame) = (camouflaged_assets(), prepare_frame());
+    let with = prepared(&assets, &frame, true);
+    let without = prepared(&assets, &frame, false);
+    assert!(with.naval(), "made with ships, its ships are the hour's own");
+    assert!(!without.naval(), "made without ships, it says so");
+    assert!(!PreparedModels::drawn_by_layers().naval());
+    assert_eq!(without.report.stacks, with.report.stacks, "the land is the same");
+    assert_eq!(without.placed.len(), with.placed.len());
+    let ship = |identity: u64| crate::map::unit_history::naval::Candidate {
+        province: 6,
+        identity,
+        ordinal: 0,
+        slot: 0,
+        priority: 3,
+        ours: true,
+        class: viewer_foundation::unit_class::CounterClass::TaskForce,
+        land_eligible: false,
+        sample_count: 0,
+        next_arc: 0.0,
+        route: Vec::new(),
+        speed: 12.0,
+        min_arc: 0.0,
+        arrival_allowed: true,
+        day: 0,
+    };
+    let layer = NavalSources {
+        candidates: vec![ship(2), ship(3)],
+        positions: vec![crate::map::unit_history::naval::FormationPlacement { force: 2, position: counter_move::Position::still([1.0; 3]), rotation: 0.5, scale: 1.0 }],
+        ..NavalSources::default()
+    };
+    let mut report = ModelReport { ship_hulls: 4, ..ModelReport::default() };
+    report.error("No ship is drawn: TaskForces is not wholly recorded this hour");
+    let joined = without.with_ships(layer.clone(), &report);
+    assert!(joined.naval(), "joined, it holds the layer's ships");
+    assert_eq!(joined.ships().candidates.iter().map(|candidate| candidate.identity).collect::<Vec<_>>(), [2, 3]);
+    assert_eq!(joined.placed.len(), without.placed.len(), "its own land stays");
+    assert_eq!(joined.report.stacks, without.report.stacks);
+    assert_eq!(joined.report.ship_hulls, without.report.ship_hulls + 4);
+    assert!(joined.report.warnings().iter().any(|line| line.contains("TaskForces is not wholly recorded")), "the layer's refusal is named: {:?}", joined.report.warnings());
+    let ships: Vec<_> = joined.movement_positions().filter(|(unit, ..)| matches!(unit, Unit::TaskForce(_))).map(|(unit, ..)| unit).collect();
+    assert_eq!(ships, [Unit::TaskForce(2)], "the ships' animators move the layer's formations");
+    assert!(without.ships().candidates.is_empty() && !without.naval(), "the models it was joined from are unchanged");
+}
+
+/// Rows at the head by key hold the equipment of the divisions asked alone: a division asked reads
+/// its rows, one not asked is refused by name and never read as having no equipment; over whole
+/// tables a division in neither holds none, as today.
+#[test]
+fn equipment_of_a_division_not_asked_is_refused_by_name_never_read_as_none() {
+    let rows = [replay_data::rows::DivisionEquipmentRow { division: 5, ordinal: 0, ..Default::default() }];
+    let asked: BTreeSet<u64> = [5].into();
+    let mut equipment = Equipment::join(&rows, &[], true);
+    equipment.asked = Some(&asked);
+    assert_eq!(equipment.of(5).map(<[_]>::len), Ok(1));
+    assert!(equipment.of(6).is_err_and(|why| why.contains("not asked")), "a division not asked is refused");
+    equipment.asked = None;
+    assert_eq!(equipment.of(6).map(<[_]>::len), Ok(0), "over whole tables a division in neither holds none");
 }

@@ -39,3 +39,6 @@
   background: color-mix(in srgb, var(--event-colour) 16%, transparent); color: var(--event-colour); }
 .event-feed-icon svg { width: 15px; height: 15px; }
 .log.is-compact .event-feed-icon svg { width: 13px; height: 13px; }
+
+/* Scripted text the recording could not fill: a token, its reason in the tooltip. */
+.scripted-gap { color: var(--muted); font-style: italic; text-decoration: underline dotted; text-underline-offset: 2px; cursor: help; }

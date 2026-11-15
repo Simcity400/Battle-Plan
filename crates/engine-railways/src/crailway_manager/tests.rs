@@ -166,15 +166,15 @@ fn eta_fixture() -> EtaMemory {
 }
 
 #[test]
-fn rail_building_supplement_keeps_old_rows_faults_and_capacity_independent() {
+fn rail_building_supplement_keeps_old_rows_and_faults_independent() {
     let mut memory = eta_fixture();
-    let mut cooldowns = [info::Row::default(); 2];
-    let mut edges = [edge::Row::default(); 3];
+    let mut cooldowns = vec![info::Row::default(); 2];
+    let mut edges = vec![edge::Row::default(); 3];
     let old = walk(&memory, 0, MEMORY_BASE, &mut cooldowns, &mut edges);
-    let expected_cooldowns = cooldowns;
-    let expected_edges = edges;
-    for capacity in [0, 1, 2] {
-        let mut buildings = vec![fresh_inputs::RailwayBuildingRow::default(); capacity];
+    let expected_cooldowns = cooldowns.clone();
+    let expected_edges = edges.clone();
+    {
+        let mut buildings = Vec::new();
         let result = walk_with_buildings(
             &memory,
             0,
@@ -187,34 +187,22 @@ fn rail_building_supplement_keeps_old_rows_faults_and_capacity_independent() {
         assert_eq!(cooldowns, expected_cooldowns);
         assert_eq!(edges, expected_edges);
         assert_eq!(result.required, 2);
-        assert_eq!(result.buildings.len(), capacity);
-        if capacity != 0 {
-            assert_eq!(buildings[0].province, 1);
-            assert_eq!(
-                buildings[0].building,
-                Ok(Some(fresh_inputs::RailwayBuildingState {
-                    building: Some(fresh_inputs::RailwayBuildingHealth {
-                        level: 4,
-                        healthy: 2,
-                        partial: Some(5_000_000),
-                    }),
-                }))
-            );
-        }
-        if capacity == 2 {
-            assert_eq!(buildings[1].building, Ok(None));
-        } else {
-            assert_eq!(
-                result.buildings,
-                Outcome::Truncated {
-                    len: capacity,
-                    unread_rows: (2 - capacity) as u32,
-                }
-            );
-        }
+        assert_eq!(result.buildings, Outcome::Rows { len: 2 });
+        assert_eq!(buildings[0].province, 1);
+        assert_eq!(
+            buildings[0].building,
+            Ok(Some(fresh_inputs::RailwayBuildingState {
+                building: Some(fresh_inputs::RailwayBuildingHealth {
+                    level: 4,
+                    healthy: 2,
+                    partial: Some(5_000_000),
+                }),
+            }))
+        );
+        assert_eq!(buildings[1].building, Ok(None));
     }
     memory.refused = Some(0x4000 + crate::cbuilding::PARTIAL_HEALTH);
-    let mut buildings = [fresh_inputs::RailwayBuildingRow::default(); 2];
+    let mut buildings = vec![fresh_inputs::RailwayBuildingRow::default(); 2];
     let result = walk_with_buildings(
         &memory,
         0,
@@ -249,39 +237,6 @@ fn rail_building_supplement_keeps_old_rows_faults_and_capacity_independent() {
     assert_eq!(result.required, 1);
 }
 
-#[test]
-fn zero_capacity_rail_supplement_has_the_legacy_read_trace() {
-    struct Observed<'a> {
-        inner: &'a EtaMemory,
-        reads: std::cell::RefCell<Vec<(usize, usize)>>,
-    }
-    impl Memory for Observed<'_> {
-        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            self.reads.borrow_mut().push((address, output.len()));
-            self.inner.copy(address, output)
-        }
-    }
-    let memory = eta_fixture();
-    let observed = Observed {
-        inner: &memory,
-        reads: Default::default(),
-    };
-    let mut cooldowns = [info::Row::default(); 2];
-    let mut edges = [edge::Row::default(); 3];
-    let old = walk(&observed, 0, MEMORY_BASE, &mut cooldowns, &mut edges);
-    let expected = observed.reads.take();
-    let result = walk_with_buildings(
-        &observed,
-        0,
-        MEMORY_BASE,
-        &mut cooldowns,
-        &mut edges,
-        &mut [],
-    );
-    assert_eq!(result.rows, old);
-    assert_eq!(observed.reads.take(), expected);
-    assert_eq!(result.required, 2);
-}
 #[test]
 fn eta_rail_speed_uses_directed_edge_damage_and_cooldown() {
     let mut memory = eta_fixture();
@@ -464,7 +419,7 @@ fn eta_rail_fixedpoint_retains_native_sentinels_and_signed_levels() {
     assert!(movement_speed(&memory, 0, MEMORY_BASE, 0x1600, 0x1900).is_err());
 }
 
-fn run(bytes: &[u8], provinces: &mut [info::Row], edges: &mut [edge::Row]) -> Outcomes {
+fn run(bytes: &[u8], provinces: &mut Vec<info::Row>, edges: &mut Vec<edge::Row>) -> Outcomes {
     walk(
         &SliceMemory {
             base: MEMORY_BASE,
@@ -479,8 +434,8 @@ fn run(bytes: &[u8], provinces: &mut [info::Row], edges: &mut [edge::Row]) -> Ou
 
 #[test]
 fn directed_edges_and_native_values_survive_without_vanilla_caps() {
-    let mut provinces = [info::Row::default(); 4];
-    let mut edges = [edge::Row::default(); 4];
+    let mut provinces = vec![info::Row::default(); 4];
+    let mut edges = vec![edge::Row::default(); 4];
     let result = run(&fixture(), &mut provinces, &mut edges);
     assert_eq!(
         result,
@@ -526,50 +481,18 @@ fn directed_edges_and_native_values_survive_without_vanilla_caps() {
 }
 
 #[test]
-fn independent_capacities_count_all_omitted_native_rows() {
-    let mut provinces = [info::Row::default(); 1];
-    let mut edges = [edge::Row::default(); 1];
-    assert_eq!(
-        run(&fixture(), &mut provinces, &mut edges),
-        Outcomes {
-            provinces: Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            },
-            edges: Outcome::Truncated {
-                len: 1,
-                unread_rows: 2
-            },
-        }
-    );
-    assert_eq!(
-        run(&fixture(), &mut [], &mut []),
-        Outcomes {
-            provinces: Outcome::Truncated {
-                len: 0,
-                unread_rows: 2
-            },
-            edges: Outcome::Truncated {
-                len: 0,
-                unread_rows: 3
-            },
-        }
-    );
-}
-
-#[test]
 fn null_slots_and_empty_vectors_are_known_absence() {
     let mut bytes = fixture();
     array(&mut bytes, 0x1000 + info::NEIGHBOR_PAIRS, 0, 0, 0);
     array(&mut bytes, 0x1080 + info::NEIGHBOR_PAIRS, 0, 0, 0);
-    let mut provinces = [info::Row::default(); 4];
+    let mut provinces = vec![info::Row::default(); 4];
     assert_eq!(
-        run(&bytes, &mut provinces, &mut []).edges,
+        run(&bytes, &mut provinces, &mut Vec::new()).edges,
         Outcome::Rows { len: 0 }
     );
     bytes[0x500..0x520].fill(0);
     assert_eq!(
-        run(&bytes, &mut [], &mut []),
+        run(&bytes, &mut Vec::new(), &mut Vec::new()),
         Outcomes {
             provinces: Outcome::Rows { len: 0 },
             edges: Outcome::Rows { len: 0 },
@@ -602,8 +525,8 @@ fn malformed_roots_and_province_backlinks_are_unavailable() {
         put(&mut bytes, offset, replacement);
         let result = run(
             &bytes,
-            &mut [info::Row::default(); 4],
-            &mut [edge::Row::default(); 4],
+            &mut vec![info::Row::default(); 4],
+            &mut vec![edge::Row::default(); 4],
         );
         assert!(
             matches!(result.provinces, Outcome::Unavailable { .. }),
@@ -632,8 +555,8 @@ fn invalid_edges_do_not_erase_readable_cooldowns() {
         put(&mut bytes, offset, replacement);
         let result = run(
             &bytes,
-            &mut [info::Row::default(); 4],
-            &mut [edge::Row::default(); 4],
+            &mut vec![info::Row::default(); 4],
+            &mut vec![edge::Row::default(); 4],
         );
         assert_eq!(result.provinces, Outcome::Rows { len: 2 });
         assert!(matches!(result.edges, Outcome::Unavailable { .. }));
@@ -693,8 +616,8 @@ fn faults_are_scoped_to_the_table_that_reads_the_field() {
             &memory,
             0,
             MEMORY_BASE,
-            &mut [info::Row::default(); 4],
-            &mut [edge::Row::default(); 4],
+            &mut vec![info::Row::default(); 4],
+            &mut vec![edge::Row::default(); 4],
         );
         assert_eq!(result.provinces, provinces, "refused {address:#x}");
         assert_eq!(result.edges, edges, "refused {address:#x}");
@@ -864,7 +787,8 @@ fn compare_reused_edge_scratch(
         to_province: 72,
         level: -73,
     };
-    let mut rows = vec![sentinel; capacity];
+    // Storage at least the demand: the fixed-width reference never grows.
+    let mut rows = vec![sentinel; capacity.max(pairs.count as usize)];
     let mut old_rows = rows.clone();
     assert_eq!(
         read_edges(
@@ -875,7 +799,7 @@ fn compare_reused_edge_scratch(
             scratch,
             pairs,
             province,
-            &mut Buffer::Fixed(&mut rows),
+            &mut Buffer::Growing(&mut rows),
             &mut progress
         ),
         fresh_scratch_reference_edges(
@@ -903,14 +827,14 @@ fn compare_reused_edge_scratch(
 }
 
 #[test]
-fn reused_edge_scratch_matches_fresh_windows_capacities_and_partial_faults() {
+fn reused_edge_scratch_matches_fresh_windows_and_partial_faults() {
     let mut scratch = EdgeScratch::new();
     scratch.bytes.fill(0xa5);
     scratch.neighbors.fill(u32::MAX);
     // Long-to-short and empty transitions consume the same scratch.
     for count in [66, 1, 0, 63, 64, 65, 1, 0] {
         let (bytes, provinces, pairs) = many_edge_pairs(count);
-        for capacity in [0, 1, count, count + 1] {
+        for capacity in [count, count + 1] {
             compare_reused_edge_scratch(&bytes, None, provinces, pairs, 68, capacity, &mut scratch);
         }
         let reference = EdgeTrace {

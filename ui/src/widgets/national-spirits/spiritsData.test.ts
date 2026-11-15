@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import type { IdeaHistoryReply, IdeaInfo } from '../../generated/dashboard';
 import { activeAt, endedBy, historyLanes, spiritState, spirits, startUnseen } from './spiritsData.ts';
+import type { IdeaHistoryReply, IdeaInfo } from '../../generated/dashboard';
 
 const info = (token: string, category: string): IdeaInfo => ({ token, category, slot: null, law: false, designer: false,
-  effects: [], targeted: [], equipment: [], research: [], traits: [], tooltips: [], effectsKnown: true, unknown: null });
+  effects: [], targeted: [], equipment: [], research: [], traits: [], tooltips: [], effectsKnown: true, unknown: null, nameMissing: null });
 const REPLY: IdeaHistoryReply = {
   branchId: '1', tag: 'GER', unobserved: [], identityStarts: [], modifiers: [], texts: [], warnings: [],
   categories: [
@@ -27,6 +27,21 @@ const describe = { since: (hour: number) => `since ${hour}`, before: (hour: numb
 test('spirits are the ideas of any national-spirit category, whatever content names it', () => {
   assert.deepEqual(spirits(REPLY).map(spirit => spirit.token).sort(), ['blitz', 'heer', 'mefo']);
   assert.equal(spirits(REPLY).find(spirit => spirit.token === 'mefo')?.name, 'MEFO Bills');
+});
+
+test('a spirit is named whether or not its art resolves; one the recording does not name reads "Name not recorded", its reason for the tooltip', () => {
+  const missing = 'localisation MOD_heer is missing';
+  const reply: IdeaHistoryReply = { ...REPLY,
+    ideas: REPLY.ideas.map(item => item.token === 'heer' ? { ...item, nameMissing: missing } as IdeaInfo : item),
+    artwork: [...REPLY.artwork, { token: 'blitz', name: 'Blitzkrieg', description: null, baseDurationDays: null, icon: null },
+      { token: 'heer', name: null, description: null, baseDurationDays: null, icon: 'data:image/png;base64,AA==' }] };
+  const names = new Map(spirits(reply).map(spirit => [spirit.token, spirit.name]));
+  assert.equal(names.get('blitz'), 'Blitzkrieg');
+  assert.equal(names.get('heer'), 'Name not recorded');
+  assert.equal(historyLanes(spirits(reply), 650, 'gained', true, describe)[0].identity?.label, 'Name not recorded');
+  const heer = spirits(reply).find(spirit => spirit.token === 'heer');
+  assert.equal(heer?.nameMissing, `Name not recorded: ${missing}`);
+  assert.equal(spirits(reply).find(spirit => spirit.token === 'blitz')?.nameMissing, null);
 });
 
 test('the grid shows spirits held at the hour, in the order they were gained', () => {

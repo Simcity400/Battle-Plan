@@ -94,30 +94,16 @@ fn name_header(memory: &impl Memory, names: Array, id: u16) -> Result<[u8; 32], 
 /// Off-thread sizing, from the live target header and each named string's
 /// stored length. No country multiplier or chosen target/name cap.
 pub fn demand(memory: &impl Memory, base: usize, state: usize) -> Option<Demand> {
-    let result = walk(memory, base, state, &mut [], &mut []);
+    let result = count(memory, base, state);
     (!matches!(result.outcome, Outcome::Unavailable { .. })).then_some(result.required)
 }
-/// No allocations or game calls. Reference validity is an on-demand lookup;
-/// capture its live-kind bits. A dead reference resolves invalid, not refused.
-pub fn walk(
-    memory: &impl Memory,
-    base: usize,
-    state: usize,
-    output: &mut [Row],
-    text: &mut [u8],
-) -> Walk {
-    walk_buffer(
-        memory,
-        base,
-        state,
-        Buffer::Fixed(output),
-        Buffer::Fixed(text),
-    )
+pub fn count(memory: &impl Memory, base: usize, state: usize) -> Walk {
+    walk_buffer(memory, base, state, Buffer::Count, Buffer::Count)
 }
 
 /// Visit the saved registry and retained name lengths. Grow owned worker
 /// storage from original observations before copying.
-pub fn walk_growing(
+pub fn walk(
     memory: &impl Memory,
     base: usize,
     state: usize,
@@ -388,8 +374,8 @@ mod tests {
         let f = Fixture::new();
         let d = demand(&f, 0, 0x1000).unwrap();
         assert_eq!(d, Demand { rows: 2, bytes: 24 });
-        let mut rows = [Row::default(); 2];
-        let mut text = [0; 24];
+        let mut rows = vec![Row::default(); 2];
+        let mut text = vec![0; 24];
         let w = walk(&f, 0, 0x1000, &mut rows, &mut text);
         assert_eq!(w.outcome, Outcome::Rows { len: 2 });
         assert_eq!(rows[0].country, 77);
@@ -397,25 +383,14 @@ mod tests {
         assert_eq!(&text[..1], b"x");
         assert_eq!(&text[1..], b"a_long_heap_target_name");
         assert_eq!(rows[1].ordinal, 1);
-        let w = walk(&f, 0, 0x1000, &mut rows[..1], &mut text);
-        assert_eq!(
-            w.outcome,
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            }
-        );
-        assert_eq!(w.required, d);
-        let w = walk(&f, 0, 0x1000, &mut rows, &mut text[..1]);
-        assert!(matches!(w.outcome, Outcome::Truncated { .. }));
         assert_eq!(w.required, d);
     }
     #[test]
     fn intern_id_zero_keeps_the_lookup_name_and_marks_save_omission() {
         let mut f = Fixture::new();
         f.put(0xa068, &0u16.to_le_bytes());
-        let mut rows = [Row::default(); 2];
-        let mut text = [0; 28];
+        let mut rows = vec![Row::default(); 2];
+        let mut text = vec![0; 28];
         assert_eq!(
             walk(&f, 0, 0x1000, &mut rows, &mut text).outcome,
             Outcome::Rows { len: 2 }
@@ -428,8 +403,8 @@ mod tests {
     #[test]
     fn wrapped_name_ids_refuse_nonempty_registry_but_empty_remains_complete() {
         let mut f = Fixture::new();
-        let mut rows = [Row::default(); 2];
-        let mut text = [0; 24];
+        let mut rows = vec![Row::default(); 2];
+        let mut text = vec![0; 24];
         f.array(NAMES_RVA.0, 0x3000, u32::from(u16::MAX) + 1);
         assert_eq!(
             walk(&f, 0, 0x1000, &mut rows, &mut text).outcome,
@@ -446,7 +421,7 @@ mod tests {
         assert_eq!(wrapped.bytes, 0);
         assert_eq!(wrapped.required.rows, 2);
         f.array(0x1000 + REGISTRY, 0, 0);
-        let empty = walk(&f, 0, 0x1000, &mut [], &mut []);
+        let empty = walk(&f, 0, 0x1000, &mut Vec::new(), &mut Vec::new());
         assert_eq!(empty.outcome, Outcome::Rows { len: 0 });
         assert_eq!(empty.required, Demand::default());
         assert_eq!(demand(&f, 0, 0x1000), Some(Demand::default()));
@@ -461,8 +436,8 @@ mod tests {
             creference_registry::LOW_ROOTS_RVA.0 + 54 * 8,
             &0u64.to_le_bytes(),
         );
-        let mut rows = [Row::default(); 2];
-        let mut text = [0; 24];
+        let mut rows = vec![Row::default(); 2];
+        let mut text = vec![0; 24];
         assert_eq!(
             walk(&f, 0, 0x1000, &mut rows, &mut text).outcome,
             Outcome::Rows { len: 2 }
@@ -485,14 +460,14 @@ mod tests {
             let mut f = Fixture::new();
             f.put(at, &b);
             assert!(matches!(
-                walk(&f, 0, 0x1000, &mut [Row::default(); 2], &mut [0; 24]).outcome,
+                walk(&f, 0, 0x1000, &mut vec![Row::default(); 2], &mut vec![0; 24]).outcome,
                 Outcome::Unavailable { .. }
             ));
         }
         let mut f = Fixture::new();
         f.0.remove(&0x4000);
         assert!(matches!(
-            walk(&f, 0, 0x1000, &mut [Row::default(); 2], &mut [0; 24]).outcome,
+            walk(&f, 0, 0x1000, &mut vec![Row::default(); 2], &mut vec![0; 24]).outcome,
             Outcome::Unavailable { .. }
         ));
     }
@@ -528,8 +503,8 @@ mod tests {
             }
         }
         let mut memory = Combined { saved: f, registry };
-        let mut rows = [Row::default(); 2];
-        let mut text = [0; 24];
+        let mut rows = vec![Row::default(); 2];
+        let mut text = vec![0; 24];
         assert_eq!(
             walk(&memory, 0, 0x1000, &mut rows, &mut text).outcome,
             Outcome::Rows { len: 2 }
@@ -586,7 +561,7 @@ mod tests {
             reads: Cell::new(0),
         };
         assert!(matches!(
-            walk(&f, 0, 0x1000, &mut [Row::default(); 2], &mut [0; 24]).outcome,
+            walk(&f, 0, 0x1000, &mut vec![Row::default(); 2], &mut vec![0; 24]).outcome,
             Outcome::Unavailable {
                 reason: "saved event target registry changed during read"
             }
@@ -617,13 +592,13 @@ mod tests {
                 fixture.put(at + 0x68, &2u16.to_le_bytes());
             }
             assert_eq!(
-                walk(&fixture, 0, 0x1000, &mut [], &mut []).outcome,
+                super::count(&fixture, 0, 0x1000).outcome,
                 Outcome::Truncated {
                     len: 0,
                     unread_rows: count as u32
                 }
             );
-            let acquired = walk_growing(&fixture, 0, 0x1000, &mut rows, &mut text);
+            let acquired = walk(&fixture, 0, 0x1000, &mut rows, &mut text);
             assert_eq!(acquired.outcome, Outcome::Rows { len: count });
             assert_eq!(acquired.bytes, count * name_len);
             for (ordinal, row) in rows[..count].iter().enumerate() {

@@ -184,11 +184,11 @@ impl<'a> Buffers<'a> {
     /// No storage: the walk only counts demand.
     pub fn demand() -> Self {
         Self {
-            rows: Buffer::Fixed(&mut []),
-            targets: Buffer::Fixed(&mut []),
-            grants: Buffer::Fixed(&mut []),
-            stats: Buffer::Fixed(&mut []),
-            labels: Buffer::Fixed(&mut []),
+            rows: Buffer::Count,
+            targets: Buffer::Count,
+            grants: Buffer::Count,
+            stats: Buffer::Count,
+            labels: Buffer::Count,
         }
     }
 }

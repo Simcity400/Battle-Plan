@@ -11,14 +11,18 @@ export type QueueRow =
 const isArray = Array.isArray;
 export function validateTrainingQueue(value: unknown): TrainingQueueReply {
   const reply = value as TrainingQueueReply;
-  if (!reply || typeof reply.branchId !== 'string' || !Number.isInteger(reply.hour) || typeof reply.tag !== 'string'
-    || typeof reply.absent !== 'boolean' || !isArray(reply.orders) || !isArray(reply.warnings)
+  if (!reply || typeof reply.tag !== 'string' || !(reply.missing === null || typeof reply.missing === 'string')
+    || !isArray(reply.orders) || !isArray(reply.warnings)
     || (reply.readHour !== null && !Number.isInteger(reply.readHour))
     || reply.orders.some(order => typeof order.order !== 'string' || !Number.isInteger(order.amount) || !isArray(order.divisions)
       || order.divisions.some(division => typeof division.trainingRaw !== 'string' || !isArray(division.need) || !isArray(division.equipment))))
     throw new Error('Invalid training queue reply');
   return reply;
 }
+
+/** What the table's rows are: a render is due only when an order or a division in training comes, goes or moves, or
+ * a read is replaced; the queue is read once a day, so a pushed panel differs at most daily. */
+export const queueStructure = (reply: TrainingQueueReply) => JSON.stringify([reply.readHour, reply.missing, reply.orders]);
 
 /** Orders in the game's queue order, each with its divisions in training in their order. */
 export function queueRows(reply: TrainingQueueReply): QueueRow[] {
@@ -60,6 +64,8 @@ export function lowestFill(order: TrainingOrder): number | null {
   return lowest;
 }
 
+/** The order's template icon, none where its artwork is refused (`iconMissing` says why). */
+export const orderIcon = (order: TrainingOrder): string | null => order.icon;
 export const orderName = (order: TrainingOrder) => order.templateName ?? 'Template name unavailable';
 export const divisionName = (division: TrainingDivision) => division.name ?? 'Division name unavailable';
 export const percent = (ratio: number) => `${Math.round(ratio * 100)}%`;

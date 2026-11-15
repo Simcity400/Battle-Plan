@@ -269,7 +269,7 @@ impl Hooks {
             SIGNAL.admitted.store(0, Ordering::SeqCst);
         }
         let [reset, construct] = &mut self.taps;
-        let ready = Hook::set_enabled_batch_attach(
+        let ready = Hook::set_enabled_batch(
             &mut [
                 reset.publication_hook(),
                 construct.publication_hook(),

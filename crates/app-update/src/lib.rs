@@ -333,27 +333,6 @@ pub fn init(app: &AppHandle, role: Role, host: Arc<dyn Host>) -> std::io::Result
     Ok(())
 }
 
-/// The dashboard's headless preparer answers on Battle Plan's pipe: it closes for any update,
-/// running `close`, and the installer starts it again.
-pub fn serve_preparer(close: impl Fn() + Send + Sync + 'static) -> std::io::Result<()> {
-    struct Preparer<F>(F);
-    impl<F: Fn() + Send + Sync + 'static> control::Answer for Preparer<F> {
-        fn close_for_update(&self) -> Result<(), String> {
-            Ok(())
-        }
-        fn closed_for_update(&self) {
-            (self.0)();
-        }
-        fn install_blocked(&self) -> Option<String> {
-            None
-        }
-        fn preparer(&self) -> bool {
-            true
-        }
-    }
-    control::serve(Role::Dashboard, Arc::new(Preparer(close)))
-}
-
 struct Answering(Arc<dyn Host>);
 
 impl control::Answer for Answering {

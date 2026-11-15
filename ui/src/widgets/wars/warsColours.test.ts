@@ -8,7 +8,8 @@ import { chosenColour, factionIdentity, parseCampaignSettings, setFactionColour 
 import { factionColours } from '../../charts/factionColours.ts';
 import { FAILED_FACT, nameKey } from '../../dashboard/countryFacts.ts';
 import { parseColor, rgbToOklch } from '../../shell/appearance/color.ts';
-import type { CountryGroupReply, CountryStyle, FactionGroup, WarTimeline, WarsReply } from '../../generated/dashboard';
+import type { CountryGroupReply, CountryStyle, FactionGroup } from '../../generated/dashboard';
+import type { WarTimeline, WarsReply } from '../../generated/dashboard';
 import { prepareWars, warsLanes } from './warsData.ts';
 import type { WarsLaneOptions } from './warsData';
 import { warsColourPlan, warsColourSelection, warsCountryColours, warsFactionMembership, warsFixedColourKey, warsLookStart, warsSideColours } from './warsColours.ts';
@@ -24,7 +25,7 @@ const groups = (factions: FactionGroup[]): CountryGroupReply => ({
 const warReply = (members: string[]): WarsReply => ({
   branchId: 'branch', available: true, viewpoints: [], warnings: [], countryNames: [], unobserved: [], capitulationsUnobserved: [],
   wars: [{
-    id: 'war', firstHour: 10, lastHour: 39, startedBy: true, endedBy: false, capitulations: [], casualties: [],
+    id: 'war', firstHour: 10, lastHour: 39, startedBy: true, endedBy: false, capitulations: [],
     observations: [{ firstHour: 10, lastHour: 39, viewpointTag: 'First', viewpointSide: members, opposingSide: ['Opponent'],
       attackersAreViewpoint: true, representative: ['First', 'Opponent'], name: { text: 'Synthetic war', known: true, reason: null, key: null } }],
     participants: [...members.map(tag => ({ tag, side: 'attacker' as const, firstHour: 10, lastHour: 39, joinedBy: true, leftBy: false })),

@@ -105,31 +105,31 @@ fn status_world(count: usize) -> (PresentationMemory, Vec<carmy::DivisionSeed>) 
 fn status(
     memory: &impl Memory,
     seeds: &[carmy::DivisionSeed],
-    capacity: usize,
+    admitted: usize,
 ) -> (Outcome, Vec<carmy::StatusRow>) {
-    status_holding(memory, seeds, capacity, &[])
+    status_holding(memory, seeds, admitted, &[])
 }
 
+/// The source census admits the first `admitted` seeds and leaves the rest unread.
 fn status_holding(
     memory: &impl Memory,
     seeds: &[carmy::DivisionSeed],
-    capacity: usize,
+    admitted: usize,
     held: &[Option<crate::csub_unit_definition::DivisionMaxima>],
 ) -> (Outcome, Vec<carmy::StatusRow>) {
     let mut packet = status_packet(seeds.len());
     let allocated = packet.allocated_bytes();
-    let outcome = packet.capture_holding(
-        memory,
-        0,
-        GS,
-        seeds,
-        Outcome::Rows { len: seeds.len() },
-        capacity,
-        held,
-        &[],
-    );
+    let source = if admitted < seeds.len() {
+        Outcome::Truncated {
+            len: admitted,
+            unread_rows: (seeds.len() - admitted) as u32,
+        }
+    } else {
+        Outcome::Rows { len: admitted }
+    };
+    let outcome = packet.capture_holding(memory, 0, GS, &seeds[..admitted], source, held, &[]);
     assert_eq!(packet.allocated_bytes(), allocated);
-    let mut rows = vec![carmy::StatusRow::default(); capacity];
+    let mut rows = vec![carmy::StatusRow::default(); admitted];
     assert_eq!(packet.project(&mut rows), outcome);
     rows.truncate(outcome.len());
     (outcome, rows)
@@ -376,7 +376,7 @@ fn batched_status_request_counts_and_held_maxima_gates() {
     );
     assert_eq!(batch.maxima.get(), 0);
     assert_eq!(actual.fault.get(), Some(seeds[20].stat_block.unwrap()));
-    // Capacity admission never gathers the divisions beyond that prefix.
+    // A source prefix never gathers the divisions beyond it.
     let actual = HintedMemory::new(&source, None, false);
     let batch = status_reads(&actual, 65, false);
     status(&batch, &seeds, 1);
@@ -427,7 +427,6 @@ fn status_reuses_entry_scratch_and_prefetches_each_scatter() {
             GS,
             &seeds,
             Outcome::Rows { len: seeds.len() },
-            seeds.len(),
             &[],
             &[],
         );
@@ -488,7 +487,6 @@ fn status_maxima_reuses_one_probe_per_seed_and_keeps_carried_aliases_unread() {
             GS,
             &seeds,
             Outcome::Rows { len: seeds.len() },
-            seeds.len(),
             &holds,
             &[],
         );
@@ -549,7 +547,6 @@ fn status_maxima_collisions_use_serial_slots_and_values() {
         GS,
         &seeds,
         Outcome::Rows { len: seeds.len() },
-        seeds.len(),
         &holds,
         &[],
     );
@@ -689,37 +686,45 @@ fn movement_world(count: usize) -> (PresentationMemory, Vec<carmy::DivisionSeed>
     (source, seeds)
 }
 
+/// The source census admits the first `admitted` seeds; the packet starts with room for `paths`.
 fn movement(
     memory: &impl Memory,
     seeds: &[carmy::DivisionSeed],
-    rows: usize,
+    admitted: usize,
     paths: usize,
 ) -> (carmy::MovementWalk, Vec<carmy::MovementRow>, Vec<u32>) {
     let mut geometry = crate::cprovince::GeometryPacket::with_capacities(
         crate::cprovince::GeometryCapacities::default(),
     );
-    geometry.enable_growth();
     geometry.begin(memory, 0, GS).unwrap();
-    let mut packet = carmy::MovementPacket::new(rows, paths);
+    let mut packet = carmy::MovementPacket::new(admitted, paths);
     let allocated = packet.allocated_bytes();
+    let source = if admitted < seeds.len() {
+        Outcome::Truncated {
+            len: admitted,
+            unread_rows: (seeds.len() - admitted) as u32,
+        }
+    } else {
+        Outcome::Rows { len: admitted }
+    };
     let result = carmy::capture_movement_inputs(
         memory,
         0,
         GS,
-        seeds,
-        Outcome::Rows { len: seeds.len() },
-        rows,
-        paths,
+        &seeds[..admitted],
+        source,
         &mut geometry,
         &mut packet,
     );
-    let mut output = vec![carmy::MovementRow::default(); rows];
-    let mut route = vec![0; paths];
+    let mut output = vec![carmy::MovementRow::default(); admitted];
+    let mut route = vec![0; result.required_paths];
     assert_eq!(
         carmy::project_movement(&packet, &mut output, &mut route),
         result
     );
-    assert_eq!(packet.allocated_bytes(), allocated);
+    if result.required_paths <= paths {
+        assert_eq!(packet.allocated_bytes(), allocated);
+    }
     output.truncate(result.outcome.len());
     route.truncate(result.paths_len);
     (result, output, route)
@@ -751,7 +756,7 @@ fn movement_route_and_combat_payload_hints_still_lead_their_reads() {
 }
 
 #[test]
-fn movement_hints_preserve_copy_order_capacity_gaps_and_partial_faults() {
+fn movement_hints_preserve_copy_order_source_prefixes_route_growth_and_partial_faults() {
     let (source, mut seeds) = movement_world(9);
     for rows in [0, 1, 4, 5, 9] {
         for paths in [0, 2, 6, 18] {
@@ -1012,7 +1017,7 @@ fn batched_status_capacity_alias_and_partial_fault_matrix_equal_serial() {
 }
 
 #[test]
-fn batched_movement_capacity_duplicates_shared_null_and_stationary_equal_serial() {
+fn batched_movement_prefix_growth_duplicates_shared_null_and_stationary_equal_serial() {
     let (source, mut seeds) = batched_movement_world(65);
     for index in [1, 63, 64] {
         seeds[index].division = seeds[0].division;

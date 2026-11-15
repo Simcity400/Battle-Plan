@@ -10,17 +10,16 @@
 //! buffer exists. Off-refresh families carry no payload. Every frame still
 //! transits the FIFO so a slow refresh decode cannot let a later hour overtake it.
 //!
-//! Backpressure: enqueue does not block, but acquisition can wait for a free
-//! capture buffer when downstream processing exhausts the shared pool.
-//! The FIFO holds one job per pooled buffer (payload byte buffers live on the heap;
-//! payload jobs are bounded and recycled, never pool memory), so an owned
-//! buffer guarantees a free slot, as in the spool ready queue. A full queue
-//! records a whole-frame loss through `LossBatch`. Staging capacity misses
-//! instead use each family's admitted fallback and preserve its first failure;
-//! accepted-job panics and failed prepared acquisitions cannot retry live reads.
+//! No backpressure: each frame's job lives in its frame slot and the FIFO links
+//! the slots ([`crate::frame_pool`]), so enqueue never fills, never waits and
+//! never allocates; a backlog takes more frames. Only a failed allocation
+//! refuses an hour, as a whole-frame loss through `LossBatch`. Staging capacity
+//! misses instead use each family's admitted fallback and preserve its first
+//! failure; accepted-job panics and failed prepared acquisitions cannot retry
+//! live reads.
 //!
-//! Storage is allocated before hook installation. `BUFFERS` bounds queued frames;
-//! `JOB_POOL_KEEP` controls reusable payload storage per family or character part.
+//! Each family's payload pool keeps a payload for every frame a backlog holds and trims back
+//! to `JOB_POOL_STEADY` once it clears.
 //! Exhaustion or lock contention returns an empty staging object without
 //! allocating another payload. Retirement only transfers ownership on the game
 //! thread; the decode worker clears, grows and recycles that storage.
@@ -46,12 +45,10 @@ use crate::{
         weather::WeatherJob,
     },
     map_capture::PlayersJob,
-    sampling::{self, BUFFERS, DivisionsJob, Shared},
+    sampling::{self, DivisionsJob, Shared},
 };
 use replay_data::rows::TableId;
 
-use crossbeam_queue::ArrayQueue;
-use std::cell::UnsafeCell;
 use std::sync::{
     Mutex,
     atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, Ordering},
@@ -296,8 +293,8 @@ pub fn worker_id() -> u32 {
     WORKER_ID.load(Ordering::Acquire)
 }
 
-/// Loader watchdog only. A missing or failed worker cannot return frame leases
-/// and must release any callback waiting for a reusable buffer before detach.
+/// Loader watchdog only. A missing or failed worker cannot return frame leases, so the
+/// loader detaches rather than let the frames grow.
 pub fn worker_finished() -> bool {
     WORKER.lock().map_or(true, |slot| {
         slot.as_ref().is_none_or(|handle| handle.is_finished())
@@ -343,16 +340,12 @@ pub fn next_seq() -> u64 {
     SEQ.fetch_add(1, Ordering::Relaxed)
 }
 
+/// Each family stages one owned payload or retires its failed staging object;
+/// each independent character part owns a separate payload.
 const PAYLOADS_PER_FRAME: usize = 19 + CHARACTER_PARTS;
-// Each family stages one owned payload or retires its failed staging object;
-// each independent character part owns a separate payload.
+
 // The worker takes each queued frame before draining retirement, so that frame's
 // callback has already retired its failures before its lease can be returned.
-// At most BUFFERS owned frames can contribute between these drains.
-const RETIREMENT_CAPACITY: usize = BUFFERS * PAYLOADS_PER_FRAME;
-
-// Queue storage is allocated before the hook is enabled; the game thread
-// only moves vector handles here. Growth and allocator traffic stay off it.
 #[allow(clippy::large_enum_variant)]
 enum RetiredPayload {
     Relations(RelationsJob),
@@ -376,14 +369,74 @@ enum RetiredPayload {
     Weather(WeatherJob),
     Capitulation(CapitulationJob),
 }
-static RETIRED_PAYLOADS: AtomicPtr<ArrayQueue<RetiredPayload>> =
-    AtomicPtr::new(std::ptr::null_mut());
+/// Payloads retired on the game thread, freed or recycled by the decode worker. It holds
+/// as many as a backlog retires: the worker keeps room for every frame live, so a retirement
+/// allocates only when frames grew since its last drain. A retirement never waits: finding the
+/// worker taking the held ones, or a refused allocation, frees the payload where it is, which
+/// loses only its storage.
+struct Retirement {
+    held: Mutex<Vec<RetiredPayload>>,
+}
 
-fn prepare_retirement() {
-    if !RETIRED_PAYLOADS.load(Ordering::Acquire).is_null() {
-        return;
+impl Retirement {
+    fn new() -> Self {
+        Self {
+            held: Mutex::new(Vec::new()),
+        }
     }
-    let queue = Box::into_raw(Box::new(ArrayQueue::new(RETIREMENT_CAPACITY)));
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<RetiredPayload>> {
+        self.held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn push(&self, payload: RetiredPayload) {
+        let mut held = match self.held.try_lock() {
+            Ok(held) => held,
+            Err(std::sync::TryLockError::Poisoned(held)) => held.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return,
+        };
+        if engine_allocation::advisory(|| engine_allocation::reserve(&mut held, 1)).is_ok() {
+            held.push(payload);
+        }
+    }
+
+    /// Everything retired so far, leaving `spare`'s storage, sized for `frames` frames, in its
+    /// place.
+    fn take(&self, mut spare: Vec<RetiredPayload>, frames: usize) -> Vec<RetiredPayload> {
+        let room = frames.saturating_mul(PAYLOADS_PER_FRAME);
+        if spare.capacity() < room {
+            let _ = engine_allocation::advisory(|| {
+                engine_allocation::reserve_exact(&mut spare, room)
+            });
+        }
+        std::mem::replace(&mut *self.lock(), spare)
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.lock().len()
+    }
+
+    #[cfg(test)]
+    fn pop(&self) -> Option<RetiredPayload> {
+        self.lock().pop()
+    }
+
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+static RETIRED_PAYLOADS: AtomicPtr<Retirement> = AtomicPtr::new(std::ptr::null_mut());
+
+fn prepare_retirement() -> std::io::Result<()> {
+    if !RETIRED_PAYLOADS.load(Ordering::Acquire).is_null() {
+        return Ok(());
+    }
+    let queue = Box::into_raw(engine_allocation::boxed(Retirement::new())?);
     if RETIRED_PAYLOADS
         .compare_exchange(
             std::ptr::null_mut(),
@@ -398,6 +451,7 @@ fn prepare_retirement() {
             drop(Box::from_raw(queue));
         }
     }
+    Ok(())
 }
 
 /// Retain pools while callbacks can still reach the DLL on a failed detach.
@@ -475,6 +529,9 @@ impl Drop for PayloadPools {
         if let Ok(mut pool) = CAPITULATION_JOB_POOL.lock() {
             *pool = Vec::new();
         }
+        if let Ok(mut spare) = SPARE_RETIREMENT.lock() {
+            *spare = Vec::new();
+        }
         let queue = RETIRED_PAYLOADS.swap(std::ptr::null_mut(), Ordering::AcqRel);
         if !queue.is_null() {
             // The loader clears SHARED only after callback quiescence and
@@ -486,9 +543,12 @@ impl Drop for PayloadPools {
     }
 }
 
-pub fn prepare_payload_pools(game_score: bool) -> PayloadPools {
-    prepare_retirement();
-    for _ in 0..JOB_POOL_KEEP + 1 {
+/// A refused allocation is the collector's allocation failure; the pools prepared so far are
+/// released with the returned error.
+pub fn prepare_payload_pools(game_score: bool) -> std::io::Result<PayloadPools> {
+    let pools = PayloadPools;
+    prepare_retirement()?;
+    for _ in 0..JOB_POOL_STEADY {
         if crate::allocation::failed() {
             break;
         }
@@ -515,7 +575,10 @@ pub fn prepare_payload_pools(game_score: bool) -> PayloadPools {
         release_weather_job(WeatherJob::new());
         release_capitulation_job(CapitulationJob::new());
     }
-    PayloadPools
+    if crate::allocation::failed() {
+        return Err(std::io::ErrorKind::OutOfMemory.into());
+    }
+    Ok(pools)
 }
 
 fn defer_payload(payload: RetiredPayload) {
@@ -529,10 +592,7 @@ fn defer_payload(payload: RetiredPayload) {
     );
     // Preparation precedes enabling the hook; reclamation follows quiescence.
     let queue = unsafe { &*queue };
-    assert!(
-        queue.push(payload).is_ok(),
-        "owned-frame retirement bound exceeded"
-    );
+    queue.push(payload);
     // A payload retired without a queued frame still reaches the parked worker.
     let shared = sampling::SHARED.load(Ordering::Acquire);
     if !shared.is_null()
@@ -549,7 +609,18 @@ fn reclaim_payloads() {
     }
     // Only the decode worker or the quiescent loader drains this queue.
     let queue = unsafe { &*queue };
-    while let Some(payload) = queue.pop() {
+    let shared = sampling::SHARED.load(Ordering::Acquire);
+    let frames = if shared.is_null() {
+        crate::frame_pool::STEADY
+    } else {
+        unsafe { &*shared }.frames.live()
+    };
+    let spare = SPARE_RETIREMENT
+        .lock()
+        .map(|mut spare| std::mem::take(&mut *spare))
+        .unwrap_or_default();
+    let mut retired = queue.take(spare, frames);
+    for payload in retired.drain(..) {
         match payload {
             RetiredPayload::Relations(job) => release_relations_job(job),
             RetiredPayload::Characters(job) => release_characters_job(job),
@@ -573,64 +644,45 @@ fn reclaim_payloads() {
             RetiredPayload::Capitulation(job) => release_capitulation_job(job),
         }
     }
+    if let Ok(mut spare) = SPARE_RETIREMENT.lock() {
+        *spare = retired;
+    }
 }
 
-/// Enqueue a frame for decode (or ordered forwarding for skip hours).
-/// The loader starts the worker before enabling the hook. A full queue returns the job for
-/// the existing gap path and counts the drop on the existing counters.
+/// The decode worker's empty retirement storage, swapped in at its next drain.
+static SPARE_RETIREMENT: Mutex<Vec<RetiredPayload>> = Mutex::new(Vec::new());
+
+/// Enqueue a frame for decode (or ordered forwarding for skip hours) by value, as tests build
+/// their jobs. None unless an allocation failed, which returns the job.
 #[cfg(test)]
 pub fn enqueue(shared: &Shared, mut job: DecodeJob) -> Option<DecodeJob> {
     if crate::allocation::failed() {
         return Some(job);
     }
     job.queued_qpc = sampling::qpc();
-    match shared.decode_queue.push(job) {
-        Ok(()) => {
-            enqueued(shared);
-            None
-        }
-        Err(job) => {
-            refused();
-            Some(job)
-        }
-    }
+    push(shared, job);
+    enqueued(shared);
+    None
 }
 
-/// `enqueue` for the hour's job, filled in place in its reserved slot. A full
-/// queue or a failed allocation retires the job's payloads to their pools for
-/// the existing gap path and returns false.
+/// Hands the hour's job, filled in place in its frame's slot, to the decode worker. Only a
+/// failed allocation refuses it: the job's payloads retire to their pools for the existing
+/// gap path and it returns false.
 pub fn enqueue_reserved(shared: &Shared, mut reserved: Reserved<'_>) -> bool {
     if crate::allocation::failed() {
         recycle_payloads(reserved.job());
         return false;
     }
     reserved.job().queued_qpc = sampling::qpc();
-    match reserved.publish() {
-        Ok(()) => {
-            enqueued(shared);
-            true
-        }
-        Err(mut reserved) => {
-            refused();
-            recycle_payloads(reserved.job());
-            false
-        }
-    }
+    reserved.publish();
+    enqueued(shared);
+    true
 }
 
 fn enqueued(shared: &Shared) {
     if let Some(worker) = shared.decode_waker.get() {
         worker.unpark();
     }
-}
-
-fn refused() {
-    crate::equipment_destruction::lost_drain();
-    crate::naval_result_sources::lost_drain();
-    crate::air_losses::lost_drain();
-    crate::building_bombing::lost_drain();
-    crate::nuclear_strikes::lost_drain();
-    crate::land_events::fail();
 }
 
 /// Return an unqueued job's payloads to their pools.
@@ -700,6 +752,7 @@ fn recycle_payloads(job: &mut DecodeJob) {
 /// The single FIFO decode worker. Game frames arrive in hour order and hand
 /// off to the spool ready queue in the same order; no reorder buffer exists.
 fn decode_loop() {
+    let _worker = crate::allocation::enter(crate::allocation::Phase::Decode);
     let mut air_bases_memo = AirBasesMemo::default();
     let mut priority = crate::runtime::OwnPriority::frame_pipeline();
     let mut registered = false;
@@ -718,7 +771,7 @@ fn decode_loop() {
             priority.follow_pipeline(&shared.frame_priority, crate::frame_priority::Role::Decode);
             registered = true;
         }
-        match shared.decode_queue.pop() {
+        match pop(shared) {
             Some(job) => {
                 priority
                     .follow_pipeline(&shared.frame_priority, crate::frame_priority::Role::Decode);
@@ -727,7 +780,6 @@ fn decode_loop() {
             }
             None => {
                 failure::stage("idle retirement", None);
-                let _phase = crate::allocation::enter(crate::allocation::Phase::Decode);
                 crate::allocation::attempted_hour(None);
                 reclaim_payloads();
                 std::thread::park();
@@ -742,7 +794,7 @@ fn decode_loop() {
 
 #[cfg(test)]
 pub(crate) fn drain_for_test(shared: &Shared, memo: &mut AirBasesMemo) {
-    while let Some(job) = shared.decode_queue.pop() {
+    while let Some(job) = pop(shared) {
         process_owned_job(shared, job, memo);
     }
 }
@@ -751,7 +803,7 @@ pub(crate) fn drain_for_test(shared: &Shared, memo: &mut AirBasesMemo) {
 /// family to its pool. Dropping this envelope without recycling used to
 /// allocate a fresh payload on the game thread on every subsequent hour.
 fn process_owned_job(shared: &Shared, mut job: DecodeJob, air_bases_memo: &mut AirBasesMemo) {
-    sampling::frame_stage(job.index, sampling::FrameStage::Decoding);
+    shared.frame_stage(job.index, sampling::FrameStage::Decoding);
     let failure_scope = failure::Scope::frame(failure::Frame {
         index: job.index,
         seq: job.seq,
@@ -869,14 +921,8 @@ fn process_owned_job(shared: &Shared, mut job: DecodeJob, air_bases_memo: &mut A
         frame.pool_bytes = shared.pool_total();
     }
     failure::stage("publish ready", None);
-    sampling::frame_stage(job.index, sampling::FrameStage::Ready);
-    let published = publish_ready(
-        &shared.ready,
-        job.index,
-        &shared.completed[job.index],
-        job.game_elapsed,
-        crate::allocation::failed,
-    );
+    shared.frame_stage(job.index, sampling::FrameStage::Ready);
+    let published = publish_ready(shared, job.index, job.game_elapsed);
     // No frame reference or diagnostic lease survives its ready publication.
     drop(failure_scope);
     failure::stage("after ready handoff", None);
@@ -886,30 +932,21 @@ fn process_owned_job(shared: &Shared, mut job: DecodeJob, air_bases_memo: &mut A
     crate::allocation::attempted_hour(None);
 }
 
-fn publish_ready(
-    ready: &ArrayQueue<usize>,
-    index: usize,
-    completed: &std::sync::atomic::AtomicI64,
-    elapsed: i64,
-    mut failed: impl FnMut() -> bool,
-) -> bool {
-    // Failure can stop the spool between admission and a full-queue handoff.
-    // It can no longer return a slot; let teardown join this worker.
-    loop {
-        if failed() {
-            completed.store(0, Ordering::Release);
-            return false;
-        }
-        if ready.push(index).is_ok() {
-            completed.store(elapsed.max(1), Ordering::Release);
-            return true;
-        }
-        std::thread::yield_now();
+/// Hands a decoded frame to the spool, unless an allocation failed: the spool may have stopped
+/// and can no longer return it, so teardown joins this worker instead.
+fn publish_ready(shared: &Shared, index: usize, elapsed: i64) -> bool {
+    let completed = &shared.frames.slot(index).completed;
+    if crate::allocation::failed() {
+        completed.store(0, Ordering::Release);
+        return false;
     }
+    shared.frames.push_ready(index);
+    completed.store(elapsed.max(1), Ordering::Release);
+    true
 }
 
 #[cfg(test)]
-pub(crate) fn allocation_exercise(shared: &Shared, index: usize, hour: i32) -> bool {
+fn exercise_projects() -> Option<ProjectsJob> {
     use engine_native::memory::SliceMemory;
     let bytes = [7_u8; 64];
     let memory = SliceMemory {
@@ -920,11 +957,19 @@ pub(crate) fn allocation_exercise(shared: &Shared, index: usize, hour: i32) -> b
     payload.log = crate::raw::RawLog::new(4, 64);
     payload.active = true;
     if crate::allocation::failed() {
-        return false;
+        return None;
     }
-    if payload.log.take(&memory, 0x1000, 8, 1).is_none() {
+    payload.log.take(&memory, 0x1000, 8, 1)?;
+    Some(payload)
+}
+
+/// One projects decode: whether a refused allocation cost its tables by name while the frame
+/// was still published.
+#[cfg(test)]
+pub(crate) fn allocation_exercise(shared: &Shared, index: usize, hour: i32) -> bool {
+    let Some(payload) = exercise_projects() else {
         return false;
-    }
+    };
     let job = DecodeJob {
         index,
         hour,
@@ -934,7 +979,66 @@ pub(crate) fn allocation_exercise(shared: &Shared, index: usize, hour: i32) -> b
         ..Default::default()
     };
     process_owned_job(shared, job, &mut AirBasesMemo::default());
+    let frame = unsafe { &*shared.frames[index].load(Ordering::Acquire) };
+    let outcomes = frame.extended.outcomes();
     !crate::allocation::failed()
+        && shared.frames.slot(index).completed.load(Ordering::Acquire) != 0
+        && PROJECTS.iter().all(|table| {
+            outcomes[table.index()]
+                == engine_native::walk::Outcome::Unavailable {
+                    reason: ALLOCATION_REASON,
+                }
+        })
+}
+
+#[cfg(all(test, feature = "alloc-fault-injection"))]
+#[derive(Debug)]
+pub(crate) struct RefusalHour {
+    pub(crate) terminal: bool,
+    pub(crate) published: bool,
+    pub(crate) projects: [engine_native::walk::Outcome; PROJECTS.len()],
+    pub(crate) capitulation: engine_native::walk::Outcome,
+}
+
+/// One hour of two payload decodes, projects and capitulation, on the frame `index`, which the
+/// caller holds: `arm` runs once the payload is built, then the hour is decoded, taken back from
+/// the ready queue when published, and prepared again.
+#[cfg(all(test, feature = "alloc-fault-injection"))]
+pub(crate) fn refusal_exercise(
+    shared: &Shared,
+    index: usize,
+    hour: i32,
+    arm: impl FnOnce(),
+) -> RefusalHour {
+    let payload = {
+        let _setup = crate::allocation::enter(crate::allocation::Phase::Bootstrap);
+        exercise_projects().expect("the projects payload records its span")
+    };
+    arm();
+    let job = DecodeJob {
+        index,
+        hour,
+        game_elapsed: 1,
+        projects_refresh: true,
+        projects_payload: Some(payload),
+        capitulation_refresh: true,
+        capitulation_payload: Some(CapitulationJob::new()),
+        ..Default::default()
+    };
+    process_owned_job(shared, job, &mut AirBasesMemo::default());
+    let frame = unsafe { &*shared.frames[index].load(Ordering::Acquire) };
+    let outcomes = frame.extended.outcomes();
+    let hour = RefusalHour {
+        terminal: crate::allocation::failed(),
+        published: shared.frames.pop_ready() == Some(index),
+        projects: PROJECTS.map(|table| outcomes[table.index()]),
+        capitulation: outcomes[CAPITULATION[0].index()],
+    };
+    if !hour.terminal {
+        let _setup = crate::allocation::enter(crate::allocation::Phase::Bootstrap);
+        shared.prepare_frame_for_reuse(index);
+    }
+    hour
 }
 
 pub fn start_worker() -> Result<(), &'static str> {
@@ -949,6 +1053,7 @@ pub fn start_worker() -> Result<(), &'static str> {
             .name("hoi4-decode".into())
             .stack_size(crate::runtime::BACKGROUND_STACK_BYTES)
             .spawn(|| {
+                crate::private_heap::off_hold_path();
                 #[cfg(feature = "worker_sampler")]
                 let _sampler_exit = crate::thread_cpu::StopOnThreadExit;
                 #[cfg(feature = "worker_sampler")]
@@ -968,141 +1073,176 @@ pub fn start_worker() -> Result<(), &'static str> {
 }
 
 const MISSING_PAYLOAD_REASON: &str = "missing active decode payload";
+const ALLOCATION_REASON: &str = "capture buffer allocation failed";
 
-/// A declared handoff without its payload is terminal. An undeclared handoff
-/// may already contain typed results or skipped outcomes, which remain intact.
-fn fail_missing_payloads(frame: &mut sampling::Captured, job: &DecodeJob) {
-    if job.relations_refresh && job.relations_payload.is_none() {
-        let captured = frame.extended.relations_pilot();
-        captured.fail_relations_capture(captured.relation_activity(), MISSING_PAYLOAD_REASON);
-    }
-    for (part, &refresh) in job.characters_refresh.iter().enumerate() {
-        if refresh && job.characters_payload[part].is_none() {
+/// One payload decode's tables, as one verdict refuses them.
+#[derive(Clone, Copy)]
+enum Family {
+    Relations,
+    Characters(usize),
+    Projects,
+    Lexical,
+    Divisions,
+    AirStats,
+    AirWing,
+    Naval,
+    Players,
+    Session,
+    ProductionRest,
+    ConstructionRest,
+    EconomyRest,
+    AirBases,
+    Supremacy,
+    Sunk,
+    Radar,
+    Intel,
+    Weather,
+    Capitulation,
+}
+
+fn fail_family(frame: &mut sampling::Captured, family: Family, reason: &'static str) {
+    match family {
+        Family::Relations => {
+            let captured = frame.extended.relations_pilot();
+            captured.fail_relations_capture(captured.relation_activity(), reason);
+        }
+        Family::Characters(part) => {
             let captured = frame.extended.characters_pilot();
             let active = std::array::from_fn(|index| {
                 CHARACTER_MASKS[part][index] && captured.character_activity()[index]
             });
-            captured.fail_character_tables(active, MISSING_PAYLOAD_REASON);
+            captured.fail_character_tables(active, reason);
         }
-    }
-    if job.projects_refresh && job.projects_payload.is_none() {
-        frame
+        Family::Projects => frame
             .extended
             .projects_pilot()
-            .fail_projects_capture(true, MISSING_PAYLOAD_REASON);
-    }
-    if job.lexical_refresh && job.lexical_payload.is_none() {
-        frame
-            .extended
-            .lexical_pilot()
-            .fail_lexical_capture(MISSING_PAYLOAD_REASON);
-    }
-    if job.divisions_refresh && job.divisions_payload.is_none() {
-        frame.divisions_result = engine_native::walk::Outcome::Unavailable {
-            reason: MISSING_PAYLOAD_REASON,
-        };
-        frame
-            .extended
-            .install_failed_division_counts(MISSING_PAYLOAD_REASON);
-        frame.extended.fail_division_details(MISSING_PAYLOAD_REASON);
-        frame.extended.set_divisions_raw_mode(false);
-    }
-    if job.air_stats_refresh && job.air_stats_payload.is_none() {
-        frame
+            .fail_projects_capture(true, reason),
+        Family::Lexical => frame.extended.lexical_pilot().fail_lexical_capture(reason),
+        Family::Divisions => {
+            frame.divisions_result = engine_native::walk::Outcome::Unavailable { reason };
+            frame.extended.install_failed_division_counts(reason);
+            frame.extended.fail_division_details(reason);
+            frame.extended.set_divisions_raw_mode(false);
+        }
+        Family::AirStats => frame
             .extended
             .air_stats_pilot()
-            .fail_air_stats_capture(MISSING_PAYLOAD_REASON);
-    }
-    if job.air_wing_refresh && job.air_wing_payload.is_none() {
-        frame
-            .extended
-            .game_score_pilot()
-            .fail_air(MISSING_PAYLOAD_REASON);
-        frame
-            .extended
-            .air_wing_pilot()
-            .fail_air_wing_capture(MISSING_PAYLOAD_REASON);
-    }
-    if job.naval_refresh && job.naval_payload.is_none() {
-        frame
-            .extended
-            .naval_pilot()
-            .fail_naval_capture(MISSING_PAYLOAD_REASON);
-        frame.extended.install_reserved_land_certificate();
-    }
-    if job.players_refresh && job.players_payload.is_none() {
-        frame.map.fail_players_capture(MISSING_PAYLOAD_REASON);
-    }
-    if job.session_refresh && job.session_payload.is_none() {
-        frame
+            .fail_air_stats_capture(reason),
+        Family::AirWing => {
+            frame.extended.game_score_pilot().fail_air(reason);
+            frame
+                .extended
+                .air_wing_pilot()
+                .fail_air_wing_capture(reason);
+        }
+        Family::Naval => {
+            frame.extended.naval_pilot().fail_naval_capture(reason);
+            frame.extended.install_reserved_land_certificate();
+        }
+        Family::Players => frame.map.fail_players_capture(reason),
+        Family::Session => frame
             .extended
             .session_pilot()
-            .fail_session_capture(MISSING_PAYLOAD_REASON);
-    }
-    if job.production_rest_refresh && job.production_rest_payload.is_none() {
-        frame
+            .fail_session_capture(reason),
+        Family::ProductionRest => frame
             .extended
             .production_rest_pilot()
-            .fail_production_rest_capture(MISSING_PAYLOAD_REASON);
-    }
-    if job.construction_rest_refresh && job.construction_rest_payload.is_none() {
-        frame
+            .fail_production_rest_capture(reason),
+        Family::ConstructionRest => frame
             .extended
             .construction_rest_pilot()
-            .fail_construction_rest_capture(MISSING_PAYLOAD_REASON);
-    }
-    if job.economy_rest_refresh && job.economy_rest_payload.is_none() {
-        frame
+            .fail_construction_rest_capture(reason),
+        Family::EconomyRest => frame
             .extended
             .economy_rest_pilot()
-            .fail_economy_rest_capture(MISSING_PAYLOAD_REASON);
-    }
-    if job.air_bases_refresh && job.air_bases_payload.is_none() {
-        frame
-            .extended
-            .air_bases_pilot()
-            .fail_air_bases_capture(MISSING_PAYLOAD_REASON);
-        frame
-            .extended
-            .radar_pilot()
-            .fail_registrations_capture(MISSING_PAYLOAD_REASON);
-    }
-    if job.supremacy_refresh && job.supremacy_payload.is_none() {
-        frame
+            .fail_economy_rest_capture(reason),
+        Family::AirBases => {
+            frame
+                .extended
+                .air_bases_pilot()
+                .fail_air_bases_capture(reason);
+            frame
+                .extended
+                .radar_pilot()
+                .fail_registrations_capture(reason);
+        }
+        Family::Supremacy => frame
             .extended
             .supremacy_pilot()
-            .fail_supremacy_capture(MISSING_PAYLOAD_REASON);
-    }
-    if job.sunk_refresh && job.sunk_payload.is_none() {
-        frame
-            .extended
-            .sunk_pilot()
-            .fail_sunk_capture(MISSING_PAYLOAD_REASON);
-    }
-    if job.radar_refresh && job.radar_payload.is_none() {
-        frame
-            .extended
-            .radar_pilot()
-            .fail_radar_capture(MISSING_PAYLOAD_REASON);
-    }
-    if job.intel_refresh && job.intel_payload.is_none() {
-        frame
-            .extended
-            .intel_pilot()
-            .fail_intel_capture(MISSING_PAYLOAD_REASON);
-    }
-    if job.weather_refresh && job.weather_payload.is_none() {
-        frame
-            .extended
-            .weather_pilot()
-            .fail_weather_capture(MISSING_PAYLOAD_REASON);
-    }
-    if job.capitulation_refresh && job.capitulation_payload.is_none() {
-        frame
+            .fail_supremacy_capture(reason),
+        Family::Sunk => frame.extended.sunk_pilot().fail_sunk_capture(reason),
+        Family::Radar => frame.extended.radar_pilot().fail_radar_capture(reason),
+        Family::Intel => frame.extended.intel_pilot().fail_intel_capture(reason),
+        Family::Weather => frame.extended.weather_pilot().fail_weather_capture(reason),
+        Family::Capitulation => frame
             .extended
             .capitulation_pilot()
-            .fail_capitulation_capture(MISSING_PAYLOAD_REASON);
+            .fail_capitulation_capture(reason),
     }
+}
+
+/// A declared handoff without its payload is terminal. An undeclared handoff
+/// may already contain typed results or skipped outcomes, which remain intact.
+fn fail_missing_payloads(frame: &mut sampling::Captured, job: &DecodeJob) {
+    let mut missing = |refresh: bool, present: bool, family: Family| {
+        if refresh && !present {
+            fail_family(frame, family, MISSING_PAYLOAD_REASON);
+        }
+    };
+    missing(job.relations_refresh, job.relations_payload.is_some(), Family::Relations);
+    for (part, &refresh) in job.characters_refresh.iter().enumerate() {
+        missing(refresh, job.characters_payload[part].is_some(), Family::Characters(part));
+    }
+    missing(job.projects_refresh, job.projects_payload.is_some(), Family::Projects);
+    missing(job.lexical_refresh, job.lexical_payload.is_some(), Family::Lexical);
+    missing(job.divisions_refresh, job.divisions_payload.is_some(), Family::Divisions);
+    missing(job.air_stats_refresh, job.air_stats_payload.is_some(), Family::AirStats);
+    missing(job.air_wing_refresh, job.air_wing_payload.is_some(), Family::AirWing);
+    missing(job.naval_refresh, job.naval_payload.is_some(), Family::Naval);
+    missing(job.players_refresh, job.players_payload.is_some(), Family::Players);
+    missing(job.session_refresh, job.session_payload.is_some(), Family::Session);
+    missing(
+        job.production_rest_refresh,
+        job.production_rest_payload.is_some(),
+        Family::ProductionRest,
+    );
+    missing(
+        job.construction_rest_refresh,
+        job.construction_rest_payload.is_some(),
+        Family::ConstructionRest,
+    );
+    missing(
+        job.economy_rest_refresh,
+        job.economy_rest_payload.is_some(),
+        Family::EconomyRest,
+    );
+    missing(job.air_bases_refresh, job.air_bases_payload.is_some(), Family::AirBases);
+    missing(job.supremacy_refresh, job.supremacy_payload.is_some(), Family::Supremacy);
+    missing(job.sunk_refresh, job.sunk_payload.is_some(), Family::Sunk);
+    missing(job.radar_refresh, job.radar_payload.is_some(), Family::Radar);
+    missing(job.intel_refresh, job.intel_payload.is_some(), Family::Intel);
+    missing(job.weather_refresh, job.weather_payload.is_some(), Family::Weather);
+    missing(
+        job.capitulation_refresh,
+        job.capitulation_payload.is_some(),
+        Family::Capitulation,
+    );
+}
+
+/// A payload decode runs contained: a refused allocation in it costs its family's tables this
+/// hour, by name, instead of the capture, and the next hour decodes again.
+fn decode_contained(
+    shared: &Shared,
+    index: usize,
+    family: Family,
+    decode: impl FnOnce(&mut sampling::Captured),
+) -> bool {
+    let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
+    let ((), refused) = engine_allocation::contained(|| decode(frame));
+    if refused {
+        fail_family(frame, family, ALLOCATION_REASON);
+    }
+    refused
 }
 
 /// Decode one FIFO item and hand its pooled frame to the spool ready queue
@@ -1133,16 +1273,18 @@ fn process_job(
     let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
     frame.extended.decode_air_copies();
 
+    let index = job.index;
     if job.relations_refresh
         && let Some(payload) = job.relations_payload.as_ref()
     {
         failure::stage("relations", None);
-        let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
         let mut decode_ticks = [0; 2];
-        frame
-            .extended
-            .relations_pilot()
-            .decode_relations_payload(payload, &mut decode_ticks);
+        decode_contained(shared, index, Family::Relations, |frame| {
+            frame
+                .extended
+                .relations_pilot()
+                .decode_relations_payload(payload, &mut decode_ticks);
+        });
         account_decode(shared, &RELATIONS, &decode_ticks);
     }
     for (part, (refresh, payload)) in job
@@ -1155,36 +1297,43 @@ fn process_job(
             continue;
         };
         failure::stage("characters", Some(part));
-        let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
         let mut decode_ticks = [0; CHARACTERS.len()];
-        let characters = frame.extended.characters_pilot();
-        characters.decode_characters_payload(shared.base, payload, &mut decode_ticks);
-        characters.remember_templates(payload);
+        decode_contained(shared, index, Family::Characters(part), |frame| {
+            frame.extended.characters_pilot().decode_characters_payload(
+                shared.base,
+                payload,
+                &mut decode_ticks,
+            );
+        });
+        let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
+        frame.extended.characters_pilot().remember_templates(payload);
         account_decode(shared, &CHARACTERS, &decode_ticks);
     }
     if job.projects_refresh
         && let Some(payload) = job.projects_payload.as_ref()
     {
         failure::stage("projects", None);
-        let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
         let mut decode_ticks = [0; PROJECTS.len()];
-        frame.extended.projects_pilot().decode_projects_payload(
-            shared.base,
-            payload,
-            &mut decode_ticks,
-        );
+        decode_contained(shared, index, Family::Projects, |frame| {
+            frame.extended.projects_pilot().decode_projects_payload(
+                shared.base,
+                payload,
+                &mut decode_ticks,
+            );
+        });
         account_decode(shared, &PROJECTS, &decode_ticks);
     }
     if job.lexical_refresh
         && let Some(payload) = job.lexical_payload.as_ref()
     {
         failure::stage("lexical", None);
-        let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
         let mut decode_ticks = [0; 1];
-        frame
-            .extended
-            .lexical_pilot()
-            .decode_lexical_payload(shared.base, payload, &mut decode_ticks);
+        decode_contained(shared, index, Family::Lexical, |frame| {
+            frame
+                .extended
+                .lexical_pilot()
+                .decode_lexical_payload(shared.base, payload, &mut decode_ticks);
+        });
         account_decode(shared, &LEXICAL, &decode_ticks);
     }
 
@@ -1192,26 +1341,28 @@ fn process_job(
         && let Some(payload) = job.divisions_payload.as_mut()
     {
         failure::stage("divisions", None);
-        let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
         let mut decode_ticks = [0; 6];
-        sampling::decode_divisions_payload(frame, shared.base, payload, &mut decode_ticks);
+        decode_contained(shared, index, Family::Divisions, |frame| {
+            sampling::decode_divisions_payload(frame, shared.base, payload, &mut decode_ticks);
+        });
         account_decode(shared, &DIVISIONS, &decode_ticks);
     }
     if job.air_wing_refresh
         && let Some(payload) = job.air_wing_payload.as_mut()
     {
         failure::stage("air_wing", None);
-        let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
         let mut decode_ticks = [0; 2];
-        crate::extended::air::decode_air_payload(
-            frame.extended.air_wing_pilot(),
-            payload,
-            &mut decode_ticks,
-        );
-        frame
-            .extended
-            .game_score_pilot()
-            .install_air(&mut payload.game_score);
+        decode_contained(shared, index, Family::AirWing, |frame| {
+            crate::extended::air::decode_air_payload(
+                frame.extended.air_wing_pilot(),
+                payload,
+                &mut decode_ticks,
+            );
+            frame
+                .extended
+                .game_score_pilot()
+                .install_air(&mut payload.game_score);
+        });
         payload.update_capacity_charge();
         account_decode(shared, &AIR_WING, &decode_ticks);
     }
@@ -1219,193 +1370,215 @@ fn process_job(
         && let Some(payload) = job.air_stats_payload.as_ref()
     {
         failure::stage("air_stats", None);
-        let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
         let mut decode_ticks = [0; 1];
-        crate::extended::air::decode_air_stats_payload(
-            frame.extended.air_stats_pilot(),
-            shared.base,
-            payload,
-            &mut decode_ticks,
-        );
+        decode_contained(shared, index, Family::AirStats, |frame| {
+            crate::extended::air::decode_air_stats_payload(
+                frame.extended.air_stats_pilot(),
+                shared.base,
+                payload,
+                &mut decode_ticks,
+            );
+        });
         account_decode(shared, &AIR_STATS, &decode_ticks);
     }
     if job.naval_refresh
         && let Some(payload) = job.naval_payload.as_ref()
     {
         failure::stage("naval", None);
-        let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
         let mut decode_ticks = [0; 9];
-        frame
-            .extended
-            .decode_naval_payload(shared.base, payload, &mut decode_ticks);
+        decode_contained(shared, index, Family::Naval, |frame| {
+            frame
+                .extended
+                .decode_naval_payload(shared.base, payload, &mut decode_ticks);
+        });
         account_decode(shared, &NAVAL_ORDER, &decode_ticks);
     }
     if job.players_refresh
         && let Some(payload) = job.players_payload.as_ref()
     {
         failure::stage("players", None);
-        let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
         let mut decode_ticks = [0; 2];
-        frame
-            .map
-            .decode_players_payload(shared.base, payload, &mut decode_ticks);
+        decode_contained(shared, index, Family::Players, |frame| {
+            frame
+                .map
+                .decode_players_payload(shared.base, payload, &mut decode_ticks);
+        });
         account_decode(shared, &PLAYERS, &decode_ticks);
     }
     if job.session_refresh
         && let Some(payload) = job.session_payload.as_ref()
     {
         failure::stage("session", None);
-        let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
         let mut decode_ticks = [0; 3];
-        frame.extended.session_pilot().decode_session_payload(
-            shared.base,
-            payload,
-            &mut decode_ticks,
-        );
+        decode_contained(shared, index, Family::Session, |frame| {
+            frame.extended.session_pilot().decode_session_payload(
+                shared.base,
+                payload,
+                &mut decode_ticks,
+            );
+        });
         account_decode(shared, &SESSION, &decode_ticks);
     }
     if job.production_rest_refresh
         && let Some(payload) = job.production_rest_payload.as_ref()
     {
         failure::stage("production_rest", None);
-        let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
         let mut decode_ticks = [0; 8];
-        frame
-            .extended
-            .production_rest_pilot()
-            .decode_production_rest_payload(
-                shared.base,
-                payload.game_state,
-                payload,
-                &mut decode_ticks,
-            );
+        decode_contained(shared, index, Family::ProductionRest, |frame| {
+            frame
+                .extended
+                .production_rest_pilot()
+                .decode_production_rest_payload(
+                    shared.base,
+                    payload.game_state,
+                    payload,
+                    &mut decode_ticks,
+                );
+        });
         account_decode(shared, &PRODUCTION_REST, &decode_ticks);
     }
     if job.construction_rest_refresh
         && let Some(payload) = job.construction_rest_payload.as_ref()
     {
         failure::stage("construction_rest", None);
-        let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
         let mut decode_ticks = [0; 10];
-        frame.extended.construction_rest_pilot().decode_construction_rest_payload(
-            shared.base,
-            payload.game_state,
-            payload,
-            &mut decode_ticks,
-        );
+        decode_contained(shared, index, Family::ConstructionRest, |frame| {
+            frame.extended.construction_rest_pilot().decode_construction_rest_payload(
+                shared.base,
+                payload.game_state,
+                payload,
+                &mut decode_ticks,
+            );
+        });
         account_decode(shared, &CONSTRUCTION_REST, &decode_ticks);
     }
     if job.economy_rest_refresh
         && let Some(payload) = job.economy_rest_payload.as_ref()
     {
         failure::stage("economy_rest", None);
-        let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
         let mut decode_ticks = [0; crate::extended::economy::N];
-        frame
-            .extended
-            .economy_rest_pilot()
-            .decode_economy_rest_payload(shared.base, payload, &mut decode_ticks);
+        decode_contained(shared, index, Family::EconomyRest, |frame| {
+            frame
+                .extended
+                .economy_rest_pilot()
+                .decode_economy_rest_payload(shared.base, payload, &mut decode_ticks);
+        });
         account_decode(shared, &ECONOMY_REST, &decode_ticks);
     }
     if job.air_bases_refresh
         && let Some(payload) = job.air_bases_payload.as_ref()
     {
         failure::stage("air_bases", None);
-        let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
         let mut decode_ticks = [0; 3];
-        frame.extended.decode_air_bases_payload(
-            shared.base,
-            payload,
-            air_bases_memo,
-            AirBasesMemoContext {
-                owner: shared as *const Shared as usize,
-                base: shared.base,
-                seq: job.seq,
-                hour: job.hour,
-                force_full: job.force_full,
-            },
-            &mut decode_ticks,
-        );
+        let context = AirBasesMemoContext {
+            owner: shared as *const Shared as usize,
+            base: shared.base,
+            seq: job.seq,
+            hour: job.hour,
+            force_full: job.force_full,
+        };
+        let refused = decode_contained(shared, index, Family::AirBases, |frame| {
+            frame.extended.decode_air_bases_payload(
+                shared.base,
+                payload,
+                air_bases_memo,
+                context,
+                &mut decode_ticks,
+            );
+        });
+        if refused {
+            air_bases_memo.invalidate();
+        }
         account_decode(shared, &AIR_BASES, &decode_ticks);
     }
     if job.supremacy_refresh
         && let Some(payload) = job.supremacy_payload.as_ref()
     {
         failure::stage("supremacy", None);
-        let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
         let mut decode_ticks = [0; 1];
-        frame.extended.supremacy_pilot().decode_supremacy_payload(
-            shared.base,
-            payload,
-            &mut decode_ticks,
-        );
+        decode_contained(shared, index, Family::Supremacy, |frame| {
+            frame.extended.supremacy_pilot().decode_supremacy_payload(
+                shared.base,
+                payload,
+                &mut decode_ticks,
+            );
+        });
         account_decode(shared, &SUPREMACY, &decode_ticks);
     }
     if job.sunk_refresh
         && let Some(payload) = job.sunk_payload.as_ref()
     {
         failure::stage("sunk", None);
-        let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
         let mut decode_ticks = [0; 1];
-        frame
-            .extended
-            .sunk_pilot()
-            .decode_sunk_payload(shared.base, payload, &mut decode_ticks);
+        decode_contained(shared, index, Family::Sunk, |frame| {
+            frame
+                .extended
+                .sunk_pilot()
+                .decode_sunk_payload(shared.base, payload, &mut decode_ticks);
+        });
         account_decode(shared, &SUNK, &decode_ticks);
     }
     if job.radar_refresh
         && let Some(payload) = job.radar_payload.as_ref()
     {
         failure::stage("radar", None);
-        let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
         let mut decode_ticks = [0; 1];
-        frame
-            .extended
-            .radar_pilot()
-            .decode_radar_payload(payload, &mut decode_ticks);
+        decode_contained(shared, index, Family::Radar, |frame| {
+            frame
+                .extended
+                .radar_pilot()
+                .decode_radar_payload(payload, &mut decode_ticks);
+        });
         account_decode(shared, &RADAR, &decode_ticks);
     }
     if job.intel_refresh
         && let Some(payload) = job.intel_payload.as_ref()
     {
         failure::stage("intel", None);
-        let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
         let mut decode_ticks = [0; 1];
-        frame
-            .extended
-            .intel_pilot()
-            .decode_intel_payload(payload, &mut decode_ticks);
+        decode_contained(shared, index, Family::Intel, |frame| {
+            frame
+                .extended
+                .intel_pilot()
+                .decode_intel_payload(payload, &mut decode_ticks);
+        });
         account_decode(shared, &INTEL, &decode_ticks);
     }
     if job.weather_refresh
         && let Some(payload) = job.weather_payload.as_ref()
     {
         failure::stage("weather", None);
-        let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
         let mut decode_ticks = [0; 2];
         let mut tracker = shared
             .weather_temperature
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        frame.extended.weather_pilot().decode_weather_payload(
-            shared.base,
-            payload,
-            job.hour,
-            &mut tracker,
-            &mut decode_ticks,
-        );
+        let refused = decode_contained(shared, index, Family::Weather, |frame| {
+            frame.extended.weather_pilot().decode_weather_payload(
+                shared.base,
+                payload,
+                job.hour,
+                &mut tracker,
+                &mut decode_ticks,
+            );
+        });
+        if refused {
+            // A refused hour's words are no comparison for the next.
+            let _ = tracker.observe(job.hour, None);
+        }
         account_decode(shared, &WEATHER, &decode_ticks);
     }
     if job.capitulation_refresh
         && let Some(payload) = job.capitulation_payload.as_ref()
     {
         failure::stage("capitulation", None);
-        let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
         let mut decode_ticks = [0; 1];
-        frame
-            .extended
-            .capitulation_pilot()
-            .decode_capitulation_payload(shared.base, payload, &mut decode_ticks);
+        decode_contained(shared, index, Family::Capitulation, |frame| {
+            frame
+                .extended
+                .capitulation_pilot()
+                .decode_capitulation_payload(shared.base, payload, &mut decode_ticks);
+        });
         account_decode(shared, &CAPITULATION, &decode_ticks);
     }
 }
@@ -1486,7 +1659,7 @@ pub fn detach_drain(mut drained: impl FnMut(u64)) -> Result<(), &'static str> {
     let mut air_bases_memo = AirBasesMemo::default();
     if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut count = 0;
-        while let Some(job) = shared.decode_queue.pop() {
+        while let Some(job) = pop(shared) {
             process_owned_job(shared, job, &mut air_bases_memo);
             count += 1;
             failure::stage("drain progress", None);
@@ -1509,95 +1682,44 @@ pub fn detach_drain(mut drained: impl FnMut(u64)) -> Result<(), &'static str> {
     panic_failure().or(error).map_or(Ok(()), Err)
 }
 
-/// The bounded decode FIFO. Each job is filled in place in a preallocated
-/// slot and only slot numbers move through the queues, so the game thread
-/// never moves a job (tens of KiB) through its stack. A slot belongs to one
-/// side at a time: free, reserved by its producer, ready, or held by the
-/// consumer while it moves the job out.
-pub struct DecodeQueue {
-    jobs: Box<[UnsafeCell<DecodeJob>]>,
-    free: ArrayQueue<usize>,
-    ready: ArrayQueue<usize>,
+/// Frame `index`'s decode job, to fill in place: the game thread never moves a job (tens of
+/// KiB) through its stack. The caller holds the frame.
+pub fn reserve(shared: &Shared, index: usize) -> Reserved<'_> {
+    Reserved { shared, index }
 }
 
-// SAFETY: a slot's job is accessed only by the side holding its number.
-unsafe impl Sync for DecodeQueue {}
-
-impl DecodeQueue {
-    fn new(capacity: usize) -> Self {
-        let free = ArrayQueue::new(capacity);
-        for slot in 0..capacity {
-            free.push(slot).expect("decode slot fits its free list");
-        }
-        Self {
-            jobs: (0..capacity)
-                .map(|_| UnsafeCell::new(DecodeJob::default()))
-                .collect(),
-            free,
-            ready: ArrayQueue::new(capacity),
-        }
-    }
-
-    /// A vacant slot to fill in place. The hourly body holds one only while it
-    /// owns a buffer, and every queued job holds another buffer, so one is free.
-    pub fn reserve(&self) -> Option<Reserved<'_>> {
-        self.free.pop().map(|slot| Reserved { queue: self, slot })
-    }
-
-    /// By value, like the queue it replaced; the hourly body fills a reservation.
-    #[cfg(test)]
-    #[allow(clippy::result_large_err)]
-    pub fn push(&self, job: DecodeJob) -> Result<(), DecodeJob> {
-        let Some(mut reserved) = self.reserve() else {
-            return Err(job);
-        };
-        *reserved.job() = job;
-        reserved
-            .publish()
-            .map_err(|mut reserved| std::mem::take(reserved.job()))
-    }
-
-    pub fn pop(&self) -> Option<DecodeJob> {
-        let slot = self.ready.pop()?;
-        // SAFETY: popping the slot's number from `ready` hands it to this consumer.
-        let job = std::mem::take(unsafe { &mut *self.jobs[slot].get() });
-        self.free
-            .push(slot)
-            .expect("decode slot returns to its free list");
-        Some(job)
-    }
-
-    #[cfg(test)]
-    pub fn len(&self) -> usize {
-        self.ready.len()
-    }
-
-    #[cfg(test)]
-    pub fn is_empty(&self) -> bool {
-        self.ready.is_empty()
-    }
+/// The oldest queued job, moved out of its frame's slot.
+pub fn pop(shared: &Shared) -> Option<DecodeJob> {
+    let index = shared.frames.pop_decode()?;
+    // SAFETY: popping the index hands its frame, and so its job, to this consumer.
+    Some(std::mem::take(unsafe { shared.frames.job(index) }))
 }
 
-/// A producer's slot. Dropped unpublished, it returns vacant: payloads it
-/// still holds are dropped, like the locals they replace.
+/// Queues a job built by value into its frame's slot, as tests build them.
+#[cfg(test)]
+pub fn push(shared: &Shared, job: DecodeJob) {
+    let mut reserved = reserve(shared, job.index);
+    *reserved.job() = job;
+    reserved.publish();
+}
+
+/// A frame's job, until published. Dropped unpublished, it is left vacant: payloads it still
+/// holds are dropped, like the locals they replace.
 pub struct Reserved<'a> {
-    queue: &'a DecodeQueue,
-    slot: usize,
+    shared: &'a Shared,
+    index: usize,
 }
 
 impl Reserved<'_> {
     pub fn job(&mut self) -> &mut DecodeJob {
-        // SAFETY: this reservation holds the slot's number.
-        unsafe { &mut *self.queue.jobs[self.slot].get() }
+        // SAFETY: this reservation's caller holds the frame.
+        unsafe { self.shared.frames.job(self.index) }
     }
 
-    /// Hand the job to the consumer; a full queue returns the reservation.
-    fn publish(self) -> Result<(), Self> {
-        if self.queue.ready.push(self.slot).is_err() {
-            return Err(self);
-        }
+    /// Hands the job to the consumer.
+    fn publish(self) {
+        self.shared.frames.push_decode(self.index);
         std::mem::forget(self);
-        Ok(())
     }
 }
 
@@ -1625,21 +1747,16 @@ impl Drop for Reserved<'_> {
         job.intel_payload = None;
         job.weather_payload = None;
         job.capitulation_payload = None;
-        let _ = self.queue.free.push(self.slot);
     }
-}
-
-pub fn new_queue() -> DecodeQueue {
-    DecodeQueue::new(BUFFERS)
 }
 
 #[cfg(test)]
 pub(crate) fn reset_for_test() {
-    prepare_retirement();
+    prepare_retirement().unwrap();
     reclaim_payloads();
     // Production prepares bounded payload storage before installing the hook.
     // Tests exercise that lifecycle rather than relying on cold tick allocation.
-    std::mem::forget(prepare_payload_pools(false));
+    std::mem::forget(prepare_payload_pools(false).unwrap());
     SEQ.store(0, Ordering::Relaxed);
 }
 

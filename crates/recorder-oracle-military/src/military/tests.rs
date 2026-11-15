@@ -216,7 +216,7 @@ fn stored_air_wing_name_oracle_compares_bytes_presence_and_capture_refusals() {
             id,
             installed_content_save::AirWing {
                 government_in_exile_tag: None,
-                manpower: None,
+                manpower: Some(40),
 
                 id,
                 owner: b"GER".to_vec(),
@@ -242,6 +242,7 @@ fn stored_air_wing_name_oracle_compares_bytes_presence_and_capture_refusals() {
                 id,
                 owner: 101,
                 planes: 1,
+                acquired_manpower: Some(40).into(),
                 exile_country: Some(0).into(),
                 name,
                 replacement_setting: Recorded::Value(Some(0)),
@@ -302,7 +303,7 @@ fn wing_replacement_oracle_checks_raw_bytes_and_never_waives_missing_or_unavaila
             id,
             installed_content_save::AirWing {
                 government_in_exile_tag: None,
-                manpower: None,
+                manpower: Some(40),
                 stop_training_at_max_xp: false,
                 transfer_progress: None,
                 transferring_to: None,
@@ -328,6 +329,7 @@ fn wing_replacement_oracle_checks_raw_bytes_and_never_waives_missing_or_unavaila
                 owner: 101,
                 planes: 1,
                 name: Recorded::Value(Some(Vec::new())),
+                acquired_manpower: Some(40).into(),
                 exile_country: Some(0).into(),
                 replacement_setting: actual,
                 ..Default::default()
@@ -1253,12 +1255,12 @@ fn naval_combats_compare_locations_and_missing_rows_despite_membership_exclusion
 /// One saved ship with 30.00999 experience beside a recorded row holding
 /// `recorded`, compared at its display step.
 fn ship_experience_report(recorded: i64) -> Report {
-    ship_report(recorded, Some(0))
+    ship_report(recorded, Some(0).into(), Some(0))
 }
 
-/// [`ship_experience_report`] with `crew` as the recorded and saved manpower
-/// fields; `None` is a refused crew read beside a save without the keys.
-fn ship_report(recorded: i64, crew: Option<i32>) -> Report {
+/// [`ship_experience_report`] with `crew` as both recorded manpower fields
+/// and `saved_crew` as both saved ones.
+fn ship_report(recorded: i64, crew: Recorded<Option<i32>>, saved_crew: Option<i32>) -> Report {
     let membership = membership();
     let (mut frame, mut saved, _, _) = super::super::fixtures::fixture();
     let owner = saved.countries.keys().next().unwrap().clone();
@@ -1304,8 +1306,8 @@ fn ship_report(recorded: i64, crew: Option<i32>) -> Report {
                 override_set_programmatically: None,
                 equipment: None,
             }),
-            manpower: crew,
-            max_manpower: crew,
+            manpower: saved_crew,
+            max_manpower: saved_crew,
 
             has_criticals: false,
             id: 15,
@@ -1351,8 +1353,8 @@ fn ship_report(recorded: i64, crew: Option<i32>) -> Report {
                 ..Default::default()
             })
             .into(),
-            acquired_manpower: crew.into(),
-            required_manpower: crew.into(),
+            acquired_manpower: crew,
+            required_manpower: crew,
             id: 15,
             task_force: 14,
             experience: recorded,
@@ -1383,12 +1385,35 @@ fn ship_experience_compares_at_its_display_step() {
     );
 }
 
+/// A crew the frame holds compares with the save's; one the collector could not certify (the
+/// column's refusal `None`) is not recorded, a limitation with its reason, never a difference.
 #[test]
-fn a_refused_ship_crew_read_is_a_difference_beside_a_save_without_the_keys() {
+fn ship_crew_compares_with_the_save_and_a_not_recorded_crew_is_a_limitation_with_its_reason() {
+    let equal = ship_report(3_000_000, Some(255).into(), Some(255));
+    assert_differences(&equal, &[]);
+    assert_eq!(equal.compared_tables.get("Ships.manpower"), Some(&1));
+    assert_eq!(equal.compared_tables.get("Ships.max_manpower"), Some(&1));
+    assert!(!equal.limitations.contains_key(CREW_NOT_RECORDED));
     assert_differences(
-        &ship_report(3_000_000, None),
+        &ship_report(3_000_000, Some(254).into(), Some(255)),
         &["type=15 id=0.manpower", "type=15 id=0.max_manpower"],
     );
+    for (crew, saved_crew) in [
+        (Recorded::Value(None), Some(255)),
+        (Recorded::Value(None), None),
+        (Recorded::NotRecorded, Some(255)),
+    ] {
+        let missing = ship_report(3_000_000, crew, saved_crew);
+        assert_differences(&missing, &[]);
+        assert_eq!(missing.compared_tables.get("Ships.manpower"), None);
+        assert_eq!(
+            missing.limitations.get(CREW_NOT_RECORDED),
+            Some(&vec![
+                "ship type=15 id=0.manpower".to_owned(),
+                "ship type=15 id=0.max_manpower".to_owned(),
+            ])
+        );
+    }
 }
 
 fn assert_differences(report: &Report, fields: &[&str]) {
@@ -1493,8 +1518,8 @@ fn manpower_wing_oracle_compares_exile_tags_omission_aliases_and_unavailable_cap
         (Some(201).into(), Some(b"HST".as_slice()), 0),
         (Some(201).into(), None, 1),
         (Some(0).into(), Some(b"HST".as_slice()), 1),
-        (Recorded::Value(None), None, 1),
-        (Recorded::NotRecorded, None, 1),
+        (Recorded::Value(None), None, 0),
+        (Recorded::NotRecorded, None, 0),
     ] {
         saved.air_wings.insert(
             id,
@@ -1545,6 +1570,100 @@ fn manpower_wing_oracle_compares_exile_tags_omission_aliases_and_unavailable_cap
                 .differences
                 .iter()
                 .all(|line| line.contains("government_in_exile_tag"))
+        );
+    }
+}
+
+/// One saved wing with `saved` manpower and no exile beside a recorded row holding `manpower`
+/// and `exile`.
+fn wing_report(
+    manpower: Recorded<Option<i32>>,
+    exile: Recorded<Option<i32>>,
+    saved: Option<i32>,
+) -> Report {
+    use replay_data::rows::AirWingRow;
+    let (mut frame, mut saved_world, _, _) = super::super::fixtures::fixture();
+    let id = (1 << 32) | 69;
+    let country = frame.complete::<tables::Countries>().unwrap()[0].clone();
+    let links = BTreeMap::from([(101, &country)]);
+    saved_world.air.wings.push(installed_content_save::air::Wing {
+        id,
+        pool_type: b"fixture_plane".to_vec(),
+        name: None,
+        accidents: None,
+        experience: zero(),
+        equipment: installed_content_save::air::EquipmentPool {
+            entries: Vec::new(),
+            allow_zero: false,
+        },
+        ace: None,
+        raid: None,
+    });
+    saved_world.air_wings.insert(
+        id,
+        installed_content_save::AirWing {
+            reinforcement_setting: Some(0),
+            stop_training_at_max_xp: false,
+            transfer_progress: None,
+            transferring_to: None,
+            id,
+            government_in_exile_tag: None,
+            manpower: saved,
+            owner: b"GER".to_vec(),
+            name: Some(Vec::new()),
+            country_override: b"---".to_vec(),
+            air_base: 0,
+            planes: 1,
+            mission_mask: 0,
+            mission_region: None,
+            mission_active: None,
+            region_change_penalty: None,
+            pool_ordinal: 0,
+        },
+    );
+    set(
+        &mut frame,
+        TableId::AirWings,
+        TableRows::AirWings(vec![AirWingRow {
+            id,
+            owner: 101,
+            planes: 1,
+            acquired_manpower: manpower,
+            exile_country: exile,
+            replacement_setting: Some(0).into(),
+            name: Some(Vec::new()).into(),
+            ..Default::default()
+        }]),
+    );
+    let mut report = Report::default();
+    compare_air_wings(&frame, &saved_world, &links, &mut report).unwrap();
+    assert_eq!(report.air_wings, 1);
+    report
+}
+
+/// A wing's manpower the frame holds compares with the save's; a crew read the collector could
+/// not certify (the column's refusal `None`) is not recorded, a limitation with its reason,
+/// never a difference.
+#[test]
+fn wing_manpower_compares_with_the_save_and_a_not_recorded_crew_is_a_limitation_with_its_reason() {
+    let equal = wing_report(Some(480).into(), Some(0).into(), Some(480));
+    assert_differences(&equal, &[]);
+    assert_eq!(equal.compared_tables.get("AirWings.acquired_manpower"), Some(&1));
+    assert!(!equal.limitations.contains_key(CREW_NOT_RECORDED));
+    assert_differences(
+        &wing_report(Some(479).into(), Some(0).into(), Some(480)),
+        &["type=69 id=1.manpower"],
+    );
+    for missing in [Recorded::Value(None), Recorded::NotRecorded] {
+        let missing = wing_report(missing, missing, Some(480));
+        assert_differences(&missing, &[]);
+        assert_eq!(missing.compared_tables.get("AirWings.acquired_manpower"), None);
+        assert_eq!(
+            missing.limitations.get(CREW_NOT_RECORDED),
+            Some(&vec![
+                "air wing type=69 id=1.government_in_exile_tag".to_owned(),
+                "air wing type=69 id=1.manpower".to_owned(),
+            ])
         );
     }
 }
@@ -2043,7 +2162,7 @@ fn division_status_exact_movement_organisation_compares_saved_subdisplay_words()
 }
 
 #[test]
-fn training_stop_oracle_rejects_unknown_and_mismatched_demanded_flags() {
+fn training_stop_oracle_limits_unrecorded_and_rejects_mismatched_demanded_flags() {
     use replay_data::rows::{AirWingRow, Recorded};
     let (mut frame, mut saved, _, _) = super::super::fixtures::fixture();
     let id = (1 << 32) | 69;
@@ -2066,7 +2185,7 @@ fn training_stop_oracle_rejects_unknown_and_mismatched_demanded_flags() {
         id,
         installed_content_save::AirWing {
             government_in_exile_tag: None,
-            manpower: None,
+            manpower: Some(40),
             reinforcement_setting: Some(0),
             id,
             owner: b"GER".to_vec(),
@@ -2084,12 +2203,14 @@ fn training_stop_oracle_rejects_unknown_and_mismatched_demanded_flags() {
             pool_ordinal: 0,
         },
     );
-    for (flags, differences) in [
-        (None, 1),
-        (Some(0), 1),
-        (Some(1), 1),
-        (Some(3), 0),
-        (Some(15), 0),
+    // No map flags, or flags without the stop flag's present bit, record no
+    // stop flag; a present flag is compared, false against the saved true.
+    for (flags, differences, recorded) in [
+        (None, 0, false),
+        (Some(0), 0, false),
+        (Some(1), 1, true),
+        (Some(3), 0, true),
+        (Some(15), 0, true),
     ] {
         set(
             &mut frame,
@@ -2101,6 +2222,7 @@ fn training_stop_oracle_rejects_unknown_and_mismatched_demanded_flags() {
                 mission_mask: 0x800,
                 name: Recorded::Value(Some(Vec::new())),
                 map_flags: flags.into(),
+                acquired_manpower: Some(40).into(),
                 exile_country: Some(0).into(),
                 replacement_setting: Some(0).into(),
                 ..Default::default()
@@ -2119,6 +2241,19 @@ fn training_stop_oracle_rejects_unknown_and_mismatched_demanded_flags() {
                 .differences
                 .iter()
                 .all(|difference| difference.contains("stop_training_at_max_xp"))
+        );
+        assert_eq!(
+            report.compared_tables.get("AirWings.training_stop").copied(),
+            recorded.then_some(1),
+            "{flags:?}"
+        );
+        assert_eq!(
+            report
+                .limitations
+                .get(TRAINING_STOP_NOT_RECORDED)
+                .map(Vec::len),
+            (!recorded).then_some(1),
+            "{flags:?}"
         );
     }
 }

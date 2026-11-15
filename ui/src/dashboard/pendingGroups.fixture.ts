@@ -1,15 +1,13 @@
-import assert from 'node:assert/strict';
 import { createServer } from 'vite';
 import type { CountryGroupReply } from '../generated/dashboard';
 import type { CountrySelection } from './model';
 
-/** Synthetic fixtures for mounted tests of widgets that choose countries by group
- * while the groups reply is still being prepared. */
+/** Synthetic fixtures for mounted tests of widgets that choose countries by group. */
 
-/** The branch the fixtures cover; the groups reply has read it through `PREPARED_THROUGH`. */
+/** The branch the fixtures cover; GER and ENG hold their tags through `PREPARED_THROUGH` unless `final`. */
 export const BRANCH = { id: '1', firstHour: 0, lastHour: 200 };
 export const PREPARED_THROUGH = 160;
-/** An hour still being prepared, and one already read. */
+/** An hour after `PREPARED_THROUGH`, and one before it. */
 export const PENDING_HOUR = 170;
 export const KNOWN_HOUR = 150;
 
@@ -17,10 +15,8 @@ export const KNOWN_HOUR = 150;
 export const humansBy = (membership: 'hour' | 'end' | 'ever'): CountrySelection =>
   ({ kind: 'group', group: { type: 'humans' }, membership, aggregate: false });
 
-/** A groups reply answered from its prepared prefix: GER and ENG are known from the
- * first hour through `PREPARED_THROUGH`, GER a human player throughout, and every later
- * hour is still being prepared. `final` gives the same history as a final reply, in
- * which the hours after `PREPARED_THROUGH` are read and have no human player. */
+/** A groups reply: GER and ENG hold their tags from the first hour through `PREPARED_THROUGH`
+ * (`final`: through the branch end), and GER is a human player through `PREPARED_THROUGH`. */
 export function pendingGroups(options: { final?: boolean; humans?: CountryGroupReply['humans']; tags?: readonly string[] } = {}): CountryGroupReply {
   const through = options.final ? BRANCH.lastHour : PREPARED_THROUGH;
   const reply: CountryGroupReply = {
@@ -30,24 +26,12 @@ export function pendingGroups(options: { final?: boolean; humans?: CountryGroupR
     countryIdentities: (options.tags ?? ['GER', 'ENG']).map((tag, index) => ({ tag,
       identities: [{ firstHour: BRANCH.firstHour, lastHour: through, slot: index + 1, countryId: index + 101 }] })),
   };
-  return options.final ? reply : { ...reply, coverage: { firstHour: BRANCH.firstHour, lastHour: PREPARED_THROUGH, complete: false },
-    pending: [{ firstHour: PREPARED_THROUGH + 1, lastHour: BRANCH.lastHour }] } as CountryGroupReply;
+  return reply;
 }
 
-/** No human player found through `PREPARED_THROUGH`, their membership not recorded at 140-150,
- * and every later hour still being prepared. */
+/** No human player, their membership not recorded at 140-150. */
 export const gapGroups = (): CountryGroupReply =>
   ({ ...pendingGroups({ humans: [] }), unobserved: { humans: [{ firstHour: 140, lastHour: 150 }], factions: [], wars: [] } });
-
-/** What a widget with no member to ask for (`noMembersAt`) shows over `gapGroups` with humans
- * counted at each hour: the recorded gap at 145, no member at 100, still being prepared at 170. */
-export function assertNoMemberStates(render: (hour: number) => string) {
-  assert.match(render(145), /Group membership is unavailable at this time\./);
-  assert.match(render(100), /This group has no members at this moment\./);
-  const later = render(PENDING_HOUR);
-  assert.match(later, /aria-label="This range is still being prepared\."/);
-  assert.doesNotMatch(later, /unavailable|no members/);
-}
 
 /** Loads `entry` (a path under the repository root) through Vite's SSR loader with each
  * module whose path ends in a key of `replacements` replaced by its source. */

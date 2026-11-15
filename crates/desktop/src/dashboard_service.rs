@@ -1,5 +1,6 @@
 //! Host-direct dashboard queries through the shared data library.
-//! The native viewer owns map rendering; dashboard reads do not start it.
+//! The map renders on threads of its own; dashboard reads do not start it, and a map that stops
+//! leaves them working.
 
 use dashboard::{
     QueryError,
@@ -126,11 +127,6 @@ impl DashboardService {
                     true
                 }))
                 .map_err(|error| error.to_string())?;
-                // Choices saved later apply as they are saved.
-                if let Err(error) = runtime.apply_saved_preparation() {
-                    runtime.shutdown();
-                    return Err(error.to_string());
-                }
                 *saved = Some(runtime);
             }
             Arc::clone(saved.as_ref().expect("runtime initialized"))
@@ -362,10 +358,6 @@ fn cancel_native(app: &AppHandle, id: String) {
     }
 }
 
-pub fn disconnected(_app: &AppHandle, _message: &str) {
-    // A viewer disconnect does not close the independent host data runtime.
-}
-
 async fn request(
     window: &WebviewWindow,
     _host: &NativeHost,
@@ -436,6 +428,7 @@ pub async fn dashboard_product(
     request_id: String,
 ) -> Result<Response, QueryError> {
     query.validate()?;
+    // A followed query is answered where the map's playheads are, in this process too.
     request(
         &window,
         &host,
@@ -444,51 +437,6 @@ pub async fn dashboard_product(
         DataCommand::Product {
             id: request_id,
             request: query,
-        },
-    )
-    .await
-}
-
-#[tauri::command]
-pub async fn dashboard_prepared_query(
-    window: WebviewWindow,
-    host: State<'_, NativeHost>,
-    service: State<'_, DashboardService>,
-    query: ProductRequest,
-    refresh: Option<bool>,
-    request_id: String,
-) -> Result<Response, QueryError> {
-    query.validate()?;
-    request(
-        &window,
-        &host,
-        &service,
-        request_id.clone(),
-        DataCommand::PreparedQuery {
-            id: request_id,
-            request: query,
-            refresh: refresh.unwrap_or(false),
-        },
-    )
-    .await
-}
-
-#[tauri::command]
-pub async fn dashboard_preparation_preferences(
-    window: WebviewWindow,
-    host: State<'_, NativeHost>,
-    service: State<'_, DashboardService>,
-    enabled: Option<bool>,
-    request_id: String,
-) -> Result<Response, QueryError> {
-    request(
-        &window,
-        &host,
-        &service,
-        request_id.clone(),
-        DataCommand::PreparationPreferences {
-            id: request_id,
-            enabled,
         },
     )
     .await
@@ -515,114 +463,6 @@ pub async fn dashboard_history_choice(
             segment_id,
             choice,
         },
-    )
-    .await
-}
-
-async fn preparation_command(
-    window: &WebviewWindow,
-    host: &NativeHost,
-    service: &DashboardService,
-    source_id: String,
-    revision: String,
-    request_id: String,
-    action: dashboard::prepared::Action,
-) -> Result<Response, QueryError> {
-    request(
-        window,
-        host,
-        service,
-        request_id.clone(),
-        DataCommand::Preparation {
-            id: request_id,
-            source_id,
-            revision,
-            action,
-        },
-    )
-    .await
-}
-
-#[tauri::command]
-pub async fn dashboard_preparation_status(
-    window: WebviewWindow,
-    host: State<'_, NativeHost>,
-    service: State<'_, DashboardService>,
-    source_id: String,
-    revision: String,
-    request_id: String,
-) -> Result<Response, QueryError> {
-    preparation_command(
-        &window,
-        &host,
-        &service,
-        source_id,
-        revision,
-        request_id,
-        dashboard::prepared::Action::Status,
-    )
-    .await
-}
-
-#[tauri::command]
-pub async fn dashboard_prepare_source(
-    window: WebviewWindow,
-    host: State<'_, NativeHost>,
-    service: State<'_, DashboardService>,
-    source_id: String,
-    revision: String,
-    request_id: String,
-) -> Result<Response, QueryError> {
-    preparation_command(
-        &window,
-        &host,
-        &service,
-        source_id,
-        revision,
-        request_id,
-        dashboard::prepared::Action::Start,
-    )
-    .await
-}
-
-#[tauri::command]
-pub async fn dashboard_cancel_preparation(
-    window: WebviewWindow,
-    host: State<'_, NativeHost>,
-    service: State<'_, DashboardService>,
-    source_id: String,
-    revision: String,
-    request_id: String,
-) -> Result<Response, QueryError> {
-    preparation_command(
-        &window,
-        &host,
-        &service,
-        source_id,
-        revision,
-        request_id,
-        dashboard::prepared::Action::Cancel,
-    )
-    .await
-}
-
-#[tauri::command]
-pub async fn dashboard_clear_preparation(
-    window: WebviewWindow,
-    host: State<'_, NativeHost>,
-    service: State<'_, DashboardService>,
-    source_id: String,
-    revision: String,
-    request_id: String,
-) -> Result<Response, QueryError> {
-    preparation_command(
-        &window,
-        &host,
-        &service,
-        source_id,
-        revision,
-        request_id,
-        dashboard::prepared::Action::Clear,
     )
     .await
 }
@@ -657,9 +497,9 @@ pub async fn dashboard_map_settings(
         },
     )
     .await;
-    // The viewer process keeps its own copy of the preferences this host saves. A reply that
-    // fails after the save (or a save that failed) still has the viewer read the file again,
-    // which costs nothing when it did not change.
+    // The map keeps its own copy of the preferences this host saves. A reply that fails after
+    // the save (or a save that failed) still has the map read the file again, which costs
+    // nothing when it did not change.
     if saving {
         host.map_settings_saved();
         window
@@ -684,9 +524,18 @@ pub fn dashboard_release_source(
     service: State<'_, DashboardService>,
     source_id: String,
 ) -> Result<(), String> {
-    service
-        .runtime(window.app_handle())?
-        .dispatch(DataCommand::Release { source_id });
+    let runtime = service.runtime(window.app_handle())?;
+    // Its follows go with it.
+    if let Ok(source) = runtime.source(&source_id) {
+        let close = ProductRequest {
+            source_id: source_id.clone(),
+            revision: source.key().revision.clone(),
+            product: "follow-close".into(),
+            params: serde_json::json!({}),
+        };
+        runtime.dispatch(DataCommand::Product { id: format!("follow-close-{source_id}"), request: close });
+    }
+    runtime.dispatch(DataCommand::Release { source_id });
     Ok(())
 }
 

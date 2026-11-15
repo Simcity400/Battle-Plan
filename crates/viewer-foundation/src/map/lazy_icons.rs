@@ -257,6 +257,7 @@ impl LazyTextures {
         let spawned = std::thread::Builder::new()
             .name("lazy icon loader".into())
             .spawn_carried(move || {
+                crate::worker_priority::enter(crate::worker_priority::Class::Normal);
                 loop {
                     while textures.settle() {}
                     textures.running.store(false, Ordering::Release);

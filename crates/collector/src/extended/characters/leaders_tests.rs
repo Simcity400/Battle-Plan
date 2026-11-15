@@ -11,7 +11,7 @@ fn census_of(world: &World) -> CharactersJob {
     let mut job = CharactersJob::new_part(0);
     for _ in 0..16 {
         let report =
-            copy_characters_growing(world, context(PART_MASKS[0]), &mut job, Roles::Gather);
+            copy_characters(world, context(PART_MASKS[0]), &mut job, Roles::Gather);
         if report.raw_ok && job.role_census().is_some() {
             return job;
         }
@@ -71,6 +71,7 @@ fn small() -> World {
 
 #[test]
 fn unchanged_hours_read_no_leader_and_publish_the_roster_walk_rows() {
+    let _globals = crate::extended::characters::test_globals();
     let world = small();
     let characters = world.characters as u64;
     let watches = Watches::enabled(world.characters);
@@ -91,6 +92,7 @@ fn unchanged_hours_read_no_leader_and_publish_the_roster_walk_rows() {
 
 #[test]
 fn a_dirty_leader_alone_is_read_and_the_country_follows_the_census() {
+    let _globals = crate::extended::characters::test_globals();
     let mut world = small();
     let characters = world.characters as u64;
     let watches = Watches::enabled(world.characters);
@@ -119,6 +121,7 @@ fn a_dirty_leader_alone_is_read_and_the_country_follows_the_census() {
 
 #[test]
 fn set_ideology_and_invalidation_read_every_leader() {
+    let _globals = crate::extended::characters::test_globals();
     let world = small();
     let characters = world.characters as u64;
     let watches = Watches::enabled(world.characters);
@@ -148,6 +151,7 @@ fn leader_role(index: usize) -> usize {
 
 #[test]
 fn quiet_hours_look_up_no_character_and_carry_the_whole_table() {
+    let _globals = crate::extended::characters::test_globals();
     let mut world = small();
     let characters = world.characters as u64;
     let domain = Lookups::new();
@@ -205,11 +209,12 @@ fn quiet_hours_look_up_no_character_and_carry_the_whole_table() {
 /// log; recycling keeps it, and a pool miss starts one with its cache.
 #[test]
 fn recycling_keeps_a_leader_job_that_carried_from_the_census() {
+    let _globals = crate::extended::characters::test_globals();
     let world = small();
     let owner = census_of(&world);
     let loan = owner.role_census().unwrap();
     let mut job = CharactersJob::new_part(1);
-    let report = copy_characters_growing(
+    let report = copy_characters(
         &world,
         context(PART_MASKS[1]),
         &mut job,

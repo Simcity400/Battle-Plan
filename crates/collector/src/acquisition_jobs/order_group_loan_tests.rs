@@ -27,7 +27,10 @@ fn request(count: i32) -> OrdersRequest {
         assert!(payload.log.take(&source, at, bytes.len(), MASK).is_some());
     }
     OrdersRequest {
-        countries: Arc::new(engine_native::country_memory::Cache::try_with_capacity(0).unwrap()),
+        countries: engine_allocation::shared(
+            engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+        )
+        .unwrap(),
         base: 0,
         game_state: 0,
         orders: map_capture::Orders::vacant(),
@@ -42,7 +45,7 @@ fn inspect_return(mut request: OrdersRequest, bytes: usize, spans: usize, count:
     assert_eq!(payload.log.bytes.as_ptr() as usize, bytes);
     assert_eq!(payload.log.spans.as_ptr() as usize, spans);
     assert_eq!(payload.log.spans.len(), 5);
-    let ordinary = Recorded::build(&payload.log);
+    let ordinary = Recorded::build(&payload.log).unwrap();
     let mut flag = [9];
     assert!(ordinary.copy(FLAG, &mut flag));
     assert_eq!(flag, [0]);
@@ -82,11 +85,11 @@ fn executor_success_plan_failure_and_caught_panic_return_the_original_naval_loan
             observed.fetch_add(1, Ordering::Relaxed);
             let payload = request.group_source.as_ref().unwrap();
             {
-                let ordinary = Recorded::build(&payload.log);
+                let ordinary = Recorded::build(&payload.log).unwrap();
                 assert!(ordinary.copy(FLAG, &mut [0]));
                 assert!(ordinary.copy(FLAG, &mut [0]));
             }
-            let source = naval_history::OrderGroupSource::new(payload);
+            let source = naval_history::OrderGroupSource::new(payload).unwrap();
             let mut flag = [9];
             assert!(source.copy(FLAG, &mut flag));
             assert_eq!(flag, [1]);

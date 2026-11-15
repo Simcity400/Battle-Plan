@@ -1,8 +1,9 @@
 //! Native writers of retained division-template data and country template
 //! configuration. Assignment, token loading, reset, grid writes and resizing,
 //! derived-cache rebuilding, scalar/equipment/model setters and AI-role
-//! rebuilding certify the template object. Effect writers are scoped to their
-//! canonical country, so inline lock/cap stores also revoke that owner's rows.
+//! rebuilding certify the template object. Effect writers, scripted template
+//! additions among them, are scoped to their canonical country, so inline
+//! lock/cap stores and an addition's rename also revoke that owner's rows.
 //! The deleting destructor prevents address reuse from preserving a certificate.
 //! The custom-icon command resolves its template natively and stores the icon
 //! fields directly, so it revokes every template.
@@ -466,20 +467,21 @@ pub const MUTATIONS: [(MutationSite, Receiver); 60] = [
         },
         Receiver::Every,
     ),
-    // Scripted template additions (effect, scope) rename an existing template whose name the new one takes.
+    // Scripted template additions (effect, scope) append to the scope country's roster and rename
+    // the template of that roster whose name the new one takes.
     (
         MutationSite {
             name: "add_template_effect",
             rva: Rva(0x36_2650),
         },
-        Receiver::Every,
+        Receiver::ScopeCountry,
     ),
     (
         MutationSite {
             name: "add_colonial_template_effect",
             rva: Rva(0x36_8a50),
         },
-        Receiver::Every,
+        Receiver::ScopeCountry,
     ),
 ];
 

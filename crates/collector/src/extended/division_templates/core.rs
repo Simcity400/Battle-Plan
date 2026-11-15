@@ -3,8 +3,22 @@
 use super::*;
 use crate::template_changes::Changes;
 
-/// Template, owner and local-definition writer stamps.
+/// Template, owner and owner's local-definition writer stamps: a template names only global
+/// definitions and its owner's clones, so another country's clone writers leave it carried.
 pub(super) type Certificate = [(u64, u64); 3];
+
+/// Whether the certificate still stands for a row of `owner` whose clones `deployment` holds.
+fn stands(
+    changes: &dyn Changes,
+    certificate: &Certificate,
+    pointer: usize,
+    owner: u32,
+    deployment: usize,
+) -> bool {
+    changes.sequence(pointer) == Some(certificate[0])
+        && changes.sequence(owner as usize) == Some(certificate[1])
+        && changes.deployment_reset_sequence(deployment) == Some(certificate[2])
+}
 
 #[derive(Default, PartialEq)]
 struct Core {
@@ -88,10 +102,14 @@ impl Core {
 struct Entry {
     template: u64,
     certificate: Certificate,
+    /// The owner's deployment status the certificate's third stamp watches.
+    deployment: usize,
     core: Core,
     speed: Option<Vec<u32>>,
     /// Published as held this hour.
     carried: bool,
+    /// Its row was read and held again this walk.
+    renewed: bool,
 }
 
 #[derive(Default)]
@@ -138,6 +156,14 @@ pub(super) fn remember_hint(hints: &mut Vec<u32>, slot: usize, at: usize) {
     }
 }
 
+fn carries(entry: &Entry, pointer: usize, owner: u32, certificate: &Certificate) -> bool {
+    entry.core.row.pointer == pointer
+        && entry.core.row.owner == owner
+        && entry.certificate == *certificate
+        // Refused or unheld speed keys take the fresh path.
+        && entry.speed.is_some()
+}
+
 impl Store {
     pub fn forget(&mut self) {
         self.entries.clear();
@@ -151,6 +177,7 @@ impl Store {
         self.next_held = 0;
         for entry in &mut self.entries {
             entry.carried = false;
+            entry.renewed = false;
         }
     }
 
@@ -198,17 +225,50 @@ impl Store {
         };
         remember_hint(&mut self.hints, slot, at);
         let entry = &mut self.entries[at];
-        let carried = entry.core.row.pointer == pointer
-            && entry.core.row.owner == owner
-            && entry.certificate == certificate
-            // Refused or unheld speed keys take the fresh path.
-            && entry.speed.is_some();
+        let carried = carries(entry, pointer, owner, &certificate);
         entry.carried |= carried;
         if carried {
             let next = self.carried.len();
             remember_hint(&mut self.carried, next, at);
         }
         carried
+    }
+
+    /// What [`Self::carry`] decides for a walk's only occurrence of `template`, changing nothing.
+    pub fn would_carry(
+        &self,
+        template: u64,
+        pointer: usize,
+        owner: u32,
+        certificate: Option<Certificate>,
+    ) -> bool {
+        certificate.is_some_and(|certificate| {
+            self.entries
+                .binary_search_by_key(&template, |entry| entry.template)
+                .is_ok_and(|at| carries(&self.entries[at], pointer, owner, &certificate))
+        })
+    }
+
+    /// Whether `template`'s held row was read again earlier in this walk.
+    pub fn renewed(&self, template: u64) -> bool {
+        self.entries
+            .binary_search_by_key(&template, |entry| entry.template)
+            .is_ok_and(|at| self.entries[at].renewed)
+    }
+
+    /// The held row of `template`, for a range of a split walk that decided to carry it.
+    pub fn core_of(&self, template: u64) -> Option<native::IconCore<'_>> {
+        let entry = &self.entries[self
+            .entries
+            .binary_search_by_key(&template, |entry| entry.template)
+            .ok()?];
+        Some(native::IconCore {
+            row: entry.core.row,
+            bytes: &entry.core.bytes,
+            counts: &entry.core.counts,
+            variants: &entry.core.variants,
+            names: &entry.core.names,
+        })
     }
 
     /// The row the walk carried for `template`; the walk asks in the order it carried them.
@@ -239,20 +299,18 @@ impl Store {
         &mut self,
         changes: &dyn Changes,
         certificate: Option<Certificate>,
+        deployment: Option<usize>,
         row: &native::IconRow,
         bytes: &[u8],
         counts: &[native::SubunitCount],
         variants: &[u64],
         names: &[u8],
     ) {
-        let Some(certificate) = certificate else {
+        let (Some(certificate), Some(deployment)) = (certificate, deployment) else {
             self.changed = true;
             return;
         };
-        if changes.sequence(row.pointer) != Some(certificate[0])
-            || changes.sequence(row.owner as usize) != Some(certificate[1])
-            || changes.core_dependencies() != Some(certificate[2])
-        {
+        if !stands(changes, &certificate, row.pointer, row.owner, deployment) {
             self.changed = true;
             return;
         }
@@ -277,7 +335,9 @@ impl Store {
                 self.changed |= entry.core != core;
                 self.payload_bytes -= entry.core.allocated_bytes();
                 entry.certificate = certificate;
+                entry.deployment = deployment;
                 entry.core = core;
+                entry.renewed = true;
                 at
             }
             Err(at) => {
@@ -290,9 +350,11 @@ impl Store {
                     Entry {
                         template: row.template,
                         certificate,
+                        deployment,
                         core,
                         speed: None,
                         carried: false,
+                        renewed: true,
                     },
                 );
                 at
@@ -320,10 +382,13 @@ impl Store {
             return;
         };
         let entry = &mut self.entries[at];
-        if changes.sequence(entry.core.row.pointer) != Some(entry.certificate[0])
-            || changes.sequence(entry.core.row.owner as usize) != Some(entry.certificate[1])
-            || changes.core_dependencies() != Some(entry.certificate[2])
-        {
+        if !stands(
+            changes,
+            &entry.certificate,
+            entry.core.row.pointer,
+            entry.core.row.owner,
+            entry.deployment,
+        ) {
             self.changed = true;
             entry.speed = None;
             return;
@@ -363,9 +428,13 @@ mod tests {
 
     type Stamp = (u64, u64);
 
+    /// The owner's deployment status, and another country's.
+    const DEPLOYMENT: usize = 0x8400;
+    const OTHER: usize = 0x9900;
+
     struct Stamped {
         watches: Watches,
-        dependencies: AtomicU64,
+        dependencies: [AtomicU64; 2],
     }
 
     impl Changes for Stamped {
@@ -375,8 +444,9 @@ mod tests {
         fn sequence(&self, pointer: usize) -> Option<Stamp> {
             self.watches.sequence(pointer)
         }
-        fn core_dependencies(&self) -> Option<Stamp> {
-            Some((1, self.dependencies.load(Relaxed)))
+        fn deployment_reset_sequence(&self, status: usize) -> Option<Stamp> {
+            let slot = [DEPLOYMENT, OTHER].iter().position(|&at| at == status)?;
+            Some((1, self.dependencies[slot].load(Relaxed)))
         }
     }
 
@@ -384,7 +454,7 @@ mod tests {
         Some([
             changes.sequence(row.pointer)?,
             changes.sequence(row.owner as usize)?,
-            changes.core_dependencies()?,
+            changes.deployment_reset_sequence(DEPLOYMENT)?,
         ])
     }
 
@@ -392,7 +462,7 @@ mod tests {
     fn held_rows_carry_only_under_their_own_stamps_and_object() {
         let changes = Stamped {
             watches: Watches::enabled(8),
-            dependencies: AtomicU64::new(0),
+            dependencies: [AtomicU64::new(0), AtomicU64::new(0)],
         };
         let names = b"Alphakey";
         let row = native::IconRow {
@@ -410,6 +480,7 @@ mod tests {
         store.remember(
             &changes,
             certificate(&changes, &row),
+            Some(DEPLOYMENT),
             &row,
             &[],
             &[],
@@ -432,6 +503,9 @@ mod tests {
         let key = core.row.name_key.unwrap();
         assert_eq!(&core.names[key.start..][..key.len], b"key");
         assert_eq!(store.speed(row.template), Some([155].as_slice()));
+        // Another country's clone writer leaves the row carried.
+        changes.dependencies[1].fetch_add(1, Relaxed);
+        assert!(carried(&mut store, &changes, row.pointer, row.owner));
         // Another object or owner, a moved stamp or no stamp at all reads the template.
         assert!(!carried(&mut store, &changes, 0x6000, row.owner));
         assert!(!carried(&mut store, &changes, row.pointer, 2));
@@ -440,16 +514,26 @@ mod tests {
         assert!(!carried(&mut store, &changes, row.pointer, row.owner));
         store.begin();
         assert!(!store.carry(row.template, row.pointer, row.owner, None));
-        changes.dependencies.fetch_add(1, Relaxed);
+        changes.dependencies[0].fetch_add(1, Relaxed);
         assert!(!carried(&mut store, &changes, row.pointer, row.owner));
         // A writer during the read leaves nothing held under the new stamps.
         let before = certificate(&changes, &row);
         drop(changes.watches.notify(row.pointer, 0));
-        store.remember(&changes, before, &row, &[], &[], &[], names);
+        store.remember(
+            &changes,
+            before,
+            Some(DEPLOYMENT),
+            &row,
+            &[],
+            &[],
+            &[],
+            names,
+        );
         assert!(!carried(&mut store, &changes, row.pointer, row.owner));
         store.remember(
             &changes,
             certificate(&changes, &row),
+            Some(DEPLOYMENT),
             &row,
             &[],
             &[],
@@ -466,6 +550,7 @@ mod tests {
         store.remember(
             &changes,
             certificate(&changes, &row),
+            Some(DEPLOYMENT),
             &unnamed,
             &[],
             &[],

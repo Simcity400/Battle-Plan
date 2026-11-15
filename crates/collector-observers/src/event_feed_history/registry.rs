@@ -143,7 +143,7 @@ impl Store {
         }
         let state = world.state_pointer();
         self.registry_state = Some(state);
-        self.script_growing(
+        self.script_known(
             memory,
             base,
             generation,
@@ -151,7 +151,7 @@ impl Store {
             marker(&world, memory, Change::PendingBaseline, None)?,
         )?;
         native::walk_pending(memory, state, |row| {
-            self.script_growing(
+            self.script_known(
                 memory,
                 base,
                 generation,
@@ -162,14 +162,14 @@ impl Store {
         if !Self::sample_holds(cut) {
             return self.registry_crossed();
         }
-        self.script_growing(
+        self.script_known(
             memory,
             base,
             generation,
             hour,
             marker(&world, memory, Change::PendingReady, None)?,
         )?;
-        self.script_growing(
+        self.script_known(
             memory,
             base,
             generation,
@@ -177,7 +177,7 @@ impl Store {
             marker(&world, memory, Change::FiredBaseline, None)?,
         )?;
         native::walk_fired(memory, state, |definition| {
-            self.script_growing(
+            self.script_known(
                 memory,
                 base,
                 generation,
@@ -188,7 +188,7 @@ impl Store {
         if !Self::sample_holds(cut) {
             return self.registry_crossed();
         }
-        self.script_growing(
+        self.script_known(
             memory,
             base,
             generation,

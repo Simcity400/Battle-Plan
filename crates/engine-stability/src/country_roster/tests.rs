@@ -91,7 +91,7 @@ impl Memory for Traced<'_> {
 fn physical_roster_preserves_current_raw_ids_alias_order_and_cached_census() {
     let bytes = fixture();
     let memory = Traced::new(&bytes);
-    let mut output = [123; 4];
+    let mut output = vec![123; 4];
     assert_eq!(
         capture(&memory, 0, STATE, &mut output),
         Capture {
@@ -117,7 +117,7 @@ fn repeated_reserved_pointer_is_zero_but_null_or_unproved_zero_is_refused() {
     let mut bytes = fixture();
     put(&mut bytes, POINTERS + 16, &(ZERO as u64).to_le_bytes());
     let memory = Traced::new(&bytes);
-    let mut output = [123; 4];
+    let mut output = vec![123; 4];
     assert_eq!(capture(&memory, 0, STATE, &mut output).len, Ok(4));
     assert_eq!(output, [0, 7, 0, 9]);
     // A zero canonical mapping is not by itself proof of Country0's pointer.
@@ -149,7 +149,7 @@ fn repeated_reserved_pointer_is_zero_but_null_or_unproved_zero_is_refused() {
 }
 
 #[test]
-fn short_storage_and_sizing_read_only_the_proved_array_header() {
+fn sizing_reads_only_the_proved_array_header_and_short_storage_grows() {
     let bytes = fixture();
     let memory = Traced::new(&bytes);
     assert_eq!(demand(&memory, 0, STATE), Ok(4));
@@ -160,33 +160,25 @@ fn short_storage_and_sizing_read_only_the_proved_array_header() {
             .iter()
             .all(|&(address, len)| { address == STATE + cgame_state::COUNTRIES && len == 16 })
     );
-    memory.reads.borrow_mut().clear();
-    let mut output = [123; 3];
+    let mut output = vec![123; 3];
     assert_eq!(
         capture(&memory, 0, STATE, &mut output),
         Capture {
-            len: Err(CAPACITY),
+            len: Ok(4),
             required: 4
         }
-    );
-    assert_eq!(output, [123; 3]);
-    assert_eq!(
-        *memory.reads.borrow(),
-        [(STATE + cgame_state::COUNTRIES, 16)]
     );
 }
 
 #[test]
-fn fault_and_selector_change_withhold_the_field_without_retry_or_old_prefix_changes() {
+fn fault_and_selector_change_withhold_the_field_without_retry() {
     let bytes = fixture();
     let mut memory = Traced::new(&bytes);
     memory.fault = Some(FIRST + ccountry::ID);
-    let mut output = [123; 6];
-    let captured = capture(&memory, 0, STATE, &mut output[2..]);
+    let mut output = Vec::new();
+    let captured = capture(&memory, 0, STATE, &mut output);
     assert_eq!(captured.len, Err("country id unreadable"));
     assert_eq!(captured.required, 4);
-    assert_eq!(&output[..2], &[123; 2]);
-    assert_eq!(&output[2..], &[0, 123, 123, 123]);
     assert_eq!(
         memory
             .reads
@@ -199,7 +191,7 @@ fn fault_and_selector_change_withhold_the_field_without_retry_or_old_prefix_chan
 
     let mut memory = Traced::new(&bytes);
     memory.changed_header = true;
-    assert!(capture(&memory, 0, STATE, &mut output[2..]).len.is_err());
+    assert!(capture(&memory, 0, STATE, &mut output).len.is_err());
     let mut memory = Traced::new(&bytes);
     memory.changed_header = true;
     assert_eq!(
@@ -217,7 +209,7 @@ fn known_empty_and_reserved_only_arrays_need_no_positive_links_or_guessing() {
     array(&mut bytes, STATE + cgame_state::COUNTRY_LINKS, 0, 0);
     for count in [0, 1] {
         array(&mut bytes, STATE + cgame_state::COUNTRIES, POINTERS, count);
-        let mut output = [123; 1];
+        let mut output = vec![123; 1];
         let memory = Traced::new(&bytes);
         assert_eq!(
             capture(&memory, 0, STATE, &mut output).len,

@@ -73,18 +73,6 @@ impl DisplayCapture {
         self.clear();
         self.header = grid.and_then(|header| {
             self.required = header.edge_bytes()?;
-            header.read_edges(memory, &mut self.bytes)?;
-            Ok(header)
-        });
-    }
-    pub(super) fn capture_growing(
-        &mut self,
-        memory: &impl Memory,
-        grid: Result<cweather_manager::DisplayGrid, &'static str>,
-    ) {
-        self.clear();
-        self.header = grid.and_then(|header| {
-            self.required = header.edge_bytes()?;
             engine_native::walk::Buffer::Growing(&mut self.bytes).ensure(self.required)?;
             header.read_edges(memory, &mut self.bytes)?;
             Ok(header)

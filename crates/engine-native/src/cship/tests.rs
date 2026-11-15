@@ -235,7 +235,7 @@ fn model_rejects_changed_census_identity_bad_pool_and_mismatched_variant_definit
 }
 
 #[test]
-fn model_strings_reject_corruption_overflow_and_unreadable_bytes_without_truncation() {
+fn model_strings_reject_corruption_and_unreadable_bytes_and_grow_without_truncation() {
     let mut bytes = fixture();
     word(&mut bytes, FALLBACK_SPRITE + 16, 16);
     assert!(model(&bytes).is_err());
@@ -253,10 +253,10 @@ fn model_strings_reject_corruption_overflow_and_unreadable_bytes_without_truncat
         FALLBACK_SPRITE + 16,
         MODEL_TEXT_CAPACITY as u64 + 1,
     );
-    assert_eq!(
-        model(&bytes),
-        Err("ship model sprite exceeds owned capacity")
-    );
+    bytes[HEAP + MODEL_TEXT_CAPACITY] = b'Y';
+    let mut long = vec![b'X'; MODEL_TEXT_CAPACITY];
+    long.push(b'Y');
+    assert_eq!(model(&bytes).unwrap().fallback_sprite.as_bytes(), long);
     word(&mut bytes, FALLBACK_SPRITE + 16, MODEL_TEXT_CAPACITY as u64);
     bytes[HEAP + MODEL_TEXT_CAPACITY] = 1;
     assert!(model(&bytes).is_err());
@@ -786,11 +786,8 @@ fn full_model_reads() -> Vec<(usize, usize, &'static str)> {
 
 #[test]
 fn model_hull_reuse_retains_exact_bytes_and_bounded_native_savings() {
-    // The fixed reader starts with an empty one-slot cache and retains its
-    // sprite inline, including payloads that use native heap storage.
-    let bounded_memo = ModelMemo::default();
-    assert!(!bounded_memo.growing);
-    assert!(bounded_memo.hull.is_none());
+    // The memo retains its sprite inline, including payloads that use native
+    // heap storage.
     for (heap, len, extra_calls, extra_bytes) in
         [(false, 3, 0, 0), (true, 0, 1, 1), (true, 256, 2, 257)]
     {
@@ -814,7 +811,8 @@ fn model_hull_reuse_retains_exact_bytes_and_bounded_native_savings() {
         let mut memo = ModelMemo::default();
         let cold = traced_model_memo(&census, &mut memo).unwrap();
         assert_eq!(cold.hull_sprite.as_bytes(), payload);
-        let cached_sprite = &memo.hull.as_ref().unwrap().sprite;
+        assert_eq!(memo.hulls.len(), 1);
+        let cached_sprite = &memo.hulls.values().next().unwrap().sprite;
         assert_eq!(cached_sprite.as_bytes(), payload);
         assert_eq!(cached_sprite.allocated_bytes(), 0);
         assert_eq!(
@@ -947,7 +945,8 @@ fn model_hull_changed_token_pointer_and_capture_reacquire_complete_definition() 
         Err("ship model equipment definition identity mismatch")
     );
     assert_eq!(trace.reads.borrow().len(), 25);
-    assert_eq!(memo.hull.as_ref().unwrap().key.2, 11_u32.to_le_bytes());
+    assert_eq!(memo.hulls.len(), 1);
+    assert!(memo.hulls.keys().all(|key| key.2 == 11_u32.to_le_bytes()));
     for (definition, reset, text) in [
         (DEFINITIONS[0], false, b'B'),
         (DEFINITIONS[1], false, b'C'),
@@ -987,44 +986,38 @@ fn model_hull_changed_token_pointer_and_capture_reacquire_complete_definition() 
 }
 
 #[test]
-fn worker_model_memo_reuses_every_completed_hull_definition_of_the_capture() {
+fn model_memo_reuses_every_completed_hull_definition_of_the_capture() {
     // Ships of one task force alternate hull definitions: A, B, then A again.
     let mut bytes = full_model_fixture();
     let first = BASE + DEFINITIONS[0]..BASE + DEFINITIONS[1];
-    for growing in [false, true] {
-        let mut memo = ModelMemo::default();
-        if growing {
-            memo.enable_worker_growth();
-        }
-        for (second, sprite) in [(false, b'A'), (true, b'B')] {
-            word(&mut bytes, BANK + 24, if second { 6 } else { 1 });
-            let source = SliceMemory {
-                base: BASE,
-                bytes: &bytes,
-            };
-            let row = traced_model_memo(&source, &mut memo).unwrap();
-            assert_eq!(row.hull_sprite.as_bytes(), &[sprite]);
-        }
-        word(&mut bytes, BANK + 24, 1);
+    let mut memo = ModelMemo::default();
+    for (second, sprite) in [(false, b'A'), (true, b'B')] {
+        word(&mut bytes, BANK + 24, if second { 6 } else { 1 });
         let source = SliceMemory {
             base: BASE,
             bytes: &bytes,
         };
-        let trace = Trace::new(&source);
-        let row = traced_model_memo(&trace, &mut memo).unwrap();
-        assert_eq!(row, traced_model(&source).unwrap());
-        let definition_reads = trace
-            .reads
-            .borrow()
-            .iter()
-            .filter(|(address, _)| first.contains(address))
-            .count();
-        // The fixed reader rereads the identity and sprite; a worker reuses
-        // the capture's earlier complete observation of that definition.
-        assert_eq!(definition_reads, if growing { 0 } else { 2 });
-        memo.reset();
-        assert!(!memo.growing && memo.hull.is_none() && memo.hulls.is_empty());
+        let row = traced_model_memo(&source, &mut memo).unwrap();
+        assert_eq!(row.hull_sprite.as_bytes(), &[sprite]);
     }
+    word(&mut bytes, BANK + 24, 1);
+    let source = SliceMemory {
+        base: BASE,
+        bytes: &bytes,
+    };
+    let trace = Trace::new(&source);
+    let row = traced_model_memo(&trace, &mut memo).unwrap();
+    assert_eq!(row, traced_model(&source).unwrap());
+    let definition_reads = trace
+        .reads
+        .borrow()
+        .iter()
+        .filter(|(address, _)| first.contains(address))
+        .count();
+    // The capture's earlier complete observation of that definition is reused.
+    assert_eq!(definition_reads, 0);
+    memo.reset();
+    assert!(memo.hulls.is_empty());
 }
 
 #[test]
@@ -1056,7 +1049,7 @@ fn model_hull_failures_keep_original_prefix_and_never_publish_partial_text() {
             trace.fault = Some((ordinal, partial));
             assert_eq!(traced_model_memo(&trace, &mut memo), Err(reason));
             assert_eq!(*trace.reads.borrow(), reads[..=ordinal]);
-            assert!(memo.hull.is_none());
+            assert!(memo.hulls.is_empty());
             let trace = Trace::new(&source);
             assert!(traced_model_memo(&trace, &mut memo).is_ok());
             assert_eq!(*trace.reads.borrow(), reads);
@@ -1636,7 +1629,7 @@ fn a_warm_null_sprite_memo_still_requires_each_selected_variant_to_be_registered
 }
 
 #[test]
-fn worker_model_text_keeps_mod_sized_sprites_and_original_hull_memo() {
+fn model_text_keeps_mod_sized_sprites_and_original_hull_memo() {
     let mut bytes = fixture();
     word(&mut bytes, BANK + 8, 1);
     word(&mut bytes, BANK + equipment_entry::STRIDE + 8, 0);
@@ -1657,16 +1650,11 @@ fn worker_model_text_keeps_mod_sized_sprites_and_original_hull_memo() {
             word(&mut bytes, descriptor + 24, length as u64);
             bytes[payload..payload + length].fill(byte);
         }
-        assert_eq!(
-            model(&bytes),
-            Err("ship model sprite exceeds owned capacity")
-        );
         let memory = SliceMemory {
             base: BASE,
             bytes: &bytes,
         };
         let mut memo = ModelMemo::default();
-        memo.enable_worker_growth();
         for _ in 0..occurrences {
             let row = read_model(&memory, 0, BASE, &source, &mut memo).unwrap();
             assert_eq!(row.fallback_sprite.as_bytes(), vec![0xff; length]);
@@ -1678,9 +1666,10 @@ fn worker_model_text_keeps_mod_sized_sprites_and_original_hull_memo() {
 /// The model reader through gathered ship, task-force, pool-entry and
 /// variant fields ([`ShipFields`]) returns the direct reader's row, and for a
 /// fault at the first or last byte of any read either makes its exact
-/// failure, never reading a failed span again; it needs 10 guarded calls for
-/// the direct reader's 17. A later ship of the capture with the same
-/// variants gathers only itself and its pool entries for them.
+/// failure, never reading a failed span again; it needs 11 guarded calls, the
+/// capture's one game singleton gather among them, for the direct reader's 17.
+/// A later ship of the capture with the same variants gathers only itself and
+/// its pool entries for them.
 #[test]
 fn gathered_model_reads_equal_the_direct_reader_at_every_fault() {
     use super::gathered::FaultAt;
@@ -1718,7 +1707,7 @@ fn gathered_model_reads_equal_the_direct_reader_at_every_fault() {
     assert_eq!(traced_model(&direct), healthy);
     let gathered = ReadCensus::new(&source);
     assert_eq!(through_fields(&gathered), healthy);
-    assert_eq!((direct.calls(), gathered.calls()), (17, 10));
+    assert_eq!((direct.calls(), gathered.calls()), (17, 11));
     let census = ReadCensus::new(&source);
     let mut fields = ShipFields::new(0);
     fields.visit(&census, BASE);
@@ -1729,8 +1718,9 @@ fn gathered_model_reads_equal_the_direct_reader_at_every_fault() {
 }
 
 /// A held ship serves its own objects without reading them: the row is the
-/// fresh read's, and only its task force and variants are gathered. A read
-/// of a changed field differs from the held one; an unchanged read does not.
+/// fresh read's, and only the game singleton, its task force and variants are
+/// gathered. A read of a changed field differs from the held one; an unchanged
+/// read does not.
 #[test]
 fn held_ships_serve_their_own_objects_without_reading_them() {
     use crate::read_census::ReadCensus;
@@ -1747,7 +1737,11 @@ fn held_ships_serve_their_own_objects_without_reading_them() {
     let census = ReadCensus::new(&source);
     let mut fields = ShipFields::new(0);
     fields.visit_held(&census, &held);
-    assert_eq!(census.calls(), 3, "the task force and the two variants");
+    assert_eq!(
+        census.calls(),
+        4,
+        "the game singleton, the task force and the two variants"
+    );
     assert_eq!(traced_model(&fields.memory(&census)), healthy);
     assert_eq!(held.task_force(), BASE + PARENT);
     let mut again = ShipFields::new(0);
@@ -1818,5 +1812,5 @@ fn gathered_heap_sprites_equal_the_direct_reader_at_every_fault() {
     assert_eq!(traced_model(&direct), healthy);
     let gathered = ReadCensus::new(&source);
     assert_eq!(through_fields(&gathered), healthy);
-    assert_eq!((direct.calls(), gathered.calls()), (19, 10));
+    assert_eq!((direct.calls(), gathered.calls()), (19, 11));
 }

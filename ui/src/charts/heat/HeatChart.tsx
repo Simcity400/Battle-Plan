@@ -3,7 +3,8 @@ import type { KeyboardEvent, PointerEvent } from 'react';
 import { mix } from '../../shell/appearance/color';
 import TimeChart from '../TimeChart';
 import Legend from '../Legend';
-import type { ChartLayer, TimeChartProps } from '../TimeChart';
+import type { ChartLayer, LiveHead, TimeChartProps } from '../TimeChart';
+import type { Live } from '../live';
 import type { TooltipContent } from '../tooltip';
 import { fitLabelWidth, ellipsise } from '../labels';
 import { font, VALUE_LABEL_GAP } from '../draw';
@@ -20,22 +21,22 @@ import { useChartTokens } from '../useChartTokens';
 import { fillPendingBand, markApproximate, spanRanges } from '../prepared';
 import type { Span } from '../prepared';
 import { overlayRuns } from '../series.ts';
-import { PreparedKey } from '../PreparedKey';
 import './heat.css';
 
 export interface HeatChartProps {
   label: string; rows: readonly HeatRow[]; periods: readonly HeatPeriod[];
   tail?: HeatTail;
+  /** A column read as each frame draws (the head's, from followed values): drawn over the cells it
+   * covers with no render, and drawn again when it changes. */
+  liveTail?: Live<HeatTail | null>;
   /** Full campaign labels, when playback changes the row inventory. */
   labelCatalogue?: readonly string[];
   extent: Range; playhead: number | null; branchStart: number;
+  /** Where the playhead is now, read as each frame draws: the playhead moves without a render. */
+  liveHead?: LiveHead;
   afterPlayhead?: boolean; legend?: readonly { id?: string; label: string; color?: string }[];
   look: HeatLook; active: boolean; revision: unknown; hoursPerSecond?: number;
-  /** Hours whose cells come from sampled keyframes: faded, with the dashed approximate edge. */
-  approximate?: readonly Span[];
-  /** Hours still being prepared: a light band, with no cells there yet. */
-  pending?: readonly Span[];
-  /** Hours whose cells are still loading: the same light band, keyed apart. */
+  /** Hours whose cells are still loading: a light band, with no cells there yet. */
   loading?: readonly Span[];
   tooltip: (row: HeatRow, period: HeatPeriod | null, hour: number) => TooltipContent | null;
   onContextMenu?: (hour: number, x: number, y: number) => void;
@@ -138,7 +139,7 @@ export default function HeatChart(props: HeatChartProps) {
   const historyLast = useMemo(() => heatNavigation(history).keyHours.at(-1) ?? -Infinity, [history]);
   const colours = useRef(new WeakMap<readonly HeatPart[], { grey: string; color: string | null }>());
   const layers = useMemo<ChartLayer[]>(() => {
-    const gaps = overlayRuns(periods.filter(period => period.readHour == null), [], () => false, props.pending ?? []);
+    const gaps = overlayRuns(periods.filter(period => period.readHour == null), [], () => false, []);
     return [{ draw(ctx, frame, tokens, state) {
       const grey = mix(tokens.surface, tokens.text, 0.2);
       let lo = 0, hi = navigation.keyHours.length;
@@ -153,9 +154,9 @@ export default function HeatChart(props: HeatChartProps) {
       for (const period of gaps) {
         drawRecordedGap(ctx, frame, tokens, period.firstHour, period.lastHour, state.playhead);
       }
-      for (const [from, to] of [...spanRanges(props.pending, frame.x[0], frame.x[1], state.playhead),
-        ...spanRanges(props.loading, frame.x[0], frame.x[1], state.playhead)])
+      for (const [from, to] of spanRanges(props.loading, frame.x[0], frame.x[1], state.playhead))
         fillPendingBand(ctx, tokens, frame.toX(from), frame.toX(to), frame.plotTop, frame.plotHeight);
+      const live = props.liveTail?.read() ?? null;
       drawnRows.forEach((runs, index) => {
         const drawCell = ({ period, cell }: ReturnType<typeof cellRuns>[number]) => {
           const rect = cellRect(period, index, visible.length, cellsFrame, frame.x[0], frame.x[1], state.playhead);
@@ -173,10 +174,6 @@ export default function HeatChart(props: HeatChartProps) {
             if (cached.color) { ctx.fillStyle = cached.color; ctx.fillRect(rect.left, rect.top, rect.width, rect.height); }
           }
           if (cell.approximate) markApproximate(ctx, tokens, rect.left, rect.top, rect.width, rect.height);
-          for (const [from, to] of spanRanges(props.approximate, period.firstHour, period.lastHour + 1)) {
-            const left = Math.max(rect.left, frame.toX(from)), right = Math.min(rect.left + rect.width, frame.toX(to));
-            markApproximate(ctx, tokens, left, rect.top, right - left, rect.height);
-          }
         };
         const tail = props.tail, cell = tail?.cells[window.first + index];
         const shown = tail && cell && tail.period.readHour != null && tail.period.readHour <= read;
@@ -184,9 +181,21 @@ export default function HeatChart(props: HeatChartProps) {
         const joined = shown && last && joinedCellPeriod(last.period, tail.period, last.cell, cell);
         runs.forEach((run, at) => { if (!joined || at < runs.length - 1) drawCell(run); });
         if (shown) drawCell({ period: joined || tail.period, cell });
+        const liveCell = live?.cells[window.first + index];
+        if (live && liveCell) {
+          const rect = cellRect(live.period, index, visible.length, cellsFrame, frame.x[0], frame.x[1], state.playhead);
+          if (rect) { ctx.fillStyle = tokens.surface; ctx.fillRect(rect.left, rect.top, rect.width, rect.height); }
+          drawCell({ period: live.period, cell: liveCell });
+        }
       });
     } }];
-  }, [visible, periods, history, historyLast, props.tail, props.look, props.approximate, props.pending, props.loading, navigation.keyHours, window.offset, window.rowHeight]);
+  }, [visible, periods, history, historyLast, props.tail, props.liveTail, props.look, props.loading, navigation.keyHours, window.offset, window.rowHeight]);
+  // The live column's changes wake the chart as the head's moves do.
+  const liveHead = useMemo<LiveHead | undefined>(() => {
+    const head = props.liveHead, tail = props.liveTail;
+    if (!head || !tail) return head;
+    return { read: head.read, subscribe: changed => { const stops = [head.subscribe(changed), tail.subscribe(changed)]; return () => { for (const stop of stops) stop(); }; } };
+  }, [props.liveHead, props.liveTail]);
   const rows = useMemo(() => ({ labels: visible.map(row => row.label), labelWidth,
     tooltip: (_row: number, hour: number) => {
       const index = keyboard.current ? selected.current : heatRowAt(pointerY.current, window, top, props.rows.length);
@@ -219,7 +228,7 @@ export default function HeatChart(props: HeatChartProps) {
     onKeyDownCapture={keyDown} onPointerMoveCapture={point} onPointerDownCapture={point}>
     <div className="heat-chart-spacer" style={{ height: window.total }}>
       <div className="heat-chart-viewport" style={{ height: viewport.height }}>
-        <div className="heat-chart-plot" style={{ height: window.plotHeight }}><TimeChart label={props.label} extent={props.extent} playhead={props.playhead} playback="cursor" afterPlayhead={props.afterPlayhead}
+        <div className="heat-chart-plot" style={{ height: window.plotHeight }}><TimeChart label={props.label} extent={props.extent} playhead={props.playhead} liveHead={liveHead} playback="cursor" afterPlayhead={props.afterPlayhead}
           branchStart={props.branchStart} hoursPerSecond={props.hoursPerSecond} axes={{ xFrom: null, xTo: null, yMin: 0, yMax: Math.max(1, visible.length), log: false }}
           padding={{ top, bottom }} rows={rows} layers={layers} overlay={overlay} {...navigation}
           active={props.active} revision={props.revision} onContextMenu={props.onContextMenu} onSummaryView={props.onSummaryView}
@@ -231,6 +240,5 @@ export default function HeatChart(props: HeatChartProps) {
           } : undefined} /></div>
       </div>
     </div>
-  </div><Legend label={`${props.label} legend`} items={legend} always windowed />
-    <PreparedKey approximate={props.approximate} pending={props.pending} loading={props.loading} /></div>;
+  </div><Legend label={`${props.label} legend`} items={legend} always windowed /></div>;
 }

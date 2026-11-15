@@ -1,320 +1,387 @@
-import { failureText } from '../../dashboard/queryError.ts';
-import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import WidgetState from '../../components/WidgetState';
-import { useHeldFailure } from '../../dashboard/heldFailures';
 import { Segmented } from '../../components/Segmented';
 import CountryPicker from '../../components/CountryPicker';
 import { useContextMenu } from '../../components/ContextMenu';
-import { dayLabel } from '../../charts/draw';
+import { drawLineSummary, summaryExtent } from '../../charts/chartSummary';
+import type { ChartSummary } from '../../charts/chartSummary';
+import { dayLabel, font, placeEndLabels } from '../../charts/draw';
 import DrillHost from '../../charts/drill/DrillHost';
 import { CLOSED, pinnedBreakdown, reduceDrill } from '../../charts/drill/drillState';
-import { SECONDARY_DASH } from '../../charts/palette';
+import { motionOf } from '../../charts/easing.ts';
+import type { PlotFrame } from '../../charts/frame';
 import { jumpItem } from '../../charts/jump';
-import CountryRaceView from '../../charts/race/CountryRaceView';
-import type { CountryRaceLine } from '../../charts/race/countryRace';
-import { clipToSpans, runAt } from '../../charts/series';
+import Legend from '../../charts/Legend';
+import { SECONDARY_DASH } from '../../charts/palette';
 import { barStrip } from '../../charts/strip';
-import type { ChartStrip } from '../../charts/TimeChart';
+import type { ChartStrip } from '../../charts/strip';
+import TimeChart from '../../charts/TimeChart';
+import type { ChartData, ChartLayer } from '../../charts/TimeChart';
 import { CHART_LAYOUT } from '../../charts/tokens';
-import { useChartTokens } from '../../charts/useChartTokens';
+import { fitTooltip } from '../../charts/tooltip';
+import type { TooltipRow } from '../../charts/tooltip';
+import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
+import { shownUntil } from '../../charts/view';
 import type { PlaybackMode } from '../../charts/view';
 import { useComparisonCountries } from '../../dashboard/comparisonCountries';
 import { countryDrillTagAt } from '../../dashboard/countryIdentity';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
+import { countryLineColours } from '../../dashboard/countryLineColours';
+import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt.ts';
 import DatedCountryChip from '../../dashboard/DatedCountryChip';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { isMember, MEMBERSHIP_PREPARING } from '../../dashboard/groups';
+import { followStore } from '../../dashboard/follow/connection.ts';
+import { FollowedText } from '../../dashboard/follow/FollowedText.tsx';
+import { rowAmount } from '../../dashboard/follow/painters.ts';
+import { shownThrough } from '../../dashboard/follow/store.ts';
+import type { FollowEntry } from '../../dashboard/follow/store';
+import { followsHead, useFallbackHour, useFollow } from '../../dashboard/follow/useFollow.ts';
+import { isMember } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
-import { usePlaybackHour } from '../../dashboard/playback';
+import { usePlaybackMotion } from '../../dashboard/playback';
 import { useProducts } from '../../dashboard/products';
-import { NumericReply } from '../../dashboard/numericReply';
-import { groupNumbers } from '../../dashboard/groupsReply';
+import { followAtHead } from '../../dashboard/tiles/head.ts';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
+import { useCountryLineStyles } from '../../dashboard/useCountryLineStyles';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
-import type { CountryGroupReply, FuelReply } from '../../generated/dashboard';
+import { useShownHour } from '../../dashboard/widgetPerf.ts';
+import { useMeasureSeries } from '../country-measure/measureSeries';
+import { summaryEnd } from '../country-measure/measureData';
 import { BREAKDOWNS, OPTIONS } from './definition';
 import FuelBreakdown from './FuelBreakdown';
 import FuelConsumptionBreakdown from './FuelConsumptionBreakdown';
-import { consumptionForActor, fuelConsumptionLevelToken, fuelConsumptionToken, readFuelConsumption, readFuelConsumptionLevel } from './fuelConsumption';
+import { fuelConsumptionLevelToken, fuelConsumptionToken, readFuelConsumption, readFuelConsumptionLevel } from './fuelConsumption';
 import type { FuelConsumptionLevel, FuelConsumptionSelection } from './fuelConsumption';
-import { fuelExtentToken, fuelMoment, fuelOpen, fuelRecipientAtPick, fuelRecipientForReply, fuelRecipientToken, readFuelExtent, readFuelRecipient } from './fuelDrill';
-import type { FuelRecipientSelection } from './fuelDrill';
-import { usePreparedFuel, scaledFuelSummary, fuelSummaryStrip, useFuelSeriesParity } from './preparedFuel';
 import { fuelCountrySpans, fuelCountryToken, readFuelCountry } from './fuelCountry';
 import type { FuelCountrySelection } from './fuelCountry';
-import { formatFuel, fuelChoiceKey, fuelDecimals, fuelNumbers, fuelRuns, fuelTooltips, fuelView, validateFuelReply } from './fuelData';
-import { motionOf } from '../../charts/easing.ts';
+import { COUNTRY_FUEL, FUEL_DAYS, QUANTITY_SCALE, formatFuel, fuelDecimals, fuelTooltips, stripBars, stripNote, validateCountryFuel } from './fuelData';
+import { fuelExtentToken, fuelMoment, fuelOpen, fuelRecipientToken, readFuelExtent, readFuelRecipient } from './fuelDrill';
+import type { FuelRecipientSelection } from './fuelDrill';
+import type { CountryFuelReply } from '../../generated/dashboard';
 
 const STRIP_SHARE = 0.28;
+const DAY_HOURS = 24;
+const DETAIL_HOURS = 720;
+const NO_PAINT = () => {};
 
+/** A frame whose values are the tank's raw units: lines drawn from raw summaries land where fuel amounts would. */
+function rawFrame(frame: PlotFrame, scale: number): PlotFrame {
+  return { ...frame, y: [frame.y[0] * scale, frame.y[1] * scale], toY: value => frame.toY(value / scale), valueAt: py => frame.valueAt(py) * scale };
+}
+
+/** Each country's fuel against its capacity over time, with each day's gain and burn; at a moment, the day's gain or burn
+ * by source or consumer, a consumer's recipients, and every current consumer with its daily rate. */
 export default function FuelWidget({ widget, runtime, active, countrySlot, onDiagnostics }: WidgetProps) {
   const [storedDrill, dispatch] = useReducer(reduceDrill, CLOSED);
   const [drillOwner, setDrillOwner] = useState<object>();
-  const clockHour = usePlaybackHour(runtime.clock, active && (widget.time.mode === 'follow' || storedDrill.breakdown !== null && storedDrill.follow));
   const tokens = useChartTokens();
+  const viewport = useViewportHeight();
   const options = resolveOptions(OPTIONS, widget.options);
   const digits = fuelDecimals(options);
-  const { track, countries, pending, contentPending: groupContentPending, error: groupError, refreshError: groupRefreshError, retry: retryGroups } = useComparisonCountries(widget, runtime, active);
+  const showCapacity = options.capacity !== false;
+  const { track, countries, pending, contentPending, error: groupError, refreshError: groupRefreshError, retry: retryGroups } = useComparisonCountries(widget, runtime, active);
+  const tags = countries.tags;
+  const single = tags.length === 1;
+  const membership = countries.membership ?? undefined;
+  const following = widget.time.mode === 'follow';
+  const saved = BREAKDOWNS.find(item => item.id === options.show);
+  const [rootElement, setRoot] = useState<HTMLDivElement | null>(null);
+  const root = useMemo(() => ({ current: rootElement }), [rootElement]);
+  const store = useMemo(() => track ? followStore(runtime.client, track.source, runtime.clock, track.axisOffset) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
+  const shown = useShownHour();
+  const headTags = following && active && track && !saved ? tags : null;
+  const branchId = track?.branch.id;
+  const fuelQuery = useMemo(() => headTags?.length ? { product: 'series-state', params: { branchId,
+    family: { kind: COUNTRY_FUEL, measure: 'fuel' }, reads: headTags.map(tag => ({ tag, hour: 0 })) } } : null, [headTags, branchId]);
+  const capacityQuery = useMemo(() => headTags?.length && showCapacity ? { product: 'series-state', params: { branchId,
+    family: { kind: COUNTRY_FUEL, measure: 'capacity' }, reads: headTags.map(tag => ({ tag, hour: 0 })) } } : null, [headTags, branchId, showCapacity]);
+  const fuelFollowed = useFollow(store, fuelQuery, root, useCallback((entry: FollowEntry) => shown(shownThrough(entry)), [shown]));
+  const capacityFollowed = useFollow(store, capacityQuery, root, NO_PAINT);
+  const fuelHead = followsHead(fuelFollowed), capacityHead = followsHead(capacityFollowed);
+  const headFollowed = fuelHead && (!showCapacity || capacityHead);
+  // A breakdown following playback is a pushed panel: the clock is read by render only while it stands still.
+  const playing = usePlaybackMotion(runtime.clock) !== undefined;
+  const drillOnClock = saved ? following && storedDrill.breakdown === null || storedDrill.breakdown !== null && storedDrill.follow
+    : storedDrill.breakdown !== null && storedDrill.follow;
+  const clockHour = useFallbackHour(runtime.clock, active && (following && !headFollowed && !saved || drillOnClock && !playing));
   const window = track && resolveWindow(widget, track, runtime.tracks, clockHour);
-  const playhead = window && (widget.time.mode === 'follow' || widget.time.mode === 'pin') ? window.lastHour : null;
-  const heldExtent = track && options.show !== 'main' ? readFuelExtent(options.fuelExtent, track.source.metadata.campaignKey, track.branch.id) : null;
+  const playhead = window && (following || widget.time.mode === 'pin') ? window.lastHour : null;
+  const heldExtent = track && saved ? readFuelExtent(options.fuelExtent, track.source.metadata.campaignKey, track.branch.id) : null;
   const extent: [number, number] = heldExtent ?? (track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour]
     : [track.branch.firstHour, track.branch.lastHour]) : [0, 1]);
-  const requests = track ? countries.tags.map(tag => ({ sourceId: track.source.id, revision: track.source.revision, product: 'country-fuel',
-    params: { branchId: track.branch.id, tag } })) : [];
-  const prepared = usePreparedFuel(runtime.client, track, countries.tags, Math.floor(playhead ?? extent[1]), active, ['fuel','capacity','stripGain','stripBurn'], countries.membership ?? undefined);
-  const legacyProduct = useProducts<FuelReply>(runtime.client, requests, active && !prepared.enabled, validateFuelReply);
-  const product = prepared.enabled ? prepared : legacyProduct;
-  const { retry } = product;
-  const error = useHeldFailure(product.error, product.data !== undefined, retry);
-  const retained = useMemo(() => new NumericReply<FuelReply[]>(), [runtime.client]);
-  const numbers = retained.update(JSON.stringify(requests), product.data, fuelNumbers);
-  const data = product.data ?? numbers;
-  const contentPending = !!numbers && !product.data && !error;
-  const single = data?.length === 1;
-  const [chosenTag, setChosenTag] = useState<string>();
-  const [pickTags, setPickTags] = useState<readonly string[]>();
-  const [measure, setMeasure] = useState<'gain' | 'burn' | 'consumption'>('consumption');
-  const anchor = useRef<HTMLDivElement>(null);
-  const saved = BREAKDOWNS.find(item => item.id === options.show);
+  const head = playhead ?? extent[1];
+  const lastHour = track?.branch.lastHour ?? 0;
+  const [hoverHour, setHoverHour] = useState<number | null>(null);
+  const live = following && !saved;
+  const fuel = useMeasureSeries(runtime.client, track?.source, track?.branch.id, COUNTRY_FUEL, 'fuel', tags, fuelHead ? null : head, hoverHour, active && !saved,
+    false, membership, lastHour, live);
+  const capacity = useMeasureSeries(runtime.client, showCapacity ? track?.source : undefined, track?.branch.id, COUNTRY_FUEL, 'capacity', tags,
+    capacityHead ? null : head, hoverHour, active && !saved && showCapacity, false, membership, lastHour, live);
+  const withStrip = single && options.strip !== false && !saved;
+  const gain = useMeasureSeries(runtime.client, withStrip ? track?.source : undefined, track?.branch.id, FUEL_DAYS, 'stripGain', tags, null, null,
+    active && withStrip, false, membership, lastHour, live);
+  const burn = useMeasureSeries(runtime.client, withStrip ? track?.source : undefined, track?.branch.id, FUEL_DAYS, 'stripBurn', tags, null, null,
+    active && withStrip, false, membership, lastHour, live);
+  useEffect(() => { if (!fuelHead && !saved) shown(tags.length && tags.every(tag => fuel.hourLoaded(tag, Math.floor(head))) ? head : null); });
+  const styles = useCountryLineStyles(runtime.client, track, tags, Math.floor(head), active && !single && !saved);
+  const colours = useMemo(() => countryLineColours(tags, styles.known, tokens.surface, tokens.countryColours === 'fixed'), [tags, styles.known, tokens]);
+  const colourOf = useCallback((tag: string, of: 'fuel' | 'capacity') => single ? (of === 'fuel' ? tokens.accent : tokens.muted) : colours.get(tag) ?? tokens.muted,
+    [single, tokens.accent, tokens.muted, colours]);
+  const wantedNames = useMemo(() => tags.map(tag => ({ tag, hour: Math.floor(head) })), [tags, head]);
+  const names = useCountryNamesAt(runtime.client, track, single ? [] : wantedNames, active && !saved);
+  const nameOf = useCallback((tag: string) => { const read = names.get(nameKey(Math.floor(head), tag)); return read?.kind === 'value' ? read.value : tag; }, [names, head]);
+  const fuelEntry = fuelHead ? fuelFollowed.entry : null, capacityEntry = capacityHead ? capacityFollowed.entry : null;
+  useEffect(() => {
+    const stops = [[fuelEntry, fuel.head], [capacityEntry, capacity.head]].flatMap(([entry, lineHead]) => entry
+      ? tags.map((tag, row) => followAtHead((lineHead as typeof fuel.head)(tag), () => rowAmount((entry as FollowEntry).answer, row, 0))) : []);
+    return () => stops.forEach(stop => stop());
+  }, [fuelEntry, capacityEntry, tags, fuel.head, capacity.head]);
+  const playback = (options.playback as PlaybackMode) ?? 'draw-in';
+  const until = shownUntil(playhead, playback, options.afterPlayhead === true);
+  const layers = useMemo<ChartLayer[]>(() => {
+    const line = (summary: () => ChartSummary | undefined, color: string, dash: boolean, area: boolean): ChartLayer => ({
+      draw: (ctx, frame, chartTokens, state) => {
+        const drawn = summary();
+        if (drawn) drawLineSummary(ctx, rawFrame(frame, QUANTITY_SCALE), chartTokens, drawn, color, false, state.playhead === null ? null : state.playhead,
+          dash ? { dash: SECONDARY_DASH } : { area });
+      },
+      extent: x => {
+        const drawn = summary();
+        const range = drawn ? summaryExtent(drawn, x, until) : null;
+        return range && [range[0] / QUANTITY_SCALE, range[1] / QUANTITY_SCALE];
+      },
+    });
+    return tags.flatMap(tag => [...showCapacity ? [line(() => capacity.lineOf(tag), colourOf(tag, 'capacity'), true, false)] : [],
+      line(() => fuel.lineOf(tag), colourOf(tag, 'fuel'), false, single && options.areaFill !== false)]);
+  }, [tags, showCapacity, capacity.lineOf, fuel.lineOf, colourOf, single, options.areaFill, until]);
+  // The gain and burn strip reads the day series' tiles as it draws; with no bar it writes why (`stripNote`).
+  const gainFailure = gain.error?.message ?? null, burnFailure = burn.error?.message ?? null;
+  const strip = useMemo<ChartStrip | undefined>(() => {
+    if (!withStrip || !tags[0]) return undefined;
+    let held: { gain?: ChartSummary; burn?: ChartSummary; strip: ChartStrip; bars: number } | null = null;
+    const current = () => {
+      const [up, down] = [gain.lineOf(tags[0]), burn.lineOf(tags[0])];
+      if (!held || held.gain !== up || held.burn !== down) {
+        const bars = stripBars(up, down, DAY_HOURS).filter(bar => isMember(membership?.get(tags[0]), bar.lastHour));
+        held = { gain: up, burn: down, bars: bars.length, strip: barStrip(bars,
+          { height: height => Math.max(CHART_LAYOUT.stripMin, (height - CHART_LAYOUT.stripInset) * STRIP_SHARE), upLabel: 'gain', downLabel: 'burn' }) };
+      }
+      return held;
+    };
+    const lines = (summary: ChartSummary | undefined, unrecorded: string | null, failure: string | null) =>
+      ({ landed: summary !== undefined || unrecorded !== null, unrecorded, failure });
+    return { height: height => current().strip.height(height),
+      draw: (ctx, frame, chartTokens, state) => {
+        const drawn = current();
+        const note = stripNote(drawn.bars, lines(drawn.gain, gain.notRecorded, gainFailure), lines(drawn.burn, burn.notRecorded, burnFailure));
+        // A note stands for a strip with no bars: its empty baseline would cross the words.
+        if (!note) drawn.strip.draw(ctx, frame, chartTokens, state);
+        if (!note || !frame.strip) return;
+        ctx.save();
+        ctx.fillStyle = chartTokens.muted;
+        ctx.font = font(chartTokens, chartTokens.fontSize.small);
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(note.text, frame.plotLeft + frame.plotWidth / 2, frame.strip.top + frame.strip.height / 2);
+        ctx.restore();
+      },
+      describe: (point, frame, through) => current().strip.describe?.(point, frame, through) ?? null,
+      keyTargets: (view, through) => current().strip.keyTargets?.(view, through) ?? [] };
+  }, [withStrip, tags, gain.lineOf, burn.lineOf, membership, gain.notRecorded, burn.notRecorded, gainFailure, burnFailure]);
+  const chartData = useMemo<ChartData>(() => ({ revision: () => [fuel.revision(), capacity.revision(), gain.revision(), burn.revision()],
+    subscribe: listener => { const stops = [fuel.subscribe(listener), capacity.subscribe(listener), gain.subscribe(listener), burn.subscribe(listener)];
+      return () => stops.forEach(stop => stop()); } }), [fuel.revision, fuel.subscribe, capacity.revision, capacity.subscribe, gain.revision, gain.subscribe, burn.revision, burn.subscribe]);
+  // A hovered day is asked once per country for its tooltip.
+  const hoverRequests = useMemo(() => track && hoverHour !== null && !saved ? tags.map(tag => ({ sourceId: track.source.id, revision: track.source.revision,
+    product: COUNTRY_FUEL, params: { branchId: track.branch.id, tag, hour: Math.floor(hoverHour) } })) : [], [track, hoverHour, tags, saved]);
+  const hovered = useProducts<CountryFuelReply>(runtime.client, hoverRequests, active, validateCountryFuel, track?.source);
+  const hoverLabels = useCountryLabelsAt(runtime.client, track, hoverHour === null || single ? [] : tags.map(tag => ({ tag, hour: Math.floor(hoverHour) })), active);
+  const colors = { fuel: tokens.accent, capacity: tokens.muted, gained: tokens.categories[0], burned: tokens.categories[1] };
   const menu = useContextMenu('Fuel actions');
-  const candidates = useMemo(() => fuelChoiceKey(widget.countries, countries, options.capacity !== false),
-    [widget.countries, countries.tags, countries.membership, options.capacity]); // eslint-disable-line react-hooks/exhaustive-deps
-  const pickScope = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, candidates, options.show,
-    extent, options.playback, options.afterPlayhead, options.windowDays, options.log, options.yMin, options.yMax]);
-  const pickOwner = useMemo(() => ({ scope: pickScope, numbers: prepared.enabled ? prepared.owner : numbers, client: runtime.client, active }), [pickScope, prepared.enabled ? prepared.owner : numbers, runtime.client, active]);
+  const anchor = useRef<HTMLDivElement>(null);
+
+  // The drill: the breakdown chosen, the moment, the country and what is picked within it.
+  const pickScope = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, tags, options.show, extent]);
+  const pickOwner = useMemo(() => ({ scope: pickScope }), [pickScope]);
   const drill = drillOwner === undefined || drillOwner === pickOwner ? storedDrill : CLOSED;
-  const literalChosen = data?.find(reply => reply.tag === chosenTag) ?? (pickTags ? undefined : data?.[0]);
-  const drillMeasure = saved?.id ?? BREAKDOWNS.find(item => item.id === drill.breakdown)?.id ?? measure;
+  const [measure, setMeasure] = useState<'gain' | 'burn' | 'consumption'>('consumption');
+  const drillMeasure = (saved?.id ?? BREAKDOWNS.find(item => item.id === drill.breakdown)?.id ?? measure) as 'gain' | 'burn' | 'consumption';
   const actualHour = track ? clockHour + track.axisOffset : null;
   const at = fuelMoment(drill, !!saved, playhead ?? extent[1], actualHour);
-  const savedRecipient = track && saved?.id === 'burn' ? readFuelRecipient(options.fuelRecipient, track.source.metadata.campaignKey, track.branch.id) : null;
-  const [recipient, setRecipient] = useState<FuelRecipientSelection | null | undefined>(undefined);
-  const retainedRecipient = recipient === undefined ? savedRecipient : recipient;
-  const savedConsumption = track && saved?.id === 'consumption' ? readFuelConsumption(options.fuelConsumption, track.source.metadata.campaignKey, track.branch.id) : null;
-  const [consumption, setConsumption] = useState<FuelConsumptionSelection | null | undefined>(undefined);
-  const retainedConsumption = consumption === undefined ? savedConsumption : consumption;
-  const savedLevel = track && saved?.id === 'consumption' ? readFuelConsumptionLevel(options.fuelConsumptionLevel, track.source.metadata.campaignKey, track.branch.id) : null;
-  const [level, setLevel] = useState<FuelConsumptionLevel | null | undefined>(undefined);
-  const selectedLevel = level === undefined ? savedLevel : level;
-  const savedCountry = useMemo(() => track && saved ? readFuelCountry(options.fuelCountry, track.source.metadata.campaignKey, track.branch.id, widget.countries) : null,
-    [!!saved, options.fuelCountry, widget.countries, track?.source.metadata.campaignKey, track?.branch.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  const drillFollows = saved ? following && drill.breakdown === null || drill.breakdown !== null && drill.follow : drill.follow;
+  const [chosenTag, setChosenTag] = useState<string>();
+  const [pickTags, setPickTags] = useState<readonly string[]>();
+  const campaign = track?.source.metadata.campaignKey ?? '';
+  const savedCountry = useMemo(() => track && saved ? readFuelCountry(options.fuelCountry, campaign, track.branch.id, widget.countries) : null,
+    [track, saved, options.fuelCountry, widget.countries, campaign]);
   const [countryPick, setCountryPick] = useState<{ owner: object; selection: FuelCountrySelection } | null>(null);
   const selectedCountry = saved ? savedCountry : countryPick?.owner === pickOwner ? countryPick.selection : null;
   const catalogue = useCountryGroups(runtime, track, active && !!selectedCountry);
-  const catalogueStore = useMemo(() => new NumericReply<CountryGroupReply>(), [runtime.client]);
-  const identityNumbers = catalogueStore.update(JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id]), catalogue.data, groupNumbers);
-  const actorSpans = useMemo(() => selectedCountry && identityNumbers && track && identityNumbers.branchId === track.branch.id ? fuelCountrySpans(identityNumbers.countryIdentities,
-    selectedCountry, track.branch.firstHour, track.branch.lastHour, countries.membership) : null,
-  [selectedCountry, identityNumbers, track?.branch.firstHour, track?.branch.lastHour, countries.membership]);
-  const identitySpans = useMemo(() => selectedCountry && identityNumbers && track ? fuelCountrySpans(identityNumbers.countryIdentities,
-    selectedCountry, track.branch.firstHour, track.branch.lastHour) : null,
-  [selectedCountry, identityNumbers, track?.branch.firstHour, track?.branch.lastHour]);
-  const actorRequests = track && actorSpans ? [...actorSpans.keys()].map(tag => ({ sourceId: track.source.id, revision: track.source.revision,
-    product: 'country-fuel', params: { branchId: track.branch.id, tag } })) : [];
-  const actorPrepared = usePreparedFuel(runtime.client, track, [...(actorSpans?.keys() ?? [])], Math.floor(at ?? extent[1]), active && !!selectedCountry, [], actorSpans ?? undefined);
-  const actorLegacyProduct = useProducts<FuelReply>(runtime.client, actorRequests, active && !!selectedCountry && !actorPrepared.enabled, value => {
-    const result = validateFuelReply(value);
-    if (!track || result.branchId !== track.branch.id || !actorSpans?.has(result.tag)) throw new Error('The selected fuel history belongs to another country or branch.');
-    return result;
-  });
-  const actorProduct = actorPrepared.enabled ? actorPrepared : actorLegacyProduct;
-  const actorError = useHeldFailure(actorProduct.error, actorProduct.data !== undefined, actorProduct.retry);
-  const actorStore = useMemo(() => new NumericReply<FuelReply[]>(), [runtime.client]);
-  const actorNumbers = actorStore.update(JSON.stringify(actorRequests), actorProduct.data, fuelNumbers);
-  const actorData = actorProduct.data ?? actorNumbers;
-  const shownTag = actorSpans && at !== null ? countryDrillTagAt(actorSpans, at) : null;
-  // The displayed body follows the actor; detail requests retain their original supplying basis.
-  const chosen = selectedCountry ? actorData?.find(reply => reply.tag === shownTag)
-    ?? actorData?.find(reply => reply.tag === selectedCountry.tag) ?? actorData?.find(reply => actorSpans?.has(reply.tag)) : literalChosen;
-  const detailHour = selectedCountry && chosen?.tag !== shownTag ? null : at;
-  const selectedRecipient = drillMeasure === 'burn' && chosen && track ? fuelRecipientForReply(retainedRecipient, chosen, track.source.metadata.campaignKey, identitySpans ?? undefined) : null;
-  const selectedConsumption = drillMeasure === 'consumption' && chosen && track ? consumptionForActor(retainedConsumption, track.source.metadata.campaignKey, track.branch.id, chosen.tag, identitySpans ?? undefined) : null;
-  const actorWithin = useMemo(() => actorSpans ? [...actorSpans.values()].flat().sort((a, b) => a.firstHour - b.firstHour) : undefined, [actorSpans]);
-  const detailPickOwner = useMemo(() => ({ pickOwner, tag: chosen?.tag, measure: drillMeasure,
-    numbers: selectedCountry ? actorPrepared.enabled ? actorPrepared.owner : actorNumbers : prepared.enabled ? prepared.owner : numbers, identities: selectedCountry ? identityNumbers : undefined }),
-  [pickOwner, chosen?.tag, drillMeasure, selectedCountry, actorPrepared.enabled ? actorPrepared.owner : actorNumbers, prepared.enabled ? prepared.owner : numbers, identityNumbers]);
-  const pickRef = useRef({ main: pickOwner, detail: detailPickOwner, active });
-  pickRef.current = { main: pickOwner, detail: detailPickOwner, active };
-  useEffect(() => {
-    pickRef.current.active = active;
-    return () => { pickRef.current.active = false; };
-  }, [active, pickOwner]);
-  const actorContentPending = !!selectedCountry && !!actorNumbers && !actorProduct.data && !actorProduct.error;
-  useEffect(() => { dispatch({ type: 'close' }); setDrillOwner(undefined); setCountryPick(null); setChosenTag(undefined); setPickTags(undefined); setRecipient(undefined); setConsumption(undefined); setLevel(undefined); }, [pickOwner]);
-  const diagnostics = useMemo(() => [...(groupContentPending ? ['Group names are updating from the recorded content.'] : []),
-    ...(contentPending || actorContentPending ? ['Fuel source and consumer names are updating from the recorded content.']
-      : (selectedCountry ? actorData : data)?.flatMap(reply => reply.warnings.map(note => `${reply.tag}: ${note}`)) ?? [])],
-  [data, actorData, selectedCountry, contentPending, actorContentPending, groupContentPending]);
-  useDiagnostics(onDiagnostics, diagnostics);
-  const views = useMemo(() => (data ?? []).map(reply => ({ reply, view: fuelView(reply, extent[0], extent[1]) })),
-    [data, extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
-  const lines = useMemo<CountryRaceLine[]>(() => views.flatMap(({ reply, view }) => {
-    const line = (of: 'fuel' | 'capacity'): CountryRaceLine => ({ tag: reply.tag, id: `${reply.tag}:${of}`,
-      runs: clipToSpans(fuelRuns(view.reads, reply.quantityScale, of), countries.membership?.get(reply.tag)
-        ?? [{ firstHour: extent[0], lastHour: extent[1] }]),
-      ...(single ? { color: of === 'fuel' ? tokens.accent : tokens.muted } : {}),
-      ...(of === 'capacity' ? { dash: SECONDARY_DASH, endDot: false, muted: true } : { area: single && options.areaFill !== false }),
-      endLabel: (hour, name) => {
-        const read = runAt(view.reads, hour);
-        if (!read) return single ? (of === 'fuel' ? 'Fuel' : 'Capacity') : name;
-        return { text: `${single ? '' : `${name} · `}${of === 'fuel' ? 'Fuel' : 'Capacity'}`,
-          suffix: formatFuel(of === 'fuel' ? read.fuelRaw : read.capacityRaw, reply.quantityScale, digits) };
-      },
-    });
-    return [...(options.capacity !== false ? [line('capacity')] : []), line('fuel')];
-  }), [views, countries.membership, extent[0], extent[1], single, options.capacity, options.areaFill, tokens, digits]); // eslint-disable-line react-hooks/exhaustive-deps
-  const lineSummaries = useMemo(() => prepared.enabled ? new Map(views.flatMap(({ reply }) =>
-    (options.capacity === false ? ['fuel'] : ['fuel', 'capacity']).flatMap(measure => {
-      const summary = scaledFuelSummary(prepared.summary(reply.tag, measure), reply.quantityScale);
-      return summary ? [[`${reply.tag}:${measure}`, summary] as const] : [];
-    }))) : undefined, [views, options.capacity, prepared.enabled, prepared.summaries]);
-  const strip = useMemo<ChartStrip | undefined>(() => !single || options.strip === false || !views[0] ? undefined
-    : barStrip((prepared.enabled ? fuelSummaryStrip(prepared.summary(views[0].reply.tag,'stripGain'), prepared.summary(views[0].reply.tag,'stripBurn'), views[0].reply) : views[0].view.bars).filter(bar => isMember(countries.membership?.get(views[0].reply.tag), bar.lastHour)),
-      { height: height => Math.max(CHART_LAYOUT.stripMin, (height - CHART_LAYOUT.stripInset) * STRIP_SHARE), upLabel: 'gain', downLabel: 'burn' }),
-    [views, single, options.strip, countries.membership, prepared.summaries]);
-  useFuelSeriesParity(anchor, runtime.client, track, countries.tags, extent, countries.membership ?? undefined, 'Fuel chart values', data);
-  const colors = { fuel: tokens.accent, capacity: tokens.muted, gained: tokens.categories[0], burned: tokens.categories[1] };
+  const identitySpans = useMemo(() => selectedCountry && catalogue.data && track ? fuelCountrySpans(catalogue.data.countryIdentities, selectedCountry,
+    track.branch.firstHour, track.branch.lastHour) : null, [selectedCountry, catalogue.data, track]);
+  const shownTag = identitySpans && at !== null ? countryDrillTagAt(identitySpans, at) : null;
+  const drillTag = selectedCountry ? shownTag : chosenTag ?? (pickTags ? null : tags[0] ?? null);
+  const [recipient, setRecipient] = useState<FuelRecipientSelection | null | undefined>(undefined);
+  const savedRecipient = track && saved?.id === 'burn' ? readFuelRecipient(options.fuelRecipient, campaign, track.branch.id) : null;
+  const [consumption, setConsumption] = useState<FuelConsumptionSelection | null | undefined>(undefined);
+  const savedConsumption = track && saved?.id === 'consumption' ? readFuelConsumption(options.fuelConsumption, campaign, track.branch.id) : null;
+  const [level, setLevel] = useState<FuelConsumptionLevel | null | undefined>(undefined);
+  const savedLevel = track && saved?.id === 'consumption' ? readFuelConsumptionLevel(options.fuelConsumptionLevel, campaign, track.branch.id) : null;
+  const heldRecipient = recipient === undefined ? savedRecipient : recipient;
+  const heldConsumption = consumption === undefined ? savedConsumption : consumption;
+  const heldLevel = level === undefined ? savedLevel : level;
+  useEffect(() => { dispatch({ type: 'close' }); setDrillOwner(undefined); setCountryPick(null); setChosenTag(undefined); setPickTags(undefined);
+    setRecipient(undefined); setConsumption(undefined); setLevel(undefined); }, [pickOwner]);
+  const invalidSaved = !!saved && (!!options.fuelExtent && !heldExtent || !!options.fuelCountry && !savedCountry
+    || saved.id === 'burn' && !!options.fuelRecipient && !savedRecipient || saved.id === 'consumption' && !!options.fuelConsumption && !savedConsumption
+    || saved.id === 'consumption' && !!options.fuelConsumptionLevel && !savedLevel);
+
   const state = !track ? <WidgetState kind="empty" icon="droplet" message="Load a campaign and choose countries to see their fuel." />
-    : playhead !== null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)
-      ? <WidgetState kind="unavailable" message="This time is outside the recording." />
-    : groupError || error ? <WidgetState kind="error" failure={groupError ?? error!} onRetry={groupError ? retryGroups : retry} />
-      : countries.reason ? <WidgetState kind="empty" message={countries.reason} />
-        : (widget.time.mode === 'range' || widget.time.mode === 'pin') && !window ? <WidgetState kind="unavailable" message="Choose another time in widget settings." />
-          : pending || !data ? <WidgetState kind="loading" label="Loading fuel…" />
-            : !data.some(reply => reply.reads.length) && !prepared.states?.states.some(state=>state.recorded)
-              && !prepared.summaries?.series.some(line=>line.summary.buckets.some(bucket=>bucket!==null))
-              // A group's members at hours still being prepared are not known yet: none recorded is not proof of none.
-              ? countries.known(track.branch.firstHour, track.branch.lastHour) ? <WidgetState kind="unavailable" message="No fuel was recorded for the chosen countries." />
-                : <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} /> : undefined;
+    : playhead !== null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour) ? <WidgetState kind="unavailable" message="This time is outside the recording." />
+      : groupError ? <WidgetState kind="error" failure={groupError} onRetry={retryGroups} />
+        : countries.reason ? <WidgetState kind="empty" message={countries.reason} />
+          : (widget.time.mode === 'range' || widget.time.mode === 'pin') && !window ? <WidgetState kind="unavailable" message="Choose another time in widget settings." />
+            : pending ? <WidgetState kind="loading" label="Loading fuel…" />
+              : fuel.error && !fuel.summaries && !saved ? <WidgetState kind="error" failure={fuel.error} onRetry={fuel.retry} /> : undefined;
+  useDiagnostics(onDiagnostics, useMemo(() => [...(contentPending ? ['Group names are updating from the recorded content.'] : []),
+    ...(styles.error ? [`Map colours could not be loaded: ${styles.error.message}`] : []),
+    ...(showCapacity && capacity.error ? [`The capacity could not be loaded: ${capacity.error.message}`] : []),
+    ...(withStrip && (gain.error ?? burn.error) ? [`The gain and burn bars could not be loaded: ${(gain.error ?? burn.error)!.message}`] : []),
+    ...(withStrip && (gain.notRecorded ?? burn.notRecorded) ? [`Gain and burn not recorded: ${gain.notRecorded ?? burn.notRecorded}`] : []),
+    ...(hovered.data?.flatMap(reply => reply.warnings.map(note => `${reply.tag}: ${note}`)) ?? [])], [contentPending, styles.error, showCapacity, capacity.error,
+    withStrip, gain.error, burn.error, gain.notRecorded, burn.notRecorded, hovered.data]));
+
   const open = (hour: number, tag?: string, choices?: readonly string[]) => {
-    if (!active || pickRef.current.main !== pickOwner || !pickRef.current.active || saved || state || !track) return;
+    if (!active || saved || state || !track) return;
     hour = Math.floor(hour);
     if (hour < extent[0] || hour > extent[1]) return;
     const choosing = !tag && choices && choices.length > 1;
-    setRecipient(previous => fuelRecipientAtPick(previous ?? savedRecipient, choosing ? null : tag ?? chosen?.tag));
-    setConsumption(previous => track ? consumptionForActor(previous ?? savedConsumption, track.source.metadata.campaignKey, track.branch.id, choosing ? undefined : tag ?? chosen?.tag) : null);
-    if (choosing || tag && tag !== chosen?.tag) setLevel(null);
+    setRecipient(null); setConsumption(null); setLevel(null);
     setDrillOwner(pickOwner);
     if (choosing) { setChosenTag(undefined); setPickTags(choices); setCountryPick(null); }
-    else if (tag && countries.tags.includes(tag) && lines.some(line => line.tag === tag && (prepared.enabled || runAt(line.runs, hour)))) {
-      setPickTags(undefined); setChosenTag(tag);
-      setCountryPick({ owner: pickOwner, selection: { campaign: track.source.metadata.campaignKey, branch: track.branch.id, tag,
-        originOffset: hour - track.branch.firstHour } });
-    } else return;
-    dispatch(fuelOpen(drillMeasure, hour, choosing ? false : runtime.clock.getSnapshot().playing,
-      !choosing && widget.time.mode === 'follow', playhead));
+    else {
+      const picked = tag ?? choices?.[0] ?? drillTag;
+      if (!picked || !tags.includes(picked) || !isMember(membership?.get(picked), hour)) return;
+      setPickTags(undefined); setChosenTag(picked);
+      setCountryPick({ owner: pickOwner, selection: { campaign, branch: track.branch.id, tag: picked, originOffset: hour - track.branch.firstHour } });
+    }
+    dispatch(fuelOpen(drillMeasure, hour, choosing ? false : runtime.clock.getSnapshot().playing, !choosing && following, playhead));
   };
-  const main = <CountryRaceView runtime={runtime} track={track} active={active && !saved} options={options} view="lines" extent={extent} playhead={playhead}
-    lineSummaries={lineSummaries} onSummaryView={prepared.enabled ? prepared.onSummaryView : undefined}
-    onReachHour={prepared.enabled ? prepared.onHover : undefined} navigation={prepared.enabled ? prepared : undefined}
-    exactLineTags={prepared.enabled ? async hour => { const data = await prepared.exactAt(hour); return data ? data.states.filter(state=>(state.fuel || state.fuelRaw!==undefined) && isMember(countries.membership?.get(state.tag),hour)).map(state=>state.tag) : null; } : undefined}
-    state={state} moment={Math.floor(playhead ?? extent[1])} slots={1} ranked={[]} lines={lines} strip={strip}
-    countryTags={countries.tags} keyHours={[...new Set(views.flatMap(item => item.view.readHours))].sort((a, b) => a - b)}
-    segmentAt={(tag, hour) => {
-      const reads = data?.find(reply => reply.tag === tag)?.reads;
-      return reads && runAt(reads, hour) ? reads.filter(read => read.startsSegment && read.firstHour <= hour).at(-1)?.firstHour ?? null : null;
-    }}
-    label="Fuel" labels={{ lines: 'Fuel level and capacity', actions: 'Fuel actions' }} empty="" formatValue={String}
-    presentation={{ countryLooks: !single, held: false, linePadding: CHART_LAYOUT.measureEndLabels }}
-    beforeChart={<><p className="chart-line-key">Solid: fuel · dashed: capacity</p>
-      <button type="button" className="button small quiet" onClick={() => {
-        const hour = Math.floor(playhead ?? extent[1]);
-        const tags = [...new Set(lines.filter(line => runAt(line.runs, hour)).map(line => line.tag))];
-        if (tags.length) open(hour, tags.length === 1 ? tags[0] : chosenTag, tags);
-      }}>View fuel breakdown</button></>}
-    onPick={open} pickOwner={pickOwner} tooltip={() => null}
-    timeTooltip={single ? hour => isMember(countries.membership?.get(views[0].reply.tag), hour)
-      ? fuelTooltips(views[0].reply, views[0].view.reads, hour, dayLabel(hour), colors, digits,prepared.amountsAt(views[0].reply.tag,hour)) : null : undefined}
-    lineTooltip={(hour, tags, labels, country) => [{ title: dayLabel(hour), rows: tags.flatMap(tag => {
-      const value = views.find(item => item.reply.tag === tag);
-      if (!value) return [];
-      const label = labels(hour)(tag);
-      const tip = fuelTooltips(value.reply, value.view.reads, hour, label.name, colors, digits,prepared.amountsAt(tag,hour))[0];
-      return [{ label: label.name, countryFlag: label, swatch: country(tag), strong: true },
-        ...tip.rows.map(row => ({ ...row, indent: true })), ...(tip.note ? [{ label: tip.note, tone: 'muted' as const, indent: true }] : [])];
-    }) }]} />;
-  const wrongSavedActor = chosen && track && savedRecipient && !fuelRecipientForReply(savedRecipient, chosen, track.source.metadata.campaignKey, identitySpans ?? undefined);
-  const wrongSavedConsumption = chosen && track && savedConsumption && !consumptionForActor(savedConsumption, track.source.metadata.campaignKey, track.branch.id, chosen.tag, identitySpans ?? undefined);
-  const invalidSaved = saved && ((saved.id === 'burn' && options.fuelRecipient && (!savedRecipient || wrongSavedActor))
-    || (saved.id === 'consumption' && options.fuelConsumption && (!savedConsumption || wrongSavedConsumption))
-    || (saved.id === 'consumption' && options.fuelConsumptionLevel && (!savedLevel || !selectedConsumption && chosen && savedLevel.tag !== chosen.tag))
-    || (options.fuelCountry && !savedCountry) || (options.fuelExtent && !heldExtent));
-  const actorState = selectedCountry ? catalogue.error && !identityNumbers ? <WidgetState kind="error" failure={catalogue.error} onRetry={catalogue.retry} />
-    : !identityNumbers ? <WidgetState kind="loading" label="Loading country…" />
-      : !actorSpans ? <WidgetState kind="unavailable" message="Choose a country again." />
-        : actorError ? <WidgetState kind="error" failure={actorError} onRetry={actorProduct.retry} />
-          : !actorData ? <WidgetState kind="loading" label="Loading the selected country's fuel…" /> : undefined : undefined;
-  const headerReason = invalidSaved ? 'Choose a country again.'
-    : (catalogue.error && !identityNumbers ? failureText(catalogue.error, 'Couldn’t load country.') : null) ?? (!selectedCountry ? 'Country unavailable at this time.'
-      : !identityNumbers ? 'Loading country…'
-        : !actorSpans ? 'Choose a country again.'
-          : !shownTag ? 'Country unavailable at this time.'
-            : (actorError ? failureText(actorError, 'Couldn’t load fuel data.') : null) ?? (!actorData?.some(reply => reply.tag === shownTag && at !== null && runAt(reply.reads, at))
-              ? 'The selected country’s fuel is not recorded at this moment.' : null));
+  const tooltip = (hour: number) => {
+    const at = Math.floor(hour);
+    const replies = hoverHour !== null && Math.floor(hoverHour) === at ? hovered.data : undefined;
+    if (single) {
+      if (!isMember(membership?.get(tags[0]), at)) return fitTooltip([{ title: dayLabel(at), rows: [{ label: 'Not in the group at this date', tone: 'muted' as const }] }], viewport);
+      const reply = replies?.find(item => item.tag === tags[0]);
+      return fitTooltip(reply ? fuelTooltips(reply, dayLabel(at), colors, digits) : [{ title: dayLabel(at), rows: [{ label: hovered.error ? 'Could not load this day' : 'Loading…', tone: 'muted' as const }] }], viewport);
+    }
+    const rows: TooltipRow[] = tags.flatMap((tag): TooltipRow[] => {
+      const label = hoverLabels.labelAt(at)(tag);
+      const reply = replies?.find(item => item.tag === tag);
+      if (!isMember(membership?.get(tag), at)) return [{ label: label.name, countryFlag: label, value: 'Not in the group', tone: 'muted' as const }];
+      if (!reply) return [{ label: label.name, countryFlag: label, value: 'Loading…', tone: 'muted' as const }];
+      const tip = fuelTooltips(reply, label.name, colors, digits)[0];
+      return [{ label: label.name, countryFlag: label, swatch: colourOf(tag, 'fuel'), strong: true }, ...tip.rows.map(row => ({ ...row, indent: true })),
+        ...(tip.note ? [{ label: tip.note, tone: 'muted' as const, indent: true }] : [])];
+    });
+    return fitTooltip([{ title: dayLabel(at), rows }], viewport);
+  };
+  const legend = single ? null : tags.map((tag, row) => ({ id: tag, label: nameOf(tag), color: colourOf(tag, 'fuel'),
+    value: fuelEntry && store ? <FollowedText store={store} entry={fuelEntry} write={(entry, cell) => {
+      const raw = rowAmount(entry.answer, row, 0);
+      cell.put(raw == null ? raw === null ? 'Not recorded' : 'Loading…' : formatFuel(BigInt(Math.round(raw)), QUANTITY_SCALE, digits), '');
+    }} /> : undefined }));
+
+  const main = state ?? <div className="country-measure" ref={setRoot}><div className="country-measure-view">
+    {legend && <Legend label="Countries" items={legend} windowed />}
+    <p className="chart-line-key">Solid: fuel{showCapacity ? ' · dashed: capacity' : ''}</p>
+    <button type="button" className="button small quiet" onClick={() => {
+      const hour = Math.floor(playhead ?? extent[1]);
+      const present = tags.filter(tag => isMember(membership?.get(tag), hour));
+      if (present.length) open(hour, present.length === 1 ? present[0] : chosenTag, present);
+    }}>View fuel breakdown</button>
+    <div className="country-measure-chart">
+      <TimeChart label={`Fuel of ${tags.map(nameOf).join(', ')}`} extent={extent} playhead={playhead}
+        liveHead={following && track ? { read: () => runtime.clock.getSnapshot().position + (track.axisOffset ?? 0), subscribe: runtime.clock.subscribeFrame } : undefined}
+        playback={playback} afterPlayhead={options.afterPlayhead === true} windowHours={Number(options.windowDays ?? 365) * 24}
+        hoursPerSecond={motionOf(runtime.clock.getSnapshot())} branchStart={track!.branch.firstHour}
+        axes={{ xFrom: null, xTo: null, yMin: options.yMin as number | null, yMax: options.yMax as number | null, log: options.log === true }}
+        padding={{ right: options.endLabels !== false ? CHART_LAYOUT.measureEndLabels : CHART_LAYOUT.right }} layers={layers} strip={strip} active={active && !saved} notRecorded={fuel.notRecorded}
+        revision={`${track!.branch.id}:${tags.length}:${viewport}:${digits}:${showCapacity}:${hovered.data ? 'hover' : ''}`} data={chartData}
+        pickOwner={fuel.owner} onSummaryView={view => { fuel.onSummaryView(view); if (showCapacity) capacity.onSummaryView(view); if (withStrip) { gain.onSummaryView(view); burn.onSummaryView(view); } }}
+        onNavigateHour={fuel.onNavigateHour} keyboardHour={fuel.keyboardHour} keyboardRevision={fuel.keyboardRevision} onHover={setHoverHour}
+        formatValue={value => formatFuel(BigInt(Math.round(value * QUANTITY_SCALE)), QUANTITY_SCALE, 0)}
+        tooltip={hour => tooltip(hour)} onPick={hour => open(hour, single ? tags[0] : undefined, tags.filter(tag => isMember(membership?.get(tag), Math.floor(hour))))}
+        overlay={(ctx, frame, chartTokens) => {
+          if (options.endLabels === false) return;
+          const end = Math.min(until ?? extent[1], frame.x[1], extent[1]);
+          const ends = tags.flatMap(tag => (['fuel', ...showCapacity ? ['capacity'] as const : []] as const).flatMap(of => {
+            const value = summaryEnd(of === 'fuel' ? fuel.lineOf(tag) : capacity.lineOf(tag), end);
+            if (value == null) return [];
+            const what = of === 'fuel' ? 'Fuel' : 'Capacity';
+            return [{ id: `${tag}:${of}`, y: frame.toY(value / QUANTITY_SCALE), color: colourOf(tag, of),
+              text: single ? what : `${nameOf(tag)} · ${what}`, suffix: formatFuel(BigInt(Math.round(value)), QUANTITY_SCALE, digits) }];
+          }));
+          placeEndLabels(ctx, frame, chartTokens, ends);
+        }}
+        onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track!.id, hour)])} />
+    </div>
+  </div></div>;
+
+  const actorState = selectedCountry ? catalogue.error && !catalogue.data ? <WidgetState kind="error" failure={catalogue.error} onRetry={catalogue.retry} />
+    : !catalogue.data ? <WidgetState kind="loading" label="Loading country…" />
+      : !identitySpans ? <WidgetState kind="unavailable" message="Choose a country again." /> : undefined : undefined;
+  const chart = track ? { active: active && (!!saved || drill.breakdown !== null), pickOwner, extent, branchStart: track.branch.firstHour,
+    playhead: drillFollows ? actualHour : playhead, playback,
+    liveHead: drillFollows ? { read: () => runtime.clock.getSnapshot().position + track.axisOffset, subscribe: runtime.clock.subscribeFrame } : undefined, afterPlayhead: options.afterPlayhead === true, windowHours: Number(options.windowDays ?? 365) * 24,
+    hoursPerSecond: motionOf(runtime.clock.getSnapshot()), within: drillTag ? membership?.get(drillTag) ?? null : null, detailHours: DETAIL_HOURS,
+    onPick: (hour: number) => { setDrillOwner(pickOwner); dispatch(saved ? { type: 'open', breakdown: saved.id, hour, playing: false, playhead: null } : { type: 'pick', hour }); },
+    onContextMenu: (hour: number, x: number, y: number) => menu.open(x, y, [jumpItem(runtime, track.id, hour)]) } : null;
+  const breakdown = invalidSaved ? <WidgetState kind="unavailable" message="Choose a country again." /> : actorState ?? (saved ? undefined : state) ?? (track && chart && drillTag
+    ? drillMeasure === 'consumption'
+      ? <FuelConsumptionBreakdown runtime={runtime} widget={widget} track={track} tag={drillTag} hour={drillFollows ? null : at} follows={drillFollows} digits={digits}
+        campaign={campaign} aliases={identitySpans ?? undefined} selection={heldConsumption} onSelection={setConsumption} level={heldLevel} onLevel={setLevel} {...chart} />
+      : <FuelBreakdown runtime={runtime} widget={widget} track={track} tag={drillTag} measure={drillMeasure} hour={drillFollows ? null : at} follows={drillFollows}
+        digits={digits} campaign={campaign} aliases={identitySpans ?? undefined} selection={heldRecipient} onSelection={setRecipient} {...chart} />
+    : <p className="drill-empty">{selectedCountry ? 'Country unavailable at this time.' : 'Choose a country from the drawn lines for this moment.'}</p>);
+  const headerReason = invalidSaved ? 'Choose a country again.' : !selectedCountry ? 'Country unavailable at this time.' : !catalogue.data ? 'Loading country…'
+    : !identitySpans ? 'Choose a country again.' : !shownTag ? 'Country unavailable at this time.' : null;
   const headerReady = !!saved && !!options.fuelCountry && !!countrySlot && active && headerReason === null && at !== null && !!shownTag;
   const headerWanted = useMemo(() => headerReady && shownTag && at !== null ? [{ tag: shownTag, hour: at }] : [], [headerReady, shownTag, at]);
   const { labelAt: headerLabelAt } = useCountryLabelsAt(runtime.client, track, headerWanted, headerReady);
-  const pinnedHeader = saved && options.fuelCountry && countrySlot ? createPortal(<DatedCountryChip failure={(!identityNumbers ? catalogue.error : null) ?? actorError}
+  const pinnedHeader = saved && options.fuelCountry && countrySlot ? createPortal(<DatedCountryChip failure={catalogue.data ? undefined : catalogue.error}
     label={headerReady && shownTag && at !== null ? headerLabelAt(at)(shownTag) : null} hour={at} reason={headerReason} />, countrySlot) : null;
-  const chart = track && chosen ? {
-    active: active && (!!saved || drill.breakdown !== null), pickOwner: detailPickOwner, extent,
-    playhead: drill.breakdown !== null && drill.follow ? actualHour : playhead, playback: options.playback as PlaybackMode, afterPlayhead: options.afterPlayhead === true,
-    windowHours: Number(options.windowDays ?? 365) * 24, branchStart: track.branch.firstHour, hoursPerSecond: motionOf(runtime.clock.getSnapshot()),
-    within: actorWithin ?? countries.membership?.get(chosen.tag), onPick: (hour: number) => {
-      if (!pickRef.current.active || pickRef.current.detail !== detailPickOwner) return;
-      setDrillOwner(pickOwner); dispatch(saved
-      ? { type: 'open', breakdown: saved.id, hour, playing: false, playhead: null } : { type: 'pick', hour });
-    },
-    onContextMenu: (hour: number, x: number, y: number) => menu.open(x, y, [jumpItem(runtime, track.id, hour)]),
-  } : null;
-  const breakdown = invalidSaved ? <WidgetState kind="unavailable" message="Choose a country again." /> : actorState ?? state ?? (chosen && track && chart
-    ? <>{selectedCountry && !shownTag && <p className="drill-empty">Country unavailable at this time.</p>}
-      {drillMeasure === 'consumption' ? <FuelConsumptionBreakdown reply={chosen} actorSpans={actorSpans ?? undefined} identitySpans={identitySpans ?? undefined} runtime={runtime} track={track} hour={detailHour} selection={selectedConsumption} onSelection={setConsumption}
-      level={selectedLevel} onLevel={setLevel} digits={digits} {...chart} />
-      : <FuelBreakdown reply={chosen} history={selectedCountry ? actorData : undefined} actorSpans={actorSpans ?? undefined} identitySpans={identitySpans ?? undefined}
-        measure={drillMeasure} hour={detailHour} tokens={tokens} runtime={runtime} track={track}
-        selection={selectedRecipient} onSelection={setRecipient} digits={digits} {...chart} />}</>
-    : <p className="drill-empty">Choose a country from the drawn lines for this moment.</p>);
-  const refreshNotices = <>{groupRefreshError && <WidgetState kind="error" failure={groupRefreshError} onRetry={retryGroups} />}
-    {selectedCountry && catalogue.error && identityNumbers ? <WidgetState kind="error" failure={catalogue.error} onRetry={catalogue.retry} /> : null}</>;
+  const notices = groupRefreshError ? <WidgetState kind="error" failure={groupRefreshError} onRetry={retryGroups} /> : null;
+
   if (saved) return <div ref={anchor} className="drill-body">
-    {pinnedHeader}
-    {refreshNotices}
-    {(drill.breakdown === null ? widget.time.mode !== 'follow' : !drill.follow) && <button type="button" className="button small quiet" onClick={() => {
-      if (!pickRef.current.active || pickRef.current.detail !== detailPickOwner || actorState || invalidSaved) return;
-      setDrillOwner(pickOwner); dispatch({ type: 'open', breakdown: saved.id,
-        hour: actualHour ?? extent[1], playing: true, playhead: actualHour });
+    {pinnedHeader}{notices}
+    {!drillFollows && <button type="button" className="button small quiet" onClick={() => {
+      if (actorState || invalidSaved) return;
+      setDrillOwner(pickOwner); dispatch({ type: 'open', breakdown: saved.id, hour: actualHour ?? extent[1], playing: true, playhead: actualHour });
     }}>Follow playback</button>}
-    {breakdown}{menu.menu}</div>;
-  return <div ref={anchor} style={{ height: '100%', minHeight: 0 }}>{refreshNotices}<DrillHost anchor={anchor} mode={options.drill === 'popout' ? 'popout' : 'inline'}
-    open={drill.breakdown !== null} title="Fuel consumption and daily accounting" day={at === null ? '' : dayLabel(at)} following={drill.follow} canFollow={actualHour !== null && !!chosen}
-    onClose={() => dispatch({ type: 'close' })} onFollow={() => {
-      if (!pickRef.current.active || pickRef.current.detail !== detailPickOwner || actorState) return;
-      setDrillOwner(pickOwner); dispatch({ type: 'follow' });
-    }} main={main}
-    onPin={chosen && track && !actorState ? () => {
-      if (!pickRef.current.active || pickRef.current.detail !== detailPickOwner) return;
-      const pinned = pinnedBreakdown({ ...widget, countries: { kind: 'tags', tags: [selectedCountry?.tag ?? chosen.tag] } }, BREAKDOWNS.find(item => item.id === drillMeasure)!, track.id);
+    {breakdown}{menu.menu}
+  </div>;
+  return <div ref={anchor} style={{ height: '100%', minHeight: 0 }}>{notices}<DrillHost anchor={anchor} mode={options.drill === 'popout' ? 'popout' : 'inline'}
+    open={drill.breakdown !== null} title="Fuel consumption and daily accounting" day={drillFollows && playing ? 'Following playback' : at === null ? '' : dayLabel(at)} following={drill.follow}
+    canFollow={actualHour !== null && !!drillTag} onClose={() => dispatch({ type: 'close' })} onFollow={() => { setDrillOwner(pickOwner); dispatch({ type: 'follow' }); }}
+    main={main}
+    onPin={drillTag && track && !actorState ? () => {
+      const pinned = pinnedBreakdown({ ...widget, countries: { kind: 'tags', tags: [selectedCountry?.tag ?? drillTag] } }, BREAKDOWNS.find(item => item.id === drillMeasure)!, track.id);
       if (!drill.follow && at !== null) pinned.time = { mode: 'pin', windows: { [track.id]: { firstOffset: at - track.branch.firstHour, lastOffset: at - track.branch.firstHour } } };
       if (drill.follow) pinned.time = { mode: 'follow' };
       pinned.options = { ...pinned.options, fuelCountry: selectedCountry ? fuelCountryToken(selectedCountry) : '',
-        fuelRecipient: selectedRecipient ? fuelRecipientToken(selectedRecipient) : '',
-        fuelConsumption: selectedConsumption ? fuelConsumptionToken(selectedConsumption) : '',
-        fuelConsumptionLevel: selectedLevel ? fuelConsumptionLevelToken(selectedLevel) : '',
-        fuelExtent: fuelExtentToken(track.source.metadata.campaignKey, track.branch.id, extent) };
+        fuelRecipient: heldRecipient ? fuelRecipientToken(heldRecipient) : '', fuelConsumption: heldConsumption ? fuelConsumptionToken(heldConsumption) : '',
+        fuelConsumptionLevel: heldLevel ? fuelConsumptionLevelToken(heldLevel) : '', fuelExtent: fuelExtentToken(campaign, track.branch.id, extent) };
       runtime.addWidgetBelow(widget.id, pinned);
     } : undefined}>
-    {!single && track && <CountryPicker countries={track.source.metadata.countries} playerCountryId={null} selectedTag={chosen?.tag ?? null}
-      source={track.source} client={runtime.client} allowedTags={pickTags ?? countries.tags} flagAt={at !== null ? { branchId: track.branch.id, hour: at } : null}
+    {!single && track && <CountryPicker countries={track.source.metadata.countries} playerCountryId={null} selectedTag={drillTag} source={track.source} client={runtime.client}
+      allowedTags={pickTags ?? tags} flagAt={at !== null ? { branchId: track.branch.id, hour: at } : null}
       onChange={tag => {
-        if (!pickRef.current.active || pickRef.current.detail !== detailPickOwner || !tag || at === null
-          || !(pickTags ?? countries.tags).includes(tag) || !lines.some(line => line.tag === tag && runAt(line.runs, at))) return;
+        if (!tag || at === null || !(pickTags ?? tags).includes(tag) || !isMember(membership?.get(tag), at)) return;
         setDrillOwner(pickOwner); setChosenTag(tag); setPickTags(undefined);
-        setCountryPick({ owner: pickOwner, selection: { campaign: track.source.metadata.campaignKey, branch: track.branch.id,
-          tag, originOffset: at - track.branch.firstHour } });
+        setCountryPick({ owner: pickOwner, selection: { campaign, branch: track.branch.id, tag, originOffset: at - track.branch.firstHour } });
         setRecipient(null); setConsumption(null); setLevel(null);
       }} />}
     <Segmented label="Breakdown of" value={drillMeasure} onChange={next => {

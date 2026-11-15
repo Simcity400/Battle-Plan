@@ -39,9 +39,14 @@ export function VirtualList<T>({ items, itemKey, estimate, label, className, sty
   const [scroller, setScroller] = useState<HTMLElement | null>(null);
   // Ancestor refs attach after child layout effects. Read the actual element
   // after each commit so the first mount and subsequent ref changes both bind.
-  useEffect(() => { setScroller(scrollRef.current); });
-  const [view, setView] = useState({ top: 0, height: 400 });
-  const [padding, setPadding] = useState({ top: 0, right: 0, bottom: 0, left: 0 });
+  // A state set to its own value just after a commit renders once more, an empty commit: each is set only when it differs.
+  useEffect(() => { if (scrollRef.current !== scroller) setScroller(scrollRef.current); });
+  // The scrolled view as last measured; a render reads it, and a scroll renders only when the rows it shows change.
+  const view = useRef({ top: 0, height: 400 });
+  const [, setViewed] = useState(0);
+  const shownRows = useRef({ start: -1, end: -1, flow: false });
+  const [padding, setPaddingState] = useState({ top: 0, right: 0, bottom: 0, left: 0 });
+  const paddingShown = useRef(padding);
   const rowOffset = offset + padding.top;
   const [, update] = useState(0), [focus, setFocus] = useState<string | null>(null);
   // Native DOM owns descendant starting points; keys retain a removed row's
@@ -57,7 +62,7 @@ export function VirtualList<T>({ items, itemKey, estimate, label, className, sty
     if (!positions.has(cursor.key)) {
       const oldAt = cursor.keys.indexOf(cursor.key);
       const boundary = oldAt < 0 ? cursor.gap : oldAt;
-      // Removal keeps the preceding surviving node as the starting point.
+      // Removal leaves the starting point just after the preceding surviving node.
       // Insertions after it stay on the forward side, including later commits.
       cursor.gap = 0;
       for (let at = boundary - 1; at >= 0; at--) {
@@ -134,12 +139,29 @@ export function VirtualList<T>({ items, itemKey, estimate, label, className, sty
   const pendingFocus = useRef<{ key: string; backwards: boolean } | null>(null);
   const internalFocus = useRef(false);
   const focusFrame = useRef(0);
+  // What the geometry reads between commits: the latest rows and their index.
+  const placing = useRef({ index, keys, estimate, offset, flowWhenFits });
+  const gapShown = useRef(0);
+  /** The rows the measured view shows, from the view as last measured: no layout read. */
+  const place = () => {
+    const { index, keys, offset, flowWhenFits } = placing.current;
+    const { top, height } = view.current;
+    const pad = paddingShown.current, rows = offset + pad.top;
+    const flows = flowWhenFits && rows + index.offset(keys.length) + pad.bottom <= height;
+    const [first, last] = flows ? [0, keys.length] : index.range(top - rows, height);
+    const shown = shownRows.current;
+    if (shown.flow !== flows || shown.start !== first || shown.end !== last) setViewed(count => count + 1);
+  };
+  const placeLatest = useRef(place);
+  placeLatest.current = place;
+  // The view's geometry is read only when the page has just been laid out (as its observer reports a size) or as the
+  // reader scrolls: never in a commit or a frame, where it would lay out what was just written.
   useLayoutEffect(() => {
     const list = root.current;
     if (!list || !scroller) return;
-    let frame = 0, width = scroller.clientWidth, scrollerHeight = scroller.offsetHeight;
+    let width = scroller.clientWidth, scrollerHeight = scroller.offsetHeight;
     const measure = () => {
-      frame = 0;
+      const { index, keys, estimate } = placing.current;
       const rect = scroller.getBoundingClientRect(), bounds = list.getBoundingClientRect();
       const scale = rect.height / (scrollerHeight || rect.height || 1);
       const top = (rect.top - bounds.top) / scale;
@@ -149,15 +171,48 @@ export function VirtualList<T>({ items, itemKey, estimate, label, className, sty
       const gap = parseFloat(css.rowGap) || 0;
       const nextPadding = { top: parseFloat(css.paddingTop) || 0, right: parseFloat(css.paddingRight) || 0,
         bottom: parseFloat(css.paddingBottom) || 0, left: parseFloat(css.paddingLeft) || 0 };
-      setPadding(previous => previous.top === nextPadding.top && previous.right === nextPadding.right
-        && previous.bottom === nextPadding.bottom && previous.left === nextPadding.left ? previous : nextPadding);
+      const previous = paddingShown.current;
+      if (previous.top !== nextPadding.top || previous.right !== nextPadding.right || previous.bottom !== nextPadding.bottom || previous.left !== nextPadding.left) {
+        paddingShown.current = nextPadding;
+        setPaddingState(nextPadding);
+      }
+      gapShown.current = gap;
       if (index.setGap(gap)) update(value => value + 1);
       if (width !== scroller.clientWidth) { width = scroller.clientWidth; measurements.clear(); keys.forEach((_, i) => index.set(i, estimate)); update(value => value + 1); }
-      const height = scroller.clientHeight;
-      setView(previous => previous.top === top && previous.height === height ? previous : { top, height });
+      view.current = { top, height: scroller.clientHeight };
+      placeLatest.current();
     };
-    const schedule = () => { frame ||= requestAnimationFrame(measure); };
     measure();
+    scroller.addEventListener('scroll', measure, { passive: true });
+    const size = new ResizeObserver(entries => {
+      const box = entries.find(entry => entry.target === scroller)?.borderBoxSize?.[0];
+      if (box) scrollerHeight = box.blockSize;
+      measure();
+    }); size.observe(scroller); size.observe(list);
+    // Its spacing can change with its class or style and leave its size alone: measured after the next layout, which a
+    // new observation reports, rather than now.
+    let laidOut: ResizeObserver | null = null;
+    const afterLayout = () => {
+      if (laidOut) return;
+      laidOut = new ResizeObserver(() => { laidOut?.disconnect(); laidOut = null; measure(); });
+      laidOut.observe(list);
+    };
+    // Its own height is written in its style every time its rows change: only its class or authored spacing re-measures.
+    const spacingOf = () => { const style = list.style; return `${list.className}|${style.display}|${style.padding}|${style.rowGap}|${style.gap}|${style.flexDirection}`; };
+    let spaced = spacingOf();
+    const spacing = typeof MutationObserver !== 'undefined' ? new MutationObserver(() => {
+      const next = spacingOf();
+      if (next !== spaced) { spaced = next; afterLayout(); }
+    }) : null;
+    spacing?.observe(list, { attributes: true, attributeFilter: ['class', 'style'] });
+    return () => { scroller.removeEventListener('scroll', measure); size.disconnect(); spacing?.disconnect(); laidOut?.disconnect(); };
+  }, [scroller, measurements]);
+  useLayoutEffect(() => {
+    const list = root.current;
+    if (!list || !scroller) return;
+    placing.current = { index, keys, estimate, offset, flowWhenFits };
+    if (index.setGap(gapShown.current)) update(value => value + 1);
+    place();
     const toggle = (event: Event) => {
       if (!retainExpansion || !(event.target instanceof HTMLDetailsElement)) return;
       const row = event.target.closest<HTMLElement>('[data-virtual-key]'), key = row?.dataset.virtualKey;
@@ -181,7 +236,6 @@ export function VirtualList<T>({ items, itemKey, estimate, label, className, sty
       }
     }) : null;
     contents?.observe(list, { childList: true, subtree: true });
-    scroller.addEventListener('scroll', schedule, { passive: true });
     // Native Tab can enter any mounted row of a neighbouring virtual list.
     // Remember only the current key's default focus move; pointer and explicit
     // focus changes keep the row they selected.
@@ -204,7 +258,8 @@ export function VirtualList<T>({ items, itemKey, estimate, label, className, sty
           flushSync(() => setResume(cursor.key));
           return;
         }
-        const next = destination(cursor.gap > 0 ? cursor.gap - 1 : event.shiftKey ? -1 : 0, direction);
+        // As the browser resumes from where its starting point was removed: Tab on past it, Shift+Tab back before it.
+        const next = event.shiftKey ? destination(cursor.gap - 1, direction) : destination(cursor.gap, direction);
         if (next !== null) { event.preventDefault(); seek(next, event.shiftKey); }
       }
     };
@@ -226,13 +281,6 @@ export function VirtualList<T>({ items, itemKey, estimate, label, className, sty
     document.addEventListener('keydown', keyboard, true);
     document.addEventListener('pointerdown', pointer, true);
     document.addEventListener('focusin', forgetExternal);
-    const size = new ResizeObserver(entries => {
-      const box = entries.find(entry => entry.target === scroller)?.borderBoxSize?.[0];
-      if (box) scrollerHeight = box.blockSize;
-      schedule();
-    }); size.observe(scroller); size.observe(list);
-    const spacing = typeof MutationObserver !== 'undefined' ? new MutationObserver(schedule) : null;
-    spacing?.observe(list, { attributes: true, attributeFilter: ['class', 'style'] });
     observer.current = new ResizeObserver(entries => {
       // Border-box observations retain subpixel layout heights independently
       // of CSS zoom. Rounded DOM heights are only a fallback before observation.
@@ -256,19 +304,20 @@ export function VirtualList<T>({ items, itemKey, estimate, label, className, sty
       else if (node) queueFocus(node);
     }
     return () => {
-      if (frame) cancelAnimationFrame(frame); clearTimeout(tabTimer);
-      scroller.removeEventListener('scroll', schedule);
+      clearTimeout(tabTimer);
       document.removeEventListener('keydown', keyboard, true); document.removeEventListener('pointerdown', pointer, true);
       document.removeEventListener('focusin', forgetExternal);
-      size.disconnect(); spacing?.disconnect(); contents?.disconnect(); list.removeEventListener('toggle', toggle, true);
+      contents?.disconnect(); list.removeEventListener('toggle', toggle, true);
       observer.current?.disconnect(); observer.current = null; tabDirection.current = null;
       if (focusFrame.current) cancelAnimationFrame(focusFrame.current);
       focusFrame.current = 0;
     };
-  }, [index, keys, eligible, scroller, estimate, retainExpansion, rowOffset]);
+  }, [index, keys, eligible, scroller, estimate, retainExpansion, rowOffset, offset, flowWhenFits]);
   useEffect(() => () => { pendingFocus.current = null; }, []);
-  const flow = flowWhenFits && rowOffset + index.offset(items.length) + padding.bottom <= view.height;
-  const [start, end] = flow || typeof ResizeObserver === 'undefined' ? [0, items.length] : index.range(view.top - rowOffset, view.height);
+  const measured = view.current;
+  const flow = flowWhenFits && rowOffset + index.offset(items.length) + padding.bottom <= measured.height;
+  const [start, end] = flow || typeof ResizeObserver === 'undefined' ? [0, items.length] : index.range(measured.top - rowOffset, measured.height);
+  shownRows.current = { start, end, flow };
   const visible = Array.from({ length: Math.max(0, end - start) }, (_, i) => start + i);
   const focusedAt = focus === null ? undefined : positions.get(focus);
   if (focusedAt !== undefined && !visible.includes(focusedAt)) visible.push(focusedAt);
@@ -308,9 +357,9 @@ export function VirtualList<T>({ items, itemKey, estimate, label, className, sty
   const seek = (at: number, backwards = false) => {
     const scroller = scrollRef.current; if (!scroller || !items.length) return;
     at = Math.max(0, Math.min(items.length - 1, at));
-    scroller.scrollTop += rowOffset + index.offset(at) - view.top;
+    scroller.scrollTop += rowOffset + index.offset(at) - view.current.top;
     const key = keys[at];
-    setView({ top: rowOffset + index.offset(at), height: scroller.clientHeight }); setFocus(key);
+    view.current = { top: rowOffset + index.offset(at), height: scroller.clientHeight }; setViewed(count => count + 1); setFocus(key);
     pendingFocus.current = { key, backwards };
     if (focusFrame.current) cancelAnimationFrame(focusFrame.current);
     focusFrame.current = requestAnimationFrame(() => { focusFrame.current = 0; const node = nodes.current.get(key); if (node) focusPending(node); });

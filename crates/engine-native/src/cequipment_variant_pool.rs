@@ -249,21 +249,14 @@ pub fn walk(memory: &impl Memory, module_base: usize, pool: usize, output: &mut 
     }
 }
 
-/// Every canonical country's complete stockpile. Air-reserve joins use
-/// wing entries off the game thread without rereading the pool.
-pub fn walk_stockpiles(
-    memory: &impl Memory,
-    module_base: usize,
-    game_state: usize,
-    output: &mut [StockpileRow],
-) -> Outcome {
-    walk_stockpiles_buffer(
-        memory,
-        module_base,
-        game_state,
-        crate::walk::Buffer::Fixed(output),
-    )
+pub fn count_stockpiles(memory: &impl Memory, module_base: usize, game_state: usize) -> Outcome {
+    walk_stockpiles_buffer(memory, module_base, game_state, crate::walk::Buffer::Count)
 }
+#[cfg(test)]
+pub(crate) fn walk_stockpiles(memory: &impl Memory, module_base: usize, game_state: usize, output: &mut Vec<StockpileRow>) -> Outcome {
+    walk_stockpiles_buffer(memory, module_base, game_state, crate::walk::Buffer::Growing(output))
+}
+
 
 pub fn walk_stockpiles_buffer(
     memory: &impl Memory,
@@ -317,45 +310,28 @@ pub fn walk_stockpiles_buffer(
     result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
 }
 
-/// Reuse the division census's authenticated roots and native identity fields.
-/// An incomplete source census must make this dependent table unavailable; an
-/// empty slice alone is not evidence of an empty world. Every later pool header
-/// is authenticated after row capacity is reached to count omitted entries.
-pub fn walk_divisions(
-    memory: &impl Memory,
-    module_base: usize,
-    divisions: &[DivisionSource],
-    output: &mut [DivisionRow],
-) -> Outcome {
-    walk_divisions_where(memory, module_base, divisions, |_| true, output)
-}
-
-/// [`walk_divisions`] over only the census entries `keep` admits, in census
-/// order; the others are not read at all.
-pub fn walk_divisions_where(
-    memory: &impl Memory,
-    module_base: usize,
-    divisions: &[DivisionSource],
-    keep: impl Fn(&DivisionSource) -> bool,
-    output: &mut [DivisionRow],
-) -> Outcome {
-    walk_divisions_buffer(memory, module_base, divisions, keep, Buffer::Fixed(output))
-}
-
 /// Worker-only capture grows from each original authenticated pool header,
 /// then continues entries without rereading it or omitting a capacity prefix.
-pub fn walk_divisions_growing(
+pub fn walk_divisions(
     memory: &impl Memory,
     module_base: usize,
     divisions: &[DivisionSource],
     output: &mut Vec<DivisionRow>,
 ) -> Outcome {
-    walk_divisions_where_growing(memory, module_base, divisions, |_| true, output)
+    walk_divisions_where(memory, module_base, divisions, |_| true, output)
+}
+
+pub fn count_divisions(
+    memory: &impl Memory,
+    module_base: usize,
+    divisions: &[DivisionSource],
+) -> Outcome {
+    walk_divisions_buffer(memory, module_base, divisions, |_| true, Buffer::Count)
 }
 
 /// Filtered worker capture grows from original pool headers.
 /// Rejected census entries acquire no operands.
-pub fn walk_divisions_where_growing(
+pub fn walk_divisions_where(
     memory: &impl Memory,
     module_base: usize,
     divisions: &[DivisionSource],

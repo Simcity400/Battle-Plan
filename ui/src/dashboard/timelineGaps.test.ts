@@ -1,6 +1,6 @@
 import { test } from 'node:test';
-import { deepEqual } from 'node:assert/strict';
-import { timelineGaps, timelinePrepared } from './timelineGaps.ts';
+import { deepEqual, equal } from 'node:assert/strict';
+import { timelineGaps, timelineHourAt } from './timelineGaps.ts';
 
 test('gap markers clip inclusive hours after track alignment', () => {
   deepEqual(timelineGaps([
@@ -20,11 +20,13 @@ test('a single-hour gap remains visible and invalid bounds have no markers', () 
 });
 
 
-test('prepared timeline coverage follows alignment and excludes every recorded gap', () => {
-  deepEqual(timelinePrepared({ firstHour: 100, lastHour: 106 }, [
-    { firstHour: 102, lastHour: 103, reason: 'loss' }, { firstHour: 103, lastHour: 104, reason: 'overlap' },
-  ], 100, 0, 9).map(span => [span.firstHour, span.lastHour, span.left, span.width]), [
-    [100, 101, 0, 150 / 9], [105, 106, 450 / 9, 200 / 9],
-  ]);
-  deepEqual(timelinePrepared(null, [], 0, 0, 9), []);
+
+test('a pointer on the timeline names one hour for its tooltip and its seek, within the recording', () => {
+  const rect = { left: 100.4, width: 1450 };
+  const first = 60_759_371, last = 60_864_912;
+  const at = timelineHourAt(100.4 + 7 + 0.3 * 1436, rect, first, last);
+  equal(at.hour, Math.round(first + 0.3 * (last - first)));
+  equal(Number.isInteger(at.hour), true);
+  deepEqual(timelineHourAt(0, rect, first, last), { left: 7, hour: first });
+  deepEqual(timelineHourAt(5000, rect, first, last), { left: 1443, hour: last });
 });

@@ -545,6 +545,9 @@ mod census_tests {
     }
     #[test]
     fn variant_recovery_rechecks_a_writer_waiting_after_census_admission() {
+        if !isolated() {
+            return;
+        }
         static PAUSE: OnceLock<Barrier> = OnceLock::new();
         fn admitted() {
             let pause = PAUSE.get().unwrap();
@@ -568,7 +571,8 @@ mod census_tests {
         AFTER_CENSUS_ADMISSION.with(|hook| hook.set(Some(admitted)));
         let recovered = acquire(&space.memory(), space.base, &sources[..7], true);
         writer.join().unwrap();
-        assert!(!repair::pending());
+        // The waiting writer's receiver is marked for the boundary's live read.
+        assert!(repair::pending());
         assert!(pending());
         assert!(LOCK_CONTENTIONS.load(Ordering::Relaxed) >= 1);
         assert_eq!(recovered.definitions.rows[0].design.design_team_traits, 23);
@@ -583,6 +587,9 @@ mod census_tests {
     }
     #[test]
     fn partitioned_recovery_never_holds_store_during_native_reads_and_rechecks_its_proof() {
+        if !isolated() {
+            return;
+        }
         let (space, sources, _) = setup();
         struct Invalidate<'a> {
             space: &'a Space,
@@ -636,6 +643,9 @@ mod census_tests {
     }
     #[test]
     fn variant_census_final_proof_rechecks_pending_receiver_marks() {
+        if !isolated() {
+            return;
+        }
         let (_space, sources, _) = setup();
         let proof = census().unwrap();
         repair::mark(sources[0].pointer());
@@ -649,6 +659,9 @@ mod census_tests {
     }
     #[test]
     fn variant_recovery_reads_only_marked_and_new_deep_values_and_matches_a_full_census() {
+        if !isolated() {
+            return;
+        }
         let (mut space, sources, baseline) = setup();
         let changed = sources[1];
         let removed = sources[2];
@@ -706,11 +719,12 @@ mod census_tests {
         );
         assert_eq!(views(reduced), views(full));
 
-        // The current read refusal remains exactly the full reader's verdict.
+        // A read refusal in a design the reduced census reads is the full reader's verdict.
+        let new = sources.last().unwrap().pointer();
         let failing = Meter {
             space: &space,
             bytes: Cell::new(0),
-            unreadable: Some(changed.pointer() + native::AUTO_UPGRADED),
+            unreadable: Some(new + native::AUTO_UPGRADED),
         };
         let reduced = acquire(&failing, space.base, &sources, true);
         let full = acquire(&failing, space.base, &sources, false);
@@ -776,6 +790,9 @@ mod census_tests {
     }
     #[test]
     fn an_unchanged_marked_design_keeps_its_binding_and_carry_and_enters_the_ledger() {
+        if !isolated() {
+            return;
+        }
         let (space, sources, _) = setup();
         let design = sources[1];
         mark_design(&space.memory(), space.base, design.pointer(), false);
@@ -802,6 +819,9 @@ mod census_tests {
     }
     #[test]
     fn variant_census_rejects_unforwarded_shared_refresh_before_inner_rebuild() {
+        if !isolated() {
+            return;
+        }
         let (space, sources, _) = setup();
         BASE.store(space.base, Ordering::Release);
         let refresh = shared_bonus_refresh();
@@ -857,6 +877,9 @@ mod census_tests {
     }
     #[test]
     fn variant_recovery_reacquires_deep_values_after_a_completed_unforwarded_bonus_refresh() {
+        if !isolated() {
+            return;
+        }
         let (space, sources, baseline) = setup();
         let refresh = shared_bonus_refresh();
         observe_world_forwarder(true);
@@ -894,15 +917,20 @@ mod census_tests {
     }
     #[test]
     fn variant_recovery_keeps_shared_observation_and_reuses_untouched_deep_values() {
+        if !isolated() {
+            return;
+        }
         let (space, sources, baseline) = setup();
         BASE.store(space.base, Ordering::Release);
         let refresh = shared_bonus_refresh();
         observe_world_forwarder(true);
-        // The census-only fixture has no event storage, so this tombstone refuses locally.
-        assert!(retire(&space.memory(), space.base, sources[1].pointer()));
+        // Event storage that cannot grow makes this tombstone refuse locally.
+        assert!(collector_test_support::with_allocations_denied(|| {
+            retire(&space.memory(), space.base, sources[1].pointer())
+        }));
         assert_eq!(
             drain(space.base, 7, &mut Vec::new()),
-            Err("variant removal event capacity exhausted")
+            Err(STORAGE_FAILED)
         );
         assert!(!SAVED_BASELINE.load(Ordering::Acquire));
         assert!(
@@ -928,6 +956,9 @@ mod census_tests {
     }
     #[test]
     fn variant_recovery_never_carries_uncertified_dependencies_lifetimes_or_overlapping_writers() {
+        if !isolated() {
+            return;
+        }
         let (space, sources, _) = setup();
         assert!(census().is_some());
         CENSUS_REVISION.fetch_add(1, Ordering::AcqRel);
@@ -964,6 +995,9 @@ mod census_tests {
     }
     #[test]
     fn variant_recovery_reacquires_all_deep_values_when_its_certificate_changes_during_the_read() {
+        if !isolated() {
+            return;
+        }
         let (space, sources, _) = setup();
         struct Invalidate<'a> {
             space: &'a Space,
@@ -1000,6 +1034,9 @@ mod census_tests {
     }
     #[test]
     fn partitioned_recovery_retries_every_definition_after_census_invalidation() {
+        if !isolated() {
+            return;
+        }
         let (space, sources, _) = setup();
         struct Invalidate<'a> {
             space: &'a Space,
@@ -1055,12 +1092,17 @@ mod census_tests {
     }
     #[test]
     fn failed_variant_recovery_revokes_proofs_before_the_next_native_interval() {
+        if !isolated() {
+            return;
+        }
         let (space, sources, _) = setup();
-        // The census-only fixture has no event storage, so this tombstone refuses locally.
-        assert!(retire(&space.memory(), space.base, sources[0].pointer()));
+        // Event storage that cannot grow makes this tombstone refuse locally.
+        assert!(collector_test_support::with_allocations_denied(|| {
+            retire(&space.memory(), space.base, sources[0].pointer())
+        }));
         assert_eq!(
             drain(space.base, 7, &mut Vec::new()),
-            Err("variant removal event capacity exhausted")
+            Err(STORAGE_FAILED)
         );
         let failing = Meter {
             space: &space,
@@ -1093,6 +1135,9 @@ mod census_tests {
     }
     #[test]
     fn variant_store_collision_keeps_the_design_mark() {
+        if !isolated() {
+            return;
+        }
         let (space, sources, _) = setup();
         super::super::tests::with_store_contended(|| {
             mark_design(&space.memory(), space.base, sources[0].pointer(), false);
@@ -1110,6 +1155,9 @@ mod census_tests {
     }
     #[test]
     fn variant_unwatched_draft_collisions_do_not_refuse_the_saved_interval() {
+        if !isolated() {
+            return;
+        }
         let (space, sources, _) = setup();
         BASE.store(space.base, Ordering::Release);
         // The last registry row is deliberately outside the saved baseline.
@@ -1144,6 +1192,9 @@ mod census_tests {
     }
     #[test]
     fn variant_log_owner_collision_marks_known_receivers_without_revoking_unrelated_designs() {
+        if !isolated() {
+            return;
+        }
         let (space, sources, baseline) = setup();
         collector_test_support::with_allocations_denied(|| {
             unrecorded_writer(Receiver::Variant, sources[1].pointer(), None);
@@ -1155,8 +1206,13 @@ mod census_tests {
         );
         assert_eq!(drain(space.base, 7, &mut Vec::new()), Ok(2));
         let proof = census().unwrap();
-        assert!(proof.get(&sources[1]).is_none());
-        assert!(proof.get(&sources[2]).is_none());
+        // The standing boundary read both receivers and settled them back into the carry.
+        for at in [1, 2] {
+            assert_eq!(
+                proof.get(&sources[at]).as_deref(),
+                Some(&*baseline.definitions.rows[at].design)
+            );
+        }
         assert!(Arc::ptr_eq(
             &proof.get(&sources[0]).unwrap(),
             &baseline.definitions.rows[0].design

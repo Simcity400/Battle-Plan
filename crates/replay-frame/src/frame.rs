@@ -13,7 +13,7 @@ use std::{
 
 pub(crate) mod checkpoint;
 mod columns;
-pub use columns::{ColumnFrame, ColumnView, Columns, Orders, wire};
+pub use columns::{Unsayable, cells_rows, cells_rows_of, cells_view, field, stored_frame};
 mod tables;
 pub use tables::{HourFrame, Rowset, RowsetIter, Tables};
 mod decoder;
@@ -35,6 +35,8 @@ pub use source::{
 #[doc(hidden)]
 pub mod recorded;
 pub use recorded::{FrameSource, IntoRecordedFrame, RecordedFrame, RecordedTables};
+mod undeclared;
+pub use undeclared::{NOT_DECLARED, discovering, discovering_fields, not_declared, outside_reads, undeclared_reads};
 mod wire;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -78,9 +80,10 @@ pub struct Metrics {
     pub dropped_frames: u64,
 }
 
-/// `Metrics::table_ns` of a table read in an hour whose recording keeps which
-/// tables were read but not how long they took. Nonzero, so the read stays a
-/// read; never a time.
+/// `Metrics::table_ns` of a table read with no time of its own: in an hour whose
+/// recording keeps which tables were read but not how long they took, or by a
+/// walk whose time another table carries. Nonzero, so the read stays a read;
+/// never a time.
 pub const READ_TIME_NOT_RECORDED: u64 = u64::MAX;
 
 impl Metrics {
@@ -151,13 +154,18 @@ pub struct SharedView(
     Option<Hour>,
     Option<Arc<ChangeFacts>>,
     Option<Arc<FieldStamp>>,
+    /// The columns a view at the playback head holds, when not every one.
+    Option<u64>,
 );
 
 impl SharedView {
-    /// Last complete acquisition witnessed by this table's own read timing.
-    /// Untimed snapshots, including carried keyframes, have unknown provenance;
-    /// uncharged shared reads cannot be certified from another table's timing.
+    /// Last complete acquisition the recording marks read (a nonzero
+    /// `Metrics::table_ns`). A snapshot no hour marks read, a carried keyframe
+    /// included, has unknown provenance.
     pub fn sampled_at(&self) -> Option<Hour> {
+        if undeclared::is(&self.0) {
+            undeclared::read(&self.0);
+        }
         self.1
     }
 
@@ -177,13 +185,36 @@ impl SharedView {
     /// This allocation with another last acquisition: the view a frame of a
     /// later hour holds when the table was carried there unchanged, read or
     /// not (as a quiet hour of `Replay::read_block_changes` reports it).
+    /// The view holding only the columns of `fields`: a read of any other field is refused by name
+    /// ([`undeclared`]), never served.
+    pub fn with_fields(self, fields: u64) -> Self {
+        Self(self.0, self.1, self.2, self.3, Some(fields))
+    }
+
+    /// The columns it holds, when not every one.
+    pub fn fields(&self) -> Option<u64> {
+        self.4
+    }
+
+    /// The view as its holder keeps it (its status, the bytes it holds), never a reader's read:
+    /// nothing is noted or refused.
+    pub fn held(&self) -> &TableView {
+        &self.0
+    }
+
     pub fn with_sampled_at(self, hour: Option<Hour>) -> Self {
-        Self(self.0, hour, self.2, self.3)
+        Self(self.0, hour, self.2, self.3, self.4)
     }
 
     /// Whether two views are the same allocation, not just equal rows.
     pub fn ptr_eq(a: &Self, b: &Self) -> bool {
         Arc::ptr_eq(&a.0, &b.0)
+    }
+
+    /// Whether it is the view of a table its reader of rows at the head did not declare
+    /// ([`not_declared`]); asking reads nothing.
+    pub fn is_not_declared(&self) -> bool {
+        undeclared::is(&self.0)
     }
 
     /// The fields that may differ in `other` from this view, by their stamps, while both hold
@@ -209,7 +240,7 @@ impl SharedView {
 
     /// The view when this is its only holder; the shared view otherwise.
     pub fn try_unwrap(self) -> Result<TableView, Self> {
-        Arc::try_unwrap(self.0).map_err(|shared| Self(shared, self.1, self.2, self.3))
+        Arc::try_unwrap(self.0).map_err(|shared| Self(shared, self.1, self.2, self.3, self.4))
     }
 
     /// Whether another view holds this allocation too, so a write would copy it.
@@ -414,6 +445,15 @@ impl std::ops::Deref for SharedView {
     fn deref(&self) -> &TableView {
         if view_reads::RECORDING.with(std::cell::Cell::get) {
             view_reads::note(self);
+        }
+        if undeclared::is(&self.0) {
+            undeclared::read(&self.0);
+        }
+        if let Some(held) = self.4
+            && let TableView::Complete(rows) | TableView::Truncated { rows, .. } = &*self.0
+            && let Some(refused) = undeclared::outside(rows.table(), held)
+        {
+            return refused;
         }
         &self.0
     }
@@ -644,7 +684,7 @@ impl std::ops::DerefMut for SharedView {
 
 impl From<TableView> for SharedView {
     fn from(view: TableView) -> Self {
-        Self(Arc::new(view), None, None, None)
+        Self(Arc::new(view), None, None, None, None)
     }
 }
 
@@ -766,6 +806,12 @@ impl BaselineToken {
     /// The encoder, branch and committed hour of the baseline this token compares with.
     pub fn baseline(self) -> (u64, BranchId, Hour) {
         (self.encoder, self.branch, self.baseline)
+    }
+
+    /// The encoder, branch and hour the comparison is for: the next hour's
+    /// [`Self::baseline`] when this hour commits the compared table.
+    pub fn destination(self) -> (u64, BranchId, Hour) {
+        (self.encoder, self.branch, self.hour)
     }
 }
 
@@ -896,6 +942,15 @@ fn put_count(out: &mut Vec<u8>, n: usize) -> io::Result<()> {
 }
 
 impl DecodedFrame {
+    /// [`Self::complete`], reading only the fields of `fields` of each row.
+    pub fn complete_fields<T: TableSchema>(&self, fields: u64) -> io::Result<&[T::Row]> {
+        let rows = undeclared::reading(fields, || self.complete::<T>())?;
+        if let Some(held) = self.tables[T::ID.index()].fields() {
+            undeclared::held_rows(rows.as_ptr_range().start as usize..rows.as_ptr_range().end as usize, T::ID, held);
+        }
+        Ok(rows)
+    }
+
     pub fn complete<T: TableSchema>(&self) -> io::Result<&[T::Row]> {
         let table = T::ID;
         match &*self.tables[table.index()] {

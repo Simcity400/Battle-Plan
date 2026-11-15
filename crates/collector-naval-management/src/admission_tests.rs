@@ -446,3 +446,139 @@ fn naval_management_populated_observer_loss_refuses_then_readmits_every_column()
         .unwrap();
     assert_values(decoder.advance(&recovered).unwrap(), 1);
 }
+
+/// A base census too large for its table refuses its first hour only: the census offers every
+/// base it saw, and the next hour registers them all. It was refused until the next load.
+#[test]
+fn naval_repair_bases_refused_by_a_full_table_register_at_the_next_hour() {
+    const BASES: u32 = 1024;
+    let _serial = changes::fixture::SERIAL.lock().unwrap();
+    changes::fixture::undersized();
+    let mut memory = Census::default();
+    let pointer = |index: u32| BASE + index as usize * 0x100;
+    for index in 0..BASES {
+        memory.integer(pointer(index) + native::BASE_REPAIR_PRIORITY, 1);
+        memory.integer(pointer(index) + native::BASE_REPAIR_DOCKYARDS, 2);
+        memory.array(pointer(index) + native::BASE_REPAIR_QUEUE, LISTS, 0);
+    }
+    let capture = || {
+        let mut session = bases::Session::begin(&memory, 0);
+        for index in 0..BASES {
+            session.visit(
+                pointer(index),
+                &engine_native::cnaval_base::Row {
+                    province: index + 1,
+                    ..Default::default()
+                },
+            );
+        }
+        session.finish(engine_native::walk::Outcome::Rows { len: BASES as usize })
+    };
+    for table in capture().tables {
+        assert_eq!(table.err(), Some("naval repair base registration refused"));
+    }
+    changes::boundary(false);
+    let captured = capture();
+    let TableRows::NavalRepairBases(rows) = captured.tables[0].as_ref().unwrap().as_ref() else {
+        panic!("repair bases");
+    };
+    assert_eq!(rows.len(), BASES as usize);
+    assert!(captured.tables[1].is_ok());
+    changes::fixture::prepare();
+}
+
+/// Missing bytes read as zero, as a live object's untouched fields do.
+struct Zeroed<'a>(&'a Census);
+impl Memory for Zeroed<'_> {
+    fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+        for (offset, byte) in destination.iter_mut().enumerate() {
+            *byte = self.0.bytes.get(&(address + offset)).copied().unwrap_or(0);
+        }
+        true
+    }
+}
+
+/// A task force whose roster owner is another country than its fleet's is
+/// read by the core census, so the settings census it selects is whole.
+#[test]
+fn naval_management_census_with_a_foreign_task_force_is_complete() {
+    use engine_native::{ccountry, cfleet, cship, cstrategic_navy, ctask_force, cunit};
+    const FOREIGN: usize = 0xf0000;
+    const FOREIGN_PRODUCTION: usize = 0xf1000;
+    const FOREIGN_NAVY: usize = 0xf2000;
+    const ROSTERS: usize = 0xf3000;
+    let _serial = changes::fixture::SERIAL.lock().unwrap();
+    changes::fixture::prepare();
+    let mut census = Census::populated(0);
+    census.word(LISTS + 5 * 8, FOREIGN as u64);
+    census.integer(LISTS + 0x100 + 5 * 4, 5);
+    census.word(FOREIGN, ccountry::VTABLE_RVA.0 as u64);
+    census.integer(FOREIGN + ccountry::ID, 5);
+    census.word(
+        FOREIGN + ccountry::PRODUCTION_STATUS,
+        FOREIGN_PRODUCTION as u64,
+    );
+    census.word(
+        FOREIGN_PRODUCTION,
+        engine_native::cproduction_status::VTABLE_RVA.0 as u64,
+    );
+    census.word(
+        FOREIGN_PRODUCTION + engine_native::cproduction_status::COUNTRY,
+        FOREIGN as u64,
+    );
+    census.word(LISTS + 0x200 + 5 * 8, FOREIGN_NAVY as u64);
+    census.word(FOREIGN_NAVY, cstrategic_navy::VTABLE_RVA.0 as u64);
+    census.word(
+        FOREIGN_NAVY + cstrategic_navy::SECONDARY,
+        cstrategic_navy::SECONDARY_VTABLE_RVA.0 as u64,
+    );
+    census.array(COUNTRY + ccountry::FLEETS, ROSTERS, 1);
+    census.word(ROSTERS, FLEET as u64);
+    census.word(FLEET + cfleet::OWNER, COUNTRY as u64);
+    census.array(FLEET + cfleet::TASK_FORCES, ROSTERS + 0x10, 1);
+    census.word(ROSTERS + 0x10, TASK as u64);
+    census.word(
+        TASK + ctask_force::SECONDARY_BASE,
+        ctask_force::SECONDARY_VTABLE_RVA.0 as u64,
+    );
+    census.word(TASK + ctask_force::FLEET, FLEET as u64);
+    census.integer(TASK + cunit::ROSTER_OWNER, 5);
+    census.integer(TASK + cunit::LOGICAL_OWNER, 5);
+    census.array(TASK + ctask_force::SHIPS, ROSTERS + 0x20, 1);
+    census.word(ROSTERS + 0x20, SHIP as u64);
+    census.word(SHIP + cship::TASK_FORCE, TASK as u64);
+    let memory = Zeroed(&census);
+    let session = std::cell::RefCell::new(forces::Session::begin(&memory, 0, STATE));
+    let (mut fleets, mut tasks, mut ships) = (Vec::new(), Vec::new(), Vec::new());
+    let walked = cfleet::walk_timed_with_management(
+        &memory,
+        0,
+        STATE,
+        &mut fleets,
+        &mut tasks,
+        &mut ships,
+        |_| 0,
+        |pointer, row| session.borrow_mut().ship(pointer, row),
+        &mut Vec::new(),
+        |visit| session.borrow_mut().visit(visit),
+    );
+    let captured = session.into_inner().finish(walked.capture);
+    for (id, table) in forces::TABLES.into_iter().zip(&captured.tables) {
+        assert!(table.is_ok(), "{id:?}: {:?}", table.as_ref().err());
+    }
+    assert_eq!(
+        (fleets[0].owner, tasks[0].roster_owner, tasks[0].logical_owner),
+        (7, 5, 5)
+    );
+    assert_eq!(ships[0].task_force, TASK_ID);
+    let TableRows::NavalRepairTaskForces(rows) = captured.tables[2].as_ref().unwrap().as_ref()
+    else {
+        panic!("task force settings");
+    };
+    assert_eq!(rows.iter().map(|row| row.task_force).collect::<Vec<_>>(), [TASK_ID]);
+    let TableRows::NavalRepairCountries(rows) = captured.tables[0].as_ref().unwrap().as_ref()
+    else {
+        panic!("country settings");
+    };
+    assert_eq!(rows.iter().map(|row| row.country).collect::<Vec<_>>(), [5, 7]);
+}

@@ -817,32 +817,30 @@ fn advisor_lookup_without_character_roster_join() {
     let selected = existing[0].clone();
     *fixture.frame.tables[TableId::AdvisorRoles.index()] =
         TableView::Complete(TableRows::AdvisorRoles(
-            (0..24)
-                .map(|id| AdvisorRoleRow {
+            std::iter::once(selected)
+                .chain((0..24).map(|id| AdvisorRoleRow {
                     character: 10_000 + id,
                     country: 10_000 + id,
                     idea: b"synthetic_advisor".to_vec(),
                     ..Default::default()
-                })
-                .chain(std::iter::once(selected))
+                }))
                 .collect(),
         ));
     *fixture.frame.tables[TableId::AvailableAdvisors.index()] =
         TableView::Complete(TableRows::AvailableAdvisors(
-            (0..24)
-                .map(|id| AvailableAdvisorRow {
-                    country: 10_000 + id,
-                    ordinal: 0,
-                    character: 10_000 + id,
-                    idea: b"synthetic_advisor".to_vec(),
-                })
-                .chain(std::iter::once(AvailableAdvisorRow {
-                    country: 100,
-                    ordinal: 0,
-                    character: 7,
-                    idea: b"synthetic_advisor".to_vec(),
-                }))
-                .collect(),
+            std::iter::once(AvailableAdvisorRow {
+                country: 100,
+                ordinal: 0,
+                character: 7,
+                idea: b"synthetic_advisor".to_vec(),
+            })
+            .chain((0..24).map(|id| AvailableAdvisorRow {
+                country: 10_000 + id,
+                ordinal: 0,
+                character: 10_000 + id,
+                idea: b"synthetic_advisor".to_vec(),
+            }))
+            .collect(),
         ));
     *fixture.frame.tables[TableId::CountryCharacters.index()] = TableView::Unavailable {
         reason: "unused primary character roster".into(),
@@ -877,7 +875,7 @@ fn advisor_roster_and_cache_capture_failures_are_named() {
     assert_eq!(out.text, "");
     assert_eq!(out.refusals, BTreeMap::from([("synthetic effect activate_advisor: key activate_advisor: advisor modifier cache capture unavailable".into(), 1)]));
     *fixture.frame.tables[TableId::AvailableAdvisors.index()] = TableView::Unavailable {
-        reason: "format 97 lacks AvailableAdvisors".into(),
+        reason: "format 97 lacks available advisors".into(),
     };
     let out = render(
         &fixture,
@@ -885,7 +883,7 @@ fn advisor_roster_and_cache_capture_failures_are_named() {
         &mut country_scopes(),
     );
     assert_eq!(out.text, "");
-    assert_eq!(out.refusals, BTreeMap::from([("synthetic effect activate_advisor: key activate_advisor: hour 1 AvailableAdvisors is unavailable: format 97 lacks AvailableAdvisors".into(), 1)]));
+    assert_eq!(out.refusals, BTreeMap::from([("synthetic effect activate_advisor: key activate_advisor: hour 1 AvailableAdvisors is unavailable: format 97 lacks available advisors".into(), 1)]));
 }
 
 // Primary exact strings and retired folded maps use different lookup rules;
@@ -915,14 +913,14 @@ fn advisor_primary_order_precedes_retired_case_folded_lookup() {
         TableView::Complete(TableRows::AvailableAdvisors(vec![
             AvailableAdvisorRow {
                 country: 100,
-                ordinal: 9,
-                character: 8,
+                ordinal: 0,
+                character: 7,
                 idea: b"synthetic_advisor".to_vec(),
             },
             AvailableAdvisorRow {
                 country: 100,
-                ordinal: 0,
-                character: 7,
+                ordinal: 9,
+                character: 8,
                 idea: b"synthetic_advisor".to_vec(),
             },
         ]));
@@ -1226,7 +1224,7 @@ fn recorded_advisor_tooltip_keys_override_authored_blocks_and_failed_captures_re
                     out.refusals,
                     BTreeMap::from([(
                         format!(
-                            "synthetic effect {effect_key}: key {key}: AdvisorRoles.tooltip_keys capture unavailable"
+                            "synthetic effect {effect_key}: key {key}: tooltip keys of advisor roles capture unavailable"
                         ),
                         1,
                     )])

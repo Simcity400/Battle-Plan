@@ -74,29 +74,12 @@ pub struct Walk {
     pub required_provinces: usize,
 }
 
-/// Read every canonical country's groups and each group's full province-ID
-/// vector. Null or misaligned groups, invalid owner backlinks or state identities,
-/// and zero province IDs refuse the whole table. Capacity omits a whole group row
-/// and reports remaining demand.
-pub fn walk(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut [Row],
-    provinces: &mut [u32],
-) -> Walk {
-    walk_buffers(
-        memory,
-        base,
-        game_state,
-        Buffer::Fixed(output),
-        Buffer::Fixed(provinces),
-        |_, _| None,
-    )
+pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Walk {
+    walk_buffers(memory, base, game_state, Buffer::Count, Buffer::Count, |_, _| None)
 }
 
 /// Reserve from each original group/coverage header before copying its body.
-pub fn walk_growing(
+pub fn walk(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -116,24 +99,6 @@ pub fn walk_growing(
 /// The existing census supplies authenticated group and host pointers to a
 /// writer-certified symbol cache. It does not read symbol fields itself.
 pub fn walk_with_symbols(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut [Row],
-    provinces: &mut [u32],
-    symbols: impl FnMut(usize, usize) -> Option<Symbol>,
-) -> Walk {
-    walk_buffers(
-        memory,
-        base,
-        game_state,
-        Buffer::Fixed(output),
-        Buffer::Fixed(provinces),
-        symbols,
-    )
-}
-
-pub fn walk_growing_with_symbols(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -483,19 +448,8 @@ mod tests {
     }
 
     #[test]
-    fn capacity_omits_whole_groups_and_reports_the_full_demand() {
-        let (walk, rows, _) = walked(&fixture(), 1, 2);
-        assert_eq!(
-            walk.outcome,
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            }
-        );
-        // The first group does not fit the arena, so the empty second one lands.
-        assert_eq!(rows[0].ordinal, 1);
-        assert_eq!((walk.provinces_len, walk.required_provinces), (0, 3));
-        let (walk, _, _) = walked(&fixture(), 0, 8);
+    fn the_count_probe_reports_every_group_and_the_full_demand() {
+        let walk = count(&SliceMemory { base: BASE, bytes: &fixture() }, 0, BASE);
         assert_eq!(
             walk.outcome,
             Outcome::Truncated {

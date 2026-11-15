@@ -1,5 +1,6 @@
 //! The same reserved ranges acquire independent preparation leaves first,
-//! then finish native status after ordered shared admission has published.
+//! then finish native status and name their divisions after ordered shared
+//! admission has published.
 use super::*;
 
 #[allow(clippy::large_enum_variant)] // Reserved work cells retain their inline range storage.
@@ -12,6 +13,9 @@ pub(crate) enum StatusWork {
         prepared: Arc<carmy::StatusPacket>,
         part: carmy::StatusPart,
         attack: super::super::attack_stats::AttackPart,
+        naming: NamingPart,
+        carry: engine_allocation::SharedBox<NamingCarry>,
+        store: Option<Arc<super::super::attack_stats::ArmyStatStore>>,
     },
 }
 impl StatusWork {
@@ -35,6 +39,9 @@ impl StatusWork {
                 prepared,
                 part,
                 attack,
+                naming,
+                carry,
+                store,
             } => {
                 part.capture_signaled(
                     memory,
@@ -44,13 +51,23 @@ impl StatusWork {
                     prepared,
                     &collector_observers::order_membership_changes::Observer,
                 );
+                carry.stage_attack(attack, seeds, store.as_deref(), prepared);
                 attack.capture(memory, context.base);
+                naming.capture(
+                    memory,
+                    context.base,
+                    seeds,
+                    carry.carry(),
+                    store.as_deref(),
+                    changes,
+                );
             }
         }
     }
     pub(crate) fn fail(&mut self, reason: &'static str) {
-        if let Self::Status { part, .. } = self {
+        if let Self::Status { part, naming, .. } = self {
             part.fail(reason);
+            naming.fail();
         }
     }
 }

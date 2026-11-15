@@ -4,7 +4,9 @@ import { Segmented } from '../../components/Segmented';
 import DrillHost from '../../charts/drill/DrillHost';
 import { CLOSED, reduceDrill } from '../../charts/drill/drillState';
 import FlowDiagram from '../../charts/flow/FlowDiagram';
-import type { FlowHit } from '../../charts/flow/FlowDiagram';
+import type { FlowHit, FlowValues } from '../../charts/flow/FlowDiagram';
+import { liveAt } from '../../charts/live';
+import { useShownHour } from '../../dashboard/widgetPerf';
 import { countryFlowColours, countryFlowNodes } from '../../charts/flow/countries';
 import { sumFlowParts } from '../../charts/flow/sum';
 import type { SummedNode } from '../../charts/flow/sum';
@@ -20,22 +22,23 @@ import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt.ts';
 import { useHolderLooks } from '../../dashboard/holderLooks.ts';
 import { nameReadMetadata } from '../../dashboard/nameReads.ts';
-import { pendingAt, preparedPrefix } from '../../dashboard/preparedPrefix';
 import { lookHour } from '../../dashboard/countryLooks';
 import { selectedTags } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { countryMatch, countryMatchFilter } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
-import { usePlaybackHour, usePlaybackMotion } from '../../dashboard/playback';
+import { usePlaybackMotion } from '../../dashboard/playback';
+import { useHeadHour } from '../army-size/headHour.ts';
 import { useProduct } from '../../dashboard/products';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { KINDS, OPTIONS } from './definition';
 import { campaignScale, emptyMessage, flowParts, linkFilter, linkHolders, linksAt, partnersOf, requestTags, withoutRequest } from './volunteersData';
 import type { LinkAt, VolunteerKind } from './volunteersData';
-import type { VolunteersExpeditionariesReply } from '../../generated/dashboard';
 import './volunteers.css';
+import type { VolunteersExpeditionariesReply } from '../../generated/dashboard';
+import { useChangedState } from '../../dashboard/changedState.ts';
 
 const NO_WARNINGS: string[] = [];
 const unit = (kind: VolunteerKind, count: number) => kind === 'land' ? `${usNumber.format(count)} ${count === 1 ? 'division' : 'divisions'}`
@@ -43,7 +46,9 @@ const unit = (kind: VolunteerKind, count: number) => kind === 'land' ? `${usNumb
 type Partner = LinkAt & { partner: string; partnerKey: string; direction: 'sent' | 'received' };
 
 export default function VolunteersWidget({ widget, runtime, active, setOption, onDiagnostics }: WidgetProps) {
-  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  // The hour renders the widget only when which links show changes; their counts are painted by the diagram each frame.
+  const linksKey = useRef<(hour: number) => string>(() => '');
+  const playbackHour = useHeadHour(runtime.clock, active && widget.time.mode === 'follow', hour => linksKey.current(hour));
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const options = resolveOptions(OPTIONS, widget.options);
   const kind: VolunteerKind = options.kind === 'expeditionary' ? 'expeditionary' : 'land';
@@ -69,6 +74,12 @@ export default function VolunteersWidget({ widget, runtime, active, setOption, o
     params: { branchId: track.branch.id, kind, tags } } : null, active, undefined, track?.source);
   const keep = useMemo(() => linkFilter(all ? null : match.matches, options.between === 'between'), [all, match, options.between]);
   const current = useMemo(() => reply.data ? linksAt(reply.data, at, keep) : { links: [], unknown: 0 }, [reply.data, at, keep]);
+  linksKey.current = hour => {
+    if (!reply.data || !track) return '';
+    const shown = Math.floor(resolveWindow(widget, track, runtime.tracks, hour)?.lastHour ?? track.branch.lastHour);
+    const held = linksAt(reply.data, shown, keep);
+    return JSON.stringify([held.unknown, held.links.map(link => link.key)]);
+  };
   const [capacity, setCapacity] = useState(12);
   // The combined Other node takes one of the rows the diagram has room for.
   const perSide = Math.max(1, Math.min(Number(options.perSide) || 12, capacity - 1));
@@ -86,7 +97,7 @@ export default function VolunteersWidget({ widget, runtime, active, setOption, o
   // The drill holds the holder clicked, named as it was at the hour clicked.
   const picked = drill.breakdown;
   const pickedTag = useMemo(() => { if (!picked) return null; const parsed: unknown = JSON.parse(picked); return Array.isArray(parsed) && typeof parsed[0] === 'string' ? parsed[0] : null; }, [picked]);
-  const [drillRows, setDrillRows] = useState<readonly string[]>([]);
+  const [drillRows, setDrillRows] = useChangedState<readonly string[]>([]);
   // Flags for drawn nodes, and for the drill's rows while its list is mounted.
   const drillListed = picked !== null && current.links.some(item => item.senderKey === picked || item.hostKey === picked);
   const nodeTags = useMemo(() => [...new Set([...summed.nodes.flatMap(node => node.tag ? [tagOf.get(node.tag)!] : []), ...(drillListed ? drillRows : [])])],
@@ -103,6 +114,20 @@ export default function VolunteersWidget({ widget, runtime, active, setOption, o
     [summed.nodes, label, tagOf, tokens, nodeName, colours]);
   const links = useMemo(() => summed.links.map(link => ({ id: link.id, source: link.source, target: link.target, value: link.value,
     color: nodeColours.get(link.source) ?? tokens.muted, order: link.id })), [summed.links, nodeColours, tokens.muted]);
+  // Following, the diagram reads the head's ribbons as it paints: the counts move with no render.
+  const valuesAt = useCallback((hour: number): FlowValues => {
+    const held = reply.data ? linksAt(reply.data, hour, keep) : { links: [], unknown: 0 };
+    const sum = sumFlowParts(flowParts(held.links), perSide);
+    const made = countryFlowNodes(sum.nodes, key => label(tagOf.get(key) ?? key), tokens, nodeName, node => node.tag ?? '', colours);
+    return { nodes: made.nodes, hour, links: sum.links.map(link => ({ id: link.id, source: link.source, target: link.target, value: link.value,
+      color: made.colours.get(link.source) ?? tokens.muted, order: link.id })) };
+  }, [reply.data, keep, perSide, label, tagOf, tokens, nodeName, colours]);
+  const following = active && widget.time.mode === 'follow' && !!track;
+  const live = useMemo(() => following && track ? liveAt(runtime.clock,
+    position => Math.floor(resolveWindow(widget, track, runtime.tracks, position)?.lastHour ?? track.branch.lastHour), valuesAt) : null,
+  [following, track, runtime.clock, runtime.tracks, widget, valuesAt]);
+  const shown = useShownHour();
+  const reported = useMemo(() => live ? { ...live, read: () => { const value = live.read(); shown(value.hour ?? null); return value; } } : undefined, [live, shown]);
   const diagnostics = useMemo(() => [...(reply.data?.warnings ?? []), ...(current.unknown ? [`${current.unknown} links have an unknown count at this time.`] : []),
     ...(reply.error ? [reply.error] : [])], [reply.data, current.unknown, reply.error]);
   useDiagnostics(onDiagnostics, diagnostics.length ? diagnostics : NO_WARNINGS);
@@ -139,22 +164,19 @@ export default function VolunteersWidget({ widget, runtime, active, setOption, o
   if (groupFailure && !groups.data) return groupFailure;
   if (match.reason) return <>{groupFailure}<WidgetState kind="empty" message={match.reason} /></>;
   if (!all && groups.data && !tags?.length) {
-    const state = withoutRequest({ known: match.known(at), hourly: widget.countries.kind === 'group' && widget.countries.membership === 'hour',
+    const state = withoutRequest({ hourly: widget.countries.kind === 'group' && widget.countries.membership === 'hour',
       membershipUnobserved: chosen.unobserved.some(span => span.firstHour <= at && at <= span.lastHour) });
-    // Failed preparation cannot finish pending membership, so show the failure instead of loading.
-    return state.kind === 'loading' ? groupFailure ?? <WidgetState kind="loading" label={state.message} />
-      : <>{groupFailure}<WidgetState kind={state.kind} message={state.message} /></>;
+    return <>{groupFailure}<WidgetState kind={state.kind} message={state.message} /></>;
   }
   if (!all && !match.ready) return <>{groupFailure}<WidgetState kind="loading" label="Loading volunteers…" /></>;
   if (reply.error) return <>{groupFailure}<WidgetState kind="error" failure={reply.error} onRetry={reply.retry} /></>;
   if (!reply.data) return <>{groupFailure}<WidgetState kind="loading" label="Loading volunteers…" /></>;
-  if (!current.links.length && pendingAt(preparedPrefix(reply.data), at)) return <>{groupFailure}<WidgetState kind="loading" label="This range is still being prepared." /></>;
   const covers = (span: { firstHour: number; lastHour: number }) => span.firstHour <= at && at <= span.lastHour;
   const message = current.links.length ? null : emptyMessage(kind, { aidUnobserved: reply.data.unobserved.some(covers),
-    membershipUnobserved: chosen.unobserved.some(covers), membershipPending: !match.known(at), unknown: current.unknown });
+    membershipUnobserved: chosen.unobserved.some(covers), unknown: current.unknown });
   // A new kind, or a stretch of the recording after a gap, jumps rather than glides; a tag
   // passing to another country is another node, so it never glides either.
-  const main = <FlowDiagram label={`${kind === 'land' ? 'Volunteers' : 'Expeditionary forces'}: senders to hosts`} nodes={nodes} links={links}
+  const main = <FlowDiagram live={reported} label={`${kind === 'land' ? 'Volunteers' : 'Expeditionary forces'}: senders to hosts`} nodes={nodes} links={links}
     stretch={`${kind}:${lookHour(track.branch, at)?.stretch ?? 'unrecorded'}`} scale={scale} slots={perSide + 1} hour={at} hoursPerSecond={hoursPerSecond} message={message} tooltip={tooltip}
     onCapacity={setCapacity} onLabelPick={node => { const found = summed.nodes.find(item => item.id === node.id); if (found?.tag) dispatch({ type: 'open', breakdown: found.tag, hour: at, playing: false, playhead: null }); }}
     onContextMenu={(hit, x, y) => { const link = hit?.kind === 'link' ? summed.links.find(item => item.id === hit.link.id) : null;

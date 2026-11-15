@@ -142,15 +142,15 @@ fn map_model_witness_equals_full_division_status_columns() {
     populated.census.clear();
     populated
         .census
-        .capture(&populated.world.live(), base, state, PRESENTED);
+        .capture(&populated.world.live(), base, state);
     assert!(!populated.census.overflowed);
-    let inputs = Arc::clone(populated.census.unit_inputs().unwrap());
+    let inputs = engine_allocation::SharedBox::clone(populated.census.unit_inputs().unwrap());
     assert_eq!(inputs.outcome(), Outcome::Rows { len: PRESENTED });
 
     let changes = Watches::enabled(2 * PRESENTED);
     let slot = held_store::Slot::new(Box::new(
         super::super::super::attack_stats::ArmyStatStore::new(),
-    ));
+    )).unwrap();
     let mut full = populated.capture();
     full.enable_owned_settlement();
     full.status_workers = 2;
@@ -174,8 +174,12 @@ fn map_model_witness_equals_full_division_status_columns() {
             &changes,
         );
         assert!(
-            full.retain_owned_settlement(store, Some(Arc::clone(&inputs)), context)
-                .is_none()
+            full.retain_owned_settlement(
+                store,
+                Some(engine_allocation::SharedBox::clone(&inputs)),
+                context
+            )
+            .is_none()
         );
         full.decode_inputs();
         let TableView::Complete(TableRows::DivisionStatus(status)) = full.tables()[1].clone()

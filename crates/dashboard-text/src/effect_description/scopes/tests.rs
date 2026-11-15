@@ -58,7 +58,7 @@ fn format99_country_rosters_preserve_stored_order() {
     assert!(
         roster(&fixture, Roster::CountryNeighbors)
             .unwrap_err()
-            .contains("CountryCounterInputs.neighbors capture refused")
+            .contains("neighbors of country counter inputs capture refused")
     );
     let TableView::Complete(TableRows::OccupationSettings(rows)) =
         &mut *fixture.frame.tables[TableId::OccupationSettings.index()]
@@ -69,7 +69,7 @@ fn format99_country_rosters_preserve_stored_order() {
     assert!(
         roster(&fixture, Roster::OccupiedCountries)
             .unwrap_err()
-            .contains("OccupationSettings.occupied not recorded")
+            .contains("occupied of occupation settings not recorded")
     );
 
     *fixture.frame.tables[TableId::Divisions.index()] = TableView::Complete(TableRows::Divisions(
@@ -138,7 +138,7 @@ fn state_divisions_follow_native_province_and_mixed_unit_order() {
             .to_vec(),
     ));
     *fixture.frame.tables[TableId::Divisions.index()] = TableView::Complete(TableRows::Divisions(
-        [(first, 4), (third, 2), (second, 4)]
+        [(first, 4), (second, 4), (third, 2)]
             .map(|(id, province)| DivisionRow {
                 id,
                 province,
@@ -233,7 +233,7 @@ fn state_divisions_follow_native_province_and_mixed_unit_order() {
     assert!(
         roster(&fixture, Scope::State(7))
             .unwrap_err()
-            .contains("ProvinceUnitOrder lacks state 7 province 1")
+            .contains("province unit order lacks state 7 province 1")
     );
     let TableView::Complete(TableRows::Provinces(rows)) =
         &mut *fixture.frame.tables[TableId::Provinces.index()]
@@ -255,7 +255,7 @@ fn format99_active_scientists_use_raw_nonzero_byte_and_native_order() {
     let mut fixture = Fixture::new();
     *fixture.frame.tables[TableId::Scientists.index()] =
         TableView::Complete(TableRows::Scientists(
-            [(2, 9, 255), (0, 7, 1), (1, 8, 0)]
+            [(2, 7, 255), (0, 8, 1), (1, 9, 0)]
                 .into_iter()
                 .map(|(ordinal, character, active)| ScientistRow {
                     country: 100,
@@ -279,7 +279,7 @@ fn format99_active_scientists_use_raw_nonzero_byte_and_native_order() {
             renderer
                 .targets(roster, children(&item), scopes, true)
                 .unwrap(),
-            vec![Scope::Character(7), Scope::Character(9)]
+            vec![Scope::Character(8), Scope::Character(7)]
         );
     });
     for unavailable in [Recorded::NotRecorded, Recorded::Value(None)] {
@@ -302,16 +302,16 @@ fn format99_active_scientists_use_raw_nonzero_byte_and_native_order() {
                 renderer
                     .targets(roster, children(&item), scopes, true)
                     .unwrap_err()
-                    .contains("Scientists.active")
+                    .contains("active of scientists")
             );
             assert_eq!(
                 renderer
                     .roster(Roster::Scientists { active: false }, &item, scopes)
                     .unwrap(),
                 vec![
-                    Scope::Character(7),
                     Scope::Character(8),
-                    Scope::Character(9)
+                    Scope::Character(9),
+                    Scope::Character(7)
                 ]
             );
         });
@@ -450,7 +450,8 @@ fn format99_party_leader_selector_uses_current_ideology_and_refuses_capture_fail
         output
             .refusals
             .keys()
-            .any(|why| why.contains("CountryLeaderRoles.current_ideology"))
+            .any(|why| why.contains("country leader roles, current ideology of character")
+                && why.contains("not captured"))
     );
 }
 
@@ -462,21 +463,21 @@ fn industrial_organisation_iterator_uses_recorded_order_native_scopes_and_visibi
     *fixture.frame.tables[TableId::IndustrialOrganisations.index()] =
         TableView::Complete(TableRows::IndustrialOrganisations(vec![
             IndustrialOrganisationRow {
-                organisation: 79 | 2 << 32,
-                country: 100,
-                owner: 100,
-                ordinal: 1,
-                token: 11,
-                name: b"TINY".to_vec(),
-                ..Default::default()
-            },
-            IndustrialOrganisationRow {
                 organisation: 79 | 1 << 32,
                 country: 100,
                 owner: 100,
                 ordinal: 0,
                 token: 10,
                 name: b"REFERENCE".to_vec(),
+                ..Default::default()
+            },
+            IndustrialOrganisationRow {
+                organisation: 79 | 2 << 32,
+                country: 100,
+                owner: 100,
+                ordinal: 1,
+                token: 11,
+                name: b"TINY".to_vec(),
                 ..Default::default()
             },
         ]));
@@ -559,7 +560,7 @@ fn industrial_organisation_iterator_uses_recorded_order_native_scopes_and_visibi
     assert!(
         out.refusals
             .keys()
-            .any(|why| why.contains("IndustrialOrganisationDetails")),
+            .any(|why| why.contains("industrial organisation details")),
         "{:?}",
         out.refusals
     );
@@ -673,7 +674,7 @@ fn unrecorded_subjects_refuse_the_subject_roster() {
     let TableView::Complete(TableRows::CountryAppearance(rows)) =
         &mut *fixture.frame.tables[TableId::CountryAppearance.index()]
     else {
-        panic!("the fixture records CountryAppearance");
+        panic!("the fixture records country appearance");
     };
     rows[0].subjects = Recorded::NotRecorded;
     let out = fixture.render(
@@ -684,7 +685,7 @@ fn unrecorded_subjects_refuse_the_subject_roster() {
     assert!(
         out.refusals
             .keys()
-            .any(|reason| reason.contains("CountryAppearance.subjects not recorded")),
+            .any(|reason| reason.contains("subjects of country appearance not recorded")),
         "{:?}",
         out.refusals
     );
@@ -775,7 +776,7 @@ fn subject_roster_reads_existence_before_excluding_caller_alias() {
     assert!(
         out.refusals
             .keys()
-            .all(|why| why.contains("CountryCounterInputs"))
+            .all(|why| why.contains("country 100 has no country counter inputs row"))
     );
 }
 
@@ -1132,17 +1133,17 @@ fn operand_gaps_and_zero_reach_are_named_once_by_native_class() {
         (
             "every_owned_state={army_experience=2}",
             "every_owned_state",
-            "CountryCounterInputs.owned_states",
+            "owned states of country counter inputs",
         ),
         (
             "random_army_leader={army_experience=2}",
             "random_army_leader",
-            "army_leaders",
+            "army leaders of country counter inputs not recorded",
         ),
         (
             "every_active_scientist={army_experience=2}",
             "every_active_scientist",
-            "Scientists.active",
+            "active of scientists",
         ),
     ] {
         let out = fixture.render(script, &mut fresh(), Content::default());
@@ -1437,11 +1438,11 @@ fn format98_orders_require_recorded_fields_even_for_single_passing_targets() {
         };
         rows[0].navy_leaders = rows[0].army_leaders.clone();
         for (key, name) in [
-            ("every_owned_state", "owned_states"),
-            ("every_controlled_state", "controlled_states"),
-            ("every_core_state", "core_states"),
-            ("every_army_leader", "army_leaders"),
-            ("every_navy_leader", "navy_leaders"),
+            ("every_owned_state", "owned states of country counter inputs"),
+            ("every_controlled_state", "controlled states of country counter inputs"),
+            ("every_core_state", "core states of country counter inputs"),
+            ("every_army_leader", "army leaders of country counter inputs"),
+            ("every_navy_leader", "navy leaders of country counter inputs"),
         ] {
             let out = fixture.render(
                 &format!("{key}={{limit={{state=1}} army_experience=2}}"),
@@ -1467,7 +1468,7 @@ fn format98_operative_memberships_supply_native_order_and_full_handles() {
     let mut fixture = Fixture::new();
     *fixture.frame.tables[TableId::UnitLeaders.index()] =
         TableView::Complete(TableRows::UnitLeaders(
-            [(5, 101, "Five"), (6, 101, "Six"), (5, 102, "WrongHandle")]
+            [(5, 101, "Five"), (5, 102, "WrongHandle"), (6, 101, "Six")]
                 .map(|(id, reference_type, name)| UnitLeaderRow {
                     id,
                     reference_type,
@@ -1482,9 +1483,9 @@ fn format98_operative_memberships_supply_native_order_and_full_handles() {
         TableView::Complete(TableRows::OperativeMemberships(
             [
                 (5, 100, 0, 1),
-                (6, 100, 0, 0),
-                (5, 200, 0, 0),
                 (5, 100, 1, 0),
+                (5, 200, 0, 0),
+                (6, 100, 0, 0),
             ]
             .map(
                 |(id, roster_country, roster_kind, ordinal)| OperativeMembershipRow {
@@ -1579,7 +1580,7 @@ fn unrecorded_operative_order_allows_pure_empty_and_singleton_selections() {
         Content::default(),
     );
     assert_eq!(out.refusals.values().sum::<usize>(), 1);
-    assert!(out.refusals.keys().any(|why| why.contains("OperativeMemberships.ordinal") && why.contains("not recorded")));
+    assert!(out.refusals.keys().any(|why| why.contains("ordinal of operative memberships") && why.contains("not recorded")));
     let TableView::Complete(TableRows::OperativeMemberships(rows)) =
         &mut *fixture.frame.tables[TableId::OperativeMemberships.index()]
     else {
@@ -1640,7 +1641,7 @@ fn unrecorded_operative_order_refuses_reached_limit_writes_and_rng_even_for_no_m
                 },
             );
             assert!(
-                result.unwrap_err().contains("OperativeMemberships.ordinal"),
+                result.unwrap_err().contains("ordinal of operative memberships"),
                 "{limit}"
             );
             assert_eq!(renderer.scoped_value(b"stable", scopes), Ok(100_000));
@@ -1884,7 +1885,7 @@ fn state_event_uses_current_character_role_or_refuses_ambiguous_association() {
     assert!(
         out.refusals
             .keys()
-            .any(|why| why.contains("more than one UnitLeaders row")),
+            .any(|why| why.contains("more than one unit leaders row")),
         "{:?}",
         out.refusals
     );
@@ -1969,7 +1970,7 @@ fn original_tag_effect_rosters_keep_native_order_and_skip_nonpositive_raw_before
     assert!(
         roster(&fixture, 1)
             .unwrap_err()
-            .contains("original_tag_buckets not recorded")
+            .contains("original tag buckets of reserved country naming not recorded")
     );
     assert_eq!(roster(&fixture, 0), Ok(Vec::new())); // Selectedraw<=0 fast path.
 }

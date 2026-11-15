@@ -82,5 +82,5 @@
   .focus-description { padding-left: 12px; }
 }
 
-.focus-page-controls { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 6px; }
-.focus-page-controls > span { flex: 1; color: var(--muted); font-size: .75rem; text-align: center; }
+
+.dash-empty .focus-missing-reason { display: block; margin-top: 4px; color: var(--muted); font-size: 0.75rem; }

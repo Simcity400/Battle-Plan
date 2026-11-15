@@ -27,8 +27,10 @@
 .table-delta.is-positive { color: var(--positive); }
 .table-delta.is-negative { color: var(--error); }
 .table-cell { position: relative; display: inline-block; min-width: 64px; }
-.table-cellbar { position: absolute; right: 0; top: 50%; height: 16px; transform: translateY(-50%); border-radius: 3px; background: color-mix(in srgb, var(--accent) 16%, transparent); transition: width var(--table-bar-glide); }
-.chart-table .align-start .table-cellbar { left: 0; right: auto; }
+/* Full width, shown its length by a scale (`barScale`): the glide runs on the compositor and lays nothing out. */
+.table-cellbar { position: absolute; right: 0; top: 50%; width: 100%; height: 16px; margin-top: -8px; border-radius: 3px; background: color-mix(in srgb, var(--accent) 16%, transparent);
+  transform: scaleX(0); transform-origin: right center; transition: transform var(--table-bar-glide); }
+.chart-table .align-start .table-cellbar { left: 0; right: auto; transform-origin: left center; }
 .table-cell > span { position: relative; padding-right: 4px; }
 .table-country { display: inline-flex; align-items: center; gap: var(--space-2); max-width: 100%; vertical-align: top; }
 .table-country > span { overflow: hidden; text-overflow: ellipsis; }
@@ -37,7 +39,11 @@
 @media (prefers-reduced-motion: reduce) { .chart-table .moving-row { transition: none; animation: none; } .chart-table .moving-row.is-entering::after { content: none; } }
 
 .chart-table.is-wrapped tbody tr { height: auto; min-height: var(--table-row-height); }
+/* Wrapped rows set the height that brings the scrollbar: its gutter is kept so its arrival never narrows the rows it measured. */
+.chart-table.is-wrapped { scrollbar-gutter: stable; }
 .chart-table.is-wrapped td { white-space: normal; overflow-wrap: anywhere; text-overflow: clip; }
+/* A rank and its marker stay on one line: a marker never makes its row taller while it shows. */
+.chart-table.is-wrapped td.table-rank { white-space: nowrap; overflow-wrap: normal; }
 .chart-table.is-wrapped .table-country > span { white-space: normal; overflow-wrap: anywhere; text-overflow: clip; }
 
 /* Measured layout corrections are immediate; recorded rank changes still glide. */

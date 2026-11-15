@@ -5,14 +5,15 @@ import { createServer } from 'vite';
 test('releasing a recording through the desktop client forgets the reply sizes learned of it', async () => {
   const globals = globalThis as typeof globalThis & { __replySizeInvoke?: (command: string) => Promise<unknown> };
   globals.__replySizeInvoke = async () => undefined;
-  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
+  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true }, ssr: { noExternal: ['@tauri-apps/api'] },
     server: { middlewareMode: true, watch: null, hmr: false, ws: false },
-    plugins: [{ name: 'reply-size-native', enforce: 'pre', transform(source, id) {
-      const path = id.replaceAll('\\', '/');
-      if (path.endsWith('/shell/api.ts')) return 'export const desktopAvailable = true;';
-      if (path.endsWith('/dashboard/nativeClient.ts')) return source.replace(
-        "import { invoke } from '@tauri-apps/api/core';", 'const invoke = command => globalThis.__replySizeInvoke(command);');
-    } }] });
+    plugins: [{ name: 'reply-size-native', enforce: 'pre',
+      resolveId(id) { if (id === '@tauri-apps/api/core') return '\0reply-size-native'; if (id === '@tauri-apps/api/event') return '\0reply-size-events'; },
+      load(id) {
+        if (id === '\0reply-size-native') return 'export class Channel {} export const invoke = command => globalThis.__replySizeInvoke(command);';
+        if (id === '\0reply-size-events') return 'export async function listen() { return () => {}; }';
+      },
+      transform(_source, id) { if (id.replaceAll('\\', '/').endsWith('/shell/api.ts')) return 'export const desktopAvailable = true;'; } }] });
   try {
     const { nativeDashboardClient: client } = await vite.ssrLoadModule('/ui/src/dashboard/nativeClient.ts') as typeof import('./nativeClient.ts');
     const sizes = await vite.ssrLoadModule('/ui/src/dashboard/replySizes.ts') as typeof import('./replySizes.ts');
@@ -26,7 +27,7 @@ test('releasing a recording through the desktop client forgets the reply sizes l
 
 test('releasing a recording through the browser client forgets the reply sizes learned of it', async () => {
   const previous = globalThis.fetch;
-  globalThis.fetch = (async () => ({ ok: true, text: async () => '{}' })) as unknown as typeof fetch;
+  globalThis.fetch = (async () => ({ ok: true, arrayBuffer: async () => new TextEncoder().encode('{}').buffer })) as unknown as typeof fetch;
   try {
     const { browserDashboardClient: client } = await import('./browserClient.ts');
     const sizes = await import('./replySizes.ts');

@@ -105,7 +105,7 @@ pub struct Country {
     /// Stored powered-factory fraction.
     pub power_raw: i64,
     /// The country's census slot, pass-local: it places the country in a
-    /// slot range of a capture split into parts ([`capture_growing_slots`]).
+    /// slot range of a capture split into parts ([`capture_slots`]).
     pub slot: u32,
 }
 
@@ -137,23 +137,6 @@ pub struct Line {
 }
 
 pub struct Buffers<'a> {
-    pub countries: &'a mut [Country],
-    pub country_len: usize,
-    pub country_required: usize,
-    pub lines: &'a mut [Line],
-    pub line_len: usize,
-    pub line_required: usize,
-    pub efficiencies: &'a mut [i64],
-    pub efficiency_len: usize,
-    pub efficiency_required: usize,
-    pub requests: &'a mut [Request],
-    pub request_len: usize,
-    pub request_required: usize,
-    pub archetypes: &'a mut [usize],
-    pub archetype_required: usize,
-}
-
-pub struct GrowingBuffers<'a> {
     pub countries: &'a mut Vec<Country>,
     pub country_len: usize,
     pub country_required: usize,
@@ -189,27 +172,6 @@ pub struct BuffersBuffer<'a> {
 
 impl<'a> From<Buffers<'a>> for BuffersBuffer<'a> {
     fn from(value: Buffers<'a>) -> Self {
-        Self {
-            countries: crate::walk::Buffer::Fixed(value.countries),
-            country_len: value.country_len,
-            country_required: value.country_required,
-            lines: crate::walk::Buffer::Fixed(value.lines),
-            line_len: value.line_len,
-            line_required: value.line_required,
-            efficiencies: crate::walk::Buffer::Fixed(value.efficiencies),
-            efficiency_len: value.efficiency_len,
-            efficiency_required: value.efficiency_required,
-            requests: crate::walk::Buffer::Fixed(value.requests),
-            request_len: value.request_len,
-            request_required: value.request_required,
-            archetypes: crate::walk::Buffer::Fixed(value.archetypes),
-            archetype_required: value.archetype_required,
-        }
-    }
-}
-
-impl<'a> From<GrowingBuffers<'a>> for BuffersBuffer<'a> {
-    fn from(value: GrowingBuffers<'a>) -> Self {
         Self {
             countries: crate::walk::Buffer::Growing(value.countries),
             country_len: value.country_len,
@@ -428,59 +390,23 @@ pub fn capture(
     context: &mut Option<Context>,
     out: &mut Buffers<'_>,
 ) -> Result<(), &'static str> {
-    let mut buffer = BuffersBuffer {
-        countries: crate::walk::Buffer::Fixed(&mut *out.countries),
-        country_len: out.country_len,
-        country_required: out.country_required,
-        lines: crate::walk::Buffer::Fixed(&mut *out.lines),
-        line_len: out.line_len,
-        line_required: out.line_required,
-        efficiencies: crate::walk::Buffer::Fixed(&mut *out.efficiencies),
-        efficiency_len: out.efficiency_len,
-        efficiency_required: out.efficiency_required,
-        requests: crate::walk::Buffer::Fixed(&mut *out.requests),
-        request_len: out.request_len,
-        request_required: out.request_required,
-        archetypes: crate::walk::Buffer::Fixed(&mut *out.archetypes),
-        archetype_required: out.archetype_required,
-    };
-    let result = capture_buffer(memory, base, state, 1..u32::MAX, None, context, &mut buffer);
-    out.country_len = buffer.country_len;
-    out.country_required = buffer.country_required;
-    out.line_len = buffer.line_len;
-    out.line_required = buffer.line_required;
-    out.efficiency_len = buffer.efficiency_len;
-    out.efficiency_required = buffer.efficiency_required;
-    out.request_len = buffer.request_len;
-    out.request_required = buffer.request_required;
-    out.archetype_required = buffer.archetype_required;
-    result
+    capture_slots(memory, base, state, 1..u32::MAX, None, context, out)
 }
 
-pub fn capture_growing(
-    memory: &impl Memory,
-    base: usize,
-    state: usize,
-    context: &mut Option<Context>,
-    out: &mut GrowingBuffers<'_>,
-) -> Result<(), &'static str> {
-    capture_growing_slots(memory, base, state, 1..u32::MAX, None, context, out)
-}
-
-/// [`capture_growing`] over the census slots `slots` only, one part of a
+/// [`capture`] over the census slots `slots` only, one part of a
 /// capture split by consecutive slot ranges: each part's rows are the whole
 /// walk's for its slots, in order, and its first failure is the one the whole
 /// walk meets in them. `provided`, when given, is the define context read once
 /// for every part, used at a part's first country with lines in place of
 /// reading it there (the whole walk reads it once, at the first such country).
-pub fn capture_growing_slots(
+pub fn capture_slots(
     memory: &impl Memory,
     base: usize,
     state: usize,
     slots: std::ops::Range<u32>,
     provided: Option<Result<Context, &'static str>>,
     context: &mut Option<Context>,
-    out: &mut GrowingBuffers<'_>,
+    out: &mut Buffers<'_>,
 ) -> Result<(), &'static str> {
     let mut buffer = BuffersBuffer {
         countries: crate::walk::Buffer::Growing(&mut *out.countries),

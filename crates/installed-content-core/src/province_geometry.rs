@@ -13,6 +13,8 @@ use std::{
 
 use crate::{ResolvedLayers, fields::invalid, map::ProvinceKind};
 
+pub mod land_areas;
+
 /// A province's bounding box: left, bottom, width, height.
 pub type Bounds = [i32; 4];
 
@@ -362,13 +364,43 @@ pub fn engine_map_checked(
     })
 }
 
+/// Where the native province loader finds a BMP's rows: its size, the bytes a pixel spans, the
+/// rows' advance and padded length, and where the pixels start.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RasterLayout {
+    pub width: usize,
+    pub height: usize,
+    pub components: usize,
+    /// Each row's place in the decoded storage is `row * pitch`; it writes `padded` bytes there,
+    /// so a later row overwrites an earlier one's padding.
+    pub pitch: usize,
+    pub padded: usize,
+    pub pixels: usize,
+}
+
+impl RasterLayout {
+    /// The decoded storage's length: the rows before the last at their advance, the last whole.
+    pub fn written(&self) -> usize {
+        (self.height - 1) * self.pitch + self.padded
+    }
+
+    /// The file's length the rows need.
+    pub fn file_end(&self) -> io::Result<usize> {
+        self.padded
+            .checked_mul(self.height)
+            .and_then(|rows| rows.checked_add(self.pixels))
+            .ok_or_else(|| invalid("BMP pixel extent overflows"))
+    }
+
+    /// The colour of a pixel's three bytes, blue first.
+    pub fn colour(pixel: &[u8]) -> u32 {
+        color_key(pixel[2], pixel[1], pixel[0])
+    }
+}
+
 /// The 24bpp native loader ignores bfOffBits and reads from byte 54; the
 /// other supported depths seek to bfOffBits. Unwritten reads are refused.
-fn colour_raster(
-    data: &[u8],
-    check: &mut impl FnMut() -> io::Result<()>,
-) -> io::Result<(Vec<u32>, usize, usize)> {
-    check()?;
+pub(crate) fn raster_layout(data: &[u8]) -> io::Result<RasterLayout> {
     let head = data
         .get(..54)
         .ok_or_else(|| invalid("provinces.bmp is shorter than the native 54-byte header"))?;
@@ -422,21 +454,32 @@ fn colour_raster(
             "native province BMP rows overflow for {width_raw}x{height_raw} at {bpp}bpp"
         )));
     }
-    let (width, height) = (width_raw as usize, height_raw as usize);
-    let (pitch, padded) = (advance_raw as usize, padded_raw as usize);
     let pixels = if bpp == 24 {
         54
     } else {
         u32::from_le_bytes(head[10..14].try_into().unwrap()) as usize
     };
-    let file_end = padded
-        .checked_mul(height)
-        .and_then(|rows| rows.checked_add(pixels))
-        .ok_or_else(|| invalid("BMP pixel extent overflows"))?;
-    if file_end > data.len() {
+    Ok(RasterLayout {
+        width: width_raw as usize,
+        height: height_raw as usize,
+        components: components as usize,
+        pitch: advance_raw as usize,
+        padded: padded_raw as usize,
+        pixels,
+    })
+}
+
+fn colour_raster(
+    data: &[u8],
+    check: &mut impl FnMut() -> io::Result<()>,
+) -> io::Result<(Vec<u32>, usize, usize)> {
+    check()?;
+    let layout = raster_layout(data)?;
+    let RasterLayout { width, height, components, pitch, padded, pixels } = layout;
+    if layout.file_end()? > data.len() {
         return Err(invalid("provinces.bmp is short of its native decoded rows"));
     }
-    let written = (height - 1) * pitch + padded;
+    let written = layout.written();
     check()?;
     let mut decoded = vec![0_u8; written];
     for row in 0..height {
@@ -458,11 +501,11 @@ fn colour_raster(
             if x % 4096 == 0 {
                 check()?;
             }
-            let at = row + x * components as usize;
+            let at = row + x * components;
             let pixel = decoded
                 .get(at..at + 3)
                 .ok_or_else(|| invalid("native province colour reads unwritten BMP storage"))?;
-            colors[y * width + x] = color_key(pixel[2], pixel[1], pixel[0]);
+            colors[y * width + x] = RasterLayout::colour(pixel);
         }
     }
     Ok((colors, width, height))

@@ -52,17 +52,12 @@ export function linkFilter(matches: ((tag: string, hour: number) => boolean) | n
 export const requestTags = (all: boolean, aliases: readonly { tag: string }[] | null): string[] | null =>
   all ? null : [...new Set((aliases ?? []).map(run => run.tag))].sort(compareTags);
 
-const PREPARING = 'This range is still being prepared.';
-
 /** What the widget shows when the countries chosen name no tag to request, so nothing is
- * read (never every link): membership not yet known at the hour shown (`MembershipKnown`) is
- * loading; a group counted at
- * each hour whose membership was not recorded at the hour shown is unavailable there,
- * and one recorded with no members is an empty group; a choice of countries none of
- * whose holders the campaign has is not in it. */
-export function withoutRequest(state: { known: boolean; hourly: boolean; membershipUnobserved: boolean }):
-  { kind: 'loading' | 'unavailable' | 'empty'; message: string } {
-  if (!state.known) return { kind: 'loading', message: PREPARING };
+ * read (never every link): a group counted at each hour whose membership was not recorded
+ * at the hour shown is unavailable there, and one recorded with no members is an empty
+ * group; a choice of countries none of whose holders the campaign has is not in it. */
+export function withoutRequest(state: { hourly: boolean; membershipUnobserved: boolean }):
+  { kind: 'unavailable' | 'empty'; message: string } {
   if (state.hourly) return state.membershipUnobserved ? { kind: 'unavailable', message: 'This group’s membership was not recorded at this date.' }
     : { kind: 'empty', message: 'This group has no members at this date.' };
   return { kind: 'empty', message: 'The countries chosen are not in this campaign.' };
@@ -70,9 +65,8 @@ export function withoutRequest(state: { known: boolean; hourly: boolean; members
 
 /** What the diagram says when no link shows at an hour: unrecorded aid or group membership
  * is not an empty roster, and a link whose count is unknown is not none. */
-export function emptyMessage(kind: VolunteerKind, state: { aidUnobserved: boolean; membershipUnobserved: boolean; membershipPending?: boolean; unknown: number }): string {
+export function emptyMessage(kind: VolunteerKind, state: { aidUnobserved: boolean; membershipUnobserved: boolean; unknown: number }): string {
   if (state.aidUnobserved) return 'Not recorded at this date.';
-  if (state.membershipPending) return PREPARING;
   if (state.membershipUnobserved) return 'This group’s membership was not recorded at this date.';
   if (state.unknown) return 'These forces are not known at this date.';
   return kind === 'land' ? 'No volunteers abroad at this date.' : 'No expeditionary forces lent at this date.';

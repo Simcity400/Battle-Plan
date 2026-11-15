@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { buildDiagram, decodeTrade, identityCountryAt } from './tradeData.ts';
 import { nodeTooltip, ribbonTooltip, TOOLTIP_LIMIT } from './tradeTooltip.ts';
-import type { TradeFlowsReply } from '../../generated/dashboard';
 import type { NameAt } from '../../dashboard/countryNamesAt';
+import type { TradeFlowsReply } from '../../generated/dashboard';
 
 const identity = (slot: number) => JSON.stringify([slot, slot + 1]);
 const identities = (countries: readonly string[], lastHour: number) => countries.map((tag, slot) => ({ tag, runs: [{ firstHour: 0, lastHour, slot, countryId: slot + 1 }] }));
@@ -13,7 +13,7 @@ test('a sole trade through either other node names and flags both countries at t
     const reply: TradeFlowsReply = { branchId: '1', decimals: 0, countries: ['A', 'B', 'C', 'D', 'X'],
       countryIdentities: identities(['A', 'B', 'C', 'D', 'X'], 10),
       resources: [1, 2].map(id => ({ id, token: `R${id}`, ordinal: 1, name: null, icon: null })),
-      reads: [0, 5], known: [{ firstHour: 0, lastHour: 10 }], partial: [], warnings: [],
+      firstHour: 0, lastHour: 2000, known: [{ firstHour: 0, lastHour: 10 }], partial: [], warnings: [],
       flows: [100, 90, 10, 5].map((value, index) => ({ seller: reverse ? 4 : index, buyer: reverse ? index : 4, resource: index === 3 ? 2 : 1,
         sellerIdentity: identity(reverse ? 4 : index), buyerIdentity: identity(reverse ? index : 4), sellerTags: [reverse ? 4 : index], buyerTags: [reverse ? index : 4],
         firstHours: [0], lastHours: [10], deliveredRaw: [String(value)], factories: [1], convoysAssigned: [0], convoysRequired: [0], deals: [1] })) };
@@ -48,7 +48,7 @@ test('node tooltips share dated labels and bound their sorted country requests',
     const reply: TradeFlowsReply = { branchId: '1', decimals: 0, countries,
       countryIdentities: identities(countries, 23),
       resources: [3, 7].map(id => ({ id, token: `R${id}`, ordinal: 1, name: id === 7 ? 'Mod resource seven' : 'Mod resource three', icon: null })),
-      reads: [0, 5], known: [{ firstHour: 0, lastHour: 23 }], partial: [], warnings: [],
+      firstHour: 0, lastHour: 2000, known: [{ firstHour: 0, lastHour: 23 }], partial: [], warnings: [],
       flows: [...countries.slice(0, -1).map((_, index) => ({ seller: reverse ? 11 : index, buyer: reverse ? index : 11, resource: 7,
         sellerIdentity: identity(reverse ? 11 : index), buyerIdentity: identity(reverse ? index : 11), sellerTags: [reverse ? 11 : index], buyerTags: [reverse ? index : 11],
         firstHours: [0], lastHours: [23], deliveredRaw: [String(index === 0 ? 100 : 11 - index)], factories: [1], convoysAssigned: [0], convoysRequired: [0], deals: [1] })),
@@ -98,7 +98,7 @@ test('retired and current holders sharing a tag use their separate supplying dat
     countryIdentities: [{ tag: 'A', runs: [{ firstHour: 0, lastHour: 23, slot: 0, countryId: 1 }, { firstHour: 24, lastHour: 47, slot: 1, countryId: 2 }] },
       { tag: 'B', runs: [{ firstHour: 0, lastHour: 47, slot: 2, countryId: 3 }] }],
     resources: [{ id: 1, token: 'mod-resource', ordinal: 1, name: null, icon: null }],
-    reads: [0, 24], known: [{ firstHour: 0, lastHour: 47 }], partial: [], warnings: [],
+    firstHour: 0, lastHour: 2000, known: [{ firstHour: 0, lastHour: 47 }], partial: [], warnings: [],
     flows: [0, 1].map(slot => ({ seller: 0, buyer: 1, sellerIdentity: identity(slot), buyerIdentity: identity(2), sellerTags: [0], buyerTags: [1],
       resource: 1, firstHours: [slot * 24], lastHours: [slot * 24 + 23], deliveredRaw: ['10'], factories: [1], convoysAssigned: [0], convoysRequired: [0], deals: [1] })) };
   const data = decodeTrade(reply);

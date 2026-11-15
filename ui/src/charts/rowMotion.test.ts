@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { commitRows, EMPTY_HISTORY, nextDrop, nextRows, shownRows } from './rowMotion.ts';
+import { commitRows, EMPTY_HISTORY, nextDrop, nextRows, shownRows, untakenRows } from './rowMotion.ts';
 import type { MovingRow, RowHistory } from './rowMotion';
 
 const items = (...keys: string[]) => keys.map(key => ({ key, item: key.toUpperCase() }));
@@ -90,4 +90,11 @@ test('with no time to fade, a row that goes is gone at once', () => {
   const history = commitRows(EMPTY_HISTORY, items('a', 'b'), 0, 0);
   assert.deepEqual(view(shownRows(history, items('a', 'c'), 10, 0)), ['a:0:staying', 'c:1:entering']);
   assert.deepEqual(view(commitRows(history, items('a', 'c'), 10, 0).rows), ['a:0:staying', 'c:1:entering']);
+});
+
+test('a row fading out where another row now stands is not drawn: legend rows never overprint', () => {
+  // b left from slot 1, which c moved into; d left from slot 2, which no row holds now.
+  const rows = nextRows(nextRows([], items('a', 'b', 'c', 'd'), 0, 450, true), items('a', 'c'), 10, 450);
+  assert.deepEqual(view(rows), ['a:0:staying', 'c:1:staying', 'b:1:leaving', 'd:3:leaving']);
+  assert.deepEqual(view(untakenRows(rows)), ['a:0:staying', 'c:1:staying', 'd:3:leaving'], 'd still fades where nothing took its place');
 });

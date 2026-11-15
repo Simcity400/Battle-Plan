@@ -93,10 +93,10 @@ fn new_folder_name(root: &Path, campaign: &str) -> String {
     }
 }
 
-/// What a session in `folder` continues is in another capture mode: the unsaved recording, else
-/// the saved one, or hours an ended session left waiting. An unreadable recording is left to the
-/// append, which refuses it by name.
-fn other_mode(root: &Path, folder: &Path, campaign: &str, mode: CaptureMode) -> bool {
+/// What a session in `folder` continues is in another capture mode: the recording never saved,
+/// else the saved one, with the hours that wait in it. An unreadable recording is left to its
+/// writer, which refuses it by name.
+fn other_mode(folder: &Path, campaign: &str, mode: CaptureMode) -> bool {
     let other =
         |path: &Path| Replay::read_capture_mode(path).is_ok_and(|recorded| recorded != mode);
     let unsaved = replay::publication::unsaved_path(folder, campaign);
@@ -106,12 +106,6 @@ fn other_mode(root: &Path, folder: &Path, campaign: &str, mode: CaptureMode) -> 
         recording(folder, campaign).is_some_and(|path| other(&path))
     };
     continued
-        || waiting_sessions(root, folder, campaign)
-            .iter()
-            .any(|session| {
-                recorder::controller::spool_capture_mode(&session.join(campaign))
-                    .is_some_and(|recorded| recorded != mode)
-            })
 }
 
 /// Where the campaign's next session (or next load) records. A pending New
@@ -131,7 +125,7 @@ pub fn session_target_at(
         .map_err(|error| format!("Recorder settings could not be read: {error}"))?;
     let current = current_folder(&settings, root, campaign);
     if settings.campaigns.get(campaign).map(|choice| choice.next) != Some(NextLoad::NewFile)
-        && !other_mode(root, &current, campaign, mode)
+        && !other_mode(&current, campaign, mode)
     {
         return Ok((current, false));
     }
@@ -139,7 +133,7 @@ pub fn session_target_at(
         let choice = settings.campaigns.entry(campaign.to_owned()).or_default();
         let current = campaign_folder(root, choice.folder.as_deref());
         let new_file = choice.next == NextLoad::NewFile;
-        let other = other_mode(root, &current, campaign, mode);
+        let other = other_mode(&current, campaign, mode);
         if !new_file && !other {
             return (current, false);
         }

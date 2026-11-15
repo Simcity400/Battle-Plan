@@ -22,7 +22,6 @@ pub(crate) struct ObserverBoundaryReport {
 /// behind the snapshot. The event feed only prepares its hour here; the
 /// EventFeedSeal job seals it after the Governance job's census joins.
 pub(crate) struct ObserverBoundaryRequest {
-    base: usize,
     hour: i32,
     continuous: bool,
     recovery: bool,
@@ -51,14 +50,9 @@ impl ObserverBoundaryRequest {
             + self.politics.allocated_bytes()) as u64
     }
     pub(crate) fn capture(&mut self) -> ObserverBoundaryReport {
-        let memory = unsafe { engine_native::memory::LiveMemory::new() };
-        self.capture_with_memory(&memory)
-    }
-    pub(crate) fn capture_with_memory(
-        &mut self,
-        memory: &impl engine_native::Memory,
-    ) -> ObserverBoundaryReport {
         let mut report = ObserverBoundaryReport::default();
+        // The registry boundaries are charged with the land drain to the job's anchor.
+        let boundaries = qpc();
         crate::market_changes::boundary(
             self.market_clock,
             !self.continuous || self.recovery || self.market_refresh,
@@ -103,41 +97,37 @@ impl ObserverBoundaryRequest {
         crate::air_base_carry_changes::boundary(!self.continuous || self.recovery);
         crate::character_changes::boundary(!self.continuous || self.recovery);
         crate::war_changes::boundary(!self.continuous || self.recovery);
-        let begin = qpc();
-        self.land.drain_growing(self.hour, !self.continuous);
+        self.land.drain(self.hour, !self.continuous);
         self.finished[0] = true;
-        report.ticks[0] = elapsed(begin);
+        report.ticks[0] = elapsed(boundaries);
         let begin = qpc();
         self.feed
-            .drain_growing(self.hour, !self.continuous || self.recovery);
+            .drain(self.hour, !self.continuous || self.recovery);
         self.finished[1] = true;
         report.ticks[1] = elapsed(begin);
         let begin = qpc();
-        self.lines.drain_growing();
+        self.lines.drain();
         self.finished[2] = true;
         report.ticks[2] = elapsed(begin);
         let begin = qpc();
-        self.fuel.drain_growing();
+        self.fuel.drain();
         crate::fuel_awards::install_offered();
         self.finished[3] = true;
         report.ticks[3] = elapsed(begin);
         let begin = qpc();
-        self.construction.drain_growing();
-        if prepare_outputs_at(self.hour, self.continuous, self.recovery) {
-            prepare_outputs(memory, self.base);
-        }
+        self.construction.drain();
         crate::construction_ic::install_offered();
         crate::line_output::install_offered();
         self.finished[4] = true;
         report.ticks[4] = elapsed(begin);
         let begin = qpc();
-        self.peace.drain_growing(self.continuous && !self.recovery);
+        self.peace.drain(self.continuous && !self.recovery);
         crate::peace_settlements::install_offered();
         self.finished[5] = true;
         report.ticks[5] = elapsed(begin);
-        report.ticks[6] = self.operations.capture_growing();
+        report.ticks[6] = self.operations.capture();
         self.finished[6] = true;
-        report.ticks[7] = self.politics.capture_growing();
+        report.ticks[7] = self.politics.capture();
         self.finished[7] = true;
         report
     }
@@ -211,21 +201,6 @@ impl ObserverBoundaryRequest {
         }
     }
 }
-// The hourly update enters the daily update at hour %24==23;
-// daily production then visits the current production queues.
-// Prepare at that parked boundary, and on first/load/recovery boundaries,
-// rather than relying on a wall-clock poll while the simulation runs rapidly.
-fn prepare_outputs_at(hour: i32, continuous: bool, recovery: bool) -> bool {
-    !continuous || recovery || hour.rem_euclid(24) == 23
-}
-fn prepare_outputs(memory: &impl engine_native::Memory, base: usize) {
-    crate::line_output::collect();
-    crate::construction_ic::collect();
-    crate::line_output::presize(
-        crate::country_scale::observe_production_output(memory, base).unwrap_or(0),
-    );
-    let _ = crate::construction_ic::presize_from_live(memory, base);
-}
 /// The reason a failed job gives its unsealed lanes. They were their own
 /// job, dispatched after the drains joined: a drain that failed stopped the
 /// pool first, which refused that job as stopped. Lanes the job reached
@@ -243,13 +218,11 @@ fn elapsed(begin: i64) -> u64 {
 impl Captured {
     pub(crate) fn take_observer_boundary_request(
         &mut self,
-        base: usize,
         hour: i32,
         continuous: bool,
         recovery: bool,
     ) -> ObserverBoundaryRequest {
         ObserverBoundaryRequest {
-            base,
             hour,
             continuous,
             recovery,
@@ -294,6 +267,10 @@ impl Captured {
         self.politics = request.politics;
         for (table, ticks) in [
             (TableId::LandEventCoverage, report.ticks[0]),
+            (TableId::EventFeedHistory, report.ticks[1]),
+            (TableId::ProductionLineOutput, report.ticks[2]),
+            (TableId::ConstructionLineOutput, report.ticks[4]),
+            (TableId::PeaceSettlements, report.ticks[5]),
             (TableId::OperationCompletions, report.ticks[6]),
             (TableId::PoliticsCaptureCoverage, report.ticks[7]),
         ] {
@@ -316,7 +293,7 @@ mod tests {
             + captured.construction_ic.allocated_bytes()
             + captured.peace_settlements.allocated_bytes();
         crate::test_support::with_allocations_denied(|| {
-            let request = captured.take_observer_boundary_request(0, 41, true, false);
+            let request = captured.take_observer_boundary_request(41, true, false);
             assert_eq!(request.allocated_bytes(), original as u64);
             assert_eq!(captured.land_events.allocated_bytes(), 0);
             assert_eq!(captured.event_feed.allocated_bytes(), 0);
@@ -341,8 +318,11 @@ mod tests {
         );
     }
 
+    /// The output logs are sized, and their replaced rings freed, only by the sizing thread: the
+    /// hold's boundary installs what it offered and allocates, frees and walks nothing for them.
+    /// A burst the installed ring cannot take goes to the log's spill, so no entry waits on it.
     #[test]
-    fn native_daily_boundary_sizes_cold_output_logs_without_a_wall_clock_poll() {
+    fn the_sizing_thread_sizes_cold_output_logs_and_the_boundary_only_installs_them() {
         use super::super::production::production_rest_test_kit as kit;
         use engine_native::{Memory, cgame_state, cproduction_status};
         let _construction = crate::construction_ic::test_lock();
@@ -403,12 +383,16 @@ mod tests {
                 0x11900,
                 &(engine_production::cbuilding_production_line::VTABLE_RVA.0 as u64).to_le_bytes(),
             );
-            assert!(prepare_outputs_at(11, false, false));
-            assert!(prepare_outputs_at(23, true, false));
-            assert!(!prepare_outputs_at(22, true, false));
-            prepare_outputs(&memory, 0);
-            crate::line_output::install_offered();
-            crate::construction_ic::install_offered();
+            crate::line_output::collect();
+            crate::construction_ic::collect();
+            crate::line_output::presize(
+                crate::country_scale::observe_production_output(&memory, 0).unwrap(),
+            );
+            crate::construction_ic::presize_from_live(&memory, 0).unwrap();
+            crate::test_support::with_allocations_denied(|| {
+                crate::line_output::install_offered();
+                crate::construction_ic::install_offered();
+            });
             assert!(
                 serde_json::to_value(crate::line_output::status()).unwrap()["capacity"]
                     .as_u64()
@@ -458,7 +442,7 @@ mod tests {
             captured.operation_outcomes.allocated_bytes() + captured.politics.allocated_bytes();
         assert_eq!(lane_bytes, 0);
         crate::test_support::with_allocations_denied(|| {
-            let request = captured.take_observer_boundary_request(0, 41, true, false);
+            let request = captured.take_observer_boundary_request(41, true, false);
             assert_eq!(request.allocated_bytes(), (early_bytes + lane_bytes) as u64);
             assert_eq!(captured.operation_outcomes.allocated_bytes(), 0);
             assert_eq!(captured.politics.allocated_bytes(), 0);

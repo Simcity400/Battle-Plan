@@ -6,6 +6,7 @@
 import { useSyncExternalStore } from 'react';
 import type { ContentFolders } from '../shell/api';
 import type { DashboardClient } from './client';
+import { PerClient } from './prepare.ts';
 
 export class ContentRevision {
   private key: string | undefined;
@@ -37,7 +38,7 @@ export class ContentRevision {
   }
 }
 
-const revisions = new WeakMap<DashboardClient, ContentRevision>();
+const revisions = new PerClient<ContentRevision>();
 export function contentRevision(client: DashboardClient): ContentRevision {
   let revision = revisions.get(client);
   if (!revision) { revision = new ContentRevision(); revisions.set(client, revision); }

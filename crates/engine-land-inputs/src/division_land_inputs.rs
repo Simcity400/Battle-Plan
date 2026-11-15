@@ -36,31 +36,9 @@ pub struct Scratch<'a> {
     pub first: &'a mut [[u8; 2 * manpower_value_entry::STRIDE]],
 }
 
-/// No allocation or reread after a fault. Whole contributor lists only; after
-/// the first shortage publish a census prefix while counting exact demand.
-pub fn capture(
-    memory: &impl Memory,
-    base: usize,
-    sources: &[carmy::DivisionSeed],
-    source: Outcome,
-    rows: &mut [Row],
-    contributors: &mut [Contributor],
-    scratch: Scratch<'_>,
-) -> Walk {
-    capture_buffer(
-        memory,
-        base,
-        sources,
-        source,
-        Buffer::Fixed(rows),
-        Buffer::Fixed(contributors),
-        scratch,
-    )
-}
-
 /// Contributor headers are retained in the original census. Visit their complete
 /// stored count without applying a country ratio.
-pub fn capture_growing(
+pub fn capture(
     memory: &impl Memory,
     base: usize,
     sources: &[carmy::DivisionSeed],
@@ -323,7 +301,7 @@ mod sizing_tests {
                     entry
                 })
                 .collect();
-            let acquired = capture_growing(
+            let acquired = capture(
                 &SliceMemory {
                     base: 0x1000,
                     bytes: &bytes,
@@ -369,7 +347,7 @@ mod sizing_tests {
         }
         let mut sources = seeds(5_000, 137);
         sources[0].primary_vtable = None;
-        let acquired = capture_growing(
+        let acquired = capture(
             &NoReads,
             0,
             &sources,

@@ -94,16 +94,9 @@ impl Captured {
         self.rows.grow(&mut capacity.rows);
         grow_vec(&mut self.first, capacity.rows);
     }
+    /// Retain each original mandatory census occurrence before native
+    /// execution resumes, including a cold empty frame.
     pub fn visit(&mut self, source: cstate::Source) {
-        if let Some(row) = self.first.get_mut(self.seen) {
-            *row = source;
-        }
-        self.seen = self.seen.saturating_add(1);
-        self.required = self.required.max(self.seen);
-    }
-    /// States is worker-only; retain each original mandatory census occurrence
-    /// before native execution resumes, including a cold empty frame.
-    pub(crate) fn visit_growing(&mut self, source: cstate::Source) {
         if self.source_failure.is_none() {
             match self
                 .seen
@@ -116,7 +109,11 @@ impl Captured {
                 Err(reason) => self.source_failure = Some(reason),
             }
         }
-        self.visit(source);
+        if let Some(row) = self.first.get_mut(self.seen) {
+            *row = source;
+        }
+        self.seen = self.seen.saturating_add(1);
+        self.required = self.required.max(self.seen);
     }
 
     pub fn finish(&mut self, outcome: Outcome) {
@@ -180,10 +177,8 @@ impl Captured {
         memory: &impl Memory,
         base: usize,
         state: usize,
-        growing: bool,
     ) {
-        if growing
-            && let Err(reason) =
+        if let Err(reason) =
                 engine_native::walk::Buffer::Growing(&mut self.rows.rows).ensure(self.source.len())
         {
             self.fail_sources(reason);
@@ -487,7 +482,7 @@ mod tests {
     }
 
     #[test]
-    fn state_flags_owned_census_keeps_core_row_source_and_flag_capacities_independent() {
+    fn state_flags_owned_census_grows_core_row_source_and_flag_storage_independently() {
         let mut bytes = memory();
         bytes.resize(0x5000, 0);
         let root = STATE + cgame_state::STATES;
@@ -525,21 +520,10 @@ mod tests {
             };
             let report = request.run(&memory);
             assert_eq!(request.visitor.required, 2);
-            let len = core_capacity.min(source_capacity).min(flag_capacity);
             request.visitor.capture(&memory, 0, STATE);
-            assert_eq!(
-                request.visitor.outcomes(),
-                [Outcome::Truncated {
-                    len,
-                    unread_rows: (2 - len) as u32
-                }]
-            );
+            assert_eq!(request.visitor.outcomes(), [Outcome::Rows { len: 2 }]);
             assert_eq!(request.visitor.required, 2);
-            assert_eq!(report.census.result.len(), core_capacity);
-            assert_eq!(
-                matches!(report.census.result, Outcome::Rows { len: 2 }),
-                core_capacity == 2
-            );
+            assert_eq!(report.census.result, Outcome::Rows { len: 2 });
             assert!(
                 request
                     .visitor
@@ -578,6 +562,8 @@ mod tests {
         }
         let mut frame = crate::sampling::Captured::new();
         for canceled in [false, true] {
+            // Room for the census: the worker grows nothing before it panics.
+            frame.states = vec![cstate::Row::default(); 4];
             frame
                 .extended
                 .restore_state_visitor(Captured::with_capacities(&Capacities { rows: 1 }));
@@ -730,14 +716,14 @@ mod tests {
         for count in [5_000, 11_000] {
             captured.reset();
             for id in 1..=count {
-                captured.visit_growing(cstate::Source {
+                captured.visit(cstate::Source {
                     pointer: 0x1000_0000 + id * 0x1000,
                     id: id as u32,
                 });
             }
             captured.finish(Outcome::Rows { len: count });
             assert_eq!(captured.completed_sources().1, Outcome::Rows { len: count });
-            captured.acquire_owned(&FlagPopulation(count), 0, STATE, true);
+            captured.acquire_owned(&FlagPopulation(count), 0, STATE);
             assert_eq!(captured.outcomes(), [Outcome::Rows { len: count }]);
             assert_eq!(captured.rows().unwrap()[count - 1].state, count as u32);
             assert!(

@@ -213,8 +213,7 @@ impl Captured {
         self.active = replay_data::cadence::should_walk(TableId::WorldTension, hour, force_full);
     }
 
-    /// Acquire the manager and both vectors from one authenticated snapshot.
-    #[cfg(any(test, feature = "test-support"))]
+    /// Worker-owned rows and reasons grow from original headers before publication.
     pub fn capture(
         &mut self,
         memory: &impl Memory,
@@ -223,19 +222,7 @@ impl Captured {
         hour: i32,
         force_full: bool,
     ) -> [u64; N] {
-        self.capture_storage(memory, base, game_state, hour, force_full, false)
-    }
-
-    /// Worker-owned rows and reasons grow from original headers before publication.
-    pub fn capture_growing(
-        &mut self,
-        memory: &impl Memory,
-        base: usize,
-        game_state: usize,
-        hour: i32,
-        force_full: bool,
-    ) -> [u64; N] {
-        self.capture_storage(memory, base, game_state, hour, force_full, true)
+        self.capture_storage(memory, base, game_state, hour, force_full)
     }
 
     fn capture_storage(
@@ -245,7 +232,6 @@ impl Captured {
         game_state: usize,
         hour: i32,
         force_full: bool,
-        growing: bool,
     ) -> [u64; N] {
         self.prepare_hour(hour, force_full);
         self.reset();
@@ -264,7 +250,7 @@ impl Captured {
 
         let _reads = read_accounting::table(TableId::WorldTension);
         let begin = qpc();
-        let first = self.pass(memory, base, game_state, growing);
+        let first = self.pass(memory, base, game_state);
         self.manager.outcome = first.tables[0];
         self.sources.outcome = first.tables[1];
         self.aggregates.outcome = first.tables[2];
@@ -279,25 +265,23 @@ impl Captured {
         memory: &impl Memory,
         base: usize,
         game_state: usize,
-        growing: bool,
     ) -> Pass {
         let reader = match cworld_threat::Reader::new(memory, base, game_state) {
             Ok(reader) => reader,
             Err(reason) => return Pass::unavailable(reason),
         };
-        if growing {
-            // World-tension aggregates use the full current country census.
-            // These are the original owned header extents.
-            let grown = (|| {
-                engine_native::walk::Buffer::Growing(&mut self.manager.rows).ensure(1)?;
-                engine_native::walk::Buffer::Growing(&mut self.aggregates.rows)
-                    .ensure(reader.counts()[1])?;
-                Ok::<(), &'static str>(())
-            })();
-            if let Err(reason) = grown {
-                return Pass::unavailable(reason);
-            }
+        // World-tension aggregates use the full current country census.
+        // These are the original owned header extents.
+        let grown = (|| {
+            engine_native::walk::Buffer::Growing(&mut self.manager.rows).ensure(1)?;
+            engine_native::walk::Buffer::Growing(&mut self.aggregates.rows)
+                .ensure(reader.counts()[1])?;
+            Ok::<(), &'static str>(())
+        })();
+        if let Err(reason) = grown {
+            return Pass::unavailable(reason);
         }
+        
         let (manager, sources, aggregates, reasons) = (
             &mut self.manager.rows,
             &mut self.sources.rows,
@@ -305,11 +289,7 @@ impl Captured {
             &mut self.reason_bytes.first,
         );
         let manager = bounded(reader.manager(manager), manager.len());
-        let result = if growing {
-            reader.sources_growing(memory, base, sources, reasons)
-        } else {
-            reader.sources(memory, base, sources, reasons)
-        };
+        let result = reader.sources(memory, base, sources, reasons);
         let sources = bounded(result.outcome, sources.len());
         let aggregates = bounded(reader.aggregates(memory, aggregates), aggregates.len());
         Pass {
@@ -419,8 +399,6 @@ pub struct SessionJob {
     pub log: RawLog<3>,
     pub game_state: usize,
     active: bool,
-    // Fixed mode exists for callback-capacity and fault fixtures only.
-    worker_growth: bool,
     /// This hour against the held read: a carried hour copies nothing.
     plan: Plan,
     pub observed: Observed,
@@ -432,14 +410,9 @@ impl SessionJob {
             log: RawLog::new(0, 0),
             game_state: 0,
             active: false,
-            worker_growth: true,
             plan: Plan::READ,
             observed: Observed::default(),
         }
-    }
-
-    pub fn is_provisioned(&self) -> bool {
-        self.worker_growth || self.log.spans.capacity() != 0
     }
 
     /// Reset lengths for reuse, keeping every capacity. No allocation.
@@ -634,15 +607,6 @@ fn copy_pass(
 }
 
 /// Acquire one refresh into its owned payload.
-pub fn copy_session_refresh_growing(
-    memory: &impl engine_native::Memory,
-    ctx: SessionCopyContext,
-    first: &mut SessionJob,
-) -> SessionCopyReport {
-    first.worker_growth = true;
-    copy_session_refresh(memory, ctx, first)
-}
-
 pub fn copy_session_refresh(
     memory: &impl engine_native::Memory,
     ctx: SessionCopyContext,
@@ -666,9 +630,6 @@ pub fn copy_session_refresh(
             copy_ticks: [elapsed(started), 0, 0],
             raw_bytes: [0; 3],
         };
-    }
-    if first.worker_growth {
-        first.log.enable_worker_growth();
     }
     copy_pass(memory, ctx.base, ctx.game_state, &mut first.log);
     first.plan = first.plan.read(Domain::Tension, changes);
@@ -716,8 +677,14 @@ impl Captured {
         if job.plan.carry {
             self.install_held(job.observed.held, job.plan);
         } else {
-            let recorded = crate::raw::Recorded::build(&job.log);
-            let walked = self.pass(&recorded, base, job.game_state, job.worker_growth);
+            let recorded = match crate::raw::Recorded::build(&job.log) {
+                Ok(recorded) => recorded,
+                Err(reason) => {
+                    self.fail_session_capture(reason);
+                    return;
+                }
+            };
+            let walked = self.pass(&recorded, base, job.game_state);
             self.manager.outcome = walked.tables[0];
             self.sources.outcome = walked.tables[1];
             self.aggregates.outcome = walked.tables[2];

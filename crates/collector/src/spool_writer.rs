@@ -91,7 +91,7 @@ pub(crate) struct Diagnostics {
 
 #[derive(Default)]
 struct PoolCharge {
-    counter: Option<Arc<AtomicU64>>,
+    counter: Option<engine_allocation::SharedBox<AtomicU64>>,
     bytes: usize,
 }
 impl PoolCharge {
@@ -177,6 +177,9 @@ struct State {
     factory_bytes: usize,
     close_receipts: Vec<Weak<Mutex<Option<Result<(), io::ErrorKind>>>>>,
     pool: PoolCharge,
+    /// Lockstep, for tests: whether a waiting thread has handed the writer its next job.
+    #[cfg(test)]
+    turn: Option<bool>,
 }
 impl Default for State {
     fn default() -> Self {
@@ -206,10 +209,23 @@ impl Default for State {
             factory_bytes: 0,
             close_receipts: Vec::new(),
             pool: PoolCharge::default(),
+            #[cfg(test)]
+            turn: None,
         }
     }
 }
 impl State {
+    fn take_job(&mut self) -> Option<Job> {
+        #[cfg(test)]
+        if let Some(granted) = &mut self.turn
+            && !self.stop
+            && !self.jobs.is_empty()
+            && !std::mem::take(granted)
+        {
+            return None;
+        }
+        self.jobs.pop_front()
+    }
     fn retire_contexts(&mut self) {
         self.contexts.retain(|context| {
             self.frames
@@ -274,6 +290,20 @@ impl Shared {
     fn lock(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
+    /// In lockstep a thread about to wait on the writer hands it one job, and only while none runs.
+    #[cfg(test)]
+    fn hand_turn(&self, state: &mut State) {
+        if let Some(granted) = &mut state.turn
+            && !*granted
+            && !state.jobs.is_empty()
+            && state.unfinished_jobs == state.jobs.len()
+        {
+            *granted = true;
+            self.changed.notify_all();
+        }
+    }
+    #[cfg(not(test))]
+    fn hand_turn(&self, _: &mut State) {}
 
     fn outstanding(state: &State) -> impl Iterator<Item = allocation::Outstanding> + '_ {
         state.contexts.iter().filter_map(|&context| {
@@ -417,6 +447,7 @@ impl Shared {
                 state.diagnostics.waiting += 1;
                 self.changed.notify_all();
             }
+            self.hand_turn(&mut state);
             state = self
                 .changed
                 .wait(state)
@@ -519,6 +550,7 @@ impl Shared {
                 state.drainers -= 1;
                 return Err(io::Error::other("spool writer stopped before drain"));
             }
+            self.hand_turn(&mut state);
             state = self
                 .changed
                 .wait(state)
@@ -560,6 +592,7 @@ impl Writer {
             .name("replay-spool-writer".into())
             .stack_size(crate::runtime::BACKGROUND_STACK_BYTES)
             .spawn(move || {
+                crate::private_heap::off_hold_path();
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     serve(&worker, create)
                 }));
@@ -582,7 +615,7 @@ impl Writer {
         })
     }
 
-    pub(crate) fn account_to(&self, counter: Arc<AtomicU64>) {
+    pub(crate) fn account_to(&self, counter: engine_allocation::SharedBox<AtomicU64>) {
         let mut state = self.shared.lock();
         assert!(state.pool.counter.is_none());
         state.pool.bytes = 0;
@@ -645,6 +678,7 @@ impl Writer {
         state.diagnostics.waiting += 1;
         self.shared.changed.notify_all();
         while state.completions.is_empty() && !state.stopped {
+            self.shared.hand_turn(&mut state);
             state = self
                 .shared
                 .changed
@@ -672,6 +706,12 @@ impl Writer {
     pub(crate) fn drain(&self) -> io::Result<()> {
         let last = self.shared.lock().next_ticket - 1;
         self.shared.wait(last)
+    }
+    /// Tests only: the writer runs a job only while a thread waits on it, one at a time, so
+    /// the order of every allocation it and its callers make is the same on every run.
+    #[cfg(test)]
+    pub(crate) fn lockstep(&self) {
+        self.shared.lock().turn = Some(false);
     }
     pub(crate) fn resume_after_failure(&self) {
         self.shared.lock().blocked = false;
@@ -1091,12 +1131,13 @@ impl<B: SegmentBackend> Output<B> {
 }
 
 fn serve<B: SegmentBackend>(shared: &Shared, mut create: impl FnMut(&CampaignId) -> io::Result<B>) {
+    let _phase = allocation::enter(allocation::Phase::Spool);
     let mut spools: Vec<(CampaignId, u64, SegmentedSpool<B>)> = Vec::new();
     loop {
         let job = {
             let mut state = shared.lock();
             loop {
-                if let Some(job) = state.jobs.pop_front() {
+                if let Some(job) = state.take_job() {
                     break Some(job);
                 }
                 if state.stop {
@@ -1141,7 +1182,6 @@ fn serve<B: SegmentBackend>(shared: &Shared, mut create: impl FnMut(&CampaignId)
             continue;
         };
         allocation::set_context(job.context);
-        let _phase = allocation::enter(allocation::Phase::Spool);
         let is_frame = matches!(
             &job.command,
             Command::StartSegment { frame: true, .. } | Command::Records { frame: true, .. }
@@ -1452,6 +1492,35 @@ mod tests {
         assert_eq!(ranges.len(), 2);
         assert_eq!(ranges[0].range.campaign_id, b);
         assert_eq!(ranges[1].range.branch, 2);
+    }
+
+    #[test]
+    fn a_lockstep_writer_runs_one_job_for_each_turn_a_waiting_thread_hands_it() {
+        let root =
+            std::env::temp_dir().join(format!("hoi4-spool-lockstep-{}", std::process::id()));
+        let writer = Writer::start(root.clone()).unwrap();
+        writer.lockstep();
+        let first = writer
+            .output(*b"21b7cc84-3028-4f65-8e0d-adf2f37ca1a6")
+            .close_segment()
+            .unwrap();
+        let second = writer
+            .output(*b"31b7cc84-3028-4f65-8e0d-adf2f37ca1a6")
+            .close_segment()
+            .unwrap();
+        assert_eq!(writer.shared.lock().completed, 0, "nothing waited");
+        writer.shared.wait(first.ticket).unwrap();
+        {
+            let state = writer.shared.lock();
+            assert_eq!(state.completed, first.ticket);
+            assert_eq!(state.jobs.len(), 1, "the writer ran a job nothing handed it");
+        }
+        assert_eq!(first.result(), Some(Ok(())));
+        assert_eq!(second.result(), None);
+        writer.drain().unwrap();
+        assert_eq!(second.result(), Some(Ok(())));
+        drop(writer);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

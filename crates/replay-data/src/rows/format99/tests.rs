@@ -1,7 +1,10 @@
 use super::*;
 use crate::{
     cadence::{Cadence, cadence},
-    rows::compatibility::{EFFECT_INPUTS_FORMAT, RECORDER_INPUTS_FORMAT, WIDGET_CAPTURE_FORMAT},
+    rows::compatibility::{
+        AIR_HISTORY_SLOTS_FORMAT, EFFECT_INPUTS_FORMAT, RECORDER_INPUTS_FORMAT,
+        WIDGET_CAPTURE_FORMAT,
+    },
 };
 
 fn check98<T: RowCodec + Fields + std::fmt::Debug + PartialEq>(table: TableId, row: T) {
@@ -82,18 +85,18 @@ fn format101_air_scenario_operands_keep_format99_absence_distinct_from_zero() {
                 ..Default::default()
             },
         );
-        check_version(
-            version,
-            TableId::AirNavalPatrolHistories,
-            AirNavalPatrolHistoryRow {
-                country: 4,
-                region: 9,
-                index: 7,
-                enemy_ships_sunk_raw: 1,
-                scenario_channels: Recorded::Value(Some([0; 7])),
-                ..Default::default()
-            },
+        // Patrol histories of these formats are refused by name, framed by their earlier layout.
+        let table = TableId::AirNavalPatrolHistories;
+        let history = table.last_change();
+        assert!(
+            history
+                .table_gap(table, version)
+                .unwrap()
+                .contains(&format!(
+                    "layout or meaning changed at format {AIR_HISTORY_SLOTS_FORMAT}"
+                ))
         );
+        assert_eq!(history.framed_fields(table, version), 3);
     }
 }
 

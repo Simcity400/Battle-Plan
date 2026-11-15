@@ -33,7 +33,7 @@ const RADIANS: f32 = 0.017_453_292;
 
 /// One `animation` block: a 0x90-byte record with the sprite reader's defaults, retained when
 /// `animationtype` is set.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AnimationData {
     /// `animationmaskfile` and `animationtexturefile`.
     pub mask_file: Vec<u8>,
@@ -86,7 +86,7 @@ impl Default for AnimationData {
 
 /// A plain sprite's fields and defaults: `spriteType` or `quadTextureSprite`, and the base of
 /// frame-animated, tile and masked-shield kinds.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Plain {
     /// `textureFile`.
     pub texture: Vec<u8>,
@@ -210,7 +210,7 @@ impl Plain {
 }
 
 /// A `frameAnimatedSpriteType`'s own fields and defaults.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct FrameAnimation {
     /// Seconds per frame (1.0): `animation_rate_spf` as read, `animation_rate_fps` inverted after
     /// its scan (a failed scan inverts the old value).
@@ -234,7 +234,7 @@ impl Default for FrameAnimation {
 }
 
 /// A `maskedShieldType`'s fields, checked before plain sprite fields.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MaskedShield {
     /// `textureFile1` and `textureFile2`.
     pub texture1: Vec<u8>,
@@ -246,7 +246,7 @@ pub struct MaskedShield {
 }
 
 /// A `corneredTileSpriteType`'s fields and defaults.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CorneredTile {
     /// `noOfFrames` (`%u`, 1).
     pub frames: u32,
@@ -277,7 +277,7 @@ impl CorneredTile {
 }
 
 /// A `progressbartype`'s fields and defaults.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Progress {
     /// `textureFile1` and `textureFile2`: resource construction uses the "Texture" technique when
     /// both are set, else "Color".
@@ -298,7 +298,7 @@ pub struct Progress {
 }
 
 /// A `textSpriteType`'s fields and defaults.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TextSprite {
     /// `noOfFrames` (`%u`, 1).
     pub frames: u32,
@@ -311,7 +311,7 @@ pub struct TextSprite {
 }
 
 /// A `resizeableSpriteType`'s fields and defaults.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Resizeable {
     /// The frame count (`%u`, 1): `noOfFrames` and `defaultAnimationTime` both write it.
     pub frames: u32,
@@ -322,7 +322,7 @@ pub struct Resizeable {
 
 /// A `circularProgressBarType`'s fields and defaults; its shader is
 /// `gfx/FX/circularprogressbar.shader`, technique `CircularProgressBar`.
-#[derive(Clone, Debug, PartialEq, Default)]
+#[derive(Clone, Debug, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub struct CircularProgress {
     pub texture1: Vec<u8>,
     pub texture2: Vec<u8>,
@@ -335,7 +335,7 @@ pub struct CircularProgress {
 }
 
 /// A `PieChartType`'s fields and defaults; its effect is `gfx/FX/color.lua`, technique `Color`.
-#[derive(Clone, Debug, PartialEq, Default)]
+#[derive(Clone, Debug, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub struct PieChart {
     /// `size` (`%i`), which the constructor leaves uninitialised: `None` until written.
     pub size: Option<i32>,
@@ -345,7 +345,7 @@ pub struct PieChart {
 }
 
 /// A `LineChartType`'s fields and defaults.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LineChart {
     /// `size`: integer point reader into the field.
     pub size: [i32; 2],
@@ -357,7 +357,7 @@ pub struct LineChart {
 }
 
 /// A sprite kind, by the reader that reads it, with every field it stores.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum SpriteKind {
     /// `spriteType` (0x36) or `quadTextureSprite` (0x84).
     Plain(Plain),
@@ -527,7 +527,7 @@ pub struct ObjectFacts {
 }
 
 /// What the game keeps of one sprite declaration.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SpriteFacts {
     /// `name` (common sprite reader, string reader): the last assignment.
     pub name: Vec<u8>,

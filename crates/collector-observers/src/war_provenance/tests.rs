@@ -150,6 +150,7 @@ unsafe extern "system-unwind" fn witness(
 /// stays unrecorded. RAX returns unchanged and the context is restored.
 #[test]
 fn a_join_runs_its_original_inside_its_route_and_operands() {
+    let _globals = crate::event_feed_observer::test_globals();
     let _guard = ENTRY_TEST.lock().unwrap();
     BASE.store(0x1_4000_0000, Ordering::Relaxed);
     ORIGINAL[JOIN_WAR].store(witness as *const () as usize, Ordering::Release);

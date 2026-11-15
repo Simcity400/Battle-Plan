@@ -225,7 +225,7 @@ fn reserved_launch_historical_snapshots_and_insert_deltas_leave_named_gap() {
     assert!(
         historical
             .launch_sources
-            .require("ReservedCountryNaming.launch_sources")
+            .require("launch sources of reserved country naming")
             .unwrap_err()
             .contains("not recorded")
     );

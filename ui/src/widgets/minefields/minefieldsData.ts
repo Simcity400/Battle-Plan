@@ -1,172 +1,68 @@
-import { countryPart, keyedKnown, keyedRead, runAtHour, validateKeyedWindow } from '../../dashboard/keyedHistory.ts';
-import type { KeyedRun, KeyedWindow } from '../../dashboard/keyedHistory';
-import type { HolderAt } from '../../dashboard/holderLooks';
+import type { MineLine, MineReport, MinedRegion, MinefieldHistoryReply, MinefieldReportsReply, MinefieldsReply } from '../../generated/dashboard';
+import { liveKey } from '../../charts/live.ts';
+import type { LiveValues } from '../../charts/live';
 
-export interface Choice { id: string; name: string }
-export interface MinefieldsReply { window: KeyedWindow; regions: readonly Choice[]; scale: number; warnings: readonly string[] }
-export interface MineReport { kind: number; ordinal: number; victim: string | null; mineOwner: string | null; ship: string | null; equipment: string | null; damage: string; sunk: boolean; firstSeen: number | null }
-export interface ReportsReply { hour: number; readHour: number | null; region: number; reports: readonly MineReport[]; warnings: readonly string[] }
-
-const isChoice = (value: unknown): value is Choice => !!value && typeof value === 'object'
-  && typeof (value as Choice).id === 'string' && typeof (value as Choice).name === 'string';
-const strings = (value: unknown): value is string[] => Array.isArray(value) && value.every(item => typeof item === 'string');
-const optional = (value: unknown) => value === null || typeof value === 'string';
+const text = (value: unknown): value is string => typeof value === 'string';
+const strings = (value: unknown): value is string[] => Array.isArray(value) && value.every(text);
+const optional = (value: unknown) => value === null || text(value);
+const decimal = (value: unknown) => text(value) && /^-?\d+$/u.test(value);
+const count = (value: unknown) => Number.isSafeInteger(value) && (value as number) >= 0;
 
 export function validateMinefields(value: unknown): MinefieldsReply {
   const reply = value as MinefieldsReply;
-  if (!reply || typeof reply !== 'object' || !Array.isArray(reply.regions) || !reply.regions.every(isChoice)
-    || !Number.isSafeInteger(reply.scale) || reply.scale <= 0 || !strings(reply.warnings))
+  if (!reply || typeof reply !== 'object' || !Number.isSafeInteger(reply.scale) || reply.scale <= 0 || !strings(reply.warnings)
+    || !Array.isArray(reply.regions) || !reply.regions.every(region => !!region && count(region.region) && count(region.unknownOwners)
+      && Array.isArray(region.owners) && region.owners.every(owner => !!owner && text(owner.tag)))
+    || !Array.isArray(reply.unknown) || !reply.unknown.every(region => !!region && count(region.region) && count(region.unknownOwners))
+    || !Array.isArray(reply.choices) || !reply.choices.every(choice => !!choice && text(choice.id) && text(choice.name)))
     throw new Error('The minefields reply is malformed.');
-  return { ...reply, window: validateKeyedWindow(reply.window) };
+  return reply;
 }
 
-export function validateReports(value: unknown): ReportsReply {
-  const reply = value as ReportsReply;
-  if (!reply || typeof reply !== 'object' || !Number.isSafeInteger(reply.hour) || !(reply.readHour === null || Number.isSafeInteger(reply.readHour))
-    || !Number.isSafeInteger(reply.region) || !strings(reply.warnings) || !Array.isArray(reply.reports)
-    || !reply.reports.every(report => report && Number.isSafeInteger(report.kind) && Number.isSafeInteger(report.ordinal) && optional(report.victim)
-      && optional(report.mineOwner) && optional(report.ship) && optional(report.equipment) && typeof report.damage === 'string'
-      && typeof report.sunk === 'boolean' && (report.firstSeen === null || Number.isSafeInteger(report.firstSeen))))
+export function validateHistory(value: unknown): MinefieldHistoryReply {
+  const reply = value as MinefieldHistoryReply;
+  const run = (item: unknown) => Array.isArray(item) && item.length === 3 && Number.isSafeInteger(item[0]) && Number.isSafeInteger(item[1])
+    && (item[0] as number) <= (item[1] as number) && (item[2] === null || decimal(item[2]));
+  if (!reply || typeof reply !== 'object' || !count(reply.region) || !Number.isSafeInteger(reply.scale) || reply.scale <= 0 || !strings(reply.warnings)
+    || !Array.isArray(reply.lines) || !reply.lines.every((line: MineLine) => !!line && text(line.tag) && Array.isArray(line.runs) && line.runs.every(run)))
+    throw new Error('The minefield history reply is malformed.');
+  return reply;
+}
+
+export function validateReports(value: unknown): MinefieldReportsReply {
+  const reply = value as MinefieldReportsReply;
+  if (!reply || typeof reply !== 'object' || !count(reply.region) || !(reply.readHour === null || Number.isSafeInteger(reply.readHour)) || !strings(reply.warnings)
+    || !Array.isArray(reply.reports) || !reply.reports.every((report: MineReport) => !!report && Number.isSafeInteger(report.kind) && Number.isSafeInteger(report.ordinal)
+      && optional(report.victim) && optional(report.mineOwner) && optional(report.ship) && optional(report.equipment) && decimal(report.damage) && typeof report.sunk === 'boolean'))
     throw new Error('The mine reports reply is malformed.');
   return reply;
 }
 
-/** Each owner's runs: its regional amounts, its witnessed extent and the hours its vector was
- * read but refused. */
-export interface OwnerSeries { owner: string; tag: string; regions: Map<string, readonly KeyedRun[]>; extent: readonly KeyedRun[]; refused: readonly KeyedRun[] }
+/** A region as a row: its name, its owners (largest first at the reply's hour), and how many owners' amounts are
+ * unknown there. The amounts are live cells: (region, owner tag) each, and (region, `total`). */
+export interface RegionRow { region: string; name: string; owners: { tag: string }[]; unknownOwners: number }
 
-/** The owner part of the count of owners a read holds vectors for but cannot name. */
-export const UNNAMED_OWNERS = '?';
+const regionName = (names: ReadonlyMap<string, string>, region: string) => names.get(region) ?? 'Region name unavailable';
 
-/** Named owners' series; the unnamed owners' count is read separately with `unnamedRuns`. */
-export function ownerSeries(window: KeyedWindow): Map<string, OwnerSeries> {
-  const out = new Map<string, OwnerSeries>();
-  for (const series of window.series) {
-    const [owner, field] = series.name.split('|');
-    if (!field || owner === UNNAMED_OWNERS) continue;
-    const entry = out.get(owner) ?? { owner, tag: countryPart(owner)?.tag ?? owner, regions: new Map(), extent: [], refused: [] };
-    if (field === 'extent') entry.extent = series.runs;
-    else if (field === 'refused') entry.refused = series.runs;
-    else entry.regions.set(field, series.runs);
-    out.set(owner, entry);
-  }
-  return out;
-}
-
-/** How many owners' vectors a read holds but could not admit (named or not) at `hour`: while
- * any are, the inventory is incomplete and an empty table proves nothing. */
-export function refusedOwnersAt(window: KeyedWindow, owners: ReadonlyMap<string, OwnerSeries>, hour: number): number {
-  let count = 0;
-  for (const series of owners.values()) if (runAtHour(series.refused, hour)) count++;
-  const unnamed = window.series.find(series => series.name === `${UNNAMED_OWNERS}|refused`);
-  const run = unnamed && runAtHour(unnamed.runs, hour);
-  return count + (run ? Number(run[2]) : 0);
-}
-
-/** One owner's mines in a region at an hour: its amount, a proven zero below its witnessed
- * extent, or null (unknown) beyond it or without a witness. */
-export function ownerAmount(series: OwnerSeries, region: string, hour: number): bigint | null {
-  const run = runAtHour(series.regions.get(region) ?? [], hour);
-  if (run) return BigInt(run[2]);
-  const extent = runAtHour(series.extent, hour);
-  return extent && Number(region) < Number(extent[2]) ? 0n : null;
-}
-
-/** One owner's runs in a region: its recorded amounts, and zero runs where its witnessed extent
- * proves the region empty. Hours with neither stay unknown. */
-export function regionRuns(series: OwnerSeries, region: string): KeyedRun[] {
-  const amounts = series.regions.get(region) ?? [];
-  const zeros: KeyedRun[] = [];
-  let next = 0;
-  for (const [first, last, count, fresh] of series.extent) {
-    if (Number(region) >= Number(count)) continue;
-    while (next < amounts.length && amounts[next][1] < first) next++;
-    let from = first, breaks = fresh;
-    for (let index = next; index < amounts.length && amounts[index][0] <= last; index++) {
-      const run = amounts[index];
-      if (run[0] > from) zeros.push([from, run[0] - 1, '0', breaks]);
-      from = run[1] + 1;
-      breaks = false;
-    }
-    if (from <= last) zeros.push([from, last, '0', breaks]);
-  }
-  return [...amounts, ...zeros].sort((a, b) => a[0] - b[0]);
-}
-
-/** Each owner series with mines in `region` as its own holder (TAG@slot), at the last hour it
- * held them there: two holders of one tag are never named or coloured as one. */
-export function regionHolders(owners: ReadonlyMap<string, OwnerSeries>, region: string): HolderAt[] {
-  return [...owners.values()].flatMap(series => {
-    const runs = series.regions.get(region);
-    return runs?.length ? [{ key: series.owner, tag: series.tag, hour: runs.at(-1)![1] }] : [];
-  });
-}
-
-export interface RegionMines { region: string; name: string; owners: { owner: string; tag: string; amount: bigint }[]; total: bigint; unknownOwners: number }
-
-/** Sea regions holding mines at `hour`, each with its owners' amounts (largest first) and how
- * many owners' amounts are unknown there (refused owners included, named or not), and how many
- * owners' vectors were refused; null when not recorded then. With `chosen` regions, only those,
- * each listed while any owner's amount there is unknown even with none known; without, every
- * mined region, and `unlisted` counts the others whose mines are unknown: no row is no proof of
- * none there. */
-export function minesAt(reply: MinefieldsReply, owners: ReadonlyMap<string, OwnerSeries>, hour: number, chosen: readonly string[] = []):
-  { regions: RegionMines[]; readHour: number | undefined; refused: number; unlisted: number } | null {
-  if (!keyedKnown(reply.window, hour)) return null;
-  const refused = refusedOwnersAt(reply.window, owners, hour);
-  const unnamed = refused - [...owners.values()].filter(series => runAtHour(series.refused, hour)).length;
-  const names = new Map(reply.regions.map(region => [region.id, region.name]));
-  const mined = new Set<string>();
-  // Each region's owners with an amount read at `hour`, zero or not.
-  const read = new Map<string, OwnerSeries[]>();
-  for (const series of owners.values()) for (const [region, runs] of series.regions) {
-    const run = runAtHour(runs, hour);
-    if (!run) continue;
-    if (run[2] !== '0') mined.add(region);
-    const held = read.get(region);
-    if (held) held.push(series); else read.set(region, [series]);
-  }
-  // An owner with no vector, amount or refusal at `hour` holds no minefields then: the read removed it.
-  const present = [...owners.values()].filter(series => runAtHour(series.extent, hour) || runAtHour(series.refused, hour)
-    || [...series.regions.values()].some(runs => runAtHour(runs, hour)));
-  // An owner's amount is unknown in a region it read none for at or beyond its witnessed extent,
-  // or anywhere without one: counted by extent once, not owner by region.
-  const extentOf = (series: OwnerSeries) => { const run = runAtHour(series.extent, hour); return run ? Number(run[2]) : null; };
-  const extents = present.map(extentOf);
-  const witnessed = extents.filter((extent): extent is number => extent !== null).sort((a, b) => a - b);
-  const unwitnessed = extents.length - witnessed.length;
-  const unknownAt = (region: string) => {
-    const id = Number(region);
-    let low = 0, high = witnessed.length;
-    while (low < high) { const middle = (low + high) >> 1; if (witnessed[middle] <= id) low = middle + 1; else high = middle; }
-    const unread = (read.get(region) ?? []).filter(series => { const extent = extentOf(series); return extent === null || extent <= id; }).length;
-    return unnamed + unwitnessed + low - unread;
-  };
+/** The rows shown, largest total first at the reply's hour: every mined region, or with `chosen` regions only those,
+ * each listed while an owner's amount there is unknown even with none known; `unlisted` counts the regions left out
+ * whose mines are unknown. */
+export function regionRows(reply: MinefieldsReply, chosen: readonly string[] = []): { rows: RegionRow[]; unlisted: number } {
+  const names = new Map(reply.choices.map(choice => [choice.id, choice.name]));
   const wanted = chosen.length ? new Set(chosen) : null;
-  const unknownOnly = (wanted ? [...wanted] : reply.regions.map(region => region.id)).filter(region => !mined.has(region) && unknownAt(region) > 0);
-  const regions = [...mined].filter(region => !wanted || wanted.has(region)).map(region => {
-    const list: RegionMines['owners'] = [];
-    let unknownOwners = unnamed;
-    for (const series of present) {
-      const amount = ownerAmount(series, region, hour);
-      if (amount === null) unknownOwners++;
-      else if (amount !== 0n) list.push({ owner: series.owner, tag: series.tag, amount });
-    }
-    list.sort((a, b) => a.amount > b.amount ? -1 : a.amount < b.amount ? 1 : a.owner.localeCompare(b.owner));
-    return { region, name: names.get(region) ?? 'Region name unavailable', owners: list, total: list.reduce((sum, item) => sum + (item.amount > 0n ? item.amount : 0n), 0n), unknownOwners };
-  });
-  if (wanted) for (const region of unknownOnly)
-    regions.push({ region, name: names.get(region) ?? 'Region name unavailable', owners: [], total: 0n, unknownOwners: unknownAt(region) });
-  return { regions, readHour: keyedRead(reply.window, hour), refused, unlisted: wanted ? 0 : unknownOnly.length };
+  const row = (region: MinedRegion): RegionRow => {
+    const id = String(region.region);
+    return { region: id, name: regionName(names, id), owners: region.owners.map(owner => ({ tag: owner.tag })), unknownOwners: region.unknownOwners };
+  };
+  const rows = reply.regions.filter(region => !wanted || wanted.has(String(region.region))).map(row);
+  const unknown = reply.unknown.filter(region => !wanted || wanted.has(String(region.region)));
+  if (wanted) rows.push(...unknown.map(region => row({ region: region.region, owners: [], unknownOwners: region.unknownOwners })));
+  return { rows, unlisted: wanted ? 0 : unknown.length };
 }
 
-/** A region's mines on the reply's scale, or a dash where no owner's amount there is known. */
-export const regionTotalText = (region: RegionMines, scale: number) =>
-  region.owners.length || !region.unknownOwners ? minesText(region.total, scale) : '\u2014';
-
-export function orderRegions(regions: readonly RegionMines[], order: 'mines' | 'name'): RegionMines[] {
-  return [...regions].sort((a, b) => order === 'name' ? a.name.localeCompare(b.name) || a.region.localeCompare(b.region)
-    : a.total > b.total ? -1 : a.total < b.total ? 1 : a.name.localeCompare(b.name));
+/** By name, or as the reply orders them: most mines first at its hour (a change of that order is a new reply). */
+export function orderRegions(rows: readonly RegionRow[], order: 'mines' | 'name'): RegionRow[] {
+  return order === 'name' ? [...rows].sort((a, b) => a.name.localeCompare(b.name) || a.region.localeCompare(b.region)) : [...rows];
 }
 
 /** Mines on the reply's scale, exactly. */
@@ -174,4 +70,45 @@ export function minesText(value: bigint, scale: number): string {
   const negative = value < 0n, magnitude = negative ? -value : value, unit = BigInt(scale);
   const fraction = (magnitude % unit).toString().padStart(String(scale).length - 1, '0').replace(/0+$/u, '');
   return `${negative ? '−' : ''}${(magnitude / unit).toLocaleString('en-US')}${fraction ? `.${fraction}` : ''}`;
+}
+
+const exact = (value: number | undefined) => value === undefined ? null : BigInt(Math.trunc(value));
+/** An owner's mines in a region from the live cells; null where not known now. */
+export const ownerMines = (values: LiveValues<number>, region: string, tag: string) => exact(values.get(liveKey(region, tag)));
+/** A region's total from the live cells; null where an owner's amount is not known now. */
+export const regionTotal = (values: LiveValues<number>, region: string) => exact(values.get(liveKey(region, 'total')));
+
+/** A region's total on the scale: a dash where no owner's amount there is known, the reason where it is not read now,
+ * never a zero. */
+export function regionTotalText(row: RegionRow, values: LiveValues<number>, scale: number): string {
+  if (!row.owners.length) return row.unknownOwners ? '—' : minesText(0n, scale);
+  const total = regionTotal(values, row.region);
+  return total === null ? values.missing(liveKey(row.region, 'total')) : minesText(total, scale);
+}
+
+/** Each owner segment's width in percent of the greatest region total now: what each frame paints. */
+export function segmentWidths(rows: readonly RegionRow[], values: LiveValues<number>): Map<string, number[]> {
+  const highest = rows.reduce((max, row) => { const total = regionTotal(values, row.region); return total !== null && total > max ? total : max; }, 0n);
+  return new Map(rows.map(row => [row.region, row.owners.map(owner => {
+    const amount = ownerMines(values, row.region, owner.tag);
+    return highest > 0n && amount !== null && amount > 0n ? Number(amount * 10000n / highest) / 100 : 0;
+  })]));
+}
+
+/** What a render shows: the rows in order, their owners and unknown counts. Amounts are painted. */
+export function minefieldsStructure(reply: MinefieldsReply): string {
+  const { rows } = regionRows(reply);
+  return JSON.stringify([rows.map(row => [row.region, row.owners.map(owner => owner.tag), row.unknownOwners]), reply.unknown, reply.choices.length]);
+}
+
+/** An owner's history runs as chart runs on the reply's scale; hours with no value are left out. */
+export function historyRuns(line: MineLine, scale: number): { firstHour: number; lastHour: number; value: number; breakBefore: boolean }[] {
+  const out: { firstHour: number; lastHour: number; value: number; breakBefore: boolean }[] = [];
+  let gap = true;
+  for (const [firstHour, lastHour, value] of line.runs) {
+    if (value === null) { gap = true; continue; }
+    out.push({ firstHour, lastHour, value: Number(value) / scale, breakBefore: gap });
+    gap = false;
+  }
+  return out;
 }

@@ -310,23 +310,16 @@ fn fixture() -> Vec<u8> {
 }
 
 type Buffers = (
-    [ConveyorRow; 4],
-    [LineRow; 4],
-    [ManpowerRow; 8],
-    [EquipmentRow; 8],
-    [u8; 32],
-    [u8; 32],
+    Vec<ConveyorRow>,
+    Vec<LineRow>,
+    Vec<ManpowerRow>,
+    Vec<EquipmentRow>,
+    Vec<u8>,
+    Vec<u8>,
 );
 
 fn buffers() -> Buffers {
-    (
-        [ConveyorRow::default(); 4],
-        [LineRow::default(); 4],
-        [ManpowerRow::default(); 8],
-        [EquipmentRow::default(); 8],
-        [0; 32],
-        [0; 32],
-    )
+    Default::default()
 }
 
 #[test]
@@ -429,103 +422,6 @@ fn queue_keeps_full_handles_native_order_zero_training_and_signed_counts() {
             amount_raw: i64::MIN,
         }
     );
-}
-
-#[test]
-fn capacity_is_reported_per_table_and_never_publishes_partial_names() {
-    let bytes = fixture();
-    let memory = SliceMemory {
-        base: BASE,
-        bytes: &bytes,
-    };
-    let (_, mut lines, mut manpower, mut equipment, mut names, mut custom) = buffers();
-    let outcomes = walk(
-        &memory,
-        0,
-        BASE,
-        &mut [],
-        &mut lines,
-        &mut manpower,
-        &mut equipment,
-        &mut names,
-        &mut custom,
-    );
-    assert_eq!(
-        outcomes.conveyors,
-        Outcome::Truncated {
-            len: 0,
-            unread_rows: 1
-        }
-    );
-    // A conveyor that cannot be stored is still traversed, so its lines and
-    // their children are published and no child count has to be guessed.
-    assert_eq!(outcomes.lines, Outcome::Rows { len: 1 });
-    assert_eq!(outcomes.manpower, Outcome::Rows { len: 2 });
-    assert_eq!(outcomes.equipment, Outcome::Rows { len: 1 });
-    assert_eq!(outcomes.name_bytes, 0);
-    assert_eq!(outcomes.required_name_bytes, 6);
-
-    let (mut conveyors, _, mut manpower, mut equipment, mut names, mut custom) = buffers();
-    let outcomes = walk(
-        &memory,
-        0,
-        BASE,
-        &mut conveyors,
-        &mut [],
-        &mut manpower,
-        &mut equipment,
-        &mut names,
-        &mut custom,
-    );
-    assert_eq!(outcomes.conveyors, Outcome::Rows { len: 1 });
-    assert_eq!(
-        outcomes.lines,
-        Outcome::Truncated {
-            len: 0,
-            unread_rows: 1
-        }
-    );
-    assert_eq!(
-        outcomes.manpower,
-        Outcome::Truncated {
-            len: 0,
-            unread_rows: 2
-        }
-    );
-    assert_eq!(
-        outcomes.equipment,
-        Outcome::Truncated {
-            len: 0,
-            unread_rows: 1
-        }
-    );
-
-    // A name arena too small omits the conveyor and reports the full need,
-    // while its lines and their children are still read and published.
-    let (mut conveyors, mut lines, mut manpower, mut equipment, _, mut custom) = buffers();
-    let outcomes = walk(
-        &memory,
-        0,
-        BASE,
-        &mut conveyors,
-        &mut lines,
-        &mut manpower,
-        &mut equipment,
-        &mut [0; 2],
-        &mut custom,
-    );
-    assert_eq!(
-        outcomes.conveyors,
-        Outcome::Truncated {
-            len: 0,
-            unread_rows: 1
-        }
-    );
-    assert_eq!(outcomes.lines, Outcome::Rows { len: 1 });
-    assert_eq!(outcomes.manpower, Outcome::Rows { len: 2 });
-    assert_eq!(outcomes.equipment, Outcome::Rows { len: 1 });
-    assert_eq!(lines[0].conveyor, 0xfedc_ba98_0000_0040);
-    assert_eq!((outcomes.name_bytes, outcomes.required_name_bytes), (0, 6));
 }
 
 /// The owning-line back pointer is authenticated by equality, not merely by

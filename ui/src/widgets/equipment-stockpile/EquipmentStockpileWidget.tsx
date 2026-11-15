@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { narrowTableOf } from '../../charts/table/options.ts';
 import { Select } from '../../components/Select';
 import { createPortal } from 'react-dom';
@@ -26,21 +26,23 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import DatedCountryChip from '../../dashboard/DatedCountryChip';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { countryDrillTagAt } from '../../dashboard/countryIdentity';
-import { readDatedCountry } from '../../dashboard/datedCountry';
+import { chosenDatedCountry } from '../../dashboard/datedCountry';
 import type { DatedCountrySelection } from '../../dashboard/datedCountry';
 import CountryComparisons from '../../dashboard/CountryComparisons';
 import type { ComparisonProps } from '../../dashboard/CountryComparisons';
 import { resolveWindow } from '../../dashboard/model';
 import type { BoundTrack } from '../../dashboard/model';
 import { contentKey, contentSet, resolveOptions, setToken } from '../../dashboard/options';
-import { usePlaybackHour } from '../../dashboard/playback';
-import { useParityRows } from '../../dashboard/parityRows';
-import type { EquipmentStockpileReply, StockpileCatalogueReply, StockpileHolder } from '../../generated/dashboard';
+import type { EquipmentStockpileReply, StockpileCatalogueReply } from './types';
+import type { LiveHead } from '../../charts/TimeChart';
+import type { LiveValues } from '../../charts/live';
+import { useShownHour } from '../../dashboard/widgetPerf.ts';
+import { atReply } from './stockpileAt.ts';
 import { BREAKDOWN, OPTIONS } from './definition';
 import { AI_NOTE, automaticLines, CHOSEN_KEYS, hasRecords, balanceAt, balanceMode, choiceKey, choiceRow, formatPercent, oneChoicePerRow, GROUP_NOUNS, labelAt,
   SAVED_DESIGN_UNAVAILABLE, overTimeTooltip, shareModeOf, shareOf, stockAt, stockChoices, stockGroups, dailyAt, chartDrawable } from './stockpileData.ts';
 import { useStockpileChart } from './useStockpileChart';
-import { groupIn, servedHour, stockpileGroupKey } from './stockpileCatalogue';
+import { groupIn, stockpileGroupKey, stockpileView } from './stockpileCatalogue';
 import type { PreparedStockpileReply } from './stockpileCatalogue';
 import type { Grouping, StockGroup } from './stockpileData';
 import { useEquipmentStockpile, useStockpileCountry } from './useEquipmentStockpile';
@@ -49,9 +51,9 @@ import StockpileTable from './StockpileTable';
 import type { StockCount } from './stockpileView';
 import { pinnedGrouping, pinStockpileDrill, stockpileDrillGroup } from './stockpileDrill';
 import type { StockpileMode } from './stockpileDrill';
-import { stockpileParityModel } from './stockpileParityModel';
 import './equipmentStockpile.css';
 import { motionOf } from '../../charts/easing.ts';
+import type { StockpileHolder } from '../../generated/dashboard';
 
 const NO_WARNINGS: string[] = [];
 /** Room for the names at the line ends, at the right of the plot. */
@@ -71,11 +73,13 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
   const viewport = useViewportHeight();
   const options = resolveOptions(OPTIONS, widget.options);
   const saved = options.show === BREAKDOWN.id;
-  const { track, tag, holders, catalogue, data: reply, error, retry } = useEquipmentStockpile(widget, runtime, active && !saved, within);
-  const data = useMemo(() => reply && within ? { ...reply, stockHours: clipToSpans(reply.stockHours, within), lineHours: clipToSpans(reply.lineHours, within),
-    balanceHours: clipToSpans(reply.balanceHours, within), aiHours: clipToSpans(reply.aiHours, within) } : reply, [reply, within]);
-  const windowHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
-  const window = track && resolveWindow(widget, track, runtime.tracks, windowHour);
+  const { track, tag, holders, catalogue, data: reply, hour: viewHour, at: stock, error, retry } = useEquipmentStockpile(widget, runtime, active && !saved, within);
+  const data = useMemo(() => reply && clipped(reply, within), [reply, within]);
+  // The clock as rendered: what follows the head between renders reads it in the frame (`liveHead`, the painted cells).
+  const axisOffset = track?.axisOffset ?? 0;
+  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const liveHead = useMemo<LiveHead | undefined>(() => widget.time.mode === 'follow'
+    ? { read: () => runtime.clock.getSnapshot().position + axisOffset, subscribe: runtime.clock.subscribeFrame } : undefined, [widget.time.mode, runtime.clock, axisOffset]);
   const following = widget.time.mode === 'follow' || widget.time.mode === 'pin';
   const playhead = window && following ? window.lastHour : null;
   const extent: [number, number] = track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : [track.branch.firstHour, track.branch.lastHour]) : [0, 1];
@@ -87,7 +91,7 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
   const includedText = typeof options.included === 'string' ? options.included : '';
   // Stored as `setToken(key)`, so a key a setting cannot store can be included too.
   const included = useMemo(() => contentSet(includedText).map(contentKey), [includedText]);
-  const anchor = useRef<HTMLDivElement>(null);
+  const anchor = useRef<HTMLDivElement | null>(null);
   const scope = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, tag, grouping, included, options.show, options.stockpileCountry, options.partGroup, widget.time, within]);
   const pickOwner = useMemo(() => ({ scope, client: runtime.client }), [scope, runtime.client]);
   const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
@@ -97,17 +101,22 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
   const groups = useMemo(() => data ? stockGroups(data, grouping, Infinity, included) : [], [data, grouping, included]);
   // The breakdown shows a type's models; the mode a pin records follows the row opened.
   const mode: StockpileMode = selection?.mode ?? 'stock';
-  const clockHour = usePlaybackHour(runtime.clock, active && (widget.time.mode === 'follow' || shownDrill.breakdown !== null && shownDrill.follow));
-  const playbackHour = Math.floor(clockHour) + (track?.axisOffset ?? 0);
+  const playbackHour = Math.floor(runtime.clock.getHour()) + axisOffset;
   const detailHead = shownDrill.breakdown !== null && shownDrill.follow ? playbackHour : playhead ?? head;
   const at = saved && shownDrill.breakdown === null ? head : drillHour(shownDrill, playbackHour) ?? head;
-  const savedCountry = useMemo(() => saved && track ? readDatedCountry(options.stockpileCountry,
-    track.source.metadata.campaignKey, track.branch.id, widget.countries) : null,
-  [saved, options.stockpileCountry, widget.countries, track?.source.metadata.campaignKey, track?.branch.id]);
+  // Automatic ("Selected country"), the widget's own country as it was when the breakdown was first shown, held while it
+  // follows the head so the reply is not asked again each hour.
+  const [automaticOrigin, setAutomaticOrigin] = useState<{ owner: object; hour: number } | null>(null);
+  if (saved && !options.stockpileCountry && automaticOrigin?.owner !== pickOwner) setAutomaticOrigin({ owner: pickOwner, hour: head });
+  const origin = automaticOrigin?.owner === pickOwner ? automaticOrigin.hour : head;
+  const savedCountry = useMemo(() => saved && track ? chosenDatedCountry(options.stockpileCountry, track.source.metadata.campaignKey,
+    track.branch.id, widget.countries, tag, track.branch.firstHour, track.branch.lastHour, origin) : null,
+  [saved, options.stockpileCountry, widget.countries, tag, origin, track?.source.metadata.campaignKey, track?.branch.id, track?.branch.firstHour, track?.branch.lastHour]);
   const [countryPick, setCountryPick] = useState<{ owner: object; selection: DatedCountrySelection } | null>(null);
   const selectedCountry = saved ? savedCountry : countryPick?.owner === pickOwner ? countryPick.selection : null;
   const missingSavedDate = saved && shownDrill.breakdown === null && (widget.time.mode === 'pin' || widget.time.mode === 'range') && !window;
-  const actor = useStockpileCountry(selectedCountry, runtime, track, active, at, included);
+  const detailFollows = shownDrill.breakdown !== null ? shownDrill.follow : saved && widget.time.mode === 'follow';
+  const actor = useStockpileCountry(selectedCountry, runtime, track, widget, active && (saved || shownDrill.breakdown !== null), at, detailFollows, included);
   const detailData = selectedCountry ? actor.data : undefined;
   useEffect(() => {
     const warnings = (saved || shownDrill.breakdown !== null ? detailData : data)?.warnings;
@@ -120,20 +129,18 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
   const headerTag = actor.spans ? countryDrillTagAt(actor.spans, at) : null;
   const headerReason = missingSavedDate ? 'The chosen moment is unavailable.' : !selectedCountry ? options.stockpileCountry
     ? 'Choose a country again.'
-    : 'The original country choice was not saved. Select a stockpile breakdown again.'
+    : 'Choose a country for this widget.'
     : actor.reason ?? (headerTag ? null : 'Country unavailable at this time.');
   const header = useCountryLabelsAt(runtime.client, track, saved && countrySlot && headerTag && !headerReason ? [{ tag: headerTag, hour: at }] : [], active);
   const pinnedHeader = saved && countrySlot ? createPortal(<DatedCountryChip failure={actor.error} hour={missingSavedDate ? null : at} reason={headerReason}
     label={headerTag && !headerReason ? header.labelAt(at)(headerTag) : null} />, countrySlot) : null;
   const detailPickOwner = useMemo(() => ({ pickOwner, selectedCountry }), [pickOwner, selectedCountry]);
   const showingDetail = saved || shownDrill.breakdown !== null;
-  const exactData = showingDetail ? detailData : data;
-  const exactGroups = showingDetail ? picked ? [picked] : [] : groups;
-  // Figures are shown at the hour their reply answers, which a followed read holds while the next loads.
-  const exactHour = showingDetail ? servedHour(detailData, at) : servedHour(data, head);
-  const parityLabel = showingDetail ? 'Equipment stockpile breakdown exact values' : 'Equipment stockpile exact values';
-  useParityRows(anchor, () => stockpileParityModel(exactData, exactGroups, exactHour, parityLabel),
-    { ready: () => stockpileParityModel(exactData, exactGroups, exactHour, parityLabel).complete });
+  const shown = useShownHour();
+  // A view not painted from the cells (the chart, the breakdown) reports the hour of the values it rendered.
+  useEffect(() => { shown(showingDetail ? (detailData ? actor.hour : null) : (data ? viewHour : null)); });
+  const headRoot = stock.root, actorRoot = actor.at.root;
+  const root = useCallback((element: HTMLDivElement | null) => { anchor.current = element; headRoot(element); actorRoot(element); }, [headRoot, actorRoot]);
   const ownerRef = useRef({ owner: pickOwner, active });
   ownerRef.current = { owner: pickOwner, active };
   useEffect(() => {
@@ -164,9 +171,11 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
   const main = !saved && data ? <div className="equipment-stockpile">
     {options.view === 'time'
       ? <OverTime data={data} catalogue={catalogue} holders={holders} included={included} tokens={tokens} viewport={viewport} options={options} runtime={runtime} track={track}
-        extent={extent} playhead={playhead} active={active && (shownDrill.breakdown === null || options.drill === 'popout')} grouping={grouping} groups={groups}
+        extent={extent} playhead={playhead} liveHead={liveHead} shownHour={viewHour} active={active && (shownDrill.breakdown === null || options.drill === 'popout')} grouping={grouping} groups={groups}
         onMenu={(hour, x, y) => menu.open(x, y, jump(hour))} setOption={setOption} pickOwner={pickOwner} onPick={open} />
-      : <StockpileTable data={data} hour={servedHour(data, head)} included={included} count={count} setCount={setOption ? value => setOption('count', value) : undefined} narrow={narrowTableOf(options)}
+      : <StockpileTable data={data} hour={viewHour} widget={widget} live={stock.live} shownAt={stock.shownAt}
+        at={(values: LiveValues<number>) => catalogue && stock.data ? clipped(stockpileView(catalogue, atReply(stock.data, values, viewHour, track.branch.id), viewHour), within) : undefined}
+        included={included} count={count} setCount={setOption ? value => setOption('count', value) : undefined} narrow={narrowTableOf(options)}
         active={active && (shownDrill.breakdown === null || options.drill === 'popout')} viewport={viewport}
         runtime={runtime} track={track} onDiagnostics={onDiagnostics} onPick={open} />}
   </div> : null;
@@ -175,7 +184,7 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
     : actor.error ? <WidgetState kind="error" failure={actor.error} onRetry={actor.retry} />
       : actor.reason ? <WidgetState kind="unavailable" message={actor.reason} />
         : picked && detailData ? <StockpileDrill data={detailData} catalogue={actor.catalogue} holders={actor.holders} included={included} group={picked}
-    hour={servedHour(detailData, at)}
+    hour={actor.hour}
     client={runtime.client} track={track}
     extent={extent} playhead={detailHead} playback="cursor" afterPlayhead selectedHour={at} branchStart={track.branch.firstHour}
     hoursPerSecond={motionOf(runtime.clock.getSnapshot())} active={active && (saved || shownDrill.breakdown !== null)}
@@ -183,7 +192,7 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
       ? { type: 'open', breakdown: BREAKDOWN.id, hour, playing: false, playhead: null } : { type: 'pick', hour })}
     onContextMenu={(hour, x, y) => menu.open(x, y, jump(hour))} />
     : <p className="drill-empty">The chosen equipment or saved design is not defined by this campaign.</p>;
-  return <div ref={anchor} className="stockpile-drill-host">
+  return <div ref={root} className="stockpile-drill-host">
     {saved ? <div className="drill-body">
       {pinnedHeader}
       {(shownDrill.breakdown === null ? widget.time.mode !== 'follow' : !shownDrill.follow) && <button type="button" className="button small quiet"
@@ -204,10 +213,10 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
 /** The chosen groups over time, each in its own palette colour, with the zero line
  * emphasised and names at the line ends: the surplus as a share
  * of need where the game computed it, else what was in stock. */
-function OverTime({ data, catalogue, holders, included, tokens, viewport, options, runtime, track, extent, playhead, active, grouping, groups, onMenu, setOption, pickOwner, onPick }: {
+function OverTime({ data, catalogue, holders, included, tokens, viewport, options, runtime, track, extent, playhead, liveHead, shownHour, active, grouping, groups, onMenu, setOption, pickOwner, onPick }: {
   data: EquipmentStockpileReply; catalogue: StockpileCatalogueReply | undefined; holders: readonly StockpileHolder[]; included: readonly string[];
   tokens: ChartTokens; viewport: number; options: Record<string, unknown>; runtime: WidgetProps['runtime']; track: BoundTrack;
-  extent: [number, number]; playhead: number | null; active: boolean; grouping: Grouping; groups: StockGroup[];
+  extent: [number, number]; playhead: number | null; liveHead: LiveHead | undefined; shownHour: number; active: boolean; grouping: Grouping; groups: StockGroup[];
   onMenu: (hour: number, x: number, y: number) => void; setOption: WidgetProps['setOption'];
   pickOwner: object; onPick: (group: StockGroup, hour: number, mode: StockpileMode) => void;
 }) {
@@ -215,7 +224,7 @@ function OverTime({ data, catalogue, holders, included, tokens, viewport, option
   const shareMode = shareModeOf(data, grouping);
   const head = Math.floor(playhead ?? extent[1]);
   // The legend's figures are as of the hour the shown reply answers; the keyboard steps through every read.
-  const shown = servedHour(data, head);
+  const shown = shownHour;
   const navigation = (data as PreparedStockpileReply).prepared;
   const drawable = useMemo(() => groups.filter(group => chartDrawable(data, group, grouping)), [data, groups, grouping]);
   // Choices are stored as `setToken(choiceKey)` (the kit's `storedChoices`), so a key a
@@ -303,7 +312,7 @@ function OverTime({ data, catalogue, holders, included, tokens, viewport, option
       ? 'Need data unavailable.'
       : 'No stock history.'}</p>}
     <div className="stockpile-chart">
-      <TimeChart label={`${shareMode ? 'Surplus as a share of need' : 'Equipment in stock'}: ${lines.map(line => labelAt(line.group, grouping, head)).join(', ')}`} extent={extent} playhead={playhead}
+      <TimeChart label={`${shareMode ? 'Surplus as a share of need' : 'Equipment in stock'}: ${lines.map(line => labelAt(line.group, grouping, head)).join(', ')}`} extent={extent} playhead={playhead} liveHead={liveHead}
         playback={playback} afterPlayhead={options.afterPlayhead === true} windowHours={Number(options.windowDays ?? 365) * 24}
         hoursPerSecond={motionOf(runtime.clock.getSnapshot())} branchStart={track.branch.firstHour}
         axes={{ xFrom: null, xTo: null, yMin: options.yMin as number | null, yMax: options.yMax as number | null, log: options.log === true }}
@@ -311,7 +320,7 @@ function OverTime({ data, catalogue, holders, included, tokens, viewport, option
         // where every share shown is positive, as in every time chart.
         formatValue={shareMode ? formatAxisPercent : undefined}
         padding={endLabels ? { right: END_LABEL_ROOM } : undefined} layers={layers} active={active}
-        revision={`${head}:${data.branchId}:${chosen.join(' ')}:${grouping}:${viewport}:${endLabels}:${shareMode}`}
+        revision={`${data.branchId}:${chosen.join(' ')}:${grouping}:${viewport}:${endLabels}:${shareMode}`}
         // The keyboard steps through the reads; the kit adds the start of a range or zoom
         // that begins between two reads, so the value carried into it is reachable too.
         keyHours={shareMode ? navigation?.logisticsReads ?? data.logisticsReads : navigation?.reads ?? data.reads}
@@ -352,4 +361,10 @@ function OverTime({ data, catalogue, holders, included, tokens, viewport, option
         onContextMenu={(hour, x, y) => onMenu(hour, x, y)} />
     </div>
   </>;
+}
+
+/** `reply` with its known hours within the comparison's membership, where it names hours. */
+function clipped(reply: EquipmentStockpileReply, within: ComparisonProps['within']): EquipmentStockpileReply {
+  return within ? { ...reply, stockHours: clipToSpans(reply.stockHours, within), lineHours: clipToSpans(reply.lineHours, within),
+    balanceHours: clipToSpans(reply.balanceHours, within), aiHours: clipToSpans(reply.aiHours, within) } : reply;
 }

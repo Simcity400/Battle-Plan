@@ -89,17 +89,8 @@ pub struct OperativeRow {
     pub codename_heap: [bool; 2],
 }
 
-/// Caller-owned storage; the walk never allocates.
-pub struct Buffers<'a> {
-    pub traits: &'a mut [TraitRow],
-    pub trait_values: &'a mut [Trait],
-    pub operatives: &'a mut [OperativeRow],
-    pub definitions: &'a mut [u32],
-    pub bytes: &'a mut [u8],
-}
-
 /// Worker-owned rows and arenas grow from the original role/trait headers.
-pub struct GrowingBuffers<'a> {
+pub struct Buffers<'a> {
     pub traits: &'a mut Vec<TraitRow>,
     pub trait_values: &'a mut Vec<Trait>,
     pub operatives: &'a mut Vec<OperativeRow>,
@@ -269,25 +260,11 @@ impl<'a, R: Default, V: Default> Table<'a, R, V> {
 /// Walks the whole roster in native order (historical, then dynamic). An
 /// unreadable roster, page or unauthenticated character fails both tables; a
 /// role, trait or resolved leader that does not read fails its own table.
-pub fn walk(memory: &impl Memory, base: usize, game_state: usize, buffers: Buffers<'_>) -> Walk {
-    walk_storage(
-        memory,
-        base,
-        game_state,
-        Storage {
-            traits: crate::walk::Buffer::Fixed(buffers.traits),
-            trait_values: crate::walk::Buffer::Fixed(buffers.trait_values),
-            operatives: crate::walk::Buffer::Fixed(buffers.operatives),
-            definitions: crate::walk::Buffer::Fixed(buffers.definitions),
-            bytes: crate::walk::Buffer::Fixed(buffers.bytes),
-        },
-    )
-}
-pub fn walk_growing(
+pub fn walk(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    buffers: GrowingBuffers<'_>,
+    buffers: Buffers<'_>,
 ) -> Walk {
     walk_storage(
         memory,
@@ -302,6 +279,21 @@ pub fn walk_growing(
         },
     )
 }
+pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Walk {
+    walk_storage(
+        memory,
+        base,
+        game_state,
+        Storage {
+            traits: crate::walk::Buffer::Count,
+            trait_values: crate::walk::Buffer::Count,
+            operatives: crate::walk::Buffer::Count,
+            definitions: crate::walk::Buffer::Count,
+            bytes: crate::walk::Buffer::Count,
+        },
+    )
+}
+
 fn walk_storage(
     memory: &impl Memory,
     base: usize,
@@ -439,16 +431,6 @@ pub struct CensusWalk<'a> {
 
 impl<'a> CensusWalk<'a> {
     pub fn new(buffers: Buffers<'a>) -> Self {
-        Self::storage(Storage {
-            traits: crate::walk::Buffer::Fixed(buffers.traits),
-            trait_values: crate::walk::Buffer::Fixed(buffers.trait_values),
-            operatives: crate::walk::Buffer::Fixed(buffers.operatives),
-            definitions: crate::walk::Buffer::Fixed(buffers.definitions),
-            bytes: crate::walk::Buffer::Fixed(buffers.bytes),
-        })
-    }
-
-    pub fn growing(buffers: GrowingBuffers<'a>) -> Self {
         Self::storage(Storage {
             traits: crate::walk::Buffer::Growing(buffers.traits),
             trait_values: crate::walk::Buffer::Growing(buffers.trait_values),
@@ -705,7 +687,7 @@ impl<'a> CensusWalk<'a> {
                     None
                 };
                 // cunit_leader::read_codename_buffer over the held bytes.
-                let mut arena = naming::NameArena {
+                let mut arena = naming::Names {
                     bytes: pending.bytes.suffix(0),
                     len: pending.len,
                     required: pending.required,
@@ -1495,7 +1477,7 @@ mod tests {
             .collect();
         let (mut traits, mut values) = (Vec::new(), Vec::new());
         let (mut operatives, mut definitions, mut bytes) = (Vec::new(), Vec::new(), Vec::new());
-        let mut walk = CensusWalk::growing(GrowingBuffers {
+        let mut walk = CensusWalk::new(Buffers {
             traits: &mut traits,
             trait_values: &mut values,
             operatives: &mut operatives,
@@ -1585,22 +1567,22 @@ mod tests {
     #[test]
     fn resolved_name_and_codename_are_owned_and_dangling_references_stay_absent() {
         let mut memory = world();
-        let mut rows = [OperativeRow::default(); 2];
-        let mut definitions = [0; 1];
-        let mut bytes = [0; 10];
+        let mut rows = vec![OperativeRow::default(); 2];
+        let mut definitions = vec![0; 1];
+        let mut bytes = vec![0; 10];
         fn capture(
             memory: &Sparse,
-            rows: &mut [OperativeRow],
-            definitions: &mut [u32],
-            bytes: &mut [u8],
+            rows: &mut Vec<OperativeRow>,
+            definitions: &mut Vec<u32>,
+            bytes: &mut Vec<u8>,
         ) -> Walk {
             walk(
                 memory,
                 0,
                 GS,
                 Buffers {
-                    traits: &mut [],
-                    trait_values: &mut [],
+                    traits: &mut Vec::new(),
+                    trait_values: &mut Vec::new(),
                     operatives: rows,
                     definitions,
                     bytes,
@@ -1616,30 +1598,10 @@ mod tests {
         assert_eq!((codename.kind, codename.group), (2, (5, 5)));
         assert_eq!(&bytes[5..], b"GROUP");
         assert_eq!((rows[1].name, rows[1].codename), (None, None));
-        let before = rows;
+        let before = rows.clone();
         memory.put(OPERATIVE + coperative_leader::CODENAME + 0x60, &[b'Z'; 32]);
         capture(&memory, &mut rows, &mut definitions, &mut bytes);
         assert_eq!(rows, before);
-        let short = capture(&memory, &mut rows, &mut definitions, &mut []);
-        assert_eq!(short.operatives, Outcome::Rows { len: 2 });
-        assert_eq!(short.required_bytes, 10);
-        assert_eq!(
-            (short.bytes_len, rows[0].name, rows[0].codename),
-            (0, None, None)
-        );
-        assert_eq!(rows[0].leader.unwrap().skill_level, Some(4));
-        assert_eq!(&definitions, &[3]);
-        assert_eq!(
-            rows[0].name_reason,
-            Some("operative name byte capacity exceeded")
-        );
-        assert_eq!(
-            rows[0].codename_reason,
-            Some("operative codename byte capacity exceeded")
-        );
-        // A withheld row commits neither appended string.
-        let withheld = capture(&memory, &mut [], &mut definitions, &mut bytes);
-        assert_eq!((withheld.bytes_len, withheld.required_bytes), (0, 10));
         memory.u32(OPERATIVE + cunit_leader::CATEGORY, 0);
         capture(&memory, &mut rows, &mut definitions, &mut bytes);
         assert!(rows[0].codename.is_some());
@@ -1664,8 +1626,8 @@ mod tests {
     }
 
     /// A carried operative row stores what a fresh read of its leader stores
-    /// after the same earlier row, in fixed and growing storage at every
-    /// name, row and definition capacity: its trait definitions, name and
+    /// after the same earlier row, from every starting name, row and
+    /// definition capacity: its trait definitions, name and
     /// codename spans in the fresh order (name, group key, custom name), a
     /// skipped stored name's default span, per-name refusals, written and
     /// committed bytes, the growing arena's length (inline or heap-held group
@@ -1729,7 +1691,7 @@ mod tests {
                 let (mut traits, mut values) = (Vec::new(), Vec::new());
                 let (mut operatives, mut definitions, mut bytes) =
                     (Vec::new(), Vec::new(), Vec::new());
-                let mut held = CensusWalk::growing(GrowingBuffers {
+                let mut held = CensusWalk::new(Buffers {
                     traits: &mut traits,
                     trait_values: &mut values,
                     operatives: &mut operatives,
@@ -1752,7 +1714,7 @@ mod tests {
                 }
                 let heap = (group_heap.is_some(), custom_heap.is_some());
                 let whole = 2 * text.len();
-                for growing in [false, true] {
+                {
                     // Every capacity of a short text; a long one's every
                     // seventh and its last few.
                     for capacity in (0..=whole)
@@ -1766,23 +1728,13 @@ mod tests {
                                     let mut bytes = vec![0; capacity];
                                     let (mut traits, mut values): (Vec<TraitRow>, Vec<Trait>) =
                                         (Vec::new(), Vec::new());
-                                    let mut walk = if growing {
-                                        CensusWalk::growing(GrowingBuffers {
-                                            traits: &mut traits,
-                                            trait_values: &mut values,
-                                            operatives: &mut operatives,
-                                            definitions: &mut definitions,
-                                            bytes: &mut bytes,
-                                        })
-                                    } else {
-                                        CensusWalk::new(Buffers {
-                                            traits: &mut traits,
-                                            trait_values: &mut values,
-                                            operatives: &mut operatives,
-                                            definitions: &mut definitions,
-                                            bytes: &mut bytes,
-                                        })
-                                    };
+                                    let mut walk = CensusWalk::new(Buffers {
+                                        traits: &mut traits,
+                                        trait_values: &mut values,
+                                        operatives: &mut operatives,
+                                        definitions: &mut definitions,
+                                        bytes: &mut bytes,
+                                    });
                                     walk.operative(&memory, 0, &occupant);
                                     if carry {
                                         walk.carry_operative(&row, &carried_definitions, &text);
@@ -1795,7 +1747,7 @@ mod tests {
                                     store(true),
                                     store(false),
                                     "heap {heap:?}, programmatic {programmatic}, custom {} bytes, \
-                                     growing {growing}, {capacity} bytes, {rows} rows, \
+                                     {capacity} bytes, {rows} rows, \
                                      {slots} definitions",
                                     name.len()
                                 );
@@ -1805,34 +1757,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    #[test]
-    fn rows_that_do_not_fit_are_counted_with_their_values() {
-        let output = run(&world(), 1);
-        assert_eq!(
-            output.walk.traits,
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 2
-            }
-        );
-        assert_eq!(
-            output.walk.operatives,
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            }
-        );
-        assert_eq!(output.walk.required_trait_values, 4);
-        let output = run(&world(), 0);
-        assert_eq!(
-            output.walk.traits,
-            Outcome::Truncated {
-                len: 0,
-                unread_rows: 3
-            }
-        );
     }
 
     #[test]

@@ -5,7 +5,7 @@
 use super::{SECONDARY_BASE, SECONDARY_VTABLE_RVA, VTABLE_RVA};
 use crate::{
     Memory,
-    cname_group_member::{NameArena, Names, Span, StringErrors, copy_string_buffer},
+    cname_group_member::{Names, Span, StringErrors, copy_string},
     cunit, msvc_string, read,
 };
 
@@ -16,6 +16,7 @@ const ERRORS: StringErrors = [
     "task-force cached name bytes unreadable",
     "task-force cached name terminator unreadable or invalid",
 ];
+
 
 /// Copy the exact cached bytes after rechecking both vtables and the full
 /// handle supplied by the authenticated fleet walk. No native getter runs.
@@ -28,27 +29,6 @@ pub fn cached_name(
     pointer: usize,
     id: u64,
     names: &mut Names<'_>,
-) -> Result<Option<Span>, &'static str> {
-    let mut arena = NameArena {
-        bytes: crate::walk::Buffer::Fixed(names.bytes),
-        len: names.len,
-        required: names.required,
-    };
-    let result = cached_name_buffer(memory, base, pointer, id, &mut arena);
-    let (len, required) = (arena.len, arena.required);
-    names.len = len;
-    names.required = required;
-    result
-}
-
-/// Same authenticated retained cache, with worker storage grown from its
-/// original string header before publishing an admitted row.
-pub(crate) fn cached_name_buffer(
-    memory: &impl Memory,
-    base: usize,
-    pointer: usize,
-    id: u64,
-    names: &mut NameArena<'_>,
 ) -> Result<Option<Span>, &'static str> {
     let primary = engine_sites::at(base, VTABLE_RVA)
         .ok_or("task-force cached name module address overflow")?;
@@ -70,7 +50,7 @@ pub(crate) fn cached_name_buffer(
         .ok_or("task-force cached name address overflow")?;
     let header = read::<[u8; msvc_string::STRIDE]>(memory, address)
         .ok_or("task-force cached name header unreadable")?;
-    copy_string_buffer(memory, &header, names, &ERRORS)
+    copy_string(memory, &header, names, &ERRORS)
 }
 
 /// Authenticate the same header and boundary probes with an empty arena. No
@@ -82,7 +62,7 @@ pub fn cached_name_demand(
     id: u64,
 ) -> Result<usize, &'static str> {
     let mut names = Names {
-        bytes: &mut [],
+        bytes: crate::walk::Buffer::Count,
         len: 0,
         required: 0,
     };

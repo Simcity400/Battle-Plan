@@ -14,5 +14,5 @@ export const definition = {
   description: 'Who carried each side of a war: every member’s share of damage, ground, losses and lend-lease.',
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   minSize: { w: 6, h: 6 }, defaultSize: { w: 12, h: 10 },
-  countries: { max: 1 }, options: OPTIONS, factionColours: true,
+  countries: { max: 1 }, options: OPTIONS,
 } as const satisfies WidgetMeta;

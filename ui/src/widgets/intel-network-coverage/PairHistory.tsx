@@ -1,43 +1,61 @@
-import { useMemo } from 'react';
-import * as requests from '../../dashboard/batch5Requests';
+import { useMemo, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { useContextMenu } from '../../components/ContextMenu';
-import RunLines from '../../charts/RunLines';
+import { drawLineSummary } from '../../charts/chartSummary';
+import { dayLabel } from '../../charts/draw';
 import { jumpItem } from '../../charts/jump';
+import TimeChart from '../../charts/TimeChart';
+import type { ChartData, ChartLayer } from '../../charts/TimeChart';
 import { useChartTokens } from '../../charts/useChartTokens';
-import { chartRuns } from '../../dashboard/keyedHistory';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { contentKey } from '../../dashboard/options';
-import { usePlaybackMotion } from '../../dashboard/playback';
-import { useProduct } from '../../dashboard/products';
-import { measureField, LABELS, validateIntelCoverage } from './intelCoverageData';
-import type { Basis, IntelCoverageReply, Measure } from './intelCoverageData';
-import { useIntelOptions } from './useIntelCoverage';
+import { useKeyedSeries } from '../../dashboard/keyedSeries';
+import { keyId } from '../../dashboard/keyedSeriesData';
+import { contentKey, resolveOptions } from '../../dashboard/options';
+import { OPTIONS } from './definition';
+import { fieldText, LABELS, measureField, pairOf } from './intelCoverageData';
+import type { Basis, ChosenPair, Measure } from './intelCoverageData';
 
-/** One directed pair's chosen measure over the branch, held between reads. */
-export default function PairHistory({ widget, runtime, active, pair, hour }: WidgetProps & { pair: { owner: string; target: string } | null; hour: number }) {
+/** One directed pair's chosen measure over the branch: the owner's line of the target (its raw id the part) of the
+ * declared `intel-networks` series, drawn from its keyed runs, held between daily reads; unread hours are gaps. A
+ * pinned pair history reads its pair from the widget's options. */
+export default function PairHistory({ widget, runtime, active, pair, hour }: WidgetProps & { pair: ChosenPair | null; hour: number }) {
   const tokens = useChartTokens();
-  const speed = usePlaybackMotion(runtime.clock);
+  const root = useRef<HTMLDivElement>(null);
   const menu = useContextMenu('Intel network history');
-  const options = useIntelOptions(widget);
-  const chosen = pair ?? (options.owner && options.target ? { owner: contentKey(String(options.owner)), target: contentKey(String(options.target)) } : null);
+  const options = resolveOptions(OPTIONS, widget.options);
+  const chosen = pair ?? pairOf(options.owner ? contentKey(String(options.owner)) : null, options.target ? contentKey(String(options.target)) : null);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const request = track && chosen ? { sourceId: track.source.id, revision: track.source.revision, product: 'intel-network-coverage',
-    params: requests.intelPair(track.branch.id, chosen.owner, chosen.target) } : null;
-  const { data, error, retry } = useProduct<IntelCoverageReply>(runtime.client, request, active, validateIntelCoverage, track?.source);
   const field = measureField((options.measure as Measure) ?? 'covered', (options.basis as Basis) ?? 'controlled');
-  const lines = useMemo(() => {
-    const series = data?.window.series.find(item => item.name.endsWith(`|${field}`));
-    return series ? [{ id: field, label: LABELS[field], color: tokens.accent, runs: chartRuns(series.runs, field.endsWith('Strength') ? 100000 : 1) }] : [];
-  }, [data, field, tokens.accent]);
+  const keys = useMemo(() => chosen ? [{ tag: chosen.owner, part: String(chosen.targetId) }] : [], [chosen?.owner, chosen?.targetId]); // eslint-disable-line react-hooks/exhaustive-deps
+  const family = useMemo(() => ({ kind: 'intel-networks', measure: field }), [field]);
+  const [hoverHour, setHoverHour] = useState<number | null>(null);
+  const series = useKeyedSeries(runtime.client, runtime.clock, track && keys.length ? { source: track.source, branchId: track.branch.id, family, keys, partBits: 32,
+    lastHour: track.branch.lastHour, axisOffset: track.axisOffset } : null, hour, hoverHour, false, active, root);
+  const layers = useMemo<ChartLayer[]>(() => keys.map(key => ({
+    draw: (ctx, frame, chartTokens, state) => {
+      const summary = series.summaryOf(keyId(key));
+      if (summary) drawLineSummary(ctx, frame, chartTokens, summary, tokens.accent, true, state.playhead ?? null);
+    },
+  })), [keys, series.summaryOf, tokens.accent]);
+  const chartData = useMemo<ChartData>(() => ({ revision: () => [series.revision()], subscribe: series.subscribe }), [series.revision, series.subscribe]);
   if (!track) return <WidgetState kind="empty" icon="eye" message="Load a campaign to see intel networks." />;
   if (!chosen) return <WidgetState kind="empty" icon="eye" message="Choose a pair of countries: click a cell of the matrix." />;
-  if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
-  if (!data) return <WidgetState kind="loading" label="Loading the network's history…" />;
-  return <div className="intel-pair-history">
-    <RunLines label={`${LABELS[field]} over time`} extent={[track.branch.firstHour, track.branch.lastHour]} branchStart={track.branch.firstHour}
-      playhead={null} hour={hour} lines={lines} known={data.window.known} active={active} revision={data} hoursPerSecond={speed}
-      empty="No network" onContextMenu={(at, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, at)])} />
+  if (series.error) return <WidgetState kind="error" failure={series.error} onRetry={series.retry} />;
+  const valueAt = (at: number) => {
+    const line = series.lines.find(item => keyId(item.key) === keyId(keys[0]));
+    const run = line?.runs.find(item => item.firstHour <= at && at <= item.lastHour);
+    return run ? fieldText(field, Number(run.valueRaw)) : 'Not recorded';
+  };
+  return <div ref={root} className="intel-pair-history" onContextMenu={event => {
+    if (hoverHour === null) return;
+    event.preventDefault();
+    menu.open(event.clientX, event.clientY, [jumpItem(runtime, track.id, hoverHour)]);
+  }}>
+    <TimeChart label={`${LABELS[field]} over time`} extent={[track.branch.firstHour, Math.max(track.branch.firstHour + 1, track.branch.lastHour)]}
+      playhead={hour} playback="cursor" branchStart={track.branch.firstHour} axes={{ xFrom: null, xTo: null, yMin: null, yMax: null, log: false }}
+      layers={layers} active={active} notRecorded={series.unrecorded} revision={`${chosen.owner}|${chosen.targetId}|${field}:${series.summaryByKey.size}`} data={chartData}
+      onSummaryView={series.onSummaryView} onHover={setHoverHour}
+      tooltip={at => ({ title: dayLabel(at), rows: [{ label: LABELS[field], value: valueAt(Math.floor(at)), swatch: tokens.accent }] })} />
     {menu.menu}
   </div>;
 }

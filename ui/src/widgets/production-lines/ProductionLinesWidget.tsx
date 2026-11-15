@@ -1,383 +1,302 @@
-import { failureText, type Failure } from '../../dashboard/queryError.ts';
+import { useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
+import type { CSSProperties } from 'react';
 import ArtFallback from '../../components/ArtFallback';
-import { useCallback, useEffect, useMemo, useState, useRef } from 'react';
-import type { ComponentProps, CSSProperties } from 'react';
-import { createPortal } from 'react-dom';
 import { useContextMenu } from '../../components/ContextMenu';
-import GameWindowPopover from '../../components/GameWindowPopover';
 import WidgetState from '../../components/WidgetState';
-import { useHeldFailure } from '../../dashboard/heldFailures';
-import DrillHost, { FollowControl } from '../../charts/drill/DrillHost';
-import { CLOSED, drillHour, reduceDrill, pinnedBreakdown } from '../../charts/drill/drillState';
+import DrillHost from '../../charts/drill/DrillHost';
+import { CLOSED, drillHour, reduceDrill } from '../../charts/drill/drillState';
 import { dayLabel } from '../../charts/draw';
-import { easeTau, motionOf } from '../../charts/easing';
+import { easeTau } from '../../charts/easing';
 import { jumpItem } from '../../charts/jump';
+import { liveKey } from '../../charts/live';
+import type { Live, LiveValues } from '../../charts/live';
+import { scheduler } from '../../charts/scheduler';
+import type { FrameTask } from '../../charts/scheduler';
 import { runAt } from '../../charts/series';
 import Timeline from '../../charts/timeline/Timeline';
-import { fitTooltip, tooltipText } from '../../charts/tooltip';
+import { fitTooltip } from '../../charts/tooltip';
 import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
 import { formatAmount } from '../../charts/valueAxis';
 import { movingRowClass, useRowMotion } from '../../charts/useRowMotion';
-import { useRowTooltips } from '../../charts/useRowTooltips';
-import DatedCountryChip from '../../dashboard/DatedCountryChip';
-import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
-import { countryDrillTagAt } from '../../dashboard/countryIdentity';
-import { datedCountryToken, readDatedCountry } from '../../dashboard/datedCountry';
-import type { DatedCountrySelection } from '../../dashboard/datedCountry';
-import type { WidgetProps } from '../../dashboard/definitions';
+import { useAtHead } from '../../dashboard/atHead';
+import { defaultCountryTag } from '../../dashboard/countrySelection';
+import { readDatedCountry } from '../../dashboard/datedCountry';
+import type { WidgetProps, WidgetRuntime } from '../../dashboard/definitions';
+import { useHeadProduct } from '../../dashboard/headProduct';
+import { useHeldFailure } from '../../dashboard/heldFailures';
 import { resolveWindow } from '../../dashboard/model';
+import type { WidgetSpec } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
-import { usePlaybackHour, usePlaybackMotion } from '../../dashboard/playback';
-import { readAt } from '../../dashboard/reads';
-import type { ProductionLineDetailReply, ProductionLinesReply } from '../../generated/dashboard';
+import { usePlaybackMotion } from '../../dashboard/playback';
+import { useProduct } from '../../dashboard/products';
+import { useDiagnostics } from '../../dashboard/useDiagnostics';
+import { useShownEachFrame, useShownHour } from '../../dashboard/widgetPerf.ts';
 import { OPTIONS } from './definition';
-import { approximateWithin, bandScale, wantedDetailWindows, breakdownItems, breakdownTooltip, emptyHistoryState, firstViewLineReason, detailOf, efficiencyFraction, efficiencyPercent, factoryScale, finalTooltip, gapTooltip, historyLanes, iconImage, lineTooltip, linesAt, linesKnown,
-  organisationAt, organisationText, outputAt, outputTotal, productionLineKey, productionLineToken, productionLineLabel, stepTooltip, totalText, unreadNote, variantAt, variantName, weeklyOutput, weeklyText, windowOf } from './productionData.ts';
-import type { LineAt, LineOrder, TooltipForms } from './productionData';
-import { useLineDetail, useLineHour, useProductionLines, useLineBreakdown, useProductionCountry } from './useProductionLines';
 import ProductionDrill from './ProductionDrill';
-import EquipmentDesignDetail from './EquipmentDesignDetail';
+import {
+  bandScale, efficiencyFraction, efficiencyPercent, factoryScale, historyLanes, iconImage, laneStatus, lineKeyAt, lineValues, liveTotalText, organisationOf, organisationText,
+  productionLineKey, productionLineLabel, totalText, validateAtReply, validateBreakdownReply, validateProductionReply, variantName, variantOf, weeklyRaw, weeklyText, windowOf,
+} from './productionData.ts';
 import './productionLines.css';
+import type { LineNow, LineOrder, ProductionLineBreakdownReply, ProductionLinesAtReply, ProductionLinesReply } from '../../generated/dashboard';
 
-const NO_WARNINGS: string[] = [];
-const NO_WINDOWS: number[] = [];
-type TableTipPart = 'line' | 'efficiency' | 'output';
-const tableTipKey = (key: string, part: TableTipPart) => JSON.stringify([key, part]);
-const stopRowEvent = <E,>(handler: (event: E) => void) => (event: E & { stopPropagation: () => void }) => {
-  event.stopPropagation(); handler(event);
-};
+const NO_WARNINGS: readonly string[] = [];
+type Part = 'efficiency' | 'output';
 
-/** How often lines are read, for the note under a value read earlier. */
+/** The country's lines over the branch: their steps, final counts and names. */
+export function useProductionLines(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean) {
+  const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
+  const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryTag(track) ?? undefined;
+  const request = track && tag ? { sourceId: track.source.id, revision: track.source.revision, product: 'production-lines', params: { branchId: track.branch.id, tag } } : null;
+  return { track, tag, ...useProduct<ProductionLinesReply>(runtime.client, request, active, validateProductionReply, track?.source) };
+}
 
-/** One country's production lines. Live (following playback or a pinned moment):
- * the lines running then, like the game's production tab. Otherwise: one lane per
- * line across the campaign, its thickness the factories assigned.
- * The history holds each line's factory steps; every other value comes a window of
- * reads at a time: the live table's (and the next, so playback never waits) or the
- * one a history tooltip needs. */
-export default function ProductionLinesWidget({ widget, runtime, active, onDiagnostics, setOption, countrySlot }: WidgetProps) {
-  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+/** One line's factor breakdown over the window holding `hour`: asked again only when the window changes. */
+export function useLineBreakdown(runtime: WidgetRuntime, widget: WidgetSpec, tag: string | undefined, key: string | null, group: string, hour: number | null, detailHours: number, active: boolean) {
+  const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
+  const start = hour == null ? null : windowOf(detailHours, hour) * detailHours;
+  const request = track && tag && key && start != null ? { sourceId: track.source.id, revision: track.source.revision, product: 'production-line-breakdown',
+    params: { branchId: track.branch.id, tag, key, group, hour: start } } : null;
+  return useProduct<ProductionLineBreakdownReply>(runtime.client, request, active, validateBreakdownReply, track?.source);
+}
+
+/** One country's production lines. Following playback or pinned: the lines running then, like the game's production tab,
+ * pushed at the head. Over the campaign or a range: one lane per line, its thickness the factories assigned. A line's
+ * efficiency or output opens its factor breakdown. */
+export default function ProductionLinesWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const options = resolveOptions(OPTIONS, widget.options);
   const lines = useProductionLines(widget, runtime, active);
   const { track, tag, data, retry } = lines;
   const error = useHeldFailure(lines.error, data !== undefined, retry);
-  const currentData = useRef(data);
-  currentData.current = data;
-  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const live = widget.time.mode === 'follow' || widget.time.mode === 'pin';
-  const playhead = window && live ? window.lastHour : null;
-  const extent: [number, number] = track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : [track.branch.firstHour, track.branch.lastHour]) : [0, 1];
-  const menu = useContextMenu('Production line actions');
-  // The window a history tooltip asked for; the live table's follow the playhead.
-  const [hovered, setHovered] = useState<number | null>(null);
-  useEffect(() => setHovered(null), [track?.source.id, track?.source.revision, track?.branch.id, tag]);
-  const shownHour = playhead != null ? Math.floor(playhead) : null;
-  // While playback runs the live table reads each hour's rows; a pinned or scrubbed view reads
-  // whole windows.
-  const motion = usePlaybackMotion(runtime.clock);
-  const playing = widget.time.mode === 'follow' && motion !== undefined;
-  const wanted = useMemo(() => {
-    if (!data || !track) return NO_WINDOWS;
-    return wantedDetailWindows(data, track.branch.lastHour, playing ? null : shownHour, hovered);
-  }, [data, track, playing, shownHour, hovered]);
-  const windows = useLineDetail(runtime, track, tag, wanted, active);
-  const hourly = useLineHour(runtime, track, tag, playing ? shownHour : null, data?.detailHours, active);
-  // What an open organisation window could not draw.
-  const [windowNotes, setWindowNotes] = useState<string[]>(NO_WARNINGS);
-  const anchor = useRef<HTMLDivElement>(null);
-  const [storedDrill, setDrill] = useState(CLOSED);
-  const [lineKey, setLineKey] = useState<string | null>(null);
-  const [pickedHour, setPickedHour] = useState<number | null>(null);
-  const [pinnedFollow, setPinnedFollow] = useState(false);
-  const [factor, setFactor] = useState<string | null>(null);
   const pinned = options.show === 'efficiency' || options.show === 'output';
-  const key = pinned ? (track && tag ? productionLineKey(track.source.metadata.campaignKey, track.branch.id, tag, options.line) : null) : lineKey;
-  const selected = (pinned ? options.show : storedDrill.breakdown) === 'output' ? 'output' : 'efficiency';
-  const shownFactor = factor ?? (pinned && typeof options.factor === 'string' && options.factor ? options.factor : selected);
-  useEffect(() => setFactor(null), [key, selected, options.factor]);
-  const scope = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, tag, options.show, options.productionCountry, options.line, widget.time]);
-  const owner = useMemo(() => ({ client: runtime.client, scope }), [runtime.client, scope]);
-  const [countryPick, setCountryPick] = useState<{ owner: object; selection: DatedCountrySelection } | null>(null);
-  const [bodyOwner, setBodyOwner] = useState<object | null>(null);
-  const shownPickedHour = bodyOwner === owner ? pickedHour : null;
-  const shownPinnedFollow = bodyOwner === owner ? pinnedFollow : widget.time.mode === 'follow';
-  const drill = countryPick?.owner === owner ? storedDrill : CLOSED;
-  const ownerRef = useRef({ owner, active });
-  ownerRef.current = { owner, active };
-  useEffect(() => {
-    ownerRef.current.active = active;
-    return () => { ownerRef.current.active = false; };
-  }, [active, owner]);
-  const savedCountry = useMemo(() => pinned && track ? readDatedCountry(options.productionCountry,
-    track.source.metadata.campaignKey, track.branch.id, widget.countries) : null,
-  [pinned, options.productionCountry, widget.countries, track?.source.metadata.campaignKey, track?.branch.id]);
-  const selectedCountry = pinned ? savedCountry : countryPick?.owner === owner ? countryPick.selection : null;
-  const actor = useProductionCountry(selectedCountry, runtime, track, active);
-  const originHour = selectedCountry && track ? track.branch.firstHour + selectedCountry.originOffset : undefined;
-  const breakdown = useLineBreakdown(runtime, track, selectedCountry?.tag, selectedCountry && actor.spans && (pinned || drill.breakdown) ? key : null, shownFactor, active, originHour);
-  const drillPlaybackHour = usePlaybackHour(runtime.clock, active && (pinned ? shownPinnedFollow : drill.breakdown != null && drill.follow));
-  const clockHour = track ? Math.floor(drillPlaybackHour) + track.axisOffset : null;
-  const breakdownHour = pinned ? (shownPinnedFollow ? clockHour : shownPickedHour ?? shownHour ?? extent[1]) : drillHour(drill, clockHour);
-  const selectedLineIndex = data?.lines.findIndex(line => line.key === key) ?? -1;
-  const selectedLine = selectedLineIndex >= 0 ? data?.lines[selectedLineIndex] : null;
-  const lineLabel = data && selectedLine && !firstViewLineReason(data) ? productionLineLabel(data, selectedLine, selectedLineIndex, breakdownHour ?? extent[1]) : 'Production line';
-  const missingSavedDate = pinned && !shownPinnedFollow && shownPickedHour === null && (widget.time.mode === 'pin' || widget.time.mode === 'range') && !window;
-  useEffect(() => { setDrill(CLOSED); setLineKey(null); setPickedHour(null); setPinnedFollow(widget.time.mode === 'follow'); }, [runtime.client, track?.source.id, track?.source.revision, track?.branch.id, tag, widget.time]);
-  const headerTag = actor.spans && breakdownHour !== null ? countryDrillTagAt(actor.spans, breakdownHour) : null;
-  const headerReason = missingSavedDate ? 'The chosen moment is unavailable.' : !selectedCountry ? 'Saved country selection unavailable. Open the breakdown again.'
-    : actor.reason ?? (headerTag ? null : 'Country unavailable at this time.');
-  const header = useCountryLabelsAt(runtime.client, track, pinned && countrySlot && headerTag && !headerReason && breakdownHour !== null
-    ? [{ tag: headerTag, hour: breakdownHour }] : [], active);
-  const pinnedHeader = pinned && countrySlot ? createPortal(<DatedCountryChip failure={actor.error} hour={missingSavedDate ? null : breakdownHour} reason={headerReason}
-    label={headerTag && !headerReason && breakdownHour !== null ? header.labelAt(breakdownHour)(headerTag) : null} />, countrySlot) : null;
-  const openBreakdown = (key: string, part: 'efficiency' | 'output', hour: number) => {
-    if (currentData.current !== data || ownerRef.current.owner !== owner || !ownerRef.current.active) return;
-    // A first view's line keys may name another appearance than the exact history's.
-    if (data && firstViewLineReason(data)) return;
+  const order: LineOrder = options.order === 'factories' || options.order === 'output' ? options.order : 'game';
+  const head = useHeadProduct<ProductionLinesAtReply>(runtime, widget, 'production-lines-at', live && !pinned && tag ? { tag, ...order === 'game' ? {} : { order } } : null,
+    { active, validate: validateAtReply });
+  const reportShown = useShownHour();
+  const shownAt = useRef(head.shownAt);
+  shownAt.current = head.shownAt;
+  // A history lane shows its reply's hours; the hour it reports is the clock's.
+  useShownEachFrame(runtime.clock, () => live ? shownAt.current() : Math.floor((track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour())?.lastHour) ?? 0), live ? head.live : undefined);
+  const motion = usePlaybackMotion(runtime.clock);
+  const tokens = useChartTokens();
+  const anchor = useRef<HTMLDivElement>(null);
+  const menu = useContextMenu('Production line actions');
+  const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
+  const [opened, setOpened] = useState<{ key: string; part: Part } | null>(null);
+  const [factor, setFactor] = useState<string | null>(null);
+  useEffect(() => { dispatch({ type: 'close' }); setOpened(null); }, [track?.source.id, track?.source.revision, track?.branch.id, tag]);
+  const clockHour = useAtHead(runtime.clock, active && (pinned || (drill.breakdown !== null && drill.follow)), hour => {
+    if (!track) return null;
+    const window = resolveWindow(widget, track, runtime.tracks, hour);
+    return window ? Math.floor(window.lastHour) : null;
+  });
+  const extent: [number, number] = track ? [track.branch.firstHour, track.branch.lastHour] : [0, 1];
+  const headHour = () => Math.floor((track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour())?.lastHour) ?? extent[1]);
+  const window = track ? resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour()) : null;
+  const shown: [number, number] = widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : extent;
+  const savedCountry = pinned && track ? readDatedCountry(options.productionCountry, track.source.metadata.campaignKey, track.branch.id, widget.countries) : null;
+  const pinnedKey = pinned && track && tag ? productionLineKey(track.source.metadata.campaignKey, track.branch.id, savedCountry?.tag ?? tag, options.line) : null;
+  const key = pinned ? pinnedKey : opened?.key ?? null;
+  const part: Part = (pinned ? options.show : opened?.part) === 'output' ? 'output' : 'efficiency';
+  const group = factor ?? (pinned && typeof options.factor === 'string' && options.factor ? options.factor : part);
+  const breakdownHour = pinned ? clockHour : drillHour(drill, clockHour);
+  const breakdown = useLineBreakdown(runtime, widget, pinned ? savedCountry?.tag ?? tag : tag, key, group, breakdownHour, data?.detailHours ?? 720, active && (pinned || drill.breakdown !== null));
+  const warnings = useMemo(() => [...new Set([...data?.warnings ?? NO_WARNINGS, ...head.data?.warnings ?? NO_WARNINGS, ...breakdown.data?.warnings ?? NO_WARNINGS,
+    ...breakdown.data?.runs.flatMap(run => run.warnings) ?? NO_WARNINGS])], [data, head.data, breakdown.data]);
+  useDiagnostics(onDiagnostics, warnings);
+
+  const open = (handleOrKey: string, nextPart: Part, hour: number, isKey = false) => {
+    const lineKey = isKey ? handleOrKey : lineKeyAt(data, handleOrKey, hour);
+    if (!lineKey) return;
     setFactor(null);
-    setLineKey(key);
-    if (track && tag) setCountryPick({ owner, selection: { campaign: track.source.metadata.campaignKey, branch: track.branch.id,
-      tag, originOffset: Math.floor(hour) - track.branch.firstHour } });
-    setDrill(state => reduceDrill(state, { type: 'open', breakdown: part, hour, playing: runtime.clock.getSnapshot().playing, playhead: clockHour }));
+    setOpened({ key: lineKey, part: nextPart });
+    dispatch({ type: 'open', breakdown: nextPart, hour, playing: runtime.clock.getSnapshot().playing, playhead: widget.time.mode === 'follow' ? headHour() : null });
   };
-  useEffect(() => {
-    const warnings = new Set(data?.warnings ?? NO_WARNINGS);
-    for (const detail of windows.data.values()) for (const warning of detail.warnings) warnings.add(warning);
-    for (const warning of hourly.detail?.warnings ?? []) warnings.add(warning);
-    for (const warning of breakdown.data?.warnings ?? []) warnings.add(warning);
-    for (const run of breakdown.data?.runs ?? []) for (const warning of run.warnings) warnings.add(warning);
-    for (const note of windowNotes) warnings.add(note);
-    onDiagnostics(warnings.size ? [...warnings] : NO_WARNINGS);
-    return () => onDiagnostics(NO_WARNINGS);
-  }, [data, windows.data, hourly.detail, breakdown.data, windowNotes, onDiagnostics]);
 
-  if (!track || !tag) return <>{pinnedHeader}<WidgetState kind="empty" icon="grid" message="Load a campaign and choose a country to see its production lines." /></>;
-  if (missingSavedDate) return <>{pinnedHeader}<WidgetState kind="unavailable" message="Choose another time in widget settings." /></>;
-  if (!pinned && drill.breakdown === null && playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <>{pinnedHeader}<WidgetState kind="unavailable" message="This time is outside the recording." /></>;
-  if (!pinned && drill.breakdown === null && (widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <>{pinnedHeader}<WidgetState kind="unavailable" message="Choose another time in widget settings." /></>;
-  if (!pinned && drill.breakdown === null && error) return <>{pinnedHeader}<WidgetState kind="error" failure={error} onRetry={retry} /></>;
-  if (!pinned && drill.breakdown === null && !data) return <>{pinnedHeader}<WidgetState kind="loading" label="Loading production lines…" /></>;
-  if (!pinned && drill.breakdown === null && data && !data.reads.length && data.approximate.length) return <>{pinnedHeader}<WidgetState kind="loading" label="Preparing this country’s earlier production history…" /></>;
-  if (!pinned && drill.breakdown === null && data && !data.reads.length) return <>{pinnedHeader}<WidgetState kind="unavailable" message="Production lines weren’t recorded for this country." /></>;
-
-  // A first view's line keys may name another appearance: its breakdowns wait, saying why.
-  const jump = (hour: number, x: number, y: number, key?: string) => menu.open(x, y, [jumpItem(runtime, track.id, hour),
-    ...(key && data ? breakdownItems(data, part => openBreakdown(key, part, hour)) : [])]);
-  const liveTable = () => {
-    if (!data) return null;
-    const shown = Math.floor(playhead!);
-    // Playback shows the hour its reads answer, never one past the playhead; held reads of the
-    // playhead itself are shown at once.
-    const held = hourly.detail && hourly.hour !== undefined && (playing ? hourly.hour <= shown : hourly.hour === shown) ? hourly : null;
-    const hour = held && playing ? held.hour! : shown;
-    const window = windowOf(data, hour);
-    const detail = held ? held.detail : windows.data.get(window);
-    const failed = playing ? hourly.error : windows.errors.get(window);
-    // A window is answered once the published history reaches its last hour.
-    if (!detail) return failed ? <WidgetState kind="error" failure={failed} onRetry={playing ? hourly.retry : windows.retry} />
-      : <WidgetState kind="loading" label={approximateWithin(data, window * data.detailHours, (window + 1) * data.detailHours - 1)
-        ? 'This range is still being prepared.' : 'Loading production lines…'} />;
-    return <LiveTable data={data} detail={detail} hour={hour} order={options.order as LineOrder} more={options.columns === 'more'} owner={`production-lines:${widget.id}`}
-      windows={{ client: runtime.client, source: { sourceId: track.source.id, revision: track.source.revision }, branchId: track.branch.id, onDiagnostics: setWindowNotes }}
-      active={active} hoursPerSecond={motionOf(runtime.clock.getSnapshot())} onMenu={jump} onBreakdown={openBreakdown} />;
-  };
-  const identityNotice = selectedCountry && actor.identityError ? <WidgetState kind="error" failure={actor.identityError} onRetry={actor.retry} /> : null;
-  const drillView = !selectedCountry ? <WidgetState kind="unavailable" message={headerReason!} />
-    : actor.error ? <WidgetState kind="error" failure={actor.error} onRetry={actor.retry} />
-      : actor.reason ? <WidgetState kind="unavailable" message="Country unavailable at this time." />
-        : !key ? <p className="drill-empty">Choose a production line in the widget settings.</p>
+  if (!track || !tag) return <WidgetState kind="empty" icon="grid" message="Load a campaign and choose a country to see its production lines." />;
+  const drillView = !key ? <p className="drill-empty">Choose a production line in the widget settings.</p>
     : breakdown.error ? <WidgetState kind="error" what="the breakdown" failure={breakdown.error} onRetry={breakdown.retry} />
       : !breakdown.data ? <WidgetState kind="loading" label="Loading breakdown…" />
-        : <ProductionDrill key={`${key}:${selected}`} data={breakdown.data} selected={shownFactor}
-          onFactor={value => { if (!ownerRef.current.active || ownerRef.current.owner !== owner) return; setFactor(value); if (pinned) setOption?.('factor', value); }} hour={breakdownHour} extent={extent}
-          playhead={(pinned ? shownPinnedFollow : drill.follow) ? clockHour : null} active={active} hoursPerSecond={motionOf(runtime.clock.getSnapshot())}
-          onPick={hour => { if (!ownerRef.current.active || ownerRef.current.owner !== owner) return; if (pinned) { setBodyOwner(owner); setPinnedFollow(false); setPickedHour(Math.floor(hour)); }
-            else setDrill(state => reduceDrill(state, { type: 'pick', hour })); }} />;
-  const main = data ? <>{playhead != null ? liveTable()
-      : <History data={data} tag={tag} extent={extent} showEnded={options.ended !== 'hidden'} active={active}
-        hoursPerSecond={motionOf(runtime.clock.getSnapshot())} onMenu={jump}
-        windows={windows.data} failed={windows.errors} hovered={hovered} onWant={setHovered} />}</> : null;
+        : <ProductionDrill data={breakdown.data} selected={group} onFactor={setFactor} hour={breakdownHour} active={active} hoursPerSecond={motion}
+          onPick={hour => dispatch({ type: 'pick', hour })} />;
+  if (pinned) return <div ref={anchor} className="production-lines"><div className="drill-header"><span className="drill-day">{breakdownHour == null ? '' : dayLabel(breakdownHour)}</span></div>{drillView}</div>;
+  if (error && !live) return <WidgetState kind="error" failure={error} onRetry={retry} />;
+  const lineIndex = data?.lines.findIndex(line => line.key === key) ?? -1;
+  const lineLabel = data && lineIndex >= 0 ? productionLineLabel(data, data.lines[lineIndex], lineIndex, breakdownHour ?? extent[1]) : 'Production line';
+  const main = live ? <div ref={head.root} className="production-live">
+    {head.error ? <WidgetState kind="error" failure={head.error} onRetry={head.retry} />
+      : !head.data ? head.read === 'off' ? <WidgetState kind="unavailable" message="This time is outside the recording." /> : <WidgetState kind="loading" label="Loading production lines…" />
+        : <LiveTable reply={head.data} history={data} live={head.live} report={() => reportShown(shownAt.current())} more={options.columns === 'more'}
+          glide={Math.round(3 * easeTau(tokens.motion, motion, tokens.reducedMotion))} onBreakdown={(handle, nextPart) => open(handle, nextPart, head.hour ?? headHour())} />}
+  </div>
+    : !data ? <WidgetState kind="loading" label="Loading production lines…" />
+      : <History data={data} tag={tag} extent={shown} showEnded={options.ended !== 'hidden'} active={active} hoursPerSecond={motion}
+        onMenu={(hour, x, y, lineKey) => menu.open(x, y, [jumpItem(runtime, track.id, hour), ...lineKey ? [
+          { label: 'Efficiency breakdown', run: () => open(lineKey, 'efficiency', hour, true) },
+          { label: 'Output breakdown', run: () => open(lineKey, 'output', hour, true) }] : []])} />;
   return <div ref={anchor} className="production-lines">
-    {pinned ? <>{pinnedHeader}<div className="drill-header">
-      <span className="drill-day">{breakdownHour == null ? '' : dayLabel(breakdownHour)}</span>
-      <FollowControl following={shownPinnedFollow} onFollow={() => { if (!ownerRef.current.active || ownerRef.current.owner !== owner) return; setBodyOwner(owner); setPickedHour(null); setPinnedFollow(true); }} onPause={() => { if (!ownerRef.current.active || ownerRef.current.owner !== owner) return; setBodyOwner(owner); setPickedHour(breakdownHour); setPinnedFollow(false); }} /></div>{identityNotice}{drillView}</>
-      : <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown != null}
-      title={`${selected === 'output' ? 'Output' : 'Efficiency'} · ${lineLabel}`} day={breakdownHour == null ? '' : dayLabel(breakdownHour)}
-      following={drill.follow} canFollow={true} anchor={anchor} main={main}
-      onClose={() => { if (ownerRef.current.active && ownerRef.current.owner === owner) setDrill(CLOSED); }}
-      onFollow={() => { if (ownerRef.current.active && ownerRef.current.owner === owner) setDrill(state => reduceDrill(state, { type: 'follow' })); }}
-      onPin={selectedCountry && actor.spans ? () => { if (!ownerRef.current.active || ownerRef.current.owner !== owner) return; const copy = pinnedBreakdown(widget, { id: selected, label: `${selected} · ${lineLabel}` }, track.id);
-        const offset = Math.floor(breakdownHour ?? track.branch.lastHour) - track.branch.firstHour;
-        runtime.addWidgetBelow(widget.id, { ...copy, time: drill.follow ? { mode: 'follow' }
-          : { mode: 'pin', windows: { [track.id]: { firstOffset: offset, lastOffset: offset } } }, options: { ...copy.options,
-            productionCountry: datedCountryToken(selectedCountry), line: key == null ? '' : productionLineToken(track.source.metadata.campaignKey, track.branch.id, tag, key), factor: shownFactor } }); } : undefined}>
-      {identityNotice}{drillView}</DrillHost>}
+    <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown !== null && !!opened} anchor={anchor}
+      title={`${part === 'output' ? 'Output' : 'Efficiency'} · ${lineLabel}`} day={breakdownHour == null ? '' : dayLabel(breakdownHour)}
+      following={drill.follow} canFollow={widget.time.mode === 'follow'} main={main}
+      onClose={() => { dispatch({ type: 'close' }); setOpened(null); }} onFollow={() => dispatch({ type: 'follow' })}>{drillView}</DrillHost>
     {menu.menu}
-    <EquipmentDesignDetail key={`${track.source.id}:${track.source.revision}:${track.branch.id}`} runtime={runtime} track={track}
-      hour={breakdownHour ?? playhead ?? extent[1]} active={active} />
   </div>;
 }
 
-/** A tooltip's forms fitted to the window (the kit's `fitTooltip`); every row is
- * read out, and `full` (a caller asking for the text read out) gets them all. */
-const fitted = (forms: TooltipForms, height: number, full = false) => full ? forms[0] : fitTooltip(forms, height, { full: forms[0] });
-
-/** The lines running at the hour shown, one row each: the
- * equipment's art and names, factories assigned of those requested, efficiency,
- * output per week and the units made so far; with more columns, the queue place, IC
- * per unit and the organisation. Rows slide when the order changes, new lines flash in
- * and ended ones fade out (the kit's `useRowMotion`). Rows are focusable: hover or
- * focus shows the line's tooltip, right-click or the context-menu key jumps to the
- * read shown (the kit's `useRowTooltips`). */
-function LiveTable({ data, detail, hour, order, more, owner, windows, active, hoursPerSecond, onMenu, onBreakdown }: {
-  data: ProductionLinesReply; detail: ProductionLineDetailReply; hour: number; order: LineOrder; more: boolean; owner: string; active: boolean;
-  /** Where an organisation's policy window is read. */
-  windows: Pick<ComponentProps<typeof GameWindowPopover>, 'client' | 'source' | 'branchId' | 'onDiagnostics'>;
-  hoursPerSecond: number | undefined; onMenu: (hour: number, x: number, y: number, key?: string) => void;
-  onBreakdown: (key: string, part: 'efficiency' | 'output', hour: number) => void;
+/** The lines running at the hour, one row each, in the order asked: the equipment's art and names, factories assigned of
+ * those requested, efficiency, output per week and the units made so far; with more columns, the queue place, IC per unit
+ * and the organisation. Rows slide when the order changes. The numbers are the reply's live cells, painted in a frame
+ * whenever they move, never by a render; missing lines say why, never "none". */
+function LiveTable({ reply, history, live, report, more, glide, onBreakdown }: {
+  reply: ProductionLinesAtReply; history: ProductionLinesReply | undefined; live: Live<LiveValues<number>>; report: () => void; more: boolean; glide: number;
+  onBreakdown: (handle: string, part: Part) => void;
 }) {
-  const tokens = useChartTokens();
-  const height = useViewportHeight();
-  const read = readAt(data.reads, hour);
-  const scale = useMemo(() => factoryScale(data), [data]);
-  const items = useMemo(() => linesAt(data, detail, hour, order).map(at => ({ key: at.line.key, item: at })), [data, detail, hour, order]);
-  const rows = useRowMotion<LineAt>(items);
-  const targets = useMemo(() => new Map<string, { at: LineAt; part: TableTipPart }>(items.flatMap(({ key, item }) =>
-    (['line', 'efficiency', 'output'] as const).map(part => [tableTipKey(key, part), { at: item, part }] as const))), [items]);
-  const head = useMemo(() => ({ subtitle: dayLabel(hour) }), [hour]);
-  const content = useCallback((key: string) => {
-    const target = targets.get(key);
-    if (!target) return null;
-    const { at, part } = target;
-    return fitted(part === 'line' ? lineTooltip(data, at.line, at.detail, at.run, hour, head, dayLabel)
-      : breakdownTooltip(data, at.run, hour, part, head), height);
-  }, [targets, data, hour, head, height]);
-  const jumpHour = read ?? hour;
-  const tips = useRowTooltips<string>({ owner, active, content, revision: `${hour}:${data.branchId}`, onMenu: (key, x, y) => onMenu(jumpHour, x, y, targets.get(key)?.at.line.key) });
-  const cellProps = (key: string) => {
-    const props = tips.rowProps(key);
-    return { ...props, onPointerMove: stopRowEvent(props.onPointerMove), onPointerLeave: stopRowEvent(props.onPointerLeave),
-      onFocus: stopRowEvent(props.onFocus), onBlur: stopRowEvent(props.onBlur),
-      onContextMenu: stopRowEvent(props.onContextMenu), onKeyDown: stopRowEvent(props.onKeyDown) };
-  };
-  const glide = { '--row-glide': `${Math.round(3 * easeTau(tokens.motion, hoursPerSecond, tokens.reducedMotion))}ms`,
+  const scale = useMemo(() => factoryScale(history), [history]);
+  const items = useMemo(() => reply.lines.map(line => ({ key: line.handle, item: line })), [reply]);
+  const rows = useRowMotion<LineNow>(items, true);
+  const table = useRef<HTMLDivElement>(null);
+  const latest = useRef({ reply, scale, report });
+  latest.current = { reply, scale, report };
+  const repaint = useRef<() => void>(() => {});
+  useLayoutEffect(() => {
+    let painted: LiveValues<number> | null = null;
+    const paint = (force: boolean) => {
+      const values = live.read();
+      latest.current.report();
+      if (!force && values === painted) return;
+      painted = values;
+      const { reply: now, scale: most } = latest.current;
+      const byHandle = new Map(now.lines.map(line => [line.handle, line]));
+      const cells = table.current?.querySelectorAll<HTMLElement>('[data-paint]') ?? [];
+      let shared = most;
+      for (const line of now.lines) {
+        const read = lineValues(values, line.handle);
+        shared = Math.max(shared, read.active ?? 0, read.requested ?? 0);
+      }
+      const percent = (value: number | null) => value !== null && shared > 0 ? `${Math.min(100, value / shared * 100)}%` : '0%';
+      for (const cell of cells) {
+        const handle = cell.dataset.line ?? '';
+        const read = lineValues(values, handle);
+        const why = (column: string) => values.missing(liveKey(handle, column));
+        const text = (value: string, title = '') => {
+          if (cell.textContent !== value) cell.textContent = value;
+          if (cell.title !== title) cell.title = title;
+        };
+        switch (cell.dataset.paint) {
+          case 'active': text(read.active === null ? '—' : read.active.toString(), read.active === null ? why('active') : ''); break;
+          case 'requested': text(read.requested === null ? ' / —' : ` / ${read.requested}`); break;
+          case 'activeBar': cell.style.width = percent(read.active); break;
+          case 'requestedBar': cell.style.left = percent(read.requested); break;
+          case 'efficiency': text(read.efficiency === null ? '—' : `${efficiencyPercent(read.efficiency)}%`, read.efficiency === null ? why('efficiency') : ''); break;
+          case 'efficiencyBar': cell.style.width = read.efficiency === null ? '0%' : `${efficiencyFraction(read.efficiency) * 100}%`; break;
+          case 'weekly': {
+            const weekly = weeklyRaw(read.speed, read.cost);
+            text(weekly === null ? '—' : weeklyText(weekly, now.decimals), read.speed === null ? why('speed') : read.cost === null ? why('cost') : '');
+            break;
+          }
+          case 'output': {
+            const line = byHandle.get(handle);
+            text(liveTotalText(line?.output ?? null, read.output, now.outputMissing), now.outputMissing ?? (read.output === null && line?.output ? why('output')
+              : line?.output && !line.output.wholeLife ? `Since ${dayLabel(line.output.sinceHour)}` : ''));
+            break;
+          }
+          case 'cost': text(read.cost === null ? '—' : formatAmount(read.cost, now.decimals), read.cost === null ? why('cost') : ''); break;
+        }
+      }
+    };
+    repaint.current = () => paint(true);
+    const task: FrameTask = { frame: () => { paint(false); return false; } };
+    const remove = scheduler.add(task);
+    const stop = live.subscribe(() => scheduler.wake(task));
+    paint(true);
+    return () => { remove(); stop(); repaint.current = () => {}; };
+  }, [live]);
+  // Rows mounted or moved by a render are painted before they show.
+  useLayoutEffect(() => repaint.current());
+  if (reply.missing) return <WidgetState kind="unavailable" message={reply.missing} />;
+  if (!items.length && !rows.length) return <WidgetState kind="empty" message="No production lines running at this time." />;
+  const style = { '--row-glide': `${glide}ms`,
     '--production-columns': more ? 'minmax(24px, .3fr) minmax(170px, 2.2fr) 1fr 1fr .8fr .8fr .7fr 1.1fr' : 'minmax(170px, 2.4fr) 1.1fr 1.1fr .9fr .9fr',
     height: `calc(var(--production-head) + ${rows.filter(row => row.phase !== 'leaving').length} * var(--production-row))` } as CSSProperties;
-  const percent = (value: number) => scale > 0 ? `${Math.min(100, value / scale * 100)}%` : '0%';
-  // No line is "none" only where a complete census recorded none; elsewhere the lines are unknown.
-  if (!items.length && !rows.length) {
-    return linesKnown(data, hour) ? <WidgetState kind="empty" message={`No production lines running on ${dayLabel(hour)}.`} />
-      : <WidgetState kind="unavailable" message={`Production lines are not recorded on ${dayLabel(hour)}.`} />;
-  }
-  return <>
-    <div className="production-table" role="list" aria-label={`Production lines on ${dayLabel(hour)}`} style={glide}>
-      <div className="production-head" aria-hidden="true">
-        {more && <span>#</span>}<span>Equipment</span><span>Factories</span><span>Efficiency</span><span className="is-number">Output / week</span><span className="is-number">Total</span>
-        {more && <><span className="is-number">IC / unit</span><span>MIO</span></>}
-      </div>
-      {rows.map(row => {
-        const { line, detail: lineDetail, run } = row.item;
-        const variant = variantAt(data, run.variant, hour);
-        const art = iconImage(data, variant?.icon ?? null);
-        const organisation = organisationAt(data, run.mio, hour);
-        const orgArt = iconImage(data, organisation?.icon ?? null);
-        const weekly = weeklyOutput(run);
-        const output = outputAt(line, lineDetail, hour);
-        const leaving = row.phase === 'leaving';
-        const rowKey = tableTipKey(row.key, 'line');
-        const efficiencyKey = tableTipKey(row.key, 'efficiency');
-        const outputKey = tableTipKey(row.key, 'output');
-        const tip = content(rowKey);
-        return <div key={row.key} role="listitem" className={`production-row ${movingRowClass(row)}`}
-          style={{ transform: `translateY(calc(var(--production-head) + ${row.slot} * var(--production-row)))` }}
-          aria-label={tip ? tooltipText(tip) : variantName(variant, run.variant)}
-          {...(leaving ? { tabIndex: -1 } : tips.rowProps(rowKey))}>
-          <span id={tips.descriptionId(rowKey)} className="sr-only">{tip ? tooltipText(tip) : ''}</span>
-          {more && <span className="production-number is-muted">{run.priority + 1}</span>}
-          <span className="production-equipment">
-            {art ? <img className="production-art" src={art} alt="" />
-              : <ArtFallback className="production-art" icon="hammer" />}
-            <span><b>{variantName(variant, run.variant)}</b>{variant?.typeName && variant.typeName !== variantName(variant, run.variant) && <small>{variant.typeName}</small>}</span>
-          </span>
-          <span className="production-cell"><span><b className="production-number">{run.activeFactories}</b><small> / {run.requestedFactories}</small></span>
-            <span className="production-meter" aria-hidden="true"><i style={{ width: percent(run.activeFactories) }} /><em style={{ left: percent(run.requestedFactories) }} /></span></span>
-          <span className="production-cell" {...(leaving ? { tabIndex: -1 } : cellProps(efficiencyKey))}>
-            <span id={tips.descriptionId(efficiencyKey)} className="sr-only">{tooltipText(breakdownTooltip(data, run, hour, 'efficiency', head)[0])}</span>
-            <button type="button" className="production-factor production-number" disabled={leaving} aria-label={`${variantName(variant, run.variant)} efficiency breakdown`}
-              aria-describedby={tips.descriptionId(efficiencyKey)} onClick={() => onBreakdown(row.key, 'efficiency', hour)}>{`${efficiencyPercent(run)}%`}</button>
-            <span className="production-meter" aria-hidden="true"><i style={{ width: `${efficiencyFraction(run) * 100}%` }} /></span></span>
-          <span className="production-number is-number" {...(leaving ? { tabIndex: -1 } : cellProps(outputKey))}>
-            <span id={tips.descriptionId(outputKey)} className="sr-only">{tooltipText(breakdownTooltip(data, run, hour, 'output', head)[0])}</span>
-            <button type="button" className="production-factor" disabled={leaving} aria-label={`${variantName(variant, run.variant)} output breakdown`}
-              aria-describedby={tips.descriptionId(outputKey)} onClick={() => onBreakdown(row.key, 'output', hour)}>{weekly == null ? '—' : weeklyText(weekly, data.decimals)}</button></span>
-          <span className={`production-number is-number${output && outputTotal(output) != null ? '' : ' is-muted'}`}
-            title={output && !output.wholeLife ? `Since ${dayLabel(output.sinceHour)}` : undefined}>{totalText(output)}</span>
-          {more && <><span className="production-number is-number">{formatAmount(run.costRaw, data.decimals)}</span>
-            <span className="production-organisation">{run.mio !== '0' && !leaving
-              ? <GameWindowPopover {...windows} hour={hour} target={{ kind: 'mioPolicies', organisation: run.mio }}
-                className="production-factor production-organisation-trigger" heading={organisationText(organisation, run)}
-                label={organisation?.name ? `Show ${organisation.name}’s policy window` : 'Show the organisation’s policy window'}>
-                {orgArt ? <img src={orgArt} alt="" /> : <ArtFallback icon="factory" />}<small>{organisationText(organisation, run)}</small>
-              </GameWindowPopover>
-              : <>{orgArt ? <img src={orgArt} alt="" /> : run.mio !== '0' && <ArtFallback icon="factory" />}
-                <small>{organisationText(organisation, run)}</small></>}</span></>}
-        </div>;
-      })}
+  return <div ref={table} className="production-table" role="list" aria-label="Production lines" style={style}>
+    <div className="production-head" aria-hidden="true">
+      {more && <span>#</span>}<span>Equipment</span><span>Factories</span><span>Efficiency</span><span className="is-number">Output / week</span><span className="is-number">Total</span>
+      {more && <><span className="is-number">IC / unit</span><span>MIO</span></>}
     </div>
-  </>;
+    {rows.map(row => {
+      const line = row.item;
+      const variant = variantOf(reply.variants, line.variant);
+      const name = variantName(variant, line.variant);
+      const art = iconImage(reply.icons, variant?.icon ?? null);
+      const organisation = organisationOf(reply.organisations, line.mio);
+      const orgArt = iconImage(reply.icons, organisation?.icon ?? null);
+      const leaving = row.phase === 'leaving';
+      const muted = reply.outputMissing || !line.output ? ' is-muted' : '';
+      return <div key={row.key} role="listitem" className={`production-row ${movingRowClass(row)}`} aria-label={name}
+        title={variant?.nameUnknown ?? undefined} style={{ transform: `translateY(calc(var(--production-head) + ${row.slot} * var(--production-row)))` }}>
+        {more && <span className="production-number is-muted">{line.priority + 1}</span>}
+        <span className="production-equipment">
+          {art ? <img className="production-art" src={art} alt="" /> : <ArtFallback className="production-art" icon="hammer" />}
+          <span><b>{name}</b>{variant?.typeName && variant.typeName !== name && <small>{variant.typeName}</small>}</span>
+        </span>
+        <span className="production-cell"><span><b className="production-number" data-paint="active" data-line={line.handle} /><small data-paint="requested" data-line={line.handle} /></span>
+          <span className="production-meter" aria-hidden="true"><i data-paint="activeBar" data-line={line.handle} /><em data-paint="requestedBar" data-line={line.handle} /></span></span>
+        <span className="production-cell">
+          <button type="button" className="production-factor production-number" disabled={leaving} aria-label={`${name} efficiency breakdown`}
+            onClick={() => onBreakdown(line.handle, 'efficiency')} data-paint="efficiency" data-line={line.handle} />
+          <span className="production-meter" aria-hidden="true"><i data-paint="efficiencyBar" data-line={line.handle} /></span></span>
+        <span className="production-number is-number">
+          <button type="button" className="production-factor" disabled={leaving} aria-label={`${name} output breakdown`}
+            onClick={() => onBreakdown(line.handle, 'output')} data-paint="weekly" data-line={line.handle} /></span>
+        <span className={`production-number is-number${muted}`} data-paint="output" data-line={line.handle} />
+        {more && <><span className="production-number is-number" data-paint="cost" data-line={line.handle} />
+          <span className="production-organisation">{orgArt ? <img src={orgArt} alt="" /> : line.mio !== '0' && <ArtFallback icon="factory" />}
+            <small>{organisationText(organisation, line.mio)}</small></span></>}
+      </div>;
+    })}
+  </div>;
 }
 
-/** One lane per line across the campaign (or the chosen range): a band whose
- * thickness is the factories assigned at each read, accented while it runs and grey
- * once it has ended, named beside it with its factories or when it ended. A tooltip
- * asks for the window of reads behind its hour (`onWant`) and shows the line's
- * variant and factories until it arrives. */
-function History({ data, tag, extent, showEnded, active, hoursPerSecond, onMenu, windows, failed, hovered, onWant }: {
+/** One lane per line across the campaign (or the chosen range): a band whose thickness is the factories assigned,
+ * accented while it runs and grey once it has ended, named with its factories or when it ended. */
+function History({ data, tag, extent, showEnded, active, hoursPerSecond, onMenu }: {
   data: ProductionLinesReply; tag: string; extent: [number, number]; showEnded: boolean; active: boolean; hoursPerSecond: number | undefined;
-  onMenu: (hour: number, x: number, y: number, key?: string) => void; windows: ReadonlyMap<number, ProductionLineDetailReply>; failed: ReadonlyMap<number, Failure>;
-  hovered: number | null; onWant: (window: number) => void;
+  onMenu: (hour: number, x: number, y: number, key?: string) => void;
 }) {
-  const until = extent[1];
   const height = useViewportHeight();
+  const until = extent[1];
   const lanes = useMemo(() => historyLanes(data, until, showEnded, dayLabel), [data, until, showEnded]);
   const most = useMemo(() => bandScale(data), [data]);
   const byKey = useMemo(() => new Map(data.lines.map(line => [line.key, line])), [data]);
-  // A tooltip shown while its window loads is built again when it arrives.
-  const revision = useMemo(() => ({}), [data, windows, failed]); // eslint-disable-line react-hooks/exhaustive-deps
-  // No lane over hours a first view does not answer yet is not "none".
-  if (!lanes.length) return emptyHistoryState(data, extent) === 'preparing'
-    ? <WidgetState kind="loading" label="Preparing this country’s earlier production history…" />
-    : <WidgetState kind="empty" message="No production lines recorded in this time." />;
-  const description = `${dayLabel(until)}: ${lanes.map(lane => `${lane.identity?.label ?? lane.id}, ${lane.label}`).join('; ')}.`;
+  const unobserved = useMemo(() => {
+    const spans: { firstHour: number; lastHour: number }[] = [];
+    let from = extent[0];
+    for (const held of data.lineHours) {
+      if (held.firstHour > from) spans.push({ firstHour: from, lastHour: Math.min(held.firstHour - 1, extent[1]) });
+      from = Math.max(from, held.lastHour + 1);
+    }
+    if (from <= extent[1]) spans.push({ firstHour: from, lastHour: extent[1] });
+    return spans;
+  }, [data, extent]);
+  if (!lanes.length) return <WidgetState kind={data.lineHours.length ? 'empty' : 'unavailable'}
+    message={data.lineHours.length ? 'No production lines recorded in this time.' : `${tag}'s production lines weren't recorded.`} />;
   return <div className="production-history">
-    {data.approximate.length > 0 && <p className="production-caption" role="status">Showing the published production history; later history is still being prepared.</p>}
     <Timeline label={`Production lines of ${tag}`} extent={extent} playhead={null} lanes={lanes} showIcons={false} showNames={false} bandMax={most}
-      unobserved={data.approximate}
-      stickyAxis={false} fadePresentation truncateLabels={false} holderIconAlign="top"
-      description={description} hoursPerSecond={hoursPerSecond} active={active} revision={revision}
+      unobserved={unobserved} stickyAxis={false} fadePresentation truncateLabels={false} holderIconAlign="top" hoursPerSecond={hoursPerSecond} active={active} revision={data}
       tooltip={(lane, _span, hour, full) => {
         const line = byKey.get(lane.id);
-        const step = line && runAt(line.steps, hour);
         if (!line) return null;
-        // Over hours whose output read was lost, every tooltip says lines may be missing there.
-        const missing = unreadNote(data, hour);
-        // A line made between reads, or one at an hour after it ended, gives its final count.
-        if (!step && (line.betweenReads || (line.endedBy != null && hour >= line.endedBy))) return fitted(finalTooltip(data, line, hour, { subtitle: dayLabel(hour), note: missing }, dayLabel), height, full);
-        // Not recorded then, or before it started: this hour's status, not the lane's at the end shown.
-        if (!step) return gapTooltip(data, line, hour, dayLabel(hour), dayLabel, missing);
-        const head = { subtitle: dayLabel(hour), note: missing };
-        // The window of reads behind this hour: asked for once the tooltip is built.
-        const window = windowOf(data, hour);
-        if (window !== hovered) queueMicrotask(() => onWant(window));
-        const detail = windows.get(window);
-        const lineDetail = detailOf(detail, line.key);
-        const run = lineDetail && runAt(lineDetail.runs, hour);
-        if (!run) {
-          const why = failed.has(window) ? failureText(failed.get(window), 'Couldn’t load line details.') : detail ? 'Its other values are not recorded at this hour.' : 'Loading its other values…';
-          return fitted(stepTooltip(data, step, hour, head, why).map(form => ({ ...form, detail: failed.get(window)?.message })), height, full);
-        }
-        // Its bars (which the keyboard steps through) carry the final count once the view is past its end.
-        return fitted(lineTooltip(data, line, lineDetail, run, hour, head, dayLabel, until), height, full);
+        const step = runAt(line.steps, hour);
+        const status = laneStatus(line, hour, dayLabel);
+        const variant = step ? variantOf(data.variants, step.variant) : null;
+        const forms = [{ title: step ? variantName(variant, step.variant) : lane.identity?.label ?? line.key, subtitle: dayLabel(hour), rows: [
+          { label: 'Status', value: status.text },
+          ...step ? [{ label: 'Factories', value: `${step.activeFactories} of ${step.requestedFactories}` }] : [],
+          ...line.finalOutput ? [{ label: 'Units made', value: totalText(line.finalOutput) }] : [],
+          ...line.beforeRecording ? [{ label: 'Began before the recording', tone: 'muted' as const }] : [],
+        ] }];
+        return full ? forms[0] : fitTooltip(forms, height, { full: forms[0] });
       }}
       onContextMenu={(hour, x, y, lane) => onMenu(hour, x, y, lane?.id)} />
   </div>;

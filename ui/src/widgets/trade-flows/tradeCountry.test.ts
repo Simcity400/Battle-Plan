@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { TradeFlowsReply } from '../../generated/dashboard';
 import { decodeTrade } from './tradeData.ts';
 import { bandGroups, countryParts, countryTotal, countryTrade, countryTradeTags, divergingExtent, mergedBands, mirrored, partnerFact } from './tradeCountry.ts';
+import type { TradeFlowsReply } from '../../generated/dashboard';
 
 const A = '[1,1]', B = '[2,2]', C = '[3,3]';
 // A was renamed (AAA, then AAZ); B and C keep their tags. Steel comes after oil in
@@ -16,7 +16,7 @@ const reply: TradeFlowsReply = { branchId: 'b', decimals: 0,
     { tag: 'CCC', runs: [{ firstHour: 0, lastHour: 95, slot: 3, countryId: 3 }] },
   ],
   resources: [{ id: 2, token: 'mod_oil', ordinal: 1, name: 'Oil', icon: null }, { id: 9, token: 'mod_steel', ordinal: 1, name: 'Steel', icon: null }],
-  reads: [0, 24, 48, 72], known: [{ firstHour: 0, lastHour: 95 }], partial: [], warnings: [],
+  firstHour: 0, lastHour: 2000, known: [{ firstHour: 0, lastHour: 95 }], partial: [], warnings: [],
   flows: [
     // A sells steel to B for two days, across its rename.
     { seller: 0, buyer: 2, sellerIdentity: A, buyerIdentity: B, resource: 9, firstHours: [0, 48], lastHours: [47, 71], deliveredRaw: ['10', '10'],

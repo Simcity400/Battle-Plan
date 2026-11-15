@@ -1,7 +1,9 @@
 /** Bounded immutable results with shared requests and per-consumer cancellation. */
 export class ResourceCache<T> {
-  private entries = new Map<string, { controller: AbortController; promise: Promise<T>; users: number; settled: boolean; bytes: number }>();
-  private displacedLoads = 0;
+  private entries = new Map<string, { controller: AbortController; promise: Promise<T>; users: number; settled: boolean; bytes: number; value?: T }>();
+  /** Keys each owner holds past the bounds, and how many owners hold each. */
+  private pins = new Map<object, ReadonlySet<string>>();
+  private pinned = new Map<string, number>();
   private maxEntries: number;
   private maxBytes: number;
   private size: (value: T) => number;
@@ -19,6 +21,7 @@ export class ResourceCache<T> {
       this.entries.set(key, created);
       created.promise = created.promise.then(value => {
         created.settled = true;
+        created.value = value;
         if (!retain(value)) {
           if (this.entries.get(key) === created) this.entries.delete(key);
           return value;
@@ -67,20 +70,28 @@ export class ResourceCache<T> {
     return entry.promise;
   }
 
-  /** Publish a final result without replacing the owners of any outstanding load. */
-  put(key: string, value: T): void {
-    const previous = this.entries.get(key);
-    if (previous && !previous.settled) {
-      // Keep the displaced one-shot load reachable by source cancellation until
-      // its existing consumers finish. Its reply cannot replace the final value.
-      const pendingKey = JSON.stringify([JSON.parse(key)[0], key, ++this.displacedLoads]);
-      this.entries.set(pendingKey, previous);
-      const finished = () => { this.entries.delete(pendingKey); };
-      void previous.promise.then(finished, finished);
+  /** The value settled under `key`, at once, or undefined while none is. */
+  peek(key: string): T | undefined {
+    return this.entries.get(key)?.value;
+  }
+
+  /** Holds `keys` past the bounds for `owner`, in place of what it held: what it holds is what it last asked. */
+  pin(owner: object, keys: Iterable<string>): void {
+    this.unpin(owner);
+    const held = new Set(keys);
+    this.pins.set(owner, held);
+    for (const key of held) this.pinned.set(key, (this.pinned.get(key) ?? 0) + 1);
+  }
+
+  /** Lets go of what `owner` held: its keys are bounded again. */
+  unpin(owner: object): void {
+    const held = this.pins.get(owner);
+    if (!held) return;
+    this.pins.delete(owner);
+    for (const key of held) {
+      const count = (this.pinned.get(key) ?? 1) - 1;
+      if (count > 0) this.pinned.set(key, count); else this.pinned.delete(key);
     }
-    this.entries.delete(key);
-    this.entries.set(key, { controller: new AbortController(), promise: Promise.resolve(value),
-      users: 0, settled: true, bytes: this.size(value) });
     this.trim();
   }
 
@@ -89,6 +100,10 @@ export class ResourceCache<T> {
     for (const [key, entry] of this.entries) if (JSON.parse(key)[0] === sourceId) {
       this.entries.delete(key); entry.controller.abort();
     }
+    for (const [owner, held] of [...this.pins]) {
+      const kept = [...held].filter(key => JSON.parse(key)[0] !== sourceId);
+      if (kept.length < held.size) this.pin(owner, kept);
+    }
   }
 
   /** Forget only completed entries of a source; loads in flight keep their consumers. */
@@ -96,13 +111,14 @@ export class ResourceCache<T> {
     for (const [key, entry] of this.entries) if (entry.settled && JSON.parse(key)[0] === sourceId) this.entries.delete(key);
   }
 
+  /** Settled entries past the bounds go, the least recently used first; pinned ones are not counted against them. */
   private trim(): void {
     let bytes = 0;
     let count = 0;
-    for (const entry of this.entries.values()) if (entry.settled) { bytes += entry.bytes; count++; }
+    for (const [key, entry] of this.entries) if (entry.settled && !this.pinned.has(key)) { bytes += entry.bytes; count++; }
     for (const [key, entry] of this.entries) {
       if (count <= this.maxEntries && bytes <= this.maxBytes) break;
-      if (entry.settled) { this.entries.delete(key); bytes -= entry.bytes; count--; }
+      if (entry.settled && !this.pinned.has(key)) { this.entries.delete(key); bytes -= entry.bytes; count--; }
     }
   }
 }

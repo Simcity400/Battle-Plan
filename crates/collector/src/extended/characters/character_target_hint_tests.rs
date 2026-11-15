@@ -61,6 +61,7 @@ fn literal_hints(header: &[u8; 32]) -> Option<Vec<(usize, usize)>> {
 
 #[test]
 fn staged_name_hints_require_both_valid_headers_and_keep_inline_values_owned() {
+    let _globals = crate::extended::characters::test_globals();
     let mut job = CharactersJob {
         log: crate::raw::RawLog::new(4, 256),
         ..Default::default()
@@ -100,6 +101,7 @@ fn staged_name_hints_require_both_valid_headers_and_keep_inline_values_owned() {
 
 #[test]
 fn character_target_hints_obey_independent_dead_guards_and_empty_maps() {
+    let _globals = crate::extended::characters::test_globals();
     for bits in 0..32 {
         let dead = Dead {
             characters: bits & 1 != 0,
@@ -157,6 +159,7 @@ fn character_target_hints_obey_independent_dead_guards_and_empty_maps() {
 
 #[test]
 fn character_target_hints_reject_null_overflow_and_canonical_gap_ranges() {
+    let _globals = crate::extended::characters::test_globals();
     let hint = |address, len| {
         let mut result = Vec::new();
         hint_character_target(address, len, &mut |at, width| result.push((at, width)));
@@ -192,6 +195,7 @@ fn character_target_hints_reject_null_overflow_and_canonical_gap_ranges() {
 
 #[test]
 fn character_heap_hints_cover_only_first_and_terminator_lines() {
+    let _globals = crate::extended::characters::test_globals();
     for alignment in 0..64 {
         for len in [0, 1, 15, 16, 17, 63, 64, 65, 128] {
             let source = 0x2000 + alignment;
@@ -247,6 +251,7 @@ impl Memory for TraceMemory<'_> {
 
 #[test]
 fn character_fresh_view_hints_observe_no_targets_and_ignore_failed_fields() {
+    let _globals = crate::extended::characters::test_globals();
     use super::tests::{ADDRESS, CHARACTERS, IMAGE, UNITS, fixture};
     let bytes = fixture();
     let pointer = ADDRESS + CHARACTERS[0];
@@ -320,8 +325,8 @@ fn character_fresh_view_hints_observe_no_targets_and_ignore_failed_fields() {
         assert_eq!(job.log.bytes.as_ref(), used);
 
         // Failed partial bytes may be reused by a later successful field.
-        // Only successful offsets are visible, both before and after append
-        // and off-capture growth move the raw arena.
+        // Only successful offsets are visible, both before and after an
+        // append grows and moves the raw arena.
         let fields: Vec<_> = (0..VIEW_LENS.len())
             .map(|index| copied.field(&job, index).to_vec())
             .collect();
@@ -341,9 +346,10 @@ fn character_fresh_view_hints_observe_no_targets_and_ignore_failed_fields() {
             bytes: &extension,
         };
         assert!(job.log.take(&owned, 0x8000, 64, MASK_CHARACTERS).is_some());
-        assert!(job.log.take(&owned, 0x8000, 512, MASK_CHARACTERS).is_none());
-        assert!(job.log.overflowed);
-        job.log.grow();
+        let capacity = job.log.bytes.capacity();
+        assert!(job.log.take(&owned, 0x8000, 512, MASK_CHARACTERS).is_some());
+        assert!(!job.log.overflowed);
+        assert!(job.log.bytes.capacity() > capacity);
         for (index, field) in fields.iter().enumerate() {
             assert_eq!(copied.field(&job, index), field);
         }
@@ -413,6 +419,7 @@ fn original_text(
 
 #[test]
 fn character_heap_hints_preserve_exact_observations_and_failure_prefix() {
+    let _globals = crate::extended::characters::test_globals();
     let bytes = [0u8; 256];
     let expected_reads = [
         (0x2000 + 17, 1),

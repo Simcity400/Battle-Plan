@@ -16,7 +16,6 @@ struct Trace {
     bytes: Vec<u8>,
     hints: Vec<Hint>,
     eligible: bool,
-    growing: bool,
 }
 
 impl Trace {
@@ -30,19 +29,10 @@ impl Trace {
         if !self.eligible || bytes.is_empty() {
             return;
         }
-        if self.growing
-            && (engine_allocation::reserve(&mut self.reads, 1).is_err()
-                || engine_allocation::reserve(&mut self.bytes, bytes.len()).is_err())
+        if engine_allocation::reserve(&mut self.reads, 1).is_err()
+            || engine_allocation::reserve(&mut self.bytes, bytes.len()).is_err()
         {
             self.eligible = false;
-            return;
-        }
-        if self.reads.len() == self.reads.capacity()
-            || bytes.len() > self.bytes.capacity() - self.bytes.len()
-        {
-            self.eligible = false;
-        }
-        if !self.eligible {
             return;
         }
         self.reads.push(Read {
@@ -68,22 +58,10 @@ pub struct SnapshotPlan {
     complete: bool,
 }
 
-impl SnapshotPlan {
-    /// Admitted worker only. Record complete original observations without
-    /// rereading native memory when their ordered dependency trace grows.
-    pub fn enable_worker_growth(&mut self) {
-        self.trace.get_mut().growing = true;
-    }
-    pub fn new(reads: usize, bytes: usize) -> Self {
-        let mut trace = Trace::default();
-        let reserve = || -> io::Result<()> {
-            engine_allocation::reserve_exact(&mut trace.reads, reads)?;
-            engine_allocation::reserve_exact(&mut trace.bytes, bytes)?;
-            engine_allocation::reserve_exact(&mut trace.hints, reads)
-        };
-        let _ = engine_allocation::advisory(reserve);
+impl Default for SnapshotPlan {
+    fn default() -> Self {
         Self {
-            trace: RefCell::new(trace),
+            trace: RefCell::default(),
             compiled: None,
             destination: Vec::new(),
             prefix: 0,
@@ -95,6 +73,9 @@ impl SnapshotPlan {
             complete: false,
         }
     }
+}
+
+impl SnapshotPlan {
 
     pub fn allocated_bytes(&self) -> usize {
         let trace = self.trace.borrow();
@@ -273,22 +254,18 @@ impl<M: Memory> Memory for Observed<'_, M> {
             && address != 0
             && crate::address_range::is_canonical_range(address, len)
         {
-            if trace.growing
-                && engine_allocation::advisory(|| engine_allocation::reserve(&mut trace.hints, 1))
-                    .is_err()
+            if engine_allocation::advisory(|| engine_allocation::reserve(&mut trace.hints, 1))
+                .is_err()
             {
                 trace.eligible = false;
+            } else {
+                let after_reads = trace.reads.len();
+                trace.hints.push(Hint {
+                    after_reads,
+                    address,
+                    len,
+                });
             }
-            if !trace.eligible || trace.hints.len() == trace.hints.capacity() {
-                self.memory.prefetch(address, len);
-                return;
-            }
-            let after_reads = trace.reads.len();
-            trace.hints.push(Hint {
-                after_reads,
-                address,
-                len,
-            });
         }
         self.memory.prefetch(address, len);
     }
@@ -460,8 +437,7 @@ mod tests {
             calls: RefCell::new(Vec::new()),
             hints: RefCell::new(Vec::new()),
         };
-        let mut plan = SnapshotPlan::new(0, 0);
-        plan.enable_worker_growth();
+        let mut plan = SnapshotPlan::default();
         for count in [5000, 12000] {
             source.calls.borrow_mut().clear();
             source.hints.borrow_mut().clear();
@@ -490,13 +466,6 @@ mod tests {
             assert!(plan.begin(&source, true));
             assert_eq!(*source.calls.borrow(), acquired);
         }
-        let mut fixed = SnapshotPlan::new(0, 0);
-        assert!(!fixed.begin(&source, false));
-        assert!(fixed.view(&source).copy(0x1000, &mut [0; 8]));
-        assert!(fixed.finish(true));
-        assert!(fixed.pending_reads().is_none());
-        fixed.prepare();
-        assert!(fixed.compiled.is_none());
     }
 
     #[test]
@@ -505,7 +474,7 @@ mod tests {
             base: 0x1000,
             bytes: &[0x11; 16],
         };
-        let mut plan = SnapshotPlan::new(8, 16);
+        let mut plan = SnapshotPlan::default();
         let mut reference = Vec::new();
         for len in [2, 3, 5, 9] {
             plan.begin(&memory, false);
@@ -570,7 +539,7 @@ mod tests {
             calls: RefCell::new(vec![]),
             batches: Cell::new(0),
         };
-        let mut plan = SnapshotPlan::new(8, 8);
+        let mut plan = SnapshotPlan::default();
         assert!(!plan.begin(&source, false));
         assert_eq!(walk(&plan, &source), [1, 8, 7]);
         assert!(plan.finish(true));
@@ -610,50 +579,41 @@ mod tests {
     }
     #[test]
     fn changed_dependency_and_each_fault_resume_without_repeating_any_observation() {
-        for growing in [false, true] {
-            for changed in [false, true] {
-                for fail in [None, Some(1), Some(3), Some(7)] {
-                    let baseline = Source {
-                        bytes: [3, 0, 5, 6, 0, 0, 9, 0],
-                        calls: RefCell::new(vec![]),
-                        fail: None,
-                    };
-                    let mut plan = if growing {
-                        SnapshotPlan::new(0, 0)
-                    } else {
-                        SnapshotPlan::new(8, 32)
-                    };
-                    if growing {
-                        plan.enable_worker_growth();
-                    }
-                    assert!(!plan.begin(&baseline, true));
-                    assert_eq!(walk(&plan.view(&baseline)), Some([3, 5, 9]));
-                    assert!(plan.finish(true));
-                    plan.prepare();
-                    let mut fresh = Source {
-                        bytes: baseline.bytes,
-                        calls: RefCell::new(vec![]),
-                        fail,
-                    };
-                    if changed {
-                        fresh.bytes[0] = 4;
-                    }
-                    let reference = Source {
-                        bytes: fresh.bytes,
-                        calls: RefCell::new(vec![]),
-                        fail,
-                    };
-                    let expected = walk(&reference);
-                    let actual = if plan.begin(&fresh, true) {
-                        Some([3, 5, 9])
-                    } else {
-                        let result = walk(&plan.view(&fresh));
-                        assert!(plan.finish(result.is_some()));
-                        result
-                    };
-                    assert_eq!(actual, expected);
-                    assert_eq!(*fresh.calls.borrow(), *reference.calls.borrow());
+        for changed in [false, true] {
+            for fail in [None, Some(1), Some(3), Some(7)] {
+                let baseline = Source {
+                    bytes: [3, 0, 5, 6, 0, 0, 9, 0],
+                    calls: RefCell::new(vec![]),
+                    fail: None,
+                };
+                let mut plan = SnapshotPlan::default();
+                assert!(!plan.begin(&baseline, true));
+                assert_eq!(walk(&plan.view(&baseline)), Some([3, 5, 9]));
+                assert!(plan.finish(true));
+                plan.prepare();
+                let mut fresh = Source {
+                    bytes: baseline.bytes,
+                    calls: RefCell::new(vec![]),
+                    fail,
+                };
+                if changed {
+                    fresh.bytes[0] = 4;
                 }
+                let reference = Source {
+                    bytes: fresh.bytes,
+                    calls: RefCell::new(vec![]),
+                    fail,
+                };
+                let expected = walk(&reference);
+                let actual = if plan.begin(&fresh, true) {
+                    Some([3, 5, 9])
+                } else {
+                    let result = walk(&plan.view(&fresh));
+                    assert!(plan.finish(result.is_some()));
+                    result
+                };
+                assert_eq!(actual, expected);
+                assert_eq!(*fresh.calls.borrow(), *reference.calls.borrow());
             }
         }
     }
@@ -664,7 +624,7 @@ mod tests {
             calls: RefCell::new(vec![]),
             fail: None,
         };
-        let mut plan = SnapshotPlan::new(8, 32);
+        let mut plan = SnapshotPlan::default();
         assert!(!plan.begin(&source, true));
         let view = plan.view(&source);
         assert_eq!(engine_native::read::<u8>(&view, 1), Some(3));

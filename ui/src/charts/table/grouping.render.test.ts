@@ -55,10 +55,21 @@ test('five thousand distinct faction identities retain one windowed table and na
     value: BigInt(5000 - index) }));
   const html = render(rows, true);
   const mounted = keys(html).map(key => Number(key.slice(4)));
-  assert.ok(mounted.length > 0 && mounted.length <= 32);
+  assert.ok(mounted.length > 0 && mounted.length <= 32, `mounted ${mounted.length} of ${rows.length}`);
   assert.deepEqual(mounted, [...mounted].sort((a, b) => b - a), 'the mounted window follows faction identity, not the global score sort');
   assert.match(html, /aria-rowcount="5001"/);
   assert.equal((html.match(/<table /g) ?? []).length, 1);
   assert.equal((html.match(/aria-rowindex=/g) ?? []).length, mounted.length);
   assert.equal((html.match(/is-activatable/g) ?? []).length, mounted.length);
+});
+
+test('a column sorted by its live value orders by the playhead’s values, though its cell renders itself', () => {
+  const rows: Row[] = [{ key: 'early', group: { key: 'g', label: 'g', orderKey: 0n }, value: 9n }, { key: 'late', group: { key: 'g', label: 'g', orderKey: 0n }, value: 1n }];
+  const live = (shown: ReadonlyMap<string, bigint>) => ({ read: () => ({ get: (key: string) => shown.get(key.slice(0, key.indexOf('\u0000'))), missing: () => 'Not recorded' }),
+    subscribe: () => () => {} });
+  const moving: readonly TableColumn<Row>[] = [columns[0], { ...columns[1], sortsLive: true }];
+  const at = (shown: ReadonlyMap<string, bigint>) => keys(renderToStaticMarkup(createElement(Table<Row>, { label: 'Live order', rows, columns: moving, rowKey,
+    sort: { column: 'score', direction: 'descending' }, live: live(shown) })));
+  assert.deepEqual(at(new Map([['early', 9n], ['late', 1n]])), ['early', 'late']);
+  assert.deepEqual(at(new Map([['early', 1n], ['late', 9n]])), ['late', 'early'], 'the order is the live values’, not the rows’');
 });

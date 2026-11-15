@@ -2,7 +2,7 @@
 use std::{
     os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
     sync::{
-        Arc, OnceLock,
+        OnceLock,
         atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
     },
     thread::JoinHandle,
@@ -21,9 +21,24 @@ use windows_sys::Win32::System::Threading::{
 pub(crate) enum Role {
     Decode,
     Spool,
-    FirstHelper,
-    SecondHelper,
     Sizing,
+    /// The thread building frames ahead.
+    Builder,
+    /// The spool's conversion helper `n`.
+    Helper(usize),
+}
+const FIXED_ROLES: usize = 4;
+const SLOTS: usize = FIXED_ROLES + crate::pack_conversion::MAX_HELPERS;
+impl Role {
+    const fn slot(self) -> usize {
+        match self {
+            Role::Decode => 0,
+            Role::Spool => 1,
+            Role::Sizing => 2,
+            Role::Builder => 3,
+            Role::Helper(helper) => FIXED_ROLES + helper,
+        }
+    }
 }
 const UNKNOWN: u32 = 3;
 /// A copy-only thread's value while the game ticks: idle priority, off the main thread's core.
@@ -39,8 +54,8 @@ const BOOST_NS: u64 = 4_000_000;
 const REST_NS: u64 = 1_000_000;
 const RETRY: Duration = Duration::from_millis(1);
 
-fn level(free: usize, store_waiters: usize) -> u32 {
-    if store_waiters != 0 || free <= 1 {
+fn level(free: usize) -> u32 {
+    if free <= 1 {
         2
     } else if free == 2 {
         1
@@ -60,7 +75,7 @@ fn priority(level: u32) -> i32 {
 fn for_role(pressure: u32, role: usize) -> u32 {
     if pressure & TICKING != 0 {
         // Sizing reads live game memory and waits the tick out at its own priority.
-        return if role == Role::Sizing as usize {
+        return if role == Role::Sizing.slot() {
             0
         } else if pressure & PRESSED != 0 {
             TICK_PRESSED
@@ -68,7 +83,7 @@ fn for_role(pressure: u32, role: usize) -> u32 {
             TICK
         };
     }
-    if role == Role::Decode as usize {
+    if role == Role::Decode.slot() {
         pressure >> 2
     } else {
         pressure & 3
@@ -226,15 +241,13 @@ enum Boundary {
 pub(crate) struct Pipeline {
     available: AtomicUsize,
     callbacks: AtomicUsize,
-    store_waiters: AtomicUsize,
-    store_expected: AtomicBool,
     /// While the game ticks: one plus the group-0 processor running the main game thread
     /// ([`NO_PROCESSOR`] when unknown); zero otherwise.
     ticking: AtomicU32,
     /// The ticking word this reconciliation pass applies CPU sets for.
     applying: AtomicU32,
     cores: OnceLock<Option<Cores>>,
-    targets: [OnceLock<Target>; 5],
+    targets: [OnceLock<Target>; SLOTS],
     event: OnceLock<OwnedHandle>,
     stopping: AtomicBool,
     failed: AtomicBool,
@@ -249,12 +262,10 @@ impl Pipeline {
         Self {
             available: AtomicUsize::new(0),
             callbacks: AtomicUsize::new(0),
-            store_waiters: AtomicUsize::new(0),
-            store_expected: AtomicBool::new(false),
             ticking: AtomicU32::new(0),
             applying: AtomicU32::new(0),
             cores: OnceLock::new(),
-            targets: [const { OnceLock::new() }; 5],
+            targets: [const { OnceLock::new() }; SLOTS],
             event: OnceLock::new(),
             stopping: AtomicBool::new(false),
             failed: AtomicBool::new(false),
@@ -266,14 +277,18 @@ impl Pipeline {
         }
     }
     fn free_count(&self) -> usize {
-        self.available.load(Ordering::SeqCst).count_ones() as usize
+        self.available.load(Ordering::SeqCst)
     }
-    // Mark before queue publication so a racing pop cannot be undone by a late mark.
-    pub(crate) fn publish(&self, index: usize) {
-        self.available.fetch_or(1 << index, Ordering::SeqCst);
+    /// Counts a frame about to be freed: before it is pushed, so a pop's claim always
+    /// follows its publication.
+    pub(crate) fn publish(&self) {
+        self.available.fetch_add(1, Ordering::SeqCst);
     }
-    pub(crate) fn claim(&self, index: usize) {
-        self.available.fetch_and(!(1 << index), Ordering::SeqCst);
+    /// Counts a free frame taken.
+    pub(crate) fn claim(&self) {
+        let _ = self
+            .available
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |free| free.checked_sub(1));
         self.refresh();
     }
     fn pressure(&self) -> u32 {
@@ -290,13 +305,8 @@ impl Pipeline {
         if self.callbacks.load(Ordering::SeqCst) == 0 {
             return 0;
         }
-        let free = self.free_count();
-        level(free, 0)
-            | (level(
-                free,
-                self.store_waiters.load(Ordering::SeqCst)
-                    + usize::from(self.store_expected.load(Ordering::SeqCst)),
-            ) << 2)
+        let level = level(self.free_count());
+        level | level << 2
     }
     fn notify(&self) {
         if !self.pending.swap(true, Ordering::SeqCst) {
@@ -334,7 +344,9 @@ impl Pipeline {
     }
     // Only the named collector worker registers, after its NORMAL initialization succeeds.
     pub(crate) fn register(&self, role: Role) {
-        let slot = &self.targets[role as usize];
+        let Some(slot) = self.targets.get(role.slot()) else {
+            return;
+        };
         if slot.get().is_some() {
             return;
         }
@@ -359,7 +371,9 @@ impl Pipeline {
     }
     /// Whether `role`'s worker registered a handle the reconciler writes.
     pub(crate) fn registered(&self, role: Role) -> bool {
-        self.targets[role as usize].get().is_some()
+        self.targets
+            .get(role.slot())
+            .is_some_and(|slot| slot.get().is_some())
     }
     pub(crate) fn refresh(&self) {
         let pressure = self.pressure();
@@ -375,7 +389,8 @@ impl Pipeline {
             hook(boundary);
         }
     }
-    // Only the reconciler writes; every pass has one gate attempt and at most five syscalls.
+    // Only the reconciler writes; every pass has one gate attempt and at most one syscall per
+    // registered worker.
     fn reconcile(
         &self,
         budget: &mut Budget,
@@ -461,35 +476,6 @@ impl Pipeline {
             self.pending.store(true, Ordering::SeqCst);
         }
     }
-    pub(crate) fn expect_store(&self, loaned: &AtomicBool) {
-        self.store_expected.store(true, Ordering::SeqCst);
-        // A loan returned after the caller saw it outstanding must not leave the hint set.
-        if !loaned.load(Ordering::SeqCst) {
-            self.store_expected.store(false, Ordering::SeqCst);
-        }
-        self.refresh();
-    }
-    pub(crate) fn store_returned(&self) {
-        self.clear_store_expected();
-        self.refresh();
-    }
-    pub(crate) fn clear_store_expected(&self) {
-        self.store_expected.store(false, Ordering::SeqCst);
-    }
-    /// The store hint, the decode thread's requested level and the store's waiters.
-    #[cfg(test)]
-    pub(crate) fn store_state(&self) -> (bool, u32, usize) {
-        (
-            self.store_expected.load(Ordering::SeqCst),
-            for_role(self.pressure(), Role::Decode as usize),
-            self.store_waiters.load(Ordering::SeqCst),
-        )
-    }
-    pub(crate) fn wait_for_store(&self) -> StoreWait<'_> {
-        self.store_waiters.fetch_add(1, Ordering::SeqCst);
-        self.refresh();
-        StoreWait(self)
-    }
     pub(crate) fn failed(&self) -> bool {
         self.failed.load(Ordering::SeqCst)
     }
@@ -502,19 +488,6 @@ impl Drop for Callback<'_> {
         self.0.refresh();
     }
 }
-pub(crate) struct StoreWait<'a>(&'a Pipeline);
-impl StoreWait<'_> {
-    pub(crate) fn retry(&self) {
-        self.0.refresh();
-    }
-}
-impl Drop for StoreWait<'_> {
-    fn drop(&mut self) {
-        self.0.store_waiters.fetch_sub(1, Ordering::SeqCst);
-        self.0.refresh();
-    }
-}
-
 fn set_native(pipeline: &Pipeline, target: &Target, value: u32) -> bool {
     let handle = target.handle.as_raw_handle();
     // SAFETY: the reconciler alone writes these retained collector-owned handles.
@@ -595,11 +568,13 @@ fn wait(event: &OwnedHandle, timer: &OwnedHandle, delay: Option<Duration>) -> bo
 }
 
 pub(crate) struct Reconciler {
-    pipeline: Arc<Pipeline>,
+    pipeline: engine_allocation::SharedBox<Pipeline>,
     thread: Option<JoinHandle<()>>,
 }
 impl Reconciler {
-    pub(crate) fn start(pipeline: Arc<Pipeline>) -> Result<Self, &'static str> {
+    pub(crate) fn start(
+        pipeline: engine_allocation::SharedBox<Pipeline>,
+    ) -> Result<Self, &'static str> {
         // SAFETY: unnamed, auto-reset handles; no game objects or callbacks are involved.
         let (event, timer) = unsafe {
             (
@@ -622,11 +597,12 @@ impl Reconciler {
             .event
             .set(event)
             .map_err(|_| "frame priority reconciler already started")?;
-        let worker = Arc::clone(&pipeline);
+        let worker = pipeline.clone();
         let (send, ready) = std::sync::mpsc::sync_channel(0);
         let thread = std::thread::Builder::new()
             .name("hoi4-frame-priority".into())
             .spawn(move || {
+                crate::private_heap::off_hold_path();
                 #[cfg(feature = "worker_sampler")]
                 let _sampler_exit = crate::thread_cpu::StopOnThreadExit;
                 crate::thread_cpu::register(crate::thread_cpu::Role::FramePriority);

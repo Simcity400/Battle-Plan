@@ -98,7 +98,7 @@ impl Store {
         let retry = self.failure.take().is_some();
         let before = changes.quiet(FAMILY);
         let Some(before) = before else {
-            self.failure = Some("faction member accounting writer observation unavailable");
+            self.failure = Some("faction members' accounts could not be followed in the game");
             return;
         };
         // The marking registry transfers ownership on take. Retain these marks
@@ -129,7 +129,7 @@ impl Store {
             mirror::quiet()
         };
         if scalar_before.is_none() {
-            self.failure = Some("faction member scalar observation unavailable or overlapping");
+            self.failure = Some("faction members' values could not be followed in the game, or changed while read");
             return;
         }
         if baseline {

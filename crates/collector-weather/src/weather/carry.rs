@@ -541,24 +541,24 @@ fn region_combat(
 
 /// [`WeatherJob::combat`] of every region record the dense gather located:
 /// the window's regions afresh and the rest carried when the carry allows
-/// it, otherwise every region; a worker grows its storage, a fixed fixture
-/// refuses the regions past it.
+/// it, otherwise every region. A refused allocation reads no region.
 pub(super) fn capture_combat(memory: &impl Memory, job: &mut WeatherJob) {
     let Some(array) = job.regions.array else {
         return;
     };
     let count = array.count as usize;
-    if job.worker_growth && job.combat.capacity() < count {
-        let _ =
-            engine_allocation::reserve_exact(&mut job.combat, count).map_err(crate::allocation::io);
+    if engine_allocation::reserve_exact(&mut job.combat, count)
+        .map_err(crate::allocation::io)
+        .is_err()
+    {
+        return;
     }
-    let room = count.min(job.combat.capacity());
     if let Some(carry) = job.carry.as_deref_mut()
         && let Some(window) = carry.window(Part::Regions)
         && carry.combat.len() == count
     {
         let complete = follow_combat(memory, array, carry, window);
-        job.combat.extend_from_slice(&carry.combat[..room]);
+        job.combat.extend_from_slice(&carry.combat);
         if complete {
             carry.followed += 1;
         } else {
@@ -568,13 +568,12 @@ pub(super) fn capture_combat(memory: &impl Memory, job: &mut WeatherJob) {
         }
         return;
     }
-    for slot in 0..room {
-        job.combat.push(region_combat(memory, array, slot as u32));
+    for slot in 0..array.count {
+        job.combat.push(region_combat(memory, array, slot));
     }
     if let Some(carry) = job.carry.as_deref_mut() {
         // A refused region is read again next hour, not carried.
-        if room == count
-            && job.combat.iter().all(Option::is_some)
+        if job.combat.iter().all(Option::is_some)
             && (carry.combat.capacity() >= count
                 || engine_allocation::reserve_exact(&mut carry.combat, count).is_ok())
         {
@@ -612,10 +611,9 @@ fn read_province(
     array: engine_native::cpdx_array::Array,
     slot: u32,
     out: &mut Vec<super::entries::Entry>,
-    grow: bool,
 ) -> bool {
     MODIFIER_LOOKUPS.fetch_add(1, Relaxed);
-    super::entries::read(memory, array, slot, out, grow)
+    super::entries::read(memory, array, slot, out)
 }
 
 /// [`WeatherJob::province_modifiers`] of every province record: the window's
@@ -623,7 +621,8 @@ fn read_province(
 /// every province. The weather window pass rebuilds a province record's modifier
 /// with the record, so the record carry's writers are the modifier's: an hour whose
 /// province records did not follow their window reads every province's entries too.
-/// Provinces beyond the hour's storage are refused and counted.
+/// A province whose storage could not be allocated is refused, with those after it,
+/// and counted.
 pub(super) fn capture_province_modifiers(memory: &impl Memory, job: &mut WeatherJob) {
     let begin = qpc();
     capture_province_modifiers_timed(memory, job);
@@ -635,10 +634,8 @@ fn capture_province_modifiers_timed(memory: &impl Memory, job: &mut WeatherJob) 
         return;
     };
     let count = array.count;
-    let grow = job.worker_growth;
     job.province_modifiers.clear();
-    job.province_modifiers
-        .reserve_provinces(count as usize, grow);
+    job.province_modifiers.reserve_provinces(count as usize);
     let mut scratch = std::mem::take(&mut job.province_scratch);
     let window = match job.carry.as_deref() {
         Some(carry)
@@ -659,13 +656,12 @@ fn capture_province_modifiers_timed(memory: &impl Memory, job: &mut WeatherJob) 
             (Some(window), Some(carried)) if !in_window(slot, window, count) => {
                 carried.get(slot as usize)
             }
-            _ => read_province(memory, array, slot, &mut scratch, grow).then_some(&scratch[..]),
+            _ => read_province(memory, array, slot, &mut scratch).then_some(&scratch[..]),
         };
         if entries.is_none() {
             MODIFIER_REFUSALS.fetch_add(1, Relaxed);
         }
-        if !job.province_modifiers.push(entries, grow) {
-            // This province and those after it, beyond the storage, are refused.
+        if !job.province_modifiers.push(entries) {
             MODIFIER_REFUSALS.fetch_add(u64::from(count - slot), Relaxed);
             break;
         }

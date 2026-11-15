@@ -6,7 +6,7 @@ use installed_content_core::{
     defines::Defines, map::MapData, map::ProvinceKind, terrain::TerrainDefinitions,
 };
 use installed_content_regions::regions::StrategicRegion;
-use replay_data::{rows::NavalSupremacyRow, rows::tables};
+use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
 
 use {
@@ -14,8 +14,12 @@ use {
     viewer_foundation::map::{directed_wars::Owner, visibility::Families},
 };
 
-type Fact<T> = Result<T, String>;
+pub type Fact<T> = Result<T, String>;
 
+/// The relation tuple type of an installed naval blockade.
+pub const BLOCKADE: u32 = 0x27f8;
+
+#[derive(Clone)]
 struct RegionContent {
     name: String,
     minimum: Fact<i64>,
@@ -23,6 +27,7 @@ struct RegionContent {
     has_sea: bool,
 }
 
+#[derive(Clone)]
 pub struct Content {
     regions: BTreeMap<u32, RegionContent>,
     ratio: Fact<i64>,
@@ -32,6 +37,59 @@ pub struct Content {
 pub struct Fill {
     pub attributes: BTreeMap<u32, Attributes>,
     pub warnings: Vec<String>,
+}
+
+/// One country's supremacy in a region: what the classification reads of its row.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Supremacy {
+    pub country: u32,
+    pub current: i64,
+    pub previous: i64,
+}
+
+/// What the attributes read beyond the supremacy rows, at one hour.
+pub trait Relations {
+    /// Raw country reference to canonical slot, or why CountryLinks is not read.
+    fn links(&self) -> Result<&BTreeMap<u32, u32>, String>;
+    /// Whether canonical `source` is the viewer's family: itself, a faction partner, an overlord
+    /// or a subject.
+    fn family(&self, links: &BTreeMap<u32, u32>, source: u32, viewer: u32) -> Fact<bool>;
+    /// Whether the raw source country's directed war pointer toward the viewer's slot is active.
+    fn war(&self, source: u32, viewer: u32) -> Fact<bool>;
+    /// The installed naval-blockade tuples' first and second raw countries.
+    fn blockades(&self) -> Fact<&[(u32, u32)]>;
+}
+
+/// Sources' sides toward one viewer, kept while the relations they read stand; by raw country,
+/// ascending (a region's sources are a few countries).
+#[derive(Clone, Debug, Default)]
+pub struct Sides(Vec<(u32, Fact<Side>)>);
+
+impl Sides {
+    pub fn clear(&mut self) {
+        self.0.clear();
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Every kept side read again toward `viewer`; the sources whose side moved.
+    pub fn reread(&mut self, relations: &dyn Relations, viewer: u32) -> Vec<u32> {
+        let mut moved = Vec::new();
+        for (raw, held) in &mut self.0 {
+            let now = side(relations, *raw, viewer);
+            if *held != now {
+                *held = now;
+                moved.push(*raw);
+            }
+        }
+        moved
+    }
 }
 
 impl Content {
@@ -61,121 +119,216 @@ impl Content {
     }
 
     pub fn read(&self, frame: &DecodedFrame, viewer: u32) -> Fill {
-        let mut fill = Fill::default();
         let rows = frame
             .complete::<tables::NavalSupremacy>()
             .map_err(|e| e.to_string());
         let grouped = rows.as_ref().map(|rows| {
-            let mut groups: BTreeMap<u32, Vec<&NavalSupremacyRow>> = BTreeMap::new();
+            let mut groups: BTreeMap<u32, Vec<Supremacy>> = BTreeMap::new();
             for row in *rows {
-                groups.entry(row.region).or_default().push(row);
+                groups.entry(row.region).or_default().push(Supremacy {
+                    country: row.country,
+                    current: row.current,
+                    previous: row.previous,
+                });
             }
             groups
         });
-        let links = frame
-            .complete::<tables::CountryLinks>()
-            .map(|rows| {
-                rows.iter()
-                    .map(|r| (r.id, r.canonical_slot))
-                    .collect::<BTreeMap<_, _>>()
-            })
-            .map_err(|e| e.to_string());
-        let factions = OnceLock::new();
-        let subjects = OnceLock::new();
-        let mut sides: BTreeMap<u32, Fact<Side>> = BTreeMap::new();
-        let mut side = |raw: u32| -> Fact<Side> {
-            if let Some(value) = sides.get(&raw) {
-                return value.clone();
-            }
-            let value = (|| {
-                let links = links.as_ref().map_err(Clone::clone)?;
-                let slot = canonical(links, raw)?;
-                // Test the source's family relation toward the viewer before its directed war pointer.
-                if family(frame, links, slot, viewer, &factions, &subjects)? {
-                    return Ok(Side::Friendly);
-                }
-                if Owner::new(frame, raw)?.pointer_active_slot(viewer)? {
-                    Ok(Side::Enemy)
-                } else {
-                    Ok(Side::Neutral)
-                }
-            })();
-            sides.insert(raw, value.clone());
-            value
+        let relations = FrameRelations {
+            frame,
+            links: frame
+                .complete::<tables::CountryLinks>()
+                .map(|rows| {
+                    rows.iter()
+                        .map(|r| (r.id, r.canonical_slot))
+                        .collect::<BTreeMap<_, _>>()
+                })
+                .map_err(|e| e.to_string()),
+            factions: OnceLock::new(),
+            subjects: OnceLock::new(),
+            blockades: OnceLock::new(),
         };
-        let blockade = |raw| -> Fact<bool> {
-            let links = links.as_ref().map_err(Clone::clone)?;
-            let source = canonical(links, raw)?;
-            if source == 0 || viewer == 0 {
-                return Err("naval blockade pointer for canonical Country0 is not recorded".into());
-            }
-            // Installed naval-blockade tuples retain source-to-viewer direction and membership. Retired,
-            // date and cancellation flags do not add another gate here.
-            for row in frame
-                .complete::<tables::RelationTuples>()
-                .map_err(|e| e.to_string())?
-            {
-                if row.type_id == 0x27f8
-                    && canonical(links, row.first_country)? == source
-                    && canonical(links, row.second_country)? == viewer
-                {
-                    return Ok(true);
-                }
-            }
-            Ok(false)
-        };
+        let epoch = cache_epoch(
+            frame.hour,
+            frame.tables[replay_data::rows::TableId::NavalSupremacy.index()].sampled_at(),
+        );
+        let mut sides = Sides::default();
+        let mut fill = Fill::default();
         let mut refused = Vec::new();
-        for (&id, region) in &self.regions {
-            let RegionContent {
-                name,
-                minimum,
-                gradient,
-                has_sea,
-            } = region;
-            let result = (|| {
-                // Pure land regions have no province in this gradient layer.
-                if !has_sea {
-                    return Ok([0, 0]);
-                }
-                cache_epoch(
-                    frame.hour,
-                    frame.tables[replay_data::rows::TableId::NavalSupremacy.index()].sampled_at(),
-                )?;
-                let groups = grouped.as_ref().map_err(|reason| (*reason).clone())?;
-                let values = groups.get(&id).map(Vec::as_slice).unwrap_or_default();
-                classify(
-                    values,
-                    *minimum.as_ref().map_err(Clone::clone)?,
-                    *self.ratio.as_ref().map_err(Clone::clone)?,
-                    &mut side,
-                    &blockade,
-                )
-            })();
-            let [control, contested] = match result {
-                Ok(value) => value,
-                Err(reason) => {
-                    refused.push(format!("region {id} ({name}): {reason}"));
-                    [0, 0]
-                }
-            };
-            fill.attributes.insert(
-                id,
-                Attributes {
-                    control,
-                    contested,
-                    gradient: *gradient,
-                },
-            );
+        for &id in self.regions.keys() {
+            let values = grouped
+                .as_ref()
+                .map(|groups| groups.get(&id).map(Vec::as_slice).unwrap_or_default())
+                .map_err(|reason| (*reason).clone());
+            let (attributes, reason) =
+                self.region(id, &epoch, values, &relations, viewer, &mut sides);
+            refused.extend(reason);
+            fill.attributes.insert(id, attributes);
         }
-        if !refused.is_empty() {
-            fill.warnings.push(format!(
-                "Naval dominance FX withheld for {} strategic regions: {}",
-                refused.len(),
-                refused.join("; ")
-            ));
-        }
+        fill.warnings.extend(withheld(&refused));
         fill
     }
+
+    /// Regions given directly, each `(id, holds sea, minimum dominance)`, with the control ratio.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn for_tests(regions: &[(u32, bool, i64)], ratio: i64) -> Self {
+        Self {
+            regions: regions
+                .iter()
+                .map(|&(id, has_sea, minimum)| {
+                    let region = RegionContent { name: format!("region{id}"), minimum: Ok(minimum), gradient: None, has_sea };
+                    (id, region)
+                })
+                .collect(),
+            ratio: Ok(ratio),
+        }
+    }
+
+    /// The strategic region ids, ascending.
+    pub fn ids(&self) -> impl Iterator<Item = u32> + '_ {
+        self.regions.keys().copied()
+    }
+
+    /// Whether region `id` holds a sea province: only those read supremacy.
+    pub fn sea(&self, id: u32) -> bool {
+        self.regions.get(&id).is_some_and(|region| region.has_sea)
+    }
+
+    /// One region's attributes from its countries' supremacy, and why they are withheld, worded
+    /// for [`withheld`]; `epoch` is [`cache_epoch`] at the hour.
+    pub fn region(
+        &self,
+        id: u32,
+        epoch: &Fact<()>,
+        values: Result<&[Supremacy], String>,
+        relations: &dyn Relations,
+        viewer: u32,
+        sides: &mut Sides,
+    ) -> (Attributes, Option<String>) {
+        let Some(RegionContent {
+            name,
+            minimum,
+            gradient,
+            has_sea,
+        }) = self.regions.get(&id)
+        else {
+            return (Attributes::default(), None);
+        };
+        let result = (|| {
+            // Pure land regions have no province in this gradient layer.
+            if !has_sea {
+                return Ok([0, 0]);
+            }
+            epoch.clone()?;
+            let values = values?;
+            classify(
+                values,
+                *minimum.as_ref().map_err(Clone::clone)?,
+                *self.ratio.as_ref().map_err(Clone::clone)?,
+                &mut |raw| match sides.0.binary_search_by_key(&raw, |held| held.0) {
+                    Ok(at) => sides.0[at].1.clone(),
+                    Err(at) => {
+                        let value = side(relations, raw, viewer);
+                        sides.0.insert(at, (raw, value.clone()));
+                        value
+                    }
+                },
+                &|raw| blockade(relations, raw, viewer),
+            )
+        })();
+        let ([control, contested], reason) = match result {
+            Ok(value) => (value, None),
+            Err(reason) => ([0, 0], Some(format!("region {id} ({name}): {reason}"))),
+        };
+        (
+            Attributes {
+                control,
+                contested,
+                gradient: *gradient,
+            },
+            reason,
+        )
+    }
+}
+
+/// The warning naming every region whose attributes are withheld, in region order.
+pub fn withheld(refused: &[String]) -> Option<String> {
+    (!refused.is_empty()).then(|| {
+        format!(
+            "Naval dominance FX withheld for {} strategic regions: {}",
+            refused.len(),
+            refused.join("; ")
+        )
+    })
+}
+
+/// Today's relations: read from a frame of rows.
+struct FrameRelations<'a> {
+    frame: &'a DecodedFrame,
+    links: Fact<BTreeMap<u32, u32>>,
+    factions: OnceLock<Fact<Families>>,
+    subjects: OnceLock<Fact<Families>>,
+    blockades: OnceLock<Fact<Vec<(u32, u32)>>>,
+}
+
+impl Relations for FrameRelations<'_> {
+    fn links(&self) -> Result<&BTreeMap<u32, u32>, String> {
+        self.links.as_ref().map_err(Clone::clone)
+    }
+
+    fn family(&self, links: &BTreeMap<u32, u32>, source: u32, viewer: u32) -> Fact<bool> {
+        family(self.frame, links, source, viewer, &self.factions, &self.subjects)
+    }
+
+    fn war(&self, source: u32, viewer: u32) -> Fact<bool> {
+        Owner::new(self.frame, source)?.pointer_active_slot(viewer)
+    }
+
+    fn blockades(&self) -> Fact<&[(u32, u32)]> {
+        self.blockades
+            .get_or_init(|| {
+                let rows = self
+                    .frame
+                    .complete::<tables::RelationTuples>()
+                    .map_err(|e| e.to_string())?;
+                Ok(rows
+                    .iter()
+                    .filter(|row| row.type_id == BLOCKADE)
+                    .map(|row| (row.first_country, row.second_country))
+                    .collect())
+            })
+            .as_deref()
+            .map_err(Clone::clone)
+    }
+}
+
+/// The source's side toward the viewer: family before its directed war pointer.
+fn side(relations: &dyn Relations, raw: u32, viewer: u32) -> Fact<Side> {
+    let links = relations.links()?;
+    let slot = canonical(links, raw)?;
+    if relations.family(links, slot, viewer)? {
+        return Ok(Side::Friendly);
+    }
+    if relations.war(raw, viewer)? {
+        Ok(Side::Enemy)
+    } else {
+        Ok(Side::Neutral)
+    }
+}
+
+fn blockade(relations: &dyn Relations, raw: u32, viewer: u32) -> Fact<bool> {
+    let links = relations.links()?;
+    let source = canonical(links, raw)?;
+    if source == 0 || viewer == 0 {
+        return Err("naval blockade pointer for canonical Country0 is not recorded".into());
+    }
+    // Installed naval-blockade tuples retain source-to-viewer direction and membership. Retired,
+    // date and cancellation flags do not add another gate here.
+    for &(first, second) in relations.blockades()? {
+        if canonical(links, first)? == source && canonical(links, second)? == viewer {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn family(
@@ -313,7 +466,8 @@ fn zero_subject(
     )
 }
 
-fn cache_epoch(hour: replay_data::Hour, sampled: Option<replay_data::Hour>) -> Fact<()> {
+/// Whether NavalSupremacy sampled at `sampled` certifies the sorted cache at `hour`.
+pub fn cache_epoch(hour: replay_data::Hour, sampled: Option<replay_data::Hour>) -> Fact<()> {
     // The sorted supremacy cache rebuilds at midnight. Daily acquisition can straddle that boundary;
     // retain certified values within their cache epoch, without interpolating updates.
     match sampled {
@@ -325,7 +479,8 @@ fn cache_epoch(hour: replay_data::Hour, sampled: Option<replay_data::Hour>) -> F
     }
 }
 
-fn canonical(links: &BTreeMap<u32, u32>, raw: u32) -> Fact<u32> {
+/// A raw country reference's canonical slot; raw zero is Country0.
+pub fn canonical(links: &BTreeMap<u32, u32>, raw: u32) -> Fact<u32> {
     if raw == 0 {
         Ok(0)
     } else {
@@ -336,8 +491,17 @@ fn canonical(links: &BTreeMap<u32, u32>, raw: u32) -> Fact<u32> {
     }
 }
 
+/// Whether a cached subject pointer joins its recorded target, references resolved through `links`.
+pub fn subject(
+    subject: &replay_data::rows::ZeroSubjectInputs,
+    target: Fact<u32>,
+    links: &BTreeMap<u32, u32>,
+) -> Fact<bool> {
+    replay_derive::transport_subject_access::matches(subject, target, |raw| canonical(links, raw))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Side {
+pub enum Side {
     Friendly,
     Enemy,
     Neutral,
@@ -358,7 +522,7 @@ fn quotient(numerator: i64, denominator: i64) -> Fact<i64> {
 }
 
 fn classify(
-    rows: &[&NavalSupremacyRow],
+    rows: &[Supremacy],
     minimum: i64,
     ratio: i64,
     side: &mut dyn FnMut(u32) -> Fact<Side>,
@@ -704,12 +868,11 @@ mod tests {
         }
     }
 
-    fn row(country: u32, current: i64, previous: i64) -> NavalSupremacyRow {
-        NavalSupremacyRow {
+    fn row(country: u32, current: i64, previous: i64) -> Supremacy {
+        Supremacy {
             country,
             current,
             previous,
-            ..Default::default()
         }
     }
     #[test]
@@ -724,7 +887,7 @@ mod tests {
         };
         assert_eq!(
             classify(
-                &rows.iter().collect::<Vec<_>>(),
+                &rows,
                 100_000,
                 60_000,
                 side,
@@ -736,7 +899,7 @@ mod tests {
         let rows = [row(1, 0, -10), row(2, 0, 0)];
         assert!(
             classify(
-                &rows.iter().collect::<Vec<_>>(),
+                &rows,
                 100_000,
                 60_000,
                 side,
@@ -748,7 +911,8 @@ mod tests {
     #[test]
     fn faction_members_use_lazy_native_family_admission() {
         use replay_data::{
-            rows::CountryLinkRow, rows::FactionMemberRow, rows::TableId, rows::TableRows,
+            rows::CountryLinkRow, rows::FactionMemberRow, rows::NavalSupremacyRow, rows::TableId,
+            rows::TableRows,
         };
         use replay_frame::{frame::FrameDecoder, frame::FrameEncoder, frame::TableView};
         let mut source = frame();
@@ -823,7 +987,7 @@ mod tests {
         let rows = [row(1, 100_000, 0)];
         assert_eq!(
             classify(
-                &[&rows[0]],
+                &rows,
                 100_000,
                 60_000,
                 &mut |_| Ok(Side::Neutral),
@@ -834,7 +998,7 @@ mod tests {
         );
         assert!(
             classify(
-                &[&rows[0]],
+                &rows,
                 100_000,
                 60_000,
                 &mut |_| Ok(Side::Neutral),
@@ -926,7 +1090,7 @@ mod tests {
         let rows = [row(1, 1_000_000, 1_000_000)];
         assert_eq!(
             classify(
-                &[&rows[0]],
+                &rows,
                 content.regions[&19].minimum.clone().unwrap(),
                 content.ratio.clone().unwrap(),
                 &mut |_| Ok(Side::Friendly),

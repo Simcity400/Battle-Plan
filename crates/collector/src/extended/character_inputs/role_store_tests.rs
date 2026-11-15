@@ -91,13 +91,7 @@ impl World {
             })
             .collect();
         let mut census = RoleCensus::new(identities.len());
-        assert!(census.acquire_with_growth(
-            memory,
-            (BASE, STATE),
-            &identities,
-            identities.len(),
-            true
-        ));
+        assert!(census.gather(memory, (BASE, STATE), &identities, identities.len()));
         census
     }
 

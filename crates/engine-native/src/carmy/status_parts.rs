@@ -63,7 +63,6 @@ impl StatusPart {
             let seeds = seeds
                 .get(self.range.clone())
                 .ok_or("division status part sources invalid")?;
-            self.packet.enable_growth();
             self.packet
                 .grow(units.len(), MembershipCapacity::default())
                 .map_err(|_| "status seed allocation failed")?;

@@ -27,14 +27,10 @@ export function validateArmySizeReply(value: unknown): ArmySizeReply {
     || ((value.window === null) !== (value.interval === null))
     || !Array.isArray(value.measures) || !value.measures.every(measure => MEASURES.some(item => item.value === measure))
     || new Set(value.measures).size !== value.measures.length
-    || !Array.isArray(value.unknownMeasures) || !value.unknownMeasures.every(measure => MEASURES.some(item => item.value === measure)
-      && !(value.measures as unknown[]).includes(measure))
-    || new Set(value.unknownMeasures).size !== value.unknownMeasures.length || !validCountryValues(value)
+    || !validCountryValues(value)
     || value.series.some(series => series.identities !== undefined && (!isOrderedSpans(series.identities)
       || series.identities.some(identity => !unsigned32(identity.slot) || !unsigned32(identity.countryId))))
     || value.types.some(type => typeof type.name !== 'string')
-    || (value.templateSections !== undefined && (!Array.isArray(value.templateSections)
-      || !value.templateSections.every(section => typeof section === 'string')))
     || !Array.isArray(value.warnings) || !value.warnings.every(warning => typeof warning === 'string')) {
     throw new Error('The army size reply is malformed.');
   }
@@ -124,9 +120,9 @@ export function mergeArmyWindows(manifest: ArmySizeReply, windows: ReadonlyMap<n
     warnings: [...new Set([...manifest.warnings, ...replies.flatMap(reply => reply.warnings)])] };
 }
 
-/** Whether the reply offers `measure`: the recording reports it, or preparation has not yet read an hour that would. */
+/** Whether the reply offers `measure`: the recording reports it. */
 export const offersMeasure = (reply: ArmySizeReply | undefined, measure: ArmyMeasure) =>
-  !!reply && (reply.measures.includes(measure) || reply.unknownMeasures.includes(measure));
+  !!reply && reply.measures.includes(measure);
 
 /** Only measures the recording reports, or may still report while it is prepared, are
  * selectable. Empty keeps its default dynamic, so manpower can become that default once read. */
@@ -135,9 +131,8 @@ export function measureChoices(reply: ArmySizeReply | undefined): { value: strin
 }
 
 /** The chosen measure while the reply offers it; otherwise the first measure the recording reports. */
-export function armyMeasure(value: OptionValue, measures: readonly ArmyMeasure[] | undefined,
-  unknown: readonly ArmyMeasure[] = []): ArmyMeasure {
-  if (measures?.includes(value as ArmyMeasure) || unknown.includes(value as ArmyMeasure)) return value as ArmyMeasure;
+export function armyMeasure(value: OptionValue, measures: readonly ArmyMeasure[] | undefined): ArmyMeasure {
+  if (measures?.includes(value as ArmyMeasure)) return value as ArmyMeasure;
   return MEASURES.find(item => measures?.includes(item.value))?.value ?? 'divisions';
 }
 
@@ -149,6 +144,30 @@ export function armySizeRequest(branchId: string, resolved: { tags: readonly str
 
 export const measureName = (measure: ArmyMeasure) => MEASURES.find(item => item.value === measure)!.label;
 export const formatArmyValue = (value: number) => usFiveDecimals.format(value);
+/** `digits` with a comma between each group of three, as `usNumber` groups them. */
+function grouped(digits: string): string {
+  if (digits.length <= 3) return digits;
+  const head = digits.length % 3 || 3;
+  let out = digits.slice(0, head);
+  for (let at = head; at < digits.length; at += 3) out += `,${digits.slice(at, at + 3)}`;
+  return out;
+}
+
+/** A raw army value as `formatArmyRaw` writes it, from a number: none where it is not a safe integer. */
+function formatSafeArmy(raw: number, measure: ArmyMeasure): string | null {
+  if (!Number.isSafeInteger(raw)) return null;
+  const sign = raw < 0 ? '-' : '', magnitude = Math.abs(raw);
+  if (measure !== 'strength') return sign + grouped(String(magnitude));
+  const fraction = String(magnitude % 100000).padStart(5, '0').replace(/0+$/, '');
+  return `${sign}${grouped(String(Math.floor(magnitude / 100000)))}${fraction ? `.${fraction}` : ''}`;
+}
+
+/** `formatArmyRaw` of a raw value, without `Intl` while it is a safe integer. */
+export function formatArmyRawFast(raw: bigint | number, measure: ArmyMeasure): string {
+  return (typeof raw === 'number' || (raw >= -9_007_199_254_740_991n && raw <= 9_007_199_254_740_991n) ? formatSafeArmy(Number(raw), measure) : null)
+    ?? formatArmyRaw(raw.toString(), measure);
+}
+
 export function formatArmyRaw(raw: string, measure: ArmyMeasure): string {
   const value = BigInt(raw);
   if (measure !== 'strength') return usNumber.format(value);
@@ -181,6 +200,5 @@ export const armyMetadataRequest = (track: BoundTrack | undefined) => track ? {
   params: armySizeRequest(track.branch.id, { tags: [] }, METADATA_MEASURE, 'owner', false),
 } : null;
 
-/** The recording reports no army: never said while preparation may still find one. */
-export const armyAbsent = (manifest: ArmySizeReply) =>
-  !manifest.available && !manifest.unknownMeasures.includes(METADATA_MEASURE);
+/** The recording reports no army. */
+export const armyAbsent = (manifest: ArmySizeReply) => !manifest.available;

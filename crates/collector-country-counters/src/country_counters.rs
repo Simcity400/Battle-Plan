@@ -317,7 +317,7 @@ impl Captured {
             };
             let mut prefix_reader = None;
             self.rows.outcome = match store.as_deref_mut() {
-                Some(store) => ccountry::walk_counter_inputs_carried_growing(
+                Some(store) => ccountry::walk_counter_inputs_carried(
                     memory,
                     base,
                     state,
@@ -331,7 +331,7 @@ impl Captured {
                         store.offer(memory, country, rosters, effects)
                     },
                 ),
-                None => ccountry::walk_counter_inputs_with_effect_rosters_observed_growing(
+                None => ccountry::walk_counter_inputs_with_effect_rosters_observed(
                     memory,
                     base,
                     state,
@@ -349,7 +349,7 @@ impl Captured {
             self.neighbors.required = effects.required.neighbors;
             self.policies.len = effects.policy_len;
             self.policies.required = effects.required.policies;
-            let reverse_ticks = self.capture_relations_with_reverse::<_, true>(
+            let reverse_ticks = self.capture_relations_with_reverse(
                 memory,
                 base,
                 state,
@@ -366,7 +366,7 @@ impl Captured {
             let _reads = crate::read_accounting::table(TABLES[1]);
             let begin = qpc();
             self.civil_wars.outcome =
-                ccountry::walk_civil_wars_growing(memory, base, state, &mut self.civil_wars.rows);
+                ccountry::walk_civil_wars(memory, base, state, &mut self.civil_wars.rows);
             ticks[1] = qpc().saturating_sub(begin).max(0) as u64;
         }
         ticks
@@ -376,13 +376,13 @@ impl Captured {
     /// owner consumes no target span, so later owners can use the same space.
     #[cfg(test)]
     fn capture_relations(&mut self, memory: &impl Memory, base: usize, state: usize) {
-        self.capture_relations_with_reverse::<_, true>(memory, base, state, None, None, None);
+        self.capture_relations_with_reverse(memory, base, state, None, None, None);
     }
 
     /// A row whose counter row `store` carried takes its held suffix and
     /// co-belligerent targets instead of reading them; its pride ship name,
     /// census resolution and reverse visibility cell are still read.
-    fn capture_relations_with_reverse<M: Memory, const GROWING: bool>(
+    fn capture_relations_with_reverse<M: Memory>(
         &mut self,
         memory: &M,
         base: usize,
@@ -406,7 +406,7 @@ impl Captured {
         // source header. Source/cell zero are independent of positive census
         // availability; no second positive walker or pointer arena exists.
         let source = reverse.as_mut().and_then(|request| {
-            request.capture.prepare_growing(
+            request.capture.prepare(
                 memory,
                 request.hour,
                 request.observation.take(),
@@ -473,11 +473,7 @@ impl Captured {
                 store.and_then(|store| store.carried_relation(index, len, prefix.country))
             {
                 let start = self.co_belligerents.len;
-                let mut output = if GROWING {
-                    engine_native::walk::Buffer::GrowingFrom(&mut self.co_belligerents.first, start)
-                } else {
-                    engine_native::walk::Buffer::Fixed(&mut self.co_belligerents.first[start..])
-                };
+                let mut output = engine_native::walk::Buffer::GrowingFrom(&mut self.co_belligerents.first, start);
                 if output.ensure(targets.len()) == Ok(true) && targets.len() <= output.len() {
                     output[..targets.len()].copy_from_slice(targets);
                     *row = RelationRow {
@@ -509,14 +505,10 @@ impl Captured {
                 }
             }
             let mut forward = crelation_status::ForwardZeroObservation::default();
-            let targets = if GROWING {
+            let targets = {
                 engine_native::walk::Buffer::GrowingFrom(
                     &mut self.co_belligerents.first,
                     self.co_belligerents.len,
-                )
-            } else {
-                engine_native::walk::Buffer::Fixed(
-                    &mut self.co_belligerents.first[self.co_belligerents.len..],
                 )
             };
             let inputs = crelation_status::co_belligerent_inputs_observed_buffer(
@@ -1187,21 +1179,21 @@ mod tests {
     }
 
     #[test]
-    fn relation_suffix_shortfall_preserves_later_country_and_independent_zero_war() {
+    fn relation_suffix_grows_and_preserves_later_country_and_independent_zero_war() {
         let mut bytes = co_world();
         let memory = SliceMemory {
             base: 0,
             bytes: &bytes,
         };
         let mut capture = co_capture(1);
-        capture.capture_relations_with_reverse::<_, false>(&memory, 0, CO_STATE, None, None, None);
+        capture.capture_relations_with_reverse(&memory, 0, CO_STATE, None, None, None);
         assert_eq!(capture.rows.outcome, Outcome::Rows { len: 2 });
         assert_eq!(
             (
                 capture.co_belligerents.len,
                 capture.co_belligerents.required
             ),
-            (1, 3)
+            (3, 3)
         );
         let TableView::Complete(replay_data::rows::TableRows::CountryCounterInputs(rows)) =
             capture.counter_table()
@@ -1209,7 +1201,7 @@ mod tests {
             panic!("prefix lost")
         };
         assert_eq!(rows[0].owned_state_count, 7);
-        assert_eq!(rows[0].co_belligerents, Recorded::Value(None));
+        assert_eq!(rows[0].co_belligerents, Recorded::Value(Some(vec![0, 2])));
         assert_eq!(rows[0].zero_war, Recorded::Value(Some([0, 0])));
         assert_eq!(rows[1].co_belligerents, Recorded::Value(Some(vec![0])));
         let mut capacity = Capacities {

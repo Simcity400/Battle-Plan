@@ -54,7 +54,7 @@ impl Action {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) struct State {
     pub details: bool,
     pub enemy: bool,
@@ -122,6 +122,7 @@ impl State {
     }
 }
 
+#[derive(Debug)]
 pub(crate) struct Chart {
     pub graphs: Vec<Vec<[f32; 4]>>,
 }

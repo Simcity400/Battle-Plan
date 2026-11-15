@@ -62,8 +62,6 @@ pub(crate) struct Part {
 
 impl Part {
     pub(crate) fn new() -> Self {
-        let mut hosts = AssignedSources::default();
-        hosts.enable_worker_growth();
         Self {
             roots: Vec::new(),
             root_outcome: Outcome::Unavailable {
@@ -80,7 +78,7 @@ impl Part {
             links: Vec::new(),
             names: Vec::new(),
             order: PlanOrder::default(),
-            hosts,
+            hosts: AssignedSources::default(),
             plan: None,
             census_ticks: 0,
             plan_ticks: 0,

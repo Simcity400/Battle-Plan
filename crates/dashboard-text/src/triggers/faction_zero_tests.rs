@@ -150,7 +150,7 @@ fn only_known_clearing_carriers_use_the_reserved_faction_fallback() {
             evaluator
                 .enter(&parsed, Scopes::empty())
                 .unwrap_err()
-                .contains("ReservedCountryNaming")
+                .contains("reserved country naming")
         );
     });
 }

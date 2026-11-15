@@ -71,11 +71,64 @@ use {
     viewer_world::map::scene::Request,
 };
 
+pub(crate) mod combat_rows;
 mod drop;
 mod embedded;
-mod faction_highlight;
+pub(crate) mod faction_highlight;
+
+/// The political part's limitation lines: with the playhead's map open, the political, naval and
+/// mode fills layers' own while the political layer draws (its refusal is the map's own line
+/// otherwise); without it, `today`'s.
+pub(crate) fn political_lines(side: Option<&crate::playhead_host::MapSide>, today: &[String]) -> Vec<String> {
+    let Some(side) = side else { return today.to_vec() };
+    match side.parts().filter(|_| side.draws("political")) {
+        Some((_, layers)) => {
+            let political = layers.iter().filter_map(|layer| layer.any().downcast_ref::<crate::layers::political::Political>()).flat_map(|layer| layer.warnings());
+            let naval = layers.iter().filter_map(|layer| layer.any().downcast_ref::<crate::layers::naval::Naval>()).flat_map(|layer| layer.warnings());
+            let modes = layers.iter().filter_map(|layer| layer.any().downcast_ref::<crate::layers::mode_fills::ModeFills>()).flat_map(|layer| layer.lines());
+            political.chain(naval).chain(modes).collect()
+        }
+        None => Vec::new(),
+    }
+}
+
+/// The lines the playhead's map gives in place of today's hour's: its limitation lines (the tables'
+/// notes, the drawn layers' own with `raids`, the scripts reader's raid arrows, and each refused
+/// layer), and the battle plan's, the map buildings' and the unit models' own reports, each from
+/// its layer while it draws (the ships' within the units layer's while that draws).
+pub(crate) fn map_lines(side: &crate::playhead_host::MapSide, raids: &[String]) -> [Vec<String>; 2] {
+    let limitations = crate::playhead_host::limitations::lines(side, raids).unwrap_or_else(|| vec![MAP_LINES_LOADING.to_owned()]);
+    let mut lines = Vec::new();
+    if let Some((_, layers)) = side.parts() {
+        let layer = |name: &str| layers.iter().find(|layer| layer.name() == name && side.draws(name));
+        if let Some(orders) = layer("orders").and_then(|layer| layer.any().downcast_ref::<crate::layers::orders::Orders>()) {
+            lines.extend(orders.warnings());
+        }
+        if let Some(buildings) = layer("buildings").and_then(|layer| layer.any().downcast_ref::<crate::layers::buildings::BuildingsFed>()) {
+            lines.extend_from_slice(buildings.warnings());
+        }
+        match layer("units").and_then(|layer| layer.any().downcast_ref::<crate::layers::units::Units>()) {
+            Some(units) => lines.extend(units.warnings()),
+            None => {
+                if let Some(ships) = layer("ships").and_then(|layer| layer.any().downcast_ref::<crate::layers::ships::Ships>()) {
+                    lines.extend_from_slice(ships.warnings());
+                }
+            }
+        }
+        if let Some(aircraft) = layer("aircraft").and_then(|layer| layer.any().downcast_ref::<crate::layers::aircraft::Aircraft>()) {
+            lines.extend(aircraft.warning());
+        }
+    }
+    [limitations, lines]
+}
+
+/// The map's limitation line while its head has reached no hour.
+pub(crate) const MAP_LINES_LOADING: &str = "Map limitations: loading, the playback head has reached no hour yet";
+pub(crate) mod head_rows;
 pub(crate) mod highlight;
+pub(crate) mod laid_proof;
 mod hover_report;
+pub(crate) mod hover_rows;
 pub(crate) mod fly;
 mod fly_aircraft;
 pub(crate) mod picker;
@@ -157,7 +210,13 @@ mod initial_source_tests;
 #[cfg(test)]
 mod map_mode_fixture_tests;
 #[cfg(test)]
+mod map_state_tests;
+#[cfg(test)]
+mod warning_lines_tests;
+#[cfg(test)]
 mod render_failure_tests;
+#[cfg(test)]
+mod spine_tests;
 
 /// The egui memory key of the dashboard map that owns keyboard input: the one last pressed.
 const MAP_INPUT_OWNER: &str = "map camera input owner";
@@ -365,6 +424,19 @@ struct HeldClock {
     at: Instant,
 }
 
+/// What the window last presented of the playhead's map: its histories (day and night, the
+/// counters' movement, the audio) follow today's continuity rule over these.
+#[derive(Debug, Default)]
+struct MapPresented {
+    /// Branch, drawn hour and viewing country of the last picture presented.
+    last: Option<(replay_data::BranchId, i32, Option<String>)>,
+    /// The host's reset count when the window asked for a seek, until a picture composed after it
+    /// is shown.
+    seek: Option<u64>,
+    /// A reader opened since: its first picture is a seek's.
+    reopened: bool,
+}
+
 /// What the frame path keeps of the hour on screen once its layers are uploaded.
 struct ShownHour {
     epoch: u64,
@@ -542,11 +614,34 @@ struct Uploaded {
     /// The hour's battle plan, which the frame uploads once with its air orders; hours with the
     /// same plan tables share one (`viewer_counter_products::map::orders::TABLES`).
     orders: Option<Arc<viewer_foundation::map::ribbon_content::OrderField>>,
-    air_order_sources: Option<(
-        Arc<viewer_foundation::map::ribbon_content::OrderField>,
-        Arc<viewer_world::map::air_orders::Prepared>,
-        Vec<u64>,
-    )>,
+    /// What the scene's order parts were last given from, and the air orders as last highlighted.
+    order_key: Option<OrderKey>,
+    air_field: Option<((usize, Vec<u64>), Arc<viewer_foundation::map::ribbon_content::OrderField>)>,
+}
+
+/// What the scene's order parts are given from: the plan, the raid arrows and the trade routes by
+/// their producers' allocation and product, and the air orders by theirs and the bases they
+/// highlight. A new one hands the scene the parts, which writes only what changed in them.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct OrderKey {
+    pub plan: usize,
+    pub raids: usize,
+    pub routes: Option<u64>,
+    pub air: Option<(usize, Vec<u64>)>,
+}
+
+/// An order part's allocation, none as zero.
+pub(crate) fn order_at<T>(held: Option<&Arc<T>>) -> usize {
+    held.map_or(0, |held| Arc::as_ptr(held) as usize)
+}
+
+/// The order parts the map's layers give: the orders layer's plan, the hour's raid arrows (made
+/// with the overlay's tables at the head) and, while the convoys and units draw, the trade routes'
+/// product.
+struct LayeredOrders {
+    plan: Option<Arc<viewer_foundation::map::ribbon_content::OrderField>>,
+    raids: Option<Arc<viewer_foundation::map::ribbon_content::OrderField>>,
+    routes: Option<u64>,
 }
 
 /// Asks the desktop host to show or hide diagnostics with Ctrl, since F3 alone selects the air
@@ -602,6 +697,9 @@ struct Capture {
     step: f32,
     frames: u32,
     index: u32,
+    /// The harness's paced frames follow a wall clock, as a window's do: none waits for its hour,
+    /// its icons or its raid cycle.
+    paced: bool,
 }
 
 /// The open maps whose visual mods changed since they loaded, each with the revision it loaded
@@ -642,7 +740,7 @@ type MatchGame = ((u64, usize), (Raster, Option<String>));
 
 /// What an overlay was laid out for: the hour, the camera and frame, the perspective and the
 /// counter options.
-#[derive(PartialEq)]
+#[derive(Clone, PartialEq)]
 struct OverlayKey {
     occupation: Option<viewer_world::map::occupation_icons::Mode>,
     branch: replay_data::BranchId,
@@ -661,6 +759,192 @@ struct OverlayKey {
     visibility: viewer_foundation::map::mode_visibility::Visibility,
     /// The Operatives map mode, whose intel icons the overlay then lays out.
     operatives: bool,
+    /// The rows at the head the overlay's camera-bound inputs read: their hour and allocation.
+    rows: Option<(replay_data::Hour, usize)>,
+    /// The counter layers' products it was laid out with (their addresses, zero for a kind
+    /// today's tables draw).
+    layered: [usize; 6],
+}
+
+/// What the open map's overlay tables are made from: the rows at the head (their branch, hour and
+/// allocation), the perspective and the vision the vision layer shows, the engaged index's cover,
+/// and what the layers draw instead.
+#[derive(Clone, Debug, PartialEq)]
+struct TablesKey {
+    branch: replay_data::BranchId,
+    hour: replay_data::Hour,
+    rows: usize,
+    perspective: Choice,
+    vision: usize,
+    engaged: bool,
+    left_out: viewer_counters::map::counters::Kinds,
+    labels: bool,
+    /// What the view needs of the tables ([`overlay_need`]).
+    need: viewer_counters::map::counters::Need,
+}
+
+/// An overlay laid out on the tables' worker from the rows its tables were made from, for the
+/// camera and view of the frame that asked: the frame thread takes it whole.
+struct Laid {
+    key: OverlayKey,
+    prepared: std::io::Result<crate::document::PreparedOverlay>,
+    /// What the layout read that its rows do not hold.
+    missed: Vec<replay_data::rows::TableId>,
+    /// The memory it laid the counters out on.
+    on: Arc<crate::map_views::Presentation>,
+    /// The rows it was laid out from and the parts left to the map's layers ([`laid_proof`]).
+    rows: Arc<replay_frame::frame::DecodedFrame>,
+    left: crate::document::LeftToLayers,
+    /// Under the gate, the view's counter layers' products when the worker was asked.
+    asked: Option<Arc<crate::map_views::Presentation>>,
+    /// The map's layers' products laid in with it.
+    lay_ins: Arc<LayIns>,
+    times: LaidTimes,
+}
+
+/// How long the worker's build took, part by part: in the pool's queue, the tables (with the
+/// layers' products set in them), the layout (with those laid in).
+struct LaidTimes {
+    asked: Instant,
+    queued: Duration,
+    tables: Duration,
+    layout: Duration,
+    /// The tables' parts, nested inclusively, while frames are measured.
+    parts: Vec<viewer_foundation::profiling::BuilderSpan>,
+    /// The tables' thread CPU time: beside `tables`, what of its wall time the thread ran.
+    tables_cpu: Option<Duration>,
+}
+
+impl LaidTimes {
+    /// Counted for the frame that takes the build, in microseconds; `age` from the ask to the take.
+    fn note(&self) {
+        use viewer_foundation::map::redraws::note;
+        let micros = |duration: Duration| u64::try_from(duration.as_micros()).unwrap_or(u64::MAX);
+        note("laid.queued_us", micros(self.queued));
+        note("laid.tables_us", micros(self.tables));
+        note("laid.layout_us", micros(self.layout));
+        note("laid.age_us", micros(self.asked.elapsed()));
+        viewer_foundation::view_record::add("overlay", "tables_built", 1);
+        viewer_foundation::view_record::add("overlay", "tables_us", micros(self.tables));
+        viewer_foundation::view_record::add("overlay", "worker_layout_us", micros(self.layout));
+        // Each part's wall time in microseconds, under its span's name.
+        if let Some(cpu) = self.tables_cpu {
+            note("laid.tables_cpu_us", micros(cpu));
+        }
+        // A part's wall time well over its CPU time waited (a lock, a shared build) or lost its core.
+        for part in &self.parts {
+            note(part.name, (part.ms * 1000.0) as u64);
+            viewer_foundation::view_record::add("overlay tables wall", part.name, (part.ms * 1000.0) as u64);
+            if let Some(cpu_ms) = part.cpu_ms {
+                viewer_foundation::view_record::add("overlay tables cpu", part.name, (cpu_ms * 1000.0) as u64);
+            }
+        }
+    }
+}
+
+/// The map's layers' products the overlay lays in over the hour's own (labels, intel icons,
+/// resource icons, occupation marks), taken when the worker is asked, so the layout it makes
+/// holds them and the frame that installs it lays nothing in again.
+#[derive(Default)]
+pub(crate) struct LayIns {
+    labels: Option<(Arc<map_display_data::landscape::Labels>, u32)>,
+    intel: Option<Arc<viewer_raids::map::intel_icons::IntelIcons>>,
+    resources: Option<(viewer_world::map::resource_icons::HourIcons, u64)>,
+    occupation: Option<(viewer_world::map::occupation_icons::Marks, u64)>,
+}
+
+impl LayIns {
+    fn of(side: Option<&crate::playhead_host::MapSide>) -> Self {
+        let Some(side) = side else { return Self::default() };
+        Self {
+            labels: crate::layers::labels::drawn(side),
+            intel: crate::layers::intel_icons::drawn(side),
+            resources: crate::layers::resource_icons::drawn(side).map(|layer| (layer.icons(), layer.version())),
+            occupation: crate::layers::occupation_marks::drawn(side).map(|layer| (layer.marks(), layer.version())),
+        }
+    }
+
+    /// Sets the labels and intel icons in `tables`, as the frame does after installing them.
+    fn set(&self, tables: &mut crate::document::OverlayTables) {
+        if let Some((labels, ours)) = &self.labels {
+            tables.set_labels(labels, *ours);
+        }
+        if let Some(intel) = &self.intel {
+            tables.set_intel(intel);
+        }
+    }
+
+    /// Lays the resource icons and occupation marks in, as the frame's `lay_in_layers` does.
+    pub(crate) fn lay(&self, prepared: &mut crate::document::PreparedOverlay, hour: &crate::document::Hour<'_>, camera: Camera, pixels: [u32; 2], ui_scale: f32, ours: u32) {
+        if let Some((icons, version)) = &self.resources {
+            prepared.replace_resource_icons(hour, camera, pixels, ui_scale, icons, *version);
+        }
+        if let Some((marks, version)) = &self.occupation {
+            prepared.replace_occupation_icons(hour, camera, pixels, ui_scale, ours, marks, *version);
+        }
+    }
+}
+
+impl OverlayKey {
+    /// The same camera and view: the two differ at most in the hour and rows they stand for and in
+    /// the counter layers' products.
+    fn same_view(&self, other: &Self) -> bool {
+        let other = OverlayKey { branch: self.branch, hour: self.hour, rows: self.rows, layered: self.layered, ..other.clone() };
+        *self == other
+    }
+
+    /// The same in all but the counter layers' products: only the counters are laid out again.
+    fn same_but_layered(&self, other: &Self) -> bool {
+        let layered = self.layered;
+        let other = OverlayKey { layered, ..other.clone() };
+        *self == other
+    }
+}
+
+/// What asks for the overlay `now` against the one laid out `at`, by kind: the first, the hour
+/// (the rows at the head), the camera, the view (perspective, options, selections, hover, mode),
+/// and each counter layer's product (in [`viewer_counters::map::counters::Layered::identity`]'s
+/// order).
+fn overlay_asks(at: Option<&OverlayKey>, now: &OverlayKey) -> Vec<&'static str> {
+    const LAYERED: [&str; 6] = [
+        "asked.layers.land",
+        "asked.layers.land_markers",
+        "asked.layers.naval_markers",
+        "asked.layers.bases",
+        "asked.layers.guns",
+        "asked.layers.air",
+    ];
+    let Some(at) = at else {
+        return vec!["asked.first"];
+    };
+    let mut asks = Vec::new();
+    if (at.branch, at.hour, at.rows) != (now.branch, now.hour, now.rows) {
+        asks.push("asked.hour");
+    }
+    if (at.camera, at.pixels, at.ui_scale.to_bits()) != (now.camera, now.pixels, now.ui_scale.to_bits()) {
+        asks.push("asked.camera");
+    }
+    if at.perspective != now.perspective
+        || at.counter_settings != now.counter_settings
+        || at.selected != now.selected
+        || at.air_selected != now.air_selected
+        || at.air_bases != now.air_bases
+        || at.fleets_selected != now.fleets_selected
+        || at.hovered != now.hovered
+        || at.visibility != now.visibility
+        || at.operatives != now.operatives
+        || at.occupation != now.occupation
+    {
+        asks.push("asked.view");
+    }
+    asks.extend(
+        LAYERED
+            .iter()
+            .zip(at.layered.iter().zip(&now.layered))
+            .filter(|(_, (at, now))| at != now)
+            .map(|(ask, _)| *ask),
+    );
+    asks
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1022,6 +1306,8 @@ pub struct Viewer {
     /// the diagnostics box over an embedded map ([`map_overlay`]).
     pub(crate) interface_points: f32,
     embedded: Option<crate::embedded::Controller>,
+    /// The toggle harness's map service, standing in for the desktop host's ([`Self::service`]).
+    harness_service: Option<Arc<dashboard::Service>>,
     embedded_open: Option<crate::embedded::OpenRequest>,
     embedded_seek: Option<crate::embedded::Seek>,
     revision: Option<String>,
@@ -1061,6 +1347,12 @@ pub struct Viewer {
     start_pick: drop::Pick,
     /// The overlay as a free eye shows it this frame ([`free_icons::present`]).
     free_overlay: Batch,
+    /// Raised each time the overlay's batch may have been written: what [`Self::free_overlay`]
+    /// was placed from.
+    overlay_written: u64,
+    /// What the free eye's placing last read (its camera, viewport, scale and the batch it
+    /// placed): the same again places the same quads, so they stand.
+    free_presented: Option<(viewer_foundation::map::camera::Camera, [u32; 2], u32, u64)>,
     /// The icons a free eye shows this frame, which the pointer's hits follow; `None` when the
     /// overlay draws as laid out.
     looks: Option<free_icons::Looks>,
@@ -1134,6 +1426,11 @@ pub struct Viewer {
     visual_report: Option<crate::visual_fallback::Report>,
     /// Whether the last `map` call drew the map ([`crate::visual_fallback::settled`]).
     drew_frame: bool,
+    /// The playback-cost harness's layers-only run: today's hour pipeline is never started.
+    pub(crate) layers_only: bool,
+    /// The harness's warm-up: the map's first picture is composed and uploaded, the scene not
+    /// rendered, so a run's first frame is the scene's first render, as without the warm-up.
+    pub(crate) warming: bool,
     /// The revision a check found the Campaign map's visual mods changed from, reloaded once no
     /// load runs.
     visual_stale_campaign: Option<String>,
@@ -1153,6 +1450,26 @@ pub struct Viewer {
     map_animation_target: Option<Target>,
     /// The worker threads that build every hour's layers off the frame path.
     hours: Option<hours::Pipeline>,
+    /// The map's reader of the playhead of the recording on screen, unless it was refused.
+    playhead_map: Option<crate::playhead_host::MapSide>,
+    /// A dashboard map opened its playhead reader since it was installed or last not drawn.
+    playhead_opened: bool,
+    /// The rows at the head (hour, frame) the overlay on screen was laid out from; none before
+    /// its first layout over them.
+    overlay_laid: Option<(replay_data::Hour, usize)>,
+    /// The head tables (their rows' hour and frame) last given to the counter layers, and those
+    /// they held when the reader last drew: what its settled picture shows of them.
+    counters_given: Option<(replay_data::Hour, usize)>,
+    counters_drawn: Option<(replay_data::Hour, usize)>,
+    /// The document on screen has shown a whole picture since it was installed; until then the
+    /// spinner covers what is drawn beneath it.
+    shown_whole: bool,
+    /// The map's reader being made on a worker; today's picture is drawn until then.
+    playhead_opening: Option<crate::playhead_host::Opening>,
+    /// What the window last presented of the playhead's map, for its own histories.
+    presented: MapPresented,
+    /// Today's pipeline's last error while the playhead's map is open, printed once.
+    today_error: Option<String>,
     /// The engaged-flag index of the recording last closed, for a newer
     /// snapshot of it to continue.
     engaged_carry: Option<Arc<crate::engaged_index::EngagedIndex>>,
@@ -1168,8 +1485,17 @@ pub struct Viewer {
     uploaded: Uploaded,
     /// Frees the hours the window let go of off the frame path.
     dropper: Option<Arc<Dropper>>,
+    /// The app's worker threads: the host's shared ones, else this window's own once first asked.
+    worker_pool: Option<Arc<crate::worker_pool::WorkerPool>>,
     // close zoom
     unit_models: Option<Arc<viewer_world::map::unit_models::PreparedModels>>,
+    /// While the units layer does not draw: the hour's unit models as made without ships, and the
+    /// ships layer's number joined to them in `unit_models`.
+    ships_shipless: Option<Arc<viewer_world::map::unit_models::PreparedModels>>,
+    ships_joined: Option<u64>,
+    /// Whether the ships layer stands in for today's ships and the aircraft layer draws its plan, as
+    /// last seen; kept while the layers compose.
+    movers_layered: (bool, bool),
     /// Whether the scene holds `unit_models`' field. It does not move within
     /// the hour, so each installed hour uploads it once.
     unit_field_uploaded: bool,
@@ -1196,15 +1522,38 @@ pub struct Viewer {
     label_report: LabelReport,
     /// The raid offer cycle, advanced off the frame path.
     raid_lane: crate::raid_lane::RaidLane,
-    faction_highlight: faction_highlight::Lane,
-    raid_tooltips: viewer_raids::map::raids::tooltips::lane::Lane,
-    land_marker_tooltips: combat::land_marker_tooltips::Cache,
-    naval_marker_tooltips: combat::naval_marker_tooltips::Cache,
-    province_tooltips: viewer_counter_products::map::province_tooltips::Cache,
-    /// The terrain map mode's province hover, which replaces the political one.
-    terrain_tooltips: combat::terrain_mode::Cache,
-    counter_tooltips: viewer_counter_products::map::counter_tooltips::Cache,
-    division_panel_tooltips: viewer_combat::DivisionPanelCache,
+    faction_highlight: faction_highlight::Lane<faction_highlight::Prepared>,
+    hover_rows: hover_rows::HoverRows,
+    /// The selection observers, the overlay's camera-bound inputs, the walk camera, the clock's
+    /// speed and the picker, over rows at the head while the map's playhead is on.
+    head_rows: head_rows::HeadRows,
+    /// With the playhead's map open: the rows at the head the overlay was last made from, kept
+    /// while its reader loads, and the build of its tables from them.
+    overlay_frame: Option<Arc<replay_frame::frame::DecodedFrame>>,
+    overlay_tables_job: head_rows::tables::Job<TablesKey, (std::io::Result<crate::document::OverlayTables>, Option<Laid>)>,
+    /// The counters' memory the tables' worker lays the overlay out on, over the view's schedule and
+    /// movement ([`crate::map_views::Presentation::sharing`]), for the view it was made from.
+    overlay_laying: Option<(Arc<crate::map_views::Presentation>, Arc<crate::map_views::Presentation>)>,
+    /// What the overlay laid out last for the open map was laid out for ([`Self::install_overlay`]).
+    overlay_shown: Option<OverlayKey>,
+    /// The overlay key of the frame before, which the asks are counted against.
+    overlay_last_asked: Option<OverlayKey>,
+    /// The hour fraction the overlay was last drawn at.
+    overlay_drawn_fraction: Option<f32>,
+    /// The head tables' lookups by key counted so far: (tables, made, kept).
+    overlay_lookups: Option<(usize, u64, u64)>,
+    /// The equality gate of the overlay the worker lays out (`--laid-proof N`).
+    pub(crate) laid_proof: Option<laid_proof::LaidProof>,
+    /// The tables last made from rows at the head, which `overlay_tables` holds while the map is
+    /// open (sharing every part); put back when today's install replaced them.
+    head_tables: Option<(TablesKey, crate::document::OverlayTables)>,
+    /// The overlay's reads that its rows at the head do not hold yet, by name.
+    overlay_loading: Vec<String>,
+    /// The tables the overlay's last layout read that its rows did not hold, until one is made.
+    overlay_missed: Vec<replay_data::rows::TableId>,
+    /// The raid offer cycle and music chances from rows at the head, while the playhead is on.
+    scripts: crate::layers::scripts::Scripts,
+    combat_rows: combat_rows::CombatRows,
     tooltip_refused: BTreeMap<String, usize>,
     // counters
     counter_report: CounterReport,
@@ -1318,88 +1667,73 @@ fn load_scene_scoped(
     graphics: dashboard::protocol::MapGraphics,
     workers: &viewer_foundation::parallel::Workers,
 ) -> std::io::Result<Scene> {
-    let textures =
+    use viewer_foundation::load_record::stage;
+    let textures = {
+        let _stage = stage("scene.textures");
         document
             .scene_textures
-            .warm(device, queue, &document.assets, &document.icons.images)?;
-    let mut scene = Scene::with_textures(
-        device,
-        queue,
-        textures,
-        &document.assets,
-        &document.icons.lazy,
-        graphics,
-        workers,
-    )?;
-    scene.apply(
-        device,
-        queue,
+            .warm(device, queue, &document.assets, &document.icons.images)?
+    };
+    let mut scene = {
+        let _stage = stage("scene.passes");
+        Scene::with_textures(
+            device,
+            queue,
+            textures,
+            &document.assets,
+            &document.icons.lazy,
+            graphics,
+            workers,
+        )?
+    };
+    let mut apply = |name: &'static str, input: SceneInput<'_>| {
+        let _stage = stage(name);
+        scene.apply(device, queue, input)
+    };
+    apply(
+        "scene.animated_text",
         SceneInput::InstallAnimatedText {
             assets: &document.icons.animated_text,
             gui: &document.icons.counters.gui,
         },
     )?;
-    scene.apply(
-        device,
-        queue,
+    apply(
+        "scene.borders",
         SceneInput::SetBorders {
             assets: &document.border_assets,
             meshes: &document.border_meshes,
             straits: &document.straits,
         },
     )?;
-    scene.apply(
-        device,
-        queue,
+    apply(
+        "scene.rivers",
         SceneInput::SetRivers {
             assets: &document.river_assets,
             mesh: &document.river_mesh,
         },
     )?;
-    scene.apply(
-        device,
-        queue,
+    apply(
+        "scene.trees",
         SceneInput::SetTrees {
             assets: &document.tree_assets,
             geometry: document.tree_geometry.clone(),
             field: &document.tree_field,
         },
     )?;
-    scene.apply(device, queue, SceneInput::SetSprawl(&document.sprawl))?;
+    apply("scene.sprawl", SceneInput::SetSprawl(&document.sprawl))?;
     // The map's ambient objects and the nuclear impact entities share this pass,
     // as in a dump: their sounds and impacts need it in every window.
-    scene.apply(
-        device,
-        queue,
-        SceneInput::SetMapFrame(&document.frame_assets),
-    )?;
-    scene.apply(device, queue, SceneInput::WarmTrains(&document.trains))?;
-    scene.apply(device, queue, SceneInput::WarmAircraft(&document.aircraft))?;
-    scene.apply(
-        device,
-        queue,
-        SceneInput::WarmUnitModels(&document.unit_models),
-    )?;
-    scene.apply(
-        device,
-        queue,
-        SceneInput::WarmMapBuildings(&document.map_buildings),
-    )?;
-    scene.apply(device, queue, SceneInput::WarmBridges(&document.bridges))?;
-    scene.apply(
-        device,
-        queue,
-        SceneInput::WarmRailways(&document.rail_assets),
-    )?;
-    scene.apply(device, queue, SceneInput::WarmOrders(&document.orders))?;
-    scene.apply(
-        device,
-        queue,
-        SceneInput::WarmWeather(document.weather_effects.clone()),
-    )?;
-    scene.apply(
-        device,
-        queue,
+    apply("scene.map_frame", SceneInput::SetMapFrame(&document.frame_assets))?;
+    apply("scene.trains", SceneInput::WarmTrains(&document.trains))?;
+    apply("scene.aircraft", SceneInput::WarmAircraft(&document.aircraft))?;
+    apply("scene.unit_models", SceneInput::WarmUnitModels(&document.unit_models))?;
+    apply("scene.map_buildings", SceneInput::WarmMapBuildings(&document.map_buildings))?;
+    apply("scene.bridges", SceneInput::WarmBridges(&document.bridges))?;
+    apply("scene.railways", SceneInput::WarmRailways(&document.rail_assets))?;
+    apply("scene.orders", SceneInput::WarmOrders(&document.orders))?;
+    apply("scene.weather", SceneInput::WarmWeather(document.weather_effects.clone()))?;
+    apply(
+        "scene.political",
         SceneInput::WarmPolitical {
             map: &document.content.map,
             strategic_regions: &document.content.strategic_regions,
@@ -1408,19 +1742,22 @@ fn load_scene_scoped(
         },
     )?;
     let warm_started = Instant::now();
-    scene.apply(device, queue, SceneInput::WarmPipelines)?;
+    apply("scene.pipelines", SceneInput::WarmPipelines)?;
     crate::perf_log::since("pipeline_warmup", warm_started);
     let warm_started = Instant::now();
     let icons = &document.icons;
-    scene.warm_gui(
-        device,
-        icons
-            .counters
-            .gui
-            .effects()
-            .into_iter()
-            .chain(icons.combat.gui.effects()),
-    );
+    {
+        let _stage = stage("scene.gui");
+        scene.warm_gui(
+            device,
+            icons
+                .counters
+                .gui
+                .effects()
+                .into_iter()
+                .chain(icons.combat.gui.effects()),
+        );
+    }
     crate::perf_log::since("gui_warmup", warm_started);
     Ok(scene)
 }
@@ -1447,16 +1784,15 @@ impl Viewer {
         ) else {
             return Ok(());
         };
-        let mut full = now
-            .prepare_overlay_cached(
-                camera,
-                pixels,
-                ui_scale,
-                tables,
-                &self.counter_view,
-                &Default::default(),
-            )
-            .map_err(|error| error.to_string())?;
+        // With the map open, the rows at the head the overlay was laid out from.
+        let side = live_of(&self.playhead_map);
+        let rows = crate::document::OverlayRows::at_head(self.overlay_frame.clone().filter(|_| side.is_some())).leaving(crate::document::LeftToLayers::of(side));
+        let full = now.prepare_overlay_at(camera, pixels, ui_scale, tables, &self.counter_view, &Default::default(), &rows);
+        if !rows.missed().is_empty() {
+            return Ok(());
+        }
+        let mut full = full.map_err(|error| error.to_string())?;
+        lay_in_layers(side, &mut full, now, camera, pixels, ui_scale, tables.ours());
         let (mut batch, mut report) = (Batch::default(), CounterReport::default());
         full.draw_into(
             now,
@@ -1486,6 +1822,15 @@ impl Viewer {
         }
     }
 
+    /// The map service a load reads sources and preferences from: the desktop host's, else the
+    /// toggle harness's.
+    pub(crate) fn service(&self) -> Option<Arc<dashboard::Service>> {
+        self.embedded
+            .as_ref()
+            .map(crate::embedded::Controller::service)
+            .or_else(|| self.harness_service.clone())
+    }
+
     fn configure_service(&mut self) {
         if let Some(embedded) = &self.embedded
             && let Err(error) = embedded
@@ -1497,7 +1842,8 @@ impl Viewer {
     }
 
     pub fn new(
-        cc: &eframe::CreationContext<'_>,
+        ctx: &egui::Context,
+        render_state: Option<&eframe::egui_wgpu::RenderState>,
         config: Config,
         options: Options,
         error: Option<String>,
@@ -1505,21 +1851,20 @@ impl Viewer {
         failure: Arc<Mutex<Option<String>>>,
         embedded: Option<crate::embedded::Controller>,
     ) -> Self {
-        cc.egui_ctx.set_theme(egui::Theme::Dark);
+        ctx.set_theme(egui::Theme::Dark);
         let mut viewer = Self::create(
             config,
             options,
             error,
             failure,
             embedded,
-            cc.wgpu_render_state
-                .as_ref()
-                .map(|state| (state.device.clone(), state.queue.clone())),
+            render_state.map(|state| (state.device.clone(), state.queue.clone())),
         );
         if viewer.embedded.is_some() {
             match hours::Resources::new() {
                 Ok(resources) => {
-                    viewer.dropper = Some(Arc::clone(&resources.dropper));
+                    viewer.dropper = Some(Arc::clone(resources.pool().dropper()));
+                    viewer.worker_pool = Some(Arc::clone(resources.pool()));
                     viewer.shared_resources = Some(resources);
                 }
                 Err(error) => {
@@ -1531,7 +1876,7 @@ impl Viewer {
         // Without usable folders the load fails at once and says so; an
         // embedded viewer keeps the path until the host sends its folders.
         if let Some(path) = viewer.options.replay.clone() {
-            viewer.open(path, &cc.egui_ctx, None);
+            viewer.open(path, ctx, None);
         }
         viewer
     }
@@ -1576,6 +1921,7 @@ impl Viewer {
             step: options.animation_step,
             frames: options.window_frames.max(1),
             index: 0,
+            paced: false,
         });
         // counters: the perspective starts where the command line put it.
         let perspective = options.perspective.clone();
@@ -1621,6 +1967,7 @@ impl Viewer {
             interacted: false,
             interface_points: 1.0,
             embedded,
+            harness_service: None,
             embedded_open: None,
             embedded_seek: None,
             revision: None,
@@ -1645,6 +1992,8 @@ impl Viewer {
             free_overlays: false,
             start_pick: drop::Pick::Idle,
             free_overlay: Batch::default(),
+            overlay_written: 0,
+            free_presented: None,
             looks: None,
             input: crate::controls::Input::default(),
             orbit: crate::controls::orbit::Orbit::default(),
@@ -1683,6 +2032,8 @@ impl Viewer {
             visual_fallbacks: Default::default(),
             visual_report: None,
             drew_frame: false,
+            layers_only: false,
+            warming: false,
             visual_stale_campaign: None,
             config,
             options,
@@ -1706,6 +2057,15 @@ impl Viewer {
             animation_seek: false,
             map_animation_target: None,
             hours: None,
+            playhead_map: None,
+            playhead_opened: false,
+            overlay_laid: None,
+            counters_given: None,
+            counters_drawn: None,
+            shown_whole: false,
+            playhead_opening: None,
+            presented: MapPresented::default(),
+            today_error: None,
             engaged_carry: None,
             epoch: 0,
             ready: BTreeMap::new(),
@@ -1713,8 +2073,12 @@ impl Viewer {
             last_view: None,
             uploaded: Uploaded::default(),
             dropper: None,
+            worker_pool: None,
             // close zoom
             unit_models: None,
+            ships_shipless: None,
+            ships_joined: None,
+            movers_layered: (false, false),
             unit_field_uploaded: false,
             raid_tick: None,
             convoys_sailing: false,
@@ -1729,13 +2093,21 @@ impl Viewer {
             label_report: LabelReport::default(),
             raid_lane: Default::default(),
             faction_highlight: Default::default(),
-            raid_tooltips: Default::default(),
-            land_marker_tooltips: Default::default(),
-            naval_marker_tooltips: Default::default(),
-            province_tooltips: Default::default(),
-            terrain_tooltips: Default::default(),
-            counter_tooltips: Default::default(),
-            division_panel_tooltips: Default::default(),
+            hover_rows: Default::default(),
+            head_rows: Default::default(),
+            overlay_frame: None,
+            overlay_tables_job: Default::default(),
+            overlay_laying: None,
+            overlay_shown: None,
+            overlay_last_asked: None,
+            overlay_drawn_fraction: None,
+            overlay_lookups: None,
+            laid_proof: None,
+            head_tables: None,
+            overlay_loading: Vec::new(),
+            overlay_missed: Vec::new(),
+            scripts: Default::default(),
+            combat_rows: Default::default(),
             tooltip_refused: Default::default(),
             // counters
             counter_report: CounterReport::default(),
@@ -1789,9 +2161,22 @@ impl Viewer {
         viewer.diagnostics = false;
         // The dashboard gives one map at a time the audio.
         viewer.audio_focus = false;
-        viewer.dropper = Some(Arc::clone(&resources.dropper));
+        viewer.dropper = Some(Arc::clone(resources.pool().dropper()));
+        viewer.worker_pool = Some(Arc::clone(resources.pool()));
         viewer.shared_resources = Some(resources);
         viewer
+    }
+
+    /// The app's worker threads, with or without today's hour pipeline: the host's shared ones,
+    /// else this window's own, made on first use. Its dropper frees what the window retires.
+    pub(super) fn worker_pool(&mut self) -> std::io::Result<Arc<crate::worker_pool::WorkerPool>> {
+        if let Some(pool) = &self.worker_pool {
+            return Ok(Arc::clone(pool));
+        }
+        let pool = crate::worker_pool::WorkerPool::new()?;
+        self.dropper.get_or_insert_with(|| Arc::clone(pool.dropper()));
+        self.worker_pool = Some(Arc::clone(&pool));
+        Ok(pool)
     }
 
     /// The recording's `settings.txt` map options, the command line's first; a host's settings
@@ -1812,6 +2197,16 @@ impl Viewer {
         self.unit_selection = Default::default();
         self.air_selection = Default::default();
         self.fleet_selection = Default::default();
+        self.head_rows = Default::default();
+        self.forget_overlay_builds();
+        if let Some(side) = self.playhead_map.take() {
+            self.drop_later(side);
+        }
+        // The reader opens at the map's first frame, at its clock.
+        self.playhead_opening = None;
+        self.playhead_opened = false;
+        self.presented = MapPresented::default();
+        self.shown_whole = false;
         self.document = Some(document);
         if !self.dashboard_map
             && let Some(scene) = &mut self.scene
@@ -1848,14 +2243,24 @@ impl Viewer {
             (document.playback.branch(), document.playback.hour()),
             |head| (head.branch, head.hour),
         );
+        // With the playhead's map open, the hour on screen is its drawn hour once every drawn
+        // layer is settled and uploaded.
+        let shown = match &self.playhead_map {
+            Some(side) => side
+                .on_screen()
+                .filter(|on| on.settled)
+                .and_then(|on| Some((side.branch().unwrap_or(requested.0), on.drawn?, self.map_error.is_some()))),
+            None => self
+                .shown
+                .as_ref()
+                .filter(|shown| shown.epoch == self.epoch)
+                .map(|shown| (shown.branch, shown.hour, shown.error.is_some())),
+        };
         let settled = crate::visual_fallback::settled(
             self.drew_frame && error.is_none(),
             requested,
             self.rendered.as_ref().map(|head| (head.branch, head.hour)),
-            self.shown
-                .as_ref()
-                .filter(|shown| shown.epoch == self.epoch)
-                .map(|shown| (shown.branch, shown.hour, shown.error.is_some())),
+            shown,
             document.icons.lazy.busy(),
         );
         self.visual_report = Some(crate::visual_fallback::Report {
@@ -1915,6 +2320,21 @@ impl Viewer {
     /// Lighting for the frame being drawn, including a setting changed at the same replay hour.
     /// The cycle shows while it is on and the game would draw it at this playback; without the
     /// recorded speeds it shows only while paused, and the warnings name why.
+    /// Today's ribbons with the orders layer's plan and the convoys layer's trade routes appended
+    /// while they draw them; none while neither does.
+    fn layered_orders(&self) -> Option<LayeredOrders> {
+        let side = live_of(&self.playhead_map)?;
+        let plan = side
+            .draws("orders")
+            .then(|| side.parts().and_then(|(_, layers)| layers.iter().find_map(|layer| layer.any().downcast_ref::<crate::layers::orders::Orders>())))
+            .flatten()
+            .and_then(crate::layers::orders::Orders::plan)
+            .map(|(_, plan)| Arc::clone(plan));
+        let routes = layered_convoys(side).map(crate::layers::convoys::Convoys::product_seq);
+        let raids = self.head_tables.as_ref().map(|(_, tables)| Arc::clone(tables.raid_arrows()));
+        Some(LayeredOrders { plan, raids, routes })
+    }
+
     fn frame_day_night(&self, hour: i32, speeds: &Result<GameSpeeds, String>) -> DayNight {
         let shown = speeds.as_ref().map_or(!self.playing, |speeds| {
             speeds.shows_cycle(self.playing, self.speed)
@@ -1993,7 +2413,39 @@ impl Viewer {
         if let Some(dropper) = &self.dropper {
             dropper.drop_later(retired);
         }
+        self.overlay_laid = None;
+        self.close_playhead();
         self.rendered = None;
+    }
+
+    /// Nothing of this window is drawn: its maps stop sounding and let their playheads go.
+    fn not_drawn(&mut self) {
+        self.release_audio();
+        self.close_playhead();
+        if let Some(dashboard) = &mut self.dashboard {
+            dashboard.release_audio();
+            dashboard.close_playheads();
+        }
+    }
+
+    /// A map not drawn holds no reader of its playhead: a reader that takes no steps would hold
+    /// the playhead's ring for every other map of the recording. It opens again when drawn.
+    pub(crate) fn close_playhead(&mut self) {
+        if let Some(side) = self.playhead_map.take() {
+            self.drop_later(side);
+        }
+        self.playhead_opening = None;
+        self.hover_rows.end_frame(false);
+        self.hover_rows.end_frame(false);
+        self.playhead_opened = false;
+        (self.counters_given, self.counters_drawn) = (None, None);
+    }
+
+    fn drop_later(&self, side: crate::playhead_host::MapSide) {
+        match &self.dropper {
+            Some(dropper) => dropper.drop_later(side),
+            None => drop(side),
+        }
     }
 
     pub(crate) fn retry_map(&mut self) {
@@ -2020,13 +2472,8 @@ impl Viewer {
             return false;
         }
         self.options.replay = None;
-        self.raid_tooltips = Default::default();
-        self.land_marker_tooltips = Default::default();
-        self.naval_marker_tooltips = Default::default();
-        self.province_tooltips = Default::default();
-        self.terrain_tooltips = Default::default();
-        self.counter_tooltips = Default::default();
-        self.division_panel_tooltips = Default::default();
+        self.hover_rows = Default::default();
+        self.combat_rows = Default::default();
         self.tooltip_refused.clear();
         self.source = None;
         self.source_decoder = None;
@@ -2175,26 +2622,264 @@ impl Viewer {
         self.speed = speed;
         self.playing = playing && self.playhead.is_some_and(|head| head.hour < last);
         self.clock_anchor = Some(anchor);
+        self.follow_branch();
+        if sought {
+            self.open_overlay_rows();
+        }
+        if let Some(side) = &self.playhead_map {
+            if sought {
+                self.presented.seek = side.on_screen().map(|on| on.resets);
+            }
+            side.anchor(target.hour, playing, speed, sought);
+        }
     }
 
-    /// The map mode of the hour on screen: the chosen one ([`Self::map_mode`]) once an hour
-    /// built for it is installed, the previous one while that hour is being built.
+    /// Opens the overlay's reader of rows at the head on the open map's playhead before its next
+    /// picture, when the map opens or a seek is taken: its tables are declared with the map's own
+    /// and its first rows come with the map's first picture ([`head_rows::HeadRows::open_overlay`]).
+    /// Installs `prepared`, laid out for `key`, with the drawn plates of the overlay it replaces
+    /// when that was laid out for the same view and their stacks are the same by value.
+    fn install_overlay(&mut self, mut prepared: crate::document::PreparedOverlay, key: &OverlayKey) {
+        if let Some(old) = self.prepared_overlay.as_mut()
+            && self.overlay_shown.as_ref().is_some_and(|shown| shown.same_view(key))
+        {
+            prepared.carry_plates(old);
+        }
+        let retired = self.prepared_overlay.replace(prepared);
+        self.retire(retired);
+        self.overlay_laid = key.rows;
+        self.overlay_shown = Some(key.clone());
+    }
+
+    /// Frees `value` on the dropper's thread, here when there is none.
+    fn retire<T: Send + 'static>(&self, value: T) {
+        match &self.dropper {
+            Some(dropper) => dropper.drop_later(value),
+            None => drop(value),
+        }
+    }
+
+    /// The overlay's builds and what they were made from belong to the content open: a build in
+    /// flight for the content before gives nothing to the content after.
+    fn forget_overlay_builds(&mut self) {
+        let retired = (std::mem::take(&mut self.overlay_tables_job), self.head_tables.take(), self.overlay_frame.take(), self.overlay_laying.take());
+        self.retire(retired);
+        (self.overlay_shown, self.overlay_last_asked, self.overlay_drawn_fraction, self.overlay_lookups) = (None, None, None, None);
+        self.overlay_loading.clear();
+        self.overlay_missed.clear();
+    }
+
+    fn open_overlay_rows(&mut self) {
+        let Some(side) = live_of(&self.playhead_map) else { return };
+        let Some(branch) = side.branch() else { return };
+        let left = crate::document::LeftToLayers::of(Some(side));
+        if let Some(inputs) = head_rows::OverlayInputs::whole(&self.counter_view).without(left.resource_icons, left.occupation_marks) {
+            self.head_rows.open_overlay(inputs, Some((side.entry(), crate::playhead_host::rows::Recording { branch })));
+        }
+    }
+
+    /// The map mode of the hour on screen: the chosen one ([`Self::map_mode`]) once a picture
+    /// for it is on screen, the previous one while it is made. With the playhead's map open, the
+    /// mode its drawn picture was composed and settled for; today's installed hour's otherwise.
     fn shown_mode(&self) -> &viewer_world::map::map_mode::MapMode {
-        self.placements_at
-            .as_ref()
-            .map_or(&self.map_mode, |(_, _, mode)| mode)
+        match self.live_map() {
+            Some(side) => side.mode_on_screen().unwrap_or(&self.map_mode),
+            None => self.placements_at.as_ref().map_or(&self.map_mode, |(_, _, mode)| mode),
+        }
     }
 
-    /// A previous epoch's picture stays visible while its replacement is built.
+    /// A previous epoch's picture stays visible while its replacement is built. With the
+    /// playhead's map open, once its reader has composed and uploaded a first picture.
     fn picture_ready(&self) -> bool {
-        self.shown
-            .as_ref()
-            .is_some_and(|shown| shown.error.is_none())
+        match &self.playhead_map {
+            Some(side) => side.on_screen().is_some_and(|on| on.drawn.is_some()),
+            None => self.shown.as_ref().is_some_and(|shown| shown.error.is_none()),
+        }
     }
 
-    /// Whether the frame drawn answers `target` with a built hour of this
-    /// epoch: exactly, or, playing, with the newest hour built before it.
+    /// Whether the frame drawn answers `target` with everything on screen: exactly, or, playing,
+    /// with the newest hour before it. With the playhead's map open, its layers' answer alone.
     fn presentation_ready(&self, target: Playhead, playing: bool) -> bool {
+        match &self.playhead_map {
+            Some(_) => {
+                self.rendered.is_some_and(|rendered| rendered.branch == target.branch)
+                    && self.picture_whole(target, playing)
+            }
+            None => self.today_ready(target, playing),
+        }
+    }
+
+    /// With the playhead's map open, whether every part of the picture drawn shows `target`'s
+    /// hour ([`whole_picture`]); without it, whether today's frame answers it.
+    fn picture_whole(&self, target: Playhead, playing: bool) -> bool {
+        match &self.playhead_map {
+            Some(side) => side.on_screen().is_some_and(|on| {
+                whole_picture(&on, self.overlay_laid_hour(), self.counters_drawn_hour(), target.hour, playing)
+            }),
+            None => true,
+        }
+    }
+
+    /// Whether the document's load is over: today's hour of this epoch is installed, no lazy art
+    /// decodes, the overlay was laid out since the last did, and the picture asked for is whole
+    /// ([`Self::picture_whole`]). Until then the content made for it is kept.
+    fn load_complete(&self, art_busy: bool, overlay_fresh: bool) -> bool {
+        self.shown.as_ref().is_some_and(|shown| shown.epoch == self.epoch)
+            && !art_busy
+            && overlay_fresh
+            && self.playhead.is_some_and(|head| self.picture_whole(head, self.playing))
+    }
+
+    /// The hour of the rows `(hour, frame)` stand for: theirs, or a later one no step since changed
+    /// them by.
+    fn rows_stand(&self, (hour, rows): (replay_data::Hour, usize)) -> replay_data::Hour {
+        self.head_rows
+            .overlay_through(rows as *const replay_frame::frame::DecodedFrame)
+            .map_or(hour, |stands| stands.max(hour))
+    }
+
+    /// The hour the overlay on screen shows: the rows at the head it was laid out from, while no
+    /// read it missed is learned; none before its first layout.
+    fn overlay_laid_hour(&self) -> Option<replay_data::Hour> {
+        self.overlay_laid
+            .filter(|_| self.overlay_missed.is_empty())
+            .map(|rows| self.rows_stand(rows))
+    }
+
+    /// The hour of the head tables the counter layers held when the reader last drew.
+    fn counters_drawn_hour(&self) -> Option<replay_data::Hour> {
+        self.counters_drawn.map(|rows| self.rows_stand(rows))
+    }
+
+    /// Whether the picture is today's pipeline's (no playhead map), and what the playhead's
+    /// layers show while its reader draws.
+    fn on_screen(&self) -> (bool, Option<crate::playhead_host::OnScreen>) {
+        match &self.playhead_map {
+            Some(side) => (false, side.on_screen()),
+            None => (true, None),
+        }
+    }
+
+    /// The hour of the rows at the head the overlay on screen was laid out from: the older of its
+    /// rows and those its tables were made from, each at the hour no step since changed them by.
+    /// None before its first layout over rows at the head.
+    pub(crate) fn overlay_hour(&self) -> Option<replay_data::Hour> {
+        self.prepared_overlay.as_ref()?;
+        let (hour, rows) = self.overlay_at.as_ref()?.rows?;
+        let stands = |hour: replay_data::Hour, rows: usize| self.head_rows.overlay_through(rows as *const replay_frame::frame::DecodedFrame).map_or(hour, |stands| stands.max(hour));
+        let laid = stands(hour, rows);
+        Some(self.head_tables.as_ref().map_or(laid, |(key, _)| laid.min(stands(key.hour, key.rows))))
+    }
+
+    /// The playhead's map while it draws: open, its reader not stopped.
+    fn live_map(&self) -> Option<&crate::playhead_host::MapSide> {
+        self.playhead_map.as_ref().filter(|side| side.failure().is_none())
+    }
+
+    /// The branch and hour on screen: while the playhead's map is open, its reader's branch and
+    /// drawn hour (the clock's before its first picture); today's installed hour otherwise.
+    fn hour_on_screen(&self, document: &Document) -> (replay_data::BranchId, i32) {
+        match &self.playhead_map {
+            Some(_) => self.layers_on_screen().unwrap_or_else(|| self.playhead.map_or_else(|| (document.playback.branch(), document.playback.hour()), |clock| (clock.branch, clock.hour))),
+            None => (document.playback.branch(), document.playback.hour()),
+        }
+    }
+
+    /// While the playhead's map is open, its reader's branch (the clock's for a reader opened
+    /// without one) and drawn hour; none before its first picture or once its reader stopped.
+    fn layers_on_screen(&self) -> Option<(replay_data::BranchId, i32)> {
+        let side = self.playhead_map.as_ref()?;
+        Some((side.branch().or(self.playhead.map(|clock| clock.branch))?, side.on_screen()?.drawn?))
+    }
+
+    /// What rows at the head are stamped with: the clock's branch, which the reader follows.
+    fn rows_recording(&self, document: &Document) -> crate::playhead_host::rows::Recording {
+        crate::playhead_host::rows::Recording { branch: self.playhead.map_or_else(|| document.playback.branch(), |clock| clock.branch) }
+    }
+
+    /// The reader reads the clock's branch: one open on another is let go, and the next frame
+    /// opens one at the clock. A playhead plays one branch's timeline, and the readers' rows carry
+    /// the branch they were opened with.
+    fn follow_branch(&mut self) {
+        let Some(clock) = self.playhead else {
+            return;
+        };
+        if self.playhead_map.as_ref().and_then(|side| side.branch()).is_some_and(|branch| branch != clock.branch) {
+            self.close_playhead();
+        }
+    }
+
+    /// A reader made over other content than the map draws (the map reopened with other visual
+    /// mods) draws that content's art: it is let go, and the next frame opens one over `content`.
+    fn follow_content(&mut self, content: *const crate::document::Content) {
+        if self.playhead_map.as_ref().is_some_and(|side| !side.made_over(content)) {
+            self.close_playhead();
+        }
+    }
+
+    /// The map's error view: while the playhead's map is open, its reader's failure by name, else
+    /// the recorded gap the clock stands in; today's hour's error otherwise. Today's error while
+    /// the map is open is printed once, not shown.
+    fn map_error_of(&mut self, document: &Document, today: Option<std::io::Error>) -> Option<String> {
+        let Some(side) = &self.playhead_map else {
+            return today.map(|error| error.to_string());
+        };
+        if let Some(failure) = side.failure() {
+            return Some(failure.to_owned());
+        }
+        let today = today.map(|error| error.to_string());
+        if today.is_some() && today != self.today_error {
+            eprintln!("Today's hour pipeline: {}", today.as_deref().unwrap_or_default());
+        }
+        self.today_error = today;
+        let clock = self.playhead?;
+        let replay = document.playback.replay();
+        replay.block_at(clock.branch, clock.hour).is_none().then(|| crate::playback::gap_reason(replay, clock.branch, clock.hour))
+    }
+
+    /// The window's own histories follow today's continuity rule over what the playhead's map
+    /// presents: day and night and the counters' movement start again on a reset, and the audio on
+    /// a reset or recreated units. Previous and next are the branch, drawn hour and viewing country
+    /// of the last picture presented and of this one; a picture composed for the window's seek,
+    /// or a reopened reader's first, is sought. The layers reset themselves on their compose.
+    fn follow_continuity(&mut self, gaps: &[replay_frame::branches::Gap]) -> Option<(Continuity, viewer_foundation::map::presentation::UnitRestart)> {
+        let side = self.live_map()?;
+        let on = side.on_screen()?;
+        let hour = on.drawn.filter(|_| !on.composing)?;
+        let branch = side.branch().or(self.playhead.map(|clock| clock.branch))?;
+        let viewing = crate::layers::vision::drawn(side).and_then(crate::layers::vision::Vision::ours).map(|slot| slot.to_string());
+        let sought = self.presented.reopened || self.presented.seek.is_some_and(|asked| on.resets > asked);
+        self.presented.reopened = false;
+        if sought {
+            self.presented.seek = None;
+        }
+        self.present_continuity((branch, hour, viewing), sought, gaps)
+    }
+
+    /// [`Self::follow_continuity`] for the picture `next`: none when it is the picture last
+    /// presented and not sought.
+    fn present_continuity(&mut self, next: (replay_data::BranchId, i32, Option<String>), sought: bool, gaps: &[replay_frame::branches::Gap]) -> Option<(Continuity, viewer_foundation::map::presentation::UnitRestart)> {
+        use viewer_foundation::map::presentation::{UnitRestart, continuity, unit_restart};
+        if !sought && self.presented.last.as_ref() == Some(&next) {
+            return None;
+        }
+        let previous = self.presented.last.as_ref().map(|(branch, hour, viewing)| (*branch, *hour, viewing.as_deref()));
+        let shown = (next.0, next.1, next.2.as_deref());
+        let (continuity, restart) = (continuity(previous, shown, sought, gaps), unit_restart(previous, shown, sought));
+        if continuity == Continuity::Reset {
+            self.day_night = Default::default();
+            self.counter_view.presentation.movement().lock().unwrap_or_else(|error| error.into_inner()).clear();
+        }
+        if continuity == Continuity::Reset || restart != UnitRestart::Keep {
+            self.audio_reset = true;
+        }
+        self.presented.last = Some(next);
+        Some((continuity, restart))
+    }
+
+    /// Whether today's frame answers `target` with a built hour of this epoch: exactly, or,
+    /// playing, with the newest hour built before it.
+    fn today_ready(&self, target: Playhead, playing: bool) -> bool {
         self.shown.as_ref().is_some_and(|shown| {
             !self.animation_seek
                 && shown.epoch == self.epoch
@@ -2210,13 +2895,15 @@ impl Viewer {
         &self,
         target: &dashboard::protocol::DashboardMapView,
     ) -> dashboard::protocol::DashboardMapState {
-        let error = self.error.clone().or_else(|| {
-            self.shown
+        let error = self.error.clone().or_else(|| match &self.playhead_map {
+            Some(_) => self.map_error.clone(),
+            None => self
+                .shown
                 .as_ref()
                 .filter(|shown| {
                     shown.branch.to_string() == target.branch_id && shown.hour == target.hour
                 })
-                .and(self.map_error.clone())
+                .and(self.map_error.clone()),
         });
         let clock = target.branch_id.parse().ok().map(|branch| {
             let requested = Playhead {
@@ -2232,28 +2919,39 @@ impl Viewer {
         });
         let ready = clock.is_some_and(|clock| self.presentation_ready(clock, target.playing))
             && self.rendered_sequence == target.sequence;
+        let (today, layers) = self.on_screen();
         // Playing, a frame of the same branch stands in for the clock's hour; say how far back.
-        let behind = clock
-            .zip(self.rendered)
-            .filter(|(clock, rendered)| target.playing && clock.branch == rendered.branch)
-            .map(|(clock, rendered)| {
-                u32::try_from(i64::from(clock.hour) - i64::from(rendered.hour)).unwrap_or(0)
-            });
-        let behind_reason = target
-            .playing
-            .then(|| self.held_back.as_ref().map(|(_, reason)| reason.clone()))
-            .flatten();
+        let lag = |hour: i32| {
+            clock
+                .zip(self.rendered)
+                .filter(|(clock, rendered)| target.playing && clock.branch == rendered.branch)
+                .map(|(clock, _)| u32::try_from(i64::from(clock.hour) - i64::from(hour)).unwrap_or(0))
+        };
+        let today_behind = self.rendered.filter(|_| today).and_then(|rendered| lag(rendered.hour));
+        let layers_behind = layers.and_then(|on| on.drawn).and_then(lag);
+        let behind_reason = if layers_behind > today_behind.max(Some(0)) {
+            layers.as_ref().map(layers_behind_reason)
+        } else {
+            (today && target.playing).then(|| self.held_back.as_ref().map(|(_, reason)| reason.clone())).flatten()
+        };
+        // The oldest hour on screen: the layers' while they show one older than today's frame.
+        let (hour, fraction) = match (self.rendered, layers.and_then(|on| on.drawn)) {
+            (None, _) => (None, None),
+            (Some(rendered), Some(drawn)) if !today || drawn < rendered.hour => (Some(drawn), Some(0.0)),
+            (Some(_), None) if !today => (None, None),
+            (Some(rendered), _) => (Some(rendered.hour), Some(rendered.fraction as f32)),
+        };
         dashboard::protocol::DashboardMapState {
             id: target.id.clone(),
             source_id: Some(target.source_id.clone()),
             revision: Some(target.revision.clone()),
             branch_id: self.rendered.map(|shown| shown.branch.to_string()),
-            hour: self.rendered.map(|shown| shown.hour),
-            fraction: self.rendered.map(|shown| shown.fraction as f32),
+            hour,
+            fraction,
             sequence: self.rendered_sequence,
             requested_sequence: target.sequence,
             loading: error.is_none() && !ready,
-            behind,
+            behind: today_behind.max(layers_behind),
             behind_reason,
             error,
             map_mode: self.rendered.map(|_| self.shown_mode().token()),
@@ -2264,15 +2962,50 @@ impl Viewer {
             zoom: self.rendered.and(self.last_view.as_ref().map(|view| view.camera.height)),
             center: self.rendered.and(self.last_view.as_ref().map(|view| view.camera.center)),
             options: self.rendered.and(self.drawn_options.clone()),
+            applied: self.rendered.and_then(|_| self.applied_settings()),
         }
+    }
+
+    /// The settings the frame on screen drew with: the scene's anti-aliasing, the document's
+    /// texture quality and visual mods, and the graphics, volumes and counters it follows.
+    fn applied_settings(&self) -> Option<dashboard::protocol::AppliedMapSettings> {
+        let document = self.document.as_ref()?;
+        let mut graphics = self.graphics;
+        graphics.texture_quality = document.texture_quality;
+        if let Some(scene) = &self.scene {
+            graphics.samples = scene.samples();
+        }
+        Some(dashboard::protocol::AppliedMapSettings {
+            graphics,
+            audio: self.volumes,
+            counters: self.counter_filter.clone(),
+            visual_mods: document.visual_mods.iter().flatten().map(|choice| choice.id.clone()).collect(),
+        })
     }
 
 
     /// Everything the hour on screen could not draw exactly, collected after its overlay and
     /// hover. Current tooltip and combat gaps lead; persistent content notes follow. Each
     /// frame replaces the per-hour report, so recovered refusals go away with the next draw.
+    /// The hour on screen's limitation lines and its parts' reports: the playhead's map's while it
+    /// is open, today's installed hour's otherwise; none while neither shows an hour.
+    fn hour_lines(&self) -> Option<[Vec<String>; 2]> {
+        match self.playhead_map.as_ref().filter(|side| side.on_screen().is_some()) {
+            Some(side) => {
+                let ours = side.parts().and_then(|(_, layers)| layers.iter().find_map(|layer| layer.any().downcast_ref::<crate::layers::vision::Vision>())).and_then(crate::layers::vision::Vision::ours);
+                let raids = ours.and_then(|ours| self.scripts.raid_notes(ours));
+                let [limitations, reports] = map_lines(side, raids.as_deref().map_or(&[], Vec::as_slice));
+                Some([limitations, political_lines(Some(side), &[]).into_iter().chain(reports).collect()])
+            }
+            None => self.shown.as_ref().map(|shown| {
+                let reports = political_lines(None, &shown.political_warnings).into_iter();
+                [shown.limitations.lines(), reports.chain(shown.plan_warnings.iter().chain(&shown.building_warnings).chain(&shown.model_warnings).cloned()).collect()]
+            }),
+        }
+    }
+
     fn collect_warnings(&self, document: &Document) -> Vec<String> {
-        let Some(shown) = &self.shown else {
+        let Some([limitations, reports]) = self.hour_lines() else {
             return Vec::new();
         };
         // Current hover and combat gaps lead so they stay visible above persistent content notes.
@@ -2289,7 +3022,7 @@ impl Viewer {
                 .iter()
                 .map(|(reason, count)| format!("Map mode picker: {reason} ({count} refused)")),
         );
-        warnings.extend(shown.limitations.lines());
+        warnings.extend(limitations);
         // The viewer's device, when it lacks a feature some content needs to draw exactly.
         if let Some((device, _)) = &self.gpu {
             warnings.extend(device_requirements(device.features()));
@@ -2316,10 +3049,7 @@ impl Viewer {
                 "Day/night cycle: {error}, so it shows only while paused"
             ));
         }
-        warnings.extend(shown.political_warnings.iter().cloned());
-        warnings.extend(shown.plan_warnings.iter().cloned());
-        warnings.extend(shown.building_warnings.iter().cloned());
-        warnings.extend(shown.model_warnings.iter().cloned());
+        warnings.extend(reports);
         if self.camera_mode == CameraMode::Walk {
             warnings.extend(self.walk.warning());
         }
@@ -2358,12 +3088,8 @@ impl Viewer {
         }
         // The recorded naval engaged bytes against the flag derived for the recording's
         // player, over the hours the engaged index has folded so far.
-        if let Some(Ok(index)) = self
-            .hours
-            .as_ref()
-            .map(|hours| hours.engaged(&self.perspective.country))
-        {
-            warnings.extend(index.shared.byte_check().lines());
+        if let Ok(Some(history)) = self.engaged_shown(&self.perspective.country) {
+            warnings.extend(history.byte_check().lines());
         }
         // A capture renders at the dump's scale, not Match game's.
         let pinned = self
@@ -2385,14 +3111,23 @@ impl Viewer {
 
     /// The shown hour's notice that part of its snow and mud is unknown, which the map hatches.
     pub(crate) fn weather_notice(&self) -> Option<&'static str> {
-        self.shown.as_ref().and_then(|shown| shown.snow.0.note())
+        match self.playhead_map.as_ref().filter(|side| side.on_screen().is_some()) {
+            Some(side) => side.parts().filter(|_| side.draws("snow")).and_then(|(_, layers)| layers.iter().find_map(|layer| layer.any().downcast_ref::<crate::layers::snow::Snow>())).and_then(crate::layers::snow::Snow::note),
+            None => self.shown.as_ref().and_then(|shown| shown.snow.0.note()),
+        }
     }
 
     /// The diagnostics an embedded map shows over itself: the hour's stats and
     /// its data limitations, collapsed behind their count.
     pub(crate) fn diagnostics_ui(&mut self, ui: &mut egui::Ui, max_height: f32) {
-        if let Some(shown) = &self.shown {
-            for line in shown.stats() {
+        // With the playhead's map open its layers' figures stand; today's build times are not shown.
+        let side = self.playhead_map.as_ref().filter(|side| side.on_screen().is_some());
+        let stats = match side {
+            Some(side) => Some(side.parts().filter(|_| side.draws("snow")).and_then(|(_, layers)| layers.iter().find_map(|layer| layer.any().downcast_ref::<crate::layers::snow::Snow>())).and_then(crate::layers::snow::Snow::summary).map(|summary| vec![format!("Snow and mud: {}", summary.line())]).unwrap_or_default()),
+            None => self.shown.as_ref().map(|shown| shown.stats().to_vec()),
+        };
+        if let Some(stats) = stats {
+            for line in stats {
                 ui.weak(line);
             }
             if let Some(target) = self.highlighted() {
@@ -2425,6 +3160,7 @@ impl Viewer {
     }
 
     fn open(&mut self, mut path: PathBuf, ctx: &egui::Context, expected_revision: Option<String>) {
+        let _stage = viewer_foundation::load_record::stage("open.ui");
         if self.embedded.is_some() {
             match path.canonicalize() {
                 Ok(canonical) => path = canonical,
@@ -2473,11 +3209,8 @@ impl Viewer {
         let held = held_clock.is_some();
         self.options.replay = Some(path.clone());
         let options = self.options.clone();
-        let verify_revision = self.embedded.is_some();
-        let service = self
-            .embedded
-            .as_ref()
-            .map(crate::embedded::Controller::service);
+        let service = self.service();
+        let verify_revision = service.is_some();
         let resources = self.shared_resources.clone();
         let config = self.config.clone();
         let mut content = self
@@ -2502,6 +3235,7 @@ impl Viewer {
         let ctx = ctx.clone();
         let startup_content = self.startup_content.take();
         job_priority::spawn(move || {
+            let _stage = viewer_foundation::load_record::stage("load");
             let _generation = startup_content.as_ref().map_or_else(
                 installed_content_core::content::Generation::enter,
                 installed_content_core::content::Loading::enter_generation,
@@ -2515,6 +3249,7 @@ impl Viewer {
             // A withheld game table stops its reader with the reason, which the map then names.
             let load = std::panic::AssertUnwindSafe(|| -> Result<LoadedReplay, String> {
                 let revision = if verify_revision {
+                    let _stage = viewer_foundation::load_record::stage("load.replay_revision");
                     let revision = dashboard::protocol::replay_revision(&path)
                         .map_err(|error| error.to_string())?;
                     if expected_revision
@@ -2527,10 +3262,13 @@ impl Viewer {
                 } else {
                     None
                 };
-                let source = service
-                    .as_ref()
-                    .map(|service| service.open_map(&path, revision.as_deref()))
-                    .transpose()?;
+                let source = {
+                    let _stage = viewer_foundation::load_record::stage("load.open_map");
+                    service
+                        .as_ref()
+                        .map(|service| service.open_map(&path, revision.as_deref()))
+                        .transpose()?
+                };
                 let preferences = source
                     .as_ref()
                     .and_then(|source| {
@@ -2561,11 +3299,15 @@ impl Viewer {
                                 && content.visual_mods == preferences.visual_mods
                                 && content.texture_quality == preferences.graphics.texture_quality
                         }) {
-                            Some((_, content)) => Document::from_shared_content(
-                                Arc::clone(content),
-                                source.replay(),
-                                &initial,
-                            ),
+                            Some((_, content)) => {
+                                let _stage = viewer_foundation::load_record::stage("load.shared_content");
+                                viewer_foundation::load_record::count("content reused", 1, 0);
+                                Document::from_shared_content(
+                                    Arc::clone(content),
+                                    source.replay(),
+                                    &initial,
+                                )
+                            }
                             None => Document::load_shared(
                                 &path,
                                 &resolve,
@@ -2593,6 +3335,7 @@ impl Viewer {
                     if let Some(source) = &source {
                         document.bind_source(source);
                     }
+                    let decoder_stage = viewer_foundation::load_record::stage("load.decoder");
                     let decoder = resources
                         .as_ref()
                         .map(|resources| {
@@ -2616,13 +3359,17 @@ impl Viewer {
                             Ok::<_, String>(decoder)
                         })
                         .transpose()?;
+                    drop(decoder_stage);
                     // The builders need seconds for the first hour and the UI
                     // thread idles on the spinner meanwhile; the whole
                     // hour-independent scene is cheaper here than on any frame.
                     let workers = resources
                         .as_ref()
-                        .map_or_else(Default::default, |resources| resources.workers());
-                    match load_scene(&device, &queue, &document, preferences.graphics, &workers) {
+                        .map_or_else(Default::default, |resources| resources.pool().workers());
+                    let scene_stage = viewer_foundation::load_record::stage("load.scene");
+                    let scene = load_scene(&device, &queue, &document, preferences.graphics, &workers);
+                    drop(scene_stage);
+                    match scene {
                         Ok(scene) => break (document, decoder, scene),
                         // Whatever failed, content with the visual mods probes without them, as its
                         // frames then decide; only a scene that cannot be built without them
@@ -2668,13 +3415,8 @@ impl Viewer {
         self.combat.close();
         self.document = None;
         self.diplomatic_selected = None;
-        self.raid_tooltips = Default::default();
-        self.land_marker_tooltips = Default::default();
-        self.naval_marker_tooltips = Default::default();
-        self.province_tooltips = Default::default();
-        self.terrain_tooltips = Default::default();
-        self.counter_tooltips = Default::default();
-        self.division_panel_tooltips = Default::default();
+        self.hover_rows = Default::default();
+        self.combat_rows = Default::default();
         self.tooltip_refused.clear();
         self.source = None;
         self.source_decoder = None;
@@ -2703,6 +3445,7 @@ impl Viewer {
         self.last_view = None;
         // close zoom
         self.unit_models = None;
+        (self.ships_shipless, self.ships_joined) = (None, None);
         self.unit_field_uploaded = false;
         self.profile_frame = 0;
         self.scene_target.generation = 0;
@@ -2737,7 +3480,9 @@ impl Viewer {
         self.fade = None;
         // counters
         self.overlay = None;
+        self.overlay_written += 1;
         self.prepared_overlay = None;
+        self.overlay_laid = None;
         self.counter_report = CounterReport::default();
         self.counter_held = None;
         self.unit_selection = Default::default();
@@ -2746,6 +3491,7 @@ impl Viewer {
         self.overlay_fraction = None;
         self.overlay_at = None;
         self.overlay_tables = None;
+        self.forget_overlay_builds();
         self.raid_lane = Default::default();
         if let Some(dropper) = &self.dropper {
             dropper.drop_later(std::mem::take(&mut self.faction_highlight));
@@ -2760,18 +3506,18 @@ impl Viewer {
     }
 
     /// A `--window-dump` waits for this load, so its failure ends the capture
-    /// and the process; run_native hands the message to main, which exits 1.
+    /// and the process; the map's thread hands the message to main, which exits 1.
     /// Other captures belong to the map on screen and stay armed.
     fn failed_load(&mut self, error: String, ctx: &egui::Context) {
         self.failed_window_capture(&format!("replay could not be loaded: {error}"), ctx);
         self.error = Some(error);
     }
 
-    fn hour_error(&mut self, error: Option<&std::io::Error>, ctx: &egui::Context) {
-        self.map_error = error.map(ToString::to_string);
-        if let Some(error) = error {
-            self.failed_window_capture(&error.to_string(), ctx);
+    fn hour_error(&mut self, error: Option<String>, ctx: &egui::Context) {
+        if let Some(error) = &error {
+            self.failed_window_capture(error, ctx);
         }
+        self.map_error = error;
     }
 
     /// A window dump cannot write an unavailable map. Surface its failure to
@@ -2809,6 +3555,7 @@ impl Viewer {
                 decoder,
                 config,
             }))) => {
+                let _stage = viewer_foundation::load_record::stage("install");
                 self.revision = revision;
                 self.source = source;
                 self.source_decoder = decoder;
@@ -2816,19 +3563,7 @@ impl Viewer {
                 if self.embedded.is_some() {
                     self.error = None;
                 }
-                if let Some(selector) = self.options.combat {
-                    match document.frame().and_then(|frame| selector.resolve(frame)) {
-                        Ok(selection) => {
-                            self.combat.open(selection);
-                            self.combat.configure_air(
-                                self.options.air_details,
-                                self.options.air_range,
-                                self.options.air_channels,
-                            );
-                        }
-                        Err(error) => self.error = Some(error.to_string()),
-                    }
-                }
+                self.combat_rows.pending = self.options.combat;
                 self.playhead = Some(Playhead {
                     branch: document.playback.branch(),
                     hour: document.playback.hour(),
@@ -2858,14 +3593,15 @@ impl Viewer {
                     self.graphics.full_resolution = document.game_full_resolution;
                     self.volumes = document.game_audio;
                 }
+                self.shown_whole = false;
                 self.document = Some(document);
                 // The loader built the whole hour-independent scene; the
                 // frames only upload hour data into it from here.
                 self.scene = Some(scene);
                 self.uploaded = Uploaded::default();
                 self.loading = None;
-                if let (Some(embedded), Some(source)) = (&self.embedded, &self.source) {
-                    let settings = embedded.service().map_settings(&source.replay());
+                if let (Some(service), Some(source)) = (self.service(), &self.source) {
+                    let settings = service.map_settings(&source.replay());
                     self.set_embedded_graphics(&settings);
                 }
                 if let Some(opened) = self.opened
@@ -3217,6 +3953,7 @@ impl Viewer {
         queue: &eframe::wgpu::Queue,
         point: Option<[f32; 2]>,
     ) -> Result<(), String> {
+        let pool = self.worker_pool().map_err(|why| format!("Native map workers: {why}"))?;
         let adjacency = self.map_mode == viewer_world::map::map_mode::MapMode::Stock(viewer_world::map::map_mode::Stock::StrategicNavy);
         let color = if adjacency { &document.border_assets.adjacency_highlight_color } else { &document.border_assets.faction_highlight_color };
         let Ok(color) = color else {
@@ -3234,15 +3971,37 @@ impl Viewer {
         let Some(shown) = &self.shown else {
             return Ok(());
         };
-        let Some((political, borders)) = &shown.borders else {
-            return Ok(());
+        // While the political layer draws, the highlight is built over its picture, keyed by the
+        // hour it last drew whole, or at another mode over the mode fills layer's, keyed by its
+        // product's hour; today's part is then empty.
+        let layered = match &self.playhead_map {
+            Some(side) if side.draws("political") => {
+                let Some((_, layers)) = side.parts() else { return Ok(()) };
+                match layers.iter().find_map(|layer| layer.any().downcast_ref::<crate::layers::mode_fills::ModeFills>()).filter(|layer| layer.drawn()) {
+                    Some(fills) => {
+                        let Some((regions, zone, hour)) = fills.picture() else { return Ok(()) };
+                        Some((faction_highlight::Over::Mode(regions, zone), 1 << 62 | u64::from(hour as u32)))
+                    }
+                    None => {
+                        let Some(layer) = layers.iter().find_map(|layer| layer.any().downcast_ref::<crate::layers::political::Political>()) else { return Ok(()) };
+                        Some((faction_highlight::Over::Layer(layer), side.last_frame().drawn.map_or(u64::MAX, |hour| 1 << 63 | u64::from(hour as u32))))
+                    }
+                }
+            }
+            _ => None,
+        };
+        let today = shown.borders.as_ref().filter(|_| layered.is_none());
+        let picture = match (&layered, today) {
+            (Some((_, picture)), _) => *picture,
+            (None, Some((_, borders))) => borders.id,
+            (None, None) => return Ok(()),
         };
         let key = faction_highlight::Key {
             epoch: shown.epoch,
             branch: shown.branch,
             hour: shown.hour,
             perspective: self.perspective.clone(),
-            borders: borders.id,
+            borders: picture,
             regions: Arc::clone(&selected),
             adjacency,
         };
@@ -3250,46 +4009,57 @@ impl Viewer {
         if self.faction_highlight.requested() != Some(&key)
             && !scene.faction_highlight_regions().is_empty()
         {
-            scene
-                .apply(
-                    device,
-                    queue,
-                    SceneInput::SetBorderPlans {
-                        classes: &borders.classes,
-                        zone: &borders.highlighted,
-                    },
-                )
-                .map_err(|why| why.to_string())?;
+            let restored = match (self.faction_highlight.take_restore(), today) {
+                (Some(restore), _) => scene.apply(device, queue, SceneInput::SetFactionHighlight { plan: &restore, strategic_regions: &[], color: *color }).map(drop),
+                (None, Some((_, borders))) => scene.apply(device, queue, SceneInput::SetBorderPlans { classes: &borders.classes, zone: &borders.highlighted }).map(drop),
+                (None, None) => Ok(()),
+            };
+            restored.map_err(|why| why.to_string())?;
         }
         let content = Arc::clone(&document.content);
-        let political = Arc::clone(political);
-        let borders = Arc::clone(borders);
-        let Some(hours) = &self.hours else {
-            return Ok(());
+        let dropper = pool.dropper();
+        let over = match (layered, today) {
+            (Some((over, _)), _) => over,
+            (None, Some((political, borders))) => faction_highlight::Over::Today(Arc::clone(political), Arc::clone(borders)),
+            (None, None) => return Ok(()),
         };
-        let dropper = self.dropper.as_ref().expect("hour retirement worker");
-        if let Some(plan) = self.faction_highlight.update(
+        if let Some(prepared) = self.faction_highlight.update_with(
             key,
-            |job| hours.try_submit(job),
-            move || {
-                let provinces = if adjacency {
-                    selected.iter().copied().collect()
-                } else { selected
-                    .iter()
-                    .flat_map(|id| {
-                        content
-                            .strategic_regions
-                            .get(id)
-                            .into_iter()
-                            .flat_map(|region| region.provinces.iter().copied())
-                    })
-                    .collect() };
-                viewer_world::map::scene::FactionHighlight::new(
-                    &content.border_meshes,
-                    &political.layers.regions,
-                    &borders.zone,
-                    &provinces,
-                )
+            |job| pool.try_submit(job),
+            || {
+                let source = over.copied();
+                move || {
+                    let provinces: std::collections::BTreeSet<u32> = if adjacency {
+                        selected.iter().copied().collect()
+                    } else { selected
+                        .iter()
+                        .flat_map(|id| {
+                            content
+                                .strategic_regions
+                                .get(id)
+                                .into_iter()
+                                .flat_map(|region| region.provinces.iter().copied())
+                        })
+                        .collect() };
+                    let meshes = &content.border_meshes;
+                    match source {
+                        faction_highlight::Over::Layer(picture) => {
+                            let (regions, zone) = picture.regions_and_zone(&content.map);
+                            faction_highlight::Prepared {
+                                plan: viewer_world::map::scene::FactionHighlight::new(meshes, &regions, &zone, &provinces),
+                                restore: Some(viewer_world::map::scene::FactionHighlight::new(meshes, &regions, &zone, &Default::default())),
+                            }
+                        }
+                        faction_highlight::Over::Mode(regions, zone) => faction_highlight::Prepared {
+                            plan: viewer_world::map::scene::FactionHighlight::new(meshes, &regions, &zone, &provinces),
+                            restore: Some(viewer_world::map::scene::FactionHighlight::new(meshes, &regions, &zone, &Default::default())),
+                        },
+                        faction_highlight::Over::Today(political, borders) => faction_highlight::Prepared {
+                            plan: viewer_world::map::scene::FactionHighlight::new(meshes, &political.layers.regions, &borders.zone, &provinces),
+                            restore: None,
+                        },
+                    }
+                }
             },
             dropper,
         ) {
@@ -3297,7 +4067,7 @@ impl Viewer {
                 device,
                 queue,
                 SceneInput::SetFactionHighlight {
-                    plan: &plan,
+                    plan: &prepared.plan,
                     strategic_regions: &self
                         .faction_highlight
                         .requested()
@@ -3306,8 +4076,9 @@ impl Viewer {
                     color: *color,
                 },
             );
-            dropper.drop_later(plan);
+            dropper.drop_later(prepared.plan);
             result.map_err(|why| why.to_string())?;
+            self.faction_highlight.set_restore(prepared.restore);
             self.faction_highlight.installed();
         }
         Ok(())
@@ -3329,6 +4100,9 @@ impl Viewer {
         extent: [f32; 2],
         ctx: &egui::Context,
     ) -> Option<(Arc<Tooltip>, [f32; 4], Option<u32>)> {
+        if self.open_map().is_none() {
+            return self.map_tooltip_today(document, point, extent, ctx);
+        }
         let point = point?;
         let target = self.map_hit(point);
         // An intel entry takes the hover even when its text is empty: the province's is not
@@ -3348,6 +4122,14 @@ impl Viewer {
         let layer = target.and_then(|target| self.hit_layer(target));
         // The pointer in the hit icon's own layout, as its hover shapes are laid out.
         let local = self.local_point(layer, point);
+        // Every text below is made from rows at the head of the open map, with the vision and the
+        // engagements its layers show.
+        let (entry, recording) = self.rows_head()?;
+        let head = (&entry, recording);
+        let repaint = || {
+            let ctx = ctx.clone();
+            move || ctx.request_repaint()
+        };
         if let Some(MapHit::Occupation(index)) = target {
             let hit = self
                 .prepared_overlay
@@ -3355,11 +4137,9 @@ impl Viewer {
                 .occupation_hits()
                 .get(index)?;
             let rect = self.shown_rect(layer, hit.bounds()?);
-            let crate::playback::Current::Frame(frame) = document.playback.current() else {
-                return None;
-            };
             use viewer_world::map::occupation_icons::Hover;
-            let text = match &hit.hover {
+            let hover = hit.hover.clone();
+            let text = match &hover {
                 Hover::Modifier { state, token } => {
                     let result = (|| {
                         let content = document.icons.occupation.as_ref().map_err(Clone::clone)?;
@@ -3369,23 +4149,20 @@ impl Viewer {
                             .ok_or_else(|| format!("active definition {token} is absent"))
                     })();
                     // The same catalogue chose and drew the badge; keep its exact definition.
-                    let text = match result {
+                    match result {
                         Ok(definition) => {
-                            viewer_counter_products::map::occupation_modifier_tooltips::build(
-                                &document.counter_content,
-                                frame,
-                                *state,
-                                definition,
-                            )
+                            let vision = self.shown_vision().ok()?;
+                            let inputs = self.hover_inputs(document, &vision, ctx);
+                            let key = inputs.key(hover_rows::What::Occupation { state: *state, token: token.clone() }, [0, 0]);
+                            self.hover_rows.ask(hover_rows::Family::Occupation, head, key, |_| inputs.occupation(*state, definition.clone()))?
                         }
                         Err(why) => {
                             let mut text = Tooltip::default();
                             text.refused
                                 .insert(format!("occupation badge {token}: {why}"), 1);
-                            text
+                            Arc::new(text)
                         }
-                    };
-                    Arc::new(text)
+                    }
                 }
                 Hover::Resistance { state } => {
                     let province = document
@@ -3401,21 +4178,11 @@ impl Viewer {
                         text.refused.insert(format!("occupation marker state {state}: no member province supplies the resistance hover"), 1);
                         return Some((Arc::new(text), rect, None));
                     };
-                    self.province_tooltips.request(
-                        &document.counter_content,
-                        document.icons.raids.movement_reads(),
-                        frame,
-                        province,
-                        self.overlay_tables.as_ref()?.3.vision(),
-                        self.counter_view.settings.nato,
-                        self.unit_selection.ordered_units(),
-                        &document.playback.replay_handle(),
-                        &viewer_counter_products::map::province_tooltips::ModeHover::OccupationMarker,
-                        {
-                            let ctx = ctx.clone();
-                            move || ctx.request_repaint()
-                        },
-                    )
+                    let vision = self.shown_vision().ok()?;
+                    let inputs = self.hover_inputs(document, &vision, ctx);
+                    let (mode, selected, rosters) = (viewer_counter_products::map::province_tooltips::ModeHover::OccupationMarker, self.unit_selection.ordered_units(), document.playback.roster_sampler());
+                    let key = inputs.key(hover_rows::What::Province { province, mode: mode.clone() }, [hover_rows::id(selected), hover_rows::id(&rosters)]);
+                    self.hover_rows.ask(hover_rows::Family::Province, head, key, |caches| inputs.province(caches, province, mode, Arc::clone(selected), rosters))?
                 }
             };
             return Some((text, rect, None));
@@ -3434,19 +4201,13 @@ impl Viewer {
         }
         if let Some(MapHit::Base(index)) = target
             && let Some(&(province, kind)) = self.counter_report.air_base_hits.get(&index)
-            && let crate::playback::Current::Frame(frame) = document.playback.current()
         {
-            let vision = self.overlay_tables.as_ref()?.3.vision();
-            let text = viewer_counter_products::map::counter_tooltips::Batch::new(
-                &document.counter_content,
-                document.icons.raids.movement_reads(),
-                frame,
-                vision,
-                self.hover_style(),
-            )
-            .build_air_base(province, kind, self.air_selection.wings());
+            let vision = self.shown_vision().ok()?;
+            let (inputs, wings) = (self.hover_inputs(document, &vision, ctx), self.air_selection.wings());
+            let key = inputs.key(hover_rows::What::AirBase { province, kind }, [hover_rows::id(wings), 0]);
+            let text = self.hover_rows.ask(hover_rows::Family::Counters, head, key, |_| inputs.air_base(province, kind, Arc::clone(wings)))?;
             return Some((
-                Arc::new(text),
+                text,
                 self.shown_rect(layer, self.counter_report.base_hits[index].rect),
                 None,
             ));
@@ -3461,28 +4222,17 @@ impl Viewer {
         }
         if let Some(MapHit::NavalRegionHover(index)) = target {
             use viewer_counters::map::counters::NavalRegionalControl;
-            let hit = self.counter_report.naval_region_hovers.get(index)?;
-            let crate::playback::Current::Frame(frame) = document.playback.current() else {
-                return None;
+            let (region, control, rect) = {
+                let hit = self.counter_report.naval_region_hovers.get(index)?;
+                (hit.region, hit.control, hit.rect)
             };
-            let vision = self.overlay_tables.as_ref()?.3.vision();
-            let text = match hit.control {
-                NavalRegionalControl::Mines => {
-                    viewer_counter_products::map::province_tooltips::naval_mines::build(
-                        &document.counter_content,
-                        frame,
-                        vision,
-                        hit.region,
-                        false,
-                    )
-                }
-                NavalRegionalControl::Accidents => {
-                    viewer_counter_products::map::province_tooltips::naval_accidents::build(
-                        &document.counter_content,
-                        frame,
-                        vision,
-                        hit.region,
-                    )
+            let text = match control {
+                NavalRegionalControl::Mines | NavalRegionalControl::Accidents => {
+                    let mines = matches!(control, NavalRegionalControl::Mines);
+                    let vision = self.shown_vision().ok()?;
+                    let inputs = self.hover_inputs(document, &vision, ctx);
+                    let key = inputs.key(if mines { hover_rows::What::Mines(region) } else { hover_rows::What::Accidents(region) }, [0, 0]);
+                    self.hover_rows.ask(hover_rows::Family::Naval, head, key, |_| inputs.naval(region, mines))?
                 }
                 _ => {
                     let mut text = Tooltip::default();
@@ -3490,26 +4240,16 @@ impl Viewer {
                         "regional Navy control hover",
                         "drawn control has no prepared hover text".into(),
                     );
-                    text
+                    Arc::new(text)
                 }
             };
-            return Some((Arc::new(text), self.shown_rect(layer, hit.rect), None));
+            return Some((text, self.shown_rect(layer, rect), None));
         }
         if matches!(target, Some(MapHit::Raid))
             && let Some(hit) = self.raid_hit(point).cloned()
         {
-            let crate::playback::Current::Frame(frame) = document.playback.current() else {
-                return None;
-            };
-            let ours = self.overlay_tables.as_ref()?.3.ours();
-            let text = self.raid_tooltips.request(
-                Arc::clone(&document.raid_hover),
-                Arc::clone(frame),
-                ours,
-                self.counter_view.settings.nato,
-                hit.key.clone(),
-                ctx,
-            )?;
+            let ours = self.shown_vision().ok()?.ours();
+            let text = self.combat_rows.raid(head, document, ours, self.counter_view.settings.nato, hit.key.clone(), ctx)?;
             let rect = [hit.origin[0], hit.origin[1], hit.size[0], hit.size[1]];
             let layer = Some((free_icons::IconFamily::Raids, hit.layer));
             return Some((text, self.shown_rect(layer, rect), None));
@@ -3524,32 +4264,10 @@ impl Viewer {
             }
             _ => None,
         };
-        if let Some((id, rect)) = land_hit
-            && let crate::playback::Current::Frame(frame) = document.playback.current()
-        {
-            let viewer = self.overlay_tables.as_ref()?.3.ours();
-            let index = match self
-                .hours
-                .as_ref()
-                .map(|hours| hours.engaged(&self.perspective.country))
-                .transpose()
-            {
-                Ok(index) => index,
-                Err(why) => {
-                    let mut text = Tooltip::default();
-                    text.refused
-                        .insert(format!("land marker {id} engaged index: {why}"), 1);
-                    return Some((Arc::new(text), self.shown_rect(layer, rect), None));
-                }
-            };
-            let text = self.land_marker_tooltips.request(
-                &document.combat,
-                frame,
-                viewer,
-                id,
-                index.as_ref().map(|index| index.shared.as_ref()),
-                self.counter_view.settings.nato,
-            );
+        if let Some((id, rect)) = land_hit {
+            let viewer = self.shown_vision().ok()?.ours();
+            let index = self.layer_engaged();
+            let text = self.combat_rows.land_marker(head, document, viewer, id, index, self.counter_view.settings.nato, repaint())?;
             return Some((text, self.shown_rect(layer, rect), None));
         }
         let naval_hit = match target {
@@ -3563,48 +4281,22 @@ impl Viewer {
             Selection::Naval(id) => Some((id, hit.rect)),
             _ => None,
         });
-        if let Some((id, rect)) = naval_hit
-            && let crate::playback::Current::Frame(frame) = document.playback.current()
-        {
-            let viewer = self.overlay_tables.as_ref()?.3.ours();
-            let index = match self
-                .hours
-                .as_ref()
-                .map(|hours| hours.engaged(&self.perspective.country))
-                .transpose()
-            {
-                Ok(index) => index,
-                Err(why) => {
-                    let mut text = Tooltip::default();
-                    text.refused
-                        .insert(format!("naval marker {id} engaged index: {why}"), 1);
-                    return Some((Arc::new(text), self.shown_rect(layer, rect), None));
-                }
-            };
-            let text = self.naval_marker_tooltips.request(
-                &document.combat,
-                frame,
-                viewer,
-                id,
-                index.as_ref().map(|index| index.shared.as_ref()),
-            );
+        if let Some((id, rect)) = naval_hit {
+            let viewer = self.shown_vision().ok()?.ours();
+            let index = self.layer_engaged();
+            let text = self.combat_rows.naval_marker(head, document, viewer, id, index, repaint())?;
             return Some((text, self.shown_rect(layer, rect), None));
         }
         if let Some(hit) = self.counter_report.land_hovers.iter().rev().find(|hit| {
             hit.contains(local)
                 && matches!(target, Some(MapHit::Unit(index))
                 if land_hover_matches_unit(hit, &self.counter_report.unit_hits[index]))
-        }) && let crate::playback::Current::Frame(frame) = document.playback.current()
+        }).cloned()
         {
-            let vision = self.overlay_tables.as_ref()?.3.vision();
-            let text = self.counter_tooltips.request(
-                &document.counter_content,
-                document.icons.raids.movement_reads(),
-                frame,
-                hit,
-                vision,
-                self.hover_style(),
-            );
+            let vision = self.shown_vision().ok()?;
+            let inputs = self.hover_inputs(document, &vision, ctx);
+            let key = inputs.key(hover_rows::What::Land(hit.clone()), [0, 0]);
+            let text = self.hover_rows.ask(hover_rows::Family::Counters, head, key, |caches| inputs.land(caches, hit.clone()))?;
             let text = if hit.ours
                 && !hit.hidden
                 && !hit.railway_gun
@@ -3612,8 +4304,7 @@ impl Viewer {
                 && hit.control
                     == viewer_foundation::map::counter_hovers::land::CounterControl::Normal
             {
-                self.division_panel_tooltips
-                    .request(&document.combat, frame, text, hit.members[0])
+                self.combat_rows.division_panel(head, document, text, hit.members[0], repaint())
             } else {
                 text
             };
@@ -3629,45 +4320,41 @@ impl Viewer {
                     && matches!(target, Some(MapHit::Unit(index))
                 if index == hit.unit_hit && hit.matches(&self.counter_report.unit_hits[index]))
             })
-            && let crate::playback::Current::Frame(frame) = document.playback.current()
+            .cloned()
         {
             if !hit.supported {
                 return None;
             }
-            let vision = self.overlay_tables.as_ref()?.3.vision();
-            let text = self.counter_tooltips.request_task_force(
-                &document.counter_content,
-                document.icons.raids.movement_reads(),
-                frame,
-                hit,
-                vision,
-                self.hover_style(),
-            );
+            let vision = self.shown_vision().ok()?;
+            let inputs = self.hover_inputs(document, &vision, ctx);
+            let key = inputs.key(hover_rows::What::TaskForce(hit.clone()), [0, 0]);
+            let text = self.hover_rows.ask(hover_rows::Family::Counters, head, key, |caches| inputs.task_force(caches, hit.clone()))?;
             return Some((text, self.shown_rect(layer, hit.rect), None));
         }
-        if let Some((_, hit)) = self.counter_report.task_force_port_hovers.iter().enumerate().rev()
+        if let Some(hit) = self.counter_report.task_force_port_hovers.iter().enumerate().rev()
             .find(|(hover_index, hit)| hit.contains(local) && hit.has_tooltip()
                 && self.counter_report.unit_hits.get(hit.unit_hit).is_some_and(|unit| hit.matches(unit))
                 && (matches!(target, Some(MapHit::Unit(index)) if index == hit.unit_hit)
                     || matches!(target, Some(MapHit::PortTooltip(index)) if index == *hover_index)))
-            && let crate::playback::Current::Frame(frame) = document.playback.current()
+            .map(|(_, hit)| hit.clone())
         {
             if !hit.supported { return None; }
-            let vision = self.overlay_tables.as_ref()?.3.vision();
-            let text = self.counter_tooltips.request_task_force_port(&document.counter_content, document.icons.raids.movement_reads(), frame, hit, vision, self.hover_style());
+            let vision = self.shown_vision().ok()?;
+            let inputs = self.hover_inputs(document, &vision, ctx);
+            let key = inputs.key(hover_rows::What::Port(hit.clone()), [0, 0]);
+            let text = self.hover_rows.ask(hover_rows::Family::Counters, head, key, |caches| inputs.port(caches, hit.clone()))?;
             return Some((text, self.shown_rect(layer, hit.rect), None));
         }
         if target.is_some() {
             return None;
         }
-        let crate::playback::Current::Frame(frame) = document.playback.current() else {
-            return None;
-        };
         let view = self.last_view.as_ref()?;
+        // The trade routes the convoys layer draws: none drawn, none hovered.
+        let routes = self.open_map().filter(|side| side.draws("convoys") && side.draws("units")).and_then(|side| side.parts()).and_then(|(_, layers)| layers.iter().find_map(|layer| layer.any().downcast_ref::<crate::layers::convoys::Convoys>()));
         if self.counter_view.visibility.trade_routes
-            && self.uploaded.orders.as_ref().is_some_and(|orders| {
+            && routes.is_some_and(|convoys| {
                 viewer_foundation::map::ribbon_content::trade_route_hit(
-                    &orders.trade_route_hovers,
+                    &convoys.product().field.trade_route_hovers,
                     view.camera.eye(),
                     view.camera
                         .ray(point.map(|v| v * view.ui_scale), view.viewport),
@@ -3693,27 +4380,17 @@ impl Viewer {
                 return Some((Arc::new(text), [0.0, 0.0, extent[0], extent[1]], None));
             }
         };
-        let vision = self.overlay_tables.as_ref()?.3.vision();
+        let vision = self.shown_vision().ok()?;
         if *self.shown_mode()
             == viewer_world::map::map_mode::MapMode::Stock(
                 viewer_world::map::map_mode::Stock::Terrain,
             )
         {
-            let text = self
-                .terrain_tooltips
-                .request(&document.combat, frame, province, vision);
+            let text = self.combat_rows.terrain(head, document, province, &vision, repaint())?;
             return Some((text, [0.0, 0.0, extent[0], extent[1]], Some(province)));
         }
-        let mut mode_hover = picker::mode_hover(
-            self.shown_mode(),
-            document.map_modes.defines.opinion_thresholds(),
-            || {
-                document
-                    .map_modes
-                    .infrastructure
-                    .hover_level(frame, province)
-            },
-        );
+        let mode = self.shown_mode().clone();
+        let mut mode_hover = picker::mode_hover(&mode, document.map_modes.defines.opinion_thresholds(), || self.combat_rows.infrastructure(head, document, province, repaint()));
         if let viewer_counter_products::map::province_tooltips::ModeHover::StrategicAir(selected) =
             &mut mode_hover
         {
@@ -3722,23 +4399,16 @@ impl Viewer {
         if let viewer_counter_products::map::province_tooltips::ModeHover::StrategicNavy(sources) =
             &mut mode_hover
         {
-            *sources = self.overlay_tables.as_ref()?.3.naval_dominance_sources();
+            // The overlay's tables made from rows at the head make them; loading by name before.
+            *sources = match &self.head_tables {
+                Some((_, tables)) => tables.naval_dominance_sources(),
+                None => Arc::new(Err("naval dominance sources: the overlay's tables at the head are loading".into())),
+            };
         }
-        let text = self.province_tooltips.request(
-            &document.counter_content,
-            document.icons.raids.movement_reads(),
-            frame,
-            province,
-            vision,
-            self.counter_view.settings.nato,
-            self.unit_selection.ordered_units(),
-            &document.playback.replay_handle(),
-            &mode_hover,
-            {
-                let ctx = ctx.clone();
-                move || ctx.request_repaint()
-            },
-        );
+        let inputs = self.hover_inputs(document, &vision, ctx);
+        let (selected, rosters) = (self.unit_selection.ordered_units(), document.playback.roster_sampler());
+        let key = inputs.key(hover_rows::What::Province { province, mode: mode_hover.clone() }, [hover_rows::id(selected), hover_rows::id(&rosters)]);
+        let text = self.hover_rows.ask(hover_rows::Family::Province, head, key, |caches| inputs.province(caches, province, mode_hover, Arc::clone(selected), rosters))?;
         Some((text, [0.0, 0.0, extent[0], extent[1]], Some(province)))
     }
 
@@ -3818,6 +4488,64 @@ impl Viewer {
                 ui.ctx().request_repaint();
             }
         }
+        // A map's reader opens on the first frame it is drawn after it was not, or after the clock
+        // left its branch, on the clock's branch and hour when no other map of the recording
+        // anchors the playhead already.
+        self.follow_content(Arc::as_ptr(&document.content));
+        self.follow_branch();
+        if !self.playhead_opened
+            && let Some(clock) = self.playhead
+        {
+            self.playhead_opened = true;
+            let at = crate::playhead_host::At { branch: clock.branch, hour: clock.hour, playing: self.playing, speed: self.speed };
+            self.playhead_opening = crate::playhead_host::Opening::start(document, Some(at));
+        }
+        if let Some(made) = self.playhead_opening.as_ref().and_then(crate::playhead_host::Opening::poll) {
+            self.playhead_opening = None;
+            match made {
+                // Opened for a branch the clock has left meanwhile: opened again at the clock.
+                Some(side) if self.playhead.is_some_and(|clock| side.branch().is_some_and(|branch| branch != clock.branch)) => {
+                    self.drop_later(side);
+                    self.playhead_opened = false;
+                }
+                made => {
+                    if let Some(side) = &made {
+                        document.playback.read_rosters_of(side.entry());
+                    }
+                    self.presented.reopened = made.is_some();
+                    self.playhead_map = made;
+                    self.open_overlay_rows();
+                }
+            }
+        }
+        if let Some(side) = &mut self.playhead_map {
+            let at = match (&self.capture, self.playhead) {
+                (Some(capture), Some(head)) if capture.paced => crate::playhead_host::Head::Paced(head.hour),
+                (Some(_), Some(head)) => crate::playhead_host::Head::Stepped(head.hour),
+                _ => crate::playhead_host::Head::Clock(Instant::now()),
+            };
+            let view = crate::layers::View {
+                map_mode: self.map_mode.clone(),
+                perspective: self.perspective.clone(),
+                camera_height: self.last_view.as_ref().map_or(0.0, |view| view.camera.height),
+                camera: self.last_view.as_ref().map(|view| view.camera.placement()),
+                target: self.zoom.target(),
+                viewport: self.last_view.as_ref().map_or([0, 0], |view| view.viewport),
+                fog: self.perspective.fog,
+                graphics: self.graphics,
+                sound: self.audio_focus,
+                audio: self.volumes,
+                overlay: self.overlay_layers.clone(),
+                counters: self.counter_filter.clone(),
+                player_counters: self.player_counters,
+                selected: self.diplomatic_selected,
+            };
+            self.counters_drawn = self.counters_given;
+            crate::playhead_host::draw_frame(side, view, at);
+            if let Some(battles) = crate::layers::sounds::drawn(side) {
+                self.battles = battles;
+            }
+        }
         // The scene arrives with the document from the loading thread
         // (`load_scene`); only hour data uploads per frame from here.
         // The screen-space interface's scale. A capture keeps the dump's, 1.0
@@ -3889,14 +4617,57 @@ impl Viewer {
             viewport: pixels,
             ui_scale,
         };
-        let hour_error = self.refresh_hour(state, document, view, &mut laps).err();
-        self.hour_error(hour_error.as_ref(), ui.ctx());
+        // `--layers-only` never starts today's pipeline.
+        let hour_error = if self.layers_only {
+            None
+        } else {
+            let _lap = replay_frame::cpu::scope("frame.refresh.hour", Some("other"));
+            self.refresh_hour(state, document, view, &mut laps).err()
+        };
+        if let (Some(side), Some(scene)) = (&mut self.playhead_map, &mut self.scene) {
+            let stepped = self.capture.as_ref().is_some_and(|capture| !capture.paced);
+            // The land stacks read the vision layer themselves. The other counter layers are given
+            // the overlay's tables made from rows at the head, whose vision is the vision layer's.
+            if let Some((key, tables)) = &self.head_tables {
+                let _lap = replay_frame::cpu::scope("frame.refresh.counters", Some("other"));
+                let passes = || -> crate::layers::air_mission_counters::Passes { document.playback.air_rosters() };
+                self.counters_given = Some((key.hour, key.rows));
+                if crate::layers::counter_kinds::give(side, &key.perspective, tables.vision(), tables.counters(), key.branch, passes)
+                    && stepped
+                    && let Err(error) = side.settle_all()
+                {
+                    eprintln!("The map's counter layers could not settle a new vision: {error}");
+                }
+            }
+            // A saved frame (stepped, or a window dump) draws the plan of its hour.
+            if (stepped || self.options.window_dump) && side.failure().is_none() {
+                let hour = side.last_frame().head;
+                settle_plan(side, hour, Duration::from_secs(120))?;
+            }
+            let mut gpu = crate::layers::Gpu { device: &state.device, queue: &state.queue, scene, content: &document.content };
+            crate::playhead_host::upload_frame(side, &mut gpu, stepped);
+        }
+        // The counter kinds the layers draw take their products; a kind whose layer stops keeps its
+        // last until tables holding today's are on screen.
+        {
+            let _lap = replay_frame::cpu::scope("frame.refresh.counters", Some("other"));
+            let tables = match self.live_map() {
+                Some(_) => self.head_tables.as_ref().map(|(_, tables)| tables),
+                None => self.overlay_tables.as_ref().map(|(_, _, _, tables)| tables),
+            };
+            let left_out = tables.map(|tables| tables.counters().left_out()).unwrap_or_default();
+            let (published, draws) = self.playhead_map.as_ref().map(|side| (crate::layers::counter_kinds::published(side), crate::layers::counter_kinds::draws(side))).unwrap_or_default();
+            self.counter_view.presentation.counters.lock().unwrap_or_else(|error| error.into_inner()).set_layered(published, draws, left_out);
+        }
+        let map_error = self.map_error_of(document, hour_error);
+        self.hour_error(map_error, ui.ctx());
+        self.follow_continuity(&document.playback.replay().gaps);
         // An error view otherwise stops repainting; a paused seek away from it
         // still needs to poll the asynchronous builders until its hour arrives.
-        if self
-            .playhead
-            .is_some_and(|head| !self.hour_ready(head.branch, head.hour))
-        {
+        if self.playhead.is_some_and(|head| match &self.playhead_map {
+            Some(side) => side.on_screen().is_some_and(|on| on.drawn != Some(head.hour) || !on.settled),
+            None => !self.hour_ready(head.branch, head.hour),
+        }) {
             ui.ctx().request_repaint_after(Duration::from_millis(16));
         }
         if let Some(error) = self.map_error.clone() {
@@ -3923,18 +4694,19 @@ impl Viewer {
             });
             return Ok(());
         }
-        let stale_hour = self
-            .shown
-            .as_ref()
-            .is_some_and(|shown| shown.epoch != self.epoch);
-        let perspective = if stale_hour {
-            self.overlay_tables
-                .as_ref()
-                .expect("installed with the hour")
-                .2
-                .clone()
-        } else {
-            self.perspective.clone()
+        // The scene's presentation histories count rendered frames (the meshes created per frame,
+        // the shadows the next frame's water refracts): a warm-up render would put them a frame on.
+        if self.warming {
+            self.rendered = None;
+            return Ok(());
+        }
+        // With the playhead's map open, a reset composing: the picture is the one before it, drawn
+        // at the perspective its reader drew it at.
+        let (stale_hour, perspective) = match self.live_map() {
+            Some(side) if side.composing() => (true, side.view().perspective.clone()),
+            Some(_) => (false, self.perspective.clone()),
+            None if self.shown.as_ref().is_some_and(|shown| shown.epoch != self.epoch) => (true, self.overlay_tables.as_ref().expect("installed with the hour").2.clone()),
+            None => (false, self.perspective.clone()),
         };
         if stale_hour && profiling() {
             profile_print(format!(
@@ -3945,7 +4717,11 @@ impl Viewer {
         // What the frame shows of the map mode's layers (counters, convoys, fog, models) is the
         // mode of the hour on screen, until an hour built for a newly chosen mode replaces it;
         // the builders were told the chosen one.
-        if let Some((_, _, mode)) = &self.placements_at {
+        let mode = match self.playhead_map.as_ref().filter(|side| side.failure().is_none()) {
+            Some(side) => Some(side.mode_on_screen().unwrap_or(&self.map_mode)),
+            None => self.placements_at.as_ref().map(|(_, _, mode)| mode),
+        };
+        if let Some(mode) = mode {
             self.counter_view.set_mode(mode);
         }
         laps.lap("hour_misc");
@@ -4044,10 +4820,7 @@ impl Viewer {
             }
         }
         let engaged = self
-            .hours
-            .as_ref()
-            .map(|hours| hours.engaged(&perspective.country))
-            .transpose()
+            .engaged_history(&perspective.country)
             .map_err(|error| error.to_string())?;
         let animation_time = self
             .capture
@@ -4055,22 +4828,12 @@ impl Viewer {
             .and_then(|capture| capture.time)
             .unwrap_or_else(|| self.started.elapsed().as_secs_f32());
         // Hit tests and drawing use the same GUI clock.
+        let prepared = self
+            .combat_prepared(document, &perspective, engaged, ui.ctx())
+            .map_err(|error| error.to_string())?;
         let combat_geometry = self
             .combat
-            .draw(
-                &document.combat,
-                document.playback.branch(),
-                document.playback.hour(),
-                document.frame(),
-                extent,
-                &perspective,
-                engaged.as_ref().map(|index| index.shared.as_ref()),
-                self.counter_view.settings.nato,
-                false,
-                animation_time,
-                false,
-                None,
-            )
+            .draw(&document.combat, prepared, extent, false, animation_time, false, None)
             .map_err(|error| error.to_string())?;
         let point = profile_hover_point(
             response
@@ -4564,28 +5327,28 @@ impl Viewer {
                     let floor = |x: f32, z: f32| field.surface_height(x, z);
                     let eye = if self.camera_mode == CameraMode::Walk {
                         // The viewing country's infantry, chosen again for each hour and view.
-                        let key = (
-                            document.playback.branch(),
-                            document.playback.hour(),
-                            perspective.clone(),
-                        );
-                        if self.walk.stale(&key) {
-                            let figure = document
-                                .hour()
-                                .and_then(|now| {
-                                    now.vision_from_overlay(
-                                        &perspective,
-                                        self.overlay_tables
-                                            .as_ref()
-                                            .map(|(_, _, _, tables)| tables),
-                                    )
-                                    .map(|vision| (now.frame, vision.ours()))
-                                })
-                                .map_err(|error| error.to_string())
-                                .and_then(|(frame, ours)| {
-                                    document.unit_models.infantry_figure(frame, ours)
-                                });
-                            self.walk.set_figure(key, figure);
+                        // With the map open: rows at the head and the vision layer's viewing
+                        // country, the figure kept while either loads.
+                        let vision = if live_of(&self.playhead_map).is_some() { self.shown_vision().ok() } else { None };
+                        let head = head_rows::head(live_of(&self.playhead_map), document);
+                        let key = match head {
+                            Some((_, recording)) => self.head_rows.walk_hour(head).map(|hour| (recording.branch, hour, perspective.clone())),
+                            None => Some((document.playback.branch(), document.playback.hour(), perspective.clone())),
+                        };
+                        if let Some(key) = key.filter(|key| self.walk.stale(key)) {
+                            let figure = match head {
+                                Some(_) => vision.and_then(|vision| self.head_rows.walk(head, None, |frame| document.unit_models.infantry_figure(frame, vision.ours()))),
+                                None => Some(
+                                    document
+                                        .hour()
+                                        .and_then(|now| now.vision_from_overlay(&perspective, self.overlay_tables.as_ref().map(|(_, _, _, tables)| tables)).map(|vision| (now.frame, vision.ours())))
+                                        .map_err(|error| error.to_string())
+                                        .and_then(|(frame, ours)| document.unit_models.infantry_figure(frame, ours)),
+                                ),
+                            };
+                            if let Some(figure) = figure {
+                                self.walk.set_figure(key, figure);
+                            }
                         }
                         // The wheel moves the view nearer or farther over the map.
                         let wheel = if response.hovered() {
@@ -4624,6 +5387,8 @@ impl Viewer {
         laps.lap("panel_camera");
         drop(_other_cost);
         let _other_cost = replay_frame::cpu::scope("frame.movers", Some("other"));
+        let live = self.live_map().is_some();
+        self.rejoin_ships();
         let scene = self.scene.as_mut().expect("created above");
         // The frame a capture saves draws complete, built in place; live frames build elsewhere.
         let saving = self.options.window_dump
@@ -4636,14 +5401,11 @@ impl Viewer {
             self.settled_capture = saving;
         }
         // A `--window-dump` settles unit models for its camera, as `--dump`
-        // does; a host export keeps the live history.
-        if !self.unit_field_uploaded {
+        // does; a host export keeps the live history. With the map open the units layer installs
+        // the field: no field of today's is uploaded.
+        if let Some(today) = self.unit_models.as_ref().filter(|_| today_field_due(live, self.unit_field_uploaded)) {
             let timer = Instant::now();
-            let units = self
-                .unit_models
-                .as_ref()
-                .expect("prepared above")
-                .field(&document.unit_models);
+            let units = today.field(&document.unit_models);
             laps.lap("units_field");
             let units_cpu = viewer_foundation::profiling::thread_span("units_upload");
             scene
@@ -4670,7 +5432,7 @@ impl Viewer {
             }
         }
         // Raid movement uses the replay fraction; ordinary units move on the view's animators.
-        let tick = document.hour_fraction;
+        let tick = if live { 0.0 } else { document.hour_fraction };
         // The trade-route convoys sail by the presentation clock, so while they show they are
         // placed again every frame, with the raid units.
         let convoys_shown = |defines: &viewer_world::map::trade_routes::ConvoyDefines| {
@@ -4681,7 +5443,13 @@ impl Viewer {
                 self.counter_view.visibility.trade_routes,
             )
         };
-        let sailing = self.unit_models.as_ref().is_some_and(|prepared| {
+        // With the map open its units layer's models carry the raid units and convoys, and nothing
+        // of today's does.
+        let posed = match self.playhead_map.as_ref().filter(|_| live) {
+            Some(side) => crate::layers::units::prepared(side).cloned(),
+            None => self.unit_models.clone(),
+        };
+        let sailing = posed.as_ref().is_some_and(|prepared| {
             prepared.has_convoys()
                 && document
                     .trade_routes
@@ -4689,10 +5457,9 @@ impl Viewer {
                     .is_ok_and(|defines| convoys_shown(&defines.convoys))
         });
         if (self.raid_tick != Some(tick) || sailing || self.convoys_sailing)
-            && let Some(prepared) = self.unit_models.as_ref()
+            && let Some(prepared) = posed.as_ref()
         {
-            let hour = document.hour().map_err(|error| error.to_string())?;
-            let heights = hour.heights();
+            let heights = document.content.heights();
             let mut units = prepared.raid_units(&document.unit_models, Some((&heights, tick)));
             let time = self
                 .capture
@@ -4728,36 +5495,38 @@ impl Viewer {
             .step(camera, frame_delta);
         self.fade = Some(fade);
         laps.lap("names_fade");
-        let now = document.hour().map_err(|error| error.to_string())?;
-        let vision = now
-            .vision_from_overlay(
-                &perspective,
-                self.overlay_tables.as_ref().map(|(_, _, _, tables)| tables),
-            )
-            .map_err(|error| error.to_string())?;
-        self.unit_selection.observe(
-            document.playback.branch(),
-            &perspective.country,
-            vision.ours(),
-            now.frame,
-        );
+        // The viewing country: the vision the open map's vision layer shows, today's hour's with no
+        // open map. While the layer shows none the selections keep what they hold.
+        let today = if live { None } else { Some(document.hour().map_err(|error| error.to_string())?) };
+        let seen = match &today {
+            Some(now) => Some(now.vision_from_overlay(&perspective, self.overlay_tables.as_ref().map(|(_, _, _, tables)| tables)).map_err(|error| error.to_string())?),
+            None => self.shown_vision().ok(),
+        };
+        let head = head_rows::head(live_of(&self.playhead_map), document);
+        let branch = head.map_or_else(|| document.playback.branch(), |(_, recording)| recording.branch);
+        let frame = today.as_ref().map(|now| now.frame);
+        if let Some(ours) = seen.as_ref().map(|vision| vision.ours()) {
+            if self.unit_selection.units().is_empty() {
+                self.unit_selection.context(branch, &perspective.country, ours);
+            } else {
+                self.head_rows.units(head, frame, |frame| self.unit_selection.observe(branch, &perspective.country, ours, frame));
+            }
+            if self.air_selection.wings().is_empty() && self.air_selection.bases().is_empty() {
+                self.air_selection.context(branch, &perspective.country, ours);
+            } else {
+                self.head_rows.air(head, frame, |frame| self.air_selection.observe(branch, &perspective.country, ours, frame));
+            }
+            if self.fleet_selection.fleets().is_empty() {
+                self.fleet_selection.context(branch, &perspective.country, ours);
+            } else {
+                self.head_rows.fleets(head, frame, |frame| self.fleet_selection.observe(branch, &perspective.country, ours, frame));
+            }
+        }
         self.counter_view.selected = Arc::clone(self.unit_selection.units());
         laps.lap("unit_selection");
-        self.air_selection.observe(
-            document.playback.branch(),
-            &perspective.country,
-            vision.ours(),
-            now.frame,
-        );
         self.counter_view.air_selected = Arc::clone(self.air_selection.wings());
         self.counter_view.air_bases = Arc::clone(self.air_selection.bases());
         laps.lap("air_selection");
-        self.fleet_selection.observe(
-            document.playback.branch(),
-            &perspective.country,
-            vision.ours(),
-            now.frame,
-        );
         self.counter_view.fleets_selected = Arc::clone(self.fleet_selection.fleets());
         laps.lap("fleet_selection");
         drop(_other_cost);
@@ -4876,6 +5645,7 @@ impl Viewer {
         // A plate's state draws the laid-out counters again; it changes nothing they were
         // prepared with.
         if (self.counter_view.pressed, self.counter_view.plate_hovered) != was {
+            viewer_foundation::map::redraws::note("asked.pointer", 1);
             self.overlay_fraction = None;
         }
         self.last_view = Some(hours::View {
@@ -4898,11 +5668,7 @@ impl Viewer {
             });
         let hovered_name_region = hovered_name_province
             .map(|province| document.content.counters.region(province).unwrap_or(0));
-        let names_mode = &self
-            .placements_at
-            .as_ref()
-            .expect("installed with the hour")
-            .2;
+        let names_mode = self.shown_mode();
         let strategic_names = matches!(
             names_mode,
             viewer_world::map::map_mode::MapMode::Stock(
@@ -4928,11 +5694,122 @@ impl Viewer {
         let overlay_prepare_cpu = viewer_foundation::profiling::thread_span("overlay_prepare");
         // counters: one batch carries the bases, the labels, the counters and
         // the combat icons in the map mode's `<table>_PRIORITY_*` order.
+        // What the map's layers draw is neither made by today's maker nor read at the head for it.
+        let left = crate::document::LeftToLayers::of(live_of(&self.playhead_map));
+        // With the map open the overlay is made from rows at the head alone: its reader's newest,
+        // or the rows it was last made from while they load; none before its first rows.
+        // A frame that is saved, one an hour (a stepped run, a window dump), has the open map's
+        // overlay made from rows at the hour on screen: every table its tables and layout read is
+        // learned within the frame, or the frame fails by name.
+        let in_place = self.options.window_dump || self.capture.as_ref().is_some_and(|capture| !capture.paced);
+        let mut settled_overlay = None;
+        if in_place && live {
+            // The vision layer's vision of this frame, not the hovers' (remade at most four times a second).
+            let vision = live_of(&self.playhead_map)
+                .and_then(crate::layers::vision::drawn)
+                .ok_or_else(|| "The overlay at the head: the map draws no vision layer".to_owned())?
+                .shown()
+                .map(Arc::new)
+                .map_err(|why| format!("The overlay at the head: the vision layer shows no vision: {why}"))?;
+            let engaged = self.engaged_history(&perspective.country).map_err(|error| error.to_string())?;
+            let (_, hour) = self.hour_on_screen(document);
+            let labels = live_of(&self.playhead_map).is_some_and(|side| side.draws("labels"));
+            let left_out = self.counter_view.layered();
+            let need = overlay_need(&self.counter_view, overlay_camera.free().is_some());
+            let whole = head_rows::OverlayInputs::whole(&self.counter_view);
+            let inputs = whole.without(left.resource_icons, left.occupation_marks).unwrap_or(whole);
+            let head = head_rows::head(live_of(&self.playhead_map), document);
+            let (content, rosters, view, scripts) = (&document.content, document.playback.air_rosters(), &self.counter_view, &self.scripts);
+            let made = |rows: &Arc<replay_frame::frame::DecodedFrame>| {
+                let at = crate::document::Hour::new(content, rows, 0.0).with_air_rosters(Some(Arc::clone(&rosters)));
+                let raids = scripts.raids(rows.branch, vision.ours()).unwrap_or_default();
+                let (tables, missed) = replay_frame::frame::discovering(|| at.hour_tables_at_head(&perspective, Arc::clone(&vision), raids, engaged.as_deref(), left_out, labels, need, &mut viewer_foundation::profiling::BuilderSpans::new(false)));
+                if !missed.is_empty() {
+                    return (None, missed);
+                }
+                let tables = match tables {
+                    Ok(tables) => tables,
+                    Err(error) => return (Some(Err(error)), Vec::new()),
+                };
+                let trial = crate::document::OverlayRows::at_head(Some(Arc::clone(rows))).leaving(left);
+                let (laid, mut missed) = replay_frame::frame::discovering(|| at.prepare_overlay_at(overlay_camera, pixels, ui_scale, &tables, view, &Default::default(), &trial));
+                missed.extend(trial.missed());
+                missed.sort_unstable_by_key(|table| table.index());
+                missed.dedup();
+                (Some(Ok((tables, laid))), missed)
+            };
+            let (rows, made) = self.head_rows.overlay_settled(inputs, head, hour, Duration::from_secs(120), made).map_err(|error| error.to_string())?;
+            match made {
+                Some(Ok((tables, laid))) => {
+                    let key = TablesKey {
+                        branch: rows.branch,
+                        hour: rows.hour,
+                        rows: Arc::as_ptr(&rows) as usize,
+                        perspective: perspective.clone(),
+                        vision: Arc::as_ptr(&vision) as usize,
+                        engaged: engaged.as_deref().is_some_and(|index| index.covers(rows.branch, rows.hour)),
+                        left_out,
+                        labels,
+                        need,
+                    };
+                    self.overlay_tables = Some((key.branch, key.hour, key.perspective.clone(), tables.clone()));
+                    settled_overlay = Some(laid);
+                    // The other counter layers take this hour's vision and tables before the
+                    // layout reads their products, as today's took the hour it had just installed.
+                    if let Some(side) = self.playhead_map.as_mut() {
+                        let passes = || -> crate::layers::air_mission_counters::Passes { document.playback.air_rosters() };
+                        if crate::layers::counter_kinds::give(side, &key.perspective, tables.vision(), tables.counters(), key.branch, passes) {
+                            side.settle_all().map_err(|error| format!("The map's counter layers could not settle the vision of hour {hour}: {error}"))?;
+                            settled_overlay = None;
+                        }
+                        // Settled here, within the saved frame.
+                        (self.counters_given, self.counters_drawn) = (Some((key.hour, key.rows)), Some((key.hour, key.rows)));
+                        let (published, draws) = (crate::layers::counter_kinds::published(side), crate::layers::counter_kinds::draws(side));
+                        if published.identity() != self.counter_view.presentation.counters.lock().unwrap_or_else(|error| error.into_inner()).layered().identity() {
+                            settled_overlay = None;
+                        }
+                        self.counter_view.presentation.counters.lock().unwrap_or_else(|error| error.into_inner()).set_layered(published, draws, tables.counters().left_out());
+                    }
+                    self.head_tables = Some((key, tables));
+                    self.overlay_at = None;
+                }
+                Some(Err(error)) => return Err(format!("The overlay's tables at hour {hour}: {error}")),
+                None => {}
+            }
+            self.overlay_frame = Some(rows);
+        }
+        let overlay_rows = match head_rows::head(live_of(&self.playhead_map), document) {
+            // A saved frame's: the rows settled above.
+            _ if in_place && live => self.overlay_frame.clone(),
+            head @ Some(_) => {
+                if let Some(rows) = self.head_rows.overlay(head_rows::OverlayInputs::whole(&self.counter_view).without(left.resource_icons, left.occupation_marks), head) {
+                    self.overlay_frame = Some(rows);
+                }
+                self.overlay_frame.clone()
+            }
+            None => {
+                (self.overlay_frame, self.head_tables) = (None, None);
+                self.overlay_loading.clear();
+                self.overlay_missed.clear();
+                self.head_rows.overlay(head_rows::OverlayInputs::of(&self.counter_view).and_then(|inputs| inputs.without(left.resource_icons, left.occupation_marks)), None)
+            }
+        };
+        let now = match (&overlay_rows, today) {
+            (Some(rows), _) if live => crate::document::Hour::new(&document.content, rows, 0.0).with_air_rosters(Some(document.playback.air_rosters())),
+            (_, Some(now)) => now,
+            // The open map before its overlay's first rows at the head: nothing is laid out yet.
+            _ => {
+                self.rendered = None;
+                ui.ctx().request_repaint();
+                return Ok(());
+            }
+        };
         let overlay_key = OverlayKey {
+            rows: overlay_rows.as_ref().map(|rows| (rows.hour, Arc::as_ptr(rows) as usize)),
             occupation: self.counter_view.occupation,
             operatives: self.counter_view.operatives,
-            branch: document.playback.branch(),
-            hour: document.playback.hour(),
+            branch: if live { now.frame.branch } else { document.playback.branch() },
+            hour: if live { now.frame.hour } else { document.playback.hour() },
             camera: overlay_camera,
             pixels,
             ui_scale,
@@ -4944,6 +5821,7 @@ impl Viewer {
             fleets_selected: Arc::clone(self.fleet_selection.fleets()),
             hovered: self.counter_view.hovered,
             visibility: self.counter_view.visibility,
+            layered: self.counter_view.presentation.counters.lock().unwrap_or_else(|error| error.into_inner()).layered().identity(),
         };
         let (overlay_ms, additions) = {
             let _other_cost = replay_frame::cpu::scope("frame.overlay.prepare", Some("other"));
@@ -4963,12 +5841,14 @@ impl Viewer {
                 .prepared_overlay
                 .as_ref()
                 .is_some_and(|prepared| prepared.is_stale(&now));
-            let engaged = self
-                .hours
-                .as_ref()
-                .map(|hours| hours.engaged(&perspective.country))
-                .transpose()
-                .map_err(|error| error.to_string())?;
+            // The engaged index: the engagements layer's with the map open, today's pipeline's
+            // without.
+            let (engaged, layer_engaged) = if live {
+                (None, self.engaged_history(&perspective.country).map_err(|error| error.to_string())?)
+            } else {
+                (self.hours.as_ref().map(|hours| hours.engaged(&perspective.country)).transpose().map_err(|error| error.to_string())?, None)
+            };
+            let covering = layer_engaged.as_deref().or(engaged.as_ref().map(|index| index.shared.as_ref()));
             // An overlay laid out before the engaged index reached its hour, by the
             // window or by an hour builder, is laid out again once it does, so a
             // paused seek or a prebuilt hour settles on the exact flag.
@@ -4977,52 +5857,274 @@ impl Viewer {
                     .as_ref()
                     .zip(self.overlay_at.as_ref())
                     .map(|(prepared, key)| (prepared.engaged_covered(), key.branch, key.hour)),
-                |branch, hour| {
-                    engaged
-                        .as_ref()
-                        .is_some_and(|index| index.shared.covers(branch, hour))
-                },
+                |branch, hour| covering.is_some_and(|index| index.covers(branch, hour)),
             );
-            // The raid lane's icons for the hour on screen replace the hour's
-            // when they are newer; a paused frame asks the lane for one batch.
+            // The raid icons: the scripts reader's at the head with the map open, the raid lane's
+            // for the hour on screen without; a paused frame asks the lane for one batch.
             let ctx = ui.ctx().clone();
-            // Its batches borrow the hour builders' threads, as do the icon layer's owners
+            // Its batches borrow the app's builder threads, as do the icon layer's owners
             // below. A view's counters ride in builder jobs, so they hold no handle to the pool.
-            let overlay_workers = self
-                .hours
-                .as_ref()
-                .map(|hours| hours.frame_workers())
-                .unwrap_or_default();
-            if let Some(hours) = &self.hours {
-                self.raid_lane.use_workers(hours.workers());
-                if let Some(scene) = self.scene.as_mut() {
-                    scene
-                        .apply(
-                            &state.device,
-                            &state.queue,
-                            SceneInput::UseWorkers(hours.frame_workers()),
-                        )
-                        .map_err(|error| error.to_string())?;
+            let pool = self.worker_pool().map_err(|why| format!("Native map workers: {why}"))?;
+            let overlay_workers = pool.frame_workers();
+            if let Some(scene) = self.scene.as_mut() {
+                scene
+                    .apply(
+                        &state.device,
+                        &state.queue,
+                        SceneInput::UseWorkers(pool.frame_workers()),
+                    )
+                    .map_err(|error| error.to_string())?;
+            }
+            let at_head = live_of(&self.playhead_map).map(|side| Arc::clone(side.entry()));
+            let mut raids_changed = false;
+            if let Some(entry) = &at_head {
+                // The lane builds nothing and holds nothing while the map is open.
+                self.raid_lane.stand_by(true);
+                let ask = crate::layers::scripts::Ask { entry, recording: self.rows_recording(document), sources: crate::layers::scripts::Sources::of(&document.content), perspective: &perspective, playing: self.playing, raids: self.graphics.counter(self.graphics.raid_icons), music: self.audio_focus };
+                let wake = ctx.clone();
+                self.scripts.show(ask, move || wake.request_repaint());
+                // The tables made from rows at the head are the overlay's: put back where today's
+                // install replaced them, and none of today's laid out meanwhile.
+                let head_identity = self.head_tables.as_ref().map(|(_, tables)| tables.identity());
+                if self.overlay_tables.as_ref().map(|(_, _, _, tables)| tables.identity()) != head_identity {
+                    self.overlay_tables = self.head_tables.as_ref().map(|(key, tables)| (key.branch, key.hour, key.perspective.clone(), tables.clone()));
+                    self.overlay_at = None;
+                    if self.overlay_tables.is_none() {
+                        (self.prepared_overlay, self.overlay, self.overlay_fraction) = (None, None, None);
+                        self.overlay_laid = None;
+                        self.counter_report = CounterReport::default();
+                    }
+                }
+                // What the tables' worker made last: the tables, and the overlay laid out from them
+                // for the camera and view of the frame that asked, taken whole while this frame has
+                // that camera and view; it shows the hour it was laid out for.
+                let answer = self.overlay_tables_job.take();
+                if answer.is_some() || !self.playing {
+                    // The job is answered (or the head held): the overlay's reader makes its next
+                    // rows at the next step that changes them, and none the job would not read.
+                    self.head_rows.overlay_ready();
+                }
+                match answer {
+                    Some((key, head_rows::tables::Outcome::Made((Ok(tables), laid)))) => {
+                        // Routes made by key: a worker makes every route ahead, so a free frame
+                        // before its whole tables arrive finds what it admits made.
+                        if tables.counters().routes_by_key() {
+                            let (fill, counters, movement) = (tables.clone(), Arc::clone(&document.content.counters), document.content.movement.clone());
+                            pool.try_submit(Box::new(move || viewer_foundation::map::redraws::apart(|| fill.counters().fill_routes(&counters, movement.as_deref()))));
+                        }
+                        let retired = (
+                            self.overlay_tables.replace((key.branch, key.hour, key.perspective.clone(), tables.clone())),
+                            self.head_tables.replace((key, tables)),
+                        );
+                        self.retire(retired);
+                        self.overlay_at = None;
+                        if let Some(Laid { key, prepared, missed, on, rows, left, asked, lay_ins, times }) = laid {
+                            times.note();
+                            if !missed.is_empty() {
+                                self.head_rows.learn(&missed);
+                            }
+                            let shown = missed.is_empty()
+                                && key.same_view(&overlay_key)
+                                && self.overlay_laying.as_ref().is_some_and(|(view, laying)| Arc::ptr_eq(view, &self.counter_view.presentation) && Arc::ptr_eq(laying, &on));
+                            match prepared {
+                                Ok(mut prepared) if shown => {
+                                    if let Some(proof) = self.laid_proof.as_mut()
+                                        && proof.due(key.hour)
+                                        && let Some((_, _, _, tables)) = &self.overlay_tables
+                                    {
+                                        // The gate's own cost, apart from the frame's scopes.
+                                        let _proof = replay_frame::cpu::scope("laid", Some("proof"));
+                                        proof.check(&mut prepared, laid_proof::Check {
+                                            content: &document.content,
+                                            rosters: document.playback.air_rosters(),
+                                            rows: &rows,
+                                            left,
+                                            lay_ins: &lay_ins,
+                                            tables,
+                                            key: &key,
+                                            frame_hour: overlay_key.hour,
+                                            asked: asked.as_ref(),
+                                            view: &self.counter_view,
+                                            layers: &self.overlay_layers,
+                                            time: animation_time,
+                                        });
+                                    }
+                                    self.counter_view.presentation.take_memory(&on);
+                                    prepared.set_counter_view(self.counter_view.clone());
+                                    self.install_overlay(prepared, &key);
+                                    viewer_foundation::map::redraws::note("made.laid", 1);
+                                    self.overlay_missed.clear();
+                                    self.overlay_at = Some(key);
+                                    self.overlay_fraction = None;
+                                }
+                                Err(error) if shown => {
+                                    viewer_foundation::map::redraws::note("refused.full", 1);
+                                    self.overlay_loading.push(format!("the overlay: {error}"));
+                                    self.overlay_at = Some(key);
+                                    self.overlay_fraction = None;
+                                }
+                                prepared => self.retire(prepared),
+                            }
+                        }
+                    }
+                    Some((_, head_rows::tables::Outcome::Made((Err(error), _)))) => self.overlay_loading.push(format!("the overlay's tables: {error}")),
+                    Some((_, head_rows::tables::Outcome::Missed(missed))) => self.head_rows.learn(&missed),
+                    None => {}
+                }
+                // A build of the tables from these rows, for the vision the vision layer shows, and
+                // of the overlay from them for this frame's camera and view, on a worker, on a
+                // memory of the view's own; in place for a frame a capture saves.
+                if let (Some(rows), Some(vision)) = (&overlay_rows, &seen)
+                    && !stale_hour
+                    && !in_place
+                {
+                    let labels = live_of(&self.playhead_map).is_some_and(|side| side.draws("labels"));
+                    let key = TablesKey {
+                        branch: rows.branch,
+                        hour: rows.hour,
+                        rows: Arc::as_ptr(rows) as usize,
+                        perspective: perspective.clone(),
+                        vision: Arc::as_ptr(vision) as usize,
+                        engaged: covering.is_some_and(|index| index.covers(rows.branch, rows.hour)),
+                        left_out: self.counter_view.layered(),
+                        labels,
+                        need: overlay_need(&self.counter_view, overlay_camera.free().is_some()),
+                    };
+                    let real = &self.counter_view.presentation;
+                    if !self.overlay_laying.as_ref().is_some_and(|(view, _)| Arc::ptr_eq(view, real)) {
+                        self.overlay_laying = Some((Arc::clone(real), Arc::new(real.sharing())));
+                    }
+                    let on = Arc::clone(&self.overlay_laying.as_ref().expect("made above").1);
+                    // The worker's memory is its own only while no build is in flight.
+                    if !self.overlay_tables_job.running() {
+                        real.lend_layered(&on);
+                    }
+                    let asked = self.laid_proof.is_some().then(|| {
+                        let asked = Arc::new(real.snapshot());
+                        real.lend_layered(&asked);
+                        asked
+                    });
+                    let view = CounterView { presentation: on, ..self.counter_view.clone() };
+                    let (laid_key, camera) = (overlay_key.clone(), overlay_camera);
+                    let lay_ins = Arc::new(LayIns::of(live_of(&self.playhead_map)));
+                    let asked_at = Instant::now();
+                    let (content, rows, choice, vision, engaged, rosters) = (Arc::clone(&document.content), Arc::clone(rows), perspective.clone(), Arc::clone(vision), layer_engaged.clone(), document.playback.air_rosters());
+                    let raids = self.scripts.raids(rows.branch, vision.ours()).unwrap_or_default();
+                    let (left_out, need) = (key.left_out, key.need);
+                    let make = move || viewer_foundation::map::redraws::apart(|| {
+                        let started = Instant::now();
+                        let cpu_started = viewer_foundation::profiling::current_thread_cpu_time();
+                        let hour = crate::document::Hour::new(&content, &rows, 0.0).with_air_rosters(Some(rosters));
+                        let mut spans = viewer_foundation::profiling::BuilderSpans::new(replay_frame::cpu::enabled());
+                        let mut tables = hour.hour_tables_at_head(&choice, vision, raids, engaged.as_deref(), left_out, labels, need, &mut spans);
+                        if let Ok(tables) = &mut tables {
+                            lay_ins.set(tables);
+                        }
+                        let tabled = Instant::now();
+                        let tables_cpu = cpu_started.zip(viewer_foundation::profiling::current_thread_cpu_time()).and_then(|(before, after)| after.checked_sub(before));
+                        // The memory lays out exactly the products the key names, or the build lays
+                        // nothing out and the frame lays the hour out itself.
+                        let lent = view.presentation.counters.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).layered().identity();
+                        let laid = tables.as_ref().ok().filter(|_| lent == laid_key.layered).map(|tables| {
+                            let read = crate::document::OverlayRows::at_head(Some(Arc::clone(&rows))).leaving(left);
+                            // In turn on this build's thread: the builders' other thread is the frame's
+                            // and the other workers'.
+                            let prepared = hour.prepare_overlay_at(camera, pixels, ui_scale, tables, &view, &Default::default(), &read).map(|mut prepared| {
+                                lay_ins.lay(&mut prepared, &hour, camera, pixels, ui_scale, tables.ours());
+                                prepared
+                            });
+                            let times = LaidTimes { asked: asked_at, queued: started - asked_at, tables: tabled - started, layout: tabled.elapsed(), tables_cpu, parts: spans.into_records() };
+                            Laid { key: laid_key, prepared, missed: read.missed(), on: Arc::clone(&view.presentation), rows: Arc::clone(&rows), left, asked, lay_ins: Arc::clone(&lay_ins), times }
+                        });
+                        (tables, laid)
+                    });
+                    let submit = |work: Box<dyn FnOnce() + Send>| pool.try_submit(work);
+                    let wake = ctx.clone();
+                    self.overlay_tables_job.ask(&key, make, &submit, move || wake.request_repaint());
+                }
+                if let Some((branch, _, _, tables)) = &mut self.overlay_tables
+                    && let Some(icons) = self.scripts.raids(*branch, tables.ours())
+                    && !Arc::ptr_eq(&icons, &tables.raids())
+                {
+                    raids_changed = tables.set_raids_at_head(icons);
+                }
+            } else {
+                self.raid_lane.use_workers(pool.workers());
+                self.raid_lane.stand_by(false);
+                self.raid_lane.show(
+                    &document.content,
+                    &perspective,
+                    (document.playback.branch(), document.playback.hour()),
+                    self.playing,
+                    move || ctx.request_repaint(),
+                );
+                // Only icons of the lane's current reset, built for the hour and the resolved
+                // viewing country the tables are for, install.
+                if let Some((branch, hour, _, tables)) = &mut self.overlay_tables
+                    && let Some(icons) = self.raid_lane.icons(*branch, *hour, tables.ours())
+                    && !Arc::ptr_eq(&icons, &tables.raids())
+                {
+                    raids_changed = tables.set_raids(icons);
                 }
             }
-            self.raid_lane.show(
-                &document.content,
-                &perspective,
-                (document.playback.branch(), document.playback.hour()),
-                self.playing,
-                move || ctx.request_repaint(),
-            );
-            // Only icons of the lane's current reset, built for the hour and the
-            // resolved viewing country the tables are for, install.
-            let mut raids_changed = false;
-            if let Some((branch, hour, _, tables)) = &mut self.overlay_tables
-                && let Some(icons) = self.raid_lane.icons(*branch, *hour, tables.ours())
-                && !Arc::ptr_eq(&icons, &tables.raids())
-            {
-                raids_changed = tables.set_raids(icons);
+            // A part left for a layer that no longer draws it is made by today's again this frame.
+            if self.prepared_overlay.as_ref().is_some_and(|prepared| left.unmet_by(prepared.resource_icons_by(), prepared.occupation_icons_by())) {
+                self.overlay_at = None;
             }
             let layout_changed =
                 stale || engaged_arrived || self.overlay_at.as_ref() != Some(&overlay_key);
+            // Counted for what changed since the frame before, not for an overlay still behind it.
+            if layout_changed && self.overlay_last_asked.as_ref() != Some(&overlay_key) {
+                use viewer_foundation::map::redraws::note;
+                for asked in overlay_asks(self.overlay_at.as_ref(), &overlay_key) {
+                    note(asked, 1);
+                }
+                note("asked.art", u64::from(stale));
+                note("asked.engaged", u64::from(engaged_arrived));
+            }
+            if self.overlay_last_asked.as_ref() != Some(&overlay_key) {
+                self.overlay_last_asked = Some(overlay_key.clone());
+            }
+            // Only the counter layers' products changed: the counters alone are laid out again.
+            let land_only = layout_changed
+                && !stale
+                && !engaged_arrived
+                && self.overlay_at.as_ref().is_some_and(|at| at.same_but_layered(&overlay_key));
+            if land_only
+                && let (Some(prepared), Some((_, _, _, tables))) =
+                    (self.prepared_overlay.as_mut(), self.overlay_tables.as_ref())
+            {
+                let rows = crate::document::OverlayRows::at_head(overlay_rows.clone().filter(|_| live));
+                let icons = now.prepare_counters(overlay_camera, pixels, ui_scale, tables, &self.counter_view, &rows);
+                let missed = rows.missed();
+                if missed.is_empty() {
+                    match icons {
+                        Ok(icons) => {
+                            viewer_foundation::map::redraws::note("made.counters", 1);
+                            prepared.set_counters(icons);
+                        }
+                        Err(error) if live => self.overlay_loading.push(format!("the overlay's counters: {error}")),
+                        Err(error) => return Err(error.to_string()),
+                    }
+                    self.overlay_fraction = None;
+                } else {
+                    self.head_rows.learn(&missed);
+                }
+                self.overlay_missed = missed;
+                self.overlay_at = Some(overlay_key.clone());
+            }
+            // An hour the tables' worker lays out for this camera and view is shown once laid: the
+            // frame thread lays out no whole hour while the worker does.
+            let laying = live
+                && !in_place
+                && !stale
+                && !engaged_arrived
+                && self.overlay_tables_job.running()
+                && self.overlay_at.as_ref().is_some_and(|at| at.same_view(&overlay_key));
+            if layout_changed && !land_only && laying {
+                viewer_foundation::map::redraws::note("waiting.laid", 1);
+            }
+            let layout_changed = layout_changed && !land_only && !laying;
             // A raid batch on the laid-out hour, camera and view replaces the raid
             // icons alone: the rest of the overlay does not read them. The batch
             // drawn at this fraction takes them in place, as drawing it again
@@ -5032,6 +6134,7 @@ impl Viewer {
                 && let (Some(prepared), Some((_, _, _, tables))) =
                     (self.prepared_overlay.as_mut(), self.overlay_tables.as_ref())
             {
+                self.overlay_written += 1;
                 let drawn = (self.overlay_fraction == Some(document.hour_fraction))
                     .then_some(self.overlay.as_mut())
                     .flatten();
@@ -5060,79 +6163,173 @@ impl Viewer {
                         u64::from(raids_only && self.prepared_overlay.is_none()),
                     );
                 }
-                let tables_key = (
-                    document.playback.branch(),
-                    document.playback.hour(),
-                    perspective.clone(),
-                );
-                let tables_mismatch =
-                    self.overlay_tables
-                        .as_ref()
-                        .is_none_or(|(branch, hour, perspective, _)| {
-                            (*branch, *hour, perspective)
-                                != (tables_key.0, tables_key.1, &tables_key.2)
-                        });
-                let refine_arrival = engaged_arrived && !tables_mismatch;
-                let mut retired_tables = None;
-                if !stale_hour && (engaged_arrived || tables_mismatch) {
-                    let tables = {
-                        // Raid offers are only evaluated on the raid lane: until it
-                        // delivers this hour's for this view, no raid icon draws
-                        // (`RaidIcons::carried`).
-                        let ours = now
-                            .vision(&perspective)
-                            .map_err(|error| error.to_string())?
-                            .ours();
-                        let raids = self
-                            .raid_lane
-                            .icons(tables_key.0, tables_key.1, ours)
-                            .unwrap_or_default();
-                        if refine_arrival {
-                            now.refine_overlay_tables_with_raids(
-                                &self.overlay_tables.as_ref().expect("matching base").3,
-                                &perspective,
-                                raids,
-                                engaged.as_deref(),
-                            )
+                if live && let Some(laid) = settled_overlay.take() {
+                    // Settled within this saved frame over the rows at the hour on screen.
+                    self.install_overlay(laid.map_err(|error| error.to_string())?, &overlay_key);
+                    viewer_foundation::map::redraws::note("made.full", 1);
+                    self.overlay_missed.clear();
+                    self.overlay_at = Some(overlay_key);
+                    self.overlay_fraction = None;
+                } else if live {
+                    // Laid out over the rows at the head with the tables made from them; a read
+                    // they do not hold yet keeps the overlay laid out last and is learned.
+                    if let Some((_, _, _, tables)) = &self.overlay_tables {
+                        let rows = crate::document::OverlayRows::at_head(overlay_rows.clone()).leaving(left);
+                        let made = now.prepare_overlay_at(overlay_camera, pixels, ui_scale, tables, &self.counter_view, &overlay_workers, &rows);
+                        let missed = rows.missed();
+                        if missed.is_empty() {
+                            match made {
+                                Ok(prepared) => {
+                                    viewer_foundation::map::redraws::note("made.full", 1);
+                                    self.install_overlay(prepared, &overlay_key);
+                                }
+                                Err(error) => {
+                                    viewer_foundation::map::redraws::note("refused.full", 1);
+                                    self.overlay_loading.push(format!("the overlay: {error}"));
+                                }
+                            }
+                            self.overlay_fraction = None;
                         } else {
-                            now.hour_tables_with_raids(&perspective, raids, engaged.as_deref())
+                            viewer_foundation::map::redraws::note("missed.full", 1);
+                            self.head_rows.learn(&missed);
                         }
-                        .map_err(|error| error.to_string())?
-                    };
-                    let replaced = self.overlay_tables.replace((
-                        tables_key.0,
-                        tables_key.1,
-                        tables_key.2,
-                        tables,
-                    ));
-                    if refine_arrival {
-                        retired_tables = replaced;
+                        self.overlay_missed = missed;
+                        self.overlay_at = Some(overlay_key);
                     } else {
-                        drop(replaced);
-                    }
-                }
-                let tables = &self.overlay_tables.as_ref().expect("parsed above").3;
-                let prepared = now
-                    .prepare_overlay_cached(
-                        overlay_camera,
-                        pixels,
-                        ui_scale,
-                        tables,
-                        &self.counter_view,
-                        &overlay_workers,
-                    )
-                    .map_err(|error| error.to_string())?;
-                let retired_prepared = self.prepared_overlay.replace(prepared);
-                if refine_arrival && !stale_hour {
-                    // One bounded retirement for this replacement, never a wait.
-                    // The existing Dropper frees inline when its queue is full.
-                    if let Some(dropper) = &self.dropper {
-                        dropper.drop_later((retired_tables, retired_prepared));
+                        // Asked with no tables made from the rows at the head yet: named, the
+                        // tables the last build missed and those its rows still wait for.
+                        viewer_foundation::map::redraws::note("waiting.tables", 1);
+                        let mut waiting = self.head_rows.overlay_arriving();
+                        waiting.extend_from_slice(self.overlay_tables_job.loading());
+                        head_rows::note_waiting(waiting);
                     }
                 } else {
-                    drop(retired_prepared);
+                    let tables_key = (
+                        document.playback.branch(),
+                        document.playback.hour(),
+                        perspective.clone(),
+                    );
+                    let tables_mismatch =
+                        self.overlay_tables
+                            .as_ref()
+                            .is_none_or(|(branch, hour, perspective, _)| {
+                                (*branch, *hour, perspective)
+                                    != (tables_key.0, tables_key.1, &tables_key.2)
+                            });
+                    let refine_arrival = engaged_arrived && !tables_mismatch;
+                    let mut retired_tables = None;
+                    if !stale_hour && (engaged_arrived || tables_mismatch) {
+                        let tables = {
+                            // Raid offers are only evaluated on the raid lane: until it
+                            // delivers this hour's for this view, no raid icon draws
+                            // (`RaidIcons::carried`).
+                            let ours = now
+                                .vision(&perspective)
+                                .map_err(|error| error.to_string())?
+                                .ours();
+                            let raids = self
+                                .raid_lane
+                                .icons(tables_key.0, tables_key.1, ours)
+                                .unwrap_or_default();
+                            if refine_arrival {
+                                now.refine_overlay_tables_with_raids(
+                                    &self.overlay_tables.as_ref().expect("matching base").3,
+                                    &perspective,
+                                    raids,
+                                    engaged.as_deref(),
+                                    self.counter_view.layered(),
+                                )
+                            } else {
+                                now.hour_tables_layered(
+                                    &perspective,
+                                    raids,
+                                    engaged.as_deref(),
+                                    self.counter_view.layered(),
+                                    false,
+                                    &mut viewer_foundation::profiling::BuilderSpans::new(false),
+                                    true,
+                                )
+                            }
+                            .map_err(|error| error.to_string())?
+                        };
+                        let replaced = self.overlay_tables.replace((
+                            tables_key.0,
+                            tables_key.1,
+                            tables_key.2,
+                            tables,
+                        ));
+                        if refine_arrival {
+                            retired_tables = replaced;
+                        } else {
+                            drop(replaced);
+                        }
+                    }
+                    let tables = &self.overlay_tables.as_ref().expect("parsed above").3;
+                    let rows = crate::document::OverlayRows::default().leaving(left);
+                    let prepared = now
+                        .prepare_overlay_at(
+                            overlay_camera,
+                            pixels,
+                            ui_scale,
+                            tables,
+                            &self.counter_view,
+                            &overlay_workers,
+                            &rows,
+                        )
+                        .map_err(|error| error.to_string())?;
+                    let retired_prepared = self.prepared_overlay.replace(prepared);
+                    viewer_foundation::map::redraws::note("made.full", 1);
+                    if refine_arrival && !stale_hour {
+                        // One bounded retirement for this replacement, never a wait.
+                        // The existing Dropper frees inline when its queue is full.
+                        if let Some(dropper) = &self.dropper {
+                            dropper.drop_later((retired_tables, retired_prepared));
+                        }
+                    } else {
+                        drop(retired_prepared);
+                    }
+                    self.overlay_at = Some(overlay_key);
+                    self.overlay_fraction = None;
                 }
-                self.overlay_at = Some(overlay_key);
+            }
+            // The labels the map's layer holds at the head replace the hour's, laid out again alone.
+            if let Some(side) = live_of(&self.playhead_map)
+                && let Some((labels, ours)) = crate::layers::labels::drawn(side)
+                && let (Some(prepared), Some((_, _, _, tables))) = (self.prepared_overlay.as_mut(), self.overlay_tables.as_mut())
+                && tables.set_labels(&labels, ours)
+            {
+                prepared.replace_labels(&now, overlay_camera, pixels, ui_scale, &labels).map_err(|error| error.to_string())?;
+                self.overlay_fraction = None;
+            }
+            // The country names the map's layer placed at the head replace the hour's.
+            if let Some(side) = live_of(&self.playhead_map)
+                && let Some(names) = crate::layers::names::drawn(side)
+                && !self.placements.as_ref().is_some_and(|held| Arc::ptr_eq(held, &names))
+            {
+                viewer_foundation::view_record::add("names window", "taken_from_layer", 1);
+                drop(self.placements.replace(names));
+            }
+            if viewer_foundation::view_record::on() {
+                let draws = live_of(&self.playhead_map).is_some_and(|side| side.draws("names"));
+                viewer_foundation::view_record::set("names window", "layer_draws", u64::from(draws));
+                viewer_foundation::view_record::set("names window", "generation", self.placements.as_ref().map_or(0, |held| held.generation));
+                viewer_foundation::view_record::set("names window", "names", self.placements.as_ref().map_or(0, |held| held.country.len() as u64));
+            }
+            // The Operatives icons the map's layer evaluated at the head replace the hour's.
+            if let Some(side) = live_of(&self.playhead_map)
+                && let Some(icons) = crate::layers::intel_icons::drawn(side)
+                && let (Some(prepared), Some((_, _, _, tables))) = (self.prepared_overlay.as_mut(), self.overlay_tables.as_mut())
+                && tables.set_intel(&icons)
+            {
+                let started = Instant::now();
+                prepared.replace_intel(&now, overlay_camera, pixels, ui_scale, &icons);
+                crate::layers::intel_icons::installed(side, started.elapsed());
+                self.overlay_fraction = None;
+            }
+            // The resource icons and occupation marks the map's layers hold at the head replace the hour's.
+            if let (Some(prepared), Some((_, _, _, tables))) = (self.prepared_overlay.as_mut(), self.overlay_tables.as_ref())
+                && lay_in_layers(live_of(&self.playhead_map), prepared, &now, overlay_camera, pixels, ui_scale, tables.ours())
+            {
                 self.overlay_fraction = None;
             }
             overlay_prepare_cpu.finish();
@@ -5140,17 +6337,25 @@ impl Viewer {
             drop(_other_cost);
             let _other_cost = replay_frame::cpu::scope("frame.overlay.draw", Some("other"));
             let overlay_draw_cpu = viewer_foundation::profiling::thread_span("overlay_draw");
+            let owners_span = viewer_foundation::profiling::span("overlay_owners");
             // Display choices only change what the next overlay draw keeps.
-            let ours = self.overlay_tables.as_ref().expect("parsed above").3.ours();
-            let filtered = self.counter_owners.get(now.frame, &self.counter_filter);
+            let ours = self.overlay_tables.as_ref().map(|(_, _, _, tables)| tables.ours()).or_else(|| seen.as_ref().map(|vision| vision.ours()));
+            let head = head_rows::head(live_of(&self.playhead_map), document);
+            let filtered = self.counter_owners.get(frame, head, &self.counter_filter);
             let layers = crate::document::OverlayLayers::shown(
                 &self.graphics,
-                self.shown_counter_owners(filtered, ours),
+                match ours {
+                    Some(ours) => self.shown_counter_owners(filtered, ours),
+                    None => filtered,
+                },
             );
             if layers != self.overlay_layers {
                 self.overlay_layers = layers;
                 self.overlay_fraction = None;
             }
+            drop(owners_span);
+            let scene_span = viewer_foundation::profiling::span("overlay_scene_inputs");
+            let (_, movement_hour) = self.hour_on_screen(document);
             // The frame's province schedule, advanced before its map icons read the dirty bits
             // (province updates precede map-icon updates); the scene's
             // render takes it.
@@ -5164,16 +6369,19 @@ impl Viewer {
                         ),
                     )
                     .map_err(|error| error.to_string())?;
-                crate::document::select_movement(
-                    scene,
-                    &state.device,
-                    &state.queue,
-                    &document.content,
-                    now.frame,
-                    self.overlay_tables.as_ref().expect("parsed above").3.ours(),
-                    self.unit_selection.units().as_ref(),
-                )
-                .map_err(|error| error.to_string())?;
+                let head = head_rows::head(live_of(&self.playhead_map), document);
+                let selected = self.unit_selection.units().as_ref();
+                if let Some(ours) = ours {
+                    let mut arrows = |frame: &replay_frame::frame::DecodedFrame| {
+                        crate::document::select_movement(scene, &state.device, &state.queue, &document.content, frame, ours, selected)
+                    };
+                    // No selection reads no row; a selection's arrows are kept while its rows load.
+                    let moved = if selected.is_empty() { Some(arrows(now.frame)) } else { self.head_rows.arrows(head, frame, arrows) };
+                    if let Some(Err(error)) = moved {
+                        self.overlay_loading.push(format!("the selection's movement arrows: {error}"));
+                    }
+                }
+                let clock_speed = self.head_rows.map(head, frame, viewer_foundation::map::counter_move::MovementFrame::clock_speed).flatten();
                 scene
                     .apply(
                         &state.device,
@@ -5199,10 +6407,8 @@ impl Viewer {
                         .begin_frame(
                             viewer_foundation::map::counter_move::MovementFrame {
                                 time: animation_time,
-                                hour: document.playback.hour(),
-                                clock_speed: document.frame().ok().and_then(
-                                    viewer_foundation::map::counter_move::MovementFrame::clock_speed,
-                                ),
+                                hour: movement_hour,
+                                clock_speed,
                                 speeds: document.content.counters.defines.movement_speeds,
                                 steady: self.options.window_dump,
                             },
@@ -5212,72 +6418,131 @@ impl Viewer {
                             }),
                         );
                 }
-                if let Some(prepared) = &self.unit_models {
+                // With the map open the land figures move from its units layer's own placings at
+                // the applied hour, the formations from its models; nothing of today's.
+                let positions: Option<Box<dyn Iterator<Item = (viewer_foundation::unit_handle::Unit, &viewer_foundation::map::counter_move::Position, f32, f32)> + '_>> = match live_of(&self.playhead_map) {
+                    Some(side) => crate::layers::units::of(side).map(|units| Box::new(units.movement_positions()) as _),
+                    None => self.unit_models.as_ref().map(|prepared| Box::new(prepared.movement_positions()) as _),
+                };
+                if let Some(positions) = positions {
                     scene
                         .apply(
                             &state.device,
                             &state.queue,
                             SceneInput::SetUnitMovement {
-                                prepared,
+                                positions,
                                 history: presentation.movement(),
                             },
                         )
                         .map_err(|error| error.to_string())?;
                 }
             }
-            if self.overlay_fraction != Some(document.hour_fraction) {
-                let prepared = self.prepared_overlay.as_mut().expect("prepared above");
-                prepared.set_pressed(self.counter_view.pressed, self.counter_view.plate_hovered);
-                loop {
+            drop(scene_span);
+            if self.overlay_fraction != Some(document.hour_fraction)
+                && let Some(prepared) = self.prepared_overlay.as_mut()
+            {
+                // Asked for by running pools alone: only their passes run.
+                let quiet = self.overlay_fraction.is_some_and(f32::is_nan)
+                    && self.overlay_drawn_fraction == Some(document.hour_fraction);
+                if quiet {
+                    viewer_foundation::map::redraws::note("made.quiet", 1);
                     prepared
-                        .draw_into(
-                            &now,
-                            overlay_camera,
-                            pixels,
-                            ui_scale,
-                            &self.overlay_layers,
-                            animation_time,
-                            &overlay_workers,
-                            self.overlay.get_or_insert_with(Batch::default),
-                            &mut self.counter_report,
-                        )
+                        .draw_quiet(&now, overlay_camera, pixels, ui_scale, &self.overlay_layers, animation_time)
                         .map_err(|error| error.to_string())?;
-                    if self.rendered.is_some() { break; }
-                    document.icons.lazy.settle();
-                    if !prepared.is_stale(&now) && !document.icons.lazy.has_pending() { break; }
-                    *prepared = now.prepare_overlay_cached(
-                        overlay_camera, pixels, ui_scale,
-                        &self.overlay_tables.as_ref().expect("parsed above").3,
-                        &self.counter_view, &overlay_workers,
-                    ).map_err(|error| error.to_string())?;
-                }
-                if self.label_report != *prepared.label_report() {
-                    self.label_report.clone_from(prepared.label_report());
+                } else {
+                    viewer_foundation::map::redraws::note("made.draw", 1);
+                    self.overlay_written += 1;
+                    prepared.set_pressed(self.counter_view.pressed, self.counter_view.plate_hovered);
+                    loop {
+                        prepared
+                            .draw_into(
+                                &now,
+                                overlay_camera,
+                                pixels,
+                                ui_scale,
+                                &self.overlay_layers,
+                                animation_time,
+                                &overlay_workers,
+                                self.overlay.get_or_insert_with(Batch::default),
+                                &mut self.counter_report,
+                            )
+                            .map_err(|error| error.to_string())?;
+                        if self.rendered.is_some() { break; }
+                        document.icons.lazy.settle();
+                        if !prepared.is_stale(&now) && !document.icons.lazy.has_pending() { break; }
+                        *prepared = now.prepare_overlay_cached(
+                            overlay_camera, pixels, ui_scale,
+                            &self.overlay_tables.as_ref().expect("parsed above").3,
+                            &self.counter_view, &overlay_workers,
+                        ).map_err(|error| error.to_string())?;
+                    }
+                    if self.label_report != *prepared.label_report() {
+                        self.label_report.clone_from(prepared.label_report());
+                    }
                 }
                 self.overlay_fraction = Some(document.hour_fraction);
+                self.overlay_drawn_fraction = Some(document.hour_fraction);
             }
             // Native windows keep ticking and drawing while active. Their clocks do not
             // change the hour/camera preparation, including the settled counter positions.
-            if self.counter_view.presentation.take_running() {
-                self.overlay_fraction = None;
+            if let Some((_, tables)) = &self.head_tables {
+                let (identity, (made, kept)) = (tables.identity(), tables.counters().lookups());
+                let (before_made, before_kept) = match self.overlay_lookups {
+                    Some((held, made, kept)) if held == identity => (made, kept),
+                    _ => (0, 0),
+                };
+                viewer_foundation::map::redraws::note("lookups.made", made.saturating_sub(before_made));
+                viewer_foundation::map::redraws::note("lookups.kept", kept.saturating_sub(before_kept));
+                viewer_foundation::view_record::add("overlay", "lookups_made", made.saturating_sub(before_made));
+                viewer_foundation::view_record::add("overlay", "lookups_kept", kept.saturating_sub(before_kept));
+                self.overlay_lookups = Some((identity, made, kept));
+            }
+            // The overlay installed against the map's drawn picture: the hours it stands apart (after
+            // a seek, the frames past the map's own compose show here).
+            if let (Some(shown), Some((branch, drawn))) = (&self.overlay_shown, self.layers_on_screen())
+                && (shown.branch != branch || shown.hour != drawn)
+            {
+                viewer_foundation::map::redraws::note("overlay.hour_apart", 1);
+                viewer_foundation::view_record::add("overlay", "hour_apart", 1);
+                viewer_foundation::view_record::set("overlay", "hours_apart", u64::from(shown.hour.abs_diff(drawn)));
+            }
+            let running = self.counter_view.presentation.take_running();
+            if running.any {
+                viewer_foundation::map::redraws::note("asked.running", 1);
+                // Nothing shown changes: the next frame runs the pools' passes alone, unless
+                // something else asks it to draw (every other ask sets `None`).
+                self.overlay_fraction = (!running.visible).then_some(f32::NAN);
                 ui.ctx().request_repaint();
             }
             // A free eye shows the laid-out icons standing in the world; this frame's hits and
-            // drawing follow what it shows.
-            self.looks = if interface && overlay_camera.free().is_some() {
-                let ground = free_icons::Ground {
-                    field: document.assets.height_field(),
-                    sight: document.assets.terrain_sight(),
-                };
-                Some(free_icons::present(
-                    &overlay_camera,
-                    pixels,
-                    ui_scale,
-                    Some(&ground),
-                    self.overlay.as_ref().expect("drawn above"),
-                    &mut self.free_overlay,
-                ))
+            // drawing follow what it shows. Placed again only when what the placing reads changed.
+            let presented = (overlay_camera, pixels, ui_scale.to_bits(), self.overlay_written);
+            self.looks = if interface
+                && overlay_camera.free().is_some()
+                && let Some(sprites) = self.overlay.as_ref()
+            {
+                if self.free_presented == Some(presented) && self.looks.is_some() {
+                    viewer_foundation::map::redraws::note("free.placed_kept", 1);
+                    self.looks.take()
+                } else {
+                    let _span = viewer_foundation::profiling::span("overlay_free_present");
+                    viewer_foundation::map::redraws::note("free.placed", 1);
+                    let ground = free_icons::Ground {
+                        field: document.assets.height_field(),
+                        sight: document.assets.terrain_sight(),
+                    };
+                    self.free_presented = Some(presented);
+                    Some(free_icons::present(
+                        &overlay_camera,
+                        pixels,
+                        ui_scale,
+                        Some(&ground),
+                        sprites,
+                        &mut self.free_overlay,
+                    ))
+                }
             } else {
+                self.free_presented = None;
                 None
             };
             if raids_only && check_overlay() {
@@ -5290,13 +6555,12 @@ impl Viewer {
                     viewer_world::map::map_mode::Stock::StrategicNavy,
                 )
             {
+                let head = head_rows::head(live_of(&self.playhead_map), document);
                 response.context_menu(|ui| {
-                    let choices = now.vision(&perspective).and_then(|vision| {
-                        viewer_counters::map::naval_selection::fleet_choices(
-                            now.frame,
-                            vision.ours(),
-                        )
-                    });
+                    let choices = match ours {
+                        Some(ours) => self.head_rows.clicks(head, frame, |frame| viewer_counters::map::naval_selection::fleet_choices(frame, ours)).unwrap_or_else(|| Err(std::io::Error::other("the fleets at the head are loading"))),
+                        None => Err(std::io::Error::other("the viewing country is loading")),
+                    };
                     match choices {
                         Err(why) => {
                             ui.label(why.to_string());
@@ -5335,10 +6599,7 @@ impl Viewer {
             drop(_other_cost);
             let _other_cost = replay_frame::cpu::scope("frame.interface", Some("other"));
             let engaged = self
-                .hours
-                .as_ref()
-                .map(|hours| hours.engaged(&perspective.country))
-                .transpose()
+                .engaged_history(&perspective.country)
                 .map_err(|error| error.to_string())?;
             laps.lap("engaged");
             self.combat.set_playing(self.playing);
@@ -5346,20 +6607,17 @@ impl Viewer {
             self.combat
                 .prepare_air(
                     &document.playback.replay_handle(),
-                    document.playback.air_roster_source(),
                     move || wake.request_repaint(),
                 );
+            let prepared = self
+                .combat_prepared(document, &perspective, engaged, ui.ctx())
+                .map_err(|error| error.to_string())?;
             let drawn = self
                 .combat
                 .draw(
                     &document.combat,
-                    document.playback.branch(),
-                    document.playback.hour(),
-                    document.frame(),
+                    prepared,
                     extent,
-                    &perspective,
-                    engaged.as_ref().map(|index| index.shared.as_ref()),
-                    self.counter_view.settings.nato,
                     true,
                     animation_time,
                     true,
@@ -5514,17 +6772,12 @@ impl Viewer {
                                 if self.counter_report.naval_mission_hits[index].mission != 0 =>
                             {
                                 let hit = &self.counter_report.naval_mission_hits[index];
-                                let viewer = now
-                                    .vision(&perspective)
-                                    .map_err(|error| error.to_string())?
-                                    .ours();
-                                let members = viewer_counters::map::naval_selection::mission_members(
-                                    now.frame,
-                                    viewer,
-                                    hit.region,
-                                    hit.mission,
-                                )
-                                .map_err(|error| error.to_string())?;
+                                let head = head_rows::head(live_of(&self.playhead_map), document);
+                                // A click while the viewing country or the rows load selects nothing.
+                                let read = ours.and_then(|viewer| self.head_rows.clicks(head, frame, |frame| viewer_counters::map::naval_selection::mission_members(frame, viewer, hit.region, hit.mission)));
+                                let Some(members) = read_click(live, &mut self.overlay_loading, "the naval mission's members", read)? else {
+                                    continue;
+                                };
                                 let selection = viewer_foundation::map::counter_hovers::unit_hits::Hit {
                                     plate: None,
                                     ours: true,
@@ -5549,11 +6802,9 @@ impl Viewer {
                                     self.counter_report.air_grid_hits[&index].members.clone()
                                 {
                                     let shift = ui.input(|input| input.modifiers.shift);
-                                    if self
-                                        .air_selection
-                                        .grid_click(now.frame, &members, shift)
-                                        .map_err(|error| error.to_string())?
-                                    {
+                                    let head = head_rows::head(live_of(&self.playhead_map), document);
+                                    let read = self.head_rows.clicks(head, frame, |frame| self.air_selection.grid_click(frame, &members, shift));
+                                    if read_click(live, &mut self.overlay_loading, "the air grid's selection", read)?.unwrap_or(false) {
                                         self.unit_selection.clear();
                                         self.counter_view.selected =
                                             Arc::clone(self.unit_selection.units());
@@ -5566,22 +6817,17 @@ impl Viewer {
                                 if self.counter_report.air_base_hits.contains_key(&index) =>
                             {
                                 let (province, kind) = self.counter_report.air_base_hits[&index];
-                                let viewer = now
-                                    .vision(&perspective)
-                                    .map_err(|error| error.to_string())?
-                                    .ours();
                                 let shift = ui.input(|input| input.modifiers.shift);
-                                let target = viewer_counters::map::air_selection::base_target(
-                                    now.frame, viewer, province, kind,
-                                )
-                                .map_err(|error| error.to_string())?;
+                                let head = head_rows::head(live_of(&self.playhead_map), document);
+                                let read = ours.and_then(|viewer| self.head_rows.clicks(head, frame, |frame| viewer_counters::map::air_selection::base_target(frame, viewer, province, kind)));
+                                let target = read_click(live, &mut self.overlay_loading, "the air base's target", read)?.flatten();
                                 if let Some(target) = target {
                                     self.choose_map_mode(viewer_world::map::map_mode::MapMode::Stock(
                                         viewer_world::map::map_mode::Stock::StrategicAir,
                                     ));
-                                    self.air_selection
-                                        .base_click(now.frame, target, shift)
-                                        .map_err(|error| error.to_string())?;
+                                    let head = head_rows::head(live_of(&self.playhead_map), document);
+                                    let read = self.head_rows.clicks(head, frame, |frame| self.air_selection.base_click(frame, target.clone(), shift));
+                                    read_click(live, &mut self.overlay_loading, "the air base's selection", read)?;
                                     self.unit_selection.clear();
                                     self.counter_view.selected = Arc::clone(self.unit_selection.units());
                                     self.overlay_at = None;
@@ -5594,23 +6840,14 @@ impl Viewer {
                                     .is_some() =>
                             {
                                 let hit = &self.counter_report.air_mission_hits[index];
-                                let viewer = now
-                                    .vision(&perspective)
-                                    .map_err(|error| error.to_string())?
-                                    .ours();
-                                let members = viewer_counters::map::air_selection::mission_members(
-                                    now.frame,
-                                    viewer,
-                                    hit.region,
-                                    hit.mission.unwrap(),
-                                )
-                                .map_err(|error| error.to_string())?;
+                                let head = head_rows::head(live_of(&self.playhead_map), document);
+                                let read = ours.and_then(|viewer| self.head_rows.clicks(head, frame, |frame| viewer_counters::map::air_selection::mission_members(frame, viewer, hit.region, hit.mission.unwrap())));
+                                let Some(members) = read_click(live, &mut self.overlay_loading, "the air mission's members", read)? else {
+                                    continue;
+                                };
                                 let shift = ui.input(|input| input.modifiers.shift);
-                                if self
-                                    .air_selection
-                                    .mission_click(now.frame, &members, shift)
-                                    .map_err(|error| error.to_string())?
-                                {
+                                let read = self.head_rows.clicks(head, frame, |frame| self.air_selection.mission_click(frame, &members, shift));
+                                if read_click(live, &mut self.overlay_loading, "the air mission's selection", read)?.unwrap_or(false) {
                                     self.unit_selection.clear();
                                     self.counter_view.selected = Arc::clone(self.unit_selection.units());
                                     self.overlay_at = None;
@@ -5676,6 +6913,9 @@ impl Viewer {
             laps.lap("picker");
             let tooltip_point = point.filter(|_| !over_combat && !over_picker);
             let map_hit = self.map_tooltip(document, tooltip_point, extent, ui.ctx());
+            self.combat_rows.end_frame();
+            self.head_rows.end_frame();
+            self.scripts.end_frame();
             // The counter whose tooltip that is: the same rebuilt hit test, at the same point.
             let tooltip_counter = tooltip_point.and_then(|point| match self.map_hit(point)? {
                 MapHit::Unit(index) => self.counter_report.unit_hits[index].units().next(),
@@ -5737,12 +6977,10 @@ impl Viewer {
                             |province| format!("province:{province}"),
                         ),
                 );
-                let refused = self
-                    .prepared_overlay
-                    .as_ref()
-                    .expect("built above")
-                    .draw_tooltip(&now, &mut additions, text, anchor, extent, animation_time)
-                    .map_err(|error| error.to_string())?;
+                let refused = match self.prepared_overlay.as_ref() {
+                    Some(prepared) => prepared.draw_tooltip(&now, &mut additions, text, anchor, extent, animation_time).map_err(|error| error.to_string())?,
+                    None => [("the overlay is not laid out yet".to_owned(), 1)].into_iter().collect(),
+                };
                 // A refused painting, or a hidden interface, shows no tooltip.
                 self.shown_tooltip = (refused.is_empty()
                     && interface
@@ -5759,40 +6997,57 @@ impl Viewer {
                 .capture
                 .as_ref()
                 .is_some_and(|capture| capture.remaining == 0)
-                && let crate::playback::Current::Frame(frame) = document.playback.current()
             {
-                let batch = viewer_counter_products::map::counter_tooltips::Batch::new(
-                    &document.counter_content,
-                    document.icons.raids.movement_reads(),
-                    frame,
-                    &self.counter_report.perspective,
-                    self.hover_style(),
-                );
-                let tooltips = self
-                    .counter_report
-                    .land_hovers
-                    .iter()
-                    .map(|hover| batch.build(hover))
-                    .chain(
-                        self.counter_report
-                            .task_force_hovers
-                            .iter()
-                            .filter(|hover| hover.supported)
-                            .map(|hover| batch.build_task_force(hover)),
-                    );
-                let tooltips = tooltips.chain(
-                    self.counter_report
-                        .task_force_port_hovers
-                        .iter()
-                        .filter(|hover| hover.supported && hover.has_tooltip())
-                        .map(|hover| batch.build_task_force_port(hover)),
-                );
-                let refused =
-                    viewer_counter_products::map::counter_tooltips::count_refusals(tooltips);
-                for (reason, count) in refused {
-                    let current = tooltip_refused.entry(reason).or_default();
+                let inventory = |inputs: &hover_rows::Inputs, report: &CounterReport| {
+                    let key = inputs.key(hover_rows::What::Capture, [report.land_hovers.as_ptr() as usize ^ report.land_hovers.len(), report.task_force_hovers.as_ptr() as usize ^ report.task_force_port_hovers.as_ptr() as usize]);
+                    let task_forces: Vec<_> = report.task_force_hovers.iter().filter(|hover| hover.supported).cloned().collect();
+                    let ports: Vec<_> = report.task_force_port_hovers.iter().filter(|hover| hover.supported && hover.has_tooltip()).cloned().collect();
+                    let (inputs, land) = (inputs.clone(), report.land_hovers.clone());
+                    (key, move |_: &hover_rows::Caches| inputs.capture(land.clone(), task_forces.clone(), ports.clone()))
+                };
+                // Rows at the head of the open map with the vision its vision layer shows; today's
+                // frame and the counters' vision with no playhead map.
+                let made = match self.rows_head() {
+                    Some((entry, recording)) => match self.shown_vision() {
+                        Ok(vision) => {
+                            let (key, job) = inventory(&self.hover_inputs(document, &vision, ui.ctx()), &self.counter_report);
+                            self.hover_rows.wait(hover_rows::Family::Capture, (&entry, recording), key, job)
+                        }
+                        Err(_) => None,
+                    },
+                    None if self.open_map().is_some() => None,
+                    None => match document.playback.current() {
+                        crate::playback::Current::Frame(frame) => {
+                            let (key, job) = inventory(&self.hover_inputs(document, &self.counter_report.perspective, ui.ctx()), &self.counter_report);
+                            self.hover_rows.wait_today(hover_rows::Family::Capture, frame, key, job)
+                        }
+                        _ => None,
+                    },
+                };
+                for (reason, &count) in made.iter().flat_map(|text| text.refused.iter()) {
+                    let current = tooltip_refused.entry(reason.clone()).or_default();
                     *current = (*current).max(count);
                 }
+            }
+            self.hover_rows.end_frame(self.capture.is_some());
+            // A reader whose rows at the head do not hold what it reads yet says so, by name.
+            for (reason, count) in self.hover_rows.loading().into_iter().chain(self.combat_rows.loading()) {
+                *tooltip_refused.entry(reason).or_default() += count;
+            }
+            // The overlay's reads that its rows at the head do not hold yet, by name.
+            if live {
+                let tables = self.overlay_tables_job.loading();
+                if !tables.is_empty() {
+                    self.overlay_loading.push(format!("the overlay's tables: loading: {tables:?}"));
+                } else if self.head_tables.is_none() {
+                    self.overlay_loading.push("the overlay's tables: loading: not made from rows at the head yet".to_owned());
+                }
+                if !self.overlay_missed.is_empty() {
+                    self.overlay_loading.push(format!("the overlay: loading: {:?}", self.overlay_missed));
+                }
+            }
+            for reason in self.overlay_loading.drain(..) {
+                *tooltip_refused.entry(reason).or_default() += 1;
             }
             self.tooltip_refused = tooltip_refused;
             if let Some(delay) = self.combat.tooltip_repaint_after(
@@ -5828,37 +7083,27 @@ impl Viewer {
         // capture: at a fixed clock `Scene::render` takes the luminance
         // adaptation instantaneously, because the clock did not advance, which
         // is what a dump's own pair of frames does.
-        let hovered_radar = point
+        let radar_at = point
             .filter(|_| !over_combat)
             .and_then(|point| radar_province(self.map_hit(point), &self.counter_report))
-            .and_then(|province| {
-                let row = now
-                    .frame
-                    .complete::<replay_data::rows::tables::Provinces>()
-                    .ok()?
-                    .iter()
-                    .find(|row| row.id == province)?;
-                Some((
-                    row.state,
-                    self.counter_report
-                        .perspective
-                        .province_controller(province)?,
-                ))
-            });
-        let hovered_air_base = point.filter(|_| !over_combat).and_then(|point| {
+            .and_then(|province| Some((province, self.counter_report.perspective.province_controller(province)?)));
+        let base_at = point.filter(|_| !over_combat).and_then(|point| {
             let MapHit::Base(index) = self.map_hit(point)? else {
                 return None;
             };
-            let (province, kind) = self.counter_report.air_base_hits.get(&index)?;
-            let provinces = now
-                .frame
-                .complete::<replay_data::rows::tables::Provinces>()
-                .ok()?;
-            provinces
-                .binary_search_by_key(province, |row| row.id)
-                .ok()
-                .map(|at| (provinces[at].state, *kind))
+            self.counter_report.air_base_hits.get(&index).copied()
         });
+        // A hovered province's state, from the overlay's rows (at the head with the map open, none
+        // while they load).
+        let mut state_of = |province: u32| {
+            let state = |frame: &replay_frame::frame::DecodedFrame| {
+                let provinces = frame.complete::<replay_data::rows::tables::Provinces>().ok()?;
+                provinces.binary_search_by_key(&province, |row| row.id).ok().map(|at| provinces[at].state)
+            };
+            if live { self.head_rows.read_overlay(now.frame, state).flatten() } else { state(now.frame) }
+        };
+        let hovered_radar = radar_at.and_then(|(province, controller)| Some((state_of(province)?, controller)));
+        let hovered_air_base = base_at.and_then(|(province, kind)| Some((state_of(province)?, kind)));
         let hovered_air_carriers = point.filter(|_| !over_combat).and_then(|point| {
             let MapHit::Unit(index) = self.map_hit(point)? else {
                 return None;
@@ -5868,14 +7113,38 @@ impl Viewer {
                 && hit.kind == viewer_foundation::map::counter_hovers::unit_hits::Kind::TaskForce)
                 .then(|| Arc::clone(&hit.members))
         });
-        let target_light = self.frame_day_night(document.playback.hour(), &document.game_speeds);
+        let (_, shown_hour) = self.hour_on_screen(document);
+        let target_light = self.frame_day_night(shown_hour, &document.game_speeds);
         let day_night = self.day_night.update(
-            document.playback.hour(),
+            shown_hour,
             target_light,
             f64::from(animation_time),
             1.0 / self.speed,
         );
+        // With the playhead on, the radar symbols come from the radar layer.
+        let layered_radar = self
+            .playhead_map
+            .as_ref()
+            .filter(|side| side.draws("radar"))
+            .and_then(|side| side.parts())
+            .and_then(|(_, layers)| layers.iter().find_map(|layer| layer.any().downcast_ref::<crate::layers::radar::Radar>()))
+            .and_then(crate::layers::radar::Radar::field);
+        let layered = self.layered_orders();
         let scene = self.scene.as_mut().unwrap();
+        let (device, queue) = (&state.device, &state.queue);
+        // The radar symbols are the radar layer's with the map open, laid out or not.
+        if let Some(field) = layered_radar.as_deref().or(self.prepared_overlay.as_ref().map(|prepared| &*prepared.radar)) {
+            scene
+                .apply(device, queue, SceneInput::SetRadar { field, shown: self.picker.radar, hovered: hovered_radar })
+                .map_err(|e| e.to_string())?;
+        }
+        // The order parts: with the map open the layers' plan, the hour's raid arrows and the trade
+        // routes, else today's hour field; the overlay's air orders join them once laid out.
+        let (plan, raids, routes) = match &layered {
+            Some(layered) => (layered.plan.clone(), layered.raids.clone(), layered.routes),
+            None => (self.uploaded.orders.clone(), None, None),
+        };
+        let mut air = None;
         if let Some(prepared) = &self.prepared_overlay {
             let carrier_ranges = hovered_air_carriers
                 .as_deref()
@@ -5883,7 +7152,6 @@ impl Viewer {
             let ranges = carrier_ranges
                 .as_ref()
                 .unwrap_or_else(|| prepared.air_ranges.shown(hovered_air_base));
-            let (device, queue) = (&state.device, &state.queue);
             scene
                 .apply(device, queue, SceneInput::SetAirRanges(&ranges.ranges))
                 .map_err(|e| e.to_string())?;
@@ -5892,17 +7160,6 @@ impl Viewer {
                     device,
                     queue,
                     SceneInput::SetAirTransfers(&prepared.air_orders.transfers.progress),
-                )
-                .map_err(|e| e.to_string())?;
-            scene
-                .apply(
-                    device,
-                    queue,
-                    SceneInput::SetRadar {
-                        field: &prepared.radar,
-                        shown: self.picker.radar,
-                        hovered: hovered_radar,
-                    },
                 )
                 .map_err(|e| e.to_string())?;
             scene
@@ -5919,37 +7176,25 @@ impl Viewer {
                     SceneInput::SetStrategicStyles(&prepared.naval_selection.styles),
                 )
                 .map_err(|e| e.to_string())?;
-            if let Some(base) = &self.uploaded.orders {
-                let air = &prepared.air_orders;
-                if self.uploaded.air_order_sources.as_ref().is_none_or(
-                    |(had_base, had_air, highlights)| {
-                        !Arc::ptr_eq(base, had_base)
-                            || !Arc::ptr_eq(air, had_air)
-                            || *highlights != ranges.highlighted_bases
-                    },
-                ) {
-                    let air_field = air.highlighted(&ranges.highlighted_bases);
-                    let field = viewer_foundation::map::ribbon_mesh::append_kept(
-                        base,
-                        |draw| !draw.air_mode,
-                        &air_field,
-                    );
-                    scene
-                        .apply(
-                            device,
-                            queue,
-                            SceneInput::SetOrders {
-                                assets: &document.orders,
-                                field,
-                            },
-                        )
-                        .map_err(|error| error.to_string())?;
-                    self.uploaded.air_order_sources = Some((
-                        Arc::clone(base),
-                        Arc::clone(air),
-                        ranges.highlighted_bases.clone(),
-                    ));
-                }
+            air = Some((Arc::clone(&prepared.air_orders), ranges.highlighted_bases.clone()));
+        }
+        if layered.is_some() || plan.is_some() {
+            let key = OrderKey { plan: order_at(plan.as_ref()), raids: order_at(raids.as_ref()), routes, air: air.as_ref().map(|(orders, bases)| (order_at(Some(orders)), bases.clone())) };
+            if self.uploaded.order_key.as_ref() != Some(&key) {
+                let air_field = match (&air, &key.air) {
+                    (Some((orders, bases)), Some(held)) => {
+                        if self.uploaded.air_field.as_ref().is_none_or(|(had, _)| had != held) {
+                            self.uploaded.air_field = Some((held.clone(), Arc::new(orders.highlighted(bases))));
+                        }
+                        self.uploaded.air_field.as_ref().map(|(_, field)| Arc::clone(field))
+                    }
+                    _ => None,
+                };
+                let routes_field = routes.and(live_of(&self.playhead_map)).and_then(layered_convoys).map(|convoys| &convoys.product().field);
+                scene
+                    .apply(device, queue, SceneInput::SetOrders { assets: &document.orders, parts: [plan.as_deref(), raids.as_deref(), routes_field, air_field.as_deref()] })
+                    .map_err(|error| error.to_string())?;
+                self.uploaded.order_key = Some(key);
             }
         }
         scene
@@ -5980,16 +7225,18 @@ impl Viewer {
                 SceneInput::SetVisibility(self.counter_view.visibility),
             )
             .map_err(|error| error.to_string())?;
-        crate::document::select_movement(
-            scene,
-            &state.device,
-            &state.queue,
-            &document.content,
-            document.frame().map_err(|error| error.to_string())?,
-            self.overlay_tables.as_ref().expect("parsed above").3.ours(),
-            self.unit_selection.units().as_ref(),
-        )
-        .map_err(|error| error.to_string())?;
+        let ours = self.overlay_tables.as_ref().map(|(_, _, _, tables)| tables.ours()).or_else(|| seen.as_ref().map(|vision| vision.ours()));
+        let (head, selected) = (head_rows::head(live_of(&self.playhead_map), document), self.unit_selection.units().as_ref());
+        if let Some(ours) = ours {
+            let mut arrows = |frame: &replay_frame::frame::DecodedFrame| {
+                crate::document::select_movement(scene, &state.device, &state.queue, &document.content, frame, ours, selected)
+            };
+            // No selection reads no row; a selection's arrows are kept while its rows load.
+            let moved = if selected.is_empty() { Some(arrows(now.frame)) } else { self.head_rows.arrows(head, frame, arrows) };
+            if let Some(Err(error)) = moved {
+                self.overlay_loading.push(format!("the selection's movement arrows: {error}"));
+            }
+        }
         scene
             .apply(
                 &state.device,
@@ -6009,7 +7256,7 @@ impl Viewer {
         let overlay = if self.looks.is_some() {
             &mut self.free_overlay
         } else {
-            self.overlay.as_mut().expect("built above")
+            self.overlay.get_or_insert_with(Batch::default)
         };
         let laid_out = overlay.quads.len();
         overlay.quads.extend(additions.quads);
@@ -6084,7 +7331,7 @@ impl Viewer {
                     volumes: self.volumes,
                     muted: self.muted,
                     reset: std::mem::take(&mut self.audio_reset),
-                    music: self.music.clone(),
+                    music: self.playhead_map.as_ref().and_then(|_| self.scripts.music()).or_else(|| self.music.clone()),
                     battles: self.battles.clone(),
                     interface: std::mem::take(&mut self.interface_sounds),
                     interface_key: &mut self.interface_key,
@@ -6173,15 +7420,25 @@ impl Viewer {
         // has decoded and been laid out, as a headless dump does. The overlay's own layout version
         // is the reference, not a version read here: a background load that landed after the
         // layout but before this check would otherwise let the frame save without it.
-        if let Some(capture) = self.capture.as_mut() {
+        let (_, shown_at) = self.hour_on_screen(document);
+        if let Some(capture) = self.capture.as_mut().filter(|capture| !capture.paced) {
             // Anything the settle decodes moves the version, which makes the overlay stale.
             document.icons.lazy.settle();
             let laid_out = self
                 .prepared_overlay
                 .as_ref()
                 .is_some_and(|prepared| !prepared.is_stale(&now));
-            // And until the raid offer cycle is complete at the shown hour:
-            // every target evaluated, as a paused frame ends.
+            // With the map open, laid out over the newest rows at the head with tables made from
+            // them, nothing loading.
+            let at_head = !live
+                || (self.overlay_missed.is_empty()
+                    && self.overlay_tables_job.loading().is_empty()
+                    && !self.overlay_tables_job.running()
+                    && self.head_tables.as_ref().zip(overlay_rows.as_ref()).is_some_and(|((key, _), rows)| key.rows == Arc::as_ptr(rows) as usize && rows.hour == shown_at));
+            let laid_out = laid_out && at_head;
+            // And until the raid offer cycle is complete at the shown hour: every target
+            // evaluated, as a paused frame ends. With the map open, the scripts reader's batch
+            // the tables hold.
             let raids = self
                 .overlay_tables
                 .as_ref()
@@ -6226,7 +7483,11 @@ impl Viewer {
                     battles.refusals.join("; ")
                 ));
             }
-            if let Some(music) = &self.music
+            let music = match &self.playhead_map {
+                Some(_) => self.scripts.music(),
+                None => self.music.clone(),
+            };
+            if let Some(music) = &music
                 && !music.refusals.is_empty()
             {
                 warnings.push(format!(
@@ -6298,13 +7559,19 @@ impl Viewer {
                 },
             );
         }
+        // A document's first picture is shown whole or not at all: until its overlay and counter
+        // layers show the hour with its layers, the spinner covers what is drawn beneath.
+        self.shown_whole = self.shown_whole || self.playhead.is_some_and(|head| self.picture_whole(head, self.playing));
+        if !self.shown_whole {
+            let cover = rect.intersect(ui.clip_rect());
+            ui.painter().rect_filled(cover, 0.0, ui.visuals().panel_fill);
+            ui.put(egui::Rect::from_center_size(cover.center(), egui::vec2(32.0, 32.0)), egui::Spinner::new());
+        }
         // The water animates, so the window keeps drawing.
         ui.ctx().request_repaint();
         self.drew_frame = true;
-        if self.shown.as_ref().is_some_and(|shown| shown.epoch == self.epoch)
-            && !document.icons.lazy.busy()
-            && self.prepared_overlay.as_ref().is_some_and(|prepared| !prepared.is_stale(&now))
-        {
+        let overlay_fresh = self.prepared_overlay.as_ref().is_some_and(|prepared| !prepared.is_stale(&now));
+        if self.load_complete(document.icons.lazy.busy(), overlay_fresh) {
             if document.content.finish_loading()
                 && let Some(source) = &self.source
                 && std::env::var_os("BATTLE_PLAN_SOURCE_ADMISSION_FILE").or_else(|| std::env::var_os("HOI4_SOURCE_ADMISSION_FILE")).is_some()
@@ -6315,11 +7582,10 @@ impl Viewer {
         }
         self.drawn_at = Some(crate::perf_log::epoch_ms());
         self.drawn_options.clone_from(&self.applying_options);
-        self.rendered = Some(Playhead {
-            branch: document.playback.branch(),
-            hour: document.playback.hour(),
-            fraction: f64::from(document.hour_fraction),
-        });
+        // The layers show whole hours.
+        let (branch, hour) = self.hour_on_screen(document);
+        let fraction = if self.playhead_map.is_some() { 0.0 } else { f64::from(document.hour_fraction) };
+        self.rendered = Some(Playhead { branch, hour, fraction });
         Ok(())
     }
 }
@@ -6598,6 +7864,11 @@ impl eframe::App for Viewer {
 
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         crate::perf_log::frame_start();
+        // A window not shown (minimised, covered, hidden by its host) runs no UI pass, so its maps
+        // draw no frame: they let their playheads go, or the rows would wait on them.
+        if ctx.input(|input| input.viewport().visible()) == Some(false) || self.embedded.as_ref().is_some_and(|embedded| !embedded.visible()) {
+            self.not_drawn();
+        }
         engine_executable::executable_tables::scope(self.tables(), || {
             self.embedded_logic(ctx, frame)
         });
@@ -6652,11 +7923,7 @@ impl Viewer {
             .as_ref()
             .is_some_and(|embedded| !embedded.visible())
         {
-            // A hidden map stops sounding.
-            self.release_audio();
-            if let Some(dashboard) = &mut self.dashboard {
-                dashboard.release_audio();
-            }
+            self.not_drawn();
             if self.dashboard_active
                 && let Some(recording) = recording.take()
             {
@@ -6671,9 +7938,11 @@ impl Viewer {
             // The Campaign map is not drawn while dashboard maps show, even
             // while they load or failed to: it stops sounding.
             self.release_audio();
+            self.close_playhead();
         } else if let Some(dashboard) = &mut self.dashboard {
             // Nor are dashboard maps while the Campaign map shows, loaded or not.
             dashboard.release_audio();
+            dashboard.close_playheads();
         }
         if self.dashboard_active
             && let Some(dashboard) = &mut self.dashboard
@@ -7068,6 +8337,45 @@ fn presentation_matches(rendered: Playhead, target: Playhead, playing: bool) -> 
         || (playing && rendered.branch == target.branch && rendered.hour <= target.hour)
 }
 
+/// Whether the playhead's layers answer `hour`: held, they all show it settled for the view;
+/// playing, they show an hour since the last seek and no later than the head they took.
+/// Whether the picture over the playhead's map answers `hour` whole: its layers (drawn, settled),
+/// the overlay laid out over the rows at the head, and the counter layers fed the tables made from
+/// them, each by the hour it shows (none before its first). Paused, each shows `hour`; playing,
+/// each an hour from the last seek to the head. No part is exempt and none is waited for on a clock.
+fn whole_picture(
+    on: &crate::playhead_host::OnScreen,
+    overlay: Option<replay_data::Hour>,
+    counters: Option<replay_data::Hour>,
+    hour: i32,
+    playing: bool,
+) -> bool {
+    let shows = |shown: Option<replay_data::Hour>| {
+        shown.is_some_and(|shown| match playing {
+            true => on.sought.is_none_or(|sought| sought <= shown) && shown <= on.head,
+            false => shown == hour,
+        })
+    };
+    layers_show(on, hour, playing) && shows(overlay) && shows(counters)
+}
+
+fn layers_show(on: &crate::playhead_host::OnScreen, hour: i32, playing: bool) -> bool {
+    on.drawn.is_some_and(|drawn| match playing {
+        true => on.sought.is_none_or(|sought| sought <= drawn) && drawn <= on.head,
+        false => drawn == hour && on.settled,
+    })
+}
+
+/// Why the playhead's layers are behind, by the layer furthest behind.
+fn layers_behind_reason(on: &crate::playhead_host::OnScreen) -> String {
+    let holding = match on.furthest {
+        Some(layer) => layer,
+        None if on.composing => "composing a reset",
+        None => "no layer drawn yet",
+    };
+    format!("the playhead's layers: {holding}")
+}
+
 /// Whether the shown overlay, `(engaged_covered, branch, hour)`, was laid out
 /// before the engaged index covered its hour (by the window or by an hour
 /// builder) and the index now does: it is laid out again once, so a paused
@@ -7078,6 +8386,90 @@ fn engaged_relayout(
     covers: impl Fn(replay_data::BranchId, i32) -> bool,
 ) -> bool {
     shown.is_some_and(|(covered, branch, hour)| !covered && covers(branch, hour))
+}
+
+/// A click's read: none while its rows load; with the map open a failed read is a named line and
+/// selects nothing, without it the frame's error as before.
+fn read_click<T>(live: bool, lines: &mut Vec<String>, what: &str, read: Option<std::io::Result<T>>) -> Result<Option<T>, String> {
+    match read.transpose() {
+        Ok(value) => Ok(value),
+        Err(error) if live => {
+            lines.push(format!("{what}: {error}"));
+            Ok(None)
+        }
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+/// The order field the map's layers give the scene, made as today's hour field is: the battle plan
+/// (its labels and report kept), the hour's raid arrows, then the trade-route lines.
+/// A saved frame's battle plan is the plan of its hour: the map's layers settled again until the
+/// orders layer's plan (or refusal) stands for the rows at `hour`, the tables a build learned
+/// joining those rows (the stepped run's clock is held), within `limit`; refused by name.
+fn settle_plan(side: &mut crate::playhead_host::MapSide, hour: replay_data::Hour, limit: Duration) -> Result<(), String> {
+    let until = Instant::now() + limit;
+    loop {
+        let orders = side.draws("orders").then(|| side.parts().and_then(|(_, layers)| layers.iter().find_map(|layer| layer.any().downcast_ref::<crate::layers::orders::Orders>()))).flatten();
+        // Not drawn, or refused for want of a viewing country: nothing to wait for.
+        let Some(orders) = orders.filter(|orders| orders.perspective().is_some()) else { return Ok(()) };
+        let made = orders.made_for();
+        if made == Some(hour) {
+            return Ok(());
+        }
+        if Instant::now() >= until {
+            return Err(format!("The battle plan at hour {hour}: the orders layer's plan stands for the rows at {made:?} after {limit:?} (none: a build or a table it learned is still coming)"));
+        }
+        side.settle_all().map_err(|error| format!("The battle plan at hour {hour}: {error}"))?;
+        // A table it learned joins its rows on the playhead's threads.
+        std::thread::sleep(Duration::from_micros(200));
+    }
+}
+
+/// The convoys layer while it and the units draw: the trade routes join the order field then.
+fn layered_convoys(side: &crate::playhead_host::MapSide) -> Option<&crate::layers::convoys::Convoys> {
+    (side.draws("convoys") && side.draws("units")).then(|| side.parts().and_then(|(_, layers)| layers.iter().find_map(|layer| layer.any().downcast_ref::<crate::layers::convoys::Convoys>()))).flatten()
+}
+
+/// The playhead's map while its reader has not failed: the one the window takes everything from.
+fn live_of(map: &Option<crate::playhead_host::MapSide>) -> Option<&crate::playhead_host::MapSide> {
+    map.as_ref().filter(|side| side.failure().is_none())
+}
+
+/// Whether the window uploads today's unit field: one not uploaded yet, and never while the
+/// playhead's map is open (its units layer installs the field).
+fn today_field_due(live: bool, uploaded: bool) -> bool {
+    !live && !uploaded
+}
+
+/// Lays the resource icons and occupation marks `side`'s layers hold at the head into `prepared`
+/// where it holds another product, for viewing country `ours`; whether it laid any.
+fn lay_in_layers(side: Option<&crate::playhead_host::MapSide>, prepared: &mut crate::document::PreparedOverlay, now: &crate::document::Hour<'_>, camera: Camera, pixels: [u32; 2], ui_scale: f32, ours: u32) -> bool {
+    use crate::document::MadeBy;
+    let Some(side) = side else { return false };
+    let mut laid = false;
+    if let Some(layer) = crate::layers::resource_icons::drawn(side)
+        && prepared.resource_icons_by() != MadeBy::Layer(layer.version())
+    {
+        prepared.replace_resource_icons(now, camera, pixels, ui_scale, &layer.icons(), layer.version());
+        laid = true;
+    }
+    if let Some(layer) = crate::layers::occupation_marks::drawn(side)
+        && prepared.occupation_icons_by() != MadeBy::Layer(layer.version())
+    {
+        prepared.replace_occupation_icons(now, camera, pixels, ui_scale, ours, &layer.marks(), layer.version());
+        laid = true;
+    }
+    laid
+}
+
+/// How the overlay's tables are made: the air missions deferred to the first layout in the strategic air mode (the one mode whose
+/// layout reads them), made in that layout so a switch into the mode lays them out in its first
+/// frame as today, and, in the game's map pose, the parts read per entity looked up by key as the
+/// layout admits each. A free eye (`free`) admits up to the whole front at once, so its tables are
+/// made whole on the worker, as today, and no frame looks thousands up. The same for every mode,
+/// so a mode switch asks for no new tables; a change of pose asks for them.
+fn overlay_need(_view: &CounterView, free: bool) -> viewer_counters::map::counters::Need {
+    viewer_counters::map::counters::Need { air_missions: false, by_key: !free }
 }
 
 /// A deferred save may build unused warnings, but an unsavable frame never needs them.
@@ -7204,6 +8596,7 @@ pub(crate) mod tests {
             step: 0.25,
             frames,
             index: 0,
+            paced: false,
         };
         // Ordinary viewing builds none; diagnostics mode builds them on every frame.
         assert!(!builds_warnings(false, None));
@@ -7644,6 +9037,13 @@ pub(crate) mod tests {
             top_map_hit(point, &report, &[], &[], None, None),
             Some(MapHit::PortTooltip(0))
         );
+    }
+
+    #[test]
+    fn todays_unit_field_is_never_uploaded_while_the_playheads_map_is_open() {
+        assert!(super::today_field_due(false, false), "no open map: today's field until it is uploaded");
+        assert!(!super::today_field_due(false, true));
+        assert!(!super::today_field_due(true, false), "the open map's units layer installs the field");
     }
 
     #[test]
@@ -8746,6 +10146,7 @@ pub(crate) mod tests {
                         step: 0.0,
                         frames: 1,
                         index: 0,
+                        paced: false,
                     });
                 }
                 let (send, receive) = mpsc::channel();
@@ -8809,6 +10210,7 @@ pub(crate) mod tests {
                     step: 0.0,
                     frames: 1,
                     index: 0,
+                    paced: false,
                 });
             }
             let ctx = egui::Context::default();

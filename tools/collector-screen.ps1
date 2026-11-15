@@ -60,6 +60,9 @@ $children=New-Object Collections.Generic.List[Diagnostics.Process]
 $recordRoot=Join-Path $Out 'recording'
 $gameState=Join-Path (Split-Path -Parent $GameLock) 'hoi4-screen-game.json'
 $recorder=if (-not $Bare) {Join-Path (Resolve-Path -LiteralPath $BinaryDirectory).ProviderPath 'recorder.exe'} else {$null}
+# The game clock is read by recorder.exe's clock command: BinaryDirectory's, or this checkout's release build.
+. (Join-Path $PSScriptRoot 'game-clock.ps1')
+$clockRecorder=Resolve-ClockRecorder $BinaryDirectory
 $result=[ordered]@{passed=$false;bare=[bool]$Bare;save=$ExpectedSave;requested_window_seconds=$Seconds;reload_attempts=0;verified_reloads=0;clean_detaches=0;error=$null;cleanup_errors=@()}
 function Write-Json([string]$name,$value) { [IO.File]::WriteAllText((Join-Path $Out $name),($value | ConvertTo-Json -Depth 30),$utf8) }
 function Own-Lock {
@@ -68,7 +71,7 @@ function Own-Lock {
 }
 function Drive([string]$action,[hashtable]$extra=@{}) {
     Own-Lock
-    & $SmokeScript -Action $action -GameExe $GameExe -UserDirectory $UserDirectory -CaptureRoot $CaptureRoot -InputShimDir $InputShimDir -RequireInputShim @extra
+    & $SmokeScript -Action $action -GameExe $GameExe -UserDirectory $UserDirectory -CaptureRoot $CaptureRoot -InputShimDir $InputShimDir -BinaryDirectory (Split-Path -Parent $clockRecorder) -RequireInputShim @extra
 }
 function Start-Tool([string[]]$arguments,[string]$name) {
     $quoted=@($arguments | ForEach-Object { if ($_ -match '"') { throw 'A native argument contains a quote.' }; '"'+($_ -replace '(\\+)$','$1$1')+'"' })
@@ -130,7 +133,7 @@ function Pause-Game {
     $deadline=[DateTime]::UtcNow.AddSeconds(30)
     do {
         $clock=Clock
-        if ($clock.presentation_valid -and $clock.paused -le 1) { break }
+        if ($clock.presentation_valid -and $null -ne $clock.paused) { break }
         if ([DateTime]::UtcNow -ge $deadline) { throw 'Pause state remained unreadable.' }
         Start-Sleep -Milliseconds 100
     } while ($true)
@@ -278,7 +281,7 @@ try {
     $result.game_pid=$game.Id
     $null=$game.Handle
     $null=Drive 'Clock' @{GameId=$game.Id}
-    $reader=[Hoi4ClockBaseline]::new([uint32]$game.Id,[uint64]$game.MainModule.BaseAddress.ToInt64())
+    $reader=Open-GameClock $game.Id $clockRecorder
     $stable=$null; $deadline=[DateTime]::UtcNow.AddSeconds(240)
     do {
         $clock=Clock

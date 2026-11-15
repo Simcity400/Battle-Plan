@@ -118,28 +118,9 @@ pub struct Walk {
     pub required_wings: usize,
 }
 
-/// Resolve each distinct nonzero base handle and retain the native dense
-/// container/pool/wing iteration order. An unresolved or stale base is unknown,
-/// never an observed empty roster. Rows are atomic when storage is short.
-pub fn walk(
-    memory: &impl Memory,
-    module_base: usize,
-    base_handles: &UniqueHandles,
-    rows: &mut [Row],
-    wings: &mut [u64],
-) -> Walk {
-    walk_buffer(
-        memory,
-        module_base,
-        base_handles,
-        crate::walk::Buffer::Fixed(rows),
-        crate::walk::Buffer::Fixed(wings),
-    )
-}
-
 /// Aircraft counting reaches every dense container and pool occurrence.
 /// Grow worker storage from those acquired headers before publishing a base.
-pub fn walk_growing(
+pub fn walk(
     memory: &impl Memory,
     module_base: usize,
     base_handles: &UniqueHandles,
@@ -473,8 +454,8 @@ mod tests {
     #[test]
     fn dense_occurrences_keep_duplicates_and_empty_base_row() {
         let f = Fixture::new();
-        let mut rows = [Row::default(); 2];
-        let mut wings = [0; 4];
+        let mut rows = vec![Row::default(); 2];
+        let mut wings = vec![0; 4];
         let walked = walk(&f, 0, &handles(&[BASE_ID, EMPTY_ID]), &mut rows, &mut wings);
         assert_eq!(walked.outcome, Outcome::Rows { len: 2 });
         assert_eq!(walked.wings_len, 4);
@@ -498,22 +479,13 @@ mod tests {
     }
 
     #[test]
-    fn short_storage_keeps_rows_atomic_and_unresolved_base_fails_closed() {
+    fn short_storage_grows_and_an_unresolved_base_fails_closed() {
         let mut f = Fixture::new();
-        let mut rows = [Row::default(); 2];
-        let mut wings = [0; 3];
+        let mut rows = vec![Row::default(); 2];
+        let mut wings = vec![0; 3];
         let walked = walk(&f, 0, &handles(&[BASE_ID, EMPTY_ID]), &mut rows, &mut wings);
-        assert_eq!(
-            walked.outcome,
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1,
-            }
-        );
-        assert_eq!(walked.required_wings, 4);
-        assert_eq!(walked.wings_len, 0);
-        assert_eq!(rows[0].base, EMPTY_ID);
-        assert_eq!(rows[0].wings_len, 0);
+        assert_eq!(walked.outcome, Outcome::Rows { len: 2 });
+        assert_eq!((walked.wings_len, walked.required_wings), (4, 4));
 
         f.registry_entry(BASE_ID, 0);
         assert_eq!(
@@ -534,9 +506,7 @@ mod tests {
             for index in 0..count {
                 fixture.word(DATA + index * 8, CONTAINER as u64);
             }
-            let fixed = walk(&fixture, 0, &bases, &mut [Row::default(); 2], &mut []);
-            assert!(matches!(fixed.outcome, Outcome::Truncated { .. }));
-            let captured = walk_growing(&fixture, 0, &bases, &mut rows, &mut wings);
+            let captured = walk(&fixture, 0, &bases, &mut rows, &mut wings);
             assert_eq!(captured.outcome, Outcome::Rows { len: 2 });
             assert_eq!(
                 (captured.wings_len, captured.required_wings),

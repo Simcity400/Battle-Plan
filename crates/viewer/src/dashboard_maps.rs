@@ -281,6 +281,13 @@ impl DashboardMaps {
         }
     }
 
+    /// Every map lets its playhead go, as when the dashboard is not drawn.
+    pub fn close_playheads(&mut self) {
+        for view in self.views.values_mut() {
+            view.viewer.close_playhead();
+        }
+    }
+
     pub fn set_diagnostics(&mut self, enabled: bool) {
         self.diagnostics = enabled;
         for view in self.views.values_mut() {
@@ -399,7 +406,7 @@ impl DashboardMaps {
         for key in &stale {
             if let Some(source) = self.sources.get_mut(key) {
                 if let Some(content) = source.content.take() {
-                    self.resources.dropper.drop_later(content);
+                    self.resources.pool().dropper().drop_later(content);
                 }
                 source.error = None;
             }
@@ -445,7 +452,7 @@ impl DashboardMaps {
                 continue;
             };
             if let Some(content) = source.content.take() {
-                self.resources.dropper.drop_later(content);
+                self.resources.pool().dropper().drop_later(content);
             }
             source.error = None;
             for view in self.views.values_mut() {
@@ -510,7 +517,7 @@ impl DashboardMaps {
         }
         for source in self.sources.values_mut() {
             if let Some(content) = source.content.take() {
-                self.resources.dropper.drop_later(content);
+                self.resources.pool().dropper().drop_later(content);
             }
             source.error = None;
         }
@@ -635,7 +642,7 @@ impl DashboardMaps {
                 load.alive.store(false, Ordering::Release);
             }
             if let Some(source) = self.sources.remove(&key) {
-                self.resources.dropper.drop_later(source);
+                self.resources.pool().dropper().drop_later(source);
             }
         }
         self.admit(frame);
@@ -830,7 +837,7 @@ impl DashboardMaps {
             match (self.sources.get_mut(&key).filter(|_| valid), result) {
                 (Some(source), Ok(content)) => source.content = Some(content),
                 (Some(source), Err(error)) => source.error = Some(error),
-                (None, Ok(content)) => self.resources.dropper.drop_later(content),
+                (None, Ok(content)) => self.resources.pool().dropper().drop_later(content),
                 (None, Err(_)) => {}
             }
         }
@@ -949,8 +956,8 @@ impl DashboardMaps {
             let wake = ctx.clone();
             let alive = Arc::new(AtomicBool::new(true));
             let job_alive = Arc::clone(&alive);
-            let workers = self.resources.workers();
-            if self.resources.try_submit(move || {
+            let workers = self.resources.pool().workers();
+            if self.resources.pool().try_submit(Box::new(move || {
                 if !job_alive.load(Ordering::Acquire) {
                     return;
                 }
@@ -964,7 +971,7 @@ impl DashboardMaps {
                     let _ = sender.send(result);
                 }
                 wake.request_repaint();
-            }) {
+            })) {
                 view.loading = Some(SceneLoad {
                     samples: graphics.samples,
                     content: Arc::downgrade(content),
@@ -1112,10 +1119,13 @@ impl DashboardMaps {
         let audio_view = audio_view(self.audio_owner.as_ref(), &self.order, |id| {
             drawn.contains(id)
         });
-        // Every other map, drawn or not, stops sounding.
+        // Every other map, drawn or not, stops sounding; a map not drawn lets its playhead go.
         for (id, view) in &mut self.views {
             if audio_view.as_ref() != Some(id) {
                 view.viewer.release_audio();
+            }
+            if !drawn.contains(&id) {
+                view.viewer.close_playhead();
             }
         }
         let mut interacted = None;

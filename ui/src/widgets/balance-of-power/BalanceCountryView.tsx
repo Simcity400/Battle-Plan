@@ -1,9 +1,8 @@
 import { useMemo } from 'react';
+import type { ReactNode } from 'react';
 import { useContextMenu } from '../../components/ContextMenu';
 import { dayLabel, drawLine } from '../../charts/draw';
 import { jumpItem } from '../../charts/jump';
-import { pendingLayer } from '../../charts/prepared';
-import { PreparedKey } from '../../charts/PreparedKey';
 import type { Span } from '../../charts/series';
 import TimeChart from '../../charts/TimeChart';
 import type { ChartLayer } from '../../charts/TimeChart';
@@ -18,15 +17,17 @@ import type { PlaybackMode } from '../../charts/view';
 import { contentTitleHint } from '../../dashboard/contentTitles';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import type { BoundTrack } from '../../dashboard/model';
-import type { BalanceHistory } from '../../generated/dashboard';
 import { BALANCE_UNAVAILABLE, balanceAt, balanceAxis, balanceLanes, balanceName, balanceStatusAt, exactValue, plotRuns, RANGE_UNAVAILABLE, rangeName,
   SIDE_UNAVAILABLE, sideName, statusText } from './balanceOfPowerData.ts';
 import type { BalanceNames, BalanceSubject } from './balanceOfPowerData';
 import { motionOf } from '../../charts/easing.ts';
+import LiveText, { liveTexts } from '../../charts/LiveText';
+import type { Live } from '../../charts/live';
+import type { BalanceHistory } from '../../generated/dashboard';
 
 /** The balance's in-game name in strong text, then its state in a muted line, as
  * Ruling party heads its chart. The key shows on hover; members when it is shared. */
-export function BalanceHeadline({ name, token, detail, members }: { name: string; token: string; detail: string; members?: string }) {
+export function BalanceHeadline({ name, token, detail, members }: { name: string; token: string; detail: ReactNode; members?: string }) {
   return <div className="balance-headline">
     <strong data-tooltip={contentTitleHint(token)}>{name}</strong>
     {detail && <span data-tooltip={members}>{detail}</span>}
@@ -45,9 +46,13 @@ export interface BalanceViewProps {
   /** The hour the header and lanes describe, and the last hour drawn (Live cuts later ones). */
   at: number; limit: number;
   extent: readonly [number, number]; playhead: number | null;
+  /** While following, the head now and the clock's frames: the playhead, the line, the bars and the header's value move
+   * with it each frame, between renders; `limitAt` is the last hour drawn at a head. */
+  liveHead?: Live<number>;
+  limitAt?: (hour: number) => number;
   playback: { mode: PlaybackMode; afterPlayhead: boolean; windowHours: number };
-  /** Hours not recorded or still being prepared, and those still being prepared alone. */
-  unknown: readonly Span[]; pending: readonly Span[];
+  /** Hours not recorded. */
+  unknown: readonly Span[];
   /** Members of each balance at `at`, where the hour's details have loaded. */
   membersOf: (token: string) => readonly string[] | null;
   pickOwner: unknown;
@@ -62,19 +67,23 @@ const WORDS = { since: (hour: number) => `Active since ${dayLabel(hour)}`, befor
 /** One country's balance: the header line, the value over its lifetime on the authored
  * ranges' gridlines, and one lane per balance the country had. */
 export default function BalanceCountryView({ runtime, track, active, subject, names, balance, gameShown, countryName, at, limit, extent, playhead, playback,
-  unknown, pending, membersOf, pickOwner, onChoose, onPick }: BalanceViewProps) {
+  unknown, membersOf, pickOwner, onChoose, onPick, liveHead, limitAt }: BalanceViewProps) {
   const viewport = useViewportHeight();
   const menu = useContextMenu('Chart actions');
   const name = balanceName(balance, names) ?? BALANCE_UNAVAILABLE;
-  const isPending = (hour: number) => inSpans(pending, hour);
-  const status = balanceStatusAt(balance, at, limit, unknown, isPending);
+  // The header's state moves daily with the value: painted at the head each frame while following, never rendered for.
+  const detail = useMemo(() => liveHead && limitAt ? liveTexts(runtime.clock, () => Math.floor(Math.max(extent[0], Math.min(extent[1], liveHead.read()))),
+    hour => new Map([['detail', statusText(balanceStatusAt(balance, hour, limitAt(hour), unknown), balance, names)]])) : null,
+  [liveHead, limitAt, runtime.clock, extent, balance, unknown, names]);
+  const status = balanceStatusAt(balance, at, limit, unknown);
   const axis = useMemo(() => balanceAxis(balance), [balance]);
   const runs = useMemo(() => plotRuns(balance), [balance]);
   const keyHours = useMemo(() => balance.values.map(run => run.firstHour), [balance]);
-  const layers = useMemo<ChartLayer[]>(() => [pendingLayer(pending), {
+  const layers = useMemo<ChartLayer[]>(() => [{
     draw: (ctx, frame, tokens, state) => { drawLine(ctx, frame, tokens, runs, tokens.text, { until: state.playhead ?? undefined }); },
-  }], [pending, runs]);
-  const lanes = useMemo(() => balanceLanes(subject, names, limit), [subject, names, limit]);
+  }], [runs]);
+  // Following, the bars run to the full extent and the timeline stops them at the head each frame.
+  const lanes = useMemo(() => balanceLanes(subject, names, limit, liveHead ? extent[1] : limit), [subject, names, limit, liveHead, extent]);
   const timelineLanes = useMemo<TimelineLane[]>(() => lanes.map(lane => {
     const label = lane.name ?? BALANCE_UNAVAILABLE;
     return { id: lane.token, label: describeRun(lane.spans, at, WORDS, unknown, track.branch.firstHour) ?? '', identity: { label }, icons: false, names: false,
@@ -87,7 +96,7 @@ export default function BalanceCountryView({ runtime, track, active, subject, na
     const rows: TooltipRow[] = [];
     const state = balanceAt(balance, hour);
     if (state.value === null) {
-      rows.push({ label: name, value: isPending(hour) ? 'Still being prepared' : inSpans(unknown, hour) ? 'Not recorded' : 'Not active', tone: 'muted', lookupKey: balance.token });
+      rows.push({ label: name, value: inSpans(unknown, hour) ? 'Not recorded' : 'Not active', tone: 'muted', lookupKey: balance.token });
     } else {
       rows.push({ label: name, value: exactValue(state.value), strong: true, lookupKey: balance.token });
       if (state.range !== null) rows.push({ label: 'Range', value: rangeName(balance, state.range, names) ?? RANGE_UNAVAILABLE, lookupKey: state.range });
@@ -102,8 +111,8 @@ export default function BalanceCountryView({ runtime, track, active, subject, na
     const held = span ?? lanes.find(entry => entry.token === lane.id)?.spans.filter(entry => entry.firstHour <= at).at(-1) ?? null;
     const rows: TooltipRow[] = [];
     if (held) {
-      // Bounds as the lane says them: a start or end next to unrecorded or pending hours is not a date.
-      const gaps = [...unknown, ...pending];
+      // Bounds as the lane says them: a start or end next to unrecorded hours is not a date.
+      const gaps = unknown;
       const start = startUnseen(held.firstHour, track.branch.firstHour, gaps) ? `held before ${dayLabel(held.firstHour)}` : `since ${dayLabel(held.firstHour)}`;
       const state = held.lastHour >= limit ? null : runState([held], Math.max(at, held.lastHour + 1), gaps);
       const end = !state || state.kind === 'held' || state.kind === 'none' ? null : state.kind === 'unknown' ? `last recorded ${dayLabel(state.lastSeen)}`
@@ -117,21 +126,20 @@ export default function BalanceCountryView({ runtime, track, active, subject, na
   };
   const members = membersOf(balance.token);
   return <div className="balance-view">
-    <BalanceHeadline name={name} token={balance.token} detail={statusText(status, balance, names)} members={membersText(members)} />
+    <BalanceHeadline name={name} token={balance.token} detail={detail ? <LiveText live={detail} at="detail" /> : statusText(status, balance, names)} members={membersText(members)} />
     <div className="balance-chart">
-      <TimeChart label={`${name} of ${countryName}`} extent={[extent[0], extent[1]]} playhead={playhead} playback={playback.mode}
+      <TimeChart label={`${name} of ${countryName}`} extent={[extent[0], extent[1]]} playhead={playhead} liveHead={liveHead} playback={playback.mode}
         afterPlayhead={playback.afterPlayhead} windowHours={playback.windowHours} hoursPerSecond={motionOf(runtime.clock.getSnapshot())}
         branchStart={track.branch.firstHour} axes={{ xFrom: null, xTo: null, yMin: axis.min, yMax: axis.max, log: false }} valueTicks={axis.ticks}
         layers={layers} active={active} pickOwner={pickOwner} keyHours={keyHours}
-        revision={`${balance.token}:${at}:${limit}:${runs.length}:${pending.length}`}
+        revision={`${balance.token}:${at}:${limit}:${runs.length}`}
         tooltip={hour => tooltip(Math.floor(hour))}
         onPick={onPick ? hour => onPick(Math.floor(hour)) : undefined}
         onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)])} />
     </div>
-    <PreparedKey pending={pending} />
     {timelineLanes.length > 1 && <div className="balance-lanes" style={{ height: AXIS_HEIGHT + Math.min(timelineLanes.length, 3) * ROW_HEIGHT }}>
-      <Timeline label={`Balances of ${countryName}`} extent={[extent[0], Math.max(extent[0] + 1, extent[1] + 1)]} playhead={playhead} labelHour={at} lanes={timelineLanes} showIcons={false} showNames={false}
-        hoursPerSecond={motionOf(runtime.clock.getSnapshot())} active={active} revision={`${balance.token}:${at}:${limit}`} pending={pending} unobserved={unknown}
+      <Timeline label={`Balances of ${countryName}`} extent={[extent[0], Math.max(extent[0] + 1, extent[1] + 1)]} playhead={playhead} liveHead={liveHead} labelHour={liveHead ? undefined : at} lanes={timelineLanes} showIcons={false} showNames={false}
+        hoursPerSecond={motionOf(runtime.clock.getSnapshot())} active={active} revision={`${balance.token}:${at}:${limit}`} unobserved={unknown}
         tooltip={(lane, span) => laneTooltip(lane, span)} labelMenu
         onContextMenu={(hour, x, y, lane) => menu.open(x, y, [
           ...lane && onChoose && lane.id !== balance.token ? [{ label: 'Show this balance', run: () => onChoose(lane.id) }] : [],

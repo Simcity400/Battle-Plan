@@ -42,11 +42,18 @@ fn want(hour: Hour) -> Want {
         map_mode: Default::default(),
         diplomatic_selected: None,
         show_allied_plans: false,
+        units_by_layers: false,
+        plans_by_layers: false,
+        routes_by_layers: false,
+        by_layers: Default::default(),
+        parts: Default::default(),
         counters: Default::default(),
+        counter_kinds: Default::default(),
         view: super::tests::test_view(),
         have: Vec::new(),
         received: 0,
         grid: None,
+        layered: Default::default(),
     }
 }
 

@@ -31,8 +31,6 @@ pub enum OmissionReason {
     Elsewhere,
     /// The recorder settings could not be read or updated.
     Settings,
-    /// Earlier hours of the campaign wait to be saved and could not be staged.
-    Waiting,
     /// The load was never admitted (it could not be identified).
     NotAdmitted,
 }
@@ -94,15 +92,8 @@ pub struct Snapshot {
     pub capture_mode: Option<&'static str>,
     /// The collector's warning that this release does not recognise the game build.
     pub build_warning: Option<String>,
-    /// Dashboard preparation of what this recorder saved.
-    pub preparation: Option<Preparation>,
-}
-
-/// Dashboard preparation of saved recordings, in a few words, and whether it failed.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct Preparation {
-    pub text: String,
-    pub failed: bool,
+    /// Hours captured and not yet spooled, while more than the collector keeps once caught up.
+    pub behind: Option<u64>,
 }
 
 /// The fields of one collector status publication the panel uses.
@@ -118,6 +109,16 @@ pub struct Live {
     /// The flag file keys the game tries for the viewed country, in order.
     pub flag_keys: Option<Vec<String>>,
     pub build_warning: Option<String>,
+    pub behind: Option<u64>,
+}
+
+/// Hours the game has captured that the collector's spool has not taken yet, when they pass
+/// the frames it keeps once caught up (`steady`); none otherwise, or when the status does not
+/// say.
+fn behind(status: &Value) -> Option<u64> {
+    let frames = &status["acquisition_work"]["frames"];
+    let in_flight = frames["in_flight"].as_u64()?;
+    (in_flight > frames["steady"].as_u64()?).then_some(in_flight)
 }
 
 pub fn read_live(status: &Value) -> Live {
@@ -162,6 +163,7 @@ pub fn read_live(status: &Value) -> Live {
         problem,
         flag_keys: flag_keys(&status["player"]),
         build_warning: status["build"]["warning"].as_str().map(str::to_owned),
+        behind: behind(status),
     }
 }
 
@@ -237,6 +239,25 @@ mod tests {
             &json!({"campaign": CAMPAIGN, "hours": 3, "last_hour": 1, "dropped_frames": 1}),
         );
         assert_eq!(one.problem.unwrap().text, "1 hour couldn't be recorded");
+    }
+
+    #[test]
+    fn live_status_names_the_hours_behind_only_past_the_steady_frames() {
+        let status = |in_flight: u64| {
+            json!({
+                "campaign": CAMPAIGN, "hours": 40, "last_hour": 9,
+                "acquisition_work": {"frames": {
+                    "steady": 4, "live": in_flight.max(4), "free": 0,
+                    "in_flight": in_flight, "in_flight_bytes": in_flight * 1_000,
+                }},
+            })
+        };
+        assert_eq!(read_live(&status(9)).behind, Some(9));
+        assert_eq!(read_live(&status(5)).behind, Some(5));
+        assert_eq!(read_live(&status(4)).behind, None);
+        assert_eq!(read_live(&status(0)).behind, None);
+        // A status that does not carry the frames says nothing of them.
+        assert_eq!(read_live(&json!({"campaign": CAMPAIGN, "hours": 2})).behind, None);
     }
 
     #[test]

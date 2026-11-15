@@ -1,4 +1,5 @@
-//! Opt-in window frame timings, one file per viewer process: `<BATTLE_PLAN_PERF_MAP_LOG>.<pid>.jsonl`.
+//! Opt-in window frame timings, one file per map: `<BATTLE_PLAN_PERF_MAP_LOG>.<map>.jsonl`, each map of
+//! the process numbered from 1 as it first records.
 
 use job_priority::SpawnCarried as _;
 use std::{
@@ -8,7 +9,7 @@ use std::{
     io::{BufWriter, Write},
     sync::{
         Mutex, OnceLock,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, RecvTimeoutError, SyncSender},
     },
     thread::JoinHandle,
@@ -35,13 +36,24 @@ struct Loss {
 }
 
 struct Log {
+    /// This map's number in the process, which its records carry.
+    map: u64,
     queue: SyncSender<Message>,
     writer: Mutex<Option<JoinHandle<()>>>,
     lost: AtomicBool,
     loss: Mutex<Loss>,
 }
 
-static LOG: OnceLock<Option<Log>> = OnceLock::new();
+thread_local! {
+    /// This map thread's log, opened at its first record.
+    static LOG: std::cell::OnceCell<Option<&'static Log>> = const { std::cell::OnceCell::new() };
+    /// The host's name for this thread's map ([`enter`]).
+    static ROLE: Cell<&'static str> = const { Cell::new("main") };
+}
+
+/// Every map's log, which [`finish`] closes.
+static OPENED: Mutex<Vec<&'static Log>> = Mutex::new(Vec::new());
+static MAPS: AtomicU64 = AtomicU64::new(1);
 
 static STARTUP: Mutex<Vec<(String, f64)>> = Mutex::new(Vec::new());
 
@@ -170,7 +182,7 @@ impl Drop for StartupSpan {
         let mut pending = STARTUP
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(Some(log)) = LOG.get() {
+        if let Some(log) = LOG.with(|log| log.get().copied().flatten()) {
             drop(pending);
             log.send(line, at);
         } else {
@@ -227,7 +239,13 @@ fn startup_memory() -> Option<(u64, u64, u64)> {
 }
 
 fn log() -> Option<&'static Log> {
-    let log = LOG.get_or_init(open).as_ref()?;
+    let log = LOG.with(|log| {
+        *log.get_or_init(|| {
+            let log: &'static Log = Box::leak(Box::new(open()?));
+            OPENED.lock().unwrap_or_else(|error| error.into_inner()).push(log);
+            Some(log)
+        })
+    })?;
     let pending = std::mem::take(
         &mut *STARTUP
             .lock()
@@ -239,6 +257,19 @@ fn log() -> Option<&'static Log> {
     Some(log)
 }
 
+/// Where the maps' files go: the host's log beside its own, else `BATTLE_PLAN_PERF_MAP_LOG`.
+static PREFIX: OnceLock<std::ffi::OsString> = OnceLock::new();
+
+pub(crate) fn log_to(prefix: &std::path::Path) {
+    let _ = PREFIX.set(prefix.as_os_str().to_owned());
+    viewer_foundation::map::gpu_frame_time::request();
+}
+
+/// Names the map this thread runs, before it records.
+pub(crate) fn enter(role: &'static str) {
+    ROLE.with(|named| named.set(role));
+}
+
 /// Milliseconds since the Unix epoch, the clock the host and the page measure with too.
 pub(crate) fn epoch_ms() -> f64 {
     SystemTime::now()
@@ -247,15 +278,17 @@ pub(crate) fn epoch_ms() -> f64 {
 }
 
 fn open() -> Option<Log> {
-    let prefix = std::env::var_os("BATTLE_PLAN_PERF_MAP_LOG").or_else(|| std::env::var_os("HOI4_PERF_MAP_LOG")).filter(|path| !path.is_empty())?;
+    let prefix = PREFIX
+        .get()
+        .cloned()
+        .or_else(|| std::env::var_os("BATTLE_PLAN_PERF_MAP_LOG").or_else(|| std::env::var_os("HOI4_PERF_MAP_LOG")))
+        .filter(|path| !path.is_empty())?;
     let pid = std::process::id();
+    let map = MAPS.fetch_add(1, Ordering::Relaxed);
     let mut path = prefix;
-    path.push(format!(".{pid}.jsonl"));
+    path.push(format!(".{map}.jsonl"));
     let file = File::create(&path).ok()?;
-    let role = match std::env::var("BATTLE_PLAN_PERF_MAP_ROLE").or_else(|_| std::env::var("HOI4_PERF_MAP_ROLE")).as_deref() {
-        Ok("popout") => "popout",
-        _ => "main",
-    };
+    let role = ROLE.with(Cell::get);
     let (timer, reason) = match GPU_TIMER.get() {
         Some(Ok(())) => ("timestamps", "null".to_owned()),
         Some(Err(reason)) => ("unsupported", json_string(reason)),
@@ -265,7 +298,7 @@ fn open() -> Option<Log> {
         ),
     };
     let opening = format!(
-        r#"{{"t":"map_open","at":{:.3},"pid":{pid},"role":"{role}","gpu_timer":"{timer}","gpu_timer_reason":{reason}}}"#,
+        r#"{{"t":"map_open","at":{:.3},"map":{map},"pid":{pid},"role":"{role}","gpu_timer":"{timer}","gpu_timer_reason":{reason}}}"#,
         epoch_ms()
     );
     let (queue, lines) = mpsc::sync_channel::<Message>(QUEUE_LINES);
@@ -280,12 +313,8 @@ fn open() -> Option<Log> {
                     Ok(first) => first,
                     // An idle mark tells the host this queue held nothing older.
                     Err(RecvTimeoutError::Timeout) => {
-                        owed_loss(&mut out);
-                        let _ = writeln!(
-                            out,
-                            r#"{{"t":"map_idle","at":{:.3},"pid":{pid}}}"#,
-                            epoch_ms()
-                        );
+                        owed_loss(&mut out, map);
+                        let _ = writeln!(out, r#"{{"t":"map_idle","at":{:.3},"map":{map}}}"#, epoch_ms());
                         let _ = out.flush();
                         continue;
                     }
@@ -301,14 +330,10 @@ fn open() -> Option<Log> {
                     }
                 }
                 if finished {
-                    owed_loss(&mut out);
-                    let _ = writeln!(
-                        out,
-                        r#"{{"t":"map_close","at":{:.3},"pid":{pid}}}"#,
-                        epoch_ms()
-                    );
+                    owed_loss(&mut out, map);
+                    let _ = writeln!(out, r#"{{"t":"map_close","at":{:.3},"map":{map}}}"#, epoch_ms());
                 }
-                // The host may end this process after any frame.
+                // The host may end after any frame.
                 let _ = out.flush();
                 if finished {
                     break;
@@ -317,6 +342,7 @@ fn open() -> Option<Log> {
         })
         .ok()?;
     Some(Log {
+        map,
         queue,
         writer: Mutex::new(Some(writer)),
         lost: AtomicBool::new(false),
@@ -334,11 +360,10 @@ impl Loss {
         self.to = at;
     }
 
-    fn record(&self) -> String {
+    fn record(&self, map: u64) -> String {
         format!(
-            r#"{{"t":"lost","at":{:.3},"pid":{},"source":"map","count":{},"bytes":{},"from":{:.3},"to":{:.3}}}"#,
+            r#"{{"t":"lost","at":{:.3},"map":{map},"source":"map","count":{},"bytes":{},"from":{:.3},"to":{:.3}}}"#,
             epoch_ms(),
-            std::process::id(),
             self.count,
             self.bytes,
             self.from,
@@ -353,7 +378,7 @@ impl Log {
         if self.lost.load(Ordering::Acquire) {
             let mut loss = self.loss.lock().unwrap_or_else(|error| error.into_inner());
             if loss.count > 0 {
-                if self.queue.try_send(Message::Line(loss.record())).is_err() {
+                if self.queue.try_send(Message::Line(loss.record(self.map))).is_err() {
                     loss.add(line.len(), at);
                     return;
                 }
@@ -373,14 +398,15 @@ impl Log {
 }
 
 /// Writes the loss record a full queue still owes, so no idle or close mark claims a drained queue.
-fn owed_loss(out: &mut impl Write) {
-    let Some(log) = LOG.get().and_then(Option::as_ref) else {
+fn owed_loss(out: &mut impl Write, map: u64) {
+    let opened = OPENED.lock().unwrap_or_else(|error| error.into_inner());
+    let Some(log) = opened.iter().find(|log| log.map == map) else {
         return;
     };
     if log.lost.load(Ordering::Acquire) {
         let mut loss = log.loss.lock().unwrap_or_else(|error| error.into_inner());
         if loss.count > 0 {
-            let _ = writeln!(out, "{}", loss.record());
+            let _ = writeln!(out, "{}", loss.record(map));
             *loss = Loss::default();
         }
         log.lost.store(false, Ordering::Release);
@@ -406,8 +432,8 @@ pub(crate) fn since(name: &str, started: Instant) {
     let at = epoch_ms();
     log.send(
         format!(
-            r#"{{"t":"map_stage","at":{at:.3},"pid":{},"name":{},"ms":{:.3},"builds_total":{}}}"#,
-            std::process::id(),
+            r#"{{"t":"map_stage","at":{at:.3},"map":{},"name":{},"ms":{:.3},"builds_total":{}}}"#,
+            log.map,
             json_string(name),
             started.elapsed().as_secs_f64() * 1000.0,
             shader_pipeline::gpu::stats::builds_total(),
@@ -476,8 +502,8 @@ pub(crate) fn profile_frame(line: &str) {
     let at = epoch_ms();
     log.send(
         format!(
-            r#"{{"t":"map_profile","at":{at:.3},"pid":{},"frame":{frame},"line":{}}}"#,
-            std::process::id(),
+            r#"{{"t":"map_profile","at":{at:.3},"map":{},"frame":{frame},"line":{}}}"#,
+            log.map,
             json_string(line),
         ),
         at,
@@ -531,16 +557,16 @@ pub(crate) fn frame_end() {
         Some((frame, Err(why))) => (frame.to_string(), "null".to_owned(), json_string(&why)),
     };
     let at = epoch_ms();
-    let pid = std::process::id();
+    let map = log.map;
     log.send(
         format!(
-            r#"{{"t":"map","at":{at:.3},"pid":{pid},"frame":{frame},"work_ms":{work:.3},"dt":{interval},"paint_ms":{paint},"acquire_ms":{acquire},"gpu_frame":{gpu_frame},"gpu_ms":{gpu_ms},"gpu_error":{gpu_error},"painted_at":{painted}}}"#
+            r#"{{"t":"map","at":{at:.3},"map":{map},"frame":{frame},"work_ms":{work:.3},"dt":{interval},"paint_ms":{paint},"acquire_ms":{acquire},"gpu_frame":{gpu_frame},"gpu_ms":{gpu_ms},"gpu_error":{gpu_error},"painted_at":{painted}}}"#
         ),
         at,
     );
 }
 
-/// Whether this process records its map timings.
+/// Whether this map records its timings.
 pub(crate) fn enabled() -> bool {
     log().is_some()
 }
@@ -569,8 +595,8 @@ pub(crate) fn map_hour(view: Option<&str>, built: &crate::hours::Built, clock: i
     }
     log.send(
         format!(
-            r#"{{"t":"map_hour","at":{at:.3},"pid":{},"view":{},"epoch":{},"hour":{},"lag":{},"ok":{},"wall":{:.3},"source":{:.3},"parts":{{{parts}}}}}"#,
-            std::process::id(),
+            r#"{{"t":"map_hour","at":{at:.3},"map":{},"view":{},"epoch":{},"hour":{},"lag":{},"ok":{},"wall":{:.3},"source":{:.3},"parts":{{{parts}}}}}"#,
+            log.map,
             view_json(view),
             built.epoch,
             built.hour,
@@ -598,8 +624,8 @@ pub(crate) fn map_upload(
     let at = epoch_ms();
     log.send(
         format!(
-            r#"{{"t":"map_upload","at":{at:.3},"pid":{},"view":{},"epoch":{epoch},"hour":{hour},"lag":{},"ok":{ok},"upload":{upload_ms:.3}}}"#,
-            std::process::id(),
+            r#"{{"t":"map_upload","at":{at:.3},"map":{},"view":{},"epoch":{epoch},"hour":{hour},"lag":{},"ok":{ok},"upload":{upload_ms:.3}}}"#,
+            log.map,
             view_json(view),
             i64::from(clock) - i64::from(hour),
         ),
@@ -609,20 +635,20 @@ pub(crate) fn map_upload(
 
 /// Writes every queued line and any loss still owed, then waits for the writer to end.
 pub(crate) fn finish() {
-    let Some(log) = LOG.get().and_then(Option::as_ref) else {
-        return;
-    };
-    let loss = std::mem::take(&mut *log.loss.lock().unwrap_or_else(|error| error.into_inner()));
-    if loss.count > 0 {
-        let _ = log.queue.send(Message::Line(loss.record()));
-    }
-    if log.queue.send(Message::Finish).is_ok()
-        && let Some(writer) = log
-            .writer
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .take()
-    {
-        let _ = writer.join();
+    let opened = OPENED.lock().unwrap_or_else(|error| error.into_inner()).clone();
+    for log in opened {
+        let loss = std::mem::take(&mut *log.loss.lock().unwrap_or_else(|error| error.into_inner()));
+        if loss.count > 0 {
+            let _ = log.queue.send(Message::Line(loss.record(log.map)));
+        }
+        if log.queue.send(Message::Finish).is_ok()
+            && let Some(writer) = log
+                .writer
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take()
+        {
+            let _ = writer.join();
+        }
     }
 }

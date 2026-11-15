@@ -5,6 +5,7 @@ import type { WidgetKind } from './model';
 /** A default widget: kind, then x, y, width and height on the 12-column grid, in reading order,
  * and optionally the key of the catalogue variant it starts as. */
 type Panel = readonly [WidgetKind, number, number, number, number, string?];
+export interface Page { id: string; label: string; icon: IconName; panels: readonly Panel[] }
 
 /** Analytics pages. Each keeps its own saved layouts and starts from this arrangement. */
 export const PAGES = [
@@ -102,11 +103,11 @@ export const PAGES = [
     ['raid-log', 0, 32, 12, 10],
     ['intel-network-coverage', 0, 42, 6, 10],
   ] },
-] as const satisfies readonly { id: string; label: string; icon: IconName; panels: readonly Panel[] }[];
+] as const satisfies readonly Page[];
 
 /** A built-in page id, or `page-…` for one the user added. */
 export type PageId = string;
-export const pageDefinition = (id: PageId) => PAGES.find(page => page.id === id);
+export const pageDefinition = (id: PageId): Page | undefined => PAGES.find(page => page.id === id);
 export const pageIcon = (id: PageId): IconName => pageDefinition(id)?.icon ?? 'layout';
 
 /** The sidebar's pages in order, with the names the user gave them. */

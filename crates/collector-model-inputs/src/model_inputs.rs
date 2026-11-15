@@ -54,7 +54,7 @@ impl Capacities {
         state: usize,
     ) -> Result<(), &'static str> {
         self.rosters = self.rosters.max(
-            match cproduction_status::walk_available_equipment(memory, base, state, &mut []) {
+            match cproduction_status::count_available_equipment(memory, base, state) {
                 Outcome::Rows { len } => len,
                 Outcome::Truncated { len, unread_rows } => len
                     .checked_add(unread_rows as usize)
@@ -62,7 +62,7 @@ impl Capacities {
                 Outcome::Unavailable { reason } => return Err(reason),
             },
         );
-        let local = cdeployment_status::walk_local_subunits(memory, base, state, &mut [], &mut []);
+        let local = cdeployment_status::count_local_subunits(memory, base, state);
         if let Outcome::Unavailable { reason } = local.outcome {
             return Err(reason);
         }
@@ -199,7 +199,7 @@ impl Captured {
                     &mut self.local.rows,
                     &mut self.requirements.first,
                 ),
-                _ => cdeployment_status::walk_local_subunits_growing(
+                _ => cdeployment_status::walk_local_subunits(
                     memory,
                     base,
                     game_state,
@@ -218,7 +218,7 @@ impl Captured {
         if should_walk(TABLES[1], hour, force_full) {
             let _reads = crate::read_accounting::table(TABLES[1]);
             let started = qpc();
-            self.rosters.outcome = cproduction_status::walk_available_equipment_growing(
+            self.rosters.outcome = cproduction_status::walk_available_equipment(
                 memory,
                 base,
                 game_state,

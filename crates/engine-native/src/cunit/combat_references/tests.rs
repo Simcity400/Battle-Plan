@@ -118,10 +118,11 @@ fn fixture() -> (Image, [u8; 16]) {
 fn capture(
     image: &Image,
     value: [u8; 16],
-    output: &mut [MapCombatReference],
+    output: &mut Vec<MapCombatReference>,
 ) -> Result<usize, &'static str> {
     let mut resolver = registry::HeaderResolver::default();
-    read_unit_combat_references_with(image, UNIT, value, OBJECTS[0], output, |pointer| {
+    read_unit_combat_references_with(image, UNIT, value, OBJECTS[0], output,
+        0, |pointer| {
         super::super::map_combat_identity(image, 0, pointer, &mut resolver)
     })
 }
@@ -129,7 +130,7 @@ fn capture(
 #[test]
 fn ordered_classes_raw_handles_repeats_and_first_pointer_reuse() {
     let (image, value) = fixture();
-    let mut output = [MapCombatReference::default(); 4];
+    let mut output = vec![MapCombatReference::default(); 4];
     assert_eq!(capture(&image, value, &mut output), Ok(4));
     assert_eq!(
         output,
@@ -180,29 +181,18 @@ fn ordered_classes_raw_handles_repeats_and_first_pointer_reuse() {
 fn authenticated_empty_takes_the_seed_header_without_a_reread() {
     let (mut image, _) = fixture();
     let value = header(&mut image.bytes, 0);
-    assert_eq!(capture(&image, value, &mut []), Ok(0));
+    assert_eq!(capture(&image, value, &mut Vec::new()), Ok(0));
     assert!(image.reads.borrow().is_empty());
     // Only a vector with elements read after its header is checked again.
     image.changed_header = true;
-    assert_eq!(capture(&image, value, &mut []), Ok(0));
-}
-
-#[test]
-fn short_prepared_arena_refuses_before_identity_or_tail_demands() {
-    let (image, value) = fixture();
-    let mut output = [MapCombatReference::default(); 3];
-    assert_eq!(
-        capture(&image, value, &mut output),
-        Err("unit combat-reference arena capacity exceeded")
-    );
-    assert!(image.reads.borrow().is_empty());
+    assert_eq!(capture(&image, value, &mut Vec::new()), Ok(0));
 }
 
 #[test]
 fn unreadable_tail_keeps_first_refusal_and_never_claims_complete() {
     let (mut image, value) = fixture();
     image.fault = Some((VECTOR + 8, 8));
-    let mut output = [MapCombatReference::default(); 4];
+    let mut output = vec![MapCombatReference::default(); 4];
     assert_eq!(
         capture(&image, value, &mut output),
         Err("unit combat-reference pointer unreadable or null")
@@ -222,14 +212,14 @@ fn later_identity_and_registry_faults_do_not_become_empty_or_class_guesses() {
     for fault in [(OBJECTS[1], 32), (registry::HIGH_ROOT_RVA.0, 8)] {
         let (mut image, value) = fixture();
         image.fault = Some(fault);
-        let mut output = [MapCombatReference::default(); 4];
+        let mut output = vec![MapCombatReference::default(); 4];
         assert!(capture(&image, value, &mut output).is_err());
     }
     for mutation in [0_u64, 0x1234] {
         let (mut image, value) = fixture();
         word(&mut image.bytes, OBJECTS[1] + 0x10, mutation);
         assert_eq!(
-            capture(&image, value, &mut [MapCombatReference::default(); 4]),
+            capture(&image, value, &mut vec![MapCombatReference::default(); 4]),
             Err("map combat secondary identity invalid")
         );
     }
@@ -246,7 +236,7 @@ fn later_identity_and_registry_faults_do_not_become_empty_or_class_guesses() {
         (OBJECTS[1] + 0x20) as u64,
     );
     assert_eq!(
-        capture(&image, value, &mut [MapCombatReference::default(); 4]),
+        capture(&image, value, &mut vec![MapCombatReference::default(); 4]),
         Err("map combat registry identity mismatch")
     );
 }
@@ -256,13 +246,13 @@ fn final_header_change_withholds_the_complete_suffix() {
     let (mut image, value) = fixture();
     image.changed_header = true;
     assert_eq!(
-        capture(&image, value, &mut [MapCombatReference::default(); 4]),
+        capture(&image, value, &mut vec![MapCombatReference::default(); 4]),
         Err("unit combat-reference vector changed or unreadable")
     );
     image.changed_header = false;
     image.fault = Some((UNIT + COMBAT_REFERENCE_DATA, 16));
     assert_eq!(
-        capture(&image, value, &mut [MapCombatReference::default(); 4]),
+        capture(&image, value, &mut vec![MapCombatReference::default(); 4]),
         Err("unit combat-reference vector changed or unreadable")
     );
 }
@@ -272,7 +262,7 @@ fn pointer_null_and_unsupported_class_keep_independent_static_refusals() {
     let (mut image, value) = fixture();
     word(&mut image.bytes, VECTOR + 8, 0);
     assert_eq!(
-        capture(&image, value, &mut [MapCombatReference::default(); 4]),
+        capture(&image, value, &mut vec![MapCombatReference::default(); 4]),
         Err("unit combat-reference pointer unreadable or null")
     );
     let (mut image, value) = fixture();
@@ -282,7 +272,7 @@ fn pointer_null_and_unsupported_class_keep_independent_static_refusals() {
         crate::carmy::VTABLE_RVA.0 as u64,
     );
     assert_eq!(
-        capture(&image, value, &mut [MapCombatReference::default(); 4]),
+        capture(&image, value, &mut vec![MapCombatReference::default(); 4]),
         Err("map combat class unsupported")
     );
 }
@@ -323,14 +313,14 @@ fn movement_memo_reads_each_successful_combat_identity_and_bucket_once() {
     memo.reserve(5_000).unwrap();
     let allocated = memo.allocated_bytes();
     for _ in 0..5_000 {
-        let mut output = [MapCombatReference::default(); 4];
+        let mut output = vec![MapCombatReference::default(); 4];
         assert_eq!(
-            read_unit_combat_references(&image, 0, UNIT, value, OBJECTS[0], &mut output, &mut memo),
+            read_unit_combat_references(&image, 0, UNIT, value, OBJECTS[0], &mut output, 0, &mut memo),
             Ok(4)
         );
         assert_eq!(output[0], output[3]);
         assert_eq!(
-            output.map(|row| row.kind),
+            output.iter().map(|row| row.kind).collect::<Vec<_>>(),
             [COMBAT_LAND, COMBAT_BORDER_WAR, COMBAT_NAVAL, COMBAT_LAND]
         );
     }
@@ -379,7 +369,8 @@ fn movement_memo_reads_each_successful_combat_identity_and_bucket_once() {
             UNIT,
             value,
             OBJECTS[0],
-            &mut [MapCombatReference::default(); 4],
+            &mut vec![MapCombatReference::default(); 4],
+            0,
             &mut memo
         ),
         Ok(4)
@@ -421,7 +412,7 @@ impl Memory for PartialFault<'_> {
 fn movement_memo_matches_direct_values_and_first_failures_including_partial_records() {
     let (image, value) = fixture();
     assert_eq!(
-        capture(&image, value, &mut [MapCombatReference::default(); 4]),
+        capture(&image, value, &mut vec![MapCombatReference::default(); 4]),
         Ok(4)
     );
     let spans = image.reads.borrow().clone();
@@ -445,8 +436,8 @@ fn movement_memo_matches_direct_values_and_first_failures_including_partial_reco
             memo.reserve(4).unwrap();
             let mut resolver = registry::HeaderResolver::default();
             for _ in 0..3 {
-                let mut output = [MapCombatReference::default(); 4];
-                let mut expected = output;
+                let mut output = vec![MapCombatReference::default(); 4];
+                let mut expected = output.clone();
                 let result = read_unit_combat_references(
                     &actual,
                     0,
@@ -454,6 +445,7 @@ fn movement_memo_matches_direct_values_and_first_failures_including_partial_reco
                     value,
                     OBJECTS[0],
                     &mut output,
+                    0,
                     &mut memo,
                 );
                 let reference = read_unit_combat_references_with(
@@ -462,6 +454,7 @@ fn movement_memo_matches_direct_values_and_first_failures_including_partial_reco
                     value,
                     OBJECTS[0],
                     &mut expected,
+                    0,
                     |pointer| super::super::map_combat_identity(&direct, 0, pointer, &mut resolver),
                 );
                 assert_eq!(
@@ -495,8 +488,8 @@ fn movement_memo_keeps_header_rechecks_and_uncached_fallback_refusals() {
             memo.reserve(capacity).unwrap();
             let allocated = memo.allocated_bytes();
             for _ in 0..2 {
-                let mut actual = [MapCombatReference::default(); 4];
-                let mut expected = actual;
+                let mut actual = vec![MapCombatReference::default(); 4];
+                let mut expected = actual.clone();
                 let result = read_unit_combat_references(
                     &image,
                     0,
@@ -504,6 +497,7 @@ fn movement_memo_keeps_header_rechecks_and_uncached_fallback_refusals() {
                     value,
                     OBJECTS[0],
                     &mut actual,
+                    0,
                     &mut memo,
                 );
                 let reference = capture(&image, value, &mut expected);

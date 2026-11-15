@@ -7,7 +7,6 @@ import type { CountryIdentityIndex } from '../../dashboard/countryIdentity';
 import type { FactionName } from '../../dashboard/factionNames';
 import { UNNAMED_FACTION } from '../../dashboard/factionNames.ts';
 import { compareTags } from '../../dashboard/tagOrder.ts';
-import { preparedPrefix, unobservedOrPending } from '../../dashboard/preparedPrefix.ts';
 import type { CountryGroupReply, FactionGroup, HourSpan, MembershipRun } from '../../generated/dashboard';
 
 /** The Factions widget's data: every recorded faction (any number, including ones
@@ -70,9 +69,26 @@ function merged(spans: readonly HourRange[]): HourSpan[] {
   return result;
 }
 
-/** Edges beside unrecorded or pending hours are gaps, never faction or membership events. */
+/** Edges beside unrecorded hours are gaps, never faction or membership events. */
 export function factionGaps(reply: CountryGroupReply): HourSpan[] {
-  return unobservedOrPending(reply.unobserved.factions, preparedPrefix(reply));
+  return reply.unobserved.factions;
+}
+
+/** Every hour at which the lanes, their labels or a drill's roster may differ from the hour before: each edge of a
+ * faction's existence, name, members, leaders, counts and unknown hours, and of the gaps. Sorted, each once. Between
+ * two of them the widget shows the same structure, so playback renders only when the head passes one. */
+export function factionChangeHours(reply: CountryGroupReply, views: readonly FactionView[]): number[] {
+  const hours = new Set<number>();
+  const edges = (spans: readonly { firstHour: number; lastHour: number }[]) => {
+    for (const span of spans) { hours.add(span.firstHour); hours.add(span.lastHour + 1); }
+  };
+  edges(factionGaps(reply));
+  for (const faction of reply.factions) edges(faction.names);
+  for (const view of views) {
+    edges(view.existence); edges(view.lifetime); edges(view.leaders); edges(view.counts); edges(view.unknown);
+    for (const member of view.members) { edges(member.runs); edges(member.stretches); }
+  }
+  return [...hours].sort((a, b) => a - b);
 }
 
 /** Each faction of the reply, ready to draw: its name (`name`), colour (`colour`),
@@ -170,7 +186,13 @@ export interface LaneOptions {
 export const UNNAMED = UNNAMED_FACTION;
 
 /** A faction's name as shown: the display name or the recorded one, else said to have none. */
-export const factionLabel = (view: FactionView, hour?: number) => (hour == null ? view.name : view.nameAt(hour).name) ?? UNNAMED;
+/** A faction's name at `hour`; once it has ended, the name it ended with. A gap in its life takes no other hour's name. */
+export function factionNameShown(view: FactionView, hour: number): FactionName {
+  const end = view.lifetime.at(-1)?.lastHour;
+  return view.nameAt(end !== undefined && hour > end ? end : hour);
+}
+
+export const factionLabel = (view: FactionView, hour?: number) => (hour == null ? view.name : factionNameShown(view, hour).name) ?? UNNAMED;
 
 /** Words for a membership's state (`describeRun`). */
 function memberWords(day: (hour: number) => string): RunWords {

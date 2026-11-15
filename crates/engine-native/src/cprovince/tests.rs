@@ -148,19 +148,10 @@ fn many_provinces(count: usize) -> Vec<u8> {
 #[test]
 fn owned_border_conflict_rows_and_groups_grow_from_original_tree_header() {
     let memory = conflict_fixture();
-    let mut fixed = Capture::with_capacity(3, 0, 0);
-    assert_eq!(fixed.walk(&memory, 0, 0x1000), Outcome::Rows { len: 3 });
-    assert_eq!(
-        fixed.conflict_walk.outcome,
-        Outcome::Truncated {
-            len: 0,
-            unread_rows: 1
-        }
-    );
     let mut capture = Capture::default();
     assert_eq!(conflict_group_demand(&memory, 0, 0x1000), Ok(2));
     assert_eq!(
-        capture.walk_growing(&memory, 0, 0x1000),
+        capture.walk(&memory, 0, 0x1000),
         Outcome::Rows { len: 3 }
     );
     assert_eq!(capture.conflict_walk.outcome, Outcome::Rows { len: 1 });
@@ -192,45 +183,38 @@ fn province_names_fixture() -> Vec<u8> {
 }
 
 #[test]
-fn name_census_is_sparse_lossless_and_capacity_bounded() {
+fn name_census_is_sparse_lossless_and_grows_from_any_starting_storage() {
     let bytes = province_names_fixture();
     let memory = SliceMemory {
         base: 0x1000,
         bytes: &bytes,
     };
-    for (row_capacity, byte_capacity, expected, missing) in
-        [(2, 9, 2, 0), (1, 9, 1, 1), (2, 3, 1, 1), (0, 0, 0, 2)]
-    {
+    for (row_capacity, byte_capacity) in [(2, 9), (1, 9), (2, 3), (0, 0)] {
         let mut rows = vec![NameRow::default(); row_capacity];
         let mut arena = vec![0; byte_capacity];
         let report = walk_names(&memory, 0, 0x1000, &mut rows, &mut arena);
         assert_eq!(report.required_bytes, 9);
+        assert_eq!(report.outcome, Outcome::Rows { len: 2 });
         assert_eq!(
-            report.outcome,
-            if missing == 0 {
-                Outcome::Rows { len: expected }
-            } else {
-                Outcome::Truncated {
-                    len: expected,
-                    unread_rows: missing,
-                }
+            rows[0],
+            NameRow {
+                province: 2,
+                start: 0,
+                len: 3
             }
         );
-        if expected != 0 {
-            assert_eq!(
-                rows[0],
-                NameRow {
-                    province: 2,
-                    start: 0,
-                    len: 3
-                }
-            );
-            assert_eq!(&arena[..3], &[b'A', 0, 255]);
-        }
-        if expected == 2 {
-            assert_eq!(&arena[3..9], b"Sample");
-        }
+        assert_eq!(&arena[..3], &[b'A', 0, 255]);
+        assert_eq!(&arena[3..9], b"Sample");
     }
+    let counted = count_names(&memory, 0, 0x1000);
+    assert_eq!(counted.required_bytes, 9);
+    assert_eq!(
+        counted.outcome,
+        Outcome::Truncated {
+            len: 0,
+            unread_rows: 2
+        }
+    );
 }
 
 #[test]
@@ -248,8 +232,8 @@ fn names_require_a_real_census_even_when_no_overrides_exist() {
             },
             0,
             0x1000,
-            &mut [],
-            &mut [],
+            &mut Vec::new(),
+            &mut Vec::new(),
         )
         .outcome
     };
@@ -278,7 +262,7 @@ fn names_reject_bad_identity_header_and_terminator_including_after_capacity() {
             base: 0x1000,
             bytes: &bytes,
         };
-        let report = walk_names(&memory, 0, 0x1000, &mut [], &mut []);
+        let report = walk_names(&memory, 0, 0x1000, &mut Vec::new(), &mut Vec::new());
         assert!(
             matches!(report.outcome, Outcome::Unavailable { .. }),
             "offset {offset:x}"
@@ -295,7 +279,7 @@ fn exact_field_batches_cover_boundaries_and_shared_states_are_read_once_per_walk
         guards: std::cell::Cell::new(0),
         reads: std::cell::RefCell::new(Vec::new()),
     };
-    let mut rows = [Row::default(); 67];
+    let mut rows = vec![Row::default(); 67];
     assert_eq!(
         walk(&memory, 0, 0x1000, &mut rows),
         Outcome::Rows { len: 67 }
@@ -352,34 +336,9 @@ fn exact_field_batches_cover_boundaries_and_shared_states_are_read_once_per_walk
 }
 
 #[test]
-fn batching_preserves_holes_capacity_and_earlier_errors_before_later_prefetch_faults() {
+fn batching_preserves_holes_and_earlier_errors_before_later_prefetch_faults() {
     let mut bytes = many_provinces(67);
     put(&mut bytes, 0x300 + 2 * 8, &0_u64.to_le_bytes());
-    let memory = TracedMemory {
-        bytes: &bytes,
-        blocked: Some(0x2200),
-        guards: std::cell::Cell::new(0),
-        reads: std::cell::RefCell::new(Vec::new()),
-    };
-    let mut rows = [Row::default(); 1];
-    assert_eq!(
-        walk(&memory, 0, 0x1000, &mut rows),
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 65
-        }
-    );
-    assert!(
-        !memory
-            .reads
-            .borrow()
-            .iter()
-            .any(|&(address, _)| address == 0x2400)
-    );
-    // Roots x2, first body batch, first state, and the admitted row's
-    // two movement gathers. The empty second batch gathers nothing.
-    assert_eq!(memory.guards.get(), 6);
-
     // The first state semantic error still wins over a later prefetched body fault.
     put(&mut bytes, 0x12000 + cstate::ID, &0_u32.to_le_bytes());
     let memory = TracedMemory {
@@ -389,7 +348,7 @@ fn batching_preserves_holes_capacity_and_earlier_errors_before_later_prefetch_fa
         reads: std::cell::RefCell::new(Vec::new()),
     };
     assert_eq!(
-        walk(&memory, 0, 0x1000, &mut [Row::default(); 67]),
+        walk(&memory, 0, 0x1000, &mut vec![Row::default(); 67]),
         Outcome::Unavailable {
             reason: "non-null state has zero id"
         }
@@ -404,7 +363,7 @@ fn batching_preserves_holes_capacity_and_earlier_errors_before_later_prefetch_fa
         reads: std::cell::RefCell::new(Vec::new()),
     };
     assert_eq!(
-        walk(&memory, 0, 0x1000, &mut [Row::default(); 67]),
+        walk(&memory, 0, 0x1000, &mut vec![Row::default(); 67]),
         Outcome::Unavailable {
             reason: "province id differs from slot"
         }
@@ -540,7 +499,7 @@ fn cache_does_not_claim_to_detect_later_state_changes_but_each_walk_reads_fresh(
         reads: Cell::new(0),
     };
     for expected in [1, 2] {
-        let mut rows = [Row::default(); 3];
+        let mut rows = vec![Row::default(); 3];
         assert_eq!(
             walk(&memory, 0, 0x1000, &mut rows),
             Outcome::Rows { len: 3 }
@@ -635,7 +594,7 @@ fn scattered_fields_preserve_native_values_without_reading_struct_gaps() {
             bytes: &bytes,
             blocked,
         };
-        let mut rows = [Row::default(); 2];
+        let mut rows = vec![Row::default(); 2];
         assert_eq!(
             walk(&memory, 0, 0x1000, &mut rows),
             Outcome::Rows { len: 2 }
@@ -733,7 +692,7 @@ fn each_unreadable_field_keeps_its_existing_reason() {
             blocked: address..address + 1,
         };
         assert_eq!(
-            walk(&memory, 0, 0x1000, &mut [Row::default(); 2]),
+            walk(&memory, 0, 0x1000, &mut vec![Row::default(); 2]),
             Outcome::Unavailable { reason }
         );
     }
@@ -747,7 +706,7 @@ fn current_victory_points_preserve_signed_word_and_transition_to_zero() {
         0x400 + VICTORY_POINTS + 4,
         &u32::MAX.to_le_bytes(),
     );
-    let mut rows = [Row::default(); 2];
+    let mut rows = vec![Row::default(); 2];
     for value in [i32::MAX, i32::MIN, -1, 0] {
         put(&mut bytes, 0x400 + VICTORY_POINTS, &value.to_le_bytes());
         let memory = FaultMemory {
@@ -779,28 +738,21 @@ fn earlier_semantic_mismatches_precede_later_copy_failures() {
             blocked: blocked..blocked + 1,
         };
         assert_eq!(
-            walk(&memory, 0, 0x1000, &mut [Row::default(); 2]),
+            walk(&memory, 0, 0x1000, &mut vec![Row::default(); 2]),
             Outcome::Unavailable { reason }
         );
     }
 }
 
 #[test]
-fn output_capacity_still_skips_row_fields_but_checks_remaining_pointers() {
+fn every_province_pointer_and_row_is_checked() {
     let bytes = provinces();
     let memory = FaultMemory {
         bytes: &bytes,
         blocked: 0x1600..0x1608,
     };
     assert_eq!(
-        walk(&memory, 0, 0x1000, &mut [Row::default(); 1]),
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 1
-        }
-    );
-    assert_eq!(
-        walk(&memory, 0, 0x1000, &mut [Row::default(); 2]),
+        walk(&memory, 0, 0x1000, &mut vec![Row::default(); 2]),
         Outcome::Unavailable {
             reason: "province vtable mismatch"
         }
@@ -810,7 +762,7 @@ fn output_capacity_still_skips_row_fields_but_checks_remaining_pointers() {
         blocked: 0x1310..0x1318,
     };
     assert_eq!(
-        walk(&memory, 0, 0x1000, &mut [Row::default(); 1]),
+        walk(&memory, 0, 0x1000, &mut vec![Row::default(); 1]),
         Outcome::Unavailable {
             reason: "table pointer unreadable"
         }
@@ -861,7 +813,7 @@ fn address_overflow_keeps_the_original_field_and_semantic_precedence() {
             fields,
         };
         assert_eq!(
-            walk(&memory, 0, 0x1000, &mut [Row::default(); 2]),
+            walk(&memory, 0, 0x1000, &mut vec![Row::default(); 2]),
             Outcome::Unavailable { reason }
         );
     }
@@ -880,7 +832,7 @@ fn address_overflow_keeps_the_original_field_and_semantic_precedence() {
             fields,
         };
         assert_eq!(
-            walk(&memory, 0, 0x1000, &mut [Row::default(); 2]),
+            walk(&memory, 0, 0x1000, &mut vec![Row::default(); 2]),
             Outcome::Unavailable { reason }
         );
     }
@@ -922,7 +874,7 @@ fn movement_operands_sum_native_forts() {
         [(2, -1, 3, 1), (1, -1, 3, 0), (0, 0, 3, 0), (5, 0, 0, 0)]
     {
         let bytes = build(first, second, weight);
-        let mut rows = [Row::default(); 2];
+        let mut rows = vec![Row::default(); 2];
         assert_eq!(
             walk(
                 &SliceMemory {
@@ -1089,7 +1041,7 @@ fn ownership_comes_from_the_state_and_raw_controller_zero_is_preserved() {
     put(&mut bytes, 0x658, &7_u32.to_le_bytes());
     put(&mut bytes, 0x6c8, &42_u32.to_le_bytes());
     put_movement(&mut bytes, 0x400, 1, 0x100, 0x700);
-    let mut rows = [Row::default(); 2];
+    let mut rows = vec![Row::default(); 2];
     let memory = SliceMemory {
         base: 0x1000,
         bytes: &bytes,
@@ -1444,16 +1396,10 @@ fn conflict_walk(
     let mut output = vec![Row::default(); 4];
     let mut conflicts = vec![ConflictRow::default(); rows];
     let mut handles = vec![0; groups];
-    let (outcome, walk) = walk_with_conflicts(
-        memory,
-        0,
-        0x1000,
-        &mut output,
-        ConflictOutput {
-            rows: &mut conflicts,
-            groups: &mut handles,
-        },
-    );
+    let (outcome, walk) = walk_with_conflicts_buffer(memory, 0, 0x1000, crate::walk::Buffer::Growing(&mut output), ConflictBuffers {
+            rows: crate::walk::Buffer::Growing(&mut conflicts),
+            groups: crate::walk::Buffer::Growing(&mut handles),
+        }, crate::walk::Buffer::Count, None);
     (outcome, walk, output, conflicts, handles)
 }
 
@@ -1480,16 +1426,6 @@ fn border_conflicts_admit_only_resolved_groups_at_border_war() {
     assert_eq!(
         handles[0],
         (57_u64 << 32) | u64::from(crate::corders_group::REFERENCE_TYPE)
-    );
-    // No row fits: the conflict is counted, the provinces stay complete.
-    let (outcome, walk, ..) = conflict_walk(&memory, 0, 2);
-    assert_eq!(outcome, Outcome::Rows { len: 3 });
-    assert_eq!(
-        walk.outcome,
-        Outcome::Truncated {
-            len: 0,
-            unread_rows: 1
-        }
     );
 }
 
@@ -1568,16 +1504,14 @@ fn geometry_owned_index_preserves_reads_and_mismatched_id_backlink_faults() {
 
     // Requested slot 1 claims ID 2. Its observed-ID backlink remains an
     // independent gate, even though slot 1 and its index are already owned.
-    for (alias, blocked, capacity, reason) in [
-        (false, None, 2, "unit geometry province differs from census"),
-        (true, None, 2, "unit geometry province identity mismatch"),
+    for (alias, blocked, reason) in [
+        (false, None, "unit geometry province differs from census"),
+        (true, None, "unit geometry province identity mismatch"),
         (
             true,
             Some(0x1310),
-            2,
             "unit geometry province outside census or unreadable",
         ),
-        (true, None, 1, "unit geometry province capacity exhausted"),
     ] {
         let mut bytes = many_provinces(2);
         put(&mut bytes, 0x1000 + ID, &2_u32.to_le_bytes());
@@ -1586,7 +1520,7 @@ fn geometry_owned_index_preserves_reads_and_mismatched_id_backlink_faults() {
         }
         let memory = dense_trace(&bytes, blocked);
         let mut packet = GeometryPacket::with_capacities(GeometryCapacities {
-            provinces: capacity,
+            provinces: 2,
             neighbour_entries: 0,
         });
         packet.begin(&memory, 0, 0x1000).unwrap();
@@ -1594,16 +1528,16 @@ fn geometry_owned_index_preserves_reads_and_mismatched_id_backlink_faults() {
         assert_eq!(packet.acquire_definition(&memory, 1), Err(reason));
         assert_eq!(packet.acquire_pointer(&memory, 1), Err(reason));
         assert_eq!(packet.acquire_route_pointer(&memory, 1), Err(reason));
-        let mut expected = vec![
-            (0x1000 + cgame_state::PROVINCES, 16),
-            (0x1308, 8),
-            (0x2000, 8),
-            (0x2000 + ID, 4),
-        ];
-        if capacity == 2 {
-            expected.push((0x1310, 8));
-        }
-        assert_eq!(*memory.reads.borrow(), expected);
+        assert_eq!(
+            *memory.reads.borrow(),
+            [
+                (0x1000 + cgame_state::PROVINCES, 16),
+                (0x1308, 8),
+                (0x2000, 8),
+                (0x2000 + ID, 4),
+                (0x1310, 8),
+            ]
+        );
         assert_eq!(packet.required_capacities().provinces, 2);
     }
 
@@ -1690,10 +1624,10 @@ fn compare_dense_walk(bytes: &[u8], blocked: Option<usize>, capacity: usize) {
 }
 
 #[test]
-fn dense_records_match_scattered_walk_windows_capacity_faults_and_state_order() {
+fn dense_records_match_scattered_walk_windows_faults_and_state_order() {
     for count in [1, 2, 63, 64, 65, 67] {
         let bytes = many_provinces(count);
-        for capacity in [0, 1, count - 1, count, count + 1] {
+        for capacity in [count, count + 1] {
             compare_dense_walk(&bytes, None, capacity);
         }
         // First/last-byte failure at every root, exact field and state read.
@@ -1710,7 +1644,7 @@ fn dense_records_match_scattered_walk_windows_capacity_faults_and_state_order() 
     for slot in [1, 32, 64, 67] {
         put(&mut bytes, 0x300 + slot * 8, &0_u64.to_le_bytes());
     }
-    for capacity in [0, 1, 32, 63, 67] {
+    for capacity in [67] {
         compare_dense_walk(&bytes, None, capacity);
         compare_dense_walk(&bytes, Some(0x1300 + 65 * 8), capacity);
     }
@@ -1982,7 +1916,7 @@ fn province_names_grow_on_first_and_later_mod_sized_samples_without_restarting_r
             bytes: &bytes,
         };
         assert_eq!(
-            walk_names(&fixed, 0, 0x1000, &mut [], &mut []).outcome,
+            count_names(&fixed, 0, 0x1000).outcome,
             Outcome::Truncated {
                 len: 0,
                 unread_rows: count as u32
@@ -1998,7 +1932,7 @@ fn province_names_grow_on_first_and_later_mod_sized_samples_without_restarting_r
         let mut expected_text = vec![0; count * name_len];
         let expected = walk_names(&memory, 0, 0x1000, &mut expected_rows, &mut expected_text);
         let trace = memory.reads.replace(Vec::new());
-        let captured = walk_names_growing(&memory, 0, 0x1000, &mut rows, &mut arena);
+        let captured = walk_names(&memory, 0, 0x1000, &mut rows, &mut arena);
         assert_eq!(captured, expected);
         assert_eq!(captured.outcome, Outcome::Rows { len: count });
         assert_eq!(&rows[..count], expected_rows.as_slice());
@@ -2060,7 +1994,7 @@ fn slice(bytes: &[u8]) -> SliceMemory<'_> {
 /// conflict rows and their groups.
 fn assert_full_read(capture: &Capture, memory: &impl Memory, len: usize) {
     let mut full = Capture::with_capacity(0, 0, 0);
-    assert_eq!(full.walk_growing(memory, 0, 0x1000), Outcome::Rows { len });
+    assert_eq!(full.walk(memory, 0, 0x1000), Outcome::Rows { len });
     assert_eq!(capture.rows[..len], full.rows[..len]);
     assert_eq!(capture.areas[..len], full.areas[..len]);
     assert_eq!(capture.conflict_walk, full.conflict_walk);

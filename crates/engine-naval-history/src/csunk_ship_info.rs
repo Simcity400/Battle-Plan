@@ -101,24 +101,6 @@ pub fn walk(
     base: usize,
     game_state: usize,
     current_hour: i32,
-    output: &mut [Record],
-    bytes: &mut [u8],
-) -> ListWalk {
-    walk_buffer(
-        memory,
-        base,
-        game_state,
-        current_hour,
-        crate::walk::Buffer::Fixed(output),
-        crate::walk::Buffer::Fixed(bytes),
-    )
-}
-
-pub fn walk_growing(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    current_hour: i32,
     output: &mut Vec<Record>,
     bytes: &mut Vec<u8>,
 ) -> ListWalk {
@@ -213,7 +195,7 @@ enum RecordRead {
 
 /// One embedded sunk-ship record, independent of the global retained list's
 /// pruning/date admission. The caller supplies its lifetime certificate.
-pub fn read_one_growing(
+pub fn read_one(
     memory: &impl Memory,
     base: usize,
     pointer: usize,
@@ -606,7 +588,7 @@ mod tests {
         bytes
     }
 
-    fn capture(memory: &[u8], rows: &mut [Record], arena: &mut [u8]) -> ListWalk {
+    fn capture(memory: &[u8], rows: &mut Vec<Record>, arena: &mut Vec<u8>) -> ListWalk {
         walk(
             &SliceMemory {
                 base: 0,
@@ -625,7 +607,7 @@ mod tests {
         let mut memory = fixture();
         put(&mut memory, FIRST + SINK_HOUR, &0_i32.to_le_bytes());
         assert!(matches!(
-            capture(&memory, &mut [Record::default(); 2], &mut [0; 128]).outcome,
+            capture(&memory, &mut vec![Record::default(); 2], &mut vec![0; 128]).outcome,
             Outcome::Unavailable {
                 reason: "sunk-ship history date outside recorded hour"
             }
@@ -635,7 +617,7 @@ mod tests {
             bytes: &memory,
         };
         let mut text = Vec::new();
-        let (record, len) = read_one_growing(&source, 0, FIRST, &mut text).unwrap();
+        let (record, len) = read_one(&source, 0, FIRST, &mut text).unwrap();
         assert_eq!(record.sink_hour, 0);
         assert_eq!(
             &text[record.ship_name.start..record.ship_name.start + record.ship_name.len],
@@ -644,7 +626,7 @@ mod tests {
         assert!(len <= text.len());
         put(&mut memory, FIRST, &0_u64.to_le_bytes());
         assert_eq!(
-            read_one_growing(
+            read_one(
                 &SliceMemory {
                     base: 0,
                     bytes: &memory
@@ -660,8 +642,8 @@ mod tests {
     #[test]
     fn ordered_list_keeps_duplicate_variant_handles_and_native_values() {
         let mut memory = fixture();
-        let mut rows = [Record::default(); 2];
-        let mut arena = [0; 128];
+        let mut rows = vec![Record::default(); 2];
+        let mut arena = vec![0; 128];
         assert_eq!(
             capture(&memory, &mut rows, &mut arena).outcome,
             Outcome::Rows { len: 2 }
@@ -694,31 +676,6 @@ mod tests {
     }
 
     #[test]
-    fn byte_and_row_capacity_return_whole_native_prefixes() {
-        let memory = fixture();
-        let mut rows = [Record::default(); 2];
-        let mut arena = [0; 14];
-        let result = capture(&memory, &mut rows, &mut arena);
-        assert_eq!(
-            result.outcome,
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            }
-        );
-        assert_eq!(result.bytes_len, 14);
-        assert_eq!(result.required_bytes, 29);
-        let mut arena = [0; 128];
-        assert_eq!(
-            capture(&memory, &mut rows[..1], &mut arena).outcome,
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            }
-        );
-    }
-
-    #[test]
     fn long_engine_text_retains_every_byte_without_utf8_conversion() {
         let mut memory = fixture();
         put(&mut memory, FIRST + SHIP_NAME, &0x1800_u64.to_le_bytes());
@@ -733,8 +690,8 @@ mod tests {
             &300_u64.to_le_bytes(),
         );
         memory[0x1800..0x1800 + 300].fill(0xff);
-        let mut rows = [Record::default(); 2];
-        let mut arena = [0; 512];
+        let mut rows = vec![Record::default(); 2];
+        let mut arena = vec![0; 512];
         assert_eq!(
             capture(&memory, &mut rows, &mut arena).outcome,
             Outcome::Rows { len: 2 }
@@ -753,14 +710,14 @@ mod tests {
         ] {
             let mut memory = fixture();
             memory[SECOND + offset] = value;
-            let result = capture(&memory, &mut [Record::default(); 2], &mut [0; 128]);
+            let result = capture(&memory, &mut vec![Record::default(); 2], &mut vec![0; 128]);
             assert!(matches!(result.outcome, Outcome::Unavailable { .. }));
             assert_eq!(result.bytes_len, 0);
         }
         let mut memory = fixture();
         put(&mut memory, SECOND + SINK_HOUR, &201_i32.to_le_bytes());
         assert!(matches!(
-            capture(&memory, &mut [Record::default(); 2], &mut [0; 128]).outcome,
+            capture(&memory, &mut vec![Record::default(); 2], &mut vec![0; 128]).outcome,
             Outcome::Unavailable { .. }
         ));
     }
@@ -770,9 +727,9 @@ mod tests {
         let mut memory = fixture();
         put(&mut memory, FIRST + ATTRIBUTION_CLASS, &0_u64.to_le_bytes());
         put(&mut memory, FIRST + PROVINCE, &0_u64.to_le_bytes());
-        let mut rows = [Record::default(); 2];
+        let mut rows = vec![Record::default(); 2];
         assert_eq!(
-            capture(&memory, &mut rows, &mut [0; 128]).outcome,
+            capture(&memory, &mut rows, &mut vec![0; 128]).outcome,
             Outcome::Rows { len: 2 }
         );
         assert_eq!(
@@ -785,7 +742,7 @@ mod tests {
             &0_u32.to_le_bytes(),
         );
         assert_eq!(
-            capture(&memory, &mut [], &mut []).outcome,
+            capture(&memory, &mut Vec::new(), &mut Vec::new()).outcome,
             Outcome::Rows { len: 0 }
         );
     }
@@ -816,16 +773,7 @@ mod tests {
             for index in 0..count as usize {
                 put(&mut bytes, data + index * 8, &(FIRST as u64).to_le_bytes());
             }
-            let mut fixed = [Record::default(); 1];
-            let mut fixed_names = [0_u8; 14];
-            assert_eq!(
-                capture(&bytes, &mut fixed, &mut fixed_names).outcome,
-                Outcome::Truncated {
-                    len: 1,
-                    unread_rows: count - 1
-                }
-            );
-            let walked = walk_growing(
+            let walked = walk(
                 &SliceMemory {
                     base: 0,
                     bytes: &bytes,

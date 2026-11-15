@@ -1,14 +1,17 @@
 import type { LogRow } from '../../charts/log/logData';
-import { newestFirst } from '../../charts/log/logData.ts';
-import type { PlaybackBounds } from '../../charts/playbackIntervals';
+import type { LogReplyRow } from '../../charts/log/logSource';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import { formatDateTime } from '../../dashboard/calendar.ts';
 import { formatPowerChange, formatSpent } from '../../dashboard/powerDecimals.ts';
-import type { EventFeedItem, EventFeedKind, ScriptCurrency, ScriptEdge, ScriptOccurrence, ScriptOccurrenceReply } from '../../generated/dashboard';
-import { beforeBreak, breakAfter, dayOf, daysBetween, daysText, edgesAt, lastEdge, occurrenceItem, occurrenceMatches } from '../event-feed/scriptOccurrences.ts';
+import { beforeBreak, breakAfter, dayOf, daysBetween, daysText, edgesAt, lastEdge, occurrenceItem, occurrenceMatches, occurrenceOf } from '../event-feed/scriptOccurrences.ts';
 import type { RecordingBreak } from '../event-feed/scriptOccurrences';
+import { plainScripted, reasonRows } from '../event-feed/scriptedGaps.ts';
+import type { EventFeedItem, EventFeedKind, ScriptCurrency, ScriptEdge, ScriptOccurrence } from '../../generated/dashboard';
 
-export const NAME_UNAVAILABLE = 'Decision name unavailable';
+export const NAME_UNAVAILABLE = 'Decision name not recorded';
+
+/** The name as plain words, every gap written out. */
+export const decisionText = (card: DecisionCard) => plainScripted(decisionName(card));
 
 /** Where a decision stands as the reads by the playback hour show it. `taken`:
  * selected with no timer, activation or end recorded. `unknown`: running when a
@@ -61,31 +64,31 @@ export interface DecisionAt {
   pause: RecordingBreak | null;
 }
 
-export interface DecisionFilter {
-  country: (tag: string, hour: number) => boolean;
-  allCountries: boolean;
-  firstHour: number | null;
+/** The kinds that open a decision's row, and those continuing it. */
+export const OPENERS: readonly EventFeedKind[] = ['decisionSelected', 'decisionActivated'];
+export const CONTINUING: readonly EventFeedKind[] = ['decisionActivated', 'decisionDurationChanged', 'decisionRemovalEffect', 'decisionCancellationEffect',
+  'decisionCompletionEffect', 'decisionTimeoutEffect', 'decisionCompleted', 'decisionCancelled', 'decisionTimedOut', 'decisionRemoved'];
+
+/** A page row's decision; null for a row the list does not show. */
+export function decisionCard(occurrence: ScriptOccurrence | null): DecisionCard | null {
+  if (!occurrence) return null;
+  const [country, target] = occurrence.edges[0].row.participants ?? [null, null];
+  return { occurrence, item: occurrenceItem(occurrence), country, target: target !== country ? target : null };
 }
 
-/** Each page's rows once per filter, newest first by the date selected. A fact
- * whose selection was not recorded is its own row. */
-export function prepareDecisions(reply: ScriptOccurrenceReply, filter: DecisionFilter): ReadonlyArray<LogRow<DecisionAt>> {
-  return newestFirst(reply.occurrences.flatMap(occurrence => {
-    const first = occurrence.edges[0];
-    if (filter.firstHour !== null && first.row.hour < filter.firstHour) return [];
-    if (!filter.allCountries && !occurrenceMatches(occurrence, filter.country)) return [];
-    const [country, target] = first.row.participants ?? [null, null];
-    const card: DecisionCard = { occurrence, item: occurrenceItem(reply, occurrence), country, target: target !== country ? target : null };
-    return [{ key: occurrence.id, id: occurrence.id, hour: first.row.hour, revealedHour: first.row.readHour, by: false,
-      item: { card, hour: first.row.readHour, edges: [], status: 'taken', start: null, end: null, timer: null, pause: null } }];
-  }));
+/** A row of a `decisions` page, dated by the date selected; a row whose selection was not recorded is its own. */
+export function decisionRow(reply: LogReplyRow): LogRow<DecisionCard | null> {
+  const card = decisionCard(occurrenceOf(reply));
+  const first = card?.occurrence.edges[0].row;
+  return { key: reply.key, id: card?.occurrence.id ?? reply.key, hour: first?.hour ?? reply.hour, revealedHour: first?.readHour ?? reply.hour, by: false, item: card };
 }
 
-/** A row at the playback hour. It stays at its selection date while its status
- * changes in place; `statuses` keeps only rows whose status is chosen. */
-export function decisionAt(row: LogRow<DecisionAt>, hour: number, breaks: readonly RecordingBreak[], statuses: ReadonlySet<string>): LogRow<DecisionAt> | null {
-  const { card } = row.item;
-  if ((row.revealedHour ?? row.hour) > hour) return null;
+/** A row at the hour shown, matched to the chosen countries. It stays at its selection date while its status changes in
+ * place; `statuses` keeps only rows whose status is chosen. */
+export function decisionAt(row: LogRow<DecisionCard | null>, hour: number, breaks: readonly RecordingBreak[], statuses: ReadonlySet<string>,
+  country: ((tag: string, hour: number) => boolean) | null): LogRow<DecisionAt> | null {
+  const card = row.item;
+  if (!card || (row.revealedHour ?? row.hour) > hour || (country && !occurrenceMatches(card.occurrence, country))) return null;
   const edges = edgesAt(card.occurrence.edges, hour);
   const start = card.occurrence.opened && STARTS.includes(edges[0]?.row.kind) ? edges[0] : null;
   const latest = lastEdge(edges, [...ENDS, 'decisionActivated']);
@@ -113,20 +116,6 @@ export function daysLeft(at: DecisionAt): number | null {
   if (at.status !== 'active' || !at.timer) return null;
   const left = Math.ceil((at.timer.from + at.timer.days * 24 - at.hour) / 24);
   return left > 0 ? left : null;
-}
-
-export function decisionPlaybackBounds(rows: ReadonlyArray<LogRow<DecisionAt>>, hour: number): PlaybackBounds {
-  let first = -Infinity, end = Infinity;
-  for (const row of rows) if (row.item.status === 'active' && row.item.timer) {
-    const timer = row.item.timer, deadline = timer.from + timer.days * 24;
-    if (!Number.isFinite(deadline)) continue;
-    if (hour >= deadline) first = Math.max(first, deadline);
-    else {
-      const previous = deadline + Math.floor((hour - deadline) / 24) * 24;
-      first = Math.max(first, previous); end = Math.min(end, previous + 24);
-    }
-  }
-  return { first, end };
 }
 
 /** The muted line under the name: how it started, ran or ended. */
@@ -170,7 +159,7 @@ export function costText(at: DecisionAt): string | null {
 
 export function decisionDescription(at: DecisionAt, name: (tag: string) => string): string {
   const country = at.card.country === null ? 'A country not identified' : name(at.card.country);
-  return `${country}, ${decisionName(at.card)}, ${statusLabel(at).toLowerCase()}, ${lifecycleLine(at)}, cost ${costText(at) ?? 'not recorded'}`;
+  return `${country}, ${decisionText(at.card)}, ${statusLabel(at).toLowerCase()}, ${lifecycleLine(at)}, cost ${costText(at) ?? 'not recorded'}`;
 }
 
 /** Name, country, every recorded step with its date, timer, cost and the
@@ -191,8 +180,9 @@ export function decisionTooltip(at: DecisionAt, name: (tag: string) => string): 
   const cost = costText(at);
   rows.push(cost === null ? { label: 'Cost', value: 'Not recorded', tone: 'muted' } : { label: 'Cost', value: cost });
   if (card.item?.token) rows.push({ label: 'Content identity', value: card.item.token });
-  if (card.item?.description) rows.push({ label: card.item.description });
-  return [{ title: decisionName(card), icon: card.item?.icon ?? undefined, rows }];
+  rows.push(...reasonRows(card.item));
+  if (card.item?.description) rows.push({ label: plainScripted(card.item.description) });
+  return [{ title: decisionText(card), icon: card.item?.icon ?? undefined, rows }];
 }
 
 /** The menu's dates: when it was selected and when it ended. */
@@ -203,12 +193,11 @@ export const decisionJumps = (at: DecisionAt): number[] => [...new Set([at.card.
 export const activeCount = (rows: readonly LogRow<DecisionAt>[]) => rows.filter(row => row.item.status === 'active').length;
 
 /** Names the content could not resolve, by Content identity, counted once per row. */
-export function decisionDiagnostics(replies: readonly ScriptOccurrenceReply[]): string[] {
+export function decisionDiagnostics(cards: readonly DecisionCard[]): string[] {
   const names = new Map<string, number>();
-  for (const reply of replies) for (const occurrence of reply.occurrences) {
-    const item = occurrenceItem(reply, occurrence);
-    if (item?.name) continue;
-    const key = item?.token ?? 'a decision not identified';
+  for (const card of cards) {
+    if (card.item?.name) continue;
+    const key = card.item?.token ?? 'a decision not identified';
     names.set(key, (names.get(key) ?? 0) + 1);
   }
   return names.size ? [`${NAME_UNAVAILABLE}: ${[...names.keys()].sort().join(', ')} (${[...names.values()].reduce((a, b) => a + b, 0).toLocaleString()} counted)`] : [];

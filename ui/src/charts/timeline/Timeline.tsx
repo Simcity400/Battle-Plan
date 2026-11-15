@@ -12,9 +12,10 @@ import type { CountryFlagLook } from '../../components/CountryFlag';
 import { approach, easeTau } from '../easing';
 import { useMotionNow } from '../liveMotion.ts';
 import { fitLabelWidth } from '../labels';
+import type { Live } from '../live';
 import { scheduler } from '../scheduler';
 import type { FrameInfo, FrameTask } from '../scheduler';
-import { toLocal } from '../surface';
+import { drawingSurface, toLocal } from '../surface';
 import { timeTicks } from '../timeAxis';
 import { readTokens, subscribeTokens } from '../tokens';
 import { hideTooltip, scrollTooltip, showTooltip, tooltipStore, tooltipText } from '../tooltip';
@@ -30,8 +31,8 @@ import { drawCross, drawDisclosure, acceptsLaneClick, acceptsLaneMenu } from './
 import { catalogueWidth } from './labelCatalogue';
 import type { TimelineLabel } from './labelCatalogue';
 import { barContent, barNameFits, END_MARK_ROOM } from './barLabel';
-import { fillPendingBand, markApproximate, spanRanges } from '../prepared';
 import '../charts.css';
+import { textWidth as measuredWidth } from '../textWidth.ts';
 
 export type { BandStep, LaneGeometry, TimelineLane, TimelineSpan } from './layout';
 
@@ -45,6 +46,9 @@ export interface TimelineProps {
   extent: readonly [number, number];
   /** The playback hour: bars stop and the left column shows holders there. */
   playhead: number | null;
+  /** While following, the head now (a track hour) and the clock's frame signal: the playhead, the bars and the
+   * holders at it move with it every frame, between renders. Without it, `playhead` is drawn as given. */
+  liveHead?: Live<number>;
   labelHour?: number;
   /** Stable campaign labels, independent of the lanes now expanded or in view. */
   labelCatalogue?: readonly TimelineLabel[];
@@ -58,12 +62,6 @@ export interface TimelineProps {
   emptyLabel?: string;
   /** Hours the data was not recorded: a lane there has an unknown holder, not an empty slot. */
   unobserved?: readonly { firstHour: number; lastHour: number }[];
-  /** Hours whose bars come from sampled keyframes: drawn faded with the
-   * dashed approximate edge. The widget names them with `PreparedKey`. */
-  approximate?: readonly { firstHour: number; lastHour: number }[];
-  /** Hours still being prepared: a light band, with no bars there yet. The
-   * widget names them with `PreparedKey`. */
-  pending?: readonly { firstHour: number; lastHour: number }[];
   /** Taller lanes for a painted plot; every layout and interaction uses this height. */
   rowHeight?: number;
   /** Keep the dates in view while lanes scroll; false lets them scroll with the lanes. */
@@ -123,6 +121,14 @@ const sameLaneLabels = (a: readonly TimelineLane[], b: readonly TimelineLane[]) 
 const sameCatalogue = (a: readonly TimelineLabel[], b: readonly TimelineLabel[]) => a.length === b.length && a.every((label, index) =>
   label.text === b[index].text && label.space === b[index].space && label.weight === b[index].weight && label.size === b[index].size);
 
+/** `props` with the playhead its live head is at now, when it follows one. */
+function withLiveHead(props: TimelineProps): TimelineProps {
+  const live = props.liveHead;
+  if (!live || props.playhead == null) return props;
+  const head = Math.max(props.extent[0], Math.min(props.extent[1], live.read()));
+  return head === props.playhead ? props : { ...props, playhead: head };
+}
+
 /** The nearest ancestor that scrolls vertically, if any. */
 function scrollParent(element: HTMLElement): HTMLElement | null {
   let parent = element.parentElement;
@@ -153,20 +159,26 @@ export default function Timeline(props: TimelineProps) {
   const region = useRef(laneWindow(props.lanes.length, 0, window.innerHeight, props.rowHeight ?? ROW_HEIGHT, rows));
   const latest = useRef(props);
   latest.current = props;
+  /** The props a frame draws: the playhead where the live head is now, while it follows one. */
+  const headed = () => withLiveHead(latest.current);
   const motionNow = useMotionNow();
   const hoverHour = useRef<number | null>(null);
   const notifyHover = (hour: number | null) => {
     if (hoverHour.current === hour) return;
     hoverHour.current = hour;
-    queueMicrotask(() => latest.current.onHover?.(hour));
+    queueMicrotask(() => headed().onHover?.(hour));
   };
   const [zoomed, setZoomed] = useState(false);
   const [artFallbacks, setArtFallbacks] = useState<readonly { id: string; left: number; top: number; width: number; height: number; opacity: number; icon: 'flask' | 'sparkle'; clipPath: string }[]>([]);
+  // Set only when they differ: a state set to its own value just after a commit renders once more, an empty commit.
+  const fallbacksShown = useRef(artFallbacks);
   const rowHeight = props.rowHeight ?? ROW_HEIGHT;
   const height = timelineHeight(props.lanes.length, rowHeight, rows);
-  const [viewportHeight, setViewportHeight] = useState(window.innerHeight);
+  const [viewportHeight, setShownHeight] = useState(window.innerHeight);
+  const heightShown = useRef(viewportHeight);
+  const setViewportHeight = useRef((next: number) => { if (heightShown.current !== next) { heightShown.current = next; setShownHeight(next); } }).current;
   const viewportState = (spacerElement = spacer.current!, scrolling = viewportElement.current!) => {
-    const p = latest.current;
+    const p = headed();
     return timelineViewport(spacerElement, scrolling, p.lanes.length, p.rowHeight ?? ROW_HEIGHT, p.stickyAxis !== false, geometry.current);
   };
   const task = useRef<FrameTask | null>(null);
@@ -180,7 +192,7 @@ export default function Timeline(props: TimelineProps) {
     // Its own elements: unmounting detaches the refs before this effect's cleanup stops what it started.
     const spacerElement = spacer.current!;
     const scrolling = viewportElement.current!;
-    const context = element.getContext('2d')!;
+    const paper = drawingSurface(element), context = paper.context!;
     let tokens = readTokens();
     let view: ViewState = EMPTY_VIEW;
     let eased: [number, number] | null = null;
@@ -193,7 +205,7 @@ export default function Timeline(props: TimelineProps) {
     let summaryAt = -Infinity, summaryTimer: ReturnType<typeof setTimeout> | null = null;
     const sendSummary = () => {
       summaryTimer = null;
-      const sent = summaryLatest, props = latest.current;
+      const sent = summaryLatest, props = headed();
       if (!sent) return;
       summarySent = sent; summaryAt = performance.now();
       props.onSummaryView?.({ from: sent.from, to: sent.to, width: sent.width }, sent.lanes);
@@ -208,7 +220,7 @@ export default function Timeline(props: TimelineProps) {
     let catalogue: TimelineProps['labelCatalogue'];
     let inView: [number, number] = [0, -1];
     const laneUnder = (y: number) => {
-      const p = latest.current;
+      const p = headed();
       const axisTop = p.stickyAxis !== false ? offset.current : 0;
       return y < axisTop + AXIS_HEIGHT ? null : laneAt(y, p.lanes.length, geometry.current);
     };
@@ -230,7 +242,7 @@ export default function Timeline(props: TimelineProps) {
       const subrow = laneRowAt(py, index, geometry.current);
       if (subrow == null) return { span: null, hour: Math.floor(hour) };
       if (lane.paint) return { span: spanAt(lane.spans, Math.floor(hour)), hour: Math.floor(hour) };
-      const marker = markerAt(lane.spans, px, toX, x[0], Math.min(x[1], latest.current.playhead ?? Infinity), subrow);
+      const marker = markerAt(lane.spans, px, toX, x[0], Math.min(x[1], headed().playhead ?? Infinity), subrow);
       if (marker) return { span: marker, hour: marker.firstHour };
       const bands = layouts.get(lane.id)?.bands;
       const hit = bands && bandHitAt(bands, px, hour);
@@ -239,16 +251,19 @@ export default function Timeline(props: TimelineProps) {
       const rows = geometry.current;
       const centre = laneTop(index, rows) + (rows.offsets[index + 1] - rows.offsets[index]) / 2;
       const offset = py - centre;
-      const bar = barHitAt(pointerBarSpans(lane.spans, offset), px, latest.current.playhead, toX, hourAt, left, left + plotWidth(), subrow);
+      const bar = barHitAt(pointerBarSpans(lane.spans, offset), px, headed().playhead, toX, hourAt, left, left + plotWidth(), subrow);
       if (bar) return bar;
       return { span: stackedSpanAt(lane.spans, Math.floor(hour), offset) ?? spanAtRow(lane.spans, Math.floor(hour), subrow), hour: Math.floor(hour) };
     };
 
-    const plotWidth = () => Math.max(8, element.clientWidth - left - PAD_RIGHT);
+    // The canvas's layout width as its last frame measured it (only a scroll, a resize or new lanes measure it again):
+    // a frame placing its bars never reads layout back.
+    let canvasWidth = 0;
+    const plotWidth = () => Math.max(8, (canvasWidth || element.clientWidth) - left - PAD_RIGHT);
     const toX = (hour: number) => left + (hour - x[0]) / Math.max(1e-9, x[1] - x[0]) * plotWidth();
     const hourAt = (px: number) => x[0] + (px - left) / plotWidth() * (x[1] - x[0]);
     const dispatch = (action: ViewAction) => {
-      const p = latest.current;
+      const p = headed();
       view = reduceView(view, action, { x, extent: p.extent, y: [0, 1], minSpan: MIN_SPAN });
       setZoomed(view.x != null);
       wake();
@@ -277,12 +292,12 @@ export default function Timeline(props: TimelineProps) {
       if (known != null) return known;
       const room = width * SQUEEZE;
       let result = text;
-      if (context.measureText(text).width > room) {
+      if (measuredWidth(context, text) > room) {
         let low = 0;
         let high = text.length;
         while (low < high) {
           const middle = Math.ceil((low + high) / 2);
-          if (context.measureText(`${text.slice(0, middle).trimEnd()}…`).width <= room) low = middle; else high = middle - 1;
+          if (measuredWidth(context, `${text.slice(0, middle).trimEnd()}…`) <= room) low = middle; else high = middle - 1;
         }
         result = `${text.slice(0, low).trimEnd()}…`;
       }
@@ -308,7 +323,7 @@ export default function Timeline(props: TimelineProps) {
     // lanes: measured then, never in a frame, since each measure lays the page out.
     let viewMeasure: { key: unknown[]; view: ReturnType<typeof viewportState>; window?: { top: number; height: number }; size?: ReturnType<typeof sizeLaneWindow> } | null = null;
     const draw = (info: FrameInfo): boolean => {
-      const p = latest.current;
+      const p = headed();
       const row = p.rowHeight ?? ROW_HEIGHT;
       const key = [p.lanes.length, row, p.stickyAxis, geometry.current];
       if (!viewMeasure || key.some((value, index) => !Object.is(value, viewMeasure!.key[index]))) viewMeasure = { key, view: viewportState(spacerElement, scrolling) };
@@ -318,7 +333,7 @@ export default function Timeline(props: TimelineProps) {
       const viewport = laneWindow(p.lanes.length, visible.top, visible.height, row, geometry.current);
       region.current = viewport;
       if (!viewMeasure.size || viewMeasure.window?.top !== viewport.top || viewMeasure.window.height !== viewport.height) {
-        viewMeasure.size = sizeLaneWindow(element, viewport, scrolled, window.devicePixelRatio || 1);
+        viewMeasure.size = sizeLaneWindow(element, viewport, scrolled, window.devicePixelRatio || 1, paper.canvas);
         viewMeasure.window = { top: viewport.top, height: viewport.height };
       }
       const size = viewMeasure.size;
@@ -326,6 +341,7 @@ export default function Timeline(props: TimelineProps) {
       const shown = p.lanes.slice(viewport.first, viewport.end);
       const fallbacks: typeof artFallbacks[number][] = [];
       const { layoutWidth, layoutHeight } = size;
+      canvasWidth = layoutWidth;
       context.setTransform(size.scaleX, 0, 0, size.scaleY, 0, 0);
       context.clearRect(0, 0, layoutWidth, layoutHeight);
       context.translate(0, -viewport.top);
@@ -345,7 +361,7 @@ export default function Timeline(props: TimelineProps) {
         let measuring = '';
         const measureIn = (shown: string, text: string) => {
           if (shown !== measuring) { context.font = shown; measuring = shown; }
-          return context.measureText(text).width;
+          return measuredWidth(context, text);
         };
         if (p.labelCatalogue) fitted = catalogueWidth(p.labelCatalogue, item =>
           measureIn(font(tokens, item.size ?? tokens.fontSize.body, item.weight), item.text));
@@ -364,7 +380,7 @@ export default function Timeline(props: TimelineProps) {
         ? lanesInView(plotTop - AXIS_HEIGHT, plotBottom - plotTop + AXIS_HEIGHT, p.lanes.length, geometry.current) : [0, -1];
       if (visibleLanes[0] !== inView[0] || visibleLanes[1] !== inView[1]) {
         inView = visibleLanes;
-        queueMicrotask(() => latest.current.onLanesInView?.(visibleLanes[0], visibleLanes[1]));
+        queueMicrotask(() => headed().onLanesInView?.(visibleLanes[0], visibleLanes[1]));
       }
       const extentKey = `${p.extent[0]}:${p.extent[1]}`;
       if (extentKey !== zoomedFor) {
@@ -405,7 +421,7 @@ export default function Timeline(props: TimelineProps) {
 
       // Dates along the top, from the recording's own calendar.
       context.font = font(tokens, tokens.fontSize.small);
-      const ticks = timeTicks(x[0], x[1], plotWidth(), text => context.measureText(text).width);
+      const ticks = timeTicks(x[0], x[1], plotWidth(), text => measuredWidth(context, text));
       const grid = (from: number, to: number) => {
         context.strokeStyle = mix(tokens.surface, tokens.border, 0.8);
         context.lineWidth = 1;
@@ -415,8 +431,6 @@ export default function Timeline(props: TimelineProps) {
         }
       };
       grid(axisTop + AXIS_HEIGHT - 4, bottom);
-      for (const [from, to] of spanRanges(p.pending, x[0], x[1], p.playhead))
-        fillPendingBand(context, tokens, Math.max(left, toX(from)), Math.min(right, toX(to)), AXIS_HEIGHT, bottom - AXIS_HEIGHT);
       const axis = { toX, x, left, right };
       const gaps = p.gaps ?? [];
       hatchColumns(context, tokens, axis, gaps, AXIS_HEIGHT, bottom - AXIS_HEIGHT);
@@ -490,7 +504,7 @@ export default function Timeline(props: TimelineProps) {
           context.fillStyle = tokens.muted;
           context.fillText(labelText(lane.label), textAt, centre, textWidth);
         } else if (lane.pill) {
-          const width = Math.min(textWidth, context.measureText(lane.pill.text).width + 12);
+          const width = Math.min(textWidth, measuredWidth(context, lane.pill.text) + 12);
           const pillTop = centre + 1;
           const pillHeight = tokens.fontSize.small + 5;
           context.fillStyle = lane.pill.color;
@@ -595,10 +609,6 @@ export default function Timeline(props: TimelineProps) {
           const radius = Math.min(5, barHeight / 2, (to - from) / 2);
           const open = barOpenEnd(span, p.playhead) && toX(hours[1]) <= right;
           context.beginPath(); context.roundRect(from, centre - barHeight / 2, to - from, barHeight, open ? [radius, 0, 0, radius] : radius); context.fill();
-          for (const [first, last] of spanRanges(p.approximate, hours[0], hours[1])) {
-            const start = Math.max(from, toX(first)), end = Math.min(to, toX(last));
-            markApproximate(context, tokens, start, centre - barHeight / 2, end - start, barHeight);
-          }
           if (open) { context.globalAlpha = 0.5; context.fillStyle = tokens.surface; context.fillRect(to - 1, centre - barHeight / 2, 1, barHeight); context.globalAlpha = 1; }
           if (positioned) glyphs();
           const endMark = !!span.endLabel && to - from >= 16 && hours[1] >= span.lastHour + 1;
@@ -612,7 +622,7 @@ export default function Timeline(props: TimelineProps) {
           if (content.icon && to - from > 28) { drawIcon(span.icon, from + 2, centre, BAR_ICON, p.holderIconAlign === 'top', span.countryFlag); textX = from + BAR_ICON + 6; }
           context.font = font(tokens, tokens.fontSize.small, 600);
           if (span.glyph && !positioned) {
-            const width = context.measureText(span.glyph).width;
+            const width = measuredWidth(context, span.glyph);
             if (width + (textX - from) + 4 < to - from) {
               context.fillStyle = onFill;
               context.fillText(span.glyph, textX - 2, centre);
@@ -621,7 +631,7 @@ export default function Timeline(props: TimelineProps) {
           }
           if (!content.name) continue;
           context.font = font(tokens, tokens.fontSize.small, 500);
-          if (barNameFits(context.measureText(span.label).width, textX - from, to - from, endMark)) {
+          if (barNameFits(measuredWidth(context, span.label), textX - from, to - from, endMark)) {
             context.fillStyle = onFill;
             context.fillText(span.label, textX, centre);
           }
@@ -664,10 +674,14 @@ export default function Timeline(props: TimelineProps) {
       if (element.style.cursor !== cursor) element.style.cursor = cursor;
 
       const settled = Math.abs(x[0] - target[0]) + Math.abs(x[1] - target[1]) < 1e-3;
-      setArtFallbacks(before => before.length === fallbacks.length && before.every((item, index) =>
+      const before = fallbacksShown.current;
+      if (before.length !== fallbacks.length || !before.every((item, index) =>
         item.id === fallbacks[index].id && item.left === fallbacks[index].left && item.top === fallbacks[index].top
         && item.width === fallbacks[index].width && item.height === fallbacks[index].height && item.icon === fallbacks[index].icon
-        && item.clipPath === fallbacks[index].clipPath && item.opacity === fallbacks[index].opacity) ? before : fallbacks);
+        && item.clipPath === fallbacks[index].clipPath && item.opacity === fallbacks[index].opacity)) {
+        fallbacksShown.current = fallbacks;
+        setArtFallbacks(fallbacks);
+      }
       return !settled || animating || drag != null;
     };
 
@@ -678,7 +692,7 @@ export default function Timeline(props: TimelineProps) {
     const unsubscribe = subscribeTokens(next => { tokens = next; labelsFitted = false; wake(); });
     const measureView = () => {
       const parent = scrollParent(spacerElement);
-      setViewportHeight(parent ? viewHeight(parent, latest.current.rowHeight ?? ROW_HEIGHT) : window.innerHeight);
+      setViewportHeight(parent ? viewHeight(parent, headed().rowHeight ?? ROW_HEIGHT) : window.innerHeight);
     };
     const observer = new ResizeObserver(() => { if (spacerElement.isConnected) { viewMeasure = null; measureView(); wake(); } });
     observer.observe(element);
@@ -687,7 +701,7 @@ export default function Timeline(props: TimelineProps) {
     measureView();
     const scroll = () => {
       viewMeasure = null;
-      const p = latest.current;
+      const p = headed();
       const { visible } = viewportState(spacerElement, scrolling);
       if (p.active && (p.stickyAxis !== false || !coversViewport(region.current, p.lanes.length, visible, p.rowHeight ?? ROW_HEIGHT, geometry.current))) {
         draw({ now: performance.now(), dt: 0 });
@@ -706,7 +720,7 @@ export default function Timeline(props: TimelineProps) {
       const point = local(event);
       pressed = point; suppressClick = false;
       if (point.x < left) return;
-      if (event.button === 0 && point.y < (latest.current.stickyAxis !== false ? offset.current : 0) + AXIS_HEIGHT) drag = { mode: 'axis', grab: hourAt(point.x) };
+      if (event.button === 0 && point.y < (headed().stickyAxis !== false ? offset.current : 0) + AXIS_HEIGHT) drag = { mode: 'axis', grab: hourAt(point.x) };
       else if (event.button === 1 || (event.button === 0 && event.shiftKey)) drag = { mode: 'pan', lastX: point.x };
       else return;
       suppressClick = true;
@@ -743,21 +757,21 @@ export default function Timeline(props: TimelineProps) {
       if (!acceptsLaneClick(event.detail, suppressClick)) return;
       const point = local(event);
       const index = laneUnder(point.y);
-      if (index != null && activateLane(latest.current.lanes[index], 'click', latest.current.onLaneActivate)) {
-        keyed.current = { lane: index, id: latest.current.lanes[index].id, span: 0 };
+      if (index != null && activateLane(headed().lanes[index], 'click', headed().onLaneActivate)) {
+        keyed.current = { lane: index, id: headed().lanes[index].id, span: 0 };
         element.focus({ preventScroll: true }); wake();
       }
     };
     const menu = (event: MouseEvent) => {
-      const handler = latest.current.onContextMenu;
+      const handler = headed().onContextMenu;
       const point = local(event);
       const index = laneUnder(point.y);
-      if (!handler || !acceptsLaneMenu(point.x, left, latest.current.labelMenu) || index == null) return;
+      if (!handler || !acceptsLaneMenu(point.x, left, headed().labelMenu) || index == null) return;
       event.preventDefault();
       // Jump to what is drawn under the pointer: a band column's step, else the pointer's hour.
-      const lane = latest.current.lanes[index];
-      const target = point.x < left ? { hour: labelMoment(latest.current.playhead, latest.current.extent[1], latest.current.labelHour), span: null }
-        : pointed(lane, index, point.x, point.y, Math.min(hourAt(point.x), latest.current.playhead ?? Infinity));
+      const lane = headed().lanes[index];
+      const target = point.x < left ? { hour: labelMoment(headed().playhead, headed().extent[1], headed().labelHour), span: null }
+        : pointed(lane, index, point.x, point.y, Math.min(hourAt(point.x), headed().playhead ?? Infinity));
       handler(target.hour, event.clientX, event.clientY, lane, target.span);
     };
     element.addEventListener('pointerdown', down);
@@ -797,6 +811,7 @@ export default function Timeline(props: TimelineProps) {
     setViewportHeight(parent ? viewHeight(parent, rowHeight) : window.innerHeight);
   }, [rowHeight]);
   useEffect(() => { if (task.current) scheduler.wake(task.current); });
+  useEffect(() => props.liveHead?.subscribe(() => { if (task.current) scheduler.wake(task.current); }), [props.liveHead]);
 
   // With the keyboard: Up and Down choose a lane, Left and Right step through its
   // bars (up to the playhead); the bar's tooltip shows beside the lane and is read out.
@@ -810,7 +825,7 @@ export default function Timeline(props: TimelineProps) {
   // Where the keyboard can stop in a lane: each bar shown, and each step of a band, inside
   // the view and up to the playhead (`laneStops`, on the kit's `keyStops`).
   const barsOf = (lane: number) => {
-    const p = latest.current;
+    const p = headed();
     const [from, to] = viewed.current ?? p.extent;
     return laneStops(p.lanes[lane]?.spans ?? [], from, to, p.playhead);
   };
@@ -823,10 +838,10 @@ export default function Timeline(props: TimelineProps) {
     const scale = element.offsetHeight ? bounds.height / element.offsetHeight : 1;
     const rows = geometry.current;
     const row = span?.stack == null ? rows.rowHeights[lane] : 16;
-    const centre = span ? spanY(span, lane, rows, latest.current.lanes[lane].spans) : laneTop(lane, rows) + row / 2;
+    const centre = span ? spanY(span, lane, rows, headed().lanes[lane].spans) : laneTop(lane, rows) + row / 2;
     const top = bounds.top + (centre - row / 2) * scale;
     const bottom = top + row * scale;
-    const axis = latest.current.stickyAxis !== false ? AXIS_HEIGHT * scale : 0;
+    const axis = headed().stickyAxis !== false ? AXIS_HEIGHT * scale : 0;
     let parent = element.parentElement;
     while (parent && !(parent.scrollHeight > parent.clientHeight && /auto|scroll/.test(getComputedStyle(parent).overflowY))) parent = parent.parentElement;
     if (!parent) {
@@ -841,7 +856,7 @@ export default function Timeline(props: TimelineProps) {
     else if (bottom > box.bottom) parent.scrollTop += (bottom - box.bottom) / units;
   };
   const showKeyed = () => {
-    const p = latest.current;
+    const p = headed();
     const at = keyed.current;
     if (!at || !p.tooltip || !canvas.current) return;
     // A lane playback took away since is left: the tooltip closes.
@@ -889,7 +904,7 @@ export default function Timeline(props: TimelineProps) {
   // Only while no other chart holds the shared tooltip: one hovered since keeps it. A hidden
   // tooltip (such as one withheld until playback reaches the view) is free to take again.
   const ownsTooltip = () => { const current = tooltipStore.get(); return current == null || current.owner === owner; };
-  refreshKeyed.current = () => { if (keyed.current && latest.current.active && ownsTooltip()) showKeyed(); };
+  refreshKeyed.current = () => { if (keyed.current && headed().active && ownsTooltip()) showKeyed(); };
   // As playback moves, a keyboard tooltip follows what its lane shows now; an
   // off-screen timeline drops it.
   useEffect(() => {
@@ -901,7 +916,7 @@ export default function Timeline(props: TimelineProps) {
     if ((event.key === 'PageUp' || event.key === 'PageDown') && scrollTooltip(owner, event.key === 'PageUp' ? -1 : 1, true)) {
       event.preventDefault(); return;
     }
-    const lanes = latest.current.lanes;
+    const lanes = headed().lanes;
     const bars = (lane: number) => barsOf(lane).length;
     if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.key) && lanes.length) {
       event.preventDefault();
@@ -911,7 +926,7 @@ export default function Timeline(props: TimelineProps) {
       else keyed.current = null;
       const hadKey = keyed.current !== null;
       const at = keyed.current ?? { lane: 0, id: lanes[0].id, span: Math.max(0, bars(0) - 1) };
-      // Prepared navigation searches from the stop shown before this key moved it.
+      // Navigation searches from the stop shown before this key moved it.
       const shownHour = barsOf(at.lane)[at.span]?.hour;
       if (keyed.current) {
         if (event.key === 'ArrowDown') { at.lane = Math.min(lanes.length - 1, at.lane + 1); at.span = Math.max(0, bars(at.lane) - 1); }
@@ -928,16 +943,16 @@ export default function Timeline(props: TimelineProps) {
         keyed.current = selected;
         const request = selected.navigation ?? Promise.resolve();
         selected.navigation = request.then(async () => {
-          const p = latest.current, view = viewed.current ?? p.extent;
+          const p = headed(), view = viewed.current ?? p.extent;
           if (keyed.current !== selected || view[0] !== from || view[1] !== to || !p.active) return;
           const lane = p.lanes.find(lane => lane.id === selected.id);
           if (!lane || !p.onNavigateHour) return;
           const start = first ? Math.floor(labelMoment(p.playhead, to, p.labelHour)) + 1
             : selected.hour ?? shownHour ?? labelMoment(p.playhead, to, p.labelHour);
           const hour = await p.onNavigateHour(lane, start, forward);
-          const currentView = viewed.current ?? latest.current.extent;
-          if (keyed.current !== selected || currentView[0] !== from || currentView[1] !== to || !latest.current.active) return;
-          if (hour !== null && hour >= from && hour <= Math.min(to, latest.current.playhead ?? to)) selected.hour = hour;
+          const currentView = viewed.current ?? headed().extent;
+          if (keyed.current !== selected || currentView[0] !== from || currentView[1] !== to || !headed().active) return;
+          if (hour !== null && hour >= from && hour <= Math.min(to, headed().playhead ?? to)) selected.hour = hour;
           showKeyed();
         }).catch(() => { if (keyed.current === selected) showKeyed(); });
         return;
@@ -964,12 +979,12 @@ export default function Timeline(props: TimelineProps) {
       ? lanes[keyed.current.lane]?.id === keyed.current.id ? keyed.current.lane : lanes.findIndex(lane => lane.id === keyed.current!.id)
       : -1;
     const activeLane = lanes[activeIndex];
-    if (activateLane(activeLane, event.key, latest.current.onLaneActivate)) { event.preventDefault(); return; }
+    if (activateLane(activeLane, event.key, headed().onLaneActivate)) { event.preventDefault(); return; }
     // The keyboard's Jump to: the selected stop's hour, else the displayed read.
     const stops = activeLane ? barsOf(activeIndex) : [];
     const same = keyed.current?.spanId == null ? -1 : stops.findIndex(stop => stop.id === keyed.current!.spanId);
     const selected = keyed.current ? stops[same >= 0 ? same : Math.max(0, Math.min(keyed.current.span, stops.length - 1))] : undefined;
-    const menuHour = keyed.current?.hour ?? (selected ? selected.hour : labelMoment(props.playhead, props.extent[1], props.labelHour));
+    const menuHour = keyed.current?.hour ?? (selected ? selected.hour : labelMoment(headed().playhead, props.extent[1], props.labelHour));
     if ((event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey)) && props.onContextMenu && menuHour != null) {
       event.preventDefault();
       const bounds = spacer.current!.getBoundingClientRect();

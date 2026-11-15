@@ -2,6 +2,7 @@
 //! Battle Plan Recorder: a tray program that records campaigns while the game runs.
 
 mod commands;
+mod compress;
 mod flags;
 mod panel;
 mod recordings;
@@ -15,6 +16,10 @@ mod worker;
 use std::sync::Arc;
 
 fn main() {
+    let mut args = std::env::args_os().skip(1);
+    if args.next().is_some_and(|arg| arg == compress::ARGUMENT) {
+        std::process::exit(compress::child(args.next()));
+    }
     if app_update::refused_during_setup("Battle Plan Recorder") {
         return;
     }
@@ -23,12 +28,19 @@ fn main() {
         return;
     };
     let recorder = Arc::new(worker::Recorder::default());
+    let jobs = Arc::new(compress::Jobs::default());
     let app = tauri::Builder::default()
         .manage(Arc::clone(&recorder))
+        .manage(Arc::clone(&jobs))
         .manage(panel::Panel::default())
         .manage(recordings::Library::default())
         .setup(move |app| {
             let handle = app.handle().clone();
+            if let Ok(settings) = replay::recorder_settings::RecorderSettings::load() {
+                jobs.take_up(&worker::save_folder(&settings), &settings);
+            }
+            let changed = handle.clone();
+            jobs.serve(move || worker::recordings_changed(&changed))?;
             tray::create(&handle, Arc::clone(&recorder))?;
             app_update::init(
                 &handle,
@@ -57,6 +69,7 @@ fn main() {
             commands::recordings,
             commands::act_on_waiting,
             commands::reveal_recording,
+            commands::compress_recording,
             app_update::commands::app_update_state,
             app_update::commands::app_update_check,
             app_update::commands::app_update_download,

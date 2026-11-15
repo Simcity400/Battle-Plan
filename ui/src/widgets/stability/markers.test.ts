@@ -4,6 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { CountryGroupReply, FocusReply, IdeaHistoryReply } from '../../generated/dashboard';
 import { historyMarks, stabilityMarkers } from './markers.ts';
+import type { FocusMarks } from './markers.ts';
 import type { MarkerKind } from './markers.ts';
 
 const ALL = new Set<MarkerKind>(['wars', 'factions', 'government', 'focus']);
@@ -44,16 +45,16 @@ test('laws and advisors taken on while recorded are government changes; focuses 
       { token: 'total_mobilisation', firstHour: 600, lastHour: 1000, slot: null, character: null },
       { token: 'speer', firstHour: 700, lastHour: 1000, slot: 'political_advisor', character: { id: 7, token: 'GER_albert_speer', name: 'GER_albert_speer' } },
     ],
-    ideas: ['civilian_economy', 'war_economy', 'total_mobilisation'].map(token => ({ token, category: 'government', slot: 'economy', law: true, designer: false, effects: [], targeted: [], equipment: [], research: [], traits: [], tooltips: [], effectsKnown: true, unknown: null })),
+    ideas: ['civilian_economy', 'war_economy', 'total_mobilisation'].map(token => ({ token, category: 'government', slot: 'economy', law: true, designer: false, effects: [], targeted: [], equipment: [], research: [], traits: [], tooltips: [], effectsKnown: true, unknown: null, nameMissing: null })),
     artwork: [{ token: 'war_economy', name: 'War Economy', description: null, baseDurationDays: null, icon: null }],
     holders: [{ token: 'speer', character: 7, characterToken: 'GER_albert_speer', name: 'GER_albert_speer', artwork: { token: 'speer', name: 'Albert Speer', description: null, baseDurationDays: null, icon: null } }],
     categories: [{ token: 'government', name: null, kind: null, hidden: false, politicsTab: true, slots: [
       { token: 'economy', name: null, character: false, seats: 1, laws: ['civilian_economy', 'war_economy', 'total_mobilisation'] },
       { token: 'political_advisor', name: null, character: true, seats: 3, laws: [] }] }],
   } as unknown as IdeaHistoryReply;
-  const focus = { warnings: [], artwork: [], staticText: [{ token: 'GER_rhineland', name: 'Rhineland', description: null, baseDurationDays: null, icon: null }],
-    history: { progress: [], segments: [{ firstHour: 0, lastHour: 1000, order: { completed: [{ ordinal: 0, token: 'GER_rhineland', completedByHour: 50 }, { ordinal: 1, token: 'GER_old', completedByHour: null }], current: null, continuous: null, paused: false } }] } } as unknown as FocusReply;
-  const badges = stabilityMarkers({ ...base, ideas, focus: historyMarks(focus) }, ALL);
+  const focus: FocusMarks = { staticText: [{ token: 'GER_rhineland', name: 'Rhineland', description: null, baseDurationDays: null, icon: null }],
+    completed: [{ ordinal: 0, token: 'GER_rhineland', completedByHour: 50 }, { ordinal: 1, token: 'GER_old', completedByHour: null }] } as unknown as FocusMarks;
+  const badges = stabilityMarkers({ ...base, ideas, focus }, ALL);
   // The branch-start law and the one after an unrecorded hour are not changes.
   assert.deepEqual(badges.map(badge => [badge.hour, badge.glyph, badge.label]), [
     [50, '★', 'Focus: Rhineland (completed by then)'],
@@ -63,16 +64,29 @@ test('laws and advisors taken on while recorded are government changes; focuses 
   assert.ok(badges.every(badge => !badge.approximate), 'exact idea spans give exact markers');
   // Only a focus without a static title asks for its dated title.
   const asked: string[] = [];
-  const read = stabilityMarkers({ ...base, focus: historyMarks(focus), focusName: (token, hour) => { asked.push(`${token}@${hour}`); return 'Dated'; } }, new Set(['focus']));
+  const read = stabilityMarkers({ ...base, focus, focusName: (token, hour) => { asked.push(`${token}@${hour}`); return 'Dated'; } }, new Set(['focus']));
   assert.deepEqual(read.map(badge => badge.label), ['Focus: Rhineland (completed by then)']);
   assert.equal(asked.length, 0);
-  const scoped = { ...focus, staticText: [{ ...focus.staticText![0], name: null }] } as FocusReply;
-  assert.deepEqual(stabilityMarkers({ ...base, focus: historyMarks(scoped), focusName: (token, hour) => { asked.push(`${token}@${hour}`); return undefined; } }, new Set(['focus']))
+  const scoped = { ...focus, staticText: [{ ...focus.staticText![0], name: null }] } as FocusMarks;
+  assert.deepEqual(stabilityMarkers({ ...base, focus: scoped, focusName: (token, hour) => { asked.push(`${token}@${hour}`); return undefined; } }, new Set(['focus']))
     .map(badge => badge.label), ['Focus: Loading name… (completed by then)']);
   assert.deepEqual(asked, ['GER_rhineland@50']);
-  // Lanes sampled beyond prepared coverage date their changes only approximately.
-  const sampled = stabilityMarkers({ ...base, ideas: { ...ideas, approximate: [{ firstHour: 650, lastHour: 1000 }] } }, ALL);
-  assert.deepEqual(sampled.map(badge => [badge.hour, badge.approximate === true]), [[500, false], [700, true]]);
+});
+
+test('the focus history gives each completion once, with its static titles, so only scoped titles are read', () => {
+  const order = (completed: FocusReply['history']['segments'][number]['order']['completed']) => ({ completed, current: null, continuous: null, paused: false });
+  const rhineland = { ordinal: 0, token: 'GER_rhineland', completedByHour: 50 }, scoped = { ordinal: 1, token: 'GER_scoped', completedByHour: 90 };
+  const reply = { missing: [], artwork: [], warnings: [], continuousStaticText: [], history: { progress: [], segments: [
+    { firstHour: 50, lastHour: 89, order: order([rhineland]) },
+    { firstHour: 90, lastHour: 200, order: order([rhineland, scoped]) },
+  ] }, staticText: [{ token: 'GER_rhineland', name: 'Rhineland', description: null, baseDurationDays: null, icon: null },
+    { token: 'GER_scoped', name: null, description: null, baseDurationDays: null, icon: null }] } as FocusReply;
+  const marks = historyMarks(reply);
+  assert.deepEqual(marks.completed, [rhineland, scoped], 'listed by every later order, yet one occurrence each');
+  const asked: string[] = [];
+  const badges = stabilityMarkers({ ...base, focus: marks, focusName: (token, hour) => { asked.push(`${token}@${hour}`); return 'Dated scoped'; } }, new Set(['focus']));
+  assert.deepEqual(badges.map(badge => badge.label), ['Focus: Rhineland (completed by then)', 'Focus: Dated scoped (completed by then)']);
+  assert.deepEqual(asked, ['GER_scoped@90']);
 });
 
 test('a continuing advisor, a shared founding and a repeated focus are read honestly', () => {
@@ -114,20 +128,12 @@ test('a continuing advisor, a shared founding and a repeated focus are read hone
     { token: 'speer', firstHour: 100, lastHour: 300, slot: 'political_advisor', character: { id: 7, token: '', name: '' } }],
   holders: [{ token: 'speer', character: 7, characterToken: 'GER_albert_speer', name: '', artwork: { token: 'speer', name: 'Albert Speer', description: null, baseDurationDays: null, icon: null } }] } as unknown as IdeaHistoryReply;
   assert.deepEqual(stabilityMarkers({ ...base, ideas: unnamed }, ALL).map(badge => badge.label), ['Advisor: holder not recorded (appointed by then)']);
-  const focus = { warnings: [], artwork: [], history: { progress: [], segments: [
-    { firstHour: 0, lastHour: 150, order: { completed: [{ ordinal: 0, token: 'repeatable', completedByHour: 100 }], current: null, continuous: null, paused: false } },
-    { firstHour: 151, lastHour: 1000, order: { completed: [{ ordinal: 0, token: 'repeatable', completedByHour: 100 }, { ordinal: 1, token: 'repeatable', completedByHour: 200 }], current: null, continuous: null, paused: false } },
-  ] } } as unknown as FocusReply;
-  assert.deepEqual(stabilityMarkers({ ...base, extent: [150, 1000], focus: historyMarks(focus) }, ALL).map(badge => [badge.hour, badge.label]), [[200, 'Focus: Focus name unavailable (completed by then)']]);
-  // Preparation lists each dated completion once; the history repeats it in every later order.
+  // Each dated completion once, by occurrence: a repeatable focus completed twice is two events.
   const completions = { completed: [{ ordinal: 0, token: 'repeatable', completedByHour: 100 }, { ordinal: 1, token: 'repeatable', completedByHour: 200 }] };
-  assert.deepEqual(stabilityMarkers({ ...base, focus: completions }, ALL), stabilityMarkers({ ...base, focus: historyMarks(focus) }, ALL));
+  assert.deepEqual(stabilityMarkers({ ...base, extent: [150, 1000], focus: completions }, ALL).map(badge => [badge.hour, badge.label]), [[200, 'Focus: Focus name unavailable (completed by then)']]);
   // Two completions seen at one hour after a gap: both kept, each marked as a bound.
-  const twice = { warnings: [], artwork: [], history: { progress: [], segments: [
-    { firstHour: 0, lastHour: 99, order: { completed: [], current: null, continuous: null, paused: false } },
-    { firstHour: 300, lastHour: 1000, order: { completed: [{ ordinal: 0, token: 'repeatable', completedByHour: 300 }, { ordinal: 1, token: 'repeatable', completedByHour: 300 }], current: null, continuous: null, paused: false } },
-  ] } } as unknown as FocusReply;
-  assert.deepEqual(stabilityMarkers({ ...base, focus: historyMarks(twice) }, ALL).map(badge => badge.label), ['Focus: Focus name unavailable (completed by then)', 'Focus: Focus name unavailable (completed by then)']);
+  const twice = { completed: [{ ordinal: 0, token: 'repeatable', completedByHour: 300 }, { ordinal: 1, token: 'repeatable', completedByHour: 300 }] };
+  assert.deepEqual(stabilityMarkers({ ...base, focus: twice }, ALL).map(badge => badge.label), ['Focus: Focus name unavailable (completed by then)', 'Focus: Focus name unavailable (completed by then)']);
   // A law continuing across a change of country identity is no new law.
   const kept = { ...ideas, holders: [], spans: [
     { token: 'law', firstHour: 0, lastHour: 149, slot: 'economy', character: null }, { token: 'law', firstHour: 150, lastHour: 300, slot: 'economy', character: null }],
@@ -146,7 +152,7 @@ test('a continuing advisor, a shared founding and a repeated focus are read hone
   assert.deepEqual(stabilityMarkers({ ...base, ideas: moved }, ALL).map(badge => badge.hour), [100]);
   // A designer in a law slot is not a law.
   const designer = { ...kept, spans: [{ token: 'designer', firstHour: 150, lastHour: 300, slot: 'economy', character: null }],
-    ideas: [{ token: 'designer', category: 'government', slot: 'economy', law: false, designer: true, effects: [], targeted: [], equipment: [], research: [], traits: [], tooltips: [], effectsKnown: true, unknown: null }] } as unknown as IdeaHistoryReply;
+    ideas: [{ token: 'designer', category: 'government', slot: 'economy', law: false, designer: true, effects: [], targeted: [], equipment: [], research: [], traits: [], tooltips: [], effectsKnown: true, unknown: null, nameMissing: null }] } as unknown as IdeaHistoryReply;
   assert.deepEqual(stabilityMarkers({ ...base, ideas: designer }, ALL), []);
 });
 
@@ -199,15 +205,6 @@ test('faction events use dated names and display overrides without backfilling g
   const custom = stabilityMarkers({ ...base, groups: gap, factionName: () => ({ name: 'My pact', reason: null }) }, new Set<MarkerKind>(['factions']));
   assert.deepEqual(custom.map(badge => badge.label), ['Joined My pact', 'Left My pact']);
 });
-
-test('a membership ending where preparation is still pending is not a departure', () => {
-  const faction = { ...groups.factions[1], firstHour: 100, lastHour: 299, names: [{ firstHour: 100, lastHour: 299, name: 'Pact', reason: null }],
-    members: [{ tag: 'GER', firstHour: 150, lastHour: 299 }], leaders: [], incomplete: [] };
-  const prefix = { ...groups, factions: [faction], unobserved: { humans: [], factions: [], wars: [] },
-    coverage: { firstHour: 0, lastHour: 299, complete: false }, pending: [{ firstHour: 300, lastHour: 499 }] } as CountryGroupReply;
-  assert.deepEqual(stabilityMarkers({ ...base, groups: prefix }, new Set<MarkerKind>(['factions'])).map(badge => badge.label), ['Joined Pact']);
-});
-
 
 test('focus markers retain named refusals and technical details independently of missing titles', () => {
   const focus = { completed: [{ ordinal: 0, token: 'synthetic', completedByHour: 50 }] };

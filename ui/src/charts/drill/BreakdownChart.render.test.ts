@@ -39,8 +39,8 @@ test('BreakdownChart keeps the exact signed canvas path and uses shared dense ge
       return recorded.commands;
     };
     const legacy = draw(props);
-    const prepared = draw({ ...props, summaries: { parts: parts.map(part => exact(part.runs)), total: exact(runs.map(run => ({ ...run, value: 0 }))) } });
-    assert.deepEqual(prepared, legacy, 'exact summary metadata cannot change a legacy path');
+    const exactSummaries = draw({ ...props, summaries: { parts: parts.map(part => exact(part.runs)), total: exact(runs.map(run => ({ ...run, value: 0 }))) } });
+    assert.deepEqual(exactSummaries, legacy, 'exact summary metadata cannot change a legacy path');
     const bucket = { firstHour: 100, lastHour: 119, firstValue: 2, lastValue: 5, lastValueHour: 118, minHour: 105, minValue: 1,
       maxHour: 112, maxValue: 9, firstBreak: true, hasBreak: false };
     const summary: ChartSummary = { from: 100.25, to: 119.5, width: Math.ceil(frame.plotWidth), buckets: [bucket] };
@@ -52,12 +52,6 @@ test('BreakdownChart keeps the exact signed canvas path and uses shared dense ge
     assert.notDeepEqual(totalFree, legacy, 'a complete parts inventory uses dense geometry without an authoritative total');
     assert.ok(totalFree.some(command => command[0] === 'fill'));
     assert.ok(totalFree.length < 200);
-    const approximate = draw({ ...props, summaries: { parts: parts.map(() => ({ ...summary, runs,
-      approximate: [{ firstHour: 108, lastHour: 119 }] })) } });
-    assert.ok(approximate.some(command => command[0] === 'globalAlpha' && command[1] === 0.55), 'rough runs use shared faded drawing even when their width fits');
-    assert.ok(approximate.some(command => command[0] === 'setLineDash' && JSON.stringify(command[1]) === '[4,4]'));
-    assert.ok(approximate.some(command => command[0] === 'clip'));
-    assert.ok(approximate.some(command => command[0] === 'fill'), 'unprepared parts draw immediately');
     const late = draw({ ...props, summaries: { parts: parts.map(() => ({ ...summary, width: summary.width + 1 })) } });
     assert.ok(!late.some(command => command[0] === 'fill'), 'a reply for another width cannot paint this one');
   } finally { await vite.close(); delete globals.__preparedBreakdown; }

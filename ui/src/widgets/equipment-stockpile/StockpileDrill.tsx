@@ -9,13 +9,14 @@ import { exactPartShare } from '../../charts/race/countryPartsDrillData';
 import { runAt } from '../../charts/series';
 import { fixedNumber, formatAmount, formatRate, formatSigned } from '../../charts/valueAxis';
 import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
-import type { EquipmentStockpileReply, StockpileCatalogueReply, StockpileHolder } from '../../generated/dashboard';
+import type { EquipmentStockpileReply, StockpileCatalogueReply } from './types';
 import type { StockGroup } from './stockpileData';
 import { balanceMode, balanceOperandsAt, dailyAt, dailyIcAt, stockAt, variantName } from './stockpileData';
 import { stockpileGroupKey } from './stockpileCatalogue';
 import { useStockpileChart } from './useStockpileChart';
 import type { DashboardClient } from '../../dashboard/client';
 import type { BoundTrack } from '../../dashboard/model';
+import type { StockpileHolder } from '../../generated/dashboard';
 
 /** The dash Needed is drawn with, as the Fuel widget draws capacity. */
 const NEED_DASH = [5, 4];
@@ -31,7 +32,7 @@ const NEED = '';
 export default function StockpileDrill({ data, catalogue, holders, included, group, hour, client, track, ...chart }: {
   data: EquipmentStockpileReply; catalogue: StockpileCatalogueReply | undefined; holders: readonly StockpileHolder[]; included: readonly string[];
   group: StockGroup; hour: number; client: DashboardClient; track: BoundTrack;
-} & Omit<Parameters<typeof BreakdownChart>[0], 'series' | 'axes' | 'label'>) {
+} & Omit<Parameters<typeof BreakdownChart>[0], 'series' | 'axes' | 'label' | 'data'>) {
   const tokens = useChartTokens(), viewport = useViewportHeight();
   const amount = (raw: bigint) => formatAmount(raw, data.decimals, 0);
   const total = stockAt(data, group, hour);

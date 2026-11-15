@@ -529,7 +529,7 @@ mod tests {
             assert_eq!(ACTIVE.load(Ordering::SeqCst), 0);
             assert_eq!(ACQUIRED_EVENTS.load(Ordering::SeqCst), 0);
             assert_eq!(self::refusals(), refusals + usize::from(context.kind == 2));
-            let mut entries = [Entry::default(); 1];
+            let mut entries = vec![Entry::default(); 1];
             assert_eq!(super::super::drain(&mut entries).unwrap().copied, 0);
         }
         super::super::observe_for_test(false);
@@ -552,7 +552,7 @@ mod tests {
         line.set_converting(false);
         line.replace(0x6_0000_0046, 0x8_0000_004f);
         assert_eq!(unsafe { returned(&mut context) }, 1);
-        let mut entries = [Entry::default(); 2];
+        let mut entries = vec![Entry::default(); 2];
         assert_eq!(super::super::drain(&mut entries).unwrap().copied, 1);
         assert_eq!(
             (entries[0].purpose, entries[0].variant, entries[0].mio),
@@ -601,7 +601,7 @@ mod tests {
             assert_eq!(ACTIVE.load(Ordering::SeqCst), 0);
             assert_eq!(ACQUIRED_EVENTS.load(Ordering::SeqCst), 0);
         }
-        let mut entries = [Entry::default(); 1];
+        let mut entries = vec![Entry::default(); 1];
         assert_eq!(
             super::super::drain(&mut entries).err(),
             Some("native world observation is disabled")
@@ -677,7 +677,7 @@ mod tests {
         assert_eq!(unsafe { returned(&mut context) }, 1);
         assert_eq!(ACQUIRED_EVENTS.load(Ordering::SeqCst), 0);
         assert_eq!(ACTIVE.load(Ordering::SeqCst), 0);
-        let mut entries = [Entry::default(); 1];
+        let mut entries = vec![Entry::default(); 1];
         let drained = super::super::drain(&mut entries).expect("settled marker drains");
         assert_eq!(drained.copied, 1);
         assert_eq!(entries[0].kind, OutputKind::UnknownDelivery);

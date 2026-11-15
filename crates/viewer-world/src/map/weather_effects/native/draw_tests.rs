@@ -736,7 +736,7 @@ fn weather_native_cache_preserves_keys_ranges_resources_and_late_upload_failures
     engine_executable::executable_tables::initialize_for_tests().unwrap();
     let _serial = viewer_foundation::map::test_support::serial();
     let instance =
-        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+        shader_pipeline::gpu::instance();
     let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
     let mut descriptor = gpu_contract::device_descriptor(&adapter);
     descriptor.required_limits.max_buffer_size = 4 << 20;

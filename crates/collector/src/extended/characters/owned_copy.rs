@@ -1,12 +1,10 @@
 use super::*;
-use engine_allocation::{owned_vec, reserve, vec};
+use engine_allocation::{SharedBox, owned_vec, reserve, vec};
 
 /// One refresh of raw character payload. Trait occurrences reference owned,
 /// verified definitions; all other observations retain the raw replay order.
 #[derive(Debug, Default)]
 pub(crate) struct CharactersJob {
-    pub(super) worker_growing: bool,
-    pub(super) capture_growing: bool,
     pub(super) leader_rows: usize,
     pub(super) character_demand: AdvisorDemand,
     pub(super) unit_demand: AdvisorDemand,
@@ -24,7 +22,7 @@ pub(crate) struct CharactersJob {
     pub(super) appended_overflowed: bool,
     pub(super) appended_charge: crate::raw_memory::Charge,
     pub(super) skills: [SkillCopy; 32],
-    pub(super) portrait_census: Option<Arc<ccharacter_manager::PortraitCensus>>,
+    pub(super) portrait_census: Option<SharedBox<ccharacter_manager::PortraitCensus>>,
     pub(super) census_current: bool,
     pub(super) census_matches_plan: bool,
     pub(super) source_bindings: Option<CharacterSourceBindings>,
@@ -58,7 +56,7 @@ pub(crate) struct CharactersJob {
     pub(super) census_charge: crate::raw_memory::Charge,
     // The roster job gathers the role census on role hours. It persists
     // like the portrait census; the flag admits only this pass's gather.
-    pub(super) role_census: Option<Arc<census::RoleCensus>>,
+    pub(super) role_census: Option<SharedBox<census::RoleCensus>>,
     pub(super) role_census_current: bool,
     /// Historical roster length of the retained portrait census, or of the
     /// loaned census this payload was acquired from.
@@ -85,8 +83,6 @@ pub(super) struct CharacterSourceBindings {
     pub(super) sources: Vec<TraitVectorCopy>,
     pub(super) overflowed: bool,
     pub(super) ready: bool,
-    pub(super) rows: usize,
-    pub(super) bytes: usize,
     pub(super) advisor: AdvisorDemand,
     pub(super) advisor_section_complete: bool,
     pub(super) charge: crate::raw_memory::Charge,
@@ -98,8 +94,6 @@ impl CharacterSourceBindings {
             sources: owned_vec(vec(census::initial_len())),
             overflowed: false,
             ready: false,
-            rows: 0,
-            bytes: 0,
             advisor: AdvisorDemand::default(),
             advisor_section_complete: false,
             charge: crate::raw_memory::Charge::default(),
@@ -115,34 +109,22 @@ impl CharacterSourceBindings {
         });
     }
 
-    pub(super) fn matches(&self, context: CharactersCopyContext) -> bool {
-        self.ready && self.rows == context.trait_rows && self.bytes == context.trait_bytes
-    }
-
-    pub(super) fn begin(&mut self, context: CharactersCopyContext) {
+    pub(super) fn begin(&mut self) {
         self.sources.clear();
         self.overflowed = false;
         self.ready = false;
-        self.rows = context.trait_rows;
-        self.bytes = context.trait_bytes;
     }
 
-    pub(super) fn remember(&mut self, source: TraitVectorCopy, growing: bool) {
-        if growing {
-            let capacity = self.sources.capacity();
-            if reserve(&mut self.sources, 1).is_err() {
-                self.overflowed = true;
-                return;
-            }
-            if self.sources.capacity() != capacity {
-                self.update_charge();
-            }
-        }
-        if self.sources.len() == self.sources.capacity() {
+    pub(super) fn remember(&mut self, source: TraitVectorCopy) {
+        let capacity = self.sources.capacity();
+        if reserve(&mut self.sources, 1).is_err() {
             self.overflowed = true;
-        } else {
-            self.sources.push(source);
+            return;
         }
+        if self.sources.capacity() != capacity {
+            self.update_charge();
+        }
+        self.sources.push(source);
     }
 
     pub(super) fn grow(&mut self) {
@@ -214,11 +196,11 @@ pub(super) enum AppendedRole {
 }
 
 impl CharactersJob {
-    /// Whether recycling keeps the job. A leader role job that carried its
-    /// rows from the census copied no raw log, but its held rows are its
-    /// storage: dropping it would start every later hour cold.
+    /// Whether recycling keeps the job: a worker job's own storage, or a
+    /// leader role job's held rows, carried from the census without a raw log;
+    /// dropping it would start every later hour cold.
     pub(crate) fn has_storage(&self) -> bool {
-        self.worker_growing
+        self.source_bindings.is_some()
             || self.advisor_cache.is_some()
             || self.leader_cache.is_some()
             || self.log.spans.capacity() != 0
@@ -287,8 +269,6 @@ impl CharactersJob {
             ..Default::default()
         });
         Self {
-            worker_growing: false,
-            capture_growing: false,
             leader_rows: 0,
             character_demand: AdvisorDemand::default(),
             unit_demand: AdvisorDemand::default(),
@@ -307,7 +287,7 @@ impl CharactersJob {
             appended_overflowed: false,
             appended_charge,
             skills: [SkillCopy::default(); 32],
-            portrait_census: census.map(Arc::new),
+            portrait_census: census.and_then(|census| engine_allocation::shared(census).ok()),
             census_current: false,
             census_matches_plan: false,
             source_bindings: Some(CharacterSourceBindings::new()),
@@ -328,7 +308,7 @@ impl CharactersJob {
             trait_carry: leader_carry::TraitCarry::default(),
             census_carry: census::CensusCarry::default(),
             census_charge,
-            role_census: role_census.map(Arc::new),
+            role_census: role_census.and_then(|census| engine_allocation::shared(census).ok()),
             role_census_current: false,
             census_historical: 0,
             census_generation: 0,
@@ -351,13 +331,13 @@ impl CharactersJob {
         assert!(part < PARTS, "invalid character part");
         let mask = PART_MASKS[part];
         let mut job = Self::with_storage(part, 0, 0, mask[4]);
-        job.worker_growing = true;
         if part == 1 && cfg!(feature = "character_changes") {
             job.leader_cache = Some(leaders::LeaderCache::default());
         }
         if part == 2 {
             job.advisor_roots = crate::raw::RawLog::new(4, 48);
-            job.advisor_dynamic = Some(Box::new(Self::with_storage(part, 0, 0, false)));
+            job.advisor_dynamic =
+                engine_allocation::boxed(Self::with_storage(part, 0, 0, false)).ok();
         }
         job
     }
@@ -386,14 +366,14 @@ impl CharactersJob {
         }
     }
 
-    pub(crate) fn portrait_census(&self) -> Option<Arc<ccharacter_manager::PortraitCensus>> {
+    pub(crate) fn portrait_census(&self) -> Option<SharedBox<ccharacter_manager::PortraitCensus>> {
         self.census_current
             .then(|| self.portrait_census.clone())
             .flatten()
     }
 
     /// This pass's role census; role jobs return the loan at their join.
-    pub(crate) fn role_census(&self) -> Option<Arc<census::RoleCensus>> {
+    pub(crate) fn role_census(&self) -> Option<SharedBox<census::RoleCensus>> {
         self.role_census_current
             .then(|| self.role_census.clone())
             .flatten()
@@ -468,7 +448,7 @@ impl CharactersJob {
         // Every portrait lease returns before recycle. The grown census was
         // incomplete, so retire any prepared program: the next pass must
         // rediscover the roster to publish it.
-        if let Some(census) = self.portrait_census.as_mut().and_then(Arc::get_mut)
+        if let Some(census) = self.portrait_census.as_mut().and_then(SharedBox::get_mut)
             && census.needs_growth()
         {
             if census.grow().map_err(crate::allocation::io).is_err() {
@@ -477,7 +457,7 @@ impl CharactersJob {
             self.log.invalidate_read_plan();
         }
         // Role loans also return before recycle.
-        if let Some(census) = self.role_census.as_mut().and_then(Arc::get_mut) {
+        if let Some(census) = self.role_census.as_mut().and_then(SharedBox::get_mut) {
             census.grow();
         }
         let visits = self
@@ -546,19 +526,15 @@ impl CharactersJob {
 
     fn remember_appended(&mut self, role: AppendedRole) {
         self.appended_required = self.appended_required.saturating_add(1);
-        if self.worker_growing {
-            if reserve(&mut self.appended_roles, 1).is_err() {
-                self.appended_overflowed = true;
-                return;
-            }
-            self.appended_charge.set(crate::raw_memory::Capacity {
-                auxiliary_vectors: crate::raw_memory::vector_bytes(&self.appended_roles),
-                ..Default::default()
-            });
+        if reserve(&mut self.appended_roles, 1).is_err() {
+            self.appended_overflowed = true;
+            return;
         }
-        if self.appended_roles.len() < self.appended_roles.capacity() {
-            self.appended_roles.push(role);
-        }
+        self.appended_charge.set(crate::raw_memory::Capacity {
+            auxiliary_vectors: crate::raw_memory::vector_bytes(&self.appended_roles),
+            ..Default::default()
+        });
+        self.appended_roles.push(role);
     }
 
     pub(super) fn fate(&self) -> TreeFate {
@@ -588,8 +564,6 @@ pub(crate) struct CharactersCopyContext {
     /// A full hour reads every character template again.
     pub force_full: bool,
     pub active: [bool; N],
-    pub trait_rows: usize,
-    pub trait_bytes: usize,
 }
 
 /// Per-batch failure flags mirroring `Batch::active`: once a typed batch
@@ -1441,7 +1415,7 @@ pub(super) fn take_advisor_fields<const M: usize>(
     }
 }
 
-/// Mirror of `cadvisor::walk_entry`'s read set: the role-map traversal plus
+/// Mirror of `cadvisor::walk_prefix_entry`'s read set: the role-map traversal plus
 /// node, role and key/idea/slot string spans per node. Hash order and auth
 /// checks are local parses; any failure kills only the advisors batch.
 pub(super) fn copy_advisors(
@@ -2197,7 +2171,7 @@ pub(super) fn copy_trait_vector(
         return true;
     }
     if let Some(plan) = &mut job.source_bindings {
-        plan.remember(params, job.worker_growing);
+        plan.remember(params);
     }
     *dead = job.traits.acquire(memory, base, params).is_err();
     !job.traits.overflowed()
@@ -2328,14 +2302,11 @@ pub(super) fn copy_pass(
 ) {
     let _reads = read_accounting::table(TABLES[anchor(context.active)]);
     job.log.clear();
-    if job.worker_growing {
-        job.log.enable_worker_growth();
-    }
     job.advisor_demand = AdvisorDemand::default();
     job.appended_overflowed = false;
     job.skills.fill(SkillCopy::default());
     job.active = context.active;
-    job.traits.begin(context, job.worker_growing);
+    job.traits.begin();
     job.game_state = context.game_state;
     job.census_current = false;
     job.role_census_current = false;
@@ -2344,7 +2315,7 @@ pub(super) fn copy_pass(
     // also preserve capacity demand and freshly reacquire bound trait sources.
     let hourly = roster_part(context.active);
     let bound = !hourly && job.source_bindings.is_some();
-    if bound && !job.source_bindings.as_ref().unwrap().matches(context) {
+    if bound && !job.source_bindings.as_ref().unwrap().ready {
         job.log.invalidate_read_plan();
     }
     if context.active[0] {
@@ -2390,12 +2361,12 @@ pub(super) fn copy_pass(
         job.appended_roles.clear();
         job.appended_required = 0;
         if bound {
-            job.source_bindings.as_mut().unwrap().begin(context);
+            job.source_bindings.as_mut().unwrap().begin();
         }
         // The root returns every portrait lease before this job can be recycled.
         // A retained lease disables sharing; never allocate or wait here.
         let mut owned = job.portrait_census.take();
-        let census = owned.as_mut().and_then(Arc::get_mut);
+        let census = owned.as_mut().and_then(SharedBox::get_mut);
         copy_roster(
             memory,
             context.base,
@@ -2490,7 +2461,7 @@ pub(super) fn copy_roster(
     // Demand the whole native roster even if staging stops this pass early.
     if let Some(census) = census.as_mut() {
         census.expect(arrays[0].count as usize + arrays[1].count as usize);
-        if job.worker_growing && census.grow().map_err(crate::allocation::io).is_err() {
+        if census.grow().map_err(crate::allocation::io).is_err() {
             return;
         }
         job.census_historical = arrays[0].count as usize;
@@ -2683,7 +2654,8 @@ pub(super) fn gather_role_census(
     let portraits = job.portrait_census.as_ref();
     let rows = portraits.and_then(|census| census.rows(ctx.base, ctx.game_state));
     let stamp = portraits.map_or(0, |census| census.stamp());
-    if let (Some(rows), Some(roles)) = (rows, job.role_census.as_mut().and_then(Arc::get_mut)) {
+    let roles = job.role_census.as_mut().and_then(SharedBox::get_mut);
+    if let (Some(rows), Some(roles)) = (rows, roles) {
         let (admitted, counts) = job.census_carry.acquire(
             memory,
             roles,
@@ -2691,7 +2663,6 @@ pub(super) fn gather_role_census(
             rows,
             stamp,
             job.census_historical,
-            job.worker_growing,
         );
         job.role_census_current = admitted;
         if admitted && counts.gathered {
@@ -2712,9 +2683,6 @@ pub(super) fn copy_census(
 ) {
     let _reads = read_accounting::table(TABLES[anchor(context.active)]);
     job.log.clear();
-    if job.worker_growing {
-        job.log.enable_worker_growth();
-    }
     job.leader_rows = 0;
     job.advisor_demand = AdvisorDemand::default();
     job.appended_roles.clear();
@@ -2722,7 +2690,7 @@ pub(super) fn copy_census(
     job.appended_overflowed = false;
     job.skills.fill(SkillCopy::default());
     job.active = context.active;
-    job.traits.begin(context, job.worker_growing);
+    job.traits.begin();
     job.game_state = context.game_state;
     job.census_current = false;
     job.role_census_current = false;
@@ -2759,18 +2727,15 @@ pub(super) fn visit_census(
     index: usize,
     needs: impl Fn(census::Occurrence) -> bool,
 ) -> bool {
-    if job.worker_growing && reserve(&mut job.census_visited, 1).is_err() {
+    if reserve(&mut job.census_visited, 1).is_err() {
+        let remaining = (index..census.len())
+            .filter(|&index| needs(census.occurrence(index)))
+            .count();
+        job.census_required = job.census_visited.len() + remaining.max(1);
         return false;
     }
-    if job.census_visited.len() < job.census_visited.capacity() {
-        job.census_visited.push(census.occurrence(index));
-        return true;
-    }
-    let remaining = (index..census.len())
-        .filter(|&index| needs(census.occurrence(index)))
-        .count();
-    job.census_required = job.census_visited.len() + remaining.max(1);
-    false
+    job.census_visited.push(census.occurrence(index));
+    true
 }
 
 /// Leader-map sentinels are gathered in batches ahead of their maps. An empty
@@ -2872,8 +2837,7 @@ pub(super) fn copy_census_units(
     // The traits job carries the leaders no forwarded writer touched
     // ([`leader_carry`]); the roster job has none to carry here.
     job.trait_carry.begin_hour();
-    // A fixed-capacity capture's trait budget counts only fresh rows.
-    if !dead.traits && dead.units && job.worker_growing {
+    if !dead.traits && dead.units {
         job.trait_carry
             .certify(census.generation, census.len(), || quiet::leaders(census));
     }
@@ -2939,9 +2903,6 @@ pub(super) fn copy_advisor_sections(
     debug_assert_eq!(ctx.active, PART_MASKS[2]);
     let _reads = read_accounting::table(TableId::AdvisorRoles);
     job.clear();
-    if job.worker_growing {
-        job.advisor_roots.enable_worker_growth();
-    }
     job.active = ctx.active;
     job.game_state = ctx.game_state;
     let roster = ccharacter_manager::Roster::read(
@@ -2956,7 +2917,6 @@ pub(super) fn copy_advisor_sections(
         return;
     };
     let mut dynamic = job.advisor_dynamic.take().expect("advisor section storage");
-    dynamic.worker_growing = job.worker_growing;
     for (index, (array, _)) in roster.sections().into_iter().enumerate() {
         if index == 1 && !job.advisor_section_complete {
             break;

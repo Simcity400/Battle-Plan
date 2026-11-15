@@ -275,7 +275,6 @@ impl StateStore {
         memory: &impl Memory,
         base: usize,
         game_state: usize,
-        growing: bool,
         rows: &mut Vec<cstate::Row>,
         names: &mut Vec<u8>,
         visitor: &mut state_flags::Captured,
@@ -327,7 +326,7 @@ impl StateStore {
                 self.reread[index] = true;
             }
         }
-        if !engine_native::walk::Buffer::for_worker(rows, growing)
+        if !engine_native::walk::Buffer::Growing(rows)
             .ensure(len)
             .ok()?
         {
@@ -388,7 +387,7 @@ impl StateStore {
             game_state,
             census,
             rows,
-            engine_native::walk::Buffer::for_worker(names, growing),
+            engine_native::walk::Buffer::Growing(names),
             |index| (!reread[index]).then(|| held.names(index)),
             crate::scripted_maps::state,
         );
@@ -398,14 +397,11 @@ impl StateStore {
         // Nothing below falls back: the visitor sees exactly the census.
         for (&pointer, &id) in self.held.pointers.iter().zip(&self.ids) {
             let source = cstate::Source { pointer, id };
-            if growing {
-                visitor.visit_growing(source);
-            } else {
-                visitor.visit(source);
-            }
+            visitor.visit(source);
+            
         }
         visitor.finish(census);
-        inputs.acquire_carried(memory, base, visitor, growing, |index| {
+        inputs.acquire_carried(memory, base, visitor, |index| {
             (!reread[index]).then(|| held.fractions[index])
         });
         self.count();

@@ -6,6 +6,7 @@ use crate::map_binding::MapBinding;
 use replay::campaign::{HourCursor, Replay, SeekResult};
 use replay_data::{BranchId, Hour, SessionId, rows::TableId};
 use replay_frame::{frame::DecodedFrame, frame::TableView};
+use viewer_counter_products::map::province_tooltips::air_region::{RosterHistory, Sampler};
 
 /// What a playback holds for its hour: the decoded frame, shared so the
 /// window can hand it between threads without a copy, the gap it falls in, or
@@ -28,7 +29,7 @@ pub enum Current {
 }
 
 /// The recording's daily air rosters as the map counters ask them.
-pub struct AirRosters(viewer_counter_products::map::province_tooltips::air_region::RosterHistory);
+pub struct AirRosters(RosterHistory);
 
 impl viewer_counters::map::counters::AirPasses for AirRosters {
     fn visited(&self, branch: BranchId, pass: Hour, slot: u32) -> Result<bool, String> {
@@ -39,8 +40,10 @@ impl viewer_counters::map::counters::AirPasses for AirRosters {
 pub struct Playback {
     /// Shared so a worker thread can walk the same file without a copy.
     replay: Arc<Replay>,
-    /// The daily air rosters of `replay` from the map source they were last asked through.
-    air_rosters: std::sync::Mutex<Option<Arc<AirRosters>>>,
+    /// The sampler of `replay`'s daily air rosters handed out: the playhead entry's, over lanes,
+    /// once a reader opened on it ([`Self::read_rosters_of`]), else today's reader through the
+    /// map's source; and whether it is the entry's.
+    rosters: std::sync::Mutex<Option<(Arc<Sampler>, bool)>>,
     branch: BranchId,
     hour: Hour,
     current: Current,
@@ -94,7 +97,7 @@ impl Playback {
         let hour = first.first_hour;
         Ok(Self {
             replay,
-            air_rosters: std::sync::Mutex::new(None),
+            rosters: std::sync::Mutex::new(None),
             branch,
             hour,
             current: gap(branch, hour, "hour has not been decoded".into()),
@@ -229,26 +232,38 @@ impl Playback {
         self.map.as_ref().map(|map| map.roster_source())
     }
 
-    /// The daily air rosters, read through the map's source once it is open.
+    /// The daily air rosters as the map counters ask them, from the shared sampler.
     pub fn air_rosters(&self) -> Arc<AirRosters> {
+        Arc::new(AirRosters(RosterHistory::of(self.roster_sampler())))
+    }
+
+    /// The sampler of the air roster history: the playhead entry's once a reader opened on it,
+    /// else today's reader through the map's source once it is open.
+    pub fn roster_sampler(&self) -> Arc<Sampler> {
         let source = self.air_roster_source();
         let mut held = self
-            .air_rosters
+            .rosters
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(rosters) = held.as_ref().filter(|rosters| {
-            rosters.0.columnar().map(Arc::as_ptr) == source.as_ref().map(Arc::as_ptr)
+        if let Some((sampler, _)) = held.as_ref().filter(|(sampler, lanes)| {
+            *lanes || sampler.columnar().map(Arc::as_ptr) == source.as_ref().map(Arc::as_ptr)
         }) {
-            return Arc::clone(rosters);
+            return Arc::clone(sampler);
         }
-        let rosters = Arc::new(AirRosters(
-            viewer_counter_products::map::province_tooltips::air_region::RosterHistory::new(
-                Arc::clone(&self.replay),
-                source,
-            ),
-        ));
-        *held = Some(Arc::clone(&rosters));
-        rosters
+        let sampler = Arc::new(Sampler::today(Arc::clone(&self.replay), source));
+        *held = Some((Arc::clone(&sampler), false));
+        sampler
+    }
+
+    /// The air roster history is read by `entry`'s one sampler from now on, as every map and tool
+    /// on that playhead reads it; today's stays when the entry has none.
+    pub(crate) fn read_rosters_of(&self, entry: &crate::playhead_host::Entry) {
+        if let Some(sampler) = entry.rosters(&self.replay) {
+            *self
+                .rosters
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((sampler, true));
+        }
     }
 
     pub fn branch(&self) -> BranchId {
@@ -533,7 +548,11 @@ impl Playback {
             Err(error) if error.kind() == io::ErrorKind::Interrupted => return Err(error),
             Err(error) => {
                 self.cursor = None;
-                gap(branch, hour, format!("unreadable hour: {error}"))
+                Current::Refused {
+                    branch,
+                    hour,
+                    reason: format!("the hour cannot be read: {error}"),
+                }
             }
         };
         Ok(())
@@ -642,7 +661,7 @@ pub(crate) mod tests {
         frame::FrameEncoder, frame::Metrics,
     };
 
-    fn session(id: SessionId) -> SessionStart {
+    pub(crate) fn session(id: SessionId) -> SessionStart {
         SessionStart {
             id,
             process_id: id as u32,
@@ -669,7 +688,7 @@ pub(crate) mod tests {
         }
     }
 
-    fn source(branch: BranchId, hour: Hour) -> DecodedFrame {
+    pub(crate) fn source(branch: BranchId, hour: Hour) -> DecodedFrame {
         replay_frame::frame::retire_absent(DecodedFrame {
             branch,
             hour,
@@ -969,6 +988,11 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn fixture() -> Replay {
+        written_fixture().0
+    }
+
+    /// The fixture, and each hour's derived tables as its writer held them.
+    fn written_fixture() -> (Replay, Vec<DecodedFrame>) {
         let mut records = records(1, &[100, 101, 104, 105, 820]);
         records.push(Record::Gap(Gap {
             branch: 1,
@@ -976,7 +1000,24 @@ pub(crate) mod tests {
             last_hour: 104,
             reason: "flush failed".into(),
         }));
-        Replay::from_records(b"campaign".to_vec(), &[records]).unwrap()
+        Replay::from_records_derived(b"campaign".to_vec(), &[records]).unwrap()
+    }
+
+    /// The frame read back at `(branch, hour)`: `source`'s, each derived table and its read
+    /// time as the writer held them then (`derived`).
+    fn read_back(derived: &[DecodedFrame], branch: BranchId, hour: Hour) -> DecodedFrame {
+        let held = derived
+            .iter()
+            .find(|frame| (frame.branch, frame.hour) == (branch, hour))
+            .expect("the fixture writes the hour");
+        let mut frame = source(branch, hour);
+        for (index, view) in held.tables.iter().enumerate() {
+            if !view.is_not_selected() {
+                frame.tables[index] = view.clone();
+                frame.metrics.table_ns[index] = held.metrics.table_ns[index];
+            }
+        }
+        frame
     }
 
     /// The fixture with its first block damaged: the block is unreadable, while the
@@ -1028,7 +1069,8 @@ pub(crate) mod tests {
 
     #[test]
     fn steps_show_table_failures_and_gaps_without_interpolation() {
-        let mut playback = Playback::new(fixture()).unwrap();
+        let (replay, derived) = written_fixture();
+        let mut playback = Playback::new(replay).unwrap();
         assert!(playback.step().unwrap());
         let frame = playback.frame().unwrap();
         assert!(matches!(
@@ -1049,7 +1091,7 @@ pub(crate) mod tests {
             ));
         }
         assert!(playback.step().unwrap());
-        assert_eq!(playback.frame(), Some(&source(1, 104)));
+        assert_eq!(playback.frame(), Some(&read_back(&derived, 1, 104)));
     }
 
     #[test]
@@ -1092,18 +1134,23 @@ pub(crate) mod tests {
         );
     }
 
-    /// Every hour of the corrupt first block is a gap naming why, as the shared reader refuses it.
+    /// Every hour of the corrupt first block is that hour's failure, carrying the shared
+    /// reader's error, never a gap.
     fn assert_unreadable(playback: &mut Playback, hour: Hour) {
         playback.seek(1, hour).unwrap();
-        assert!(playback.replay().seek(1, hour).is_err());
-        assert!(matches!(
-            playback.current(),
-            Current::Gap { reason, .. } if reason.starts_with("unreadable hour:")
-        ));
+        let error = playback.replay().seek(1, hour).unwrap_err().to_string();
+        assert!(
+            matches!(
+                playback.current(),
+                Current::Refused { branch: 1, hour: at, reason } if *at == hour && reason.contains(&error)
+            ),
+            "hour {hour}: {:?} does not carry {error}",
+            playback.current()
+        );
     }
 
     #[test]
-    fn a_corrupt_block_is_a_gap_and_does_not_hide_the_next_block() {
+    fn a_corrupt_block_is_its_hours_failure_and_does_not_hide_the_next_block() {
         let mut playback = Playback::new(corrupt_first_block(&fixture())).unwrap();
         for hour in [100, 101, 100] {
             assert_unreadable(&mut playback, hour);
@@ -1214,7 +1261,8 @@ pub(crate) mod tests {
 
     #[test]
     fn cancellation_walks_do_not_hold_endpoints_and_can_export_the_same_hour_afterwards() {
-        let replay = Arc::new(fixture());
+        let (replay, derived) = written_fixture();
+        let replay = Arc::new(replay);
         let mut playback = Playback::unloaded(Arc::clone(&replay)).unwrap();
         playback.advance_cancellable(1, 104, &|| false).unwrap();
         assert!(!playback.materialized);
@@ -1228,7 +1276,7 @@ pub(crate) mod tests {
         let Current::Frame(held) = held else {
             panic!("held frame")
         };
-        assert_eq!(held.as_ref(), &source(1, 105));
+        assert_eq!(held.as_ref(), &read_back(&derived, 1, 105));
     }
 
     #[test]
@@ -1260,13 +1308,13 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn an_unreadable_block_is_read_again_to_the_same_gap() {
+    fn an_unreadable_block_is_read_again_to_the_same_failure() {
         let mut playback = Playback::new(corrupt_first_block(&fixture())).unwrap();
         let unreadable = playback.current().clone();
-        assert!(matches!(
-            &unreadable,
-            Current::Gap { reason, .. } if reason.starts_with("unreadable hour:")
-        ));
+        assert!(
+            matches!(&unreadable, Current::Refused { .. }),
+            "{unreadable:?}"
+        );
         assert!(!playback.holds_source(), "a failed walk is let go");
         assert_eq!(playback.walk_start(1, 101), Some(99));
         playback.seek(1, 100).unwrap();
@@ -1274,6 +1322,26 @@ pub(crate) mod tests {
         for hour in [101, 100] {
             assert_unreadable(&mut playback, hour);
         }
+    }
+
+    /// The campaign map's document and a dashboard map's each read today's sampler until a reader
+    /// opens on them; then, and again for a reader opened anew, the playhead's one lanes sampler.
+    #[test]
+    fn every_reader_opened_hands_out_its_playheads_one_lanes_roster_sampler() {
+        use crate::layers::sounds::tests::{quick, record_runs, units};
+        let replay = Arc::new(Replay::from_records(b"campaign".to_vec(), &[records(1, &[100, 101, 102])]).unwrap());
+        let entry = crate::playhead_host::open(units(record_runs(&[(100, 3)], &[], |_, _| {}), "every reader hands out the lanes rosters"), quick()).unwrap();
+        let lanes = entry.rosters(&replay).expect("the recording holds a block at the playhead's first hour");
+        let campaign = Playback::unloaded(Arc::clone(&replay)).unwrap();
+        let dashboard = Playback::unloaded(Arc::clone(&replay)).unwrap();
+        for (name, playback) in [("the campaign map", &campaign), ("a dashboard map", &dashboard)] {
+            assert!(!Arc::ptr_eq(&playback.roster_sampler(), &lanes), "{name} reads today's before a reader opens");
+            playback.read_rosters_of(&entry);
+            assert!(Arc::ptr_eq(&playback.roster_sampler(), &lanes), "{name} reads the lanes once its reader opened");
+        }
+        campaign.read_rosters_of(&entry);
+        assert!(Arc::ptr_eq(&campaign.roster_sampler(), &lanes), "a reopened reader keeps the one sampler");
+        assert!(Arc::ptr_eq(&entry.rosters(&replay).unwrap(), &lanes), "one sampler a recording and timeline");
     }
 }
 
@@ -1291,7 +1359,11 @@ mod damaged_recording_tests {
         };
         let replay = Replay::open(recording.damaged_block(&recording.index[0]).unwrap()).unwrap();
         let mut playback = Playback::new(replay).unwrap();
-        assert!(matches!(playback.current(), Current::Gap { .. }));
+        assert!(
+            matches!(playback.current(), Current::Refused { .. }),
+            "{:?}",
+            playback.current()
+        );
         playback.seek(1, 820).unwrap();
         assert_eq!(playback.frame().unwrap(), expected.as_ref());
     }

@@ -50,35 +50,13 @@ impl Captured {
         self.ticks = 0;
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    /// Worker-only preparation continues from the original matrix controls.
     pub fn prepare(
         &mut self,
         memory: &impl Memory,
         hour: Option<i32>,
         observation: Option<ccountry::ReservedVisibilityObservation>,
         prefix_ready: bool,
-    ) -> Option<crelation_status::ReservedVisibilitySource> {
-        self.prepare_storage(memory, hour, observation, prefix_ready, false)
-    }
-
-    /// Worker-only preparation continues from the original matrix controls.
-    pub fn prepare_growing(
-        &mut self,
-        memory: &impl Memory,
-        hour: Option<i32>,
-        observation: Option<ccountry::ReservedVisibilityObservation>,
-        prefix_ready: bool,
-    ) -> Option<crelation_status::ReservedVisibilitySource> {
-        self.prepare_storage(memory, hour, observation, prefix_ready, true)
-    }
-
-    fn prepare_storage(
-        &mut self,
-        memory: &impl Memory,
-        hour: Option<i32>,
-        observation: Option<ccountry::ReservedVisibilityObservation>,
-        prefix_ready: bool,
-        growing: bool,
     ) -> Option<crelation_status::ReservedVisibilitySource> {
         self.reset();
         self.attempted = true;
@@ -101,14 +79,13 @@ impl Captured {
             Ok(source) => {
                 self.cells.required = source.required_slots();
                 // Full country visibility uses the original matrix extent.
-                if growing
-                    && let Err(reason) = engine_native::walk::Buffer::Growing(&mut self.cells.first)
-                        .ensure(self.cells.required)
+                if let Err(reason) = engine_native::walk::Buffer::Growing(&mut self.cells.first)
+                    .ensure(self.cells.required)
                 {
                     self.source_reason = Some(reason);
                     return None;
                 }
-                self.cells.len = self.cells.required.min(self.cells.first.len());
+                self.cells.len = self.cells.required;
                 self.cells.first[..self.cells.len].fill(Cell::default());
                 Some(source)
             }
@@ -128,8 +105,7 @@ impl Captured {
         slot: u32,
         forward: Option<&crelation_status::ForwardZeroObservation>,
     ) {
-        // A required-prefix or whole-M storage refusal cannot commit any
-        // later vector body. The exact header demand still drives growth.
+        // A refused source or required prefix cannot commit any later vector body.
         if self.refusal().is_some() {
             return;
         }
@@ -159,10 +135,6 @@ impl Captured {
                 self.sample_hour
                     .is_none()
                     .then_some("reserved reverse visibility hour unavailable")
-            })
-            .or_else(|| {
-                (self.cells.required > self.cells.first.len())
-                    .then_some("reserved reverse visibility arena capacity exceeded")
             })
             .or_else(|| {
                 (!self.prefix_ready).then_some("reserved naming singleton prefix unavailable")

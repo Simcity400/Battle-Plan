@@ -38,14 +38,9 @@ impl Capacities {
         state: usize,
     ) -> Result<(), &'static str> {
         let deployments = collector_extended_support::demand::rows(
-            ccountry_supply_system::walk_floating_harbor_deployments(memory, base, state, &mut []),
+            ccountry_supply_system::count_floating_harbor_deployments(memory, base, state),
         );
-        let facilities = collector_extended_support::demand::rows(special_facility_flags::walk(
-            memory,
-            base,
-            state,
-            &mut [],
-        ));
+        let facilities = collector_extended_support::demand::rows(special_facility_flags::count(memory, base, state));
         if let Ok(count) = deployments {
             crate::country_scale::raise(&mut self.deployments, count);
         }
@@ -95,7 +90,7 @@ impl Captured {
         let begin = qpc();
         self.deployments.outcome = {
             let _reads = crate::read_accounting::table(TABLES[0]);
-            ccountry_supply_system::walk_floating_harbor_deployments_growing(
+            ccountry_supply_system::walk_floating_harbor_deployments(
                 memory,
                 base,
                 state,
@@ -105,7 +100,7 @@ impl Captured {
         let middle = qpc();
         self.facilities.outcome = {
             let _reads = crate::read_accounting::table(TABLES[1]);
-            special_facility_flags::walk_growing(memory, base, state, &mut self.facilities.rows)
+            special_facility_flags::walk(memory, base, state, &mut self.facilities.rows)
         };
         [
             middle.saturating_sub(begin).max(0) as u64,

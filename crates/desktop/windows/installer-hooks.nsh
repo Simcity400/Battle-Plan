@@ -12,7 +12,7 @@ Var HoiStartCheckbox
 ; 1 or 0 once the welcome page was shown; empty for passive updates, which leave the choice alone.
 Var HoiStartRecorder
 Var HoiRunning
-; 1 once a copy answered that it closes as an app, rather than as a preparer.
+; 1 once a copy answered that it closes.
 Var HoiAppClosed
 Var HoiRecorderRan
 Var HoiReplayRan
@@ -70,9 +70,8 @@ Var HoiStateFile
 !macroend
 
 ; Setup that failed after closing the apps lets them start again, reopens the ones it closed or
-; that started it (/HOI4RECORDER, /R: they exit before setup looks), and starts the preparer on
-; anything queued meanwhile. Only the install step closes anything, so a cancelled wizard leaves
-; nothing to reopen.
+; that started it (/HOI4RECORDER, /R: they exit before setup looks). Only the install step closes
+; anything, so a cancelled wizard leaves nothing to reopen.
 Function .onInstFailed
   ${If} $HoiClosing != 1
     Return
@@ -96,11 +95,10 @@ Function .onInstFailed
   ${If} $HoiReplayRan == 1
     !insertmacro HOI_RUN_AS_USER "$INSTDIR\${HOI_APP_EXE}" ""
   ${EndIf}
-  !insertmacro HOI_RUN_AS_USER "$INSTDIR\${HOI_APP_EXE}" "--prepare"
 FunctionEnd
 
 ; An uninstaller that stopped after closing the apps, on its own or run by a setup, reopens what
-; it closed, so its setup must not reopen them again, and starts the preparer.
+; it closed, so its setup must not reopen them again.
 Function un.onUninstFailed
   ${If} $HoiClosing != 1
     Return
@@ -119,7 +117,6 @@ Function un.onUninstFailed
   ${If} $HoiAppClosed == 1
     !insertmacro HOI_RUN_AS_USER "$INSTDIR\${HOI_APP_EXE}" ""
   ${EndIf}
-  !insertmacro HOI_RUN_AS_USER "$INSTDIR\${HOI_APP_EXE}" "--prepare"
 FunctionEnd
 
 !define MUI_CUSTOMFUNCTION_GUIINIT HoiGuiInit
@@ -160,7 +157,7 @@ FunctionEnd
 
 ; Ask ${exe} to close through its pipe (app-update's control.rs): it closes, or refuses while it
 ; records, saves or is attached to the game. Nothing is killed. $HoiRunning is 1 when it ran,
-; $HoiAppClosed when a copy answered as the app ('Y') rather than as a headless preparer ('P').
+; $HoiAppClosed when a copy answered that it closes ('Y').
 ; Inline, as sections come after the template's plugin folder.
 !macro HOI_CLOSE role exe name
   StrCpy $HoiRunning 0
@@ -185,7 +182,7 @@ FunctionEnd
       ; Every few seconds: each running copy answers once, and one already closing answers yes.
       IntOp $6 $5 % 8
       ${If} $6 = 0
-        ; Sends 'C', reads one byte: 'Y' closing, 'P' a preparer closing, 'N' refused.
+        ; Sends 'C', reads one byte: 'Y' closing, 'N' refused.
         System::Call 'kernel32::CallNamedPipeW(w r4, *i 67, i 1, *i 0 .r7, i 4, *i 0 .r8, i 60000) i .r9'
         IntOp $7 $7 & 0xFF
         ${If} $9 <> 0
@@ -217,11 +214,14 @@ FunctionEnd
   !insertmacro HOI_CLOSE "recorder" "${HOI_RECORDER_EXE}" "${HOI_RECORDER}"
   ${IfThen} $HoiRunning == 1 ${|} StrCpy $HoiRecorderRan 1 ${|}
   !insertmacro HOI_CLOSE "dashboard" "${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
-  ; A headless preparer runs the same executable; only Battle Plan's own answer reopens it.
   ${IfThen} $HoiAppClosed == 1 ${|} StrCpy $HoiReplayRan 1 ${|}
 !macroend
 
 !macro NSIS_HOOK_POSTINSTALL
+  ; Versions before the map ran inside Battle Plan installed it and its shader compiler apart; an
+  ; update leaves only what this version ships.
+  Delete "$INSTDIR\viewer.exe"
+  RMDir /r "$INSTDIR\shader-tools"
   ${If} $UpdateMode <> 1
   ${AndIf} $NoShortcutMode <> 1
     CreateShortcut "$SMPROGRAMS\${HOI_RECORDER}.lnk" "$INSTDIR\${HOI_RECORDER_EXE}"
@@ -243,9 +243,6 @@ FunctionEnd
   ${If} $HoiRecorderRan == 1
     nsis_tauri_utils::RunAsUser "$INSTDIR\${HOI_RECORDER_EXE}" ""
   ${EndIf}
-  ; Recordings may have been queued while setup held the apps off: the preparer works them,
-  ; and leaves at once when none waits.
-  nsis_tauri_utils::RunAsUser "$INSTDIR\${MAINBINARYNAME}.exe" "--prepare"
   ${If} $HoiReplayRan == 1
   ${AndIf} $PassiveMode = 1
     ${GetOptions} $CMDLINE "/R" $0

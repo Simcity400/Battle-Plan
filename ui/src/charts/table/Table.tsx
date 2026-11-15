@@ -6,6 +6,14 @@ import { CountryFlagUrl } from '../../components/CountryFlag';
 import type { MenuItem } from '../../components/ContextMenu';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { hideTooltip, refreshTooltip, scrollTooltip, showTooltip, tooltipText } from '../tooltip';
+import { liveKey } from '../live';
+import { atNextSlot, structureOpen } from '../../dashboard/structurePace';
+import { useWhyCommit } from '../../dashboard/widgetPerf.ts';
+import type { Live, LiveValues } from '../live';
+import { scheduler } from '../scheduler';
+import type { FrameTask } from '../scheduler';
+import { BarCell, barScale, textCell } from '../../dashboard/follow/painters.ts';
+import type { TextCell } from '../../dashboard/follow/painters';
 import type { TooltipContent } from '../tooltip';
 import { movingRowClass, useRowMotion } from '../useRowMotion';
 import { useChartTokens, useViewportHeight } from '../useChartTokens';
@@ -14,16 +22,18 @@ import { useMotionNow } from '../liveMotion.ts';
 import { sameRevision, useRevision, useMemoRows } from '../memoRows.tsx';
 import type { RowEvents, RowRevision } from '../memoRows.tsx';
 import { useTableAppearance } from './useTableAppearance.ts';
-import { FULL_FIT, barFraction, barMaximum, densityRowHeight, fitColumns, groupedRows, isMissing, nextSort, rankChanges, measuredRowOffsets, rowOffsets, scrollToShow, shownMotion, sortRows, treeRows, visibleRange } from './logic.ts';
-import type { ColumnFit, RankChange, Sort, TableGroup, TableTree, TreeRow } from './logic';
+import { FULL_FIT, barFraction, barMaximum, densityRowHeight, fitColumns, groupedRows, isMissing, withRowHeights, nextSort, rankChanges, measuredRowOffsets, rowOffsets, scrollToShow, shownMotion, sortRows, treeRows, visibleRange } from './logic.ts';
+import type { ColumnFit, RankChange, RowMeasurements, Sort, SortValue, TableGroup, TableTree, TreeRow } from './logic';
 import { cellContent, columnAlign, growColumnWidths, hideOrder, tableGrid, withHidden } from './columns.ts';
 import type { TableColumn } from './columns';
 import { sortKey } from './options.ts';
 import type { NarrowTable } from './options';
-import { useParityRows } from '../../dashboard/parityRows';
-import type { ParityPreparation } from '../../dashboard/parityRows';
+
+import { shownSlot } from '../rowNavigation.ts';
+import type { RevealClock } from '../reveal';
 import '../charts.css';
 import './table.css';
+import { engine } from '../../engine/frame.ts';
 
 export type { TableColumn } from './columns';
 export type { TableTree } from './logic';
@@ -62,17 +72,54 @@ export interface TableProps<T> {
   tooltip?: (row: T) => TooltipContent;
   /** The rows actually mounted; a widget asks for flags only for these countries. */
   onVisibleRows?: (rows: readonly T[]) => void;
-  /** Complete recording operands, with optional history preparation. */
-  parity?: { complete: boolean; preparation?: ParityPreparation; item?: (row: T) => unknown; reads?: unknown };
   hoursPerSecond?: number;
   /** Narrow tables hide prioritised columns into the row tooltip, or scroll sideways. */
   narrow?: NarrowTable;
+  /** The playhead's values of the columns that `paint`, keyed `liveKey(rowKey(row), column.key)`: read as each frame
+   * paints, so they move with no render. Their texts, bars and a sort by them come from here, not from `rows`. */
+  live?: Live<LiveValues<SortValue>>;
+  /** Following, the clock rows are revealed by and each row's reveal hour: rows past the clock's hour are drawn ahead,
+   * hidden and taking no height, and each frame reveals those it reaches with the entry motion while the rows after them
+   * glide down, so rows arriving cost no render. Not with `rank`, whose numbers count every row given. */
+  reveal?: { clock: RevealClock; at: (row: T) => number };
 }
+
+/** Each slot's reveal hour, the same hours ascending, and the slot of each key: what a frame reads to reveal rows. */
+interface Held { reveal: Float64Array; sorted: Float64Array; slots: ReadonlyMap<string, number> }
+
+/** How many of `sorted` are at or before `hour`. */
+function revealedThrough(sorted: Float64Array, hour: number): number {
+  let low = 0, high = sorted.length;
+  while (low < high) { const middle = (low + high) >> 1; if (sorted[middle] <= hour) low = middle + 1; else high = middle; }
+  return low;
+}
+
+/** `[start, end)` widened over the rows next to it held ahead of `hour`: they take no height where the row they will
+ * push down starts, and are drawn with it so revealing them needs no render. Rows merely unmeasured never widen it. */
+function widenOverAhead(held: Held | null, hour: number | null, start: number, end: number, count: number): [number, number] {
+  if (!held || hour === null) return [start, end];
+  while (start > 0 && held.reveal[start - 1] > hour) start--;
+  while (end < count && held.reveal[end] > hour) end++;
+  return [start, end];
+}
+/** `offsets` with the slots not revealed at `hour` taking no height; `offsets` itself when every slot is revealed. */
+function revealedOffsets(offsets: readonly number[], held: Held, hour: number): readonly number[] {
+  if (revealedThrough(held.sorted, hour) === held.sorted.length) return offsets;
+  const shown = [offsets[0]];
+  for (let slot = 0; slot < offsets.length - 1; slot++) shown.push(shown[slot] + (held.reveal[slot] > hour ? 0 : offsets[slot + 1] - offsets[slot]));
+  return shown;
+}
+
+/** A painted cell: its text, its bar if it draws one, and the key and column it shows. */
+/** A painted bar and tone from another live cell of the row (`barCell`), and the tone last set. */
+interface FromCell { key: string; bar: BarCell | null; element: HTMLElement; tone: string | undefined }
+interface LiveCell<T> { key: string; column: TableColumn<T>; text: TextCell; bar: BarCell | null; from: FromCell | null }
 
 /** style-5 Scoreboard: real table semantics, only the viewport's rows mounted. */
 export default function Table<T>({ label, rows, columns, rowKey, rowRevision, tieKey = rowKey, groupBy, tree, unsorted = false, sort: storedSort, setOption, sortOptionValue = sortKey, cellBars = true,
   rank = false, rankMarkers = true, density = 'comfortable', rowHeight, onRowClick, muted, menu: rowMenu,
-  tooltip, onVisibleRows, parity, hoursPerSecond, narrow = 'hide' }: TableProps<T>) {
+  tooltip, onVisibleRows, hoursPerSecond, narrow = 'hide', live, reveal: givenReveal }: TableProps<T>) {
+  const revealBy = rank ? undefined : givenReveal;
   const owner = useId();
   const tokens = useChartTokens();
   const viewportHeight = useViewportHeight();
@@ -86,7 +133,7 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
   const [focusedKey, setFocusedKey] = useState<string | null>(null);
   const [description, setDescription] = useState<{ key: string; text: string } | null>(null);
   const tipCache = useRef<{ row: T; build: TableProps<T>['tooltip']; hidden: readonly TableColumn<T>[]; shown: readonly TableColumn<T>[];
-    key: string; viewport: number; content: TooltipContent | null } | null>(null);
+    key: string; viewport: number; values: LiveValues<SortValue> | null; content: TooltipContent | null } | null>(null);
   const activeTip = useRef<{ key: string; origin: 'pointer' | 'keyboard'; x: number; y: number } | null>(null);
   const [localSort, setLocalSort] = useState<Sort | null>(null);
   const { tableSize, headerSize, tableFont, wrapping, comfortable, compact, headerMinimum, fonts } = useTableAppearance(scroll);
@@ -98,7 +145,7 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
   const heightScope = `${widthScope}/${view.width}/${rowHeight ?? ''}`;
   const bottomAnchor = useRef(false);
   const focusAnchor = useRef(false);
-  const [rowMeasurements, setRowMeasurements] = useState<{ scope: string; heights: ReadonlyMap<string, number> }>({ scope: heightScope, heights: new Map() });
+  const [rowMeasurements, setRowMeasurements] = useState<RowMeasurements>({ scope: heightScope, heights: new Map(), floor: 0 });
   const requestedSort = setOption ? storedSort : localSort ?? storedSort;
   const sortedColumn = columns.find(column => column.key === requestedSort.column && column.sortable !== false)
     ?? columns.find(column => column.sortable !== false);
@@ -118,19 +165,26 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
   }, [columns, columnFit]);
   const hiddenColumns = useMemo(() => columnFit.hidden.length
     ? columns.filter(column => columnFit.hidden.includes(column.key) && !column.inTooltip) : NO_COLUMNS as readonly TableColumn<T>[], [columns, columnFit]);
+  // A sort by a painted column orders by the live values last committed: read again at most four times a second.
+  const liveSort = live && !unsorted && sortedColumn && (sortedColumn.paint || sortedColumn.sortsLive) ? sortedColumn.key : null;
+  const [sortedFrom, setSortedFrom] = useState<{ live: typeof live; values: LiveValues<SortValue> } | null>(null);
+  const sortValues = liveSort === null ? null : sortedFrom && sortedFrom.live === live ? sortedFrom.values : live!.read();
   // Rebuilt column objects with the same accessor (such as new labels for another column) keep the order.
-  const sortValue = sortedColumn?.value;
+  const columnValue = sortedColumn?.value;
+  const sortValue = useMemo(() => sortValues && liveSort !== null ? (row: T) => sortValues.get(liveKey(rowKey(row), liveSort)) : columnValue,
+    [sortValues, liveSort, rowKey, columnValue]);
   // Groups the table holds itself: each toggled row's key and whether it is now open.
   const [toggled, setToggled] = useState<ReadonlyMap<string, boolean>>(new Map());
   const treeChildren = tree?.children, treeOpen = tree?.open, treeInitial = tree?.initiallyOpen, onToggle = tree?.onToggle;
   const isOpen = useCallback((row: T) => treeOpen ? treeOpen(row) : toggled.get(rowKey(row)) ?? treeInitial?.(row) ?? true,
     [treeOpen, treeInitial, toggled, rowKey]);
-  const arrange = useCallback((list: readonly T[], level: number) => {
+  const arrangeBy = useCallback((by: ((row: T) => SortValue) | undefined) => (list: readonly T[], level: number) => {
     if (unsorted) return list.slice();
-    const value = sortValue ?? (() => null);
+    const value = by ?? (() => null);
     return groupBy && level === 1 ? groupedRows(list, groupBy, value, sort.direction, rowKey, tieKey)
       : sortRows(list, value, sort.direction, rowKey, tieKey);
-  }, [unsorted, sortValue, sort.direction, rowKey, tieKey, groupBy]);
+  }, [unsorted, sort.direction, rowKey, tieKey, groupBy]);
+  const arrange = useMemo(() => arrangeBy(sortValue), [arrangeBy, sortValue]);
   const { ordered, nesting } = useMemo((): { ordered: T[]; nesting: ReadonlyMap<string, TreeRow> | null } => {
     if (!treeChildren) return { ordered: arrange(rows, 1), nesting: null };
     const { rows: flat, nesting } = treeRows(rows, treeChildren, isOpen, arrange, rowKey);
@@ -142,22 +196,7 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
   };
   const items = useMemo(() => ordered.map((item, slot) => ({ key: rowKey(item),
     item: { value: item, rank: nesting?.get(rowKey(item))?.position ?? slot + 1 } })), [ordered, rowKey, nesting]);
-  if (import.meta.env.MODE === 'parity') {
-    useParityRows(scroll, () => {
-      // Parity covers every nested row, whether its group is open or not.
-      const full = treeChildren ? treeRows(rows, treeChildren, isOpen, arrange, rowKey, true) : null;
-      const all = full?.rows ?? ordered;
-      return { kind: 'table', label,
-        complete: parity?.complete ?? true, total: all.length,
-        columns: columns.map(column => ({ key: column.key, label: column.label })), sort, readOutcomes: parity?.reads,
-        rows: all.map((row, index) => {
-          const node = full?.nesting.get(rowKey(row));
-          return { key: rowKey(row), index, ...(node ? { level: node.level, parent: node.parent, open: node.group ? node.open : undefined } : {}),
-            item: parity?.item ? parity.item(row) : row, cells: columns.map(column => ({ key: column.key, value: column.value(row) })) };
-        }) };
-    }, parity?.preparation);
-  }
-  const moving = useRowMotion(items);
+  const moving = useRowMotion(items, true);
   // The rows in view at the last commit, and those in view before its change, kept mounted while
   // they glide out until the next change. Read in render and written after a commit, so recording
   // them renders nothing again.
@@ -167,15 +206,13 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
   const ordering = `${groupBy ? 'grouped/' : ''}${tree ? 'tree/' : ''}${unsorted ? 'given' : sortKey(sort)}`;
   // Rank markers against the ranks last committed, so a new order shows them in the frame it is drawn.
   const committedRanks = useRef<{ ordering: string; ranks: ReadonlyMap<string, RankChange> }>({ ordering: '', ranks: NO_RANKS });
-  // Moved on when a marker's hold ends.
-  const [rankClock, setRankClock] = useState(0);
   const drawnRanks = useMemo(() => {
     const at = performance.now();
     if (!rank || !rankMarkers) return { ranks: NO_RANKS, at };
     const held = committedRanks.current;
     const next = rankChanges(held.ranks, items.map(item => item.key), at, RANK_HOLD_MS, held.ordering !== ordering);
     return { ranks: sameRanks(held.ranks, next) ? held.ranks : next, at };
-  }, [items, rank, rankMarkers, ordering, rankClock]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [items, rank, rankMarkers, ordering]); // eslint-disable-line react-hooks/exhaustive-deps
   const ranks = drawnRanks.ranks;
   useLayoutEffect(() => {
     // A marker drawn here holds from when it is shown, however late its render commits.
@@ -187,10 +224,21 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
       shown.set(key, { ...item, until: item.until + shift });
     }
     committedRanks.current = { ordering, ranks: shown ?? ranks };
-    let due = Infinity;
-    for (const item of committedRanks.current.ranks.values()) if (item.delta) due = Math.min(due, item.until);
-    if (!Number.isFinite(due)) return;
-    const timer = window.setTimeout(() => setRankClock(value => value + 1), Math.max(0, due - performance.now()) + 16);
+    // A marker whose hold ends is hidden where it is drawn, never by a commit (run 13: a commit a marker while playing);
+    // the next render leaves it out.
+    let timer = 0;
+    const expire = () => {
+      const now = performance.now();
+      let due = Infinity;
+      for (const [key, item] of committedRanks.current.ranks) {
+        if (!item.delta) continue;
+        if (item.until > now) { due = Math.min(due, item.until); continue; }
+        const mark = scroll.current?.querySelector<HTMLElement>(`tbody tr[data-table-row="${CSS.escape(key)}"] .table-delta`);
+        if (mark) mark.hidden = true;
+      }
+      if (Number.isFinite(due)) timer = window.setTimeout(expire, Math.ceil(due - now) + 16);
+    };
+    expire();
     return () => window.clearTimeout(timer);
   }, [drawnRanks, ordering]); // eslint-disable-line react-hooks/exhaustive-deps
   useLayoutEffect(() => {
@@ -218,9 +266,24 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
     for (const [slot, key] of JSON.parse(leavingSlots) as [number, string][]) keys[slot] = key;
     return keys;
   }, [count, items, leavingSlots]));
-  const offsets = useMemo(() => wrapping
-    ? measuredRowOffsets(slotKeys, rowMeasurements.scope === heightScope ? rowMeasurements.heights : new Map(), view.rowHeight, view.headerHeight)
-    : rowOffsets(count, view.rowHeight, view.headerHeight), [wrapping, slotKeys, rowMeasurements, heightScope, count, view.rowHeight, view.headerHeight]);
+  const fullOffsets = useMemo(() => wrapping
+    // Heights measured at another width stand until their rows are measured again: rows never collapse onto each other meanwhile.
+    ? measuredRowOffsets(slotKeys, rowMeasurements.heights, Math.max(view.rowHeight, rowMeasurements.floor), view.headerHeight)
+    : rowOffsets(count, view.rowHeight, view.headerHeight), [wrapping, slotKeys, rowMeasurements, count, view.rowHeight, view.headerHeight]);
+  const revealAt = revealBy?.at;
+  const held = useMemo<Held | null>(() => {
+    if (!revealAt) return null;
+    const hours = new Map(items.map(item => [item.key, revealAt(item.item.value)]));
+    const reveal = Float64Array.from(slotKeys, key => hours.get(key) ?? -Infinity);
+    return { reveal, sorted: Float64Array.from(reveal).sort(), slots: new Map(slotKeys.map((key, slot) => [key, slot])) };
+  }, [revealAt, items, slotKeys]);
+  const revealHour = held && revealBy ? revealBy.clock.hour() : null;
+  const revealCut = held && revealHour !== null ? revealedThrough(held.sorted, revealHour) : null;
+  // The hour matters only through the rows it reveals (`revealCut`): a render inside the same cut keeps the layout.
+  const hourHeld = useRef(revealHour);
+  hourHeld.current = revealHour;
+  const offsets = useMemo(() => held && revealCut !== null && hourHeld.current !== null ? revealedOffsets(fullOffsets, held, hourHeld.current) : fullOffsets,
+    [fullOffsets, held, revealCut]);
   const committedGeometry = useRef({ heightScope, rowMeasurements });
   const measuring = committedGeometry.current.heightScope !== heightScope || committedGeometry.current.rowMeasurements !== rowMeasurements;
   useLayoutEffect(() => {
@@ -232,7 +295,44 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
       if (index >= 0) element.scrollTop = scrollToShow(offsets, index, element.scrollTop, view.height, view.headerHeight);
     }
   }, [heightScope, rowMeasurements, offsets, focusedKey, slotKeys, view.height, view.headerHeight]);
-  const [start, end] = count > WINDOWING_THRESHOLD ? visibleRange(offsets, view.top, view.height) : [0, count];
+  const [start, end] = count > WINDOWING_THRESHOLD ? widenOverAhead(held, hourHeld.current, ...visibleRange(offsets, view.top, view.height), count) : [0, count];
+  // Held ahead: after each commit and each frame, each mounted row's place and reveal state (`data-reveal`, never
+  // rendered, so a render keeps a running entry) and the body's height are painted at the clock's hour.
+  const body = useRef<HTMLTableSectionElement>(null);
+  const revealed = useRef<{ full: readonly number[]; held: Held; header: number; cut: number; hour: number } | null>(null);
+  const enterRows = useRef(!tokens.reducedMotion);
+  enterRows.current = !tokens.reducedMotion;
+  const paintRevealed = useCallback((enter: boolean) => {
+    const now = revealed.current, tbody = body.current;
+    if (!now || !tbody) return;
+    const shown = revealedOffsets(now.full, now.held, now.hour);
+    tbody.style.height = `${shown[shown.length - 1] - now.header}px`;
+    for (const row of tbody.children as HTMLCollectionOf<HTMLElement>) {
+      const slot = now.held.slots.get(row.dataset.tableRow ?? '');
+      if (slot == null) continue;
+      row.style.transform = `translateY(${shown[slot] - now.header}px)`;
+      const ahead = now.held.reveal[slot] > now.hour, was = row.dataset.reveal;
+      if (ahead) { if (was !== 'ahead') { row.dataset.reveal = 'ahead'; row.inert = true; } }
+      else if (was === 'ahead') { if (enter) row.dataset.reveal = 'in'; else delete row.dataset.reveal; row.inert = false; }
+    }
+  }, []);
+  useLayoutEffect(() => {
+    revealed.current = held && revealCut !== null && hourHeld.current !== null
+      ? { full: fullOffsets, held, header: view.headerHeight, cut: revealCut, hour: hourHeld.current } : null;
+    if (revealed.current) paintRevealed(false);
+  });
+  useLayoutEffect(() => {
+    if (!revealBy) return;
+    return revealBy.clock.subscribe(() => {
+      const now = revealed.current;
+      if (!now) return;
+      const hour = revealBy.clock.hour(), cut = revealedThrough(now.held.sorted, hour);
+      if (cut === now.cut) return;
+      const forward = hour > now.hour && revealBy.clock.playing();
+      revealed.current = { ...now, cut, hour };
+      paintRevealed(forward && enterRows.current);
+    });
+  }, [revealBy, paintRevealed]);
   // Keep previously visible DOM rows through the glide, even when their new
   // rank is outside the viewport. The existing motion hook owns their slots.
   const previousWindow = committedWindow.current;
@@ -241,6 +341,7 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
   const mounted = shownMotion(moving, start, end, !tokens.reducedMotion,
     row => row.key === focusedKey || (!tokens.reducedMotion && (departing.has(row.key) || crossing?.has(row.key) === true)));
   const memoRow = useMemoRows();
+  const liveColumns = live ? shownColumns.filter(column => column.paint).map(column => column.key).join('\u0000') : null;
   const maxima = useMemo(() => new Map(columns.filter(column => column.bar != null).map(column => [column.key,
     column.bar === 'visible' ? barMaximum(ordered, column.value) : column.bar as number | bigint])), [columns, ordered]);
   const barRevision = useRevision(shownColumns.filter(column => column.bar != null).flatMap(column => [column.key, maxima.get(column.key)]));
@@ -261,6 +362,9 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
   const naturalRevision = useRevision([headerKeys, ...[...widthKeys].flatMap(([key, columns]) =>
     [key, columns.size, ...[...columns.values()].flatMap(revision => [revision.length, ...revision])])]);
   const mountedKeys = useRevision(mounted.map(row => row.key));
+  // A rank marker whose hold has ended is not drawn again (its row mounting, or rendering for another reason).
+  const renderedAt = performance.now();
+  useWhyCommit('Table', { rows, columns, live, sortedFrom, rowMeasurements, natural, fit, view, focusedKey, description, toggled, localSort, mounted: mountedKeys });
   useLayoutEffect(() => {
     const before = committedWindow.current;
     committedWindow.current = { items, keys: new Set(items.slice(start, end).map(row => row.key)),
@@ -285,7 +389,7 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
     const pending = new Map<Element, { key: string; width: number }>();
     const observed = new Map<Element, NaturalCell>();
     const measurements = new Map<string | undefined, Map<string, NaturalMeasurement>>();
-    let frame = 0;
+    let frame: (() => void) | null = null;
     const observer = new ResizeObserver(entries => {
       for (const { target, contentRect } of entries) {
         if (!target.isConnected) continue;
@@ -307,8 +411,9 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
         pending.set(target, { key: cell.key, width: Math.max(pending.get(target)?.width ?? 0, width) });
       }
       if (frame) return;
-      frame = requestAnimationFrame(() => {
-        frame = 0;
+      // Readings land with the frame's data, so what they commit is taken in the same frame.
+      frame = engine.next('data', () => {
+        frame = null;
         const readings = [...pending].filter(([element]) => element.isConnected).map(([, reading]) => reading);
         pending.clear();
         if (!readings.length) return;
@@ -323,7 +428,7 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
       });
     });
     naturalCells.current = { observer, observed, measurements };
-    return () => { observer.disconnect(); cancelAnimationFrame(frame); naturalCells.current = null; };
+    return () => { observer.disconnect(); frame?.(); naturalCells.current = null; };
   }, [widthScope]);
   useLayoutEffect(() => {
     const held = naturalCells.current!;
@@ -353,7 +458,7 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
   useLayoutEffect(() => {
     if (!wrapping || !scroll.current) return;
     const pending = new Map<Element, readonly [string, number]>();
-    let frame = 0;
+    let frame: (() => void) | null = null;
     const observer = new ResizeObserver(entries => {
       for (const entry of entries) {
         if (!entry.target.isConnected) continue;
@@ -361,27 +466,21 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
         pending.set(entry.target, [element.dataset.tableRow!, entry.borderBoxSize[0]?.blockSize ?? element.offsetHeight]);
       }
       if (frame) return;
-      frame = requestAnimationFrame(() => {
-        frame = 0;
+      // Readings land with the frame's data, so what they commit is taken in the same frame.
+      frame = engine.next('data', () => {
+        frame = null;
         const readings = [...pending].filter(([element]) => element.isConnected).map(([, reading]) => reading);
         pending.clear();
         if (!readings.length) return;
-        // Rows re-observed at the heights already applied commit nothing.
+        // Only a row taller than the rows' own height moves the rows below it: a row mounting at that height, or re-observed
+        // at the height applied, commits nothing (run 13: a commit after each row arriving in every table).
         const applied = committedGeometry.current.rowMeasurements;
-        const known = applied.scope === heightScope ? applied.heights : null;
-        if (known && readings.every(([key, height]) => known.get(key) === height)) return;
-        inFrame(() => setRowMeasurements(before => {
-          const previous = before.scope === heightScope ? before.heights : new Map<string, number>();
-          let heights: Map<string, number> | undefined;
-          for (const [key, height] of readings) if (previous.get(key) !== height) {
-            heights ??= new Map(previous); heights.set(key, height);
-          }
-          return heights ? { scope: heightScope, heights } : before;
-        }));
+        if (withRowHeights(applied, readings, currentView.current.rowHeight, heightScope) === applied) return;
+        inFrame(() => setRowMeasurements(before => withRowHeights(before, readings, currentView.current.rowHeight, heightScope)));
       });
     });
     measuredRows.current = { observer, observed: new Set() };
-    return () => { observer.disconnect(); cancelAnimationFrame(frame); measuredRows.current = null; };
+    return () => { observer.disconnect(); frame?.(); measuredRows.current = null; };
   }, [wrapping, heightScope]);
   useLayoutEffect(() => {
     const held = measuredRows.current;
@@ -391,10 +490,11 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
       if (!held.observed.has(row)) { held.observed.add(row); held.observer.observe(row); }
     }
   }, [mountedKeys, heightScope, wrapping]);
+  // A gone row's height is read by no offset: it is dropped once gone rows outnumber the rows, so a row leaving costs no commit.
   useEffect(() => {
+    if (rowMeasurements.heights.size <= Math.max(64, 2 * slotKeys.length)) return;
     const live = new Set(slotKeys);
-    if ([...rowMeasurements.heights.keys()].some(key => !live.has(key)))
-      setRowMeasurements({ ...rowMeasurements, heights: new Map([...rowMeasurements.heights].filter(([key]) => live.has(key))) });
+    setRowMeasurements({ ...rowMeasurements, heights: new Map([...rowMeasurements.heights].filter(([key]) => live.has(key))) });
   }, [slotKeys, rowMeasurements]);
   useEffect(() => () => hideTooltip(owner), [owner]);
   // A scrollable tooltip this table owns takes the wheel, as the chart kits' do; the layer
@@ -413,13 +513,21 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
   const contentFor = useCallback((row: T) => {
     if (!tooltip && !hiddenColumns.length) return null;
     const held = tipCache.current, key = rowKey(row);
+    const values = live?.read() ?? null;
     // Every input of the combined content: the row, the widget's builder, the hidden and shown
-    // columns, the row's key and the window height that decides whether it scrolls.
-    if (held?.row !== row || held.build !== tooltip || held.hidden !== hiddenColumns || held.shown !== shownColumns || held.key !== key || held.viewport !== viewportHeight)
-      tipCache.current = { row, build: tooltip, hidden: hiddenColumns, shown: shownColumns, key, viewport: viewportHeight,
-        content: withHidden(tooltip?.(row) ?? null, row, hiddenColumns, shownColumns, key, viewportHeight) };
+    // columns, the row's key, the live values and the window height that decides whether it scrolls.
+    if (held?.row !== row || held.build !== tooltip || held.hidden !== hiddenColumns || held.shown !== shownColumns || held.key !== key
+      || held.viewport !== viewportHeight || held.values !== values) {
+      // A hidden painted column gives its live value, as its cell would paint it.
+      const hidden = values ? hiddenColumns.map(column => column.paint ? { ...column, text: (item: T) => {
+        const key = liveKey(rowKey(item), column.key), value = values.get(key);
+        return value == null || isMissing(value) ? null : column.paint!(value, key);
+      } } : column) : hiddenColumns;
+      tipCache.current = { row, build: tooltip, hidden: hiddenColumns, shown: shownColumns, key, viewport: viewportHeight, values,
+        content: withHidden(tooltip?.(row) ?? null, row, hidden, shownColumns, key, viewportHeight) };
+    }
     return tipCache.current!.content;
-  }, [tooltip, hiddenColumns, shownColumns, rowKey, viewportHeight]);
+  }, [tooltip, hiddenColumns, shownColumns, rowKey, viewportHeight, live]);
   const clearTip = () => { activeTip.current = null; hideTooltip(owner); };
   const show = (key: string, row: T, origin: 'pointer' | 'keyboard', x: number, y: number) => {
     const content = contentFor(row);
@@ -442,15 +550,85 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
     const next = content && focusedKey !== null ? { key: focusedKey, text: tooltipText(content) } : null;
     if (description?.key !== next?.key || description?.text !== next?.text) setDescription(next);
   }, [ordered, rowKey, focusedKey, contentFor, owner, description]);
+  // Painted cells: found after each commit, written in a frame whenever the live values move, never by a render.
+  const liveCells = useRef<LiveCell<T>[]>([]);
+  const livePaint = useRef<((force: boolean) => void) | null>(null);
+  const liveLatest = useRef({ ordered, rowKey, liveSort, sortValues,
+    orderDiffers: (_values: LiveValues<SortValue>): boolean => false, refreshTip: () => {} });
+  liveLatest.current = { ordered, rowKey, liveSort, sortValues,
+    orderDiffers: values => {
+      const by = (row: T) => values.get(liveKey(rowKey(row), liveSort!));
+      const next = treeChildren ? treeRows(rows, treeChildren, isOpen, arrangeBy(by), rowKey).rows : arrangeBy(by)(rows, 1);
+      return next.length !== ordered.length || next.some((row, index) => rowKey(row) !== rowKey(ordered[index]));
+    },
+    refreshTip: () => {
+      const tip = activeTip.current;
+      const row = tip ? ordered.find(item => rowKey(item) === tip.key) : undefined;
+      if (row !== undefined) refreshTooltip(owner, () => contentFor(row));
+    } };
+  useLayoutEffect(() => {
+    if (!live) return;
+    let painted: LiveValues<SortValue> | null = null, sortHeld: (() => void) | null = null;
+    const task: FrameTask = { frame: () => { paint(false); return false; } };
+    const wake = () => scheduler.wake(task);
+    const paint = (force: boolean) => {
+      const at = liveLatest.current, values = live.read();
+      if (!force && values === painted) return;
+      const moved = values !== painted;
+      painted = values;
+      const maxima = new Map<string, number | bigint>();
+      for (const cell of liveCells.current) {
+        if (cell.from) paintFrom(cell.from, cell.column, values.get(cell.from.key));
+        const value = values.get(cell.key);
+        if (value == null || isMissing(value)) { cell.text.put(cell.column.missingText?.(cell.key) ?? '—', values.missing(cell.key)); cell.bar?.put('0%'); continue; }
+        cell.text.put(cell.column.paint!(value, cell.key), '');
+        if (!cell.bar) continue;
+        let maximum = maxima.get(cell.column.key);
+        if (maximum === undefined) {
+          const column = cell.column.key;
+          maximum = cell.column.bar === 'visible' ? barMaximum(at.ordered, row => values.get(liveKey(at.rowKey(row), column))) : cell.column.bar as number | bigint;
+          maxima.set(column, maximum);
+        }
+        cell.bar.put(typeof value === 'string' ? '0%' : `${barFraction(value, maximum) * 100}%`);
+      }
+      if (moved) at.refreshTip();
+      if (at.liveSort === null || values === at.sortValues) return;
+      if (!at.orderDiffers(values)) return;
+      // A new order is structure: taken in the slot's task, painted again there from the newest values.
+      if (!structureOpen()) { sortHeld ??= atNextSlot(() => { sortHeld = null; paint(true); }); return; }
+      setSortedFrom({ live, values });
+    };
+    livePaint.current = paint;
+    const remove = scheduler.add(task);
+    const stop = live.subscribe(wake);
+    return () => { remove(); stop(); sortHeld?.(); livePaint.current = null; };
+  }, [live]);
+  useLayoutEffect(() => {
+    if (!live) { liveCells.current = []; return; }
+    const painting = new Map(shownColumns.filter(column => column.paint).map(column => [column.key, column]));
+    const cells: LiveCell<T>[] = [];
+    for (const element of scroll.current?.querySelectorAll<HTMLElement>('[data-table-live]') ?? []) {
+      const column = painting.get(element.dataset.tableLiveColumn ?? '');
+      if (!column) continue;
+      const bar = element.closest('.table-cell')?.querySelector<HTMLElement>('.table-cellbar');
+      const fromKey = element.dataset.tableLiveFrom;
+      const from = fromKey ? { key: fromKey, bar: bar ? new BarCell(bar.style, true) : null, element, tone: undefined } : null;
+      cells.push({ key: element.dataset.tableLive!, column, text: textCell(element), bar: bar && !column.barOf ? new BarCell(bar.style, true) : null, from });
+    }
+    liveCells.current = cells;
+    livePaint.current?.(true);
+  });
   const open = (row: T, x: number, y: number) => {
     const items = rowMenu?.(row);
     if (!items?.length) return false;
     clearTip(); contextMenu.open(x, y, items);
     return true;
   };
+  /** Whether the row at `slot` shows at the clock's hour as the frame last painted it (held ahead: revealed). */
+  const revealedNow = (slot: number) => { const now = revealed.current; return !now || now.held.reveal[slot] <= now.hour; };
   const focusSlot = (slot: number) => {
-    // A leaving row keeps focus while it fades, even once no row is left to move to.
-    if (slot < 0 || slot >= ordered.length) return;
+    // A leaving row keeps focus while it fades, even once no row is left to move to. A row held ahead is never focused.
+    if (slot < 0 || slot >= ordered.length || !revealedNow(slot)) return;
     const top = scrollToShow(offsets, slot, view.top, view.height, view.headerHeight);
     bottomAnchor.current = false;
     focusAnchor.current = true;
@@ -487,8 +665,9 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
           if (setOption) setOption('tableSort', sortOptionValue(next)); else setLocalSort(next);
         }}>{naturalContent(column, headers[index])}</button>}
       </th>)}</tr></thead>
-      <tbody style={{ height: offsets[count] - view.headerHeight }}>{mounted.map(row => {
-        const change = ranks.get(row.key)?.delta ?? 0;
+      <tbody ref={body} style={{ height: offsets[count] - view.headerHeight }}>{mounted.map(row => {
+        const marker = ranks.get(row.key);
+        const change = marker && marker.until > renderedAt ? marker.delta : 0;
         const node = nesting?.get(row.key);
         const opens = node?.group === true && node.count > 0;
         const events: RowEvents = {
@@ -530,14 +709,17 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
               }
             } else if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
               event.preventDefault();
-              focusSlot(event.key === 'Home' ? 0 : event.key === 'End' ? ordered.length - 1 : Math.max(0, Math.min(ordered.length - 1, row.slot + (event.key === 'ArrowDown' ? 1 : -1))));
+              // Only over the rows the clock has revealed.
+              const step = event.key === 'ArrowDown' || event.key === 'Home' ? 1 : -1;
+              const slot = shownSlot(event.key === 'Home' ? 0 : event.key === 'End' ? ordered.length - 1 : row.slot + step, step, ordered.length, revealedNow);
+              if (slot != null) focusSlot(slot);
             }
           },
           onPointerDown: () => { keyboardMenu.current = false; },
         };
         const isMuted = muted?.(row.item.value);
-        const revision = [...revisions.get(row.key)!, layoutKeys, cellBars, rank, rankMarkers, row.item.rank, change,
-          barRevision, row.phase, row.slot, offsets[row.slot] - view.headerHeight,
+        const revision = [...revisions.get(row.key)!, layoutKeys, cellBars, rank, rankMarkers, row.item.rank, change, change && marker!.until,
+          barRevision, row.phase, row.slot, offsets[row.slot] - view.headerHeight, liveColumns,
           node?.level, node?.size, node?.position, node?.group, node?.count, node?.open, description?.key === row.key,
           isMuted, !!onRowClick];
         return memoRow(row.key, revision, handlers => <tr data-table-row={row.key} className={`${movingRowClass(row)}${isMuted ? ' is-muted' : ''}${node?.group ? ' is-group' : ''}${opens || (onRowClick && !node?.group) ? ' is-activatable' : ''}`} tabIndex={row.phase === 'leaving' ? -1 : 0}
@@ -546,8 +728,22 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
           aria-describedby={description?.key === row.key ? `${owner}-description` : undefined}
           style={{ transform: `translateY(${offsets[row.slot] - view.headerHeight}px)` }}
           {...handlers}>
-          {rank && <td className="table-rank">{row.item.rank}{rankMarkers && change !== 0 && <span className={`table-delta ${change > 0 ? 'is-positive' : 'is-negative'}`}>{change > 0 ? '▲' : '▼'}{Math.abs(change)}</span>}</td>}
+          {rank && <td className="table-rank">{row.item.rank}{rankMarkers && change !== 0 && <span key={marker!.until} className={`table-delta ${change > 0 ? 'is-positive' : 'is-negative'}`}>{change > 0 ? '▲' : '▼'}{Math.abs(change)}</span>}</td>}
           {shownColumns.map((column, index) => {
+            if (live && column.paint) {
+              // Painted from the live values in a frame; React renders the empty cell once.
+              const tone = column.cellClass?.(row.item.value);
+              const structureBar = column.barOf?.(row.item.value) ?? null;
+              const from = structureBar === 'cell' && column.barCell ? liveKey(row.key, column.barCell.id) : undefined;
+              const text = <span className={tone ? `table-live ${tone}` : 'table-live'} data-table-live={liveKey(row.key, column.key)} data-table-live-column={column.key}
+                data-table-live-from={from} />;
+              const shown = node && index === 0 ? <TreeCell level={node.level} group={node.group} count={node.count} open={node.open}>{text}</TreeCell> : text;
+              const bar = column.barOf ? <CellBar value={cellBars ? structureBar === 'cell' ? 0 : structureBar : null} maximum={typeof column.bar === 'string' || column.bar == null ? 0 : column.bar}>{shown}</CellBar>
+                : <span className="table-cell">{cellBars && <i className="table-cellbar" aria-hidden="true" />}<span>{shown}</span></span>;
+              return <td key={column.key} className={`${column.numeric ? 'is-numeric ' : ''}align-${columnAlign(column)}`}>
+                {naturalContent(column, column.bar != null ? bar : shown)}
+              </td>;
+            }
             const value = column.value(row.item.value), missing = isMissing(value);
             const cell = cellContent(column, row.item.value, value);
             const content = node && index === 0 ? <TreeCell level={node.level} group={node.group} count={node.count} open={node.open}>{cell}</TreeCell> : cell;
@@ -573,11 +769,24 @@ function TreeCell({ level, group, count, open, children }: Pick<TreeRow, 'level'
 }
 
 /** Composed cells may sort by one value and draw a bar from another. */
+/** A cell's bar and tone painted from another live cell of its row (`barCell`): no bar and no tone while it has no
+ * value. */
+function paintFrom<T>(from: FromCell, column: TableColumn<T>, value: SortValue | undefined) {
+  const known = typeof value === 'number' && Number.isFinite(value);
+  const maximum = typeof column.bar === 'number' || typeof column.bar === 'bigint' ? column.bar : 0;
+  from.bar?.put(known ? `${barFraction(column.barCell?.value ? column.barCell.value(value) : value, maximum) * 100}%` : '0%');
+  const tone = known ? column.barCell?.tone?.(value) : undefined;
+  if (tone === from.tone) return;
+  if (from.tone) from.element.classList.remove(from.tone);
+  if (tone) from.element.classList.add(tone);
+  from.tone = tone;
+}
+
 export function CellBar({ value, maximum, children }: {
   value: number | bigint | null; maximum: number | bigint; children: ReactNode;
 }) {
   return <span className="table-cell">{value !== null && <i className="table-cellbar" aria-hidden="true"
-    style={{ width: `${barFraction(value, maximum) * 100}%` }} />}<span>{children}</span></span>;
+    style={{ transform: barScale(`${barFraction(value, maximum) * 100}%`) }} />}<span>{children}</span></span>;
 }
 
 export function CountryCell({ name, nameFailure, flag, flagReason, flagDetail, flagPending }: {

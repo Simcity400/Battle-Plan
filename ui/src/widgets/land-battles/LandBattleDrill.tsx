@@ -92,7 +92,7 @@ export default function LandBattleDrill({ row, context, colours, looks, terrain,
       return <div className="lb-drill-side" key={index}>
         <div className="lb-drill-side-head"><i style={{ background: colours[index] }} />{SIDES[index]}
           {outcome.kind === 'won' && outcome.side === index && <span className="lb-drill-won">won</span>}</div>
-        <div className="lb-drill-countries">{looks[index].countries.map(part => <span key={`${part.tag}@${part.hour}`}>
+        <div className="lb-drill-countries">{looks[index].countries.map(part => <span key={part.tag}>
           <CountryFlagUrl className="log-flag" url={part.flag} detail={part.flagDetail} reason={part.flagReason} pending={part.flagPending} />{part.name}</span>)}
           {looks[index].unknown && <span className="is-muted">{looks[index].unknown}</span>}</div>
         <dl className="lb-drill-facts-list">

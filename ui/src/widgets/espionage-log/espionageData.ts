@@ -1,309 +1,328 @@
+import type { LogPage, LogRow } from '../../charts/log/logData';
+import type { LogReplyRow } from '../../charts/log/logSource';
 import { countryNameDetails } from '../../charts/tooltip.ts';
-import { contentTitle } from '../../dashboard/contentTitles.ts';
-import type { EspionageLogReply, EspionageOperation, EspionageOperationRun, EspionageOperationType } from '../../generated/dashboard';
-import { isOrderedSpans, isSpan, runAt, spansCovered } from '../../charts/series.ts';
-import type { LogRow } from '../../charts/log/logData';
-import { playbackRows } from '../../charts/playbackIntervals.ts';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
-import type { CountryLabel } from '../../dashboard/countryFlagsAt';
-import { object, int, unsigned32, unsigned64 } from '../../dashboard/validation.ts';
 import { drawableIcon } from '../../dashboard/artwork.ts';
 import { formatDateTime } from '../../dashboard/calendar.ts';
-import { entryAt, readAt } from '../../dashboard/reads.ts';
+import { contentTitle } from '../../dashboard/contentTitles.ts';
+import type { CountryLabel } from '../../dashboard/countryFlagsAt';
+import { compareCountries } from '../../dashboard/intelligence.ts';
 import { setToken, storableToken, UNSTORABLE } from '../../dashboard/options.ts';
+import type {
+  Country, EndedOperation, EspionageEndedReply, EspionageOperationReply, EspionageOperationsReply, EspionageTypesReply, EspionageTypeTokensReply, LogCell, OperationState, OperationType,
+  OperationUnderWay, OperativeName,
+} from '../../generated/dashboard';
 
-const nullableText = (v: unknown) => v === null || typeof v === 'string';
-const descriptionRef = (v: unknown) => object(v) && int(v.hour) && unsigned64(v.id) && unsigned32(v.owner) && (v.sequence === null || unsigned64(v.sequence));
-const nullableInt = (v: unknown) => v === null || int(v);
-const type = (v: unknown) => object(v) && typeof v.key === 'string' && v.key.length > 0 && nullableText(v.name) && nullableText(v.iconMissing) && 'icon' in v;
-const run = (v: unknown) => isSpan(v) && int(v.readHour) && v.readHour <= v.firstHour
-  && (v.preparationRatio === null || (int(v.preparationRatio) && v.preparationRatio >= 0 && v.preparationRatio <= 100_000))
-  && nullableInt(v.elapsedDays) && nullableInt(v.startHour) && nullableInt(v.currentPhase) && typeof v.terminal === 'boolean'
-  && typeof v.autoCommence === 'boolean'
-  && nullableText(v.ownerTag) && nullableText(v.targetTag) && nullableText(v.typeKey)
-  && unsigned32(v.phaseCount) && typeof v.autoRepeat === 'boolean' && int(v.durationDays) && unsigned32(v.assignedSlots)
-  && (v.operatives === null || (Array.isArray(v.operatives) && v.operatives.every(id => typeof id === 'string')))
-  && (v.operativeNames === null || (Array.isArray(v.operativeNames) && Array.isArray(v.operatives)
-    && v.operativeNames.length === v.operatives.length && v.operativeNames.every((name, index) => object(name)
-      && name.id === (v.operatives as unknown[])[index] && nullableText(name.name) && nullableText(name.unavailable))));
+const object = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
+const integer = (value: unknown): value is number => Number.isSafeInteger(value);
+const text = (value: unknown): value is string | null => value === null || typeof value === 'string';
+const maybe = (value: unknown) => value === null || integer(value);
+const handle = (value: unknown): value is string => typeof value === 'string' && /^\d{1,20}$/.test(value);
+const country = (value: unknown): value is Country => object(value) && integer(value.id) && (value.tag === null || (typeof value.tag === 'string' && value.tag.length > 0));
+const warnings = (value: Record<string, unknown>) => Array.isArray(value.warnings) && value.warnings.every(item => typeof item === 'string');
+const state = (value: unknown): value is OperationState => object(value) && maybe(value.startHour) && integer(value.durationDays) && integer(value.phaseCount)
+  && maybe(value.currentPhase) && maybe(value.elapsedDays) && (value.preparationRatio === null || (integer(value.preparationRatio) && value.preparationRatio >= 0
+    && value.preparationRatio <= 100_000)) && integer(value.assignedSlots) && typeof value.autoRepeat === 'boolean' && typeof value.autoCommence === 'boolean'
+  && typeof value.terminal === 'boolean';
+const malformed = (what: string) => new Error(`The ${what} reply is malformed.`);
 
-/** Types are content identities, not a fixed catalogue; bad art keeps its named placeholder. */
-export function validateEspionageLogReply(data: unknown): EspionageLogReply {
-  const reads = object(data) && Array.isArray(data.readHours) ? data.readHours : null;
-  if (!object(data) || typeof data.branchId !== 'string' || !int(data.firstHour) || !int(data.lastHour) || data.firstHour > data.lastHour
-    || !(data.window === null || (int(data.window) && data.window >= 0)) || !isOrderedSpans(data.windows)
-    || !isOrderedSpans(data.available) || !reads || !reads.every((hour, i) => int(hour) && (!i || reads[i - 1] < hour))
-    || !isOrderedSpans(data.completionsAvailable) || !nullableText(data.completionsUnrecorded)
-    || !Array.isArray(data.types) || !data.types.every(type) || new Set(data.types.map(item => item.key)).size !== data.types.length
-    || !Array.isArray(data.operations) || !data.operations.every(op => object(op) && typeof op.id === 'string' && int(op.firstRead)
-      && unsigned32(op.definitionToken)
-      && nullableInt(op.startHour) && nullableInt(op.startKnownAt) && ((op.startHour === null) === (op.startKnownAt === null))
-      && isOrderedSpans(op.runs) && op.runs.every(run) && (!op.runs.length || op.runs[0].firstHour >= op.firstRead)
-      && (op.end === null || (object(op.end) && int(op.end.byHour) && int(op.end.lastSeen) && op.end.byHour >= op.end.lastSeen
-        && nullableInt(op.end.completionHour) && (op.end.completionSequence === null || unsigned64(op.end.completionSequence))
-        && ((op.end.completionHour === null) === (op.end.completionSequence === null))
-        && (op.end.completionHour === null || op.end.completionHour <= op.end.byHour)
-        && nullableText(op.end.typeKey)
-        && (op.end.outcome === null || (object(op.end.outcome) && typeof op.end.outcome.bonus === 'boolean'
-          && typeof op.end.outcome.detected === 'boolean' && typeof op.end.outcome.recordedLanguage === 'string'
-          && (op.end.outcome.descriptionRef === null || descriptionRef(op.end.outcome.descriptionRef))
-          && nullableText(op.end.outcome.descriptionUnrecorded) && unsigned64(op.end.outcome.descriptionRequiredBytes)
-          && ((op.end.outcome.descriptionRef === null) !== (op.end.outcome.descriptionUnrecorded === null))))
-        && nullableText(op.end.outcomeUnrecorded) && ((op.end.outcome === null) !== (op.end.outcomeUnrecorded === null))
-        && nullableText(op.end.ownerTag) && nullableText(op.end.targetTag)
-        && (op.end.reason === 'completed' || op.end.reason === 'disappeared')))
-      && (op.runs.length > 0 || (op.end !== null && op.end.completionHour !== null)))
-    || new Set(data.operations.map(op => op.id)).size !== data.operations.length
-    || !Array.isArray(data.warnings) || !data.warnings.every(warning => typeof warning === 'string') || !nullableText(data.unavailable)) {
-    throw new Error('The espionage operations reply is malformed.');
+export function validateOperations(value: unknown): EspionageOperationsReply {
+  if (!object(value) || !Array.isArray(value.operations) || !value.operations.every(item => object(item) && handle(item.id) && country(item.owner)
+    && country(item.target) && text(item.operation) && state(item.state)) || !text(value.missing) || !warnings(value)) throw malformed('espionage operations');
+  return value as unknown as EspionageOperationsReply;
+}
+
+export function validateEnded(value: unknown): EspionageEndedReply {
+  if (!object(value) || !Array.isArray(value.operations) || !value.operations.every(item => object(item) && handle(item.id) && country(item.owner)
+    && country(item.target) && text(item.operation) && integer(item.firstSeen) && integer(item.lastSeen) && integer(item.byHour)
+    && item.firstSeen <= item.lastSeen && item.lastSeen < item.byHour && typeof item.completionsRecorded === 'boolean' && state(item.state))
+    || !warnings(value)) throw malformed('ended operations');
+  return value as unknown as EspionageEndedReply;
+}
+
+/** Types are the content's definitions, never a fixed list; art that cannot be drawn keeps a named placeholder. */
+export function validateTypes(value: unknown): EspionageTypesReply {
+  if (!object(value) || !Array.isArray(value.types) || !value.types.every(item => object(item) && typeof item.key === 'string' && item.key.length > 0
+    && text(item.name) && text(item.icon) && text(item.missing))
+    || new Set(value.types.map(item => (item as { key: string }).key)).size !== value.types.length || !text(value.missing) || !warnings(value)) {
+    throw malformed('operation types');
   }
-  const reply = data as unknown as EspionageLogReply;
-  if (reply.window === null && (reply.operations.length || reply.readHours.length)) throw new Error('The espionage manifest contains detail history.');
-  if (reply.window !== null && reply.windows.length) throw new Error('The espionage detail contains a manifest.');
-  const types = new Set(reply.types.map(item => item.key));
-  for (const operation of reply.operations) {
-    if (!spansCovered(operation.runs, reply.available)) throw new Error('The espionage operations reply crosses unobserved hours.');
-    if (operation.end && operation.end.completionHour !== null && !runAt(reply.completionsAvailable, operation.end.byHour)) {
-      throw new Error('The espionage operations reply has an unrecorded completion read.');
-    }
-    const reference = operation.end?.outcome?.descriptionRef;
-    if (reference && (reference.hour !== operation.end?.byHour || reference.sequence !== operation.end?.completionSequence
-      || reference.id !== operation.id.split(':')[0])) throw new Error('The espionage description does not name its ending read.');
-    for (const run of [...operation.runs, ...(operation.end ? [operation.end] : [])]) {
-      if (run.typeKey !== null && !types.has(run.typeKey)) throw new Error('The espionage operations reply names an unlisted operation type.');
-    }
-  }
-  for (const item of reply.types) {
-    const original = item.icon;
-    item.icon = drawableIcon(original);
-    if (original !== null && item.icon === null) {
-      item.iconMissing = `Artwork refused for operation type ${item.key}: not a drawable bounded PNG`;
-      reply.warnings.push(`${item.iconMissing} (1)`);
-    }
+  const reply = value as unknown as EspionageTypesReply;
+  for (const type of reply.types) {
+    const original = type.icon;
+    type.icon = drawableIcon(original);
+    if (original !== null && type.icon === null) type.missing = [type.missing, `Artwork refused for operation type ${type.key}: not a drawable bounded PNG`].filter(Boolean).join('; ');
   }
   return reply;
 }
-export const operationName = (type: EspionageOperationType | undefined) => contentTitle(type?.name, type?.key, 'Operation name unavailable');
-export function operationChoices(reply: EspionageLogReply | undefined) {
-  return (reply?.types ?? []).map(type => ({ value: setToken(type.key), label: operationName(type), icon: type.icon,
-    unavailable: storableToken(setToken(type.key)) ? undefined : UNSTORABLE }))
-    .sort((a, b) => a.label.localeCompare(b.label));
+
+/** The tokens the recording gave each type: read apart from the names, so no name waits on the history. */
+export function validateTypeTokens(value: unknown): EspionageTypeTokensReply {
+  if (!object(value) || !Array.isArray(value.types) || !value.types.every(item => object(item) && typeof item.key === 'string' && item.key.length > 0
+    && Array.isArray(item.tokens) && item.tokens.every(token => integer(token) && token >= 0))
+    || new Set(value.types.map(item => (item as { key: string }).key)).size !== value.types.length || !text(value.missing) || !warnings(value)) {
+    throw malformed('operation type tokens');
+  }
+  return value as unknown as EspionageTypeTokensReply;
 }
-export interface OperationAt {
-  operation: EspionageOperation;
-  windowIndex?: number;
-  /** Null in a gap. `last` is identity/history only there, never a current measurement. */
-  run: EspionageOperationRun | null;
-  last: EspionageOperationRun | null;
-  typeKey: string | null;
-  readHour: number | null;
-  state: 'preparing' | 'running' | 'completed' | 'disappeared' | 'unread';
-  startHour: number | null;
-  ownerTag: string | null;
-  targetTag: string | null;
+
+const operative = (value: unknown): value is OperativeName => object(value) && handle(value.id) && text(value.name) && text(value.unavailable)
+  && (value.name === null) !== (value.unavailable === null);
+export function validateOperation(value: unknown, id: string): EspionageOperationReply {
+  if (!object(value) || value.id !== id || !integer(value.firstSeen) || !integer(value.lastSeen) || !integer(value.readHour) || !state(value.state)
+    || !(value.operatives === null || (Array.isArray(value.operatives) && value.operatives.every(operative))) || !warnings(value)) throw malformed('espionage operation');
+  return value as unknown as EspionageOperationReply;
+}
+
+export type OperationKind = 'preparing' | 'running' | 'completed' | 'ended';
+
+/** A completion's stored results, as its log row holds them. */
+export interface Completion {
+  completionHour: number | null; terminal: number | null; bonus: number | null; detected: number | null;
+  description: string | null; descriptionUnrecorded: string | null;
+}
+
+/** An operation as one row of the log shows it, whichever list it comes from. */
+export interface OperationItem {
+  /** Its handle; none where a completion row did not record it. */
+  id: string | null;
+  kind: OperationKind;
+  owner: Country;
+  target: Country | null;
+  operation: string | null;
+  /** The hour its countries are named at. */
   countryHour: number;
+  startHour: number | null;
+  firstSeen: number | null;
+  lastSeen: number | null;
+  /** The first read that no longer held it (an ended operation). */
+  byHour: number | null;
+  /** As read: under way at the hour shown, an ended operation at its last read; none for a completion. */
+  state: OperationState | null;
+  completion: Completion | null;
+  /** False where completions were not recorded throughout an ended operation's life. */
+  completionsRecorded: boolean;
 }
-export function operationAt(reply: EspionageLogReply, operation: EspionageOperation, hour: number): OperationAt | null {
-  if (hour < operation.firstRead) return null;
-  const last = entryAt(operation.runs, hour);
-  const end = operation.end && operation.end.byHour <= hour ? operation.end : null;
-  if (!last && !end) return null;
-  const current = end ? runAt(operation.runs, end.lastSeen) : runAt(operation.runs, hour);
-  const state = end ? end.reason === 'completed' ? 'completed' : 'disappeared'
-    : !current ? 'unread' : current.durationDays === 0 ? 'preparing' : 'running';
-  const read = current ? readAt(reply.readHours, end ? Math.min(end.lastSeen, current.lastHour) : Math.min(hour, current.lastHour)) ?? current.readHour : null;
-  return { operation, run: current, last, readHour: read, state,
-    countryHour: end?.byHour ?? read ?? readAt(reply.readHours, last!.lastHour) ?? last!.readHour,
-    ownerTag: end ? end.ownerTag : (current ?? last)?.ownerTag ?? null, targetTag: end ? end.targetTag : (current ?? last)?.targetTag ?? null,
-    typeKey: end ? end.typeKey : (current ?? last)?.typeKey ?? null,
-    startHour: operation.startKnownAt !== null && operation.startKnownAt <= hour ? operation.startHour : null };
+
+export const kindOf = (value: OperationState): OperationKind => value.durationDays === 0 ? 'preparing' : 'running';
+
+const cellNumber = (cell: LogCell | undefined) => cell?.kind === 'number' ? Number(cell.value) : null;
+const cellText = (cell: LogCell | undefined) => cell?.kind === 'text' ? cell.value : null;
+
+/** A page row of `espionage-log` as the list's row. */
+export function completionRow(row: LogReplyRow): LogRow<OperationItem> {
+  const cells = row.cells;
+  const target = cellNumber(cells.target);
+  return { key: row.key, id: `completion:${row.key}`, hour: row.hour, item: {
+    id: cellText(cells.id), kind: 'completed', owner: { id: cellNumber(cells.owner) ?? 0, tag: cellText(cells.ownerTag) },
+    target: target === null ? null : { id: target, tag: cellText(cells.targetTag) }, operation: cellText(cells.operation), countryHour: row.hour,
+    startHour: cellNumber(cells.startHour), firstSeen: cellNumber(cells.firstSeen), lastSeen: cellNumber(cells.lastSeen), byHour: null, state: null,
+    completion: { completionHour: cellNumber(cells.completionHour), terminal: cellNumber(cells.terminal), bonus: cellNumber(cells.bonus), detected: cellNumber(cells.detected),
+      description: cellText(cells.description), descriptionUnrecorded: cellText(cells.descriptionUnrecorded) },
+    completionsRecorded: true,
+  } };
 }
+
+export function underWayItem(operation: OperationUnderWay, hour: number): OperationItem {
+  return { id: operation.id, kind: kindOf(operation.state), owner: operation.owner, target: operation.target, operation: operation.operation, countryHour: hour,
+    startHour: operation.state.startHour, firstSeen: null, lastSeen: null, byHour: null, state: operation.state, completion: null, completionsRecorded: true };
+}
+
+export function endedItem(operation: EndedOperation): OperationItem {
+  return { id: operation.id, kind: 'ended', owner: operation.owner, target: operation.target, operation: operation.operation, countryHour: operation.lastSeen,
+    startHour: operation.state.startHour, firstSeen: operation.firstSeen, lastSeen: operation.lastSeen, byHour: operation.byHour, state: operation.state,
+    completion: null, completionsRecorded: operation.completionsRecorded };
+}
+
+/** Which operations a list keeps: their types (keys; every type when null), the chosen countries as owner, target or either at the row's
+ * hour, countries the hour names no tag for only when every country is chosen, and rows dated from `from`. */
 export interface OperationFilter {
-  types: readonly string[];
-  country: (tag: string, hour: number) => boolean;
+  types: ReadonlySet<string> | null;
   role: 'owner' | 'target' | 'either';
-  includeUnknownCountries?: boolean;
+  country: (tag: string, hour: number) => boolean;
+  includeUnknown: boolean;
   from: number | null;
-  live: boolean;
-  runningOrder: 'start' | 'preparation';
-}
-export function operationRows(reply: EspionageLogReply, hour: number, filter: OperationFilter): ReadonlyArray<LogRow<OperationAt>> {
-  const types = new Set(filter.types);
-  const rows: LogRow<OperationAt>[] = [];
-  for (const operation of reply.operations) {
-    const at = operationAt(reply, operation, hour);
-    if (!at || (types.size && (at.typeKey === null || !types.has(at.typeKey)))) continue;
-    const end = operation.end && operation.end.byHour <= hour ? operation.end : null;
-    const date = end?.completionHour ?? end?.byHour ?? at.readHour ?? (at.last ? readAt(reply.readHours, at.last.lastHour) ?? at.last.readHour : operation.firstRead);
-    const owner = at.ownerTag === null ? filter.includeUnknownCountries === true : filter.country(at.ownerTag, at.countryHour);
-    const target = at.targetTag === null ? filter.includeUnknownCountries === true : filter.country(at.targetTag, at.countryHour);
-    if ((filter.role === 'owner' && !owner) || (filter.role === 'target' && !target) || (filter.role === 'either' && !owner && !target)) continue;
-    if (filter.from !== null && date < filter.from) continue;
-    rows.push({ key: `${operation.id}:${end?.byHour ?? 'active'}`, id: operation.id, hour: date, by: end !== null && end.completionHour === null, item: at });
-  }
-  return sortOperationRows(rows, filter);
-}
-function sortOperationRows(rows: LogRow<OperationAt>[], filter: OperationFilter): ReadonlyArray<LogRow<OperationAt>> {
-  const ongoing = (row: LogRow<OperationAt>) => row.item.state === 'preparing' || row.item.state === 'running';
-  return rows.sort((a, b) => {
-    if (filter.live) {
-      const first = ongoing(a); const second = ongoing(b);
-      if (first !== second) return first ? -1 : 1;
-      if (first && filter.runningOrder === 'preparation') {
-        const av = a.item.run?.preparationRatio; const bv = b.item.run?.preparationRatio;
-        if (av !== bv) return av == null ? 1 : bv == null ? -1 : bv - av;
-      }
-      if (first) return (b.item.startHour ?? b.item.operation.firstRead) - (a.item.startHour ?? a.item.operation.firstRead) || a.id!.localeCompare(b.id!);
-    }
-    return b.hour - a.hour || a.id!.localeCompare(b.id!);
-  });
-}
-export function operationWindowIdentity(sourceId: string, revision: string, branchId: string, content: number): string {
-  return JSON.stringify([sourceId, revision, branchId, content]);
-}
-export function operationWindowIndex(windows: readonly { firstHour: number; lastHour: number }[], at: number): number {
-  for (let index = windows.length - 1; index >= 0; index--) if (windows[index].firstHour <= at) return index;
-  return -1;
-}
-/** Hold the playhead, visible windows and their earlier neighbour. */
-export function operationWindows(manifest: EspionageLogReply | undefined, at: number, live: boolean, visible: readonly number[] = [], from = -Infinity): number[] {
-  if (!manifest) return [];
-  const current = operationWindowIndex(manifest.windows, at);
-  if (current < 0) return [];
-  const wanted = new Set([current, ...visible.filter(index => index >= 0 && index <= current && manifest.windows[index]?.lastHour >= from)]);
-  const oldest = Math.min(...wanted);
-  if (oldest > 0 && manifest.windows[oldest - 1].lastHour >= from) wanted.add(oldest - 1);
-  if (live && current + 1 < manifest.windows.length) wanted.add(current + 1);
-  return [...wanted].sort((a, b) => a - b);
-}
-/** A row belongs to its actual ending/read window; a spanning episode is shown
- * once, using the latest loaded window at or before the requested moment. */
-export function windowedOperationRows(windows: ReadonlyMap<number, EspionageLogReply>, hour: number, filter: OperationFilter): ReadonlyArray<LogRow<OperationAt>> {
-  const rows = new Map<string, LogRow<OperationAt>>();
-  const sorted = [...windows].sort(([a], [b]) => a - b);
-  const current = sorted.find(([, reply]) => reply.firstHour <= hour && hour <= reply.lastHour)?.[0];
-  for (const [index, reply] of sorted) {
-    if (reply.firstHour > hour) continue;
-    for (const row of operationRows(reply, Math.min(hour, reply.lastHour), filter)) {
-      const ended = row.item.state === 'completed' || row.item.state === 'disappeared';
-      if (!ended && index !== current) continue;
-      rows.set(row.item.operation.id, { ...row, item: { ...row.item, windowIndex: index } });
-    }
-  }
-  return sortOperationRows([...rows.values()], filter);
 }
 
-export function espionagePlayback(windows: ReadonlyMap<number, EspionageLogReply>, filter: OperationFilter) {
-  const types = new Set(filter.types);
-  const includes = (run: EspionageOperationRun, hour: number) => {
-    if (types.size && (run.typeKey === null || !types.has(run.typeKey)) || filter.from !== null && hour < filter.from) return false;
-    const owner = run.ownerTag === null ? filter.includeUnknownCountries === true : filter.country(run.ownerTag, hour);
-    const target = run.targetTag === null ? filter.includeUnknownCountries === true : filter.country(run.targetTag, hour);
-    return filter.role === 'owner' ? owner : filter.role === 'target' ? target : owner || target;
-  };
-  function* changes() {
-    for (const reply of windows.values()) {
-      yield reply.firstHour; yield reply.lastHour + 1;
-      for (const operation of reply.operations) {
-        yield operation.firstRead;
-        if (operation.startKnownAt != null) yield operation.startKnownAt;
-        if (operation.end) yield operation.end.byHour;
-        for (const run of operation.runs) {
-          const end = Math.min(run.lastHour, reply.lastHour, operation.end ? operation.end.byHour - 1 : Infinity);
-          if (run.firstHour > end) continue;
-          yield run.firstHour;
-          if (end === run.lastHour) yield end + 1;
-          let low = 0, high = reply.readHours.length;
-          while (low < high) {
-            const middle = Math.floor((low + high) / 2);
-            if (reply.readHours[middle] < run.firstHour) low = middle + 1; else high = middle;
-          }
-          let previous = includes(run, readAt(reply.readHours, run.firstHour) ?? run.readHour);
-          for (let index = low; index < reply.readHours.length && reply.readHours[index] <= end; index++) {
-            const hour = reply.readHours[index], shown = includes(run, hour);
-            if (shown || previous) yield hour;
-            previous = shown;
-          }
-        }
-      }
-    }
-  }
-  return playbackRows(changes(), hour => windowedOperationRows(windows, hour, filter));
+export function keeps(item: OperationItem, date: number, filter: OperationFilter): boolean {
+  if (filter.types && (item.operation === null || !filter.types.has(item.operation))) return false;
+  if (filter.from !== null && date < filter.from) return false;
+  const side = (value: Country | null) => value?.tag ? filter.country(value.tag, item.countryHour) : filter.includeUnknown;
+  return filter.role === 'owner' ? side(item.owner) : filter.role === 'target' ? side(item.target) : side(item.owner) || side(item.target);
 }
 
-export function operationState(at: OperationAt): string {
-  switch (at.state) {
+/** Operations under way at `hour`, kept by `filter`: newest start first, or highest preparation first; those not launched have no
+ * start and follow the launched ones. */
+export function underWayRows(reply: EspionageOperationsReply | undefined, hour: number, filter: OperationFilter, order: 'start' | 'preparation'): LogRow<OperationItem>[] {
+  if (!reply) return [];
+  const rows = reply.operations.map(operation => underWayItem(operation, hour)).filter(item => keeps(item, hour, filter));
+  const start = (item: OperationItem) => item.startHour ?? -Infinity;
+  const prepared = (item: OperationItem) => item.state?.preparationRatio ?? -1;
+  rows.sort((a, b) => (order === 'preparation' ? prepared(b) - prepared(a) : 0) || start(b) - start(a) || compareCountries(a.owner, b.owner) || a.id!.localeCompare(b.id!));
+  return rows.map(item => ({ key: `op:${item.id}`, id: `op:${item.id}`, hour: item.startHour ?? hour, item }));
+}
+
+/** What renders the under-way list: its rows in order, never the numbers that move between reads (painted). */
+export function underWayStructure(reply: EspionageOperationsReply, order: 'start' | 'preparation'): string {
+  const rows = underWayRows(reply, 0, { types: null, role: 'owner', country: () => true, includeUnknown: true, from: null }, order);
+  return JSON.stringify([reply.missing, rows.map(row => [row.item.id, row.item.kind, row.item.owner, row.item.target, row.item.operation, row.item.startHour,
+    row.item.state?.phaseCount, row.item.state?.assignedSlots, row.item.state?.autoRepeat, row.item.state?.autoCommence])]);
+}
+
+/** The ended operations a cut shows: the `shown` that ended first (every one when null), kept by `filter`, newest first. */
+export function endedRows(reply: EspionageEndedReply | undefined, shown: number | null, filter: OperationFilter): LogRow<OperationItem>[] {
+  if (!reply) return [];
+  const through = shown === null ? reply.operations : reply.operations.slice(Math.max(0, reply.operations.length - shown));
+  return through.map(endedItem).filter(item => keeps(item, item.byHour!, filter))
+    .map(item => ({ key: `ended:${item.id}:${item.byHour}`, id: `ended:${item.id}`, hour: item.byHour!, by: true, item }));
+}
+
+/** How many ended operations a cut at `hour` shows (the reply is newest first): the list renders only when this changes. */
+export function endedThrough(reply: EspionageEndedReply | undefined, hour: number): number {
+  if (!reply) return 0;
+  let low = 0, high = reply.operations.length;
+  while (low < high) {
+    const middle = (low + high) >> 1;
+    if (reply.operations[middle].byHour > hour) low = middle + 1; else high = middle;
+  }
+  return reply.operations.length - low;
+}
+
+/** A page's rows kept by `filter` where the server could not filter them (several roles, or countries not given by tag). */
+export function filteredPages(pages: readonly LogPage<OperationItem>[], filter: OperationFilter | null): readonly LogPage<OperationItem>[] {
+  if (!filter) return pages;
+  return pages.map(page => page.rows ? { ...page, rows: page.rows.filter(row => keeps(row.item, row.hour, filter)) } : page);
+}
+
+/** The types to choose from: those the recording gave a token, so ones it may hold (never a type it cannot), named as the content names
+ * them. */
+export function operationChoices(types: EspionageTypesReply | undefined, tokens: EspionageTypeTokensReply | undefined) {
+  const recorded = new Set((tokens?.types ?? []).filter(type => type.tokens.length > 0).map(type => type.key));
+  return (types?.types ?? []).filter(type => recorded.has(type.key)).map(type => ({ value: setToken(type.key), label: operationName(type), icon: type.icon ?? undefined,
+    unavailable: storableToken(setToken(type.key)) ? undefined : UNSTORABLE })).sort((a, b) => a.label.localeCompare(b.label));
+}
+
+/** The recorded tokens of the chosen types, for the completions log's facet: null for every type, undefined while the tokens are read. */
+export function typeTokens(tokens: EspionageTypeTokensReply | undefined, chosen: ReadonlySet<string> | null): number[] | null | undefined {
+  if (!chosen) return null;
+  if (!tokens) return undefined;
+  return [...new Set(tokens.types.filter(type => chosen.has(type.key)).flatMap(type => type.tokens))].sort((a, b) => a - b);
+}
+
+/** An operation as the content names it; while the types are loading, that; never its key, which no user reads as a name. */
+export const operationName = (type: OperationType | undefined, pending = false) => contentTitle(type?.name, type?.key, 'Operation name unavailable', pending);
+
+export function operationState(item: OperationItem): string {
+  switch (item.kind) {
     case 'preparing': return 'Preparing';
     case 'running': return 'Running';
     case 'completed': return 'Completed';
-    case 'disappeared': return 'Ended';
-    case 'unread': return 'Not recorded at this hour';
+    case 'ended': return item.completionsRecorded ? 'Ended without completing' : 'Ended; completion not recorded';
   }
 }
-/** Sentence parts let the log keep each country's flag beside its own name. */
-export function operationWording(at: OperationAt): { action: string; afterTarget: string } {
-  switch (at.state) {
+
+/** Sentence parts, so the log keeps each country's flag beside its own name. */
+export function operationWording(item: OperationItem): { action: string; afterTarget: string } {
+  switch (item.kind) {
     case 'preparing': return { action: ' is preparing ', afterTarget: '' };
     case 'running': return { action: ' is running ', afterTarget: '' };
     case 'completed': return { action: ' completed ', afterTarget: '' };
-    case 'disappeared': return { action: '’s ', afterTarget: ' ended' };
-    case 'unread': return { action: '’s ', afterTarget: ' is unavailable at this time' };
+    case 'ended': return { action: '’s ', afterTarget: ' ended' };
   }
 }
-export const preparationRatio = (at: OperationAt) => at.run?.preparationRatio == null ? null : at.run.preparationRatio / 100_000;
-/** Native elapsed-day result is supplied by the read, never the playhead. */
-export const executionRatio = (at: OperationAt) => at.run?.elapsedDays == null || at.run.durationDays === 0 ? null : at.run.elapsedDays / at.run.durationDays;
-export const operationProgress = (at: OperationAt) => at.state === 'preparing' ? preparationRatio(at) : at.state === 'running' ? executionRatio(at) : null;
-/** Active rows have no outcome. Stored descriptions retain their recorded language. */
-export function operationOutcome(at: OperationAt): string | null {
-  if (at.state !== 'completed' && at.state !== 'disappeared') return null;
-  const end = at.operation.end;
-  return end?.outcome?.descriptionUnrecorded ? 'Description unavailable.' : end?.outcome?.descriptionRef ? 'Outcome' : 'Outcome not recorded.';
+
+/** A stored result flag: the game writes 0 or 1. */
+const flag = (name: string, value: number | null): { value: boolean | null; refused: string | null } => value === null ? { value: null, refused: null }
+  : value === 0 || value === 1 ? { value: value === 1, refused: null } : { value: null, refused: `Stored operation ${name} refused: flag byte ${value} is not 0 or 1` };
+
+/** What a finished row says of its outcome; an operation under way has none. */
+export function outcomeText(item: OperationItem): string | null {
+  if (item.kind === 'ended') return item.completionsRecorded ? 'Outcome not recorded.' : 'Completion not recorded.';
+  const completion = item.completion;
+  if (!completion) return null;
+  if (completion.bonus === null || completion.detected === null || flag('bonus', completion.bonus).refused || flag('detection', completion.detected).refused) return 'Outcome not recorded.';
+  return completion.descriptionUnrecorded !== null ? 'Description unavailable.' : 'Outcome';
 }
-export function operationJumpHours(at: OperationAt, shownHour: number, rowHour?: number): number[] {
-  const end = at.operation.end && at.operation.end.byHour <= shownHour ? (at.operation.end.completionHour ?? at.operation.end.byHour) : null;
-  const hours = [at.startHour, end].filter((hour): hour is number => hour !== null);
-  return [...new Set(hours.length ? hours : [rowHour ?? at.operation.firstRead])].sort((a, b) => a - b);
+
+/** The meter of an operation under way: preparation while preparing, elapsed over duration while running. */
+export function operationProgress(item: Pick<OperationItem, 'kind'>, value: OperationState | null): number | null {
+  if (!value) return null;
+  if (item.kind === 'preparing') return value.preparationRatio === null ? null : value.preparationRatio / 100_000;
+  if (item.kind === 'running') return value.elapsedDays === null || value.durationDays === 0 ? null : value.elapsedDays / value.durationDays;
+  return null;
 }
-export function operationTooltip(reply: EspionageLogReply, row: LogRow<OperationAt>, country: (tag: string | null) => ReturnType<CountryLabel>, description?: string): TooltipContent[] {
-  const at = row.item;
-  const type = reply.types.find(type => type.key === at.typeKey);
-  const current = at.run;
-  const countryRow = (label: string, tag: string | null): TooltipRow => {
-    const value = country(tag);
-    return { ...countryNameDetails(value), label, value: value.name, countryFlag: tag === null ? undefined : {
-      flag: value.flag, flagReason: value.flagReason, ...(value.flagDetail !== undefined ? { flagDetail: value.flagDetail } : {}), flagPending: value.flagPending,
-    } };
+
+export function progressText(item: Pick<OperationItem, 'kind'>, value: OperationState | null): string {
+  if (!value) return 'Not recorded';
+  if (item.kind === 'preparing') return value.preparationRatio === null ? 'Preparation not recorded' : `Preparation ${Math.trunc(value.preparationRatio / 1000)}%`;
+  return value.elapsedDays === null ? 'Elapsed days not recorded' : `${value.elapsedDays} / ${value.durationDays} days`;
+}
+
+/** The hours a row's menu jumps to: its start and its end, else its first sighting or its own date. */
+export function jumpHours(item: OperationItem, rowHour: number): number[] {
+  const end = item.kind === 'completed' ? item.completion?.completionHour ?? rowHour : item.byHour;
+  const hours = [item.startHour, end].filter((hour): hour is number => hour !== null);
+  return [...new Set(hours.length ? hours : [item.firstSeen ?? rowHour])].sort((a, b) => a - b);
+}
+
+/** What the tooltip reads on demand: the operation at its read, with its operatives, or why it is not shown. */
+export type OperationDetail = { reply: EspionageOperationReply } | { failure: string } | null;
+
+export function operationTooltip(item: OperationItem, rowHour: number, type: OperationType | undefined, label: (value: Country | null) => ReturnType<CountryLabel>,
+  current: OperationState | null, detail: OperationDetail, pending = false): TooltipContent {
+  const countryRow = (name: string, value: Country | null): TooltipRow => {
+    const shown = label(value);
+    return { ...countryNameDetails(shown), label: name, value: shown.name, countryFlag: value?.tag ? {
+      flag: shown.flag, flagReason: shown.flagReason, ...(shown.flagDetail !== undefined ? { flagDetail: shown.flagDetail } : {}), flagPending: shown.flagPending } : undefined };
   };
+  const read = detail && 'reply' in detail ? detail.reply : null;
+  const firstSeen = item.firstSeen ?? read?.firstSeen ?? null;
   const rows: TooltipRow[] = [
-    countryRow('Owner', at.ownerTag), countryRow('Target', at.targetTag),
-    { label: 'First seen', value: `by ${formatDateTime(at.operation.firstRead)}` },
-    { label: 'Execution started', value: at.startHour === null ? 'Not recorded' : formatDateTime(at.startHour) },
-    { label: 'Status', value: operationState(at) },
+    countryRow('Owner', item.owner), countryRow('Target', item.target),
+    { label: 'First seen', value: firstSeen === null ? detail === null ? 'Loading…' : 'Not recorded' : `by ${formatDateTime(firstSeen)}` },
+    { label: 'Execution started', value: item.startHour === null ? 'Not recorded' : formatDateTime(item.startHour) },
+    { label: 'Status', value: operationState(item) },
   ];
-  const ended = at.state === 'completed' || at.state === 'disappeared';
-  const outcome = ended && at.operation.end?.outcome?.descriptionRef ? description ?? 'Loading description…' : operationOutcome(at);
-  if (outcome !== null) rows.push({ label: 'Outcome', value: outcome });
-  const end = at.operation.end;
-  if (end && (at.state === 'completed' || at.state === 'disappeared')) {
-    rows.push({ label: at.state === 'completed' ? 'Completed' : 'Ended', value: end.completionHour === null ? `by ${formatDateTime(end.byHour)}` : formatDateTime(end.completionHour) });
-    if (end.outcome) rows.push({ label: 'Bonus result', value: end.outcome.bonus ? 'Yes' : 'No' },
-      { label: 'Detected', value: end.outcome.detected ? 'Yes' : 'No' });
+  const completion = item.completion;
+  if (item.kind === 'completed' && completion) {
+    const bonus = flag('bonus', completion.bonus), detected = flag('detection', completion.detected);
+    rows.push({ label: 'Outcome', value: completion.description ?? completion.descriptionUnrecorded ?? 'Outcome not recorded.' },
+      { label: 'Completed', value: completion.completionHour === null ? `by ${formatDateTime(rowHour)}` : formatDateTime(completion.completionHour) },
+      { label: 'Bonus result', value: bonus.refused ?? (bonus.value === null ? 'Not recorded' : bonus.value ? 'Yes' : 'No') },
+      { label: 'Detected', value: detected.refused ?? (detected.value === null ? 'Not recorded' : detected.value ? 'Yes' : 'No') });
+  } else if (item.kind === 'ended') {
+    rows.push({ label: 'Outcome', value: outcomeText(item)! }, { label: 'Ended', value: `by ${formatDateTime(item.byHour!)}` });
   }
-  if (current) {
-    // Preparation percentages truncate to whole percent.
-    if (at.state === 'running') rows.push({ label: 'Execution progress', value: current.elapsedDays === null ? 'Not recorded' : `${current.elapsedDays} / ${current.durationDays} days` });
-    rows.push({ label: 'Phases', value: current.currentPhase === null ? `${current.phaseCount} phases; current phase unknown`
-      : `Phase ${current.currentPhase + 1} of ${current.phaseCount}` },
-      { label: 'Preparation', value: current.preparationRatio === null ? 'Not recorded' : `${Math.trunc(current.preparationRatio / 1000)}%` },
-      { label: 'Auto-start', value: current.autoCommence ? 'Enabled' : 'Disabled' },
-      { label: 'Auto-repeat', value: current.autoRepeat ? 'Enabled' : 'Disabled' },
-      // The slot count includes unassigned slots.
-      { label: 'Operatives', value: `${current.operatives?.length ?? 'Unknown'} / ${current.assignedSlots}` });
-    for (const [index] of (current.operatives ?? []).entries()) {
-      const name = current.operativeNames?.[index];
-      rows.push({ label: 'Operative', value: name?.name === '' ? 'Unnamed operative' : name?.name ?? 'Name unavailable' });
-    }
-  } else rows.push({ label: 'Preparation, phases and assignments at this hour', value: 'Not recorded', tone: 'muted' });
-  return [{ title: operationName(type), icon: type?.icon ?? undefined, rows }];
+  const values = current ?? read?.state ?? null;
+  if (values) {
+    if (item.kind === 'running') rows.push({ label: 'Execution progress', value: values.elapsedDays === null ? 'Not recorded' : `${values.elapsedDays} / ${values.durationDays} days` });
+    rows.push({ label: 'Phases', value: values.currentPhase === null ? `${values.phaseCount} phases; current phase unknown` : `Phase ${values.currentPhase + 1} of ${values.phaseCount}` },
+      // Preparation percentages truncate to whole percent, as the game's meter text does.
+      { label: 'Preparation', value: values.preparationRatio === null ? 'Not recorded' : `${Math.trunc(values.preparationRatio / 1000)}%` },
+      { label: 'Auto-start', value: values.autoCommence ? 'Enabled' : 'Disabled' },
+      { label: 'Auto-repeat', value: values.autoRepeat ? 'Enabled' : 'Disabled' });
+  } else rows.push({ label: 'Preparation, phases and assignments', value: detail === null ? 'Loading…' : 'Not recorded', tone: 'muted' });
+  if (read) {
+    // The slot count includes unassigned slots.
+    rows.push({ label: 'Operatives', value: `${read.operatives?.length ?? 'Unknown'} / ${read.state.assignedSlots}` });
+    for (const name of read.operatives ?? []) rows.push({ label: 'Operative', value: name.name === '' ? 'Unnamed operative' : name.name ?? name.unavailable ?? 'Name unavailable' });
+  } else if (detail && 'failure' in detail) rows.push({ label: 'Operatives', value: detail.failure, tone: 'muted' });
+  return { title: operationName(type, pending), icon: type?.icon ?? undefined, rows, ...(type?.missing ? { note: type.missing } : {}) };
+}
+
+/** The numbers of the operations under way that move between reads, written into their marked cells with no render. */
+export function paintOperations(root: Element | null, reply: EspionageOperationsReply) {
+  if (!root) return;
+  const byId = new Map(reply.operations.map(operation => [operation.id, operation]));
+  for (const element of root.querySelectorAll<HTMLElement>('[data-esp-op]')) {
+    const operation = byId.get(element.dataset.espOp!);
+    if (!operation) continue;
+    const item = { kind: kindOf(operation.state) };
+    if (element.dataset.espField === 'meter') {
+      const progress = operationProgress(item, operation.state);
+      const bar = element.firstElementChild as HTMLElement | null;
+      if (bar) bar.style.width = progress === null ? '0' : `${Math.max(0, Math.min(1, progress)) * 100}%`;
+      element.classList.toggle('is-unknown', progress === null);
+    } else element.textContent = progressText(item, operation.state);
+  }
 }

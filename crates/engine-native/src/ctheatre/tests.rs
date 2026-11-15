@@ -179,7 +179,7 @@ fn reserved_header_failure_keeps_first_observation_without_a_gather_retry() {
         canonical_slot: 0,
         id: 0,
     };
-    let mut output = [Row::default(); 1];
+    let mut output = vec![Row::default(); 1];
     let mut callbacks = 0;
     let walk = walk_reserved_land_headers(&memory, MODULE, Ok(root), &mut output, |_, _| {
         callbacks += 1;
@@ -194,7 +194,7 @@ fn reserved_header_failure_keeps_first_observation_without_a_gather_retry() {
         base: MEMORY,
         bytes: &bytes,
     };
-    let empty = walk_reserved_land_headers(&memory, MODULE, Ok(root), &mut [], |_, _| {
+    let empty = walk_reserved_land_headers(&memory, MODULE, Ok(root), &mut Vec::new(), |_, _| {
         panic!("fresh empty theatre vector must not demand unrelated OOB")
     });
     assert_eq!((empty.len, empty.native_count), (Ok(0), Some(0)));
@@ -202,17 +202,17 @@ fn reserved_header_failure_keeps_first_observation_without_a_gather_retry() {
 
 #[derive(Default)]
 struct Captured {
-    land: [Row; 2],
-    groups: [ctheater_group::Row; 2],
-    orders: [ctheater_group::MemberRow; 2],
-    air: [cair_theatre::Row; 2],
-    air_groups: [cair_group::Row; 2],
-    wings: [cair_group::MemberRow; 2],
-    names: [u8; 32],
+    land: Vec<Row>,
+    groups: Vec<ctheater_group::Row>,
+    orders: Vec<ctheater_group::MemberRow>,
+    air: Vec<cair_theatre::Row>,
+    air_groups: Vec<cair_group::Row>,
+    wings: Vec<cair_group::MemberRow>,
+    names: Vec<u8>,
 }
 
 impl Captured {
-    fn read(&mut self, bytes: &[u8], row_capacity: usize, name_capacity: usize) -> Walk {
+    fn read(&mut self, bytes: &[u8]) -> Walk {
         walk(
             &SliceMemory {
                 base: MEMORY,
@@ -222,16 +222,38 @@ impl Captured {
             MEMORY,
             true,
             Buffers {
-                land: &mut self.land[..row_capacity],
-                land_groups: &mut self.groups[..row_capacity],
-                land_members: &mut self.orders[..row_capacity],
-                air: &mut self.air[..row_capacity],
-                air_groups: &mut self.air_groups[..row_capacity],
-                air_members: &mut self.wings[..row_capacity],
-                names: &mut self.names[..name_capacity],
+                land: &mut self.land,
+                land_groups: &mut self.groups,
+                land_members: &mut self.orders,
+                air: &mut self.air,
+                air_groups: &mut self.air_groups,
+                air_members: &mut self.wings,
+                names: &mut self.names,
             },
         )
     }
+}
+
+/// The count-only probe of every table.
+fn count(bytes: &[u8]) -> Walk {
+    walk_buffers(
+        &SliceMemory {
+            base: MEMORY,
+            bytes,
+        },
+        MODULE,
+        MEMORY,
+        true,
+        Storage {
+            land: Buffer::Count,
+            land_groups: Buffer::Count,
+            land_members: Buffer::Count,
+            air: Buffer::Count,
+            air_groups: Buffer::Count,
+            air_members: Buffer::Count,
+            names: Buffer::Count,
+        },
+    )
 }
 
 /// The gathered theatre header gives the per-field walk's rows, arenas and
@@ -372,7 +394,7 @@ fn gathered_land_headers_match_per_field_reads() {
 fn persistent_handles_native_aliases_priorities_and_literal_bytes_are_lossless() {
     let bytes = fixture();
     let mut captured = Captured::default();
-    let result = captured.read(&bytes, 2, 32);
+    let result = captured.read(&bytes);
     for table in [
         result.land,
         result.land_groups,
@@ -416,7 +438,7 @@ fn volunteer_tag_is_independent_of_owner_and_backlinks_keep_complete_references(
     let mut captured = Captured::default();
     for tag in [0, 2, i32::MIN] {
         put(&mut bytes, LAND + VOLUNTEERS_THEATRE, tag.to_le_bytes());
-        let result = captured.read(&bytes, 2, 32);
+        let result = captured.read(&bytes);
         assert_eq!(result.land, Outcome::Rows { len: 1 });
         assert_eq!(captured.land[0].owner, 1);
         assert_eq!(captured.land[0].volunteers_theatre, tag);
@@ -461,16 +483,15 @@ fn volunteer_tag_is_independent_of_owner_and_backlinks_keep_complete_references(
     );
     put(&mut bytes, LAND + OWNER, 0_u32.to_le_bytes());
     assert!(matches!(
-        captured.read(&bytes, 2, 32).land,
+        captured.read(&bytes).land,
         Outcome::Unavailable { .. }
     ));
 }
 
 #[test]
-fn capacities_omit_whole_rows_and_report_nested_rows_and_full_name_demand() {
+fn the_count_probe_reports_nested_rows_and_full_name_demand() {
     let bytes = fixture();
-    let mut captured = Captured::default();
-    let result = captured.read(&bytes, 0, 0);
+    let result = count(&bytes);
     for table in [
         result.land,
         result.land_groups,
@@ -489,25 +510,6 @@ fn capacities_omit_whole_rows_and_report_nested_rows_and_full_name_demand() {
     }
     assert_eq!(result.names_len, 0);
     assert_eq!(result.names_required, 11);
-    let result = captured.read(&bytes, 2, 2);
-    assert_eq!(
-        result.land_groups,
-        Outcome::Truncated {
-            len: 0,
-            unread_rows: 1
-        }
-    );
-    assert_eq!(
-        result.air,
-        Outcome::Truncated {
-            len: 0,
-            unread_rows: 1
-        }
-    );
-    assert_eq!(result.air_groups, Outcome::Rows { len: 1 });
-    assert_eq!(result.air_members, Outcome::Rows { len: 1 });
-    assert_eq!(result.names_len, 0);
-    assert_eq!(result.names_required, 11);
 }
 
 #[test]
@@ -519,7 +521,7 @@ fn land_and_air_faults_are_independent_and_parent_mismatches_are_not_empty_table
         LAND_GROUP + ctheater_group::THEATRE,
         0_u64.to_le_bytes(),
     );
-    let result = captured.read(&bytes, 2, 32);
+    let result = captured.read(&bytes);
     assert!(matches!(result.land_groups, Outcome::Unavailable { .. }));
     assert_eq!(result.air_members, Outcome::Rows { len: 1 });
     let mut bytes = fixture();
@@ -528,7 +530,7 @@ fn land_and_air_faults_are_independent_and_parent_mismatches_are_not_empty_table
         AIR_GROUP + cair_group::THEATRE_HANDLE,
         0_u64.to_le_bytes(),
     );
-    let result = captured.read(&bytes, 2, 32);
+    let result = captured.read(&bytes);
     assert_eq!(result.land_members, Outcome::Rows { len: 1 });
     assert!(matches!(result.air_groups, Outcome::Unavailable { .. }));
     let mut bytes = fixture();
@@ -537,12 +539,12 @@ fn land_and_air_faults_are_independent_and_parent_mismatches_are_not_empty_table
         COUNTRY_POINTER + ccountry::AIR_THEATRES + 8,
         0_u32.to_le_bytes(),
     );
-    let result = captured.read(&bytes, 2, 32);
+    let result = captured.read(&bytes);
     assert_eq!(result.land_members, Outcome::Rows { len: 1 });
     assert!(matches!(result.air, Outcome::Unavailable { .. }));
     let mut bytes = fixture();
     put(&mut bytes, AIR + cair_theatre::COUNTRY, 0_u32.to_le_bytes());
-    let result = captured.read(&bytes, 2, 32);
+    let result = captured.read(&bytes);
     assert_eq!(result.land_members, Outcome::Rows { len: 1 });
     assert!(matches!(result.air, Outcome::Unavailable { .. }));
 }
@@ -560,15 +562,15 @@ fn heap_names_are_exact_and_wrong_terminators_or_reference_types_fail() {
     );
     put(&mut bytes, 0x6200, *b"arbitrary");
     put(&mut bytes, name + msvc_string::LENGTH, 9_u64.to_le_bytes());
-    let result = captured.read(&bytes, 2, 32);
+    let result = captured.read(&bytes);
     assert_eq!(result.air, Outcome::Rows { len: 1 });
     assert_eq!(&captured.names[3..12], b"arbitrary");
     put(&mut bytes, 0x6209, [1]);
-    let result = captured.read(&bytes, 2, 32);
+    let result = captured.read(&bytes);
     assert!(matches!(result.air, Outcome::Unavailable { .. }));
     let mut bytes = fixture();
     put(&mut bytes, 0x22a0, handle(cair_group::TYPE).to_le_bytes());
-    let result = captured.read(&bytes, 2, 32);
+    let result = captured.read(&bytes);
     assert!(matches!(result.air_members, Outcome::Unavailable { .. }));
     assert_eq!(result.land_members, Outcome::Rows { len: 1 });
 }
@@ -783,24 +785,7 @@ fn a_nonpositive_volunteer_key_leaves_a_theatre_out_of_scope() {
 }
 
 #[test]
-fn stationed_capacity_omits_whole_rows_and_keeps_faults_independent() {
-    let (walk, areas, _, _) = stationed(&stationed_fixture(), 4, 1, 1);
-    assert_eq!(
-        walk.areas,
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 1
-        }
-    );
-    assert_eq!(areas[0].ordinal, 1);
-    assert_eq!((walk.provinces_len, walk.required_provinces), (0, 2));
-    assert_eq!(
-        walk.units,
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 1
-        }
-    );
+fn stationed_unit_faults_stay_independent_of_areas() {
     let mut bytes = stationed_fixture();
     put(&mut bytes, 0x2440, 0_u64.to_le_bytes());
     let (walk, _, _, _) = stationed(&bytes, 4, 8, 4);

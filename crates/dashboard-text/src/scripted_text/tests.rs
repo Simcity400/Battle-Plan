@@ -41,7 +41,7 @@ fn reserved_zero_naming_is_separate_from_positive_country_links() {
     assert!(
         text.country_tag(0)
             .unwrap_err()
-            .contains("ReservedCountryNaming")
+            .contains("reserved country naming")
     );
     drop(text);
     *frame.tables[TableId::ReservedCountryNaming.index()] =
@@ -220,7 +220,7 @@ fn scripted_map_state_hovers_use_controller_continent_occupied_country_and_cache
         ScriptedText::new(&f, &cat.localisation, content, 1)
             .expand_in("[Root.Occupied.GetTag]", &scopes)
             .unwrap_err()
-            .contains("no current-hour read or writer certificate")
+            .contains("not read this hour, so the values carried from an earlier hour cannot answer this exactly")
     );
 }
 
@@ -359,22 +359,22 @@ fn party_original_fallback_uses_the_party_tag_and_keeps_earlier_hits() {
         (
             Recorded::NotRecorded,
             Recorded::Value(Some(b"MOD_original".to_vec())),
-            "CountryAppearance.original_tag_reference not recorded",
+            "original tag reference of country appearance not recorded",
         ),
         (
             Recorded::Value(None),
             Recorded::Value(Some(b"MOD_original".to_vec())),
-            "CountryAppearance.original_tag_reference capture refused",
+            "original tag reference of country appearance capture refused",
         ),
         (
             Recorded::Value(Some(400)),
             Recorded::NotRecorded,
-            "CountryAppearance.original_tag not recorded",
+            "original tag of country appearance not recorded",
         ),
         (
             Recorded::Value(Some(400)),
             Recorded::Value(None),
-            "CountryAppearance.original_tag capture refused",
+            "original tag of country appearance capture refused",
         ),
         (
             Recorded::Value(Some(400)),
@@ -410,13 +410,13 @@ fn party_original_fallback_uses_the_party_tag_and_keeps_earlier_hits() {
     assert!(
         name(&frame, &party, false)
             .unwrap_err()
-            .contains("CountryLinks")
+            .contains("no recorded country link")
     );
     party.tag = 0;
     assert!(
         name(&frame, &party, false)
             .unwrap_err()
-            .contains("ReservedCountryNaming")
+            .contains("reserved country naming")
     );
     *frame.tables[TableId::ReservedCountryNaming.index()] =
         TableView::Complete(TableRows::ReservedCountryNaming(vec![
@@ -501,7 +501,7 @@ fn brackets_evaluate_for_the_country_the_text_is_shown_for() {
     assert_eq!(expand("x[ROOT.GetTag] y [z", &ger).as_deref(), Ok("xGER"));
     // Refused by name with the missing input.
     for (text, reason) in [
-        ("[Player.GetName]", "LocalPlayer"),
+        ("[Player.GetName]", "local player"),
         ("[(ROOT.GetName?a:b)]", "the conditional scripted text"),
         (
             "[ROOT.GetOldName]",
@@ -815,7 +815,7 @@ fn promotions_tell_absence_from_a_recording_gap() {
         &truncated,
         1,
         "[ROOT.GER_erwin_rommel.GetName]",
-        "GER_erwin_rommel: whether it names a character of country slot 1 is unknown: Characters the table is truncated (3 rows missing)",
+        "GER_erwin_rommel: whether it names a character of country slot 1 is unknown: characters: the table is truncated (3 rows missing)",
     );
     let mut unspelled = frame();
     *unspelled.tables[TableId::LexicalTokens.index()] =
@@ -834,7 +834,7 @@ fn promotions_tell_absence_from_a_recording_gap() {
         &untagged,
         1,
         "[ROOT.Nobody.GetTag]",
-        "Nobody: whether it is a country tag is unknown: Countries the table is unavailable: fixture",
+        "Nobody: whether it is a country tag is unknown: countries: the table is unavailable: fixture",
     );
     // SOV's overlord link 100 needs CountryLinks.
     let mut unlinked = frame();
@@ -888,7 +888,7 @@ fn promotions_tell_absence_from_a_recording_gap() {
         &whole,
         1,
         "[ROOT.FactionLeader.GetTag]",
-        "the faction of country slot 1 is unknown: FactionMembers the table is unavailable",
+        "the faction of country slot 1 is unknown: faction members: the table is unavailable",
     );
 }
 

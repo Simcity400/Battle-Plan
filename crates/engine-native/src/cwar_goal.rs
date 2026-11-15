@@ -52,25 +52,9 @@ fn field<T: crate::memory::Raw>(
         .ok_or("owned wargoal field unreadable or address overflow")
 }
 
-/// An empty row destination observes the live roster and claimed-state header
-/// sums only. Real capture never allocates, and no incomplete goal is published.
+/// Rows and claimed states grow from the live roster and claimed-state headers;
+/// no incomplete goal is published.
 pub fn walk(
-    memory: &impl Memory,
-    base: usize,
-    state: usize,
-    output: &mut [Row],
-    states: &mut [u32],
-) -> Walk {
-    walk_buffer(
-        memory,
-        base,
-        state,
-        crate::walk::Buffer::Fixed(output),
-        crate::walk::Buffer::Fixed(states),
-    )
-}
-
-pub fn walk_growing(
     memory: &impl Memory,
     base: usize,
     state: usize,

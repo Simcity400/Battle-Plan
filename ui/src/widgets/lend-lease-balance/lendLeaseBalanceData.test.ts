@@ -1,67 +1,60 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import type { LendLeaseBalanceReply } from '../../generated/dashboard';
-import { amountLabel, amountText, emptyBalance, rankedAt, validateLendLeaseBalance } from './lendLeaseBalanceData.ts';
+import { amountLabel, balanceRows, balanceSelection, emptyBalance, firstRecorded, partnersAt, rankedRows, totalsOverTime, validateLendLeaseBalance,
+  validateLendLeasePartners, valueAt } from './lendLeaseBalanceData.ts';
+import type { LendLeaseBalanceReply, LendLeasePartnersReply } from '../../generated/dashboard';
 
-const history = (holder: string, tag: string, sent: string, received: string, from = 0) => ({
-  holder, tags: [{ hour: from, tag }], values: [[[from, 50, sent]], [], [[from, 50, received]], []],
+const partners = (): LendLeasePartnersReply => ({
+  holder: 'GER', scale: 100000, firstHour: 0, lastHour: 99, warnings: [], known: [{ firstHour: 0, lastHour: 39 }, { firstHour: 50, lastHour: 99 }],
+  totals: [[[10, 29, '300000'], [30, 39, '100000'], [50, 99, '100000']], [[10, 99, '0']]],
+  partners: [
+    { slot: 8, tags: [{ firstHour: 10, lastHour: 99, tag: 'FRA' }], values: [[[10, 29, '100000'], [30, 39, '100000'], [50, 99, '100000']], [[10, 99, '0']]] },
+    // Its row left at hour 30: held at zero after.
+    { slot: 4, tags: [{ firstHour: 20, lastHour: 99, tag: 'ITA' }], values: [[[20, 29, '200000'], [30, 39, '0'], [50, 99, '0']], [[20, 99, '0']]] },
+  ],
 });
+
+test('a holder\'s partners at an hour are read from their runs: ranked, held at zero once their row leaves, unknown outside the reads', () => {
+  const data = validateLendLeasePartners(partners());
+  assert.deepEqual(partnersAt(data, 25).map(row => [row.tag, row.sent]), [['ITA', 200000n], ['FRA', 100000n]]);
+  assert.deepEqual(partnersAt(data, 35).map(row => [row.tag, row.sent]), [['FRA', 100000n], ['ITA', 0n]], 'a partner gone from the histories stays, at zero');
+  assert.deepEqual(partnersAt(data, 45), [], 'an unread hour shows no partner, never zeros');
+  assert.deepEqual(partnersAt(data, 15).map(row => row.tag), ['FRA'], 'a partner shows from its first row on');
+  assert.equal(valueAt(data.totals[0], 40), null);
+  assert.equal(firstRecorded(data), 10);
+  assert.deepEqual(totalsOverTime(data).sent.map(run => [run.firstHour, run.value]), [[10, 3], [30, 1], [50, 1]]);
+  assert.throws(() => validateLendLeasePartners({ ...partners(), totals: [[[5, 1, '1']], []] }), /malformed/);
+});
+
 const reply = (): LendLeaseBalanceReply => ({
-  branchId: '1', lastHour: 50, scale: 100000, holder: null, warnings: [], known: [[0, 50, '1']],
-  histories: [history('1', 'AAA', '500000', '0'), history('2', 'BBB', '0', '300000'), history('3', 'CCC', '200000', '100000'),
-    history('4', 'DDD', '0', '0'), history('5', 'EEE', '-100', '0', 20)],
-  coverage: { firstHour: 0, lastHour: 50, complete: true }, pending: [],
-} as unknown as LendLeaseBalanceReply);
-
-test('ranking uses sent plus received, ties by holder, and countries with neither leave', () => {
-  const data = validateLendLeaseBalance(reply());
-  const all = rankedAt(data, 'industry', 10, { kind: 'all' }, [], undefined, 50)!;
-  assert.deepEqual(all.map(row => row.tag), ['AAA', 'BBB', 'CCC']);
-  const top = rankedAt(data, 'industry', 10, { kind: 'group', group: { type: 'top', count: 2 }, membership: 'hour', aggregate: false }, [], undefined, 50)!;
-  assert.deepEqual(top.map(row => row.tag), ['AAA', 'BBB']);
-  // Before its first read a history is unknown, not zero; a signed correction stays.
-  assert.ok(!rankedAt(data, 'industry', 10, { kind: 'all' }, [], undefined, 50)!.some(row => row.tag === 'EEE'));
-  const later = rankedAt(data, 'industry', 30, { kind: 'tags', tags: ['EEE'] }, [], undefined, 50)!;
-  assert.equal(amountText(later[0].sent, 100000), '-0.001');
-  // Fuel was not recorded for anyone here.
-  assert.deepEqual(rankedAt(data, 'fuel', 10, { kind: 'all' }, [], undefined, 50), []);
+  holder: null, scale: 100000, missing: null, warnings: [],
+  rows: [
+    { slot: 2, tag: 'ENG', values: ['500000', '0', '0', '7'] },
+    { slot: 3, tag: 'SOV', values: ['0', '0', '900000', '0'] },
+    { slot: 5, tag: 'FRA', values: ['0', '0', '0', '0'] },
+    { slot: 6, tag: null, values: ['9', '9', '9', '9'] },
+  ],
 });
 
-test('amounts stay exact', () => {
-  assert.equal(amountText(123456789n, 100000), '1,234.56789');
-  assert.equal(amountText(null, 100000), '—');
+test('rows rank by sent plus received, drop countries with neither and those without a tag, and keep the selection', () => {
+  const rows = balanceRows(validateLendLeaseBalance(reply()), 'industry');
+  assert.deepEqual(rankedRows(rows, { tags: null, limit: Infinity }).map(row => row.tag), ['SOV', 'ENG']);
+  assert.deepEqual(rankedRows(rows, { tags: null, limit: 1 }).map(row => row.tag), ['SOV']);
+  assert.deepEqual(rankedRows(rows, { tags: new Set(['ENG']), limit: Infinity }).map(row => row.tag), ['ENG']);
+  assert.deepEqual(balanceRows(reply(), 'fuel').map(row => [row.tag, row.sent, row.received]), [['ENG', 0n, 7n], ['SOV', 0n, 0n], ['FRA', 0n, 0n]]);
 });
 
-test('bar labels round to two decimals but never read 0 when they are not', () => {
-  assert.equal(amountLabel(635892500n, 100000), '6,358.93');
-  assert.equal(amountLabel(500000000n, 100000), '5,000');
-  assert.equal(amountLabel(100n, 100000), '0.001');
-  assert.equal(amountLabel(0n, 100000), '0');
-  assert.equal(amountLabel(null, 100000), '—');
+test('an empty chart says whether zero is proven by the rosters or nothing is recorded', () => {
+  const rows = balanceRows(reply(), 'industry');
+  assert.equal(emptyBalance(rows, { tags: new Set(['FRA']) }), 'zero');
+  assert.equal(emptyBalance(rows, { tags: new Set(['FRA', 'GER']) }), 'partial');
+  assert.equal(emptyBalance(rows, { tags: new Set(['GER']) }), 'none-recorded');
+  assert.equal(emptyBalance(rows, { tags: new Set(), membersUnknown: true }), 'members-unrecorded');
+  assert.deepEqual(balanceSelection({ kind: 'tags', tags: ['ENG'] }, [], undefined, 0, 0), { tags: new Set(['ENG']), limit: Infinity });
 });
 
-test('no lend-lease is said only for recorded zero; unread or unrostered is unavailable', () => {
-  const data = validateLendLeaseBalance(reply());
-  assert.equal(emptyBalance(data, 'industry', 10, { kind: 'tags', tags: ['DDD'] }, [], undefined, 50), 'zero');
-  assert.equal(emptyBalance(data, 'industry', 10, { kind: 'tags', tags: ['ZZZ'] }, [], undefined, 50), 'none-recorded');
-  assert.equal(emptyBalance({ ...data, known: [] }, 'industry', 10, { kind: 'all' }, [], undefined, 50), 'unrecorded');
-  // One recorded zero never hides a selected country with no recorded total.
-  assert.equal(emptyBalance(data, 'industry', 10, { kind: 'tags', tags: ['DDD', 'ZZZ'] }, [], undefined, 50), 'partial');
-  // A fuel total not recorded is not zero, though the industry one is.
-  assert.equal(emptyBalance(data, 'fuel', 10, { kind: 'tags', tags: ['DDD'] }, [], undefined, 50), 'none-recorded');
-});
-
-test('a group proves no lend-lease only from its own members\' histories', () => {
-  const data = validateLendLeaseBalance(reply());
-  const groups = (members: string[], unobserved: { firstHour: number; lastHour: number }[] = []) => ({ humans: [], wars: [],
-    factions: [{ id: 'g', members: members.map(tag => ({ tag, firstHour: 0, lastHour: 50 })), incomplete: [] }],
-    unobserved: { humans: [], factions: unobserved, wars: [] } }) as unknown as Parameters<typeof emptyBalance>[5];
-  const group = { kind: 'group', group: { type: 'faction', id: 'g' }, membership: 'hour', aggregate: false } as unknown as Parameters<typeof emptyBalance>[3];
-  // DDD's recorded zero says nothing about a group of ZZZ.
-  assert.equal(emptyBalance(data, 'industry', 10, group, [], groups(['ZZZ']), 50), 'none-recorded');
-  assert.equal(emptyBalance(data, 'industry', 10, group, [], groups(['DDD']), 50), 'zero');
-  assert.equal(emptyBalance(data, 'industry', 10, group, [], groups(['DDD', 'ZZZ']), 50), 'partial');
-  // Groups still loading prove nothing; nor does a roster not observed at the hour.
-  assert.equal(emptyBalance(data, 'industry', 10, group, [], undefined, 50), 'none-recorded');
-  assert.equal(emptyBalance(data, 'industry', 10, group, [], groups(['DDD'], [{ firstHour: 5, lastHour: 15 }]), 50), 'members-unrecorded');
+test('labels keep two decimals unless that would read zero, and a malformed reply is refused', () => {
+  assert.equal(amountLabel(123456n), '1.23');
+  assert.equal(amountLabel(7n), '0.00007');
+  assert.throws(() => validateLendLeaseBalance({ ...reply(), rows: [...reply().rows].reverse() }));
 });

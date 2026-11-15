@@ -15,6 +15,7 @@ pub struct Selection {
     bases: Arc<Vec<u64>>,
 }
 
+#[derive(Clone)]
 pub struct BaseTarget {
     base: u64,
     members: Vec<u64>,
@@ -213,6 +214,15 @@ impl Selection {
         }
     }
 
+    /// A new branch, country or viewer clears the selection; it reads no rows.
+    pub fn context(&mut self, branch: BranchId, country: &Country, viewer: u32) {
+        let context = (branch, country.clone(), viewer);
+        if self.context.as_ref() != Some(&context) {
+            self.clear();
+            self.context = Some(context);
+        }
+    }
+
     pub fn observe(
         &mut self,
         branch: BranchId,
@@ -220,11 +230,7 @@ impl Selection {
         viewer: u32,
         frame: &DecodedFrame,
     ) {
-        let context = (branch, country.clone(), viewer);
-        if self.context.as_ref() != Some(&context) {
-            self.clear();
-            self.context = Some(context);
-        }
+        self.context(branch, country, viewer);
         if let Ok(rows) = frame.complete::<tables::AirWings>() {
             Arc::make_mut(&mut self.wings)
                 .retain(|wing| rows.binary_search_by_key(wing, |row| row.id).is_ok());

@@ -6,25 +6,12 @@ import { createServer } from 'vite';
 import type { BoundTrack, CountrySelection, WidgetSpec } from './model';
 import type { WidgetCountryChipProps, WidgetPreset, WidgetRuntime } from './definitions';
 
-// Each breakdown's header chip, the option its Pin as widget copy saves the country in,
-// and its definition, whose catalogue cards are the unpinned breakdowns. These bodies
-// offer no country to choose, so an unpinned one asks for it in the header.
-const BREAKDOWNS: readonly [kind: string, chip: string, pin: string][] = [
-  ['political-power', 'country-measure/MeasureCountryChip.tsx', 'powerCountry'],
-  ['command-power', 'country-measure/MeasureCountryChip.tsx', 'powerCountry'],
-  ['stability', 'stability/StabilityCountryChip.tsx', 'stabilityCountry'],
-  ['equipment-losses', 'equipment-losses/LossesCountryChip.tsx', 'lossCountry'],
-  ['nuclear-arsenal', 'nuclear-arsenal/NuclearCountryChip.tsx', 'drillOriginHour'],
-];
-// These bodies let you choose a country, so they keep the header even unpinned
-// (savedActorHeaders and NavalLossesPin follow a card to a choice).
+// Breakdowns whose body lets you choose a country keep the header for the body even unpinned.
 const CHOOSING: readonly [kind: string, chip: string][] = [
   ['army-size', 'army-size/ArmyCountryChip.tsx'],
-  ['supply-health', 'supply-health/SupplyCountryChip.tsx'],
-  ['naval-losses', 'naval-losses/NavalLossesCountryChip.tsx'],
 ];
 
-test('an unpinned breakdown asks for a country unless its body offers one; a pinned one leaves its header to the body', async () => {
+test('a breakdown whose body offers a country leaves its header to the body', async () => {
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
     server: { middlewareMode: true, watch: null, hmr: false, ws: false } });
   try {
@@ -44,19 +31,6 @@ test('an unpinned breakdown asks for a country unless its body offers one; a pin
     for (const [kind, path] of CHOOSING) {
       const { variants, chip } = await load(kind, path);
       assert.ok(variants.some(variant => /dash-widget-country-slot/.test(chip(variant.initial.options ?? {}))), `${kind}'s breakdown card keeps the body's header`);
-    }
-    for (const [kind, path, pin] of BREAKDOWNS) {
-      const { variants, chip } = await load(kind, path);
-      // A breakdown's card is one whose Pin as widget copy hands its header to the body.
-      const breakdowns = variants.filter(variant => /dash-widget-country-slot/.test(chip({ ...variant.initial.options, [pin]: 0 })));
-      assert.ok(breakdowns.length, `${kind} has a catalogue card for a breakdown`);
-      for (const { key, initial: { options = {} } } of breakdowns) {
-        for (const countries of [top, { kind: 'selected' }, { kind: 'tags', tags: ['opaque-a'] }] as CountrySelection[]) {
-          const header = chip(options, countries);
-          assert.match(header, />Choose a country</, `${kind} ${key} asks for a country`);
-          assert.doesNotMatch(header, /Unavailable|Undated name|dash-widget-country-slot/, `${kind} ${key} names no holder the body has not dated`);
-        }
-      }
     }
   } finally { await vite.close(); }
 });

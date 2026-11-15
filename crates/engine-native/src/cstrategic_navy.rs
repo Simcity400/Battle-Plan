@@ -42,15 +42,13 @@ pub const REGIONAL_CONVOY_EFFICIENCY: usize = 0x10;
 /// The efficiency the game takes for a region outside the records: full.
 pub const FULL_REGIONAL_CONVOY_EFFICIENCY: i64 = 100_000;
 
-/// The country's regional convoy records, after its navy's identity and owner authenticate.
+/// The country's regional convoy records, after its navy's identity authenticates.
 pub fn regional_convoys(
     memory: &impl Memory,
     base: usize,
-    state: usize,
     navy: usize,
-    country: ccountry::Country,
 ) -> Result<Array, &'static str> {
-    with_identity(memory, base, state, navy, country, None, || {
+    with_identity(memory, base, navy, || {
         let root = navy
             .checked_add(REGIONAL_CONVOYS)
             .ok_or("navy regional convoys root overflow")?;
@@ -82,13 +80,12 @@ pub fn registered_missions(memory: &impl Memory, navy: usize) -> Result<u32, &'s
         .ok_or("navy registered missions unreadable or invalid")
 }
 
-fn with_identity<M: Memory, T>(
-    memory: &M,
+// A navy is its slot's country's: the game finds a country's navy by the
+// country's slot and never compares the navy's stored owner with it.
+fn with_identity<T>(
+    memory: &impl Memory,
     base: usize,
-    state: usize,
     navy: usize,
-    country: ccountry::Country,
-    countries: Option<&ccountry::Reader<'_, M>>,
     consume: impl FnOnce() -> Result<T, &'static str>,
 ) -> Result<T, &'static str> {
     let primary = engine_sites::at(base, VTABLE_RVA).ok_or("navy vtable overflow")? as u64;
@@ -97,57 +94,27 @@ fn with_identity<M: Memory, T>(
     let secondary_at = navy
         .checked_add(SECONDARY)
         .ok_or("navy identity overflow")?;
-    let owner_at = navy.checked_add(OWNER).ok_or("navy owner overflow")?;
-    let owner = read::<u32>(memory, owner_at).ok_or("navy owner unreadable")?;
     if navy == 0
         || read::<u64>(memory, navy) != Some(primary)
         || read::<u64>(memory, secondary_at) != Some(secondary)
     {
-        return Err("navy identity or owner mismatch");
-    }
-    let resolved = match countries {
-        Some(countries) => countries.resolve(owner)?,
-        None => ccountry::Reader::new(memory, base, state)?.resolve(owner)?,
-    };
-    if resolved.pointer != country.pointer {
-        return Err("navy identity or owner mismatch");
+        return Err("navy identity mismatch");
     }
     consume()
 }
 
-/// Resolve owning navy country without reaching regional operands.
-pub(crate) fn authenticate_owner(
-    memory: &impl Memory,
-    base: usize,
-    state: usize,
-    navy: usize,
-    country: ccountry::Country,
-) -> Result<(), &'static str> {
-    with_identity(memory, base, state, navy, country, None, || Ok(()))
-}
-
-pub fn authenticate_owner_with_countries<M: Memory>(
-    memory: &M,
-    base: usize,
-    state: usize,
-    navy: usize,
-    country: ccountry::Country,
-    countries: &ccountry::Reader<'_, M>,
-) -> Result<(), &'static str> {
-    with_identity(memory, base, state, navy, country, Some(countries), || {
-        Ok(())
-    })
+/// The navy's identity, without reaching regional operands.
+pub fn authenticate(memory: &impl Memory, base: usize, navy: usize) -> Result<(), &'static str> {
+    with_identity(memory, base, navy, || Ok(()))
 }
 
 pub(crate) fn regional_operand(
     memory: &impl Memory,
     base: usize,
-    state: usize,
     navy: usize,
-    country: ccountry::Country,
     region: u32,
 ) -> Result<i64, &'static str> {
-    let array = regional_inputs(memory, base, state, navy, country)?;
+    let array = regional_inputs(memory, base, navy)?;
     let at = array
         .element(region, 8)
         .ok_or("navy regional operand outside array")?;
@@ -159,17 +126,13 @@ pub(crate) fn regional_operand(
 pub(crate) fn regional_inputs(
     memory: &impl Memory,
     base: usize,
-    state: usize,
     navy: usize,
-    country: ccountry::Country,
 ) -> Result<Array, &'static str> {
-    with_identity(memory, base, state, navy, country, None, || {
-        regional_array(memory, navy)
-    })
+    with_identity(memory, base, navy, || regional_array(memory, navy))
 }
 
-/// Region-indexed array borrowed only after this navy's identity and owner
-/// authenticate in the same frozen acquisition, without retry.
+/// Region-indexed array borrowed only after this navy's identity
+/// authenticates in the same frozen acquisition, without retry.
 pub fn regional_array(memory: &impl Memory, navy: usize) -> Result<Array, &'static str> {
     let root = navy
         .checked_add(REGIONAL_OPERANDS)
@@ -194,7 +157,7 @@ pub struct AccessRow {
     pub mode: u8,
 }
 
-const NAVY_FIELDS: [RecordField; 4] = [
+const NAVY_FIELDS: [RecordField; 3] = [
     RecordField {
         source_offset: 0,
         destination_offset: 0,
@@ -206,17 +169,12 @@ const NAVY_FIELDS: [RecordField; 4] = [
         len: 8,
     },
     RecordField {
-        source_offset: OWNER,
-        destination_offset: 16,
-        len: 4,
-    },
-    RecordField {
         source_offset: ACCESS_MODES,
-        destination_offset: 20,
+        destination_offset: 16,
         len: 16,
     },
 ];
-const NAVY_BYTES: usize = 36;
+const NAVY_BYTES: usize = 32;
 const NAVY_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&NAVY_FIELDS, NAVY_BYTES).expect("valid navy access layout");
 const BATCH: usize = 64;
@@ -303,20 +261,13 @@ impl ModeSpans {
     }
 }
 
-/// Every nonzero regional access mode for each canonical country's navy.
-/// Authenticate navies in guarded batches; a null navy has no modes.
-pub fn access_modes(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut [AccessRow],
-) -> Outcome {
-    access_modes_buffer(memory, base, game_state, Buffer::Fixed(output))
+pub fn count_access_modes(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
+    access_modes_buffer(memory, base, game_state, Buffer::Count)
 }
 
 /// Worker-owned storage grows from the original native headers.
 #[cfg(any(test, feature = "test-support"))]
-pub fn access_modes_growing(
+pub fn access_modes(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -354,7 +305,6 @@ pub fn access_modes_buffer(
             .and_then(|header| Array::read(memory, header, 8))
             .ok_or("navy manager array invalid")?;
         let (primary, secondary) = (expected(VTABLE_RVA)?, expected(SECONDARY_VTABLE_RVA)?);
-        // Every stored navy is visited; its owner must file it under its slot.
         let slots = navies.count;
         let mut words = [0_u8; BATCH * 8];
         let mut pointers = [0_usize; BATCH];
@@ -404,13 +354,10 @@ pub fn access_modes_buffer(
                 if word(0) != primary || word(8) != secondary {
                     return Err("navy identity mismatch");
                 }
-                // Strategic-navy lookup indexes by the owner's canonical slot.
-                let raw = u32::from_le_bytes(record[16..20].try_into().unwrap());
-                let country = countries.resolve(raw)?;
-                if country.canonical_slot != slot {
-                    return Err("navy owner differs from its slot");
-                }
-                let array = Array::from_header(record[20..36].try_into().unwrap(), 1)
+                let Some(country) = countries.at(slot)? else {
+                    continue;
+                };
+                let array = Array::from_header(record[16..32].try_into().unwrap(), 1)
                     .ok_or("navy access modes invalid")?;
                 // Region-access lookup indexes the complete stored array.
                 required_rows = required_rows
@@ -507,14 +454,14 @@ mod access_tests {
         bytes
     }
 
-    fn run(bytes: &[u8], output: &mut [AccessRow]) -> Outcome {
+    fn run(bytes: &[u8], output: &mut Vec<AccessRow>) -> Outcome {
         access_modes(&SliceMemory { base: 0, bytes }, 0, GS, output)
     }
 
     #[test]
     fn only_nonzero_modes_become_rows_keyed_by_region_id() {
         let bytes = fixture();
-        let mut rows = [AccessRow::default(); 4];
+        let mut rows = vec![AccessRow::default(); 4];
         assert_eq!(run(&bytes, &mut rows), Outcome::Rows { len: 2 });
         assert_eq!(
             rows[..2],
@@ -531,30 +478,33 @@ mod access_tests {
                 },
             ]
         );
-        assert_eq!(
-            run(&bytes, &mut rows[..1]),
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            }
-        );
     }
 
     #[test]
-    fn a_foreign_or_misfiled_navy_fails_instead_of_dropping_modes() {
-        for (at, value) in [(NAVIES[1], 0_u64), (NAVIES[1] + OWNER, 1), (0x6118, 0x7800)] {
+    fn a_navy_failing_its_identity_fails_instead_of_dropping_modes() {
+        for (at, value) in [(NAVIES[1], 0_u64), (0x6118, 0x7800)] {
             let mut bytes = fixture();
-            if at == NAVIES[1] + OWNER {
-                p32(&mut bytes, at, value as u32);
-            } else {
-                p64(&mut bytes, at, value);
-            }
-            let mut rows = [AccessRow::default(); 4];
-            assert!(matches!(
+            p64(&mut bytes, at, value);
+            let mut rows = vec![AccessRow::default(); 4];
+            assert_eq!(
                 run(&bytes, &mut rows),
-                Outcome::Unavailable { .. }
-            ));
+                Outcome::Unavailable {
+                    reason: "navy identity mismatch"
+                }
+            );
         }
+    }
+
+    /// The game finds a country's navy by the country's slot, never by the
+    /// navy's stored owner, so a navy storing another owner is its slot's.
+    #[test]
+    fn foreign_navy_is_recorded_as_its_slots_country() {
+        let mut bytes = fixture();
+        p32(&mut bytes, NAVIES[0] + OWNER, 2);
+        p32(&mut bytes, NAVIES[1] + OWNER, 1);
+        let mut rows = vec![AccessRow::default(); 4];
+        assert_eq!(run(&bytes, &mut rows), Outcome::Rows { len: 2 });
+        assert_eq!(rows[..2].iter().map(|row| row.country).collect::<Vec<_>>(), [1, 1]);
     }
 }
 

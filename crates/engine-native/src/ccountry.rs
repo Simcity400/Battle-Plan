@@ -1315,26 +1315,7 @@ pub fn read_country_naming_demand(
     }
 }
 
-/// Copies slot zero's operands once. A prefix shortage counts the singleton;
-/// an optional original-tag shortage preserves the prefix row and
-/// counts its extra byte demand. No payload is shortened or read off-thread.
-/// Synthetic fixtures cover the native branches and independent refusals;
-/// live capture cost and fresh-save verification remain unverified.
-pub fn read_reserved_naming(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    names: &mut [u8],
-) -> ReservedNamingWalk {
-    read_reserved_naming_observed_inner(
-        memory,
-        base,
-        game_state,
-        crate::walk::Buffer::Fixed(names),
-        None,
-    )
-}
-pub fn read_reserved_naming_observed_growing(
+pub fn read_reserved_naming_observed(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -1349,7 +1330,8 @@ pub fn read_reserved_naming_observed_growing(
         Some(journal),
     )
 }
-fn read_reserved_naming_observed_inner<M: Memory>(
+
+pub fn read_reserved_naming_observed_inner<M: Memory>(
     memory: &M,
     base: usize,
     game_state: usize,
@@ -1643,7 +1625,7 @@ pub fn capture_appearance_original_tags(
     memory: &impl Memory,
     game_state: usize,
     rows: &mut [AppearanceRow],
-    names: &mut [u8],
+    names: &mut Vec<u8>,
     used: &mut usize,
     required: &mut usize,
 ) {
@@ -1651,13 +1633,13 @@ pub fn capture_appearance_original_tags(
         memory,
         game_state,
         rows,
-        crate::walk::Buffer::Fixed(names),
+        crate::walk::Buffer::Growing(names),
         used,
         required,
         None,
     )
 }
-pub fn capture_appearance_original_tags_observed_growing(
+pub fn capture_appearance_original_tags_observed(
     memory: &impl Memory,
     game_state: usize,
     rows: &mut [OwnedAppearanceRow],
@@ -1766,25 +1748,7 @@ fn capture_appearance_original_tags_observed_inner<
     }
 }
 
-/// Uses the shared authenticated country census when Memory provides it.
-/// Rows that do not fit are counted without reading their payloads.
-pub fn walk_appearance(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    dynamic_boundary: u32,
-    output: &mut [AppearanceRow],
-) -> Outcome {
-    walk_appearance_observed_inner(
-        memory,
-        base,
-        game_state,
-        dynamic_boundary,
-        crate::walk::Buffer::Fixed(output),
-        None,
-    )
-}
-pub fn walk_appearance_observed_growing(
+pub fn walk_appearance_observed(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -1801,7 +1765,7 @@ pub fn walk_appearance_observed_growing(
         Some(journal),
     )
 }
-/// The globals of one [`walk_appearance_carrying_growing`] beside each
+/// The globals of one [`walk_appearance_carrying`] beside each
 /// country: the naming context every row's name operands read, and the
 /// country link header, whose count bounds the native ids.
 #[derive(Clone, Copy, Debug)]
@@ -1859,13 +1823,13 @@ impl OwnedAppearanceRow {
     }
 }
 
-/// [`walk_appearance_observed_growing`], except that `carry` is offered
+/// [`walk_appearance_observed`], except that `carry` is offered
 /// each country, in walk order, with its row's storage first: when it fills
 /// the row from an earlier read it proved current and returns true, nothing
 /// of that country is read or journalled. Every other country is read as
 /// there.
 #[allow(clippy::type_complexity)]
-pub fn walk_appearance_carrying_growing(
+pub fn walk_appearance_carrying(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -1884,6 +1848,7 @@ pub fn walk_appearance_carrying_growing(
         carry,
     )
 }
+
 fn walk_appearance_observed_inner<
     T: crate::capture_text::Value,
     G: crate::capture_text::Value,
@@ -3273,16 +3238,10 @@ pub struct SentVolunteerRow {
     pub division: u64,
 }
 
-/// Preserve handles and positions, including null/stale references. Their logical
-/// country already belongs to the hourly division census; never reread it here.
-pub fn walk_sent_volunteers(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut [SentVolunteerRow],
-) -> Outcome {
-    walk_sent_volunteers_buffer(memory, base, game_state, Buffer::Fixed(output))
+pub fn count_sent_volunteers(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
+    walk_sent_volunteers_buffer(memory, base, game_state, Buffer::Count)
 }
+
 
 pub fn walk_sent_volunteers_buffer(
     memory: &impl Memory,
@@ -3358,18 +3317,8 @@ pub struct VolunteerHostRow {
     pub air_capacity_modifier: Option<i64>,
 }
 
-/// Read every canonical country's host vector and paired tally. Appending
-/// and overlapping erasure change the vectors sequentially, so counts can
-/// disagree mid-edit. Serialization requires equal counts; refuse unequal
-/// counts rather than pairing different positions. Capacity omits whole
-/// rows and counts full remaining demand.
-pub fn walk_volunteer_hosts(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut [VolunteerHostRow],
-) -> Outcome {
-    walk_volunteer_hosts_buffer(memory, base, game_state, Buffer::Fixed(output))
+pub fn count_volunteer_hosts(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
+    walk_volunteer_hosts_buffer(memory, base, game_state, Buffer::Count)
 }
 
 pub fn walk_volunteer_hosts_buffer(
@@ -3696,71 +3645,9 @@ pub const ATTACK_MODIFIER_KEYS: [u32; 2] = [
     crate::modifier_keys::LAND_BUNKER_EFFECTIVENESS_FACTOR,
 ];
 
-/// Uses the shared authenticated country census and authenticates each country
-/// before its fields. The owned-state array header must be a valid CPdxArray.
-pub fn walk_counter_inputs(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut [CounterInputsRow],
-) -> Outcome {
-    walk_counter_inputs_inner(
-        memory,
-        base,
-        game_state,
-        crate::walk::Buffer::Fixed(output),
-        None,
-        None,
-        None,
-        None,
-    )
-}
-
-/// The same country walk with hourly native-order roster inputs. No caller
-/// allocation occurs; a refused roster leaves its scalar row available.
-pub fn walk_counter_inputs_with_rosters(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut [CounterInputsRow],
-    rosters: &mut CounterRosters<'_>,
-) -> Outcome {
-    walk_counter_inputs_inner(
-        memory,
-        base,
-        game_state,
-        crate::walk::Buffer::Fixed(output),
-        Some(rosters),
-        None,
-        None,
-        None,
-    )
-}
-
-#[cfg(test)]
-pub fn walk_counter_inputs_with_effect_rosters(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut [CounterInputsRow],
-    rosters: &mut CounterRosters<'_>,
-    effects: &mut EffectRosters<'_>,
-) -> Outcome {
-    walk_counter_inputs_inner(
-        memory,
-        base,
-        game_state,
-        crate::walk::Buffer::Fixed(output),
-        Some(rosters),
-        Some(effects),
-        None,
-        None,
-    )
-}
-
 /// Worker-owned capture grows from the original country and child headers.
 #[allow(clippy::too_many_arguments)]
-pub fn walk_counter_inputs_with_effect_rosters_observed_growing<'a, M: Memory>(
+pub fn walk_counter_inputs_with_effect_rosters_observed<'a, M: Memory>(
     memory: &'a M,
     base: usize,
     game_state: usize,
@@ -3782,7 +3669,7 @@ pub fn walk_counter_inputs_with_effect_rosters_observed_growing<'a, M: Memory>(
 }
 
 /// A caller's offer to carry a country of
-/// [`walk_counter_inputs_carried_growing`]: given the authenticated country
+/// [`walk_counter_inputs_carried`]: given the authenticated country
 /// and this read's roster arenas, it returns the row of an earlier complete
 /// read it proved current, with that read's rosters placed in the arenas
 /// ([`CarriedRosters::append`]) and the row's spans naming them, or `None`
@@ -3794,13 +3681,13 @@ pub type CounterCarry<'a> = dyn for<'r, 's, 'e, 'f> FnMut(
     ) -> Option<CounterInputsRow>
     + 'a;
 
-/// [`walk_counter_inputs_with_effect_rosters_observed_growing`], except that
+/// [`walk_counter_inputs_with_effect_rosters_observed`], except that
 /// `carry` is offered each country in walk order once its identity (the
 /// vtable and `+ID` the walk checks before any field) is confirmed: a
 /// carried country's row stands for all of its reads. Every other country is
 /// read there, in the same order and with the same outcomes and first fault.
 #[allow(clippy::too_many_arguments)]
-pub fn walk_counter_inputs_carried_growing<'a, M: Memory>(
+pub fn walk_counter_inputs_carried<'a, M: Memory>(
     memory: &'a M,
     base: usize,
     game_state: usize,
@@ -3822,7 +3709,6 @@ pub fn walk_counter_inputs_carried_growing<'a, M: Memory>(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 fn walk_counter_inputs_inner<'a, M: Memory>(
     memory: &'a M,
     base: usize,
@@ -4053,20 +3939,15 @@ pub struct CivilWarRow {
     pub target: u32,
 }
 
+pub fn count_civil_wars(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
+    walk_civil_wars_buffer(memory, base, game_state, crate::walk::Buffer::Count)
+}
+
 /// Every canonical country's civil-war array, in native order; countries
 /// with an empty array have no rows. A country whose entries do not all fit
 /// is counted whole from its header, as is every later one, so an empty
 /// `output` yields the live total as `unread_rows`.
 pub fn walk_civil_wars(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut [CivilWarRow],
-) -> Outcome {
-    walk_civil_wars_buffer(memory, base, game_state, crate::walk::Buffer::Fixed(output))
-}
-
-pub fn walk_civil_wars_growing(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -4517,8 +4398,8 @@ mod tests {
     #[test]
     fn reserved_naming_authenticates_only_slot_zero_and_preserves_unbuilt_strings() {
         let mut bytes = reserved_fixture();
-        let mut names = [0; 64];
-        let read = read_reserved_naming(&ReservedMemory { bytes: &bytes }, 0, 0x1000, &mut names);
+        let mut names = vec![0; 64];
+        let read = read_reserved_naming_observed_inner(&ReservedMemory { bytes: &bytes }, 0, 0x1000, crate::walk::Buffer::Growing(&mut names), None);
         assert_eq!(read.outcome, Outcome::Rows { len: 1 });
         assert_eq!(read.row.built, 0);
         assert_eq!(read.row.group, None);
@@ -4545,7 +4426,7 @@ mod tests {
         );
         put(&mut bytes, 0x11000 + ID, &1_u32.to_le_bytes());
         assert_eq!(
-            read_reserved_naming(&ReservedMemory { bytes: &bytes }, 0, 0x1000, &mut names).outcome,
+            read_reserved_naming_observed_inner(&ReservedMemory { bytes: &bytes }, 0, 0x1000, crate::walk::Buffer::Growing(&mut names), None).outcome,
             Outcome::Unavailable {
                 reason: "reserved country id is not zero"
             }
@@ -4553,7 +4434,7 @@ mod tests {
         put(&mut bytes, 0x11000 + ID, &0_u32.to_le_bytes());
         put(&mut bytes, 0x11000, &0_u64.to_le_bytes());
         assert_eq!(
-            read_reserved_naming(&ReservedMemory { bytes: &bytes }, 0, 0x1000, &mut names).outcome,
+            read_reserved_naming_observed_inner(&ReservedMemory { bytes: &bytes }, 0, 0x1000, crate::walk::Buffer::Growing(&mut names), None).outcome,
             Outcome::Unavailable {
                 reason: "reserved country object identity mismatch"
             }
@@ -4569,9 +4450,9 @@ mod tests {
                 0x11000 + OWNED_STATE_COUNT,
                 &count.to_le_bytes(),
             );
-            let mut names = [0; 11];
+            let mut names = vec![0; 11];
             let captured =
-                read_reserved_naming(&ReservedMemory { bytes: &bytes }, 0, 0x1000, &mut names);
+                read_reserved_naming_observed_inner(&ReservedMemory { bytes: &bytes }, 0, 0x1000, crate::walk::Buffer::Growing(&mut names), None);
             assert_eq!(captured.outcome, Outcome::Rows { len: 1 });
             assert_eq!(captured.row.owned_state_count, Some(count));
             assert_eq!(captured.row.owned_state_count_failure, None);
@@ -4592,8 +4473,8 @@ mod tests {
             }
         }
         let bytes = reserved_fixture();
-        let mut names = [0; 11];
-        let captured = read_reserved_naming(&CountFault { bytes: &bytes }, 0, 0x1000, &mut names);
+        let mut names = vec![0; 11];
+        let captured = read_reserved_naming_observed_inner(&CountFault { bytes: &bytes }, 0, 0x1000, crate::walk::Buffer::Growing(&mut names), None);
         assert_eq!(captured.outcome, Outcome::Rows { len: 1 });
         assert_eq!(captured.row.owned_state_count, None);
         assert_eq!(
@@ -4668,8 +4549,18 @@ mod tests {
                     at,
                     attempts: std::cell::Cell::new(0),
                 };
-                let mut names = [0; 11];
-                let captured = read_reserved_naming(&memory, 0, 0x1000, &mut names[..capacity]);
+                let mut names = Vec::new();
+                let captured = read_reserved_naming_observed_inner(
+                    &memory,
+                    0,
+                    0x1000,
+                    if capacity == 0 {
+                        crate::walk::Buffer::Count
+                    } else {
+                        crate::walk::Buffer::Growing(&mut names)
+                    },
+                    None,
+                );
                 let observed = captured.visibility.unwrap();
                 assert_eq!(observed.faction(), Err(reason));
                 assert_eq!(observed.faction(), Err(reason));
@@ -4716,7 +4607,7 @@ mod tests {
             DIPLOMACY + crate::cdiplomacy_status::COUNTRY,
             &0x11000_u64.to_le_bytes(),
         );
-        let captured = read_reserved_naming(&ReservedMemory { bytes: &bytes }, 0, 0x1000, &mut []);
+        let captured = read_reserved_naming_observed_inner(&ReservedMemory { bytes: &bytes }, 0, 0x1000, crate::walk::Buffer::Count, None);
         assert_eq!(
             captured.outcome,
             Outcome::Truncated {
@@ -4770,9 +4661,9 @@ mod tests {
                 DIPLOMACY + crate::cdiplomacy_status::FACTION,
                 &pointer.to_le_bytes(),
             );
-            let mut names = [0; 11];
+            let mut names = vec![0; 11];
             let captured =
-                read_reserved_naming(&ReservedMemory { bytes: &bytes }, 0, 0x1000, &mut names);
+                read_reserved_naming_observed_inner(&ReservedMemory { bytes: &bytes }, 0, 0x1000, crate::walk::Buffer::Growing(&mut names), None);
             assert_eq!(captured.outcome, Outcome::Rows { len: 1 });
             assert_eq!(captured.row.faction, Some(expected));
             assert_eq!(captured.row.faction_failure, None);
@@ -4784,8 +4675,8 @@ mod tests {
                     && ReservedMemory { bytes: self.0 }.copy(address, output)
             }
         }
-        let mut names = [0; 11];
-        let captured = read_reserved_naming(&FactionFault(&bytes), 0, 0x1000, &mut names);
+        let mut names = vec![0; 11];
+        let captured = read_reserved_naming_observed_inner(&FactionFault(&bytes), 0, 0x1000, crate::walk::Buffer::Growing(&mut names), None);
         assert_eq!(captured.outcome, Outcome::Rows { len: 1 });
         assert_eq!(captured.row.faction, None);
         assert_eq!(
@@ -4813,9 +4704,9 @@ mod tests {
                     0xe000 + crate::ccountry_database::DYNAMIC_TAG_BOUNDARY,
                     &boundary.to_le_bytes(),
                 );
-                let mut names = [0; 64];
+                let mut names = vec![0; 64];
                 let read =
-                    read_reserved_naming(&ReservedMemory { bytes: &bytes }, 0, 0x1000, &mut names);
+                    read_reserved_naming_observed_inner(&ReservedMemory { bytes: &bytes }, 0, 0x1000, crate::walk::Buffer::Growing(&mut names), None);
                 assert_eq!(read.outcome, Outcome::Rows { len: 1 });
                 let selected = read.row.original_tag.unwrap();
                 assert_eq!(
@@ -4846,7 +4737,7 @@ mod tests {
         put(&mut bytes, 0x11000 + ORIGINAL_TAG, &2_i32.to_le_bytes());
         bytes[0xc000 + 2 * STRIDE..0xc000 + 3 * STRIDE].fill(0);
         short_string(&mut bytes, 0xc000 + 2 * STRIDE, b"");
-        let mut names = [0; 11];
+        let mut names = vec![0; 11];
         for boundary in [0_u32, 1, i32::MIN as u32, i32::MAX as u32] {
             put(
                 &mut bytes,
@@ -4854,7 +4745,7 @@ mod tests {
                 &boundary.to_le_bytes(),
             );
             let read =
-                read_reserved_naming(&ReservedMemory { bytes: &bytes }, 0, 0x1000, &mut names);
+                read_reserved_naming_observed_inner(&ReservedMemory { bytes: &bytes }, 0, 0x1000, crate::walk::Buffer::Growing(&mut names), None);
             assert_eq!(read.outcome, Outcome::Rows { len: 1 });
             assert_eq!(read.row.original_tag.unwrap().len, 0);
             assert_eq!(read.row.original_tag_reference, 2);
@@ -4887,17 +4778,8 @@ mod tests {
         bytes[0x14000..0x14800].fill(0xff);
         let memory = ReservedMemory { bytes: &bytes };
         assert_eq!(read_reserved_naming_demand(&memory, 0, 0x1000), Ok(2059));
-        let mut names = vec![0; 2059];
-        let short = read_reserved_naming(&memory, 0, 0x1000, &mut names[..11]);
-        assert_eq!(short.outcome, Outcome::Rows { len: 1 });
-        assert_eq!(short.bytes_len, 11);
-        assert_eq!(short.required_bytes, 2059);
-        assert_eq!(short.row.original_tag, None);
-        assert_eq!(
-            short.row.original_tag_failure,
-            Some("reserved original tag bytes do not fit arena")
-        );
-        let full = read_reserved_naming(&memory, 0, 0x1000, &mut names);
+        let mut names = Vec::new();
+        let full = read_reserved_naming_observed_inner(&memory, 0, 0x1000, crate::walk::Buffer::Growing(&mut names), None);
         assert_eq!(full.outcome, Outcome::Rows { len: 1 });
         assert_eq!(full.bytes_len, 2059);
         let tag = full.row.original_tag.unwrap();
@@ -4922,7 +4804,7 @@ mod tests {
                 address,
             };
             assert_eq!(read_reserved_naming_demand(&memory, 0, 0x1000), Ok(demand));
-            let failed = read_reserved_naming(&memory, 0, 0x1000, &mut names);
+            let failed = read_reserved_naming_observed_inner(&memory, 0, 0x1000, crate::walk::Buffer::Growing(&mut names), None);
             assert_eq!(failed.outcome, Outcome::Rows { len: 1 });
             assert_eq!(failed.bytes_len, 11);
             assert_eq!(failed.required_bytes, demand);
@@ -4932,7 +4814,7 @@ mod tests {
             assert_eq!(&names[3..11], b"MOD_ZERO");
         }
         put(&mut bytes, 0x11000 + ORIGINAL_TAG, &i32::MAX.to_le_bytes());
-        let read = read_reserved_naming(&ReservedMemory { bytes: &bytes }, 0, 0x1000, &mut names);
+        let read = read_reserved_naming_observed_inner(&ReservedMemory { bytes: &bytes }, 0, 0x1000, crate::walk::Buffer::Growing(&mut names), None);
         assert_eq!(read.outcome, Outcome::Rows { len: 1 });
         assert_eq!(read.row.original_tag, None);
         assert_eq!(
@@ -4958,12 +4840,12 @@ mod tests {
                 base: 0,
                 bytes: &bytes,
             };
-            let mut rows = [AppearanceRow::default(); 2];
+            let mut rows = vec![AppearanceRow::default(); 2];
             assert_eq!(
-                walk_appearance(&memory, 0, 0x1000, boundary, &mut rows),
+                walk_appearance_observed_inner(&memory, 0, 0x1000, boundary, crate::walk::Buffer::Growing(&mut rows), None),
                 Outcome::Rows { len: 2 }
             );
-            let mut names = [0; 3];
+            let mut names = vec![0; 3];
             let (mut used, mut required) = (0, 0);
             capture_appearance_original_tags(
                 &memory,
@@ -4982,13 +4864,13 @@ mod tests {
         let mut bytes = appearance_fixture();
         short_string(&mut bytes, 0xc000 + STRIDE, b"MOD_OWN");
         put(&mut bytes, 0x3000 + ORIGINAL_TAG, &1_i32.to_le_bytes());
-        let mut rows = [AppearanceRow::default(); 2];
+        let mut rows = vec![AppearanceRow::default(); 2];
         let memory = SliceMemory {
             base: 0,
             bytes: &bytes,
         };
-        walk_appearance(&memory, 0, 0x1000, 3, &mut rows);
-        let mut names = [0; 7];
+        walk_appearance_observed_inner(&memory, 0, 0x1000, 3, crate::walk::Buffer::Growing(&mut rows), None);
+        let mut names = vec![0; 7];
         let (mut used, mut required) = (0, 0);
         capture_appearance_original_tags(
             &memory,
@@ -5008,7 +4890,7 @@ mod tests {
                 bytes: &bytes,
             };
             assert_eq!(
-                walk_appearance(&memory, 0, 0x1000, boundary, &mut rows),
+                walk_appearance_observed_inner(&memory, 0, 0x1000, boundary, crate::walk::Buffer::Growing(&mut rows), None),
                 Outcome::Rows { len: 2 }
             );
             capture_appearance_original_tags(
@@ -5036,12 +4918,12 @@ mod tests {
                 base: 0,
                 bytes: &bytes,
             };
-            let mut rows = [AppearanceRow::default(); 2];
+            let mut rows = vec![AppearanceRow::default(); 2];
             assert_eq!(
-                walk_appearance(&memory, 0, 0x1000, 3, &mut rows),
+                walk_appearance_observed_inner(&memory, 0, 0x1000, 3, crate::walk::Buffer::Growing(&mut rows), None),
                 Outcome::Rows { len: 2 }
             );
-            let mut names = [0; 3];
+            let mut names = vec![0; 3];
             let (mut used, mut required) = (0, 0);
             capture_appearance_original_tags(
                 &memory,
@@ -5087,30 +4969,14 @@ mod tests {
             &2048_u64.to_le_bytes(),
         );
         bytes[0x14000..0x14800].fill(0xff);
-        let mut rows = [AppearanceRow::default(); 2];
+        let mut rows = vec![AppearanceRow::default(); 2];
         let memory = ReservedMemory { bytes: &bytes };
         assert_eq!(
-            walk_appearance(&memory, 0, 0x1000, 3, &mut rows),
+            walk_appearance_observed_inner(&memory, 0, 0x1000, 3, crate::walk::Buffer::Growing(&mut rows), None),
             Outcome::Rows { len: 2 }
         );
         assert_eq!(read_country_naming_demand(&memory, 0, 0x1000), Ok(2062));
-        let mut names = vec![0; 2051];
-        let (mut used, mut required) = (0, 0);
-        capture_appearance_original_tags(
-            &memory,
-            0x1000,
-            &mut rows,
-            &mut names[..3],
-            &mut used,
-            &mut required,
-        );
-        assert_eq!((used, required), (3, 2051));
-        assert_eq!(rows[0].original_tag.unwrap().len, 3);
-        assert_eq!(rows[1].original_tag, None);
-        assert_eq!(
-            rows[1].original_tag_failure,
-            Some("country original tag bytes do not fit arena")
-        );
+        let mut names = Vec::new();
         let (mut used, mut required) = (0, 0);
         capture_appearance_original_tags(
             &memory,
@@ -5181,22 +5047,8 @@ mod tests {
         for (offset, len) in [(NAME, 1_u64), (ADJECTIVE, 0), (DEFINITE_NAME, 9)] {
             put(&mut bytes, 0x11000 + offset + 16, &len.to_le_bytes());
         }
-        let mut names = vec![0; 2051];
-        let read = read_reserved_naming(
-            &ReservedMemory { bytes: &bytes },
-            0,
-            0x1000,
-            &mut names[..11],
-        );
-        assert_eq!(
-            read.outcome,
-            Outcome::Truncated {
-                len: 0,
-                unread_rows: 1
-            }
-        );
-        assert_eq!(read.required_bytes, 2051);
-        let read = read_reserved_naming(&ReservedMemory { bytes: &bytes }, 0, 0x1000, &mut names);
+        let mut names = Vec::new();
+        let read = read_reserved_naming_observed_inner(&ReservedMemory { bytes: &bytes }, 0, 0x1000, crate::walk::Buffer::Growing(&mut names), None);
         assert_eq!(read.outcome, Outcome::Rows { len: 1 });
         assert_eq!(read.row.built, 3);
         assert_eq!(read.row.cosmetic_tag.len, 2048);
@@ -5214,7 +5066,7 @@ mod tests {
                 }
             }
         }
-        let failed = read_reserved_naming(&PayloadFault(&bytes), 0, 0x1000, &mut names);
+        let failed = read_reserved_naming_observed_inner(&PayloadFault(&bytes), 0, 0x1000, crate::walk::Buffer::Growing(&mut names), None);
         assert_eq!(
             failed.outcome,
             Outcome::Unavailable {
@@ -5225,7 +5077,7 @@ mod tests {
         assert_eq!(failed.bytes_len, 0);
         put(&mut bytes, 0x14800, &[1]);
         assert_eq!(
-            read_reserved_naming(&ReservedMemory { bytes: &bytes }, 0, 0x1000, &mut names).outcome,
+            read_reserved_naming_observed_inner(&ReservedMemory { bytes: &bytes }, 0, 0x1000, crate::walk::Buffer::Growing(&mut names), None).outcome,
             Outcome::Unavailable {
                 reason: "string terminator unreadable or invalid"
             }
@@ -5285,8 +5137,8 @@ mod tests {
             0xb200 + crate::autonomy_state_definition::NAME,
             b"mod_subject",
         );
-        let mut names = [0; 128];
-        let read = read_reserved_naming(&ReservedMemory { bytes: &bytes }, 0, 0x1000, &mut names);
+        let mut names = vec![0; 128];
+        let read = read_reserved_naming_observed_inner(&ReservedMemory { bytes: &bytes }, 0, 0x1000, crate::walk::Buffer::Growing(&mut names), None);
         assert_eq!(read.outcome, Outcome::Rows { len: 1 });
         let text = |name: crate::csubject_relation::Name| &names[name.start..name.start + name.len];
         assert_eq!(text(read.row.leader_ideology), b"despotism");
@@ -5299,7 +5151,7 @@ mod tests {
             &0_u64.to_le_bytes(),
         );
         assert_eq!(
-            read_reserved_naming(&ReservedMemory { bytes: &bytes }, 0, 0x1000, &mut names).outcome,
+            read_reserved_naming_observed_inner(&ReservedMemory { bytes: &bytes }, 0, 0x1000, crate::walk::Buffer::Growing(&mut names), None).outcome,
             Outcome::Unavailable {
                 reason: "reserved autonomy definition is null"
             }
@@ -5489,9 +5341,9 @@ mod tests {
             base: 0,
             bytes: &bytes,
         };
-        let mut output = [AppearanceRow::default(); 3];
+        let mut output: Vec<AppearanceRow> = vec![AppearanceRow::default(); 3];
         assert_eq!(
-            walk_appearance(&memory, 0, 0x1000, 1, &mut output),
+            walk_appearance_observed_inner(&memory, 0, 0x1000, 1, crate::walk::Buffer::Growing(&mut output), None),
             Outcome::Rows { len: 2 }
         );
         assert_eq!(output[0].country, 1);
@@ -5520,8 +5372,8 @@ mod tests {
         assert!(output[1].leader_ideology.as_bytes().is_empty());
         assert_eq!(output[1].leader_character, None);
         // A static country is named after its own tag.
-        let mut static_output = [AppearanceRow::default(); 2];
-        walk_appearance(&memory, 0, 0x1000, 2, &mut static_output);
+        let mut static_output: Vec<AppearanceRow> = vec![AppearanceRow::default(); 2];
+        walk_appearance_observed_inner(&memory, 0, 0x1000, 2, crate::walk::Buffer::Growing(&mut static_output), None);
         assert!(static_output[0].name_tag.as_bytes().is_empty());
         let census = crate::read_census::ReadCensus::new(&memory);
         assert_eq!(
@@ -5543,13 +5395,6 @@ mod tests {
         // single diplomacy read from `cdiplomacy_status::SUBJECTS` through `OVERLORD` with the
         // overlord, without payload.
         assert_eq!(census.calls(), 34 + 11 + 3);
-        assert_eq!(
-            walk_appearance(&memory, 0, 0x1000, 1, &mut output[..1]),
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            }
-        );
     }
 
     #[test]
@@ -5682,16 +5527,10 @@ mod tests {
             put(&mut bytes, 0x2000 + slot * 8, &0_u64.to_le_bytes());
         }
         assert_eq!(
-            walk_appearance(
-                &SliceMemory {
+            walk_appearance_observed_inner(&SliceMemory {
                     base: 0,
                     bytes: &bytes
-                },
-                0,
-                0x1000,
-                1,
-                &mut []
-            ),
+                }, 0, 0x1000, 1, crate::walk::Buffer::<AppearanceRow>::Count, None),
             Outcome::Unavailable {
                 reason: "country table has no readable countries"
             }
@@ -6226,7 +6065,7 @@ mod tests {
         let mut rows = vec![SentVolunteerRow::default(); divisions];
         ReadCounts::take_current();
         assert_eq!(
-            walk_sent_volunteers(&memory, 0, address, &mut rows),
+            walk_sent_volunteers_buffer(&memory, 0, address, crate::walk::Buffer::Growing(&mut rows)),
             Outcome::Rows { len: divisions }
         );
         let counts = ReadCounts::take_current();
@@ -6235,7 +6074,7 @@ mod tests {
         for _ in 0..25 {
             let start = std::time::Instant::now();
             assert_eq!(
-                walk_sent_volunteers(&memory, 0, address, &mut rows),
+                walk_sent_volunteers_buffer(&memory, 0, address, crate::walk::Buffer::Growing(&mut rows)),
                 Outcome::Rows { len: divisions }
             );
             times.push(start.elapsed().as_secs_f64() * 1000.0);
@@ -6262,13 +6101,13 @@ mod tests {
         for i in 0..65_u64 {
             put(&mut bytes, 0x4000 + i as usize * 8, &i.to_le_bytes());
         }
-        let mut rows = [SentVolunteerRow::default(); 65];
+        let mut rows = vec![SentVolunteerRow::default(); 65];
         let memory = SliceMemory {
             base: 0x1000,
             bytes: &bytes,
         };
         assert_eq!(
-            walk_sent_volunteers(&memory, 0, 0x1000, &mut rows),
+            walk_sent_volunteers_buffer(&memory, 0, 0x1000, crate::walk::Buffer::Growing(&mut rows)),
             Outcome::Rows { len: 65 }
         );
         for (i, r) in rows.iter().enumerate() {
@@ -6281,32 +6120,20 @@ mod tests {
                 }
             );
         }
-        assert_eq!(
-            walk_sent_volunteers(&memory, 0, 0x1000, &mut rows[..64]),
-            Outcome::Truncated {
-                len: 64,
-                unread_rows: 1
-            }
-        );
         let short = SliceMemory {
             base: 0x1000,
             bytes: &bytes[..0x4000 + 64 * 8],
         };
         assert!(matches!(
-            walk_sent_volunteers(&short, 0, 0x1000, &mut rows),
+            walk_sent_volunteers_buffer(&short, 0, 0x1000, crate::walk::Buffer::Growing(&mut rows)),
             Outcome::Unavailable { .. }
         ));
         put(&mut bytes, offset + 12, &66_u32.to_le_bytes());
         assert!(matches!(
-            walk_sent_volunteers(
-                &SliceMemory {
+            walk_sent_volunteers_buffer(&SliceMemory {
                     base: 0x1000,
                     bytes: &bytes
-                },
-                0,
-                0x1000,
-                &mut rows
-            ),
+                }, 0, 0x1000, crate::walk::Buffer::Growing(&mut rows)),
             Outcome::Unavailable { .. }
         ));
     }
@@ -6353,13 +6180,13 @@ mod tests {
             base: 0x1000,
             bytes: &bytes,
         };
-        let mut rows = [VolunteerHostRow::default(); 2];
+        let mut rows = vec![VolunteerHostRow::default(); 2];
         assert_eq!(
             walk_volunteer_hosts_with_air_buffer(
                 &memory,
                 0,
                 0x1000,
-                Buffer::Fixed(&mut rows),
+                Buffer::Growing(&mut rows),
                 true
             ),
             Outcome::Rows { len: 2 }
@@ -6385,7 +6212,7 @@ mod tests {
         };
         let mut rows = vec![VolunteerHostRow::default(); 128];
         assert_eq!(
-            walk_volunteer_hosts(&memory, 0, 0x1000, &mut rows),
+            walk_volunteer_hosts_buffer(&memory, 0, 0x1000, crate::walk::Buffer::Growing(&mut rows)),
             Outcome::Rows { len: 65 }
         );
         for (position, row) in rows[..65].iter().enumerate() {
@@ -6401,31 +6228,16 @@ mod tests {
                 "position {position}"
             );
         }
-        // Capacity that stops inside the second window omits only the tail.
-        let mut rows = vec![VolunteerHostRow::default(); 64];
-        assert_eq!(
-            walk_volunteer_hosts(&memory, 0, 0x1000, &mut rows),
-            Outcome::Truncated {
-                len: 64,
-                unread_rows: 1
-            }
-        );
-        assert_eq!(rows[63].position, 63);
     }
 
     #[test]
     fn a_mid_edit_volunteer_pair_refuses_instead_of_pairing_the_wrong_tally() {
         let bytes = volunteer_world(65, 64);
         assert_eq!(
-            walk_volunteer_hosts(
-                &SliceMemory {
+            walk_volunteer_hosts_buffer(&SliceMemory {
                     base: 0x1000,
                     bytes: &bytes
-                },
-                0,
-                0x1000,
-                &mut [VolunteerHostRow::default(); 128]
-            ),
+                }, 0, 0x1000, crate::walk::Buffer::Growing(&mut vec![VolunteerHostRow::default(); 128])),
             Outcome::Unavailable {
                 reason: "volunteer host and tally vectors have different counts"
             }
@@ -6803,13 +6615,6 @@ mod tests {
         assert_eq!(rows[0].war_support_raw, -4_294_967_299);
         assert_eq!(rows[0].convoys_raw, Some(4_294_967_300));
         assert_eq!(rows[0].peace_conference_participant, 0);
-        assert_eq!(
-            walk(&memory, 0, 0x1000, &mut []),
-            Outcome::Truncated {
-                len: 0,
-                unread_rows: 1
-            }
-        );
         bytes[0x1000 + CONVOY_STATE + cconvoys::CACHE_VALID] = 0;
         let memory = SliceMemory {
             base: 0x1000,
@@ -6876,20 +6681,6 @@ mod tests {
                     canonical_slot: 1
                 },
             ]
-        );
-        assert_eq!(
-            walk_links(&memory, 0, 0x1000, &mut rows[..2]),
-            Outcome::Truncated {
-                len: 2,
-                unread_rows: 1
-            }
-        );
-        assert_eq!(
-            walk_links(&memory, 0, 0x1000, &mut []),
-            Outcome::Truncated {
-                len: 0,
-                unread_rows: 3
-            }
         );
         bytes[0x704..0x720].fill(0);
         let memory = SliceMemory {
@@ -7006,15 +6797,14 @@ mod tests {
             base: 0,
             bytes: &bytes,
         };
-        let mut output = [CounterInputsRow::default(); 2];
+        let mut output = vec![CounterInputsRow::default(); 2];
         let census = crate::read_census::ReadCensus::new(&memory);
         assert_eq!(
-            walk_counter_inputs(&census, 0, 0x1000, &mut output),
+            walk_counter_inputs_inner(&census, 0, 0x1000, crate::walk::Buffer::Growing(&mut output), None, None, None, None),
             Outcome::Rows { len: 2 }
         );
-        let complete_cost = (census.calls(), census.bytes());
         assert_eq!(
-            output,
+            output[..2],
             [
                 CounterInputsRow {
                     country: 1,
@@ -7045,29 +6835,13 @@ mod tests {
                 },
             ]
         );
-        census.reset();
-        assert_eq!(
-            walk_counter_inputs(&census, 0, 0x1000, &mut output[..1]),
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            }
-        );
-        assert_eq!(
-            (
-                complete_cost.0 - census.calls(),
-                complete_cost.1 - census.bytes()
-            ),
-            (7, 84),
-            "country 2 adds an identity check, its three fields, its empty roster header and its accumulator header"
-        );
         // A null slot 0 is no fallback unit; a slot that is not an army is refused.
         put(&mut bytes, 0x12000, &0_u64.to_le_bytes());
         let memory = SliceMemory {
             base: 0,
             bytes: &bytes,
         };
-        walk_counter_inputs(&memory, 0, 0x1000, &mut output);
+        walk_counter_inputs_inner(&memory, 0, 0x1000, crate::walk::Buffer::Growing(&mut output), None, None, None, None);
         assert_eq!(output[0].first_division, 0);
         put(&mut bytes, 0x12000, &0x12200_u64.to_le_bytes());
         let memory = SliceMemory {
@@ -7075,7 +6849,7 @@ mod tests {
             bytes: &bytes,
         };
         assert_eq!(
-            walk_counter_inputs(&memory, 0, 0x1000, &mut output),
+            walk_counter_inputs_inner(&memory, 0, 0x1000, crate::walk::Buffer::Growing(&mut output), None, None, None, None),
             Outcome::Unavailable {
                 reason: "country first division is not an army"
             }
@@ -7088,7 +6862,7 @@ mod tests {
             bytes: &bytes,
         };
         assert_eq!(
-            walk_counter_inputs(&memory, 0, 0x1000, &mut output),
+            walk_counter_inputs_inner(&memory, 0, 0x1000, crate::walk::Buffer::Growing(&mut output), None, None, None, None),
             Outcome::Unavailable {
                 reason: "country owned-state array unreadable or invalid"
             }
@@ -7104,7 +6878,7 @@ mod tests {
             bytes: &bytes,
         };
         assert_eq!(
-            walk_counter_inputs(&memory, 0, 0x1000, &mut output),
+            walk_counter_inputs_inner(&memory, 0, 0x1000, crate::walk::Buffer::Growing(&mut output), None, None, None, None),
             Outcome::Unavailable {
                 reason: "country controlled-state array unreadable or invalid"
             }
@@ -7129,7 +6903,7 @@ mod tests {
             base: 0,
             bytes: &bytes,
         };
-        let mut output = [CivilWarRow::default(); 4];
+        let mut output = vec![CivilWarRow::default(); 4];
         assert_eq!(
             walk_civil_wars(&memory, 0, 0x1000, &mut output),
             Outcome::Rows { len: 3 }
@@ -7154,16 +6928,9 @@ mod tests {
                 },
             ]
         );
-        // A country's entries fit whole or are counted; no storage counts all.
+        // The count probe counts every entry.
         assert_eq!(
-            walk_civil_wars(&memory, 0, 0x1000, &mut output[..2]),
-            Outcome::Truncated {
-                len: 0,
-                unread_rows: 3
-            }
-        );
-        assert_eq!(
-            walk_civil_wars(&memory, 0, 0x1000, &mut []),
+            walk_civil_wars_buffer(&memory, 0, 0x1000, crate::walk::Buffer::Count),
             Outcome::Truncated {
                 len: 0,
                 unread_rows: 3
@@ -7198,7 +6965,7 @@ mod tests {
                 &SliceMemory { base: 0, bytes },
                 0,
                 0x1000,
-                &mut [CivilWarRow::default(); 4],
+                &mut vec![CivilWarRow::default(); 4],
             )
         };
         assert_eq!(

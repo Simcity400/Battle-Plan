@@ -20,7 +20,7 @@ pub(crate) struct Request {
     pub inputs: Inputs,
     /// The held rows, lent by the callback; absent reads every state.
     pub store: Option<Box<StateStore>>,
-    pub countries: Option<std::sync::Arc<engine_native::country_memory::Cache>>,
+    pub countries: Option<engine_allocation::SharedBox<engine_native::country_memory::Cache>>,
     pub occupation_store: Option<Box<OccupationStore>>,
 }
 
@@ -89,9 +89,8 @@ impl Inputs {
         memory: &impl Memory,
         base: usize,
         visitor: &state_flags::Captured,
-        growing: bool,
     ) {
-        self.acquire_carried(memory, base, visitor, growing, |_| None);
+        self.acquire_carried(memory, base, visitor, |_| None);
     }
 
     /// [`Self::acquire`] where `carried` supplies, by source index, the
@@ -101,7 +100,6 @@ impl Inputs {
         memory: &impl Memory,
         base: usize,
         visitor: &state_flags::Captured,
-        growing: bool,
         carried: impl FnMut(usize) -> Option<Result<i64, &'static str>>,
     ) {
         let (sources, source, required) = visitor.completed_sources();
@@ -111,7 +109,7 @@ impl Inputs {
             return;
         }
         let capacity = sources.len().max(self.rows.len());
-        if growing && engine_allocation::resize_default(&mut self.rows, capacity).is_err() {
+        if engine_allocation::resize_default(&mut self.rows, capacity).is_err() {
             self.fail("state fraction buffer allocation failed");
             return;
         }
@@ -183,16 +181,11 @@ impl Report {
     }
 }
 impl Request {
-    #[cfg(test)]
     pub(crate) fn run(&mut self, memory: &impl Memory) -> Report {
-        self.run_with(memory, false)
+        self.run_with(memory)
     }
 
-    pub(crate) fn run_growing(&mut self, memory: &impl Memory) -> Report {
-        self.run_with(memory, true)
-    }
-
-    fn run_with(&mut self, memory: &impl Memory, growing: bool) -> Report {
+    fn run_with(&mut self, memory: &impl Memory) -> Report {
         let _reads = crate::read_accounting::table(replay_data::rows::TableId::States);
         let Self {
             census,
@@ -214,7 +207,6 @@ impl Request {
                     memory,
                     base,
                     game_state,
-                    growing,
                     rows,
                     &mut names.bytes,
                     visitor,
@@ -226,11 +218,7 @@ impl Request {
                 store.finish(false, outcome.len());
                 return walk.outcome;
             }
-            let outcome = if growing {
-                cstate::walk_with_growing(memory, base, game_state, rows, |source| {
-                    visitor.visit_growing(source)
-                })
-            } else {
+            let outcome = {
                 cstate::walk_with(memory, base, game_state, rows, |source| {
                     visitor.visit(source)
                 })
@@ -244,7 +232,7 @@ impl Request {
                 game_state,
                 outcome,
                 rows,
-                engine_native::walk::Buffer::for_worker(&mut names.bytes, growing),
+                engine_native::walk::Buffer::Growing(&mut names.bytes),
                 |_| None,
                 |id| {
                     store
@@ -254,7 +242,7 @@ impl Request {
             );
             names.len = walk.bytes_len;
             names.required = walk.required_bytes;
-            inputs.acquire(memory, base, visitor, growing);
+            inputs.acquire(memory, base, visitor);
             if let Some(store) = store.as_deref_mut() {
                 store.hold(rows, &names.bytes, walk, visitor, inputs);
                 store.finish(true, walk.outcome.len());
@@ -302,7 +290,7 @@ impl Request {
             }
         }
         let occupation_ticks = sampling::qpc() - occupation_begin;
-        visitor.acquire_owned(memory, base, game_state, growing);
+        visitor.acquire_owned(memory, base, game_state);
         Report {
             census: report,
             ticks,
@@ -539,10 +527,25 @@ pub(crate) mod tests {
             &mut request.census.payload,
             &mut request.names.bytes,
         );
+        // Run reads the state fractions into storage that grows after the names.
+        request.inputs.acquire(memory, 0, &request.visitor);
         // Run acquires the flags and active border trees after its census.
         cstate::infrastructure_map::snapshot(memory, 0, STATE, names.outcome, &mut request.census.payload);
-        request.visitor.acquire_owned(memory, 0, STATE, true);
+        request.visitor.acquire_owned(memory, 0, STATE);
         names.outcome
+    }
+
+    /// Where `trace`, a healthy run's reads, holds the infrastructure snapshot's.
+    fn infrastructure_snapshot(bytes: &[u8], trace: &[(usize, usize)]) -> std::ops::Range<usize> {
+        let alone = Traced::new(bytes);
+        let mut rows = vec![cstate::Row::default(); 2];
+        cstate::infrastructure_map::snapshot(&alone, 0, STATE, Outcome::Rows { len: 2 }, &mut rows);
+        let alone = alone.calls.into_inner();
+        let start = trace
+            .windows(alone.len())
+            .rposition(|reads| reads == alone.as_slice())
+            .unwrap();
+        start..start + alone.len()
     }
 
     #[test]
@@ -568,9 +571,7 @@ pub(crate) mod tests {
             if capacity == 2 {
                 assert_eq!(report.census.result, Outcome::Rows { len: 2 });
                 assert!(
-                    actual
-                        .census
-                        .payload
+                    actual.census.payload[..2]
                         .iter()
                         .all(|row| row.movement_infrastructure == MOVEMENT_INFRASTRUCTURE)
                 );
@@ -600,17 +601,10 @@ pub(crate) mod tests {
     #[test]
     fn growing_states_fills_the_first_census_without_repeating_its_root() {
         let bytes = fixture();
-        assert_eq!(
-            request(0).run(&Traced::new(&bytes)).census.result,
-            Outcome::Truncated {
-                len: 0,
-                unread_rows: 2
-            }
-        );
         let memory = Traced::new(&bytes);
         let mut request = request(0);
         request.visitor = state_flags::Captured::default();
-        let report = request.run_growing(&memory);
+        let report = request.run(&memory);
         assert_eq!(report.census.result, Outcome::Rows { len: 2 });
         assert_eq!(request.census.payload[1].id, 3);
         assert_eq!(request.inputs.outcome, Outcome::Rows { len: 2 });
@@ -631,8 +625,12 @@ pub(crate) mod tests {
     fn every_primary_states_fault_preserves_the_single_serial_trace() {
         let bytes = fixture();
         let healthy = Traced::new(&bytes);
-        request(2).run(&healthy);
+        let mut healthy_request = request(2);
+        healthy_request.run(&healthy);
+        let fractions = |request: &Request| [1, 3].map(|id| request.inputs.fraction(id));
+        let healthy_fractions = fractions(&healthy_request);
         let count = healthy.calls.borrow().len();
+        let snapshot = infrastructure_snapshot(&bytes, &healthy.calls.borrow());
         for fault in 0..count {
             let mut memory = Traced::new(&bytes);
             memory.fault = Some(fault);
@@ -648,33 +646,32 @@ pub(crate) mod tests {
             // only that state's category.
             if len == 8 && [FIRST, LAST].contains(&at.wrapping_sub(cstate::CATEGORY)) {
                 assert_eq!(report.census.result, Outcome::Rows { len: 2 });
-                assert!(
-                    actual
-                        .census
-                        .payload
-                        .iter()
-                        .any(|row| row.category.is_none())
-                );
+                assert!(actual.census.payload[..2].iter().any(|row| row.category.is_none()));
             } else if healthy.calls.borrow()[fault] == (0x033d_d4b8, 8) {
                 // The continents database singleton is optional.
                 assert_eq!(report.census.result, Outcome::Rows { len: 2 });
                 assert_eq!(actual.visitor.outcomes(), [Outcome::Rows { len: 2 }]);
-                assert!(
-                    actual
-                        .census
-                        .payload
-                        .iter()
-                        .all(|row| row.continent.is_none())
-                );
+                assert!(actual.census.payload[..2].iter().all(|row| row.continent.is_none()));
+            } else if snapshot.contains(&fault) {
+                // The infrastructure snapshot withholds only infrastructure, which the fixture's
+                // states have none of.
+                assert_eq!(report.census.result, Outcome::Rows { len: 2 });
+                assert_eq!(actual.visitor.outcomes(), [Outcome::Rows { len: 2 }]);
+                assert!(actual.census.payload[..2].iter().all(|row| row.infrastructure.is_none()));
             } else {
-                // A census fault fails the census; a flag fault fails only flags.
+                // A census fault fails the census, a flag fault only flags, and a fraction
+                // fault only the fractions.
                 assert!(
                     matches!(report.census.result, Outcome::Unavailable { .. })
-                        || matches!(actual.visitor.outcomes(), [Outcome::Unavailable { .. }]),
+                        || matches!(actual.visitor.outcomes(), [Outcome::Unavailable { .. }])
+                        || matches!(actual.inputs.outcome, Outcome::Unavailable { .. })
+                        || fractions(&actual) != healthy_fractions,
                     "fault {fault}"
                 );
             }
             assert_eq!(actual.census.payload, reference.census.payload);
+            assert_eq!(actual.inputs.outcome, reference.inputs.outcome);
+            assert_eq!(fractions(&actual), fractions(&reference));
             assert_eq!(*memory.calls.borrow(), *expected.calls.borrow());
             actual.visitor.capture(&memory, 0, STATE);
             reference.visitor.capture(&expected, 0, STATE);
@@ -694,7 +691,8 @@ pub(crate) mod tests {
                 }))
             })
             .unwrap();
-            let owned = request(2);
+            // Room for the fixture's three state slots: the census does not grow.
+            let owned = request(3);
             let pointer = owned.census.payload.as_ptr();
             let visitor_bytes = owned.visitor.allocated_bytes();
             let mut pending = Some(owned);
@@ -718,9 +716,9 @@ pub(crate) mod tests {
         healthy.inputs = Inputs::with_capacity(2).unwrap();
         let observed = Traced::new(&bytes);
         healthy.run(&observed);
-        let fault = observed
-            .calls
-            .borrow()
+        let trace = observed.calls.into_inner();
+        // The fraction control reads the database singleton last before the snapshot does.
+        let fault = trace[..infrastructure_snapshot(&bytes, &trace).start]
             .iter()
             .rposition(|(address, _)| *address == cbuilding_database::SINGLETON_RVA.0)
             .unwrap();
@@ -738,39 +736,6 @@ pub(crate) mod tests {
         assert_eq!(captured.inputs.fraction(3), None);
         assert_eq!(healthy.inputs.fraction(1), Some(0));
         assert_eq!(healthy.inputs.fraction(3), Some(0));
-    }
-
-    #[test]
-    fn later_old_field_failure_keeps_fraction_prefix_and_complete_core_demand() {
-        let bytes = fixture();
-        let observed = Traced::new(&bytes);
-        request(1).run(&observed);
-        let fault = observed
-            .calls
-            .borrow()
-            .iter()
-            .position(|(address, _)| *address == cbuilding_database::SINGLETON_RVA.0)
-            .unwrap();
-        let mut memory = Traced::new(&bytes);
-        memory.fault = Some(fault);
-        let mut captured = request(1);
-        captured.inputs = Inputs::with_capacity(1).unwrap();
-        let report = captured.run(&memory);
-        assert!(matches!(report.census.result, Outcome::Unavailable { .. }));
-        assert_eq!(captured.inputs.required(), 2);
-        assert_eq!(
-            captured.inputs.outcome,
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            }
-        );
-        assert_eq!(captured.inputs.fraction(1), Some(0));
-        assert_eq!(captured.inputs.fraction(3), None);
-        captured.inputs.fail("worker failed after census");
-        assert_eq!(captured.inputs.required(), 2);
-        assert_eq!(captured.inputs.fraction(1), None);
-        assert!(captured.visitor.completed_sources().0.is_empty());
     }
 
     #[test]

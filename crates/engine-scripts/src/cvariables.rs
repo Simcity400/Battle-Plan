@@ -104,6 +104,10 @@ impl VariableCarry for Fresh {
     fn read(&mut self, _: usize, _: Outcome, _: &[Row], _: &[u8]) {}
 }
 
+pub fn count_scopes(memory: &impl Memory, base: usize, game_state: usize) -> ScopeWalk {
+    walk_scopes_buffer(memory, base, game_state, crate::walk::Buffer::Count, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
+}
+
 /// Construction stores allocated CVariables pointers in the game state, each country and each state
 /// (`cgame_state::GLOBAL_VARIABLES`, `ccountry::VARIABLES`, `cstate::VARIABLES`); a character's is
 /// embedded (`ccharacter::VARIABLES`), walked for each authenticated roster occurrence as the
@@ -112,24 +116,6 @@ impl VariableCarry for Fresh {
 /// return. All arenas are caller-owned; a truncated container omits its whole scope, while empty
 /// authenticated containers remain explicit complete scope rows.
 pub fn walk_scopes(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut [ScopeRow],
-    entries: &mut [Row],
-    names: &mut [u8],
-) -> ScopeWalk {
-    walk_scopes_buffer(
-        memory,
-        base,
-        game_state,
-        crate::walk::Buffer::Fixed(output),
-        crate::walk::Buffer::Fixed(entries),
-        crate::walk::Buffer::Fixed(names),
-    )
-}
-
-pub fn walk_scopes_growing(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -206,8 +192,8 @@ pub fn walk_scopes_carried(
                     memory,
                     base,
                     head,
-                    crate::walk::Buffer::Fixed(&mut entries[entries_len..entries_len]),
-                    crate::walk::Buffer::Fixed(&mut names[bytes_len..bytes_len]),
+                    crate::walk::Buffer::Count,
+                    crate::walk::Buffer::Count,
                 )
             };
             let (count, omitted) = match captured.outcome {
@@ -452,22 +438,6 @@ pub fn read_store_carried(
 /// replay assembly sorts the exact keys and checks duplicate keys off-thread.
 /// Empty slots are selected by native probe distance, never by string plausibility.
 pub fn walk(
-    memory: &impl Memory,
-    base: usize,
-    container: usize,
-    output: &mut [Row],
-    names: &mut [u8],
-) -> NameWalk {
-    walk_buffer(
-        memory,
-        base,
-        container,
-        crate::walk::Buffer::Fixed(output),
-        crate::walk::Buffer::Fixed(names),
-    )
-}
-
-pub fn walk_growing(
     memory: &impl Memory,
     base: usize,
     container: usize,

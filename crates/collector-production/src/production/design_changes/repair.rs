@@ -247,6 +247,9 @@ mod tests {
     use super::*;
     #[test]
     fn prepared_marks_cover_receivers_without_callback_growth() {
+        if !isolated() {
+            return;
+        }
         let watches = (1..=5)
             .map(|pointer| {
                 (

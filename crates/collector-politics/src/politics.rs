@@ -123,14 +123,10 @@ impl Captured {
     }
     /// Worker lane-index handoff. The existing
     /// Countries acquisition owns the endpoint reads; spool owns the census.
-    pub fn capture_growing(&mut self) -> u64 {
+    pub fn capture(&mut self) -> u64 {
         let started = crate::clock::qpc();
         self.handoff = Some(hooks::handoff_growing(&mut self.cursors));
         crate::clock::qpc().saturating_sub(started).max(0) as u64
-    }
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn capture(&mut self) -> u64 {
-        self.capture_growing()
     }
 }
 fn unavailable(reason: &str) -> TableView {

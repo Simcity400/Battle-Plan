@@ -183,6 +183,29 @@ pub(crate) fn capacity() -> usize {
     WATCHES.registry.capacity()
 }
 
+/// Tests: holds every test on this domain's process-wide state, which starts
+/// as a fresh process's (no table installed or offered, no scope or embedded
+/// demand, no counts).
+#[cfg(test)]
+pub(crate) fn test_globals() -> std::sync::MutexGuard<'static, ()> {
+    static TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let guard = TEST.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    // SAFETY: every test that notifies, sizes or captures through these
+    // statics holds the guard, and no hook is installed in tests.
+    unsafe {
+        WATCHES.registry.release();
+        WATCHES.structure.release();
+    }
+    WATCHES.registry.set_enabled(false);
+    WATCHES.structure.set_enabled(false);
+    SCOPES.store(0, Ordering::Relaxed);
+    EMBEDDED_SCOPES.store(0, Ordering::Relaxed);
+    for read in &READS {
+        read.store(0, Ordering::Relaxed);
+    }
+    guard
+}
+
 /// Game thread, in the hourly callback before any capture. `invalidate`
 /// after a load, gap or recovery: nothing observed before it certifies
 /// anything.

@@ -111,6 +111,17 @@ pub async fn set_recording_compression(
     .await
 }
 
+/// Auto Compress on or off: after saving, the tray compresses a recording to High's level.
+#[tauri::command]
+pub async fn set_auto_compress(enabled: bool) -> Result<RecorderSettings, String> {
+    blocking(move || {
+        RecorderSettings::update(|settings| settings.auto_compress = enabled)
+            .map(|(settings, ())| settings)
+            .map_err(|error| error.to_string())
+    })
+    .await
+}
+
 #[tauri::command]
 pub async fn recording_preferences() -> Result<RecordingPreferences, String> {
     blocking(|| {

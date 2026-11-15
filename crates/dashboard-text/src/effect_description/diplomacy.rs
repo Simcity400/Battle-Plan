@@ -16,7 +16,7 @@ const LEADER_CHARACTER: u64 = mask::<UnitLeaderRow>(&["character_id"]);
 
 /// A reached inventory predicate requires both complete goal tables.
 pub(super) const CREATE_WARGOAL_UNRECORDED: &str =
-    "create_wargoal requires recorded CountryWargoals and WargoalTargets";
+    "create_wargoal requires recorded country wargoals and wargoal targets";
 
 impl Renderer<'_, '_, '_> {
     pub(super) fn purchase_contract(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
@@ -135,7 +135,7 @@ impl Renderer<'_, '_, '_> {
                     .next()
                     .transpose()
                     .map_err(built)?
-                    .ok_or("PoliticalParties lacks civil-war fallback ruling ideology")?;
+                    .ok_or("political parties lacks civil-war fallback ruling ideology")?;
                 self.politics_ideology(Some(&token.token), scopes)?
             }
         };
@@ -257,7 +257,7 @@ impl Renderer<'_, '_, '_> {
                     .map_err(built)?
                     .ok_or("create_wargoal target subjects are not recorded")?;
                 let mut found = false;
-                for &raw in target_row.subjects.require("CountryAppearance.subjects")? {
+                for &raw in target_row.subjects.require("subjects of country appearance")? {
                     if world
                         .recorded()
                         .slot(raw as u32)
@@ -399,21 +399,21 @@ impl Renderer<'_, '_, '_> {
             .next()
             .transpose()
             .map_err(built)?
-            .ok_or("CountryAppearance lacks ordered target subjects")?;
+            .ok_or("country appearance lacks ordered target subjects")?;
         // The ordered subject roster is reached only inside a removal or join
         // branch. A same-faction nonleader needs no subject roster.
         let subject = |raw: i32| {
             world
                 .recorded()
                 .slot(raw as u32)
-                .ok_or_else(|| format!("CountryLinks lacks ordered subject {raw}"))
+                .ok_or_else(|| format!("country links lacks ordered subject {raw}"))
         };
         let mut body = String::new();
         if appearance.overlord > 0 {
             let master = world
                 .recorded()
                 .slot(appearance.overlord as u32)
-                .ok_or("CountryLinks lacks target overlord")?;
+                .ok_or("country links lacks target overlord")?;
             if source_faction.is_none()
                 || world.faction(master).map_err(|why| why.to_string())? != source_faction
             {
@@ -445,7 +445,7 @@ impl Renderer<'_, '_, '_> {
                 )
             };
             body.push_str(&line(target)?);
-            for &raw in appearance.subjects.require("CountryAppearance.subjects")? {
+            for &raw in appearance.subjects.require("subjects of country appearance")? {
                 body.push_str(&line(subject(raw)?)?);
             }
         }
@@ -484,7 +484,7 @@ impl Renderer<'_, '_, '_> {
                 }
             };
             body.push_str(&line(target)?);
-            for &raw in appearance.subjects.require("CountryAppearance.subjects")? {
+            for &raw in appearance.subjects.require("subjects of country appearance")? {
                 body.push_str(&line(subject(raw)?)?);
             }
         }
@@ -713,7 +713,7 @@ impl Renderer<'_, '_, '_> {
             .slot(row.controller)
             .ok_or_else(|| {
                 format!(
-                    "CountryLinks lacks state {state} controller {}",
+                    "country links lacks state {state} controller {}",
                     row.controller
                 )
             })?;
@@ -841,7 +841,7 @@ impl Renderer<'_, '_, '_> {
     fn diplomacy_autonomy_feature(&self) -> Result<bool, String> {
         let features = self.complete::<tables::SimulationFeatures>(FEATURES)?;
         let (1, Some(features)) = (features.len(), each(features).next().transpose()?) else {
-            return Err("SimulationFeatures lacks a unique autonomy feature mask".into());
+            return Err("simulation features lacks a unique autonomy feature mask".into());
         };
         Ok(features.dlc_mask & 0xE != 0)
     }
@@ -962,7 +962,7 @@ impl Renderer<'_, '_, '_> {
             Scope::Leader(reference) | Scope::CountryLeader { leader: reference, .. } => {
                 let leaders = self.complete::<tables::UnitLeaders>(LEADER_CHARACTER)?;
                 let row = keyed(&leaders, u128::from(reference))?
-                    .ok_or_else(|| format!("UnitLeaders lacks scope leader {reference:#x}"))?;
+                    .ok_or_else(|| format!("unit leaders lacks scope leader {reference:#x}"))?;
                 row.character_id
             }
             Scope::Country(_) | Scope::State(_) | Scope::Province(_) if scopes.bare => {
@@ -973,9 +973,9 @@ impl Renderer<'_, '_, '_> {
         let tables = crate::character_scope::Tables::read_in(frame);
         let positive = match tables.unit_leader(character).map_err(|why| why.to_string())? {
             Some(crate::character_scope::UnitLeader::Direct(row)) => {
-                *row.exile_country.require("UnitLeaders.exile_country")? > 0
+                *row.exile_country.require("exile country of unit leaders")? > 0
             }
-            Some(crate::character_scope::UnitLeader::Referenced(_)) => return Err("referenced operative leader exile_country is not recorded by CharacterOperatives; no new input is captured".into()),
+            Some(crate::character_scope::UnitLeader::Referenced(_)) => return Err("referenced operative leader exile_country is not recorded by character operatives; no new input is captured".into()),
             None => false,
         };
         if positive {

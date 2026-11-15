@@ -45,15 +45,13 @@ impl Row {
     }
 }
 
-/// Reads the persistent vector once into caller-owned storage. The spool's
-/// generic key validation rejects duplicate raw bucket identities off-thread.
-pub fn walk(memory: &impl Memory, base: usize, game_state: usize, output: &mut [Row]) -> Outcome {
-    walk_buffer(memory, base, game_state, Buffer::Fixed(output))
+pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
+    walk_buffer(memory, base, game_state, Buffer::Count)
 }
 
 /// Worker rows grow from the original aggregate header, including appended
 /// buckets without country-roster changes.
-pub fn walk_growing(
+pub fn walk(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -162,7 +160,7 @@ mod tests {
     #[test]
     fn history_preserves_full_native_values_unknown_killer_and_order() {
         let bytes = fixture();
-        let mut rows = [Row::default(); 2];
+        let mut rows = vec![Row::default(); 2];
         assert_eq!(
             walk(
                 &SliceMemory {
@@ -195,22 +193,21 @@ mod tests {
     }
 
     #[test]
-    fn history_capacity_fault_and_empty_are_distinct() {
+    fn history_count_fault_and_empty_are_distinct() {
         let mut bytes = fixture();
-        let mut rows = [Row::default(); 1];
+        let mut rows = vec![Row::default(); 1];
         assert_eq!(
-            walk(
+            count(
                 &SliceMemory {
                     base: 0x1000,
                     bytes: &bytes
                 },
                 0,
                 0x1000,
-                &mut rows
             ),
             Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
+                len: 0,
+                unread_rows: 2
             }
         );
         bytes[0x600..0x608].fill(0);

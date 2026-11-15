@@ -8,7 +8,7 @@ import type { TooltipContent } from '../../charts/tooltip';
 import { Lineage } from '../../dashboard/identity.ts';
 import { countryIdentityIndex } from '../../dashboard/countryIdentity.ts';
 import type { WarObservation, WarParticipantRun, WarTimeline, WarsReply } from '../../generated/dashboard';
-import { casualtiesAt, countryTagAt, isWarsReply, joinedAt, laneCountries, observationAt, labelObservationAt, piecesThrough, viewpointSummary, participantHoldingAt, prepareWars, retainExpandedWars, sideLabel, validateWarsReply, viewpointAt, warNamesAt, warsLanes, warsReplyState } from './warsData.ts';
+import { countryTagAt, lossesOf, structureAt, structureHours, validateWarContributions, validateWarLosses, isWarsReply, joinedAt, laneCountries, observationAt, labelObservationAt, piecesThrough, viewpointSummary, participantHoldingAt, prepareWars, retainExpandedWars, sideLabel, validateWarsReply, viewpointAt, warNamesAt, warsLanes, warsReplyState } from './warsData.ts';
 import type { WarsLaneOptions } from './warsData';
 
 const participant = (tag: string, side: WarParticipantRun['side'], firstHour = 10, lastHour = 19): WarParticipantRun =>
@@ -19,7 +19,6 @@ const observation = (firstHour = 10, lastHour = 19, attackersAreViewpoint: boole
 });
 const war = (id = '1', firstHour = 10, lastHour = 19): WarTimeline => ({
   id, firstHour, lastHour, startedBy: true, endedBy: false, observations: [observation(firstHour, lastHour)],
-  casualties: [[firstHour, lastHour, '900719925474099312345', '7', '-900719925474099399999', '0']],
   participants: [participant('One side', 'attacker', firstHour, lastHour), participant('Other side', 'defender', firstHour, lastHour)],
   capitulations: [],
 });
@@ -88,8 +87,6 @@ test('validate the complete dated contract, including availability and arbitrary
   assert.equal(validateWarsReply(data), data);
   for (const bad of [null, {}, { ...data, available: undefined }, { ...data, countryNames: undefined }, { ...data, viewpoints: undefined }, { ...data, warnings: [null] }, { ...data, wars: [data.wars[0], data.wars[0]] },
     { ...data, wars: [{ ...war(), participants: [{ ...participant('A', 'attacker'), side: 'invented' }] }] },
-    { ...data, wars: [{ ...war(), casualties: [[10, 19, '1K', '0', '0', '0']] }] },
-    { ...data, wars: [{ ...war(), casualties: [[10, 19, '1', '0', '0', '0'], [19, 20, '2', '0', '0', '0']] }] },
     { ...data, unobserved: [{ firstHour: 14, lastHour: 14 }] }]) {
     assert.equal(isWarsReply(bad), false);
     assert.throws(() => validateWarsReply(bad), /malformed/);
@@ -111,18 +108,15 @@ test('the observed viewpoint follows peacetime player changes and stays unknown 
   assert.equal(isWarsReply({ ...data, unobserved: [{ firstHour: 15, lastHour: 15 }] }), false);
 });
 
-test('covering observations and casualties do not carry a name, roster or losses through a gap', () => {
+test('covering observations do not carry a name or roster through a gap', () => {
   const item = war('gap', 10, 39);
   item.observations = [observation(10, 19), { ...observation(30, 39), name: { text: 'Second name', known: true, reason: null, key: null } }];
-  item.casualties = [[10, 19, '5', '0', '9', '0'], [30, 39, '50', '2', '90', '3']];
   item.participants = [participant('One side', 'attacker', 10, 19), participant('One side', 'attacker', 30, 39)];
   const data = reply([item]);
   data.unobserved = [{ firstHour: 20, lastHour: 29 }];
   validateWarsReply(data);
   assert.equal(observationAt(item, 19.9)?.name.text, 'Recorded name');
   assert.equal(observationAt(item, 25), null);
-  assert.equal(casualtiesAt(item, 25), null);
-  assert.deepEqual(casualtiesAt(item, 35), item.casualties[1]);
   const prepared = prepareWars(data);
   assert.equal(participantHoldingAt(prepared.wars[0].participants[0], 25), null);
   const shown = warsLanes(prepared, 39, options);
@@ -508,4 +502,38 @@ test('wars the game names alike are told apart by their start; a unique name sta
   assert.equal(names.get(other), 'Other name');
   // Before the second war starts, the first's name is its own.
   assert.equal(warNamesAt([first, second], 20).get(first), 'Recorded name');
+});
+
+test('the lanes change only at structure hours, so a widget following the head renders only when it passes one', () => {
+  const item = war('1', 10, 39);
+  item.observations = [observation(10, 19), { ...observation(20, 39), name: { text: 'Second name', known: true, reason: null, key: null } }];
+  item.participants = [participant('One side', 'attacker', 10, 39), participant('Other side', 'defender', 10, 39), participant('Third', 'defender', 25, 30)];
+  const prepared = prepareWars(reply([item]));
+  const hours = structureHours(prepared);
+  assert.deepEqual(hours, [10, 20, 25, 31, 40]);
+  // Every hour between two structure hours shows the same lanes as the first of them.
+  for (let at = 0; at < 45; at++) {
+    const from = hours[structureAt(hours, at) - 1] ?? at;
+    const lanes = (hour: number) => JSON.stringify(warsLanes(prepared, hour, { ...options, expanded: new Set(['1']) }).lanes.map(lane => [lane.id, lane.identity?.label, lane.spans.length]));
+    assert.equal(lanes(at), lanes(from), `hour ${at}`);
+  }
+  assert.equal(structureAt(hours, 9), 0);
+  assert.equal(structureAt(hours, 24), structureAt(hours, 20));
+  assert.notEqual(structureAt(hours, 25), structureAt(hours, 24));
+});
+
+test('a losses reply gives each war a run or the reason it has none, never both and never zero for unknown', () => {
+  const data = { branchId: 'b', hour: 15, warnings: [], wars: [
+    { id: '1', run: [15, 15, '10', '0', '-3', '2'], reason: null },
+    { id: '2', run: null, reason: 'Not recorded: a relation' },
+  ] };
+  assert.equal(validateWarLosses(data), data);
+  assert.deepEqual(lossesOf(data as never, '1')?.run, [15, 15, '10', '0', '-3', '2']);
+  assert.equal(lossesOf(data as never, '2')?.run, null);
+  assert.equal(lossesOf(data as never, '3'), undefined);
+  for (const bad of [{ ...data, wars: [{ id: '1', run: null, reason: null }] }, { ...data, wars: [{ id: '1', run: [15, 15, '1x', '0', '0', '0'], reason: null }] },
+    { ...data, wars: [data.wars[0], data.wars[0]] }, { ...data, hour: 'x' }]) assert.throws(() => validateWarLosses(bad), /malformed/);
+  const groups = { branchId: 'b', hour: 15, available: true, warnings: [], contributions: [{ viewpointSide: ['A'], opposingSide: ['B'], reason: 'why', participants: [] }] };
+  assert.equal(validateWarContributions(groups), groups);
+  assert.throws(() => validateWarContributions({ ...groups, available: 'yes' }), /malformed/);
 });

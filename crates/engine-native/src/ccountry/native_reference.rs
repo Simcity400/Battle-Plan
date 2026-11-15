@@ -78,12 +78,12 @@ impl<T: Copy> Results<T> {
             .and_then(|index| self.entries[index].map(|(_, value)| value))
     }
 
-    fn admit(&mut self, growing: bool) -> bool {
+    fn admit(&mut self) -> bool {
         self.required = self.required.max(self.used.saturating_add(1));
         if self.used < self.capacity {
             true
         } else {
-            if growing && !self.short {
+            if !self.short {
                 let grown = (|| {
                     let capacity = allocation::mul(self.capacity.max(1), 2)?;
                     let mut grown = Self::new(capacity)?;
@@ -98,8 +98,8 @@ impl<T: Copy> Results<T> {
                     return true;
                 }
             }
-            // Further unseen IDs cannot be uniquely counted without storage.
-            // Refuse before querying them and report this known lower bound.
+            // After a refused growth, further unseen IDs cannot be uniquely
+            // counted. Refuse before querying them and report this lower bound.
             self.short = true;
             false
         }
@@ -127,10 +127,9 @@ impl<T: Copy> Results<T> {
     }
 }
 
-/// Owned results for one exclusively loaned acquisition pass.
-/// Fixed callers never grow; worker callers retain every result during growth.
+/// Owned results for one exclusively loaned acquisition pass. Growth in the
+/// pass retains every earlier result.
 pub struct NativeReferenceMemo {
-    worker_growth: bool,
     identity: Option<(usize, usize)>,
     reserved: Cell<Option<super::ReservedCountryObservation>>,
     positive: Cell<Option<Result<[Array; 2], &'static str>>>,
@@ -155,7 +154,6 @@ impl NativeReferenceMemo {
     /// the already latched allocation failure.
     pub const fn vacant() -> Self {
         Self {
-            worker_growth: false,
             identity: None,
             reserved: Cell::new(None),
             positive: Cell::new(None),
@@ -169,7 +167,6 @@ impl NativeReferenceMemo {
 
     pub fn try_with_capacity(raw_references: usize, links: usize) -> io::Result<Self> {
         Ok(Self {
-            worker_growth: false,
             identity: None,
             reserved: Cell::new(None),
             positive: Cell::new(None),
@@ -179,12 +176,6 @@ impl NativeReferenceMemo {
             link_used: Cell::new(0),
             link_required: Cell::new(0),
         })
-    }
-
-    /// Only allocating worker acquisitions may enable this. Existing raw,
-    /// canonical, link and reserved observations remain the pass's first ones.
-    pub fn enable_worker_growth(&mut self) {
-        self.worker_growth = true;
     }
 
     fn clear(&mut self) {
@@ -337,13 +328,11 @@ impl<'a, M: Memory> NativeReferenceContext<'a, M> {
         // Resolve the full original link domain. Grow storage before any link
         // resolution and retain observed headers on failure.
         let result = result.and_then(|arrays| {
-            if self.memo.worker_growth {
-                let mut links = self.memo.links.borrow_mut();
-                let required = arrays[1].count as usize;
-                if required > links.len() {
-                    allocation::resize_default(&mut links, required)
-                        .map_err(|_| "native country link observations do not fit arena")?;
-                }
+            let mut links = self.memo.links.borrow_mut();
+            let required = arrays[1].count as usize;
+            if required > links.len() {
+                allocation::resize_default(&mut links, required)
+                    .map_err(|_| "native country link observations do not fit arena")?;
             }
             Ok(arrays)
         });
@@ -404,7 +393,7 @@ impl<'a, M: Memory> NativeReferenceContext<'a, M> {
         if let Some(result) = self.memo.raw.borrow().get(raw) {
             return result;
         }
-        if !self.memo.raw.borrow_mut().admit(self.memo.worker_growth) {
+        if !self.memo.raw.borrow_mut().admit() {
             return Err("native country raw results do not fit arena");
         }
         let result = (|| {
@@ -416,12 +405,7 @@ impl<'a, M: Memory> NativeReferenceContext<'a, M> {
             let country = if let Some(result) = observed {
                 result
             } else {
-                if !self
-                    .memo
-                    .canonical
-                    .borrow_mut()
-                    .admit(self.memo.worker_growth)
-                {
+                if !self.memo.canonical.borrow_mut().admit() {
                     return Err("native country canonical results do not fit arena");
                 }
                 let arrays = self.arrays()?;

@@ -3,20 +3,13 @@ import { test } from 'node:test';
 import { sinkingWindowRows } from './shipsSunkWindows.ts';
 import type { ShipsSunkWindowReply } from './useShipsSunk';
 import { validateSinkingManifest, validateSinkingWindow } from './useShipsSunk.ts';
-import type { ShipsSunkReply, ShipsSunkRow } from '../../generated/dashboard';
 import { deepFreeze } from '../../testFrozen.ts';
-import { createElement } from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
-import { createServer } from 'vite';
-import type { ComponentType } from 'react';
-import type { WidgetProps } from '../../dashboard/definitions';
-import type { LogListProps } from '../../charts/log/LogList';
-import type { SinkingItem } from './shipsSunkWindows';
+import type { ShipsSunkReply, ShipsSunkRow } from '../../generated/dashboard';
 const row = (sinkHour: number, knownAt: number): ShipsSunkRow => ({ sinkHour, knownAt, name: 'recorded ship', classIndex: 0,
   recordedNameIndex: 0, victim: 'mod victim', attacker: null, victimAsOf: null, attackerAsOf: null, placeIndex: 0,
   cause: 'hostile', attributionName: null, assistedKill: false });
 function page(window: number, indices: number[], rows: ShipsSunkRow[], token: number): ShipsSunkWindowReply {
-  const reply: ShipsSunkReply = { branchId: '1', available: true, firstHour: 100, lastHour: 130, firstRead: 100, unread: [],
+  const reply: ShipsSunkReply = { branchId: '1', window, available: true, firstHour: 100, lastHour: 130, firstRead: 100, unread: [],
     classes: [{ token, key: `mod class ${token}`, name: null, icon: null }], places: [`mod sea ${token}`],
     recordedNames: [`recorded class ${token}`], rows, warnings: [] };
   return { window, indices, reply };
@@ -57,72 +50,21 @@ test('sinking content is prepared once and retained until a visibility boundary 
   assert.equal(sinkingWindowRows(replacement, 130, [], 'both', country, null, 'campaign')[0].item.name, 'repaired');
 });
 
-test('the real sinking widget passes unchanged rows to LogList while only playback advances', async () => {
-  const window = deepFreeze(page(0, [0, 1], [row(100, 100), row(110, 130)], 70));
-  const state = { hour: 101, log: undefined as LogListProps<SinkingItem> | undefined,
-    manifest: { classes: window.reply, windows: [{ firstHour: 100, lastHour: 160 }] },
-    pages: deepFreeze(new Map([[0, window]])), errors: deepFreeze(new Map<number, string>()),
-    track: { id: 'main', axisOffset: 0, source: { id: 'source', revision: '1', metadata: { campaignKey: 'campaign', countries: [] } },
-      branch: { id: '1', firstHour: 100, lastHour: 160, gaps: [] } } };
-  const memos: { deps: readonly unknown[]; value: unknown }[] = [];
-  let cursor = 0;
-  const memo = (build: () => unknown, deps: readonly unknown[]) => {
-    const index = cursor++, before = memos[index];
-    if (!before || before.deps.length !== deps.length || deps.some((value, index) => !Object.is(value, before.deps[index])))
-      memos[index] = { deps: [...deps], value: build() };
-    return memos[index].value;
-  };
-  const hooks = { memo, callback: (callback: unknown, deps: readonly unknown[]) => memo(() => callback, deps) };
-  const host = globalThis as typeof globalThis & { __sinkingPlayback?: typeof state; __sinkingHooks?: typeof hooks };
-  host.__sinkingPlayback = state; host.__sinkingHooks = hooks;
-  const replacements: Record<string, string> = {
-    '/widgets/ships-sunk/useShipsSunk.ts': `export const useShipsSunk = () => ({ track: globalThis.__sinkingPlayback.track, data: globalThis.__sinkingPlayback.manifest, retry() {} });
-      export const useShipsSunkBattleTitles = () => ({}); export const validateSinkingWindow = value => value;
-      export const useShipClassChoices = () => ({});`,
-    '/dashboard/productWindows.ts': `export const useProductWindows = () => ({ data: globalThis.__sinkingPlayback.pages, errors: globalThis.__sinkingPlayback.errors, retry() {} });`,
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => globalThis.__sinkingPlayback.hour;',
-    '/dashboard/contentRevision.ts': 'export const useContentRevision = () => 0;',
-    '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({});',
-    '/dashboard/countryFlagsAt.ts': `const label = () => ({ name: 'synthetic' }), labelAt = () => label;
-      export const useCountryLabelsAt = () => ({ labelAt }); export const flagReadMetadata = () => ({});`,
-    '/charts/log/LogList.tsx': 'export const PreparedLogCoverage = () => null; export default props => { globalThis.__sinkingPlayback.log = props; return null; };',
-    '/components/ChipSet.tsx': 'export const ChipSet = () => null;',
-  };
-  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
-    server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'sinking-playback-caller', enforce: 'pre',
-      transform(source, id) {
-        const path = id.replaceAll('\\', '/');
-        const replacement = Object.entries(replacements).find(([suffix]) => path.endsWith(suffix));
-        if (replacement) return replacement[1];
-        if (path.endsWith('/widgets/ships-sunk/ShipsSunkWidget.tsx')) return source
-          .replace(/\buseMemo(?:<[^;\n]*>)?\(/g, 'globalThis.__sinkingHooks.memo(')
-          .replace(/\buseCallback\(/g, 'globalThis.__sinkingHooks.callback(');
-      },
-    }] });
-  try {
-    await vite.ssrLoadModule('/ui/src/widgets/definitions.ts');
-    const { createWidget } = await vite.ssrLoadModule('/ui/src/dashboard/model.ts');
-    const { default: Widget } = await vite.ssrLoadModule('/ui/src/widgets/ships-sunk/ShipsSunkWidget.tsx') as { default: ComponentType<WidgetProps> };
-    const props = { widget: { ...createWidget('ships-sunk', 'main'), countries: { kind: 'all' }, time: { mode: 'follow' } },
-      runtime: { tracks: [state.track], client: {}, clock: {} }, active: true, onDiagnostics() {} } as unknown as WidgetProps;
-    const render = () => { cursor = 0; renderToStaticMarkup(createElement(Widget, props)); return state.log!.rows!; };
-    const first = render();
-    assert.equal(first.length, 1);
-    for (state.hour = 102; state.hour < 130; state.hour++) assert.equal(render(), first);
-    const crossed = render();
-    assert.notEqual(crossed, first);
-    assert.equal(crossed.length, 2);
-    assert.equal(crossed[1], first[0]);
-  } finally { await vite.close(); delete host.__sinkingPlayback; delete host.__sinkingHooks; }
+
+test('a window reply keys its rows by window and place, and the manifest refuses an unordered window list', () => {
+  const reply = page(3, [], [row(100, 100), row(101, 124)], 5).reply;
+  const window = validateSinkingWindow(reply);
+  assert.equal(window.window, 3);
+  assert.deepEqual(window.indices, [3 * 2 ** 32, 3 * 2 ** 32 + 1]);
+  assert.throws(() => validateSinkingWindow({ ...reply, window: -1 }));
+  const manifest = { branchId: '1', windows: [{ firstHour: 100, lastHour: 130 }], available: true, firstRead: 100, classes: [], recordedNames: [], warnings: [] };
+  assert.equal(validateSinkingManifest(manifest), manifest);
+  assert.throws(() => validateSinkingManifest({ ...manifest, windows: [{ firstHour: 130, lastHour: 100 }] }));
 });
 
-test('pending sinking pages preserve their coverage so held windows can follow repairs', () => {
-  const pending = [{ firstHour: 111, lastHour: 130 }];
-  const value = { ...page(0, [0], [row(105, 110)], 70),
-    coverage: { schema: 1, firstHour: 100, lastHour: 110, complete: false }, pending };
-  assert.deepEqual(validateSinkingWindow(value).coverage, value.coverage);
-  assert.deepEqual(validateSinkingWindow(value).pending, pending);
-  assert.deepEqual(validateSinkingManifest({ windows: [{ firstHour: 100, lastHour: 130 }], classes: value.reply,
-    coverage: { firstHour: 100, lastHour: 99, complete: false }, pending }).pending, pending);
-  assert.throws(() => validateSinkingWindow({ ...value, pending: [{ firstHour: 130, lastHour: 111 }] }));
+test('a sinking first listed after it sank is revealed at its listing, so a block draws it ahead and the clock shows it then', () => {
+  const pages = new Map([[0, page(0, [0, 1, 2], [row(99, 100), row(105, 130), row(110, 110)], 70)]]);
+  const drawn = sinkingWindowRows(pages, 130, [], 'both', () => true, null, 'campaign');
+  assert.deepEqual(drawn.map(row => [row.key, row.hour, row.revealedHour]), [['2', 110, undefined], ['1', 105, 130], ['0', 99, 100]]);
+  assert.deepEqual(sinkingWindowRows(pages, 129, [], 'both', () => true, null, 'campaign').map(row => row.key), ['2', '0']);
 });

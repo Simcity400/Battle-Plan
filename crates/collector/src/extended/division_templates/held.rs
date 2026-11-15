@@ -6,7 +6,7 @@ use crate::template_changes::Changes;
 use std::sync::Arc;
 
 type Stamp = (u64, u64);
-type Certificate = [Stamp; 2];
+pub(super) type Certificate = [Stamp; 2];
 
 #[derive(Default)]
 struct Entry {
@@ -280,11 +280,78 @@ pub(super) struct Store {
 
 use super::core::hinted;
 
+fn needs_read(
+    entry: &Entry,
+    owner: u32,
+    pointer: usize,
+    current: Option<Certificate>,
+    fresh: bool,
+) -> bool {
+    let same = entry.pointer == pointer && entry.owner == owner;
+    fresh || !same || !entry.attempted || current != entry.certificate
+}
+
 fn certificate(changes: &dyn Changes, pointer: usize, owner: u32) -> Option<Certificate> {
     Some([
         changes.sequence(pointer)?,
         changes.sequence(owner as usize)?,
     ])
+}
+
+/// The writer stamps a walk takes before its reads: the current country's and its deployment
+/// status's, then each roster batch's templates'.
+#[derive(Clone, Copy)]
+pub(super) struct Stamps {
+    /// The current country's deployment status, whose clones its templates name, and that
+    /// status's local-definition stamp taken before its roster's reads.
+    pub deployment: Option<usize>,
+    dependencies: Option<Stamp>,
+    owner: Option<Stamp>,
+    batch: [(usize, Option<Stamp>); native::READ_BATCH],
+}
+
+impl Default for Stamps {
+    fn default() -> Self {
+        Self {
+            deployment: None,
+            dependencies: None,
+            owner: None,
+            batch: [(0, None); native::READ_BATCH],
+        }
+    }
+}
+
+impl Stamps {
+    pub fn country(&mut self, changes: &dyn Changes, country: u32, deployment: Option<usize>) {
+        self.owner = changes.sequence(country as usize);
+        self.deployment = deployment;
+        self.dependencies = deployment.and_then(|status| changes.deployment_reset_sequence(status));
+    }
+
+    pub fn records(&mut self, changes: &dyn Changes, templates: &[usize]) {
+        for (slot, &pointer) in self.batch.iter_mut().zip(templates) {
+            *slot = (pointer, changes.sequence(pointer));
+        }
+    }
+
+    /// The template's stamp taken before this batch's reads, and its owner's.
+    pub fn template(&self, pointer: usize, ordinal: u32) -> Option<Certificate> {
+        let (expected, stamp) = self.batch[ordinal as usize % native::READ_BATCH];
+        Some([stamp.filter(|_| expected == pointer)?, self.owner?])
+    }
+
+    pub fn core(
+        &self,
+        changes: &dyn Changes,
+        pointer: usize,
+        ordinal: u32,
+    ) -> Option<super::core::Certificate> {
+        if changes.fresh_only() {
+            return None;
+        }
+        let [template, owner] = self.template(pointer, ordinal)?;
+        Some([template, owner, self.dependencies?])
+    }
 }
 
 /// The walk's policy: a template carries when its extension needs no read
@@ -293,9 +360,7 @@ pub(super) struct Demand<'a> {
     store: &'a mut Store,
     changes: &'a dyn Changes,
     core: &'a mut super::core::Store,
-    dependencies: Option<Stamp>,
-    owner: Option<(u64, u64)>,
-    batch: [(usize, Option<Stamp>); native::READ_BATCH],
+    stamps: Stamps,
     /// Carried and read occurrences.
     pub counts: [u64; 2],
 }
@@ -309,36 +374,17 @@ impl<'a> Demand<'a> {
             store,
             changes,
             core,
-            dependencies: None,
-            owner: None,
-            batch: [(0, None); native::READ_BATCH],
+            stamps: Stamps::default(),
             counts: [0; 2],
         }
     }
-
-    /// The template's stamp taken before this batch's reads, and its owner's.
-    fn stamps(&self, pointer: usize, ordinal: u32) -> Option<Certificate> {
-        let (expected, stamp) = self.batch[ordinal as usize % native::READ_BATCH];
-        Some([stamp.filter(|_| expected == pointer)?, self.owner?])
-    }
-
-    fn certificate(&self, pointer: usize, ordinal: u32) -> Option<super::core::Certificate> {
-        if self.changes.fresh_only() {
-            return None;
-        }
-        let [template, owner] = self.stamps(pointer, ordinal)?;
-        Some([template, owner, self.dependencies?])
-    }
 }
 impl native::DetailPolicy for Demand<'_> {
-    fn before_country(&mut self, country: u32) {
-        self.owner = self.changes.sequence(country as usize);
+    fn before_country(&mut self, country: u32, deployment: Option<usize>) {
+        self.stamps.country(self.changes, country, deployment);
     }
     fn before_records(&mut self, templates: &[usize]) {
-        self.dependencies = self.changes.core_dependencies();
-        for (slot, &pointer) in self.batch.iter_mut().zip(templates) {
-            *slot = (pointer, self.changes.sequence(pointer));
-        }
+        self.stamps.records(self.changes, templates);
     }
     fn demand(
         &mut self,
@@ -347,8 +393,8 @@ impl native::DetailPolicy for Demand<'_> {
         template: u64,
         ordinal: u32,
     ) -> native::Acquire {
-        let stamps = self.stamps(pointer, ordinal);
-        let certificate = self.certificate(pointer, ordinal);
+        let stamps = self.stamps.template(pointer, ordinal);
+        let certificate = self.stamps.core(self.changes, pointer, ordinal);
         let details = self.store.request_certified(
             country,
             pointer,
@@ -376,10 +422,13 @@ impl native::DetailPolicy for Demand<'_> {
         variants: &[u64],
         names: &[u8],
     ) {
-        let certificate = self.certificate(row.pointer, row.settings.roster_ordinal);
+        let certificate = self
+            .stamps
+            .core(self.changes, row.pointer, row.settings.roster_ordinal);
         self.core.remember(
             self.changes,
             certificate,
+            self.stamps.deployment,
             row,
             bytes,
             counts,
@@ -458,7 +507,7 @@ impl Store {
             changes.fresh_only(),
         )
     }
-    fn request_certified(
+    pub(super) fn request_certified(
         &mut self,
         owner: u32,
         pointer: usize,
@@ -495,7 +544,6 @@ impl Store {
         };
         super::core::remember_hint(&mut self.hints, slot, at);
         let entry = &mut self.entries[at];
-        let same = entry.pointer == pointer && entry.owner == owner;
         if current.is_none() && !fresh {
             entry.valid = false;
             entry.attempted = false;
@@ -504,7 +552,7 @@ impl Store {
             entry.reordered = false;
             return false;
         }
-        let read = fresh || !same || !entry.attempted || current != entry.certificate;
+        let read = needs_read(entry, owner, pointer, current, fresh);
         if read {
             self.requested = true;
             entry.attempted = true;
@@ -520,6 +568,42 @@ impl Store {
         entry.requested = read;
         entry.valid = !read && entry.acquired && current.is_some() && current == entry.certificate;
         read
+    }
+
+    /// What [`Self::request_certified`] decides for a walk's only occurrence of `template`,
+    /// changing nothing: a range of a split walk decides on the stores the walk began with.
+    pub(super) fn decide(
+        &self,
+        owner: u32,
+        pointer: usize,
+        template: u64,
+        current: Option<Certificate>,
+        fresh: bool,
+    ) -> bool {
+        if current.is_none() && !fresh {
+            return false;
+        }
+        match self
+            .entries
+            .binary_search_by_key(&template, |entry| entry.template)
+        {
+            Ok(at) => needs_read(&self.entries[at], owner, pointer, current, fresh),
+            Err(_) => needs_read(&Entry::default(), owner, pointer, current, fresh),
+        }
+    }
+
+    /// Room for an entry for each of `templates` not held yet, so applying a split walk's
+    /// decisions inserts without a refusal its ranges could not have decided on.
+    pub(super) fn reserve_new(&mut self, templates: &[u64]) -> bool {
+        let new = templates
+            .iter()
+            .filter(|&&template| {
+                self.entries
+                    .binary_search_by_key(&template, |entry| entry.template)
+                    .is_err()
+            })
+            .count();
+        engine_allocation::reserve(&mut self.entries, new).is_ok()
     }
 
     /// Freezes what this walk read; a writer since its stamps refuses it.

@@ -608,11 +608,46 @@ fn incremental_wartime_hours_read_only_changed_slots_and_never_walk_retained_gro
 }
 
 #[test]
-fn overflow_recovers_in_the_same_hour_or_first_readable_hour_with_identical_bytes() {
+fn overflow_stays_incremental_and_a_refused_spill_recovers_by_the_first_readable_hour() {
     if !isolated() {
         return;
     }
     let hooks = TerminalHooks::install();
+    {
+        let producer = history_events::test_support::Producer::new();
+        let mut f = Fixture::new();
+        let mut state = State::new();
+        let mut c = Conversion::new();
+        assert!(
+            views(&mut c, &capture_public(&mut state, &f))
+                .iter()
+                .all(Result::is_ok)
+        );
+        assert_eq!(producer.capacity(), 1);
+        let g = f.group(9);
+        f.manpower(g, &[[i32::MIN, 0, i32::MAX], [1, 2, 3], [4, 5, 6]]);
+        f.month(g, 0, &[]);
+        f.month(g, 5, &[i64::MIN, 0, i64::MAX]);
+        f.managers(&[(7, vec![g])]);
+        let mut facts = Vec::new();
+        event::seed_group(&f, 0, g, 7, 0, &f.blocks[&g], &mut |fact| facts.push(fact)).unwrap();
+        assert!(facts.len() > 1);
+        producer.write(SIGNAL, |emit| {
+            event::seed_group(&f, 0, g, 7, 0, &f.blocks[&g], emit).unwrap();
+        });
+        assert_eq!(producer.rejected(), 0);
+        assert_eq!(producer.losses(), 0);
+        assert!(producer.required() >= facts.len());
+        let batch = capture_public(&mut state, &NoFullWalk(&f));
+        assert!(!batch.full, "a burst past the lane stays incremental");
+        assert!(producer.capacity() >= facts.len());
+        let expected = capture(&mut State::new(), &f, SIGNAL, history_events::quiet());
+        assert_eq!(
+            encoded(&views(&mut c, &batch)),
+            encoded(&views(&mut Conversion::new(), &expected))
+        );
+        hooks.assert_live();
+    }
     for unreadable_this_hour in [false, true] {
         let producer = history_events::test_support::Producer::new();
         let mut f = Fixture::new();
@@ -628,22 +663,28 @@ fn overflow_recovers_in_the_same_hour_or_first_readable_hour_with_identical_byte
         f.int(p + native::MANPOWER_LOSSES, 77);
         let mut facts = Vec::new();
         event::seed_group(&f, 0, g, 7, 0, &f.blocks[&g], &mut |fact| facts.push(fact)).unwrap();
-        producer.write(SIGNAL, |emit| {
-            event::seed_group(&f, 0, g, 7, 0, &f.blocks[&g], emit).unwrap();
+        collector_test_support::with_allocations_denied(|| {
+            producer.write(SIGNAL, |emit| {
+                event::seed_group(&f, 0, g, 7, 0, &f.blocks[&g], emit).unwrap();
+            });
         });
         assert_eq!(producer.rejected(), facts.len() as u64 - 1);
         assert_eq!(producer.losses(), producer.rejected());
+        let status = serde_json::to_value(crate::history_events::refusals()).unwrap();
+        assert_eq!(status["first_loss"], "combat log event allocation failed");
+        assert_eq!(status["lost"], producer.losses());
         history_events::prepare(0);
         assert_eq!(
             producer.capacity(),
             1,
-            "overflow cannot replace a pending entry"
+            "a refused spill cannot replace a pending entry"
         );
         state.begin(SIGNAL, false);
         assert!(
             state.full,
             "emit's loss notification revokes incremental capture"
         );
+        assert_eq!(state.recovery_reason, "combat log writer occurrence loss");
         assert_eq!(state.drained.len(), 1);
         assert_eq!(state.drained[0].fact, facts[0]);
         assert!(producer.capacity() >= facts.len());
@@ -1030,13 +1071,13 @@ fn retained_history_recovers_independently_of_unreadable_own_equipment_payloads(
     )
     .unwrap();
     f.unreadable = Some(equipment.data);
-    let mut memo = manager::VariantMemo::vacant();
+    let mut memo = manager::VariantMemo::default();
     let own = manager::walk(
         &f,
         0,
         GAME_STATE,
         |_| Some(manager::Months::All),
-        &mut [manager::Row::default()],
+        &mut vec![manager::Row::default()],
         &mut memo,
     );
     assert!(matches!(own, Outcome::Unavailable { .. }));

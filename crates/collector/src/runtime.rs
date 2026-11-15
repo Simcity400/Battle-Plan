@@ -307,6 +307,7 @@ pub(crate) fn installation_message(message: impl Into<String>) -> &'static str {
 }
 
 pub unsafe extern "system" fn worker(module: *mut c_void) -> u32 {
+    crate::private_heap::off_hold_path();
     let _bootstrap = crate::allocation::enter(crate::allocation::Phase::Bootstrap);
     crate::allocation::install_hooks();
     let witness = bootstrap_witness(module);
@@ -326,14 +327,38 @@ pub unsafe extern "system" fn worker(module: *mut c_void) -> u32 {
         let _ = fs::write(path.with_file_name("collector.error.txt"), error);
     }
     finish_worker(&SHARED, witness, |witness| {
+        let resident = resident_reason(crate::module_threads::started_in(module));
+        if let Some(reason) = &resident
+            && let Ok(path) = module_path(module)
+        {
+            let _ = fs::write(path.with_file_name(RESIDENT_FILE), reason);
+        }
         crate::allocation::clear_handle();
         engine_allocation::set_hooks(None, None);
         engine_allocation::set_stop_hook(None);
         drop(witness);
-        unsafe {
-            FreeLibraryAndExitThread(module, 0);
+        // A resident image is a small leak; an unload under its own live threads is a crash.
+        if resident.is_none() {
+            unsafe {
+                FreeLibraryAndExitThread(module, 0);
+            }
         }
+        0
     })
+}
+
+/// Beside the collector, why it stayed loaded at its end; the recorder names it in the session's
+/// completion.
+const RESIDENT_FILE: &str = "collector.resident.txt";
+
+/// Why the collector cannot unload, given the live threads that started in it besides the
+/// unloading one: none when there are none.
+fn resident_reason(threads: Result<Vec<u32>, String>) -> Option<String> {
+    match threads {
+        Ok(threads) if threads.is_empty() => None,
+        Ok(threads) => Some(format!("collector stays loaded: {} of its threads are still running", threads.len())),
+        Err(reason) => Some(format!("collector stays loaded: {reason}")),
+    }
 }
 
 fn finish_worker<T>(shared: &AtomicPtr<Shared>, witness: T, unload: impl FnOnce(T) -> u32) -> u32 {
@@ -1039,7 +1064,8 @@ fn run(
         )
     })?;
     crate::politics_changes::resize(
-        crate::country_scale::observe_politics_demand(&memory, base, slots).unwrap_or(slots),
+        crate::country_scale::observe_politics_demand(&memory, base, slots, sampling::BUFFERS)
+            .unwrap_or(slots),
         processor
             .observe_input_demand(engine_events::politics_sites::lexical_key_demand(
                 &memory, base,
@@ -1085,12 +1111,10 @@ fn run(
         sizing.extended.game_score.raise(observed.demand);
     }
     let _ = sizing.extended.combat_progress.presize(&memory, base);
-    crate::equipment_destruction::prepare(&memory, base, slots);
     crate::experience_gains::prepare(slots);
-    sizing.extended.equipment_destruction = crate::equipment_destruction::capacity();
+    sizing.extended.equipment_destruction = crate::equipment_destruction::demand();
     crate::naval_result_sources::prepare(&memory, base);
-    crate::naval_result_sources::install_offered();
-    sizing.extended.naval_result_sources = crate::naval_result_sources::capacity();
+    sizing.extended.naval_result_sources = crate::naval_result_sources::demand();
     crate::air_losses::prepare(&memory, base, slots);
     crate::building_bombing::prepare(&memory, base, slots);
     crate::nuclear_strikes::presize(crate::building_bombing::buildings().saturating_add(slots));
@@ -1313,15 +1337,14 @@ fn run(
     shared.capture_mode = session.capture_mode;
     shared.tick_idle = Some(idle);
     shared.prepare_roster(&memory);
-    shared
-        .prepare_clock_capture(&memory)
-        .map_err(|_| "clock preparation allocation failed")?;
-    let shared = Arc::new(shared);
-    processor.account_writer(Arc::clone(&shared.pool_bytes));
+    shared.prepare_clock_capture(&memory);
+    let shared = engine_allocation::shared(shared)
+        .map_err(|e| error_reason(e, "collector state allocation failed"))?;
+    processor.account_writer(shared.pool_bytes.clone());
     progress.step("shared_started", None);
     let mut spool_state = SpoolState {
         sizing,
-        applied_combat_hints: [CombatHintState::default(); sampling::BUFFERS],
+        applied_combat_hints: AppliedHints::default(),
     };
     grow_combat_hints(
         &shared,
@@ -1340,7 +1363,8 @@ fn run(
         .acquisition
         .set(acquisition)
         .map_err(|_| "acquisition pool already initialized")?;
-    let _payload_pools = decode::prepare_payload_pools(config.game_score);
+    let _payload_pools = decode::prepare_payload_pools(config.game_score)
+        .map_err(|e| error_reason(e, "payload pools allocation failed"))?;
     if config.cancel_file.exists() || detach.signaled() {
         return Err("recording cancelled before hook installation");
     }
@@ -1350,47 +1374,47 @@ fn run(
     let acquisition = shared.acquisition.get().expect("initialized before hook");
     let mut owned_workers = acquisition.thread_ids();
     let mut priority_reconciler =
-        crate::frame_priority::Reconciler::start(Arc::clone(&shared.frame_priority))?;
+        crate::frame_priority::Reconciler::start(shared.frame_priority.clone())?;
     owned_workers.push(priority_reconciler.thread_id());
     let (mut history_worker, history_handoff) = HistoryWorker::start(
         config.output_dir.clone(),
         config.replay_dir.clone(),
-        Some(Arc::clone(&shared)),
+        Some(shared.clone()),
     )
     .map_err(|e| error_reason(e, "history worker could not start"))?;
     owned_workers.push(history_worker.thread_id());
     // The conversion helpers are collector workers for every quiescence check
     // and join with the processor when the spool thread returns. Without them
     // the spool thread converts every table itself, with identical output.
-    for (role, priority_role) in [
-        (
-            crate::thread_cpu::Role::SpoolHelper,
-            crate::frame_priority::Role::FirstHelper,
-        ),
-        (
-            crate::thread_cpu::Role::SecondSpoolHelper,
-            crate::frame_priority::Role::SecondHelper,
-        ),
-    ] {
-        if let Ok(helper) = crate::spool_helper::SpoolHelper::start(Some((
-            Arc::clone(&shared.frame_priority),
-            priority_role,
-        ))) {
-            owned_workers.push(helper.thread_id());
-            crate::thread_cpu::register_id(role, helper.thread_id());
-            processor.set_helper(helper);
+    for index in 0..crate::spool_helper::pool_size() {
+        let Ok(helper) = crate::spool_helper::SpoolHelper::start(Some((
+            shared.frame_priority.clone(),
+            crate::frame_priority::Role::Helper(index),
+        ))) else {
+            break;
+        };
+        let id = helper.thread_id();
+        if !processor.set_helper(helper) {
+            break;
         }
+        owned_workers.push(id);
+        crate::thread_cpu::register_helper(index, id);
     }
-    // The sizing thread is a collector worker too; the spool thread owns it
-    // and joins it before returning. Without it the spool thread sizes.
-    let sizing = SizingThread::start(Arc::clone(&shared), spool_state);
+    // The sizing thread and the frame builder are collector workers too; the spool thread owns
+    // them and joins them before returning. Without the sizing thread the spool thread sizes;
+    // without the builder each hour that finds no frame free builds its own.
+    let sizing = SizingThread::start(shared.clone(), spool_state);
     if let Some(id) = sizing.thread_id() {
         owned_workers.push(id);
         crate::thread_cpu::register_id(crate::thread_cpu::Role::SpoolSizing, id);
     }
+    if let Some(id) = sizing.builder_id() {
+        owned_workers.push(id);
+        crate::thread_cpu::register_id(crate::thread_cpu::Role::FrameBuilder, id);
+    }
     let spool_id = Arc::new(AtomicU32::new(0));
     let spool_thread_id = Arc::clone(&spool_id);
-    let spool_shared = Arc::clone(&shared);
+    let spool_shared = shared.clone();
     let spool_status = status_path.clone();
     // Owned here and finished only after the spool thread has returned and
     // callbacks are quiescent; the spool thread gets a hand-over handle.
@@ -1408,6 +1432,7 @@ fn run(
         .name("hoi4-spool".into())
         .stack_size(BACKGROUND_STACK_BYTES)
         .spawn(move || {
+            crate::private_heap::off_hold_path();
             spool_thread_id.store(unsafe { GetCurrentThreadId() }, Ordering::Release);
             crate::thread_cpu::register(crate::thread_cpu::Role::Spool);
             spool_loop(
@@ -1462,15 +1487,19 @@ fn run(
     if crate::allocation::failed() {
         installation_error = Some("collector allocation failed before hooks");
     }
-    SHARED.store(Arc::as_ptr(&shared).cast_mut(), Ordering::Release);
+    SHARED.store(
+        engine_allocation::SharedBox::as_ptr(&shared).cast_mut(),
+        Ordering::Release,
+    );
     let mut deadline = Instant::now() + Duration::from_secs(15);
     // The family each attempt reached: the one that failed, or that was
     // still not ready when the deadline expired.
     let stage = crate::progress::Stage::new(&progress, "world_lifetime");
     while installation_error.is_none() && !crate::allocation::failed() {
         stage.set("world_lifetime");
+        // Every family publishes under one suspension of the game's threads.
         match (|| {
-            if !install_attach_batch(
+            install_attach_batch(
                 &stage,
                 &mut [
                     ("world_lifetime", &mut || world_hooks.set_enabled(true)),
@@ -1572,33 +1601,13 @@ fn run(
                     ("opinion_changes", &mut || opinion_hooks.set_enabled(true)),
                     ("line_output", &mut || line_hooks.set_enabled(true)),
                     ("peace_settlements", &mut || peace_hooks.set_enabled(true)),
-                ],
-            )? {
-                return Ok(false);
-            }
-            stage.set("land_events");
-            if !land_hooks.set_enabled(true)? {
-                return Ok(false);
-            }
-            stage.set("construction_ic");
-            if !construction_hooks.set_enabled(true)? {
-                return Ok(false);
-            }
-            stage.set("logistics_balance");
-            if !logistics_hooks.set_enabled(true)? {
-                return Ok(false);
-            }
-            stage.set("combat_log_prune");
-            if !prune_hooks.set_enabled(true)? {
-                return Ok(false);
-            }
-            stage.set("equipment_destruction");
-            if !destruction_hooks.set_enabled(true)? {
-                return Ok(false);
-            }
-            if !install_attach_batch(
-                &stage,
-                &mut [
+                    ("land_events", &mut || land_hooks.set_enabled(true)),
+                    ("construction_ic", &mut || construction_hooks.set_enabled(true)),
+                    ("logistics_balance", &mut || logistics_hooks.set_enabled(true)),
+                    ("combat_log_prune", &mut || prune_hooks.set_enabled(true)),
+                    ("equipment_destruction", &mut || {
+                        destruction_hooks.set_enabled(true)
+                    }),
                     ("event_feed_observer", &mut || {
                         event_feed_hooks.set_enabled(true)
                     }),
@@ -1610,28 +1619,20 @@ fn run(
                         operation_hooks.set_enabled(true)
                     }),
                     ("politics_changes", &mut || politics_hooks.set_enabled(true)),
-                ],
-            )? {
-                return Ok(false);
-            }
-            stage.set("naval_result_sources");
-            if !naval_result_hooks.set_enabled(true)? {
-                return Ok(false);
-            }
-            if !install_attach_batch(
-                &stage,
-                &mut [
+                    ("naval_result_sources", &mut || {
+                        naval_result_hooks.set_enabled(true)
+                    }),
                     ("air_losses", &mut || air_loss_hooks.set_enabled(true)),
                     ("building_bombing", &mut || bombing_hooks.set_enabled(true)),
                     ("nuclear_strikes", &mut || nuclear_hooks.set_enabled(true)),
                     ("market_changes", &mut || market_hooks.set_enabled(true)),
                     ("map_events", &mut || map_event_hooks.set_enabled(true)),
+                    // Last: no hour is admitted before every family has reported.
+                    ("hourly", &mut || {
+                        hook.set_enabled(true).map_err(installation_message)
+                    }),
                 ],
-            )? {
-                return Ok(false);
-            }
-            stage.set("hourly");
-            hook.set_enabled(true).map_err(installation_message)
+            )
         })() {
             Ok(true) => break,
             Ok(false) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(1)),
@@ -1691,6 +1692,7 @@ fn run(
         installation_error = Some(error);
     }
     if installation_error.is_none() && !crate::allocation::failed() {
+        HOURLY_ADMISSION.open();
         progress.step("ready", None);
         ready.set();
     } else {
@@ -1706,13 +1708,11 @@ fn run(
     {
         std::thread::sleep(Duration::from_millis(20));
     }
-    // A callback may be waiting for a reusable frame. Cancel that wait before
-    // restoring the hook and waiting for ACTIVE to reach zero; ordinary restore
-    // keeps recording until every callback already in the relay has returned.
+    // No callback waits on a frame, so ordinary restore keeps recording until every
+    // callback already in the relay has returned.
     let _teardown = crate::allocation::enter(crate::allocation::Phase::Teardown);
     let _restoration = restoration.map(crate::hook::restoration::Scratch::enter);
     crate::allocation::attempted_hour(None);
-    shared.cancel_buffer_wait.store(true, Ordering::Release);
     let decode_stopped_early = installation_error.is_none() && decode::worker_finished();
     let detach_started = Instant::now();
     progress.step("detach_requested", None);
@@ -1742,7 +1742,6 @@ fn run(
                 .unwrap_or(reason);
             refuse_detach!(error, |_error| {
                 shared.recording.store(false, Ordering::Release);
-                shared.cancel_buffer_wait.store(true, Ordering::Release);
                 status_writer.finish();
                 if !crate::allocation::failed() {
                     let status = crate::status::status!({
@@ -1908,6 +1907,27 @@ fn run(
                 Some(ticks_to_micros(published.ticks, frequency)),
             );
         }
+        // Prepared restoration restores each family's next publication, every
+        // family at once, under one suspension. World lifetime joins only once
+        // every other family is restored, so it always takes a later one.
+        let mut batch = crate::hook::restoration::Batch::collect();
+        let mut batch_restored = 0;
+        if let Some(batch) = batch.as_mut() {
+            let world_ready = world_restore_ready(&restored, observers_active());
+            for family in RestoreFamily::ALL {
+                if !restored[family as usize]
+                    && (family != RestoreFamily::WorldLifetime || world_ready)
+                {
+                    let _ = toggle(family);
+                }
+            }
+            let begin = crate::clock::qpc();
+            batch_restored = batch.publish();
+            progress.step(
+                format_args!("restore_batch {batch_restored} publications"),
+                Some(ticks_to_micros(crate::clock::qpc() - begin, frequency)),
+            );
+        }
         let restore = |family| {
             let (result, refusal) = crate::hook::restoration::attempt(|| toggle(family));
             // Its count: the microseconds of its own checks and writes in the
@@ -1942,8 +1962,11 @@ fn run(
             Instant::now,
         );
         drop(restore_round_shared);
+        drop(batch);
         match result {
             Ok(RestoreRound::Complete) => break Ok(()),
+            // A batch that restored publications leaves only the families' next ones.
+            Ok(RestoreRound::Retry(_)) if batch_restored != 0 => {}
             Ok(RestoreRound::Retry(delay)) => std::thread::sleep(delay),
             Ok(RestoreRound::Stalled) => {
                 break Err(first_restore_error.unwrap_or_else(|| {
@@ -2037,7 +2060,7 @@ fn run(
     // Each change of the ready queue's length is progress for the recorder.
     let mut pending = usize::MAX;
     while !spool.is_finished() {
-        let ready = shared.ready.len();
+        let ready = shared.frames.ready_len();
         if ready != pending {
             pending = ready;
             progress.step("spool_draining", Some(ready as u64));
@@ -2822,11 +2845,23 @@ struct CaptureAdmission {
 }
 
 impl CaptureAdmission {
+    #[cfg(test)]
     const fn new() -> Self {
         Self {
             closed: AtomicBool::new(false),
             active: AtomicUsize::new(0),
         }
+    }
+
+    const fn closed() -> Self {
+        Self {
+            closed: AtomicBool::new(true),
+            active: AtomicUsize::new(0),
+        }
+    }
+
+    fn open(&self) {
+        self.closed.store(false, Ordering::SeqCst);
     }
 
     fn enter(&self) -> Option<CaptureLease<'_>> {
@@ -2857,7 +2892,9 @@ impl Drop for CaptureLease<'_> {
     }
 }
 
-static HOURLY_ADMISSION: CaptureAdmission = CaptureAdmission::new();
+/// Opened once every family has reported: the hourly hook goes live in the same suspension as
+/// the families, whose observers are only settled by their reports after it.
+static HOURLY_ADMISSION: CaptureAdmission = CaptureAdmission::closed();
 
 pub(crate) fn admit_hourly_capture() -> Option<CaptureLease<'static>> {
     HOURLY_ADMISSION.enter()
@@ -2963,6 +3000,12 @@ fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
         "equipment_destruction": crate::equipment_destruction::status(),
         "sample_boundary": sampling::SAMPLE_BOUNDARY.name(),
         "order_membership_signals": crate::order_membership_changes::status(),
+        "player_commands": crate::player_commands::status(),
+        "propaganda_changes": collector_intel::propaganda_changes::status(),
+        "intel_sources": collector_intel::source_changes::status(),
+        "combat_log_history": collector_combat_log::history_events::refusals(),
+        "politics_changes": crate::politics_changes::refusals(),
+        "certificate_registries": crate::watch_registry::status(crate::army_stat_changes::registries()),
     });
     #[cfg(feature = "order_membership_oracle")]
     let base = base.join(status!({
@@ -2994,11 +3037,8 @@ fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
                 "elapsed_ns": shared.native_tick_ns.load(Ordering::Relaxed),
                 "calls": shared.native_tick_calls.load(Ordering::Relaxed),
             },
-            "acquisition_work": {
-                "buffer_wait_calls": shared.buffer_wait_calls.load(Ordering::Relaxed),
-                "buffer_wait_ns": shared.buffer_wait_ns.load(Ordering::Relaxed),
-                "buffer_wait_max_ns": shared.buffer_wait_max_ns.load(Ordering::Relaxed),
-            },
+            "acquisition_work": acquisition_work(shared),
+            "hour_stages": crate::hour_stages::status(),
             "collector_thread_cpu": crate::thread_cpu::status(
                 shared
                     .acquisition
@@ -3075,6 +3115,14 @@ pub(crate) fn status_allocation_failure_exercise() -> io::Result<()> {
     assert!(absent.get("native_tick_work").is_none());
     assert!(absent.get("collector_thread_cpu").is_none());
     assert!(absent["hook_timing"]["families"]["hourly"].is_object());
+    // Each family that names its refusals reports them in the live status.
+    for (family, reason) in [
+        ("intel_sources", "first_loss"),
+        ("politics_changes", "staging_error"),
+    ] {
+        assert!(absent[family].get(reason).is_some(), "{family}.{reason}");
+    }
+    assert!(absent["combat_log_history"].get("first_loss").is_some());
     shared
         .acquisition
         .get()
@@ -4095,9 +4143,44 @@ struct CombatHintState {
     naval: Option<crate::extended::naval_details::Capacities>,
 }
 
+/// The combat hints each frame slot's frame holds, with the slot's generation when they
+/// were applied: a frame allocated since holds none.
+#[derive(Clone, Default, PartialEq)]
+struct AppliedHints(Vec<(u64, CombatHintState)>);
+
+impl AppliedHints {
+    fn get(&self, index: usize, generation: u64) -> CombatHintState {
+        self.0
+            .get(index)
+            .filter(|(applied, _)| *applied == generation)
+            .map_or_else(CombatHintState::default, |(_, state)| *state)
+    }
+
+    fn set(&mut self, index: usize, generation: u64, state: CombatHintState) {
+        if self.0.len() <= index {
+            self.0
+                .resize(index + 1, (u64::MAX, CombatHintState::default()));
+        }
+        self.0[index] = (generation, state);
+    }
+
+    #[cfg(test)]
+    fn iter(&self) -> impl Iterator<Item = &CombatHintState> {
+        self.0.iter().map(|(_, state)| state)
+    }
+}
+
+impl std::ops::Index<usize> for AppliedHints {
+    type Output = CombatHintState;
+
+    fn index(&self, index: usize) -> &CombatHintState {
+        &self.0[index].1
+    }
+}
+
 struct SpoolState {
     sizing: crate::country_scale::Sizing,
-    applied_combat_hints: [CombatHintState; sampling::BUFFERS],
+    applied_combat_hints: AppliedHints,
 }
 
 impl CombatHints {
@@ -4141,22 +4224,30 @@ fn grow_combat_hints(
     shared: &Shared,
     capacities: &crate::extended::Capacities,
     hints: &CombatHints,
-    applied: &mut [CombatHintState; sampling::BUFFERS],
+    applied: &mut AppliedHints,
 ) -> bool {
-    let pending: [_; sampling::BUFFERS] =
-        std::array::from_fn(|index| hints.pending(capacities, &applied[index]));
-    if pending
-        .iter()
-        .all(|hint| hint.land.is_none() && hint.naval.is_none())
-    {
+    let generation = |index: usize| {
+        shared
+            .frames
+            .slot(index)
+            .generation
+            .load(Ordering::Acquire)
+    };
+    let made = shared.frames.made();
+    if (0..made).all(|index| {
+        let hint = hints.pending(capacities, &applied.get(index, generation(index)));
+        hint.land.is_none() && hint.naval.is_none()
+    }) {
         return false;
     }
     let mut refused = false;
-    for index in 0..sampling::BUFFERS {
+    for index in 0..made {
         if !shared.take_idle_frame_for_growth(index) {
             continue;
         }
-        let hint = pending[index];
+        let generation = generation(index);
+        let mut state = applied.get(index, generation);
+        let hint = hints.pending(capacities, &state);
         if hint.land.is_none() && hint.naval.is_none() {
             shared.restore_idle_frame_prepared(index);
             continue;
@@ -4167,11 +4258,12 @@ fn grow_combat_hints(
             .apply_combat_hints(hint.land.as_ref(), hint.naval.as_ref());
         refused |= (hint.land.is_some() && !success[0]) || (hint.naval.is_some() && !success[1]);
         if success[0] {
-            applied[index].land = hint.land;
+            state.land = hint.land;
         }
         if success[1] {
-            applied[index].naval = hint.naval;
+            state.naval = hint.naval;
         }
+        applied.set(index, generation, state);
         shared.restore_idle_frame_prepared(index);
     }
     refused
@@ -4184,7 +4276,7 @@ fn grow_idle_frames(shared: &Shared, sizing: &SizingShared, capacities: &mut Buf
         .extended
         .combat_progress
         .presize(&live, shared.base);
-    for idle_index in 0..sampling::BUFFERS {
+    for idle_index in 0..shared.frames.made() {
         if !shared.take_idle_frame_for_growth(idle_index) {
             continue;
         }
@@ -4197,6 +4289,57 @@ fn grow_idle_frames(shared: &Shared, sizing: &SizingShared, capacities: &mut Buf
         sizing.account_homes(shared);
         shared.restore_idle_frame_prepared(idle_index);
     }
+}
+
+/// The game thread's waits outside the collector's own reading, by cause, and the frames.
+/// `buffer_wait_*` stay zero by construction: no frame or held store is ever waited on.
+fn acquisition_work(shared: &Shared) -> impl serde::Serialize {
+    let [heap_hours, heap_hours_ns, heap_hour_max_ns] = shared.heap_waits.read();
+    let calls = |calls: crate::private_heap::Calls| {
+        crate::status::status!({
+            "calls": calls.calls,
+            "ns": shared.ns(calls.ticks as i64),
+            "max_ns": shared.ns(calls.max_ticks as i64),
+        })
+    };
+    let (hold, other) = (crate::ALLOCATOR.hold(), crate::ALLOCATOR.other());
+    let frames = shared.frames.gauge();
+    crate::status::status!({
+        "buffer_wait_calls": 0,
+        "buffer_wait_ns": 0,
+        "buffer_wait_max_ns": 0,
+        "waits": {
+            "allocator": {
+                "hold": {
+                    "hours": heap_hours, "ns": heap_hours_ns, "max_ns": heap_hour_max_ns,
+                    "heap": calls(hold.heap),
+                    "pages": calls(hold.pages),
+                    "cause": "the game thread or an acquisition worker entered the private heap's lock (a refill the depot could not serve, an over-aligned block) or asked the system for pages; steady blocks come from its own cache",
+                },
+                "other": {
+                    "heap": calls(other.heap),
+                    "pages": calls(other.pages),
+                    "cause": "collector threads that never hold the game entered the private heap's lock or asked the system for pages",
+                },
+            },
+        },
+        "frames": {
+            "steady": crate::frame_pool::STEADY,
+            "live": frames.live,
+            "free": frames.free,
+            "in_flight": frames.in_flight,
+            "in_flight_bytes": frames.in_flight_bytes,
+            "live_bytes": frames.live_bytes,
+            "grown": frames.grown,
+            "grow_ns": frames.grow_ns,
+            "grow_max_ns": frames.grow_max_ns,
+            "ahead_ready": frames.ahead_ready,
+            "built_ahead": frames.built_ahead,
+            "ahead_taken": frames.ahead_taken,
+            "freed": frames.freed,
+        },
+        "scope": "cumulative since attach: the game thread's waits outside the collector's own reading by cause, buffer_wait_* zero by construction (no frame or held store is ever waited on: an hour that finds the held division store still settling takes one of its own; while fewer than two frames are free, the frame builder thread builds frames ahead until the next hour's and a spare are, built_ahead, which hours take, ahead_taken; an hour that still finds no frame free builds one on the game thread, grown/grow_ns; frames past the steady count are freed once more than two are free, freed); frames now: live and all their bytes, free, ahead_ready (built ahead and not yet taken), in_flight (taken for an hour and not yet returned by the spool) and their bytes",
+    })
 }
 
 struct SpoolOutcome {
@@ -4273,12 +4416,10 @@ pub(crate) fn wait_completed_callback(
 
 struct StopRecordingOnSpoolExit<'a> {
     recording: &'a AtomicBool,
-    cancel_buffer_wait: &'a AtomicBool,
 }
 impl StopRecordingOnSpoolExit<'_> {
     fn stop(&self) {
         self.recording.store(false, Ordering::Release);
-        self.cancel_buffer_wait.store(true, Ordering::Release);
     }
 }
 impl Drop for StopRecordingOnSpoolExit<'_> {
@@ -4346,7 +4487,6 @@ fn spool_loop(
     let _sampler_exit = crate::thread_cpu::StopOnThreadExit;
     let stop_recording = StopRecordingOnSpoolExit {
         recording: &shared.recording,
-        cancel_buffer_wait: &shared.cancel_buffer_wait,
     };
     let _phase = crate::allocation::enter(crate::allocation::Phase::Spool);
     let live = unsafe { LiveMemory::new() };
@@ -4356,8 +4496,8 @@ fn spool_loop(
     let mut reported = Instant::now() - Duration::from_secs(1);
     let mut priority = OwnPriority::frame_pipeline();
     priority.follow_pipeline(&shared.frame_priority, crate::frame_priority::Role::Spool);
-    // Wake-ups replace polling: decode publication, a parked clock
-    // preparation and the stop request unpark this thread.
+    // Wake-ups replace polling: decode publication, the roster and the stop request unpark
+    // this thread.
     let _ = shared.spool_waker.set(std::thread::current());
     let phases = &crate::spool_phases::SPOOL;
     loop {
@@ -4365,18 +4505,16 @@ fn spool_loop(
             return Err("collector allocation failed");
         }
         let span = phases.span(Phase::Observers);
-        // A live read: between ticks only. A parked callback wakes this thread to prepare it.
+        // A live read: between ticks only.
         if !crate::tick_gate::game_ticking() {
-            shared
-                .prepare_clock_capture(&live)
-                .map_err(|_| "clock preparation allocation failed")?;
+            shared.prepare_frame_clocks(&live);
         }
         span.finish();
         verify_content_roster(shared, config, &mut session, &mut processor, &writer)?;
         priority.follow_pipeline(&shared.frame_priority, crate::frame_priority::Role::Spool);
         let mut received = false;
-        while let Some(index) = shared.ready.pop() {
-            sampling::frame_stage(index, sampling::FrameStage::Spool);
+        while let Some(index) = shared.frames.pop_ready() {
+            shared.frame_stage(index, sampling::FrameStage::Spool);
             let watch = crate::slow_hours::SpoolWatch::start();
             let watched_hour = unsafe { &*shared.frames[index].load(Ordering::Acquire) }
                 .clock
@@ -4389,7 +4527,10 @@ fn spool_loop(
             priority.follow_pipeline(&shared.frame_priority, crate::frame_priority::Role::Spool);
             let span = phases.span(Phase::Receive);
             let elapsed =
-                wait_completed_callback(&shared.completed[index], &shared.callback_tail[index])?;
+                wait_completed_callback(
+                    &shared.frames.slot(index).completed,
+                    &shared.frames.slot(index).callback_tail,
+                )?;
             let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
             frame.total_ns = shared.ns(elapsed);
             crate::allocation::set_context(crate::allocation::Context {
@@ -4449,10 +4590,9 @@ fn spool_loop(
                         }),
                     )
                     .map_err(|e| error_reason(e, "spool status allocation failed"))?;
-                if shared.stop_spool.load(Ordering::Acquire) || shared.free.is_empty() {
-                    // A persistent open failure cannot release a frame. Once
-                    // all frames are occupied, end the worker so the loader
-                    // cancels the callback wait and restores the hook.
+                if shared.stop_spool.load(Ordering::Acquire) {
+                    // The hours behind this one stay in their frames while it retries;
+                    // the status names the warning and the frames in flight.
                     stop_recording.stop();
                     let _ = processor.detach();
                     return Err("cannot open campaign spool; observations remain unwritten");
@@ -4557,12 +4697,14 @@ fn spool_loop(
             if let Err(error) = processor.flush_commands(false) {
                 last_warning = Some(error_reason(error, "command capture publication failed"));
             }
-            history_requests.poll(&mut processor, &shared.history_frames);
-            if let Some(slow) = watch.finish(watched_hour, |ticks| shared.ns(ticks)) {
-                processor
-                    .slow_spool_frame(slow)
-                    .map_err(|_| "spool slow-frame allocation failed")?;
-            }
+            history_requests.poll(
+                &mut processor,
+                &shared.history_frames,
+                shared.frames.slots().map(|slot| &slot.fence),
+            );
+            processor
+                .end_spool_frame(watch.finish(watched_hour, |ticks| shared.ns(ticks)))
+                .map_err(|_| "spool slow-frame allocation failed")?;
             // A sustained backlog must not starve sizing, the flush or the status.
             if reported.elapsed() >= Duration::from_secs(1) {
                 break;
@@ -4594,7 +4736,11 @@ fn spool_loop(
             last_warning = Some(error_reason(error, "collector spool I/O failed"));
         }
         span.finish();
-        history_requests.poll(&mut processor, &shared.history_frames);
+        history_requests.poll(
+            &mut processor,
+            &shared.history_frames,
+            shared.frames.slots().map(|slot| &slot.fence),
+        );
         if reported.elapsed() >= Duration::from_secs(1) || shared.stop_spool.load(Ordering::Acquire)
         {
             let _span = phases.span(Phase::Status);
@@ -4633,13 +4779,11 @@ fn spool_loop(
                 .map_err(|e| error_reason(e, "status hand-over allocation failed"))?;
             reported = Instant::now();
         }
-        if let Some(slow) = between.finish(None, |ticks| shared.ns(ticks)) {
-            processor
-                .slow_spool_frame(slow)
-                .map_err(|_| "spool slow-frame allocation failed")?;
-        }
+        processor
+            .end_spool_frame(between.finish(None, |ticks| shared.ns(ticks)))
+            .map_err(|_| "spool slow-frame allocation failed")?;
         if shared.stop_spool.load(Ordering::Acquire) {
-            if !shared.ready.is_empty() {
+            if !shared.frames.ready_is_empty() {
                 continue;
             }
             let _teardown = crate::allocation::enter(crate::allocation::Phase::Teardown);
@@ -4708,7 +4852,7 @@ fn spool_loop(
                 directories,
             });
         }
-        if shared.ready.is_empty() {
+        if shared.frames.ready_is_empty() {
             let _span = phases.span(Phase::Wait);
             std::thread::park_timeout(SPOOL_IDLE_WAIT);
         }
@@ -4716,12 +4860,8 @@ fn spool_loop(
 }
 
 /// Shared monotonic demand; snapshots grow only exclusively owned frames outside the mutex.
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct BufferCapacities {
-    core: [usize; 12],
-    map: crate::map_capture::MapCapacities,
-    extended: crate::extended::Capacities,
-}
+/// The game thread allocates a new frame from it.
+type BufferCapacities = sampling::FrameCapacities;
 
 impl CapacityMax for BufferCapacities {
     fn merge_max(&mut self, other: Self) {
@@ -4798,11 +4938,13 @@ impl SizingBackoff {
 /// What one sizing pass keeps between passes.
 struct SizingState {
     registry: RegistryWatch,
-    applied_combat_hints: [CombatHintState; sampling::BUFFERS],
+    applied_combat_hints: AppliedHints,
     fuel_demand_at: Instant,
     /// The last pass that ran the prompt once-a-second sizing reads.
     second: Instant,
     capacity_census: SizingBackoff,
+    /// The frames the politics staging was last sized for.
+    politics_frames: usize,
 }
 
 /// Sizing observations the spool thread records in its status.
@@ -4817,7 +4959,8 @@ type SizingCheck = Box<dyn FnOnce(&SizingShared, &Shared) + Send>;
 
 /// State the spool thread shares with its sizing thread.
 struct SizingShared {
-    capacities: Mutex<BufferCapacities>,
+    /// The pool's own ([`Shared::frame_capacities`]), which a new frame is allocated from.
+    capacities: engine_allocation::SharedBox<crate::frame_capacities::Capacities>,
     idle_growth_requested: AtomicBool,
     country_intel_accounted: AtomicUsize,
     template_home_accounted: AtomicUsize,
@@ -4850,8 +4993,9 @@ struct SizingShared {
 
 impl SizingShared {
     fn new(shared: &Shared, capacities: BufferCapacities, state: Option<SizingState>) -> Self {
+        *shared.frame_capacities.lock() = capacities;
         Self {
-            capacities: Mutex::new(capacities),
+            capacities: shared.frame_capacities.clone(),
             idle_growth_requested: AtomicBool::new(false),
             country_intel_accounted: AtomicUsize::new(shared.country_intel.allocated_bytes()),
             template_home_accounted: AtomicUsize::new(0),
@@ -4951,8 +5095,8 @@ impl SizingShared {
 
     /// The spool prepares only its owned frame, then publishes it under a short monotonic merge.
     fn recycle_frame(&self, shared: &Shared, index: usize) {
-        sampling::frame_stage(index, sampling::FrameStage::Recycle);
-        let mut proposal = *lock(&self.capacities);
+        shared.frame_stage(index, sampling::FrameStage::Recycle);
+        let mut proposal = *self.capacities.lock();
         // A live read: between ticks only. The sizing thread presizes combats every pass, so
         // a frame returned during a tick still grows to the latest live demand.
         if !crate::tick_gate::game_ticking() {
@@ -4982,15 +5126,17 @@ impl SizingShared {
             if let Some(check) = lock(&self.before_recycle_publish).take() {
                 check(self, shared);
             }
-            let mut capacities = lock(&self.capacities);
+            let mut capacities = self.capacities.lock();
             self.merge_capacities(&mut capacities, proposal);
             if *capacities == proposal {
-                shared.recycle_frame(index);
+                let surplus = shared.recycle_frame_unfreed(index);
                 if let Some(generation) = admitted
                     && crate::world_lifetime::token() == Some(generation)
                 {
                     self.settled_world.store(generation, Ordering::Release);
                 }
+                drop(capacities);
+                shared.free_surplus(surplus);
                 return;
             }
             proposal = *capacities;
@@ -5003,22 +5149,24 @@ impl SizingShared {
         _shared: &Shared,
         step: impl FnOnce(&mut BufferCapacities) -> R,
     ) -> R {
-        step(&mut lock(&self.capacities))
+        step(&mut self.capacities.lock())
     }
 }
 
 /// The spool's sizing thread: live sizing reads, the capture-buffer growth
 /// they request and between-tick observer preparation, in passes beside the
-/// spool thread. Dropping it stops and joins the thread.
+/// spool thread. Beside it the frame builder builds frames ahead and nothing
+/// else, so a wake never waits for a pass. Dropping it stops and joins both.
 struct SizingThread {
     sizing: Arc<SizingShared>,
     thread: Option<std::thread::JoinHandle<()>>,
+    builder: Option<std::thread::JoinHandle<()>>,
 }
 
 impl SizingThread {
     /// Start the thread with the attach-time capacities and sizing caches.
     /// Without a thread the spool thread runs each pass itself.
-    fn start(shared: Arc<Shared>, state: SpoolState) -> Self {
+    fn start(shared: engine_allocation::SharedBox<Shared>, state: SpoolState) -> Self {
         let sizing = Arc::new(SizingShared::new(
             &shared,
             BufferCapacities {
@@ -5032,28 +5180,45 @@ impl SizingThread {
                 fuel_demand_at: Instant::now(),
                 second: Instant::now() - Duration::from_secs(1),
                 capacity_census: SizingBackoff::new(),
+                politics_frames: sampling::BUFFERS,
             }),
         ));
+        let builder = {
+            let shared = shared.clone();
+            let sizing = Arc::clone(&sizing);
+            std::thread::Builder::new()
+                .name("hoi4-frame-builder".into())
+                .stack_size(BACKGROUND_STACK_BYTES)
+                .spawn(move || {
+                    crate::private_heap::off_hold_path();
+                    crate::thread_cpu::register(crate::thread_cpu::Role::FrameBuilder);
+                    frame_builder(&shared, &sizing);
+                })
+                .ok()
+        };
         let worker = Arc::clone(&sizing);
         let thread = std::thread::Builder::new()
             .name("hoi4-spool-sizing".into())
             .stack_size(BACKGROUND_STACK_BYTES)
             .spawn(move || {
+                crate::private_heap::off_hold_path();
                 crate::thread_cpu::register(crate::thread_cpu::Role::SpoolSizing);
                 sizing_loop(&shared, &worker);
             })
             .ok();
-        Self { sizing, thread }
+        Self {
+            sizing,
+            thread,
+            builder,
+        }
     }
 
     fn thread_id(&self) -> Option<u32> {
-        use std::os::windows::io::AsRawHandle;
-        let thread = self.thread.as_ref()?;
-        // SAFETY: the handle stays open while the JoinHandle lives.
-        let id = unsafe {
-            windows_sys::Win32::System::Threading::GetThreadId(thread.as_raw_handle() as _)
-        };
-        (id != 0).then_some(id)
+        handle_id(self.thread.as_ref()?)
+    }
+
+    fn builder_id(&self) -> Option<u32> {
+        handle_id(self.builder.as_ref()?)
     }
 
     /// Called by the spool thread once per pass: record what the sizing
@@ -5136,10 +5301,35 @@ impl Drop for SizingThread {
             crate::worker_sampler::stop_before_thread_exit();
         }
         self.sizing.stop.store(true, Ordering::Release);
-        if let Some(thread) = self.thread.take() {
+        for thread in [self.thread.take(), self.builder.take()].into_iter().flatten() {
             thread.thread().unpark();
             let _ = thread.join();
         }
+    }
+}
+
+fn handle_id(thread: &std::thread::JoinHandle<()>) -> Option<u32> {
+    use std::os::windows::io::AsRawHandle;
+    // SAFETY: the handle stays open while the JoinHandle lives.
+    let id =
+        unsafe { windows_sys::Win32::System::Threading::GetThreadId(thread.as_raw_handle() as _) };
+    (id != 0).then_some(id)
+}
+
+/// The frame builder thread ([`Shared::build_ahead_until`]). A refused frame is the terminal
+/// sizing failure, which ends the spool thread.
+fn frame_builder(shared: &Shared, sizing: &SizingShared) {
+    let _phase = crate::allocation::enter(crate::allocation::Phase::Spool);
+    let mut priority = OwnPriority::frame_pipeline();
+    let built = shared.build_ahead_until(&sizing.stop, || {
+        priority.follow_pipeline(&shared.frame_priority, crate::frame_priority::Role::Builder);
+        crate::allocation::set_context(*lock(&sizing.context));
+    });
+    if let Err(error) = built {
+        let _ = sizing
+            .failure
+            .set(error_reason(error, "frame allocation failed"));
+        shared.wake_spool();
     }
 }
 
@@ -5156,6 +5346,7 @@ fn sizing_loop(shared: &Shared, sizing: &SizingShared) {
     let mut next_pass = Instant::now();
     while !sizing.stop.load(Ordering::Acquire) && !crate::allocation::failed() {
         priority.follow_pipeline(&shared.frame_priority, crate::frame_priority::Role::Sizing);
+        crate::allocation::set_context(*lock(&sizing.context));
         let retired = std::mem::take(&mut *lock(&sizing.retired));
         if !retired.is_empty() {
             let _span = phases.span(Phase::Retire);
@@ -5163,7 +5354,6 @@ fn sizing_loop(shared: &Shared, sizing: &SizingShared) {
         }
         let due = Instant::now() >= next_pass;
         if sizing.pass_requested.swap(false, Ordering::AcqRel) || due {
-            crate::allocation::set_context(*lock(&sizing.context));
             if let Err(failure) = sizing_pass(shared, sizing, &mut state, phases, true) {
                 let _ = sizing.failure.set(failure);
                 shared.wake_spool();
@@ -5308,12 +5498,25 @@ fn sizing_pass(
     let span = span.switch(Phase::Sizing);
     if state.fuel_demand_at.elapsed() >= RegistryWatch::INTEL_INTERVAL {
         state.fuel_demand_at = Instant::now();
-        if let Some(entries) =
-            crate::country_scale::observe_politics_demand(&live, base, registry.slots)
-        {
+        if let Some(entries) = crate::country_scale::observe_politics_demand(
+            &live,
+            base,
+            registry.slots,
+            shared.frames.live(),
+        ) {
             crate::politics_changes::resize(entries, 0);
         }
         crate::fuel_awards::presize(&live, base);
+    }
+    // The staging holds every hour the spool has not drained: when a backlog grows the frames,
+    // it grows with them at once, not at the next census.
+    let frames = shared.frames.live().max(sampling::BUFFERS);
+    if frames > state.politics_frames
+        && let Some(entries) =
+            crate::country_scale::observe_politics_demand(&live, base, registry.slots, frames)
+    {
+        crate::politics_changes::resize(entries, 0);
+        state.politics_frames = frames;
     }
     // This advisory worker arena has no observer-preparation dependency; do
     // not nest its admission under the independent event-preparation timer.
@@ -5346,7 +5549,7 @@ fn sizing_pass(
         });
     }
     let span = span.switch(Phase::Observers);
-    let peace = lock(&sizing.capacities).extended.peace_settlements;
+    let peace = sizing.capacities.lock().extended.peace_settlements;
     crate::peace_settlements::presize(peace);
     if crate::extended::records_any(
         shared.capture_mode,
@@ -5356,7 +5559,7 @@ fn sizing_pass(
     }
     let span = span.switch(Phase::Sizing);
     crate::naval_result_sources::prepare(&live, base);
-    let naval_result_capacity = crate::naval_result_sources::capacity();
+    let naval_result_capacity = crate::naval_result_sources::demand();
     sizing.raise(shared, |capacities| {
         let sources = &mut capacities.extended.naval_result_sources;
         *sources = (*sources).max(naval_result_capacity);
@@ -5390,7 +5593,8 @@ fn sizing_pass(
         crate::operation_outcomes::resize(slots.max(1));
         // This census is RegistryWatch-throttled, including while idle.
         crate::politics_changes::resize(
-            crate::country_scale::observe_politics_demand(&live, base, slots).unwrap_or(slots),
+            crate::country_scale::observe_politics_demand(&live, base, slots, shared.frames.live())
+                .unwrap_or(slots),
             sizing
                 .demand(engine_events::politics_sites::lexical_key_demand(
                     &live, base,
@@ -5470,18 +5674,14 @@ fn sizing_pass(
                     .err(),
             ]
         });
-        // These fixed before/after arenas and bounded event logs cannot grow
-        // on native writers. Keep their live census at one second, not on
-        // the advisory worker-census backoff.
-        crate::equipment_destruction::prepare(&live, base, registry.slots);
         // A census during loading undercounts, and its table could not grow before the next load.
         if crate::world_lifetime::token().is_some() {
             collector_naval_management::changes::presize(&live, base);
         }
-        let destruction_capacity = crate::equipment_destruction::capacity();
+        let destruction_demand = crate::equipment_destruction::demand();
         sizing.raise(shared, |capacities| {
             let destruction = &mut capacities.extended.equipment_destruction;
-            *destruction = (*destruction).max(destruction_capacity);
+            *destruction = (*destruction).max(destruction_demand);
         });
     }
     if capacity_census && let Some(rows) = sizing.demand(registry.poll_intel(&live, base)).flatten()
@@ -5583,7 +5783,7 @@ fn sizing_pass(
                 .raise_for_census(demand)
         });
     }
-    let game_score = lock(&sizing.capacities).extended.game_score.enabled;
+    let game_score = sizing.capacities.lock().extended.game_score.enabled;
     if capacity_census
         && game_score
         && let Some(observed) = registry.poll_game_score(&live, base)
@@ -6230,20 +6430,107 @@ mod tests {
     #[test]
     fn spool_error_stops_capture_before_synchronous_writer_cleanup() {
         let recording = AtomicBool::new(true);
-        let cancelled = AtomicBool::new(false);
         {
             let stop = StopRecordingOnSpoolExit {
                 recording: &recording,
-                cancel_buffer_wait: &cancelled,
             };
             stop.stop();
             assert!(!recording.load(Ordering::Acquire));
-            assert!(cancelled.load(Ordering::Acquire));
             recording.store(true, Ordering::Release);
-            cancelled.store(false, Ordering::Release);
         }
         assert!(!recording.load(Ordering::Acquire));
-        assert!(cancelled.load(Ordering::Acquire));
+    }
+
+    /// A spool slower than the game: the hours it has not taken stay in frames the game
+    /// allocated for them, and the status carries how many and their bytes until it catches up.
+    #[test]
+    fn a_slow_spool_s_backlog_is_in_the_status_and_clears_when_it_catches_up() {
+        let shared = Shared::new(0, 0, 1);
+        let status = |shared: &Shared| serde_json::to_value(acquisition_work(shared)).unwrap();
+        let steady = crate::frame_pool::STEADY as u64;
+        let quiet = status(&shared);
+        assert_eq!(quiet["frames"]["steady"], steady);
+        assert_eq!(quiet["frames"]["in_flight"], 0);
+        assert_eq!(quiet["frames"]["live"], steady);
+        assert_eq!(quiet["buffer_wait_calls"], 0);
+        assert!(quiet["waits"]["allocator"]["hold"]["heap"]["calls"].is_u64());
+        assert!(quiet["waits"]["allocator"]["other"]["heap"]["calls"].is_u64());
+        let hours = 2 * crate::frame_pool::STEADY + 1;
+        let taken: Vec<_> = (0..hours)
+            .map(|_| {
+                let index = shared.take_frame(&mut 0).unwrap();
+                shared.frames.push_decode(index);
+                index
+            })
+            .collect();
+        let behind = status(&shared);
+        assert_eq!(behind["frames"]["in_flight"], hours as u64);
+        assert_eq!(behind["frames"]["live"], hours as u64);
+        assert_eq!(behind["frames"]["free"], 0);
+        assert_eq!(behind["frames"]["grown"], hours as u64 - steady);
+        let bytes: u64 = taken
+            .iter()
+            .map(|&index| shared.frames.slot(index).bytes.load(Ordering::Relaxed))
+            .sum();
+        assert!(bytes > 0);
+        assert_eq!(behind["frames"]["in_flight_bytes"], bytes);
+        assert_eq!(behind["frames"]["live_bytes"], bytes);
+        assert_eq!(behind["frames"]["built_ahead"], 0);
+        // The frame builder's look: none is free, so the next hour's frame and a spare are built.
+        for _ in 0..crate::frame_pool::AHEAD {
+            shared.build_frame_ahead().unwrap();
+        }
+        let ahead = status(&shared);
+        let built = crate::frame_pool::AHEAD as u64;
+        assert_eq!(ahead["frames"]["built_ahead"], built);
+        assert_eq!(ahead["frames"]["ahead_ready"], built);
+        assert_eq!(ahead["frames"]["free"], built);
+        let index = shared.take_frame(&mut 0).unwrap();
+        shared.frames.push_decode(index);
+        let taken_ahead = status(&shared);
+        assert_eq!(taken_ahead["frames"]["ahead_taken"], 1);
+        assert_eq!(taken_ahead["frames"]["ahead_ready"], built - 1);
+        assert_eq!(taken_ahead["frames"]["grown"], hours as u64 - steady);
+        while let Some(index) = shared.frames.pop_decode() {
+            shared.recycle_frame(index);
+        }
+        // The returns free every frame past the steady ones once more than the frames kept ahead
+        // are free; the spare never taken is one of the steady frames left.
+        let caught_up = status(&shared);
+        assert_eq!(caught_up["frames"]["in_flight"], 0);
+        assert_eq!(caught_up["frames"]["in_flight_bytes"], 0);
+        assert_eq!(caught_up["frames"]["freed"], hours as u64 + built - steady);
+        assert_eq!(caught_up["frames"]["live"], steady);
+        assert_eq!(caught_up["frames"]["free"], steady);
+        assert_eq!(caught_up["frames"]["ahead_ready"], built - 1);
+    }
+
+    /// An hour building its own frame while the spool or the sizing thread holds the frame
+    /// capacities never waits for them: it builds from the capacities last published, and a
+    /// change is published once its holder lets go. On the base the hour waited for the holder.
+    #[test]
+    fn an_hour_building_its_own_frame_never_waits_on_the_held_frame_capacities() {
+        let shared = Arc::new(Shared::new(0, 0, crate::test_qpc_frequency()));
+        for _ in 0..crate::frame_pool::STEADY {
+            shared.take_frame(&mut 0).unwrap();
+        }
+        let before = shared.frame_capacities.published();
+        let mut held = shared.frame_capacities.lock();
+        held.core[5] += 8;
+        let hour = {
+            let shared = Arc::clone(&shared);
+            std::thread::spawn(move || {
+                let mut grow_ns = 0;
+                shared.take_frame(&mut grow_ns).map(|_| grow_ns)
+            })
+        };
+        let grow_ns = hour.join().unwrap().expect("the hour's own frame");
+        assert!(shared.frame_capacities.published() == before, "a change still held is not read");
+        drop(held);
+        assert_eq!(shared.frame_capacities.published().core[5], before.core[5] + 8);
+        assert!(grow_ns > 0, "an hour with no free frame builds its own");
+        let frames = serde_json::to_value(acquisition_work(&shared)).unwrap()["frames"].clone();
+        assert_eq!(frames["grown"], 1);
     }
 
     fn poll_history_reply(
@@ -6791,8 +7078,9 @@ mod tests {
             "the refusal cannot be retried in report"
         );
         assert_eq!(later_calls.get(), 0);
-        assert_eq!(first_posts.get(), 1);
-        assert_eq!(second_posts.get(), 1);
+        // Once ahead in collect, once in report with the real outcome.
+        assert_eq!(first_posts.get(), 2);
+        assert_eq!(second_posts.get(), 2);
         assert_eq!(ATTACH_PREPARATIONS[0].load(Ordering::SeqCst), 1);
         assert_eq!(ATTACH_PREPARATIONS[1].load(Ordering::SeqCst), 1);
         assert_eq!(ATTACH_PREPARATIONS[2].load(Ordering::SeqCst), 0);
@@ -6874,7 +7162,7 @@ mod tests {
         collect_refused.set(false);
         assert_eq!(install(), Ok(true));
         assert_eq!(stage.get(), "runtime_busy_later");
-        assert_eq!(later_posts.get(), 1);
+        assert_eq!(later_posts.get(), 2);
         assert!(first[0].is_enabled() && middle[0].is_enabled() && later[0].is_enabled());
         assert_eq!(crate::hook::SUSPENSIONS.with(Cell::get) - suspensions, 2);
         crate::hook::publication::select_family(None);
@@ -6951,7 +7239,7 @@ mod tests {
         assert_eq!(stage.get(), "runtime_prepare_later");
         for (prepared, posted) in ATTACH_PREPARATIONS.iter().zip(&posts) {
             assert_eq!(prepared.load(Ordering::SeqCst), 1);
-            assert_eq!(posted.get(), 1);
+            assert_eq!(posted.get(), 2);
         }
         assert_eq!(crate::hook::SUSPENSIONS.with(Cell::get) - suspensions, 1);
         crate::hook::publication::select_family(None);
@@ -7037,7 +7325,7 @@ mod tests {
                     prepared.load(Ordering::SeqCst),
                     usize::from(index < 2 || !busy)
                 );
-                assert_eq!(posts[index].get(), usize::from(index == 0 || !busy));
+                assert_eq!(posts[index].get(), 1 + usize::from(index == 0 || !busy));
             }
             assert!(ready.iter().all(Hook::is_enabled));
             assert_eq!(
@@ -7103,6 +7391,7 @@ mod tests {
         let thread = SizingThread {
             sizing: Arc::new(SizingShared::new(&shared, capacities, None)),
             thread: None,
+            builder: None,
         };
         (shared, thread)
     }
@@ -7198,18 +7487,18 @@ mod tests {
                 });
             }
         });
-        let capacities = *lock(&sizing.capacities);
+        let capacities = *sizing.capacities.lock();
         assert!(capacities.extended.naval_result_sources >= 64);
         assert!(capacities.extended.equipment_destruction >= 64);
         // Capacity publication never leases frames.
-        assert_eq!(shared.free.len(), sampling::BUFFERS);
+        assert_eq!(shared.frames.len(), sampling::BUFFERS);
     }
 
     fn assert_idle_war_and_faction_capacities(shared: &Shared, sizing: &SizingShared) {
-        let capacities = *lock(&sizing.capacities);
-        assert_eq!(shared.free.len(), sampling::BUFFERS);
-        for frame in &shared.frames {
-            let frame = unsafe { &*frame.load(Ordering::Acquire) };
+        let capacities = *sizing.capacities.lock();
+        assert_eq!(shared.frames.len(), sampling::BUFFERS);
+        for slot in shared.frames.slots() {
+            let frame = unsafe { &*slot.frame.load(Ordering::Acquire) };
             assert!(frame.wars.len() >= capacities.core[5]);
             assert!(frame.factions.len() >= capacities.core[6]);
         }
@@ -7219,16 +7508,16 @@ mod tests {
     fn live_observation_releases_capacity_mutex_and_grows_idle_buffers() {
         let (shared, thread) = sizing_fixture();
         let sizing = &thread.sizing;
-        let wars = lock(&sizing.capacities).core[5] + 8;
+        let wars = sizing.capacities.lock().core[5] + 8;
         let mut reads = 0;
         sizing.raise_from_live_observation(&shared, |capacities| {
             reads += 1;
-            assert!(sizing.capacities.try_lock().is_ok());
+            assert!(sizing.capacities.try_lock().is_some());
             capacities.core[5] = wars;
             [None, None]
         });
         assert_eq!(reads, 1);
-        assert_eq!(lock(&sizing.capacities).core[5], wars);
+        assert_eq!(sizing.capacities.lock().core[5], wars);
         assert_eq!(lock(&sizing.pending).errors, 0);
         sizing.grow_idle(&shared);
         assert_idle_war_and_faction_capacities(&shared, sizing);
@@ -7238,13 +7527,13 @@ mod tests {
     fn live_observation_merges_concurrent_raises_without_repeating_live_reads() {
         let (shared, thread) = sizing_fixture();
         let sizing = &thread.sizing;
-        let initial = *lock(&sizing.capacities);
+        let initial = *sizing.capacities.lock();
         let wars = initial.core[5] + 8;
         let factions = initial.core[6] + 8;
         let mut reads = 0;
         sizing.raise_from_live_observation(&shared, |capacities| {
             reads += 1;
-            assert!(sizing.capacities.try_lock().is_ok());
+            assert!(sizing.capacities.try_lock().is_some());
             capacities.core[5] = wars;
             capacities.extended.naval_result_sources = 16;
             std::thread::scope(|scope| {
@@ -7266,7 +7555,7 @@ mod tests {
             ]
         });
         assert_eq!(reads, 1);
-        let published = *lock(&sizing.capacities);
+        let published = *sizing.capacities.lock();
         assert_eq!(published.core[5], wars + 8);
         assert_eq!(published.core[6], factions);
         assert_eq!(published.extended.naval_result_sources, 16);
@@ -7283,10 +7572,11 @@ mod tests {
 
     #[test]
     fn recycle_merges_a_concurrent_raise_and_catches_up_before_publication() {
+        let _demand = crate::equipment_destruction::tests::fresh_demand();
         let (shared, thread) = sizing_fixture();
         let sizing = &thread.sizing;
         let returning = shared.take_frame(&mut 0).unwrap();
-        let initial = *lock(&sizing.capacities);
+        let initial = *sizing.capacities.lock();
         let wars = initial.core[5] + 8;
         let factions = initial.core[6] + 8;
         let frame = unsafe { &mut *shared.frames[returning].load(Ordering::Acquire) };
@@ -7301,8 +7591,8 @@ mod tests {
         let checked = Arc::new(AtomicBool::new(false));
         let check_seen = Arc::clone(&checked);
         *lock(&sizing.before_recycle_publish) = Some(Box::new(move |sizing, shared| {
-            assert!(sizing.capacities.try_lock().is_ok());
-            assert_eq!(shared.free.len(), sampling::BUFFERS - 1);
+            assert!(sizing.capacities.try_lock().is_some());
+            assert_eq!(shared.frames.len(), sampling::BUFFERS - 1);
             let frame = unsafe { &*shared.frames[returning].load(Ordering::Acquire) };
             assert!(frame.wars.len() >= wars);
             let grown_wars = frame.wars.len();
@@ -7323,11 +7613,11 @@ mod tests {
         sizing.recycle_frame(&shared, returning);
         assert!(checked.load(Ordering::Relaxed));
         assert!(!sizing.hint_demand.load(Ordering::Acquire));
-        let capacities = *lock(&sizing.capacities);
+        let capacities = *sizing.capacities.lock();
         assert!(capacities.core[5] > wars);
         assert!(capacities.core[6] >= factions);
         assert_eq!(capacities.extended.equipment_destruction, 24);
-        let free: [_; sampling::BUFFERS] = std::array::from_fn(|_| shared.free.pop().unwrap());
+        let free: [_; sampling::BUFFERS] = std::array::from_fn(|_| shared.frames.pop().unwrap());
         assert!(free.contains(&returning));
         for index in free {
             let frame = unsafe { &*shared.frames[index].load(Ordering::Acquire) };
@@ -7344,90 +7634,299 @@ mod tests {
     }
 
     #[test]
-    fn idle_growth_keeps_the_last_free_frame_for_the_game() {
+    fn idle_growth_keeps_the_next_hour_s_frame_and_its_spare_for_the_game() {
         let (shared, thread) = sizing_fixture();
         let sizing = &thread.sizing;
-        let held: [_; sampling::BUFFERS - 1] =
+        let held: [_; sampling::BUFFERS - crate::frame_pool::AHEAD] =
             std::array::from_fn(|_| shared.take_frame(&mut 0).unwrap());
-        let idle = (0..sampling::BUFFERS)
-            .find(|index| !held.contains(index))
-            .unwrap();
-        let (before, wars) = {
-            let frame = unsafe { &*shared.frames[idle].load(Ordering::Acquire) };
-            (frame.allocated_bytes(), frame.wars.len() + 8)
+        let idle: Vec<_> = (0..sampling::BUFFERS)
+            .filter(|index| !held.contains(index))
+            .collect();
+        let frame = |index: usize| unsafe { &*shared.frames[index].load(Ordering::Acquire) };
+        let bytes = || {
+            idle.iter()
+                .map(|&index| frame(index).allocated_bytes())
+                .collect::<Vec<_>>()
         };
+        let before = bytes();
+        let wars = frame(idle[0]).wars.len() + 8;
         sizing.raise(&shared, |capacities| capacities.core[5] = wars);
         *lock(&sizing.before_idle_frame_growth) = Some(Box::new(|_, _| {
-            panic!("sizing leased the game's last free frame for growth");
+            panic!("sizing leased the game's next frame or its spare for growth");
         }));
         let pool_before = shared.pool_owned();
-        let waits = shared.buffer_wait_calls.load(Ordering::Relaxed);
-        assert_eq!(shared.free.len(), 1);
+        assert_eq!(shared.frames.len(), crate::frame_pool::AHEAD);
         sizing.grow_idle(&shared);
-        assert_eq!(shared.free.len(), 1);
+        assert_eq!(shared.frames.len(), crate::frame_pool::AHEAD);
         assert_eq!(shared.pool_owned(), pool_before);
-        assert_eq!(
-            unsafe { &*shared.frames[idle].load(Ordering::Acquire) }.allocated_bytes(),
-            before
-        );
-        let mut wait = u64::MAX;
-        assert_eq!(shared.take_frame(&mut wait), Some(idle));
-        assert_eq!(wait, 0);
-        assert_eq!(shared.buffer_wait_calls.load(Ordering::Relaxed), waits);
-        sizing.recycle_frame(&shared, idle);
-        assert!(
-            unsafe { &*shared.frames[idle].load(Ordering::Acquire) }
-                .wars
-                .len()
-                >= wars
-        );
+        assert_eq!(bytes(), before);
+        let mut taken: Vec<_> = (0..crate::frame_pool::AHEAD)
+            .map(|_| {
+                let mut wait = u64::MAX;
+                let index = shared.take_frame(&mut wait).unwrap();
+                assert_eq!(wait, 0);
+                index
+            })
+            .collect();
+        taken.sort_unstable();
+        assert_eq!(taken, idle);
+        for &index in &idle {
+            sizing.recycle_frame(&shared, index);
+            assert!(frame(index).wars.len() >= wars);
+        }
         for index in held {
             shared.recycle_frame_prepared(index);
         }
-        assert_eq!(shared.free.len(), sampling::BUFFERS);
+        assert_eq!(shared.frames.len(), sampling::BUFFERS);
+    }
+
+    /// The sizing thread held inside a pass, in its idle growth with a frame leased, does not hold
+    /// up building ahead: the hour that leaves fewer than the next hour's frame and its spare free
+    /// wakes the frame builder, and the spare is built while the pass is still held. On the base
+    /// the sizing thread built ahead only between passes, so the spare waited for the pass to end.
+    #[test]
+    fn a_wake_during_a_sizing_pass_builds_the_spare_without_waiting_for_the_pass() {
+        use std::sync::mpsc;
+        let fixture = Arc::new(sizing_fixture());
+        let (shared, thread) = &*fixture;
+        let sizing = &*thread.sizing;
+        let wars = sizing.capacities.lock().core[5] + 8;
+        sizing.raise(shared, |capacities| capacities.core[5] = wars);
+        let (in_pass, pass_entered) = mpsc::channel::<()>();
+        let (release, resume) = mpsc::channel::<()>();
+        *lock(&sizing.before_idle_frame_growth) = Some(Box::new(move |_, _| {
+            let _ = in_pass.send(());
+            let _ = resume.recv_timeout(crate::TEST_HANG_GUARD);
+        }));
+        let (built, spare) = mpsc::channel::<()>();
+        let built = Mutex::new(built);
+        let installed = shared.build_ahead_seam.set(Box::new(move |at| {
+            if at == sampling::BuildAhead::Free {
+                let _ = built.lock().unwrap().send(());
+            }
+        }));
+        assert!(installed.is_ok());
+        let watching = Arc::clone(&fixture);
+        crate::watched(
+            move || format!("{:?}", watching.0.frames.gauge()),
+            move |steps| {
+                let (shared, thread) = &*fixture;
+                let sizing = &*thread.sizing;
+                let builder = {
+                    let fixture = Arc::clone(&fixture);
+                    crate::spawn_ending(move || frame_builder(&fixture.0, &fixture.1.sizing))
+                };
+                // Ends the pass and the builder however this is left, so neither stays held.
+                struct End<'a>(Option<mpsc::Sender<()>>, &'a AtomicBool, std::thread::Thread);
+                impl Drop for End<'_> {
+                    fn drop(&mut self) {
+                        drop(self.0.take());
+                        self.1.store(true, Ordering::Release);
+                        self.2.unpark();
+                    }
+                }
+                let end = End(Some(release), &sizing.stop, builder.thread().clone());
+                let pass = {
+                    let fixture = Arc::clone(&fixture);
+                    crate::spawn_ending(move || fixture.1.sizing.grow_idle(&fixture.0))
+                };
+                steps.at("waiting for the pass to lease an idle frame");
+                pass_entered
+                    .recv_timeout(crate::TEST_HANG_GUARD)
+                    .unwrap_or_else(|_| panic!("the pass never leased an idle frame"));
+                assert_eq!(shared.frames.len(), sampling::BUFFERS - 1);
+                // The second hour leaves one frame free: the builder is woken for the spare.
+                let held: Vec<_> = (0..sampling::BUFFERS - 2)
+                    .map(|hour| {
+                        steps.at(format_args!("hour {hour}: taking its frame"));
+                        let mut grow_ns = u64::MAX;
+                        let index = shared.take_frame(&mut grow_ns).unwrap();
+                        assert_eq!(grow_ns, 0, "hour {hour}: {:?}", shared.frames.gauge());
+                        index
+                    })
+                    .collect();
+                steps.at("waiting for the spare while the pass is held");
+                spare.recv_timeout(crate::TEST_HANG_GUARD).unwrap_or_else(|_| {
+                    panic!("the spare waited for the pass: {:?}", shared.frames.gauge())
+                });
+                assert!(!pass.is_finished(), "the pass ended before the spare was built");
+                let gauge = shared.frames.gauge();
+                assert_eq!((gauge.grown, gauge.built_ahead), (0, 1), "{gauge:?}");
+                drop(end);
+                steps.at("the pass, released, and the builder, stopped");
+                pass.end(|| "the sizing pass, released,".into());
+                builder.end(|| "the frame builder, stopped,".into());
+                assert!(thread.sizing.failure.get().is_none());
+                for index in held {
+                    shared.recycle_frame_prepared(index);
+                }
+                let gauge = shared.frames.gauge();
+                assert_eq!(
+                    (gauge.live, gauge.free, gauge.in_flight, gauge.freed),
+                    (sampling::BUFFERS, sampling::BUFFERS, 0, 1),
+                    "{gauge:?}"
+                );
+            },
+        );
     }
 
     #[test]
     fn recycling_and_game_reuse_finish_while_idle_growth_is_paused() {
-        let (shared, thread) = sizing_fixture();
+        let fixture = Arc::new(sizing_fixture());
+        let (shared, thread) = &*fixture;
         let sizing = &thread.sizing;
         let returning = shared.take_frame(&mut 0).unwrap();
-        let wars = lock(&sizing.capacities).core[5] + 8;
-        sizing.raise(&shared, |capacities| capacities.core[5] = wars);
+        let wars = sizing.capacities.lock().core[5] + 8;
+        sizing.raise(shared, |capacities| capacities.core[5] = wars);
         let (leased, lease_seen) = std::sync::mpsc::channel();
         let (release, resume) = std::sync::mpsc::channel::<()>();
         *lock(&sizing.before_idle_frame_growth) = Some(Box::new(move |sizing, shared| {
-            assert!(sizing.capacities.try_lock().is_ok());
-            assert_eq!(shared.free.len(), sampling::BUFFERS - 2);
+            assert!(sizing.capacities.try_lock().is_some());
+            assert_eq!(shared.frames.len(), sampling::BUFFERS - 2);
             leased.send(()).unwrap();
-            let _ = resume.recv();
+            let _ = resume.recv_timeout(crate::TEST_HANG_GUARD);
         }));
-        std::thread::scope(|scope| {
-            let release_on_exit = release;
-            let worker = scope.spawn(|| sizing.grow_idle(&shared));
-            lease_seen.recv().unwrap();
-            let waits = shared.buffer_wait_calls.load(Ordering::Relaxed);
-            let others: Vec<_> = (0..sampling::BUFFERS - 2)
-                .map(|_| {
-                    let mut wait = u64::MAX;
-                    let index = shared.take_frame(&mut wait).unwrap();
-                    assert_eq!(wait, 0);
-                    index
-                })
-                .collect();
-            assert!(shared.free.is_empty());
-            sizing.recycle_frame(&shared, returning);
-            let mut wait = u64::MAX;
-            assert_eq!(shared.take_frame(&mut wait), Some(returning));
-            assert_eq!(wait, 0);
-            assert_eq!(shared.buffer_wait_calls.load(Ordering::Relaxed), waits);
-            drop(release_on_exit);
-            worker.join().unwrap();
-            for index in others.into_iter().chain(Some(returning)) {
-                shared.recycle_frame_prepared(index);
-            }
-        });
-        assert_eq!(shared.free.len(), sampling::BUFFERS);
+        let watching = Arc::clone(&fixture);
+        crate::watched(
+            move || format!("{:?}", watching.0.frames.gauge()),
+            move |steps| {
+                let (shared, thread) = &*fixture;
+                let sizing = &thread.sizing;
+                // Dropped on every way out, so the held growth always finishes.
+                let release = release;
+                let worker = {
+                    let fixture = Arc::clone(&fixture);
+                    crate::spawn_ending(move || fixture.1.sizing.grow_idle(&fixture.0))
+                };
+                steps.at("waiting for idle growth to lease a frame");
+                lease_seen
+                    .recv_timeout(crate::TEST_HANG_GUARD)
+                    .unwrap_or_else(|_| panic!("idle growth never leased a frame"));
+                let others: Vec<_> = (0..sampling::BUFFERS - 2)
+                    .map(|hour| {
+                        steps.at(format_args!("hour {hour}: taking its frame"));
+                        let mut wait = u64::MAX;
+                        let index = shared.take_frame(&mut wait).unwrap();
+                        assert_eq!(wait, 0);
+                        index
+                    })
+                    .collect();
+                assert_eq!(shared.frames.len(), 0);
+                steps.at("the spool recycling while idle growth is held");
+                sizing.recycle_frame(shared, returning);
+                steps.at("the game reusing the recycled frame");
+                let mut wait = u64::MAX;
+                assert_eq!(shared.take_frame(&mut wait), Some(returning));
+                assert_eq!(wait, 0);
+                drop(release);
+                steps.at("idle growth, released");
+                worker.end(|| "idle growth, released,".into());
+                for index in others.into_iter().chain(Some(returning)) {
+                    shared.recycle_frame_prepared(index);
+                }
+                assert_eq!(shared.frames.len(), sampling::BUFFERS);
+            },
+        );
+    }
+
+    /// The spool freeing a frame past what the pool keeps, held in the free, never holds up an
+    /// hour that finds no frame free and builds its own: the spool frees it only after letting go
+    /// of the capacities that hour's build reads. On the base it freed the frame while holding
+    /// them, so the hour's build waited for the free to end.
+    #[test]
+    fn an_hour_building_its_own_frame_never_waits_for_the_spool_freeing_a_surplus_one() {
+        use crate::frame_pool::AHEAD;
+        use sampling::BUFFERS;
+        use std::sync::mpsc;
+        let fixture = Arc::new(sizing_fixture());
+        let (freeing, free_held) = mpsc::channel::<()>();
+        let (release, released) = mpsc::channel::<()>();
+        let released = Mutex::new(released);
+        let installed = fixture.0.surplus_free_seam.set(Box::new(move || {
+            let _ = freeing.send(());
+            let _ = released
+                .lock()
+                .unwrap()
+                .recv_timeout(crate::TEST_HANG_GUARD);
+        }));
+        assert!(installed.is_ok());
+        let watching = Arc::clone(&fixture);
+        crate::watched(
+            move || format!("{:?}", watching.0.frames.gauge()),
+            move |steps| {
+                let (shared, thread) = &*fixture;
+                // Dropped on every way out, so the held free always finishes.
+                let release = release;
+                // One hour past the steady frames builds its own: one frame past what is kept.
+                let mut taken: Vec<_> = (0..=BUFFERS)
+                    .map(|hour| {
+                        steps.at(format_args!("hour {hour}: taking its frame"));
+                        shared
+                            .take_frame(&mut 0)
+                            .unwrap_or_else(|| panic!("hour {hour}: {:?}", shared.frames.gauge()))
+                    })
+                    .collect();
+                // Returned until more than the frames kept ahead are free: the next is surplus.
+                for _ in 0..=AHEAD {
+                    let index = taken.pop().unwrap();
+                    steps.at(format_args!("the spool returning frame {index}"));
+                    thread.sizing.recycle_frame(shared, index);
+                }
+                let gauge = shared.frames.gauge();
+                assert_eq!(
+                    (gauge.live, gauge.free, gauge.grown),
+                    (BUFFERS + 1, AHEAD + 1, 1),
+                    "{gauge:?}"
+                );
+                let surplus = taken.pop().unwrap();
+                let spool = {
+                    let fixture = Arc::clone(&fixture);
+                    crate::spawn_ending(move || fixture.1.sizing.recycle_frame(&fixture.0, surplus))
+                };
+                steps.at("waiting for the spool to free the surplus frame");
+                free_held.recv_timeout(crate::TEST_HANG_GUARD).unwrap_or_else(|_| {
+                    panic!("the spool never freed a surplus frame: {:?}", shared.frames.gauge())
+                });
+                // Every free frame is taken, and the hour after builds its own.
+                let hours = AHEAD + 2;
+                let game = {
+                    let fixture = Arc::clone(&fixture);
+                    crate::spawn_ending(move || {
+                        (0..hours)
+                            .map(|_| {
+                                let mut grow_ns = u64::MAX;
+                                (fixture.0.take_frame(&mut grow_ns), grow_ns)
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                };
+                steps.at("the hours, while the spool's free is held");
+                let hours_taken = game.end(|| {
+                    format!(
+                        "the hours, while the spool freed a surplus frame, ({:?})",
+                        shared.frames.gauge()
+                    )
+                });
+                assert!(!spool.is_finished(), "the spool's free ended before the hours did");
+                for (hour, &(index, grow_ns)) in hours_taken.iter().enumerate() {
+                    assert!(index.is_some(), "hour {hour}: {:?}", shared.frames.gauge());
+                    assert_eq!(grow_ns > 0, hour == hours - 1, "hour {hour} grew {grow_ns} ns");
+                }
+                drop(release);
+                steps.at("the spool's free, released");
+                spool.end(|| "the spool's free, released,".into());
+                let hours_held = hours_taken.into_iter().flat_map(|(index, _)| index);
+                for index in taken.into_iter().chain(hours_held) {
+                    shared.recycle_frame(index);
+                }
+                let gauge = shared.frames.gauge();
+                assert_eq!(
+                    (gauge.live, gauge.free, gauge.in_flight, gauge.freed),
+                    (BUFFERS, BUFFERS, 0, 2),
+                    "{gauge:?}"
+                );
+            },
+        );
     }
 
     #[test]
@@ -7439,8 +7938,8 @@ mod tests {
         let allocated_bytes = || {
             shared
                 .frames
-                .iter()
-                .map(|frame| unsafe { &*frame.load(Ordering::Acquire) }.allocated_bytes())
+                .slots()
+                .map(|slot| unsafe { &*slot.frame.load(Ordering::Acquire) }.allocated_bytes())
                 .sum::<usize>()
                 + shared.country_intel.allocated_bytes()
         };
@@ -7451,7 +7950,7 @@ mod tests {
         let frame = unsafe { &*shared.frames[returning].load(Ordering::Acquire) };
         // A fresh frame has no CountryIntel loan: Home is free for idle growth.
         let before_frame_bytes = frame.allocated_bytes();
-        let initial = *lock(&sizing.capacities);
+        let initial = *sizing.capacities.lock();
         let wars = initial.core[5] + 8;
         let intel_rows = initial.extended.intel.rows[15] + 8;
 
@@ -7461,7 +7960,7 @@ mod tests {
             capacities.extended.raise_for_country_intel(intel_rows);
         });
         sizing.grow_idle(&shared);
-        assert_eq!(shared.free.len(), sampling::BUFFERS - 1);
+        assert_eq!(shared.frames.len(), sampling::BUFFERS - 1);
         assert_eq!(frame.allocated_bytes(), before_frame_bytes);
         let shared_after_idle = shared.country_intel.allocated_bytes();
         assert!(shared_after_idle > shared_before);
@@ -7496,7 +7995,7 @@ mod tests {
         let held: [_; 2] = std::array::from_fn(|_| shared.take_frame(&mut 0).unwrap());
         let before = shared.country_intel.allocated_bytes();
         let pool_before = shared.pool_owned();
-        let mut rows = lock(&sizing.capacities).extended.intel.rows[15] + 8;
+        let mut rows = sizing.capacities.lock().extended.intel.rows[15] + 8;
         let mut loan = crate::extended::daily_intel::Loan::new(shared.country_intel.clone());
         loan.grow(&mut rows);
         let added = shared.country_intel.allocated_bytes() - before;
@@ -7955,7 +8454,7 @@ mod tests {
     fn combat_hints_skip_failed_reserves_without_latching_demand() {
         let shared = Shared::new(0, 0, 1);
         let capacities = crate::extended::Capacities::default();
-        let mut applied = [CombatHintState::default(); sampling::BUFFERS];
+        let mut applied = AppliedHints::default();
         let hints = CombatHints {
             land: Some(engine_native::cland_combat::DetailDemand {
                 rows: usize::MAX,
@@ -7980,7 +8479,7 @@ mod tests {
             &hints,
             &mut applied
         ));
-        assert!(applied == [CombatHintState::default(); sampling::BUFFERS]);
+        assert!(applied.iter().all(|state| *state == CombatHintState::default()));
         assert_eq!(crate::allocation::failed(), stopped);
         assert!(capacities == crate::extended::Capacities::default());
         // A later valid observation is retried, without the failed huge peak.
@@ -8008,19 +8507,19 @@ mod tests {
                 .all(|state| state.land.is_some() && state.naval.is_some())
         );
         assert!(shared.pool_owned() > before);
-        assert_eq!(shared.free.len(), sampling::BUFFERS);
+        assert_eq!(shared.frames.len(), sampling::BUFFERS);
     }
 
     #[test]
-    fn combat_hints_keep_the_last_free_frame_for_the_game() {
+    fn combat_hints_keep_the_next_hour_s_frame_and_its_spare_for_the_game() {
         let shared = Shared::new(0, 0, 1);
-        let held: [_; sampling::BUFFERS - 1] =
+        let held: [_; sampling::BUFFERS - crate::frame_pool::AHEAD] =
             std::array::from_fn(|_| shared.take_frame(&mut 0).unwrap());
-        let idle = (0..sampling::BUFFERS)
-            .find(|index| !held.contains(index))
-            .unwrap();
+        let idle: Vec<_> = (0..sampling::BUFFERS)
+            .filter(|index| !held.contains(index))
+            .collect();
         let capacities = crate::extended::Capacities::default();
-        let mut applied = [CombatHintState::default(); sampling::BUFFERS];
+        let mut applied = AppliedHints::default();
         let hints = CombatHints {
             land: Some(engine_native::cland_combat::DetailDemand {
                 rows: 600,
@@ -8032,28 +8531,27 @@ mod tests {
             }),
             failures: [None; 2],
         };
-        let before = unsafe { &*shared.frames[idle].load(Ordering::Acquire) }.allocated_bytes();
+        let bytes = || {
+            idle.iter()
+                .map(|&index| {
+                    unsafe { &*shared.frames[index].load(Ordering::Acquire) }.allocated_bytes()
+                })
+                .collect::<Vec<_>>()
+        };
+        let before = bytes();
         let pool_before = shared.pool_owned();
-        let waits = shared.buffer_wait_calls.load(Ordering::Relaxed);
-        assert_eq!(shared.free.len(), 1);
+        assert_eq!(shared.frames.len(), crate::frame_pool::AHEAD);
         assert!(!grow_combat_hints(
             &shared,
             &capacities,
             &hints,
             &mut applied
         ));
-        assert_eq!(shared.free.len(), 1);
-        assert!(applied == [CombatHintState::default(); sampling::BUFFERS]);
+        assert_eq!(shared.frames.len(), crate::frame_pool::AHEAD);
+        assert!(applied.iter().all(|state| *state == CombatHintState::default()));
         assert_eq!(shared.pool_owned(), pool_before);
-        assert_eq!(
-            unsafe { &*shared.frames[idle].load(Ordering::Acquire) }.allocated_bytes(),
-            before
-        );
-        let mut wait = u64::MAX;
-        assert_eq!(shared.take_frame(&mut wait), Some(idle));
-        assert_eq!(wait, 0);
-        assert_eq!(shared.buffer_wait_calls.load(Ordering::Relaxed), waits);
-        shared.recycle_frame_prepared(idle);
+        assert_eq!(bytes(), before);
+        // With a third frame free, every free frame is leased in turn.
         shared.recycle_frame_prepared(held[0]);
         assert!(!grow_combat_hints(
             &shared,
@@ -8061,24 +8559,26 @@ mod tests {
             &hints,
             &mut applied
         ));
-        assert!(applied[idle].land.is_some() && applied[idle].naval.is_some());
+        for index in idle.iter().copied().chain(Some(held[0])) {
+            assert!(applied[index].land.is_some() && applied[index].naval.is_some());
+        }
         for index in held.into_iter().skip(1) {
             shared.recycle_frame_prepared(index);
         }
-        assert_eq!(shared.free.len(), sampling::BUFFERS);
+        assert_eq!(shared.frames.len(), sampling::BUFFERS);
     }
 
     #[test]
     fn combat_hints_keep_applied_state_and_grow_directly_recycled_frames() {
         let shared = Shared::new(0, 0, 1);
         let capacities = crate::extended::Capacities::default();
-        let mut applied = [CombatHintState::default(); sampling::BUFFERS];
+        let mut applied = AppliedHints::default();
         let accounted = shared.pool_owned();
         let frame_bytes = || {
             shared
                 .frames
-                .iter()
-                .map(|frame| unsafe { &*frame.load(Ordering::Acquire) }.allocated_bytes())
+                .slots()
+                .map(|slot| unsafe { &*slot.frame.load(Ordering::Acquire) }.allocated_bytes())
                 .sum::<usize>()
         };
         let bytes = frame_bytes();
@@ -8101,7 +8601,7 @@ mod tests {
         };
         grow_combat_hints(&shared, &capacities, &hints, &mut applied);
         check_accounting();
-        let grown = applied;
+        let grown = applied.clone();
         assert!(
             grown
                 .iter()
@@ -8117,28 +8617,28 @@ mod tests {
         assert!(applied == grown);
 
         // A leased frame must still receive a later hint when it returns.
-        let held = shared.free.pop().unwrap();
+        let held = shared.frames.pop().unwrap();
         let previous = applied[held];
         hints.land.as_mut().unwrap().rows = 1200;
         hints.naval.as_mut().unwrap().rows = 257;
         grow_combat_hints(&shared, &capacities, &hints, &mut applied);
         check_accounting();
         assert!(applied[held] == previous);
-        let grown = applied;
+        let grown = applied.clone();
         grow_combat_hints(&shared, &capacities, &hints, &mut applied);
         check_accounting();
         assert!(applied == grown);
-        // A queue-full drop returns directly to free, without a ready pop.
+        // A dropped frame returns directly to free, without a ready pop.
         shared.recycle_frame(held);
         grow_combat_hints(&shared, &capacities, &hints, &mut applied);
         check_accounting();
         assert!(applied[held].land != previous.land);
         assert!(applied[held].naval != previous.naval);
-        let grown = applied;
+        let grown = applied.clone();
         grow_combat_hints(&shared, &capacities, &hints, &mut applied);
         check_accounting();
         assert!(applied == grown);
-        assert_eq!(shared.free.len(), sampling::BUFFERS);
+        assert_eq!(shared.frames.len(), sampling::BUFFERS);
     }
 
     #[test]

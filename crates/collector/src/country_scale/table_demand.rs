@@ -41,10 +41,10 @@ pub(crate) fn presize_periodic(
     // preparation depends on their census, including the physical navy pass.
     if capacity_census {
         accept(
-            rows(engine_native::cair_wing::walk(memory, base, state, &mut []))
+            rows(engine_native::cair_wing::count(memory, base, state))
                 .map(|count| map.raise_air_wings(count)),
         );
-        let naval = engine_native::cfleet::walk(memory, base, state, &mut [], &mut [], &mut []);
+        let naval = engine_native::cfleet::count(memory, base, state);
         for (index, outcome) in [naval.fleets, naval.task_forces, naval.ships]
             .into_iter()
             .enumerate()
@@ -66,12 +66,7 @@ pub(crate) fn presize_periodic(
     // The supply census uses every non-sentinel supply slot.
     accept_hint!(
         3,
-        rows(engine_railways::sprovince_supply_data::walk(
-            memory,
-            base,
-            state,
-            &mut [],
-        ))
+        rows(engine_railways::sprovince_supply_data::count(memory, base, state))
         .map(|count| super::raise(&mut extended.economy.rows[2], super::rows(count, 1))),
     );
     accept_hint!(4, extended.province_unit_order.presize(memory, base, state));

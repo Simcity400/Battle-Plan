@@ -50,8 +50,9 @@ mod shared_hours;
 pub(crate) use shared_hours::Held;
 use shared_hours::{
     Adopt, BuildingField, Cells, Deliver, Delivery, Found, HourStore, Territory, TerritoryKey,
-    Width, deliver_when, near_values, take_shared,
+    deliver_when, near_values, take_shared,
 };
+use crate::worker_pool::{Width, WorkerPool};
 mod source_mailbox;
 pub use shared_decoder::SharedDecoder;
 mod trace;
@@ -72,7 +73,6 @@ use std::{
     time::{Duration, Instant},
 };
 use viewer_foundation::builder_pool::Pool;
-use viewer_foundation::parallel::Workers;
 use viewer_foundation::profiling::{BuilderSpan, BuilderSpans};
 use viewer_foundation::worker_priority::background_priority;
 
@@ -87,7 +87,7 @@ use {
     viewer_foundation::map::name_draw::Placements, viewer_foundation::map::perspective,
     viewer_foundation::map::ribbon_content::OrderField,
     viewer_foundation::map::tables::Limitations, viewer_foundation::map::textures::IntelMap,
-    viewer_foundation::retirement::builder_count, viewer_world::map::aircraft::AircraftPlan,
+    viewer_world::map::aircraft::AircraftPlan,
     viewer_world::map::border_pass::ClassPlan, viewer_world::map::demilitarized::Zone,
     viewer_world::map::demilitarized::ZonePlan, viewer_world::map::political::PoliticalLayers,
     viewer_world::map::trains::TrainPlan, viewer_world::map::unit_models::PreparedModels,
@@ -104,6 +104,19 @@ pub struct View {
 }
 
 /// What the window wants built.
+/// Which of today's parts the map's layers draw.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ByLayers {
+    /// The country names: the names part is not built.
+    pub names: bool,
+    /// The railway strips and bridges: the rails part is not built.
+    pub rails: bool,
+    /// The state and capital labels: the overlay tables read none.
+    pub labels: bool,
+    /// The supply trains: the movers part builds no train plan.
+    pub trains: bool,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Want {
     pub branch: BranchId,
@@ -122,8 +135,22 @@ pub struct Want {
     pub map_mode: viewer_world::map::map_mode::MapMode,
     pub diplomatic_selected: Option<u32>,
     pub show_allied_plans: bool,
+    /// Today's parts the map's layers draw: each gets no job and an empty part.
+    pub parts: DrawnParts,
+    /// The map's units layer draws the unit models (with the raid units and convoys made over rows
+    /// at the head, and the ships unless the ships layer draws them): today's movers part makes none.
+    pub units_by_layers: bool,
+    /// The map's orders layer draws the battle plan: today's movers part makes none.
+    pub plans_by_layers: bool,
+    /// The map's convoys layer draws the trade routes: today's movers part makes none.
+    pub routes_by_layers: bool,
+    /// The parts the map's layers draw instead of today's (P7's own line until the parts are one
+    /// table): an empty part stands in for each, and its job is not dispatched.
+    pub by_layers: ByLayers,
     /// The window's counter options and memory, which its hours are laid out with.
     pub counters: CounterView,
+    /// The counter kinds the map's layers draw: the hour's tables leave them out.
+    pub counter_kinds: viewer_counters::map::counters::Kinds,
     pub view: View,
     /// The hours of this branch the window holds built, the one on screen
     /// included; the builders do not build them again.
@@ -132,6 +159,25 @@ pub struct Want {
     /// after that are on their way and not built again either.
     pub received: u64,
     pub grid: Option<Grid>,
+    /// The products the window draws from the playhead's layers, which these builders leave out.
+    pub layered: Layered,
+}
+
+/// Products the map draws from the playhead's layers: not built here while drawn there. A change
+/// rebuilds nothing already built: an hour says what it holds (its unit models' ships, its plan).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Layered {
+    pub snow: bool,
+    pub intel: bool,
+    pub weather: bool,
+    pub radar: bool,
+    /// The overlay's resource icons and occupation icons.
+    pub resource_icons: bool,
+    pub occupation_marks: bool,
+    /// The ships layer stands in for today's ships: the unit models are made without them.
+    pub ships: bool,
+    /// The aircraft layer draws its plan: the hour carries none.
+    pub aircraft: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -203,6 +249,12 @@ impl Want {
     fn invalidates_parts(&self, next: &Want) -> bool {
         self.perspective != next.perspective
             || self.show_allied_plans != next.show_allied_plans
+            || self.parts != next.parts
+            || self.units_by_layers != next.units_by_layers
+            || self.plans_by_layers != next.plans_by_layers
+            || self.routes_by_layers != next.routes_by_layers
+            || self.by_layers != next.by_layers
+            || self.counter_kinds != next.counter_kinds
             || self.counters.settings != next.counters.settings
             || !Arc::ptr_eq(&self.counters.presentation, &next.counters.presentation)
     }
@@ -536,7 +588,8 @@ pub struct Layers {
     /// with the hour: an hour sharing its neighbour's field still reports its own.
     pub building_warnings: Vec<String>,
     pub trains: TrainPlan,
-    pub aircraft: AircraftPlan,
+    /// None when built while the aircraft layer drew the plan.
+    pub aircraft: Option<AircraftPlan>,
     pub units: Arc<PreparedModels>,
     /// Shared by the hours whose plan tables are the same
     /// ([`viewer_counter_products::map::orders::TABLES`]), so the window uploads it once.
@@ -779,7 +832,7 @@ type FogPart = map_products::FogProduct;
 #[derive(Clone)]
 struct Movers {
     trains: TrainPlan,
-    aircraft: AircraftPlan,
+    aircraft: Option<AircraftPlan>,
     units: Arc<PreparedModels>,
     orders: Arc<OrderField>,
     effects: weather_effects::Prepared,
@@ -825,6 +878,41 @@ impl Part {
 }
 
 const PARTS: usize = 8;
+
+/// Today's parts by name, in [`part_rank`] order.
+pub const PART_NAMES: [&str; PARTS] = ["political", "names", "overlay", "rails", "buildings", "movers", "fog", "snow"];
+
+fn part_index(name: &str) -> Option<usize> {
+    PART_NAMES.iter().position(|&held| held == name)
+}
+
+/// Today's parts the map's layers draw, one bit a part in [`PART_NAMES`] order.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DrawnParts(u8);
+
+impl DrawnParts {
+    pub fn of<'a>(parts: impl IntoIterator<Item = &'a str>) -> Self {
+        Self(parts.into_iter().filter_map(part_index).fold(0, |bits, at| bits | 1 << at))
+    }
+
+    pub fn draws(self, part: &str) -> bool {
+        part_index(part).is_some_and(|at| self.0 & 1 << at != 0)
+    }
+}
+
+/// Per part, jobs dispatched and hours left to the layers with an empty part, since the start.
+static PART_COUNTS: [[AtomicU64; 2]; PARTS] = [const { [const { AtomicU64::new(0) }; 2] }; PARTS];
+
+fn count_part(name: &str, kind: usize) {
+    if let Some(at) = part_index(name) {
+        PART_COUNTS[at][kind].fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Per part of [`PART_NAMES`]: jobs dispatched, and hours whose part the layers drew instead.
+pub fn part_counts() -> [(&'static str, u64, u64); PARTS] {
+    std::array::from_fn(|at| (PART_NAMES[at], PART_COUNTS[at][0].load(Ordering::Relaxed), PART_COUNTS[at][1].load(Ordering::Relaxed)))
+}
 
 /// One part's value for one hour, which the neighbouring hours' parts compare with.
 struct Slot<T> {
@@ -886,11 +974,6 @@ impl<T> Drop for Fill<T> {
 /// One part's slots of several hours.
 fn slots_of<T>(hours: &[Slots], part: impl Fn(&Slots) -> &Arc<Slot<T>>) -> Vec<Arc<Slot<T>>> {
     hours.iter().map(|slots| Arc::clone(part(slots))).collect()
-}
-
-/// The values of every slot that has one, waiting for each.
-fn wait_all<T>(slots: Vec<Arc<Slot<T>>>) -> Vec<Arc<T>> {
-    slots.iter().filter_map(|slot| slot.wait()).collect()
 }
 
 /// The slots of one hour's shared parts.
@@ -973,29 +1056,25 @@ enum Event {
 /// One worker budget for every map in a native root. Per-view coordinators
 /// retain independent cancellation and layer state, but do not multiply pools.
 pub struct Resources {
-    pool: Arc<Pool>,
-    frame_workers: Workers,
+    /// The app's threads, which the views' pipelines borrow.
+    pool: Arc<WorkerPool>,
     decoders: Mutex<BTreeMap<usize, Weak<SharedDecoder>>>,
     /// Each source's shared hour products, while a view builds from them.
     stores: Mutex<Vec<Weak<HourStore>>>,
-    /// The in-flight width the views on this pool share.
-    width: Arc<Width>,
-    pub dropper: Arc<Dropper>,
 }
 
 impl Resources {
     pub fn new() -> io::Result<Arc<Self>> {
-        let pool = Arc::new(Pool::new(builder_count())?);
-        let frame_workers = viewer_foundation::frame_assist::workers(pool.clone());
-        let width = Width::new(viewer_foundation::parallel::Spawn::threads(&*pool));
         Ok(Arc::new(Self {
-            pool,
-            frame_workers,
+            pool: WorkerPool::new()?,
             decoders: Mutex::new(BTreeMap::new()),
             stores: Mutex::new(Vec::new()),
-            width,
-            dropper: Arc::new(Dropper::new()?),
         }))
+    }
+
+    /// The app's threads these maps share.
+    pub fn pool(&self) -> &Arc<WorkerPool> {
+        &self.pool
     }
 
     /// The hour products every view of `content` and `replay` shares.
@@ -1014,17 +1093,6 @@ impl Resources {
         Ok(store)
     }
 
-    /// The builders' threads, lent to scene creation's split work while they are free.
-    pub fn workers(&self) -> Workers {
-        Workers::new(Arc::clone(&self.pool) as _)
-    }
-
-    /// A bounded nonblocking admission path for scene creation. The caller can
-    /// retry next frame when hour work already occupies the shared queue.
-    pub fn try_submit(&self, work: impl FnOnce() + Send + 'static) -> bool {
-        self.pool.try_submit(Box::new(work)).is_ok()
-    }
-
     pub fn decoder(&self, replay: Arc<Replay>) -> io::Result<Arc<SharedDecoder>> {
         let key = Arc::as_ptr(&replay) as usize;
         let mut decoders = self.decoders.lock().map_err(|_| stopped())?;
@@ -1036,8 +1104,8 @@ impl Resources {
         // weak entry can upgrade. No bytes or decoder are copied per map.
         let decoder = Arc::new(SharedDecoder::serving(
             replay,
-            map_workers(&self.pool),
-            Some(Arc::clone(&self.dropper)),
+            map_workers(self.pool.pool()),
+            Some(Arc::clone(self.pool.dropper())),
         )?);
         decoders.insert(key, Arc::downgrade(&decoder));
         Ok(decoder)
@@ -1303,10 +1371,15 @@ impl Pending {
     }
 }
 
+/// What one table's view keeps alive: its shared allocation and its rows or reason.
 fn true_table_bytes(table: &replay_frame::frame::SharedView) -> u64 {
-    dashboard_base::prepared::prepass::HeldBytes::default()
-        .view(table)
-        .total()
+    use replay_frame::frame::TableView;
+    let held = match &**table {
+        TableView::Complete(rows) | TableView::Truncated { rows, .. } => rows.heap_bytes(),
+        TableView::Unavailable { reason } => reason.capacity(),
+        TableView::NotRecorded { .. } => 0,
+    };
+    (std::mem::size_of::<TableView>() + 2 * std::mem::size_of::<usize>() + held) as u64
 }
 
 #[derive(Default)]
@@ -1716,7 +1789,7 @@ impl DecodeLane {
                     drop(read);
                     continue 'next;
                 }
-                Err(error) => Current::Gap {
+                Err(error) => Current::Refused {
                     branch,
                     hour,
                     reason: error.to_string(),
@@ -2191,6 +2264,7 @@ impl coordinator::BuildTarget for Coordinator {
         let air_rosters = self.playback.air_rosters();
         let mut jobs = VecDeque::new();
         let mut submit = |name: &'static str, work: PartWork| {
+            count_part(name, 0);
             let content = Arc::clone(&self.content);
             let frame = Arc::clone(&frame);
             let alive = Arc::clone(&alive);
@@ -2216,7 +2290,18 @@ impl coordinator::BuildTarget for Coordinator {
                 work,
             }));
         };
-        {
+        if want.parts.draws("political") {
+            count_part("political", 1);
+            // An empty part stands in for today's; the layers draw what it would have held.
+            let empty = map_display_data::province_field::ProvinceField(Arc::new(map_display_data::province_field::Storage::Dense(Arc::default())));
+            let regions = map_display_data::landscape::Regions { country_of: empty.clone(), owner_of: empty.clone(), state_of: empty, country_colors: Default::default(), warnings: Vec::new(), strategic_attributes: Default::default(), mode: None };
+            let projection = Arc::new(map_display_data::landscape::ModeProjection::Stock { fill: Default::default() });
+            let political = Arc::new(Political { id: next_id(), colour: None, _projection: projection, layers: PoliticalLayers { regions: Arc::new(regions), build: Duration::ZERO } });
+            let borders = Arc::new(Borders { id: next_id(), political: political.id, zone: map_display_data::retained::Retained::new(Zone::default()), classes: ClassPlan::default(), highlighted: ZonePlan::default() });
+            Fill(Arc::clone(&slots.political)).set(Some(Arc::clone(&political)));
+            Fill(Arc::clone(&slots.borders)).set(Some(Arc::clone(&borders)));
+            pending.prefill("political", Part::Political(Ok((political, borders))), None, "drawn by layers");
+        } else {
             let fill = Fill(Arc::clone(&slots.political));
             let fill_borders = Fill(Arc::clone(&slots.borders));
             let near_regions = slots_of(&neighbours, |slots| &slots.political);
@@ -2348,7 +2433,9 @@ impl coordinator::BuildTarget for Coordinator {
                 }),
             );
         }
-        {
+        if want.by_layers.names {
+            pending.prefill("names", Part::Names(Ok(Arc::default())), None, "drawn by layers");
+        } else {
             let mode = want.map_mode.clone();
             let adopt: Adopt<Placements> =
                 Arc::new(|value: io::Result<Arc<Placements>>, _: bool| Part::Names(value));
@@ -2372,8 +2459,11 @@ impl coordinator::BuildTarget for Coordinator {
         }
         let (camera, viewport, ui_scale) =
             (want.view.camera, want.view.viewport, want.view.ui_scale);
+        let layered = want.layered;
         let overlay_perspective = want.perspective.clone();
         let overlay_counters = want.counters.clone();
+        let counter_kinds = want.counter_kinds;
+        let labels_by_layers = want.by_layers.labels;
         let temperature_frame = Arc::clone(&frame);
         // The window's index when it is for this perspective's country, so a
         // prebuilt hour carries the exact flags once the index covers it.
@@ -2396,11 +2486,14 @@ impl coordinator::BuildTarget for Coordinator {
                     // Raid icons come from the window's raid lane
                     // ([`crate::raid_lane`]), which chains hours.
                     let tables = spans.measure("overlay.tables", |spans| {
-                        view.hour_tables_with_raids_profiled(
+                        view.hour_tables_layered(
                             &overlay_perspective,
                             Arc::default(),
                             overlay_engaged.as_deref(),
+                            counter_kinds,
+                            labels_by_layers,
                             spans,
+                            !layered.radar,
                         )
                     })?;
                     spans.measure("overlay.flags_warm", |_| {
@@ -2413,6 +2506,7 @@ impl coordinator::BuildTarget for Coordinator {
                             ui_scale,
                             &tables,
                             &overlay_counters,
+                            crate::document::LeftToLayers { resource_icons: layered.resource_icons, occupation_marks: layered.occupation_marks },
                             spans,
                         )
                     })?;
@@ -2424,7 +2518,11 @@ impl coordinator::BuildTarget for Coordinator {
         if reusable.is_some() {
             return PreparedTarget::Parts(Box::new(pending), jobs);
         }
-        {
+        if want.by_layers.rails {
+            let rails = Arc::new(Rails { id: next_id(), value: Arc::default(), geometry: None });
+            Fill(Arc::clone(&slots.rails)).set(Some(Arc::clone(&rails)));
+            pending.prefill("rails", Part::Rails(Ok(rails)), None, "drawn by layers");
+        } else {
             let fill = Fill(Arc::clone(&slots.rails));
             let near = slots_of(&neighbours, |slots| &slots.rails);
             let adopt: Adopt<Rails> = Arc::new(move |value: io::Result<Arc<Rails>>, wait: bool| {
@@ -2517,7 +2615,10 @@ impl coordinator::BuildTarget for Coordinator {
             }
         }
         let movers_perspective = want.perspective.clone();
+        let trains_by_layers = want.by_layers.trains;
         let show_allied_plans = want.show_allied_plans;
+        let units_by_layers = want.units_by_layers;
+        let (plans_by_layers, routes_by_layers) = (want.plans_by_layers, want.routes_by_layers);
         submit(
             "movers",
             Box::new(move |view, spans| {
@@ -2525,32 +2626,33 @@ impl coordinator::BuildTarget for Coordinator {
                     let mut laps = MoversLaps::new(epoch, branch, hour);
                     // The raid arrows' units and the trade-route convoys join the unit models.
                     let (orders, convoys) =
-                        view.orders_and_convoys(&movers_perspective, show_allied_plans)?;
+                        view.orders_and_convoys_with(&movers_perspective, show_allied_plans, plans_by_layers, routes_by_layers)?;
                     laps.lap("orders_and_convoys");
-                    let mut units = laps.split("prepare_unit_models", |lap| {
-                        view.prepare_unit_models_with_spans(&movers_perspective, lap, spans)
-                    })?;
-                    units.add_raid_units(&view.unit_models, &orders.raid_units);
-                    laps.lap("add_raid_units");
-                    if let Ok(defines) = &view.trade_routes {
-                        units.add_convoys(convoys, defines.convoys);
-                    }
-                    laps.lap("add_convoys");
-                    units.stage_field(&view.unit_models);
-                    laps.lap("stage_field");
-                    let trains = view.train_plan(&movers_perspective)?;
+                    let units = if units_by_layers {
+                        PreparedModels::drawn_by_layers()
+                    } else {
+                        let mut units = laps.split("prepare_unit_models", |lap| {
+                            view.prepare_unit_models_naval_or_not(&movers_perspective, !layered.ships, lap, spans)
+                        })?;
+                        units.add_raid_units(&view.unit_models, &orders.raid_units);
+                        laps.lap("add_raid_units");
+                        if let Ok(defines) = &view.trade_routes {
+                            units.add_convoys(convoys, defines.convoys);
+                        }
+                        laps.lap("add_convoys");
+                        units.stage_field(&view.unit_models);
+                        laps.lap("stage_field");
+                        units
+                    };
+                    let trains = if trains_by_layers { TrainPlan::default() } else { view.train_plan(&movers_perspective)? };
                     laps.lap("train_plan");
-                    let aircraft = view.aircraft_plan(&movers_perspective)?;
+                    let aircraft = if layered.aircraft { None } else { Some(view.aircraft_plan(&movers_perspective)?) };
                     laps.lap("aircraft_plan");
                     let units = Arc::new(units);
                     let effects = {
                         let _cost = replay_frame::cpu::scope("viewer", Some("weather"));
-                        weather_effects::prepare(
-                            &view.weather_effects,
-                            view.weather_field()?,
-                            camera,
-                            viewport,
-                        )
+                        let field = if layered.weather { weather_effects::Field::default() } else { view.weather_field()? };
+                        weather_effects::prepare(&view.weather_effects, field, camera, viewport)
                     };
                     laps.lap("weather_effects_prepare");
                     let impacts = Arc::new(view.nuclear_impacts()?);
@@ -2583,7 +2685,7 @@ impl coordinator::BuildTarget for Coordinator {
                             at,
                             deliver.clone(),
                             Arc::clone(&adopt),
-                            || view.fog_products(&perspective, &store.memos.fog, spans),
+                            || view.fog_products(&perspective, &store.memos.fog, spans, !layered.intel),
                         )
                     }),
                 );
@@ -2605,6 +2707,19 @@ impl coordinator::BuildTarget for Coordinator {
                             deliver.clone(),
                             Arc::clone(&adopt),
                             || {
+                                if layered.snow {
+                                    return Ok(Arc::new(SnowMud {
+                                        width: 0,
+                                        height: 0,
+                                        texels: Default::default(),
+                                        unknown: Default::default(),
+                                        province_snow: Default::default(),
+                                        post_factors: None,
+                                        build: Duration::ZERO,
+                                        summary: Default::default(),
+                                        refresh: None,
+                                    }));
+                                }
                                 let _cost = replay_frame::cpu::scope("viewer", Some("weather"));
                                 view.snow_product(&store.memos.snow_shared)
                             },
@@ -2806,9 +2921,6 @@ pub struct Pipeline {
     /// The engaged-flag index for the last perspective country asked for,
     /// shared with the coordinator's overlay builds.
     engaged: Engaged,
-    /// The builders' turns, which other work may borrow.
-    workers: Workers,
-    frame_workers: Workers,
     pool: Arc<Pool>,
     grid_sequence: u64,
     grid_decision: Option<Result<u32, &'static str>>,
@@ -2818,29 +2930,25 @@ pub struct Pipeline {
 type Engaged = Arc<Mutex<Option<Arc<EngagedIndex>>>>;
 
 impl Pipeline {
-    /// Starts the coordinator and a builder pool of all the hardware threads
-    /// the process may use (its affinity mask) less eight, at least two, leaving the window's own frame, the GPU
-    /// driver and the game's own threads theirs: on the sixteen-thread
-    /// machine this is eight builders, and more finished hours no sooner
-    /// while spiking the frames they arrived on.
+    /// Starts the coordinator on a builder pool of its own ([`WorkerPool::new`]).
     #[cfg(test)]
     pub fn new(content: Arc<Content>, replay: Arc<Replay>) -> io::Result<Self> {
-        Self::with_map_binding(content, replay, None)
+        Self::with_map_binding(content, replay, &*WorkerPool::new()?, None)
     }
 
+    /// Starts the coordinator on the app's builder pool, with an in-flight width and hour
+    /// products of its own.
     pub fn with_map_binding(
         content: Arc<Content>,
         replay: Arc<Replay>,
+        pool: &WorkerPool,
         binding: Option<Arc<crate::map_binding::MapBinding>>,
     ) -> io::Result<Self> {
-        let parallel = builder_count();
-        let pool = Arc::new(Pool::new(parallel)?);
-        let frame_workers = viewer_foundation::frame_assist::workers(pool.clone());
+        let parallel = pool.threads();
         Self::start(
             content,
             replay,
-            pool,
-            frame_workers,
+            Arc::clone(pool.pool()),
             None,
             HourStore::private(),
             Width::new(parallel),
@@ -2857,18 +2965,7 @@ impl Pipeline {
         resources: &Resources,
         binding: Option<Arc<crate::map_binding::MapBinding>>,
     ) -> io::Result<Self> {
-        let parallel = viewer_foundation::parallel::Spawn::threads(&*resources.pool);
-        Self::start(
-            content,
-            replay,
-            Arc::clone(&resources.pool),
-            resources.frame_workers.clone(),
-            None,
-            HourStore::private(),
-            Width::new(parallel),
-            parallel,
-            binding,
-        )
+        Self::with_map_binding(content, replay, resources.pool(), binding)
     }
 
     pub fn shared(
@@ -2879,16 +2976,15 @@ impl Pipeline {
         let decoder = resources.decoder(Arc::clone(&replay))?;
         let store = resources.store(&content, &replay)?;
         // The maps on the pool share one pool's worth of hours in flight between them.
-        let parallel = viewer_foundation::parallel::Spawn::threads(&*resources.pool);
+        let pool = resources.pool();
         Self::start(
             content,
             replay,
-            Arc::clone(&resources.pool),
-            resources.frame_workers.clone(),
+            Arc::clone(pool.pool()),
             Some(decoder),
             store,
-            Arc::clone(&resources.width),
-            parallel,
+            Arc::clone(pool.width()),
+            pool.threads(),
             None,
         )
     }
@@ -2900,7 +2996,6 @@ impl Pipeline {
         content: Arc<Content>,
         replay: Arc<Replay>,
         pool: Arc<Pool>,
-        frame_workers: Workers,
         shared_decoder: Option<Arc<SharedDecoder>>,
         store: Arc<HourStore>,
         width: Arc<Width>,
@@ -2913,7 +3008,6 @@ impl Pipeline {
                 content,
                 replay,
                 pool,
-                frame_workers,
                 shared_decoder,
                 store,
                 width,
@@ -2928,7 +3022,6 @@ impl Pipeline {
         content: Arc<Content>,
         replay: Arc<Replay>,
         pool: Arc<Pool>,
-        frame_workers: Workers,
         shared_decoder: Option<Arc<SharedDecoder>>,
         store: Arc<HourStore>,
         width: Arc<Width>,
@@ -2941,7 +3034,6 @@ impl Pipeline {
         let (outbox, results) = mpsc::sync_channel(parallel);
         let requested = Arc::new(Mutex::new(None));
         let result_space = Arc::new(AtomicBool::new(false));
-        let workers = Workers::new(Arc::clone(&pool) as _);
         let lane = match shared_decoder {
             Some(_) => None,
             None => {
@@ -3004,8 +3096,6 @@ impl Pipeline {
             seek_pending: false,
             requested,
             engaged,
-            workers,
-            frame_workers,
             pool,
             grid_sequence: 0,
             grid_decision: None,
@@ -3046,22 +3136,6 @@ impl Pipeline {
         if index.extend(&self.replay) {
             *self.engaged.lock().unwrap_or_else(|p| p.into_inner()) = Some(index);
         }
-    }
-
-    /// The builders' threads for work split across threads, such as a raid
-    /// batch ([`crate::parallel::Workers`]).
-    pub fn workers(&self) -> Workers {
-        self.workers.clone()
-    }
-
-    /// Synchronous frame turns: protected helpers, then borrowed builders.
-    pub fn frame_workers(&self) -> Workers {
-        self.frame_workers.clone()
-    }
-
-    /// Queues a view's CPU preparation without blocking its frame.
-    pub(crate) fn try_submit(&self, work: Box<dyn FnOnce() + Send>) -> bool {
-        self.pool.try_submit(work).is_ok()
     }
 
     /// Whether this pipeline builds for this content and replay.
@@ -3276,7 +3350,13 @@ mod mode_tests {
             map_mode: Default::default(),
             diplomatic_selected: None,
             show_allied_plans: false,
+            units_by_layers: false,
+            plans_by_layers: false,
+            routes_by_layers: false,
+            by_layers: Default::default(),
+            parts: Default::default(),
             counters: Default::default(),
+            counter_kinds: Default::default(),
             view: View {
                 camera: Camera::fit(
                     viewer_foundation::map::camera::MapSize {
@@ -3292,6 +3372,7 @@ mod mode_tests {
             have: vec![10, 11],
             received: 2,
             grid: None,
+            layered: Default::default(),
         }
     }
 

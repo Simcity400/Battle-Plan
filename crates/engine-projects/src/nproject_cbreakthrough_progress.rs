@@ -24,11 +24,7 @@ pub struct Row {
     pub points: i32,
 }
 
-pub fn walk(memory: &impl Memory, base: usize, game_state: usize, output: &mut [Row]) -> Outcome {
-    walk_buffer(memory, base, game_state, crate::walk::Buffer::Fixed(output))
-}
-
-pub fn walk_growing(
+pub fn walk(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -100,24 +96,6 @@ pub fn walk_status_buffer(
         };
     };
     walk_progress_buffer(memory, base, address, owner, output)
-}
-
-/// Allocation-free in-order traversal using the engine's minimum/successor law.
-/// Capacity stops payload reads and reports the declared remaining row count.
-pub fn walk_progress(
-    memory: &impl Memory,
-    base: usize,
-    address: usize,
-    owner: u32,
-    output: &mut [Row],
-) -> Outcome {
-    walk_progress_buffer(
-        memory,
-        base,
-        address,
-        owner,
-        crate::walk::Buffer::Fixed(output),
-    )
 }
 
 pub fn walk_progress_buffer(
@@ -337,23 +315,17 @@ mod tests {
         bytes
     }
 
-    fn capture(bytes: &[u8], output: &mut [Row]) -> Outcome {
-        walk_progress(
-            &SliceMemory {
+    fn capture(bytes: &[u8], output: &mut Vec<Row>) -> Outcome {
+        walk_progress_buffer(&SliceMemory {
                 base: ADDRESS,
                 bytes,
-            },
-            IMAGE,
-            ADDRESS,
-            19,
-            output,
-        )
+            }, IMAGE, ADDRESS, 19, crate::walk::Buffer::Growing(output))
     }
 
     #[test]
     fn successor_recovers_ancestors_and_preserves_signed_native_points() {
         let bytes = tree();
-        let mut rows = [Row::default(); 3];
+        let mut rows = vec![Row::default(); 3];
         assert_eq!(capture(&bytes, &mut rows), Outcome::Rows { len: 3 });
         assert_eq!(
             rows,
@@ -385,9 +357,9 @@ mod tests {
             MINIMUM + node::SPECIALIZATION_HANDLE,
             &u32::MAX.to_le_bytes(),
         );
-        let mut rows = [Row::default(); 3];
+        let mut rows = vec![Row::default(); 3];
         assert_eq!(capture(&bytes, &mut rows), Outcome::Rows { len: 3 });
-        assert_eq!(rows.map(|row| row.specialization), [u32::MAX, 11, 15]);
+        assert_eq!(rows.iter().map(|row| row.specialization).collect::<Vec<_>>(), [u32::MAX, 11, 15]);
         write(
             &mut bytes,
             ROOT + node::SPECIALIZATION_HANDLE,
@@ -402,7 +374,7 @@ mod tests {
     }
 
     #[test]
-    fn capacity_stops_before_unread_payload_and_reports_exact_remainder() {
+    fn the_count_probe_reads_no_row_payload_and_reports_every_row() {
         let bytes = tree();
         struct MissingRootPayload<'a>(&'a [u8]);
         impl Memory for MissingRootPayload<'_> {
@@ -410,7 +382,7 @@ mod tests {
                 assert_ne!(
                     address,
                     ROOT + node::SPECIALIZATION_HANDLE,
-                    "truncation read an omitted row payload"
+                    "the count probe read a row payload"
                 );
                 SliceMemory {
                     base: ADDRESS,
@@ -420,16 +392,10 @@ mod tests {
             }
         }
         assert_eq!(
-            walk_progress(
-                &MissingRootPayload(&bytes),
-                IMAGE,
-                ADDRESS,
-                19,
-                &mut [Row::default(); 1]
-            ),
+            walk_progress_buffer(&MissingRootPayload(&bytes), IMAGE, ADDRESS, 19, crate::walk::Buffer::Count),
             Outcome::Truncated {
-                len: 1,
-                unread_rows: 2
+                len: 0,
+                unread_rows: 3
             }
         );
     }
@@ -441,7 +407,7 @@ mod tests {
             let mut bytes = original.clone();
             write(&mut bytes, ADDRESS + TREE_SIZE, &count.to_le_bytes());
             assert!(matches!(
-                capture(&bytes, &mut [Row::default(); 4]),
+                capture(&bytes, &mut vec![Row::default(); 4]),
                 Outcome::Unavailable { .. }
             ));
         }
@@ -452,7 +418,7 @@ mod tests {
             &(ROOT as u64).to_le_bytes(),
         );
         assert!(matches!(
-            capture(&bytes, &mut [Row::default(); 3]),
+            capture(&bytes, &mut vec![Row::default(); 3]),
             Outcome::Unavailable { .. }
         ));
         let mut bytes = original;
@@ -467,7 +433,7 @@ mod tests {
             &(MAXIMUM as u64).to_le_bytes(),
         );
         assert!(matches!(
-            capture(&bytes, &mut [Row::default(); 3]),
+            capture(&bytes, &mut vec![Row::default(); 3]),
             Outcome::Unavailable { .. }
         ));
     }
@@ -477,15 +443,15 @@ mod tests {
         let mut bytes = tree();
         write(&mut bytes, ADDRESS + TREE_SIZE, &0_u64.to_le_bytes());
         assert!(matches!(
-            capture(&bytes, &mut []),
+            capture(&bytes, &mut Vec::new()),
             Outcome::Unavailable { .. }
         ));
         for offset in [node::LEFT, node::PARENT, node::RIGHT] {
             write(&mut bytes, HEADER + offset, &(HEADER as u64).to_le_bytes());
         }
-        assert_eq!(capture(&bytes, &mut []), Outcome::Rows { len: 0 });
+        assert_eq!(capture(&bytes, &mut Vec::new()), Outcome::Rows { len: 0 });
         assert!(matches!(
-            capture(&bytes[..0x99], &mut []),
+            capture(&bytes[..0x99], &mut Vec::new()),
             Outcome::Unavailable { .. }
         ));
     }

@@ -1,28 +1,48 @@
-import { useEffect } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import WidgetState from '../../components/WidgetState';
-import BombingBreakdown from '../../dashboard/BombingBreakdown';
+import BombingBreakdown from './BombingBreakdown';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
-import { usePlaybackHour } from '../../dashboard/playback';
+import { useHeadHour } from '../army-size/headHour.ts';
+import { useIdentityKey } from '../../dashboard/atHead';
 import { useMilitaryAirLedger } from '../../dashboard/useMilitaryAirLedger';
-import { ledgerPinnedIdentity, militaryAirPreparing } from '../../dashboard/militaryAirLedger';
+import { ledgerComplete, ledgerCountryAt, ledgerPinnedIdentity, militaryAirIndex } from '../../dashboard/militaryAirLedger';
 import { OPTIONS } from './definition';
 
 const NO_WARNINGS: string[] = [];
 
 export default function BombingDamageBreakdownWidget({ widget, runtime, active, countrySlot = null, onDiagnostics }: WidgetProps) {
-  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
-  const options = resolveOptions(OPTIONS, widget.options);
+  // Following, the sunburst reads its values at the head each frame; the widget renders only when the holder shown,
+  // or whether its damage is complete, changes.
+  const following = active && widget.time.mode === 'follow';
+  const headKey = useRef<(position: number) => string>(() => '');
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
+  const identityKey = useIdentityKey(runtime.client, track, following);
+  const playbackHour = useHeadHour(runtime.clock, following, position => headKey.current(position));
+  const options = resolveOptions(OPTIONS, widget.options);
   const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryTag(track);
   // The country's damage alone is broken down by building and state.
-  const { data, error, retry } = useMilitaryAirLedger(widget, runtime, 'bombing', active, { metric: 'total' });
+  const { data, pending, error, retry } = useMilitaryAirLedger(widget, runtime, 'bombing', active, { metric: 'total' });
+  const index = useMemo(() => data ? militaryAirIndex(data) : null, [data]);
   const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const hour = window?.lastHour ?? 0;
-  const from = widget.time.mode === 'range' ? window?.firstHour ?? hour : data?.observed[0]?.firstHour ?? track?.branch.firstHour ?? hour;
+  const from = widget.time.mode === 'range' ? window?.firstHour ?? hour : data?.countedFrom ?? data?.observed[0]?.firstHour ?? track?.branch.firstHour ?? hour;
   const end = widget.time.mode === 'range' ? hour : track?.branch.lastHour ?? hour;
+  const identity = track && tag ? ledgerPinnedIdentity(widget.options?.holder, track.source.metadata.campaignKey, track.branch.id, tag) : undefined;
+  const headAt = useMemo(() => following && track ? (position: number) => {
+    const at = resolveWindow(widget, track, runtime.tracks, position)?.lastHour;
+    return at === undefined || at < track.branch.firstHour || at > track.branch.lastHour ? null : at;
+  } : null, [following, widget, track, runtime.tracks]);
+  headKey.current = position => {
+    const at = headAt?.(position);
+    if (at == null || !index || !data || !tag) return `outside:${at ?? ''}`;
+    const row = ledgerCountryAt(index, tag, from, at, identity);
+    // The header names the holder as it is at the hour shown: the hour moves when its name, colour or flag does.
+    return JSON.stringify([row?.tag ?? null, row?.identity ?? null, ledgerComplete(data.observed, from, at, data.incomplete),
+      row ? identityKey(at, [row.tag]) : null]);
+  };
   useEffect(() => {
     onDiagnostics(data?.warnings.length ? data.warnings : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);
@@ -31,11 +51,10 @@ export default function BombingDamageBreakdownWidget({ widget, runtime, active, 
   if (!window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   if (hour < track.branch.firstHour || hour > track.branch.lastHour) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
   if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
-  if (!data) return <WidgetState kind="loading" label="Loading bombing damage…" />;
-  if (militaryAirPreparing(data, hour)) return <WidgetState kind="loading" label="This range is still being prepared." />;
+  // The breakdown's final values are the span's end: shown once every window through it is held.
+  if (!data || !index || pending) return <WidgetState kind="loading" label="Loading bombing damage…" />;
   if (!data.available) return <WidgetState kind="unavailable" message="Bombing damage was not recorded." />;
-  const identity = ledgerPinnedIdentity(widget.options?.holder, track.source.metadata.campaignKey, track.branch.id, tag);
-  return <BombingBreakdown data={data} runtime={runtime} track={track} tag={tag} identity={identity} countrySlot={countrySlot}
+  return <BombingBreakdown data={data} index={index} runtime={runtime} track={track} tag={tag} identity={identity} countrySlot={countrySlot}
     headerSelection={widget.countries.kind === 'tags' && widget.countries.tags.length === 1 && identity ? { tag, identity } : null}
-    from={from} hour={hour} end={end} dealt={options.direction === 'dealt'} options={options} active={active} />;
+    from={from} hour={hour} end={end} dealt={options.direction === 'dealt'} options={options} active={active} headAt={headAt} />;
 }

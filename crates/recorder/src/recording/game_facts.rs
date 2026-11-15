@@ -1,8 +1,12 @@
 //! The game facts a session's recordings carry, gathered beside the capture.
 
-use installed_content_core::content::{GatheredContent, facts};
+use installed_content_core::{
+    LayerRole,
+    content::{GatheredContent, facts},
+};
 use replay_data::identity::Identity;
 use std::{
+    collections::BTreeMap,
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -20,18 +24,33 @@ pub(super) struct GameFacts {
 }
 
 impl GameFacts {
-    pub(super) fn start(content: &GatheredContent, identity: &Identity, session: &Path) -> Self {
+    /// The facts of `content` as `identity`'s, the session's: a layer whose files differ from
+    /// those the session recorded is withheld by name, and facts the session already packed are
+    /// kept. Compressed chunks are kept in `cache` for later packs.
+    pub(super) fn start(
+        content: &GatheredContent,
+        identity: &Identity,
+        session: &Path,
+        cache: &Path,
+    ) -> Self {
         let cancelled = Arc::new(AtomicBool::new(false));
         let stopping = Arc::clone(&cancelled);
         let layers = content.layers.clone();
+        let withheld = changed_layers(content, identity);
         let identity = identity.clone();
         let file = session.join(replay::campaign::SESSION_FACTS_FILE);
-        let cache = replay::recorder_settings::directory();
+        let cache = cache.to_owned();
         let thread = std::thread::Builder::new()
             .name("game facts".into())
             .spawn(move || {
+                if packed(&file, &identity) {
+                    return Ok("kept as the session packed them".to_owned());
+                }
+                let withheld = withheld?;
                 job_priority::background_thread();
-                job_priority::confined(|| pack(&layers, &identity, &cache, &file, &stopping))
+                job_priority::confined(|| {
+                    pack(&layers, withheld, &identity, &cache, &file, &stopping)
+                })
             })
             .ok();
         Self { cancelled, thread }
@@ -57,23 +76,90 @@ impl Drop for GameFacts {
     }
 }
 
+/// Whether the facts file `file` already holds `identity`'s facts.
+fn packed(file: &Path, identity: &Identity) -> bool {
+    std::fs::File::open(file)
+        .ok()
+        .and_then(|mut file| replay::campaign::session_facts_place(&mut file, identity).ok())
+        .flatten()
+        .is_some()
+}
+
+/// The layers of `content`, gathered now, whose files differ from those `identity` recorded, by
+/// index with why; or why none of `content`'s facts can be `identity`'s.
+fn changed_layers(
+    content: &GatheredContent,
+    identity: &Identity,
+) -> Result<BTreeMap<usize, String>, String> {
+    if content.language != identity.language {
+        return Err(format!(
+            "the game's language is {} now, and the session recorded {}",
+            content.language, identity.language
+        ));
+    }
+    if !content
+        .dlc
+        .iter()
+        .map(|dlc| &dlc.id)
+        .eq(identity.dlc.iter().map(|dlc| &dlc.id))
+    {
+        return Err("the DLC installed now are not those the session recorded".to_owned());
+    }
+    if !content
+        .mods
+        .iter()
+        .map(|layer| &layer.id)
+        .eq(identity.mods.iter().map(|layer| &layer.id))
+    {
+        return Err("the mods enabled now are not those the session recorded".to_owned());
+    }
+    let changed = |kind: &str, id: &str, now: [u8; 32], then: [u8; 32]| {
+        (now != then).then(|| format!("{kind} {id} changed since the session began"))
+    };
+    let mut withheld = BTreeMap::new();
+    for (index, layer) in content.layers.layers.iter().enumerate() {
+        let why = match layer.role {
+            LayerRole::Dlc => content
+                .dlc
+                .iter()
+                .zip(&identity.dlc)
+                .find(|(now, _)| now.id == layer.id)
+                .and_then(|(now, then)| changed("DLC", &now.id, now.hash, then.hash)),
+            LayerRole::Mod => content
+                .mods
+                .iter()
+                .zip(&identity.mods)
+                .find(|(now, _)| now.id == layer.id)
+                .and_then(|(now, then)| changed("Mod", &now.id, now.hash, then.hash)),
+            LayerRole::Vanilla | LayerRole::Builtin | LayerRole::AboveMods => {
+                (content.vanilla_hash != identity.vanilla_hash)
+                    .then(|| "the base game changed since the session began".to_owned())
+            }
+            LayerRole::UserDirectory | LayerRole::Visual => None,
+        };
+        if let Some(why) = why {
+            withheld.insert(index, why);
+        }
+    }
+    Ok(withheld)
+}
+
 fn pack(
     layers: &installed_content_core::ResolvedLayers,
+    withheld: BTreeMap<usize, String>,
     identity: &Identity,
     cache: &Path,
     file: &PathBuf,
     cancelled: &AtomicBool,
 ) -> Result<String, String> {
-    let source = facts::Source {
-        layers,
-        withheld: Default::default(),
-    };
+    let source = facts::Source { layers, withheld };
     let executable = engine_executable::executable_tables::recorded_facts();
     let (pack, stats) = facts::write(&source, identity, executable, cache, &|| {
         cancelled.load(Ordering::Acquire)
     })
     .map_err(|error| error.to_string())?;
-    let bytes = replay::campaign::encode_session_facts(identity, &pack).map_err(|e| e.to_string())?;
+    let bytes =
+        replay::campaign::encode_session_facts(identity, &pack).map_err(|e| e.to_string())?;
     let staged = file.with_extension("bin.tmp");
     std::fs::write(&staged, &bytes)
         .and_then(|()| std::fs::rename(&staged, file))
@@ -86,4 +172,74 @@ fn pack(
         stats.cached_chunks,
         stats.chunks
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use installed_content_core::{GatherOptions, gather};
+    use std::{fs, sync::Arc};
+
+    /// A recorder taking a session over gathers the content installed now, where one mod's file
+    /// changed since the session began: that mod's facts are withheld by name, never carried
+    /// under the session's identity, and facts the session already packed are kept as they are.
+    #[test]
+    fn a_take_over_withholds_a_changed_mod_and_keeps_facts_already_packed() {
+        let root = crate::test_support::allocation_test_directory("take-over-changed-mod-facts");
+        let write = |path: &str, text: &str| {
+            let path = root.join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, text).unwrap();
+        };
+        write("game/hoi4.exe", "synthetic executable");
+        write("game/common/ideas/base.txt", "ideas = { base = {} }");
+        fs::create_dir_all(root.join("game/dlc")).unwrap();
+        write("user/settings.txt", "language=l_english");
+        write(
+            "user/dlc_load.json",
+            r#"{"enabled_mods":["mod/changed.mod"],"disabled_dlcs":[]}"#,
+        );
+        write("user/mod/changed.mod", r#"name="Changed" path="changed""#);
+        write(
+            "user/changed/common/ideas/mod.txt",
+            "ideas = { first = {} }",
+        );
+        let options = GatherOptions {
+            game_dir: root.join("game"),
+            user_dir: root.join("user"),
+            cache_dir: root.join("cache"),
+            dlc_order: None,
+        };
+        let began = gather(&options).unwrap();
+        let identity = began
+            .identity("build".into(), [1; 32], 20, "test".into(), [2; 32])
+            .unwrap();
+        write(
+            "user/changed/common/ideas/mod.txt",
+            "ideas = { second = {} }",
+        );
+        let now = gather(&options).unwrap();
+        let session = root.join("session");
+        fs::create_dir_all(&session).unwrap();
+        let file = session.join(replay::campaign::SESSION_FACTS_FILE);
+        GameFacts::start(&now, &identity, &session, &options.cache_dir)
+            .finish()
+            .unwrap();
+        let packed = fs::read(&file).unwrap();
+        let pack = replay::campaign::session_facts_for(&packed, &identity).unwrap();
+        let pack = facts::Pack::open(Arc::new(pack.to_vec()), 0, pack.len() as u64).unwrap();
+        let layer = |role| pack.layers.iter().find(|layer| layer.role == role).unwrap();
+        assert_eq!(layer(LayerRole::Vanilla).withheld(), None);
+        let changed = layer(LayerRole::Mod);
+        let reason = changed
+            .withheld()
+            .expect("the changed mod's facts were carried");
+        assert!(reason.contains("changed since"), "{reason}");
+        // Facts the session already packed for its identity are kept, not packed again.
+        GameFacts::start(&began, &identity, &session, &options.cache_dir)
+            .finish()
+            .unwrap();
+        assert_eq!(fs::read(&file).unwrap(), packed);
+        fs::remove_dir_all(root).unwrap();
+    }
 }

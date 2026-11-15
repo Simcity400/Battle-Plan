@@ -66,17 +66,17 @@ pub struct ReservedLandWalk {
     pub required_rows: usize,
     pub capacity_short: bool,
 }
-
 #[cfg(test)]
-pub fn walk_reserved_land_headers(
+pub(crate) fn walk_reserved_land_headers(
     memory: &impl Memory,
     base: usize,
     root: Result<ccountry::Country, &'static str>,
-    output: &mut [Row],
+    output: &mut Vec<Row>,
     validate_rosters: impl FnMut(usize, u64) -> Result<(), &'static str>,
 ) -> ReservedLandWalk {
-    walk_reserved_land_headers_buffer(memory, base, root, Buffer::Fixed(output), validate_rosters)
+    walk_reserved_land_headers_buffer(memory, base, root, Buffer::Growing(output), validate_rosters)
 }
+
 
 pub fn walk_reserved_land_headers_buffer(
     memory: &impl Memory,
@@ -212,13 +212,13 @@ pub fn read_wing_membership(
 /// Caller-owned row storage and a shared exact-byte name arena. All storage is
 /// allocated outside the game thread. Naval theatre state has its own reader.
 pub struct Buffers<'a> {
-    pub land: &'a mut [Row],
-    pub land_groups: &'a mut [ctheater_group::Row],
-    pub land_members: &'a mut [ctheater_group::MemberRow],
-    pub air: &'a mut [cair_theatre::Row],
-    pub air_groups: &'a mut [cair_group::Row],
-    pub air_members: &'a mut [cair_group::MemberRow],
-    pub names: &'a mut [u8],
+    pub land: &'a mut Vec<Row>,
+    pub land_groups: &'a mut Vec<ctheater_group::Row>,
+    pub land_members: &'a mut Vec<ctheater_group::MemberRow>,
+    pub air: &'a mut Vec<cair_theatre::Row>,
+    pub air_groups: &'a mut Vec<cair_group::Row>,
+    pub air_members: &'a mut Vec<cair_group::MemberRow>,
+    pub names: &'a mut Vec<u8>,
 }
 
 /// Worker storage grows from each original native header before filling.
@@ -683,13 +683,13 @@ pub fn walk(
         game_state,
         details_active,
         Storage {
-            land: Buffer::Fixed(buffers.land),
-            land_groups: Buffer::Fixed(buffers.land_groups),
-            land_members: Buffer::Fixed(buffers.land_members),
-            air: Buffer::Fixed(buffers.air),
-            air_groups: Buffer::Fixed(buffers.air_groups),
-            air_members: Buffer::Fixed(buffers.air_members),
-            names: Buffer::Fixed(buffers.names),
+            land: Buffer::Growing(buffers.land),
+            land_groups: Buffer::Growing(buffers.land_groups),
+            land_members: Buffer::Growing(buffers.land_members),
+            air: Buffer::Growing(buffers.air),
+            air_groups: Buffer::Growing(buffers.air_groups),
+            air_members: Buffer::Growing(buffers.air_members),
+            names: Buffer::Growing(buffers.names),
         },
     )
 }
@@ -710,7 +710,7 @@ pub fn walk_buffers(
     };
     let mut air_failure = None;
     let mut names = Names {
-        bytes: std::mem::replace(&mut buffers.names, Buffer::Fixed(&mut [])),
+        bytes: std::mem::replace(&mut buffers.names, Buffer::Count),
         len: 0,
         required: 0,
     };
@@ -775,9 +775,9 @@ pub struct StationedBuffers<'a> {
     /// Whether the caller requested controller-area rows in this acquisition.
     /// Stationed unit rows and their shared theatre census remain independent.
     pub areas_active: bool,
-    pub areas: &'a mut [ccontroller_area::Row],
-    pub area_provinces: &'a mut [u32],
-    pub units: &'a mut [StationedUnitRow],
+    pub areas: &'a mut Vec<ccontroller_area::Row>,
+    pub area_provinces: &'a mut Vec<u32>,
+    pub units: &'a mut Vec<StationedUnitRow>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -820,9 +820,28 @@ pub fn walk_stationed(
         game_state,
         StationedStorage {
             areas_active: buffers.areas_active,
-            areas: Buffer::Fixed(buffers.areas),
-            area_provinces: Buffer::Fixed(buffers.area_provinces),
-            units: Buffer::Fixed(buffers.units),
+            areas: Buffer::Growing(buffers.areas),
+            area_provinces: Buffer::Growing(buffers.area_provinces),
+            units: Buffer::Growing(buffers.units),
+        },
+    )
+}
+
+pub fn count_stationed(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    areas_active: bool,
+) -> StationedWalk {
+    walk_stationed_buffers(
+        memory,
+        base,
+        game_state,
+        StationedStorage {
+            areas_active,
+            areas: Buffer::Count,
+            area_provinces: Buffer::Count,
+            units: Buffer::Count,
         },
     )
 }

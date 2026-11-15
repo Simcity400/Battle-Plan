@@ -159,55 +159,29 @@ struct Output<'a> {
     rows: Buffer<'a, Row>,
     len: usize,
     unread_rows: u32,
-    memo: &'a mut VariantMemo,
+    /// `None` reads every variant's identity: a detour on the game's workers
+    /// must not allocate.
+    memo: Option<&'a mut VariantMemo>,
 }
 
 /// Authenticated variant ids by pointer, for one walk only. Within a walk the
 /// game is held at the sampling boundary, so a variant pointer read and
 /// authenticated once names the same variant for the rest of that walk; the
 /// memo is cleared at the start of every walk and never carried across hours.
+/// It grows from the walk's pool headers; the default allocates nothing.
+#[derive(Default)]
 pub struct VariantMemo {
     pointers: Vec<usize>,
     ids: Vec<u32>,
-    worker_growth: bool,
     len: usize,
 }
 
-impl Default for VariantMemo {
-    fn default() -> Self {
-        Self::vacant()
-    }
-}
-
 impl VariantMemo {
-    /// Allocated once by the owner of the capture buffers.
-    pub fn try_new() -> std::io::Result<Self> {
-        Ok(Self {
-            pointers: Vec::new(),
-            ids: Vec::new(),
-            worker_growth: true,
-            len: 0,
-        })
-    }
-
-    /// Allocation-free placeholder: remembers nothing.
-    pub fn vacant() -> Self {
-        Self {
-            pointers: Vec::new(),
-            ids: Vec::new(),
-            worker_growth: false,
-            len: 0,
-        }
-    }
-
     pub fn allocated_bytes(&self) -> usize {
         self.pointers.capacity() * size_of::<usize>() + self.ids.capacity() * size_of::<u32>()
     }
 
     fn reserve(&mut self, additional: usize) -> std::io::Result<()> {
-        if !self.worker_growth {
-            return Ok(());
-        }
         // One empty cell terminates probing; rounding is index geometry, not
         // an identity admission limit or per-country storage estimate.
         let required = crate::allocation::add(crate::allocation::add(self.len, additional)?, 1)?;
@@ -303,7 +277,7 @@ pub fn walk(
     base: usize,
     game_state: usize,
     mut select: impl FnMut(u32) -> Option<Months>,
-    rows: &mut [Row],
+    rows: &mut Vec<Row>,
     memo: &mut VariantMemo,
 ) -> Outcome {
     walk_prepared(
@@ -324,13 +298,16 @@ pub fn row_demand(
     base: usize,
     game_state: usize,
 ) -> Result<usize, &'static str> {
-    match walk(
+    match walk_prepared_buffer(
         memory,
         base,
         game_state,
-        |_| Some(Months::All),
-        &mut [],
-        &mut VariantMemo::vacant(),
+        &mut (),
+        |_, _| Ok(()),
+        |_, _| Ok(Some(Months::All)),
+        Buffer::Count,
+        None,
+        &mut |_, _, _, _| Ok(()),
     ) {
         Outcome::Rows { len } => Ok(len),
         Outcome::Truncated { len, unread_rows } => len
@@ -350,31 +327,6 @@ pub fn walk_prepared<T>(
     state: &mut T,
     prepare: impl FnMut(&mut T, usize) -> Result<(), &'static str>,
     select: impl FnMut(&mut T, u32) -> Result<Option<Months>, &'static str>,
-    rows: &mut [Row],
-    memo: &mut VariantMemo,
-) -> Outcome {
-    walk_prepared_buffer(
-        memory,
-        base,
-        game_state,
-        state,
-        prepare,
-        select,
-        Buffer::Fixed(rows),
-        memo,
-        &mut |_, _, _, _| Ok(()),
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-#[cfg(test)]
-pub fn walk_prepared_growing<T>(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    state: &mut T,
-    prepare: impl FnMut(&mut T, usize) -> Result<(), &'static str>,
-    select: impl FnMut(&mut T, u32) -> Result<Option<Months>, &'static str>,
     rows: &mut Vec<Row>,
     memo: &mut VariantMemo,
 ) -> Outcome {
@@ -386,7 +338,7 @@ pub fn walk_prepared_growing<T>(
         prepare,
         select,
         Buffer::Growing(rows),
-        memo,
+        Some(memo),
         &mut |_, _, _, _| Ok(()),
     )
 }
@@ -394,7 +346,7 @@ pub fn walk_prepared_growing<T>(
 /// Shares already authenticated group objects with an initial-history consumer.
 /// The callback adds no registry walk and must gate supplemental reads itself.
 #[allow(clippy::too_many_arguments)]
-pub fn walk_prepared_growing_observed<T>(
+pub fn walk_prepared_observed<T>(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -413,7 +365,7 @@ pub fn walk_prepared_growing_observed<T>(
         prepare,
         select,
         Buffer::Growing(rows),
-        memo,
+        Some(memo),
         visit_group,
     )
 }
@@ -427,11 +379,12 @@ fn walk_prepared_buffer<T>(
     prepare: impl FnMut(&mut T, usize) -> Result<(), &'static str>,
     mut select: impl FnMut(&mut T, u32) -> Result<Option<Months>, &'static str>,
     rows: Buffer<'_, Row>,
-    memo: &mut VariantMemo,
+    mut memo: Option<&mut VariantMemo>,
     visit_group: &mut impl FnMut(u32, usize, u32, &[u8]) -> Result<(), &'static str>,
 ) -> Outcome {
-    memo.clear();
-    memo.worker_growth |= rows.is_growing();
+    if let Some(memo) = memo.as_deref_mut() {
+        memo.clear();
+    }
     let mut output = Output {
         rows,
         len: 0,
@@ -781,10 +734,10 @@ fn read_pool(
         return Ok(());
     }
     // Native pool headers supply the full original attempted variant demand.
-    output
-        .memo
-        .reserve(items.count as usize)
-        .map_err(|_| "combat log variant memo allocation failed")?;
+    if let Some(memo) = output.memo.as_deref_mut() {
+        memo.reserve(items.count as usize)
+            .map_err(|_| "combat log variant memo allocation failed")?;
+    }
     let start = output.len;
     let mut entries = [0_u8; BATCH * equipment_entry::STRIDE];
     let mut ids = [0_u32; BATCH];
@@ -808,7 +761,7 @@ fn read_pool(
             if variant == 0 {
                 return Err("combat log pool variant pointer null");
             }
-            match output.memo.get(variant) {
+            match output.memo.as_deref().and_then(|memo| memo.get(variant)) {
                 Some(id) => ids[index] = id,
                 None => {
                     misses[missed] = index;
@@ -832,7 +785,9 @@ fn read_pool(
             )?;
             let id = (handle >> 32) as u32;
             ids[misses[miss]] = id;
-            output.memo.insert(unknown[miss], id);
+            if let Some(memo) = output.memo.as_deref_mut() {
+                memo.insert(unknown[miss], id);
+            }
         }
         for (index, entry) in bytes.chunks_exact(equipment_entry::STRIDE).enumerate() {
             output.rows[output.len] = Row {
@@ -923,13 +878,11 @@ pub fn deleted_logs(
     let groups = Array::from_header(header[GROUPS..GROUPS + 16].try_into().unwrap(), 8)
         .ok_or("combat log group array invalid")?;
     let country = u32_at(&header, COUNTRY);
-    // No memo: the detour runs on the game's workers and must not allocate.
-    let mut memo = VariantMemo::vacant();
     let mut output = Output {
-        rows: Buffer::Fixed(rows),
+        rows: Buffer::Exact(rows),
         len: 0,
         unread_rows: 0,
-        memo: &mut memo,
+        memo: None,
     };
     let mut resolver = crate::creference_registry::HeaderResolver::default();
     for_each_group(memory, &vtables, groups, |_, _, bytes, reference| {

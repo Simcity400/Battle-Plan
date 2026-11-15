@@ -61,8 +61,8 @@ impl Captured {
         grow_vec(&mut self.entries, capacity.entries);
         grow_vec(&mut self.names, capacity.names);
     }
-    pub fn drain_growing(&mut self) {
-        self.drained = Some(fuel_awards::drain_growing(
+    pub fn drain(&mut self) {
+        self.drained = Some(fuel_awards::drain(
             &mut self.entries,
             &mut self.names,
         ));

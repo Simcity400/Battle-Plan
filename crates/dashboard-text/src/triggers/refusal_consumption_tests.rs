@@ -196,7 +196,7 @@ fn capital_and_overlord_indexes_preserve_failed_country_joins() {
             }
         });
         assert_eq!(failures.len(), 1, "{failures:?}");
-        assert!(failures.first().unwrap().contains("CountryLinks"));
+        assert!(failures.first().unwrap().names("CountryLinks"));
     }
 }
 
@@ -219,8 +219,13 @@ fn unavailable_faction_members_has_one_global_identity_across_scope_readers() {
             });
             assert_eq!(failures.len(), 1, "{failures:?}");
             let why = failures.first().unwrap();
-            assert!(
-                why.contains("FactionMembers") && !why.contains("Country("),
+            assert_eq!(
+                why.identities(),
+                &BTreeSet::from([super::super::refusal::Identity::Input {
+                    table: TableId::FactionMembers,
+                    field: String::new(),
+                    scope: None,
+                }]),
                 "{why}"
             );
         }
@@ -240,7 +245,7 @@ fn consuming_a_lazy_seed_through_the_output_reader_replays_its_failure() {
                 super::super::refusal::assert_reached(&failure);
             });
             assert_eq!(failures.len(), 1, "{failures:?}");
-            assert!(failures.first().unwrap().contains("ScriptVariables"));
+            assert!(failures.first().unwrap().names("ScriptVariables"));
         }
     });
 }
@@ -620,7 +625,7 @@ fn positive_id_sources_record_but_authenticated_nulls_and_membership_absence_do_
             "Raids",
         ] {
             assert_eq!(
-                missing.iter().filter(|why| why.contains(table)).count(),
+                missing.iter().filter(|why| why.names(table)).count(),
                 1,
                 "{missing:?}"
             );
@@ -695,7 +700,7 @@ fn country_token_absence_requires_complete_countries_on_cold_and_warm_reads() {
                     assert!(missing.is_empty(), "{missing:?}");
                 } else {
                     assert_eq!(missing.len(), 1, "{missing:?}");
-                    assert!(missing.first().unwrap().contains("Countries"));
+                    assert!(missing.first().unwrap().names("Countries"));
                 }
                 let body = "set_temp_variable = { red = AAA } set_temp_variable = { alpha = 1 }";
                 if status == "complete" {
@@ -738,7 +743,7 @@ fn character_token_membership_absence_requires_both_complete_tables() {
                     missing
                         .first()
                         .unwrap()
-                        .contains(&format!("{unavailable:?}"))
+                        .names(&format!("{unavailable:?}"))
                 );
             }
         });
@@ -793,7 +798,7 @@ fn nested_scope_parse_replays_country_classification_failure_on_cold_and_warm_re
                         panic!("nested classification must refuse: {result:?}");
                     };
                     assert_eq!(reasons.len(), 1, "{reasons:?}");
-                    assert!(reasons.first().unwrap().contains("Countries"));
+                    assert!(reasons.first().unwrap().names("Countries"));
                 } else {
                     assert_eq!(result, Eval::True);
                     assert!(eval.temp_value(b"green").is_none());

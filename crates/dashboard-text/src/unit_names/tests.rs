@@ -47,7 +47,7 @@ fn task_force_name_capture_failure_and_historical_absence_remain_distinct() {
     assert!(
         task_force_name(&row, &localisation("english"), "english")
             .unwrap_err()
-            .contains("TaskForceCounterInputs.name not recorded")
+            .contains("name of task force counter inputs not recorded")
     );
     row.name = Recorded::Value(None);
     assert!(
@@ -90,7 +90,7 @@ fn retained_army_name_is_authoritative_without_generator_or_content() {
             "failed cache does not acquire content"
         ))
         .unwrap_err()
-        .contains("DivisionStatus.name unavailable")
+        .contains("name of division status unavailable")
     );
 }
 

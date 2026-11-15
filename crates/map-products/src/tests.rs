@@ -949,7 +949,7 @@ fn original_recorded_battles(
             .iter()
             .zip(&combat.attacker_classes)
             .chain(combat.defenders.iter().zip(&combat.defender_classes));
-        for (&division, _) in members.filter(|(_, class)| **class == DIVISION_CLASS) {
+        for (&division, _) in members.filter(|(_, class)| **class == viewer_audio::battle::DIVISION_CLASS) {
             match composition(division) {
                 Some(units) => {
                     for (unit, count) in units {

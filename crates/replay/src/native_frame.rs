@@ -2,9 +2,10 @@
 //! conversion hands the row encoder today: one [`TableWriter`] per table and the run's
 //! dictionary. A run is one branch's continuous hours; a new branch starts a new writer.
 //!
-//! Each table's sample hour follows the row decoder: a complete table read this hour is
-//! sampled at it, an unread table the hour leaves alone keeps its sample, and any other view
-//! (changed unread, truncated, unavailable, not recorded) has none. A staggered table's
+//! Each table's sample hour: a complete table read this hour is sampled at it, an unread table
+//! the hour leaves alone keeps its sample, and any other view (changed unread, truncated,
+//! unavailable, not recorded) has none. An unread table keeps it at a row keyframe too, where
+//! the row decoder, starting afresh, has none. A staggered table's
 //! off-slot refusal carries its complete rows, as the row encoder carries it between keyframes,
 //! and a truncated read is refused where the row encoder writes a keyframe: at the hours
 //! [`RowFrame::keyframe`] names, and otherwise at a run's first hour.
@@ -399,11 +400,11 @@ impl FrameWriter {
             } else {
                 writer.acquisition().last_read
             };
-            // A row keyframe writes every table anew, so an unread one keeps no sample.
+            // Also at a row keyframe: the rows this run holds prove the read they came from.
             let sample = match recorded.get(index) {
                 Some(source) => source.sample,
                 None => match prepared.evidence.status {
-                    Status::Complete if was_read || (!changed && !keyframe) => implied,
+                    Status::Complete if was_read || !changed => implied,
                     _ => None,
                 },
             };

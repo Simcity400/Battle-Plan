@@ -19,7 +19,7 @@ use replay_data::{BranchId, Hour, rows::TableId, rows::tables};
 use replay_derive::air_region_derive as derive;
 use replay_frame::frame::DecodedFrame;
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashSet, VecDeque},
     sync::{
         Arc, Condvar, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -51,7 +51,7 @@ pub trait Rosters {
 /// One sample's roster: which canonical slots it lists and which of them are eligible,
 /// as bit sets. Equal rosters share one interned snapshot.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
-struct Roster {
+pub struct Roster {
     listed: Vec<u64>,
     eligible: Vec<u64>,
 }
@@ -73,60 +73,104 @@ impl Roster {
     fn eligible(&self, slot: u32) -> Option<bool> {
         Self::get(&self.listed, slot).then(|| Self::get(&self.eligible, slot))
     }
+
+    /// The roster AirDailyRoster's rows list, each raw country turned into its canonical
+    /// slot by CountryLinks (key-sorted rows, as a frame holds them).
+    pub fn of(
+        rows: &[replay_data::rows::AirDailyRosterRow],
+        links: &[replay_data::rows::CountryLinkRow],
+    ) -> Result<Self, String> {
+        let mut roster = Self::default();
+        for row in rows {
+            let slot = links
+                .binary_search_by_key(&row.country, |link| link.id)
+                .map(|at| links[at].canonical_slot)
+                .map_err(|_| format!("AirDailyRoster country {} has no CountryLink", row.country))?;
+            Self::set(&mut roster.listed, slot);
+            if row.eligible {
+                Self::set(&mut roster.eligible, slot);
+            }
+        }
+        Ok(roster)
+    }
+
+    fn bytes(&self) -> usize {
+        (self.listed.capacity() + self.eligible.capacity()) * size_of::<u64>()
+    }
 }
 
 type Sample = Result<Arc<Roster>, String>;
 
 /// Why a search stopped: a newer demand or the service closing superseded it.
-const SUPERSEDED: &str = "the air roster search was superseded";
+pub const SUPERSEDED: &str = "the air roster search was superseded";
 
-/// The recording's daily air rosters at the samples around each daily pass, read from
-/// the recording a block at a time and kept. Each sample holds an interned snapshot, so
-/// a history of unchanged rosters keeps one copy. Reading blocks; only the worker calls
-/// it.
-struct Samples {
-    replay: Arc<Replay>,
-    columnar: Option<Arc<Natives>>,
-    cursor: OnceLock<Result<Mutex<Cursor>, String>>,
-    hours: Mutex<BTreeMap<(BranchId, Hour), Sample>>,
-    distinct: Mutex<HashSet<Arc<Roster>>>,
-    /// Blocks read, for the cancellation checks.
-    blocks: AtomicUsize,
-    /// Answers whether the current search should stop before reading another block.
-    superseded: Box<dyn Fn() -> bool + Send + Sync>,
+/// What a source read for an asked hour: the span of hours it read, which holds that hour,
+/// and the roster at each sample of it around a daily pass's tick (hours ≡ 23 and ≡ 0 mod
+/// 24), or why that sample is unreadable.
+pub struct Span {
+    pub first: Hour,
+    pub last: Hour,
+    pub samples: Vec<(Hour, Result<Roster, String>)>,
 }
 
-impl Samples {
-    fn roster(&self, decoded: &DecodedFrame) -> Sample {
-        let rows = decoded
-            .complete::<tables::AirDailyRoster>()
-            .map_err(|error| error.to_string())?;
-        let links = decoded
-            .complete::<tables::CountryLinks>()
-            .map_err(|error| error.to_string())?;
-        let mut roster = Roster::default();
-        for row in rows {
-            let slot = links
-                .binary_search_by_key(&row.country, |link| link.id)
-                .map(|at| links[at].canonical_slot)
-                .map_err(|_| {
-                    format!("AirDailyRoster country {} has no CountryLink", row.country)
-                })?;
-            Roster::set(&mut roster.listed, slot);
-            if row.eligible {
-                Roster::set(&mut roster.eligible, slot);
-            }
-        }
-        Ok(self.intern(roster))
-    }
+/// Whether `hour` is a sample around a daily pass's tick: the hour before it or the pass's own.
+pub fn sample_hour(hour: Hour) -> bool {
+    matches!(hour.rem_euclid(derive::DAY), 0 | 23)
+}
 
-    fn read_columnar(&self, branch: BranchId, hour: Hour) -> Sample {
-        let natives = self.columnar.as_ref().expect("columnar source");
+/// Where the roster samples are read from: today's block reader, today's columnar cursor,
+/// or lanes of the history's own (the viewer's).
+pub trait SampleSource: Send + Sync {
+    /// The span holding `hour` of `branch`, an empty one where nothing is recorded;
+    /// `Err(SUPERSEDED)` once `superseded` says to stop.
+    fn span(&self, branch: BranchId, hour: Hour, superseded: &dyn Fn() -> bool) -> Result<Span, String>;
+}
+
+/// Today's reader: the whole block holding the hour, decoded, its samples kept.
+struct Blocks(Arc<Replay>);
+
+impl SampleSource for Blocks {
+    fn span(&self, branch: BranchId, hour: Hour, _: &dyn Fn() -> bool) -> Result<Span, String> {
+        let Some(index) = self.0.index.iter().find(|index| {
+            index.branch == branch && index.first_hour <= hour && hour <= index.last_hour
+        }) else {
+            return Ok(Span { first: hour, last: hour, samples: Vec::new() });
+        };
+        let mut samples = Vec::new();
+        let tables = [TableId::AirDailyRoster, TableId::CountryLinks];
+        let read = self.0.read_block_alone(
+            index,
+            &tables,
+            |_, decoded| {
+                let at = decoded.hour;
+                if sample_hour(at) {
+                    samples.push((at, roster(decoded)));
+                }
+                Ok(())
+            },
+            || Ok(()),
+        );
+        if let Err(error) = read {
+            samples.push((hour, Err(format!("hour {hour} is unreadable: {error}"))));
+        }
+        Ok(Span { first: index.first_hour, last: index.last_hour, samples })
+    }
+}
+
+/// Today's columnar cursor over the two tables, moved to each sample asked.
+struct Columnar {
+    replay: Arc<Replay>,
+    natives: Arc<Natives>,
+    cursor: OnceLock<Result<Mutex<Cursor>, String>>,
+}
+
+impl SampleSource for Columnar {
+    fn span(&self, branch: BranchId, hour: Hour, superseded: &dyn Fn() -> bool) -> Result<Span, String> {
         let cursor = self
             .cursor
             .get_or_init(|| {
                 Cursor::new(
-                    Arc::clone(natives),
+                    Arc::clone(&self.natives),
                     &[TableId::AirDailyRoster, TableId::CountryLinks],
                     self.replay.format,
                     self.replay.capture_mode,
@@ -139,25 +183,97 @@ impl Samples {
         let mut cursor = cursor
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if (self.superseded)() {
+        if superseded() {
             return Err(SUPERSEDED.into());
         }
+        let only = |sample| Ok(Span { first: hour, last: hour, samples: vec![(hour, sample)] });
         let Some(segment) = self.replay.segment_at(branch, hour) else {
-            return Err(format!("hour {hour} of branch {branch} is not recorded"));
+            return only(Err(format!("hour {hour} of branch {branch} is not recorded")));
         };
-        if !cursor
-            .move_to(segment, branch, hour, &*self.superseded)
-            .map_err(|error| {
-                if (self.superseded)() {
-                    SUPERSEDED.into()
-                } else {
-                    error.to_string()
-                }
-            })?
-        {
-            return Err(format!("hour {hour} of branch {branch} is not recorded"));
+        match cursor.move_to(segment, branch, hour, superseded) {
+            Err(_) if superseded() => Err(SUPERSEDED.into()),
+            Err(error) => only(Err(error.to_string())),
+            Ok(false) => only(Err(format!("hour {hour} of branch {branch} is not recorded"))),
+            Ok(true) => only(cursor.build(None).map_err(|error| error.to_string()).and_then(|decoded| roster(&decoded))),
         }
-        self.roster(&cursor.build(None).map_err(|error| error.to_string())?)
+    }
+}
+
+fn roster(decoded: &DecodedFrame) -> Result<Roster, String> {
+    let rows = decoded
+        .complete::<tables::AirDailyRoster>()
+        .map_err(|error| error.to_string())?;
+    let links = decoded
+        .complete::<tables::CountryLinks>()
+        .map_err(|error| error.to_string())?;
+    Roster::of(rows, links)
+}
+
+/// The spans whose samples are kept: the newest few, so what is held does not grow with
+/// hours played. An eligible country's question reads the head's span and at most the one
+/// before it; a search further back reads and drops.
+const KEPT: usize = 8;
+
+/// The recording's daily air rosters at the samples around each daily pass, read through
+/// one source and shared by every reader of the history (the province hover, the combat
+/// window's air panel, the air-mission counters). Each sample holds an interned snapshot,
+/// so a history of unchanged rosters keeps one copy.
+pub struct Sampler {
+    replay: Arc<Replay>,
+    columnar: Option<Arc<Natives>>,
+    source: Box<dyn SampleSource>,
+    hours: Mutex<BTreeMap<(BranchId, Hour), Sample>>,
+    /// The spans read, oldest first.
+    spans: Mutex<VecDeque<(BranchId, Hour, Hour)>>,
+    distinct: Mutex<HashSet<Arc<Roster>>>,
+    /// Spans read, for the cancellation checks.
+    blocks: AtomicUsize,
+    /// One span read at a time: a second asker of the same span waits and finds it held.
+    reading: Mutex<()>,
+}
+
+impl Sampler {
+    pub fn new(replay: Arc<Replay>, source: Box<dyn SampleSource>) -> Self {
+        Self::with(replay, None, source)
+    }
+
+    /// Today's sources: the columnar cursor when `columnar` is given, else the block reader.
+    pub fn today(replay: Arc<Replay>, columnar: Option<Arc<Natives>>) -> Self {
+        let source: Box<dyn SampleSource> = match &columnar {
+            Some(natives) => Box::new(Columnar { replay: Arc::clone(&replay), natives: Arc::clone(natives), cursor: OnceLock::new() }),
+            None => Box::new(Blocks(Arc::clone(&replay))),
+        };
+        Self::with(replay, columnar, source)
+    }
+
+    fn with(replay: Arc<Replay>, columnar: Option<Arc<Natives>>, source: Box<dyn SampleSource>) -> Self {
+        Self {
+            replay,
+            columnar,
+            source,
+            hours: Mutex::default(),
+            spans: Mutex::default(),
+            distinct: Mutex::default(),
+            blocks: AtomicUsize::new(0),
+            reading: Mutex::default(),
+        }
+    }
+
+    pub fn replay(&self) -> &Arc<Replay> {
+        &self.replay
+    }
+
+    pub fn columnar(&self) -> Option<&Arc<Natives>> {
+        self.columnar.as_ref()
+    }
+
+    /// The samples, spans and distinct rosters held, and their bytes.
+    pub fn held(&self) -> (usize, usize, usize, usize) {
+        let hours = self.hours.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let distinct = self.distinct.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let spans = self.spans.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len();
+        let bytes = hours.len() * (size_of::<(BranchId, Hour)>() + size_of::<Sample>()) + distinct.iter().map(|roster| roster.bytes() + size_of::<Roster>()).sum::<usize>();
+        (hours.len(), spans, distinct.len(), bytes)
     }
 
     fn intern(&self, roster: Roster) -> Arc<Roster> {
@@ -173,79 +289,57 @@ impl Samples {
         roster
     }
 
-    /// Every pass-adjacent sample of the block holding `hour`, or why it is unreadable.
-    fn read_block(&self, branch: BranchId, hour: Hour) -> BTreeMap<Hour, Sample> {
-        let mut out = BTreeMap::new();
-        let Some(index) = self.replay.index.iter().find(|index| {
-            index.branch == branch && index.first_hour <= hour && hour <= index.last_hour
-        }) else {
-            return out;
-        };
-        self.blocks.fetch_add(1, Ordering::AcqRel);
-        let tables = [TableId::AirDailyRoster, TableId::CountryLinks];
-        let read = self.replay.read_block_alone(
-            index,
-            &tables,
-            |_, decoded| {
-                let at = decoded.hour;
-                if matches!(at.rem_euclid(derive::DAY), 0 | 23) {
-                    out.insert(at, self.roster(decoded));
-                }
-                Ok(())
-            },
-            || Ok(()),
-        );
-        if let Err(error) = read {
-            out.insert(hour, Err(format!("hour {hour} is unreadable: {error}")));
+    /// Keeps `span`'s samples, and the newest [`KEPT`] spans' only.
+    fn keep(&self, branch: BranchId, span: Span) {
+        let mut hours = self.hours.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        for (at, sample) in span.samples {
+            hours.entry((branch, at)).or_insert_with(|| sample.map(|roster| self.intern(roster)));
         }
-        out
-    }
-}
-
-impl RosterSamples for Samples {
-    fn first_hour(&self, branch: BranchId) -> Option<Hour> {
-        self.replay
-            .branches
-            .iter()
-            .find(|start| start.id == branch)
-            .map(|start| start.first_hour)
-    }
-
-    fn eligible(&self, branch: BranchId, hour: Hour, slot: u32) -> Result<bool, String> {
-        let held = self
-            .hours
+        let mut spans = self.spans.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        spans.push_back((branch, span.first, span.last));
+        if spans.len() <= KEPT {
+            return;
+        }
+        while spans.len() > KEPT {
+            spans.pop_front();
+        }
+        hours.retain(|&(of, at), _| spans.iter().any(|&(branch, first, last)| branch == of && first <= at && at <= last));
+        drop(hours);
+        self.distinct
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&(branch, hour))
-            .cloned();
-        let roster = match held {
+            .retain(|roster| Arc::strong_count(roster) > 1);
+    }
+
+    fn eligible(&self, branch: BranchId, hour: Hour, slot: u32, superseded: &dyn Fn() -> bool) -> Result<bool, String> {
+        let held = || {
+            self.hours
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(&(branch, hour))
+                .cloned()
+        };
+        let roster = match held() {
             Some(roster) => roster,
             None => {
-                if (self.superseded)() {
+                if superseded() {
                     return Err(SUPERSEDED.into());
                 }
-                let block = if self.columnar.is_some() {
-                    let sample = self.read_columnar(branch, hour);
-                    if sample.as_ref().err().is_some_and(|why| why == SUPERSEDED) {
-                        return Err(SUPERSEDED.into());
+                let _reading = self.reading.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                match held() {
+                    Some(roster) => roster,
+                    None => {
+                        self.blocks.fetch_add(1, Ordering::AcqRel);
+                        let mut span = self.source.span(branch, hour, superseded)?;
+                        if !span.samples.iter().any(|(at, _)| *at == hour) {
+                            span.samples.push((hour, Err(format!("hour {hour} of branch {branch} is not recorded"))));
+                            span.first = span.first.min(hour);
+                            span.last = span.last.max(hour);
+                        }
+                        self.keep(branch, span);
+                        held().unwrap_or_else(|| Err(format!("hour {hour} of branch {branch} is not recorded")))
                     }
-                    BTreeMap::from([(hour, sample)])
-                } else {
-                    self.read_block(branch, hour)
-                };
-                let mut hours = self
-                    .hours
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                for (at, roster) in block {
-                    hours.entry((branch, at)).or_insert(roster);
                 }
-                hours
-                    .entry((branch, hour))
-                    .or_insert_with(|| {
-                        Err(format!("hour {hour} of branch {branch} is not recorded"))
-                    })
-                    .clone()
             }
         };
         roster?
@@ -254,37 +348,44 @@ impl RosterSamples for Samples {
     }
 }
 
+/// A sampler asked on behalf of one search, which `superseded` may stop between reads.
+struct Asking<'a>(&'a Sampler, &'a dyn Fn() -> bool);
+
+impl RosterSamples for Asking<'_> {
+    fn first_hour(&self, branch: BranchId) -> Option<Hour> {
+        self.0
+            .replay
+            .branches
+            .iter()
+            .find(|start| start.id == branch)
+            .map(|start| start.first_hour)
+    }
+
+    fn eligible(&self, branch: BranchId, hour: Hour, slot: u32) -> Result<bool, String> {
+        self.0.eligible(branch, hour, slot, self.1)
+    }
+}
+
 /// The recording's daily air rosters read on the asking thread, for an hour builder that
-/// answers within the hour it builds. Samples read once are kept.
-pub struct RosterHistory(Samples);
+/// answers within the hour it builds; samples kept as the sampler bounds them.
+pub struct RosterHistory(Arc<Sampler>);
 
 impl RosterHistory {
-    pub fn new(replay: Arc<Replay>, columnar: Option<Arc<Natives>>) -> Self {
-        Self(Samples {
-            replay,
-            columnar,
-            cursor: OnceLock::new(),
-            hours: Mutex::default(),
-            distinct: Mutex::default(),
-            blocks: AtomicUsize::new(0),
-            superseded: Box::new(|| false),
-        })
+    /// Another reader of `sampler`'s history.
+    pub fn of(sampler: Arc<Sampler>) -> Self {
+        Self(sampler)
     }
 
-    pub fn replay(&self) -> &Arc<Replay> {
-        &self.0.replay
-    }
-
-    pub fn columnar(&self) -> Option<&Arc<Natives>> {
-        self.0.columnar.as_ref()
+    pub fn sampler(&self) -> &Arc<Sampler> {
+        &self.0
     }
 
     /// Whether the daily pass at `pass` visited the country in `slot`
     /// ([`derive::pass_visited`]). A pass at or before the branch's first sample counts as not
     /// visiting: every row read since already holds it ([`derive::visiting_pass`]).
     pub fn visited(&self, branch: BranchId, pass: Hour, slot: u32) -> Result<bool, String> {
-        let first = self
-            .0
+        let asking = Asking(&self.0, &|| false);
+        let first = asking
             .first_hour(branch)
             .ok_or_else(|| format!("branch {branch} is not recorded"))?;
         if pass <= first {
@@ -292,9 +393,15 @@ impl RosterHistory {
         }
         derive::pass_visited(
             pass,
-            self.0.eligible(branch, pass - 1, slot)?,
-            self.0.eligible(branch, pass, slot)?,
+            asking.eligible(branch, pass - 1, slot)?,
+            asking.eligible(branch, pass, slot)?,
         )
+    }
+
+    /// The latest daily pass of `branch` at or before `hour` that visited the country in
+    /// `slot`, read on this thread.
+    pub fn visiting_pass(&self, branch: BranchId, hour: Hour, slot: u32) -> Result<Option<Hour>, String> {
+        visiting_pass(&Asking(&self.0, &|| false), branch, hour, slot)
     }
 }
 
@@ -312,7 +419,9 @@ struct Demand {
 }
 
 struct Shared {
-    samples: Samples,
+    samples: Arc<Sampler>,
+    /// Whether the search in hand is still the latest demand.
+    superseded: Box<dyn Fn() -> bool + Send + Sync>,
     answers: Mutex<BTreeMap<Key, Answer>>,
     demand: Arc<(Mutex<Demand>, Condvar)>,
     /// Advances with every answer, so a held hover built while one was pending rebuilds.
@@ -353,7 +462,7 @@ impl Shared {
             }
         };
         let (branch, hour, slot) = key;
-        let answer = visiting_pass(&self.samples, branch, hour, slot);
+        let answer = visiting_pass(&self.asking(), branch, hour, slot);
         let (demand, _) = &*self.demand;
         let mut demand = demand
             .lock()
@@ -369,12 +478,24 @@ impl Shared {
             demand.latest = None;
         }
         drop(demand);
-        self.answers
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(key, answer);
+        self.keep(key, answer);
         self.advance();
         true
+    }
+
+    fn asking(&self) -> Asking<'_> {
+        Asking(&self.samples, &*self.superseded)
+    }
+
+    /// Keeps `answer`, the newest per (branch, slot): what is held does not grow with the
+    /// hours a hover is asked at.
+    fn keep(&self, key: Key, answer: Answer) {
+        let mut answers = self
+            .answers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        answers.retain(|&(branch, _, slot), _| (branch, slot) != (key.0, key.2));
+        answers.insert(key, answer);
     }
 
     /// Failed spawns must stop the already-started service, or waiters would hang.
@@ -457,7 +578,12 @@ impl PassRosters {
         file: Arc<Natives>,
         wake: impl Fn() + Send + Sync + 'static,
     ) -> Self {
-        Self::with_source(replay, wake, true, Some(file))
+        Self::with_sampler(Arc::new(Sampler::today(replay, Some(file))), wake, true)
+    }
+
+    /// Another reader of `sampler`'s history, with a worker of its own.
+    pub fn of(sampler: Arc<Sampler>, wake: impl Fn() + Send + Sync + 'static) -> Self {
+        Self::with_sampler(sampler, wake, true)
     }
 
     fn with_worker(
@@ -465,14 +591,13 @@ impl PassRosters {
         wake: impl Fn() + Send + Sync + 'static,
         spawn: bool,
     ) -> Self {
-        Self::with_source(replay, wake, spawn, None)
+        Self::with_sampler(Arc::new(Sampler::today(replay, None)), wake, spawn)
     }
 
-    fn with_source(
-        replay: Arc<Replay>,
+    fn with_sampler(
+        samples: Arc<Sampler>,
         wake: impl Fn() + Send + Sync + 'static,
         spawn: bool,
-        columnar: Option<Arc<Natives>>,
     ) -> Self {
         let demand: Arc<(Mutex<Demand>, Condvar)> = Arc::default();
         let superseded = {
@@ -488,15 +613,8 @@ impl PassRosters {
         };
         Self {
             shared: Arc::new(Shared {
-                samples: Samples {
-                    replay,
-                    columnar,
-                    cursor: OnceLock::new(),
-                    hours: Mutex::default(),
-                    distinct: Mutex::default(),
-                    blocks: AtomicUsize::new(0),
-                    superseded: Box::new(superseded),
-                },
+                samples,
+                superseded: Box::new(superseded),
                 answers: Mutex::default(),
                 demand,
                 generation: AtomicU64::new(0),
@@ -512,11 +630,15 @@ impl PassRosters {
     }
 
     pub fn replay(&self) -> &Arc<Replay> {
-        &self.shared.samples.replay
+        self.shared.samples.replay()
     }
 
     pub fn columnar(&self) -> Option<&Arc<Natives>> {
-        self.shared.samples.columnar.as_ref()
+        self.shared.samples.columnar()
+    }
+
+    pub fn sampler(&self) -> &Arc<Sampler> {
+        &self.shared.samples
     }
 
     /// How many answers have completed.
@@ -1069,7 +1191,7 @@ pub(super) mod tests {
         fresh.shared.demand.0.lock().unwrap().searching = Some((1, 127, 5));
         assert_eq!(fresh.visiting_pass(1, 103, 5), None);
         assert_eq!(
-            visiting_pass(&fresh.shared.samples, 1, 127, 5),
+            visiting_pass(&fresh.shared.asking(), 1, 127, 5),
             Err(SUPERSEDED.into())
         );
         assert_eq!(fresh.shared.samples.blocks.load(Ordering::Acquire), 0);

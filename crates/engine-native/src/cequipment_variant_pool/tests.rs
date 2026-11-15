@@ -74,9 +74,9 @@ fn stockpiles_authenticate_aliases_and_count_later_countries_after_capacity() {
         base: 0,
         bytes: &bytes,
     };
-    let mut rows = [StockpileRow::default(); 4];
+    let mut rows = vec![StockpileRow::default(); 4];
     assert_eq!(
-        walk_stockpiles(&memory, 0, 0x1000, &mut rows),
+        walk_stockpiles_buffer(&memory, 0, 0x1000, crate::walk::Buffer::Growing(&mut rows)),
         Outcome::Rows { len: 3 }
     );
     assert_eq!(
@@ -91,15 +91,8 @@ fn stockpiles_authenticate_aliases_and_count_later_countries_after_capacity() {
         base: 0,
         bytes: &bytes,
     };
-    assert_eq!(
-        walk_stockpiles(&memory, 0, 0x1000, &mut rows[..1]),
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 2
-        }
-    );
     assert!(matches!(
-        walk_stockpiles(&memory, 0, 0x1000, &mut rows),
+        walk_stockpiles_buffer(&memory, 0, 0x1000, crate::walk::Buffer::Growing(&mut rows)),
         Outcome::Unavailable { .. }
     ));
     p64(&mut bytes, 0x9000 + cproduction_status::COUNTRY, 0x4000);
@@ -108,7 +101,7 @@ fn stockpiles_authenticate_aliases_and_count_later_countries_after_capacity() {
         bytes: &bytes,
     };
     assert_eq!(
-        walk_stockpiles(&memory, 0, 0x1000, &mut rows[..1]),
+        walk_stockpiles(&memory, 0, 0x1000, &mut rows),
         Outcome::Unavailable {
             reason: "production status country mismatch"
         }
@@ -125,7 +118,7 @@ fn no_country_census_is_unavailable_but_authenticated_empty_stockpiles_are_empty
         bytes: &bytes,
     };
     assert_eq!(
-        walk_stockpiles(&memory, 0, 0x1000, &mut []),
+        walk_stockpiles_buffer(&memory, 0, 0x1000, crate::walk::Buffer::Count),
         Outcome::Rows { len: 0 }
     );
     bytes[0x2000..0x2020].fill(0);
@@ -134,7 +127,7 @@ fn no_country_census_is_unavailable_but_authenticated_empty_stockpiles_are_empty
         bytes: &bytes,
     };
     assert_eq!(
-        walk_stockpiles(&memory, 0, 0x1000, &mut []),
+        walk_stockpiles_buffer(&memory, 0, 0x1000, crate::walk::Buffer::Count),
         Outcome::Unavailable {
             reason: "stockpile country census contains no countries"
         }
@@ -167,7 +160,7 @@ fn division_dependencies_and_later_pool_headers_are_preserved() {
         base: 0,
         bytes: &bytes,
     };
-    let mut rows = [DivisionRow::default(); 3];
+    let mut rows = vec![DivisionRow::default(); 3];
     assert_eq!(
         walk_divisions(&memory, 0, &sources, &mut rows),
         Outcome::Rows { len: 3 }
@@ -195,13 +188,6 @@ fn division_dependencies_and_later_pool_headers_are_preserved() {
         (rows[0].division, rows[1].ordinal),
         (sources[1].division, 1)
     );
-    assert_eq!(
-        walk_divisions(&memory, 0, &sources, &mut rows[..1]),
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 2
-        }
-    );
     p32(
         &mut bytes,
         sources[1].pointer + carmy::EQUIPMENT_POOL + COUNT,
@@ -212,7 +198,7 @@ fn division_dependencies_and_later_pool_headers_are_preserved() {
         bytes: &bytes,
     };
     assert_eq!(
-        walk_divisions(&memory, 0, &sources, &mut rows[..1]),
+        walk_divisions(&memory, 0, &sources, &mut rows),
         Outcome::Unavailable {
             reason: "equipment pool array invalid or unreadable"
         }
@@ -251,7 +237,7 @@ fn filtered_worker_division_equipment_grows_for_mod_pools_without_roster_growth(
             bytes: &bytes,
         };
         assert_eq!(
-            walk_divisions_where_growing(&memory, 0, &sources, |_| true, &mut rows),
+            walk_divisions_where(&memory, 0, &sources, |_| true, &mut rows),
             Outcome::Rows {
                 len: COUNTRIES * entries as usize
             }
@@ -266,16 +252,12 @@ fn filtered_worker_division_equipment_grows_for_mod_pools_without_roster_growth(
         base: 0,
         bytes: &bytes,
     };
-    assert!(
-        matches!(walk_divisions_where(&memory, 0, &sources, |_| true, &mut rows[..1]),
-        Outcome::Truncated { unread_rows, .. } if unread_rows == (COUNTRIES * 17 - 1) as u32)
-    );
     let rejected = DivisionSource {
         pointer: usize::MAX,
         ..Default::default()
     };
     assert_eq!(
-        walk_divisions_where_growing(&memory, 0, &[rejected], |_| false, &mut rows),
+        walk_divisions_where(&memory, 0, &[rejected], |_| false, &mut rows),
         Outcome::Rows { len: 0 }
     );
 }
@@ -340,7 +322,7 @@ fn a_mid_batch_bank_fault_keeps_its_reason_and_stops_before_later_entries() {
         country: 7,
     }];
     let bytes = bank(3);
-    let mut rows = [DivisionRow::default(); 3];
+    let mut rows = vec![DivisionRow::default(); 3];
     assert_eq!(
         walk_divisions(
             &SliceMemory {

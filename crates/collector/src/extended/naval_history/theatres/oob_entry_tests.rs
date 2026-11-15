@@ -58,7 +58,7 @@ pub(super) fn copy_oob_root_serial(
                     })
                 {
                     job.oob_theatres_required = job.oob_theatres.len().saturating_add(1);
-                    if job.growing {
+                    {
                         if reserve(&mut job.oob_theatres, 1).is_err() {
                             return false;
                         }

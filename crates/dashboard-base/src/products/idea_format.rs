@@ -94,7 +94,6 @@ pub(crate) fn recorded(
         let read = replay.visit_blocks(
             &[block],
             &selected,
-            None,
             |_, _, decoded| {
                 if validate_campaign(decoded, replay).is_err() {
                     return Ok(false);
@@ -218,7 +217,7 @@ pub fn content_formats(
     let mut findings = Vec::new();
     for key in keys {
         if content_format(content, key).is_none() {
-            findings.push(Finding::new(Kind::Offline, format!("modifier {key}"), "the modifier's display definition needs the recorded ModifierDefinitions table; unavailable offline"));
+            findings.push(Finding::new(Kind::Offline, format!("modifier {key}"), "the modifier's display definition needs the recorded modifier definitions table; unavailable offline"));
         }
     }
     findings

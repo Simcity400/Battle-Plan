@@ -43,7 +43,7 @@ impl Captured {
     pub fn fail(&mut self, reason: &'static str) {
         self.rows.fail(Outcome::Unavailable { reason });
     }
-    pub fn capture_growing(
+    pub fn capture(
         &mut self,
         _memory: &impl Memory,
         _base: usize,
@@ -51,7 +51,7 @@ impl Captured {
     ) -> [u64; N] {
         self.reset();
         let started = qpc();
-        self.rows.outcome = match producer::drain_growing(&mut self.rows.rows) {
+        self.rows.outcome = match producer::drain(&mut self.rows.rows) {
             Ok(len) => Outcome::Rows { len },
             Err(reason) => Outcome::Unavailable { reason },
         };

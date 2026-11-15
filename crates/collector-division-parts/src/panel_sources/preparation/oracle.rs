@@ -1,5 +1,6 @@
 use super::reference::ReferenceReads;
 use super::*;
+use crate::army_stat_changes::{MEMBERSHIP_TEST, serial};
 use engine_native::{
     carmy, ccountry, cequipment_variant as variant, cequipment_variant_pool as pool, cstate,
     division_panel_operands, modifier_accumulator::Value, modifier_definition as definition,
@@ -280,7 +281,7 @@ fn compare_but_attrition(actual: &NativeReads, expected: &NativeReads) {
 
 #[test]
 fn compact_source_observations_match_the_original_field_faults_and_admission() {
-    let _serial = super::super::tests::MEMBERSHIP_TEST.lock().unwrap();
+    let _serial = serial(&MEMBERSHIP_TEST);
     operands::demand(2, 1, 1);
     operands::presize();
     operands::boundary(true);

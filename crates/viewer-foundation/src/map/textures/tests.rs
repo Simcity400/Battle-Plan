@@ -539,7 +539,7 @@ fn sixteen_bit_textures_go_up_at_shader_precision() {
 #[ignore = "requires an adapter; checks cube-map upload refusal"]
 fn a_nonsquare_cube_is_refused_by_name_before_gpu_validation() {
     let _serial = serial();
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let instance = shader_pipeline::gpu::instance();
     let adapter =
         pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
             .unwrap();
@@ -585,7 +585,7 @@ fn a_nonsquare_cube_is_refused_by_name_before_gpu_validation() {
 #[ignore = "requires an adapter; samples 16-bit texels on the device"]
 fn sixteen_bit_texels_sample_exactly_on_the_device() {
     let _serial = serial();
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let instance = shader_pipeline::gpu::instance();
     let adapter =
         pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
             .unwrap();

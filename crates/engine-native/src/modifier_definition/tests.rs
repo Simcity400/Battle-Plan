@@ -342,33 +342,6 @@ fn inconsistent_rows_and_every_short_read_are_unavailable() {
 }
 
 #[test]
-fn rows_and_text_truncate_to_a_prefix_with_counted_remainders() {
-    let (result, rows, _) = registry().walk(1, 128);
-    assert_eq!(
-        result.outcome,
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 2
-        }
-    );
-    assert_eq!(rows[0].index, 0);
-    // The long name key does not fit: the prefix stops before its row and
-    // the next growth step covers that key.
-    let (result, rows, text) = registry().walk(8, 16);
-    assert_eq!(
-        result.outcome,
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 2
-        }
-    );
-    assert_eq!(&text[..13], b"MODIFIER_NONE");
-    assert_eq!(rows[0].name_key.len, 13);
-    assert!(result.text_required >= 13 + LONG.len());
-    assert_eq!(result.text_len, 13);
-}
-
-#[test]
 fn the_header_is_the_refresh_control_and_a_moved_table_discards_the_copy() {
     let mut table = registry();
     let before = super::table(&table.memory, BASE).unwrap();
@@ -409,7 +382,7 @@ fn the_header_is_the_refresh_control_and_a_moved_table_discards_the_copy() {
         inner: &table.memory,
         header_reads: std::cell::Cell::new(0),
     };
-    let result = walk(&moving, BASE, &mut [Row::default(); 8], &mut [0; 128]);
+    let result = walk(&moving, BASE, &mut vec![Row::default(); 8], &mut vec![0; 128]);
     assert_eq!(
         result.outcome,
         Outcome::Unavailable {
@@ -522,9 +495,6 @@ fn modifier_definitions_grow_rows_and_text_from_original_headers_for_mod_populat
         let table = Table::new(&definitions);
         let demand = storage_demand(&table.memory, BASE).unwrap();
         assert_eq!(demand, (count, count * (name.len() + 2)));
-        assert!(
-            matches!(table.walk(0, 0).0.outcome, Outcome::Truncated { unread_rows, .. } if unread_rows == count as u32)
-        );
         let source = Traced {
             source: &table.memory,
             calls: std::cell::RefCell::new(Vec::new()),
@@ -533,7 +503,7 @@ fn modifier_definitions_grow_rows_and_text_from_original_headers_for_mod_populat
         let mut expected_text = vec![0; demand.1];
         let expected = walk(&source, BASE, &mut expected_rows, &mut expected_text);
         let trace = source.calls.replace(Vec::new());
-        let captured = walk_growing(&source, BASE, &mut rows, &mut text);
+        let captured = walk(&source, BASE, &mut rows, &mut text);
         assert_eq!(captured, expected);
         assert_eq!(captured.outcome, Outcome::Rows { len: count });
         assert_eq!(&rows[..count], expected_rows.as_slice());

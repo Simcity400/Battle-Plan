@@ -558,16 +558,25 @@ fn publish_attach_status(family: Family) -> io::Result<()> {
     if WORKERS_STARTED.load(Ordering::Acquire) {
         return Ok(());
     }
-    if let Some(context) = CONTEXT.get() {
-        let status = crate::status::status!({
-            "state": if family.essential().is_some() { "failed" } else { "attaching" },
-            "session": context.session,
-            "process_start_time": context.process_start,
-            "failed_hook_families": status(),
-            "build": build_gate::status(),
-            "installation_error": family.essential(),
-        });
-        crate::runtime::write_status(&context.directory.join("status.json"), &status)?;
+    let Some(context) = CONTEXT.get() else {
+        return Ok(());
+    };
+    let status = crate::status::status!({
+        "state": if family.essential().is_some() { "failed" } else { "attaching" },
+        "session": context.session,
+        "process_start_time": context.process_start,
+        "failed_hook_families": status(),
+        "build": build_gate::status(),
+        "installation_error": family.essential(),
+    });
+    // A reader holding status.json past the replace retry must not refuse the attach.
+    if let Err(error) =
+        crate::runtime::write_status(&context.directory.join("status.json"), &status)
+    {
+        log(
+            &context.directory,
+            format_args!("hook failure status not published: {error}"),
+        )?;
     }
     Ok(())
 }

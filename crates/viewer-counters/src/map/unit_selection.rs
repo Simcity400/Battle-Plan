@@ -77,6 +77,16 @@ impl Selection {
         changed
     }
 
+    /// A new branch, country or viewer clears the selection; it reads no rows.
+    pub fn context(&mut self, branch: BranchId, country: &Country, viewer: u32) -> bool {
+        let context = (branch, country.clone(), viewer);
+        if self.context.as_ref() == Some(&context) {
+            return false;
+        }
+        self.context = Some(context);
+        self.clear()
+    }
+
     /// Selection survives roster, logical and expeditionary ownership changes.
     /// Complete censuses can retire missing handles; an absent or partial class
     /// census cannot prove disappearance, so it preserves that class. Ownership
@@ -88,12 +98,7 @@ impl Selection {
         viewer: u32,
         frame: &DecodedFrame,
     ) -> bool {
-        let context = (branch, country.clone(), viewer);
-        let mut changed = false;
-        if self.context.as_ref() != Some(&context) {
-            changed |= self.clear();
-            self.context = Some(context);
-        }
+        let mut changed = self.context(branch, country, viewer);
         if self.units.is_empty() {
             return changed;
         }

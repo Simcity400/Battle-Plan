@@ -155,10 +155,7 @@ fn event(
     pointer: usize,
     live: bool,
 ) -> Result<(), &'static str> {
-    store.batch.required_events = store.batch.required_events.saturating_add(1);
-    if store.batch.events.len() == store.batch.events.capacity() {
-        return Err("design liveness event capacity exhausted");
-    }
+    store.batch.room()?;
     let state = engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
         .and_then(|at| engine_native::read::<u64>(memory, at))
         .ok_or("design liveness clock unreadable")?;

@@ -55,7 +55,7 @@ test('widget metadata preserves world controls and content-choice title policies
     const track = { ...template.tracks[0], source: syntheticDashboardSource('source', '1', 'Synthetic campaign.battleplan'),
       branch: { id: 'branch' } } as unknown as BoundTrack;
     const runtime = { campaignTracks: template.tracks, defaultRoleId: 'primary', tracks: [track, { ...track, id: 'other' }],
-      maps: { schedule() {} }, client: {} } as unknown as WidgetRuntime;
+      maps: { schedule() {} }, client: {}, clock: { getHour: () => 0 } } as unknown as WidgetRuntime;
     const settings = (widget: typeof world) => renderToStaticMarkup(createElement(WidgetSettings, { widget, template, runtime, onChange() {} }));
     assert.doesNotMatch(settings(world), /COUNTRIES_SETTINGS|aria-label="Countries"/);
     assert.match(settings(world), /CAMPAIGN_PICKER/);

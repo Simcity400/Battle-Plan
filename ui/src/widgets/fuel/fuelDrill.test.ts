@@ -1,68 +1,71 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { CLOSED, reduceDrill } from '../../charts/drill/drillState.ts';
-import { fuelExtentToken, fuelMoment, fuelOpen, fuelRecipientAtPick, fuelRecipientBasis, fuelRecipientForReply, fuelRecipientToken, readFuelExtent, readFuelRecipient, sameFuelActor } from './fuelDrill.ts';
-import type { FuelRecipientSelection } from './fuelDrill';
-import type { FuelRead } from '../../generated/dashboard';
+import { consumptionLevelAvailable, consumptionParts, demandGeometry, fuelConsumptionLevelToken, fuelConsumptionToken, levelComplete, readFuelConsumption,
+  readFuelConsumptionLevel, validateFuelDemand, validateFuelDemandHistory } from './fuelConsumption.ts';
+import { detailWindows, fuelRecipientFor, fuelRecipientToken, joinedRuns, readBasis, readFuelRecipient } from './fuelDrill.ts';
+import type { FuelDemandPart, FuelDemandReply } from '../../generated/dashboard';
 
-const selected: FuelRecipientSelection = { campaign: 'c1', branch: 'b1', consumer: 1, key: 'opaque-native-name-key', continuityStartHour: 77,
-  basis: { branchId: 'b1', tag: 'synthetic tag', hour: 100, country: '7', countryInstance: 0 } };
+const basis = { branchId: '1', tag: 'ONE', hour: 48, country: 7, countryInstance: 0 };
 
-test('recipient pins preserve native supplying basis and refuse campaign, branch and same-instance reset reuse', () => {
-  const token = fuelRecipientToken(selected);
-  assert.deepEqual(readFuelRecipient(token, 'c1', 'b1'), selected);
-  assert.equal(readFuelRecipient(token, 'c2', 'b1'), null);
-  assert.equal(readFuelRecipient(token, 'c1', 'b2'), null);
-  const read = { country: '7', countryInstance: 0, continuityStartHour: 77 } as FuelRead;
-  assert.equal(sameFuelActor(selected, read), true);
-  assert.equal(sameFuelActor(selected, { ...read, continuityStartHour: 101 }), false);
-  assert.equal(sameFuelActor(selected, { ...read, countryInstance: 1 }), false);
-  const extent = fuelExtentToken('c1', 'b1', [50, 500]);
-  assert.deepEqual(readFuelExtent(extent, 'c1', 'b1'), [50, 500]);
-  assert.equal(readFuelExtent(extent, 'c1', 'b2'), null);
+test('a picked recipient, consumer or level is kept only for its campaign and branch, and survives its token', () => {
+  const recipient = { campaign: 'c', branch: '1', consumer: 2, basis, key: 'k', name: 'Fleet' };
+  assert.deepEqual(readFuelRecipient(fuelRecipientToken(recipient), 'c', '1'), recipient);
+  assert.equal(readFuelRecipient(fuelRecipientToken(recipient), 'c', '2'), null);
+  assert.equal(readFuelRecipient(fuelRecipientToken({ ...recipient, consumer: 3 }), 'c', '1'), null);
+  const consumer = { campaign: 'c', branch: '1', basis, key: 'k', name: null };
+  assert.deepEqual(readFuelConsumption(fuelConsumptionToken(consumer), 'c', '1'), consumer);
+  const level = { campaign: 'c', branch: '1', basis, level: 'command:12' };
+  assert.deepEqual(readFuelConsumptionLevel(fuelConsumptionLevelToken(level), 'c', '1'), level);
+  assert.equal(readFuelConsumptionLevel(fuelConsumptionLevelToken({ ...level, level: 'nowhere' }), 'c', '1'), null);
+  assert.equal(readBasis('1', 'ONE', { readHour: 48, country: 7, countryInstance: null }), null, 'no basis before the instance is known');
 });
 
-test('recipient detail retains its native basis through a recorded alias, never a reused original tag', () => {
-  const aliases = new Map([[selected.basis.tag, [{ firstHour: 100, lastHour: 123 }]], ['renamed', [{ firstHour: 124, lastHour: 200 }]]]);
-  assert.equal(fuelRecipientForReply(selected, { branchId: 'b1', tag: 'renamed' }, 'c1', aliases), selected);
-  assert.equal(fuelRecipientBasis({ branchId: 'b1', tag: 'renamed' }, null, selected, 'c1', aliases), selected.basis);
-  assert.equal(fuelRecipientForReply({ ...selected, basis: { ...selected.basis, hour: 150 } }, { branchId: 'b1', tag: 'renamed' }, 'c1', aliases), null);
+test("a pick follows its country to another tag only where the pick's country spans name it", () => {
+  const pick = { campaign: 'c', branch: '1', basis };
+  assert.equal(fuelRecipientFor(pick, 'c', '1', 'ONE'), pick);
+  assert.equal(fuelRecipientFor(pick, 'c', '1', 'TWO'), null);
+  const aliases = new Map([['ONE', [{ firstHour: 0, lastHour: 99 }]], ['TWO', [{ firstHour: 100, lastHour: 200 }]]]);
+  assert.equal(fuelRecipientFor(pick, 'c', '1', 'TWO', aliases), pick);
+  assert.equal(fuelRecipientFor(pick, 'c', '1', 'TRE', aliases), null);
 });
 
-test('Campaign, Range and Pin picks keep the drawn day; Follow then tracks the actual clock until a day is picked', () => {
-  for (const mode of ['Campaign', 'Range', 'Pin']) {
-    const held = reduceDrill(CLOSED, fuelOpen('burn', 200, false, false, 100));
-    assert.equal(fuelMoment(held, false, 200, 100), 200, mode);
-    const followed = reduceDrill(held, { type: 'follow' });
-    assert.equal(fuelMoment(followed, false, 200, 110), 110, mode);
-    const picked = reduceDrill(followed, { type: 'pick', hour: 150 });
-    assert.equal(fuelMoment(picked, false, 200, 120), 150, mode);
-    assert.equal(fuelMoment(CLOSED, true, 200, 100), 200, mode);
-  }
-  assert.equal(fuelMoment(reduceDrill(CLOSED, fuelOpen('burn', 200, true, true, 100)), false, 200, 101), 101);
+test('a detail history asks the windows its view and its moment reach, and joins a read two windows repeat', () => {
+  assert.deepEqual(detailWindows([0, 5000], [700, 1500], 3000, 720), [0, 1, 2, 4]);
+  assert.deepEqual(detailWindows([800, 5000], [0, 100], null, 720), []);
+  assert.deepEqual(joinedRuns([[{ firstHour: 700, lastHour: 719 }], [{ firstHour: 700, lastHour: 723 }, { firstHour: 724, lastHour: 747 }]]),
+    [{ firstHour: 700, lastHour: 723 }, { firstHour: 724, lastHour: 747 }]);
 });
 
-test('close A then reopen a drawn B line clears the selected A recipient before the actual lazy request seam', () => {
-  const replyA = { branchId: 'b1', tag: 'synthetic tag' };
-  const replyB = { branchId: 'b1', tag: 'other tag' };
-  const readB: FuelRead = { firstHour: 124, lastHour: 147, startsSegment: true, country: '8', countryInstance: 1, continuityStartHour: 101,
-    fuelRaw: '0', capacityRaw: '0', lendLeaseRaw: '0', leftOut: null, awardsReason: null,
-    day: { gainedRaw: '0', burnedRaw: '0', receivedRaw: ['0', '0', '0'], otherRaw: '0',
-      awards: { gainsRaw: ['0', '0', '0', '0'], ownGainRaw: '0', ownGainQuantityRaw: '0',
-        transfersRaw: ['0', '0', '0', '0'], consumedRaw: '0', receivedRaw: ['0', '0', '0'] } } };
-  let drill = reduceDrill(CLOSED, fuelOpen('burn', 100, false, false, null));
-  let recipient: FuelRecipientSelection | null = selected;
-  assert.deepEqual(fuelRecipientBasis(replyA, null, recipient, 'c1'), selected.basis);
-  drill = reduceDrill(drill, { type: 'close' });
-  recipient = fuelRecipientAtPick(recipient, replyB.tag); // Actual main-chart open() actor seam.
-  drill = reduceDrill(drill, fuelOpen('burn', 124, false, false, null));
-  assert.equal(recipient, null);
-  assert.equal(fuelMoment(drill, false, 124, 100), 124);
-  assert.deepEqual(fuelRecipientBasis(replyB, readB, recipient, 'c1'), { branchId: 'b1', tag: 'other tag',
-    hour: 124, country: '8', countryInstance: 1 });
-  // Even a retained/restored A token cannot request or render A under reply B.
-  const restored = readFuelRecipient(fuelRecipientToken(selected), 'c1', 'b1');
-  assert.equal(fuelRecipientForReply(restored, replyB, 'c1'), null);
-  assert.equal(fuelRecipientBasis(replyB, readB, restored, 'c1'), null);
-  assert.equal(fuelRecipientForReply(restored, replyA, 'c2'), null);
+const part = (key: string, kind: number, patch: Partial<FuelDemandPart> = {}): FuelDemandPart => ({ key, kind, reference: key, parent: '0', ordinal: 0, owners: null,
+  wingOwner: null, group: null, topologyReason: null, site: null, amountRaw: '100', reason: null, recordedName: key, nameReason: null, ...patch });
+const demand = (): FuelDemandReply => ({ tag: 'ONE', readHour: 48, country: 7, countryInstance: 0,
+  consumption: { nativeDailyRaw: ['1', '2', null], knownDailyRaw: ['1', '2', '0'], positiveDailyRaw: ['1', '2', '0'], reasons: [null, null, 'navy unread'] },
+  parts: [part('d1', 0, { group: '50' }), part('d2', 0, { reference: '61' }), part('d3', 0), part('w1', 1), part('t1', 2, { parent: '80' }), part('t2', 2, { amountRaw: null, reason: 'rate unread' })],
+  commands: [{ reference: '50', parent: '0', country: 7, armyGroup: true, members: [], children: ['60'], recordedName: 'Group', nameReason: null },
+    { reference: '60', parent: '50', country: 7, armyGroup: false, members: ['61'], children: [], recordedName: 'Army', nameReason: null }],
+  fleets: [{ reference: '80', recordedName: 'Fleet', nameReason: null }],
+  sites: [{ list: 0, ordinal: 3, base: '90', containerOwner: 7, capacityRaw: null, demilitarized: null, reason: null, wings: ['w1'] }],
+  topologyReason: null, warnings: [] });
+
+test("a level shows the consumers the pack's own links put under it, and its sum is a subtotal when any is unknown", () => {
+  const reply = validateFuelDemand(demand());
+  const keys = (level: string) => consumptionParts(reply, level).map(item => item.key);
+  assert.deepEqual(keys('command:50'), ['d1', 'd2'], "an army group reaches its armies' members");
+  assert.deepEqual(keys('fleet:80'), ['t1']);
+  assert.deepEqual(keys('family:2'), ['t1', 't2']);
+  const site = `site:${JSON.stringify([0, 0, 3, '90', 7])}`;
+  assert.deepEqual(keys(site), ['w1']);
+  assert.equal(consumptionLevelAvailable(reply, 'fleet:81'), false);
+  assert.equal(levelComplete(reply, 'family:0', consumptionParts(reply, 'family:0')), true);
+  assert.equal(levelComplete(reply, 'family:2', consumptionParts(reply, 'family:2')), false, 'a rate not read');
+  assert.equal(levelComplete(reply, 'all', consumptionParts(reply, 'all')), false);
+});
+
+test("a consumer's history is drawn only where a read held it, a new line after each gap", () => {
+  const history = { tag: 'ONE', country: 7, window: 0, firstHour: 0, lastHour: 719, warnings: [], parts: [{ key: 'd1', runs: [
+    { firstHour: 0, lastHour: 23, startsSegment: true, amountRaw: '200000', reason: null },
+    { firstHour: 24, lastHour: 47, startsSegment: false, amountRaw: null, reason: 'not in the pack' },
+    { firstHour: 48, lastHour: 71, startsSegment: false, amountRaw: '100000', reason: null }] }] };
+  const runs = validateFuelDemandHistory(history).parts[0].runs;
+  assert.deepEqual(demandGeometry(runs, 100000), [{ firstHour: 0, lastHour: 23, value: 2, breakBefore: true }, { firstHour: 48, lastHour: 71, value: 1, breakBefore: true }]);
 });

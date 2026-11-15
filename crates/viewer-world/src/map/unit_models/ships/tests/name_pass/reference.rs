@@ -43,7 +43,7 @@ fn name<'t>(
         || {
             let hour = hour.ok_or("naval_entity: hourly graphics inputs are unavailable")?;
             let variant =
-                hour.variants.get(&row.variant).copied().ok_or_else(|| {
+                hour.variants.get(row.variant).ok_or_else(|| {
                     format!("naval_entity: variant {} is unavailable", row.variant)
                 })?;
             // Use the variant creator directly; the division adapter instead
@@ -62,6 +62,7 @@ fn name<'t>(
                 ));
             }
             let owner = hour
+                .country
                 .links
                 .get(&owner)
                 .copied()

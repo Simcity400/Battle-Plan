@@ -65,7 +65,6 @@ pub fn compare_line_output(
         replay.visit_blocks(
             &[block],
             &LINE_OUTPUT_TABLES,
-            None,
             |_, _, hour_frame| {
             if hour_frame.hour > frame.hour {
                 return Ok(false);
@@ -98,7 +97,6 @@ fn observation_start(replay: &Replay, frame: &DecodedFrame) -> io::Result<Option
         replay.visit_blocks(
             &[block],
             &LINE_OUTPUT_TABLES,
-            None,
             |_, _, hour_frame| {
             if hour_frame.hour > frame.hour {
                 return Ok(false);

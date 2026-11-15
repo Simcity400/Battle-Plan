@@ -8,7 +8,8 @@ use replay_data::{
 };
 use replay_frame::{
     branches::BranchReason, branches::BranchStart, branches::Parentage, frame::DecodedFrame,
-    frame::FrameEncoder, frame::FrameInput, frame::Metrics, frame::TableView,
+    frame::Frame, frame::FrameEncoder, frame::FrameInput, frame::Metrics, frame::TableInput,
+    frame::TableUpdate, frame::TableView,
 };
 
 pub const CAMPAIGN: &[u8] = b"analytics-test";
@@ -116,6 +117,29 @@ pub fn source(branch: u64, hour: i32, power: Option<i64>) -> DecodedFrame {
 }
 
 pub fn records(branch: u64, frames: Vec<DecodedFrame>) -> Vec<Record> {
+    let mut encoder = FrameEncoder::new();
+    framed(branch, frames, |frame| encoder.encode_input(frame, false).unwrap())
+}
+
+/// [`records`], each frame its tables as given rather than encoded: a row may leave a field not
+/// recorded, as a recording's cells can and the spool's row frames cannot.
+pub fn snapshot_records(branch: u64, frames: Vec<DecodedFrame>) -> Vec<Record> {
+    framed(branch, frames, |frame| Frame {
+        branch: frame.branch,
+        hour: frame.hour,
+        keyframe: true,
+        metrics: frame.metrics,
+        tables: frame.tables.map(|table| match table {
+            TableInput::Sampled(TableView::Complete(rows)) => TableUpdate::Snapshot(rows),
+            TableInput::Sampled(TableView::Truncated { rows, missing }) => TableUpdate::Truncated { rows, missing },
+            TableInput::Sampled(TableView::Unavailable { reason }) => TableUpdate::Unavailable { reason },
+            TableInput::Sampled(TableView::NotRecorded { mode }) => TableUpdate::NotRecorded { mode },
+            _ => unreachable!("a decoded frame's tables are sampled"),
+        }),
+    })
+}
+
+fn framed(branch: u64, frames: Vec<DecodedFrame>, mut frame_of: impl FnMut(FrameInput) -> Frame) -> Vec<Record> {
     let session = session(branch);
     let mode = session.capture_mode;
     let mut out = vec![
@@ -129,7 +153,6 @@ pub fn records(branch: u64, frames: Vec<DecodedFrame>) -> Vec<Record> {
             reason: BranchReason::SessionStart,
         }),
     ];
-    let mut encoder = FrameEncoder::new();
     out.extend(
         frames
             .into_iter()
@@ -141,7 +164,7 @@ pub fn records(branch: u64, frames: Vec<DecodedFrame>) -> Vec<Record> {
                 }
                 let mut frame = FrameInput::from(frame);
                 frame.scope_to(mode);
-                Record::Frame(encoder.encode_input(frame, false).unwrap())
+                Record::Frame(frame_of(frame))
             }),
     );
     out

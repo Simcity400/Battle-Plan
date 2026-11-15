@@ -13,7 +13,7 @@ use engine_native::{cbuilding, memory::SliceMemory, province_definition};
 use engine_railways::{
     crailway_manager as manager, crailway_manager::BuildingOutcomes, crailway_manager::RailCarry,
     crailway_manager::fresh_inputs::RailwayBuildingRow,
-    crailway_manager::selected_inputs::GrowingLevels,
+    crailway_manager::selected_inputs::Levels,
 };
 use std::cell::RefCell;
 
@@ -335,12 +335,12 @@ struct Hour {
 fn run(memory: &Calls<'_>, carry: &mut impl RailCarry) -> Rows {
     let (mut cooldowns, mut edges, mut buildings, mut values) =
         (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-    let mut levels = GrowingLevels {
+    let mut levels = Levels {
         values: &mut values,
         len: 0,
         required: 0,
     };
-    let outcomes = manager::walk_with_selection_growing_carried(
+    let outcomes = manager::walk_with_selection_carried(
         memory,
         0,
         GAME_STATE,

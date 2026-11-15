@@ -18,7 +18,7 @@ impl Renderer<'_, '_, '_> {
         let token = world
             .token(row.definition_id)
             .map_err(|why| why.to_string())?
-            .ok_or("LexicalTokens lacks project definition")?;
+            .ok_or("lexical tokens lacks project definition")?;
         let token = std::str::from_utf8(token).map_err(|_| "project definition is not UTF-8")?;
         let cached = self.context.text.content().effects()?;
         let database = cached
@@ -45,7 +45,7 @@ impl Renderer<'_, '_, '_> {
             .unwrap_or(token);
         let country = world
             .slot(owner)
-            .ok_or("CountryLinks lacks project owner")?;
+            .ok_or("country links lacks project owner")?;
         let tagged = format!("{}_{key}", self.tag(country)?);
         let key = if self.context.localisation.get(&tagged).is_some() {
             &tagged
@@ -72,7 +72,7 @@ impl Renderer<'_, '_, '_> {
                 replay_data::rows::Recorded::Value(Some(bytes)) => bytes.as_slice(),
                 replay_data::rows::Recorded::Value(None) => {
                     return Err(format!(
-                        "AirWings UNIT {reference:#x} stored name unavailable: guarded read or name arena refusal"
+                        "air wings UNIT {reference:#x} stored name unavailable: guarded read or name arena refusal"
                     ));
                 }
                 replay_data::rows::Recorded::NotRecorded => {
@@ -160,7 +160,7 @@ impl Renderer<'_, '_, '_> {
             .map_err(|why| why.to_string())?
             .get(u128::from(reference))
             .map_err(built)?
-            .ok_or_else(|| format!("RaidTargets lacks raid {reference:#x}"))?;
+            .ok_or_else(|| format!("raid targets lacks raid {reference:#x}"))?;
         let (kind, type_name) = if target.raid_type == 0 {
             (None, String::new()) // null type contributes empty TYPE.
         } else {
@@ -169,7 +169,7 @@ impl Renderer<'_, '_, '_> {
                 .world()?
                 .token(target.raid_type)
                 .map_err(|why| why.to_string())?
-                .ok_or("LexicalTokens lacks raid type")?;
+                .ok_or("lexical tokens lacks raid type")?;
             let token = std::str::from_utf8(token).map_err(|_| "raid type is not UTF-8")?;
             let cache = self.context.text.content().effects()?;
             let database = cache
@@ -279,7 +279,7 @@ impl Renderer<'_, '_, '_> {
             let token = world
                 .token(scope.building_type)
                 .map_err(|why| why.to_string())?
-                .ok_or("LexicalTokens lacks raid building type")?;
+                .ok_or("lexical tokens lacks raid building type")?;
             let cached = self.context.text.content().effects()?;
             let buildings = self
                 .context

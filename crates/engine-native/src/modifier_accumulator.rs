@@ -57,8 +57,6 @@ struct SnapshotNode {
 }
 
 const SNAPSHOT_BATCH: usize = 64;
-pub const SNAPSHOT_NODE_CAPACITY: &str = "modifier snapshot node capacity exceeded";
-pub const SNAPSHOT_ENTRY_CAPACITY: &str = "modifier snapshot entry capacity exceeded";
 const SNAPSHOT_FIELDS: [crate::memory::RecordField; 1] = [crate::memory::RecordField {
     source_offset: 0,
     destination_offset: 0,
@@ -68,9 +66,9 @@ const SNAPSHOT_LAYOUT: crate::memory::RecordLayout<'static> =
     crate::memory::RecordLayout::new(&SNAPSHOT_FIELDS, modifier_entry::STRIDE)
         .expect("modifier snapshot entry layout");
 
-/// Owned raw accumulators for one acquisition pass. Only `try_new` and
-/// `try_grow` allocate, unless worker growth is enabled. Each address, including a failed source, is acquired once;
-/// successful entry prefixes and the first failure remain owned until cleared.
+/// Owned raw accumulators for one acquisition pass, growing in the pass. Each
+/// address, including a failed source, is acquired once; successful entry
+/// prefixes and the first failure remain owned until cleared.
 #[derive(Debug, Default)]
 pub struct SnapshotArena {
     nodes: Vec<SnapshotNode>,
@@ -79,7 +77,6 @@ pub struct SnapshotArena {
     capacity: SnapshotCapacity,
     required: SnapshotCapacity,
     generation: u64,
-    worker_growth: bool,
 }
 
 impl SnapshotArena {
@@ -104,7 +101,6 @@ impl SnapshotArena {
             capacity,
             required: SnapshotCapacity::default(),
             generation: 0,
-            worker_growth: false,
         })
     }
 
@@ -127,15 +123,7 @@ impl SnapshotArena {
         self.capacity
     }
 
-    /// Acquisition workers retain the original array-header demand and grow
-    /// only for entry batches already acquired successfully.
-    pub fn enable_worker_growth(&mut self) {
-        self.worker_growth = true;
-    }
-
-    /// Known distinct-address demand and full entry demand from valid headers.
-    /// If node storage fills, its requirement is a lower bound: unseen addresses
-    /// are refused before reading native bytes, so their entry demand is unknown.
+    /// Distinct-address demand, and the entries actually read.
     pub fn required_capacity(&self) -> SnapshotCapacity {
         self.required
     }
@@ -150,7 +138,6 @@ impl SnapshotArena {
     /// Resize only while the owning frame is off the acquisition threads.
     /// Existing observations are discarded, including when no growth is needed.
     pub fn try_grow(&mut self, capacity: SnapshotCapacity) -> std::io::Result<()> {
-        let worker_growth = self.worker_growth;
         let capacity = SnapshotCapacity {
             nodes: capacity.nodes.max(self.capacity.nodes),
             entries: capacity.entries.max(self.capacity.entries),
@@ -162,7 +149,6 @@ impl SnapshotArena {
             *self = Self::try_new(capacity)?;
             self.generation = generation;
         }
-        self.worker_growth = worker_growth;
         Ok(())
     }
 
@@ -198,8 +184,6 @@ impl SnapshotArena {
     /// Acquire at the actual accumulator header address. The caller owns source
     /// identity and graph authentication, just as for `lookup_at`. Country and
     /// explicit-address calls share a node only when their addresses are equal.
-    /// Capacity refusal reports demand but supplies no snapshot; callers may
-    /// use the direct reader.
     pub fn capture_at(
         &mut self,
         memory: &impl Memory,
@@ -235,7 +219,7 @@ impl SnapshotArena {
     fn insert(&mut self, address: usize) -> Result<usize, &'static str> {
         let mut slot = (!self.index.is_empty()).then(|| self.index_slot(address));
         self.required.nodes = self.required.nodes.max(self.nodes.len().saturating_add(1));
-        if self.nodes.len() == self.capacity.nodes && self.worker_growth {
+        if self.nodes.len() == self.capacity.nodes {
             let count = crate::allocation::add(self.nodes.len(), 1)
                 .map_err(|_| "modifier snapshot allocation failed")?;
             let capacity = self
@@ -260,9 +244,6 @@ impl SnapshotArena {
             }
             slot = Some(self.index_slot(address));
         }
-        if self.nodes.len() == self.capacity.nodes {
-            return Err(SNAPSHOT_NODE_CAPACITY);
-        }
         let node = self.nodes.len();
         self.nodes.push(SnapshotNode {
             address,
@@ -277,11 +258,9 @@ impl SnapshotArena {
     /// Serve `address` from `entries`, a complete observation of its array
     /// that an earlier capture made and a certificate keeps: later lookups
     /// read nothing for it. An address this capture already observed keeps
-    /// its observation; a capacity refusal leaves it to be read.
+    /// its observation; a refused allocation leaves it to be read.
     pub fn hold(&mut self, address: usize, entries: &[[u8; 16]]) {
         if self.existing(address).is_some()
-            || (!self.worker_growth
-                && entries.len() > self.capacity.entries.saturating_sub(self.entries.len()))
             || crate::allocation::reserve(&mut self.entries, entries.len()).is_err()
         {
             return;
@@ -294,14 +273,12 @@ impl SnapshotArena {
         self.nodes[node].result = Ok(());
         self.entries.extend_from_slice(entries);
         self.required.entries = self.required.entries.saturating_add(entries.len());
-        if self.worker_growth {
-            self.capacity.entries = self.capacity.entries.max(self.entries.len());
-        }
+        self.capacity.entries = self.capacity.entries.max(self.entries.len());
     }
 
     /// Observe `address`'s complete array as a lookup there would (once per
     /// capture; a later lookup is served from it) and return its entries;
-    /// `None` when the observation failed or was refused for capacity.
+    /// `None` when the observation failed or its allocation was refused.
     pub fn observe(&mut self, memory: &impl Memory, address: usize) -> Option<&[[u8; 16]]> {
         if self.existing(address).is_none() {
             let node = self.insert(address).ok()?;
@@ -343,15 +320,6 @@ impl SnapshotArena {
             .ok_or("modifier accumulator header unreadable or invalid")?;
         let array = Array::from_header(header, modifier_entry::STRIDE)
             .ok_or("modifier accumulator header unreadable or invalid")?;
-        self.required.entries = self
-            .required
-            .entries
-            .checked_add(array.count as usize)
-            .ok_or("modifier snapshot entry demand overflow")?;
-        if !self.worker_growth && array.count as usize > self.capacity.entries - self.entries.len()
-        {
-            return Err(SNAPSHOT_ENTRY_CAPACITY);
-        }
         let mut previous_key = 0;
         let mut first = 0;
         while first < array.count as usize {
@@ -373,9 +341,8 @@ impl SnapshotArena {
             crate::allocation::reserve(&mut self.entries, completed)
                 .map_err(|_| "modifier snapshot allocation failed")?;
             self.entries.extend_from_slice(&scratch[..completed]);
-            if self.worker_growth {
-                self.capacity.entries = self.capacity.entries.max(self.entries.len());
-            }
+            self.capacity.entries = self.capacity.entries.max(self.entries.len());
+            self.required.entries = self.required.entries.saturating_add(completed);
             self.nodes[node].len += completed;
             // A batch can read ahead of a malformed key. Keep every successful
             // entry, but preserve the first source-order failure.

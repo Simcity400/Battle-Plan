@@ -201,20 +201,10 @@ pub struct Walk {
 /// aircraft spotting scale are omitted, except at the roster's last region for every
 /// country: a complete table so proves the country's strategic-air object,
 /// and any other absent pair of that country is zero.
+///
+/// Runs on a worker: `held` and `output` grow to the live roster, score
+/// headers and retained nonzero pairs, and only a failed allocation refuses.
 pub fn walk(
-    memory: &impl Memory,
-    base: usize,
-    game: usize,
-    hour: i32,
-    held: &mut Held,
-    output: &mut [Row],
-) -> Walk {
-    walk_buffer(memory, base, game, hour, held, Buffer::Fixed(output))
-}
-
-/// Worker-only growth follows the original roster, score headers and retained
-/// nonzero pairs; no capacity failure restarts a native observation.
-pub fn walk_growing(
     memory: &impl Memory,
     base: usize,
     game: usize,
@@ -222,66 +212,36 @@ pub fn walk_growing(
     held: &mut Held,
     output: &mut Vec<Row>,
 ) -> Walk {
-    walk_buffer(memory, base, game, hour, held, Buffer::Growing(output))
-}
-
-fn walk_buffer(
-    memory: &impl Memory,
-    base: usize,
-    game: usize,
-    hour: i32,
-    held: &mut Held,
-    mut output: Buffer<'_, Row>,
-) -> Walk {
     let mut walk = Walk {
         outcome: Outcome::Rows { len: 0 },
         regions: 0,
         countries: 0,
         full: true,
     };
-    let result =
-        read_table(memory, base, game, hour, held, &mut output, &mut walk).and_then(|result| {
-            if output.is_growing() {
-                Buffer::Growing(&mut held.rows).ensure(result.0)?;
-            }
-            Ok(result)
-        });
+    let result = read_table(memory, base, game, hour, held, output, &mut walk).and_then(|result| {
+        Buffer::Growing(&mut held.rows).ensure(result.0)?;
+        Ok(result)
+    });
     walk.outcome = match result {
-        Ok((len, period)) if len <= output.len() => {
-            if len <= held.rows.len() && walk.countries <= held.next_countries.len() {
-                let mut menu_bytes = 0;
-                for (kept, row) in held.rows[..len].iter_mut().zip(&output[..len]) {
-                    kept.assign(row, row.menu.as_ref(), row.menu_bytes);
-                    menu_bytes += row.menu_bytes as usize;
-                }
-                let stale = held.row_len.max(len);
-                for row in &mut held.rows[len..stale] {
-                    row.menu = None;
-                }
-                held.menu_bytes = menu_bytes;
-                held.row_len = len;
-                std::mem::swap(&mut held.regions, &mut held.next_regions);
-                std::mem::swap(&mut held.countries, &mut held.next_countries);
-                held.region_len = walk.regions;
-                held.country_len = walk.countries;
-                held.period = period;
-                held.hour = Some(hour);
-            } else {
-                held.hour = None;
+        Ok((len, period)) => {
+            let mut menu_bytes = 0;
+            for (kept, row) in held.rows[..len].iter_mut().zip(&output[..len]) {
+                kept.assign(row, row.menu.as_ref(), row.menu_bytes);
+                menu_bytes += row.menu_bytes as usize;
             }
+            let stale = held.row_len.max(len);
+            for row in &mut held.rows[len..stale] {
+                row.menu = None;
+            }
+            held.menu_bytes = menu_bytes;
+            held.row_len = len;
+            std::mem::swap(&mut held.regions, &mut held.next_regions);
+            std::mem::swap(&mut held.countries, &mut held.next_countries);
+            held.region_len = walk.regions;
+            held.country_len = walk.countries;
+            held.period = period;
+            held.hour = Some(hour);
             Outcome::Rows { len }
-        }
-        Ok((len, _)) => {
-            held.hour = None;
-            match u32::try_from(len - output.len()) {
-                Ok(unread_rows) => Outcome::Truncated {
-                    len: output.len(),
-                    unread_rows,
-                },
-                Err(_) => Outcome::Unavailable {
-                    reason: "raid air score count overflow",
-                },
-            }
         }
         Err(reason) => {
             held.hour = None;
@@ -297,7 +257,7 @@ fn read_table(
     game: usize,
     hour: i32,
     held: &mut Held,
-    output: &mut Buffer<'_, Row>,
+    output: &mut Vec<Row>,
     walk: &mut Walk,
 ) -> Result<(usize, i32), &'static str> {
     let delay = engine_sites::at(base, COMBAT_DELAY_RVA)
@@ -314,14 +274,9 @@ fn read_table(
         .and_then(|at| Array::read(memory, at, 8))
         .ok_or("raid air region roster unreadable")?;
     walk.regions = roster.count as usize;
-    if output.is_growing() {
-        // Setup sizes regional entries from the live strategic-region roster.
-        held.grow(walk.regions, held.next_countries.len(), held.rows.len())
-            .map_err(|_| "capture buffer allocation failed")?;
-    }
-    if walk.regions > held.next_regions.len() || walk.regions > held.slots.len() {
-        return Err("raid air region scratch too small");
-    }
+    // Setup sizes regional entries from the live strategic-region roster.
+    held.grow(walk.regions, held.next_countries.len(), held.rows.len())
+        .map_err(|_| "capture buffer allocation failed")?;
     read_regions(memory, base, roster, &mut held.next_regions[..walk.regions])?;
     let regions = &held.next_regions[..walk.regions];
     let last = regions
@@ -391,23 +346,18 @@ fn read_table(
             )?,
             None => read_all(memory, scores, &target, scratch, output, &mut len)?,
         }
-        if output.is_growing() {
-            Buffer::Growing(&mut *next).ensure(
-                countries
-                    .checked_add(1)
-                    .ok_or("raid air country count overflow")?,
-            )?;
-        }
-        if let Some(next) = next.get_mut(countries) {
-            *next = Country {
-                canonical_slot: root.canonical_slot,
-                id: root.country,
-                address: root.address,
-                data: scores.data,
-                rows: len - first,
-            };
-        }
-        countries += 1;
+        let counted = countries
+            .checked_add(1)
+            .ok_or("raid air country count overflow")?;
+        Buffer::Growing(&mut *next).ensure(counted)?;
+        next[countries] = Country {
+            canonical_slot: root.canonical_slot,
+            id: root.country,
+            address: root.address,
+            data: scores.data,
+            rows: len - first,
+        };
+        countries = counted;
         Ok(())
     })?;
     walk.countries = countries;
@@ -517,7 +467,7 @@ impl Target<'_> {
         air_spotting_scale: Option<i64>,
         read: menu::Read,
         held: Option<&Row>,
-        output: &mut Buffer<'_, Row>,
+        output: &mut Vec<Row>,
         len: &mut usize,
     ) -> Result<(), &'static str> {
         let changed;
@@ -579,21 +529,20 @@ impl Target<'_> {
 
 /// Writes `row` with `menu` over the output's slot, which usually still holds the same menu.
 fn push(
-    output: &mut Buffer<'_, Row>,
+    output: &mut Vec<Row>,
     len: &mut usize,
     row: &Row,
     menu: Option<&Arc<Menu>>,
     menu_bytes: u32,
 ) -> Result<(), &'static str> {
-    output.ensure(len.checked_add(1).ok_or("raid air score count overflow")?)?;
-    if let Some(slot) = output.get_mut(*len) {
-        slot.assign(row, menu, menu_bytes);
-    }
-    *len = len.checked_add(1).ok_or("raid air score count overflow")?;
+    let next = len.checked_add(1).ok_or("raid air score count overflow")?;
+    Buffer::Growing(&mut *output).ensure(next)?;
+    output[*len].assign(row, menu, menu_bytes);
+    *len = next;
     Ok(())
 }
 
-fn carry_row(output: &mut Buffer<'_, Row>, len: &mut usize, row: &Row) -> Result<(), &'static str> {
+fn carry_row(output: &mut Vec<Row>, len: &mut usize, row: &Row) -> Result<(), &'static str> {
     push(output, len, row, row.menu.as_ref(), row.menu_bytes)
 }
 
@@ -626,7 +575,7 @@ fn read_all(
     scores: Array,
     target: &Target<'_>,
     scratch: &mut menu::Scratch,
-    output: &mut Buffer<'_, Row>,
+    output: &mut Vec<Row>,
     len: &mut usize,
 ) -> Result<(), &'static str> {
     let mut bytes = [0; BATCH * ENTRY];
@@ -679,7 +628,7 @@ fn carry(
     held: &[Row],
     phase: i32,
     scratch: &mut menu::Scratch,
-    output: &mut Buffer<'_, Row>,
+    output: &mut Vec<Row>,
     len: &mut usize,
 ) -> Result<(), &'static str> {
     let updated = |row: &Row| target.regions[row.slot as usize].updated(row.slot as usize, phase);
@@ -964,7 +913,7 @@ mod tests {
             at
         }
 
-        fn walk(&self, hour: i32, held: &mut Held, output: &mut [Row]) -> Walk {
+        fn walk(&self, hour: i32, held: &mut Held, output: &mut Vec<Row>) -> Walk {
             let memory = SliceMemory {
                 base: MEMORY,
                 bytes: &self.bytes,
@@ -998,7 +947,7 @@ mod tests {
         world.put(empty, MEMORY + 0x0fff_0000);
         let mut held = held(12, 1, 16);
         held.certify(Some(1));
-        let mut rows: [Row; 16] = std::array::from_fn(|_| Row::default());
+        let mut rows = Vec::new();
         let menu = |walk: &Walk, rows: &[Row], slot: u32| {
             rows[..walk.outcome.len()]
                 .iter()
@@ -1255,7 +1204,7 @@ mod tests {
         world.pair(1, 5, 5, 7);
         world.impact(1, 5, -40_000);
         let mut held = held(20, 1, 16);
-        let mut rows: [Row; 16] = std::array::from_fn(|_| Row::default());
+        let mut rows = Vec::new();
         let impacts = |walk: &Walk, rows: &[Row]| {
             rows[..walk.outcome.len()]
                 .iter()
@@ -1277,7 +1226,7 @@ mod tests {
         world.pair(1, 3, 5, 0);
         world.pair(2, 12, 0, -7);
         let mut held = held(20, 3, 16);
-        let mut rows: [Row; 16] = std::array::from_fn(|_| Row::default());
+        let mut rows = Vec::new();
         let first = world.walk(HOUR - 1, &mut held, &mut rows);
         assert!(first.full);
         assert_eq!((first.regions, first.countries), (20, 3));
@@ -1344,7 +1293,7 @@ mod tests {
     fn each_changed_premise_rereads_what_it_cannot_carry() {
         let mut world = World::new(2, 12);
         let mut held = held(12, 2, 16);
-        let mut rows: [Row; 16] = std::array::from_fn(|_| Row::default());
+        let mut rows = Vec::new();
         assert!(world.walk(HOUR - 1, &mut held, &mut rows).full);
         assert!(!world.walk(HOUR, &mut held, &mut rows).full);
         // The define is read live: a different period rereads everything.
@@ -1379,7 +1328,7 @@ mod tests {
         // Slot 5 is rewritten only at phase 5; HOUR is phase 3.
         world.pair(1, 5, 9, 9);
         let mut held = held(12, 2, 16);
-        let mut rows: [Row; 16] = std::array::from_fn(|_| Row::default());
+        let mut rows = Vec::new();
         held.certify(Some(1));
         assert!(world.walk(HOUR - 1, &mut held, &mut rows).full);
         world.pair(1, 5, 0, 0);
@@ -1422,34 +1371,19 @@ mod tests {
     }
 
     #[test]
-    fn capacity_failures_and_bad_rosters_leave_nothing_to_carry() {
+    fn held_tables_smaller_than_the_game_grow_and_bad_rosters_leave_nothing_to_carry() {
         let mut world = World::new(2, 10);
         world.pair(1, 2, 1, 1);
-        let mut rows: [Row; 8] = std::array::from_fn(|_| Row::default());
-        let walked = world.walk(HOUR, &mut held(9, 2, 8), &mut rows);
-        assert_eq!(walked.regions, 10);
+        let mut rows = Vec::new();
+        let mut held = held(9, 1, 0);
+        let walked = world.walk(HOUR, &mut held, &mut rows);
+        assert_eq!((walked.regions, walked.countries), (10, 2));
+        assert_eq!(walked.outcome, Outcome::Rows { len: 3 });
         assert_eq!(
-            walked.outcome,
-            Outcome::Unavailable {
-                reason: "raid air region scratch too small"
-            }
+            pairs(&walked, &rows),
+            [(1, 1_002, 1, 1), (1, 1_009, 0, 0), (2, 1_009, 0, 0)]
         );
-        let mut held = held(10, 2, 8);
-        assert_eq!(
-            world.walk(HOUR, &mut held, &mut rows[..2]).outcome,
-            Outcome::Truncated {
-                len: 2,
-                unread_rows: 1
-            }
-        );
-        assert!(world.walk(HOUR + 1, &mut held, &mut rows).full);
-        // Rows the caller cannot hold are published; the next hour is full.
-        let mut unheld = self::held(10, 1, 8);
-        assert_eq!(
-            world.walk(HOUR, &mut unheld, &mut rows).outcome,
-            Outcome::Rows { len: 3 }
-        );
-        assert!(world.walk(HOUR + 1, &mut unheld, &mut rows).full);
+        assert!(!world.walk(HOUR + 1, &mut held, &mut rows).full);
         let region = world.region(4);
         world.put32(region + cstrategic_region::RUNTIME_SLOT, 5);
         assert_eq!(

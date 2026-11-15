@@ -141,18 +141,16 @@ test('incomplete instrumentation and mismatched installed dependencies refuse', 
   finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test('disposable adapter refuses debug input and teardown never follows shader input junctions', async () => {
+test('disposable adapter refuses debug input and its teardown removes it', async () => {
   const { startUI, removeAdapter } = await import('./server.mjs');
-  const root = await mkdtemp(path.join(tmpdir(), 'parity-adapter-')), outside = await mkdtemp(path.join(tmpdir(), 'parity-input-'));
+  const root = await mkdtemp(path.join(tmpdir(), 'parity-adapter-'));
   try {
     await assert.rejects(startUI({}, { bridge: path.join(root, 'debug/dashboard-bridge.exe') }, root), /debug/);
     const adapter = path.join(root, 'bridge'); await mkdir(path.join(adapter, '.cargo-target/debug'), { recursive: true });
-    await writeFile(path.join(outside, 'tool'), 'keep');
-    await symlink(outside, path.join(adapter, '.cargo-target/debug/shader-tools'), 'junction');
+    await writeFile(path.join(adapter, '.cargo-target/debug/dxcompiler.dll'), 'copy');
     await removeAdapter(adapter);
-    assert.equal(await readFile(path.join(outside, 'tool'), 'utf8'), 'keep');
     assert.equal(await stat(adapter).catch(() => null), null);
-  } finally { await rm(root, { recursive: true, force: true }); await rm(outside, { recursive: true, force: true }); }
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
 
 // Retained raster and budget checks exercise the reduced capture path.

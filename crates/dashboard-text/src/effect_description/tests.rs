@@ -875,14 +875,26 @@ fn state_leaves_refuse_unavailable_and_partial_rosters_before_invalid_state_logi
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
-    for table in [
-        TableView::Unavailable {
-            reason: "synthetic unavailable roster".into(),
-        },
-        TableView::Truncated {
-            rows: TableRows::States(vec![]),
-            missing: 1,
-        },
+    for (table, gap) in [
+        (
+            TableView::Unavailable {
+                reason: "synthetic unavailable roster".into(),
+            },
+            [
+                "states: not available: synthetic unavailable roster",
+                "hour 1 States is unavailable: synthetic unavailable roster",
+            ],
+        ),
+        (
+            TableView::Truncated {
+                rows: TableRows::States(vec![]),
+                missing: 1,
+            },
+            [
+                "states: read only in part (1 rows missing)",
+                "hour 1 States is truncated (1 missing rows)",
+            ],
+        ),
     ] {
         *fixture.frame.tables[TableId::States.index()] = table;
         for leaf in [
@@ -898,7 +910,14 @@ fn state_leaves_refuse_unavailable_and_partial_rosters_before_invalid_state_logi
                 "{leaf}: {:?}",
                 out.refusals
             );
-            assert!(out.refusals.keys().any(|why| why.contains("States")));
+            // The world words a core table's gap; the frame names the table.
+            assert!(
+                out.refusals
+                    .keys()
+                    .any(|why| gap.iter().any(|gap| why.contains(gap))),
+                "{leaf}: {:?}",
+                out.refusals
+            );
         }
     }
     *fixture.frame.tables[TableId::States.index()] = TableView::Complete(TableRows::States(vec![]));
@@ -1348,7 +1367,7 @@ fn compatibility_absent_subjects_refuses_only_faction_effect() {
     assert!(
         out.refusals
             .keys()
-            .any(|reason| reason.contains("CountryAppearance.subjects not recorded"))
+            .any(|reason| reason.contains("subjects of country appearance not recorded"))
     );
 }
 
@@ -1848,7 +1867,13 @@ fn recorded_tables_cover_every_effect_operand() {
         .iter()
         .map(|table| format!("{table:?}"))
         .collect();
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    // A test built on Boat runs here: the run-time variable names this checkout.
+    let root = std::env::var_os("CARGO_MANIFEST_DIR")
+        .map_or_else(
+            || std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")),
+            std::path::PathBuf::from,
+        )
+        .join("src");
     let mut files = vec![
         root.join("effect_description.rs"),
         root.join("variant_names.rs"),

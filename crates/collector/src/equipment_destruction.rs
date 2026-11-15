@@ -1,8 +1,12 @@
 //! Destruction writers only. Every event uses its native owner and exact signed
-//! pool difference. Try-locks never wait on a game thread; overlap, refusal,
-//! overflow or a lost drain refuses its interval until a clean hourly boundary.
+//! pool difference. A writer copies what it reads into events of its own and
+//! pushes them lock-free where it once took the store, before it returns to
+//! the game; the hourly drain folds them in push order into deltas, provenance
+//! and credits. Refusal, a failed allocation or a lost drain refuses its
+//! interval until a clean hourly boundary.
 use crate::hook::Hook;
 type Clock = engine_native::cgame_state::Clock<u64>;
+use collector_primitives::spill_stack::{Reserved, SpillStack};
 use engine_events::equipment_destruction as native;
 use engine_native::{Memory, equipment_entry};
 use native::SiteId;
@@ -12,13 +16,17 @@ use queue_index::FixedIndex;
 use std::{
     borrow::Cow,
     cell::Cell,
+    collections::HashMap,
     ops::Range,
     sync::{
-        LazyLock, Mutex, OnceLock,
+        LazyLock, Mutex, OnceLock, PoisonError,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
 };
 use transfers::{Credits, Net, PoolState};
+
+type Row = equipment_entry::Row;
+type Read<T> = Result<T, &'static str>;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Entry {
@@ -47,7 +55,6 @@ fn record_refusal(site_index: Option<usize>, reason: &'static str) -> Refusal {
         SITE_REFUSALS[site].fetch_add(1, Ordering::Relaxed);
     }
     REFUSALS.fetch_add(1, Ordering::Relaxed);
-    poison();
     refusal
 }
 
@@ -55,17 +62,413 @@ fn record_refusal(site_index: Option<usize>, reason: &'static str) -> Refusal {
 struct HeldRow {
     destination: usize,
     country: u32,
-    row: equipment_entry::Row,
-}
-#[derive(Clone, Copy, Default)]
-struct MergeReserve {
-    pool: usize,
-    country: u32,
-    identity: u32,
-    held_start: usize,
-    held_end: usize,
+    row: Row,
 }
 
+/// A deletion scope as its writer opened it; the drain resolves its provenance.
+#[derive(Clone, Copy)]
+struct Scope {
+    id: u64,
+    army: usize,
+    handle: u64,
+    country: u32,
+    ignored: bool,
+    merge_source: bool,
+    observed: bool,
+}
+impl Scope {
+    fn ignored(army: usize) -> Self {
+        Self {
+            id: next_id(),
+            army,
+            handle: 0,
+            country: 0,
+            ignored: true,
+            merge_source: false,
+            observed: false,
+        }
+    }
+}
+
+struct Event {
+    thread: u32,
+    kind: Kind,
+}
+
+/// Each kind is one place a writer once held the store, with what it read there.
+enum Kind {
+    Boundary {
+        transition: bool,
+        load: bool,
+        first: bool,
+        skipped_queue: bool,
+    },
+    Lost,
+    Refused {
+        site: SiteId,
+        reason: &'static str,
+    },
+    Revoke,
+    Skipped {
+        scope: Option<Scope>,
+        army: Option<usize>,
+        identity: Option<u64>,
+    },
+    SkippedQueue,
+    /// A pool writer inside a whole merge, on an army of the merge's scope.
+    Nested {
+        site: SiteId,
+        army: usize,
+        scope: Scope,
+        identity: Read<u64>,
+    },
+    /// Pushed before the writer reads, so no window can fall between its reads and its place.
+    Open {
+        id: u64,
+        site: SiteId,
+    },
+    /// What the writer read once its window was open.
+    Basis {
+        id: u64,
+        site: SiteId,
+        pre: Pre,
+    },
+    Close {
+        id: u64,
+        post: Post,
+    },
+    Delete {
+        scope: Scope,
+        expeditionary_owner: u32,
+        classified: Option<(native::Cause, native::Disposition)>,
+    },
+    Retire {
+        army: usize,
+        handle: Option<u64>,
+        scope: Option<u64>,
+    },
+    /// A division destructor's window, open before it reads the pool.
+    Freeing {
+        id: u64,
+        army: usize,
+    },
+    Free(Box<Free>),
+    Freed {
+        id: u64,
+        unwound: bool,
+    },
+    Queue {
+        army: usize,
+        handle: u64,
+        cause: native::Cause,
+        disposition: native::Disposition,
+    },
+    Transfer {
+        site: SiteId,
+        entry: Entry,
+    },
+}
+
+/// What an observed writer read before its native original.
+enum Pre {
+    Pool(PoolPre),
+    Variant(VariantPre),
+    Return(Box<ReturnPre>),
+    Merge(Box<MergePre>),
+}
+struct PoolPre {
+    cause: native::Cause,
+    army: Option<usize>,
+    scope: Option<Scope>,
+    identity: Read<u64>,
+    owner: Read<u32>,
+    pool: Read<usize>,
+    rows: Read<Vec<Row>>,
+}
+struct VariantPre {
+    army: Read<usize>,
+    pool: usize,
+    scope: Option<Scope>,
+    identity: Read<u64>,
+    owner: Read<u32>,
+    design: Read<u64>,
+    amount: Read<i64>,
+}
+struct ReturnPre {
+    army: Read<usize>,
+    pool: usize,
+    scope: Option<Scope>,
+    excluded: Read<bool>,
+    identity: Read<u64>,
+    owner: Read<u32>,
+    reserves: Read<usize>,
+    reserve_owner: Read<u32>,
+    sources: Read<Vec<Row>>,
+    touched: Read<Vec<Row>>,
+}
+struct MergePre {
+    excluded: Read<bool>,
+    /// The survivor and its handle, after every merged army authenticated.
+    head: Read<(usize, u64)>,
+    country: Read<u32>,
+    armies: Read<Vec<MergeArmy>>,
+    rest: Read<MergeRest>,
+    pools: Vec<usize>,
+}
+struct MergeArmy {
+    army: usize,
+    rows: Vec<Row>,
+    identity: u64,
+    owner: Read<u32>,
+}
+struct MergeRest {
+    scopes: Vec<MergeScope>,
+}
+struct MergeScope {
+    pool: usize,
+    main: bool,
+    identity: u32,
+    held: Vec<HeldRow>,
+    touched: Vec<Row>,
+}
+impl Pre {
+    /// The army a refused writer leaves unobserved, for its skipped credits.
+    fn source(&self) -> (Option<Scope>, Option<usize>, Option<u64>) {
+        match self {
+            Self::Pool(pre) => (pre.scope, pre.army, pre.identity.ok()),
+            Self::Variant(pre) => (pre.scope, pre.army.ok(), pre.identity.ok()),
+            Self::Return(pre) => (pre.scope, pre.army.ok(), pre.identity.ok()),
+            Self::Merge(_) => (None, None, None),
+        }
+    }
+    /// The pools its window covers, and whether it reads shared reserves.
+    fn window(&mut self, site: SiteId) -> (Pools, bool) {
+        match self {
+            Self::Pool(pre) => (
+                pre.pool.map_or(Pools::None, Pools::One),
+                site == SiteId::ScriptedReserveEquipmentFraction,
+            ),
+            Self::Variant(pre) => (Pools::One(pre.pool), false),
+            Self::Return(pre) => (
+                pre.reserves
+                    .map_or(Pools::One(pre.pool), |reserves| Pools::Two(pre.pool, reserves)),
+                true,
+            ),
+            Self::Merge(pre) => (Pools::Many(std::mem::take(&mut pre.pools)), true),
+        }
+    }
+}
+
+/// An observation's pools; only a merge's need storage of their own.
+enum Pools {
+    None,
+    One(usize),
+    Two(usize, usize),
+    Many(Vec<usize>),
+}
+impl Pools {
+    fn contains(&self, pool: usize) -> bool {
+        match self {
+            Self::None => false,
+            Self::One(one) => *one == pool,
+            Self::Two(one, two) => *one == pool || *two == pool,
+            Self::Many(pools) => pools.contains(&pool),
+        }
+    }
+    fn shared(&self, other: &Self) -> Option<usize> {
+        match other {
+            Self::None => None,
+            Self::One(one) => self.contains(*one).then_some(*one),
+            Self::Two(one, two) => [*one, *two].into_iter().find(|&pool| self.contains(pool)),
+            Self::Many(pools) => pools.iter().copied().find(|&pool| self.contains(pool)),
+        }
+    }
+}
+
+/// A pool whose two threads' native writes cannot be ordered.
+#[derive(Clone, Copy, serde::Serialize)]
+struct Contest {
+    reason: &'static str,
+    site_index: usize,
+    other_site_index: usize,
+    pool: usize,
+    country: u32,
+}
+
+/// What it read after the original returned, or why it never did.
+enum Post {
+    Unsettled,
+    WorldChanged,
+    Pool(Read<Vec<Row>>),
+    Variant(Read<i64>),
+    Return {
+        identity: Read<u64>,
+        touched: Read<Vec<Row>>,
+    },
+    Merge {
+        identity: Read<u64>,
+        rows: Read<Vec<Row>>,
+        scopes: Vec<(Read<u32>, Read<Vec<Row>>)>,
+    },
+}
+
+struct Free {
+    id: u64,
+    army: usize,
+    direct: Option<(Scope, u32)>,
+    scope: Option<Scope>,
+    deleted: Option<Read<Vec<Row>>>,
+    enabled: bool,
+    identity: Option<u64>,
+    merge_source: bool,
+    observing: bool,
+}
+
+static LOG: SpillStack<Event> = SpillStack::new();
+
+fn thread_id() -> u32 {
+    unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() }
+}
+fn next_id() -> u64 {
+    NEXT_ID.fetch_add(1, Ordering::Relaxed)
+}
+fn event(kind: Kind) -> Event {
+    Event {
+        thread: thread_id(),
+        kind,
+    }
+}
+/// Hook path: never waits. A refused event refuses the interval it may belong to.
+fn log(kind: Kind) {
+    if LOG.push(event(kind)).is_err() {
+        refused_event(None);
+    }
+}
+fn refused_event(site: Option<SiteId>) {
+    STORAGE_REFUSALS.fetch_add(1, Ordering::SeqCst);
+    record_refusal(site.map(|site| site as usize), EVENT_STORAGE_FAILED);
+}
+fn boxed<T>(value: T) -> Read<Box<T>> {
+    engine_allocation::advisory(|| engine_allocation::boxed(value)).map_err(|_| EVENT_STORAGE_FAILED)
+}
+
+#[derive(Clone, Copy)]
+struct Queued {
+    army: usize,
+    handle: u64,
+    cause: native::Cause,
+    disposition: native::Disposition,
+}
+
+#[derive(Clone, Copy)]
+struct Deletion {
+    army: usize,
+    handle: u64,
+    country: u32,
+    cause: native::Cause,
+    disposition: native::Disposition,
+    expeditionary_owner: u32,
+    returned: bool,
+    ignored: bool,
+    // Direct Merge caller remains known when queued HQ disposition wins.
+    merge_source: bool,
+}
+impl Deletion {
+    fn ignored(army: usize) -> Self {
+        Self {
+            army,
+            handle: 0,
+            country: 0,
+            cause: native::Cause::Unknown,
+            disposition: native::Disposition::Loss,
+            expeditionary_owner: 0,
+            returned: false,
+            ignored: true,
+            merge_source: false,
+        }
+    }
+}
+
+/// An observation between its two events.
+struct Opened {
+    site: SiteId,
+    thread: u32,
+    pools: Pools,
+    reserves: bool,
+    /// `None` when the drain excluded or refused it before the original.
+    state: Option<OpenState>,
+    /// Until its basis arrives: how many windows had closed when it opened.
+    since: Option<u64>,
+}
+enum OpenState {
+    Pool {
+        country: u32,
+        cause: native::Cause,
+        rows: Vec<Row>,
+    },
+    Variant {
+        country: u32,
+        design: u64,
+        before: i64,
+    },
+    Return {
+        army: usize,
+        handle: u64,
+        country: u32,
+        scope: Option<u64>,
+        sources: Vec<Row>,
+        pre: Vec<Row>,
+        bookkeeping: bool,
+        revision: u64,
+    },
+    Merge {
+        country: u32,
+        survivor: usize,
+        handle: u64,
+        scopes: Vec<(bool, u32)>,
+        net: Vec<Net>,
+        prior_credit: bool,
+    },
+}
+impl OpenState {
+    fn country(&self) -> u32 {
+        match self {
+            Self::Pool { country, .. }
+            | Self::Variant { country, .. }
+            | Self::Return { country, .. }
+            | Self::Merge { country, .. } => *country,
+        }
+    }
+}
+/// A window that closed while another thread's observation awaited its basis.
+struct Closed {
+    at: u64,
+    thread: u32,
+    window: Window,
+}
+enum Window {
+    Observation { site: SiteId, pools: Pools },
+    Destructor { pool: usize },
+}
+/// A division destructor between its two events.
+struct Freeing {
+    thread: u32,
+    army: usize,
+    pool: usize,
+    enabled: bool,
+    retired: Option<u64>,
+    direct: Option<u64>,
+}
+
+const SHARED_POOL: &str = "equipment destruction pools observed by two threads at once";
+const DESTRUCTOR_OVERLAP: &str =
+    "equipment destruction observation overlaps another thread's division destructor";
+const UNSETTLED: &str = "equipment observed native call did not settle";
+const NO_BASIS: &str = "equipment observation closed without its pre-state";
+const NO_WINDOW: &str = "equipment observation pre-state has no open window";
+const DRAIN_STORAGE_FAILED: &str = "equipment destruction drain storage allocation failed";
+
+/// The drain's fold of the event log. Writers never take it.
 struct Store {
     _charge: crate::raw_memory::Charge,
     entries: Vec<Entry>,
@@ -73,19 +476,22 @@ struct Store {
     queued_by_army: FixedIndex<usize, u64>,
     queued_limit: usize,
     queued_count: usize,
-    before: Vec<equipment_entry::Row>,
-    after: Vec<equipment_entry::Row>,
-    raw: Vec<u8>,
-    net: Vec<Net>,
-    armies: Vec<usize>,
-    held: Vec<HeldRow>,
-    reserves: Vec<MergeReserve>,
     credits: Credits,
     transition: bool,
     refusal: Option<Refusal>,
     interval_refusal: Option<Refusal>,
     attach_interval: bool,
     unproven_queue: bool,
+    poisoned: bool,
+    scopes: HashMap<u64, Deletion>,
+    open: HashMap<u64, Opened>,
+    freeing: HashMap<u64, Freeing>,
+    /// Windows closed so far, and those an awaiting basis is still checked against.
+    closes: u64,
+    closed: Vec<Closed>,
+    net: Vec<Net>,
+    /// Refused-event and unsettled-call counts already charged to an interval.
+    charged: (u64, u64),
 }
 impl Store {
     fn new() -> Self {
@@ -96,51 +502,68 @@ impl Store {
             queued_by_army: FixedIndex::new(),
             queued_limit: 0,
             queued_count: 0,
-            before: Vec::new(),
-            after: Vec::new(),
-            raw: Vec::new(),
-            net: Vec::new(),
-            armies: Vec::new(),
-            held: Vec::new(),
-            reserves: Vec::new(),
             credits: Credits::new(),
             transition: true,
             refusal: None,
             interval_refusal: None,
             attach_interval: true,
             unproven_queue: false,
+            poisoned: false,
+            scopes: HashMap::new(),
+            open: HashMap::new(),
+            freeing: HashMap::new(),
+            closes: 0,
+            closed: Vec::new(),
+            net: Vec::new(),
+            charged: hook_failures(),
         }
     }
     #[cfg(test)]
     fn owned_capacity(&self) -> crate::raw_memory::Capacity {
         owned_capacity(
             &self.entries,
-            &self.before,
-            &self.after,
-            &self.raw,
             &self.queued,
             &self.queued_by_army,
-            (
-                &self.net,
-                &self.armies,
-                &self.held,
-                &self.reserves,
-                &self.credits,
-            ),
+            &self.credits,
         )
     }
     fn append(&mut self, site: SiteId, entry: Entry) -> Result<(), &'static str> {
         append_entry(&mut self.entries, site, entry)
     }
+    /// Accounts for what the fold grew.
+    fn recharge(&mut self) {
+        let capacity = owned_capacity(
+            &self.entries,
+            &self.queued,
+            &self.queued_by_army,
+            &self.credits,
+        );
+        STORE_BYTES.store(
+            capacity.payload_vectors + capacity.index_vectors,
+            Ordering::Relaxed,
+        );
+        CAPACITY.store(self.entries.capacity(), Ordering::Release);
+        self._charge.set(capacity);
+    }
     fn refuse(&mut self, site_index: Option<usize>, reason: &'static str) {
         self.refusal
             .get_or_insert(record_refusal(site_index, reason));
+        self.poisoned = true;
+        UNAVAILABLE.store(true, Ordering::Relaxed);
     }
-    fn boundary(&mut self, transition: bool, load: bool) {
+    /// A refused native writer can mutate any open observation's pools.
+    fn revoke(&mut self) {
+        if !self.open.is_empty() {
+            self.credits.advance();
+        }
+    }
+    fn fail(&mut self, site: SiteId, reason: &'static str) {
+        self.revoke();
+        self.refuse(Some(site as usize), reason);
+    }
+    fn boundary(&mut self, transition: bool, load: bool, refused: bool) {
         EVENT_ATTEMPTS.store(0, Ordering::Relaxed);
-        CALL_ATTEMPTS.store(0, Ordering::Relaxed);
         self.transition = transition;
-        let refused = POISONED.swap(false, Ordering::SeqCst);
         self.interval_refusal = None;
         if transition {
             self.entries.clear();
@@ -178,6 +601,1169 @@ impl Store {
             self.unproven_queue = false;
         }
     }
+
+    /// Folds every pushed event in push order. A failure counted while the
+    /// log is taken cannot be placed on either side of it, so it refuses both.
+    fn fold(&mut self) {
+        let before = hook_failures();
+        let taken = LOG.take();
+        let after = hook_failures();
+        for event in taken {
+            self.apply(event);
+        }
+        if after.0 > self.charged.0 {
+            // A refused event can hide a provenance or credit change.
+            self.credits.advance();
+            self.charge(EVENT_STORAGE_FAILED);
+        }
+        if after.1 > self.charged.1 {
+            self.revoke();
+            self.charge(UNSETTLED);
+        }
+        self.charged = before;
+        UNAVAILABLE.store(self.poisoned, Ordering::Relaxed);
+        self.recharge();
+    }
+    /// A writer already counted this refusal; only the interval learns of it.
+    fn charge(&mut self, reason: &'static str) {
+        self.refusal.get_or_insert(Refusal {
+            site_index: None,
+            reason,
+        });
+        self.poisoned = true;
+    }
+    fn apply(&mut self, Event { thread, kind }: Event) {
+        match kind {
+            Kind::Boundary {
+                transition,
+                load,
+                first,
+                skipped_queue,
+            } => {
+                let refused = std::mem::take(&mut self.poisoned);
+                self.attach_interval |= first || load || skipped_queue;
+                self.boundary(transition, load, refused);
+            }
+            Kind::Lost => self.poisoned = true,
+            Kind::Refused { site, reason } => self.fail(site, reason),
+            Kind::Revoke => self.revoke(),
+            Kind::Skipped {
+                scope,
+                army,
+                identity,
+            } => self.skip_credit(scope, army, identity),
+            Kind::SkippedQueue => self.attach_interval = true,
+            Kind::Nested {
+                site,
+                army,
+                scope,
+                identity,
+            } => self.nested(site, army, scope, identity),
+            Kind::Open { id, site } => self.open(thread, id, site),
+            Kind::Basis { id, site, pre } => self.basis(thread, id, site, pre),
+            Kind::Close { id, post } => self.close(id, post),
+            Kind::Delete {
+                scope,
+                expeditionary_owner,
+                classified,
+            } => self.delete(scope, expeditionary_owner, classified),
+            Kind::Retire { army, handle, scope } => {
+                self.retire(army, handle);
+                if let Some(id) = scope {
+                    self.scopes.remove(&id);
+                }
+            }
+            Kind::Freeing { id, army } => self.begin_free(thread, id, army),
+            Kind::Free(free) => self.free(*free),
+            Kind::Freed { id, unwound } => self.freed(id, unwound),
+            Kind::Queue {
+                army,
+                handle,
+                cause,
+                disposition,
+            } => {
+                if self.poisoned {
+                    self.revoke();
+                    self.attach_interval = true;
+                } else if let Err(reason) = self.record_queue(army, handle, cause, disposition) {
+                    self.refuse(Some(SiteId::Queue as usize), reason);
+                }
+            }
+            Kind::Transfer { site, entry } => {
+                if self.poisoned {
+                    self.revoke();
+                } else if let Err(reason) = self.append(site, entry) {
+                    self.refuse(Some(site as usize), reason);
+                }
+            }
+        }
+    }
+    /// What a writer entering a refused interval skipped: its native original
+    /// still ran, so an open observation and its army's credits lose their basis.
+    fn skipped_entry(
+        &mut self,
+        site: SiteId,
+        scope: Option<Scope>,
+        army: Option<usize>,
+        identity: Option<u64>,
+    ) {
+        self.revoke();
+        match site {
+            SiteId::Land
+            | SiteId::Attrition
+            | SiteId::Paradrop
+            | SiteId::SetExiled
+            | SiteId::VolunteerReturnLoss
+            | SiteId::CapitulationEscapeLoss
+            | SiteId::ScriptedEquipmentFraction
+            | SiteId::Return
+            | SiteId::HqReturn => self.skip_credit(scope, army, identity),
+            SiteId::Merge => self.skip_credit(None, None, None),
+            _ => {}
+        }
+    }
+    fn skip_credit(&mut self, scope: Option<Scope>, army: Option<usize>, identity: Option<u64>) {
+        let context = army.and_then(|army| self.scope_of(scope, army));
+        if context.is_some_and(|context| context.ignored) {
+            return;
+        }
+        let source = army.and_then(|army| {
+            context
+                .filter(|context| context.handle != 0)
+                .map(|context| context.handle)
+                .or(identity)
+                .map(|handle| (army, handle))
+        });
+        if let Some((army, handle)) = source
+            && self.credits.skip(handle, army)
+        {
+            return;
+        }
+        // A revision mismatch is a persistent refusal on retained heads.
+        self.credits.advance();
+    }
+    /// The writer's deletion scope for this army, as the drain resolved it.
+    fn scope_of(&self, scope: Option<Scope>, army: usize) -> Option<Deletion> {
+        scope
+            .filter(|scope| scope.army == army)
+            .and_then(|scope| self.scopes.get(&scope.id).copied())
+    }
+    /// The scope only while the army still has the scope's handle.
+    fn context(
+        &self,
+        scope: Option<Scope>,
+        army: usize,
+        identity: Read<u64>,
+    ) -> Read<Option<Deletion>> {
+        let Some(context) = self.scope_of(scope, army) else {
+            return Ok(None);
+        };
+        if context.ignored && context.handle == 0 {
+            return Ok(Some(context));
+        }
+        Ok((identity? == context.handle).then_some(context))
+    }
+    fn insert_scope(&mut self, id: u64, context: Deletion) {
+        if engine_allocation::advisory(|| engine_allocation::reserve_map(&mut self.scopes, 1))
+            .is_err()
+        {
+            self.refuse(Some(SiteId::Delete as usize), DRAIN_STORAGE_FAILED);
+            return;
+        }
+        self.scopes.insert(id, context);
+    }
+    fn nested(&mut self, site: SiteId, army: usize, scope: Scope, identity: Read<u64>) {
+        if self.poisoned {
+            self.skipped_entry(site, Some(scope), Some(army), identity.ok());
+            return;
+        }
+        // Unit deletion can flush a transferred source through other native
+        // writers. Whole-merge scratch excludes that source's later bookkeeping too.
+        match self.context(Some(scope), army, identity) {
+            Err(reason) => self.fail(site, reason),
+            Ok(Some(context))
+                if context.returned
+                    || context.ignored
+                    || context.disposition != native::Disposition::Loss => {}
+            Ok(_) => self.fail(site, "equipment destruction pool observations overlap"),
+        }
+    }
+    fn transferred_source(
+        &self,
+        army: usize,
+        context: Option<Deletion>,
+        identity: Read<u64>,
+        owner: Read<u32>,
+    ) -> Result<bool, &'static str> {
+        if context.is_some_and(|context| {
+            context.ignored
+                || context.returned
+                || matches!(
+                    context.disposition,
+                    native::Disposition::Merged
+                        | native::Disposition::VolunteerTransferred
+                        | native::Disposition::ExileTransferred
+                )
+        }) {
+            return Ok(true);
+        }
+        let pending = self
+            .queued_by_army
+            .get(&army)
+            .and_then(|handle| self.queued.get(handle))
+            .filter(|entry| entry.disposition != native::Disposition::Loss);
+        if !self.credits.is_empty() {
+            let handle = identity?;
+            if self.credits.contains(handle) {
+                let country = context.map_or(owner, |context| Ok(context.country))?;
+                return Ok(self.credits.state(handle, army, country)? == PoolState::Bookkeeping);
+            }
+        }
+        // A recycled address cannot inherit another division's transfer witness.
+        if let Some(pending) = pending {
+            return Ok(identity? == pending.handle);
+        }
+        Ok(context.is_some_and(|context| context.disposition != native::Disposition::Loss))
+    }
+
+    fn open(&mut self, thread: u32, id: u64, site: SiteId) {
+        if engine_allocation::advisory(|| engine_allocation::reserve_map(&mut self.open, 1))
+            .is_err()
+        {
+            self.fail(site, DRAIN_STORAGE_FAILED);
+            return;
+        }
+        self.open.insert(
+            id,
+            Opened {
+                site,
+                thread,
+                pools: Pools::None,
+                reserves: false,
+                state: None,
+                since: Some(self.closes),
+            },
+        );
+    }
+    fn basis(&mut self, thread: u32, id: u64, site: SiteId, mut pre: Pre) {
+        let since = self.open.get_mut(&id).and_then(|opened| opened.since.take());
+        let (scope, army, identity) = pre.source();
+        let Some(since) = since.filter(|_| !self.poisoned) else {
+            self.open.remove(&id);
+            self.skipped_entry(site, scope, army, identity);
+            if since.is_none() {
+                self.refuse(Some(site as usize), NO_WINDOW);
+            }
+            self.settle();
+            return;
+        };
+        let (pools, reserves) = pre.window(site);
+        match self.open_state(site, pre) {
+            Ok(Some(state)) => {
+                if let Some((reason, other, pool)) = self.conflict(thread, &pools, reserves, since)
+                {
+                    self.contest(site, reason, other, pool, state.country());
+                }
+                if let Some(opened) = self.open.get_mut(&id) {
+                    opened.pools = pools;
+                    opened.reserves = reserves;
+                    opened.state = Some(state);
+                }
+            }
+            Ok(None) => {}
+            Err(reason) => {
+                self.fail(site, reason);
+                if matches!(site, SiteId::Return | SiteId::HqReturn) {
+                    self.skip_credit(scope, army, identity);
+                } else if site == SiteId::Merge {
+                    self.skip_credit(None, None, None);
+                }
+            }
+        }
+        self.settle();
+    }
+    /// Closed windows matter only while an observation awaits its basis.
+    fn settle(&mut self) {
+        if !self.open.values().any(|opened| opened.since.is_some()) {
+            self.closed.clear();
+        }
+    }
+    /// A closing window another thread's awaiting observation may have read across.
+    fn closed(&mut self, thread: u32, window: Window) {
+        self.closes += 1;
+        if !self
+            .open
+            .values()
+            .any(|opened| opened.since.is_some() && opened.thread != thread)
+        {
+            return;
+        }
+        if engine_allocation::advisory(|| engine_allocation::reserve(&mut self.closed, 1)).is_err()
+        {
+            let site = match window {
+                Window::Observation { site, .. } => site,
+                Window::Destructor { .. } => SiteId::DivisionFree,
+            };
+            self.fail(site, DRAIN_STORAGE_FAILED);
+            return;
+        }
+        self.closed.push(Closed {
+            at: self.closes,
+            thread,
+            window,
+        });
+    }
+    /// Another thread's window over the same pools, or any destructor beside
+    /// shared reserves, open since this window opened: the order of their
+    /// native writes is unknown.
+    fn conflict(
+        &self,
+        thread: u32,
+        pools: &Pools,
+        reserves: bool,
+        since: u64,
+    ) -> Option<(&'static str, SiteId, usize)> {
+        self.open
+            .values()
+            .filter(|opened| opened.thread != thread)
+            .find_map(|opened| {
+                opened
+                    .pools
+                    .shared(pools)
+                    .map(|pool| (SHARED_POOL, opened.site, pool))
+            })
+            .or_else(|| {
+                self.freeing
+                    .values()
+                    .find(|freeing| {
+                        freeing.thread != thread && (reserves || pools.contains(freeing.pool))
+                    })
+                    .map(|freeing| (DESTRUCTOR_OVERLAP, SiteId::DivisionFree, freeing.pool))
+            })
+            .or_else(|| {
+                self.closed
+                    .iter()
+                    .filter(|closed| closed.at > since && closed.thread != thread)
+                    .find_map(|closed| match &closed.window {
+                        Window::Observation { site, pools: other } => {
+                            other.shared(pools).map(|pool| (SHARED_POOL, *site, pool))
+                        }
+                        Window::Destructor { pool } => (reserves || pools.contains(*pool))
+                            .then_some((DESTRUCTOR_OVERLAP, SiteId::DivisionFree, *pool)),
+                    })
+            })
+    }
+    /// The recording has no keyed refusal, so a contest refuses the interval.
+    fn contest(
+        &mut self,
+        site: SiteId,
+        reason: &'static str,
+        other: SiteId,
+        pool: usize,
+        country: u32,
+    ) {
+        CONTESTS.fetch_add(1, Ordering::Relaxed);
+        *CONTEST.lock().unwrap_or_else(PoisonError::into_inner) = Some(Contest {
+            reason,
+            site_index: site as usize,
+            other_site_index: other as usize,
+            pool,
+            country,
+        });
+        self.fail(site, reason);
+    }
+    fn open_state(&mut self, site: SiteId, pre: Pre) -> Read<Option<OpenState>> {
+        match pre {
+            Pre::Pool(pre) => self.pool_open(pre),
+            Pre::Variant(pre) => self.variant_open(pre),
+            Pre::Return(pre) => self.return_open(site, *pre),
+            Pre::Merge(pre) => self.merge_open(*pre),
+        }
+    }
+    fn close(&mut self, id: u64, post: Post) {
+        if let Some(site) = self
+            .open
+            .get(&id)
+            .filter(|opened| opened.since.is_some())
+            .map(|opened| opened.site)
+        {
+            // Its writer unwound before it pushed what it read.
+            self.fail(site, NO_BASIS);
+        }
+        if matches!(post, Post::WorldChanged)
+            && let Some(site) = self
+                .open
+                .get(&id)
+                .filter(|opened| opened.state.is_some())
+                .map(|opened| opened.site)
+        {
+            self.fail(
+                site,
+                "equipment destruction native world changed during original",
+            );
+        }
+        let Some(Opened {
+            site,
+            thread,
+            pools,
+            state,
+            ..
+        }) = self.open.remove(&id)
+        else {
+            return;
+        };
+        if !matches!(pools, Pools::None) {
+            self.closed(thread, Window::Observation { site, pools });
+        }
+        self.settle();
+        let Some(state) = state else {
+            return;
+        };
+        let result = match (state, post) {
+            (_, Post::WorldChanged) => Ok(()),
+            (_, Post::Unsettled) => {
+                self.fail(site, UNSETTLED);
+                Ok(())
+            }
+            (
+                OpenState::Pool {
+                    country,
+                    cause,
+                    rows,
+                },
+                Post::Pool(after),
+            ) => self.pool_close(site, country, cause, rows, after),
+            (
+                OpenState::Variant {
+                    country,
+                    design,
+                    before,
+                },
+                Post::Variant(after),
+            ) => self.variant_close(country, design, before, after),
+            (state @ OpenState::Return { .. }, post @ Post::Return { .. }) => {
+                self.return_close(state, post)
+            }
+            (state @ OpenState::Merge { .. }, post @ Post::Merge { .. }) => {
+                self.merge_close(state, post)
+            }
+            _ => Err("equipment observation events disagree"),
+        };
+        if let Err(reason) = result {
+            self.refuse(Some(site as usize), reason);
+        }
+    }
+
+    fn pool_open(&self, pre: PoolPre) -> Read<Option<OpenState>> {
+        let PoolPre {
+            cause,
+            army,
+            scope,
+            identity,
+            owner,
+            pool,
+            rows,
+        } = pre;
+        let country = if let Some(army) = army {
+            let context = self.context(scope, army, identity)?;
+            if self.transferred_source(army, context, identity, owner)? {
+                return Ok(None);
+            }
+            context.map_or(owner, |context| Ok(context.country))?
+        } else {
+            owner?
+        };
+        pool?;
+        Ok(Some(OpenState::Pool {
+            country,
+            cause,
+            rows: rows?,
+        }))
+    }
+    fn pool_close(
+        &mut self,
+        site: SiteId,
+        country: u32,
+        cause: native::Cause,
+        mut before: Vec<Row>,
+        after: Read<Vec<Row>>,
+    ) -> Result<(), &'static str> {
+        let mut after = after?;
+        let mut failure = None;
+        let entries = &mut self.entries;
+        native::removals(&mut before, &mut after, |variant, amount_raw| {
+            if let Err(reason) = append_entry(
+                entries,
+                site,
+                Entry {
+                    country,
+                    cause,
+                    disposition: native::Disposition::Loss,
+                    expeditionary_owner: 0,
+                    division_handle: 0,
+                    variant,
+                    amount_raw,
+                },
+            ) {
+                failure.get_or_insert(reason);
+            }
+        })?;
+        failure.map_or(Ok(()), Err)
+    }
+    fn variant_open(&self, pre: VariantPre) -> Read<Option<OpenState>> {
+        let army = pre.army?;
+        let context = self.context(pre.scope, army, pre.identity)?;
+        if self.transferred_source(army, context, pre.identity, pre.owner)? {
+            return Ok(None);
+        }
+        let country = context.map_or(pre.owner, |context| Ok(context.country))?;
+        let design = pre.design?;
+        Ok(Some(OpenState::Variant {
+            country,
+            design,
+            before: pre.amount?,
+        }))
+    }
+    fn variant_close(
+        &mut self,
+        country: u32,
+        design: u64,
+        before: i64,
+        after: Read<i64>,
+    ) -> Result<(), &'static str> {
+        let amount_raw = before
+            .checked_sub(after?)
+            .ok_or("destruction difference overflow")?;
+        self.append(
+            SiteId::Attrition,
+            Entry {
+                country,
+                cause: native::Cause::Attrition,
+                disposition: native::Disposition::Loss,
+                expeditionary_owner: 0,
+                division_handle: 0,
+                variant: design,
+                amount_raw,
+            },
+        )
+    }
+
+    // Bulk reserve credits saturate independently of their still-owned source
+    // pool. Retain actual credits until that source dies.
+    fn return_open(&mut self, site: SiteId, pre: ReturnPre) -> Read<Option<OpenState>> {
+        let army = pre.army?;
+        let context = self.scope_of(pre.scope, army);
+        if context.is_some_and(|context| context.ignored) {
+            return Ok(None);
+        }
+        if site == SiteId::Return && context.is_none() {
+            return Err("equipment deletion returned-pool identity mismatch");
+        }
+        if pre.excluded? {
+            return Ok(None);
+        }
+        let handle = pre.identity?;
+        if context.is_some_and(|context| context.handle != handle) {
+            return Err("equipment returned source handle mismatch");
+        }
+        let country = context.map_or(pre.owner, |context| Ok(context.country));
+        let revision = self.credits.revision();
+        let bookkeeping = if self.credits.contains(handle) {
+            let prior = country.and_then(|country| self.credits.state(handle, army, country));
+            self.credits.invalidate(handle);
+            prior? == PoolState::Bookkeeping
+        } else {
+            self.credits.begin(handle, army, country?, revision)?;
+            self.credits.invalidate(handle);
+            false
+        };
+        let country = country?;
+        pre.reserves?;
+        pre.reserve_owner?;
+        Ok(Some(OpenState::Return {
+            army,
+            handle,
+            country,
+            scope: pre.scope.filter(|scope| scope.army == army).map(|scope| scope.id),
+            sources: pre.sources?,
+            pre: pre.touched?,
+            bookkeeping,
+            revision,
+        }))
+    }
+    fn return_close(&mut self, state: OpenState, post: Post) -> Result<(), &'static str> {
+        let (
+            OpenState::Return {
+                army,
+                handle,
+                country,
+                scope,
+                sources,
+                pre,
+                bookkeeping,
+                revision,
+            },
+            Post::Return { identity, touched },
+        ) = (state, post)
+        else {
+            return Err("equipment observation events disagree");
+        };
+        if identity? != handle {
+            return Err("equipment returned source changed handle");
+        }
+        let post = touched?;
+        let mut net = std::mem::take(&mut self.net);
+        net.clear();
+        let result = (|| {
+            self.credits
+                .visit(handle, army, country, |value| transfers::push(&mut net, value))?;
+            if !bookkeeping {
+                // The source is copied before credit. Later excluded cleanup writes
+                // to this retained bookkeeping pool cannot invent a second gain/loss.
+                for row in &sources {
+                    transfers::push(
+                        &mut net,
+                        Net {
+                            country: 0,
+                            variant: row.variant_handle,
+                            amount: i128::from(row.amount_raw),
+                            credited: 0,
+                        },
+                    )?;
+                }
+            }
+            for row in &pre {
+                transfers::push(
+                    &mut net,
+                    Net {
+                        country: 0,
+                        variant: row.variant_handle,
+                        amount: i128::from(row.amount_raw),
+                        credited: -i128::from(row.amount_raw),
+                    },
+                )?;
+            }
+            for row in &post {
+                transfers::push(
+                    &mut net,
+                    Net {
+                        country: 0,
+                        variant: row.variant_handle,
+                        amount: -i128::from(row.amount_raw),
+                        credited: i128::from(row.amount_raw),
+                    },
+                )?;
+            }
+            let len = transfers::compact(&mut net)?;
+            self.credits.check_continuity(handle)?;
+            // Keep the revision observed before reads, including first-head creation.
+            // A rejected callback in between must never supply a new certified basis.
+            self.credits.begin(handle, army, country, revision)?; // keeps an explicit zero-credit witness
+            self.credits.invalidate(handle);
+            for value in &net[..len] {
+                if value.amount != 0 || value.credited != 0 {
+                    self.credits.push(handle, *value)?;
+                }
+            }
+            self.credits
+                .set_state(handle, army, country, PoolState::Bookkeeping)
+        })();
+        self.net = net;
+        result?;
+        if let Some(context) = scope
+            .and_then(|scope| self.scopes.get_mut(&scope))
+            .filter(|context| context.army == army && context.handle == handle)
+        {
+            context.returned = true;
+        }
+        Ok(())
+    }
+
+    // Merging copies signed nonzero source/survivor entries, clears the
+    // survivor, saturates each retained allocation, and can round reserve credits.
+    fn merge_open(&mut self, pre: MergePre) -> Read<Option<OpenState>> {
+        if pre.excluded? {
+            return Ok(None);
+        }
+        let (survivor, handle) = pre.head?;
+        let country = pre.country;
+        let prior_credit = self.credits.contains(handle);
+        let prior_state = if prior_credit {
+            let state = country.and_then(|country| self.credits.state(handle, survivor, country));
+            self.credits.invalidate(handle);
+            Some(state?)
+        } else {
+            None
+        };
+        let country = country?;
+        // Selected main quantities transfer to the survivor's aggregate before
+        // allocation and credit, both survivor-owned. Its net correction therefore
+        // belongs to that recipient, even for mixed owners. Canceled delivery
+        // returns instead belong to each resolved reserve owner.
+        let mut net = Vec::new();
+        for army in &pre.armies? {
+            let credited = if army.army == survivor {
+                prior_state == Some(PoolState::Bookkeeping)
+            } else {
+                self.credits.contains(army.identity)
+                    && self
+                        .credits
+                        .state(army.identity, army.army, army.owner?)?
+                        == PoolState::Bookkeeping
+            };
+            // Returned bookkeeping still selects credits. Its source-time deficit
+            // settles separately; live donor inventory remains a real input.
+            if !credited {
+                for row in &army.rows {
+                    transfers::push(
+                        &mut net,
+                        Net {
+                            country,
+                            variant: row.variant_handle,
+                            amount: i128::from(row.amount_raw),
+                            credited: 0,
+                        },
+                    )?;
+                }
+            }
+        }
+        let rest = pre.rest?;
+        let mut scopes = Vec::new();
+        engine_allocation::advisory(|| engine_allocation::reserve(&mut scopes, rest.scopes.len()))
+            .map_err(|_| DRAIN_STORAGE_FAILED)?;
+        for scope in &rest.scopes {
+            let scope_country = if scope.main { country } else { scope.identity };
+            for row in scope
+                .held
+                .iter()
+                .map(|held| held.row)
+                .chain(scope.touched.iter().copied())
+            {
+                transfers::push(
+                    &mut net,
+                    Net {
+                        country: scope_country,
+                        variant: row.variant_handle,
+                        amount: i128::from(row.amount_raw),
+                        credited: 0,
+                    },
+                )?;
+            }
+            scopes.push((scope.main, scope.identity));
+        }
+        Ok(Some(OpenState::Merge {
+            country,
+            survivor,
+            handle,
+            scopes,
+            net,
+            prior_credit,
+        }))
+    }
+    fn merge_close(&mut self, state: OpenState, post: Post) -> Result<(), &'static str> {
+        let (
+            OpenState::Merge {
+                country,
+                survivor,
+                handle,
+                scopes,
+                mut net,
+                prior_credit,
+            },
+            Post::Merge {
+                identity,
+                rows,
+                scopes: reads,
+            },
+        ) = (state, post)
+        else {
+            return Err("equipment observation events disagree");
+        };
+        if identity? != handle {
+            return Err("merge survivor changed handle");
+        }
+        for row in &rows? {
+            transfers::push(
+                &mut net,
+                Net {
+                    country,
+                    variant: row.variant_handle,
+                    amount: -i128::from(row.amount_raw),
+                    credited: 0,
+                },
+            )?;
+        }
+        if reads.len() != scopes.len() {
+            return Err("equipment observation events disagree");
+        }
+        for ((main, identity), (owner, touched)) in scopes.into_iter().zip(reads) {
+            if owner? != identity {
+                return Err("merge reserve destination changed identity");
+            }
+            let scope_country = if main { country } else { identity };
+            for row in &touched? {
+                transfers::push(
+                    &mut net,
+                    Net {
+                        country: scope_country,
+                        variant: row.variant_handle,
+                        amount: -i128::from(row.amount_raw),
+                        credited: 0,
+                    },
+                )?;
+            }
+        }
+        let len = transfers::compact(&mut net)?;
+        for value in &net[..len] {
+            let amount_raw = i64::try_from(value.amount)
+                .map_err(|_| "merge equipment correction exceeds signed width")?;
+            self.append(
+                SiteId::Merge,
+                Entry {
+                    country: value.country,
+                    cause: native::Cause::DivisionMerged,
+                    disposition: native::Disposition::Loss,
+                    expeditionary_owner: 0,
+                    division_handle: 0,
+                    variant: value.variant,
+                    amount_raw,
+                },
+            )?;
+        }
+        if prior_credit {
+            self.credits
+                .set_state(handle, survivor, country, PoolState::Live)?;
+        }
+        Ok(())
+    }
+
+    fn take_queued(&mut self, army: usize, handle: u64) -> Option<Queued> {
+        if self
+            .queued
+            .get(&handle)
+            .is_none_or(|entry| entry.army != army)
+        {
+            return None;
+        }
+        if self.queued_by_army.get(&army) == Some(&handle) {
+            self.queued_by_army.remove(&army);
+        }
+        let entry = self.queued.remove(&handle);
+        if entry.is_some() {
+            self.queued_count -= 1;
+        }
+        entry
+    }
+    // The original can reject a nested scheduling request or free the unit.
+    // Retire its owned identity without reading that unit. Cleanup scopes
+    // lacking a live handle use only the excluded object's opaque address.
+    fn retire(&mut self, army: usize, handle: Option<u64>) {
+        if let Some(handle) = handle.or_else(|| self.queued_by_army.get(&army).copied()) {
+            self.take_queued(army, handle);
+        }
+    }
+    fn record_queue(
+        &mut self,
+        army: usize,
+        handle: u64,
+        cause: native::Cause,
+        disposition: native::Disposition,
+    ) -> Result<(), &'static str> {
+        if let Some(previous) = self.queued_by_army.get(&army).copied()
+            && previous != handle
+        {
+            self.take_queued(army, previous);
+        }
+        if let Some(entry) = self.queued.get_mut(&handle) {
+            if entry.army != army {
+                return Err("equipment deletion handle has conflicting army address");
+            }
+            if entry.cause != cause {
+                entry.cause = native::Cause::Unknown;
+            }
+            if disposition != native::Disposition::Loss {
+                entry.disposition = disposition;
+            }
+            return Ok(());
+        }
+        if self.queued_count == self.queued_limit {
+            grow_queue(self)?;
+        }
+        self.queued.insert(
+            handle,
+            Queued {
+                army,
+                handle,
+                cause,
+                disposition,
+            },
+        )?;
+        if let Err(reason) = self.queued_by_army.insert(army, handle) {
+            self.queued.remove(&handle);
+            return Err(reason);
+        }
+        self.queued_count += 1;
+        Ok(())
+    }
+    fn delete(
+        &mut self,
+        scope: Scope,
+        expeditionary_owner: u32,
+        classified: Option<(native::Cause, native::Disposition)>,
+    ) {
+        if self.poisoned {
+            self.revoke();
+            return;
+        }
+        let context = if scope.ignored {
+            Deletion::ignored(scope.army)
+        } else {
+            let pending = self.take_queued(scope.army, scope.handle);
+            if classified.is_none() && pending.is_none() && self.attach_interval {
+                self.unproven_queue = true;
+                Deletion::ignored(scope.army)
+            } else {
+                let (cause, mut disposition) = classified.unwrap_or_else(|| {
+                    pending
+                        .map(|entry| (entry.cause, entry.disposition))
+                        .unwrap_or((native::Cause::Unknown, native::Disposition::Loss))
+                });
+                // A later direct caller cannot undo an already proved pool transfer.
+                if let Some(entry) =
+                    pending.filter(|entry| entry.disposition != native::Disposition::Loss)
+                {
+                    disposition = entry.disposition;
+                }
+                Deletion {
+                    army: scope.army,
+                    handle: scope.handle,
+                    country: scope.country,
+                    cause,
+                    disposition,
+                    expeditionary_owner,
+                    returned: false,
+                    ignored: false,
+                    merge_source: scope.merge_source,
+                }
+            }
+        };
+        self.insert_scope(scope.id, context);
+    }
+    fn begin_free(&mut self, thread: u32, id: u64, army: usize) {
+        let pool = army
+            .checked_add(engine_native::carmy::EQUIPMENT_POOL)
+            .unwrap_or(usize::MAX);
+        if let Some((site, country)) = self.open.values().find_map(|opened| {
+            opened
+                .state
+                .as_ref()
+                .filter(|_| {
+                    opened.thread != thread && (opened.reserves || opened.pools.contains(pool))
+                })
+                .map(|state| (opened.site, state.country()))
+        }) {
+            self.contest(SiteId::DivisionFree, DESTRUCTOR_OVERLAP, site, pool, country);
+        }
+        if engine_allocation::advisory(|| engine_allocation::reserve_map(&mut self.freeing, 1))
+            .is_err()
+        {
+            self.fail(SiteId::DivisionFree, DRAIN_STORAGE_FAILED);
+            return;
+        }
+        self.freeing.insert(
+            id,
+            Freeing {
+                thread,
+                army,
+                pool,
+                enabled: false,
+                retired: None,
+                direct: None,
+            },
+        );
+    }
+    fn free(&mut self, free: Free) {
+        let Free {
+            id,
+            army,
+            direct,
+            scope,
+            deleted,
+            enabled,
+            identity,
+            merge_source,
+            observing,
+        } = free;
+        if self.poisoned {
+            self.revoke();
+        } else {
+            if let Some((direct, expeditionary_owner)) = direct {
+                let pending = self.take_queued(army, direct.handle);
+                self.insert_scope(
+                    direct.id,
+                    Deletion {
+                        army,
+                        handle: direct.handle,
+                        country: direct.country,
+                        cause: pending.map_or(native::Cause::Unknown, |entry| entry.cause),
+                        disposition: pending
+                            .map_or(native::Disposition::Loss, |entry| entry.disposition),
+                        expeditionary_owner,
+                        returned: false,
+                        ignored: false,
+                        merge_source: false,
+                    },
+                );
+            }
+            if let Some(rows) = deleted
+                && let Some(context) = self.scope_of(scope, army).filter(|c| !c.ignored)
+                && let Err(reason) = self.observe_deleted(context, rows, observing)
+            {
+                self.fail(SiteId::DivisionFree, reason);
+            }
+        }
+        let context = self.scope_of(scope, army);
+        let enabled = enabled && !context.is_some_and(|context| context.ignored);
+        let retired = context
+            .filter(|context| context.handle != 0)
+            .map(|context| context.handle)
+            .or(identity);
+        if enabled {
+            match retired {
+                Some(handle) => self.credits.invalidate(handle),
+                None => self.skip_credit(scope, Some(army), None),
+            }
+        }
+        if observing && !merge_source && context.is_none_or(|context| !context.ignored) {
+            // Its destructor returns held deliveries,
+            // including shared reserves outside the authenticated Merge inputs.
+            self.fail(
+                SiteId::DivisionFree,
+                "equipment deletion native pools overlap observation",
+            );
+        }
+        if let Some(freeing) = self.freeing.get_mut(&id) {
+            freeing.enabled = enabled;
+            freeing.retired = retired;
+            freeing.direct = direct.map(|(scope, _)| scope.id);
+        }
+    }
+    fn freed(&mut self, id: u64, unwound: bool) {
+        let Some(freeing) = self.freeing.remove(&id) else {
+            return;
+        };
+        self.closed(freeing.thread, Window::Destructor { pool: freeing.pool });
+        self.settle();
+        if !unwound && freeing.enabled {
+            self.retire(freeing.army, freeing.retired);
+            if let Some(handle) = freeing.retired {
+                self.credits.remove(handle);
+            }
+        }
+        if let Some(scope) = freeing.direct {
+            self.scopes.remove(&scope);
+        }
+    }
+    /// No read follows this callback's native destructor. The marker is present
+    /// even for a division whose remaining pool is empty.
+    fn observe_deleted(
+        &mut self,
+        context: Deletion,
+        rows: Read<Vec<Row>>,
+        observing: bool,
+    ) -> Result<(), &'static str> {
+        let disposition = if context.returned && context.disposition == native::Disposition::Loss
+        {
+            native::Disposition::Returned
+        } else {
+            context.disposition
+        };
+        let cause = if disposition == native::Disposition::Loss {
+            count_cause(context.cause)
+        } else {
+            context.cause
+        };
+        self.append(
+            SiteId::DivisionFree,
+            Entry {
+                country: context.country,
+                cause,
+                disposition,
+                expeditionary_owner: context.expeditionary_owner,
+                division_handle: context.handle,
+                variant: 0,
+                amount_raw: 0,
+            },
+        )?;
+        if self.credits.contains(context.handle) {
+            let state = self
+                .credits
+                .state(context.handle, context.army, context.country);
+            settle_credit(self, context)?;
+            if state? == PoolState::Bookkeeping
+                || context.merge_source
+                || matches!(
+                    disposition,
+                    native::Disposition::Merged
+                        | native::Disposition::VolunteerTransferred
+                        | native::Disposition::ExileTransferred
+                )
+            {
+                return Ok(());
+            }
+            // Whole Merge cleared/reallocated this pool after the old return.
+            // Its old source-time deficit and new live residual are independent.
+        } else {
+            if matches!(
+                disposition,
+                native::Disposition::Returned | native::Disposition::HqTransferred
+            ) {
+                return Err("equipment returned source has no actual credit witness");
+            }
+            if disposition != native::Disposition::Loss {
+                return Ok(());
+            }
+        }
+        if observing {
+            return Err("equipment deletion snapshot overlaps pool observation");
+        }
+        let rows = rows?;
+        let mut net = std::mem::take(&mut self.net);
+        net.clear();
+        let result = (|| {
+            for row in &rows {
+                transfers::push(
+                    &mut net,
+                    Net {
+                        country: 0,
+                        variant: row.variant_handle,
+                        amount: i128::from(row.amount_raw),
+                        credited: 0,
+                    },
+                )?;
+            }
+            let len = transfers::compact(&mut net)?;
+            for value in &net[..len] {
+                let amount_raw = i64::try_from(value.amount)
+                    .map_err(|_| "equipment deletion correction exceeds signed width")?;
+                self.append(
+                    SiteId::DivisionFree,
+                    Entry {
+                        country: context.country,
+                        cause,
+                        disposition: native::Disposition::Loss,
+                        expeditionary_owner: 0,
+                        division_handle: 0,
+                        variant: value.variant,
+                        amount_raw,
+                    },
+                )?;
+            }
+            Ok(())
+        })();
+        self.net = net;
+        result
+    }
 }
 
 fn append_entry(entries: &mut Vec<Entry>, site: SiteId, entry: Entry) -> Result<(), &'static str> {
@@ -188,23 +1774,24 @@ fn append_entry(entries: &mut Vec<Entry>, site: SiteId, entry: Entry) -> Result<
     } else if entry.amount_raw == 0 {
         return Ok(());
     }
-    // Pool differences can exceed a census allowance
-    // through repeated calls. Retain every reached row, including refusals.
+    // The attempts, refused ones too, size the receiving frames.
     let attempted = EVENT_ATTEMPTS
         .fetch_add(1, Ordering::Relaxed)
         .saturating_add(1);
     EVENT_REQUIRED.fetch_max(attempted, Ordering::Relaxed);
     if entries.len() == entries.capacity() {
-        return Err(event_overflow(site));
+        count_growth(site);
+        engine_allocation::advisory(|| engine_allocation::reserve(entries, 1))
+            .map_err(|_| EVENT_STORAGE_FAILED)?;
     }
-    entries.push(entry); // capacity checked; never allocates
+    entries.push(entry);
     EVENTS.fetch_add(1, Ordering::Relaxed);
     record_hourly_peak(entries.len(), entries.capacity());
     Ok(())
 }
 
 // Pending credits already carry compact per-design deficits. This visitor
-// settles them without touching scratch borrowed by an outer whole Merge.
+// settles them without touching a whole Merge's own corrections.
 fn settle_credit(store: &mut Store, context: Deletion) -> Result<(), &'static str> {
     store
         .credits
@@ -233,29 +1820,13 @@ fn settle_credit(store: &mut Store, context: Deletion) -> Result<(), &'static st
 
 fn owned_capacity(
     entries: &Vec<Entry>,
-    before: &Vec<equipment_entry::Row>,
-    after: &Vec<equipment_entry::Row>,
-    raw: &Vec<u8>,
     queued: &FixedIndex<u64, Queued>,
     by_army: &FixedIndex<usize, u64>,
-    (net, armies, held, reserves, credits): (
-        &Vec<Net>,
-        &Vec<usize>,
-        &Vec<HeldRow>,
-        &Vec<MergeReserve>,
-        &Credits,
-    ),
+    credits: &Credits,
 ) -> crate::raw_memory::Capacity {
     use crate::raw_memory::{Capacity, vector_bytes};
     Capacity {
         payload_vectors: vector_bytes(entries),
-        auxiliary_vectors: vector_bytes(before)
-            + vector_bytes(after)
-            + vector_bytes(raw)
-            + vector_bytes(net)
-            + vector_bytes(armies)
-            + vector_bytes(held)
-            + vector_bytes(reserves),
         index_vectors: queued.allocated_bytes() as u64
             + by_army.allocated_bytes() as u64
             + credits.allocated_bytes() as u64,
@@ -270,80 +1841,36 @@ pub fn release() -> Result<(), &'static str> {
         || ACTIVE
             .iter()
             .any(|active| active.load(Ordering::SeqCst) != 0)
-        || OBSERVING.load(Ordering::SeqCst)
-        || BOUNDARY_ADMISSION.load(Ordering::SeqCst) != 0
+        || OPEN.load(Ordering::SeqCst) != 0
     {
         return Err("equipment event storage release before callback quiescence");
     }
     let storage = {
         let mut store = STORE.lock().unwrap_or_else(|error| error.into_inner());
         CAPACITY.store(0, Ordering::Release);
-        OFFERED_CAPACITY.store(0, Ordering::Release);
         QUEUED_CAPACITY.store(0, Ordering::Release);
-        DESIGNS.store(0, Ordering::Release);
-        POOL_CAPACITY.store(0, Ordering::Release);
+        STORE_BYTES.store(0, Ordering::Relaxed);
         EVENT_ATTEMPTS.store(0, Ordering::Relaxed);
         CALL_ATTEMPTS.store(0, Ordering::Relaxed);
         EVENT_REQUIRED.store(0, Ordering::Relaxed);
-        POOL_REQUIRED.store(0, Ordering::Relaxed);
         std::mem::replace(&mut *store, Store::new())
     };
-    drop(storage);
-    let mut swap = STORAGE_SWAP
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
-    drop(swap.ready.take());
-    drop(swap.retired.take());
+    drop((storage, LOG.take()));
     Ok(())
 }
 
-#[derive(Clone, Copy)]
-struct Queued {
-    army: usize,
-    handle: u64,
-    cause: native::Cause,
-    disposition: native::Disposition,
-}
-
-#[derive(Clone, Copy)]
-struct Deletion {
-    army: usize,
-    handle: u64,
-    country: u32,
-    cause: native::Cause,
-    disposition: native::Disposition,
-    expeditionary_owner: u32,
-    returned: bool,
-    observed: bool,
-    ignored: bool,
-    // Direct Merge caller remains known when queued HQ disposition wins.
-    merge_source: bool,
-}
-impl Deletion {
-    fn ignored(army: usize) -> Self {
-        Self {
-            army,
-            handle: 0,
-            country: 0,
-            cause: native::Cause::Unknown,
-            disposition: native::Disposition::Loss,
-            expeditionary_owner: 0,
-            returned: false,
-            observed: false,
-            ignored: true,
-            merge_source: false,
-        }
-    }
-}
 thread_local! {
     // Unit deletion can enter nested cleanup. Each scope restores its caller's
-    // context without allocating or holding STORE across a native callback.
-    static DELETION: Cell<Option<Deletion>> = const { Cell::new(None) };
+    // context without allocating across a native callback.
+    static DELETION: Cell<Option<Scope>> = const { Cell::new(None) };
     static WHOLE_MERGE: Cell<bool> = const { Cell::new(false) };
+    // This thread's open observation and division destructors.
+    static OBSERVING: Cell<bool> = const { Cell::new(false) };
+    static FREEING: Cell<usize> = const { Cell::new(0) };
 }
-struct DeletionScope(Option<Deletion>);
+struct DeletionScope(Option<Scope>);
 impl DeletionScope {
-    fn enter(context: Option<Deletion>) -> Self {
+    fn enter(context: Option<Scope>) -> Self {
         Self(DELETION.replace(context))
     }
 }
@@ -352,45 +1879,28 @@ impl Drop for DeletionScope {
         DELETION.set(self.0);
     }
 }
+// Starts empty at attach and grows only in the drain, to what the hours need.
 static STORE: LazyLock<Mutex<Store>> = LazyLock::new(|| Mutex::new(Store::new()));
-#[derive(Default)]
-struct StorageSwap {
-    ready: Option<(Store, usize)>,
-    retired: Option<Store>,
-}
-// Native writers never take this slot. Retired vectors are freed off-thread.
-static STORAGE_SWAP: LazyLock<Mutex<StorageSwap>> =
-    LazyLock::new(|| Mutex::new(StorageSwap::default()));
-// The first attach-level diagnostic stays visible while a writer owns STORE.
+// The first attach-level diagnostic stays visible before the drain folds it.
 static FIRST_REFUSAL: OnceLock<Refusal> = OnceLock::new();
-// Only the hourly boundary writes this clock. It advances even if a writer
-// owns STORE, so an overlapping drain cannot masquerade as a later branch.
+// Only the hourly boundary writes this clock.
 static CLOCK: Mutex<Option<Clock>> = Mutex::new(None);
 static WORLD_GENERATION: AtomicU64 = AtomicU64::new(0);
 static BASE: AtomicUsize = AtomicUsize::new(0);
 static CAPACITY: AtomicUsize = AtomicUsize::new(0);
-static OFFERED_CAPACITY: AtomicUsize = AtomicUsize::new(0);
 static EVENT_ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
 static CALL_ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
 static EVENT_REQUIRED: AtomicUsize = AtomicUsize::new(0);
-static POOL_REQUIRED: AtomicUsize = AtomicUsize::new(0);
 static QUEUED_CAPACITY: AtomicUsize = AtomicUsize::new(0);
-static DESIGNS: AtomicUsize = AtomicUsize::new(0);
-static POOL_CAPACITY: AtomicUsize = AtomicUsize::new(0);
+static STORE_BYTES: AtomicU64 = AtomicU64::new(0);
 static HOURLY_PEAK_EVENTS: AtomicUsize = AtomicUsize::new(0);
 static HOURLY_PEAK_CAPACITY: AtomicUsize = AtomicUsize::new(0);
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static SUPPLEMENTAL_ENABLED: AtomicBool = AtomicBool::new(false);
-static POISONED: AtomicBool = AtomicBool::new(false);
-static OBSERVING: AtomicBool = AtomicBool::new(false);
-// Bit 0 owns the boundary, bit 1 remembers a callback entering that boundary,
-// and each callback/observation holds four units across its native original.
-static BOUNDARY_ADMISSION: AtomicUsize = AtomicUsize::new(0);
-static PENDING_BOUNDARY: AtomicBool = AtomicBool::new(false);
-static PENDING_LOAD: AtomicBool = AtomicBool::new(false);
-// Only refused callbacks advance this fallback. When STORE is unavailable,
-// no old head can be silently certified after an unknown native mutation.
-static CREDIT_REVISION: AtomicU64 = AtomicU64::new(0);
+static UNAVAILABLE: AtomicBool = AtomicBool::new(false);
+/// Observations between their two events, on every thread.
+static OPEN: AtomicUsize = AtomicUsize::new(0);
+static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 static SKIPPED_QUEUE: AtomicBool = AtomicBool::new(false);
 static ACTIVE: [AtomicUsize; native::SITES.len()] =
     [const { AtomicUsize::new(0) }; native::SITES.len()];
@@ -410,30 +1920,35 @@ static OVERFLOW: AtomicU64 = AtomicU64::new(0);
 static SITE_OVERFLOW: [AtomicU64; native::SITES.len()] =
     [const { AtomicU64::new(0) }; native::SITES.len()];
 static REFUSALS: AtomicU64 = AtomicU64::new(0);
+static CONTESTS: AtomicU64 = AtomicU64::new(0);
+static CONTEST: Mutex<Option<Contest>> = Mutex::new(None);
 static LOST: AtomicU64 = AtomicU64::new(0);
 static DRAINS: AtomicU64 = AtomicU64::new(0);
 static HANDED_OVER: AtomicU64 = AtomicU64::new(0);
-static OVERLAPS: AtomicU64 = AtomicU64::new(0);
-static PREPARE_FAILURES: AtomicU64 = AtomicU64::new(0);
+/// Events a writer could not allocate.
+static STORAGE_REFUSALS: AtomicU64 = AtomicU64::new(0);
+/// Armed writers whose native original unwound.
+static UNSETTLED_CALLS: AtomicU64 = AtomicU64::new(0);
 static UNKNOWN_CALLERS: AtomicU64 = AtomicU64::new(0);
 
+fn hook_failures() -> (u64, u64) {
+    (
+        STORAGE_REFUSALS.load(Ordering::SeqCst),
+        UNSETTLED_CALLS.load(Ordering::SeqCst),
+    )
+}
 pub fn active() -> usize {
     ACTIVE.iter().map(|v| v.load(Ordering::SeqCst)).sum()
 }
-static EVENT_HINT: AtomicUsize = AtomicUsize::new(0);
+/// Rows the receiving frames need: the largest hour seen, counting attempts the drain refused.
 pub(crate) fn demand() -> usize {
-    EVENT_HINT
-        .load(Ordering::Acquire)
+    HOURLY_PEAK_EVENTS
+        .load(Ordering::Relaxed)
         .max(EVENT_REQUIRED.load(Ordering::Acquire))
-}
-pub fn capacity() -> usize {
-    CAPACITY
-        .load(Ordering::Acquire)
-        .max(OFFERED_CAPACITY.load(Ordering::Acquire))
 }
 fn record_hourly_peak(events: usize, capacity: usize) {
     if events > HOURLY_PEAK_EVENTS.load(Ordering::Relaxed) {
-        // All producers hold STORE, so the capacity belongs to this peak.
+        // Only the drain appends, so the capacity belongs to this peak.
         // Partial and refused intervals remain included as headroom evidence.
         HOURLY_PEAK_CAPACITY.store(capacity, Ordering::Relaxed);
         HOURLY_PEAK_EVENTS.store(events, Ordering::Relaxed);
@@ -445,14 +1960,9 @@ fn count_cause(cause: native::Cause) -> native::Cause {
     }
     cause
 }
-fn poison() {
-    POISONED.store(true, Ordering::SeqCst);
-}
 fn revoke_active_observation() {
-    if OBSERVING.load(Ordering::SeqCst) {
-        let _ = CREDIT_REVISION.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |value| {
-            value.checked_add(1)
-        });
+    if OPEN.load(Ordering::SeqCst) != 0 {
+        log(Kind::Revoke);
     }
 }
 pub fn lost_drain() {
@@ -461,291 +1971,44 @@ pub fn lost_drain() {
         return;
     }
     LOST.fetch_add(1, Ordering::Relaxed);
-    poison();
+    log(Kind::Lost);
 }
 
-/// Allocate only before enabling, or on the spool's sizing thread. Grow from live
-/// country, division and saved design censuses, per native event family. These
-/// are admission allowances, not per-hour native bounds: repeat bursts can
-/// overflow and then explicitly withhold the table. Build new storage before
-/// publishing a spare; install it only at an empty, writer-free boundary.
-/// A failed sizing observation skips growth and counts a prepare failure; it
-/// cannot lose a recorded event or invalidate the existing branch observation.
-pub fn prepare(memory: &impl Memory, base: usize, countries: usize) {
-    engine_allocation::advisory(|| prepare_storage(memory, base, countries));
-}
+const EVENT_STORAGE_FAILED: &str = "equipment destruction event storage allocation failed";
+const QUEUE_STORAGE_FAILED: &str = "equipment deletion provenance storage allocation failed";
 
-fn prepare_storage(memory: &impl Memory, base: usize, countries: usize) {
-    let (prepared_events, prepared_queue, prepared_designs, prepared_pool) = {
-        let mut swap = STORAGE_SWAP
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        drop(swap.retired.take());
-        swap.ready
-            .as_ref()
-            .map_or((0, 0, 0, 0), |(store, designs)| {
-                (
-                    EVENT_HINT.load(Ordering::Acquire),
-                    store.queued_limit,
-                    *designs,
-                    store.before.len(),
-                )
-            })
-    };
-    let Some(designs) = native::design_count(memory, base) else {
-        PREPARE_FAILURES.fetch_add(1, Ordering::Relaxed);
-        return;
-    };
-    let Some(population) = native::population(memory, base) else {
-        PREPARE_FAILURES.fetch_add(1, Ordering::Relaxed);
-        return;
-    };
-    let Some(events) = log_capacity(countries, population, designs) else {
-        PREPARE_FAILURES.fetch_add(1, Ordering::Relaxed);
-        return;
-    };
-    EVENT_HINT.fetch_max(events, Ordering::Release);
-    let events = demand();
-    // Merge main/held pools can create corresponding reserve rows in
-    // addition to S existing entries.
-    let Some(pool_bound) = population
-        .division_pool_entries
-        .checked_add(population.delivery_pool_entries)
-        .and_then(|n| n.checked_mul(2))
-        .and_then(|n| n.checked_add(population.stockpile_entries))
-    else {
-        PREPARE_FAILURES.fetch_add(1, Ordering::Relaxed);
-        return;
-    };
-    let pool_bound = pool_bound
-        .max(POOL_REQUIRED.load(Ordering::Relaxed))
-        .max(designs)
-        .max(POOL_CAPACITY.load(Ordering::Acquire))
-        .max(prepared_pool);
-    let queued_bound = population.divisions;
-    if events <= capacity().max(prepared_events)
-        && designs <= DESIGNS.load(Ordering::Acquire).max(prepared_designs)
-        && queued_bound <= QUEUED_CAPACITY.load(Ordering::Acquire).max(prepared_queue)
-        && pool_bound <= POOL_CAPACITY.load(Ordering::Acquire).max(prepared_pool)
-    {
-        return;
-    }
-    let events = events.max(prepared_events);
-    let designs = designs
-        .max(DESIGNS.load(Ordering::Acquire))
-        .max(prepared_designs);
-    let queued_bound = queued_bound
-        .max(QUEUED_CAPACITY.load(Ordering::Acquire))
-        .max(prepared_queue);
-    let Some(raw_bytes) = pool_bound.checked_mul(equipment_entry::STRIDE) else {
-        PREPARE_FAILURES.fetch_add(1, Ordering::Relaxed);
-        return;
-    };
-    let mut entries = Vec::new();
-    let mut before = Vec::new();
-    let mut after = Vec::new();
-    let mut raw = Vec::new();
-    let mut net = Vec::new();
-    let mut armies = Vec::new();
-    let mut held = Vec::new();
-    let mut reserves = Vec::new();
-    let Some(net_bound) = pool_bound.checked_mul(3) else {
-        PREPARE_FAILURES.fetch_add(1, Ordering::Relaxed);
-        return;
-    };
-    let Some(army_bound) = queued_bound.checked_add(1) else {
-        PREPARE_FAILURES.fetch_add(1, Ordering::Relaxed);
-        return;
-    };
-    let credits = Credits::try_new(queued_bound, pool_bound);
-    let indexes = FixedIndex::try_new(queued_bound)
-        .and_then(|queued| FixedIndex::try_new(queued_bound).map(|by_army| (queued, by_army)));
-    if engine_allocation::reserve_exact(&mut entries, events).is_err()
-        || indexes.is_err()
-        || credits.is_err()
-        || engine_allocation::reserve_exact(&mut net, net_bound).is_err()
-        || engine_allocation::reserve_exact(&mut armies, army_bound).is_err()
-        || engine_allocation::reserve_exact(&mut before, pool_bound).is_err()
-        || engine_allocation::reserve_exact(&mut after, pool_bound).is_err()
-        || engine_allocation::reserve_exact(&mut held, pool_bound).is_err()
-        || engine_allocation::reserve_exact(&mut reserves, army_bound).is_err()
-        || engine_allocation::reserve_exact(&mut raw, raw_bytes).is_err()
-    {
-        PREPARE_FAILURES.fetch_add(1, Ordering::Relaxed);
-        return;
-    }
-    let Ok((queued, queued_by_army)) = indexes else {
-        return;
-    };
-    let Ok(credits) = credits else {
-        return;
-    };
-    before.resize(pool_bound, equipment_entry::Row::default());
-    after.resize(pool_bound, equipment_entry::Row::default());
-    held.resize(pool_bound, HeldRow::default());
-    reserves.resize(army_bound, MergeReserve::default());
-    net.resize(net_bound, Net::default());
-    armies.resize(army_bound, 0);
-    raw.resize(raw_bytes, 0);
-    let mut charge = crate::raw_memory::Charge::default();
-    charge.set(owned_capacity(
-        &entries,
-        &before,
-        &after,
-        &raw,
-        &queued,
-        &queued_by_army,
-        (&net, &armies, &held, &reserves, &credits),
-    ));
-    let storage = Store {
-        _charge: charge,
-        entries,
-        queued,
-        queued_by_army,
-        queued_limit: queued_bound,
-        before,
-        after,
-        raw,
-        net,
-        armies,
-        held,
-        reserves,
-        credits,
-        ..Store::new()
-    };
-    let offered = events;
-    STORAGE_SWAP
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .ready = Some((storage, designs));
-    // The spool sizes receiving frames before the boundary installs this spare.
-    OFFERED_CAPACITY.fetch_max(offered, Ordering::Release);
-}
-
-// Caller owns boundary admission and STORE; no native reads or vector drops.
-fn install_prepared(store: &mut Store) {
-    if !store.entries.is_empty() {
-        return;
-    }
-    let Ok(mut swap) = STORAGE_SWAP.try_lock() else {
-        return;
-    };
-    if swap.retired.is_some() {
-        return;
-    }
-    let Some((ready, designs)) = swap.ready.as_mut() else {
-        return;
-    };
-    let copy = ready
-        .queued
-        .clear()
-        .and_then(|()| ready.queued_by_army.clear())
-        .and_then(|()| ready.credits.clear())
-        .and_then(|()| {
-            store
-                .queued
-                .iter()
-                .try_for_each(|(&key, &value)| ready.queued.insert(key, value))
-        })
-        .and_then(|()| {
-            store
-                .queued_by_army
-                .iter()
-                .try_for_each(|(&key, &value)| ready.queued_by_army.insert(key, value))
-        });
-    if let Err(reason) = copy.and_then(|()| store.credits.copy_to(&mut ready.credits)) {
-        store.refuse(None, reason);
-        return;
-    }
-    std::mem::swap(&mut store._charge, &mut ready._charge);
-    std::mem::swap(&mut store.entries, &mut ready.entries);
-    std::mem::swap(&mut store.queued, &mut ready.queued);
-    std::mem::swap(&mut store.queued_by_army, &mut ready.queued_by_army);
-    std::mem::swap(&mut store.before, &mut ready.before);
-    std::mem::swap(&mut store.after, &mut ready.after);
-    std::mem::swap(&mut store.raw, &mut ready.raw);
-    std::mem::swap(&mut store.net, &mut ready.net);
-    std::mem::swap(&mut store.armies, &mut ready.armies);
-    std::mem::swap(&mut store.held, &mut ready.held);
-    std::mem::swap(&mut store.reserves, &mut ready.reserves);
-    std::mem::swap(&mut store.credits, &mut ready.credits);
-    std::mem::swap(&mut store.queued_limit, &mut ready.queued_limit);
-    CAPACITY.store(store.entries.capacity(), Ordering::Release);
-    QUEUED_CAPACITY.store(store.queued.capacity(), Ordering::Release);
-    DESIGNS.store(*designs, Ordering::Release);
-    POOL_CAPACITY.store(store.before.len(), Ordering::Release);
-    swap.retired = swap.ready.take().map(|(storage, _)| storage);
-}
-
-fn log_capacity(countries: usize, population: native::Population, designs: usize) -> Option<usize> {
-    // One live-census sweep per family: deletion/volunteer/exile removals
-    // each witness D divisions. Land, attrition, remainder, paradrop, merge,
-    // exile, volunteer return, capitulation escape
-    // and scripted division writers each get P actual division-pool entries,
-    // never D times every globally saved design. Scripted stockpile scaling
-    // gets S actual reserve entries. Air/garrison attribute by owner: each gets
-    // C+V from the country registry and saved-design census, not their C*V
-    // cross product. Their wing/occupation populations and repeated calls in
-    // ANY family have no
-    // per-hour bound from these censuses; excess refuses by writer name and
-    // counts SITE_OVERFLOW.
-    let owners_and_designs = countries.checked_add(designs)?;
-    let native::Population {
-        divisions,
-        division_pool_entries: pool,
-        stockpile_entries,
-        delivery_pool_entries,
-    } = population;
-    [
-        divisions,             // deletion witnesses
-        divisions,             // volunteer transfer witnesses
-        divisions,             // exile transfer witnesses
-        pool,                  // land
-        pool,                  // attrition
-        pool,                  // deletion remainder
-        pool,                  // paradrop
-        pool,                  // merge main pool corrections
-        delivery_pool_entries, // canceled delivery corrections
-        pool,                  // exile reductions
-        pool,                  // volunteer return reductions
-        pool,                  // capitulation escape reductions
-        pool,                  // scripted division reductions
-        owners_and_designs,    // air
-        owners_and_designs,    // garrison
-        stockpile_entries,     // scripted stockpile reductions
-    ]
-    .into_iter()
-    .try_fold(0usize, usize::checked_add)
-}
-
-fn event_overflow(site: SiteId) -> &'static str {
+/// A full log or index grew as the drain folded.
+fn count_growth(site: SiteId) {
     OVERFLOW.fetch_add(1, Ordering::Relaxed);
     SITE_OVERFLOW[site as usize].fetch_add(1, Ordering::Relaxed);
-    match site {
-        SiteId::Land => "land damage event log overflow",
-        SiteId::Attrition => "attrition event log overflow",
-        SiteId::Air => "airplane loss event log overflow",
-        SiteId::Garrison => "garrison resistance event log overflow",
-        SiteId::DivisionFree => "division deletion event log overflow",
-        SiteId::Paradrop => "paradrop disruption event log overflow",
-        SiteId::Merge => "merge equipment event log overflow",
-        SiteId::Return | SiteId::HqReturn => "returned equipment event log overflow",
-        SiteId::VolunteerTransfer => "volunteer transfer event log overflow",
-        SiteId::ExileTransfer => "exile transfer event log overflow",
-        SiteId::SetExiled => "exile equipment event log overflow",
-        SiteId::VolunteerReturnLoss => "volunteer return equipment event log overflow",
-        SiteId::CapitulationEscapeLoss => "capitulation escape equipment event log overflow",
-        SiteId::ScriptedEquipmentFraction => "scripted division equipment event log overflow",
-        SiteId::ScriptedReserveEquipmentFraction => {
-            "scripted stockpile equipment event log overflow"
-        }
-        _ => "equipment destruction event log overflow",
-    }
+}
+
+/// The drain's only growth of the provenance indexes: both doubled.
+fn grow_queue(store: &mut Store) -> Result<(), &'static str> {
+    count_growth(SiteId::Queue);
+    let limit = store
+        .queued_limit
+        .checked_mul(2)
+        .ok_or(QUEUE_STORAGE_FAILED)?
+        .max(1);
+    let (queued, by_army) = engine_allocation::advisory(|| {
+        Ok::<_, std::io::Error>((store.queued.grown(limit)?, store.queued_by_army.grown(limit)?))
+    })
+    .map_err(|_| QUEUE_STORAGE_FAILED)?;
+    store.queued = queued;
+    store.queued_by_army = by_army;
+    store.queued_limit = limit;
+    QUEUED_CAPACITY.fetch_max(limit, Ordering::Release);
+    Ok(())
 }
 
 /// Called before acquisition (also when no reusable frame exists). First,
 /// load and discontinuity boundaries discard the previous partial interval.
 pub fn boundary(clock: Option<Clock>) {
+    #[cfg(test)]
+    if !tests::owns_observation() {
+        return;
+    }
     let Some(clock) = clock else {
         lost_drain();
         return;
@@ -771,94 +2034,31 @@ pub fn boundary(clock: Option<Clock>) {
         });
     *previous = Some(clock);
     drop(previous);
-    let Some(claim) = BoundaryClaim::try_enter() else {
-        refuse_boundary(transition, load);
-        return;
-    };
-    if OBSERVING.load(Ordering::SeqCst) || active() != 0 {
-        refuse_boundary(transition, load);
-        return;
-    }
-    let load = load || PENDING_LOAD.load(Ordering::SeqCst);
-    let transition = transition || PENDING_BOUNDARY.load(Ordering::SeqCst);
-    match STORE.try_lock() {
-        Ok(mut store) => {
-            PENDING_LOAD.store(false, Ordering::SeqCst);
-            PENDING_BOUNDARY.store(false, Ordering::SeqCst);
-            let skipped_queue = SKIPPED_QUEUE.swap(false, Ordering::SeqCst);
-            store.attach_interval |= first || load || skipped_queue;
-            store.boundary(transition, load);
-            install_prepared(&mut store);
-            if claim.finish() {
-                store.transition = true;
-                store.attach_interval = true;
-                store.refuse(
-                    None,
-                    "equipment destruction boundary overlaps active observation; interval is partial",
-                );
-            }
-        }
-        Err(_) => {
-            refuse_boundary(transition, load);
-        }
-    }
+    CALL_ATTEMPTS.store(0, Ordering::Relaxed);
+    log(Kind::Boundary {
+        transition,
+        load,
+        first,
+        skipped_queue: SKIPPED_QUEUE.swap(false, Ordering::SeqCst),
+    });
 }
 
-fn refuse_boundary(transition: bool, load: bool) {
-    if transition {
-        PENDING_BOUNDARY.store(true, Ordering::SeqCst);
-    }
-    if load {
-        PENDING_LOAD.store(true, Ordering::SeqCst);
-    }
-    OVERLAPS.fetch_add(1, Ordering::Relaxed);
-    if let Ok(mut store) = STORE.try_lock() {
-        store.transition = true;
-        store.attach_interval = true;
-        store.refuse(
-            None,
-            "equipment destruction boundary overlaps active observation; interval is partial",
-        );
-    } else {
-        record_refusal(
-            None,
-            "equipment destruction boundary overlaps active observation; interval is partial",
-        );
-    }
-}
-
-#[cfg(test)]
-pub fn drain(output: &mut [Entry]) -> Result<usize, &'static str> {
-    drain_buffer(engine_native::walk::Buffer::Fixed(output))
-}
-pub fn drain_growing(output: &mut Vec<Entry>) -> Result<usize, &'static str> {
+pub fn drain(output: &mut Vec<Entry>) -> Result<usize, &'static str> {
     drain_buffer(engine_native::walk::Buffer::Growing(output))
 }
 fn drain_buffer(mut output: engine_native::walk::Buffer<'_, Entry>) -> Result<usize, &'static str> {
+    #[cfg(test)]
+    if !tests::owns_observation() {
+        return Err("equipment destruction hooks unavailable (see status unhooked)");
+    }
     DRAINS.fetch_add(1, Ordering::Relaxed);
     if UNHOOKED.get().is_some() || !ENABLED.load(Ordering::SeqCst) {
         return Err("equipment destruction hooks unavailable (see status unhooked)");
     }
-    let claim = match BoundaryClaim::try_enter() {
-        Some(claim) if active() == 0 && !OBSERVING.load(Ordering::SeqCst) => claim,
-        _ => {
-            lost_drain();
-            let refusal = STORE.try_lock().ok().and_then(|store| store.refusal);
-            return Err(
-                refusal.map_or("equipment destruction active writer at drain", |r| r.reason)
-            );
-        }
-    };
-    let Ok(mut store) = STORE.try_lock() else {
-        lost_drain();
-        return Err("equipment destruction writer overlaps hourly drain");
-    };
-    if POISONED.load(Ordering::SeqCst)
-        || store.refusal.is_some()
-        || store.interval_refusal.is_some()
-    {
+    let mut store = STORE.lock().unwrap_or_else(|error| error.into_inner());
+    store.fold();
+    if store.poisoned || store.refusal.is_some() || store.interval_refusal.is_some() {
         store.entries.clear();
-        install_prepared(&mut store);
         return Err(store.refusal.or(store.interval_refusal).map_or(
             "equipment destruction lost observation; interval unavailable",
             |r| r.reason,
@@ -869,14 +2069,12 @@ fn drain_buffer(mut output: engine_native::walk::Buffer<'_, Entry>) -> Result<us
         // open for later queued deletions, but do not refuse it a second time.
         store.unproven_queue = false;
         store.entries.clear();
-        install_prepared(&mut store);
         return Err("equipment destruction first/branch interval is partial");
     }
     if store.unproven_queue {
         store.unproven_queue = false;
         store.attach_interval = false;
         store.entries.clear();
-        install_prepared(&mut store);
         return Err("queued division provenance is unavailable; interval is partial");
     }
     let len = store.entries.len();
@@ -884,17 +2082,12 @@ fn drain_buffer(mut output: engine_native::walk::Buffer<'_, Entry>) -> Result<us
         .ensure(len)
         .map_err(|_| "equipment destruction drain allocation failed")?;
     if len > output.len() {
+        drop(store);
         lost_drain();
         return Err("equipment destruction drain storage too small");
     }
     output[..len].copy_from_slice(&store.entries);
     store.entries.clear();
-    install_prepared(&mut store);
-    // Admission remembers even a callback that completed during the copy.
-    if claim.finish() || POISONED.load(Ordering::SeqCst) || active() != 0 {
-        lost_drain();
-        return Err("equipment destruction writer overlaps hourly drain");
-    }
     store.attach_interval = false;
     HANDED_OVER.fetch_add(len as u64, Ordering::Relaxed);
     Ok(len)
@@ -912,62 +2105,16 @@ pub fn deletion_unavailable() -> Option<&'static str> {
     }
 }
 
-fn boundary_running() -> bool {
-    BOUNDARY_ADMISSION.load(Ordering::SeqCst) & 1 != 0
-}
-struct Admission;
-impl Admission {
-    fn enter() -> Self {
-        if BOUNDARY_ADMISSION.fetch_add(4, Ordering::SeqCst) & 1 != 0 {
-            BOUNDARY_ADMISSION.fetch_or(2, Ordering::SeqCst);
-            poison();
-        }
-        Self
-    }
-}
-impl Drop for Admission {
-    fn drop(&mut self) {
-        BOUNDARY_ADMISSION.fetch_sub(4, Ordering::SeqCst);
-    }
-}
-struct BoundaryClaim(bool);
-impl BoundaryClaim {
-    fn try_enter() -> Option<Self> {
-        let state = BOUNDARY_ADMISSION.load(Ordering::SeqCst);
-        if state & !2 != 0 {
-            return None;
-        }
-        // A stale conflict bit belongs to an earlier boundary that already
-        // refused its active callback; claim once, without waiting or retry.
-        BOUNDARY_ADMISSION
-            .compare_exchange(state, 1, Ordering::SeqCst, Ordering::SeqCst)
-            .ok()
-            .map(|_| Self(false))
-    }
-    fn finish(mut self) -> bool {
-        self.0 = true;
-        BOUNDARY_ADMISSION.fetch_and(!3, Ordering::SeqCst) != 1
-    }
-}
-impl Drop for BoundaryClaim {
-    fn drop(&mut self) {
-        if !self.0 {
-            BOUNDARY_ADMISSION.fetch_and(!3, Ordering::SeqCst);
-        }
-    }
-}
 struct Call {
     site: SiteId,
-    _admission: Admission,
     unsettled: bool,
     returned: Cell<bool>,
-    // Last field: it drops after the admission and records the whole callback.
+    // Last field: it drops last and records the whole callback.
     timing: crate::hook_timing::Span,
 }
 impl Call {
     fn enter(site: SiteId) -> Self {
         let timing = crate::hook_timing::enter(crate::hook_timing::Family::EquipmentDestruction);
-        let admission = Admission::enter();
         ACTIVE[site as usize].fetch_add(1, Ordering::SeqCst);
         CALLS[site as usize].fetch_add(1, Ordering::Relaxed);
         if ENABLED.load(Ordering::SeqCst) {
@@ -980,20 +2127,16 @@ impl Call {
         }
         Self {
             site,
-            _admission: admission,
             unsettled: false,
             returned: Cell::new(false),
             timing,
         }
     }
-}
-impl Call {
     fn run<T>(&self, original: impl FnOnce() -> T) -> T {
         let result = self.timing.original(original);
         self.returned.set(true);
         result
     }
-
     fn arm(&mut self) {
         self.unsettled = true;
     }
@@ -1004,7 +2147,9 @@ impl Call {
 impl Drop for Call {
     fn drop(&mut self) {
         if self.unsettled {
-            observation_failed(self.site, "equipment observed native call did not settle");
+            // No allocation while a native exception unwinds this frame.
+            UNSETTLED_CALLS.fetch_add(1, Ordering::SeqCst);
+            record_refusal(Some(self.site as usize), UNSETTLED);
         }
         // Cleanup can run while Windows still traverses our shim/native return.
         // Only normal return proves that detach may retire this callback.
@@ -1015,98 +2160,210 @@ impl Drop for Call {
     }
 }
 
-struct Observation {
-    site: SiteId,
-    unsettled: bool,
+struct Observing;
+impl Observing {
+    fn enter() -> Self {
+        OBSERVING.set(true);
+        OPEN.fetch_add(1, Ordering::SeqCst);
+        Self
+    }
 }
-impl Drop for Observation {
+impl Drop for Observing {
     fn drop(&mut self) {
-        OBSERVING.store(false, Ordering::SeqCst);
-        if self.unsettled {
-            observation_failed(self.site, "equipment observed native call did not settle");
+        OBSERVING.set(false);
+        OPEN.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+struct InDestructor;
+impl InDestructor {
+    fn enter() -> Self {
+        FREEING.set(FREEING.get() + 1);
+        Self
+    }
+}
+impl Drop for InDestructor {
+    fn drop(&mut self) {
+        FREEING.set(FREEING.get() - 1);
+    }
+}
+
+/// A closing event whose storage is held before the original runs, so an
+/// observation always closes; unwinding pushes it as it stands.
+struct Closing(Option<Reserved<'static, Event>>);
+impl Closing {
+    fn finish(mut self, finish: impl FnOnce(&mut Kind)) {
+        if let Some(mut node) = self.0.take() {
+            finish(&mut node.kind);
+            node.push();
+        }
+    }
+}
+impl Drop for Closing {
+    fn drop(&mut self) {
+        if let Some(node) = self.0.take() {
+            node.push();
         }
     }
 }
 
-/// Own scratch without retaining a lock or a native-memory borrow across the
-/// original. An overlapping pool writer runs normally and refuses its interval.
-fn observe_native<T, P>(
+/// Own the copies without retaining a lock or a native-memory borrow across
+/// the original. A writer the drain cannot place runs normally and refuses.
+fn observe_native<T, C>(
     site: SiteId,
-    pre: impl FnOnce(&mut Store) -> Result<Option<P>, &'static str>,
+    bail: impl FnOnce(),
+    pre: impl FnOnce() -> (Pre, C),
     original: impl FnOnce() -> T,
-    post: impl FnOnce(&mut Store, P) -> Result<(), &'static str>,
+    post: impl FnOnce(C) -> Post,
 ) -> T {
     let generation = crate::world_lifetime::generation();
-    let _admission = Admission::enter();
     if crate::world_lifetime::invalidating() {
         observation_failed(
             site,
             "equipment destruction native world awaits hourly boundary",
         );
+        bail();
         return original();
     }
-    if boundary_running() {
-        observation_failed(
-            site,
-            "equipment destruction observation overlaps partial boundary",
-        );
-        return original();
-    }
-    if OBSERVING.swap(true, Ordering::SeqCst) {
+    if OBSERVING.get() {
         observation_failed(site, "equipment destruction pool observations overlap");
+        bail();
         return original();
     }
-    let mut observation = Observation {
-        site,
-        unsettled: false,
-    };
-    // Claim before checking Free: an earlier destructor blocks these reads,
-    // while a later destructor sees OBSERVING before its native mutation.
-    if ACTIVE[SiteId::DivisionFree as usize].load(Ordering::SeqCst) != 0 {
+    if FREEING.get() != 0 {
         observation_failed(
             site,
             "equipment observation overlaps active native destructor",
         );
+        bail();
         return original();
     }
-    let before = if let Ok(mut store) = STORE.try_lock() {
-        pre(&mut store)
-    } else {
-        OVERLAPS.fetch_add(1, Ordering::Relaxed);
-        Err("equipment destruction pre-observation overlaps writer")
-    };
-    let before = match before {
-        Ok(before) => before,
-        Err(reason) => {
-            observation_failed(site, reason);
-            None
-        }
-    };
-    observation.unsettled = before.is_some();
-    let result = original();
-    if let Some(before) = before {
-        if generation != crate::world_lifetime::generation() {
-            observation.unsettled = false;
-            observation_failed(
+    let _observing = Observing::enter();
+    let id = next_id();
+    let reserved = LOG
+        .reserve(event(Kind::Close {
+            id,
+            post: Post::Unsettled,
+        }))
+        .and_then(|close| {
+            let basis = LOG.reserve(event(Kind::Basis {
+                id,
                 site,
-                "equipment destruction native world changed during original",
-            );
-            return result;
-        }
-        if let Ok(mut store) = STORE.try_lock() {
-            if let Err(reason) = post(&mut store, before) {
-                store.refuse(Some(site as usize), reason);
-            }
-        } else {
-            OVERLAPS.fetch_add(1, Ordering::Relaxed);
-            observation_failed(
-                site,
-                "equipment destruction post-observation overlaps writer",
-            );
-        }
+                pre: failed_pool(NO_BASIS),
+            }))?;
+            Ok((close, basis))
+        });
+    let Ok((close, mut basis)) = reserved else {
+        refused_event(Some(site));
+        bail();
+        return original();
+    };
+    if LOG.push(event(Kind::Open { id, site })).is_err() {
+        refused_event(Some(site));
+        drop((close, basis));
+        bail();
+        return original();
     }
-    observation.unsettled = false;
+    let close = Closing(Some(close));
+    let (pre, context) = pre();
+    #[cfg(test)]
+    tests::after_pool_read(site);
+    if let Kind::Basis { pre: read, .. } = &mut basis.kind {
+        *read = pre;
+    }
+    basis.push();
+    let result = original();
+    let read = if generation != crate::world_lifetime::generation() {
+        Post::WorldChanged
+    } else {
+        post(context)
+    };
+    close.finish(|kind| {
+        if let Kind::Close { post, .. } = kind {
+            *post = read;
+        }
+    });
     result
+}
+
+fn observation_failed(site: SiteId, reason: &'static str) {
+    log(Kind::Refused { site, reason });
+}
+
+fn recording() -> bool {
+    let admitted = ENABLED.load(Ordering::SeqCst)
+        && !crate::world_lifetime::invalidating()
+        && SUPPLEMENTAL_ENABLED.load(Ordering::SeqCst)
+        && !crate::allocation::failed();
+    // Refused native originals still mutate pools used by an active observer.
+    if !admitted {
+        revoke_active_observation();
+    }
+    admitted
+}
+
+fn skipped_credit_mutation(army: Option<usize>) {
+    if !ENABLED.load(Ordering::SeqCst) || !SUPPLEMENTAL_ENABLED.load(Ordering::SeqCst) {
+        return;
+    }
+    let scope = army.and_then(|army| DELETION.get().filter(|scope| scope.army == army));
+    if scope.is_some_and(|scope| scope.ignored) {
+        return;
+    }
+    let identity = army.and_then(|army| {
+        native::army_identity(
+            &unsafe { engine_native::memory::LiveMemory::new() },
+            BASE.load(Ordering::Relaxed),
+            army,
+        )
+        .ok()
+    });
+    log(Kind::Skipped {
+        scope,
+        army,
+        identity,
+    });
+}
+
+/// The pool's rows in storage of their own.
+fn pool_rows(memory: &impl Memory, base: usize, pool: usize) -> Read<Vec<Row>> {
+    let count = engine_native::cequipment_variant_pool::entries(memory, base, pool)?.count as usize;
+    let mut rows = engine_allocation::advisory(|| engine_allocation::default_vec(count))
+        .map_err(|_| EVENT_STORAGE_FAILED)?;
+    let len = native::snapshot(memory, base, pool, &mut rows)?;
+    rows.truncate(len);
+    Ok(rows)
+}
+/// The destination rows `selected` reaches, in storage of their own.
+fn touched_rows(
+    memory: &impl Memory,
+    base: usize,
+    pool: usize,
+    selected: impl Fn(usize) -> bool,
+) -> Read<Vec<Row>> {
+    let count = engine_native::cequipment_variant_pool::entries(memory, base, pool)?.count as usize;
+    let mut rows = engine_allocation::advisory(|| engine_allocation::default_vec(count))
+        .map_err(|_| EVENT_STORAGE_FAILED)?;
+    let len = native::touched_reserves_if(memory, base, pool, selected, &mut rows)?;
+    rows.truncate(len);
+    Ok(rows)
+}
+fn variant_amount(memory: &impl Memory, base: usize, pool: usize, variant: usize) -> Read<i64> {
+    let count = engine_native::cequipment_variant_pool::entries(memory, base, pool)?.count as usize;
+    let bytes = count
+        .checked_mul(equipment_entry::STRIDE)
+        .ok_or("destruction variant snapshot size overflow")?;
+    let mut scratch = engine_allocation::advisory(|| engine_allocation::default_vec(bytes))
+        .map_err(|_| EVENT_STORAGE_FAILED)?;
+    native::variant_amount(memory, base, pool, variant, &mut scratch)
+}
+/// Whether `source` selects `variant` among sources sorted by variant pointer.
+fn selects(sources: &[Row], variant: usize) -> bool {
+    let start = sources.partition_point(|row| row.variant_pointer < variant);
+    sources[start..]
+        .iter()
+        .take_while(|row| row.variant_pointer == variant)
+        .next()
+        .is_some()
 }
 
 fn army_receiver(site: SiteId, receiver: usize) -> Result<Option<usize>, &'static str> {
@@ -1122,183 +2379,143 @@ fn army_receiver(site: SiteId, receiver: usize) -> Result<Option<usize>, &'stati
         _ => Ok(None),
     }
 }
-// Unit deletion can flush a transferred source through other native
-// writers. Whole-merge scratch excludes that source's later bookkeeping too.
-fn whole_merge_transfer(
-    memory: &impl Memory,
-    base: usize,
-    army: Option<usize>,
-) -> Result<bool, &'static str> {
-    if !WHOLE_MERGE.get() {
-        return Ok(false);
-    }
-    let Some(army) = army else {
-        return Ok(false);
+
+/// Inside a whole merge, a writer on one of its armies is left to the drain:
+/// a transferred source's flush is excluded, any other overlaps the merge.
+fn nested_in_merge(site: SiteId, army: Option<usize>) -> bool {
+    let Some((army, scope)) = army
+        .filter(|_| WHOLE_MERGE.get())
+        .and_then(|army| Some((army, DELETION.get().filter(|scope| scope.army == army)?)))
+    else {
+        return false;
     };
-    Ok(
-        active_deletion_context(memory, base, army)?.is_some_and(|context| {
-            context.returned || context.ignored || context.disposition != native::Disposition::Loss
-        }),
-    )
-}
-
-fn pool_before(
-    store: &mut Store,
-    site: SiteId,
-    receiver: usize,
-    memory: &impl Memory,
-    base: usize,
-) -> Result<Option<(u32, usize, usize)>, &'static str> {
-    let army = army_receiver(site, receiver)?;
-    let context = army
-        .map(|army| active_deletion_context(memory, base, army))
-        .transpose()?
-        .flatten();
-    if let Some(army) = army
-        && transferred_source(store, memory, base, army, context)?
-    {
-        return Ok(None);
-    }
-    (|| {
-        let country = if let Some(army) = army {
-            army_observation_owner(memory, army, context)
-        } else {
-            match site {
-                SiteId::Air => native::air_owner(memory, receiver),
-                SiteId::Garrison => native::garrison_owner(memory, receiver),
-                SiteId::ScriptedReserveEquipmentFraction => {
-                    native::reserve_owner(memory, base, receiver)
-                }
-                _ => Err("unsupported pool destruction writer"),
-            }
-        }?;
-        let pool = match site {
-            SiteId::Land | SiteId::Paradrop | SiteId::SetExiled => receiver
-                .checked_add(engine_native::carmy::EQUIPMENT_POOL)
-                .ok_or("army equipment pool address overflow")?,
-            SiteId::VolunteerReturnLoss
-            | SiteId::CapitulationEscapeLoss
-            | SiteId::ScriptedEquipmentFraction
-            | SiteId::ScriptedReserveEquipmentFraction => receiver,
-            _ => native::pool(receiver, site)?,
-        };
-        let len = snapshot(memory, base, pool, &mut store.before, 0)?;
-        Ok(Some((country, pool, len)))
-    })()
-}
-
-fn snapshot(
-    memory: &impl Memory,
-    base: usize,
-    pool: usize,
-    rows: &mut [equipment_entry::Row],
-    prefix: usize,
-) -> Result<usize, &'static str> {
-    native::snapshot_with_demand(memory, base, pool, rows, |count| {
-        POOL_REQUIRED.fetch_max(prefix.saturating_add(count), Ordering::Relaxed);
-    })
-}
-fn variant_amount(
-    memory: &impl Memory,
-    base: usize,
-    pool: usize,
-    variant: usize,
-    scratch: &mut [u8],
-) -> Result<i64, &'static str> {
-    native::variant_amount_with_demand(memory, base, pool, variant, scratch, |count| {
-        POOL_REQUIRED.fetch_max(count, Ordering::Relaxed);
-    })
-}
-fn pool_after(
-    store: &mut Store,
-    site: SiteId,
-    pre: Option<(u32, usize, usize)>,
-    cause: native::Cause,
-    memory: &impl Memory,
-    base: usize,
-) -> Result<(), &'static str> {
-    let Some((country, pool, len)) = pre else {
-        return Ok(());
+    let identity = if scope.ignored && scope.handle == 0 {
+        Ok(0)
+    } else {
+        native::army_identity(
+            &unsafe { engine_native::memory::LiveMemory::new() },
+            BASE.load(Ordering::Relaxed),
+            army,
+        )
     };
-    let after = snapshot(memory, base, pool, &mut store.after, 0)?;
-    let mut failure = None;
-    let entries = &mut store.entries;
-    // A strike's division and wing pool changes are forwarded to the nuclear
-    // strike family ([`crate::nuclear_strikes::equipment`]).
-    let strike = matches!(site, SiteId::Land | SiteId::Air);
-    native::removals(
-        &mut store.before[..len],
-        &mut store.after[..after],
-        |variant, amount_raw| {
-            if strike {
-                crate::nuclear_strikes::equipment(
-                    site == SiteId::Air,
-                    country,
-                    variant,
-                    amount_raw,
-                );
-            }
-            if let Err(reason) = append_entry(
-                entries,
-                site,
-                Entry {
-                    country,
-                    cause,
-                    disposition: native::Disposition::Loss,
-                    expeditionary_owner: 0,
-                    division_handle: 0,
-                    variant,
-                    amount_raw,
-                },
-            ) {
-                failure.get_or_insert(reason);
-            }
-        },
-    )?;
-    if let Some(reason) = failure {
-        return Err(reason);
-    }
-    if strike {
-        crate::nuclear_strikes::equipment_observed();
-    }
-    Ok(())
+    log(Kind::Nested {
+        site,
+        army,
+        scope,
+        identity,
+    });
+    true
 }
 
-#[cfg(test)]
-fn observe_pool(
-    store: &mut Store,
+/// The owner a writer on this army sees: its deletion scope's, while the army
+/// keeps the scope's handle, else the live owner.
+fn observed_owner(scope: Option<Scope>, identity: Read<u64>, owner: Read<u32>) -> Read<u32> {
+    match scope {
+        Some(scope) if (scope.ignored && scope.handle == 0) || identity == Ok(scope.handle) => {
+            Ok(scope.country)
+        }
+        _ => owner,
+    }
+}
+
+fn measure_pool(
     site: SiteId,
     receiver: usize,
     cause: native::Cause,
-    memory: &impl Memory,
-    base: usize,
+    strike: bool,
     original: impl FnOnce(),
-) -> Result<(), &'static str> {
-    let before = pool_before(store, site, receiver, memory, base);
-    original();
-    pool_after(store, site, before?, cause, memory, base)
-}
-
-fn measure_pool(site: SiteId, receiver: usize, cause: native::Cause, original: impl FnOnce()) {
+) {
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let base = BASE.load(Ordering::Relaxed);
-    match army_receiver(site, receiver).and_then(|army| whole_merge_transfer(&memory, base, army)) {
-        Ok(true) => {
-            original();
-            return;
-        }
+    let army = match army_receiver(site, receiver) {
+        Ok(army) => army,
         Err(reason) => {
             observation_failed(site, reason);
             original();
             return;
         }
-        Ok(false) => {}
+    };
+    if nested_in_merge(site, army) {
+        original();
+        return;
     }
+    let scope = army.and_then(|army| DELETION.get().filter(|scope| scope.army == army));
     observe_native(
         site,
-        |store| pool_before(store, site, receiver, &memory, base),
+        || {},
+        || {
+            let identity = army.map_or(Err("pool writer has no army"), |army| {
+                native::army_identity(&memory, base, army)
+            });
+            let owner = match army {
+                Some(army) => native::army_owner(&memory, army),
+                None => match site {
+                    SiteId::Air => native::air_owner(&memory, receiver),
+                    SiteId::Garrison => native::garrison_owner(&memory, receiver),
+                    SiteId::ScriptedReserveEquipmentFraction => {
+                        native::reserve_owner(&memory, base, receiver)
+                    }
+                    _ => Err("unsupported pool destruction writer"),
+                },
+            };
+            let pool = match site {
+                SiteId::Land | SiteId::Paradrop | SiteId::SetExiled => receiver
+                    .checked_add(engine_native::carmy::EQUIPMENT_POOL)
+                    .ok_or("army equipment pool address overflow"),
+                SiteId::VolunteerReturnLoss
+                | SiteId::CapitulationEscapeLoss
+                | SiteId::ScriptedEquipmentFraction
+                | SiteId::ScriptedReserveEquipmentFraction => Ok(receiver),
+                _ => native::pool(receiver, site),
+            };
+            let rows = pool.and_then(|pool| pool_rows(&memory, base, pool));
+            // A strike's division and wing pool changes are forwarded to the nuclear
+            // strike family ([`crate::nuclear_strikes::equipment`]) as they happen.
+            let forward = (strike && army.is_none_or(|_| scope.is_none_or(|s| !s.ignored)))
+                .then(|| {
+                    let country = if army.is_some() {
+                        observed_owner(scope, identity, owner)
+                    } else {
+                        owner
+                    };
+                    let copy = rows.as_ref().ok().and_then(|rows| {
+                        engine_allocation::advisory(|| {
+                            engine_allocation::collect_vec(rows.iter().copied())
+                        })
+                        .ok()
+                    });
+                    country.ok().zip(copy)
+                })
+                .flatten();
+            let pre = Pre::Pool(PoolPre {
+                cause,
+                army,
+                scope,
+                identity,
+                owner,
+                pool,
+                rows,
+            });
+            (pre, (pool, forward))
+        },
         original,
-        |store, before| pool_after(store, site, Some(before), cause, &memory, base),
+        |(pool, forward): (Read<usize>, Option<(u32, Vec<Row>)>)| {
+            let mut after = pool.and_then(|pool| pool_rows(&memory, base, pool));
+            if let (Some((country, mut before)), Ok(after)) = (forward, after.as_mut()) {
+                let forwarded = native::removals(&mut before, after, |variant, amount_raw| {
+                    crate::nuclear_strikes::equipment(
+                        site == SiteId::Air,
+                        country,
+                        variant,
+                        amount_raw,
+                    );
+                });
+                if forwarded.is_ok() {
+                    crate::nuclear_strikes::equipment_observed();
+                }
+            }
+            Post::Pool(after)
+        },
     );
 }
 
@@ -1342,12 +2559,7 @@ unsafe extern "system-unwind" fn land(
     let original: ArmyFn =
         unsafe { std::mem::transmute(ORIGINAL[SiteId::Land as usize].load(Ordering::Acquire)) };
     let run = || _call.run(|| unsafe { original(a, b, c, d, e, f, g, h) });
-    if !ENABLED.load(Ordering::SeqCst)
-        || boundary_running()
-        || POISONED.load(Ordering::SeqCst)
-        || crate::allocation::failed()
-        || b == 0
-    {
+    if !ENABLED.load(Ordering::SeqCst) || crate::allocation::failed() || b == 0 {
         if b != 0 {
             revoke_active_observation();
             skipped_credit_mutation(Some(a));
@@ -1357,7 +2569,7 @@ unsafe extern "system-unwind" fn land(
     }
     let base = BASE.load(Ordering::Relaxed);
     let cause = count_cause(native::land_cause(base, caller));
-    measure_pool(SiteId::Land, a, cause, run);
+    measure_pool(SiteId::Land, a, cause, _strike.is_some(), run);
 }
 
 /// A tail jump with no frame: the native three arguments remain unchanged.
@@ -1377,12 +2589,7 @@ unsafe extern "system-unwind" fn air(a: usize, b: usize, c: usize, caller: usize
     let original: unsafe extern "system-unwind" fn(usize, usize, usize) =
         unsafe { std::mem::transmute(ORIGINAL[SiteId::Air as usize].load(Ordering::Acquire)) };
     let run = || _call.run(|| unsafe { original(a, b, c) });
-    if !ENABLED.load(Ordering::SeqCst)
-        || boundary_running()
-        || POISONED.load(Ordering::SeqCst)
-        || crate::allocation::failed()
-        || b as u32 == 0
-    {
+    if !ENABLED.load(Ordering::SeqCst) || crate::allocation::failed() || b as u32 == 0 {
         if b as u32 != 0 {
             revoke_active_observation();
         }
@@ -1393,71 +2600,19 @@ unsafe extern "system-unwind" fn air(a: usize, b: usize, c: usize, caller: usize
     let cause = count_cause(native::air_cause(base, caller));
     // Airplane losses accept a negative request and add its negation;
     // observe that native gain as a signed correction too.
-    measure_pool(SiteId::Air, a, cause, run);
+    measure_pool(SiteId::Air, a, cause, _strike.is_some(), run);
 }
 unsafe extern "system-unwind" fn garrison(a: usize, b: usize, c: usize) {
     let _call = Call::enter(SiteId::Garrison);
     let original: unsafe extern "system-unwind" fn(usize, usize, usize) =
         unsafe { std::mem::transmute(ORIGINAL[SiteId::Garrison as usize].load(Ordering::Acquire)) };
     let run = || _call.run(|| unsafe { original(a, b, c) });
-    if !ENABLED.load(Ordering::SeqCst)
-        || boundary_running()
-        || POISONED.load(Ordering::SeqCst)
-        || crate::allocation::failed()
-    {
+    if !ENABLED.load(Ordering::SeqCst) || crate::allocation::failed() {
         revoke_active_observation();
         run();
         return;
     }
-    measure_pool(SiteId::Garrison, a, native::Cause::Garrison, run);
-}
-fn variant_before(
-    store: &mut Store,
-    memory: &impl Memory,
-    base: usize,
-    pool: usize,
-    variant: usize,
-) -> Result<Option<(u32, u64, i64)>, &'static str> {
-    let army = pool
-        .checked_sub(engine_native::carmy::EQUIPMENT_POOL)
-        .ok_or("attrition army address underflow")?;
-    let context = active_deletion_context(memory, base, army)?;
-    if transferred_source(store, memory, base, army, context)? {
-        return Ok(None);
-    }
-    let country = army_observation_owner(memory, army, context)?;
-    let design = engine_native::cequipment_variant::identity(memory, base, variant)?;
-    let before = variant_amount(memory, base, pool, variant, &mut store.raw)?;
-    Ok(Some((country, design, before)))
-}
-
-fn variant_after(
-    store: &mut Store,
-    memory: &impl Memory,
-    base: usize,
-    pool: usize,
-    variant: usize,
-    pre: Option<(u32, u64, i64)>,
-) -> Result<(), &'static str> {
-    let Some((country, design, before)) = pre else {
-        return Ok(());
-    };
-    let after = variant_amount(memory, base, pool, variant, &mut store.raw)?;
-    let amount_raw = before
-        .checked_sub(after)
-        .ok_or("destruction difference overflow")?;
-    store.append(
-        SiteId::Attrition,
-        Entry {
-            country,
-            cause: native::Cause::Attrition,
-            disposition: native::Disposition::Loss,
-            expeditionary_owner: 0,
-            division_handle: 0,
-            variant: design,
-            amount_raw,
-        },
-    )
+    measure_pool(SiteId::Garrison, a, native::Cause::Garrison, false, run);
 }
 
 unsafe extern "system-unwind" fn attrition(pool: usize, variant: usize, quantity: usize) {
@@ -1466,175 +2621,56 @@ unsafe extern "system-unwind" fn attrition(pool: usize, variant: usize, quantity
         std::mem::transmute(ORIGINAL[SiteId::Attrition as usize].load(Ordering::Acquire))
     };
     let run = || _call.run(|| unsafe { original(pool, variant, quantity) });
-    if !ENABLED.load(Ordering::SeqCst)
-        || boundary_running()
-        || POISONED.load(Ordering::SeqCst)
-        || crate::allocation::failed()
-    {
+    let army = pool.checked_sub(engine_native::carmy::EQUIPMENT_POOL);
+    if !ENABLED.load(Ordering::SeqCst) || crate::allocation::failed() {
         revoke_active_observation();
-        skipped_credit_mutation(pool.checked_sub(engine_native::carmy::EQUIPMENT_POOL));
+        skipped_credit_mutation(army);
+        run();
+        return;
+    }
+    if nested_in_merge(SiteId::Attrition, army) {
         run();
         return;
     }
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let base = BASE.load(Ordering::Relaxed);
-    let army = pool.checked_sub(engine_native::carmy::EQUIPMENT_POOL);
-    match whole_merge_transfer(&memory, base, army) {
-        Ok(true) => {
-            run();
-            return;
-        }
-        Err(reason) => {
-            observation_failed(SiteId::Attrition, reason);
-            run();
-            return;
-        }
-        Ok(false) => {}
-    }
+    let scope = army.and_then(|army| DELETION.get().filter(|scope| scope.army == army));
     observe_native(
         SiteId::Attrition,
-        |store| variant_before(store, &memory, base, pool, variant),
+        || {},
+        || {
+            let pre = VariantPre {
+                army: army.ok_or("attrition army address underflow"),
+                pool,
+                scope,
+                identity: army.map_or(Err("attrition army address underflow"), |army| {
+                    native::army_identity(&memory, base, army)
+                }),
+                owner: army.map_or(Err("attrition army address underflow"), |army| {
+                    native::army_owner(&memory, army)
+                }),
+                design: engine_native::cequipment_variant::identity(&memory, base, variant),
+                amount: variant_amount(&memory, base, pool, variant),
+            };
+            (Pre::Variant(pre), ())
+        },
         run,
-        |store, pre| variant_after(store, &memory, base, pool, variant, Some(pre)),
+        |()| Post::Variant(variant_amount(&memory, base, pool, variant)),
     );
 }
 
-fn recording() -> bool {
-    let admitted = ENABLED.load(Ordering::SeqCst)
-        && !crate::world_lifetime::invalidating()
-        && SUPPLEMENTAL_ENABLED.load(Ordering::SeqCst)
-        && !boundary_running()
-        && !POISONED.load(Ordering::SeqCst)
-        && !crate::allocation::failed();
-    // Refused native originals still mutate pools used by an active observer.
-    if !admitted {
-        revoke_active_observation();
-    }
-    admitted
-}
-
-fn observation_failed(site: SiteId, reason: &'static str) {
-    // Any refused native family can mutate the active observer's destinations.
-    revoke_active_observation();
-    if let Ok(mut store) = STORE.try_lock() {
-        store.refuse(Some(site as usize), reason);
-    } else {
-        record_refusal(Some(site as usize), reason);
-    }
-}
-
-fn transferred_source(
-    store: &Store,
-    memory: &impl Memory,
-    base: usize,
-    army: usize,
-    context: Option<Deletion>,
-) -> Result<bool, &'static str> {
-    if context.is_some_and(|context| {
-        context.ignored
-            || context.returned
-            || matches!(
-                context.disposition,
-                native::Disposition::Merged
-                    | native::Disposition::VolunteerTransferred
-                    | native::Disposition::ExileTransferred
-            )
-    }) {
-        return Ok(true);
-    }
-    let pending = store
-        .queued_by_army
-        .get(&army)
-        .and_then(|handle| store.queued.get(handle))
-        .filter(|entry| entry.disposition != native::Disposition::Loss);
-    if !store.credits.is_empty() {
-        let handle = native::army_identity(memory, base, army)?;
-        if store.credits.contains(handle) {
-            return Ok(store.credits.state(
-                handle,
-                army,
-                army_observation_owner(memory, army, context)?,
-            )? == PoolState::Bookkeeping);
-        }
-    }
-    // A recycled address cannot inherit another division's transfer witness.
-    if let Some(pending) = pending {
-        return Ok(native::army_identity(memory, base, army)? == pending.handle);
-    }
-    Ok(context.is_some_and(|context| context.disposition != native::Disposition::Loss))
-}
-
-fn active_deletion_context(
-    memory: &impl Memory,
-    base: usize,
-    army: usize,
-) -> Result<Option<Deletion>, &'static str> {
-    let Some(context) = DELETION.get().filter(|context| context.army == army) else {
-        return Ok(None);
-    };
-    if context.ignored && context.handle == 0 {
-        return Ok(Some(context));
-    }
-    Ok((native::army_identity(memory, base, army)? == context.handle).then_some(context))
-}
-
-fn army_observation_owner(
-    memory: &impl Memory,
-    army: usize,
-    context: Option<Deletion>,
-) -> Result<u32, &'static str> {
-    match context {
-        Some(context) => Ok(context.country),
-        None => native::army_owner(memory, army),
-    }
-}
-
-fn take_queued(store: &mut Store, army: usize, handle: u64) -> Option<Queued> {
-    if store
-        .queued
-        .get(&handle)
-        .is_none_or(|entry| entry.army != army)
-    {
-        return None;
-    }
-    if store.queued_by_army.get(&army) == Some(&handle) {
-        store.queued_by_army.remove(&army);
-    }
-    let entry = store.queued.remove(&handle);
-    if entry.is_some() {
-        store.queued_count -= 1;
-    }
-    entry
-}
-
-fn retire_queued(site: SiteId, army: usize, handle: Option<u64>) {
-    // The original can reject a nested scheduling request or free the unit.
-    // Retire its owned identity without reading that unit. Cleanup scopes
-    // lacking a live handle use only the excluded object's opaque address.
-    if let Ok(mut store) = STORE.try_lock() {
-        if let Some(handle) = handle.or_else(|| store.queued_by_army.get(&army).copied()) {
-            take_queued(&mut store, army, handle);
-        }
-    } else {
-        OVERLAPS.fetch_add(1, Ordering::Relaxed);
-        observation_failed(
-            site,
-            "equipment deletion provenance retirement overlaps writer",
-        );
-    }
-}
-
-fn deletion_context(
+/// The scope a deletion opens, or `None` when the unit is not an army.
+fn deletion_scope(
     memory: &impl Memory,
     base: usize,
     state: usize,
     army: usize,
     caller: usize,
-) -> Result<Option<Deletion>, &'static str> {
+) -> Read<Option<(Scope, u32, Option<(native::Cause, native::Disposition)>)>> {
     let classified = native::deletion_context(base, caller);
     let merge_source = classified == native::DeletionContext::Transfer(native::Disposition::Merged);
     let classified = match classified {
-        native::DeletionContext::Ignore => return Ok(Some(Deletion::ignored(army))),
+        native::DeletionContext::Ignore => return Ok(Some((Scope::ignored(army), 0, None))),
         native::DeletionContext::Queue => None,
         native::DeletionContext::Loss(cause) => Some((cause, native::Disposition::Loss)),
         native::DeletionContext::Transfer(disposition) => {
@@ -1645,54 +2681,35 @@ fn deletion_context(
     if native::cleanup(memory, base)? {
         // Default/partially read objects can have no live handle or owner.
         // This scope suppresses their destructor without authenticating them.
-        return Ok(Some(Deletion::ignored(army)));
+        return Ok(Some((Scope::ignored(army), 0, None)));
     }
     if !native::is_army(memory, base, army)? {
         return Ok(None);
     }
     if native::fake_intel_division(memory, army)? {
-        return Ok(Some(Deletion::ignored(army)));
+        return Ok(Some((Scope::ignored(army), 0, None)));
     }
     let handle = native::army_identity(memory, base, army)?;
     let country = native::army_owner(memory, army)?;
     let expeditionary_owner = native::army_expeditionary_owner(memory, army)?;
-    let Ok(mut store) = STORE.try_lock() else {
-        OVERLAPS.fetch_add(1, Ordering::Relaxed);
-        poison();
-        return Err("equipment deletion context overlaps writer");
-    };
-    let pending = take_queued(&mut store, army, handle);
-    store.attach_interval |= SKIPPED_QUEUE.swap(false, Ordering::SeqCst);
-    if classified.is_none() && pending.is_none() && store.attach_interval {
-        store.unproven_queue = true;
-        return Ok(Some(Deletion::ignored(army)));
-    }
-    let (cause, mut disposition) = classified.unwrap_or_else(|| {
-        pending
-            .map(|entry| (entry.cause, entry.disposition))
-            .unwrap_or((native::Cause::Unknown, native::Disposition::Loss))
-    });
-    // A later direct caller cannot undo an already proved pool transfer.
-    if let Some(entry) = pending.filter(|entry| entry.disposition != native::Disposition::Loss) {
-        disposition = entry.disposition;
-    }
-    Ok(Some(Deletion {
-        army,
-        handle,
-        country,
-        cause,
-        disposition,
+    Ok(Some((
+        Scope {
+            id: next_id(),
+            army,
+            handle,
+            country,
+            ignored: false,
+            merge_source,
+            observed: false,
+        },
         expeditionary_owner,
-        returned: false,
-        observed: false,
-        ignored: false,
-        merge_source,
-    }))
+        classified,
+    )))
 }
 
 /// Unit deletion keeps the entry owner before it clears expeditionary ownership.
-/// Its original can flush damage through another hooked writer, so no producer
-/// lock spans that call. Only the later destructor takes the residual snapshot.
+/// Its original can flush damage through another hooked writer, so no event
+/// spans that call. Only the later destructor takes the residual snapshot.
 #[unsafe(naked)]
 unsafe extern "system-unwind" fn delete_entry() {
     core::arch::naked_asm!("mov rax, [rsp]", "jmp {body}", body = sym destruction_delete_shim);
@@ -1714,10 +2731,18 @@ unsafe extern "system-unwind" fn delete(
     let mut call = Call::enter(SiteId::Delete);
     let original: unsafe extern "system-unwind" fn(usize, usize, usize, usize) =
         unsafe { std::mem::transmute(ORIGINAL[SiteId::Delete as usize].load(Ordering::Acquire)) };
-    let context = if recording() {
+    let scope = if recording() {
         let memory = unsafe { engine_native::memory::LiveMemory::new() };
-        match deletion_context(&memory, BASE.load(Ordering::Relaxed), state, unit, caller) {
-            Ok(context) => context,
+        match deletion_scope(&memory, BASE.load(Ordering::Relaxed), state, unit, caller) {
+            Ok(Some((scope, expeditionary_owner, classified))) => {
+                log(Kind::Delete {
+                    scope,
+                    expeditionary_owner,
+                    classified,
+                });
+                Some(scope)
+            }
+            Ok(None) => None,
             Err(reason) => {
                 observation_failed(SiteId::Delete, reason);
                 None
@@ -1726,238 +2751,83 @@ unsafe extern "system-unwind" fn delete(
     } else {
         None
     };
-    if context.is_some_and(|context| !context.ignored) {
+    if scope.is_some_and(|scope| !scope.ignored) {
         call.arm();
     }
-    let _scope = DeletionScope::enter(context);
+    let _scope = DeletionScope::enter(scope);
     call.run(|| unsafe { original(state, unit, return_equipment, behavior) });
     call.settle();
     if ENABLED.load(Ordering::SeqCst) && SUPPLEMENTAL_ENABLED.load(Ordering::SeqCst) {
-        retire_queued(
-            SiteId::Delete,
-            unit,
-            context
-                .filter(|context| context.handle != 0)
-                .map(|context| context.handle),
-        );
+        log(Kind::Retire {
+            army: unit,
+            handle: scope
+                .filter(|scope| scope.handle != 0)
+                .map(|scope| scope.handle),
+            scope: scope.map(|scope| scope.id),
+        });
     }
 }
 
-// Bulk reserve credits saturate independently of their still-owned source
-// pool. Retain actual credits until that source dies.
-type ReturnedPoolContext = (usize, u64, u32, usize, usize, bool, u64);
-
-fn return_before(
-    store: &mut Store,
-    memory: &impl Memory,
-    base: usize,
-    (site, revision): (SiteId, u64),
-    reserves: usize,
-    pool: usize,
-) -> Result<Option<ReturnedPoolContext>, &'static str> {
-    let army = pool
-        .checked_sub(engine_native::carmy::EQUIPMENT_POOL)
-        .ok_or("returned army address underflow")?;
-    let context = DELETION.get().filter(|context| context.army == army);
-    if context.is_some_and(|context| context.ignored) {
-        return Ok(None);
-    }
-    if site == SiteId::Return && context.is_none_or(|context| context.army != army) {
-        return Err("equipment deletion returned-pool identity mismatch");
-    }
-    if native::cleanup(memory, base)? || native::fake_intel_division(memory, army)? {
-        return Ok(None);
-    }
-    let handle = native::army_identity(memory, base, army)?;
-    if context.is_some_and(|context| context.army != army || context.handle != handle) {
-        return Err("equipment returned source handle mismatch");
-    }
-    let country = army_observation_owner(memory, army, context);
-    #[cfg(test)]
-    tests::return_revision_overlap(1, reserves, pool);
-    let bookkeeping = if store.credits.contains(handle) {
-        let prior = country.and_then(|country| store.credits.state(handle, army, country));
-        store.credits.invalidate(handle);
-        prior? == PoolState::Bookkeeping
-    } else {
-        store.credits.begin(handle, army, country?, revision)?;
-        store.credits.invalidate(handle);
-        false
-    };
-    let country = country?;
-    let reserves = native::reserve_pool(reserves)?;
-    native::reserve_owner(memory, base, reserves)?;
-    let sources = snapshot(memory, base, pool, &mut store.before, 0)?;
-    store.before[..sources].sort_unstable_by_key(|row| row.variant_pointer);
-    let pre = native::touched_reserves(
-        memory,
-        base,
-        reserves,
-        &store.before[..sources],
-        false,
-        &mut store.after,
-    )?;
-    Ok(Some((
-        army,
-        handle,
-        country,
-        sources,
-        pre,
-        bookkeeping,
-        revision,
-    )))
-}
-fn return_after(
-    store: &mut Store,
-    memory: &impl Memory,
-    base: usize,
-    reserves: usize,
-    (army, handle, country, sources, pre, bookkeeping, revision): ReturnedPoolContext,
-) -> Result<(), &'static str> {
-    if native::army_identity(memory, base, army)? != handle {
-        return Err("equipment returned source changed handle");
-    }
-    let reserves = native::reserve_pool(reserves)?;
-    let (selected, post) = store.before.split_at_mut(sources);
-    let post = native::touched_reserves(memory, base, reserves, selected, false, post)?;
-    let mut len = 0;
-    store.credits.visit(handle, army, country, |value| {
-        transfers::push(&mut store.net, &mut len, value)
-    })?;
-    if !bookkeeping {
-        // The source is copied before credit. Later excluded cleanup writes
-        // to this retained bookkeeping pool cannot invent a second gain/loss.
-        for row in &store.before[..sources] {
-            transfers::push(
-                &mut store.net,
-                &mut len,
-                Net {
-                    country: 0,
-                    variant: row.variant_handle,
-                    amount: i128::from(row.amount_raw),
-                    credited: 0,
-                },
-            )?;
-        }
-    }
-    for row in &store.after[..pre] {
-        transfers::push(
-            &mut store.net,
-            &mut len,
-            Net {
-                country: 0,
-                variant: row.variant_handle,
-                amount: i128::from(row.amount_raw),
-                credited: -i128::from(row.amount_raw),
-            },
-        )?;
-    }
-    for row in &store.before[sources..sources + post] {
-        transfers::push(
-            &mut store.net,
-            &mut len,
-            Net {
-                country: 0,
-                variant: row.variant_handle,
-                amount: -i128::from(row.amount_raw),
-                credited: i128::from(row.amount_raw),
-            },
-        )?;
-    }
-    let len = transfers::compact(&mut store.net[..len])?;
-    store.credits.check_continuity(handle)?;
-    #[cfg(test)]
-    tests::return_revision_overlap(
-        2,
-        reserves - engine_native::cproduction_status::STOCKPILE_POOL,
-        army + engine_native::carmy::EQUIPMENT_POOL,
-    );
-    // Keep the revision observed before reads, including first-head creation.
-    // A concurrent rejected callback must never supply a new certified basis.
-    store.credits.begin(handle, army, country, revision)?; // keeps an explicit zero-credit witness
-    store.credits.invalidate(handle);
-    for value in &store.net[..len] {
-        if value.amount != 0 || value.credited != 0 {
-            store.credits.push(handle, *value)?;
-        }
-    }
-    store
-        .credits
-        .set_state(handle, army, country, PoolState::Bookkeeping)?;
-    if let Some(mut context) = DELETION
-        .get()
-        .filter(|context| context.army == army && context.handle == handle)
-    {
-        context.returned = true;
-        DELETION.set(Some(context));
-    }
-    Ok(())
-}
-fn skipped_credit_mutation(army: Option<usize>) {
-    if !ENABLED.load(Ordering::SeqCst) || !SUPPLEMENTAL_ENABLED.load(Ordering::SeqCst) {
-        return;
-    }
-    if army.is_some_and(|army| {
-        DELETION
-            .get()
-            .is_some_and(|context| context.army == army && context.ignored)
-    }) {
-        return;
-    }
-    let source = army.and_then(|army| {
-        let handle = DELETION
-            .get()
-            .filter(|context| context.army == army && context.handle != 0)
-            .map(|context| context.handle)
-            .or_else(|| {
-                native::army_identity(
-                    &unsafe { engine_native::memory::LiveMemory::new() },
-                    BASE.load(Ordering::Relaxed),
-                    army,
-                )
-                .ok()
-            });
-        handle.map(|handle| (army, handle))
-    });
-    if let Some((army, handle)) = source
-        && let Ok(mut store) = STORE.try_lock()
-        && store.credits.skip(handle, army)
-    {
-        return;
-    }
-    // Never wait or allocate in an overlap. A revision mismatch is a
-    // persistent refusal on retained heads, including an outer observer.
-    let _ = CREDIT_REVISION.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |value| {
-        value.checked_add(1)
-    });
-}
 unsafe fn returned_at(site: SiteId, reserves: usize, pool: usize) {
     let _call = Call::enter(site);
-    let revision = CREDIT_REVISION.load(Ordering::SeqCst);
     let original: unsafe extern "system-unwind" fn(usize, usize) =
         unsafe { std::mem::transmute(ORIGINAL[site as usize].load(Ordering::Acquire)) };
-    let admitted = Cell::new(false);
-    let run = || {
-        if !admitted.get() {
-            skipped_credit_mutation(pool.checked_sub(engine_native::carmy::EQUIPMENT_POOL));
-        }
-        _call.run(|| unsafe { original(reserves, pool) })
-    };
+    let army = pool.checked_sub(engine_native::carmy::EQUIPMENT_POOL);
+    let run = || _call.run(|| unsafe { original(reserves, pool) });
     if !recording() {
+        skipped_credit_mutation(army);
         run();
         return;
     }
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let base = BASE.load(Ordering::Relaxed);
+    let reserve_pool = native::reserve_pool(reserves);
     observe_native(
         site,
-        |store| {
-            let before = return_before(store, &memory, base, (site, revision), reserves, pool);
-            admitted.set(before.is_ok()); // None is an authenticated native exclusion
-            before
+        || skipped_credit_mutation(army),
+        || {
+            let scope = army.and_then(|army| DELETION.get().filter(|scope| scope.army == army));
+            let army = army.ok_or("returned army address underflow");
+            let sources = pool_rows(&memory, base, pool).map(|mut rows| {
+                rows.sort_unstable_by_key(|row| row.variant_pointer);
+                rows
+            });
+            let selected = sources.as_ref().ok().and_then(|rows| {
+                engine_allocation::advisory(|| engine_allocation::collect_vec(rows.iter().copied()))
+                    .ok()
+            });
+            let touched = reserve_pool.and_then(|reserves| {
+                let sources = sources.as_ref().map_err(|reason| *reason)?;
+                touched_rows(&memory, base, reserves, |variant| selects(sources, variant))
+            });
+            let pre = ReturnPre {
+                army,
+                pool,
+                scope,
+                excluded: army.and_then(|army| {
+                    Ok(native::cleanup(&memory, base)?
+                        || native::fake_intel_division(&memory, army)?)
+                }),
+                identity: army.and_then(|army| native::army_identity(&memory, base, army)),
+                owner: army.and_then(|army| native::army_owner(&memory, army)),
+                reserves: reserve_pool,
+                reserve_owner: reserve_pool
+                    .and_then(|reserves| native::reserve_owner(&memory, base, reserves)),
+                sources,
+                touched,
+            };
+            (boxed(pre).map_or_else(failed_pool, Pre::Return), selected)
         },
         run,
-        |store, pre| return_after(store, &memory, base, reserves, pre),
+        |selected: Option<Vec<Row>>| Post::Return {
+            identity: army
+                .ok_or("returned army address underflow")
+                .and_then(|army| native::army_identity(&memory, base, army)),
+            touched: reserve_pool.and_then(|reserves| {
+                let sources = selected.as_deref().ok_or(EVENT_STORAGE_FAILED)?;
+                touched_rows(&memory, base, reserves, |variant| selects(sources, variant))
+            }),
+        },
     );
 }
 unsafe extern "system-unwind" fn returned(reserves: usize, pool: usize) {
@@ -1971,105 +2841,26 @@ unsafe extern "system-unwind" fn hq_returned(reserves: usize, pool: usize) {
     }
 }
 
-/// No read follows this callback's native destructor. The marker is present
-/// even for a division whose remaining pool is empty.
-fn observe_deleted(
-    store: &mut Store,
-    memory: &impl Memory,
-    base: usize,
-    context: Deletion,
-) -> Result<(), &'static str> {
-    let disposition = if context.returned && context.disposition == native::Disposition::Loss {
-        native::Disposition::Returned
-    } else {
-        context.disposition
-    };
-    let cause = if disposition == native::Disposition::Loss {
-        count_cause(context.cause)
-    } else {
-        context.cause
-    };
-    store.append(
-        SiteId::DivisionFree,
-        Entry {
-            country: context.country,
-            cause,
-            disposition,
-            expeditionary_owner: context.expeditionary_owner,
-            division_handle: context.handle,
-            variant: 0,
-            amount_raw: 0,
+/// A direct destructor's own scope, or `None` for an excluded object.
+fn direct_scope(memory: &impl Memory, base: usize, army: usize) -> Read<Option<(Scope, u32)>> {
+    if native::cleanup(memory, base)? || native::fake_intel_division(memory, army)? {
+        return Ok(None);
+    }
+    let handle = native::army_identity(memory, base, army)?;
+    let country = native::army_owner(memory, army)?;
+    let expeditionary_owner = native::army_expeditionary_owner(memory, army)?;
+    Ok(Some((
+        Scope {
+            id: next_id(),
+            army,
+            handle,
+            country,
+            ignored: false,
+            merge_source: false,
+            observed: false,
         },
-    )?;
-    if store.credits.contains(context.handle) {
-        let state = store
-            .credits
-            .state(context.handle, context.army, context.country);
-        settle_credit(store, context)?;
-        if state? == PoolState::Bookkeeping
-            || context.merge_source
-            || matches!(
-                disposition,
-                native::Disposition::Merged
-                    | native::Disposition::VolunteerTransferred
-                    | native::Disposition::ExileTransferred
-            )
-        {
-            return Ok(());
-        }
-        // Whole Merge cleared/reallocated this pool after the old return.
-        // Its old source-time deficit and new live residual are independent.
-    } else {
-        if matches!(
-            disposition,
-            native::Disposition::Returned | native::Disposition::HqTransferred
-        ) {
-            return Err("equipment returned source has no actual credit witness");
-        }
-        if disposition != native::Disposition::Loss {
-            return Ok(());
-        }
-    }
-    if OBSERVING.load(Ordering::SeqCst) {
-        return Err("equipment deletion snapshot overlaps pool observation");
-    }
-    let pool = context
-        .army
-        .checked_add(engine_native::carmy::EQUIPMENT_POOL)
-        .ok_or("deleted army equipment pool address overflow")?;
-    let mut len = 0;
-    let rows = snapshot(memory, base, pool, &mut store.before, 0)?;
-    for row in &store.before[..rows] {
-        transfers::push(
-            &mut store.net,
-            &mut len,
-            Net {
-                country: 0,
-                variant: row.variant_handle,
-                amount: i128::from(row.amount_raw),
-                credited: 0,
-            },
-        )?;
-    }
-    let len = transfers::compact(&mut store.net[..len])?;
-    for index in 0..len {
-        let value = store.net[index];
-        let amount_raw = i64::try_from(value.amount)
-            .map_err(|_| "equipment deletion correction exceeds signed width")?;
-        store.append(
-            SiteId::DivisionFree,
-            Entry {
-                country: context.country,
-                cause,
-                disposition: native::Disposition::Loss,
-                expeditionary_owner: 0,
-                division_handle: 0,
-                variant: value.variant,
-                amount_raw,
-            },
-        )?;
-    }
-    Ok(())
+        expeditionary_owner,
+    )))
 }
 
 #[unsafe(naked)]
@@ -2078,188 +2869,92 @@ unsafe extern "system-unwind" fn division_free_entry() {
 }
 unsafe extern "system-unwind" fn division_free(army: usize, flags: usize) -> usize {
     let mut call = Call::enter(SiteId::DivisionFree);
+    let _freeing = InDestructor::enter();
     let original: unsafe extern "system-unwind" fn(usize, usize) -> usize = unsafe {
         std::mem::transmute(ORIGINAL[SiteId::DivisionFree as usize].load(Ordering::Acquire))
     };
-    let mut direct_scope = None;
-    if recording() {
-        if DELETION.get().is_none_or(|context| context.army != army) {
-            let memory = unsafe { engine_native::memory::LiveMemory::new() };
-            let base = BASE.load(Ordering::Relaxed);
-            let context = (|| {
-                if native::cleanup(&memory, base)? || native::fake_intel_division(&memory, army)? {
-                    return Ok(None);
-                }
-                let handle = native::army_identity(&memory, base, army)?;
-                let Ok(mut store) = STORE.try_lock() else {
-                    OVERLAPS.fetch_add(1, Ordering::Relaxed);
-                    return Err("equipment deletion direct context overlaps writer");
-                };
-                let pending = take_queued(&mut store, army, handle);
-                Ok(Some(Deletion {
-                    army,
-                    handle,
-                    country: native::army_owner(&memory, army)?,
-                    cause: pending.map_or(native::Cause::Unknown, |entry| entry.cause),
-                    disposition: pending
-                        .map_or(native::Disposition::Loss, |entry| entry.disposition),
-                    expeditionary_owner: native::army_expeditionary_owner(&memory, army)?,
-                    returned: false,
-                    observed: false,
-                    ignored: false,
-                    merge_source: false,
-                }))
-            })();
-            match context {
-                Ok(Some(context)) => {
-                    direct_scope = Some(DeletionScope::enter(Some(context)));
-                }
-                Ok(None) => {}
-                Err(reason) => observation_failed(SiteId::DivisionFree, reason),
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let base = BASE.load(Ordering::Relaxed);
+    let admitted = recording();
+    let id = next_id();
+    let mut freed = None;
+    if ENABLED.load(Ordering::SeqCst) {
+        match LOG.reserve(event(Kind::Freed { id, unwound: true })) {
+            Ok(node) if LOG.push(event(Kind::Freeing { id, army })).is_ok() => {
+                freed = Some(Closing(Some(node)));
             }
-        }
-        if let Some(mut context) = DELETION.get()
-            && context.army == army
-            && !context.ignored
-            && !context.observed
-        {
-            context.observed = true;
-            DELETION.set(Some(context));
-            let result = if let Ok(mut store) = STORE.try_lock() {
-                let memory = unsafe { engine_native::memory::LiveMemory::new() };
-                observe_deleted(&mut store, &memory, BASE.load(Ordering::Relaxed), context)
-            } else {
-                OVERLAPS.fetch_add(1, Ordering::Relaxed);
-                Err("equipment deletion snapshot overlaps writer")
-            };
-            if let Err(reason) = result {
-                observation_failed(SiteId::DivisionFree, reason);
-            }
+            _ => refused_event(Some(SiteId::DivisionFree)),
         }
     }
-    let enabled = ENABLED.load(Ordering::SeqCst)
-        && SUPPLEMENTAL_ENABLED.load(Ordering::SeqCst)
-        && !DELETION
-            .get()
-            .is_some_and(|context| context.army == army && context.ignored);
-    let retired = DELETION
-        .get()
-        .filter(|context| context.army == army && context.handle != 0)
-        .map(|context| context.handle)
-        .or_else(|| {
-            enabled
-                .then(|| {
-                    native::army_identity(
-                        &unsafe { engine_native::memory::LiveMemory::new() },
-                        BASE.load(Ordering::Relaxed),
-                        army,
-                    )
-                    .ok()
-                })
-                .flatten()
-        });
-    if enabled {
-        if let Some(handle) = retired {
-            if let Ok(mut store) = STORE.try_lock() {
-                store.credits.invalidate(handle);
-            } else {
-                skipped_credit_mutation(None);
-                observation_failed(
-                    SiteId::DivisionFree,
-                    "equipment deletion proof overlaps writer",
-                );
+    let mut direct = None;
+    let mut direct_scope_guard = None;
+    if admitted && DELETION.get().is_none_or(|scope| scope.army != army) {
+        match direct_scope(&memory, base, army) {
+            Ok(Some(found)) => {
+                direct_scope_guard = Some(DeletionScope::enter(Some(found.0)));
+                direct = Some(found);
             }
-        } else {
-            skipped_credit_mutation(Some(army));
+            Ok(None) => {}
+            Err(reason) => observation_failed(SiteId::DivisionFree, reason),
         }
     }
-    let context = DELETION.get().filter(|context| context.army == army);
-    let merge_source = WHOLE_MERGE.get()
-        && context.is_some_and(|context| {
-            context.merge_source
-                && native::army_identity(
-                    &unsafe { engine_native::memory::LiveMemory::new() },
-                    BASE.load(Ordering::Relaxed),
-                    army,
-                ) == Ok(context.handle)
-        });
-    if OBSERVING.load(Ordering::SeqCst)
-        && !merge_source
-        && context.is_none_or(|context| !context.ignored)
+    let mut deleted = None;
+    if admitted
+        && let Some(mut scope) = DELETION.get()
+        && scope.army == army
+        && !scope.ignored
+        && !scope.observed
     {
-        // Its destructor returns held deliveries,
-        // including shared reserves outside the authenticated Merge inputs.
-        observation_failed(
-            SiteId::DivisionFree,
-            "equipment deletion native pools overlap observation",
+        scope.observed = true;
+        DELETION.set(Some(scope));
+        deleted = Some(
+            army.checked_add(engine_native::carmy::EQUIPMENT_POOL)
+                .ok_or("deleted army equipment pool address overflow")
+                .and_then(|pool| pool_rows(&memory, base, pool)),
         );
     }
-    if DELETION.get().is_some_and(|context| !context.ignored) {
+    #[cfg(test)]
+    tests::after_pool_read(SiteId::DivisionFree);
+    let scope = DELETION.get().filter(|scope| scope.army == army);
+    let identity = native::army_identity(&memory, base, army);
+    let free = Free {
+        id,
+        army,
+        direct,
+        scope,
+        deleted,
+        enabled: ENABLED.load(Ordering::SeqCst)
+            && SUPPLEMENTAL_ENABLED.load(Ordering::SeqCst)
+            && !scope.is_some_and(|scope| scope.ignored),
+        identity: identity.ok(),
+        merge_source: WHOLE_MERGE.get()
+            && scope.is_some_and(|scope| scope.merge_source && identity == Ok(scope.handle)),
+        observing: OBSERVING.get(),
+    };
+    if freed.is_some()
+        && boxed(free)
+            .and_then(|free| {
+                LOG.push(event(Kind::Free(free)))
+                    .map_err(|_| EVENT_STORAGE_FAILED)
+            })
+            .is_err()
+    {
+        refused_event(Some(SiteId::DivisionFree));
+    }
+    if DELETION.get().is_some_and(|scope| !scope.ignored) {
         call.arm();
     }
     let result = call.run(|| unsafe { original(army, flags) });
     call.settle();
-    if enabled {
-        retire_queued(SiteId::DivisionFree, army, retired);
-        if let Some(handle) = retired {
-            if let Ok(mut store) = STORE.try_lock() {
-                store.credits.remove(handle);
-            } else {
-                observation_failed(
-                    SiteId::DivisionFree,
-                    "equipment deletion proof retirement overlaps writer",
-                );
+    if let Some(freed) = freed {
+        freed.finish(|kind| {
+            if let Kind::Freed { unwound, .. } = kind {
+                *unwound = false;
             }
-        }
+        });
     }
-    drop(direct_scope);
+    drop(direct_scope_guard);
     result
-}
-
-fn record_queue(
-    store: &mut Store,
-    army: usize,
-    handle: u64,
-    cause: native::Cause,
-    disposition: native::Disposition,
-) -> Result<(), &'static str> {
-    if let Some(previous) = store.queued_by_army.get(&army).copied()
-        && previous != handle
-    {
-        take_queued(store, army, previous);
-    }
-    if let Some(entry) = store.queued.get_mut(&handle) {
-        if entry.army != army {
-            return Err("equipment deletion handle has conflicting army address");
-        }
-        if entry.cause != cause {
-            entry.cause = native::Cause::Unknown;
-        }
-        if disposition != native::Disposition::Loss {
-            entry.disposition = disposition;
-        }
-        return Ok(());
-    }
-    if store.queued_count == store.queued_limit {
-        OVERFLOW.fetch_add(1, Ordering::Relaxed);
-        SITE_OVERFLOW[SiteId::Queue as usize].fetch_add(1, Ordering::Relaxed);
-        return Err("equipment deletion provenance log overflow");
-    }
-    store.queued.insert(
-        handle,
-        Queued {
-            army,
-            handle,
-            cause,
-            disposition,
-        },
-    )?;
-    if let Err(reason) = store.queued_by_army.insert(army, handle) {
-        store.queued.remove(&handle);
-        return Err(reason);
-    }
-    store.queued_count += 1;
-    Ok(())
 }
 
 #[unsafe(naked)]
@@ -2276,7 +2971,7 @@ unsafe extern "system-unwind" fn queue(state: usize, unit: usize, caller: usize)
         let result = (|| {
             let classified = native::queued_context(base, caller);
             let (cause, disposition) = match classified {
-                native::QueuedContext::Ignore => return Ok(false),
+                native::QueuedContext::Ignore => return Ok(None),
                 native::QueuedContext::Loss(cause) => (cause, native::Disposition::Loss),
                 native::QueuedContext::Transfer(disposition) => {
                     (native::Cause::Unknown, disposition)
@@ -2287,24 +2982,29 @@ unsafe extern "system-unwind" fn queue(state: usize, unit: usize, caller: usize)
                 || !native::is_army(&memory, base, unit)?
                 || native::fake_intel_division(&memory, unit)?
             {
-                return Ok(false);
+                return Ok(None);
             }
             let handle = native::army_identity(&memory, base, unit)?;
-            let Ok(mut store) = STORE.try_lock() else {
-                OVERLAPS.fetch_add(1, Ordering::Relaxed);
-                return Err("equipment deletion provenance overlaps writer");
-            };
-            record_queue(&mut store, unit, handle, cause, disposition).map(|()| true)
+            Ok(Some((handle, cause, disposition)))
         })();
-        if result == Ok(true) {
-            call.arm();
+        match result {
+            Ok(Some((handle, cause, disposition))) => {
+                log(Kind::Queue {
+                    army: unit,
+                    handle,
+                    cause,
+                    disposition,
+                });
+                call.arm();
+            }
+            Ok(None) => {}
+            Err(reason) => observation_failed(SiteId::Queue, reason),
         }
-        if let Err(reason) = result {
-            observation_failed(SiteId::Queue, reason);
-        }
+    } else if ENABLED.load(Ordering::SeqCst) {
+        // Enable ordering and refused intervals can skip a real native queue
+        // request. Its later unit deletion must not fabricate Unknown loss.
+        log(Kind::SkippedQueue);
     } else {
-        // Poison, enable ordering and boundary refusal can skip a real native
-        // queue request. Its later unit deletion must not fabricate Unknown loss.
         SKIPPED_QUEUE.store(true, Ordering::SeqCst);
     }
     call.run(|| unsafe { original(state, unit) });
@@ -2331,6 +3031,7 @@ unsafe extern "system-unwind" fn paradrop(
         SiteId::Paradrop,
         army,
         native::Cause::ParadropDisruption,
+        false,
         run,
     );
 }
@@ -2375,18 +3076,10 @@ unsafe fn transfer_roster(
         observation_failed(site, reason);
     }
     let result = call.run(|| unsafe { original(country, army) });
-    match pending {
-        Ok(Some(entry)) if result as u8 != 0 => {
-            if let Ok(mut store) = STORE.try_lock() {
-                if let Err(reason) = store.append(site, entry) {
-                    store.refuse(Some(site as usize), reason);
-                }
-            } else {
-                OVERLAPS.fetch_add(1, Ordering::Relaxed);
-                observation_failed(site, "division roster transfer overlaps writer");
-            }
-        }
-        _ => {}
+    if let Ok(Some(entry)) = pending
+        && result as u8 != 0
+    {
+        log(Kind::Transfer { site, entry });
     }
     call.settle();
     result
@@ -2418,7 +3111,7 @@ unsafe fn pool_scale(site: SiteId, receiver: usize, factor: usize, cause: native
         unsafe { std::mem::transmute(ORIGINAL[site as usize].load(Ordering::Acquire)) };
     let run = || _call.run(|| unsafe { original(receiver, factor) });
     if recording() {
-        measure_pool(site, receiver, cause, run);
+        measure_pool(site, receiver, cause, false, run);
     } else {
         if let Ok(Some(army)) = army_receiver(site, receiver) {
             skipped_credit_mutation(Some(army));
@@ -2489,220 +3182,7 @@ impl Drop for WholeMergeScope {
     }
 }
 
-// Merging copies signed nonzero source/survivor entries, clears the
-// survivor, saturates each retained allocation, and can round reserve credits.
-// Observe physical pools once; source pools are gone after the native call.
-struct MergeBefore {
-    country: u32,
-    survivor: usize,
-    handle: u64,
-    main_reserve: usize,
-    sources: usize,
-    scopes: usize,
-    len: usize,
-    prior_credit: bool,
-}
-fn merge_before(
-    store: &mut Store,
-    memory: &impl Memory,
-    base: usize,
-    argument: usize,
-) -> Result<Option<MergeBefore>, &'static str> {
-    if native::cleanup(memory, base)? {
-        return Ok(None);
-    }
-    let (survivor, armies) = native::merge_armies(memory, base, argument, &mut store.armies)?;
-    let handle = native::army_identity(memory, base, survivor)?;
-    let country = native::merge_owner(memory, survivor);
-    let prior_credit = store.credits.contains(handle);
-    let prior_state = if prior_credit {
-        let state = country.and_then(|country| store.credits.state(handle, survivor, country));
-        store.credits.invalidate(handle);
-        Some(state?)
-    } else {
-        None
-    };
-    let country = country?;
-    // Selected main quantities transfer to the survivor's aggregate before
-    // allocation and credit, both survivor-owned. Its
-    // net correction therefore belongs to that recipient, even for mixed owners.
-    // Canceled delivery returns instead belong to each resolved reserve owner.
-    let mut sources = 0;
-    let mut len = 0;
-    for &army in &store.armies[..armies] {
-        let pool = army
-            .checked_add(engine_native::carmy::EQUIPMENT_POOL)
-            .ok_or("merge pool address overflow")?;
-        let rows = snapshot(memory, base, pool, &mut store.before[sources..], sources)?;
-        let handle = native::army_identity(memory, base, army)?;
-        let credited = if army == survivor {
-            prior_state == Some(PoolState::Bookkeeping)
-        } else {
-            store.credits.contains(handle)
-                && store
-                    .credits
-                    .state(handle, army, native::army_owner(memory, army)?)?
-                    == PoolState::Bookkeeping
-        };
-        // Returned bookkeeping still selects credits. Its source-time deficit
-        // settles separately; live donor inventory remains a real input.
-        if !credited {
-            for row in &store.before[sources..sources + rows] {
-                transfers::push(
-                    &mut store.net,
-                    &mut len,
-                    Net {
-                        country,
-                        variant: row.variant_handle,
-                        amount: i128::from(row.amount_raw),
-                        credited: 0,
-                    },
-                )?;
-            }
-        }
-        sources += rows;
-    }
-    store.before[..sources].sort_unstable_by_key(|row| row.variant_pointer);
-    let main_reserve = if store.before[..sources].iter().any(|row| row.amount_raw > 0) {
-        native::merge_reserves(memory, base, survivor)?
-    } else {
-        0
-    };
-    let mut held = 0;
-    for &army in &store.armies[..armies] {
-        let mut destination = None;
-        // Destructed source families resolve their own roster country. Only
-        // reinforcement is canceled on the survivor.
-        native::canceled_delivery_pools(memory, base, army, army != survivor, |pool| {
-            let rows = snapshot(memory, base, pool, &mut store.after, 0)?;
-            if rows == 0 {
-                return Ok(());
-            }
-            let (pool, identity) = if let Some(destination) = destination {
-                destination
-            } else {
-                let pool = native::merge_reserves(memory, base, army)?;
-                let identity = native::reserve_owner(memory, base, pool)?;
-                destination = Some((pool, identity));
-                (pool, identity)
-            };
-            for &row in &store.after[..rows] {
-                *store
-                    .held
-                    .get_mut(held)
-                    .ok_or("merge held delivery scratch too short")? = HeldRow {
-                    destination: pool,
-                    country: identity,
-                    row,
-                };
-                held += 1;
-            }
-            Ok(())
-        })?;
-    }
-    store.held[..held].sort_unstable_by_key(|held| (held.destination, held.row.variant_pointer));
-    let mut scopes = 0;
-    let mut start = 0;
-    while start < held {
-        let first = store.held[start];
-        let mut end = start + 1;
-        while end < held && store.held[end].destination == first.destination {
-            if store.held[end].country != first.country {
-                return Err("merge reserve destination changed identity");
-            }
-            end += 1;
-        }
-        *store
-            .reserves
-            .get_mut(scopes)
-            .ok_or("merge reserve scopes scratch too short")? = MergeReserve {
-            pool: first.destination,
-            country: if first.destination == main_reserve {
-                country
-            } else {
-                first.country
-            },
-            identity: first.country,
-            held_start: start,
-            held_end: end,
-        };
-        scopes += 1;
-        start = end;
-    }
-    if main_reserve != 0
-        && !store.reserves[..scopes]
-            .iter()
-            .any(|scope| scope.pool == main_reserve)
-    {
-        *store
-            .reserves
-            .get_mut(scopes)
-            .ok_or("merge reserve scopes scratch too short")? = MergeReserve {
-            pool: main_reserve,
-            country,
-            identity: native::reserve_owner(memory, base, main_reserve)?,
-            held_start: 0,
-            held_end: 0,
-        };
-        scopes += 1;
-    }
-    for scope in &store.reserves[..scopes] {
-        for held in &store.held[scope.held_start..scope.held_end] {
-            transfers::push(
-                &mut store.net,
-                &mut len,
-                Net {
-                    country: scope.country,
-                    variant: held.row.variant_handle,
-                    amount: i128::from(held.row.amount_raw),
-                    credited: 0,
-                },
-            )?;
-        }
-        let rows = native::touched_reserves_if(
-            memory,
-            base,
-            scope.pool,
-            |variant| {
-                merge_selected(
-                    &store.before[..sources],
-                    &store.held[scope.held_start..scope.held_end],
-                    scope.pool == main_reserve,
-                    variant,
-                )
-            },
-            &mut store.after,
-        )?;
-        for row in &store.after[..rows] {
-            transfers::push(
-                &mut store.net,
-                &mut len,
-                Net {
-                    country: scope.country,
-                    variant: row.variant_handle,
-                    amount: i128::from(row.amount_raw),
-                    credited: 0,
-                },
-            )?;
-        }
-    }
-    Ok(Some(MergeBefore {
-        country,
-        survivor,
-        handle,
-        main_reserve,
-        sources,
-        scopes,
-        len,
-        prior_credit,
-    }))
-}
-fn merge_selected(
-    sources: &[equipment_entry::Row],
-    held: &[HeldRow],
-    main: bool,
-    variant: usize,
-) -> bool {
+fn merge_selected(sources: &[Row], held: &[HeldRow], main: bool, variant: usize) -> bool {
     let start = sources.partition_point(|row| row.variant_pointer < variant);
     (main
         && sources[start..]
@@ -2713,110 +3193,244 @@ fn merge_selected(
             .binary_search_by_key(&variant, |held| held.row.variant_pointer)
             .is_ok()
 }
-fn merge_after(
-    store: &mut Store,
+
+/// What a merge's post reads select: the merged sources and each destination.
+#[derive(Default)]
+struct MergeReads {
+    survivor: usize,
+    sources: Vec<Row>,
+    scopes: Vec<(usize, bool, Vec<HeldRow>)>,
+}
+
+// Observe physical pools once; source pools are gone after the native call.
+fn merge_pre(memory: &impl Memory, base: usize, argument: usize) -> (Pre, MergeReads) {
+    let mut reads = MergeReads::default();
+    let mut pools = Vec::new();
+    let excluded = native::cleanup(memory, base);
+    let failed = |reason| MergePre {
+        excluded,
+        head: Err(reason),
+        country: Err(reason),
+        armies: Err(reason),
+        rest: Err(reason),
+        pools: Vec::new(),
+    };
+    let pre = (|| {
+        if excluded != Ok(false) {
+            return failed("merge observation excluded");
+        }
+        let head = (|| {
+            let inputs = native::merge_input_count(memory, argument)?;
+            let mut armies = engine_allocation::advisory(|| {
+                engine_allocation::default_vec(inputs.saturating_add(1))
+            })
+            .map_err(|_| EVENT_STORAGE_FAILED)?;
+            let (survivor, len) = native::merge_armies(memory, base, argument, &mut armies)?;
+            armies.truncate(len);
+            Ok((survivor, armies, native::army_identity(memory, base, survivor)?))
+        })();
+        let (survivor, armies, handle) = match head {
+            Ok(head) => head,
+            Err(reason) => return failed(reason),
+        };
+        reads.survivor = survivor;
+        let country = native::merge_owner(memory, survivor);
+        let read_armies = (|| {
+            let mut read = engine_allocation::advisory(|| engine_allocation::vec(armies.len()))
+                .map_err(|_| EVENT_STORAGE_FAILED)?;
+            for &army in &armies {
+                let pool = army
+                    .checked_add(engine_native::carmy::EQUIPMENT_POOL)
+                    .ok_or("merge pool address overflow")?;
+                let rows = pool_rows(memory, base, pool)?;
+                let identity = native::army_identity(memory, base, army)?;
+                read.push(MergeArmy {
+                    army,
+                    rows,
+                    identity,
+                    owner: native::army_owner(memory, army),
+                });
+            }
+            Ok(read)
+        })();
+        let rest = read_armies.as_ref().map_err(|reason| *reason).and_then(|read| {
+            let total = read.iter().map(|army| army.rows.len()).sum();
+            let sources = &mut reads.sources;
+            engine_allocation::advisory(|| {
+                engine_allocation::reserve(sources, total)
+                    .and_then(|()| engine_allocation::reserve(&mut pools, read.len()))
+            })
+            .map_err(|_| EVENT_STORAGE_FAILED)?;
+            for army in read {
+                sources.extend_from_slice(&army.rows);
+                pools.push(army.army.saturating_add(engine_native::carmy::EQUIPMENT_POOL));
+            }
+            sources.sort_unstable_by_key(|row| row.variant_pointer);
+            merge_rest(memory, base, &armies, survivor, &mut reads, &mut pools)
+        });
+        MergePre {
+            excluded,
+            head: Ok((survivor, handle)),
+            country,
+            armies: read_armies,
+            rest,
+            pools: std::mem::take(&mut pools),
+        }
+    })();
+    let pre = boxed(pre).map_or_else(failed_pool, Pre::Merge);
+    (pre, reads)
+}
+/// An observation whose own record could not be held; the drain refuses it by name.
+fn failed_pool(reason: &'static str) -> Pre {
+    Pre::Pool(PoolPre {
+        cause: native::Cause::Unknown,
+        army: None,
+        scope: None,
+        identity: Err(reason),
+        owner: Err(reason),
+        pool: Err(reason),
+        rows: Err(reason),
+    })
+}
+fn merge_rest(
     memory: &impl Memory,
     base: usize,
-    MergeBefore {
-        country,
+    armies: &[usize],
+    survivor: usize,
+    reads: &mut MergeReads,
+    pools: &mut Vec<usize>,
+) -> Read<MergeRest> {
+    let sources = &reads.sources;
+    let main_reserve = if sources.iter().any(|row| row.amount_raw > 0) {
+        native::merge_reserves(memory, base, survivor)?
+    } else {
+        0
+    };
+    let mut held: Vec<HeldRow> = Vec::new();
+    for &army in armies {
+        let mut destination = None;
+        // Destructed source families resolve their own roster country. Only
+        // reinforcement is canceled on the survivor.
+        native::canceled_delivery_pools(memory, base, army, army != survivor, |pool| {
+            let rows = pool_rows(memory, base, pool)?;
+            if rows.is_empty() {
+                return Ok(());
+            }
+            let (destination, identity) = match destination {
+                Some(destination) => destination,
+                None => {
+                    let reserve = native::merge_reserves(memory, base, army)?;
+                    let identity = native::reserve_owner(memory, base, reserve)?;
+                    destination = Some((reserve, identity));
+                    (reserve, identity)
+                }
+            };
+            engine_allocation::advisory(|| {
+                engine_allocation::reserve(&mut held, rows.len())
+                    .and_then(|()| engine_allocation::reserve(pools, 1))
+            })
+            .map_err(|_| EVENT_STORAGE_FAILED)?;
+            pools.push(pool);
+            held.extend(rows.into_iter().map(|row| HeldRow {
+                destination,
+                country: identity,
+                row,
+            }));
+            Ok(())
+        })?;
+    }
+    held.sort_unstable_by_key(|held| (held.destination, held.row.variant_pointer));
+    let mut scopes: Vec<MergeScope> = Vec::new();
+    let mut start = 0;
+    while start < held.len() {
+        let first = held[start];
+        let mut end = start + 1;
+        while end < held.len() && held[end].destination == first.destination {
+            if held[end].country != first.country {
+                return Err("merge reserve destination changed identity");
+            }
+            end += 1;
+        }
+        let group = engine_allocation::advisory(|| engine_allocation::collect_vec(held[start..end].iter().copied()))
+            .map_err(|_| EVENT_STORAGE_FAILED)?;
+        engine_allocation::advisory(|| engine_allocation::reserve(&mut scopes, 1))
+            .map_err(|_| EVENT_STORAGE_FAILED)?;
+        scopes.push(MergeScope {
+            pool: first.destination,
+            main: first.destination == main_reserve,
+            identity: first.country,
+            held: group,
+            touched: Vec::new(),
+        });
+        start = end;
+    }
+    if main_reserve != 0 && !scopes.iter().any(|scope| scope.pool == main_reserve) {
+        engine_allocation::advisory(|| engine_allocation::reserve(&mut scopes, 1))
+            .map_err(|_| EVENT_STORAGE_FAILED)?;
+        scopes.push(MergeScope {
+            pool: main_reserve,
+            main: true,
+            identity: native::reserve_owner(memory, base, main_reserve)?,
+            held: Vec::new(),
+            touched: Vec::new(),
+        });
+    }
+    engine_allocation::advisory(|| {
+        engine_allocation::reserve(&mut reads.scopes, scopes.len())
+            .and_then(|()| engine_allocation::reserve(pools, scopes.len()))
+    })
+    .map_err(|_| EVENT_STORAGE_FAILED)?;
+    for scope in &mut scopes {
+        scope.touched = touched_rows(memory, base, scope.pool, |variant| {
+            merge_selected(&reads.sources, &scope.held, scope.main, variant)
+        })?;
+        let held = engine_allocation::advisory(|| engine_allocation::collect_vec(scope.held.iter().copied()))
+            .map_err(|_| EVENT_STORAGE_FAILED)?;
+        reads.scopes.push((scope.pool, scope.main, held));
+        pools.push(scope.pool);
+    }
+    Ok(MergeRest { scopes })
+}
+fn merge_post(memory: &impl Memory, base: usize, reads: MergeReads) -> Post {
+    let MergeReads {
         survivor,
-        handle,
-        main_reserve,
         sources,
         scopes,
-        mut len,
-        prior_credit,
-    }: MergeBefore,
-) -> Result<(), &'static str> {
-    if native::army_identity(memory, base, survivor)? != handle {
-        return Err("merge survivor changed handle");
+    } = reads;
+    let mut read = Vec::new();
+    if engine_allocation::advisory(|| engine_allocation::reserve(&mut read, scopes.len())).is_err() {
+        return Post::Merge {
+            identity: Err(EVENT_STORAGE_FAILED),
+            rows: Err(EVENT_STORAGE_FAILED),
+            scopes: Vec::new(),
+        };
     }
-    let pool = survivor
-        .checked_add(engine_native::carmy::EQUIPMENT_POOL)
-        .ok_or("merge pool address overflow")?;
-    let rows = snapshot(memory, base, pool, &mut store.after, 0)?;
-    for row in &store.after[..rows] {
-        transfers::push(
-            &mut store.net,
-            &mut len,
-            Net {
-                country,
-                variant: row.variant_handle,
-                amount: -i128::from(row.amount_raw),
-                credited: 0,
-            },
-        )?;
+    for (pool, main, held) in &scopes {
+        read.push((
+            native::reserve_owner(memory, base, *pool),
+            touched_rows(memory, base, *pool, |variant| {
+                merge_selected(&sources, held, *main, variant)
+            }),
+        ));
     }
-    for scope in &store.reserves[..scopes] {
-        if native::reserve_owner(memory, base, scope.pool)? != scope.identity {
-            return Err("merge reserve destination changed identity");
-        }
-        let rows = native::touched_reserves_if(
-            memory,
-            base,
-            scope.pool,
-            |variant| {
-                merge_selected(
-                    &store.before[..sources],
-                    &store.held[scope.held_start..scope.held_end],
-                    scope.pool == main_reserve,
-                    variant,
-                )
-            },
-            &mut store.after,
-        )?;
-        for row in &store.after[..rows] {
-            transfers::push(
-                &mut store.net,
-                &mut len,
-                Net {
-                    country: scope.country,
-                    variant: row.variant_handle,
-                    amount: -i128::from(row.amount_raw),
-                    credited: 0,
-                },
-            )?;
-        }
+    Post::Merge {
+        identity: native::army_identity(memory, base, survivor),
+        rows: survivor
+            .checked_add(engine_native::carmy::EQUIPMENT_POOL)
+            .ok_or("merge pool address overflow")
+            .and_then(|pool| pool_rows(memory, base, pool)),
+        scopes: read,
     }
-    let len = transfers::compact(&mut store.net[..len])?;
-    for index in 0..len {
-        let value = store.net[index];
-        let amount_raw = i64::try_from(value.amount)
-            .map_err(|_| "merge equipment correction exceeds signed width")?;
-        store.append(
-            SiteId::Merge,
-            Entry {
-                country: value.country,
-                cause: native::Cause::DivisionMerged,
-                disposition: native::Disposition::Loss,
-                expeditionary_owner: 0,
-                division_handle: 0,
-                variant: value.variant,
-                amount_raw,
-            },
-        )?;
-    }
-    if prior_credit {
-        store
-            .credits
-            .set_state(handle, survivor, country, PoolState::Live)?;
-    }
-    Ok(())
 }
 unsafe extern "system-unwind" fn merge(argument: usize) {
     let _call = Call::enter(SiteId::Merge);
     let original: unsafe extern "system-unwind" fn(usize) =
         unsafe { std::mem::transmute(ORIGINAL[SiteId::Merge as usize].load(Ordering::Acquire)) };
-    let admitted = Cell::new(false);
-    let run = || {
+    let run = || _call.run(|| unsafe { original(argument) });
+    if !recording() {
         // A skipped whole operation can mutate survivor and donor lifetimes;
         // its failed admission has no authenticated complete receiver set.
-        if !admitted.get() {
-            skipped_credit_mutation(None);
-        }
-        _call.run(|| unsafe { original(argument) })
-    };
-    if !recording() {
+        skipped_credit_mutation(None);
         run();
         return;
     }
@@ -2825,13 +3439,10 @@ unsafe extern "system-unwind" fn merge(argument: usize) {
     let _scope = WholeMergeScope::enter();
     observe_native(
         SiteId::Merge,
-        |store| {
-            let before = merge_before(store, &memory, base, argument);
-            admitted.set(before.is_ok());
-            before
-        },
+        || skipped_credit_mutation(None),
+        || merge_pre(&memory, base, argument),
         run,
-        |store, pre| merge_after(store, &memory, base, pre),
+        |reads| merge_post(&memory, base, reads),
     );
 }
 
@@ -3078,6 +3689,7 @@ impl Drop for Hooks {
 }
 pub fn status() -> impl serde::Serialize {
     let refusal = FIRST_REFUSAL.get().copied();
+    let contested = *CONTEST.lock().unwrap_or_else(PoisonError::into_inner);
     let hooks = std::array::from_fn::<_, { native::SITES.len() }, _>(|i| {
         let site = &native::SITES[i];
         crate::status::status!({
@@ -3090,18 +3702,18 @@ pub fn status() -> impl serde::Serialize {
             "overflow": SITE_OVERFLOW[i].load(Ordering::Relaxed),
         })
     });
-    crate::status::status!({"hooks":crate::status::sequence(hooks.into_iter()),"unhooked":UNHOOKED.get(),"supplemental_unhooked":SUPPLEMENTAL_UNHOOKED.get(),"supplemental_enabled":SUPPLEMENTAL_ENABLED.load(Ordering::SeqCst),"branch_unavailable":POISONED.load(Ordering::SeqCst),
+    crate::status::status!({"hooks":crate::status::sequence(hooks.into_iter()),"unhooked":UNHOOKED.get(),"supplemental_unhooked":SUPPLEMENTAL_UNHOOKED.get(),"supplemental_enabled":SUPPLEMENTAL_ENABLED.load(Ordering::SeqCst),"branch_unavailable":UNAVAILABLE.load(Ordering::Relaxed),
         "events":EVENTS.load(Ordering::Relaxed),"overflow":OVERFLOW.load(Ordering::Relaxed),"refusals":REFUSALS.load(Ordering::Relaxed),"refusal":refusal,
-        "lost_drains":LOST.load(Ordering::Relaxed),"overlaps":OVERLAPS.load(Ordering::Relaxed),"drains":DRAINS.load(Ordering::Relaxed),
-        "handed_over":HANDED_OVER.load(Ordering::Relaxed),"event_capacity":capacity(),"queue_capacity":QUEUED_CAPACITY.load(Ordering::Acquire),"design_capacity":DESIGNS.load(Ordering::Acquire),
-        "prepare_failures":PREPARE_FAILURES.load(Ordering::Relaxed),
+        "contested_pools":CONTESTS.load(Ordering::Relaxed),"contested_pool":contested,
+        "lost_drains":LOST.load(Ordering::Relaxed),"drains":DRAINS.load(Ordering::Relaxed),"storage_refusals":STORAGE_REFUSALS.load(Ordering::Relaxed),
+        "handed_over":HANDED_OVER.load(Ordering::Relaxed),"event_capacity":CAPACITY.load(Ordering::Acquire),"queue_capacity":QUEUED_CAPACITY.load(Ordering::Acquire),"store_bytes":STORE_BYTES.load(Ordering::Relaxed),
         "unknown_callers":UNKNOWN_CALLERS.load(Ordering::Relaxed),
         "hourly_peak_events":HOURLY_PEAK_EVENTS.load(Ordering::Relaxed),"hourly_peak_capacity":HOURLY_PEAK_CAPACITY.load(Ordering::Relaxed),
         "scope":"cumulative since attach; stable causes; unknown callers counted; peak includes partial or refused intervals; refusals recover at clean boundaries; first and branch intervals are partial"})
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 #[cfg(test)]
 pub(crate) fn synthetic_restore_hooks(original: Hook, supplemental: Hook) -> Hooks {

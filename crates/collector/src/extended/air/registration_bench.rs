@@ -156,7 +156,7 @@ fn build(shape: &Shape) -> Vec<u8> {
 fn copy(bytes: &[u8], job: &mut AirBasesJob) -> f64 {
     let memory = super::air_bases_test_kit::memory(bytes);
     let started = Instant::now();
-    let report = copy_air_bases_refresh_growing(
+    let report = copy_air_bases_refresh(
         &memory,
         AirBasesCopyContext {
             hour: 0,

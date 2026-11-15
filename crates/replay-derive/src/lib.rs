@@ -3,10 +3,12 @@
 pub mod air_mission_counts;
 pub mod air_mission_sources;
 pub mod air_region_derive;
+pub mod air_superiority;
 pub mod aircraft_count;
 pub mod attack_derive;
 pub mod directed_war_derive;
 pub mod eta_derive;
+pub mod factories;
 pub mod fixed_layout;
 pub mod modifier_registry;
 pub mod naval_dominance_derive;

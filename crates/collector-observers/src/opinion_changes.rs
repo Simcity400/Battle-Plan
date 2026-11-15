@@ -605,8 +605,8 @@ unsafe extern "system" fn recompute_opinion(status: usize) {
 }
 
 unsafe extern "system" fn reset(status: usize, first: usize, second: usize, value: usize) {
-    let _occupation = crate::occupation_changes::changed(status);
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::OpinionChanges);
+    let _occupation = crate::occupation_changes::changed(status);
     let mutation = Mutation::enter(1);
     let _wars = crate::war_changes::forwarded(crate::war_changes::Site::StatusReset);
     let _participation =

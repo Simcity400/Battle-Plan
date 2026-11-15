@@ -27,7 +27,7 @@ fn localisation_status(
     match status {
         OperandStatus::Complete | OperandStatus::Truncated(_) => Ok(()),
         OperandStatus::WrongLayout | OperandStatus::TruncatedWrongLayout(_) => {
-            Err(format!("{table:?} contains another table's rows").into())
+            Err(format!("{} holds rows of another kind", table.words()).into())
         }
         _ => status
             .complete(frame.hour(), table)
@@ -328,7 +328,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
                 .slot(record.country)
                 .ok_or_else(|| -> Failure {
                     self.world()
-                        .unlinked("CountryCharacters/CountryRetiredCharacters", record.country)
+                        .unlinked("country characters/country retired characters", record.country)
                 })?;
             if owner != country {
                 continue;
@@ -361,7 +361,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             )?;
             let tokens = frame.held::<replay_data::rows::tables::LexicalTokens>(0);
             let spelling = super::world::literal(&tokens, token)?.ok_or_else(|| -> Failure {
-                format!("{candidate}: rostered character {id}'s name token {token} is unread in LexicalTokens").into()
+                format!("{candidate}: rostered character {id}'s name token {token} is unread in lexical tokens").into()
             })?;
             if spelling.eq_ignore_ascii_case(candidate.as_bytes()) {
                 return Err(format!(
@@ -393,7 +393,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
                 continue;
             };
             let literal = super::world::literal(&tokens, token)?.ok_or_else(|| -> Failure {
-                format!("{name}: character {id}'s name token {token} is not spelled in LexicalTokens, so native character lookup cannot be decided").into()
+                format!("{name}: character {id}'s name token {token} is not spelled in lexical tokens, so native character lookup cannot be decided").into()
             })?;
             if literal.eq_ignore_ascii_case(name.as_bytes()) {
                 matches.push(id);
@@ -1351,7 +1351,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
                 0,
             )?;
             if reserved.len() != 1 {
-                return Err("ReservedCountryNaming does not hold one reserved country".into());
+                return Err("reserved country naming does not hold one reserved country".into());
             }
             // The one reserved row is keyed zero.
             reserved
@@ -1362,7 +1362,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
                         why,
                     )
                 })?
-                .ok_or("ReservedCountryNaming's one row is not keyed zero")?
+                .ok_or("reserved country naming's one row is not keyed zero")?
         } else {
             return Err(format!("country slot {slot} has no recorded tag").into());
         };

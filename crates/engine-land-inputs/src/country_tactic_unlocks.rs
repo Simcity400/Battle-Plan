@@ -63,17 +63,6 @@ struct Roots {
     pub doctrine: Array,
 }
 
-/// Caller-owned buffers. Every length is a capacity; demand beyond it is
-/// reported in [`Capture`] and never becomes a partial table.
-pub struct Buffers<'a> {
-    pub rows: &'a mut [Row],
-    pub unlocks: &'a mut [u32],
-    /// The database table.
-    pub registry: &'a mut [RegistryEntry],
-    /// Byte staging for the database entries or one country's pointer list.
-    pub list: &'a mut [u8],
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Capture {
     pub outcome: Outcome,
@@ -260,25 +249,21 @@ fn registry(
     Ok(true)
 }
 
-/// Full census sized from the live country, database and list counts.
-/// Pressure retains the exact demand of every buffer but publishes no
-/// partial table. Lists that fit the staging buffer are still authenticated
-/// under other pressure, so a fault is never hidden as pressure.
-pub fn capture(memory: &impl Memory, base: usize, game: usize, buffers: Buffers<'_>) -> Capture {
+/// Grow on the worker from the original database, country and unlock headers.
+#[allow(clippy::too_many_arguments)]
+pub fn count(memory: &impl Memory, base: usize, game: usize) -> Capture {
     capture_buffer(
         memory,
         base,
         game,
-        crate::walk::Buffer::Fixed(buffers.rows),
-        crate::walk::Buffer::Fixed(buffers.unlocks),
-        crate::walk::Buffer::Fixed(buffers.registry),
-        crate::walk::Buffer::Fixed(buffers.list),
+        crate::walk::Buffer::Count,
+        crate::walk::Buffer::Count,
+        crate::walk::Buffer::Count,
+        crate::walk::Buffer::Count,
     )
 }
 
-/// Grow on the worker from the original database, country and unlock headers.
-#[allow(clippy::too_many_arguments)]
-pub fn capture_growing(
+pub fn capture(
     memory: &impl Memory,
     base: usize,
     game: usize,

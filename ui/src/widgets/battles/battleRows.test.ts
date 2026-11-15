@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { battleJumpHour, battleCountryRequests, battleDate, battleDateMoment, battleFlagCount, battleShortDate, battleLogRows, battleMeasure, battleTooltip, battleValueText, battleWinner, isBattleRow,
-  battlePlaceRequests, namedBattles } from './battleRows.ts';
+import { battleChangeHours, battleChanges, battleJumpHour, battleCountryRequests, battleDate, battleDateMoment, battleFlagCount, battleShortDate, battleLogRows, battleMeasure, battleState, battleStateRows, heldWindowsEnd, battleTooltip, battleValueText, battleWinner, isBattleRow,
+  battlePlaceRequests, heldAtHour, namedBattles, rowsById } from './battleRows.ts';
 import { validatePlaceNamesReply } from '../../dashboard/placeNamesData.ts';
 import type { BattleLabels, BattleRow, BattleValue } from './battleRows';
 import { HOUR_EPOCH, gameDate, formatDate } from '../../dashboard/calendar.ts';
@@ -36,6 +36,7 @@ test('later naming reads preserve battle dates, request stable hours and date th
   assert.equal(battleTooltip(named[0], labels, tag => ({ name: tag })).rows.some(row => row.label.startsWith('named as of ')), false);
   assert.throws(() => validatePlaceNamesReply({ ...places, places: [places.places[0], places.places[0]] }));
 });
+
 
 test('short table dates use the start bound; unrecorded starts use a known end', () => {
   const battle = row();
@@ -162,4 +163,64 @@ test('dated known-country flag failures stay distinct from pending flags and an 
   assert.equal(tip.rows.find(part => part.label === pending.name)?.countryFlag, pending);
   assert.equal(tip.rows.find(part => part.label === 'Countries unknown')?.countryFlag, undefined);
   assert.equal(tip.rows.find(part => part.countryFlag === completed)?.label, '', 'an authoritative empty name stays empty');
+});
+
+test('a battle log over a block holds each battle\'s states, each shown from its change to the next, in every hour\'s order', () => {
+  const sides = (sunk: number | null): BattleRow['sides'] => [
+    { label: 'First side', countries: [{ tag: 'mod tag', hour: 90 }], counts: [{ label: 'Ships', value: 3 }], losses: [sunk === null ? { label: 'Sunk', value: null, unknown: 'Losses not read' } : { label: 'Sunk', value: sunk }] },
+    { label: 'Other side', countries: [{ tag: 'other mod tag', hour: 90 }], counts: [{ label: 'Ships', value: 2 }], losses: [] }];
+  const battle = (id: string, start: number, end: number | null, sunk: number | null): BattleRow => ({ id, place: { name: null, hour: start },
+    start: { hour: start, bound: 'exact' }, end: end === null ? null : { hour: end, bound: 'exact' }, sides: sides(sunk),
+    winner: end === null ? { unknown: 'Result not recorded' } : { side: 0 } });
+  // x: under way from 90, ended and won at 112; y: from 105, its losses read 1 then 2 from 108, then not read from 115.
+  const rowsAt = (hour: number) => [hour < 112 ? battle('x', 90, null, 1) : battle('x', 90, 112, 1),
+    ...hour >= 105 ? [battle('y', 105, null, hour >= 115 ? null : hour >= 108 ? 2 : 1)] : []];
+  const hours = [100, 105, 108, 112, 115];
+  const shownAt = (rows: ReturnType<typeof battleStateRows<BattleRow>>, hour: number) => rows.filter(item =>
+    Math.max(item.hour, item.revealedHour ?? item.hour) <= hour && (item.leftHour ?? Infinity) > hour).map(item => [item.item.id, item.item.end === null]);
+  const rendered = battleStateRows(hours, rowsAt, true);
+  for (let hour = 100; hour <= 120; hour++) {
+    assert.deepEqual(shownAt(rendered, hour), battleLogRows(rowsAt(hour), true).map(item => [item.item.id, item.item.end === null]), `at ${hour}`);
+  }
+  assert.equal(rendered.filter(item => item.item.id === 'y').length, 3, 'losses a row renders: a state per read');
+  const painted = battleStateRows(hours, rowsAt, true, item => battleState(item, true));
+  assert.equal(painted.filter(item => item.item.id === 'y').length, 2, 'losses painted between changes: a state only when they stop being known');
+  assert.ok(painted.every(item => item.id === item.item.id), 'a battle\'s states share its id: the log draws them as one row');
+  // Read whole only at the first hour, then each battle at its own changes: the same states, a read per change.
+  const reads: string[] = [];
+  const own = new Map([[105, ['y']], [108, ['y']], [112, ['x']], [115, ['y']]]);
+  const byBattle = battleStateRows(hours, at => { reads.push(`*@${at}`); return rowsAt(at); }, true, undefined, at => own.get(at) ?? [],
+    (id, at) => { reads.push(`${id}@${at}`); return rowsAt(at).find(item => item.id === id) ?? null; });
+  assert.deepEqual(byBattle.map(item => [item.key, item.revealedHour ?? null, item.leftHour ?? null]), rendered.map(item => [item.key, item.revealedHour ?? null, item.leftHour ?? null]));
+  assert.deepEqual(reads, ['*@100', 'y@105', 'y@108', 'x@112', 'y@115']);
+  const changes = battleChanges([100, 100], [['x', [90, 112]], ['y', [105, 108, 115]], ['x', [112]]]);
+  assert.deepEqual(changes.whole, [100]);
+  assert.deepEqual(changes.battles.get(112), ['x'], 'a battle held by two windows changes once at an hour');
+  assert.deepEqual(battleChangeHours(changes), [90, 100, 105, 108, 112, 115]);
+});
+
+test('a battle list draws ahead only through the windows held without a gap from the hour\'s, through the next window at most', () => {
+  const windows = [{ firstHour: 100, lastHour: 130 }, { firstHour: 131, lastHour: 160 }, { firstHour: 161, lastHour: 190 }];
+  assert.equal(heldWindowsEnd(windows, new Set([0]), 120), 131);
+  // The next block then begins at most two windows on, in a window asked with this one (`battleWindows`).
+  assert.equal(heldWindowsEnd(windows, new Set([0, 1, 2]), 120), 161, 'never past the window after the hour\'s');
+  assert.equal(heldWindowsEnd(windows, new Set([0, 1, 2]), 140), 191);
+  assert.equal(heldWindowsEnd(windows, new Set([0, 2]), 120), 131, 'a window not held ends what may be drawn');
+  assert.equal(heldWindowsEnd(windows, new Set([1]), 120), 121, 'the hour\'s own window not held: nothing past the hour');
+  assert.equal(heldWindowsEnd(windows, new Set([0]), 99), 100, 'before the first window');
+});
+
+test('the rows at the head are replayed once an hour however many rows ask, and found by battle without a scan', () => {
+  const replayed: number[] = [];
+  const rowsAt = heldAtHour((hour: number) => { replayed.push(hour); return [{ id: `a${hour}` }, { id: `b${hour}` }] as unknown as BattleRow[]; });
+  const first = rowsAt(10);
+  // A render's rows, each row's tooltip and the frame's painter at one head hour.
+  for (let row = 0; row < 50; row++) assert.equal(rowsAt(10), first);
+  assert.deepEqual(replayed, [10], 'one replay for the hour');
+  assert.notEqual(rowsAt(11), first);
+  assert.deepEqual(replayed, [10, 11], 'the head moving replays again');
+  const byId = rowsById(rowsAt(11));
+  assert.equal(byId, rowsById(rowsAt(11)), 'indexed once per list of rows');
+  assert.equal(byId.get('b11'), rowsAt(11)[1]);
+  assert.equal(byId.get('b10'), undefined);
 });

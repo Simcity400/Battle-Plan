@@ -1,46 +1,44 @@
 import { nameReadText } from '../../dashboard/nameReads.ts';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { reporting } from '../../dashboard/follow/liveCells.ts';
+import { useShownHour } from '../../dashboard/widgetPerf.ts';
 import { createPortal } from 'react-dom';
 import WidgetState from '../../components/WidgetState';
-import ProgressMeter from '../../charts/meter/ProgressMeter';
 import Table, { CountryCell } from '../../charts/table/Table';
 import type { TableColumn } from '../../charts/table/Table';
 import { narrowTableOf, tableSortOf } from '../../charts/table/options';
-import { useTableHour } from '../../charts/table/useTableHour';
 import { fitTooltip } from '../../charts/tooltip';
 import { usNumber } from '../../charts/numberFormat';
-import { dayLabel } from '../../charts/draw';
 import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import type { CountryLabel } from '../../dashboard/countryFlagsAt';
 import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt';
 import { selectedTags } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { countryMatch, MEMBERSHIP_PREPARING } from '../../dashboard/groups';
-import { resolveWindow } from '../../dashboard/model';
-import type { BoundTrack } from '../../dashboard/model';
+import { countryMatch, countryMatchChangeHours, membershipUnrecordedAt } from '../../dashboard/groups';
+import { useChoiceHour } from '../../dashboard/atHead';
+import { useHeadProduct } from '../../dashboard/headProduct';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackMotion } from '../../dashboard/playback';
-import { preparedThroughHour, readAt } from '../../dashboard/politicsHistory';
-import { useFollowedProduct, useProduct } from '../../dashboard/products';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
-import type { PoliticsHistoryReply, PoliticsStateReply } from '../../generated/dashboard';
 import { DEFAULT_SORT, OPTIONS } from './definition';
-import { deployedAirByTag, EXILE_VALUES, exilesAt, exileTooltip, exileWarnings, legitimacyShare, legitimacyText, manpowerText, validateExileDetails, validateExilesReply } from './governmentsInExileData';
+import { exileNumbers, exilesAt, exileStructure, exileTableValues, exileTooltip, exileWarnings, legitimacyText, manpowerText, validateExiles } from './governmentsInExileData';
+import { mapLive } from '../../charts/live';
+import type { LiveValues } from '../../charts/live';
 import type { ExileRow } from './governmentsInExileData';
-import { exilesRequest, shownHour } from '../../dashboard/widgetRequests';
 import './governmentsInExile.css';
 
 const NO_ROWS: readonly ExileRow[] = [];
 const NO_WARNINGS: string[] = [];
+const PARAMS = { view: 'exiles' } as const;
 const rowKey = (row: ExileRow) => row.key;
-const MOVING_HOUR = ['hour'] as const;
 const tieKey = (row: ExileRow) => row.tag;
+const rowOf = (key: string) => key.slice(0, key.lastIndexOf('\u0000'));
+const count = (value: unknown) => usNumber.format(value as number);
 
-/** The table's columns: countries by `label` (sorted by `sortName`), deployed air crews
- * by `airOf`, the hiding columns' values in the row tooltip. */
-export function exileColumns(sortName: (tag: string) => string, label: CountryLabel, cellBars: boolean,
-  airOf: (row: ExileRow) => number | null | undefined, airDate: string | null = null): TableColumn<ExileRow>[] {
+/** The table's columns: countries by `label` (sorted by `sortName`), the hiding columns' values in the row tooltip; the
+ * numbers painted from `values` (the live cells), Manpower beside its cap. */
+export function exileColumns(sortName: (tag: string) => string, label: CountryLabel, values: () => LiveValues<number>): TableColumn<ExileRow>[] {
   return [
     { key: 'exile', header: 'Exile', label: 'Exile', width: 'minmax(var(--table-name-min), 2fr)',
       value: row => sortName(row.tag), text: row => label(row.tag).name, render: row => <CountryCell {...label(row.tag)} /> },
@@ -48,46 +46,31 @@ export function exileColumns(sortName: (tag: string) => string, label: CountryLa
       value: row => row.host === null ? null : sortName(row.host), text: row => row.host === null ? null : label(row.host).name,
       render: row => row.host === null ? 'Not recorded' : <CountryCell {...label(row.host)} /> },
     { key: 'legitimacy', header: 'Legitimacy', label: 'Legitimacy', numeric: true, width: 'minmax(calc(var(--space-6) * 3), 1fr)', priority: 2, inTooltip: true,
-      value: EXILE_VALUES.legitimacy,
-      render: row => <span className="exile-legitimacy"><span>{legitimacyText(row.legitimacy!)}</span>
-        {cellBars && <ProgressMeter value={legitimacyShare(row.legitimacy!)} state="live" label="Legitimacy" />}</span> },
+      value: () => null, paint: value => legitimacyText(value as number), bar: 100 },
     { key: 'manpower', header: 'Manpower', label: 'Manpower', numeric: true, width: 'max-content', priority: 3, inTooltip: true,
-      value: EXILE_VALUES.manpower, render: manpowerText },
-    { key: 'air', header: 'Air crews', label: 'Air crews', numeric: true, width: 'max-content', priority: 5, inTooltip: true,
-      value: row => airOf(row), render: row => airDate ? `${usNumber.format(airOf(row)!)} (${airDate})` : usNumber.format(airOf(row)!) },
-    { key: 'leaders', header: 'Army leaders', label: 'Army leaders', numeric: true, width: 'max-content', priority: 4, inTooltip: true,
-      value: EXILE_VALUES.leaders, render: row => usNumber.format(row.leaders!) },
+      value: () => null, paint: (_, key) => manpowerText(exileNumbers(values(), rowOf(key))) },
+    { key: 'air', header: 'Air crews', label: 'Air crews', numeric: true, width: 'max-content', priority: 5, inTooltip: true, value: () => null, paint: count },
+    { key: 'leaders', header: 'Army leaders', label: 'Army leaders', numeric: true, width: 'max-content', priority: 4, inTooltip: true, value: () => null, paint: count },
   ];
 }
 
-/** Deployed air crews at the shown hour, only while exiles are shown. While playback moves,
- * the last landed hour stays shown, named by `hour`, while the newest is read. */
-function useDeployedAir(runtime: WidgetProps['runtime'], track: BoundTrack | undefined, hour: number, enabled: boolean) {
-  const request = track && enabled ? { sourceId: track.source.id, revision: track.source.revision, product: 'politics-state',
-    params: { branchId: track.branch.id, hour, view: 'exiles' } } : null;
-  const read = useFollowedProduct<PoliticsStateReply>(runtime.client, request, MOVING_HOUR, enabled,
-    value => validateExileDetails(value, (value as { hour?: unknown } | null)?.hour as number));
-  const answered = read.data === undefined || read.moment === undefined ? undefined : (JSON.parse(read.moment) as [number])[0];
-  // A reply must answer the hour it was asked for.
-  const data = read.data && read.data.hour === answered ? read.data : undefined;
-  const error = read.error ?? (read.data && !data ? new Error('The exile details reply answers another hour.') : undefined);
-  const air = useMemo(() => data ? deployedAirByTag(data) : null, [data]);
-  const warnings = useMemo(() => error ? [`1 refused exile deployed air crews: ${error.message}`] : data?.warnings ?? NO_WARNINGS,
-    [data, error]);
-  return { air, hour: data ? answered : undefined, warnings };
-}
-
+/** Every government in exile at the playback date: the hour's rows, followed at the head as a pushed panel. */
 export default function GovernmentsInExileWidget({ widget, runtime, active, headerSlot, setOption, onDiagnostics }: WidgetProps) {
-  const playbackHour = useTableHour(runtime.clock, active && widget.time.mode === 'follow');
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const tokens = useChartTokens();
   const viewport = useViewportHeight();
   const options = resolveOptions(OPTIONS, widget.options);
   const sort = tableSortOf(options.tableSort, DEFAULT_SORT);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
-  const hour = shownHour(track, window);
-  const inside = !!track && !!window && track.branch.firstHour <= hour && hour <= track.branch.lastHour;
+  const head = useHeadProduct(runtime, widget, 'politics-state', track ? PARAMS : null, { active, validate: validateExiles, structure: exileStructure });
+  const data = useMemo(() => head.data && head.at !== null ? { ...head.data, hour: head.at } : undefined, [head.data, head.at]);
+  const live = head.live;
+  const shown = useShownHour();
+  const shownAt = useRef(head.shownAt);
+  shownAt.current = head.shownAt;
+  // The table's painted cells report the hour they are of at each frame they read.
+  const tableLive = useMemo(() => mapLive(reporting(live, () => shown(shownAt.current())), exileTableValues), [live, shown]);
+  const hour = data?.hour ?? track?.branch.lastHour ?? 0;
   const needsGroups = widget.countries.kind !== 'all';
   const groups = useCountryGroups(runtime, track, active && needsGroups);
   const selected = selectedTags(widget.countries, track);
@@ -96,16 +79,12 @@ export default function GovernmentsInExileWidget({ widget, runtime, active, head
   const fallback = useMemo(() => selected, [selectedKey]);
   const match = useMemo(() => countryMatch(widget.countries, fallback, groups.data, track?.branch.lastHour ?? hour),
     [widget.countries, fallback, groups.data, track?.branch.lastHour, hour]);
-  const request = exilesRequest(track, hour);
-  const { data, error, retry } = useProduct<PoliticsHistoryReply>(runtime.client, request, active, validateExilesReply, track?.source);
-  const prepared = !!data && preparedThroughHour(data, hour);
-  const read = !!data && readAt(data.known, hour);
-  const view = useMemo(() => data && prepared && read && match.ready && !match.reason ? exilesAt(data, hour, match.matches) : null,
-    [data, prepared, read, hour, match]);
+  const unrecorded = useCallback((at: number) => membershipUnrecordedAt(widget.countries, groups.data, at), [widget.countries, groups.data]);
+  // A held panel's rows are chosen again where the chosen group changes, at the hour its values are current through.
+  const choiceAt = useChoiceHour(runtime.clock, active, () => head.atNow() ?? hour, () => head.shownAt(), countryMatchChangeHours(match.matches), head.live.subscribe);
+  const view = useMemo(() => data && match.ready && !match.reason ? exilesAt({ exiles: data.exiles, hour: choiceAt }, match.matches, unrecorded) : null,
+    [data, match, unrecorded, choiceAt]);
   const rows = view?.rows ?? NO_ROWS;
-  const details = useDeployedAir(runtime, track, hour, active && inside && rows.length > 0);
-  // Undefined while the hour detail loads or when it does not list the exile; null when it says not recorded.
-  const airOf = useCallback((row: ExileRow) => details.air?.has(row.tag) ? details.air.get(row.tag) : undefined, [details.air]);
   const [visible, setVisible] = useState<readonly ExileRow[]>(NO_ROWS);
   const onVisibleRows = useCallback((rows: readonly ExileRow[]) => setVisible(rows), []);
   const wanted = useMemo(() => visible.flatMap(row => [{ hour, tag: row.tag }, ...row.host === null ? [] : [{ hour, tag: row.host }]]), [visible, hour]);
@@ -114,13 +93,10 @@ export default function GovernmentsInExileWidget({ widget, runtime, active, head
   const sortingNames = useMemo(() => sort.column === 'exile' ? rows.map(row => ({ hour, tag: row.tag }))
     : sort.column === 'host' ? rows.flatMap(row => row.host === null ? [] : [{ hour, tag: row.host }]) : [], [rows, sort.column, hour]);
   const names = useCountryNamesAt(runtime.client, track, sortingNames, active);
-  // Air crews still from an earlier read carry that read's date, never the shown hour's.
-  const airDate = details.hour !== undefined && details.hour !== hour ? dayLabel(details.hour) : null;
-  const columns = useMemo(() => exileColumns(tag => nameReadText(names.get(nameKey(hour, tag))), labelAt(hour), options.cellBars === true, airOf, airDate),
-    [names, labelAt, hour, options.cellBars, airOf, airDate]);
-  const tooltip = useCallback((row: ExileRow) => fitTooltip([exileTooltip(row, hour, labelAt(hour)(row.tag),
-    row.host === null ? null : labelAt(hour)(row.host), airOf(row), details.hour)], viewport), [labelAt, hour, viewport, airOf, details.hour]);
-  const warnings = useMemo(() => data ? exileWarnings(data, view, details.warnings) : NO_WARNINGS, [data, view, details.warnings]);
+  const columns = useMemo(() => exileColumns(tag => nameReadText(names.get(nameKey(hour, tag))), labelAt(hour), live.read), [names, labelAt, hour, live]);
+  const tooltip = useCallback((row: ExileRow) => fitTooltip([exileTooltip(exileNumbers(live.read(), row.key), hour, labelAt(hour)(row.tag),
+    row.host === null ? null : labelAt(hour)(row.host))], viewport), [labelAt, hour, viewport, live]);
+  const warnings = useMemo(() => data ? exileWarnings(data, view) : NO_WARNINGS, [data, view]);
   useEffect(() => {
     onDiagnostics(warnings);
     return () => onDiagnostics(NO_WARNINGS);
@@ -128,20 +104,19 @@ export default function GovernmentsInExileWidget({ widget, runtime, active, head
 
   let body;
   if (!track) body = <WidgetState kind="empty" icon="flag" message="Load a campaign to see governments in exile." />;
-  else if (!window || !inside) body = <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  else if (error) body = <WidgetState kind="error" failure={error} onRetry={retry} />;
+  else if (head.read === 'off') body = <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  else if (head.error && !data) body = <WidgetState kind="error" failure={head.error} onRetry={head.retry} />;
   else if (needsGroups && groups.error && !groups.data) body = <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;
   else if (match.reason) body = <WidgetState kind="unavailable" message={match.reason} />;
   else if (!data || !match.ready) body = <WidgetState kind="loading" label="Loading governments in exile…" />;
-  else if (!prepared) body = <WidgetState kind="loading" label="This range is still being prepared." />;
-  else if (!read) body = <WidgetState kind="unavailable" message="Exiles were not recorded at this date." />;
-  else if (!rows.length) body = match.known(hour) ? <WidgetState kind="empty" icon="flag" message="No governments in exile at this date." />
-    : <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
+  else if (data.unavailable.some(entry => entry.label === 'exile status')) body = <WidgetState kind="unavailable" message="Exiles were not recorded at this date." />;
+  else if (!rows.length && view?.membership) body = <WidgetState kind="unavailable" message={view.membership} />;
+  else if (!rows.length) body = <WidgetState kind="empty" icon="flag" message="No governments in exile at this date." />;
   else body = <Table rowRevision={row => [row, columns]} key={`${track.source.id}:${track.branch.id}`} label="Governments in exile" rows={rows} columns={columns} rowKey={rowKey} tieKey={tieKey}
     sort={sort} setOption={setOption} cellBars={options.cellBars === true} rank rankMarkers={options.rankMarkers === true}
     density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)} rowHeight={2 * (tokens.fontSize.title + tokens.fontSize.small)}
-    tooltip={tooltip} onVisibleRows={onVisibleRows} hoursPerSecond={hoursPerSecond} />;
-  return <div className="governments-in-exile">
+    tooltip={tooltip} onVisibleRows={onVisibleRows} hoursPerSecond={hoursPerSecond} live={tableLive} />;
+  return <div className="governments-in-exile" ref={head.root}>
     {headerSlot && view && createPortal(<span className="pill exile-header-count">{usNumber.format(rows.length)} in exile</span>, headerSlot)}
     {needsGroups && groups.error && groups.data ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null}
     {body}

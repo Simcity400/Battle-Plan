@@ -664,7 +664,7 @@ pub struct FlagRow {
 
 /// Read the ID-indexed state array. Country references remain raw, including
 /// zero and aliases.
-pub fn walk(memory: &impl Memory, base: usize, game_state: usize, output: &mut [Row]) -> Outcome {
+pub fn walk(memory: &impl Memory, base: usize, game_state: usize, output: &mut Vec<Row>) -> Outcome {
     walk_with(memory, base, game_state, output, |_| {})
 }
 
@@ -696,16 +696,6 @@ pub fn read_country_tags(memory: &impl Memory, pointer: usize) -> Result<[u32; 2
 /// The visitor runs only for complete authenticated rows, inside this census.
 /// Its sources may be consumed only before this hourly callback returns.
 pub fn walk_with(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut [Row],
-    visit: impl FnMut(Source),
-) -> Outcome {
-    walk_with_buffer(memory, base, game_state, walk::Buffer::Fixed(output), visit)
-}
-
-pub fn walk_with_growing(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -742,7 +732,7 @@ fn walk_with_buffer(
         };
     }
     // World reset sizes slots from the live state database.
-    let outcome = walk::pointers_buffer(memory, array, output, |index, pointer| {
+    let outcome = walk::pointers(memory, array, output, |index, pointer| {
         let at = |offset| pointer.checked_add(offset).ok_or("state address overflow");
         let vtable = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
         if read::<u64>(memory, pointer) != Some(vtable as u64) {
@@ -938,24 +928,6 @@ pub fn read_movement_infrastructure_selected(
 /// (the rest are omitted rows); `required_bytes` counts every row so the arena grows off the game
 /// thread. A fault denies the table.
 pub fn read_names(
-    memory: &impl Memory,
-    game_state: usize,
-    census: Outcome,
-    rows: &mut [Row],
-    bytes: &mut [u8],
-) -> NameWalk {
-    read_names_carried(
-        memory,
-        game_state,
-        census,
-        rows,
-        walk::Buffer::Fixed(bytes),
-        |_| None,
-    )
-}
-
-#[cfg(test)]
-pub fn read_names_growing(
     memory: &impl Memory,
     game_state: usize,
     census: Outcome,

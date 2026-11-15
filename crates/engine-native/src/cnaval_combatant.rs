@@ -526,13 +526,13 @@ mod damage_source_tests {
             base: 0,
             bytes: &bytes,
         };
-        let mut output = [(0, 0); 2];
+        let mut output = vec![(0, 0); 2];
         let (mut used, mut required) = (0, 0);
         assert_eq!(
             damage_by_type(
                 &memory,
                 side,
-                crate::walk::Buffer::Fixed(&mut output),
+                crate::walk::Buffer::Growing(&mut output),
                 &mut used,
                 &mut required
             ),
@@ -551,7 +551,7 @@ mod damage_source_tests {
             damage_by_type(
                 &memory,
                 side,
-                crate::walk::Buffer::Fixed(&mut output),
+                crate::walk::Buffer::Growing(&mut output),
                 &mut used,
                 &mut required
             ),
@@ -704,7 +704,7 @@ mod damage_source_tests {
                 damage_by_type(
                     &memory,
                     SIDE,
-                    crate::walk::Buffer::Fixed(&mut []),
+                    crate::walk::Buffer::Count,
                     &mut 0,
                     &mut 0
                 )
@@ -715,7 +715,7 @@ mod damage_source_tests {
                     &memory,
                     0,
                     &side,
-                    crate::walk::Buffer::Fixed(&mut []),
+                    crate::walk::Buffer::Count,
                     &mut 0,
                     &mut 0
                 )

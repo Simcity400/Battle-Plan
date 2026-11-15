@@ -169,12 +169,12 @@ fn root_views_preserve_missing_naming_and_reserved_zero_refusals() {
     let second = first.for_root(2);
     let native = fixture.text(2);
     let refusal = second.country_names().name(2).unwrap_err();
-    assert!(refusal.contains("CountryAppearance"), "{refusal}");
+    assert!(refusal.contains("country appearance"), "{refusal}");
     assert_eq!(Err(refusal), native.country_names().name(2));
     assert_eq!(second.country_tag(2), Ok("SOV"));
     let reserved = first.for_root(0);
     let refusal = reserved.country_tag(0).unwrap_err();
-    assert!(refusal.contains("ReservedCountryNaming"), "{refusal}");
+    assert!(refusal.contains("reserved country naming"), "{refusal}");
     assert_eq!(Err(refusal), fixture.text(0).country_tag(0));
 }
 

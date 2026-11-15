@@ -36,15 +36,7 @@ pub(super) fn presize(
                 continue;
             }
         };
-        let focus = engine_focus::cnational_focus_progress::walk(
-            memory,
-            base,
-            country.pointer,
-            country.id,
-            &mut [],
-            &mut [],
-            &mut [],
-        );
+        let focus = engine_focus::cnational_focus_progress::count(memory, base, country.pointer, country.id);
         for (index, outcome) in [focus.outcome, focus.completed_outcome]
             .into_iter()
             .enumerate()
@@ -56,13 +48,7 @@ pub(super) fn presize(
         focus_bytes = focus_bytes
             .checked_add(focus.required_bytes)
             .ok_or("focus sizing byte count overflow")?;
-        let slot_demand = engine_research::ctechnology_status::walk_slots(
-            memory,
-            base,
-            country.pointer,
-            country.id,
-            &mut [],
-        );
+        let slot_demand = engine_research::ctechnology_status::count_slots(memory, base, country.pointer, country.id);
         if let Err(reason) = add_rows(&mut slots, slot_demand) {
             refusal.get_or_insert(reason);
         }
@@ -70,11 +56,11 @@ pub(super) fn presize(
             Ok(reader) => {
                 if let Err(reason) = add_rows(
                     &mut leaders,
-                    reader.party_leaders(country.id, &mut []),
+                    reader.party_leaders_buffer(country.id, engine_native::walk::Buffer::Count),
                 ) {
                     refusal.get_or_insert(reason);
                 }
-                let active = reader.ideas(&mut [], &mut []);
+                let active = reader.ideas_buffer(engine_native::walk::Buffer::Count, engine_native::walk::Buffer::Count);
                 if let Err(reason) = add_rows(&mut ideas.rows, active.outcome)
                 {
                     refusal.get_or_insert(reason);
@@ -88,20 +74,14 @@ pub(super) fn presize(
                 refusal.get_or_insert(reason);
             }
         }
-        let decision = cdecision_status::walk(memory, base, country.pointer, &mut [], &mut []);
+        let decision = cdecision_status::count(memory, base, country.pointer);
         if let Err(reason) = add_rows(&mut decisions[0], decision.outcome) {
             refusal.get_or_insert(reason);
         }
         decisions[1] = decisions[1]
             .checked_add(decision.required_bytes)
             .ok_or("decision sizing byte count overflow")?;
-        let tactic = engine_native::ccombat_tactic::preferred(
-            memory,
-            base,
-            country.pointer,
-            country.id,
-            &mut [],
-        );
+        let tactic = engine_native::ccombat_tactic::count_preferred(memory, base, country.pointer, country.id);
         if let Err(reason) = match tactic.outcome {
             engine_native::walk::Outcome::Unavailable { reason } => Err(reason),
             _ => Ok(()),
@@ -123,14 +103,14 @@ pub(super) fn presize(
             Ok(())
         });
         let (input, bonuses) = match prepared {
-            Ok(()) => engine_research::research_inputs::walk_country(
+            Ok(()) => engine_research::research_inputs::walk_country_buffer(
                 memory,
                 base,
                 country.pointer,
                 country.id,
                 research_context,
-                &mut research_inputs,
-                &mut [],
+                engine_native::walk::Buffer::Growing(&mut research_inputs),
+                engine_native::walk::Buffer::Count,
             ),
             Err(reason) => (
                 engine_native::walk::Outcome::Unavailable { reason },
@@ -144,14 +124,14 @@ pub(super) fn presize(
             }
         }
         if let engine_native::walk::Outcome::Rows { len } = input {
-            let modifiers = engine_research::research_modifiers::walk_country(
+            let modifiers = engine_research::research_modifiers::walk_country_buffer(
                 memory,
                 base,
                 &countries,
                 country,
                 modifier_context,
                 &research_inputs[..len],
-                &mut [],
+                engine_native::walk::Buffer::Count,
             );
             if let Err(reason) = add_rows(&mut research_rows[2], modifiers) {
                 refusal.get_or_insert(reason);
@@ -233,7 +213,7 @@ pub(super) fn presize(
         }
     }
     let sharing =
-        engine_research::ctechnology_sharing_group::walk(memory, base, state, &mut [], &mut []);
+        engine_research::ctechnology_sharing_group::count(memory, base, state);
     for (index, outcome) in [(12, sharing.groups), (13, sharing.members)] {
         let mut count = 0;
         if let Err(reason) = add_rows(&mut count, outcome) {
@@ -246,11 +226,11 @@ pub(super) fn presize(
         base,
         state,
         engine_power_balance::power_balance_manager::Buffers {
-            records: &mut [],
-            members: &mut [],
-            ranges: &mut [],
-            overrides: &mut [],
-            text: &mut [],
+            records: engine_native::walk::Buffer::Count,
+            members: engine_native::walk::Buffer::Count,
+            ranges: engine_native::walk::Buffer::Count,
+            overrides: engine_native::walk::Buffer::Count,
+            text: engine_native::walk::Buffer::Count,
         },
     );
     for (index, outcome) in [

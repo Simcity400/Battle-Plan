@@ -124,15 +124,9 @@ fn motion_rows_carry_routes_and_the_naval_combat_role() {
     let mut defender = bytes.clone();
     put(&mut defender, SIDE_COUNTRY, &0_u32.to_le_bytes());
     assert_eq!(collect(&defender, 1, 3).1[0].combat_role, 2);
-    // A short arena truncates and reports the demand the next hour grows to.
+    // A short arena grows to the demand.
     let (walk, _, _) = collect(&bytes, 1, 2);
-    assert_eq!(
-        walk.outcome,
-        Outcome::Truncated {
-            len: 0,
-            unread_rows: 1
-        }
-    );
+    assert_eq!(walk.outcome, Outcome::Rows { len: 1 });
     assert_eq!(walk.required_paths, 3);
     // A first combat that is no combat object refuses the census.
     let mut foreign = bytes.clone();
@@ -164,7 +158,7 @@ fn growing_motion_keeps_the_first_full_routes_beyond_previous_capacity() {
     let mut paths = Vec::new();
     let mut combats = cunit::FirstCombatMemo::new(0);
     let mut collector =
-        MapMotionCollector::new_growing(&memory, 0, STATE, &mut rows, &mut paths, &mut combats);
+        MapMotionCollector::new(&memory, 0, STATE, &mut rows, &mut paths, &mut combats);
     for index in 0..count {
         collector.visit(TASK, ((index as u64 + 1) << 32) | 61);
     }
@@ -256,9 +250,9 @@ fn combat_links_fixture() -> (CombatLinksMemory, [u64; 2]) {
 fn collect_combat_links(
     memory: &impl Memory,
     second: bool,
-) -> (MapMotionWalk, [MapMotionRow; 2], [u32; 6]) {
-    let mut rows = [MapMotionRow::default(); 2];
-    let mut paths = [0; 6];
+) -> (MapMotionWalk, Vec<MapMotionRow>, Vec<u32>) {
+    let mut rows = vec![MapMotionRow::default(); 2];
+    let mut paths = vec![0; 6];
     let mut combats = cunit::FirstCombatMemo::new(2);
     let mut collector =
         MapMotionCollector::new(memory, 0, STATE, &mut rows, &mut paths, &mut combats);
@@ -385,8 +379,8 @@ fn arrow_scalar_faults_preserve_both_motion_prefixes_and_other_raw_scalars() {
             bytes: &bytes,
             at: TASK + offset,
         };
-        let mut rows = [MapMotionRow::default(); 2];
-        let mut paths = [0; 6];
+        let mut rows = vec![MapMotionRow::default(); 2];
+        let mut paths = vec![0; 6];
         let mut combats = cunit::FirstCombatMemo::new(2);
         let mut collector =
             MapMotionCollector::new(&memory, 0, STATE, &mut rows, &mut paths, &mut combats);
@@ -507,7 +501,7 @@ fn growing_missions_keep_full_repeated_region_lists_from_the_first_header() {
     let mut rows = Vec::new();
     let mut regions = Vec::new();
     let count = 5_000_usize;
-    let mut collector = MissionCollector::new_growing(&memory, 0, STATE, &mut rows, &mut regions);
+    let mut collector = MissionCollector::new(&memory, 0, STATE, &mut rows, &mut regions);
     for index in 0..count {
         collector.visit(TASK, ((index as u64 + 1) << 32) | 61);
     }
@@ -538,16 +532,11 @@ fn mission_rows_keep_accessible_regions_in_order_with_repeats() {
             regions_len: 3,
         }
     );
-    // A short arena truncates and reports the demand the next hour grows to.
-    let (walk, _, _) = collect_missions(&bytes, 1, 2);
-    assert_eq!(
-        walk.outcome,
-        Outcome::Truncated {
-            len: 0,
-            unread_rows: 1
-        }
-    );
+    // A short arena grows to the demand.
+    let (walk, _, arena) = collect_missions(&bytes, 1, 2);
+    assert_eq!(walk.outcome, Outcome::Rows { len: 1 });
     assert_eq!(walk.required_regions, 3);
+    assert_eq!(arena[..3], [2, 1, 2]);
     // A region that is not the one registered at its id refuses the census.
     let mut stray = bytes.clone();
     put(&mut stray, REGIONS + 8, &(REGION_TWO as u64).to_le_bytes());

@@ -8,7 +8,7 @@ fn participation_sources_include_authenticated_countries_without_owned_wars() {
     let world = fixture(3);
     let mut cache = DiscoveryCache::new(4, 0);
     let (mut owned, mut goals, mut scores) = (Vec::new(), Vec::new(), Vec::new());
-    let outcomes = walk_cached_growing(
+    let outcomes = walk_cached(
         &world.memory(),
         0,
         world.game_state(),
@@ -141,22 +141,6 @@ fn owned_order_retired_bytes_null_goals_and_scores_for_every_country() {
             ),
             (2, 0, 0)
         );
-        assert_eq!(
-            walk(&memory, 0, world.game_state(), &mut [], &mut [], &mut []),
-            [
-                Outcome::Truncated {
-                    len: 0,
-                    unread_rows: count
-                },
-                Outcome::Truncated {
-                    len: 0,
-                    unread_rows: count * 2
-                },
-                Outcome::Unavailable {
-                    reason: "war score reachability owned rows truncated"
-                }
-            ]
-        );
     }
 }
 
@@ -180,9 +164,9 @@ fn bad_owned_identity_and_short_goal_arrays_are_unavailable() {
             &world.memory(),
             0,
             world.game_state(),
-            &mut [OwnedRow::default(); 2],
-            &mut [cwar_goal::relation::Row::default(); 4],
-            &mut [CountryRow::default(); 2]
+            &mut vec![OwnedRow::default(); 2],
+            &mut vec![cwar_goal::relation::Row::default(); 4],
+            &mut vec![CountryRow::default(); 2]
         )
         .iter()
         .all(|o| matches!(o, Outcome::Unavailable { .. }))
@@ -194,9 +178,9 @@ fn bad_owned_identity_and_short_goal_arrays_are_unavailable() {
             &world.memory(),
             0,
             world.game_state(),
-            &mut [OwnedRow::default(); 2],
-            &mut [cwar_goal::relation::Row::default(); 4],
-            &mut [CountryRow::default(); 2]
+            &mut vec![OwnedRow::default(); 2],
+            &mut vec![cwar_goal::relation::Row::default(); 4],
+            &mut vec![CountryRow::default(); 2]
         )
         .iter()
         .all(|o| matches!(o, Outcome::Unavailable { .. }))
@@ -370,7 +354,7 @@ fn shared_templates_keep_every_factory_score_native() {
         }
     }
     let mut expected = [CountryRow::default(); 4];
-    let mut scores = [CountryRow::default(); 4];
+    let mut scores = vec![CountryRow::default(); 4];
     assert!(
         baseline::walk(
             &w.memory(),
@@ -388,8 +372,8 @@ fn shared_templates_keep_every_factory_score_native() {
             &w.memory(),
             0,
             w.game_state(),
-            &mut [OwnedRow::default(); 4],
-            &mut [cwar_goal::relation::Row::default(); 8],
+            &mut vec![OwnedRow::default(); 4],
+            &mut vec![cwar_goal::relation::Row::default(); 8],
             &mut scores,
         )
         .iter()
@@ -423,9 +407,9 @@ fn score_failures_keep_owned_and_goals_and_the_first_reason() {
         &w.memory(),
         0,
         w.game_state(),
-        &mut [OwnedRow::default(); 2],
-        &mut [cwar_goal::relation::Row::default(); 4],
-        &mut [CountryRow::default(); 2],
+        &mut vec![OwnedRow::default(); 2],
+        &mut vec![cwar_goal::relation::Row::default(); 4],
+        &mut vec![CountryRow::default(); 2],
     );
     assert_eq!(
         outcomes,
@@ -447,9 +431,9 @@ fn unchanged_header_does_not_hide_retirement_goal_changes_or_replaced_pointers()
         read::<u64>(&w.memory(), root + cdiplomacy_status::OWNED_RELATIONS).unwrap() as usize;
     let relation = read::<u64>(&w.memory(), vector).unwrap() as usize;
     let mut cache = DiscoveryCache::new(3, 2);
-    let mut owned = [OwnedRow::default(); 2];
-    let mut goals = [cwar_goal::relation::Row::default(); 4];
-    let mut scores = [CountryRow::default(); 2];
+    let mut owned = vec![OwnedRow::default(); 2];
+    let mut goals = vec![cwar_goal::relation::Row::default(); 4];
+    let mut scores = vec![CountryRow::default(); 2];
     assert!(
         walk_cached(
             &w.memory(),
@@ -502,13 +486,13 @@ fn template_and_subject_failures_are_scores_only_and_unreachable_factories_are_n
         read::<u64>(&w.memory(), w.object(3) + ccountry::PRODUCTION_STATUS).unwrap() as usize;
     w.u64(unreachable, 0);
     let run = |w: &World| {
-        let mut scores = [CountryRow::default(); 4];
+        let mut scores = vec![CountryRow::default(); 4];
         let outcomes = walk(
             &w.memory(),
             0,
             w.game_state(),
-            &mut [OwnedRow::default(); 4],
-            &mut [cwar_goal::relation::Row::default(); 8],
+            &mut vec![OwnedRow::default(); 4],
+            &mut vec![cwar_goal::relation::Row::default(); 8],
             &mut scores,
         );
         (outcomes, scores)
@@ -518,7 +502,10 @@ fn template_and_subject_failures_are_scores_only_and_unreachable_factories_are_n
         outcomes.iter().all(|o| matches!(o, Outcome::Rows { .. })),
         "{outcomes:?}"
     );
-    assert_eq!(scores.map(|r| r.score_available), [1, 1, 0, 0]);
+    assert_eq!(
+        scores.iter().map(|r| r.score_available).collect::<Vec<_>>(),
+        [1, 1, 0, 0]
+    );
 
     let core = read::<u64>(
         &w.memory(),
@@ -570,9 +557,9 @@ fn truncation_does_not_admit_an_empty_discovery_fingerprint() {
         &w.memory(),
         0,
         w.game_state(),
-        &mut [],
-        &mut [],
-        &mut [],
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
         &mut cache,
     );
     assert_eq!(
@@ -580,9 +567,9 @@ fn truncation_does_not_admit_an_empty_discovery_fingerprint() {
             &w.memory(),
             0,
             w.game_state(),
-            &mut [OwnedRow::default(); 2],
-            &mut [cwar_goal::relation::Row::default(); 4],
-            &mut [CountryRow::default(); 2],
+            &mut vec![OwnedRow::default(); 2],
+            &mut vec![cwar_goal::relation::Row::default(); 4],
+            &mut vec![CountryRow::default(); 2],
             &mut cache
         )[0],
         Outcome::Rows { len: 2 }
@@ -601,9 +588,9 @@ fn batched_goals_preserve_owner_side_and_page_order_and_exact_truncation() {
         w.array(relation + offset, handles, count as u32);
     }
     let mut cache = DiscoveryCache::new(5, 4);
-    let mut owned = [OwnedRow::default(); 4];
-    let mut scores = [CountryRow::default(); 4];
-    let mut goals = [cwar_goal::relation::Row::default(); 140];
+    let mut owned = vec![OwnedRow::default(); 4];
+    let mut scores = vec![CountryRow::default(); 4];
+    let mut goals = vec![cwar_goal::relation::Row::default(); 140];
     for _ in 0..2 {
         assert_eq!(
             walk_cached(
@@ -636,25 +623,6 @@ fn batched_goals_preserve_owner_side_and_page_order_and_exact_truncation() {
             expected
         );
     }
-    assert_eq!(
-        walk_cached(
-            &w.memory(),
-            0,
-            w.game_state(),
-            &mut owned,
-            &mut goals[..70],
-            &mut scores,
-            &mut cache
-        )[1],
-        Outcome::Truncated {
-            len: 70,
-            unread_rows: 70
-        }
-    );
-    assert_eq!(
-        (goals[69].owner, goals[69].side, goals[69].ordinal),
-        (2, 0, 1)
-    );
     // Recycling an address can change its type without changing the header.
     w.u32(relation + crelation::TYPE_ID, 99);
     assert_eq!(
@@ -703,9 +671,9 @@ fn retired_viewpoint_counterparts_keep_scores_when_native_sides_can_reach_them()
             old.count + 1,
         );
     }
-    let mut owned = [OwnedRow::default(); 6];
-    let mut goals = [cwar_goal::relation::Row::default(); 8];
-    let mut scores = [CountryRow::default(); 4];
+    let mut owned = vec![OwnedRow::default(); 6];
+    let mut goals = vec![cwar_goal::relation::Row::default(); 8];
+    let mut scores = vec![CountryRow::default(); 4];
     assert_eq!(
         walk(
             &w.memory(),
@@ -723,7 +691,10 @@ fn retired_viewpoint_counterparts_keep_scores_when_native_sides_can_reach_them()
     );
     // Seed 2's first side is [1]. Its second candidate includes retained 3,
     // so native cross-side pruning cannot remove 3 despite no live 1/3 war.
-    assert_eq!(scores.map(|r| r.score_available), [1, 1, 1, 0]);
+    assert_eq!(
+        scores.iter().map(|r| r.score_available).collect::<Vec<_>>(),
+        [1, 1, 1, 0]
+    );
     let production =
         read::<u64>(&w.memory(), w.object(3) + ccountry::PRODUCTION_STATUS).unwrap() as usize;
     w.u64(production, 0);
@@ -774,10 +745,10 @@ fn a_flush_partway_through_a_country_keeps_its_later_pages_previous_rows() {
     }
     w.array(root + cdiplomacy_status::OWNED_RELATIONS, vector, 150);
     let mut cache = DiscoveryCache::new(3, 151);
-    let mut owned = [OwnedRow::default(); 160];
-    let mut goals = [cwar_goal::relation::Row::default(); 8];
-    let mut scores = [CountryRow::default(); 2];
-    let mut hour = |w: &World, owned: &mut [OwnedRow], cache: &mut DiscoveryCache| {
+    let mut owned = vec![OwnedRow::default(); 160];
+    let mut goals = vec![cwar_goal::relation::Row::default(); 8];
+    let mut scores = vec![CountryRow::default(); 2];
+    let mut hour = |w: &World, owned: &mut Vec<OwnedRow>, cache: &mut DiscoveryCache| {
         walk_cached(
             &w.memory(),
             0,
@@ -792,14 +763,14 @@ fn a_flush_partway_through_a_country_keeps_its_later_pages_previous_rows() {
     let replaced = war(&mut w);
     w.u64(vector + 63 * 8, replaced as u64);
     assert_eq!(hour(&w, &mut owned, &mut cache), Outcome::Rows { len: 87 });
-    let mut fresh = [OwnedRow::default(); 160];
+    let mut fresh = vec![OwnedRow::default(); 160];
     walk(
         &w.memory(),
         0,
         w.game_state(),
         &mut fresh,
-        &mut [cwar_goal::relation::Row::default(); 8],
-        &mut [CountryRow::default(); 2],
+        &mut vec![cwar_goal::relation::Row::default(); 8],
+        &mut vec![CountryRow::default(); 2],
     );
     assert_eq!(owned[..87], fresh[..87]);
 }
@@ -834,7 +805,7 @@ type Hour = (
 fn certified_hour(world: &World, cache: &mut DiscoveryCache, certified: bool) -> Hour {
     let (mut owned, mut goals, mut scores, mut visited) =
         (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-    let outcomes = walk_cached_growing_with_owners(
+    let outcomes = walk_cached_with_owners(
         &world.memory(),
         0,
         world.game_state(),

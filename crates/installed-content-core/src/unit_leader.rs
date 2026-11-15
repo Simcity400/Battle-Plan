@@ -33,6 +33,7 @@ use crate::{
 };
 
 mod division_experience;
+pub mod needs;
 mod skills;
 mod sub_units;
 

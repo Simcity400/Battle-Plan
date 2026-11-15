@@ -250,7 +250,13 @@ fn unit_scale_replay_layers() {
                 map_mode: Default::default(),
                 diplomatic_selected: None,
                 show_allied_plans: false,
+                units_by_layers: false,
+                plans_by_layers: false,
+                routes_by_layers: false,
+                by_layers: Default::default(),
+                parts: Default::default(),
                 counters: Default::default(),
+                counter_kinds: Default::default(),
                 view: crate::hours::View {
                     camera,
                     viewport: [1920, 1080],
@@ -259,6 +265,7 @@ fn unit_scale_replay_layers() {
                 have: Vec::new(),
                 received: 0,
                 grid: None,
+                layered: Default::default(),
             })
             .unwrap();
         let mut held = Vec::new();

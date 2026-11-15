@@ -1,6 +1,6 @@
 import CombatLogDetails from '../land-battles/CombatLogDetails';
 import { narrowTableOf } from '../../charts/table/options.ts';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import DatedCountryChip from '../../dashboard/DatedCountryChip';
 import { countryDrillTagAt } from '../../dashboard/countryIdentity';
@@ -10,21 +10,22 @@ import { chooseDrillCountry, drillCountryCoverage, drillCountrySpans, readDrillC
 import WidgetState from '../../components/WidgetState';
 import { useHeldFailure } from '../../dashboard/heldFailures';
 import { useContextMenu } from '../../components/ContextMenu';
-import { dayLabel, drawBands } from '../../charts/draw';
-import { drawApproximateSpans, summaryFits } from '../../charts/chartSummary';
-import { PreparedKey } from '../../charts/PreparedKey';
-import { PreparedLogCoverage } from '../../charts/log/LogList';
+import { drawBands } from '../../charts/draw';
 import DrillHost from '../../charts/drill/DrillHost';
 import DrillParts from '../../charts/drill/DrillParts';
+import type { LiveDrillParts } from '../../charts/drill/DrillParts';
 import { CLOSED, reduceDrill } from '../../charts/drill/drillState';
 import type { DrillState } from '../../charts/drill/drillState';
 import { jumpItem } from '../../charts/jump';
+import { liveAt, liveKey, valuesOf } from '../../charts/live';
+import type { Live, LiveValues } from '../../charts/live';
 import { stackExtent } from '../../charts/stack';
 import Sunburst from '../../charts/sunburst/Sunburst';
-import type { SunburstText } from '../../charts/sunburst/Sunburst';
+import type { SunburstText, SunburstValues } from '../../charts/sunburst/Sunburst';
 import { levelsShown, sunburstSettings } from '../../charts/sunburst/sunburstOptions';
 import Table from '../../charts/table/Table';
 import type { TableColumn } from '../../charts/table/Table';
+import type { SortValue } from '../../charts/table/logic';
 import TimeChart from '../../charts/TimeChart';
 import type { ChartLayer } from '../../charts/TimeChart';
 import { fitTooltip } from '../../charts/tooltip';
@@ -32,34 +33,50 @@ import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
 import { formatDateTime } from '../../dashboard/calendar';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
+import { useHeadProduct } from '../../dashboard/headProduct';
 import { resolveWindow } from '../../dashboard/model';
 import { NumericReply } from '../../dashboard/numericReply';
 import { resolveOptions } from '../../dashboard/options';
-import { usePlaybackHour, usePlaybackMotion } from '../../dashboard/playback';
-import { preparedLossHour, preparedLossWindow, stretchWindow, usePreparedLosses } from './preparedLosses';
+import { usePlaybackMotion } from '../../dashboard/playback';
 import { sinceLabel } from '../../dashboard/stretch';
-import type { PreparedLosses } from './preparedLosses';
 import { entryAt } from '../../dashboard/reads';
-import type { LossesParams } from '../../generated/dashboard';
+import { useShownHour } from '../../dashboard/widgetPerf';
 import { DETAIL, OPTIONS } from './definition';
 import { LEVELS, coverageLegend, destructionLegend, formatLosses, lossItems, lossesTotal, lossesFootnote,
-  lossWindow, lossKey, unknownCauses } from './lossesData.ts';
+  lossWindow, lossKey, unknownCauses, withHead, withShips } from './lossesData.ts';
+import type { LossWindow } from './lossesData';
 import { lossHistory, lossNumbers, lossParts, lossRows, lossSegments, pinLosses, readLossSelection } from './lossDrill';
 import type { LossRow } from './lossDrill';
-import { useParityRows } from '../../dashboard/parityRows';
-import { lossesParity } from './lossesParity';
+import { exactLossHour, stretchWindow, useLossHistory } from './lossesSource';
+import type { LossSelection } from './lossesSource';
+import type { LandSource, LossHeadReply, LossLeaf, LossesReply } from '../../generated/dashboard';
 import './equipmentLosses.css';
-import { useReplyGaps } from '../../dashboard/replyGaps';
 
 const ROOT = { id: 'all', label: 'All losses' }, NO_WARNINGS: string[] = [];
 const rowKey = (row: LossRow) => row.id;
-function OriginalEquipmentLossesWidget({ widget, runtime, active, countrySlot, onDiagnostics }: WidgetProps) {
+
+function validateHead(value: unknown): LossHeadReply {
+  const reply = value as LossHeadReply;
+  if (!reply || !Array.isArray(reply.leaves) || !reply.leaves.every(leaf => typeof leaf === 'string') || !Array.isArray(reply.warnings))
+    throw new Error('The equipment-loss head reply is malformed.');
+  return reply;
+}
+
+/** The reply as it stands at `hour` of the head: ships the reads through it listed, each leaf's total its followed cell. */
+function atHead(reply: LossesReply, hour: number, cells: LiveValues<number>, named: ReadonlySet<string>): LossesReply {
+  return withHead(withShips(reply, hour), hour, (leaf: LossLeaf) => {
+    if (!named.has(leaf.key)) return null;
+    const key = liveKey(leaf.key, 'total');
+    return cells.get(key) ?? cells.missing(key);
+  });
+}
+
+function LossesView({ widget, runtime, active, countrySlot, onDiagnostics }: WidgetProps) {
   const [localDrill, setLocalDrill] = useState<{ owner: unknown; state: DrillState } | null>(null);
   const [picked, setPicked] = useState<readonly string[] | null | undefined>(undefined);
   const anchor = useRef<HTMLDivElement>(null), menu = useContextMenu('Equipment loss actions');
+  const shown = useShownHour();
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  // Its charts draw equipment-losses replies: cut only where the families they read lost hours.
-  const gaps = useReplyGaps(track?.source.id, track?.branch.id, 'equipment-losses');
   const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryTag(track) ?? undefined;
   const options = resolveOptions(OPTIONS, widget.options), settings = sunburstSettings(options);
   const hasSavedCountry = Object.hasOwn(widget.options ?? {}, 'lossCountry');
@@ -69,52 +86,64 @@ function OriginalEquipmentLossesWidget({ widget, runtime, active, countrySlot, o
   const drill = localDrill?.owner === bindingOwner ? localDrill.state : CLOSED;
   const setDrill = (next: DrillState | ((state: DrillState) => DrillState)) => setLocalDrill(before => ({ owner: bindingOwner,
     state: typeof next === 'function' ? next(before?.owner === bindingOwner ? before.state : CLOSED) : next }));
-  const playback = usePlaybackHour(runtime.clock, active && (widget.time.mode === 'follow' || drill.breakdown !== null && drill.follow));
   const speed = usePlaybackMotion(runtime.clock), tokens = useChartTokens(), height = useViewportHeight();
-  const resolved = track ? resolveWindow(widget, track, runtime.tracks, playback) : null;
-  const requestedView = track ? lossWindow(resolved, track.branch, widget.time.mode) : null;
+  const followView = widget.time.mode === 'follow';
+  // A followed view's window is the branch: its hour is the head's, read where painted, never a key.
+  const requestedView: LossWindow | null = !track ? null : followView
+    ? { first: track.branch.firstHour, hour: track.branch.lastHour, end: track.branch.lastHour, campaign: false, from: null }
+    : lossWindow(resolveWindow(widget, track, runtime.tracks, 0), track.branch, widget.time.mode);
+  const hourAt = (position: number) => Math.floor((track && resolveWindow(widget, track, runtime.tracks, position)?.lastHour) ?? requestedView?.end ?? 0);
   const saved = options.show === DETAIL.id, open = saved || drill.breakdown !== null;
-  const origin = useRef<{ owner: typeof bindingOwner; hour: number } | null>(null);
-  if (origin.current?.owner !== bindingOwner) origin.current = null;
-  if (requestedView && !origin.current) origin.current = { owner: bindingOwner, hour: requestedView.hour };
   const catalogue = useCountryGroups(runtime, track, active);
+  const origin = requestedView ? followView ? hourAt(runtime.clock.getSnapshot().position) : requestedView.hour : null;
+  const originRef = useRef<{ owner: unknown; hour: number } | null>(null);
+  if (originRef.current?.owner !== bindingOwner) originRef.current = origin === null ? null : { owner: bindingOwner, hour: origin };
   const savedCountry = useMemo(() => readDrillCountry(widget.options?.lossCountry, track, widget.countries),
     [widget.options?.lossCountry, track, widget.countries]);
   const selectedCountry = useMemo(() => savedCountry ?? (hasSavedCountry ? null
-    : catalogue.data && track && tag && origin.current ? chooseDrillCountry(catalogue.data.countryIdentities, track, tag, origin.current.hour) : null),
-    [savedCountry, hasSavedCountry, catalogue.data, track, tag, bindingOwner]);
+    : catalogue.data && track && tag && originRef.current ? chooseDrillCountry(catalogue.data.countryIdentities, track, tag, originRef.current.hour) : null),
+  [savedCountry, hasSavedCountry, catalogue.data, track, tag, bindingOwner]); // eslint-disable-line react-hooks/exhaustive-deps
   const actorSpans = useMemo(() => selectedCountry && catalogue.data && track ? drillCountrySpans(catalogue.data.countryIdentities, selectedCountry, track) : null,
     [selectedCountry, catalogue.data, track]);
-  const following = drill.breakdown !== null ? drill.follow : widget.time.mode === 'follow';
-  const detailHour = Math.floor(following ? playback + (track?.axisOffset ?? 0) : drill.hour ?? requestedView?.hour ?? 0);
-  const nativeSelection: LossesParams | null = track && selectedCountry && actorSpans ? {
-    branchId: track.branch.id, tag: selectedCountry.tag, landSource: options.landSource as LossesParams['landSource'],
-    country: { slot: selectedCountry.slot, countryId: selectedCountry.countryId, originHour: track.branch.firstHour + selectedCountry.originOffset },
-  } : null;
-  const product = usePreparedLosses(runtime.client, track, nativeSelection, requestedView, detailHour, active, open);
-  const request = product.request;
-  const retained = useMemo(() => new NumericReply<PreparedLosses>(), [runtime.client]);
-  const identity = JSON.stringify([track?.source.id, track?.source.revision, nativeSelection]);
+  const selection: LossSelection | null = useMemo(() => track && selectedCountry && actorSpans ? {
+    branchId: track.branch.id, tag: selectedCountry.tag, landSource: options.landSource as LandSource,
+    country: { slot: selectedCountry.slot, countryId: selectedCountry.countryId },
+  } : null, [track, selectedCountry, actorSpans, options.landSource]);
+  // The drill follows the head only beside a followed view; pinned, it reads its own hour exactly.
+  const following = followView && (drill.breakdown === null || drill.follow);
+  const pinnedDetail = !following && drill.breakdown !== null ? drill.hour : null;
+  const product = useLossHistory(runtime.client, track, selection, requestedView,
+    [...(followView ? [] : [requestedView?.hour ?? 0]), ...(pinnedDetail === null ? [] : [Math.floor(pinnedDetail)])], active, open);
+  const head = useHeadProduct<LossHeadReply>(runtime, widget, 'equipment-loss-head',
+    followView && selection ? { tag: selection.tag, country: selection.country } : null,
+    { active, validate: validateHead, structure: reply => reply.leaves.join(',') });
+  const retained = useMemo(() => new NumericReply<LossesReply>(), [runtime.client]);
+  const identity = JSON.stringify([track?.source.id, track?.source.revision, selection]);
   const numbers = retained.update(identity, product.data, reply => ({ ...reply, ...lossNumbers(reply) }));
   const data = product.data ?? numbers, contentPending = !!numbers && !product.data && !product.error;
   const productError = useHeldFailure(product.error, product.data !== undefined, product.retry);
-  // The window the reply answers: before preparation reaches the requested
-  // one, through its prepared prefix's last hour.
-  const view = requestedView && data ? preparedLossWindow(data, requestedView) : requestedView;
-  const pendingRange = !!requestedView && !!data && !view;
-  const selection = useMemo(() => track && tag ? readLossSelection(widget.options?.lossSelection, track.source.metadata.campaignKey, track.branch.id, tag) : null,
-    [widget.options?.lossSelection, track?.source.metadata.campaignKey, track?.branch.id, tag]);
-  const selected = useMemo(() => picked === undefined ? selection ? new Set(selection.keys) : null : picked === null ? null : new Set(picked), [picked, selection]);
+  // One ref for the widget's lifetime: an inline one sets the follow root twice a render, an empty commit after each.
+  const headRoot = head.root;
+  const rootRef = useCallback((element: HTMLDivElement | null) => { (anchor as { current: HTMLDivElement | null }).current = element; headRoot(element); }, [headRoot]);
+  const named = useMemo(() => new Set(head.data?.leaves ?? []), [head.data]);
+  // The structure's hour while followed: the push that made it; the numbers are painted from the head between.
+  const structureHour = followView ? head.at ?? origin ?? 0 : requestedView?.hour ?? 0;
+  const view = requestedView && data ? stretchWindow(data, { ...requestedView, hour: structureHour }) : requestedView;
+  const shownReply = useMemo(() => data && view ? followView && head.data ? atHead(data, view.hour, head.live.read(), named) : withShips(data, view.hour) : null,
+    [data, view?.hour, followView, head.data, named]); // eslint-disable-line react-hooks/exhaustive-deps
+  const selectionPick = useMemo(() => track && tag ? readLossSelection(widget.options?.lossSelection, track.source.metadata.campaignKey, track.branch.id, tag) : null,
+    [widget.options?.lossSelection, track?.source.metadata.campaignKey, track?.branch.id, tag]); // eslint-disable-line react-hooks/exhaustive-deps
+  const selected = useMemo(() => picked === undefined ? selectionPick ? new Set(selectionPick.keys) : null : picked === null ? null : new Set(picked), [picked, selectionPick]);
   const scope = JSON.stringify([identity, widget.time, widget.options?.lossSelection]);
   const pickOwner = useMemo(() => ({ client: runtime.client, scope }), [runtime.client, scope]);
-  useEffect(() => { setDrill(CLOSED); setPicked(undefined); }, [pickOwner]);
+  useEffect(() => { setDrill(CLOSED); setPicked(undefined); }, [pickOwner]); // eslint-disable-line react-hooks/exhaustive-deps
   const hour = view?.hour ?? 0;
   const detailPickOwner = useMemo(() => ({ pickOwner, selected }), [pickOwner, selected]);
-  const shownDetailHour = data && !preparedLossHour(data, detailHour) ? data.preparedDetailHour : detailHour;
-  const detailWindow = view && track && detailHour >= view.first && detailHour <= (requestedView?.end ?? view.end)
-    ? { ...view, from: requestedView?.from, hour: Math.min(shownDetailHour, view.end) } : null;
-  // The detail's hour may lie in another stretch than the view's: it counts within its own.
-  const detailView = detailWindow && data ? stretchWindow(data, detailWindow) : detailWindow;
+  const detailHour = following ? hour : Math.floor(drill.hour ?? hour);
+  const detailBase = view && detailHour >= view.first && detailHour <= view.end ? { ...view, hour: detailHour } : null;
+  const detailView = detailBase && data ? stretchWindow(data, detailBase) : detailBase;
+  const detailReply = useMemo(() => data && detailView ? following ? shownReply : withShips(data, detailView.hour) : null,
+    [data, detailView?.hour, following, shownReply]); // eslint-disable-line react-hooks/exhaustive-deps
   const shownTag = actorSpans && detailView ? countryDrillTagAt(actorSpans, detailView.hour) : null;
   const countryLabels = useCountryLabelsAt(runtime.client, track, saved && savedCountry && shownTag && detailView ? [{ tag: shownTag, hour: detailView.hour }] : [], active);
   const actorReason = hasSavedCountry && !savedCountry ? 'Choose a country again.'
@@ -124,129 +153,180 @@ function OriginalEquipmentLossesWidget({ widget, runtime, active, countrySlot, o
   const countryHeader = saved && countrySlot ? createPortal(<DatedCountryChip hour={detailView?.hour ?? null}
     label={savedCountry && shownTag && detailView ? countryLabels.labelAt(detailView.hour)(shownTag) : null}
     reason={hasSavedCountry ? actorReason : 'Choose a country again.'} />, countrySlot) : null;
-  const items = useMemo(() => data && view ? lossItems(data, view) : [], [data, view?.first, view?.hour, view?.end, view?.from]);
+  const items = useMemo(() => shownReply && view ? lossItems(shownReply, view) : [], [shownReply, view?.first, view?.hour, view?.end, view?.from]); // eslint-disable-line react-hooks/exhaustive-deps
   const total = useMemo(() => lossesTotal(items), [items]);
-  const rows = useMemo(() => data && detailView && shownTag ? lossRows(data, detailView, selected) : [], [data, detailView?.hour, detailView?.from, view?.first, view?.end, view?.from, selected, shownTag]);
+  const rows = useMemo(() => detailReply && detailView && shownTag ? lossRows(detailReply, detailView, selected) : [],
+    [detailReply, detailView?.hour, detailView?.from, selected, shownTag]); // eslint-disable-line react-hooks/exhaustive-deps
   const coverageSpans = useMemo(() => actorSpans ? drillCountryCoverage(actorSpans) : [], [actorSpans]);
-  const stack = useMemo(() => data && view ? lossHistory(data, view.first, view.end, view.from, selected, coverageSpans) : null,
-    [data, view?.first, view?.end, view?.from, selected, coverageSpans]);
+  const history = useMemo(() => data && view ? withShips(data, view.end) : null, [data, view?.end]); // eslint-disable-line react-hooks/exhaustive-deps
+  const stack = useMemo(() => history && view ? lossHistory(history, view.first, view.end, view.from, selected, coverageSpans) : null,
+    [history, view?.first, view?.end, view?.from, selected, coverageSpans]); // eslint-disable-line react-hooks/exhaustive-deps
   const known = useMemo(() => stack?.model.hours.map((firstHour, index) => ({ firstHour, value: stack.model.edges[index]?.some(edge => edge.high > edge.low) === true })) ?? [], [stack]);
   const colors = useMemo(() => stack?.keys.map((_key, index) => tokens.categories[index % tokens.categories.length]) ?? [], [stack, tokens.categories]);
   const layers = useMemo<ChartLayer[]>(() => stack ? [{
     draw: (ctx, frame, theme, state) => {
-      const to = Math.min(view?.end ?? frame.x[1], frame.x[1], state.playhead ?? frame.x[1]);
-      if (!data || !summaryFits(frame, { from: data.preparedFrom, to: data.preparedTo, width: data.preparedWidth }, to)) return;
-      drawApproximateSpans(ctx, frame, data.prefix?.approximate, state.playhead, () => {
-        for (const segment of lossSegments(stack.model, frame.x[0], Math.min(frame.x[1], state.playhead ?? frame.x[1]),
-          (frame.x[1] - frame.x[0]) / Math.max(1, frame.plotWidth))) drawBands(ctx, frame, theme, segment.hours, segment.bands, colors, segment);
-      });
+      for (const segment of lossSegments(stack.model, frame.x[0], Math.min(frame.x[1], state.playhead ?? frame.x[1]),
+        (frame.x[1] - frame.x[0]) / Math.max(1, frame.plotWidth))) drawBands(ctx, frame, theme, segment.hours, segment.bands, colors, segment);
     }, extent: range => stackExtent(stack.model, range[0], range[1]),
-  }] : [], [stack, colors, data, view?.first, view?.end]);
+  }] : [], [stack, colors]);
   const scale = data?.amountScale ?? 1;
+
+  // Followed: the head's values painted each frame from its cells and the ships listed by then, never rendered.
+  const headLive = useMemo(() => {
+    if (!followView || !data || !view || !head.data) return null;
+    const hourOf = liveAt(runtime.clock, hourAt, at => at);
+    let made: { hour: number; cells: LiveValues<number>; reply: LossesReply } | null = null;
+    const replyLive: Live<LossesReply> & { hour(): number } = {
+      hour: () => hourOf.read(),
+      read: () => {
+        const at = hourOf.read(), cells = head.live.read();
+        if (!made || made.hour !== at || made.cells !== cells) made = { hour: at, cells, reply: atHead(data, at, cells, named) };
+        shown(head.shownAt());
+        return made.reply;
+      },
+      subscribe: changed => { const stops = [hourOf.subscribe(changed), head.live.subscribe(changed)]; return () => { for (const stop of stops) stop(); }; },
+    };
+    return replyLive;
+  }, [followView, data, view?.first, view?.end, view?.from, head.data, head.live, named, runtime.clock]); // eslint-disable-line react-hooks/exhaustive-deps
+  const sunburstLive = useMemo<Live<SunburstValues> | undefined>(() => {
+    if (!headLive || !view) return undefined;
+    let made: { reply: LossesReply; values: SunburstValues } | null = null;
+    return { subscribe: headLive.subscribe, read: () => {
+      const reply = headLive.read();
+      if (made?.reply !== reply) {
+        const shownItems = lossItems(reply, { ...view, hour: headLive.hour() });
+        made = { reply, values: { items: shownItems, authoritativeTotal: lossesTotal(shownItems) } };
+      }
+      return made.values;
+    } };
+  }, [headLive, view?.first, view?.end, view?.from]); // eslint-disable-line react-hooks/exhaustive-deps
+  const rowsLive = useMemo<Live<LiveValues<SortValue>> | undefined>(() => {
+    if (!headLive || !view || !following) return undefined;
+    let made: { reply: LossesReply; values: LiveValues<SortValue> } | null = null;
+    return { subscribe: headLive.subscribe, read: () => {
+      const reply = headLive.read();
+      if (made?.reply !== reply) {
+        const at = lossRows(reply, { ...view, hour: headLive.hour() }, selected);
+        made = { reply, values: valuesOf(new Map(at.flatMap(row => row.exact === null ? [] : [[liveKey(row.id, 'amount'), Number(row.exact)] as const])), 'Not known') };
+      }
+      return made.values;
+    } };
+  }, [headLive, view?.first, view?.end, view?.from, following, selected]); // eslint-disable-line react-hooks/exhaustive-deps
+  const partsLive = useMemo<LiveDrillParts | undefined>(() => {
+    if (!headLive || !view || !following) return undefined;
+    let made: { reply: LossesReply; parts: ReturnType<LiveDrillParts['read']> } | null = null;
+    return { subscribe: headLive.subscribe, read: () => {
+      const reply = headLive.read();
+      if (made?.reply !== reply) made = { reply, parts: { parts: partsOf(lossRows(reply, { ...view, hour: headLive.hour() }, selected)) } };
+      return made.parts;
+    } };
+  }, [headLive, view?.first, view?.end, view?.from, following, selected]); // eslint-disable-line react-hooks/exhaustive-deps
+  const liveHead = useMemo(() => following && headLive ? { read: () => headLive.hour(), subscribe: headLive.subscribe } : undefined, [following, headLive]);
+  if (!followView) shown(data && view ? view.hour : null);
+
   const text = useMemo<SunburstText>(() => ({ format: (value, exact) => formatLosses(value, exact, scale), unit: 'units', valueLabel: 'Losses', shares: !total.incomplete }), [scale, total.incomplete]);
   const rowText = (row: LossRow) => row.exact === null ? 'Not known' : `${row.incomplete ? 'Subtotal: ' : ''}${formatLosses(Number(row.exact), row.exact, scale)}`;
   const columns = useMemo<TableColumn<LossRow>[]>(() => [
     { key: 'cause', header: 'Cause', label: 'Cause', priority: 1, inTooltip: true, value: row => row.cause },
     { key: 'type', header: 'Equipment type', label: 'Equipment type', priority: 2, inTooltip: true, value: row => row.type },
     { key: 'design', header: 'Design', label: 'Design', value: row => row.design },
-    { key: 'amount', header: 'Losses', label: 'Losses', numeric: true, width: 'max-content', value: row => row.exact, render: rowText },
-  ], [scale]);
-  const parts = useMemo(() => lossParts(rows, scale).map(part => ({ ...part,
-    text: part.raw == null ? 'Not known' : `${part.incomplete ? 'Subtotal: ' : ''}${formatLosses(Number(part.raw), part.raw, scale)}`,
-    color: colors[stack?.keys.indexOf(part.id) ?? -1] })), [rows, scale, colors, stack]);
-  useEffect(() => { onDiagnostics(contentPending ? ['Equipment-loss content names are updating.'] : data?.warnings ?? NO_WARNINGS);
-    return () => onDiagnostics(NO_WARNINGS); }, [data, contentPending, onDiagnostics]);
+    { key: 'amount', header: 'Losses', label: 'Losses', numeric: true, width: 'max-content', value: row => row.exact, render: rowText,
+      paint: value => formatLosses(Number(value), BigInt(Math.round(Number(value))), scale) },
+  ], [scale]); // eslint-disable-line react-hooks/exhaustive-deps
+  function partsOf(at: readonly LossRow[]) {
+    return lossParts(at, scale).map(part => ({ ...part,
+      text: part.raw == null ? 'Not known' : `${part.incomplete ? 'Subtotal: ' : ''}${formatLosses(Number(part.raw), part.raw, scale)}`,
+      color: colors[stack?.keys.indexOf(part.id) ?? -1] }));
+  }
+  const parts = useMemo(() => partsOf(rows), [rows, scale, colors, stack]); // eslint-disable-line react-hooks/exhaustive-deps
+  const warnings = useMemo(() => [...data?.warnings ?? [], ...head.data?.warnings ?? []], [data, head.data]);
+  useEffect(() => { onDiagnostics(contentPending ? ['Equipment-loss content names are updating.'] : warnings.length ? warnings : NO_WARNINGS);
+    return () => onDiagnostics(NO_WARNINGS); }, [warnings, contentPending, onDiagnostics]);
 
   const unavailable = !track || !tag ? <WidgetState kind="empty" icon="sunburst" message="Load a campaign and choose a country to see its equipment losses." />
-    : !view ? pendingRange ? <WidgetState kind="loading" label="This range is still being prepared." />
-      : <WidgetState kind="unavailable" message="This time is outside the recording." />
-      : selection === undefined ? <WidgetState kind="unavailable" message="Choose losses again." />
+    : !view ? <WidgetState kind="unavailable" message="This time is outside the recording." />
+      : selectionPick === undefined ? <WidgetState kind="unavailable" message="Choose losses again." />
         : (hasSavedCountry && !savedCountry) || (catalogue.data && (!selectedCountry || !actorSpans))
           ? <WidgetState kind="unavailable" message={actorReason!} />
           : catalogue.error && !catalogue.data ? <WidgetState kind="error" failure={catalogue.error} onRetry={catalogue.retry} />
             : productError ? <WidgetState kind="error" failure={productError} onRetry={product.retry} />
-              : !data ? <><PreparedLogCoverage coverage={request ? null : undefined} />
-                <WidgetState kind="loading" label="Loading equipment losses..." /></> : null;
-  if (import.meta.env.MODE === 'parity') {
-    useParityRows(saved ? null : anchor, () => lossesParity({
-      campaignKey: track?.source.metadata.campaignKey, request, data, window: view,
-      items, total, levels: levelsShown(options, LEVELS), settings,
-      complete: unavailable === null && !!track && !!tag && !!view && !!data,
-    }));
-  }
+              : head.error && followView ? <WidgetState kind="error" failure={head.error} onRetry={head.retry} />
+                : !data || !shownReply ? <WidgetState kind="loading" label="Loading equipment losses..." /> : null;
   const catalogueNotice = catalogue.error && catalogue.data ? <WidgetState kind="error" failure={catalogue.error} onRetry={catalogue.retry} /> : null;
-  if (unavailable || !track || !tag || !view || !data) return <>{countryHeader}{catalogueNotice}{unavailable}</>;
+  if (unavailable || !track || !tag || !view || !data || !shownReply) return <div ref={head.root} className="equipment-losses">{countryHeader}{catalogueNotice}{unavailable}</div>;
   const openRows = (keys: readonly string[] | null) => { setPicked(keys); setDrill(state => reduceDrill(state, { type: 'open', breakdown: DETAIL.id,
-    hour, playing: widget.time.mode === 'follow' && runtime.clock.getSnapshot().playing, playhead: widget.time.mode === 'follow' ? hour : null })); };
-  const coverage = coverageLegend(data, view, tokens);
-  const lostThrough = [data.prefix?.pending.length && requestedView && view.hour < requestedView.hour
-    ? `Lost through ${dayLabel(view.hour)}; the rest is still being prepared.` : null,
-    data.prefix?.approximate?.length ? 'Approximate while sinking dates and equipment types are still being prepared.' : null].filter(Boolean).join(' ');
-  const airCoverage = data.landSource === 'combatLog' ? destructionLegend(data, view, tokens) : [];
+    hour, playing: followView && runtime.clock.getSnapshot().playing, playhead: followView ? hour : null })); };
+  const coverage = coverageLegend(shownReply, view, tokens);
+  const airCoverage = shownReply.landSource === 'combatLog' ? destructionLegend(shownReply, view, tokens) : [];
   const incomplete = total.incomplete || [...coverage, ...airCoverage].some(item => item.label === 'Incomplete')
-    || data.causes.some(cause => cause.loss && cause.source.kind === 'destruction')
-      && (data.destructionCountedFrom === null || view.hour < data.destructionCountedFrom);
-  const status = data.prefix?.approximate?.length ? 'Approximate' : total.exact === null ? 'Unavailable' : incomplete ? 'Incomplete' : 'Complete';
-  const limitations = incomplete ? unknownCauses(data, view.hour) : [];
+    || shownReply.causes.some(cause => cause.loss && cause.source.kind === 'destruction')
+      && (shownReply.destructionCountedFrom === null || view.hour < shownReply.destructionCountedFrom);
+  const status = total.exact === null ? 'Unavailable' : incomplete ? 'Incomplete' : 'Complete';
+  const limitations = incomplete ? unknownCauses(shownReply, view.hour) : [];
   const coverageBody = limitations.length ? <details className="equipment-losses-completeness"><summary>{status}</summary>
     {limitations.map(item => <p key={item.id}>{item.label}</p>)}</details> : <span className="equipment-losses-completeness">{status}</span>;
+  const readHourOf = (at: readonly LossRow[]) => at.reduce<number | null>((latest, row) => row.readHour === null ? latest : Math.max(latest ?? row.readHour, row.readHour), null);
   const main = <div className="equipment-losses-main">
     <p className="chart-line-key">{total.incomplete ? 'Subtotal' : 'Losses'}: {total.exact === null ? 'Not known' : formatLosses(total.value ?? 0, total.exact, scale)}
       {view.since != null && <span className="equipment-losses-since"> ({sinceLabel(view.since)})</span>}</p>
     <Sunburst label="Equipment losses" items={items} root={ROOT} levels={levelsShown(options, LEVELS)} text={text} settings={settings}
       authoritativeTotal={total} pickOwner={pickOwner} hoursPerSecond={speed} active={active && (!open || options.drill === 'popout')}
-      footnote={[lostThrough, lossesFootnote(data, view)].filter(Boolean).join(' ')} legendExtra={coverageBody}
+      live={sunburstLive} footnote={lossesFootnote(shownReply, view)} legendExtra={coverageBody}
       canPick={node => node.children.length === 0 && node.counted.size > 0}
       onPick={node => { if (node.children.length || !node.counted.size) return false; openRows([...node.counted]); return true; }}
-      onContextMenu={(node, x, y) => { const chosen = lossRows(data, view, node ? node.counted : null);
-        const read = chosen.reduce<number | null>((latest, row) => row.readHour === null ? latest : Math.max(latest ?? row.readHour, row.readHour), null);
+      onContextMenu={(node, x, y) => { const at = followView && headLive ? headLive.read() : shownReply;
+        const read = readHourOf(lossRows(at, view, node ? node.counted : null));
         menu.open(x, y, [{ label: 'Losses', run: () => openRows(node ? [...node.counted] : null) }, ...(read === null ? [] : [jumpItem(runtime, track.id, read)])]); }} />
     <button type="button" className="button small" onClick={() => openRows(null)}>View all losses</button>
   </div>;
   const detail = !detailView ? <WidgetState kind="unavailable" message="This time is outside the recording." /> : <>
-    <PreparedKey approximate={data.prefix?.approximate} pending={data.prefix?.pending} />
     {detailView.since != null && <p className="chart-line-key">Counted {sinceLabel(detailView.since)}, after hours the recording lost.</p>}
-    {saved && <p className="chart-line-key">{formatDateTime(detailView.hour)} {!following && view.from == null && <button type="button" className="button small"
+    {saved && <p className="chart-line-key">{following ? 'Following playback' : formatDateTime(detailView.hour)} {!following && followView && view.from == null && <button type="button" className="button small"
       onClick={() => setDrill(state => ({ ...state, breakdown: DETAIL.id, follow: true, hour: null }))}>Follow playback</button>}</p>}
     {actorReason && <p className="drill-empty">{actorReason}</p>}
     {selected && <button type="button" className="button small" onClick={() => setPicked(null)}>View all losses</button>}
-    <DrillParts parts={parts} format={value => formatLosses(value * scale, null, scale)} positiveBars virtual active={active && open}
-      showShares={!rows.some(row => row.incomplete || row.exact === null || row.exact < 0n)} onPick={id => { const part = parts.find(part => part.id === id); if (part) setPicked(part.keys); }} />
+    <DrillParts parts={parts} live={partsLive} format={value => formatLosses(value * scale, null, scale)} positiveBars virtual active={active && open}
+      showShares={!rows.some(row => row.incomplete || row.exact === null || row.exact < 0n)} onPick={id => { const part = parts.find(item => item.id === id); if (part) setPicked(part.keys); }} />
     <div className="equipment-losses-table"><Table rowRevision={row => [row, columns]} label="Equipment losses" rows={rows} columns={columns} rowKey={rowKey} narrow={narrowTableOf(options)}
-      sort={{ column: 'amount', direction: 'descending' }} cellBars={false} rankMarkers={false} hoursPerSecond={speed} onRowClick={row => setPicked([row.id])}
+      live={rowsLive} sort={{ column: 'amount', direction: 'descending' }} cellBars={false} rankMarkers={false} hoursPerSecond={speed} onRowClick={row => setPicked([row.id])}
       menu={row => row.readHour === null ? [] : [jumpItem(runtime, track.id, row.readHour)]}
       tooltip={row => fitTooltip([{ title: `${row.cause} / ${row.type} / ${row.design}`, rows: [{ label: 'Losses', value: rowText(row) }], note: row.note }], height)} /></div>
-    <div className="breakdown-chart"><TimeChart gaps={gaps} label="Equipment losses over time" extent={[view.first, Math.max(view.first + 1, view.end + 1)]}
-      branchStart={track.branch.firstHour} playhead={detailView.hour} playback="cursor" hoursPerSecond={speed} axes={{ xFrom: null, xTo: null, yMin: 0, yMax: null, log: false }} layers={layers}
+    <div className="breakdown-chart"><TimeChart label="Equipment losses over time" extent={[view.first, Math.max(view.first + 1, view.end + 1)]}
+      branchStart={track.branch.firstHour} playhead={detailView.hour} liveHead={liveHead} playback="cursor" hoursPerSecond={speed} axes={{ xFrom: null, xTo: null, yMin: 0, yMax: null, log: false }} layers={layers}
       active={active && open} revision={stack} pickOwner={detailPickOwner}
       onSummaryView={product.onSummaryView} onHover={product.onHover}
       keyboardHour={product.keyboardHour} keyboardRevision={product.keyboardRevision}
-      onNavigateHour={(key, from, x, until) => product.navigate(key, from, x, until, data.causes.filter(cause => cause.loss && cause.unknown === null)
+      onNavigateHour={(key, from, x, until) => product.navigate(key, from, x, until, data.causes.filter(cause => cause.loss && cause.unknown === null && cause.source.kind !== 'sunkShips')
         .flatMap(cause => cause.leaves.filter(leaf => !selected || selected.has(lossKey(cause, leaf.design === null ? undefined : data.designs[leaf.design])))
-          .map(leaf => [cause.source, leaf.design === null ? null : data.designs[leaf.design].variant] as const)))}
-      onPick={h => {
-        const selectedHour = Math.floor(Math.min(h, view.end));
+          .map(leaf => [cause.source, leaf.key] as const)),
+        (history ?? data).causes.filter(cause => cause.loss && cause.source.kind === 'sunkShips')
+          .flatMap(cause => cause.leaves.filter(leaf => !selected || selected.has(lossKey(cause, leaf.design === null ? undefined : data.designs[leaf.design]))))
+          .flatMap(leaf => leaf.points.map(point => point.hour)))}
+      onPick={at => {
+        const selectedHour = Math.floor(Math.min(at, view.end));
         void product.exactAt(selectedHour).then(exact => {
           if (!exact) return;
-          const at = lossHistory(exact, selectedHour, selectedHour, view.from, selected, coverageSpans);
-          if (at.model.edges[0]?.some(edge => edge.high > edge.low)) setDrill(state => ({ ...state, breakdown: DETAIL.id, follow: false, hour: selectedHour }));
+          const point = lossHistory(withShips(exact, selectedHour), selectedHour, selectedHour, view.from, selected, coverageSpans);
+          if (point.model.edges[0]?.some(edge => edge.high > edge.low)) setDrill(state => ({ ...state, breakdown: DETAIL.id, follow: false, hour: selectedHour }));
         });
       }}
-      onContextMenu={(h, x, y) => { const at = Math.floor(Math.min(h, view.end)); if (!preparedLossHour(data, at) || !entryAt(known, at)?.value) return;
-        const read = lossRows(data, { ...view, hour: at }, selected).reduce<number | null>((latest, row) => row.readHour === null ? latest : Math.max(latest ?? row.readHour, row.readHour), null);
+      onContextMenu={(at, x, y) => { const pointed = Math.floor(Math.min(at, view.end)); if (!entryAt(known, pointed)?.value) return;
+        const read = readHourOf(lossRows(withShips(data, pointed), { ...view, hour: pointed }, selected));
         if (read !== null) menu.open(x, y, [jumpItem(runtime, track.id, read)]); }}
-      tooltip={h => { const at = Math.floor(Math.min(h, view.end)); if (!preparedLossHour(data, at) || !entryAt(known, at)?.value) return null;
-        return fitTooltip([{ title: 'Equipment losses', subtitle: formatDateTime(at), rows: lossRows(data, { ...view, hour: at }, selected)
-          .map(row => ({ label: `${row.cause} / ${row.design}`, value: rowText(row) })) }], height); }} /></div>
+      tooltip={at => { const pointed = Math.floor(Math.min(at, view.end)); if (!entryAt(known, pointed)?.value) return null;
+        return fitTooltip([{ title: 'Equipment losses', subtitle: `${formatDateTime(pointed)}${exactLossHour(data, pointed) ? '' : ' (to the chart\'s bin)'}`,
+          rows: lossRows(withShips(data, pointed), { ...view, hour: pointed }, selected).map(row => ({ label: `${row.cause} / ${row.design}`, value: rowText(row) })) }], height); }} /></div>
   </>;
-  return <div ref={anchor} className="equipment-losses">{countryHeader}{catalogueNotice}
-    <PreparedLogCoverage coverage={request && !product.data && !product.error ? null : undefined} />
+  return <div ref={rootRef} className="equipment-losses">{countryHeader}{catalogueNotice}
     {saved ? detail : <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={open}
-    title="Equipment losses" day={formatDateTime(detailHour)} following={following} canFollow={view.from == null}
+    title="Equipment losses" day={following ? 'Following playback' : formatDateTime(detailHour)} following={following} canFollow={followView && view.from == null}
     onClose={() => setDrill(CLOSED)} onFollow={() => setDrill(state => ({ ...state, breakdown: DETAIL.id, follow: true, hour: null }))}
     onPin={detailView ? () => runtime.addWidgetBelow(widget.id,
-      pinLosses(widget, track, tag, detailView.hour, following, view.from, selected ? [...selected] : null, selectedCountry)) : undefined}
+      pinLosses(widget, track, tag, following && headLive ? headLive.hour() : detailView.hour, following, view.from, selected ? [...selected] : null, selectedCountry)) : undefined}
     anchor={anchor} main={main}>{detail}</DrillHost>}{menu.menu}</div>;
 }
 
-export default function EquipmentLossesWidget(props: WidgetProps) { return <><OriginalEquipmentLossesWidget {...props} /><CombatLogDetails {...props} view="equipment" /></>; }
+/** The losses, then the game's retained Combat Log of the country's equipment, as main shows them. */
+export default function EquipmentLossesWidget(props: WidgetProps) {
+  return <><LossesView {...props} /><CombatLogDetails {...props} view="equipment" /></>;
+}

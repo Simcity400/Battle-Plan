@@ -6,9 +6,9 @@ pub(super) fn walk(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    output: &mut [Row],
+    output: &mut Vec<Row>,
 ) -> Outcome {
-    walk_inner(memory, base, game_state, crate::walk::Buffer::Fixed(output))
+    walk_inner(memory, base, game_state, crate::walk::Buffer::Growing(output))
         .unwrap_or_else(|reason| Outcome::Unavailable { reason })
 }
 

@@ -261,15 +261,9 @@ impl RecordedIndex {
 }
 
 impl<'a> Recorded<'a> {
-    pub fn build<const N: usize>(log: &'a RawLog<N>) -> Self {
-        Self::build_range(log, 0..log.spans.len()).unwrap_or_else(|_| Self {
-            index: RecordedIndex::default(),
-            recycle: &log.index,
-            spans: &[],
-            bytes: &[],
-            next_exact: std::cell::Cell::new(0),
-            last_bulk: std::cell::Cell::new(usize::MAX),
-        })
+    /// The whole log; a refused index allocation is named for the tables that read it.
+    pub fn build<const N: usize>(log: &'a RawLog<N>) -> Result<Self, &'static str> {
+        Self::build_range(log, 0..log.spans.len())
     }
 
     /// Borrow only this acquisition phase's observations. Masks are fault

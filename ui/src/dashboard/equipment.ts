@@ -3,8 +3,8 @@
  * resolve, and the arms. The products resolve types through the recorded content
  * stack (`crates/dashboard/src/products/equipment.rs`); nothing here is vanilla. */
 import { entryAt } from './reads.ts';
-import type { Domain, StockVariantName } from '../generated/dashboard';
 import type { OptionField } from './options';
+import type { Domain, StockVariantName } from '../generated/dashboard';
 
 /** Every production widget uses the same refit selection and default. */
 export const REFITS_OPTION: OptionField = {

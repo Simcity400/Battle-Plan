@@ -12,7 +12,7 @@ fn growing_naval_history_raw_jobs_decode_full_first_and_later_mod_populations() 
     let mut sunk = SunkJob::new();
     for count in [5_000_usize, 12_000] {
         let bytes = supremacy_test_kit::mod_fixture(count);
-        let report = copy_supremacy_refresh_growing(
+        let report = copy_supremacy_refresh(
             &supremacy_test_kit::memory(&bytes),
             SupremacyCopyContext {
                 base: supremacy_test_kit::BASE,
@@ -28,7 +28,7 @@ fn growing_naval_history_raw_jobs_decode_full_first_and_later_mod_populations() 
         assert_eq!(captured.supremacy.outcome, Outcome::Rows { len: count });
 
         let bytes = sunk_test_kit::mod_fixture(count);
-        let report = copy_sunk_refresh_growing(
+        let report = copy_sunk_refresh(
             &sunk_test_kit::memory(&bytes),
             SunkCopyContext {
                 base: sunk_test_kit::BASE,
@@ -224,16 +224,12 @@ fn a_large_registry_presizes_only_the_native_country_snapshot() {
     assert_eq!(job.oob_theatre_positions.capacity(), 0);
 }
 
-/// The registry census snapshot holds only a complete census that fits,
-/// grows off the callback from its demand, and is dropped with the pass.
+/// The registry census snapshot holds only a complete census, grows to it in
+/// the pass, and is dropped with the pass.
 #[test]
-fn census_roots_snapshot_fits_grows_and_never_outlives_its_pass() {
+fn census_roots_snapshot_grows_in_the_pass_and_never_outlives_it() {
     let roots = [corders_group::Root::default(); 5];
     let mut job = NavalJob::default();
-    job.capture_roots(&roots, Outcome::Rows { len: 3 });
-    assert_eq!((job.roots_len, job.roots.capacity()), (None, 0));
-    assert!(job.grow_for_next());
-    job.grow();
     job.capture_roots(&roots, Outcome::Rows { len: 3 });
     assert_eq!(job.roots_len, Some(3));
     assert_eq!(job.roots, roots[..3]);
@@ -390,42 +386,6 @@ fn naval_job_capacity_accounting_tracks_all_vectors_through_growth_clear_and_dro
 }
 
 #[test]
-fn shared_naval_projection_preserves_truncated_prefix_and_growth() {
-    use crate::extended::air::{AirWingCopyContext, AirWingJob, wing_test_kit as kit};
-    let mut bytes = kit::fixture();
-    bytes[0x34000..0x34008].fill(0);
-    let memory = kit::memory(&bytes);
-    let mut naval = NavalJob::default();
-    naval.wing_sources.reserve_exact(1);
-    let mut wings = AirWingJob::fixture();
-    let context = AirWingCopyContext {
-        hour: 0,
-        force_full: true,
-        base: kit::BASE,
-        game_state: kit::GAME_STATE,
-
-        limits: [2, 3, 2],
-        naval_limit: naval.wing_limit(),
-        game_score: false,
-    };
-    assert!(crate::extended::air::copy_air_refresh(&memory, context, &mut wings).raw_ok);
-    naval.install_wings(&mut wings);
-    assert_eq!(naval.wing_sources.len(), 1);
-    assert_eq!(
-        naval.wing_outcome,
-        Some(Outcome::Truncated {
-            len: 1,
-            unread_rows: 1
-        })
-    );
-    assert_eq!(naval.wing_required, 2);
-    assert!(naval.grow_for_next());
-    naval.grow();
-    assert!(naval.wing_limit() >= 2);
-}
-
-// regression: da93900628 Size live collector storage and preserve native observation intervals
-#[test]
 fn first_hour_naval_memberships_handoff_all_wings() {
     use crate::{extended::air, unit_scale_tests::fixture};
     const WINGS: usize = 12;
@@ -445,10 +405,9 @@ fn first_hour_naval_memberships_handoff_all_wings() {
         base: world.base,
         game_state: world.state,
         limits: [1; 3],
-        naval_limit: naval.wing_limit(),
         game_score: false,
     };
-    assert!(air::copy_air_refresh_growing(&world.live(), context, &mut wings).raw_ok);
+    assert!(air::copy_air_refresh(&world.live(), context, &mut wings).raw_ok);
     assert_eq!(wings.naval_membership_outcome, Outcome::Rows { len: WINGS });
     let original_rows = wings.naval_memberships[..WINGS].to_vec();
     let prepared = wings.naval_memberships.as_ptr();
@@ -518,7 +477,7 @@ fn naval_decode_grows_shared_memberships_from_the_original_census() {
     let memory = kit::memory(&bytes);
     let mut wings = air::AirWingJob::default();
     assert!(
-        air::copy_air_refresh_growing(
+        air::copy_air_refresh(
             &memory,
             air::AirWingCopyContext {
                 hour: 0,
@@ -526,7 +485,6 @@ fn naval_decode_grows_shared_memberships_from_the_original_census() {
                 base: kit::BASE,
                 game_state: kit::GAME_STATE,
                 limits: [1; 3],
-                naval_limit: 0,
                 game_score: false,
             },
             &mut wings,
@@ -588,7 +546,7 @@ fn a_copy_whose_wing_census_follows_it_decodes_as_one_given_it_first() {
     assert!(super::copy_naval_refresh(&memory, context, &mut first).raw_ok);
 
     let mut following = NavalJob::fixture();
-    let mut wings = kit::wing_census(&memory, &following);
+    let mut wings = kit::wing_census(&memory);
     following.defer_wings();
     let report = super::copy_naval_refresh(&memory, context, &mut following);
     assert!(report.raw_ok, "the copy reads no wing value");
@@ -612,7 +570,7 @@ fn a_copy_whose_wing_census_follows_it_decodes_as_one_given_it_first() {
 }
 
 #[test]
-fn naval_decode_bounds_shared_memberships_to_frame_capacity() {
+fn naval_decode_grows_shared_memberships_past_the_frame_capacity() {
     use super::naval_test_kit as kit;
     let bytes = kit::fixture();
     let memory = kit::memory(&bytes);
@@ -641,14 +599,8 @@ fn naval_decode_bounds_shared_memberships_to_frame_capacity() {
             }
         });
         super::decode_naval_payload(&mut captured, kit::BASE, &job, &mut [0; NAVAL_PACK_N]);
-        assert_eq!(
-            captured.wing_sources.outcome,
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: missing + 1
-            }
-        );
-        assert_eq!(captured.wing_sources.rows.len(), 1);
+        assert_eq!(Some(captured.wing_sources.outcome), job.wing_outcome);
+        assert!(captured.wing_sources.rows.len() >= 2);
     }
 }
 
@@ -665,7 +617,6 @@ fn shared_wing_fallback_charges_acquisition_and_installation() {
         game_state: kit::GAME_STATE,
 
         limits: [2, 3, 2],
-        naval_limit: 0,
         game_score: false,
     };
     assert!(crate::extended::air::copy_air_refresh(&memory, context, &mut wings).raw_ok);
@@ -681,7 +632,6 @@ fn shared_wing_fallback_charges_acquisition_and_installation() {
     assert_eq!(captured.source_ticks[1], first_ticks + 23);
 }
 
-use engine_native::memory::SliceMemory;
 
 fn small() -> Captured {
     Captured::with_capacities(&Capacities {
@@ -722,58 +672,6 @@ fn primary_membership_rejects_omissions_duplicates_and_incomplete_censuses() {
     assert!(
         membership_issue(full, &rows, link, Outcome::Rows { len: 4 }, &sources, link).is_some()
     );
-}
-
-#[test]
-fn wing_visitor_requires_a_complete_enclosing_census_and_preserves_full_handles() {
-    let mut captured = small();
-    captured.reset();
-    let mut bytes = [0; 0x48];
-    let group = 0x89ab_cdef_0000_004e_u64;
-    bytes[cair_wing::GROUP_HANDLE..cair_wing::GROUP_HANDLE + 8]
-        .copy_from_slice(&group.to_le_bytes());
-    let memory = SliceMemory {
-        base: 0x1000,
-        bytes: &bytes,
-    };
-    let wing = cair_wing::Row {
-        id: 0xfedc_ba98_0000_0009,
-        ..Default::default()
-    };
-    captured.visit_wing(&memory, 0x1000, &wing);
-    assert!(!complete_source(
-        &captured.wing_sources,
-        captured.wings_finished
-    ));
-    captured.finish_wings(Outcome::Rows { len: 1 });
-    assert!(complete_source(
-        &captured.wing_sources,
-        captured.wings_finished
-    ));
-    assert_eq!(
-        captured.wing_sources.rows[0],
-        ctheatre::WingMembership {
-            wing: wing.id,
-            group
-        }
-    );
-    captured.reset();
-    captured.visit_wing(&memory, 0x1000, &wing);
-    captured.finish_wings(Outcome::Truncated {
-        len: 1,
-        unread_rows: 2,
-    });
-    assert!(!complete_source(
-        &captured.wing_sources,
-        captured.wings_finished
-    ));
-    captured.reset();
-    captured.visit_wing(&memory, 0x1000, &wing);
-    captured.finish_wings(Outcome::Rows { len: 2 });
-    assert!(matches!(
-        captured.wing_sources.outcome,
-        Outcome::Unavailable { .. }
-    ));
 }
 
 #[test]
@@ -1067,14 +965,6 @@ fn roster_land_theatres_match_the_census_copy_and_the_typed_walk() {
             if *name == "null-slot owner" {
                 assert!(spans.contains(&(LTAB + 12)), "{case}");
             }
-            // Without room for the roster the census copy is taken.
-            let mut tight = NavalJob::fixture();
-            tight.roster = ccountry::RosterSnapshot::try_with_capacity(0).unwrap();
-            let short = hourly(&|job| copy_naval_refresh(&roster, context, job), &mut tight);
-            assert_eq!(short, expected, "{case}");
-            assert!(tight.roster.roster(kit::BASE, kit::GAME_STATE).is_none());
-            assert!(tight.grow_for_next());
-            assert_eq!(tight.log.spans.len(), plain.log.spans.len(), "{case}");
         }
     }
     assert!(roster_used >= variants.len() - 3, "{roster_used}");
@@ -1314,28 +1204,6 @@ fn supremacy_uses_slot_0() {
 }
 
 #[test]
-fn naval_staging_overflow_falls_back_to_typed_walk() {
-    use super::naval_test_kit as kit;
-    use super::{NavalCopyContext, NavalJob};
-    let bytes = kit::fixture();
-    let memory = kit::memory(&bytes);
-    let ctx = NavalCopyContext {
-        hour: 0,
-        force_full: true,
-        base: kit::BASE,
-        game_state: kit::GAME_STATE,
-    };
-    let mut tiny = NavalJob {
-        log: crate::raw::RawLog::new(1, 1),
-        game_state: 0,
-        ..Default::default()
-    };
-    kit::stage_wings(&memory, &mut tiny);
-    let report = super::copy_naval_refresh(&memory, ctx, &mut tiny);
-    assert!(!report.raw_ok);
-}
-
-#[test]
 fn supremacy_split_copy_matches_direct_walk() {
     use super::supremacy_test_kit as kit;
     use engine_native::{memory::CountedMemory, memory::ReadCounts};
@@ -1457,27 +1325,6 @@ fn supremacy_split_copy_matches_direct_walk_on_fault_matrix() {
         assert!(report.raw_ok, "fault={fault:x}");
         kit::assert_matches_direct(&split, &direct);
     }
-}
-
-#[test]
-fn supremacy_staging_overflow_falls_back_to_typed_walk() {
-    use super::supremacy_test_kit as kit;
-    use super::{SupremacyCopyContext, SupremacyJob};
-    let bytes = kit::fixture();
-    let memory = kit::memory(&bytes);
-    let ctx = SupremacyCopyContext {
-        hour: 0,
-        force_full: true,
-        base: kit::BASE,
-        game_state: kit::GAME_STATE,
-    };
-    let mut tiny = SupremacyJob {
-        log: crate::raw::RawLog::new(1, 1),
-        game_state: 0,
-        ..Default::default()
-    };
-    let report = super::copy_supremacy_refresh(&memory, ctx, &mut tiny);
-    assert!(!report.raw_ok);
 }
 
 #[test]
@@ -1610,28 +1457,6 @@ fn sunk_split_copy_matches_direct_walk_on_fault_matrix() {
 }
 
 #[test]
-fn sunk_staging_overflow_falls_back_to_typed_walk() {
-    use super::sunk_test_kit as kit;
-    use super::{SunkCopyContext, SunkJob};
-    let bytes = kit::fixture();
-    let memory = kit::memory(&bytes);
-    let ctx = SunkCopyContext {
-        force_full: true,
-        base: kit::BASE,
-        game_state: kit::GAME_STATE,
-        hour: kit::HOUR,
-    };
-    let mut tiny = SunkJob {
-        log: crate::raw::RawLog::new(1, 1),
-        game_state: 0,
-        hour: 0,
-        ..Default::default()
-    };
-    let report = super::copy_sunk_refresh(&memory, ctx, &mut tiny);
-    assert!(!report.raw_ok);
-}
-
-#[test]
 fn growing_theatre_job_publishes_first_payload_from_empty_raw_and_typed_arenas() {
     let mut bytes = naval_test_kit::fixture();
     let command_name = 0x62000 + corders_group::NAME;
@@ -1644,7 +1469,7 @@ fn growing_theatre_job_publishes_first_payload_from_empty_raw_and_typed_arenas()
     };
     let mut job = NavalJob::new();
     naval_test_kit::stage_wings(&memory, &mut job);
-    let report = copy_naval_refresh_growing(
+    let report = copy_naval_refresh(
         &memory,
         NavalCopyContext {
             base: naval_test_kit::BASE,
@@ -1706,11 +1531,11 @@ fn attempted_root_census_failure_is_terminal_for_naval_copy_and_decode() {
         if rejected {
             job.fail_roots(reason);
         } else {
-            job.capture_roots_growing(&[], Outcome::Unavailable { reason });
+            job.capture_roots(&[], Outcome::Unavailable { reason });
         }
         naval_test_kit::stage_wings(&memory, &mut job);
         assert!(
-            copy_naval_refresh_growing(
+            copy_naval_refresh(
                 &memory,
                 NavalCopyContext {
                     base: naval_test_kit::BASE,

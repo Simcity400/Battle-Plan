@@ -1,27 +1,40 @@
-//! Per-pass GPU timestamps of one frame, a profiling aid under
-//! `BATTLE_PLAN_VIEWER_GPU_PASSES`.
+//! Per-pass GPU timestamps of a frame: a profiling aid under `BATTLE_PLAN_VIEWER_GPU_PASSES`, which
+//! prints each frame's after waiting for it, and the view record's `gpu_passes` while a measurement
+//! keeps that record ([`crate::view_record`]), which never waits: each frame's timestamps map back
+//! on their own and are read frames later.
 //!
-//! [`crate::map::gpu_contract::device_descriptor`] asks for the timestamp features only
-//! when the variable is set, so an ordinary run never creates a query set and
-//! never waits for one. The scene writes a timestamp after each group of
-//! passes; reading them back waits for the frame's submission, so a timed run
-//! measures the GPU's own per-pass cost, not the pipelined frame rate. The
-//! backend may reorder commands between timestamps, so these are attributions,
-//! not exact boundaries.
+//! [`crate::map::gpu_contract::device_descriptor`] asks for the timestamp features only in those
+//! two cases, so an ordinary run never creates a query set. The scene writes a timestamp after
+//! each group of passes. The backend may reorder commands between timestamps, so these are
+//! attributions, not exact boundaries.
 
 use crate::profile_writer::profile_print;
-use std::sync::OnceLock;
+use std::sync::{
+    Arc, OnceLock,
+    atomic::{AtomicU8, Ordering},
+};
 
 use eframe::wgpu;
 
 /// Timestamps one frame may write.
 // Three wraps revisit every map-body pass and both mesh queues.
 const MAX: u32 = 128;
+/// Frames whose timestamps may be on their way back at once.
+const SLOTS: usize = 4;
+const IDLE: u8 = 0;
+const MAPPING: u8 = 1;
+const READY: u8 = 2;
+const FAILED: u8 = 3;
 
-/// Whether per-pass GPU timing is requested.
+/// Whether per-pass GPU timing is printed (the profiling aid).
 pub fn requested() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| std::env::var_os("BATTLE_PLAN_VIEWER_GPU_PASSES").or_else(|| std::env::var_os("HOI4_VIEWER_GPU_PASSES")).is_some())
+}
+
+/// Whether per-pass GPU timing goes to the view record.
+pub fn recorded() -> bool {
+    crate::view_record::on()
 }
 
 /// The device features per-pass timing needs.
@@ -29,20 +42,36 @@ pub fn features() -> wgpu::Features {
     wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS
 }
 
-pub struct PassTimer {
-    set: wgpu::QuerySet,
-    resolve: wgpu::Buffer,
+/// The view record's section for the per-pass GPU times, in microseconds.
+pub const SECTION: &str = "gpu_passes";
+
+struct Slot {
     read: wgpu::Buffer,
     labels: Vec<&'static str>,
-    period: f32,
-    /// The caller's number for the frame being timed ([`PassTimer::label`]).
+    state: Arc<AtomicU8>,
     frame: u64,
 }
 
+pub struct PassTimer {
+    set: wgpu::QuerySet,
+    resolve: wgpu::Buffer,
+    slots: Vec<Slot>,
+    current: usize,
+    /// This frame's marks, and whether its slot was free to take them.
+    labels: Vec<&'static str>,
+    active: bool,
+    period: f32,
+    /// The caller's number for the frame being timed ([`PassTimer::label`]).
+    frame: u64,
+    record: bool,
+}
+
 impl PassTimer {
-    /// A timer when timing is requested and the device can write timestamps.
+    /// A timer when timing is printed or recorded and the device can write timestamps. A
+    /// recording without the features says so in each frame's record ([`Self::unavailable`]).
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Option<Self> {
-        if !requested() {
+        let record = recorded();
+        if !requested() && !record {
             return None;
         }
         if !device.features().contains(features()) {
@@ -56,28 +85,45 @@ impl PassTimer {
             return None;
         }
         let bytes = u64::from(MAX) * 8;
+        let slots = (0..SLOTS)
+            .map(|_| Slot {
+                read: device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("gpu pass readback"),
+                    size: bytes,
+                    usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                }),
+                labels: Vec::new(),
+                state: Arc::new(AtomicU8::new(IDLE)),
+                frame: 0,
+            })
+            .collect();
         Some(Self {
             set: device.create_query_set(&wgpu::QuerySetDescriptor {
                 label: Some("gpu pass timestamps"),
                 ty: wgpu::QueryType::Timestamp,
-                count: MAX,
+                count: MAX * SLOTS as u32,
             }),
             resolve: device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("gpu pass resolve"),
-                size: bytes,
+                size: bytes * SLOTS as u64,
                 usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
                 mapped_at_creation: false,
             }),
-            read: device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("gpu pass readback"),
-                size: bytes,
-                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            }),
+            slots,
+            current: 0,
             labels: Vec::new(),
+            active: false,
             period: queue.get_timestamp_period(),
             frame: 0,
+            record,
         })
+    }
+
+    /// A frame recorded on a device without timestamps: its record names the GPU times as not
+    /// recorded, never as zero.
+    pub fn unavailable() {
+        crate::view_record::set(SECTION, "not_recorded", 1);
     }
 
     /// Numbers the next report, so its line pairs with the caller's own
@@ -86,13 +132,17 @@ impl PassTimer {
         self.frame = frame;
     }
 
-    /// Marks the end of the passes named `label` (the first mark is the start).
+    /// Marks the end of the passes named `label` (the first mark is the start). A frame whose
+    /// slot still waits for an earlier frame's readback is not timed.
     pub fn mark(&mut self, encoder: &mut wgpu::CommandEncoder, label: &'static str) {
-        let index = self.labels.len() as u32;
-        if index < MAX {
-            encoder.write_timestamp(&self.set, index);
-            self.labels.push(label);
+        if self.labels.is_empty() {
+            self.active = self.slots[self.current].state.load(Ordering::Acquire) == IDLE;
         }
+        let index = self.labels.len() as u32;
+        if self.active && index < MAX {
+            encoder.write_timestamp(&self.set, self.current as u32 * MAX + index);
+        }
+        self.labels.push(label);
     }
 
     /// Forgets the marks of a frame whose encoder was dropped: they were never submitted.
@@ -100,56 +150,97 @@ impl PassTimer {
         self.labels.clear();
     }
 
-    /// Resolves the frame's timestamps into the readback buffer.
+    /// Resolves the frame's timestamps into its slot's readback buffer.
     pub fn finish(&mut self, encoder: &mut wgpu::CommandEncoder) {
-        let count = self.labels.len() as u32;
-        if count < 2 {
+        let count = (self.labels.len() as u32).min(MAX);
+        if !self.active || count < 2 {
             return;
         }
-        encoder.resolve_query_set(&self.set, 0..count, &self.resolve, 0);
-        encoder.copy_buffer_to_buffer(&self.resolve, 0, &self.read, 0, u64::from(count) * 8);
+        let base = self.current as u32 * MAX;
+        let offset = u64::from(base) * 8;
+        encoder.resolve_query_set(&self.set, base..base + count, &self.resolve, offset);
+        encoder.copy_buffer_to_buffer(&self.resolve, offset, &self.slots[self.current].read, 0, u64::from(count) * 8);
     }
 
-    /// Waits for the submitted frame and prints each group's milliseconds.
+    /// After the frame's submission: printed, it waits for the frame and prints each group's
+    /// milliseconds; recorded, its readback starts and every frame whose timestamps came back is
+    /// written to the record, never waiting.
     pub fn report(&mut self, device: &wgpu::Device) {
-        let labels = std::mem::take(&mut self.labels);
-        if labels.len() < 2 {
-            return;
+        let mut labels = std::mem::take(&mut self.labels);
+        labels.truncate(MAX as usize);
+        if self.active && labels.len() >= 2 {
+            let slot = &mut self.slots[self.current];
+            slot.labels = labels;
+            slot.frame = self.frame;
+            let state = Arc::clone(&slot.state);
+            state.store(MAPPING, Ordering::Release);
+            slot.read.slice(..).map_async(wgpu::MapMode::Read, move |result| {
+                state.store(if result.is_ok() { READY } else { FAILED }, Ordering::Release);
+            });
+            self.current = (self.current + 1) % SLOTS;
+        } else if self.record && !self.active {
+            crate::view_record::add(SECTION, "frames_not_timed", 1);
         }
-        let bytes = labels.len() as u64 * 8;
-        let slice = self.read.slice(0..bytes);
-        slice.map_async(wgpu::MapMode::Read, |_| {});
-        if device
-            .poll(wgpu::PollType::Wait {
-                submission_index: None,
-                timeout: None,
-            })
-            .is_err()
-        {
-            self.read.unmap();
-            return;
-        }
-        let ticks: Vec<u64> = {
-            let Ok(data) = slice.get_mapped_range() else {
-                self.read.unmap();
-                return;
-            };
-            data.chunks_exact(8)
-                .map(|chunk| u64::from_le_bytes(chunk.try_into().expect("eight bytes")))
-                .collect()
-        };
-        self.read.unmap();
-        let (total, parts) = pass_times(&labels, &ticks, self.period);
-        let parts = parts
-            .iter()
-            .map(|(label, ms)| format!("{label}={ms:.3}"))
-            .collect::<Vec<_>>()
-            .join(" ");
-        profile_print(format!(
-            "PROFILE gpu_passes frame {} total {total:.3} {parts}",
-            self.frame
-        ));
         self.frame += 1;
+        let poll = if self.record {
+            wgpu::PollType::Poll
+        } else {
+            wgpu::PollType::Wait { submission_index: None, timeout: None }
+        };
+        let _ = device.poll(poll);
+        self.collect();
+    }
+
+    fn collect(&mut self) {
+        for offset in 0..SLOTS {
+            let slot = &mut self.slots[(self.current + offset) % SLOTS];
+            match slot.state.load(Ordering::Acquire) {
+                READY => {
+                    let ticks: Option<Vec<u64>> = slot
+                        .read
+                        .slice(0..slot.labels.len() as u64 * 8)
+                        .get_mapped_range()
+                        .ok()
+                        .map(|data| {
+                            data.chunks_exact(8)
+                                .map(|chunk| u64::from_le_bytes(chunk.try_into().expect("eight bytes")))
+                                .collect()
+                        });
+                    slot.read.unmap();
+                    slot.state.store(IDLE, Ordering::Release);
+                    let labels = std::mem::take(&mut slot.labels);
+                    let Some(ticks) = ticks else {
+                        continue;
+                    };
+                    let (total, parts) = pass_times(&labels, &ticks, self.period);
+                    if self.record {
+                        use crate::view_record::set;
+                        let us = |ms: f64| (ms * 1000.0).round() as u64;
+                        set(SECTION, "total", us(total));
+                        set(SECTION, "frames_ago", self.frame.saturating_sub(slot.frame));
+                        for (label, ms) in parts {
+                            set(SECTION, label, us(ms));
+                        }
+                    } else {
+                        let parts = parts
+                            .iter()
+                            .map(|(label, ms)| format!("{label}={ms:.3}"))
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        profile_print(format!("PROFILE gpu_passes frame {} total {total:.3} {parts}", slot.frame));
+                    }
+                }
+                FAILED => {
+                    slot.read.unmap();
+                    slot.state.store(IDLE, Ordering::Release);
+                    slot.labels.clear();
+                    if self.record {
+                        crate::view_record::add(SECTION, "readbacks_failed", 1);
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 }
 

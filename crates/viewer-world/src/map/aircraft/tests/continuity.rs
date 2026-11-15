@@ -167,3 +167,35 @@ fn repeated_hour_installs_without_a_frame_never_reuse_an_unretired_actor_key() {
         previous = next;
     }
 }
+
+/// A plan whose flights differ in one wing's starts that run anew: fresh players, its flight
+/// standing on its new pose, counted in `restarts`; every other run's flights stay where they are
+/// drawn.
+#[test]
+fn a_plan_that_changes_one_wings_flights_starts_that_run_anew() {
+    let defines = FlightDefines::for_tests();
+    let (mut previous, rigs) = one_run(vec![height(3.0), height(1.0), height(-1.0), height(-1.0)], 1.0, false, false, Explode::Plays);
+    let mut other = previous.flights[0].clone();
+    other.wing = 2;
+    previous.flights.push(other);
+    let mut run = previous.runs[0].clone();
+    run.flights = 1..2;
+    previous.runs.push(run);
+    let source = previous.clone();
+    let played = |_: (usize, u32, u32)| Some(Some((0.6, 2.0)));
+    let at = 1.5;
+    for frame in 0..=45 {
+        let time = frame as f32 / 30.0;
+        previous.advance(&rigs, &defines, Some(BAND), time, &played);
+        previous.eased_runs(&rigs, &defines, time);
+    }
+    let drawn = previous.clone().eased_runs(&rigs, &defines, at);
+    let mut restarted = source.clone();
+    restarted.flights[1].origin = [6.0, 10.0, 6.0];
+    restarted.carry_presentation(&mut previous.clone(), Continuity::Continue, &|_, _| panic!("no launch in this fixture")).unwrap();
+    restarted.advance(&rigs, &defines, Some(BAND), at, &played);
+    assert_eq!(restarted.restarts(), 1, "the changed run starts anew");
+    assert_ne!(restarted.flight_seed(1), previous.flight_seed(1), "with fresh players");
+    let unchanged = restarted.eased_runs(&rigs, &defines, at);
+    assert_eq!(unchanged[0], drawn[0], "the other run's flight is where it was");
+}

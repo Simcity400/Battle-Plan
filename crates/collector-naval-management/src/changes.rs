@@ -19,6 +19,8 @@ static ORIGINALS: [AtomicUsize; METHODS.len()] = [const { AtomicUsize::new(0) };
 
 static FORCES: WatchRegistry = WatchRegistry::marking();
 static BASES: WatchRegistry = WatchRegistry::marking();
+static FORCES_REFUSED: AtomicBool = AtomicBool::new(false);
+static BASES_REFUSED: AtomicBool = AtomicBool::new(false);
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static AUTHENTICATION_REFUSALS: [AtomicU64; SITES.len() + METHODS.len()] =
     [const { AtomicU64::new(0) }; SITES.len() + METHODS.len()];
@@ -30,7 +32,7 @@ pub(crate) fn read_refused(table: usize) {
     READ_REFUSALS[table].fetch_add(1, Ordering::Relaxed);
 }
 
-pub const UNAVAILABLE: &str = "naval repair writer observation unavailable";
+pub const UNAVAILABLE: &str = "naval repairs could not be followed in the game";
 
 /// Native patch inventory shared with the collector's cross-family ownership audit.
 pub fn patch_sites() -> impl Iterator<Item = (&'static str, Rva)> {
@@ -56,8 +58,16 @@ fn hook_failure(
 }
 
 pub fn boundary(invalidate: bool) {
-    FORCES.boundary(invalidate);
-    BASES.boundary(invalidate);
+    renew(&FORCES, &FORCES_REFUSED, invalidate);
+    renew(&BASES, &BASES_REFUSED, invalidate);
+}
+/// A refused registration found the table full, so its hour is already unavailable: install the
+/// grown table at the next hour rather than at the next load.
+fn renew(registry: &WatchRegistry, refused: &AtomicBool, invalidate: bool) {
+    let grow = refused.load(Ordering::Relaxed) && registry.growth_pending();
+    if registry.boundary(invalidate || grow).renewed() {
+        refused.store(false, Ordering::Relaxed);
+    }
 }
 pub fn active() -> usize {
     FORCES.active().saturating_add(BASES.active())
@@ -149,19 +159,20 @@ pub fn presize(memory: &impl Memory, base: usize) {
     }
 }
 
-pub fn register_force(pointer: usize) -> bool {
-    let available = FORCES.sequence(pointer).is_some() && FORCES.sequence(pointer | 1).is_some();
+fn admit(registry: &WatchRegistry, refused: &AtomicBool, pointer: usize) -> bool {
+    let available =
+        registry.sequence(pointer).is_some() && registry.sequence(pointer | 1).is_some();
     if !available {
         REFUSED.fetch_add(1, Ordering::Relaxed);
+        refused.store(true, Ordering::Relaxed);
     }
     available
 }
+pub fn register_force(pointer: usize) -> bool {
+    admit(&FORCES, &FORCES_REFUSED, pointer)
+}
 pub fn register_base(pointer: usize) -> bool {
-    let available = BASES.sequence(pointer).is_some() && BASES.sequence(pointer | 1).is_some();
-    if !available {
-        REFUSED.fetch_add(1, Ordering::Relaxed);
-    }
-    available
+    admit(&BASES, &BASES_REFUSED, pointer)
 }
 pub fn take_forces(visit: impl FnMut(usize)) -> Option<u64> {
     FORCES.take(visit)
@@ -326,6 +337,7 @@ impl Hooks {
             method::<16> as *const () as usize,
             method::<17> as *const () as usize,
             method::<18> as *const () as usize,
+            method::<19> as *const () as usize,
         ];
         engine_allocation::reserve(&mut methods, METHODS.len())
             .map_err(|_| "naval repair method allocation failed")?;
@@ -348,7 +360,7 @@ impl Hooks {
         if !enabled {
             self.observe(false);
         }
-        let ready = Hook::set_enabled_iter_attach(
+        let ready = Hook::set_enabled_iter(
             self.taps
                 .iter_mut()
                 .map(Tap::publication_hook)
@@ -416,9 +428,9 @@ mod tests {
     #[test]
     fn naval_management_integration_site_inventory_includes_independent_split() {
         assert_eq!(SITES.len(), 48);
-        assert_eq!(METHODS.len(), 19);
-        assert_eq!(SITES.len() + METHODS.len(), 67);
-        assert_eq!(AUTHENTICATION_REFUSALS.len(), 67);
+        assert_eq!(METHODS.len(), 20);
+        assert_eq!(SITES.len() + METHODS.len(), 68);
+        assert_eq!(AUTHENTICATION_REFUSALS.len(), 68);
         assert!(
             SITES
                 .iter()
@@ -470,6 +482,60 @@ mod tests {
         let after = hook_timing::counts(Family::NavalManagementChanges);
         assert_eq!(after.calls - before.calls, 2);
         assert_eq!(after.sampled - before.sampled, 2);
+    }
+
+    /// A ship leaving its task force leaves its base's repair queue through this erase alone;
+    /// unmarked, the base kept the ship's row until its re-queue an hour later marked it.
+    #[test]
+    fn one_ship_erased_from_a_base_repair_queue_marks_that_base() {
+        let _serial = fixture::SERIAL.lock().unwrap();
+        fixture::prepare();
+        let base = 0x3000;
+        let other = 0x4000;
+        assert!(register_base(base));
+        assert!(register_base(other));
+        take_bases(|_| {}).unwrap();
+        take_forces(|_| {}).unwrap();
+        let index = METHODS
+            .iter()
+            .position(|site| site.name == "base queue erase")
+            .expect("one ship's erase from a base's repair queue is observed");
+        assert_eq!(index, 19, "method::<19> is the erase's callback");
+        assert!(METHODS[index].base && METHODS[index].argument == 0);
+        unsafe extern "system-unwind" fn erase(base: usize, _: usize, _: usize, _: usize) -> usize {
+            base
+        }
+        let previous = ORIGINALS[index].swap(erase as *const () as usize, Ordering::SeqCst);
+        // SAFETY: the test owns this slot and its original has the method ABI.
+        let result = unsafe { method::<19>(base, 0x5000, 0, 0) };
+        ORIGINALS[index].store(previous, Ordering::SeqCst);
+        assert_eq!(result, base);
+        let mut marked = Vec::new();
+        take_bases(|pointer| marked.push(pointer)).unwrap();
+        assert_eq!(marked, [base]);
+        take_forces(|_| panic!("a queue erase marks no task force")).unwrap();
+    }
+
+    /// A table too small for an undercounted census grew only at the next load.
+    #[test]
+    fn a_refused_registration_takes_the_grown_table_at_the_next_hour() {
+        let _serial = fixture::SERIAL.lock().unwrap();
+        let receivers: Vec<usize> = (1..=4096).map(|index| index * 0x40).collect();
+        for base in [false, true] {
+            fixture::undersized();
+            let (register, demand): (fn(usize) -> bool, fn(usize)) = if base {
+                (register_base, base_demand)
+            } else {
+                (register_force, force_demand)
+            };
+            let refused = receivers.iter().filter(|&&pointer| !register(pointer)).count();
+            assert!(refused > 0, "the smallest table refuses some of {} receivers", receivers.len());
+            demand(receivers.len());
+            boundary(false);
+            let refused = receivers.iter().filter(|&&pointer| !register(pointer)).count();
+            assert_eq!(refused, 0, "base {base}: the grown table takes every receiver");
+        }
+        fixture::prepare();
     }
 
     #[test]
@@ -527,6 +593,19 @@ pub(crate) mod fixture {
     pub fn prepare() {
         FORCES.offer(40_000);
         BASES.offer(10_000);
+        FORCES.set_enabled(true);
+        BASES.set_enabled(true);
+        boundary(true);
+    }
+    /// Both registries hold the smallest table, as after a census that undercounted.
+    pub fn undersized() {
+        // SAFETY: the serial lock excludes every notification and capture.
+        unsafe {
+            FORCES.release();
+            BASES.release();
+        }
+        FORCES.offer(1);
+        BASES.offer(1);
         FORCES.set_enabled(true);
         BASES.set_enabled(true);
         boundary(true);

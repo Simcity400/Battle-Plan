@@ -1,12 +1,15 @@
-// Shared reading of the prepared country political-state history
-// (`politics-state-history`): its envelope, holder tag runs and value runs.
-import type { HolderTag, HourSpan, PoliticsHistoryMode, PoliticsHistoryReply, PoliticsRun } from '../generated/dashboard';
+// Shared reading of the branch's political-state history (`politics-state-history`): its
+// envelope, holder tag runs and value runs.
+import type { HolderTag, HourSpan, PoliticsHistoryMode, PoliticsHistoryReply, PoliticsRun, PoliticsStateReply } from '../generated/dashboard';
 import type { Span } from '../charts/series';
 import { isOrderedSpans, runAt } from '../charts/series.ts';
 import { object, opaqueTag } from './validation.ts';
-import { pendingAt, preparedPrefix } from './preparedPrefix.ts';
 
 export const POLITICS_HISTORY = 'politics-state-history';
+
+/** A `politics-state` reply with the hour it is of: the request's, or the push's that made its structure (its numbers are
+ * live cells, `follow/liveCells.ts`). */
+export type PoliticsStateAt = PoliticsStateReply & { hour: number };
 
 /** A decimal integer that is exact as a number. */
 export const integerText = (value: string): boolean => /^-?\d{1,16}$/.test(value) && Number.isSafeInteger(Number(value));
@@ -55,14 +58,7 @@ export function validatePoliticsHistory(value: unknown, mode: PoliticsHistoryMod
     || !isOrderedSpans(value.known)
     || !Array.isArray(value.warnings) || value.warnings.some(warning => typeof warning !== 'string') || !body(value))
     throw new Error('The political state history reply is malformed.');
-  // A malformed prepared prefix throws here, not while drawing.
-  preparedPrefix(value);
   return value as unknown as PoliticsHistoryReply;
-}
-
-/** Whether the reply answers `hour`: it is prepared and not still pending. */
-export function preparedThroughHour(reply: Pick<PoliticsHistoryReply, 'lastHour'>, hour: number): boolean {
-  return reply.lastHour !== null && hour <= reply.lastHour && !pendingAt(preparedPrefix(reply), hour);
 }
 
 /** Whether the reply's part was read at `hour`. */
@@ -83,13 +79,11 @@ export function unreadSpans(known: readonly HourSpan[], firstHour: number, lastH
   return spans;
 }
 
-/** The hours a part's values cannot be said to start or end at: recorded gaps, the
- * hours `firstHour..=lastHour` the part was not read, and hours still being prepared,
- * in order and merged where they overlap or meet, so a stretch inside another never
- * reads as its end. */
-export function unknownHours(gaps: readonly HourSpan[], known: readonly HourSpan[], firstHour: number, lastHour: number | null,
-  pending: readonly HourSpan[]): Span[] {
-  const spans = [...gaps, ...unreadSpans(known, firstHour, lastHour), ...pending].sort((a, b) => a.firstHour - b.firstHour);
+/** The hours a part's values cannot be said to start or end at: recorded gaps and the hours
+ * `firstHour..=lastHour` the part was not read, in order and merged where they overlap or meet,
+ * so a stretch inside another never reads as its end. */
+export function unknownHours(gaps: readonly HourSpan[], known: readonly HourSpan[], firstHour: number, lastHour: number | null): Span[] {
+  const spans = [...gaps, ...unreadSpans(known, firstHour, lastHour)].sort((a, b) => a.firstHour - b.firstHour);
   const merged: Span[] = [];
   for (const span of spans) {
     const last = merged.at(-1);
@@ -97,14 +91,6 @@ export function unknownHours(gaps: readonly HourSpan[], known: readonly HourSpan
     else merged.push({ firstHour: span.firstHour, lastHour: span.lastHour });
   }
   return merged;
-}
-
-/** The fixed week of hours holding `hour`, counted from `branchFirst`: one
- * exile history request answers a week, so following asks once a week. */
-export const HISTORY_WINDOW_HOURS = 7 * 24;
-export function historyWindow(branchFirst: number, hour: number): HourSpan {
-  const firstHour = branchFirst + Math.floor((hour - branchFirst) / HISTORY_WINDOW_HOURS) * HISTORY_WINDOW_HOURS;
-  return { firstHour, lastHour: firstHour + HISTORY_WINDOW_HOURS - 1 };
 }
 
 /** A stable key for a holder: its first recorded tag and hour. */

@@ -16,7 +16,7 @@
 //! builder pool lends, as the viewer starts one for the processors the
 //! process may use (`RAID_BENCH_THREADS` limits them; 1 evaluates in order
 //! on the calling thread). Run in release, `RAID_BENCH_ROUNDS` times:
-//! `cargo test -p viewer --release --bin viewer -- --ignored raid_view_bench --nocapture`.
+//! `cargo test -p viewer-raids --release --lib -- --ignored raid_view_bench --nocapture`.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};

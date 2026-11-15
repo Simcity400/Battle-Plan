@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn air_region_hover_rebuilds_for_each_views_ordered_wing_selection() {
-    let replay = air_region::tests::recording(80, &[]);
+    let replay = Arc::new(air_region::Sampler::today(air_region::tests::recording(80, &[]), None));
     let mut holder = Holder::<ModeHover>::default();
     let mut built = 0;
     let mut ask = |holder: &mut Holder<ModeHover>, selected: &[u64]| {
@@ -100,7 +100,7 @@ fn native_multiline_indentation_keeps_gaps_and_refusals_out_of_text() {
 /// the next ask rebuilds it with what the history gave and nothing pending.
 #[test]
 fn a_tooltip_built_with_a_pending_history_rebuilds_once_answered() {
-    let replay = air_region::tests::recording(80, &[]);
+    let replay = Arc::new(air_region::Sampler::today(air_region::tests::recording(80, &[]), None));
     let mut holder = Holder::<u32>::default();
     let built = std::sync::atomic::AtomicUsize::new(0);
     let ask = |holder: &mut Holder<u32>| {
@@ -143,7 +143,7 @@ fn a_tooltip_built_with_a_pending_history_rebuilds_once_answered() {
 
 #[test]
 fn navy_hover_rebuilds_when_prepared_source_coverage_finishes_without_an_hour_change() {
-    let replay = air_region::tests::recording(80, &[]);
+    let replay = Arc::new(air_region::Sampler::today(air_region::tests::recording(80, &[]), None));
     let mut holder = Holder::<ModeHover>::default();
     let mut built = 0;
     let mut ask = |holder: &mut Holder<ModeHover>, sources| {

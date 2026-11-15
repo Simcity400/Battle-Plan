@@ -106,8 +106,8 @@ impl Totals {
             drained,
             &Reasons {
                 first: "the branch's first frame drained no rocket events",
-                restarted: "rocket writer observation restarted",
-                lost: "rocket writer events were lost",
+                restarted: "rocket production stopped being followed in the game",
+                lost: "some rocket production in the game was missed",
                 absent: "a frame drained no rocket events",
             },
         );

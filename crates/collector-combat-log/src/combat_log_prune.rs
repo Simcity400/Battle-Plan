@@ -18,11 +18,14 @@
 //! that many with one `fetch_add`, then reads them into its reservation. The
 //! log is sized off the hook ([`prepare`]) from the rows every retained group
 //! log holds, any of which a prune can delete, and from any shortfall a prune
-//! met; a drain installs the larger log. The hourly callback, which runs while
-//! no daily update does, hands the rows over ([`drain`]). Rows that do not fit
-//! (the whole pools that did are kept), a read that fails, or hooks that are
-//! not installed or enabled make that drain unobserved: the table then says so
-//! for the hour (`CombatLogState.prune_observed`).
+//! met; a drain installs the larger log. A prune whose reservation the log
+//! cannot hold reads its rows whole into storage of its own on a lock-free
+//! spill, so it never waits for the drain.
+//! The hourly callback, which runs while no daily update does, hands the rows
+//! over in reservation order ([`drain`]). A read that fails, a spill whose
+//! allocation fails, or hooks that are not installed or enabled make that drain
+//! unobserved: the table then says so for the hour
+//! (`CombatLogState.prune_observed`).
 //!
 //! Each row carries the load signal (the global
 //! [`engine_native::cgame_state::PLAY_SESSION_STARTED_AT_RVA`] every load sets) of
@@ -36,9 +39,10 @@
 //! 4 MB. The TBB workers live in TBB.DLL; their actual stack reserve is not
 //! established by the executable task path alone. A live run must check it
 //! and measure `observe_total_ns` and `observe_max_ns`; a smaller worker stack
-//! needs a smaller batch footprint. Observation stays allocation-free and
-//! lock-free.
+//! needs a smaller batch footprint. A prune within the log allocates nothing
+//! and takes no lock.
 use crate::{hook::Hook, opinion_changes::Padded};
+use collector_primitives::spill_stack::SpillStack;
 use engine_land_inputs::{
     ncombat_log_cmanager as native, ncombat_log_cmanager::PRUNE_RVA, ncombat_log_cmanager::Row,
 };
@@ -146,6 +150,26 @@ static REQUIRED: AtomicUsize = AtomicUsize::new(0);
 static CURSOR: Padded<AtomicUsize> = Padded(AtomicUsize::new(0));
 /// A prune call whose deleted logs could not be read completely.
 static LOST: AtomicBool = AtomicBool::new(false);
+/// Reservations the log could not hold, read whole, until drained.
+static SPILL: SpillStack<Spilled> = SpillStack::new();
+/// Spilled reservations taken from [`SPILL`]; producers never lock it.
+static HELD: Mutex<Vec<Spilled>> = Mutex::new(Vec::new());
+/// A prune whose spill could not be allocated.
+static STORAGE_LOST: AtomicBool = AtomicBool::new(false);
+const STORAGE_FAILED: &str = "combat log prune row storage allocation failed";
+struct Spilled {
+    first: usize,
+    signal: i64,
+    rows: Vec<Row>,
+}
+/// Every spilled reservation, pushed ones taken in; one no storage could take is named.
+fn held() -> std::sync::MutexGuard<'static, Vec<Spilled>> {
+    let mut held = HELD.lock().unwrap_or_else(PoisonError::into_inner);
+    if SPILL.take_into(&mut held).is_err() {
+        STORAGE_LOST.store(true, Ordering::SeqCst);
+    }
+    held
+}
 static ENABLED: AtomicBool = AtomicBool::new(false);
 pub static ACTIVE: Padded<AtomicUsize> = Padded(AtomicUsize::new(0));
 static ORIGINAL: AtomicUsize = AtomicUsize::new(0);
@@ -154,7 +178,7 @@ static UNHOOKED: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
 /// A hook state change since the last drain: the prunes between went unseen.
 static CHANGED: AtomicBool = AtomicBool::new(true);
 /// `[prune calls, calls with deleted logs, rows logged, failed reads,
-/// overflowed logs, drains, rows handed over, unobserved drains, rows of
+/// spilled reservations, drains, rows handed over, unobserved drains, rows of
 /// another session discarded, failed log offers, installed logs]`.
 static COUNTERS: [AtomicU64; 11] = [const { AtomicU64::new(0) }; 11];
 static OBSERVE_TICKS: AtomicU64 = AtomicU64::new(0);
@@ -188,11 +212,11 @@ fn failed_read() {
     LOST.store(true, Ordering::SeqCst);
 }
 
-/// Rows the log could not hold; the next drain installs a log of `required`.
-fn overflowed(required: usize) {
+/// A reservation the log could not hold; the next drain installs a log of
+/// `required`.
+fn spilled(required: usize) {
     REQUIRED.fetch_max(required, Ordering::SeqCst);
     COUNTERS[4].fetch_add(1, Ordering::Relaxed);
-    LOST.store(true, Ordering::SeqCst);
 }
 
 /// Before the prune of `manager` runs: log its logs about to be deleted.
@@ -221,12 +245,12 @@ fn observe(manager: usize) {
     });
 }
 
-/// One prune's `demand` rows, which `read` writes into the part of its
-/// reservation within the log: whole pools, a prefix of what it counted.
+/// One prune's `demand` rows, which `read` writes into its reservation when
+/// the log holds all of it, and otherwise into a spill.
 fn record(
     signal: i64,
     demand: usize,
-    read: impl FnOnce(&mut [Row]) -> Result<Outcome, &'static str>,
+    mut read: impl FnMut(&mut [Row]) -> Result<Outcome, &'static str>,
 ) {
     COUNTERS[1].fetch_add(1, Ordering::Relaxed);
     // Tested after this call entered `ACTIVE` (see `Log`).
@@ -236,38 +260,82 @@ fn record(
         // SAFETY: see `Log`.
         unsafe { LOG.load(Ordering::SeqCst).as_ref() }
     };
-    let Some(log) = log else {
-        return overflowed(demand);
-    };
     let first = CURSOR.fetch_add(demand, Ordering::SeqCst);
     let end = first.saturating_add(demand);
-    let stored = end.min(log.len());
-    if end > log.len() {
-        overflowed(end);
-    }
-    if first >= stored {
-        return;
-    }
-    // SAFETY: this writer alone reserved `first..stored`, within the log.
-    let kept = match read(unsafe { log.rows_mut(first..stored) }) {
+    let Some(log) = log.filter(|log| end <= log.len()) else {
+        spilled(end);
+        if let Some(log) = log {
+            for index in first..end.min(log.len()) {
+                // SAFETY: this writer alone reserved `first..end`.
+                unsafe { log.mark(index, None) };
+            }
+        }
+        return spill_rows(first, signal, demand, read);
+    };
+    // SAFETY: this writer alone reserved `first..end`, within the log.
+    let kept = match read(unsafe { log.rows_mut(first..end) }) {
         Ok(Outcome::Rows { len }) => len,
         Ok(Outcome::Truncated { len, unread_rows }) => {
-            if end <= log.len() {
-                // A deleted log grew between the count and the read.
-                overflowed(first + len + unread_rows as usize);
+            // A deleted log grew between the count and the read.
+            for index in first..end {
+                // SAFETY: as above.
+                unsafe { log.mark(index, None) };
             }
-            len
+            let required = len.saturating_add(unread_rows as usize);
+            spilled(first.saturating_add(required));
+            return spill_rows(first, signal, required, read);
         }
         Ok(Outcome::Unavailable { .. }) | Err(_) => {
             failed_read();
             0
         }
     };
-    for index in first..stored {
+    for index in first..end {
         // SAFETY: as above.
         unsafe { log.mark(index, (index < first + kept).then_some(signal)) };
     }
     COUNTERS[2].fetch_add(kept as u64, Ordering::Relaxed);
+}
+
+/// The prune's thread: reads the reservation at `first` whole into owned rows.
+fn spill_rows(
+    first: usize,
+    signal: i64,
+    mut demand: usize,
+    mut read: impl FnMut(&mut [Row]) -> Result<Outcome, &'static str>,
+) {
+    let mut rows = Vec::new();
+    loop {
+        if engine_allocation::advisory(|| engine_allocation::resize_default(&mut rows, demand))
+            .is_err()
+        {
+            STORAGE_LOST.store(true, Ordering::SeqCst);
+            return;
+        }
+        match read(&mut rows) {
+            Ok(Outcome::Rows { len }) => {
+                rows.truncate(len);
+                break;
+            }
+            Ok(Outcome::Truncated { len, unread_rows }) => {
+                demand = len.saturating_add(unread_rows as usize);
+            }
+            Ok(Outcome::Unavailable { .. }) | Err(_) => return failed_read(),
+        }
+    }
+    let kept = rows.len() as u64;
+    if SPILL
+        .push(Spilled {
+            first,
+            signal,
+            rows,
+        })
+        .is_err()
+    {
+        STORAGE_LOST.store(true, Ordering::SeqCst);
+        return;
+    }
+    COUNTERS[2].fetch_add(kept, Ordering::Relaxed);
 }
 
 /// Off the hook: the log must hold `demand` rows (the native row demand of
@@ -337,7 +405,8 @@ pub fn release_storage() -> Result<(), &'static str> {
     LOG.store(ptr::null_mut(), Ordering::SeqCst);
     CAPACITY.store(0, Ordering::SeqCst);
     CURSOR.store(0, Ordering::SeqCst);
-    let released = std::mem::take(&mut *swap);
+    STORAGE_LOST.store(false, Ordering::SeqCst);
+    let released = (std::mem::take(&mut *swap), std::mem::take(&mut *held()));
     HANDOFF.store(false, Ordering::SeqCst);
     drop(swap);
     drop(released);
@@ -348,8 +417,8 @@ pub fn release_storage() -> Result<(), &'static str> {
 /// `output`, from the hourly sample, their only consumer, and empty the log;
 /// rows another session logged are discarded. Then install a larger log if one
 /// is needed. `Err` when some prune since the last drain went unobserved
-/// (hooks not installed or enabled, or changed state; rows that did not fit;
-/// a read that failed): the rows it did keep are still handed over.
+/// (hooks not installed or enabled, or changed state; a read that failed; rows
+/// no storage could be allocated for): the rows it did keep are still handed over.
 pub fn drain(signal: i64, output: &mut Vec<Row>) -> Result<(), &'static str> {
     COUNTERS[5].fetch_add(1, Ordering::Relaxed);
     if ACTIVE.load(Ordering::SeqCst) != 0 {
@@ -360,33 +429,49 @@ pub fn drain(signal: i64, output: &mut Vec<Row>) -> Result<(), &'static str> {
     // SAFETY: only this boundary and detach replace the installed log.
     let log = unsafe { LOG.load(Ordering::SeqCst).as_ref() };
     let reserved = log.map_or(0, |log| CURSOR.load(Ordering::SeqCst).min(log.len()));
-    engine_allocation::reserve(output, reserved)
+    // Every spilled prune is pushed once no prune is active.
+    let mut pending = held();
+    let spilled_rows = pending.iter().map(|spilled| spilled.rows.len()).sum::<usize>();
+    engine_allocation::reserve(output, reserved.saturating_add(spilled_rows))
         .map_err(|_| "combat log drain allocation failed")?;
+    pending.sort_unstable_by_key(|spilled| spilled.first);
     let mut other = 0_u64;
     let mut handed = 0_u64;
+    let mut take = |logged: i64, row: Row| {
+        if logged == signal {
+            output.push(row);
+            handed += 1;
+        } else {
+            other += 1;
+        }
+    };
+    let mut spills = pending.drain(..).peekable();
     for index in 0..reserved {
+        while let Some(spilled) = spills.next_if(|spilled| spilled.first <= index) {
+            spilled.rows.iter().for_each(|&row| take(spilled.signal, row));
+        }
         // SAFETY: no writer is active and every reserved element within the
         // log was marked (see `Log`).
-        match log.map(|log| unsafe { log.read(index) }) {
-            Some((Some(logged), row)) if logged == signal => {
-                output.push(row);
-                handed += 1;
-            }
-            Some((Some(_), _)) => other += 1,
-            _ => {}
+        if let Some((Some(logged), row)) = log.map(|log| unsafe { log.read(index) }) {
+            take(logged, row);
         }
     }
+    spills.for_each(|spilled| spilled.rows.iter().for_each(|&row| take(spilled.signal, row)));
+    drop(pending);
     COUNTERS[6].fetch_add(handed, Ordering::Relaxed);
     COUNTERS[8].fetch_add(other, Ordering::Relaxed);
     CURSOR.store(0, Ordering::SeqCst);
     prepare(0);
     install();
     let lost = LOST.swap(false, Ordering::SeqCst);
+    let storage_lost = STORAGE_LOST.swap(false, Ordering::SeqCst);
     let changed = CHANGED.swap(false, Ordering::SeqCst);
     let result = if UNHOOKED.get().is_some() {
         Err("combat log prune hook is not installed")
     } else if !ENABLED.load(Ordering::SeqCst) || changed {
         Err("combat log prune hook was not enabled throughout")
+    } else if storage_lost {
+        Err(STORAGE_FAILED)
     } else if lost {
         Err("a pruned combat log could not be kept")
     } else {
@@ -421,7 +506,7 @@ pub fn status() -> impl serde::Serialize {
         "calls_with_deleted_logs": c[1],
         "rows_logged": c[2],
         "failed_reads": c[3],
-        "overflowed_logs": c[4],
+        "spilled_reservations": c[4],
         "drains": c[5],
         "handed_over": c[6],
         "unobserved_drains": c[7],
@@ -544,6 +629,8 @@ pub fn observe_for_test(enabled: bool) {
     ENABLED.store(enabled, Ordering::SeqCst);
     CHANGED.store(false, Ordering::SeqCst);
     LOST.store(false, Ordering::SeqCst);
+    held().clear();
+    STORAGE_LOST.store(false, Ordering::SeqCst);
     install_for_test(TEST_ROWS);
 }
 
@@ -726,22 +813,27 @@ mod tests {
         std::hint::black_box(bytes);
     }
 
-    /// Rows that do not fit keep the prefix that did, make the drain
-    /// unobserved, and size the log the drain installs; a disabled hook is
-    /// unobserved.
+    /// Rows past the log are read whole into the spill and handed over in
+    /// reservation order, and size the log the drain installs; a disabled
+    /// hook is unobserved.
     #[test]
-    fn rows_that_do_not_fit_keep_their_prefix_and_grow_the_log() {
+    fn rows_past_the_log_are_kept_whole_in_order_and_grow_the_log() {
         let _lock = test_lock();
         observe_for_test(true);
         install_for_test(8);
         append_for_test(SIGNAL, &[row(1, 1); 6]);
         append_for_test(SIGNAL, &[row(2, 1), row(2, 2), row(2, 3), row(2, 4)]);
+        append_for_test(SIGNAL, &[row(3, 1)]);
         let mut output = Vec::new();
-        assert!(drain(SIGNAL, &mut output).is_err());
-        assert_eq!(output.len(), 8);
-        assert_eq!(output[6..], [row(2, 1), row(2, 2)]);
-        // The failed drain installed a log for the ten rows.
-        assert!(CAPACITY.load(Ordering::SeqCst) >= 10);
+        assert_eq!(drain(SIGNAL, &mut output), Ok(()));
+        assert_eq!(output.len(), 11);
+        assert_eq!(
+            output[6..],
+            [row(2, 1), row(2, 2), row(2, 3), row(2, 4), row(3, 1)]
+        );
+        assert!(held().is_empty());
+        // The drain installed a log for the eleven rows.
+        assert!(CAPACITY.load(Ordering::SeqCst) >= 11);
         output.clear();
         append_for_test(SIGNAL, &[row(1, 1); 6]);
         append_for_test(SIGNAL, &[row(2, 1), row(2, 2), row(2, 3), row(2, 4)]);
@@ -777,9 +869,10 @@ mod tests {
         );
     }
 
-    /// Before any log is installed a prune is lost and requests its rows; a
-    /// read that stops early leaves only what it read; a failed read keeps
-    /// nothing of its own while other prunes' rows are handed over.
+    /// Before any log is installed a prune's rows are kept in the spill and
+    /// request a log; a read that stops early leaves only what it read; a
+    /// failed read keeps nothing of its own while other prunes' rows are
+    /// handed over.
     #[test]
     fn unread_reservations_are_never_handed_over() {
         let _lock = test_lock();
@@ -788,9 +881,10 @@ mod tests {
         append_for_test(SIGNAL, &[row(1, 1); 8]);
         assert!(REQUIRED.load(Ordering::SeqCst) >= 8);
         let mut output = Vec::new();
-        assert!(drain(SIGNAL, &mut output).is_err());
-        assert!(output.is_empty());
+        assert_eq!(drain(SIGNAL, &mut output), Ok(()));
+        assert_eq!(output, [row(1, 1); 8]);
         assert!(CAPACITY.load(Ordering::SeqCst) >= 8);
+        output.clear();
         // Fewer rows than counted: a deleted log shrank between the reads.
         record(SIGNAL, 3, |out| {
             out[0] = row(2, 1);
@@ -810,6 +904,69 @@ mod tests {
         });
         assert_eq!(drain(SIGNAL, &mut output), Ok(()));
         assert_eq!(output, [row(5, 1)]);
+    }
+
+    /// A deleted log that grew between the count and the read is read again
+    /// whole; a spill that cannot be allocated names the drain's loss.
+    #[test]
+    fn a_reservation_that_grew_is_reread_whole_and_a_failed_spill_is_named() {
+        let _lock = test_lock();
+        observe_for_test(true);
+        install_for_test(8);
+        let grown = [row(1, 1), row(1, 2), row(1, 3)];
+        record(SIGNAL, 2, |out| {
+            let len = out.len().min(grown.len());
+            out[..len].copy_from_slice(&grown[..len]);
+            Ok(if len == grown.len() {
+                Outcome::Rows { len }
+            } else {
+                Outcome::Truncated {
+                    len,
+                    unread_rows: (grown.len() - len) as u32,
+                }
+            })
+        });
+        append_for_test(SIGNAL, &[row(2, 1)]);
+        let mut output = Vec::new();
+        assert_eq!(drain(SIGNAL, &mut output), Ok(()));
+        assert_eq!(output, [row(1, 1), row(1, 2), row(1, 3), row(2, 1)]);
+        output.clear();
+        install_for_test(1);
+        collector_test_support::with_allocations_denied(|| {
+            append_for_test(SIGNAL, &[row(3, 1), row(3, 2)]);
+        });
+        append_for_test(SIGNAL, &[row(4, 1)]);
+        assert_eq!(drain(SIGNAL, &mut output), Err(STORAGE_FAILED));
+        assert_eq!(output, [row(4, 1)]);
+    }
+
+    /// A prune past the log completes while the drain holds its spilled
+    /// reservations, and a burst of them is handed over whole and in order.
+    #[test]
+    fn a_spill_never_waits_for_the_drain_and_a_burst_keeps_every_row_in_order() {
+        let _lock = test_lock();
+        observe_for_test(true);
+        install_for_test(4);
+        let burst = |call: u32| -> Vec<Row> { (0..3).map(|variant| row(call, variant)).collect() };
+        let consumer = held();
+        let (done, finished) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                for call in 0..200 {
+                    let _call = Call::enter();
+                    append_for_test(SIGNAL, &burst(call));
+                }
+                done.send(()).unwrap();
+            });
+            finished
+                .recv_timeout(std::time::Duration::from_secs(30))
+                .expect("a combat log prune spill waited for the drain's lock");
+            drop(consumer);
+        });
+        let mut output = Vec::new();
+        assert_eq!(drain(SIGNAL, &mut output), Ok(()));
+        assert_eq!(output, (0..200).flat_map(burst).collect::<Vec<_>>());
+        assert!(held().is_empty());
     }
 
     /// A load between two samples: the rows the left session logged after

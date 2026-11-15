@@ -132,16 +132,10 @@ fn bench_province_gates_and_border_conflicts() {
             "Provinces (no conflict)"
         };
         report(label, n, &memory, || {
-            let (outcome, walk) = walk_with_conflicts(
-                &memory,
-                base,
-                game_state,
-                &mut rows,
-                ConflictOutput {
-                    rows: &mut conflict_rows,
-                    groups: &mut groups,
-                },
-            );
+            let (outcome, walk) = walk_with_conflicts_buffer(&memory, base, game_state, crate::walk::Buffer::Growing(&mut rows), ConflictBuffers {
+            rows: crate::walk::Buffer::Growing(&mut conflict_rows),
+            groups: crate::walk::Buffer::Growing(&mut groups),
+        }, crate::walk::Buffer::Count, None);
             assert_eq!(outcome, Outcome::Rows { len: provinces });
             assert_eq!(walk.outcome, Outcome::Rows { len: conflicts });
             format!(

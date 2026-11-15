@@ -73,6 +73,6 @@ fn organisation_name_uses_event_read_override_owner_scope_and_exact_missing_key(
     };
     assert_eq!(
         show(&frame),
-        Err("CountryLinks lacks industrial organisation owner".into())
+        Err("country links lacks industrial organisation owner".into())
     );
 }

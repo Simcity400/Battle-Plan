@@ -25,11 +25,9 @@ pub(crate) struct NavalJob {
     pub log: RawLog<NAVAL_PACK_N>,
     pub(super) reserved_index: crate::raw::RecordedCache,
     pub game_state: usize,
-    pub(super) growing: bool,
     pub(super) theatres_active: bool,
     pub(super) wing_sources: Vec<ctheatre::WingMembership>,
     pub(super) wing_outcome: Option<Outcome>,
-    pub(super) wing_growing: bool,
     pub(super) wing_required: usize,
     /// The copy left before the wing census joined: the callback installs it
     /// after the copy returns ([`Self::install_wings_after`]).
@@ -103,7 +101,6 @@ impl NavalJob {
     /// Callback-owned values from the one shared complete wing census.
     pub(crate) fn install_wings(&mut self, job: &mut super::super::air::AirWingJob) -> u64 {
         self.theatres_active = job.theatres_active;
-        self.wing_growing = job.growing;
         if !job.theatres_active {
             self.wing_sources.clear();
             self.wing_outcome = Some(SKIPPED);
@@ -111,56 +108,11 @@ impl NavalJob {
             return 0;
         }
         let begin = qpc();
-        if job.growing {
-            let outcome = job.naval_membership_outcome;
-            std::mem::swap(&mut self.wing_sources, &mut job.naval_memberships);
-            self.wing_sources.truncate(outcome.len());
-            self.wing_outcome = Some(outcome);
-            self.wing_required = job.required_memberships;
-            return elapsed(begin);
-        }
-        self.wing_sources.clear();
-        let (source, rows) = job.memberships();
-        // Capacity demand is independent of failure: a bad tail leaf in the
-        // complete shared census must not hide a smaller consumer's shortage.
-        self.wing_required = match source {
-            Outcome::Rows { len } => len,
-            Outcome::Truncated { len, unread_rows } => len.saturating_add(unread_rows as usize),
-            Outcome::Unavailable { .. } => rows.len().saturating_add(1),
-        };
-        let mut failure = None;
-        let mut omitted = 0_u32;
-        for row in rows {
-            if let Some(reason) = row.error {
-                failure.get_or_insert(reason);
-            } else if self.wing_sources.len() < self.wing_sources.capacity() {
-                self.wing_sources.push(row.value);
-            } else {
-                omitted = omitted.saturating_add(1);
-            }
-        }
-        self.wing_outcome = Some(match source {
-            Outcome::Rows { .. } => match failure {
-                Some(reason) => Outcome::Unavailable { reason },
-                None if omitted != 0 => Outcome::Truncated {
-                    len: self.wing_sources.len(),
-                    unread_rows: omitted,
-                },
-                None => Outcome::Rows {
-                    len: self.wing_sources.len(),
-                },
-            },
-            Outcome::Truncated { .. } => {
-                let len = self.wing_sources.len();
-                match u32::try_from(self.wing_required.saturating_sub(len)) {
-                    Ok(unread_rows) => Outcome::Truncated { len, unread_rows },
-                    Err(_) => Outcome::Unavailable {
-                        reason: "air-wing omitted source count overflow",
-                    },
-                }
-            }
-            other => other,
-        });
+        let outcome = job.naval_membership_outcome;
+        std::mem::swap(&mut self.wing_sources, &mut job.naval_memberships);
+        self.wing_sources.truncate(outcome.len());
+        self.wing_outcome = Some(outcome);
+        self.wing_required = job.required_memberships;
         elapsed(begin)
     }
 
@@ -188,11 +140,9 @@ impl NavalJob {
     pub fn clear(&mut self) {
         self.log.clear();
         self.game_state = 0;
-        self.growing = false;
         self.theatres_active = false;
         self.wing_sources.clear();
         self.wing_outcome = None;
-        self.wing_growing = false;
         self.wing_required = 0;
         self.wings_follow = false;
         self.oob_theatres.clear();
@@ -216,10 +166,18 @@ impl NavalJob {
         self.reserved_growth_rows = 0;
     }
 
-    /// Retains the original census verdict as well as a complete fitted prefix.
-    /// This fixed entry preserves allocation-free fixture/callback storage;
-    /// a failed or short attempted snapshot never authorizes a registry retry.
+    /// Retains the original census verdict as well as the complete census.
+    /// A failed attempted snapshot never authorizes a registry retry.
     pub(crate) fn capture_roots(&mut self, roots: &[corders_group::Root], outcome: Outcome) -> u64 {
+        if let Outcome::Rows { len } = outcome
+            && len <= roots.len()
+        {
+            let additional = len.saturating_sub(self.roots.len());
+            if reserve_exact(&mut self.roots, additional).is_err() {
+                self.fail_roots("orders registry snapshot allocation failed");
+                return 0;
+            }
+        }
         let begin = qpc();
         self.roots.clear();
         self.roots_len = None;
@@ -240,23 +198,6 @@ impl NavalJob {
         elapsed(begin)
     }
 
-    /// Worker-only snapshot of the original, complete registry census.
-    pub(crate) fn capture_roots_growing(
-        &mut self,
-        roots: &[corders_group::Root],
-        outcome: Outcome,
-    ) -> u64 {
-        if let Outcome::Rows { len } = outcome
-            && len <= roots.len()
-        {
-            let additional = len.saturating_sub(self.roots.len());
-            if reserve_exact(&mut self.roots, additional).is_err() {
-                self.fail_roots("orders registry snapshot allocation failed");
-                return 0;
-            }
-        }
-        self.capture_roots(roots, outcome)
-    }
 
     /// A rejected or failed accepted producer supplies no retryable census.
     pub(crate) fn fail_roots(&mut self, reason: &'static str) {
@@ -343,10 +284,6 @@ impl NavalJob {
                 + self.roster.allocated_bytes() as u64,
             ..Default::default()
         });
-    }
-
-    pub(crate) fn wing_limit(&self) -> usize {
-        self.wing_sources.capacity()
     }
 }
 
@@ -566,11 +503,10 @@ fn copy_naval_theatres_with_root(
     if let Some(roster) = memory.authenticated_countries(base, game_state)
         && roster.slots().len() == roster.arrays()[0].count as usize
     {
-        if log.worker_growth_enabled()
-            && roster_snapshot
-                .reserve(roster.slots().len())
-                .map_err(crate::allocation::io)
-                .is_err()
+        if roster_snapshot
+            .reserve(roster.slots().len())
+            .map_err(crate::allocation::io)
+            .is_err()
         {
             return;
         }
@@ -1081,17 +1017,16 @@ fn copy_oob_root(
                     })
                 {
                     job.oob_theatres_required = job.oob_theatres.len().saturating_add(1);
-                    if job.growing {
-                        if reserve(&mut job.oob_theatres, 1).is_err() {
-                            return false;
-                        }
-                        let required = job
-                            .oob_theatres_required
-                            .saturating_sub(job.oob_theatre_positions.len());
-                        if reserve(&mut job.oob_theatre_positions, required).is_err() {
-                            return false;
-                        }
+                    if reserve(&mut job.oob_theatres, 1).is_err() {
+                        return false;
                     }
+                    let required = job
+                        .oob_theatres_required
+                        .saturating_sub(job.oob_theatre_positions.len());
+                    if reserve(&mut job.oob_theatre_positions, required).is_err() {
+                        return false;
+                    }
+                    
                     if job.oob_theatres.len() == job.oob_theatres.capacity()
                         || job.oob_theatres.len() == job.oob_theatre_positions.capacity()
                     {
@@ -1728,9 +1663,6 @@ fn copy_naval_pass(
     // This independent raw phase reads no shared wing value: they are
     // installed before it, or after it returns (`NavalJob::defer_wings`).
     job.log.clear();
-    if job.growing {
-        job.log.enable_worker_growth();
-    }
     job.clear_reserved();
     job.game_state = game_state;
     let details_active = job.theatres_active;
@@ -1780,23 +1712,13 @@ pub(crate) fn copy_naval_refresh(
     }
     let mut ticks = [0u64; NAVAL_PACK_N];
     copy_naval_pass(job, memory, ctx.base, ctx.game_state, &mut ticks);
+    job.update_capacity_charge();
     NavalCopyReport {
         raw_ok: job.positive_raw_complete,
         copy_ticks: ticks,
     }
 }
 
-/// Acquisition-worker entry: grow from this pass's original observations.
-pub(crate) fn copy_naval_refresh_growing(
-    memory: &impl Memory,
-    ctx: NavalCopyContext,
-    job: &mut NavalJob,
-) -> NavalCopyReport {
-    job.growing = true;
-    let report = copy_naval_refresh(memory, ctx, job);
-    job.update_capacity_charge();
-    report
-}
 
 impl Captured {
     /// Finish an accepted theatre/OOB acquisition failure after independent
@@ -1863,7 +1785,7 @@ pub(crate) fn decode_naval_payload(
         ),
         Some(outcome) => (&[][..], outcome),
         None => {
-            let outcome = corders_group::walk_roots_growing(&recorded, base, &mut walked);
+            let outcome = corders_group::walk_roots(&recorded, base, &mut walked);
             (&walked[..], outcome)
         }
     };
@@ -1879,11 +1801,8 @@ pub(crate) fn decode_naval_payload(
     }
     // Order sources + OOB through the existing setters (identical rows,
     // outcomes and ticks to the game thread's source callbacks).
-    if job.growing {
-        captured.set_order_sources_growing(&recorded, base, roots, roots_outcome);
-    } else {
-        captured.set_order_sources(&recorded, base, roots, roots_outcome);
-    }
+    captured.set_order_sources(&recorded, base, roots, roots_outcome);
+    
     // The hourly header walk uses the same country and owner checks as the
     // daily detail walk, but never requires wing membership or nested arenas.
     if !job.theatres_active {
@@ -1908,13 +1827,13 @@ pub(crate) fn decode_naval_payload(
         job.game_state,
         job.theatres_active,
         ctheatre::Storage {
-            land: storage_buffer(&mut captured.land.rows, job.growing),
-            land_groups: storage_buffer(&mut captured.land_groups.rows, job.growing),
-            land_members: storage_buffer(&mut captured.land_members.rows, job.growing),
-            air: storage_buffer(&mut captured.air.rows, job.growing),
-            air_groups: storage_buffer(&mut captured.air_groups.rows, job.growing),
-            air_members: storage_buffer(&mut captured.air_members.rows, job.growing),
-            names: storage_buffer(&mut captured.theatre_names.first, job.growing),
+            land: storage_buffer(&mut captured.land.rows),
+            land_groups: storage_buffer(&mut captured.land_groups.rows),
+            land_members: storage_buffer(&mut captured.land_members.rows),
+            air: storage_buffer(&mut captured.air.rows),
+            air_groups: storage_buffer(&mut captured.air_groups.rows),
+            air_members: storage_buffer(&mut captured.air_members.rows),
+            names: storage_buffer(&mut captured.theatre_names.first),
         },
     );
     captured.land.outcome = bounded(first.land, captured.land.rows.len());
@@ -1955,7 +1874,6 @@ pub(crate) fn decode_naval_payload(
                 .unwrap_or(Err("reserved land root observation absent")),
             Some((&job.log, job.positive_span_end)),
             job.reserved_first_failure,
-            job.growing,
         );
     }
     // Keep observed raw demand independent from logical certificate refusal.
@@ -1971,9 +1889,8 @@ pub(crate) fn decode_naval_payload(
     // Preserve the complete authoritative reverse census without attempting
     // an unrelated full wing decode from an incomplete mirror.
     let source_len = job.wing_sources.len();
-    if job.wing_growing {
-        crate::table_capture::grow_vec(&mut captured.wing_sources.rows, source_len);
-    }
+    crate::table_capture::grow_vec(&mut captured.wing_sources.rows, source_len);
+    
     let copied = source_len.min(captured.wing_sources.rows.len());
     captured.wing_sources.rows[..copied].copy_from_slice(&job.wing_sources[..copied]);
     captured.wing_sources.outcome = match job.wing_outcome {

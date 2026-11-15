@@ -113,43 +113,60 @@ impl<'a> DestinationHostility<'a> {
         total: u32,
         owner: Option<u32>,
     ) -> Result<bool, &'static str> {
-        // Test the signed ordinary count before looking up its tail.
-        if (total as i32) <= 0 {
-            return Ok(false);
-        }
-        if path.len() != total as usize {
-            return Err("last ordinary-route province hostility");
-        }
-        let last = *path
-            .last()
-            .ok_or("last ordinary-route province hostility")?;
-        // Reject signed nonpositive province IDs.
-        if (last as i32) <= 0 {
-            return Ok(false);
-        }
-        let controller = *self
-            .controllers
-            .get(&last)
-            .ok_or("last ordinary-route province controller")?;
-        if (controller as i32) <= 0 {
-            return Ok(false);
-        }
-        let owner = owner.ok_or("action logical owner")?;
-        if controller == owner {
-            return Ok(false);
-        }
-        // The game receives the destination controller and
-        // targets the unit's raw logical owner. Reverse truth is no evidence.
-        let mut owners = self.owners.borrow_mut();
-        let receiver = owners
-            .entry(controller)
-            .or_insert_with(|| Owner::new(self.frame, controller));
-        receiver
-            .as_ref()
-            .map_err(|_| "action destination directed-war receiver unavailable")?
-            .at_war(owner)
-            .map_err(|_| "action destination directed-war operands unavailable")
+        destination_enemy_by(
+            path,
+            total,
+            owner,
+            |province| self.controllers.get(&province).copied(),
+            |controller, owner| {
+                let mut owners = self.owners.borrow_mut();
+                let receiver = owners
+                    .entry(controller)
+                    .or_insert_with(|| Owner::new(self.frame, controller));
+                receiver
+                    .as_ref()
+                    .map_err(|_| "action destination directed-war receiver unavailable")?
+                    .at_war(owner)
+                    .map_err(|_| "action destination directed-war operands unavailable")
+            },
+        )
     }
+}
+
+/// [`DestinationHostility::destination_enemy`] from a province's controller and whether a
+/// receiver (raw) is at war with a target (raw).
+pub fn destination_enemy_by(
+    path: &[u32],
+    total: u32,
+    owner: Option<u32>,
+    controller_of: impl Fn(u32) -> Option<u32>,
+    at_war: impl FnOnce(u32, u32) -> Result<bool, &'static str>,
+) -> Result<bool, &'static str> {
+    // Test the signed ordinary count before looking up its tail.
+    if (total as i32) <= 0 {
+        return Ok(false);
+    }
+    if path.len() != total as usize {
+        return Err("last ordinary-route province hostility");
+    }
+    let last = *path
+        .last()
+        .ok_or("last ordinary-route province hostility")?;
+    // Reject signed nonpositive province IDs.
+    if (last as i32) <= 0 {
+        return Ok(false);
+    }
+    let controller = controller_of(last).ok_or("last ordinary-route province controller")?;
+    if (controller as i32) <= 0 {
+        return Ok(false);
+    }
+    let owner = owner.ok_or("action logical owner")?;
+    if controller == owner {
+        return Ok(false);
+    }
+    // The game receives the destination controller and
+    // targets the unit's raw logical owner. Reverse truth is no evidence.
+    at_war(controller, owner)
 }
 
 /// Unit and combat membership links are maintained in both directions.
@@ -192,12 +209,14 @@ impl TransferCombatUnits {
     }
 
     fn get(&self, division: u64) -> Option<bool> {
-        if self.units.contains(&division) {
-            Some(true)
-        } else {
-            self.complete.then_some(false)
-        }
+        transfer_membership(self.units.contains(&division), self.complete)
     }
+}
+
+/// Whether a division is in a naval transfer a naval combat names: proved when named, disproved
+/// only by a whole census.
+pub fn transfer_membership(named: bool, complete: bool) -> Option<bool> {
+    if named { Some(true) } else { complete.then_some(false) }
 }
 
 /// One hour's class-0 actions for the viewing country's roster, independent of camera.
@@ -245,29 +264,19 @@ impl Actions {
             .iter()
             .filter(|movement| ours.is_none() || own.contains(&movement.division))
             .map(|movement| {
-                let transfer = transfers.get(movement.division);
-                let needs_enemy = (movement.path_total as i32) > 0
-                    && movement.target == 0
-                    && movement.retreat == 0
-                    && movement.strategic_redeployment == 0
-                    && (movement.naval_transfer == 0 || transfer == Some(false));
                 (
                     movement.division,
-                    admit_strategic_layout(
-                        action_code(
-                            movement,
-                            standing.get(&movement.division).copied().flatten(),
-                            if needs_enemy {
-                                hostility.destination_enemy(
-                                    &movement.path,
-                                    movement.path_total,
-                                    owners.get(&movement.division).copied(),
-                                )
-                            } else {
-                                Err("last ordinary-route province hostility")
-                            },
-                            transfer,
-                        ),
+                    division_action(
+                        movement,
+                        standing.get(&movement.division).copied().flatten(),
+                        transfers.get(movement.division),
+                        || {
+                            hostility.destination_enemy(
+                                &movement.path,
+                                movement.path_total,
+                                owners.get(&movement.division).copied(),
+                            )
+                        },
                         strategic_layout.is_ok(),
                     ),
                 )
@@ -291,6 +300,35 @@ impl Actions {
     }
 }
 
+/// The action of one division from its movement row: its standing attack, its transfer-combat
+/// membership and, only when the route's tail decides, whether that tail is hostile.
+pub fn division_action(
+    movement: &DivisionMovementRow,
+    standing: Option<bool>,
+    transfer: Option<bool>,
+    destination_enemy: impl FnOnce() -> Result<bool, &'static str>,
+    strategic_layout: bool,
+) -> Action {
+    let needs_enemy = (movement.path_total as i32) > 0
+        && movement.target == 0
+        && movement.retreat == 0
+        && movement.strategic_redeployment == 0
+        && (movement.naval_transfer == 0 || transfer == Some(false));
+    admit_strategic_layout(
+        action_code(
+            movement,
+            standing,
+            if needs_enemy {
+                destination_enemy()
+            } else {
+                Err("last ordinary-route province hostility")
+            },
+            transfer,
+        ),
+        strategic_layout,
+    )
+}
+
 /// Scan unit combat references and ordered attacker countries, preserving early
 /// return. Naval details supply their side's ordered primary list. This path
 /// does not inspect combat-side unit membership.
@@ -300,28 +338,35 @@ fn recorded_standing(
     owner: u32,
     links: &BTreeMap<u32, u32>,
 ) -> Option<bool> {
+    recorded_standing_by(packet, owner, links, |kind, combat| match kind {
+        0 | 1 => {
+            let sides = rows::<tables::LandCombatSides>(frame).ok()?;
+            let side = sides.rows().iter().find(|side| side.combat == combat)?;
+            Some(side.attacker_primary.clone())
+        }
+        // Naval details carry this same ordered primary country list.
+        _ => {
+            let naval = rows::<tables::NavalCombatDetails>(frame).ok()?;
+            let row = naval.rows().iter().find(|row| row.combat == combat)?;
+            Some(row.sides[0].summary.countries.clone())
+        }
+    })
+}
+
+/// [`recorded_standing`] with `countries` giving a referenced combat's ordered attacker
+/// countries by its kind (0 and 1 land, 2 naval) and id.
+pub fn recorded_standing_by(
+    packet: &replay_data::rows::UnitCombatReferences,
+    owner: u32,
+    links: &BTreeMap<u32, u32>,
+    countries: impl Fn(u8, u64) -> Option<Vec<u32>>,
+) -> Option<bool> {
     for reference in &packet.entries {
-        let countries = match reference.kind {
-            0 | 1 => {
-                let sides = rows::<tables::LandCombatSides>(frame).ok()?;
-                let side = sides
-                    .rows()
-                    .iter()
-                    .find(|side| side.combat == reference.combat)?;
-                &side.attacker_primary
-            }
-            2 => {
-                // Naval details carry this same ordered primary country list.
-                let naval = rows::<tables::NavalCombatDetails>(frame).ok()?;
-                let combat = naval
-                    .rows()
-                    .iter()
-                    .find(|combat| combat.combat == reference.combat)?;
-                &combat.sides[0].summary.countries
-            }
-            _ => return None,
-        };
-        for &country in countries {
+        if !matches!(reference.kind, 0..=2) {
+            return None;
+        }
+        let countries = countries(reference.kind, reference.combat)?;
+        for country in countries {
             if country == owner {
                 return Some(true);
             }
@@ -331,6 +376,40 @@ fn recorded_standing(
         }
     }
     Some(false)
+}
+
+/// The fallback when a division's combat references are not recorded: its combats from
+/// combat-side membership (`references`) and each one's attacker countries.
+pub fn membership_standing(
+    owner: u32,
+    references: &BTreeSet<u64>,
+    sides: impl Fn(u64) -> Option<Vec<u32>>,
+    links: &BTreeMap<u32, u32>,
+    combats_complete: bool,
+    combat_count: u32,
+) -> Option<bool> {
+    let mut unknown = false;
+    for &reference in references {
+        let Some(countries) = sides(reference) else {
+            unknown = true;
+            continue;
+        };
+        for country in countries {
+            if country == owner {
+                return Some(true);
+            }
+            if country != 0 && owner != 0 {
+                match (links.get(&country), links.get(&owner)) {
+                    (Some(country), Some(owner)) if country == owner => {
+                        return Some(true);
+                    }
+                    (Some(_), Some(_)) => {}
+                    _ => unknown = true,
+                }
+            }
+        }
+    }
+    (!unknown && combats_complete && references.len() == combat_count as usize).then_some(false)
 }
 
 /// Combat-side membership and unit combat references are added and removed
@@ -395,36 +474,30 @@ fn standing_attacks(
                 let result = (|| {
                     let owner = *owners.get(&movement.division)?;
                     let references = membership.get(&movement.division)?;
-                    let mut unknown = false;
-                    for reference in references {
-                        let Some(countries) = sides.get(reference) else {
-                            unknown = true;
-                            continue;
-                        };
-                        for &country in *countries {
-                            if country == owner {
-                                return Some(true);
-                            }
-                            if country != 0 && owner != 0 {
-                                match (links.get(&country), links.get(&owner)) {
-                                    (Some(country), Some(owner)) if country == owner => {
-                                        return Some(true);
-                                    }
-                                    (Some(_), Some(_)) => {}
-                                    _ => unknown = true,
-                                }
-                            }
-                        }
-                    }
-                    (!unknown
-                        && combats.is_complete()
-                        && references.len() == movement.combat_count as usize)
-                        .then_some(false)
+                    membership_standing(
+                        owner,
+                        references,
+                        |combat| sides.get(&combat).map(|countries| countries.to_vec()),
+                        links,
+                        combats.is_complete(),
+                        movement.combat_count,
+                    )
                 })();
                 (movement.division, result)
             }),
     );
     Ok(result)
+}
+
+/// Whether the recording's strategic-redeployment fixed layout validates against its recorded
+/// definitions, however they are read ([`replay_derive::fixed_layout::validate_definitions`]):
+/// the actions 6 and 11 are refused by name otherwise.
+pub fn strategic_layout_of(
+    whole: Result<(), String>,
+    token: impl Fn(u32) -> Option<u32>,
+    spells: impl Fn(u32, &[u8]) -> Option<bool>,
+) -> bool {
+    replay_derive::fixed_layout::validate_definitions(replay_derive::fixed_layout::STRATEGIC_ACTION, whole, token, spells).is_ok()
 }
 
 /// A fixed-key failure affects only the two strategic-redeployment actions.

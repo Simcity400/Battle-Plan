@@ -1,14 +1,14 @@
 import type { CountryGroupReply, HourSpan, MembershipRun } from '../generated/dashboard';
 import { clipToSpans } from '../charts/series.ts';
 import { withoutHours } from '../charts/timeline/runState.ts';
-import { factionNameLabel } from './factionNames.ts';
+import { factionChoiceLabel } from './factionNames.ts';
 import { compareTags } from './tagOrder.ts';
 import type { Run } from '../charts/series';
 import type { CountryGroup, CountrySelection, GroupMembership } from './model';
 import { countryIdentityIndex } from './countryIdentity.ts';
 import type { CountryIdentityIndex } from './countryIdentity.ts';
-import { finalPreparedReply, preparedPrefix } from './preparedPrefix.ts';
 import { PlaybackIntervals, spanChanges } from '../charts/playbackIntervals.ts';
+import { NO_MEMBERS } from './noMembers.ts';
 
 /** Smart country groups, resolved from the recording's own history: human players,
  * any recorded faction (including ones founded or dissolved partway through),
@@ -103,7 +103,7 @@ export function groupLabel(group: CountryGroup, reply: CountryGroupReply | undef
     case 'humans': return 'Human players';
     case 'faction': {
       const faction = reply?.factions.find(faction => faction.id === group.id);
-      return faction ? factionNameLabel(faction, hour, overrides?.[faction.id]?.name) : 'Unnamed faction';
+      return faction ? factionChoiceLabel(faction, hour, overrides?.[faction.id]?.name) : 'Unnamed faction';
     }
     case 'war': return `At war with ${countryName(group.tag)}`;
     case 'top': return `Top ${group.count}`;
@@ -130,61 +130,23 @@ function unrecorded(membership: GroupMembership): string {
   }
 }
 
-/** Whether a groups reply is final. A reply answered from the prepared prefix while the
- * branch is still being prepared is not: holders and memberships of its later hours may
- * still be read, so finding no country in it is not yet proof that there is none. Without
- * a reply (identities supplied from elsewhere) nothing is pending. */
-export function groupsSettled(groups: CountryGroupReply | undefined): boolean {
-  return !groups || finalPreparedReply(groups);
-}
-
-/** Whether `hour` is still being prepared in a partial groups reply: its holders and
- * memberships are not known yet. */
-export function groupsPendingAt(groups: CountryGroupReply | undefined, hour: number): boolean {
-  const pending = groups ? preparedPrefix(groups)?.pending ?? [] : [];
-  return pending.some(span => span.firstHour <= hour && hour <= span.lastHour);
-}
-
-/** Whether a groups reply has read every hour `firstHour..lastHour` (one hour when
- * `lastHour` is left out): always for a final reply, else only inside the coverage its
- * prefix reads through. A gap recorded there is a real gap. */
-export function groupsKnownAt(groups: CountryGroupReply | undefined, firstHour: number, lastHour = firstHour): boolean {
-  if (groupsSettled(groups)) return true;
-  const prefix = preparedPrefix(groups);
-  return !!prefix && prefix.coverage.firstHour <= firstHour && lastHour <= prefix.coverage.lastHour
-    && !prefix.pending.some(span => span.firstHour <= lastHour && firstHour <= span.lastHour);
-}
-
 /** Whether a country choice's membership is known at every hour `firstHour..lastHour`
  * (one hour when `lastHour` is left out), so a country it leaves out there is proven
- * not to be chosen. False while those hours, or what the choice counts beyond them (the
- * branch end, or the whole branch), are still being prepared: an absence or empty state
- * waits for it. A recorded gap is known: it is unrecorded, not pending. */
+ * not to be chosen: false only while the group history the choice needs loads. A
+ * recorded gap is known: it is unrecorded. */
 export type MembershipKnown = (firstHour: number, lastHour?: number) => boolean;
-
-/** Shown in place of an absence or empty state while `MembershipKnown` is false. */
-export const MEMBERSHIP_PREPARING = 'This range is still being prepared.';
 
 const ALWAYS: MembershipKnown = () => true;
 const NEVER: MembershipKnown = () => false;
 
-/** Whether what a choice counts beyond the hours it is applied at has been read: the
- * members at the branch end, or for any other choice the whole branch, since a holder of
- * a chosen tag, a member ever, or a group not founded yet may first appear later. A group
- * counted at each hour needs only those hours. */
-function choiceSettled(selection: CountrySelection, groups: CountryGroupReply | undefined, lastHour: number): boolean {
-  if (selection.kind === 'all') return true;
-  if (selection.kind !== 'group') return groupsSettled(groups);
-  if (!groups) return false;
-  if (selection.membership === 'ever' || !groupRuns(groups, selection.group)) return groupsSettled(groups);
-  return selection.membership === 'hour' || groupsKnownAt(groups, lastHour);
-}
+/** Whether the group history a choice needs has loaded: a group needs the groups reply. */
+const choiceLoaded = (selection: CountrySelection, groups: CountryGroupReply | undefined) => selection.kind !== 'group' || groups !== undefined;
 
 export interface WorldFilter {
   readonly tags: ReadonlySet<string> | null;
   readonly reason: string | null;
-  /** Whether the countries are known at the hour asked (`MembershipKnown`). While not,
-   * `reason` is null and the countries are those read so far: an empty set is loading. */
+  /** Whether the countries are known (`MembershipKnown`): false while the identities or the
+   * group history load, and then `reason` is null and an empty set is loading. */
   readonly known: boolean;
   /** Native identity keys resolved at the hours membership counts. */
   readonly countryIds?: ReadonlySet<string> | null;
@@ -206,10 +168,8 @@ function readWorldFilter(selection: CountrySelection, fallback: readonly string[
   const identities = identitiesFor(groups, index);
   const filter = settledWorldFilter(selection, fallback, groups, hour, lastHour, identities);
   if (selection.kind === 'all' || filter.reason === CHOOSE) return { ...filter, known: true };
-  // While the groups are still being prepared, a reason holds only once what it is about has
-  // been read: the hour shown, and the end or the whole branch when the choice counts them
-  // (a gap recorded there stays a gap, an hour still pending is loading).
-  const known = !!identities && choiceSettled(selection, groups, lastHour) && groupsKnownAt(groups, hour);
+  // No reason holds until the identities and the group history the choice needs have loaded.
+  const known = !!identities && choiceLoaded(selection, groups);
   return known ? { ...filter, known } : { ...filter, reason: null, known };
 }
 
@@ -225,10 +185,8 @@ const filterHours = new WeakMap<CountryGroupReply, ReadonlyArray<number>>();
 function worldFilterHours(groups: CountryGroupReply): ReadonlyArray<number> {
   let hours = filterHours.get(groups);
   if (!hours) {
-    const prefix = preparedPrefix(groups);
     hours = [...spanChanges([...groups.humans, ...groups.wars, ...groups.factions.flatMap(faction => [...faction.members, ...faction.incomplete ?? []]),
-      ...groups.unobserved.humans, ...groups.unobserved.factions, ...groups.unobserved.wars,
-      ...prefix?.pending ?? [], ...(prefix ? [prefix.coverage] : [])])];
+      ...groups.unobserved.humans, ...groups.unobserved.factions, ...groups.unobserved.wars])];
     filterHours.set(groups, hours);
   }
   return hours;
@@ -294,8 +252,7 @@ function settledWorldFilter(selection: CountrySelection, fallback: readonly stri
     : identities.keysDuring(members.map(tag => ({ tag, firstHour: at, lastHour: at })));
   return { tags: new Set(identities.aliasesAt(countryIds, hour)), countryIds, reason: members.length
     ? countryIds.size ? null : 'Group members are unavailable at this time.'
-    : selection.membership === 'ever' ? 'This group has no members in this campaign.'
-      : selection.membership === 'end' ? 'This group has no members at the end of this campaign.' : 'This group has no members at this moment.' };
+    : selection.membership === 'ever' ? NO_MEMBERS.ever : selection.membership === 'end' ? NO_MEMBERS.end : NO_MEMBERS.hour };
 }
 
 /** Whether a dated row of a country passes a widget's country choice, for logs, whose
@@ -305,12 +262,18 @@ function settledWorldFilter(selection: CountrySelection, fallback: readonly stri
  * group history loads; a row whose group membership at its hour was not recorded
  * does not pass. Manual picks include all native holders of their literal tags;
  * rows resolve at their own hours. Null means identity history is still loading.
- * A row at an hour `known` leaves out is unknown, not a nonmember: a caller checks it
- * over the hours it shows before it says that no row matches. */
+ * `known` is false only while loading. */
 export interface CountryMatch { ready: boolean; matches: (tag: string, hour: number) => boolean; known: MembershipKnown; reason: string | null }
 
 const matchChanges = new WeakMap<CountryMatch['matches'], ReadonlyArray<number>>();
 export const countryMatchChangeHours = (matches: CountryMatch['matches']) => matchChanges.get(matches);
+
+/** Why a group counted at each hour has no known members at `hour`: its history was not recorded there. Null for any
+ * other choice, or a recorded hour. */
+export function membershipUnrecordedAt(selection: CountrySelection, groups: CountryGroupReply | undefined, hour: number): string | null {
+  if (selection.kind !== 'group' || selection.membership !== 'hour' || !groups) return null;
+  return groupUnobserved(groups, selection.group).some(span => span.firstHour <= hour && hour <= span.lastHour) ? unrecorded('hour') : null;
+}
 
 export function countryMatch(selection: CountrySelection, fallback: readonly string[], groups: CountryGroupReply | undefined, lastHour: number,
   index?: CountryIdentityIndex | null): CountryMatch {
@@ -326,32 +289,27 @@ function readCountryMatch(selection: CountrySelection, fallback: readonly string
   const identities = identitiesFor(groups, index);
   const loading: CountryMatch = { ready: false, matches: () => false, known: NEVER, reason: null };
   if (!identities || selection.kind === 'group' && !groups) return loading;
-  // Each row resolves its country at its own hour, so those hours must have been read too.
-  const settled = choiceSettled(selection, groups, lastHour);
-  const known: MembershipKnown = settled ? (first, last = first) => groupsKnownAt(groups, first, last) : NEVER;
   if (selection.kind === 'group' && selection.membership === 'hour') {
     const runs = groupRuns(groups!, selection.group);
-    // A group the reply does not name yet may still be founded in hours being prepared.
-    if (!runs) return settled ? { ready: true, matches: () => false, known: ALWAYS, reason: UNAVAILABLE } : loading;
+    if (!runs) return { ready: true, matches: () => false, known: ALWAYS, reason: UNAVAILABLE };
     const unobserved = groupUnobserved(groups!, selection.group);
+    // A group no one ever joined says so at once: a log would otherwise read its whole history to find no row of it.
+    if (!runs.length) return { ready: true, matches: () => false, known: ALWAYS, reason: unobserved.length ? unrecorded('ever') : NO_MEMBERS.ever };
     const byTag = new Map<string, MembershipRun[]>();
     for (const run of runs) {
       const history = byTag.get(run.tag);
       if (history) history.push(run); else byTag.set(run.tag, [run]);
     }
-    // Hours not recorded, or still being prepared, have no known members. Hours answered
-    // from a keyframe match as sampled, though not `known` until read exactly.
-    const hidden = (hour: number) => unobserved.some(span => span.firstHour <= hour && hour <= span.lastHour) || groupsPendingAt(groups, hour);
+    // Hours not recorded have no known members.
+    const hidden = (hour: number) => unobserved.some(span => span.firstHour <= hour && hour <= span.lastHour);
     return { ready: true, matches: (tag, hour) => identities.keyAt(tag, hour) !== null && !hidden(hour)
-      && (byTag.get(tag) ?? []).some(run => run.firstHour <= hour && hour <= run.lastHour), known, reason: null };
+      && (byTag.get(tag) ?? []).some(run => run.firstHour <= hour && hour <= run.lastHour), known: ALWAYS, reason: null };
   }
   const { countryIds, reason } = worldFilter(selection, fallback, groups, lastHour, lastHour, identities);
-  // A partial groups reply that names none of the choice yet is still loading it.
-  const ready = !!countryIds?.size || reason !== null || settled;
-  return { ready, matches: (tag, hour) => {
+  return { ready: true, matches: (tag, hour) => {
     const key = identities.keyAt(tag, hour);
     return key !== null && countryIds?.has(key) === true;
-  }, known: reason === null ? known : ALWAYS, reason };
+  }, known: ALWAYS, reason };
 }
 
 export interface ResolvedCountries {
@@ -392,18 +350,6 @@ export function rankedCandidates(resolved: ResolvedCountries, hour: number, all:
   return resolved.tags.filter(tag => isMember(resolved.membership!.get(tag), hour));
 }
 
-/** Whether a choice's members, by tag, are known at the hours asked (`MembershipKnown`):
- * chosen tags and top N need no group history; a group counted at each hour is known at
- * the hours read, one counted at the end once its last hour is, and one counted ever, or
- * not named yet, once the whole branch is. */
-export function membersKnown(selection: CountrySelection, groups: CountryGroupReply | undefined, lastHour: number): MembershipKnown {
-  if (selection.kind !== 'group' || selection.group.type === 'top') return ALWAYS;
-  if (!groups) return NEVER;
-  const runs = groupRuns(groups, selection.group);
-  if (selection.membership === 'hour' && runs) return (first, last = first) => groupsKnownAt(groups, first, last);
-  return (selection.membership === 'end' && runs ? groupsKnownAt(groups, lastHour) : groupsSettled(groups)) ? ALWAYS : NEVER;
-}
-
 /** The countries a multi-country widget draws: chosen tags, or a group's members
  * under its rule, at most `max` (the widget's own limit). */
 export function resolveCountries(selection: CountrySelection, fallback: string[], groups: CountryGroupReply | undefined, lastHour: number, max: number, factionTotals = false): ResolvedCountries {
@@ -418,33 +364,31 @@ export function resolveCountries(selection: CountrySelection, fallback: string[]
   }
   // Top N needs no group history: the widget ranks by its own value.
   if (selection.group.type === 'top') return { ...none, reason: null, top: Math.max(1, Math.min(max, selection.group.count)) };
-  const known = membersKnown(selection, groups, lastHour);
-  if (!groups) return { ...none, reason: null, known };
+  // A group's members are known once the groups reply has loaded.
+  if (!groups) return { ...none, reason: null, known: NEVER };
+  const known = ALWAYS;
   const runs = groupRuns(groups, selection.group);
-  // Members at the end are decided at the branch's last hour; members ever, the union of
-  // hourly members these tags are, and a group not named yet only by the whole branch.
-  const proven = selection.membership === 'end' && runs ? groupsKnownAt(groups, lastHour) : groupsSettled(groups);
-  if (!runs) return { ...none, reason: proven ? UNAVAILABLE : null, known };
+  if (!runs) return { ...none, reason: UNAVAILABLE, known };
   const unobserved = groupUnobserved(groups, selection.group);
   const members = groupMembers(runs, selection.membership === 'end' ? 'end' : 'ever', lastHour, lastHour, Infinity, unobserved);
   // Unknown is not empty: the membership counted was not recorded.
-  if (!members) return { ...none, unobserved, reason: proven ? unrecorded(selection.membership === 'end' ? 'end' : 'ever') : null, known };
+  if (!members) return { ...none, unobserved, reason: unrecorded(selection.membership === 'end' ? 'end' : 'ever'), known };
   const tags = members.slice(0, max);
   const membership = selection.membership === 'hour' ? new Map(tags.map(tag => [tag, [] as MembershipRun[]])) : null;
   if (membership) for (const run of runs) membership.get(run.tag)?.push(run);
   return { tags, membership, unobserved, dropped: Math.max(0, members.length - max), known,
-    reason: members.length || !proven ? null : 'This group has no members in this campaign.' };
+    reason: members.length ? null : NO_MEMBERS.ever };
 }
 
-/** For a widget that asks its product only for a group's members found so far: when it has
- * none to ask for, so no reply will come, why nothing shows at `hour`. Null when there are
- * members to ask for, the choice is not such a group, or `resolved` already says why; else
- * `{ reason }`: the dated reason once `hour` has been read (a recorded gap, or no member
- * then), and null while it is still being prepared. */
+/** For a widget that asks its product only for a group's members: when it has none to ask
+ * for, so no reply will come, why nothing shows at `hour` (a recorded gap, or no member
+ * then). Null when there are members to ask for, the choice is not such a group, or
+ * `resolved` already says why. */
 export function noMembersAt(selection: CountrySelection, resolved: ResolvedCountries, groups: CountryGroupReply | undefined,
-  hour: number, lastHour: number): { reason: string | null } | null {
+  hour: number, lastHour: number): { reason: string } | null {
   if (selection.kind !== 'group' || resolved.top != null || resolved.factionId != null || resolved.tags.length || resolved.reason || !groups) return null;
-  return { reason: worldFilter(selection, [], groups, hour, lastHour).reason };
+  const { reason } = worldFilter(selection, [], groups, hour, lastHour);
+  return reason === null ? null : { reason };
 }
 
 /** Drawing projection only: keep the original resolved tags as backend roots. */
@@ -522,6 +466,18 @@ export function worldRequestTags(selection: CountrySelection, fallback: string[]
   const reason = resolved.reason ?? worldFilter(counted, fallback, groups, lastHour, lastHour, identities).reason;
   // Backends expand these literal roots; an alias is never a new manual pick.
   return { tags: resolved.tags, ready: reason === null && resolved.tags.length > 0, reason };
+}
+
+/** The countries `selection` keeps, as a scope the server keeps a log to (a feed page's and its counts' `scope`): each
+ * tag over the hours it counts, less the hours its group's history was not recorded, where `countryMatch` knows no
+ * member either; null for every country. Empty while the identities are not known. */
+export function countryScope(selection: CountrySelection, fallback: readonly string[], groups: CountryGroupReply | undefined, lastHour: number,
+  firstHour?: number): MembershipRun[] | null {
+  const filter = countryMatchFilter(selection, fallback, groups, lastHour, undefined, firstHour);
+  if (!filter.membership) return null;
+  const runs = [...filter.membership].sort((a, b) => a.firstHour - b.firstHour || a.tag.localeCompare(b.tag));
+  const hidden = [...filter.unobserved].sort((a, b) => a.firstHour - b.firstHour);
+  return hidden.length ? withoutHours(runs, hidden) : runs;
 }
 
 /** Serializable countryMatch predicate. Native alias runs bound every holder. */

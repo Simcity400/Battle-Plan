@@ -1,6 +1,11 @@
-//! Land raster coverage in map cells (`province_geometry::EngineMap`).
+//! Land raster coverage in map cells, as the engine's map (`province_geometry::EngineMap`)
+//! resolves the raster, counted as it streams in: the raster is never held whole.
 //! The province map is not equal-area: northern territory is enlarged.
-use crate::{ResolvedLayers, fields::invalid, province_geometry::engine_map_checked};
+#[cfg(any(test, feature = "test-support"))]
+use crate::province_geometry::engine_map_checked;
+#[cfg(any(test, feature = "test-support"))]
+use installed_content_core::fields::invalid;
+use crate::{ResolvedLayers, province_geometry::land_areas::LandAreas};
 use std::{
     io,
     sync::atomic::{AtomicBool, Ordering},
@@ -44,8 +49,7 @@ impl ProvinceAreas {
         check()?;
         let definitions = layers.read(&definition)?;
         check()?;
-        let raster = layers.read(&provinces)?;
-        Self::from_assets_checked(&definitions, &raster, check).map_err(|error| {
+        Self::stream_checked(definitions, |piece| layers.read_pieces(&provinces, piece), check).map_err(|error| {
             io::Error::new(
                 error.kind(),
                 format!("Map area from {definition} and {provinces}: {error}"),
@@ -53,11 +57,40 @@ impl ProvinceAreas {
         })
     }
 
+    /// The areas of the raster `raster` hands in pieces, in file order; `definitions` is let go
+    /// of before the raster is read.
+    fn stream_checked(
+        definitions: installed_content_core::content::Bytes,
+        raster: impl FnOnce(&mut dyn FnMut(&[u8]) -> io::Result<()>) -> io::Result<()>,
+        check: &mut impl FnMut() -> io::Result<()>,
+    ) -> io::Result<Self> {
+        check()?;
+        let mut counted = LandAreas::new(&definitions)?;
+        drop(definitions);
+        raster(&mut |piece: &[u8]| {
+            check()?;
+            counted.piece(piece)
+        })?;
+        check()?;
+        Ok(Self { land: counted.finish()? })
+    }
+
+    /// The areas of `definitions` and the raster handed as `pieces`, for tests.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn from_pieces(definitions: &[u8], pieces: &[&[u8]]) -> io::Result<Self> {
+        Self::stream_checked(
+            definitions.into(),
+            |piece| pieces.iter().try_for_each(|bytes| piece(bytes)),
+            &mut || Ok(()),
+        )
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub fn from_assets(definitions: &[u8], provinces: &[u8]) -> io::Result<Self> {
         Self::from_assets_checked(definitions, provinces, &mut || Ok(()))
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     fn from_assets_checked(
         definitions: &[u8],
         provinces: &[u8],
@@ -65,7 +98,7 @@ impl ProvinceAreas {
     ) -> io::Result<Self> {
         check()?;
         // Refuse ambiguous record positions rather than attach area to a different id.
-        let rows = crate::map::definition_rows(definitions)?;
+        let rows = installed_content_core::map::definition_rows(definitions)?;
         for (index, row) in rows.iter().enumerate() {
             if index % 4096 == 0 {
                 check()?;
@@ -80,6 +113,7 @@ impl ProvinceAreas {
         Self::from_map_checked(map, check)
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     fn from_map_checked(
         map: crate::province_geometry::EngineMap,
         check: &mut impl FnMut() -> io::Result<()>,
@@ -172,6 +206,76 @@ mod tests {
         .unwrap_err();
         assert_eq!(checks, 4);
         assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+    }
+
+    /// The streamed count is the whole-map one on rasters handed in many pieces: 24bpp rows with
+    /// padding, an 8bpp raster whose pixels start past a palette and read across rows, unknown
+    /// colours inventing records, and a short raster refused alike.
+    #[test]
+    fn streamed_areas_equal_the_whole_map_count_in_any_pieces() {
+        let definitions = b"0;0;0;0;land\n1;1;2;3;land\n2;2;3;4;sea\n3;3;4;5;lake\n4;4;5;6;land\n5;7;7;7;land\n";
+        let mut colours = Vec::new();
+        for y in 0..7 {
+            for x in 0..5 {
+                colours.push(match (x + 2 * y) % 6 {
+                    0 => [1, 2, 3],
+                    1 => [2, 3, 4],
+                    2 => [4, 5, 6],
+                    3 => [9, 8, 7],
+                    4 => [1, 2, 3],
+                    _ => [7, 7, 7 + (y as u8 % 2)],
+                });
+            }
+        }
+        let wide = bitmap_rows(&colours, 5, 7);
+        let mut indexed = vec![0_u8; 54 + 1024];
+        indexed[..2].copy_from_slice(b"BM");
+        indexed[10..14].copy_from_slice(&(54_u32 + 1024).to_le_bytes());
+        indexed[14..18].copy_from_slice(&40_u32.to_le_bytes());
+        indexed[18..22].copy_from_slice(&6_i32.to_le_bytes());
+        indexed[22..26].copy_from_slice(&4_i32.to_le_bytes());
+        indexed[26..28].copy_from_slice(&1_u16.to_le_bytes());
+        indexed[28..30].copy_from_slice(&8_u16.to_le_bytes());
+        for row in 0..4_u8 {
+            indexed.extend([1, 2, 3, row, 5, 6, 7, 8]);
+        }
+        // A 1bpp raster too narrow to have row bytes: every read refused alike.
+        let mut narrow = indexed[..54].to_vec();
+        narrow[10..14].copy_from_slice(&54_u32.to_le_bytes());
+        narrow[18..22].copy_from_slice(&3_i32.to_le_bytes());
+        narrow[28..30].copy_from_slice(&1_u16.to_le_bytes());
+        narrow.extend([0; 8]);
+        for raster in [&wide, &bitmap(&[[1, 2, 3], [4, 5, 6], [9, 9, 9]]), &indexed, &narrow] {
+            let whole = ProvinceAreas::from_assets(definitions, raster).map(|areas| areas.land).map_err(|error| error.to_string());
+            for size in [1, 2, 3, 7, 54, 64, raster.len()] {
+                let pieces: Vec<&[u8]> = raster.chunks(size).collect();
+                let streamed = ProvinceAreas::from_pieces(definitions, &pieces).map(|areas| areas.land).map_err(|error| error.to_string());
+                assert_eq!(streamed, whole, "pieces of {size} bytes");
+            }
+        }
+        assert!(ProvinceAreas::from_assets(definitions, &wide).unwrap().land.iter().any(|&cells| cells > 0));
+        let short = &wide[..wide.len() - 5];
+        let refused = ProvinceAreas::from_pieces(definitions, &short.chunks(9).collect::<Vec<_>>()).unwrap_err().to_string();
+        assert_eq!(refused, ProvinceAreas::from_assets(definitions, short).unwrap_err().to_string());
+    }
+
+    /// A 24bpp bitmap of `width` by `height` file rows of `colours`, rows padded to four bytes.
+    fn bitmap_rows(colours: &[[u8; 3]], width: usize, height: usize) -> Vec<u8> {
+        let stride = (width * 3).div_ceil(4) * 4;
+        let mut bytes = vec![0; 54 + stride * height];
+        bytes[..2].copy_from_slice(b"BM");
+        bytes[2..6].copy_from_slice(&((54 + stride * height) as u32).to_le_bytes());
+        bytes[10..14].copy_from_slice(&54u32.to_le_bytes());
+        bytes[14..18].copy_from_slice(&40u32.to_le_bytes());
+        bytes[18..22].copy_from_slice(&(width as i32).to_le_bytes());
+        bytes[22..26].copy_from_slice(&(height as i32).to_le_bytes());
+        bytes[26..28].copy_from_slice(&1u16.to_le_bytes());
+        bytes[28..30].copy_from_slice(&24u16.to_le_bytes());
+        for (index, [red, green, blue]) in colours.iter().enumerate() {
+            let at = 54 + (index / width) * stride + (index % width) * 3;
+            bytes[at..at + 3].copy_from_slice(&[*blue, *green, *red]);
+        }
+        bytes
     }
 
     #[test]

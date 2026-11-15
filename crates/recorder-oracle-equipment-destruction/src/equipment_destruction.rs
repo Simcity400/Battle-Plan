@@ -229,7 +229,6 @@ fn division_history(replay: &Replay, frame: &DecodedFrame) -> io::Result<Divisio
         replay.visit_blocks(
             &[block],
             &selected,
-            None,
             |_, _, hour_frame| {
             if hour_frame.hour >= frame.hour {
                 return Ok(false);

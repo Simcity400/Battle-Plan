@@ -874,7 +874,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 break;
             }
         }
-        let party = party.ok_or("PoliticalParties lacks the party selected by ideology")?;
+        let party = party.ok_or("political parties lacks the party selected by ideology")?;
         self.context
             .text
             .party_name(&party, self.tag(country)?, false)
@@ -939,7 +939,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 // state resistance is recorded unchanged, even inactive.
                 let rows = self.complete::<tables::StateResistance>(RESISTANCE_COUNTRY)?;
                 let raw = keyed(&rows, u128::from(state))?
-                    .ok_or_else(|| format!("StateResistance lacks country for state {state}"))?
+                    .ok_or_else(|| format!("state resistance lacks country for state {state}"))?
                     .country;
                 if raw == 0 {
                     None
@@ -949,7 +949,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                             .text
                             .recorded()
                             .slot(raw)
-                            .ok_or_else(|| format!("CountryLinks lacks occupied country {raw}"))?,
+                            .ok_or_else(|| format!("country links lacks occupied country {raw}"))?,
                     )
                 }
             }
@@ -974,7 +974,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                                 Some(self.context.text.recorded().slot(state.owner).ok_or_else(
                                     || {
                                         format!(
-                                            "CountryLinks lacks state {id} owner {}",
+                                            "country links lacks state {id} owner {}",
                                             state.owner
                                         )
                                     },

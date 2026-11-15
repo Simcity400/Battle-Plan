@@ -187,31 +187,36 @@ pub enum Naming {
 /// The caller's preallocated name-byte arena for one pass. Nothing here
 /// allocates; `required` counts every byte a complete pass would need.
 pub struct Names<'a> {
-    pub bytes: &'a mut [u8],
-    pub len: usize,
-    pub required: usize,
-}
-
-pub struct NameArena<'a> {
     pub bytes: crate::walk::Buffer<'a, u8>,
     pub len: usize,
     pub required: usize,
-}
-
-impl Names<'_> {
-    fn arena(&mut self) -> NameArena<'_> {
-        NameArena {
-            bytes: crate::walk::Buffer::Fixed(self.bytes),
-            len: self.len,
-            required: self.required,
-        }
-    }
 }
 
 /// Every field [`inputs`] reads lies in `[vtable, FLAG_B]`, so one guarded copy acquires them.
 /// `inputs` ignores the `CACHED_NAME` cache inside that span; [`cached_name`] independently
 /// publishes its exact retained bytes.
 pub const INPUT_SPAN: usize = FLAG_B + 1;
+
+
+/// Worker acquisition grows from the original retained header and payload.
+pub fn cached_name_growing(
+    memory: &impl Memory,
+    base: usize,
+    pointer: usize,
+    bytes: &mut Vec<u8>,
+    len: &mut usize,
+    required: &mut usize,
+) -> Result<Option<Span>, &'static str> {
+    let mut names = Names {
+        bytes: crate::walk::Buffer::Growing(bytes),
+        len: *len,
+        required: *required,
+    };
+    let result = cached_name(memory, base, pointer, &mut names);
+    *len = names.len;
+    *required = names.required;
+    result
+}
 
 /// Copy the exact retained army display string independently of [`inputs`].
 /// Missing groups, failed templates and exhausted authored names cannot hide
@@ -226,40 +231,6 @@ pub fn cached_name(
     pointer: usize,
     names: &mut Names<'_>,
 ) -> Result<Option<Span>, &'static str> {
-    let mut arena = names.arena();
-    let result = cached_name_buffer(memory, base, pointer, &mut arena);
-    let (len, required) = (arena.len, arena.required);
-    names.len = len;
-    names.required = required;
-    result
-}
-
-/// Worker acquisition grows from the original retained header and payload.
-pub fn cached_name_growing(
-    memory: &impl Memory,
-    base: usize,
-    pointer: usize,
-    bytes: &mut Vec<u8>,
-    len: &mut usize,
-    required: &mut usize,
-) -> Result<Option<Span>, &'static str> {
-    let mut names = NameArena {
-        bytes: crate::walk::Buffer::Growing(bytes),
-        len: *len,
-        required: *required,
-    };
-    let result = cached_name_buffer(memory, base, pointer, &mut names);
-    *len = names.len;
-    *required = names.required;
-    result
-}
-
-pub(crate) fn cached_name_buffer(
-    memory: &impl Memory,
-    base: usize,
-    pointer: usize,
-    names: &mut NameArena<'_>,
-) -> Result<Option<Span>, &'static str> {
     let expected = engine_sites::at(base, VTABLE_RVA)
         .ok_or("division cached name module address overflow")?;
     if read::<u64>(memory, pointer) != Some(expected as u64) {
@@ -270,7 +241,7 @@ pub(crate) fn cached_name_buffer(
         .ok_or("division cached name address overflow")?;
     let header = read::<[u8; msvc_string::STRIDE]>(memory, address)
         .ok_or("division cached name header unreadable")?;
-    copy_string_buffer(memory, &header, names, &CACHED)
+    copy_string(memory, &header, names, &CACHED)
 }
 
 /// The same authenticated cache/header/terminator admission as [`cached_name`]
@@ -282,7 +253,7 @@ pub fn cached_name_demand(
     pointer: usize,
 ) -> Result<usize, &'static str> {
     let mut names = Names {
-        bytes: &mut [],
+        bytes: crate::walk::Buffer::Count,
         len: 0,
         required: 0,
     };
@@ -403,7 +374,7 @@ impl GroupKeys {
         memory: &impl Memory,
         base: usize,
         group: usize,
-        names: &mut NameArena<'_>,
+        names: &mut Names<'_>,
     ) -> Result<Span, &'static str> {
         if group == 0 {
             return Ok(NULL_GROUP);
@@ -419,7 +390,7 @@ impl GroupKeys {
             return Err("division naming group identity mismatch");
         }
         let span =
-            match copy_string_buffer(memory, &header[GROUP_KEY..GROUP_KEY + 32], names, &KEY)? {
+            match copy_string(memory, &header[GROUP_KEY..GROUP_KEY + 32], names, &KEY)? {
                 Some(span) => {
                     // Committed now: later divisions and templates share it.
                     names.len += span.1;
@@ -459,6 +430,7 @@ const CACHED: StringErrors = [
     "division cached name terminator unreadable or invalid",
 ];
 
+
 /// Validates an MSVC string from its 32-byte header (inline bytes, length,
 /// capacity) and copies its bytes to `names` at `names.len`, uncommitted.
 /// The length belongs to the game's own allocation: it is bounded by the
@@ -473,72 +445,29 @@ pub(crate) fn copy_string(
     names: &mut Names<'_>,
     errors: &StringErrors,
 ) -> Result<Option<Span>, &'static str> {
-    let mut arena = names.arena();
-    let result = copy_string_buffer(memory, header, &mut arena, errors);
-    let (len, required) = (arena.len, arena.required);
-    names.len = len;
-    names.required = required;
-    result
-}
-
-pub(crate) fn copy_string_buffer(
-    memory: &impl Memory,
-    header: &[u8],
-    names: &mut NameArena<'_>,
-    errors: &StringErrors,
-) -> Result<Option<Span>, &'static str> {
-    let word = |at: usize| u64::from_le_bytes(header[at..at + 8].try_into().unwrap());
-    let (len, capacity) = (word(msvc_string::LENGTH), word(msvc_string::CAPACITY));
-    if len > capacity || capacity < msvc_string::INLINE_CAPACITY {
-        return Err(errors[0]);
-    }
-    let len = usize::try_from(len).map_err(|_| errors[0])?;
     let start = names.len;
     let free = names.bytes.len().saturating_sub(start);
-    if capacity == msvc_string::INLINE_CAPACITY {
-        if len != 0 && header[len] != 0 {
-            return Err(errors[3]);
+    let (source, len) = match string_source(memory, header, errors)? {
+        StringSource::Empty => return Ok(Some((start, 0))),
+        StringSource::Inline(text) => {
+            let len = text.len();
+            names.required = demand(names.required, len)?;
+            if !names.bytes.ensure(
+                start
+                    .checked_add(len)
+                    .ok_or("division name arena overflow")?,
+            )? {
+                return Ok(None);
+            }
+            names.bytes[start..start + len].copy_from_slice(text);
+            return Ok(Some((start, len)));
         }
-        names.required = names
-            .required
-            .checked_add(len)
-            .ok_or("division name demand overflow")?;
-        if !names.bytes.ensure(
-            start
-                .checked_add(len)
-                .ok_or("division name arena overflow")?,
-        )? {
-            return Ok(None);
-        }
-        names.bytes[start..start + len].copy_from_slice(&header[..len]);
-        return Ok(Some((start, len)));
-    }
-    let source = usize::try_from(word(0))
-        .ok()
-        .filter(|address| *address != 0)
-        .ok_or(errors[1])?;
-    if len == 0 {
-        return Ok(Some((start, 0)));
-    }
-    // The first byte, then the last byte with its terminator.
-    let last = source.checked_add(len - 1).ok_or(errors[3])?;
-    source.checked_add(len).ok_or(errors[3])?;
-    let (mut first, mut tail) = ([0_u8; 1], [0_u8; 2]);
-    match memory.copy_scattered_prefetched([source, last], &mut [&mut first, &mut tail]) {
-        0 => return Err(errors[2]),
-        1 => return Err(errors[3]),
-        _ => {}
-    }
-    if tail[1] != 0 {
-        return Err(errors[3]);
-    }
-    names.required = names
-        .required
-        .checked_add(len)
-        .ok_or("division name demand overflow")?;
+        StringSource::Heap { source, len } => (source, len),
+    };
+    names.required = demand(names.required, len)?;
     if len > free {
         match &mut names.bytes {
-            crate::walk::Buffer::Fixed(_) => return Ok(None),
+            crate::walk::Buffer::Count | crate::walk::Buffer::Exact(_) => return Ok(None),
             crate::walk::Buffer::GrowingFrom(bytes, offset) => {
                 msvc_string::copy_growing(
                     memory,
@@ -571,6 +500,102 @@ pub(crate) fn copy_string_buffer(
     Ok(Some((start, len)))
 }
 
+/// A string header [`string_source`] validated.
+enum StringSource<'h> {
+    /// A heap string of no bytes: nothing is read or counted.
+    Empty,
+    Inline(&'h [u8]),
+    Heap {
+        source: usize,
+        len: usize,
+    },
+}
+
+/// [`copy_string`]'s validation, before any demand is counted.
+fn string_source<'h>(
+    memory: &impl Memory,
+    header: &'h [u8],
+    errors: &StringErrors,
+) -> Result<StringSource<'h>, &'static str> {
+    let word = |at: usize| u64::from_le_bytes(header[at..at + 8].try_into().unwrap());
+    let (len, capacity) = (word(msvc_string::LENGTH), word(msvc_string::CAPACITY));
+    if len > capacity || capacity < msvc_string::INLINE_CAPACITY {
+        return Err(errors[0]);
+    }
+    let len = usize::try_from(len).map_err(|_| errors[0])?;
+    if capacity == msvc_string::INLINE_CAPACITY {
+        if len != 0 && header[len] != 0 {
+            return Err(errors[3]);
+        }
+        return Ok(StringSource::Inline(&header[..len]));
+    }
+    let source = usize::try_from(word(0))
+        .ok()
+        .filter(|address| *address != 0)
+        .ok_or(errors[1])?;
+    if len == 0 {
+        return Ok(StringSource::Empty);
+    }
+    // The first byte, then the last byte with its terminator.
+    let last = source.checked_add(len - 1).ok_or(errors[3])?;
+    source.checked_add(len).ok_or(errors[3])?;
+    let (mut first, mut tail) = ([0_u8; 1], [0_u8; 2]);
+    match memory.copy_scattered_prefetched([source, last], &mut [&mut first, &mut tail]) {
+        0 => return Err(errors[2]),
+        1 => return Err(errors[3]),
+        _ => {}
+    }
+    if tail[1] != 0 {
+        return Err(errors[3]);
+    }
+    Ok(StringSource::Heap { source, len })
+}
+
+fn demand(required: usize, len: usize) -> Result<usize, &'static str> {
+    required
+        .checked_add(len)
+        .ok_or("division name demand overflow")
+}
+
+/// [`copy_string`] into worker storage at `at`, which grows to hold it. Returns its length.
+fn copy_string_into(
+    memory: &impl Memory,
+    header: &[u8],
+    bytes: &mut Vec<u8>,
+    at: usize,
+    required: &mut usize,
+    errors: &StringErrors,
+) -> Result<usize, &'static str> {
+    let (source, len) = match string_source(memory, header, errors)? {
+        StringSource::Empty => return Ok(0),
+        StringSource::Inline(text) => {
+            *required = demand(*required, text.len())?;
+            let end = at
+                .checked_add(text.len())
+                .ok_or("division name arena overflow")?;
+            crate::walk::grow(bytes, end)?;
+            bytes[at..end].copy_from_slice(text);
+            return Ok(text.len());
+        }
+        StringSource::Heap { source, len } => (source, len),
+    };
+    *required = demand(*required, len)?;
+    if len > bytes.len().saturating_sub(at) {
+        msvc_string::copy_growing(
+            memory,
+            source,
+            len,
+            bytes,
+            at,
+            errors[2],
+            "division name arena allocation failed",
+        )?;
+    } else if !read_slice(memory, source, &mut bytes[at..at + len]) {
+        return Err(errors[2]);
+    }
+    Ok(len)
+}
+
 /// Read division naming operands in one member copy; heap-held names add
 /// terminator and byte reads. A type-zero member whose stored name is hidden
 /// resolves its template once per pass. Later divisions with that template
@@ -582,12 +607,7 @@ pub fn inputs(
     groups: &mut GroupKeys,
     names: &mut Names<'_>,
 ) -> Result<Naming, &'static str> {
-    let mut arena = names.arena();
-    let result = read_inputs(memory, base, pointer, groups, &mut arena, false);
-    let (len, required) = (arena.len, arena.required);
-    names.len = len;
-    names.required = required;
-    result
+    read_inputs(memory, base, pointer, groups, names, false)
 }
 
 /// One guarded copy of a member's span from its vtable through `FLAG_B`: every field [`inputs`]
@@ -674,7 +694,7 @@ pub fn inputs_growing(
     len: &mut usize,
     required: &mut usize,
 ) -> Result<Naming, &'static str> {
-    let mut names = NameArena {
+    let mut names = Names {
         bytes: crate::walk::Buffer::Growing(bytes),
         len: *len,
         required: *required,
@@ -687,7 +707,7 @@ pub fn inputs_growing(
 
 /// Copies held cache bytes into the arena at `len`, uncommitted, as a read
 /// of the same text would; the caller advances `len` on admission.
-pub fn held_cached_name_growing(
+pub fn held_cached_name(
     text: &[u8],
     bytes: &mut Vec<u8>,
     len: usize,
@@ -708,9 +728,9 @@ pub fn held_cached_name_growing(
 
 /// [`cached_name_growing`] over the member span [`member`] copied, which holds the vtable and the
 /// `CACHED_NAME` header. A heap text that fits the arena with its terminator is one copy of both;
-/// any other text, or a copy that faults, takes [`copy_string_buffer`]'s reads, which name the
+/// any other text, or a copy that faults, takes [`copy_string`]'s reads, which name the
 /// fault.
-pub fn cached_name_from_member_growing(
+pub fn cached_name_from_member(
     memory: &impl Memory,
     base: usize,
     member: &[u8; INPUT_SPAN],
@@ -724,7 +744,7 @@ pub fn cached_name_from_member_growing(
         return Err("division cached name member identity unreadable or invalid");
     }
     let header = &member[CACHED_NAME..CACHED_NAME + msvc_string::STRIDE];
-    let mut names = NameArena {
+    let mut names = Names {
         bytes: crate::walk::Buffer::Growing(bytes),
         len: *len,
         required: *required,
@@ -737,14 +757,14 @@ pub fn cached_name_from_member_growing(
 
 /// Copy the raw override, including hidden programmatic text, from an
 /// authenticated member's original descriptor. No name selection is performed.
-pub fn raw_override_from_member_growing(
+pub fn raw_override_from_member(
     memory: &impl Memory,
     member: &[u8; INPUT_SPAN],
     bytes: &mut Vec<u8>,
     len: &mut usize,
     required: &mut usize,
 ) -> Result<Option<Span>, &'static str> {
-    let mut names = NameArena {
+    let mut names = Names {
         bytes: crate::walk::Buffer::Growing(bytes),
         len: *len,
         required: *required,
@@ -760,12 +780,12 @@ pub fn raw_override_from_member_growing(
     result
 }
 
-/// [`copy_string_buffer`] with one copy of a fitting heap string's bytes and
+/// [`copy_string`] with one copy of a fitting heap string's bytes and
 /// terminator in place of its first/last-byte gather and payload copy.
 fn copy_fitting_string(
     memory: &impl Memory,
     header: &[u8],
-    names: &mut NameArena<'_>,
+    names: &mut Names<'_>,
     errors: &StringErrors,
 ) -> Result<Option<Span>, &'static str> {
     let word = |at: usize| u64::from_le_bytes(header[at..at + 8].try_into().unwrap());
@@ -787,13 +807,49 @@ fn copy_fitting_string(
             .ok_or("division name demand overflow")?;
         return Ok(Some((start, len)));
     }
-    copy_string_buffer(memory, header, names, errors)
+    copy_string(memory, header, names, errors)
 }
 
 /// An operative codename's operands ([`read_inputs`]); `heap` receives
 /// whether its group key and its stored name are heap-held (their header's
 /// capacity is not the inline one), which decides how
-/// [`copy_string_buffer`] grows a growing arena for them.
+/// [`copy_string`] grows a growing arena for them.
+/// [`codename_inputs_buffer`] into worker storage from `from`, which grows to hold
+/// every byte, so the member's operands are its row or a read's refusal. `len` is
+/// relative to `from` and commits both spans.
+pub(crate) fn codename_inputs_into(
+    memory: &impl Memory,
+    base: usize,
+    pointer: usize,
+    bytes: &mut Vec<u8>,
+    from: usize,
+    len: &mut usize,
+    required: &mut usize,
+) -> Result<Inputs, &'static str> {
+    // The module check precedes the member copy, as it always has.
+    engine_sites::at(base, VTABLE_RVA).ok_or("division name module address overflow")?;
+    let member = member(memory, pointer)?;
+    let mut row = member_row(base, &member)?;
+    if row.kind != 2 {
+        return Err("operative codename member is not type two");
+    }
+    let mut copy =
+        |header: &[u8], len: &mut usize, errors: &StringErrors| -> Result<Span, &'static str> {
+            let at = from
+                .checked_add(*len)
+                .ok_or("division name arena overflow")?;
+            let copied = copy_string_into(memory, header, bytes, at, required, errors)?;
+            let span = (*len, copied);
+            *len += copied;
+            Ok(span)
+        };
+    row.group = copy(&member[FIRST_NAME_TEXT..FIRST_NAME_TEXT + 32], len, &KEY)?;
+    if shows_custom(memory, base, pointer, &member, &row)? {
+        row.custom = copy(&member[OVERRIDE_NAME..OVERRIDE_NAME + 32], len, &CUSTOM)?;
+    }
+    Ok(row)
+}
+
 pub(crate) fn codename_inputs_buffer(
     memory: &impl Memory,
     base: usize,
@@ -811,7 +867,7 @@ pub(crate) fn codename_inputs_buffer(
         let at = at + msvc_string::CAPACITY;
         u64::from_le_bytes(member[at..at + 8].try_into().unwrap()) != msvc_string::INLINE_CAPACITY
     });
-    let mut arena = NameArena {
+    let mut arena = Names {
         bytes: buffer,
         len: *len,
         required: *required,
@@ -839,10 +895,10 @@ pub fn custom_copied(row: &Inputs) -> bool {
 
 /// [`member_inputs`]' type-two path over a held read's operands: `held`'s
 /// fields, its group key's bytes and its stored name's (`None` when it was
-/// not copied, [`custom_copied`]), placed as [`copy_string_buffer`] places
+/// not copied, [`custom_copied`]), placed as [`copy_string`] places
 /// them, `heap` deciding each one's growth ([`codename_inputs_buffer`]).
 pub fn carry_codename(
-    names: &mut NameArena<'_>,
+    names: &mut Names<'_>,
     held: Inputs,
     group: &[u8],
     custom: Option<&[u8]>,
@@ -874,10 +930,10 @@ pub fn carry_codename(
     })
 }
 
-/// [`copy_string_buffer`] of held bytes: demand, fit, growth and span as
+/// [`copy_string`] of held bytes: demand, fit, growth and span as
 /// the fresh copy of an inline or heap-held string of the same bytes.
 fn place_string(
-    names: &mut NameArena<'_>,
+    names: &mut Names<'_>,
     bytes: &[u8],
     heap: bool,
     errors: &StringErrors,
@@ -909,11 +965,11 @@ fn place_string(
         .ok_or("division name demand overflow")?;
     if len > free {
         let (output, at) = match &mut names.bytes {
-            crate::walk::Buffer::Fixed(_) => return Ok(None),
+            crate::walk::Buffer::Count | crate::walk::Buffer::Exact(_) => return Ok(None),
             crate::walk::Buffer::GrowingFrom(output, offset) => (output, *offset + start),
             crate::walk::Buffer::Growing(output) => (output, start),
         };
-        msvc_string::place_growing(
+        msvc_string::place(
             bytes,
             output,
             at,
@@ -931,7 +987,7 @@ pub(crate) fn read_inputs(
     base: usize,
     pointer: usize,
     groups: &mut GroupKeys,
-    names: &mut NameArena<'_>,
+    names: &mut Names<'_>,
     codename: bool,
 ) -> Result<Naming, &'static str> {
     // The module check precedes the member copy, as it always has.
@@ -947,31 +1003,18 @@ fn member_inputs(
     pointer: usize,
     member: &[u8; INPUT_SPAN],
     groups: &mut GroupKeys,
-    names: &mut NameArena<'_>,
+    names: &mut Names<'_>,
     codename: bool,
 ) -> Result<Naming, &'static str> {
-    let expected = engine_sites::at(base, VTABLE_RVA)
-        .ok_or("division name module address overflow")?;
     let word = |at: usize| u64::from_le_bytes(member[at..at + 8].try_into().unwrap());
-    if word(0) != expected as u64 {
-        return Err("division name vtable mismatch");
-    }
-    let signed = |at: usize| i32::from_le_bytes(member[at..at + 4].try_into().unwrap());
-    let mut row = Inputs {
-        kind: signed(TYPE),
-        order: signed(ORDER),
-        ordered: member[FLAG_A],
-        programmatic: member[FLAG_B],
-        template: word(TEMPLATE_REFERENCE),
-        ..Inputs::default()
-    };
+    let mut row = member_row(base, member)?;
     if codename && row.kind != 2 {
         return Err("operative codename member is not type two");
     }
     // Type-two group lookup hashes this exact authored key.
     let mut fits = true;
     if row.kind == 2 {
-        match copy_string_buffer(
+        match copy_string(
             memory,
             &member[FIRST_NAME_TEXT..FIRST_NAME_TEXT + 32],
             names,
@@ -985,13 +1028,8 @@ fn member_inputs(
         }
     }
     let header = &member[OVERRIDE_NAME..OVERRIDE_NAME + 32];
-    // A nonempty stored override is shown when `FLAG_B` is clear, independently of the group.
-    if row.programmatic == 0
-        || (row.kind == 2
-            && word(OVERRIDE_NAME_LENGTH) != 0
-            && operative_group_is_null(memory, base, pointer, member)?)
-    {
-        match copy_string_buffer(memory, header, names, &CUSTOM)? {
+    if shows_custom(memory, base, pointer, member, &row)? {
+        match copy_string(memory, header, names, &CUSTOM)? {
             Some(span) => row.custom = span,
             None => return Ok(Naming::DoesNotFit),
         }
@@ -1008,7 +1046,7 @@ fn member_inputs(
         // With `FLAG_B` set, only a null group shows a nonempty stored override. A null group
         // without it generates a legacy name, which is not captured.
         NULL_GROUP if word(OVERRIDE_NAME + msvc_string::LENGTH) != 0 => {
-            match copy_string_buffer(memory, header, names, &CUSTOM)? {
+            match copy_string(memory, header, names, &CUSTOM)? {
                 Some(span) => row.custom = span,
                 None => return Ok(Naming::DoesNotFit),
             }
@@ -1020,6 +1058,44 @@ fn member_inputs(
             Ok(Naming::Row(row))
         }
     }
+}
+
+/// The member's authenticated scalar operands, with no string copied.
+fn member_row(base: usize, member: &[u8; INPUT_SPAN]) -> Result<Inputs, &'static str> {
+    let expected =
+        engine_sites::at(base, VTABLE_RVA).ok_or("division name module address overflow")?;
+    let word = |at: usize| u64::from_le_bytes(member[at..at + 8].try_into().unwrap());
+    if word(0) != expected as u64 {
+        return Err("division name vtable mismatch");
+    }
+    let signed = |at: usize| i32::from_le_bytes(member[at..at + 4].try_into().unwrap());
+    Ok(Inputs {
+        kind: signed(TYPE),
+        order: signed(ORDER),
+        ordered: member[FLAG_A],
+        programmatic: member[FLAG_B],
+        template: word(TEMPLATE_REFERENCE),
+        ..Inputs::default()
+    })
+}
+
+/// A nonempty stored override is shown when `FLAG_B` is clear, independently of the group.
+fn shows_custom(
+    memory: &impl Memory,
+    base: usize,
+    pointer: usize,
+    member: &[u8; INPUT_SPAN],
+    row: &Inputs,
+) -> Result<bool, &'static str> {
+    let length = u64::from_le_bytes(
+        member[OVERRIDE_NAME_LENGTH..OVERRIDE_NAME_LENGTH + 8]
+            .try_into()
+            .unwrap(),
+    );
+    Ok(row.programmatic == 0
+        || (row.kind == 2
+            && length != 0
+            && operative_group_is_null(memory, base, pointer, member)?))
 }
 
 /// Type-two name-group resolution uses the member's stored hash to select
@@ -1142,7 +1218,7 @@ fn template_group(
     base: usize,
     template: u64,
     groups: &mut GroupKeys,
-    names: &mut NameArena<'_>,
+    names: &mut Names<'_>,
 ) -> Result<Span, &'static str> {
     if template == 0 {
         return Ok(NULL_GROUP);
@@ -1229,7 +1305,7 @@ mod tests {
     fn run(memory: &impl Memory, arena: usize) -> (Result<Naming, &'static str>, Vec<u8>, usize) {
         let mut bytes = vec![0; arena];
         let mut names = Names {
-            bytes: &mut bytes,
+            bytes: crate::walk::Buffer::Growing(&mut bytes),
             len: 0,
             required: 0,
         };
@@ -1242,6 +1318,22 @@ mod tests {
         );
         let required = names.required;
         (result, bytes, required)
+    }
+    /// The census count probe: no bytes stored, the demand counted.
+    fn count(memory: &impl Memory) -> (Result<Naming, &'static str>, usize) {
+        let mut names = Names {
+            bytes: crate::walk::Buffer::Count,
+            len: 0,
+            required: 0,
+        };
+        let result = inputs(
+            memory,
+            0,
+            0x1000,
+            &mut GroupKeys::with_capacity(4, 4),
+            &mut names,
+        );
+        (result, names.required)
     }
     fn row(result: Result<Naming, &'static str>) -> Inputs {
         match result {
@@ -1273,7 +1365,7 @@ mod tests {
         );
         assert_eq!(required, 9);
         assert_eq!(run(&guard(&bytes), 0).2, 9);
-        assert_eq!(run(&guard(&bytes), 8).0, Ok(Naming::DoesNotFit));
+        assert_eq!(count(&guard(&bytes)), (Ok(Naming::DoesNotFit), 9));
         bytes[FLAG_B] = 1;
         bytes[OVERRIDE_NAME_LENGTH..OVERRIDE_NAME_LENGTH + 8].fill(0);
         let (result, _, required) = run(&guard(&bytes), 5);
@@ -1310,7 +1402,7 @@ mod tests {
             b"legacy"
         );
         assert_eq!(required, 11);
-        assert_eq!(run(&memory, 5).0, Ok(Naming::DoesNotFit));
+        assert_eq!(count(&memory), (Ok(Naming::DoesNotFit), 11));
         put(&mut memory.bytes, 0x200, 0x1300);
         put(&mut memory.bytes, 0x300, 0x1400);
         put(&mut memory.bytes, 0x400, GROUP_VTABLE_RVA.0 as u64);
@@ -1352,7 +1444,7 @@ mod tests {
             b"1st"
         );
         assert_eq!((named.group.1, required), (0, 3));
-        assert_eq!(run(&guard(&bytes), 2).0, Ok(Naming::DoesNotFit));
+        assert_eq!(count(&guard(&bytes)), (Ok(Naming::DoesNotFit), 3));
         // A stored length of zero: the game builds the legacy name.
         let mut unnamed = bytes;
         unnamed[OVERRIDE_NAME + 16..OVERRIDE_NAME + 24].fill(0);
@@ -1399,9 +1491,8 @@ mod tests {
         let mut changed = bytes;
         changed[0x60..0x80].fill(0x5a);
         assert_eq!(run(&guard(&changed), 64).0, Ok(Naming::Row(named)));
-        // Too small an arena counts the name and omits nothing silently.
-        assert_eq!(run(&guard(&bytes), 4).0, Ok(Naming::DoesNotFit));
-        assert_eq!(run(&guard(&bytes), 4).2, 5);
+        // The count probe counts the name and omits nothing silently.
+        assert_eq!(count(&guard(&bytes)), (Ok(Naming::DoesNotFit), 5));
         bytes[OVERRIDE_NAME + 5] = b'!';
         assert_eq!(
             run(&guard(&bytes), 64).0,
@@ -1436,9 +1527,9 @@ mod tests {
                 (0x1100, name.len())
             ]
         );
-        // A short arena: the demand is counted, nothing is copied.
+        // The count probe: the demand is counted, nothing is copied.
         let memory = guard(&bytes);
-        assert_eq!(run(&memory, 64), (Ok(Naming::DoesNotFit), vec![0; 64], 300));
+        assert_eq!(count(&memory), (Ok(Naming::DoesNotFit), 300));
         assert_eq!(memory.reads.borrow().len(), 3);
         for (at, value, reason) in [
             (

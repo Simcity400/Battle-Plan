@@ -50,17 +50,13 @@ impl Captured {
         self.rows.fail(Outcome::Unavailable { reason });
         self.deletion_unavailable = Some(reason);
     }
-    #[cfg(test)]
-    pub fn capture(&mut self, _memory: &impl Memory, _base: usize, _state: usize) -> [u64; N] {
-        self.capture_with(|rows| producer::drain(rows))
-    }
-    pub fn capture_growing(
+    pub fn capture(
         &mut self,
         _memory: &impl Memory,
         _base: usize,
         _state: usize,
     ) -> [u64; N] {
-        self.capture_with(producer::drain_growing)
+        self.capture_with(producer::drain)
     }
     fn capture_with(
         &mut self,

@@ -87,9 +87,9 @@ impl PresentationDispatch {
     pub(super) fn dispatch(
         &mut self,
         captured: &mut division_presentation::Captured,
-        countries: &Arc<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
         context: division_presentation::CaptureContext,
-        inputs: &Option<Arc<crate::division_census::UnitInputs>>,
+        inputs: &Option<engine_allocation::SharedBox<crate::division_census::UnitInputs>>,
     ) {
         let Some(executor) = self.executor.upgrade() else {
             return;
@@ -110,7 +110,7 @@ impl PresentationDispatch {
         self.dispatched = true;
         for index in 0..captured.status_part_count() {
             let mut job = Some(Job::PresentationStatus(PresentationStatusRequest {
-                countries: Arc::clone(countries),
+                countries: engine_allocation::SharedBox::clone(countries),
                 context,
                 inputs: inputs.clone(),
                 part: Some(captured.take_status_part(index)),

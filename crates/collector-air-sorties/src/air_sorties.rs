@@ -154,12 +154,11 @@ struct Cached {
     region_map: Option<(usize, map_air_country_region_modifier::CountryMap)>,
 }
 
-/// Fixed fixture storage or worker rows that grow before publication.
+/// Worker rows that grow before publication.
 struct Rows<T> {
     rows: Vec<T>,
     len: usize,
     required: usize,
-    growing: bool,
 }
 
 impl<T: Default> Rows<T> {
@@ -168,7 +167,6 @@ impl<T: Default> Rows<T> {
             rows: allocation::owned_vec(allocation::default_vec(capacity)),
             len: 0,
             required: 0,
-            growing: false,
         }
     }
     fn reset(&mut self) {
@@ -180,9 +178,8 @@ impl<T: Default> Rows<T> {
             .required
             .checked_add(1)
             .ok_or("sortie row count overflow")?;
-        if self.growing {
-            Buffer::Growing(&mut self.rows).ensure(self.required)?;
-        }
+        Buffer::Growing(&mut self.rows).ensure(self.required)?;
+        
         if let Some(slot) = self.rows.get_mut(self.len) {
             *slot = row;
             self.len += 1;
@@ -311,7 +308,6 @@ impl Sorties {
 
     /// `registered` are the registered wings, `witnesses` the probed bases
     /// sorted by handle. Any unreadable operand fails every sortie table.
-    #[cfg(any(test, feature = "test-support"))]
     pub fn capture<'a>(
         &mut self,
         memory: &impl Memory,
@@ -328,28 +324,6 @@ impl Sorties {
             metadata,
             registered,
             witnesses,
-            false,
-            &mut (),
-        )
-    }
-
-    pub fn capture_growing<'a>(
-        &mut self,
-        memory: &impl Memory,
-        base: usize,
-        game_state: usize,
-        metadata: bool,
-        registered: impl Iterator<Item = Result<&'a WingIdentity, &'static str>>,
-        witnesses: &[BaseWitness],
-    ) {
-        self.capture_mode(
-            memory,
-            base,
-            game_state,
-            metadata,
-            registered,
-            witnesses,
-            true,
             &mut (),
         )
     }
@@ -369,7 +343,7 @@ impl Sorties {
         observer: &mut impl RegionObserver,
     ) {
         self.capture_mode(
-            memory, base, game_state, metadata, registered, witnesses, true, observer,
+            memory, base, game_state, metadata, registered, witnesses, observer,
         )
     }
 
@@ -382,16 +356,9 @@ impl Sorties {
         metadata: bool,
         registered: impl Iterator<Item = Result<&'a WingIdentity, &'static str>>,
         witnesses: &[BaseWitness],
-        growing: bool,
         observer: &mut impl RegionObserver,
     ) {
         self.reset();
-        self.missions.growing = growing;
-        self.reached.growing = growing;
-        self.containers.growing = growing;
-        self.modifiers.growing = growing;
-        self.special.growing = growing;
-        self.keys.growing = growing;
         self.metadata_outcome = if metadata {
             UNSET
         } else {
@@ -467,9 +434,8 @@ impl Sorties {
             })?;
         }
         self.read_missions(memory, base)?;
-        if self.missions.growing {
-            Buffer::Growing(&mut self.order).ensure(self.missions.len)?;
-        }
+        Buffer::Growing(&mut self.order).ensure(self.missions.len)?;
+        
         self.definitions(memory, base)?;
         self.queue_keys(memory, &countries, witnesses)?;
         let keys = &mut self.keys.rows[..self.keys.len];
@@ -646,13 +612,12 @@ impl Sorties {
                     .required
                     .checked_add(ids)
                     .ok_or("sortie reached count overflow")?;
-                if self.reached.growing {
-                    Buffer::Growing(&mut self.reached.rows).ensure(
-                        start
-                            .checked_add(ids)
-                            .ok_or("sortie reached count overflow")?,
-                    )?;
-                }
+                Buffer::Growing(&mut self.reached.rows).ensure(
+                    start
+                        .checked_add(ids)
+                        .ok_or("sortie reached count overflow")?,
+                )?;
+                
                 let Some(output) = self.reached.rows.get_mut(start..start + ids) else {
                     continue;
                 };
@@ -750,11 +715,7 @@ impl Sorties {
                 continue;
             }
             let country = countries.resolve(effective)?;
-            let count = if self.keys.growing {
-                native::volunteer_hosts_growing(memory, country.pointer, &mut self.hosts)?
-            } else {
-                native::volunteer_hosts(memory, country.pointer, &mut self.hosts)?
-            };
+            let count = native::volunteer_hosts(memory, country.pointer, &mut self.hosts)?;
             self.hosts_required = self.hosts_required.max(count);
             let mut hosts = 0;
             if count > self.hosts.len() {

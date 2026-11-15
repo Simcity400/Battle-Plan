@@ -11,7 +11,6 @@ const PART_COST: u64 = 384;
 
 #[derive(Debug)]
 pub(crate) struct AirWingJob {
-    pub(crate) crew: crate::crew_store::CrewStore,
     pub(crate) names: Vec<u8>,
     pub(crate) names_len: usize,
     pub(crate) names_required: usize,
@@ -46,7 +45,6 @@ pub(crate) struct AirWingJob {
     pub(super) required: [usize; 3],
     pub(crate) required_memberships: usize,
     pub(super) acquired: bool,
-    pub(crate) growing: bool,
     pub(crate) membership_ticks: u64,
     pub(crate) game_score_ticks: [u64; 2],
     pub(super) raw_bytes: [u64; WING_PACK_N],
@@ -113,7 +111,6 @@ const NO_CENSUS: cair_wing::GameScoreWalk = cair_wing::GameScoreWalk {
 impl Default for AirWingJob {
     fn default() -> Self {
         Self {
-            crew: Default::default(),
             names: Vec::new(),
             names_len: 0,
             names_required: 0,
@@ -145,7 +142,6 @@ impl Default for AirWingJob {
             required: [0; 3],
             required_memberships: 0,
             acquired: false,
-            growing: false,
             membership_ticks: 0,
             game_score_ticks: [0; 2],
             raw_bytes: [0; 2],
@@ -189,9 +185,12 @@ impl AirWingJob {
     }
     /// A later part of a split census: its worker grows its storage, and its
     /// WingEquipment store stays with it.
+    /// A refused store allocation is the collector's allocation failure and leaves no store.
     pub(crate) fn part() -> Self {
         Self {
-            wing_store: cfg!(feature = "wing_changes").then(|| Box::new(super::WingStore::new())),
+            wing_store: cfg!(feature = "wing_changes")
+                .then(|| allocation::boxed(super::WingStore::new()).ok())
+                .flatten(),
             ..Default::default()
         }
     }
@@ -209,7 +208,6 @@ impl AirWingJob {
                 + vector_bytes(&self.identities)
                 + vector_bytes(&self.naval_memberships)
                 + self.transport.allocated_bytes() as u64
-                + self.crew.allocated_bytes() as u64
                 + self.map_flags.allocated_bytes(),
             ..Default::default()
         });
@@ -245,7 +243,6 @@ impl AirWingJob {
         self.required = [0; 3];
         self.required_memberships = 0;
         self.acquired = false;
-        self.growing = false;
         self.membership_ticks = 0;
         self.game_score_ticks = [0; 2];
         self.raw_bytes = [0; 2];
@@ -310,6 +307,7 @@ impl AirWingJob {
         }
         self.update_capacity_charge();
     }
+    #[cfg(test)]
     pub(crate) fn memberships(&self) -> (Outcome, &[WingMembershipRead]) {
         (self.naval_outcome, &self.memberships[..self.source_len])
     }
@@ -442,8 +440,6 @@ pub(crate) struct AirWingCopyContext {
     pub force_full: bool,
     /// Initial map grant and independent equipment/cumulative destination limits.
     pub limits: [usize; 3],
-    /// Independently pooled naval source capacity.
-    pub naval_limit: usize,
     pub game_score: bool,
 }
 
@@ -470,9 +466,8 @@ fn copy_air_pass(
     job: &mut AirWingJob,
     memory: &impl Memory,
     ctx: AirWingCopyContext,
-    growing: bool,
 ) {
-    walk_air_part(job, memory, ctx, growing);
+    walk_air_part(job, memory, ctx);
     if !job.split {
         job.finish_census(&mut []);
     }
@@ -485,16 +480,11 @@ fn walk_air_part(
     job: &mut AirWingJob,
     memory: &impl Memory,
     ctx: AirWingCopyContext,
-    growing: bool,
 ) {
-    debug_assert!(growing || !job.split, "only growing parts join");
     let mut reads = read_accounting::table(TableId::WingEquipment);
     job.clear();
-    job.crew.begin(ctx.limits[0]);
-    if growing {
-        job.map_flags.begin(ctx.limits[0], ctx.force_full);
-    }
-    job.growing = growing;
+    job.map_flags.begin(ctx.limits[0], ctx.force_full);
+    
     job.cumulative_active =
         replay_data::cadence::should_walk(TableId::WingCumulative, ctx.hour, ctx.force_full);
     job.theatres_active =
@@ -509,17 +499,7 @@ fn walk_air_part(
     // The score projection rides this census: a worker pass grows its wing,
     // country and first-site storage from the acquired headers, so ordinary
     // growth never truncates it, whichever frame last lent the storage.
-    job.game_score.set_growing(growing);
-    let naval_limit = if job.theatres_active {
-        ctx.naval_limit
-    } else {
-        0
-    };
-    job.required_memberships = if job.theatres_active {
-        ctx.limits[0].max(naval_limit)
-    } else {
-        0
-    };
+    job.required_memberships = if job.theatres_active { ctx.limits[0] } else { 0 };
     let source = WingMemory {
         inner: memory,
         bytes: std::cell::Cell::new([0; 2]),
@@ -547,20 +527,11 @@ fn walk_air_part(
     let mut transport =
         cair_wing::transport_operands::Pass::new(ctx.base, ctx.limits[0], &mut job.transport);
     let score_ticks = std::cell::Cell::new([0_u64; 2]);
-    let score_limit = job.game_score.wing_limit();
     let score = std::cell::RefCell::new(&mut job.game_score);
     let mut map_len = 0;
     let mut fuel_references = engine_native::creference_registry::ScopedResolver::new(ctx.base);
-    let map_rows = if growing {
-        engine_native::walk::Buffer::Growing(&mut job.map_rows)
-    } else {
-        engine_native::walk::Buffer::Fixed(&mut job.map_rows[..ctx.limits[0]])
-    };
-    let sources = if growing {
-        engine_native::walk::Buffer::Growing(&mut job.sources)
-    } else {
-        engine_native::walk::Buffer::Fixed(&mut job.sources)
-    };
+    let map_rows = engine_native::walk::Buffer::Growing(&mut job.map_rows);
+    let sources = engine_native::walk::Buffer::Growing(&mut job.sources);
     let walked = cair_wing::walk_shared_game_score_buffers_with_owners(
         &source,
         ctx.base,
@@ -568,17 +539,17 @@ fn walk_air_part(
         slots,
         map_rows,
         sources,
-        naval_limit,
         None,
-        score_limit,
+        ctx.game_score,
         |pointer, pool, row, admitted| {
             cost.set(cost.get().saturating_add(1));
             if admitted.map {
-                let crew = job.crew.read_air(memory, pointer, row.id);
+                let crew =
+                    crate::crew::wing(memory, pointer, collector_observers::crew_changes::quiet);
                 row.acquired_manpower = crew.map(|value| value[0]);
                 row.exile_country = crew.map(|value| value[1]);
                 map_len += 1;
-                row.name = if growing {
+                row.name = {
                     match cair_wing::capture_name_growing(
                         &source,
                         pointer,
@@ -594,65 +565,47 @@ fn walk_air_part(
                             None
                         }
                     }
-                } else {
-                    let mut names = cair_wing::NameArena {
-                        bytes: &mut job.names,
-                        used: job.names_len,
-                        required: job.names_required,
-                        failures: job.name_failures,
-                    };
-                    let value = names.capture(&source, pointer, admitted.name_header);
-                    job.names_len = names.used;
-                    job.names_required = names.required;
-                    job.name_failures = names.failures;
-                    value
                 };
-                if growing {
-                    let _ = transport.ensure_capacity(map_len);
-                    job.map_flags.ensure_capacity(map_len);
-                }
+                let _ = transport.ensure_capacity(map_len);
+                job.map_flags.ensure_capacity(map_len);
+                
                 let _transport_reads = read_accounting::table(TableId::AirWings);
                 source.mask.set(4);
-                let raid_token = growing.then(crate::wing_changes::map_quiet).flatten();
+                let raid_token = crate::wing_changes::map_quiet();
                 let started = qpc();
                 let raid_pointer = transport.capture(&source, pointer, pool, row);
                 job.transport_ticks += elapsed(started);
                 source.mask.set(1);
                 row.replacement_setting =
                     collector_observers::wing_preferences::read(&source, pointer, row.id);
-                if growing {
-                    row.fuel_inputs = Some(cair_wing::fuel_inputs::capture(
-                        &source,
-                        ctx.base,
-                        pointer,
-                        row,
-                        &mut fuel_references,
-                    ));
-                    row.map_flags = Some(job.map_flags.capture(
-                        &source,
-                        ctx.base,
-                        pointer,
-                        row,
-                        raid_pointer,
-                        raid_token,
-                    ));
-                    if row.map_flags.is_some_and(|flags| flags & 16 != 0) {
-                        row.raid_reference = job
-                            .map_flags
-                            .raid_reference(pointer, row.id)
-                            .filter(|reference| reference.resolves)
-                            .or(row.raid_reference);
-                    }
+                row.fuel_inputs = Some(cair_wing::fuel_inputs::capture(
+                    &source,
+                    ctx.base,
+                    pointer,
+                    row,
+                    &mut fuel_references,
+                ));
+                row.map_flags = Some(job.map_flags.capture(
+                    &source,
+                    ctx.base,
+                    pointer,
+                    row,
+                    raid_pointer,
+                    raid_token,
+                ));
+                if row.map_flags.is_some_and(|flags| flags & 16 != 0) {
+                    row.raid_reference = job
+                        .map_flags
+                        .raid_reference(pointer, row.id)
+                        .filter(|reference| reference.resolves)
+                        .or(row.raid_reference);
                 }
+                
             }
-            let wing = WingSource { pointer, pool, row };
+            let wing = WingSource { pointer, row };
             if admitted.sources && !matches!(equipment, Outcome::Unavailable { .. }) {
                 source.mask.set(1);
-                let output = if growing {
-                    engine_native::walk::Buffer::Growing(&mut job.equipment)
-                } else {
-                    engine_native::walk::Buffer::Fixed(&mut job.equipment[..ctx.limits[1]])
-                };
+                let output = engine_native::walk::Buffer::Growing(&mut job.equipment);
                 let (next, required) = read_equipment_carried(
                     &source,
                     ctx.base,
@@ -667,11 +620,7 @@ fn walk_air_part(
             if admitted.sources && !matches!(cumulative, Outcome::Unavailable { .. }) {
                 reads.select(TableId::WingCumulative);
                 source.mask.set(2);
-                let mut output = if growing {
-                    engine_native::walk::Buffer::Growing(&mut job.cumulative)
-                } else {
-                    engine_native::walk::Buffer::Fixed(&mut job.cumulative[..ctx.limits[2]])
-                };
+                let mut output = engine_native::walk::Buffer::Growing(&mut job.cumulative);
                 let required = cumulative.len().saturating_add(1);
                 cumulative_required = required;
                 let next = if let Err(reason) = output.ensure(required) {
@@ -693,8 +642,7 @@ fn walk_air_part(
                 cumulative = append(cumulative, next);
             }
             if job.theatres_active && (admitted.map || admitted.naval) {
-                if growing
-                    && engine_native::walk::Buffer::Growing(&mut job.memberships)
+                if engine_native::walk::Buffer::Growing(&mut job.memberships)
                         .ensure(membership_len + 1)
                         .is_err()
                 {
@@ -749,10 +697,8 @@ fn walk_air_part(
             source.mask.set(3);
         },
     );
-    job.crew.finish();
-    if growing {
-        job.map_flags.finish();
-    }
+    job.map_flags.finish();
+    
     job.census = walked;
     job.equipment_outcome = equipment;
     job.cumulative_outcome = cumulative;
@@ -774,9 +720,8 @@ fn walk_air_part(
     job.acquired = true;
     job.game_score_ticks = score_ticks.get();
     job.cost = cost.get();
-    if growing {
-        job.project();
-    }
+    job.project();
+    
 }
 
 impl AirWingJob {
@@ -1006,17 +951,16 @@ impl AirWingJob {
         };
         self.required[1] = self.required[1].max(self.equipment_required);
         self.required[2] = self.required[2].max(self.cumulative_required);
-        if self.growing {
-            self.required[0] = self.required[0].max(self.map_outcome.len());
-            self.required_memberships = self.required_memberships.max(self.membership_len);
-            // Identities exist only for a complete source census: a later
-            // part's census refusal is the joined identities' outcome.
-            if !matches!(self.source_outcome, Outcome::Rows { .. })
-                && self.identity_outcome != IDENTITIES_UNALLOCATED
-            {
-                self.identity_outcome = self.source_outcome;
-            }
+        self.required[0] = self.required[0].max(self.map_outcome.len());
+        self.required_memberships = self.required_memberships.max(self.membership_len);
+        // Identities exist only for a complete source census: a later
+        // part's census refusal is the joined identities' outcome.
+        if !matches!(self.source_outcome, Outcome::Rows { .. })
+            && self.identity_outcome != IDENTITIES_UNALLOCATED
+        {
+            self.identity_outcome = self.source_outcome;
         }
+        
     }
 }
 
@@ -1121,28 +1065,18 @@ pub(crate) fn part_starts(
     Some((starts, filled))
 }
 
-#[cfg(test)]
 pub(crate) fn copy_air_refresh(
     memory: &impl Memory,
     ctx: AirWingCopyContext,
     job: &mut AirWingJob,
 ) -> AirWingCopyReport {
-    copy_air_refresh_inner(memory, ctx, job, false)
-}
-
-pub(crate) fn copy_air_refresh_growing(
-    memory: &impl Memory,
-    ctx: AirWingCopyContext,
-    job: &mut AirWingJob,
-) -> AirWingCopyReport {
-    copy_air_refresh_inner(memory, ctx, job, true)
+    copy_air_refresh_inner(memory, ctx, job)
 }
 
 fn copy_air_refresh_inner(
     memory: &impl Memory,
     ctx: AirWingCopyContext,
     job: &mut AirWingJob,
-    growing: bool,
 ) -> AirWingCopyReport {
     let started = qpc();
     let cumulative_active =
@@ -1153,40 +1087,16 @@ fn copy_air_refresh_inner(
     if !cumulative_active {
         limits[2] = 0;
     }
-    let memberships = if theatres_active {
-        ctx.limits[0].max(ctx.naval_limit)
-    } else {
-        0
-    };
-    if growing {
-        job.required = limits;
-        job.required_memberships = memberships;
-        if job.grow_for_next() {
-            job.grow();
-        }
+    let memberships = if theatres_active { ctx.limits[0] } else { 0 };
+    job.required = limits;
+    job.required_memberships = memberships;
+    if job.grow_for_next() {
+        job.grow();
     }
-    let fits = job.has_storage()
-        && job.memberships.len() >= memberships
-        && limits
-            .iter()
-            .zip([
-                job.map_rows.len(),
-                job.equipment.len(),
-                job.cumulative.len(),
-            ])
-            .all(|(&required, capacity)| required <= capacity);
-    if !growing && !fits {
-        job.clear();
-        job.cumulative_active = cumulative_active;
-        job.theatres_active = theatres_active;
-        job.required = limits;
-        job.required_memberships = memberships;
-        return AirWingCopyReport::default();
-    }
-    copy_air_pass(job, memory, ctx, growing);
-    if growing {
-        job.update_capacity_charge();
-    }
+    
+    copy_air_pass(job, memory, ctx);
+    job.update_capacity_charge();
+    
     AirWingCopyReport {
         raw_ok: job.acquired,
         copy_ticks: [
@@ -1209,22 +1119,18 @@ pub(crate) fn decode_air_payload(
 ) {
     let started = qpc();
     captured.active[2] = job.cumulative_active;
-    if job.growing {
-        crate::table_capture::grow_vec(&mut captured.equipment.rows, job.equipment_outcome.len());
-        if job.cumulative_active {
-            crate::table_capture::grow_vec(
-                &mut captured.cumulative.rows,
-                job.cumulative_outcome.len(),
-            );
-        }
+    crate::table_capture::grow_vec(&mut captured.equipment.rows, job.equipment_outcome.len());
+    if job.cumulative_active {
+        crate::table_capture::grow_vec(
+            &mut captured.cumulative.rows,
+            job.cumulative_outcome.len(),
+        );
     }
-    let fits = if job.growing {
+    
+    let fits = {
         captured.equipment.rows.len() >= job.equipment_outcome.len()
             && (!job.cumulative_active
                 || captured.cumulative.rows.len() >= job.cumulative_outcome.len())
-    } else {
-        captured.equipment.rows.len() == job.limits[1]
-            && (!job.cumulative_active || captured.cumulative.rows.len() == job.limits[2])
     };
     if !job.acquired || !fits {
         captured.equipment.outcome = NO_WING_SOURCE;

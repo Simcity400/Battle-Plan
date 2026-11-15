@@ -607,13 +607,17 @@ mod tests {
         // Clock and MapEvents rows name the frame's own hour (MapEvents'
         // interval ends at it), so neither can equal the preceding hour's
         // baseline; comparing MapEvents would only ever find it dense.
+        // The collector never acquires a derived table.
         let current = replay_data::format::FormatVersion::CURRENT.version();
         let misplaced: Vec<(TableId, bool)> = TableId::ALL
             .into_iter()
             .filter_map(|table| {
                 let hourly = replay_data::cadence::cadence(table) == Cadence::Hourly;
                 let names_its_hour = matches!(table, TableId::Clock | TableId::MapEvents);
-                let expected = hourly && !names_its_hour && table.last_change().present(current);
+                let expected = hourly
+                    && !names_its_hour
+                    && !table.is_derived()
+                    && table.last_change().present(current);
                 (seen[table.index()] != expected).then_some((table, expected))
             })
             .collect();
@@ -681,8 +685,10 @@ mod tests {
     /// only the differing rows reach the encoder.
     #[test]
     fn compared_frames_encode_the_bytes_of_complete_frames() {
-        let first = crate::spool_helper::SpoolHelper::start(None).unwrap();
-        let second = crate::spool_helper::SpoolHelper::start(None).unwrap();
+        let pool = [
+            crate::spool_helper::SpoolHelper::start(None).unwrap(),
+            crate::spool_helper::SpoolHelper::start(None).unwrap(),
+        ];
         for helpers in [0, 1, 2] {
             let counters = Counters::default();
             let mut compared = FrameEncoder::new();
@@ -714,8 +720,7 @@ mod tests {
                     },
                     &mut input,
                     (helpers != 0).then_some(crate::spool_helper::Helpers {
-                        first: &first,
-                        second: (helpers == 2).then_some(&second),
+                        pool: &pool[..helpers],
                         backlogged: hour % 2 == 0,
                     }),
                     &counters,

@@ -72,6 +72,9 @@ export const inheritingAll = (settings: CampaignMapSettings): CampaignMapSetting
 });
 const isSet = (value: unknown) => value !== null && value !== undefined;
 const overridden = (settings: CampaignMapSettings) => Object.values(settings.graphics).some(isSet) || Object.values(settings.audio).some(isSet) || settings.counters !== null;
+/** What a row tells the acceptance suite: the setting it holds (`graphics.<key>`, `audio.<key>`, `counters` or
+ * `visualMods`) and, once its draft is saved, the value the map must report drawing with. */
+const applied = (setting: string, value: unknown) => ({ 'data-map-setting': setting, 'data-map-value': JSON.stringify(value ?? null) });
 const filterLabel = (filter: CounterFilter) => filter.kind === 'all' ? 'All countries' : filter.kind === 'players' ? 'Players only' : `${filter.tags.length} chosen`;
 
 export default function MapAppearance({ source, client, global = false, viewId, userFolder }: { source: DashboardSource | null; client: DashboardClient; global?: boolean; viewId?: string; userFolder?: string }) {
@@ -112,7 +115,7 @@ export default function MapAppearance({ source, client, global = false, viewId, 
   const switchRow = (key: Switch, label: string, part = false) => {
     const own = draft?.graphics[key];
     const value = isSet(own) ? own as boolean : inherited?.graphics[key] as boolean | null | undefined;
-    return <div className={`map-option-row${part ? ' map-option-part' : ''}`} key={key} data-overridden={isSet(own) || undefined}>
+    return <div className={`map-option-row${part ? ' map-option-part' : ''}`} key={key} data-overridden={isSet(own) || undefined} {...applied(`graphics.${key}`, value)}>
       <span>{label}</span>
       <span className="map-option-control">
         {isSet(own) && reset(label, () => setGraphics(key, null))}
@@ -125,7 +128,7 @@ export default function MapAppearance({ source, client, global = false, viewId, 
     const own = draft?.graphics[key];
     const parent = inherited?.graphics[key];
     const describe = (value: number | undefined) => choices.find(choice => choice.value === String(value))?.label ?? '';
-    return <div className="map-option-row" data-overridden={isSet(own) || undefined}><span>{label}</span>
+    return <div className="map-option-row" data-overridden={isSet(own) || undefined} {...applied(`graphics.${key}`, isSet(own) ? own : parent)}><span>{label}</span>
       <Select label={label} disabled={!enabled} value={isSet(own) ? String(own) : ''} onChange={value => setGraphics(key, value === '' ? null : Number(value))}
         options={[{ value: '', label: !draft ? (!available ? 'No campaign' : error ? 'Unavailable' : 'Loading...') : `Inherit (${describe(parent)})` }, ...choices]} /></div>;
   };
@@ -184,7 +187,7 @@ export default function MapAppearance({ source, client, global = false, viewId, 
         <small className="map-graphics-group-title">{group.title}</small>
         <div className="map-graphics-grid">{group.items.map(item => switchRow(item.key, item.label))}</div>
       </div>)}
-      <div className="map-option-row" data-overridden={filter !== null || undefined}><span>{COUNTER_FILTER}</span>
+      <div className="map-option-row" data-overridden={filter !== null || undefined} {...applied('counters', inherited || filter ? shownFilter : null)}><span>{COUNTER_FILTER}</span>
         <span className="map-option-control">
           <Select label={COUNTER_FILTER} disabled={!enabled} value={filter?.kind ?? ''}
             onChange={value => { if (draft) setDraft({ ...draft, counters: value === '' ? null : value === 'countries' ? { kind: 'countries', tags: chosen } : { kind: value as 'all' | 'players' } }); }}
@@ -216,7 +219,7 @@ export default function MapAppearance({ source, client, global = false, viewId, 
         {AUDIO.map(([key, label]) => {
           const own = draft?.audio[key];
           const value = isSet(own) ? own as number : inherited?.audio[key];
-          return <div className="map-option-row" key={key} data-overridden={isSet(own) || undefined}><span>{label}</span>
+          return <div className="map-option-row" key={key} data-overridden={isSet(own) || undefined} {...applied(`audio.${key}`, value)}><span>{label}</span>
             <span className="map-option-control">
               {isSet(own) && reset(label, () => setAudio(key, null))}
               <input type="range" min={0} max={100} step={1} aria-label={label} disabled={!enabled} value={value ?? 0} onChange={event => setAudio(key, Number(event.currentTarget.value))} />
@@ -238,7 +241,7 @@ export default function MapAppearance({ source, client, global = false, viewId, 
       {!reply && <p className="map-menu-note" role="status">{!available ? 'Load a campaign to see installed visual mods.' : error ? 'Installed mods are unavailable until the settings connection is restored.' : 'Reading installed mods...'}</p>}
       {reply && <div className="map-mod-tools">{reply.mods.length > 0 && <input className="map-mod-search" aria-label="Search installed visual mods" placeholder="Search installed mods..." value={query} onChange={event => setQuery(event.currentTarget.value)} />}
         <button type="button" className="button quiet" disabled={busy} onClick={() => void refreshMods()}>Refresh</button></div>}
-      <div className="map-mod-list">{mods.map(mod => <label key={mod.id} className="map-mod-row">
+      <div className="map-mod-list" data-overridden={draft?.visualMods != null || undefined} {...applied('visualMods', selected.map(choice => choice.id).sort())}>{mods.map(mod => <label key={mod.id} className="map-mod-row">
         <input type="checkbox" checked={selected.some(choice => choice.id === mod.id)} disabled={busy || !draft} onChange={event => {
           if (draft) setDraft({ ...draft, visualMods: event.currentTarget.checked ? [...selected, { id: mod.id, name: mod.name }] : selected.filter(choice => choice.id !== mod.id) });
         }} /><span>{mod.name}{'recordedId' in mod && recorded.has(mod.recordedId) && <small>In the recording</small>}{mod.problem && <small>{mod.problem}</small>}</span>
@@ -246,7 +249,7 @@ export default function MapAppearance({ source, client, global = false, viewId, 
       {reply && mods.length === 0 && <p className="map-menu-note">{query ? 'No matching installed mods.' : 'No installed mods found.'}</p>}
       {reply && !mapDirty && reply.appliedMods.length > 1 && <div className="map-mod-order"><small>Shown in the game's load order; later mods cover earlier ones.</small>{reply.appliedMods.map(mod => <div key={mod.id}><span>{mod.name}</span></div>)}</div>}
       {reply && !mapDirty && reply.appliedNotes.map(note => <p key={note} className="map-menu-note">{note}</p>)}
-      {draft?.visualMods !== null && draft && <button type="button" className="map-menu-action" disabled={busy} onClick={() => setDraft({ ...draft, visualMods: null })}>{global ? 'Show no visual mods' : `Use ${parentLabel} for mods`}</button>}
+      {draft?.visualMods !== null && draft && <button type="button" className="map-menu-action map-mods-inherit" disabled={busy} onClick={() => setDraft({ ...draft, visualMods: null })}>{global ? 'Show no visual mods' : `Use ${parentLabel} for mods`}</button>}
     </details>
     {available && !reply && !error && <p className="map-menu-note" role="status">Reading map settings…</p>}
     {error && <div className="map-menu-error" role="alert">{error}{!reply && <button type="button" className="button quiet" onClick={() => setRetry(value => value + 1)}>Retry</button>}</div>}

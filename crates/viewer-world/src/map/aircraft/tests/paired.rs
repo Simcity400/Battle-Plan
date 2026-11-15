@@ -162,7 +162,7 @@ fn paired_placement_keeps_each_surviving_side_and_its_native_callbacks() {
                 }),
             };
             let mut out = AircraftPlan::default();
-            out.place(&batch, 1, &mut Random::new(37), &placement);
+            out.place(&batch, 1, &mut Random::new(37), &placement, &mut Keeping::default());
             let expected: Vec<_> = rig
                 .sides
                 .iter()
@@ -278,7 +278,7 @@ fn a_rootless_rocket_flies_to_the_rig_origin_at_rocket_speed_and_ends_there() {
         defender: None,
     };
     let mut out = AircraftPlan::default();
-    out.place(&batch, 1, &mut Random::new(37), &placement);
+    out.place(&batch, 1, &mut Random::new(37), &placement, &mut Keeping::default());
     assert!(out.diagnostics.is_empty(), "{:?}", out.diagnostics);
     let [flight] = out.flights.as_slice() else {
         panic!("one rocket");

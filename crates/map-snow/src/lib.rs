@@ -168,10 +168,7 @@ fn grid_with(
         None
     };
     // Unrecorded boundary history must not be reconstructed from province simulation.
-    let boundary = (0..height - 1)
-        .map(|z| z * width + width - 1)
-        .chain((0..width).map(|x| (height - 1) * width + x));
-    for (edge, cell) in boundary.enumerate() {
+    for (edge, cell) in boundary(width, height).enumerate() {
         cells[cell as usize * 2..cell as usize * 2 + 2].copy_from_slice(
             &display.map_or([0; 2], |d| [d.edges[edge], d.edges[edge_cells + edge]]),
         );
@@ -197,6 +194,14 @@ fn grid_with(
         summary,
         refresh,
     })
+}
+
+/// The grid's boundary cells in the order the retained edges hold them: the east column south
+/// first without the northern corner, then the northern row.
+pub fn boundary(width: u32, height: u32) -> impl Iterator<Item = u32> {
+    (0..height - 1)
+        .map(move |z| z * width + width - 1)
+        .chain((0..width).map(move |x| (height - 1) * width + x))
 }
 
 #[derive(Clone)]
@@ -312,6 +317,34 @@ impl SnowCells {
         )))
     }
 
+    /// The map's largest province id.
+    pub fn largest(&self) -> u32 {
+        self.largest
+    }
+
+    /// The grid's cell count.
+    pub fn cells(&self) -> usize {
+        self.perm.len()
+    }
+
+    /// The cells `province`'s pixels fall in.
+    pub fn province_cells(&self, province: u32) -> &[usize] {
+        self.province_cells.get(&province).map_or(&[], Vec::as_slice)
+    }
+
+    /// One cell's snow and mud: its pixels' province bytes averaged, permanent snow full.
+    pub fn cell_bytes(&self, cell: usize, bytes: impl Fn(u32) -> [u8; 2]) -> [u8; 2] {
+        let area = SNOW_MUD_BLOCK * SNOW_MUD_BLOCK;
+        let mut snow = u32::from(self.perm[cell]) * u32::from(u8::MAX);
+        let mut mud = 0u32;
+        for &(province, snow_pixels, pixels) in &self.entries[self.offsets[cell]..self.offsets[cell + 1]] {
+            let [province_snow, province_mud] = bytes(province);
+            snow += u32::from(snow_pixels) * u32::from(province_snow);
+            mud += u32::from(pixels) * u32::from(province_mud);
+        }
+        [(snow / area) as u8, (mud / area) as u8]
+    }
+
     /// Each cell's unknown flag: 1 where a province `known` does not hold reaches it. Every pixel
     /// adds its province's mud byte to the average, so no unobserved contributor is irrelevant.
     fn unknown(&self, known: &[bool]) -> Vec<u8> {
@@ -321,7 +354,7 @@ impl SnowCells {
             .collect()
     }
 
-    fn cell_unknown(&self, cell: usize, known: impl Fn(u32) -> bool) -> u8 {
+    pub fn cell_unknown(&self, cell: usize, known: impl Fn(u32) -> bool) -> u8 {
         u8::from(
             self.entries[self.offsets[cell]..self.offsets[cell + 1]]
                 .iter()
@@ -331,19 +364,9 @@ impl SnowCells {
 
     /// `rasterise`'s cells for these per-province bytes.
     fn average(&self, bytes: &[[u8; 2]]) -> (u32, u32, Vec<u8>) {
-        let area = SNOW_MUD_BLOCK * SNOW_MUD_BLOCK;
         let mut cells = vec![0u8; self.perm.len() * 2];
         for (cell, out) in cells.chunks_exact_mut(2).enumerate() {
-            let mut snow = u32::from(self.perm[cell]) * u32::from(u8::MAX);
-            let mut mud = 0u32;
-            let range = self.offsets[cell]..self.offsets[cell + 1];
-            for &(province, snow_pixels, pixels) in &self.entries[range] {
-                let [province_snow, province_mud] =
-                    bytes.get(province as usize).copied().unwrap_or([0; 2]);
-                snow += u32::from(snow_pixels) * u32::from(province_snow);
-                mud += u32::from(pixels) * u32::from(province_mud);
-            }
-            out.copy_from_slice(&[(snow / area) as u8, (mud / area) as u8]);
+            out.copy_from_slice(&self.cell_bytes(cell, |province| bytes.get(province as usize).copied().unwrap_or([0; 2])));
         }
         (self.width, self.height, cells)
     }

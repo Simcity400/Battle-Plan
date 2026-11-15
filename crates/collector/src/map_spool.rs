@@ -732,13 +732,15 @@ mod tests {
                 captured.player_names[0] ^= 1;
                 captured.orders.geometry[0] ^= 1;
                 captured.air_wings.rows[0].strategic_bombing_raw = Some(0);
+                captured.naval.ships.rows[0].acquired_manpower = None;
+                captured.naval.ships.rows[0].required_manpower = None;
             }
             let current = table_inputs(
                 &captured,
                 Some(&mut Projection::new(&encoder, 1, hour, false, &scratch)),
             );
             for (index, table) in current.iter().enumerate() {
-                let reused = hour == 1 || (hour == 2 && !matches!(index, 0 | 8 | 9));
+                let reused = hour == 1 || (hour == 2 && !matches!(index, 0 | 5 | 8 | 9));
                 assert_eq!(
                     matches!(table, TableInput::ComparedEqual(_)),
                     reused,
@@ -845,8 +847,8 @@ mod tests {
             vec![cship::Row {
                 name: None,
                 naming: None,
-                acquired_manpower: None,
-                required_manpower: None,
+                acquired_manpower: Some(i32::MIN),
+                required_manpower: Some(i32::MAX),
                 roster_ordinal: 0,
                 id: u64::MAX,
                 task_force: u64::MAX - 1,
@@ -991,8 +993,8 @@ mod tests {
             TableRows::Ships(vec![ShipRow {
                 name: Default::default(),
                 naming: Default::default(),
-                acquired_manpower: Default::default(),
-                required_manpower: Default::default(),
+                acquired_manpower: Some(i32::MIN).into(),
+                required_manpower: Some(i32::MAX).into(),
 
                 id: u64::MAX,
                 task_force: u64::MAX - 1,
@@ -1023,8 +1025,10 @@ mod tests {
                 state: u32::MAX - 1,
             }]),
             TableRows::AirWings(vec![AirWingRow {
-                acquired_manpower: Default::default(),
-                exile_country: Default::default(),
+                // An uncertified crew is the column's refusal: the row encoder holds no
+                // not-recorded cell.
+                acquired_manpower: replay_data::rows::Recorded::Value(None),
+                exile_country: replay_data::rows::Recorded::Value(None),
 
                 id: u64::MAX,
                 owner: u32::MAX,
@@ -1437,7 +1441,7 @@ mod ship_names_tests {
         )
         .ok()
         .flatten();
-        let naming = cship::naming_growing(
+        let naming = cship::naming(
             &memory,
             0,
             SHIP,

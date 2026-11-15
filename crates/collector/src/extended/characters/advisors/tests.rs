@@ -42,8 +42,6 @@ fn context() -> CharactersCopyContext {
         base: IMAGE,
         game_state: ADDRESS,
         active: PART_MASKS[2],
-        trait_rows: 0,
-        trait_bytes: 0,
     }
 }
 fn cache_for(bytes: &[u8]) -> Cache {
@@ -58,6 +56,7 @@ fn cache_for(bytes: &[u8]) -> Cache {
 
 #[test]
 fn advisor_modifier_sizing_survives_an_unreadable_political_census() {
+    let _globals = crate::extended::characters::test_globals();
     struct World<'a>(&'a [u8]);
     impl Memory for World<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
@@ -159,6 +158,7 @@ fn assert_outer_matches(cache: &Cache, memory: &impl Memory) {
 }
 #[test]
 fn first_capture_prepares_controls_without_a_second_roster_discovery() {
+    let _globals = crate::extended::characters::test_globals();
     let bytes = super::super::tests::section_fixture();
     let mut observer = Observer::new();
     let mut cache = cache_for(&bytes);
@@ -178,6 +178,7 @@ fn first_capture_prepares_controls_without_a_second_roster_discovery() {
 }
 #[test]
 fn unregistered_maps_cannot_use_a_control_only_certificate() {
+    let _globals = crate::extended::characters::test_globals();
     struct Unwatched;
     impl Changes for Unwatched {
         fn quiet(&self) -> Option<(u64, u64)> {
@@ -209,6 +210,7 @@ fn warm(cache: &mut Cache, bytes: &[u8], observer: &Observer) {
 
 #[test]
 fn fresh_modifier_cache_changes_without_an_advisor_mutation_hook() {
+    let _globals = crate::extended::characters::test_globals();
     use super::super::tests::array;
     let mut bytes = super::super::tests::section_fixture();
     let data = 0x8a00;
@@ -259,6 +261,7 @@ fn fresh_modifier_cache_changes_without_an_advisor_mutation_hook() {
 
 #[test]
 fn fresh_cache_spans_survive_definition_relocation_and_faults() {
+    let _globals = crate::extended::characters::test_globals();
     use super::super::tests::{WaveMemory, array};
     let mut bytes = super::super::tests::section_fixture();
     add_second_role(&mut bytes);
@@ -304,7 +307,8 @@ fn fresh_cache_spans_survive_definition_relocation_and_faults() {
 }
 
 #[test]
-fn tooltip_shortage_preserves_later_numeric_caches() {
+fn short_modifier_storage_grows_to_every_numeric_cache_and_tooltip() {
+    let _globals = crate::extended::characters::test_globals();
     use super::super::tests::{SECOND_ADVISOR, two_advisor_fixture};
     let bytes = two_advisor_fixture(true);
     let rows = [kit::ADV_ROLE, SECOND_ADVISOR].map(|pointer| cadvisor::Row {
@@ -329,75 +333,15 @@ fn tooltip_shortage_preserves_later_numeric_caches() {
                 &modifiers.bytes[span.start + 8..span.start + 16],
                 &if index == 0 { -17_i64 } else { 19_i64 }.to_le_bytes()
             );
-            assert_eq!(
-                span.tooltip_recorded,
-                capacity >= if index == 0 { 40 } else { 49 }
-            );
-            if !span.tooltip_recorded {
-                assert_eq!(
-                    span.tooltip_failure,
-                    Some(cadvisor::TOOLTIP_CAPACITY_REASON)
-                );
-            }
+            assert!(span.tooltip_recorded);
         }
-        assert_eq!(
-            modifiers.shortfall,
-            if capacity == 32 {
-                2
-            } else if capacity == 40 {
-                1
-            } else {
-                0
-            }
-        );
+        assert_eq!(modifiers.shortfall, 0);
     }
 }
 
 #[test]
-fn optional_cache_capacity_shortfall_keeps_roles_and_definition_certificates() {
-    use super::super::tests::array;
-    let mut bytes = super::super::tests::section_fixture();
-    array(
-        &mut bytes,
-        kit::ADV_ROLE + cadvisor::MODIFIER_ENTRIES,
-        0x8a00,
-        2,
-    );
-    let observer = Observer::new();
-    let mut cache = cache_for(&bytes);
-    warm(&mut cache, &bytes, &observer);
-    cache.modifiers.spans.clear();
-    cache.modifiers.bytes.clear();
-    cache.capture(&kit::memory(&bytes), context(), &observer, None);
-    assert_eq!(cache.result.outcome, Outcome::Rows { len: 1 });
-    assert_eq!(cache.modifiers.shortfall, 1);
-    assert_eq!(cache.modifiers.failure, None);
-    assert!(cache.sections.iter().all(|section| section.valid));
-    assert_eq!(cache.counts.planned, 2);
-    let mut captured = Captured::with_capacities(&fixture_capacities());
-    cache.decode(&mut captured);
-    let TableView::Complete(TableRows::AdvisorRoles(rows)) = captured.advisors_table() else {
-        panic!("capacity shortfall keeps advisor roles");
-    };
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].idea, b"idea");
-    assert_eq!(
-        rows[0].modifier_cache,
-        replay_data::rows::Recorded::Value(None)
-    );
-    assert_eq!(
-        captured.advisors.rows.rows[0].modifier_failure,
-        Some(cadvisor::MODIFIER_CAPACITY_REASON)
-    );
-    cache.prepare();
-    cache.grow();
-    cache.capture(&kit::memory(&bytes), context(), &observer, None);
-    assert_eq!(cache.counts.planned, 2);
-    assert_outer_fresh(&cache, &bytes);
-}
-
-#[test]
 fn independent_plans_refresh_country_mutations_aliases_and_roster_growth() {
+    let _globals = crate::extended::characters::test_globals();
     use super::super::tests::{MANAGER, array};
     let mut bytes = super::super::tests::section_fixture();
     let mut observer = Observer::new();
@@ -442,6 +386,7 @@ fn independent_plans_refresh_country_mutations_aliases_and_roster_growth() {
 }
 #[test]
 fn planned_control_failures_keep_first_fault_and_recover_with_fresh_data() {
+    let _globals = crate::extended::characters::test_globals();
     use super::super::tests::WaveMemory;
     let bytes = super::super::tests::section_fixture();
     let observer = Observer::new();
@@ -495,6 +440,7 @@ fn planned_control_failures_keep_first_fault_and_recover_with_fresh_data() {
 
 #[test]
 fn planned_country_prefix_survives_later_control_change_and_fault() {
+    let _globals = crate::extended::characters::test_globals();
     use super::super::tests::WaveMemory;
     let mut original = kit::mapped_fixture();
     add_second_role(&mut original);
@@ -559,6 +505,7 @@ fn planned_country_prefix_survives_later_control_change_and_fault() {
 
 #[test]
 fn planned_duplicate_characters_keep_each_country_observation() {
+    let _globals = crate::extended::characters::test_globals();
     use super::super::tests::{ROSTER, WaveMemory};
     struct Countries<'a> {
         bytes: &'a [u8],
@@ -649,30 +596,6 @@ fn planned_duplicate_characters_keep_each_country_observation() {
     }
 }
 
-#[test]
-fn earlier_truncation_suppresses_later_rows_and_retains_missing_demand() {
-    let mut bytes = super::super::tests::section_fixture();
-    add_second_role(&mut bytes);
-    let observer = Observer::new();
-    let mut cache = cache_for(&bytes);
-    cache.sections[0] = Section::with_capacity(0, 0, 8);
-    cache.capture(&kit::memory(&bytes), context(), &observer, None);
-    assert!(matches!(
-        cache.result.outcome,
-        Outcome::Truncated {
-            len: 0,
-            unread_rows: 2
-        }
-    ));
-    assert_eq!(cache.sections[1].result.outcome.len(), 0);
-    for _ in 0..3 {
-        cache.grow();
-        cache.capture(&kit::memory(&bytes), context(), &observer, None);
-    }
-    assert_outer_fresh(&cache, &bytes);
-    warm(&mut cache, &bytes, &observer);
-}
-
 fn add_second_role(bytes: &mut [u8]) {
     let character = CHARACTERS[1];
     let offset = character + ccharacter::ADVISOR_MAP_HEAD;
@@ -692,6 +615,7 @@ fn add_second_role(bytes: &mut [u8]) {
 
 #[test]
 fn role_addition_removal_and_arena_relocation_keep_other_characters_reusable() {
+    let _globals = crate::extended::characters::test_globals();
     let mut bytes = kit::mapped_fixture();
     let mut cache = Section::with_capacity(8, 512, 8);
     let mut observer = Observer::new();
@@ -731,6 +655,7 @@ fn role_addition_removal_and_arena_relocation_keep_other_characters_reusable() {
 }
 #[test]
 fn unchanged_roles_skip_payload_reads_but_country_stays_current() {
+    let _globals = crate::extended::characters::test_globals();
     let mut bytes = kit::mapped_fixture();
     let mut cache = Section::with_capacity(8, 512, 8);
     let observer = Observer::new();
@@ -756,6 +681,7 @@ fn unchanged_roles_skip_payload_reads_but_country_stays_current() {
 }
 #[test]
 fn same_count_replacement_and_larger_strings_refresh_only_the_affected_character() {
+    let _globals = crate::extended::characters::test_globals();
     let mut bytes = kit::mapped_fixture();
     let mut cache = Section::with_capacity(8, 512, 8);
     let mut observer = Observer::new();
@@ -778,17 +704,12 @@ fn same_count_replacement_and_larger_strings_refresh_only_the_affected_character
     assert_eq!((cache.counts.read, cache.counts.reused), (3, 0));
 }
 #[test]
-fn truncation_and_unwatched_entries_stay_fresh_and_grow_off_capture() {
+fn short_storage_and_unwatched_entries_stay_fresh() {
+    let _globals = crate::extended::characters::test_globals();
     let bytes = kit::mapped_fixture();
     let mut cache = Section::with_capacity(0, 0, 1);
     let mut observer = Observer::new();
     cache.capture(&kit::memory(&bytes), context(), &observer);
-    assert!(matches!(cache.result.outcome, Outcome::Truncated { .. }));
-    assert!(!cache.valid);
-    for _ in 0..3 {
-        cache.grow();
-        cache.capture(&kit::memory(&bytes), context(), &observer);
-    }
     assert_fresh(&cache, &bytes);
     observer.enabled = false;
     cache.capture(&kit::memory(&bytes), context(), &observer);
@@ -797,6 +718,7 @@ fn truncation_and_unwatched_entries_stay_fresh_and_grow_off_capture() {
 }
 #[test]
 fn fresh_control_faults_and_dirty_role_faults_never_reuse_stale_success() {
+    let _globals = crate::extended::characters::test_globals();
     let bytes = kit::mapped_fixture();
     let mut observer = Observer::new();
     struct Fault<'a> {
@@ -835,7 +757,8 @@ fn fresh_control_faults_and_dirty_role_faults_never_reuse_stale_success() {
 }
 
 #[test]
-fn tooltip_keys_stay_fresh_under_definition_reuse_and_shortfalls_keep_roles() {
+fn tooltip_keys_stay_fresh_under_definition_reuse() {
+    let _globals = crate::extended::characters::test_globals();
     let mut bytes = super::super::tests::section_fixture();
     let table = kit::ADV_ROLE + cadvisor::TOOLTIP_KEYS + 8;
     pointer(&mut bytes, table, 0x8b00);
@@ -858,23 +781,6 @@ fn tooltip_keys_stay_fresh_under_definition_reuse_and_shortfalls_keep_roles() {
         rows[0].tooltip_keys,
         replay_data::rows::Recorded::Value(Some(vec![b"later".to_vec()]))
     );
-    cache.modifiers.bytes.clear();
-    cache.capture(&kit::memory(&bytes), context(), &observer, None);
-    cache.decode(&mut captured);
-    let TableView::Complete(TableRows::AdvisorRoles(rows)) = captured.advisors_table() else {
-        panic!("tooltip capacity shortfall keeps roles");
-    };
-    assert_eq!(rows[0].idea, b"idea");
-    assert_eq!(
-        rows[0].tooltip_keys,
-        replay_data::rows::Recorded::Value(None)
-    );
-    assert_eq!(
-        captured.advisors.rows.rows[0].tooltip_failure,
-        Some(cadvisor::TOOLTIP_CAPACITY_REASON)
-    );
-    cache.grow();
-    cache.capture(&kit::memory(&bytes), context(), &observer, None);
     assert_outer_fresh(&cache, &bytes);
 }
 
@@ -1072,6 +978,7 @@ fn entry(definition: u32, value: i64) -> replay_data::rows::CachedModifier {
 
 #[test]
 fn certified_advisor_modifiers_are_carried_until_a_hooked_rebuild() {
+    let _globals = crate::extended::characters::test_globals();
     use crate::character_changes::Watches;
     static WATCHES: Watches = Watches::new();
     WATCHES.enable(64);
@@ -1089,7 +996,7 @@ fn certified_advisor_modifiers_are_carried_until_a_hooked_rebuild() {
     let mut cache = cache_for(&bytes);
     cache.modifiers.roles = RoleObservation::with(&WATCHES);
     // The first hour reads and holds every role.
-    cache.capture_growing(&kit::memory(&bytes), context(), &observer, None);
+    cache.capture(&kit::memory(&bytes), context(), &observer, None);
     let roles = cache.result.outcome.len() as u64;
     assert!(roles >= 1);
     assert_eq!(
@@ -1103,7 +1010,7 @@ fn certified_advisor_modifiers_are_carried_until_a_hooked_rebuild() {
     cache.prepare();
     // A quiet hour carries every role without reading its cache or keys.
     let quiet = Counting::new(&bytes, watched());
-    cache.capture_growing(&quiet, context(), &observer, None);
+    cache.capture(&quiet, context(), &observer, None);
     assert_eq!(quiet.reads(), 0, "a carried role is not read");
     assert_eq!(
         (
@@ -1117,7 +1024,7 @@ fn certified_advisor_modifiers_are_carried_until_a_hooked_rebuild() {
     // No native writer changes the cache outside the hooked rebuild, so a
     // write no hook saw stays unread: the held entries are published.
     put(&mut bytes, data.start + 8, (-1_i64).to_le_bytes());
-    cache.capture_growing(&kit::memory(&bytes), context(), &observer, None);
+    cache.capture(&kit::memory(&bytes), context(), &observer, None);
     assert_eq!(first_role_entries(&cache), [entry(7, -5), entry(8, 9)]);
     // A trait-addition effect rebuilds the cache through the hooked
     // advisor modifier rebuild on the role's character: that role alone is read afresh.
@@ -1126,7 +1033,7 @@ fn certified_advisor_modifiers_are_carried_until_a_hooked_rebuild() {
         engine_mutations::character_role_mutations::ADVISOR_MODIFIERS,
     ));
     let rebuilt = Counting::new(&bytes, watched());
-    cache.capture_growing(&rebuilt, context(), &observer, None);
+    cache.capture(&rebuilt, context(), &observer, None);
     assert!(rebuilt.reads() > 0);
     assert_eq!(cache.modifiers.role_counts.read, 1);
     assert_eq!(cache.modifiers.role_counts.reused, roles - 1);
@@ -1134,7 +1041,7 @@ fn certified_advisor_modifiers_are_carried_until_a_hooked_rebuild() {
     assert_eq!(first_role_entries(&cache), [entry(7, -1), entry(8, 9)]);
     // A load, gap or recovery starts an epoch: every role is read.
     WATCHES.boundary(true);
-    cache.capture_growing(&kit::memory(&bytes), context(), &observer, None);
+    cache.capture(&kit::memory(&bytes), context(), &observer, None);
     assert_eq!(
         (
             cache.modifiers.role_counts.reused,
@@ -1147,6 +1054,7 @@ fn certified_advisor_modifiers_are_carried_until_a_hooked_rebuild() {
 
 #[test]
 fn quiet_hours_carry_advisor_modifier_caches_and_read_only_a_rebuilt_role() {
+    let _globals = crate::extended::characters::test_globals();
     use crate::character_changes::Watches;
     static WATCHES: Watches = Watches::new();
     let ManyAdvisors {
@@ -1165,7 +1073,7 @@ fn quiet_hours_carry_advisor_modifier_caches_and_read_only_a_rebuilt_role() {
         rows: [0; N],
         bytes: [0; N],
     });
-    cache.capture_growing(&kit::memory(&bytes), context(), &observer, None);
+    cache.capture(&kit::memory(&bytes), context(), &observer, None);
     assert_eq!(cache.result.outcome, Outcome::Rows { len: 40 });
     assert_eq!(cache.modifiers.role_counts.read, 40);
     cache.decode(&mut captured);
@@ -1174,7 +1082,7 @@ fn quiet_hours_carry_advisor_modifier_caches_and_read_only_a_rebuilt_role() {
     cache.prepare();
     let watched = || vec![numeric..numeric + 16, tooltip..tooltip + 0x28];
     let quiet = Counting::new(&bytes, watched());
-    cache.capture_growing(&quiet, context(), &observer, None);
+    cache.capture(&quiet, context(), &observer, None);
     assert_eq!(quiet.reads(), 0);
     assert_eq!(
         (
@@ -1191,7 +1099,7 @@ fn quiet_hours_carry_advisor_modifier_caches_and_read_only_a_rebuilt_role() {
         engine_mutations::character_role_mutations::ADVISOR_MODIFIERS,
     ));
     let rebuilt = Counting::new(&bytes, watched());
-    cache.capture_growing(&rebuilt, context(), &observer, None);
+    cache.capture(&rebuilt, context(), &observer, None);
     assert!(rebuilt.reads() > 0, "the rebuilt role is read");
     assert_eq!(
         (
@@ -1207,6 +1115,7 @@ fn quiet_hours_carry_advisor_modifier_caches_and_read_only_a_rebuilt_role() {
 #[cfg(feature = "advisor_profile")]
 #[test]
 fn profile_diagnostics_have_five_slots_independent_of_table_count() {
+    let _globals = crate::extended::characters::test_globals();
     let section = Section::with_capacity(0, 0, 0);
     let memory = engine_native::memory::SliceMemory {
         base: 0,

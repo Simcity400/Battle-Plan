@@ -654,7 +654,7 @@ mod tests;
 mod output;
 pub use output::compare_output;
 #[cfg(test)]
-use output::{OUTPUT_TABLES, OutputCheck};
+use output::{ENDED_ADDITION, OUTPUT_TABLES, OutputCheck};
 
 #[cfg(test)]
 mod output_tests;

@@ -57,7 +57,7 @@ fn store(text: &str) -> String {
 pub struct Localisation {
     pub language: String,
     /// Key as written, value as stored (see the module documentation).
-    entries: BTreeMap<String, String>,
+    entries: Entries,
     /// Reader logs with file, physical line and recovery reason.
     /// Syntax errors end the file; illegal escapes and failed UTF-8
     /// conversions log and continue. A missing BOM skips the file.
@@ -70,10 +70,91 @@ pub struct Localisation {
     pub duplicates: Vec<String>,
 }
 
+/// A localisation's entries: as its files were read, or kept and read in place
+/// ([`Localisation::from_kept`]).
+#[derive(Clone)]
+enum Entries {
+    Read(BTreeMap<String, String>),
+    Kept(installed_content_core::kept::Table),
+}
+
+impl Default for Entries {
+    fn default() -> Self {
+        Self::Read(BTreeMap::new())
+    }
+}
+
+impl FromIterator<(String, String)> for Entries {
+    fn from_iter<I: IntoIterator<Item = (String, String)>>(entries: I) -> Self {
+        Self::Read(entries.into_iter().collect())
+    }
+}
+
+impl PartialEq for Entries {
+    fn eq(&self, other: &Self) -> bool {
+        self.len() == other.len() && self.iter().eq(other.iter())
+    }
+}
+
+impl Eq for Entries {}
+
+impl std::fmt::Debug for Entries {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_map().entries(self.iter()).finish()
+    }
+}
+
+impl Entries {
+    fn get(&self, key: &str) -> Option<&str> {
+        match self {
+            Self::Read(entries) => entries.get(key).map(String::as_str),
+            Self::Kept(table) => table
+                .find(key.as_bytes())
+                .and_then(|index| table.value(index))
+                .and_then(|value| std::str::from_utf8(value).ok()),
+        }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Self::Read(entries) => entries.len(),
+            Self::Kept(table) => table.len(),
+        }
+    }
+
+    fn iter(&self) -> Box<dyn Iterator<Item = (&str, &str)> + '_> {
+        match self {
+            Self::Read(entries) => Box::new(
+                entries
+                    .iter()
+                    .map(|(key, value)| (key.as_str(), value.as_str())),
+            ),
+            Self::Kept(table) => Box::new((0..table.len()).filter_map(move |index| {
+                Some((
+                    std::str::from_utf8(table.key(index)?).ok()?,
+                    std::str::from_utf8(table.value(index)?).ok()?,
+                ))
+            })),
+        }
+    }
+
+    fn insert(&mut self, key: String, value: String) {
+        if let Self::Kept(_) = self {
+            *self = self
+                .iter()
+                .map(|(key, value)| (key.to_owned(), value.to_owned()))
+                .collect();
+        }
+        if let Self::Read(entries) = self {
+            entries.insert(key, value);
+        }
+    }
+}
+
 impl Localisation {
     /// The stored text of a key, or `None` when no layer defines it.
     pub fn get(&self, key: &str) -> Option<&str> {
-        self.entries.get(key).map(String::as_str)
+        self.entries.get(key)
     }
 
     /// Number of distinct keys.
@@ -83,14 +164,49 @@ impl Localisation {
 
     /// True when no layer defined any key of this language.
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.entries.len() == 0
     }
 
     /// Every key and stored value in key order.
     pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
-        self.entries
-            .iter()
-            .map(|(key, value)| (key.as_str(), value.as_str()))
+        self.entries.iter()
+    }
+
+    /// Appends this localisation in the form [`Self::from_kept`] reads in place.
+    pub fn keep(&self, out: &mut Vec<u8>) {
+        use installed_content_core::kept::{Table, put_bytes, put_texts};
+        put_bytes(out, self.language.as_bytes());
+        put_texts(out, &self.logged);
+        put_texts(out, &self.refused);
+        put_texts(out, &self.duplicates);
+        let entries: Vec<(&str, &str)> = self.iter().collect();
+        Table::write(
+            out,
+            entries
+                .into_iter()
+                .map(|(key, value)| (key.as_bytes(), value.as_bytes())),
+        );
+    }
+
+    /// The localisation [`Self::keep`] put at `at` in `bytes`, its entries read in place, and
+    /// where it ends.
+    pub fn from_kept(bytes: &std::sync::Arc<Vec<u8>>, at: usize) -> io::Result<(Self, usize)> {
+        let mut input = installed_content_core::kept::Input::new(bytes, at);
+        let language = input.text()?;
+        let logged = input.texts()?;
+        let refused = input.texts()?;
+        let duplicates = input.texts()?;
+        let (table, end) = installed_content_core::kept::Table::read(bytes, input.at())?;
+        Ok((
+            Self {
+                language,
+                entries: Entries::Kept(table),
+                logged,
+                refused,
+                duplicates,
+            },
+            end,
+        ))
     }
 
     /// The game's localiser with no arguments: [`Localisation::localise_with`]
@@ -851,6 +967,37 @@ impl Piece<'_> {
             }
         }
     }
+}
+
+/// Stored game text as plain text, read as the game's text layout reads it ([`pieces`]): colour
+/// codes are removed, inline images (a text icon or an inline flag) are left
+/// out of the plain text, and the 0x14 and 0x1A spacing controls, which have
+/// no plain-text form, are refused by name.
+pub fn plain_text(text: &str) -> Result<String, String> {
+    let mut clean = String::new();
+    for piece in pieces(text) {
+        match piece {
+            Piece::Text(text) => clean.push_str(text),
+            Piece::Colour(_) | Piece::Icon(_) | Piece::Flag(_) => (),
+            Piece::Control14 | Piece::Control1A(_) => {
+                return Err(format!(
+                    "{}, which plain text cannot show",
+                    piece.describe()
+                ));
+            }
+        }
+    }
+    Ok(clean)
+}
+
+/// A string the engine built for display, recorded as bytes, as plain text.
+/// Stored colour codes and icons use the shared game localiser; unsupported
+/// controls and invalid UTF-8 stay refusals instead of invented text.
+pub fn display_text(bytes: &[u8]) -> Result<String, String> {
+    let text = std::str::from_utf8(bytes).map_err(|_| "is not UTF-8".to_owned())?;
+    plain_text(text)
+        .map(|text| text.trim().to_owned())
+        .map_err(|reason| format!("holds {reason}"))
 }
 
 /// Stored text in the pieces the game's text layout makes of it.
@@ -2592,6 +2739,41 @@ mod tests {
         assert!(!repeated.is_empty());
         assert_eq!(repeated.iter().collect::<Vec<_>>(), vec![("A", "one")]);
         assert_eq!(repeated.duplicates.len(), 1);
+    }
+
+    /// A kept localisation reads back equal to the one read from its files, answering every key,
+    /// substitution and missing key alike, and a key merged into it after is kept beside them.
+    #[test]
+    fn a_kept_localisation_reads_in_place_as_its_files_were_read() {
+        let read = merged(&[
+            (
+                "localisation/english/b.yml",
+                1,
+                "l_english:\n A: \"late\"\n NAME: \"$A$ and §Yyellow§!\"\n",
+            ),
+            (
+                "localisation/english/a.yml",
+                0,
+                "l_english:\n A: \"early\"\n B: \"\"\n C: \"bad \\q escape\"\n",
+            ),
+        ]);
+        assert!(!read.duplicates.is_empty() && !read.logged.is_empty());
+        let mut out = b"before".to_vec();
+        read.keep(&mut out);
+        let end = out.len();
+        out.extend(b"after");
+        let bytes = std::sync::Arc::new(out);
+        let (kept, at) = Localisation::from_kept(&bytes, 6).unwrap();
+        assert_eq!(at, end);
+        assert_eq!(kept, read);
+        for key in ["A", "B", "C", "NAME", "MISSING", ""] {
+            assert_eq!(kept.get(key), read.get(key), "{key}");
+            assert_eq!(kept.localise(key.as_bytes()), read.localise(key.as_bytes()), "{key}");
+        }
+        assert!(Localisation::from_kept(&std::sync::Arc::new(bytes[..end - 1].to_vec()), 6).is_err());
+        let mut grown = kept.clone();
+        grown.entries.insert("D".into(), "late key".into());
+        assert_eq!((grown.get("A"), grown.get("D"), grown.len()), (Some("early"), Some("late key"), read.len() + 1));
     }
 
     #[test]

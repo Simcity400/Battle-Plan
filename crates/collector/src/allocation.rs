@@ -1,19 +1,10 @@
 //! Capture failure notification and native allocation hook installation.
 
 pub(crate) use crate::terminal::*;
-use std::{io, sync::atomic::Ordering};
+use std::io;
 
 pub(crate) fn fail(phase: Phase, code: Code) {
-    if !crate::terminal::record_failure(phase, code) {
-        return;
-    }
-    // A frame waiter must release the game callback immediately.
-    let shared = crate::sampling::SHARED.load(Ordering::Acquire);
-    if !shared.is_null() {
-        unsafe {
-            (*shared).cancel_buffer_wait.store(true, Ordering::Release);
-        }
-    }
+    crate::terminal::record_failure(phase, code);
 }
 
 pub(crate) fn install_hooks() {
@@ -30,7 +21,10 @@ pub(crate) fn native_error(error: &io::Error) {
 }
 #[cfg(test)]
 pub(crate) fn concurrent_watermark_exercise() -> io::Result<()> {
-    use std::sync::{Arc, atomic::AtomicBool};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
     install_hooks();
     for _ in 0..64 {
         reset();

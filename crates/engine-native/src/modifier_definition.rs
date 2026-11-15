@@ -68,12 +68,6 @@ impl DefinitionMemo {
         })
     }
 
-    pub fn with_capacity(keys: usize) -> Self {
-        Self {
-            entries: std::cell::RefCell::new(Vec::with_capacity(keys)),
-        }
-    }
-
     /// Forget every key for the next walk, keeping the storage.
     pub fn clear(&self) {
         self.entries.borrow_mut().clear();
@@ -405,16 +399,7 @@ fn word(row: &[u8], offset: usize) -> u32 {
 /// are copied exactly (MSVC small-string or heap layout); rows and text that do
 /// not fit publish a truncated prefix with the remaining registered rows
 /// counted. A header change during the copy discards the walk.
-pub fn walk(memory: &impl Memory, base: usize, rows: &mut [Row], text: &mut [u8]) -> Walk {
-    walk_buffer(
-        memory,
-        base,
-        crate::walk::Buffer::Fixed(rows),
-        crate::walk::Buffer::Fixed(text),
-    )
-}
-
-pub fn walk_growing(
+pub fn walk(
     memory: &impl Memory,
     base: usize,
     rows: &mut Vec<Row>,

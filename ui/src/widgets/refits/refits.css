@@ -1,6 +1,0 @@
-.refits { display: flex; flex-direction: column; height: 100%; min-height: 0; container-type: inline-size; }
-.refits > .chart-table { flex: 1; min-height: 0; }
-.refits-progress { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
-.refits-progress > .progress-meter { flex: 1 1 auto; min-width: 40px; }
-.refits-progress > span { font-variant-numeric: tabular-nums; font-weight: 600; }
-.yard-unnamed { color: var(--muted); font-style: italic; }

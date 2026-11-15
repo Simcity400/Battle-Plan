@@ -312,7 +312,7 @@ pub fn read_task_force(
     memory: &impl Memory,
     base: usize,
     visit: cfleet::TaskForceVisit,
-    headquarters: &mut [u64],
+    headquarters: &mut Vec<u64>,
 ) -> Result<Operands, &'static str> {
     read_task_force_observed(memory, base, visit, headquarters, &mut None)
 }
@@ -324,7 +324,7 @@ pub fn read_task_force_observed(
     memory: &impl Memory,
     base: usize,
     visit: cfleet::TaskForceVisit,
-    headquarters: &mut [u64],
+    headquarters: &mut Vec<u64>,
     original_header: &mut Option<Result<[u8; 16], &'static str>>,
 ) -> Result<Operands, &'static str> {
     read_task_force_transport_observed(
@@ -336,26 +336,11 @@ pub fn read_task_force_observed(
         &mut None,
     )
 }
-
-/// Supplies the original mission-owner attempt independently of later strict
-/// icon operands. None is unattempted; a failed original attempt is not retried.
-pub fn read_task_force_transport_observed(
-    memory: &impl Memory,
-    base: usize,
-    visit: cfleet::TaskForceVisit,
-    headquarters: &mut [u64],
-    original_header: &mut Option<Result<[u8; 16], &'static str>>,
-    original_owner: &mut Option<Result<u32, &'static str>>,
-) -> Result<Operands, &'static str> {
-    read_task_force_transport_observed_buffer(
-        memory,
-        base,
-        visit,
-        crate::walk::Buffer::Fixed(headquarters),
-        original_header,
-        original_owner,
-    )
+#[cfg(test)]
+pub(crate) fn read_task_force_transport_observed(memory: &impl Memory, base: usize, visit: cfleet::TaskForceVisit, headquarters: &mut Vec<u64>, original_header: &mut Option<Result<[u8; 16], &'static str>>, original_owner: &mut Option<Result<u32, &'static str>>) -> Result<Operands, &'static str> {
+    read_task_force_transport_observed_buffer(memory, base, visit, crate::walk::Buffer::Growing(headquarters), original_header, original_owner)
 }
+
 
 pub fn read_task_force_transport_observed_buffer(
     memory: &impl Memory,
@@ -612,13 +597,8 @@ pub fn ledger(
     Ok(count)
 }
 
-/// Stored supply-hub IDs; return the complete list or its capacity demand.
-pub fn navy_hubs(
-    memory: &impl Memory,
-    navy: usize,
-    out: &mut [u32],
-) -> Result<usize, &'static str> {
-    navy_hubs_buffer(memory, navy, crate::walk::Buffer::Fixed(out))
+pub fn count_navy_hubs(memory: &impl Memory, navy: usize) -> Result<usize, &'static str> {
+    navy_hubs_buffer(memory, navy, crate::walk::Buffer::Count)
 }
 
 pub fn navy_hubs_buffer(

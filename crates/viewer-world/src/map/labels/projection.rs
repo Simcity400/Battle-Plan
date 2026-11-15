@@ -239,8 +239,22 @@ pub fn note_withheld_capitals(
     frame: &DecodedFrame,
     links: &BTreeMap<u32, u32>,
 ) -> io::Result<()> {
+    note_withheld(out, withheld_capitals(frame, links)?);
+    Ok(())
+}
+
+/// Why a capital state's star is withheld: no province with victory points.
+pub const NO_VICTORY_POINTS: &str = "none of its provinces has victory points, and the anchor the game falls \
+     back on is not recorded";
+
+/// Why a capital state's star is withheld: a tie for the most victory points.
+pub const TIED_VICTORY_POINTS: &str = "its provinces tie for the most victory points, and the state's province \
+     order that settles the tie is not recorded";
+
+/// [`note_withheld_capitals`]' lines from the withheld states, in ascending state order, each with why.
+pub fn note_withheld(out: &mut viewer_foundation::map::tables::Limitations, states: impl IntoIterator<Item = (u32, &'static str)>) {
     let mut withheld: BTreeMap<&str, Vec<String>> = BTreeMap::new();
-    for (state, why) in withheld_capitals(frame, links)? {
+    for (state, why) in states {
         withheld.entry(why).or_default().push(state.to_string());
     }
     for (why, states) in withheld {
@@ -254,7 +268,6 @@ pub fn note_withheld_capitals(
             &format!("capital {noun} {} {verb} no star: {why}", states.join(", ")),
         );
     }
-    Ok(())
 }
 
 /// Each controller's current capital state and the province its star stands on.
@@ -314,14 +327,8 @@ fn capital_choices(
         .map(|(state, (_, holders))| {
             let choice = match holders[..] {
                 [province] => Ok(province),
-                [] => Err(
-                    "none of its provinces has victory points, and the anchor the game falls \
-                     back on is not recorded",
-                ),
-                _ => Err(
-                    "its provinces tie for the most victory points, and the state's province \
-                     order that settles the tie is not recorded",
-                ),
+                [] => Err(NO_VICTORY_POINTS),
+                _ => Err(TIED_VICTORY_POINTS),
             };
             (state, choice)
         })

@@ -11,6 +11,11 @@ use std::{
     time::Instant,
 };
 
+pub(crate) mod flight;
+pub(crate) mod paced;
+pub(crate) mod proof;
+pub(crate) mod toggle;
+
 const CAPTURES: &str = "BATTLE_PLAN_CAPTURES";
 const ROWS: &[(&str, &str, f64)] = &[
     (
@@ -49,10 +54,42 @@ fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message.into())
 }
 
+/// Each harness job runs on a map thread of the host the desktop app runs its maps on.
 pub(crate) fn dispatch(args: &[OsString]) -> Option<io::Result<()>> {
-    args.iter()
-        .any(|arg| arg == "--playback-cost")
-        .then(|| run(args))
+    let job: fn(&[OsString]) -> io::Result<()> = if args.iter().any(|arg| arg == "--playhead-proof") {
+        proof::run
+    } else if args.iter().any(|arg| arg == "--visual-toggle") {
+        toggle::run
+    } else if args.iter().any(|arg| arg == "--playback-cost") {
+        run
+    } else {
+        return None;
+    };
+    let args = args.to_vec();
+    Some(
+        crate::host::run("map (harness)", move |_| job(&args).map_err(|error| error.to_string()))
+            .and_then(|ended| ended.map_err(crate::host::Ending::into_error)),
+    )
+}
+
+/// Names a finished run's `cache` folder to start this run's caches from.
+const SEED_CACHE: &str = "BATTLE_PLAN_PLAYBACK_SEED_CACHE";
+
+/// Copies every file under `from` to the same place under `to`; how many.
+fn copy_tree(from: &Path, to: &Path) -> io::Result<usize> {
+    let mut copied = 0;
+    fs::create_dir_all(to)?;
+    for entry in fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copied += copy_tree(&entry.path(), &target)?;
+        } else {
+            fs::copy(entry.path(), &target)?;
+            copied += 1;
+        }
+    }
+    Ok(copied)
 }
 
 struct Locks(Vec<(PathBuf, File)>);
@@ -122,13 +159,8 @@ fn labels(snapshot: &Value) -> BTreeMap<(String, String, String), u64> {
 }
 
 fn run(args: &[OsString]) -> io::Result<()> {
-    if std::env::var_os("BATTLE_PLAN_VIEWER_PARENT").or_else(|| std::env::var_os("HOI4_VIEWER_PARENT")).is_some()
-        || viewer_foundation::profile_writer::profiling()
-        || crate::hours::page_grid()
-    {
-        return Err(invalid(
-            "--playback-cost requires standalone, unprofiled, consecutive-hour playback",
-        ));
+    if viewer_foundation::profile_writer::profiling() {
+        return Err(invalid("--playback-cost requires unprofiled playback"));
     }
     let mut translated = Vec::new();
     let mut hours = None;
@@ -141,9 +173,17 @@ fn run(args: &[OsString]) -> io::Result<()> {
         paused: false,
         refresh_hz: 0.0,
         complete_models: false,
+        paced: None,
+        seeks: 0,
+        playhead: true,
+        layers_only: false,
+        layers: None,
+        laid_proof: None,
+        flight: None,
     };
     let mut from = false;
     let mut speed = false;
+    let mut step = false;
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         match arg.to_str() {
@@ -162,6 +202,7 @@ fn run(args: &[OsString]) -> io::Result<()> {
                 );
             }
             Some("--hour-step") => {
+                step = true;
                 schedule.step = args
                     .next()
                     .and_then(|v| v.to_str())
@@ -202,7 +243,46 @@ fn run(args: &[OsString]) -> io::Result<()> {
                     .ok_or_else(|| invalid("--zoom needs <wheel lines>:<every N frames>"))?;
                 schedule.zoom = Some(crate::app::playback_cost::Zoom { lines, every });
             }
+            Some("--paced") => {
+                schedule.paced = Some(
+                    args.next()
+                        .and_then(|v| v.to_str())
+                        .and_then(|v| v.parse::<f64>().ok())
+                        .filter(|v| v.is_finite() && *v > 0.0)
+                        .ok_or_else(|| invalid("--paced needs game hours per second"))?,
+                );
+            }
+            Some("--flight") => {
+                let value = args.next().and_then(|v| v.to_str()).unwrap_or_default();
+                schedule.flight = Some(flight::Flight::parse(value)?);
+            }
             Some("--paused") => schedule.paused = true,
+            Some("--no-playhead") => schedule.playhead = false,
+            Some("--layers-only" | "--today-off") => schedule.layers_only = true,
+            Some("--register") => {
+                schedule.layers = Some(
+                    args.next()
+                        .and_then(|v| v.to_str())
+                        .map(|v| v.split(',').map(str::trim).filter(|name| !name.is_empty()).map(str::to_owned).collect())
+                        .ok_or_else(|| invalid("--register needs the names of the layers the window registers, comma-separated"))?,
+                );
+            }
+            Some("--seeks") => {
+                schedule.seeks = args
+                    .next()
+                    .and_then(|v| v.to_str())
+                    .and_then(|v| v.parse::<u32>().ok())
+                    .ok_or_else(|| invalid("--seeks needs a count"))?;
+            }
+            Some("--laid-proof") => {
+                schedule.laid_proof = Some(
+                    args.next()
+                        .and_then(|v| v.to_str())
+                        .and_then(|v| v.parse::<u32>().ok())
+                        .filter(|v| *v > 0)
+                        .ok_or_else(|| invalid("--laid-proof needs every how many laid-out overlays to compare"))?,
+                );
+            }
             Some("--complete-models") => schedule.complete_models = true,
             Some("--refresh-hz") => {
                 schedule.refresh_hz = args
@@ -251,20 +331,52 @@ fn run(args: &[OsString]) -> io::Result<()> {
             "--png-frame requires --complete-models; pixel proof runs are not timing runs",
         ));
     }
+    if schedule.laid_proof.is_some() && (schedule.paced.is_none() || !schedule.playhead) {
+        return Err(invalid("--laid-proof compares the overlay the tables' worker lays out, which only a paced run with the map's playhead installs"));
+    }
+    if schedule.flight.is_some()
+        && (schedule.paced.is_none() || schedule.pan.is_some() || schedule.zoom.is_some())
+    {
+        return Err(invalid("--flight flies the camera of a paced run, by each frame's due time, and replaces --pan and --zoom"));
+    }
+    if schedule.layers_only && !schedule.playhead {
+        return Err(invalid("--layers-only draws the map's layers alone, which --no-playhead turns off"));
+    }
     let hours = hours.ok_or_else(|| invalid("--playback-cost requires --hours N"))?;
-    if !from || !speed {
-        return Err(invalid(
-            "--playback-cost requires --from-hour H and --speed max",
-        ));
+    if !from {
+        return Err(invalid("--playback-cost requires --from-hour H"));
+    }
+    match schedule.paced {
+        Some(_)
+            if step
+                || speed
+                || (schedule.pan.is_some() && !schedule.paused)
+                || (schedule.paused && schedule.seeks > 0)
+                || schedule.zoom.is_some()
+                || !schedule.pngs.is_empty() =>
+        {
+            return Err(invalid(
+                "--paced replaces --hour-step and --speed, takes --pan only with --paused (the hour held, --hours frames), no --seeks with --paused, and runs without --zoom or --png-frame",
+            ));
+        }
+        Some(_) => {}
+        None if !speed => return Err(invalid("--playback-cost requires --speed max or --paced S")),
+        None if crate::hours::page_grid() => {
+            return Err(invalid(
+                "--playback-cost's step mode requires consecutive-hour playback",
+            ));
+        }
+        None => {}
     }
     let mut options = Options::parse(translated.into_iter())?;
     options.profile_pointer = pointer;
     if options.hour_fraction != 0.0 {
         return Err(invalid("--from-hour must be a whole game hour"));
     }
-    let span = match schedule.pan {
-        Some(_) => 0,
-        None => (i64::from(hours) - 1) * i64::from(schedule.step),
+    let span = match (schedule.paced, schedule.pan) {
+        (Some(_), _) => i64::from(hours),
+        (None, Some(_)) => 0,
+        (None, None) => (i64::from(hours) - 1) * i64::from(schedule.step),
     };
     let end = i64::from(options.hour.unwrap()) + span;
     options.playback_cost_end =
@@ -298,6 +410,12 @@ fn run(args: &[OsString]) -> io::Result<()> {
     let roaming = output.join("cache/roaming");
     fs::create_dir_all(&local)?;
     fs::create_dir_all(&roaming)?;
+    // A finished run's caches (its compiled shaders), so a run does not compile them all again.
+    // A harness setting for measurement runs only; the product never reads it.
+    let seeded = match std::env::var_os(SEED_CACHE) {
+        Some(seed) => Some(copy_tree(Path::new(&seed), &output.join("cache"))?),
+        None => None,
+    };
     // Isolation is set before any viewer worker exists.
     unsafe {
         std::env::set_var("LOCALAPPDATA", local);
@@ -372,6 +490,7 @@ fn run(args: &[OsString]) -> io::Result<()> {
     let mut limitations = load_warnings;
     content_reads.append_to(&mut limitations);
     report["limitations"] = json!(limitations);
+    report["seeded_cache_files"] = json!(seeded);
     report["file_cache"] =
         json!("uncontrolled; isolated application caches, no system cache purge");
     let after = fs::metadata(&recording)?;
@@ -394,6 +513,14 @@ fn run(args: &[OsString]) -> io::Result<()> {
         ));
     }
     Ok(())
+}
+
+/// The process's CPU by its counter and by its threads' cycles agree within 5%, or within the
+/// counter's own granularity on a short run: it counts a thread's time in 15.6 ms ticks, and sixteen
+/// of them (0.25 s) bound what a run of a few seconds over the process's threads may differ by.
+fn reconciles(process_ns: u64, scoped_ns: u64) -> bool {
+    let residual = i128::from(process_ns) - i128::from(scoped_ns);
+    process_ns > 0 && residual.unsigned_abs() as f64 <= (process_ns as f64 * 0.05).max(0.25e9)
 }
 
 pub(crate) fn accounting(
@@ -453,7 +580,7 @@ pub(crate) fn accounting(
     }
     let scoped: u64 = sums.values().map(|v| v.0).sum();
     let residual = i128::from(process_ns) - i128::from(scoped);
-    let passed = process_ns > 0 && residual.unsigned_abs() as f64 <= process_ns as f64 * 0.05;
+    let passed = reconciles(process_ns, scoped);
     let mut rows = Vec::new();
     for (name, plan_row, budget) in ROWS {
         rows.push(json!({"name":name,"plan_row":plan_row,"plan_row_budget_us_per_game_hour":budget,
@@ -466,6 +593,29 @@ pub(crate) fn accounting(
         "cpu_reconciliation":{"passed":passed,"process_cpu_ns":process_ns,"scope_cpu_ns":scoped,
             "registered_scope_cpu_ns":registered,"process_cycle_cpu_ns":process_cycle_ns,
             "unregistered_thread_cpu_ns":unscoped,
-            "process_minus_scopes_ns":residual,"relative_tolerance":0.05},
-        "scope_notes":"Exclusive thread-cycle scopes; nested scopes replace their parent. Other is registered thread overhead plus the positive difference between whole-process cycles and registered thread cycles, including unregistered OS/library threads. All cycle costs use one calibrated TSC rate; they are not scaled to force agreement with the independent GetProcessTimes CPU counter, which must reconcile within 5%. Null means no instrumented call, not zero cost. Shared PLAN row budgets are not additive. Accounting overhead is included, not subtracted. Codec covers only the product restore path actually executed; no speculative display products are built."})
+            "process_minus_scopes_ns":residual,"relative_tolerance":0.05,"absolute_tolerance_ns":250_000_000u64},
+        "scope_notes":"Exclusive thread-cycle scopes; nested scopes replace their parent. Other is registered thread overhead plus the positive difference between whole-process cycles and registered thread cycles, including unregistered OS/library threads. All cycle costs use one calibrated TSC rate; they are not scaled to force agreement with the independent GetProcessTimes CPU counter, which must reconcile within 5% or 0.25 s (its 15.6 ms ticks over a short run), whichever is larger. Null means no instrumented call, not zero cost. Shared PLAN row budgets are not additive. Accounting overhead is included, not subtracted. Codec covers only the product restore path actually executed; no speculative display products are built."})
+}
+
+pub(crate) fn distribution(mut values: Vec<f64>) -> Value {
+    if values.is_empty() {
+        return json!({"p50":null,"p95":null,"p99":null,"max":null});
+    }
+    values.sort_by(f64::total_cmp);
+    let rank = |p: f64| ((values.len() as f64 * p).ceil() as usize).saturating_sub(1);
+    json!({"p50":values[rank(0.5)],"p95":values[rank(0.95)],"p99":values[rank(0.99)],"max":values.last()})
+}
+
+#[cfg(test)]
+mod reconciliation_tests {
+    /// A three-second run (P10f's `i3c-late-1`): the process's CPU by its counter, which counts in
+    /// 15.6 ms ticks a thread, and by its threads' cycles differ by 187 ms, inside the counter's own
+    /// granularity; a long run is held to 5%.
+    #[test]
+    fn a_short_run_reconciles_within_its_counter_ticks_and_a_long_one_within_five_percent() {
+        assert!(super::reconciles(3_078_125_000, 3_265_013_595));
+        assert!(!super::reconciles(100_000_000_000, 106_000_000_000));
+        assert!(super::reconciles(100_000_000_000, 104_000_000_000));
+        assert!(!super::reconciles(0, 0));
+    }
 }

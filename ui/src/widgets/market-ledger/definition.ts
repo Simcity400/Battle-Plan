@@ -2,7 +2,7 @@ import type { WidgetMeta } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
 import { LOG_OPTIONS } from '../../charts/log/logOptions.ts';
 import { DRILL_OPTION } from '../../charts/drill/drillState.ts';
-import { KINDS } from './ledgerData.ts';
+import { KINDS } from '../../dashboard/marketLedger.ts';
 
 export const DETAILS = { id: 'contract', label: 'Contract' };
 

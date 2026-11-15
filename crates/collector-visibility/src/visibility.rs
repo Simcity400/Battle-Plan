@@ -123,30 +123,19 @@ impl Capacities {
                 failure.get_or_insert(reason);
             }
         };
-        let (countries, slots) = native::countries(memory, base, state, &mut []);
+        let (countries, slots) = native::count_countries(memory, base, state);
         accept(&mut self.countries, countries);
         self.raise_for_countries(slots);
         accept(
             &mut self.states,
-            native::states(memory, base, state, &mut []),
+            native::count_states(memory, base, state),
         );
         accept(
             &mut self.naval_access,
-            cstrategic_navy::access_modes(memory, base, state, &mut []),
+            cstrategic_navy::count_access_modes(memory, base, state),
         );
         let mut resolver = crelation_status::Resolver::default();
-        let links = crelation_status::links_observed_transport(
-            memory,
-            base,
-            state,
-            &mut [],
-            crelation_status::WarOutput {
-                rows: &mut [],
-                countries: &mut [],
-            },
-            &mut resolver,
-            0,
-        );
+        let links = crelation_status::count_links_observed_transport(memory, base, state, &mut resolver, 0);
         accept(&mut self.links, links.links);
         accept(&mut self.wars, links.wars);
         raise(&mut self.war_links, links.required_countries);
@@ -322,7 +311,7 @@ impl Captured {
         self.naval_access.grow(&mut capacity.naval_access);
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    /// Worker-owned rows and arenas grow from original headers before publication.
     pub fn capture(
         &mut self,
         memory: &impl Memory,
@@ -331,19 +320,7 @@ impl Captured {
         hour: i32,
         force_full: bool,
     ) -> [u64; N] {
-        self.capture_storage(memory, base, game_state, hour, force_full, false)
-    }
-
-    /// Worker-owned rows and arenas grow from original headers before publication.
-    pub fn capture_growing(
-        &mut self,
-        memory: &impl Memory,
-        base: usize,
-        game_state: usize,
-        hour: i32,
-        force_full: bool,
-    ) -> [u64; N] {
-        self.capture_storage(memory, base, game_state, hour, force_full, true)
+        self.capture_storage(memory, base, game_state, hour, force_full)
     }
 
     /// NavalRegionAccess: the held read on a quiet hour, otherwise every
@@ -355,7 +332,6 @@ impl Captured {
         base: usize,
         game_state: usize,
         force_full: bool,
-        growing: bool,
         changes: &impl Changes,
         held: &Mutex<Held<Vec<cstrategic_navy::AccessRow>>>,
     ) {
@@ -369,7 +345,7 @@ impl Captured {
         {
             let carried = held.carried(Domain::RegionAccess);
             let ensured =
-                engine_native::walk::Buffer::for_worker(rows, growing).ensure(carried.len());
+                engine_native::walk::Buffer::Growing(rows).ensure(carried.len());
             self.naval_access.outcome = match ensured {
                 Ok(_) if carried.len() <= rows.len() => {
                     rows[..carried.len()].copy_from_slice(carried);
@@ -387,7 +363,7 @@ impl Captured {
             memory,
             base,
             game_state,
-            engine_native::walk::Buffer::for_worker(rows, growing),
+            engine_native::walk::Buffer::Growing(rows),
         );
         self.naval_access.outcome = outcome;
         if let Some(held) = &mut held {
@@ -411,7 +387,6 @@ impl Captured {
         game_state: usize,
         hour: i32,
         force_full: bool,
-        growing: bool,
     ) -> [u64; N] {
         self.reset();
         let mut ticks = [0; N];
@@ -488,7 +463,7 @@ impl Captured {
                         };
                 }
                 1 => {
-                    let held = (growing && cfg!(feature = "visibility_changes"))
+                    let held = (cfg!(feature = "visibility_changes"))
                         .then(|| HELD_VISIBILITY.try_lock().ok())
                         .flatten();
                     (self.countries.outcome, self.slots) = if let Some(mut held) = held {
@@ -506,10 +481,7 @@ impl Captured {
                             memory,
                             base,
                             game_state,
-                            engine_native::walk::Buffer::for_worker(
-                                &mut self.countries.rows,
-                                growing,
-                            ),
+                            engine_native::walk::Buffer::Growing(&mut self.countries.rows),
                         )
                     };
                 }
@@ -519,7 +491,7 @@ impl Captured {
                         memory,
                         base,
                         game_state,
-                        engine_native::walk::Buffer::for_worker(&mut self.states.rows, growing),
+                        engine_native::walk::Buffer::Growing(&mut self.states.rows),
                         &mut extent,
                     );
                     if let Some(features) = self.dlc_mask.rows.first_mut() {
@@ -531,7 +503,6 @@ impl Captured {
                     base,
                     game_state,
                     force_full,
-                    growing,
                     &changes::Observer,
                     &HELD_ACCESS,
                 ),
@@ -546,8 +517,8 @@ impl Captured {
                         };
                 }
                 _ => {
-                    let walk = if growing {
-                        crelation_status::links_observed_transport_growing(
+                    let walk = {
+                        crelation_status::links_observed_transport(
                             memory,
                             base,
                             game_state,
@@ -557,19 +528,6 @@ impl Captured {
                                 countries: engine_native::walk::Buffer::Growing(
                                     &mut self.war_links.first,
                                 ),
-                            },
-                            &mut self.resolver,
-                            hour,
-                        )
-                    } else {
-                        crelation_status::links_observed_transport(
-                            memory,
-                            base,
-                            game_state,
-                            &mut self.links.rows,
-                            crelation_status::WarOutput {
-                                rows: &mut self.wars.rows,
-                                countries: &mut self.war_links.first,
                             },
                             &mut self.resolver,
                             hour,

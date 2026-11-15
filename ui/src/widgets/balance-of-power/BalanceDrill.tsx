@@ -4,10 +4,11 @@ import DrillParts from '../../charts/drill/DrillParts';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import type { BoundTrack } from '../../dashboard/model';
-import type { PoliticsHistoryReply } from '../../generated/dashboard';
-import { BALANCE_UNAVAILABLE, changeText, driftParts, RANGE_UNAVAILABLE, SIDE_UNAVAILABLE, valueText, weeklyState } from './balanceOfPowerData';
+import { BALANCE_UNAVAILABLE, changeText, driftParts, RANGE_UNAVAILABLE, recordValue, SIDE_UNAVAILABLE, valueText, weeklyState } from './balanceOfPowerData';
+import { liveKey } from '../../charts/live';
 import { BalanceHeadline, membersText } from './BalanceCountryView';
 import type { BalanceDetails } from './useBalanceDetails';
+import type { PoliticsHistoryReply } from '../../generated/dashboard';
 
 const plain = (value: number) => String(value);
 
@@ -29,9 +30,10 @@ export default function BalanceDrill({ runtime, track, history, tag, at, token, 
   if (details.error) return <WidgetState kind="error" what="the weekly change" failure={details.error} onRetry={details.retry} />;
   if (!details.data || !state) return <WidgetState kind="loading" label="Loading the weekly change…" />;
   if (state.kind === 'unread') return <WidgetState kind="unavailable" message="The balance of power was not recorded at this date." />;
-  if (state.kind === 'preparing') return <WidgetState kind="loading" label="This range is still being prepared." />;
   if (!record || !parts) return <WidgetState kind="empty" message="No balance of power is active at this date." />;
-  const detail = [record.range ? record.range.name ?? RANGE_UNAVAILABLE : null, valueText(record.value),
+  const value = recordValue(details.values, record);
+  const detail = [record.range ? record.range.name ?? RANGE_UNAVAILABLE : null,
+    value === null ? details.values.missing(liveKey(String(record.ordinal), 'value')) : valueText(value),
     record.trending ? `toward ${record.trending.name ?? SIDE_UNAVAILABLE}` : null].filter(Boolean).join(' · ');
   const memberNames = record.members.flatMap(member => member.tag === null ? [] : [labelAt(hour)(member.tag).name]);
   return <div className="balance-drill">

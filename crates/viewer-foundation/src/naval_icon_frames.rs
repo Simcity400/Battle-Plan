@@ -3,25 +3,25 @@
 use crate::{
     engaged::Engaged,
     icon_frames::{self, IconHour, IconInput},
-    map::tables::rows,
 };
 use replay_data::{rows::NavalCombatDetailsRow, rows::NavalCombatShipRow, rows::tables};
-use replay_frame::frame::DecodedFrame;
+use replay_frame::frame::Tables;
 use std::{collections::BTreeMap, io};
 
 /// The naval combat icons' hour for the engaged index ([`icon_frames`]): `alive`
 /// comes from [`admitted`], `seen` from the combat's naval engaged `flag`, and the
 /// frame from the convoy variant over the forward-group census ([`censuses`]).
 /// The game writes `bg_btn`'s frame only while engaged and otherwise retains it.
-pub fn naval_icon_hour(
-    frame: &DecodedFrame,
+pub fn naval_icon_hour<F: Tables + ?Sized>(
+    frame: &F,
     flag: &dyn Fn(u64) -> Engaged,
 ) -> io::Result<IconHour> {
-    let combats = rows::<tables::NavalCombats>(frame)?;
-    let details = rows::<tables::NavalCombatDetails>(frame)?;
+    use crate::fold_tables::available as rows;
+    let combats = rows::<tables::NavalCombats, F>(frame)?;
+    let details = rows::<tables::NavalCombatDetails, F>(frame)?;
     let details: BTreeMap<u64, &NavalCombatDetailsRow> =
         details.rows().iter().map(|row| (row.combat, row)).collect();
-    let members = rows::<tables::NavalCombatShips>(frame)?;
+    let members = rows::<tables::NavalCombatShips, F>(frame)?;
     let censuses = members.is_complete().then(|| censuses(members.rows()));
     Ok(IconHour {
         combats: combats
@@ -52,12 +52,40 @@ pub fn naval_icon_hour(
 /// Drop an active icon when either side's primary country list is empty;
 /// an absent detail row cannot decide it.
 pub fn admitted(detail: Option<&NavalCombatDetailsRow>) -> Option<bool> {
-    detail.map(|detail| {
-        detail
-            .sides
-            .iter()
-            .all(|side| !side.summary.countries.is_empty())
-    })
+    admitted_of(detail.map(|detail| [detail.sides[0].summary.countries.as_slice(), detail.sides[1].summary.countries.as_slice()]))
+}
+
+/// [`admitted`] from values: each side's primary country list.
+pub fn admitted_of(countries: Option<[&[u32]; 2]>) -> Option<bool> {
+    countries.map(|sides| sides.iter().all(|countries| !countries.is_empty()))
+}
+
+/// The fields of a `NavalCombatShips` row the census, the forward groups and the HQ frame read.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CensusMember {
+    pub combat: u64,
+    pub side: u8,
+    pub ship: u64,
+    pub member_source: u8,
+    pub group_index: u32,
+    pub live_convoy: u8,
+    pub live_ship: u8,
+    pub formation_flags: u64,
+}
+
+impl CensusMember {
+    pub fn of(row: &NavalCombatShipRow) -> Self {
+        Self {
+            combat: row.combat,
+            side: row.side,
+            ship: row.ship,
+            member_source: row.member_source,
+            group_index: row.group_index,
+            live_convoy: row.live_convoy,
+            live_ship: row.live_ship,
+            formation_flags: row.formation_flags,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -72,6 +100,11 @@ pub struct Census {
 /// screen bit 8; all others use the other category. A combat has two sides. A
 /// member recording a third leaves its combat's census undecided, with a named cause.
 pub fn censuses(members: &[NavalCombatShipRow]) -> BTreeMap<u64, Result<[Census; 2], String>> {
+    censuses_of(members.iter().map(CensusMember::of))
+}
+
+/// [`censuses`] from values.
+pub fn censuses_of(members: impl IntoIterator<Item = CensusMember>) -> BTreeMap<u64, Result<[Census; 2], String>> {
     let mut out: BTreeMap<u64, Result<[Census; 2], String>> = BTreeMap::new();
     for member in members {
         if member.member_source != 0 || member.group_index == u32::MAX {

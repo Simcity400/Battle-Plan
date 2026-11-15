@@ -38,7 +38,7 @@ pub use crate::output_log::Drained;
 use crate::{
     opinion_changes::Padded,
     output_hooks,
-    output_log::{DrainCounters, Log},
+    output_log::{DrainCounters, Log, Reserved, Spill},
 };
 use engine_native::Memory;
 use replay_data::rows::OutputPurpose;
@@ -184,6 +184,7 @@ fn log() -> Option<&'static Storage> {
 
 /// Entries ever appended; each log maps `n` to `n % slots.len()`.
 static OBSERVATION: Log = Log::new(0);
+static SPILL: Spill<Entry> = Spill::new();
 static CURSOR: &Padded<AtomicU64> = &OBSERVATION.cursor;
 static ENABLED: &AtomicBool = &OBSERVATION.enabled;
 pub static ACTIVE: &Padded<AtomicUsize> = &OBSERVATION.active;
@@ -220,8 +221,8 @@ static CONSUMED: &AtomicU64 = &OBSERVATION.consumed;
 /// Why the hooks are not installed, when they are not.
 static UNHOOKED: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
 /// `[credits, deliveries from a production call, other deliveries, entries,
-/// inexact entries, drains, entries handed over, overflowed logs, unobserved
-/// drains, failed producer reads]`.
+/// inexact entries, drains, entries handed over, intervals given up for entry
+/// storage, unobserved drains, failed producer reads]`.
 static COUNTERS: [AtomicU64; 10] = [const { AtomicU64::new(0) }; 10];
 static SIZING_REFUSALS: AtomicU64 = AtomicU64::new(0);
 static FIRST_SIZING_REFUSAL: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
@@ -522,24 +523,21 @@ fn observe_credit(frozen: Option<Entry>) {
     }
 }
 
-/// Store an entry, guarded by [`Log::enter`]. A writer that stalled until writers
-/// had appended a whole log after its index may have overwritten a newer entry
-/// in its slot; every drain meanwhile saw it active and handed nothing over, so
-/// it ends the observation (a new epoch) before it leaves.
+/// Store an entry, guarded by [`Log::enter`], in its ring slot or the spill.
 fn append(entry: Entry) {
     COUNTERS[3].fetch_add(1, Ordering::Relaxed);
     if !entry.exact {
         COUNTERS[4].fetch_add(1, Ordering::Relaxed);
     }
-    let (index, slot) = OBSERVATION.reserve_optional();
+    let (index, reserved) = OBSERVATION.reserve();
+    let slot = match reserved {
+        Reserved::Slot(slot) => log().and_then(|log| log.slots.get(slot)),
+        Reserved::Spill => None,
+    };
     let Some(slot) = slot else {
+        OBSERVATION.spill(&SPILL, index, entry);
         return;
     };
-    let Some(log) = log() else {
-        invalidate();
-        return;
-    };
-    let slot = &log.slots[slot];
     slot.line.store(entry.line, Ordering::SeqCst);
     slot.country.store(entry.country, Ordering::SeqCst);
     slot.variant.store(entry.variant, Ordering::SeqCst);
@@ -584,12 +582,8 @@ fn entry(slot: &Slot) -> Entry {
     }
 }
 
-/// Copy settled entries without allocating; short storage defers the rest.
-#[cfg(any(test, feature = "test-support"))]
-pub fn drain(output: &mut [Entry]) -> Result<Drained, &'static str> {
-    drain_buffer(engine_native::walk::Buffer::Fixed(output))
-}
-pub fn drain_growing(output: &mut Vec<Entry>) -> Result<Drained, &'static str> {
+/// Copy settled entries; short storage defers the rest.
+pub fn drain(output: &mut Vec<Entry>) -> Result<Drained, &'static str> {
     drain_buffer(engine_native::walk::Buffer::Growing(output))
 }
 fn drain_buffer(output: engine_native::walk::Buffer<'_, Entry>) -> Result<Drained, &'static str> {
@@ -601,15 +595,14 @@ fn drain_buffer(output: engine_native::walk::Buffer<'_, Entry>) -> Result<Draine
             Some("production line hooks are not installed")
         } else if !ENABLED.load(Ordering::SeqCst) {
             Some("production line hooks are not enabled")
-        } else if log.is_none() {
-            Some("production line log is not installed")
         } else {
             crate::world_lifetime::unavailable_reason()
         }
     };
     OBSERVATION.drain_buffer(
         output,
-        |slot| entry(&log.unwrap().slots[slot]),
+        &SPILL,
+        |slot| Some(entry(log?.slots.get(slot)?)),
         unavailable,
         "production line observation restarted during the drain",
         DrainCounters {
@@ -723,6 +716,7 @@ impl Drop for Hooks {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         *swap = LogSwap::default();
+        SPILL.release();
     }
 }
 
@@ -752,6 +746,7 @@ pub fn observe_for_test(enabled: bool) {
 #[cfg(any(test, feature = "test-support"))]
 pub fn reset_log_for_test(capacity: usize) {
     OBSERVATION.required.store(0, Ordering::Relaxed);
+    SPILL.clear();
     let mut current = Storage::new(capacity).unwrap();
     LOG.store(&mut *current, Ordering::SeqCst);
     CAPACITY.store(capacity, Ordering::Release);
@@ -952,31 +947,44 @@ mod tests {
         observe_for_test(false);
     }
     #[test]
-    fn rejected_empty_log_burst_grows_without_a_new_census_or_chosen_floor() {
+    fn a_burst_into_an_empty_log_is_handed_over_whole_and_grows_the_next_log() {
         let _lock = test_lock();
         observe_for_test(true);
         reset_log_for_test(0);
         assert_eq!(capacity_for_lines(0), 0);
+        let overflows = serde_json::to_value(status()).unwrap()["overflowed_logs"]
+            .as_u64()
+            .unwrap();
         let mut frame = Vec::new();
         for line in 1..=5000 {
             let _writer = Call::enter();
             append(tick(line));
         }
-        let lost = drain_growing(&mut frame).unwrap();
-        assert_eq!((lost.pending, lost.copied), (5000, 0));
+        let spilled = drain(&mut frame).unwrap();
+        assert_eq!((spilled.pending, spilled.copied), (5000, 5000));
+        assert_eq!(frame[..5000], (1..=5000).map(tick).collect::<Vec<_>>());
         assert_eq!(OBSERVATION.required.load(Ordering::Relaxed), 5000);
+        assert!(SPILL.is_empty());
         presize(0);
         install_offered();
         collect();
         assert_eq!(CAPACITY.load(Ordering::Acquire), 5000);
-        for line in 1..=5000 {
+        for line in 5001..=10_000 {
             let _writer = Call::enter();
             append(tick(line));
         }
-        let drained = drain_growing(&mut frame).unwrap();
+        assert!(SPILL.is_empty());
+        let drained = drain(&mut frame).unwrap();
         assert_eq!((drained.pending, drained.copied), (5000, 5000));
-        assert_eq!(frame[..5000], (1..=5000).map(tick).collect::<Vec<_>>());
-        assert_eq!(drained.first, lost.cursor);
+        assert_eq!(frame[..5000], (5001..=10_000).map(tick).collect::<Vec<_>>());
+        assert_eq!(
+            (drained.epoch, drained.first),
+            (spilled.epoch, spilled.cursor)
+        );
+        assert_eq!(
+            serde_json::to_value(status()).unwrap()["overflowed_logs"],
+            overflows
+        );
         observe_for_test(false);
     }
 
@@ -995,11 +1003,7 @@ mod tests {
         assert!(LOG_SWAP.lock().unwrap().next.is_some());
         let (first, mut entries) = drained(2);
         let first = first.unwrap();
-        install_offered();
-        assert_eq!(serde_json::to_value(status()).unwrap()["capacity"], 8);
-        let (last, rest) = drained(2);
-        let last = last.unwrap();
-        entries.extend(rest);
+        assert!(first.complete());
         let writer = Call::enter();
         install_offered();
         assert_eq!(serde_json::to_value(status()).unwrap()["capacity"], 8);
@@ -1030,9 +1034,8 @@ mod tests {
         let after = after.unwrap();
         entries.extend(rest);
         assert_eq!(entries, (1..=6).map(tick).collect::<Vec<_>>());
-        assert_eq!(last.first, first.first + first.copied as u64);
-        assert_eq!(after.first, last.cursor);
-        assert_eq!((last.epoch, after.epoch), (first.epoch, first.epoch));
+        assert_eq!(after.first, first.cursor);
+        assert_eq!(after.epoch, first.epoch);
         assert!(after.complete());
         assert!(drained(8).1.is_empty());
         observe_for_test(false);
@@ -1281,10 +1284,10 @@ mod tests {
         observe_for_test(false);
     }
 
-    /// Short storage hands over the oldest entries and keeps the rest for the
-    /// next drain; a writer that is active hands over nothing yet.
+    /// A writer that is active hands over nothing yet; short storage grows to
+    /// every entry.
     #[test]
-    fn short_storage_and_active_writers_defer_entries_without_losing_them() {
+    fn active_writers_defer_entries_and_short_storage_grows_without_losing_them() {
         let _lock = test_lock();
         observe_for_test(true);
         let a = Line::new(0x31_0000_0021, 0x9_0000_0046, 0);
@@ -1296,33 +1299,29 @@ mod tests {
                 Some(i64::from(count) * UNIT_SCALE),
             );
         }
-        let (result, entries) = drained(2);
-        let first = result.unwrap();
-        assert_eq!((first.copied, first.pending), (2, 5));
-        assert!(!first.complete());
-        assert_eq!(entries.iter().map(|e| e.units).collect::<Vec<_>>(), [1, 2]);
         let writer = Call::enter();
         let (result, _) = drained(8);
         let during = result.unwrap();
-        assert_eq!((during.first, during.copied), (first.first + 2, 0));
+        assert_eq!(during.copied, 0);
         assert!(!during.complete());
         drop(writer);
-        let (result, entries) = drained(8);
+        let (result, entries) = drained(2);
         let last = result.unwrap();
-        assert_eq!(last.first, first.first + 2);
+        assert_eq!(last.first, during.first);
         assert!(last.complete());
+        assert_eq!((last.copied, last.pending), (5, 5));
         assert_eq!(
             entries.iter().map(|e| e.units).collect::<Vec<_>>(),
-            [3, 4, 5]
+            [1, 2, 3, 4, 5]
         );
         observe_for_test(false);
     }
 
-    /// An overflowed log hands over nothing and restarts past the loss, so the
-    /// next drain no longer continues the previous one; disabled hooks hand
-    /// over nothing; an epoch change is visible to the spool.
+    /// A burst past the log is handed over whole and in order into short
+    /// storage that grows, and the log grows only once it is empty; disabled
+    /// hooks hand over nothing; an epoch change is visible to the spool.
     #[test]
-    fn overflow_disabled_hooks_and_epochs_are_never_handed_over_as_continuous() {
+    fn bursts_past_the_log_disabled_hooks_and_epochs_are_handed_over_as_they_are() {
         let _lock = test_lock();
         observe_for_test(true);
         reset_log_for_test(8);
@@ -1332,33 +1331,35 @@ mod tests {
         let overflows = serde_json::to_value(status()).unwrap()["overflowed_logs"]
             .as_u64()
             .unwrap();
-        for _ in 0..=CAPACITY.load(Ordering::Acquire) {
-            produce_for_test(a.address(), NAVAL, 1, None);
+        for count in 1..=20 {
+            produce_for_test(a.address(), NAVAL, count, None);
         }
         presize(20);
         install_offered();
         assert_eq!(serde_json::to_value(status()).unwrap()["capacity"], 8);
         let (result, entries) = drained(4);
-        let overflowed = result.unwrap();
+        let whole = result.unwrap();
+        assert_eq!(whole.first, before.first + before.copied as u64);
+        assert!(whole.complete());
+        assert_eq!(
+            entries.iter().map(|e| e.credit).collect::<Vec<_>>(),
+            (1..=20).collect::<Vec<_>>()
+        );
         assert_eq!(
             serde_json::to_value(status()).unwrap()["overflowed_logs"],
-            overflows + 1
+            overflows
         );
-        assert!(entries.is_empty());
-        assert!(overflowed.first > before.first + before.copied as u64);
-        assert_eq!(overflowed.first, overflowed.cursor);
-        assert!(overflowed.complete());
-        // Growing after the loss cannot turn it into a continuous drain.
         install_offered();
         collect();
-        let grown = drained(4).0.unwrap();
         assert_eq!(
-            (grown.epoch, grown.first),
-            (overflowed.epoch, overflowed.cursor)
+            serde_json::to_value(status()).unwrap()["capacity"],
+            capacity_for_lines(20)
         );
+        let grown = drained(4).0.unwrap();
+        assert_eq!((grown.epoch, grown.first), (whole.epoch, whole.cursor));
         invalidate();
         let (result, _) = drained(4);
-        assert!(result.unwrap().epoch > overflowed.epoch);
+        assert!(result.unwrap().epoch > whole.epoch);
         ENABLED.store(false, Ordering::SeqCst);
         produce_for_test(a.address(), NAVAL, 1, None);
         let (result, _) = drained(4);

@@ -99,9 +99,12 @@ use dashboard_core::protocol::AirMission;
 use std::sync::Mutex;
 use std::sync::RwLock;
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    cell::Cell,
+    collections::{BTreeMap, BTreeSet, HashMap},
     io,
+    ops::Range,
     sync::Arc,
+    time::Instant,
 };
 use viewer_foundation::map::aircraft_model;
 use viewer_foundation::map::camera::Camera;
@@ -117,7 +120,7 @@ use installed_content_core::{
 use installed_content_equipment_graphics::equipment_graphics::aircraft as aircraft_catalogue;
 use installed_content_image::native::Decode;
 use installed_content_regions::regions::StrategicRegion;
-pub use model_inputs::ModelMemo;
+pub use model_inputs::{KeptModels, ModelMemo, ModelsMade, Selected};
 use replay_data::{
     rows::AIR_MISSION_LAY_MINES, rows::AIR_MISSION_NAVAL_PATROL, rows::AIR_MISSION_TRAINING,
     rows::AIR_MISSION_ZERO_PLANE_FLAGS, rows::AirBaseRow, rows::AirCountryRelationRow,
@@ -150,7 +153,6 @@ use {
     viewer_foundation::map::air_registry_sources::AirRegistrySources,
     viewer_foundation::map::aircraft_count::SortieDefines,
     viewer_foundation::map::aircraft_count::SortieSources,
-    viewer_foundation::map::perspective::Vision,
     viewer_foundation::map::province_geometry::ProvinceGeometry,
     viewer_foundation::map::province_map::HeightField, viewer_foundation::map::tables::Available,
     viewer_foundation::map::tables::core, viewer_foundation::map::tables::rows,
@@ -2160,7 +2162,121 @@ pub struct AircraftPlan {
     launches: Vec<launches::Launch>,
     /// Whether explosions were taken past the launch clock's opening instant.
     opened: bool,
+    /// The runs it started anew at its install.
+    restarts: usize,
+    /// While the flight record is kept: the flights drawn the frame before, by identity, and those
+    /// of them this frame stood on a fresh transform instead of easing on ([`Self::field`]).
+    drawn_keys: BTreeSet<FlightKey>,
+    snapped: usize,
     pub diagnostics: Vec<String>,
+    /// What its build took, by part.
+    pub marks: Marks,
+}
+
+/// One build's parts, in nanoseconds of the building thread: the sources read (links,
+/// participants, registry, sortie sources, target scans), the wings admitted in visit order, the
+/// scenarios generated with their launch records, the training patrols, and the flights' animation
+/// requests, each without the model selection by the content's scripts and the placement (routes,
+/// terrain) made inside them, which are counted apart; and the wings admitted and scenarios placed.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Marks {
+    pub sources: u64,
+    pub admission: u64,
+    pub generation: u64,
+    pub training: u64,
+    pub requests: u64,
+    pub models: u64,
+    pub placement: u64,
+    pub wings: usize,
+    /// Scenarios and their flights placed anew, and kept from the build before ([`Kept`]).
+    pub scenarios: usize,
+    pub flights_placed: usize,
+    pub kept: usize,
+    pub flights_kept: usize,
+}
+
+/// What a worker keeps from one build to the next, for one maker's assets and map: each scenario's
+/// placed flights (routes, terrain and animation requests) by everything placing them reads, so a
+/// scenario whose wings keep their mission, region, target province, take-off point, model and
+/// draws is not placed again. It holds only what the last build placed or kept.
+#[derive(Default)]
+pub struct Kept {
+    placed: HashMap<Placing, Vec<Flight>>,
+}
+
+/// Everything a scenario's placement reads that can differ from build to build; the rest (the
+/// rig named `rig`, the province's centroid and the heights) is the maker's own content.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct Placing {
+    rig: String,
+    mission: AirMission,
+    region: u32,
+    province: u32,
+    start: [u32; 3],
+    yaw: u32,
+    phase: u32,
+    /// Each side's actor: its mesh, wing, take-off point and whether it plays `explode`.
+    actors: [Option<(usize, u64, [u32; 3], bool)>; 2],
+}
+
+impl Placing {
+    fn of(batch: &Batch<'_>, province: u32, yaw: f32, phase: f32) -> Self {
+        let actor = |actor: &Option<Actor>| {
+            actor.as_ref().map(|actor| {
+                (
+                    actor.mesh,
+                    actor.wing,
+                    actor.start.map(f32::to_bits),
+                    actor.explode == Explode::Plays,
+                )
+            })
+        };
+        Self {
+            rig: batch.key.to_owned(),
+            mission: batch.mission,
+            region: batch.region,
+            province,
+            start: batch.start.map(f32::to_bits),
+            yaw: yaw.to_bits(),
+            phase: phase.to_bits(),
+            actors: [actor(&batch.attacker), actor(&batch.defender)],
+        }
+    }
+}
+
+/// One build's keeping: what the build before placed, what this one placed or kept, and the
+/// flights it placed anew, whose requests are made at the end.
+#[derive(Default)]
+struct Keeping {
+    before: HashMap<Placing, Vec<Flight>>,
+    now: HashMap<Placing, Vec<Flight>>,
+    fresh: Vec<(Placing, Range<usize>)>,
+}
+
+impl Keeping {
+    /// The flights placed for `key` by the build before, or earlier in this one.
+    fn take(&mut self, key: &Placing) -> Option<Vec<Flight>> {
+        self.before.remove(key).or_else(|| self.now.get(key).cloned())
+    }
+}
+
+impl Marks {
+    /// Each timed part by name, in the order a build runs them.
+    pub fn parts(&self) -> [(&'static str, u64); 7] {
+        [
+            ("sources", self.sources),
+            ("admission", self.admission),
+            ("generation", self.generation),
+            ("training", self.training),
+            ("requests", self.requests),
+            ("models", self.models),
+            ("placement", self.placement),
+        ]
+    }
+}
+
+fn since(started: Instant) -> u64 {
+    started.elapsed().as_nanos() as u64
 }
 
 /// Launch explosions' impact ids set this bit, apart from the flights'.
@@ -3206,6 +3322,7 @@ impl AircraftPlan {
         province: u32,
         rng: &mut Random,
         map: &Placement<'_, '_>,
+        keeping: &mut Keeping,
     ) {
         let (start, rig, region) = (batch.start, batch.rig, batch.region);
         let Some([x, z]) = map.geometry.centroid(province) else {
@@ -3221,6 +3338,22 @@ impl AircraftPlan {
             + (10.0 + 30.0 * rng.unit().sqrt()).to_radians()
                 * if rng.next() & 1 == 0 { -1.0 } else { 1.0 };
         let phase = rng.unit();
+        let key = Placing::of(batch, province, yaw, phase);
+        let first = self.flights.len();
+        if let Some(group) = keeping.take(&key) {
+            self.runs.push(Run {
+                initialized: false,
+                flights: first..first + group.len(),
+                start: 0.0,
+                cycle: 0,
+                grounds: vec![Ground::Following; group.len()],
+            });
+            self.flights.extend(group.iter().cloned());
+            (self.marks.kept, self.marks.flights_kept) =
+                (self.marks.kept + 1, self.marks.flights_kept + group.len());
+            keeping.now.insert(key, group);
+            return;
+        }
         let mut group = Vec::new();
         let mut group_travel = 0.0f32;
         for (track, poses) in rig.tracks.iter().enumerate() {
@@ -3309,7 +3442,9 @@ impl AircraftPlan {
             f.delay = group_travel - f.travel;
             f.group_travel = group_travel;
         }
-        let first = self.flights.len();
+        (self.marks.scenarios, self.marks.flights_placed) =
+            (self.marks.scenarios + 1, self.marks.flights_placed + group.len());
+        keeping.fresh.push((key, first..first + group.len()));
         self.runs.push(Run {
             initialized: false,
             flights: first..first + group.len(),
@@ -3320,25 +3455,61 @@ impl AircraftPlan {
         self.flights.extend(group);
     }
 
-    #[allow(clippy::too_many_arguments)]
+    /// `ours` is the viewing country's canonical slot: admission reads nothing else of what the
+    /// viewer sees, whatever the fog-of-war switch.
+    #[expect(clippy::too_many_arguments, reason = "a build's inputs are given together")]
     pub fn build(
         frame: &DecodedFrame,
         assets: &AircraftAssets,
         region_of: &BTreeMap<u32, u32>,
         geometry: &ProvinceGeometry,
         heights: &HeightField<'_>,
-        vision: &Vision,
+        ours: u32,
         model: &dyn Fn(u64, u32) -> Result<Option<String>, String>,
         carrier_origin: &dyn Fn(&TaskForceRow) -> Result<[f32; 3], &'static str>,
         impact_place: &dyn Fn(u32) -> Option<([f32; 3], [f32; 4])>,
     ) -> io::Result<Self> {
+        Self::make(
+            frame,
+            assets,
+            region_of,
+            geometry,
+            heights,
+            ours,
+            model,
+            carrier_origin,
+            impact_place,
+            &mut Kept::default(),
+        )
+    }
+
+    /// [`Self::build`], keeping from `kept` each scenario the build before placed whose placement
+    /// reads the same, and leaving in it what this build placed or kept.
+    #[expect(clippy::too_many_arguments, reason = "a build's inputs are given together")]
+    pub fn make(
+        frame: &DecodedFrame,
+        assets: &AircraftAssets,
+        region_of: &BTreeMap<u32, u32>,
+        geometry: &ProvinceGeometry,
+        heights: &HeightField<'_>,
+        ours: u32,
+        model: &dyn Fn(u64, u32) -> Result<Option<String>, String>,
+        carrier_origin: &dyn Fn(&TaskForceRow) -> Result<[f32; 3], &'static str>,
+        impact_place: &dyn Fn(u32) -> Option<([f32; 3], [f32; 4])>,
+        kept: &mut Kept,
+    ) -> io::Result<Self> {
+        let mut keeping = Keeping {
+            before: std::mem::take(&mut kept.placed),
+            now: HashMap::new(),
+            fresh: Vec::new(),
+        };
         let mut out = Self::default();
+        let started = Instant::now();
+        let (models, placing) = (Cell::new(0), Cell::new(0));
         let links: BTreeMap<_, _> = core::<tables::CountryLinks>(frame)?
             .iter()
             .map(|r| (r.id, r.canonical_slot))
             .collect();
-        // Admission uses the viewing country independently of the fog-of-war switch.
-        let ours = vision.ours();
         let (participants, gap) = participant_countries(frame, ours, &links)?;
         let mut training = TrainingGate {
             participants: gap.is_none(),
@@ -3444,15 +3615,22 @@ impl AircraftPlan {
         };
         let primary = model_inputs::Primary::new(frame);
         let wing_mesh = |wing: u64, raw_country: u32| {
-            let variant = primary
-                .get(wing)
-                .map_err(Unresolved::Token)?
-                .ok_or(Unresolved::Identity)?;
-            let entity = model(variant, raw_country)
-                .map_err(Unresolved::Token)?
-                .ok_or_else(|| Unresolved::Missing(format!("variant {variant}")))?;
-            assets.resolve(&entity)
+            let chosen = Instant::now();
+            let mesh = (|| {
+                let variant = primary
+                    .get(wing)
+                    .map_err(Unresolved::Token)?
+                    .ok_or(Unresolved::Identity)?;
+                let entity = model(variant, raw_country)
+                    .map_err(Unresolved::Token)?
+                    .ok_or_else(|| Unresolved::Missing(format!("variant {variant}")))?;
+                assets.resolve(&entity)
+            })();
+            models.set(models.get() + since(chosen));
+            mesh
         };
+        out.marks.sources = since(started);
+        let mut lap = Instant::now();
         let mut refusals = Refusals::default();
         let mut groups = Groups::default();
         let mut caps = Caps::default();
@@ -3541,6 +3719,13 @@ impl AircraftPlan {
             }
         }
         let history = ScenarioHistory::read(frame, ours)?;
+        out.marks.admission = since(lap);
+        out.marks.wings = regional
+            .values()
+            .flat_map(|groups| groups.arrays.iter().flatten())
+            .map(Vec::len)
+            .sum();
+        lap = Instant::now();
         let count = |candidate: &ScenarioWing<'_>| {
             sources.count(
                 candidate.wing,
@@ -3706,7 +3891,9 @@ impl AircraftPlan {
                     defender,
                 };
                 let placed = out.flights.len();
-                out.place(&batch, province, &mut rng, &placement);
+                let placing_at = Instant::now();
+                out.place(&batch, province, &mut rng, &placement, &mut keeping);
+                placing.set(placing.get() + since(placing_at));
                 if draw.kind == scenarios::MISSILE_KIND {
                     match impact_place(province) {
                         Some((position, bounds)) => {
@@ -3720,6 +3907,9 @@ impl AircraftPlan {
             }
         }
         out.diagnostics.extend(records.diagnostics());
+        let inner = models.get() + placing.get();
+        out.marks.generation = since(lap).saturating_sub(inner);
+        lap = Instant::now();
         if unflown_missiles > 0 {
             out.diagnostics.push(format!(
                 "{unflown_missiles} missile bombing scenarios are not flown and their explosions not drawn: the content's missile_1_bombing rig is refused (its content warning names why)"
@@ -3814,20 +4004,97 @@ impl AircraftPlan {
                 defender: None,
             };
             for ordinal in 0..draw.batches {
-                out.place(&batch, province, &mut batch.random(ordinal), &placement);
+                let placing_at = Instant::now();
+                out.place(
+                    &batch,
+                    province,
+                    &mut batch.random(ordinal),
+                    &placement,
+                    &mut keeping,
+                );
+                placing.set(placing.get() + since(placing_at));
             }
         }
-        for flight in &mut out.flights {
-            flight.requests = Arc::new(flight_requests(
-                flight,
-                &assets.rigs[&flight.rig],
-                assets.library().rig(flight.mesh),
-                flight_defines.clock_speed,
-            ));
+        out.marks.training = since(lap).saturating_sub(models.get() + placing.get() - inner);
+        lap = Instant::now();
+        for (key, flights) in keeping.fresh {
+            for flight in &mut out.flights[flights.clone()] {
+                flight.requests = Arc::new(flight_requests(
+                    flight,
+                    &assets.rigs[&flight.rig],
+                    assets.library().rig(flight.mesh),
+                    flight_defines.clock_speed,
+                ));
+            }
+            keeping.now.insert(key, out.flights[flights].to_vec());
         }
+        kept.placed = keeping.now;
         out.diagnostics.extend(undecided.diagnostics());
         out.diagnostics.extend(refusals.diagnostics());
+        out.marks.requests = since(lap);
+        (out.marks.models, out.marks.placement) = (models.get(), placing.get());
         Ok(out)
+    }
+
+    /// Bytes the plan holds: flights with their routes, requests and terrain, runs and launches.
+    pub fn bytes(&self) -> usize {
+        use std::mem::size_of;
+        let flights: usize = self
+            .flights
+            .iter()
+            .map(|flight| {
+                size_of::<Flight>()
+                    + (flight.outgoing.points.capacity() + flight.incoming.points.capacity()) * 16
+                    + flight.rig.capacity()
+                    + flight.requests.len() * size_of::<crate::map::entity_animation::Request>()
+                    + flight.terrain.as_ref().map_or(0, |terrain| terrain.values.capacity())
+            })
+            .sum();
+        flights
+            + self.runs.iter().map(|run| size_of::<Run>() + run.grounds.capacity()).sum::<usize>()
+            + self.launches.capacity() * size_of::<launches::Launch>()
+            + self.diagnostics.iter().map(String::capacity).sum::<usize>()
+    }
+
+    /// Flights, launches and diagnostics the plan holds.
+    pub fn counts(&self) -> [usize; 3] {
+        [self.flights.len(), self.launches.len(), self.diagnostics.len()]
+    }
+
+    /// Entries of two plans built for an hour compared, entries differing, and the first
+    /// described: every flight as placed, every run, launch and diagnostic in order. What the
+    /// frames advanced since (eased transforms, run clocks) is not compared.
+    pub fn differ(&self, other: &Self) -> (u64, u64, Option<String>) {
+        let mut differing = 0;
+        let mut first = None;
+        let mut note = |what: String| {
+            differing += 1;
+            first.get_or_insert(what);
+        };
+        let flight = |f: &Flight| {
+            ((f.mission, f.mesh, f.wing, f.region, f.track, f.lands, f.explode), (f.origin.map(f32::to_bits), f.yaw.to_bits(), f.travel.to_bits(), f.delay.to_bits(), f.group_travel.to_bits(), f.phase.to_bits()))
+        };
+        for (at, (a, b)) in self.flights.iter().zip(&other.flights).enumerate() {
+            if flight(a) != flight(b) || a.rig != b.rig || a.outgoing != b.outgoing || a.incoming != b.incoming || a.requests != b.requests || a.impact != b.impact || a.terrain != b.terrain {
+                note(format!("flight {at}: wing {} region {} rig {} track {} against wing {} region {} rig {} track {}", a.wing, a.region, a.rig, a.track, b.wing, b.region, b.rig, b.track));
+            }
+        }
+        if self.flights.len() != other.flights.len() {
+            note(format!("{} flights against {}", self.flights.len(), other.flights.len()));
+        }
+        let runs = |plan: &Self| plan.runs.iter().map(|run| (run.flights.clone(), run.grounds.len())).collect::<Vec<_>>();
+        if runs(self) != runs(other) {
+            note("the scenario runs differ".into());
+        }
+        if self.launches != other.launches {
+            note(format!("{} launches against {}", self.launches.len(), other.launches.len()));
+        }
+        if self.diagnostics != other.diagnostics {
+            let at = self.diagnostics.iter().zip(&other.diagnostics).position(|(a, b)| a != b);
+            note(format!("diagnostics: {:?} against {:?}", at.map(|at| &self.diagnostics[at]), at.map(|at| &other.diagnostics[at])));
+        }
+        let entries = self.flights.len().max(other.flights.len()) + self.launches.len().max(other.launches.len()) + self.diagnostics.len().max(other.diagnostics.len()) + 1;
+        (entries as u64, differing, first)
     }
 
     /// The missile explosions of scenarios that finished on a frame since
@@ -4184,6 +4451,9 @@ impl AircraftPlan {
                     *eased
                 }
                 _ => {
+                    if frames.is_some() && self.drawn_keys.contains(&flight.key()) {
+                        self.snapped += 1;
+                    }
                     let eased = Eased::at(cycle, &pose);
                     self.eased.insert(flight.key(), eased);
                     eased
@@ -4244,28 +4514,39 @@ impl AircraftPlan {
         }
         self.flight_seeds.resize(self.flights.len(), 0);
         let mut retained = BTreeSet::new();
-        for run in &mut self.runs {
+        // Each run's run of the plan before: the same flights.
+        let mut matched: Vec<Option<usize>> = vec![None; self.runs.len()];
+        for (at, run) in self.runs.iter().enumerate() {
             let flights = &self.flights[run.flights.clone()];
             let key = flights.iter().map(Flight::key).collect::<Vec<_>>();
-            let matched = prior.get_mut(&key).and_then(|candidates| {
+            matched[at] = prior.get_mut(&key).and_then(|candidates| {
                 let at = candidates.iter().position(|&index| {
                     flights == &previous.flights[previous.runs[index].flights.clone()]
                 })?;
                 Some(candidates.remove(at))
             });
-            if let Some(index) = matched {
-                let old = &previous.runs[index];
-                for (next, old) in run.flights.clone().zip(old.flights.clone()) {
-                    self.flight_seeds[next] = previous.flight_seed(old);
+        }
+        self.restarts = 0;
+        for (run, matched) in self.runs.iter_mut().zip(matched) {
+            match matched {
+                Some(index) => {
+                    let old = &previous.runs[index];
+                    for (next, old) in run.flights.clone().zip(old.flights.clone()) {
+                        self.flight_seeds[next] = previous.flight_seed(old);
+                    }
+                    run.start = old.start;
+                    run.cycle = old.cycle;
+                    run.initialized = old.initialized;
+                    if old.grounds.len() == run.grounds.len() {
+                        run.grounds.clone_from(&old.grounds);
+                    }
+                    retained.extend(self.flights[run.flights.clone()].iter().map(Flight::key));
                 }
-                run.start = old.start;
-                run.cycle = old.cycle;
-                run.initialized = old.initialized;
-                run.grounds.clone_from(&old.grounds);
-                retained.extend(key);
-            } else {
-                for index in run.flights.clone() {
-                    self.flight_seeds[index] = fresh()?;
+                None => {
+                    self.restarts += 1;
+                    for index in run.flights.clone() {
+                        self.flight_seeds[index] = fresh()?;
+                    }
                 }
             }
         }
@@ -4317,9 +4598,15 @@ impl AircraftPlan {
         Ok(())
     }
 
+    /// The runs its install started anew: new players, nothing carried.
+    pub fn restarts(&self) -> usize {
+        self.restarts
+    }
+
     /// Takes over the drawn transforms of the plan this one replaces, for the
     /// flights the two share.
     pub fn carry_easing(&mut self, previous: &mut Self) {
+        self.drawn_keys = std::mem::take(&mut previous.drawn_keys);
         let keys: BTreeSet<FlightKey> = self.flights.iter().map(Flight::key).collect();
         self.eased = std::mem::take(&mut previous.eased);
         self.eased.retain(|key, _| keys.contains(key));
@@ -4373,6 +4660,7 @@ impl AircraftPlan {
         shown: &dyn Fn(AirMission) -> bool,
         played: Played<'_>,
     ) -> (ModelField, BTreeSet<(usize, u32, u32)>) {
+        self.snapped = 0;
         let placed = match &assets.flight_defines {
             Ok(defines) => {
                 self.advance(&assets.rigs, defines, assets.band, seconds, played);
@@ -4380,6 +4668,14 @@ impl AircraftPlan {
             }
             Err(_) => Vec::new(),
         };
+        if viewer_foundation::view_record::on() {
+            // `jumps`: a flight drawn the frame before that stands on a fresh transform instead of
+            // easing on (its drawn transform lost at an install); a take-off at a new cycle is the
+            // game's own and eases from its route's first point.
+            viewer_foundation::view_record::add("flights", "jumps", self.snapped as u64);
+            viewer_foundation::view_record::set("flights", "running", self.runs.len() as u64);
+            self.drawn_keys = placed.iter().map(|&(index, _)| self.flights[index].key()).collect();
+        }
         // An actor exploding in the band asks for `explode` at its entry.
         let mut entries = BTreeMap::new();
         for run in &self.runs {

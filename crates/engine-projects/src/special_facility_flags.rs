@@ -18,13 +18,13 @@ pub struct Row {
     pub flag: u8,
 }
 
-/// Reads the flag of every province a country's program names, in country and program order;
-/// a province two programs name appears twice. Nothing is allocated.
-pub fn walk(memory: &impl Memory, base: usize, game_state: usize, output: &mut [Row]) -> Outcome {
-    walk_buffer(memory, base, game_state, crate::walk::Buffer::Fixed(output))
+pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
+    walk_buffer(memory, base, game_state, crate::walk::Buffer::Count)
 }
 
-pub fn walk_growing(
+/// Reads the flag of every province a country's program names, in country and program order;
+/// a province two programs name appears twice. Nothing is allocated.
+pub fn walk(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -305,7 +305,17 @@ mod tests {
             )
         );
         assert_eq!(
-            run(&bytes, 0).0,
+            count(
+                &Image {
+                    bytes: SliceMemory {
+                        base: 0,
+                        bytes: &bytes
+                    },
+                    idler: IDLER as u64,
+                },
+                0,
+                GAME
+            ),
             Outcome::Truncated {
                 len: 0,
                 unread_rows: 1
@@ -354,14 +364,14 @@ mod tests {
                 idler: IDLER as u64,
             };
             assert_eq!(
-                walk(&memory, 0, GAME, &mut []),
+                super::count(&memory, 0, GAME),
                 Outcome::Truncated {
                     len: 0,
                     unread_rows: count as u32
                 }
             );
             assert_eq!(
-                walk_growing(&memory, 0, GAME, &mut output),
+                walk(&memory, 0, GAME, &mut output),
                 Outcome::Rows { len: count }
             );
             assert!(output[..count].iter().all(|row| *row

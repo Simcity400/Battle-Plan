@@ -204,6 +204,11 @@ impl Preparation {
     pub fn has_variant(&self, handle: u64, pointer: usize) -> bool {
         self.reads.has_variant(handle, pointer)
     }
+    /// The trees, memberships, variants and states this range read for the ordered admission.
+    #[cfg(test)]
+    fn staged_reads(&self) -> usize {
+        self.reads.staged()
+    }
     pub fn allocated_bytes(&self) -> usize {
         self.memo.allocated_bytes()
             + self.reads.allocated_bytes()
@@ -242,6 +247,7 @@ impl Preparation {
         if countries.is_none() {
             self.reads.incomplete();
         }
+        let held = store.admitted().unwrap_or(store);
         let country = source_owner(seed).ok().and_then(|owner| {
             countries.map(|countries| {
                 let country = *self
@@ -294,7 +300,7 @@ impl Preparation {
         self.local_province_refusal |= province.is_err();
         if let Err(reason) = province {
             let reason = source_owner(seed).err().unwrap_or(reason);
-            if !store
+            if !held
                 .pools
                 .get(&seed.division)
                 .is_some_and(|held| held.context_refusal == Some(reason))
@@ -306,7 +312,7 @@ impl Preparation {
         }
         let context = province
             .ok()
-            .filter(|province| !store.provinces.contains_key(province))
+            .filter(|province| !held.provinces.contains_key(province))
             .map(|province| {
                 if let Some(context) = self.provinces.get(&province) {
                     return Ok(*context);
@@ -471,7 +477,22 @@ fn owner_range(kind: u8, owner: u64) -> std::ops::Range<u128> {
     let start = key(kind, owner, 0);
     start..start + (1u128 << 32)
 }
+/// What a store of an earlier world holds for this hour's admission: nothing.
+static FORGOTTEN: std::sync::LazyLock<Store> = std::sync::LazyLock::new(Store::default);
 impl Store {
+    /// The store this hour's ordered admission begins from, for range reads: a store of an
+    /// earlier world is forgotten before anything is admitted, so ranges read as for an empty
+    /// one. `None` when the world moved after the boundary was captured.
+    fn admitted(&self) -> Option<&Store> {
+        let world = operands::world_epoch();
+        if self.world_epoch == world {
+            Some(self)
+        } else if self.boundary.active && self.boundary.world_epoch == world {
+            Some(&FORGOTTEN)
+        } else {
+            None
+        }
+    }
     pub fn forget(&mut self) {
         self.boundary.active = false;
         self.settling_owned = false;
@@ -1576,6 +1597,7 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::army_stat_changes::{MEMBERSHIP_TEST, serial};
     use replay_data::rows::RowCodec;
     use std::cell::Cell;
     static PROOF: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -1620,7 +1642,6 @@ mod tests {
         table.clear();
         assert_eq!(table.bytes, table_bytes::<u64, u64>(table.capacity()));
     }
-    pub(super) static MEMBERSHIP_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
     pub(super) struct Enabled;
     impl Drop for Enabled {
         fn drop(&mut self) {
@@ -1650,7 +1671,7 @@ mod tests {
     fn unchanged_contexts_and_changed_new_removed_divisions_match_fresh_publication() {
         use engine_native::{carmy, cequipment_variant_pool as pool, cgame_state};
         use replay_data::rows::tables;
-        let _serial = MEMBERSHIP_TEST.lock().unwrap();
+        let _serial = serial(&MEMBERSHIP_TEST);
         const DIVISIONS: usize = 64;
         const STATE: usize = 0x100;
         const COUNTRY: usize = 0x1000;
@@ -2095,10 +2116,153 @@ mod tests {
         }
     }
 
+    /// A forced hour's store belongs to an earlier world: the ranges read every membership as
+    /// for an empty store, and the ordered admission, which forgets that store, reads none.
+    #[test]
+    fn a_store_of_an_earlier_world_is_staged_as_empty_and_admitted_without_pool_reads() {
+        use engine_native::{carmy, cequipment_variant_pool as pool, cgame_state};
+        use replay_data::rows::tables;
+        let _serial = serial(&MEMBERSHIP_TEST);
+        const DIVISIONS: usize = 64;
+        const STATE: usize = 0x100;
+        const COUNTRY: usize = 0x1000;
+        operands::demand(DIVISIONS, 0, 0);
+        operands::presize();
+        operands::boundary(true);
+        operands::patched(true);
+        observe(true);
+        let _enabled = Enabled;
+        let mut world = World {
+            bytes: vec![0; 0x4000 + DIVISIONS * 0x1000],
+            reads: Cell::new(0),
+            deny: Cell::new(false),
+        };
+        let put = |bytes: &mut [u8], at: usize, value: u64| {
+            bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+        };
+        for (header, data) in [
+            (STATE + cgame_state::COUNTRIES, 0x800),
+            (STATE + cgame_state::COUNTRY_LINKS, 0x900),
+        ] {
+            put(&mut world.bytes, header, data);
+            put(&mut world.bytes, header + 8, 2 | (2 << 32));
+        }
+        put(&mut world.bytes, 0x808, COUNTRY as u64);
+        put(&mut world.bytes, 0x900, 1 << 32);
+        put(&mut world.bytes, COUNTRY, ccountry::VTABLE_RVA.0 as u64);
+        put(&mut world.bytes, COUNTRY + ccountry::ID, 1);
+        let seeds: Vec<_> = (0..DIVISIONS)
+            .map(|index| {
+                let pointer = 0x4000 + index * 0x1000;
+                put(
+                    &mut world.bytes,
+                    pointer + carmy::EQUIPMENT_POOL,
+                    pool::VTABLE_RVA.0 as u64,
+                );
+                DivisionSeed {
+                    pointer,
+                    division: index as u64 + 1,
+                    roster_owner: Some(1),
+                    logical_owner: Some(1),
+                    orders_group: Some(0),
+                    ordinary_route: Some([0; 16]),
+                    location: Some(0),
+                    ..Default::default()
+                }
+            })
+            .collect();
+        struct Pools<'a> {
+            world: &'a World,
+            seeds: &'a [DivisionSeed],
+            reads: Cell<usize>,
+        }
+        impl Memory for Pools<'_> {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                if self.seeds.iter().any(|seed| {
+                    (seed.pointer + carmy::EQUIPMENT_POOL..seed.pointer + 0x1000).contains(&address)
+                }) {
+                    self.reads.set(self.reads.get() + 1);
+                }
+                self.world.copy(address, output)
+            }
+        }
+        let complete = |snapshot: &SourceSnapshot| {
+            snapshot
+                .publish(|rows| rows.complete::<tables::DivisionPanelSources>().unwrap())
+                .unwrap()
+        };
+        for parts in [1, 2, 7] {
+            let range = |part: usize| seeds.len() * part / parts..seeds.len() * (part + 1) / parts;
+            let mut staged = Store::default();
+            let mut selected = Vec::new();
+            staged
+                .capture(&world, 0, STATE, &seeds, &mut selected)
+                .unwrap();
+            operands::boundary(true);
+            let mut serial = Store::default();
+            let mut expected_selection = Vec::new();
+            let expected = serial
+                .capture(&world, 0, STATE, &seeds, &mut expected_selection)
+                .unwrap();
+            staged.capture_boundary();
+            assert!(!staged.can_settle_owned());
+            let countries = ccountry::Reader::new(&world, 0, STATE).unwrap();
+            let mut memos: Vec<_> = (0..parts).map(|_| Preparation::default()).collect();
+            let mut selections = vec![None; seeds.len()];
+            for part in (0..parts).rev() {
+                assert!(memos[part].begin(range(part).len()));
+                for index in range(part) {
+                    selections[index] = Some(memos[part].capture(
+                        &world,
+                        0,
+                        STATE,
+                        Some(&countries),
+                        &staged,
+                        &seeds[index],
+                    ));
+                }
+                assert!(
+                    memos[part].staged_reads() >= range(part).len(),
+                    "parts={parts}: range {part} read its memberships"
+                );
+            }
+            let memory = Pools {
+                world: &world,
+                seeds: &seeds,
+                reads: Cell::new(0),
+            };
+            let actual = staged
+                .capture_staged(
+                    &memory,
+                    0,
+                    STATE,
+                    &seeds,
+                    &mut selected,
+                    |index| selections[index],
+                    |index| {
+                        memos
+                            .iter()
+                            .enumerate()
+                            .find(|(part, _)| range(*part).contains(&index))
+                            .map(|(_, memo)| memo)
+                    },
+                    |handle, pointer| memos.iter().find(|memo| memo.has_variant(handle, pointer)),
+                )
+                .unwrap();
+            assert_eq!(memory.reads.get(), 0, "parts={parts}: the ordered admission read a pool");
+            assert_eq!(complete(&actual), complete(&expected), "parts={parts}");
+            assert_eq!(selected, expected_selection, "parts={parts}");
+            for (division, held) in &serial.pools {
+                assert_eq!(staged.pools[division].certificate, held.certificate);
+                assert_eq!(staged.pools[division].count, held.count);
+            }
+        }
+    }
+
     #[test]
     fn repeated_dirty_refusals_keep_rows_and_membership_allocations() {
         use engine_native::{carmy, cequipment_variant_pool};
-        let _serial = MEMBERSHIP_TEST.lock().unwrap();
+        let _serial = serial(&MEMBERSHIP_TEST);
         operands::demand(1, 0, 0);
         operands::presize();
         operands::boundary(true);
@@ -2147,7 +2311,7 @@ mod tests {
     #[test]
     fn a_pool_clear_replaces_refused_membership_with_successful_empty_membership() {
         use engine_native::{carmy, cequipment_variant_pool};
-        let _serial = MEMBERSHIP_TEST.lock().unwrap();
+        let _serial = serial(&MEMBERSHIP_TEST);
         operands::demand(1, 0, 0);
         operands::presize();
         operands::boundary(true);
@@ -2243,7 +2407,7 @@ mod tests {
     #[test]
     fn first_multi_entry_failures_withdraw_all_ordinals_and_publication_checks_the_rows() {
         use engine_native::{cequipment_variant as variant, division_panel_operands};
-        let _serial = MEMBERSHIP_TEST.lock().unwrap();
+        let _serial = serial(&MEMBERSHIP_TEST);
         operands::demand(0, 1, 0);
         operands::presize();
         operands::boundary(true);
@@ -2376,7 +2540,7 @@ mod tests {
     #[test]
     fn source_invalidation_replaces_carried_terrain_and_quiet_values_need_no_reads() {
         use engine_native::{cequipment_variant as variant, division_panel_operands};
-        let _serial = MEMBERSHIP_TEST.lock().unwrap();
+        let _serial = serial(&MEMBERSHIP_TEST);
         operands::demand(0, 1, 0);
         operands::presize();
         operands::boundary(true);
@@ -2550,7 +2714,7 @@ mod tests {
     #[test]
     fn an_equal_terrain_reread_allocates_nothing_and_each_change_publishes_only_its_rows() {
         use engine_native::{cequipment_variant as variant, division_panel_operands};
-        let _serial = MEMBERSHIP_TEST.lock().unwrap();
+        let _serial = serial(&MEMBERSHIP_TEST);
         operands::demand(0, 1, 0);
         operands::presize();
         operands::boundary(true);
@@ -2688,7 +2852,7 @@ mod tests {
     #[test]
     fn retirement_reauthenticates_only_affected_pools_before_following_variants() {
         use engine_native::{cequipment_variant as variant, cequipment_variant_pool as pool};
-        let _serial = MEMBERSHIP_TEST.lock().unwrap();
+        let _serial = serial(&MEMBERSHIP_TEST);
         operands::demand(2, 1, 0);
         operands::presize();
         operands::boundary(true);

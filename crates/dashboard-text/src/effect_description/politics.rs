@@ -403,7 +403,7 @@ impl Renderer<'_, '_, '_> {
     // retain the recorded table cadence.
     pub(super) fn politics_create_agency(&self, scopes: Scopes) -> Result<String, String> {
         let Some(features) = self.features(DLC_MASK)? else {
-            return Err("SimulationFeatures lacks the agency feature mask".into());
+            return Err("simulation features lacks the agency feature mask".into());
         };
         if features.dlc_mask & (1 << 5) == 0 {
             return Ok(String::new());
@@ -416,7 +416,7 @@ impl Renderer<'_, '_, '_> {
             .next()
             .transpose()
             .map_err(built)?
-            .ok_or("IntelligenceAgencies lacks agency identity")?;
+            .ok_or("intelligence agencies lacks agency identity")?;
         if row.created != 0 {
             return Ok(String::new());
         }

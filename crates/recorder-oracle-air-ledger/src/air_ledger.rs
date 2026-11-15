@@ -67,7 +67,6 @@ pub fn compare_air_losses(
         replay.visit_blocks(
             &[block],
             &ORACLE_TABLES,
-            None,
             |_, _, hour_frame| {
             if hour_frame.hour > frame.hour {
                 return Ok(false);

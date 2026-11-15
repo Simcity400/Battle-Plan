@@ -60,7 +60,12 @@ fn template_fallback_uses_recorded_language_and_template_country() {
         .evaluate(&triggers, crate::triggers::Scopes::of(Scope::Country(1)))
         .decided()
         .unwrap_err();
-    assert!(refused.contains("DivisionTemplateIcons"), "{refused}");
+    assert!(
+        refused.contains(
+            "division template icons names a country that no recorded country link holds"
+        ),
+        "{refused}"
+    );
 }
 
 #[test]

@@ -19,6 +19,14 @@ test('faction choices keep their labels without showing backend naming refusals'
   assert.equal(groupKinds(reply, { max: 5000 }, undefined, { '42': { name: 'Readable override' } })[1].label, 'Readable override');
 });
 
+test('a faction founded after the hour shown is offered by its own name, never as one of several unnamed factions', () => {
+  // Run 14 at 31 May 1938: three factions of the 1940s were offered as "Unnamed faction", the same label three times.
+  const later = (id: string, name: string, firstHour: number) => ({ id, name, nameReason: null, names: [{ firstHour, lastHour: 900, name, reason: null }] });
+  const reply = { factions: [later('7', 'African Union', 500), later('8', "The People's Front", 800)] } as unknown as import('../../generated/dashboard').CountryGroupReply;
+  assert.deepEqual(groupKinds(reply, { max: 5000 }, 100).slice(1, 3).map(kind => kind.label), ['African Union', "The People's Front"]);
+  assert.equal(groupKinds(reply, { max: 5000 }, 600)[1].label, 'African Union');
+});
+
 function elements(value: ReactNode): ReactElement<Record<string, unknown>>[] {
   if (Array.isArray(value)) return value.flatMap(elements);
   if (!isValidElement<Record<string, unknown>>(value)) return [];

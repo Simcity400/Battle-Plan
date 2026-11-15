@@ -112,7 +112,7 @@ impl<'a> ScriptedText<'a> {
                 break;
             }
         }
-        let country = country.ok_or_else(|| format!("GetManpower: Countries {gap}"))?;
+        let country = country.ok_or_else(|| format!("GetManpower: countries: {gap}"))?;
         let states = self
             .frame
             .complete::<tables::States>(STATE)
@@ -165,7 +165,7 @@ impl<'a> ScriptedText<'a> {
             .country_row::<tables::IntelligenceAgencies>(slot, AGENCY)
             .map_err(|reason| format!("GetAgency: {reason}"))?
             .ok_or_else(|| {
-                format!("GetAgency: country slot {slot} has no IntelligenceAgencies row")
+                format!("GetAgency: country slot {slot} has no intelligence agencies row")
             })?;
         if agency.created == 0 {
             return self.localise("AGENCY_NAME");
@@ -199,7 +199,7 @@ impl<'a> ScriptedText<'a> {
         let row = self
             .country_row::<tables::CountryAppearance>(slot, APPEARANCE)
             .map_err(|reason| format!("{entry}: {reason}"))?
-            .ok_or_else(|| format!("{entry}: country slot {slot} has no CountryAppearance row"))?;
+            .ok_or_else(|| format!("{entry}: country slot {slot} has no country appearance row"))?;
         let (old, what) = match suffix {
             "_DEF" => (&row.old_definite_name, "the old definite name"),
             "_ADJ" => (&row.old_adjective, "the old adjective"),
@@ -225,7 +225,7 @@ impl<'a> ScriptedText<'a> {
         let (characters, gap) = rows::<tables::Characters>(self.frame, CHARACTER);
         keyed(&characters, u128::from(id))?
             .map(|row| row.gender)
-            .ok_or_else(|| format!("character {id}'s gender: Characters {gap}"))
+            .ok_or_else(|| format!("character {id}'s gender: {}: {gap}", replay_data::rows::TableId::Characters.words()))
     }
 
     // A missing party, leader or parent is gender 0.
@@ -251,7 +251,7 @@ impl<'a> ScriptedText<'a> {
                     }
                 }
                 None if !complete::<tables::PartyLeaders>(self.frame) => {
-                    return Err(format!("{name}: PartyLeaders {gap}"));
+                    return Err(format!("{name}: party leaders: {gap}"));
                 }
                 None => {}
             }
@@ -293,7 +293,7 @@ impl<'a> ScriptedText<'a> {
         let ruling = if matches!(which, Party::Ruling) {
             let (politics, gap) = rows::<tables::Politics>(self.frame, POLITICS);
             let row = first(&politics, |key| self.scopes.slot(key as u32) == Some(slot))?
-                .ok_or_else(|| format!("party of country {slot}: Politics {gap}"))?;
+                .ok_or_else(|| format!("party of country {slot}: politics: {gap}"))?;
             let Some(id) = row.ruling_party else {
                 return Ok(None);
             };
@@ -317,7 +317,7 @@ impl<'a> ScriptedText<'a> {
         }
         if party.is_none() && ruling.is_some() {
             return Err(format!(
-                "party of country {slot}: ruling party has no PoliticalParties row: {gap}"
+                "party of country {slot}: ruling party has no political parties row: {gap}"
             ));
         }
         if party.is_some()
@@ -329,7 +329,7 @@ impl<'a> ScriptedText<'a> {
         {
             Ok(party)
         } else {
-            Err(format!("party of country {slot}: PoliticalParties {gap}"))
+            Err(format!("party of country {slot}: political parties: {gap}"))
         }
     }
 
@@ -398,7 +398,7 @@ impl<'a> ScriptedText<'a> {
     pub(crate) fn last_election_unrecorded(&self, slot: u32) -> Result<String, String> {
         let (politics, gap) = rows::<tables::Politics>(self.frame, POLITICS);
         let row = first(&politics, |key| self.scopes.slot(key as u32) == Some(slot))?
-            .ok_or_else(|| format!("GetLastElection: Politics {gap}"))?;
+            .ok_or_else(|| format!("GetLastElection: politics: {gap}"))?;
         self.date_text(row.last_election)
     }
 
@@ -415,7 +415,7 @@ impl<'a> ScriptedText<'a> {
                 .map_or_else(|| Ok(String::new()), |id| self.character_name(id)),
             None if complete::<tables::PartyLeaders>(self.frame) => Ok(String::new()),
             None => Err(format!(
-                "party {}'s first leader: PartyLeaders {gap}",
+                "party {}'s first leader: party leaders: {gap}",
                 party.id
             )),
         }

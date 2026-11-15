@@ -1,12 +1,130 @@
-//! Hour-local aircraft model results and the same signed primary-equipment fold.
+//! Aircraft model results, hour-local or kept across builds, and the same signed primary-equipment
+//! fold.
+use crate::map::{
+    equipment_graphics::{
+        Decided, Limits,
+        bridge::{CensusRead, Retained},
+        context,
+    },
+    unit_models::UnitModelAssets,
+};
 use replay_data::rows::{WingEquipmentRow, tables};
-use replay_frame::frame::DecodedFrame;
+use replay_frame::frame::{DecodedFrame, kept};
 use std::{
-    cell::{OnceCell, RefCell},
-    collections::BTreeMap,
+    cell::{Cell, OnceCell, RefCell},
+    collections::{BTreeMap, HashSet},
+    sync::Arc,
 };
 
-type Selected = Result<Option<String>, String>;
+pub type Selected = Result<Option<String>, String>;
+
+/// Each (variant, raw country)'s model chosen by the content's scripts, kept from one build to the
+/// next while what choosing it read reads the same: the rows it read or noted (a change drops
+/// exactly the models it reaches, [`kept::Kept::indexed`]) and its census entries; the pools its
+/// limits decided and the countries' joined geography are read unnoted, so they are compared whole
+/// and one that differs drops every model. A refusal is chosen again each build, as its words may
+/// name the hour. It holds the models of the last build and the frame they were kept at.
+#[derive(Default)]
+pub struct KeptModels {
+    held: Option<Held>,
+}
+
+struct Held {
+    frame: Arc<DecodedFrame>,
+    decided: Decided,
+    geography: Result<context::Prepared, String>,
+    /// The census at `frame`, once a model read it.
+    census: Option<Result<Arc<Retained>, String>>,
+    models: kept::Kept<(u64, u32), Option<String>, CensusRead>,
+}
+
+/// What one build's models did: the (variant, country)s whose model was kept from the build
+/// before, and those chosen anew.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ModelsMade {
+    pub kept: usize,
+    pub chosen: usize,
+}
+
+impl KeptModels {
+    /// One build's models over `frame` under `limits`: `run` is given each (variant, raw country)'s
+    /// model, kept or chosen by `assets` and kept for the next build. Gives back what `run` gave,
+    /// every pool the build's limits decided (what a product made from the models read of the
+    /// scripts beyond the rows) and what it kept and chose.
+    pub fn session<R>(
+        &mut self,
+        assets: &UnitModelAssets,
+        frame: &DecodedFrame,
+        limits: Limits<'_>,
+        run: impl FnOnce(&dyn Fn(u64, u32) -> Selected) -> R,
+    ) -> (R, Decided, ModelsMade) {
+        let now = Arc::new(frame.clone());
+        let geography = assets.aircraft_geography(frame);
+        let held = self.held.take().filter(|held| {
+            held.geography == geography && limits.decide_the_same(&held.decided)
+        });
+        let (then, models, was) = match held {
+            Some(held) => (held.frame, held.models, held.census),
+            None => (Arc::clone(&now), kept::Kept::indexed(), None),
+        };
+        let census = OnceCell::new();
+        let made = Cell::new(ModelsMade::default());
+        let (out, models) = {
+            let census_now = || census.get_or_init(|| assets.census(frame));
+            let changed = |read: &CensusRead| match (&was, census_now()) {
+                (Some(Ok(was)), Ok(is)) => !(Arc::ptr_eq(was, is) || was.same_read(is, read)),
+                (Some(Err(was)), Err(is)) => was != is,
+                _ => true,
+            };
+            let between = kept::Between::new(&then, &now);
+            let models = RefCell::new(models.hour(&between, &changed));
+            let refused = RefCell::new(BTreeMap::<(u64, u32), String>::new());
+            let asked = RefCell::new(HashSet::<(u64, u32)>::new());
+            let model = |variant: u64, country: u32| -> Selected {
+                let key = (variant, country);
+                let first = asked.borrow_mut().insert(key);
+                let held = models.borrow_mut().get(&key);
+                if let Some(held) = held {
+                    if first {
+                        made.set(ModelsMade { kept: made.get().kept + 1, ..made.get() });
+                    }
+                    return Ok((*held.value).clone());
+                }
+                if let Some(why) = refused.borrow().get(&key) {
+                    return Err(why.clone());
+                }
+                let (chosen, reads) = kept::record::<CensusRead, _>(frame, || {
+                    assets.aircraft_entity(frame, limits, variant, country)
+                });
+                made.set(ModelsMade { chosen: made.get().chosen + 1, ..made.get() });
+                match chosen {
+                    Ok(entity) => {
+                        if reads.iter().any(|read| matches!(read, kept::Read::Derived(_))) {
+                            census_now();
+                        }
+                        models.borrow_mut().put(key, entity.clone(), reads);
+                        Ok(entity)
+                    }
+                    Err(why) => {
+                        refused.borrow_mut().insert(key, why.clone());
+                        Err(why)
+                    }
+                }
+            };
+            let out = run(&model);
+            (out, models.into_inner().finish())
+        };
+        let decided = limits.decided();
+        self.held = Some(Held {
+            frame: now,
+            decided: decided.clone(),
+            geography,
+            census: census.into_inner(),
+            models,
+        });
+        (out, decided, made.get())
+    }
+}
 
 /// One build call's immutable model selection results. Raw country references
 /// stay distinct, and failures and known absence are retained just like names.

@@ -1,9 +1,11 @@
-# Installs the SPIR-V-enabled upstream DXC for PdxShader effects, in the current user's tools.
-# The SDK's dxc can advertise -spirv while being built without its code generator.
+# Puts the pinned, SPIR-V-enabled upstream DXC that compiles PdxShader effects, dxcompiler.dll and
+# its dxil.dll, into -Destination: beside replay-desktop.exe for the installer and for development,
+# beside the viewer harness or test programs. The SDK's DXC can advertise -spirv while being built
+# without its code generator. Its licences ship from the repository's LICENSES folder.
 [CmdletBinding()]
 param(
     [string]$ArchivePath,
-    [string]$Destination = (Join-Path $env:LOCALAPPDATA 'HOI4Replay/shader-tools/dxc')
+    [Parameter(Mandatory)][string]$Destination
 )
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -27,8 +29,7 @@ try {
     try {
         New-Item -ItemType Directory -Force -Path $Destination | Out-Null
         # Extract only named files: no authored path, native installer or machine-wide setting.
-        # Every licence the archive carries: LLVM (NCSA), Microsoft's MIT and the DXC terms.
-        foreach ($member in @('bin/x64/dxc.exe', 'bin/x64/dxcompiler.dll', 'bin/x64/dxil.dll', 'LICENSE-LLVM.txt', 'LICENCE-MIT.txt', 'LICENSE-MS.txt')) {
+        foreach ($member in @('bin/x64/dxcompiler.dll', 'bin/x64/dxil.dll')) {
             $entry = $zip.Entries | Where-Object { $_.FullName.Replace('\', '/') -ceq $member } | Select-Object -First 1
             if (-not $entry) { throw "DXC archive is missing $member" }
             $path = Join-Path $Destination ([IO.Path]::GetFileName($member))
@@ -37,7 +38,7 @@ try {
     } finally {
         $zip.Dispose()
     }
-    Write-Output (Join-Path $Destination 'dxc.exe')
+    Write-Output (Join-Path $Destination 'dxcompiler.dll')
 } finally {
     if ($downloaded -and (Test-Path -LiteralPath $ArchivePath)) {
         Remove-Item -LiteralPath $ArchivePath

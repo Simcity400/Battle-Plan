@@ -1,29 +1,14 @@
-//! A recording's extents and its world log's layout (`H4COLUMN` version 9): one campaign, every
-//! session in it, in sections ([`crate::container`]).
+//! A recording's extents (`H4COLUMN` version 12): one campaign, every session in it, in
+//! sections ([`crate::container`]).
 //!
 //! Every extent is described where it is referenced, by an [`Extent`] envelope carrying a
 //! digest of its stored bytes, so a reader checks an extent's place and length before allocating
-//! and its bytes before decoding. The file's header, footer and root are [`crate::container`]'s.
-//!
-//! The world log holds the runs. A run is one continuous span of one branch and observation
-//! epoch, on its own grid of [`UNIT_ORDINALS`]-ordinal blocks, each written once and never
-//! revised: one [`IndexPage`] per block names its hour records ([`crate::records`]) and each
-//! table's block ([`crate::block`]) for the tables with hours in it, the restart that may end it
-//! (one extent per table and the run's dictionary chunk, under one ordinal barrier), which tables
-//! the block touched, and the chain after it. A page's records and blocks (its units) each decode
-//! alone, stored as frames of [`CHUNK_BYTES`] raw bytes each compressed apart
-//! ([`IndexPage::chunks`]), so one unit decodes on many threads. A restart's table is stored as a
-//! change from the run's previous restart's ([`RestartTable::base`]), every
-//! [`KEYFRAME_RESTARTS`]th whole. Dictionary ids are run-local. Each run's pages are listed by its
-//! own [`RunDirectory`] extent, the world log's entry for the run, so a revision rewrites only the
-//! directories of the runs it adds to and a small root.
-//!
-//! The chain covers each block's extents by their digests ([`chain_block`]).
+//! and its bytes before decoding. The file's header, footer and root are [`crate::container`]'s;
+//! the world log's pages are [`crate::pages`]'.
 
 use crate::{
     invalid,
     leaf::{Reader, Writer},
-    state::Bits,
 };
 use std::io;
 
@@ -31,37 +16,20 @@ use std::io;
 mod tests;
 
 pub const MAGIC: &[u8; 8] = b"H4COLUMN";
-/// 9: versioned sections, the world log, records and game facts among them, and resume state
-/// beside the file ([`crate::container`]); 8: a page's units decode alone, in chunks
-/// ([`CHUNK_BYTES`]); 7: a whole restart every 16th ([`KEYFRAME_RESTARTS`]); 6: a whole campaign in
-/// one file; 5: each table's hours stored once per block of [`UNIT_ORDINALS`].
-pub const VERSION: u32 = 9;
+/// 12: each table's unit of a block its parts of per-column streams entity by entity
+/// ([`crate::unit`]), restores per column by replay work, the world log's pages
+/// [`crate::pages`]; 11: each table a lane, with its own presence, statuses, reads, sections and
+/// strings per block, a clock unit per block, span pages and summaries; 10: each root says whether
+/// its revision is saved ([`crate::container::Saved`]).
+pub const VERSION: u32 = 12;
 pub const HEADER_BYTES: usize = 12;
 pub const FOOTER_MAGIC: &[u8; 8] = b"H4COLEND";
 /// Root offset, root stored length, root digest and the footer magic.
 pub const FOOTER_BYTES: usize = 8 + 8 + 16 + 8;
 /// Recorded ordinals per block; only a run's last block may hold fewer.
 pub const UNIT_ORDINALS: u32 = 720;
-/// Blocks from a run's start or restart to its next restart.
-pub const RESTART_BLOCKS: u32 = 3;
-/// Every how many of a run's restarts one is stored whole; the others are changes from the
-/// restart before them. Opening a walk at a restart decodes up to this many restarts, and a
-/// damaged restart costs the walks of the restarts after it up to the next whole one.
-pub const KEYFRAME_RESTARTS: u32 = 16;
-/// Raw bytes per chunk of a page's unit; only a unit's last chunk may hold fewer.
-pub const CHUNK_BYTES: u64 = 2 << 20;
-/// The fewest bytes an [`Extent`] envelope encodes in: its kind, seven varints, its digest.
-const EXTENT_BYTES: usize = 1 + 7 + 16;
-
-/// A count read from `bytes`, refused when it exceeds `limit` or more entries of
-/// `entry_bytes` each than the bytes could hold.
-fn bounded(count: usize, limit: usize, bytes: &[u8], entry_bytes: usize) -> io::Result<usize> {
-    if count > limit || count > bytes.len() / entry_bytes.max(1) {
-        return Err(invalid("A count exceeds what its bytes or schema can hold"));
-    }
-    Ok(count)
-}
-
+/// Blocks a span page indexes.
+pub const SPAN_BLOCKS: u32 = 16;
 /// BLAKE3 of `bytes`, truncated to 128 bits: binds stored bytes to their envelope.
 pub fn digest(bytes: &[u8]) -> [u8; 16] {
     let hash = blake3::hash(bytes);
@@ -102,31 +70,18 @@ fn tables_digest<'k>(tables: impl Iterator<Item = &'k [crate::state::Kind]>) -> 
     *hasher.finalize().as_bytes()
 }
 
-/// The chain value after one block: the value before it, then its hour records' and each of
-/// its tables' extents, by digest, in table order.
-pub fn chain_block(before: &[u8; 32], records: &Extent, tables: &[Extent]) -> [u8; 32] {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(before);
-    for extent in std::iter::once(records).chain(tables) {
-        hasher.update(&extent.stream.to_le_bytes());
-        hasher.update(&extent.stored.to_le_bytes());
-        hasher.update(&extent.digest);
-    }
-    *hasher.finalize().as_bytes()
-}
-
 /// What an extent holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
-    /// A block's hour records ([`crate::records`]).
-    Records = 1,
-    /// One table's hours of one block ([`crate::block`]).
+    /// A block's per-hour flags and metrics ([`crate::lane::Clock`]).
+    Clock = 1,
+    /// One table's unit of one block ([`crate::lane`]).
     Block = 2,
-    /// The run-local strings first used since the run's previous restart.
-    DictionaryChunk = 3,
-    /// One table's state at a restart.
-    RestartTable = 4,
-    IndexPage = 5,
+    /// One table's state at a block's end ([`crate::restart`]).
+    Restore = 3,
+    /// One table's summary piece of one level ([`crate::summary`]).
+    Summary = 4,
+    BlockPage = 5,
     Root = 6,
     /// One run's place in the campaign and its pages ([`RunDirectory`]).
     RunDirectory = 7,
@@ -140,16 +95,20 @@ pub enum Kind {
     Data = 11,
     /// A section owner's bytes as they are; its other fields are the owner's tags.
     Stored = 12,
+    /// One span's directory: its blocks' clocks and each table's row ([`SpanDirectory`]).
+    SpanDirectory = 13,
+    /// One span's table rows, stored as they are ([`SpanRow`]).
+    SpanIndex = 14,
 }
 
 impl Kind {
     fn read(byte: u8) -> io::Result<Self> {
         Ok(match byte {
-            1 => Self::Records,
+            1 => Self::Clock,
             2 => Self::Block,
-            3 => Self::DictionaryChunk,
-            4 => Self::RestartTable,
-            5 => Self::IndexPage,
+            3 => Self::Restore,
+            4 => Self::Summary,
+            5 => Self::BlockPage,
             6 => Self::Root,
             7 => Self::RunDirectory,
             8 => Self::Controls,
@@ -157,6 +116,8 @@ impl Kind {
             10 => Self::Index,
             11 => Self::Data,
             12 => Self::Stored,
+            13 => Self::SpanDirectory,
+            14 => Self::SpanIndex,
             _ => return Err(invalid(format!("Unknown extent kind {byte}"))),
         })
     }
@@ -189,12 +150,11 @@ pub mod epoch {
 pub struct Extent {
     pub kind: Kind,
     pub run: u32,
-    /// A block's or restart's table; else 0.
+    /// A unit's, restore's or summary's table; else 0.
     pub stream: u32,
-    /// A block's, its records' or page's first ordinal; a restart's barrier (the last ordinal
-    /// it holds).
+    /// A unit's, clock's or page's first ordinal; a restore's last ordinal; a summary's first.
     pub first: u32,
-    /// Ordinals a block, its records or page cover; 0 otherwise.
+    /// Ordinals a unit, clock, page or summary covers; 0 otherwise.
     pub hours: u32,
     pub offset: u64,
     pub stored: u64,
@@ -256,358 +216,22 @@ impl Extent {
             self.kind, self.run, self.stream, self.first, self.hours
         ))
     }
-
-    fn expect(&self, kind: Kind, run: u32) -> io::Result<()> {
-        if self.kind != kind || self.run != run {
-            return Err(self.damaged(&format!("is not a {kind:?} extent of run {run}")));
-        }
-        Ok(())
-    }
 }
 
-/// One table's state at a restart, with the run-local dictionary ids it references.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RestartTable {
+/// Where one table's row lies in a span index, and the digest of its bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RowPlace {
     pub table: u32,
-    pub extent: Extent,
-    /// Its bytes are zstd with the run's previous restart's raw bytes of the same table as
-    /// their dictionary: the restart holds only what changed since.
-    pub base: bool,
-    /// The run's dictionary chunks its state references, by their restarts' ordinals in
-    /// the run, ascending: a damaged chunk refuses exactly the tables listing it.
-    pub chunks: Vec<u32>,
+    pub offset: u64,
+    pub length: u32,
+    pub digest: [u8; 16],
 }
 
-/// The restart ending a unit position.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RestartDirectory {
-    /// The last ordinal whose changes the restart holds.
-    pub after: u32,
-    pub hour: i32,
-    /// This restart's ordinal among its run's restarts.
-    pub ordinal: u32,
-    pub chunk: Extent,
-    /// The run-local dictionary ids the chunk holds: its first, and how many.
-    pub ids: (u32, u32),
-    /// Every table's state, ascending by table.
-    pub tables: Vec<RestartTable>,
-}
-
-/// One block of a run.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct IndexPage {
-    pub run: u32,
-    pub first: u32,
-    pub hours: u32,
-    pub first_hour: i32,
-    pub last_hour: i32,
-    pub records: Extent,
-    /// The block of each table with hours in it, ascending by table.
-    pub tables: Vec<Extent>,
-    /// Each unit's chunks' stored lengths, the records' then each table's block's, in order: a
-    /// unit of `raw` bytes is [`chunk_count`] zstd frames, each of [`CHUNK_BYTES`] raw bytes but
-    /// its last, compressed apart and stored end to end.
-    pub chunks: Vec<u32>,
-    pub restart: Option<RestartDirectory>,
-    /// Tables some hour of the position has a section for.
-    pub sectioned: Bits,
-    /// Tables some hour of the position read.
-    pub read: Bits,
-    /// Tables whose status changed within the position or at its first ordinal.
-    pub status_changed: Bits,
-    /// The chain after the block ([`chain_block`]).
-    pub chain: [u8; 32],
-}
-
-/// The chunks a unit of `raw` bytes is stored in: one at least.
-pub const fn chunk_count(raw: u64) -> u64 {
-    if raw == 0 { 1 } else { raw.div_ceil(CHUNK_BYTES) }
-}
-
-/// The raw bytes of chunk `at` of a unit of `raw` bytes.
-pub const fn chunk_raw(raw: u64, at: u64) -> u64 {
-    let start = at * CHUNK_BYTES;
-    if raw - start < CHUNK_BYTES { raw - start } else { CHUNK_BYTES }
-}
-
-fn zigzag(value: i32) -> u64 {
-    u64::from(((value << 1) ^ (value >> 31)) as u32)
-}
-
-fn unzigzag(value: u64) -> io::Result<i32> {
-    let value = u32::try_from(value).map_err(|_| invalid("Hour exceeds 32 bits"))?;
-    Ok(((value >> 1) as i32) ^ -((value & 1) as i32))
-}
-
-fn write_bits(writer: &mut Writer, bits: &Bits) -> io::Result<()> {
-    writer.varint(bits.words().len() as u64)?;
-    for word in bits.words() {
-        writer.raw(&word.to_le_bytes())?;
-    }
-    Ok(())
-}
-
-fn read_bits(reader: &mut Reader<'_>, tables: usize) -> io::Result<Bits> {
-    let count = reader.count()?;
-    if count != tables.div_ceil(64) {
-        return Err(invalid(
-            "A page's table bitmap differs from the schema's tables",
-        ));
-    }
-    let mut words = engine_allocation::vec(count)?;
-    for _ in 0..count {
-        words.push(u64::from_le_bytes(
-            reader.raw(8)?.try_into().expect("eight bytes"),
-        ));
-    }
-    Bits::from_words(words)
-}
-
-impl IndexPage {
-    pub fn write(&self) -> io::Result<Vec<u8>> {
-        let mut writer = Writer::new();
-        writer.varint(u64::from(self.run))?;
-        writer.varint(u64::from(self.first))?;
-        writer.varint(u64::from(self.hours))?;
-        writer.varint(zigzag(self.first_hour))?;
-        writer.varint(zigzag(self.last_hour))?;
-        self.records.write(&mut writer)?;
-        writer.varint(self.tables.len() as u64)?;
-        for table in &self.tables {
-            table.write(&mut writer)?;
-        }
-        writer.varint(self.chunks.len() as u64)?;
-        for &chunk in &self.chunks {
-            writer.varint(u64::from(chunk))?;
-        }
-        match &self.restart {
-            None => writer.u8(0)?,
-            Some(restart) => {
-                writer.u8(1)?;
-                writer.varint(u64::from(restart.after))?;
-                writer.varint(zigzag(restart.hour))?;
-                writer.varint(u64::from(restart.ordinal))?;
-                restart.chunk.write(&mut writer)?;
-                writer.varint(u64::from(restart.ids.0))?;
-                writer.varint(u64::from(restart.ids.1))?;
-                writer.varint(restart.tables.len() as u64)?;
-                for table in &restart.tables {
-                    writer.varint(u64::from(table.table))?;
-                    table.extent.write(&mut writer)?;
-                    writer.u8(u8::from(table.base))?;
-                    writer.varint(table.chunks.len() as u64)?;
-                    for &chunk in &table.chunks {
-                        writer.varint(u64::from(chunk))?;
-                    }
-                }
-            }
-        }
-        write_bits(&mut writer, &self.sectioned)?;
-        write_bits(&mut writer, &self.read)?;
-        write_bits(&mut writer, &self.status_changed)?;
-        writer.raw(&self.chain)?;
-        Ok(writer.into_bytes())
-    }
-
-    /// A page of a schema with `tables` tables, checked against the envelope `page` it
-    /// was read through.
-    pub fn read(bytes: &[u8], page: &Extent, tables: usize) -> io::Result<Self> {
-        let mut reader = Reader::new(bytes);
-        let run = reader.varint_u32()?;
-        let first = reader.varint_u32()?;
-        let hours = reader.varint_u32()?;
-        let first_hour = unzigzag(reader.varint()?)?;
-        let last_hour = unzigzag(reader.varint()?)?;
-        let records = Extent::read(&mut reader)?;
-        let count = bounded(reader.count()?, tables, bytes, EXTENT_BYTES)?;
-        let mut blocks = engine_allocation::vec(count)?;
-        for _ in 0..count {
-            blocks.push(Extent::read(&mut reader)?);
-        }
-        let count = bounded(reader.count()?, usize::MAX, bytes, 1)?;
-        let mut chunks = engine_allocation::vec(count)?;
-        for _ in 0..count {
-            chunks.push(reader.varint_u32()?);
-        }
-        let restart = match reader.u8()? {
-            0 => None,
-            1 => {
-                let after = reader.varint_u32()?;
-                let hour = unzigzag(reader.varint()?)?;
-                let ordinal = reader.varint_u32()?;
-                let chunk = Extent::read(&mut reader)?;
-                let ids = (reader.varint_u32()?, reader.varint_u32()?);
-                if reader.count()? != tables {
-                    return Err(invalid("A restart does not hold every table once"));
-                }
-                let mut restored = engine_allocation::vec(tables)?;
-                for _ in 0..tables {
-                    let table = reader.varint_u32()?;
-                    let extent = Extent::read(&mut reader)?;
-                    let base = match reader.u8()? {
-                        0 => false,
-                        1 => true,
-                        _ => return Err(invalid("A restart table's base marker is malformed")),
-                    };
-                    let limit = ordinal as usize + 1;
-                    let count = bounded(reader.count()?, limit, bytes, 1)?;
-                    let mut chunks = engine_allocation::vec(count)?;
-                    for _ in 0..count {
-                        chunks.push(reader.varint_u32()?);
-                    }
-                    restored.push(RestartTable {
-                        table,
-                        extent,
-                        base,
-                        chunks,
-                    });
-                }
-                Some(RestartDirectory {
-                    after,
-                    hour,
-                    ordinal,
-                    chunk,
-                    ids,
-                    tables: restored,
-                })
-            }
-            _ => return Err(invalid("A page's restart marker is malformed")),
-        };
-        let sectioned = read_bits(&mut reader, tables)?;
-        let read = read_bits(&mut reader, tables)?;
-        let status_changed = read_bits(&mut reader, tables)?;
-        let chain = reader.raw(32)?.try_into().expect("thirty-two bytes");
-        reader.finish()?;
-        let page_read = Self {
-            run,
-            first,
-            hours,
-            first_hour,
-            last_hour,
-            records,
-            tables: blocks,
-            chunks,
-            restart,
-            sectioned,
-            read,
-            status_changed,
-            chain,
-        };
-        if (page.run, page.first, page.hours) != (run, first, hours) {
-            return Err(page.damaged("holds another unit position"));
-        }
-        page_read.validate(tables)?;
-        Ok(page_read)
-    }
-
-    /// Its units, the records then each table's block, each with its chunks' stored lengths.
-    pub fn units(&self) -> impl Iterator<Item = (&Extent, &[u32])> {
-        let mut rest = self.chunks.as_slice();
-        std::iter::once(&self.records).chain(&self.tables).map(move |unit| {
-            // A page read is validated: its chunks list each unit's.
-            let count = (chunk_count(unit.raw) as usize).min(rest.len());
-            let (chunks, after) = rest.split_at(count);
-            rest = after;
-            (unit, chunks)
-        })
-    }
-
-    /// Table `table`'s block, when it has hours in this one.
-    pub fn table(&self, table: u32) -> Option<&Extent> {
-        self.tables
-            .binary_search_by_key(&table, |extent| extent.stream)
-            .ok()
-            .map(|at| &self.tables[at])
-    }
-
-    /// A block of the run, its records and tables' blocks covering it whole, the tables in
-    /// order; a restart ending it holds every table's state once, in order, changes only from
-    /// a restart before it.
-    fn validate(&self, tables: usize) -> io::Result<()> {
-        if self.hours == 0 || self.hours > UNIT_ORDINALS || self.first % UNIT_ORDINALS != 0 {
-            return Err(invalid("A page does not cover a block"));
-        }
-        // Ordinal arithmetic in u64: untrusted values never overflow.
-        let end = u64::from(self.first) + u64::from(self.hours);
-        if end > u64::from(u32::MAX) + 1 {
-            return Err(invalid("A page ends past the last ordinal"));
-        }
-        self.records.expect(Kind::Records, self.run)?;
-        if (self.records.stream, self.records.first, self.records.hours) != (0, self.first, self.hours) {
-            return Err(self.records.damaged("does not cover its page's block"));
-        }
-        let mut previous: Option<u32> = None;
-        for block in &self.tables {
-            block.expect(Kind::Block, self.run)?;
-            let placed = block.first == self.first
-                && block.hours == self.hours
-                && (block.stream as usize) < tables
-                && previous.is_none_or(|before| before < block.stream);
-            if !placed {
-                return Err(block.damaged("does not belong to its page's block"));
-            }
-            previous = Some(block.stream);
-        }
-        let mut rest = self.chunks.as_slice();
-        for unit in std::iter::once(&self.records).chain(&self.tables) {
-            let count = usize::try_from(chunk_count(unit.raw))
-                .ok()
-                .filter(|&count| count <= rest.len())
-                .ok_or_else(|| unit.damaged("has more chunks than its page lists"))?;
-            let (chunks, after) = rest.split_at(count);
-            rest = after;
-            let stored = chunks
-                .iter()
-                .try_fold(0_u64, |stored, &chunk| stored.checked_add(u64::from(chunk)));
-            if stored != Some(unit.stored) || chunks.contains(&0) {
-                return Err(unit.damaged("differs from its chunks' stored lengths"));
-            }
-        }
-        if !rest.is_empty() {
-            return Err(invalid("A page lists chunks of no unit"));
-        }
-        if let Some(restart) = &self.restart {
-            restart.chunk.expect(Kind::DictionaryChunk, self.run)?;
-            if u64::from(restart.after) + 1 != end || restart.chunk.first != restart.after {
-                return Err(invalid("A restart does not end its page's position"));
-            }
-            if u64::from(restart.ids.0) + u64::from(restart.ids.1) > u64::from(u32::MAX) + 1 {
-                return Err(invalid("A dictionary chunk's ids pass the last id"));
-            }
-            if restart.tables.len() != tables
-                || restart
-                    .tables
-                    .iter()
-                    .enumerate()
-                    .any(|(at, table)| table.table as usize != at)
-            {
-                return Err(invalid(
-                    "A restart does not hold every table once, in order",
-                ));
-            }
-            for table in &restart.tables {
-                table.extent.expect(Kind::RestartTable, self.run)?;
-                if table.extent.stream != table.table || table.extent.first != restart.after {
-                    return Err(table.extent.damaged("does not belong to its restart"));
-                }
-                if table.base && restart.ordinal % KEYFRAME_RESTARTS == 0 {
-                    return Err(table.extent.damaged("is a change in a restart stored whole"));
-                }
-                let ordered = table.chunks.windows(2).all(|pair| pair[0] < pair[1]);
-                if !ordered
-                    || table
-                        .chunks
-                        .last()
-                        .is_some_and(|&last| last > restart.ordinal)
-                {
-                    return Err(table
-                        .extent
-                        .damaged("names chunks its restart cannot reference"));
-                }
-            }
-        }
-        Ok(())
-    }
+/// One closed span of a run: its directory and its index.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SpanPages {
+    pub directory: Extent,
+    pub index: Extent,
 }
 
 /// What every chain of the recording starts from: what no revision changes.
@@ -637,10 +261,22 @@ impl Identity {
 
     /// The identity [`Self::chain_bytes`] wrote.
     pub fn read(bytes: &[u8]) -> io::Result<Self> {
-        let mut identity = Reader::new(bytes);
-        if identity.varint()? != u64::from(VERSION) {
+        let (version, identity) = Self::read_any(bytes)?;
+        if version != u64::from(VERSION) {
             return Err(invalid("The identity names another format version"));
         }
+        Ok(identity)
+    }
+
+    /// The identity a capture begins with, of whichever recording format its collector wrote: a
+    /// capture's compatibility is its row format, and the recording made of it writes its own.
+    pub fn read_capture(bytes: &[u8]) -> io::Result<Self> {
+        Ok(Self::read_any(bytes)?.1)
+    }
+
+    fn read_any(bytes: &[u8]) -> io::Result<(u64, Self)> {
+        let mut identity = Reader::new(bytes);
+        let version = identity.varint()?;
         let schema = identity.raw(32)?.try_into().expect("thirty-two bytes");
         let length = identity.count()?;
         let campaign = identity.raw(length)?.to_vec();
@@ -648,93 +284,15 @@ impl Identity {
         let content = identity.raw(length)?.to_vec();
         let capture_mode = identity.u8()?;
         identity.finish()?;
-        Ok(Self {
-            schema,
-            campaign,
-            content,
-            capture_mode,
-        })
-    }
-}
-
-/// One run: its place in the campaign and its pages.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RunDirectory {
-    pub branch: u64,
-    /// Why the run starts ([`epoch`]).
-    pub epoch: u8,
-    pub first_hour: i32,
-    pub ordinals: u32,
-    /// The chain after the run's last ordinal.
-    pub chain: [u8; 32],
-    /// Every unit position's page, in order.
-    pub pages: Vec<Extent>,
-}
-
-impl RunDirectory {
-    pub fn write(&self, run: u32) -> io::Result<Vec<u8>> {
-        self.validate(run)?;
-        let mut writer = Writer::new();
-        writer.varint(self.branch)?;
-        writer.u8(self.epoch)?;
-        writer.varint(zigzag(self.first_hour))?;
-        writer.varint(u64::from(self.ordinals))?;
-        writer.raw(&self.chain)?;
-        writer.varint(self.pages.len() as u64)?;
-        for page in &self.pages {
-            page.write(&mut writer)?;
-        }
-        Ok(writer.into_bytes())
-    }
-
-    /// Run `run`'s directory, read through its envelope `directory`.
-    pub fn read(bytes: &[u8], directory: &Extent, run: u32) -> io::Result<Self> {
-        directory.expect(Kind::RunDirectory, run)?;
-        let mut reader = Reader::new(bytes);
-        let branch = reader.varint()?;
-        let epoch = reader.u8()?;
-        let first_hour = unzigzag(reader.varint()?)?;
-        let ordinals = reader.varint_u32()?;
-        let chain = reader.raw(32)?.try_into().expect("thirty-two bytes");
-        let count = bounded(reader.count()?, usize::MAX, bytes, EXTENT_BYTES)?;
-        let mut pages = engine_allocation::vec(count)?;
-        for _ in 0..count {
-            pages.push(Extent::read(&mut reader)?);
-        }
-        reader.finish()?;
-        let read = Self {
-            branch,
-            epoch,
-            first_hour,
-            ordinals,
-            chain,
-            pages,
-        };
-        read.validate(run)?;
-        Ok(read)
-    }
-
-    /// Its pages cover its ordinals on the unit grid, in order, the last alone possibly short.
-    fn validate(&self, run: u32) -> io::Result<()> {
-        let mut next = 0_u64;
-        for page in &self.pages {
-            page.expect(Kind::IndexPage, run)?;
-            let end = u64::from(page.first) + u64::from(page.hours);
-            let full = u64::from(page.first) == next
-                && page.hours > 0
-                && page.hours <= UNIT_ORDINALS
-                && (page.hours == UNIT_ORDINALS || end == u64::from(self.ordinals));
-            if !full {
-                return Err(page.damaged("is not the run's next unit position"));
-            }
-            next = end;
-        }
-        if next != u64::from(self.ordinals) {
-            return Err(invalid(format!(
-                "Run {run}'s pages do not cover its ordinals"
-            )));
-        }
-        Ok(())
+        Ok((
+            version,
+            Self {
+                schema,
+                campaign,
+                content,
+                capture_mode,
+            },
+        ))
     }
 }
 
@@ -758,10 +316,10 @@ pub fn check_header(header: &[u8]) -> io::Result<()> {
     match version.cmp(&VERSION) {
         std::cmp::Ordering::Equal => Ok(()),
         std::cmp::Ordering::Less => Err(invalid(format!(
-            "An H4COLUMN version {version} recording, older than this build's version {VERSION}; this build reads version {VERSION} only and has no upgrader for it"
+            "An H4COLUMN recording of format {version}; this build reads and writes format {VERSION} only and has no upgrader for it"
         ))),
         std::cmp::Ordering::Greater => Err(invalid(format!(
-            "An H4COLUMN version {version} recording, newer than this build's version {VERSION}"
+            "An H4COLUMN recording of format {version}, newer than this build's; this build reads and writes format {VERSION}"
         ))),
     }
 }

@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { laneRequests } from '../../charts/timeline/laneRequests.ts';
+import { changesBy } from '../../charts/timeline/runState.ts';
 import { countryIdentityIndex } from '../../dashboard/countryIdentity.ts';
 import { worldFilter } from '../../dashboard/groups.ts';
 import { unknownHours } from '../../dashboard/politicsHistory.ts';
 import type { CivilWar, CivilWarSide, CivilWarsReply, HolderTag, HourSpan, SideExit } from '../../generated/dashboard';
-import { civilWarLanes, civilWarsAt, exitText, jumpHours, laneCountries, NAME_NOT_KNOWN, sideTree, sideTooltip, summaryText,
+import { changeHours, civilWarLanes, civilWarsAt, exitText, jumpHours, laneCountries, NAME_NOT_KNOWN, sideTree, sideTooltip, summaryText,
   tooltipCountries, validateCivilWarsReply, warTooltip } from './civilWarsData.ts';
 import type { CivilWarsOptions, LaneText, TooltipText } from './civilWarsData';
 
@@ -25,7 +26,7 @@ const text: LaneText = {
   dated: (tag, hour) => ({ name: `${NAMES[tag] ?? tag}@${hour}`, known: true }),
   day: hour => `day ${hour}`, neutral: '#888888', positive: '#00aa00',
 };
-const tipText: TooltipText = { dated: text.dated, day: text.day, branchFirst: 0, unread: [], pending: () => false };
+const tipText: TooltipText = { dated: text.dated, day: text.day, branchFirst: 0, unread: [] };
 const all = (unread: readonly HourSpan[] = [], lastHour: number | null = 1000): CivilWarsOptions =>
   ({ ended: true, countryIds: null, identities: null, unread, lastHour });
 
@@ -133,9 +134,8 @@ test('Live reveals civil wars, sides and outcomes as playback reaches them, and 
   // Seeking back: the breakaway's breakaway, the winner and its muting go again.
   assert.deepEqual(shown(150).map(row => row[0]), ['Civil war in Modland@100', 'Modland@live', 'Free Modland@live']);
   assert.ok(shown(250).every(row => row[2] === false));
-  // Hours still being prepared after a listing are no ending.
-  const pending = validateCivilWarsReply({ ...reply([war('w1', 100, 500, [side(tags([0, 'MOD']), 100, 500, null, true), side(tags([100, 'D01']), 100, 500, 0)])], 500),
-    coverage: { firstHour: 0, lastHour: 500, complete: false }, pending: [{ firstHour: 501, lastHour: 900 }] });
+  // Hours not read after a listing are no ending.
+  const pending = validateCivilWarsReply(reply([war('w1', 100, 500, [side(tags([0, 'MOD']), 100, 500, null, true), side(tags([100, 'D01']), 100, 500, 0)])], 500));
   const later = civilWarsAt(pending, 800, all([{ firstHour: 501, lastHour: 900 }], 500)).wars[0];
   assert.equal(later.ongoing, true);
   assert.deepEqual(civilWarLanes([later], new Set(), text, 0, []).lanes.map(lane => lane.label), ['Ongoing · 2 sides', 'Since day 100', 'Since day 100']);
@@ -184,7 +184,7 @@ test('hours the civil-war lists were not read are unknown: a listing ending ther
   const sides = [side(tags([0, 'MOD']), 100, 100, null, true), side(tags([100, 'D01']), 100, 100, 0)];
   // Read through 100, not from 101 to the last prepared hour.
   const data = validateCivilWarsReply(reply([war('w', 100, 100, sides)], 200, [{ firstHour: 0, lastHour: 100 }]));
-  const unread = unknownHours([], data.known, 0, data.lastHour, []);
+  const unread = unknownHours([], data.known, 0, data.lastHour);
   assert.deepEqual(unread, [{ firstHour: 101, lastHour: 200 }]);
   const view = civilWarsAt(data, 150, all(unread, data.lastHour));
   assert.equal(view.wars[0].ongoing, true, 'not known to have ended');
@@ -192,7 +192,7 @@ test('hours the civil-war lists were not read are unknown: a listing ending ther
   assert.deepEqual(lanes.map(lane => lane.label), ['Ongoing · 2 sides', 'Last recorded day 100', 'Last recorded day 100']);
   assert.equal(warTooltip(view.wars[0], 150, { ...tipText, unread }).rows.find(row => row.label === 'Ended')?.value, 'Not recorded after day 100');
   // Read again from 151: the listing's end is known to lie in the unread stretch.
-  const reread = unknownHours([], [{ firstHour: 0, lastHour: 100 }, { firstHour: 151, lastHour: 200 }], 0, 200, []);
+  const reread = unknownHours([], [{ firstHour: 0, lastHour: 100 }, { firstHour: 151, lastHour: 200 }], 0, 200);
   const after = civilWarsAt(data, 170, all(reread, 200)).wars[0];
   assert.equal(after.ongoing, false);
   assert.equal(warTooltip(after, 170, { ...tipText, unread: reread }).rows.find(row => row.label === 'Ended')?.value, 'by day 151');
@@ -252,4 +252,13 @@ test('thousands of civil wars among 5,000 countries are all listed; only lanes i
   const wanted = laneCountries(requests.looks, info);
   assert.ok(wanted.dated.length + wanted.live.length < 100);
   assert.ok(tooltipCountries(info.get(lanes[0].id)!).length <= 5);
+});
+
+test('the timeline renders only where a war, a side, a tag, an exit, an outcome or a stretch not read changes', () => {
+  const hours = changeHours(reply([threeSided]), [{ firstHour: 500, lastHour: 509 }], [{ hour: 250 }]);
+  for (const hour of [100, 200, 250, 301, 305, 351, 360, 401, 500, 510]) assert.ok(hours.includes(hour), `${hour} is a change`);
+  assert.ok(hours.every((hour, index) => index === 0 || hours[index - 1] < hour), 'ascending and distinct');
+  // Between two changes the lanes hold, however far the head moves.
+  assert.equal(changesBy(hours, 201), changesBy(hours, 249));
+  assert.notEqual(changesBy(hours, 300), changesBy(hours, 301));
 });

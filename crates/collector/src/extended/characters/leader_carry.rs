@@ -583,13 +583,40 @@ fn fresh_layout() -> u64 {
 
 /// Appends one carried leader's held rows, whose spans start at zero, and
 /// their text as a walk stores them.
-pub(super) fn held_rows<R: Copy>(
+/// [`held_rows`] into growing storage at `at` and `from`.
+pub(super) fn held_rows_into<R: Copy + Default>(
     held: &[R],
     text: &[u8],
-    rows: &mut [R],
-    bytes: &mut [u8],
+    rows: &mut Vec<R>,
+    at: usize,
+    bytes: &mut Vec<u8>,
+    from: usize,
+) -> Result<super::Stored, &'static str> {
+    engine_native::walk::grow(rows, at + held.len())?;
+    engine_native::walk::grow(bytes, from + text.len())?;
+    rows[at..at + held.len()].copy_from_slice(held);
+    bytes[from..from + text.len()].copy_from_slice(text);
+    Ok(super::Stored {
+        rows: held.len(),
+        bytes_len: text.len(),
+        required_bytes: text.len(),
+    })
+}
+
+pub(super) fn held_rows<R: Copy + Default>(
+    held: &[R],
+    text: &[u8],
+    mut rows: engine_native::walk::Buffer<'_, R>,
+    mut bytes: engine_native::walk::Buffer<'_, u8>,
 ) -> ReadResult {
-    if rows.len() < held.len() || bytes.len() < text.len() {
+    let fits = rows
+        .ensure(held.len())
+        .and_then(|rows| Ok(rows && bytes.ensure(text.len())?));
+    let fits = match fits {
+        Ok(fits) => fits,
+        Err(reason) => return ReadResult::rows(Outcome::Unavailable { reason }),
+    };
+    if !fits {
         return ReadResult {
             outcome: Outcome::Truncated {
                 len: 0,

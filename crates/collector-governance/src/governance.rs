@@ -1397,7 +1397,7 @@ impl Captured {
             let _reads = read_accounting::table(TABLES[index]);
             let started = qpc();
             if index == 23 {
-                let result = cpolitical_status::walk_timed_ideas_growing(
+                let result = cpolitical_status::walk_timed_ideas(
                     memory,
                     base,
                     game_state,
@@ -1408,7 +1408,7 @@ impl Captured {
                 self.timed_idea_text.len = result.bytes_len;
                 self.timed_idea_text.required = result.required_bytes;
             } else {
-                let result = cdecision_status::walk_random_items_growing(
+                let result = cdecision_status::walk_random_items(
                     memory,
                     base,
                     game_state,
@@ -1742,7 +1742,7 @@ fn acquire_partitioned(
     let demand_failure = if enabled[9] {
         let started = qpc();
         let _reads = read_accounting::table(TABLES[9]);
-        let demand = engine_decisions::border_effect_demand::walk_growing(
+        let demand = engine_decisions::border_effect_demand::walk(
             memory,
             base,
             game_state,
@@ -2359,7 +2359,7 @@ fn acquire_partitioned(
                                 values,
                             ),
                             (walk, plan) => {
-                                let result = cdynamic_modifier_container::walk_growing(
+                                let result = cdynamic_modifier_container::walk(
                                     memory,
                                     base,
                                     country.pointer,
@@ -2512,7 +2512,7 @@ fn acquire_partitioned(
     if enabled[12] {
         let _reads = read_accounting::table(TABLES[12]);
         let started = qpc();
-        let result = ctechnology_sharing_group::walk_growing(
+        let result = ctechnology_sharing_group::walk(
             memory,
             base,
             game_state,
@@ -2526,11 +2526,11 @@ fn acquire_partitioned(
     if enabled[14] {
         let _reads = read_accounting::table(TABLES[14]);
         let started = qpc();
-        let result = power_balance_manager::walk_buffer(
+        let result = power_balance_manager::walk(
             memory,
             base,
             game_state,
-            power_balance_manager::GrowingBuffers {
+            power_balance_manager::Buffers {
                 records: engine_native::walk::Buffer::Growing(b.balances),
                 members: engine_native::walk::Buffer::Growing(b.balance_members),
                 ranges: engine_native::walk::Buffer::Growing(b.ranges),

@@ -71,7 +71,7 @@ pub struct HullVariantInputs {
 
 /// One consecutive selected-source observation within this stopped capture.
 /// Both healthy and failed fields remain frozen while this exact key repeats;
-/// a different key begins the next observation. A worker also keeps every
+/// a different key begins the next observation. It also keeps every
 /// packet whose six fields all succeeded, keyed by the same exact source, so
 /// a variant seen earlier in the capture is not acquired again; refused or
 /// partial packets never enter that map. No global cache.
@@ -134,8 +134,8 @@ impl Memo {
 ///
 /// At most14 fixed guarded spans/101 bytes per nonnull selection, without
 /// retries or a definition walk. Consecutive same-key observations retain
-/// their completed/failed packet without reading again, and a worker reuses
-/// any earlier complete packet of the same key. Reset ModelMemo at every
+/// their completed/failed packet without reading again, and any earlier
+/// complete packet of the same key is reused. Reset ModelMemo at every
 /// capture; a different key replaces the last observation. The caller
 /// admits this separately from the old budget. Empty selection has no reads.
 /// A registered variant can reference the native null CType: its exact
@@ -156,7 +156,6 @@ pub fn read_hull_variant(
         None => {
             let packet = acquire(memory, base, source);
             if let Some(complete) = packet.filter(complete)
-                && memo.growing
                 // An allocation failure is already terminal for the capture;
                 // it only forgoes this reuse.
                 && crate::allocation::reserve_map(&mut state.complete, 1).is_ok()

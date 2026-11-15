@@ -1,5 +1,5 @@
 use super::super::{
-    Captured, CharactersCopyContext, CharactersJob, N, Roles, copy_characters_growing,
+    Captured, CharactersCopyContext, CharactersJob, N, Roles, copy_characters,
 };
 use super::*;
 use engine_native::{cgame_state, cunit_leader_trait, memory::SliceMemory, walk::Outcome};
@@ -114,6 +114,7 @@ impl World {
 
 #[test]
 fn failed_assigned_trait_hint_preserves_other_occurrences() {
+    let _globals = crate::extended::characters::test_globals();
     let mut world = World::new();
     world.u32(world.units[0] + cunit_leader::TRAIT_COUNT, u32::MAX);
     let mut capacity = Capacities::default();
@@ -124,6 +125,7 @@ fn failed_assigned_trait_hint_preserves_other_occurrences() {
 
 #[test]
 fn worker_grows_character_unit_text_and_census_before_first_publication() {
+    let _globals = crate::extended::characters::test_globals();
     let mut world = World::new();
     for index in 0..COUNT {
         let unit = world.units[index];
@@ -140,19 +142,17 @@ fn worker_grows_character_unit_text_and_census_before_first_publication() {
         }
     }
     let mut job = CharactersJob::with_storage(0, 0, 0, false);
-    job.portrait_census = Some(std::sync::Arc::new(
+    job.portrait_census = Some(engine_allocation::shared(
         engine_native::ccharacter_manager::PortraitCensus::try_new(0).unwrap(),
-    ));
-    job.role_census = Some(std::sync::Arc::new(super::super::census::RoleCensus::new(
+    ).unwrap());
+    job.role_census = Some(engine_allocation::shared(super::super::census::RoleCensus::new(
         0,
-    )));
+    )).unwrap());
     let context = CharactersCopyContext {
         base: BASE,
         game_state: STATE,
         force_full: false,
         active: [true, false, false, true, false, true],
-        trait_rows: 0,
-        trait_bytes: 0,
     };
     let mut captured = Captured::with_capacities(&Capacities {
         rows: [0; N],
@@ -171,7 +171,7 @@ fn worker_grows_character_unit_text_and_census_before_first_publication() {
                 world.u64(address + 24, 4_096);
             }
         }
-        assert!(copy_characters_growing(&world.memory(), context, &mut job, Roles::Gather).raw_ok);
+        assert!(copy_characters(&world.memory(), context, &mut job, Roles::Gather).raw_ok);
         assert_eq!(
             job.portrait_census()
                 .unwrap()

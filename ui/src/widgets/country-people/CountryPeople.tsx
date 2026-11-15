@@ -1,37 +1,47 @@
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { VirtualList } from '../../components/VirtualList';
 import WidgetState from '../../components/WidgetState';
 import WindowedRows from '../../charts/WindowedRows';
 import { dayLabel } from '../../charts/draw';
 import { usNumber } from '../../charts/numberFormat';
-import type { BoundTrack } from '../../dashboard/model';
 import type { WidgetRuntime } from '../../dashboard/definitions';
-import { useFollowedProduct } from '../../dashboard/products';
-import type { PeopleReply } from '../../generated/dashboard';
-import { peopleValue, validatePeople } from './peopleData';
+import { useHeadProduct } from '../../dashboard/headProduct';
+import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
+import { factTexts, peopleStructure, peopleValue, validatePeople } from './peopleData';
 import './people.css';
+import type { PeopleReply } from '../../generated/dashboard';
 
 const staticRow = () => false;
 
-/** Reached details share the country and date of the existing view. */
-export default function CountryPeople({ runtime, track, tag, hour, active, view, onWarnings }: {
-  runtime: WidgetRuntime; track: BoundTrack | undefined; tag: string | null | undefined; hour: number; active: boolean;
+/** One country's manpower or elections at the widget's hour (`hoverHour` when the reader points at another): rows at an
+ * hour, followed at the head as a pushed panel. It renders when its facts' shape changes; their values are painted. */
+export default function CountryPeople({ runtime, widget, track, tag, hoverHour = null, active, view, onWarnings }: {
+  runtime: WidgetRuntime; widget: WidgetSpec; track: BoundTrack | undefined; tag: string | null | undefined; hoverHour?: number | null; active: boolean;
   view: 'manpower' | 'politics'; onWarnings?: (warnings: string[]) => void;
 }) {
   const exileScroll = useRef<HTMLDivElement>(null);
-  const request = track && tag ? { sourceId: track.source.id, revision: track.source.revision, product: 'country-people',
-    params: { branchId: track.branch.id, tag, hour: Math.floor(hour) } } : null;
-  // During playback the last read hour stays shown while the next loads.
-  const result = useFollowedProduct<PeopleReply>(runtime.client, request, ['hour'], active, validatePeople);
-  const current = result.data?.tag === tag && result.data?.branchId === track?.branch.id;
-  useEffect(() => { onWarnings?.(current ? result.data?.warnings ?? [] : []); return () => onWarnings?.([]); }, [current, result.data, onWarnings]);
+  const facts = useRef<HTMLDListElement | null>(null);
+  const params = useMemo(() => track && tag ? { tag } : null, [track, tag]);
+  const paint = useCallback((reply: PeopleReply) => {
+    const list = facts.current;
+    if (!list) return;
+    const texts = factTexts(reply[view]);
+    for (const cell of list.querySelectorAll<HTMLElement>('dd[data-fact]')) {
+      const text = texts.get(cell.dataset.fact ?? '');
+      if (text !== undefined && cell.textContent !== text) cell.textContent = text;
+    }
+  }, [view]);
+  const structure = useCallback((reply: PeopleReply) => peopleStructure(reply, view), [view]);
+  const head = useHeadProduct(runtime, widget, 'country-people', params, { active, validate: validatePeople, structure, paint, hoverHour });
+  const data = head.data;
+  const current = data?.tag === tag && data?.branchId === track?.branch.id;
+  useEffect(() => { onWarnings?.(current ? data?.warnings ?? [] : []); return () => onWarnings?.([]); }, [current, data, onWarnings]);
   if (!tag || !track) return null;
-  if (result.error) return <WidgetState kind="error" what="manpower and politics" failure={result.error} onRetry={result.retry} />;
-  if (!result.data || !current) return <WidgetState kind="loading" label="Loading country details…" />;
-  const data = result.data;
+  if (head.error && !data) return <WidgetState kind="error" what="manpower and politics" failure={head.error} onRetry={head.retry} />;
+  if (!data || !current) return <div ref={head.root}><WidgetState kind="loading" label="Loading country details…" /></div>;
   const number = (value: number | null) => value === null ? 'Not recorded' : usNumber.format(value);
-  return <section className="country-people" aria-label={view === 'manpower' ? 'Recruitment and manpower pools' : 'Elections and governments in exile'}>
-    <dl className="country-people-facts">{data[view].map(fact => <div key={fact.label}><dt>{fact.label}</dt><dd>{peopleValue(fact)}</dd></div>)}</dl>
+  return <section ref={head.root} className="country-people" aria-label={view === 'manpower' ? 'Recruitment and manpower pools' : 'Elections and governments in exile'}>
+    <dl ref={facts} className="country-people-facts">{data[view].map(fact => <div key={fact.label}><dt>{fact.label}</dt><dd data-fact={fact.label}>{peopleValue(fact)}</dd></div>)}</dl>
     {view === 'manpower' && data.readHour !== null && data.readHour !== data.hour && <p className="country-people-note">Recruitment last read {dayLabel(data.readHour)}.</p>}
     {view === 'manpower' && <details><summary>State manpower pools ({data.states.length})</summary>
       <div className="country-people-state-heading"><span>State</span><span>Available</span><span>Locked</span><span>Total</span><span>Recruitment</span><span>Recruitable</span></div>

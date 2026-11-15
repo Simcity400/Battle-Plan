@@ -3,9 +3,9 @@ import type { OptionChoices, WidgetRuntime } from '../../dashboard/definitions';
 import type { WidgetSpec } from '../../dashboard/model';
 import { POLITICS_HISTORY } from '../../dashboard/politicsHistory';
 import { useProduct } from '../../dashboard/products';
-import type { PoliticsHistoryReply } from '../../generated/dashboard';
 import { BALANCE_UNAVAILABLE, balanceName, validateCountryBalances } from './balanceOfPowerData';
 import { singleCountry } from './definition';
+import type { PoliticsHistoryReply } from '../../generated/dashboard';
 
 /** The gear's Balance choices: every balance a holder of the country's tag had, by in-game name. */
 export function useBalanceChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {

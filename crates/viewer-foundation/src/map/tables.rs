@@ -72,40 +72,47 @@ impl Limitations {
         self.lines.push(line);
     }
 
-    pub fn note_aircraft(&mut self, frame: &DecodedFrame) {
-        self.note::<tables::WingEquipment>(
-            frame,
+    pub fn note_aircraft(&mut self, statuses: &dyn Statuses) {
+        self.note_seen(
+            statuses,
+            tables::WingEquipment::ID,
             "aircraft with missing equipment identity are not drawn",
         );
-        self.note::<tables::VariantDefinitions>(
-            frame,
+        self.note_seen(
+            statuses,
+            tables::VariantDefinitions::ID,
             "aircraft with missing variant definitions are not drawn",
         );
-        self.note::<tables::LexicalTokens>(
-            frame,
+        self.note_seen(
+            statuses,
+            tables::LexicalTokens::ID,
             "aircraft whose equipment type token is among the missing rows are not drawn",
         );
         self.note_field("Flying aircraft", "Wings fly in the recorded mission registration order, for the viewpoint's participant arrays built from the recorded donor, wartime-ally and enemy vectors in native order (AirCountryRelations, sliced by country and emitted whenever a vector changes) and its volunteer hosts; without that complete table and VolunteerHosts only the viewpoint's own wings fly. Wings fill the native per-side arrays of 50 in visit order; the game then draws from each at random with a wall-clock seed, the viewer in order with a fixed seed. Sizing, limits, curves, take-off scale and clock come from NAirGfx. Admission and counts follow mission eligibility and count rules on the recorded mission, base-container, modifier and host-base operands. Scenarios anchor at the mission's last target (bombers, transports), a seeded draw from the recorded reached provinces (scouts, the viewer/A side's fighters) or from the region's provinces (B-side fighters), at integer centroids, with seed 0x41495250 and the authored animated formations; naval-patrol fighters fly the kamikaze scenarios at the province and scenario outcome selects from their country's task forces in naval combat and the viewpoint's regional air history. Opposed regions pair bombers with the other side's fighters and fighters with fighters (dogfights), drawn from the arrays with the same fixed seed; each pair's outcome selects the scenario's authored outcome variant, with its states and particle events, from the viewpoint's first-window regional air history (AirNavalPatrolHistories), and a region without that history omits its opposed and dependent transport scenarios (counted). A region whose bomber and fighter arrays are all empty flies the viewpoint's own training wings based there instead, the first 50 in the recorded pool order (AirWings.pool_ordinal), as planes / NAirGfx.TRANSPORT_DIVISION_FACTOR fighter patrols under MAX_TRAINING_SCENARIOS from one seeded region province each; the game draws them at random, the viewer in wing-ID order; a full region beside a training wing whose pool base does not resolve is counted; a region where a wing that could fill those arrays is undecided does not train (counted). Omitted: naval strike and patrol wings whose only undecided target is an embarked railway gun, whose transfer, combat and owner are not recorded (the diagnostics count them); strategic bombing wings whose only undecided target is the strategic railway-gun branch, which is not recorded either. Base-equipment wings follow the scouts with MISSILES_DIVISION_FACTOR and MAX_MISSILE_BOMBING_SCENARIOS and fly missile bombing scenarios to their mission's last target; a rocket without its attachment node rides the scenario root at ROCKET_SPEED; slots without a landing route (the rocket, successful kamikazes, defenders of a successful interception or dogfight, attackers of a lost dogfight) meet the near-ground band (AIRPLANES_GROUND_COLLISION_OFFSET_Y, the entity's explode state for AIRPLANES_GROUND_EXPLOSION_TIME_DELAY), and a missile scenario ends, with the content's missile explosion entity at the province's standstill anchor, where its rocket reaches the terrain. Bit-17 missions and launch-flagged definitions start launch effects at their bases instead: one record per base province, the primary equipment's entity after a RANDOM_SCENARIO_ANIMATION_MAX_DELAY draw, and for the launch flag a missile explosion in a drawn province of the mission region; every state base stands where the game's base position finder puts it, through the content's building types, and the drawn transforms ease toward their poses by AIRPLANES_SMOOTH_INTERPOLATION_MOVE and _TURN. The game's delay, heading and province draws are wall-clock random; the viewer's are seeded. A carrier wing takes off from its task force's settled route point. Unrecorded or uncertain: hostile air-intel estimates, scenario phase, designer/graphical/cosmetic overrides, airborne camera/fade, the single-CAS attachment slot alias. Dump clock zero; window clock advances.");
     }
 
-    pub fn note_trains(&mut self, frame: &DecodedFrame) {
-        self.note::<replay_data::rows::tables::ProvinceSupply>(
-            frame,
+    pub fn note_trains(&mut self, statuses: &dyn Statuses) {
+        self.note_seen(
+            statuses,
+            tables::ProvinceSupply::ID,
             "railway supply-source spurs and port anchors unavailable",
         );
-        self.note::<replay_data::rows::tables::RailEdges>(
-            frame,
+        self.note_seen(
+            statuses,
+            tables::RailEdges::ID,
             "railway strips, bridges and train routes unavailable",
         );
-        self.note::<replay_data::rows::tables::RailCooldowns>(frame, "train routes unavailable");
-        self.note::<replay_data::rows::tables::SupplyNodes>(frame, "supply trains are hidden: node weights and selected parent routes are unavailable; no shortest-path substitute is used");
-        self.note::<replay_data::rows::tables::TrainInventory>(frame, "supply trains are hidden: allocated variants, fleet cap and controller access are unavailable");
-        self.note::<replay_data::rows::tables::VariantDefinitions>(
-            frame,
+        self.note_seen(statuses, tables::RailCooldowns::ID, "train routes unavailable");
+        self.note_seen(statuses, tables::SupplyNodes::ID, "supply trains are hidden: node weights and selected parent routes are unavailable; no shortest-path substitute is used");
+        self.note_seen(statuses, tables::TrainInventory::ID, "supply trains are hidden: allocated variants, fleet cap and controller access are unavailable");
+        self.note_seen(
+            statuses,
+            tables::VariantDefinitions::ID,
             "supply trains are hidden: allocated variant model keys are unavailable",
         );
-        self.note::<replay_data::rows::tables::LexicalTokens>(
-            frame,
+        self.note_seen(
+            statuses,
+            tables::LexicalTokens::ID,
             "a supply train whose equipment type token is among the missing rows draws no consist",
         );
         self.note_field("Supply train phase", "The scheduler seed/counter, remaining interval and existing train fleet are unrecorded. Presentation uses seed 0x54524149 XOR ordered route provinces, a global 9200..12000 ms schedule and animation time (dump=0). Routes/weights/access and signed ordered inventory are recorded in format 21, each country's once a game day at its owner slice (its read hour is in SliceReads), so a route, weight or fleet can be up to a day old. Rail spline anchors, continent wagon fallback, wheel animation and exhaust remain unverified. A null or missing variant join suppresses that consist; the engine's unrecorded first-owned-train fallback is not invented.");
@@ -156,6 +163,17 @@ impl Limitations {
     /// which field it fell back from.
     pub fn note_field(&mut self, field: &str, affected: &str) {
         self.push(format!("Field {field}: {affected}"));
+    }
+
+    /// Records `affected` when `table` is not complete in `statuses`, worded as [`Limitations::note`].
+    pub fn note_seen(&mut self, statuses: &dyn Statuses, table: replay_data::rows::TableId, affected: &str) {
+        match statuses.seen(table) {
+            Seen::Complete => {}
+            Seen::Truncated(missing) => self.push(format!("Table {table:?} truncated ({missing} missing rows): {affected}")),
+            Seen::Unavailable(reason) => self.push(format!("Table {table:?} unavailable: {reason}: {affected}")),
+            Seen::NotRecorded(Some(mode)) => self.push(format!("Table {table:?} not recorded in a {mode} recording: {affected}")),
+            Seen::NotRecorded(None) => self.push(format!("Table {table:?} not recorded at this hour: {affected}")),
+        }
     }
 
     /// The recorded lines, one per degraded table. An hour that drew
@@ -244,21 +262,24 @@ impl Limitations {
     /// Only fog of war on reads them: with it off unit intel returns
     /// `0xff` before any of them is asked, so a gap in them costs nothing and
     /// is not stated.
-    pub fn note_fog_on_sight(&mut self, frame: &DecodedFrame) {
-        self.note::<tables::UnitIntel>(
-            frame,
+    pub fn note_fog_on_sight(&mut self, statuses: &dyn Statuses) {
+        self.note_seen(
+            statuses,
+            tables::UnitIntel::ID,
             "with fog of war on, a division or task force among the missing rows keeps the \
              detection level 0 the engine gives an absent entry, so a stack the viewing country had \
              detected is drawn with the game's question mark",
         );
-        self.note::<tables::CountryIntel>(
-            frame,
+        self.note_seen(
+            statuses,
+            tables::CountryIntel::ID,
             "with fog of war on, an air base icon whose controller the missing rows name keeps \
              the icon: hiding on air intel alone needs the whole table, and a truncated one \
              proves nothing about the lanes it did not reach",
         );
-        self.note::<tables::RelationLinks>(
-            frame,
+        self.note_seen(
+            statuses,
+            tables::RelationLinks::ID,
             "with fog of war on, an air base icon keeps the icon when access to its controller \
              cannot be decided: hiding on access alone needs the whole table",
         );
@@ -333,14 +354,86 @@ pub struct Perspective {
 /// responsible only for degrading; the wording of the degradation is here, next
 /// to the wording of every other one.
 ///
+/// A table's status as the limitation notes read it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Seen {
+    Complete,
+    Truncated(u32),
+    /// Unavailable, with the recording's reason.
+    Unavailable(String),
+    /// Not recorded, in a recording of the mode named when it is known.
+    NotRecorded(Option<replay_data::scope::CaptureMode>),
+}
+
+/// Each table's status at one hour.
+pub trait Statuses {
+    fn seen(&self, table: replay_data::rows::TableId) -> Seen;
+}
+
+impl Statuses for DecodedFrame {
+    fn seen(&self, table: replay_data::rows::TableId) -> Seen {
+        match &*self.tables[table.index()] {
+            TableView::Complete(_) => Seen::Complete,
+            TableView::Truncated { missing, .. } => Seen::Truncated(*missing),
+            TableView::Unavailable { reason } => Seen::Unavailable(reason.to_string()),
+            TableView::NotRecorded { mode } => Seen::NotRecorded(Some(*mode)),
+        }
+    }
+}
+
+/// What the table notes read from rows rather than statuses: a frame's, or the values the map's
+/// layers hold at the head. Each is what a table holding no rows gives.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RowFacts {
+    /// Naval bases whose recorded country list is unreadable.
+    pub unreadable_naval_bases: usize,
+    pub divisions: bool,
+    pub task_forces: bool,
+    /// Division templates whose model inputs were unreadable.
+    pub unreadable_templates: usize,
+    /// When ShipModels holds rows: whether every one holds its counter operands.
+    pub ship_counters: Option<bool>,
+    /// A weather region holds rain, snow, a blizzard or a sandstorm.
+    pub weather: bool,
+    /// When WeatherProvinces holds rows: why province zero's retained display is missing, none
+    /// when it holds one.
+    pub weather_display: Option<Option<&'static str>>,
+}
+
+/// Why province zero's retained weather display is missing: not recorded, or recorded without one.
+pub const DISPLAY_NOT_RECORDED: &str = "not recorded";
+pub const DISPLAY_UNAVAILABLE: &str = "unavailable";
+
+impl RowFacts {
+    pub fn of(frame: &DecodedFrame) -> Self {
+        fn held<'f, T: TableSchema>(frame: &'f DecodedFrame) -> &'f [T::Row] {
+            rows::<T>(frame).map_or(&[][..], |rows| rows.rows())
+        }
+        let models = held::<tables::ShipModels>(frame);
+        let provinces = held::<tables::WeatherProvinces>(frame);
+        Self {
+            unreadable_naval_bases: held::<tables::NavalBases>(frame).iter().filter(|base| base.countries_unreadable).count(),
+            divisions: !held::<tables::Divisions>(frame).is_empty(),
+            task_forces: !held::<tables::TaskForces>(frame).is_empty(),
+            unreadable_templates: held::<tables::DivisionTemplateIcons>(frame).iter().filter(|template| template.model_unreadable != 0).count(),
+            ship_counters: (!models.is_empty()).then(|| models.iter().all(|row| row.counter.is_some())),
+            weather: held::<tables::WeatherRegions>(frame).iter().any(|r| [r.light_rain, r.heavy_rain, r.snow, r.blizzard, r.sandstorm].iter().any(|v| *v != 0)),
+            weather_display: (!provinces.is_empty()).then(|| match provinces.iter().find(|row| row.id == 0).map(|row| &row.display) {
+                Some(replay_data::rows::Recorded::Value(Some(_))) => None,
+                Some(replay_data::rows::Recorded::NotRecorded) => Some(DISPLAY_NOT_RECORDED),
+                _ => Some(DISPLAY_UNAVAILABLE),
+            }),
+        }
+    }
+}
+
 /// The core tables are absent on purpose. A gap in one of them is not a
 /// limitation of the render, it is the absence of the render, and `core`
 /// names it as a frame error instead.
-pub fn limitations(frame: &DecodedFrame) -> Limitations {
+pub fn table_limitations(statuses: &dyn Statuses, facts: &RowFacts) -> Limitations {
     let mut out = Limitations::default();
     // borders: the demilitarised-zone bucket bank
-    out.note::<tables::StateFlags>(
-        frame,
+    out.note_seen(statuses, tables::StateFlags::ID,
         "the demilitarised-zone border is not drawn at all: a state this hour is silent about \
          cannot be assumed not to be demilitarised, and half a zone is a wrong outline rather than \
          a short one; with the table truncated a state among the missing rows shows no air-base \
@@ -348,166 +441,138 @@ pub fn limitations(frame: &DecodedFrame) -> Limitations {
          hides every plane-count box — report-only, the count box is \
          never drawn outside the air map mode",
     );
-    out.note::<tables::States>(
-        frame,
+    out.note_seen(statuses, tables::States::ID,
         "the demilitarised-zone border is not drawn at all: the recorded flags are joined to this \
          table's state ids, and a state it is silent about cannot be shown to exist; a capital \
          also carries no star without its state's recorded controller",
     );
-    out.note::<tables::CountryAppearance>(
-        frame,
+    out.note_seen(statuses, tables::CountryAppearance::ID,
         "a controller with no recorded colour is filled grey, its name shows its tag, \
          and a counter flag falls back from its cosmetic tag",
     );
-    out.note::<tables::ArmyIconInputs>(frame, "missing division rows use the standard template and recover only HQ-provider separation from OrdersGroups; alternate template grouping is unavailable");
+    out.note_seen(statuses, tables::ArmyIconInputs::ID, "missing division rows use the standard template and recover only HQ-provider separation from OrdersGroups; alternate template grouping is unavailable");
     // names
-    out.note::<tables::ProvinceNames>(
-        frame,
+    out.note_seen(statuses, tables::ProvinceNames::ID,
         "a victory point renamed in game keeps the static localised name of its province, because \
          a province this hour is silent about cannot be assumed not to have been renamed",
     );
-    out.note::<tables::Politics>(
-        frame,
+    out.note_seen(statuses, tables::Politics::ID,
         "country names show their tag, counter flags fall back to the plain <TAG> key, and a \
          capital carries no star",
     );
-    out.note::<tables::PoliticalParties>(
-        frame,
+    out.note_seen(statuses, tables::PoliticalParties::ID,
         "country names show their tag and counter flags fall back to the plain <TAG> key",
     );
     // counters: allegiance
-    out.note::<tables::LocalPlayer>(
-        frame,
+    out.note_seen(statuses, tables::LocalPlayer::ID,
         "the recording client's viewpoint is unavailable; the default view uses the lowest country slot",
     );
-    out.note::<tables::WarRelations>(
-        frame,
+    out.note_seen(statuses, tables::WarRelations::ID,
         "no country is coloured as an enemy and the hour is drawn as if no war were running; a war \
          is also what stops a faction partner from sharing vision, so a combat icon can show a \
          percentage the game hid; with fog of war on, an unavailable table leaves every stack drawn \
          in full, and a truncated one can only show more than the game did, never less",
     );
-    out.note::<tables::FactionMembers>(
-        frame,
+    out.note_seen(statuses, tables::FactionMembers::ID,
         "no country is coloured as an ally, and counters are grouped as if no faction existed; a \
          partner among the missing rows also shares no vision, so its combats keep the game's \
          question mark and its visible stacks lose their template picture; with fog of war on, a \
          truncated table draws its stacks with the question mark and an unavailable one draws \
          every stack in full",
     );
-    out.note::<tables::Subjects>(
-        frame,
+    out.note_seen(statuses, tables::Subjects::ID,
         "an overlord and its subject among the missing rows share no vision, so a combat icon \
          between them keeps the game's question mark and, with fog of war on, one of them carries \
          the game's question mark where the game drew it in full; subject colour inheritance \
          among the missing rows is unavailable, so those countries keep their own authored colour",
     );
-    out.note::<tables::Autonomy>(
-        frame,
+    out.note_seen(statuses, tables::Autonomy::ID,
         "current subject colour switches among the missing rows are unavailable; those subjects keep their own colour and their names fall back to their tags",
     );
     // counters: co-belligerency. `Relations::read` needs all four tables complete; without
     // them the counter pass knows no side but the viewing country's own.
     const COUNTER_RELATIONS: &str = "unit counters take no side but the viewing country's own,         and different owners never share a counter column, because the co-belligerent byte the         grouping reads is derived from the complete war, faction, subject and relation tables";
-    out.note::<tables::WarRelations>(frame, COUNTER_RELATIONS);
-    out.note::<tables::FactionMembers>(frame, COUNTER_RELATIONS);
-    out.note::<tables::Subjects>(frame, COUNTER_RELATIONS);
-    out.note::<tables::RelationLinks>(frame, COUNTER_RELATIONS);
-    out.note::<tables::ProvinceUnitOrder>(frame, "units are offered to the counter first-fit in cold handle order within each province bucket, and port occupant order is unknown; merges and plate order that depend on which unit came first can differ from the game");
-    out.note::<tables::NavalBases>(
-        frame,
+    out.note_seen(statuses, tables::WarRelations::ID, COUNTER_RELATIONS);
+    out.note_seen(statuses, tables::FactionMembers::ID, COUNTER_RELATIONS);
+    out.note_seen(statuses, tables::Subjects::ID, COUNTER_RELATIONS);
+    out.note_seen(statuses, tables::RelationLinks::ID, COUNTER_RELATIONS);
+    out.note_seen(statuses, tables::ProvinceUnitOrder::ID, "units are offered to the counter first-fit in cold handle order within each province bucket, and port occupant order is unknown; merges and plate order that depend on which unit came first can differ from the game");
+    out.note_seen(statuses, tables::NavalBases::ID,
         "a port with no row draws no base icon because its country and access list are unknown",
     );
-    out.note::<tables::NavalProvinceCombats>(frame, "naval combat icons in sea provinces lose their stack order, spill-over icons are not drawn and the progress size is undecided where two combats of a province might be engaged: the provinces' combat vectors are unknown");
-    out.note::<tables::NavalCombatTransfers>(frame, "naval combat icons that spill onto a transferred unit's sea province are not drawn: the combats' transfer vectors are unknown");
-    out.note::<tables::NavalTransferUnits>(frame, "naval combat icons that spill onto a transferred unit's sea province are not drawn: the transfers' unit vectors are unknown");
+    out.note_seen(statuses, tables::NavalProvinceCombats::ID, "naval combat icons in sea provinces lose their stack order, spill-over icons are not drawn and the progress size is undecided where two combats of a province might be engaged: the provinces' combat vectors are unknown");
+    out.note_seen(statuses, tables::NavalCombatTransfers::ID, "naval combat icons that spill onto a transferred unit's sea province are not drawn: the combats' transfer vectors are unknown");
+    out.note_seen(statuses, tables::NavalTransferUnits::ID, "naval combat icons that spill onto a transferred unit's sea province are not drawn: the transfers' unit vectors are unknown");
     const RESULTS: &str = "retained naval result icons are not drawn: every visible result of a province decides its sprite and frame";
-    out.note::<tables::NavalResults>(frame, RESULTS);
-    out.note::<tables::NavalResultMembers>(frame, RESULTS);
-    out.note::<tables::NavalResultCountries>(frame, RESULTS);
-    if let Ok(bases) = rows::<tables::NavalBases>(frame) {
-        let unreadable = bases
-            .rows()
-            .iter()
-            .filter(|base| base.countries_unreadable)
-            .count();
-        if unreadable > 0 {
-            out.note_field(
-                "Naval base access lists",
-                &format!(
-                    "{unreadable} naval bases recorded an unreadable country list; where the viewing country knows the port (its own, or at peace with military access, docking rights, a faction or an overlord-subject tie to its country) the icon's permission glyph needs the list, so it is not drawn and the diagnostics count it by reason"
-                ),
-            );
-        }
+    out.note_seen(statuses, tables::NavalResults::ID, RESULTS);
+    out.note_seen(statuses, tables::NavalResultMembers::ID, RESULTS);
+    out.note_seen(statuses, tables::NavalResultCountries::ID, RESULTS);
+    let unreadable = facts.unreadable_naval_bases;
+    if unreadable > 0 {
+        out.note_field(
+            "Naval base access lists",
+            &format!(
+                "{unreadable} naval bases recorded an unreadable country list; where the viewing country knows the port (its own, or at peace with military access, docking rights, a faction or an overlord-subject tie to its country) the icon's permission glyph needs the list, so it is not drawn and the diagnostics count it by reason"
+            ),
+        );
     }
-    out.note::<tables::TaskForceMissions>(frame, "naval mission map icons are not drawn: an incomplete mission census cannot give a region's registrations");
-    out.note::<tables::FloatingHarborDeployments>(frame, "a floating harbour whose province carries the temporary-supply bit is not drawn: its controller's deployment records are unknown");
-    out.note::<tables::FacilityMapFlags>(frame, "a program province with no row draws no special-facility icon: the recording client's map flag is unknown there");
-    out.note::<tables::Raids>(
-        frame,
+    out.note_seen(statuses, tables::TaskForceMissions::ID, "naval mission map icons are not drawn: an incomplete mission census cannot give a region's registrations");
+    out.note_seen(statuses, tables::FloatingHarborDeployments::ID, "a floating harbour whose province carries the temporary-supply bit is not drawn: its controller's deployment records are unknown");
+    out.note_seen(statuses, tables::FacilityMapFlags::ID, "a program province with no row draws no special-facility icon: the recording client's map flag is unknown there");
+    out.note_seen(statuses, tables::Raids::ID,
         "raid icons are withheld while the raid census is incomplete",
     );
-    out.note::<tables::RaidTargets>(
-        frame,
+    out.note_seen(statuses, tables::RaidTargets::ID,
         "raid icons are withheld while the raid targets are incomplete",
     );
-    out.note::<tables::RaidCountries>(
-        frame,
+    out.note_seen(statuses, tables::RaidCountries::ID,
         "raid icons are withheld while the countries' raid statuses are incomplete",
     );
-    out.note::<tables::RaidTargetStatuses>(frame, "raid offers are withheld while the target statuses are incomplete, and foreign need_detection buildings stay hidden");
-    out.note::<tables::RaidCooldowns>(
-        frame,
+    out.note_seen(statuses, tables::RaidTargetStatuses::ID, "raid offers are withheld while the target statuses are incomplete, and foreign need_detection buildings stay hidden");
+    out.note_seen(statuses, tables::RaidCooldowns::ID,
         "raid offers cannot be proved off cooldown, so their tint is unverified",
     );
-    out.note::<tables::RaidPathDistances>(
-        frame,
+    out.note_seen(statuses, tables::RaidPathDistances::ID,
         "naval and land raid ranges use their own content searches while the dispatcher memos are unavailable",
     );
     let resources = "raid offers whose target type compares a state resource are withheld while the state resource inputs are incomplete";
-    out.note::<tables::StateResourceInputs>(frame, resources);
-    out.note::<tables::StateResources>(frame, resources);
-    out.note::<tables::CountryBuildingResources>(frame, resources);
-    out.note::<tables::StateDynamicModifiers>(
-        frame,
+    out.note_seen(statuses, tables::StateResourceInputs::ID, resources);
+    out.note_seen(statuses, tables::StateResources::ID, resources);
+    out.note_seen(statuses, tables::CountryBuildingResources::ID, resources);
+    out.note_seen(statuses, tables::StateDynamicModifiers::ID,
         "raid offers that test a state's dynamic modifiers are withheld while those modifiers are incomplete",
     );
-    out.note::<tables::CountryWars>(
-        frame,
+    out.note_seen(statuses, tables::CountryWars::ID,
         "raid army reach cannot decide entry into an occupied neutral's province: the enemy lists and occupation rules are unknown",
     );
-    out.note::<tables::NavalRegionAccess>(
-        frame,
+    out.note_seen(statuses, tables::NavalRegionAccess::ID,
         "raid army reach through a strategic sea region stays unknown while the region access modes are incomplete",
     );
-    out.note::<tables::BorderConflicts>(
-        frame,
+    out.note_seen(statuses, tables::BorderConflicts::ID,
         "raid army reach cannot decide which orders groups a border conflict admits",
     );
-    out.note::<tables::FactionTheatres>(frame, "a theatre with no row draws no faction-theatre pin; its regions, country count, emblem and hidden list are the pin's inputs");
-    out.note::<tables::LeaderPortraits>(
-        frame,
+    out.note_seen(statuses, tables::FactionTheatres::ID, "a theatre with no row draws no faction-theatre pin; its regions, country count, emblem and hidden list are the pin's inputs");
+    out.note_seen(statuses, tables::LeaderPortraits::ID,
         "HQ portraits remain undrawn while the runtime leader census is incomplete or unavailable",
     );
-    out.note::<tables::CharacterPortraits>(frame, "character-backed HQ portraits remain undrawn while their runtime portrait census is incomplete or unavailable; recorded non-character leader pictures remain usable");
-    out.note::<tables::OrdersGroupCounterInputs>(frame, "saved withdrawing status is unknown for the missing groups, so their HQ leader-en-route flag is not known");
-    out.note::<tables::LeaderPortraitPaths>(
-        frame,
+    out.note_seen(statuses, tables::CharacterPortraits::ID, "character-backed HQ portraits remain undrawn while their runtime portrait census is incomplete or unavailable; recorded non-character leader pictures remain usable");
+    out.note_seen(statuses, tables::OrdersGroupCounterInputs::ID, "saved withdrawing status is unknown for the missing groups, so their HQ leader-en-route flag is not known");
+    out.note_seen(statuses, tables::LeaderPortraitPaths::ID,
         "missing leader country/tag operands leave the picture directory unavailable",
     );
-    out.note::<tables::TaskForceCounterInputs>(frame, "mission-region presence, running-away status, engagement rule, bombardment region, accessible-region count, repair parent, detached activity, repair last mission and received-supply ratio are unknown for the missing task forces");
-    out.note::<tables::TaskForceMapMotion>(frame, "no task force is placed on the map or in a port: an incomplete motion census cannot say which task forces are docked, in combat or under way");
-    out.note::<tables::FleetCounterInputs>(frame, "fleet marker RGBA, mission-region count and ordered task-force roster are unknown for the missing fleets");
-    out.note::<tables::CountryCounterInputs>(frame, "pride-of-the-fleet references and owned-state counts are unknown for the missing countries");
-    out.note::<tables::RailwayGunCounterInputs>(frame, "railway guns are not drawn: an incomplete gun census cannot establish which guns share a plate");
-    out.note::<tables::ActiveAbilities>(frame, "the land counter ability grid is not drawn: a commander missing from the census cannot be shown to have no active ability");
+    out.note_seen(statuses, tables::TaskForceCounterInputs::ID, "mission-region presence, running-away status, engagement rule, bombardment region, accessible-region count, repair parent, detached activity, repair last mission and received-supply ratio are unknown for the missing task forces");
+    out.note_seen(statuses, tables::TaskForceMapMotion::ID, "no task force is placed on the map or in a port: an incomplete motion census cannot say which task forces are docked, in combat or under way");
+    out.note_seen(statuses, tables::FleetCounterInputs::ID, "fleet marker RGBA, mission-region count and ordered task-force roster are unknown for the missing fleets");
+    out.note_seen(statuses, tables::CountryCounterInputs::ID, "pride-of-the-fleet references and owned-state counts are unknown for the missing countries");
+    out.note_seen(statuses, tables::RailwayGunCounterInputs::ID, "railway guns are not drawn: an incomplete gun census cannot establish which guns share a plate");
+    out.note_seen(statuses, tables::ActiveAbilities::ID, "the land counter ability grid is not drawn: a commander missing from the census cannot be shown to have no active ability");
     let recorded_order =
-        rows::<tables::ProvinceUnitOrder>(frame).is_ok_and(|rows| rows.is_complete());
-    if rows::<tables::Divisions>(frame).is_ok_and(|rows| !rows.rows().is_empty()) {
+        matches!(statuses.seen(tables::ProvinceUnitOrder::ID), Seen::Complete);
+    if facts.divisions {
         let counter_inputs = [
-            complete::<tables::OrdersGroupCounterInputs>(frame),
-            complete::<tables::OrdersGroupPlans>(frame),
-            complete::<tables::LeaderPortraitPaths>(frame),
+            matches!(statuses.seen(tables::OrdersGroupCounterInputs::ID), Seen::Complete),
+            matches!(statuses.seen(tables::OrdersGroupPlans::ID), Seen::Complete),
+            matches!(statuses.seen(tables::LeaderPortraitPaths::ID), Seen::Complete),
         ]
         .into_iter()
         .all(|complete| complete);
@@ -519,16 +584,15 @@ pub fn limitations(frame: &DecodedFrame) -> Limitations {
             out.note_field("Counter presentation", "The province occupant census is incomplete or unavailable. Units use cold province/bucket and handle order, so first-fit grouping, plate order and mixed-country lead flags can differ from the game. Other missing counter operands follow the individual table limitations listed above.");
         }
     }
-    out.note::<tables::OrdersGroups>(frame, "HQ provider plates and portraits require hq_provider and leader; missing groups have no HQ decoration");
-    out.note::<tables::UnitLeaders>(
-        frame,
+    out.note_seen(statuses, tables::OrdersGroups::ID, "HQ provider plates and portraits require hq_provider and leader; missing groups have no HQ decoration");
+    out.note_seen(statuses, tables::UnitLeaders::ID,
         "character-backed HQ portraits require the orders-group leader's recorded category",
     );
-    if rows::<tables::TaskForces>(frame).is_ok_and(|rows| !rows.rows().is_empty()) {
+    if facts.task_forces {
         let naval_inputs = [
-            complete::<tables::TaskForceCounterInputs>(frame),
-            complete::<tables::FleetCounterInputs>(frame),
-            complete::<tables::CountryCounterInputs>(frame),
+            matches!(statuses.seen(tables::TaskForceCounterInputs::ID), Seen::Complete),
+            matches!(statuses.seen(tables::FleetCounterInputs::ID), Seen::Complete),
+            matches!(statuses.seen(tables::CountryCounterInputs::ID), Seen::Complete),
         ]
         .into_iter()
         .all(|complete| complete);
@@ -541,188 +605,132 @@ pub fn limitations(frame: &DecodedFrame) -> Limitations {
         }
     }
     // counters
-    out.note::<tables::Divisions>(
-        frame,
+    out.note_seen(statuses, tables::Divisions::ID,
         "land counters count only the recorded divisions, and a land combat's attack direction may \
          be missing",
     );
-    out.note::<tables::DivisionTemplateIcons>(
-        frame,
+    out.note_seen(statuses, tables::DivisionTemplateIcons::ID,
             "a land counter whose division's template is among the missing rows draws no unit-type icon, and its dark overlay panel is left bare; different missing templates remain separate because their grouping keys are unknown; at close zoom its division draws no model, because with no template there is no sub-unit for the engine's entity ladder to start from",
     );
-    if let Ok(templates) = rows::<tables::DivisionTemplateIcons>(frame) {
-        let unreadable = templates
-            .rows()
-            .iter()
-            .filter(|template| template.model_unreadable != 0)
-            .count();
-        if unreadable > 0 {
-            out.note_field(
-                "Division template model inputs",
-                &format!(
-                    "model inputs of {unreadable} division {} were unreadable this hour; at close zoom their divisions draw no model, and their counters are unaffected",
-                    if unreadable == 1 { "template" } else { "templates" }
-                ),
-            );
-        }
+    let unreadable = facts.unreadable_templates;
+    if unreadable > 0 {
+        out.note_field(
+            "Division template model inputs",
+            &format!(
+                "model inputs of {unreadable} division {} were unreadable this hour; at close zoom their divisions draw no model, and their counters are unaffected",
+                if unreadable == 1 { "template" } else { "templates" }
+            ),
+        );
     }
     // A recording without DivisionStatus draws its land figures and exercise glyphs from
     // DivisionModelInputs.
-    if !frame.recorded(tables::DivisionStatus::ID) {
-        out.note::<tables::DivisionStatus>(
-            frame,
+    if matches!(statuses.seen(tables::DivisionStatus::ID), Seen::NotRecorded(_)) {
+        out.note_seen(statuses, tables::DivisionStatus::ID,
             "a land counter with a division among the missing rows draws no organisation or strength bars, and that division's supply, attrition, entrenchment and no-order glyphs are not drawn",
         );
-        out.note::<tables::DivisionModelInputs>(
-            frame,
+        out.note_seen(statuses, tables::DivisionModelInputs::ID,
             "a division among the missing rows has no known model number, camouflage or exercise: at close zoom it draws no model, and its land counter draws no exercise glyph unless another division of its stack exercises",
         );
     } else {
-        out.note::<tables::DivisionStatus>(
-            frame,
+        out.note_seen(statuses, tables::DivisionStatus::ID,
             "a land counter with a division among the missing rows draws no organisation or strength bars, and that division's supply, attrition, entrenchment, exercise and no-order glyphs are not drawn; at close zoom its model number and camouflage are unknown, so it draws no model",
         );
     }
     // close zoom: the 3D model selectors' daily inputs
-    out.note::<tables::DivisionEquipment>(
-        frame,
+    out.note_seen(statuses, tables::DivisionEquipment::ID,
         "a close-zoom division among the missing rows has no known equipment, so its model is unknown and not drawn",
     );
-    out.note::<tables::NewDivisionEquipment>(
-        frame,
+    out.note_seen(statuses, tables::NewDivisionEquipment::ID,
         "a close-zoom division deployed since the daily equipment refresh has no known equipment until the next one, so its model is not drawn",
     );
-    out.note::<tables::VariantDefinitions>(
-        frame,
+    out.note_seen(statuses, tables::VariantDefinitions::ID,
         "a close-zoom division whose equipment names a missing variant draws no model",
     );
-    out.note::<tables::LexicalTokens>(
-        frame,
+    out.note_seen(statuses, tables::LexicalTokens::ID,
         "a close-zoom division whose equipment type token is among the missing rows draws no model",
     );
-    out.note::<tables::CountryLocalSubunits>(
-        frame,
+    out.note_seen(statuses, tables::CountryLocalSubunits::ID,
         "a close-zoom division whose template holds a country-local sub-unit clone draws no model, because the clone's requirements are unknown",
     );
-    out.note::<tables::AvailableEquipmentVariants>(
-        frame,
+    out.note_seen(statuses, tables::AvailableEquipmentVariants::ID,
         "a close-zoom division with no qualifying equipment of its own draws no model, because the viewing country's rosters are unknown",
     );
-    out.note::<tables::DivisionMovement>(
-        frame,
+    out.note_seen(statuses, tables::DivisionMovement::ID,
             "a division among the missing rows counts as standing still: its counter and its close-zoom model sit on its province's own anchor instead of along its route, the model faces a hash of the province instead of along the route, its supply crate is not suppressed for a convoy crossing, its counter's tooltip shows no arrival estimate, and a division the row would have shown in naval transfer draws its land figure at full size rather than a quarter-scale transport",
     );
-    out.note::<tables::TaskForces>(
-        frame,
+    out.note_seen(statuses, tables::TaskForces::ID,
         "naval counters cover only the recorded task forces, and a naval base whose recorded \
          occupant array names one of the missing rows draws none of its port items (the task \
          force is listed by why)",
     );
-    out.note::<tables::Ships>(
-        frame,
+    out.note_seen(statuses, tables::Ships::ID,
         "a naval counter's ship count covers only the recorded ships, where the game counts every          ship in the task force's own array",
     );
-    out.note::<tables::ShipModels>(frame, "at-sea hulls are hidden unless ShipModels, Ships and TaskForces are complete; stationary port formations stay hidden by the engine's own rule");
-    if rows::<tables::ShipModels>(frame).is_ok_and(|r| !r.rows().is_empty()) {
-        if rows::<tables::ShipModels>(frame)
-            .is_ok_and(|r| r.rows().iter().all(|row| row.counter.is_some()))
-        {
-            out.note_field("ShipModels formation", "The capital slot takes the first recorded roster ship with flag bit 6 or 22; support slots take bit 8 then bits 7/39 in roster order. The formation stands where its task force's counter does. Named locators, retained slots, node RNG, the formation's facing and earlier explicit graphical variant selection are unrecorded. Models use deterministic handle phase and authored default animation pose.");
-        } else {
-            out.note_field("ShipModels formation", "Missing ship roster operands suppress the formation; neither capital choice nor support slot order can be established.");
-        }
+    out.note_seen(statuses, tables::ShipModels::ID, "at-sea hulls are hidden unless ShipModels, Ships and TaskForces are complete; stationary port formations stay hidden by the engine's own rule");
+    match facts.ship_counters {
+        Some(true) => out.note_field("ShipModels formation", "The capital slot takes the first recorded roster ship with flag bit 6 or 22; support slots take bit 8 then bits 7/39 in roster order. The formation stands where its task force's counter does. Named locators, retained slots, node RNG, the formation's facing and earlier explicit graphical variant selection are unrecorded. Models use deterministic handle phase and authored default animation pose."),
+        Some(false) => out.note_field("ShipModels formation", "Missing ship roster operands suppress the formation; neither capital choice nor support slot order can be established."),
+        None => {}
     }
     // orders: the recorded player's battle plan
-    out.note::<tables::ArmyOrderPlans>(
-        frame,
+    out.note_seen(statuses, tables::ArmyOrderPlans::ID,
         "battle-plan binding, style and assignment; absent plans are not drawn",
     );
-    out.note::<tables::OrdersGroupPlans>(
-        frame,
+    out.note_seen(statuses, tables::OrdersGroupPlans::ID,
         "battle-plan colour and root order lists; absent colours are not guessed and a missing group's orders stay unresolved",
     );
-    out.note::<tables::Fronts>(frame, "bound-front geometry; absent fronts are not drawn");
-    out.note::<tables::ArmyOrders>(
-        frame,
+    out.note_seen(statuses, tables::Fronts::ID, "bound-front geometry; absent fronts are not drawn");
+    out.note_seen(statuses, tables::ArmyOrders::ID,
         "the battle plan covers only recorded orders; missing orders are not drawn",
     );
-    out.note::<tables::OrdersGroups>(
-        frame,
+    out.note_seen(statuses, tables::OrdersGroups::ID,
         "an order whose owning group is missing is not drawn; the army-group style is not guessed",
     );
-    out.note::<tables::LandCombats>(
-        frame,
+    out.note_seen(statuses, tables::LandCombats::ID,
         "a land combat among the missing rows carries no combat icon",
     );
-    out.note::<tables::LandCombatSides>(
-        frame,
+    out.note_seen(statuses, tables::LandCombatSides::ID,
         "a land combat among the missing rows carries no combat icon: its sides decide whether \
          the viewing country sees it",
     );
-    out.note::<tables::AirBaseRegistrations>(
-        frame,
+    out.note_seen(statuses, tables::AirBaseRegistrations::ID,
         "an air base among the missing rows shows no plane count, because the recorded \
          registrations are what says whether the viewing country is shown one at all; with \
          the table truncated every base keeps the fallback badge for any recorded plane \
          instead of the recorded stationed-or-detail frame",
     );
-    out.note::<tables::NavalCombats>(
-        frame,
+    out.note_seen(statuses, tables::NavalCombats::ID,
         "a naval combat among the missing rows carries no combat icon",
     );
-    out.note::<tables::StateBuildings>(
-        frame,
+    out.note_seen(statuses, tables::StateBuildings::ID,
         "a building among the missing rows has no map mesh, and an air base no icon: the icon \
          lives on the state's building slot, so without the row there is no anchor, no icon and \
          no count",
     );
-    out.note::<tables::ProvinceBuildings>(
-        frame,
+    out.note_seen(statuses, tables::ProvinceBuildings::ID,
         "a building among the missing rows has no map mesh; a naval base carries no base icon",
     );
-    out.note::<tables::AirBases>(
-        frame,
+    out.note_seen(statuses, tables::AirBases::ID,
         "an air base among the missing rows carries no wing count",
     );
-    out.note::<tables::AirWings>(
-        frame,
+    out.note_seen(statuses, tables::AirWings::ID,
         "an air base's wing count covers only the recorded wings",
     );
-    out.note::<tables::LexicalTokens>(
-        frame,
+    out.note_seen(statuses, tables::LexicalTokens::ID,
         "a base icon whose building token is among the missing rows is not drawn at all",
     );
     // weather
-    out.note::<tables::WeatherRegions>(
-        frame,
+    out.note_seen(statuses, tables::WeatherRegions::ID,
         "weather effects are drawn only for the recorded region rows",
     );
-    if rows::<tables::WeatherRegions>(frame).is_ok_and(|v| {
-        v.rows().iter().any(|r| {
-            [r.light_rain, r.heavy_rain, r.snow, r.blizzard, r.sandstorm]
-                .iter()
-                .any(|v| *v != 0)
-        })
-    }) {
+    if facts.weather {
         out.note_field("weather particle presentation", "WeatherRegions selects the common/weather.txt effect entities at map/weatherpositions.txt anchors; their particles follow the particle-update rules. A region's emitters start empty when its weather starts and grow on the window clock, so a dump (time 0) draws none; native seeds and frame deltas are not recorded. Weather particle descriptors are outside hash-verified content coverage.");
     }
-    out.note::<tables::WeatherProvinces>(
-        frame,
+    out.note_seen(statuses, tables::WeatherProvinces::ID,
         "the snow and mud texture draws the missing provinces bare, and a winter post-effect volume missing a representative's snow is not graded",
     );
-    if rows::<tables::WeatherProvinces>(frame).is_ok_and(|v| !v.rows().is_empty()) {
-        let weather = rows::<tables::WeatherProvinces>(frame).unwrap();
-        let display = weather
-            .rows()
-            .iter()
-            .find(|row| row.id == 0)
-            .map(|row| &row.display);
-        if !matches!(display, Some(replay_data::rows::Recorded::Value(Some(_)))) {
-            let reason = if matches!(display, Some(replay_data::rows::Recorded::NotRecorded)) {
-                "not recorded"
-            } else {
-                "unavailable"
-            };
+    if let Some(display) = facts.weather_display {
+        if let Some(reason) = display {
             out.note_field("WeatherProvinces.display", &format!("1 retained snow/mud boundary {reason}; edge cells and refresh timing are unknown (weather.rs), so no current-simulation edge is substituted"));
         }
         out.note_field("Winter grading", "Each post-effect volume uses one representative province per strategic region: the last overlapping land province in list order. Its weight is the whole area of overlapping land provinces, and grading uses raw hourly WeatherProvinces snow. The runtime region-list order remains unverified.");
@@ -730,9 +738,9 @@ pub fn limitations(frame: &DecodedFrame) -> Limitations {
     out
 }
 
-/// Whether this hour holds a complete recorded `T` table.
-fn complete<T: TableSchema>(frame: &DecodedFrame) -> bool {
-    rows::<T>(frame).is_ok_and(|rows| rows.is_complete())
+/// [`table_limitations`] of a frame of rows: its statuses, and its rows for the notes that read them.
+pub fn limitations(frame: &DecodedFrame) -> Limitations {
+    table_limitations(frame, &RowFacts::of(frame))
 }
 
 fn invalid(message: impl Into<String>) -> io::Error {

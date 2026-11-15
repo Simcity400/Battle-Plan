@@ -8,7 +8,12 @@ use viewer_foundation::map::presentation::Continuity;
 #[derive(Default)]
 pub struct Presentation {
     pub size: [u32; 2],
+    /// The planes shown, unless [`Self::stale`]: then they are the target's bytes, written to the
+    /// texture in rectangles or by a plane swapped in, and copied here only when a path reads them.
     pub texels: Vec<u8>,
+    stale: bool,
+    /// One rectangle's bytes, rows `columns * 4` apart ([`Self::take_rect`]).
+    rect: Vec<u8>,
     /// One byte per cell, 255 where the hatch overlay draws: the cell is unknown in the pending
     /// hour, in the snapshot the texels show, or in the one they still fade from.
     pub unknown: Vec<u8>,
@@ -25,6 +30,8 @@ pub struct Presentation {
     shared_pending: Option<Arc<SnowMud>>,
     target: Paged<u8>,
     mismatched: Vec<usize>,
+    /// Of [`Self::mismatched`], the pages held before the rectangles began: read again at the end.
+    kept: usize,
     uploads: Vec<Range<usize>>,
     dirty: bool,
     refresh: Option<Refresh>,
@@ -47,6 +54,11 @@ fn same_page(now: &Option<Paged<u8>>, was: &Option<Paged<u8>>, page: usize) -> b
         }
         _ => false,
     }
+}
+
+/// Whether a cell of `bytes` shows its planes unlike its bytes.
+fn mismatching(bytes: &[u8]) -> bool {
+    bytes.chunks_exact(4).any(|cell| cell[0] != cell[3] || cell[2] != cell[1])
 }
 
 fn dirty_pages(
@@ -105,9 +117,25 @@ impl Presentation {
         }
     }
 
+    /// The planes made current where they are [`Self::stale`]: the target's bytes, which an
+    /// immediate grid taken in rectangles or swapped in shows exactly.
+    pub fn planes(&mut self) {
+        if std::mem::take(&mut self.stale) {
+            self.texels.clear();
+            for page in self.target.pages() {
+                self.texels.extend_from_slice(page);
+            }
+        }
+    }
+
     pub fn set_shared(&mut self, snow: &Arc<SnowMud>, continuity: Continuity) -> io::Result<bool> {
         let size = [snow.width, snow.height];
         let reset = continuity == Continuity::Reset || self.size != size || self.texels.is_empty();
+        if reset {
+            self.stale = false;
+        } else {
+            self.planes();
+        }
         let changed = reset
             || self.refresh != snow.refresh
             || !(self
@@ -134,14 +162,13 @@ impl Presentation {
             self.mismatched.clear();
             if reset {
                 self.texels.clear();
-                self.texels.extend(snow.texels.iter().copied());
+                for page in snow.texels.pages() {
+                    self.texels.extend_from_slice(page);
+                }
                 self.uploads.clear();
                 self.uploads.push(0..self.texels.len());
                 for (page, bytes) in snow.texels.pages().enumerate() {
-                    if bytes
-                        .chunks_exact(4)
-                        .any(|cell| cell[0] != cell[3] || cell[2] != cell[1])
-                    {
+                    if mismatching(bytes) {
                         self.mismatched.push(page);
                     }
                 }
@@ -154,10 +181,7 @@ impl Presentation {
                         self.texels[start..end].copy_from_slice(bytes);
                         self.upload(start..end);
                     }
-                    if bytes
-                        .chunks_exact(4)
-                        .any(|cell| cell[0] != cell[3] || cell[2] != cell[1])
-                    {
+                    if mismatching(bytes) {
                         self.mismatched.push(page);
                     }
                 }
@@ -177,6 +201,101 @@ impl Presentation {
         self.dirty = true;
         self.refresh_unknown();
         Ok(false)
+    }
+
+    /// Whether `snow` can be taken a rectangle at a time ([`Self::begin_parts`]) as [`Self::set_shared`]
+    /// would take it whole: a reset always; a continuation only while it and the planes are drawn at
+    /// once (no graphics refresh pending or due) and at one size. The planes shown are then their
+    /// bytes, cells whose planes differ included, as every grid drawn at once leaves them.
+    pub fn takes_parts(&self, snow: &SnowMud, continuity: Continuity) -> bool {
+        continuity == Continuity::Reset
+            || (self.size == [snow.width, snow.height]
+                && !self.texels.is_empty()
+                && self.refresh.is_none()
+                && snow.refresh.is_none()
+                && !self.dirty)
+    }
+
+    /// Starts taking `snow` in rectangles: a reset sizes the planes, whose every byte the
+    /// rectangles then write, and drops a refresh still pending.
+    pub fn begin_parts(&mut self, snow: &SnowMud, continuity: Continuity) -> io::Result<()> {
+        if continuity == Continuity::Reset {
+            self.reserve(snow)?;
+            self.size = [snow.width, snow.height];
+            self.texels.resize(snow.texels.len(), 0);
+            self.mismatched.clear();
+            self.dirty = false;
+        }
+        self.kept = self.mismatched.len();
+        self.uploads.clear();
+        Ok(())
+    }
+
+    /// `snow`'s cells of `rows` and `columns`, rows `columns.len() * 4` bytes apart, for the
+    /// texture; the planes they stand for go [`Self::stale`].
+    pub fn take_rect(&mut self, snow: &SnowMud, rows: Range<u32>, columns: Range<u32>) -> io::Result<&[u8]> {
+        let [width, height] = self.size;
+        if rows.end > height || columns.end > width || snow.texels.len() != self.texels.len() {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "snow rectangle outside the grid"));
+        }
+        let page = map_display_data::PAGE_ITEMS;
+        self.rect.clear();
+        for row in rows.clone() {
+            let mut at = (row as usize * width as usize + columns.start as usize) * 4;
+            let end = at + columns.len() * 4;
+            while at < end {
+                let bytes = &snow.texels.page(at / page)[at % page..];
+                let take = bytes.len().min(end - at);
+                let bytes = &bytes[..take];
+                self.rect.extend_from_slice(bytes);
+                // Without an early exit, so the check runs as wide as the copy.
+                if bytes.chunks_exact(4).fold(false, |any, cell| any | (cell[0] != cell[3]) | (cell[2] != cell[1])) {
+                    self.mismatched.push(at / page);
+                }
+                at += take;
+            }
+        }
+        self.stale = true;
+        Ok(&self.rect)
+    }
+
+    /// Ends taking `snow` in rectangles, every cell where it differs from the grid held written:
+    /// the presentation is then as [`Self::set_shared`] leaves it after taking `snow` whole.
+    pub fn finish_parts(&mut self, snow: &Arc<SnowMud>, continuity: Continuity) {
+        self.stale = true;
+        // A page that mismatched before stays listed while its bytes still do, rectangle or not.
+        let (kept, pages) = (std::mem::take(&mut self.kept), snow.texels.pages().len());
+        let mut still = 0;
+        for at in 0..kept {
+            let page = self.mismatched[at];
+            if page < pages && mismatching(snow.texels.page(page)) {
+                self.mismatched[still] = page;
+                still += 1;
+            }
+        }
+        self.mismatched.drain(still..kept);
+        self.mismatched.sort_unstable();
+        self.mismatched.dedup();
+        self.shared_pending = Some(Arc::clone(snow));
+        self.refresh = snow.refresh;
+        self.target = snow.texels.clone();
+        self.shown_unknown = snow.unknown.clone();
+        self.faded_unknown = None;
+        self.refresh_unknown();
+        self.dirty = false;
+        self.fade = 0.0;
+        if continuity == Continuity::Reset {
+            self.last_time = None;
+            self.last_refresh = 0.0;
+        }
+    }
+
+    /// Takes `snow` as written whole to a texture swapped in for the one drawn, its pages whose
+    /// cells are shown unlike its bytes `mismatched`: the presentation is then as taking it in
+    /// rectangles leaves it. Only when [`Self::takes_parts`] as a continuation.
+    pub fn swap_in(&mut self, snow: &Arc<SnowMud>, mismatched: Vec<usize>) {
+        (self.mismatched, self.kept) = (mismatched, 0);
+        self.finish_parts(snow, Continuity::Continue);
     }
 
     /// Recomputes the drawn hatch flags from the pending, shown and faded-from masks.
@@ -283,6 +402,7 @@ impl Presentation {
         self.last_refresh = last_refresh;
         self.last_time = Some(now);
         if refreshed {
+            self.planes();
             self.last_refresh = f64::from(now);
             let pending = self
                 .shared_pending
@@ -462,6 +582,142 @@ mod tests {
         player.set_shared(&snapshot([0, 0, 0], 3), Reset).unwrap();
         assert_eq!(player.unknown, [0, 0, 0]);
         assert_eq!(player.hatched(), 0);
+    }
+
+    /// A grid taken a rectangle at a time leaves the planes, the target and the hatch as taking it
+    /// whole does, a reset as a continuation, copying only the rectangles' cells.
+    #[test]
+    fn a_grid_taken_in_rectangles_is_presented_as_one_taken_whole() {
+        let (width, height) = (40u32, 30u32);
+        let grid = |seed: u8, unknown: Option<usize>| {
+            let texels: Vec<u8> = (0..width * height)
+                .flat_map(|cell| {
+                    let [snow, mud] = [(cell as u8).wrapping_mul(seed), seed];
+                    [mud, snow, snow, mud]
+                })
+                .collect();
+            let mut mask = vec![0; (width * height) as usize];
+            if let Some(cell) = unknown {
+                mask[cell] = 1;
+            }
+            Arc::new(SnowMud {
+                width,
+                height,
+                texels: texels.into(),
+                unknown: mask.into(),
+                province_snow: vec![].into(),
+                post_factors: None,
+                build: Default::default(),
+                summary: Default::default(),
+                refresh: None,
+            })
+        };
+        let (first, second) = (grid(3, None), grid(5, Some(7)));
+        let mut whole = Presentation::default();
+        whole.set_shared(&first, Reset).unwrap();
+        let mut parts = Presentation::default();
+        assert!(parts.takes_parts(&first, Reset));
+        parts.begin_parts(&first, Reset).unwrap();
+        for band in (0..height).step_by(8) {
+            parts.take_rect(&first, band..(band + 8).min(height), 0..width).unwrap();
+        }
+        parts.finish_parts(&first, Reset);
+        parts.planes();
+        assert_eq!(parts.texels, whole.texels, "a reset in rectangles writes every plane");
+        assert_eq!((parts.unknown.clone(), parts.hatched()), (whole.unknown.clone(), whole.hatched()));
+
+        whole.set_shared(&second, Continue).unwrap();
+        assert!(parts.takes_parts(&second, Continue));
+        parts.begin_parts(&second, Continue).unwrap();
+        assert_eq!(parts.take_rect(&second, 0..height, 0..width).unwrap(), second.texels.to_vec());
+        parts.finish_parts(&second, Continue);
+        parts.planes();
+        assert_eq!(parts.texels, whole.texels, "a continuation in rectangles equals one taken whole");
+        assert_eq!((parts.unknown.clone(), parts.hatched()), (whole.unknown.clone(), whole.hatched()));
+        assert!(parts.take_unknown_upload() && whole.take_unknown_upload(), "the hatch is written again once, in both");
+        assert!(parts.target == whole.target && parts.mismatched == whole.mismatched);
+
+        // One cell changed: the rectangle holding it alone is copied, and nothing else moves.
+        let third = Arc::new(SnowMud { texels: second.texels.edited((0..4).map(|channel| ((12 * width as usize + 9) * 4 + channel, 77))), ..SnowMud::clone(&second) });
+        let before = parts.texels.clone();
+        parts.begin_parts(&third, Continue).unwrap();
+        let rect: Vec<u8> = (8..16).flat_map(|row| third.texels.to_vec()[(row * width as usize + 9) * 4..(row * width as usize + 10) * 4].to_vec()).collect();
+        assert_eq!(parts.take_rect(&third, 8..16, 9..10).unwrap(), rect, "the rectangle's bytes alone");
+        assert_eq!(parts.texels, before, "a rectangle copies nothing into the planes");
+        parts.finish_parts(&third, Continue);
+        parts.planes();
+        let moved: Vec<usize> = (0..before.len()).filter(|&at| before[at] != parts.texels[at]).collect();
+        assert_eq!(moved, ((12 * width as usize + 9) * 4..(12 * width as usize + 9) * 4 + 4).collect::<Vec<_>>());
+        whole.set_shared(&third, Continue).unwrap();
+        assert_eq!(parts.texels, whole.texels);
+
+        // A cell whose planes differ (on the second page) is taken in rectangles, and so are the
+        // grids after it: its page stays listed while its bytes differ, and goes once they agree.
+        let mut last = third;
+        for (row, column, cell) in [(27, 3, [1, 2, 3, 4]), (2, 5, [6, 6, 6, 6]), (27, 3, [9, 8, 8, 9])] {
+            let next = Arc::new(SnowMud { texels: last.texels.edited((0..4).map(|channel| ((row * width as usize + column) * 4 + channel, cell[channel]))), ..SnowMud::clone(&last) });
+            whole.set_shared(&next, Continue).unwrap();
+            assert!(parts.takes_parts(&next, Continue), "a grid after one whose planes differ is taken in rectangles");
+            parts.begin_parts(&next, Continue).unwrap();
+            let band = row as u32 / 8 * 8;
+            parts.take_rect(&next, band..(band + 8).min(height), column as u32..column as u32 + 1).unwrap();
+            parts.finish_parts(&next, Continue);
+            parts.planes();
+            assert_eq!(parts.texels, whole.texels, "cell {row}/{column}");
+            assert_eq!(parts.mismatched, whole.mismatched, "cell {row}/{column}: the pages whose planes differ");
+            last = next;
+        }
+        assert!(parts.mismatched.is_empty());
+        let third = last;
+
+        // A refresh pending, or a grid that refreshes, is taken whole.
+        let refreshed = Arc::new(SnowMud { refresh: Some(Refresh { interval: 25_000, identity: 1 }), ..SnowMud::clone(&third) });
+        assert!(!parts.takes_parts(&refreshed, Continue) && parts.takes_parts(&refreshed, Reset));
+    }
+
+    /// A grid written whole to the texture swapped in leaves the presentation as taking it in
+    /// rectangles does, with no plane copied; a refreshing grid after it reads the planes it shows.
+    #[test]
+    fn a_grid_swapped_in_is_presented_as_one_taken_in_rectangles() {
+        let grid = |seed: u8, unknown: Option<usize>| {
+            let texels: Vec<u8> = (0..24u32).flat_map(|cell| [seed, cell as u8, cell as u8, seed]).collect();
+            let mut mask = vec![0; 24];
+            if let Some(cell) = unknown {
+                mask[cell] = 1;
+            }
+            Arc::new(SnowMud { width: 6, height: 4, texels: texels.into(), unknown: mask.into(), province_snow: vec![].into(), post_factors: None, build: Default::default(), summary: Default::default(), refresh: None })
+        };
+        let (first, second) = (grid(3, None), grid(5, Some(2)));
+        let (mut parts, mut swapped) = (Presentation::default(), Presentation::default());
+        parts.set_shared(&first, Reset).unwrap();
+        swapped.set_shared(&first, Reset).unwrap();
+        assert!(swapped.takes_parts(&second, Continue));
+        parts.begin_parts(&second, Continue).unwrap();
+        parts.take_rect(&second, 0..4, 0..6).unwrap();
+        parts.finish_parts(&second, Continue);
+        let held = swapped.texels.clone();
+        swapped.swap_in(&second, Vec::new());
+        assert_eq!(swapped.texels, held, "a swap copies no plane");
+        for player in [&mut parts, &mut swapped] {
+            player.planes();
+        }
+        assert_eq!((&swapped.texels, &swapped.unknown, swapped.hatched()), (&parts.texels, &parts.unknown, parts.hatched()));
+        assert!(swapped.target == parts.target && swapped.mismatched == parts.mismatched && swapped.fade == parts.fade);
+        assert_eq!(swapped.take_unknown_upload(), parts.take_unknown_upload());
+        // The cross-fade then starts from the planes the swap left shown.
+        let fading = Arc::new(SnowMud { refresh: Some(Refresh { interval: 25_000, identity: 1 }), ..SnowMud::clone(&grid(9, None)) });
+        let (mut again, mut whole) = (Presentation::default(), Presentation::default());
+        for player in [&mut again, &mut whole] {
+            player.set_shared(&first, Reset).unwrap();
+        }
+        again.swap_in(&second, Vec::new());
+        whole.set_shared(&second, Continue).unwrap();
+        for player in [&mut again, &mut whole] {
+            player.set_shared(&fading, Continue).unwrap();
+            player.advance(0.0, 0.0).unwrap();
+            assert!(player.advance(1.0, 0.5).unwrap());
+        }
+        assert_eq!(again.texels, whole.texels, "the fade's planes are those the swap showed, as one taken whole shows them");
     }
 
     #[test]

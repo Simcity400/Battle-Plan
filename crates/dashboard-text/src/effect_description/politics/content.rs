@@ -123,7 +123,7 @@ impl Renderer<'_, '_, '_> {
                 .iter()
                 .any(|token| token.eq_ignore_ascii_case(group.token.as_bytes()))
             {
-                return Err(format!("PoliticalParties lacks ideology {}", group.token));
+                return Err(format!("political parties lacks ideology {}", group.token));
             }
             let value = selectors
                 .iter()
@@ -149,7 +149,7 @@ impl Renderer<'_, '_, '_> {
                 .world()?
                 .state_row(state)
                 .and_then(|(owner, _)| self.context.text.recorded().slot(owner))
-                .ok_or_else(|| format!("States/CountryLinks lacks focus-name owner for {state}")),
+                .ok_or_else(|| format!("States/country links lacks focus-name owner for {state}")),
             _ => Err("focus description scope has no country/state owner".into()),
         }
     }

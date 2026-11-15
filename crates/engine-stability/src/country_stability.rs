@@ -637,40 +637,10 @@ impl WalkTiming {
     }
 }
 
-/// Reads one authenticated country. On error nothing is written.
-#[allow(clippy::too_many_arguments)]
-pub fn walk_country<M: Memory>(
-    memory: &M,
-    base: usize,
-    countries: &ccountry::Reader<'_, M>,
-    country: ccountry::Country,
-    context: &Context,
-    scratch: &mut Scratch,
-    input: &mut InputRow,
-    lines: &mut [LineRow],
-    bytes: &mut [u8],
-) -> Result<CountryWalk, &'static str> {
-    walk_country_buffers(
-        &mut Memo::default(),
-        memory,
-        base,
-        countries,
-        country,
-        context,
-        scratch,
-        input,
-        Buffer::Fixed(lines),
-        Buffer::Fixed(bytes),
-        0,
-        0,
-        None,
-    )
-}
-
 /// Worker-only append. Child/source storage follows the original headers and
 /// emitted rows/text grow before copying each native occurrence.
 #[allow(clippy::too_many_arguments)]
-pub fn walk_country_growing<M: Memory>(
+pub fn walk_country<M: Memory>(
     memory: &M,
     base: usize,
     countries: &ccountry::Reader<'_, M>,
@@ -704,7 +674,7 @@ pub fn walk_country_growing<M: Memory>(
 /// Reset `memo` before a new hour's Context, even when its globals compare equal.
 #[allow(clippy::too_many_arguments)]
 #[cfg(test)]
-pub fn walk_country_growing_memo<M: Memory>(
+pub fn walk_country_memo<M: Memory>(
     memory: &M,
     base: usize,
     countries: &ccountry::Reader<'_, M>,
@@ -738,7 +708,7 @@ pub fn walk_country_growing_memo<M: Memory>(
 /// The hourly-memo worker walk with optional diagnostics kept out of the
 /// ordinary walker and benchmarks. Refused phases retain their elapsed ticks.
 #[allow(clippy::too_many_arguments)]
-pub fn walk_country_growing_memo_timed<M: Memory>(
+pub fn walk_country_memo_timed<M: Memory>(
     memory: &M,
     base: usize,
     countries: &ccountry::Reader<'_, M>,
@@ -770,7 +740,7 @@ pub fn walk_country_growing_memo_timed<M: Memory>(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+
 fn walk_country_buffers<M: Memory>(
     memo: &mut Memo,
     memory: &M,
@@ -856,7 +826,7 @@ fn demand_advisory(
         let Some(country) = countries.at(slot)? else {
             continue;
         };
-        let walk = walk_country_growing(
+        let walk = walk_country(
             memory,
             base,
             &countries,

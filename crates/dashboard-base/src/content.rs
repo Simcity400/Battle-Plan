@@ -1,7 +1,6 @@
 //! Refuse unverified recorded content unless the user explicitly allows it.
 
-use crate::{Source, invalid, products::ContentOptions};
-use installed_content_core::ResolveOptions;
+use crate::{Source, catalogue::kept::Keeping, invalid, products::ContentOptions};
 use installed_content_localisation::localisation::Localisation;
 use replay_data::identity::Verification;
 use std::{io, path::PathBuf, sync::Arc};
@@ -19,24 +18,21 @@ pub fn content_key(content: Option<&ContentOptions>) -> Option<ContentKey> {
     })
 }
 
-/// Everything a source's localisation depends on besides the recording: the
-/// folders, the cache folder and the user's game language, or `None` when `settings.txt` names
-/// none, which takes the first language the mod stack's language list declares, as the game does.
-pub type LocalisationKey = (ContentKey, PathBuf, Option<String>);
+/// Everything a source's localisation depends on besides the recording: the folders and the
+/// cache folder. Its language is the recording's own ([`recorded_language`]).
+pub type LocalisationKey = (ContentKey, PathBuf);
 
-/// The key for these folders, reading the game language from the user folder.
-pub fn localisation_key(source: &Source, content: &ContentOptions) -> io::Result<LocalisationKey> {
-    Ok((
+pub fn localisation_key(content: &ContentOptions) -> LocalisationKey {
+    (
         content_key(Some(content)).expect("content options given"),
         content.options.cache_dir.clone(),
-        source_language(source, &content.options)?,
-    ))
+    )
 }
 
-/// The recording's localisation in the user's game language, read once per source
-/// and key and shared by every product that names anything.
+/// The recording's localisation in its own language, read once per source and key and shared by
+/// every product that names anything.
 pub fn localisation(source: &Source, content: &ContentOptions) -> io::Result<Arc<Localisation>> {
-    localisation_with_key(source, content, localisation_key(source, content)?)
+    localisation_with_key(source, content, localisation_key(content))
 }
 
 pub(crate) fn localisation_with_key(
@@ -44,15 +40,24 @@ pub(crate) fn localisation_with_key(
     content: &ContentOptions,
     key: LocalisationKey,
 ) -> io::Result<Arc<Localisation>> {
-    localisation_in(source, content, key, || source.content(&content.options))
+    localisation_in(
+        source,
+        content,
+        key,
+        || source.content(&content.options),
+        Keeping::On,
+    )
 }
 
-/// [`localisation_with_key`] reading, when it is not cached, the content `resolved` gives.
+/// [`localisation_with_key`] reading, when it is not cached, its kept file or else the content
+/// `resolved` gives. Without `keeping` it is built from that content alone, and neither read
+/// from nor left in the source's cache.
 pub(crate) fn localisation_in(
     source: &Source,
     content: &ContentOptions,
     key: LocalisationKey,
     resolved: impl FnOnce() -> io::Result<Arc<installed_content_core::content::ResolvedContent>>,
+    keeping: Keeping,
 ) -> io::Result<Arc<Localisation>> {
     type Cached = Option<(
         LocalisationKey,
@@ -61,43 +66,51 @@ pub(crate) fn localisation_in(
     )>;
     let state = source.state::<Cached>();
     let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
-    if let Some((cached, localisation, diagnostics)) = state.as_ref()
+    if keeping == Keeping::On
+        && let Some((cached, localisation, diagnostics)) = state.as_ref()
         && *cached == key
     {
         diagnostics.credit();
         return Ok(Arc::clone(localisation));
     }
-    let (localisation, diagnostics) = installed_content_core::content::diagnostics::capture(|| {
-        let mut warnings = Vec::new();
-        check_replay(&source.replay(), content.allow_unverified, &mut warnings)?;
-        let layers = resolved()?;
-        let language = chosen_language(&layers.layers, key.2.as_deref())?;
-        installed_content_localisation::localisation::read_cached(
-            &layers.layers,
-            &language,
-            &content.options.cache_dir,
-        )
-    });
+    let mut warnings = Vec::new();
+    check_replay(&source.replay(), content.allow_unverified, &mut warnings)?;
+    let build = || {
+        installed_content_core::content::diagnostics::capture(|| {
+            let layers = resolved()?;
+            let language = recorded_language(source.replay_ref());
+            installed_content_localisation::localisation::read_cached(
+                &layers.layers,
+                &language,
+                &content.options.cache_dir,
+            )
+        })
+    };
+    let (localisation, diagnostics) = match keeping {
+        Keeping::On => crate::catalogue::kept::kept(
+            crate::catalogue::kept::place::<Localisation>(source, &content.options.cache_dir, &[]),
+            build,
+        ),
+        Keeping::Off => build(),
+    };
     diagnostics.credit();
     let localisation = Arc::new(localisation?);
-    *state = Some((key, Arc::clone(&localisation), diagnostics));
+    if keeping == Keeping::On {
+        *state = Some((key, Arc::clone(&localisation), diagnostics));
+    }
     Ok(localisation)
 }
 
-/// The replay's shared setup under `content`: its prepared store bound to the content's
-/// inputs, the localisation, the presented catalogue and the equipment types products name
-/// things with, each done once per open replay into the source's shared state, so no product's
-/// first ask does them. A failure is left for the product that needs the part to report with
+/// The replay's shared setup under `content`: the localisation and the presented catalogue,
+/// each done once per open replay into the source's shared state, so no product's first ask
+/// does them. A failure is left for the product that needs the part to report with
 /// its reason.
 pub fn warm(source: &Source, content: &ContentOptions) {
     let _warm = installed_content_core::content::Generation::inherit();
     let resolved = source.content(&content.options).ok();
     let _generation = resolved.as_ref().map(|content| content.layers.enter_generation());
-    let _ = crate::prepared::files(source, Some(content));
     let _ = localisation(source, content);
-    if let Ok(catalogue) = crate::catalogue::catalogue(source, content) {
-        let _ = crate::products::equipment::units(source, &catalogue);
-    }
+    let _ = crate::catalogue::catalogue(source, content);
 }
 
 /// [`localisation`] for naming countries, or the warning that says why names show tags.
@@ -112,85 +125,10 @@ pub fn name_localisation(
     }
 }
 
-/// The language the game prepares text in from `requested` (`settings.txt`'s): it when the mod
-/// stack's language list declares it, else the list's first; or why it cannot be known.
-fn chosen_language(
-    layers: &installed_content_core::ResolvedLayers,
-    requested: Option<&str>,
-) -> io::Result<String> {
-    installed_content_localisation::localisation::selected_language(layers, requested)
-        .map_err(|error| invalid(format!("No game language: {error}")))
-}
-
-/// The note a widget shows when names the recording stored are shown in its own language because
-/// no game folder is set.
-pub const RECORDED_LANGUAGE_NOTE: &str =
-    "Names stored in the recording are shown in the recording's language: no game folder is set.";
-
-/// The language the user's game prepares text in, as the game decides it: `settings.txt`'s, else
-/// the first language the recording's mod stack declares; `None` with no game folders chosen, or
-/// why it cannot be known.
-pub fn game_language(
-    source: &Source,
-    content: Option<&ContentOptions>,
-) -> Result<Option<String>, String> {
-    let Some(content) = content else {
-        return Ok(None);
-    };
-    let requested = source_language(source, &content.options).map_err(|error| error.to_string())?;
-    let layers = source
-        .content(&content.options)
-        .map_err(|error| format!("No game language: {error}"))?;
-    chosen_language(&layers.layers, requested.as_deref())
-        .map(Some)
-        .map_err(|error| error.to_string())
-}
-
-/// The language names the recording stored are checked against ([`game_language`]), and the
-/// note to show with it. With no game folders the recording's own language is used: a stored
-/// name is the game's own output in that language. When the game language cannot be known it is
-/// empty, so stored names are refused by name, and the note says why.
-pub fn stored_name_language(
-    source: &Source,
-    content: Option<&ContentOptions>,
-) -> (String, Option<String>) {
-    match game_language(source, content) {
-        Ok(Some(language)) => (language, None),
-        Ok(None) => {
-            let recorded = &source.replay_ref().identity.language;
-            (
-                recorded.strip_prefix("l_").unwrap_or(recorded).to_owned(),
-                Some(RECORDED_LANGUAGE_NOTE.to_owned()),
-            )
-        }
-        Err(why) => (String::new(), Some(why)),
-    }
-}
-
-/// The user's game language from the configured user folder's `settings.txt`; `None` when it
-/// names none or is absent. A file that cannot be read leaves the language unknown, refused by
-/// name.
-pub fn language(options: &ResolveOptions) -> io::Result<Option<String>> {
-    let path = options.user_dir.join("settings.txt");
-    installed_content_settings::settings::read_keys(&options.user_dir)
-        .map(|keys| keys.language())
-        .map_err(|error| {
-            invalid(format!(
-                "No game language: {} could not be read: {error}",
-                path.display()
-            ))
-        })
-}
-
-fn source_language(source: &Source, options: &ResolveOptions) -> io::Result<Option<String>> {
-    // Settings remain readable when installed artwork cannot be resolved.
-    let resolved = match source.content(options) {
-        Ok(resolved) => resolved,
-        Err(_) => return language(options),
-    };
-    installed_content_settings::settings::language_in(&resolved.layers, &options.user_dir).map_err(|error| {
-        invalid(format!("No game language: {} could not be read: {error}", options.user_dir.join("settings.txt").display()))
-    })
+/// Playback's text language: the recording's own, the only one its facts carry, never `settings.txt`'s.
+pub fn recorded_language(replay: &replay::campaign::Replay) -> String {
+    let language = &replay.identity.language;
+    language.strip_prefix("l_").unwrap_or(language).to_owned()
 }
 
 pub fn check_verification(

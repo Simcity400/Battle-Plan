@@ -5,7 +5,7 @@ use crate::playback::Current;
 use replay::{
     campaign::{Parallel, Replay},
     columnar_frames::Pool,
-    columnar_natives::{Costs, Cursor, Natives},
+    columnar_natives::{Cursor, Natives},
 };
 use replay_data::{BranchId, Hour, rows::TableId, rows::tables};
 use replay_frame::frame::{DecodedFrame, TableView};
@@ -51,12 +51,7 @@ impl Columnar {
             replay.format,
             replay.capture_mode,
         )?
-        .with_change_facts()
-        .with_costs(Costs {
-            // Scrubbing back takes up the map's checkpoints.
-            checkpoints: true,
-            ..Costs::default()
-        });
+        .with_change_facts();
         Ok(MapSource {
             cursor,
             replay,
@@ -94,8 +89,8 @@ impl MapSource {
     /// `hour` of `branch`: with `materialize`, its frame; without, the move taken there and no
     /// frame built. It builds no other hour: the hours before it that a window lacks are read
     /// as hours of their own, after it, and the cursor walks on from whichever it read last.
-    /// An hour no run holds is the replay's gap there. Cancellation leaves the source where its
-    /// walk stopped, to be asked again; damage is the hour's gap.
+    /// An hour no run holds is the replay's gap there; any other failure is the hour's, refused
+    /// by name. Cancellation leaves the source where it stood, to be asked again.
     pub fn read(
         &mut self,
         branch: BranchId,
@@ -129,19 +124,27 @@ impl MapSource {
                 .then(|| self.cursor.build(Some(&parallel)))
                 .transpose()
         })();
+        let refused = |reason: String| Current::Refused {
+            branch,
+            hour,
+            reason,
+        };
         match read {
             Ok(Some(frame)) if campaign_holds(&frame, &self.replay.campaign_id) => {
                 Ok(Current::Frame(Arc::new(frame)))
             }
-            Ok(Some(_)) => Ok(gap(
-                "frame campaign identity differs from replay header".into()
+            Ok(Some(_)) => Ok(refused(
+                "frame campaign identity differs from replay header".into(),
             )),
             Ok(None) => Ok(gap("hour has not been decoded".into())),
             Err(error) if error.kind() == io::ErrorKind::Interrupted => Err(error),
-            Err(error) => Ok(gap(format!("unreadable hour: {error}"))),
+            Err(error) => Ok(refused(format!("the map's hour cannot be read: {error}"))),
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
 
 /// Whether `frame`'s Campaign, when complete, is the replay's one campaign `campaign`.
 fn campaign_holds(frame: &DecodedFrame, campaign: &[u8]) -> bool {

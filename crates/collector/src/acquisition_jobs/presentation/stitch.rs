@@ -69,7 +69,7 @@ impl PresentationFanIn {
         let mut state = lock_unpoisoned(&self.state);
         state.failure = report.err();
         state.parent = Some(PresentationRequest {
-            countries: Arc::clone(&request.countries),
+            countries: engine_allocation::SharedBox::clone(&request.countries),
             context: request.context,
             captured: std::mem::replace(
                 &mut request.captured,

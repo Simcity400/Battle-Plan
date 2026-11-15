@@ -89,22 +89,6 @@ pub fn walk(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    output: &mut [country_intel_row::Row],
-    scratch: &mut [u8],
-) -> Outcome {
-    walk_buffer(
-        memory,
-        base,
-        game_state,
-        crate::walk::Buffer::Fixed(output),
-        scratch,
-    )
-}
-
-pub fn walk_growing(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
     output: &mut Vec<country_intel_row::Row>,
     scratch: &mut [u8],
 ) -> Outcome {
@@ -231,23 +215,6 @@ pub struct ReservedCapture {
 /// country alias in a positive physical slot can be saved.
 #[cfg(test)]
 pub fn walk_with_reserved(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut [country_intel_row::Row],
-    scratch: &mut [u8],
-) -> ReservedCapture {
-    walk_with_reserved_buffer(
-        memory,
-        base,
-        game_state,
-        crate::walk::Buffer::Fixed(output),
-        scratch,
-    )
-}
-
-#[cfg(test)]
-pub fn walk_with_reserved_growing(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -560,7 +527,7 @@ mod tests {
         let mut scratch = [0; 2 * country_intel_row::STRIDE];
         let expected = run(&bytes, 8);
         assert_eq!(
-            walk_growing(&memory(&bytes), BASE, GS, &mut rows, &mut scratch),
+            walk(&memory(&bytes), BASE, GS, &mut rows, &mut scratch),
             expected.0
         );
         assert_eq!(&rows[..expected.0.len()], expected.1.as_slice());
@@ -581,7 +548,7 @@ mod tests {
         let expected = run(&bytes, COUNT);
         assert_eq!(expected.0, Outcome::Rows { len: COUNT });
         assert_eq!(
-            walk_growing(&memory(&bytes), BASE, GS, &mut rows, &mut scratch),
+            walk(&memory(&bytes), BASE, GS, &mut rows, &mut scratch),
             expected.0
         );
         assert_eq!(&rows[..COUNT], expected.1.as_slice());
@@ -594,7 +561,7 @@ mod tests {
         let expected = run_reserved(&bytes, 8);
         let mut rows = Vec::new();
         let mut scratch = [0; 2 * country_intel_row::STRIDE];
-        let actual = walk_with_reserved_growing(&memory(&bytes), BASE, GS, &mut rows, &mut scratch);
+        let actual = walk_with_reserved(&memory(&bytes), BASE, GS, &mut rows, &mut scratch);
         assert_eq!(actual.outcome, expected.0.outcome);
         assert_eq!(actual.vector_count, expected.0.vector_count);
         assert_eq!(actual.reserved_required, expected.0.reserved_required);
@@ -646,26 +613,6 @@ mod tests {
         let mut bytes = fixture();
         p32(&mut bytes, TABLES[0] + COUNT, 0);
         assert_eq!(run(&bytes, 8).0, Outcome::Rows { len: 0 });
-    }
-
-    #[test]
-    fn capacity_truncates_with_the_exact_missing_kept_record_count() {
-        let (outcome, rows) = run(&fixture(), 1);
-        assert_eq!(
-            outcome,
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            }
-        );
-        assert_eq!(rows[0].target_index, 1);
-        assert_eq!(
-            run(&fixture(), 0).0,
-            Outcome::Truncated {
-                len: 0,
-                unread_rows: 2
-            }
-        );
     }
 
     #[test]
@@ -734,7 +681,7 @@ mod tests {
                 bytes: &bytes,
                 address,
             };
-            let mut output = [country_intel_row::Row::default(); 8];
+            let mut output = vec![country_intel_row::Row::default(); 8];
             let mut scratch = [0_u8; 4 * country_intel_row::STRIDE];
             assert_eq!(
                 walk(&memory, BASE, GS, &mut output, &mut scratch),
@@ -754,7 +701,7 @@ mod tests {
                 reason: "country intel record batch unreadable"
             }
         );
-        let mut output = [country_intel_row::Row::default(); 8];
+        let mut output = vec![country_intel_row::Row::default(); 8];
         assert_eq!(
             walk(&memory(&bytes), BASE, GS, &mut output, &mut []),
             Outcome::Unavailable {
@@ -767,7 +714,7 @@ mod tests {
     fn one_bulk_copy_per_scratch_fill_preserves_native_order() {
         // A one-record scratch forces three copies and must still keep order.
         let bytes = fixture();
-        let mut output = [country_intel_row::Row::default(); 8];
+        let mut output = vec![country_intel_row::Row::default(); 8];
         let mut scratch = [0_u8; country_intel_row::STRIDE];
         let outcome = walk(&memory(&bytes), BASE, GS, &mut output, &mut scratch);
         assert_eq!(outcome, Outcome::Rows { len: 2 });
@@ -943,23 +890,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn reserved_shortage_scans_whole_vector_and_rolls_back_sparse_suffix() {
-        let bytes = reserved_fixture(5);
-        let (capture, rows) = run_reserved(&bytes, 3);
-        assert_eq!(capture.outcome, Outcome::Rows { len: 2 });
-        assert_eq!(
-            capture.vector_count,
-            Err("reserved country intel row arena too small")
-        );
-        assert_eq!(capture.reserved_required, 4); // Exact sparse total, not dense seven.
-        assert!(rows.iter().all(|row| row.owner_country > 0));
-        let (capture, _) = run_reserved(&bytes, 1);
-        assert!(matches!(capture.outcome, Outcome::Truncated { .. }));
-        assert!(!capture.reserved_reached);
-        assert_eq!(capture.reserved_required, 0);
-    }
-
     struct ReservedMemory<'a> {
         bytes: &'a [u8],
         root: Result<ccountry::Country, &'static str>,
@@ -1013,7 +943,7 @@ mod tests {
         p64(&mut bytes, 0x3010, RESERVED_COUNTRY as u64); // Positive physical alias.
         p64(&mut bytes, RESERVED_COUNTRY, 1); // Cached authentication remains authoritative.
         let memory = cached_reserved(&bytes);
-        let mut rows = [country_intel_row::Row::default(); 8];
+        let mut rows = vec![country_intel_row::Row::default(); 8];
         let mut scratch = [0_u8; 64];
         let capture = walk_with_reserved(&memory, BASE, GS, &mut rows, &mut scratch);
         assert_eq!(capture.vector_count, Ok(3));
@@ -1035,7 +965,7 @@ mod tests {
         let bytes = reserved_fixture(5);
         let mut memory = cached_reserved(&bytes);
         memory.fail_once = Some(RESERVED_RECORDS + 2 * country_intel_row::STRIDE);
-        let mut rows = [country_intel_row::Row::default(); 8];
+        let mut rows = vec![country_intel_row::Row::default(); 8];
         let mut scratch = [0_u8; 64];
         let capture = walk_with_reserved(&memory, BASE, GS, &mut rows, &mut scratch);
         assert_eq!(capture.outcome, Outcome::Rows { len: 2 });
@@ -1123,7 +1053,7 @@ mod tests {
                 fail_first: false,
                 attempts: std::cell::Cell::new(0),
             };
-            let mut rows = [country_intel_row::Row::default(); 8];
+            let mut rows = vec![country_intel_row::Row::default(); 8];
             let mut scratch = [0_u8; 64];
             let capture = walk_with_reserved(&memory, BASE, GS, &mut rows, &mut scratch);
             assert_eq!(capture.vector_count, Ok(3));
@@ -1135,7 +1065,7 @@ mod tests {
             fail_first: true,
             attempts: std::cell::Cell::new(0),
         };
-        let mut rows = [country_intel_row::Row::default(); 8];
+        let mut rows = vec![country_intel_row::Row::default(); 8];
         let mut scratch = [0_u8; 64];
         let capture = walk_with_reserved(&memory, BASE, GS, &mut rows, &mut scratch);
         assert_eq!(capture.outcome, Outcome::Rows { len: 2 });
@@ -1208,14 +1138,14 @@ mod tests {
             assert_eq!(reader.reserved(), Err(reason));
             assert!(reader.at(1).unwrap().is_some());
             assert_eq!(reader.at(2), Err(reason));
-            let mut rows = [country_intel_row::Row::default(); 8];
+            let mut rows = vec![country_intel_row::Row::default(); 8];
             let mut scratch = [0_u8; 64];
             assert_eq!(
                 walk_in_reader(
                     &view,
                     BASE,
                     &reader,
-                    crate::walk::Buffer::Fixed(&mut rows),
+                    crate::walk::Buffer::Growing(&mut rows),
                     &mut scratch,
                     &mut |_, _, _| {},
                 ),

@@ -642,13 +642,12 @@ type Walked = Vec<Result<Captured, &'static str>>;
 /// Divisions per image gather in the test walk: a combat's.
 const IMAGE_BATCH: usize = 20;
 
-/// Fixed scratch for comparison within the unshared reader baseline's limits.
+/// Scratch for comparison with the unshared reader baseline.
 struct Scratch {
-    widths: [inputs::WidthTerm; main_combat::WIDTH_TERM_LIMIT],
-    modifiers: [reinforcement::ModifierTerm; main_reinforcement::MODIFIER_LIMIT],
-    supply: [reinforcement::SupplyTerm; main_reinforcement::SUPPLY_TERM_LIMIT],
-    acclimatization:
-        [reinforcement::AcclimatizationTerm; main_reinforcement::ACCLIMATIZATION_LIMIT],
+    widths: Vec<inputs::WidthTerm>,
+    modifiers: Vec<reinforcement::ModifierTerm>,
+    supply: Vec<reinforcement::SupplyTerm>,
+    acclimatization: Vec<reinforcement::AcclimatizationTerm>,
     transport: Vec<reinforcement::TransportTerm>,
     groups: crate::cname_group_member::GroupKeys,
     names: Vec<u8>,
@@ -657,10 +656,10 @@ struct Scratch {
 impl Scratch {
     fn new() -> Self {
         Self {
-            widths: [Default::default(); main_combat::WIDTH_TERM_LIMIT],
-            modifiers: [Default::default(); main_reinforcement::MODIFIER_LIMIT],
-            supply: [Default::default(); main_reinforcement::SUPPLY_TERM_LIMIT],
-            acclimatization: [Default::default(); main_reinforcement::ACCLIMATIZATION_LIMIT],
+            widths: vec![Default::default(); main_combat::WIDTH_TERM_LIMIT],
+            modifiers: vec![Default::default(); main_reinforcement::MODIFIER_LIMIT],
+            supply: vec![Default::default(); main_reinforcement::SUPPLY_TERM_LIMIT],
+            acclimatization: vec![Default::default(); main_reinforcement::ACCLIMATIZATION_LIMIT],
             transport: Vec::new(),
             groups: crate::cname_group_member::GroupKeys::with_capacity(64, 64),
             names: vec![0; 4096],
@@ -702,7 +701,7 @@ fn walk_main(memory: &World, divisions: &[(usize, u64)]) -> Walked {
                 handle,
                 &mut s.groups,
                 &mut crate::cname_group_member::Names {
-                    bytes: &mut s.names,
+                    bytes: crate::walk::Buffer::Growing(&mut s.names),
                     len: 0,
                     required: 0,
                 },
@@ -765,7 +764,7 @@ fn walk_shared(memory: &World, sources: &mut Sources, divisions: &[(usize, u64)]
                 handle,
                 &mut s.groups,
                 &mut crate::cname_group_member::Names {
-                    bytes: &mut s.names,
+                    bytes: crate::walk::Buffer::Growing(&mut s.names),
                     len: 0,
                     required: 0,
                 },

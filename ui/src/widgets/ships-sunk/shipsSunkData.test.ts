@@ -1,14 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { CountryGroupReply, ShipBattleTitle, ShipsSunkReply, ShipsSunkRow } from '../../generated/dashboard';
+import type { CountryGroupReply, ShipsSunkManifestReply, ShipsSunkReply, ShipsSunkRow } from '../../generated/dashboard';
 import { definition } from './definition.ts';
 import { logCountryRequests } from '../../charts/log/logData.ts';
-import { tooltipText } from '../../charts/tooltip.ts';
 import { contentKey, setToken } from '../../dashboard/options.ts';
 import { engineHour, formatDateTime } from '../../dashboard/calendar.ts';
 import { countryMatch } from '../../dashboard/groups.ts';
-import { shipAction, shipBattleLabel, shipBattleRequests, shipClassChoices, shipClassName, shipCountryLabels, shipCountryRequests, shipCauseLabel, shipDescription, shipLogOrder, shipLogRows, shipTooltip,
-  validateShipBattleTitlesReply, validateShipsSunkReply } from './shipsSunkData.ts';
+import { manifestClassChoices, shipAction, shipClassChoices, shipClassName, shipCountryLabels, shipCountryRequests, shipCauseLabel, shipDescription, shipLogOrder, shipLogRows, shipTooltip,
+  validateShipsSunkReply } from './shipsSunkData.ts';
 
 function row(overrides: Partial<ShipsSunkRow> = {}): ShipsSunkRow {
   return { sinkHour: 102, knownAt: 110, name: 'Recorded vessel', classIndex: 0, recordedNameIndex: 0,
@@ -16,7 +15,7 @@ function row(overrides: Partial<ShipsSunkRow> = {}): ShipsSunkRow {
     cause: 'hostile', attributionName: null, assistedKill: false, ...overrides };
 }
 function fixture(): ShipsSunkReply {
-  return { branchId: 'branch', available: true, firstHour: 100, lastHour: 120, firstRead: 100,
+  return { branchId: 'branch', window: 0, available: true, firstHour: 100, lastHour: 120, firstRead: 100,
     unread: [{ firstHour: 101, lastHour: 109 }], warnings: [], places: ['Renamed mod sea'], recordedNames: ['Recorded design'], classes: [
       { token: 999, key: 'mod/sea vessel', name: 'Extra mod ship class', icon: null },
       { token: 888, key: null, name: null, icon: null },
@@ -168,7 +167,6 @@ test('ships log retains fifty thousand sinking rows while only visible countries
   assert.equal(rows.length, 50000);
   assert.equal(rows[0].hour, 50099);
   assert.equal(logCountryRequests(rows.slice(0, 20), item => ({ hour: item.hour, tags: [item.item.victim, item.item.attacker] })).length, 40);
-  assert.equal(shipBattleRequests(rows.slice(0, 5000), data).length, 5000, 'drawn title requests have no chosen row cap');
   const ordered = shipLogOrder(data);
   const playbackRows = shipLogRows(data, 25099, [], 'both', () => true, null, ordered);
   assert.equal(playbackRows.length, 25000);
@@ -178,38 +176,6 @@ test('ships log retains fifty thousand sinking rows while only visible countries
 
 test('ships sunk uses the shared uncapped country-selection convention', () => {
   assert.equal(definition.countries.max, Number.MAX_SAFE_INTEGER);
-});
-
-test('drawn battle titles retain native content text, a supplying date and named missing data', () => {
-  const data = fixture();
-  const sunk = data.rows[0];
-  const battle: ShipBattleTitle = { index: 0, hour: sunk.knownAt, name: 'Mod engagement [literal]', missing: null };
-  const label = `Mod engagement [literal] (as of ${formatDateTime(sunk.knownAt)})`;
-  assert.equal(shipBattleLabel(sunk, battle), label);
-  const description = shipDescription(data, sunk, 'Victim', 'Attacker', battle);
-  assert.ok(description.includes(label));
-  assert.doesNotMatch(description, /Battle of/);
-  const tooltip = shipTooltip(data, sunk, 'Victim', 'Attacker', battle);
-  assert.equal(tooltip.subtitle, formatDateTime(sunk.sinkHour));
-  assert.equal(tooltip.rows.find(row => row.label === 'Battle')?.value, label);
-  assert.equal(shipBattleLabel(sunk, { ...battle, hour: sunk.sinkHour }), battle.name);
-  const notApplicable = { ...battle, name: null, missing: null };
-  assert.equal(shipBattleLabel(sunk, notApplicable), undefined);
-  assert.equal(shipTooltip(data, sunk, 'Victim', 'Attacker', notApplicable).rows.some(row => row.label === 'Battle'), false);
-  const missing = { ...battle, name: null, missing: 'province 71 has no recorded victory points' };
-  assert.equal(shipBattleLabel(sunk, missing), undefined);
-  assert.equal(shipTooltip(data, sunk, 'Victim', 'Attacker', missing).rows.find(row => row.label === 'Battle title unavailable'), undefined);
-  const rows = shipLogOrder(data);
-  assert.deepEqual(shipBattleRequests([rows[1], rows[0], rows[1]], data), [0, 3]);
-  assert.deepEqual(shipBattleRequests(rows, fixture()), [], 'old-source drawn indices cannot resolve new-source rows');
-  assert.deepEqual(shipBattleRequests(rows, undefined), []);
-  assert.deepEqual(shipCountryRequests(rows, fixture()), [], 'old-source countries cannot request names and flags from the new source');
-  assert.deepEqual(shipCountryRequests(rows, undefined), []);
-  assert.throws(() => validateShipBattleTitlesReply({ rows: [battle, missing], warnings: [] }), /malformed/, 'duplicate indices refuse');
-  assert.equal(validateShipBattleTitlesReply({ rows: [battle], warnings: [] }).rows[0].name, battle.name);
-  for (const value of [{ ...battle, missing: 'unknown' }, { ...battle, index: 0x100000000 }, { ...battle, hour: 1.5 }]) {
-    assert.throws(() => validateShipBattleTitlesReply({ rows: [value], warnings: [] }), /malformed/);
-  }
 });
 
 test('duplicate unknown class choices stay distinct without showing campaign tokens', () => {
@@ -223,14 +189,14 @@ test('duplicate unknown class choices stay distinct without showing campaign tok
   assert.ok(choices.every(choice => !choice.label.includes('private-campaign')));
 });
 
-test('battle-title failures qualify only pending hostile titles and never expose the request reason', () => {
-  const data = fixture(), error = new Error('Synthetic malformed battle title request');
-  const failed = shipTooltip(data, row(), 'Victim', 'Attacker', undefined, error);
-  assert.ok(failed.rows.some(row => row.label === 'Couldn’t load the battle title.'));
-  assert.equal(failed.rows.find(row => row.label === 'Couldn’t load the battle title.')?.detail, error.message);
-  assert.doesNotMatch(tooltipText(failed), /Synthetic malformed battle title request/);
-  const absent: ShipBattleTitle = { index: 0, hour: 110, name: null, missing: null };
-  for (const tooltip of [shipTooltip(data, row({ cause: 'cause' }), 'Victim', 'Attacker', undefined, error),
-    shipTooltip(data, row(), 'Victim', 'Attacker', absent, error)])
-    assert.ok(!tooltip.rows.some(row => row.label === 'Couldn’t load the battle title.'));
+
+test('the class choice covers the manifest classes, named or keyed, without campaign tokens in labels', () => {
+  const manifest: ShipsSunkManifestReply = { branchId: '1', windows: [], available: true, firstRead: 100, recordedNames: [], warnings: [],
+    classes: [{ token: 7, key: 'mod_frigate', name: 'Frigate', icon: null }, { token: 8, key: null, name: null, icon: null },
+      { token: 9, key: 'mod_frigate', name: 'Frigate', icon: null }] };
+  const choices = manifestClassChoices(manifest, 'private-campaign');
+  assert.deepEqual(choices.map(choice => choice.label), ['Class name unavailable', 'Frigate']);
+  assert.equal(choices[1].value, 'mod_frigate');
+  assert.ok(choices.every(choice => !choice.label.includes('private-campaign')));
+  assert.deepEqual(manifestClassChoices(undefined, 'x'), []);
 });

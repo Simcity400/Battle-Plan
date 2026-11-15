@@ -13,6 +13,8 @@ import { useContentRevision } from './contentRevision.ts';
 import { inFrame } from './frameUpdates.ts';
 import type { BoundTrack } from './model';
 import { loadTransientProduct } from './products.ts';
+import { busyWait } from '../shell/busy.ts';
+import { PerClient } from './prepare.ts';
 
 /** A flag as it is shown: drawn (its artwork URL and picture), or why there is none. */
 export type FlagRead = Readonly<{ url?: string; image?: CountryFlagImage; reason?: string }>;
@@ -45,9 +47,9 @@ interface Drawings {
   told: Set<string> | null;
 }
 
-const states = new WeakMap<DashboardClient, Drawings>();
+const states = new PerClient<Drawings>();
 const choiceKeys = new WeakMap<CountryFlagChoice, string>();
-const unavailableReads = new WeakMap<DashboardClient, Map<string, FlagRead>>();
+const unavailableReads = new PerClient<Map<string, FlagRead>>();
 
 function unavailableFlag(client: DashboardClient, reason: string): FlagRead {
   let reasons = unavailableReads.get(client);
@@ -152,7 +154,7 @@ async function draw(client: DashboardClient, state: Drawings, recording: Dashboa
       state.failures.set(key, count);
       state.entries.set(key, { failed: failure });
       // A failure for want of room is tried again after a wait; any other waits for `retryFlags`.
-      if (retryable) setTimeout(() => {
+      if (retryable) busyWait(() => {
         if (states.get(client) !== state || !('failed' in (state.entries.get(key) ?? {}))) return;
         state.entries.delete(key);
         tell(state, key);
@@ -250,8 +252,7 @@ export function useFlagReads(client: DashboardClient, recording: DashboardSource
     }
     if (shown.undrawn.length) drawFlags(client, recording, content, size, shown.undrawn);
     if (wait === undefined) return;
-    const timer = setTimeout(() => setVersion(value => value + 1), wait);
-    return () => clearTimeout(timer);
+    return busyWait(() => setVersion(value => value + 1), wait);
   }, [shown, active]); // eslint-disable-line react-hooks/exhaustive-deps
   const branches = useMemo(() => [...new Set(wanted.map(([branchId]) => branchId))], [wanted]);
   useEffect(() => {

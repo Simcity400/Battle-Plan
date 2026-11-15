@@ -232,6 +232,9 @@ impl Entity {
     }
 }
 
+/// Float rounding of a drawn point, in world units, for the flight record's motion check.
+const MOTION_SLACK: f32 = 1e-3;
+
 /// What one viewer frame applies to each province it updates.
 #[derive(Clone, Copy)]
 struct Frame {
@@ -305,6 +308,7 @@ impl Province {
             }
         }
         self.land_visits.retain(|slot, _| placed(slot));
+        let before = self.entities.len();
         self.entities.retain(|slot, entity| {
             let kind = slot.0 as usize;
             if frame.steady {
@@ -320,6 +324,7 @@ impl Province {
             // once when popup growth is requested; otherwise it shrinks.
             placed(slot) || (!was[kind] && entity.shrink(frame.delta, frame.gates))
         });
+        viewer_foundation::view_record::add("unit models", "history_destroyed", (before - self.entities.len()) as u64);
         for (&slot, parts) in targets.into_iter().flatten() {
             let kind = slot.0 as usize;
             if !frame.shown[kind] {
@@ -447,6 +452,7 @@ impl Province {
         }
         // The game has no budget guard; queued work can exceed the limit.
         budget.charge();
+        viewer_foundation::view_record::add("unit models", "history_created", 1);
         self.entities.insert(
             slot,
             Entity {
@@ -467,8 +473,10 @@ impl Province {
     /// returns early and a kind already shrinking keeps its entity.
     fn leave(&mut self, steady: bool) {
         let (shown, arrows) = (self.shown, self.arrows);
+        let before = self.entities.len();
         self.entities
             .retain(|slot, _| !steady && !shown[slot.0 as usize] && !arrows);
+        viewer_foundation::view_record::add("unit models", "history_left_view", (before - self.entities.len()) as u64);
         self.shown = [false; 2];
         self.arrows = false;
     }
@@ -504,6 +512,9 @@ pub struct History {
     bounds: Arc<BTreeMap<u32, [f32; 4]>>,
     /// The previous frame's animation clock.
     last: Option<f32>,
+    /// Each land figure's root as last drawn, its walk's identity and its animator's drawn point,
+    /// while the flight record is kept ([`Self::note_motion`]).
+    drawn_at: BTreeMap<Slot, ([f32; 3], u32, Option<[f32; 3]>)>,
     /// The view's province phase and dirty bits, shared with its counters ([`Self::share_schedule`]).
     schedule: Shared,
     /// The last incarnation handed out.
@@ -1069,7 +1080,48 @@ impl History {
                 },
             )
         }));
+        if viewer_foundation::view_record::on() {
+            self.note_motion();
+        }
         placed
+    }
+
+    /// The flight record's check of every land figure drawn against the frame before
+    /// ([`viewer_foundation::view_record`], section `units`): `jumps`, a figure whose root moved
+    /// further than its animator's drawn point did (a moving figure is drawn at that point, so
+    /// only a placement, an install or a re-creation can add to it); `restarts`, a figure whose walk
+    /// began again (its entity made anew: the game's own when its model changes); `appeared`, a
+    /// figure drawn that was not the frame before (it grows in at the content's popup speed);
+    /// `figures`, those drawn. Motion's own glides are the counters' animator's, counted there.
+    fn note_motion(&mut self) {
+        use viewer_foundation::view_record::{add, set};
+        let distance = |a: [f32; 3], b: [f32; 3]| (a[0] - b[0]).hypot(a[2] - b[2]);
+        let mut now = BTreeMap::new();
+        for at in self.provinces.populated.iter() {
+            for (slot, entity) in &self.provinces.records[at].province.entities {
+                let Some(part) = entity.parts.values().next().filter(|_| slot.0 == Kind::Land) else { continue };
+                let delta = self.movement.binary_search_by_key(slot, |entry| entry.0).ok().map(|index| self.movement[index].1);
+                let root = delta.map_or(part.target.instance, |delta| delta.apply(part.target.instance)).position;
+                now.insert(*slot, (root, part.identity, delta.map(|delta| delta.at)));
+            }
+        }
+        let (mut jumps, mut restarts, mut appeared) = (0, 0, 0);
+        for (slot, &(root, identity, drawn)) in &now {
+            let Some(&(was, was_identity, was_drawn)) = self.drawn_at.get(slot) else {
+                appeared += 1;
+                continue;
+            };
+            let allowed = drawn.zip(was_drawn).map_or(0.0, |(drawn, was)| distance(drawn, was));
+            if distance(root, was) > allowed + MOTION_SLACK {
+                jumps += 1;
+            }
+            restarts += u64::from(identity != was_identity);
+        }
+        add("units", "jumps", jumps);
+        add("units", "restarts", restarts);
+        add("units", "appeared", appeared);
+        set("units", "figures", now.len() as u64);
+        self.drawn_at = now;
     }
 
     pub fn combat_warnings(&self) -> Vec<String> {

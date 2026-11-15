@@ -1,5 +1,5 @@
-//! Fixed chained indexes for queue provenance. Only construction allocates;
-//! removal recycles a node and load reset changes a generation, never rehashes.
+//! Fixed chained indexes keyed by division. Only construction and the drain's
+//! growth allocate; removal recycles a node and load reset changes a generation.
 
 const NONE: usize = usize::MAX;
 
@@ -76,6 +76,16 @@ impl<K: Key, V: Copy> FixedIndex<K, V> {
         );
         Ok(index)
     }
+    /// A copy of the current entries in an index of `capacity` nodes.
+    pub(super) fn grown(&self, capacity: usize) -> std::io::Result<Self> {
+        let mut index = Self::try_new(capacity.max(self.len))?;
+        for (&key, &value) in self.iter() {
+            index
+                .insert(key, value)
+                .map_err(|_| engine_allocation::oom())?;
+        }
+        Ok(index)
+    }
     #[cfg(test)]
     pub(super) fn with_capacity(capacity: usize) -> Self {
         Self::try_new(capacity).unwrap()
@@ -83,7 +93,6 @@ impl<K: Key, V: Copy> FixedIndex<K, V> {
     pub(super) fn capacity(&self) -> usize {
         self.nodes.len()
     }
-    #[cfg(test)]
     pub(super) fn len(&self) -> usize {
         self.len
     }

@@ -16,18 +16,28 @@ export function Select({ id: triggerId, label, value, options, disabled = false,
 }) {
   const id = useId();
   const menu = usePopover('start');
-  const selected = options.find(option => option.value === value);
+  // Held until their content changes: an equal list passed anew keeps the open menu's measured rows where they are, so a
+  // pointer aimed at one still lands on it.
+  const [held, setHeld] = useState(options);
+  if (held !== options && !sameOptions(held, options)) setHeld(options);
+  const selected = held.find(option => option.value === value);
   return <>
     <button ref={menu.trigger} id={triggerId} type="button" className="select-trigger" popoverTarget={id} autoFocus={autoFocus} aria-haspopup="listbox" aria-expanded={menu.open}
       aria-label={label} disabled={disabled} data-detail={selected?.detail} data-tooltip={selected?.reason}>
       <span>{selected?.label ?? value}</span><Icon name="chevron-down" /></button>
     {/* Kept in place: inside another popover this keeps native light-dismiss nested. */}
     <Popover menu={menu} portal={false} id={id} className="select-menu" aria-label={label}>
-      {menu.open && <SelectMenu label={label} value={value} options={options} onChoose={chosen => { menu.close(); if (chosen !== value) onChange(chosen); }} />}
+      {menu.open && <SelectMenu label={label} value={value} options={held} onChoose={chosen => { menu.close(); if (chosen !== value) onChange(chosen); }} />}
 
     </Popover>
   </>;
 }
+
+const sameOptions = (a: readonly SelectOption[], b: readonly SelectOption[]) => a.length === b.length && a.every((option, at) => {
+  const other = b[at];
+  return option.value === other.value && option.label === other.label && !!option.disabled === !!other.disabled
+    && option.reason === other.reason && option.detail === other.detail;
+});
 
 const OPTION_HEIGHT = 32;
 function SelectMenu({ label, value, options, onChoose }: { label: string; value: string; options: readonly SelectOption[]; onChoose(value: string): void }) {

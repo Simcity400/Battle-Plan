@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { rawAmount, validateMarketReply, marketRequest } from './marketData.ts';
+import { rawAmount, validateMarketReply, marketRequest, marketLendLeaseWaits } from './marketData.ts';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
@@ -23,9 +23,10 @@ test('market catalogue card is a switchable Trade flows view', () => {
 });
 
 test('market unavailable collections remain unknown and malformed nested values refuse', () => {
-  const reply = { branchId: '1', hour: 7, offers: null, contracts: [], agreements: [], deliveries: [], warnings: ['writer unavailable'] };
+  const reply = { branchId: '1', offers: null, contracts: [], agreements: [], purchasesMissing: null, unattributed: 0, variants: [], icons: [], warnings: ['writer unavailable'] };
   assert.equal(validateMarketReply(reply).offers, null);
   assert.throws(() => validateMarketReply({ ...reply, offers: [{ country: 5000, tag: 'AA', inventory: [{ variant: '1', name: null, amountRaw: 1 }], prices: [], subsidies: [], subsidyTotalRaw: '0', autoSendMarketAccess: false }] }));
+  assert.throws(() => validateMarketReply({ ...reply, unattributed: undefined }), 'a reply says how many rows it could not attribute');
 });
 test('market requests preserve source, revision, date and unlimited country demand', () => {
   const track = { source: { id: 'source', revision: 'revision' }, branch: { id: '4' } };
@@ -37,35 +38,32 @@ test('market requests preserve source, revision, date and unlimited country dema
   assert.equal(request.revision, 'revision');
 });
 
-test('Trade flows market presentation keeps terms, schedules and terminal deliveries at the supplied hour', async () => {
+test('Trade flows market presentation keeps terms, schedules and live progress at the supplied hour', async () => {
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true }, server: { middlewareMode: true, watch: null, hmr: false, ws: false } });
   try {
     const { default: View } = await vite.ssrLoadModule('/ui/src/widgets/trade-flows/TradeMarketView.tsx');
     const item = { variant: '31', name: 'Mod equipment', amountRaw: '9007199254740993' };
-    const data = validateMarketReply({ branchId: '1', hour: 77, warnings: [],
+    const data = { ...validateMarketReply({ branchId: '1', warnings: [], purchasesMissing: null, unattributed: 0, variants: [], icons: [],
       offers: [{ country: 5000, tag: 'AAA', inventory: [item], prices: [{ variant: '31', name: 'Mod equipment', level: 2 }], subsidies: [], subsidyTotalRaw: '17', autoSendMarketAccess: true }],
-      contracts: [{ id: '17', seller: 'AAA', buyer: 'BBB', request: false, speed: 3, equipment: [item], prices: [{ ...item, amountRaw: '12345' }], levels: [], subsidies: [] }],
-      agreements: [{ id: '18', giver: 'AAA', receiver: 'BBB', revision: '3', activeSince: 1, lastDelivery: 77,
-        monthly: [item], percentage: [], once: [], delivered: [item], sunk: [], fuelDailyRaw: '32769', fuelPercentageRaw: '10001', fuelSentRaw: '17', fuelSunkRaw: '0', lastFuelDeliveredRaw: '17' }],
-      deliveries: [{ id: '1', occurrence: '7', agreement: '18', hour: 77, kind: 6, giver: 'AAA', receiver: 'BBB', item: { ...item, amountRaw: '0' }, lostRaw: '0', totalRaw: '0', lostTotalRaw: '0' }] });
-    const render = (selected?: string) => renderToStaticMarkup(createElement(View, { data, selected }));
+      contracts: [{ key: '9', id: '0000000000000017', seller: 'AAA', buyer: 'BBB', request: false, speed: 3, equipment: [item], prices: [{ ...item, amountRaw: '12345' }], levels: [], subsidies: [], purchase: true }],
+      agreements: [{ key: '8', id: '0000000000000018', giver: 'AAA', receiver: 'BBB', revision: '3', activeSince: 1, lastDelivery: 77,
+        monthly: [item], percentage: [], once: [], delivered: [item], sunk: [], fuelDailyRaw: '32769', fuelPercentageRaw: '10001', lastFuelDeliveredRaw: '17' }] }), hour: 77 };
+    const values = { get: (key: string) => ({ '9\u0000assigned': 2, '9\u0000convoys': 3, '9\u0000collected': 150000, '9\u0000deliveries': 4, '8\u0000fuelSent': 65536 } as Record<string, number>)[key], missing: () => 'Not read yet' };
+    const render = (selected?: string) => renderToStaticMarkup(createElement(View, { data, selected, values }));
     const html = render();
-    for (const title of ['International market', 'Lend-lease', 'Listed inventory', 'Asking price levels', 'Agreed prices (CIC)', 'Monthly', 'Once', 'Delivered', 'Agreement ended']) assert.ok(html.includes(title), title);
+    for (const title of ['International market', 'Lend-lease', 'Listed inventory', 'Asking price levels', 'Agreed prices (CIC)', 'Monthly', 'Once', 'Delivered']) assert.ok(html.includes(title), title);
     assert.match(html, /90071992547[.]40993/);
     assert.match(html, /Mod equipment/);
-    assert.match(render('agreement:18'), /<details open=""/);
-    assert.doesNotMatch(render('agreement:18'), /<summary[^>]*>.*Contract<\/summary>/);
-    const unknown = renderToStaticMarkup(createElement(View, { data: { ...data, offers: null, contracts: null, agreements: null, deliveries: null } }));
+    assert.match(html, /Convoys 2 of 3 · collected 1[.]5 CIC · deliveries 4/);
+    assert.match(html, /Fuel sent: 2 · lost: —/, 'a live cell not held reads as missing, never zero');
+    assert.match(render('agreement:0000000000000018'), /<details open=""/);
+    const unknown = renderToStaticMarkup(createElement(View, { data: { ...data, offers: null, contracts: null, agreements: null } }));
     assert.match(unknown, /not recorded/);
     assert.doesNotMatch(unknown, /No active agreements/);
-    const partial = validateMarketReply({ ...data, deliveries: [data.deliveries![0], {
-      ...data.deliveries![0], id: '2', agreement: '19', kind: 34,
-      item: { variant: '0', name: 'Delivery amount unavailable: cumulative baseline uncertified', amountRaw: '0' },
-    }] });
-    const missingAmount = renderToStaticMarkup(createElement(View, { data: partial }));
-    assert.match(missingAmount, /Agreement ended/);
-    assert.match(missingAmount, /Delivery amount unavailable: cumulative baseline uncertified/);
-    assert.doesNotMatch(missingAmount, /No deliveries observed/);
-    assert.doesNotMatch(missingAmount, /Equipment name unavailable: 0/);
   } finally { await vite.close(); }
+});
+
+test('the market view says by name that it waits on the market family until its product is served', () => {
+  assert.match(marketLendLeaseWaits(['trade-flows']) ?? '', /market widgets/);
+  assert.equal(marketLendLeaseWaits(['trade-flows', 'market-lendlease']), null);
 });

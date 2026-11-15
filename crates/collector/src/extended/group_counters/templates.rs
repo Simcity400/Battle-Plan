@@ -295,7 +295,7 @@ mod tests {
         put(&mut memory.0, 0x4000 + bucket::TYPE, handle);
         put(&mut memory.0, 0x4000 + bucket::OBJECT, 0x1000);
         memory.0[0x4000 + 13 * bucket::STRIDE + bucket::DISTANCE] = bucket::TERMINAL_DISTANCE;
-        let mut roots = [Root::default(); 1];
+        let mut roots = vec![Root::default(); 1];
         assert_eq!(
             corders_group::walk_roots(&memory, 0, &mut roots),
             engine_native::walk::Outcome::Rows { len: 1 }

@@ -1,10 +1,8 @@
 //! Display steps through the row and nested value codecs ([`crate::display`]).
 use super::*;
-use crate::display::{DISPLAY_PRECISION_FORMAT, Rounding, Step};
-use crate::value::value_struct;
+use crate::display::{DISPLAY_PRECISION_FORMAT, Step};
+use crate::rows::test_rows::{Gauge, SteppedRow, TENTH};
 
-const TENTH: Step = Step::fixed5(10_000, Rounding::TowardZero);
-const WHOLE: Step = Step::fixed5(100_000, Rounding::HalfAwayFromZero);
 
 #[test]
 fn naval_condition_operands_keep_raw_digits_through_capture_snapshot_and_delta() {
@@ -36,27 +34,6 @@ fn naval_condition_operands_keep_raw_digits_through_capture_snapshot_and_delta()
     assert_eq!(delta.apply(Some(row)).unwrap(), next);
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-struct Gauge {
-    id: u32,
-    level: i64,
-}
-value_struct!(Gauge { id: u32, level @ TENTH: i64 });
-opaque_value!(Vec<Gauge>);
-
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-struct SteppedRow {
-    id: u64,
-    exact: i64,
-    level: i64,
-    optional: Option<i64>,
-    recorded: Recorded<i64>,
-    pair: [i64; 2],
-    gauges: Vec<Gauge>,
-}
-typed_codec!(SteppedRow, 64, |row| row.id as u128,
- |key| Self { id: key as u64, ..Default::default() },
- { 0 => (exact): I64, 1 => (level): I64 @ TENTH, 2 => (optional): OptionalI64 @ TENTH, 3 => (recorded): I64 @ WHOLE, 4 => (pair): Opaque @ TENTH, 5 => (gauges): Opaque }, |_row| Ok(()));
 
 fn captured() -> SteppedRow {
     SteppedRow {

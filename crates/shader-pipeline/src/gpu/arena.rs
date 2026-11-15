@@ -202,6 +202,7 @@ impl Arena {
                 None => {
                     let offset = align(chunk.staged.len(), alignment);
                     chunk.staged.resize(offset, 0);
+                    super::stats::staged(bytes.len());
                     chunk.staged.extend_from_slice(bytes);
                     chunk.staged.resize(offset + reserved, 0);
                     if inner.recent.len() == RECENT {
@@ -225,6 +226,7 @@ impl Arena {
     /// Write `bytes` into a caller-owned buffer (`COPY_DST`, four-byte aligned) at the next flush,
     /// before the commands that read them.
     pub fn write(&self, buffer: &wgpu::Buffer, offset: u64, bytes: &[u8]) {
+        super::stats::staged(bytes.len());
         self.inner
             .borrow_mut()
             .writes
@@ -244,6 +246,7 @@ impl Arena {
         let chunk = &mut inner.chunks[inner.current];
         let offset = align(chunk.staged.len(), alignment);
         chunk.staged.resize(offset, 0);
+        super::stats::staged(bytes.len());
         chunk.staged.extend_from_slice(bytes);
         chunk.staged.resize(offset + size, 0);
         Ok(Slice {
@@ -278,6 +281,7 @@ impl Arena {
         let chunk = &mut inner.chunks[inner.current];
         let offset = align(chunk.staged.len(), 4);
         chunk.staged.resize(offset, 0);
+        super::stats::staged(bytes.len());
         chunk.staged.extend_from_slice(bytes);
         chunk.staged.resize(offset + size, 0);
         if inner.vertices.len() == RECENT {
@@ -513,7 +517,7 @@ mod tests {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let instance =
-            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+            crate::gpu::instance();
         let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
         let mut descriptor = wgpu::DeviceDescriptor::default();
         descriptor.required_limits.max_buffer_size = CHUNK;

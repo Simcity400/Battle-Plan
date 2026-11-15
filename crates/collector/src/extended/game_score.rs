@@ -154,7 +154,6 @@ pub(crate) struct Witnessed<'a> {
 /// strategic-air, base-registration or wing-payload walk is introduced.
 pub(crate) struct AirInputs {
     enabled: bool,
-    growing: bool,
     allocation_failure: Option<&'static str>,
     countries: Vec<AirCountry>,
     required_countries: usize,
@@ -182,7 +181,6 @@ impl AirInputs {
     fn new(enabled: bool, countries: usize, sites: usize, wings: usize) -> Self {
         Self {
             enabled,
-            growing: false,
             allocation_failure: None,
             countries: owned_vec(engine_allocation::default_vec(countries)),
             required_countries: 0,
@@ -194,13 +192,12 @@ impl AirInputs {
     }
     pub(crate) fn for_wing_job(wings: usize) -> Self {
         let [sites, observed_wings] = arena_hints();
-        let mut inputs = Self::new(
+        let inputs = Self::new(
             false,
             crate::country_scale::census_rows(0),
             sites,
             wings.max(observed_wings),
         );
-        inputs.growing = true;
         inputs
     }
     pub(crate) fn presize(&mut self) {
@@ -208,21 +205,6 @@ impl AirInputs {
         grow_vec(&mut self.countries, crate::country_scale::census_rows(0));
         grow_vec(&mut self.sites.first, sites);
         grow_vec(&mut self.wings.rows, wings);
-    }
-    /// Growth follows the executing pass, not the storage: the frame lends
-    /// its fixed arenas back to the worker job each hour (`install_air`), and
-    /// a pool miss starts from empty storage. A worker pass grows them from
-    /// the acquired headers like the shared census it rides on; callback and
-    /// typed passes keep their fixed limits.
-    pub(crate) fn set_growing(&mut self, growing: bool) {
-        self.growing = growing;
-    }
-    pub(crate) fn wing_limit(&self) -> Option<usize> {
-        self.enabled.then_some(if self.growing {
-            usize::MAX
-        } else {
-            self.wings.rows.len()
-        })
     }
     pub(crate) fn begin(&mut self, enabled: bool) {
         self.enabled = enabled;
@@ -255,7 +237,7 @@ impl AirInputs {
         self.required_countries = self.required_countries.max(slot_index.saturating_add(1));
         // Short storage still visits every owner and counts every site's header demand.
         let start = self.sites.len;
-        let read = if self.growing {
+        let read = {
             if let Err(error) = engine_native::walk::Buffer::Growing(&mut self.countries)
                 .ensure(self.required_countries)
             {
@@ -270,8 +252,6 @@ impl AirInputs {
                 entry,
                 engine_native::walk::Buffer::Growing(&mut self.sites.first).suffix(start),
             )
-        } else {
-            native::read_first_sites(memory, base, slot, entry, &mut self.sites.first[start..])
         };
         self.sites.required = self.sites.required.saturating_add(read.required);
         self.sites.len = self.sites.len.saturating_add(read.len);
@@ -290,8 +270,7 @@ impl AirInputs {
         }
         self.required_wings = self.required_wings.saturating_add(1);
         let len = self.written_wings;
-        if self.growing
-            && let Err(reason) = engine_native::walk::Buffer::Growing(&mut self.wings.rows)
+        if let Err(reason) = engine_native::walk::Buffer::Growing(&mut self.wings.rows)
                 .ensure(self.required_wings)
         {
             self.allocation_failure = Some(reason);
@@ -534,7 +513,7 @@ impl Captured {
         }
         let mut reads = crate::read_accounting::table(TABLES[0]);
         let started = qpc();
-        let capture = native::walk_country_inputs_growing(
+        let capture = native::walk_country_inputs(
             memory,
             base,
             state,
@@ -554,40 +533,11 @@ impl Captured {
         self.multiplier_outcome = Outcome::Rows { len: 1 };
         [country_ticks, 0, super::elapsed(started)]
     }
-    pub(crate) fn begin_air(&mut self) {
-        self.air.begin(self.enabled);
-    }
-    pub(crate) fn owner(
-        &mut self,
-        memory: &impl Memory,
-        base: usize,
-        slot: u32,
-        entry: Option<usize>,
-    ) {
-        self.air.owner(memory, base, slot, entry);
-    }
-    pub(crate) fn wing(
-        &mut self,
-        memory: &impl Memory,
-        pointer: usize,
-        row: &engine_native::cair_wing::ScoreLeaf,
-    ) {
-        self.air.wing(memory, pointer, row);
-    }
-    pub(crate) fn wing_limit(&self) -> Option<usize> {
-        self.air.wing_limit()
-    }
-    pub(crate) fn finish_air(&mut self, parent: Outcome) {
-        self.air.finish(parent);
-    }
     pub(crate) fn fail_air(&mut self, reason: &'static str) {
         self.air.finish(Outcome::Unavailable { reason });
     }
     pub(crate) fn install_air(&mut self, air: &mut AirInputs) {
         std::mem::swap(&mut self.air, air);
-        // A typed fallback on this frame never grows; the returned storage
-        // grows again on the worker's next pass.
-        self.air.set_growing(false);
         // The returned job grows its replacement buffers from this same hour's
         // demand before recycling; the spool grows the captured set separately.
         air.required_countries = air.required_countries.max(self.air.required_countries);

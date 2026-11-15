@@ -32,7 +32,7 @@ impl Capacities {
         state: usize,
     ) -> Result<(), &'static str> {
         // Size from the bounded map and every country list.
-        let demand = cnaval_base::walk(memory, base, state, &mut [], &mut []);
+        let demand = cnaval_base::count(memory, base, state);
         let rows = collector_extended_support::demand::rows(demand.outcome)?;
         crate::country_scale::raise(&mut self.rows, rows);
         crate::country_scale::raise(&mut self.countries, demand.required_countries);
@@ -125,7 +125,7 @@ impl Captured {
             }
             None => collector_naval_management::bases::Session::begin(memory, base),
         };
-        let walked = cnaval_base::walk_growing_observed(
+        let walked = cnaval_base::walk_observed(
             memory,
             base,
             state,

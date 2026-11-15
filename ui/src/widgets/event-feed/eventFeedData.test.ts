@@ -1,358 +1,123 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { deepFreeze } from '../../testFrozen.ts';
-import type { CountryGroupReply, EventFeedReply, EventFeedRow } from '../../generated/dashboard';
-import { countryMatch } from '../../dashboard/groups.ts';
-import { logCountryRequests } from '../../charts/log/logData.ts';
-import { resolveOptions } from '../../dashboard/options.ts';
-import { CATEGORIES, OPTIONS, definition } from './definition.ts';
-import { eventCountryName, eventDescription, eventTooltip, filteredEventRows, notRecorded, validateEventFeedPage, validateEventFeedReply } from './eventFeedData.ts';
-import { logPlaybackAt, logPlaybackIndex } from '../../charts/log/logPlayback.ts';
-import type { FeedFilter } from './eventFeedData';
+import type { LogPage, LogRow } from '../../charts/log/logData';
+import { eventDescription, eventTooltip, familyReveals, kindsRequest, familyRows, familyShown, feedFacets, feedLogRow, feedRow, pageNotes, pagesNoted, rowMatches,
+  validateFeedRow, validateSpan, withFamilyRows } from './eventFeedData.ts';
+import type { FeedEvent } from './eventFeedData';
+import type { EventFeedRow, FeedKindCode } from '../../generated/dashboard';
 
-const all: FeedFilter = { categories: new Set(CATEGORIES.map(category => category.value)),
-  country: () => true, firstHour: null };
-const row = (kind: EventFeedRow['kind'], category: EventFeedRow['category'], hour = 120, more: Partial<EventFeedRow> = {}): EventFeedRow => ({
-  id: JSON.stringify([kind, hour]), kind, category, hour, readHour: hour, nameHour: hour, exact: false,
-  tags: ['mod | country'], item: null, amount: null, ...more,
-});
-const reply = (rows: EventFeedRow[] = []): EventFeedReply => ({ branchId: '1', firstHour: 100, lastHour: 200,
-  windows: [{ firstHour: 100, lastHour: 200, count: Math.max(1, rows.length), categoryCounts: {
-    warsPeace: rows.filter(row => row.category === 'warsPeace').length,
-    diplomacy: rows.filter(row => row.category === 'diplomacy').length,
-    politics: rows.filter(row => row.category === 'politics').length,
-    milestones: rows.filter(row => row.category === 'milestones').length + (rows.length ? 0 : 1),
-  } }], rows, items: [], modifiers: [], texts: [], unavailable: [], warnings: [] });
-const named = { token: 'mod/item', name: 'A modded item', description: null,
-  icon: 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png', idea: null };
+let serial = 0;
+const row = (kind: EventFeedRow['kind'], hour: number, tags: string[], more: Partial<EventFeedRow> = {}): EventFeedRow => ({
+  id: `native:1:${serial++}`, hour, readHour: hour, nameHour: hour, exact: true, category: 'warsPeace', kind, tags,
+  participants: [tags[0] ?? null, tags[1] ?? null], item: null, amount: null, ...more });
+const family = (kind: EventFeedRow['kind'], hour: number, tags: string[], category: EventFeedRow['category'] = 'warsPeace'): EventFeedRow => ({
+  id: `${kind}:${hour}:${tags.join(',')}`, hour, readHour: hour, nameHour: hour, exact: true, category, kind, tags, item: null, amount: null });
+const page = (key: string, rows: readonly LogRow<FeedEvent>[] | undefined, count = rows?.length ?? 3): LogPage<FeedEvent> => ({ key, start: 0, end: 0, count, rows });
+const logRow = (event: EventFeedRow) => feedLogRow(event, event.id);
+const hours = (pages: readonly LogPage<FeedEvent>[]) => pages.map(page => page.rows?.map(held => held.hour) ?? null);
 
-test('scripted fires, news and sub-day decision lifecycles retain distinct occurrences and compact identities', () => {
-  const kinds = ['scriptEventFired', 'newsEventFired', 'eventOptionSelected', 'decisionSelected',
-    'decisionRemoved', 'decisionCancelled', 'decisionTimedOut', 'decisionActivated', 'decisionCompleted', 'decisionReenabled', 'decisionRemovalEffect', 'decisionCancellationEffect', 'decisionCompletionEffect', 'decisionTimeoutEffect', 'decisionDurationChanged'] as const;
-  const data = reply(kinds.map((kind, n) => row(kind, 'politics', 125, {
-    id: `native:7:${n}`, exact: true, readHour: 130, tags: ['actor', 'target'], participants: ['actor', 'target'], item: 0,
-    cause: { how: null, within: null, conference: null, state: null, ally: null, reason: null,
-      notes: ['Event instance: 7.', 'Selected native option ordinal: -1.'] },
-  })));
-  data.items = [{ ...named, token: 'synthetic.1' }];
-  validateEventFeedReply(data);
-  const rows = filteredEventRows(data, all);
-  assert.equal(rows.length, kinds.length);
-  assert.equal(new Set(rows.map(row => row.item.event.id)).size, kinds.length);
-  for (const at of rows) assert.match(eventDescription(at.item, tag => tag), /A modded item/);
-  assert.match(eventDescription(rows.find(row => row.item.event.kind === 'newsEventFired')!.item, tag => tag), /news/);
+test('a page row is its named row, validated, shown at its hour from its read, an icon the dashboard cannot draw dropped', () => {
+  const event = row('warDeclared', 100, ['GER', 'POL'], { readHour: 101, cause: { how: 'a diplomatic action', within: null, conference: null, state: null,
+    ally: null, reason: null, notes: [] } });
+  const mapped = feedRow({ key: '7', hour: 101, cells: {}, fields: { row: event } });
+  assert.deepEqual([mapped.key, mapped.hour, mapped.revealedHour, mapped.item.event], ['7', 100, 101, event]);
+  const scripted = row('scriptEventFired', 100, ['GER', 'GER'], { category: 'politics',
+    item: { token: 'news.1', name: 'News', icon: 'javascript:bad', description: null, options: [{ ordinal: 0, name: 'Fine' }] } });
+  assert.equal(feedRow({ key: '8', hour: 100, cells: {}, fields: { row: scripted } }).item.item?.icon, null);
+  assert.throws(() => feedRow({ key: '9', hour: 100, cells: {}, fields: { row: { ...event, participants: ['GER', 'ITA'] } } }), /malformed/,
+    'roles disagree with the tags');
+  assert.throws(() => feedRow({ key: '9', hour: 100, cells: {}, fields: { row: null } }), /malformed/, 'a row the feed does not show is never asked');
 });
 
-test('effect invocation is described separately from an actual terminal transition', () => {
-  const data = reply([row('decisionRemovalEffect', 'politics', 120, { item: 0 }),
-    row('decisionRemoved', 'politics', 120, { item: 0 })]);
-  data.items = [named];
-  const items = filteredEventRows(data, all).map(at => at.item);
-  const invocation = items.find(at => at.event.kind === 'decisionRemovalEffect')!;
-  const terminal = items.find(at => at.event.kind === 'decisionRemoved')!;
-  assert.match(eventDescription(invocation, tag => tag), /ran removal effects/);
-  assert.doesNotMatch(eventDescription(invocation, tag => tag), /ended decision/);
-  assert.match(eventDescription(terminal, tag => tag), /ended decision/);
+test('the kind facet takes the codes of the chosen categories, never a code no category holds', () => {
+  const kinds: FeedKindCode[] = [{ kind: 'warDeclared', code: 0, category: 'warsPeace' }, { kind: 'scriptEventFired', code: 8, category: 'politics' },
+    { kind: 'guaranteeGranted', code: 129, category: 'diplomacy' }];
+  assert.deepEqual(feedFacets(kinds, new Set(['warsPeace', 'diplomacy'])), [{ name: 'kind', values: [0, 129], tags: [] }]);
+  assert.equal(feedFacets(kinds, new Set()), null);
+  assert.equal(feedFacets(kinds, new Set(['milestones'])), null, 'no kind of the log is a milestone: the log is not asked with an empty filter');
+  assert.deepEqual(feedFacets(kinds, new Set(['milestones', 'politics'])), [{ name: 'kind', values: [8], tags: [] }]);
 });
 
-test('event tooltips show gameplay caveats without country-label provenance', () => {
-  for (const [kind, category, note] of [
-    ['warStarted', 'warsPeace', 'War entry; declaration or joining unknown.'],
-    ['ceasedToExist', 'milestones', 'Lost all owned states.'],
-    ['nukesIncreased', 'milestones', 'Stockpile increase.'],
-  ] as const) {
-    const data = reply([row(kind, category, 150, { nameHour: 149, amount: 1 })]);
-    const at = filteredEventRows(data, all)[0].item;
-    const tip = eventTooltip(at, () => 'Country')[0];
-    assert.equal(tip.note, note);
-    assert.ok(!tip.rows.some(row => row.label === 'Country last observed'));
-    assert.ok(tip.rows.some(row => row.label === 'Date'));
-  }
+test('a row matches a chosen country through any country it names at its own hour, a vanished one at its last', () => {
+  const chosen = (tag: string, hour: number) => tag === 'POL' && hour <= 150;
+  assert.equal(rowMatches(row('warDeclared', 100, ['GER', 'POL']), chosen), true, 'the target');
+  assert.equal(rowMatches(row('warJoined', 100, ['ITA', 'GER'], { cause: { how: null, within: null, conference: null, state: null, ally: 'POL', reason: null,
+    notes: [] } }), chosen), true, 'a join\'s ally');
+  assert.equal(rowMatches(family('ceasedToExist', 200, ['POL']), chosen), false);
+  assert.equal(rowMatches({ ...family('ceasedToExist', 200, ['POL']), nameHour: 140 }, chosen), true, 'named at its last read with states');
 });
 
-test('native roles stay unknown in their original positions and remain visible for all countries', () => {
-  const data = reply([row('annexed', 'warsPeace', 115, {
-    exact: true, readHour: 140, tags: ['mod,partner'], participants: [null, 'mod,partner'],
-  }), row('warJoined', 'warsPeace', 116, {
-    exact: true, readHour: 140, tags: [], participants: [null, null],
-  })]);
-  const rows = filteredEventRows(validateEventFeedReply(data), { ...all, allCountries: true });
-  assert.equal(rows.length, 2);
-  assert.equal(eventDescription(rows[1].item, tag => tag), 'A country not identified annexed mod,partner');
-  assert.equal(eventDescription(rows[0].item, tag => tag), 'A country not identified joined the war against a country not identified');
-  assert.equal(filteredEventRows(data, { ...all, allCountries: false, country: () => false }).length, 0);
-  assert.equal(filteredEventRows(data, { ...all, allCountries: false, country: tag => tag === 'mod,partner' }).length, 1);
-  assert.equal(logPlaybackAt(logPlaybackIndex(rows), 139).rows.length, 0);
-  assert.equal(logPlaybackAt(logPlaybackIndex(rows), 140).rows.length, 2);
-  assert.throws(() => validateEventFeedReply({ ...data, rows: [{ ...data.rows[0], participants: ['another country', null] }] }), /malformed/);
-  assert.throws(() => validateEventFeedReply({ ...data, rows: [{ ...data.rows[0], participants: undefined }] }), /malformed/);
+test('other families\' rows fall among the loaded pages by hour, wait for a page they could belong to, and stop at the head', () => {
+  const span = validateSpan({ branchId: '1', firstHour: 0, lastHour: 1000, kinds: [], unavailable: [], warnings: [],
+    rows: [family('warStarted', 50, ['GER', 'POL']), family('factionJoined', 150, ['ITA'], 'diplomacy'), family('capitulated', 250, ['POL']),
+      family('warStarted', 350, ['SOV', 'FIN'])] });
+  const rows = familyRows(span, new Set(['warsPeace', 'diplomacy']), null, null);
+  const first = page('0', [logRow(row('warDeclared', 100, ['GER', 'POL'])), logRow(row('annexed', 200, ['GER', 'AUS']))]);
+  const second = page('1', [logRow(row('warEnded', 300, ['GER', 'POL'])), logRow(row('released', 400, ['GER', 'SLO']))]);
+  assert.deepEqual(hours(withFamilyRows([first, second], rows, rows.length)), [[100, 200, 50, 150, 250], [300, 400, 350]]);
+  assert.equal(withFamilyRows([first, second], rows, rows.length)[0].count, 5, 'counted by its rows');
+  assert.deepEqual(hours(withFamilyRows([first, page('1', undefined, 500)], rows, rows.length)), [[100, 200, 50, 150], null],
+    'a row after the page\'s last waits for the next page');
+  assert.deepEqual(hours(withFamilyRows([first, second], rows, familyShown(rows, 260))), [[100, 200, 50, 150, 250], [300, 400]], 'the head has not read it');
+  assert.deepEqual(hours(withFamilyRows([], rows, 2)), [[50, 150]], 'no feed row yet: a page of their own');
+  assert.deepEqual(familyRows(span, new Set(['warsPeace']), 200, tag => tag === 'POL').map(held => held.hour), [250], 'category, range and country');
 });
 
-test('unchanged playback hours preserve feed row references while read, filter and content changes update them', () => {
-  const data = reply([row('focusCompleted', 'milestones', 110, { item: 0 }),
-    row('lawChanged', 'politics', 120), row('projectFinished', 'milestones', 130)]);
-  data.items = [named];
-  const index = logPlaybackIndex(filteredEventRows(data, all));
-  const first = logPlaybackAt(index, 110);
-  assert.equal(logPlaybackAt(index, 119, first), first);
-  const added = logPlaybackAt(index, 120, first);
-  assert.notEqual(added, first);
-  assert.deepEqual(added.rows.map(row => row.item.event.kind), ['lawChanged', 'focusCompleted']);
-  const filtered = logPlaybackAt(logPlaybackIndex(filteredEventRows(data, { ...all, categories: new Set(['politics']) })), 120, added);
-  assert.deepEqual(filtered.rows.map(row => row.item.event.kind), ['lawChanged']);
-  const content = { ...data, items: [{ ...named, name: 'A changed content name' }] };
-  const changed = logPlaybackAt(logPlaybackIndex(filteredEventRows(content, all)), 110, first);
-  assert.equal(changed.rows[0].item.item!.name, 'A changed content name');
+test("milestones alone are the span's rows, revealed by the hour each was read", () => {
+  const span = validateSpan({ branchId: '1', firstHour: 0, lastHour: 1000, kinds: [], unavailable: [], warnings: [],
+    rows: [{ ...family('projectFinished', 50, ['USA'], 'milestones'), readHour: 75 }, family('focusCompleted', 60, ['GER'], 'politics'),
+      family('nukesIncreased', 70, ['USA'], 'milestones'), family('nukesIncreased', 80, ['USA'], 'milestones')] });
+  const rows = familyRows(span, new Set(['milestones']), null, null);
+  assert.deepEqual(familyReveals(rows), [70, 75, 80], 'ascending by the read that revealed each');
+  assert.deepEqual(hours(withFamilyRows([], rows, familyShown(rows, 76))), [[50, 70]], 'no page: the rows read by the head, a page of their own');
+  assert.deepEqual(hours(withFamilyRows([], rows, familyShown(rows, null))), [[50, 70, 80]]);
 });
 
-test('country labels distinguish pending, failed and completed missing name reads', () => {
-  assert.equal(eventCountryName('opaque | tag', { name: 'opaque | tag' }), 'opaque | tag (loading name…)');
-  assert.equal(eventCountryName('opaque | tag', { name: 'opaque | tag', known: false }), 'opaque | tag (name not known)');
-  assert.equal(eventCountryName('opaque | tag', { name: 'opaque | tag', known: false, nameFailed: true }), 'opaque | tag (name not recorded)');
-  assert.equal(eventCountryName('opaque | tag', { name: 'Recorded name', known: true }), 'Recorded name');
+test('a row reads as a sentence naming its countries, how it happened and the ally a join fought beside', () => {
+  const name = (tag: string) => ({ GER: 'Germany', POL: 'Poland', ITA: 'Italy' })[tag] ?? tag;
+  const join = row('warJoined', 100, ['ITA', 'POL'], { cause: { how: 'a call to arms', within: null, conference: '7', state: null, ally: 'GER', reason: 'ally',
+    notes: ['against every enemy of the ally\'s side'] } });
+  assert.equal(eventDescription({ event: join, item: null }, name), 'Italy joined the war against Poland through a call to arms, alongside Germany');
+  const tooltip = eventTooltip({ event: join, item: null }, name)[0];
+  assert.deepEqual(tooltip.rows.map(held => held.label), ['Date', 'How', 'Hostility reason', 'Peace conference', 'against every enemy of the ally\'s side']);
+  const unknown = row('annexed', 100, ['GER'], { participants: ['GER', null] });
+  assert.equal(eventDescription({ event: unknown, item: null }, name), 'Germany annexed a country not identified');
+  const taken = row('stateTransferred', 100, ['GER', 'POL'], { cause: { how: null, within: null, conference: null, state: 64, ally: null, reason: null, notes: [] } });
+  assert.equal(eventDescription({ event: taken, item: null }, name), 'Germany took state 64 from Poland', 'a state not named is its number');
+  assert.equal(eventTooltip({ event: row('warEnded', 100, ['GER', 'POL']), item: null }, name)[0].rows.at(-1)?.value, 'Not recorded in this recording',
+    'a native row without its cause says so');
 });
 
-test('every recorded event has honest wording and keeps countries as opaque identities', () => {
-  const cases: [EventFeedRow['kind'], EventFeedRow['category'], string][] = [
-    ['warStarted', 'warsPeace', 'became at war with'], ['peace', 'warsPeace', 'was no longer at war with'],
-    ['capitulated', 'warsPeace', 'capitulated'], ['ceasedToExist', 'warsPeace', 'ceased to exist'],
-    ['factionJoined', 'diplomacy', 'joined'], ['factionLeft', 'diplomacy', 'left'],
-    ['becameSubject', 'diplomacy', 'became a subject of'], ['guaranteeGranted', 'diplomacy', 'guaranteed the independence of'],
-    ['rulingPartyChanged', 'politics', 'changed its ruling party to'], ['lawChanged', 'politics', 'adopted'],
-    ['advisorHired', 'politics', 'appointed'], ['focusCompleted', 'milestones', 'completed focus'],
-    ['projectFinished', 'milestones', 'completed special project'],
-    ['nukesIncreased', 'milestones', 'increased its nuclear stockpile by 2 bombs'],
-  ];
-  const data = reply(cases.map(([kind, category], index) => row(kind, category, 120 + index,
-    { tags: ['mod | country', 'mod,partner'], item: 0, amount: kind === 'nukesIncreased' ? 2 : null })));
-  data.items = [named];
-  const rows = filteredEventRows(validateEventFeedReply(data), all);
-  assert.equal(rows.length, cases.length);
-  for (const [kind, , words] of cases) {
-    const at = rows.find(candidate => candidate.item.event.kind === kind)!;
-    const text = eventDescription(at.item, tag => tag === 'mod | country' ? 'Country at this hour' : 'Partner at this hour');
-    assert.ok(text.includes(words), text);
-    assert.ok(text.startsWith('Country at this hour'), text);
-    assert.equal(at.by, false, 'a listed event shows its day, never "by"');
-  }
+test('what pages say beside their rows is one line a note, its counts over every page held added, and a malformed page refused', () => {
+  const refused = { kind: 'content', label: 'Event text', reason: 'The event database is unavailable', count: 2 };
+  const first = pageNotes({ unavailable: [refused], warnings: ['Read at 10 lost'] });
+  const second = pageNotes({ unavailable: [{ ...refused, count: 3 }, { kind: 'content', label: 'Pictures', reason: 'No art', count: null }], warnings: [] });
+  assert.deepEqual(pagesNoted([...first, ...second]), ['Read at 10 lost', 'Event text: Not recorded — The event database is unavailable (5 counted)',
+    'Pictures: Not recorded — No art']);
+  assert.throws(() => pageNotes({ unavailable: [{ kind: 'content' }], warnings: [] }), /malformed/);
 });
 
-test('native dates stay exact but wait for their supplying read, and every row shows only its day', () => {
-  const data = reply([row('focusCompleted', 'milestones', 115, { exact: true, readHour: 140, nameHour: 115 }),
-    row('lawChanged', 'politics', 120)]);
-  const index = logPlaybackIndex(filteredEventRows(data, all));
-  assert.deepEqual(logPlaybackAt(index, 119).rows, []);
-  assert.equal(logPlaybackAt(index, 120).rows[0].by, false);
-  const exact = logPlaybackAt(index, 140).rows.find(candidate => candidate.item.event.kind === 'focusCompleted')!;
-  assert.equal(exact.hour, 115);
-  assert.equal(exact.revealedHour, 140);
-  assert.equal(exact.by, false);
-  const labels = eventTooltip(exact.item, tag => tag)[0].rows?.map(row => row.label) ?? [];
-  assert.equal(labels[0], 'Date');
-  assert.ok(!labels.some(label => /observed by|supplying|Native date/i.test(String(label))), 'the hover gives the day, not reads or bounds');
-  assert.ok(!labels.includes('Artwork'), 'an event without a picture says nothing about artwork');
-  assert.doesNotMatch(String(eventTooltip(exact.item, tag => tag)[0].rows?.[0].value), /·/, 'no hour');
-  assert.deepEqual(filteredEventRows(data, { ...all, firstHour: 121 }), []);
+test('a nuclear strike names its bomb and target, totals only its complete parts, and a state-less impact says so', () => {
+  const strike = { province: 13000, state: 1204, buildingLevels: 2.5, warSupport: -25, units: 1, manpowerLost: null, equipmentLost: null,
+    notRecorded: ['equipment: writers not forwarded (1×)'] };
+  const event = validateFeedRow({ ...row('nuclearStrike', 40, ['USA', 'JAP'], { readHour: 41, item: { token: 'nuclear_bomb', name: 'Atomic bomb', icon: null,
+    description: null } }), strike });
+  const at = { event, item: event.item };
+  const name = (tag: string) => tag;
+  assert.equal(eventDescription(at, name, () => 'Hiroshima'), 'USA dropped Atomic bomb on JAP');
+  const [tip] = eventTooltip(at, name, () => 'Hiroshima');
+  assert.deepEqual(tip.rows.slice(1, 4).map(item => item.value), ['Hiroshima', '13000', '2.5']);
+  assert.ok(tip.rows.some(item => item.label === 'Manpower lost' && item.value === 'Not fully recorded'));
+  assert.ok(!tip.rows.some(item => item.label === 'Cause'), 'a strike has no recorded cause to miss');
+  const stateless = validateFeedRow({ ...row('nuclearStrike', 40, ['USA'], { participants: ['USA', null], item: null }), strike: { ...strike, state: null } });
+  assert.equal(eventDescription({ event: stateless, item: null }, name), 'USA dropped a nuclear bomb of a type not known on a province without a state');
+  assert.throws(() => validateFeedRow({ ...row('warDeclared', 40, ['USA', 'JAP']), strike }), /malformed/, 'only a strike carries one');
 });
 
-test('modded focus, law and project retain content names and artwork, with the shared idea tooltip', () => {
-  const data = reply([row('focusCompleted', 'milestones', 110, { item: 0 }), row('lawChanged', 'politics', 120, { item: 1 }),
-    row('projectFinished', 'milestones', 130, { item: 2 })]);
-  data.items = ['Focus from a mod', 'Law from a mod', 'Project from a mod'].map(name => ({ ...named, name }));
-  data.items[1].idea = { token: 'mod/item', category: 'mod_category', slot: 'mod_slot', law: true, designer: false,
-    effectsKnown: true, unknown: null, effects: [], targeted: [], equipment: [], research: [], traits: [], tooltips: [] };
-  const rows = filteredEventRows(validateEventFeedReply(data), all);
-  for (const item of rows) {
-    assert.equal(item.item.item?.icon, named.icon);
-    assert.ok(eventDescription(item.item, tag => tag).includes(item.item.item!.name!));
-  }
-  assert.equal(filteredEventRows(data, { ...all, categories: new Set(['politics']) }).length, 1);
-  const law = rows.find(item => item.item.event.kind === 'lawChanged')!;
-  assert.ok(eventTooltip(law.item, tag => tag)[0].title?.includes('Law from a mod'));
-});
-
-test('renames and disappeared countries request only their row-hour identities without later names', () => {
-  const data = reply([row('focusCompleted', 'milestones', 110), row('rulingPartyChanged', 'politics', 150),
-    row('ceasedToExist', 'warsPeace', 170, { nameHour: 169 })]);
-  const rows = filteredEventRows(data, all);
-  assert.deepEqual(logCountryRequests(rows, candidate => ({ hour: candidate.item.event.nameHour, tags: candidate.item.event.tags })),
-    [{ hour: 169, tag: 'mod | country' }, { hour: 150, tag: 'mod | country' }, { hour: 110, tag: 'mod | country' }]);
-  const names = new Map([[110, 'Old name'], [150, 'New name'], [169, 'Last observed name']]);
-  assert.ok(eventDescription(rows[2].item, () => names.get(rows[2].item.event.nameHour)!).startsWith('Old name'));
-  assert.ok(eventDescription(rows[0].item, () => names.get(169)!).startsWith('Last observed name'));
-  assert.match(eventTooltip(rows[0].item, tag => tag)[0].note!, /Lost all owned states/);
-});
-
-test('country filters use row hours and last-known membership for left and vanished countries', () => {
-  const data = reply([row('peace', 'warsPeace', 110, { tags: ['one', 'two'] }), row('peace', 'warsPeace', 150, { tags: ['one', 'two'] })]);
-  const filter = { ...all, country: (tag: string, hour: number) => tag === 'two' && hour === 110 };
-  assert.deepEqual(filteredEventRows(data, filter).map(item => item.hour), [110]);
-  const match = countryMatch({ kind: 'all' }, [], undefined, 200);
-  assert.equal(match.matches('AI or human | opaque', 110), true);
-  assert.equal(filteredEventRows(data, { ...all, country: () => false }).length, 0);
-  const groups: CountryGroupReply = { branchId: '1', warnings: [], identityChanges: [], humans: [], wars: [],
-    countryIdentities: [{ tag: 'two', identities: [{ firstHour: 100, lastHour: 200, slot: 1, countryId: 10 }] }],
-    warStarts: [], capitulations: [], unobserved: { humans: [], wars: [], factions: [{ firstHour: 145, lastHour: 155 }] },
-    factions: [{ id: '7', name: 'Modded faction', nameReason: null, recordedName: 'mod_faction', firstHour: 100, lastHour: 200,
-      names: [{ firstHour: 100, lastHour: 144, name: 'Modded faction', reason: null },
-        { firstHour: 156, lastHour: 200, name: 'Modded faction', reason: null }],
-      members: [{ tag: 'two', firstHour: 100, lastHour: 200 }], leaders: [], incomplete: [] }] };
-  const selected = countryMatch({ kind: 'group', group: { type: 'faction', id: '7' }, membership: 'hour', aggregate: false }, [], groups, 200);
-  assert.deepEqual(filteredEventRows(data, { ...all, country: selected.matches }).map(candidate => candidate.hour), [110]);
-  const ended = reply([row('factionLeft', 'diplomacy', 145, { tags: ['two'], nameHour: 144 }),
-    row('ceasedToExist', 'warsPeace', 150, { tags: ['two'], nameHour: 144 })]);
-  assert.deepEqual(filteredEventRows(ended, { ...all, country: selected.matches }).map(candidate => candidate.hour), [150, 145]);
-});
-
-test('missing captures have one explicit adapter, and bad icons do not discard named mod content', () => {
-  const data = reply([row('focusCompleted', 'milestones', 120, { item: 0 })]);
-  data.items = [{ ...named, icon: 'javascript:bad' }];
-  data.unavailable = [{ kind: 'drops', label: 'Nuclear drops', reason: 'Only stockpile amounts were captured.', count: null },
-    { kind: 'mod/refused', label: 'Modded form', reason: 'Unsupported scripted artwork: mod/refused.', count: 3 }];
-  deepFreeze(data);
-  const checked = validateEventFeedReply(data);
-  assert.equal(checked.items[0].icon, null);
-  assert.equal(checked.items[0].name, named.name);
-  assert.equal(data.items[0].icon, 'javascript:bad');
-  assert.notEqual(checked, data);
-  assert.notEqual(checked.items, data.items);
-  assert.notEqual(checked.items[0], data.items[0]);
-  assert.equal(checked.rows, data.rows);
-  assert.deepEqual(validateEventFeedReply(data), checked);
-  assert.equal(validateEventFeedReply(deepFreeze(checked)), checked);
-  assert.match(notRecorded(checked)[0], /Not recorded.*Only stockpile/);
-  assert.ok(notRecorded(checked)[0].includes('Not recorded — '));
-  assert.match(notRecorded(checked)[1], /mod\/refused.*3 counted/);
-  assert.throws(() => validateEventFeedReply({ ...data, rows: [{ ...data.rows[0], readHour: 119 }] }));
-  assert.throws(() => validateEventFeedReply({ ...data, rows: [{ ...data.rows[0], item: 99 }] }));
-  assert.throws(() => validateEventFeedReply({ ...data, rows: [data.rows[0], data.rows[0]] }));
-});
-
-test('country rows keep every observed match and do not invent empty-capture events', () => {
-  const data = reply(Array.from({ length: 8 }, (_, index) => row('nukesIncreased', 'milestones', 120,
-    { id: `nuke/${index}`, tags: [`mod country ${index}`], amount: 1 })));
-  assert.equal(filteredEventRows(validateEventFeedReply(data), all).length, 8);
-  assert.equal(filteredEventRows(reply([]), all).length, 0);
-});
-
-test('country filtering happens once per prepared page and never on unchanged playback hours', () => {
-  const data = reply(Array.from({ length: 8 }, (_, index) => row('focusCompleted', 'milestones', 120,
-    { id: `focus/${index}`, tags: [`opaque ${index}`], readHour: 140 })));
-  let countryChecks = 0;
-  const index = logPlaybackIndex(filteredEventRows(data, { ...all, country: () => { countryChecks++; return true; } }));
-  assert.equal(countryChecks, 8);
-  const before = logPlaybackAt(index, 120);
-  for (let hour = 121; hour < 140; hour++) assert.equal(logPlaybackAt(index, hour, before), before);
-  const arrived = logPlaybackAt(index, 140, before);
-  assert.equal(arrived.rows.length, 8);
-  assert.equal(logPlaybackAt(index, 200, arrived), arrived);
-  assert.equal(countryChecks, 8);
-});
-
-test('war and peace sentences list every counterparty and guarantees retain their recorded direction', () => {
-  const data = reply([row('warStarted', 'warsPeace', 110, { tags: ['actor', 'one', 'two', 'three'] }),
-    row('peace', 'warsPeace', 120, { tags: ['actor', 'one', 'two'] }),
-    row('guaranteeGranted', 'diplomacy', 130, { tags: ['guarantor', 'guaranteed'] })]);
-  const rows = filteredEventRows(data, all);
-  assert.equal(eventDescription(rows[2].item, tag => tag), 'actor became at war with one, two and three');
-  assert.equal(eventDescription(rows[1].item, tag => tag), 'actor was no longer at war with one and two');
-  assert.equal(eventDescription(rows[0].item, tag => tag), 'guarantor guaranteed the independence of guaranteed');
-});
-
-test('defaults match the approved log and obsolete technology options cannot enable events', () => {
-  const options = resolveOptions(OPTIONS, {});
-  assert.equal(options.density, 'comfortable');
-  assert.equal(options.months, false);
-  assert.equal(options.chips, true);
-  assert.equal(Object.hasOwn(options, 'technologies'), false);
-  assert.deepEqual(resolveOptions(OPTIONS, { technologies: true }), options);
-  assert.deepEqual(resolveOptions(OPTIONS, { technologies: false }), options);
-  assert.equal(options.artwork, true);
-  assert.equal(definition.countries.all, true);
-  assert.equal(definition.countries.max, Number.MAX_SAFE_INTEGER);
-  for (const category of CATEGORIES) assert.equal(options[category.value], true);
-});
-
-test('technology completion rows are outside the Event feed contract', () => {
-  const data = reply([row('focusCompleted', 'milestones')]);
-  assert.throws(() => validateEventFeedReply({ ...data, rows: [{ ...data.rows[0], kind: 'technologyResearched' }] }),
-    /event feed reply is malformed/);
-});
-
-test('native causes say how an event happened, name the ally and the state, and older rows say none was recorded', () => {
-  const cause = { how: 'a call to arms', within: 'a diplomatic action', conference: null, state: null,
-    ally: 'mod | ally', reason: 'ally', notes: ['against every enemy of the ally side'] };
-  const data = validateEventFeedReply(reply([
-    row('warJoined', 'warsPeace', 120, { exact: true, tags: ['mod | joiner', 'mod | enemy'],
-      participants: ['mod | joiner', 'mod | enemy'], cause }),
-    row('stateTransferred', 'warsPeace', 121, { exact: true, tags: ['mod | taker', 'mod | loser'],
-      participants: ['mod | taker', 'mod | loser'], cause: { ...cause, how: 'an annexation', ally: null, reason: null,
-        notes: [], state: 64, conference: '30064771121' } }),
-    row('warEnded', 'warsPeace', 122, { exact: true, tags: ['mod | a', 'mod | b'], participants: ['mod | a', 'mod | b'] }),
-  ]));
-  const rows = filteredEventRows(data, all);
-  const state = (_hour: number, id: number) => `Danzig (${id})`;
-  assert.equal(eventDescription(rows[2].item, tag => tag, state),
-    'mod | joiner joined the war against mod | enemy through a call to arms, alongside mod | ally');
-  assert.equal(eventDescription(rows[1].item, tag => tag, state),
-    'mod | taker took Danzig (64) from mod | loser through an annexation');
-  assert.equal(eventDescription(rows[0].item, tag => tag), 'mod | a and mod | b were no longer at war');
-  const joined = eventTooltip(rows[2].item, tag => tag)[0].rows!;
-  assert.deepEqual(joined.slice(1, 5).map(item => [item.label, item.value]), [['How', 'a call to arms'],
-    ['During', 'a diplomatic action'], ['Hostility reason', 'ally'], ['against every enemy of the ally side', undefined]]);
-  assert.equal(eventTooltip(rows[1].item, tag => tag)[0].rows!.find(item => item.label === 'Peace conference')?.value, '30064771121');
-  assert.equal(eventTooltip(rows[0].item, tag => tag)[0].rows!.find(item => item.label === 'Cause')?.value,
-    'Not recorded in this recording');
-  assert.throws(() => validateEventFeedReply({ ...data, rows: [{ ...data.rows[0], cause: { ...cause, ally: 7 } }] }), /malformed/);
-  assert.throws(() => validateEventFeedReply(reply([row('lawChanged', 'politics', 120, { cause })])), /malformed/);
-});
-
-test('a nuclear strike names its bomb, launcher and target owner, with totals only for fully recorded parts', () => {
-  const strike = { province: 13000, state: 2, buildingLevels: 2.5, warSupport: -20, units: 3, manpowerLost: 2500,
-    equipmentLost: null, notRecorded: ['equipment: equipment destruction writers not forwarded (1×)'] };
-  const data = reply([row('nuclearStrike', 'warsPeace', 115, {
-    exact: true, readHour: 116, tags: ['mod | country', 'mod,partner'], participants: ['mod | country', 'mod,partner'],
-    item: 0, strike,
-  }), row('nuclearStrike', 'warsPeace', 117, {
-    exact: true, readHour: 117, tags: ['mod | country'], participants: ['mod | country', null],
-    strike: { ...strike, state: null, notRecorded: [] },
-  })]);
-  data.items = [{ ...named, name: 'Thermonuclear Bomb' }];
-  const rows = filteredEventRows(validateEventFeedReply(data), all);
-  const at = (hour: number) => rows.find(candidate => candidate.item.event.hour === hour)!.item;
-  assert.equal(eventDescription(at(115), tag => tag), 'mod | country dropped Thermonuclear Bomb on mod,partner');
-  assert.equal(eventDescription(at(117), tag => tag),
-    'mod | country dropped a nuclear bomb of a type not known on a province without a state');
-  const tooltip = eventTooltip(at(115), tag => tag, (hour, state) => hour === 115 && state === 2 ? 'Moscow' : null)[0].rows!;
-  const value = (label: string) => tooltip.find(entry => entry.label === label)?.value;
-  assert.equal(value('State'), 'Moscow');
-  assert.equal(value('Building levels destroyed'), (2.5).toLocaleString());
-  assert.equal(value('War support'), '-20%');
-  assert.equal(value('Equipment destroyed'), 'Not fully recorded');
-  assert.equal(value('Not recorded'), strike.notRecorded[0]);
-  assert.throws(() => validateEventFeedReply({ ...data, rows: [{ ...data.rows[0], strike: undefined }] }), /malformed/);
-  assert.throws(() => validateEventFeedReply(reply([row('lawChanged', 'politics', 120, { strike })])), /malformed/);
-});
-
-test('kinds without game artwork have their own icon', async () => {
-  const { EVENT_ICONS } = await import('./definition.ts');
-  assert.deepEqual([EVENT_ICONS.warDeclared, EVENT_ICONS.civilWarWarTransferred, EVENT_ICONS.peace, EVENT_ICONS.capitulated,
-    EVENT_ICONS.becameSubject, EVENT_ICONS.rulingPartyChanged], ['swords', 'flag-torn', 'olive-branch', 'flag', 'link', 'ballot']);
-  assert.deepEqual([EVENT_ICONS.warEnded, EVENT_ICONS.peaceConferenceStarted, EVENT_ICONS.nuclearStrike], ['olive-branch', 'handshake', 'sunburst']);
-});
-
-test('prepared cursor pages retain duplicate native occurrences and keep IDs inside the row owner', () => {
-  const first = row('warDeclared', 'warsPeace', 125, { id: 'native-99', exact: true, readHour: 150, tags: ['actor', 'target'], participants: ['actor', 'target'] });
-  const data = { ...reply([first, { ...first, readHour: 151 }]), windows: [] };
-  const page = validateEventFeedPage({ reply: data, nextCursor: 'keeps-live-200-native-125' });
-  assert.equal(page.reply.rows.length, 2);
-  const rows = filteredEventRows(page.reply, all);
-  assert.notEqual(rows[0].key, rows[1].key);
-  assert.deepEqual(rows.map(row => row.item.event.id), ['native-99', 'native-99']);
-  assert.throws(() => validateEventFeedPage({ reply: data, nextCursor: 125 }), /malformed/);
-  assert.equal(validateEventFeedPage({ reply: { ...data, rows: [] }, nextCursor: 'next' }).nextCursor, 'next',
-    'an obsolete raw project page retains its advancing continuation');
-  assert.throws(() => validateEventFeedPage({ reply: data, nextCursor: '' }), /no progress/);
-  assert.equal(validateEventFeedPage({ reply: { ...data, rows: [] }, nextCursor: null }).reply.rows.length, 0);
-  assert.throws(() => validateEventFeedPage({ reply: reply(), nextCursor: null }), /manifest/);
+test("the kinds' codes are asked alone, apart from the span of no family whose notes walk its reads", () => {
+  const track = { source: { id: 's', revision: 'r' }, branch: { id: '3' } };
+  assert.deepEqual(kindsRequest(track), { sourceId: 's', revision: 'r', product: 'event-feed-span', params: { branchId: '3', categories: [], kindsOnly: true } });
+  const kinds: FeedKindCode[] = [{ kind: 'warStarted', code: 4, category: 'warsPeace' }];
+  const reply = validateSpan({ branchId: '3', firstHour: 1, lastHour: 9, kinds, rows: [], unavailable: [], warnings: [] });
+  assert.deepEqual(reply.kinds, kinds);
 });

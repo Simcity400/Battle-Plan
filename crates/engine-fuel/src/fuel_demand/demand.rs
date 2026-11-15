@@ -123,7 +123,7 @@ fn demand_inner(
             )?;
         }
     }
-    let group_count = match corders_group::walk_roots(memory, base, &mut []) {
+    let group_count = match corders_group::count_roots(memory, base) {
         Outcome::Rows { len } => len,
         Outcome::Truncated { len, unread_rows } => len
             .checked_add(unread_rows as usize)

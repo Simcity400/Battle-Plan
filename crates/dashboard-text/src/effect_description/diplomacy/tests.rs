@@ -208,7 +208,7 @@ fn reached_faction_subject_loops_keep_order_aliases_and_refusals() {
     assert!(
         out.refusals
             .keys()
-            .all(|why| why.contains("CountryAppearance.subjects not recorded"))
+            .all(|why| why.contains("subjects of country appearance not recorded"))
     );
 }
 
@@ -2182,13 +2182,13 @@ fn diplomacy_output_branches() {
             Some(77),
             false,
             "",
-            Some("token 77 has no LexicalTokens spelling"),
+            Some("token 77 has no lexical tokens spelling"),
         ),
         (
             Some(77),
             true,
             "",
-            Some("LexicalTokens is not recorded completely"),
+            Some("lexical tokens is not recorded completely"),
         ),
     ] {
         if let TableView::Complete(TableRows::Factions(rows)) =

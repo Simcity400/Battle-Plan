@@ -100,3 +100,26 @@ test('forgetting settled entries leaves loads in flight for their consumers', as
   assert.equal(await cache.get('["a","settled"]', async () => ++calls, signal()), 2);
   assert.equal(await cache.get('["a","pending"]', async () => 99, signal()), 7);
 });
+
+test('a settled value is had at once; what an owner pins stays past the bounds until it pins anew', async () => {
+  const cache = new ResourceCache<string>(1, 1_000, () => 1);
+  const key = (name: string) => JSON.stringify(['source', name]);
+  assert.equal(cache.peek(key('a')), undefined);
+  const asked = cache.get(key('a'), async () => 'A', signal());
+  assert.equal(cache.peek(key('a')), undefined, 'nothing while it loads');
+  await asked;
+  assert.equal(cache.peek(key('a')), 'A');
+  const page = {};
+  cache.pin(page, [key('a')]);
+  await cache.get(key('b'), async () => 'B', signal());
+  await cache.get(key('c'), async () => 'C', signal());
+  assert.equal(cache.peek(key('a')), 'A', 'pinned: never pushed out by the bound of one entry');
+  assert.equal(cache.peek(key('b')), undefined, 'unpinned: bounded as before');
+  assert.equal(cache.peek(key('c')), 'C');
+  cache.pin(page, [key('c')]);
+  assert.equal(cache.peek(key('a')), undefined, 'let go once the owner pins what it asks now');
+  assert.equal(cache.peek(key('c')), 'C');
+  cache.deleteSource('source');
+  assert.equal(cache.peek(key('c')), undefined);
+  cache.unpin(page);
+});

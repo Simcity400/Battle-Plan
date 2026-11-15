@@ -22,9 +22,19 @@ pub enum Count {
     GuiJoins,
     /// Microseconds those batches waited.
     GuiJoinMicros,
+    /// Compiled GUI draws an upload prepared.
+    GuiPrepared,
+    /// Writes and bytes staged for the GPU, counted where they are staged (they reach the GPU
+    /// at a flush, which `Uploads` and `UploadBytes` count).
+    Staged,
+    StagedBytes,
+    /// Compiled GUI draws handed to the sprite pass.
+    GuiHanded,
+    /// Compiled GUI draws prepared to a native packet (not batched).
+    GuiNative,
 }
 
-pub const NAMES: [&str; 12] = [
+pub const NAMES: [&str; 17] = [
     "draws",
     "pipelines",
     "bind_groups",
@@ -37,9 +47,14 @@ pub const NAMES: [&str; 12] = [
     "window_builds",
     "gui_joins",
     "gui_join_us",
+    "gui_prepared",
+    "staged",
+    "staged_bytes",
+    "gui_handed",
+    "gui_native",
 ];
 
-static COUNTS: [AtomicU64; 12] = [const { AtomicU64::new(0) }; 12];
+static COUNTS: [AtomicU64; NAMES.len()] = [const { AtomicU64::new(0) }; NAMES.len()];
 static BUILDS_TOTAL: AtomicU64 = AtomicU64::new(0);
 
 pub fn builds_total() -> u64 {
@@ -115,8 +130,20 @@ pub fn created_buffer() {
     add(Count::CreatedBuffers, 1);
 }
 
+/// Bytes staged for the GPU ([`Count::StagedBytes`]).
+#[inline]
+pub fn staged(bytes: usize) {
+    add(Count::Staged, 1);
+    add(Count::StagedBytes, bytes as u64);
+}
+
+/// The counts since the last take, left in place.
+pub fn peek() -> [u64; NAMES.len()] {
+    std::array::from_fn(|index| COUNTS[index].load(Relaxed))
+}
+
 /// The counts since the last take.
-pub fn take() -> [u64; 12] {
+pub fn take() -> [u64; NAMES.len()] {
     std::array::from_fn(|index| COUNTS[index].swap(0, Relaxed))
 }
 

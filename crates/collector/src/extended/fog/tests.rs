@@ -402,8 +402,8 @@ fn every_family_keeps_native_order_widths_and_absent_values() {
 }
 
 #[test]
-fn arena_pressure_truncates_and_growth_restores_the_full_census() {
-    let mut capacities = Capacities {
+fn short_arenas_grow_to_the_full_census_in_one_capture() {
+    let capacities = Capacities {
         rows: [4; N],
         radar_provinces: 1,
         area_provinces: 8,
@@ -415,20 +415,6 @@ fn arena_pressure_truncates_and_growth_restores_the_full_census() {
         base: BASE,
         bytes: &bytes,
     };
-    let _ticks = captured.capture(&memory, 0, BASE, 0, true);
-    assert_eq!(
-        captured.outcomes()[0],
-        Outcome::Truncated {
-            len: 0,
-            unread_rows: 1
-        }
-    );
-    assert!(matches!(
-        captured.tables()[0],
-        TableView::Truncated { missing: 1, .. }
-    ));
-    captured.grow(&mut capacities);
-    assert!(capacities.radar_provinces >= 2);
     let _ticks = captured.capture(&memory, 0, BASE, 0, true);
     assert_eq!(captured.outcomes()[0], Outcome::Rows { len: 1 });
 }
@@ -514,28 +500,6 @@ fn free_fog_acquisition_preserves_frame_state_until_owned_decode() {
     captured.decode_intel_payload(&intel_first, &mut [0]);
     assert!(matches!(captured.outcomes()[0], Outcome::Rows { len: 1 }));
     assert!(matches!(captured.outcomes()[4], Outcome::Rows { len: 2 }));
-}
-
-#[test]
-fn free_fog_capture_checks_destination_capacity_before_any_live_observation() {
-    struct NoReads;
-    impl Memory for NoReads {
-        fn copy(&self, _: usize, _: &mut [u8]) -> bool {
-            panic!("native read before capacity admission")
-        }
-    }
-    let (_, captured) = small();
-    let radar_ctx = captured.radar_copy_context(0, BASE, 0, true);
-    for mut job in [RadarJob::with_storage(0, 8), RadarJob::with_storage(4, 0)] {
-        let report = copy_radar_refresh(&NoReads, radar_ctx, &mut job);
-        assert!(!report.raw_ok && !job.acquired);
-        assert!(job.grow_for_next());
-    }
-    let mut job = IntelJob::default();
-    let ctx = captured.intel_copy_context(0, BASE);
-    let report = copy_intel_refresh_with_divisions(&NoReads, ctx, &mut job, None);
-    assert!(!report.raw_ok && !job.acquired);
-    assert!(job.grow_for_next());
 }
 
 #[test]
@@ -723,11 +687,12 @@ fn radar_split_copy_matches_direct_walk() {
     );
     let anchor = TableId::RadarCoverage;
     let mut expected = read_accounting::ZERO;
-    // 144 scalar bytes include both country authentications; the pool
-    // and group each gather three spans, adding 60 bytes.
+    // 144 scalar bytes include both country authentications, each one
+    // scattered read of the vtable and id; the pool and group each gather
+    // three spans, adding 60 bytes.
     expected[anchor.index()] = ReadCounts {
-        copy_calls: 21,
-        scattered_calls: 2,
+        copy_calls: 17,
+        scattered_calls: 4,
         record_calls: 0,
         plan_calls: 0,
         spans: 27,
@@ -793,26 +758,6 @@ fn radar_split_copy_matches_direct_walk_on_fault_matrix() {
         assert!(report.raw_ok, "fault={fault:x}");
         kit::assert_matches_direct(&split, &direct);
     }
-}
-
-#[test]
-fn radar_staging_overflow_falls_back_to_typed_walk() {
-    use super::radar_test_kit as kit;
-    use super::{RadarCopyContext, RadarJob};
-    let bytes = kit::fixture();
-    let memory = kit::memory(&bytes);
-    let ctx = RadarCopyContext {
-        hour: 0,
-        force_full: true,
-        base: kit::BASE,
-        game_state: kit::GAME_STATE,
-        row_limit: 1024,
-        province_limit: 65_536,
-    };
-    let mut tiny = RadarJob::default();
-    let report = copy_radar_refresh(&memory, ctx, &mut tiny);
-    assert!(!report.raw_ok);
-    assert!(tiny.grow_for_next());
 }
 
 #[test]
@@ -893,21 +838,4 @@ fn intel_split_copy_matches_direct_walk_on_fault_matrix() {
         kit::assert_matches_direct(&split, &direct);
         kit::assert_paths_match_direct(&split, &direct);
     }
-}
-
-#[test]
-fn intel_staging_overflow_falls_back_to_typed_walk() {
-    use super::intel_test_kit as kit;
-    use super::{IntelCopyContext, IntelJob};
-    let bytes = kit::fixture();
-    let memory = kit::memory(&bytes);
-    let ctx = IntelCopyContext {
-        base: kit::BASE,
-        game_state: kit::GAME_STATE,
-        row_limit: 32_768,
-    };
-    let mut tiny = IntelJob::default();
-    let report = copy_intel_refresh_with_divisions(&memory, ctx, &mut tiny, None);
-    assert!(!report.raw_ok);
-    assert!(tiny.grow_for_next());
 }

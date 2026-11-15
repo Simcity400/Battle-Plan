@@ -9,10 +9,11 @@ import { approach, approachAcrossGap, easeTau } from '../easing';
 import { useMotionNow } from '../liveMotion.ts';
 import { nextRows } from '../rowMotion';
 import type { MovingRow } from '../rowMotion';
+import type { Live } from '../live';
 import { scheduler } from '../scheduler';
 import { SECONDARY_DASH } from '../palette';
 import type { FrameTask } from '../scheduler';
-import { backingSize, toLocal } from '../surface';
+import { backingSize, drawingSurface, sizeCanvas, toLocal } from '../surface';
 import { fitTooltip, hideTooltip, showTooltip, tooltipStore, tooltipText } from '../tooltip';
 import type { TooltipContent } from '../tooltip';
 import { useChartTokens, useViewportHeight } from '../useChartTokens';
@@ -55,6 +56,11 @@ export interface ButterflyProps<T extends ButterflyItem> {
   contextItems?: (item: T) => readonly MenuItem[];
   /** Enter opens the left value; Shift+Enter opens the right. */
   onSelect?: (item: T, side: 'left' | 'right') => void;
+  /** Items read as each frame draws (the playhead's values), in place of `items`. `items` stays the rows a render
+   * shows: their texts are measured and their keys stepped from it. */
+  liveItems?: Live<readonly T[]>;
+  /** Said in place of the rows and the value axis while there is no row to draw. */
+  empty?: string;
 }
 
 interface Shape { slot: number; left: number | null; right: number | null; segment: string }
@@ -88,9 +94,15 @@ export default function ButterflyChart<T extends ButterflyItem>(props: Butterfly
   const menuKey = useRef(false);
 
   useEffect(() => {
-    const element = canvas.current!;
-    const ctx = element.getContext('2d');
+    const element = canvas.current!, container = root.current!;
+    const drawing = drawingSurface(element), ctx = drawing.context;
     if (!ctx) return;
+    // Sizes and scroll as last laid out, read when they change, never in a frame.
+    let geometry: { room: number; width: number; height: number; rectWidth: number; rectHeight: number; scrollTop: number } | null = null;
+    const measure = () => {
+      const rect = element.getBoundingClientRect();
+      return geometry = { room: container.clientHeight, width: element.clientWidth, height: element.clientHeight, rectWidth: rect.width, rectHeight: rect.height, scrollTop: container.scrollTop };
+    };
     let rows: MovingRow<T>[] = [];
     let items: readonly T[] | null = null;
     const shapes = new Map<string, Shape>();
@@ -103,7 +115,8 @@ export default function ButterflyChart<T extends ButterflyItem>(props: Butterfly
     let shortWidth = -1, shortFont = '';
     const loaded = () => { if (task.current) scheduler.wake(task.current); };
     const frameTask: FrameTask = { frame: ({ dt, now }) => {
-      const { props: p, tokens: t, viewport: room } = latest.current;
+      const { props: latestProps, tokens: t, viewport: room } = latest.current;
+      const p = latestProps.liveItems ? { ...latestProps, items: latestProps.liveItems.read() } : latestProps;
       const tau = easeTau(t.motion, motionNow(p.hoursPerSecond), t.reducedMotion);
       if (items !== p.items) {
         rows = nextRows(rows, p.items.map(item => ({ key: item.id, item })), now, tau * 3, items == null);
@@ -111,15 +124,13 @@ export default function ButterflyChart<T extends ButterflyItem>(props: Butterfly
       } else rows = rows.filter(row => row.phase !== 'leaving' || now - row.since < tau * 3);
       const ids = new Set(rows.map(row => row.key));
       for (const id of shapes.keys()) if (!ids.has(id)) shapes.delete(id);
-      const container = root.current!;
-      const surface = butterflySurface(p.items.length, container.clientHeight);
+      const laid = geometry ?? measure();
+      const surface = butterflySurface(p.items.length, laid.room);
       const canvasHeight = `${surface.canvasHeight}px`;
       if (element.style.height !== canvasHeight) element.style.height = canvasHeight;
-      const width = element.clientWidth, height = element.clientHeight, scrollTop = container.scrollTop;
-      const rect = element.getBoundingClientRect();
-      const size = backingSize({ layoutWidth: width, layoutHeight: height, rectWidth: rect.width, rectHeight: rect.height, devicePixelRatio: window.devicePixelRatio || 1 });
-      if (element.width !== size.width) element.width = size.width;
-      if (element.height !== size.height) element.height = size.height;
+      const { width, height, scrollTop } = laid;
+      const size = backingSize({ layoutWidth: width, layoutHeight: height, rectWidth: laid.rectWidth, rectHeight: laid.rectHeight, devicePixelRatio: window.devicePixelRatio || 1 });
+      sizeCanvas(drawing.canvas, size.width, size.height);
       ctx.setTransform(size.scaleX, 0, 0, size.scaleY, 0, 0);
       ctx.clearRect(0, 0, width, height);
       // The race's fonts: names at the label weight, exact values at the value weight.
@@ -154,7 +165,8 @@ export default function ButterflyChart<T extends ButterflyItem>(props: Butterfly
       let moving = scale !== targetScale;
       // The race's value axis on both sides: hairline gridlines through the rows, labelled
       // under them, fixed while the rows scroll.
-      const ticks = p.axis === false ? [] : butterflyTicks(scale, layout.half);
+      const silent = !!p.empty && !rows.length;
+      const ticks = p.axis === false || silent ? [] : butterflyTicks(scale, layout.half);
       const format = p.formatTick ?? formatAxisValue;
       const rowsBottom = layout.top + visible.height;
       rowsEnd.current = rowsBottom;
@@ -241,6 +253,10 @@ export default function ButterflyChart<T extends ButterflyItem>(props: Butterfly
       }
       ctx.restore();
       ctx.globalAlpha = 1;
+      if (silent) {
+        ctx.font = labelFont; ctx.fillStyle = t.muted; ctx.textAlign = 'center';
+        ctx.fillText(p.empty!, width / 2, layout.top + visible.height / 2);
+      }
       // Column headings in the axis labels' style, each side's beside the axis.
       ctx.font = axisFont; ctx.fillStyle = t.muted;
       ctx.textAlign = 'right'; ctx.fillText(p.leftLabel, layout.axis - VALUE_GAP, layout.top / 2);
@@ -258,8 +274,10 @@ export default function ButterflyChart<T extends ButterflyItem>(props: Butterfly
         const decoded = raw ? countryFlagContent(fitTooltip([raw], room, { keep: 1 }), undefined, loaded) : null;
         const fitted = decoded ? fitTooltip([decoded], room, { keep: 1 }) : null;
         if (fitted) {
-          showTooltip(owner, fitted, pointer.current?.clientX ?? rect.left + rect.width / 2,
-            pointer.current?.clientY ?? rect.top + (hit!.y - scrollTop) * rect.height / Math.max(1, height));
+          // A keyboard tooltip is placed from the canvas's place on screen, read only then.
+          const rect = pointer.current ? null : element.getBoundingClientRect();
+          showTooltip(owner, fitted, pointer.current?.clientX ?? rect!.left + rect!.width / 2,
+            pointer.current?.clientY ?? rect!.top + (hit!.y - scrollTop) * rect!.height / Math.max(1, height));
           if (keyed.current) setSpoken(tooltipText(fitted));
         } else { hideTooltip(owner); setSpoken(''); }
       }
@@ -269,16 +287,19 @@ export default function ButterflyChart<T extends ButterflyItem>(props: Butterfly
     task.current = frameTask;
     const remove = scheduler.add(frameTask, element);
     scheduler.setVisible(frameTask, latest.current.props.active);
-    const observer = new ResizeObserver(() => scheduler.wake(frameTask));
+    const observer = new ResizeObserver(() => { measure(); scheduler.wake(frameTask); });
     observer.observe(element);
-    observer.observe(root.current!);
-    return () => { remove(); observer.disconnect(); task.current = null; hideTooltip(owner); };
+    observer.observe(container);
+    const scrolled = () => { if (geometry) geometry.scrollTop = container.scrollTop; };
+    container.addEventListener('scroll', scrolled, { passive: true });
+    return () => { remove(); observer.disconnect(); container.removeEventListener('scroll', scrolled); task.current = null; hideTooltip(owner); };
   }, [owner]);
   useEffect(() => {
     if (task.current) { scheduler.setVisible(task.current, props.active); scheduler.wake(task.current); }
     if (!props.active) hideTooltip(owner);
   }, [props, tokens, viewport, owner]);
   const wake = () => { if (task.current) scheduler.wake(task.current); };
+  useEffect(() => props.liveItems?.subscribe(() => { if (task.current) scheduler.wake(task.current); }), [props.liveItems]);
   const leave = () => { pointer.current = null; keyed.current = null; setSpoken(''); hideTooltip(owner); wake(); };
   const open = (item: T, x: number, y: number) => { const list = props.contextItems?.(item); if (list) menu.open(x, y, list); };
   return <div ref={root} className="butterfly-chart themed-scrollbar" onScroll={wake}>
@@ -306,7 +327,7 @@ export default function ButterflyChart<T extends ButterflyItem>(props: Butterfly
             : point.y >= headerHeight.current && point.y <= rowsEnd.current ? hits.current.find(hit => Math.abs(hit.y - point.y - root.current!.scrollTop) < hit.slot / 2) : undefined;
           if (hit) open(hit.item, event.clientX, event.clientY);
         }} onKeyDown={event => {
-          const items = props.items;
+          const items = props.liveItems?.read() ?? props.items;
           if (event.key === 'Escape') { event.preventDefault(); leave(); return; }
           if (['ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) {
             event.preventDefault(); if (!items.length) return;

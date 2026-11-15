@@ -195,7 +195,7 @@ fn public_token_lookup_keeps_null_and_last_duplicate_semantics() {
             assert_eq!(value, Ok(None));
             assert_eq!(
                 failures.iter().map(ToString::to_string).collect::<Vec<_>>(),
-                ["LexicalTokens: input unavailable or refused"]
+                ["lexical tokens: not available or refused"]
             );
         }
     });

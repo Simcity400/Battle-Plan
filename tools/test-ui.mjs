@@ -11,22 +11,36 @@ const tabFullTest = 'ui/src/components/VirtualList.dom.test.ts';
 // Add every browser fixture here. The dependency check below refuses omissions.
 export const browserTests = [
   'ui/src/charts/heat/HeatMatrix.dom.test.ts',
+  'ui/src/charts/live.dom.test.ts',
+  'ui/src/charts/paintCost.dom.test.ts',
   'ui/src/charts/shareDrawing.test.ts',
   'ui/src/charts/table/Table.dom.test.ts',
-  'ui/src/widgets/dockyardSizes.dom.test.ts',
   'ui/src/components/CountryFlag.dom.test.ts',
-  'ui/src/components/GameWindow.dom.test.ts',
-  'ui/src/components/GameWindow.keyboard.dom.test.ts',
+  'ui/src/components/DateTimePicker.dom.test.ts',
   'ui/src/components/loadable.dom.test.ts',
+  'ui/src/components/PlaybackSpeed.dom.test.ts',
   'ui/src/components/Select.dom.test.ts',
+  'ui/src/dashboard/atHead.dom.test.ts',
+  'ui/src/dashboard/follow/follow.dom.test.ts',
+  'ui/src/dashboard/follow/liveCells.dom.test.ts',
+  'ui/src/dashboard/follow/requests.dom.test.ts',
+  'ui/src/dashboard/playbackBars.dom.test.ts',
+  'ui/src/test-support/recordedPages.dom.test.ts',
+  'ui/src/engine/armyRecorded.dom.test.ts',
+  'ui/src/widgets/national-focus/politicsPlayback.dom.test.ts',
+  'ui/src/dashboard/prepareLane.dom.test.ts',
+  'ui/src/widgets/occupied-states/occupiedStates.dom.test.ts',
   'ui/src/recorder/RecorderPanel.dom.test.ts',
   'ui/src/shell/appearance/WidgetIconMenu.dom.test.ts',
-  'ui/src/widgets/diplomacySizes.dom.test.ts',
-  'ui/src/widgets/economySizes.dom.test.ts',
-  'ui/src/widgets/politicsSizes.dom.test.ts',
+  'ui/src/widgets/army-size/race.dom.test.ts',
+  'ui/src/widgets/raid-log/raidPlayback.dom.test.ts',
+  'ui/src/widgets/special-projects/specialProjects.dom.test.ts',
+  'ui/src/widgets/scoreboard/scoreboard.dom.test.ts',
+  'ui/src/widgets/world-tension/worldTension.dom.test.ts',
+  'ui/src/widgets/game-score/gameScore.dom.test.ts',
   tabFullTest,
 ];
-const toolTests = ['tools/canvas-page.test.ts', 'tools/test-ui.test.mjs', 'tools/e2e/verdicts.test.mjs'];
+const toolTests = ['tools/canvas-page.test.ts', 'tools/cargo-target.test.mjs', 'tools/test-ui.test.mjs', 'tools/e2e/verdicts.test.mjs', 'tools/e2e/playbackVerdicts.test.mjs'];
 const pureBrowserSupportTests = new Set(['tools/canvas-page.test.ts']);
 
 export async function discoverTests(root = repositoryRoot) {

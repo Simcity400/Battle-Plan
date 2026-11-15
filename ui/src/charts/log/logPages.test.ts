@@ -3,7 +3,8 @@ import test from 'node:test';
 import { engineHour } from '../../dashboard/calendar.ts';
 import { anchoredScrollTop, logOffsets, MONTH_HEIGHT, ROW_HEIGHT } from './logData.ts';
 import type { LogPage, LogRow } from './logData';
-import { logPageItems, logPageRange, logPageTarget, logPixelTarget, logRowOrdinals, logRowTarget, stableLogPages, wantedLogPages, withContinuation } from './logPages.ts';
+import { logPageItems, logPageRange, logPageTarget, logPixelTarget, logRowOrdinals, logRowTarget, newestPageRows, stableLogPages, wantedLogPages, withContinuation } from './logPages.ts';
+import { logItemState, logShownOrdinals, logSpans } from './logAhead.ts';
 
 const row = (key: string, hour: number): LogRow<string> => ({ key, hour, item: key });
 const page = (key: string, start: number, count: number, rows?: LogRow<string>[]): LogPage<string> => ({ key, start, end: start + 9, count, rows });
@@ -73,6 +74,10 @@ test('keyboard targets reach pending windows and retain their offset when loaded
   assert.equal(target?.offset, 1);
   assert.equal(target?.ordinal, 101);
   assert.equal(logPageTarget(logPageItems([page('old', 0, 0)], false), [0], 'old', 999), null);
+  // Held ahead of a clock at hour 5, the loaded window's row of hour 9 waits: a pending target reaches only the row shown.
+  const spans = logSpans(held), shown = (index: number) => logItemState(spans, index, 5) === 'shown';
+  assert.deepEqual(logPageTarget(held, logShownOrdinals(held, spans, 5), 'old', 0, shown), { index: 2, offset: 0, ordinal: 100, pageKey: 'old', row: held[2].kind === 'row' ? held[2].row : undefined });
+  assert.equal(logPageTarget(held, logShownOrdinals(held, spans, 1), 'old', 0, index => logItemState(spans, index, 1) === 'shown'), null, 'no row of the window shows yet');
 });
 
 test('months are unknown over pending pages and loaded month sections keep unique keys', () => {
@@ -197,4 +202,13 @@ test('a page the last loaded page continues to is described at once, so an hour 
   assert.equal(withContinuation(described, new Map(), next), described);
   const looped = [{ cursor: null, end: 100 }, { cursor: 'b', end: 90 }];
   assert.equal(withContinuation(looped, new Map([[1, { nextCursor: 'b' }]]), next), looped);
+});
+
+test('following, the rows named with a block are those of the newest pages held, whole pages back to the count asked', () => {
+  const page = (index: number, rows?: number): LogPage<number> => ({ key: String(index), start: index * 4, end: index * 4 + 3, count: 4,
+    ...(rows === undefined ? {} : { rows: Array.from({ length: rows }, (_, at) => ({ key: `${index}:${at}`, hour: index * 4 + at, item: at })) }) });
+  const pages = [page(0, 4), page(1), page(2, 4), page(3, 2)];
+  assert.deepEqual(newestPageRows(pages, 3).map(row => row.key), ['3:0', '3:1', '2:0', '2:1', '2:2', '2:3'], 'the newest page, then the next back until three rows');
+  assert.deepEqual(newestPageRows(pages, 7).map(row => row.key).length, 10, 'a page not held adds none; the oldest is reached');
+  assert.deepEqual(newestPageRows([], 5), []);
 });

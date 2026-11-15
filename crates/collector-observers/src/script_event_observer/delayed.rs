@@ -245,6 +245,7 @@ mod tests {
     use super::*;
     #[test]
     fn cancellation_can_close_the_pass_with_its_cursor_beyond_the_shortened_queue() {
+        let _globals = crate::event_feed_observer::test_globals();
         let mut pass = Pass::default();
         assert_eq!(pass.advance(5), Ok(5));
         assert_eq!(pass.finish(3), 0);
@@ -252,6 +253,7 @@ mod tests {
     }
     #[test]
     fn sparse_cursor_anchors_derive_five_thousand_quiet_decrements_without_timer_callbacks() {
+        let _globals = crate::event_feed_observer::test_globals();
         let mut pass = Pass::default();
         assert_eq!(pass.advance(5000), Ok(5000)); // one pass end, no visits
         let mut pass = Pass::default();
@@ -267,6 +269,7 @@ mod tests {
     // regression: a306568425 Fix event registry writers, terminal results and delayed pass capture cost
     #[test]
     fn delayed_hooks_observe_only_passes_and_sparse_cursor_boundaries() {
+        let _globals = crate::event_feed_observer::test_globals();
         assert_eq!(
             native::DELAYED_TAPS.map(|site| site.name),
             ["DelayedEventFireBoundary", "RetireDelayedEvent"]

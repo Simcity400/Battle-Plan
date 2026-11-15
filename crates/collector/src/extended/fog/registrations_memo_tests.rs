@@ -163,7 +163,7 @@ fn air_registration_projection_matches_complete_tables_across_membership_and_ref
             }
             _ => {}
         }
-        captured.carrier.install_states(&state);
+        captured.carrier.install_states(&state).unwrap();
         let ordinary = captured.registration_table(captured.registrations.outcome, None);
         assert_eq!(
             matches!(ordinary, TableInput::Sampled(TableView::Complete(_))),

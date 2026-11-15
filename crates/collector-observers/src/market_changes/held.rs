@@ -229,12 +229,9 @@ fn read_agreement(
     memory: &impl Memory,
     base: usize,
     pointer: usize,
-    owner: u32,
 ) -> Result<LendLeaseAgreementRow, &'static str> {
+    // The giver is the giver resources' owner link, the key every agreement event carries.
     let identity = lease::identity(memory, base, pointer)?;
-    if identity.giver != owner {
-        return Err("market agreement giver differs from census owner");
-    }
     let mut terms = lease::Terms::default();
     lease::terms(memory, base, pointer, identity, &mut terms)?;
     Ok(LendLeaseAgreementRow {
@@ -378,7 +375,7 @@ fn read_variables(
 ) -> Result<Vec<MarketVariable>, &'static str> {
     let mut rows = Vec::new();
     let mut names = Vec::new();
-    let result = engine_scripts::cvariables::walk_growing(memory, base, at, &mut rows, &mut names);
+    let result = engine_scripts::cvariables::walk(memory, base, at, &mut rows, &mut names);
     let engine_native::walk::Outcome::Rows { len } = result.outcome else {
         return Err("market contract variables unavailable");
     };
@@ -529,7 +526,7 @@ pub fn seed_country(memory: &impl Memory, base: usize, country: ccountry::Countr
                     .ok_or("market exchange member address overflow")?,
             )
             .ok_or("market exchange member unreadable")?;
-            let row = read_agreement(memory, base, pointer as usize, country.id)?;
+            let row = read_agreement(memory, base, pointer as usize)?;
             let key = (row.country, row.id);
             if row.last_fuel_delivered_raw != 0 {
                 state.last_fuel.insert(key);
@@ -1198,6 +1195,33 @@ fn observe_interval(
         }
     }
 }
+fn reread_variables(
+    state: &mut State,
+    memory: &impl Memory,
+    base: usize,
+    at: usize,
+) -> Result<(), &'static str> {
+    let Some(key) = state.variable_owners.get(&at).copied() else {
+        return Ok(());
+    };
+    let Some(held) = state.contracts.get_mut(&key) else {
+        return Ok(());
+    };
+    if held.pointer + market::CONTRACT_VARIABLES != at
+        || read::<u64>(
+            memory,
+            held.pointer + engine_production::cpurchase_contract::ID_TYPE,
+        ) != Some(held.row.id)
+    {
+        return Err("market variable holder identity changed");
+    }
+    let rows = read_variables(memory, base, at)?;
+    held.row.variables = rows.into();
+    let seed = scalar(memory, at, engine_scripts::cvariables::SEED);
+    state.changed_contracts.insert(key);
+    held.row.variable_state = seed?;
+    Ok(())
+}
 /// Read marked domains and retry only uncertified country holders.
 pub fn acquire(
     memory: &impl Memory,
@@ -1231,38 +1255,24 @@ pub fn acquire(
     acquire_admissions(&mut state, memory, base);
     worker::acquire_marked(&mut state, memory, base, &mut observed);
     let mut variable_failure = None;
+    let every_holder = take_unobserved_variables();
     if VARIABLES_WATCH
         .take(|at| {
-            let Some(key) = state.variable_owners.get(&at).copied() else {
-                return;
-            };
-            let Some(held) = state.contracts.get_mut(&key) else {
-                return;
-            };
-            if held.pointer + market::CONTRACT_VARIABLES != at
-                || read::<u64>(
-                    memory,
-                    held.pointer + engine_production::cpurchase_contract::ID_TYPE,
-                ) != Some(held.row.id)
-            {
-                variable_failure = Some("market variable holder identity changed");
-                return;
-            }
-            match read_variables(memory, base, at) {
-                Ok(rows) => {
-                    held.row.variables = rows.into();
-                    match scalar(memory, at, engine_scripts::cvariables::SEED) {
-                        Ok(seed) => held.row.variable_state = seed,
-                        Err(reason) => variable_failure = Some(reason),
-                    };
-                    state.changed_contracts.insert(key);
-                }
-                Err(reason) => variable_failure = Some(reason),
+            if let Err(reason) = reread_variables(&mut state, memory, base, at) {
+                variable_failure = Some(reason);
             }
         })
         .is_none()
     {
         variable_failure = Some("market contract variable coverage unavailable");
+    }
+    if every_holder {
+        let holders: Vec<usize> = state.variable_owners.keys().copied().collect();
+        for at in holders {
+            if let Err(reason) = reread_variables(&mut state, memory, base, at) {
+                variable_failure = Some(reason);
+            }
+        }
     }
     if let Some(reason) = variable_failure {
         state.refusals[1] = Some(reason);
@@ -1467,6 +1477,37 @@ pub(super) fn test_census(rows: [replay_data::rows::TableRows; 3]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn foreign_giver_agreement_is_recorded_under_its_resources_owner() {
+        use engine_native::{ccountry::synthetic::World, cequipment_variant_pool as native_pool};
+        let mut world = World::new(0, 2, 0x20);
+        let resources = world.alloc(0x30);
+        world.u64(
+            resources,
+            engine_resources::ccountry_resources::VTABLE_RVA.0 as u64,
+        );
+        world.u32(
+            resources + engine_resources::ccountry_resources::OWNER,
+            5001,
+        );
+        let pointer = world.alloc(lease::SIZE);
+        let id = (17_u64 << 32) | 9001;
+        world.u64(pointer, lease::VTABLE_RVA.0 as u64);
+        world.u64(pointer + lease::HANDLE, id);
+        world.u64(pointer + lease::GIVER_RESOURCES, resources as u64);
+        world.u32(pointer + lease::RECEIVER, 4999);
+        for pool in [
+            lease::MONTHLY_NEED,
+            lease::PERCENTAGE_NEED,
+            lease::ONCE_NEED,
+            lease::DELIVERED,
+            lease::SUNK,
+        ] {
+            world.u64(pointer + pool, native_pool::VTABLE_RVA.0 as u64);
+        }
+        let row = read_agreement(&world.memory(), 0, pointer).unwrap();
+        assert_eq!((row.country, row.id, row.receiver), (5001, id, 4999));
+    }
     #[test]
     fn terminal_differences_precede_country_reset_and_post_reset_birth_admission() {
         let mut state = agreement();

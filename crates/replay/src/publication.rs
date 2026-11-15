@@ -198,6 +198,12 @@ pub(crate) fn replace_file_with(
     directory.sync_all().map_err(unflushed)
 }
 
+/// Durably replace `destination` with the closed, synced sibling `source`, refused while anything
+/// holds `destination` open, so no reader or writer is left on the bytes replaced.
+pub fn replace_unopened(source: &Path, destination: &Path) -> io::Result<()> {
+    classic_replace(source, destination)
+}
+
 /// Complete a visible recording's durability barrier without rewriting it.
 /// A matching revision may be visible after an interrupted or failed flush.
 pub fn sync_file(destination: &Path) -> io::Result<()> {

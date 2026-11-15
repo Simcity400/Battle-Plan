@@ -29,12 +29,9 @@ pub(super) fn capture(memory: &impl Memory, base: usize, job: &mut WeatherJob) {
         return;
     };
     let count = array.count as usize;
-    if job.worker_growth
-        && engine_allocation::reserve_exact(&mut job.air_efficiency, count).is_err()
-    {
+    if engine_allocation::reserve_exact(&mut job.air_efficiency, count).is_err() {
         return;
     }
-    let room = count.min(job.air_efficiency.capacity());
     let read = |slot| {
         array
             .element(slot, sweather_per_region::STRIDE)
@@ -55,21 +52,22 @@ pub(super) fn capture(memory: &impl Memory, base: usize, job: &mut WeatherJob) {
             *held = kept(Some(&*held), read(slot));
         }
         job.air_efficiency
-            .extend(carry.air_efficiency[..room].iter().cloned());
+            .extend(carry.air_efficiency.iter().cloned());
     } else {
         let previous = job
             .carry
             .as_deref()
             .map(|carry| carry.air_efficiency.as_slice())
             .filter(|held| held.len() == count);
-        job.air_efficiency.extend(
-            (0..room as u32).map(|slot| kept(previous.and_then(|held| held.get(slot as usize)), read(slot))),
-        );
+        job.air_efficiency.extend((0..array.count).map(|slot| {
+            kept(
+                previous.and_then(|held| held.get(slot as usize)),
+                read(slot),
+            )
+        }));
         if let Some(carry) = job.carry.as_deref_mut() {
             carry.air_efficiency.clear();
-            if room == count
-                && engine_allocation::reserve_exact(&mut carry.air_efficiency, count).is_ok()
-            {
+            if engine_allocation::reserve_exact(&mut carry.air_efficiency, count).is_ok() {
                 carry
                     .air_efficiency
                     .extend(job.air_efficiency.iter().cloned());

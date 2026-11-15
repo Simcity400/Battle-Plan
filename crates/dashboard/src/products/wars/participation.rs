@@ -1,0 +1,175 @@
+//! Each native group's contributions at an hour: every member's share of its side's war score,
+//! from the directional participation ledgers and the same-side deliveries, as the war screen
+//! counts them.
+use super::{WarSide, native::Blob};
+use dashboard_base::catalogue::Catalogue;
+use replay_data::{
+    rows::tables,
+    war_participation::{self as derive, DeliveryHistory, Factors, Scores},
+};
+use replay_frame::frame::DecodedFrame;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use ts_rs::TS;
+
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct WarContributionCountry {
+    pub tag: String,
+    pub side: WarSide,
+    /// All quantities are exact signed fixed5 words.
+    pub equipment_damage: String,
+    pub occupation: String,
+    pub air_damage: String,
+    pub strategic_bombing: String,
+    pub ship_damage: String,
+    pub convoy_damage: String,
+    pub casualties: String,
+    pub unknown_casualties: String,
+    pub lend_lease_sent: String,
+    pub lend_lease_received: String,
+    pub score: String,
+    pub participation: String,
+}
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct WarContributionGroup {
+    pub viewpoint_side: Vec<String>,
+    pub opposing_side: Vec<String>,
+    pub participants: Vec<WarContributionCountry>,
+    pub reason: Option<String>,
+}
+
+pub(crate) fn factors(cat: Option<&Catalogue>) -> Result<Factors, String> {
+    cat.ok_or("Recorded content is needed for lend-lease participation")?
+        .war_participation_factors()
+}
+
+/// Each of the viewpoint's `blobs`' contributions from the participation tables `frame` holds,
+/// countries resolved through the hour's tags and links; `active` tells the hour's relations.
+pub(crate) fn contributions(
+    blobs: &[Blob],
+    (tags, raw_to_slot): (&HashMap<u32, String>, &HashMap<u32, u32>),
+    active: &dyn Fn(u32, u32) -> bool,
+    frame: &DecodedFrame,
+    factors: Result<Factors, String>,
+) -> Vec<WarContributionGroup> {
+    let slot = |raw| {
+        raw_to_slot
+            .get(&raw)
+            .copied()
+            .ok_or_else(|| format!("Unresolved participation country {raw}"))
+    };
+    let inputs = (|| -> Result<_, String> {
+        let factors = factors?;
+        let mut ledgers = HashMap::new();
+        for row in frame
+            .complete::<tables::WarParticipation>()
+            .map_err(|e| e.to_string())?
+        {
+            let (a, b) = (slot(row.war_first)?, slot(row.war_second)?);
+            let key = match row.direction {
+                0 => (a, b),
+                1 => (b, a),
+                _ => return Err("Invalid participation direction".into()),
+            };
+            if ledgers.insert(key, row.scores()).is_some() {
+                return Err("Ambiguous directional participation ledger".into());
+            }
+        }
+        let mut histories = HashMap::new();
+        for row in frame
+            .complete::<tables::WarLendLeaseHistories>()
+            .map_err(|e| e.to_string())?
+        {
+            let key = (slot(row.country)?, slot(row.target)?);
+            let value = DeliveryHistory {
+                industry_sent: row.industry_sent,
+                fuel_sent: row.fuel_sent,
+                industry_received: row.industry_received,
+                fuel_received: row.fuel_received,
+            };
+            if histories.insert(key, value).is_some() {
+                return Err("Ambiguous participation delivery history".into());
+            }
+        }
+        Ok((ledgers, histories, factors))
+    })();
+    blobs
+        .iter()
+        .map(|blob| {
+            let mut group = WarContributionGroup {
+                viewpoint_side: blob.first.iter().map(|id| tags[id].clone()).collect(),
+                opposing_side: blob.second.iter().map(|id| tags[id].clone()).collect(),
+                participants: Vec::new(),
+                reason: None,
+            };
+            let result = (|| -> Result<Vec<WarContributionCountry>, String> {
+                let (ledgers, histories, factors) = inputs.as_ref().map_err(Clone::clone)?;
+                let mut participants = Vec::new();
+                for (side, own, opponents) in [
+                    (WarSide::Viewpoint, &blob.first, &blob.second),
+                    (WarSide::Opponent, &blob.second, &blob.first),
+                ] {
+                    let mut scores = Vec::with_capacity(own.len());
+                    for &country in own {
+                        let mut directional = Vec::new();
+                        for &opponent in opponents {
+                            if active(country, opponent) {
+                                directional.push(
+                                    *ledgers
+                                        .get(&(country, opponent))
+                                        .ok_or("Directional participation ledger not recorded")?,
+                                );
+                            }
+                        }
+                        let mut deliveries = Vec::new();
+                        for &ally in own {
+                            if ally != country && !active(country, ally) {
+                                deliveries.push(
+                                    histories.get(&(country, ally)).copied().unwrap_or_default(),
+                                );
+                            }
+                        }
+                        scores.push(derive::breakdown(directional, deliveries, *factors));
+                    }
+                    for (&country, score) in own.iter().zip(&scores) {
+                        participants.push(country_view(
+                            tags[&country].clone(),
+                            side,
+                            *score,
+                            derive::share(
+                                score.total(false),
+                                scores.iter().map(|s| s.total(false)),
+                            ),
+                        ));
+                    }
+                }
+                Ok(participants)
+            })();
+            match result {
+                Ok(participants) => group.participants = participants,
+                Err(reason) => group.reason = Some(reason),
+            }
+            group
+        })
+        .collect()
+}
+fn country_view(tag: String, side: WarSide, s: Scores, share: i64) -> WarContributionCountry {
+    WarContributionCountry {
+        tag,
+        side,
+        equipment_damage: s.equipment_damage.to_string(),
+        occupation: s.province_capture.to_string(),
+        air_damage: s.air_damage.to_string(),
+        strategic_bombing: s.strategic_bombing.to_string(),
+        ship_damage: s.sunk_ships.to_string(),
+        convoy_damage: s.sunk_convoys.to_string(),
+        casualties: s.casualties.to_string(),
+        unknown_casualties: s.unknown_casualties.to_string(),
+        lend_lease_sent: s.lend_lease_sent.to_string(),
+        lend_lease_received: s.lend_lease_received.to_string(),
+        score: s.total(false).to_string(),
+        participation: share.to_string(),
+    }
+}

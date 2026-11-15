@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { commitRows, EMPTY_HISTORY, shownRows } from '../rowMotion.ts';
-import { FULL_FIT, barFraction, barMaximum, fitColumns, groupedRows, nextSort, rankChanges, measuredRowOffsets, rowOffsets, scrollToShow, shownMotion, sortRows, visibleRange } from './logic.ts';
+import { FULL_FIT, barFraction, barMaximum, fitColumns, groupedRows, nextSort, rankChanges, measuredRowOffsets, rowOffsets, scrollToShow, shownMotion, sortRows, visibleRange, withRowHeights } from './logic.ts';
 import { sortKey, tableSortOf, tableSortOptions, TABLE_OPTIONS } from './options.ts';
 import { resolveOptions, setOption } from '../../dashboard/options.ts';
 
@@ -174,6 +174,24 @@ test('dated faction changes move existing country keys through the shared row mo
   const changed = items([{ ...rows[0], group: rows[1].group }, rows[1]]);
   assert.deepEqual(changed.map(row => row.key), ['native-country-a', 'native-country-b']);
   assert.ok(shownRows(history, changed, 100, 450).every(row => row.phase === 'staying'));
+});
+
+// Run 13: a commit after every row joining a table, each measured at the height every row has (a compact row is a pixel
+// over the stylesheet's minimum, so every one of them was "taller").
+test('a row measured at the height the rows have changes nothing; only a taller row, or the rows shrinking, does', () => {
+  const empty = { scope: 's', heights: new Map<string, number>(), floor: 0 };
+  const first = withRowHeights(empty, [['a', 23], ['b', 23], ['c', 46]], 22, 's');
+  assert.equal(first.floor, 23, 'the lowest row measured is the height every row is taken to have');
+  assert.deepEqual([...first.heights], [['c', 46]], 'only the taller row is held');
+  assert.equal(withRowHeights(first, [['d', 23.3], ['a', 23]], 22, 's'), first, 'a row joining at the rows’ height, or one re-observed, renders nothing');
+  const wrapped = withRowHeights(first, [['d', 46]], 22, 's');
+  assert.notEqual(wrapped, first);
+  assert.equal(wrapped.heights.get('d'), 46, 'a row wrapping onto two lines is held');
+  assert.equal(withRowHeights(wrapped, [['d', 23]], 22, 's').heights.has('d'), false, 'and let go when it fits one line again');
+  const other = withRowHeights(first, [['a', 23]], 22, 't');
+  assert.equal(other.scope, 't');
+  assert.equal(other.heights.get('c'), 46, 'heights measured at another width stand until measured again');
+  assert.deepEqual(measuredRowOffsets(['a', 'c', 'x'], first.heights, Math.max(22, first.floor), 0), [0, 23, 69, 92], 'an unmeasured row takes the rows’ height');
 });
 
 test('wrapped-row geometry follows measured identities across reorder and supports 5000 rows', () => {

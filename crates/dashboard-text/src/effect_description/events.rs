@@ -25,7 +25,7 @@ const RULING: u64 = mask::<PoliticsRow>(&["ruling_party"]);
 const PARTY_TOKEN: u64 = mask::<PoliticalPartyRow>(&["token"]);
 
 const DECISION_RANDOM_COUNT_GAP: &str =
-    "DecisionRandomItems is not complete for this decision-description seed";
+    "decision random items is not complete for this decision-description seed";
 
 mod descriptions;
 #[cfg(test)]
@@ -53,7 +53,7 @@ fn matching<'a>(
     candidates.sort_by_key(|row| row.ordinal);
     for row in candidates {
         let row_owner = slot(row.country)
-            .ok_or_else(|| format!("CountryLinks lacks Decisions owner {}", row.country))?;
+            .ok_or_else(|| format!("country links lacks Decisions owner {}", row.country))?;
         if row_owner != owner || row.numeric_target != target_state {
             continue;
         }
@@ -61,7 +61,7 @@ fn matching<'a>(
             None
         } else {
             Some(slot(row.country_target).ok_or_else(|| {
-                format!("CountryLinks lacks Decisions target {}", row.country_target)
+                format!("country links lacks Decisions target {}", row.country_target)
             })?)
         };
         if country == target_country {
@@ -137,7 +137,7 @@ pub fn decision_name_key_at<'f>(
         .next()
         .transpose()
         .map_err(built)?
-        .ok_or("CountryAppearance lacks decision-name cosmetic tag")?;
+        .ok_or("country appearance lacks decision-name cosmetic tag")?;
     let politics = frame
         .complete::<tables::Politics>(RULING)
         .map_err(|why| why.to_string())?
@@ -156,7 +156,7 @@ pub fn decision_name_key_at<'f>(
         .next()
         .transpose()
         .map_err(built)?
-        .ok_or("PoliticalParties lacks decision-name ruling ideology")?;
+        .ok_or("political parties lacks decision-name ruling ideology")?;
     let utf8 = |bytes: &[u8]| {
         std::str::from_utf8(installed_content_core::parser::c_string(bytes))
             .map(str::to_owned)
@@ -433,7 +433,7 @@ impl Renderer<'_, '_, '_> {
                     .world()?
                     .recorded()
                     .slot(row.country_target)
-                    .ok_or("CountryLinks lacks decision title target")?,
+                    .ok_or("country links lacks decision title target")?,
             )
         };
         let target = country_target.unwrap_or(row.numeric_target) as i32;
@@ -490,8 +490,8 @@ impl Renderer<'_, '_, '_> {
             None
         } else if let Some(row) = row {
             *row.description_seed
-                .require("Decisions.description_seed")
-                .map_err(|_| "Decisions.description_seed not recorded")?
+                .require("description seed of decisions")
+                .map_err(|_| "description seed of decisions not recorded")?
         } else {
             let world = self
                 .context

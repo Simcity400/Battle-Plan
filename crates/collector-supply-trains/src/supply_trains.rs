@@ -449,7 +449,7 @@ impl Captured {
     #[cfg(test)]
     fn vacant() -> Self {
         Self {
-            parts: (0..PARTS).map(|_| Part::vacant()).collect(),
+            parts: owned_vec(collect_vec((0..PARTS).map(|_| Part::vacant()))),
             trains: Trains::vacant(),
             selection: SliceSelection::new(false),
             terminal_failure: None,
@@ -458,7 +458,7 @@ impl Captured {
 
     pub fn with_capacities(c: &Capacities) -> Self {
         Self {
-            parts: (0..PARTS).map(|_| Part::new(c)).collect(),
+            parts: owned_vec(collect_vec((0..PARTS).map(|_| Part::new(c)))),
             trains: Trains::new(c),
             selection: SliceSelection::new(true),
             terminal_failure: None,

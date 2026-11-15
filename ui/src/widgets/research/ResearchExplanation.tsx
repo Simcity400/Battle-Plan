@@ -1,11 +1,17 @@
 import { useMemo, useState } from 'react';
 import type { CSSProperties } from 'react';
-import type { ResearchEntry, ResearchHistory, ResearchSlotHistory } from '../../generated/dashboard';
+import type { ResearchHistory, ResearchSlotHistory } from './types';
+import type { DashboardClient } from '../../dashboard/client';
+import type { BoundTrack } from '../../dashboard/model';
+import { useProduct } from '../../dashboard/products.ts';
+import WidgetState from '../../components/WidgetState';
+import { validateResearchBreakdown, withBreakdown } from './researchData';
 import { formatDate, formatDateTime, gameDate } from '../../dashboard/calendar';
 import { Icon } from '../../components/Icons';
 import { researchNumber } from './researchBreakdown';
-import { completedResearchJourney, researchJourney, researchTimeSplit, type ResearchTimeSplit } from './researchJourney';
+import { completedResearchJourney, researchAssignments, researchJourney, researchTimeSplit, type ResearchTimeSplit } from './researchJourney';
 import { researchTimeRows, type ResearchSegment } from './researchTimeBar';
+import type { ResearchBreakdownPart, ResearchBreakdownReply, ResearchEntry } from '../../generated/dashboard';
 
 const date = (hour: number) => { const value = gameDate(hour); return value ? formatDate(value) : '—'; };
 const amount = (raw: bigint) => researchNumber(raw < 0n ? -raw : raw);
@@ -45,25 +51,47 @@ function TimeBar({ split, active }: { split: ResearchTimeSplit; active: boolean 
   </div>;
 }
 
-export default function ResearchExplanation({ history, slots, slot, entry, description }: {
+/** The breakdown parts of `entry`'s journey: each assignment it moved through, read through its end, or through
+ * `asked` (the hour the breakdown was opened at) while still researched. */
+export function breakdownParts(slots: readonly ResearchSlotHistory[], slot: ResearchSlotHistory, entry: ResearchEntry, asked: number): ResearchBreakdownPart[] {
+  return researchAssignments(slots, slot, entry).map(part => ({ slot: part.slot.index, firstObservedHour: part.entry.firstObservedHour,
+    lastHour: part.entry.endedByHour ?? Math.max(part.entry.firstObservedHour, asked),
+    started: part.entry.startedAfterHour !== null }));
+}
+
+/** How a technology's research time came about. Its reads are asked once when it opens (`research-breakdown`),
+ * never again as playback moves: an assignment still researched is explained through the hour it was opened at. */
+export default function ResearchExplanation({ client, track, tag, hour, history, slots, slot, entry, description }: {
+  client: DashboardClient; track: BoundTrack; tag: string; hour: number;
   history: ResearchHistory; slots: ResearchSlotHistory[]; slot: ResearchSlotHistory; entry: ResearchEntry; description?: string | null;
 }) {
+  const [asked] = useState(hour);
+  const parts = breakdownParts(slots, slot, entry, asked);
+  const request = { sourceId: track.source.id, revision: track.source.revision, product: 'research-breakdown', params: { branchId: track.branch.id, tag, parts } };
+  const { data, error, retry } = useProduct<ResearchBreakdownReply>(client, request, true, validateResearchBreakdown, track.source);
+  const joined = useMemo<ResearchHistory>(() => ({ coverage: history.coverage, slots: withBreakdown(history.slots, data) }), [history, data]);
+  const joinedSlots = useMemo(() => withBreakdown(slots, data), [slots, data]);
+  const joinedSlot = joinedSlots.find(owner => owner.index === slot.index) ?? slot;
   // Playback recreates clipped entries every hour. Completed work depends only
   // on immutable source history and its already-visible observation bounds.
-  const completed = useMemo(() => completedResearchJourney(history, slot.index, entry),
-    [history, slot.index, entry.firstObservedHour, entry.technologyHandle, entry.level, entry.token,
+  const completed = useMemo(() => data ? completedResearchJourney(joined, slot.index, entry) : null,
+    [data, joined, slot.index, entry.firstObservedHour, entry.technologyHandle, entry.level, entry.token,
       entry.outcome, entry.endedByHour, entry.outcomeObservedHour]);
-  const journey = useMemo(() => completed ?? researchJourney(slots, slot, entry), [completed, slots, slot, entry]);
+  const journey = useMemo(() => completed ?? researchJourney(joinedSlots, joinedSlot, entry), [completed, joinedSlots, joinedSlot, entry]);
   const active = entry.outcome === 'active';
-  const split = useMemo(() => researchTimeSplit(journey, active), [journey, active]);
-  return <div className="focus-description research-description">
+  const split = useMemo(() => data ? researchTimeSplit(journey, active) : null, [data, journey, active]);
+  const missing = data?.parts.flatMap(part => part.missing ?? []) ?? [];
+  return <div className="research-description">
     <div className="research-when">
       {entry.outcome === 'completed' && entry.endedByHour !== null
         ? <span data-tooltip={formatDateTime(entry.endedByHour)}><small>Completed</small>{date(entry.endedByHour)}</span>
         : <span data-tooltip={journey.startKnown ? formatDateTime(journey.firstHour) : 'Start date unknown.'}>
           <small>{journey.startKnown ? 'Started' : 'Started by'}</small>{date(journey.firstHour)}</span>}
     </div>
-    {split ? <TimeBar split={split} active={active} /> : <p className="research-unavailable">Research time breakdown unavailable.</p>}
+    {error && !data ? <WidgetState kind="error" failure={error} onRetry={retry} />
+      : !data ? <p className="research-unavailable" role="status">Loading research time breakdown…</p>
+        : split ? <TimeBar split={split} active={active} />
+          : <p className="research-unavailable">Research time breakdown unavailable{missing.length ? `: ${missing.join(' ')}` : '.'}</p>}
     {description && <details className="research-description-text"><summary>Description<Icon name="chevron-down" className="research-chevron" aria-hidden="true" /></summary><p>{description}</p></details>}
   </div>;
 }

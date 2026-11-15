@@ -7,6 +7,7 @@ import type { Compression } from './compression';
 
 export interface SettingsPatch {
   compression?: Compression;
+  autoCompress?: boolean;
   recordEveryCampaign?: boolean;
   autoSave?: boolean;
   startWithWindows?: boolean;
@@ -40,6 +41,8 @@ export const recordings = (view: RecordingsView) => invoke<Recordings>('recordin
 export const actOnWaiting = (session: string, campaign: string, discard: boolean) => invoke<string | null>('act_on_waiting', { session, campaign, discard });
 /** Show a saved recording selected in its folder. */
 export const revealRecording = (path: string) => invoke<void>('reveal_recording', { path });
+/** Compress a saved recording to the smaller High size in the background, one at a time. */
+export const compressRecording = (path: string) => invoke<void>('compress_recording', { path });
 
 export const onStatus = (handler: (snapshot: Snapshot) => void): Promise<UnlistenFn> =>
   listen<Snapshot>('recorder-status', event => handler(event.payload));

@@ -156,6 +156,13 @@ fn generation_of(scope: (usize, usize), historical: usize, pointers: &[usize], r
 static LIVE_LEN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 static LIVE_HINT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
+#[cfg(test)]
+pub(super) fn forget_live() {
+    LIVE_LEN.store(0, std::sync::atomic::Ordering::Relaxed);
+    LIVE_HINT.store(0, std::sync::atomic::Ordering::Relaxed);
+    HISTORY.with_borrow_mut(|history| *history = History::default());
+}
+
 pub(super) fn remember_roster(count: usize) {
     LIVE_HINT.fetch_max(count, std::sync::atomic::Ordering::Relaxed);
 }
@@ -225,13 +232,12 @@ impl RoleCensus {
     /// Gather every occurrence's fields in one guarded call. `census` must be
     /// complete and freshly certified for `scope` in this callback; the
     /// census is admitted only when every field of every occurrence copied.
-    pub(crate) fn acquire_with_growth(
+    pub(crate) fn gather(
         &mut self,
         memory: &impl Memory,
         scope: (usize, usize),
         census: &[PortraitIdentity],
         historical: usize,
-        growing: bool,
     ) -> bool {
         self.scope = scope;
         self.complete = false;
@@ -239,9 +245,7 @@ impl RoleCensus {
         self.required = census.len();
         LIVE_LEN.store(census.len(), std::sync::atomic::Ordering::Relaxed);
         self.historical = historical;
-        if growing {
-            self.grow();
-        }
+        self.grow();
         if census.len() > self.fits() || historical > census.len() {
             return false;
         }
@@ -492,7 +496,6 @@ impl CensusCarry {
         census: &[PortraitIdentity],
         stamp: u64,
         historical: usize,
-        growing: bool,
     ) -> (bool, crate::census_changes::Counts) {
         let mut counts = crate::census_changes::Counts::default();
         let token = self.changes.quiet();
@@ -509,7 +512,7 @@ impl CensusCarry {
             return (true, counts);
         }
         counts.gathered = true;
-        let admitted = roles.acquire_with_growth(memory, scope, census, historical, growing);
+        let admitted = roles.gather(memory, scope, census, historical);
         self.token = token.filter(|_| admitted);
         self.stamp = admitted.then_some(stamp);
         (admitted, counts)

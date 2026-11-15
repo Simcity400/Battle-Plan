@@ -66,11 +66,11 @@ def launch(args):
         raise RuntimeError('This session desktop is already open; close its app first')
     source = pathlib.Path(args[0]).resolve(strict=True)
     ROOT.mkdir(parents=True, exist_ok=True)
-    for filename in [source.name, 'viewer.exe']:
-        shutil.copy2(source.parent / filename, ROOT / filename)
-    # The viewer finds its shader compiler beside itself.
-    if (source.parent / 'shader-tools').is_dir():
-        shutil.copytree(source.parent / 'shader-tools', ROOT / 'shader-tools', dirs_exist_ok=True)
+    shutil.copy2(source, ROOT / source.name)
+    # The app's map loads the pinned shader compiler from beside the app.
+    for filename in ['dxcompiler.dll', 'dxil.dll']:
+        if (source.parent / filename).is_file():
+            shutil.copy2(source.parent / filename, ROOT / filename)
     args = [str(ROOT / source.name), *args[1:]]
     desk = desktop(True)
     for key,subdir in [('APPDATA','roaming'),('LOCALAPPDATA','local'),('WEBVIEW2_USER_DATA_FOLDER','webview')]:

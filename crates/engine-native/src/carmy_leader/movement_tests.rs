@@ -75,7 +75,7 @@ fn primary_prefix_preserves_lazy_chunks_and_reuses_members_without_source_reads(
 }
 
 #[test]
-fn primary_zero_capacity_matches_direct_trace_and_keeps_first_root_and_clean_staleness() {
+fn primary_zero_capacity_reads_the_direct_trace_once_and_keeps_first_root_and_clean_staleness() {
     let mut fixture = primary_fixture(1);
     // A later primary root and all parent roots are unreachable after the
     // first match, including when a warmed membership lookup supplies it.
@@ -87,9 +87,21 @@ fn primary_zero_capacity_matches_direct_trace_and_keeps_first_root_and_clean_sta
     assert_eq!(movement_primary_root(&source, 0, member), Ok(ROOT));
     let direct = source.reads.borrow().clone();
     source.reads.borrow_mut().clear();
+    // The direct walk authenticates its own group before reading the parent
+    // and again as the first owner; the memo serves the second from the first.
+    let identity = [(GROUP, 8), (GROUP + group::HANDLE, 4)];
+    let parent = direct
+        .iter()
+        .position(|&read| read == (GROUP + group::PARENT, 8))
+        .unwrap();
+    assert_eq!(direct[parent - 2..parent], identity);
+    assert_eq!(direct[parent + 1..parent + 3], identity);
+    let mut once = direct.clone();
+    once.drain(parent + 1..parent + 3);
     let mut empty = PrimaryRootCache::new(0, 0);
     assert_eq!(empty.resolve(&source, 0, member), Ok(ROOT));
-    assert_eq!(*source.reads.borrow(), direct);
+    assert_eq!(*source.reads.borrow(), once);
+    assert!(empty.chunks.is_empty());
     let mut cache = PrimaryRootCache::new(8, 4);
     assert_eq!(cache.resolve(&source, 0, member), Ok(ROOT));
     source.fixture.borrow_mut().bytes[member + PRIMARY_ROOT_DIRTY] = 0;
@@ -524,6 +536,33 @@ fn memoized_selection_matches_seeded_and_reads_group_inputs_once_a_pass() {
         );
     }
     assert!(unkept.count(GROUP + group::LEADER) == seeds.len());
+}
+
+/// A refused memo growth carries the allocation's name, never a field's.
+#[cfg(feature = "alloc-fault-injection")]
+#[test]
+fn refused_memo_growth_is_named_as_the_allocation_failure() {
+    let mut fixture = Fixture::new();
+    fixture.root(GROUP, group::PRIMARY_ORDER_DATA, ARMY);
+    fixture.bytes[ARMY + crate::corders_group_member::HOST_OFFSET + PRIMARY_ROOT_DIRTY] = 1;
+    let seed = carmy::DivisionSeed {
+        pointer: ARMY,
+        orders_group: Some(GROUP),
+        class: Some(0),
+        ..Default::default()
+    };
+    assert_eq!(
+        movement_accumulator_memoized(&fixture, 0, &seed, &mut LeaderMemo::vacant()),
+        Ok(Some(LEADER + 0x4d8))
+    );
+    let mut refused = LeaderMemo::vacant();
+    assert_eq!(
+        crate::allocation::test_support::with_allocations_denied(|| {
+            movement_accumulator_memoized(&fixture, 0, &seed, &mut refused)
+        }),
+        Err("movement leader memo allocation failed")
+    );
+    assert!(refused.roots.metadata.refused());
 }
 
 /// The census selects every division from one read of its group and leader:

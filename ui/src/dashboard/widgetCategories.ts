@@ -1,6 +1,7 @@
 // Pure grouping and search for the widget catalogue; no React.
 import type { IconName } from '../components/Icons';
 import { PAGES } from './pages.ts';
+import type { Page } from './pages.ts';
 import { resolveOptions } from './options.ts';
 import type { OptionField, WidgetOptions } from './options';
 
@@ -10,11 +11,11 @@ export interface WidgetGroup<T> { label: string; page?: string; icon?: IconName;
 
 /** A widget's declared category, else the first subject page that shows it, else Overview's.
  * Groups follow the sidebar's page order; a declared category no page names comes after them, then Other. */
-export function widgetGroups<T extends Categorised>(definitions: readonly T[]): WidgetGroup<T>[] {
-  const subjects = PAGES.filter(page => page.id !== 'overview');
+export function widgetGroups<T extends Categorised>(definitions: readonly T[], pages: readonly Page[] = PAGES): WidgetGroup<T>[] {
+  const subjects = pages.filter(page => page.id !== 'overview');
   const pageLabel = (kind: string) => (subjects.find(page => page.panels.some(([panel]) => panel === kind))
-    ?? PAGES.find(page => page.panels.some(([panel]) => panel === kind)))?.label;
-  const groups = new Map<string, WidgetGroup<T>>(PAGES.map(page => [page.label, { label: page.label, page: page.id, icon: page.icon, items: [] }]));
+    ?? pages.find(page => page.panels.some(([panel]) => panel === kind)))?.label;
+  const groups = new Map<string, WidgetGroup<T>>(pages.map(page => [page.label, { label: page.label, page: page.id, icon: page.icon, items: [] }]));
   for (const definition of definitions) {
     const label = definition.category || pageLabel(definition.kind) || 'Other';
     if (!groups.has(label)) groups.set(label, { label, items: [] });

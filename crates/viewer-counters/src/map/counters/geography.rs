@@ -85,7 +85,7 @@ impl Memo {
         };
         Ok(self
             .recent
-            .get_or_insert_with(key, || {
+            .get_or_insert_without_waiting(key, || {
                 Ok::<_, Infallible>(Arc::new(Geometry::build(
                     provinces, bounds, region_of, defines, map_width,
                 )))

@@ -118,10 +118,10 @@ pub(crate) fn read(
     base: usize,
     pointer: usize,
     group: usize,
-    wing_types: &mut [u32],
+    wing_types: &mut Vec<u32>,
     wing_types_len: &mut usize,
     wing_types_required: &mut usize,
-    plane_wings: &mut [u64],
+    plane_wings: &mut Vec<u64>,
     plane_wings_len: &mut usize,
     plane_wings_required: &mut usize,
 ) -> Result<Row, &'static str> {
@@ -130,10 +130,10 @@ pub(crate) fn read(
         base,
         pointer,
         group,
-        crate::walk::Buffer::Fixed(wing_types),
+        crate::walk::Buffer::Growing(wing_types),
         wing_types_len,
         wing_types_required,
-        crate::walk::Buffer::Fixed(plane_wings),
+        crate::walk::Buffer::Growing(plane_wings),
         plane_wings_len,
         plane_wings_required,
     )
@@ -309,14 +309,14 @@ mod presentation_cache_tests {
             naval_hits: &mut Vec::new(),
             lengths: [0; 3],
             required: [0; 3],
-            planes: crate::walk::Buffer::Fixed(&mut []),
+            planes: crate::walk::Buffer::Count,
             planes_len: 0,
             planes_required: 0,
-            plane_air_hits: crate::walk::Buffer::Fixed(&mut []),
-            plane_naval_hits: crate::walk::Buffer::Fixed(&mut []),
+            plane_air_hits: crate::walk::Buffer::Count,
+            plane_naval_hits: crate::walk::Buffer::Count,
             plane_hit_lengths: [0; 2],
             plane_hit_required: [0; 2],
-            plane_kills: crate::walk::Buffer::Fixed(&mut []),
+            plane_kills: crate::walk::Buffer::Count,
             plane_kills_len: 0,
             plane_kills_required: 0,
             weapon_sources: &mut Vec::new(),
@@ -326,26 +326,26 @@ mod presentation_cache_tests {
             doctrine_keys: Default::default(),
             term_metadata: Default::default(),
             source_memo: Default::default(),
-            commander_inputs: crate::walk::Buffer::Fixed(&mut []),
+            commander_inputs: crate::walk::Buffer::Count,
             commander_inputs_len: 0,
             commander_inputs_required: 0,
             commander_timed_traits: &mut Vec::new(),
             commander_timed_traits_len: 0,
-            side_units: crate::walk::Buffer::Fixed(&mut []),
+            side_units: crate::walk::Buffer::Count,
             side_units_len: 0,
             side_units_required: 0,
             summary_countries: &mut Vec::new(),
             summary_countries_len: 0,
-            custom_sea: crate::walk::Buffer::Fixed(&mut []),
+            custom_sea: crate::walk::Buffer::Count,
             custom_sea_len: 0,
             custom_sea_required: 0,
-            damage_sources: crate::walk::Buffer::Fixed(&mut []),
+            damage_sources: crate::walk::Buffer::Count,
             damage_sources_len: 0,
             damage_sources_required: 0,
-            wing_types: crate::walk::Buffer::Fixed(&mut []),
+            wing_types: crate::walk::Buffer::Count,
             wing_types_len: 0,
             wing_types_required: 0,
-            plane_wings: crate::walk::Buffer::Fixed(&mut []),
+            plane_wings: crate::walk::Buffer::Count,
             plane_wings_len: 0,
             plane_wings_required: 0,
         };
@@ -436,21 +436,6 @@ mod presentation_cache_tests {
                     .all(|(index, &value)| value == index as u64 + 1)
             );
             assert!(wings[count..2 * count].iter().all(|&value| value == 0));
-            assert!(
-                read(
-                    &memory,
-                    0,
-                    PLANE,
-                    0,
-                    &mut [],
-                    &mut 0,
-                    &mut 0,
-                    &mut [],
-                    &mut 0,
-                    &mut 0
-                )
-                .is_err()
-            );
         }
     }
 }

@@ -6,7 +6,6 @@
 //! its definition's terrain category: the highlighted name on its own line, then the land
 //! combat terrain text ([`land_terrain`](super::land_terrain)), then its local province
 //! effects ([`local`]).
-use std::sync::Arc;
 
 use installed_content_core::terrain::TerrainCategory;
 use installed_content_localisation::localisation::Localisation;
@@ -125,36 +124,6 @@ fn land(
         Err(why) => *refused = Some(why),
     }
     Ok(text)
-}
-
-/// The hover of the last province asked for, kept while the hour and viewing country stay.
-#[derive(Default)]
-pub struct Cache {
-    held: Option<Held>,
-}
-
-/// The province and viewing country a hover was built for, its hour and the hover.
-type Held = ((u32, u32), Arc<DecodedFrame>, Arc<Tooltip>);
-
-impl Cache {
-    pub fn request(
-        &mut self,
-        content: &Content,
-        frame: &Arc<DecodedFrame>,
-        province: u32,
-        vision: &Vision,
-    ) -> Arc<Tooltip> {
-        let key = (province, vision.ours());
-        if let Some((held, held_frame, text)) = &self.held
-            && *held == key
-            && Arc::ptr_eq(held_frame, frame)
-        {
-            return Arc::clone(text);
-        }
-        let text = Arc::new(hover(content, frame, province, vision));
-        self.held = Some((key, Arc::clone(frame), Arc::clone(&text)));
-        text
-    }
 }
 
 #[cfg(test)]

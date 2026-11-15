@@ -586,7 +586,7 @@ impl Captured {
         read_phase.select(TABLES[2]);
         self.dense_bases.outcome = match self.select_dense_base_handles() {
             Ok(()) => {
-                let walked = naval_combat_air_base_wings::walk_growing(
+                let walked = naval_combat_air_base_wings::walk(
                     memory,
                     base,
                     &self.base_handles,

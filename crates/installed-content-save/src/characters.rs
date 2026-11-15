@@ -115,6 +115,40 @@ pub struct Manager {
     pub unit_leaders: BTreeMap<u64, UnitLeader>,
 }
 
+impl Manager {
+    /// The roster loading this save builds. The roster loader reads each
+    /// saved character and keeps it only when its name is nonempty, pushing
+    /// the kept ones in saved order; any other it destroys with its roles,
+    /// unit leader and variables.
+    pub fn loaded(&self) -> Self {
+        let mut order: Vec<&Character> = self.characters.values().collect();
+        order.sort_unstable_by_key(|character| (character.roster, character.ordinal));
+        let mut next = [0_u32; 2];
+        let mut characters = BTreeMap::new();
+        for character in order.into_iter().filter(|c| c.survives_load()) {
+            let ordinal = &mut next[usize::from(character.roster)];
+            characters.insert(
+                character.id,
+                Character {
+                    ordinal: *ordinal,
+                    ..character.clone()
+                },
+            );
+            *ordinal += 1;
+        }
+        let unit_leaders = self
+            .unit_leaders
+            .iter()
+            .filter(|(_, leader)| characters.contains_key(&leader.character))
+            .map(|(&id, leader)| (id, leader.clone()))
+            .collect();
+        Self {
+            characters,
+            unit_leaders,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Character {
     /// The writer saves the stored gender enum as a token.
@@ -148,6 +182,14 @@ pub struct Character {
     /// `type`) only when either word is nonzero, so omission is none; the
     /// handle is the stored eight bytes (type low, id high).
     pub operative: Option<u64>,
+}
+
+impl Character {
+    /// Whether loading the save keeps this character ([`Manager::loaded`]):
+    /// its name reads back nonempty. The writer omits an empty name.
+    pub fn survives_load(&self) -> bool {
+        self.name.as_deref().is_some_and(|name| !name.is_empty())
+    }
 }
 
 /// A character's serialized scientist role.

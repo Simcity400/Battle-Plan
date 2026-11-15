@@ -322,7 +322,7 @@ fn run(
 ) -> (Capture, WeatherJob) {
     let mut job = WeatherJob::new();
     job.carry = carry;
-    let report = copy_weather_refresh_growing(
+    let report = copy_weather_refresh(
         memory,
         WeatherCopyContext {
             base: 0,
@@ -638,6 +638,7 @@ fn a_failed_window_record_is_not_read_again() {
 
 /// A window region whose combat entries fail their first read is refused, not
 /// read again; every other region keeps its value, and the next hour reads all.
+/// The second attempt is the air efficiency breakdown's own probe, after it.
 #[test]
 fn a_failed_window_combat_lookup_is_not_read_again() {
     let (mut world, carry) = held(40, 9, (5, 2));
@@ -652,7 +653,7 @@ fn a_failed_window_combat_lookup_is_not_read_again() {
     let mut carry = carry;
     carry.begin(2, false, Some(0));
     let (captured, mut job) = run(&memory, world.base + STATE, Some(carry));
-    assert_eq!(memory.attempts.get(), 1);
+    assert_eq!(memory.attempts.get(), 2);
     let (full, _) = run(&world.memory(), world.base + STATE, None);
     for slot in 0..9 {
         let expected = if slot == failed {
@@ -694,7 +695,7 @@ fn weather_window_bench() {
             evict.fill(at as u8);
             std::hint::black_box(&evict);
             let started = std::time::Instant::now();
-            let report = copy_weather_refresh_growing(
+            let report = copy_weather_refresh(
                 &live,
                 WeatherCopyContext {
                     base: 0,

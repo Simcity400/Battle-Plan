@@ -476,9 +476,7 @@ impl<'a> ScriptedText<'a> {
         self.world
             .get_or_init(|| {
                 crate::triggers::inputs::unrecorded(|| {
-                    self.content
-                        .lazy_world(self.frame)
-                        .map(|world| world.with_lexicon(self.lexicon))
+                    self.content.lazy_world(self.frame)
                 })
             })
             .as_ref()
@@ -628,33 +626,13 @@ impl<'a> ScriptedText<'a> {
     }
 
     pub(crate) fn state_name_for_unrecorded(&self, id: u32, plain: bool) -> Result<String, String> {
-        static EMPTY_STATE_NAMES: StateNames = BTreeMap::new();
         let (states, gap) = rows::<tables::States>(self.frame, STATE);
-        let state = keyed(&states, u128::from(id))?.ok_or_else(|| format!("state {id}: States {gap}"))?;
+        let state = keyed(&states, u128::from(id))?.ok_or_else(|| format!("state {id}: states: {gap}"))?;
         state_name_from(
             &state,
             |bytes, what| self.stored_text(bytes, what),
             |id| {
-                self.content.environment()?;
-                #[cfg(any(test, feature = "test-support"))]
-                let names = match self.content.environment()?.inputs.get() {
-                    Some(Ok(inputs)) => &inputs.state_names,
-                    _ => self
-                        .content
-                        .cached_states()
-                        .map(|states| &states.names)
-                        .unwrap_or(&EMPTY_STATE_NAMES),
-                };
-                #[cfg(not(any(test, feature = "test-support")))]
-                let names = self
-                    .content
-                    .cached_states()
-                    .map(|states| &states.names)
-                    .unwrap_or(&EMPTY_STATE_NAMES);
-                let definition = names.get(&id).ok_or_else(|| {
-                    format!("GetName: state {id} has no recorded-content template")
-                })?;
-                let key = definition.as_ref().map_err(Clone::clone)?;
+                let key = state_template_key(self.content, id)?;
                 if plain {
                     crate::catalogue::localised(
                         self.localisation,
@@ -667,6 +645,60 @@ impl<'a> ScriptedText<'a> {
             },
         )
     }
+}
+
+/// The name key of state `id`'s recorded-content template.
+fn state_template_key(content: &ScriptedContent, id: u32) -> Result<&String, String> {
+    static EMPTY_STATE_NAMES: StateNames = BTreeMap::new();
+    content.environment()?;
+    #[cfg(any(test, feature = "test-support"))]
+    let names = match content.environment()?.inputs.get() {
+        Some(Ok(inputs)) => &inputs.state_names,
+        _ => content
+            .cached_states()
+            .map(|states| &states.names)
+            .unwrap_or(&EMPTY_STATE_NAMES),
+    };
+    #[cfg(not(any(test, feature = "test-support")))]
+    let names = content
+        .cached_states()
+        .map(|states| &states.names)
+        .unwrap_or(&EMPTY_STATE_NAMES);
+    let definition = names
+        .get(&id)
+        .ok_or_else(|| format!("GetName: state {id} has no recorded-content template"))?;
+    definition.as_ref().map_err(Clone::clone)
+}
+
+/// [`ScriptedText::plain_state_name`] of state `id` from its recorded custom and owner names,
+/// for a reader that holds those two cells rather than a frame's States row.
+pub fn plain_state_name_of(
+    localisation: &Localisation,
+    content: &ScriptedContent,
+    id: u32,
+    custom_name: &[u8],
+    owner_name: &[u8],
+) -> Result<String, String> {
+    let state = replay_data::rows::StateRow {
+        id,
+        custom_name: custom_name.to_vec(),
+        owner_name: owner_name.to_vec(),
+        ..Default::default()
+    };
+    state_name_from(
+        &state,
+        |bytes, what| super::stored_text(localisation, &content.recorded_language, bytes, what),
+        |id| {
+            crate::catalogue::localised(
+                localisation,
+                state_template_key(content, id)?,
+                crate::catalogue::View::Plain,
+            )
+        },
+    )
+}
+
+impl<'a> ScriptedText<'a> {
 
     /// Primary province display names, also used by the combat-history location.
     pub fn province_display_name_primary(&self, id: u32) -> Result<Option<String>, String> {
@@ -699,7 +731,7 @@ impl<'a> ScriptedText<'a> {
         }
         let (provinces, gap) = rows::<tables::Provinces>(self.frame, PROVINCE);
         let province = keyed(&provinces, u128::from(id))?
-            .ok_or_else(|| format!("province {id}: Provinces {gap}"))?;
+            .ok_or_else(|| format!("province {id}: provinces: {gap}"))?;
         if province.state != 0 {
             self.state_name(province.state)
         } else {
@@ -729,7 +761,7 @@ impl<'a> ScriptedText<'a> {
         } else if complete::<tables::ProvinceNames>(self.frame) {
             Ok(None)
         } else {
-            Err(format!("GetName of province {id}: ProvinceNames {gap}"))
+            Err(format!("GetName of province {id}: province names: {gap}"))
         }
     }
 
@@ -743,7 +775,7 @@ impl<'a> ScriptedText<'a> {
     pub(crate) fn province_victory_point_name_unrecorded(&self, id: u32) -> Result<String, String> {
         let (provinces, gap) = rows::<tables::Provinces>(self.frame, PROVINCE);
         let province = keyed(&provinces, u128::from(id))?
-            .ok_or_else(|| format!("province {id}: Provinces {gap}"))?;
+            .ok_or_else(|| format!("province {id}: provinces: {gap}"))?;
         // Use the state's owner original tag or tag, not the
         // province controller. A null state uses the country at slot zero.
         let owner = if province.state == 0 {

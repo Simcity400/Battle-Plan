@@ -29,7 +29,7 @@ pub fn with_demand_parts(
     let parts = match parts {
         TableView::Complete(parts) => Ok(parts
             .rows::<tables::FuelDemandParts>()
-            .ok_or_else(|| invalid("FuelDemandParts view holds another table's rows"))?),
+            .ok_or_else(|| invalid("fuel demand parts view holds another table's rows"))?),
         TableView::Truncated { .. } => Err("fuel demand parts are truncated"),
         TableView::Unavailable { .. } => Err("fuel demand parts are unavailable"),
         TableView::NotRecorded { .. } => Err("fuel demand parts are not recorded"),

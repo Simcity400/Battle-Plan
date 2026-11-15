@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { IdeaHistoryReply } from '../generated/dashboard';
 import { nameKey } from './countryFacts.ts';
 import type { NameAt } from './countryFacts';
 import { useCountryNamesAt } from './countryNamesAt.ts';
@@ -7,6 +6,7 @@ import type { DashboardClient } from './client';
 import { nameReadText, nameReadFailure } from './nameReads.ts';
 import { ideaTooltipSources } from './ideaTooltip.ts';
 import type { BoundTrack } from './model';
+import type { IdeaHistoryReply } from '../generated/dashboard';
 
 /** What the idea widgets' tooltips read: the formats and texts of the reply, each
  * idea and its artwork, and the countries targeted modifiers name, as they were

@@ -56,6 +56,7 @@ impl GroupStamp {
 #[derive(Clone)]
 pub(super) struct GroupResources {
     pub pipeline: wgpu::RenderPipeline,
+    pub read_only: super::ReadOnly,
     pub groups: [wgpu::BindGroup; 3],
 }
 

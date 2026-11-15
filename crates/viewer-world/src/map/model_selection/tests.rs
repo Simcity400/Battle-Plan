@@ -117,16 +117,13 @@ fn names() -> TokenNames<'static> {
     TokenNames::from_rows(rows, true)
 }
 
-fn variants() -> BTreeMap<u64, &'static VariantDefinitionRow> {
+fn variants() -> Vec<VariantDefinitionRow> {
     [(10, 101), (20, 102), (30, 103)]
         .into_iter()
-        .map(|(id, equipment_token)| {
-            let row: &'static VariantDefinitionRow = Box::leak(Box::new(VariantDefinitionRow {
-                id,
-                equipment_token,
-                ..Default::default()
-            }));
-            (id, row)
+        .map(|(id, equipment_token)| VariantDefinitionRow {
+            id,
+            equipment_token,
+            ..Default::default()
         })
         .collect()
 }
@@ -167,18 +164,15 @@ fn an_unnamed_candidate_refuses_the_pair_instead_of_ranking_the_next() {
         .unwrap();
     let mut variants = variants();
     // Variant 40's token is not in the hour's LexicalTokens.
-    variants.insert(
-        40,
-        Box::leak(Box::new(VariantDefinitionRow {
-            id: 40,
-            equipment_token: 999,
-            ..Default::default()
-        })),
-    );
+    variants.push(VariantDefinitionRow {
+        id: 40,
+        equipment_token: 999,
+        ..Default::default()
+    });
     let rows = [equipment(40, 900, 0), equipment(20, 500, 2)];
-    let refs: Vec<_> = rows.iter().collect();
+    let refs = &rows[..];
     let error = content
-        .select_pair(&template, None, &[], &refs, &variants, &names())
+        .select_pair(&template, None, &[], refs, Variants::new(&variants[..]), &names())
         .unwrap_err();
     assert_eq!(
         error.to_string(),
@@ -202,9 +196,9 @@ fn without_a_category_the_representative_largest_need_filters_by_quantity_then_o
         equipment(30, 500, 7),
         equipment(20, 500, 2),
     ];
-    let refs: Vec<_> = rows.iter().collect();
+    let refs = &rows[..];
     let pair = content
-        .select_pair(&template, None, &[20], &refs, &variants, &names())
+        .select_pair(&template, None, &[20], refs, Variants::new(&variants[..]), &names())
         .unwrap()
         .unwrap();
     assert_eq!((pair.variant.id, pair.subunit.key.as_str()), (20, "armor"));
@@ -214,7 +208,7 @@ fn without_a_category_the_representative_largest_need_filters_by_quantity_then_o
         .unwrap();
     assert!(
         content
-            .select_pair(&null, None, &[], &refs, &variants, &names())
+            .select_pair(&null, None, &[], refs, Variants::new(&variants[..]), &names())
             .unwrap()
             .is_none()
     );
@@ -234,16 +228,16 @@ fn a_category_scores_the_stored_groups_and_skips_excluded_variants() {
         equipment(30, 500, 1),
         equipment(10, 1, 2),
     ];
-    let refs: Vec<_> = rows.iter().collect();
+    let refs = &rows[..];
     // Armor wins the tanks pair: the only group needing tanks.
     let pair = content
-        .select_pair(&template, Some(1 << 2), &[20], &refs, &variants, &names())
+        .select_pair(&template, Some(1 << 2), &[20], refs, Variants::new(&variants[..]), &names())
         .unwrap()
         .unwrap();
     assert_eq!((pair.variant.id, pair.subunit.key.as_str()), (30, "armor"));
     // Rifles: infantry's two entries outscore armor's one.
     let pair = content
-        .select_pair(&template, Some(1 << 5), &[], &refs, &variants, &names())
+        .select_pair(&template, Some(1 << 5), &[], refs, Variants::new(&variants[..]), &names())
         .unwrap()
         .unwrap();
     assert_eq!(pair.subunit.key, "infantry");
@@ -254,8 +248,8 @@ fn a_category_scores_the_stored_groups_and_skips_excluded_variants() {
                 &template,
                 Some(1 << 5),
                 &[],
-                &[&missing[0]],
-                &variants,
+                &missing,
+                Variants::new(&variants[..]),
                 &names()
             )
             .is_err()
@@ -292,9 +286,9 @@ fn a_local_representatives_recorded_need_selects_its_equipment_without_rescoring
         .unwrap();
     let variants = variants();
     let rows = [equipment(10, 900, 0), equipment(20, 100, 1)];
-    let refs: Vec<_> = rows.iter().collect();
+    let refs = &rows[..];
     let pair = content
-        .select_pair(&template, None, &[], &refs, &variants, &names())
+        .select_pair(&template, None, &[], refs, Variants::new(&variants[..]), &names())
         .unwrap()
         .unwrap();
     assert_eq!(pair.variant.id, 20);
@@ -320,14 +314,11 @@ fn coarse_pair_scopes_keep_stable_ties_nulls_exclusions_and_first_errors() {
         .template(&row((0, 0), &[(2, 0, 1)]), &source)
         .unwrap();
     let mut variants = variants();
-    variants.insert(
-        40,
-        Box::leak(Box::new(VariantDefinitionRow {
-            id: 40,
-            equipment_token: 999,
-            ..Default::default()
-        })),
-    );
+    variants.push(VariantDefinitionRow {
+        id: 40,
+        equipment_token: 999,
+        ..Default::default()
+    });
     let names = names();
     let snapshot = |result: io::Result<Option<SelectedPair<'_>>>| {
         result
@@ -352,7 +343,7 @@ fn coarse_pair_scopes_keep_stable_ties_nulls_exclusions_and_first_errors() {
         if frame.is_multiple_of(11) {
             rows.insert(0, equipment(99, 0, 9));
         }
-        let refs: Vec<_> = rows.iter().collect();
+        let refs = &rows[..];
         let category = (frame.is_multiple_of(3)).then_some(1 << 2);
         let excluded: &[u64] = if frame.is_multiple_of(4) { &[20] } else { &[] };
         let template = if frame.is_multiple_of(13) {
@@ -361,9 +352,9 @@ fn coarse_pair_scopes_keep_stable_ties_nulls_exclusions_and_first_errors() {
             &template
         };
         let ordinary =
-            snapshot(content.select_pair(template, category, excluded, &refs, &variants, &names));
+            snapshot(content.select_pair(template, category, excluded, refs, Variants::new(&variants[..]), &names));
         let measured = snapshot(content.select_pair_profiled(
-            template, category, excluded, &refs, &variants, &names, &stages,
+            template, category, excluded, refs, Variants::new(&variants[..]), &names, &stages,
         ));
         assert_eq!(ordinary, measured, "frame {frame}");
     }
@@ -385,15 +376,15 @@ fn coarse_pair_scopes_keep_stable_ties_nulls_exclusions_and_first_errors() {
     // even for negative quantities, and excluded rows are read before ranking.
     for handles in [[20, 30], [30, 20]] {
         let rows = handles.map(|handle| equipment(handle, -1, 7));
-        let refs: Vec<_> = rows.iter().collect();
+        let refs = &rows[..];
         let pair = content
-            .select_pair(&template, None, &[], &refs, &variants, &names)
+            .select_pair(&template, None, &[], refs, Variants::new(&variants[..]), &names)
             .unwrap()
             .unwrap();
         assert_eq!(pair.variant.id, handles[0]);
     }
     let rows = [equipment(40, 0, 9), equipment(99, 0, 0)];
-    let refs: Vec<_> = rows.iter().collect();
+    let refs = &rows[..];
     let stages = profile::Stages::new(true);
     assert_eq!(
         content
@@ -401,8 +392,8 @@ fn coarse_pair_scopes_keep_stable_ties_nulls_exclusions_and_first_errors() {
                 &template,
                 Some(1 << 2),
                 &[40],
-                &refs,
-                &variants,
+                refs,
+                Variants::new(&variants[..]),
                 &names,
                 &stages
             )
@@ -423,7 +414,7 @@ fn coarse_pair_scopes_keep_stable_ties_nulls_exclusions_and_first_errors() {
     let stages = profile::Stages::new(true);
     assert!(
         content
-            .select_pair_profiled(&null, None, &[], &refs, &variants, &names, &stages)
+            .select_pair_profiled(&null, None, &[], refs, Variants::new(&variants[..]), &names, &stages)
             .unwrap()
             .is_none()
     );
@@ -447,7 +438,7 @@ fn retained_classification_keeps_multi_hour_keys_failures_ties_and_original_dema
             TableView::Complete(TableRows::empty(TableId::ALL[i])).into()
         }),
     };
-    let definitions: Vec<_> = variants().values().map(|row| (*row).clone()).collect();
+    let definitions = variants();
     let tokens: Vec<_> = [
         (101, b"rifles_1".as_slice()),
         (102, b"Tanks_1"),
@@ -513,12 +504,9 @@ fn retained_classification_keeps_multi_hour_keys_failures_ties_and_original_dema
         if hour.is_multiple_of(17) {
             held = frame.clone();
         }
-        let variants: BTreeMap<_, _> = frame
+        let variants = frame
             .complete::<replay_data::rows::tables::VariantDefinitions>()
-            .unwrap()
-            .iter()
-            .map(|row| (row.id, row))
-            .collect();
+            .unwrap();
         let names = TokenNames::new(&frame).unwrap();
         let requirements = if hour.is_multiple_of(7) {
             vec![(5, 200_000)]
@@ -549,7 +537,7 @@ fn retained_classification_keeps_multi_hour_keys_failures_ties_and_original_dema
             if (hour + query).is_multiple_of(13) {
                 rows.insert(0, equipment(99, 0, 0));
             }
-            let refs: Vec<_> = rows.iter().collect();
+            let refs = &rows[..];
             let category = (query.is_multiple_of(3)).then_some(1 << 2);
             let excluded: &[u64] = if query.is_multiple_of(4) {
                 &[20, 40]
@@ -562,14 +550,14 @@ fn retained_classification_keeps_multi_hour_keys_failures_ties_and_original_dema
                 _ => &template,
             };
             let expected = snapshot(
-                content.select_pair(template, category, excluded, &refs, &variants, &names),
+                content.select_pair(template, category, excluded, refs, Variants::new(&variants[..]), &names),
             );
             let actual = snapshot(content.select_pair_classified(
                 template,
                 category,
                 excluded,
-                &refs,
-                &variants,
+                refs,
+                Variants::new(&variants[..]),
                 &names,
                 &Stages::new(false),
                 Some(&facts),
@@ -583,15 +571,15 @@ fn retained_classification_keeps_multi_hour_keys_failures_ties_and_original_dema
         let cloned = content.clone();
         let facts = cloned.classification_facts(&frame).unwrap();
         let rows = [equipment(20, 500, 0), equipment(30, 500, 0)];
-        let refs: Vec<_> = rows.iter().collect();
+        let refs = &rows[..];
         assert_eq!(
-            snapshot(content.select_pair(&template, None, &[], &refs, &variants, &names)),
+            snapshot(content.select_pair(&template, None, &[], refs, Variants::new(&variants[..]), &names)),
             snapshot(cloned.select_pair_classified(
                 &template,
                 None,
                 &[],
-                &refs,
-                &variants,
+                refs,
+                Variants::new(&variants[..]),
                 &names,
                 &Stages::new(false),
                 Some(&facts)

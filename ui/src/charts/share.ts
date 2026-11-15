@@ -308,3 +308,24 @@ export function shareLayer(model: StackModel, bands: readonly ShareBand[], exten
     }
   } };
 }
+
+/** Shares read as the chart draws them: the runs up to the head (`read(head)`, the head's bin at the followed
+ * values), the layer taking each new set in place, so a tile landing or the head moving repaints without a render. */
+export interface LiveShares { read(head: number | null): readonly ShareRun[]; revision(): unknown; subscribe(listener: () => void): () => void }
+
+/** `layer` fed from `live` as it draws: a set of runs not seen before is stacked and taken in place (its changed
+ * suffix redrawn), the same set draws as held. */
+export function liveShareLayer(layer: ShareLayer, live: LiveShares, bands: number, extent: () => readonly [number, number],
+  summaries?: () => readonly ChartSummary[] | undefined): ChartLayer {
+  let seen: readonly ShareRun[] | null = null;
+  return {
+    draw(ctx, frame, tokens, state) {
+      const runs = live.read(state.playhead === null ? null : Math.min(frame.x[1], state.playhead));
+      if (runs !== seen) {
+        seen = runs;
+        layer.update(shareStack(summaryShareRuns(runs, summaries?.()), bands), extent());
+      }
+      layer.draw(ctx, frame, tokens, state);
+    },
+  };
+}

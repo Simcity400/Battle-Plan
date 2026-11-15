@@ -427,7 +427,7 @@ fn cold_and_later_capture_grows_air_text_and_weather_from_original_headers() {
             memory.put(GRID + slot * 24, &weather_cell.to_le_bytes());
         }
         memory.weather_reads.set(0);
-        captured.capture_growing(&memory, 0, STATE, hour);
+        captured.capture(&memory, 0, STATE, hour);
         assert_eq!(captured.reason, None);
         let weather_rows = provinces as usize * 24;
         assert_eq!(captured.lengths[0], COUNT);

@@ -14,7 +14,7 @@ mod demand;
 mod details;
 
 pub use country_sets::{
-    CountrySetError, CountrySetsRow, read_country_sets, read_country_sets_buffer,
+    CountrySetError, CountrySetsRow, read_country_sets_buffer,
 };
 pub use demand::{DetailDemand, detail_demand};
 pub use details::{
@@ -463,9 +463,9 @@ pub fn walk(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    output: &mut [Row],
-    participants: &mut [u64],
-    classes: &mut [u32],
+    output: &mut Vec<Row>,
+    participants: &mut Vec<u64>,
+    classes: &mut Vec<u32>,
 ) -> Walk {
     walk_with(
         memory,
@@ -478,32 +478,9 @@ pub fn walk(
     )
 }
 
-/// Visits only complete authenticated rows. A visitor owns its independent
-/// failure/capacity result, and must also consume the returned parent outcome.
-pub fn walk_with(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut [Row],
-    participants: &mut [u64],
-    classes: &mut [u32],
-    mut visit: impl FnMut(Source),
-) -> Walk {
-    walk_members_buffer(
-        memory,
-        base,
-        game_state,
-        crate::walk::Buffer::Fixed(output),
-        crate::walk::Buffer::Fixed(participants),
-        crate::walk::Buffer::Fixed(&mut []),
-        Some(crate::walk::Buffer::Fixed(classes)),
-        |source, _| visit(source),
-    )
-}
-
 /// Worker rows and participant handles grow from original registry and
 /// side headers without retaining optional unit pointers.
-pub fn walk_with_growing(
+pub fn walk_with(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -518,7 +495,7 @@ pub fn walk_with_growing(
         game_state,
         crate::walk::Buffer::Growing(output),
         crate::walk::Buffer::Growing(participants),
-        crate::walk::Buffer::Fixed(&mut []),
+        crate::walk::Buffer::Count,
         Some(crate::walk::Buffer::Growing(classes)),
         |source, _| visit(source),
     )
@@ -565,35 +542,9 @@ pub fn core_demand(
     Ok(demand)
 }
 
-/// [`walk_with`], also keeping each participant's pointer beside its handle
-/// (`pointers` as long as `participants`) and lending the visitor the combat's
-/// authenticated [`Members`]. Shorter pointer storage lends [`Members::none`].
-/// The detail readers read division fields of every participant, so this walk
-/// admits only divisions.
-pub fn walk_members(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut [Row],
-    participants: &mut [u64],
-    pointers: &mut [usize],
-    visit: impl FnMut(Source, Members<'_>),
-) -> Walk {
-    walk_members_buffer(
-        memory,
-        base,
-        game_state,
-        crate::walk::Buffer::Fixed(output),
-        crate::walk::Buffer::Fixed(participants),
-        crate::walk::Buffer::Fixed(pointers),
-        None,
-        visit,
-    )
-}
-
 /// Original registry and side counts bound worker destinations before
 /// rows or participant payloads are acquired.
-pub fn walk_members_growing(
+pub fn walk_members(
     memory: &impl Memory,
     base: usize,
     game_state: usize,

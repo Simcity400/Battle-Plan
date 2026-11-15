@@ -48,6 +48,11 @@ fn a_root_names_each_section_once_in_order_with_its_version() {
             sequence: 3,
             digest: [7; 16],
         }),
+        saved: Saved::No(Some(Revision {
+            number: 2,
+            length: 4_096,
+            root: [9; 16],
+        })),
         sections: vec![
             Section {
                 key: SectionKey::WORLD_LOG,
@@ -62,8 +67,13 @@ fn a_root_names_each_section_once_in_order_with_its_version() {
                 open: vec![data(0)],
             },
         ],
+        level: Some(-7),
     };
     assert_eq!(Root::read(&root.write().unwrap()).unwrap(), root);
+    // A root written before roots recorded their level reads as recording none.
+    let unrecorded = Root { level: None, ..root.clone() };
+    assert_eq!(Root::read(&unrecorded.write().unwrap()).unwrap(), unrecorded);
+    assert!(root.write().unwrap().len() > unrecorded.write().unwrap().len());
     assert!(root.open(family(3), 2).unwrap().is_some());
     let older = root.open(family(3), 3).unwrap_err().to_string();
     assert!(older.contains("schema version 2, older"), "{older}");
@@ -111,7 +121,7 @@ fn a_section_pages_its_frozen_extents_a_fanout_at_a_time() {
     }
     // A frozen extent named out of the order it was written is refused.
     assert!(writer.append(family(1), data(0)).is_err());
-    writer.commit(None, |_| Ok(())).unwrap();
+    writer.commit(None, true, |_| Ok(())).unwrap();
     let section = writer.section_of(family(1)).unwrap().clone();
     assert_eq!(section.len(), u64::from(count));
     let levels: Vec<usize> = section.frozen.levels().iter().map(Vec::len).collect();
@@ -141,7 +151,7 @@ fn a_crash_resumes_at_the_newest_root_whose_state_slot_verifies() {
     for (at, state) in [b"first".as_slice(), b"second", b"third"].into_iter().enumerate() {
         let extent = writer.put_zstd(Kind::Data, Tags::default(), state, 3).unwrap();
         writer.append(family(1), extent).unwrap();
-        let revision = writer.commit(Some(&[entry(state)]), |file| file.sync_data()).unwrap();
+        let revision = writer.commit(Some(&[entry(state)]), true, |file| file.sync_data()).unwrap();
         assert_eq!(revision.number, at as u64 + 1);
     }
     drop(writer);
@@ -190,9 +200,9 @@ fn finishing_keeps_each_familys_state_once_and_removes_the_state_file() {
         version: 5,
         bytes: b"family two".to_vec(),
     };
-    writer.commit(Some(std::slice::from_ref(&state)), |file| file.sync_data()).unwrap();
+    writer.commit(Some(std::slice::from_ref(&state)), true, |file| file.sync_data()).unwrap();
     assert!(state_path.exists());
-    writer.finish(&[state], |file| file.sync_data()).unwrap();
+    writer.finish(&[state], true, |file| file.sync_data()).unwrap();
     assert!(!state_path.exists());
     let bytes = std::fs::read(&path).unwrap();
     let recovered = recover(bytes.as_slice(), None).unwrap();
@@ -217,7 +227,7 @@ fn a_map_restore_section_names_each_points_hour_ordinal_and_spacing() {
     let first = points.add(&mut writer, 100, b"opaque page image", Payload::Zstd(3)).unwrap();
     let second = points.add(&mut writer, 124, b"opaque change", Payload::Stored).unwrap();
     assert_eq!((point_of(&first), point_of(&second)), ((100, 0, 24), (124, 1, 24)));
-    writer.commit(None, |_| Ok(())).unwrap();
+    writer.commit(None, true, |_| Ok(())).unwrap();
     // A writer declared again goes on after the points the section holds.
     assert_eq!(MapRestoreWriter::new(&mut writer, 1, 3, schedule).unwrap().points(), 2);
     assert!(MapRestoreWriter::new(&mut writer, 1, 4, schedule).is_err());
@@ -236,4 +246,101 @@ fn a_catalogue_gives_each_key_one_id_and_reads_its_chunks_in_order() {
     read.read_chunk(&chunk).unwrap();
     assert_eq!((read.id(b"ENG"), read.key(0)), (Some(1), Some(b"GER".as_slice())));
     assert!(read.read_chunk(&chunk).is_err());
+}
+
+/// A reader opens the newest saved revision, whatever is appended after it: revisions that are
+/// not saved, and the bytes of one being written. A save is one more root; a file taken up
+/// keeps its saved revision; cut back to it, the file is that revision again; and a file none of
+/// whose revisions is saved has none to open.
+#[test]
+fn a_reader_opens_the_newest_saved_revision() {
+    let mut writer = ContainerWriter::create(Cursor::new(Vec::new()), identity(), 3, None).unwrap();
+    writer.section(family(1), 1).unwrap();
+    let add = |writer: &mut ContainerWriter<Cursor<Vec<u8>>>, saved: bool| {
+        let extent = writer.put(Kind::Stored, Tags::default(), 1, b"x").unwrap();
+        writer.append(family(1), extent).unwrap();
+        writer.commit(None, saved, |_| Ok(())).unwrap()
+    };
+    let opened = |file: &[u8], open: Open| {
+        locate(file, open).unwrap().map(|(root, length)| {
+            let read = read_root(file, &root).unwrap();
+            (read.revision, length, read.section(family(1)).unwrap().len())
+        })
+    };
+    // Nothing saved yet: a reader has no revision, the writer has its own.
+    let first = add(&mut writer, false);
+    let file = writer.file_mut().get_ref().clone();
+    assert_eq!(opened(&file, Open::Saved), None);
+    assert_eq!(opened(&file, Open::Newest), Some((1, first.length, 1)));
+    assert_eq!(writer.saved(), None);
+    let saved = add(&mut writer, true);
+    let second = add(&mut writer, false);
+    let third = add(&mut writer, false);
+    assert_eq!(writer.saved(), Some(saved));
+    let mut file = writer.file_mut().get_ref().clone();
+    assert_eq!(opened(&file, Open::Saved), Some((2, saved.length, 2)));
+    assert_eq!(opened(&file, Open::Newest), Some((4, third.length, 4)));
+    // The bytes of a revision being appended, its extents and a root no footer names yet, are
+    // no revision.
+    file.extend_from_slice(&[0x5a; 300]);
+    file.extend_from_slice(FOOTER_MAGIC);
+    assert_eq!(opened(&file, Open::Saved), Some((2, saved.length, 2)));
+    assert_eq!(opened(&file, Open::Newest), Some((4, third.length, 4)));
+    file.truncate(third.length as usize);
+    // Taken up after its newest revision, the file keeps the saved one it names, and a save is
+    // one more root holding no extent.
+    let (root, length) = locate(file.as_slice(), Open::Newest).unwrap().unwrap();
+    let at = Revision {
+        number: 4,
+        length,
+        root: root.digest,
+    };
+    let resumed = read_root(file.as_slice(), &root).unwrap();
+    assert_eq!(resumed.saved, Saved::No(Some(saved)));
+    let mut writer = ContainerWriter::resume(Cursor::new(file.clone()), resumed, at, 3, None).unwrap();
+    assert_eq!(writer.saved(), Some(saved));
+    let marked = writer.commit(None, true, |_| Ok(())).unwrap();
+    assert_eq!(writer.saved(), Some(marked));
+    let after = writer.file_mut().get_ref().clone();
+    assert_eq!(opened(&after, Open::Saved), Some((5, marked.length, 4)));
+    assert!(marked.length - third.length < 400, "a save appends a root and a footer");
+    // Cut back to its saved revision, the file is that revision: the discarded ones are gone.
+    file.truncate(saved.length as usize);
+    assert_eq!(opened(&file, Open::Saved), Some((2, saved.length, 2)));
+    assert_eq!(opened(&file, Open::Newest), Some((2, saved.length, 2)));
+    // A root naming a saved revision the file does not hold is refused, never guessed around.
+    let mut damaged = after[..second.length as usize].to_vec();
+    damaged[saved.length as usize - FOOTER_BYTES + 20] ^= 1;
+    assert!(locate(damaged.as_slice(), Open::Saved).is_err());
+    assert_eq!(opened(&damaged, Open::Newest), Some((3, second.length, 3)));
+}
+
+/// Each root records the level its file was written at: kept by a writer taking the file up at
+/// that level, none once one takes it up at another, and a file written to replace another numbers
+/// its first revision after that one's last.
+#[test]
+fn a_root_records_the_level_every_revision_of_its_file_was_written_at() {
+    let newest = |file: &[u8]| {
+        let (root, length) = locate(file, Open::Newest).unwrap().unwrap();
+        let read = read_root(file, &root).unwrap();
+        let at = Revision { number: read.revision, length, root: root.digest };
+        (read, at)
+    };
+    let mut writer = ContainerWriter::create(Cursor::new(Vec::new()), identity(), 7, None).unwrap();
+    writer.section(family(1), 1).unwrap();
+    writer.commit(None, true, |_| Ok(())).unwrap();
+    let file = writer.into_inner().into_inner();
+    let (root, at) = newest(&file);
+    assert_eq!(root.level, Some(7));
+    for (level, recorded) in [(7, Some(7)), (19, None)] {
+        let mut writer = ContainerWriter::resume(Cursor::new(file.clone()), root.clone(), at, level, None).unwrap();
+        let extent = writer.put_zstd(Kind::Data, Tags::default(), b"more", level).unwrap();
+        writer.append(family(1), extent).unwrap();
+        writer.commit(None, true, |_| Ok(())).unwrap();
+        assert_eq!(newest(&writer.into_inner().into_inner()).0.level, recorded, "taken up at {level}");
+    }
+    let mut writer = ContainerWriter::create_after(Cursor::new(Vec::new()), identity(), 19, root.revision, None).unwrap();
+    writer.commit(None, true, |_| Ok(())).unwrap();
+    let (replaced, _) = newest(&writer.into_inner().into_inner());
+    assert_eq!((replaced.revision, replaced.level), (root.revision + 1, Some(19)));
 }

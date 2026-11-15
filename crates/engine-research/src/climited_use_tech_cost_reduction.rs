@@ -18,7 +18,6 @@ pub(crate) fn value(
     memory: &impl Memory,
     pointer: usize,
     id: i32,
-    growing: bool,
 ) -> Result<(Value, i64), &'static str> {
     let descriptor = Descriptor::read(
         memory,
@@ -26,7 +25,7 @@ pub(crate) fn value(
             .checked_add(NAME)
             .ok_or("cost bonus address overflow")?,
     )?;
-    let name = Text::from_descriptor(memory, descriptor, growing)?;
+    let name = Text::from_descriptor(memory, descriptor)?;
     let reduction = read::<i64>(
         memory,
         pointer

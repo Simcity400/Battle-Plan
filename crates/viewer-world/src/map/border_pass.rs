@@ -729,6 +729,49 @@ impl ClassPlan {
             .collect()
     }
 
+    /// The province bucket's draws by vertex chunk, as indexes into its draws: what
+    /// [`Self::patch_chunks`] walks.
+    pub fn chunk_draws(meshes: &BorderMeshes) -> Vec<Vec<u32>> {
+        let Some(mesh) = meshes.meshes.get(BorderClass::Province.bucket()) else { return Vec::new() };
+        let mut chunks = vec![Vec::new(); mesh.chunks.len()];
+        for (at, draw) in mesh.draws.iter().enumerate() {
+            if let Some(chunk) = chunks.get_mut(draw.chunk as usize) {
+                chunk.push(at as u32);
+            }
+        }
+        chunks
+    }
+
+    /// The three land classes' runs of the vertex chunks `chunks` rebuilt, each edge of the
+    /// province bucket in the class `class` gives it (`None`: left out, as an edge the
+    /// demilitarised zone splits); every other run keeps its list, and so its buffer. `draws` is
+    /// [`Self::chunk_draws`]; `class` is given the draw's index in the province bucket. Equal to
+    /// [`Self::new`] when `class` is [`land_class`] with the zone's cut, whatever the edges changed
+    /// in the chunks named.
+    pub fn patch_chunks(&mut self, meshes: &BorderMeshes, draws: &[Vec<u32>], chunks: &[usize], class: impl Fn(usize) -> Option<BorderClass>) {
+        let Some(mesh) = meshes.meshes.get(BorderClass::Province.bucket()) else { return };
+        for (at, target) in BorderClass::ALL.iter().enumerate() {
+            if !matches!(target, BorderClass::Province | BorderClass::State | BorderClass::Country) {
+                continue;
+            }
+            let runs = &mut self.runs[at];
+            for &chunk in chunks {
+                let mut indices = Vec::new();
+                for &at in draws.get(chunk).map_or(&[][..], Vec::as_slice) {
+                    let draw = mesh.draws[at as usize];
+                    if class(at as usize) == Some(*target) {
+                        run_indices(draw.base_vertex, draw.vertex_count / 2, &mut indices);
+                    }
+                }
+                runs.retain(|run| run.chunk != chunk);
+                if !indices.is_empty() {
+                    let place = runs.partition_point(|run| run.chunk < chunk);
+                    runs.insert(place, PlannedRun { source: BorderClass::Province.bucket(), chunk, indices: Arc::new(indices) });
+                }
+            }
+        }
+    }
+
     /// Takes `other`'s copy of every run the two plans hold alike, so a pass
     /// that drew `other` keeps those runs' buffers when it is given this plan.
     pub fn share(&mut self, other: &ClassPlan) {

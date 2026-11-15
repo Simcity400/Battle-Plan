@@ -46,6 +46,9 @@ pub struct Saved {
     /// The file's size from its metadata.
     pub bytes: u64,
     pub flag: Option<FlagImage>,
+    /// The compression level its file records it was written at; `None` when it records none.
+    pub level: Option<i32>,
+    pub job: Option<crate::compress::Job>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
@@ -100,7 +103,8 @@ impl Default for Library {
 
 #[derive(Default)]
 struct Cache {
-    spans: HashMap<PathBuf, (u64, Option<SystemTime>, Span)>,
+    /// Each saved file's span and recorded level, read once per version of it.
+    spans: HashMap<PathBuf, (u64, Option<SystemTime>, Span, Option<i32>)>,
     sessions: HashMap<PathBuf, (Option<(SystemTime, u64)>, Vec<WaitingCampaign>)>,
     /// Each folder's recordings by campaign, read again once its listing changes.
     folders: HashMap<PathBuf, (Listing, recording_files::Found)>,
@@ -110,49 +114,24 @@ type Listing = Vec<(PathBuf, u64, SystemTime)>;
 
 type Version = Option<(SystemTime, u64)>;
 
+/// What of an ended session a waiting recording's name is read from, as it stands.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct WaitingRevision {
     session: PathBuf,
     files: Vec<(PathBuf, Version)>,
-    spools: Option<Listing>,
 }
 
-fn waiting_revision(session: &Path, campaign: &str) -> WaitingRevision {
-    let mut spools = (|| {
-        let mut listing = Vec::new();
-        for entry in fs::read_dir(session.join(campaign)).ok()? {
-            let entry = entry.ok()?;
-            let name = entry.file_name();
-            let name = name.to_str()?;
-            if name.starts_with("spool.") && name.ends_with(".h4s") {
-                let (modified, length) = version(&entry.path())?;
-                listing.push((entry.path(), length, modified));
-            }
-        }
-        Some(listing)
-    })();
-    if let Some(listing) = &mut spools {
-        listing.sort();
-    }
+fn waiting_revision(session: &Path) -> WaitingRevision {
     WaitingRevision {
         session: session.to_owned(),
-        files: [
-            PathBuf::from("completed.json"),
-            PathBuf::from("admitted.json"),
-            PathBuf::from("recordings.json"),
-            PathBuf::from("bin/recorder.json"),
-            PathBuf::from("bin/collector.json"),
-            PathBuf::from(campaign).join("saved.json"),
-            PathBuf::from(campaign).join("checkpoint.json"),
-        ]
-        .into_iter()
-        .map(|path| {
-            let path = session.join(path);
-            let stamp = version(&path);
-            (path, stamp)
-        })
-        .collect(),
-        spools,
+        files: ["completed.json", "admitted.json", "bin/recorder.json", "bin/collector.json"]
+            .into_iter()
+            .map(|path| {
+                let path = session.join(path);
+                let stamp = version(&path);
+                (path, stamp)
+            })
+            .collect(),
     }
 }
 
@@ -453,7 +432,7 @@ impl Library {
                         name: None,
                         first_hour: None,
                         last_hour: live.hour,
-                        spool_bytes: controller::unsaved_spool_bytes(&session.join(campaign)),
+                        spool_bytes: controller::unsaved_bytes(session, target, campaign),
                         status: Status::Recording,
                         flag: flag(campaign),
                     },
@@ -470,9 +449,7 @@ impl Library {
                         name: None,
                         first_hour: waiting.unsaved.first_hour,
                         last_hour: waiting.unsaved.last_hour,
-                        spool_bytes: controller::unsaved_spool_bytes(
-                            &session.join(&waiting.campaign),
-                        ),
+                        spool_bytes: controller::unsaved_bytes(session, target, &waiting.campaign),
                         status: if waiting.saving {
                             Status::Saving
                         } else {
@@ -527,8 +504,10 @@ impl Library {
                         name: None,
                         first_hour: waiting.first_hour,
                         last_hour: waiting.last_hour,
-                        spool_bytes: controller::unsaved_spool_bytes(
-                            &session.join(&waiting.campaign),
+                        spool_bytes: controller::unsaved_bytes(
+                            session,
+                            &waiting.target,
+                            &waiting.campaign,
                         ),
                         status: Status::Waiting,
                         flag: flag(&waiting.campaign),
@@ -582,7 +561,7 @@ impl Library {
                     .ok(),
                 sessions: sessions
                     .iter()
-                    .map(|session| waiting_revision(session, &row.campaign))
+                    .map(|session| waiting_revision(session))
                     .collect(),
                 chosen: target
                     .canonicalize()
@@ -659,14 +638,15 @@ impl Library {
                 continue;
             };
             let version = (metadata.len(), metadata.modified().ok());
-            let span = match cache.spans.get(&path) {
-                Some((bytes, time, span)) if (*bytes, *time) == version => *span,
+            let (span, level) = match cache.spans.get(&path) {
+                Some((bytes, time, span, level)) if (*bytes, *time) == version => (*span, *level),
                 _ => {
                     let span = Replay::read_hour_span(&path).ok().flatten();
+                    let level = replay::recompress::level_of(&path).ok().flatten();
                     cache
                         .spans
-                        .insert(path.clone(), (version.0, version.1, span));
-                    span
+                        .insert(path.clone(), (version.0, version.1, span, level));
+                    (span, level)
                 }
             };
             let campaign = path.parent().and_then(|folder| {
@@ -686,6 +666,8 @@ impl Library {
                     last_hour: span.map(|(_, last)| last),
                     bytes: metadata.len(),
                     flag: campaign.as_deref().and_then(flag),
+                    level,
+                    job: None,
                 },
             ));
         }
@@ -705,7 +687,7 @@ impl Library {
 }
 
 /// Recordings in the save folder and the campaign folders beside them.
-fn saved_files(root: &Path) -> Vec<PathBuf> {
+pub(crate) fn saved_files(root: &Path) -> Vec<PathBuf> {
     let recordings = |folder: &Path| -> Vec<PathBuf> {
         fs::read_dir(folder)
             .into_iter()
@@ -757,6 +739,14 @@ mod tests {
         fs::write(path, vec![0; bytes]).unwrap();
     }
 
+    fn journal(campaign: &Path, segment: u32, bytes: usize) {
+        let mut name = [0; replay::columnar_journal::SEGMENT_NAME_BYTES];
+        write(
+            &campaign.join(replay::columnar_journal::segment_name(0, segment, &mut name)),
+            bytes,
+        );
+    }
+
     /// A file of `bytes` whose header names `campaign`, cut short after it.
     fn recording(path: &Path, campaign: &str, bytes: u64) {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -805,7 +795,7 @@ mod tests {
         };
         settings.save_to(&path).unwrap();
         let ended = earlier.join("sessions").join("1-1");
-        write(&ended.join(OTHER).join("spool.0000.h4s"), 100);
+        journal(&ended.join(OTHER), 0, 100);
         let waiting = |waiting: serde_json::Value| {
             fs::write(
                 ended.join("completed.json"),
@@ -961,8 +951,8 @@ mod tests {
         write(&root.join("notes.txt"), 10);
         // An ended session that left the other campaign waiting.
         let ended = root.join("sessions").join("1-1");
-        write(&ended.join(OTHER).join("spool.0000.h4s"), 1000);
-        write(&ended.join(OTHER).join("spool.0001.h4s"), 500);
+        journal(&ended.join(OTHER), 0, 1000);
+        journal(&ended.join(OTHER), 1, 500);
         fs::write(
             ended.join("completed.json"),
             serde_json::to_vec(&serde_json::json!({
@@ -974,7 +964,7 @@ mod tests {
         .unwrap();
         // An older ended session left the same recording waiting: one row for both.
         let older = root.join("sessions").join("1-0");
-        write(&older.join(OTHER).join("spool.0000.h4s"), 200);
+        journal(&older.join(OTHER), 0, 200);
         fs::write(
             older.join("completed.json"),
             serde_json::to_vec(&serde_json::json!({
@@ -986,7 +976,7 @@ mod tests {
         .unwrap();
         // The running session records the first campaign.
         let running = root.join("sessions").join("2-2");
-        write(&running.join(CAMPAIGN).join("spool.0000.h4s"), 4000);
+        journal(&running.join(CAMPAIGN), 0, 4000);
         let library = namer(BTreeMap::new(), Arc::default());
         let flag = FlagImage {
             width: 1,
@@ -1074,8 +1064,8 @@ mod tests {
         let germany = root.join("Germany 1936.battleplan");
         recording(&germany, CAMPAIGN, 3000);
         let running = root.join("sessions").join("2-2");
-        write(&running.join(CAMPAIGN).join("spool.0000.h4s"), 4000);
-        write(&running.join(OTHER).join("spool.0000.h4s"), 1000);
+        journal(&running.join(CAMPAIGN), 0, 4000);
+        journal(&running.join(OTHER), 0, 1000);
         let names = BTreeMap::from([(CAMPAIGN.to_owned(), "Germany 1936–1943".to_owned())]);
         let set_aside = [Waiting {
             campaign: CAMPAIGN.into(),
@@ -1121,7 +1111,7 @@ mod tests {
         );
         // A Full capture of 1936 waits in the save folder, its hours staged there.
         let ended = root.join("sessions").join("1-1");
-        write(&ended.join(CAMPAIGN).join("spool.0000.h4s"), 1000);
+        journal(&ended.join(CAMPAIGN), 0, 1000);
         fs::write(
             ended.join("completed.json"),
             serde_json::to_vec(&serde_json::json!({
@@ -1135,7 +1125,7 @@ mod tests {
         recording(&staged, CAMPAIGN, 100);
         // The running Map capture records into its folder, adding to unsaved hours there.
         let running = root.join("sessions").join("2-2");
-        write(&running.join(CAMPAIGN).join("spool.0000.h4s"), 4000);
+        journal(&running.join(CAMPAIGN), 0, 4000);
         let target = root.join(&map);
         recording(
             &replay::publication::unsaved_path(&target, CAMPAIGN),
@@ -1197,15 +1187,17 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
-    fn waiting_names_revalidate_resolution_settings_and_spool_journal_revisions() {
+    fn waiting_names_revalidate_resolution_settings_and_waiting_revisions() {
         let root = scratch();
         let mut settings = RecorderSettings {
             save_folder: Some(root.clone()),
             ..Default::default()
         };
         let session = root.join("sessions/1-1");
-        let spool = session.join(CAMPAIGN).join("spool.0000.h4s");
-        write(&spool, 10);
+        fs::create_dir_all(&session).unwrap();
+        // Its end wrote its hours into the recording, where its name is read from.
+        let waiting = replay::publication::unsaved_path(&root, CAMPAIGN);
+        recording(&waiting, CAMPAIGN, 100);
         fs::write(
             session.join("completed.json"),
             serde_json::to_vec(&serde_json::json!({
@@ -1265,19 +1257,19 @@ mod tests {
         };
         refresh(&settings, None);
         *response.lock().unwrap() = Some("Z01".into());
-        write(&spool, 20);
+        recording(&waiting, CAMPAIGN, 200);
         refresh(&settings, Some("Z01"));
         *response.lock().unwrap() = Some("Named country".into());
         settings.user_folder = Some(root.join("other-user"));
         refresh(&settings, Some("Named country"));
         *installation.lock().unwrap() = Ok((root.join("other-game"), root.join("user")));
         refresh(&settings, Some("Named country"));
-        write(&session.join(CAMPAIGN).join("saved.json"), 10);
+        write(&session.join("admitted.json"), 10);
         refresh(&settings, Some("Named country"));
-        write(&session.join(CAMPAIGN).join("checkpoint.json"), 10);
+        write(&session.join("bin/collector.json"), 10);
         refresh(&settings, Some("Named country"));
         *response.lock().unwrap() = Some("Z01".into());
-        write(&session.join(CAMPAIGN).join("saved.json"), 20);
+        write(&session.join("admitted.json"), 20);
         refresh(&settings, Some("Z01"));
         // A repaired content installation is retried without waiting on a timer in this test.
         *response.lock().unwrap() = Some("Repaired country".into());
@@ -1364,7 +1356,7 @@ mod tests {
             ..Default::default()
         };
         let session = root.join("sessions/1-1");
-        write(&session.join(CAMPAIGN).join("spool.0000.h4s"), 10);
+        journal(&session.join(CAMPAIGN), 0, 10);
         fs::write(
             session.join("completed.json"),
             serde_json::to_vec(&serde_json::json!({
@@ -1463,7 +1455,7 @@ mod tests {
             ..Default::default()
         };
         let session = root.join("sessions/1-1");
-        write(&session.join(CAMPAIGN).join("spool.0000.h4s"), 10);
+        journal(&session.join(CAMPAIGN), 0, 10);
         fs::write(
             session.join("completed.json"),
             serde_json::to_vec(&serde_json::json!({
@@ -1538,7 +1530,7 @@ mod tests {
             ..Default::default()
         };
         let session = root.join("sessions/1-1");
-        write(&session.join(CAMPAIGN).join("spool.0000.h4s"), 10);
+        journal(&session.join(CAMPAIGN), 0, 10);
         fs::write(
             session.join("completed.json"),
             serde_json::to_vec(&serde_json::json!({
@@ -1611,7 +1603,7 @@ mod tests {
             ..Default::default()
         };
         let session = root.join("sessions/1-1");
-        write(&session.join(CAMPAIGN).join("spool.0000.h4s"), 10);
+        journal(&session.join(CAMPAIGN), 0, 10);
         fs::write(
             session.join("completed.json"),
             serde_json::to_vec(&serde_json::json!({
@@ -1702,7 +1694,7 @@ mod tests {
             ..Default::default()
         };
         let session = root.join("sessions/1-1");
-        write(&session.join(CAMPAIGN).join("spool.0000.h4s"), 10);
+        journal(&session.join(CAMPAIGN), 0, 10);
         fs::write(
             session.join("completed.json"),
             serde_json::to_vec(&serde_json::json!({

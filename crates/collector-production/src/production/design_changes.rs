@@ -1,5 +1,6 @@
 //! Owned snapshots taken at native design mutation boundaries. Native callbacks
-//! only fill prepared raw storage; typed decoding and growth run on a worker.
+//! fill storage prepared on a worker and grow it when it is full; typed
+//! decoding runs on a worker.
 use super::*;
 #[macro_use]
 mod diagnostics;
@@ -30,6 +31,7 @@ use std::sync::{
 };
 
 const ROOT_BYTES: usize = native::DESIGN_TEAM_TRAITS + 4;
+const STORAGE_FAILED: &str = "variant change storage allocation failed";
 static STORE: OnceLock<Mutex<Store>> = OnceLock::new();
 // STORE never spans an original, forwarded notification or native call. Hooks
 // only copy guarded memory into prepared buffers. Workers may prepare/copy owned
@@ -265,6 +267,15 @@ impl Batch {
             let _ = engine_allocation::reserve(&mut self.events, additional);
         }
     }
+    /// Callback path: room for one more event, grown where it is written.
+    fn room(&mut self) -> Result<(), &'static str> {
+        self.required_events = self.required_events.saturating_add(1);
+        if self.events.len() == self.events.capacity() {
+            engine_allocation::advisory(|| engine_allocation::reserve(&mut self.events, 1))
+                .map_err(|_| STORAGE_FAILED)?;
+        }
+        Ok(())
+    }
 }
 #[derive(Clone, Copy)]
 struct Watch {
@@ -273,8 +284,8 @@ struct Watch {
     flags: [u8; 3],
     dirty: bool,
 }
-/// Designs published into `watched` since the boundary last registered them, in storage
-/// prepared at the census; a full list leaves the boundary to scan every watched design.
+/// Designs published into `watched` since the boundary last registered them; a list
+/// that could not grow leaves the boundary to scan every watched design.
 #[derive(Default)]
 struct Published {
     pointers: Vec<usize>,
@@ -702,15 +713,22 @@ fn mark_design(memory: &impl Memory, base: usize, pointer: usize, published: boo
                 return;
             }
         };
-        if store.watched.len() == store.watched.capacity() {
-            store.batch.failure = Some("variant change watch capacity exhausted");
+        if store.watched.len() == store.watched.capacity()
+            && engine_allocation::advisory(|| engine_allocation::reserve_map(&mut store.watched, 1))
+                .is_err()
+        {
+            store.batch.failure = Some(STORAGE_FAILED);
             return;
         }
         repair::added();
-        if store.published.pointers.len() < store.published.pointers.capacity() {
-            store.published.pointers.push(pointer);
+        let published = &mut store.published;
+        if published.pointers.len() < published.pointers.capacity()
+            || engine_allocation::advisory(|| engine_allocation::reserve(&mut published.pointers, 1))
+                .is_ok()
+        {
+            published.pointers.push(pointer);
         } else {
-            store.published.overflowed = true;
+            published.overflowed = true;
         }
         store.watched.insert(
             pointer,
@@ -779,9 +797,8 @@ fn retire_from(store: &mut Store, memory: &impl Memory, base: usize, pointer: us
     let Some(watch) = store.watched.remove(&pointer) else {
         return;
     };
-    store.batch.required_events = store.batch.required_events.saturating_add(1);
-    if store.batch.events.len() == store.batch.events.capacity() {
-        store.batch.failure = Some("variant removal event capacity exhausted");
+    if let Err(reason) = store.batch.room() {
+        store.batch.failure = Some(reason);
         return;
     }
     let hour = engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
@@ -2922,6 +2939,32 @@ fn observe_walk(
         &walk.modules.rows[..walk.modules.outcome.len()],
         walk.upgrades.rows[..walk.upgrades.outcome.len()].first(),
     )
+}
+
+/// True in a child process that runs only the calling test. The parent runs
+/// that child and returns false: STORE, the receiver claims and the census
+/// state are set once per process, as in the game, so no two tests share them.
+#[cfg(test)]
+fn isolated() -> bool {
+    const CHILD: &str = "BATTLE_PLAN_DESIGN_CHANGES_ISOLATED_TEST";
+    let thread = std::thread::current();
+    let name = thread.name().unwrap();
+    if std::env::var_os(CHILD).as_deref() == Some(std::ffi::OsStr::new(name)) {
+        return true;
+    }
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", name, "--nocapture", "--test-threads=1"])
+        .env(CHILD, name)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success() && stdout.contains("1 passed"),
+        "isolated test failed: {}\n--- child stderr ---\n{}\n--- child stdout ---\n{stdout}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    false
 }
 
 #[cfg(test)]

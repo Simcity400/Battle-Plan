@@ -318,7 +318,7 @@ fn compatibility_template_fallback_key_is_unknown_but_explicit_name_remains_usab
         result
             .decided()
             .unwrap_err()
-            .contains("DivisionTemplates.name_key not recorded")
+            .contains("name key of division templates not recorded")
     );
 }
 
@@ -602,7 +602,7 @@ fn ability_country_leader_copies_keep_both_masks_and_getter_priorities() {
                 .evaluate(&items("tag=GER"), Scopes::of(this))
                 .decided()
                 .unwrap_err();
-            assert!(why.contains("more than one UnitLeaders row"), "{why}");
+            assert!(why.contains("more than one unit leaders row"), "{why}");
         }
     });
 }
@@ -780,7 +780,7 @@ fn state_roster_distinguishes_older_fields_from_failed_capture() {
         check(&f, "", 3, "any_controlled_state={always=yes}")
             .decided()
             .unwrap_err()
-            .contains("controlled_states capture unavailable")
+            .contains("controlled states of country counter inputs capture unavailable")
     );
     let TableView::Complete(TableRows::CountryCounterInputs(rows)) =
         &mut *f.tables[TableId::CountryCounterInputs.index()]

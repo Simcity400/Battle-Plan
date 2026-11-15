@@ -48,9 +48,29 @@ fn sizes_route_through_the_cli() {
         "sizes".into(),
         path.clone().into_os_string(),
         "--json".into(),
-        "--verify".into(),
-        "--columns".into(),
     ])
     .unwrap();
     assert!(crate::recording::command(vec!["sizes".into()]).is_err());
+}
+
+/// `recompress <replay> --level N` compresses the recording where it lies, says so again for one
+/// already at the level, and refuses a level that is no number.
+#[test]
+fn recompress_routes_through_the_cli() {
+    let directory = std::env::temp_dir().join(format!("recorder-recompress-cli-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&directory);
+    fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("synthetic.battleplan");
+    fs::write(&path, ::replay::columnar_frames::fixtures::restored(7, &[(1, 100, 1)])).unwrap();
+    let run = |level: &[&str]| {
+        let mut args = vec!["recompress".into(), path.clone().into_os_string()];
+        args.extend(level.iter().map(Into::into));
+        crate::recording::command(args)
+    };
+    run(&["--level", "19"]).unwrap();
+    assert_eq!(::replay::recompress::level_of(&path).unwrap(), Some(19));
+    run(&["--level=19"]).unwrap();
+    assert!(run(&["--level", "high"]).is_err());
+    assert!(run(&[]).is_err());
+    fs::remove_dir_all(&directory).unwrap();
 }

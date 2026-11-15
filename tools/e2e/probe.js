@@ -20,7 +20,9 @@
   for (const type of ['pointerdown', 'pointerup', 'pointermove', 'click', 'keydown', 'input', 'change', 'wheel'])
     addEventListener(type, e => { if (e.isTrusted && p.inputs.length < 20000) p.inputs.push({ type, t: e.timeStamp }); }, { capture: true, passive: true });
 
-  const LOADING = '[data-state=loading], .skeleton, [aria-busy="true"], .spinner';
+  // A row still naming its place or country (`.is-loading`, "Loading place…") is loading too: a step settles, and pictures
+  // its widget, once its names have landed (run 13's screenshots were taken up to a second before they did).
+  const LOADING = '[data-state=loading], .skeleton, [aria-busy="true"], .spinner, .is-loading';
   const loadingText = e => e.matches('[role=status]') && /^Loading\b/.test((e.textContent || '').trim());
   const placeholders = () => [...document.querySelectorAll(`${LOADING}, [role=status]`)].filter(e => (e.matches(LOADING) || loadingText(e)) && shownOnScreen(e)
     && !(p.ignore && e.closest(`article.dash-widget[data-widget="${CSS.escape(p.ignore)}"]`)));
@@ -231,7 +233,7 @@
     // What this frame paints is sampled after every animation callback, the charts' included: a resize observer's
     // callback runs then, in the same rendering update, so the probe makes one fire each frame it measures.
     p.frameStart = now;
-    if ((p.tracking || p.watching || (p.done && p.doneAt === null)) && document.body) {
+    if ((p.tracking || p.watching || (p.done && p.doneAt === null) || (p.alt && p.altAt === null)) && document.body) {
       if (!sizer.isConnected) { document.body.append(sizer); resized.observe(sizer); }
       sizer.style.width = sizer.style.width === '1px' ? '2px' : '1px';
     }
@@ -256,6 +258,7 @@
       }
     }
     if (p.done && p.doneAt === null) { try { if (p.done()) p.doneAt = p.frameStart; } catch { /* the step reports it never finished */ } }
+    if (p.alt && p.altAt === null) { try { if (p.alt()) p.altAt = p.frameStart; } catch { /* only `done` finishes it */ } }
     p.settler?.();
   };
   const sizer = document.createElement('div');
@@ -264,31 +267,44 @@
   const resized = new ResizeObserver(sampleFrame);
   requestAnimationFrame(frame);
 
-  /** Starts a measured step: what follows is measured from here, and `done`, when given, must hold for it to finish. */
-  p.mark = (done, ignore = null) => {
+  /** Starts a measured step: what follows is measured from here, and `done`, when given, must hold for it to finish.
+   * `alt`, when given, also finishes it once it has held for `altQuiet` ms: the app's word that the step's effect is
+   * complete although `done` never held (a setting drawn that changed nothing), so a no-op is known without a timeout. */
+  p.mark = (done, ignore = null, alt = null, altQuiet = 0) => {
     p.ignore = ignore;
     p.inputs = []; p.events = []; p.loafs = []; p.transitions = []; p.last = new Map(); p.tracking = true;
     p.placeholders = { ms: 0, where: new Set() }; placeholderSince = null;
     p.done = done ? new Function(`return (${done});`) : null; p.doneAt = null;
+    p.alt = alt ? new Function(`return (${alt});`) : null; p.altAt = null; p.altQuiet = altQuiet;
     p.t0 = performance.now();
     p.t0Epoch = performance.timeOrigin + p.t0;
     return p.t0;
   };
-  /** Resolves once every visible widget has left loading for `quiet` ms and `done` holds, or at `timeout`;
-   * then reports the step's input, its paint, each touched widget, and when `done` first held. */
-  p.settle = (timeout, quiet, only = null) => new Promise(resolve => {
-    let since = null;
+  /** The app's count of what it has in flight, by kind, or null where the app keeps none. */
+  p.inFlight = () => { try { return window.__busy ? window.__busy.kinds() : null; } catch { return null; } };
+  /** Resolves once every visible widget has left loading, `done` holds and the step is over (`over`, the suite's `stepOver`:
+   * with the app's count of what it has in flight, one frame after it is zero; without it, `quiet` ms later), or at
+   * `timeout`; then reports the step's input, its paint, each touched widget, and when `done` first held. */
+  p.settle = (timeout, quiet, only = null, over) => new Promise(resolve => {
+    let since = null, idle = 0;
     const check = () => {
       const now = performance.now();
       // A step that touches one widget waits for it alone; a placeholder elsewhere still counts against it.
       const visible = p.widgets().filter(w => w.visible && (only === null || w.title === only || w.key === only));
-      const settled = visible.every(w => w.state !== 'loading') && (!p.done || p.doneAt !== null);
+      const finished = !p.done || p.doneAt !== null;
+      const kinds = p.inFlight();
+      const busy = kinds === null ? null : Object.values(kinds).reduce((sum, n) => sum + n, 0);
+      const settled = visible.every(w => w.state !== 'loading') && (finished || p.altAt !== null);
       since = settled ? since ?? now : null;
-      if ((settled && now - since >= quiet) || now - p.t0 >= timeout) {
+      idle = settled && busy === 0 ? idle + 1 : 0;
+      const wait = finished ? quiet : Math.max(quiet, p.altQuiet);
+      if (over({ settled, busy, idle, heldMs: since === null ? 0 : now - since, wait }) || now - p.t0 >= timeout) {
         p.settler = null;
         p.tracking = false;
+        const pending = busy > 0 ? kinds : null;
         // The frames up to now finish rendering, and their stamps arrive, before the report reads them.
-        requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(() => resolve(p.report(now, !settled, visible)), 0)));
+        requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(() => resolve({ ...p.report(now, !settled || pending !== null, visible),
+          inFlight: pending, busySignal: busy !== null }), 0)));
       }
     };
     // Decided after each frame's sample, which sees what that frame paints, so its last frame is counted too.
@@ -333,7 +349,7 @@
     const painted = paints.some(v => v === null) ? null : Math.max(-Infinity, ...paints);
     return { t0: p.t0, now, timedOut, input: input?.t ?? null, last: lastInput, inputType: input?.type ?? null, inputs: p.inputs.length,
       paint: Number.isFinite(painted) ? painted : null,
-      doneAt: shown(p.doneAt), doneAtSeen: p.doneAt !== null, widgets: [...widgets.values()].map(({ loadingFrom, states, ...w }) => w),
+      doneAt: shown(p.doneAt), doneAtSeen: p.doneAt !== null, altAt: p.altAt, widgets: [...widgets.values()].map(({ loadingFrom, states, ...w }) => w),
       placeholderMs: (placeholderEnd(now), p.placeholders.ms), placeholderAt: [...p.placeholders.where],
       loafs: p.loafs.filter(l => l.dur >= 50 && l.start + l.dur >= p.t0).map(l => ({ dur: Math.round(l.dur), top: l.top })) };
   };

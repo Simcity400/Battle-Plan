@@ -88,8 +88,8 @@ fn complete_inputs_preserve_signed_words_and_native_origin_order() {
         base: BASE,
         bytes: &bytes,
     };
-    let mut origins = [Origin::default(); 3];
-    let row = capture(&memory, UNIT, &mut origins).unwrap();
+    let mut origins = vec![Origin::default(); 3];
+    let row = capture_buffer(&memory, UNIT, crate::walk::Buffer::Growing(&mut origins)).unwrap();
     assert_eq!(origins, expected);
     assert_eq!((row.asked, row.received), (i64::MIN, i64::MAX));
     assert_eq!(
@@ -135,7 +135,7 @@ fn live_extent_crosses_batches_without_a_content_count_limit() {
         bytes: &bytes,
     };
     let mut origins = vec![Origin::default(); expected.len()];
-    let row = capture(&memory, UNIT, &mut origins).unwrap();
+    let row = capture_buffer(&memory, UNIT, crate::walk::Buffer::Growing(&mut origins)).unwrap();
     assert_eq!(row.origins_len, Ok(expected.len()));
     assert_eq!(origins, expected);
 }
@@ -180,7 +180,7 @@ fn capacity_shortage_reports_exact_demand_before_origin_payload_reads() {
         header_reads: Cell::new(0),
     };
     assert_eq!(
-        capture(&memory, UNIT, &mut []).unwrap().origins_len,
+        capture_buffer(&memory, UNIT, crate::walk::Buffer::Count).unwrap().origins_len,
         Err(Failure::OriginsCapacity { required: 3 })
     );
 }
@@ -193,7 +193,7 @@ fn malformed_empty_null_and_overflow_headers_are_distinct_from_absent_origins() 
         base: BASE,
         bytes: &bytes,
     };
-    assert_eq!(capture(&memory, UNIT, &mut []).unwrap().origins_len, Ok(0));
+    assert_eq!(capture_buffer(&memory, UNIT, crate::walk::Buffer::Count).unwrap().origins_len, Ok(0));
     for (data, capacity, count) in [
         (DATA as u64, 0_u32, 1_u32),
         (0, 1, 1),
@@ -208,7 +208,7 @@ fn malformed_empty_null_and_overflow_headers_are_distinct_from_absent_origins() 
             bytes: &bytes,
         };
         assert_eq!(
-            capture(&memory, UNIT, &mut [Origin::default()])
+            capture_buffer(&memory, UNIT, crate::walk::Buffer::Growing(&mut vec![Origin::default()]))
                 .unwrap()
                 .origins_len,
             Err(Failure::InvalidOrigins)
@@ -235,7 +235,7 @@ fn field_and_origin_faults_never_certify_a_partial_pack_and_header_drift_is_refu
             change_header: false,
             header_reads: Cell::new(0),
         };
-        let result = capture(&memory, UNIT, &mut [Origin::default(); 2]);
+        let result = capture_buffer(&memory, UNIT, crate::walk::Buffer::Growing(&mut vec![Origin::default(); 2]));
         if fail < UNIT + ORIGINS || fail == UNIT + SHIP_DEMAND {
             assert_eq!(result, Err(Failure::Unreadable));
         } else {
@@ -254,7 +254,7 @@ fn field_and_origin_faults_never_certify_a_partial_pack_and_header_drift_is_refu
         header_reads: Cell::new(0),
     };
     assert_eq!(
-        capture(&memory, UNIT, &mut [Origin::default(); 2])
+        capture_buffer(&memory, UNIT, crate::walk::Buffer::Growing(&mut vec![Origin::default(); 2]))
             .unwrap()
             .origins_len,
         Err(Failure::OriginsChanged)
@@ -281,7 +281,7 @@ fn unrelated_consumer_bytes_and_origin_fields_are_not_read() {
             change_header: false,
             header_reads: Cell::new(0),
         };
-        assert!(capture(&memory, UNIT, &mut [Origin::default()]).is_ok());
+        assert!(capture_buffer(&memory, UNIT, crate::walk::Buffer::Growing(&mut vec![Origin::default()])).is_ok());
     }
 }
 
@@ -302,7 +302,7 @@ fn worker_origins_grow_from_original_header_before_first_and_later_publication()
             bytes: &bytes,
         };
         assert_eq!(
-            capture(&memory, UNIT, &mut []).unwrap().origins_len,
+            capture_buffer(&memory, UNIT, crate::walk::Buffer::Count).unwrap().origins_len,
             Err(Failure::OriginsCapacity { required: count })
         );
         let inputs =
@@ -414,13 +414,7 @@ fn batched_units_keep_each_footer_and_native_origin_order_across_batches() {
     };
     let mut units = vec![UnitCapture::default(); pointers.len()];
     let mut arena = Vec::new();
-    let used = capture_units(
-        &memory,
-        |index| pointers[index],
-        &mut units,
-        &mut arena,
-        true,
-    );
+    let used = capture_units(&memory, |index| pointers[index], &mut units, &mut arena);
     let total: usize = origins.iter().map(Vec::len).sum();
     assert_eq!(
         used,
@@ -437,49 +431,9 @@ fn batched_units_keep_each_footer_and_native_origin_order_across_batches() {
         start += expected.len();
         // The single-unit reader agrees with every batched footer.
         let mut single = vec![Origin::default(); expected.len()];
-        assert_eq!(capture(&memory, pointers[index], &mut single), unit.inputs);
+        assert_eq!(capture_buffer(&memory, pointers[index], crate::walk::Buffer::Growing(&mut single)), unit.inputs);
         assert_eq!(&single, expected);
     }
-}
-
-#[test]
-fn a_fixed_arena_reports_each_shortage_and_keeps_the_units_that_fit() {
-    let origins: Vec<Vec<Origin>> = [2, 3, 1]
-        .into_iter()
-        .map(|rows| vec![Origin::default(); rows])
-        .collect();
-    let (bytes, pointers) = units_fixture(&origins);
-    let memory = SliceMemory {
-        base: BASE,
-        bytes: &bytes,
-    };
-    let mut units = vec![UnitCapture::default(); 3];
-    let mut arena = vec![Origin::default(); 4];
-    let used = capture_units(
-        &memory,
-        |index| pointers[index],
-        &mut units,
-        &mut arena,
-        false,
-    );
-    assert_eq!(
-        used,
-        OriginsUse {
-            len: 3,
-            required: 6
-        }
-    );
-    assert_eq!(arena.len(), 4);
-    assert_eq!(units[0].inputs, Ok(unit_inputs(0, Ok(2))));
-    assert_eq!(
-        units[1].inputs,
-        Ok(unit_inputs(
-            1,
-            Err(Failure::OriginsCapacity { required: 3 })
-        ))
-    );
-    assert_eq!(units[2].inputs, Ok(unit_inputs(2, Ok(1))));
-    assert_eq!(units[2].origins_start, 2);
 }
 
 struct Faults<'a> {
@@ -542,13 +496,7 @@ fn a_fault_fails_only_its_own_unit_or_origin_fragment() {
     };
     let mut units = vec![UnitCapture::default(); pointers.len()];
     let mut arena = Vec::new();
-    let used = capture_units(
-        &memory,
-        |index| pointers[index],
-        &mut units,
-        &mut arena,
-        true,
-    );
+    let used = capture_units(&memory, |index| pointers[index], &mut units, &mut arena);
     assert_eq!(
         used,
         OriginsUse {
@@ -585,7 +533,7 @@ fn null_roots_are_unreadable() {
     let mut units = [UnitCapture::default(); 2];
     let mut arena = Vec::new();
     assert_eq!(
-        capture_units(&memory, |_| 0, &mut units, &mut arena, true),
+        capture_units(&memory, |_| 0, &mut units, &mut arena),
         OriginsUse::default()
     );
     assert_eq!(units.map(|unit| unit.inputs), [Err(Failure::Unreadable); 2]);
@@ -615,13 +563,7 @@ fn batched_units_read_no_unrelated_consumer_bytes() {
             header_reads: Cell::new(0),
         };
         let mut units = vec![UnitCapture::default(); 3];
-        capture_units(
-            &memory,
-            |index| pointers[index],
-            &mut units,
-            &mut Vec::new(),
-            true,
-        );
+        capture_units(&memory, |index| pointers[index], &mut units, &mut Vec::new());
         for (index, unit) in units.iter().enumerate() {
             assert_eq!(unit.inputs, Ok(unit_inputs(index, Ok(1))), "{fail:#x}");
         }

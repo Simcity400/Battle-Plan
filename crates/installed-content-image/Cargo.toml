@@ -25,3 +25,4 @@ test-support = []
 [target.'cfg(all())'.dev-dependencies]
 installed-content-image = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
+unify-bitflags-2 = { workspace = true }

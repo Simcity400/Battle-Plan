@@ -27,16 +27,6 @@ pub struct TransferUnits {
     pub units: [usize; 2],
 }
 
-/// Caller-owned rows and handle arenas.
-pub struct Buffers<'a> {
-    pub combats: &'a mut [CombatTransfers],
-    pub transfer_handles: &'a mut [u64],
-    /// Also the scratch the distinct transfer handles are sorted in, so it needs a row per
-    /// nonzero handle the combats name; [`Walk::transfers`] reports that demand.
-    pub transfers: &'a mut [TransferUnits],
-    pub unit_handles: &'a mut [u64],
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Walk {
     pub combats: Outcome,
@@ -100,30 +90,18 @@ fn outcome(len: usize, missing: usize) -> Outcome {
 /// transfers are found by sorting their handles in the caller's row buffer, so the walk is
 /// linear in reads and `n log n` in comparisons. Nothing is allocated: a short buffer
 /// truncates and reports the demand.
-pub struct GrowingBuffers<'a> {
+pub struct Buffers<'a> {
     pub combats: &'a mut Vec<CombatTransfers>,
     pub transfer_handles: &'a mut Vec<u64>,
     pub transfers: &'a mut Vec<TransferUnits>,
     pub unit_handles: &'a mut Vec<u64>,
 }
 
-pub fn walk(memory: &impl Memory, base: usize, state: usize, buffers: Buffers<'_>) -> Walk {
-    walk_buffer(
-        memory,
-        base,
-        state,
-        crate::walk::Buffer::Fixed(buffers.combats),
-        crate::walk::Buffer::Fixed(buffers.transfer_handles),
-        crate::walk::Buffer::Fixed(buffers.transfers),
-        crate::walk::Buffer::Fixed(buffers.unit_handles),
-    )
-}
-
-pub fn walk_growing(
+pub fn walk(
     memory: &impl Memory,
     base: usize,
     state: usize,
-    buffers: GrowingBuffers<'_>,
+    buffers: Buffers<'_>,
 ) -> Walk {
     walk_buffer(
         memory,
@@ -607,25 +585,10 @@ mod tests {
         // Stale, null-object and zero unit handles are omitted.
         assert_eq!(units[0], unit);
         assert_eq!(walked.unit_handles_required, 1);
-        // A short handle arena truncates the combats and leaves the transfers to grow.
-        let (short, ..) = fixture.walk([2, 4, 4, 4]);
-        assert_eq!(
-            short.combats,
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            }
-        );
-        assert!(matches!(short.transfers, Outcome::Truncated { len: 0, .. }));
-        // Too few rows to sort the named handles in truncates with their demand.
-        let (few, ..) = fixture.walk([2, 5, 3, 4]);
-        assert_eq!(
-            few.transfers,
-            Outcome::Truncated {
-                len: 0,
-                unread_rows: 4
-            }
-        );
+        // Short arenas grow to the same rows.
+        let (short, ..) = fixture.walk([2, 4, 3, 4]);
+        assert_eq!(short.combats, Outcome::Rows { len: 2 });
+        assert_eq!(short.transfers, Outcome::Rows { len: 1 });
     }
 
     #[test]
@@ -647,13 +610,11 @@ mod tests {
                 base: 0,
                 bytes: &fixture.bytes,
             });
-            let previous = fixture.walk([0; 4]).0;
-            assert!(matches!(previous.combats, Outcome::Truncated { .. }));
-            let capture = walk_growing(
+            let capture = walk(
                 &memory,
                 0,
                 STATE,
-                GrowingBuffers {
+                Buffers {
                     combats: &mut combats,
                     transfer_handles: &mut named,
                     transfers: &mut transfers,

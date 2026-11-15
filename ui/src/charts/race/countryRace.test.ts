@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { countryRaceEnds, countryRaceHours, countryRaceItems, countryRacePickTag, countryRaceReadHour, countryRaceSegments, countryRaceStack, countryRaceTooltipTags, forEachCountryRaceSegment, forEachJoinedCountryRaceSegment, heldStackSegment, partColours } from './countryRace.ts';
+import { countryRaceEnds, countryRaceHours, countryRaceItems, countryRacePickTag, countryRaceReadHour, countryRaceSegments, countryRaceStack, countryRaceTooltipTags, forEachCountryRaceSegment, forEachJoinedCountryRaceSegment, heldStackSegment, partColours, raceLabelAt } from './countryRace.ts';
 import { barExtent, selectRaceRow, stepRace } from './race.ts';
 import { linesAt, linesTooltip } from './lines.ts';
 import { buildStack, stackedSegments } from '../stack.ts';
@@ -217,4 +217,12 @@ test('a stack changing at every read fills as one shape per stretch, never as se
   assert.equal(joined.length, 2);
   for (const segment of joined) assert.ok(segment.hours.every((hour, index) => index === 0 || segment.hours[index - 1] <= hour));
   assert.ok(joined[0].hours.at(-1)! < joined[1].hours[0]);
+});
+
+test('a dated race label is read at the hour the race shows, never the hour it rendered', () => {
+  const label = (hour: number) => `Faction totals, Factories, ${hour}`;
+  assert.equal(raceLabelAt(label, 120), 'Faction totals, Factories, 120');
+  assert.equal(raceLabelAt(label, 4_000), 'Faction totals, Factories, 4000');
+  assert.equal(raceLabelAt('Race of losses taken', 4_000), 'Race of losses taken');
+  assert.equal(raceLabelAt(undefined, 4_000), undefined);
 });

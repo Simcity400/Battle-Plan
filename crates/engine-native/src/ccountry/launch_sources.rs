@@ -127,23 +127,6 @@ impl ReservedOwnedStates {
         memory: &impl Memory,
         base: usize,
         state: usize,
-        scratch: &mut [Occurrence],
-        output: &mut [u32],
-    ) -> DomainCapture {
-        self.capture_buffer(
-            memory,
-            base,
-            state,
-            crate::walk::Buffer::Fixed(scratch),
-            crate::walk::Buffer::Fixed(output),
-        )
-    }
-
-    pub fn capture_growing(
-        self,
-        memory: &impl Memory,
-        base: usize,
-        state: usize,
         scratch: &mut Vec<Occurrence>,
         output: &mut Vec<u32>,
     ) -> DomainCapture {
@@ -355,15 +338,15 @@ pub(crate) fn capture_naval(
     memory: &impl Memory,
     base: usize,
     navy: usize,
-    scratch: &mut [Occurrence],
-    output: &mut [LaunchNavalBase],
+    scratch: &mut Vec<Occurrence>,
+    output: &mut Vec<LaunchNavalBase>,
 ) -> NavalCapture {
     capture_naval_buffer(
         memory,
         base,
         navy,
-        crate::walk::Buffer::Fixed(scratch),
-        crate::walk::Buffer::Fixed(output),
+        crate::walk::Buffer::Growing(scratch),
+        crate::walk::Buffer::Growing(output),
     )
 }
 

@@ -11,7 +11,7 @@ use std::{
 
 // Bump whenever source assembly, DXC flags, naga or reflection changes. This is part of
 // the filename hash as well as the payload; old caches cannot silently survive an upgrade.
-// `Compiler::at` refuses any DXC but `DXC_VERSION`, which this names.
+// `Compiler::at` refuses any dxcompiler.dll but `DXC_VERSION`, which this names.
 const ABI: &str = "pdxshader-14/dxc-1.9.0.5402-0d3ee6b55/hlsl2016/dx-layout/naga-30.0.1";
 
 /// A failure names the effect and technique, as [`Compiler::compile`] does.
@@ -87,6 +87,15 @@ struct Entry {
 }
 
 type Cached = Arc<Once<Result<Arc<Compiled>, String>>>;
+
+static COMPILED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static DISK_HITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Programs compiled and programs read from disk by every cache of the process since it started.
+pub fn totals() -> (u64, u64) {
+    use std::sync::atomic::Ordering::Relaxed;
+    (COMPILED.load(Relaxed), DISK_HITS.load(Relaxed))
+}
 
 pub struct Cache {
     root: Option<PathBuf>,
@@ -213,6 +222,7 @@ impl Cache {
                     && entry.checksum == format!("{:x}", Sha256::digest(bytes))
                 {
                     self.diagnostics.lock().unwrap().disk_hits += 1;
+                    DISK_HITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     return Ok(Arc::new(entry.program));
                 }
             }
@@ -225,6 +235,7 @@ impl Cache {
         {
             let mut stats = self.diagnostics.lock().unwrap();
             stats.compiled += 1;
+            COMPILED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             stats.generated_bytes +=
                 (compiled.vertex.wgsl.len() + compiled.pixel.wgsl.len()) as u64;
         }
@@ -382,17 +393,11 @@ pub(crate) mod tests {
         assert!(ABI.contains("/dxc-1.9.0.5402-0d3ee6b55/"));
         let scratch = super::super::Scratch::new().unwrap();
         for installation in ["baseline-main", "lane-det-1"] {
-            let missing = scratch
-                .0
-                .join(installation)
-                .join("shader-tools/dxc/dxc.exe");
-            let Err(reason) = Compiler::at(missing) else {
+            let missing = scratch.0.join(installation).join("dxcompiler.dll");
+            let Err(reason) = Compiler::at(&missing) else {
                 panic!("a missing compiler must be refused");
             };
-            assert_eq!(
-                reason,
-                "DXC not found; install shader-tools/dxc/dxc.exe or set BATTLE_PLAN_SHADER_COMPILER"
-            );
+            assert_eq!(reason, "DXC not found: dxcompiler.dll is not beside the application");
         }
     }
 
@@ -406,7 +411,7 @@ pub(crate) mod tests {
                 _: &Technique,
                 _: &[String],
             ) -> Result<Compiled, String> {
-                Err("effect \"vanilla.shader\", technique \"Up\": DXC not found; install shader-tools/dxc/dxc.exe or set BATTLE_PLAN_SHADER_COMPILER".into())
+                Err("effect \"vanilla.shader\", technique \"Up\": DXC not found: dxcompiler.dll is not beside the application".into())
             }
         }
         let cache = Arc::new(Cache::new(None, Arc::new(Missing)));
@@ -420,7 +425,7 @@ pub(crate) mod tests {
             assert!(
                 reason.contains("vanilla.shader")
                     && reason.contains("Up")
-                    && reason.contains("DXC not found;")
+                    && reason.contains("DXC not found:")
             );
         }
         assert_eq!(cache.diagnostics().refused.values().sum::<u64>(), 2);

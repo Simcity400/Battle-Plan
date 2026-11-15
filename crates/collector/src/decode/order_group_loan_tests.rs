@@ -11,7 +11,7 @@ fn abandoned_orders_loan_retires_once_on_drop_and_callback_unwind() {
     let _serial = crate::hook::FAMILY_TEST
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    prepare_retirement();
+    prepare_retirement().unwrap();
     reclaim_payloads();
     let queue = RETIRED_PAYLOADS.load(Ordering::Acquire);
     // Preparation keeps the queue alive until quiescent loader teardown.
@@ -37,9 +37,9 @@ fn abandoned_orders_loan_retires_once_on_drop_and_callback_unwind() {
         );
         let identity = payload.log.bytes.as_ptr();
         let request = OrdersRequest {
-            countries: std::sync::Arc::new(
+            countries: engine_allocation::shared(
                 engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
-            ),
+            ).unwrap(),
             base: 0,
             game_state: 0,
             orders: Orders::vacant(),

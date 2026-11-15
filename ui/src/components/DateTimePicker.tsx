@@ -21,8 +21,8 @@ interface Props {
   describedBy?: string;
   id?: string;
   onChange: (hour: number) => void;
-  /** A value that changes too often to render: the trigger's date and time are painted from it
-   * directly; `value` still drives the calendar. */
+  /** A value that changes too often to render: the trigger's date and time are painted from it, and an open
+   * calendar follows it until the user pages or picks; `value` drives the calendar otherwise. */
   live?: LiveValue;
 }
 
@@ -44,7 +44,11 @@ export default function DateTimePicker({ label, hideLabel = false, value, min, m
   const menu = usePopover('start');
   const { trigger, popup, open } = menu;
   const focusDay = useRef(false);
-  const selected = value == null ? null : gameDate(value);
+  // Open on a live value, the calendar shows the live hour (`held`, as of its last render). While `following`, the
+  // day and time are painted in the frame and only a new month renders; paging or keys hold it where it is.
+  const [held, setHeld] = useState<{ hour: number; following: boolean } | null>(null);
+  const shownValue = live && held ? held.hour : value;
+  const selected = shownValue == null ? null : gameDate(shownValue);
   const minimum = gameDate(Math.max(min, HOUR_EPOCH));
   const maximum = gameDate(max);
   const available = !disabled && minimum != null && maximum != null && min <= max;
@@ -61,9 +65,10 @@ export default function DateTimePicker({ label, hideLabel = false, value, min, m
   const firstDay = clamp(Math.floor((min - monthStart) / 24) + 1, 1, daysInMonth);
   const lastDay = clamp(Math.floor((max - monthStart) / 24) + 1, 1, daysInMonth);
   const activeDay = clamp(focusedDay, firstDay, lastDay);
-  const selectedDayStart = value != null && selected ? value - selected.hour + 1 : min;
-  const rangeFirst = value != null && otherValue != null ? Math.min(value, otherValue) : null;
-  const rangeLast = value != null && otherValue != null ? Math.max(value, otherValue) : null;
+  const selectedDayStart = shownValue != null && selected ? shownValue - selected.hour + 1 : min;
+  const rangeFirst = shownValue != null && otherValue != null ? Math.min(shownValue, otherValue) : null;
+  const rangeLast = shownValue != null && otherValue != null ? Math.max(shownValue, otherValue) : null;
+  const following = open && !!live && !!held?.following;
   const liveDate = useRef<HTMLSpanElement>(null);
   const liveTime = useRef<HTMLSpanElement>(null);
 
@@ -82,6 +87,39 @@ export default function DateTimePicker({ label, hideLabel = false, value, min, m
     return live.subscribe(paint);
   }, [live]);
 
+  const paintHead = useRef<(() => void) | null>(null);
+  paintHead.current = following ? () => {
+    const hour = live!.read();
+    const date = hour == null ? null : gameDate(hour);
+    const body = popup.current;
+    if (hour == null || !date || !body) return;
+    if (monthIndex(date) !== viewMonth) {
+      setHeld({ hour, following: true });
+      setFocusedDay(date.day);
+      showMonth(monthIndex(date));
+      return;
+    }
+    for (const cell of body.querySelectorAll<HTMLElement>('.calendar-grid [role="gridcell"]')) {
+      const day = cell.firstElementChild?.getAttribute('data-day');
+      // A day cell becomes an empty one as the month changes, keeping what was painted on it.
+      if (day == null) { cell.removeAttribute('aria-selected'); continue; }
+      const on = String(Number(day) === date.day);
+      if (cell.getAttribute('aria-selected') !== on) cell.setAttribute('aria-selected', on);
+    }
+    const time = body.querySelector<HTMLElement>('.calendar-time .select-trigger > span');
+    if (time) showText(time, formatTime(date.hour));
+  } : null;
+  // After every render, since React leaves the followed day and time to the painter, and on every live change.
+  useLayoutEffect(() => paintHead.current?.());
+  useLayoutEffect(() => following ? live!.subscribe(() => paintHead.current?.()) : undefined, [following, live]);
+
+  /** The user moved the calendar: it stops following and holds the hour it shows. */
+  function hold() {
+    if (!following) return;
+    const hour = live!.read();
+    setHeld(hour == null ? null : { hour, following: false });
+  }
+
   useLayoutEffect(() => {
     if (!open || !focusDay.current) return;
     focusDay.current = false;
@@ -99,21 +137,35 @@ export default function DateTimePicker({ label, hideLabel = false, value, min, m
   function choose(hour: number) {
     const next = gameDate(hour);
     if (!next || hour < min || hour > max) return;
+    setHeld(null);
     onChange(hour);
     setFocusedDay(next.day);
     showMonth(monthIndex(next));
+  }
+
+  /** The hour the calendar shows now: following, the live one its painter shows, which `held` trails. */
+  function current(): { hour: number; date: NonNullable<ReturnType<typeof gameDate>> } | null {
+    const hour = following ? live!.read() : shownValue;
+    const date = hour == null ? null : gameDate(hour);
+    return hour != null && date ? { hour, date } : null;
   }
 
   function chooseDay(day: number) {
     // Preserve time where possible; a partially recorded boundary day can
     // restrict the available hours. The time field always shows the result.
     const start = engineHour({ ...view, day, hour: 1 });
-    if (start != null) choose(clamp(start + (selected?.hour ?? 1) - 1, min, max));
+    if (start != null) choose(clamp(start + (current()?.date.hour ?? 1) - 1, min, max));
+  }
+
+  function chooseTime(time: number) {
+    const shown = current();
+    choose((shown ? shown.hour - shown.date.hour + 1 : min) + time - 1);
   }
 
   function commitYear(focus = false) {
     const year = Number(yearInput);
     if (/^-?\d+$/.test(yearInput) && Number.isSafeInteger(year) && minimum && maximum) {
+      if (year !== view.year) hold();
       showMonth(clamp(year, minimum.year, maximum.year) * 12 + view.month - 1, focus);
     } else {
       setYearInput(String(view.year));
@@ -132,12 +184,14 @@ export default function DateTimePicker({ label, hideLabel = false, value, min, m
       case 'PageUp':
       case 'PageDown': {
         event.preventDefault();
+        hold();
         showMonth(viewMonth + (event.key === 'PageUp' ? -1 : 1) * (event.shiftKey ? 12 : 1), true);
         return;
       }
       default: return;
     }
     event.preventDefault();
+    hold();
     const next = gameDate(clamp(monthStart + (day - 1 + step) * 24, min, max));
     if (!next) return;
     setFocusedDay(next.day);
@@ -164,6 +218,7 @@ export default function DateTimePicker({ label, hideLabel = false, value, min, m
         // A live value opens on the date shown now, which `value` may trail.
         const shown = live ? live.read() : value;
         const opening = (shown == null ? null : gameDate(shown)) ?? minimum;
+        setHeld(isOpen && live && shown != null ? { hour: shown, following: true } : null);
         if (isOpen && opening) {
           showMonth(monthIndex(opening), true);
           setFocusedDay(opening.day);
@@ -172,8 +227,8 @@ export default function DateTimePicker({ label, hideLabel = false, value, min, m
       <PopoverBody open={open}>{() => <>
         <div className="calendar-navigation">
           <button type="button" className="calendar-arrow" aria-label="Previous month" disabled={viewMonth <= firstMonth}
-            onClick={() => showMonth(viewMonth - 1)}><Icon name="chevron-left" /></button>
-          <Select label="Month" value={String(view.month)} onChange={value => showMonth(view.year * 12 + Number(value) - 1)}
+            onClick={() => { hold(); showMonth(viewMonth - 1); }}><Icon name="chevron-left" /></button>
+          <Select label="Month" value={String(view.month)} onChange={value => { hold(); showMonth(view.year * 12 + Number(value) - 1); }}
             options={monthNames.map((name, index) => ({ value: String(index + 1), label: name,
               disabled: view.year * 12 + index < firstMonth || view.year * 12 + index > lastMonth }))} />
           <label className="sr-only" htmlFor={`${id}-year`}>Year</label>
@@ -181,9 +236,10 @@ export default function DateTimePicker({ label, hideLabel = false, value, min, m
             value={yearInput} onChange={(event) => setYearInput(event.currentTarget.value)} onBlur={() => commitYear()}
             onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); commitYear(true); } }} />
           <button type="button" className="calendar-arrow" aria-label="Next month" disabled={viewMonth >= lastMonth}
-            onClick={() => showMonth(viewMonth + 1)}><Icon name="chevron-right" /></button>
+            onClick={() => { hold(); showMonth(viewMonth + 1); }}><Icon name="chevron-right" /></button>
         </div>
-        <p className="sr-only" aria-live="polite">{monthNames[view.month - 1]} {view.year}</p>
+        {/* Following a live value, the month and date move on their own: announced only once the user moves them. */}
+        <p className="sr-only" aria-live={following ? 'off' : 'polite'}>{monthNames[view.month - 1]} {view.year}</p>
         <p id={`${id}-keys`} className="sr-only">Use arrow keys to move between days. Page Up and Page Down change the month; hold Shift to change the year.</p>
         {/* This is the game's fixed-length calendar. Weekday names would imply
             a Gregorian leap-year calendar that these recordings do not use. */}
@@ -197,7 +253,7 @@ export default function DateTimePicker({ label, hideLabel = false, value, min, m
               const isSelected = selected != null && monthIndex(selected) === viewMonth && selected.day === day;
               const isDisabled = start > max || start + 23 < min;
               const inRange = rangeFirst != null && rangeLast != null && start <= rangeLast && start + 23 >= rangeFirst;
-              return <div role="gridcell" aria-selected={isSelected} key={column}>
+              return <div role="gridcell" aria-selected={following ? undefined : isSelected} key={column}>
                 <button type="button" data-day={day} className={`calendar-day${inRange ? ' in-range' : ''}`}
                   aria-label={`${day} ${monthNames[view.month - 1]} ${view.year}`} disabled={isDisabled}
                   tabIndex={day === activeDay ? 0 : -1} onFocus={() => setFocusedDay(day)}
@@ -209,7 +265,7 @@ export default function DateTimePicker({ label, hideLabel = false, value, min, m
         <div className="calendar-time">
           <label htmlFor={`${id}-time`}><Icon name="clock" /><span>Time<span className="sr-only"> · Game time, hourly</span></span></label>
           <Select id={`${id}-time`} label="Time" value={String(selected?.hour ?? 1)} disabled={!selected}
-            onChange={value => choose(selectedDayStart + Number(value) - 1)}
+            onChange={value => chooseTime(Number(value))}
             options={Array.from({ length: 24 }, (_, index) => ({ value: String(index + 1), label: formatTime(index + 1),
               disabled: selectedDayStart + index < min || selectedDayStart + index > max }))} />
         </div>
@@ -220,7 +276,7 @@ export default function DateTimePicker({ label, hideLabel = false, value, min, m
           </div>
           <button type="button" className="button primary small" onClick={menu.close}>Done</button>
         </div>
-        <span className="sr-only" aria-live="polite">{value != null ? formatDateTime(value) : 'Choose a date'}</span>
+        <span className="sr-only" aria-live={following ? 'off' : 'polite'}>{shownValue != null ? formatDateTime(shownValue) : 'Choose a date'}</span>
       </>}</PopoverBody>
     </Popover>
   </div>;

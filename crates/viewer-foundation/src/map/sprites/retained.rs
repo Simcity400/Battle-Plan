@@ -169,32 +169,48 @@ impl CameraFrame {
 
 pub(super) struct Upload {
     quads: Vec<Quad>,
+    /// The quads in the order the upload draws them ([`super::sort_order`]).
+    order: Vec<usize>,
     size: [u32; 2],
     scale: u32,
     artwork: Option<u64>,
 }
 
 impl Upload {
-    pub(super) fn new(batch: &Batch, size: [u32; 2], scale: f32, artwork: Option<u64>) -> Self {
+    pub(super) fn new(
+        batch: &Batch,
+        order: &[usize],
+        size: [u32; 2],
+        scale: f32,
+        artwork: Option<u64>,
+    ) -> Self {
         let mut upload = Self {
             quads: Vec::new(),
+            order: Vec::new(),
             size,
             scale: scale.to_bits(),
             artwork,
         };
-        upload.update(batch, size, scale, artwork);
+        upload.update(batch, order, size, scale, artwork);
         upload
     }
 
     /// Keep the snapshot's storage on a miss: a moving camera can change every quad.
+    /// `order` is the batch's drawn order; one that is not the batch's is kept as none, which no
+    /// later batch matches in order.
     pub(super) fn update(
         &mut self,
         batch: &Batch,
+        order: &[usize],
         size: [u32; 2],
         scale: f32,
         artwork: Option<u64>,
     ) {
         self.quads.clone_from(&batch.quads);
+        self.order.clear();
+        if order.len() == batch.quads.len() {
+            self.order.extend_from_slice(order);
+        }
         self.size = size;
         self.scale = scale.to_bits();
         self.artwork = artwork;
@@ -217,6 +233,28 @@ impl Upload {
                 .zip(&batch.quads)
                 .all(|(a, b)| same_quad(a, b))
     }
+
+    /// Whether `batch`, drawn in `order`, draws what the snapshot drew: the same quads in the same
+    /// drawn order, whatever their layers, which only sort them.
+    pub(super) fn matches_in_order(
+        &self,
+        batch: &Batch,
+        order: &[usize],
+        size: [u32; 2],
+        scale: f32,
+        artwork: Option<u64>,
+    ) -> bool {
+        self.size == size
+            && self.scale == scale.to_bits()
+            && self.artwork == artwork
+            && self.quads.len() == batch.quads.len()
+            && self.order.len() == self.quads.len()
+            && order.len() == batch.quads.len()
+            && order
+                .iter()
+                .zip(&self.order)
+                .all(|(&now, &then)| same_drawn(&batch.quads[now], &self.quads[then]))
+    }
 }
 
 #[inline]
@@ -226,8 +264,12 @@ fn floats(a: &[f32], b: &[f32]) -> bool {
 }
 
 fn same_quad(a: &Quad, b: &Quad) -> bool {
+    a.layer == b.layer && same_drawn(a, b)
+}
+
+/// The same quad but for its layer.
+fn same_drawn(a: &Quad, b: &Quad) -> bool {
     a.texture == b.texture
-        && a.layer == b.layer
         && floats(&a.rect, &b.rect)
         && floats(&a.uv, &b.uv)
         && floats(&a.color, &b.color)
@@ -579,17 +621,17 @@ mod tests {
             [4., 4.],
             [1.; 4],
         );
-        let mut kept = Upload::new(&batch, [16, 16], 1., Some(3));
+        let mut kept = Upload::new(&batch, &[], [16, 16], 1., Some(3));
         let storage = kept.quads.as_ptr();
         let capacity = kept.quads.capacity();
         batch.quads[0].rect[0] = -0.;
         assert!(!kept.matches(&batch, [17, 18], 2., Some(4)));
-        kept.update(&batch, [17, 18], 2., Some(4));
+        kept.update(&batch, &[], [17, 18], 2., Some(4));
         assert!(kept.matches(&batch, [17, 18], 2., Some(4)));
         assert_eq!(kept.quads.as_ptr(), storage);
         assert_eq!(kept.quads.capacity(), capacity);
         batch.clear();
-        kept.update(&batch, [17, 18], 2., Some(4));
+        kept.update(&batch, &[], [17, 18], 2., Some(4));
         assert!(kept.matches(&batch, [17, 18], 2., Some(4)));
         assert_eq!(kept.quads.capacity(), capacity);
     }
@@ -609,7 +651,7 @@ mod tests {
             [4., 4.],
             [1.; 4],
         );
-        let kept = Upload::new(&batch, [16, 16], 1., Some(3));
+        let kept = Upload::new(&batch, &[], [16, 16], 1., Some(3));
         assert!(kept.matches(&batch, [16, 16], 1., Some(3)));
         assert!(!kept.matches(&batch, [17, 16], 1., Some(3)));
         assert!(!kept.matches(&batch, [16, 16], 2., Some(3)));

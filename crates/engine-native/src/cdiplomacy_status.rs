@@ -75,22 +75,6 @@ pub fn walk_capitulation(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    output: &mut [CapitulationRow],
-    recipients: &mut [u32],
-) -> Outcome {
-    walk_capitulation_buffer(
-        memory,
-        base,
-        game_state,
-        crate::walk::Buffer::Fixed(output),
-        crate::walk::Buffer::Fixed(recipients),
-    )
-}
-
-pub fn walk_capitulation_growing(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
     output: &mut Vec<CapitulationRow>,
     recipients: &mut Vec<u32>,
 ) -> Outcome {
@@ -321,9 +305,9 @@ mod tests {
             &i32::MIN.to_le_bytes(),
         );
         bytes[FIRST_DIPLOMACY + CAPITULATED] = 0x80;
-        let mut rows = [CapitulationRow::default(); 4];
+        let mut rows = vec![CapitulationRow::default(); 4];
         assert_eq!(
-            walk_capitulation(&memory(&bytes), BASE, GAME, &mut rows, &mut []),
+            walk_capitulation(&memory(&bytes), BASE, GAME, &mut rows, &mut Vec::new()),
             Outcome::Rows { len: 2 }
         );
         assert_eq!(
@@ -357,33 +341,30 @@ mod tests {
             }
         }
         let bytes = fixture();
-        let mut rows = [CapitulationRow::default(); 2];
+        let mut rows = vec![CapitulationRow::default(); 2];
         assert_eq!(
-            walk_capitulation(&Holes(memory(&bytes)), BASE, GAME, &mut rows, &mut []),
+            walk_capitulation(&Holes(memory(&bytes)), BASE, GAME, &mut rows, &mut Vec::new()),
             Outcome::Rows { len: 2 }
         );
         assert_eq!(rows[0].country, 3);
     }
 
     #[test]
-    fn capacity_counts_canonical_rows_without_reading_omitted_fields() {
+    fn the_count_probe_counts_canonical_rows_without_reading_omitted_fields() {
         let mut bytes = fixture();
         put(
             &mut bytes,
             SECOND + ccountry::DIPLOMACY_STATUS,
             &0_u64.to_le_bytes(),
         );
-        let mut rows = [CapitulationRow::default(); 1];
         assert_eq!(
-            walk_capitulation(&memory(&bytes), BASE, GAME, &mut rows, &mut []),
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            }
-        );
-        assert_eq!(rows[0].country, 3);
-        assert_eq!(
-            walk_capitulation(&memory(&bytes), BASE, GAME, &mut [], &mut []),
+            walk_capitulation_buffer(
+                &memory(&bytes),
+                BASE,
+                GAME,
+                crate::walk::Buffer::Count,
+                crate::walk::Buffer::Count,
+            ),
             Outcome::Truncated {
                 len: 0,
                 unread_rows: 2
@@ -394,7 +375,7 @@ mod tests {
     #[test]
     fn missing_roots_backlink_and_late_field_faults_are_unavailable() {
         let valid = fixture();
-        let mut rows = [CapitulationRow::default(); 2];
+        let mut rows = vec![CapitulationRow::default(); 2];
         for address in [
             SECOND + ccountry::DIPLOMACY_STATUS,
             SECOND_DIPLOMACY,
@@ -403,13 +384,13 @@ mod tests {
             let mut broken = valid.clone();
             put(&mut broken, address, &0_u64.to_le_bytes());
             assert!(matches!(
-                walk_capitulation(&memory(&broken), BASE, GAME, &mut rows, &mut []),
+                walk_capitulation(&memory(&broken), BASE, GAME, &mut rows, &mut Vec::new()),
                 Outcome::Unavailable { .. }
             ));
         }
         let broken = &valid[..SECOND_DIPLOMACY + CAPITULATED_HOUR + 3];
         assert!(matches!(
-            walk_capitulation(&memory(broken), BASE, GAME, &mut rows, &mut []),
+            walk_capitulation(&memory(broken), BASE, GAME, &mut rows, &mut Vec::new()),
             Outcome::Unavailable {
                 reason: "capitulation field unreadable"
             }
@@ -455,8 +436,8 @@ mod tests {
                 &recipient.to_le_bytes(),
             );
         }
-        let mut rows = [CapitulationRow::default(); 2];
-        let mut recipients = [0_u32; 2];
+        let mut rows = vec![CapitulationRow::default(); 2];
+        let mut recipients = vec![0_u32; 2];
         assert_eq!(
             walk_capitulation(&memory(&bytes), BASE, GAME, &mut rows, &mut recipients),
             Outcome::Rows { len: 2 }
@@ -464,14 +445,6 @@ mod tests {
         assert_eq!((rows[0].war_goals, rows[0].war_goals_start), (Some(2), 0));
         assert_eq!(recipients, [7, 9]);
         assert_eq!((rows[1].war_goals, rows[1].war_goals_start), (Some(0), 2));
-        // Too short a fixed buffer leaves the country unread.
-        assert_eq!(
-            walk_capitulation(&memory(&bytes), BASE, GAME, &mut rows, &mut [0; 1]),
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            }
-        );
         // A goal that is not a war goal refuses only that country's list.
         put(&mut bytes, 0xa200, &0_u64.to_le_bytes());
         assert_eq!(

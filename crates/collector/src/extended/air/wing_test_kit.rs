@@ -194,15 +194,12 @@ pub(crate) struct Split {
     pub cumulative: Vec<engine_native::cair_wing::CumulativeRow>,
 }
 
-fn collect_typed(memory: &impl Memory, capacity: &Capacities) -> Split {
+/// The independent reference: the wing walk, then each wing's equipment and
+/// cumulative operands read afresh, in walk order.
+fn collect_typed(memory: &impl Memory, _capacity: &Capacities) -> Split {
     use engine_native::cair_wing;
-    let mut captured = Captured::with_capacities(capacity);
-    // Typed reference: wing walk with visitor into pooled buffers,
-    // exactly like the game thread's Sources::air sequence.
-    captured.begin_wings();
-    // Re-walk collecting (pointer,row) for the visitor (typed, no raw).
     let mut collected: Vec<(usize, usize, cair_wing::Row)> = Vec::new();
-    let mut wing_rows = vec![cair_wing::Row::default(); 8192];
+    let mut wing_rows = Vec::new();
     let outcome = cair_wing::walk_with(
         memory,
         BASE,
@@ -212,21 +209,42 @@ fn collect_typed(memory: &impl Memory, capacity: &Capacities) -> Split {
             collected.push((pointer, pool, *row));
         },
     );
-    for (pointer, pool, row) in &collected {
+    let mut equipment = Vec::new();
+    let mut equipment_outcome = Outcome::Rows { len: 0 };
+    let mut cumulative = Vec::new();
+    let mut cumulative_outcome = Outcome::Rows { len: 0 };
+    for (pointer, _, row) in &collected {
         let source = super::WingSource {
             pointer: *pointer,
-            pool: *pool,
             row,
         };
-        captured.visit_wing(memory, BASE, source);
+        if !matches!(equipment_outcome, Outcome::Unavailable { .. }) {
+            let next = super::read_equipment_buffer(
+                memory,
+                BASE,
+                &source,
+                engine_native::walk::Buffer::GrowingFrom(&mut equipment, equipment_outcome.len()),
+                0,
+            )
+            .0;
+            equipment_outcome = super::append(equipment_outcome, next);
+        }
+        if !matches!(cumulative_outcome, Outcome::Unavailable { .. }) {
+            let next = match cair_wing::read_cumulative(memory, *pointer, row) {
+                Ok(value) => {
+                    cumulative.push(value);
+                    Outcome::Rows { len: 1 }
+                }
+                Err(reason) => Outcome::Unavailable { reason },
+            };
+            cumulative_outcome = super::append(cumulative_outcome, next);
+        }
     }
-    captured.finish_wings(outcome);
-    let _ = outcome;
     Split {
-        equipment_outcome: captured.equipment.outcome,
-        equipment: captured.equipment.rows.clone(),
-        cumulative_outcome: captured.cumulative.outcome,
-        cumulative: captured.cumulative.rows.clone(),
+        equipment_outcome: super::require_parent(outcome, equipment_outcome),
+        equipment,
+        cumulative_outcome: super::require_parent(outcome, cumulative_outcome),
+        cumulative,
     }
 }
 
@@ -246,7 +264,6 @@ pub(crate) fn split(memory: &impl Memory) -> (Split, AirWingCopyReport, AirWingJ
         game_state: GAME_STATE,
 
         limits: [1024, 8192, 4096],
-        naval_limit: 4096,
         game_score: false,
     };
     let mut first = AirWingJob::fixture();
@@ -282,7 +299,6 @@ pub(crate) fn split_with(
         game_state: GAME_STATE,
 
         limits: [1024, capacity.rows[0], capacity.rows[2]],
-        naval_limit: 4096,
         game_score: false,
     };
     let mut first = AirWingJob::fixture();
@@ -322,7 +338,6 @@ pub(crate) fn split_truncated(memory: &impl Memory) -> (Split, AirWingCopyReport
         game_state: GAME_STATE,
 
         limits: [1024, 1, 1],
-        naval_limit: 4096,
         game_score: false,
     };
     let mut first = AirWingJob::fixture();

@@ -1,3 +1,6 @@
+import type { ButterflyItem } from '../../charts/butterfly';
+import { formatAmount } from '../../charts/valueAxis.ts';
+import type { HolderLooks } from '../../dashboard/holderLooks';
 import type { WarContributionCountry, WarContributionGroup, WarObservation, WarTimeline, WarsReply } from '../../generated/dashboard';
 import { labelObservationAt, observationAt } from '../wars/warsData.ts';
 
@@ -104,3 +107,35 @@ export function shareText(value: bigint, total: bigint): string {
 
 /** The war's name as Wars names it, or its status word. */
 export const warName = (observation: WarObservation | null) => observation?.name.known ? observation.name.text : 'Name not recorded';
+
+export type Show = 'share' | 'totals';
+export type Looks = Pick<HolderLooks, 'colour' | 'name' | 'nameFailure'>;
+export type ContributionItem = ButterflyItem & { row: ContributionRow };
+
+const amount = (raw: bigint, digits = 2) => formatAmount(raw, SCALE, digits);
+/** An exact contribution as the tooltip writes it: a share in percent for the total contribution. */
+export const formatContribution = (raw: bigint, participation: boolean) => participation ? `${amount(raw * 100n, 5)}%` : amount(raw, 5);
+const sideText = (side: SideTotal, participation: boolean) => !side.members.length ? 'Not recorded'
+  : participation ? `${amount(side.total * 100n)}%` : sideMagnitude(side) === 0n ? 'None yet' : amount(sideAmount(side));
+
+/** The bars of `rows`: each side's members as parts in their colours, a negative part outlined as negative, unknown
+ * casualties hatched beside their member. */
+export function contributionItems(rows: readonly ContributionRow[], show: Show, looks: Pick<Looks, 'colour'>, muted: string): ContributionItem[] {
+  return rows.map(row => {
+    const lengths = rowLengths(row, show), participation = row.key === 'participation';
+    const parts = (side: SideTotal) => side.members.flatMap(member => [
+      { id: member.tag, value: Math.abs(toNumber(member.value)), color: looks.colour(member.tag), negative: member.value < 0n },
+      ...(member.unknown != null && member.unknown !== 0n ? [{ id: `${member.tag}:unknown`, value: Math.abs(toNumber(member.unknown)), color: looks.colour(member.tag), hatched: true,
+        negative: member.unknown < 0n }] : []),
+    ]);
+    return { id: row.key, label: row.label, color: muted, row, segment: 'war',
+      left: lengths.left, right: lengths.right, leftParts: parts(row.left), rightParts: parts(row.right),
+      leftText: sideText(row.left, participation), rightText: sideText(row.right, participation), ratioText: '' };
+  });
+}
+
+/** What a render of a group shows apart from its numbers: its members on each side, in order, and whether it is
+ * shown at all. Its numbers are painted as they change, never by a render. */
+export function contributionStructure(group: WarContributionGroup | null, available: boolean): string {
+  return JSON.stringify(group ? [group.viewpointSide, group.opposingSide, group.participants.map(row => row.tag), group.reason] : [available]);
+}

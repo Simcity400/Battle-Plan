@@ -17,6 +17,23 @@ export interface TableColumn<T> {
   hint?: string;
   value: (row: T) => SortValue;
   render?: (row: T) => ReactNode;
+  /** The cell is painted at the head: its text is this of the table's live value for it (never rendered), and its bar
+   * and a sort by it read that value too. Without a live source the table renders `value` as before. `key` is the
+   * cell's live key, for a text that also shows another cell of its row. */
+  paint?: (value: NonNullable<SortValue>, key: string) => string;
+  /** A sort by it reads the table's live value for it, as by a painted column, though its cell renders itself. */
+  sortsLive?: boolean;
+  /** What a painted cell with no value shows (its reason stays its title); "—" without it. */
+  missingText?: (key: string) => string;
+  /** A painted cell's bar from its row, not its live value: a bar of the row's structure (none for null) beside a
+   * painted number of another measure; `'cell'` paints it from `barCell`. */
+  barOf?: (row: T) => number | bigint | null | 'cell';
+  /** Where `barOf` gives `'cell'`: the bar is painted each frame from another live cell of the row (`id`), through
+   * `value` into the bar's units, and `tone` is a class the painter keeps on the text while that cell's value says so.
+   * A second moving measure beside the painted number, with no commit. */
+  barCell?: { id: string; value?: (value: number) => number | bigint; tone?: (value: number) => string | undefined };
+  /** A painted cell's class from its row: a tone of the row's structure around the painted text. */
+  cellClass?: (row: T) => string | undefined;
   /** Data key for a cell's width when its paint changes independently. */
   widthKey?: (row: T) => string | readonly unknown[];
   renderMissing?: boolean;

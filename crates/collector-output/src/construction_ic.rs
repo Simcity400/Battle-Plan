@@ -14,7 +14,7 @@
 //! knows whose output it is.
 //!
 //! Every clocked hourly boundary joins the worker that grows its owned frame
-//! from the original pending burst ([`drain_growing`]); the spool totals it per
+//! from the original pending burst ([`drain`]); the spool totals it per
 //! branch (`extended::construction_ic`). Producer storage follows the original
 //! native construction queues and route counts at attach and input cadence,
 //! plus complete attempted bursts. After its owned drain, the empty boundary
@@ -29,7 +29,7 @@ pub use crate::output_log::Drained;
 use crate::{
     opinion_changes::Padded,
     output_hooks,
-    output_log::{DrainCounters, Log},
+    output_log::{DrainCounters, Log, Reserved, Spill},
 };
 use engine_native::Memory;
 use engine_sites::Rva;
@@ -87,8 +87,9 @@ static LOG_SWAP: Mutex<LogSwap> = Mutex::new(LogSwap {
 static LOG: AtomicPtr<Storage> = AtomicPtr::new(ptr::null_mut());
 static SWAPS: AtomicU64 = AtomicU64::new(0);
 static FAILED_OFFERS: AtomicU64 = AtomicU64::new(0);
-static REJECTED: AtomicU64 = AtomicU64::new(0);
+static SPILLED: AtomicU64 = AtomicU64::new(0);
 static OBSERVATION: Log = Log::new(0);
+static SPILL: Spill<Entry> = Spill::new();
 static CURSOR: &Padded<AtomicU64> = &OBSERVATION.cursor;
 static ENABLED: &AtomicBool = &OBSERVATION.enabled;
 pub static ACTIVE: &Padded<AtomicUsize> = &OBSERVATION.active;
@@ -121,7 +122,8 @@ static REFUSAL_PENDING: AtomicBool = AtomicBool::new(false);
 static UNHOOKED: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
 /// `[building spends, other speed reads, railway advances, railway spends,
 /// railway carries, entries, inexact entries, drains, entries handed over,
-/// overflowed logs, unobserved drains, refused operand reads, unread identities]`.
+/// intervals given up for entry storage, unobserved drains, refused operand reads,
+/// unread identities]`.
 static COUNTERS: [AtomicU64; 13] = [const { AtomicU64::new(0) }; 13];
 
 pub fn capacity() -> usize {
@@ -432,10 +434,7 @@ fn observe_segment(amount: i64) {
     }
 }
 
-/// Store an entry, guarded by [`Log::enter`]. A writer that stalled until writers
-/// had appended a whole log after its index may have overwritten a newer entry
-/// in its slot; every drain meanwhile saw it active and handed nothing over, so
-/// it ends the observation (a new epoch) before it leaves.
+/// Store an entry, guarded by [`Log::enter`], in its ring slot or the spill.
 fn append(entry: Entry) {
     COUNTERS[5].fetch_add(1, Ordering::Relaxed);
     if entry.identity.is_none() {
@@ -444,10 +443,14 @@ fn append(entry: Entry) {
     if entry.instant {
         COUNTERS[6].fetch_add(1, Ordering::Relaxed);
     }
-    let (index, slot) = OBSERVATION.reserve_optional();
-    let Some(slot) = slot.and_then(|slot| log()?.slots.get(slot)) else {
-        REJECTED.fetch_add(1, Ordering::Relaxed);
-        invalidate();
+    let (index, reserved) = OBSERVATION.reserve();
+    let slot = match reserved {
+        Reserved::Slot(slot) => log().and_then(|log| log.slots.get(slot)),
+        Reserved::Spill => None,
+    };
+    let Some(slot) = slot else {
+        SPILLED.fetch_add(1, Ordering::Relaxed);
+        OBSERVATION.spill(&SPILL, index, entry);
         return;
     };
     let identity = entry.identity.unwrap_or_default();
@@ -533,14 +536,15 @@ fn entry(slot: &Slot) -> Entry {
     }
 }
 
-/// Copy settled entries without allocating; short storage defers the rest.
-#[cfg(any(test, feature = "test-support"))]
-pub fn drain(output: &mut [Entry]) -> Result<Drained, &'static str> {
+/// Joined acquisition worker only: reserve the original complete pending burst
+/// before advancing its consumed frontier; the producer is never reread.
+pub fn drain(output: &mut Vec<Entry>) -> Result<Drained, &'static str> {
     let log = log();
     OBSERVATION.drain(
         output,
-        |slot| entry(&log.unwrap().slots[slot]),
-        || unavailable(log.is_some()),
+        &SPILL,
+        |slot| Some(entry(log?.slots.get(slot)?)),
+        unavailable,
         "construction line observation restarted during the drain",
         DrainCounters {
             drains: &COUNTERS[7],
@@ -551,33 +555,13 @@ pub fn drain(output: &mut [Entry]) -> Result<Drained, &'static str> {
     )
 }
 
-/// Joined acquisition worker only: reserve the original complete pending burst
-/// before advancing its consumed frontier; the producer is never reread.
-pub fn drain_growing(output: &mut Vec<Entry>) -> Result<Drained, &'static str> {
-    let log = log();
-    OBSERVATION.drain_growing(
-        output,
-        |slot| entry(&log.unwrap().slots[slot]),
-        || unavailable(log.is_some()),
-        "construction line observation restarted during the drain",
-        DrainCounters {
-            drains: &COUNTERS[7],
-            copied: &COUNTERS[8],
-            overflow: &COUNTERS[9],
-            unobserved: &COUNTERS[10],
-        },
-    )
-}
-
-fn unavailable(installed: bool) -> Option<&'static str> {
+fn unavailable() -> Option<&'static str> {
     if let Some(reason) = UNHOOKED.get() {
         Some(*reason)
     } else if REFUSAL_PENDING.swap(false, Ordering::SeqCst) {
         REFUSED.get().copied()
     } else if !ENABLED.load(Ordering::SeqCst) {
         Some("construction line hooks are not enabled")
-    } else if !installed {
-        Some("construction line log is not installed")
     } else {
         None
     }
@@ -601,7 +585,7 @@ pub fn status() -> impl serde::Serialize {
         "required": OBSERVATION.required.load(Ordering::Acquire),
         "swaps": SWAPS.load(Ordering::Relaxed),
         "failed_offers": FAILED_OFFERS.load(Ordering::Relaxed),
-        "rejected_entries": REJECTED.load(Ordering::Relaxed),
+        "spilled_entries": SPILLED.load(Ordering::Relaxed),
         "building_spends": counters[0],
         "other_speed_reads": counters[1],
         "railway_advances": counters[2],
@@ -693,6 +677,7 @@ impl Drop for Hooks {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         *swap = LogSwap::default();
+        SPILL.release();
     }
 }
 
@@ -835,6 +820,7 @@ pub fn reset_log_for_test(capacity: usize) {
     OBSERVATION.capacity.store(capacity, Ordering::Release);
     OBSERVATION.required.store(0, Ordering::Release);
     CONSUMED.store(CURSOR.load(Ordering::SeqCst), Ordering::Relaxed);
+    SPILL.clear();
 }
 
 #[cfg(test)]
@@ -867,7 +853,7 @@ mod tests {
             let _writer = OBSERVATION.enter();
             append(expected);
             drop(_writer);
-            let mut entries = [Entry::default(); 1];
+            let mut entries = vec![Entry::default(); 1];
             drain(&mut entries).unwrap();
             assert_eq!(entries[0], expected);
         }
@@ -1527,8 +1513,8 @@ mod tests {
         observe_for_test(false, 0);
     }
 
-    /// Short storage defers entries; an active writer defers all; an overflow
-    /// restarts past the loss; disabled hooks hand over nothing.
+    /// An active writer defers every entry; short storage grows; a burst past
+    /// the log is handed over whole; disabled hooks hand over nothing.
     #[test]
     fn drains_defer_restart_and_refuse_as_the_line_output_log_does() {
         let _lock = test_lock();
@@ -1538,26 +1524,26 @@ mod tests {
         for amount in 1..=5 {
             observe_speed(&mut building, amount, spend_site(&image));
         }
-        let (result, entries) = drained(2);
-        let first = result.unwrap();
-        assert_eq!((first.copied, first.pending), (2, 5));
-        assert_eq!(entries.iter().map(|e| e.amount).collect::<Vec<_>>(), [1, 2]);
         let writer = OBSERVATION.enter();
         assert_eq!(drained(8).0.unwrap().copied, 0);
         drop(writer);
-        let (result, entries) = drained(8);
-        assert!(result.unwrap().complete());
+        let (result, entries) = drained(2);
+        let first = result.unwrap();
+        assert!(first.complete());
+        assert_eq!((first.copied, first.pending), (5, 5));
         assert_eq!(
             entries.iter().map(|e| e.amount).collect::<Vec<_>>(),
-            [3, 4, 5]
+            [1, 2, 3, 4, 5]
         );
-        for _ in 0..=capacity() {
+        let burst = capacity() + 1;
+        for _ in 0..burst {
             observe_speed(&mut building, 1, spend_site(&image));
         }
         let (result, entries) = drained(4);
-        let overflowed = result.unwrap();
-        assert!(entries.is_empty());
-        assert_eq!(overflowed.first, overflowed.cursor);
+        let whole = result.unwrap();
+        assert!(whole.complete());
+        assert_eq!((whole.copied, whole.pending), (burst, burst));
+        assert!(entries.iter().all(|entry| entry.amount == 1));
         ENABLED.store(false, Ordering::SeqCst);
         assert_eq!(drained(4).0, Err("construction line hooks are not enabled"));
         observe_for_test(false, 0);

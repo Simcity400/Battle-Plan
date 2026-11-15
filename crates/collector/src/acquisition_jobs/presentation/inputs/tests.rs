@@ -104,11 +104,11 @@ fn parked_callback_handoff(unwind: PublicationUnwind) {
     let inputs = Arc::new(PresentationInputs::new(&executor, &Arc::default()));
     let store = division_presentation::held_store::Slot::new(Box::new(
         crate::extended::attack_stats::ArmyStatStore::new(),
-    ));
+    )).unwrap();
+    // The previous hour's loan, still with its decode worker.
     let older = store.take().unwrap();
     let address = &*older as *const _;
-    let (store_wait, store_waiting) = mpsc::channel();
-    store.set_wait_hook(move || store_wait.send(()).unwrap());
+    let mut hour_store = None;
     let (publishing, published) = mpsc::channel();
     let (resume, resumed) = mpsc::channel();
     let resumed = Mutex::new(resumed);
@@ -177,14 +177,17 @@ fn parked_callback_handoff(unwind: PublicationUnwind) {
     let (probe, probed) = mpsc::channel();
     let (park, parked) = mpsc::channel();
     executor.set_readiness_wait_hook(move || park.send(()).unwrap());
-    let countries = Arc::new(engine_native::country_memory::Cache::try_with_capacity(0).unwrap());
+    let countries = engine_allocation::shared(
+        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+    )
+    .unwrap();
     let mut captured = division_presentation::Captured::with_capacities(&Default::default());
     captured.reserve_sources(3);
     let bytes = captured.allocated_bytes();
     assert!(bytes > 0);
     inputs.arm(
         PresentationRequest {
-            countries: Arc::clone(&countries),
+            countries: engine_allocation::SharedBox::clone(&countries),
             context: division_presentation::CaptureContext {
                 base: 0,
                 game_state: 0,
@@ -196,7 +199,7 @@ fn parked_callback_handoff(unwind: PublicationUnwind) {
             army_stats: None,
         },
         0,
-        Some(Arc::clone(&store)),
+        Some(store.clone()),
         false,
     );
     let mut payload = sampling::DivisionsJob::new_worker();
@@ -204,7 +207,7 @@ fn parked_callback_handoff(unwind: PublicationUnwind) {
     // SAFETY: this fixture owns the synthetic census through collection and publisher settlement.
     let ticket = unsafe {
         executor.submit(&mut Some(Job::DivisionInputs(RawRequest {
-            countries: Arc::clone(&countries),
+            countries: engine_allocation::SharedBox::clone(&countries),
             context: Default::default(),
             payload,
         })))
@@ -257,15 +260,8 @@ fn parked_callback_handoff(unwind: PublicationUnwind) {
             "callback closed the publisher's locked handoff"
         );
         resume.send(()).unwrap();
-        if unwind != PublicationUnwind::BeforeStore {
-            store_waiting.recv_timeout(crate::TEST_HANG_GUARD).unwrap();
-            assert!(inputs.try_close().is_none());
-            assert!(
-                finished.try_recv().is_err(),
-                "callback advanced before the store loan returned"
-            );
-            drop(older.take());
-        }
+        // The older loan stays out until the hour has taken its store: returned first, it would
+        // be the latest store and the hour would carry it on.
         if unwind != PublicationUnwind::None {
             failed.recv_timeout(crate::TEST_HANG_GUARD).unwrap();
             assert!(inputs.state.is_poisoned());
@@ -304,10 +300,12 @@ fn parked_callback_handoff(unwind: PublicationUnwind) {
             );
             assert!(dispatched.is_none());
             let retained = retained.expect("presentation retained");
-            assert!(Arc::ptr_eq(&retained.countries, &countries));
+            assert!(engine_allocation::SharedBox::ptr_eq(&retained.countries, &countries));
             assert_eq!(retained.captured.allocated_bytes(), bytes);
             if submit_unwind {
-                assert_eq!(retained.army_stats.as_deref().unwrap() as *const _, address);
+                let taken = retained.army_stats.as_deref().unwrap() as *const _;
+                assert_ne!(taken, address, "the hour took a store of its own");
+                hour_store = Some(taken);
             }
             drop(retained);
             drop(older.take());
@@ -320,8 +318,11 @@ fn parked_callback_handoff(unwind: PublicationUnwind) {
             let Job::Presentation(request) = &completion.request else {
                 unreachable!()
             };
-            assert_eq!(request.army_stats.as_deref().unwrap() as *const _, address);
+            let taken = request.army_stats.as_deref().unwrap() as *const _;
+            assert_ne!(taken, address, "the hour took a store of its own");
+            hour_store = Some(taken);
             drop(completion);
+            drop(older.take());
             drop((movement, speed_terms));
         }
         callback.join().unwrap();
@@ -345,7 +346,7 @@ fn parked_callback_handoff(unwind: PublicationUnwind) {
         failure_panicked.load(Ordering::Acquire),
         unwind == PublicationUnwind::BeforeFailureOutcome
     );
-    assert_eq!(Arc::strong_count(&countries), 1);
+    assert_eq!(engine_allocation::SharedBox::strong_count(&countries), 1);
     assert_eq!(Arc::strong_count(&inputs), 1);
     let state = inputs
         .state
@@ -354,12 +355,16 @@ fn parked_callback_handoff(unwind: PublicationUnwind) {
     assert!(state.closed && state.request.is_none() && state.pending.is_none());
     assert!(state.master.is_none() && state.parts.iter().all(Option::is_none));
     assert!(state.movement.is_none() && state.speed_terms.is_none());
-    assert_eq!(Arc::strong_count(&store), 1);
-    assert_eq!(&*store.take().unwrap() as *const _, address);
+    assert_eq!(store.owners(), 1);
+    // The latest take's store carries on; the older one returned after it carries nothing.
+    assert_eq!(
+        &*store.take().unwrap() as *const _,
+        hour_store.unwrap_or(address)
+    );
 }
 
 #[test]
-fn a_parked_callback_waits_for_the_final_publishers_store_loan_return() {
+fn a_parked_callback_never_waits_for_the_previous_hours_store_loan() {
     parked_callback_handoff(PublicationUnwind::None);
 }
 

@@ -1,8 +1,8 @@
 import { type Failure, failureText } from '../../dashboard/queryError.ts';
-import type { NavalBattleDetail, NavalBattleDetailsReply } from '../../generated/dashboard';
 import type { TooltipRow } from '../../charts/tooltip';
 import { formatDateTime, isEngineHour } from '../../dashboard/calendar.ts';
 import { int, object } from '../../dashboard/validation.ts';
+import type { NavalBattleDetail, NavalBattleDetailsReply } from '../../generated/dashboard';
 
 const text = (v: unknown): v is string | null => v === null || typeof v === 'string';
 const hour = (v: unknown): v is number => int(v) && isEngineHour(v);
@@ -25,8 +25,10 @@ export function validateNavalBattleDetails(v: unknown): NavalBattleDetailsReply 
   return v as unknown as NavalBattleDetailsReply;
 }
 export const navalDetailKey = (id: string, hour: number) => JSON.stringify([id, hour]);
-export function navalFleetDescription(detail: NavalBattleDetail | undefined): string | null {
-  if (!detail) return null;
+/** The fleets of a battle as its row's subtitle; while its details are not held, that they are loading, could not be
+ * read (the failure's own words where it names them) or were not answered: never nothing. */
+export function navalFleetDescription(detail: NavalBattleDetail | undefined, read: { pending: boolean; error?: Failure | undefined }): string {
+  if (!detail) return read.error ? failureText(read.error, 'Fleets couldn’t load') : read.pending ? 'Loading fleets…' : 'Fleets not read for this battle';
   return detail.fleets.map(side => side.names.length ? side.names.join(', ') + (side.unknown ? ' + unavailable' : '')
     : side.unknown ? 'Fleet names not recorded' : 'No fleet recorded').join(' v ');
 }

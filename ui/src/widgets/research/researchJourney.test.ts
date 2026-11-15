@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { ResearchEntry, ResearchSlotHistory, ResearchSlotState } from '../../generated/dashboard';
+import type { ResearchSlotHistory } from './types';
 import { completedResearchJourney, researchJourney, researchTimeSplit, savedResearchCredit } from './researchJourney.ts';
 import type { ResearchTimeSplit } from './researchJourney';
 import { researchTimeRows } from './researchTimeBar.ts';
 import { researchAt } from './researchData.ts';
+import type { ResearchEntry, ResearchSlotState } from '../../generated/dashboard';
 
 const start = 43_800_000 + 1938 * 8760;
 function assignment(index: number, from: number, to: number, speed: bigint, saved: bigint, initial: bigint, outcome: ResearchEntry['outcome']): ResearchSlotHistory {
@@ -13,7 +14,7 @@ function assignment(index: number, from: number, to: number, speed: bigint, save
     token: 'radio', technologyHandle: 7, databaseIndex: 7, continuityStartHour: start, level: 0,
     firstObservedHour: firstHour, startedAfterHour: firstHour - 1,
     lastObservedHour: outcome === 'active' ? endHour : endHour - 1,
-    endedByHour: outcome === 'active' ? null : endHour, outcome,
+    endedByHour: outcome === 'active' ? null : endHour, outcomeObservedHour: null, outcome,
   };
   const state: ResearchSlotState = {
     firstHour, lastHour: outcome === 'active' ? endHour : endHour - 1, entryFirstObservedHour: firstHour, token: 'radio',

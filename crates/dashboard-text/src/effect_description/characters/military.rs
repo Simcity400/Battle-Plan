@@ -32,7 +32,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             let row = row?;
             if world.slot(row.country).ok_or_else(|| {
                 format!(
-                    "CountryLinks lacks character roster country {}",
+                    "country links lacks character roster country {}",
                     row.country
                 )
             })? != country
@@ -118,7 +118,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                     }
                     let Some(id) = row.character else { continue };
                     let candidate = keyed(&characters, u128::from(id))?.ok_or_else(|| {
-                        format!("CountryCharacters references missing character {id}")
+                        format!("country characters references missing character {id}")
                     })?;
                     if candidate.token == token.as_bytes()
                         && selected

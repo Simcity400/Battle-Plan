@@ -131,7 +131,7 @@ pub fn modifier_demand(
                 return Err("advisor role character parent mismatch");
             }
             let array = modifier_entries(memory, pointer)?;
-            let tooltips = copy_tooltip_keys(memory, pointer, &mut [])?;
+            let tooltips = count_tooltip_keys(memory, pointer)?;
             demand.tooltip_bytes = demand
                 .tooltip_bytes
                 .checked_add(tooltips.required)
@@ -228,15 +228,10 @@ pub fn visit_tooltip_keys(
     Ok(())
 }
 
-/// Packs each occupied key as its u64 byte length followed by its bytes.
-/// A short arena still visits every slot and counts its exact byte demand.
-pub fn copy_tooltip_keys(
-    memory: &impl crate::Memory,
-    pointer: usize,
-    bytes: &mut [u8],
-) -> Result<TooltipRead, &'static str> {
-    copy_tooltip_keys_buffer(memory, pointer, crate::walk::Buffer::Fixed(bytes))
+pub fn count_tooltip_keys(memory: &impl crate::Memory, pointer: usize) -> Result<TooltipRead, &'static str> {
+    copy_tooltip_keys_buffer(memory, pointer, crate::walk::Buffer::Count)
 }
+
 
 pub fn copy_tooltip_keys_buffer(
     memory: &impl crate::Memory,
@@ -430,95 +425,18 @@ pub struct Row {
     pub tooltip_failure: Option<&'static str>,
 }
 
-/// Captures persistent advisor roles, with exact map key, idea token and slot. A role's existence
-/// does not assert appointment; the appointed list is CCountryCharacters' appointed advisors
-/// (`ccountry_characters::walk`, the HiredAdvisors table). Native order is retained; sorting and
-/// row-key validation belong off-thread.
-pub fn walk(
-    memory: &impl crate::Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut [Row],
-    bytes: &mut [u8],
-) -> crate::ccharacter::NameWalk {
-    use crate::{ccharacter::NameWalk, ccharacter_manager, walk::Outcome};
-    let result = (|| {
-        let mut len = 0;
-        let mut bytes_len = 0;
-        let mut required_bytes = 0_usize;
-        let mut unread_rows = 0_u32;
-        ccharacter_manager::visit(memory, base, game_state, |entry| {
-            let end = if unread_rows == 0 { output.len() } else { len };
-            let result = walk_entry_inner(
-                memory,
-                base,
-                entry,
-                &mut output[len..end],
-                &mut bytes[bytes_len..],
-                true,
-            );
-            let (added, unread) = match result.outcome {
-                Outcome::Rows { len } => (len, 0),
-                Outcome::Truncated { len, unread_rows } => (len, unread_rows),
-                Outcome::Unavailable { reason } => return Err(reason),
-            };
-            for row in &mut output[len..len + added] {
-                row.key_start += bytes_len;
-                row.idea_start += bytes_len;
-                row.slot_start += bytes_len;
-                row.modifier_start += bytes_len;
-            }
-            len += added;
-            bytes_len += result.bytes_len;
-            required_bytes = required_bytes
-                .checked_add(result.required_bytes)
-                .ok_or("advisor string size overflow")?;
-            unread_rows = unread_rows
-                .checked_add(unread)
-                .ok_or("advisor row count overflow")?;
-            Ok(())
-        })?;
-        Ok(NameWalk {
-            outcome: if unread_rows == 0 {
-                Outcome::Rows { len }
-            } else {
-                Outcome::Truncated { len, unread_rows }
-            },
-            bytes_len,
-            required_bytes,
-        })
-    })();
-    let result = result.unwrap_or_else(|reason| NameWalk {
-        outcome: Outcome::Unavailable { reason },
-        bytes_len: 0,
-        required_bytes: 0,
-    });
-    append_tooltips(memory, output, bytes, result)
-}
-
-/// Walks one authenticated character. Native keys use unsigned hash order,
-/// with a locale-sensitive comparator only on hash collisions.
-pub fn walk_entry(
-    memory: &impl crate::Memory,
-    base: usize,
-    entry: crate::ccharacter_manager::Entry,
-    output: &mut [Row],
-    bytes: &mut [u8],
-) -> crate::ccharacter::NameWalk {
-    let prefix = walk_entry_inner(memory, base, entry, output, bytes, true);
-    append_tooltips(memory, output, bytes, prefix)
-}
-
-/// Copies existing role fields and numeric caches before a multi-character
-/// caller appends tooltip keys with `append_tooltips`.
+/// Copies one authenticated character's role fields and numeric caches before
+/// the caller appends tooltip keys with `append_tooltips`. Native keys use
+/// unsigned hash order, with a locale-sensitive comparator only on hash
+/// collisions.
 pub fn walk_prefix_entry(
     memory: &impl crate::Memory,
     base: usize,
     entry: crate::ccharacter_manager::Entry,
-    output: &mut [Row],
-    bytes: &mut [u8],
+    output: crate::walk::Buffer<'_, Row>,
+    bytes: crate::walk::Buffer<'_, u8>,
 ) -> crate::ccharacter::NameWalk {
-    walk_entry_inner(memory, base, entry, output, bytes, true)
+    walk_entry_inner_buffer(memory, base, entry, output, bytes, true)
 }
 
 /// Worker-only storage from each acquired role-map and string header.
@@ -530,24 +448,6 @@ pub fn walk_definitions_entry_buffer(
     bytes: crate::walk::Buffer<'_, u8>,
 ) -> crate::ccharacter::NameWalk {
     walk_entry_inner_buffer(memory, base, entry, output, bytes, false)
-}
-
-fn walk_entry_inner(
-    memory: &impl crate::Memory,
-    base: usize,
-    entry: crate::ccharacter_manager::Entry,
-    output: &mut [Row],
-    bytes: &mut [u8],
-    capture_cache: bool,
-) -> crate::ccharacter::NameWalk {
-    walk_entry_inner_buffer(
-        memory,
-        base,
-        entry,
-        crate::walk::Buffer::Fixed(output),
-        crate::walk::Buffer::Fixed(bytes),
-        capture_cache,
-    )
 }
 
 fn walk_entry_inner_buffer(
@@ -745,12 +645,12 @@ fn walk_entry_inner_buffer(
 pub fn append_tooltips(
     memory: &impl crate::Memory,
     rows: &mut [Row],
-    bytes: &mut [u8],
+    mut bytes: crate::walk::Buffer<'_, u8>,
     mut captured: crate::ccharacter::NameWalk,
 ) -> crate::ccharacter::NameWalk {
     for row in &mut rows[..captured.outcome.len()] {
         row.tooltip_start = captured.bytes_len;
-        match copy_tooltip_keys(memory, row.pointer, &mut bytes[captured.bytes_len..]) {
+        match copy_tooltip_keys_buffer(memory, row.pointer, bytes.suffix(captured.bytes_len)) {
             Ok(read) => {
                 let Some(required) = captured.required_bytes.checked_add(read.required) else {
                     row.tooltip_failure = Some("advisor tooltip byte count overflow");
@@ -801,8 +701,8 @@ mod tests {
             base: 0,
             bytes: &bytes,
         };
-        let mut output = [0; 36];
-        let read = copy_tooltip_keys(&memory, 0, &mut output).unwrap();
+        let mut output = vec![0; 36];
+        let read = copy_tooltip_keys_buffer(&memory, 0, crate::walk::Buffer::Growing(&mut output)).unwrap();
         assert_eq!(
             read,
             TooltipRead {
@@ -815,7 +715,7 @@ mod tests {
         assert_eq!(&output[8..11], &first);
         assert_eq!(&output[11..19], &17_u64.to_le_bytes());
         assert_eq!(&output[19..], &last);
-        let read = copy_tooltip_keys(&memory, 0, &mut output[..35]).unwrap();
+        let read = count_tooltip_keys(&memory, 0).unwrap();
         assert_eq!(
             read,
             TooltipRead {
@@ -826,14 +726,10 @@ mod tests {
         );
         bytes[table + 8..table + 12].copy_from_slice(&1_u32.to_le_bytes());
         assert_eq!(
-            copy_tooltip_keys(
-                &SliceMemory {
+            copy_tooltip_keys_buffer(&SliceMemory {
                     base: 0,
                     bytes: &bytes
-                },
-                0,
-                &mut output
-            ),
+                }, 0, crate::walk::Buffer::Growing(&mut output)),
             Err("advisor tooltip slot count differs from header")
         );
     }

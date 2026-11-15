@@ -77,10 +77,13 @@ mod capture_mode {
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecorderSettings {
-    /// Saved as `blockCompression`: a choice saved under `compression` was for the format before
-    /// blocks, and loads as the default, High.
-    #[serde(default, rename = "blockCompression")]
+    /// Saved as `liveCompression`: the level the recorder writes at while a game runs.
+    #[serde(default, rename = "liveCompression")]
     pub compression: crate::compression::Compression,
+    /// Auto Compress: after saving, the tray compresses the recording to High's level in the
+    /// background. No effect while Compression is High.
+    #[serde(default = "enabled")]
+    pub auto_compress: bool,
     /// Auto record: campaigns record when they load, unless their own choice says otherwise.
     #[serde(default = "enabled")]
     pub record_every_campaign: bool,
@@ -139,7 +142,8 @@ pub fn same_path(first: &Path, second: &Path) -> bool {
 impl Default for RecorderSettings {
     fn default() -> Self {
         Self {
-            compression: crate::compression::Compression::High,
+            compression: crate::compression::Compression::default(),
+            auto_compress: true,
             record_every_campaign: true,
             auto_save: true,
             save_folder: None,
@@ -367,6 +371,8 @@ mod tests {
         let root = scratch("defaults");
         let path = root.join("settings.json");
         let settings = RecorderSettings::load_from(&path).unwrap();
+        assert_eq!(settings.compression, crate::compression::Compression::Low);
+        assert!(settings.auto_compress, "Auto Compress is on until turned off");
         assert!(settings.record_every_campaign && settings.auto_save);
         assert!(settings.start_with_replay);
         assert_eq!(settings.capture_mode, CaptureMode::Full);
@@ -491,6 +497,30 @@ mod tests {
         );
         fs::write(&path, br#"{"captureMode":"light"}"#).unwrap();
         assert!(RecorderSettings::load_from(&path).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A key no longer read (`blockCompression`, `compression`) loads as if absent; Compression
+    /// and Auto Compress are saved by their keys and kept.
+    #[test]
+    fn old_compression_keys_are_ignored_and_auto_compress_is_on_until_turned_off() {
+        use crate::compression::Compression;
+        let root = scratch("compression");
+        let path = root.join("settings.json");
+        for old in [&br#"{"blockCompression":"high"}"#[..], br#"{"compression":"high"}"#] {
+            fs::write(&path, old).unwrap();
+            let loaded = RecorderSettings::load_from(&path).unwrap();
+            assert_eq!((loaded.compression, loaded.auto_compress), (Compression::Low, true));
+        }
+        RecorderSettings::update_at(&path, |settings| {
+            settings.choose_compression(Compression::High);
+            settings.auto_compress = false;
+        })
+        .unwrap();
+        let saved = fs::read_to_string(&path).unwrap();
+        assert!(saved.contains(r#""liveCompression": "high""#) && saved.contains(r#""autoCompress": false"#), "{saved}");
+        let loaded = RecorderSettings::load_from(&path).unwrap();
+        assert_eq!((loaded.compression, loaded.auto_compress), (Compression::High, false));
         fs::remove_dir_all(root).unwrap();
     }
 

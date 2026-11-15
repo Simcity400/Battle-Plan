@@ -20,3 +20,29 @@ export function clockText(seconds: number | null): string {
 }
 
 export const CLOCK_NOTE = 'Real recorded time for the selected branch. Playing time includes idle time while unpaused. Recording gaps are excluded. During replay, totals advance by recorded game hour, not by time spent watching the replay.';
+
+export interface ClockTotals { recorded: number | null; playing: number | null; paused: number | null; complete: boolean }
+export interface ClockRow { id: string; name: string; seconds: number | null; text?: string; note: string }
+export const UNCLASSIFIED = 'Some recorded intervals have unknown pause state; playing and paused totals are unavailable.';
+const GAPS = 'Only recorded intervals are included. Recording gaps are not counted as paused or playing time.';
+
+/** The warnings the request path gives for these totals. */
+export const clockWarnings = (totals: Pick<ClockTotals, 'playing' | 'complete'>): string[] =>
+  [...(totals.complete ? [] : [GAPS]), ...(totals.playing === null ? [UNCLASSIFIED] : [])];
+
+/** The four rows, their totals and the warnings, from the clock's totals. */
+export function clockRows(totals: ClockTotals, warnings: readonly string[]): ClockRow[] {
+  const note = warnings.length ? `${CLOCK_NOTE} ${warnings.join(' ')}` : CLOCK_NOTE;
+  return [
+    { id: 'total', name: 'Total recorded time', seconds: totals.recorded, note },
+    { id: 'playing', name: 'Playing time', seconds: totals.playing, note },
+    { id: 'paused', name: 'Paused time', seconds: totals.paused, note },
+    { id: 'coverage', name: 'Coverage', seconds: null, text: totals.complete ? 'Complete' : 'Gaps excluded', note },
+  ];
+}
+
+/** What a followed head renders from: none yet, a refusal, or totals with the warnings that hold. Each is its own
+ * key, so the rows are made again when totals arrive whatever warnings they carry. */
+export function clockStructure(head: ClockTotals | { reason: string } | null): string {
+  return !head ? 'none' : 'reason' in head ? `reason:${head.reason}` : `totals:${clockWarnings(head).join('|')}`;
+}

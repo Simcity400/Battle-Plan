@@ -1,77 +1,72 @@
-/** Event choices and Decisions read the same prepared occurrence pages: each
- * card is an opening fact (a dispatch, a selection) with the facts continuing
- * it, every one at its own native date and supplying read. Pure: validation,
- * playback cuts, recording breaks and day wording shared by both widgets. */
+/** Event choices and Decisions page the same cards (`event-choices`, `decisions`): each an opening occurrence (a dispatch,
+ * a selection) with the rows continuing it, every one at its own date and read. Pure: validation, the page facets, the
+ * cut of a card at the head, recording breaks and day wording shared by both widgets. */
+import type { LogPage, LogRow } from '../../charts/log/logData';
+import type { LogReplyRow } from '../../charts/log/logSource';
 import { formatDate, formatDateTime, gameDate } from '../../dashboard/calendar.ts';
-import { preparedPrefix } from '../../dashboard/preparedPrefix.ts';
-import type { PreparedPrefixFields } from '../../dashboard/preparedPrefix';
 import { int, object } from '../../dashboard/validation.ts';
-import { notRecorded, validateEventFeedReply } from './eventFeedData.ts';
-import type { EventFeedItem, EventFeedKind, ScriptEdge, ScriptOccurrence, ScriptOccurrenceReply } from '../../generated/dashboard';
-
-/** A page of occurrences; `prefix` while it is answered from the prepared
- * prefix, backwards from that prefix's last hour (as the event feed's pages). */
-export interface ScriptPage { reply: ScriptOccurrenceReply; nextCursor: string | null; prefix?: PreparedPrefixFields | null }
+import { validateFeedRow } from './eventFeedData.ts';
+import type { Facet } from './eventFeedData';
+import type { EventFeedItem, EventFeedKind, FeedKindCode, ScriptEdge, ScriptOccurrence } from '../../generated/dashboard';
 
 const CURRENCIES = new Set(['politicalPower', 'commandPower']);
 const RAW = /^-?\d+$/;
 const optional = (value: unknown): value is number | null => value === null || int(value);
 const costs = (value: unknown): boolean => value === null || (Array.isArray(value)
-  && value.every(cost => object(cost) && typeof cost.currency === 'string' && CURRENCIES.has(cost.currency)
-    && typeof cost.amount === 'string' && RAW.test(cost.amount)));
-const options = (item: Record<string, unknown>): boolean => item.options === undefined || (Array.isArray(item.options)
-  && item.options.every(option => object(option) && int(option.ordinal) && (option.name === null || typeof option.name === 'string')));
+  && value.every(cost => object(cost) && typeof cost.currency === 'string' && CURRENCIES.has(cost.currency) && typeof cost.amount === 'string' && RAW.test(cost.amount)));
 
-/** Validate a page's occurrences, rows, items and cursor before drawing. Rows,
- * items and missing-capture notes follow the event feed's own validation. */
-export function validateScriptPage(value: unknown): ScriptPage {
-  const malformed = () => new Error('The prepared occurrence page is malformed.');
-  if (!object(value) || !(value.nextCursor === null || typeof value.nextCursor === 'string') || value.nextCursor === '') throw malformed();
-  const reply = value.reply;
-  if (!object(reply) || !Array.isArray(reply.occurrences) || !reply.occurrences.every(occurrence => object(occurrence)
-    && typeof occurrence.id === 'string' && occurrence.id.length > 0 && typeof occurrence.opened === 'boolean'
-    && Array.isArray(occurrence.edges) && occurrence.edges.length > 0 && occurrence.edges.every(edge => object(edge) && object(edge.row)
-      && optional(edge.option) && optional(edge.lifecycle) && optional(edge.days) && costs(edge.costs)))
-    || !Array.isArray(reply.items) || !reply.items.every(item => object(item) && options(item))) throw malformed();
-  const occurrences = reply.occurrences as unknown as ScriptOccurrence[];
-  let items: EventFeedItem[];
-  try {
-    // The event feed's checks: identities, dates within the reply, item references, artwork.
-    items = validateEventFeedReply({ branchId: reply.branchId, firstHour: reply.firstHour, lastHour: reply.lastHour, windows: [],
-      rows: occurrences.flatMap(occurrence => occurrence.edges.map(edge => edge.row)), items: reply.items,
-      modifiers: [], texts: [], unavailable: reply.unavailable, warnings: reply.warnings }).items;
-  } catch { throw malformed(); }
-  const validated = reply as unknown as ScriptOccurrenceReply;
-  return { reply: items === validated.items ? validated : { ...validated, items }, nextCursor: value.nextCursor, prefix: preparedPrefix(value) };
+/** A card as a page sends it: its edges, each a feed row with the operands its wording needs. */
+export function validateOccurrence(value: unknown): ScriptOccurrence {
+  if (!object(value) || typeof value.id !== 'string' || value.id.length === 0 || typeof value.opened !== 'boolean' || !Array.isArray(value.edges)
+    || value.edges.length === 0 || !value.edges.every(edge => object(edge) && optional(edge.option) && optional(edge.lifecycle) && optional(edge.days) && costs(edge.costs))) {
+    throw new Error('The occurrence card is malformed.');
+  }
+  const edges = (value.edges as Record<string, unknown>[]).map(edge => ({ ...(edge as unknown as ScriptEdge), row: validateFeedRow(edge.row) }));
+  return { id: value.id, opened: value.opened, edges };
 }
 
-/** Missing captures, as the event feed reports them. */
-export const scriptNotRecorded = (reply: ScriptOccurrenceReply): string[] => notRecorded(reply);
+/** A card page row's occurrence; null for a row the list does not show. */
+export const occurrenceOf = (reply: LogReplyRow): ScriptOccurrence | null =>
+  reply.fields.occurrence === null || reply.fields.occurrence === undefined ? null : validateOccurrence(reply.fields.occurrence);
 
-/** An edge's content item, or null when it has none. */
-export const edgeItem = (reply: ScriptOccurrenceReply, edge: ScriptEdge): EventFeedItem | null =>
-  edge.row.item === null ? null : reply.items[edge.row.item] ?? null;
+/** The page facets: the rows of the opening kinds chosen and of the kinds continuing a card, that continue nothing (a card's
+ * first row: its opener, or a continuing row whose opening was not recorded). */
+export function cardFacets(kinds: readonly FeedKindCode[], openers: readonly EventFeedKind[], continuing: readonly EventFeedKind[]): Facet[] {
+  const wanted = new Set<EventFeedKind>([...openers, ...continuing]);
+  return [{ name: 'kind', values: kinds.filter(kind => wanted.has(kind.kind)).map(kind => kind.code), tags: [] },
+    // A row continuing nothing has no opener read hour: its facet holds the none value.
+    { name: 'opener', values: [-1], tags: [] }];
+}
+
+/** The loaded pages' cards as `at` shows each at the head (null hides it), each page counted by them. */
+export function cutPages<T, U>(pages: readonly LogPage<T>[], at: (row: LogRow<T>) => LogRow<U> | null): readonly LogPage<U>[] {
+  return pages.map(page => {
+    if (!page.rows) return page as unknown as LogPage<U>;
+    const rows = page.rows.flatMap(row => at(row) ?? []);
+    return { ...page, rows, count: page.count - (page.rows.length - rows.length) };
+  });
+}
 
 /** The first item any edge of a card names. */
-export function occurrenceItem(reply: ScriptOccurrenceReply, occurrence: ScriptOccurrence): EventFeedItem | null {
-  for (const edge of occurrence.edges) { const item = edgeItem(reply, edge); if (item) return item; }
+export function occurrenceItem(occurrence: ScriptOccurrence): EventFeedItem | null {
+  for (const edge of occurrence.edges) if (edge.row.item) return edge.row.item;
   return null;
 }
 
-/** The edges a playback hour has read: each appears at its own supplying read. */
+/** The edges the head has read: each appears at its own read. */
 export const edgesAt = (edges: readonly ScriptEdge[], hour: number): ScriptEdge[] => edges.filter(edge => edge.row.readHour <= hour);
 
-/** The last edge of these kinds read by `hour`. */
+/** The last edge of these kinds. */
 export function lastEdge(edges: readonly ScriptEdge[], kinds: readonly EventFeedKind[]): ScriptEdge | null {
   for (let index = edges.length - 1; index >= 0; index--) if (kinds.includes(edges[index].row.kind)) return edges[index];
   return null;
 }
 
-/** A card matches chosen countries through any of its countries at its own fact's hour. */
+/** A card matches chosen countries through any of its countries at its own row's hour. */
 export const occurrenceMatches = (occurrence: ScriptOccurrence, country: (tag: string, hour: number) => boolean): boolean =>
   occurrence.edges.some(edge => edge.row.tags.some(tag => country(tag, edge.row.hour)));
 
-/** Names and flags only for drawn cards, each country at its own fact's hour. */
+/** Names and flags only for drawn cards, each country at its own row's hour. */
 export function occurrenceCountryRequests(occurrences: readonly ScriptOccurrence[]): { hour: number; tag: string }[] {
   const wanted = new Map<string, { hour: number; tag: string }>();
   for (const occurrence of occurrences) for (const edge of occurrence.edges) for (const tag of edge.row.tags) {
@@ -81,8 +76,18 @@ export function occurrenceCountryRequests(occurrences: readonly ScriptOccurrence
   return [...wanted.values()];
 }
 
-/** A stretch the recording does not cover: a capture gap, or reads whose
- * events are incomplete because the recorder was detached between them. */
+/** The hour a card list reads its cards at while following: the head, held while no card it holds changes there. A card
+ * changes where an edge is read, a recording break begins, or (open) a day turns; the key is taken at most four times a
+ * second of playback. */
+export function cardsKey(edges: readonly number[], breaks: readonly RecordingBreak[], days: boolean, hour: number, step: number): string {
+  const at = step > 1 ? Math.floor(hour / step) * step : hour;
+  const read = edges.filter(edge => edge <= at).length;
+  const broken = breaks.filter(span => span.firstHour <= at).length;
+  return `${read}|${broken}|${days ? Math.floor(at / 24) : ''}`;
+}
+
+/** A stretch the recording does not cover: a capture gap, or reads whose events are incomplete because the recorder was
+ * detached between them. */
 export interface RecordingBreak { firstHour: number; lastHour: number }
 export function recordingBreaks(branch: { gaps: readonly { firstHour: number; lastHour: number }[];
   eventLosses?: readonly { afterHour: number; hour: number }[] }): RecordingBreak[] {
@@ -96,7 +101,7 @@ export function breakAfter(breaks: readonly RecordingBreak[], from: number, to: 
   return breaks.find(span => span.lastHour > from && span.firstHour <= to) ?? null;
 }
 
-/** A fact's day, as the logs date it. */
+/** A row's day, as the logs date it. */
 export const dayOf = (hour: number): string => { const date = gameDate(hour); return date ? formatDate(date) : formatDateTime(hour); };
 
 /** Whole calendar days from one hour to a later one. */

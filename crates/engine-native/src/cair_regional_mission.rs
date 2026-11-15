@@ -206,7 +206,7 @@ pub fn walk(
     base: usize,
     game_state: usize,
     wings: &[WingIdentity],
-    output: &mut [Row],
+    output: &mut Vec<Row>,
 ) -> Outcome {
     walk_with_diagnostic(
         memory,
@@ -215,27 +215,6 @@ pub fn walk(
         wings,
         output,
         &mut FailureContext::default(),
-    )
-}
-
-/// The same census, retaining the first failure's location for diagnostics.
-/// A complete or capacity-truncated walk leaves no failure context.
-pub fn walk_with_diagnostic(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    wings: &[WingIdentity],
-    output: &mut [Row],
-    failure: &mut FailureContext,
-) -> Outcome {
-    walk_with_transport(
-        memory,
-        base,
-        game_state,
-        wings,
-        output,
-        failure,
-        &mut NoTransport,
     )
 }
 
@@ -285,30 +264,8 @@ impl<F: FnMut()> Drop for TransportRetirement<F> {
 struct NoTransport;
 impl TransportObserver for NoTransport {}
 
-/// Adds independent transport observations without a replacement census.
-pub fn walk_with_transport(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    wings: &[WingIdentity],
-    output: &mut [Row],
-    failure: &mut FailureContext,
-    observer: &mut impl TransportObserver,
-) -> Outcome {
-    walk_buffer(
-        memory,
-        base,
-        game_state,
-        wings,
-        Buffer::Fixed(output),
-        failure,
-        observer,
-        &mut Fresh,
-    )
-}
-
 /// Worker-owned rows grow from the same regional headers the census follows.
-pub fn walk_with_transport_growing(
+pub fn walk_with_transport(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -329,7 +286,9 @@ pub fn walk_with_transport_growing(
     )
 }
 
-pub fn walk_with_diagnostic_growing(
+/// The same census, retaining the first failure's location for diagnostics.
+/// A complete or capacity-truncated walk leaves no failure context.
+pub fn walk_with_diagnostic(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -337,7 +296,7 @@ pub fn walk_with_diagnostic_growing(
     output: &mut Vec<Row>,
     failure: &mut FailureContext,
 ) -> Outcome {
-    walk_with_transport_growing(
+    walk_with_transport(
         memory,
         base,
         game_state,
@@ -825,7 +784,7 @@ mod tests {
         );
         (bytes, [wing(WING_A, 101), wing(WING_B, 202)])
     }
-    fn capture(bytes: &[u8], wings: &[WingIdentity], output: &mut [Row]) -> Outcome {
+    fn capture(bytes: &[u8], wings: &[WingIdentity], output: &mut Vec<Row>) -> Outcome {
         walk(&SliceMemory { base: 0, bytes }, 0, GS, wings, output)
     }
 
@@ -849,7 +808,7 @@ mod tests {
                 members,
                 count,
             );
-            let result = walk_with_diagnostic_growing(
+            let result = walk_with_diagnostic(
                 &SliceMemory {
                     base: 0,
                     bytes: &bytes,
@@ -873,21 +832,13 @@ mod tests {
                     ordinal: count - 1
                 }
             );
-            let mut fixed = [Row::default()];
-            assert_eq!(
-                capture(&bytes, &wings, &mut fixed),
-                Outcome::Truncated {
-                    len: 1,
-                    unread_rows: count - 1
-                }
-            );
         }
     }
 
     #[test]
     fn registration_order_is_the_regional_vector_order() {
         let (bytes, wings) = fixture();
-        let mut rows = [Row::default(); 2];
+        let mut rows = vec![Row::default(); 2];
         assert_eq!(capture(&bytes, &wings, &mut rows), Outcome::Rows { len: 2 });
         assert_eq!(
             rows,
@@ -901,13 +852,6 @@ mod tests {
                     ordinal: 1
                 }
             ]
-        );
-        assert_eq!(
-            capture(&bytes, &wings, &mut rows[..1]),
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            }
         );
     }
 
@@ -929,7 +873,7 @@ mod tests {
             if data != 0 {
                 put32(&mut bytes, REGIONS + 2 * 0x18 + 8, 2);
             }
-            let mut rows = [Row::default(); 2];
+            let mut rows = vec![Row::default(); 2];
             assert_eq!(capture(&bytes, &wings, &mut rows), Outcome::Rows { len: 2 });
             assert_eq!(
                 rows[0],
@@ -961,7 +905,7 @@ mod tests {
             0,
             0,
         );
-        let mut rows = [Row::default(); 2];
+        let mut rows = vec![Row::default(); 2];
         assert_eq!(capture(&bytes, &wings, &mut rows), Outcome::Rows { len: 0 });
         // An empty vector cannot hide registrations counted by all-active.
         array(
@@ -999,13 +943,13 @@ mod tests {
             ALL,
             0,
         );
-        assert_eq!(capture(&bytes, &wings, &mut []), Outcome::Rows { len: 0 });
+        assert_eq!(capture(&bytes, &wings, &mut Vec::new()), Outcome::Rows { len: 0 });
     }
 
     #[test]
     fn invalid_region_headers_keep_the_country_and_region_in_the_diagnostic() {
         let (mut bytes, wings) = fixture();
-        let mut rows = [Row::default(); 2];
+        let mut rows = vec![Row::default(); 2];
         let mut failure = FailureContext::default();
         // The region exists, but its count exceeds its capacity.
         put32(&mut bytes, REGIONS + 5 * 0x18 + 8, 1);
@@ -1053,7 +997,7 @@ mod tests {
     #[test]
     fn a_missing_region_or_unknown_member_is_unavailable() {
         let (mut bytes, wings) = fixture();
-        let mut rows = [Row::default(); 2];
+        let mut rows = vec![Row::default(); 2];
         // The all-active count still holds both registrations.
         put32(
             &mut bytes,
@@ -1140,7 +1084,7 @@ mod tests {
     fn carried(
         bytes: &[u8],
         wings: &[WingIdentity],
-        output: &mut [Row],
+        output: &mut Vec<Row>,
         carry: &mut Holding,
     ) -> (Outcome, FailureContext, Vec<std::ops::Range<usize>>) {
         let memory = Traced {
@@ -1153,7 +1097,7 @@ mod tests {
             0,
             GS,
             wings,
-            Buffer::Fixed(output),
+            Buffer::Growing(output),
             &mut failure,
             carry,
         );
@@ -1181,7 +1125,7 @@ mod tests {
     fn carried_registrations_publish_a_fresh_walks_rows_without_regional_reads() {
         let (bytes, wings) = fixture();
         let mut carry = Holding::default();
-        let mut fresh = [Row::default(); 2];
+        let mut fresh = vec![Row::default(); 2];
         let (outcome, _, reads) = carried(&bytes, &wings, &mut fresh, &mut carry);
         assert_eq!(outcome, Outcome::Rows { len: 2 });
         assert!(regional(&reads));
@@ -1212,12 +1156,11 @@ mod tests {
         );
         carry.held = std::mem::take(&mut carry.recorded);
         carry.carry = true;
-        for capacity in [2, 1] {
-            let mut rows = [Row::default(); 2];
-            let (outcome, failure, reads) =
-                carried(&bytes, &wings, &mut rows[..capacity], &mut carry);
-            assert_eq!(outcome, capture(&bytes, &wings, &mut fresh[..capacity]));
-            assert_eq!(rows[..capacity], fresh[..capacity]);
+        for _ in 0..2 {
+            let mut rows = Vec::new();
+            let (outcome, failure, reads) = carried(&bytes, &wings, &mut rows, &mut carry);
+            assert_eq!(outcome, capture(&bytes, &wings, &mut fresh));
+            assert_eq!(rows, fresh);
             assert_eq!(failure, FailureContext::default());
             assert!(!regional(&reads), "{reads:x?}");
             assert!(reads.iter().any(|read| read.start == OWNER + 0x98));
@@ -1227,7 +1170,7 @@ mod tests {
         // registration; the census names it, so the row is the census's.
         let mut renamed = wings;
         renamed[0].wing = 303;
-        let mut rows = [Row::default(); 2];
+        let mut rows = vec![Row::default(); 2];
         carried(&bytes, &renamed, &mut rows, &mut carry);
         capture(&bytes, &renamed, &mut fresh);
         assert_eq!(rows, fresh);
@@ -1240,7 +1183,7 @@ mod tests {
     fn a_census_disagreement_reads_the_carried_object_afresh() {
         let (bytes, wings) = fixture();
         let mut carry = Holding::default();
-        carried(&bytes, &wings, &mut [Row::default(); 2], &mut carry);
+        carried(&bytes, &wings, &mut vec![Row::default(); 2], &mut carry);
         carry.held = std::mem::take(&mut carry.recorded);
         carry.carry = true;
         let mut moved = wings;
@@ -1251,7 +1194,7 @@ mod tests {
         let missing = [wings[0]];
         for census in [&moved[..], &foreign[..], &missing[..]] {
             let before = carry.read;
-            let mut rows = [Row::default(); 2];
+            let mut rows = vec![Row::default(); 2];
             let (outcome, failure, reads) = carried(&bytes, census, &mut rows, &mut carry);
             let mut expected_failure = FailureContext::default();
             let expected = walk_with_diagnostic(
@@ -1262,7 +1205,7 @@ mod tests {
                 0,
                 GS,
                 census,
-                &mut [Row::default(); 2],
+                &mut vec![Row::default(); 2],
                 &mut expected_failure,
             );
             assert!(matches!(expected, Outcome::Unavailable { .. }));
@@ -1303,7 +1246,7 @@ mod tests {
                 0,
                 GS,
                 &wings,
-                &mut [Row::default(); 2],
+                &mut vec![Row::default(); 2],
                 &mut FailureContext::default(),
                 &mut observer,
             );

@@ -1,9 +1,12 @@
 //! Passive applied-fuel observations. Depends on the shared interior Tap;
-//! no game function is called and no storage grows on a native callback.
+//! no game function is called. A receipt the live buffer has no room for gets
+//! storage of its own on a lock-free spill, so the callback never waits for the
+//! drain; only a failed allocation loses it.
 use crate::{
     hook::{Hook, Registers, Tap},
     output_log::{Call, Drained, Log, raise},
 };
+use collector_primitives::spill_stack::SpillStack;
 use engine_fuel::fuel_awards as native;
 use engine_native::{Memory, memory::LiveMemory};
 use engine_sites::Rva;
@@ -11,12 +14,13 @@ use std::{
     cell::{Cell, RefCell, UnsafeCell},
     ops::Range,
     sync::{
-        Mutex, OnceLock,
+        Mutex, MutexGuard, OnceLock, PoisonError,
         atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering},
     },
 };
 
 static LOG: Log = Log::new(0);
+static SPILL: Spill = Spill::new();
 /// The taps in tag order: begin, end, five land receipts, naval, air, reset.
 const SITES: usize = 10;
 static BASE: AtomicUsize = AtomicUsize::new(0);
@@ -86,6 +90,122 @@ pub struct Entry {
     pub name: Option<(usize, usize)>,
     pub name_reason: Option<&'static str>,
 }
+/// Receipts the live buffer had no slot or name room for, or that came while no
+/// buffer was installed, with their names, until a drain takes them.
+struct Spill {
+    pushed: SpillStack<Pushed>,
+    /// Taken from `pushed`; only the drain locks it.
+    held: Mutex<Spilled>,
+    /// The lowest index no storage could take, or `u64::MAX`.
+    lost: AtomicU64,
+}
+/// One spilled receipt with its own copy of its stored name.
+struct Pushed {
+    index: u64,
+    entry: Entry,
+    name_required: usize,
+    name: Vec<u8>,
+}
+struct Spilled {
+    /// Index, receipt (its name in `names`) and stored name length.
+    entries: Vec<(u64, Entry, usize)>,
+    names: Vec<u8>,
+}
+impl Spilled {
+    fn discard_before(&mut self, index: u64) {
+        self.entries.retain(|&(at, ..)| at >= index);
+        if self.entries.is_empty() {
+            self.names.clear();
+        }
+    }
+}
+impl Spill {
+    const fn new() -> Self {
+        Self {
+            pushed: SpillStack::new(),
+            held: Mutex::new(Spilled {
+                entries: Vec::new(),
+                names: Vec::new(),
+            }),
+            lost: AtomicU64::new(u64::MAX),
+        }
+    }
+    /// Drain path: the held receipts with every pushed one taken in.
+    fn held(&self) -> MutexGuard<'_, Spilled> {
+        let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
+        let Spilled { entries, names } = &mut *held;
+        for pushed in self.pushed.take() {
+            if engine_allocation::reserve(entries, 1)
+                .and_then(|()| engine_allocation::reserve(names, pushed.name.len()))
+                .is_err()
+            {
+                self.lost.fetch_min(pushed.index, Ordering::AcqRel);
+                continue;
+            }
+            let mut entry = pushed.entry;
+            if let Some((_, len)) = entry.name {
+                entry.name = Some((names.len(), len));
+                names.extend_from_slice(&pushed.name);
+            }
+            entries.push((pushed.index, entry, pushed.name_required));
+        }
+        held
+    }
+    /// Callback path: lock-free; false only when the storage could not be allocated.
+    fn push(
+        &self,
+        index: u64,
+        mut entry: Entry,
+        name: Option<native::StoredName>,
+        memory: &impl Memory,
+    ) -> bool {
+        let name_required = name.as_ref().map_or(0, native::StoredName::byte_len);
+        let mut bytes = Vec::new();
+        if engine_allocation::advisory(|| engine_allocation::reserve_exact(&mut bytes, name_required))
+            .is_err()
+        {
+            self.lost.fetch_min(index, Ordering::AcqRel);
+            return false;
+        }
+        if let Some(name) = name {
+            bytes.resize(name_required, 0);
+            match name.copy(memory, &mut bytes) {
+                Ok(()) => entry.name = Some((0, name_required)),
+                Err(reason) => {
+                    bytes.clear();
+                    entry.name_reason = Some(reason);
+                }
+            }
+        }
+        let refusal = entry.name_reason;
+        let pushed = Pushed {
+            index,
+            entry,
+            name_required,
+            name: bytes,
+        };
+        if self.pushed.push(pushed).is_err() {
+            self.lost.fetch_min(index, Ordering::AcqRel);
+            return false;
+        }
+        if let Some(reason) = refusal {
+            REFUSAL.record(reason);
+            COUNTERS[8].fetch_add(1, Ordering::Relaxed);
+        }
+        true
+    }
+    /// After every writer and drain has left: frees the storage.
+    fn release(&self) {
+        drop(self.pushed.take());
+        *self.held.lock().unwrap_or_else(PoisonError::into_inner) = Spilled {
+            entries: Vec::new(),
+            names: Vec::new(),
+        };
+        self.lost.store(u64::MAX, Ordering::Release);
+    }
+}
+const STORAGE_FAILED: &str = "fuel receipt storage allocation failed";
+
 struct Slot {
     entry: UnsafeCell<Entry>,
     name_required: UnsafeCell<usize>,
@@ -103,7 +223,6 @@ struct Buffer {
     disposed: AtomicPtr<Buffer>,
     base: AtomicU64,
     cursor: AtomicU64,
-    lost: AtomicU64,
     names_demand: AtomicUsize,
     entries_required: AtomicUsize,
     _charge: crate::raw_memory::Charge,
@@ -152,7 +271,6 @@ impl Buffer {
             disposed: AtomicPtr::new(std::ptr::null_mut()),
             base: AtomicU64::new(0),
             cursor: AtomicU64::new(0),
-            lost: AtomicU64::new(0),
             names_demand: AtomicUsize::new(0),
             entries_required: AtomicUsize::new(0),
             _charge: charge,
@@ -382,9 +500,11 @@ pub fn install_offered() {
         return;
     };
     retire_consumed(&mut domains);
+    // Every receipt before the first buffer spilled, so it installs over them.
     if domains.retired.is_some()
         || LOG.active.load(Ordering::SeqCst) != 0
-        || LOG.cursor.load(Ordering::SeqCst) != LOG.consumed.load(Ordering::Relaxed)
+        || (domains.current.is_some()
+            && LOG.cursor.load(Ordering::SeqCst) != LOG.consumed.load(Ordering::Relaxed))
     {
         return;
     }
@@ -498,6 +618,7 @@ pub fn release() -> Result<(), &'static str> {
     drop(current);
     drop(retired);
     drop(offered);
+    SPILL.release();
     release_disposed();
     Ok(())
 }
@@ -562,10 +683,14 @@ fn append(
     }
     let Some(buffer) = (unsafe { LIVE.load(Ordering::SeqCst).as_ref() }).and_then(publishing)
     else {
+        let index = LOG.cursor.fetch_add(1, Ordering::SeqCst);
+        if SPILL.push(index, entry, name, memory) {
+            return true;
+        }
         refuse_append(entry, true);
         return false;
     };
-    let retained = append_buffer(&LOG, buffer.0, entry, name, memory);
+    let retained = append_buffer(&LOG, &SPILL, buffer.0, entry, name, memory);
     if !retained {
         refuse_append(entry, false);
     }
@@ -594,6 +719,7 @@ fn append_root(call: &Call<'_>, pending: Pending, settled: native::Settled, memo
 }
 fn append_buffer(
     log: &Log,
+    spill: &Spill,
     buffer: &Buffer,
     mut entry: Entry,
     name: Option<native::StoredName>,
@@ -613,32 +739,30 @@ fn append_buffer(
         usize::try_from(pending).unwrap_or(usize::MAX),
         Ordering::Relaxed,
     );
-    if pending > buffer.entries.len() as u64 {
-        // Like political lanes, reject shortage without overwriting a reader or
-        // another writer. The whole attempted frontier remains growth demand.
-        buffer.lost.fetch_max(index + 1, Ordering::Release);
-        log.invalidate();
-        return false;
+    // A slot is taken only when every earlier receipt in it was consumed; the
+    // whole attempted frontier remains growth demand.
+    if pending > buffer.entries.len() as u64
+        || name
+            .as_ref()
+            .is_some_and(|name| name.byte_len() > buffer.stride)
+    {
+        return spill.push(index, entry, name, memory);
     }
     let slot = index as usize % buffer.entries.len();
     let name_required = name.as_ref().map_or(0, native::StoredName::byte_len);
     if let Some(name) = name {
-        if name.byte_len() > buffer.stride {
-            entry.name_reason = Some("fuel recipient stored name does not fit");
-        } else {
-            let start = slot * buffer.stride;
-            let bytes = unsafe {
-                std::slice::from_raw_parts_mut(
-                    buffer.names.as_ptr().add(start).cast::<u8>().cast_mut(),
-                    name.byte_len(),
-                )
-            };
-            match name.copy(memory, bytes) {
-                Ok(()) => {
-                    entry.name = Some((start, name.byte_len()));
-                }
-                Err(reason) => entry.name_reason = Some(reason),
+        let start = slot * buffer.stride;
+        let bytes = unsafe {
+            std::slice::from_raw_parts_mut(
+                buffer.names.as_ptr().add(start).cast::<u8>().cast_mut(),
+                name.byte_len(),
+            )
+        };
+        match name.copy(memory, bytes) {
+            Ok(()) => {
+                entry.name = Some((start, name.byte_len()));
             }
+            Err(reason) => entry.name_reason = Some(reason),
         }
     }
     if let Some(reason) = entry.name_reason {
@@ -751,7 +875,7 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, tag: usize) {
             REFUSAL.record(if status == 0 {
                 "fuel reset status is null"
             } else {
-                "fuel reset receipt storage unavailable or exhausted"
+                STORAGE_FAILED
             });
             COUNTERS[9].fetch_add(1, Ordering::Relaxed);
         }
@@ -900,17 +1024,7 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, tag: usize) {
     PENDING.set(Some(pending));
 }
 
-#[cfg(any(test, feature = "test-support"))]
 pub fn drain(
-    entries: &mut [Entry],
-    names: &mut [u8],
-) -> Result<(Drained, usize, usize), &'static str> {
-    drain_buffers(
-        engine_native::walk::Buffer::Fixed(entries),
-        engine_native::walk::Buffer::Fixed(names),
-    )
-}
-pub fn drain_growing(
     entries: &mut Vec<Entry>,
     names: &mut Vec<u8>,
 ) -> Result<(Drained, usize, usize), &'static str> {
@@ -953,6 +1067,7 @@ fn drain_domains(
     let names_required = attempted_since(name_cursor, &NAME_CONSUMED);
     let result = handover_buffers(
         &LOG,
+        &SPILL,
         buffer,
         domains.retired.as_deref(),
         entries,
@@ -989,36 +1104,9 @@ fn drain_domains(
         (drained, len, required.max(names_required))
     })
 }
-#[cfg(test)]
-fn handover(
-    log: &Log,
-    buffer: &Buffer,
-    entries: &mut [Entry],
-    names: &mut [u8],
-    unavailable: Option<&'static str>,
-) -> Result<(Drained, usize, usize), &'static str> {
-    handover_domains(log, buffer, None, entries, names, unavailable)
-}
-#[cfg(test)]
-fn handover_domains(
-    log: &Log,
-    buffer: &Buffer,
-    older: Option<&Buffer>,
-    entries: &mut [Entry],
-    names: &mut [u8],
-    unavailable: Option<&'static str>,
-) -> Result<(Drained, usize, usize), &'static str> {
-    handover_buffers(
-        log,
-        buffer,
-        older,
-        engine_native::walk::Buffer::Fixed(entries),
-        engine_native::walk::Buffer::Fixed(names),
-        unavailable,
-    )
-}
 fn handover_buffers(
     log: &Log,
+    spill: &Spill,
     buffer: &Buffer,
     older: Option<&Buffer>,
     mut entries: engine_native::walk::Buffer<'_, Entry>,
@@ -1031,6 +1119,7 @@ fn handover_buffers(
     let epoch = log.epoch.load(Ordering::SeqCst);
     if let Some(reason) = unavailable {
         log.consumed.store(cursor, Ordering::Release);
+        spill.held().discard_before(cursor);
         return Err(reason);
     }
     let pending = usize::try_from(cursor.wrapping_sub(first))
@@ -1045,37 +1134,60 @@ fn handover_buffers(
     if log.active.load(Ordering::SeqCst) != 0 {
         return Ok((drained, 0, 0));
     }
-    let boundary = older.map_or(first, |old| old.cursor.load(Ordering::Acquire));
-    let lost = |domain: &Buffer, start: u64, end: u64| {
-        end.saturating_sub(start) > domain.entries.len() as u64
-            || (start < domain.lost.load(Ordering::Acquire)
-                && domain.lost.load(Ordering::Acquire) <= end)
-    };
-    if older.is_some_and(|old| lost(old, first, boundary.min(cursor)))
-        || lost(buffer, first.max(boundary), cursor)
-    {
+    // Every spilled receipt before `cursor` is pushed once no callback is active.
+    let mut held = spill.held();
+    if spill.lost.load(Ordering::Acquire) < cursor {
+        let _ = spill
+            .lost
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |lost| {
+                (lost < cursor).then_some(u64::MAX)
+            });
         COUNTERS[10].fetch_add(1, Ordering::Relaxed);
         log.consumed.store(cursor, Ordering::Release);
+        held.discard_before(cursor);
         drained.first = cursor;
         return Ok((drained, 0, 0));
     }
+    let boundary = older.map_or(first, |old| old.cursor.load(Ordering::Acquire));
     let source = |index: u64| older.filter(|_| index < boundary).unwrap_or(buffer);
+    let slot = |index: u64| {
+        let domain = source(index);
+        let slot = (index as usize)
+            .checked_rem(domain.entries.len())
+            .map(|slot| &domain.entries[slot])
+            .filter(|slot| slot.published.load(Ordering::Acquire) == index + 1)
+            .ok_or("fuel receipt publication incomplete")?;
+        Ok::<_, &'static str>((domain, slot))
+    };
     // Worker destinations follow the original settled cursor, including a
     // sealed predecessor. Fixed callback fixtures retain short-drain semantics.
     entries.ensure(pending)?;
     let copied = pending.min(entries.len());
+    held.entries.sort_unstable_by_key(|&(index, ..)| index);
+    let stale = held.entries.partition_point(|&(index, ..)| index < first);
+    let spilled = &held.entries[stale..];
+    let spilled_at = |at: &mut usize, index: u64| match spilled.get(*at) {
+        Some(&(held, entry, required)) if held == index => {
+            *at += 1;
+            Some((entry, required))
+        }
+        _ => None,
+    };
     let mut name_bytes = 0usize;
     let mut required = 0usize;
+    let mut at = 0;
     for index in first..cursor {
-        let domain = source(index);
-        let slot = &domain.entries[index as usize % domain.entries.len()];
-        if slot.published.load(Ordering::Acquire) != index + 1 {
-            return Err("fuel receipt publication incomplete");
-        }
-        required = required.saturating_add(unsafe { *slot.name_required.get() });
+        let (entry, name_required) = match spilled_at(&mut at, index) {
+            Some(held) => held,
+            None => {
+                let (_, slot) = slot(index)?;
+                unsafe { (*slot.entry.get(), *slot.name_required.get()) }
+            }
+        };
+        required = required.saturating_add(name_required);
         if index - first < copied as u64 {
             name_bytes = name_bytes
-                .checked_add(unsafe { *slot.entry.get() }.name.map_or(0, |(_, len)| len))
+                .checked_add(entry.name.map_or(0, |(_, len)| len))
                 .ok_or("fuel name handover size overflow")?;
         }
     }
@@ -1088,22 +1200,38 @@ fn handover_buffers(
         return Err("fuel name handover does not fit");
     }
     let mut len = 0usize;
+    let mut at = 0;
     for (offset, target) in entries[..copied].iter_mut().enumerate() {
         let index = first + offset as u64;
-        let domain = source(index);
-        let slot = &domain.entries[index as usize % domain.entries.len()];
-        let mut entry = unsafe { *slot.entry.get() };
-        if let Some((start, name_len)) = entry.name {
-            let offset = len;
-            let bytes = names
-                .get_mut(offset..offset.saturating_add(name_len))
-                .ok_or("fuel name handover does not fit")?;
-            for (out, byte) in bytes.iter_mut().zip(&domain.names[start..start + name_len]) {
-                *out = unsafe { *byte.get() };
+        let entry = match spilled_at(&mut at, index) {
+            Some((mut entry, _)) => {
+                if let Some((start, name_len)) = entry.name {
+                    names
+                        .get_mut(len..len.saturating_add(name_len))
+                        .ok_or("fuel name handover does not fit")?
+                        .copy_from_slice(&held.names[start..start + name_len]);
+                    entry.name = Some((len, name_len));
+                    len += name_len;
+                }
+                entry
             }
-            entry.name = Some((offset, name_len));
-            len += name_len;
-        }
+            None => {
+                let (domain, slot) = slot(index)?;
+                let mut entry = unsafe { *slot.entry.get() };
+                if let Some((start, name_len)) = entry.name {
+                    let bytes = names
+                        .get_mut(len..len.saturating_add(name_len))
+                        .ok_or("fuel name handover does not fit")?;
+                    for (out, byte) in bytes.iter_mut().zip(&domain.names[start..start + name_len])
+                    {
+                        *out = unsafe { *byte.get() };
+                    }
+                    entry.name = Some((len, name_len));
+                    len += name_len;
+                }
+                entry
+            }
+        };
         *target = entry;
     }
     if log.epoch.load(Ordering::SeqCst) != epoch {
@@ -1111,6 +1239,7 @@ fn handover_buffers(
     }
     // Release slots only after their names have also become owned frame bytes.
     log.consumed.store(first + copied as u64, Ordering::Release);
+    held.discard_before(first + copied as u64);
     drained.copied = copied;
     COUNTERS[7].fetch_add(copied as u64, Ordering::Relaxed);
     Ok((drained, len, required))
@@ -1198,7 +1327,7 @@ impl Hooks {
         }
         let ready = match crate::hook::shared::attach_outcome() {
             Some(outcome) => outcome.map_err(|_| "fuel award tap publication failed")?,
-            None => Hook::set_enabled_iter_attach(
+            None => Hook::set_enabled_iter(
                 self.taps.iter_mut().map(Tap::publication_hook),
                 enabled,
             )

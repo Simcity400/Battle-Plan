@@ -426,28 +426,7 @@ pub fn localised_in_details(
     })
 }
 
-/// Stored game text (`installed_content_localisation::localisation`) as plain text, read as the
-/// game's text layout reads it (`installed_content_localisation::localisation::pieces`): colour
-/// codes are removed, inline images (a text icon or an inline flag) are left
-/// out of the plain text, and the 0x14 and 0x1A spacing controls, which have
-/// no plain-text form, are refused by name.
-pub fn plain_text(text: &str) -> Result<String, String> {
-    use installed_content_localisation::{localisation::Piece, localisation::pieces};
-    let mut clean = String::new();
-    for piece in pieces(text) {
-        match piece {
-            Piece::Text(text) => clean.push_str(text),
-            Piece::Colour(_) | Piece::Icon(_) | Piece::Flag(_) => (),
-            Piece::Control14 | Piece::Control1A(_) => {
-                return Err(format!(
-                    "{}, which plain text cannot show",
-                    piece.describe()
-                ));
-            }
-        }
-    }
-    Ok(clean)
-}
+pub use installed_content_localisation::localisation::{display_text, plain_text};
 
 /// Issues by reason, with what each names.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -843,15 +822,6 @@ impl BoundedRefusals {
     }
 }
 
-/// A string the engine built for display, recorded as bytes, as plain text.
-/// Stored colour codes and icons use the shared game localiser; unsupported
-/// controls and invalid UTF-8 stay refusals instead of invented text.
-pub fn display_text(bytes: &[u8]) -> Result<String, String> {
-    let text = std::str::from_utf8(bytes).map_err(|_| "is not UTF-8".to_owned())?;
-    plain_text(text)
-        .map(|text| text.trim().to_owned())
-        .map_err(|reason| format!("holds {reason}"))
-}
 
 // Loaded once a run, and handed through a preparation's spool as it is.
 impl replay_spool::Spooled for Catalogue {
@@ -1010,7 +980,7 @@ impl Catalogue {
         presentation: Presentation,
         localisation: Arc<Localisation>,
         verification: Vec<String>,
-        mut warnings: Vec<String>,
+        warnings: Vec<String>,
         recorded_language: String,
         gui_decode: Result<installed_content_image::native::Decode, String>,
     ) -> io::Result<Self> {
@@ -1019,6 +989,30 @@ impl Catalogue {
         let sprites = content
             .layers
             .artwork("interface sprites", installed_content_gfx::gfx::read)?;
+        Ok(Self::from_parts(
+            content,
+            presentation,
+            localisation,
+            sprites,
+            verification,
+            warnings,
+            recorded_language,
+            gui_decode,
+        ))
+    }
+
+    /// [`Self::from_content`] with its interface sprites already read.
+    #[allow(clippy::too_many_arguments, reason = "each is one independent part of the catalogue")]
+    pub fn from_parts(
+        content: Arc<ResolvedContent>,
+        presentation: Presentation,
+        localisation: Arc<Localisation>,
+        sprites: SpriteSet,
+        verification: Vec<String>,
+        mut warnings: Vec<String>,
+        recorded_language: String,
+        gui_decode: Result<installed_content_image::native::Decode, String>,
+    ) -> Self {
         for (label, count) in [
             ("logged localisation diagnostics", localisation.logged.len()),
             ("refused localisation forms", localisation.refused.len()),
@@ -1037,7 +1031,7 @@ impl Catalogue {
                 sprites.refused.join("; ")
             ));
         }
-        Ok(Self {
+        Self {
             content,
             presentation,
             localisation,
@@ -1056,7 +1050,7 @@ impl Catalogue {
             recorded: Once::new(),
             #[cfg(any(test, feature = "test-support"))]
             content_loads: Default::default(),
-        })
+        }
     }
 
     /// A content-only catalogue, without a recording or identity verification.
@@ -1133,9 +1127,27 @@ impl Catalogue {
         country_kind: Kind,
         refusals: Option<&Mutex<Refusals>>,
     ) -> Option<String> {
+        self.localised_or_why_for(key, arguments, view, country_kind, refusals)
+            .ok()
+    }
+
+    /// [`Catalogue::localised`], or why it shows no text: the key is missing from the
+    /// localisation, or its text is refused.
+    pub fn localised_or_why(&self, key: &str, view: View) -> Result<String, String> {
+        self.localised_or_why_for(key, &[], view, Kind::Unsupported, None)
+    }
+
+    fn localised_or_why_for(
+        &self,
+        key: &str,
+        arguments: &[(&str, Argument<'_>)],
+        view: View,
+        country_kind: Kind,
+        refusals: Option<&Mutex<Refusals>>,
+    ) -> Result<String, String> {
         if !self.has_presentation_key(key) {
+            let key = key.split('\0').next().unwrap_or_default();
             if let Some(refusals) = refusals {
-                let key = key.split('\0').next().unwrap_or_default();
                 refusals
                     .lock()
                     .unwrap_or_else(|error| error.into_inner())
@@ -1144,23 +1156,24 @@ impl Catalogue {
                         key,
                     );
             }
-            return None;
+            return Err(format!("localisation {key} is missing"));
         }
         let (text, findings) =
             localised_with_reason(&self.localisation, key, arguments, view, country_kind);
         for finding in findings {
             self.note(finding);
         }
-        text.inspect_err(|finding| {
+        text.map_err(|finding| {
             if let Some(refusals) = refusals {
                 refusals
                     .lock()
                     .unwrap_or_else(|error| error.into_inner())
                     .note(&finding.message, &finding.subject);
             }
-            self.refuse_finding((**finding).clone());
+            let message = finding.message.clone();
+            self.refuse_finding(*finding);
+            message
         })
-        .ok()
     }
 
     /// Keep missing presentation keys distinct from authored empty strings.
@@ -2708,13 +2721,20 @@ pub mod tests {
         let (catalogue, _folder) =
             folder_catalogue(&[("outside_policy/synthetic.txt", "independent fixture")]);
         let reads = catalogue.content.layers.report_uncovered_reads();
-        catalogue
-            .content
-            .layers
-            .read("outside_policy/synthetic.txt")
-            .unwrap();
-        catalogue.refuse("synthetic reason", "synthetic name");
-        let entries = catalogue.refusal_entries();
+        // A reply's reads are reported from its own diagnostics scope.
+        let ((entries, lines, warnings), _) = installed_content_core::content::diagnostics::capture(|| {
+            catalogue
+                .content
+                .layers
+                .read("outside_policy/synthetic.txt")
+                .unwrap();
+            catalogue.refuse("synthetic reason", "synthetic name");
+            (
+                catalogue.refusal_entries(),
+                catalogue.refusal_lines(),
+                catalogue.reader_warning_lines(),
+            )
+        });
         assert_eq!(
             entries,
             [
@@ -2726,13 +2746,13 @@ pub mod tests {
             ]
         );
         assert_eq!(
-            catalogue.refusal_lines(),
+            lines,
             entries
                 .into_iter()
                 .map(|(line, _)| line)
                 .collect::<Vec<_>>()
         );
-        assert_eq!(catalogue.reader_warning_lines(), [reads.warning().unwrap()]);
+        assert_eq!(warnings, [reads.warning().unwrap()]);
     }
 
     /// A consumer's scope reports its own refusals in the shared tally's form;

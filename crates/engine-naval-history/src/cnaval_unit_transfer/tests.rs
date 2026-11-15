@@ -218,7 +218,7 @@ fn transport_static_definition_requires_derived_type_not_temporary_modifier() {
 #[test]
 fn transport_owner_navy_is_required_only_after_native_feature_gates() {
     for empty_enemies in [false, true] {
-        for fault in 0..4 {
+        for fault in 0..3 {
             let mut m = fixture();
             if empty_enemies {
                 m.array(0xa000 + cdiplomacy_status::ENEMY_COUNTRIES, 0, 0);
@@ -229,8 +229,7 @@ fn transport_owner_navy_is_required_only_after_native_feature_gates() {
             );
             match fault {
                 0 => m.word(0x12008, 0),
-                1 => m.dword(0x18000 + cstrategic_navy::OWNER, 2),
-                2 => m.word(0x18000, 0),
+                1 => m.word(0x18000, 0),
                 _ => m.word(0x18000 + cstrategic_navy::SECONDARY, 0),
             }
             assert!(movement_speed(&m, 0, 0x1000, 1, 0xd000).is_err());
@@ -253,9 +252,11 @@ fn transport_faults_never_become_partial_enemy_aggregates() {
             "address {address:x}"
         );
     }
+    // A navy is its slot's country's, whatever owner it stores.
     let mut m = fixture();
     m.dword(0x13000 + cstrategic_navy::OWNER, 1);
-    assert!(movement_speed(&m, 0, 0x1000, 1, 0xd000).is_err());
+    m.dword(0x18000 + cstrategic_navy::OWNER, 2);
+    assert_eq!(movement_speed(&m, 0, 0x1000, 1, 0xd000), Ok(145_000));
     let mut m = fixture();
     // Native out-of-range weather returns no weather modifier, not failure.
     m.array(0xe000 + cweather_manager::REGIONS, 0, 0);

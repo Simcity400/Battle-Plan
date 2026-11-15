@@ -52,25 +52,12 @@ pub struct Walk {
     pub required_entries: usize,
 }
 
-pub fn walk(
-    memory: &impl Memory,
-    base: usize,
-    state: usize,
-    rows: &mut [Row],
-    entries: &mut [Entry],
-) -> Walk {
-    walk_buffer(
-        memory,
-        base,
-        state,
-        Buffer::Fixed(rows),
-        Buffer::Fixed(entries),
-        &mut speed_key(),
-    )
+pub fn count(memory: &impl Memory, base: usize, state: usize) -> Walk {
+    walk_buffer(memory, base, state, Buffer::Count, Buffer::Count, &mut speed_key())
 }
 
 /// `speed` is the caller's held key ([`speed_key`]), kept across walks.
-pub fn walk_growing(
+pub fn walk(
     memory: &impl Memory,
     base: usize,
     state: usize,
@@ -460,7 +447,7 @@ mod tests {
         memory.put(engine_native::ccountry::synthetic::START, &world.bytes);
         let mut rows = Vec::new();
         let mut entries = Vec::new();
-        let result = walk_growing(memory, 0, world.game_state(), &mut rows, &mut entries, &mut speed_key());
+        let result = walk(memory, 0, world.game_state(), &mut rows, &mut entries, &mut speed_key());
         (result, rows, entries)
     }
 
@@ -484,21 +471,6 @@ mod tests {
                 state: None,
                 ..Entry::default()
             })
-        );
-        let short = walk(
-            &memory,
-            0,
-            world.game_state(),
-            &mut [Row::default()],
-            &mut [],
-        );
-        assert_eq!(short.required_entries, 4);
-        assert_eq!(
-            short.outcome,
-            Outcome::Truncated {
-                len: 0,
-                unread_rows: 1
-            }
         );
     }
 

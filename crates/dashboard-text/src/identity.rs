@@ -4,7 +4,7 @@
 
 use replay_data::rows::{
     CharacterRow, CountryAppearanceRow, CountryCivilWarRow, CountryCounterInputRow,
-    CountryLinkRow, CountryRow, CountryWarRow, LexicalTokenRow, WarRelationRow, mask, tables,
+    CountryLinkRow, CountryRow, CountryWarRow, LexicalTokenRow, TableId, WarRelationRow, mask, tables,
 };
 use replay_frame::frame::{Rowset, Tables};
 use std::{borrow::Cow, collections::HashMap};
@@ -80,7 +80,7 @@ pub fn built_template_in(
     let token = character.template_tag;
     let lexical = crate::triggers::refusal::reference(lexical, token != 0,
         || crate::triggers::refusal::missing_reference(replay_data::rows::TableId::LexicalTokens, None))
-        .ok_or_else(|| format!("character {id}'s template tag token {token} is not spelled: LexicalTokens is incomplete"))?;
+        .ok_or_else(|| format!("character {id}'s template tag token {token} is not spelled: {} is incomplete", replay_data::rows::TableId::LexicalTokens.words()))?;
     let literal = crate::triggers::refusal::reference(
         spelling(&lexical, token),
         token != 0,
@@ -92,7 +92,7 @@ pub fn built_template_in(
         },
     )
     .ok_or_else(|| {
-        format!("character {id}'s template tag token {token} has no LexicalTokens row")
+        format!("character {id}'s template tag token {token} has no lexical tokens row")
     })?;
     let tag = std::str::from_utf8(literal)
         .map_err(|_| format!("character {id}'s template tag token {token} is not UTF-8"))?;
@@ -117,7 +117,6 @@ pub fn civil_war<F: Tables + ?Sized>(frame: &F, slot: u32) -> Result<bool, Strin
 /// none of it since the hour before leaves every country's answer as it was.
 pub fn civil_war_reads() -> Vec<crate::triggers::inputs::TableRead> {
     use crate::triggers::inputs::TableRead;
-    use replay_data::rows::TableId;
     vec![
         TableRead::fields(TableId::Countries, &["canonical_slot"]),
         TableRead::fields(TableId::CountryLinks, &["canonical_slot"]),
@@ -143,7 +142,6 @@ const SPAN: u64 = mask::<WarRelationRow>(&["start_hour", "end_hour"]);
 /// order: a reference that does not resolve is reported only where that
 /// scan reaches it.
 pub struct CivilWars<'a> {
-    hour: i32,
     links: Rowset<'a, CountryLinkRow>,
     /// Each canonical slot's first Countries row id.
     raw: HashMap<u32, u32>,
@@ -258,7 +256,6 @@ impl<'a> CivilWars<'a> {
                 Ok(relations)
             });
         Ok(Self {
-            hour,
             links,
             raw,
             owned,
@@ -273,7 +270,7 @@ impl<'a> CivilWars<'a> {
     /// holds.
     pub fn holds(&self, slot: u32) -> Result<bool, String> {
         for &target in self.targets(self.raw_of(slot)?) {
-            if self.exists(self.linked(target, "CountryCivilWars")?)? {
+            if self.exists(self.linked(target, TableId::CountryCivilWars)?)? {
                 return Ok(true);
             }
         }
@@ -282,7 +279,7 @@ impl<'a> CivilWars<'a> {
                 continue;
             }
             for &target in self.targets(self.raw_of(enemy)?) {
-                if self.linked(target, "CountryCivilWars")? == slot {
+                if self.linked(target, TableId::CountryCivilWars)? == slot {
                     return Ok(true);
                 }
             }
@@ -291,28 +288,24 @@ impl<'a> CivilWars<'a> {
     }
 
     fn raw_of(&self, slot: u32) -> Result<u32, String> {
-        self.raw.get(&slot).copied().ok_or_else(|| {
-            format!("country slot {slot} has no Countries row at hour {}", self.hour)
-        })
+        self.raw.get(&slot).copied().ok_or_else(|| "a country is not among the recorded countries at this hour".to_owned())
     }
 
     /// Whether `slot` owns a state, the game's existence check.
     pub fn exists(&self, slot: u32) -> Result<bool, String> {
         let raw = self.raw_of(slot)?;
-        self.owned.get(&raw).map(|&count| count > 0).ok_or_else(|| {
-            format!(
-                "the owned state count (CountryCounterInputs.owned_state_count) of country {raw} is not recorded at hour {}",
-                self.hour
-            )
-        })
+        self.owned
+            .get(&raw)
+            .map(|&count| count > 0)
+            .ok_or_else(|| "a country's owned state count is not recorded at this hour".to_owned())
     }
 
     fn targets(&self, raw: u32) -> &[u32] {
         self.lists.get(&raw).map(Vec::as_slice).unwrap_or_default()
     }
 
-    fn linked(&self, raw: u32, table: &str) -> Result<u32, String> {
-        linked(&self.links, raw, table, self.hour)
+    fn linked(&self, raw: u32, table: TableId) -> Result<u32, String> {
+        linked(&self.links, raw, table)
     }
 
     /// The country's enemy vector: its CountryWars row's where read, else the
@@ -326,38 +319,32 @@ impl<'a> CivilWars<'a> {
             .unlinked
             .filter(|&(at, _)| found.is_none_or(|(found, _)| at < found))
         {
-            self.linked(raw, "CountryWars")?;
+            self.linked(raw, TableId::CountryWars)?;
         }
         if let Some((_, key)) = found {
             let row = wars
                 .rows
                 .get(key)
                 .map_err(|error| error.to_string())?
-                .ok_or_else(|| format!("CountryWars row {key} is not held at hour {}", self.hour))?;
+                .ok_or_else(|| format!("a country's {} are not held at this hour", TableId::CountryWars.words()))?;
             return row
                 .enemies
                 .iter()
-                .map(|&raw| self.linked(raw, "CountryWars"))
+                .map(|&raw| self.linked(raw, TableId::CountryWars))
                 .collect();
         }
         let relations = self.relations.as_ref().map_err(Clone::clone)?;
         if let Some(raw) = relations.unlinked {
-            self.linked(raw, "WarRelations")?;
+            self.linked(raw, TableId::WarRelations)?;
         }
         Ok(relations.by_slot.get(&slot).cloned().unwrap_or_default())
     }
 }
 
 /// A raw country reference's canonical slot, or why the hour cannot say.
-fn linked(
-    links: &Rowset<'_, CountryLinkRow>,
-    raw: u32,
-    table: &str,
-    hour: i32,
-) -> Result<u32, String> {
-    crate::metadata::link_slot_in(links, raw).ok_or_else(|| {
-        format!("{table} names country {raw}, which CountryLinks does not hold at hour {hour}")
-    })
+fn linked(links: &Rowset<'_, CountryLinkRow>, raw: u32, table: TableId) -> Result<u32, String> {
+    crate::metadata::link_slot_in(links, raw)
+        .ok_or_else(|| format!("{} names a country that no recorded country link holds", table.words()))
 }
 
 /// A country as idea naming needs it at one hour, owned for the scans that

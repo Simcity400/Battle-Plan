@@ -72,7 +72,8 @@ impl Defines {
 pub(super) struct Inputs<'a> {
     rows: HashMap<u64, &'a OperativeMissionRow>,
     groups: HashMap<(u32, u32, i32), Vec<&'a OperativeMissionRow>>,
-    auxiliary: HashMap<(u32, u32, u32, u8), &'a IntelNetworkAuxiliaryRow>,
+    /// The auxiliary networks, or why the table cannot be read.
+    auxiliary: Result<HashMap<(u32, u32, u32, u8), &'a IntelNetworkAuxiliaryRow>, String>,
     defense: Result<HashMap<u32, i64>, String>,
 }
 
@@ -81,7 +82,11 @@ impl<'a> Inputs<'a> {
         let mut result = Self {
             rows: HashMap::new(),
             groups: HashMap::new(),
-            auxiliary: HashMap::new(),
+            auxiliary: complete::<tables::IntelNetworkAuxiliaries>(hour.frame, "IntelNetworkAuxiliaries").map(|rows| {
+                rows.iter()
+                    .filter_map(|row| Some(((hour.slot(row.owner)?, hour.slot(row.target)?, row.subnetwork, row.kind), row)))
+                    .collect()
+            }),
             defense: complete::<tables::IntelligenceAgencies>(hour.frame, "IntelligenceAgencies")
                 .map(|rows| {
                     rows.iter()
@@ -101,15 +106,6 @@ impl<'a> Inputs<'a> {
                         .entry((owner, variant, state))
                         .or_default()
                         .push(row);
-                }
-            }
-        }
-        if let Ok(rows) = hour.frame.complete::<tables::IntelNetworkAuxiliaries>() {
-            for row in rows {
-                if let (Some(owner), Some(target)) = (hour.slot(row.owner), hour.slot(row.target)) {
-                    result
-                        .auxiliary
-                        .insert((owner, target, row.subnetwork, row.kind), row);
                 }
             }
         }
@@ -198,10 +194,9 @@ fn coverage(
     let Ok(subnetwork) = u32::try_from(network.subnetwork_selector) else {
         return Ok(None);
     };
+    let auxiliary = shared.missions.auxiliary.as_ref().map_err(Clone::clone)?;
     let get = |kind| {
-        shared
-            .missions
-            .auxiliary
+        auxiliary
             .get(&(owner, target, subnetwork, kind))
             .copied()
             .ok_or_else(|| "subnetwork coverage operands unavailable".to_owned())

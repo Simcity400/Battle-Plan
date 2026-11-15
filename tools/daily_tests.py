@@ -1,18 +1,20 @@
 """Test `main` once a day on this machine (Python 3.11+, Windows).
 
-    python tools/daily_tests.py install --game-dir <the game folder> --fixture <recording folder> [--at 03:00]
-    python tools/daily_tests.py run --game-dir <the game folder> --fixture <recording folder>
+    python tools/daily_tests.py install --game-dir <the game folder> --fixture <recording folder> --recorded-replies <file> [--at 03:00]
+    python tools/daily_tests.py run --game-dir <the game folder> --fixture <recording folder> --recorded-replies <file>
 
 `install` makes the runner's own worktree of origin/main and registers the Windows task that runs
 it daily at `--at`, or as soon as it can after a missed start. `run` moves that worktree to the
 newest origin/main and holds TESTS_RUNNING while it runs every Rust test, the UI typecheck and
 tests, the dependency checks and the acceptance suite (tools/e2e/suite.py: the release app, built
-on Boat, on a prepared copy of the `--fixture` recording). It compiles only with DISK_FLOOR free,
+on Boat, on a copy of the `--fixture` recording). It compiles only with DISK_FLOOR free,
 without incremental compilation, and once the build finishes removes from its Cargo target
-whatever that build neither produced nor used, so the target holds one build. Its report goes to
+whatever that build neither produced nor used, so the target holds one build. `--recorded-replies`
+names the replies the acceptance sweep recorded (`--record-replies`) from the `--fixture` recording,
+which the browser tests replay (BATTLE_PLAN_RECORDED_REPLIES). Its report goes to
 captures\\ci: latest.md, a folder per run with each step's log, kept 30 days, and
 history.tsv, kept whole. The acceptance suite's report is e2e/e2e.md in the run's folder; its
-preparation baseline and last work stay in E2E_STATE.
+visual baseline and last work stay in E2E_STATE.
 """
 
 import argparse
@@ -459,7 +461,10 @@ def run_checked_out(args):
         os.environ, BATTLE_PLAN_GAME_DIR=args.game_dir, CARGO_TERM_COLOR="never", NO_COLOR="1",
         CARGO_INCREMENTAL="0",
     )
-    build = Build(target_dir(), folder, environment, deadline, args.fixture)
+    environment.pop("BATTLE_PLAN_RECORDED_REPLIES", None)
+    if args.recorded_replies:
+        environment["BATTLE_PLAN_RECORDED_REPLIES"] = args.recorded_replies
+    build =Build(target_dir(), folder, environment, deadline, args.fixture)
     size_at_start = size_of(build.target)
     plan = steps()
     rows, failures, passed, summary = [], None, set(), None
@@ -543,7 +548,7 @@ def run(args):
             log = folder / "runner.log"
             command = [
                 sys.executable, str(WORKTREE / "tools" / "daily_tests.py"), "run",
-                "--game-dir", args.game_dir, *(["--fixture", args.fixture] if args.fixture else []),
+                "--game-dir", args.game_dir, *fixtures(args),
                 "--continue-run", commit, started.isoformat(),
                 str(deadline - REPORT_MARGIN), str(folder),
             ]
@@ -650,8 +655,7 @@ def install(args):
     start = datetime.datetime.combine(datetime.date.today(), at)
     if start <= datetime.datetime.now():
         start += datetime.timedelta(days=1)
-    fixture = ["--fixture", args.fixture] if args.fixture else []
-    arguments = subprocess.list2cmdline([str(script), "run", "--game-dir", args.game_dir, *fixture])
+    arguments = subprocess.list2cmdline([str(script), "run", "--game-dir", args.game_dir, *fixtures(args)])
     xml = TASK_XML.format(
         start=start.isoformat(timespec="seconds"),
         user=escape(f"{os.environ['USERDOMAIN']}\\{os.environ['USERNAME']}"),
@@ -669,6 +673,14 @@ def install(args):
     return 0
 
 
+def fixtures(args):
+    """The fixture arguments a run passes on: to the checked-out runner, and in the task."""
+    return [
+        *(["--fixture", args.fixture] if args.fixture else []),
+        *(["--recorded-replies", args.recorded_replies] if args.recorded_replies else []),
+    ]
+
+
 def parse(argv):
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     commands = parser.add_subparsers(dest="command", required=True)
@@ -681,6 +693,10 @@ def parse(argv):
         )
         # The acceptance suite's recording folder; without it that step fails and says why.
         command.add_argument("--fixture", type=os.path.abspath, default=os.environ.get("BATTLE_PLAN_E2E_FIXTURE", os.environ.get("HOI4_E2E_FIXTURE")))
+        # Without it the recorded-reply browser tests fail and say why.
+        command.add_argument(
+            "--recorded-replies", type=os.path.abspath, default=os.environ.get("BATTLE_PLAN_RECORDED_REPLIES", os.environ.get("HOI4_RECORDED_REPLIES")) or None
+        )
         if name == "install":
             command.add_argument("--at", default="03:00", help="local start time, HH:MM")
         else:

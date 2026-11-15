@@ -1,5 +1,6 @@
 use super::*;
 use crate::memory::SliceMemory;
+use crate::walk::Buffer;
 use std::cell::{Cell, RefCell};
 
 #[test]
@@ -492,12 +493,12 @@ fn text_preserves_long_heap_bytes_and_omits_whole_rows_when_short() {
     u64_at(&mut bytes, NAME + msvc_string::CAPACITY, name.len() as u64);
     bytes[0x4000..0x4000 + name.len()].copy_from_slice(&name);
     let mut arena = vec![0; name.len() + 3];
-    let result = read_text(&memory(&bytes), ADDRESS, &mut arena);
+    let result = read_text(&memory(&bytes), ADDRESS, Buffer::Exact(&mut arena));
     assert_eq!(result.outcome, Outcome::Rows { len: 1 });
     assert_eq!(&arena[..name.len()], &name);
     assert_eq!(&arena[name.len()..], &[0xff, 0, b'x']);
     let mut short = [0x99; 5];
-    let result = read_text(&memory(&bytes), ADDRESS, &mut short);
+    let result = read_text(&memory(&bytes), ADDRESS, Buffer::Exact(&mut short));
     assert_eq!(
         result.outcome,
         Outcome::Truncated {
@@ -507,11 +508,27 @@ fn text_preserves_long_heap_bytes_and_omits_whole_rows_when_short() {
     );
     assert_eq!((result.bytes_len, result.required_bytes), (0, 4100));
     assert_eq!(short, [0x99; 5]);
+    let mut grown = vec![0x99; 5];
+    let result = read_text(&memory(&bytes), ADDRESS, Buffer::GrowingFrom(&mut grown, 5));
+    assert_eq!(result.outcome, Outcome::Rows { len: 1 });
+    assert_eq!((result.bytes_len, result.required_bytes), (4100, 4100));
+    assert_eq!(&grown[..5], &[0x99; 5]);
+    assert_eq!(&grown[5..5 + name.len()], &name);
+    let mut into = vec![0x99; 5];
+    assert_eq!(
+        read_text_into(&memory(&bytes), ADDRESS, &mut into, 5),
+        Ok(Text {
+            name_len: name.len(),
+            token_len: 3
+        })
+    );
+    assert_eq!(&into[..5 + 4100], &grown[..5 + 4100]);
     bytes[0x4000 + name.len()] = 1;
     assert!(matches!(
-        read_text(&memory(&bytes), ADDRESS, &mut arena).outcome,
+        read_text(&memory(&bytes), ADDRESS, Buffer::Exact(&mut arena)).outcome,
         Outcome::Unavailable { .. }
     ));
+    assert!(read_text_into(&memory(&bytes), ADDRESS, &mut into, 0).is_err());
 }
 
 #[test]
@@ -524,8 +541,8 @@ fn assigned_traits_preserve_order_and_report_both_capacities_exactly() {
         IMAGE,
         ADDRESS,
         0x8000_0001,
-        &mut rows,
-        &mut arena,
+        Buffer::Exact(&mut rows),
+        Buffer::Exact(&mut arena),
     );
     assert_eq!(result.outcome, Outcome::Rows { len: 2 });
     assert_eq!(
@@ -543,8 +560,8 @@ fn assigned_traits_preserve_order_and_report_both_capacities_exactly() {
         IMAGE,
         ADDRESS,
         0x8000_0001,
-        &mut rows[..1],
-        &mut arena,
+        Buffer::Exact(&mut rows[..1]),
+        Buffer::Exact(&mut arena),
     );
     assert_eq!(
         result.outcome,
@@ -559,8 +576,8 @@ fn assigned_traits_preserve_order_and_report_both_capacities_exactly() {
         IMAGE,
         ADDRESS,
         0x8000_0001,
-        &mut rows,
-        &mut arena[..4],
+        Buffer::Exact(&mut rows),
+        Buffer::Exact(&mut arena[..4]),
     );
     assert_eq!(
         result.outcome,
@@ -570,6 +587,19 @@ fn assigned_traits_preserve_order_and_report_both_capacities_exactly() {
         }
     );
     assert_eq!((result.bytes_len, result.required_bytes), (0, 5));
+    let (mut rows, mut arena) = (Vec::new(), Vec::new());
+    let result = walk_traits(
+        &memory(&bytes),
+        IMAGE,
+        ADDRESS,
+        0x8000_0001,
+        Buffer::Growing(&mut rows),
+        Buffer::Growing(&mut arena),
+    );
+    assert_eq!(result.outcome, Outcome::Rows { len: 2 });
+    assert_eq!((result.bytes_len, result.required_bytes), (10, 10));
+    assert_eq!((rows[0].token_id, rows[1].token_id), (-2, 27));
+    assert_eq!(&arena[..10], b"firstother");
 }
 
 #[test]
@@ -616,8 +646,8 @@ fn trait_faults_never_certify_prefixes_and_empty_vectors_are_available() {
         IMAGE,
         ADDRESS,
         0x8000_0001,
-        &mut rows,
-        &mut arena,
+        Buffer::Exact(&mut rows),
+        Buffer::Exact(&mut arena),
     );
     assert!(matches!(result.outcome, Outcome::Unavailable { .. }));
     assert_eq!(result.bytes_len, 0);
@@ -628,8 +658,8 @@ fn trait_faults_never_certify_prefixes_and_empty_vectors_are_available() {
             IMAGE,
             ADDRESS,
             0x8000_0001,
-            &mut rows[..1],
-            &mut arena
+            Buffer::Exact(&mut rows[..1]),
+            Buffer::Exact(&mut arena)
         )
         .outcome,
         Outcome::Truncated {
@@ -644,8 +674,8 @@ fn trait_faults_never_certify_prefixes_and_empty_vectors_are_available() {
             IMAGE,
             ADDRESS,
             0x8000_0001,
-            &mut rows,
-            &mut arena
+            Buffer::Exact(&mut rows),
+            Buffer::Exact(&mut arena)
         )
         .outcome,
         Outcome::Unavailable { .. }
@@ -657,14 +687,22 @@ fn trait_faults_never_certify_prefixes_and_empty_vectors_are_available() {
             IMAGE,
             ADDRESS,
             0x8000_0001,
-            &mut rows,
-            &mut arena
+            Buffer::Exact(&mut rows),
+            Buffer::Exact(&mut arena)
         )
         .outcome,
         Outcome::Rows { len: 0 }
     );
     assert!(matches!(
-        walk_traits(&memory(&bytes), IMAGE, ADDRESS, 1, &mut rows, &mut arena).outcome,
+        walk_traits(
+            &memory(&bytes),
+            IMAGE,
+            ADDRESS,
+            1,
+            Buffer::Exact(&mut rows),
+            Buffer::Exact(&mut arena)
+        )
+        .outcome,
         Outcome::Unavailable { .. }
     ));
 }

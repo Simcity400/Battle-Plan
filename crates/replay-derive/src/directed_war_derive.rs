@@ -64,31 +64,40 @@ impl ReceiverWars {
         links: &[CountryLinkRow],
         receiver_slot: u32,
     ) -> Fact<Self> {
-        if receiver_slot == 0 {
-            return Err("derived direct wars need a positive receiver".into());
-        }
         if !links.windows(2).all(|pair| pair[0].id < pair[1].id) {
             return Err("CountryLinks rows are not in ascending raw-id order".into());
         }
         let slot = |raw: u32| {
             links
                 .binary_search_by_key(&raw, |row| row.id)
+                .ok()
                 .map(|index| links[index].canonical_slot)
-                .map_err(|_| format!("WarRelations names country {raw}, which CountryLinks lacks"))
         };
-        let receiver: Vec<u32> = links
-            .iter()
-            .filter(|row| row.canonical_slot == receiver_slot)
-            .map(|row| row.id)
-            .collect();
+        let receiver = links.iter().filter(|row| row.canonical_slot == receiver_slot).map(|row| row.id);
+        Self::from_pairs(wars.iter().map(|row| (row.first_country, row.second_country)), receiver, slot, receiver_slot)
+    }
+
+    /// From each war's two raw countries, the receiver's raw references and a raw reference's
+    /// canonical slot.
+    pub fn from_pairs(
+        wars: impl IntoIterator<Item = (u32, u32)>,
+        receiver: impl IntoIterator<Item = u32>,
+        slot_of: impl Fn(u32) -> Option<u32>,
+        receiver_slot: u32,
+    ) -> Fact<Self> {
+        if receiver_slot == 0 {
+            return Err("derived direct wars need a positive receiver".into());
+        }
+        let slot = |raw: u32| slot_of(raw).ok_or_else(|| format!("WarRelations names country {raw}, which CountryLinks lacks"));
+        let receiver: Vec<u32> = receiver.into_iter().collect();
         let mut targets = Vec::new();
-        for row in wars {
+        for (first_country, second_country) in wars {
             let other = match (
-                receiver.contains(&row.first_country),
-                receiver.contains(&row.second_country),
+                receiver.contains(&first_country),
+                receiver.contains(&second_country),
             ) {
-                (true, false) => row.second_country,
-                (false, true) => row.first_country,
+                (true, false) => second_country,
+                (false, true) => first_country,
                 (false, false) => continue,
                 (true, true) => {
                     return Err(format!(

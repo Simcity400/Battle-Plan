@@ -33,7 +33,7 @@ test('country Butterfly tooltips remain bounded after flag status expands, with 
   const context = new Proxy(surface, { get: (target, key) => Reflect.get(target, key) ?? (() => {}) });
   const canvas = { clientWidth: 600, clientHeight: 360, width: 0, height: 0, style: {},
     getContext: () => context, getBoundingClientRect: () => ({ left: 0, top: 0, width: 600, height: 360 }) };
-  const state = { canvas, container: { clientHeight: 360, scrollTop: 0 }, effects: [] as (() => unknown)[],
+  const state = { canvas, container: { clientHeight: 360, scrollTop: 0, addEventListener() {}, removeEventListener() {} }, effects: [] as (() => unknown)[],
     task: undefined as FrameTask | undefined, key: undefined as ((event: { key: string; shiftKey?: boolean; preventDefault(): void }) => void) | undefined,
     click: undefined as ((event: { clientX: number; clientY: number }) => void) | undefined };
   const host = globalThis as typeof globalThis & { __butterflyFlags?: typeof state; __butterflyFlagEffect?: (effect: () => unknown) => void };

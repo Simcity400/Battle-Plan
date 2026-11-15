@@ -181,9 +181,9 @@ fn input(count: u32) -> PoolInput {
 
 fn capture(memory: &Synthetic, wings: &[usize]) -> Packet {
     let countries = ccountry::Reader::new(memory, MODULE, GAME).unwrap();
-    let mut country_terms = [CountryTerms::default(); 3];
-    let mut aces = [AceSlot::default(); 4];
-    let mut forecasts = [ForecastSlot::default(); 4];
+    let mut country_terms = vec![CountryTerms::default(); 3];
+    let mut aces = vec![AceSlot::default(); 4];
+    let mut forecasts = vec![ForecastSlot::default(); 4];
     let mut reader = Reader::new(
         memory,
         MODULE,
@@ -202,9 +202,9 @@ fn capture(memory: &Synthetic, wings: &[usize]) -> Packet {
 
 fn capture_with_planes(memory: &Synthetic) -> (Packet, Result<i32, &'static str>) {
     let countries = ccountry::Reader::new(memory, MODULE, GAME).unwrap();
-    let mut country_terms = [CountryTerms::default(); 3];
-    let mut aces = [AceSlot::default(); 4];
-    let mut forecasts = [ForecastSlot::default(); 4];
+    let mut country_terms = vec![CountryTerms::default(); 3];
+    let mut aces = vec![AceSlot::default(); 4];
+    let mut forecasts = vec![ForecastSlot::default(); 4];
     let mut reader = Reader::new(
         memory,
         MODULE,
@@ -578,42 +578,6 @@ fn invalid_current_masks_and_capacity_refusals_do_not_erase_known_maximum() {
     memory.i32(WING + cair_wing::MISSION + air_mission::CAPACITY_CLASS, -1);
     assert_eq!(capture(&memory, &[WING]).current, None);
     assert_eq!(capture(&memory, &[WING]).maximum, Some(600000));
-}
-
-#[test]
-fn incomplete_membership_and_empty_forecast_capacity_refuse_whole_numeric_query() {
-    let mut memory = fixture();
-    region(&mut memory, 1);
-    weather(&mut memory);
-    let countries = ccountry::Reader::new(&memory, MODULE, GAME).unwrap();
-    let mut country_terms = [CountryTerms::default(); 3];
-    let mut aces = [AceSlot::default(); 1];
-    let mut reader = Reader::new(
-        &memory,
-        MODULE,
-        GAME,
-        &countries,
-        &mut country_terms,
-        &mut aces,
-        &mut [],
-    );
-    let mut pool = reader.begin_pool(input(1));
-    reader.wing(&mut pool, WING);
-    let packet = pool.finish();
-    assert_eq!(
-        packet.current_failure,
-        Some("carrier fuel forecast memo capacity exceeded")
-    );
-    assert_eq!(packet.maximum, Some(600000));
-    assert_eq!(memory.times(REGION, 8), 0);
-    let mut pool = reader.begin_pool(input(2));
-    reader.wing(&mut pool, WING);
-    let packet = pool.finish();
-    assert_eq!(packet.current, None);
-    assert_eq!(
-        packet.maximum_failure,
-        Some("carrier fuel membership incomplete")
-    );
 }
 
 #[test]

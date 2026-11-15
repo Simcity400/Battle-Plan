@@ -137,7 +137,6 @@ fn unbuilt(stock: Stock) -> &'static str {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Variant {
-    Country,
     Factions,
     Players,
     Ideology,
@@ -167,11 +166,6 @@ fn country_variant(
         defines.country_channel
     };
     match variant {
-        Variant::Country => {
-            for (&slot, &color) in &colors {
-                styles.insert(slot + 1, style(color));
-            }
-        }
         Variant::Factions => {
             let members = match complete::<tables::FactionMembers>(frame, "factions") {
                 Ok(rows) => rows,

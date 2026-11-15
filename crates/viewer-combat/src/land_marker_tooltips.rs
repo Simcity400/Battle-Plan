@@ -4,7 +4,7 @@ use installed_content_country_names::country_names::CountryNames;
 use installed_content_localisation::{localisation::Argument, localisation::Localisation};
 use replay_data::{rows::LandCombatRow, rows::LandCombatSideRow, rows::tables};
 use replay_frame::frame::DecodedFrame;
-use std::{collections::BTreeMap, sync::Arc};
+use std::collections::BTreeMap;
 use viewer_foundation::engagement_history::{self, History};
 use viewer_foundation::land_combat_math::conditions as land_combat_math_conditions;
 use viewer_foundation::land_combat_math::side_scores;
@@ -190,149 +190,124 @@ pub(super) fn intel(
     }
 }
 
-/// The branch, hour, viewing country and combat a tooltip was built for, and
-/// whether the engaged index covered that hour, and the viewer's NATO preference.
-type CacheKey = (replay_data::BranchId, i32, u32, u64, bool, bool);
-
-#[derive(Default)]
-pub struct Cache {
-    held: Option<(CacheKey, Arc<Tooltip>)>,
-}
-impl Cache {
-    pub fn request(
-        &mut self,
-        static_content: &Arc<StaticContent>,
-        frame: &DecodedFrame,
-        viewer: u32,
-        id: u64,
-        index: Option<&History>,
-        nato: bool,
-    ) -> Arc<Tooltip> {
-        let key = (
-            frame.branch,
-            frame.hour,
+/// The land marker hover of combat `id` for the viewing country `viewer`.
+pub fn build(
+    static_content: &StaticContent,
+    frame: &DecodedFrame,
+    viewer: u32,
+    id: u64,
+    index: Option<&History>,
+    nato: bool,
+) -> Tooltip {
+    let mut text = Tooltip::default();
+    let result: Result<String, String> = (|| {
+        let links: BTreeMap<_, _> = core::<tables::CountryLinks>(frame)
+            .map_err(|e| e.to_string())?
+            .iter()
+            .map(|row| (row.id, row.canonical_slot))
+            .collect();
+        let relations = Relations::read(frame, &links);
+        let (flags, provenance) = engagement_history::combats(
+            frame,
+            engagement_history::LAND,
             viewer,
-            id,
-            index.is_some_and(|index| index.covers(frame.branch, frame.hour)),
-            nato,
-        );
-        if let Some((held, text)) = &self.held
-            && *held == key
-        {
-            return Arc::clone(text);
+            &links,
+            relations.as_ref().map_err(|e| *e),
+            index,
+        )
+        .map_err(|e| e.to_string())?;
+        if let Some(why) = provenance.limitation() {
+            text.refused.insert(format!("land marker {id}: {why}"), 1);
         }
-        let mut text = Tooltip::default();
-        let result: Result<String, String> = (|| {
-            let links: BTreeMap<_, _> = core::<tables::CountryLinks>(frame)
-                .map_err(|e| e.to_string())?
-                .iter()
-                .map(|row| (row.id, row.canonical_slot))
-                .collect();
-            let relations = Relations::read(frame, &links);
-            let (flags, provenance) = engagement_history::combats(
-                frame,
-                engagement_history::LAND,
-                viewer,
-                &links,
-                relations.as_ref().map_err(|e| *e),
-                index,
-            )
+        if let Some(title) = intel(
+            static_content.assets.as_ref(),
+            &static_content.localisation,
+            flags.get(&id).copied().unwrap_or(Engaged::Unknown),
+        )? {
+            return Ok(title);
+        }
+        let combat_rows = rows::<tables::LandCombats>(frame).map_err(|e| e.to_string())?;
+        let combat = combat_rows
+            .rows()
+            .iter()
+            .find(|row| row.id == id)
+            .ok_or_else(|| format!("LandCombats lacks combat {id}"))?;
+        let side_rows = rows::<tables::LandCombatSides>(frame).map_err(|e| e.to_string())?;
+        let sides = side_rows
+            .rows()
+            .iter()
+            .find(|row| row.combat == id)
+            .ok_or_else(|| format!("LandCombatSides lacks combat {id}"))?;
+        let membership = membership(sides, viewer, &links)?;
+        let details = rows::<tables::LandCombatDetails>(frame).map_err(|e| e.to_string())?;
+        let detail = details
+            .rows()
+            .iter()
+            .find(|row| row.combat == id)
+            .ok_or_else(|| format!("LandCombatDetails lacks combat {id}"))?;
+        let divisions =
+            rows::<tables::LandCombatDivisions>(frame).map_err(|e| e.to_string())?;
+        let members =
+            viewer_foundation::land_combat_math::combat_rows(divisions.rows(), id);
+        let values = viewer_foundation::land_combat_math::member_values(frame, members)
             .map_err(|e| e.to_string())?;
-            if let Some(why) = provenance.limitation() {
-                text.refused.insert(format!("land marker {id}: {why}"), 1);
-            }
-            if let Some(title) = intel(
-                static_content.assets.as_ref(),
-                &static_content.localisation,
-                flags.get(&id).copied().unwrap_or(Engaged::Unknown),
-            )? {
-                return Ok(title);
-            }
-            let combat_rows = rows::<tables::LandCombats>(frame).map_err(|e| e.to_string())?;
-            let combat = combat_rows
-                .rows()
-                .iter()
-                .find(|row| row.id == id)
-                .ok_or_else(|| format!("LandCombats lacks combat {id}"))?;
-            let side_rows = rows::<tables::LandCombatSides>(frame).map_err(|e| e.to_string())?;
-            let sides = side_rows
-                .rows()
-                .iter()
-                .find(|row| row.combat == id)
-                .ok_or_else(|| format!("LandCombatSides lacks combat {id}"))?;
-            let membership = membership(sides, viewer, &links)?;
-            let details = rows::<tables::LandCombatDetails>(frame).map_err(|e| e.to_string())?;
-            let detail = details
-                .rows()
-                .iter()
-                .find(|row| row.combat == id)
-                .ok_or_else(|| format!("LandCombatDetails lacks combat {id}"))?;
-            let divisions =
-                rows::<tables::LandCombatDivisions>(frame).map_err(|e| e.to_string())?;
-            let members =
-                viewer_foundation::land_combat_math::combat_rows(divisions.rows(), id);
-            let values = viewer_foundation::land_combat_math::member_values(frame, members)
-                .map_err(|e| e.to_string())?;
-            let conditions = land_combat_math_conditions(frame).map_err(|e| e.to_string())?;
-            let scores = side_scores(
-                detail,
-                replay_data::rows::land_combat_members(members, &values),
-                &conditions,
-                [&combat.attackers, &combat.defenders],
-                static_content.scores,
-            )
-            .map_err(|e| format!("survival estimate: {e:?}"))?;
-            let names = CountryNames::read(frame, &static_content.localisation);
-            let result = seen(
-                static_content.assets.as_ref(),
-                &static_content.localisation,
-                combat,
-                sides,
-                scores,
-                membership,
-                &|raw| {
-                    names.name(
-                        *links
-                            .get(&raw)
-                            .ok_or_else(|| format!("CountryLinks lacks participant {raw}"))?,
-                    )
-                },
-            )?;
-            text.body = result;
-            let border_result = detail
-                .border_war
-                .require("LandCombatDetails.border_war")
-                .and_then(|border| match border {
-                    Some(border) => super::border_marker::append(
-                        static_content,
-                        frame,
-                        viewer,
-                        &links,
-                        border,
-                        nato,
-                        &mut text,
-                    ),
-                    None => Ok(()),
-                });
-            if let Err(why) = border_result {
-                *text
-                    .refused
-                    .entry(format!("land marker {id} border-conflict tail: {why}"))
-                    .or_default() += 1;
-            }
-            Ok(std::mem::take(&mut text.body))
-        })();
-        match result {
-            // hover text construction writes only its third (delayed) output.
-            Ok(body) => text.body = body,
-            Err(why) => {
-                text.refused.insert(format!("land marker {id}: {why}"), 1);
-            }
+        let conditions = land_combat_math_conditions(frame).map_err(|e| e.to_string())?;
+        let scores = side_scores(
+            detail,
+            replay_data::rows::land_combat_members(members, &values),
+            &conditions,
+            [&combat.attackers, &combat.defenders],
+            static_content.scores,
+        )
+        .map_err(|e| format!("survival estimate: {e:?}"))?;
+        let names = CountryNames::read(frame, &static_content.localisation);
+        let result = seen(
+            static_content.assets.as_ref(),
+            &static_content.localisation,
+            combat,
+            sides,
+            scores,
+            membership,
+            &|raw| {
+                names.name(
+                    *links
+                        .get(&raw)
+                        .ok_or_else(|| format!("CountryLinks lacks participant {raw}"))?,
+                )
+            },
+        )?;
+        text.body = result;
+        let border_result = detail
+            .border_war
+            .require("LandCombatDetails.border_war")
+            .and_then(|border| match border {
+                Some(border) => super::border_marker::append(
+                    static_content,
+                    frame,
+                    viewer,
+                    &links,
+                    border,
+                    nato,
+                    &mut text,
+                ),
+                None => Ok(()),
+            });
+        if let Err(why) = border_result {
+            *text
+                .refused
+                .entry(format!("land marker {id} border-conflict tail: {why}"))
+                .or_default() += 1;
         }
-        let text = Arc::new(text);
-        self.held = Some((key, Arc::clone(&text)));
-        text
+        Ok(std::mem::take(&mut text.body))
+    })();
+    match result {
+        // hover text construction writes only its third (delayed) output.
+        Ok(body) => text.body = body,
+        Err(why) => {
+            text.refused.insert(format!("land marker {id}: {why}"), 1);
+        }
     }
+    text
 }
 
 #[cfg(test)]

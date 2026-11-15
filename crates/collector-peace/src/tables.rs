@@ -63,8 +63,8 @@ impl Captured {
             self.storage = storage;
         }
     }
-    pub fn drain_growing(&mut self, continuous: bool) {
-        self.drained = crate::peace_settlements::drain_growing(&mut self.storage, continuous);
+    pub fn drain(&mut self, continuous: bool) {
+        self.drained = crate::peace_settlements::drain(&mut self.storage, continuous);
     }
     pub fn capture_bids(
         &mut self,
@@ -90,7 +90,7 @@ impl Captured {
                     .ok_or("peace bid roster pointer unreadable")?
                     as usize;
                 self.storage
-                    .observe_bids_growing(memory, base, pointer, hour, index as u64);
+                    .observe_bids(memory, base, pointer, hour, index as u64);
             }
             Ok(0)
         })();
@@ -250,7 +250,7 @@ mod tests {
 
     #[test]
     fn ordinary_forms_capture_loaded_cached_names_without_invented_keys() {
-        let _globals = crate::peace_settlements::TEST_GLOBALS.lock().unwrap();
+        let _globals = crate::peace_settlements::test_globals();
         let mut fixture = crate::peace_settlement_tests::fixture::Fixture::new(1, 4);
         let forms = [
             (engine_peace::ctake_state_action::VTABLE_RVA, "Loaded state"),
@@ -291,8 +291,8 @@ mod tests {
     }
 
     #[test]
-    fn cached_heap_name_preserves_every_byte_and_grows_from_observed_demand() {
-        let _globals = crate::peace_settlements::TEST_GLOBALS.lock().unwrap();
+    fn cached_heap_name_past_the_prepared_arena_is_kept_whole_in_the_callback() {
+        let _globals = crate::peace_settlements::test_globals();
         let mut fixture = crate::peace_settlement_tests::fixture::Fixture::new(1, 1);
         let name = vec![b'x'; 5_001];
         let heap = fixture.bytes.len();
@@ -308,29 +308,19 @@ mod tests {
         let demand = engine_peace::peace_settlement::demand(&fixture.memory(), 0, 0x100);
         assert_eq!(demand.failure, None);
         assert_eq!(demand.name_bytes, name.len());
-        let mut capacity = Capacities::for_counts(1, 1);
+        let capacity = Capacities::for_counts(1, 1);
+        assert!(capacity.name_bytes < name.len());
         let mut captured = Captured::with_capacities(&capacity);
         assert!(
             captured
                 .storage
                 .observe(&fixture.memory(), 0, 0x100, Some(112), 1, true)
         );
-        assert_eq!(captured.storage.events[0].snapshot.actions, 0);
-        assert_eq!(captured.storage.events[0].snapshot.omitted, 1);
-        assert_eq!(
-            captured.storage.events[0].snapshot.required_name_bytes,
-            name.len()
-        );
-        captured.drained = Ok(0);
-        captured.grow(&mut capacity);
-        assert_eq!(capacity.name_bytes, name.len());
-        assert!(
-            captured
-                .storage
-                .observe(&fixture.memory(), 0, 0x100, Some(113), 2, true)
-        );
-        assert_eq!(captured.storage.events[0].snapshot.failure, None);
-        assert_eq!(captured.storage.events[0].snapshot.omitted, 0);
+        let snapshot = &captured.storage.events[0].snapshot;
+        assert_eq!(snapshot.failure, None);
+        assert_eq!(snapshot.omitted, 0);
+        assert_eq!(snapshot.actions, 1);
+        assert!(captured.storage.capacity().name_bytes >= name.len());
         let rows = captured.convert().unwrap();
         assert_eq!(
             rows[0].actions[0].cached_name.as_deref(),
@@ -342,7 +332,7 @@ mod tests {
     fn peace_unavailable_reason_signals_allocation_failure_once() {
         use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
         use windows_sys::Win32::System::Threading::GetCurrentThreadId;
-        let _globals = crate::peace_settlements::TEST_GLOBALS.lock().unwrap();
+        let _globals = crate::peace_settlements::test_globals();
         static OWNER: AtomicU32 = AtomicU32::new(0);
         static FAILURES: AtomicUsize = AtomicUsize::new(0);
         fn owns_failure() -> bool {
@@ -376,7 +366,7 @@ mod tests {
 
     #[test]
     fn peace_conversion_returns_allocation_failure() {
-        let _globals = crate::peace_settlements::TEST_GLOBALS.lock().unwrap();
+        let _globals = crate::peace_settlements::test_globals();
         let mut captured = Captured::with_capacities(&Capacities {
             events: 1,
             countries: 0,

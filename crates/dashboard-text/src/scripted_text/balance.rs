@@ -282,7 +282,7 @@ impl<'a> ScriptedText<'a> {
             }
             if !missing.is_empty() {
                 return Err(format!(
-                    "{name}: {} feature-gated modifiers ({}) cannot be decided without this hour's SimulationFeatures.dlc_mask",
+                    "{name}: {} feature-gated modifiers ({}) cannot be decided without this hour's dlc mask of simulation features",
                     missing.len(),
                     missing.join(", ")
                 ));

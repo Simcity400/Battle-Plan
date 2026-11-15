@@ -136,7 +136,7 @@ impl Launch {
         observed: &mut Result<native::NavyInputs, &'static str>,
     ) {
         let captured = match observed {
-            Ok(inputs) => inputs.capture_launch_growing(
+            Ok(inputs) => inputs.capture_launch(
                 memory,
                 base,
                 &mut self.launch_scratch.first,

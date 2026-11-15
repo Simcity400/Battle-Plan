@@ -270,10 +270,12 @@ fn party_leader_role_identity_survives_capture_at_country_scale() {
     let mut captured = Captured::vacant();
     captured.party_leaders = CaptureRows::new(5_000);
     for (index, destination) in captured.party_leaders.rows.iter_mut().enumerate() {
+        let mut one = Vec::new();
         assert_eq!(
-            reader.party_leaders(index as u32 + 1, std::slice::from_mut(destination)),
+            reader.party_leaders(index as u32 + 1, &mut one),
             Outcome::Rows { len: 1 }
         );
+        *destination = one.swap_remove(0);
     }
     captured.party_leaders.outcome = Outcome::Rows { len: 5_000 };
     let tables = captured.tables();

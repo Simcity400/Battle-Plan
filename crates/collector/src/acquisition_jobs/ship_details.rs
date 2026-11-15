@@ -12,7 +12,7 @@ pub(crate) struct ShipDetailsDispatch {
 #[derive(Default)]
 struct State {
     closed: bool,
-    countries: Option<Arc<engine_native::country_memory::Cache>>,
+    countries: Option<engine_allocation::SharedBox<engine_native::country_memory::Cache>>,
     context: Option<ship_models::CaptureContext>,
     captured: Option<ship_models::Captured>,
     dispatched: bool,
@@ -42,7 +42,7 @@ impl ShipDetailsDispatch {
             state.closed && state.captured.is_none() && state.pending.iter().all(Option::is_none)
         );
         *state = State {
-            countries: Some(Arc::clone(&request.countries)),
+            countries: Some(engine_allocation::SharedBox::clone(&request.countries)),
             context: Some(request.context),
             ..Default::default()
         };
@@ -102,7 +102,7 @@ impl acquisition::Publication for ShipDetailsDispatch {
         let Some(executor) = self.executor.upgrade() else {
             return;
         };
-        let countries = Arc::clone(state.countries.as_ref().unwrap());
+        let countries = engine_allocation::SharedBox::clone(state.countries.as_ref().unwrap());
         let context = state.context.unwrap();
         let captured = state.captured.as_mut().unwrap();
         captured.set_context(context);
@@ -143,7 +143,7 @@ impl acquisition::Publication for ShipDetailsDispatch {
 
 pub(crate) fn take_parts(
     captured: &mut ship_models::Captured,
-    countries: &Arc<engine_native::country_memory::Cache>,
+    countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
     base: usize,
 ) -> [Option<ShipModelDetailsRequest>; ship_models::MAX_PARTS] {
     let mut requests = [const { None }; ship_models::MAX_PARTS];
@@ -151,14 +151,14 @@ pub(crate) fn take_parts(
     let context = captured.capture_context(base);
     for (part, request) in requests.iter_mut().enumerate().take(parts).skip(1) {
         *request = Some(ShipModelDetailsRequest {
-            countries: Arc::clone(countries),
+            countries: engine_allocation::SharedBox::clone(countries),
             context,
             part,
             captured: captured.take_part(part - 1),
         });
     }
     requests[0] = Some(ShipModelDetailsRequest {
-        countries: Arc::clone(countries),
+        countries: engine_allocation::SharedBox::clone(countries),
         context,
         part: 0,
         captured: std::mem::replace(captured, ship_models::Captured::vacant()),

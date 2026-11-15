@@ -192,28 +192,6 @@ fn intel_lane(
     Ok(result)
 }
 
-fn selected_navy<M: Memory>(
-    memory: &M,
-    base: usize,
-    state: usize,
-    country: ccountry::Country,
-    countries: &ccountry::Reader<'_, M>,
-) -> Result<usize, &'static str> {
-    // Select navies by canonical country from the shared manager.
-    let navies = cstrategic_navy_manager::navies(memory, base, state)?;
-    let slot = navies
-        .element(country.canonical_slot, 8)
-        .ok_or("navy manager country outside array")?;
-    let navy = read::<u64>(memory, slot)
-        .filter(|&p| p != 0)
-        .ok_or("country navy absent or unreadable")? as usize;
-    // Resolve the owner backlink after DLC/static-definition gates.
-    cstrategic_navy::authenticate_owner_with_countries(
-        memory, base, state, navy, country, countries,
-    )?;
-    Ok(navy)
-}
-
 fn totals<M: Memory>(
     memory: &M,
     base: usize,
@@ -250,7 +228,7 @@ fn totals<M: Memory>(
             intel_lane(memory, countries, owner_intel, enemy_intel, country)?.wrapping_sub(
                 intel_lane(memory, countries, enemy_intel, owner_intel, owner)?,
             );
-        let navy = selected_navy(memory, base, state, country, countries)?;
+        let navy = cstrategic_navy_manager::navy(memory, base, state, country)?;
         let regions = cstrategic_navy::regional_array(memory, navy)?;
         let at = regions
             .element(region, 8)
@@ -329,9 +307,9 @@ fn composed_inputs<M: Memory>(
     if value::<u64>(memory, definition, 0)? != key(base, cstatic_modifier::VTABLE_RVA)? as u64 {
         return Err("transport modifier identity mismatch");
     }
-    // Resolve the owner's navy and its owner backlink after DLC/static-definition gates, even with
-    // no enemies. The owner's regional operand is not reached.
-    selected_navy(memory, base, state, owner, countries)?;
+    // Authenticate the owner's navy after DLC/static-definition gates, even with no enemies. The
+    // owner's regional operand is not reached.
+    cstrategic_navy_manager::navy(memory, base, state, owner)?;
     let (total, mean) = totals(memory, base, state, countries, owner, region)?;
     let maximum = global::<i64>(memory, base, MAXIMUM_TOTAL_RVA)?;
     let bounded = if total < 0 {

@@ -106,7 +106,11 @@ fn refused(family: Family, refusal: Refusal) {
     let index = family.index();
     MISSED[index].fetch_add(1, Ordering::SeqCst);
     match refusal {
-        Refusal::Capacity | Refusal::Staging => fault(family, Fault::Capacity),
+        Refusal::Staging => fault(family, Fault::Capacity),
+        Refusal::Allocation => {
+            LAST_REFUSAL[index].store(pack("map event spill allocation failed"), Ordering::Relaxed);
+            fault(family, Fault::Capacity);
+        }
         Refusal::Read(reason) => {
             LAST_REFUSAL[index].store(pack(reason), Ordering::Relaxed);
             fault(family, Fault::Read);
@@ -694,7 +698,7 @@ impl Hooks {
                 fault(family, Fault::Disabled);
             }
         }
-        let ready = Hook::set_enabled_iter_attach(
+        let ready = Hook::set_enabled_iter(
             self.hooks
                 .iter_mut()
                 .map(|(_, hook)| hook)

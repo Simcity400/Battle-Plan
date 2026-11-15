@@ -6,7 +6,7 @@ import { createServer } from 'vite';
 import type { WidgetProps } from '../../dashboard/definitions';
 import type { DashboardMapState } from '../../dashboard/client';
 
-test('map load errors hide diagnostics and retain Retry; an hour not available yet says so; the displayed map keeps its mode and date; a hidden map is not loading', async () => {
+test('map load errors hide diagnostics and retain Retry; an hour not available yet says so; the displayed map keeps its mode and date; a hidden map is not loading; a frame of another hour stays labelled, never covered by a loading placeholder', async () => {
   const host = globalThis as typeof globalThis & { __mapReview?: DashboardMapState; __mapsHidden?: boolean };
   host.__mapReview = { id: 'map', sourceId: 's', revision: 'r', branchId: 'b', hour: 105, fraction: 0,
     sequence: 0, requestedSequence: 0, loading: false, error: 'Synthetic native failure' };
@@ -15,7 +15,6 @@ test('map load errors hide diagnostics and retain Retry; an hour not available y
       transform(_source, id) {
         const path = id.replaceAll('\\', '/');
         if (path.endsWith('/dashboard/geometry.ts')) return 'export const useMapState = () => globalThis.__mapReview; export const useMapsHidden = () => !!globalThis.__mapsHidden;';
-        if (path.endsWith('/dashboard/playback.ts')) return 'export const usePlaybackHour = clock => clock.getHour();';
       },
     }] });
   try {
@@ -41,5 +40,18 @@ test('map load errors hide diagnostics and retain Retry; an hour not available y
     const hidden = render();
     assert.match(hidden, /Map hidden while a menu is open/);
     assert.doesNotMatch(hidden, /spinner|Preparing this map/);
+    // Paused at a new hour, the viewer still presents the frame of the hour before while it builds this one: that frame is
+    // dated and marked as updating, with no placeholder over it. With no frame at all, the map is being prepared.
+    host.__mapsHidden = false;
+    (props.runtime.clock as { getSnapshot: () => unknown }).getSnapshot = () => ({ position: 106, hour: 106, playing: false, sequence: 3, seekSequence: 1, fraction: 0, hoursPerSecond: 4 });
+    host.__mapReview = { ...host.__mapReview, hour: 105, sequence: 2, requestedSequence: 3, loading: true };
+    const stale = render();
+    assert.doesNotMatch(stale, /spinner|Preparing this map/);
+    assert.match(stale, /Updating…/);
+    assert.match(stale, /data-map-current="false"/);
+    host.__mapReview = { ...host.__mapReview, hour: null, branchId: null };
+    const first = render();
+    assert.match(first, /spinner/);
+    assert.match(first, /Preparing this map…/);
   } finally { await vite.close(); delete host.__mapReview; delete host.__mapsHidden; }
 });

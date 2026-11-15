@@ -501,7 +501,7 @@ fn construction_rest_split_copy_matches_direct_walk() {
 }
 
 #[test]
-fn occupied_roster_split_copy_preserves_settings_on_short_arena_and_native_failure() {
+fn occupied_roster_split_copy_preserves_settings_from_empty_storage_and_on_native_failure() {
     use super::construction_rest_test_kit as kit;
     for failure in [false, true] {
         let mut bytes = kit::fixture();
@@ -529,7 +529,7 @@ fn occupied_roster_split_copy_preserves_settings_on_short_arena_and_native_failu
             assert_eq!(settings[0].law, b"civilian");
             assert_eq!(
                 settings[0].occupied,
-                rows::Recorded::Value((!failure && storage == 1).then(|| vec![1]))
+                rows::Recorded::Value((!failure).then(|| vec![1]))
             );
         }
     }
@@ -916,32 +916,9 @@ fn construction_rest_demand_failures_are_explicit_and_keep_successful_allocation
             assert_eq!(captured.laws.outcome, Outcome::Unavailable { reason });
             assert_eq!(captured.settings.rows.len(), 2);
             assert!(captured.allocated_bytes() > before);
-            assert_eq!(captured.law_bytes.first.len(), 0);
         }
         assert_eq!(&captured.outcomes()[7..], &reference.outcomes()[7..]);
     }
-}
-
-#[test]
-fn construction_rest_staging_overflow_falls_back_to_typed_walk() {
-    use super::construction_rest_test_kit as kit;
-    let bytes = kit::fixture();
-    let memory = engine_native::memory::SliceMemory {
-        base: kit::BASE,
-        bytes: &bytes,
-    };
-    let ctx = ConstructionRestCopyContext {
-        base: 0,
-        game_state: kit::BASE,
-    };
-    let mut tiny = ConstructionRestJob {
-        log: crate::raw::RawLog::new(8, 8),
-        ..ConstructionRestJob::default()
-    };
-    let report = crate::construction::copy_construction_rest_refresh(&memory, ctx, &mut tiny);
-    assert!(!report.raw_ok);
-    assert!(tiny.log.overflowed);
-    assert!(tiny.grow_for_next());
 }
 
 #[test]

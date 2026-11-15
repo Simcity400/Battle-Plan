@@ -1,12 +1,14 @@
 import { countryNameDetails } from '../../charts/tooltip.ts';
-import type { useTradeFlows } from './useTradeFlows';
 import { useCallback, useMemo, useRef, useState } from 'react';
 import DrillParts from '../../charts/drill/DrillParts';
-import type { DrillPart } from '../../charts/drill/DrillParts';
+import type { DrillPart, LiveDrillParts } from '../../charts/drill/DrillParts';
 import { dayLabel, drawBands, drawPlayhead } from '../../charts/draw';
-import { drawApproximateSpans, summaryFits } from '../../charts/chartSummary';
+import { mapLive } from '../../charts/live';
+import type { Live } from '../../charts/live';
+import LiveText from '../../charts/LiveText';
+import type { LiveTexts } from '../../charts/LiveText';
 import { usNumber } from '../../charts/numberFormat';
-import { compactStack, compactStackExtent, forEachCompactStackSegment } from '../../charts/stack';
+import { compactStack, compactStackExtent, forEachCompactStackSegment, forEachJoinedSegment } from '../../charts/stack';
 import { heldStackSegment } from '../../charts/race/countryRace';
 import TimeChart from '../../charts/TimeChart';
 import type { ChartLayer } from '../../charts/TimeChart';
@@ -19,22 +21,24 @@ import type { NameAt } from '../../dashboard/countryNamesAt';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import type { BoundTrack } from '../../dashboard/model';
 import type { HourSpan } from '../../generated/dashboard';
-import { preparedContributionStack, contributionAmounts, contributionHistory, contributionMeasureExtent, contributionMeasureModel, forEachContributionMeasureSegment } from './tradeDrill';
+import { contributionAmounts, contributionHistory, contributionMeasureExtent, contributionMeasureModel, forEachContributionMeasureSegment } from './tradeDrill';
 import { coverageNote, flowCountryAt, formatDays, knownHours, knownSpanAt, measureAmount, measureNote, resourceName } from './tradeData';
 import type { Flow, Measure, TradeData, TradeCountryFact } from './tradeData';
 import { TOOLTIP_LIMIT } from './tradeTooltip';
 import { motionOf } from '../../charts/easing.ts';
 
-/** The complete native holder/resource inventory, and the same measure over time. */
-export default function TradeDrill({ prepared, flows, trade, track, runtime, measure, from, hour, extent, playhead, known, colours, tokens, identityNote, active, onPick, onContextMenu }: {
+/** The drill's hour each frame while it follows playback, with its texts. */
+export type LiveHour = Live<number> & { hour(): number; texts: LiveTexts };
+
+/** The complete native holder/resource inventory, and the same measure over time. While it follows
+ * playback the amounts and the playhead are painted at the head each frame (`live`); `hour` is then
+ * the hour its names are read at, which moves with the look grid, not each hour. */
+export default function TradeDrill({ flows, trade, track, runtime, measure, from, hour, live, extent, known, colours, tokens, identityNote, active, onPick, onContextMenu }: {
   flows: readonly Flow[]; trade: TradeData; track: BoundTrack; runtime: WidgetRuntime; measure: Measure; from: number;
-  hour: number | null; extent: [number, number]; playhead: number | null; known: readonly HourSpan[];
+  hour: number | null; live: LiveHour | null; extent: [number, number]; known: readonly HourSpan[];
   colours: ReadonlyMap<number, string>; tokens: ChartTokens; identityNote?: string; active: boolean; onPick: (hour: number) => void;
   onContextMenu: (hour: number, x: number, y: number) => void;
-  prepared?: Pick<ReturnType<typeof useTradeFlows>, 'onSummaryView' | 'onHover' | 'navigateFlows' | 'keyboardHour' | 'keyboardRevision' | 'hasExactHour'>;
 }) {
-  const navigate = prepared?.navigateFlows;
-  const onNavigateHour = useMemo(() => navigate?.(flows.map(flow => flow.key)), [navigate, flows]);
   const [visible, setVisible] = useState<readonly string[]>([]);
   const [hovered, setHovered] = useState<{ hour: number; flows: readonly Flow[] } | null>(null);
   const hoverKey = useRef('');
@@ -71,72 +75,65 @@ export default function TradeDrill({ prepared, flows, trade, track, runtime, mea
     hoverKey.current = key;
     queueMicrotask(() => setHovered({ hour: at, flows: selected }));
   }, []);
-  const pending = hour != null && !!prepared?.hasExactHour && !prepared.hasExactHour(hour);
-  // Totals and averages add the cumulative prefixes: while those are prepared, nothing is summed.
-  const cumulativePending = measure !== 'current' && flows.some(flow => flow.prepared?.cumulativePending);
-  const amounts = useMemo(() => hour == null || pending || cumulativePending ? [] : contributionAmounts(flows, measure, from, hour, known),
-    [flows, measure, from, hour, known, pending, cumulativePending]);
-  const total = hour == null || pending || cumulativePending || !flows.length || amounts.some(item => item.raw == null) ? null : measureAmount(flows, measure, from, hour);
   const scale = 10 ** trade.reply.decimals;
-  const parts = useMemo<DrillPart[]>(() => amounts.map(({ flow, raw }) => {
-    const seller = visibleSet.has(flow.key) ? flowCountryAt(flow, 'seller', hour!) : null;
-    return { ...nameDetails(flow, hour!), id: flow.key,
-    label: named(flow, hour!), value: raw == null ? null : Number(raw) / scale, raw,
-    text: raw == null ? 'Not recorded' : formatAmount(raw, trade.reply.decimals, trade.reply.decimals),
-    shareText: raw == null || total == null || total === 0n ? '—'
-      : `${formatAmount(rescale(raw * (total < 0n ? -100n : 100n), total < 0n ? -total : total, 1), 1, 1)}%`,
-    color: colours.get(flow.resource.id) ?? tokens.muted,
-    countryFlag: seller ? labels.labelAt(factHour(seller, false))(seller.tag) : undefined,
-  }; }), [amounts, named, nameDetails, hour, scale, trade.reply.decimals, total, colours, tokens.muted, visibleSet, labels.labelAt, factHour]);
-  const dense = useMemo(() => preparedContributionStack(flows), [flows]);
+  // The parts at an hour: names and flags as read at `hour`, amounts at `at`.
+  const partsAt = useCallback((at: number) => {
+    const amounts = contributionAmounts(flows, measure, from, at, known);
+    const total = !flows.length || amounts.some(item => item.raw == null) ? null : measureAmount(flows, measure, from, at);
+    const named_ = hour ?? at;
+    const parts = amounts.map(({ flow, raw }): DrillPart => {
+      const seller = visibleSet.has(flow.key) ? flowCountryAt(flow, 'seller', named_) : null;
+      return { ...nameDetails(flow, named_), id: flow.key,
+        label: named(flow, named_), value: raw == null ? null : Number(raw) / scale, raw,
+        text: raw == null ? 'Not recorded' : formatAmount(raw, trade.reply.decimals, trade.reply.decimals),
+        shareText: raw == null || total == null || total === 0n ? '—'
+          : `${formatAmount(rescale(raw * (total < 0n ? -100n : 100n), total < 0n ? -total : total, 1), 1, 1)}%`,
+        color: colours.get(flow.resource.id) ?? tokens.muted,
+        countryFlag: seller ? labels.labelAt(factHour(seller, false))(seller.tag) : undefined };
+    });
+    return { parts, total: total == null ? null : Number(total) / scale,
+      totalText: total == null ? 'Not recorded' : formatAmount(total, trade.reply.decimals, trade.reply.decimals) };
+  }, [flows, measure, from, known, hour, visibleSet, nameDetails, named, scale, trade.reply.decimals, colours, tokens.muted, labels.labelAt, factHour]);
+  const shown = useMemo(() => hour == null || live ? null : partsAt(hour), [hour, live, partsAt]);
+  const liveParts = useMemo<LiveDrillParts | undefined>(() => live ? mapLive(live, partsAt) : undefined, [live, partsAt]);
   const stack = useMemo(() => measure === 'current' ? compactStack(flows.map(flow => contributionHistory(flow, known))) : null, [flows, known, measure]);
-  const measured = useMemo(() => measure === 'current' || cumulativePending ? null : contributionMeasureModel(flows, measure, from, known),
-    [flows, measure, from, known, cumulativePending]);
+  const measured = useMemo(() => measure === 'current' ? null : contributionMeasureModel(flows, measure, from, known), [flows, measure, from, known]);
   const colors = useMemo(() => flows.map(flow => colours.get(flow.resource.id) ?? tokens.muted), [flows, colours, tokens.muted]);
   const layers = useMemo<ChartLayer[]>(() => [{
     draw: (ctx, frame, chartTokens, state) => {
       const end = Math.min(frame.x[1], state.playhead ?? frame.x[1]);
       const minHours = (frame.x[1] - frame.x[0]) / Math.max(1, frame.plotWidth);
-      if (dense && !summaryFits(frame, dense, end)) return;
-      if (dense) drawApproximateSpans(ctx, frame, dense.approximate, end, () => forEachCompactStackSegment(dense.model, frame.x[0], end, minHours, piece => {
-        const geometry = measure === 'current' ? heldStackSegment(piece) : piece;
-        drawBands(ctx, frame, chartTokens, geometry.hours, geometry.bands, colors, geometry);
-      }, dense.sample));
-      else if (stack) forEachCompactStackSegment(stack, frame.x[0], end, minHours, piece => {
-        const held = heldStackSegment(piece);
-        drawBands(ctx, frame, chartTokens, held.hours, held.bands, colors, held);
-      });
-      else if (measured) forEachContributionMeasureSegment(measured, frame.x[0], end, minHours,
+      if (stack) forEachJoinedSegment(piece => forEachCompactStackSegment(stack, frame.x[0], end, minHours, segment => piece(heldStackSegment(segment))),
+        held => drawBands(ctx, frame, chartTokens, held.hours, held.bands, colors, held));
+      else if (measured) forEachJoinedSegment(piece => forEachContributionMeasureSegment(measured, frame.x[0], end, minHours, piece),
         piece => drawBands(ctx, frame, chartTokens, piece.hours, piece.bands, colors, piece));
     },
-    extent: x => dense ? compactStackExtent(dense.model, x[0], x[1]) : stack ? compactStackExtent(stack, x[0], x[1]) : measured ? contributionMeasureExtent(measured, x[0], x[1]) : null,
-  }], [dense, stack, measured, colors, measure]);
-  const missingGroupHours = hour == null ? 0 : knownHours(trade.reply.known, from, hour) - knownHours(known, from, hour);
-  const note = hour == null ? undefined : [coverageNote(trade.reply, measure, from, hour),
-    measure !== 'current' && missingGroupHours > 0 ? `Group membership is missing for ${formatDays(missingGroupHours)}.` : null]
-    .filter(Boolean).join(' ') || undefined;
+    extent: x => stack ? compactStackExtent(stack, x[0], x[1]) : measured ? contributionMeasureExtent(measured, x[0], x[1]) : null,
+  }], [stack, measured, colors]);
+  const noteAt = useCallback((at: number) => {
+    const missingGroupHours = knownHours(trade.reply.known, from, at) - knownHours(known, from, at);
+    return [coverageNote(trade.reply, measure, from, at), measure !== 'current' && missingGroupHours > 0 ? `Group membership is missing for ${formatDays(missingGroupHours)}.` : null]
+      .filter(Boolean).join(' ');
+  }, [trade.reply, measure, from, known]);
+  const note = hour == null || live ? '' : noteAt(hour);
+  const parts = shown?.parts ?? (live ? partsAt(live.hour()).parts : []);
   return <div className="trade-drill">
-    <p className="drill-empty">{measureNote(measure)}{hour != null ? ` · ${dayLabel(hour)}` : ''}. {usNumber.format(flows.length)} trades.</p>
+    <p className="drill-empty">{measureNote(measure)}{live ? <> · <LiveText live={live.texts} at="day" /></> : hour != null ? ` · ${dayLabel(hour)}` : ''}. {usNumber.format(flows.length)} trades.</p>
     {identityNote && <p className="drill-empty">{identityNote}</p>}
     {!flows.length && <p className="drill-empty">No trades match this selection.</p>}
-    {hour == null ? <p className="drill-empty">Choose a day.</p> : pending ? <p className="drill-empty">Loading trade amounts…</p>
-      : cumulativePending ? <p className="drill-empty">Trade totals and averages are still being prepared.</p>
-      : <DrillParts parts={parts} virtual active={active} onVisible={setVisible} positiveBars signedShares
-        total={total == null ? null : Number(total) / scale} format={value => String(value)}
-        totalRow={{ label: 'Total', value: total == null ? 'Not recorded' : formatAmount(total, trade.reply.decimals, trade.reply.decimals) }} />}
-    {note && <p className="drill-empty">{note}</p>}
+    {hour == null && !live ? <p className="drill-empty">Choose a day.</p>
+      : <DrillParts parts={parts} live={liveParts} virtual active={active} onVisible={setVisible} positiveBars signedShares
+        total={shown?.total ?? null} format={value => String(value)}
+        totalRow={{ label: 'Total', value: shown?.totalText ?? 'Not recorded' }} />}
+    {live ? <p className="drill-empty"><LiveText live={live.texts} at="note" /></p> : note && <p className="drill-empty">{note}</p>}
     <p className="drill-empty">{measureNote(measure)} over time.</p>
-    {!!dense?.approximate.length && <p className="chart-line-key"><i className="is-dashed" aria-hidden="true" />Approximate</p>}
     <div className="trade-drill-chart">
       <TimeChart label={`Selected trade contributors, ${measureNote(measure).toLowerCase()} over time`} extent={extent} branchStart={track.branch.firstHour}
-        playhead={playhead} playback="cursor" afterPlayhead hoursPerSecond={motionOf(runtime.clock.getSnapshot())}
-        axes={{ xFrom: null, xTo: null, yMin: 0, yMax: null, log: false }} layers={layers} onSummaryView={prepared?.onSummaryView} onHover={prepared?.onHover}
-        onNavigateHour={onNavigateHour} keyboardHour={prepared?.keyboardHour} keyboardRevision={prepared?.keyboardRevision} keyHours={stack?.hours ?? measured?.hours}
-        active={active} revision={dense ?? stack ?? measured} onPick={onPick} onContextMenu={onContextMenu}
-        overlay={(ctx, frame, chartTokens) => { if (hour != null) drawPlayhead(ctx, frame, chartTokens, hour); }}
+        playhead={live ? live.hour() : hour} liveHead={live ?? undefined} playback="cursor" afterPlayhead hoursPerSecond={motionOf(runtime.clock.getSnapshot())}
+        axes={{ xFrom: null, xTo: null, yMin: 0, yMax: null, log: false }} layers={layers} keyHours={stack?.hours ?? measured?.hours}
+        active={active} revision={stack ?? measured} onPick={onPick} onContextMenu={onContextMenu}
+        overlay={live ? undefined : (ctx, frame, chartTokens) => { if (hour != null) drawPlayhead(ctx, frame, chartTokens, hour); }}
         tooltip={at => {
-          if (prepared?.hasExactHour && !prepared.hasExactHour(at)) return { title: dayLabel(at), rows: [{ label: 'Trade amounts', value: 'Loading...', tone: 'muted' }] };
-          if (cumulativePending) return { title: dayLabel(at), rows: [{ label: 'Trade totals', value: 'Still being prepared', tone: 'muted' }] };
           // An unrecorded hour hides only its own amounts: totals so far still add the hours before it.
           if (measure === 'current' && knownSpanAt(known, at) < 0) return { title: dayLabel(at), rows: [{ label: 'Trade contributions', value: 'Not recorded', tone: 'muted' }] };
           const amountsAt = contributionAmounts(flows, measure, from, at, known);
@@ -156,4 +153,14 @@ export default function TradeDrill({ prepared, flows, trade, track, runtime, mea
         }} />
     </div>
   </div>;
+}
+
+/** The texts a following trade view paints: its day and the coverage note at the head. */
+export function tradeTexts(trade: TradeData, measure: Measure, from: number, known: readonly HourSpan[]) {
+  return (at: number) => {
+    const missingGroupHours = knownHours(trade.reply.known, from, at) - knownHours(known, from, at);
+    const note = [coverageNote(trade.reply, measure, from, at), measure !== 'current' && missingGroupHours > 0 ? `Group membership is missing for ${formatDays(missingGroupHours)}.` : null]
+      .filter(Boolean).join(' ');
+    return new Map([['day', measure === 'current' ? dayLabel(at) : `${dayLabel(from)} – ${dayLabel(at)}`], ['note', note], ['caption-day', dayLabel(at)]]);
+  };
 }

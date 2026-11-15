@@ -129,9 +129,8 @@ pub(super) fn observe(memory: &impl Memory, base: usize, key: sources::Key, reti
         return;
     };
     NOTES.fetch_add(1, Ordering::Relaxed);
-    store.batch.required_events = store.batch.required_events.saturating_add(1);
-    if store.batch.events.len() == store.batch.events.capacity() {
-        store.batch.failure = Some("design source event capacity exhausted");
+    if let Err(reason) = store.batch.room() {
+        store.batch.failure = Some(reason);
         return;
     }
     let (pointer, kind) = match key {
@@ -197,48 +196,35 @@ pub(super) fn materialize(
         index += 1;
         keep
     });
-    // The presized log first; a short one doubles until the hour's sources fit.
     let mut log = std::mem::replace(&mut batch.log, RawLog::new(0, 0));
     log.clear();
-    let (mut spans, mut bytes) = (log.spans.capacity().max(64), log.bytes.capacity().max(4096));
-    loop {
-        let copied = (|| {
-            for event in &mut batch.events {
-                let start = log.spans.len();
-                match event.kind {
-                    Kind::Source => direct(&mut log, memory, base, event.pointer)?,
-                    Kind::Provider(owner) => {
-                        let state = engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
-                            .and_then(|at| engine_native::read::<u64>(memory, at))
-                            .ok_or("design provider world unreadable")? as usize;
-                        let countries = engine_native::ccountry::Reader::new(memory, base, state)?;
-                        let country = countries.resolve(owner)?;
-                        if engine_native::cproduction_status::manager(memory, base, country)?
-                            != event.pointer
-                        {
-                            return Err("design provider address reused outside its owner lifetime");
-                        }
-                        provider(&mut log, memory, event.pointer)?;
+    let copied = (|| {
+        for event in &mut batch.events {
+            let start = log.spans.len();
+            match event.kind {
+                Kind::Source => direct(&mut log, memory, base, event.pointer)?,
+                Kind::Provider(owner) => {
+                    let state = engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
+                        .and_then(|at| engine_native::read::<u64>(memory, at))
+                        .ok_or("design provider world unreadable")? as usize;
+                    let countries = engine_native::ccountry::Reader::new(memory, base, state)?;
+                    let country = countries.resolve(owner)?;
+                    if engine_native::cproduction_status::manager(memory, base, country)?
+                        != event.pointer
+                    {
+                        return Err("design provider address reused outside its owner lifetime");
                     }
-                    _ => continue,
+                    provider(&mut log, memory, event.pointer)?;
                 }
-                (event.start, event.end) = (start, log.spans.len());
+                _ => continue,
             }
-            Ok(())
-        })();
-        match copied {
-            Ok(()) => {
-                batch.log = log;
-                return Ok(());
-            }
-            Err(_) if log.overflowed => {
-                spans = spans.checked_mul(2).ok_or("design source copy size overflow")?;
-                bytes = bytes.checked_mul(2).ok_or("design source copy size overflow")?;
-                log = RawLog::new(spans, bytes);
-            }
-            Err(reason) => return Err(reason),
+            (event.start, event.end) = (start, log.spans.len());
         }
-    }
+        Ok(())
+    })();
+    copied?;
+    batch.log = log;
+    Ok(())
 }
 pub(super) fn reset_provider(memory: &impl Memory, base: usize, pointer: usize) {
     observe(memory, base, sources::Key::Provider(pointer), true);

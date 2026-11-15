@@ -1,5 +1,5 @@
-import { pendingAt, preparedPrefix, fieldPreparing } from '../../dashboard/preparedPrefix';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { setAttr, setStyle, setText } from '../../charts/domText';
 import type { HTMLAttributes } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { CountryFlagUrl } from '../../components/CountryFlag';
@@ -7,147 +7,160 @@ import { useContextMenu } from '../../components/ContextMenu';
 import type { MenuItem } from '../../components/ContextMenu';
 import WindowedRows from '../../charts/WindowedRows';
 import type { MovingRow } from '../../charts/rowMotion';
-import { ProgressMeter } from '../../charts/meter';
+import type { Live, LiveValues } from '../../charts/live';
 import { jumpItem } from '../../charts/jump';
-import { runAt } from '../../charts/series';
 import { tooltipText } from '../../charts/tooltip';
 import type { TooltipContent } from '../../charts/tooltip';
 import { useRowTooltips } from '../../charts/useRowTooltips';
 import { useViewportHeight } from '../../charts/useChartTokens';
 import { selectedTags } from '../../dashboard/countrySelection';
-import type { WidgetProps } from '../../dashboard/definitions';
-import { countryMatch, MEMBERSHIP_PREPARING } from '../../dashboard/groups';
-import { resolveWindow } from '../../dashboard/model';
-import { resolveOptions } from '../../dashboard/options';
-import { usePlaybackHour } from '../../dashboard/playback';
-import { useProduct } from '../../dashboard/products';
-import { useParityRows } from '../../dashboard/parityRows';
-import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import type { CountryLabel } from '../../dashboard/countryFlagsAt';
-import type { DecryptionReply } from '../../generated/dashboard';
+import type { WidgetProps } from '../../dashboard/definitions';
+import { countryMatch } from '../../dashboard/groups';
+import { useHeadProduct } from '../../dashboard/headProduct';
+import { shownHour, useIntelLabels } from '../../dashboard/IntelCountry';
+import { tagsOf } from '../../dashboard/intelligence';
+import { resolveOptions } from '../../dashboard/options';
+import { useCountryGroups } from '../../dashboard/useCountryGroups';
+import { useDiagnostics } from '../../dashboard/useDiagnostics';
+import { useShownEachFrame } from '../../dashboard/widgetPerf';
 import { OPTIONS } from './definition';
-import { activeBonusDays, amountText, CIPHER_BROKEN, decryptionTooltip, observationDate, progressLabel, progressText, raceRows, validateDecryptionReply, workingStatus } from './decryptionData';
-import type { CountrySide, RaceOrder, RaceRow } from './decryptionData';
-import { useDecryptionCountries } from './decryptionCountries';
-import type { CipherCountries } from './decryptionCountries';
+import { activeBonusDays, amountText, bonusText, CIPHER_BROKEN, cipherNumbers, decryptionTooltip, observationDate, pairKey, percentOf,
+  progressLabel, progressText, raceRows, raceStructure, validateDecryption, workingStatus } from './decryptionData';
+import type { CountrySide, RaceOrder } from './decryptionData';
 import './decryption.css';
+import type { CipherPair, DecryptionReply } from '../../generated/dashboard';
 
-const NO_WARNINGS: string[] = [];
+const NO_ROWS: readonly MovingRow<CipherPair>[] = [];
+const PARAMS = {} as const;
 
+/** Every cipher being broken at the hour, as a race: a pushed panel at the head whose rows (pairs, order, broken or not,
+ * each attempt's start and break) render only when they change; the progress, amounts and bonus countdowns are live
+ * cells painted each frame. Pinned, a range's end or a hovered hour is asked for its hour. */
 export default function DecryptionWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
-  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const options = resolveOptions(OPTIONS, widget.options);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
-  const hour = window?.lastHour ?? 0;
-  const first = track ? track.branch.firstHour + Math.floor((hour - track.branch.firstHour) / 24) * 24 : hour;
-  const day = track && runtime.client.preparedQuery ? { firstHour: first, lastHour: Math.min(first + 23, track.branch.lastHour) } : null;
-  const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'decryption',
-    params: { branchId: track.branch.id, ...day } } : null;
-  const { data, error, retry } = useProduct<DecryptionReply>(runtime.client, request, active, value => validateDecryptionReply(value, day), track?.source);
+  const head = useHeadProduct<DecryptionReply>(runtime, widget, 'decryption', track ? PARAMS : null,
+    { active, validate: validateDecryption, structure: raceStructure });
+  useShownEachFrame(runtime.clock, head.shownAt, head.live);
+  const hour = head.at ?? shownHour(runtime, widget, head) ?? 0;
   const groups = useCountryGroups(runtime, track, active && widget.countries.kind !== 'all');
-  const selection = useMemo(() => {
-    return countryMatch(widget.countries, selectedTags(widget.countries, track), groups.data, track?.branch.lastHour ?? hour);
-  }, [widget.countries, track, groups.data, groups.error, hour]);
-  const rows = useMemo(() => data && selection.ready ? raceRows(data, hour, options.order as RaceOrder, null, options.countrySide as CountrySide,
-    widget.countries.kind === 'all' ? undefined : selection.matches) : [],
-    [data, hour, options.order, options.countrySide, selection, widget.countries.kind]);
-  const items = useMemo(() => rows.map(item => ({ key: item.key, item })), [rows]);
-  const root = useRef<HTMLDivElement>(null);
-  useParityRows(root, () => ({ kind: 'table', label: 'Decryption values',
-    complete: Boolean(data && selection.ready), total: rows.length,
-    rows: rows.map(row => ({ key: row.key, hour: row.hour, ownerId: row.pair.ownerId, targetId: row.pair.targetId,
-      run: row.run, tags: row.tags, broken: row.broken })),
-  }));
-  const [visibleRows, setVisibleRows] = useState<readonly MovingRow<RaceRow>[]>([]);
-  const countries = useDecryptionCountries(runtime.client, track, rows, visibleRows, active);
+  const selection = useMemo(() => countryMatch(widget.countries, selectedTags(widget.countries, track), groups.data, track?.branch.lastHour ?? hour),
+    [widget.countries, track, groups.data, hour]);
+  const data = head.data;
+  const rows = useMemo(() => data && selection.ready ? raceRows(data, options.order as RaceOrder, options.countrySide as CountrySide, hour,
+    widget.countries.kind === 'all' ? undefined : selection.matches) : [], [data, options.order, options.countrySide, hour, selection, widget.countries.kind]);
+  const items = useMemo(() => rows.map(item => ({ key: pairKey(item), item })), [rows]);
+  const [visible, setVisible] = useState<readonly MovingRow<CipherPair>[]>(NO_ROWS);
+  // Names and flags load for the rows drawn, not every pair; pushed at the head, for every pair, so the race reordering
+  // or a row scrolling into view asks nothing and renders nothing.
+  const pushed = head.read === 'followed';
+  const tags = useMemo(() => tagsOf((pushed ? rows : visible.map(row => row.item)).flatMap(pair => [pair.owner, pair.target])), [pushed, rows, visible]);
+  const label = useIntelLabels(runtime, widget, tags, hour, active, pushed);
+  const labelOf = useCallback((tag: string | null) => tag === null ? null : label(tag), [label]);
   const menu = useContextMenu('Cipher actions');
   const height = useViewportHeight();
-  const byKey = useMemo(() => new Map(rows.map(row => [row.key, row])), [rows]);
+  const byKey = useMemo(() => new Map(rows.map(row => [pairKey(row), row])), [rows]);
+  const live = head.live;
   const content = useCallback((key: string) => {
-    const row = byKey.get(key);
-    if (!row) return null;
-    const labels = countries.pair(row);
-    return decryptionTooltip(row, labels.owner, labels.target, height);
-  }, [byKey, countries, height]);
+    const pair = byKey.get(key);
+    return pair && data ? decryptionTooltip(pair, data, cipherNumbers(live.read(), pair), labelOf(pair.owner.tag), labelOf(pair.target.tag), height) : null;
+  }, [byKey, data, live, labelOf, height]);
   const jump = (key: string, x: number, y: number) => {
-    const row = byKey.get(key);
-    if (!track || !row) return;
-    const items: MenuItem[] = [];
-    if (row.run.started) items.push({ ...jumpItem(runtime, track.id, row.run.started.hour),
-      label: `Jump to the start of the current attempt · ${observationDate(row.run.started, row.hour)}` });
-    if (row.run.broken === true && row.broken) items.push({ ...jumpItem(runtime, track.id, row.broken.hour),
-      label: `Jump to the break · ${observationDate(row.broken, row.hour)}` });
-    if (items.length) menu.open(x, y, items);
+    const pair = byKey.get(key);
+    if (!track || !pair) return;
+    const entries: MenuItem[] = [];
+    if (pair.started) entries.push({ ...jumpItem(runtime, track.id, pair.started.hour),
+      label: `Jump to the start of the current attempt · ${observationDate(pair.started)}` });
+    if (pair.broken === true && pair.brokenAt) entries.push({ ...jumpItem(runtime, track.id, pair.brokenAt.hour),
+      label: `Jump to the break · ${observationDate(pair.brokenAt)}` });
+    if (entries.length) menu.open(x, y, entries);
   };
   const tips = useRowTooltips<string>({ owner: `decryption:${widget.id}`, active, content,
-    revision: `${hour}:${track?.source.revision}:${track?.branch.id}:${countries.revision}`, onMenu: jump });
-  useEffect(() => { onDiagnostics(data?.warnings ?? NO_WARNINGS); return () => onDiagnostics(NO_WARNINGS); }, [data, onDiagnostics]);
+    revision: `${hour}:${track?.source.revision}:${track?.branch.id}`, onMenu: jump });
+  useDiagnostics(onDiagnostics, data ? data.warnings : null);
   if (!track) return <WidgetState kind="empty" icon="target" message="Load a campaign to see its decryption races." />;
-  if (!window || hour < track.branch.firstHour || hour > track.branch.lastHour) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
+  if (head.read === 'off') return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  if (head.error && !data) return <WidgetState kind="error" failure={head.error} onRetry={head.retry} />;
   const groupFailure = widget.countries.kind !== 'all' && groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (groupFailure && !groups.data) return groupFailure;
-  if (!data || !selection.ready) return <>{groupFailure}<WidgetState kind="loading" label="Loading decryption…" /></>;
-  if (pendingAt(preparedPrefix(data), hour)) return <>{groupFailure}<WidgetState kind="loading" label="This range is still being prepared." /></>;
-  const coverage = runAt(data.coverage, hour);
-  if (!coverage || (!coverage.complete && !rows.length)) return <>{groupFailure}<WidgetState kind="unavailable"
-    message="Decryption data is unavailable at this time." /></>;
-  if (selection.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={selection.reason} /></>;
-  return <div ref={root} className="decryption" key={JSON.stringify([track.source.id, track.source.revision, track.branch.id])}>{groupFailure}
-    {rows.some(row => fieldPreparing(row.run, 'started')) && <p className="chart-line-key">Attempt histories, starts and breaks are still being prepared.</p>}
-    <WindowedRows items={items} rowHeight={52} padding={8} label="Decryption races" className="decryption-race"
-      onVisibleRows={setVisibleRows} empty={selection.known(hour) ? <WidgetState kind="empty" message={widget.countries.kind === 'all' ? 'No ciphers being decrypted yet.' : 'No matching decryption pairs at this time.'} />
-        : <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />}>
-      {row => <RaceCell row={row.item} labels={countries.pair(row.item)} active={active && row.phase !== 'leaving'} leaving={row.phase === 'leaving'}
-        rowProps={row.phase === 'leaving' ? undefined : tips.rowProps(row.key)} descriptionId={tips.descriptionId(row.key)}
-        content={row.phase === 'leaving' ? null : content(row.key)} />}
-    </WindowedRows>
+  const body = () => {
+    if (!data || !selection.ready) return <WidgetState kind="loading" label="Loading decryption…" />;
+    if (data.missing) return <WidgetState kind="unavailable" message="Decryption data is unavailable at this time." detail={data.missing} />;
+    if (selection.reason) return <WidgetState kind="unavailable" message={selection.reason} />;
+    return <>
+      {data.attemptsUnknown && <p className="chart-line-key">{data.attemptsUnknown}</p>}
+      <WindowedRows items={items} rowHeight={52} padding={8} label="Decryption races" className="decryption-race" onVisibleRows={pushed ? undefined : setVisible}
+        empty={<WidgetState kind="empty" message={widget.countries.kind === 'all' ? 'No ciphers being decrypted yet.' : 'No matching decryption pairs at this time.'} />}>
+        {row => <RaceCell pair={row.item} reply={data} live={live} owner={labelOf(row.item.owner.tag)} target={labelOf(row.item.target.tag)}
+          active={active && row.phase !== 'leaving'} leaving={row.phase === 'leaving'}
+          rowProps={row.phase === 'leaving' ? undefined : tips.rowProps(row.key)} descriptionId={tips.descriptionId(row.key)}
+          content={row.phase === 'leaving' ? null : content(row.key)} />}
+      </WindowedRows>
+    </>;
+  };
+  return <div ref={head.root} className="decryption" key={`${track.source.id}:${track.source.revision}:${track.branch.id}`}>
+    {groupFailure}
+    {body()}
     {menu.menu}
   </div>;
 }
 
-/** Country labels retain their supplying native segment while fading. */
-function RaceCell({ row, labels, active, leaving, rowProps, descriptionId, content }: {
-  row: RaceRow; labels: CipherCountries; active: boolean; leaving: boolean;
-  rowProps: HTMLAttributes<HTMLDivElement> | undefined; descriptionId: string; content: TooltipContent | null;
+/** One pair: its flags and target, the game's progress meter and its status. The meter, its percent, an unknown
+ * threshold's amount and the bonus countdown are painted from `live` each frame, never rendered for. */
+function RaceCell({ pair, reply, live, owner, target, active, leaving, rowProps, descriptionId, content }: {
+  pair: CipherPair; reply: DecryptionReply; live: Live<LiveValues<number>>; owner: ReturnType<CountryLabel> | null; target: ReturnType<CountryLabel> | null;
+  active: boolean; leaving: boolean; rowProps: HTMLAttributes<HTMLDivElement> | undefined; descriptionId: string; content: TooltipContent | null;
 }) {
-  const decryptor = labels.owner;
-  const target = labels.target;
-  const [shownLabels, setShownLabels] = useState<{ decryptor: ReturnType<CountryLabel>; target: ReturnType<CountryLabel> } | null>(null);
-  useEffect(() => {
-    if (!leaving) setShownLabels(previous => previous?.decryptor.name === decryptor.name && previous.target.name === target.name
-      && previous.decryptor.flag === decryptor.flag && previous.target.flag === target.flag
-      && previous.decryptor.flagReason === decryptor.flagReason && previous.target.flagReason === target.flagReason
-      && previous.decryptor.flagPending === decryptor.flagPending && previous.target.flagPending === target.flagPending
-      ? previous : {
-        decryptor: { name: decryptor.name, flag: decryptor.flag, flagReason: decryptor.flagReason, ...(decryptor.flagDetail !== undefined ? { flagDetail: decryptor.flagDetail } : {}), flagPending: decryptor.flagPending },
-        target: { name: target.name, flag: target.flag, flagReason: target.flagReason, ...(target.flagDetail !== undefined ? { flagDetail: target.flagDetail } : {}), flagPending: target.flagPending },
-      });
-  }, [leaving, decryptor.name, decryptor.flag, decryptor.flagReason, decryptor.flagPending, target.name, target.flag, target.flagReason, target.flagPending]);
-  // A fading row keeps its last displayed names and flags from the same look.
-  const shown = leaving ? shownLabels ?? { decryptor, target } : { decryptor, target };
-  const broken = row.run.broken === true;
-  const bonus = activeBonusDays(row.run);
-  const live = active && !broken && row.run.decrypting !== 0 && row.run.progressPercent != null;
+  const broken = pair.broken === true;
+  const known = pair.thresholdRaw !== null;
+  const fill = useRef<HTMLElement>(null), meter = useRef<HTMLDivElement>(null), percent = useRef<HTMLElement>(null);
+  const unknown = useRef<HTMLElement>(null), amount = useRef<HTMLSpanElement>(null), bonus = useRef<HTMLSpanElement>(null);
+  const view = () => {
+    const numbers = cipherNumbers(live.read(), pair);
+    const shown = percentOf(pair, numbers);
+    return { numbers, percent: shown, bonus: activeBonusDays(pair, numbers) };
+  };
+  useLayoutEffect(() => {
+    const paint = () => {
+      const now = view();
+      setStyle(fill.current, 'width', `${now.percent ?? 0}%`);
+      if (meter.current) {
+        if (now.percent === null) { if (meter.current.hasAttribute('aria-valuenow')) meter.current.removeAttribute('aria-valuenow'); setAttr(meter.current, 'aria-valuetext', 'Not recorded'); }
+        else { setAttr(meter.current, 'aria-valuenow', String(now.percent / 100)); if (meter.current.hasAttribute('aria-valuetext')) meter.current.removeAttribute('aria-valuetext'); }
+      }
+      setText(percent.current, progressLabel(now.percent));
+      setText(unknown.current, progressText(now.percent, now.numbers));
+      setText(amount.current, amountText(now.numbers));
+      setText(bonus.current, bonusText(now.bonus));
+    };
+    paint();
+    return live.subscribe(paint);
+    // `view` reads only `live` and `pair`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [live, pair]);
+  const now = view();
+  const state = broken ? 'done' : active && pair.decrypting !== 0 && known ? 'live' : 'idle';
   return <div className="decryption-row" {...rowProps} tabIndex={leaving ? -1 : 0}>
     {content && <span id={descriptionId} className="sr-only">{tooltipText(content)}</span>}
     <div className="decryption-pair">
-      <span className="decryption-flag">{row.tags.ownerTag !== null && <CountryFlagUrl url={shown.decryptor.flag} detail={shown.decryptor.flagDetail} reason={shown.decryptor.flagReason} pending={shown.decryptor.flagPending} />}</span>
+      <span className="decryption-flag">{owner && <CountryFlagUrl url={owner.flag} detail={owner.flagDetail} reason={owner.flagReason} pending={owner.flagPending} />}</span>
       <small aria-hidden="true">→</small>
-      <span className="decryption-flag">{row.tags.targetTag !== null && <CountryFlagUrl url={shown.target.flag} detail={shown.target.flagDetail} reason={shown.target.flagReason} pending={shown.target.flagPending} />}</span>
-      <small className="decryption-target">{shown.target.name}</small>
+      <span className="decryption-flag">{target && <CountryFlagUrl url={target.flag} detail={target.flagDetail} reason={target.flagReason} pending={target.flagPending} />}</span>
+      <small className="decryption-target">{target?.name ?? pair.target.tag ?? `Country ${pair.target.id}`}</small>
     </div>
     <div className="decryption-progress" aria-hidden="true">
-      <ProgressMeter value={row.run.progressPercent == null ? null : row.run.progressPercent / 100}
-        state={broken ? 'done' : live ? 'live' : 'idle'} sweep />
-      {broken && row.run.progressPercent == null && <small className="decryption-unknown">{progressText(row.run)}</small>}
+      <div ref={meter} className={`progress-meter is-${state} has-sweep`} role="meter" aria-label="Progress" aria-valuemin={0} aria-valuemax={1}
+        aria-valuenow={now.percent === null ? undefined : now.percent / 100} aria-valuetext={now.percent === null ? 'Not recorded' : undefined}>
+        <i ref={fill} style={{ width: `${now.percent ?? 0}%` }} />
+      </div>
+      {broken && !known && <small ref={unknown} className="decryption-unknown">{progressText(now.percent, now.numbers)}</small>}
     </div>
     <div className="decryption-status">
-      <b>{broken ? CIPHER_BROKEN : progressLabel(row.run)}</b>
-      <span>{broken ? fieldPreparing(row.run, 'breaks') ? 'Break date still being prepared' : observationDate(row.broken, row.hour) : workingStatus(row.run)}</span>
-      {!broken && row.run.progressPercent == null && <span className="decryption-amount">{amountText(row.run)}</span>}
-      {bonus != null && <span className="pill warning">{bonus >= 0 ? '+' : ''}{bonus} bonus days</span>}
+      <b ref={broken ? undefined : percent}>{broken ? CIPHER_BROKEN : progressLabel(now.percent)}</b>
+      <span>{broken ? observationDate(pair.brokenAt, reply.attemptsUnknown === null ? 'Not recorded' : 'Not known') : workingStatus(pair)}</span>
+      {!broken && !known && <span ref={amount} className="decryption-amount">{amountText(now.numbers)}</span>}
+      {broken && pair.bonusActive !== 0 && <span ref={bonus} className="pill warning">{bonusText(now.bonus)}</span>}
     </div>
   </div>;
 }

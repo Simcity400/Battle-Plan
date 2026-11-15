@@ -147,3 +147,18 @@ fn a_later_table_serves_the_names_an_earlier_one_kept() {
     assert!(Table::new("test:").bytes(name).is_none(), "a table without a folder keeps memory alone");
     std::fs::remove_dir_all(&folder).unwrap();
 }
+
+#[test]
+fn an_embedded_viewers_images_are_named_and_served_as_the_desktops() {
+    let folder = std::env::temp_dir().join(format!("artwork-desktop-test-{}", std::process::id()));
+    std::fs::create_dir_all(&folder).unwrap();
+    let png = encode(&image(2, 2, 5)).unwrap();
+    let url = Table::kept_in(DESKTOP_BASE, &folder).put(png.clone());
+    // The one form the dashboard accepts (`ui/src/dashboard/payload.ts`, `artworkUrlValue`).
+    let name = url.strip_prefix("http://artwork.localhost/").unwrap();
+    assert!(Name::parse(name).is_some(), "{url}");
+    let desktop = Table::kept_in(DESKTOP_BASE, &folder);
+    assert_eq!(&*desktop.url_bytes(&url).unwrap(), &png[..], "the desktop serves what the viewer drew");
+    assert!(desktop.url_bytes(&Table::new(UNCONFIGURED).put(png)).is_none(), "an unconfigured process's names are never served");
+    std::fs::remove_dir_all(&folder).unwrap();
+}

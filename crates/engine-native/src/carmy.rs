@@ -838,11 +838,10 @@ struct PresentationInput {
     bytes: [u8; 16],
 }
 
-/// Exact dependencies retained only within one acquisition. Worker storage
-/// grows at each successful reached dependency; a vacant callback uses direct reads.
+/// Exact dependencies retained only within one acquisition. Storage grows at
+/// each successful reached dependency; a refused growth is its own error.
 pub(crate) struct PresentationInputs {
     entries: std::collections::HashMap<(usize, usize), PresentationInput>,
-    worker_growth: bool,
     refused: bool,
 }
 
@@ -852,15 +851,13 @@ impl PresentationInputs {
         crate::allocation::reserve_map(&mut entries, capacity)?;
         Ok(Self {
             entries,
-            worker_growth: capacity != 0,
             refused: false,
         })
     }
-    /// Keeps nothing: every operand is read. Allocates nothing.
+    /// Empty; allocates nothing until an operand is retained.
     pub(crate) fn vacant() -> Self {
         Self {
             entries: std::collections::HashMap::new(),
-            worker_growth: false,
             refused: false,
         }
     }
@@ -875,31 +872,32 @@ impl PresentationInputs {
     pub(crate) fn refused(&self) -> bool {
         self.refused
     }
+    /// `None` for an unreadable operand; an error only for refused growth.
     pub(crate) fn read<T: crate::memory::Raw>(
         &mut self,
         memory: &impl Memory,
         address: usize,
-    ) -> Option<T> {
+    ) -> std::io::Result<Option<T>> {
         let len = std::mem::size_of::<T>();
         // These operands are scalar/native record prefixes, at most 16 bytes.
-        if !self.worker_growth || address == 0 || len > 16 || len == 0 {
-            return read(memory, address);
+        if address == 0 || len > 16 || len == 0 {
+            return Ok(read(memory, address));
         }
         if let Some(entry) = self.entries.get(&(address, len)) {
             // Raw is sealed to padding-free all-bit-pattern types.
-            return Some(unsafe { entry.bytes.as_ptr().cast::<T>().read_unaligned() });
+            return Ok(Some(unsafe { entry.bytes.as_ptr().cast::<T>().read_unaligned() }));
         }
         let mut entry = PresentationInput::default();
         if !crate::read_slice(memory, address, &mut entry.bytes[..len]) {
-            return None;
+            return Ok(None);
         }
         let value = unsafe { entry.bytes.as_ptr().cast::<T>().read_unaligned() };
-        if crate::allocation::reserve_map(&mut self.entries, 1).is_err() {
+        if let Err(error) = crate::allocation::reserve_map(&mut self.entries, 1) {
             self.refused = true;
-            return None;
+            return Err(error);
         }
         self.entries.insert((address, len), entry);
-        Some(value)
+        Ok(Some(value))
     }
 }
 
@@ -928,7 +926,7 @@ fn shared_presentation_read<T: crate::memory::Raw>(
     address: usize,
 ) -> Option<T> {
     match inputs {
-        Some(inputs) => inputs.shared.borrow_mut().read(memory, address),
+        Some(inputs) => inputs.shared.borrow_mut().read(memory, address).ok().flatten(),
         None => read(memory, address),
     }
 }
@@ -1667,7 +1665,6 @@ struct StatusAttritionMetadata {
 /// addresses are interpreted during projection. Native child admission and
 /// branch pruning finish here before the game resumes.
 pub struct StatusPacket {
-    growing: bool,
     capacities: StatusCapacities,
     required: StatusCapacities,
     units: Vec<StatusUnitInputs>,
@@ -1732,6 +1729,10 @@ pub struct StatusPacket {
     outcome: Outcome,
 }
 
+/// Seed `index`'s maxima as a parallel preparation read them; `None` when nobody staged its block.
+pub type StagedDivisionMaxima<'a> =
+    dyn Fn(usize) -> Option<Result<crate::csub_unit_definition::DivisionMaxima, &'static str>> + 'a;
+
 #[derive(Clone, Copy)]
 struct SelectedMaxima {
     slot: usize,
@@ -1766,9 +1767,7 @@ fn status_pointer_slot(slots: &[usize], pointer: usize, key: impl Fn(usize) -> u
 
 impl StatusPacket {
     pub fn new(units: usize) -> std::io::Result<Self> {
-        let mut packet = Self::with_capacities(StatusCapacities::new(units))?;
-        packet.enable_growth();
-        Ok(packet)
+        Self::with_capacities(StatusCapacities::new(units))
     }
 
     /// Allocation-free placeholder while the complete packet is owned by a job.
@@ -1783,7 +1782,6 @@ impl StatusPacket {
             membership: MembershipCapacity::default(),
         };
         Self {
-            growing: false,
             capacities,
             required: capacities,
             units: Vec::new(),
@@ -1841,7 +1839,6 @@ impl StatusPacket {
         let mut exercise_autonomy = std::collections::HashMap::new();
         crate::allocation::reserve_map(&mut exercise_autonomy, capacities.units)?;
         Ok(Self {
-            growing: false,
             capacities,
             required: capacities,
             units: crate::allocation::vec(capacities.units)?,
@@ -1882,9 +1879,9 @@ impl StatusPacket {
             commander_order: crate::allocation::vec(capacities.units)?,
             // The two retreat-ban keys; a vacant packet stays allocation-free.
             commander_memo: std::sync::Mutex::new(
-                crate::modifier_definition::DefinitionMemo::with_capacity(
+                crate::modifier_definition::DefinitionMemo::try_with_capacity(
                     if capacities.units == 0 { 0 } else { 2 },
-                ),
+                )?,
             ),
             modifiers: crate::modifier_accumulator::SnapshotArena::try_new(capacities.modifiers)?,
             membership: MembershipPacket::try_with_capacity(
@@ -1910,12 +1907,6 @@ impl StatusPacket {
             minimum_strength: None,
             outcome: Outcome::Rows { len: 0 },
         })
-    }
-
-    /// Worker ownership allows original native controls to grow storage.
-    pub fn enable_growth(&mut self) {
-        self.growing = true;
-        self.modifiers.enable_worker_growth();
     }
 
     pub fn clear(&mut self) {
@@ -2052,13 +2043,9 @@ impl StatusPacket {
         next.membership.roots = next.membership.roots.max(membership.roots);
         next.membership.chunks = next.membership.chunks.max(membership.chunks);
         if next != self.capacities {
-            let growing = self.growing;
             let mut packet = Self::with_capacities(next)?;
             std::mem::swap(&mut packet.supply_requested, &mut self.supply_requested);
             *self = packet;
-            if growing {
-                self.enable_growth();
-            }
         }
         Ok(())
     }
@@ -2134,6 +2121,7 @@ impl StatusPacket {
         base: usize,
         seeds: &[DivisionSeed],
         held: &[Option<crate::csub_unit_definition::DivisionMaxima>],
+        staged_reads: impl Fn(usize) -> bool,
         batch: &mut crate::csub_unit_definition::MaximaBatch,
     ) -> [SelectedMaxima; 64] {
         let mut selected = [SelectedMaxima::default(); 64];
@@ -2169,7 +2157,7 @@ impl StatusPacket {
                     .copied()
                     .flatten()
                     .is_some_and(|value| value.pointer == pointer);
-                let row = if carried || pointer == 0 {
+                let row = if carried || pointer == 0 || staged_reads(index) {
                     usize::MAX
                 } else {
                     pointers[len] = pointer;
@@ -2196,6 +2184,10 @@ impl StatusPacket {
         selected
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the seed's carried, staged and batched reads"
+    )]
     fn maxima(
         &mut self,
         memory: &impl Memory,
@@ -2203,6 +2195,7 @@ impl StatusPacket {
         pointer: usize,
         selected: SelectedMaxima,
         held: Option<crate::csub_unit_definition::DivisionMaxima>,
+        staged: Option<Result<crate::csub_unit_definition::DivisionMaxima, &'static str>>,
         batch: &crate::csub_unit_definition::MaximaBatch,
     ) -> Result<usize, &'static str> {
         let slot = selected.slot;
@@ -2212,7 +2205,10 @@ impl StatusPacket {
         }
         let value = match held.filter(|value| value.pointer == pointer) {
             Some(value) => value,
-            None => batch.read(memory, base, pointer, selected.row)?,
+            None => match staged {
+                Some(staged) => staged?,
+                None => batch.read(memory, base, pointer, selected.row)?,
+            },
         };
         let index = self.maxima.len();
         self.maxima.push(value);
@@ -2617,14 +2613,9 @@ impl StatusPacket {
             .checked_add(values.count as usize)
             .ok_or("exercise manpower count overflow")?;
         self.required.manpower = self.required.manpower.max(required);
-        if self.growing {
-            crate::allocation::reserve(&mut self.manpower, required - start)
-                .map_err(|_| "status manpower allocation failed")?;
-            self.capacities.manpower = self.capacities.manpower.max(required);
-        }
-        if required > self.capacities.manpower {
-            return Err("division status manpower packet capacity exceeded");
-        }
+        crate::allocation::reserve(&mut self.manpower, required - start)
+            .map_err(|_| "status manpower allocation failed")?;
+        self.capacities.manpower = self.capacities.manpower.max(required);
         const BATCH: usize = 64;
         const FIELDS: [crate::memory::RecordField; 1] = [crate::memory::RecordField {
             source_offset: 4,
@@ -2678,12 +2669,10 @@ impl StatusPacket {
         }
         let thresholds = Array::from_header(self.thresholds_header.unwrap()?, 8)
             .ok_or("exercise thresholds invalid")?;
-        if self.growing {
-            let additional = (thresholds.count as usize).saturating_sub(self.thresholds.len());
-            crate::allocation::reserve(&mut self.thresholds, additional)
-                .map_err(|_| "status threshold allocation failed")?;
-            self.capacities.thresholds = self.capacities.thresholds.max(thresholds.count as usize);
-        }
+        let additional = (thresholds.count as usize).saturating_sub(self.thresholds.len());
+        crate::allocation::reserve(&mut self.thresholds, additional)
+            .map_err(|_| "status threshold allocation failed")?;
+        self.capacities.thresholds = self.capacities.thresholds.max(thresholds.count as usize);
         if thresholds.count == 0 {
             return Err("exercise thresholds empty");
         }
@@ -2691,9 +2680,6 @@ impl StatusPacket {
         for index in 0..thresholds.count as usize {
             if index == self.thresholds.len() {
                 self.required.thresholds = self.required.thresholds.max(index + 1);
-                if index == self.capacities.thresholds {
-                    return Err("division status threshold packet capacity exceeded");
-                }
                 let value = thresholds
                     .element(index as u32, 8)
                     .and_then(|p| read::<i64>(memory, p))
@@ -2956,16 +2942,8 @@ impl StatusPacket {
             return Ok(Camouflage { category: None });
         }
         let categories = *self.categories_loaded.get_or_insert_with(|| {
-            if self.growing {
-                self.categories.load_growing(
-                    memory,
-                    base,
-                    &mut self.required.acclimatization_categories,
-                )
-            } else {
-                self.categories
-                    .load(memory, base, &mut self.required.acclimatization_categories)
-            }
+            self.categories
+                .load(memory, base, &mut self.required.acclimatization_categories)
         });
         categories?;
         let token = usize::try_from(category)
@@ -2986,18 +2964,8 @@ impl StatusPacket {
         state: usize,
         seeds: &[DivisionSeed],
         source_outcome: Outcome,
-        row_capacity: usize,
     ) -> Outcome {
-        self.capture_holding(
-            memory,
-            base,
-            state,
-            seeds,
-            source_outcome,
-            row_capacity,
-            &[],
-            &[],
-        )
+        self.capture_holding(memory, base, state, seeds, source_outcome, &[], &[])
     }
 
     /// [`Self::capture`] with the caller's carried maxima: `held[i]` is seed
@@ -3012,7 +2980,6 @@ impl StatusPacket {
         state: usize,
         seeds: &[DivisionSeed],
         source_outcome: Outcome,
-        row_capacity: usize,
         held: &[Option<crate::csub_unit_definition::DivisionMaxima>],
         experience: &[Option<i64>],
     ) -> Outcome {
@@ -3022,8 +2989,8 @@ impl StatusPacket {
             state,
             seeds,
             source_outcome,
-            row_capacity,
             held,
+            &|_| None,
             false,
         );
         self.finish_holding(
@@ -3046,8 +3013,8 @@ impl StatusPacket {
         state: usize,
         seeds: &[DivisionSeed],
         source_outcome: Outcome,
-        row_capacity: usize,
         held: &[Option<crate::csub_unit_definition::DivisionMaxima>],
+        staged: &StagedDivisionMaxima<'_>,
         defer_membership: bool,
     ) -> Result<(usize, ccountry::Reader<'a, M>), &'static str> {
         self.clear();
@@ -3058,22 +3025,13 @@ impl StatusPacket {
             if source_outcome.len() != seeds.len() {
                 return Err("division status source length invalid");
             }
-            if self.growing {
-                // Serialization retains every division; child-header growth follows the
-                // same acquisition without retrying the walk.
-                self.grow(seeds.len(), self.membership.capacity())
-                    .map_err(|_| "status seed allocation failed")?;
-            }
+            // Serialization retains every division; child-header growth follows the
+            // same acquisition without retrying the walk.
+            self.grow(seeds.len(), self.membership.capacity())
+                .map_err(|_| "status seed allocation failed")?;
             let countries = ccountry::Reader::new(memory, base, state)?;
             self.required.units = self.required.units.max(seeds.len());
-            if seeds.len() > self.capacities.units {
-                return Err("division status seed packet capacity exceeded");
-            }
-            let count = seeds.len().min(if self.growing {
-                seeds.len()
-            } else {
-                row_capacity
-            });
+            let count = seeds.len();
             let mut batch = crate::csub_unit_definition::MaximaBatch::new();
             let mut selected = [SelectedMaxima::default(); 64];
             let identity = engine_sites::at(base, VTABLE_RVA).map(|at| at as u64);
@@ -3085,6 +3043,7 @@ impl StatusPacket {
                         base,
                         &seeds[index..end],
                         held.get(index..held.len().min(end)).unwrap_or(&[]),
+                        |offset| staged(index + offset).is_some(),
                         &mut batch,
                     );
                 }
@@ -3114,6 +3073,7 @@ impl StatusPacket {
                         stats,
                         selected[index % 64],
                         held.get(index).copied().flatten(),
+                        staged(index),
                         &batch,
                     )?;
 
@@ -3179,14 +3139,44 @@ impl StatusPacket {
         held: &[Option<crate::csub_unit_definition::DivisionMaxima>],
         experience: &[Option<i64>],
     ) -> Outcome {
+        self.prepare_holding_staged(
+            memory,
+            base,
+            state,
+            seeds,
+            source_outcome,
+            held,
+            experience,
+            &|_| None,
+        )
+    }
+
+    /// [`Self::prepare_holding`] taking each seed's maxima from `staged` where the
+    /// parallel preparation already read its block ([`crate::csub_unit_definition::stage_division_maxima`]):
+    /// the ordered pass then reads only the blocks nobody staged.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "prepare_holding's operands and the staged reads"
+    )]
+    pub fn prepare_holding_staged(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+        seeds: &[DivisionSeed],
+        source_outcome: Outcome,
+        held: &[Option<crate::csub_unit_definition::DivisionMaxima>],
+        experience: &[Option<i64>],
+        staged: &StagedDivisionMaxima<'_>,
+    ) -> Outcome {
         let prepared = self.prepare_holding_inner(
             memory,
             base,
             state,
             seeds,
             source_outcome,
-            seeds.len(),
             held,
+            staged,
             true,
         );
         self.outcome = match prepared {
@@ -3314,15 +3304,10 @@ impl StatusPacket {
                     }
                 }
             }
-            let source_missing = match source_outcome {
+            let missing = match source_outcome {
                 Outcome::Truncated { unread_rows, .. } => unread_rows,
                 _ => 0,
             };
-            let omitted =
-                u32::try_from(seeds.len() - count).map_err(|_| "division status count overflow")?;
-            let missing = source_missing
-                .checked_add(omitted)
-                .ok_or("division status count overflow")?;
             Ok(if missing == 0 {
                 Outcome::Rows { len: count }
             } else {
@@ -3377,7 +3362,6 @@ impl StatusPacket {
             |index| self.supply_requested.get(index).copied().unwrap_or(true),
             &mut self.supply[..self.supply_len],
             &mut self.supply_origins,
-            self.growing,
         );
         self.supply_origins_len = used.len;
         self.required.supply_origins = self.required.supply_origins.max(used.required);
@@ -3780,7 +3764,8 @@ impl DigInMemo {
         })
     }
 
-    /// Keeps nothing: every division reads afresh. Allocates nothing.
+    /// Keeps nothing: every division reads afresh. Allocates nothing until a
+    /// walk retains a primary root field.
     pub fn vacant() -> Self {
         Self {
             leaders: crate::carmy_leader::LeaderMemo::vacant(),
@@ -4041,7 +4026,6 @@ fn status_test_capture(
         state,
         &seeds[..count],
         source_outcome,
-        output.len(),
     );
     packet.project(output)
 }

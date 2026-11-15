@@ -10,10 +10,80 @@ const SECOND: usize = 0x600;
 
 fn walk_all(
     memory: &impl Memory,
-    rows: &mut [PortraitRow],
-    entries: &mut [crate::character_portrait_entry::Row],
+    rows: &mut Vec<PortraitRow>,
+    entries: &mut Vec<crate::character_portrait_entry::Row<crate::capture_text::Owned>>,
 ) -> UnitOrderWalk {
     walk_portraits(memory, 0, GS, rows, entries, PortraitWalk::default())
+}
+
+fn first_entry(memory: &impl Memory) -> ccharacter_manager::Entry {
+    let mut first = None;
+    ccharacter_manager::visit(memory, 0, GS, |entry| {
+        first = first.or(Some(entry));
+        Ok(())
+    })
+    .unwrap();
+    first.unwrap()
+}
+
+/// One character's advisor roles as the collector family walks them: the role
+/// prefix, then its tooltip keys.
+fn advisor_entry(
+    memory: &impl Memory,
+    base: usize,
+    entry: ccharacter_manager::Entry,
+    rows: &mut Vec<cadvisor::Row>,
+    bytes: &mut Vec<u8>,
+) -> NameWalk {
+    let prefix = cadvisor::walk_prefix_entry(
+        memory,
+        base,
+        entry,
+        crate::walk::Buffer::Growing(rows),
+        crate::walk::Buffer::Growing(bytes),
+    );
+    cadvisor::append_tooltips(memory, rows, crate::walk::Buffer::Growing(bytes), prefix)
+}
+
+/// Every roster occurrence through `walk_entry` into growing storage: rows in
+/// roster order, each row's text after the previous row's, as the collector
+/// family appends them.
+fn walk_roster(memory: &impl Memory) -> (Outcome, Vec<Row>, Vec<u8>) {
+    let (mut rows, mut names) = (Vec::new(), Vec::new());
+    let walked = (|| {
+        let source = ccharacter_manager::Roster::read(memory, 0, GS)?;
+        for index in 0..source.count() {
+            let entry = source.at(memory, index)?;
+            let (mut row, mut text) = (Vec::new(), Vec::new());
+            let result = walk_entry(
+                memory,
+                0,
+                entry,
+                |_| None,
+                crate::walk::Buffer::Growing(&mut row),
+                crate::walk::Buffer::Growing(&mut text),
+            );
+            match result.outcome {
+                Outcome::Rows { len: 1 } => {
+                    let start = names.len();
+                    let mut row = row[0];
+                    row.name_start += start;
+                    row.token_start += start;
+                    row.template_file_start += start;
+                    names.extend_from_slice(&text[..result.bytes_len]);
+                    rows.push(row);
+                }
+                Outcome::Unavailable { reason } => return Err(reason),
+                _ => return Err("character entry returned an invalid row count"),
+            }
+        }
+        Ok(())
+    })();
+    let outcome = match walked {
+        Ok(()) => Outcome::Rows { len: rows.len() },
+        Err(reason) => Outcome::Unavailable { reason },
+    };
+    (outcome, rows, names)
 }
 
 fn u64_at(bytes: &mut [u8], at: usize, value: u64) {
@@ -276,10 +346,10 @@ fn advisor_exact_batches_reduce_guards_and_discard_every_failed_span() {
         roster: 0,
         ordinal: 0,
     };
-    let mut rows = [cadvisor::Row::default(); 1];
-    let mut names = [0; 51];
+    let mut rows = vec![cadvisor::Row::default(); 1];
+    let mut names = vec![0; 51];
     let traced = TracedMemory::new(&bytes, None);
-    let result = cadvisor::walk_entry(&traced, 0, entry, &mut rows, &mut names);
+    let result = advisor_entry(&traced, 0, entry, &mut rows, &mut names);
     assert_eq!(result.outcome, Outcome::Rows { len: 1 });
     // The empty appended tooltip set still requires its exact native header.
     assert_eq!(traced.guards.get(), 11);
@@ -309,7 +379,7 @@ fn advisor_exact_batches_reduce_guards_and_discard_every_failed_span() {
         (0x1a00 + 7, 0x1a40),
     ] {
         let traced = TracedMemory::new(&bytes, Some(fault));
-        let result = cadvisor::walk_entry(&traced, 0, entry, &mut rows, &mut names);
+        let result = advisor_entry(&traced, 0, entry, &mut rows, &mut names);
         assert!(matches!(result.outcome, Outcome::Unavailable { .. }));
         assert_eq!(result.bytes_len, 0);
         assert!(
@@ -323,7 +393,7 @@ fn advisor_exact_batches_reduce_guards_and_discard_every_failed_span() {
 }
 
 #[test]
-fn advisor_cache_fit_and_shortfall_keep_the_existing_role() {
+fn advisor_cache_fits_and_a_short_arena_grows_keeping_the_existing_role() {
     use crate::character_advisor_node as node;
     let mut bytes = fixture();
     let head = 0x840;
@@ -352,11 +422,11 @@ fn advisor_cache_fit_and_shortfall_keep_the_existing_role() {
         roster: 0,
         ordinal: 0,
     };
-    for (capacity, recorded, bytes_len) in [(27, true, 27), (26, false, 11)] {
+    for (capacity, recorded, bytes_len) in [(27, true, 27), (0, true, 27)] {
         let traced = TracedMemory::new(&bytes, None);
-        let mut rows = [cadvisor::Row::default(); 1];
+        let mut rows = vec![cadvisor::Row::default(); 1];
         let mut arena = vec![0; capacity];
-        let result = cadvisor::walk_entry(&traced, 0, entry, &mut rows, &mut arena);
+        let result = advisor_entry(&traced, 0, entry, &mut rows, &mut arena);
         assert_eq!(result.outcome, Outcome::Rows { len: 1 });
         assert_eq!(result.required_bytes, 27);
         assert_eq!(result.bytes_len, bytes_len);
@@ -462,9 +532,9 @@ fn advisor_native_hash_order_can_reverse_literal_order() {
         string(&mut bytes, role + cadvisor::IDEA_TOKEN, b"idea");
         string(&mut bytes, role + cadvisor::SLOT, key);
     }
-    let mut rows = [cadvisor::Row::default(); 2];
-    let mut names = [0; 64];
-    let result = cadvisor::walk(&memory(&bytes), 0, GS, &mut rows, &mut names);
+    let mut rows = vec![cadvisor::Row::default(); 2];
+    let mut names = vec![0; 64];
+    let result = advisor_entry(&memory(&bytes), 0, first_entry(&memory(&bytes)), &mut rows, &mut names);
     assert_eq!(result.outcome, Outcome::Rows { len: 2 });
     assert_eq!(
         &names[rows[0].key_start..rows[0].key_start + rows[0].key_len],
@@ -474,17 +544,17 @@ fn advisor_native_hash_order_can_reverse_literal_order() {
         &names[rows[1].key_start..rows[1].key_start + rows[1].key_len],
         b"alpha"
     );
-    assert_eq!(rows.map(|row| row.ordinal), [0, 1]);
+    assert_eq!(rows.iter().map(|row| row.ordinal).collect::<Vec<_>>(), [0, 1]);
     u32_at(&mut bytes, root + advisor_node::KEY_HASH, 0);
     assert_eq!(
-        cadvisor::walk(&memory(&bytes), 0, GS, &mut rows, &mut names).outcome,
+        advisor_entry(&memory(&bytes), 0, first_entry(&memory(&bytes)), &mut rows, &mut names).outcome,
         Outcome::Unavailable {
             reason: "advisor role map hash order invalid"
         }
     );
     u32_at(&mut bytes, root + advisor_node::KEY_HASH, 1);
     assert_eq!(
-        cadvisor::walk(&memory(&bytes), 0, GS, &mut rows, &mut names).outcome,
+        advisor_entry(&memory(&bytes), 0, first_entry(&memory(&bytes)), &mut rows, &mut names).outcome,
         Outcome::Unavailable {
             reason: "advisor role hash collision needs native locale comparison"
         }
@@ -494,11 +564,9 @@ fn advisor_native_hash_order_can_reverse_literal_order() {
 #[test]
 fn complete_rosters_keep_duplicate_names_negative_tokens_and_unrecruited_characters() {
     let bytes = fixture();
-    let mut rows = [Row::default(); 2];
-    let mut names = [0_u8; 64];
-    let result = walk(&memory(&bytes), 0, GS, &mut rows, &mut names);
-    assert_eq!(result.outcome, Outcome::Rows { len: 2 });
-    assert_eq!(rows.map(|row| row.id), [900, 22]);
+    let (outcome, rows, names) = walk_roster(&memory(&bytes));
+    assert_eq!(outcome, Outcome::Rows { len: 2 });
+    assert_eq!(rows.iter().map(|row| row.id).collect::<Vec<_>>(), [900, 22]);
     assert_eq!(
         (rows[0].country, rows[0].name_token_id, rows[0].token_len),
         (0, -1, 0)
@@ -508,29 +576,14 @@ fn complete_rosters_keep_duplicate_names_negative_tokens_and_unrecruited_charact
         &names[rows[1].token_start..rows[1].token_start + rows[1].token_len],
         b"dynamic_token"
     );
-    assert_eq!(result.bytes_len, result.required_bytes);
 }
 
 #[test]
-fn character_capacity_omits_whole_rows_and_reports_required_text() {
-    let bytes = fixture();
-    let mut rows = [Row::default(); 2];
-    let mut names = [0_u8; 9];
-    let result = walk(&memory(&bytes), 0, GS, &mut rows, &mut names);
-    assert_eq!(
-        result.outcome,
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 1
-        }
-    );
-    assert_eq!(result.bytes_len, 9);
-    assert_eq!(result.required_bytes, 31);
-    assert_eq!(rows[0].id, 900);
-    let mut bad = bytes;
-    u32_at(&mut bad, SECOND + TYPE, 12);
+fn a_roster_occurrence_of_another_type_fails_the_roster() {
+    let mut bytes = fixture();
+    u32_at(&mut bytes, SECOND + TYPE, 12);
     assert!(matches!(
-        walk(&memory(&bad), 0, GS, &mut rows, &mut names).outcome,
+        walk_roster(&memory(&bytes)).0,
         Outcome::Unavailable { .. }
     ));
 }
@@ -538,48 +591,36 @@ fn character_capacity_omits_whole_rows_and_reports_required_text() {
 #[test]
 fn duplicate_ids_reach_off_thread_validation_and_corrupt_strings_fail() {
     let mut bytes = fixture();
-    let mut rows = [Row::default(); 2];
-    let mut names = [0; 64];
     u32_at(&mut bytes, SECOND + ID, 900);
-    assert_eq!(
-        walk(&memory(&bytes), 0, GS, &mut rows, &mut names).outcome,
-        Outcome::Rows { len: 2 }
-    );
-    assert_eq!(rows.map(|row| row.id), [900, 900]);
+    let (outcome, rows, _) = walk_roster(&memory(&bytes));
+    assert_eq!(outcome, Outcome::Rows { len: 2 });
+    assert_eq!(rows.iter().map(|row| row.id).collect::<Vec<_>>(), [900, 900]);
     u32_at(&mut bytes, SECOND + ID, 22);
     u64_at(&mut bytes, SECOND + TOKEN + 16, 16);
     assert!(matches!(
-        walk(&memory(&bytes), 0, GS, &mut rows, &mut names).outcome,
+        walk_roster(&memory(&bytes)).0,
         Outcome::Unavailable { .. }
     ));
 }
 
 #[test]
-fn row_capacity_stops_before_omitted_identity_and_heap_bytes_are_exact() {
+fn heap_name_bytes_are_exact_and_a_bad_terminator_fails() {
     let mut bytes = fixture();
-    u32_at(&mut bytes, SECOND + TYPE, 12);
-    let mut rows = [Row::default(); 1];
-    let mut names = [0; 64];
-    let result = walk(&memory(&bytes), 0, GS, &mut rows, &mut names);
-    assert_eq!(
-        result.outcome,
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 1
-        }
-    );
-    assert_eq!(result.required_bytes, 9);
     let raw = [0xff_u8, 0, 42, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
     u64_at(&mut bytes, FIRST + NAME, 0x1a00);
     u64_at(&mut bytes, FIRST + NAME + 16, raw.len() as u64);
     u64_at(&mut bytes, FIRST + NAME + 24, 31);
     bytes[0x1a00..0x1a10].copy_from_slice(&raw);
-    let result = walk(&memory(&bytes), 0, GS, &mut rows, &mut names);
-    assert_eq!(result.bytes_len, 16);
-    assert_eq!(&names[..16], &raw);
+    let (outcome, rows, names) = walk_roster(&memory(&bytes));
+    assert_eq!(outcome, Outcome::Rows { len: 2 });
+    assert_eq!(rows[0].name_len, raw.len());
+    assert_eq!(
+        &names[rows[0].name_start..rows[0].name_start + raw.len()],
+        &raw
+    );
     bytes[0x1a10] = 1;
     assert!(matches!(
-        walk(&memory(&bytes), 0, GS, &mut rows, &mut names).outcome,
+        walk_roster(&memory(&bytes)).0,
         Outcome::Unavailable { .. }
     ));
 }
@@ -608,11 +649,9 @@ fn templates_are_read_or_reused_by_pointer_and_their_file_follows_the_names() {
     bytes[FILE..FILE + path.len()].copy_from_slice(path);
     u32_at(&mut bytes, AT + template::SOURCE_LINE, 12);
     bytes[AT + template::GENERATED] = 1;
-    let mut rows = [Row::default(); 2];
-    let mut names = [0_u8; 64];
-    let result = walk(&memory(&bytes), 0, GS, &mut rows, &mut names);
-    assert_eq!(result.outcome, Outcome::Rows { len: 2 });
-    assert_eq!(result.bytes_len, 9 + 9 + 13 + path.len());
+    let (outcome, rows, names) = walk_roster(&memory(&bytes));
+    assert_eq!(outcome, Outcome::Rows { len: 2 });
+    assert_eq!(names.len(), 9 + 9 + 13 + path.len());
     assert_eq!((rows[0].template, rows[0].template_file_len), (0, 0));
     assert_eq!(rows[0].template_identity, template::Identity::default());
     assert_eq!(rows[1].template, AT);
@@ -631,11 +670,12 @@ fn templates_are_read_or_reused_by_pointer_and_their_file_follows_the_names() {
         demand(&memory(&bytes), 0, GS),
         Ok(Demand {
             rows: 2,
-            bytes: result.bytes_len
+            bytes: names.len()
         })
     );
 
     // A known identity for this pointer is reused without reading it.
+    let mut names = [0_u8; 64];
     let traced = TracedMemory::new(&bytes, None);
     let roster = ccharacter_manager::Roster::read(&traced, 0, GS).unwrap();
     let entry = roster.at(&traced, 1).unwrap();
@@ -656,8 +696,8 @@ fn templates_are_read_or_reused_by_pointer_and_their_file_follows_the_names() {
                 file: b"",
             })
         },
-        &mut row,
-        &mut names,
+        crate::walk::Buffer::Exact(&mut row),
+        crate::walk::Buffer::Exact(&mut names),
     );
     assert_eq!(result.outcome, Outcome::Rows { len: 1 });
     assert_eq!(
@@ -679,7 +719,14 @@ fn templates_are_read_or_reused_by_pointer_and_their_file_follows_the_names() {
 
     // The file is text demand like the names.
     let mut short = [0_u8; 9 + 13 + 4];
-    let result = walk_entry(&memory(&bytes), 0, entry, |_| None, &mut row, &mut short);
+    let result = walk_entry(
+        &memory(&bytes),
+        0,
+        entry,
+        |_| None,
+        crate::walk::Buffer::Exact(&mut row),
+        crate::walk::Buffer::Exact(&mut short),
+    );
     assert_eq!(
         result.outcome,
         Outcome::Truncated {
@@ -695,7 +742,14 @@ fn templates_are_read_or_reused_by_pointer_and_their_file_follows_the_names() {
     u64_at(&mut bytes, AT + template::SOURCE_FILE + 24, 15);
     u32_at(&mut bytes, AT + template::SOURCE_LINE, u32::MAX);
     bytes[AT + template::GENERATED] = 0;
-    let result = walk_entry(&memory(&bytes), 0, entry, |_| None, &mut row, &mut names);
+    let result = walk_entry(
+        &memory(&bytes),
+        0,
+        entry,
+        |_| None,
+        crate::walk::Buffer::Exact(&mut row),
+        crate::walk::Buffer::Exact(&mut names),
+    );
     assert_eq!(result.outcome, Outcome::Rows { len: 1 });
     assert_eq!(row[0].template_identity.line, -1);
     assert_eq!(row[0].template_file_len, 0);
@@ -703,7 +757,15 @@ fn templates_are_read_or_reused_by_pointer_and_their_file_follows_the_names() {
     // Anything but a template fails the row.
     u64_at(&mut bytes, AT, 0x1234);
     assert_eq!(
-        walk_entry(&memory(&bytes), 0, entry, |_| None, &mut row, &mut names).outcome,
+        walk_entry(
+            &memory(&bytes),
+            0,
+            entry,
+            |_| None,
+            crate::walk::Buffer::Exact(&mut row),
+            crate::walk::Buffer::Exact(&mut names)
+        )
+        .outcome,
         Outcome::Unavailable {
             reason: "character template vtable mismatch"
         }
@@ -734,7 +796,12 @@ fn role_walks_keep_distinct_ideologies_and_do_not_claim_advisor_appointment() {
     }
     let mut leaders = [ccountry_leader::Row::default(); 2];
     assert_eq!(
-        ccountry_leader::walk(&memory(&bytes), 0, GS, &mut leaders),
+        ccountry_leader::walk(
+            &memory(&bytes),
+            0,
+            GS,
+            crate::walk::Buffer::Exact(&mut leaders)
+        ),
         Outcome::Rows { len: 2 }
     );
     assert_eq!(leaders.map(|row| row.ideology), [-7, 3]);
@@ -754,9 +821,9 @@ fn role_walks_keep_distinct_ideologies_and_do_not_claim_advisor_appointment() {
     u64_at(&mut bytes, role + cadvisor::CHARACTER, FIRST as u64);
     string(&mut bytes, role + cadvisor::IDEA_TOKEN, b"idea_token");
     string(&mut bytes, role + cadvisor::SLOT, b"army_chief");
-    let mut advisors = [cadvisor::Row::default(); 1];
-    let mut names = [0; 64];
-    let result = cadvisor::walk(&memory(&bytes), 0, GS, &mut advisors, &mut names);
+    let mut advisors = vec![cadvisor::Row::default(); 1];
+    let mut names = vec![0; 64];
+    let result = advisor_entry(&memory(&bytes), 0, first_entry(&memory(&bytes)), &mut advisors, &mut names);
     assert_eq!(result.outcome, Outcome::Rows { len: 1 });
     assert_eq!(
         (
@@ -772,12 +839,17 @@ fn role_walks_keep_distinct_ideologies_and_do_not_claim_advisor_appointment() {
     );
     u64_at(&mut bytes, role + cadvisor::CHARACTER, SECOND as u64);
     assert!(matches!(
-        cadvisor::walk(&memory(&bytes), 0, GS, &mut advisors, &mut names).outcome,
+        advisor_entry(&memory(&bytes), 0, first_entry(&memory(&bytes)), &mut advisors, &mut names).outcome,
         Outcome::Unavailable { .. }
     ));
     u64_at(&mut bytes, root + 8, root as u64);
     assert!(matches!(
-        ccountry_leader::walk(&memory(&bytes), 0, GS, &mut leaders),
+        ccountry_leader::walk(
+            &memory(&bytes),
+            0,
+            GS,
+            crate::walk::Buffer::Exact(&mut leaders)
+        ),
         Outcome::Unavailable { .. }
     ));
 }
@@ -1030,8 +1102,8 @@ fn view_pages_defer_later_fatal_slots_and_retain_independent_optional_fields() {
             0,
             first.entry().unwrap(),
             |_| None,
-            &mut [Row::default(); 1],
-            &mut [0; 64]
+            crate::walk::Buffer::Exact(&mut [Row::default(); 1]),
+            crate::walk::Buffer::Exact(&mut [0; 64])
         )
         .outcome,
         Outcome::Unavailable { .. }
@@ -1056,22 +1128,13 @@ fn hourly_portrait_holder_preserves_entry_order_and_requires_whole_character_cap
             if index == 0 { b"a.dds" } else { b"b.dds" },
         );
     }
-    let mut rows = [PortraitRow::default(); 2];
-    let mut entries = [crate::character_portrait_entry::Row::default(); 2];
+    let mut rows = vec![PortraitRow::default(); 2];
+    let mut entries = vec![crate::character_portrait_entry::Row::<crate::capture_text::Owned>::default(); 2];
     let result = walk_all(&memory(&bytes), &mut rows, &mut entries);
     assert_eq!(result.outcome, Outcome::Rows { len: 2 });
     assert_eq!([rows[0].character, rows[1].character], [22, 900]);
     assert_eq!([entries[0].size, entries[1].size], [1, 0]);
     assert_eq!(entries[0].is_set, 255);
-    let result = walk_all(&memory(&bytes), &mut rows, &mut entries[..1]);
-    assert_eq!(
-        result.outcome,
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 1
-        }
-    );
-    assert_eq!(result.required, 2);
     u32_at(&mut bytes, FIRST + PORTRAIT_COUNT, 129);
     assert!(matches!(
         walk_all(&memory(&bytes), &mut rows, &mut entries).outcome,
@@ -1126,7 +1189,7 @@ fn portrait_census_and_walk_have_no_fixed_character_limit() {
         0,
         GS,
         &mut output,
-        &mut [],
+        &mut Vec::new(),
         PortraitWalk {
             census: Some(&census),
             ..Default::default()
@@ -1134,25 +1197,6 @@ fn portrait_census_and_walk_have_no_fixed_character_limit() {
     );
     assert_eq!(walked.outcome, Outcome::Rows { len: CHARACTERS });
     assert_eq!(output[CHARACTERS - 1].character, CHARACTERS as u32);
-    // Rows that do not fit are counted, not refused.
-    let walked = walk_portraits(
-        &memory,
-        0,
-        GS,
-        &mut output[..10],
-        &mut [],
-        PortraitWalk {
-            census: Some(&census),
-            ..Default::default()
-        },
-    );
-    assert_eq!(
-        walked.outcome,
-        Outcome::Truncated {
-            len: 10,
-            unread_rows: (CHARACTERS - 10) as u32
-        }
-    );
 }
 
 #[test]
@@ -1168,12 +1212,12 @@ fn shared_portrait_census_removes_only_common_reads_and_preserves_faults() {
     }
     census.finish(2);
     let shared = TracedMemory::new(&bytes, None);
-    let mut rows = [PortraitRow::default(); 2];
-    let mut entries = [crate::character_portrait_entry::Row::default(); 2];
+    let mut rows = vec![PortraitRow::default(); 2];
+    let mut entries = vec![crate::character_portrait_entry::Row::<crate::capture_text::Owned>::default(); 2];
     let capture = |memory: &TracedMemory<'_>,
                    census: Option<&PortraitCensus>,
-                   rows: &mut [PortraitRow],
-                   entries: &mut [crate::character_portrait_entry::Row]| {
+                   rows: &mut Vec<PortraitRow>,
+                   entries: &mut Vec<crate::character_portrait_entry::Row<crate::capture_text::Owned>>| {
         let walk = PortraitWalk {
             census,
             ..Default::default()
@@ -1189,25 +1233,15 @@ fn shared_portrait_census_removes_only_common_reads_and_preserves_faults() {
         || at == SECOND + PORTRAIT_DATA
         || (0x1800..0x1838).contains(&at)));
     for fault in reads.iter().map(|&(at, _)| Some(at)).chain([None]) {
-        for row_capacity in 0..=2 {
+        {
             let direct = TracedMemory::new(&bytes, fault);
             let shared = TracedMemory::new(&bytes, fault);
-            let mut expected_rows = [PortraitRow::default(); 2];
-            let mut expected_entries = [crate::character_portrait_entry::Row::default(); 2];
-            let mut actual_rows = expected_rows;
-            let mut actual_entries = expected_entries;
-            let expected = capture(
-                &direct,
-                None,
-                &mut expected_rows[..row_capacity],
-                &mut expected_entries,
-            );
-            let actual = capture(
-                &shared,
-                Some(&census),
-                &mut actual_rows[..row_capacity],
-                &mut actual_entries,
-            );
+            let mut expected_rows = vec![PortraitRow::default(); 2];
+            let mut expected_entries = vec![crate::character_portrait_entry::Row::<crate::capture_text::Owned>::default(); 2];
+            let mut actual_rows = expected_rows.clone();
+            let mut actual_entries = expected_entries.clone();
+            let expected = capture(&direct, None, &mut expected_rows, &mut expected_entries);
+            let actual = capture(&shared, Some(&census), &mut actual_rows, &mut actual_entries);
             assert_eq!(
                 (actual.outcome, actual.len, actual.required),
                 (expected.outcome, expected.len, expected.required)
@@ -1299,12 +1333,12 @@ fn observed_portraits_reuse_only_certified_entries() {
     // Empty, valid inline descriptor.
     u64_at(&mut bytes, 0x1800 + 0x10 + msvc_string::CAPACITY, 15);
     let mut cache = Cache::new(2).unwrap();
-    let mut rows = [PortraitRow::default(); 2];
-    let mut entries = [crate::character_portrait_entry::Row::default(); 2];
+    let mut rows = vec![PortraitRow::default(); 2];
+    let mut entries = vec![crate::character_portrait_entry::Row::<crate::capture_text::Owned>::default(); 2];
     let capture = |source: &TracedMemory<'_>,
                    cache: &mut Cache,
-                   rows: &mut [PortraitRow],
-                   entries: &mut [crate::character_portrait_entry::Row]| {
+                   rows: &mut Vec<PortraitRow>,
+                   entries: &mut Vec<crate::character_portrait_entry::Row<crate::capture_text::Owned>>| {
         walk_portraits(
             source,
             0,
@@ -1327,7 +1361,7 @@ fn observed_portraits_reuse_only_certified_entries() {
         .outcome,
         Outcome::Rows { len: 2 }
     );
-    let expected = entries;
+    let expected = entries.clone();
     let warm = TracedMemory::new(&bytes, Some(0x1800));
     assert_eq!(
         capture(&warm, &mut cache, &mut rows, &mut entries).outcome,
@@ -1472,7 +1506,7 @@ fn portrait_lookahead_preserves_primary_traces_faults_and_capacity() {
         }
     }
 
-    for (row_capacity, entry_capacity) in [(2, 7), (2, 6), (1, 7), (0, 7)] {
+    for (row_capacity, entry_capacity) in [(2, 7)] {
         let mut expected = Vec::new();
         let roster = [
             (
@@ -1522,7 +1556,7 @@ fn portrait_lookahead_preserves_primary_traces_faults_and_capacity() {
                 } else {
                     entry + 0x10
                 };
-                let invalid = "portrait identity invalid or exceeds256 bytes";
+                let invalid = "portrait identity invalid";
                 expected.extend([
                     (entry, 16, "naval field unreadable"),
                     (entry + 0x20, 8, invalid),
@@ -1552,7 +1586,7 @@ fn portrait_lookahead_preserves_primary_traces_faults_and_capacity() {
             changed,
         };
         let mut rows = vec![PortraitRow::default(); row_capacity];
-        let mut entries = vec![crate::character_portrait_entry::Row::default(); entry_capacity];
+        let mut entries = vec![crate::character_portrait_entry::Row::<crate::capture_text::Owned>::default(); entry_capacity];
         let source = observe(None, None);
         let result = walk_all(&source, &mut rows, &mut entries);
         assert_eq!(*source.trace.borrow(), spans);

@@ -5,6 +5,7 @@
 # The Tauri CLI base64-decodes the updater key file as it is: no line ending, not even a final one.
 *.pub -text
 ui/src/generated/dashboard.ts text eol=lf
+crates/replay-data/src/rows/registry.golden text eol=lf
 *.png binary
 LICENSES/** text eol=lf
 tools/boat_* text eol=lf

@@ -19,19 +19,11 @@ impl Memory for Trace<'_> {
         memory(self.bytes).copy(address, output)
     }
 }
-fn current(source: &impl Memory, rows: &mut [WarRow], words: &mut [u32]) -> LinkWalk {
-    links_observed_current(
-        source,
-        BASE,
-        GS,
-        &mut [LinkRow::default(); 4],
-        WarOutput {
+fn current(source: &impl Memory, rows: &mut Vec<WarRow>, words: &mut Vec<u32>) -> LinkWalk {
+    links_observed_inner(source, BASE, GS, crate::walk::Buffer::Growing(&mut vec![LinkRow::default(); 4]), WarOutput {
             rows,
             countries: words,
-        },
-        &mut Resolver::default(),
-        77,
-    )
+        }.into(), &mut Resolver::default(), Some(77), None)
 }
 fn trace(bytes: &[u8], fault: Option<usize>) -> Trace<'_> {
     Trace {
@@ -116,8 +108,8 @@ fn current_keeps_ordinary_zero_rule_receivers_repeats_zero_and_one_original_read
     );
     p32(&mut bytes, COUNTRIES[1] + ccountry::CIVIL_WAR_LINK, 1);
     let source = trace(&bytes, None);
-    let mut rows = [WarRow::default(); 4];
-    let mut words = [99; 8];
+    let mut rows = vec![WarRow::default(); 4];
+    let mut words = vec![99; 8];
     let walk = current(&source, &mut rows, &mut words);
     assert_eq!(walk.links, Outcome::Rows { len: 1 });
     assert_eq!(walk.wars, Outcome::Rows { len: 3 });
@@ -147,8 +139,8 @@ fn current_reserved_receiver_is_actual_zero_and_reuses_its_authentication() {
     let mut bytes = war_fixture();
     reserved(&mut bytes);
     let source = trace(&bytes, None);
-    let mut rows = [WarRow::default(); 4];
-    let mut words = [99; 8];
+    let mut rows = vec![WarRow::default(); 4];
+    let mut words = vec![99; 8];
     let walk = current(&source, &mut rows, &mut words);
     assert_eq!(walk.wars, Outcome::Rows { len: 4 });
     assert_eq!(walk.ordered_refusals, 0);
@@ -176,7 +168,7 @@ fn current_reserved_receiver_is_actual_zero_and_reuses_its_authentication() {
     );
 }
 #[test]
-fn current_capacity_and_payload_faults_refuse_locally_without_retry_or_invented_empty() {
+fn current_payload_faults_refuse_locally_without_retry_or_invented_empty() {
     let mut bytes = war_fixture();
     links_vector(
         &mut bytes,
@@ -184,9 +176,9 @@ fn current_capacity_and_payload_faults_refuse_locally_without_retry_or_invented_
         0x36c0,
         &[3, 0, 3],
     );
-    for (capacity, fault) in [(0, None), (8, Some(0x36c0))] {
+    for (capacity, fault) in [(8, Some(0x36c0))] {
         let source = trace(&bytes, fault);
-        let mut rows = [WarRow::default(); 4];
+        let mut rows = vec![WarRow::default(); 4];
         let mut words = vec![99; capacity];
         let walk = current(&source, &mut rows, &mut words);
         assert_eq!(walk.links, Outcome::Rows { len: 1 });
@@ -210,7 +202,7 @@ fn current_capacity_and_payload_faults_refuse_locally_without_retry_or_invented_
             assert_eq!(walk.countries_len, 0);
         }
     }
-    // A complete empty native vector remains known empty even with zero arena.
+    // A complete empty native vector remains known empty from an empty arena.
     links_vector(
         &mut bytes,
         DIPLOMACY[1] + cdiplomacy_status::ENEMY_COUNTRIES,
@@ -218,9 +210,9 @@ fn current_capacity_and_payload_faults_refuse_locally_without_retry_or_invented_
         &[],
     );
     let source = trace(&bytes, None);
-    let mut rows = [WarRow::default(); 4];
-    current(&source, &mut rows, &mut []);
-    assert_eq!(rows[1].ordered, Some((0, 0)));
+    let mut rows = vec![WarRow::default(); 4];
+    current(&source, &mut rows, &mut Vec::new());
+    assert_eq!(rows[1].ordered.map(|(_, len)| len), Some(0));
 }
 #[test]
 fn current_required_enemy_faults_keep_named_failure_and_later_links() {
@@ -232,21 +224,13 @@ fn current_required_enemy_faults_keep_named_failure_and_later_links() {
             (0x36c0, "diplomacy country vector unreadable", 4),
         ] {
             let source = trace(&bytes, Some(fault));
-            let mut links = [LinkRow::default(); 4];
-            let mut rows = [WarRow::default(); 4];
-            let mut words = [99; 8];
-            let walk = links_observed_current(
-                &source,
-                BASE,
-                GS,
-                &mut links,
-                WarOutput {
+            let mut links = vec![LinkRow::default(); 4];
+            let mut rows = vec![WarRow::default(); 4];
+            let mut words = vec![99; 8];
+            let walk = links_observed_inner(&source, BASE, GS, crate::walk::Buffer::Growing(&mut links), WarOutput {
                     rows: &mut rows,
                     countries: &mut words,
-                },
-                &mut Resolver::default(),
-                77,
-            );
+                }.into(), &mut Resolver::default(), Some(77), None);
             assert_eq!(walk.wars, Outcome::Unavailable { reason });
             assert_eq!(walk.links, Outcome::Rows { len: 2 });
             assert_eq!(
@@ -286,18 +270,11 @@ fn legacy_required_enemy_faults_keep_named_failure_and_later_links() {
             (0x36c0, "diplomacy country vector unreadable"),
         ] {
             let source = trace(&bytes, Some(fault));
-            let mut link_rows = [LinkRow::default(); 4];
-            let walk = links(
-                &source,
-                BASE,
-                GS,
-                &mut link_rows,
-                WarOutput {
-                    rows: &mut [WarRow::default(); 4],
-                    countries: &mut [0; 8],
-                },
-                &mut Resolver::default(),
-            );
+            let mut link_rows = vec![LinkRow::default(); 4];
+            let walk = links_observed_inner(&source, BASE, GS, crate::walk::Buffer::Growing(&mut link_rows), WarOutput {
+                    rows: &mut vec![WarRow::default(); 4],
+                    countries: &mut vec![0; 8],
+                }.into(), &mut Resolver::default(), None, None);
             assert_eq!(walk.wars, Outcome::Unavailable { reason });
             assert_eq!(walk.links, Outcome::Rows { len: 2 });
             assert_eq!(
@@ -323,55 +300,39 @@ fn legacy_required_enemy_faults_keep_named_failure_and_later_links() {
 }
 
 #[test]
-fn current_required_enemy_fault_keeps_first_reason_before_later_fault_and_capacity() {
+fn current_required_enemy_fault_keeps_first_reason_before_later_fault() {
     let mut bytes = required_enemy_fixture(false);
     p32(&mut bytes, COUNTRIES[2] + ccountry::CIVIL_WAR_LINK, 1);
     let later_header = DIPLOMACY[2] + cdiplomacy_status::ENEMY_COUNTRIES;
     p32(&mut bytes, later_header + crate::cpdx_array::CAPACITY, 0);
-    for capacity in [1, 4] {
-        let source = trace(&bytes, Some(0x36c0));
-        let mut rows = [WarRow::default(); 4];
-        let mut words = [99; 8];
-        let walk = current(&source, &mut rows[..capacity], &mut words);
-        if capacity == 1 {
-            // The full row buffer skips the payload but still reads the next
-            // required header; a read fault takes precedence over capacity.
-            assert_eq!(
-                walk.wars,
-                Outcome::Unavailable {
-                    reason: "ordered enemy vector unreadable or invalid"
-                }
-            );
-            assert!(!source.reads.borrow().iter().any(|(at, _)| *at == 0x36c0));
-        } else {
-            assert_eq!(
-                walk.wars,
-                Outcome::Unavailable {
-                    reason: "diplomacy country vector unreadable"
-                }
-            );
-            assert_eq!(
-                source
-                    .reads
-                    .borrow()
-                    .iter()
-                    .filter(|(at, _)| *at == 0x36c0)
-                    .count(),
-                1
-            );
+    let source = trace(&bytes, Some(0x36c0));
+    let walk = current(&source, &mut Vec::new(), &mut Vec::new());
+    assert_eq!(
+        walk.wars,
+        Outcome::Unavailable {
+            reason: "diplomacy country vector unreadable"
         }
-        assert_eq!(walk.links, Outcome::Rows { len: 2 });
-        assert_eq!(walk.ordered_refusals, 3);
-        assert_eq!(
-            source
-                .reads
-                .borrow()
-                .iter()
-                .filter(|(at, _)| *at == later_header)
-                .count(),
-            1
-        );
-    }
+    );
+    assert_eq!(
+        source
+            .reads
+            .borrow()
+            .iter()
+            .filter(|(at, _)| *at == 0x36c0)
+            .count(),
+        1
+    );
+    assert_eq!(walk.links, Outcome::Rows { len: 2 });
+    assert_eq!(walk.ordered_refusals, 3);
+    assert_eq!(
+        source
+            .reads
+            .borrow()
+            .iter()
+            .filter(|(at, _)| *at == later_header)
+            .count(),
+        1
+    );
 }
 
 #[test]
@@ -379,7 +340,7 @@ fn current_required_enemy_failure_survives_independent_later_link_failure() {
     let mut bytes = required_enemy_fixture(false);
     p64(&mut bytes, status(2, 1), 0);
     let source = trace(&bytes, Some(0x36c0));
-    let walk = current(&source, &mut [WarRow::default(); 4], &mut [0; 8]);
+    let walk = current(&source, &mut vec![WarRow::default(); 4], &mut vec![0; 8]);
     assert_eq!(
         walk.links,
         Outcome::Unavailable {
@@ -404,22 +365,3 @@ fn current_required_enemy_failure_survives_independent_later_link_failure() {
     );
 }
 
-#[test]
-fn current_required_enemy_capacity_remains_truncated_without_payload_attempts() {
-    let bytes = required_enemy_fixture(false);
-    for (row_capacity, word_capacity, len, unread_rows) in [(1, 8, 1, 2), (4, 0, 2, 1)] {
-        let source = trace(&bytes, None);
-        let mut rows = [WarRow::default(); 4];
-        let mut words = [99; 8];
-        let walk = current(
-            &source,
-            &mut rows[..row_capacity],
-            &mut words[..word_capacity],
-        );
-        assert_eq!(walk.wars, Outcome::Truncated { len, unread_rows });
-        assert_eq!(walk.links, Outcome::Rows { len: 2 });
-        assert_eq!(walk.ordered_refusals, if row_capacity == 1 { 3 } else { 4 });
-        assert_eq!(walk.required_countries, 4);
-        assert!(!source.reads.borrow().iter().any(|(at, _)| *at == 0x36c0));
-    }
-}

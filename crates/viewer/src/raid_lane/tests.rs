@@ -407,3 +407,20 @@ fn ordered_retirement_matches_retention_without_visiting_live_future_hours() {
         }
     }
 }
+
+/// While the offers come from the playback head, the lane keeps no frame it is fed and lets go
+/// of those it held; when the playhead is off again, it keeps them as before.
+#[test]
+fn standing_by_for_the_playback_head_the_lane_keeps_no_frame() {
+    let lane = RaidLane::default();
+    let gap = Current::Gap { branch: 1, hour: 9, reason: String::new() };
+    lane.feed(1, 9, &gap, None);
+    assert!(lane.has_frame(1, 9));
+    lane.stand_by(true);
+    assert!(!lane.has_frame(1, 9), "what it held is let go");
+    lane.feed(1, 10, &gap, None);
+    assert!(!lane.has_frame(1, 10), "standing by, a fed frame is not kept");
+    lane.stand_by(false);
+    lane.feed(1, 11, &gap, None);
+    assert!(lane.has_frame(1, 11));
+}

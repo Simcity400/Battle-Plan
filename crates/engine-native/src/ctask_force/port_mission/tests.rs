@@ -120,10 +120,10 @@ fn duplicate_searchers_reuse_exact_full_reference_and_roster_owner_for_generic_c
     for (class, owner) in [(0, 0), (1, 17), (13, u32::MAX)] {
         let memory = world(class, owner, &[REFERENCE, REFERENCE, 0]);
         let (mut searchers, mut avoided, mut bytes, mut answers) = (
-            [Searcher::default(); 3],
-            [],
-            [],
-            [ReferenceAnswer::default(); 8],
+            vec![Searcher::default(); 3],
+            Vec::new(),
+            Vec::new(),
+            vec![ReferenceAnswer::default(); 8],
         );
         let mut capture = Collector::new(
             &memory,
@@ -183,10 +183,10 @@ fn late_partial_raw_slot_keeps_the_known_first_match_prefix_and_never_retries() 
     let memory = world(1, 17, &[REFERENCE, REFERENCE, REFERENCE]);
     memory.fail_once.set(Some(REFS + 8));
     let (mut searchers, mut avoided, mut bytes, mut answers) = (
-        [Searcher::default(); 3],
-        [],
-        [],
-        [ReferenceAnswer::default(); 8],
+        vec![Searcher::default(); 3],
+        Vec::new(),
+        Vec::new(),
+        vec![ReferenceAnswer::default(); 8],
     );
     let mut capture = Collector::new(
         &memory,
@@ -216,10 +216,10 @@ fn bucket_fault_is_sticky_across_duplicate_references_and_target_liveness() {
     let bucket = 0x2000 + Fixture::index(REFERENCE) * crate::reference_bucket::STRIDE;
     memory.fail_once.set(Some(bucket));
     let (mut searchers, mut avoided, mut bytes, mut answers) = (
-        [Searcher::default(); 2],
-        [],
-        [],
-        [ReferenceAnswer::default(); 8],
+        vec![Searcher::default(); 2],
+        Vec::new(),
+        Vec::new(),
+        vec![ReferenceAnswer::default(); 8],
     );
     let mut capture = Collector::new(
         &memory,
@@ -261,10 +261,10 @@ fn bad_searcher_identity_withholds_owner_but_cannot_change_native_target_livenes
             .memory
             .put(TASK + ENGAGEMENT_TARGET, &REFERENCE.to_le_bytes());
         let (mut searchers, mut avoided, mut bytes, mut answers) = (
-            [Searcher::default(); 1],
-            [],
-            [],
-            [ReferenceAnswer::default(); 4],
+            vec![Searcher::default(); 1],
+            Vec::new(),
+            Vec::new(),
+            vec![ReferenceAnswer::default(); 4],
         );
         let mut capture = Collector::new(
             &memory,
@@ -292,10 +292,10 @@ fn authenticated_owner_word_fault_keeps_known_resolution_and_is_not_retried() {
         .put(TASK + ENGAGEMENT_TARGET, &REFERENCE.to_le_bytes());
     memory.fail_once.set(Some(UNIT + cunit::ROSTER_OWNER));
     let (mut searchers, mut avoided, mut bytes, mut answers) = (
-        [Searcher::default(); 2],
-        [],
-        [],
-        [ReferenceAnswer::default(); 8],
+        vec![Searcher::default(); 2],
+        Vec::new(),
+        Vec::new(),
+        vec![ReferenceAnswer::default(); 8],
     );
     let mut capture = Collector::new(
         &memory,
@@ -336,10 +336,10 @@ fn a_zero_id_refuses_generic_identity_without_adding_a_target_liveness_gate() {
         .memory
         .put(TASK + ENGAGEMENT_TARGET, &100_u64.to_le_bytes());
     let (mut searchers, mut avoided, mut bytes, mut answers) = (
-        [Searcher::default(); 1],
-        [],
-        [],
-        [ReferenceAnswer::default(); 4],
+        vec![Searcher::default(); 1],
+        Vec::new(),
+        Vec::new(),
+        vec![ReferenceAnswer::default(); 4],
     );
     let mut capture = Collector::new(
         &memory,
@@ -375,7 +375,7 @@ fn target_liveness_has_no_kind_gate_and_dangling_values_keep_the_raw_handle() {
             .memory
             .put(TASK + ENGAGEMENT_TARGET, &REFERENCE.to_le_bytes());
         let (mut searchers, mut avoided, mut bytes, mut answers) =
-            ([], [], [], [ReferenceAnswer::default(); 2]);
+            (Vec::new(), Vec::new(), Vec::new(), vec![ReferenceAnswer::default(); 2]);
         let mut capture = Collector::new(
             &memory,
             0,
@@ -407,7 +407,7 @@ fn exact_nullable_string_slots_preserve_raw_bytes_empty_and_late_faults() {
         .memory
         .put(STRINGS + 2 * 32 + 16, &99_u64.to_le_bytes());
     let (mut searchers, mut avoided, mut bytes, mut answers) =
-        ([], [None; 4], [0; 20], [ReferenceAnswer::default(); 2]);
+        (Vec::new(), vec![None; 4], vec![0; 20], vec![ReferenceAnswer::default(); 2]);
     let mut capture = Collector::new(
         &memory,
         0,
@@ -429,45 +429,6 @@ fn exact_nullable_string_slots_preserve_raw_bytes_empty_and_late_faults() {
 }
 
 #[test]
-fn independent_arena_shortages_keep_siblings_and_complete_known_growth_demand() {
-    for (search_capacity, span_capacity, byte_capacity) in [(0, 2, 8), (1, 0, 8), (1, 2, 0)] {
-        let mut memory = world(1, 17, &[REFERENCE]);
-        strings(&mut memory.memory, &[b"one", b"two"]);
-        let (mut searchers, mut avoided, mut bytes, mut answers) = (
-            [Searcher::default(); 1],
-            [None; 2],
-            [0; 8],
-            [ReferenceAnswer::default(); 4],
-        );
-        let before = prefix();
-        let mut capture = Collector::new(
-            &memory,
-            0,
-            1,
-            &mut searchers[..search_capacity],
-            &mut avoided[..span_capacity],
-            &mut bytes[..byte_capacity],
-            &mut answers,
-        );
-        let input = capture.capture(TASK, 2, &before);
-        let counts = capture.finish();
-        assert_eq!(before, prefix());
-        assert_eq!(input.searching.is_some(), search_capacity != 0);
-        assert_eq!(input.avoided_ship_types.is_some(), span_capacity != 0);
-        assert_eq!(input.engagement_target.unwrap().resolves, Some(false));
-        assert_eq!(
-            (
-                counts.searching_required,
-                counts.avoided_required,
-                counts.bytes_required
-            ),
-            (1, 2, 6)
-        );
-        assert_eq!(counts.reference_required, 2);
-    }
-}
-
-#[test]
 fn early_status_gates_and_rule_four_leave_late_groups_unconsumed() {
     for (mission, detached, combats, rule, has_target) in [
         (0_u32, 0_i32, 0_i32, 2_i32, false),
@@ -483,7 +444,7 @@ fn early_status_gates_and_rule_four_leave_late_groups_unconsumed() {
         prefix.detached_activity = detached;
         prefix.engagement_rule = rule;
         let (mut searchers, mut avoided, mut bytes, mut answers) =
-            ([], [], [], [ReferenceAnswer::default(); 2]);
+            (Vec::new(), Vec::new(), Vec::new(), vec![ReferenceAnswer::default(); 2]);
         let mut capture = Collector::new(
             &memory,
             0,
@@ -510,7 +471,7 @@ fn early_status_gates_and_rule_four_leave_late_groups_unconsumed() {
 #[test]
 fn native_pointer_scratch_is_erased_on_early_drop_and_rust_unwind() {
     let memory = world(1, 17, &[]);
-    let mut answers = [ReferenceAnswer::default(); 2];
+    let mut answers = vec![ReferenceAnswer::default(); 2];
     let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut reader = Reader::new(&memory, 0, &mut answers);
         assert_eq!(reader.searching_owner(REFERENCE).roster_owner, Some(17));
@@ -558,7 +519,7 @@ fn growing_reference_rehash_preserves_the_original_failed_observation() {
     memory.fail_once.set(Some(bucket));
     let (mut searchers, mut avoided, mut bytes, mut answers) =
         (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-    let mut capture = Collector::new_growing(
+    let mut capture = Collector::new(
         &memory,
         0,
         1,
@@ -599,7 +560,7 @@ fn growing_port_buffers_keep_partial_raw_faults_and_later_string_slots() {
     memory.fail_once.set(Some(REFS + 8));
     let (mut searchers, mut avoided, mut bytes, mut answers) =
         (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-    let mut capture = Collector::new_growing(
+    let mut capture = Collector::new(
         &memory,
         0,
         1,
@@ -650,7 +611,7 @@ fn growing_port_heap_text_uses_original_descriptor_and_does_not_retry_faults() {
         }
         let (mut searchers, mut avoided, mut bytes, mut answers) =
             (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-        let mut capture = Collector::new_growing(
+        let mut capture = Collector::new(
             &memory,
             0,
             1,

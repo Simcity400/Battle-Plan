@@ -490,7 +490,7 @@ pub fn capture_selected(
             .sort_unstable_by(|a, b| a.name.cmp(&b.name));
     }
     if fresh.flags {
-        match cflag_manager::walk_growing(memory, base, at(pointer, FLAGS)?, &mut row.flags) {
+        match cflag_manager::walk(memory, base, at(pointer, FLAGS)?, &mut row.flags) {
             crate::walk::Outcome::Rows { len } => row.flags.truncate(len),
             crate::walk::Outcome::Unavailable { reason } => return Err(reason),
             _ => return Err("organisation flag store incomplete"),

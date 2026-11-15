@@ -1389,7 +1389,6 @@ fn motion_capture_reads_fresh_operands_only_for_admitted_current_hour_native_dem
         (None, 1, false, 1),
         (Some(17), 0, false, 1),
         (Some(17), 1, true, 1),
-        (Some(17), 1, false, 0),
         (Some(17), 1, false, 1),
     ] {
         let mut memory = fixture();
@@ -1402,7 +1401,7 @@ fn motion_capture_reads_fresh_operands_only_for_admitted_current_hour_native_dem
             memory.u32(0x5000 + crate::cprovince::ID, 2);
             memory.u64(TASK + cunit::MOVEMENT_TARGET, 0x5000);
         }
-        let mut rows = [ctask_force::MapMotionRow::default(); 1];
+        let mut rows = vec![ctask_force::MapMotionRow::default(); 1];
         let mut paths = vec![0; path_capacity];
         let mut combats = cunit::FirstCombatMemo::new(1);
         let mut collector = ctask_force::MapMotionCollector::new(
@@ -1428,20 +1427,10 @@ fn motion_capture_reads_fresh_operands_only_for_admitted_current_hour_native_dem
             usize::from(demanded)
         );
         assert_eq!(memory.calls(TASK + cunit::LOGICAL_OWNER), 1);
-        if path_capacity == 0 {
-            assert!(matches!(
-                walk.outcome,
-                crate::walk::Outcome::Truncated {
-                    len: 0,
-                    unread_rows: 1
-                }
-            ));
-        } else {
-            assert_eq!(walk.outcome, crate::walk::Outcome::Rows { len: 1 });
-            assert_eq!(rows[0].logical_owner, 7);
-            if demanded {
-                assert_eq!(rows[0].fresh.unwrap().sample_hour, 17);
-            }
+        assert_eq!(walk.outcome, crate::walk::Outcome::Rows { len: 1 });
+        assert_eq!(rows[0].logical_owner, 7);
+        if demanded {
+            assert_eq!(rows[0].fresh.unwrap().sample_hour, 17);
         }
     }
 }
@@ -1453,8 +1442,8 @@ fn refused_or_unverified_layout_skips_modifier_graph_and_keeps_independent_prefi
         memory.array(STATE + crate::cgame_state::PROVINCES, 0x980, 4);
         memory.array(TASK + cunit::ORDINARY_ROUTE_DATA, 0x4800, 1);
         memory.u32(0x4800, 2);
-        let mut rows = [ctask_force::MapMotionRow::default(); 1];
-        let mut paths = [0; 1];
+        let mut rows = vec![ctask_force::MapMotionRow::default(); 1];
+        let mut paths = vec![0; 1];
         let mut combats = cunit::FirstCombatMemo::new(1);
         let mut collector = ctask_force::MapMotionCollector::new(
             &memory,
@@ -2304,8 +2293,8 @@ fn mission_risk_only_reads_one_graph_and_keeps_speed_stats_failures_independent(
 #[test]
 fn motion_mission_risk_idle_admission_shares_eta_graph_without_an_ordinary_route() {
     let memory = motion_mission_risk_fixture(0);
-    let mut rows = [ctask_force::MapMotionRow::default(); 1];
-    let mut paths = [];
+    let mut rows = vec![ctask_force::MapMotionRow::default(); 1];
+    let mut paths = vec![];
     let mut combats = cunit::FirstCombatMemo::new(1);
     let mut collector = ctask_force::MapMotionCollector::new(
         &memory,
@@ -2335,8 +2324,8 @@ fn motion_mission_risk_idle_admission_shares_eta_graph_without_an_ordinary_route
 #[test]
 fn motion_mission_risk_missing_hour_refuses_packet_without_reading_fresh_graph() {
     let memory = motion_mission_risk_fixture(0);
-    let mut rows = [ctask_force::MapMotionRow::default(); 1];
-    let mut paths = [];
+    let mut rows = vec![ctask_force::MapMotionRow::default(); 1];
+    let mut paths = vec![];
     let mut combats = cunit::FirstCombatMemo::new(1);
     let mut collector = ctask_force::MapMotionCollector::new(
         &memory,
@@ -2362,8 +2351,8 @@ fn motion_mission_risk_missing_hour_refuses_packet_without_reading_fresh_graph()
 #[test]
 fn motion_mission_risk_failed_original_admission_keeps_exact_refusal_and_eta_packet() {
     let memory = motion_mission_risk_fixture(0);
-    let mut rows = [ctask_force::MapMotionRow::default(); 1];
-    let mut paths = [];
+    let mut rows = vec![ctask_force::MapMotionRow::default(); 1];
+    let mut paths = vec![];
     let mut combats = cunit::FirstCombatMemo::new(1);
     let mut collector = ctask_force::MapMotionCollector::new(
         &memory,
@@ -2392,8 +2381,8 @@ fn motion_mission_risk_failed_original_admission_keeps_exact_refusal_and_eta_pac
 fn motion_mission_risk_route_failure_keeps_one_risk_only_graph_and_motion_refusal() {
     let mut memory = motion_mission_risk_fixture(1);
     memory.fault = Some((TASK + cunit::ORDINARY_ROUTE_DATA, 16));
-    let mut rows = [ctask_force::MapMotionRow::default(); 1];
-    let mut paths = [0; 1];
+    let mut rows = vec![ctask_force::MapMotionRow::default(); 1];
+    let mut paths = vec![0; 1];
     let mut combats = cunit::FirstCombatMemo::new(1);
     let mut collector = ctask_force::MapMotionCollector::new(
         &memory,
@@ -2422,47 +2411,12 @@ fn motion_mission_risk_route_failure_keeps_one_risk_only_graph_and_motion_refusa
 }
 
 #[test]
-fn motion_mission_risk_capacity_refusal_preserves_truncation_and_one_risk_only_graph() {
-    for (row_capacity, path_capacity) in [(0, 1), (1, 0)] {
-        let memory = motion_mission_risk_fixture(1);
-        let mut rows = vec![ctask_force::MapMotionRow::default(); row_capacity];
-        let mut paths = vec![0; path_capacity];
-        let mut combats = cunit::FirstCombatMemo::new(1);
-        let mut collector = ctask_force::MapMotionCollector::new(
-            &memory,
-            TERRAIN_IMAGE,
-            STATE,
-            &mut rows,
-            &mut paths,
-            &mut combats,
-        )
-        .with_fresh_hour(32)
-        .with_fresh_modifier_guard(Ok(()));
-        let risk = collector
-            .visit_with_mission_risk(TASK, 7, Ok(true), Ok(()))
-            .unwrap();
-        let walk = collector.finish(None);
-        assert_eq!(risk.combined_detection, Ok(Some(RISK_COMBINED)));
-        assert_eq!(
-            walk.outcome,
-            crate::walk::Outcome::Truncated {
-                len: 0,
-                unread_rows: 1
-            }
-        );
-        assert_eq!((walk.paths_len, walk.required_paths), (0, 1));
-        assert_mission_risk_graph_read_once(&memory);
-        assert_mission_risk_skips_eta_fields(&memory);
-    }
-}
-
-#[test]
 fn motion_mission_risk_prior_motion_failure_does_not_retry_prefix_or_lose_risk() {
     const BAD_TASK: usize = 0x28000;
     let mut memory = motion_mission_risk_fixture(0);
     memory.fault = Some((BAD_TASK + cunit::ORDINARY_ROUTE_DATA, 16));
-    let mut rows = [ctask_force::MapMotionRow::default(); 1];
-    let mut paths = [];
+    let mut rows = vec![ctask_force::MapMotionRow::default(); 1];
+    let mut paths = vec![];
     let mut combats = cunit::FirstCombatMemo::new(1);
     let mut collector = ctask_force::MapMotionCollector::new(
         &memory,
@@ -2641,8 +2595,8 @@ fn contribution_only_borrows_detection_stats_without_own_risk_later_leaves() {
 #[test]
 fn original_counter_contributor_union_keeps_one_motion_and_modifier_graph() {
     let memory = motion_mission_risk_fixture(0);
-    let mut rows = [ctask_force::MapMotionRow::default(); 1];
-    let mut paths = [];
+    let mut rows = vec![ctask_force::MapMotionRow::default(); 1];
+    let mut paths = vec![];
     let mut combats = cunit::FirstCombatMemo::new(1);
     let mut collector = ctask_force::MapMotionCollector::new(
         &memory,
@@ -2686,8 +2640,8 @@ fn original_counter_contributor_union_keeps_one_motion_and_modifier_graph() {
 #[test]
 fn borrowed_mission_risk_outside_census_uses_no_motion_capacity_or_identity_probe() {
     let memory = motion_mission_risk_fixture(1);
-    let mut rows = [];
-    let mut paths = [];
+    let mut rows = vec![];
+    let mut paths = vec![];
     let mut combats = cunit::FirstCombatMemo::new(1);
     let mut collector = ctask_force::MapMotionCollector::new(
         &memory,
@@ -2740,8 +2694,8 @@ fn borrowed_mission_risk_original_loan_error_precedes_clock_demand_and_guard() {
         (Some(35), Ok(false), Err("risk guard mismatch")),
     ] {
         let memory = motion_mission_risk_fixture(1);
-        let mut rows = [];
-        let mut paths = [];
+        let mut rows = vec![];
+        let mut paths = vec![];
         let mut combats = cunit::FirstCombatMemo::new(1);
         let mut collector = ctask_force::MapMotionCollector::new(
             &memory,
@@ -2773,8 +2727,8 @@ fn borrowed_mission_risk_original_loan_error_precedes_clock_demand_and_guard() {
 #[test]
 fn borrowed_mission_risk_authenticated_loan_without_hour_reads_no_graph() {
     let memory = motion_mission_risk_fixture(1);
-    let mut rows = [];
-    let mut paths = [];
+    let mut rows = vec![];
+    let mut paths = vec![];
     let mut combats = cunit::FirstCombatMemo::new(1);
     let mut collector = ctask_force::MapMotionCollector::new(
         &memory,
@@ -2811,8 +2765,8 @@ fn borrowed_mission_risk_unreached_demand_refusal_and_guard_leave_graph_and_cens
         ),
     ] {
         let memory = motion_mission_risk_fixture(1);
-        let mut rows = [];
-        let mut paths = [];
+        let mut rows = vec![];
+        let mut paths = vec![];
         let mut combats = cunit::FirstCombatMemo::new(1);
         let mut collector = ctask_force::MapMotionCollector::new(
             &memory,
@@ -2839,8 +2793,8 @@ fn borrowed_mission_risk_unreached_demand_refusal_and_guard_leave_graph_and_cens
 #[test]
 fn borrowed_mission_risk_preserves_existing_invalid_motion_roster_refusal() {
     let memory = mission_risk_fixture(); // No legacy province roster is installed.
-    let mut rows = [];
-    let mut paths = [];
+    let mut rows = vec![];
+    let mut paths = vec![];
     let mut combats = cunit::FirstCombatMemo::new(1);
     let mut collector = ctask_force::MapMotionCollector::new(
         &memory,
@@ -2878,8 +2832,8 @@ fn borrowed_mission_risk_distinct_receiver_retains_normal_visit_metadata_failure
         memory.u32(OUTSIDE_TASK + cunit::ROSTER_OWNER, 1);
         memory.fault = Some((fault, 4));
         memory.fail_once = true;
-        let mut rows = [ctask_force::MapMotionRow::default(); 1];
-        let mut paths = [];
+        let mut rows = vec![ctask_force::MapMotionRow::default(); 1];
+        let mut paths = vec![];
         let mut combats = cunit::FirstCombatMemo::new(1);
         let mut collector = ctask_force::MapMotionCollector::new(
             &memory,
@@ -2923,8 +2877,8 @@ fn original_counter_risk_preserves_signed_count_and_owner_from_one_motion_attemp
     for (count, reached) in [(i32::MIN, true), (-1, true), (0, true), (1, false)] {
         let mut memory = motion_mission_risk_fixture(0);
         memory.u32(TASK + cunit::COMBAT_REFERENCE_COUNT, count as u32);
-        let mut rows = [ctask_force::MapMotionRow::default(); 1];
-        let mut paths = [];
+        let mut rows = vec![ctask_force::MapMotionRow::default(); 1];
+        let mut paths = vec![];
         let mut combats = cunit::FirstCombatMemo::new(1);
         let mut collector = ctask_force::MapMotionCollector::new(
             &memory,
@@ -2987,8 +2941,8 @@ fn original_counter_risk_failed_combat_header_is_not_retried_as_a_readable_count
     let mut memory = motion_mission_risk_fixture(0);
     memory.fault = Some((TASK + cunit::COMBAT_REFERENCE_DATA, 16));
     memory.fail_once = true;
-    let mut rows = [ctask_force::MapMotionRow::default(); 1];
-    let mut paths = [];
+    let mut rows = vec![ctask_force::MapMotionRow::default(); 1];
+    let mut paths = vec![];
     let mut combats = cunit::FirstCombatMemo::new(1);
     let mut collector = ctask_force::MapMotionCollector::new(
         &memory,
@@ -3033,8 +2987,8 @@ fn original_counter_risk_early_route_failure_reads_unattempted_count_once_after_
     ] {
         let mut memory = motion_mission_risk_fixture(0);
         memory.fault = Some((TASK + cunit::ORDINARY_ROUTE_DATA, 16));
-        let mut rows = [ctask_force::MapMotionRow::default(); 1];
-        let mut paths = [];
+        let mut rows = vec![ctask_force::MapMotionRow::default(); 1];
+        let mut paths = vec![];
         let mut combats = cunit::FirstCombatMemo::new(1);
         let mut collector = ctask_force::MapMotionCollector::new(
             &memory,
@@ -3083,49 +3037,12 @@ fn original_counter_risk_early_route_failure_reads_unattempted_count_once_after_
 }
 
 #[test]
-fn original_counter_risk_capacity_failure_keeps_original_count_and_owner_without_reprobe() {
-    let memory = motion_mission_risk_fixture(0);
-    let mut rows = [];
-    let mut paths = [];
-    let mut combats = cunit::FirstCombatMemo::new(1);
-    let mut collector = ctask_force::MapMotionCollector::new(
-        &memory,
-        TERRAIN_IMAGE,
-        STATE,
-        &mut rows,
-        &mut paths,
-        &mut combats,
-    )
-    .with_fresh_hour(39)
-    .with_fresh_modifier_guard(Ok(()));
-    let mut count = None;
-    let mut owner = None;
-    let risk = collector
-        .visit_with_original_counter_risk_observed(TASK, 7, Ok(1), Ok(()), &mut count, &mut owner)
-        .unwrap();
-    assert_eq!(count, Some(Ok(0)));
-    assert_eq!(owner, Some(Ok(7)));
-    assert_eq!(risk.combined_detection, Ok(Some(RISK_COMBINED)));
-    assert_eq!(
-        collector.finish(None).outcome,
-        crate::walk::Outcome::Truncated {
-            len: 0,
-            unread_rows: 1
-        }
-    );
-    assert_eq!(memory.calls(TASK + cunit::COMBAT_REFERENCE_DATA), 1);
-    assert_eq!(memory.calls(TASK + cunit::COMBAT_REFERENCE_COUNT), 0);
-    assert_mission_risk_graph_read_once(&memory);
-    assert_mission_risk_skips_eta_fields(&memory);
-}
-
-#[test]
 fn original_counter_risk_failed_owner_is_retained_without_poisoning_independent_risk() {
     let mut memory = motion_mission_risk_fixture(0);
     memory.fault = Some((TASK + cunit::LOGICAL_OWNER, 4));
     memory.fail_once = true;
-    let mut rows = [ctask_force::MapMotionRow::default(); 1];
-    let mut paths = [];
+    let mut rows = vec![ctask_force::MapMotionRow::default(); 1];
+    let mut paths = vec![];
     let mut combats = cunit::FirstCombatMemo::new(1);
     let mut collector = ctask_force::MapMotionCollector::new(
         &memory,
@@ -3163,8 +3080,8 @@ fn original_counter_risk_failed_shared_graph_never_falls_back_to_a_second_graph(
     let mut memory = motion_mission_risk_fixture(0);
     memory.fault = Some((RISK_LOCATION, 8));
     memory.fail_once = true;
-    let mut rows = [ctask_force::MapMotionRow::default(); 1];
-    let mut paths = [];
+    let mut rows = vec![ctask_force::MapMotionRow::default(); 1];
+    let mut paths = vec![];
     let mut combats = cunit::FirstCombatMemo::new(1);
     let mut collector = ctask_force::MapMotionCollector::new(
         &memory,

@@ -265,7 +265,7 @@ impl Captured {
                     &mut self.rows.rows,
                     &mut self.bytes.first,
                 ),
-                _ => native::walk_growing(
+                _ => native::walk(
                     memory,
                     base,
                     game_state,
@@ -311,12 +311,12 @@ impl Captured {
                     if active {
                         engine_native::walk::Buffer::Growing(&mut self.active.rows)
                     } else {
-                        engine_native::walk::Buffer::Fixed(&mut [])
+                        engine_native::walk::Buffer::Count
                     },
                     if retired {
                         engine_native::walk::Buffer::Growing(&mut self.retired.rows)
                     } else {
-                        engine_native::walk::Buffer::Fixed(&mut [])
+                        engine_native::walk::Buffer::Count
                     },
                 ),
             };
@@ -355,7 +355,7 @@ impl Captured {
                     carry.finish(matches!(walk.outcome, Outcome::Rows { .. }));
                     walk
                 }
-                None => advisor_tokens::walk_growing(
+                None => advisor_tokens::walk(
                     memory,
                     base,
                     game_state,

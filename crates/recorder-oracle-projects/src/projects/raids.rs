@@ -751,20 +751,23 @@ pub(super) fn compare_raids(
             row.outcome,
             saved.outcome,
         );
+        // The save writes a show_for entry only for a positive country handle.
+        if row.show_for.iter().any(|&raw| raw as i32 <= 0) {
+            report.limitation(
+                "the save writes no show_for entry without a country; those entries are not compared",
+                format!("{label}.show_for"),
+            );
+        }
         let show_for = row
             .show_for
             .iter()
-            .map(|&raw| signed_country(raw as i32, countries))
+            .filter_map(|&raw| signed_country(raw as i32, countries).transpose())
             .collect::<io::Result<Vec<_>>>()?;
         equal(
             report,
             format!("{label}.show_for"),
             show_for,
-            saved
-                .show_for
-                .iter()
-                .map(|tag| Some(tag.as_slice()))
-                .collect(),
+            saved.show_for.iter().map(Vec::as_slice).collect(),
         );
         if row.source.kind_present > 1
             || (row.source.kind_present != 0) != row.source.kind.is_some()

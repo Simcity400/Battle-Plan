@@ -3331,7 +3331,7 @@ fn rows<T: Fixture>(tick: usize) -> Vec<T> {
     rows
 }
 pub fn sample_extended_table(table: TableId, tick: usize) -> Option<TableRows> {
-    if let Some(rows) = super::super::politics_rows::sample_politics_table(table, tick) {
+    if let Some(rows) = super::sample_politics_table(table, tick) {
         return Some(rows);
     }
     Some(match table {
@@ -4657,14 +4657,6 @@ fn supply_vertex_rows_round_trip_beside_nodes_and_delta_only_their_edge() {
     assert_eq!(decoded.apply(Some(vertex)).unwrap(), moved);
 }
 
-pub fn round_trip<T: RowCodec + Debug + PartialEq>(row: &T) -> usize {
-    let mut bytes = Vec::new();
-    encode_row(row, 0, &mut bytes).unwrap();
-    let mut input = Decoder::new(&bytes);
-    assert_eq!(&decode_row::<T>(0, &mut input).unwrap(), row);
-    input.finish().unwrap();
-    bytes.len()
-}
 
 #[test]
 fn equipment_spending_keeps_old_delivery_prefix_and_independent_optional_suffixes() {
@@ -7158,12 +7150,10 @@ fn strategic_action_codec_measures_incremental_payload_bytes() {
         ..base.clone()
     };
     let baseline_bytes = round_trip(&baseline);
-    // Withdrawal and transport each add an opaque length and absence tag;
-    // native optional i32 priority adds one tag. Strategic action is unchanged.
-    // Fresh ETA and combat references each add an opaque length and absence
-    // tag; the retired selected route and unit transport fields add only an
-    // empty opaque length. The fuel word adds a present optional i64.
-    assert_eq!(baseline_bytes, 74 + 5 + 5 + 4 + 4 + 9 + 1);
+    // Withdrawal, order transport and the absent own base speed each add an
+    // opaque length and absence tag; native optional i32 priority adds one tag;
+    // the fuel word adds a present optional i64. Strategic action is unchanged.
+    assert_eq!(baseline_bytes, 69 + 5 + 5 + 5 + 1 + 9);
     assert!(baseline.delta(Some(&baseline)).unwrap().is_none());
     for (tick, expected) in [
         (0, 15),
@@ -8156,12 +8146,20 @@ impl Sample for AirHistoryWindow {
     }
 }
 
-impl Sample for ModifierBreakdownNode {
+/// One complete preorder tree, as every tree codec requires: a root with `tick % 3` leaves.
+impl Sample for std::sync::Arc<Vec<ModifierBreakdownNode>> {
     fn sample(tick: usize) -> Self {
-        Self {
-            children: 0,
+        let leaves = tick % 3;
+        let root = ModifierBreakdownNode {
+            children: leaves as u32,
             value: tick as i64,
             name: Vec::new(),
-        }
+        };
+        let leaves = (0..leaves).map(|index| ModifierBreakdownNode {
+            children: 0,
+            value: i64::MIN + (tick + index) as i64,
+            name: vec![b'k', index as u8, tick as u8],
+        });
+        Self::new(std::iter::once(root).chain(leaves).collect())
     }
 }

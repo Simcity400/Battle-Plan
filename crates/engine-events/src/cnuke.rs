@@ -40,11 +40,7 @@ pub struct Row {
 /// Copies the two inline CNuke entries for every canonical country. The row key
 /// is (country, nuke_type); amount and ready retain their native signed widths.
 /// No totals or progress-to-ready conversion are substituted for either field.
-pub fn walk(memory: &impl Memory, base: usize, game_state: usize, rows: &mut [Row]) -> Outcome {
-    walk_buffer(memory, base, game_state, crate::walk::Buffer::Fixed(rows))
-}
-
-pub fn walk_growing(
+pub fn walk(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -229,14 +225,18 @@ mod tests {
         bytes
     }
 
-    fn capture(bytes: &[u8], output: &mut [Row]) -> Outcome {
+    fn capture(bytes: &[u8], output: &mut Vec<Row>) -> Outcome {
         walk(&SliceMemory { base: 0, bytes }, 0, GAME, output)
+    }
+
+    fn count(bytes: &[u8]) -> Outcome {
+        walk_buffer(&SliceMemory { base: 0, bytes }, 0, GAME, crate::walk::Buffer::Count)
     }
 
     #[test]
     fn raw_signed_values_and_alias_owners_survive_without_totals_or_rounding() {
         let bytes = fixture();
-        let mut rows = [Row::default(); 4];
+        let mut rows = vec![Row::default(); 4];
         assert_eq!(capture(&bytes, &mut rows), Outcome::Rows { len: 2 });
         assert_eq!(
             rows[0],
@@ -257,14 +257,7 @@ mod tests {
             }
         );
         assert_eq!(
-            capture(&bytes, &mut rows[..1]),
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            }
-        );
-        assert_eq!(
-            capture(&bytes, &mut []),
+            count(&bytes),
             Outcome::Truncated {
                 len: 0,
                 unread_rows: 2
@@ -282,7 +275,7 @@ mod tests {
                 LOADED_SERIAL_TYPE_VALUE,
             );
         }
-        let mut rows = [Row::default(); 2];
+        let mut rows = vec![Row::default(); 2];
         assert_eq!(capture(&bytes, &mut rows), Outcome::Rows { len: 2 });
         assert_eq!((rows[0].amount_raw, rows[1].ready), (i64::MIN, i32::MAX));
     }
@@ -298,7 +291,7 @@ mod tests {
             let mut bytes = fixture();
             u32_at(&mut bytes, at, value);
             assert!(matches!(
-                capture(&bytes, &mut [Row::default(); 2]),
+                capture(&bytes, &mut vec![Row::default(); 2]),
                 Outcome::Unavailable { .. }
             ));
         }
@@ -310,7 +303,7 @@ mod tests {
             let mut bytes = fixture();
             u64_at(&mut bytes, at, 0);
             assert!(matches!(
-                capture(&bytes, &mut [Row::default(); 2]),
+                capture(&bytes, &mut vec![Row::default(); 2]),
                 Outcome::Unavailable { .. }
             ));
         }
@@ -318,7 +311,7 @@ mod tests {
         assert!(matches!(
             capture(
                 &bytes[..NUKES + STRIDE + READY + 3],
-                &mut [Row::default(); 2]
+                &mut vec![Row::default(); 2]
             ),
             Outcome::Unavailable { .. }
         ));
@@ -330,7 +323,7 @@ mod tests {
         let mut bytes = fixture();
         u32_at(&mut bytes, OWNER + ccountry::NUKES + 12, 0);
         assert_eq!(
-            capture(&bytes, &mut [Row::default(); 2]),
+            capture(&bytes, &mut vec![Row::default(); 2]),
             Outcome::Rows { len: 0 }
         );
         // A third entry is read and authenticated like the first two.
@@ -343,7 +336,7 @@ mod tests {
         u64_at(&mut bytes, at + AMOUNT, 7);
         u32_at(&mut bytes, at + TYPE, 2);
         u32_at(&mut bytes, at + READY, 1);
-        let mut rows = [Row::default(); 3];
+        let mut rows = vec![Row::default(); 3];
         assert_eq!(capture(&bytes, &mut rows), Outcome::Rows { len: 3 });
         assert_eq!(
             rows[2],
@@ -354,13 +347,6 @@ mod tests {
                 ready: 1
             }
         );
-        assert_eq!(
-            capture(&bytes, &mut rows[..2]),
-            Outcome::Truncated {
-                len: 2,
-                unread_rows: 1
-            }
-        );
     }
 
     #[test]
@@ -369,17 +355,10 @@ mod tests {
         u64_at(&mut bytes, COUNTRIES + 8, 0);
         u64_at(&mut bytes, COUNTRIES + 24, 0);
         assert!(matches!(
-            capture(&bytes, &mut []),
+            count(&bytes),
             Outcome::Unavailable { .. }
         ));
         let bytes = fixture();
-        assert_eq!(
-            capture(&bytes[..NUKES + STRIDE], &mut [Row::default(); 1]),
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            }
-        );
         assert_eq!(
             read_row(
                 &SliceMemory {

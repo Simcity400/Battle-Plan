@@ -51,7 +51,7 @@ impl Store {
         sequence: &impl Fn(usize) -> Option<Certificate>,
     ) -> Raw {
         let Some(before) = sequence(country.pointer) else {
-            return [Err("faction country accumulator observation unavailable"); 2];
+            return [Err("faction countries' totals could not be followed in the game"); 2];
         };
         let at = self
             .held
@@ -197,7 +197,7 @@ impl Store {
                     Err(why) => {
                         if matches!(
                             why,
-                            "faction country accumulator observation unavailable"
+                            "faction countries' totals could not be followed in the game"
                                 | "faction country accumulator changed during lookup"
                                 | "faction country carry allocation failed"
                         ) {

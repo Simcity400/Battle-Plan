@@ -69,7 +69,7 @@ export function useCountryFactsRead<V>(client: DashboardClient, track: Pick<Boun
 
 /** The country timeline held for `track` under `content`, re-rendering, once a frame, as it arrives
  * or grows while `watching`. Reading it never asks for it (`askTimeline` does). */
-function useHeldTimeline(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, content: number,
+export function useHeldTimeline(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, content: number,
   watching: boolean): CountryTimeline | undefined {
   const [, told] = useState(0);
   const sourceId = track?.source.id, revision = track?.source.revision, branchId = track?.branch.id;
@@ -148,9 +148,9 @@ function useFactStore<V>(client: DashboardClient, track: Pick<BoundTrack, 'sourc
   return { held, requests, answered, rest, version };
 }
 
-/** Names from `country-styles`, which names at most 64 countries per request. */
+/** Names from `country-styles`, every country in one request. */
 const NAMES: FactSpec<string> = {
-  product: 'country-styles', perRequest: 64, shared: true,
+  product: 'country-styles', perRequest: Infinity, shared: true,
   params: (branchId, hour, tags) => ({ branchId, hour, tags }),
   extract: data => new Map((data as CountryStyleReply).styles.flatMap(style => typeof style.name === 'string' ? [[style.tag, style.name] as const] : [])),
   held: heldFacts(style => style.name),
@@ -165,9 +165,10 @@ export function useCountryNamesAt(client: DashboardClient, track: Pick<BoundTrac
   const read = useCountryFactsRead(client, track, available, active, NAMES, maxHours, attempt);
   const previous = useRef<ReadonlyMap<string, NameRead>>(new Map());
   // The last name read for each country: while its name at a new hour is read, that one shows, never "loading".
-  const lastRead = useRef({ track: '', names: new Map<string, NameRead>() });
+  // Held per client as the reads are: another client's names are never shown for this one's.
+  const lastRead = useRef<{ client: DashboardClient | null; track: string; names: Map<string, NameRead> }>({ client: null, track: '', names: new Map() });
   const trackKey = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id]) : '';
-  if (lastRead.current.track !== trackKey) lastRead.current = { track: trackKey, names: new Map() };
+  if (lastRead.current.track !== trackKey || lastRead.current.client !== client) lastRead.current = { client, track: trackKey, names: new Map() };
   return useMemo(() => {
     const requested = new Set(available.map(item => nameKey(item.hour, item.tag)));
     const held = lastRead.current.names;

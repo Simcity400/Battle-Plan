@@ -9,8 +9,6 @@ import { copyPreparedSeed } from './nativeSeed.mjs';
 import { writeJSON } from './cache.mjs';
 
 export async function removeAdapter(root) {
-  // Unlink the input junction before recursive scratch removal.
-  await rm(path.join(root, '.cargo-target/debug/shader-tools'), { force: true, recursive: true });
   await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 }
 
@@ -28,7 +26,8 @@ export async function startUI(ui, config, output) {
   };
   try {
     await mkdir(path.dirname(binary), { recursive: true }); await copyFile(config.bridge, binary);
-    await symlink(path.resolve(config.shaderTools), path.join(path.dirname(binary), 'shader-tools'), process.platform === 'win32' ? 'junction' : 'dir');
+    // The bridge loads the pinned shader compiler from beside itself, as it was built beside it.
+    for (const name of ['dxcompiler.dll', 'dxil.dll']) await copyFile(path.join(path.dirname(config.bridge), name), path.join(path.dirname(binary), name));
     for (const name of ['crates/dashboard-core/src/map_settings.rs', 'crates/dashboard/src/reply_cache.rs']) {
       const marker = path.join(root, name);
       await mkdir(path.dirname(marker), { recursive: true }); await copyFile(path.join(ui.root, name), marker);

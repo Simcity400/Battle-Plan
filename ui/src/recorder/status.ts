@@ -7,7 +7,7 @@ import type { Compression } from './compression';
 export type Phase = 'waiting' | 'notRecording' | 'recording' | 'saving' | 'saved' | 'discarded' | 'unsaved';
 export interface Problem { text: string; detail: string }
 /** Loads a finished session recorded but left out of its recordings, and why when it is one reason. */
-export interface OmittedLoads { loads: number; reason: 'off' | 'elsewhere' | 'settings' | 'waiting' | 'notAdmitted' | null }
+export interface OmittedLoads { loads: number; reason: 'off' | 'elsewhere' | 'settings' | 'notAdmitted' | null }
 /** Straight-alpha RGBA of the viewed country's flag, as the app's flag canvas draws it. */
 export interface FlagImage { width: number; height: number; pixels: number[] }
 
@@ -51,8 +51,9 @@ export type NextLoad = 'continue' | 'newFile';
 export type CaptureMode = 'full' | 'map';
 export interface CampaignChoice { record?: boolean; next?: NextLoad; folder?: string; flag?: string }
 export interface RecorderSettings {
-  /** Absent until chosen: High. */
-  blockCompression?: Compression;
+  liveCompression: Compression;
+  /** Auto Compress: after saving, the recording is compressed to High in the background. No effect while High. */
+  autoCompress: boolean;
   /** Auto record. */
   recordEveryCampaign: boolean;
   autoSave: boolean;
@@ -82,6 +83,9 @@ export interface UnsavedRecording {
   flag: FlagImage | null;
 }
 
+/** A saved recording's compress: waiting its turn, under way, or kept as recorded and why. */
+export type CompressJob = { state: 'queued' } | { state: 'compressing'; units: number; total: number } | { state: 'kept'; reason: string };
+
 export interface SavedRecording {
   path: string;
   firstHour: number | null;
@@ -89,6 +93,26 @@ export interface SavedRecording {
   /** The file's size from its metadata. */
   bytes: number;
   flag: FlagImage | null;
+  /** The compression level its file records it was written at; null when it records none. */
+  level: number | null;
+  job: CompressJob | null;
+}
+
+/** The level Compress and Auto Compress make a recording: High's. */
+export const COMPRESSED_LEVEL = 19;
+
+/** Whether a saved recording offers Compress: only while Compression is Low, never on one its file
+ * records at High's level or one on its way there; one kept as recorded offers it again. */
+export function compressOffered(settings: Pick<RecorderSettings, 'liveCompression'> | null, row: SavedRecording): boolean {
+  return settings?.liveCompression === 'low' && row.level !== COMPRESSED_LEVEL && (row.job == null || row.job.state === 'kept');
+}
+
+/** A saved recording's compress, in a few words. */
+export function compressText(job: CompressJob | null): string | null {
+  if (!job) return null;
+  if (job.state === 'queued') return 'Compress waiting';
+  if (job.state === 'compressing') return `Compressing ${Math.floor(job.units * 100 / Math.max(job.total, 1))}%`;
+  return `Kept as recorded: ${job.reason}`;
 }
 
 export interface Recordings { unsaved: UnsavedRecording[]; saved: SavedRecording[] }
@@ -163,7 +187,6 @@ export function omittedText(omitted: OmittedLoads | null | undefined): string | 
     case 'off': return `${count} (Record automatically was off)`;
     case 'elsewhere': return `${count} (${one ? 'it belongs' : 'they belong'} in another file)`;
     case 'settings': return `${count} (the recorder's settings couldn't be read)`;
-    case 'waiting': return `${count} (earlier hours wait to be saved; save or discard them in Recordings)`;
     case 'notAdmitted': return `${count} (${one ? 'it was' : 'they were'} not identified)`;
     default: return count;
   }

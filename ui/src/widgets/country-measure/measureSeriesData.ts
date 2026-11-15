@@ -1,0 +1,56 @@
+import type { SeriesDrop, SeriesEventPage, SeriesRun, SeriesState } from '../../generated/dashboard';
+
+export interface MeasureStates {
+  branchId: string;
+  measure: string;
+  decimals: number;
+  states: readonly SeriesState[];
+}
+const raw = (value: unknown): value is string => typeof value === 'string' && /^-?\d+$/.test(value);
+const ordinal = (value: unknown): value is string => typeof value === 'string' && /^(0|[1-9]\d*)$/.test(value);
+const hour = (value: unknown): value is number => Number.isSafeInteger(value);
+const object = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
+const decimals = (value: unknown): value is number => Number.isInteger(value) && (value as number) >= 0 && (value as number) <= 12;
+const drop = (value: unknown): value is SeriesDrop => object(value) && hour(value.hour) && raw(value.beforeRaw) && raw(value.afterRaw);
+const run = (value: unknown): value is SeriesRun => object(value) && hour(value.firstHour) && hour(value.lastHour)
+  && value.firstHour <= value.lastHour && raw(value.valueRaw) && typeof value.startsSegment === 'boolean'
+  && Number.isSafeInteger(value.slot) && Number.isSafeInteger(value.countryId) && hour(value.segmentFirstHour)
+  && value.segmentFirstHour <= value.firstHour && typeof value.firstExact === 'boolean' && typeof value.lastExact === 'boolean';
+
+export function validateMeasureStates(value: unknown): MeasureStates {
+  if (!object(value) || typeof value.branchId !== 'string' || typeof value.measure !== 'string' || !decimals(value.decimals)
+    || !Array.isArray(value.states) || !value.states.every(state => object(state) && typeof state.tag === 'string' && hour(state.hour)
+      && (state.run === null || run(state.run)) && (state.drop === null || drop(state.drop))
+      && (state.missing === null || typeof state.missing === 'string')))
+    throw new Error('The balance hour reply is malformed.');
+  return value as unknown as MeasureStates;
+}
+
+export function validateMeasureDrops(value: unknown): SeriesEventPage {
+  if (!object(value) || !ordinal(value.firstOrdinal) || !ordinal(value.total)
+    || !(value.cursor === null || ordinal(value.cursor))
+    || !Array.isArray(value.rows) || !value.rows.every(event => object(event) && typeof event.tag === 'string'
+      && hour(event.hour) && ordinal(event.ordinal) && drop(event.row) && event.hour === event.row.hour))
+    throw new Error('The balance event page is malformed.');
+  return value as unknown as SeriesEventPage;
+}
+
+/** A tag's exact runs and drops among the hours read: display extrema never supply a balance. */
+export interface ReachedLine {
+  tag: string;
+  runs: SeriesRun[];
+  drops: SeriesDrop[];
+  /** Why each read hour without a value has none. */
+  missing: Map<number, string>;
+}
+
+export function reachedLines(tags: readonly string[], states: MeasureStates | undefined): ReachedLine[] {
+  return tags.map(tag => {
+    const reached = states?.states.filter(state => state.tag === tag) ?? [];
+    const unique = new Map<string, SeriesRun>();
+    for (const state of reached) if (state.run) unique.set(JSON.stringify([state.run.firstHour, state.run.lastHour, state.run.valueRaw, state.run.countryId]), state.run);
+    return { tag, runs: [...unique.values()].sort((a, b) => a.firstHour - b.firstHour),
+      drops: reached.flatMap(state => state.drop ? [state.drop] : []),
+      missing: new Map(reached.flatMap(state => state.missing === null ? [] : [[state.hour, state.missing] as const])) };
+  });
+}

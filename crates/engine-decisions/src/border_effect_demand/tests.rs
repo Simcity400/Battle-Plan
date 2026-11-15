@@ -140,7 +140,7 @@ fn zero_border_combats_reads_only_the_manager_header() {
     f.array(GS + cgame_state::COMBATS + 8, 0, 0);
     let census = ReadCensus::new(&f);
     assert_eq!(
-        walk(&census, 0, GS, &mut [], &mut [], &mut [0; 8]).outcome,
+        walk(&census, 0, GS, &mut Vec::new(), &mut Vec::new(), &mut vec![0; 8]).outcome,
         Outcome::Rows { len: 0 }
     );
     assert_eq!((census.calls(), census.bytes()), (1, 16));
@@ -148,7 +148,7 @@ fn zero_border_combats_reads_only_the_manager_header() {
     f.u64(0x2000, COMBAT);
     f.u64(COMBAT, cland_combat::VTABLE_RVA.0);
     assert_eq!(
-        walk(&f, 0, GS, &mut [], &mut [], &mut [0; 8]).outcome,
+        walk(&f, 0, GS, &mut Vec::new(), &mut Vec::new(), &mut vec![0; 8]).outcome,
         Outcome::Rows { len: 0 }
     );
 }
@@ -156,9 +156,9 @@ fn zero_border_combats_reads_only_the_manager_header() {
 #[test]
 fn native_event_resolution_unions_immediate_option_and_attached_else() {
     let f = Fixture::event_fixture();
-    let mut tokens = [Token::default(); 4];
-    let mut stack = [Frame::default(); 8];
-    let result = walk(&f, 0, GS, &mut tokens, &mut stack, &mut [0; 8]);
+    let mut tokens = vec![Token::default(); 4];
+    let mut stack = vec![Frame::default(); 8];
+    let result = walk(&f, 0, GS, &mut tokens, &mut stack, &mut vec![0; 8]);
     assert_eq!(result.outcome, Outcome::Rows { len: 3 });
     assert_eq!((result.required_rows, result.required_stack), (3, 4));
     assert!(result.complete(&tokens, &stack));
@@ -169,32 +169,18 @@ fn native_event_resolution_unions_immediate_option_and_attached_else() {
 }
 
 #[test]
-fn pressure_faults_and_cycles_cannot_become_no_demand() {
+fn faults_and_cycles_cannot_become_no_demand() {
     let mut f = Fixture::event_fixture();
     let result = walk(
         &f,
         0,
         GS,
-        &mut [Token::default(); 1],
-        &mut [Frame::default(); 8],
-        &mut [0; 8],
+        &mut vec![Token::default(); 1],
+        &mut vec![Frame::default(); 1],
+        &mut vec![0; 8],
     );
-    assert_eq!(
-        result.outcome,
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 2
-        }
-    );
-    assert_eq!(result.required_rows, 3);
-    let result = walk(&f, 0, GS, &mut [], &mut [Frame::default(); 1], &mut [0; 8]);
-    assert_eq!(
-        result.outcome,
-        Outcome::Unavailable {
-            reason: "border demand stack capacity"
-        }
-    );
-    assert_eq!(result.required_stack, 2);
+    assert_eq!(result.outcome, Outcome::Rows { len: 3 });
+    assert_eq!((result.required_rows, result.required_stack), (3, 4));
     f.u64(FIRST + 8, FIRST + 0x400);
     f.u32(FIRST + 16, 1);
     f.u32(FIRST + 20, 1);
@@ -204,9 +190,9 @@ fn pressure_faults_and_cycles_cannot_become_no_demand() {
             &f,
             0,
             GS,
-            &mut [Token::default(); 8],
-            &mut [Frame::default(); 8],
-            &mut [0; 8]
+            &mut vec![Token::default(); 8],
+            &mut vec![Frame::default(); 8],
+            &mut vec![0; 8]
         )
         .outcome,
         Outcome::Unavailable {
@@ -215,7 +201,7 @@ fn pressure_faults_and_cycles_cannot_become_no_demand() {
     );
     f.0.remove(&(COMBAT + cland_combat::BODY));
     assert!(matches!(
-        walk(&f, 0, GS, &mut [], &mut [], &mut [0; 8]).outcome,
+        walk(&f, 0, GS, &mut Vec::new(), &mut Vec::new(), &mut vec![0; 8]).outcome,
         Outcome::Unavailable { .. }
     ));
 }
@@ -232,7 +218,7 @@ fn multiple_options_operative_and_refused_classes_do_not_demand_seed_reads() {
                 f.u64(SECOND, 0x0299_ffff);
             }
         }
-        let result = walk(&f, 0, GS, &mut [], &mut [Frame::default(); 8], &mut [0; 8]);
+        let result = walk(&f, 0, GS, &mut Vec::new(), &mut vec![Frame::default(); 8], &mut vec![0; 8]);
         assert_eq!(result.outcome, Outcome::Rows { len: 0 });
     }
 }
@@ -257,7 +243,7 @@ fn unknown_combat_classes_are_outside_border_demand() {
     f.u64(0x2000, COMBAT);
     f.u64(COMBAT, 0x0123_4567);
     assert_eq!(
-        walk(&f, 0, GS, &mut [], &mut [], &mut []).outcome,
+        walk(&f, 0, GS, &mut Vec::new(), &mut Vec::new(), &mut Vec::new()).outcome,
         Outcome::Rows { len: 0 }
     );
 }
@@ -293,28 +279,13 @@ fn repeated_resolved_events_walk_their_effect_trees_once() {
         &memory,
         0,
         GS,
-        &mut [Token::default(); 4],
-        &mut [Frame::default(); 8],
-        &mut [0; 1],
+        &mut vec![Token::default(); 4],
+        &mut vec![Frame::default(); 8],
+        &mut vec![0; 1],
     );
     assert_eq!(result.outcome, Outcome::Rows { len: 3 });
     assert_eq!(result.required_events, 1);
     assert_eq!(memory.event_reads.get(), 1);
-    let result = walk(
-        &f,
-        0,
-        GS,
-        &mut [Token::default(); 4],
-        &mut [Frame::default(); 8],
-        &mut [],
-    );
-    assert_eq!(
-        result.outcome,
-        Outcome::Unavailable {
-            reason: "border demand event capacity"
-        }
-    );
-    assert_eq!(result.required_events, 1);
 }
 
 #[test]

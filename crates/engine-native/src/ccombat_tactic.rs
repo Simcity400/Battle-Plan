@@ -101,23 +101,10 @@ pub fn preferred_identity(
     }
 }
 
-/// Reads one country's selection and its exact token bytes. A null pointer or
-/// unknown vtable is unavailable; only CNullCombatTactic means no selection.
-pub fn preferred(
-    memory: &impl Memory,
-    base: usize,
-    country: usize,
-    country_id: u32,
-    token: &mut [u8],
-) -> Preferred {
-    preferred_buffer(
-        memory,
-        base,
-        country,
-        country_id,
-        crate::walk::Buffer::Fixed(token),
-    )
+pub fn count_preferred(memory: &impl Memory, base: usize, country: usize, country_id: u32) -> Preferred {
+    preferred_buffer(memory, base, country, country_id, crate::walk::Buffer::Count)
 }
+
 
 pub fn preferred_buffer(
     memory: &impl Memory,
@@ -297,52 +284,23 @@ mod tests {
     #[test]
     fn authenticated_none_differs_from_fault_and_tokens_are_not_hashed_or_clipped() {
         let mut bytes = fixture();
-        let mut token = [0; 2];
-        let result = preferred(
-            &SliceMemory {
+        let mut token = vec![0; 2];
+        let result = preferred_buffer(&SliceMemory {
                 base: 0x1000,
                 bytes: &bytes,
-            },
-            BASE,
-            0x1000,
-            9,
-            &mut token,
-        );
+            }, BASE, 0x1000, 9, crate::walk::Buffer::Growing(&mut token));
         assert_eq!(result.outcome, Outcome::Rows { len: 1 });
         assert_eq!(result.row.tactic_id, 7);
         assert_eq!(token, [b'a', 0xff]);
-        assert_eq!(
-            preferred(
-                &SliceMemory {
-                    base: 0x1000,
-                    bytes: &bytes
-                },
-                BASE,
-                0x1000,
-                9,
-                &mut token[..1]
-            )
-            .outcome,
-            Outcome::Truncated {
-                len: 0,
-                unread_rows: 1
-            }
-        );
         put(
             &mut bytes,
             0x2800,
             ((BASE + cnull_combat_tactic::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
-        let result = preferred(
-            &SliceMemory {
+        let result = preferred_buffer(&SliceMemory {
                 base: 0x1000,
                 bytes: &bytes,
-            },
-            BASE,
-            0x1000,
-            9,
-            &mut [],
-        );
+            }, BASE, 0x1000, 9, crate::walk::Buffer::Count);
         assert_eq!(result.outcome, Outcome::Rows { len: 1 });
         assert_eq!(result.row.tactic_id, 0);
         put(
@@ -351,16 +309,10 @@ mod tests {
             0_u64.to_le_bytes(),
         );
         assert!(matches!(
-            preferred(
-                &SliceMemory {
+            preferred_buffer(&SliceMemory {
                     base: 0x1000,
                     bytes: &bytes
-                },
-                BASE,
-                0x1000,
-                9,
-                &mut token
-            )
+                }, BASE, 0x1000, 9, crate::walk::Buffer::Growing(&mut token))
             .outcome,
             Outcome::Unavailable { .. }
         ));
@@ -386,7 +338,7 @@ mod tests {
         assert_eq!(identity.pointer, 0x2800);
         // The full read cannot copy that name into its 128-byte buffer.
         assert!(!matches!(
-            preferred(&memory, BASE, 0x1000, 9, &mut [0; 128]).outcome,
+            preferred_buffer(&memory, BASE, 0x1000, 9, crate::walk::Buffer::Growing(&mut vec![0; 128])).outcome,
             Outcome::Rows { .. }
         ));
         let named = fixture();
@@ -403,7 +355,7 @@ mod tests {
             weight(
                 &named,
                 0x1000,
-                &preferred(&named, BASE, 0x1000, 9, &mut [0; 2]),
+                &preferred_buffer(&named, BASE, 0x1000, 9, crate::walk::Buffer::Growing(&mut vec![0; 2])),
                 context
             )
         );
@@ -451,7 +403,7 @@ mod tests {
             base: 0x1000,
             bytes: &bytes,
         };
-        let preferred = preferred(&memory, BASE, 0x1000, 9, &mut [0; 2]);
+        let preferred = preferred_buffer(&memory, BASE, 0x1000, 9, crate::walk::Buffer::Growing(&mut vec![0; 2]));
         let context = WeightContext {
             country_factor_raw: i64::MAX,
             metadata: 0x3000,

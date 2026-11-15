@@ -71,7 +71,7 @@ macro_rules! keyed_pair {
             Divisions, DivisionStatus, DivisionMovement, DivisionPanelStats, DivisionLandInputs,
             DivisionRetreatBans, MovementStateTerms, CoreSupplyAccess, CountryUnitSpeedEntries,
             RiverRelations, DivisionTransportSpeeds, WeatherProvinces, DivisionTemplateIcons,
-            AirBaseRegistrations, CharacterRoleTraits)
+            AirBaseRegistrations, CharacterRoleTraits, ScriptVariables)
     };
 }
 
@@ -84,7 +84,7 @@ pub fn takes_keyed_updates(table: TableId) -> bool {
         Divisions, DivisionStatus, DivisionMovement, DivisionPanelStats, DivisionLandInputs,
         DivisionRetreatBans, MovementStateTerms, CoreSupplyAccess, CountryUnitSpeedEntries,
         RiverRelations, DivisionTransportSpeeds, WeatherProvinces, DivisionTemplateIcons,
-        AirBaseRegistrations, CharacterRoleTraits)
+        AirBaseRegistrations, CharacterRoleTraits, ScriptVariables)
 }
 
 /// `rows.partition_point(holds)`, probing outward from the front so short prefixes stay local.
@@ -659,7 +659,7 @@ mod tests {
             assert!(keyed_pair!(&empty, &empty, |_old, _new, _wrap| true, false), "{table:?}");
             assert!(!sliced_pair!(&empty, &empty, |_old, _new, _wrap| true, false), "{table:?}");
         }
-        assert_eq!(keyed, 15);
+        assert_eq!(keyed, 16);
     }
 
     fn input(country: u32, index: u32, progress: i64) -> ResearchInputRow {

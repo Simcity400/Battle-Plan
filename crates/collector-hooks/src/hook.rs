@@ -495,7 +495,7 @@ impl Hook {
         if !enabled && restoration::active() {
             return Ok(restoration::restore(hooks.iter_mut()));
         }
-        let mut references = publication_storage(hooks.len(), enabled)
+        let mut references = shared::publication_storage_attach(hooks.len(), enabled)
             .map_err(|_| "hook family allocation failed")?;
         references.extend(hooks.iter_mut());
         Self::set_enabled_batch(&mut references, enabled)
@@ -508,18 +508,11 @@ impl Hook {
         Self::publish_iter(hooks, enabled, Self::set_enabled_batch)
     }
 
-    pub fn set_enabled_iter_attach<'a>(
+    pub fn set_enabled_iter_tracking_busy<'a>(
         hooks: impl Iterator<Item = &'a mut Self>,
         enabled: bool,
     ) -> Result<bool, String> {
-        Self::publish_iter(hooks, enabled, Self::set_enabled_batch_attach)
-    }
-
-    pub fn set_enabled_iter_attach_tracking_busy<'a>(
-        hooks: impl Iterator<Item = &'a mut Self>,
-        enabled: bool,
-    ) -> Result<bool, String> {
-        Self::publish_iter(hooks, enabled, Self::set_enabled_batch_attach_tracking_busy)
+        Self::publish_iter(hooks, enabled, Self::set_enabled_batch_tracking_busy)
     }
 
     fn publish_iter<'a>(
@@ -540,10 +533,10 @@ impl Hook {
         publish(&mut references, enabled)
     }
 
+    /// One publication of scattered hooks (including taps), under its own suspension or, inside
+    /// an attach round, under the round's.
     pub fn set_enabled_batch(hooks: &mut [&mut Self], enabled: bool) -> Result<bool, String> {
-        let result = Self::set_family_enabled_with_flush(hooks, enabled, shared::real_flush);
-        Self::observe_installation_outcome(hooks.iter().map(|hook| &**hook), &result);
-        result
+        shared::batch::<false>(hooks, enabled)
     }
 
     /// Retain the first busy site for callers that report publication deadlines.
@@ -551,7 +544,14 @@ impl Hook {
         hooks: &mut [&mut Self],
         enabled: bool,
     ) -> Result<bool, String> {
-        let result = Self::set_family_enabled_with_flush_tracking::<true>(
+        shared::batch::<true>(hooks, enabled)
+    }
+
+    fn publish_batch<const TRACK_BUSY: bool>(
+        hooks: &mut [&mut Self],
+        enabled: bool,
+    ) -> Result<bool, String> {
+        let result = Self::set_family_enabled_with_flush_tracking::<TRACK_BUSY>(
             hooks,
             enabled,
             shared::real_flush,
@@ -592,6 +592,7 @@ impl Hook {
         })
     }
 
+    #[cfg(test)]
     fn set_family_enabled_with_flush(
         hooks: &mut [&mut Self],
         enabled: bool,
@@ -1006,6 +1007,7 @@ fn open_thread(id: u32) -> Result<Option<HANDLE>, u32> {
             THREAD_SUSPEND_RESUME
                 | THREAD_GET_CONTEXT
                 | THREAD_QUERY_LIMITED_INFORMATION
+                | THREAD_SET_LIMITED_INFORMATION
                 | THREAD_SYNCHRONIZE,
             0,
             id,
@@ -1062,6 +1064,25 @@ fn acquire_context(handle: HANDLE, context: &mut AlignedContext) -> Result<(), u
     }
 }
 
+/// Raise a held thread to time-critical until it resumes; its prior priority, or `None` when
+/// unchanged. Synchronization waits for the thread itself to run a kernel callback, which an
+/// idle-priority thread (the graphics driver's workers) does only once no other thread on the
+/// machine wants the processor: on a busy machine that held the game for over a second. Raised
+/// only after its suspension was requested, the thread runs no user code at this priority.
+fn raise_priority(handle: HANDLE) -> (i32, Option<i32>) {
+    #[cfg(test)]
+    if snapshot_tests::exited(handle).is_some() {
+        return (0, None);
+    }
+    let current = unsafe { GetThreadPriority(handle) };
+    // An unreadable priority (`i32::MAX`) is above time-critical too, and is left alone.
+    if current >= THREAD_PRIORITY_TIME_CRITICAL {
+        return (current, None);
+    }
+    let raised = unsafe { SetThreadPriority(handle, THREAD_PRIORITY_TIME_CRITICAL) } != 0;
+    (current, raised.then_some(current))
+}
+
 fn thread_exited(handle: HANDLE) -> bool {
     #[cfg(test)]
     if let Some(exited) = snapshot_tests::exited(handle) {
@@ -1076,6 +1097,8 @@ struct Thread {
     suspended: bool,
     ip: Option<usize>,
     exited: bool,
+    /// The priority to restore before it resumes, once raised for synchronization.
+    priority: Option<i32>,
 }
 
 // The native x64 CONTEXT contract requires 16 bytes even though windows-sys
@@ -1132,6 +1155,7 @@ impl Threads {
                     suspended: false,
                     ip: None,
                     exited: false,
+                    priority: None,
                 });
             }
             Ok(())
@@ -1329,6 +1353,7 @@ impl Threads {
                         suspended: false,
                         ip: None,
                         exited: false,
+                        priority: None,
                     });
                     added = true;
                 }
@@ -1364,13 +1389,14 @@ impl Threads {
     }
 
     fn synchronize(&mut self) -> Result<(), u32> {
-        self.synchronize_with(acquire_context, thread_exited)
+        self.synchronize_with(acquire_context, thread_exited, raise_priority)
     }
 
     fn synchronize_with(
         &mut self,
         mut context: impl FnMut(HANDLE, &mut AlignedContext) -> Result<(), u32>,
         mut exited: impl FnMut(HANDLE) -> bool,
+        mut raise: impl FnMut(HANDLE) -> (i32, Option<i32>),
     ) -> Result<(), u32> {
         self.invalidate_snapshot();
         let begin = self.diagnostics.now();
@@ -1378,9 +1404,17 @@ impl Threads {
             for thread in self.threads.iter_mut().filter(|thread| thread.suspended) {
                 self.context.0 = unsafe { std::mem::zeroed() };
                 self.context.0.ContextFlags = CONTEXT_CONTROL_AMD64;
+                let priority = match thread.priority {
+                    Some(priority) => priority,
+                    None => {
+                        let (priority, raised) = raise(thread.handle);
+                        thread.priority = raised;
+                        priority
+                    }
+                };
                 let started = self.diagnostics.now();
                 let result = context(thread.handle, &mut self.context);
-                self.diagnostics.context(started, thread.id);
+                self.diagnostics.context(started, thread.id, priority);
                 if let Err(error) = result {
                     if exited(thread.handle) {
                         if !thread.exited {
@@ -1470,6 +1504,15 @@ impl Threads {
     /// Persistent uncertainty retains this controller and all caller storage
     /// in the resume-only loop, even when an outer detach budget has expired.
     pub fn resume(&mut self) -> Result<(), u32> {
+        // Each raised thread gets its own priority back before it can run again.
+        for thread in self.threads.iter_mut().filter(|thread| thread.suspended) {
+            if let Some(priority) = thread.priority.take()
+                && unsafe { SetThreadPriority(thread.handle, priority) } == 0
+                && !thread_exited(thread.handle)
+            {
+                self.diagnostics.priority_restore_failed();
+            }
+        }
         self.resume_with(
             |handle| {
                 if unsafe { ResumeThread(handle) } == u32::MAX {
@@ -1741,6 +1784,7 @@ mod safety_tests {
                     suspended: false,
                     ip: None,
                     exited: false,
+                    priority: None,
                 };
                 Ok(true)
             },
@@ -1864,6 +1908,7 @@ mod safety_tests {
                     suspended: handle != 2,
                     ip: None,
                     exited: false,
+                    priority: None,
                 })
                 .collect(),
             excluded: Vec::new(),
@@ -1915,6 +1960,7 @@ mod thread_resume_policy_tests {
                     suspended: true,
                     ip: None,
                     exited: false,
+                    priority: None,
                 })
                 .collect(),
             excluded: Vec::new(),

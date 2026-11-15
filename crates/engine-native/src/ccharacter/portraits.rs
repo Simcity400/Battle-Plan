@@ -41,24 +41,6 @@ pub fn walk_portraits(
     memory: &impl Memory,
     base: usize,
     state: usize,
-    output: &mut [PortraitRow],
-    entries: &mut [crate::character_portrait_entry::Row],
-    walk: PortraitWalk<'_>,
-) -> crate::cprovince::UnitOrderWalk {
-    walk_portraits_buffer(
-        memory,
-        base,
-        state,
-        crate::walk::Buffer::Fixed(output),
-        crate::walk::Buffer::Fixed(entries),
-        walk,
-    )
-}
-
-pub fn walk_portraits_growing(
-    memory: &impl Memory,
-    base: usize,
-    state: usize,
     output: &mut Vec<PortraitRow>,
     entries: &mut Vec<crate::character_portrait_entry::Row<crate::capture_text::Owned>>,
     walk: PortraitWalk<'_>,
@@ -69,6 +51,22 @@ pub fn walk_portraits_growing(
         state,
         crate::walk::Buffer::Growing(output),
         crate::walk::Buffer::Growing(entries),
+        walk,
+    )
+}
+
+pub fn count_portraits(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+    walk: PortraitWalk<'_>,
+) -> crate::cprovince::UnitOrderWalk {
+    walk_portraits_buffer::<crate::capture_text::Owned>(
+        memory,
+        base,
+        state,
+        crate::walk::Buffer::Count,
+        crate::walk::Buffer::Count,
         walk,
     )
 }

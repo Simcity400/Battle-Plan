@@ -74,24 +74,6 @@ pub fn walk(
     base: usize,
     game_state: usize,
     dispatcher: Dispatcher,
-    rows: &mut [Row],
-    torn: &mut u32,
-) -> Outcome {
-    walk_buffer(
-        memory,
-        base,
-        game_state,
-        dispatcher,
-        crate::walk::Buffer::Fixed(rows),
-        torn,
-    )
-}
-
-pub fn walk_growing(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    dispatcher: Dispatcher,
     rows: &mut Vec<Row>,
     torn: &mut u32,
 ) -> Outcome {
@@ -315,7 +297,7 @@ mod tests {
         bytes
     }
 
-    fn run(bytes: &[u8], rows: &mut [Row]) -> Outcome {
+    fn run(bytes: &[u8], rows: &mut Vec<Row>) -> Outcome {
         let mut torn = 0;
         let outcome = walk(
             &SliceMemory { base: 0, bytes },
@@ -347,7 +329,7 @@ mod tests {
             land_table + DISTANCE,
             &900_000_i64.to_le_bytes(),
         );
-        let mut rows = [Row::default(); 1];
+        let mut rows = vec![Row::default(); 1];
         for (dispatcher, distance) in [(Dispatcher::Land, 900_000), (Dispatcher::Naval, 500_000)] {
             let memory = SliceMemory {
                 base: 0,
@@ -434,7 +416,7 @@ mod tests {
     #[test]
     fn a_held_lock_or_a_moving_header_is_a_counted_torn_read() {
         let buckets = [(3, 1, 7, 9, 500_000, 1)];
-        let mut rows = [Row::default(); 4];
+        let mut rows = vec![Row::default(); 4];
         // Held by a writer: this hour's table is not published.
         let mut locked = fixture(&buckets, 7, 1, 1);
         put(
@@ -520,7 +502,7 @@ mod tests {
     #[test]
     fn entries_come_back_by_key_with_failures_kept() {
         let bytes = fixture(&[(3, 1, 9, 2, 700_000, 1), (1, 2, 4, 5, 0, 0)], 3, 2, 2);
-        let mut rows = [Row::default(); 4];
+        let mut rows = vec![Row::default(); 4];
         assert_eq!(run(&bytes, &mut rows), Outcome::Rows { len: 2 });
         assert_eq!(
             rows[..2],
@@ -539,19 +521,11 @@ mod tests {
                 },
             ]
         );
-        let mut one = [Row::default(); 1];
-        assert_eq!(
-            run(&bytes, &mut one),
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            }
-        );
     }
 
     #[test]
     fn a_count_sentinel_or_probe_mismatch_is_refused() {
-        let mut rows = [Row::default(); 4];
+        let mut rows = vec![Row::default(); 4];
         let wrong_count = fixture(&[(0, 1, 1, 2, 3, 1)], 1, 1, 2);
         assert!(matches!(
             run(&wrong_count, &mut rows),
@@ -623,16 +597,6 @@ mod tests {
                 base: 0,
                 bytes: &bytes,
             };
-            if entries == 1_149 {
-                let mut old = vec![Row::default(); 1_024];
-                assert_eq!(
-                    run(&bytes, &mut old),
-                    Outcome::Truncated {
-                        len: 1_024,
-                        unread_rows: 125
-                    }
-                );
-            }
             let mut rows =
                 vec![Row::default(); required_rows(&memory, 0, GAME, Dispatcher::Naval).unwrap()];
             assert_eq!(run(&bytes, &mut rows), Outcome::Rows { len: entries });

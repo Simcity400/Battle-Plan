@@ -7,15 +7,15 @@ import { formatDateTime } from '../../dashboard/calendar.ts';
 import { createWidget } from '../../dashboard/model.ts';
 import { subjectToken } from '../../dashboard/chosen.ts';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
-import type { CareerFacts, CareerMedal, CareerRow, DivisionCareersReply, DivisionRecordReply, RecordEntry } from '../../generated/dashboard';
 import { DEFAULT_SORT } from '../most-decorated-divisions/definition.ts';
+import type { CareerFacts, CareerMedal, CareerRow, DivisionCareersReply, DivisionRecordReply, RecordEntry } from '../../generated/dashboard';
 
 const isArray = Array.isArray;
 const validFacts = (facts: CareerFacts | null) => facts === null || (isArray(facts.awards) && (facts.medals === null || Number.isInteger(facts.medals)));
 
 export function validateDivisionCareers(value: unknown): DivisionCareersReply {
   const reply = value as DivisionCareersReply;
-  if (!reply || typeof reply.branchId !== 'string' || !Number.isInteger(reply.hour) || !isArray(reply.divisions) || !isArray(reply.medals)
+  if (!reply || !isArray(reply.divisions) || !isArray(reply.medals)
     || !isArray(reply.templates) || !isArray(reply.warnings) || reply.divisions.some(row => typeof row.division !== 'string' || !validFacts(row.facts)))
     throw new Error('Invalid division careers reply');
   return reply;
@@ -23,7 +23,7 @@ export function validateDivisionCareers(value: unknown): DivisionCareersReply {
 
 export function validateDivisionRecord(value: unknown): DivisionRecordReply {
   const reply = value as DivisionRecordReply;
-  if (!reply || typeof reply.branchId !== 'string' || !Number.isInteger(reply.hour) || typeof reply.division !== 'string'
+  if (!reply || typeof reply.division !== 'string'
     || typeof reply.absent !== 'boolean' || !isArray(reply.entries) || !isArray(reply.medals) || !validFacts(reply.facts)
     || reply.entries.some(entry => !Number.isInteger(entry.hour) || typeof entry.award !== 'boolean'))
     throw new Error('Invalid division record reply');
@@ -68,7 +68,7 @@ export function entryTooltip(item: RecordItem): TooltipContent {
 }
 
 /** One leaderboard row: the division's career facts with its country and template. */
-export function careerTooltip(row: CareerRow, reply: DivisionCareersReply, country: string, template: string | null): TooltipContent {
+export function careerTooltip(row: CareerRow, reply: DivisionCareersReply, hour: number, country: string, template: string | null): TooltipContent {
   const facts = row.facts;
   const rows: TooltipRow[] = [
     { label: 'Country', value: country },
@@ -80,7 +80,7 @@ export function careerTooltip(row: CareerRow, reply: DivisionCareersReply, count
   const ratio = experienceRatio(facts);
   rows.push({ label: 'Experience', value: facts.levelName === null ? 'Not recorded' : `${facts.levelName}${ratio === null ? '' : ` (${Math.round(ratio * 100)}%)`}`, divider: true },
     { label: 'Enemy soldiers killed', value: facts.kills === null ? 'Not recorded' : usNumber.format(facts.kills) });
-  return { title: divisionName(row.name), subtitle: `As of ${formatDateTime(reply.hour)}`, rows };
+  return { title: divisionName(row.name), subtitle: `As of ${formatDateTime(hour)}`, rows };
 }
 
 /** A Division service record widget for one division, at the drill's moment. */
@@ -94,6 +94,11 @@ export function pinnedRecord(source: WidgetSpec, division: string, track: Pick<B
 }
 
 export const divisionKey = (row: CareerRow) => row.division;
+
+/** What a followed ranking renders on: its divisions, medals and templates; experience and kills move with them. */
+export const careersStructure = (reply: DivisionCareersReply) => JSON.stringify([reply.missing, reply.divisions, reply.medals, reply.templates, reply.warnings]);
+/** What a followed record renders on. */
+export const recordStructure = (reply: DivisionRecordReply) => JSON.stringify(reply);
 export const medalsValue = (row: CareerRow) => row.facts.medals;
 // Keyed by column, so a different default sort column fails to compile here.
 const defaultSortValue = { medals: medalsValue }[DEFAULT_SORT.column];

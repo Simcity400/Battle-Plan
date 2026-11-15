@@ -5,7 +5,6 @@ use crate::{
     sampling::qpc,
 };
 use engine_native::{Memory, cfaction, cfaction_system, country_memory::Cache, walk::Outcome};
-use std::sync::Arc;
 
 #[derive(Default)]
 pub(crate) struct Names {
@@ -35,13 +34,8 @@ impl Names {
         memory: &impl Memory,
         base: usize,
         game_state: usize,
-        growing: bool,
     ) -> Outcome {
-        let names = if growing {
-            cfaction::walk_growing(memory, base, game_state, &mut self.rows, &mut self.bytes)
-        } else {
-            cfaction::walk(memory, base, game_state, &mut self.rows, &mut self.bytes)
-        };
+        let names = cfaction::walk(memory, base, game_state, &mut self.rows, &mut self.bytes);
         self.bytes_len = names.bytes_len;
         self.required_bytes = names.required_bytes;
         names.outcome
@@ -49,7 +43,7 @@ impl Names {
 }
 
 pub(crate) struct Request {
-    pub countries: Arc<Cache>,
+    pub countries: engine_allocation::SharedBox<Cache>,
     pub factions: GatherRequest<Names>,
     pub members: GatherRequest<Vec<cfaction_system::MemberRow>>,
     pub goal_store: Option<Box<crate::faction_goals::Store>>,
@@ -99,16 +93,11 @@ impl Report {
     }
 }
 
-#[cfg(test)]
 pub(crate) fn run(request: &mut Request, memory: &impl Memory) -> Report {
-    run_with(request, memory, false)
+    run_with(request, memory)
 }
 
-pub(crate) fn run_growing(request: &mut Request, memory: &impl Memory) -> Report {
-    run_with(request, memory, true)
-}
-
-fn run_with(request: &mut Request, memory: &impl Memory, growing: bool) -> Report {
+fn run_with(request: &mut Request, memory: &impl Memory) -> Report {
     let _factions_reads = crate::read_accounting::table(replay_data::rows::TableId::Factions);
     let cached = request.countries.view(memory);
     let names = &mut request.factions;
@@ -119,11 +108,8 @@ fn run_with(request: &mut Request, memory: &impl Memory, growing: bool) -> Repor
         let (base, game_state) = (members.base, members.game_state);
         let started = qpc();
         let members = members.run(|rows| {
-            if growing {
-                cfaction_system::walk_members_growing(&cached, base, game_state, rows)
-            } else {
-                cfaction_system::walk_members(&cached, base, game_state, rows)
-            }
+            cfaction_system::walk_members(&cached, base, game_state, rows)
+            
         });
         let members_ticks = qpc().saturating_sub(started).max(0) as u64;
         (members, members_ticks)
@@ -132,8 +118,7 @@ fn run_with(request: &mut Request, memory: &impl Memory, growing: bool) -> Repor
     let (base, game_state) = (names.base, names.game_state);
     let mut goal_ticks = 0;
     let mut companion_ticks = 0;
-    let factions = if growing && (request.goal_store.is_some() || request.companion_store.is_some())
-    {
+    let factions = if request.goal_store.is_some() || request.companion_store.is_some() {
         // SAFETY: this worker exclusively owns both companion stores inside
         // the existing native world's quiescent acquisition lease.
         unsafe {
@@ -151,7 +136,7 @@ fn run_with(request: &mut Request, memory: &impl Memory, growing: bool) -> Repor
         }
         let mut complete = false;
         let report = names.run(|payload| {
-            let (names, identity_complete) = cfaction::walk_growing_with(
+            let (names, identity_complete) = cfaction::walk_with(
                 &cached,
                 base,
                 game_state,
@@ -195,7 +180,7 @@ fn run_with(request: &mut Request, memory: &impl Memory, growing: bool) -> Repor
         }
         report
     } else {
-        names.run(|payload| payload.walk(&cached, base, game_state, growing))
+        names.run(|payload| payload.walk(&cached, base, game_state))
     };
     let faction_ticks = (qpc().saturating_sub(started).max(0) as u64)
         .saturating_sub(goal_ticks.saturating_add(companion_ticks));
@@ -323,8 +308,11 @@ mod tests {
         bytes
     }
 
-    fn snapshot(bytes: &[u8], cells: usize) -> Arc<Cache> {
-        let mut storage = Arc::new(Cache::try_with_capacity(cells).unwrap());
+    fn snapshot(bytes: &[u8], cells: usize) -> engine_allocation::SharedBox<Cache> {
+        let mut storage = engine_allocation::shared(
+            Cache::try_with_capacity(cells).unwrap(),
+        )
+        .unwrap();
         Cache::prepare_shared(&mut storage, &SliceMemory { base: 0, bytes }, 0, GS).unwrap()
     }
 
@@ -357,13 +345,13 @@ mod tests {
     }
 
     fn take(
-        countries: &Arc<Cache>,
+        countries: &engine_allocation::SharedBox<Cache>,
         rows: &mut Vec<cfaction::Row>,
         names: &mut Vec<u8>,
         members: &mut Vec<cfaction_system::MemberRow>,
     ) -> Request {
         Request {
-            countries: Arc::clone(countries),
+            countries: engine_allocation::SharedBox::clone(countries),
             factions: GatherRequest {
                 base: 0,
                 game_state: GS,
@@ -379,13 +367,12 @@ mod tests {
     }
 
     #[test]
-    fn single_factions_acquisition_preserves_rows_arenas_capacity_and_read_trace() {
+    fn single_factions_acquisition_preserves_sufficient_rows_arenas_and_read_trace() {
         let bytes = fixture();
         for cells in [0, 512] {
             let countries = snapshot(&bytes, cells);
-            for (capacity, name_capacity, member_capacity) in
-                [(2, 16, 2), (0, 0, 0), (1, 16, 1), (2, 0, 2)]
-            {
+            // Storage that holds the census: it is kept and not reallocated.
+            for (capacity, name_capacity, member_capacity) in [(2, 16, 2)] {
                 let reference = Traced::new(&bytes);
                 let cached = countries.view(&reference);
                 let mut expected_rows = vec![cfaction::Row::default(); capacity];
@@ -458,7 +445,7 @@ mod tests {
         let mut text = Vec::new();
         let mut members = Vec::new();
         let mut request = take(&countries, &mut rows, &mut text, &mut members);
-        let growing = run_growing(&mut request, &actual);
+        let growing = run(&mut request, &actual);
         assert_eq!(growing.factions.result, fixed.factions.result);
         assert_eq!(growing.members.result, fixed.members.result);
         assert_eq!(*actual.calls.borrow(), *reference.calls.borrow());
@@ -528,7 +515,7 @@ mod tests {
                 (4, 4)
             );
             assert_eq!((rows.as_ptr(), names.as_ptr(), members.as_ptr()), pointers);
-            assert_eq!(Arc::strong_count(&countries), 1);
+            assert_eq!(engine_allocation::SharedBox::strong_count(&countries), 1);
             assert_eq!(pool.calibration().uncollected, 0);
         }
     }

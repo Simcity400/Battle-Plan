@@ -47,12 +47,12 @@ pub fn required_tokens(
     base: usize,
     game_state: usize,
 ) -> Result<usize, &'static str> {
-    let walk = walk(
+    let walk = walk_buffer(
         memory,
         base,
         game_state,
-        &mut [],
-        &mut [],
+        crate::walk::Buffer::Count,
+        crate::walk::Buffer::Count,
         &mut TypeTokens::empty(),
     );
     match walk.outcome {
@@ -62,24 +62,6 @@ pub fn required_tokens(
 }
 
 pub fn walk(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    rows: &mut [Row],
-    tokens: &mut [u32],
-    known: &mut TypeTokens,
-) -> Walk {
-    walk_buffer(
-        memory,
-        base,
-        game_state,
-        crate::walk::Buffer::Fixed(rows),
-        crate::walk::Buffer::Fixed(tokens),
-        known,
-    )
-}
-
-pub fn walk_growing(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -279,9 +261,9 @@ mod tests {
         bytes
     }
 
-    fn run(bytes: &[u8], tokens: &mut [u32]) -> (Walk, Row) {
+    fn run(bytes: &[u8], tokens: &mut Vec<u32>) -> (Walk, Row) {
         let memory = SliceMemory { base: 0, bytes };
-        let mut rows = [Row::default()];
+        let mut rows = vec![Row::default()];
         let mut known = TypeTokens::with_definitions(4);
         let walk = walk(&memory, 0, GS, &mut rows, tokens, &mut known);
         (walk, rows[0])
@@ -289,7 +271,7 @@ mod tests {
 
     #[test]
     fn the_cache_country_and_its_allowed_types_read_as_tokens_in_native_order() {
-        let mut tokens = [0; 4];
+        let mut tokens = vec![0; 4];
         let (walk, row) = run(&fixture(), &mut tokens);
         assert_eq!(walk.outcome, Outcome::Rows { len: 1 });
         assert_eq!(row.country, 7);
@@ -307,22 +289,8 @@ mod tests {
     }
 
     #[test]
-    fn a_short_arena_truncates_and_asks_for_the_list() {
-        let mut tokens = [0; 1];
-        let (walk, _) = run(&fixture(), &mut tokens);
-        assert!(matches!(
-            walk.outcome,
-            Outcome::Truncated {
-                len: 0,
-                unread_rows: 1
-            }
-        ));
-        assert_eq!(walk.required_tokens, 2);
-    }
-
-    #[test]
     fn a_foreign_cache_or_index_is_refused() {
-        let mut tokens = [0; 4];
+        let mut tokens = vec![0; 4];
         let mut bytes = fixture();
         put(&mut bytes, ROOT + CACHE, &0_u64.to_le_bytes());
         assert!(matches!(

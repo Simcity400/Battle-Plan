@@ -395,22 +395,6 @@ pub fn walk(
     memory: &impl Memory,
     base: usize,
     game: usize,
-    output: &mut [Row],
-    operatives: &mut [Operative],
-) -> Walk {
-    walk_buffer(
-        memory,
-        base,
-        game,
-        crate::walk::Buffer::Fixed(output),
-        crate::walk::Buffer::Fixed(operatives),
-    )
-}
-
-pub fn walk_growing(
-    memory: &impl Memory,
-    base: usize,
-    game: usize,
     output: &mut Vec<Row>,
     operatives: &mut Vec<Operative>,
     carry: &mut impl Carry,
@@ -713,8 +697,8 @@ mod tests {
             f.u64(end + 0x1010, HANDLE);
             f
         }
-        fn run(&self, rows: &mut [Row], operatives: &mut [Operative]) -> Walk {
-            walk(self, 0, GAME, rows, operatives)
+        fn run(&self, rows: &mut Vec<Row>, operatives: &mut Vec<Operative>) -> Walk {
+            walk(self, 0, GAME, rows, operatives, &mut NoCarry)
         }
     }
 
@@ -722,7 +706,7 @@ mod tests {
     fn exact_operands_aliases_and_duplicates() {
         let f = Fixture::new(3);
         let mut rows = vec![Row::default(); 3];
-        let mut operatives = [Operative::default(); 2];
+        let mut operatives = vec![Operative::default(); 2];
         assert_eq!(required_operatives(&f, 0, GAME), Ok(3));
         assert_eq!(
             f.run(&mut rows, &mut operatives).outcome,
@@ -740,7 +724,7 @@ mod tests {
             }
         );
         assert_eq!(
-            operatives,
+            operatives[..2],
             [Operative {
                 handle: HANDLE,
                 defense: 45678,
@@ -748,21 +732,6 @@ mod tests {
             }; 2]
         );
         assert_eq!(rows[2].country, 3);
-        assert_eq!(
-            f.run(&mut rows[..1], &mut operatives).outcome,
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 2
-            }
-        );
-        let short = f.run(&mut rows, &mut operatives[..1]);
-        assert_eq!(short.operatives, 2);
-        assert_eq!(
-            short.outcome,
-            Outcome::Unavailable {
-                reason: "raid counteroperative arena too small"
-            }
-        );
     }
 
     /// Both country keys come from one copy of the country's accumulator,
@@ -782,8 +751,8 @@ mod tests {
         let mut f = Fixture::new(1);
         let entries = f.country + ccountry::MODIFIER_ACCUMULATOR + 0x20;
         let counted = Counted(&f, std::cell::Cell::new(0), entries);
-        let mut rows = [Row::default()];
-        let walk = walk(&counted, 0, GAME, &mut rows, &mut [Operative::default(); 2]);
+        let mut rows = vec![Row::default()];
+        let walk = walk(&counted, 0, GAME, &mut rows, &mut vec![Operative::default(); 2], &mut NoCarry);
         assert_eq!(walk.outcome, Outcome::Rows { len: 1 });
         assert_eq!(
             (rows[0].country_defense, rows[0].crypto_strength),
@@ -795,7 +764,7 @@ mod tests {
             &[(CRYPTO, 249999), (DEFENSE, -125000)],
         );
         assert_eq!(
-            f.run(&mut rows, &mut [Operative::default(); 2]).outcome,
+            f.run(&mut rows, &mut vec![Operative::default(); 2]).outcome,
             Outcome::Rows { len: 1 }
         );
         assert_eq!(
@@ -822,9 +791,9 @@ mod tests {
             &[(DEFENSE, -125000), (CRYPTO, 249999), (CRYPTO + 1, 5)],
         );
         let run = |f: &Fixture, holes: Vec<std::ops::Range<usize>>| {
-            let mut rows = [Row::default()];
-            let mut operatives = [Operative::default(); 2];
-            let outcome = walk(&Holes(f, holes), 0, GAME, &mut rows, &mut operatives).outcome;
+            let mut rows = vec![Row::default()];
+            let mut operatives = vec![Operative::default(); 2];
+            let outcome = walk(&Holes(f, holes), 0, GAME, &mut rows, &mut operatives, &mut NoCarry).outcome;
             (outcome, rows[0].country_defense, rows[0].crypto_strength)
         };
         let rows = (Outcome::Rows { len: 1 }, -125000, Some(249999));
@@ -902,7 +871,7 @@ mod tests {
         let (mut rows, mut operatives) = (Vec::new(), Vec::new());
         let mut hour = |carry: &mut Holding| {
             counted.reads.borrow_mut().clear();
-            let walk = walk_growing(&counted, 0, GAME, &mut rows, &mut operatives, carry);
+            let walk = walk(&counted, 0, GAME, &mut rows, &mut operatives, carry);
             assert_eq!(walk.outcome, Outcome::Rows { len: 1 });
             (
                 rows[0].crypto_strength,
@@ -934,7 +903,7 @@ mod tests {
     #[test]
     fn mission_filter_does_not_read_an_inapplicable_implementation() {
         let mut f = Fixture::new(1);
-        let mut rows = [Row::default()];
+        let mut rows = vec![Row::default()];
         f.u32(
             f.operative + operative::ACTION + action::VARIANT,
             action::BUILD_NETWORK,
@@ -943,10 +912,10 @@ mod tests {
             f.operative + operative::ACTION + action::IMPLEMENTATION,
             u64::MAX,
         );
-        assert_eq!(f.run(&mut rows, &mut []).outcome, Outcome::Rows { len: 1 });
+        assert_eq!(f.run(&mut rows, &mut Vec::new()).outcome, Outcome::Rows { len: 1 });
         assert_eq!(rows[0].operatives_len, 0);
         f.u64(GAME + cgame_state::STRATEGIC_OPERATIVE_MANAGER, 0);
-        assert_eq!(f.run(&mut rows, &mut []).outcome, Outcome::Rows { len: 1 });
+        assert_eq!(f.run(&mut rows, &mut Vec::new()).outcome, Outcome::Rows { len: 1 });
         assert!(!rows[0].strategic_present);
         assert_eq!(rows[0].country_defense, 0);
         assert_eq!(rows[0].crypto_strength, Some(249999));
@@ -955,8 +924,8 @@ mod tests {
     #[test]
     fn identity_owner_and_short_read_failures_never_become_zero() {
         let mut f = Fixture::new(1);
-        let mut rows = [Row::default()];
-        let mut ops = [Operative::default(); 2];
+        let mut rows = vec![Row::default()];
+        let mut ops = vec![Operative::default(); 2];
         f.u64(f.operative + operative::IDENTITY, HANDLE + 1);
         assert_eq!(
             f.run(&mut rows, &mut ops).outcome,
@@ -1001,7 +970,7 @@ mod tests {
             .unwrap_or(1500);
         let memory = Fixture::new(countries);
         let mut rows = vec![Row::default(); countries];
-        let mut ops = [Operative::default(); 2];
+        let mut ops = vec![Operative::default(); 2];
         let mut samples = Vec::new();
         for _ in 0..40 {
             let start = std::time::Instant::now();

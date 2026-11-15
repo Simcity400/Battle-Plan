@@ -3,7 +3,7 @@
 //! Native order is explicit in keys; all growth/conversion is off-thread.
 //!
 //! The owned war occurrences and their goals are carried from the frame's
-//! latest complete walk ([`native::walk_cached_growing_with_owners`]) while
+//! latest complete walk ([`native::walk_cached_with_owners`]) while
 //! the war domain's token ([`war_changes`]) and every owner's goal sequence
 //! ([`wargoal_changes::goal_sequence`]) equal those taken after that walk. A
 //! war's goal list grows only through the hooked goal consumer, which names
@@ -183,7 +183,7 @@ impl Captured {
         let outcomes = self
             .inventory
             .visit_owners(memory, base, force_full, |owners| {
-                native::walk_cached_growing_with_owners(
+                native::walk_cached_with_owners(
                     memory,
                     base,
                     state,

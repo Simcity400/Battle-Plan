@@ -6,8 +6,10 @@
 //! permutations need no observation. Construction, loading and destruction
 //! revoke observations of a reused address. The existing fleet
 //! census reads a vector only on its first observation or a changed
-//! certificate. Disabled or unavailable observation refuses the field rather
-//! than introducing a periodic native vector walk.
+//! certificate. A fleet the watch table cannot hold (none installed yet, or
+//! every slot its probes reach taken) is certified by the family's quiet
+//! token instead, which any region writer moves. Disabled observation
+//! refuses the field rather than introducing a periodic native vector walk.
 
 use crate::{hook::Hook, watch_registry::WatchRegistry};
 use engine_native::Memory;
@@ -17,8 +19,13 @@ use std::{
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 
-/// A receiver's observation epoch and writer sequence.
-pub type Certificate = (u64, u64);
+/// What proves a fleet's held regions current: the fleet's own writer sequence, or, for a fleet
+/// the watch table cannot hold, the family's quiet token, which every region writer moves.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Certificate {
+    Fleet { epoch: u64, sequence: u64 },
+    Family { epoch: u64, revision: u64 },
+}
 
 /// A verified native entry owned by this family.
 #[derive(Clone, Copy)]
@@ -70,10 +77,15 @@ static ORIGINAL: [AtomicUsize; SITES.len()] = [const { AtomicUsize::new(0) }; SI
 /// Register a fleet reached by the authenticated census. Observation being
 /// disabled refuses even an otherwise retained registry certificate.
 pub fn sequence(fleet: usize) -> Option<Certificate> {
-    ENABLED
-        .load(Ordering::SeqCst)
-        .then(|| WATCHES.sequence(fleet))
-        .flatten()
+    if !ENABLED.load(Ordering::SeqCst) {
+        return None;
+    }
+    match WATCHES.sequence(fleet) {
+        Some((epoch, sequence)) => Some(Certificate::Fleet { epoch, sequence }),
+        None => WATCHES
+            .quiet()
+            .map(|(epoch, revision)| Certificate::Family { epoch, revision }),
+    }
 }
 
 /// Demand measured by the fleet census, used only for off-thread sizing.
@@ -209,6 +221,7 @@ macro_rules! writer {
             third: usize,
             fourth: usize,
         ) -> usize {
+            let _hook = crate::hook_timing::label();
             CALLS[$site].fetch_add(1, Ordering::Relaxed);
             unsafe {
                 invoke(
@@ -352,5 +365,34 @@ mod tests {
         assert_eq!(watches.active(), 0);
         // SAFETY: no synthetic writer remains in flight.
         unsafe { watches.release() };
+    }
+
+    /// A fleet made after the session's table filled: the game holds its regions (none, here),
+    /// so it is read under the family's quiet token instead of refused for its whole life.
+    #[test]
+    fn a_fleet_the_full_table_cannot_hold_is_certified_by_the_family_quiet_token() {
+        WATCHES.offer(1);
+        assert!(WATCHES.boundary(true).installed());
+        WATCHES.set_enabled(true);
+        ENABLED.store(true, Ordering::SeqCst);
+        for held in 1..=16_384 {
+            let _ = WATCHES.sequence(held * 0x1000);
+        }
+        let fleet = 0x7fff_0000;
+        assert_eq!(WATCHES.sequence(fleet), None, "the table holds no more fleets");
+        let quiet = sequence(fleet);
+        assert!(quiet.is_some(), "an unheld fleet is still certified");
+        assert_eq!(sequence(fleet), quiet, "no writer: the same certificate");
+        drop(WATCHES.notify(0x1000));
+        assert_ne!(sequence(fleet), quiet, "any fleet's writer revokes it");
+        {
+            let _running = WATCHES.notify(0x2000);
+            assert_eq!(sequence(fleet), None, "nothing is certified while a writer runs");
+        }
+        ENABLED.store(false, Ordering::SeqCst);
+        WATCHES.set_enabled(false);
+        assert_eq!(sequence(fleet), None, "disabled observation certifies nothing");
+        // SAFETY: no synthetic writer remains in flight.
+        unsafe { WATCHES.release() };
     }
 }

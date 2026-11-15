@@ -1,5 +1,6 @@
 //! Commands the panel invokes.
 use crate::{
+    compress::Jobs,
     panel,
     recordings::{Library, Live, Recordings},
     snapshot::Snapshot,
@@ -132,6 +133,7 @@ pub struct SettingsPatch {
     start_with_replay: Option<bool>,
     capture_mode: Option<String>,
     compression: Option<replay::compression::Compression>,
+    auto_compress: Option<bool>,
 }
 
 #[tauri::command]
@@ -162,6 +164,7 @@ pub async fn update_recorder_settings(
             );
             set(&mut settings.auto_save, patch.auto_save);
             set(&mut settings.start_with_replay, patch.start_with_replay);
+            set(&mut settings.auto_compress, patch.auto_compress);
             if let Some(compression) = patch.compression {
                 settings.choose_compression(compression);
             }
@@ -311,13 +314,27 @@ pub async fn recordings(
             names: &names,
         };
         let named = app.clone();
-        Ok(app
+        let mut listed = app
             .state::<Library>()
             .list(&settings, view, &live, &recorder.flags(), move || {
                 recordings_changed(&named)
-            }))
+            });
+        let jobs = app.state::<Arc<Jobs>>();
+        for row in &mut listed.saved {
+            row.job = jobs.job(Path::new(&row.path));
+        }
+        Ok(listed)
     })
     .await
+}
+
+/// Compresses a saved recording to the smaller High size in the background, after any queued.
+#[tauri::command]
+pub async fn compress_recording(app: AppHandle, path: String) -> Result<(), String> {
+    let jobs = Arc::clone(app.state::<Arc<Jobs>>().inner());
+    blocking(move || jobs.request(Path::new(&path))).await?;
+    recordings_changed(&app);
+    Ok(())
 }
 
 /// The running session, or a session folder of this recorder's save folder or of one it saved
@@ -373,11 +390,15 @@ pub async fn act_on_waiting(
     if recorder.act_on_recording(&target, &campaign, discard) {
         return Ok(None);
     }
+    let jobs = Arc::clone(app.state::<Arc<Jobs>>().inner());
     let result = blocking(move || {
         if discard {
             recorder::controller::discard_waiting(&session, &campaign).map(|()| None)
         } else {
             recorder::controller::save_waiting(&session, &campaign).map(|saved| {
+                if let Some(path) = &saved.recording {
+                    jobs.saved(path);
+                }
                 saved
                     .by_tag
                     .map(|why| format!("Saved. Its countries are named by tag: {why}"))

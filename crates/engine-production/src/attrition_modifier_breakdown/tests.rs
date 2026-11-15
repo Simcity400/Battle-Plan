@@ -68,27 +68,27 @@ impl Fixture {
 }
 
 fn buffers<'a>(
-    requests: &'a mut [Request],
-    roots: &'a mut [Root],
-    nodes: &'a mut [RawNode],
-    text: &'a mut [u8],
-    stack: &'a mut [Frame],
+    requests: &'a mut Vec<Request>,
+    roots: &'a mut Vec<Root>,
+    nodes: &'a mut Vec<RawNode>,
+    text: &'a mut Vec<u8>,
+    stack: &'a mut Vec<Frame>,
 ) -> Buffers<'a> {
     let request_len = requests.len();
     Buffers {
-        requests: crate::walk::Buffer::Fixed(requests),
+        requests: crate::walk::Buffer::Growing(requests),
         request_len,
         request_required: request_len,
-        roots: crate::walk::Buffer::Fixed(roots),
+        roots: crate::walk::Buffer::Growing(roots),
         root_len: 0,
         root_required: 0,
-        nodes: crate::walk::Buffer::Fixed(nodes),
+        nodes: crate::walk::Buffer::Growing(nodes),
         node_len: 0,
         node_required: 0,
-        text: crate::walk::Buffer::Fixed(text),
+        text: crate::walk::Buffer::Growing(text),
         text_len: 0,
         text_required: 0,
-        stack: crate::walk::Buffer::Fixed(stack),
+        stack: crate::walk::Buffer::Growing(stack),
         stack_required: 0,
         repeats: None,
     }
@@ -148,11 +148,11 @@ fn cold_worker_formatter_arenas_keep_native_labels_and_later_tree_growth() {
                 .iter()
                 .all(|&byte| byte == b'M')
         );
-        let mut requests = [Request {
+        let mut requests = vec![Request {
             accumulator: root,
             key,
         }];
-        let mut enough_roots = [Root::default(); 1];
+        let mut enough_roots = vec![Root::default(); 1];
         let mut enough_nodes = vec![RawNode::default(); count + 1];
         let mut enough_text = vec![0; count * label.len()];
         let mut enough_stack = vec![Frame::default(); 2];
@@ -187,7 +187,7 @@ fn attrition_trees_deduplicate_pairs_and_keep_aliases_interior_labels_and_zero_n
         &[leaf, zero, leaf],
     );
     let root = fixture.node(b"root", &[], &[branch]);
-    let mut requests = [
+    let mut requests = vec![
         Request {
             accumulator: root,
             key: keys[1],
@@ -201,10 +201,10 @@ fn attrition_trees_deduplicate_pairs_and_keep_aliases_interior_labels_and_zero_n
             key: keys[0],
         },
     ];
-    let mut roots = [Root::default(); 2];
-    let mut nodes = [RawNode::default(); 10];
-    let mut text = [0; 256];
-    let mut stack = [Frame::default(); 3];
+    let mut roots = vec![Root::default(); 2];
+    let mut nodes = vec![RawNode::default(); 10];
+    let mut text = vec![0; 256];
+    let mut stack = vec![Frame::default(); 3];
     let mut buffers = buffers(&mut requests, &mut roots, &mut nodes, &mut text, &mut stack);
     capture(&fixture, 0, &mut buffers).unwrap();
     assert_eq!(
@@ -246,7 +246,7 @@ fn attrition_failed_tree_releases_storage_and_preserves_other_root() {
     fixture.word(cycle, (bad - 0x10) as u64);
     fixture.array(bad + 0x18, cycle, 1);
     let good = fixture.node(b"good", &[(key, 2)], &[]);
-    let mut requests = [
+    let mut requests = vec![
         Request {
             accumulator: bad,
             key,
@@ -256,10 +256,10 @@ fn attrition_failed_tree_releases_storage_and_preserves_other_root() {
             key,
         },
     ];
-    let mut roots = [Root::default(); 2];
-    let mut nodes = [RawNode::default(); 2];
-    let mut text = [0; 16];
-    let mut stack = [Frame::default(); 2];
+    let mut roots = vec![Root::default(); 2];
+    let mut nodes = vec![RawNode::default(); 2];
+    let mut text = vec![0; 16];
+    let mut stack = vec![Frame::default(); 2];
     let mut buffers = buffers(&mut requests, &mut roots, &mut nodes, &mut text, &mut stack);
     capture(&fixture, 0, &mut buffers).unwrap();
     assert_eq!(
@@ -287,10 +287,10 @@ fn attrition_armies_share_each_requested_tree_once() {
         };
         3 * crate::carmy_attrition::SOURCE_COUNT
     ];
-    let mut roots = [Root::default(); 1];
-    let mut nodes = [RawNode::default(); 1];
-    let mut text = [0; 6];
-    let mut stack = [Frame::default(); 1];
+    let mut roots = vec![Root::default(); 1];
+    let mut nodes = vec![RawNode::default(); 1];
+    let mut text = vec![0; 6];
+    let mut stack = vec![Frame::default(); 1];
     let mut buffers = buffers(&mut requests, &mut roots, &mut nodes, &mut text, &mut stack);
     capture(&fixture, 0, &mut buffers).unwrap();
     assert_eq!(
@@ -306,78 +306,12 @@ fn attrition_armies_share_each_requested_tree_once() {
 }
 
 #[test]
-fn attrition_short_node_and_text_arenas_count_complete_demand_and_keep_small_root() {
-    let mut fixture = Fixture::new();
-    let key = modifier_keys::ATTRITION;
-    let leaf = fixture.node(&[b'x'; 80], &[(key, 3)], &[]);
-    let large = fixture.node(b"large", &[], &[leaf, leaf, leaf]);
-    let good = fixture.node(b"ok", &[(key, 2)], &[]);
-    let mut requests = [
-        Request {
-            accumulator: large,
-            key,
-        },
-        Request {
-            accumulator: good,
-            key,
-        },
-    ];
-    let mut roots = [Root::default(); 2];
-    let mut nodes = [RawNode::default(); 2];
-    let mut text = [0; 8];
-    let mut stack = [Frame::default(); 2];
-    let mut buffers = buffers(&mut requests, &mut roots, &mut nodes, &mut text, &mut stack);
-    capture(&fixture, 0, &mut buffers).unwrap();
-    assert_eq!(buffers.roots[0].failure, Some(TEXT_CAPACITY));
-    assert_eq!(buffers.roots[1].failure, None);
-    assert_eq!(
-        (
-            buffers.node_required,
-            buffers.text_required,
-            buffers.stack_required
-        ),
-        (5, 242, 2)
-    );
-    assert_eq!((buffers.node_len, buffers.text_len), (1, 2));
-}
-
-#[test]
-#[cfg(windows)]
-fn attrition_short_depth_counts_all_descendants_and_detects_cycles() {
-    let mut fixture = Fixture::new();
-    let key = modifier_keys::ATTRITION;
-    let mut root = fixture.node(b"leaf", &[(key, 1)], &[]);
-    for _ in 0..24 {
-        root = fixture.node(b"", &[], &[root]);
-    }
-    let mut requests = [Request {
-        accumulator: root,
-        key,
-    }];
-    let mut roots = [Root::default(); 1];
-    let mut nodes = [RawNode::default(); 25];
-    let mut text = [0; 4];
-    let mut stack = [Frame::default(); 1];
-    let mut buffers = buffers(&mut requests, &mut roots, &mut nodes, &mut text, &mut stack);
-    capture(&fixture, 0, &mut buffers).unwrap();
-    assert_eq!(buffers.roots[0].failure, Some(DEPTH_CAPACITY));
-    assert_eq!(
-        (
-            buffers.node_required,
-            buffers.text_required,
-            buffers.stack_required
-        ),
-        (25, 4, 25)
-    );
-}
-
-#[test]
-fn attrition_root_or_request_shortage_never_certifies_a_partial_identity_census() {
+fn attrition_request_shortage_never_certifies_a_partial_identity_census() {
     let mut fixture = Fixture::new();
     let key = modifier_keys::ATTRITION;
     let first = fixture.node(b"", &[], &[]);
     let second = fixture.node(b"", &[], &[]);
-    let mut requests = [
+    let mut requests = vec![
         Request {
             accumulator: first,
             key,
@@ -387,13 +321,11 @@ fn attrition_root_or_request_shortage_never_certifies_a_partial_identity_census(
             key,
         },
     ];
-    let mut roots = [Root::default(); 1];
-    let mut nodes = [RawNode::default(); 2];
-    let mut text = [];
-    let mut stack = [Frame::default(); 1];
+    let mut roots = Vec::new();
+    let mut nodes = Vec::new();
+    let mut text = Vec::new();
+    let mut stack = Vec::new();
     let mut buffers = buffers(&mut requests, &mut roots, &mut nodes, &mut text, &mut stack);
-    assert_eq!(capture(&fixture, 0, &mut buffers), Err(ROOT_CAPACITY));
-    assert_eq!((buffers.root_required, buffers.node_required), (2, 2));
     buffers.request_len = 1;
     buffers.request_required = 2;
     assert_eq!(capture(&fixture, 0, &mut buffers), Err(REQUEST_CAPACITY));

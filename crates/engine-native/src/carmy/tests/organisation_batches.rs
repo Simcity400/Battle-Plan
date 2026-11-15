@@ -161,7 +161,6 @@ fn packet(source: &impl Memory, seeds: &[DivisionSeed]) -> StatusPacket {
             GS,
             seeds,
             Outcome::Rows { len: seeds.len() },
-            seeds.len()
         ),
         Outcome::Rows { len: seeds.len() }
     );

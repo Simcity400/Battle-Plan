@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { divergingStack } from '../../charts/series.ts';
-import type { MeasureParts, StabilityPart } from '../../generated/dashboard';
-import { engineSum, knownAt, partLayers, partName, partsAt, partsStack, partsWithin, REMAINDER_LABEL, SMALLER_LABEL, stackRange, validateStabilityPartsReply, visibleSegment } from './partsData.ts';
+import type { MeasureParts, StabilityPart, StabilityPartName } from './types';
+import type { ChartBucket, ChartSummary } from '../../charts/chartSummary';
+import { engineSum, knownAt, partLayers, partName, partsAt, partsStack, partsWithin, REMAINDER_LABEL, SMALLER_LABEL, stackRange, visibleSegment, measureOf, partsFromLines, partsAtStates, validateStabilityPartNames, namesAt } from './partsData.ts';
 
 const run = (firstHour: number, lastHour: number, valueRaw: string) => ({ firstHour, lastHour, valueRaw, startsSegment: false });
 const part = (id: string, runs: StabilityPart['runs'], extra: Partial<StabilityPart> = {}): StabilityPart => ({ id, term: null, line: null, runs, ...extra });
@@ -70,12 +71,66 @@ test('the stack breaks at unrecorded hours and samples both ends of every change
   assert.deepEqual(partsStack(PARTS, layers, 5, 12, 18), []);
 });
 
-test('a malformed parts reply is refused', () => {
-  const reply = { branchId: '1', tag: 'GER', decimals: 5, stability: PARTS, warSupport: { observed: [], parts: [] }, warnings: [] };
-  assert.equal(validateStabilityPartsReply(reply).tag, 'GER');
-  assert.throws(() => validateStabilityPartsReply({ ...reply, stability: { ...PARTS, observed: [{ firstHour: 5, lastHour: 1 }] } }), /malformed/);
-  assert.throws(() => validateStabilityPartsReply({ ...reply, stability: { ...PARTS, observed: [{ firstHour: 0, lastHour: Number.MAX_SAFE_INTEGER + 1 }] } }), /malformed/);
-  assert.throws(() => validateStabilityPartsReply({ ...reply, warSupport: undefined }), /malformed/);
+const bucket = (firstHour: number, lastHour: number, value: number, firstBreak = false): ChartBucket => ({ firstHour, lastHour, firstValue: value,
+  lastValue: value, lastValueHour: lastHour, minHour: firstHour, minValue: value, maxHour: firstHour, maxValue: value, firstBreak, hasBreak: false });
+const summary = (buckets: (ChartBucket | null)[]): ChartSummary => ({ from: 0, to: 100, width: buckets.length, buckets });
+const named = (part: string, kind: string, id: string | null, extra: Partial<StabilityPartName> = {}): StabilityPartName =>
+  ({ part, measure: 'stability', kind, id, term: null, line: null, missing: null, ...extra });
+const WAR = String((1n << 32n) | 4n);
+
+test('a part names its measure in the bits above its handle', () => {
+  assert.equal(measureOf('7'), 'stability');
+  assert.equal(measureOf(WAR), 'warSupport');
+});
+
+test('a measure’s parts over a view are their lines’ bins, known where the displayed value’s line holds a bin', () => {
+  const names = new Map([['1', named('1', 'total', 'total')], ['2', named('2', 'term', 'term:base', { term: 'base' })], ['3', named('3', 'line', 'line:idea:a:0:0', { line })],
+    ['5', named('5', 'line', 'line:idea:a:0:0', { line })]]);
+  const lines = new Map([
+    ['1', summary([bucket(0, 5, 0.6), bucket(6, 11, 0.6), null, bucket(18, 23, 0.5, true)])],
+    ['2', summary([bucket(0, 5, 0.5), bucket(6, 11, 0.5), null, bucket(18, 23, 0.5, true)])],
+    ['3', summary([bucket(0, 5, 0.1), null, null, null])],
+    ['5', summary([null, bucket(6, 11, 0.1), null, null])],
+  ]);
+  const parts = partsFromLines(['1', '2', '3', '5', '6'], lines, names);
+  assert.deepEqual(parts.observed, [{ firstHour: 0, lastHour: 11 }, { firstHour: 18, lastHour: 23 }]);
+  assert.deepEqual(parts.parts.map(item => [item.id, item.runs.map(run => [run.firstHour, run.lastHour, run.valueRaw])]), [
+    ['term:base', [[0, 11, '50000'], [18, 23, '50000']]],
+    ['line:idea:a:0:0', [[0, 11, '10000']]],
+  ], 'one source under two handles is one part; the displayed value is no part');
+  assert.ok(parts.parts.every(item => item.id !== 'total'));
+  const unnamed = partsFromLines(['1', '9'], new Map([['1', lines.get('1')!], ['9', summary([bucket(0, 5, 0.2)])]]), new Map([['1', names.get('1')!]]));
+  assert.equal(unnamed.parts[0].id, 'part:9', 'a part not named yet keeps its key, never another’s name');
+  // Tiled lines with the head at hour 8: bins stop at the head's bin (6-11), which holds the value at the head to it.
+  const tiled = (summary: ChartSummary, value: number): ChartSummary => ({ ...summary, tiles: { binHours: 6, valueAt: () => value } });
+  const headed = partsFromLines(['1', '2'], new Map([['1', tiled(lines.get('1')!, 0.7)], ['2', tiled(lines.get('2')!, 0.4)]]), names, 8);
+  assert.deepEqual(headed.observed, [{ firstHour: 0, lastHour: 8 }]);
+  assert.deepEqual(headed.parts[0].runs.map(run => [run.firstHour, run.lastHour, run.valueRaw]), [[0, 5, '50000'], [6, 8, '40000']],
+    'the head bin is the value at the head, never the bin’s first value nor an hour after the head');
+});
+
+test('each part is named at the last hour it was held in the view, so one only an earlier run held still has its name', () => {
+  const listed = [{ part: '1', id: null, firstHour: 0, lastHour: 50 }, { part: '2', id: null, firstHour: 0, lastHour: 900 },
+    { part: '3', id: null, firstHour: 600, lastHour: 2_000 }, { part: '1', id: null, firstHour: 700, lastHour: 800 }];
+  assert.deepEqual(namesAt(listed, 1_000), [[800, ['1']], [900, ['2']], [1_000, ['3']]]);
+});
+
+test('parts at an hour are the states read there, known only where the displayed value was recorded', () => {
+  const names = new Map([['1', named('1', 'total', 'total')], ['2', named('2', 'term', 'term:base', { term: 'base' })], ['3', named('3', 'remainder', 'remainder')]]);
+  const state = (part: string, hour: number, valueRaw: string | null) => ({ tag: 'A', part, hour, drop: null, missing: valueRaw === null ? 'Not recorded' : null,
+    run: valueRaw === null ? null : { firstHour: hour - 2, lastHour: hour + 2, valueRaw, slot: 1, countryId: 1, startsSegment: false, segmentFirstHour: 0, firstExact: true, lastExact: true } });
+  const states = [state('1', 10, '60000'), state('2', 10, '50000'), state('3', 10, '10000'), state('1', 11, null), state('2', 11, '50000')];
+  const at = partsAtStates(['1', '2', '3'], states, 10, names);
+  assert.deepEqual(at.observed, [{ firstHour: 10, lastHour: 10 }]);
+  assert.deepEqual(at.parts.map(item => [item.id, item.runs[0].valueRaw, item.runs[0].firstHour]), [['term:base', '50000', 10], ['remainder', '10000', 10]]);
+  assert.deepEqual(partsAtStates(['1', '2'], states, 11, names).observed, [], 'no displayed value, no known parts');
+});
+
+test('a part names reply is checked before it is shown', () => {
+  const reply = { tag: 'A', hour: 3, warnings: [], parts: [named('1', 'total', 'total')] };
+  assert.equal(validateStabilityPartNames(reply), reply);
+  assert.throws(() => validateStabilityPartNames({ ...reply, parts: [{ ...reply.parts[0], measure: 'other' }] }), /malformed/);
+  assert.throws(() => validateStabilityPartNames({ ...reply, parts: null }), /malformed/);
 });
 
 test('parts are known only within the hours the country is shown', () => {

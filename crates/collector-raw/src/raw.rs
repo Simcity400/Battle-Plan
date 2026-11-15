@@ -80,13 +80,15 @@ pub struct RawGrowth {
     pub span_capacity_scope: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub packet_inline_bytes_excluded_from_vector_accounting: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refusal: Option<&'static str>,
 }
 
 static GROWTH_DIAGNOSTICS: Mutex<Vec<(&'static str, Growth)>> = Mutex::new(Vec::new());
 
 /// Worker-only capacity diagnostics: never allocate or lock in the callback.
 pub fn note_growth<const N: usize>(family: &'static str, log: &RawLog<N>) {
-    if !log.overflowed {
+    if !log.overflowed && !log.torn {
         return;
     }
     let failed = log.spans.iter().find(|span| !span.ok);
@@ -112,9 +114,14 @@ pub fn note_growth<const N: usize>(family: &'static str, log: &RawLog<N>) {
             last_mask: log.spans.last().map(|span| span.mask),
             span_capacity_scope: None,
             packet_inline_bytes_excluded_from_vector_accounting: None,
+            refusal: log.refusal(),
         }),
     );
 }
+
+/// No span the game holds is longer than `u32::MAX` bytes, so a read that long
+/// took its length from a torn or foreign header: it is unreadable.
+pub const TORN_READ: &str = "raw read longer than any game span: torn or foreign header";
 
 /// Publish an equivalent worker-owned packet capacity diagnostic.
 pub fn publish_growth(family: &'static str, value: Growth) {
@@ -327,8 +334,8 @@ impl<T: AsRef<[u8]> + ?Sized> PartialEq<T> for RawBytes {
 impl Eq for RawBytes {}
 
 /// One refresh of raw payload for a family of at most 32 tables. Flat pools
-/// keep every span fixed-size so `clear` recycles capacities. Allocating worker
-/// roles may grow before a read; fixed callback logs grow on decode recycling.
+/// keep every span fixed-size so `clear` recycles capacities. Every acquisition
+/// role is a worker, so storage grows before the read that needs it.
 #[derive(Debug)]
 pub struct RawLog<const N: usize> {
     pub spans: Vec<Span>,
@@ -336,10 +343,11 @@ pub struct RawLog<const N: usize> {
     pub fault: [bool; N],
     pub raw_bytes: [u64; N],
     pub overflowed: bool,
+    /// A read was refused as [`TORN_READ`].
+    torn: bool,
     span_exhausted: bool,
     required_spans: usize,
     required_bytes: usize,
-    worker_growth: bool,
     /// Set when the log holds bulk spans wider than the replay's requests
     /// (contiguous table copies). The decode side then serves sub-ranges
     /// from the enclosing span instead of exact matches only.
@@ -374,10 +382,10 @@ impl<const N: usize> RawLog<N> {
             fault: [false; N],
             raw_bytes: [0; N],
             overflowed: false,
+            torn: false,
             span_exhausted: false,
             required_spans: 0,
             required_bytes: 0,
-            worker_growth: false,
             has_bulk: false,
             index: RefCell::new(None),
             plan: CapturePlan::default(),
@@ -412,10 +420,10 @@ impl<const N: usize> RawLog<N> {
         self.fault = [false; N];
         self.raw_bytes = [0; N];
         self.overflowed = false;
+        self.torn = false;
         self.span_exhausted = false;
         self.required_spans = 0;
         self.required_bytes = 0;
-        self.worker_growth = false;
         self.has_bulk = false;
         self.plan.active = false;
         self.plan.sealed = false;
@@ -616,6 +624,26 @@ impl<const N: usize> RawLog<N> {
         }
     }
 
+    /// The named refusal of a read this capture could not hold, if any.
+    pub fn refusal(&self) -> Option<&'static str> {
+        self.torn.then_some(TORN_READ)
+    }
+
+    /// A read whose length no game span has fails its tables as unreadable,
+    /// with no span: its length does not fit one.
+    fn refuse_torn(&mut self, mask: u32) {
+        self.torn = true;
+        self.mark_fault(mask);
+    }
+
+    fn mark_fault(&mut self, mask: u32) {
+        for (slot, fault) in self.fault.iter_mut().enumerate() {
+            if mask & (1 << slot) != 0 {
+                *fault = true;
+            }
+        }
+    }
+
     pub fn grow_for_next(&self) -> bool {
         // More storage cannot repair a failed source read. In particular an
         // invalid optional-object path must not double every pool indefinitely.
@@ -670,21 +698,11 @@ impl<const N: usize> RawLog<N> {
         self.update_capacity_charge();
     }
 
-    /// Preflight `extra` more bytes before any read that must not be
-    /// retried: when they do not fit, mark overflow and the size to grow to.
+    /// Grow to `extra` more bytes before any read that must not be retried:
+    /// when storage cannot hold them, mark overflow and the size to grow to.
     pub fn reserve(&mut self, extra: usize) {
         let end = self.bytes.len().saturating_add(extra);
         let _ = self.ensure_storage(0, end);
-    }
-
-    /// Allocating acquisition roles opt in after clear, before their first
-    /// source read. Growth preserves the acquired prefix and never retries it.
-    pub fn enable_worker_growth(&mut self) {
-        self.worker_growth = true;
-    }
-
-    pub fn worker_growth_enabled(&self) -> bool {
-        self.worker_growth
     }
 
     /// Whether `spans` more spans and `bytes` more pool bytes fit the
@@ -710,7 +728,7 @@ impl<const N: usize> RawLog<N> {
         let needed_spans = self.spans.len().checked_add(spans);
         let span_short = needed_spans.is_none_or(|needed| needed > self.spans.capacity());
         let byte_short = end > self.bytes.capacity();
-        if self.worker_growth && end <= u32::MAX as usize && (span_short || byte_short) {
+        if end <= u32::MAX as usize && (span_short || byte_short) {
             let _phase = crate::allocation::enter(crate::allocation::Phase::Raw);
             if span_short && let Some(needed) = needed_spans {
                 let target = needed;
@@ -862,7 +880,7 @@ impl<const N: usize> RawLog<N> {
             return Some(self.bytes.len());
         }
         let Ok(len32) = u32::try_from(len) else {
-            self.overflowed = true;
+            self.refuse_torn(mask);
             return None;
         };
         if addr == 0 || addr.checked_add(len).is_none() {
@@ -957,7 +975,7 @@ impl<const N: usize> RawLog<N> {
             return Some(self.bytes.len());
         }
         let Ok(len32) = u32::try_from(len) else {
-            self.overflowed = true;
+            self.refuse_torn(mask);
             return None;
         };
         if addr == 0 || addr.checked_add(len).is_none() || !is_canonical_range(addr, len) {
@@ -1034,7 +1052,11 @@ impl<const N: usize> RawLog<N> {
         let mut starts = [0; M];
         for (index, len) in lengths.into_iter().enumerate() {
             starts[index] = end;
-            let Some(next) = end.checked_add(len).filter(|_| len <= u32::MAX as usize) else {
+            if len > u32::MAX as usize {
+                self.refuse_torn(masks[index]);
+                return None;
+            }
+            let Some(next) = end.checked_add(len) else {
                 self.overflowed = true;
                 return None;
             };
@@ -1352,11 +1374,7 @@ impl<const N: usize> RawLog<N> {
             start: 0,
             bulk: false,
         });
-        for (slot, fault) in self.fault.iter_mut().enumerate() {
-            if mask & (1 << slot) != 0 {
-                *fault = true;
-            }
-        }
+        self.mark_fault(mask);
     }
 
     /// A different source-operation kind cannot consume a scalar prefix.
@@ -1430,20 +1448,26 @@ pub fn allocation_exercise() -> bool {
         return false;
     }
     {
-        let recorded = Recorded::build(&log);
-        if crate::allocation::failed() {
+        let Ok(recorded) = Recorded::build(&log) else {
             return false;
-        }
+        };
         if !recorded.copy(0x1000, &mut [0; 8]) || !recorded.copy(0x1002, &mut [0; 3]) {
             return false;
         }
     }
     log.clear();
     // Demand grows both arenas beyond their prepared capacities.
-    while !log.span_exhausted {
-        let _ = log.take(&memory, 0x1000, 1, 1);
+    for _ in 0..64 {
+        if log.take(&memory, 0x1000, 1, 1).is_none() {
+            return false;
+        }
     }
     log.reserve(64);
+    if crate::allocation::failed() {
+        return false;
+    }
+    // A read longer than any game span is refused by name, and published.
+    let _ = log.take(&memory, 0x1000, u32::MAX as usize + 1, 1);
     note_growth("synthetic-allocation", &log);
     if crate::allocation::failed() {
         return false;

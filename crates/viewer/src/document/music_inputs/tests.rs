@@ -347,14 +347,10 @@ fn music_inputs_keep_fixed_weights_rng_refusal_order_and_multi_hour_changes() {
     Arc::get_mut(&mut changed).unwrap().stations = Some(vec!["off".into()]);
     let (actual, evaluated) = run(&memo, &base, &changed, 1);
     assert_eq!(evaluated, 1);
-    assert_eq!(
-        actual
-            .weights
-            .iter()
-            .filter(|value| value.is_none())
-            .count(),
-        11
-    );
+    // An invalid trigger key adds no child, as the game loads it, so t8's modifier holds.
+    let mut expected = vec![None; 11];
+    expected[8] = Some(297.0f64.to_bits());
+    assert_eq!(bits(&actual), expected);
 }
 
 #[test]
@@ -733,4 +729,32 @@ fn map_products_music_matches_the_pre_extraction_synchronous_evaluator() {
             assert_eq!(actual.refusals, expected.refusals);
         }
     }
+}
+
+/// Rows at the playback head keep a table's allocation while it is unchanged: the memo keeps
+/// only identities, reuses what an unchanged table decided, and reads again what a replaced one
+/// holds, always as the synchronous evaluator decides.
+#[test]
+fn map_products_music_by_identity_reads_again_only_what_a_replaced_table_holds() {
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    let content = fixture_content();
+    let memo = map_products::music_inputs::Memo::by_identity();
+    let mut kept = None;
+    let mut check = |frame: &DecodedFrame, why: &str| {
+        let expected = original(frame, &content, 1);
+        let (actual, next) = with_world(frame, |world| memo.chances_kept(frame, &content, 1, world));
+        kept = Some(next);
+        assert_eq!(bits(&actual), bits(&expected), "{why}");
+        assert_eq!(actual.refusals, expected.refusals, "{why}");
+    };
+    let mut frame = frame(2);
+    check(&frame, "first");
+    frame.hour = 17;
+    check(&frame, "an hour on, every table the same allocation");
+    frame.tables[TableId::ScriptFlags.index()] = TableView::Complete(TableRows::ScriptFlags(Vec::new())).into();
+    check(&frame, "the flag gone with a new ScriptFlags");
+    frame.tables[TableId::WarRelations.index()] = TableView::Complete(TableRows::WarRelations(Vec::new())).into();
+    frame.hour = 18;
+    check(&frame, "no war with a new WarRelations");
+    drop(kept);
 }

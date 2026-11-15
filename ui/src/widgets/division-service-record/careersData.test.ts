@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { CareerFacts, CareerRow, DivisionRecordReply, RecordEntry } from '../../generated/dashboard';
 import { experienceRatio, headerDetail, recordRows, topDivision, validateDivisionRecord } from './careersData.ts';
+import type { CareerFacts, CareerRow, DivisionRecordReply, RecordEntry } from '../../generated/dashboard';
 
 const facts = (extra: Partial<CareerFacts> = {}): CareerFacts => ({ medals: 3, awards: [], historyMissing: null, experienceRaw: '60000', level: 2, levelName: 'Veteran', kills: 1234, ...extra });
 const entry = (award: boolean, ordinal: number, hour: number): RecordEntry => ({ award, ordinal, hour, description: `E${ordinal}`, descriptionMissing: null, provinces: [], medal: award ? 0 : null });
-const reply = (entries: RecordEntry[]): DivisionRecordReply => validateDivisionRecord({ branchId: '1', hour: 100, division: '7', absent: false, tag: 'GER', template: null,
+const reply = (entries: RecordEntry[]): DivisionRecordReply => validateDivisionRecord({ division: '7', absent: false, tag: 'GER', template: null,
   name: 'First', nameMissing: null, facts: facts(), medals: [{ key: 'm', name: 'Medal' }], entries, warnings: [] });
 
 test('the record lists entries newest first and filters by the Show setting', () => {

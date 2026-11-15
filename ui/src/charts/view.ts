@@ -89,14 +89,16 @@ export function shownUntil(playhead: number | null, mode: PlaybackMode, afterPla
 
 /** The time range a chart shows when the user hasn't zoomed. Draw-in grows to the
  * playhead; cursor shows the whole range with the playhead over it; window slides a
- * fixed length behind the playhead. Whole-campaign views pass the branch end. */
-export function playbackDomain(mode: PlaybackMode, extent: Range, playhead: number, windowHours: number, minSpan: number): Range {
+ * fixed length behind the playhead. Whole-campaign views pass the branch end.
+ * A window `paused` (or after a seek) ends at the playhead, one hour at the branch's first;
+ * playing, it holds its first length until the playhead reaches that length's end. */
+export function playbackDomain(mode: PlaybackMode, extent: Range, playhead: number, windowHours: number, minSpan: number, paused = false): Range {
   const [first, last] = extent;
   const head = Math.max(first, Math.min(last, playhead));
   if (mode === 'cursor') return extent;
   if (mode === 'window') {
     const length = Math.max(minSpan, windowHours);
-    const end = Math.max(head, Math.min(last, first + length));
+    const end = Math.max(head, Math.min(last, first + (paused ? 1 : length)));
     return [Math.max(first, end - length), end];
   }
   return [first, Math.max(head, Math.min(last, first + minSpan))];

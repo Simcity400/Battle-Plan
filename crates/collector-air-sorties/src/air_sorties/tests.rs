@@ -383,8 +383,8 @@ fn capacities() -> Capacities {
 }
 
 #[test]
-fn volunteer_hosts_past_capacity_truncate_until_grown() {
-    let mut capacity = Capacities {
+fn volunteer_hosts_past_capacity_grow() {
+    let capacity = Capacities {
         hosts: 1,
         ..capacities()
     };
@@ -401,12 +401,7 @@ fn volunteer_hosts_past_capacity_truncate_until_grown() {
             &fixture.witnesses,
         )
     };
-    // Two hosts do not fit: only the wings' own containers are read.
-    capture(&mut sorties);
-    assert!(matches!(sorties.outcome, Outcome::Truncated { .. }));
-    assert_eq!(sorties.containers.len, 8);
-    sorties.grow(&mut capacity);
-    assert_eq!(capacity.hosts, 2);
+    // Storage for one host grows to both.
     capture(&mut sorties);
     assert_eq!(sorties.outcome, Outcome::Rows { len: 0 });
     // Two bases, each with four owners and their hosts: nine slots apiece.
@@ -534,7 +529,9 @@ fn sortie_cost_scales_with_missions_not_countries() {
             "{missions} missions, {countries} countries: {calls} guarded calls ({:.1}/mission), {best:?}",
             calls as f64 / missions as f64,
         );
-        assert!(calls <= 30 * missions, "{calls} guarded calls");
+        // Every flying country's container and volunteer hosts are read once
+        // an hour: the fixture's 300 of them, whatever the country count.
+        assert!(calls <= 30 * missions + 3_000, "{calls} guarded calls");
     }
 }
 

@@ -46,7 +46,7 @@ impl Captured {
         self.reset();
         let _reads = crate::read_accounting::table(TABLES[0]);
         let begin = qpc();
-        let result = native::walk_growing(
+        let result = native::walk(
             memory,
             base,
             state,
@@ -159,7 +159,7 @@ mod tests {
         );
         let mut small = Captured::vacant();
         assert_eq!(
-            native::walk(&f, 0, state, &mut [], &mut []).outcome,
+            native::count(&f, 0, state).outcome,
             Outcome::Truncated {
                 len: 0,
                 unread_rows: n as u32

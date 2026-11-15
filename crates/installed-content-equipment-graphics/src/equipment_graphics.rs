@@ -22,7 +22,6 @@ use crate::{
     key_names::KeyNames,
     parser::{
         self, Item, Operator, Value,
-        decimal::Decimal,
         native::{self, Shape},
     },
 };
@@ -745,20 +744,7 @@ fn strings(value: &Value) -> io::Result<Vec<String>> {
         .collect()
 }
 
-/// Authored fixed5 decimals keep the first five fractional digits. Save
-/// Decimal refuses lossy input, so authored digits past the fifth are
-/// truncated before it is used.
-pub fn authored_fixed5(bytes: &[u8]) -> io::Result<i64> {
-    let bytes = if let Some(dot) = bytes.iter().position(|byte| *byte == b'.')
-        && bytes.len() > dot + 6
-        && bytes[dot + 1..].iter().all(u8::is_ascii_digit)
-    {
-        &bytes[..dot + 6]
-    } else {
-        bytes
-    };
-    Ok(Decimal::parse(bytes)?.raw)
-}
+pub use crate::fixed5::authored_fixed5;
 
 fn folded_strings(value: &Value) -> io::Result<Vec<String>> {
     Ok(strings(value)?

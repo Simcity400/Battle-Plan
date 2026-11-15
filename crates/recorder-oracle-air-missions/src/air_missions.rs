@@ -2161,7 +2161,8 @@ mod tests {
             TableView::Complete(TableRows::AirNavalPatrolHistories(rows));
         let context = super::super::country_context(&frame).unwrap();
         let mut report = Report::default();
-        assert_eq!(naval_patrol(&frame, &context, &mut report).unwrap(), (0, 4));
+        // Three history rows, the availability witness and two ring markers.
+        assert_eq!(naval_patrol(&frame, &context, &mut report).unwrap(), (0, 6));
         assert_eq!(
             report.limitations["AirNavalPatrolHistories.scenario_channels unavailable after a current read refusal; original naval-patrol history remains readable"],
             ["air history 7:9:0", "air history 7:9:1"]

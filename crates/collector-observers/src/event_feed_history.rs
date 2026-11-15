@@ -18,9 +18,9 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-/// More detour witnesses staged in one hour than prepared: refused by name,
-/// never grown on a callback.
-pub(crate) const WITNESS_STORAGE: &str = crate::script_event_observer::staging::WITNESS_STORAGE;
+/// The detour witness arena could not grow on the callback.
+pub(crate) const WITNESS_ALLOCATION: &str =
+    crate::script_event_observer::staging::WITNESS_ALLOCATION;
 /// Witnesses a frame abandoned on an unwind, dropped at the next boundary.
 pub(crate) const WITNESS_ABANDONED: &str = crate::script_event_observer::staging::WITNESS_ABANDONED;
 /// An open detour's witnesses a boundary reset before it published.
@@ -75,8 +75,8 @@ fn crossed_sample(sample: usize) {
 /// An owner baseline a native writer crossed: refused, and retried at the
 /// next visit rather than recorded as a failed attempt.
 pub(crate) const OWNER_CROSSED: &str = "owner baseline crossed a native writer";
-/// A recovery baseline never grows storage under the shared-store lease. It
-/// raises the demand presize prepares, and is retried at the next visit.
+/// A private owner transaction could not allocate its storage; retried at
+/// the next visit.
 pub(crate) const OWNER_STORAGE: &str = "owner baseline needs prepared storage";
 
 /// Each owed registry may need one local storage/crossed refusal. Successful
@@ -87,20 +87,23 @@ const OWNER_CONTROL_TOKEN: usize = if OWNER_STORAGE.len() > OWNER_CROSSED.len() 
     OWNER_CROSSED.len()
 };
 
-/// Prepared indexes out of room, or private off-lease baseline growth failed.
+/// Prepared indexes out of room, or a growth allocation failed.
 /// These remain storage pressure, never a failed native-content attempt.
-const OWNER_SHORTAGES: [&str; 10] = [
+const OWNER_SHORTAGES: [&str; 11] = [
     "decision owner certificates need prepared capacity",
     "decision pointer certificates need prepared capacity",
     "decision pointer certificates are full",
     "delayed-event pointer index needs prepared storage",
-    "event registry baseline occurrence allocation failed",
-    "event registry baseline token allocation failed",
-    "event registry baseline graph allocation failed",
-    "event registry baseline scope allocation failed",
-    "decision baseline certificate allocation failed",
-    "delayed-event baseline identity allocation failed",
+    OCCURRENCE_ALLOCATION,
+    "event feed script token allocation failed",
+    "event feed scope graph allocation failed",
+    "event feed script scope allocation failed",
+    "decision certificate allocation failed",
+    "delayed-event identity allocation failed",
+    "delayed-event census table allocation failed",
 ];
+/// Occurrence storage could not grow, on a callback or a baseline.
+const OCCURRENCE_ALLOCATION: &str = "event feed occurrence allocation failed";
 
 /// A baseline sample's writer cut, taken inside a worker lease. It holds
 /// while no native writer has attempted the store or run a bracketed
@@ -392,9 +395,6 @@ pub struct Store {
     unpublished_from: usize,
     /// Inside a worker owner baseline: the first rejection's reason.
     local: Option<Option<&'static str>>,
-    /// Inside a worker owner baseline: prepared storage ran short. Owner
-    /// baselines never grow it under the lease.
-    local_short: bool,
     /// The owner baseline sample being read: its writer cut, or `None` when
     /// it began while a native writer was in flight.
     sample: Option<Option<Cut>>,
@@ -408,8 +408,8 @@ pub struct Store {
     /// Bumped by every arena reset, so a detour open across a boundary
     /// knows its witnesses were dropped.
     staged_epoch: u64,
-    /// Only the country worker's privately owned recovery transaction may
-    /// grow while reading an owner. It never shares the observer lease.
+    /// The country worker's privately owned recovery transaction, which
+    /// never shares the observer lease.
     preparing_owner: bool,
     entry_demand: usize,
     owner_refusals: [Option<OwnerRefusal>; 2],
@@ -460,7 +460,6 @@ impl Store {
             registry_state: None,
             unpublished_from: 0,
             local: None,
-            local_short: false,
             sample: None,
             prepared: None,
             staged: Vec::new(),
@@ -562,18 +561,20 @@ impl Store {
     pub(crate) fn witness_capacity(&self) -> usize {
         self.staged.len()
     }
-    /// A latch appends its witness. Demand rises even when it does not fit,
-    /// so the next hour is prepared larger; never grows on the callback.
+    /// A latch appends its witness, growing the arena on the callback when
+    /// a burst outruns the prepared size; demand still sizes the next hour.
     pub(crate) fn stage_witness(
         &mut self,
         token: u64,
         witness: Witness,
     ) -> Result<(), &'static str> {
-        self.staged_demand = self.staged_demand.max(self.staged_used.saturating_add(1));
-        let slot = self
-            .staged
-            .get_mut(self.staged_used)
-            .ok_or(WITNESS_STORAGE)?;
+        let needed = self.staged_used.saturating_add(1);
+        self.staged_demand = self.staged_demand.max(needed);
+        if needed > self.staged.len() {
+            self.prepare_staged(needed.max(self.staged.len().saturating_mul(2)))
+                .map_err(|_| WITNESS_ALLOCATION)?;
+        }
+        let slot = &mut self.staged[self.staged_used];
         *slot = Some(Staged {
             token,
             witness,
@@ -687,8 +688,8 @@ impl Store {
     /// A worker owner baseline of `registry`. Its rejections count but stay
     /// with that owner; the refusal carries the first reason, whether a
     /// rejection was already counted, and whether it is retried at the next
-    /// visit. Retention and observation loss stay global. Nothing inside
-    /// grows prepared storage unless this is the private off-lease transaction.
+    /// visit. Retention and observation loss stay global. Storage grows
+    /// inside as anywhere; only a failed allocation is storage pressure.
     ///
     /// Every exit that does not certify checks the sample's writer cut
     /// first: a sample a writer crossed is retried whatever error or
@@ -700,26 +701,23 @@ impl Store {
         apply: impl FnOnce(&mut Self) -> Result<T, &'static str>,
     ) -> Result<T, OwnerRefusal> {
         let outer = self.local.replace(None);
-        let outer_short = std::mem::replace(&mut self.local_short, false);
         self.sample = None;
         let result = apply(self);
         let scoped = self.local.take().flatten();
-        let short = std::mem::replace(&mut self.local_short, outer_short);
         let sample = self.sample.take();
         self.local = outer;
         let reason = match (result, scoped) {
-            (Ok(value), None) if !short => return Ok(value),
+            (Ok(value), None) => return Ok(value),
             (Err(reason), _) => reason,
             (Ok(_), Some(reason)) => reason,
-            (Ok(_), None) => OWNER_STORAGE,
         };
         let crossed =
             reason == OWNER_CROSSED || sample.is_some_and(|cut| cut.is_none_or(|cut| !cut.holds()));
         if crossed {
             crossed_sample(registry as usize);
         }
-        // A prepared index short of room is a storage shortage too.
-        let short = !crossed && (short || OWNER_SHORTAGES.contains(&reason));
+        // A failed allocation is storage pressure, retried at the next visit.
+        let short = !crossed && OWNER_SHORTAGES.contains(&reason);
         Err(OwnerRefusal {
             reason: if crossed {
                 OWNER_CROSSED
@@ -731,17 +729,6 @@ impl Store {
             counted: scoped.is_some(),
             retry: true,
         })
-    }
-    /// Only the private off-lease transaction or a non-owner worker baseline
-    /// may grow storage.
-    fn grows(&self, growing: bool) -> bool {
-        self.preparing_owner || (growing && self.local.is_none())
-    }
-    /// Prepared storage ran short: an owner baseline is retried.
-    fn short(&mut self) {
-        if self.local.is_some() {
-            self.local_short = true;
-        }
     }
     /// A baseline sample certifies only across an unbroken writer cut, with
     /// no decline recorded in this interval: such a decline is a lost
@@ -869,9 +856,16 @@ impl Store {
         if let Err(reason) = self.observation(generation) {
             return Err(self.reject(reason));
         }
-        if self.entries.len() >= self.entries.capacity().saturating_sub(self.owner_controls) {
-            self.short();
-            return Err(self.reject("Event feed callback storage needs growth"));
+        if self.entries.len() >= self.entries.capacity().saturating_sub(self.owner_controls)
+            && self
+                .prepare_capacity(
+                    self.entries
+                        .len()
+                        .max(self.owner_controls.saturating_add(1)),
+                )
+                .is_err()
+        {
+            return Err(self.reject(OCCURRENCE_ALLOCATION));
         }
         let Some(next) = self.next_sequence.checked_add(1) else {
             self.retained.get_or_insert("Event feed sequence exhausted");
@@ -930,8 +924,10 @@ impl Store {
         .map(drop)
     }
 
-    /// Acquire the one script occurrence the native writer reached. Every
-    /// payload destination is prepared; no callback allocation or queue walk.
+    /// Acquire the one script occurrence the native writer reached, on its
+    /// callback or a baseline. Storage the boundary prepared from demand
+    /// usually holds it; a larger burst grows it in place, and only a failed
+    /// allocation refuses the occurrence by name. No queue walk.
     pub fn script_known(
         &mut self,
         memory: &impl Memory,
@@ -940,30 +936,8 @@ impl Store {
         hour: i32,
         fact: ScriptFact,
     ) -> Result<(), &'static str> {
-        self.script_mode(memory, base, generation, hour, fact, false)
-    }
-    /// Initial baseline acquisition on the existing boundary worker only.
-    fn script_growing(
-        &mut self,
-        memory: &impl Memory,
-        base: usize,
-        generation: u64,
-        hour: i32,
-        fact: ScriptFact,
-    ) -> Result<(), &'static str> {
-        self.script_mode(memory, base, generation, hour, fact, true)
-    }
-    fn script_mode(
-        &mut self,
-        memory: &impl Memory,
-        base: usize,
-        generation: u64,
-        hour: i32,
-        fact: ScriptFact,
-        growing: bool,
-    ) -> Result<(), &'static str> {
         let token = Token::Native(fact.token);
-        self.script_token(memory, base, generation, hour, fact, token, growing)
+        self.script_token(memory, base, generation, hour, fact, token)
     }
     /// A capture refusal marker whose token is the static reason.
     #[allow(
@@ -978,21 +952,12 @@ impl Store {
         hour: i32,
         fact: ScriptFact,
         reason: &'static str,
-        growing: bool,
     ) -> Result<(), &'static str> {
         // A refusal alone may spend one control. Repeated refusals have
         // already returned before here; a failed emission spends nothing.
         let reserved = self.owner_controls;
         self.owner_controls = reserved.saturating_sub(1);
-        let result = self.script_token(
-            memory,
-            base,
-            generation,
-            hour,
-            fact,
-            Token::Text(reason),
-            growing,
-        );
+        let result = self.script_token(memory, base, generation, hour, fact, Token::Text(reason));
         if result.is_err() {
             self.owner_controls = reserved;
         }
@@ -1010,7 +975,6 @@ impl Store {
         hour: i32,
         fact: ScriptFact,
         token: Token,
-        growing: bool,
     ) -> Result<(), &'static str> {
         let result = (|| {
             self.observation(generation)?;
@@ -1021,17 +985,13 @@ impl Store {
                         .capacity()
                         .saturating_sub(store.owner_controls)
             };
-            if self.grows(growing) && !entry_room(self) {
+            if !entry_room(self) {
                 self.prepare_capacity(
                     self.entries
                         .len()
                         .max(self.owner_controls.saturating_add(1)),
                 )
-                .map_err(|_| "event registry baseline occurrence allocation failed")?;
-            }
-            if !entry_room(self) {
-                self.short();
-                return Err("Event feed callback storage needs growth");
+                .map_err(|_| OCCURRENCE_ALLOCATION)?;
             }
             let mut token_end = self
                 .tokens_used
@@ -1040,19 +1000,18 @@ impl Store {
             let token_demand =
                 token_end.saturating_add(self.owner_controls.saturating_mul(OWNER_CONTROL_TOKEN));
             self.token_demand = self.token_demand.max(token_demand);
-            if self.grows(growing) && token_demand > self.script_tokens.len() {
-                self.prepare_scripts(
-                    token_demand.max(self.script_tokens.len().saturating_mul(2)),
-                    self.script_scopes.len(),
-                    self.scope_nodes.len(),
-                )
-                .map_err(|_| "event registry baseline token allocation failed")?;
-            }
-            if token_demand > self.script_tokens.len() {
-                self.short();
-            }
-            let token_result = if token_demand > self.script_tokens.len() {
-                Err("event feed script tokens need prepared storage")
+            // A failed token allocation keeps the occurrence, its token
+            // named as unrecorded.
+            let token_result = if token_demand > self.script_tokens.len()
+                && self
+                    .prepare_scripts(
+                        token_demand.max(self.script_tokens.len().saturating_mul(2)),
+                        self.script_scopes.len(),
+                        self.scope_nodes.len(),
+                    )
+                    .is_err()
+            {
+                Err("event feed script token allocation failed")
             } else {
                 self.script_tokens
                     .get_mut(self.tokens_used..token_end)
@@ -1079,16 +1038,19 @@ impl Store {
                     &mut self.scope_nodes,
                     &mut self.scope_index,
                 );
-                while self.grows(growing)
-                    && graph.failure.is_some()
-                    && graph.required > self.scope_nodes.len()
-                {
-                    self.prepare_scripts(
-                        self.script_tokens.len(),
-                        self.script_scopes.len(),
-                        graph.required.max(self.scope_nodes.len().saturating_mul(2)),
-                    )
-                    .map_err(|_| "event registry baseline graph allocation failed")?;
+                let mut grown = true;
+                while graph.failure.is_some() && graph.required > self.scope_nodes.len() {
+                    if self
+                        .prepare_scripts(
+                            self.script_tokens.len(),
+                            self.script_scopes.len(),
+                            graph.required.max(self.scope_nodes.len().saturating_mul(2)),
+                        )
+                        .is_err()
+                    {
+                        grown = false;
+                        break;
+                    }
                     graph = engine_events::cevent_scope::copy_graph(
                         memory,
                         base,
@@ -1098,11 +1060,12 @@ impl Store {
                     );
                 }
                 self.graph_demand = self.graph_demand.max(graph.required);
-                if graph.failure.is_some() && graph.required > self.scope_nodes.len() {
-                    self.short();
-                }
                 if let Some(reason) = graph.failure {
-                    self.reject(reason);
+                    self.reject(if grown {
+                        reason
+                    } else {
+                        "event feed scope graph allocation failed"
+                    });
                     scope_unrecorded = true;
                     0
                 } else {
@@ -1116,17 +1079,16 @@ impl Store {
                 .checked_add(graph_len)
                 .ok_or("event feed script scope demand overflow")?;
             self.scope_demand = self.scope_demand.max(scope_end);
-            if self.grows(growing) && scope_end > self.script_scopes.len() {
-                self.prepare_scripts(
-                    self.script_tokens.len(),
-                    scope_end.max(self.script_scopes.len().saturating_mul(2)),
-                    self.scope_nodes.len(),
-                )
-                .map_err(|_| "event registry baseline scope allocation failed")?;
-            }
-            if scope_end > self.script_scopes.len() {
-                self.short();
-                self.reject("event feed script scopes need prepared storage");
+            if scope_end > self.script_scopes.len()
+                && self
+                    .prepare_scripts(
+                        self.script_tokens.len(),
+                        scope_end.max(self.script_scopes.len().saturating_mul(2)),
+                        self.scope_nodes.len(),
+                    )
+                    .is_err()
+            {
+                self.reject("event feed script scope allocation failed");
                 scope_unrecorded = true;
                 graph_len = 0;
                 scope_end = self.scopes_used;
@@ -1562,10 +1524,6 @@ impl Store {
             std::mem::swap(&mut self.publications, spare);
         }
     }
-    #[cfg(test)]
-    fn reserve_receipt(&mut self) -> Result<(), &'static str> {
-        allocation::reserve(&mut self.publications, 1).map_err(|_| RECEIPT_STORAGE)
-    }
     pub fn unacknowledged(&self) -> usize {
         self.entries
             .iter()
@@ -1605,17 +1563,7 @@ impl Store {
         boundary: OwnerBoundary,
     ) -> Result<(), &'static str> {
         self.prepare_boundary::<engine_native::memory::LiveMemory>(boundary, None)?;
-        self.reserve_receipt()?;
-        self.seal(output, boundary, false)
-    }
-    #[cfg(test)]
-    pub fn snapshot_growing(
-        &mut self,
-        output: &mut Snapshot,
-        boundary: OwnerBoundary,
-    ) -> Result<(), &'static str> {
-        self.prepare_boundary::<engine_native::memory::LiveMemory>(boundary, None)?;
-        self.seal(output, boundary, true)
+        self.seal(output, boundary)
     }
     #[cfg(test)]
     pub fn snapshot_with_registry<M: Memory>(
@@ -1626,7 +1574,7 @@ impl Store {
         base: usize,
     ) -> Result<(), &'static str> {
         self.prepare_boundary(boundary, Some((memory, base)))?;
-        self.seal(output, boundary, true)
+        self.seal(output, boundary)
     }
     /// The boundary worker's first half: retire acknowledged history, admit
     /// the observed world and acquire the registry baseline. Owner census
@@ -1709,9 +1657,6 @@ impl Store {
         // an output receipt; never acquire a baseline we must invalidate
         // in the same publication. Missing writer coverage also waits;
         // a healthy first interval can still publish a fresh baseline.
-        // This registry baseline still grows storage under the worker
-        // lease: it predates owner recovery and is small. Owner baselines
-        // never grow.
         if let Some((memory, base)) = registry
             && self.failure.is_none()
             && boundary.coverage == EventFeedCoverage::Complete
@@ -1745,13 +1690,14 @@ impl Store {
             })
     }
     /// The boundary worker's second half: publish everything reached since
-    /// the previous seal, including the prepared hour's census markers. In
-    /// production output and receipt room grow off-lease; shortfalls refuse the hour.
+    /// the previous seal, including the prepared hour's census markers.
+    /// Output and receipt room were grown off-lease from the measured demand;
+    /// facts callbacks added since grow them here, and only a failed
+    /// allocation refuses the hour.
     pub fn seal(
         &mut self,
         output: &mut Snapshot,
         mut boundary: OwnerBoundary,
-        growing: bool,
     ) -> Result<(), &'static str> {
         if self.prepared.take() != Some(boundary.generation)
             || self.generation != Some(boundary.generation)
@@ -1769,17 +1715,7 @@ impl Store {
         let unpublished = self.unpublished_from;
         let demand = self.seal_demand()?;
         output.required = demand.events;
-        if growing {
-            output.reserve(demand)?;
-        }
-        if output.required > output.events.capacity() {
-            return Err("Event feed hourly storage needs growth");
-        }
-        if demand.tokens > output.script_tokens.capacity()
-            || demand.scopes > output.script_scopes.capacity()
-        {
-            return Err("Event feed script hourly storage needs growth");
-        }
+        output.reserve(demand)?;
         if self.entries[unpublished..].iter().any(|entry| {
             entry.publication.is_none() && entry.fact() && entry.event.hour > boundary.read_hour
         }) {
@@ -1818,12 +1754,7 @@ impl Store {
                 boundary_refusal = self.failure.is_some();
             }
         }
-        if growing {
-            allocation::reserve(&mut self.publications, 1).map_err(|_| RECEIPT_STORAGE)?;
-        }
-        if self.publications.len() == self.publications.capacity() {
-            return Err(RECEIPT_STORAGE);
-        }
+        allocation::reserve(&mut self.publications, 1).map_err(|_| RECEIPT_STORAGE)?;
         self.advance()?;
         if boundary_refusal {
             // An older in-flight publication cannot acknowledge this loss.

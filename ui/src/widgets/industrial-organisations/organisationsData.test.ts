@@ -1,54 +1,47 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
-import { organisationsAt, policyText, remainingDays, rosterKnown, validateOrganisations } from './organisationsData.ts';
-import { HOUR_EPOCH } from '../../dashboard/calendar.ts';
-import { withWindowDiagnostics } from '../../dashboard/gameWindows.ts';
+import test from 'node:test';
+import { liveKey, valuesOf } from '../../charts/live.ts';
+import { cooldownDays, cooldownValues, fundsText, organisationNumbers, organisationRows, policyText, validateOrganisations } from './organisationsData.ts';
+import type { IndustrialOrganisationsReply, OrganisationNow } from '../../generated/dashboard';
 
-const mio = (id: string, size: string | null, funds: string, policy: number | null) => ({ id, holder: [[0, 50, '1']], size: size === null ? [] : [[0, 50, size]],
-  funds: [[0, 50, funds]], points: [], unlocked: [[0, 50, '2']], policy: policy === null ? [] : [[0, 50, String(policy)]],
-  policyName: policy === null ? [] : [[0, 50, '1']], policyUnresolved: id === '3' ? [[0, 50, '1']] : [], cooldown: [[0, 50, '100']],
-  names: [{ firstHour: 0, token: 'synthetic_mio', name: id === '2' ? null : 'Synthetic Works', icon: 'GFX_synthetic' }] });
-// References are decimal u64 strings, as every product spells them.
-const reply = () => validateOrganisations({ branchId: '1', view: 'organisations', lastHour: 50, licences: [], designs: [], designsFrom: null, variants: {}, warnings: [],
-  known: [[0, 50, '1']], holders: { '1': [{ hour: 0, tag: 'AAA' }] }, texts: ['synthetic_policy', 'Synthetic Policy'], icons: { GFX_synthetic: null },
-  organisations: [mio('1', '2', '500000', 0), mio('2', '5', '-1', null), mio('3', null, '0', null)],
-  coverage: { firstHour: 0, lastHour: 50, complete: true }, pending: [] });
+const organisation = (id: string, read: boolean, policy: Partial<OrganisationNow> = {}): OrganisationNow => ({ id, token: 'generic_artillery_organization', name: 'Artillery Manufacturer',
+  nameUnknown: null, icon: 'sprite:a#1', iconUnknown: null, size: read ? 6 : null, traits: read ? 3 : null,
+  policyToken: null, policyName: null, policyUnknown: null, cooldownHour: null, ...policy });
 
-test('organisations rank by size, keep unknown state unranked and name policies as stored', () => {
-  const rows = organisationsAt(reply(), 'AAA', 40);
-  assert.deepEqual(rows.map(row => row.key), ['2', '1', '3']);
-  assert.equal(rows[0].name, null);
-  assert.equal(rows[1].policy, 'Synthetic Policy');
-  assert.equal(policyText(rows[0]), 'None · Cooldown 3 days');
-  // A selected policy the recording cannot spell is not "None".
-  assert.equal(policyText(rows[2]), 'Policy name unavailable · Cooldown 3 days');
-  assert.equal(organisationsAt(reply(), 'BBB', 10).length, 0);
+// Day 1,000 starts at hour 24,000; the first organisation may change its policy again on day 1,012.
+const HOUR = 24_005;
+const reply: IndustrialOrganisationsReply = { branchId: '1', tag: 'GER', missing: null, detailsMissing: null, warnings: [], icons: [{ key: 'sprite:a#1', image: 'artwork:a.png' }], organisations: [
+  organisation('1', true, { policyToken: 'mio_policy_general_assembly_line_optimisers', policyName: 'Assembly Line Optimisers', cooldownHour: 1_012 * 24 + 3 }),
+  organisation('2', true),
+  organisation('3', true, { policyToken: 'mio_policy_unnamed', policyUnknown: 'The content does not name the selected policy.' }),
+  organisation('4', false),
+] };
+
+test('a policy is named, none is none only where the state was read, and an unnamed selected policy is still a policy', () => {
+  const rows = organisationRows(validateOrganisations(reply));
+  assert.deepEqual(rows.map(row => policyText(row, cooldownDays(row.cooldownHour, HOUR))), ['Assembly Line Optimisers · Cooldown 12 days', 'None', 'Policy name unavailable', '—']);
+  assert.equal(rows[0].icon, 'artwork:a.png');
 });
 
-test('a running cooldown shows its remaining days', () => {
-  const [, row] = organisationsAt(reply(), 'AAA', 30);
-  assert.equal(policyText(row), 'Synthetic Policy · Cooldown 3 days');
+test('cooldown days are counted from the shown hour by whole days, as the game counts them, and none once the day is reached', () => {
+  const rows = organisationRows(reply);
+  assert.equal(cooldownDays(rows[0].cooldownHour, HOUR), 12);
+  assert.equal(cooldownDays(rows[0].cooldownHour, 1_011 * 24 + 23), 1, 'the last hour of the day before');
+  assert.equal(cooldownDays(rows[0].cooldownHour, 1_012 * 24), null, 'its own day: none left');
+  assert.equal(cooldownValues(rows, HOUR).get('1'), 12);
+  assert.equal(cooldownValues(rows, HOUR).get('2'), 0);
 });
 
-test('a cooldown counts calendar days, as the policy window does: its end day is already off cooldown', () => {
-  const day = HOUR_EPOCH + 1936 * 8760;
-  assert.equal(remainingDays(null, day), 0);
-  assert.equal(remainingDays(day + 23, day), 0);
-  assert.equal(remainingDays(day + 24, day + 23), 1);
-  assert.equal(remainingDays(day + 48, day + 1), 2);
+test('funds and points are read from their cells, and a cell without a value is missing, never zero', () => {
+  const values = valuesOf(new Map([[liveKey('1', 'funds'), 158_543_576], [liveKey('1', 'points'), 4]]), 'IndustrialOrganisationDetails was not recorded at this hour');
+  const read = organisationNumbers(values, '1');
+  assert.equal(fundsText(read.funds), '1,585');
+  assert.equal(read.points, 4);
+  const unread = organisationNumbers(values, '4');
+  assert.equal(fundsText(unread.funds), '—', 'unread funds are missing, never zero');
+  assert.equal(unread.points, null);
 });
 
-test('an unread roster is unknown, not an empty one', () => {
-  assert.equal(rosterKnown(reply(), 10), true);
-  assert.equal(rosterKnown({ known: [] }, 10), false);
-});
-
-test('the policy window’s refusals join the catalogue warnings, neither overwriting the other', () => {
-  const catalogue = ['Organisation names unavailable for 2 organisations'];
-  const window = ['Policy button refused: unsupported effect', 'Artwork unavailable: GFX_synthetic_policy', catalogue[0]];
-  assert.deepEqual(withWindowDiagnostics(catalogue, window), [catalogue[0], window[0], window[1]]);
-  assert.equal(withWindowDiagnostics(catalogue, []), catalogue);
-  assert.deepEqual(withWindowDiagnostics([], window.slice(0, 1)), window.slice(0, 1));
-  // A line the window repeats (artwork failing again as a list scrolls) is reported once.
-  assert.deepEqual(withWindowDiagnostics(catalogue, [window[1], window[1], window[0], window[1]]), [catalogue[0], window[1], window[0]]);
+test('a reply with a malformed organisation is refused', () => {
+  assert.throws(() => validateOrganisations({ ...reply, organisations: [{ ...reply.organisations[0], cooldownHour: 'soon' as unknown as number }] }), /Invalid industrial organisations/);
 });

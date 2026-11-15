@@ -2,46 +2,27 @@ use super::*;
 use crate::raw::CountrySlots;
 
 /// Acquire one owned payload and report its per-table costs.
-#[cfg(any(test, feature = "test-support"))]
 pub fn copy_economy_rest_refresh(
     memory: &impl Memory,
     ctx: EconomyRestCopyContext,
     job: &mut EconomyRestJob,
 ) -> EconomyRestCopyReport {
-    copy_economy_rest(memory, ctx, job, false)
-}
-
-pub fn copy_economy_rest_refresh_growing(
-    memory: &impl Memory,
-    ctx: EconomyRestCopyContext,
-    job: &mut EconomyRestJob,
-) -> EconomyRestCopyReport {
-    copy_economy_rest(memory, ctx, job, true)
+    copy_economy_rest(memory, ctx, job)
 }
 
 fn copy_economy_rest(
     memory: &impl Memory,
     ctx: EconomyRestCopyContext,
     job: &mut EconomyRestJob,
-    growing: bool,
 ) -> EconomyRestCopyReport {
     let started = qpc();
     job.clear();
-    if growing {
-        job.log.enable_worker_growth();
-    }
     job.game_state = ctx.game_state;
     job.resources_active = ctx.resources_active;
     job.other_active = ctx.other_active;
-    // Fixed resources require their grants before any raw source fault is consumed.
     // Worker buffers grow from the original headers without restarting acquisition.
-    if ctx.resources_active
-        && !job
-            .resources
-            .prepare(ctx.resource_rows, ctx.resource_scratch)
-        && !growing
-    {
-        return EconomyRestCopyReport::default();
+    if ctx.resources_active {
+        job.resources.prepare(ctx.resource_rows, ctx.resource_scratch);
     }
     copy_economy_rest_pass(
         memory,
@@ -69,7 +50,7 @@ fn copy_economy_rest(
             reason: "economy shared country census unreadable",
         }); 3];
     } else if ctx.resources_active && !overflow {
-        acquire_resource_group(memory, ctx, &mut job.resources, &mut ticks, growing);
+        acquire_resource_group(memory, ctx, &mut job.resources, &mut ticks);
     }
     EconomyRestCopyReport {
         raw_ok: !overflow || job.staging_failure.is_some(),
@@ -82,16 +63,13 @@ fn install_resource_rows<R: Copy + Default>(
     output: &mut Vec<R>,
     source: &[R],
     outcome: Option<Outcome>,
-    granted: usize,
-    growing: bool,
 ) -> Outcome {
     let Some(outcome) = outcome else {
         return Outcome::Unavailable {
             reason: "economy resource payload missing",
         };
     };
-    if growing
-        && engine_native::walk::Buffer::Growing(output)
+    if engine_native::walk::Buffer::Growing(output)
             .ensure(outcome.len())
             .is_err()
     {
@@ -99,8 +77,7 @@ fn install_resource_rows<R: Copy + Default>(
             reason: "capture buffer allocation failed",
         };
     }
-    if (!growing && output.len() != granted)
-        || outcome.len() > output.len()
+    if outcome.len() > output.len()
         || outcome.len() > source.len()
     {
         return Outcome::Unavailable {
@@ -116,19 +93,10 @@ fn acquire_resource_group(
     ctx: EconomyRestCopyContext,
     owned: &mut OwnedResources,
     ticks: &mut [u64; N],
-    growing: bool,
 ) {
     let mut reads = read_accounting::table(TABLES[6]);
     let started = qpc();
-    let outcome = if growing {
-        cstrategic_resource::walk_growing(memory, ctx.base, &mut owned.definitions)
-    } else {
-        cstrategic_resource::walk(
-            memory,
-            ctx.base,
-            &mut owned.definitions[..ctx.resource_rows[0]],
-        )
-    };
+    let outcome = cstrategic_resource::walk(memory, ctx.base, &mut owned.definitions);
     let definitions = &owned.definitions;
     owned.outcomes[0] = Some(outcome);
     ticks[6] = elapsed(started);
@@ -148,11 +116,7 @@ fn acquire_resource_group(
         ctx.base,
         ctx.game_state,
         descriptors,
-        if growing {
-            engine_native::walk::Buffer::Growing(&mut owned.resources)
-        } else {
-            engine_native::walk::Buffer::Fixed(&mut owned.resources[..ctx.resource_rows[1]])
-        },
+        engine_native::walk::Buffer::Growing(&mut owned.resources),
         |country, resources| {
             collector_observers::market_changes::held::discover_country(
                 memory,
@@ -178,16 +142,8 @@ fn acquire_resource_group(
         ctx.base,
         ctx.game_state,
         descriptors,
-        if growing {
-            engine_native::walk::Buffer::Growing(&mut owned.exchanges)
-        } else {
-            engine_native::walk::Buffer::Fixed(&mut owned.exchanges[..ctx.resource_rows[2]])
-        },
-        if growing {
-            engine_native::walk::Buffer::Growing(&mut owned.scratch)
-        } else {
-            engine_native::walk::Buffer::Fixed(&mut owned.scratch[..ctx.resource_scratch])
-        },
+        engine_native::walk::Buffer::Growing(&mut owned.exchanges),
+        engine_native::walk::Buffer::Growing(&mut owned.scratch),
     ));
     ticks[8] = elapsed(started);
 }
@@ -211,15 +167,16 @@ impl Captured {
             self.fail_economy_rest_capture(reason);
             return;
         }
-        let recorded = crate::raw::Recorded::build(&job.log);
+        let recorded = match crate::raw::Recorded::build(&job.log) {
+            Ok(recorded) => recorded,
+            Err(reason) => {
+                self.fail_economy_rest_capture(reason);
+                return;
+            }
+        };
         if self.other_active {
             let started = qpc();
-            self.capture_fuel_buffers(
-                &recorded,
-                base,
-                job.game_state,
-                job.log.worker_growth_enabled(),
-            );
+            self.capture_fuel_buffers(&recorded, base, job.game_state);
             decode_ticks[0] += elapsed(started);
             let started = qpc();
             self.experience.outcome = bounded(
@@ -227,28 +184,15 @@ impl Captured {
                     &recorded,
                     base,
                     job.game_state,
-                    engine_native::walk::Buffer::for_worker(
-                        &mut self.experience.rows,
-                        job.log.worker_growth_enabled(),
-                    ),
+                    engine_native::walk::Buffer::Growing(&mut self.experience.rows),
                 ),
                 self.experience.rows.len(),
             );
             decode_ticks[1] += elapsed(started);
         }
         let started = qpc();
-        let supply = if job.log.worker_growth_enabled() {
-            // Supply checksums retain the full vector.
-            // Decode sizes from its already-owned header, never live memory.
-            sprovince_supply_data::walk_growing(
-                &recorded,
-                base,
-                job.game_state,
-                &mut self.supply.rows,
-            )
-        } else {
-            sprovince_supply_data::walk(&recorded, base, job.game_state, &mut self.supply.rows)
-        };
+        let supply =
+            sprovince_supply_data::walk(&recorded, base, job.game_state, &mut self.supply.rows);
         self.supply.outcome = bounded(supply, self.supply.rows.len());
         decode_ticks[2] += elapsed(started);
         if self.other_active {
@@ -258,10 +202,7 @@ impl Captured {
                     &recorded,
                     base,
                     job.game_state,
-                    engine_native::walk::Buffer::for_worker(
-                        &mut self.hubs.rows,
-                        job.log.worker_growth_enabled(),
-                    ),
+                    engine_native::walk::Buffer::Growing(&mut self.hubs.rows),
                 ),
                 self.hubs.rows.len(),
             );
@@ -270,10 +211,7 @@ impl Captured {
                     &recorded,
                     base,
                     job.game_state,
-                    engine_native::walk::Buffer::for_worker(
-                        &mut self.disrupted.rows,
-                        job.log.worker_growth_enabled(),
-                    ),
+                    engine_native::walk::Buffer::Growing(&mut self.disrupted.rows),
                 ),
                 self.disrupted.rows.len(),
             );
@@ -284,14 +222,8 @@ impl Captured {
                 &recorded,
                 base,
                 job.game_state,
-                engine_native::walk::Buffer::for_worker(
-                    &mut self.foreign.rows,
-                    job.log.worker_growth_enabled(),
-                ),
-                engine_native::walk::Buffer::for_worker(
-                    &mut self.sources.first,
-                    job.log.worker_growth_enabled(),
-                ),
+                engine_native::walk::Buffer::Growing(&mut self.foreign.rows),
+                engine_native::walk::Buffer::Growing(&mut self.sources.first),
             );
             self.foreign.outcome = bounded(first.outcome, self.foreign.rows.len());
             self.sources.len = first.bytes_len;
@@ -314,8 +246,6 @@ impl Captured {
                 &mut self.definitions.rows,
                 &job.resources.definitions,
                 job.resources.outcomes[0],
-                job.resources.required[0],
-                job.log.worker_growth_enabled(),
             );
             decode_ticks[6] += elapsed(started);
             let started = qpc();
@@ -325,8 +255,6 @@ impl Captured {
                     &mut self.resources.rows,
                     &job.resources.resources,
                     job.resources.outcomes[1],
-                    job.resources.required[1],
-                    job.log.worker_growth_enabled(),
                 )
             } else {
                 unavailable_descriptors()
@@ -338,8 +266,6 @@ impl Captured {
                     &mut self.exchanges.rows,
                     &job.resources.exchanges,
                     job.resources.outcomes[2],
-                    job.resources.required[2],
-                    job.log.worker_growth_enabled(),
                 )
             } else {
                 unavailable_descriptors()
@@ -353,14 +279,8 @@ impl Captured {
                     &recorded,
                     base,
                     job.game_state,
-                    engine_native::walk::Buffer::for_worker(
-                        &mut self.purchases.rows,
-                        job.log.worker_growth_enabled(),
-                    ),
-                    engine_native::walk::Buffer::for_worker(
-                        &mut self.purchase_scratch,
-                        job.log.worker_growth_enabled(),
-                    ),
+                    engine_native::walk::Buffer::Growing(&mut self.purchases.rows),
+                    engine_native::walk::Buffer::Growing(&mut self.purchase_scratch),
                 ),
                 self.purchases.rows.len(),
             );

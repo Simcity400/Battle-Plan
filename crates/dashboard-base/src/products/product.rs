@@ -100,9 +100,10 @@ pub trait Product: 'static {
     /// Whether it answers a hover or label at one hour (one block at most): served on its
     /// own threads, so a whole-recording scan never delays it.
     const INTERACTIVE: bool = false;
-    /// How its served replies are checked between two preparations of a
-    /// recording; none checks them by the generic plan.
-    const SERVED: Option<&'static crate::prepared::served::Plan> = None;
+    /// Whether a reply replays recorded tables to the hours its rows name (a page of a log
+    /// named at each row's hour): it waits and runs on threads of its own, so however long it
+    /// takes, no other reply waits behind it.
+    const REPLAYS: bool = false;
     type Params: DeserializeOwned + TS + 'static;
     type Reply: Serialize + TS + ReplyWarnings + 'static;
 
@@ -115,23 +116,13 @@ pub trait Product: 'static {
         vec![Self::Params::decl(), Self::Reply::decl()]
     }
 
-    /// The whole-recording reply. A product served only by prepared queries
-    /// keeps its loader as its tests' oracle (`#[cfg(test)]`) and refuses here.
+    /// The reply.
     fn load(
-        _source: &Source,
-        _params: &Self::Params,
-        _context: &LoadContext,
-        _cancelled: &AtomicBool,
-    ) -> io::Result<Self::Reply> {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            prepared_only(Self::KEY),
-        ))
-    }
-}
-
-pub fn prepared_only(key: &str) -> String {
-    format!("{key} is served by prepared queries")
+        source: &Source,
+        params: &Self::Params,
+        context: &LoadContext,
+        cancelled: &AtomicBool,
+    ) -> io::Result<Self::Reply>;
 }
 
 /// Parameters shared by the per-country products.
@@ -212,27 +203,11 @@ pub fn table_missing_reason(
     use replay_frame::frame::TableView;
     match &*frame.tables[table.index()] {
         TableView::Complete(rows) if rows.table() == table => None,
-        TableView::Complete(_) => Some(format!("{table:?} contains another table's rows")),
-        TableView::Truncated { .. } => Some(format!("{table:?} is truncated")),
+        TableView::Complete(_) => Some(format!("{}: holds rows of another kind", table.words())),
+        TableView::Truncated { .. } => Some(format!("{}: read only in part", table.words())),
         TableView::Unavailable { reason } => Some(unavailable_reason(table, reason)),
         TableView::NotRecorded { mode } => {
-            Some(format!("{table:?} is not recorded in a {mode} recording"))
-        }
-    }
-}
-
-/// [`table_missing_reason`] of `table` read through a walk's views.
-pub fn view_missing_reason(
-    view: replay_frame::frame::ColumnView<'_>,
-    table: replay_data::rows::TableId,
-) -> Option<String> {
-    use replay_frame::frame::ColumnView;
-    match view {
-        ColumnView::Complete(_) => None,
-        ColumnView::Truncated { .. } => Some(format!("{table:?} is truncated")),
-        ColumnView::Unavailable { reason } => Some(unavailable_reason(table, reason)),
-        ColumnView::NotRecorded { mode } => {
-            Some(format!("{table:?} is not recorded in a {mode} recording"))
+            Some(format!("{}: not recorded in a {mode} recording", table.words()))
         }
     }
 }
@@ -245,20 +220,20 @@ pub fn status_missing_reason(
     use replay_frame::frame::OperandStatus;
     match status {
         OperandStatus::Complete => None,
-        OperandStatus::WrongLayout => Some(format!("{table:?} contains another table's rows")),
+        OperandStatus::WrongLayout => Some(format!("{}: holds rows of another kind", table.words())),
         OperandStatus::Truncated(_) | OperandStatus::TruncatedWrongLayout(_) => {
-            Some(format!("{table:?} is truncated"))
+            Some(format!("{}: read only in part", table.words()))
         }
         OperandStatus::Unavailable(reason) => Some(unavailable_reason(table, reason)),
         OperandStatus::NotRecorded(mode) => {
-            Some(format!("{table:?} is not recorded in a {mode} recording"))
+            Some(format!("{}: not recorded in a {mode} recording", table.words()))
         }
     }
 }
 
 fn unavailable_reason(table: replay_data::rows::TableId, reason: &str) -> String {
     if reason.starts_with("missing table baseline") {
-        return format!("{table:?} baseline missing");
+        return format!("{}: its first reading is missing", table.words());
     }
     // FrameEncoder withholds partial rows at keyframes, retaining the
     // truncation count in its named unavailable marker.
@@ -267,7 +242,7 @@ fn unavailable_reason(table: replay_data::rows::TableId, reason: &str) -> String
         .and_then(|count| count.strip_suffix(" rows not read"))
         .is_some_and(|count| count.parse::<u32>().is_ok_and(|count| count != 0));
     if truncated {
-        format!("{table:?} is truncated")
+        format!("{}: read only in part", table.words())
     } else {
         reason.to_owned()
     }

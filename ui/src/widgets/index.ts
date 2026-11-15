@@ -3,8 +3,7 @@ import type { WidgetRenderer } from '../dashboard/definitions';
 import { widgetMetas } from './definitions';
 import { lazyWidget } from './lazyWidget';
 import { useIdeaTimelinePresets } from './idea-timeline/ideaTimelinePresets';
-// Game windows a widget can open (Industrial organisations' policy chooser).
-import '../components/gameWindowRegistry';
+import { useProducedTypeChoices } from './equipment-produced/useProduced';
 const renderers = {
   'campaign-clock': lazyWidget('campaign-clock', ['render']),
   'apm-graph': lazyWidget('apm-graph', ['render']),
@@ -30,10 +29,10 @@ const renderers = {
   'national-spirits': lazyWidget('national-spirits', ['render']),
   'spirit-history': lazyWidget('spirit-history', ['render']),
   'ruling-party': lazyWidget('ruling-party', ['render']),
-  'resource-balance': lazyWidget('resource-balance', ['render', 'countryChip']),
+  'resource-balance': lazyWidget('resource-balance', ['render']),
   'equipment-stockpile': lazyWidget('equipment-stockpile', ['render', 'countryChip']),
   'fuel': lazyWidget('fuel', ['render', 'countryChip']),
-  'production-lines': lazyWidget('production-lines', ['render', 'countryChip']),
+  'production-lines': lazyWidget('production-lines', ['render']),
   'factories': lazyWidget('factories', ['render', 'countryChip']),
   'territory': lazyWidget('territory', ['render']),
   'territory-breakdown': lazyWidget('territory-breakdown', ['render']),
@@ -44,8 +43,8 @@ const renderers = {
   'military-factory-spending': lazyWidget('military-factory-spending', ['render']),
   'occupied-states': lazyWidget('occupied-states', ['render']),
   'occupation-trend': lazyWidget('occupation-trend', ['render']),
-  'air-force-size': lazyWidget('air-force-size', ['render', 'countryChip']),
-  'navy-size': lazyWidget('navy-size', ['render', 'countryChip']),
+  'air-force-size': lazyWidget('air-force-size', ['render']),
+  'navy-size': lazyWidget('navy-size', ['render']),
   'air-superiority-region': lazyWidget('air-superiority-region', ['render']),
   'air-superiority-timeline': lazyWidget('air-superiority-timeline', ['render']),
   'refits': lazyWidget('refits', ['render']),
@@ -84,7 +83,7 @@ const renderers = {
   'construction-spending': lazyWidget('construction-spending', ['render']),
   'special-projects': lazyWidget('special-projects', ['render']),
   'nuclear-arsenal': lazyWidget('nuclear-arsenal', ['render', 'countryChip']),
-  'naval-losses': lazyWidget('naval-losses', ['render', 'countryChip']),
+  'naval-losses': lazyWidget('naval-losses', ['render']),
   'ships-sunk': lazyWidget('ships-sunk', ['render']),
   'raid-log': lazyWidget('raid-log', ['render']),
   'raid-tally': lazyWidget('raid-tally', ['render']),
@@ -122,4 +121,5 @@ const renderers = {
   'war-contribution': lazyWidget('war-contribution', ['render']),
 } satisfies Record<(typeof widgetMetas)[number]['kind'], WidgetRenderer>;
 renderers['idea-timeline'].usePresets = useIdeaTimelinePresets;
+renderers['equipment-produced'].useOptionChoices = useProducedTypeChoices;
 registerWidgets(widgetMetas.map(meta => ({ ...meta, ...renderers[meta.kind] })));

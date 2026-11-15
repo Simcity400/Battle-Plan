@@ -268,6 +268,45 @@ pub(super) fn mark<K: Clone + Eq + std::hash::Hash>(
     }
 }
 
+/// What a naval base icon's update wrote: its glyph (none hides it), scale and mode, its port
+/// items, and the art and flags they drew with. The same again writes nothing new.
+struct BaseWritten {
+    province: u32,
+    glyph: Option<bases::NavalBaseIcon>,
+    scale: u32,
+    strategic: bool,
+    items: Result<Vec<gui_windows::Update>, Cow<'static, str>>,
+    art: u64,
+    countries: Option<Arc<Countries>>,
+}
+
+impl BaseWritten {
+    #[allow(clippy::too_many_arguments, reason = "every input a base icon's update reads")]
+    fn same(
+        &self,
+        province: u32,
+        glyph: Option<&bases::NavalBaseIcon>,
+        scale: u32,
+        strategic: bool,
+        items: Result<&[gui_windows::Update], &Cow<'static, str>>,
+        art: u64,
+        countries: Option<&Arc<Countries>>,
+    ) -> bool {
+        let countries = match (&self.countries, countries) {
+            (Some(held), Some(now)) => Arc::ptr_eq(held, now) || held.same_flags(now),
+            (None, None) => true,
+            _ => false,
+        };
+        self.province == province
+            && self.glyph.as_ref() == glyph
+            && self.scale == scale
+            && self.strategic == strategic
+            && self.items.as_ref().map(Vec::as_slice) == items
+            && self.art == art
+            && countries
+    }
+}
+
 /// One grid item's window.
 #[derive(Debug)]
 struct Item {
@@ -331,6 +370,8 @@ pub struct Windows {
     /// Each live combat icon's anchor and stack place from the last update that
     /// placed it, read each frame.
     placed: HashMap<CombatOwner, ([f32; 3], u32)>,
+    /// What each naval base icon's update last wrote, by slot ([`BaseWritten`]).
+    base_written: HashMap<SlotId, BaseWritten>,
     /// Naval counters at sea by their source task force.
     counters: HashMap<u64, Counter>,
     carrier_wings: CarrierViews,
@@ -345,6 +386,12 @@ pub struct Windows {
     last: Option<f32>,
     /// Something ran at the last frame's tick ([`Instance::active`], [`Pool::active`]).
     active: bool,
+    /// Nothing ran at the last frame's tick: [`Self::active`] as the tick left it, before the
+    /// view takes it.
+    settled: bool,
+    /// Something it shows changed on its own at the last frame: [`Self::active`] but for an icon a
+    /// dirty province kept off screen, which asks only for the pools' passes.
+    visible: bool,
     /// An icon of the presented frame is kept off screen by its province's dirty bit alone
     /// ([`admission`]): the frame the bit clears erases it.
     kept_off_screen: bool,
@@ -388,6 +435,17 @@ impl Windows {
     /// Keeps the view presenting: a land plate's pointer state still changes on the clock.
     pub(super) fn keep_active(&mut self) {
         self.active = true;
+        self.visible = true;
+    }
+
+    /// Whether something it shows changes on its own, not cleared.
+    pub fn running_visibly(&self) -> bool {
+        self.visible || self.air_missions.running_visibly()
+    }
+
+    /// Presents the next frames for the pools' passes alone ([`PoolView::set_quiet`]).
+    pub fn set_quiet(&mut self, quiet: bool) {
+        self.air_missions.set_quiet(quiet);
     }
 
     pub fn take_active(&mut self) -> bool {
@@ -696,6 +754,10 @@ pub(super) fn present(
         update_laps.lap("dc_nu_setup");
         return Ok(());
     }
+    viewer_foundation::map::redraws::note(
+        if windows.settled { "naval.settled" } else { "naval.active" },
+        1,
+    );
     // The view's single presentation clock and the frame's step.
     let frame = frame(&mut windows.last, time);
     update_laps.lap("dc_nu_setup");
@@ -1194,8 +1256,11 @@ pub(super) fn present(
         }
     }
     for view in carrier_wings.values_mut() {
-        windows.active |= view.take_running();
+        let running = view.take_running();
+        windows.active |= running;
+        windows.visible |= running;
     }
+    windows.settled = !windows.active;
     windows.carrier_wings = carrier_wings;
     Ok(())
 }
@@ -1212,6 +1277,14 @@ enum Registered {
 /// Tick every registered window's transition in reverse registration order.
 /// An ended fade or hide movement immediately hides its children, including
 /// retained freed windows.
+/// Whether an icon the pass admitted (kept off screen when `off_screen`) asks for the next frame:
+/// only while its province `cleans` ([`viewer_foundation::map::province_schedule::Schedule::cleans`]),
+/// the one off-screen icon a later pass erases. An icon kept by a province dirty in view is kept by
+/// every later pass alike.
+fn keeps_asking(off_screen: bool, cleans: bool) -> bool {
+    off_screen && cleans
+}
+
 pub(super) fn tick(
     windows: &mut Windows,
     native: &NativeWindows,
@@ -1426,8 +1499,7 @@ pub(super) fn tick(
         transition_unknown(windows, window, &format!("its window does not tick: {why}"));
     }
     settle(windows, native);
-    windows.active = std::mem::take(&mut windows.kept_off_screen)
-        || !windows.settling.is_empty()
+    windows.visible = !windows.settling.is_empty()
         || windows.combats.as_ref().is_some_and(Pool::active)
         || windows.bases.as_ref().is_some_and(Pool::active)
         || windows.results.as_ref().is_some_and(Pool::active)
@@ -1437,6 +1509,8 @@ pub(super) fn tick(
             .values()
             .any(|counter| counter.instance.active())
         || (missions.is_some() && windows.missions.active());
+    windows.active = std::mem::take(&mut windows.kept_off_screen) || windows.visible;
+    windows.settled = !windows.active;
 }
 
 /// Every mission window, as the transition list names it: a phase of the mission view fails as a
@@ -1620,7 +1694,8 @@ fn combat_frame(
                 icon_point(inputs, anchor, ordinal, size),
                 |point| inside(inputs, point, size),
             );
-            kept_off_screen |= off_screen;
+            // Kept off screen by a province dirty in view, the icon is kept by every later pass.
+            kept_off_screen |= keeps_asking(off_screen, schedule.cleans(owner.0));
             admitted
         })?;
         windows.kept_off_screen |= kept_off_screen;
@@ -2628,6 +2703,7 @@ fn base_frame(
             if !shown {
                 if let Some(slot) = pool.slot_of(&province) {
                     let held = pool.erase(window, &province)?;
+                    windows.base_written.remove(&slot);
                     erased.push((slot, held));
                 }
                 continue;
@@ -2659,11 +2735,12 @@ fn base_frame(
                 icon_point(inputs, anchor, 0, size),
                 |point| inside(inputs, point, size),
             );
-            kept_off_screen |= off_screen;
+            kept_off_screen |= keeps_asking(off_screen, schedule.cleans(*province));
             admitted
         })?;
         windows.kept_off_screen |= kept_off_screen;
         for gone in pass.erased {
+            windows.base_written.remove(&gone.slot);
             erased.push((gone.slot, gone.held));
         }
         for (slot, held) in erased {
@@ -2681,26 +2758,54 @@ fn base_frame(
             .map(|glyph| (glyph.province, glyph))
             .collect();
         drop(maps_profile);
+        let strategic = inputs.visibility.priorities
+            == viewer_foundation::map::mode_visibility::PriorityTable::StrategicNavy;
         for (province, slot) in pass.updated {
+            let glyph = glyphs.get(&province).copied();
+            if strategic
+                && let Some(reason) = glyph.and_then(|glyph| glyph.capacity_refusal)
+            {
+                *report
+                    .icon_gui_notes
+                    .entry(format!("{NAVAL_BASE_WINDOW}: {reason}"))
+                    .or_default() += 1;
+            }
+            let scale = glyph.map_or(0.0, |glyph| {
+                if glyph.highlighted {
+                    inputs.content.defines.naval_base_highlighted_scale
+                } else {
+                    inputs.content.defines.naval_base_scale
+                }
+            });
+            // No roster (or an emptied box) appends nothing; an undecided one appends what the
+            // hour does not know.
+            let items = match &bases.ports {
+                Ok(None) => Ok(&[][..]),
+                Ok(Some(ports)) => match ports.get(&province) {
+                    None => Ok(&[][..]),
+                    Some(Ok(items)) => Ok(items.as_slice()),
+                    Some(Err(why)) => Err(why),
+                },
+                Err(why) => Err(why),
+            };
+            // A window the pass left as it was, settled, whose update would write what it last
+            // wrote, is written nothing: its port items stand as they are.
+            let standing = pool
+                .instance(slot)
+                .is_some_and(|instance| !instance.written() && !instance.active())
+                && windows.base_written.get(&slot).is_some_and(|written| {
+                    written.same(province, glyph, scale.to_bits(), strategic, items, inputs.art, plan.countries.as_ref())
+                });
+            if standing {
+                viewer_foundation::map::redraws::note("naval.bases_kept", 1);
+                continue;
+            }
+            windows.base_written.remove(&slot);
             let instance = pool.get(slot).ok_or("an updated icon has no window")?;
             let update_profile = viewer_foundation::profiling::span("dc_nu_base_update");
-            match glyphs.get(&province) {
+            match glyph {
                 Some(glyph) => {
-                    if inputs.visibility.priorities
-                        == viewer_foundation::map::mode_visibility::PriorityTable::StrategicNavy
-                        && let Some(reason) = glyph.capacity_refusal
-                    {
-                        *report
-                            .icon_gui_notes
-                            .entry(format!("{NAVAL_BASE_WINDOW}: {reason}"))
-                            .or_default() += 1;
-                    }
-                    if let Err(why) = update_naval(
-                        instance,
-                        window,
-                        glyph,
-                        if glyph.highlighted { inputs.content.defines.naval_base_highlighted_scale } else { inputs.content.defines.naval_base_scale },
-                        inputs.visibility.priorities == viewer_foundation::map::mode_visibility::PriorityTable::StrategicNavy, &resources) {
+                    if let Err(why) = update_naval(instance, window, glyph, scale, strategic, &resources) {
                         pool.refuse(slot, Unknown::Update, why.into());
                         continue;
                     }
@@ -2714,21 +2819,23 @@ fn base_frame(
                 }
             }
             drop(update_profile);
-            // No roster (or an emptied box) appends nothing; an undecided one appends what the
-            // hour does not know.
-            let items = match &bases.ports {
-                Ok(None) => Ok(&[][..]),
-                Ok(Some(ports)) => match ports.get(&province) {
-                    None => Ok(&[][..]),
-                    Some(Ok(items)) => Ok(items.as_slice()),
-                    Some(Err(why)) => Err(why),
-                },
-                Err(why) => Err(why),
-            };
             let items_profile = viewer_foundation::profiling::span("dc_nu_base_items");
             base_items(windows, instance, window, slot, items, &resources, report)?;
             drop(items_profile);
             pool.rewrote(slot, Rewrote::Update);
+            viewer_foundation::map::redraws::note("naval.bases_written", 1);
+            windows.base_written.insert(
+                slot,
+                BaseWritten {
+                    province,
+                    glyph: glyph.copied(),
+                    scale: scale.to_bits(),
+                    strategic,
+                    items: items.map(<[gui_windows::Update]>::to_vec).map_err(Clone::clone),
+                    art: inputs.art,
+                    countries: plan.countries.clone(),
+                },
+            );
         }
         Ok(())
     })();
@@ -2741,6 +2848,10 @@ fn base_frame(
         (Err(why), _) => unknown_pool(windows, slots, &format!("port items are not placed: {why}")),
         (Ok(()), Some(why)) => unknown_pool(windows, slots, why),
         (Ok(()), None) => {}
+    }
+    // A frame that left the windows' parts unknown has every base written again by the next.
+    if result.is_err() || plan.bases_undecided.is_some() {
+        windows.base_written.clear();
     }
     if let Err(why) = result {
         *report
@@ -2813,7 +2924,7 @@ fn result_frame(
             let (admitted, off_screen) = admission(schedule.dirty(*province), point, |point| {
                 inside(inputs, point, size)
             });
-            kept_off_screen |= off_screen;
+            kept_off_screen |= keeps_asking(off_screen, schedule.cleans(*province));
             admitted
         })?;
         windows.kept_off_screen |= kept_off_screen;

@@ -1,6 +1,5 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
 import { MEASURE_OPTIONS } from '../country-measure/options.ts';
-import { breakdownVariants } from '../../charts/drill/drillState.ts';
 
 export const definition = {
   kind: 'political-power', version: 1, title: 'Political power', icon: 'sparkle',
@@ -9,5 +8,4 @@ export const definition = {
   minSize: { w: 4, h: 6 }, defaultSize: { w: 8, h: 10 },
   countries: { max: Number.MAX_SAFE_INTEGER },
   options: MEASURE_OPTIONS,
-  variants: breakdownVariants('Political power', MEASURE_OPTIONS),
 } as const satisfies WidgetMeta;

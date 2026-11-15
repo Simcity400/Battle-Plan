@@ -63,6 +63,10 @@ impl View {
     pub fn take_running(&mut self) -> bool {
         std::mem::take(&mut self.active)
     }
+    /// Whether an item changed on its own at the last frame, not cleared.
+    pub fn running(&self) -> bool {
+        self.active
+    }
     pub fn retain(&mut self, live: &[(u32, SlotId)]) {
         self.entries
             .retain(|owner, (slot, _)| slot.is_some_and(|slot| live.contains(&(*owner, slot))));

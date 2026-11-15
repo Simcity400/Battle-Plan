@@ -22,7 +22,7 @@ use viewer_foundation::map::{
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Side {
+pub enum Side {
     Friend,
     Enemy,
     Neutral,
@@ -139,21 +139,14 @@ impl Key {
                     &sent[start..end]
                 }),
         )?;
-        let mut seen = BTreeSet::new();
-        let mut hosts = Vec::new();
-        for row in list {
-            let Some(division) = replay_data::military_aid::live_division(divisions, row.division)
-            else {
-                continue;
-            };
-            let host = replay_data::military_aid::volunteer_host(division);
-            let slot = canonical(links, host)
-                .ok_or("SentVolunteers logical country missing from CountryLinks")?;
-            // Actual zero does not alias a positive reference resolving to zero.
-            if seen.insert((host != 0, slot)) {
-                hosts.push((host, row.ordinal));
-            }
-        }
+        let hosts = volunteer_hosts(
+            list.iter().map(|row| (row.ordinal, row.division)),
+            |reference| {
+                replay_data::military_aid::live_division(divisions, reference)
+                    .map(replay_data::military_aid::volunteer_host)
+            },
+            links,
+        )?;
         Ok(Self {
             ours,
             hosts: Ok(hosts),
@@ -162,12 +155,126 @@ impl Key {
     }
 }
 
+/// Each volunteer host's first position in the viewing country's list `(ordinal, division)`, in
+/// list order; `host_of` is a live division's logical owner (raw reference).
+pub fn volunteer_hosts(
+    list: impl IntoIterator<Item = (u32, u64)>,
+    host_of: impl Fn(u64) -> Option<u32>,
+    links: &BTreeMap<u32, u32>,
+) -> Result<Vec<(u32, u32)>, String> {
+    let mut seen = BTreeSet::new();
+    let mut hosts = Vec::new();
+    for (ordinal, division) in list {
+        let Some(host) = host_of(division) else {
+            continue;
+        };
+        let slot = canonical(links, host)
+            .ok_or("SentVolunteers logical country missing from CountryLinks")?;
+        // Actual zero does not alias a positive reference resolving to zero.
+        if seen.insert((host != 0, slot)) {
+            hosts.push((host, ordinal));
+        }
+    }
+    Ok(hosts)
+}
+
+/// One receiver country's direct relations, as the index asks them ([`Owner`]'s answers).
+pub trait Receiver {
+    fn same_country(&self, raw: u32) -> Result<bool, String>;
+    fn at_war(&self, raw: u32) -> Result<bool, String>;
+}
+
+impl Receiver for Owner<'_> {
+    fn same_country(&self, raw: u32) -> Result<bool, String> {
+        Owner::same_country(self, raw)
+    }
+
+    fn at_war(&self, raw: u32) -> Result<bool, String> {
+        Owner::at_war(self, raw)
+    }
+}
+
+/// What the index reads of one hour's relations: a frame's ([`Index::read`]) or a layer's kept
+/// from change sets.
+pub trait RelationFacts {
+    type Receiver<'r>: Receiver
+    where
+        Self: 'r;
+    /// The receiver country of a raw reference.
+    fn receiver(&self, raw: u32) -> Result<Self::Receiver<'_>, String>;
+    /// [`visibility::counter_shared`]: whether the viewer shares a counter's vision with `raw`.
+    fn counter_shared(&self, viewer: &Self::Receiver<'_>, raw: u32) -> Result<bool, String>;
+}
+
+struct FrameFacts<'a> {
+    frame: &'a DecodedFrame,
+    links: &'a BTreeMap<u32, u32>,
+    families: Result<Families, &'static str>,
+}
+
+impl RelationFacts for FrameFacts<'_> {
+    type Receiver<'r>
+        = Owner<'r>
+    where
+        Self: 'r;
+
+    fn receiver(&self, raw: u32) -> Result<Owner<'_>, String> {
+        Owner::new(self.frame, raw)
+    }
+
+    fn counter_shared(&self, viewer: &Owner<'_>, raw: u32) -> Result<bool, String> {
+        visibility::counter_shared(self.frame, self.links, viewer, raw, self.families.as_ref().map_err(|reason| *reason))
+    }
+}
+
+/// The viewing country's receiver: its raw reference at slot `ours` (zero for slot zero).
+fn viewer_of<'f, F: RelationFacts>(facts: &'f F, links: &BTreeMap<u32, u32>, ours: u32) -> Result<F::Receiver<'f>, String> {
+    if ours == 0 {
+        Ok(0)
+    } else {
+        links
+            .iter()
+            .find(|&(_, &slot)| slot == ours)
+            .map(|(&raw, _)| raw)
+            .ok_or_else(|| "viewing country CountryLinks row missing".to_owned())
+    }
+    .and_then(|raw| facts.receiver(raw))
+}
+
+/// One country's relation to the viewer and to the viewer's volunteer hosts.
+fn country<F: RelationFacts>(facts: &F, viewer: &Result<F::Receiver<'_>, String>, links: &BTreeMap<u32, u32>, hosts: &[(u32, u32)], raw: u32) -> Country {
+    let friend = viewer.as_ref().map_err(Clone::clone).and_then(|viewer| facts.counter_shared(viewer, raw));
+    let enemy = viewer.as_ref().map_err(Clone::clone).and_then(|viewer| viewer.at_war(raw));
+    let first_host = hosts
+        .iter()
+        .find(|&&(host, _)| raw == host || (raw != 0 && host != 0 && canonical(links, raw) == canonical(links, host)))
+        .map(|&(_, position)| position);
+    let mut first_host_enemy = None;
+    if !hosts.is_empty() {
+        let receiver = facts.receiver(raw);
+        for &(host, position) in hosts {
+            match receiver.as_ref().map_err(Clone::clone).and_then(|receiver| receiver.at_war(host)) {
+                Ok(false) => {}
+                Ok(true) => {
+                    first_host_enemy = Some((position, Ok(())));
+                    break;
+                }
+                Err(reason) => {
+                    first_host_enemy = Some((position, Err(reason)));
+                    break;
+                }
+            }
+        }
+    }
+    Country { friend, enemy, first_host, first_host_enemy }
+}
+
 /// Each country's relation to the viewing country, by raw reference.
 ///
 /// The first matching sent volunteer decides the loop :
 /// each host keeps its first position, and each country at war with a host the
 /// earliest such position. A lookup never walks divisions or volunteer lists.
-#[derive(Default)]
+#[derive(Debug, Default, PartialEq)]
 pub struct Index {
     countries: HashMap<u32, Country>,
     problem: Option<String>,
@@ -175,6 +282,7 @@ pub struct Index {
     volunteer_problem: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq)]
 struct Country {
     friend: Result<bool, String>,
     enemy: Result<bool, String>,
@@ -222,7 +330,7 @@ impl Index {
                 hosts: Err(problem),
             },
         };
-        memo.get_or_build(frame, key.clone(), |projected| {
+        memo.get_or_build_without_waiting(frame, key.clone(), |projected| {
             let links: BTreeMap<u32, u32> = projected
                 .complete::<tables::CountryLinks>()?
                 .iter()
@@ -241,93 +349,104 @@ impl Index {
     }
 
     fn new(frame: &DecodedFrame, links: &BTreeMap<u32, u32>, key: &Key) -> Self {
-        let viewer = if key.ours == 0 {
-            Ok(0)
-        } else {
-            links
-                .iter()
-                .find(|&(_, &slot)| slot == key.ours)
-                .map(|(&raw, _)| raw)
-                .ok_or_else(|| "viewing country CountryLinks row missing".to_owned())
+        let facts = FrameFacts { frame, links, families: Families::read(frame, links) };
+        Self::compute(&facts, links, key.ours, key.hosts.as_deref().map_err(Clone::clone))
+    }
+
+    /// The index from `facts`: `links` raw to canonical slot, the viewing country's slot `ours`
+    /// and its volunteer hosts ([`volunteer_hosts`]).
+    pub fn compute<F: RelationFacts>(facts: &F, links: &BTreeMap<u32, u32>, ours: u32, hosts: Result<&[(u32, u32)], String>) -> Self {
+        let viewer = viewer_of(facts, links, ours);
+        let volunteer_problem = hosts.as_ref().err().cloned();
+        let hosts = hosts.unwrap_or_default();
+        let countries = links.keys().copied().chain([0]).map(|raw| (raw, country(facts, &viewer, links, hosts, raw))).collect();
+        let mut index = Self { countries, problem: None, query_problem: None, volunteer_problem };
+        index.query_problem = index.first_query_problem(links);
+        index
+    }
+
+    /// This index made again for the same viewing country with only the countries `raws` names
+    /// decided anew from `facts`; every other country's relation is kept. A country `links` no
+    /// longer holds leaves.
+    pub fn remake<F: RelationFacts>(&self, facts: &F, links: &BTreeMap<u32, u32>, ours: u32, hosts: Result<&[(u32, u32)], String>, raws: &BTreeSet<u32>) -> Self {
+        if self.problem.is_some() {
+            return Self::compute(facts, links, ours, hosts);
         }
-        .and_then(|raw| Owner::new(frame, raw));
-        let families = Families::read(frame, links);
-        let volunteer_problem = key.hosts.as_ref().err().cloned();
-        let mut query_problem = volunteer_problem.clone();
-        let hosts = key.hosts.as_deref().unwrap_or_default();
-        let countries = links
-            .keys()
-            .copied()
-            .chain([0])
-            .map(|raw| {
-                let friend = viewer.as_ref().map_err(Clone::clone).and_then(|viewer| {
-                    visibility::counter_shared(
-                        frame,
-                        links,
-                        viewer,
-                        raw,
-                        families.as_ref().map_err(|reason| *reason),
-                    )
-                });
-                let enemy = viewer
-                    .as_ref()
-                    .map_err(Clone::clone)
-                    .and_then(|viewer| viewer.at_war(raw));
-                let first_host = hosts
-                    .iter()
-                    .find(|&&(host, _)| {
-                        raw == host
-                            || (raw != 0
-                                && host != 0
-                                && canonical(links, raw) == canonical(links, host))
-                    })
-                    .map(|&(_, position)| position);
-                let mut first_host_enemy = None;
-                if !hosts.is_empty() {
-                    let receiver = Owner::new(frame, raw);
-                    for &(host, position) in hosts {
-                        match receiver
-                            .as_ref()
-                            .map_err(Clone::clone)
-                            .and_then(|receiver| receiver.at_war(host))
-                        {
-                            Ok(false) => {}
-                            Ok(true) => {
-                                first_host_enemy = Some((position, Ok(())));
-                                break;
-                            }
-                            Err(reason) => {
-                                first_host_enemy = Some((position, Err(reason)));
-                                break;
-                            }
-                        }
-                    }
-                }
-                for result in [&friend, &enemy] {
-                    if let Err(reason) = result {
-                        query_problem.get_or_insert_with(|| reason.clone());
-                    }
-                }
-                if let Some((_, Err(reason))) = &first_host_enemy {
-                    query_problem.get_or_insert_with(|| reason.clone());
-                }
-                (
-                    raw,
-                    Country {
-                        friend,
-                        enemy,
-                        first_host,
-                        first_host_enemy,
-                    },
-                )
-            })
-            .collect();
-        Self {
-            countries,
-            problem: None,
-            query_problem,
-            volunteer_problem,
+        let viewer = viewer_of(facts, links, ours);
+        let volunteer_problem = hosts.as_ref().err().cloned();
+        let hosts = hosts.unwrap_or_default();
+        let mut countries = self.countries.clone();
+        for &raw in raws {
+            if raw == 0 || links.contains_key(&raw) {
+                countries.insert(raw, country(facts, &viewer, links, hosts, raw));
+            } else {
+                countries.remove(&raw);
+            }
         }
+        let mut index = Self { countries, problem: None, query_problem: None, volunteer_problem };
+        index.query_problem = index.first_query_problem(links);
+        index
+    }
+
+    /// The first refusal in the order the countries are decided (the volunteers', then each
+    /// country's in raw order, country zero last): what `of` reports when it answers `None`.
+    fn first_query_problem(&self, links: &BTreeMap<u32, u32>) -> Option<String> {
+        if let Some(problem) = &self.volunteer_problem {
+            return Some(problem.clone());
+        }
+        links.keys().copied().chain([0]).find_map(|raw| {
+            let country = self.countries.get(&raw)?;
+            match (&country.friend, &country.enemy, &country.first_host_enemy) {
+                (Err(reason), _, _) | (_, Err(reason), _) | (_, _, Some((_, Err(reason)))) => Some(reason.clone()),
+                _ => None,
+            }
+        })
+    }
+
+    /// An index the hour cannot make, for `problem`.
+    pub fn unavailable_for(problem: String) -> Self {
+        Self::unavailable(problem)
+    }
+
+    /// Countries whose relation differs from `other`'s (raw references), and the first described.
+    pub fn differ(&self, other: &Self) -> (u64, Option<String>) {
+        let mut differing = 0;
+        let mut first = None;
+        for (what, a, b) in [("problem", &self.problem, &other.problem), ("query problem", &self.query_problem, &other.query_problem), ("volunteer problem", &self.volunteer_problem, &other.volunteer_problem)] {
+            if a != b {
+                differing += 1;
+                first.get_or_insert(format!("{what}: {a:?} against {b:?}"));
+            }
+        }
+        let raws: BTreeSet<u32> = self.countries.keys().chain(other.countries.keys()).copied().collect();
+        for raw in raws {
+            let (a, b) = (self.countries.get(&raw), other.countries.get(&raw));
+            if a != b {
+                differing += 1;
+                first.get_or_insert(format!("country {raw}: {a:?} against {b:?}"));
+            }
+        }
+        (differing, first)
+    }
+
+    /// Countries (raw references) whose relation differs from `other`'s.
+    pub fn changed_from(&self, other: &Self) -> Vec<u32> {
+        let raws: BTreeSet<u32> = self.countries.keys().chain(other.countries.keys()).copied().collect();
+        raws.into_iter().filter(|raw| self.countries.get(raw) != other.countries.get(raw)).collect()
+    }
+
+    /// Why the viewer's volunteer hosts are not known, when they are not.
+    pub fn volunteer_problem(&self) -> Option<&String> {
+        self.volunteer_problem.as_ref()
+    }
+
+    /// Countries it holds a relation for.
+    pub fn len(&self) -> usize {
+        self.countries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.countries.is_empty()
     }
 
     /// Why [`Index::of`] answers `None`.
@@ -338,7 +457,7 @@ impl Index {
             .unwrap_or("counter owner missing from CountryLinks")
     }
 
-    pub(super) fn of(&self, roster: u32, logical: u32) -> Option<Side> {
+    pub fn of(&self, roster: u32, logical: u32) -> Option<Side> {
         // A signed nonpositive roster owner bypasses every relation predicate.
         if (roster as i32) <= 0 {
             return Some(Side::Friend);

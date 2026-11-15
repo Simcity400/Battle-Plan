@@ -1,4 +1,5 @@
 import { contentTitle } from '../../dashboard/contentTitles.ts';
+import { ideaName } from '../../dashboard/ideaHistoryReply.ts';
 import type { TimelineLane, TimelineSpan } from '../../charts/timeline/layout';
 import type { Artwork, CategoryInfo, IdeaHistoryReply, IdeaInfo, IdeaSpan } from '../../generated/dashboard';
 
@@ -39,7 +40,7 @@ export function lanesFor(reply: IdeaHistoryReply, category: CategoryInfo, styles
       return look ? { ...base, label: look.name ?? 'Holder name unavailable', icon: look.icon ?? undefined } : { ...base, label: UNIDENTIFIED_HOLDER };
     }
     const look = art.get(item.token);
-    return { ...base, label: contentTitle(look?.name, item.token, 'Idea name unavailable'), icon: look?.icon ?? undefined };
+    return { ...base, label: ideaName(look, infos.get(item.token), 'Idea name unavailable'), icon: look?.icon ?? undefined };
   };
   const lanes: TimelineLane[] = [];
   for (const slot of category.slots) {

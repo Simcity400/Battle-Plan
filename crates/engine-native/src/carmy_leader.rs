@@ -101,7 +101,8 @@ impl PrimaryRootCache {
         Self::try_new(roots, chunks).unwrap()
     }
 
-    /// Keeps nothing: every root and member chunk is read. Allocates nothing.
+    /// Keeps no root or member chunk: each is read. Allocates nothing until a
+    /// root field is retained.
     pub fn vacant() -> Self {
         Self {
             metadata: crate::carmy::PresentationInputs::vacant(),
@@ -285,6 +286,8 @@ fn primary_contains_from(
     Ok(false)
 }
 
+const MEMO_ALLOCATION: &str = "movement leader memo allocation failed";
+
 fn primary_shared<T: crate::memory::Raw>(
     memory: &impl crate::Memory,
     pointer: usize,
@@ -293,7 +296,7 @@ fn primary_shared<T: crate::memory::Raw>(
 ) -> Result<T, &'static str> {
     let address = movement_at(pointer, offset)?;
     match cache.as_deref_mut() {
-        Some(cache) => cache.metadata.read(memory, address),
+        Some(cache) => cache.metadata.read(memory, address).map_err(|_| MEMO_ALLOCATION)?,
         None => crate::read(memory, address),
     }
     .ok_or("movement leader field unreadable")
@@ -446,6 +449,7 @@ fn movement_primary_root_internal(
                 Some(cache) => cache
                     .metadata
                     .read(memory, at)
+                    .map_err(|_| MEMO_ALLOCATION)?
                     .and_then(|header| Array::from_header(header, 8)),
                 None => Array::read(memory, at, 8),
             }
@@ -808,7 +812,8 @@ impl LeaderMemo {
         })
     }
 
-    /// Keeps no group: every division reads afresh. Allocates nothing.
+    /// Keeps no group: every division reads afresh. Allocates nothing until a
+    /// walk retains a primary root field.
     pub fn vacant() -> Self {
         Self {
             leaders: PassTable::vacant(),
@@ -1274,7 +1279,7 @@ pub fn capture_selections(
     }
     let mut memo = crate::allocation::advisory(|| LeaderMemo::try_with_capacity(groups.len()))
         .map_err(|_| ALLOCATION)?;
-    // The memo's reads grow its storage; a refused growth reads as a fault, so is discarded.
+    // The memo's reads grow its storage; a refused growth discards every selection.
     crate::allocation::advisory(|| {
         for seed in seeds.iter_mut() {
             let group = seed

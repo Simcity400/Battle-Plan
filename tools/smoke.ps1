@@ -7,7 +7,7 @@ and a new Out directory. An explicit Checkpoint runs the workspace checks
 before building the three release artifacts.
 It preserves the input save and restores the isolated user
 profile selection/settings after normal exit. Explicit actions remain available. Baseline reads only the game's clock,
-which is withheld on a build this release does not recognise; it sends no input and does not inject.
+through recorder.exe's clock command on any game build; it sends no input and does not inject.
 Launch does not modify settings or certify that a save finished loading.
 Reload requires a held GameLock and its exact LockOwner token, an explicit GameId,
 and UiConfig naming expected_save, expected_hour, expected_seed, menu, load_game,
@@ -69,8 +69,11 @@ writes build-receipt.json in Out; existing smoke-result.json has the same fields
 .PARAMETER BinaryDirectory
 Directory of those binaries; defaults to this checkout's .cargo-target/release.
 All source and copied hashes and the clean current HEAD are verified before launch.
-The viewer's pinned shader compiler, shader-tools\dxc, is copied from beside them
-unless BATTLE_PLAN_SHADER_COMPILER names one; either is checked before launch.
+The other actions read the game clock with the recorder.exe in this directory (same default):
+recorder.exe clock locates the game's sites on any build and names each field it withholds.
+Smoke reads it with its own receipt-verified copy.
+The viewer's pinned shader compiler, dxcompiler.dll and dxil.dll, is copied from beside
+them and checked before launch.
 .PARAMETER Checkpoint
 Run workspace checks and build the release binaries before the live smoke.
 Mutually exclusive with BuildReceipt/BinaryDirectory. Subsequent smokes use the
@@ -185,9 +188,13 @@ function Get-GameBuild([string]$Path) {
     [pscustomobject]@{ Size = $bytes.LongLength; Sha256 = $hash; Version = $version; Recognised = $recognised; Warning = $warning }
 }
 
-function Assert-ClockReadable($Build) {
-    if (-not $Build.Recognised) { throw "Clock reading is withheld: it reads the recognised build's memory layout. $($Build.Warning)" }
+function Write-GameBuildWarning([string]$Path) {
+    $build = Get-GameBuild $Path
+    if ($build.Warning) { Write-Warning $build.Warning }
+    $build
 }
+
+. (Join-Path $PSScriptRoot 'game-clock.ps1')
 
 function Open-InputShim {
     # The open control block, or $null when the shim is not attached.
@@ -263,19 +270,17 @@ function Write-LaunchSelection([string]$userPath, [string]$saveName) {
     [IO.File]::WriteAllText((Join-Path $userPath 'continue_game.json'), $json, [Text.UTF8Encoding]::new($false))
 }
 
-# The viewer runs shader-tools\dxc\dxc.exe beside itself unless BATTLE_PLAN_SHADER_COMPILER names one,
-# so a viewer copied away from its build takes that folder along.
-function Copy-ShaderCompiler([string]$source, [string]$destination, [string]$override) {
-    if ($override) {
-        if (-not (Test-Path -LiteralPath $override -PathType Leaf)) { throw 'BATTLE_PLAN_SHADER_COMPILER names no file.' }
-        return $override
+# The viewer loads the pinned shader compiler, dxcompiler.dll and its dxil.dll, from beside itself,
+# so a viewer copied away from its build takes them along.
+function Copy-ShaderCompiler([string]$source, [string]$destination) {
+    $names = @('dxcompiler.dll', 'dxil.dll')
+    foreach ($name in $names) {
+        if (-not (Test-Path -LiteralPath (Join-Path $source $name) -PathType Leaf)) {
+            throw "The viewer needs the pinned shader compiler: install it beside the smoke binaries (tools/install-shader-compiler.ps1 -Destination '$source')."
+        }
     }
-    $tools = Join-Path $source 'shader-tools'
-    if (-not (Test-Path -LiteralPath (Join-Path $tools 'dxc\dxc.exe') -PathType Leaf)) {
-        throw "The viewer needs the pinned shader compiler: install it beside the smoke binaries (tools/install-shader-compiler.ps1 -Destination '$tools\dxc') or set BATTLE_PLAN_SHADER_COMPILER."
-    }
-    Copy-Item -LiteralPath $tools -Destination (Join-Path $destination 'shader-tools') -Recurse
-    Join-Path $destination 'shader-tools\dxc\dxc.exe'
+    foreach ($name in $names) { Copy-Item -LiteralPath (Join-Path $source $name) -Destination (Join-Path $destination $name) }
+    Join-Path $destination 'dxcompiler.dll'
 }
 
 function Set-ShimFlags($shim, [int]$flags) { $shim.View.Write($script:ShimFlagsOffset, [uint32]$flags) }
@@ -294,121 +299,6 @@ function Invoke-ShimPointer($shim, $window, [int]$logicalX, [int]$logicalY, [int
         & $press
     } finally {
         Set-ShimFlags $shim 0
-    }
-}
-
-function Initialize-SmokeClock {
-    if (-not ('Hoi4ClockBaseline' -as [type])) {
-        Add-Type -TypeDefinition @'
-using System;
-using System.ComponentModel;
-using System.Runtime.InteropServices;
-public sealed class Hoi4ClockBaseline : IDisposable {
-    public sealed class Clock {
-        public ulong game_state, play_time;
-        public long play_session_started_at;
-        public int hour, seed, speed;
-        public byte tick_busy;
-        public byte paused = 255;
-        public bool presentation_valid;
-        public float[] eye, look_at;
-        public int[] viewport;
-        public bool Same(Clock other) {
-            return other != null && game_state == other.game_state && hour == other.hour &&
-                play_time == other.play_time && play_session_started_at == other.play_session_started_at && seed == other.seed && speed == other.speed && tick_busy == other.tick_busy && paused == other.paused;
-        }
-    }
-    [DllImport("kernel32.dll", SetLastError=true)] static extern IntPtr OpenProcess(uint access, bool inherit, uint process);
-    [DllImport("kernel32.dll", SetLastError=true)] static extern bool ReadProcessMemory(IntPtr process, IntPtr address, byte[] bytes, UIntPtr size, out UIntPtr read);
-    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
-    [DllImport("kernel32.dll")] static extern bool QueryPerformanceCounter(out long value);
-    [DllImport("kernel32.dll")] static extern bool QueryPerformanceFrequency(out long value);
-    readonly ulong image;
-    readonly byte[] bytes = new byte[32];
-    IntPtr process;
-    public readonly long Frequency;
-    public Hoi4ClockBaseline(uint processId, ulong imageBase) {
-        if (!QueryPerformanceFrequency(out Frequency) || Frequency <= 0)
-            throw new InvalidOperationException("QueryPerformanceFrequency failed.");
-        image = imageBase;
-        process = OpenProcess(0x10, false, processId); // PROCESS_VM_READ only; this helper never writes or injects.
-        if (process == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
-    }
-    public static long Qpc() {
-        long value;
-        if (!QueryPerformanceCounter(out value)) throw new InvalidOperationException("QueryPerformanceCounter failed.");
-        return value;
-    }
-    bool Read(ulong address, uint size) {
-        UIntPtr read;
-        return address > 0 && address <= long.MaxValue &&
-            ReadProcessMemory(process, new IntPtr((long)address), bytes, new UIntPtr(size), out read) && read.ToUInt64() == size;
-    }
-    bool Presentation(Clock clock) {
-        // The game idler and camera root: read only, never call engine code.
-        if (!Read(image + 0x033ddb08, 8)) return false;
-        ulong idler = BitConverter.ToUInt64(bytes, 0);
-        if (idler == 0 || idler > long.MaxValue - 0x1000) return false;
-        if (!Read(image + 0x033ddb10, 8) || BitConverter.ToUInt64(bytes, 0) != idler) return false;
-        if (!Read(idler, 8) || BitConverter.ToUInt64(bytes, 0) != image + 0x029e58d8) return false;
-        if (!Read(idler + 0x6c1, 1) || bytes[0] > 1) return false;
-        clock.paused = bytes[0];
-        // The live root member is a pointer.
-        if (!Read(idler + 0x760, 8)) return false;
-        ulong camera = BitConverter.ToUInt64(bytes, 0);
-        if (camera == 0 || camera > long.MaxValue - 0x740) return false;
-        if (!Read(camera + 8, 8) || BitConverter.ToUInt64(bytes, 0) != idler) return false;
-        if (!Read(camera + 0x680, 24)) return false;
-        clock.eye = new float[3]; clock.look_at = new float[3];
-        for (int n = 0; n < 3; n++) {
-            clock.eye[n] = BitConverter.ToSingle(bytes, n * 4);
-            clock.look_at[n] = BitConverter.ToSingle(bytes, 12 + n * 4);
-        }
-        // Compare the canonical embedded render view with its camera root.
-        if (!Read(camera + 0x10 + 0x180, 24)) return false;
-        for (int n = 0; n < 3; n++) {
-            if (clock.eye[n] != BitConverter.ToSingle(bytes, n * 4) ||
-                clock.look_at[n] != BitConverter.ToSingle(bytes, 12 + n * 4)) return false;
-        }
-        if (!Read(camera + 0x6c0, 16)) return false;
-        clock.viewport = new int[4];
-        for (int n = 0; n < 4; n++) clock.viewport[n] = BitConverter.ToInt32(bytes, n * 4);
-
-        return true;
-    }
-    Clock Once() {
-        // Read the game-state singleton, clock fields and load witness.
-        if (!Read(image + 0x033dd6b0, 8)) return null;
-        ulong state = BitConverter.ToUInt64(bytes, 0);
-        if (state == 0 || state > long.MaxValue - 0x800) return null;
-        var clock = new Clock();
-        clock.game_state = state;
-        if (!Read(state + 0x468, 4)) return null;
-        clock.hour = BitConverter.ToInt32(bytes, 0);
-        if (!Read(state + 0x490, 8)) return null;
-        clock.play_time = BitConverter.ToUInt64(bytes, 0);
-        if (!Read(state + 0x720, 4)) return null;
-        clock.seed = BitConverter.ToInt32(bytes, 0);
-        if (!Read(state + 0x4bc, 4)) return null;
-        clock.speed = BitConverter.ToInt32(bytes, 0);
-        if (!Read(state + 0x4c0, 1)) return null;
-        clock.tick_busy = bytes[0];
-        if (!Read(image + 0x033dd888, 8)) return null;
-        clock.play_session_started_at = BitConverter.ToInt64(bytes, 0);
-        clock.presentation_valid = Presentation(clock);
-        if (!clock.presentation_valid) { clock.eye = null; clock.look_at = null; clock.viewport = null; }
-        if (!Read(image + 0x033dd6b0, 8) || BitConverter.ToUInt64(bytes, 0) != state) return null;
-        return clock;
-    }
-    public Clock Sample() {
-        Clock first = Once(), second = Once();
-        return first != null && first.Same(second) ? second : null;
-    }
-    public void Dispose() {
-        if (process != IntPtr.Zero) { CloseHandle(process); process = IntPtr.Zero; }
-    }
-}
-'@
     }
 }
 
@@ -440,10 +330,7 @@ function Invoke-FullSmoke {
     $selection = if (Test-Path -LiteralPath $selectionPath) { ,[IO.File]::ReadAllBytes($selectionPath) } else { $null }
     if (-not (Test-Path -LiteralPath $sourceSave -PathType Leaf)) { throw 'Expected save is missing.' }
     if (@(Get-Process -Name the game,recorder -ErrorAction SilentlyContinue).Count) { throw 'Smoke will not take over another running game or recorder.' }
-    $gameBuild = Get-GameBuild $gamePath
-    if ($gameBuild.Warning) { Write-Warning $gameBuild.Warning }
-    # The smoke times its saves by the game clock.
-    Assert-ClockReadable $gameBuild
+    $gameBuild = Write-GameBuildWarning $gamePath
     $ui = [IO.File]::ReadAllText((Resolve-Path -LiteralPath $UiConfig)) | ConvertFrom-Json
     foreach ($name in @('menu','speed_up','speed_down','pause','save_menu','save_name','save_confirm','save_back','menu_close','exit_game','exit_confirm','map_center','capture_cursor')) {
         $point = $ui.$name
@@ -543,7 +430,7 @@ function Invoke-FullSmoke {
         do {
             $game.Refresh(); if ($game.HasExited) { throw 'Game exited during smoke.' }
             $clock=$reader.Sample()
-            if ($null -ne $clock -and $clock.paused -le 1 -and $clock.tick_busy -eq 0) { return $clock }
+            if ($null -ne $clock -and $null -ne $clock.paused -and $clock.tick_busy -eq 0) { return $clock }
             Start-Sleep -Milliseconds 10
         } while ([DateTime]::UtcNow -lt $limit)
         throw 'No stable, authenticated game clock.'
@@ -668,15 +555,17 @@ function Invoke-FullSmoke {
         foreach ($file in $sourceBinaries) { Copy-Item -LiteralPath (Join-Path $binarySource $file.name) -Destination (Join-Path $bin $file.name) }
         $report.binaries=@(Read-Binaries $bin $sourceBinaries)
         # Checked now: a shader cache miss after the long recording would otherwise refuse the viewer's layers.
-        $compiler=Copy-ShaderCompiler $binarySource $bin $(if (Test-Path Env:BATTLE_PLAN_SHADER_COMPILER) { $env:BATTLE_PLAN_SHADER_COMPILER } else { $env:HOI4_SHADER_COMPILER })
+        $compiler=Copy-ShaderCompiler $binarySource $bin
         $pinned=[regex]::Match([IO.File]::ReadAllText((Join-Path $repo 'crates\shader-pipeline\src\lib.rs')),'pub const DXC_VERSION: &str = "([^"]+)";').Groups[1].Value
         if (-not $pinned) { throw 'DXC_VERSION not found in crates/shader-pipeline/src/lib.rs.' }
-        if (-not (Run-Tool $compiler @('--version') 'shader-compiler' 30).Contains($pinned)) { throw "The shader compiler is not the pinned DXC $pinned." }
+        # The version the DLL reports to the viewer is its product version.
+        if ((Get-Item -LiteralPath $compiler).VersionInfo.ProductVersion -cne $pinned) { throw "The shader compiler is not the pinned DXC $pinned." }
         $report.shader_compiler=@{path=$compiler;sha256=(Get-FileHash -LiteralPath $compiler -Algorithm SHA256).Hash}
         if ($null -ne $selection) { [IO.File]::WriteAllBytes((Join-Path $output 'continue-before.json'),$selection) }
         [IO.File]::WriteAllBytes((Join-Path $output 'settings-before.txt'),$settingsBytes)
         Copy-Item -LiteralPath $UiConfig -Destination (Join-Path $output 'ui.json')
         Copy-Item -LiteralPath $driver -Destination (Join-Path $output 'smoke-driver.ps1')
+        Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'game-clock.ps1') -Destination (Join-Path $output 'game-clock.ps1')
         $null=Confirm-Source 'pre-launch' $report.source_commit
         [IO.File]::WriteAllText((Join-Path $output 'build-receipt.json'),
             (@{source_commit=$report.source_commit;binaries=$report.binaries} | ConvertTo-Json -Depth 8),$utf8)
@@ -687,15 +576,18 @@ function Invoke-FullSmoke {
         Stage 'launch-and-attach'
         $script:smokeStatusPath=$null
         $recorderRun=Launch-Tool $recorder @('record','--once','--out',$recordRoot,'--user-dir',$userPath) 'record'
-        $launch=& $driver -CaptureRoot $CaptureRoot -InputShimDir $InputShimDir -Action Launch -GameExe $gamePath -UserDirectory $userPath -ContinueLastSave -ExpectedSave $ExpectedSave -Foreground:$Foreground
+        $launch=& $driver -CaptureRoot $CaptureRoot -InputShimDir $InputShimDir -BinaryDirectory $bin -Action Launch -GameExe $gamePath -UserDirectory $userPath -ContinueLastSave -ExpectedSave $ExpectedSave -Foreground:$Foreground
         $game=Get-Process -Id $launch.GameId
-        Initialize-SmokeClock
         $limit=[DateTime]::UtcNow.AddSeconds(300)
         do {
             $game.Refresh(); if ($game.HasExited) { throw 'Game exited before loading.' }
-            if ($null -eq $reader) { try { $reader=[Hoi4ClockBaseline]::new([uint32]$game.Id,[uint64]$game.MainModule.BaseAddress.ToInt64()) } catch {} }
+            if ($null -eq $reader) {
+                try { $reader=Open-GameClock $game.Id $recorder }
+                catch { if ($_.Exception.Message -like 'Clock reading is withheld*') { throw } }
+                if ($reader) { foreach ($withheld in Get-ClockWithheld $reader) { Write-Warning "Game clock field withheld: $withheld" } }
+            }
             $clock=if ($reader) { $reader.Sample() } else { $null }
-            if ($clock -and $clock.hour -eq $ui.expected_hour -and $clock.seed -eq $ui.expected_seed -and $clock.paused -le 1 -and $game.MainWindowHandle -ne [IntPtr]::Zero) { break }
+            if ($clock -and $clock.hour -eq $ui.expected_hour -and $clock.seed -eq $ui.expected_seed -and $null -ne $clock.paused -and $game.MainWindowHandle -ne [IntPtr]::Zero) { break }
             if ([DateTime]::UtcNow -gt $limit) { throw 'Expected save did not finish loading.' }
             Start-Sleep -Milliseconds 100
         } while ($true)
@@ -961,10 +853,11 @@ if ($Action -eq 'Launch') {
     if (-not $Foreground) {
         # Keep the game behind whatever was active: it takes focus when its window appears and again when the map
         # loads. Watch until the map is up and the window has stayed in the background for a few seconds.
-        $gameBuild = Get-GameBuild $gamePath
-        if ($gameBuild.Warning) { Write-Warning "$($gameBuild.Warning) The map load cannot be read from the clock; launch returns after the window stays in the background for 30 seconds." }
-        Initialize-SmokeClock
-        $reader = $null; $quietSince = $null; $pushes = 0; $loaded = $false
+        $gameBuild = Write-GameBuildWarning $gamePath
+        # Without the clock's camera the map load cannot be read: launch then returns once the window stays in the background for 30 seconds.
+        $clockUnavailable = $null
+        try { $clockRecorder = Resolve-ClockRecorder $BinaryDirectory } catch { $clockUnavailable = $_.Exception.Message }
+        $reader = $null; $quietSince = $null; $pushes = 0; $loaded = $false; $warned = $false
         $deadline = [DateTime]::UtcNow.AddSeconds(240)
         do {
             Start-Sleep -Milliseconds 100
@@ -975,16 +868,29 @@ if ($Action -eq 'Launch') {
                 if ([Hoi4ProbeInput]::GetForegroundWindow() -eq $handle) {
                     [void][Hoi4ProbeInput]::PushBehind($handle, $previousForeground); $pushes++; $quietSince = $null
                 } elseif ($null -eq $quietSince) { $quietSince = [DateTime]::UtcNow }
-                if ($gameBuild.Recognised -and $null -eq $reader) { try { $reader = [Hoi4ClockBaseline]::new([uint32]$started.Id, [uint64]$started.MainModule.BaseAddress.ToInt64()) } catch { $reader = $null } }
+                if ($null -eq $clockUnavailable -and $null -eq $reader) {
+                    try {
+                        $reader = Open-GameClock $started.Id $clockRecorder
+                        $withheld = @(Get-ClockWithheld $reader)
+                        if ($withheld.Count) { $clockUnavailable = "Game clock fields withheld: $($withheld -join '; ')."; $reader.Dispose(); $reader = $null }
+                    } catch {
+                        $reader = $null
+                        if ($_.Exception.Message -like 'Clock reading is withheld*') { $clockUnavailable = $_.Exception.Message }
+                    }
+                }
             }
-            $clock = if ($reader) { $reader.Sample() } else { $null }
+            $clock = $null
+            if ($reader) {
+                try { $clock = $reader.Sample() } catch { $clockUnavailable = $_.Exception.Message; $reader.Dispose(); $reader = $null }
+            }
+            if ($clockUnavailable -and -not $warned) { Write-Warning "$clockUnavailable The map load cannot be read from the clock; launch returns after the window stays in the background for 30 seconds."; $warned = $true }
             $loaded = [bool]($clock -and $clock.presentation_valid -and $null -ne $quietSince -and ([DateTime]::UtcNow - $quietSince).TotalSeconds -ge 5)
-            $settled = -not $gameBuild.Recognised -and $null -ne $quietSince -and ([DateTime]::UtcNow - $quietSince).TotalSeconds -ge 30
+            $settled = $null -ne $clockUnavailable -and $null -ne $quietSince -and ([DateTime]::UtcNow - $quietSince).TotalSeconds -ge 30
         } while (-not $loaded -and -not $settled -and [DateTime]::UtcNow -lt $deadline)
         if ($reader) { $reader.Dispose() }
         # Background clicks need the shim; it is attached once, after the window exists.
         $shim = if ($started.MainWindowHandle -ne [IntPtr]::Zero) { Install-InputShim $started.Id } else { 'no window' }
-        [pscustomobject]@{ Action = 'Launch'; GameId = $started.Id; GameExe = $gamePath; RequestedUserDirectory = $userPath; Background = $true; ForegroundPushes = $pushes; LoadedBeforeReturn = $(if ($gameBuild.Recognised) { $loaded } else { $null }); InputShim = $shim; GameBuildWarning = $gameBuild.Warning }
+        [pscustomobject]@{ Action = 'Launch'; GameId = $started.Id; GameExe = $gamePath; RequestedUserDirectory = $userPath; Background = $true; ForegroundPushes = $pushes; LoadedBeforeReturn = $(if ($null -eq $clockUnavailable) { $loaded } else { $null }); InputShim = $shim; GameBuildWarning = $gameBuild.Warning; ClockUnavailable = $clockUnavailable }
         return
     }
     [pscustomobject]@{ Action = 'Launch'; GameId = $started.Id; GameExe = $gamePath; RequestedUserDirectory = $userPath }
@@ -1012,7 +918,8 @@ if ($Action -eq 'Reload') {
         (Get-Item -LiteralPath $GameLock).LastWriteTimeUtc = [DateTime]::UtcNow
     }
     Confirm-ReloadLock
-    Assert-ClockReadable (Get-GameBuild $gamePath)
+    $gameBuild = Write-GameBuildWarning $gamePath
+    $clockRecorder = Resolve-ClockRecorder $BinaryDirectory
     function Confirm-ReloadIdle {
         Confirm-ReloadLock
         $game.Refresh()
@@ -1102,9 +1009,10 @@ if ($Action -eq 'Reload') {
             Start-Sleep -Milliseconds 250
         } while ($true)
     }
-    Initialize-SmokeClock
-    $reader = [Hoi4ClockBaseline]::new([uint32]$game.Id, [uint64]$game.MainModule.BaseAddress.ToInt64())
+    $reader = Open-GameClock $game.Id $clockRecorder
     try {
+        $withheld = @(Get-ClockWithheld $reader)
+        if ($withheld.Count) { throw "Reload needs the paused camera and load witness, and this build withholds: $($withheld -join '; ')" }
         $before = $reader.Sample()
         if (-not $before -or -not $before.presentation_valid -or $before.play_session_started_at -le 0) { throw 'No authenticated presentation/load witness before reload.' }
         $watch = [Diagnostics.Stopwatch]::StartNew()
@@ -1142,9 +1050,8 @@ if ($Action -eq 'Reload') {
     } finally { $reader.Dispose() }
 }
 if ($Action -eq 'Clock') {
-    Assert-ClockReadable (Get-GameBuild $gamePath)
-    Initialize-SmokeClock
-    $reader = [Hoi4ClockBaseline]::new([uint32]$game.Id, [uint64]$game.MainModule.BaseAddress.ToInt64())
+    $gameBuild = Write-GameBuildWarning $gamePath
+    $reader = Open-GameClock $game.Id (Resolve-ClockRecorder $BinaryDirectory)
     try { $reader.Sample() } finally { $reader.Dispose() }
     return
 }
@@ -1163,8 +1070,8 @@ if ($Action -eq 'Baseline') {
         throw 'Create the baseline capture directory before starting the measurement.'
     }
     if (Test-Path -LiteralPath $capturePath) { throw "Baseline already exists: $capturePath" }
-    $gameBuild = Get-GameBuild $gamePath
-    Assert-ClockReadable $gameBuild
+    $gameBuild = Write-GameBuildWarning $gamePath
+    $clockRecorder = Resolve-ClockRecorder $BinaryDirectory
     $actualSize = $gameBuild.Size
     $actualHash = $gameBuild.Sha256
     if (-not $gameBuild.Version) { throw 'The executable has no single version text.' }
@@ -1172,19 +1079,18 @@ if ($Action -eq 'Baseline') {
     if (@($game.Modules | Where-Object { $_.ModuleName -ieq 'collector.dll' }).Count -ne 0) {
         throw 'The free-run baseline requires collector.dll to be detached first.'
     }
-    Initialize-SmokeClock
     $reader = $null
     $stream = $null
     $writer = $null
     $summary = $null
     $stopReason = 'duration completed'
     try {
-        $reader = [Hoi4ClockBaseline]::new([uint32]$game.Id, [uint64]$game.MainModule.BaseAddress.ToInt64())
+        $reader = Open-GameClock $game.Id $clockRecorder
         $processStart = $game.StartTime.ToUniversalTime().ToFileTimeUtc()
         $stream = [IO.File]::Open($capturePath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
         $writer = [IO.StreamWriter]::new($stream, [Text.UTF8Encoding]::new($false))
         $writer.AutoFlush = $true
-        $qpcStart = [Hoi4ClockBaseline]::Qpc()
+        $qpcStart = [Diagnostics.Stopwatch]::GetTimestamp()
         $lastFlush = $qpcStart
         $lastProcessCheck = $qpcStart
         $writer.WriteLine((@{ kind = 'baseline_start'; pid = $game.Id; process_start_time = $processStart;
@@ -1204,11 +1110,11 @@ if ($Action -eq 'Baseline') {
         $witnessChanges = [int64]0
         $discontinuities = [int64]0
         $invalidQpc = [int64]0
-        while (([Hoi4ClockBaseline]::Qpc() - $qpcStart) / [double]$reader.Frequency -lt $Seconds) {
+        while (([Diagnostics.Stopwatch]::GetTimestamp() - $qpcStart) / [double]$reader.Frequency -lt $Seconds) {
             $game.Refresh()
             if ($game.HasExited) { $stopReason = 'game exited'; break }
             $clock = $reader.Sample()
-            $qpc = [Hoi4ClockBaseline]::Qpc()
+            $qpc = [Diagnostics.Stopwatch]::GetTimestamp()
             $elapsed = ($qpc - $qpcStart) / [double]$reader.Frequency
             $reason = $null
             if ($null -eq $clock) {
@@ -1260,7 +1166,7 @@ if ($Action -eq 'Baseline') {
             hours = $hours; elapsed_s = $pairSeconds; hours_per_s = $rate; valid_samples = $valid; missing_samples = $missing;
             continuous_pairs = $pairs; load_changes = $loadChanges; witness_changes = $witnessChanges;
             backwards_discontinuities = $discontinuities; invalid_qpc_pairs = $invalidQpc;
-            observation_elapsed_s = ([Hoi4ClockBaseline]::Qpc() - $qpcStart) / [double]$reader.Frequency; stop_reason = $stopReason }
+            observation_elapsed_s = ([Diagnostics.Stopwatch]::GetTimestamp() - $qpcStart) / [double]$reader.Frequency; stop_reason = $stopReason }
         $writer.WriteLine(($summary | ConvertTo-Json -Compress))
     } finally {
         try { if ($null -ne $writer) { $writer.Flush() }; if ($null -ne $stream) { $stream.Flush($true) } }

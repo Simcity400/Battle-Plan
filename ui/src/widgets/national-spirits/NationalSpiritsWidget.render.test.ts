@@ -10,13 +10,12 @@ test('spirit tiles keep names and focus access with reserved fallback artwork', 
   const data: IdeaHistoryReply = { branchId: '1', tag: 'mod_country', unobserved: [], identityStarts: [100], modifiers: [], texts: [], warnings: [],
     categories: [{ token: 'mod_spirits', name: 'Mod spirits', kind: 'national_spirit', hidden: false, politicsTab: true, slots: [] }],
     ideas: [{ token: 'mod_spirit', category: 'mod_spirits', slot: null, law: false, designer: false, effects: [], targeted: [], equipment: [], research: [],
-      traits: [], tooltips: [], effectsKnown: true, unknown: null }], spans: [{ token: 'mod_spirit', firstHour: 100, lastHour: 200, slot: null, character: null }],
+      traits: [], tooltips: [], effectsKnown: true, unknown: null, nameMissing: null }], spans: [{ token: 'mod_spirit', firstHour: 100, lastHour: 200, slot: null, character: null }],
     artwork: [{ token: 'mod_spirit', name: 'Mod spirit', description: null, baseDurationDays: null, icon: null }], holders: [] };
   const replacements: Record<string, string> = {
-    '/dashboard/ideaHistory.ts': `export const useIdeaHistory = () => ({ track: { source: { id: 'source', revision: '1', metadata: { campaignKey: 'campaign' } },
+    '/dashboard/ideaHistory.ts': `import { resolveWindow } from '/ui/src/dashboard/model.ts'; export const useIdeaHour = (widget, runtime, track) => { const hour = track ? resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour())?.lastHour : undefined; return hour === undefined || hour < track.branch.firstHour || hour > track.branch.lastHour ? null : Math.floor(hour); }; export const useIdeaHistory = () => ({ track: { source: { id: 'source', revision: '1', metadata: { campaignKey: 'campaign' } },
       branch: { id: '1', firstHour: 100, lastHour: 200 }, axisOffset: 0 }, tag: 'mod_country', data: ${JSON.stringify(data)} });`,
     '/dashboard/useIdeaTooltips.ts': 'export const useIdeaTooltips = () => undefined;',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open() {}, menu: null });',
   };
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },

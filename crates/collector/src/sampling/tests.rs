@@ -39,14 +39,14 @@ fn rejected_division_inputs_keep_the_original_owner_and_cannot_retry_native_inpu
     let pool = acquisition::Pool::start(1, acquisition::MAX_JOBS).unwrap();
     let mut batch = acquisition::Batch::new(&pool);
     let payload = DivisionsJob::new_worker();
-    let owner = Arc::clone(payload.census.unit_inputs().unwrap());
+    let owner = engine_allocation::SharedBox::clone(payload.census.unit_inputs().unwrap());
     let context = DivisionsCopyContext {
         game_state: usize::MAX,
         details_active: false,
         ..Default::default()
     };
     let request = acquisition::Job::DivisionInputs(acquisition::RawRequest {
-        countries: Arc::new(Cache::try_with_capacity(0).unwrap()),
+        countries: engine_allocation::shared(Cache::try_with_capacity(0).unwrap()).unwrap(),
         context,
         payload,
     });
@@ -64,7 +64,7 @@ fn rejected_division_inputs_keep_the_original_owner_and_cannot_retry_native_inpu
     let acquisition::Job::DivisionInputs(mut request) = completed.request else {
         panic!("rejected division input owner lost");
     };
-    assert!(Arc::ptr_eq(
+    assert!(engine_allocation::SharedBox::ptr_eq(
         &owner,
         request.payload.census.unit_inputs().unwrap()
     ));
@@ -72,7 +72,7 @@ fn rejected_division_inputs_keep_the_original_owner_and_cannot_retry_native_inpu
     let report = copy_divisions_core_refresh(&NoDivisionReads, context, &mut request.payload);
     assert!(!report.raw_ok);
     assert!(request.payload.core_finished);
-    assert!(Arc::ptr_eq(
+    assert!(engine_allocation::SharedBox::ptr_eq(
         &owner,
         request.payload.census.unit_inputs().unwrap()
     ));
@@ -94,9 +94,9 @@ fn a_rejected_submission_parks_in_the_pool_and_its_join_returns_it() {
     pool.shutdown().unwrap();
     let mut batch = acquisition::Batch::new(&pool);
     let payload = DivisionsJob::new_worker();
-    let owner = Arc::clone(payload.census.unit_inputs().unwrap());
+    let owner = engine_allocation::SharedBox::clone(payload.census.unit_inputs().unwrap());
     let request = acquisition::Job::DivisionInputs(acquisition::RawRequest {
-        countries: Arc::new(Cache::try_with_capacity(0).unwrap()),
+        countries: engine_allocation::shared(Cache::try_with_capacity(0).unwrap()).unwrap(),
         context: DivisionsCopyContext {
             game_state: usize::MAX,
             details_active: false,
@@ -121,7 +121,7 @@ fn a_rejected_submission_parks_in_the_pool_and_its_join_returns_it() {
     let acquisition::Job::DivisionInputs(request) = completed.request else {
         panic!("parked division input owner lost");
     };
-    assert!(Arc::ptr_eq(
+    assert!(engine_allocation::SharedBox::ptr_eq(
         &owner,
         request.payload.census.unit_inputs().unwrap()
     ));
@@ -137,7 +137,7 @@ fn rejected_air_missions_reuses_the_heap_payload_and_publishes_named_first_hour_
     pool.shutdown().unwrap();
     let mut batch = acquisition::Batch::new(&pool);
     let mut captured = extended::Captured::with_capacities(&extended::Capacities::default());
-    let countries = Arc::new(Cache::try_with_capacity(0).unwrap());
+    let countries = engine_allocation::shared(Cache::try_with_capacity(0).unwrap()).unwrap();
     for hour in [3, 17] {
         captured.air_wing_pilot().prepare_hour(hour, true);
         let request = captured.take_air_missions_request(&countries, 0, 0, None);
@@ -194,7 +194,7 @@ fn a_rejected_presentation_fails_beside_a_completed_movement_pass() {
     let mut batch = acquisition::Batch::new(&pool);
     let mut request = acquisition::PresentationRequest {
         dispatch: Default::default(),
-        countries: Arc::new(Cache::try_with_capacity(0).unwrap()),
+        countries: engine_allocation::shared(Cache::try_with_capacity(0).unwrap()).unwrap(),
         context: extended::division_presentation::CaptureContext {
             base: 0,
             game_state: 0,
@@ -341,7 +341,7 @@ fn a_rejected_stitch_keeps_an_earlier_order_failure() {
         (None, "army order worker admission failed"),
     ] {
         let mut request = acquisition::OrdersRequest {
-            countries: Arc::new(Cache::try_with_capacity(0).unwrap()),
+            countries: engine_allocation::shared(Cache::try_with_capacity(0).unwrap()).unwrap(),
             base: 0,
             game_state: 0,
             orders: crate::map_capture::Orders::for_test(&Default::default()),
@@ -378,7 +378,7 @@ fn a_rejected_stitch_keeps_an_earlier_order_failure() {
 fn stitch_request(base: usize, earlier: Option<&'static str>) -> acquisition::OrdersRequest {
     use crate::extended::plans::{Capacities, Captured};
     let mut request = acquisition::OrdersRequest {
-        countries: Arc::new(Cache::try_with_capacity(0).unwrap()),
+        countries: engine_allocation::shared(Cache::try_with_capacity(0).unwrap()).unwrap(),
         base,
         game_state: 0,
         orders: crate::map_capture::Orders::for_test(&Default::default()),
@@ -651,7 +651,7 @@ fn the_callback_carries_the_order_split_to_the_next_hour_on_any_frame() {
     let hour = |orders: &mut Orders, millis: u64, fail: bool| {
         // SAFETY: this test is the split's only reader and writer.
         unsafe { begin_order_parts(&shared, orders) };
-        orders.walk_roots_growing(&memory, world.base);
+        orders.walk_roots(&memory, world.base);
         orders.prepare_parts();
         let count = orders.part_count();
         for index in 0..count {
@@ -722,20 +722,20 @@ fn failed_division_inputs_keep_the_original_roster_fault_through_core_and_decode
     };
     let mut job = DivisionsJob::new_worker();
     // Storage admission succeeds; the original native failure remains an outcome.
-    assert!(copy_divisions_inputs_refresh_growing(
+    assert!(copy_divisions_inputs_refresh(
         &memory, context, &mut job
     ));
     let reason = "division roster unreadable or invalid";
     let unavailable = Outcome::Unavailable { reason };
-    let owner = Arc::clone(job.census.unit_inputs().unwrap());
+    let owner = engine_allocation::SharedBox::clone(job.census.unit_inputs().unwrap());
     assert_eq!(owner.outcome(), unavailable);
     assert_eq!(owner.intel_sources().outcome, unavailable);
     assert_eq!(memory.attempts.get(), 1);
     let report = copy_divisions_core_refresh(&NoDivisionReads, context, &mut job);
     assert!(report.raw_ok);
-    assert_eq!(job.source_outcome(usize::MAX), unavailable);
+    assert_eq!(job.source_outcome(), unavailable);
     assert_eq!(job.details.outcomes(), [unavailable; 5]);
-    assert!(Arc::ptr_eq(&owner, job.census.unit_inputs().unwrap()));
+    assert!(engine_allocation::SharedBox::ptr_eq(&owner, job.census.unit_inputs().unwrap()));
     let repeated = copy_divisions_core_refresh(&NoDivisionReads, context, &mut job);
     assert_eq!(repeated.copy_ticks, report.copy_ticks);
     assert_eq!(memory.attempts.get(), 1);
@@ -754,7 +754,7 @@ fn missing_and_short_original_unit_packets_refuse_every_dependent_worker() {
     use crate::division_census::UnitInputs;
     let bytes = kit::fixture();
     let memory = NoRosterRetry(&bytes);
-    let countries = Arc::new(Cache::try_with_capacity(0).unwrap());
+    let countries = engine_allocation::shared(Cache::try_with_capacity(0).unwrap()).unwrap();
     let seed = carmy::DivisionSeed {
         pointer: kit::A1,
         roster_owner: Some(1),
@@ -762,27 +762,27 @@ fn missing_and_short_original_unit_packets_refuse_every_dependent_worker() {
     };
     for inputs in [
         None,
-        Some(Arc::new(UnitInputs::fixture(
+        Some(engine_allocation::shared(UnitInputs::fixture(
             vec![seed],
             Outcome::Rows { len: 2 },
-        ))),
-        Some(Arc::new(UnitInputs::fixture(
+        )).unwrap()),
+        Some(engine_allocation::shared(UnitInputs::fixture(
             vec![seed],
             Outcome::Truncated {
                 len: 1,
                 unread_rows: 1,
             },
-        ))),
-        Some(Arc::new(UnitInputs::fixture(
+        )).unwrap()),
+        Some(engine_allocation::shared(UnitInputs::fixture(
             Vec::new(),
             Outcome::Unavailable {
                 reason: "original division input read failed",
             },
-        ))),
+        )).unwrap()),
     ] {
         let mut request = acquisition::PresentationRequest {
             dispatch: Default::default(),
-            countries: Arc::clone(&countries),
+            countries: engine_allocation::SharedBox::clone(&countries),
             context: extended::division_presentation::CaptureContext {
                 base: kit::BASE,
                 game_state: kit::GAME_STATE,
@@ -824,7 +824,7 @@ fn missing_and_short_original_unit_packets_refuse_every_dependent_worker() {
         );
 
         let mut intel = acquisition::Job::Intel(acquisition::IntelRequest {
-            countries: Arc::clone(&countries),
+            countries: engine_allocation::SharedBox::clone(&countries),
             context: extended::fog::IntelCopyContext {
                 base: kit::BASE,
                 game_state: kit::GAME_STATE,
@@ -857,7 +857,7 @@ fn missing_and_short_owned_division_source_packets_refuse_final_equipment_consum
         game_state: kit::GAME_STATE,
         ..Default::default()
     };
-    let countries = Arc::new(Cache::try_with_capacity(0).unwrap());
+    let countries = engine_allocation::shared(Cache::try_with_capacity(0).unwrap()).unwrap();
     let hour = replay_data::cadence::refresh_slot(TableId::DivisionEquipment).unwrap() as i32;
     // Exercise the final equipment consumers on their native slot; a full
     // refresh also acquires the independent fuel contributor roster.
@@ -868,22 +868,22 @@ fn missing_and_short_owned_division_source_packets_refuse_final_equipment_consum
     ));
     for displaced_length in [0, 1] {
         let mut job = DivisionsJob::new_worker();
-        assert!(copy_divisions_inputs_refresh_growing(
+        assert!(copy_divisions_inputs_refresh(
             &kit::memory(&bytes),
             context,
             &mut job
         ));
         assert!(copy_divisions_core_refresh(&kit::memory(&bytes), context, &mut job).raw_ok);
-        assert_eq!(job.source_outcome(usize::MAX), Outcome::Rows { len: 3 });
+        assert_eq!(job.source_outcome(), Outcome::Rows { len: 3 });
         let mut sink = extended::Captured::with_capacities(&extended::Capacities {
             division_sources: displaced_length,
             ..Default::default()
         });
         // The original packet has moved; its displaced zero/short buffer cannot
         // masquerade as a second complete observation of the same census.
-        job.supply_sources(&mut sink, usize::MAX, None);
+        job.supply_sources(&mut sink, None);
         let mut frame = Captured::new();
-        job.supply_sources(&mut frame.extended, usize::MAX, None);
+        job.supply_sources(&mut frame.extended, None);
         frame.extended.set_new_division_mark(Mark::Above(Counters {
             unit: 0,
             registry: 0,
@@ -927,7 +927,7 @@ fn rejected_allocating_worker_preserves_payload_without_callback_reads() {
     payload.fingerprints = Some(Box::new(crate::slicing::SliceFingerprints::new()));
     let store = payload.fingerprints.as_deref().unwrap() as *const _;
     let request = acquisition::Job::Relations(acquisition::RawRequest {
-        countries: Arc::new(Cache::try_with_capacity(1).unwrap()),
+        countries: engine_allocation::shared(Cache::try_with_capacity(1).unwrap()).unwrap(),
         context: extended::intel::RelationsCopyContext {
             base: 0,
             game_state: usize::MAX,
@@ -1140,7 +1140,7 @@ fn a_dropped_frame_invalidates_its_sliced_reads_and_a_clockless_one_does_not() {
     early_at(0);
     assert_eq!(early_at(1), [false, false]);
     for (clock, expected) in [(Some(clock(7, 1)), [true, false]), (None, [false, false])] {
-        let index = shared.free.pop().expect("pooled buffer");
+        let index = shared.frames.pop().expect("pooled buffer");
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
         frame.extended.prepare_hour(7, false);
         frame.clock = clock;
@@ -1190,120 +1190,17 @@ fn a_family_the_spool_could_not_publish_is_read_in_full_next_hour() {
 }
 
 #[test]
-fn decode_queue_full_takes_the_existing_gap_branch_with_existing_counters() {
+fn a_refused_hand_off_records_its_hour_and_returns_the_frame() {
     let shared = Shared::new(0, 0, 1);
-    let index = shared.free.pop().expect("pooled buffer");
-    for seq in 0..BUFFERS {
-        shared
-            .decode_queue
-            .push(decode::DecodeJob {
-                queued_qpc: 0,
-                index,
-                seq: seq as u64,
-                hour: 0,
-                relations_refresh: false,
-                characters_refresh: [false; CHARACTER_PARTS],
-                projects_refresh: false,
-                lexical_refresh: false,
-                divisions_refresh: false,
-                air_wing_refresh: false,
-                air_stats_refresh: false,
-                naval_refresh: false,
-                players_refresh: false,
-                session_refresh: false,
-                production_rest_refresh: false,
-                construction_rest_refresh: false,
-                economy_rest_refresh: false,
-                air_bases_refresh: false,
-                supremacy_refresh: false,
-                sunk_refresh: false,
-                radar_refresh: false,
-                intel_refresh: false,
-                weather_refresh: false,
-                capitulation_refresh: false,
-                force_full: false,
-                game_elapsed: 1,
-                relations_payload: None,
-                characters_payload: [const { None }; CHARACTER_PARTS],
-                projects_payload: None,
-                lexical_payload: None,
-                divisions_payload: None,
-                air_wing_payload: None,
-                air_stats_payload: None,
-                naval_payload: None,
-                players_payload: None,
-                session_payload: None,
-                production_rest_payload: None,
-                construction_rest_payload: None,
-                economy_rest_payload: None,
-                air_bases_payload: None,
-                supremacy_payload: None,
-                sunk_payload: None,
-                radar_payload: None,
-                intel_payload: None,
-                weather_payload: None,
-                capitulation_payload: None,
-            })
-            .unwrap();
-    }
-    // A decode FIFO filled with duplicate leases is an invariant violation.
-    // Keep its explicit failure path rather than losing an acquired frame silently.
-    let extra = decode::DecodeJob {
-        queued_qpc: 0,
-        index,
-        seq: u64::MAX,
-        hour: 0,
-        relations_refresh: false,
-        characters_refresh: [false; CHARACTER_PARTS],
-        projects_refresh: false,
-        lexical_refresh: false,
-        divisions_refresh: false,
-        air_wing_refresh: false,
-        air_stats_refresh: false,
-        naval_refresh: false,
-        players_refresh: false,
-        session_refresh: false,
-        production_rest_refresh: false,
-        construction_rest_refresh: false,
-        economy_rest_refresh: false,
-        air_bases_refresh: false,
-        supremacy_refresh: false,
-        sunk_refresh: false,
-        radar_refresh: false,
-        intel_refresh: false,
-        weather_refresh: false,
-        capitulation_refresh: false,
-        force_full: false,
-        game_elapsed: 1,
-        relations_payload: None,
-        characters_payload: [const { None }; CHARACTER_PARTS],
-        projects_payload: None,
-        lexical_payload: None,
-        divisions_payload: None,
-        air_wing_payload: None,
-        air_stats_payload: None,
-        naval_payload: None,
-        players_payload: None,
-        session_payload: None,
-        production_rest_payload: None,
-        construction_rest_payload: None,
-        economy_rest_payload: None,
-        air_bases_payload: None,
-        supremacy_payload: None,
-        sunk_payload: None,
-        radar_payload: None,
-        intel_payload: None,
-        weather_payload: None,
-        capitulation_payload: None,
-    };
-    assert!(shared.decode_queue.push(extra).is_err());
+    let index = shared.frames.pop().expect("pooled frame");
+    shared.frame_priority.claim();
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     frame.clock = Some(clock(42, 7));
     let dropped_before = shared.dropped.load(Ordering::Relaxed);
     drop_owned_frame(&shared, frame, index);
     assert_eq!(shared.dropped.load(Ordering::Relaxed), dropped_before + 1);
-    assert_eq!(shared.ready.len(), 0);
-    assert_eq!(shared.free.len(), BUFFERS);
+    assert!(shared.frames.ready_is_empty());
+    assert_eq!(shared.frames.len(), BUFFERS);
     let pending = unsafe { &*shared.pending.get() };
     let runs: Vec<_> = pending.iter().collect();
     assert_eq!(runs.len(), 1);
@@ -1317,36 +1214,31 @@ fn decode_queue_full_takes_the_existing_gap_branch_with_existing_counters() {
 #[test]
 fn pool_initialization_allocates_all_slots_and_counts_actual_bytes() {
     let shared = Shared::new(0, 0, 1);
-    assert_eq!(shared.ready.capacity(), BUFFERS);
-    assert_eq!(shared.free.len(), BUFFERS);
-    let mut bytes = size_of::<AtomicU64>() + 2 * size_of::<usize>();
+    assert_eq!(shared.frames.len(), BUFFERS);
+    assert_eq!(shared.frames.live(), BUFFERS);
+    let mut bytes = engine_allocation::SharedBox::<AtomicU64>::BYTES;
     bytes += unsafe { (&*shared.roster.get()).as_ref().unwrap() }.allocated_bytes();
     bytes += unsafe { &*shared.country_cache.get() }.allocated_bytes();
     // One CountryIntel buffer and one held RaidAirScores table for the pool.
     bytes += shared.country_intel.allocated_bytes();
     bytes += unsafe { (&*shared.raid_air_scores.get()).as_ref().unwrap() }.allocated_bytes();
     bytes += unsafe { &*shared.fixed_layout_buffer.get() }.capacity();
-    // The frame-priority pipeline is one Arc allocation.
-    let arc = |data: std::alloc::Layout| {
-        std::alloc::Layout::new::<[usize; 2]>()
-            .extend(data)
-            .unwrap()
-            .0
-            .pad_to_align()
-            .size()
-    };
-    bytes += arc(std::alloc::Layout::new::<crate::frame_priority::Pipeline>());
-    for slot in &shared.frames {
-        let frame = slot.load(Ordering::Acquire);
+    // The frame-priority pipeline is one shared allocation.
+    bytes += engine_allocation::SharedBox::<crate::frame_priority::Pipeline>::BYTES;
+    // The pool's slots and the capacities a new frame is allocated from.
+    bytes += shared.frames.slot_bytes() as usize;
+    bytes += engine_allocation::SharedBox::<crate::frame_capacities::Capacities>::BYTES;
+    for slot in shared.frames.slots() {
+        let frame = slot.frame.load(Ordering::Acquire);
         assert!(!frame.is_null());
         let frame = unsafe { &*frame };
         let home = frame.extended.country_intel_home().unwrap();
         assert!(home.shares(&shared.country_intel));
-        assert!(Arc::ptr_eq(
+        assert!(engine_allocation::SharedBox::ptr_eq(
             &frame.extended.template_home().unwrap(),
             &shared.template_home
         ));
-        assert!(Arc::ptr_eq(
+        assert!(engine_allocation::SharedBox::ptr_eq(
             &frame.extended.naval_combat_home().unwrap(),
             &shared.naval_combat_home
         ));
@@ -1355,83 +1247,321 @@ fn pool_initialization_allocates_all_slots_and_counts_actual_bytes() {
     assert_eq!(shared.pool_owned(), bytes as u64);
 }
 
+/// A spool stalled for more hours than the pool keeps never holds the game: each hour takes a
+/// new frame instead of waiting, every hour comes out of the decode FIFO in order, and once
+/// the spool catches up the frames past the steady count are freed. On the base the fifth
+/// hour waited for a frame (`buffer_wait_calls` counted it) until the spool returned one.
 #[test]
-fn exhausted_pool_reuses_a_returned_frame_without_allocating_or_dropping() {
-    use std::sync::mpsc;
+fn a_stalled_spool_never_holds_the_game_and_the_pool_returns_to_its_steady_frames() {
+    use std::{collections::HashSet, sync::mpsc};
     let shared = Arc::new(Shared::new(0, 0, 1));
-    let held: Vec<_> = (0..BUFFERS)
-        .map(|_| {
-            let mut wait_ns = u64::MAX;
-            let index = shared.take_frame(&mut wait_ns).unwrap();
-            assert_eq!(wait_ns, 0);
-            index
+    let hours = 3 * BUFFERS + 1;
+    let (send, taken) = mpsc::channel();
+    let producer = {
+        let shared = Arc::clone(&shared);
+        std::thread::spawn(move || {
+            for hour in 0..hours {
+                let mut grow_ns = u64::MAX;
+                let index = shared.take_frame(&mut grow_ns).expect("a frame for every hour");
+                unsafe { (*shared.frames[index].load(Ordering::Acquire)).qpc = hour as i64 };
+                shared.frames.push_decode(index);
+                send.send((index, grow_ns)).unwrap();
+            }
         })
-        .collect();
-    let original = shared.frames[held[0]].load(Ordering::Acquire);
-    unsafe {
-        (*original).qpc = 42;
+    };
+    let mut indices = Vec::new();
+    for hour in 0..hours {
+        let (index, grow_ns) = taken
+            .recv_timeout(crate::TEST_HANG_GUARD)
+            .unwrap_or_else(|_| panic!("the game thread waited for a frame at hour {hour}"));
+        assert_eq!(grow_ns == 0, hour < BUFFERS, "hour {hour} grew {grow_ns} ns");
+        indices.push(index);
     }
-    let bytes = shared.pool_owned();
-    let (send, receive) = mpsc::channel();
-    let consumer = Arc::clone(&shared);
-    let waiter = std::thread::spawn(move || {
-        let mut wait_ns = 0;
-        let result = consumer.take_frame(&mut wait_ns);
-        send.send((result, wait_ns)).unwrap();
-    });
-    // Nothing is returned until the waiter is counted in the wait path, so
-    // it can only leave early by not waiting at all, which ends the thread.
-    while shared.buffer_wait_calls.load(Ordering::Relaxed) == 0 && !waiter.is_finished() {
-        std::thread::yield_now();
-    }
-    let waited = shared.buffer_wait_calls.load(Ordering::Relaxed);
-    let pending = receive.try_recv().is_err();
-    shared.recycle_frame(held[0]);
-    let result = receive.recv();
-    shared.cancel_buffer_wait.store(true, Ordering::Release);
-    waiter.join().unwrap();
-    assert_eq!(waited, 1);
-    assert!(pending);
-    let (index, wait_ns) = result.unwrap();
-    assert_eq!(index, Some(held[0]));
-    assert!(wait_ns > 0);
-    assert_eq!(shared.frames[held[0]].load(Ordering::Acquire), original);
-    assert_eq!(unsafe { (*original).qpc }, 42);
-    assert_eq!(shared.pool_owned(), bytes);
-    assert_eq!(shared.dropped.load(Ordering::Relaxed), 0);
-    for index in held {
+    producer.join().unwrap();
+    assert_eq!(indices.iter().collect::<HashSet<_>>().len(), hours);
+    let backlog = shared.frames.gauge();
+    assert_eq!(backlog.live, hours);
+    assert_eq!(backlog.in_flight, hours);
+    assert_eq!(backlog.grown, (hours - BUFFERS) as u64);
+    assert!(backlog.in_flight_bytes > 0);
+    for (hour, &expected) in indices.iter().enumerate() {
+        let index = shared.frames.pop_decode().expect("every queued hour");
+        assert_eq!(index, expected, "hour {hour} out of order");
+        assert_eq!(
+            unsafe { (*shared.frames[index].load(Ordering::Acquire)).qpc },
+            hour as i64
+        );
         shared.recycle_frame(index);
     }
-    assert_eq!(shared.free.len(), BUFFERS);
+    assert_eq!(shared.frames.pop_decode(), None);
+    let caught_up = shared.frames.gauge();
+    assert_eq!((caught_up.live, caught_up.free, caught_up.in_flight), (BUFFERS, BUFFERS, 0));
+    assert_eq!(caught_up.freed, (hours - BUFFERS) as u64);
+    assert_eq!(caught_up.in_flight_bytes, 0);
+    let mut grow_ns = u64::MAX;
+    let index = shared.take_frame(&mut grow_ns).unwrap();
+    assert_eq!(grow_ns, 0);
+    shared.recycle_frame(index);
 }
 
+/// A builder as slow as an hour, with the spool held back so every hour's frame stays taken: the
+/// game thread wakes it while the last free frame is still there, it keeps building while fewer
+/// than the next hour's and a spare are free, so every hour from the first past the steady frames
+/// takes a frame built ahead and none is built on the game thread. A burst faster than the
+/// builder still gets its frame at once, built on the game thread, and told to stop, the builder
+/// finishes the build under way and builds nothing more. Once the spool catches up its returns
+/// free every frame past the steady ones. On the base the builder was woken only when
+/// the free set was empty and built only what the backlog grew by since its last look, so the
+/// hour after the last steady frame was built on the game thread. Watched: a block anywhere fails
+/// the test with the step it was at.
 #[test]
-fn exhausted_pool_wait_cancels_without_a_live_consumer() {
-    use std::{sync::mpsc, time::Duration};
-    let shared = Arc::new(Shared::new(0, 0, 1));
-    let held: Vec<_> = (0..BUFFERS)
-        .map(|_| shared.take_frame(&mut 0).unwrap())
-        .collect();
-    let (send, receive) = mpsc::channel();
-    let consumer = Arc::clone(&shared);
-    let waiter = std::thread::spawn(move || {
-        send.send(consumer.take_frame(&mut 0)).unwrap();
-    });
-    let deadline = std::time::Instant::now() + Duration::from_secs(2);
-    while shared.buffer_wait_calls.load(Ordering::Relaxed) == 0
-        && std::time::Instant::now() < deadline
-    {
-        std::thread::yield_now();
+fn a_slowed_builder_keeps_a_spare_ahead_so_the_game_thread_never_builds_a_frame() {
+    use crate::frame_pool::{AHEAD, STEADY};
+    use std::sync::mpsc;
+    let shared = Arc::new(Shared::new(0, 0, crate::test_qpc_frequency()));
+    let watching = Arc::clone(&shared);
+    crate::watched(
+        move || format!("{:?}", watching.frames.gauge()),
+        move |steps| {
+            let (started, builds) = mpsc::channel::<()>();
+            let (release, released) = mpsc::channel::<()>();
+            let released = Mutex::new(released);
+            // Each build ahead starts, then finishes once the test has taken the next hour.
+            let installed = shared.build_ahead_seam.set(Box::new(move |at| {
+                if at == BuildAhead::Starting {
+                    let _ = started.send(());
+                    let _ = released
+                        .lock()
+                        .unwrap()
+                        .recv_timeout(crate::TEST_HANG_GUARD);
+                }
+            }));
+            assert!(installed.is_ok());
+            let gauge = || format!("{:?}", shared.frames.gauge());
+            let hour = |at: usize, held: &mut Vec<usize>| {
+                steps.at(format_args!("hour {at}: taking its frame; {}", gauge()));
+                let mut grow_ns = u64::MAX;
+                let index = shared
+                    .take_frame(&mut grow_ns)
+                    .unwrap_or_else(|| panic!("hour {at}: no frame: {}", gauge()));
+                held.push(index);
+                steps.at(format_args!("hour {at}: took frame {index}; {}", gauge()));
+                grow_ns
+            };
+            let build_started = |at: usize| {
+                steps.at(format_args!("after hour {at}: waiting for a build ahead; {}", gauge()));
+                builds
+                    .recv_timeout(crate::TEST_HANG_GUARD)
+                    .unwrap_or_else(|_| {
+                        panic!("no frame was being built ahead after hour {at}: {}", gauge())
+                    });
+            };
+            let mut held = Vec::new();
+            let builder = TestBuilder::start(&shared, release);
+            for at in 1..=STEADY - AHEAD {
+                assert_eq!(hour(at, &mut held), 0, "hour {at}: {}", gauge());
+            }
+            // This hour leaves the last free frame: the builder starts on the next one now.
+            assert_eq!(hour(STEADY - 1, &mut held), 0, "{}", gauge());
+            build_started(STEADY - 1);
+            let hours = 4 * STEADY;
+            for at in STEADY..=hours {
+                assert_eq!(hour(at, &mut held), 0, "hour {at} built its own frame: {}", gauge());
+                let gauge = shared.frames.gauge();
+                assert_eq!(gauge.grown, 0, "hour {at}: {gauge:?}");
+                assert_eq!(gauge.ahead_taken, (at - STEADY) as u64, "hour {at}: {gauge:?}");
+                builder.release();
+                // The next build starts only once the one released is in the free set.
+                build_started(at);
+            }
+            let behind = shared.frames.gauge();
+            assert_eq!((behind.in_flight, behind.free, behind.grown), (hours, 1, 0), "{behind:?}");
+            assert_eq!(behind.built_ahead, (hours - STEADY + 1) as u64, "{behind:?}");
+            // Two hours before the builder finishes: the second builds its own and never waits.
+            assert_eq!(hour(hours + 1, &mut held), 0, "{}", gauge());
+            let grew = hour(hours + 2, &mut held);
+            let burst = shared.frames.gauge();
+            assert_eq!(burst.grown, 1, "{burst:?}");
+            assert!(grew > 0, "{burst:?}");
+            assert!(grew < crate::TEST_HANG_GUARD.as_nanos() as u64, "{grew} ns: {burst:?}");
+            assert_eq!((burst.grow_ns, burst.grow_max_ns), (grew, grew), "{burst:?}");
+            // The builder is held at the start of its next build: that one finishes, no other.
+            steps.at(format_args!("ending the builder; {}", gauge()));
+            builder.end(gauge).unwrap();
+            let behind = shared.frames.gauge();
+            assert_eq!(behind.in_flight, held.len(), "{behind:?}");
+            assert_eq!(behind.free, AHEAD - 1, "{behind:?}");
+            assert_eq!(behind.built_ahead, (hours - STEADY + 2) as u64, "{behind:?}");
+            for index in held.drain(..) {
+                steps.at(format_args!("recycling frame {index}; {}", gauge()));
+                shared.recycle_frame(index);
+            }
+            let caught_up = shared.frames.gauge();
+            assert_eq!(
+                (caught_up.live, caught_up.free, caught_up.in_flight),
+                (STEADY, STEADY, 0),
+                "{caught_up:?}"
+            );
+            assert_eq!(caught_up.freed, (behind.live - STEADY) as u64, "{caught_up:?}");
+        },
+    );
+}
+
+/// A frame builder thread for a test, running the product's loop ([`Shared::build_ahead_until`]).
+/// However the test leaves, dropping it stops the builder and lets a held build finish; the test
+/// waits for it only through [`Self::end`], which is bounded.
+struct TestBuilder {
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    release: Option<std::sync::mpsc::Sender<()>>,
+    builder: Option<crate::Ending<std::io::Result<()>>>,
+}
+
+impl TestBuilder {
+    fn start(shared: &Arc<Shared>, release: std::sync::mpsc::Sender<()>) -> Self {
+        Self::following(shared, release, || {})
     }
-    shared.cancel_buffer_wait.store(true, Ordering::Release);
-    let result = receive.recv_timeout(crate::TEST_HANG_GUARD);
-    waiter.join().unwrap();
-    assert_eq!(result.unwrap(), None);
-    for index in held {
-        shared.recycle_frame(index);
+
+    /// With `follow` run before each of the builder's looks.
+    fn following(
+        shared: &Arc<Shared>,
+        release: std::sync::mpsc::Sender<()>,
+        follow: impl FnMut() + Send + 'static,
+    ) -> Self {
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let builder = {
+            let (shared, stop) = (Arc::clone(shared), Arc::clone(&stop));
+            crate::spawn_ending(move || shared.build_ahead_until(&stop, follow))
+        };
+        Self {
+            stop,
+            release: Some(release),
+            builder: Some(builder),
+        }
     }
-    // Cancellation does not discard a frame that is already available.
-    assert!(shared.take_frame(&mut 0).is_some());
+
+    /// Lets the build held at its start finish.
+    fn release(&self) {
+        if let Some(release) = &self.release {
+            release.send(()).unwrap();
+        }
+    }
+
+    fn stop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        drop(self.release.take());
+        if let Some(builder) = &self.builder {
+            builder.thread().unpark();
+        }
+    }
+
+    /// Stops the builder and returns what its loop returned.
+    fn end(mut self, gauge: impl Fn() -> String) -> std::io::Result<()> {
+        self.stop();
+        let builder = self.builder.take().expect("a started builder");
+        builder.end(|| format!("the frame builder, stopped, ({})", gauge()))
+    }
+}
+
+impl Drop for TestBuilder {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+/// Told to stop, the frame builder builds nothing more and ends: parked with the frames it keeps
+/// ahead free, in the middle of a build with none free, and held before its look with none free.
+/// On the base it read `stop` only before a look: stopped mid-build or before its look while
+/// frames were short, it built until two were free, then parked without reading `stop` again,
+/// and the stop's wake had been used by a wait inside the build (here the test's hold), so it
+/// never ended.
+#[test]
+fn a_stopped_frame_builder_builds_nothing_more_and_ends() {
+    use crate::frame_pool::STEADY;
+    use std::sync::mpsc;
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Stopped {
+        Parked,
+        MidBuild,
+        BeforeItsLook,
+    }
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Seen {
+        Build(BuildAhead),
+        Looking,
+    }
+    for stopped in [Stopped::Parked, Stopped::MidBuild, Stopped::BeforeItsLook] {
+        let shared = Arc::new(Shared::new(0, 0, crate::test_qpc_frequency()));
+        let watching = Arc::clone(&shared);
+        crate::watched(
+            move || format!("{stopped:?}: {:?}", watching.frames.gauge()),
+            move |steps| {
+                let gauge = || format!("{stopped:?}: {:?}", shared.frames.gauge());
+                let (seen, sightings) = mpsc::channel::<Seen>();
+                let (release, released) = mpsc::channel::<()>();
+                let released = Arc::new(Mutex::new(released));
+                let hold = move || {
+                    let _ = released.lock().unwrap().recv_timeout(crate::TEST_HANG_GUARD);
+                };
+                let installed = shared.build_ahead_seam.set(Box::new({
+                    let (seen, hold) = (Mutex::new(seen.clone()), hold.clone());
+                    move |at| {
+                        let _ = seen.lock().unwrap().send(Seen::Build(at));
+                        if stopped == Stopped::MidBuild && at == BuildAhead::Starting {
+                            hold();
+                        }
+                    }
+                }));
+                assert!(installed.is_ok());
+                let mut looks = 0;
+                let builder = TestBuilder::following(&shared, release, move || {
+                    looks += 1;
+                    if looks > 1 && stopped == Stopped::BeforeItsLook {
+                        let _ = seen.send(Seen::Looking);
+                        hold();
+                    }
+                });
+                let mut starts = 0;
+                let mut wait_for = |wanted: Seen| {
+                    steps.at(format_args!("waiting for {wanted:?}; {}", gauge()));
+                    loop {
+                        let at = sightings
+                            .recv_timeout(crate::TEST_HANG_GUARD)
+                            .unwrap_or_else(|_| panic!("never saw {wanted:?}: {}", gauge()));
+                        starts += usize::from(at == Seen::Build(BuildAhead::Starting));
+                        if at == wanted {
+                            break;
+                        }
+                    }
+                };
+                wait_for(Seen::Build(BuildAhead::Parking));
+                if stopped != Stopped::Parked {
+                    for at in 0..STEADY {
+                        steps.at(format_args!("taking frame {at}; {}", gauge()));
+                        let mut grow_ns = u64::MAX;
+                        shared.take_frame(&mut grow_ns).expect("a free frame");
+                        assert_eq!(grow_ns, 0, "{}", gauge());
+                    }
+                    wait_for(match stopped {
+                        Stopped::MidBuild => Seen::Build(BuildAhead::Starting),
+                        _ => Seen::Looking,
+                    });
+                }
+                steps.at(format_args!("stopping the builder; {}", gauge()));
+                builder.end(gauge).unwrap();
+                starts += sightings
+                    .try_iter()
+                    .filter(|&at| at == Seen::Build(BuildAhead::Starting))
+                    .count();
+                let ended = shared.frames.gauge();
+                let built = usize::from(stopped == Stopped::MidBuild);
+                assert_eq!(starts, built, "{stopped:?}: {ended:?}");
+                assert_eq!(ended.built_ahead, built as u64, "{stopped:?}: {ended:?}");
+                let free = if stopped == Stopped::Parked { STEADY } else { built };
+                assert_eq!(ended.free, free, "{stopped:?}: {ended:?}");
+                assert_eq!(ended.grown, 0, "{stopped:?}: {ended:?}");
+            },
+        );
+    }
 }
 
 #[test]
@@ -1457,11 +1587,10 @@ fn acquisition_panic_stops_admission_and_preserves_losses_without_waiting() {
     };
     assert!(!completed);
     assert!(shared.acquisition_failed());
-    assert!(shared.cancel_buffer_wait.load(Ordering::Acquire));
     assert_eq!(shared.acquisition_panics.load(Ordering::Acquire), 1);
-    assert_eq!(shared.free.len(), BUFFERS - 1);
+    assert_eq!(shared.frames.len(), BUFFERS - 1);
     assert_eq!(shared.take_frame(&mut 0), None);
-    assert_eq!(shared.buffer_wait_calls.load(Ordering::Relaxed), 0);
+    assert_eq!(shared.frames.live(), BUFFERS);
 
     // During a delayed hook restore, record the next hour as a loss without
     // running acquisition again or consuming another capture buffer.
@@ -1479,9 +1608,9 @@ fn acquisition_panic_stops_admission_and_preserves_losses_without_waiting() {
 
     // Cancellation also works when no healthy frame remains. Do not
     // reclaim the partially restored frame as if acquisition succeeded.
-    while shared.free.pop().is_some() {}
+    while shared.frames.pop().is_some() {}
     assert_eq!(shared.take_frame(&mut 0), None);
-    assert_eq!(shared.completed[index].load(Ordering::Acquire), 0);
+    assert_eq!(shared.frames.slot(index).completed.load(Ordering::Acquire), 0);
 }
 
 fn clock(hour: i32, signal: i64) -> Clock {
@@ -1563,45 +1692,6 @@ fn capacity_growth_keeps_primary_rows_and_name_arena_sized() {
     let mut idle = Captured::new();
     idle.grow(&mut capacities);
     assert_eq!(idle.allocated_bytes(), frame.allocated_bytes());
-}
-
-#[test]
-fn fallback_census_growth_consumes_the_failed_attempt_once() {
-    use super::divisions_test_kit as kit;
-    let bytes = kit::fixture();
-    let mut frame = Captured::new();
-    frame.division_fallback = crate::division_census::Census::new_worker();
-    frame
-        .division_fallback
-        .capture(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE, 64);
-    assert!(frame.division_fallback.overflowed);
-    let mut capacities = INITIAL_CAPACITIES;
-    frame.grow(&mut capacities);
-    assert!(frame.division_fallback.initialized());
-    assert!(!frame.division_fallback.overflowed);
-    let grown = frame.division_fallback.allocated_bytes();
-    assert!(grown > 0);
-
-    // A subsequent frame that never used the fallback carries no new
-    // overflow request and must retain, rather than double, its storage.
-    frame.grow(&mut capacities);
-    assert_eq!(frame.division_fallback.allocated_bytes(), grown);
-
-    frame
-        .division_fallback
-        .capture(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE, 64);
-    assert_eq!(
-        frame.division_fallback.outcome(64),
-        Outcome::Rows { len: 3 },
-    );
-    let lease = Arc::clone(frame.division_fallback.unit_inputs().unwrap());
-    frame.extended.install_unit_inputs(Some(Arc::clone(&lease)));
-    assert_eq!(Arc::strong_count(&lease), 3);
-    frame.extended.release_unit_inputs();
-    assert_eq!(Arc::strong_count(&lease), 2);
-    drop(lease);
-    frame.grow(&mut capacities);
-    assert_eq!(frame.division_fallback.allocated_bytes(), grown);
 }
 
 fn cadence_clock(hour: i32, signal: i64) -> Clock {
@@ -1736,7 +1826,7 @@ fn table_retry_preserves_admitted_politics_mutations() {
         },
         &memory,
     );
-    let mut cursors = [LaneCursor::default()];
+    let mut cursors = vec![LaneCursor::default()];
     let handoff = fixture.handoff(&mut cursors).unwrap();
     let shared = Shared::new(0, 0, 1);
     let mut cadence = prepared_cadence();
@@ -1781,21 +1871,13 @@ fn wars_typed_walk_preserves_primary_native_rows() {
 }
 
 #[test]
-fn wars_typed_capacities_keep_full_validation_and_exact_unread_counts() {
+fn wars_typed_walk_keeps_full_validation_from_any_starting_storage() {
     use super::wars_test_kit as kit;
     let bytes = kit::fixture();
     let memory = kit::memory(&bytes);
     for cap in [0usize, 1, 2, 64] {
         let direct = kit::direct(&memory, cap);
-        let expected = if cap >= 2 {
-            Outcome::Rows { len: 2 }
-        } else {
-            Outcome::Truncated {
-                len: cap,
-                unread_rows: (2 - cap) as u32,
-            }
-        };
-        assert_eq!(direct.owned_outcome, expected);
+        assert_eq!(direct.owned_outcome, Outcome::Rows { len: 2 }, "capacity {cap}");
     }
 }
 
@@ -1883,37 +1965,15 @@ fn divisions_split_copy_matches_direct_walk() {
 }
 
 #[test]
-fn divisions_split_copy_matches_direct_walk_under_truncation() {
+fn divisions_split_copy_matches_direct_walk_from_short_storage() {
     use super::divisions_test_kit as kit;
     let bytes = kit::fixture();
     let memory = kit::memory(&bytes);
-    let direct = kit::direct(&memory, [1; 6]);
+    let direct = kit::direct(&memory, [64; 6]);
     let (split, report, _) = kit::split(&memory, [1; 6]);
     assert!(report.raw_ok);
     kit::assert_matches_direct(&split, &direct);
-    // A truncated divisions walk makes every dependent census
-    // incomplete on both paths with the identical reason.
-    assert_eq!(
-        split.divisions_outcome,
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 2
-        }
-    );
-    for outcome in [
-        split.equipment_outcome,
-        split.groups_outcome,
-        split.requests_outcome,
-        split.deliveries_outcome,
-        split.produced_outcome,
-    ] {
-        assert_eq!(
-            outcome,
-            Outcome::Unavailable {
-                reason: "source census incomplete"
-            }
-        );
-    }
+    assert_eq!(split.divisions_outcome, Outcome::Rows { len: 3 });
 }
 
 #[test]
@@ -2091,13 +2151,13 @@ fn divisions_owned_success_supplies_both_live_companions_before_decode_without_e
     let mut first = DivisionsJob::new();
     let report = copy_divisions_refresh(&memory, ctx, &mut first);
     assert!(report.raw_ok);
-    assert_eq!(first.source_outcome(64), Outcome::Rows { len: 3 });
-    let (first_sources, _) = first.census.sources(64);
+    assert_eq!(first.source_outcome(), Outcome::Rows { len: 3 });
+    let (first_sources, _) = first.census.sources();
     assert_eq!(first_sources[0].division, 101);
     assert_eq!(first_sources[0].template, 0x3455_0000_0034);
     assert_eq!(first_sources[0].country, 1);
     let mut frame = Captured::new();
-    first.supply_sources(&mut frame.extended, frame.divisions.len(), None);
+    first.supply_sources(&mut frame.extended, None);
     frame
         .extended
         .install_unit_inputs(first.census.unit_inputs().cloned());
@@ -2148,7 +2208,7 @@ fn divisions_owned_success_supplies_both_live_companions_before_decode_without_e
 }
 
 #[test]
-fn divisions_copied_sources_distinguish_semantic_faults_capacity_and_empty_census() {
+fn divisions_copied_sources_distinguish_semantic_faults_and_empty_census() {
     use super::divisions_test_kit as kit;
     let ctx = DivisionsCopyContext {
         base: 0,
@@ -2167,18 +2227,9 @@ fn divisions_copied_sources_distinguish_semantic_faults_capacity_and_empty_censu
         let report = copy_divisions_refresh(&kit::memory(&bytes), ctx, &mut first);
         assert!(report.raw_ok); // No overflow is not a successful census.
         assert!(matches!(
-            first.source_outcome(64),
+            first.source_outcome(),
             Outcome::Unavailable { .. }
         ));
-        if fault == kit::A2 || fault == kit::A2 + carmy::STANDARD_TEMPLATE {
-            assert_eq!(
-                first.source_outcome(1),
-                Outcome::Truncated {
-                    len: 1,
-                    unread_rows: 2
-                }
-            );
-        }
     }
     let mut bytes = kit::fixture();
     for address in [kit::CTAB + 8, kit::CTAB + 16, kit::CTAB + 24] {
@@ -2188,7 +2239,7 @@ fn divisions_copied_sources_distinguish_semantic_faults_capacity_and_empty_censu
     let report = copy_divisions_refresh(&kit::memory(&bytes), ctx, &mut first);
     assert!(report.raw_ok);
     assert!(matches!(
-        first.source_outcome(0),
+        first.source_outcome(),
         Outcome::Unavailable { .. }
     ));
     // The pointer census is empty and complete for independent consumers;
@@ -2199,16 +2250,8 @@ fn divisions_copied_sources_distinguish_semantic_faults_capacity_and_empty_censu
         bytes[country + ccountry::DIVISIONS..country + ccountry::DIVISIONS + 16].fill(0);
     }
     copy_divisions_refresh(&kit::memory(&bytes), ctx, &mut first);
-    assert_eq!(first.source_outcome(0), Outcome::Rows { len: 0 });
-    assert!(first.census.sources(64).0.is_empty()); // Recycled rows were cleared.
-    first.census = crate::division_census::Census::default();
-    let bytes = kit::fixture();
-    let report = copy_divisions_refresh(&kit::memory(&bytes), ctx, &mut first);
-    assert!(!report.raw_ok && first.census.overflowed);
-    assert!(matches!(
-        first.source_outcome(64),
-        Outcome::Unavailable { .. }
-    ));
+    assert_eq!(first.source_outcome(), Outcome::Rows { len: 0 });
+    assert!(first.census.sources().0.is_empty()); // Recycled rows were cleared.
 }
 
 #[test]
@@ -2226,7 +2269,7 @@ fn divisions_owned_census_survives_a_private_core_field_fault() {
     }
     let bytes = kit::fixture();
     let mut census = crate::division_census::Census::new();
-    census.capture(&Fault(&bytes), kit::BASE, kit::GAME_STATE, 64);
+    census.capture(&Fault(&bytes), kit::BASE, kit::GAME_STATE);
     assert_eq!(census.census_outcome(), Outcome::Rows { len: 3 });
     assert_eq!(
         census
@@ -2237,7 +2280,7 @@ fn divisions_owned_census_survives_a_private_core_field_fault() {
         [kit::A1, kit::A2, kit::A3]
     );
     assert_eq!(
-        census.rows(64).1,
+        census.rows().1,
         Outcome::Unavailable {
             reason: "division hit points unreadable"
         }
@@ -2253,20 +2296,14 @@ fn divisions_shared_empty_country_census_preserves_independent_fog_success() {
     }
     let memory = kit::memory(&bytes);
     let mut census = crate::division_census::Census::new();
-    census.capture(&memory, kit::BASE, kit::GAME_STATE, 64);
+    census.capture(&memory, kit::BASE, kit::GAME_STATE);
     let direct =
-        engine_visibility::unit_viewer_entry::walk(&memory, kit::BASE, kit::GAME_STATE, &mut []);
+        engine_visibility::unit_viewer_entry::walk(&memory, kit::BASE, kit::GAME_STATE, &mut Vec::new());
     assert_eq!(direct, Outcome::Rows { len: 0 });
-    let shared = engine_visibility::unit_viewer_entry::walk_with_divisions(
-        &memory,
-        kit::BASE,
-        kit::GAME_STATE,
-        &mut [],
-        Some(census.intel_sources()),
-    );
+    let shared = engine_visibility::unit_viewer_entry::walk_with_divisions_buffer(&memory, kit::BASE, kit::GAME_STATE, engine_native::walk::Buffer::Count, Some(census.intel_sources()));
     assert_eq!(shared, direct);
     assert_eq!(
-        census.rows(0).1,
+        census.rows().1,
         Outcome::Unavailable {
             reason: "country table has no readable countries"
         }
@@ -2306,8 +2343,8 @@ fn divisions_owned_batch_does_not_retry_a_failed_field_into_success() {
     );
     memory.pending.set(true);
     let mut census = crate::division_census::Census::new();
-    census.capture(&memory, kit::BASE, kit::GAME_STATE, 64);
-    assert_eq!(census.rows(64).1, direct.divisions_outcome);
+    census.capture(&memory, kit::BASE, kit::GAME_STATE);
+    assert_eq!(census.rows().1, direct.divisions_outcome);
 }
 
 #[test]
@@ -2350,10 +2387,10 @@ fn divisions_seeded_worker_preserves_primary_trace_and_never_repeats_core() {
     assert!(copy_divisions_inputs_refresh(&memory, ctx, &mut payload));
     let seed_reads = read_accounting::snapshot();
     assert!(seed_reads[TableId::Divisions.index()].bytes > 0);
-    let inputs = Arc::clone(payload.census.unit_inputs().unwrap());
+    let inputs = engine_allocation::SharedBox::clone(payload.census.unit_inputs().unwrap());
     let report = copy_divisions_core_refresh(&memory, ctx, &mut payload);
     assert!(report.raw_ok);
-    assert!(Arc::ptr_eq(&inputs, payload.census.unit_inputs().unwrap()));
+    assert!(engine_allocation::SharedBox::ptr_eq(&inputs, payload.census.unit_inputs().unwrap()));
     let accounted = read_accounting::snapshot();
     let repeated = copy_divisions_core_refresh(&NoRead, ctx, &mut payload);
     assert_eq!(repeated.copy_ticks, report.copy_ticks);
@@ -2361,8 +2398,8 @@ fn divisions_seeded_worker_preserves_primary_trace_and_never_repeats_core() {
     let mut composed = DivisionsJob::new();
     copy_divisions_refresh(&composed_memory, ctx, &mut composed);
     assert_eq!(
-        payload.census.rows(ctx.row_capacity),
-        composed.census.rows(ctx.row_capacity)
+        payload.census.rows(),
+        composed.census.rows()
     );
     assert_eq!(*memory.0.calls.borrow(), *composed_memory.calls.borrow());
     assert_eq!(
@@ -2426,7 +2463,6 @@ fn divisions_seeded_worker_rejects_changed_context_without_reacquiring_inputs() 
     let context = DivisionsCopyContext {
         base: kit::BASE,
         game_state: kit::GAME_STATE,
-        row_capacity: 64,
         ..Default::default()
     };
     let mut job = DivisionsJob::new();
@@ -2435,37 +2471,14 @@ fn divisions_seeded_worker_rejects_changed_context_without_reacquiring_inputs() 
         context,
         &mut job,
     ));
-    let lease = Arc::clone(job.census.unit_inputs().unwrap());
+    let lease = engine_allocation::SharedBox::clone(job.census.unit_inputs().unwrap());
     let changed = DivisionsCopyContext {
-        row_capacity: 0,
+        game_state: context.game_state + 8,
         ..context
     };
     assert!(!copy_divisions_core_refresh(&NoRead, changed, &mut job).raw_ok);
-    assert!(Arc::ptr_eq(&lease, job.census.unit_inputs().unwrap()));
+    assert!(engine_allocation::SharedBox::ptr_eq(&lease, job.census.unit_inputs().unwrap()));
     assert!(!copy_divisions_core_refresh(&NoRead, context, &mut job).raw_ok);
-}
-
-#[test]
-fn divisions_staging_overflow_falls_back_to_typed_walk() {
-    use super::divisions_test_kit as kit;
-    let bytes = kit::fixture();
-    let memory = kit::memory(&bytes);
-    let ctx = DivisionsCopyContext {
-        base: kit::BASE,
-        game_state: kit::GAME_STATE,
-        ..Default::default()
-    };
-    let mut first = DivisionsJob::new();
-    first.census = crate::division_census::Census::default();
-    let report = copy_divisions_refresh(&memory, ctx, &mut first);
-    assert!(!report.raw_ok);
-    assert!(first.grow_for_next());
-    // The typed walk still produces the identical rows through the
-    // existing path, so the fallback keeps every row.
-    let direct = kit::direct(&memory, [64; 6]);
-    assert_eq!(direct.divisions_outcome, Outcome::Rows { len: 3 });
-    assert_eq!(direct.equipment_outcome, Outcome::Rows { len: 3 });
-    assert_eq!(direct.groups_outcome, Outcome::Rows { len: 3 });
 }
 
 #[test]
@@ -2493,7 +2506,6 @@ fn inactive_division_details_skip_capacity_reads_and_decode_installation() {
     let context = DivisionsCopyContext {
         base: kit::BASE,
         game_state: kit::GAME_STATE,
-        row_capacity: 64,
         source_capacity: 64,
         detail_capacities: [usize::MAX; 5],
         details_active: false,
@@ -2504,10 +2516,10 @@ fn inactive_division_details_skip_capacity_reads_and_decode_installation() {
     };
     let reads = crate::read_accounting::Capture::new();
     assert!(copy_divisions_inputs_refresh(&memory, context, &mut job));
-    let lease = Arc::clone(job.census.unit_inputs().unwrap());
+    let lease = engine_allocation::SharedBox::clone(job.census.unit_inputs().unwrap());
     let report = copy_divisions_core_refresh(&memory, context, &mut job);
     assert!(report.raw_ok);
-    assert!(Arc::ptr_eq(&lease, job.census.unit_inputs().unwrap()));
+    assert!(engine_allocation::SharedBox::ptr_eq(&lease, job.census.unit_inputs().unwrap()));
     assert_eq!(job.details.allocated_bytes(), 0);
     let skipped = Outcome::Unavailable {
         reason: replay_data::cadence::SKIPPED_REASON,
@@ -2523,9 +2535,9 @@ fn inactive_division_details_skip_capacity_reads_and_decode_installation() {
     }
     let mut census = crate::division_census::Census::new();
     census.capture_inputs(&reference, context.base, context.game_state);
-    census.capture_core(&reference, context.row_capacity);
+    census.capture_core(&reference);
     assert_eq!(*memory.0.calls.borrow(), *reference.calls.borrow());
-    assert_eq!(job.census.rows(64), census.rows(64));
+    assert_eq!(job.census.rows(), census.rows());
     drop(lease);
 
     let mut frame = Captured::new();
@@ -2572,19 +2584,15 @@ fn divisions_copy_decode_counters_keep_game_thread_cost_separate() {
 }
 
 #[test]
-fn divisions_truncation_matrix_matches_direct_with_same_caps() {
-    // B3: zero-cap / one-row / exact-fit (3) / ample run typed AND
-    // copy-decode against the SAME memory with the SAME pooled caps,
-    // asserting identical outcome (incl. len/unread) and identical rows.
-    // The 3-division fixture makes cap 1 the overflow-by-one arm for
-    // divisions (total 3, truncated with dependents unavailable); cap 0
-    // the massive/zero-rows arm.
+fn divisions_split_from_any_pooled_storage_matches_the_whole_direct_walk() {
+    // Zero, one row, an exact fit and ample pooled storage all grow to the
+    // whole 3-division census and its dependents.
     use super::divisions_test_kit as kit;
     let bytes = kit::fixture();
     let memory = kit::memory(&bytes);
+    let direct = kit::direct(&memory, [64; 6]);
     for cap in [0usize, 1, 3, 64] {
         let caps = [cap; 6];
-        let direct = kit::direct(&memory, caps);
         let (split, report, _) = kit::split(&memory, caps);
         assert!(report.raw_ok, "cap={cap}");
         kit::assert_matches_direct(&split, &direct);
@@ -2603,7 +2611,7 @@ fn divisions_truncation_matrix_matches_direct_with_same_caps() {
 }
 
 #[test]
-fn cancelled_no_frame_acquisition_marks_naval_sources_unavailable_before_reuse() {
+fn no_frame_acquisition_marks_naval_sources_unavailable_before_reuse() {
     use crate::naval_result_sources::{self as sources, Entry, tests::Observation};
     let _observation = Observation::new();
     sources::tests::setup(1, 0);
@@ -2611,12 +2619,8 @@ fn cancelled_no_frame_acquisition_marks_naval_sources_unavailable_before_reuse()
     sources::boundary(Some(clock(41, 7).with_campaign_id(0)));
     let shared = Shared::new(0, 0, 1);
     shared.roster_ready.store(true, Ordering::Release);
-    let held: Vec<_> = (0..BUFFERS)
-        .map(|_| shared.take_frame(&mut 0).unwrap())
-        .collect();
-    shared.cancel_buffer_wait.store(true, Ordering::Release);
-    let index = shared.take_frame(&mut 0);
-    assert_eq!(index, None);
+    // An hour without a frame: its frame could not be allocated.
+    let index = None;
     unsafe {
         acquire(
             &shared,
@@ -2631,15 +2635,13 @@ fn cancelled_no_frame_acquisition_marks_naval_sources_unavailable_before_reuse()
             },
         );
     }
-    let mut entries = [Entry::default(); 1];
+    let mut entries = vec![Entry::default(); 1];
     assert_eq!(
         sources::drain(&mut entries).unwrap_err(),
         "naval result sources lost observation; interval unavailable"
     );
-    // Detach cancellation still permits a later callback to obtain a newly
-    // recycled frame. That must not make the lost event interval complete.
-    shared.recycle_frame(held[0]);
-    assert_eq!(shared.take_frame(&mut 0), Some(held[0]));
+    // A later callback obtains a frame. That must not make the lost event interval complete.
+    let held = shared.take_frame(&mut 0).unwrap();
     sources::boundary(Some(clock(42, 7).with_campaign_id(0)));
     assert_eq!(
         sources::drain(&mut entries).unwrap_err(),
@@ -2651,9 +2653,7 @@ fn cancelled_no_frame_acquisition_marks_naval_sources_unavailable_before_reuse()
     let losses = unsafe { &*shared.pending.get() };
     let run = losses.iter().next().unwrap();
     assert_eq!((run.first_hour, run.last_hour, run.count), (41, 41, 1));
-    for index in held {
-        shared.recycle_frame(index);
-    }
+    shared.recycle_frame(held);
 }
 
 #[test]
@@ -2676,7 +2676,7 @@ fn contained_acquisition_failure_marks_the_naval_event_interval_unavailable() {
     assert!(forwarded);
     assert_eq!(shared.acquisition_panics.load(Ordering::Acquire), 1);
     assert_eq!(
-        sources::drain(&mut [Entry::default(); 1]).unwrap_err(),
+        sources::drain(&mut vec![Entry::default(); 1]).unwrap_err(),
         "naval result sources lost observation; interval unavailable"
     );
 }
@@ -2722,12 +2722,12 @@ fn campaign_shared() -> Shared {
 #[test]
 fn campaign_clock_callback_keeps_long_identity_and_loss_bytes_under_allocator_denial() {
     let mut memory = campaign_clock_memory(5_001);
-    let shared = campaign_shared();
-    shared.prepare_clock_capture(&memory).unwrap();
+    let mut shared = campaign_shared();
+    shared.prepare_clock_capture(&memory);
     let index = shared.take_frame(&mut 0).unwrap();
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     let before = frame.allocated_bytes();
-    let mut capture = shared.wait_clock_preparation(&memory);
+    let capture = unsafe { shared.prepared_clock_capture(&memory) };
     let cadence = unsafe { &mut *shared.cadence.get() };
     let pending = unsafe { &mut *shared.pending.get() };
     crate::test_support::with_allocations_denied(|| {
@@ -2767,80 +2767,167 @@ fn campaign_clock_callback_keeps_long_identity_and_loss_bytes_under_allocator_de
     });
     assert_eq!(pending.iter().count(), 2);
     assert_eq!(frame.allocated_bytes(), before);
-    drop(capture);
     shared.recycle_frame(index);
 }
 
+/// The game thread grows the clock destination itself. Refused by the allocator, the growth
+/// fails the hour's clock read, by the allocation failure, and nothing on that path aborts; the
+/// next callback grows it. No assertion runs inside the denial: a panic's message allocates.
 #[test]
-fn campaign_clock_growth_waits_for_spool_preparation_without_callback_allocation() {
+fn campaign_clock_growth_refused_by_the_allocator_fails_the_read_and_a_later_callback_grows() {
     let short = campaign_clock_memory(1);
     let long = campaign_clock_memory(5_001);
-    let shared = campaign_shared();
-    shared.prepare_clock_capture(&short).unwrap();
-    std::thread::scope(|scope| {
-        scope.spawn(|| {
-            while shared.clock_required() < 5_001 {
-                std::thread::yield_now();
-            }
-            loop {
-                shared.prepare_clock_capture(&long).unwrap();
-                if shared
-                    .clock_capture
-                    .try_lock()
-                    .is_ok_and(|capture| capture.prepared >= 5_001)
-                {
-                    break;
-                }
-                std::thread::yield_now();
-            }
-        });
-        crate::test_support::with_allocations_denied(|| {
-            let mut capture = shared.wait_clock_preparation(&long);
-            let (entry, _) = capture.read(&long, 0).unwrap();
-            let index = shared.take_frame(&mut 0).unwrap();
-            let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
-            frame.set_clock(Some(entry));
-            assert_eq!(
-                frame.clock.as_ref().unwrap().campaign_id.as_bytes().len(),
-                5_001
-            );
-            shared.recycle_frame(index);
-        });
+    let mut shared = campaign_shared();
+    shared.prepare_clock_capture(&short);
+    let (prepared, read) = crate::test_support::with_allocations_denied(|| {
+        let capture = unsafe { shared.prepared_clock_capture(&long) };
+        let read = capture.read(&long, 0).is_ok();
+        (capture.prepared, read)
     });
+    assert_eq!((prepared, read), (1, false));
+    let capture = unsafe { shared.prepared_clock_capture(&long) };
+    assert_eq!(capture.prepared, 5_001);
+    assert!(capture.read(&long, 0).is_ok());
 }
 
+/// A new slot segment the allocator refuses gives the hour's frame growth up without aborting,
+/// and the pool is as it was. Each of the frame's own allocations is refused in turn by
+/// `allocation_failure_tests::every_refused_allocation_of_a_new_frame_names_its_hour_and_never_aborts`,
+/// in a child with the terminal hooks installed. No assertion runs inside the denial: a panic's
+/// message allocates.
 #[test]
-fn campaign_clock_gate_does_not_block_frame_return_or_shutdown() {
+fn frame_growth_refused_a_slot_segment_gives_up_without_aborting() {
+    let shared = Shared::new(0, 0, 1);
+    let held: Vec<_> = (0..BUFFERS)
+        .map(|_| shared.take_frame(&mut 0).unwrap())
+        .collect();
+    let mut grow_ns = u64::MAX;
+    let segment = crate::test_support::with_allocations_denied(|| shared.take_frame(&mut grow_ns));
+    assert_eq!((segment, grow_ns), (None, 0));
+    assert_eq!((shared.frames.made(), shared.frames.live()), (BUFFERS, BUFFERS));
+    let grown = shared.take_frame(&mut grow_ns).unwrap();
+    assert!(grow_ns > 0);
+    for index in held.into_iter().chain(Some(grown)) {
+        shared.recycle_frame(index);
+    }
+    assert_eq!((shared.frames.made(), shared.frames.live()), (BUFFERS + 1, BUFFERS));
+}
+
+/// The spool grows only the free frames for a longer campaign id, never the game thread's own
+/// clock buffers: the hour for that id grows those itself, and finds its frame already grown.
+#[test]
+fn campaign_clock_preparation_grows_on_the_game_thread_without_waiting() {
     let short = campaign_clock_memory(1);
     let long = campaign_clock_memory(5_001);
-    let shared = campaign_shared();
-    shared.prepare_clock_capture(&short).unwrap();
-    let capture = shared.wait_clock_preparation(&short);
-    // Spool remains able to process/return frames while a callback holds the clock.
-    shared.prepare_clock_capture(&long).unwrap();
-    assert_eq!(capture.prepared, 1);
-    drop(capture);
-    shared.cancel_buffer_wait.store(true, Ordering::Release);
-    let mut capture = shared.wait_clock_preparation(&long);
-    assert!(capture.read(&long, 0).is_err());
+    let mut shared = campaign_shared();
+    shared.prepare_clock_capture(&short);
+    shared.prepare_frame_clocks(&long);
+    assert_eq!(unsafe { shared.prepared_clock_capture(&short) }.prepared, 1);
+    let capture = unsafe { shared.prepared_clock_capture(&long) };
+    assert_eq!(capture.prepared, 5_001);
+    assert!(capture.read(&long, 0).is_ok());
+    // Every free frame was grown, one at a time past the next hour's and its spare: no hour
+    // allocates for its clock.
+    let frames = crate::test_support::with_allocations_denied(|| {
+        let frames: [Option<usize>; BUFFERS] = std::array::from_fn(|_| shared.take_frame(&mut 0));
+        for index in frames.into_iter().flatten() {
+            shared.recycle_frame(index);
+        }
+        frames
+    });
+    assert!(frames.iter().all(Option::is_some), "a frame was short: {frames:?}");
+}
+
+/// The spool's clock preparation, held while it grows a free frame for a longer campaign id,
+/// never holds up the hour that needs that id: the game thread grows its own buffers and the
+/// frame it takes, and reads the exact clock without waiting. On the base the hour took the
+/// clock lock that the spool held through its growth, and waited for it.
+#[test]
+fn an_hour_needing_a_longer_clock_never_waits_for_the_spool_s_clock_preparation() {
+    use std::sync::mpsc;
+    let short = campaign_clock_memory(1);
+    let long = Arc::new(campaign_clock_memory(5_001));
+    let mut shared = campaign_shared();
+    shared.prepare_clock_capture(&short);
+    let (holding, held) = mpsc::channel::<()>();
+    let (release, released) = mpsc::channel::<()>();
+    let released = Mutex::new(released);
+    let installed = shared.clock_frame_seam.set(Box::new(move || {
+        let _ = holding.send(());
+        let _ = released
+            .lock()
+            .unwrap()
+            .recv_timeout(crate::TEST_HANG_GUARD);
+    }));
+    assert!(installed.is_ok());
+    let shared = Arc::new(shared);
+    let watching = Arc::clone(&shared);
+    crate::watched(
+        move || format!("{:?}", watching.frames.gauge()),
+        move |steps| {
+            // Dropped on every way out, so the held preparation always finishes.
+            let release = release;
+            let spool = {
+                let (shared, long) = (Arc::clone(&shared), Arc::clone(&long));
+                crate::spawn_ending(move || shared.prepare_frame_clocks(&*long))
+            };
+            steps.at("waiting for the spool's clock preparation to hold a frame");
+            held.recv_timeout(crate::TEST_HANG_GUARD)
+                .unwrap_or_else(|_| panic!("the spool's clock preparation never held a frame"));
+            // Left behind, never joined, if it waits.
+            let hour = {
+                let (shared, long) = (Arc::clone(&shared), Arc::clone(&long));
+                crate::spawn_ending(move || {
+                    let capture = unsafe { shared.prepared_clock_capture(&*long) };
+                    let index = shared.take_frame(&mut 0);
+                    let read = capture.read(&*long, 0);
+                    match (index, read) {
+                        (Some(index), Ok((entry, epoch))) => {
+                            let frame =
+                                unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
+                            frame.set_clock(Some(entry));
+                            let clock = frame.clock.as_ref().unwrap();
+                            Ok((index, clock.hour, clock.campaign_id.as_bytes().to_vec(), epoch))
+                        }
+                        (index, read) => Err(format!("frame {index:?}, read {:?}", read.err())),
+                    }
+                })
+            };
+            steps.at("the hour, while the spool's preparation is held");
+            let (index, hour, campaign_id, epoch) = hour
+                .end(|| "the hour, waiting for the spool's clock preparation,".into())
+                .unwrap_or_else(|failure| panic!("the hour's clock failed: {failure}"));
+            assert!(
+                !spool.is_finished(),
+                "the spool's preparation ended before the hour did"
+            );
+            drop(release);
+            steps.at("the spool's preparation, released");
+            spool.end(|| "the spool's clock preparation, released,".into());
+            assert_eq!((hour, epoch), (42, 1));
+            assert_eq!(campaign_id, vec![b'a'; 5_001]);
+            shared.recycle_frame(index);
+        },
+    );
 }
 
 #[test]
 fn campaign_clock_in_service_frames_prepare_before_republication() {
     let short = campaign_clock_memory(1);
     let long = campaign_clock_memory(5_001);
-    let shared = campaign_shared();
-    shared.prepare_clock_capture(&short).unwrap();
+    let mut shared = campaign_shared();
+    shared.prepare_clock_capture(&short);
     let held: Vec<_> = (0..BUFFERS)
         .map(|_| shared.take_frame(&mut 0).unwrap())
         .collect();
-    shared.clock_required.store(5_001, Ordering::Release);
-    shared.prepare_clock_capture(&long).unwrap();
+    // The hour that asked for the longer id grew the game thread's own buffers.
+    let _ = unsafe { shared.prepared_clock_capture(&long) };
+    shared.prepare_frame_clocks(&long);
     for index in held {
         shared.recycle_frame_prepared(index);
     }
     crate::test_support::with_allocations_denied(|| {
-        let mut capture = shared.wait_clock_preparation(&long);
+        let capture = unsafe { shared.prepared_clock_capture(&long) };
         let (entry, _) = capture.read(&long, 0).unwrap();
         let held: [usize; BUFFERS] = std::array::from_fn(|_| shared.take_frame(&mut 0).unwrap());
         for &index in &held {
@@ -2860,13 +2947,12 @@ fn campaign_clock_in_service_frames_prepare_before_republication() {
 #[test]
 fn campaign_clock_optional_preparation_denial_is_named_and_nonterminal() {
     let memory = campaign_clock_memory(5_001);
-    let shared = campaign_shared();
-    crate::test_support::with_allocations_denied(|| {
-        shared.prepare_clock_capture(&memory).unwrap();
-    });
+    let mut shared = campaign_shared();
+    crate::test_support::with_allocations_denied(|| shared.prepare_clock_capture(&memory));
     assert!(!crate::allocation::failed());
-    shared.prepare_clock_capture(&memory).unwrap();
-    assert_eq!(shared.clock_capture.lock().unwrap().prepared, 5_001);
+    assert_eq!(shared.clock_capture.get_mut().prepared, 0);
+    shared.prepare_clock_capture(&memory);
+    assert_eq!(shared.clock_capture.get_mut().prepared, 5_001);
 }
 
 #[test]
@@ -2922,7 +3008,7 @@ fn a_parked_spool_wakes_on_a_ready_buffer_without_waiting_for_its_deadline() {
             shared.spool_waker.set(std::thread::current()).unwrap();
             registered.send(()).unwrap();
             let started = Instant::now();
-            while shared.ready.is_empty() {
+            while shared.frames.ready_is_empty() {
                 // Far longer than the test allows: only the wake ends it.
                 std::thread::park_timeout(Duration::from_secs(60));
                 assert!(started.elapsed() < Duration::from_secs(30));
@@ -2932,7 +3018,7 @@ fn a_parked_spool_wakes_on_a_ready_buffer_without_waiting_for_its_deadline() {
     };
     ready.recv().unwrap();
     std::thread::sleep(Duration::from_millis(20));
-    shared.ready.push(1).unwrap();
+    shared.frames.push_ready(1);
     shared.wake_spool();
     let waited = spool.join().unwrap();
     assert!(waited < Duration::from_secs(10), "{waited:?}");
@@ -2968,7 +3054,7 @@ fn buffer_return_runs_on_a_small_stack() {
             for index in held {
                 worker.recycle_frame_prepared(index);
             }
-            worker.free.len()
+            worker.frames.len()
         })
         .unwrap()
         .join()
@@ -2981,16 +3067,16 @@ fn buffers_backlogged_with_one_free_buffer() {
     let shared = campaign_shared();
     let first = shared.take_frame(&mut 0).unwrap();
     let second = shared.take_frame(&mut 0).unwrap();
-    assert_eq!(shared.free.len(), 2);
+    assert_eq!(shared.frames.len(), 2);
     assert!(!shared.buffers_backlogged());
     let third = shared.take_frame(&mut 0).unwrap();
-    assert_eq!(shared.free.len(), 1);
+    assert_eq!(shared.frames.len(), 1);
     assert!(shared.buffers_backlogged());
     shared.recycle_frame_prepared(first);
     assert!(!shared.buffers_backlogged());
     shared.recycle_frame_prepared(second);
     shared.recycle_frame_prepared(third);
-    assert_eq!(shared.free.len(), BUFFERS);
+    assert_eq!(shared.frames.len(), BUFFERS);
 }
 
 /// The Radar and Projects joins turn an incomplete raw acquisition into a
@@ -3034,36 +3120,3 @@ fn every_air_bases_join_has_a_raw_payload_or_a_failure() {
     }
 }
 
-#[test]
-fn free_frames_hand_out_the_newest_and_idle_leases_keep_their_age() {
-    let free = FreeFrames::new();
-    for index in 0..BUFFERS {
-        free.push(index).unwrap();
-    }
-    assert_eq!(free.restore(0), Err(0));
-    assert_eq!(free.len(), BUFFERS);
-    assert!(free.take(1, true));
-    assert!(!free.take(1, false));
-    // A return while the lease is out is newer than the leased frame.
-    let newest = free.pop().unwrap();
-    assert_eq!(newest, BUFFERS - 1);
-    free.push(newest).unwrap();
-    free.restore(1).unwrap();
-    assert_eq!(free.restore(1), Err(1));
-    assert!(free.take(BUFFERS - 1, false));
-    free.restore(BUFFERS - 1).unwrap();
-    let newest_first: Vec<_> = std::iter::from_fn(|| free.pop()).collect();
-    assert_eq!(newest_first, (0..BUFFERS).rev().collect::<Vec<_>>());
-    assert!(free.is_empty());
-    assert!(!free.take(0, false));
-    // The frame returned last is the next one taken.
-    free.push(2).unwrap();
-    free.push(0).unwrap();
-    assert_eq!(free.pop(), Some(0));
-    free.push(0).unwrap();
-    assert_eq!(free.pop(), Some(0));
-    // The last free frame stays for the game.
-    assert!(!free.take(2, true));
-    assert!(free.take(2, false));
-    assert!(free.is_empty());
-}

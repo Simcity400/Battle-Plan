@@ -4,10 +4,9 @@
 
 use crate::acquisition_gather::{Report as GatherReport, Request as GatherRequest};
 use engine_native::{Memory, ccountry, country_memory::Cache, walk::Outcome};
-use std::sync::Arc;
 
 pub(crate) struct Request {
-    countries: Arc<Cache>,
+    countries: engine_allocation::SharedBox<Cache>,
     rows: Vec<ccountry::Row>,
     links: GatherRequest<Vec<ccountry::LinkRow>>,
     naming: Option<Naming>,
@@ -43,14 +42,14 @@ impl Default for Report {
 
 impl Request {
     pub(crate) fn take(
-        countries: &Arc<Cache>,
+        countries: &engine_allocation::SharedBox<Cache>,
         base: usize,
         game_state: usize,
         rows: &mut Vec<ccountry::Row>,
         links: &mut Vec<ccountry::LinkRow>,
     ) -> Self {
         Self {
-            countries: Arc::clone(countries),
+            countries: engine_allocation::SharedBox::clone(countries),
             rows: std::mem::take(rows),
             links: GatherRequest::take(base, game_state, links),
             naming: None,
@@ -68,7 +67,7 @@ impl Request {
 
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn take_with_naming(
-        countries: &Arc<Cache>,
+        countries: &engine_allocation::SharedBox<Cache>,
         base: usize,
         game_state: usize,
         rows: &mut Vec<ccountry::Row>,
@@ -215,7 +214,9 @@ impl Request {
 /// game thread takes its preacquired ticks after joining it, before the
 /// tables ([`crate::extended::Captured::take_preacquired_templates`]).
 pub(crate) struct TemplatesRequest {
-    countries: Arc<Cache>,
+    /// Splits the template walk by country ranges across the workers once armed at submission.
+    pub(crate) workers: crate::acquisition_jobs::variant_workers::Dispatch,
+    countries: engine_allocation::SharedBox<Cache>,
     templates: crate::extended::division_templates::Captured,
     base: usize,
     game_state: usize,
@@ -229,7 +230,7 @@ pub(crate) struct TemplatesReport;
 impl TemplatesRequest {
     /// Lends the template dictionary to the job, leaving a vacant one.
     pub(crate) fn take(
-        countries: &Arc<Cache>,
+        countries: &engine_allocation::SharedBox<Cache>,
         base: usize,
         game_state: usize,
         templates: &mut crate::extended::division_templates::Captured,
@@ -237,7 +238,8 @@ impl TemplatesRequest {
         force_full: bool,
     ) -> Self {
         Self {
-            countries: Arc::clone(countries),
+            workers: Default::default(),
+            countries: engine_allocation::SharedBox::clone(countries),
             templates: std::mem::replace(
                 templates,
                 crate::extended::division_templates::Captured::vacant(),
@@ -251,12 +253,18 @@ impl TemplatesRequest {
 
     pub(crate) fn run(&mut self, memory: &impl Memory) -> TemplatesReport {
         let cached = self.countries.view(memory);
+        let (workers, base) = (&self.workers, self.base);
+        let mut walk = |parts| workers.template_walk(parts, memory, base);
         self.templates.capture_preacquired(
             &cached,
             self.base,
             self.game_state,
             self.hour,
             self.force_full,
+            Some(crate::extended::division_templates::TemplateWorkers {
+                lanes: workers.lanes(),
+                walk: &mut walk,
+            }),
         );
         TemplatesReport
     }
@@ -377,8 +385,11 @@ mod tests {
         bytes
     }
 
-    fn snapshot(bytes: &[u8], cells: usize) -> Arc<Cache> {
-        let mut cache = Arc::new(Cache::try_with_capacity(cells).unwrap());
+    fn snapshot(bytes: &[u8], cells: usize) -> engine_allocation::SharedBox<Cache> {
+        let mut cache = engine_allocation::shared(
+            Cache::try_with_capacity(cells).unwrap(),
+        )
+        .unwrap();
         Cache::prepare_shared(&mut cache, &SliceMemory { base: 0, bytes }, 0, STATE).unwrap()
     }
 
@@ -430,7 +441,10 @@ mod tests {
                 let mut traced = Traced::new(&bytes);
                 traced.fault = fault;
                 let memory = CountedMemory::new(traced);
-                let mut storage = Arc::new(Cache::try_with_capacity(cells).unwrap());
+                let mut storage = engine_allocation::shared(
+                    Cache::try_with_capacity(cells).unwrap(),
+                )
+                .unwrap();
                 let snapshot = read_accounting::with_table(TableId::Countries, || {
                     Cache::prepare_shared(&mut storage, &memory, 0, STATE).unwrap()
                 });
@@ -448,7 +462,10 @@ mod tests {
 
                 let mut original = Traced::new(&bytes);
                 original.fault = fault;
-                let mut original_storage = Arc::new(Cache::try_with_capacity(cells).unwrap());
+                let mut original_storage = engine_allocation::shared(
+                    Cache::try_with_capacity(cells).unwrap(),
+                )
+                .unwrap();
                 let original_snapshot =
                     Cache::prepare_shared(&mut original_storage, &original, 0, STATE).unwrap();
                 let cached = original_snapshot.view(&original);
@@ -599,7 +616,7 @@ mod tests {
             assert_eq!(report.links.result, Outcome::Rows { len: 3 });
             completed.request.restore(&mut rows, &mut links);
             assert_eq!((rows.as_ptr(), links.as_ptr()), pointers);
-            assert_eq!(Arc::strong_count(&snapshot), 1);
+            assert_eq!(engine_allocation::SharedBox::strong_count(&snapshot), 1);
             assert_eq!(pool.calibration().uncollected, 0);
         }
     }

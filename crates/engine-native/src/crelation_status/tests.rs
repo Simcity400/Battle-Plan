@@ -186,7 +186,7 @@ fn co_belligerents_read_each_candidate_byte_in_both_vectors() {
     bytes[status(0, 3) + CO_BELLIGERENT] = 1;
     let memory = memory(&bytes);
     let countries = ccountry::Reader::new(&memory, BASE, GS).unwrap();
-    let mut slots = [0_u32; 4];
+    let mut slots = vec![0_u32; 4];
     assert_eq!(
         co_belligerents(&memory, BASE, &countries, country(0), &mut slots),
         Ok((2, 2))
@@ -200,11 +200,7 @@ fn co_belligerents_read_each_candidate_byte_in_both_vectors() {
         co_belligerents(&memory, BASE, &countries, country(0), &mut slots),
         Ok((1, 1))
     );
-    // Without storage the demand is an upper bound: repeats are not deduplicated.
-    assert_eq!(
-        co_belligerents(&memory, BASE, &countries, country(0), &mut []),
-        Ok((0, 2))
-    );
+
     p64(&mut bytes, status(0, 2) + DIPLOMACY_STATUS, 0);
     let memory = self::memory(&bytes);
     let countries = ccountry::Reader::new(&memory, BASE, GS).unwrap();
@@ -336,7 +332,7 @@ impl Memory for ReverseTrace<'_> {
 fn reverse_source(memory: &impl Memory) -> ReservedVisibilitySource {
     // Names deliberately have no content-database root. Completed private
     // scalars survive that refusal; required prefix publication stays refused.
-    let mut naming = ccountry::read_reserved_naming(memory, BASE, GS, &mut []);
+    let mut naming = ccountry::read_reserved_naming_observed_inner(memory, BASE, GS, crate::walk::Buffer::Count, None);
     assert!(matches!(naming.outcome, Outcome::Unavailable { .. }));
     let observed = naming.visibility.take().unwrap();
     ReservedVisibilitySource::new(memory, &observed).unwrap()
@@ -356,13 +352,13 @@ fn observed_forward_keeps_the_original_order_values_and_read_faults() {
         let old = ReverseTrace::new(&bytes, fault);
         let old_countries = ccountry::Reader::new(&old, BASE, GS).unwrap();
         old.calls.borrow_mut().clear();
-        let mut old_output = [99; 4];
+        let mut old_output = vec![99; 4];
         let expected =
             co_belligerent_inputs(&old, BASE, &old_countries, country(0), &mut old_output);
         let new = ReverseTrace::new(&bytes, fault);
         let new_countries = ccountry::Reader::new(&new, BASE, GS).unwrap();
         new.calls.borrow_mut().clear();
-        let mut new_output = [99; 4];
+        let mut new_output = vec![99; 4];
         let mut observation = ForwardZeroObservation::default();
         assert_eq!(
             co_belligerent_inputs_observed(
@@ -583,7 +579,7 @@ fn reverse_reuses_forward_first_zero_and_reads_only_the_previously_skipped_secon
         BASE,
         &countries,
         country(0),
-        &mut [0; 4],
+        &mut vec![0; 4],
         &mut observed,
     );
     assert_eq!(forward.zero_subject.unwrap().parties, Some([Some(0), None]));
@@ -630,7 +626,7 @@ fn shared_failed_party_is_not_retried_and_known_second_raw_match_survives() {
         BASE,
         &countries,
         country(0),
-        &mut [0; 4],
+        &mut vec![0; 4],
         &mut observed,
     );
     assert_eq!(
@@ -682,7 +678,7 @@ fn reverse_first_match_ignores_forward_second_failure_and_alias_matches_short_ci
             BASE,
             &countries,
             country(0),
-            &mut [0; 4],
+            &mut vec![0; 4],
             &mut observed,
         );
         assert_eq!(
@@ -736,7 +732,7 @@ fn forward_null_and_different_pointers_never_certify_reverse_absence_or_retry() 
         BASE,
         &countries,
         country(0),
-        &mut [0; 4],
+        &mut vec![0; 4],
         &mut observed,
     );
     assert!(forward.zero_war.is_err());
@@ -800,7 +796,7 @@ fn same_pointer_retired_type_and_identity_faults_are_sticky_and_independent() {
             BASE,
             &countries,
             country(0),
-            &mut [0; 4],
+            &mut vec![0; 4],
             &mut observed,
         );
         let reverse = source.cell(&memory, BASE, Some(&countries), 1, Some(&observed));
@@ -819,7 +815,7 @@ fn same_pointer_retired_type_and_identity_faults_are_sticky_and_independent() {
     }
 }
 
-fn co_inputs(bytes: &[u8], output: &mut [u32]) -> CoBelligerentInputs {
+fn co_inputs(bytes: &[u8], output: &mut Vec<u32>) -> CoBelligerentInputs {
     let memory = memory(bytes);
     let countries = ccountry::Reader::new(&memory, BASE, GS).unwrap();
     co_belligerent_inputs(&memory, BASE, &countries, country(0), output)
@@ -828,7 +824,7 @@ fn co_inputs(bytes: &[u8], output: &mut [u32]) -> CoBelligerentInputs {
 #[test]
 fn co_inputs_keep_directed_native_truth_aliases_and_exact_capacity_demand() {
     let mut bytes = co_inputs_fixture();
-    let mut slots = [99_u32; 4];
+    let mut slots = vec![99_u32; 4];
     assert_eq!(
         co_inputs(&bytes, &mut slots),
         CoBelligerentInputs {
@@ -839,19 +835,6 @@ fn co_inputs_keep_directed_native_truth_aliases_and_exact_capacity_demand() {
         }
     );
     assert_eq!(slots, [0, 2, 3, 99]);
-    // The complete unique count is retained even with no output storage;
-    // neither a repeat nor an alias inflates this new reader's demand.
-    for capacity in 0..3 {
-        slots.fill(99);
-        let result = co_inputs(&bytes, &mut slots[..capacity]);
-        assert_eq!(
-            result.targets,
-            Err("co-belligerent targets do not fit arena")
-        );
-        assert_eq!(result.required_targets, 3);
-        assert_eq!(result.zero_war, Ok([1, 0x7f]));
-        assert!(slots[..capacity].iter().all(|&slot| slot == 0));
-    }
     // An enemy candidate's stored byte wins over vector membership or an
     // active/retired war interpretation. A later sample retains no old set.
     bytes[status(0, 2) + CO_BELLIGERENT] = 0;
@@ -889,7 +872,7 @@ fn co_inputs_read_slot_zero_even_when_the_candidate_vectors_are_empty() {
         links_vector(&mut bytes, DIPLOMACY[0] + offset, data, &[]);
     }
     p64(&mut bytes, status(0, 0) + WAR_RELATION, 0);
-    let mut slots = [99_u32; 2];
+    let mut slots = vec![99_u32; 2];
     assert_eq!(
         co_inputs(&bytes, &mut slots),
         CoBelligerentInputs {
@@ -1000,7 +983,7 @@ fn co_inputs_refuse_each_operand_once_without_erasing_the_independent_result() {
             attempts: std::cell::Cell::new(0),
         };
         let countries = ccountry::Reader::new(&memory, BASE, GS).unwrap();
-        let mut slots = [99_u32; 4];
+        let mut slots = vec![99_u32; 4];
         let zero_subject = if [
             DIPLOMACY[0] + cdiplomacy_status::RELATIONS,
             status(0, 0),
@@ -1042,7 +1025,7 @@ fn co_inputs_refuse_each_operand_once_without_erasing_the_independent_result() {
 #[test]
 fn co_inputs_authenticate_the_target_slot_and_refuse_unsupported_native_width() {
     let mut bytes = co_inputs_fixture();
-    let mut slots = [99_u32; 4];
+    let mut slots = vec![99_u32; 4];
     // A nonzero alias is never accepted for the reserved target zero.
     p32(&mut bytes, status(0, 0) + TARGET_COUNTRY, 4);
     assert_eq!(
@@ -1127,17 +1110,13 @@ fn invasion_co_targets_accept_raw_aliases_without_reading_slot_zero() {
     p64(&mut bytes, matrix_data(0), 0);
     let memory = memory(&bytes);
     let countries = ccountry::Reader::new(&memory, BASE, GS).unwrap();
-    let mut slots = [99_u32; 4];
+    let mut slots = vec![99_u32; 4];
     assert_eq!(
         co_belligerents(&memory, BASE, &countries, country(0), &mut slots),
         Ok((2, 2))
     );
     assert_eq!(slots[..2], [2, 3]);
-    // Preserve the invasion helper's established shortage upper bound.
-    assert_eq!(
-        co_belligerents(&memory, BASE, &countries, country(0), &mut []),
-        Ok((0, 6))
-    );
+
     p32(&mut bytes, status(0, 2) + TARGET_COUNTRY, 3);
     let memory = self::memory(&bytes);
     let countries = ccountry::Reader::new(&memory, BASE, GS).unwrap();
@@ -1171,7 +1150,7 @@ fn native_empty_and_zero_only_co_candidates_need_no_positive_headers() {
         memo.reset(BASE, GS);
         let countries = memo.view(&memory, BASE, GS);
         assert_eq!(
-            co_belligerents_native(&memory, BASE, &countries, country(0), &mut []),
+            co_belligerents_native(&memory, BASE, &countries, country(0), &mut Vec::new()),
             Ok((0, 0))
         );
         assert_eq!(memo.link_required(), 0);
@@ -1201,14 +1180,15 @@ fn native_alias_zero_is_skipped_but_positive_status_target_remains_binding() {
     memo.reset(BASE, GS);
     let memory = memory(&bytes);
     let countries = memo.view(&memory, BASE, GS);
-    let mut slots = [0_u32; 1];
+    let mut slots = vec![0_u32; 1];
     assert_eq!(
         co_belligerents_native(&memory, BASE, &countries, country(0), &mut slots),
         Ok((1, 1))
     );
     assert_eq!(slots, [3]);
+    // The count probe's demand is an upper bound: repeats are not deduplicated.
     assert_eq!(
-        co_belligerents_native(&memory, BASE, &countries, country(0), &mut []),
+        co_belligerents_native_buffer(&memory, BASE, &countries, country(0), crate::walk::Buffer::Count),
         Ok((0, 3))
     );
     // Positive matrix-slot target validation cannot accept raw0 or a raw
@@ -1234,8 +1214,8 @@ fn run(bytes: &[u8]) -> (Walk, Vec<OpinionRow>, Vec<TupleRow>) {
     let (mut resolver, mut baseline) = (Resolver::default(), Baseline::default());
     let passes: Vec<_> = (0..3)
         .map(|_| {
-            let mut opinions = [OpinionRow::default(); 16];
-            let mut tuples = [TupleRow::default(); 16];
+            let mut opinions = vec![OpinionRow::default(); 16];
+            let mut tuples = vec![TupleRow::default(); 16];
             let result = walk_with(
                 &memory(bytes),
                 BASE,
@@ -1297,7 +1277,7 @@ fn links_come_from_owned_relations_without_walking_the_matrix() {
     p64(&mut bytes, status(2, 1) + ATTACHE_LINK, RELATION[0] as u64);
     // A slot set in a status no owned relation names is never visited.
     p64(&mut bytes, status(1, 3) + AIR_BASE_ACCESS, 1);
-    let mut rows = [LinkRow::default(); 4];
+    let mut rows = vec![LinkRow::default(); 4];
     let mut resolver = Resolver::default();
     let outcome = link_rows(&bytes, &mut rows, &mut resolver);
     assert_eq!(outcome, Outcome::Rows { len: 1 });
@@ -1311,7 +1291,7 @@ fn links_come_from_owned_relations_without_walking_the_matrix() {
         }
     );
     assert_eq!(
-        link_rows(&bytes, &mut [], &mut resolver),
+        link_count(&bytes, &mut resolver),
         Outcome::Truncated {
             len: 0,
             unread_rows: 1
@@ -1359,7 +1339,7 @@ fn a_pair_named_twice_is_one_row_and_the_walk_reuses_its_scratch() {
     );
     let mut resolver = Resolver::with_capacity(8);
     let storage = (resolver.references.as_ptr(), resolver.capacity());
-    let mut rows = [LinkRow::default(); 4];
+    let mut rows = vec![LinkRow::default(); 4];
     for _ in 0..2 {
         assert_eq!(
             link_rows(&bytes, &mut rows, &mut resolver),
@@ -1378,7 +1358,7 @@ fn a_pair_named_twice_is_one_row_and_the_walk_reuses_its_scratch() {
     }
     // A full output counts the pair once per naming relation: an upper bound.
     assert_eq!(
-        link_rows(&bytes, &mut [], &mut resolver),
+        link_count(&bytes, &mut resolver),
         Outcome::Truncated {
             len: 0,
             unread_rows: 2
@@ -1386,24 +1366,30 @@ fn a_pair_named_twice_is_one_row_and_the_walk_reuses_its_scratch() {
     );
 }
 
-fn link_rows(bytes: &[u8], rows: &mut [LinkRow], resolver: &mut Resolver) -> Outcome {
-    let (mut wars, mut countries) = ([WarRow::default(); 4], [0_u32; 8]);
-    links(
-        &memory(bytes),
-        BASE,
-        GS,
-        rows,
-        WarOutput {
+fn link_rows(bytes: &[u8], rows: &mut Vec<LinkRow>, resolver: &mut Resolver) -> Outcome {
+    link_rows_into(bytes, crate::walk::Buffer::Growing(rows), resolver)
+}
+
+/// The count-only probe of the links.
+fn link_count(bytes: &[u8], resolver: &mut Resolver) -> Outcome {
+    link_rows_into(bytes, crate::walk::Buffer::Count, resolver)
+}
+
+fn link_rows_into(
+    bytes: &[u8],
+    rows: crate::walk::Buffer<'_, LinkRow>,
+    resolver: &mut Resolver,
+) -> Outcome {
+    let (mut wars, mut countries) = (Vec::new(), Vec::new());
+    links_observed_inner(&memory(bytes), BASE, GS, rows, WarOutput {
             rows: &mut wars,
             countries: &mut countries,
-        },
-        resolver,
-    )
+        }.into(), resolver, None, None)
     .links
 }
 
-fn transport_links(memory: &impl Memory, rows: &mut [LinkRow]) -> LinkWalk {
-    let (mut wars, mut countries) = ([WarRow::default(); 4], [0_u32; 8]);
+fn transport_links(memory: &impl Memory, rows: &mut Vec<LinkRow>) -> LinkWalk {
+    let (mut wars, mut countries) = (Vec::new(), Vec::new());
     links_observed_transport(
         memory,
         BASE,
@@ -1412,7 +1398,8 @@ fn transport_links(memory: &impl Memory, rows: &mut [LinkRow]) -> LinkWalk {
         WarOutput {
             rows: &mut wars,
             countries: &mut countries,
-        },
+        }
+        .into(),
         &mut Resolver::default(),
         73,
     )
@@ -1447,7 +1434,7 @@ fn transport_subject_fixture() -> Vec<u8> {
 fn transport_subject_original_sparse_pass_certifies_owners_and_deduplicates_attempts() {
     let bytes = transport_subject_fixture();
     let trace = ReverseTrace::new(&bytes, None);
-    let mut rows = [LinkRow::default(); 8];
+    let mut rows = vec![LinkRow::default(); 8];
     assert_eq!(
         transport_links(&trace, &mut rows).links,
         Outcome::Rows { len: 5 }
@@ -1491,13 +1478,6 @@ fn transport_subject_original_sparse_pass_certifies_owners_and_deduplicates_atte
     }
     assert_eq!(trace.reads(RELATION[0] + crelation::START_HOUR), 0);
     assert_eq!(trace.reads(RELATION[0] + crelation::END_HOUR), 0);
-    assert!(matches!(
-        transport_links(&memory(&bytes), &mut rows[..4]).links,
-        Outcome::Truncated {
-            len: 4,
-            unread_rows: 1
-        }
-    ));
     assert_eq!(
         link_rows(&bytes, &mut rows, &mut Resolver::default()),
         Outcome::Rows { len: 0 }
@@ -1508,7 +1488,7 @@ fn transport_subject_original_sparse_pass_certifies_owners_and_deduplicates_atte
 fn transport_subject_only_fault_refuses_coverage_without_erasing_original_tables() {
     let mut bytes = transport_subject_fixture();
     p64(&mut bytes, status(0, 2), 7);
-    let mut rows = [LinkRow::default(); 8];
+    let mut rows = vec![LinkRow::default(); 8];
     let walk = transport_links(&memory(&bytes), &mut rows);
     assert_eq!(walk.links, Outcome::Rows { len: 4 });
     // The composed current-hour pass captures each positive owner's ordered
@@ -1550,7 +1530,7 @@ fn transport_subject_merge_keeps_original_link_faults_and_failed_suffix_is_not_r
         status(0, 2) + MILITARY_ACCESS,
         RELATION[1] as u64,
     );
-    let mut rows = [LinkRow::default(); 8];
+    let mut rows = vec![LinkRow::default(); 8];
     // A subject pointer that stays unreadable refuses the shared suffix
     // once, and the military access row keeps that refusal.
     let persistent = StarlessFault {
@@ -1665,21 +1645,14 @@ fn war_fixture() -> Vec<u8> {
     bytes
 }
 
-fn walk_wars(bytes: &[u8], capacity: (usize, usize)) -> (LinkWalk, Vec<WarRow>, Vec<u32>) {
-    let mut rows = [LinkRow::default(); 4];
-    let mut wars = vec![WarRow::default(); capacity.0];
-    let mut countries = vec![0_u32; capacity.1];
-    let walk = links(
-        &memory(bytes),
-        BASE,
-        GS,
-        &mut rows,
-        WarOutput {
+fn walk_wars(bytes: &[u8]) -> (LinkWalk, Vec<WarRow>, Vec<u32>) {
+    let mut rows = Vec::new();
+    let mut wars = Vec::new();
+    let mut countries = Vec::new();
+    let walk = links_observed_inner(&memory(bytes), BASE, GS, crate::walk::Buffer::Growing(&mut rows), WarOutput {
             rows: &mut wars,
             countries: &mut countries,
-        },
-        &mut Resolver::default(),
-    );
+        }.into(), &mut Resolver::default(), None, None);
     (walk, wars, countries)
 }
 
@@ -1697,13 +1670,13 @@ fn row(country: u32, rule: u8) -> WarRow {
 #[test]
 fn war_rows_record_the_rule_and_leave_enemy_sets_to_derivation() {
     let bytes = war_fixture();
-    let (walk, wars, _) = walk_wars(&bytes, (4, 8));
+    let (walk, wars, _) = walk_wars(&bytes);
     assert_eq!(walk.links, Outcome::Rows { len: 1 });
     assert_eq!(walk.wars, Outcome::Rows { len: 2 });
     assert_eq!((walk.countries_len, walk.required_countries), (0, 0));
     assert_eq!(wars[..2], [row(1, 1), row(3, 0x80)]);
     // The access relation's slot is the link row's military access bit.
-    let mut rows = [LinkRow::default(); 2];
+    let mut rows = vec![LinkRow::default(); 2];
     assert_eq!(
         link_rows(&bytes, &mut rows, &mut Resolver::default()),
         Outcome::Rows { len: 1 }
@@ -1722,7 +1695,7 @@ fn a_civil_war_revolter_has_its_enemy_vector_read() {
         0x36c0,
         &[3, 9],
     );
-    let (walk, wars, countries) = walk_wars(&bytes, (4, 8));
+    let (walk, wars, countries) = walk_wars(&bytes);
     assert_eq!(walk.wars, Outcome::Rows { len: 3 });
     assert_eq!(
         wars[1],
@@ -1738,18 +1711,6 @@ fn a_civil_war_revolter_has_its_enemy_vector_read() {
         }
     );
     assert_eq!(countries[..2], [3, 9]);
-    // Too few links truncates that row and reports its demand; only the
-    // war-link arena is short, so the link table stays complete.
-    let (walk, _, _) = walk_wars(&bytes, (4, 1));
-    assert_eq!(
-        walk.wars,
-        Outcome::Truncated {
-            len: 2,
-            unread_rows: 1
-        }
-    );
-    assert_eq!((walk.countries_len, walk.required_countries), (0, 2));
-    assert_eq!(walk.links, Outcome::Rows { len: 1 });
 }
 
 /// An owned war relation whose retired byte is set could linger in a side
@@ -1772,7 +1733,7 @@ fn a_retired_war_relation_makes_its_owner_read_the_vector() {
         0x3480,
         &[RELATION[1] as u64],
     );
-    let (walk, wars, countries) = walk_wars(&bytes, (4, 8));
+    let (walk, wars, countries) = walk_wars(&bytes);
     assert_eq!(walk.wars, Outcome::Rows { len: 2 });
     assert_eq!(wars[0], row(1, 1));
     assert_eq!(
@@ -1786,7 +1747,7 @@ fn a_retired_war_relation_makes_its_owner_read_the_vector() {
     assert_eq!(countries[..2], [1, 2]);
     // An active war relation alone changes nothing.
     bytes[RELATION[1] + crelation::RETIRED] = 0;
-    let (walk, wars, _) = walk_wars(&bytes, (4, 8));
+    let (walk, wars, _) = walk_wars(&bytes);
     assert_eq!(walk.countries_len, 0);
     assert_eq!(wars[1], row(3, 0x80));
 }
@@ -1830,7 +1791,7 @@ fn access_and_docking_slots_come_from_their_owned_relations() {
         status(2, 1) + MILITARY_ACCESS,
         RELATION[1] as u64,
     );
-    let mut rows = [LinkRow::default(); 4];
+    let mut rows = vec![LinkRow::default(); 4];
     assert_eq!(
         link_rows(&bytes, &mut rows, &mut Resolver::default()),
         Outcome::Rows { len: 2 }
@@ -1900,8 +1861,8 @@ fn only_nonzero_opinions_and_serializable_relations_become_rows() {
             &memory(&bytes),
             BASE,
             GS,
-            &mut [OpinionRow::default(); 16],
-            &mut [TupleRow::default(); 16],
+            &mut vec![OpinionRow::default(); 16],
+            &mut vec![TupleRow::default(); 16],
             &mut Resolver::default(),
         ),
         result
@@ -2030,48 +1991,6 @@ fn empty_matrices_are_a_complete_empty_pair_of_tables() {
 }
 
 #[test]
-fn capacity_truncates_each_table_independently_with_exact_missing_counts() {
-    let mut bytes = fixture();
-    for target in 1..4 {
-        p32(&mut bytes, status(0, target) + OPINION, target as u32);
-    }
-    relation(
-        &mut bytes,
-        RELATION[0],
-        cguarantee_relation::VTABLE_RVA,
-        cguarantee_relation::TYPE,
-        1,
-        2,
-    );
-    array(
-        &mut bytes,
-        status(0, 2) + SERIALIZABLE_RELATIONS,
-        serializable_data(0, 2),
-        &[RELATION[0] as u64],
-    );
-    for owner in [0, 1] {
-        own(&mut bytes, owner, &[RELATION[0]]);
-    }
-    let mut opinions = [OpinionRow::default(); 2];
-    let result = walk(&memory(&bytes), BASE, GS, &mut opinions, &mut [], [true; 2]);
-    assert_eq!(
-        result.opinions,
-        Outcome::Truncated {
-            len: 2,
-            unread_rows: 1
-        }
-    );
-    assert_eq!(
-        result.tuples,
-        Outcome::Truncated {
-            len: 0,
-            unread_rows: 1
-        }
-    );
-    assert_eq!(opinions[1].target_country, 2);
-}
-
-#[test]
 fn changed_headers_null_slots_and_bad_identities_are_named_failures() {
     let mut valid = fixture();
     relation(
@@ -2182,13 +2101,13 @@ fn changed_headers_null_slots_and_bad_identities_are_named_failures() {
     // The owned vector is read only for tuples.
     let mut bytes = valid.clone();
     p64(&mut bytes, 0x3400 + 2 * 0x40, 0);
-    let mut opinions = [OpinionRow::default(); 4];
+    let mut opinions = vec![OpinionRow::default(); 4];
     let result = walk(
         &memory(&bytes),
         BASE,
         GS,
         &mut opinions,
-        &mut [],
+        &mut Vec::new(),
         [true, false],
     );
     assert_eq!(result.opinions, Outcome::Rows { len: 0 });
@@ -2296,13 +2215,13 @@ fn observed_slice(
 ) -> (Outcome, Vec<OpinionRow>, usize) {
     let slice = memory(bytes);
     let memory = Counting::new(&slice);
-    let mut opinions = [OpinionRow::default(); 8];
+    let mut opinions = vec![OpinionRow::default(); 8];
     let result = walk_with(
         &memory,
         BASE,
         GS,
         &mut opinions,
-        &mut [],
+        &mut Vec::new(),
         [true, false],
         &mut Resolver::default(),
         baseline,
@@ -2444,8 +2363,8 @@ fn observed_walks_replay_the_baseline_and_read_only_marked_statuses() {
             &Panicking(memory(&moved)),
             BASE,
             GS,
-            &mut [OpinionRow::default(); 8],
-            &mut [],
+            &mut vec![OpinionRow::default(); 8],
+            &mut Vec::new(),
             [true, false],
             &mut Resolver::default(),
             &mut baseline,
@@ -2465,12 +2384,12 @@ fn observed_walks_replay_the_baseline_and_read_only_marked_statuses() {
     // No observation reads every owner in full without recording.
     let _ = fresh;
     // Tuple-only walks leave the baseline alone.
-    let mut tuples = [TupleRow::default(); 4];
+    let mut tuples = vec![TupleRow::default(); 4];
     walk_with(
         &memory(&moved),
         BASE,
         GS,
-        &mut [],
+        &mut Vec::new(),
         &mut tuples,
         [false, true],
         &mut Resolver::default(),
@@ -2481,15 +2400,14 @@ fn observed_walks_replay_the_baseline_and_read_only_marked_statuses() {
     let incremental = baseline.counts().incremental_walks;
     observed(&moved, &mut baseline, (1, 2), &[]);
     assert_eq!(baseline.counts().incremental_walks, incremental + 1);
-    // Truncation is the full walk's: the replay pushes through the same
-    // counters.
-    let mut short = [OpinionRow::default(); 2];
+    // A replay grows short storage as the full walk does.
+    let mut short = vec![OpinionRow::default(); 2];
     let result = walk_with(
         &memory(&moved),
         BASE,
         GS,
         &mut short,
-        &mut [],
+        &mut Vec::new(),
         [true, false],
         &mut Resolver::default(),
         &mut baseline,
@@ -2499,13 +2417,7 @@ fn observed_walks_replay_the_baseline_and_read_only_marked_statuses() {
         }),
         |_| true,
     );
-    assert_eq!(
-        result.opinions,
-        Outcome::Truncated {
-            len: 2,
-            unread_rows: 4
-        }
-    );
+    assert_eq!(result.opinions, Outcome::Rows { len: 6 });
     assert_eq!(baseline.counts().incremental_walks, incremental + 2);
 }
 
@@ -2622,12 +2534,12 @@ fn received_relations_and_null_endpoints_name_no_status() {
     own(&mut bytes, 1, &[RELATION[0]]);
     let slice = memory(&bytes);
     let counting = Counting::new(&slice);
-    let mut tuples = [TupleRow::default(); 4];
-    let result = walk(&counting, BASE, GS, &mut [], &mut tuples, [false, true]);
+    let mut tuples = vec![TupleRow::default(); 4];
+    let result = walk(&counting, BASE, GS, &mut Vec::new(), &mut tuples, [false, true]);
     assert_eq!(result.tuples, Outcome::Rows { len: 1 });
     assert_eq!((tuples[0].owner_country, tuples[0].target_country), (2, 1));
     // A tuple-only pass reads the one status it needs, not the matrix.
-    let mut opinions = [OpinionRow::default(); 4];
+    let mut opinions = vec![OpinionRow::default(); 4];
     let both = Counting::new(&slice);
     walk(&both, BASE, GS, &mut opinions, &mut tuples, [true; 2]);
     assert!(counting.take()[2] < both.take()[2]);
@@ -2652,8 +2564,8 @@ mod dense {
         memory: &impl Memory,
         base: usize,
         game_state: usize,
-        opinions: &mut [OpinionRow],
-        tuples: &mut [TupleRow],
+        opinions: &mut Vec<OpinionRow>,
+        tuples: &mut Vec<TupleRow>,
         resolved: &mut Resolver,
     ) -> Walk {
         let result = (|| {
@@ -2705,7 +2617,7 @@ mod dense {
                         let opinion = i32::from_le_bytes(record[12..16].try_into().unwrap());
                         if opinion != 0 {
                             counters.push_opinion(
-                                &mut Buffer::Fixed(opinions),
+                                &mut Buffer::Growing(&mut *opinions),
                                 OpinionRow {
                                     owner_country: country.id,
                                     target_country,
@@ -2722,7 +2634,7 @@ mod dense {
                             country,
                             target_country,
                             serializable,
-                            &mut Buffer::Fixed(tuples),
+                            &mut Buffer::Growing(&mut *tuples),
                             &mut counters,
                             resolved,
                         )?;
@@ -3558,7 +3470,7 @@ fn forward_packet_alias_zero_reaches_war_and_whole_military_qword_before_old_gua
         let memory = ReverseTrace::new(&bytes, None);
         let countries = ccountry::Reader::new(&memory, BASE, GS).unwrap();
         let mut observed = ForwardZeroObservation::default();
-        let mut targets = [99; 4];
+        let mut targets = vec![99; 4];
         let old = co_belligerent_inputs_observed(
             &memory,
             BASE,
@@ -3610,7 +3522,7 @@ fn forward_packet_healthy_original_attempts_add_only_one_military_read() {
         BASE,
         &countries,
         country(0),
-        &mut [99; 4],
+        &mut vec![99; 4],
         &mut observed,
     );
     let before = memory.calls.borrow().len();
@@ -3660,7 +3572,7 @@ fn forward_packet_original_same_field_faults_are_never_retried_or_backfilled() {
             BASE,
             &countries,
             country(0),
-            &mut [99; 4],
+            &mut vec![99; 4],
             &mut observed,
         );
         assert!(
@@ -3740,7 +3652,7 @@ fn forward_packet_new_pointed_faults_remain_sticky_for_equal_pointer_reverse_cel
             BASE,
             &countries,
             country(0),
-            &mut [99; 4],
+            &mut vec![99; 4],
             &mut observed,
         );
         assert_eq!(old.zero_war, Err("slot-0 relation target mismatch"));
@@ -3765,7 +3677,7 @@ fn forward_packet_unknown_war_skips_new_military_and_subject_without_repeating_t
         BASE,
         &countries,
         country(0),
-        &mut [0; 4],
+        &mut vec![0; 4],
         &mut observed,
     );
     let packet = forward_zero_visibility_inputs(&memory, BASE, &countries, &mut observed);
@@ -3807,7 +3719,7 @@ fn forward_packet_subject_or_uses_raw_zero_and_positive_aliases_in_native_order(
             BASE,
             &countries,
             country(0),
-            &mut [0; 4],
+            &mut vec![0; 4],
             &mut observed,
         );
         assert_eq!(old.zero_subject, Err("slot-0 relation target mismatch"));
@@ -3848,7 +3760,7 @@ fn forward_packet_partial_first_failure_retains_known_second_raw_match() {
         BASE,
         &countries,
         country(0),
-        &mut [0; 4],
+        &mut vec![0; 4],
         &mut observed,
     );
     let packet = forward_zero_visibility_inputs(&memory, BASE, &countries, &mut observed);
@@ -3875,7 +3787,7 @@ fn forward_packet_military_failure_retains_independent_alias_target_and_subject(
         BASE,
         &countries,
         country(0),
-        &mut [0; 4],
+        &mut vec![0; 4],
         &mut observed,
     );
     let packet = forward_zero_visibility_inputs(&memory, BASE, &countries, &mut observed);
@@ -3905,7 +3817,7 @@ fn forward_packet_unknown_positive_target_link_is_not_assumed_zero() {
         BASE,
         &countries,
         country(0),
-        &mut [0; 4],
+        &mut vec![0; 4],
         &mut observed,
     );
     let packet = forward_zero_visibility_inputs(&memory, BASE, &countries, &mut observed);
@@ -3934,7 +3846,7 @@ fn forward_packet_failed_status_controls_refuse_without_reacquiring_root_or_head
             BASE,
             &countries,
             country(0),
-            &mut [0; 4],
+            &mut vec![0; 4],
             &mut observed,
         );
         let before = memory.calls.borrow().len();
@@ -3972,7 +3884,7 @@ fn growing_relation_rows_complete_the_original_walk() {
     assert!(matches!(expected.tuples, Outcome::Rows { len } if len > 1));
     let mut opinions = vec![OpinionRow::default(); 1];
     let mut tuples = vec![TupleRow::default(); 1];
-    let actual = walk_growing_with(
+    let actual = walk_with(
         &memory,
         world::BASE,
         world::STATE,
@@ -4069,7 +3981,7 @@ fn signed_country_slots_above_u16_reach_links_tuples_and_co_belligerents() {
         serializable_data(0, 3),
         &[RELATION[0] as u64],
     );
-    let mut link_output = [LinkRow::default(); 4];
+    let mut link_output = vec![LinkRow::default(); 4];
     assert_eq!(
         link_rows(&bytes, &mut link_output, &mut Resolver::default()),
         Outcome::Rows { len: 1 }
@@ -4077,7 +3989,7 @@ fn signed_country_slots_above_u16_reach_links_tuples_and_co_belligerents() {
     assert_eq!(link_output[0].country, HIGH_SLOT as u32);
     let mut opinions = Vec::new();
     let mut tuples = Vec::new();
-    let report = walk_growing_with(
+    let report = walk_with(
         &memory(&bytes),
         BASE,
         GS,
@@ -4102,10 +4014,9 @@ fn signed_country_slots_above_u16_reach_links_tuples_and_co_belligerents() {
     bytes[status(0, 3) + CO_BELLIGERENT] = 1;
     let source = memory(&bytes);
     let mut memo = ccountry::NativeReferenceMemo::try_with_capacity(0, 0).unwrap();
-    memo.enable_worker_growth();
     memo.reset(BASE, GS);
     let countries = memo.view(&source, BASE, GS);
-    let mut co = [0; 4];
+    let mut co = vec![0; 4];
     assert_eq!(
         co_belligerents_native(&source, BASE, &countries, country(0), &mut co),
         Ok((1, 1))
@@ -4158,7 +4069,7 @@ fn a_co_candidates_status_fields_are_copied_in_one_guarded_call() {
         calls: Default::default(),
     };
     let countries = ccountry::Reader::new(&memory, BASE, GS).unwrap();
-    let mut slots = [99_u32; 4];
+    let mut slots = vec![99_u32; 4];
     let inputs = co_belligerent_inputs(&memory, BASE, &countries, country(0), &mut slots);
     assert_eq!(inputs.targets, Ok(3));
     assert_eq!(slots, [0, 2, 3, 99]);
@@ -4199,9 +4110,9 @@ fn owners_enemy_headers_and_owned_pointers_are_hinted_before_their_reads() {
         memory: memory(&bytes),
         log: Default::default(),
     };
-    let mut rows = [LinkRow::default(); 8];
+    let mut rows = vec![LinkRow::default(); 8];
     let walk = transport_links(&hints, &mut rows);
-    let mut plain = [LinkRow::default(); 8];
+    let mut plain = vec![LinkRow::default(); 8];
     assert_eq!(walk, transport_links(&memory(&bytes), &mut plain));
     assert_eq!(rows, plain);
     let log = hints.log.into_inner();
@@ -4247,7 +4158,7 @@ fn relation_hints_leave_every_read_and_a_one_shot_fault_unchanged() {
             hints: std::cell::Cell::new(0),
         };
         let plain = ReverseTrace::new(&bytes, fault);
-        let (mut rows, mut plain_rows) = ([LinkRow::default(); 8], [LinkRow::default(); 8]);
+        let (mut rows, mut plain_rows) = (Vec::new(), Vec::new());
         assert_eq!(
             transport_links(&hinted, &mut rows),
             transport_links(&plain, &mut plain_rows),
@@ -4309,17 +4220,10 @@ impl Memory for StarFaults<'_> {
 fn star_links(memory: &impl Memory, partners: usize) -> (Outcome, Vec<LinkRow>) {
     let mut resolver = Resolver::with_capacity(partners + 2);
     let mut rows = vec![LinkRow::default(); partners * 2];
-    let outcome = links(
-        memory,
-        BASE,
-        GS,
-        &mut rows,
-        WarOutput {
-            rows: &mut [],
-            countries: &mut [],
-        },
-        &mut resolver,
-    )
+    let outcome = links_observed_inner(memory, BASE, GS, crate::walk::Buffer::Growing(&mut rows), WarOutput {
+            rows: &mut Vec::new(),
+            countries: &mut Vec::new(),
+        }.into(), &mut resolver, None, None)
     .links;
     (outcome, rows)
 }
@@ -4342,7 +4246,8 @@ fn star_transport(
         WarOutput {
             rows: &mut wars,
             countries: &mut countries,
-        },
+        }
+        .into(),
         &mut resolver,
         73,
     );

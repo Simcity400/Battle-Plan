@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { APPROXIMATE_ALPHA, APPROXIMATE_DASH, PENDING_ALPHA, markApproximate, overlapsSpans, pendingLayer, preparedKeyItems, preparedRangeText, spanRanges } from './prepared.ts';
-import { dayLabel } from './draw.ts';
+import { APPROXIMATE_ALPHA, APPROXIMATE_DASH, PENDING_ALPHA, markApproximate, overlapsSpans, pendingLayer, preparedKeyItems, spanRanges } from './prepared.ts';
 import { plotFrame } from './frame.ts';
 import { tokensFromValues } from './tokens.ts';
 
@@ -62,16 +61,4 @@ test('approximate geometry fades through the surface and takes the dashed edge o
   const empty = new Recorder();
   markApproximate(empty.context, tokens, 10, 20, 0, 8);
   assert.equal(empty.calls.length, 0);
-});
-
-test('a prepared log names its prepared days, a proven newest window, or the whole range as still being prepared', () => {
-  const partial = { firstHour: 0, lastHour: 240, complete: false };
-  assert.equal(preparedRangeText(undefined), null);
-  assert.equal(preparedRangeText({ ...partial, complete: true }), null);
-  assert.equal(preparedRangeText({ ...partial, complete: true }, 500), null);
-  assert.equal(preparedRangeText(null), 'This range is still being prepared.');
-  assert.equal(preparedRangeText(partial), `Prepared ${dayLabel(0)} to ${dayLabel(240)}; the rest is still being prepared.`);
-  assert.equal(preparedRangeText(partial, 500),
-    `Newest days exact from ${dayLabel(500)}. Prepared ${dayLabel(0)} to ${dayLabel(240)}; the rest is still being prepared.`);
-  assert.equal(preparedRangeText(null, 500), `Newest days exact from ${dayLabel(500)}; the rest is still being prepared.`);
 });

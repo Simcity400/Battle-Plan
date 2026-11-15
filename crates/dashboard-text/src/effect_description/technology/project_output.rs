@@ -38,7 +38,7 @@ impl Renderer<'_, '_, '_> {
         let token = world
             .token(row.definition_id)
             .map_err(|why| why.to_string())?
-            .ok_or("LexicalTokens lacks project definition")?;
+            .ok_or("lexical tokens lacks project definition")?;
         let token = std::str::from_utf8(token).map_err(|_| "project definition is not UTF-8")?;
         let catalogue = self
             .character_content()?
@@ -81,7 +81,7 @@ impl Renderer<'_, '_, '_> {
         let world = self.context.world()?;
         let country = world
             .slot(owner)
-            .ok_or("CountryLinks lacks project owner")?;
+            .ok_or("country links lacks project owner")?;
         let project = self
             .evaluator()?
             .fresh_country_scope(Some(0), None)
@@ -255,7 +255,7 @@ impl Renderer<'_, '_, '_> {
         let token = world
             .token_of(specialization.as_bytes())
             .map_err(|why| why.to_string())?
-            .ok_or("LexicalTokens lacks project specialization")?;
+            .ok_or("lexical tokens lacks project specialization")?;
         let scientists = self.complete::<tables::Scientists>(SCIENTIST)?;
         let skills = self.complete::<tables::ScientistSkills>(SKILL)?;
         let mut eligible = BTreeSet::new();
@@ -335,7 +335,7 @@ impl Renderer<'_, '_, '_> {
             .ok_or_else(|| self.content_gap("buildings"))?;
         for program in programs {
             let row = keyed(&rows, u128::from(program.id))?
-                .ok_or("ProjectPrograms lacks roster program configuration")?;
+                .ok_or("project programs lacks roster program configuration")?;
             let name = std::str::from_utf8(&row.building)
                 .map_err(|_| "program building token is not UTF-8")?;
             let building = buildings

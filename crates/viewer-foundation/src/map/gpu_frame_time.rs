@@ -23,12 +23,18 @@ const STRIDE: u64 = wgpu::QUERY_RESOLVE_BUFFER_ALIGNMENT;
 /// A frame's GPU milliseconds, or why it has none.
 pub type FrameTime = (u64, Result<f64, String>);
 
+static REQUESTED: OnceLock<bool> = OnceLock::new();
+
 /// Whether this process writes the perf map log, whose `map` records carry the GPU time.
 pub fn requested() -> bool {
-    static REQUESTED: OnceLock<bool> = OnceLock::new();
-    // The variable the viewer's perf log opens its file from.
+    // The variable the viewer's perf log opens its file from, unless its host named the file.
     *REQUESTED
         .get_or_init(|| std::env::var_os("BATTLE_PLAN_PERF_MAP_LOG").or_else(|| std::env::var_os("HOI4_PERF_MAP_LOG")).is_some_and(|path| !path.is_empty()))
+}
+
+/// The host writes the perf map log: its maps' devices time their frames.
+pub fn request() {
+    let _ = REQUESTED.set(true);
 }
 
 /// The device features frame timing needs.

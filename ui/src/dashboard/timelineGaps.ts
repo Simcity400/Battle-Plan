@@ -15,17 +15,11 @@ export function timelineGaps(gaps: readonly RecordingGap[], offset: number, firs
   });
 }
 
-/** Preparation covers a prefix, but recorded gaps are never exact data. */
-export function timelinePrepared(coverage: { firstHour: number; lastHour: number } | null,
-  gaps: readonly RecordingGap[], offset: number, first: number, last: number) {
-  if (!coverage) return [];
-  let spans = [{ firstHour: coverage.firstHour, lastHour: coverage.lastHour }];
-  for (const gap of gaps) spans = spans.flatMap(span => {
-    if (gap.lastHour < span.firstHour || gap.firstHour > span.lastHour) return [span];
-    return [
-      { firstHour: span.firstHour, lastHour: gap.firstHour - 1 },
-      { firstHour: gap.lastHour + 1, lastHour: span.lastHour },
-    ].filter(span => span.firstHour <= span.lastHour);
-  });
-  return timelineGaps(spans.map(span => ({ ...span, reason: 'Exact prepared hours' })), offset, first, last);
+
+/** The clock hour under `clientX` on the timeline's range input (`left`, `width`), whose thumb is 14 px wide: one hour for
+ * the pointer's tooltip and its seek alike, so a click goes to the hour its tooltip names whatever the browser rounds its
+ * value to (a 13-year recording is about 70 hours a pixel). */
+export function timelineHourAt(clientX: number, rect: { left: number; width: number }, first: number, last: number): { left: number; hour: number } {
+  const fraction = Math.min(1, Math.max(0, (clientX - rect.left - 7) / Math.max(1, rect.width - 14)));
+  return { left: 7 + fraction * (rect.width - 14), hour: Math.min(last, Math.max(first, Math.round(first + fraction * (last - first)))) };
 }

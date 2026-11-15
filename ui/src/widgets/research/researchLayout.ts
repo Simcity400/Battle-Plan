@@ -1,18 +1,16 @@
 import { failureText, type Failure } from '../../dashboard/queryError.ts';
-import type { ResearchCoverage, ResearchEntry, ResearchHistory, ResearchSlotHistory, ResearchSlotState } from '../../generated/dashboard';
+import type { ResearchHistory, ResearchSlotHistory } from './types';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import { formatDate, formatDateTime, gameDate, monthNames } from '../../dashboard/calendar.ts';
 import { researchNumber } from './researchBreakdown.ts';
-import { researchHeldRuns, researchLatestProgress } from './researchData.ts';
-import type { ResearchFolderLook, ResearchHeldRun } from './researchData';
+import type { ResearchFolderLook } from './researchData';
 import { researchAssignments, researchStartKnown } from './researchJourney.ts';
+import type { ResearchCoverage, ResearchEntry } from '../../generated/dashboard';
 
-/** One row of a slot's lane: a completion, a technology held without its
- * recorded occurrence, a stretch the recording lacks, or the slot opening or
- * closing. `hour` orders the lane. */
+/** One row of a slot's lane: a completion, a stretch the recording lacks, or
+ * the slot opening or closing. `hour` orders the lane. */
 export type ResearchItem =
   | { kind: 'completed'; key: string; hour: number; slot: ResearchSlotHistory; entry: ResearchEntry }
-  | { kind: 'held'; key: string; hour: number; slot: ResearchSlotHistory; run: ResearchHeldRun }
   | { kind: 'gap'; key: string; hour: number; lastHour: number }
   | { kind: 'opened'; key: string; hour: number; known: boolean }
   | { kind: 'closed'; key: string; hour: number };
@@ -22,7 +20,7 @@ export type ResearchItem =
  * reached by then. */
 export interface ResearchLane { slot: ResearchSlotHistory; appeared: number; offset: number; items: ResearchItem[] }
 
-const RANK: Record<ResearchItem['kind'], number> = { opened: 0, completed: 1, held: 1, gap: 2, closed: 3 };
+const RANK: Record<ResearchItem['kind'], number> = { opened: 0, completed: 1, gap: 2, closed: 3 };
 
 /** Research coverage known by `hour`. */
 export function coverageAt(coverage: readonly ResearchCoverage[], hour: number): ResearchCoverage[] {
@@ -35,10 +33,9 @@ export function coverageGaps(coverage: readonly ResearchCoverage[]): { firstHour
     .filter(gap => gap.lastHour >= gap.firstHour);
 }
 
-/** One lane per slot, in slot order: its completions (or, for older
- * recordings, what it held) in order, the recording's gaps that fall inside its
- * sequence, and its opening and closing. `slots` and `coverage` are clipped at
- * `hour`; a technology still held at `hour` is not yet history. */
+/** One lane per slot, in slot order: its completions in order, the recording's
+ * gaps that fall inside its sequence, and its opening and closing. `slots` and
+ * `coverage` are clipped at `hour`. */
 export function researchLanes(slots: readonly ResearchSlotHistory[], coverage: readonly ResearchCoverage[], hour: number): ResearchLane[] {
   const spanOf = (at: number) => coverage.findIndex(span => span.firstHour <= at && at <= span.lastHour);
   const gaps = coverageGaps(coverage).map(gap => ({ ...gap, before: gap.firstHour - 1, after: gap.lastHour + 1 }));
@@ -46,8 +43,6 @@ export function researchLanes(slots: readonly ResearchSlotHistory[], coverage: r
     const items: ResearchItem[] = [];
     for (const entry of slot.entries) if (entry.outcome === 'completed' && entry.endedByHour !== null)
       items.push({ kind: 'completed', key: `c:${entry.firstObservedHour}:${entry.token}`, hour: entry.endedByHour, slot, entry });
-    for (const run of researchHeldRuns(slot)) if (run.lastHour < hour)
-      items.push({ kind: 'held', key: `h:${run.firstHour}:${run.token}`, hour: run.endedByHour ?? run.lastHour, slot, run });
     slot.availability.forEach((span, index) => {
       const within = spanOf(span.firstHour);
       if (within >= 0 && coverage[within].firstHour < span.firstHour) {
@@ -85,7 +80,7 @@ function prefixAt<T>(rows: readonly T[], hour: number, at: (row: T) => number): 
 }
 function revealedAt(item: ResearchItem): number {
   return item.kind === 'completed' ? Math.max(item.hour, item.entry.firstObservedHour, item.entry.outcomeObservedHour ?? item.hour)
-    : item.kind === 'held' ? item.run.lastHour + 1 : item.kind === 'gap' ? item.lastHour + 1 : item.hour;
+    : item.kind === 'gap' ? item.lastHour + 1 : item.hour;
 }
 
 /** Index the immutable history once. Playback selects only newly revealed rows;
@@ -128,12 +123,18 @@ export function researchLanesAt(history: ResearchHistory, hour: number): Researc
   return index.shown;
 }
 
-/** One List row: a completion, something held (older recordings), or a gap. */
+/** What the history shows at `hour`: the rows each lane has revealed, where it starts, and the coverage known. It
+ * changes only when a row is revealed, so a widget following playback renders only then, never because the hour
+ * moved on inside it. */
+export function researchRevealKey(history: ResearchHistory, hour: number): string {
+  const lanes = researchLanesAt(history, hour).map(lane => `${lane.slot.index}:${lane.items.length}:${lane.offset}`).join(',');
+  return `${lanes};${history.coverage.filter(span => span.firstHour <= hour).length}`;
+}
+
+/** One List row: a completion or a gap. */
 export type ResearchRow =
   | { kind: 'completed'; key: string; hour: number; slot: ResearchSlotHistory; entry: ResearchEntry; token: string;
     started: { hour: number; known: boolean }; startSlot: number | null; tookHours: number | null }
-  | { kind: 'held'; key: string; hour: number; slot: ResearchSlotHistory; run: ResearchHeldRun; token: string;
-    startKnown: boolean; heldHours: number | null }
   | { kind: 'gap'; key: string; hour: number; lastHour: number };
 
 /** A completion's start and time taken, as its explanation joins them: started
@@ -148,21 +149,12 @@ export function completedRow(slots: readonly ResearchSlotHistory[], slot: Resear
     tookHours: known ? hour - first.entry.firstObservedHour : null };
 }
 
-/** What a slot held without its recorded occurrence: its start is known when the
- * read before, in the same coverage, showed something else. */
-export function heldRow(coverage: readonly ResearchCoverage[], slot: ResearchSlotHistory, run: ResearchHeldRun, hour: number): Extract<ResearchRow, { kind: 'held' }> {
-  const startKnown = coverage.some(span => span.firstHour < run.firstHour && run.firstHour <= span.lastHour);
-  return { kind: 'held', key: `h:${slot.index}:${run.firstHour}:${run.token}`, hour, slot, run, token: run.token, startKnown,
-    heldHours: startKnown && run.endedByHour !== null ? run.endedByHour - run.firstHour : null };
-}
-
-/** Every lane's completions and held technologies with the recording's gaps,
+/** Every lane's completions with the recording's gaps,
  * in time order (the List sorts them itself). */
 export function researchRows(lanes: readonly ResearchLane[], slots: readonly ResearchSlotHistory[], coverage: readonly ResearchCoverage[]): ResearchRow[] {
   const rows: ResearchRow[] = [];
   for (const lane of lanes) for (const item of lane.items) {
     if (item.kind === 'completed') rows.push(completedRow(slots, item.slot, item.entry, item.hour));
-    else if (item.kind === 'held') rows.push(heldRow(coverage, item.slot, item.run, item.hour));
   }
   for (const gap of coverageGaps(coverage)) rows.push({ kind: 'gap', key: `g:${gap.firstHour}`, hour: gap.firstHour, lastHour: gap.lastHour });
   return rows.sort((a, b) => a.hour - b.hour || (a.kind === 'gap' ? 1 : 0) - (b.kind === 'gap' ? 1 : 0) || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
@@ -190,12 +182,10 @@ export function researchDays(hours: number): string {
   return `${text} ${text === '1' ? 'day' : 'days'}`;
 }
 
-/** The plain date under a lane cell's name, and the List's Date column. A held
- * technology's date is when it had left the slot, never a completion. */
+/** The plain date under a lane cell's name, and the List's Date column. */
 export function researchItemDate(item: Exclude<ResearchItem, { kind: 'gap' }> | Exclude<ResearchRow, { kind: 'gap' }>): string {
   switch (item.kind) {
     case 'completed': return researchDate(item.hour);
-    case 'held': return item.run.endedByHour !== null ? `until ${researchDate(item.run.endedByHour)}` : `last seen ${researchDate(item.run.lastHour)}`;
     case 'opened': return item.known ? `Opened by ${researchDate(item.hour)}` : `Recorded from ${researchDate(item.hour)}`;
     case 'closed': return `Closed by ${researchDate(item.hour)}`;
   }
@@ -228,23 +218,6 @@ export function completedTooltip(row: Extract<ResearchRow, { kind: 'completed' }
   ];
   rows.push(...artworkFailureRows(text, row.token));
   return { title: text.name(row.token, entry.databaseIndex), icon: text.icon(row.token), subtitle: text.folder(row.token, entry.databaseIndex)?.name, rows };
-}
-
-/** What a slot held without its recorded occurrence: when it was first and last
- * seen, its last read progress, and that its outcome is not recorded. */
-export function heldTooltip(row: Extract<ResearchRow, { kind: 'held' }>, text: ResearchText): TooltipContent {
-  const { run, slot } = row;
-  const state: ResearchSlotState | undefined = slot.states.find(s => s.token === run.token && s.firstHour <= run.lastHour && run.lastHour <= s.lastHour);
-  const progress = state ? researchLatestProgress(slot, state, run.lastHour) : null;
-  const rows: TooltipRow[] = [
-    { label: 'First held', value: row.startKnown ? researchDate(run.firstHour) : `by ${researchDate(run.firstHour)}` },
-    run.endedByHour !== null ? { label: 'Gone', value: `by ${formatDateTime(run.endedByHour)}` } : { label: 'Last seen', value: formatDateTime(run.lastHour) },
-    ...progress ? [{ label: 'Last read', value: `${Math.round(progress.fraction * 100)}% on ${formatDateTime(progress.hour)}` }] : [],
-    { label: 'Slot', value: `${slot.index + 1}` },
-  ];
-  rows.push(...artworkFailureRows(text, row.token));
-  return { title: text.name(row.token), icon: text.icon(row.token), subtitle: text.folder(row.token)?.name, rows,
-    note: 'This recording does not say whether it finished.' };
 }
 
 export function gapTooltip(gap: { hour: number; lastHour: number }): TooltipContent {

@@ -51,11 +51,14 @@ viewer-foundation = { path = "../viewer-foundation", features = ["test-support"]
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
 engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
+installed-content-province-area = { workspace = true, features = ["test-support"] }
 installed-content-weather = { workspace = true, features = ["test-support"] }
+recorder-derive = { workspace = true, features = ["test-support"] }
 replay = { workspace = true, features = ["test-support"] }
 replay-data = { workspace = true, features = ["test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
+unify-bitflags-2 = { workspace = true }
 unify-dpi = { workspace = true }
 unify-indexmap = { workspace = true }
 unify-once_cell = { workspace = true }

@@ -17,15 +17,15 @@ import type { WidgetProps } from './definitions';
 import type { BoundTrack, WidgetSpec } from './model';
 import type BombingDrill from './BombingDrill.tsx';
 import type AirLossDrill from './AirLossDrill.tsx';
-import type { MilitaryAirReply } from '../generated/dashboard';
 import type { SunburstProps } from '../charts/sunburst/Sunburst';
 import { militaryAirIndex, validateMilitaryAirReply } from './militaryAirLedger.ts';
 import { OPTIONS } from '../widgets/air-kills-losses/definition.ts';
 import { partOf } from './militaryAirParts.fixture.ts';
 import type { Leaf } from './militaryAirParts.fixture';
+import type { MilitaryAirLedger } from './militaryAirLedger';
 
 const span = (firstHour: number, lastHour = firstHour) => ({ firstHour, lastHour });
-const data = (): MilitaryAirReply => ({ family: 'airLosses', firstHour: 10, lastHour: 20, available: true,
+const data = (): MilitaryAirLedger => ({ family: 'airLosses', firstHour: 10, lastHour: 20, available: true,
   observed: [span(10, 16), span(18, 20)], incomplete: [], countries: ['A', 'B', 'C'].map((tag, id) => ({ tag, identity: `${id}:9`,
     present: [span(10, 16), span(18, 20)], membership: tag === 'A' ? [span(10, 16), span(18, 20)] : tag === 'B' ? [span(10, 12)] : [span(13, 16), span(18, 20)] })), parts: ([
     { tag: 'B', identity: '1:9', dealt: false, opponent: null, region: 40001, cause: 1, buildingToken: null, buildingId: null, state: null,
@@ -75,7 +75,7 @@ async function server(replacements: Record<string, string>) {
     }] });
 }
 const common = {
-  '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour(); export const usePlaybackMotion = () => 24;',
+  '/dashboard/playback.ts': 'export const usePlaybackMotion = () => 24;',
   '/dashboard/countryLooks.ts': 'export const useCountryLooks = () => ({ name: (tag, hour) => tag + " at " + hour, color: () => null, flag: () => undefined, flagReason: () => undefined, flagPending: () => false, revision: 0 });',
   '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = (_client, _track, wanted, active) => { if (active || wanted.length) throw new Error("This fixture has no country header target"); return { labelAt: () => () => { throw new Error("No country header label was requested"); }, revision: 0 }; };',
   '/charts/useChartTokens.ts': `const tokens = ${JSON.stringify(tokensFromValues(() => '#777', 'sans-serif'))}; export const useChartTokens = () => tokens;`,
@@ -93,7 +93,7 @@ test('bombing breakdown keeps damage amounts and uses readable missing-content l
     '/charts/sunburst/Sunburst.tsx': 'export default props => {globalThis.__bombingBreakdown = props; return null;};',
   });
   try {
-    const {default: Breakdown} = await vite.ssrLoadModule('/ui/src/dashboard/BombingBreakdown.tsx') as typeof import('./BombingBreakdown.tsx');
+    const {default: Breakdown} = await vite.ssrLoadModule('/ui/src/widgets/bombing-damage-breakdown/BombingBreakdown.tsx') as typeof import('../widgets/bombing-damage-breakdown/BombingBreakdown.tsx');
     renderToStaticMarkup(createElement(Breakdown, {data: reply, runtime: {client: {}, clock: {}} as never, track: state.track as unknown as BoundTrack,
       tag: 'B', identity: '1:9', from: 10, hour: 19, end: 20, dealt: false, options: {}, active: true}));
     const chart = host.__bombingBreakdown!;
@@ -294,7 +294,7 @@ test('actual cause producer keeps exact negative rows, positive geometry and nat
   } finally { await vite.close(); delete globals.__airDrill; }
 });
 
-const bombingData = (): MilitaryAirReply => ({ ...data(), family: 'bombing', parts: data().parts.map((part, i) => ({ ...part,
+const bombingData = (): MilitaryAirLedger => ({ ...data(), family: 'bombing', parts: data().parts.map((part, i) => ({ ...part,
   opponentKnown: null, cause: 1, buildingToken: i === 1 ? 'correction' : 'factory', buildingId: i === 1 ? 2 : 1, state: 7 })),
   buildings: [{ id: 'factory', name: 'Factory', missing: null }, { id: 'correction', name: 'Corrected building', missing: null }] });
 
@@ -396,7 +396,7 @@ test('bombing sunburst uses content titles and hover keys while exact recorded d
     '/charts/sunburst/Sunburst.tsx': 'export default props => { globalThis.__bombingTitles.sunburst = props; return null; };',
   });
   try {
-    const View = (await vite.ssrLoadModule('/ui/src/dashboard/BombingBreakdown.tsx')).default;
+    const View = (await vite.ssrLoadModule('/ui/src/widgets/bombing-damage-breakdown/BombingBreakdown.tsx')).default;
     const data = validateMilitaryAirReply(bombingData());
     const props = { data, track: fixture().track, runtime: { client: {}, clock: {} }, tag: 'B', identity: '1:9',
       from: 10, hour: 16, end: 20, dealt: false, active: true, options: {} };

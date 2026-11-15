@@ -210,3 +210,13 @@ test('keyboard stops for daily reads are built once per change', () => {
   memo(reads.slice(), strip, targets, [view[0], view[1] - 24], 2000);
   assert.equal(asked, 4);
 });
+
+test('a span bar is drawn and hovered over its hours but names no hour: the hover is about the hour pointed at', () => {
+  const bars = [{ firstHour: 1099, lastHour: 1195, up: 10, down: 10, span: true as const }, { firstHour: 1195, lastHour: 1219, up: 5, down: 5 }];
+  const strip = barStrip(bars, { height: () => 60, upLabel: 'gain', downLabel: 'burn' });
+  const above = stripMiddle(FRAME.strip!) - 5;
+  assert.equal(stripBarAt(bars, FRAME, null, { x: FRAME.toX(1150), y: above }), bars[0]);
+  assert.equal(strip.describe!({ x: FRAME.toX(1150), y: above }, FRAME, null), null);
+  assert.equal(strip.describe!({ x: FRAME.toX(1210), y: above }, FRAME, null), 1219);
+  assert.deepEqual(stripKeyTargets(bars, [1000, 2000], null).map(target => target.describes), [1219]);
+});

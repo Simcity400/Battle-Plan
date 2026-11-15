@@ -1,5 +1,6 @@
 """Tests for tools/boat.py against a fake Boat: python tools/boat_test.py"""
 
+import ast
 import contextlib
 import io
 import json
@@ -10,8 +11,10 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import types
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import boat as bt  # noqa: E402
@@ -32,7 +35,10 @@ class FakeBoat:
         self.synced = []
         self.fail_downloads = False
         self.cargo_exit = 0
+        self.outcome = None
         self.renewed = threading.Event()
+        self.missing = set()
+        self.failing = set()
 
     def boat(self, *args, check=True, idempotent=None, shielded=False):
         self.calls.append(args)
@@ -52,6 +58,14 @@ class FakeBoat:
             if "--type" in args:
                 vm["type"] = args[args.index("--type") + 1]
             return OK, []
+        if command == "new":
+            source = args[args.index("--from") + 1]
+            if source in self.missing:
+                return types.SimpleNamespace(returncode=1, stdout="", stderr="no such snapshot"), []
+            self.vms["n"] = {"id": "n", "state": "ready", "type": "large", "ttlSeconds": bt.LEASE_SECONDS, "hydrated": True}
+            return OK, [{"event": "created", "id": "n"}]
+        if command == "snapshot" or (command == "exec" and "source-revision" in args[-1]):
+            return OK, []
         if command == "push":
             files = [path for path in Path(args[2]).rglob("*") if path.is_file() and ".git" not in path.parts]
             return OK, [{"files": len(files)}]
@@ -68,6 +82,8 @@ class FakeBoat:
             return self.acquire_status.get(vmid, 0), self.acquire_output.get(vmid, "{}")
         if mode == "release":
             return 0, ""
+        if mode == "outcome" and self.outcome is not None:
+            return 0, json.dumps(self.outcome)
         if mode == "outcome":
             artifact = {"path": f"{bt.REMOTE}/target/{bt.TARGET}/release/viewer.exe", "sha256": "0" * 64}
             bundle = {"path": f"{bt.REMOTE}/artifacts-x.tar.xz", "size": 10, "sha256": "0" * 64}
@@ -82,8 +98,10 @@ class FakeBoat:
                 return self.sync_status, "j"
         if mode == "check":
             return self.cargo_exit, "j"
-        if mode == "build":
-            return 0, "j"
+        if mode in {"build", "test"}:
+            return self.cargo_exit, "j"
+        if mode in {"ui", "provenance"}:
+            return int(mode in self.failing), "j"
         raise AssertionError(f"unexpected remote call {mode} {args}")
 
     def ttl_calls(self, vmid):
@@ -99,7 +117,7 @@ class Harness(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.state = bt.State(self.root / "state")
-        self.saved = {name: getattr(bt, name) for name in ("boat", "remote", "quick", "RENEW_SECONDS", "HYDRATION_SECONDS", "UPLOAD_CHUNKS")}
+        self.saved = {name: getattr(bt, name) for name in ("boat", "remote", "quick", "deliver", "run_program", "RENEW_SECONDS", "HYDRATION_SECONDS", "UPLOAD_CHUNKS")}
 
     def tearDown(self):
         for name, value in self.saved.items():
@@ -199,6 +217,11 @@ class Plan(unittest.TestCase):
         self.assertEqual(first.rebuilds({**entry, "used": 3.0}), (0, 3))
         self.assertEqual(self.plan("check", "-p", "top").rebuilds(entry), (3, 0))
 
+    def test_only_tests_in_a_profile_without_incremental_sessions_count_on_the_cache(self):
+        self.assertIsNone(self.plan("test", "--no-run", "-p", "top").cache)
+        self.assertEqual(self.plan("test", "--no-run", "--release", "-p", "top").cache, "cache_tests_release")
+        self.assertEqual(self.plan("build", "--release", "-p", "top").cache, "cache_build_release")
+
     def test_a_tree_stands_only_until_another_run_uses_the_vm_and_only_for_its_profile(self):
         release = self.plan("build", "--release", "-p", "top")
         entry = self.built(release)
@@ -214,19 +237,285 @@ class Plan(unittest.TestCase):
         self.assertEqual((release.rebuilds(lost), check.rebuilds(lost)), ((3, 0), (0, 0)))
 
 
+    def test_a_feature_named_through_a_member_that_dev_depends_on_itself_reaches_the_build(self):
+        crates = {"solo": '[features]\nx = []\ny = []\n[dev-dependencies]\nsolo = { path = ".", features = ["y"] }\n', "pair": "[features]\nx = []\n"}
+        for name, body in crates.items():
+            (self.root / "crates" / name).mkdir(parents=True)
+            (self.root / "crates" / name / "Cargo.toml").write_text(f'[package]\nname = "{name}"\n{body}')
+        cases = [
+            (["-p", "solo", "--features", "solo/x,solo/y"], ["-p", "solo", "--features", "x,y"]),
+            (["-p", "solo", "--features=solo/x", "-Fsolo/y", "-F", "solo/x"], ["-p", "solo", "--features=x", "-Fy", "-F", "x"]),
+            (["-p", "solo", "-p", "middle", "--no-default-features", "--features", "solo/x"], ["-p", "solo", "-p", "middle", "--no-default-features", "--features", "x"]),
+            (["-p", "solo", "--features", "x"], ["-p", "solo", "--features", "x"]),
+            (["-p", "pair", "--features", "pair/x"], ["-p", "pair", "--features", "pair/x"]),
+            (["-p", "top", "--features", "solo/x"], ["-p", "top", "--features", "solo/x"]),
+        ]
+        for args, expected in cases:
+            with self.subTest(args=args):
+                self.assertEqual(bt.member_features(self.root, ["build", "--release", *args]), ["build", "--release", *expected])
+        with self.assertRaises(bt.Failure):
+            bt.member_features(self.root, ["build", "--release", "-p", "solo", "-p", "pair", "--features", "solo/x"])
+
+
+class FrequentTests(unittest.TestCase):
+    def test_the_successful_test_builds_of_the_window_come_most_frequent_first_as_sent(self):
+        now = time.mktime(time.strptime("2026-11-12T16:00:00", "%Y-%m-%dT%H:%M:%S"))
+        lines = [
+            {"time": "2026-11-12T15:00:00+1100", "mode": "test", "exit": 0, "args": ["test", "--no-run", "-p", "b", "--lib"]},
+            {"time": "2026-11-12T15:01:00+1100", "mode": "test", "exit": 0, "args": ["test", "--no-run", "-p", "a", "--bin", "a"]},
+            {"time": "2026-11-12T15:02:00+1100", "mode": "test", "exit": 0, "args": ["test", "--no-run", "-p", "a", "--bin", "a"]},
+            {"time": "2026-11-12T15:03:00+1100", "mode": "test", "exit": 101, "args": ["test", "--no-run", "-p", "c", "--lib"]},
+            {"time": "2026-11-12T15:04:00+1100", "mode": "check", "exit": 0, "args": ["check", "-p", "d"]},
+            {"time": "2026-11-10T15:00:00+1100", "mode": "test", "exit": 0, "args": ["test", "--no-run", "-p", "e", "--lib"]},
+        ]
+        with tempfile.TemporaryDirectory() as temp:
+            log = Path(temp) / "timings.jsonl"
+            log.write_text("\n".join(json.dumps(line) for line in lines) + "\nnot json\n", encoding="utf-8")
+            self.assertEqual(bt.frequent_tests(log, now), [
+                ("test", ["--warm", "--", "test", "--no-run", "--no-fail-fast", "-p", "a", "--bin", "a"]),
+                ("test", ["--warm", "--", "test", "--no-run", "--no-fail-fast", "-p", "b", "--lib"]),
+            ])
+            self.assertEqual(bt.frequent_tests(Path(temp) / "missing.jsonl", now), [])
+
+
 class Parse(unittest.TestCase):
     def test_check_and_build(self):
-        self.assertEqual(bt.parse(["check", "-p", "viewer", "--all-targets"]), ("check", ["check", "-p", "viewer", "--all-targets"], None, False))
-        mode, cargo, outdir, refresh = bt.parse(["build", "--refresh-image", "--out", "x", "--release", "-p", "viewer"])
-        self.assertEqual((mode, cargo, outdir, refresh), ("build", ["build", "--release", "-p", "viewer"], Path("x"), True))
-        self.assertEqual(bt.parse(["ui"]), ("ui", [], None, False))
+        self.assertEqual(bt.parse(["check", "-p", "viewer", "--all-targets"]), ("check", ["check", "-p", "viewer", "--all-targets"], None, None))
+        mode, cargo, outdir, _ = bt.parse(["build", "--out", "x", "--release", "-p", "viewer"])
+        self.assertEqual((mode, cargo, outdir), ("build", ["build", "--release", "-p", "viewer"], Path("x")))
+        self.assertEqual(bt.parse(["snapshot"]), ("snapshot", [], None, None))
+        with self.assertRaises(bt.Failure):
+            bt.parse(["snapshot", "--workspace"])
+        self.assertEqual(bt.parse(["ui"]), ("ui", [], None, None))
         mode, cargo, outdir, _ = bt.parse(["build", "--out", "x", "--profile", "release-lto", "-p", "collector", "--lib"])
         self.assertEqual((mode, cargo, outdir, bt.profile(cargo)), ("build", ["build", "--profile", "release-lto", "-p", "collector", "--lib"], Path("x"), "release-lto"))
 
     def test_refuses_what_the_tool_owns(self):
-        for args in (["check", "-j", "3"], ["check", "-j3"], ["check", "--jobs=2"], ["check", "--target", "x"], ["check", "--target-dir=x"], ["check", "--message-format=json"], ["build", "--out", "x", "-p", "viewer"], ["build", "--out", "x", "--profile", "dev"], ["build", "--out", "x", "--profile=test"], ["build", "--release"], ["ui", "x"], ["test"], []):
+        for args in (["check", "-j", "3"], ["check", "-j3"], ["check", "--jobs=2"], ["check", "--target", "x"], ["check", "--target-dir=x"], ["check", "--message-format=json"], ["build", "--out", "x", "-p", "viewer"], ["build", "--out", "x", "--profile", "dev"], ["build", "--out", "x", "--profile=test"], ["build", "--release"], ["ui", "x"], ["test", "-p", "x", "-j", "2"], ["test", "-p", "x", "--target", "y"], ["test", "-p", "x", "--message-format=json"], []):
             with self.subTest(args=args), self.assertRaises(bt.Failure):
                 bt.parse(args)
+
+    def test_test_takes_cargo_test_arguments_and_names_before_or_after_the_separator(self):
+        mode, cargo, outdir, run = bt.parse(["test", "-p", "replay", "--features", "a,b", "--test", "codec", "first", "--out", "o", "--no-fail-fast", "--pdb", "--release", "--", "second", "--exact", "--nocapture"])
+        self.assertEqual((mode, cargo, outdir), ("test", ["test", "--no-run", "-p", "replay", "--features", "a,b", "--test", "codec", "--release"], Path("o")))
+        self.assertEqual((run.program, run.fail_fast, run.pdb), (["first", "second", "--exact", "--nocapture"], False, True))
+        _, cargo, outdir, run = bt.parse(["test", "-preplay-columnar", "--lib", "name"])
+        self.assertEqual((cargo, outdir, bt.profile(cargo), run.program, run.fail_fast, run.pdb), (["test", "--no-run", "-preplay-columnar", "--lib"], None, "dev", ["name"], True, False))
+        # Words after -- go to the programs whatever they look like.
+        self.assertEqual(bt.parse(["test", "-p", "x", "--", "--test-threads", "1", "-p"])[3].program, ["--test-threads", "1", "-p"])
+
+    def test_test_refuses_by_name_what_cannot_run_here(self):
+        for args, reason in ((["test"], "-p"), (["test", "name"], "-p"), (["test", "--workspace"], "suite"), (["test", "-p", "x", "--doc"], "rustdoc"), (["test", "-p", "x", "--no-run"], "check"), (["test", "-p", "x", "--out"], "directory")):
+            with self.subTest(args=args), self.assertRaisesRegex(bt.Refused, reason):
+                bt.parse(args)
+
+
+def remote_function(name):
+    """A function of the VM's runner, whose module runs on import and only on Linux."""
+    tree = ast.parse((Path(bt.TOOLS) / "boat_remote.py").read_text(encoding="utf-8"))
+    node = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == name)
+    namespace = {"Path": Path, "SRC": Path("/home/user/hoi4/src")}
+    exec(compile(ast.Module([node], []), "boat_remote.py", "exec"), namespace)
+    return namespace[name]
+
+
+def artifact(package, name, kind, test, executable):
+    return {"reason": "compiler-artifact", "package_id": package, "target": {"name": name, "kind": kind}, "profile": {"test": test}, "executable": executable}
+
+
+class TestPrograms(unittest.TestCase):
+    """The runner's reading of Cargo's messages: which executable is which test program."""
+
+    def test_each_test_program_comes_with_its_package_and_only_named_binaries_come_too(self):
+        deps = f"/home/user/hoi4/target/{bt.TARGET}/debug"
+        viewer, other = "path+file:///home/user/hoi4/src/crates/viewer#0.1.0", "path+file:///home/user/hoi4/src/crates/viewer-core#0.2.0-rc.1"
+        events = [
+            {"reason": "build-script-executed", "package_id": viewer, "env": [["BATTLE_PLAN_STAMP", "abc"]], "out_dir": "/x"},
+            artifact(other, "viewer_core", ["lib"], False, None),
+            artifact(viewer, "viewer", ["lib"], True, f"{deps}/deps/viewer-1a.exe"),
+            artifact(viewer, "viewer", ["bin"], True, f"{deps}/deps/viewer-2b.exe"),
+            artifact(viewer, "viewer", ["bin"], False, f"{deps}/viewer.exe"),
+            artifact(viewer, "tool", ["bin"], False, f"{deps}/tool.exe"),
+            artifact(viewer, "dump_stack", ["test"], True, f"{deps}/deps/dump_stack-3c.exe"),
+            artifact(viewer, "demo", ["example"], False, f"{deps}/examples/demo.exe"),
+            artifact(other, "viewer_core", ["lib"], True, f"{deps}/deps/viewer_core-4d.exe"),
+            {"reason": "compiler-artifact", "package_id": viewer, "target": {"name": "build-script-build", "kind": ["custom-build"]}, "profile": {"test": False}, "executable": None},
+        ]
+        packages = {
+            viewer: {"id": viewer, "name": "viewer", "version": "0.1.0", "authors": [], "manifest_path": "/home/user/hoi4/src/crates/viewer/Cargo.toml", "description": None},
+            other: {"id": other, "name": "viewer-core", "version": "0.2.0-rc.1", "authors": ["a", "b"], "manifest_path": "/home/user/hoi4/src/crates/viewer-core/Cargo.toml", "license": "MIT"},
+        }
+        files, tests, binaries = remote_function("test_programs")(events, packages, {"viewer/viewer"}, False)
+        self.assertEqual([(test["package"]["name"], test["target"], test["kind"], test["executable"]) for test in tests], [("viewer", "viewer", ["lib"], "viewer-1a.exe"), ("viewer", "viewer", ["bin"], "viewer-2b.exe"), ("viewer", "dump_stack", ["test"], "dump_stack-3c.exe"), ("viewer-core", "viewer_core", ["lib"], "viewer_core-4d.exe")])
+        self.assertEqual(tests[0]["package"]["manifest"], "crates/viewer/Cargo.toml")
+        self.assertEqual((tests[0]["package"]["env"], tests[3]["package"]["env"], tests[3]["package"]["license"]), ([["BATTLE_PLAN_STAMP", "abc"]], [], "MIT"))
+        self.assertEqual(binaries, [{"package": "viewer", "name": "viewer", "executable": "viewer.exe", "path": f"{deps}/viewer.exe"}])
+        self.assertEqual(files, [f"{deps}/deps/viewer-1a.exe", f"{deps}/deps/viewer-2b.exe", f"{deps}/deps/dump_stack-3c.exe", f"{deps}/deps/viewer_core-4d.exe", f"{deps}/viewer.exe"])
+
+
+def program(name="replay", kind=("lib",), target="replay", executable="replay-1a.exe", env=(), version="1.2.3"):
+    package = {"name": name, "version": version, "authors": ["a", "b"], "manifest": f"crates/{name}/Cargo.toml", "env": [list(pair) for pair in env], "description": None, "rust_version": "1.80"}
+    return {"package": package, "target": target, "kind": list(kind), "executable": executable}
+
+
+class TestEnvironment(unittest.TestCase):
+    def test_a_program_gets_what_cargo_test_sets_with_this_machines_paths(self):
+        worktree, folder = Path("C:/w"), Path("C:/w/.cargo-target/boat-test")
+        base = {"Path": "C:/bin", "BATTLE_PLAN_CAPTURES": "D:/c", "CARGO_PKG_NAME": "stale"}
+        binaries = [{"package": "viewer", "name": "viewer", "executable": "viewer.exe"}, {"package": "other", "name": "x", "executable": "x.exe"}]
+        unit = bt.test_environment(base, worktree, folder, program("viewer", env=[("BATTLE_PLAN_STAMP", "abc")], version="0.4.1-rc.2+build.5"), binaries)
+        keys = ("CARGO_MANIFEST_DIR", "CARGO_MANIFEST_PATH", "CARGO_PKG_NAME", "CARGO_PKG_VERSION", "CARGO_PKG_VERSION_MAJOR", "CARGO_PKG_VERSION_MINOR", "CARGO_PKG_VERSION_PATCH", "CARGO_PKG_VERSION_PRE", "CARGO_PKG_AUTHORS", "CARGO_PKG_DESCRIPTION", "CARGO_PKG_RUST_VERSION", "BATTLE_PLAN_STAMP", "BATTLE_PLAN_CAPTURES", "Path")
+        self.assertEqual({key: unit[key] for key in keys}, {
+            "CARGO_MANIFEST_DIR": str(worktree / "crates/viewer"), "CARGO_MANIFEST_PATH": str(worktree / "crates/viewer/Cargo.toml"), "CARGO_PKG_NAME": "viewer", "CARGO_PKG_VERSION": "0.4.1-rc.2+build.5",
+            "CARGO_PKG_VERSION_MAJOR": "0", "CARGO_PKG_VERSION_MINOR": "4", "CARGO_PKG_VERSION_PATCH": "1", "CARGO_PKG_VERSION_PRE": "rc.2", "CARGO_PKG_AUTHORS": "a:b", "CARGO_PKG_DESCRIPTION": "",
+            "CARGO_PKG_RUST_VERSION": "1.80", "BATTLE_PLAN_STAMP": "abc", "BATTLE_PLAN_CAPTURES": "D:/c", "Path": str(folder) + os.pathsep + "C:/bin"})
+        self.assertNotIn("PATH", unit)
+        # Only integration tests and benches get binaries and a temporary folder, as Cargo gives them at compile time.
+        self.assertFalse({"CARGO_BIN_EXE_viewer", "CARGO_TARGET_TMPDIR"} & unit.keys())
+        integration = bt.test_environment(base, worktree, folder, program("viewer", ("test",), "dump_stack"), binaries)
+        self.assertEqual((integration["CARGO_BIN_EXE_viewer"], integration["CARGO_TARGET_TMPDIR"]), (str(folder / "viewer.exe"), str(folder / "tmp")))
+        self.assertNotIn("CARGO_BIN_EXE_x", integration)
+
+
+class TestSources(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        (self.root / "Cargo.toml").write_text('[workspace]\nmembers = ["crates/*"]\n')
+        files = {
+            "crates/app/Cargo.toml": '[package]\nname = "app"\n',
+            "crates/app/tests/run.rs": 'fn a() { Command::new(env!("CARGO_BIN_EXE_app-cli")); }\nconst B: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/x"));\n',
+            "crates/app/src/lib.rs": 'fn f() { let root = env!("CARGO_MANIFEST_DIR"); let o = env!("OUT_DIR"); }\n',
+            "crates/app/src/fixed.rs": 'fn g() { std::env::var_os("CARGO_MANIFEST_DIR").unwrap_or(env!("CARGO_MANIFEST_DIR").into()); }\n',
+            "crates/app/src/bin/cli.rs": 'fn main() { env!("CARGO_MANIFEST_DIR"); }\n',
+            "crates/app/build.rs": 'fn main() { env!("CARGO_MANIFEST_DIR"); }\n',
+            "crates/other/Cargo.toml": '[package]\nname = "other"\n',
+            "crates/other/tests/t.rs": 'fn h() { env!("CARGO_BIN_EXE_other"); }\n',
+        }
+        for name, text in files.items():
+            (self.root / name).parent.mkdir(parents=True, exist_ok=True)
+            (self.root / name).write_text(text)
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def test_binaries_named_by_a_selected_crates_code_come_with_its_tests(self):
+        self.assertEqual(bt.named_binaries(self.root, ["test", "--no-run", "-p", "app"]), ["app/app-cli"])
+        self.assertEqual(bt.named_binaries(self.root, ["test", "--no-run", "-p", "app", "-p", "other"]), ["app/app-cli", "other/other"])
+
+    def test_paths_compiled_in_without_a_run_time_reading_are_named(self):
+        self.assertEqual(bt.compiled_paths(self.root, ["test", "--no-run", "-p", "app"]), ['crates/app/src/lib.rs:1: env!("CARGO_MANIFEST_DIR")', 'crates/app/src/lib.rs:1: env!("OUT_DIR")', 'crates/app/tests/run.rs:1: env!("CARGO_BIN_EXE_app-cli")'])
+
+    def test_a_named_out_folder_is_replaced_only_when_a_test_run_left_it(self):
+        mine, theirs, empty = self.root / "mine", self.root / "theirs", self.root / "empty"
+        for folder in (mine, theirs, empty):
+            folder.mkdir()
+        (mine / "boat-artifacts.json").write_text(json.dumps({"cargo_arguments": ["test", "--no-run"]}))
+        (theirs / "viewer.exe").write_text("")
+        (mine / "old-1a.exe").write_text("")
+        claimed, lock = bt.test_folder(self.root, mine)
+        self.assertEqual(claimed, mine.resolve())
+        with self.assertRaisesRegex(bt.Refused, "in use"):
+            bt.test_folder(self.root, mine)
+        bt.replace_folder(mine)
+        self.assertEqual([entry.name for entry in mine.iterdir()], [bt.TEST_LOCK])
+        lock.close()
+        # A folder holding only the lock an earlier run left is still the tool's.
+        bt.test_folder(self.root, mine)[1].close()
+        bt.test_folder(self.root, empty)[1].close()
+        with self.assertRaisesRegex(bt.Refused, "no earlier"):
+            bt.test_folder(self.root, theirs)
+
+    def test_each_run_has_a_folder_of_its_own_and_removes_only_ended_runs_folders(self):
+        base = self.root / ".cargo-target" / "boat-test"
+        live, live_lock = bt.test_folder(self.root, None)
+        ended, ended_lock = bt.test_folder(self.root, None)
+        (live / "a.exe").write_text("")
+        (ended / "b.exe").write_text("")
+        ended_lock.close()
+        base.joinpath("stray.exe").write_text("")
+        third, third_lock = bt.test_folder(self.root, None)
+        self.assertEqual({live.parent, third.parent}, {base.resolve()})
+        self.assertEqual(sorted(path.name for path in base.iterdir()), sorted([live.name, third.name]))
+        self.assertTrue((live / "a.exe").exists())
+        live_lock.close()
+        third_lock.close()
+
+
+class TestRuns(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.folder = Path(self.temp.name)
+        self.saved = bt.run_program
+        self.said = []
+        self.ran = []
+
+    def tearDown(self):
+        bt.run_program = self.saved
+        self.temp.cleanup()
+
+    def run_with(self, results, args=("name",), fail_fast=True):
+        programs = [program("b", ("test",), "z", "z.exe"), program("b", ("lib",), "b", "b.exe"), program("a", ("test",), "t", "t.exe"), program("b", ("bin",), "b", "bb.exe")]
+
+        def run_program(executable, program_args, cwd, env):
+            self.ran.append((executable.name, cwd.name, env["CARGO_PKG_NAME"], program_args))
+            return results[executable.name]
+
+        bt.run_program = run_program
+        say, bt.say = bt.say, self.said.append
+        placed, bt.place_shader_compiler = bt.place_shader_compiler, lambda worktree, folder: self.said.append(f"placed {folder}")
+        try:
+            return bt.run_tests(Path("C:/w"), self.folder, {"tests": programs}, bt.TestRun(list(args), fail_fast), 0)
+        finally:
+            bt.say = say
+            bt.place_shader_compiler = placed
+
+    def test_the_programs_get_the_pinned_shader_compiler_beside_them_from_the_worktrees_copy(self):
+        worktree = self.folder / "worktree"
+        copy = worktree / ".cargo-target" / "shader-compiler"
+        copy.mkdir(parents=True)
+        for name in bt.SHADER_COMPILER:
+            (copy / name).write_text(name)
+        programs = self.folder / "programs"
+        programs.mkdir()
+        with mock.patch.object(bt.subprocess, "run") as installed:
+            bt.place_shader_compiler(worktree, programs)
+        installed.assert_not_called()
+        self.assertEqual({name: (programs / name).read_text() for name in bt.SHADER_COMPILER}, {name: name for name in bt.SHADER_COMPILER})
+        self.assertEqual(self.run_with({name: (0, 1, 0) for name in ("t.exe", "b.exe", "bb.exe", "z.exe")}), 0)
+        self.assertIn(f"placed {self.folder}", self.said)
+
+    def test_programs_run_in_cargos_order_and_the_worst_exit_wins(self):
+        results = {"t.exe": (0, 1, 3), "b.exe": (0, 0, 2), "bb.exe": (101, 1, 0), "z.exe": (0xC0000005, None, None)}
+        self.assertEqual(self.run_with(results, fail_fast=False), 0xC0000005 - 2 ** 32)
+        self.assertEqual(self.ran, [("t.exe", "a", "a", ["name"]), ("b.exe", "b", "b", ["name"]), ("bb.exe", "b", "b", ["name"]), ("z.exe", "b", "b", ["name"])])
+        self.assertIn(f"Test program: b bin b: {self.folder / 'bb.exe'}: exit 101", self.said)
+        self.assertIn(f"Test program: b test z: {self.folder / 'z.exe'}: exit 0xc0000005", self.said)
+
+    def test_the_first_failing_program_stops_the_run_as_in_cargo(self):
+        results = {"t.exe": (101, 1, 0), "b.exe": (0, 1, 0), "bb.exe": (0, 1, 0), "z.exe": (0, 1, 0)}
+        self.assertEqual(self.run_with(results), 101)
+        self.assertEqual([name for name, *_ in self.ran], ["t.exe"])
+        self.assertTrue(any("3 not run" in line for line in self.said))
+
+    def test_names_that_match_nothing_fail_where_cargo_would_pass(self):
+        nothing = {name: (0, 0, 4) for name in ("t.exe", "b.exe", "bb.exe", "z.exe")}
+        self.assertEqual(self.run_with(nothing), 1)
+        self.assertTrue(any(line.startswith("No test matched name: 16 filtered out in 4 programs") for line in self.said))
+        self.assertEqual(self.run_with(nothing, args=("name", "--list")), 0)
+        self.said.clear()
+        self.assertEqual(self.run_with({name: (0, 0, 0) for name in nothing}, args=()), 0)
+        self.assertIn("No tests ran: the selected programs hold none", self.said)
+
+    def test_a_program_streams_its_output_and_its_counts_are_read(self):
+        script = "import sys; print('running 2 tests'); print('test a ... ok', file=sys.stderr); print('test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s'); sys.exit(3)"
+        out = io.BytesIO()
+        wrapper = io.TextIOWrapper(out)
+        with contextlib.redirect_stdout(wrapper):
+            result = self.saved(Path(sys.executable), ["-c", script], self.folder, dict(os.environ))
+        wrapper.flush()
+        self.assertEqual(result, (3, 2, 5))
+        self.assertIn(b"test a ... ok", out.getvalue())
 
 
 class Reconcile(Harness):
@@ -390,6 +679,78 @@ class Run(Harness):
         self.assertEqual((record["exit"], record["cargo_exit"], record["completed"], record["failure_phase"]), (bt.UNAVAILABLE, 0, False, "deliver"))
         self.assertNotIn("artifacts_verified", record)
         self.assertEqual(fake.ttl_calls("a")[-1], bt.IDLE_SECONDS)
+
+    def test_a_test_run_lets_the_vm_go_then_runs_what_it_delivered_with_the_runner_told_what_to_send(self):
+        fake = self.use(FakeBoat([vm("a")]))
+        (self.repo / "Cargo.toml").write_text('[workspace]\nmembers = ["crates/*"]\n')
+        (self.repo / "crates" / "app" / "tests").mkdir(parents=True)
+        (self.repo / "crates" / "app" / "Cargo.toml").write_text('[package]\nname = "app"\n')
+        (self.repo / "crates" / "app" / "tests" / "cli.rs").write_text('fn f() { std::env::var_os("CARGO_BIN_EXE_app"); env!("CARGO_BIN_EXE_app"); }\n')
+        out = self.root / "out"
+        out.mkdir()
+        (out / "boat-artifacts.json").write_text(json.dumps({"cargo_arguments": ["test"]}))
+        (out / "old-1a.exe").write_text("")
+        fake.outcome = {"exit": 0, "tests": [program("app", ("test",), "cli", "cli-2b.exe")], "binaries": [{"package": "app", "name": "app", "executable": "app.exe"}], "artifacts": [{"path": "x"}], "bundle": {}}
+        delivered, ran = [], []
+
+        def deliver(vmid, job, outdir):
+            delivered.append((sorted(path.name for path in outdir.iterdir()), job["tests"][0]["executable"]))
+            return [{"path": f"/t/{name}", "sha256": "0" * 64} for name in ("cli-2b.exe", "app.exe")]
+
+        def run_program(executable, args, cwd, env):
+            # The VM's local lock is free by now.
+            self.state.lock("a").close()
+            ran.append((executable, args, cwd, env["CARGO_BIN_EXE_app"]))
+            return 0, 1, 0
+
+        bt.deliver, bt.run_program = deliver, run_program
+        self.state.update("a", used=1.0, tree_build_release={"app": "x"}, tree_build_release_used=1.0)
+        self.assertEqual(bt.main(["test", "--out", str(out), "-p", "app", "--test", "cli", "--", "name"]), 0)
+        test = next(call for call in fake.remote_calls if call[1] == "test")
+        self.assertEqual(test[3:5], ("--sync", fake.synced[-1]))
+        self.assertEqual(list(test[5:]), ["--bin-exe=app/app", "--", "test", "--no-run", "-p", "app", "--test", "cli"])
+        self.assertEqual(delivered, [([bt.TEST_LOCK], "cli-2b.exe")])
+        self.assertEqual(ran, [(out.resolve() / "cli-2b.exe", ["name"], self.repo.resolve() / "crates" / "app", str(out.resolve() / "app.exe"))])
+        self.assertEqual(json.loads((out / "boat-artifacts.json").read_text())["cargo_arguments"][:2], ["test", "--no-run"])
+        record = self.last_record()
+        self.assertEqual((record["mode"], record["exit"], set(record["phases"])), ("test", 0, {"allocate", "sync", "run", "deliver"}))
+        # Tests build in a target of their own, which leaves the release build's tree standing.
+        entry = self.state.entry("a")
+        self.assertEqual((list(entry["tree_tests_dev"]), entry["tree_build_release"]), (["app"], {"app": "x"}))
+
+    def test_an_image_is_saved_only_after_every_step_compiled_and_from_the_base_until_it_exists(self):
+        self.saved.update(SNAPSHOT=bt.SNAPSHOT, BASE_SNAPSHOT=bt.BASE_SNAPSHOT)
+        bt.SNAPSHOT, bt.BASE_SNAPSHOT = "image", "base"
+        fake = self.use(FakeBoat([]))
+        fake.missing = {"image"}
+        self.assertEqual(bt.main(["snapshot"]), 0)
+        news = [call for call in fake.calls if call[0] == "new"]
+        self.assertEqual([call[call.index("--from") + 1] for call in news], ["image", "base"])
+        steps = [call for call in fake.remote_calls if len(call) > 2 and call[1] in {"ui", "check", "test", "build", "provenance"}]
+        self.assertEqual([call[1] for call in steps], [mode for mode, _ in bt.WARM] + ["provenance"])
+        self.assertEqual([call[3:4] == ("--sync",) for call in steps], [True] + [False] * len(bt.WARM))
+        self.assertEqual(fake.calls[-2][0:3], ("snapshot", "n", "image"))
+        self.assertEqual(fake.ttl_calls("n")[-1], bt.IDLE_SECONDS)
+        # A tree that does not compile whole still warms the image; a step that failed otherwise does not save it.
+        fake = self.use(FakeBoat([]))
+        fake.cargo_exit = 101
+        self.assertEqual(bt.main(["snapshot"]), 0)
+        fake = self.use(FakeBoat([]))
+        fake.cargo_exit = 1
+        self.assertEqual(bt.main(["snapshot"]), bt.UNAVAILABLE)
+        self.assertNotIn("snapshot", [call[0] for call in fake.calls])
+        self.assertEqual(fake.ttl_calls("n")[-1], bt.IDLE_SECONDS)
+
+    def test_a_compile_error_runs_nothing_and_passes_through(self):
+        fake = self.use(FakeBoat([vm("a")]))
+        fake.cargo_exit = 101
+        bt.run_program = None
+        self.assertEqual(bt.main(["test", "-p", "x", "--", "name"]), 101)
+
+    def test_a_refusal_names_why_and_is_not_a_boat_failure(self):
+        fake = self.use(FakeBoat([vm("a")]))
+        self.assertEqual(bt.main(["test", "-p", "x", "--doc"]), 2)
+        self.assertEqual(fake.calls, [])
 
 
 TLS = '{"error":"could not reach the Boat API at https://boat.dev: error sending request for url (https://boat.dev/api/boat/sandboxes): client error (Connect): tls handshake eof","event":"error"}'

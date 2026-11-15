@@ -4,13 +4,9 @@ import { resolveCountries, worldFilter } from '../../dashboard/groups.ts';
 import { resolveOptions } from '../../dashboard/options.ts';
 import { definition, OPTIONS } from './definition.ts';
 import type { CountrySelection } from '../../dashboard/model';
-import type { CountryGroupReply } from '../../generated/dashboard';
-import type { ResourceInfo, TradeFlow, TradeFlowsReply } from '../../generated/dashboard';
-import type { PreparedTradeReply } from './tradeData';
+import type { CountryGroupReply, ResourceInfo, TradeFlow, TradeFlowsReply } from '../../generated/dashboard';
 import { buildDiagram, campaignScale, coverageNote, decodeTrade, emptyMessage, flowValue, heldScale, knownSpanAt, leftOutAt, measureAmount, measureRows, OTHER, resourceColours, selectFlows, selectionMessage,
-  sideRanks, tradeScope, flowCountryAt, identityCountryAt, unknownNote, unrecordedMessage, validateTradeFlowsReply, resourceName, measureNote, mergePreparedTrade, exactSums } from './tradeData.ts';
-import { countryTotal } from './tradeCountry.ts';
-import { wireSummary } from '../../charts/chartSummary.fixture.ts';
+  sideRanks, tradeScope, flowCountryAt, identityCountryAt, unknownNote, unrecordedMessage, validateTradeFlowsReply, resourceName, measureNote, mergeTrade } from './tradeData.ts';
 
 const resource = (id: number, token: string): ResourceInfo => ({ id, token, ordinal: 1, name: null, icon: null });
 /** A flow from runs of [first, last, delivered raw, factories, convoys assigned, required]. */
@@ -28,7 +24,7 @@ function reply(countries = ['GER', 'ITA', 'SPR']): TradeFlowsReply {
     branchId: '1', decimals: 5, resources: [resource(1, 'steel'), resource(2, 'oil')], countries,
     countryIdentities: countries.map((tag, slot) => ({ tag, runs: [{ firstHour: 0, lastHour: 575, slot, countryId: slot + 1 }] }))
       .sort((a, b) => a.tag < b.tag ? -1 : a.tag > b.tag ? 1 : 0),
-    reads: [0, 24, 48], known: [{ firstHour: 0, lastHour: 71 }, { firstHour: 96, lastHour: 119 }], partial: [{ firstHour: 24, lastHour: 47, deals: 2 }],
+    firstHour: 0, lastHour: 119, known: [{ firstHour: 0, lastHour: 71 }, { firstHour: 96, lastHour: 119 }], partial: [{ firstHour: 24, lastHour: 47, deals: 2 }],
     flows: [flow(0, 1, 1, [[0, 47, '1000000', 2, 3, 4], [48, 71, '2000000', 2, 3, 4]]), flow(1, 2, 2, [[24, 47, '500000', 1]])],
     warnings: [],
   };
@@ -405,11 +401,7 @@ test('identity lookup does not fill an unrecorded interval from a future rename'
   assert.deepEqual(identityCountryAt(data, '[7,11]', 22), { identity: '[7,11]', tag: 'X', hour: 20, firstHour: 0, lastHour: 20 });
   assert.equal(identityCountryAt(data, '[7,11]', 24)?.tag, 'Y');
   assert.throws(() => validateTradeFlowsReply(item)); // Numeric run cannot span that missing identity evidence.
-  // A prefix still being prepared may hold runs ahead of its identity history: pending, not malformed.
-  const prefix = validateTradeFlowsReply({ ...item, coverage: { firstHour: 0, lastHour: 10, complete: false } } as PreparedTradeReply) as PreparedTradeReply;
-  assert.equal(prefix.holdersPending, true);
-  assert.throws(() => validateTradeFlowsReply({ ...item, coverage: { firstHour: 0, lastHour: 30, complete: true } } as PreparedTradeReply));
-  assert.equal((validateTradeFlowsReply({ ...renamedReply(), coverage: { firstHour: 0, lastHour: 10, complete: false } } as PreparedTradeReply) as PreparedTradeReply).holdersPending, undefined);
+  assert.doesNotThrow(() => validateTradeFlowsReply(renamedReply()));
 });
 
 test('five thousand native holders retain distinct histories and selected end-group identity', () => {
@@ -422,90 +414,40 @@ test('five thousand native holders retain distinct histories and selected end-gr
   assert.equal(buildDiagram(data.flows, 'total', 0, 23, 12).total, 5000);
 });
 
-test('prepared signed prefixes retain exact small corrections after wide campaign totals and during peace', () => {
-  const native = reply(); native.flows = [flow(0, 1, 1, [])];
-  const key = JSON.stringify(['[0,1]', '[1,2]', 1]);
-  const wide = 10n ** 25n;
-  const prepared = { ...native, prefixes: { [key]: { '-1': [String(wide), '100', '200', '300', '4', '10'],
-    '59': [String(wide - 2_400_000n), '116', '220', '324', '8', '14'] } }, basis: 0, scoped: false };
-  const parsed = validateTradeFlowsReply(prepared);
-  const [recorded] = decodeTrade(parsed).flows;
-  assert.equal(measureAmount([recorded], 'total', 0, 59), -100_000n);
-  assert.equal(measureAmount([recorded], 'average', 0, 59), -600_000n);
-  assert.equal(flowValue(recorded, 'total', 0, 59), -1);
-  assert.equal(flowValue(recorded, 'average', 0, 59), -6);
-  assert.equal(flowValue(recorded, 'current', 0, 59), 0);
-});
 
-test('dense trade scale envelopes cover asynchronous peaks while exact windows retain the legacy sweep', () => {
-  const native = reply();
-  native.flows = [flow(0, 1, 1, [[0, 9, '1000000']]), flow(1, 2, 2, [[10, 19, '2000000']])];
-  const flows = decodeTrade(native).flows;
-  const truePeak = campaignScale(flows, 'current', 0, 19);
-  const dense = flows.map((flow, index) => ({ ...flow, prepared: { prefixes: {}, scoped: false, summary: { from: 0, to: 19, width: 1,
-    buckets: [{ firstHour: 0, lastHour: 19, firstValue: index ? 0 : 10, lastValue: index ? 20 : 0, lastValueHour: 10,
-      minHour: index ? 0 : 10, minValue: 0, maxHour: index ? 10 : 0, maxValue: index ? 20 : 10, firstBreak: false, hasBreak: false }] } } }));
-  assert.equal(truePeak, 20);
-  assert.ok(campaignScale(dense, 'current', 0, 19) >= truePeak);
-  assert.equal(campaignScale(dense, 'current', 0, 19), 30);
-  const exact = dense.map(flow => ({ ...flow, prepared: { ...flow.prepared, summary: { ...flow.prepared.summary,
-    runs: flow.runs.map(run => ({ firstHour: run.firstHour, lastHour: run.lastHour, value: run.amount, breakBefore: false })) } } }));
-  assert.equal(campaignScale(exact, 'current', 0, 19), truePeak);
-});
+/** `whole` cut to `first..=last` as the product reads a window: each flow's runs cut to its hours, its countries only those its flows name. */
+function cut(whole: TradeFlowsReply, first: number, last: number): TradeFlowsReply {
+  const spans = <T extends { firstHour: number; lastHour: number }>(items: readonly T[]) => items.flatMap(item =>
+    Math.max(item.firstHour, first) > Math.min(item.lastHour, last) ? [] : [{ ...item, firstHour: Math.max(item.firstHour, first), lastHour: Math.min(item.lastHour, last) }]);
+  const flows = whole.flows.flatMap(item => {
+    const runs = item.firstHours.flatMap((start, run) => Math.max(start, first) > Math.min(item.lastHours[run], last) ? [] : [run]);
+    if (!runs.length) return [];
+    const pick = <T,>(list: readonly T[]) => runs.map(run => list[run]);
+    return [{ ...item, firstHours: runs.map(run => Math.max(item.firstHours[run], first)), lastHours: runs.map(run => Math.min(item.lastHours[run], last)),
+      sellerTags: pick(item.sellerTags), buyerTags: pick(item.buyerTags), deliveredRaw: pick(item.deliveredRaw), factories: pick(item.factories),
+      convoysAssigned: pick(item.convoysAssigned), convoysRequired: pick(item.convoysRequired), deals: pick(item.deals) }];
+  });
+  const named = [...new Set(flows.flatMap(item => [item.seller, item.buyer, ...item.sellerTags, ...item.buyerTags]))].sort((a, b) => a - b);
+  const index = new Map(named.map((at, to) => [at, to]));
+  return { ...whole, firstHour: first, lastHour: last, countries: named.map(at => whole.countries[at]),
+    countryIdentities: spans(whole.countryIdentities.filter(country => named.some(at => whole.countries[at] === country.tag)).flatMap(country => country.runs.map(run => ({ ...run, tag: country.tag }))))
+      .reduce<TradeFlowsReply['countryIdentities']>((out, run) => { const { tag, ...held } = run; const at = out.find(item => item.tag === tag); if (at) at.runs.push(held); else out.push({ tag, runs: [held] }); return out; }, []),
+    known: spans(whole.known), partial: spans(whole.partial),
+    flows: flows.map(item => ({ ...item, seller: index.get(item.seller)!, buyer: index.get(item.buyer)!, sellerTags: item.sellerTags.map(at => index.get(at)!), buyerTags: item.buyerTags.map(at => index.get(at)!) })) };
+}
 
-test('point pages preserve accepted trade geometry and merge overlapping exact facts without filling gaps', () => {
-  const a = { ...reply(), exactHours: [0], summaries: {}, prefixes: {}, coverageCounts: { '0': [1, 0] as [number, number] } };
-  const b = { ...reply(), exactHours: [24], summaries: {}, prefixes: {}, coverageCounts: { '24': [25, 1] as [number, number] } };
-  a.flows[0] = flow(0, 1, 1, [[0, 47, '1000000']]);
-  b.flows[0] = flow(0, 1, 1, [[24, 47, '1000000'], [96, 100, '2000000']]);
-  a.partial = [{ firstHour: 24, lastHour: 47, deals: 2 }];
-  b.partial = [{ firstHour: 30, lastHour: 40, deals: 2 }];
-  b.known = [{ firstHour: 24, lastHour: 47 }, { firstHour: 96, lastHour: 100 }];
-  const merged = mergePreparedTrade(a, b);
-  assert.equal(merged.summaries, a.summaries, 'point summaries never replace accepted geometry');
-  assert.deepEqual(merged.exactHours, [0, 24]);
-  assert.deepEqual(merged.flows[0].firstHours, [0, 96]);
-  assert.deepEqual(merged.flows[0].lastHours, [47, 100]);
-  assert.deepEqual(merged.partial, a.partial);
-  assert.deepEqual(merged.known, a.known);
-  assert.deepEqual(merged.coverageCounts, { '0': [1, 0], '24': [25, 1] });
-  assert.doesNotThrow(() => validateTradeFlowsReply(merged));
-  assert.equal(flowValue(decodeTrade(merged).flows[0], 'current', 0, 70), 0);
-  assert.equal(a.flows[0].lastHours[0], 47, 'the accepted reply remains immutable');
-});
-
-test('progressive point pages admit new flow keys and exact aliases without replacing viewport geometry', () => {
-  const a = { ...reply(['Old', 'Seller']), flows: [flow(1, 0, 1, [[10, 10, '1000000']])], summaries: {}, cumulativePending: true };
-  const b = { ...reply(['New', 'Seller']), flows: [flow(1, 0, 1, [[11, 11, '2000000']]), flow(1, 0, 2, [[11, 11, '3000000']])], summaries: {}, cumulativePending: true };
-  a.countryIdentities = [{ tag: 'Old', runs: [{ firstHour: 10, lastHour: 12, slot: 0, countryId: 1 }] },
-    { tag: 'Seller', runs: [{ firstHour: 10, lastHour: 12, slot: 1, countryId: 2 }] }];
-  b.countryIdentities = [{ tag: 'New', runs: [{ firstHour: 11, lastHour: 11, slot: 0, countryId: 1 }] },
-    { tag: 'Seller', runs: [{ firstHour: 11, lastHour: 11, slot: 1, countryId: 2 }] }];
-  const merged = mergePreparedTrade(a, b);
-  assert.equal(merged.summaries, a.summaries);
-  assert.deepEqual(merged.countries, ['New', 'Old', 'Seller']);
-  assert.equal(merged.flows.length, 2, 'a key only found by the exact page stays in the sparse inventory');
-  assert.doesNotThrow(() => validateTradeFlowsReply(merged));
-  const data = decodeTrade(merged);
-  assert.equal(identityCountryAt(data, '[0,1]', 10)?.tag, 'Old');
-  assert.equal(identityCountryAt(data, '[0,1]', 11)?.tag, 'New');
-  assert.equal(identityCountryAt(data, '[0,1]', 12)?.tag, 'Old', 'unsampled hours keep rough provenance');
-  assert.equal(measureAmount(data.flows, 'current', 10, 11), 5_000_000n);
-});
-
-test('progressive native trade amounts stay exact while integrals and first/last dates remain pending', () => {
-  const native = reply(); native.flows = [flow(0, 1, 1, [[59, 59, '1234567', 3, 4, 5]])];
-  const key = JSON.stringify(['[0,1]', '[1,2]', 1]);
-  const summary = { from: 0, to: 59, width: 1, runs: [{ firstHour: 0, lastHour: 59, value: 10, breakBefore: true }],
-    buckets: [{ firstHour: 0, lastHour: 59, firstValue: 10, lastValue: 10, lastValueHour: 0, minHour: 0, minValue: 10, maxHour: 0, maxValue: 10, firstBreak: true, hasBreak: false, absoluteTotal: '600' }],
-    approximate: [{ firstHour: 0, lastHour: 59 }] };
-  const progressive = { ...native, summaries: { [key]: wireSummary(summary) }, cumulativePending: true };
-  const data = decodeTrade(validateTradeFlowsReply(progressive));
-  assert.deepEqual(data.flows[0].prepared?.summary, summary, 'summaries do not require prepared prefixes');
-  assert.equal(measureAmount(data.flows, 'current', 0, 59), 1_234_567n);
-  assert.equal(measureRows(data.flows, 'current', 0, 59, 5)[1].value, '3');
-  assert.throws(() => exactSums(data.flows, 0, 59), /still being prepared/);
-  assert.equal(countryTotal(data.flows, 'total', 0, 59, native.known), null);
-  assert.match(measureRows(data.flows, 'average', 0, 59, 5)[0].label, /still being prepared/);
-  assert.equal(campaignScale(data.flows, 'current', 0, 59), 10, 'rough runs use the conservative bucket envelope');
+test('the windows held join into the reply of their hours together, a run across their edge one run', () => {
+  const whole = validateTradeFlowsReply(reply());
+  const windows = [cut(whole, 0, 30), cut(whole, 31, 60), cut(whole, 61, 119)].map(validateTradeFlowsReply);
+  assert.deepEqual(windows[0].countries, ['GER', 'ITA', 'SPR']);
+  assert.deepEqual(windows[2].countries, ['GER', 'ITA'], 'a window names only its flows\' countries');
+  const merged = mergeTrade([windows[2], windows[0], windows[1]]);
+  assert.ok(merged);
+  validateTradeFlowsReply(merged);
+  assert.deepEqual(merged.flows, whole.flows);
+  assert.deepEqual(merged.known, whole.known);
+  assert.deepEqual(merged.partial, whole.partial);
+  assert.deepEqual([merged.firstHour, merged.lastHour, merged.countries], [0, 119, whole.countries]);
+  assert.deepEqual(merged.countryIdentities.map(country => [country.tag, country.runs.length]), [['GER', 1], ['ITA', 1], ['SPR', 1]]);
+  assert.equal(mergeTrade([]), null);
 });

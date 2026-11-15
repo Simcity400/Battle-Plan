@@ -211,10 +211,10 @@ fn tokens(frame: &dyn replay_frame::frame::DecodedSource) -> Result<Tokens<'_>, 
     let complete = match frame.lexical_status() {
         OperandStatus::Complete => true,
         OperandStatus::Truncated(_) | OperandStatus::Unavailable(_) => false,
-        _ => return Err("LexicalTokens holds another table's rows".into()),
+        _ => return Err("lexical tokens holds another table's rows".into()),
     };
     if !rows.is_sorted_by(|a, b| a.token < b.token) {
-        return Err("LexicalTokens rows are not in token order".into());
+        return Err("lexical tokens rows are not in token order".into());
     }
     Ok(Tokens { rows, complete })
 }
@@ -229,9 +229,9 @@ fn definition(tokens: &Result<Tokens<'_>, String>, token: u32) -> Result<String,
         .binary_search_by_key(&token, |r| r.token)
         .map_err(|_| {
             if tokens.complete {
-                format!("definition token {token} is not in LexicalTokens")
+                format!("definition token {token} is not in lexical tokens")
             } else {
-                format!("definition token {token} is among LexicalTokens' missing rows")
+                format!("definition token {token} is among lexical tokens' missing rows")
             }
         })?;
     let name = std::str::from_utf8(&tokens.rows[at].literal)

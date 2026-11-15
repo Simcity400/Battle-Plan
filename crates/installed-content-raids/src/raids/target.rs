@@ -27,54 +27,13 @@ fn state_row(frame: &dyn DecodedSource, id: u32) -> Result<&StateRow> {
 /// leader's captor, then leader province. A resolved captor's raw word
 /// suppresses the leader-province fallback.
 pub fn country(frame: &dyn DecodedSource, scope: &RaidScope) -> Result<Option<u32>> {
-    let raw = if scope.building_type != 0 {
-        if scope.building_country > 0 {
-            scope.building_country as u32
-        } else if scope.building_flags & 1 != 0 {
-            province(frame, scope.building_location)?.controller
-        } else {
-            state_row(frame, scope.building_location)?.controller
-        }
-    } else if scope.province != 0 {
-        province(frame, scope.province)?.controller
-    } else if scope.state != 0 {
-        state_row(frame, scope.state)?.controller
-    } else if let Some(captor) = scope.leader_country {
-        // Copy the captor's raw country word unchanged; no signed-positive
-        // test or leader-province retry follows that read.
-        captor as u32
-    } else if scope.leader_province != 0 {
-        province(frame, scope.leader_province)?.controller
-    } else {
-        0
-    };
-    Ok((raw != 0).then_some(raw))
+    scope.country_with(|id| province(frame, id).map(|row| row.controller), |id| state_row(frame, id).map(|row| row.controller))
 }
 
 /// Plain location priority: explicit state, province, leader province,
 /// then building state. A provincial building resolves through its province.
 pub fn state(frame: &dyn DecodedSource, scope: &RaidScope) -> Result<Option<u32>> {
-    if scope.state != 0 {
-        return Ok(Some(scope.state));
-    }
-    let id = if scope.province != 0 {
-        province(frame, scope.province)?.state
-    } else if scope.leader_province != 0 {
-        province(frame, scope.leader_province)?.state
-    } else if scope.building_type == 0 {
-        0
-    } else if scope.building_flags & 1 != 0 {
-        province(frame, scope.building_location)?.state
-    } else if scope.building_location as i32 <= 0 {
-        // A state building rejects a nonpositive signed location.
-        0
-    } else {
-        scope.building_location
-    };
-    // Province and leader locations require a state pointer, as does a
-    // provincial building's province. The recorder retains an observed null
-    // as state 0; an unreadable pointer is a table gap.
-    Ok((id != 0).then_some(id))
+    scope.state_with(|id| province(frame, id).map(|row| row.state))
 }
 
 fn owner_tag(frame: &dyn DecodedSource, owner: u32) -> Result<&str> {

@@ -115,12 +115,12 @@ impl Renderer<'_, '_, '_> {
             let raw = match frame.status(TableId::ProvinceNames) {
                 replay_frame::frame::OperandStatus::Unavailable(reason) => {
                     return Err(format!(
-                        "victory-point raw-name fallback: ProvinceNames unavailable: {reason}"
+                        "victory-point raw-name fallback: province names unavailable: {reason}"
                     ));
                 }
                 replay_frame::frame::OperandStatus::NotRecorded(mode) => {
                     return Err(format!(
-                        "victory-point raw-name fallback: ProvinceNames is not recorded in a {mode} recording"
+                        "victory-point raw-name fallback: province names is not recorded in a {mode} recording"
                     ));
                 }
                 _ => frame

@@ -8,6 +8,7 @@ import {
   setMapView,
 } from './api.ts';
 import type { DesktopState, MapBounds, MapView } from './api';
+import { engine } from '../engine/frame.ts';
 
 export function useDesktopState(retry: number) {
   const [state, setState] = useState<DesktopState | null>(null);
@@ -122,7 +123,7 @@ export function useMapSurface(
     if (!desktopAvailable || !element.current || !enabled) return;
     mounted.current = true;
     const target = element.current;
-    let frame = 0;
+    let frame: (() => void) | null = null;
     let resolution: MediaQueryList | null = null;
     let lastBounds: MapBounds = { x: 0, y: 0, width: 1, height: 1 };
 
@@ -142,8 +143,9 @@ export function useMapSurface(
 
     const schedule = () => {
       if (frame) return;
-      frame = requestAnimationFrame(() => {
-        frame = 0;
+      // Layout is read in the frame's measure phase, before anything in it writes.
+      frame = engine.next('measure', () => {
+        frame = null;
         measure();
       });
     };
@@ -170,7 +172,7 @@ export function useMapSurface(
     return () => {
       mounted.current = false;
       observer.disconnect();
-      if (frame) cancelAnimationFrame(frame);
+      frame?.();
       window.removeEventListener('resize', schedule);
       window.visualViewport?.removeEventListener('resize', schedule);
       document.removeEventListener('visibilitychange', visibilityChanged);

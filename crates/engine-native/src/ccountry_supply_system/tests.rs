@@ -184,7 +184,7 @@ fn floating_harbour_records_keep_slot_and_array_order() {
         province,
         status,
     };
-    let mut rows = [FloatingHarborDeployment::default(); 4];
+    let mut rows = vec![FloatingHarborDeployment::default(); 4];
     assert_eq!(
         walk_floating_harbor_deployments(&memory, 0, GAME, &mut rows),
         Outcome::Rows { len: 4 }
@@ -198,21 +198,12 @@ fn floating_harbour_records_keep_slot_and_array_order() {
             row(2, 0, 77, 2)
         ]
     );
-    let mut short = [FloatingHarborDeployment::default(); 2];
-    assert_eq!(
-        walk_floating_harbor_deployments(&memory, 0, GAME, &mut short),
-        Outcome::Truncated {
-            len: 2,
-            unread_rows: 2
-        }
-    );
-    assert_eq!(short.as_slice(), &rows[..2]);
 }
 
 #[test]
 fn settings_preserve_raw_actor_aliases_zero_and_exact_level_byte() {
     let mut bytes = fixture();
-    let mut rows = [Row::default(); 3];
+    let mut rows = vec![Row::default(); 3];
     assert_eq!(
         walk(&NoEntryPadding(&bytes), 0, GAME, &mut rows),
         Outcome::Rows { len: 3 }
@@ -244,18 +235,11 @@ fn settings_preserve_raw_actor_aliases_zero_and_exact_level_byte() {
 }
 
 #[test]
-fn capacity_counts_settings_across_nodes_and_empty_maps_emit_nothing() {
+fn the_count_probe_counts_settings_across_nodes_and_empty_maps_emit_nothing() {
     let mut bytes = fixture();
-    let mut rows = [Row::default(); 1];
+    let mut rows = vec![Row::default(); 1];
     assert_eq!(
-        walk(&NoEntryPadding(&bytes), 0, GAME, &mut rows),
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 2
-        }
-    );
-    assert_eq!(
-        walk(&NoEntryPadding(&bytes), 0, GAME, &mut []),
+        count(&NoEntryPadding(&bytes), 0, GAME),
         Outcome::Truncated {
             len: 0,
             unread_rows: 3
@@ -279,7 +263,7 @@ fn capacity_counts_settings_across_nodes_and_empty_maps_emit_nothing() {
 #[test]
 fn malformed_map_headers_and_actor_links_make_table_unavailable() {
     let mut bytes = fixture();
-    let mut rows = [Row::default(); 3];
+    let mut rows = vec![Row::default(); 3];
     put(
         &mut bytes,
         0x7000 + supply_node_record::MOTORIZATION_COUNT,
@@ -496,8 +480,8 @@ impl<'a> TrainMemory<'a> {
 fn train_nodes_preserve_native_identity_values_parent_edges_and_count_raw_read_work() {
     let bytes = train_fixture();
     let memory = TrainMemory::new(&bytes);
-    let mut nodes = [crate::supply_node::Row::default(); 3];
-    let mut paths = [0; 3];
+    let mut nodes = vec![crate::supply_node::Row::default(); 3];
+    let mut paths = vec![0; 3];
     let report = crate::supply_node::walk(&memory, 0, GAME, &mut nodes, &mut paths);
     assert_eq!(report.outcome, Outcome::Rows { len: 3 });
     assert_eq!((report.paths, report.required_paths), (3, 3));
@@ -533,7 +517,7 @@ fn unresolved_province_ids_are_recorded_as_the_games_null_province() {
     };
     let walk = |bytes: &[u8], rows: usize| {
         let mut nodes = vec![node::Row::default(); rows];
-        let mut paths = [0; 3];
+        let mut paths = vec![0; 3];
         let report = node::walk(&TrainMemory::new(bytes), 0, GAME, &mut nodes, &mut paths);
         let mut rows = nodes
             .iter()
@@ -672,8 +656,8 @@ fn unresolved_province_ids_are_recorded_as_the_games_null_province() {
     let bytes = train_fixture();
     let mut memory = TrainMemory::new(&bytes);
     memory.reject = Some(0x18000 + 3 * 8);
-    let mut nodes = [node::Row::default(); 3];
-    let report = node::walk(&memory, 0, GAME, &mut nodes, &mut [0; 3]);
+    let mut nodes = vec![node::Row::default(); 3];
+    let report = node::walk(&memory, 0, GAME, &mut nodes, &mut vec![0; 3]);
     assert_eq!(
         report.outcome,
         Outcome::Unavailable {
@@ -708,34 +692,24 @@ fn node_routes_are_acquired_only_after_the_first_positive_parent() {
             self.source.copy(address, output)
         }
     }
-    let capture = |bytes: &[u8], capacity: usize, reject_outer: bool| {
+    let capture = |bytes: &[u8], reject_outer: bool| {
         let mut source = TrainMemory::new(bytes);
         source.reject = reject_outer.then_some(ROOT + supply_route::ROUTE_MAP);
         let memory = Traced {
             source,
             outer_reads: Cell::new(0),
         };
-        let mut rows = [node::Row::default(); 3];
-        let mut paths = [0; 3];
-        let report = node::walk(&memory, 0, GAME, &mut rows[..capacity], &mut paths);
+        let mut rows = vec![node::Row::default(); 3];
+        let mut paths = vec![0; 3];
+        let report = node::walk(&memory, 0, GAME, &mut rows, &mut paths);
         (report.outcome, memory.outer_reads.get(), rows, paths)
     };
-    // An unreadable route map is irrelevant to empty/root-only censuses
-    // and rows omitted for capacity. A positive-parent edge must fail it.
-    for (count, capacity, expected, route_reads) in [
-        (0, 3, Outcome::Rows { len: 0 }, 0),
-        (1, 3, Outcome::Rows { len: 1 }, 0),
+    // An unreadable route map is irrelevant to empty/root-only censuses.
+    // A positive-parent edge must fail it.
+    for (count, expected, route_reads) in [
+        (0, Outcome::Rows { len: 0 }, 0),
+        (1, Outcome::Rows { len: 1 }, 0),
         (
-            3,
-            0,
-            Outcome::Truncated {
-                len: 0,
-                unread_rows: 3,
-            },
-            0,
-        ),
-        (
-            3,
             3,
             Outcome::Unavailable {
                 reason: "supply map header unreadable",
@@ -751,7 +725,7 @@ fn node_routes_are_acquired_only_after_the_first_positive_parent() {
             count,
             3,
         );
-        let (outcome, reads, rows, _) = capture(&bytes, capacity, true);
+        let (outcome, reads, rows, _) = capture(&bytes, true);
         assert_eq!(outcome, expected);
         assert_eq!(reads, route_reads);
         if count == 1 {
@@ -759,14 +733,14 @@ fn node_routes_are_acquired_only_after_the_first_positive_parent() {
         }
     }
     let mut bytes = train_fixture();
-    let (outcome, reads, _, paths) = capture(&bytes, 3, false);
+    let (outcome, reads, _, paths) = capture(&bytes, false);
     assert_eq!(outcome, Outcome::Rows { len: 3 });
     assert_eq!(reads, 1);
     assert_eq!(paths, [2, 2, 1]);
 
     // The later route-map fault must not replace the first node failure.
     put(&mut bytes, 0xa000 + node::INDEX, &99_u32.to_le_bytes());
-    let (outcome, reads, _, _) = capture(&bytes, 3, true);
+    let (outcome, reads, _, _) = capture(&bytes, true);
     assert_eq!(
         outcome,
         Outcome::Unavailable {
@@ -794,7 +768,7 @@ fn repeated_global_edges_keep_rows_path_occurrences_pressure_and_first_faults() 
         }
     }
     let capture = |memory: &Traced<'_>, memo: &mut node::ProvinceMemo, size| {
-        let mut rows = [node::Row::default(); 6];
+        let mut rows = vec![node::Row::default(); 6];
         let mut paths = vec![0; size];
         memo.begin(memory, 0, GAME);
         let report = node::walk_part(memory, 0, GAME, 0, 1, &mut rows, &mut paths, memo);
@@ -935,7 +909,7 @@ fn parent_headers_reuse_interleaved_keys_but_refresh_root_and_route_payloads() {
     let other_outer = route::read_outer(&memory, other_root).unwrap();
     memory.reads.borrow_mut().clear();
     let observe = |memo: &mut InnerMemo, parent, province| {
-        let mut path = [0; 3];
+        let mut path = vec![0; 3];
         let result = route::read_edge_buffer(
             &memory,
             0,
@@ -943,7 +917,7 @@ fn parent_headers_reuse_interleaved_keys_but_refresh_root_and_route_payloads() {
             memo,
             parent,
             province,
-            crate::walk::Buffer::Fixed(&mut path),
+            crate::walk::Buffer::Growing(&mut path),
         );
         (result, path)
     };
@@ -999,7 +973,7 @@ fn parent_headers_reuse_interleaved_keys_but_refresh_root_and_route_payloads() {
     retained.begin();
     assert_eq!(observe(&mut retained, 2, 3).0.unwrap().0.from, 0);
     retained.begin();
-    let mut path = [0; 3];
+    let mut path = vec![0; 3];
     let (row, need) = route::read_edge_buffer(
         &memory,
         0,
@@ -1007,7 +981,7 @@ fn parent_headers_reuse_interleaved_keys_but_refresh_root_and_route_payloads() {
         &mut retained,
         2,
         3,
-        crate::walk::Buffer::Fixed(&mut path),
+        crate::walk::Buffer::Growing(&mut path),
     )
     .unwrap();
     assert_eq!((row.from, row.to, row.len, need), (2, 3, 2, 2));
@@ -1051,12 +1025,12 @@ fn parent_chains_record_each_node_less_vertex_once_and_stop_at_nodes() {
         put(&mut bytes, bucket + 8, &parent.to_le_bytes());
     }
     let memory = TrainMemory::new(&bytes);
-    let mut rows = [node::Row::default(); 4];
-    let mut paths = [0; 3];
+    let mut rows = vec![node::Row::default(); 4];
+    let mut paths = vec![0; 3];
     let report = node::walk(&memory, 0, GAME, &mut rows, &mut paths);
     assert_eq!(report.outcome, Outcome::Rows { len: 4 });
     assert_eq!(
-        rows.map(|r| (r.index, r.province, r.parent, r.route.from, r.route.len)),
+        rows.iter().map(|r| (r.index, r.province, r.parent, r.route.from, r.route.len)).collect::<Vec<_>>(),
         [
             (1, 2, 1, 1, 3),
             (2, 3, 1, 0, 0),
@@ -1066,18 +1040,10 @@ fn parent_chains_record_each_node_less_vertex_once_and_stop_at_nodes() {
     );
     assert_eq!(paths, [2, 2, 1]);
     assert_eq!((rows[3].kind, rows[3].available), (0, 0));
-    let report = node::walk(&memory, 0, GAME, &mut rows[..3], &mut paths);
-    assert_eq!(
-        report.outcome,
-        Outcome::Truncated {
-            len: 3,
-            unread_rows: 1
-        }
-    );
 }
 
 #[test]
-fn parent_vertex_membership_keeps_sorted_rows_cycles_country_scope_and_truncation() {
+fn parent_vertex_membership_keeps_sorted_rows_cycles_and_country_scope() {
     use crate::{supply_node as node, supply_parent_map};
     let mut memo = node::ProvinceMemo::with_scratch().unwrap();
     // The large ID exercises the exact fallback outside the bounded bitset.
@@ -1137,9 +1103,9 @@ fn parent_vertex_membership_keeps_sorted_rows_cycles_country_scope_and_truncatio
                 }
             }
             let memory = TrainMemory::new(&bytes);
-            let mut rows = [node::Row::default(); 12];
+            let mut rows = vec![node::Row::default(); 12];
             memo.begin(&memory, 0, GAME);
-            let report = node::walk_part(&memory, 0, GAME, 0, 1, &mut rows, &mut [], &mut memo);
+            let report = node::walk_part(&memory, 0, GAME, 0, 1, &mut rows, &mut Vec::new(), &mut memo);
             assert_eq!(report.outcome, Outcome::Rows { len: 12 });
             assert_eq!((report.paths, report.required_paths), (0, 0));
             for (country, rows) in [1, 7].into_iter().zip(rows.chunks_exact(6)) {
@@ -1160,16 +1126,12 @@ fn parent_vertex_membership_keeps_sorted_rows_cycles_country_scope_and_truncatio
             }
             // Clear membership even when the same memo and census are reused.
             let report =
-                node::walk_part(&memory, 0, GAME, 0, 1, &mut rows[..11], &mut [], &mut memo);
+                node::walk_part(&memory, 0, GAME, 0, 1, &mut rows, &mut Vec::new(), &mut memo);
+            assert_eq!(report.outcome, Outcome::Rows { len: 12 });
             assert_eq!(
-                report.outcome,
-                Outcome::Truncated {
-                    len: 11,
-                    unread_rows: 1
-                }
+                rows[9..12].iter().map(|row| row.province).collect::<Vec<_>>(),
+                [1, 5, high]
             );
-            assert_eq!(rows[9].province, 5);
-            assert_eq!(rows[10].province, high);
         }
     }
 }
@@ -1178,10 +1140,10 @@ fn parent_vertex_membership_keeps_sorted_rows_cycles_country_scope_and_truncatio
 fn train_inventory_preserves_empty_countries_order_counts_access_and_whole_row_pressure() {
     let bytes = train_fixture();
     let memory = TrainMemory::new(&bytes);
-    let mut rows = [TrainRow::default(); 2];
-    let mut entries = [crate::supply_train_entry::Row::default(); 2];
-    let mut access = [0; 3];
-    let mut runs = [[0; 2]; 2];
+    let mut rows = vec![TrainRow::default(); 2];
+    let mut entries = vec![crate::supply_train_entry::Row::default(); 2];
+    let mut access = vec![0; 3];
+    let mut runs = vec![[0; 2]; 2];
     let report = walk_trains(
         &memory,
         0,
@@ -1201,13 +1163,13 @@ fn train_inventory_preserves_empty_countries_order_counts_access_and_whole_row_p
         ),
         (1, 3, 7, 0)
     );
-    assert_eq!(entries.map(|r| r.count), [i32::MIN, i32::MAX]);
+    assert_eq!(entries.iter().map(|r| r.count).collect::<Vec<_>>(), [i32::MIN, i32::MAX]);
     assert_eq!(
-        rows.map(|row| (
+        rows.iter().map(|row| (
             row.allocated_trucks,
             row.required_trucks_raw,
             row.required_trains,
-        )),
+        )).collect::<Vec<_>>(),
         [
             (Some(i32::MIN), Some(i64::MAX), Some(i32::MAX)),
             (Some(0), Some(0), Some(0)),
@@ -1220,24 +1182,6 @@ fn train_inventory_preserves_empty_countries_order_counts_access_and_whole_row_p
     assert_eq!(runs[0], [1, 2]);
     assert_eq!(access[..2], [255, 1]);
     assert_eq!((report.access, report.runs), (2, 1));
-    let report = walk_trains(
-        &memory,
-        0,
-        GAME,
-        &mut rows,
-        &mut entries[..1],
-        &mut access,
-        &mut runs,
-    );
-    assert_eq!(
-        report.outcome,
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 1
-        }
-    );
-    assert_eq!(rows[0].country, 7);
-    assert_eq!(report.required_entries, 2);
 }
 
 /// A synthetic census of `n` canonical slots (slot 0 is the sentinel). Every
@@ -1377,19 +1321,9 @@ fn census(n: u32) -> Vec<u8> {
 #[test]
 fn train_inputs_reject_bad_identity_map_path_and_reference_without_prefix_success() {
     use crate::supply_node as node;
-    let mut nodes = [node::Row::default(); 3];
-    let mut paths = [0; 3];
+    let mut nodes = vec![node::Row::default(); 3];
+    let mut paths = vec![0; 3];
     let bytes = train_fixture();
-    let memory = TrainMemory::new(&bytes);
-    let report = node::walk(&memory, 0, GAME, &mut nodes, &mut paths[..2]);
-    assert_eq!(
-        report.outcome,
-        Outcome::Truncated {
-            len: 2,
-            unread_rows: 1
-        }
-    );
-    assert_eq!(report.required_paths, 3);
     for (at, value) in [
         (0xa000, 99_u32),
         // Province 1's object holds another id.
@@ -1416,17 +1350,17 @@ fn train_inputs_reject_bad_identity_map_path_and_reference_without_prefix_succes
         &TrainMemory::new(&bytes),
         0,
         GAME,
-        &mut [TrainRow::default(); 2],
-        &mut [crate::supply_train_entry::Row::default(); 2],
-        &mut [0; 3],
-        &mut [[0; 2]; 2],
+        &mut vec![TrainRow::default(); 2],
+        &mut vec![crate::supply_train_entry::Row::default(); 2],
+        &mut vec![0; 3],
+        &mut vec![[0; 2]; 2],
     );
     assert!(matches!(report.outcome, Outcome::Unavailable { .. }));
     // An unreadable access array fails the table even with no room to store it.
     let bytes = train_fixture();
     let mut memory = TrainMemory::new(&bytes);
     memory.reject = Some(0xf101);
-    let report = walk_trains(&memory, 0, GAME, &mut [], &mut [], &mut [], &mut []);
+    let report = walk_trains(&memory, 0, GAME, &mut Vec::new(), &mut Vec::new(), &mut Vec::new(), &mut Vec::new());
     assert_eq!(
         report.outcome,
         Outcome::Unavailable {
@@ -1438,10 +1372,10 @@ fn train_inputs_reject_bad_identity_map_path_and_reference_without_prefix_succes
 #[test]
 fn supply_vehicle_faults_keep_inventory_payloads_and_independent_scalars() {
     let bytes = train_fixture();
-    let mut baseline = [TrainRow::default(); 2];
-    let mut baseline_entries = [crate::supply_train_entry::Row::default(); 2];
-    let mut baseline_access = [0; 3];
-    let mut baseline_runs = [[0; 2]; 2];
+    let mut baseline = vec![TrainRow::default(); 2];
+    let mut baseline_entries = vec![crate::supply_train_entry::Row::default(); 2];
+    let mut baseline_access = vec![0; 3];
+    let mut baseline_runs = vec![[0; 2]; 2];
     assert_eq!(
         walk_trains(
             &TrainMemory::new(&bytes),
@@ -1466,10 +1400,10 @@ fn supply_vehicle_faults_keep_inventory_payloads_and_independent_scalars() {
     {
         let mut memory = TrainMemory::new(&bytes);
         memory.reject = Some(address + 1);
-        let mut rows = [TrainRow::default(); 2];
-        let mut entries = [crate::supply_train_entry::Row::default(); 2];
-        let mut access = [0; 3];
-        let mut runs = [[0; 2]; 2];
+        let mut rows = vec![TrainRow::default(); 2];
+        let mut entries = vec![crate::supply_train_entry::Row::default(); 2];
+        let mut access = vec![0; 3];
+        let mut runs = vec![[0; 2]; 2];
         let report = walk_trains(
             &memory,
             0,
@@ -1480,7 +1414,7 @@ fn supply_vehicle_faults_keep_inventory_payloads_and_independent_scalars() {
             &mut runs,
         );
         assert_eq!(report.outcome, Outcome::Rows { len: 2 });
-        let mut expected = baseline;
+        let mut expected = baseline.clone();
         match field {
             0 => expected[0].allocated_trucks = None,
             1 => expected[0].required_trucks_raw = None,
@@ -1500,8 +1434,8 @@ fn supply_vehicle_faults_keep_inventory_payloads_and_independent_scalars() {
                 &memory,
                 0,
                 GAME,
-                &mut [crate::supply_node::Row::default(); 3],
-                &mut [0; 3],
+                &mut vec![crate::supply_node::Row::default(); 3],
+                &mut vec![0; 3],
             )
             .outcome,
             Outcome::Rows { len: 3 }
@@ -1541,10 +1475,10 @@ fn allocated_trains_authenticate_full_variants_and_keep_duplicate_entry_order() 
         0x14000 + variant::DEFINITION,
         &0x15000_u64.to_le_bytes(),
     );
-    let mut rows = [TrainRow::default(); 2];
-    let mut entries = [crate::supply_train_entry::Row::default(); 2];
-    let mut access = [0; 3];
-    let mut runs = [[0; 2]; 2];
+    let mut rows = vec![TrainRow::default(); 2];
+    let mut entries = vec![crate::supply_train_entry::Row::default(); 2];
+    let mut access = vec![0; 3];
+    let mut runs = vec![[0; 2]; 2];
     let report = walk_trains(
         &TrainMemory::new(&bytes),
         0,
@@ -1556,7 +1490,7 @@ fn allocated_trains_authenticate_full_variants_and_keep_duplicate_entry_order() 
     );
     assert_eq!(report.outcome, Outcome::Rows { len: 2 });
     assert_eq!(
-        entries.map(|e| (e.variant, e.count)),
+        entries.iter().map(|e| (e.variant, e.count)).collect::<Vec<_>>(),
         [(handle, i32::MIN), (handle, i32::MAX)]
     );
     put(&mut bytes, 0x14008, &(handle + (1_u64 << 32)).to_le_bytes());
@@ -1584,33 +1518,11 @@ fn node_capacity_never_returns_a_complete_prefix() {
         0x6320 + supply_companion::ROUTES_SUBTYPE_ZERO + 12,
         &1_u32.to_le_bytes(),
     );
-    let mut nodes = [crate::supply_node::Row::default(); 3];
-    let mut paths = [0; 3];
+    let mut nodes = vec![crate::supply_node::Row::default(); 3];
+    let mut paths = vec![0; 3];
     let report =
         crate::supply_node::walk(&TrainMemory::new(&bytes), 0, GAME, &mut nodes, &mut paths);
     assert_eq!(report.outcome, Outcome::Rows { len: 3 });
-    let report = crate::supply_node::walk(
-        &TrainMemory::new(&bytes),
-        0,
-        GAME,
-        &mut nodes[..1],
-        &mut paths,
-    );
-    assert_eq!(
-        report.outcome,
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 2
-        }
-    );
-    let report = crate::supply_node::walk(&TrainMemory::new(&bytes), 0, GAME, &mut [], &mut paths);
-    assert_eq!(
-        report.outcome,
-        Outcome::Truncated {
-            len: 0,
-            unread_rows: 3
-        }
-    );
 }
 
 /// A walk of selected countries reads exactly their nodes and inventory, each
@@ -1687,7 +1599,7 @@ fn selected_supply_walks_partition_a_census_by_country() {
         let mut whole_paths = Vec::new();
         let mut memo = crate::supply_node::ProvinceMemo::default();
         memo.begin(&memory, 0, GAME);
-        let whole = crate::supply_node::walk_part_growing(
+        let whole = crate::supply_node::walk_part(
             &memory,
             0,
             GAME,
@@ -1715,7 +1627,7 @@ fn selected_supply_walks_partition_a_census_by_country() {
         };
         let (mut trains, mut entries, mut access, mut runs) =
             (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-        let report = walk_trains_growing(
+        let report = walk_trains(
             &memory,
             0,
             GAME,
@@ -1736,7 +1648,7 @@ fn selected_supply_walks_partition_a_census_by_country() {
             let mut paths = Vec::new();
             let mut memo = crate::supply_node::ProvinceMemo::default();
             memo.begin(&memory, 0, GAME);
-            let report = crate::supply_node::walk_part_selected_growing(
+            let report = crate::supply_node::walk_part_selected(
                 &memory, 0, GAME, 0, 1, &mut nodes, &mut paths, &mut memo, &select,
             );
             let expected: Vec<_> = whole_nodes
@@ -1757,7 +1669,7 @@ fn selected_supply_walks_partition_a_census_by_country() {
             );
             let (mut trains, mut entries, mut access, mut runs) =
                 (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-            let report = walk_trains_selected_growing(
+            let report = walk_trains_selected(
                 &memory,
                 0,
                 GAME,
@@ -1818,7 +1730,7 @@ fn growing_supply_parent_vertices_and_path_words_complete_the_original_first_wal
     let mut paths = Vec::new();
     let mut memo = crate::supply_node::ProvinceMemo::default();
     memo.begin(&memory, 0, GAME);
-    let captured = crate::supply_node::walk_part_growing(
+    let captured = crate::supply_node::walk_part(
         &memory, 0, GAME, 0, 1, &mut rows, &mut paths, &mut memo,
     );
     assert_eq!(captured.outcome, expected.outcome);

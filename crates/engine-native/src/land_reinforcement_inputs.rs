@@ -854,7 +854,7 @@ fn transport_owner(
     arena: &mut Vec<TransportEnemy>,
 ) -> Result<TransportOwner, &'static str> {
     use crate::{ccountry_intel, cdiplomacy_status, cstrategic_navy_manager};
-    cstrategic_navy_manager::authenticate_owner(memory, base, game, owner)?;
+    cstrategic_navy_manager::authenticate(memory, base, game, owner)?;
     let owner_intel = pointer(memory, owner.pointer, ccountry::INTEL_TABLE)?;
     auth(memory, base, owner_intel, ccountry_intel::VTABLE_RVA)?;
     let diplomacy = pointer(memory, owner.pointer, ccountry::DIPLOMACY_STATUS)?;
@@ -1105,49 +1105,15 @@ fn transport_context(
     Ok(row)
 }
 
-/// Authenticated pointer-free, bounded raw speed graph. Source selectors follow
-/// native predicates; numeric operands retain their native integer bits. The
-/// naval-transfer branch owns the separate regional weather/enemy/intel graph.
-/// Its enemy terms are written to `transport_terms[transport_start..]`, growing
-/// the caller-owned vector as needed, so call it only where the caller may
-/// allocate (the acquisition worker, never the hourly callback). Entries past
-/// the returned count are unspecified scratch.
-///
-/// Per-source reads are shared through `sources` for the pass
-/// ([`crate::combat_sources`]): every read a division still makes, and every
-/// failure, comes at main's point with main's reason.
-#[allow(clippy::too_many_arguments)]
-pub fn capture_context(
-    memory: &impl Memory,
-    base: usize,
-    game: usize,
-    sources: &mut Sources,
-    army: usize,
-    expected_handle: u64,
-    modifiers: &mut [ModifierTerm],
-    supply: &mut [SupplyTerm],
-    acclimatization_terms: &mut [AcclimatizationTerm],
-    transport_terms: &mut Vec<TransportTerm>,
-    transport_start: usize,
-) -> Result<ContextRow, &'static str> {
-    capture_context_buffer(
-        memory,
-        base,
-        game,
-        sources,
-        army,
-        expected_handle,
-        Buffer::Fixed(modifiers),
-        Buffer::Fixed(supply),
-        Buffer::Fixed(acclimatization_terms),
-        transport_terms,
-        transport_start,
-    )
-}
-
 /// Worker storage follows each original movement operand, including template,
 /// acclimatization and selected-category vectors.
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn capture_context(memory: &impl Memory, base: usize, game: usize, sources: &mut Sources, army: usize, expected_handle: u64, modifiers: &mut Vec<ModifierTerm>, supply: &mut Vec<SupplyTerm>, acclimatization_terms: &mut Vec<AcclimatizationTerm>, transport_terms: &mut Vec<TransportTerm>, transport_start: usize) -> Result<ContextRow, &'static str> {
+    capture_context_buffer(memory, base, game, sources, army, expected_handle, Buffer::Growing(modifiers), Buffer::Growing(supply), Buffer::Growing(acclimatization_terms), transport_terms, transport_start)
+}
+
 pub fn capture_context_buffer(
     memory: &impl Memory,
     base: usize,

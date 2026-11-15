@@ -255,40 +255,9 @@ pub struct CoreRow {
     pub province_locations_len: usize,
 }
 
-/// The core, claim and strategic-location lists of the census states
-/// `selected` accepts, one row per state (empty lists included), in census
-/// order. Each state is authenticated (vtable and ID) with its list headers
-/// and province array in one record batch of 64; each nonempty list is its
-/// own guarded copies, and each province is authenticated (vtable, ID and
-/// state) before its strategic locations are read. A state whose lists
-/// do not fit in `links` has no row and is counted; `required` is the links
-/// every selected state needs.
-#[allow(clippy::too_many_arguments)]
-pub fn state_cores(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    census: &[u32],
-    selected: &dyn Fn(u32) -> bool,
-    rows: &mut [CoreRow],
-    links: &mut [u32],
-    required: &mut usize,
-) -> Outcome {
-    state_cores_buffer(
-        memory,
-        base,
-        game_state,
-        census,
-        selected,
-        Buffer::Fixed(rows),
-        Buffer::Fixed(links),
-        required,
-    )
-}
-
 /// Worker-only acquisition; the original core-list headers size owned links.
 #[allow(clippy::too_many_arguments)]
-pub fn state_cores_growing(
+pub fn state_cores(
     memory: &impl Memory,
     base: usize,
     game_state: usize,

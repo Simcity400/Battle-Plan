@@ -11,7 +11,6 @@
 
 use super::{LoadContext, Product};
 use crate::{Source, catalogue::Catalogue, content, flag_choices::Chain, invalid};
-use dashboard_base::products::country_styles::CountryFlagChoice;
 use installed_content_core::content::diagnostics::Once as OnceLock;
 use installed_content_core::{ResolveOptions, content::ResolvedContent, flags::FlagSet};
 use installed_content_image::Rgba8Image;
@@ -59,6 +58,18 @@ impl CountryFlagSize {
             Self::Shield | Self::Panel => &[],
         }
     }
+}
+
+/// What a country's flag is drawn from: the file key each of the game's flag atlases resolves
+/// its candidates to in the recorded mod stack. The atlases are the normal (`gfx/flags/`),
+/// medium and small ones, in that order.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq, Hash, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CountryFlagChoice {
+    /// Each atlas's key; null where no candidate gives it a file it draws.
+    pub keys: [Option<String>; 3],
+    /// Why each atlas has no key, or what was refused on the way to its key; null when nothing.
+    pub reasons: [Option<String>; 3],
 }
 
 /// A flag set's place in a choice's keys ([`CountryFlagChoice::keys`]).
@@ -572,11 +583,6 @@ impl FlagCache {
             files,
             reported: Reported::default(),
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn files(&self) -> Arc<FlagFiles> {
-        Arc::clone(&self.files)
     }
 }
 
@@ -1476,13 +1482,13 @@ mod tests {
         // A known cosmetic candidate supplies the flag though the tag tail is unknown.
         let tail = Chain {
             candidates: vec!["GER".into()],
-            refusal: Some("CountryAppearance.original_tag capture refused".into()),
+            refusal: Some("original tag of country appearance capture refused".into()),
         };
         let choice = folders.choose(&tail).unwrap();
         assert_eq!(choice.keys, [Some("GER".into()), None, Some("GER".into())]);
         assert_eq!(
             choice.reasons[1].as_deref(),
-            Some("CountryAppearance.original_tag capture refused")
+            Some("original tag of country appearance capture refused")
         );
     }
 
@@ -1525,23 +1531,6 @@ mod tests {
             assert_eq!(together.unavailable[at].flag, at as u32);
             assert_eq!(together.unavailable[at].reason, reason, "{at}");
         }
-    }
-
-    /// Drawing a choice reads no hour of the recording: preparation made it.
-    #[test]
-    fn a_flag_draw_reads_no_recording() {
-        use dashboard_base::prepared::query::frames;
-        let (_catalogue, folder) = crate::catalogue::tests::folder_catalogue(&[]);
-        let frame = dashboard_base::test_fixtures::source(1, 100, Some(1));
-        let (source, context) =
-            dashboard_base::test_fixtures::source_with_content(vec![frame], &folder.0);
-        let params = CountryFlagParams {
-            flags: vec![every("GER")],
-            size: CountryFlagSize::Full,
-        };
-        let before = frames::reads(&source);
-        let _ = CountryFlags::load(&source, &params, &context, &AtomicBool::new(false));
-        assert_eq!(frames::reads(&source), before);
     }
 
     #[test]

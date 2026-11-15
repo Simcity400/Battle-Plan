@@ -74,7 +74,7 @@ pub fn demand(
     country: usize,
     country_id: u32,
 ) -> Result<Demand, &'static str> {
-    let walked = walk(memory, base, country, country_id, &mut [], &mut [], &mut []);
+    let walked = count(memory, base, country, country_id);
     let rows = match walked.outcome {
         Outcome::Rows { len } => len,
         Outcome::Truncated { len, unread_rows } => len
@@ -89,35 +89,16 @@ pub fn demand(
     })
 }
 
+pub fn count(memory: &impl Memory, base: usize, country: usize, country_id: u32) -> Walk {
+    walk_into(memory, base, country, country_id, crate::walk::Buffer::Count, 0, crate::walk::Buffer::Count, 0, crate::walk::Buffer::Count, 0)
+}
+
 /// Copies one authenticated country's own current timed modifiers. Output and
 /// arenas are caller-owned; insufficient capacity omits whole entries and
 /// reports the exact missing row count. Names and ordered fixed5 values remain
 /// lossless, including disabled instances and the native -1 duration sentinel.
-pub fn walk(
-    memory: &impl Memory,
-    base: usize,
-    country: usize,
-    country_id: u32,
-    output: &mut [Row],
-    tokens: &mut [u8],
-    values: &mut [i64],
-) -> Walk {
-    walk_into(
-        memory,
-        base,
-        country,
-        country_id,
-        crate::walk::Buffer::Fixed(output),
-        0,
-        crate::walk::Buffer::Fixed(tokens),
-        0,
-        crate::walk::Buffer::Fixed(values),
-        0,
-    )
-}
-
 #[allow(clippy::too_many_arguments)]
-pub fn walk_growing(
+pub fn walk(
     memory: &impl Memory,
     base: usize,
     country: usize,
@@ -388,9 +369,9 @@ mod tests {
     #[test]
     fn preserves_disabled_permanent_zero_day_entries_and_full_width_values() {
         let bytes = fixture();
-        let mut rows = [Row::default(); 2];
-        let mut tokens = [0; 4];
-        let mut values = [0; 4];
+        let mut rows = Vec::new();
+        let mut tokens = Vec::new();
+        let mut values = Vec::new();
         let result = walk(
             &SliceMemory {
                 base: COUNTRY_PTR,
@@ -400,8 +381,11 @@ mod tests {
             COUNTRY_PTR,
             8,
             &mut rows,
+            0,
             &mut tokens,
+            0,
             &mut values,
+            0,
         );
         assert_eq!(result.outcome, Outcome::Rows { len: 2 });
         assert_eq!(tokens, [b'a', 0xff, b'a', 0xff]);
@@ -413,34 +397,11 @@ mod tests {
     }
 
     #[test]
-    fn arena_capacity_omits_whole_rows_and_bad_empty_container_is_unavailable() {
+    fn bad_empty_container_is_unavailable() {
         let mut bytes = fixture();
-        let mut rows = [Row::default(); 2];
-        let mut tokens = [0; 3];
-        let mut values = [0; 4];
-        let result = walk(
-            &SliceMemory {
-                base: COUNTRY_PTR,
-                bytes: &bytes,
-            },
-            BASE,
-            COUNTRY_PTR,
-            8,
-            &mut rows,
-            &mut tokens,
-            &mut values,
-        );
-        assert_eq!(
-            result.outcome,
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            }
-        );
-        assert_eq!(
-            (result.required_token_bytes, result.required_values),
-            (4, 4)
-        );
+        let mut rows = Vec::new();
+        let mut tokens = Vec::new();
+        let mut values = Vec::new();
         put(
             &mut bytes,
             COUNTRY_PTR + ccountry::DYNAMIC_MODIFIERS + ENTRIES_COUNT,
@@ -461,8 +422,11 @@ mod tests {
                 COUNTRY_PTR,
                 8,
                 &mut rows,
+                0,
                 &mut tokens,
-                &mut values
+                0,
+                &mut values,
+                0
             )
             .outcome,
             Outcome::Unavailable { .. }

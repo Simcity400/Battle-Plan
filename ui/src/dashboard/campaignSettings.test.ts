@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applyColourSet, chosenColour, factionIdentity, loadCampaignSettings, MAX_CAMPAIGN_SETTINGS_STORAGE, parseCampaignSettings, saveCampaignSettings, saveColourSet,
+import { applyColourSet, chosenColour, factionIdentity, factionStylesKey, loadCampaignSettings, MAX_CAMPAIGN_SETTINGS_STORAGE, parseCampaignSettings, saveCampaignSettings, saveColourSet,
   setCampaignFlag, setFactionColour, setFactionStyle } from './campaignSettings.ts';
 import { FACTION_APART, factionColours } from '../charts/factionColours.ts';
 import { parseColor, rgbToOklch } from '../shell/appearance/color.ts';
@@ -52,6 +52,18 @@ test('faction styles are stored per campaign, validated and cleared', () => {
   const storage = memory();
   saveCampaignSettings(setFactionStyle(settings, 'ab12', '12', { colour: '#aa0000' }), storage);
   assert.deepEqual(loadCampaignSettings(storage).campaigns.ab12.factions['12'], { colour: '#aa0000' });
+});
+
+test('the faction styles a campaign renders with change with its own names and colours and every campaign’s colours, not another campaign’s', () => {
+  const empty = parseCampaignSettings(undefined);
+  assert.equal(factionStylesKey(empty, 'ab12'), '');
+  assert.equal(factionStylesKey(empty, null), '');
+  const renamed = setFactionStyle(empty, 'ab12', '3', { name: 'Western Allies' });
+  assert.notEqual(factionStylesKey(renamed, 'ab12'), factionStylesKey(empty, 'ab12'));
+  assert.equal(factionStylesKey(setFactionStyle(empty, 'other', '3', { name: 'Western Allies' }), 'ab12'), '');
+  const shared = setFactionColour(renamed, 'all', 'ab12', '3', factionIdentity('Allies', null), '#123456');
+  assert.notEqual(factionStylesKey(shared, 'ab12'), factionStylesKey(renamed, 'ab12'));
+  assert.equal(factionStylesKey(setFactionStyle(renamed, 'ab12', '3', { name: 'Western Allies' }), 'ab12'), factionStylesKey(renamed, 'ab12'));
 });
 
 test('unsafe or malformed stored settings are dropped', () => {

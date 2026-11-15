@@ -190,3 +190,14 @@ export function describeRun(runs: readonly HourRange[], hour: number, words: Run
     case 'held': return startUnseen(state.since, branchFirstHour, unobserved) ? words.before(state.since) : words.since(state.since);
   }
 }
+
+/** How many of `hours` (ascending) have come by `hour`: a lane widget whose lanes change only at those hours shows the
+ * same structure while it holds, and renders only when it moves. */
+export function changesBy(hours: readonly number[], hour: number): number {
+  let low = 0, high = hours.length;
+  while (low < high) {
+    const mid = (low + high) >> 1;
+    if (hours[mid] <= hour) low = mid + 1; else high = mid;
+  }
+  return low;
+}

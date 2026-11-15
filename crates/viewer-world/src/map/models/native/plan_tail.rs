@@ -65,11 +65,11 @@ impl<'a> Caller<'a> {
 
 // Five source families, NOT an allocation cap: two frame slots share one source.
 // Optional supplies preserve absent VS/PS/skin/grid rather than filling missing bytes.
-const FRAME: usize = 0;
-const VERTEX: usize = 1;
-const PIXEL: usize = 2;
-const SKIN: usize = 3;
-const GRID: usize = 4;
+pub(super) const FRAME: usize = 0;
+pub(super) const VERTEX: usize = 1;
+pub(super) const PIXEL: usize = 2;
+pub(super) const SKIN: usize = 3;
+pub(super) const GRID: usize = 4;
 const SOURCES: usize = 5;
 
 #[derive(Clone, Copy)]
@@ -99,7 +99,7 @@ impl<'a> Supplies<'a> {
 
 }
 
-fn selector(binding: u32) -> Option<usize> {
+pub(super) fn selector(binding: u32) -> Option<usize> {
     match binding {
         0 | 1 => Some(FRAME),
         2 => Some(VERTEX),

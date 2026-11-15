@@ -1,6 +1,8 @@
-import type { FactionDetailReply, FactionGoalDefinition, FactionGoalDetail, FactionResourceDetail } from '../../generated/dashboard';
+import type { FactionDetailReply, FactionGoalDefinition, FactionGoalRewardsReply, FactionHeldGoal, FactionResourceDetail } from '../../generated/dashboard';
+import type { LiveValues } from '../../charts/live';
 import type { TooltipRow } from '../../charts/tooltip';
 import { HOUR_EPOCH } from '../../dashboard/calendar.ts';
+import { goalProgress as liveProgress, resourceKey } from '../../dashboard/factionDetails.ts';
 import type { FactionView } from './factionsData';
 
 const HOURS_PER_YEAR = 365 * 24;
@@ -38,59 +40,74 @@ export function rewardLines(text: string): RewardLine[] {
   return out;
 }
 
-/** What completing a goal gives, as tooltip rows under one heading. */
-export function rewardRows(definition: FactionGoalDefinition, heading: string): TooltipRow[] {
-  const lines = definition.rewards.filter(reward => reward.kind === 'complete_effect').flatMap(reward => rewardLines(reward.text));
+/** A goal's completion rewards as its tooltip knows them: described, still being asked, or not to be had. */
+export type RewardState = { kind: 'described'; reply: FactionGoalRewardsReply } | { kind: 'loading' } | { kind: 'failed'; reason: string };
+
+/** What completing a goal gives, as tooltip rows under one heading; none where the goal gives nothing described. */
+export function rewardRows(state: RewardState, heading: string): TooltipRow[] {
+  const head: TooltipRow = { label: heading, strong: true, divider: true };
+  if (state.kind === 'loading') return [head, { label: 'Loading rewards…', tone: 'muted' }];
+  if (state.kind === 'failed') return [head, { label: `Rewards unavailable: ${state.reason}`, tone: 'muted' }];
+  if (state.reply.reason) return [head, { label: `Rewards not described: ${state.reply.reason}`, tone: 'muted' }];
+  const lines = state.reply.text ? rewardLines(state.reply.text) : [];
   if (!lines.length) return [];
-  return [{ label: heading, strong: true, divider: true },
-    ...lines.map(line => line.heading ? { label: line.text, tone: 'muted' as const } : { label: line.text, indent: true })];
+  return [head, ...lines.map(line => line.heading ? { label: line.text, tone: 'muted' as const } : { label: line.text, indent: true })];
 }
 
 export const goalName = (definition: FactionGoalDefinition) => definition.name || 'Goal name not recorded';
 export const goalStatus = (status: number) => STATUS[status] ?? 'Status not recorded';
 
+/** A held goal with its definition. */
+export interface HeldGoal { goal: FactionHeldGoal; definition: FactionGoalDefinition }
+
 /** The manifest's held entry: the goal its definition names. */
-export function manifestGoal(reply: FactionDetailReply): FactionGoalDetail | null {
-  const token = reply.manifest?.token;
-  return token == null ? null : reply.goals.find(goal => goal.definition.token === token) ?? null;
+export function manifestGoal(reply: FactionDetailReply): HeldGoal | null {
+  const index = reply.manifest;
+  const goal = index == null ? undefined : reply.goals.find(entry => entry.definition === index);
+  return goal ? { goal, definition: reply.definitions[goal.definition] } : null;
 }
 
-/** Progress as the game holds it, only where it is a share of the goal (0–100%). */
-export function goalProgress(goal: FactionGoalDetail): number | null {
-  const value = goal.progressPercent;
-  return value != null && value >= 0 && value <= 100 ? value : null;
+/** Progress as the game holds it at the frame, only where it is a share of the goal (0–100%). */
+export function goalPercent(values: LiveValues<number>, goal: Pick<FactionHeldGoal, 'ordinal'>): number | null {
+  const progress = liveProgress(values, goal.ordinal);
+  return progress.kind === 'percent' && progress.percent >= 0 && progress.percent <= 100 ? progress.percent : null;
 }
 
 /** The manifest's thresholds on its bar, and the furthest named one it has reached. */
-export function manifestMarks(goal: FactionGoalDetail): { marks: { at: number; name: string | null }[]; reached: string | null } {
-  const bands = goal.definition.bands;
+export function manifestMarks(held: HeldGoal): { marks: { at: number; name: string | null }[]; reached: string | null } {
+  const bands = held.definition.bands;
   const marks = bands.flatMap(band => band.min != null && band.min > 0 && band.min < 1 ? [{ at: band.min * 100, name: band.name }] : []);
-  const reached = [...goal.activeSections].sort((a, b) => b - a).map(index => bands[index]?.name).find(name => name) ?? null;
+  const reached = [...held.goal.activeSections].sort((a, b) => b - a).map(index => bands[index]?.name).find(name => name) ?? null;
   return { marks, reached };
 }
 
 /** Active goals other than the manifest, grouped under their terms. */
-export function goalGroups(reply: FactionDetailReply, manifest: FactionGoalDetail | null): { key: string; name: string; goals: FactionGoalDetail[] }[] {
-  const groups = new Map<string, { key: string; name: string; goals: FactionGoalDetail[] }>();
+export function goalGroups(reply: FactionDetailReply, manifest: HeldGoal | null): { key: string; name: string; goals: HeldGoal[] }[] {
+  const groups = new Map<string, { key: string; name: string; goals: HeldGoal[] }>();
   for (const goal of reply.goals) {
-    if (goal === manifest) continue;
-    const key = goal.definition.category ?? '';
+    if (goal === manifest?.goal) continue;
+    const definition = reply.definitions[goal.definition];
+    const key = definition.category ?? '';
     let group = groups.get(key);
-    if (!group) groups.set(key, group = { key, name: goal.definition.categoryName ?? (key ? key.replaceAll('_', ' ') : 'Other goals'), goals: [] });
-    group.goals.push(goal);
+    if (!group) groups.set(key, group = { key, name: definition.categoryName ?? (key ? key.replaceAll('_', ' ') : 'Other goals'), goals: [] });
+    group.goals.push({ goal, definition });
   }
   const rank = (key: string) => { const index = TERMS.indexOf(key); return index < 0 ? TERMS.length : index; };
   return [...groups.values()].sort((a, b) => rank(a.key) - rank(b.key));
 }
 
-/** Resources the faction extracts, largest first, an amount kept when its name is unavailable. */
-export function extracted(resources: readonly FactionResourceDetail[] | null): { resource: FactionResourceDetail; value: number }[] {
-  return (resources ?? []).map(resource => ({ resource, value: Number(BigInt(resource.raw)) / 100_000 }))
-    .sort((a, b) => b.value - a.value);
+/** A pooled resource's amount at the frame; undefined where its cell holds none. */
+export const resourceAmount = (values: LiveValues<number>, resource: Pick<FactionResourceDetail, 'ordinal'>) => values.get(resourceKey(resource.ordinal));
+
+/** Each resource's place, largest amount first, an amount not known last; ties by slot. */
+export function resourceOrder(resources: readonly FactionResourceDetail[], values: LiveValues<number>): Map<number, number> {
+  const amounts = resources.map(resource => ({ ordinal: resource.ordinal, value: resourceAmount(values, resource) }));
+  amounts.sort((a, b) => (b.value ?? -Infinity) - (a.value ?? -Infinity) || a.ordinal - b.ordinal);
+  return new Map(amounts.map((entry, place) => [entry.ordinal, place]));
 }
 
-/** A fixed-point (five places) amount as a whole number. */
-export const fixedWhole = (raw: string | null) => raw == null ? null : Number(BigInt(raw) / 100_000n);
+/** A fixed-point amount the live cell has scaled to units, as the whole number the game shows. */
+export const wholeOf = (value: number | undefined) => value === undefined ? null : Math.trunc(value);
 
 /** Countries joining the faction by `at`, grouped by hour: the chart's flags. Each
  * country is placed where its first membership began. */
@@ -104,10 +121,11 @@ export function joinEvents(view: FactionView, at: number): { hour: number; membe
   return [...byHour].sort((a, b) => a[0] - b[0]).map(([hour, members]) => ({ hour, members }));
 }
 
-/** The member count over [from, at], as steps clipped to the range. */
-export function countSteps(view: FactionView, from: number, at: number): { firstHour: number; lastHour: number; value: number }[] {
+/** The member count from `from` by the steps begun at `at`, clipped to the range [from, to]: the chart draws them to
+ * `to` and shows them to the head. */
+export function countSteps(view: FactionView, from: number, at: number, to = at): { firstHour: number; lastHour: number; value: number }[] {
   return view.counts.filter(step => step.lastHour >= from && step.firstHour <= at)
-    .map(step => ({ firstHour: Math.max(from, step.firstHour), lastHour: Math.min(at, step.lastHour), value: step.value }));
+    .map(step => ({ firstHour: Math.max(from, step.firstHour), lastHour: Math.min(to, step.lastHour), value: step.value }));
 }
 
 /** The first hour of each game year inside [from, to]. */

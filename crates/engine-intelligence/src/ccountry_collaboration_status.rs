@@ -97,11 +97,7 @@ fn relation(
 /// Reads outgoing relations and verifies both directions of their native
 /// incoming/outgoing membership. Link aliases are resolved only for validation;
 /// the row retains its target's original link and the source object's native id.
-pub fn walk(memory: &impl Memory, base: usize, game_state: usize, output: &mut [Row]) -> Outcome {
-    walk_buffer(memory, base, game_state, crate::walk::Buffer::Fixed(output))
-}
-
-pub fn walk_growing(
+pub fn walk(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -304,7 +300,7 @@ mod tests {
             base: 0x1000,
             bytes: &bytes,
         };
-        let mut output = [Row::default(); 3];
+        let mut output = vec![Row::default(); 3];
         assert_eq!(
             walk(&memory, 0, 0x1000, &mut output),
             Outcome::Rows { len: 2 }
@@ -325,14 +321,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            walk(&memory, 0, 0x1000, &mut output[..1]),
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            }
-        );
-        assert_eq!(
-            walk(&memory, 0, 0x1000, &mut []),
+            walk_buffer(&memory, 0, 0x1000, crate::walk::Buffer::Count),
             Outcome::Truncated {
                 len: 0,
                 unread_rows: 2
@@ -369,7 +358,7 @@ mod tests {
                     },
                     0,
                     0x1000,
-                    &mut [Row::default(); 3]
+                    &mut vec![Row::default(); 3]
                 ),
                 Outcome::Unavailable { reason }
             );
@@ -385,7 +374,7 @@ mod tests {
                 },
                 0,
                 0x1000,
-                &mut [Row::default(); 3]
+                &mut vec![Row::default(); 3]
             ),
             Outcome::Unavailable {
                 reason: "collaboration outgoing relation lacks unique reciprocal incoming link"
@@ -402,7 +391,7 @@ mod tests {
                 },
                 0,
                 0x1000,
-                &mut [Row::default(); 3]
+                &mut vec![Row::default(); 3]
             ),
             Outcome::Unavailable {
                 reason: "collaboration incoming link lacks unique reciprocal outgoing relation"
@@ -444,7 +433,7 @@ mod tests {
                     },
                     0,
                     0x1000,
-                    &mut [Row::default(); 3]
+                    &mut vec![Row::default(); 3]
                 ),
                 Outcome::Unavailable { reason }
             );
@@ -459,7 +448,7 @@ mod tests {
                 },
                 0,
                 0x1000,
-                &mut [Row::default(); 3]
+                &mut vec![Row::default(); 3]
             ),
             Outcome::Unavailable {
                 reason: "collaboration progress unreadable"

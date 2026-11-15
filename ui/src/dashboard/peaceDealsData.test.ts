@@ -21,7 +21,7 @@ function reply(release: Record<string, unknown>, released: unknown = true) {
     change: { kind: 'countryReleased', country: 'country/3', from: ['country/1'], states: [3], ...release } };
   const deal = { id: 'outcome:101:0', derived: true, observation: 'conferenceNotRecorded', conferenceId: null, warName: null, firstObservedHour: 101, lastObservedHour: 101,
     currentTurn: null, finalized: null, firstFinalizedHour: null, endHour: 101, endIsBy: true, firstAbsentHour: null, participantsDerived: true, winners: [], losers: [],
-    items: [item], captured: null, captureUnavailable: null, transfers: graph, limitations: [], preparing: [] };
+    items: [item], captured: null, captureUnavailable: null, transfers: graph, limitations: [] };
   const spans = Object.fromEntries(['settlements', 'conferences', 'ownership', 'wars', 'subjects', 'governments', 'existence', 'victoryPoints'].map(key => [key, []]));
   return { branchId: '1', derived: true, deals: [deal], transfers: graph, unobserved: spans, warnings: [] };
 }

@@ -164,7 +164,7 @@ fn capture(
 }
 fn full(world: &World) -> Vec<native::CountryRow> {
     let mut rows = Vec::new();
-    let (outcome, _) = native::countries_growing(world, 0, STATE, &mut rows);
+    let (outcome, _) = native::countries(world, 0, STATE, &mut rows);
     assert!(matches!(outcome, Outcome::Rows { .. }), "{outcome:?}");
     rows.truncate(outcome.len());
     rows
@@ -272,7 +272,7 @@ fn failed_definition_and_incomplete_output_forget_every_held_country() {
         &world,
         0,
         STATE,
-        Buffer::Fixed(&mut []),
+        Buffer::Count,
         &domain,
         false,
     );
@@ -356,7 +356,7 @@ fn a_full_read_keeps_metadata_before_the_next_country_and_does_not_retry_a_one_s
         &domain,
         false,
     );
-    let (expected, _) = native::countries_growing(
+    let (expected, _) = native::countries(
         &{
             let same_fault = Counted::new(&world);
             same_fault.fault.set(Some(failed));
@@ -394,13 +394,14 @@ fn advisory_store_allocation_failure_publishes_exact_rows_and_forgets_consumed_m
     store.fresh = Vec::new();
     domain.write(Table::Visibility, 2);
     domain.boundary(false);
-    let mut rows = [native::CountryRow::default(); 3];
+    // Room for every slot: only the advisory store's allocation is refused.
+    let mut rows = vec![native::CountryRow::default(); 8];
     let ((outcome, _), _, _) = crate::test_support::with_allocations_denied(|| {
         store.capture(
             &world,
             0,
             STATE,
-            Buffer::Fixed(&mut rows),
+            Buffer::Growing(&mut rows),
             &domain,
             false,
         )

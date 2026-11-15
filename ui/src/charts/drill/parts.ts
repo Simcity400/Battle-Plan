@@ -16,6 +16,18 @@ export function orderedDrillParts(parts: readonly DrillPart[]): DrillPart[] {
   });
 }
 
+/** The part of a total no recorded source explains. */
+export interface DrillUnattributed { label: string; value: number; raw?: bigint | null; text?: string; shareText?: string; color?: string }
+
+/** The rows a breakdown shows: its parts largest first, then what no source explains when it is not zero. */
+export function drillRows(parts: readonly DrillPart[], unattributed?: DrillUnattributed): { key: string; item: DrillPart }[] {
+  const ordered = orderedDrillParts(parts).map(item => ({ key: JSON.stringify(['part', item.id]), item }));
+  if (unattributed && (unattributed.raw === undefined ? unattributed.value !== 0 : unattributed.raw !== 0n)) ordered.push({ key: 'unattributed',
+    item: { id: '', label: unattributed.label, value: unattributed.value, raw: unattributed.raw, text: unattributed.text,
+      shareText: unattributed.shareText, color: unattributed.color, muted: true } });
+  return ordered;
+}
+
 export function drillPartShare(value: number | null, total: number | null, signed = false): string {
   if (value == null || total == null || total === 0) return '—';
   const share = Math.round((signed ? value / total : Math.abs(value) / Math.abs(total)) * 1000) / 10;

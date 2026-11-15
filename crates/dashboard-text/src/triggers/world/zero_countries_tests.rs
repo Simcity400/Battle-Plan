@@ -80,7 +80,12 @@ fn genuine_member_zero_does_not_poison_positive_faction_absence() {
         }],
     );
     with_world(&frame, |world| {
-        assert!(world.faction(2).unwrap_err().contains("country 999"));
+        let why = world.faction(2).unwrap_err();
+        assert!(
+            why.names("CountryLinks.canonical_slot")
+                && why == "faction members names a country that no recorded country link holds",
+            "{why}"
+        );
     });
 }
 
@@ -370,19 +375,17 @@ fn empty_primary_roots_ignore_unavailable_order_payloads() {
     );
     with_world(&frame, |world| {
         assert_reserved_empty(&world);
+        let why = world.complete_invasion_orders(1).err().unwrap();
         assert!(
-            world
-                .complete_invasion_orders(1)
-                .err()
-                .unwrap()
-                .contains("country 999")
+            why.names("CountryLinks.canonical_slot")
+                && why == "land theatres names a country that no recorded country link holds",
+            "{why}"
         );
+        let why = world.complete_invasion_orders(2).err().unwrap();
         assert!(
-            world
-                .complete_invasion_orders(2)
-                .err()
-                .unwrap()
-                .contains("country 999")
+            why.names("CountryLinks.canonical_slot")
+                && why == "land theatres names a country that no recorded country link holds",
+            "{why}"
         );
     });
 }
@@ -530,12 +533,11 @@ fn reserved_invasions_use_certified_roster_and_keep_unknown_positive_owners_unkn
     );
     with_world(&frame, |world| {
         assert_eq!(world.complete_invasion_orders(0).unwrap().len(), 1);
+        let why = world.complete_invasion_orders(1).err().unwrap();
         assert!(
-            world
-                .complete_invasion_orders(1)
-                .err()
-                .unwrap()
-                .contains("country 999")
+            why.names("CountryLinks.canonical_slot")
+                && why == "land theatres names a country that no recorded country link holds",
+            "{why}"
         );
     });
 }

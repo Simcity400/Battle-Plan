@@ -259,7 +259,7 @@ impl Cache {
         vision: &Arc<Vision>,
         nato: bool,
         selected: &Arc<Vec<Unit>>,
-        replay: &Arc<replay::campaign::Replay>,
+        rosters: &Arc<air_region::Sampler>,
         mode: &ModeHover,
         wake: impl Fn() + Send + Sync + 'static,
     ) -> Arc<Tooltip> {
@@ -272,7 +272,7 @@ impl Cache {
                     && Arc::ptr_eq(selected, held_selected)
             },
         );
-        let text = self.held.get(key, same, replay, wake, |rosters| {
+        let text = self.held.get(key, same, rosters, wake, |rosters| {
             build(
                 content, reads, frame, province, vision, nato, selected, rosters, mode,
             )
@@ -301,8 +301,8 @@ impl Cache {
 }
 
 /// The held tooltip with its key, the roster answers' generation it was built at, and
-/// whether one of its questions was still pending; the recording's daily air rosters,
-/// read on demand and kept for its replay.
+/// whether one of its questions was still pending; its questions to the shared roster
+/// history, asked on a worker of its own.
 struct Holder<K> {
     held: Option<(K, u64, bool, Arc<Tooltip>)>,
     rosters: Option<air_region::PassRosters>,
@@ -322,16 +322,16 @@ impl<K: PartialEq> Holder<K> {
         &mut self,
         key: K,
         same: bool,
-        replay: &Arc<replay::campaign::Replay>,
+        sampler: &Arc<air_region::Sampler>,
         wake: impl Fn() + Send + Sync + 'static,
         build: impl FnOnce(&dyn air_region::Rosters) -> Tooltip,
     ) -> Arc<Tooltip> {
         if !self
             .rosters
             .as_ref()
-            .is_some_and(|rosters| Arc::ptr_eq(rosters.replay(), replay))
+            .is_some_and(|rosters| Arc::ptr_eq(rosters.sampler(), sampler))
         {
-            self.rosters = Some(air_region::PassRosters::new(Arc::clone(replay), wake));
+            self.rosters = Some(air_region::PassRosters::of(Arc::clone(sampler), wake));
             self.held = None;
         }
         let rosters = self.rosters.as_ref().expect("installed above");

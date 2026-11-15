@@ -1,22 +1,26 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { divisionTooltip, equipmentFill, lowestFill, orderTooltip, queueRows, queueStructure, trainingRatio, validateTrainingQueue } from './trainingQueueData.ts';
 import type { TrainingDivision, TrainingOrder } from '../../generated/dashboard';
-import { divisionTooltip, equipmentFill, lowestFill, orderTooltip, queueRows, trainingRatio, validateTrainingQueue } from './trainingQueueData.ts';
 
 const division = (line: string, extra: Partial<TrainingDivision> = {}): TrainingDivision => ({ line, ordinal: 0, name: `Division ${line}`, nameMissing: null,
   trainingRaw: '50000', maxTrainingRaw: '100000', manpower: 100, manpowerNeeded: 900, maxManpower: 1000, contributors: [], equipment: [],
   need: [{ archetype: 'rifle', name: 'Rifles', needRaw: '100000000', heldRaw: '150000000' }, { archetype: 'gun', name: 'Guns', needRaw: '10000000', heldRaw: '0' }],
   needMissing: null, comparisonMissing: null, halted: false, ...extra });
-const order = (id: string, divisions: TrainingDivision[]): TrainingOrder => ({ order: id, ordinal: 0, template: '5', templateName: 'Infantry', templateMissing: null,
-  icon: null, iconMissing: null, amount: 3, priority: 1, priorityName: 'Medium', priorityMissing: null, location: 0, locationName: 'Not set', locationMissing: null,
+const order = (id: string, divisions: TrainingDivision[]): TrainingOrder => ({ order: id, ordinal: 0, template: '5', templateName: 'Infantry', templateMissing: null, icon: null, iconMissing: 'Template artwork operands not recorded',
+  amount: 3, priority: 1, priorityName: 'Medium', priorityMissing: null, location: 0, locationName: 'Not set', locationMissing: null,
   closed: false, exile: null, divisions });
 
 test('orders keep the game’s order and their own divisions only', () => {
-  const reply = validateTrainingQueue({ branchId: '1', hour: 10, tag: 'GER', absent: false, readHour: 8, missing: null, warnings: [],
+  const reply = validateTrainingQueue({ tag: 'GER', readHour: 8, missing: null, warnings: [],
     orders: [order('b', [division('2'), division('1')]), order('a', [])] });
   const rows = queueRows(reply);
   assert.deepEqual(rows.map(row => row.key), ['order:b', 'order:a']);
   assert.ok(rows[0].kind === 'order' && rows[0].children.map(row => row.key).join() === 'line:2,line:1');
+  // A pushed panel renders only when the queue it shows differs; warnings alone do not.
+  assert.equal(queueStructure({ ...reply, warnings: ['a name refused'] }), queueStructure(reply));
+  assert.notEqual(queueStructure({ ...reply, readHour: 32 }), queueStructure(reply));
+  assert.throws(() => validateTrainingQueue({ tag: 'GER', readHour: 8, missing: 3, warnings: [], orders: [] }), /Invalid/);
 });
 
 test('equipment fill counts no type past its need and an unknown need is no fill', () => {

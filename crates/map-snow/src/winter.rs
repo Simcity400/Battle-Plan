@@ -304,7 +304,7 @@ pub fn snow_factor(
     )
 }
 
-fn snow_factor_with(
+pub fn snow_factor_with(
     records: &[SnowRecord],
     snow: impl Fn(u32) -> Option<i64>,
     defines: SnowDefines,

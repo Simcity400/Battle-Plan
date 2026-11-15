@@ -16,7 +16,7 @@ const ASSEMBLED: &str = "Event feed assembled by spool";
 pub struct Captured {
     snapshot: collector_observers::event_feed_history::Snapshot,
     sampled: bool,
-    /// The hour and partial flag `drain_growing` prepared, until sealed.
+    /// The hour and partial flag `drain` prepared, until sealed.
     prepared: Option<(i32, bool)>,
 }
 
@@ -56,9 +56,9 @@ impl Captured {
         crate::table_capture::grow_capacity(&mut capacity.events, self.snapshot.required);
         let _ = self.snapshot.grow(capacity.events);
     }
-    /// Prepares the hour at the observer boundary; [`Self::seal_growing`]
+    /// Prepares the hour at the observer boundary; [`Self::seal`]
     /// publishes it.
-    pub fn drain_growing(&mut self, hour: i32, partial: bool) {
+    pub fn drain(&mut self, hour: i32, partial: bool) {
         self.prepared = None;
         match collector_observers::event_feed_observer::prepare_growing(hour, partial) {
             Ok(()) => self.prepared = Some((hour, partial)),
@@ -67,9 +67,9 @@ impl Captured {
     }
     /// The seal follows the country census, so its markers belong to the
     /// hour they were read. An hour already refused stays refused.
-    pub fn seal_growing(&mut self) {
+    pub fn seal(&mut self) {
         if let Some((hour, partial)) = self.prepared {
-            collector_observers::event_feed_observer::seal_growing(
+            collector_observers::event_feed_observer::seal(
                 &mut self.snapshot,
                 hour,
                 partial,
@@ -114,7 +114,7 @@ mod tests {
     #[test]
     fn a_refused_preparation_is_sampled_and_no_seal_or_join_failure_replaces_it() {
         let mut captured = Captured::vacant();
-        captured.drain_growing(7, false);
+        captured.drain(7, false);
         let refused = captured.snapshot.boundary;
         assert!(matches!(refused.coverage, EventFeedCoverage::Unavailable));
         assert_eq!(refused.read_hour, 7);
@@ -124,7 +124,7 @@ mod tests {
 
         // Nothing was prepared: the seal and a failed seal job keep the
         // boundary's own refusal.
-        captured.seal_growing();
+        captured.seal();
         captured.fail_prepared("event feed seal job failed");
         let kept = captured.snapshot.boundary;
         assert!(matches!(kept.coverage, EventFeedCoverage::Unavailable));
@@ -134,7 +134,7 @@ mod tests {
 
         captured.reset();
         assert!(captured.prepare_pack().unwrap().is_none());
-        captured.seal_growing();
+        captured.seal();
         assert!(captured.prepare_pack().unwrap().is_none());
     }
 }

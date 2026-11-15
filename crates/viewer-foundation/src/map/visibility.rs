@@ -9,7 +9,7 @@ use replay_data::rows::tables;
 use replay_data::rows::{
     CountryIntelRow, Recorded, RelationLinkRow, ReservedCountryNamingRow, ZeroSubjectInputs,
 };
-pub use replay_derive::visibility::event_shared;
+pub use replay_derive::visibility::{event_shared, forward_zero_shared_of};
 pub(crate) use replay_derive::visibility::owner_rows;
 #[cfg(test)]
 use replay_derive::visibility::*;
@@ -163,11 +163,11 @@ fn complete<'a, T: replay_data::rows::TableSchema>(
     frame.complete::<T>().map_err(|_| name)
 }
 
-pub(super) fn saturate(current: u8, term: i32) -> u8 {
+pub(crate) fn saturate(current: u8, term: i32) -> u8 {
     i32::from(current).wrapping_add(term).clamp(0, 255) as u8
 }
 /// Fixed-point technology rounding.
-pub(super) fn rounded(value: i64) -> i32 {
+pub(crate) fn rounded(value: i64) -> i32 {
     (value.wrapping_add(if value < 0 { -50_000 } else { 50_000 }) / 100_000) as i32
 }
 /// The air-base icon intel gates with the
@@ -187,13 +187,17 @@ impl AirDefines {
         else {
             return Err("SimulationFeatures singleton");
         };
-        Ok(Self {
+        Ok(Self::of(defines, features.dlc_mask))
+    }
+    /// From the defines and the simulation's DLC feature mask.
+    pub fn of(defines: &Defines, dlc_mask: u32) -> Self {
+        Self {
             maximum: defines.intel_maximums[3],
             icon_threshold: defines.air_icon_threshold,
             detail: defines.air_detail_thresholds,
             fuzzy_range: defines.air_plane_fuzzy_range,
-            enabled: features.dlc_mask & 0x20 != 0,
-        })
+            enabled: dlc_mask & 0x20 != 0,
+        }
     }
     fn fraction(&self, raw: Option<i64>, shared: bool, fog: bool) -> Option<i64> {
         if shared || !fog {
@@ -271,11 +275,15 @@ impl NavalDefines {
         else {
             return Err("SimulationFeatures singleton");
         };
-        Ok(Self {
+        Ok(Self::of(defines, features.dlc_mask))
+    }
+    /// From the defines and the simulation's DLC feature mask.
+    pub fn of(defines: &Defines, dlc_mask: u32) -> Self {
+        Self {
             maximum: defines.intel_maximums[2],
             detail: defines.naval_detail_thresholds,
-            enabled: features.dlc_mask & 0x20 != 0,
-        })
+            enabled: dlc_mask & 0x20 != 0,
+        }
     }
 
     /// Without the feature: 4 when the viewer shares vision with the owner or fog is off,
@@ -299,7 +307,7 @@ impl NavalDefines {
     }
 }
 
-pub(super) fn network_term(cutoff: i32, modifier: i64) -> i32 {
+pub(crate) fn network_term(cutoff: i32, modifier: i64) -> i32 {
     (i64::from(cutoff.wrapping_add(255))
         .wrapping_mul(100_000)
         .wrapping_mul(modifier)

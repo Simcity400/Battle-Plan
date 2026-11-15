@@ -274,6 +274,57 @@ pub fn adopt_thread_records(records: Option<ThreadRecords>) {
     });
 }
 
+std::thread_local! {
+    /// The GPU counts at the last lap noted, and each lap's counts since the last take.
+    static PASS_COUNTS: std::cell::RefCell<PassCounts> = std::cell::RefCell::default();
+}
+
+type GpuCounts = [u64; shader_pipeline::gpu::stats::NAMES.len()];
+
+#[derive(Default)]
+struct PassCounts {
+    last: Option<GpuCounts>,
+    laps: Vec<(&'static str, GpuCounts)>,
+}
+
+/// Charges the GPU commands and staged bytes since the last lap noted to lap `name`.
+fn pass_counts(name: &'static str) {
+    let now = shader_pipeline::gpu::stats::peek();
+    PASS_COUNTS.with(|counts| {
+        let mut counts = counts.borrow_mut();
+        let since = counts.last.map_or([0; shader_pipeline::gpu::stats::NAMES.len()], |last| {
+            std::array::from_fn(|at| now[at].saturating_sub(last[at]))
+        });
+        counts.last = Some(now);
+        match counts.laps.iter_mut().find(|(lap, _)| *lap == name) {
+            Some((_, total)) => total.iter_mut().zip(since).for_each(|(total, n)| *total += n),
+            None => counts.laps.push((name, since)),
+        }
+    });
+}
+
+/// Each lap's GPU commands and staged bytes since the last take, by the names
+/// [`shader_pipeline::gpu::stats::NAMES`] gives, laps with none left out. The counts restart
+/// from the next lap noted, as [`shader_pipeline::gpu::stats::take`] restarts them.
+pub fn take_pass_counts() -> Vec<(&'static str, Vec<(&'static str, u64)>)> {
+    PASS_COUNTS.with(|counts| {
+        let mut counts = counts.borrow_mut();
+        counts.last = None;
+        std::mem::take(&mut counts.laps)
+            .into_iter()
+            .filter_map(|(lap, counts)| {
+                let named: Vec<_> = shader_pipeline::gpu::stats::NAMES
+                    .iter()
+                    .copied()
+                    .zip(counts)
+                    .filter(|(_, n)| *n != 0)
+                    .collect();
+                (!named.is_empty()).then_some((lap, named))
+            })
+            .collect()
+    })
+}
+
 /// Named CPU laps of one frame, recorded only while `start` was given a clock.
 #[derive(Default)]
 pub struct CpuLaps {
@@ -281,6 +332,9 @@ pub struct CpuLaps {
     laps: Vec<(&'static str, f64)>,
     /// Thread cycles at the last lap while playback-cost accounting notes each lap.
     cycles: Option<u64>,
+    /// With [`Self::record_walls`] while the view record is kept: the wall clock and the thread's
+    /// own CPU at the last lap.
+    walls: Option<(Instant, Option<std::time::Duration>)>,
 }
 
 impl CpuLaps {
@@ -289,6 +343,16 @@ impl CpuLaps {
         self.last = clock;
         self.laps.clear();
         self.cycles = replay_frame::cpu::enabled().then(replay_frame::cpu::thread_cycles);
+        self.walls = None;
+    }
+
+    /// Records each later lap's wall time against the frame thread's own CPU in it (the view
+    /// record's `render_wall_us` and `render_cpu_us`), so time the thread is off its CPU inside a
+    /// lap is placed by lap; nothing while the view record is not kept.
+    pub fn record_walls(&mut self) {
+        if crate::view_record::on() {
+            self.walls = Some((Instant::now(), current_thread_cpu_time()));
+        }
     }
 
     pub fn lap(&mut self, name: &'static str) {
@@ -307,9 +371,18 @@ impl CpuLaps {
     }
 
     fn note(&mut self, name: &'static str) {
+        if let Some((wall, cpu)) = self.walls {
+            let (now, now_cpu) = (Instant::now(), current_thread_cpu_time());
+            crate::view_record::add("render_wall_us", name, (now - wall).as_micros() as u64);
+            if let (Some(cpu), Some(now_cpu)) = (cpu, now_cpu) {
+                crate::view_record::add("render_cpu_us", name, now_cpu.saturating_sub(cpu).as_micros() as u64);
+            }
+            self.walls = Some((now, now_cpu));
+        }
         if let Some(cycles) = self.cycles {
             replay_frame::cpu::note(name, "lap", cycles);
             self.cycles = Some(replay_frame::cpu::thread_cycles());
+            pass_counts(name);
         }
     }
 

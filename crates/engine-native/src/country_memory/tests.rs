@@ -150,11 +150,11 @@ fn reserved_failed_selection_is_scoped_and_reprepare_retires_it() {
 #[test]
 fn shared_snapshot_refuses_reseed_while_leased_without_reading_or_mutating() {
     let source = Synthetic::countries();
-    let mut owner = Arc::new(Cache::with_capacity(64));
+    let mut owner = engine_allocation::shared(Cache::with_capacity(64)).unwrap();
     let first = Cache::prepare_shared(&mut owner, &source, 0, 0x1000).unwrap();
     let initial = shared_walks(&first.view(&source));
     source.observations.borrow_mut().clear();
-    let worker = Arc::clone(&first);
+    let worker = first.clone();
     assert_eq!(
         Cache::prepare_shared(&mut owner, &source, 0, 0x1000).err(),
         Some("country snapshot still leased by a reader")
@@ -170,7 +170,7 @@ fn shared_snapshot_refuses_reseed_while_leased_without_reading_or_mutating() {
 #[test]
 fn shared_snapshot_views_reuse_current_seed_without_rereading() {
     let source = Synthetic::countries();
-    let mut owner = Arc::new(Cache::with_capacity(64));
+    let mut owner = engine_allocation::shared(Cache::with_capacity(64)).unwrap();
     let snapshot = Cache::prepare_shared(&mut owner, &source, 0, 0x1000).unwrap();
     source.observations.borrow_mut().clear();
     let first = snapshot.view(&source);
@@ -257,7 +257,7 @@ fn roster_headers_and_proved_links_remove_guards_without_reading_ordinary_fields
         .iter()
         .map(|(_, len)| len)
         .sum();
-    assert_eq!(direct_guards, 41);
+    assert_eq!(direct_guards, 36);
     assert_eq!(direct_bytes, 252);
     let mut cache = Cache::with_capacity(64);
     cache.prepare(&source, 0, 0x1000);
@@ -1219,7 +1219,7 @@ fn authenticated_roster_never_elides_recording_wrapper_observations() {
 }
 
 #[test]
-fn authenticated_roster_keeps_typed_rows_and_capacity_outcomes() {
+fn authenticated_roster_keeps_typed_rows_from_any_starting_storage() {
     for capacity in [0, 1, 2, 3] {
         let source = Synthetic::countries();
         for (offset, data) in [
@@ -1239,24 +1239,14 @@ fn authenticated_roster_keeps_typed_rows_and_capacity_outcomes() {
         let mut actual = vec![ccountry::VolunteerHostRow::default(); capacity];
         let mut expected = actual.clone();
         source.observations.borrow_mut().clear();
-        let actual_outcome = ccountry::walk_volunteer_hosts(&memory, 0, 0x1000, &mut actual);
+        let actual_outcome = ccountry::walk_volunteer_hosts_buffer(&memory, 0, 0x1000, crate::walk::Buffer::Growing(&mut actual));
         let actual_reads = source.observations.borrow().clone();
         source.observations.borrow_mut().clear();
         let expected_outcome =
-            ccountry::walk_volunteer_hosts(&ByteOnly(&memory), 0, 0x1000, &mut expected);
+            ccountry::walk_volunteer_hosts_buffer(&ByteOnly(&memory), 0, 0x1000, crate::walk::Buffer::Growing(&mut expected));
         assert_eq!(actual_outcome, expected_outcome);
         assert_eq!(actual, expected);
         assert_eq!(&*source.observations.borrow(), &actual_reads);
-        assert_eq!(
-            actual_outcome,
-            if capacity < 2 {
-                Outcome::Truncated {
-                    len: capacity,
-                    unread_rows: (2 - capacity) as u32,
-                }
-            } else {
-                Outcome::Rows { len: 2 }
-            }
-        );
+        assert_eq!(actual_outcome, Outcome::Rows { len: 2 }, "capacity {capacity}");
     }
 }

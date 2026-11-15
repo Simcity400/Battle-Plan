@@ -20,27 +20,33 @@ import { formatDateTime } from './calendar';
 import { useCountryLooks } from './countryLooks';
 import { selectedTags } from './countrySelection';
 import type { WidgetProps } from './definitions';
-import { MEMBERSHIP_PREPARING, resolveCountries } from './groups';
+import { resolveCountries } from './groups';
 import { groupNumbers } from './groupsReply';
 import { createWidget, resolveWindow } from './model';
 import { NumericReply } from './numericReply';
 import { contentSet, resolveOptions } from './options';
 import type { OptionField } from './options';
-import { usePlaybackHour, usePlaybackMotion } from './playback';
+import { usePlaybackMotion } from './playback';
+import { useHeadHour } from '../widgets/army-size/headHour.ts';
+import LiveText, { liveTexts } from '../charts/LiveText';
 import { useCountryGroups } from './useCountryGroups';
 import { useMilitaryAirLedger } from './useMilitaryAirLedger';
-import { AIR_LEDGER_NOTE, LEDGER_GAP_NOTE, BOMBING_GAP_NOTE, ledgerCountries, ledgerCountryAt, ledgerDifference, ledgerLabel, ledgerPinnedIdentity, ledgerRuns, ledgerScale, ledgerSegmentAt, militaryAirAt, militaryAirIndex, militaryAirLineTooltip, militaryAirTooltip, militaryAirPreparing } from './militaryAirLedger';
+import { AIR_LEDGER_NOTE, LEDGER_GAP_NOTE, BOMBING_GAP_NOTE, ledgerCountries, ledgerCountryAt, ledgerDifference, ledgerLabel, ledgerPinnedIdentity, ledgerRuns, ledgerScale, ledgerSegmentAt, militaryAirAt, militaryAirIndex, militaryAirLineTooltip, militaryAirTooltip } from './militaryAirLedger';
+import { liveAt, sameBy } from '../charts/live';
+import { stickyLimit, stickyMembers } from './follow/stickyMembers.ts';
+import type { StickyMembers } from './follow/stickyMembers';
 import type { LedgerRow } from './militaryAirLedger';
 import { airLossDrillActor, airLossDrillActors, pinAirLossDrill } from './airLossDrill';
 import AirLossDrill from './AirLossDrill.tsx';
 import DatedCountryChip from './DatedCountryChip';
 import BombingDrill from './BombingDrill';
-import type { MilitaryAirReply } from '../generated/dashboard';
-import { useParityRows } from './parityRows';
+import type { CountryRaceEntry } from '../charts/race/countryRace';
 import './militaryAirLedger.css';
+import type { MilitaryAirFamily } from '../generated/dashboard';
+import type { MilitaryAirLedger } from './militaryAirLedger';
 
 const NO_WARNINGS: string[] = [];
-const airOperands = (reply: MilitaryAirReply): MilitaryAirReply => ({ ...reply, regions: [], buildings: [], warnings: [] });
+const airOperands = (reply: MilitaryAirLedger): MilitaryAirLedger => ({ ...reply, regions: [], buildings: [], warnings: [] });
 type Item = ButterflyItem & { row: LedgerRow };
 /** A native holder's item id, made once per series rather than each played hour. */
 const itemIds = new WeakMap<LedgerRow['series'], string>();
@@ -50,21 +56,35 @@ const itemId = (row: LedgerRow) => {
   return id;
 };
 
-/** Native event totals share playback, identities and charts across all three widgets. */
+const SEP = String.fromCharCode(0);
+const rowsKey = (rows: readonly LedgerRow[]) => rows.map(row => row.tag + SEP + row.identity).join(SEP + SEP);
+const entryKey = (entry: CountryRaceEntry) => [entry.tag, entry.label, entry.value, entry.stretch].join(SEP);
+const itemKey = (item: Item) => [item.id, item.leftText, item.rightText, item.ratioText, item.segment, item.label, item.color].join(SEP);
+
+/** Native event totals share playback, identities and charts across all three widgets. Following the playhead, the
+ * widget renders only when the rows shown change; the race and the bars read their values at the clock as they draw. */
 export default function MilitaryAirView({ widget, runtime, active, countrySlot = null, onDiagnostics, family, fields, title }: WidgetProps & {
-  family: MilitaryAirReply['family']; fields: readonly OptionField[]; title: string;
+  family: MilitaryAirFamily; fields: readonly OptionField[]; title: string;
 }) {
-  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const following = active && widget.time.mode === 'follow';
+  const headKey = useRef<(hour: number) => string>(() => '');
+  const playbackHour = useHeadHour(runtime.clock, following, at => headKey.current(at));
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const tokens = useChartTokens(), options = resolveOptions(fields, widget.options);
   const air = family === 'airLosses', metric = air ? options.measure === 'dealt' ? 'dealt' : 'taken' : 'total';
   const regions = contentSet(options.regions).map(Number), causes = contentSet(options.causes).map(Number);
-  const { track, data, error, retry } = useMilitaryAirLedger(widget, runtime, family, active, { regions, causes, metric });
+  const [airDrill, dispatchAir] = useReducer(reducePartsRaceDrill, CLOSED_PARTS_RACE);
+  const [bombingDrill, setDrill] = useState<{ owner: object; tag: string; identity: string; dealt: boolean; hour: number | null } | null>(null);
+  const pinnedAir = air && (options.view === 'breakdown' || options.show === 'breakdown' || widget.options?.show === 'breakdown');
+  // A race or bars of totals read the window shown, which carries every total before it; lines, a breakdown and a drill
+  // read the span.
+  const reach = (air ? options.view === 'lines' || pinnedAir || airDrill.breakdown != null || !!airDrill.choices : !!bombingDrill) ? 'end' : 'shown';
+  const { track, data, pending, error, retry } = useMilitaryAirLedger(widget, runtime, family, active, { regions, causes, metric }, reach);
   const grouped = widget.countries.kind === 'group' && widget.countries.group.type !== 'top';
   const groups = useCountryGroups(runtime, track, active && grouped);
   const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const hour = window?.lastHour ?? 0;
-  const from = widget.time.mode === 'range' ? window?.firstHour ?? hour : data?.observed[0]?.firstHour ?? track?.branch.firstHour ?? hour;
+  const from = widget.time.mode === 'range' ? window?.firstHour ?? hour : data?.countedFrom ?? data?.observed[0]?.firstHour ?? track?.branch.firstHour ?? hour;
   const end = widget.time.mode === 'range' ? hour : track?.branch.lastHour ?? hour;
   const index = useMemo(() => data ? militaryAirIndex(data) : null, [data]);
   const rows = useMemo(() => index ? militaryAirAt(index, from, hour) : [], [index, from, hour]);
@@ -91,30 +111,58 @@ export default function MilitaryAirView({ widget, runtime, active, countrySlot =
           suffix: ledgerLabel(ledgerDifference(series.points, from, at)[dealt ? 'dealt' : 'taken'], family) }) };
     })).filter(line => line.runs.length);
   }, [air, options.view, lineSeries, grouped, widget.countries, fallbackKey, groups.data, lastHour, from, end, family]); // eslint-disable-line react-hooks/exhaustive-deps
+  const hourAt = (position: number) => (track && resolveWindow(widget, track, runtime.tracks, position)?.lastHour) ?? hour;
+  const rowsAt = (at: number) => index ? ledgerCountries(militaryAirAt(index, from, at), widget.countries, fallback, groups.data, at, lastHour, metric, data?.countries).rows : [];
+  const axisOffset = track?.axisOffset ?? 0;
+  const liveScope = JSON.stringify([following, air, options.view, from, metric, options.ratio, widget.countries, fallbackKey, lastHour, track?.id]);
+  // Following, the structure is every holder shown since the view was set (`stickyMembers`): the bars paint the rows at
+  // the head each frame, so a holder leaving the top and coming back, or the top reordering, renders nothing and asks
+  // no look again.
+  const sticky = useRef<{ held: StickyMembers | null; key: string }>({ held: null, key: '' });
+  const top = widget.countries.kind === 'group' && widget.countries.group.type === 'top' ? widget.countries.group.count : selected.rows.length;
+  headKey.current = position => {
+    if (air && options.view === 'lines') return '';
+    const now = rowsAt(hourAt(position));
+    if (!following) return rowsKey(now);
+    const before = sticky.current.held;
+    const held = stickyMembers(before, liveScope, now.map(row => row.tag + SEP + row.identity), stickyLimit(Math.max(1, top)));
+    if (held !== before) sticky.current = { held, key: held.tags.join(SEP + SEP) };
+    return sticky.current.key;
+  };
+  const stickyHeld = following ? sticky.current.held : null;
   const segmentAt = useMemo(() => index ? ledgerSegmentAt(index) : () => null, [index]);
-  const tags = useMemo(() => selected.rows.map(row => row.tag), [selected.rows]);
+  const tags = useMemo(() => [...new Set([...selected.rows.map(row => row.tag), ...(stickyHeld?.tags ?? []).map(member => member.split(SEP)[0]!)])],
+    [selected.rows, stickyHeld]);
   const dates = useMemo(() => new Map(selected.rows.map(row => [row.tag, hour])), [selected.rows, hour]);
   const looks = useCountryLooks(runtime.client, track, air ? [] : tags, hour, active, segmentAt, dates, true);
   const colour = useCountryColours(tags, looks.color, tokens, looks);
-  const items = useMemo<Item[]>(() => selected.rows.map(row => ({ id: itemId(row), label: looks.name(row.tag, hour), flag: looks.flag(row.tag, hour), color: colour(row.tag, hour),
-    countryFlag: { flag: looks.flag(row.tag, hour), flagReason: looks.flagReason(row.tag, hour), flagPending: looks.flagPending(row.tag, hour) },
+  const itemsAt = (rows: readonly LedgerRow[], at: number): Item[] => rows.map(row => ({ id: itemId(row), label: looks.name(row.tag, at), flag: looks.flag(row.tag, at), color: colour(row.tag, at),
+    countryFlag: { flag: looks.flag(row.tag, at), flagReason: looks.flagReason(row.tag, at), flagPending: looks.flagPending(row.tag, at) },
     left: Number(row.taken) / ledgerScale(family), right: Number(row.dealt) / ledgerScale(family), leftText: ledgerLabel(row.taken, family), rightText: ledgerLabel(row.dealt, family),
-    ratioText: row.complete ? formatRatio(row.dealt, row.taken) : 'Not known', segment: String(row.segment), row })), [selected.rows, looks, colour, hour, family]);
+    ratioText: row.complete ? formatRatio(row.dealt, row.taken) : 'Not known', segment: String(row.segment), row }));
+  const items = useMemo<Item[]>(() => itemsAt(selected.rows, hour), [selected.rows, looks, colour, hour, family]); // eslint-disable-line react-hooks/exhaustive-deps
+  const liveItems = useMemo(() => {
+    if (!following || air || !index) return undefined;
+    const live = liveAt(runtime.clock, position => hourAt(position), at => itemsAt(rowsAt(at), at), sameBy(itemKey));
+    return { read: live.read, subscribe: live.subscribe };
+  }, [liveScope, index, looks, colour, groups.data, runtime.clock, axisOffset]); // eslint-disable-line react-hooks/exhaustive-deps
   // Built only when their inputs change, so the race keeps its own memoised layers.
   const shownValue = metric === 'dealt' ? 'dealt' : 'taken';
-  const ranked = useMemo(() => air ? selected.rows.map(row => ({ tag: row.tag, value: Number(row[shownValue]) / ledgerScale(family),
+  const raceEntries = (rows: readonly LedgerRow[], at: number): CountryRaceEntry[] => rows.map(row => ({ tag: row.tag, value: Number(row[shownValue]) / ledgerScale(family),
     label: ledgerLabel(row[shownValue], family) + (options.ratio !== false ? ' · ' + (row.complete ? formatRatio(row.dealt, row.taken) : 'Not known') : ''),
-    stretch: JSON.stringify([row.identity, row.segment]) })) : [], [air, selected.rows, shownValue, family, options.ratio]);
+    stretch: JSON.stringify([row.identity, row.segment]), hour: at }));
+  const ranked = useMemo(() => air ? raceEntries(selected.rows, hour) : [], [air, selected.rows, shownValue, family, options.ratio, hour]); // eslint-disable-line react-hooks/exhaustive-deps
+  const liveRanked = useMemo(() => {
+    if (!following || !air || options.view === 'lines' || !index) return undefined;
+    const live = liveAt(runtime.clock, position => hourAt(position), at => raceEntries(rowsAt(at), at), sameBy(entryKey));
+    return { entries: live.read, hour: live.hour, bind: live.subscribe };
+  }, [liveScope, shownValue, index, groups.data, runtime.clock, axisOffset]); // eslint-disable-line react-hooks/exhaustive-deps
+  const liveHead = useMemo(() => following ? { read: () => runtime.clock.getSnapshot().position + axisOffset, subscribe: runtime.clock.subscribeFrame } : undefined,
+    [following, runtime.clock, axisOffset]);
   const raceTags = useMemo(() => options.view === 'lines' ? [...new Set(lines.map(line => line.tag))] : tags, [options.view, lines, tags]);
   const extentStart = widget.time.mode === 'range' ? from : track?.branch.firstHour ?? from;
   const raceExtent = useMemo<[number, number]>(() => [extentStart, end], [extentStart, end]);
   const root = useRef<HTMLDivElement>(null);
-  useParityRows(root, () => ({ kind: 'chart', label: air ? 'Aircraft loss values' : 'Bombing damage values',
-    complete: !!data && !error && (!grouped || !!groups.data), total: selected.rows.length, from, hour,
-    rows: selected.rows.map(row => ({ tag: row.tag, identity: row.identity, segment: row.segment,
-      dealt: row.dealt.toString(), taken: row.taken.toString(), complete: row.complete })),
-    countries: data?.countries ?? [], parts: data?.parts ?? [], observed: data?.observed ?? [], incomplete: data?.incomplete ?? [],
-  }));
   const airKey = JSON.stringify([track?.source.id, track?.branch.id, widget.countries, widget.time, from,
     options.regions, options.causes, options.measure, options.view, options.show]);
   const airScope = useMemo(() => ({ client: runtime.client, key: airKey }), [runtime.client, airKey]);
@@ -125,28 +173,50 @@ export default function MilitaryAirView({ widget, runtime, active, countrySlot =
   const airPickOwner = useMemo(() => ({ airScope, numbers, groupData, geometryKey }), [airScope, numbers, groupData, geometryKey]);
   const airPickRef = useRef(airPickOwner);
   airPickRef.current = airPickOwner;
-  const [airDrill, dispatchAir] = useReducer(reducePartsRaceDrill, CLOSED_PARTS_RACE);
   const [airOwner, setAirOwner] = useState<typeof airScope | null>(null);
   const airState = airOwner === airScope ? airDrill : CLOSED_PARTS_RACE;
-  const airPlaybackHour = usePlaybackHour(runtime.clock, active && air && airState.breakdown != null && airState.follow);
+  // A drill following the playhead renders only when the holder it shows, or whether that holder's ledger is complete,
+  // changes: its parts, total, history head and day are read at the head each frame.
+  const headTrackHour = useMemo(() => track ? (position: number) => {
+    const at = Math.floor(position) + track.axisOffset;
+    return at >= track.branch.firstHour && at <= track.branch.lastHour ? at : null;
+  } : null, [track]);
+  const drillKey = (actor: { tag: string; identity: string } | null) => (position: number) => {
+    const at = headTrackHour?.(position) ?? null;
+    if (at === null || !index || !actor || at < from || at > end) return `outside:${at ?? ''}`;
+    const row = ledgerCountryAt(index, actor.tag, from, at, actor.identity);
+    return JSON.stringify([row?.tag ?? null, row?.complete ?? null]);
+  };
+  const airDrillKey = useRef<(position: number) => string>(() => '');
+  const airPlaybackHour = useHeadHour(runtime.clock, active && air && airState.breakdown != null && airState.follow, position => airDrillKey.current(position));
   const clockHour = track ? Math.floor(airPlaybackHour) + track.axisOffset : null;
   const liveHour = clockHour != null && track && clockHour >= track.branch.firstHour && clockHour <= track.branch.lastHour ? clockHour : null;
   const airAt = Math.floor((airState.breakdown == null ? airState.hour ?? hour : drillHour(airState, clockHour)) ?? hour);
   const airChoices = airState.choices;
-  const pinnedAir = air && (options.view === 'breakdown' || options.show === 'breakdown' || widget.options?.show === 'breakdown');
   const pinnedTag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : fallback[0] ?? selected.rows[0]?.tag;
   const pinnedIdentity = track && pinnedTag ? ledgerPinnedIdentity(widget.options?.holder, track.source.metadata.campaignKey, track.branch.id, pinnedTag) : undefined;
   const pinnedRow = pinnedAir && index && pinnedTag ? ledgerCountryAt(index, pinnedTag, from, airAt, pinnedIdentity) : null;
   const airActor = airState.breakdown ? airLossDrillActor(airState.breakdown) : pinnedRow ? { tag: pinnedRow.tag, identity: pinnedRow.identity } : null;
   const airOpen = !!airChoices || !!airActor;
   const airFollowing = airState.breakdown == null ? pinnedAir && widget.time.mode === 'follow' : airState.follow;
-  const [bombingDrill, setDrill] = useState<{ owner: typeof airScope; tag: string; identity: string; dealt: boolean; hour: number | null } | null>(null);
+  airDrillKey.current = drillKey(airActor);
+  const airHead = active && air && airFollowing && airActor && liveHour !== null ? headTrackHour : null;
   const drill = bombingDrill?.owner === airScope ? bombingDrill : null;
   // The drilled country's damage by building and state is in the ledger loaded, as it opens at once.
-  const detail = { data, error, retry };
-  const bombingPlaybackHour = usePlaybackHour(runtime.clock, active && !air && !!drill && drill.hour === null);
+  const detail = { data: pending ? undefined : data, error, retry };
+  const bombingDrillKey = useRef<(position: number) => string>(() => '');
+  bombingDrillKey.current = drillKey(drill && { tag: drill.tag, identity: drill.identity });
+  const bombingPlaybackHour = useHeadHour(runtime.clock, active && !air && !!drill && drill.hour === null, position => bombingDrillKey.current(position));
   const bombingHour = track ? Math.floor(bombingPlaybackHour) + track.axisOffset : null;
   const bombingLive = bombingHour != null && track && bombingHour >= track.branch.firstHour && bombingHour <= track.branch.lastHour ? bombingHour : null;
+  const bombingHead = active && !air && drill?.hour === null && bombingLive !== null ? headTrackHour : null;
+  // The day a following drill shows, painted at the head.
+  const dayHead = airHead ?? bombingHead;
+  const dayFallback = useRef(hour);
+  dayFallback.current = air ? airAt : drill?.hour ?? bombingHour ?? hour;
+  const liveDay = useMemo(() => dayHead ? liveTexts(runtime.clock, () => dayHead(runtime.clock.getSnapshot().position) ?? dayFallback.current,
+    at => new Map([['day', formatDateTime(at)]])) : null, [dayHead, runtime.clock]);
+  const dayText = (at: number) => liveDay ? <LiveText live={liveDay} at="day" /> : formatDateTime(at);
   useEffect(() => {
     const warnings = [...(data?.warnings ?? []), ...(grouped ? groups.data?.warnings ?? [] : [])];
     onDiagnostics(warnings.length ? warnings : NO_WARNINGS);
@@ -161,7 +231,6 @@ export default function MilitaryAirView({ widget, runtime, active, countrySlot =
   const groupFailure = grouped && groups.error ? <WidgetState kind="error" what="country groups" failure={groups.error} onRetry={groups.retry} /> : null;
   if (groupFailure && !groups.data) return groupFailure;
   if (!data || grouped && !groups.data) return <>{groupFailure}<WidgetState kind="loading" label={'Loading ' + title.toLowerCase() + '…'} /></>;
-  if (militaryAirPreparing(data, hour)) return <>{groupFailure}<WidgetState kind="loading" label="This range is still being prepared." /></>;
   if (!data.available) return <>{groupFailure}<WidgetState kind="unavailable" message={air ? "Aircraft losses were not recorded." : "Bombing damage was not recorded."} /></>;
   if (!air && selected.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={selected.reason} /></>;
   const open = (row: LedgerRow, dealt: boolean) => {
@@ -192,20 +261,23 @@ export default function MilitaryAirView({ widget, runtime, active, countrySlot =
     setAirOwner(airScope);
     dispatchAir({ type: 'open', breakdown: JSON.stringify([airActor.tag, airActor.identity]), hour: airAt, playing: true, playhead: liveHour });
   };
-  const airMainState = selected.reason && !(options.view === 'lines' && lines.length) ? <WidgetState kind="unavailable" message={selected.reason} />
+  const airMainState = options.view === 'lines' && pending ? <WidgetState kind="loading" label={'Loading ' + title.toLowerCase() + '…'} />
+    : selected.reason && !(options.view === 'lines' && lines.length) ? <WidgetState kind="unavailable" message={selected.reason} />
     : !rows.length && !(options.view === 'lines' && lines.length) ? <WidgetState kind="unavailable" message="Country details unavailable at this time." />
-      : !selected.known && !selected.rows.length && !(options.view === 'lines' && lines.length) ? <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} /> : undefined;
+        // A top N holds only countries above zero (the reply's membership): none yet is said, never a list of zeros.
+        : !selected.rows.length && options.view !== 'lines' && widget.countries.kind === 'group' && widget.countries.group.type === 'top'
+          ? <WidgetState kind="empty" message={metric === 'dealt' ? 'No country has downed aircraft yet.' : 'No country has lost aircraft yet.'} /> : undefined;
   const content = air ? <CountryRaceView runtime={runtime} track={track} active={active && (!airOpen || options.drill === 'popout')} options={options} view={options.view === 'lines' ? 'lines' : 'race'}
     extent={raceExtent} playhead={widget.time.mode === 'follow' || widget.time.mode === 'pin' ? hour : null}
-    moment={hour} slots={selected.rows.length} ranked={ranked}
+    moment={hour} slots={selected.rows.length} ranked={ranked} liveRanked={liveRanked} liveHead={liveHead}
     countryTags={raceTags} countryLookHours={dates} segmentAt={segmentAt} lines={lines}
     label={title} empty="No selected country was recorded at this moment." formatValue={formatAxisValue}
     state={airMainState} onPick={openAir} pickOwner={airPickOwner} selectedHour={airOpen ? airAt : undefined} resetKey={airKey}
     lineTooltip={(at, hovered, labelAt, country) => index ? [militaryAirLineTooltip(index, from, Math.floor(at), hovered, labelAt, country)] : []}
     tooltip={(tag, at, name) => { const row = index && militaryAirAt(index, from, at).find(row => row.tag === tag); return row ? [tooltip(row, name)] : null; }} />
-    : !items.length ? selected.known ? <WidgetState kind="unavailable" message="No selected country was recorded at this moment." /> : <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />
-      : <ButterflyChart label={title} items={items} active={active && (!drill || options.drill === 'popout')} hoursPerSecond={hoursPerSecond}
-        leftLabel={'◀ ' + leftLabel} rightLabel={rightLabel + ' ▶'} ratioLabel="Ratio" showValues={options.values !== false} showRatio={options.ratio !== false}
+    : !items.length ? <WidgetState kind="unavailable" message="No selected country was recorded at this moment." />
+      : <ButterflyChart label={title} items={items} liveItems={liveItems} active={active && (!drill || options.drill === 'popout')} hoursPerSecond={hoursPerSecond}
+        leftLabel={'◀ ' + leftLabel} rightLabel={rightLabel + ' ▶'} ratioLabel="Ratio" empty="No selected country was recorded at this moment." showValues={options.values !== false} showRatio={options.ratio !== false}
         tooltip={item => ({ ...tooltip(item.row, item.label), countryFlag: item.countryFlag })} onSelect={(item, side) => open(item.row, side === 'right')}
         contextItems={item => [jumpItem(runtime, track.id, item.row.readHour), { label: 'Break down damage suffered', run: () => open(item.row, false) }, { label: 'Break down damage inflicted', run: () => open(item.row, true) }]} />;
   const unknown = index && ledgerDifference(index.unknown, from, hour);
@@ -215,21 +287,21 @@ export default function MilitaryAirView({ widget, runtime, active, countrySlot =
     {!!index?.unknown.length && <p className="chart-line-key">Unattributed: {leftLabel.toLowerCase()} {ledgerLabel(unknown?.taken ?? 0n, family)}; {rightLabel.toLowerCase()} {ledgerLabel(unknown?.dealt ?? 0n, family)}.</p>}
   </div>;
   if (air) {
-    const detail = index && airActor ? <AirLossDrill index={index} runtime={runtime} track={track} tag={airActor.tag} identity={airActor.identity}
+    const detail = pending ? <WidgetState kind="loading" label="Loading aircraft loss causes…" /> : index && airActor ? <AirLossDrill index={index} runtime={runtime} track={track} tag={airActor.tag} identity={airActor.identity}
       countrySlot={pinnedAir ? countrySlot : null} headerSelection={widget.countries.kind === 'tags' && widget.countries.tags.length === 1 && pinnedIdentity
         ? { tag: widget.countries.tags[0], identity: pinnedIdentity } : null}
-      from={from} hour={airAt} end={end} dealt={metric === 'dealt'} active={active} afterPlayhead={options.afterPlayhead === true} onPick={pickAirDay} pickOwner={airPickOwner} />
+      from={from} hour={airAt} end={end} dealt={metric === 'dealt'} active={active} afterPlayhead={options.afterPlayhead === true} onPick={pickAirDay} pickOwner={airPickOwner} headAt={airHead} />
       : <WidgetState kind="empty" message="Choose a country to see its aircraft loss causes." />;
     if (pinnedAir) return <div ref={root} className="military-air-ledger">{groupFailure}
       {!airActor && countrySlot && createPortal(<DatedCountryChip label={null} hour={airAt}
         reason={pinnedIdentity ? 'Country unavailable at this time.'
           : 'Saved country unavailable.'} />, countrySlot)}
-      <p className="chart-line-key">{formatDateTime(airAt)} {liveHour != null && airActor
+      <p className="chart-line-key">{dayText(airAt)} {liveHour != null && airActor
         && <FollowControl following={airFollowing} onFollow={followAir} onPause={() => pickAirDay(airAt)} />}</p>{detail}
     </div>;
     return <div ref={root} className="military-air-ledger">{groupFailure}
       <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={airOpen} title={metric === 'dealt' ? 'Enemy losses by cause' : 'Own losses by cause'}
-        day={formatDateTime(airAt)} following={airFollowing} canFollow={!airChoices && !!airActor && liveHour != null} anchor={root} returnFocus=".country-race-chart canvas"
+        day={dayText(airAt)} following={airFollowing} canFollow={!airChoices && !!airActor && liveHour != null} anchor={root} returnFocus=".country-race-chart canvas"
         onClose={() => { if (active && airPickRef.current === airPickOwner) dispatchAir({ type: 'close' }); }} onFollow={followAir} onPause={() => pickAirDay(airAt)}
         onPin={airActor && !airChoices && airAt >= from && airAt <= end ? () => {
           if (!active || airPickRef.current !== airPickOwner) return;
@@ -251,7 +323,7 @@ export default function MilitaryAirView({ widget, runtime, active, countrySlot =
   }
   const shown = drill ? drill.hour ?? bombingHour ?? hour : hour;
   return <div ref={root} className="military-air-ledger">{groupFailure}
-    <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={!!drill} title="Bombing damage breakdown" day={formatDateTime(shown)} following={drill?.hour === null}
+    <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={!!drill} title="Bombing damage breakdown" day={dayText(shown)} following={drill?.hour === null}
       canFollow={!!drill && bombingLive != null} anchor={root}
       onClose={() => { if (active && airPickRef.current === airPickOwner) setDrill(null); }}
       onFollow={() => { if (active && airPickRef.current === airPickOwner && bombingLive != null)
@@ -270,7 +342,7 @@ export default function MilitaryAirView({ widget, runtime, active, countrySlot =
       } : undefined} main={main}>
       {drill && (detail.error ? <WidgetState kind="error" failure={detail.error} onRetry={detail.retry} />
         : !detail.data ? <WidgetState kind="loading" label="Loading bombing damage breakdown…" />
-          : <BombingDrill data={detail.data} runtime={runtime} track={track} tag={drill.tag} identity={drill.identity} from={from} hour={shown} end={end} dealt={drill.dealt} active={active}
+          : <BombingDrill data={detail.data} runtime={runtime} track={track} tag={drill.tag} identity={drill.identity} from={from} hour={shown} end={end} dealt={drill.dealt} active={active} headAt={bombingHead}
             pickOwner={airPickOwner} onPick={at => { if (active && airPickRef.current === airPickOwner)
               setDrill(before => before?.owner === airScope ? { ...before, hour: Math.floor(at) } : before); }} />)}
     </DrillHost>

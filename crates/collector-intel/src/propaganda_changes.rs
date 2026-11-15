@@ -26,6 +26,15 @@ static ENABLED: AtomicBool = AtomicBool::new(false);
 static EPOCH: AtomicU64 = AtomicU64::new(1);
 static ORDER: AtomicU64 = AtomicU64::new(0);
 static FAILED: AtomicU64 = AtomicU64::new(0);
+const UNPREPARED: usize = 0;
+const ALLOCATION: usize = 1;
+const INCOMPLETE: usize = 2;
+const FAILURE_NAMES: [&str; 3] = [
+    "propaganda append lane not prepared",
+    "propaganda append allocation failed",
+    "propaganda writer did not complete",
+];
+static FAILURES: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
 static CALLS: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
 static ORIGINAL: [AtomicUsize; 2] = [const { AtomicUsize::new(0) }; 2];
 static CURRENT: AtomicPtr<SharedLane<Append>> = AtomicPtr::new(ptr::null_mut());
@@ -165,6 +174,7 @@ struct Store {
     events: Vec<(u64, usize, u64, Append)>,
     epoch: u64,
     failure: u64,
+    failures: [u64; 3],
     rejected: u64,
     valid: bool,
     snapshot: crate::retained_snapshot::RetainedSnapshot,
@@ -182,10 +192,20 @@ impl Store {
             events: Vec::new(),
             epoch: 0,
             failure: 0,
+            failures: [0; 3],
             rejected: 0,
             valid: false,
             snapshot: crate::retained_snapshot::RetainedSnapshot::new(),
         }
+    }
+
+    /// Why observation was lost since the last capture: the first writer refusal by name.
+    fn loss(&self, failures: &[u64; 3]) -> &'static str {
+        FAILURE_NAMES
+            .into_iter()
+            .zip(failures.iter().zip(self.failures))
+            .find_map(|(name, (now, seen))| (*now != seen).then_some(name))
+            .unwrap_or("propaganda history requires daily or forced bootstrap after lost observation")
     }
 
     fn prepare(&mut self, entries: usize) -> Result<(), &'static str> {
@@ -224,6 +244,7 @@ impl Store {
         }
         let epoch = EPOCH.load(Ordering::SeqCst);
         let failure = FAILED.load(Ordering::SeqCst);
+        let failures = FAILURES.each_ref().map(|count| count.load(Ordering::SeqCst));
         let rejected = self.lanes.iter().map(|lane| lane.rejected()).sum::<u64>();
         let lost = self.epoch != epoch || self.failure != failure || self.rejected != rejected;
         if lost {
@@ -263,9 +284,7 @@ impl Store {
         }
         let mut changed = bootstrap || !self.valid;
         if !self.valid && !bootstrap {
-            return Err(
-                "propaganda history requires daily or forced bootstrap after lost observation",
-            );
+            return Err(self.loss(&failures));
         }
         // Reuse the existing census's manager header and authenticated roots.
         // Only bootstrap or a changed manager membership visits its other
@@ -438,6 +457,7 @@ impl Store {
         self.prepare(demand.max(self.seeds.len()))?;
         self.epoch = epoch;
         self.failure = failure;
+        self.failures = failures;
         self.rejected = rejected;
         self.valid = true;
         events.clear();
@@ -550,6 +570,17 @@ pub fn boundary(invalidate: bool) {
 pub fn active() -> usize {
     ACTIVE.load(Ordering::SeqCst)
 }
+pub fn status() -> impl serde::Serialize {
+    crate::status::status!({
+        "lost": FAILED.load(Ordering::Relaxed),
+        "reasons": crate::status::map(
+            FAILURE_NAMES
+                .into_iter()
+                .zip(FAILURES.iter().map(|count| count.load(Ordering::Relaxed)))
+                .filter(|(_, count)| *count != 0),
+        ),
+    })
+}
 
 
 struct Guard {
@@ -564,29 +595,30 @@ impl Guard {
 impl Drop for Guard {
     fn drop(&mut self) {
         if !self.complete {
-            FAILED.fetch_add(1, Ordering::SeqCst);
+            fail(INCOMPLETE);
             return;
         }
         ACTIVE.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
+fn fail(reason: usize) {
+    FAILURES[reason].fetch_add(1, Ordering::SeqCst);
+    FAILED.fetch_add(1, Ordering::SeqCst);
+}
+
 fn publish(object: usize, reset: bool) {
-    let result = (|| {
-        let event = Append {
-            order: ORDER.fetch_add(1, Ordering::SeqCst),
-            object,
-            reset,
-        };
-        let lane = CURRENT.load(Ordering::SeqCst);
-        let lane = unsafe { lane.as_ref() }.ok_or("propaganda append lane not prepared")?;
-        lane.reserve()
-            .ok_or("propaganda append lane full")?
-            .publish(event);
-        Ok::<(), &'static str>(())
-    })();
-    if result.is_err() {
-        FAILED.fetch_add(1, Ordering::SeqCst);
+    let event = Append {
+        order: ORDER.fetch_add(1, Ordering::SeqCst),
+        object,
+        reset,
+    };
+    let Some(lane) = (unsafe { CURRENT.load(Ordering::SeqCst).as_ref() }) else {
+        return fail(UNPREPARED);
+    };
+    match lane.reserve() {
+        Some(slot) => slot.publish(event),
+        None => fail(ALLOCATION),
     }
 }
 
@@ -845,18 +877,30 @@ mod tests {
             None
         );
         world.u32(roots + native::HISTORY + 16, 0);
+        // The first cut's resets are a burst past the prepared lane; every one is read.
         for expected in [Some(COUNTRIES + 1), None] {
-            store
-                .lanes
-                .last()
-                .unwrap()
-                .reserve()
-                .unwrap()
-                .publish(Append {
+            let lane = store.lanes.last().unwrap();
+            let burst = if expected.is_some() {
+                4 * lane.len() as u64 + 3
+            } else {
+                1
+            };
+            for order in 1..=burst {
+                lane.reserve().unwrap().publish(Append {
+                    order,
                     object: roots,
                     reset: true,
-                    ..Append::default()
                 });
+            }
+            assert_eq!(
+                lane.published(|append| append.order)
+                    .unwrap()
+                    .into_iter()
+                    .map(|(order, _)| order)
+                    .collect::<Vec<_>>(),
+                (1..=burst).collect::<Vec<_>>()
+            );
+            assert_eq!(lane.rejected(), 0);
             assert_eq!(
                 store
                     .capture(
@@ -873,6 +917,26 @@ mod tests {
                 expected
             );
         }
+        // A refused append names its reason in the status and in the interval's refusal.
+        let lane = store.lanes.last().unwrap();
+        assert!(ptr::eq(CURRENT.load(Ordering::SeqCst), &**lane));
+        for order in 0..lane.len() as u64 {
+            lane.reserve().unwrap().publish(Append {
+                order,
+                object: roots,
+                reset: true,
+            });
+        }
+        let refused = FAILURES[ALLOCATION].load(Ordering::SeqCst);
+        crate::test_support::with_allocations_denied(|| publish(roots, true));
+        assert_eq!(
+            serde_json::to_value(status()).unwrap()["reasons"]["propaganda append allocation failed"],
+            refused + 1
+        );
+        assert_eq!(
+            store.capture(&NoRead, 0, objects, &roster, false, false, true, &mut output),
+            Err("propaganda append allocation failed")
+        );
         CURRENT.store(ptr::null_mut(), Ordering::SeqCst);
     }
 

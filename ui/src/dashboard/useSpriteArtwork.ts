@@ -1,38 +1,52 @@
 import { useEffect, useState } from 'react';
 import { useContentRevision } from './contentRevision';
+import type { DashboardClient } from './client';
 import type { WidgetRuntime } from './definitions';
 import type { BoundTrack } from './model';
 import { loadTransientProduct } from './products';
 import { spriteFrames, spriteIcons, spriteId } from './spriteArtwork';
 import type { SpriteFrame } from './spriteArtwork';
+import { PerClient } from './prepare.ts';
 
-const NONE: ReadonlyMap<string, string | null> = new Map();
+/** The images each client holds for one recording and content revision, by frame: a frame is asked once, and a widget
+ * naming another set asks only the frames it adds. */
+const held = new PerClient<{ scope: string; icons: Map<string, string | null> }>();
+
+function heldIcons(client: DashboardClient, scope: string): Map<string, string | null> {
+  const now = held.get(client);
+  if (now?.scope === scope) return now.icons;
+  const icons = new Map<string, string | null>();
+  held.set(client, { scope, icons });
+  return icons;
+}
 
 /** Images for the exact sprite frames a product returned (doctrine icons, mission icons), loaded
  * on demand through the shared sprite route. The returned lookup takes a frame and gives its
  * image, null when it has no drawable art, or undefined while loading, so the widget draws its
- * text without a picture meanwhile. */
+ * text without a picture meanwhile. Frames already held are drawn at once and never asked again. */
 export function useSpriteArtwork(runtime: WidgetRuntime, track: BoundTrack | undefined, sprites: Iterable<SpriteFrame | null | undefined>,
   active: boolean): (sprite: SpriteFrame | null | undefined) => string | null {
   const revision = useContentRevision(runtime.client);
-  const asked = spriteFrames(sprites);
+  const scope = track ? JSON.stringify([track.source.id, track.source.revision, revision]) : '';
+  const icons = heldIcons(runtime.client, scope);
+  const asked = spriteFrames(sprites).filter(sprite => !icons.has(spriteId(sprite)));
   const request = track && asked.length ? { sourceId: track.source.id, revision: track.source.revision, product: 'sprite-artwork',
     params: { sprites: asked } } : null;
   const key = JSON.stringify([request, revision]);
-  const [state, setState] = useState<{ client: WidgetRuntime['client']; key: string; icons: ReadonlyMap<string, string | null> }>();
+  const [, setLanded] = useState(0);
   useEffect(() => {
     if (!active || !request) return;
     const controller = new AbortController();
     void loadTransientProduct<unknown>(runtime.client, request, controller.signal).then(reply => {
-      if (!controller.signal.aborted) setState({ client: runtime.client, key, icons: spriteIcons(reply, asked) });
+      if (controller.signal.aborted) return;
+      for (const [id, icon] of spriteIcons(reply, asked)) icons.set(id, icon);
+      setLanded(count => count + 1);
     }).catch(() => {
-      // Art is decoration: a refused request leaves the names without pictures.
-      if (!controller.signal.aborted) setState({ client: runtime.client, key, icons: NONE });
+      // Art is decoration: a refused request leaves the names without pictures until the frames asked change.
     });
     return () => controller.abort();
     // The key holds the source, the frames and the content revision.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runtime.client, key, active]);
-  const icons = state?.client === runtime.client && state.key === key ? state.icons : NONE;
   return sprite => (sprite && icons.get(spriteId(sprite))) ?? null;
 }

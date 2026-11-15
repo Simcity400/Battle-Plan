@@ -105,7 +105,7 @@ impl Capacities {
             .count()
             .saturating_sub(1) as usize;
         crate::table_capture::grow_capacity(&mut self.country_rows, countries);
-        let daily = native::walk(memory, base, state, &mut [], &mut [], &mut []);
+        let daily = native::count(memory, base, state);
         let icons = native::icon_capacity(memory, base, state);
         let demand = |outcome| match outcome {
             Outcome::Rows { len } => Ok(len),
@@ -140,6 +140,8 @@ impl Capacities {
     }
 }
 
+pub(crate) use split::{TemplateWorkers, WalkPart};
+
 struct Preacquired {
     base: usize,
     state: usize,
@@ -172,7 +174,12 @@ pub(crate) struct Shelf {
     bytes: usize,
 }
 
-pub(crate) type Home = std::sync::Arc<std::sync::Mutex<Shelf>>;
+pub(crate) type Home = engine_allocation::SharedBox<std::sync::Mutex<Shelf>>;
+
+/// A pool's empty home; a refused allocation is the collector's allocation failure.
+pub(crate) fn new_home() -> std::io::Result<Home> {
+    engine_allocation::shared(std::sync::Mutex::default())
+}
 
 /// The high-water bytes of the pool's template stores.
 pub(crate) fn home_allocated_bytes(home: &Home) -> usize {
@@ -223,6 +230,19 @@ pub struct Captured {
     generation: u64,
     /// The held generation and roster of a clean hour, once settled.
     witness: Option<Witness>,
+    /// The hour's carried and read template occurrences.
+    occurrences: [u64; 2],
+    /// The split walk's ranges, kept with their arenas from hour to hour; the first
+    /// `staged_parts` hold this hour's rows and speed keys.
+    walk_parts: Vec<WalkPart>,
+    staged_parts: usize,
+    /// Why this hour's split walk left the hour to the serial walk.
+    split_fallback: Option<crate::hour_stages::TemplateFallback>,
+    /// The stores' loan to the ranges, allocated once.
+    lent: Option<engine_allocation::SharedBox<split::Lent>>,
+    /// Each country slot's weight and templates, and the hour's templates, for the split.
+    slot_weights: Vec<(u32, u64, u32)>,
+    stitching: split::Stitching,
 }
 impl Captured {
     pub(crate) fn fail_capture(&mut self, hour: i32, force_full: bool, reason: &'static str) {
@@ -258,14 +278,16 @@ impl Captured {
         })
     }
 
+    #[cfg(test)]
     pub fn with_capacities(capacity: &Capacities) -> Self {
         Self {
-            home: Some(Home::default()),
+            home: Some(new_home().unwrap()),
             ..Self::without_home(capacity)
         }
     }
 
-    fn without_home(capacity: &Capacities) -> Self {
+    /// A frame's capture with no stores until the pool shares its home ([`Self::share_home`]).
+    pub(crate) fn without_home(capacity: &Capacities) -> Self {
         Self {
             preacquired: None,
             pending_owned: false,
@@ -293,6 +315,13 @@ impl Captured {
             clean: None,
             generation: 0,
             witness: None,
+            occurrences: [0; 2],
+            walk_parts: Vec::new(),
+            staged_parts: 0,
+            split_fallback: None,
+            lent: None,
+            slot_weights: Vec::new(),
+            stitching: split::Stitching::default(),
         }
     }
     pub fn reset(&mut self) {
@@ -315,6 +344,8 @@ impl Captured {
         self.locals.reset();
         self.speed_keys.clear();
         self.speed_spans.clear();
+        self.staged_parts = 0;
+        self.split_fallback = None;
     }
     fn discard_owned(&mut self) {
         if self.pending_owned {
@@ -341,14 +372,27 @@ impl Captured {
             + self.locals.allocated_bytes()
             + self.speed_keys.capacity() * size_of::<u32>()
             + self.speed_spans.capacity() * size_of::<(u64, Option<(usize, usize)>)>()
+            + self.walk_parts.capacity() * size_of::<WalkPart>()
+            + self
+                .walk_parts
+                .iter()
+                .map(WalkPart::allocated_bytes)
+                .sum::<usize>()
+            + self
+                .lent
+                .as_ref()
+                .map_or(0, |_| engine_allocation::SharedBox::<split::Lent>::BYTES)
+            + self.slot_weights.capacity() * size_of::<(u32, u64, u32)>()
+            + self.stitching.allocated_bytes()
     }
+    #[cfg(test)]
     pub(crate) fn home(&self) -> Option<Home> {
         self.home.clone()
     }
 
     /// Take and return the stores of `home`, shared with the pool's other frames.
     pub(crate) fn share_home(&mut self, home: &Home) {
-        self.home = Some(std::sync::Arc::clone(home));
+        self.home = Some(home.clone());
     }
 
     pub fn grow(&mut self, capacity: &mut Capacities) {
@@ -416,6 +460,7 @@ impl Captured {
         state: usize,
         hour: i32,
         force: bool,
+        workers: Option<TemplateWorkers<'_>>,
     ) {
         let ticks = self.capture_observed(
             memory,
@@ -424,7 +469,11 @@ impl Captured {
             hour,
             force,
             &crate::template_changes::Observer,
+            workers,
         );
+        if let Some(fallback) = self.split_fallback {
+            crate::hour_stages::note_template_fallback(fallback);
+        }
         self.preacquired = Some(Preacquired {
             base,
             state,
@@ -485,7 +534,7 @@ impl Captured {
         force: bool,
         changes: &dyn crate::template_changes::Changes,
     ) -> [u64; N] {
-        let mut ticks = self.capture_observed(memory, base, state, hour, force, changes);
+        let mut ticks = self.capture_observed(memory, base, state, hour, force, changes, None);
         let start = qpc();
         self.settle_owned();
         ticks[1] += qpc().saturating_sub(start).max(0) as u64;
@@ -501,7 +550,9 @@ impl Captured {
         hour: i32,
         force: bool,
         changes: &dyn crate::template_changes::Changes,
+        workers: Option<TemplateWorkers<'_>>,
     ) -> [u64; N] {
+        use crate::hour_stages::{Part, record_part};
         self.reset();
         // Without the pool's settled stores (the last settlement is still pending, or
         // failed), this walk reads every template.
@@ -537,54 +588,34 @@ impl Captured {
         let country_refusals: u32;
         // The counter/model inputs, each composition grid's entries and the
         // demanded display-name inputs every hour.
-        let mut country_ticks = 0_u64;
+        let country_ticks: u64;
         let icons = {
             let _reads = crate::read_accounting::table(TABLES[1]);
             let start = qpc();
-            let mut country_len = 0;
-            let mut country_failure = None;
-            let country_rows = &mut self.country_rows.rows;
-            let country_cache = &mut self.country_cache;
-            let context_failures = &mut self.model_failures;
-            let mut countries = |country| {
-                if country_failure.is_some() {
-                    return;
-                }
-                let start = qpc();
-                let _reads = crate::read_accounting::table(TABLES[2]);
-                let result = (|| {
-                    let row = country_cache.read(memory, base, state, country, changes)?;
-                    if let Some(reason) = row.garrison_failure {
-                        context_failures.add(reason);
+            let walked = workers.map(|mut workers| {
+                self.walk_split(memory, base, state, changes, &mut workers)
+            });
+            let split::Walked {
+                walk,
+                counts,
+                country_len,
+                country_failure,
+                country_ticks: ticks,
+            } = match walked {
+                Some(Ok(walked)) => walked,
+                refused => {
+                    if let Some(Err(fallback)) = refused {
+                        self.split_fallback = Some(fallback);
                     }
-                    engine_native::walk::Buffer::Growing(&mut *country_rows)
-                        .ensure(country_len + 1)?;
-                    country_rows[country_len] = row;
-                    country_len += 1;
-                    Ok::<(), &'static str>(())
-                })();
-                country_ticks += qpc().saturating_sub(start).max(0) as u64;
-                country_failure = result.err();
+                    let serial = qpc();
+                    let walked = self.walk_serial(memory, base, state, changes);
+                    record_part(Part::TemplateSerial, serial, qpc());
+                    walked
+                }
             };
-            let mut details = held::Demand::new(&mut self.held, &mut self.core, changes);
-            let walk = native::walk_icons_with_selected_details_growing(
-                memory,
-                base,
-                state,
-                &mut self.icon_rows.rows,
-                &mut self.icon_bytes.first,
-                &mut self.counts.first,
-                &mut self.variants.first,
-                native::DefinitionSlots {
-                    database: &mut self.database.first,
-                    globals: &mut self.globals.first,
-                    locals: &mut self.locals.first,
-                },
-                &mut self.name_bytes.first,
-                &mut countries,
-                &mut details,
-            );
-            templates = details.counts;
+            country_ticks = ticks;
+            templates = counts;
+            self.occurrences = counts;
             self.country_rows.outcome = match (walk.outcome, country_failure) {
                 (Outcome::Unavailable { reason }, _) | (_, Some(reason)) => {
                     Outcome::Unavailable { reason }
@@ -604,7 +635,10 @@ impl Captured {
             self.database.required = walk.required_database;
             self.globals.required = walk.required_database;
             self.locals.required = walk.required_locals;
+            let speed = qpc();
             speed_refusals = self.capture_speed_keys(memory, base, changes);
+            let certify = qpc();
+            record_part(Part::TemplateSpeedKeys, speed, certify);
             country_refusals = self.model_failures.rows;
             if let Some(rows) = self.icon_rows.rows.get(..walk.outcome.len()) {
                 self.held.certify(changes, rows);
@@ -622,7 +656,9 @@ impl Captured {
                     }
                 }
             }
-            qpc().saturating_sub(start).max(0) as u64
+            let certified = qpc();
+            record_part(Part::TemplateCertify, certify, certified);
+            certified.saturating_sub(start).max(0) as u64
         };
         let country_native_ticks = country_ticks;
         self.country_cache.finish();
@@ -649,6 +685,7 @@ impl Captured {
             &mut self.bytes.first,
         );
         self.rows.outcome = outcome;
+        record_part(Part::TemplateDictionary, start, qpc());
         crate::template_changes::record(
             &crate::template_changes::Counts {
                 carried: templates[0],
@@ -698,6 +735,68 @@ impl Captured {
             icons.saturating_sub(country_native_ticks),
             country_ticks,
         ]
+    }
+
+    /// The hour's walk on this thread, every store changed in walk order.
+    fn walk_serial(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+        changes: &dyn crate::template_changes::Changes,
+    ) -> split::Walked {
+        let mut country_ticks = 0_u64;
+        let mut country_len = 0;
+        let mut country_failure = None;
+        let country_rows = &mut self.country_rows.rows;
+        let country_cache = &mut self.country_cache;
+        let context_failures = &mut self.model_failures;
+        let mut countries = |country| {
+            if country_failure.is_some() {
+                return;
+            }
+            let start = qpc();
+            let _reads = crate::read_accounting::table(TABLES[2]);
+            let result = (|| {
+                let row = country_cache.read(memory, base, state, country, changes)?;
+                if let Some(reason) = row.garrison_failure {
+                    context_failures.add(reason);
+                }
+                engine_native::walk::Buffer::Growing(&mut *country_rows)
+                    .ensure(country_len + 1)?;
+                country_rows[country_len] = row;
+                country_len += 1;
+                Ok::<(), &'static str>(())
+            })();
+            country_ticks += qpc().saturating_sub(start).max(0) as u64;
+            country_failure = result.err();
+        };
+        let mut details = held::Demand::new(&mut self.held, &mut self.core, changes);
+        let walk = native::walk_icons_with_selected_details(
+            memory,
+            base,
+            state,
+            &mut self.icon_rows.rows,
+            &mut self.icon_bytes.first,
+            &mut self.counts.first,
+            &mut self.variants.first,
+            native::DefinitionSlots {
+                database: &mut self.database.first,
+                globals: &mut self.globals.first,
+                locals: &mut self.locals.first,
+            },
+            &mut self.name_bytes.first,
+            &mut countries,
+            &mut details,
+        );
+        let counts = details.counts;
+        split::Walked {
+            walk,
+            counts,
+            country_len,
+            country_failure,
+            country_ticks,
+        }
     }
 
     /// Owned observations and frozen `held` certificates; no Memory capability.
@@ -798,8 +897,8 @@ impl Captured {
                 (payload.layout.as_ref(), payload.settings.as_ref())
             })
     }
-    /// DivisionTemplateIcons.speed_keys of every walked template, read from
-    /// its template object after the walk; returns the refused templates.
+    /// DivisionTemplateIcons.speed_keys of every walked template, read from its template object
+    /// after the walk, or by the split walk's range that read it; returns the refused templates.
     fn capture_speed_keys(
         &mut self,
         memory: &impl Memory,
@@ -818,7 +917,10 @@ impl Captured {
             // No span to publish: every row refuses.
             refused = rows.len() as u64;
         } else {
-            for row in rows {
+            let parts = &self.walk_parts[..self.staged_parts.min(self.walk_parts.len())];
+            let mut staged = parts.iter().flat_map(|part| part.staged_speed_keys());
+            let mut next = staged.next();
+            for (at, row) in rows.iter().enumerate() {
                 let start = self.speed_keys.len();
                 let span = if let Some(keys) = self.core.speed(row.template) {
                     let span = engine_allocation::reserve(&mut self.speed_keys, keys.len())
@@ -830,14 +932,28 @@ impl Captured {
                     refused += u64::from(span.is_none());
                     span
                 } else {
-                    let span = engine_native::carmy::movement_speed_keys(
-                        memory,
-                        base,
-                        row.pointer,
-                        &mut self.speed_keys,
-                    )
-                    .ok()
-                    .map(|()| (start, self.speed_keys.len() - start));
+                    while next.is_some_and(|(staged, _)| staged < at) {
+                        next = staged.next();
+                    }
+                    let read = next.filter(|&(staged, _)| staged == at).map(|(_, keys)| keys);
+                    let span = match read {
+                        Some(keys) => keys.and_then(|keys| {
+                            engine_allocation::reserve(&mut self.speed_keys, keys.len())
+                                .ok()
+                                .map(|()| {
+                                    self.speed_keys.extend_from_slice(keys);
+                                    (start, keys.len())
+                                })
+                        }),
+                        None => engine_native::carmy::movement_speed_keys(
+                            memory,
+                            base,
+                            row.pointer,
+                            &mut self.speed_keys,
+                        )
+                        .ok()
+                        .map(|()| (start, self.speed_keys.len() - start)),
+                    };
                     refused += u64::from(span.is_none());
                     self.core.remember_speed(
                         row.template,
@@ -850,6 +966,21 @@ impl Captured {
             }
         }
         refused
+    }
+
+    #[cfg(test)]
+    pub(crate) fn occurrences(&self) -> [u64; 2] {
+        self.occurrences
+    }
+
+    #[cfg(test)]
+    pub(crate) fn split_fallback(&self) -> Option<crate::hour_stages::TemplateFallback> {
+        self.split_fallback
+    }
+
+    #[cfg(test)]
+    pub(crate) fn speed_spans(&self) -> (&[u32], &[(u64, Option<(usize, usize)>)]) {
+        (&self.speed_keys, &self.speed_spans)
     }
 
     /// The template's speed keys this hour; `None` is its refusal.
@@ -1279,6 +1410,7 @@ mod core;
 mod countries;
 mod dictionary;
 mod held;
+mod split;
 
 #[cfg(test)]
 mod tests;

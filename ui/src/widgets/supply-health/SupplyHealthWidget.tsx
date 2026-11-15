@@ -7,7 +7,6 @@ import SupplyBreakdown from './SupplyBreakdown';
 import { createPortal } from 'react-dom';
 import { useContextMenu } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
-import { useHeldFailure } from '../../dashboard/heldFailures';
 import StackedShareChart from '../../charts/StackedShareChart';
 import WindowedRows from '../../charts/WindowedRows';
 import type { MovingRow } from '../../charts/rowMotion';
@@ -16,38 +15,40 @@ import { clipToSpans, runAt } from '../../charts/series';
 import { fitTooltip } from '../../charts/tooltip';
 import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
 import type { PlaybackMode } from '../../charts/view';
+import { motionOf } from '../../charts/easing.ts';
+import LiveText, { liveTexts } from '../../charts/LiveText';
 import { formatDateTime } from '../../dashboard/calendar';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { countryCapitulationBadges, countryCapitulationRows } from '../../dashboard/countryCapitulations';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import DatedCountryChip, { ChooseCountryChip } from '../../dashboard/DatedCountryChip';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { MEMBERSHIP_PREPARING, resolveCountries } from '../../dashboard/groups';
+import { resolveCountries } from '../../dashboard/groups';
 import { groupNumbers } from '../../dashboard/groupsReply';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
-import { usePlaybackHour, usePlaybackMotion } from '../../dashboard/playback';
 import { NumericReply } from '../../dashboard/numericReply';
-import { usePreparedSupply } from './preparedSupply';
-import { useParityRows } from '../../dashboard/parityRows';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
-import type { SupplyHealthReply, SupplyHealthSeries, CountryGroupReply } from '../../generated/dashboard';
+import { useFallbackHour } from '../../dashboard/follow/useFollow.ts';
+import type { CountryGroupReply } from '../../generated/dashboard';
 import { definition } from './definition';
 import { supplyCountrySelection } from './SupplyCountryChip';
-import { STATES, STATE_LABELS, supplyDrillNumbers, supplyShareRuns, supplyTooltip, totalDivisions } from './supplyHealthData';
+import { STATES, STATE_LABELS, supplyTooltip } from './supplyHealthData';
+import { useSupplySeries } from './supplySeries';
 import './supplyHealth.css';
+import { useShownEachFrame } from '../../dashboard/widgetPerf';
+import { useChangedState } from '../../dashboard/changedState.ts';
 
 const NO_WARNINGS: string[] = [];
-const hasSupplyActor = (series: Pick<SupplyHealthSeries, 'identities' | 'runs'>, hour: number): boolean =>
-  series.identities === undefined ? runAt(series.runs, hour) !== null : runAt(series.identities, hour) !== null;
 
+/** Each chosen country's divisions by supply state as stacked shares over time, from the recording's own supply
+ * table: one chart per country, its breakdown at a day a click away. */
 export default function SupplyHealthWidget({ widget, runtime, active, headerSlot, countrySlot = null, onDiagnostics }: WidgetProps) {
-  const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const tokens = useChartTokens();
   const viewport = useViewportHeight();
   const body = useRef<HTMLDivElement>(null);
   const [bodyHeight, setBodyHeight] = useState(0);
-  const [visibleTags, setVisibleTags] = useState<string[]>([]);
+  const [visibleTags, setVisibleTags] = useChangedState<string[]>([]);
   useLayoutEffect(() => {
     const element = body.current;
     if (!element) return;
@@ -60,17 +61,20 @@ export default function SupplyHealthWidget({ widget, runtime, active, headerSlot
   const options = resolveOptions(definition.options, widget.options);
   const pinned = options.show === 'breakdown';
   const [drill, dispatchDrill] = useReducer(reducePartsRaceDrill, CLOSED_PARTS_RACE);
-  const playbackHour = usePlaybackHour(runtime.clock, active && (widget.time.mode === 'follow' || drill.breakdown !== null && drill.follow));
+  const following = widget.time.mode === 'follow';
+  // The charts move with the clock each frame (their live head) and a breakdown following playback paints its day
+  // and counts from the clock and followed values: nothing renders because the hour moved.
+  const playbackHour = useFallbackHour(runtime.clock, false);
+  const drillFollows = drill.breakdown !== null && drill.follow;
   const [drillOrigin, setDrillOrigin] = useState<{ tag: string; hour: number } | null>(null);
   const [drillWarnings, setDrillWarnings] = useState<string[]>([]);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const savedSelection = supplyCountrySelection(widget, track);
   const invalidSavedSelection = pinned && Object.hasOwn(widget.options ?? {}, 'drillOriginHour') && !savedSelection;
   const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
-  const stores = useMemo(() => ({ groups: new NumericReply<CountryGroupReply>(), groupWarnings: new NumericReply<string[]>(),
-    numbers: new NumericReply<SupplyHealthReply>(), warnings: new NumericReply<string[]>() }), [runtime.client]);
+  const stores = useMemo(() => ({ groups: new NumericReply<CountryGroupReply>(), groupWarnings: new NumericReply<string[]>() }), [runtime.client]);
   const sourceScope = JSON.stringify([track?.source.id, track?.branch.id]);
-  const incomingGroups = useCountryGroups(runtime, track, active && (widget.countries.kind === 'group' || !pinned));
+  const incomingGroups = useCountryGroups(runtime, track, active);
   const groupData = stores.groups.update(sourceScope, incomingGroups.data, groupNumbers);
   const groupWarnings = stores.groupWarnings.update(sourceScope, incomingGroups.data?.warnings, reply => reply);
   const groups = { ...incomingGroups, data: groupData };
@@ -80,21 +84,22 @@ export default function SupplyHealthWidget({ widget, runtime, active, headerSlot
     [widget.countries, fallback, groups.data, lastHour]);
   const extent: [number, number] = track ? (widget.time.mode === 'range' && window
     ? [window.firstHour, window.lastHour] : [track.branch.firstHour, track.branch.lastHour]) : [0, 1];
-  const playhead = window && (widget.time.mode === 'follow' || widget.time.mode === 'pin') ? window.lastHour : null;
+  const axisOffset = track?.axisOffset ?? 0;
+  const clockHead = useMemo(() => ({ read: () => runtime.clock.getSnapshot().position + axisOffset, subscribe: runtime.clock.subscribeFrame }),
+    [runtime.clock, axisOffset]);
+  const liveHead = following ? clockHead : undefined;
+  const dayText = useMemo(() => liveTexts(runtime.clock, () => Math.floor(clockHead.read()), hour => new Map([['day', formatDateTime(hour)]])),
+    [runtime.clock, clockHead]);
+  const playhead = window && (following || widget.time.mode === 'pin') ? window.lastHour : null;
   const head = Math.floor(playhead ?? extent[1]);
-  const [tip, setTip] = useState<{ tag: string; hour: number } | null>(null);
-  const incoming = usePreparedSupply(runtime.client, track, countries.tags, head, tip?.hour ?? null, active, undefined, visibleTags);
-  const numericScope = JSON.stringify([sourceScope, widget.countries, countries.tags]);
-  const data = stores.numbers.update(numericScope, incoming.data, supplyDrillNumbers);
-  const warnings = stores.warnings.update(numericScope, incoming.data?.warnings, reply => reply);
-  const { retry } = incoming;
-  const error = useHeldFailure(incoming.error, incoming.data !== undefined, retry);
-  useParityRows(body, () => {
-    const rows = (incoming.data?.series ?? []).flatMap(series => series.runs.map(run => ({ tag: series.tag, ...run, identities: series.identities })));
-    return { kind: 'windowed', label: 'Supply health exact counts', complete: incoming.parityComplete, total: rows.length,
-      rows: rows.map((row, index) => ({ index, key: `${row.tag}:${row.firstHour}:${row.lastHour}`, ...row })),
-      available: incoming.data?.available, reason: incoming.data?.reason, warnings: incoming.data?.warnings };
-  }, { prepare: incoming.parityPrepare, ready: () => incoming.parityComplete, error: () => incoming.error ?? null });
+  const identities = useMemo(() => new Map((groups.data?.countryIdentities ?? []).map(history => [history.tag, history.identities])), [groups.data]);
+  const hasActor = useCallback((tag: string, hour: number) => runAt(identities.get(tag) ?? [], Math.floor(hour)) !== null, [identities]);
+  const [tip, setTip] = useChangedState<{ tag: string; hour: number } | null>(null);
+  const reads = useMemo(() => tip ? [tip] : [], [tip]);
+  const supply = useSupplySeries(runtime.client, runtime.clock, track?.source, track?.branch.id, countries.tags, countries.membership ?? undefined, lastHour, active, reads,
+    following, body, track?.axisOffset);
+  useShownEachFrame(runtime.clock, () => supply.drawn ? following ? Math.min(Math.floor(clockHead.read()), lastHour) : head : null);
+  const { error, retry } = supply;
   const resetKey = JSON.stringify([track?.source.id, track?.branch.id, widget.countries, widget.time,
     options.show, widget.options?.drillOriginHour]);
   useEffect(() => { dispatchDrill({ type: 'close' }); setDrillOrigin(null); }, [resetKey]);
@@ -106,55 +111,49 @@ export default function SupplyHealthWidget({ widget, runtime, active, headerSlot
   const drillTag = drill.breakdown;
   const originHour = drillOrigin?.tag === drillTag ? drillOrigin.hour : drillAt;
   const open = (hour: number, tag: string) => {
-    if (!active) return;
-    const country = data?.series.find(series => series.tag === tag);
-    if (!country || !hasSupplyActor(country, Math.floor(hour))) return;
+    if (!active || !hasActor(tag, hour)) return;
     setDrillOrigin({ tag, hour: Math.floor(hour) });
     dispatchDrill({ type: 'open', breakdown: tag, hour, playing: runtime.clock.getSnapshot().playing,
-      playhead: widget.time.mode === 'follow' ? playhead : null });
+      playhead: following ? playhead : null });
   };
   // A standalone multi-country breakdown asks for an actor instead of inventing one.
   useEffect(() => {
-    if (!pinned || invalidSavedSelection || !window || drill.breakdown !== null || drill.choices !== null || !data) return;
+    if (!pinned || invalidSavedSelection || !window || drill.breakdown !== null || drill.choices !== null || !groups.data) return;
     if (savedSelection) {
       const { tag: fixed, hour: originHour } = savedSelection;
-      const country = data.series.find(series => series.tag === fixed);
-      if (!country || !hasSupplyActor(country, originHour)) return;
+      if (!hasActor(fixed, originHour)) return;
       setDrillOrigin({ tag: fixed, hour: originHour });
-      dispatchDrill({ type: 'open', breakdown: fixed, hour: head, playing: false,
-        playhead: widget.time.mode === 'follow' ? playhead : null });
+      dispatchDrill({ type: 'open', breakdown: fixed, hour: head, playing: false, playhead: following ? playhead : null });
       return;
     }
-    const actors = data.series.filter(series => hasSupplyActor(series, head)
-      && (!countries.membership || runAt(countries.membership.get(series.tag) ?? [], head))).map(series => series.tag);
+    const actors = countries.tags.filter(tag => hasActor(tag, head)
+      && (!countries.membership || runAt(countries.membership.get(tag) ?? [], head)));
     if (actors.length === 1) {
       const tag = actors[0];
       setDrillOrigin({ tag, hour: head });
-      dispatchDrill({ type: 'open', breakdown: tag, hour: head, playing: false,
-        playhead: widget.time.mode === 'follow' ? playhead : null });
+      dispatchDrill({ type: 'open', breakdown: tag, hour: head, playing: false, playhead: following ? playhead : null });
     } else if (actors.length > 1) dispatchDrill({ type: 'actors', key: resetKey, tags: actors, hour: head });
-  }, [pinned, invalidSavedSelection, !!window, drill, data, head, playhead, countries.membership, savedSelection?.tag, savedSelection?.hour, widget.time.mode, resetKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [pinned, invalidSavedSelection, !!window, drill, groups.data, head, playhead, countries.tags, countries.membership, savedSelection?.tag, savedSelection?.hour, following, resetKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const drillOpen = drill.breakdown !== null || choices !== null;
   const membershipKey = useMemo(() => JSON.stringify([...(countries.membership ?? [])]), [countries.membership]);
   const countryScope = JSON.stringify(widget.countries);
-  const series = useMemo(() => (data?.series ?? []).filter(series => !countries.membership || countries.membership.has(series.tag)).map(series => {
-    const inRange = clipToSpans(series.runs, [{ firstHour: extent[0], lastHour: extent[1] }]);
-    const membership = countries.membership?.get(series.tag);
-    const runs = membership ? clipToSpans(inRange, membership) : inRange;
-    const geometry = clipToSpans(incoming.geometry.get(series.tag) ?? runs, [{ firstHour: extent[0], lastHour: extent[1] }]);
-    const drawing = membership ? clipToSpans(geometry, membership) : geometry;
-    return { drawing, tag: series.tag, identities: series.identities, membership, runs, shares: supplyShareRuns(drawing), hours: runs.map(run => run.firstHour),
-      pickOwner: { client: runtime.client, source: sourceScope, selection: countryScope, first: extent[0], last: extent[1],
-        tag: series.tag, runs, identities: series.identities, membership } };
-  }), [data, incoming.geometry, membershipKey, extent[0], extent[1], runtime.client, sourceScope, countryScope]); // eslint-disable-line react-hooks/exhaustive-deps
-  const seriesByTag = useMemo(() => new Map(series.map(item => [item.tag, item])), [series]);
-  const badgesByTag = useMemo(() => countryCapitulationBadges(groups.data, series.map(country => ({ ...country, segments: country.runs })), extent),
-    [groups.data, series, extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
-  const wanted = useMemo(() => [...visibleTags.map(tag => ({ tag, hour: Math.min(head, seriesByTag.get(tag)?.runs.at(-1)?.lastHour ?? head) })),
-    ...(tip && visibleTags.includes(tip.tag) ? [tip] : [])].filter(({ tag, hour }) => {
-      const country = seriesByTag.get(tag);
-      return country && hasSupplyActor(country, hour);
-    }), [visibleTags, head, tip, seriesByTag]);
+  const series = useMemo(() => countries.tags.filter(tag => !countries.membership || countries.membership.has(tag)).map(tag => {
+    const membership = countries.membership?.get(tag);
+    const inRange = clipToSpans(supply.sharesOf(tag), [{ firstHour: extent[0], lastHour: extent[1] }]);
+    const drawing = membership ? clipToSpans(inRange, membership) : inRange;
+    // Following, the chart draws the newest lines with the head's bin at the followed shares, clipped as `drawing` is.
+    const live = following ? supply.liveShares(tag, runs => {
+      const shown = clipToSpans(runs, [{ firstHour: extent[0], lastHour: extent[1] }]);
+      return membership ? clipToSpans(shown, membership) : shown;
+    }) : undefined;
+    return { tag, membership, drawing, live, missing: supply.missing.get(tag) ?? [], hours: drawing.map(run => run.firstHour),
+      pickOwner: { client: runtime.client, source: sourceScope, selection: countryScope, first: extent[0], last: extent[1], tag, drawing } };
+  }), [countries.tags, supply.shares, supply.missing, supply.liveShares, following, membershipKey, extent[0], extent[1], runtime.client, sourceScope, countryScope]); // eslint-disable-line react-hooks/exhaustive-deps
+  const badgesByTag = useMemo(() => countryCapitulationBadges(groups.data, series.map(country => ({ tag: country.tag, membership: country.membership,
+    identities: identities.get(country.tag), segments: country.drawing })), extent),
+  [groups.data, series, identities, extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
+  const wanted = useMemo(() => [...visibleTags.map(tag => ({ tag, hour: head })), ...(tip && visibleTags.includes(tip.tag) ? [tip] : [])]
+    .filter(({ tag, hour }) => hasActor(tag, hour)), [visibleTags, head, tip, hasActor]);
   const labels = useCountryLabelsAt(runtime.client, track, wanted, active);
   useEffect(() => { if (!active) setTip(null); }, [active]);
   useEffect(() => { setTip(null); }, [track?.source.id, track?.source.revision, track?.branch.id]);
@@ -168,64 +167,61 @@ export default function SupplyHealthWidget({ widget, runtime, active, headerSlot
     setVisibleTags(previous => previous.length === tags.length && previous.every((tag, index) => tag === tags[index]) ? previous : tags);
   }, []);
   useEffect(() => {
-    const diagnostics = [...(warnings ?? []), ...(data?.reason ? [data.reason] : []), ...(groupWarnings ?? []),
-      ...(widget.countries.kind !== 'group' && !pinned && incomingGroups.error ? [`Capitulation markers are unavailable: ${incomingGroups.error.message}`] : []), ...drillWarnings];
+    const diagnostics = [...(groupWarnings ?? []),
+      ...(incomingGroups.error ? [`Countries and capitulation markers are unavailable: ${incomingGroups.error.message}`] : []), ...drillWarnings];
     onDiagnostics(diagnostics.length ? diagnostics : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);
-  }, [data, warnings, groupWarnings, incomingGroups.error, widget.countries.kind, pinned, drillWarnings, onDiagnostics]);
+  }, [groupWarnings, incomingGroups.error, drillWarnings, onDiagnostics]);
 
   const problem = (() => {
     if (!track) return <WidgetState kind="empty" icon="shield" message="Load a campaign to see supply health." />;
     if ((widget.time.mode === 'pin' || widget.time.mode === 'range') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
     if (invalidSavedSelection) return <WidgetState kind="unavailable" message="Selected country unavailable." />;
-    if (widget.countries.kind === 'group' && groups.error && !groups.data) return <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;
+    if (groups.error && !groups.data) return <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;
     if (countries.top != null) return <WidgetState kind="empty" message="Choose countries or a group in settings." />;
     if (countries.reason) return <WidgetState kind="empty" message={countries.reason} />;
-    if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
-    if (!data || (widget.countries.kind === 'group' && !groups.data)) return <WidgetState kind="loading" label="Loading supply health…" />;
-    if (!data.available) return <WidgetState kind="unavailable" message="Not in this recording" />;
-    // A group's members at hours still being prepared are not known yet: no country is not proof of none.
-    if (!series.length && !countries.known(extent[0], extent[1])) return <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
+    if (error && !supply.drawn) return <WidgetState kind="error" failure={error} onRetry={retry} />;
+    if (!groups.data) return <WidgetState kind="loading" label="Loading supply health…" />;
     return undefined;
   })();
   const state = problem ?? (track ? <>
-      {!incoming.data && <WidgetState kind="loading" label="Refreshing supply health…" />}
+      {error && <WidgetState kind="error" failure={error} onRetry={retry} />}
       {bodyHeight > 0 && <WindowedRows items={items} rowHeight={bodyHeight} label="Supply health by country"
         className="supply-health-rows" onVisibleRows={onVisibleRows}>
         {row => {
           const country = row.item;
           const badges = badgesByTag.get(country.tag);
-          const labelHour = Math.min(head, country.runs.at(-1)?.lastHour ?? head);
+          const name = labels.labelAt(head)(country.tag).name;
+          const reason = country.missing.find(span => span.firstHour <= extent[1] && span.lastHour >= extent[0])?.reason;
           return <section className="supply-health-country-chart" tabIndex={0}
-            aria-label={labels.labelAt(labelHour)(country.tag).name} onKeyDown={event => { if (event.target !== event.currentTarget) event.stopPropagation(); }}>
-            {series.length > 1 && <p className="supply-health-country">{labels.labelAt(labelHour)(country.tag).name}</p>}
-            {!country.drawing.length ? countries.known(extent[0], extent[1]) ? <WidgetState kind="unavailable" message="Supply was not recorded for this period." />
-              : <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />
-              : country.drawing.every(run => totalDivisions(run) === 0) ? <WidgetState kind="empty" message="No divisions in this period." />
-              : <StackedShareChart label={`Supply health · ${labels.labelAt(labelHour)(country.tag).name}`}
-                onSummaryView={incoming.onSummaryView} onNavigateHour={incoming.onNavigateHour} keyboardHour={incoming.keyboardHour} keyboardRevision={incoming.keyboardRevision}
-                summaries={incoming.summaries.get(country.tag)} runs={country.shares} bands={bands} extent={extent} playhead={playhead}
+            aria-label={name} onKeyDown={event => { if (event.target !== event.currentTarget) event.stopPropagation(); }}>
+            {series.length > 1 && <p className="supply-health-country">{name}</p>}
+            <StackedShareChart label={`Supply health · ${name}`}
+                onSummaryView={supply.onSummaryView} onNavigateHour={supply.onNavigateHour} keyboardHour={supply.keyboardHour} keyboardRevision={supply.keyboardRevision}
+                runs={country.drawing} live={country.live} bands={bands} extent={extent} playhead={playhead} liveHead={liveHead}
                 playback={options.playback as PlaybackMode} afterPlayhead={options.afterPlayhead === true}
-                windowHours={Number(options.windowDays) * 24} hoursPerSecond={hoursPerSecond}
-                branchStart={track.branch.firstHour} active={active && row.phase !== 'leaving' && (!drillOpen || options.drill === 'popout')}
+                windowHours={Number(options.windowDays) * 24} hoursPerSecond={motionOf(runtime.clock.getSnapshot())}
+                branchStart={track.branch.firstHour} active={active && row.phase !== 'leaving' && (!drillOpen || options.drill === 'popout')} notRecorded={supply.notRecorded}
                 keyHours={badges?.length ? [...new Set([...country.hours, ...badges.map(badge => badge.hour)])].sort((a, b) => a - b) : country.hours} badges={badges}
-                revision={`${head}:${labels.revision}:${viewport}`}
+                revision={`${labels.revision}:${viewport}:${reason ?? ''}`}
                 tooltip={(hour, _frame, hovered = []) => {
                   const at = Math.floor(hour);
                   if (at < extent[0] || at > extent[1]) return null;
                   const membership = countries.membership?.get(country.tag);
                   if (membership && !runAt(membership, at)) return null;
-                  const actor = hasSupplyActor(country, at);
+                  const actor = hasActor(country.tag, at);
                   const label = actor ? labels.labelAt(at)(country.tag) : { name: 'Unknown country' };
                   const tip = supplyTooltip(formatDateTime(at), label.name, actor ? label : undefined,
-                    actor ? runAt(country.runs, at) : null, colors);
+                    actor ? supply.at(country.tag, at) : { missing: 'No country held this tag at this time.' }, colors);
                   return fitTooltip([{ ...tip, rows: [...tip.rows, ...countryCapitulationRows(hovered, labels.labelAt)] }], viewport, { keep: hovered.length });
                 }}
                 onHover={hour => setTip(previous => hour == null
                   ? previous?.tag === country.tag ? null : previous
-                  : previous?.tag === country.tag && previous.hour === hour ? previous : { tag: country.tag, hour })}
+                  : previous?.tag === country.tag && previous.hour === Math.floor(hour) ? previous : { tag: country.tag, hour: Math.floor(hour) })}
                 onPick={hour => open(hour, country.tag)} pickOwner={country.pickOwner}
-                onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)])} />}
+                onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)])} />
+            {supply.drawn && !country.drawing.length && <p className="drill-empty">{supply.divisions.get(country.tag) === 0 ? 'No divisions in this period.'
+                : reason ?? 'Supply was not recorded for this period.'}</p>}
           </section>;
         }}
       </WindowedRows>}
@@ -240,7 +236,9 @@ export default function SupplyHealthWidget({ widget, runtime, active, headerSlot
   const breakdown = <SupplyBreakdown runtime={runtime} track={track} active={active} options={options} extent={extent}
     countrySlot={pinned && problem === undefined && choices === null && !unchosen ? countrySlot : null}
     headerSelection={hasOrigin || drillTag === null ? savedSelection : { tag: drillTag, hour: originHour }}
-    playhead={drillPlayhead} tag={drillTag} hour={drillAt} originHour={originHour} following={drill.follow} pinned={pinned}
+    identities={groups.data?.countryIdentities ?? null}
+    playhead={drillPlayhead} liveHead={drillFollows ? clockHead : undefined} dayText={drillFollows ? dayText : undefined}
+    tag={drillTag} hour={drillAt} originHour={originHour} following={drill.follow} pinned={pinned}
     onPick={hour => active && dispatchDrill({ type: 'pick', hour })} onFollow={follow} onWarnings={setDrillWarnings} />;
   const choice = choices && track ? <div className="parts-race-details">
     <p className="drill-empty">Choose a country for {formatDateTime(drillAt)}.</p>
@@ -253,12 +251,12 @@ export default function SupplyHealthWidget({ widget, runtime, active, headerSlot
       }} />
   </div> : breakdown;
   return <>
-    {widget.countries.kind === 'group' && groups.error && groups.data ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null}
+    {groups.error && groups.data ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null}
     {neutralHeader}
     {headerSlot && createPortal(<small className="dash-widget-subtitle"> · share of divisions</small>, headerSlot)}
     <div ref={body} className="supply-health">{pinned ? problem ?? choice : <DrillHost
       mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drillOpen} anchor={body} title="Supply classification"
-      day={formatDateTime(drillAt)} following={drill.follow} canFollow={choices === null && track !== undefined}
+      day={drillFollows ? <LiveText live={dayText} at="day" /> : formatDateTime(drillAt)} following={drill.follow} canFollow={choices === null && track !== undefined}
       returnFocus=".supply-health-country-chart" onClose={() => dispatchDrill({ type: 'close' })} onFollow={follow}
       onPin={track && drillTag ? () => runtime.addWidgetBelow(widget.id, pinPartsRace(
         { ...widget, time: drill.follow ? { mode: 'follow' } : widget.time,

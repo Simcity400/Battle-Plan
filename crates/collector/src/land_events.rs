@@ -1,8 +1,11 @@
 //! Growing multi-producer event-word log. Detours copy transient inputs only;
-//! owned words are decoded off-thread. Failed reads/overflow poison the interval.
+//! owned words are decoded off-thread. A record the ring has no free words for
+//! gets storage of its own on a lock-free spill the drain takes whole; a producer
+//! never waits. Failed reads poison the interval.
 #[cfg(all(test, feature = "tap-foreign-probe"))]
 mod foreign_unwind;
 use crate::{hook::Hook, opinion_changes::Padded};
+use collector_primitives::spill_stack::SpillStack;
 use engine_land_inputs::land_events as native;
 use engine_native::Memory;
 use std::{
@@ -48,6 +51,34 @@ static LOG_REQUIRED: AtomicUsize = AtomicUsize::new(0);
 static OBSERVER_WORDS: AtomicUsize = AtomicUsize::new(0);
 static BASE_WORDS: AtomicUsize = AtomicUsize::new(0);
 static RESIZING: AtomicBool = AtomicBool::new(false);
+/// Records the ring had no free words for: each one's first index and words.
+static SPILL: SpillStack<(u64, Vec<u64>)> = SpillStack::new();
+/// Spilled words with their index, taken from [`SPILL`]; only the drain holds it.
+static SPILLED: Mutex<Vec<(u64, u64)>> = Mutex::new(Vec::new());
+/// The lowest index of a record no storage could take, or `u64::MAX`.
+static STORAGE_LOST: AtomicU64 = AtomicU64::new(u64::MAX);
+const STORAGE_FAILED: &str = "land event storage allocation failed";
+fn spilled() -> std::sync::MutexGuard<'static, Vec<(u64, u64)>> {
+    SPILLED.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+/// Moves every pushed record's words into `held`. A record from `end` on that
+/// `held` cannot take is lost to the next interval; false when one before `end` was.
+fn take_spill(held: &mut Vec<(u64, u64)>, end: u64) -> bool {
+    let mut kept = true;
+    for (first, words) in SPILL.take() {
+        if engine_allocation::reserve(held, words.len()).is_err() {
+            if first < end {
+                kept = false;
+            } else {
+                STORAGE_LOST.fetch_min(first, Ordering::SeqCst);
+                fail();
+            }
+            continue;
+        }
+        held.extend((first..).zip(words));
+    }
+    kept
+}
 
 /// Runs `body`, or `diverted` when the calling thread is a test thread
 /// outside the land test that owns the process-wide log
@@ -177,7 +208,9 @@ fn release_owned() -> Result<(), &'static str> {
         BASE_WORDS.store(0, Ordering::Relaxed);
         OBSERVER_WORDS.store(0, Ordering::Relaxed);
         CONSUMED.store(CURSOR.load(Ordering::SeqCst), Ordering::SeqCst);
-        std::mem::take(&mut *swap)
+        STORAGE_LOST.store(u64::MAX, Ordering::SeqCst);
+        drop(SPILL.take());
+        (std::mem::take(&mut *swap), std::mem::take(&mut *spilled()))
     };
     drop(buffers);
     Ok(())
@@ -426,8 +459,9 @@ fn lost_casualty_reads_owned(count: u64) -> u64 {
         .saturating_add(count)
 }
 
-/// Caller reserved one contiguous logical record. Atomics avoid any data race
-/// even when a stalled producer is lapped; PRODUCERS/cursor/epoch checks reject it.
+/// Caller reserved one contiguous logical record. Ring words go only where every
+/// earlier word was consumed; otherwise the record spills. Atomics avoid a data race
+/// with a stalled producer a refused drain skipped; PRODUCERS/cursor/epoch checks reject it.
 fn append(size: usize, copy: impl FnOnce(&mut dyn FnMut(u64)) -> Result<(), &'static str>) {
     append_at(size, |_, put| copy(put));
 }
@@ -458,12 +492,39 @@ fn append_owned(
     let consumed = CONSUMED.load(Ordering::SeqCst);
     let required = CURSOR.load(Ordering::SeqCst).wrapping_sub(consumed) as usize;
     LOG_REQUIRED.fetch_max(required.max(size), Ordering::Relaxed);
-    if RESIZING.load(Ordering::SeqCst) {
-        fail();
-        return;
-    }
-    let Some(log) = log().filter(|s| s.words.len() >= required && s.words.len() >= size) else {
-        fail();
+    let end = first.wrapping_add(size as u64).wrapping_sub(consumed);
+    let ring = (!RESIZING.load(Ordering::SeqCst))
+        .then(log)
+        .flatten()
+        .filter(|log| end <= log.words.len() as u64);
+    let Some(log) = ring else {
+        let mut words = Vec::new();
+        if engine_allocation::advisory(|| engine_allocation::reserve_exact(&mut words, size.max(1)))
+            .is_err()
+        {
+            STORAGE_LOST.fetch_min(first, Ordering::SeqCst);
+            fail();
+            return;
+        }
+        words.push(0);
+        producer.uncommitted = true;
+        let mut written = 1;
+        let result = copy(first, &mut |word| {
+            if written < size {
+                words.push(word);
+            }
+            written += 1;
+        });
+        producer.uncommitted = false;
+        if result.is_err() || written != size {
+            fail();
+            return;
+        }
+        words[0] = size as u64;
+        if SPILL.push((first, words)).is_err() {
+            STORAGE_LOST.fetch_min(first, Ordering::SeqCst);
+            fail();
+        }
         return;
     };
     let capacity = log.words.len() as u64;
@@ -478,7 +539,8 @@ fn append_owned(
         written += 1;
     });
     producer.uncommitted = false;
-    let lapped = CURSOR.load(Ordering::SeqCst).wrapping_sub(first) > capacity;
+    let lapped = CONSUMED.load(Ordering::SeqCst) > first
+        && CURSOR.load(Ordering::SeqCst).wrapping_sub(first) > capacity;
     if result.is_err() || written != size || lapped {
         fail();
         return;
@@ -498,18 +560,10 @@ pub struct Drain {
     pub lost: u64,
     pub reason: &'static str,
 }
-/// A first boundary/load/gap discards its unknown prefix. An epoch
-/// change, capacity shortage or concurrent producer refuses the whole interval.
+/// A first boundary/load/gap discards its unknown prefix. An epoch change,
+/// a record no storage could take or a concurrent producer refuses the whole interval.
 /// The next interval can restart; consumers cannot infer its preceding events.
-#[cfg(test)]
-pub fn drain(output: &mut [u64], hour: i32, invalidating: bool) -> Drain {
-    drain_buffer(
-        engine_native::walk::Buffer::Fixed(output),
-        hour,
-        invalidating,
-    )
-}
-pub(crate) fn drain_growing(output: &mut Vec<u64>, hour: i32, invalidating: bool) -> Drain {
+pub(crate) fn drain(output: &mut Vec<u64>, hour: i32, invalidating: bool) -> Drain {
     drain_buffer(
         engine_native::walk::Buffer::Growing(output),
         hour,
@@ -560,14 +614,35 @@ fn diverted_drain(hour: i32) -> Drain {
     }
 }
 fn drain_owned(
-    mut output: engine_native::walk::Buffer<'_, u64>,
+    output: engine_native::walk::Buffer<'_, u64>,
     hour: i32,
     invalidating: bool,
 ) -> Drain {
     if invalidating {
         advance_epoch();
     }
+    let mut held = spilled();
     let end = CURSOR.load(Ordering::SeqCst);
+    let storage_lost = STORAGE_LOST
+        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |lost| {
+            (lost < end).then_some(u64::MAX)
+        })
+        .is_ok();
+    let result = drain_interval(output, hour, invalidating, end, storage_lost, &mut held);
+    take_spill(&mut held, end);
+    held.sort_unstable_by_key(|&(index, _)| index);
+    let taken = held.partition_point(|&(index, _)| index < end);
+    held.drain(..taken);
+    result
+}
+fn drain_interval(
+    mut output: engine_native::walk::Buffer<'_, u64>,
+    hour: i32,
+    invalidating: bool,
+    end: u64,
+    storage_lost: bool,
+    spilled: &mut Vec<(u64, u64)>,
+) -> Drain {
     let first = CONSUMED.swap(end, Ordering::SeqCst);
     let epoch = EPOCH.load(Ordering::SeqCst);
     let old_epoch = OBSERVED_EPOCH.swap(epoch, Ordering::SeqCst);
@@ -603,9 +678,7 @@ fn drain_owned(
         result.reason = "land event hour unavailable or discontinuous";
         return result;
     }
-    if required <= LOG_CAPACITY.load(Ordering::Acquire)
-        && let Err(reason) = output.ensure(required)
-    {
+    if let Err(reason) = output.ensure(required) {
         fail();
         result.epoch = EPOCH.load(Ordering::SeqCst);
         result.lost = LOST.load(Ordering::Relaxed);
@@ -613,21 +686,22 @@ fn drain_owned(
         result.reason = reason;
         return result;
     }
-    if required > LOG_CAPACITY.load(Ordering::Acquire) || required > output.len() {
-        let log_overflow = required > LOG_CAPACITY.load(Ordering::Acquire);
+    if required > output.len() {
         fail();
         result.epoch = EPOCH.load(Ordering::SeqCst);
         result.lost = LOST.load(Ordering::Relaxed);
         OBSERVED_EPOCH.store(result.epoch, Ordering::SeqCst);
-        result.reason = if log_overflow {
-            "land event log capacity exceeded"
-        } else {
-            "land event drain capacity exceeded"
-        };
+        result.reason = "land event drain capacity exceeded";
+        return result;
+    }
+    if storage_lost {
+        result.epoch = EPOCH.load(Ordering::SeqCst);
+        OBSERVED_EPOCH.store(result.epoch, Ordering::SeqCst);
+        result.reason = STORAGE_FAILED;
         return result;
     }
     if epoch != old_epoch {
-        result.reason = "land event epoch changed after a failed read or overflow";
+        result.reason = "land event epoch changed after a failed read";
         return result;
     }
     if PRODUCERS.load(Ordering::SeqCst) != 0 {
@@ -638,14 +712,39 @@ fn drain_owned(
         result.reason = "land event producer active at boundary";
         return result;
     }
-    if required > 0 {
-        let log = log().unwrap(); // Nonzero capacity was checked above.
-        for (n, word) in output[..required].iter_mut().enumerate() {
-            *word = log.words[(first.wrapping_add(n as u64) % log.words.len() as u64) as usize]
-                .load(Ordering::Acquire);
-        }
+    // Every record before `end` is pushed once no producer is active.
+    if !take_spill(spilled, end) {
+        fail();
+        result.epoch = EPOCH.load(Ordering::SeqCst);
+        result.lost = LOST.load(Ordering::Relaxed);
+        OBSERVED_EPOCH.store(result.epoch, Ordering::SeqCst);
+        result.reason = STORAGE_FAILED;
+        return result;
     }
-    if PRODUCERS.load(Ordering::SeqCst) != 0
+    spilled.sort_unstable_by_key(|&(index, _)| index);
+    let log = log().filter(|log| !log.words.is_empty());
+    let mut held = spilled.partition_point(|&(index, _)| index < first);
+    let mut missing = false;
+    for (n, word) in output[..required].iter_mut().enumerate() {
+        let index = first.wrapping_add(n as u64);
+        *word = match spilled.get(held) {
+            Some(&(at, value)) if at == index => {
+                held += 1;
+                value
+            }
+            _ => match log {
+                Some(log) => {
+                    log.words[(index % log.words.len() as u64) as usize].load(Ordering::Acquire)
+                }
+                None => {
+                    missing = true;
+                    0
+                }
+            },
+        };
+    }
+    if missing
+        || PRODUCERS.load(Ordering::SeqCst) != 0
         || EPOCH.load(Ordering::SeqCst) != epoch
         || CURSOR.load(Ordering::SeqCst) != end
     {
@@ -1390,7 +1489,11 @@ pub(crate) mod test_support {
         LOG.store(&mut *storage, Ordering::SeqCst);
         LOG_CAPACITY.store(words, Ordering::SeqCst);
         LOG_REQUIRED.store(0, Ordering::SeqCst);
+        BASE_WORDS.store(0, Ordering::SeqCst);
+        OBSERVER_WORDS.store(0, Ordering::SeqCst);
         RESIZING.store(false, Ordering::SeqCst);
+        free_spill();
+        STORAGE_LOST.store(u64::MAX, Ordering::SeqCst);
         swap.current = Some(storage);
         CURSOR.store(0, Ordering::SeqCst);
         CONSUMED.store(0, Ordering::SeqCst);
@@ -1403,6 +1506,10 @@ pub(crate) mod test_support {
         PRODUCERS.store(0, Ordering::SeqCst);
         LAST_DISPATCHED.set((0, 0, 0));
         ENABLED.store(true, Ordering::SeqCst);
+    }
+    pub fn free_spill() {
+        drop(SPILL.take());
+        drop(std::mem::take(&mut *spilled()));
     }
     pub fn append_record(payload: &[u64]) {
         append(payload.len() + 1, |put| {
@@ -1852,7 +1959,7 @@ mod tests {
         unsafe extern "system-unwind" fn writer(_: usize, _: usize, _: usize, _: usize, _: usize) {}
         let original = ORIGINAL[DESTROYED].swap(writer as *const () as usize, Ordering::SeqCst);
         let _restore = Restore::new(&DESTRUCTION);
-        let mut output = [0; 32];
+        let mut output = vec![0; 32];
         drain(&mut output, 10, true);
         let lost = test_support::thread_lost();
         for _ in 0..2 {
@@ -2032,7 +2139,7 @@ mod tests {
         let _guard = exclusive();
         reset();
         let old_base = BASE.swap(0, Ordering::SeqCst);
-        let mut output = [0; 8];
+        let mut output = vec![0; 8];
         drain(&mut output, 10, true);
         let lost = test_support::thread_lost();
         let unknown_side = 0u64;
@@ -2484,7 +2591,7 @@ mod tests {
         assert!(!ENABLED.load(Ordering::SeqCst));
         assert!(release().is_err());
         assert_eq!(LOG.load(Ordering::SeqCst), storage);
-        let mut out = [0; 32];
+        let mut out = vec![0; 32];
         for (hour, load) in [(10, false), (11, true), (12, false)] {
             let rejected = drain(&mut out, hour, load);
             assert!(!rejected.complete);
@@ -2564,7 +2671,7 @@ mod tests {
         assert_eq!(ACTIVE.load(Ordering::SeqCst), 4);
         assert!(crate::runtime::observers_active());
         assert!(release().is_err());
-        let mut output = [0; 8];
+        let mut output = vec![0; 8];
         for (hour, load) in [(10, false), (11, true), (12, false)] {
             let refused = drain(&mut output, hour, load);
             assert!(!refused.complete);
@@ -2588,7 +2695,7 @@ mod tests {
     fn append_unwind_releases_producer_and_refuses_interval() {
         let _guard = exclusive();
         reset();
-        let mut output = [0; 8];
+        let mut output = vec![0; 8];
         drain(&mut output, 10, true);
         let lost = test_support::thread_lost();
         let result = std::panic::catch_unwind(|| {
@@ -2681,10 +2788,10 @@ mod tests {
         ENABLED.store(false, Ordering::SeqCst);
     }
     #[test]
-    fn first_gap_read_failure_capacity_and_busy_producer_are_unknown() {
+    fn first_gap_read_failure_and_busy_producer_are_unknown() {
         let _guard = exclusive();
         reset();
-        let mut out = [0; 32];
+        let mut out = vec![0; 32];
         assert!(!drain(&mut out, 10, false).complete);
         assert!(drain(&mut out, 11, false).complete);
         append(4, |put| {
@@ -2709,9 +2816,9 @@ mod tests {
             put(0);
             Ok(())
         });
-        let short = drain(&mut [], 22, false);
-        assert!(!short.complete);
-        assert_eq!(short.reason, "land event drain capacity exceeded");
+        let grown = drain(&mut Vec::new(), 22, false);
+        assert!(grown.complete, "{}", grown.reason);
+        assert_eq!(grown.words, 4);
         drain(&mut out, 23, true);
         PRODUCERS.store(1, Ordering::SeqCst);
         assert!(!drain(&mut out, 24, false).complete);
@@ -2719,39 +2826,92 @@ mod tests {
         ENABLED.store(false, Ordering::SeqCst);
     }
     #[test]
-    fn land_log_growth_exceeds_the_former_ceiling_and_counts_refused_intervals() {
+    fn a_record_past_the_log_spills_whole_and_the_log_grows_to_it() {
         let _guard = exclusive();
         test_support::reset_with_words(0);
-        let demand = (1 << 20) + 17; // Regression fixture beyond the removed cap.
+        let demand = (1 << 20) + 17;
         let mut out = vec![0; demand];
         drain(&mut out, 10, true);
-        append(demand, |_| {
-            panic!("short log must not read transient payload")
-        });
-        let overflow = drain(&mut out, 11, false);
-        assert!(!overflow.complete);
-        assert_eq!(overflow.reason, "land event log capacity exceeded");
-        assert!(overflow.lost > 0);
         let lost = test_support::thread_lost();
-        assert_eq!(overflow.required, demand);
-        // Growth starts no epoch; other modules' tests may on their threads.
         let epochs = test_support::thread_epochs();
-        prepare();
-        install_offered();
-        assert!(LOG_CAPACITY.load(Ordering::SeqCst) >= demand);
-        assert_eq!(test_support::thread_epochs(), epochs);
-        append(demand, |put| {
-            for _ in 1..demand {
-                put(7);
-            }
-            Ok(())
-        });
-        let recovered = drain(&mut out, 12, false);
-        assert!(recovered.complete);
-        assert_eq!(recovered.words, demand);
-        assert_eq!(out[0], demand as u64);
-        assert!(out[1..].iter().all(|&word| word == 7));
+        for hour in [11, 12] {
+            append(demand, |put| {
+                for word in 1..demand {
+                    put(word as u64);
+                }
+                Ok(())
+            });
+            let drained = drain(&mut out, hour, false);
+            assert!(drained.complete, "{}", drained.reason);
+            assert_eq!(drained.words, demand);
+            assert_eq!(drained.required, demand);
+            assert_eq!(out[0], demand as u64);
+            assert!(out[1..].iter().enumerate().all(|(n, &word)| word == n as u64 + 1));
+            assert!(spilled().is_empty() && SPILL.is_empty());
+            prepare();
+            install_offered();
+            assert!(LOG_CAPACITY.load(Ordering::SeqCst) >= demand);
+        }
         assert_eq!(test_support::thread_lost(), lost);
+        assert_eq!(test_support::thread_epochs(), epochs);
+        ENABLED.store(false, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn records_past_a_short_log_keep_their_order_among_ring_records() {
+        let _guard = exclusive();
+        test_support::reset_with_words(8);
+        let mut out = vec![0; 64];
+        drain(&mut out, 10, true);
+        for payload in 1..=6 {
+            test_support::append_record(&[payload, payload * 10]);
+        }
+        let drained = drain(&mut out, 11, false);
+        assert!(drained.complete, "{}", drained.reason);
+        assert_eq!(drained.words, 18);
+        let records: Vec<_> = out[..18].chunks(3).map(|record| record.to_vec()).collect();
+        assert_eq!(
+            records,
+            (1..=6).map(|payload| vec![3, payload, payload * 10]).collect::<Vec<_>>()
+        );
+        assert!(spilled().is_empty() && SPILL.is_empty());
+        ENABLED.store(false, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn a_spill_never_waits_for_the_drain_and_a_burst_keeps_every_record_in_order() {
+        let _guard = exclusive();
+        test_support::reset_with_words(8);
+        let mut out = vec![0; 1024];
+        drain(&mut out, 10, true);
+        let lost = LOST.load(Ordering::SeqCst);
+        // The drain's spill storage stays held through the whole burst.
+        let held = spilled();
+        let (done, finished) = std::sync::mpsc::channel();
+        let producer = std::thread::spawn(move || {
+            test_support::adopt();
+            for payload in 1..=40_u64 {
+                test_support::append_record(&[payload, payload * 10, !payload]);
+            }
+            done.send(()).unwrap();
+        });
+        finished
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("a land event spill waited for the drain's lock");
+        drop(held);
+        producer.join().unwrap();
+        let drained = drain(&mut out, 11, false);
+        assert!(drained.complete, "{}", drained.reason);
+        assert_eq!(drained.words, 160);
+        let records: Vec<_> = out[..160].chunks(4).map(<[u64]>::to_vec).collect();
+        assert_eq!(
+            records,
+            (1..=40_u64)
+                .map(|payload| vec![4, payload, payload * 10, !payload])
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(LOST.load(Ordering::SeqCst), lost);
+        assert!(spilled().is_empty() && SPILL.is_empty());
         ENABLED.store(false, Ordering::SeqCst);
     }
 
@@ -2802,7 +2962,7 @@ mod tests {
     fn a_real_producer_overlapping_the_boundary_poisoned_only_that_interval() {
         let _guard = exclusive();
         reset();
-        let mut out = [0; 32];
+        let mut out = vec![0; 32];
         drain(&mut out, 10, true);
         let entered = std::sync::Barrier::new(2);
         let release = std::sync::Barrier::new(2);
@@ -2842,7 +3002,7 @@ mod tests {
     fn resolver_lifetime_at_boundary_does_not_poison_an_interval() {
         let _guard = exclusive();
         reset();
-        let mut out = [0; 32];
+        let mut out = vec![0; 32];
         drain(&mut out, 10, true);
         let _resolver_call = Call::enter();
         assert_ne!(ACTIVE.load(Ordering::SeqCst), 0);
@@ -2867,7 +3027,7 @@ mod ownership_tests {
     fn a_foreign_thread_leaves_an_owned_log_alone() {
         let _guard = exclusive();
         reset();
-        let mut out = [0; 32];
+        let mut out = vec![0; 32];
         drain(&mut out, 10, true);
         let epoch = EPOCH.load(Ordering::SeqCst);
         let capacity = LOG_CAPACITY.load(Ordering::SeqCst);

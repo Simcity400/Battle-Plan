@@ -1868,3 +1868,34 @@ fn symbolic_buildings_validate_authored_group_order_not_bucket_slot_ids() {
         );
     }
 }
+
+/// A layer's slots handed to the scene as pages install exactly those slots through today's
+/// install, which shares the pages instead of converting them; pages patched by their changed
+/// chunks keep every untouched page shared.
+#[test]
+fn shared_slot_pages_install_as_the_layers_slots_and_share_untouched_pages() {
+    let kind = BuildingType { name: "infrastructure".into(), show_on_map: Some(1), show_on_map_meshes: 1, ..Default::default() };
+    let types = Buildings { declaration_order: vec![kind.name.clone()], types: BTreeMap::from([(kind.name.clone(), kind)]), ..Default::default() };
+    let defines = Defines { shrink_distance: 180.0, destroyed: 6_000_000, recovered: 8_000_000, damaged: 80_000, max_levels: 10, popup_speed: 5.0 };
+    let at = |x: f32| installed_content_core::positions::BuildingPosition { state: 100, kind: "infrastructure".into(), x, y: 0.0, z: x, rotation: 0.0, adjacent_sea: 0 };
+    let authored = (0..150).map(|id| (100, "infrastructure".to_owned(), at(id as f32), None)).collect();
+    let assets = MapBuildingAssets::stub(&types, defines, authored, Vec::new(), Vec::new(), None);
+    let hour = |at: i32| WireHour { branch: 0, hour: at, perspective: 1, fog: true, warnings: Vec::new(), city_damage: Arc::default() };
+    let mut slots: Vec<PreparedSlot> = (0..150).map(PreparedSlot::empty).collect();
+    let mut history = BuildingHistory::default();
+    let first = assets.slot_pages(&slots, &[], None).unwrap();
+    let product = assets.shared_product(&first, None, [7; 32], hour(1)).unwrap();
+    let installed = history.install_display(&product, &assets).unwrap();
+    assert!((0..150).all(|id| installed.slots[id] == slots[id]));
+    for id in [70, 140] {
+        slots[id].source = Some((0, id as u32));
+        slots[id].drawn_at_distance = Some(false);
+    }
+    let patched = assets.slot_pages(&slots, &[2, 1, 1], Some(&first)).unwrap();
+    assert!(Arc::ptr_eq(patched.0.chunks.get(0).unwrap(), first.0.chunks.get(0).unwrap()), "an untouched page is shared");
+    assert_eq!(patched.0, assets.slot_pages(&slots, &[], None).unwrap().0, "patched pages equal pages made whole");
+    let product = assets.shared_product(&patched, Some(&product), [7; 32], hour(2)).unwrap();
+    let installed = history.install_display(&product, &assets).unwrap();
+    assert!((0..150).all(|id| installed.slots[id] == slots[id]), "the install takes the layer's slots as they are");
+    assert!(installed.slots.ptr_eq(&patched.0), "the install shares the pages, converting nothing");
+}

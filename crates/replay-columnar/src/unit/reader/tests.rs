@@ -1,0 +1,322 @@
+use super::*;
+use crate::unit::{FrameEntry, PartEntry, column_stream, put_varint, put_wide, zig_wide};
+
+/// One stream of column 0 of model 0, its directory and events as given, compressed alone as a
+/// part's only frame: the bytes and the part's entry.
+fn part_of(tracks: u64, directory: &[u8], events: &[u8]) -> (Vec<u8>, PartEntry) {
+    let mut raw = vec![0_u8];
+    put_varint(&mut raw, tracks);
+    put_varint(&mut raw, directory.len() as u64);
+    put_varint(&mut raw, 0);
+    put_varint(&mut raw, 0);
+    raw.extend_from_slice(directory);
+    raw.extend_from_slice(events);
+    let stored = zstd::bulk::compress(&raw, 1).unwrap();
+    let digest = blake3::hash(&stored).as_bytes()[..16].try_into().unwrap();
+    let frame = FrameEntry { streams: vec![column_stream(0)], offset: 0, stored: stored.len() as u32, raw: raw.len() as u32, digest, chained: false, small: false };
+    (stored, PartEntry { first: 0, frames: vec![frame], ..PartEntry::default() })
+}
+
+/// Two rows at slots 0 and 1 of one number column.
+fn cells() -> TableState {
+    let mut cells = TableState::new(&[Kind::I32]);
+    cells.insert_row(0, 10).unwrap();
+    cells.insert_row(1, 11).unwrap();
+    cells
+}
+
+fn advanced(bytes: &[u8], entry: &PartEntry) -> io::Result<Advanced> {
+    let part = fetch(&bytes.to_vec(), entry, BLOCK as u16 - 1, &[0], None)?;
+    let mut cursor = Cursor::new(&[Kind::I32], &[0], 0);
+    cursor.push(part);
+    let mut cells = cells();
+    cursor.advance(23, 24, &mut cells, &mut [Vec::new()], &mut Lives::default())
+}
+
+/// A well-formed stream reads: the base the damaged ones below are made from.
+#[test]
+fn a_whole_stream_reads() {
+    // Slot 0: at hour 0, +1; slot 1: at hour 1, +1.
+    let (bytes, entry) = part_of(2, &[0, 2, 2, 1, 2, 2], &[0, 2, 1, 2]);
+    assert_eq!(advanced(&bytes, &entry).unwrap(), Advanced::Reached);
+}
+
+/// A directory one byte longer than its tracks is refused when the part is fetched.
+#[test]
+fn a_directory_that_disagrees_is_refused_by_name() {
+    let (bytes, entry) = part_of(1, &[0, 2, 2, 0], &[0, 2]);
+    let refused = fetch(&bytes, &entry, BLOCK as u16 - 1, &[0], None).unwrap_err();
+    assert!(refused.to_string().contains("directory disagrees"), "{refused}");
+}
+
+/// A track whose length passes its stream is refused when the part is fetched.
+#[test]
+fn a_track_running_past_its_stream_is_refused_by_name() {
+    let (bytes, entry) = part_of(1, &[0, 2, 9], &[0, 2]);
+    let refused = fetch(&bytes, &entry, BLOCK as u16 - 1, &[0], None).unwrap_err();
+    assert!(refused.to_string().contains("passes its stream"), "{refused}");
+}
+
+/// An event's code that runs on into the next track's bytes is damage, reported by name after the
+/// loop.
+#[test]
+fn an_event_running_into_the_next_track_is_refused_by_name() {
+    let (bytes, entry) = part_of(2, &[0, 2, 2, 1, 2, 2], &[0, 0x82, 1, 2]);
+    let refused = advanced(&bytes, &entry).unwrap_err();
+    assert!(refused.to_string().contains("damaged"), "{refused}");
+}
+
+/// A varint whose bytes run to the stream's end reads into the zero bytes past the frame, never
+/// out of it, and is refused by name.
+#[test]
+fn a_varint_running_past_the_buffer_is_refused_by_name() {
+    let (bytes, entry) = part_of(1, &[0, 2, 3], &[0, 0x80, 0x80]);
+    let refused = advanced(&bytes, &entry).unwrap_err();
+    assert!(refused.to_string().contains("damaged"), "{refused}");
+}
+
+/// A track whose events lie past its part's last hour is refused when the cursor passes the part.
+#[test]
+fn events_past_their_part_are_refused_by_name() {
+    let (bytes, entry) = part_of(1, &[0, 2, 3], &[0x80, 0x05, 2]);
+    let part = fetch(&bytes, &entry, 10, &[0], None).unwrap();
+    let mut cursor = Cursor::new(&[Kind::I32], &[0], 0);
+    cursor.push(part);
+    let mut cells = cells();
+    let refused = cursor.advance(20, 24, &mut cells, &mut [Vec::new()], &mut Lives::default()).unwrap_err();
+    assert!(refused.to_string().contains("past its part"), "{refused}");
+}
+
+/// One block of `script`'s hours on a table of a number and a list column, written by the store:
+/// the unit's bytes, its page, and the table after each hour.
+fn written(script: impl Fn(u32, &mut crate::store::TableChanges<'_>)) -> (Vec<u8>, crate::unit::BlockPage, Vec<TableState>) {
+    use crate::{
+        store::Store,
+        unit::{BlockPage, Encoder, PartSink, Settings},
+    };
+    #[derive(Default)]
+    struct Memory {
+        bytes: Vec<u8>,
+        pages: Vec<BlockPage>,
+    }
+    impl PartSink for Memory {
+        fn frame(&mut self, stored: &[u8]) -> io::Result<u64> {
+            let offset = self.bytes.len() as u64;
+            self.bytes.extend_from_slice(stored);
+            Ok(offset)
+        }
+
+        fn block(&mut self, page: BlockPage) -> io::Result<()> {
+            self.pages.push(page);
+            Ok(())
+        }
+
+        fn read_back(&mut self, offset: u64, stored: u32, out: &mut Vec<u8>) -> io::Result<()> {
+            out.clear();
+            out.extend_from_slice(&self.bytes[offset as usize..offset as usize + stored as usize]);
+            Ok(())
+        }
+    }
+    let kinds = vec![Kind::I32, Kind::U32List];
+    let mut store = Store::new(vec![kinds.clone()], vec![false]);
+    store.attach(Encoder::new(&[kinds], Settings::at(3)).unwrap());
+    let mut memory = Memory::default();
+    let mut states = Vec::new();
+    store.begin_run(0);
+    for hour in 0..BLOCK {
+        store.begin_hour(hour as i32, &[]).unwrap();
+        store.status(0, Status::Complete, true, Some(hour as i32), true).unwrap();
+        script(hour, &mut store.table(0).unwrap());
+        store.end_hour(&mut memory).unwrap();
+        states.push(store.table_state(0).unwrap().clone());
+    }
+    store.end_block();
+    (memory.bytes, memory.pages.remove(0), states)
+}
+
+/// A row's key and cells, as text.
+fn row(cells: &TableState, slot: u32) -> (Option<u128>, Vec<String>) {
+    (cells.key(slot), (0..2).map(|column| format!("{:?}", cells.value(column, slot))).collect())
+}
+
+fn live_rows(cells: &TableState) -> Vec<(u32, Option<u128>, Vec<String>)> {
+    cells.rows().map(|slot| {
+        let (key, values) = row(cells, slot);
+        (slot, key, values)
+    }).collect()
+}
+
+/// A cursor over the block's one part from hour 1, its cells the table after hour 0.
+fn cursor_over(bytes: &[u8], page: &crate::unit::BlockPage, states: &[TableState]) -> (Cursor, TableState) {
+    let part = fetch(&bytes.to_vec(), &page.tables[0].parts[0], page.hours - 1, &[0, 1], None).unwrap();
+    let mut cursor = Cursor::new(&[Kind::I32, Kind::U32List], &[0, 1], 1);
+    cursor.push(part);
+    (cursor, states[0].clone())
+}
+
+/// Each row a step deletes is handed over with its cells at its last live hour, before it is
+/// cleared: a row older than the step, a row born and gone within the step on the slot the first
+/// left (with writes between), a row born and gone on a fresh slot; the slot taken a third time.
+/// The step otherwise ends as `advance` leaves it.
+#[test]
+fn a_deleted_row_is_seen_at_its_last_live_hour() {
+    use crate::state::Cell;
+    let list = |items: &[u32]| items.to_vec();
+    let script = |hour: u32, changes: &mut crate::store::TableChanges<'_>| {
+        let lists = [list(&[1, 2, 3]), list(&[1, 9, 3]), list(&[4, 4]), list(&[7, 7, 7, 7, 7])];
+        match hour {
+            0 => {
+                changes.insert_at(0, 1).unwrap();
+                changes.write(0, 0, Cell::I32(5)).unwrap();
+                changes.write(0, 1, Cell::U32List(&lists[0])).unwrap();
+                changes.insert_at(1, 4).unwrap();
+                changes.write(1, 0, Cell::I32(100)).unwrap();
+                changes.write(1, 1, Cell::U32List(&lists[2])).unwrap();
+            }
+            26 => {
+                changes.insert_at(2, 5).unwrap();
+                changes.write(2, 0, Cell::I32(-3)).unwrap();
+                changes.write(2, 1, Cell::U32List(&lists[3])).unwrap();
+            }
+            27 => {
+                changes.write(2, 0, Cell::I32(-30)).unwrap();
+                changes.write(2, 1, Cell::U32List(&lists[1])).unwrap();
+            }
+            29 => changes.write(2, 0, Cell::I32(-31)).unwrap(),
+            30 => changes.delete(0).unwrap(),
+            31 => changes.delete(2).unwrap(),
+            32 => {
+                changes.insert_at(0, 2).unwrap();
+                changes.write(0, 0, Cell::I32(70)).unwrap();
+                changes.write(0, 1, Cell::U32List(&lists[0])).unwrap();
+            }
+            33 => changes.write(0, 1, Cell::U32List(&lists[1])).unwrap(),
+            35 => changes.write(0, 0, Cell::I32(71)).unwrap(),
+            40 => changes.delete(0).unwrap(),
+            44 => {
+                changes.insert_at(0, 3).unwrap();
+                changes.write(0, 0, Cell::I32(9)).unwrap();
+            }
+            45 => changes.write(0, 1, Cell::U32List(&lists[2])).unwrap(),
+            _ => {}
+        }
+        if hour % 3 == 0 && hour > 0 && changes.held().live().get(1) {
+            changes.write(1, 0, Cell::I32(100 + hour as i32)).unwrap();
+        }
+        if hour > 0 && hour < 30 && hour % 4 == 1 {
+            changes.write(0, 0, Cell::I32(5 + hour as i32)).unwrap();
+        }
+    };
+    let (bytes, page, states) = written(script);
+    // The reference: hour by hour, each deleted row read at the end of the hour before its delete.
+    let (mut hourly, mut cells) = cursor_over(&bytes, &page, &states);
+    let mut expected = Vec::new();
+    let mut before = cells.clone();
+    for hour in 1..48_u16 {
+        let mut lives = Lives::default();
+        hourly.advance(hour, 1, &mut cells, &mut [Vec::new(), Vec::new()], &mut lives).unwrap();
+        for &(at, slot, key) in &lives.deleted {
+            expected.push((at, slot, key, row(&before, slot)));
+        }
+        before = cells.clone();
+    }
+    // Hours 1 to 23 as one step, then 24 to 47 seen.
+    let (mut stepped, mut seen_cells) = cursor_over(&bytes, &page, &states);
+    let (mut plain, mut plain_cells) = cursor_over(&bytes, &page, &states);
+    let mut seen = Vec::new();
+    for (to, step) in [(23_u16, 23_u16), (47, 24)] {
+        let (mut written, mut lives) = (vec![Vec::new(), Vec::new()], Lives::default());
+        stepped.advance_seeing(to, step, &mut seen_cells, &mut written, &mut lives, &mut |hour, slot, key, cells| seen.push((hour, slot, key, row(cells, slot)))).unwrap();
+        let (mut plain_written, mut plain_lives) = (vec![Vec::new(), Vec::new()], Lives::default());
+        plain.advance(to, step, &mut plain_cells, &mut plain_written, &mut plain_lives).unwrap();
+        assert_eq!(live_rows(&seen_cells), live_rows(&plain_cells), "the cells after the step to {to}");
+        assert_eq!(written, plain_written, "the slots written in the step to {to}");
+        assert_eq!(lives, plain_lives, "the lives of the step to {to}");
+        assert_eq!(live_rows(&seen_cells), live_rows(&states[usize::from(to)]), "the store's table after hour {to}");
+    }
+    assert_eq!(expected.len(), 3, "three rows are deleted: {expected:?}");
+    assert_eq!(seen, expected, "each deleted row as it stood at its last live hour");
+}
+
+
+/// A long run of consecutive rows deleted in one hour beside single deletes, and a slot of the run
+/// taken again in the step: the cells, the lives in slot order and the slots written equal a
+/// cursor stepped hour by hour and the store's table.
+#[test]
+fn a_run_of_deleted_rows_is_cleared_as_one() {
+    use crate::state::Cell;
+    let script = |hour: u32, changes: &mut crate::store::TableChanges<'_>| {
+        let list = [3_u32, 4];
+        match hour {
+            0 => {
+                for slot in 0..200 {
+                    changes.insert_at(slot, 1000 + u128::from(slot)).unwrap();
+                    changes.write(slot, 0, Cell::I32(slot as i32)).unwrap();
+                    changes.write(slot, 1, Cell::U32List(&list[..(slot % 3) as usize])).unwrap();
+                }
+            }
+            30 => {
+                for slot in (3..5).chain(10..150).chain([160, 190]) {
+                    changes.delete(slot).unwrap();
+                }
+            }
+            31 => {
+                changes.insert_at(40, 77).unwrap();
+                changes.write(40, 0, Cell::I32(-7)).unwrap();
+            }
+            _ if hour % 5 == 0 => {
+                for slot in [0, 150, 199] {
+                    changes.write(slot, 0, Cell::I32(hour as i32)).unwrap();
+                }
+            }
+            _ => {}
+        }
+    };
+    let (bytes, page, states) = written(script);
+    let (mut hourly, mut hourly_cells) = cursor_over(&bytes, &page, &states);
+    let (mut stepped, mut cells) = cursor_over(&bytes, &page, &states);
+    let mut hourly_lives = Lives::default();
+    for hour in 1..48_u16 {
+        hourly.advance(hour, 1, &mut hourly_cells, &mut [Vec::new(), Vec::new()], &mut hourly_lives).unwrap();
+    }
+    let mut lives = Lives::default();
+    for (to, step) in [(23_u16, 23_u16), (47, 24)] {
+        stepped.advance(to, step, &mut cells, &mut [Vec::new(), Vec::new()], &mut lives).unwrap();
+        assert_eq!(live_rows(&cells), live_rows(&states[usize::from(to)]), "the store's table after hour {to}");
+    }
+    assert_eq!(lives, hourly_lives, "the lives, in slot order within each hour");
+    assert_eq!(live_rows(&cells), live_rows(&hourly_cells));
+    assert_eq!(lives.deleted.len(), 144);
+    assert_eq!(cells.value(0, 100), Value::Number(0), "a cleared slot holds nothing");
+}
+
+/// Stepping past varints and summing key differences, 64 or eight bytes or a word's keys at a
+/// time, equal reading them one at a time: widths of one to nineteen bytes, in runs and mixed,
+/// from every start, for every count; a step past the stream's end is refused.
+#[test]
+fn stepping_past_values_and_summing_keys_equal_reading_them_one_at_a_time() {
+    let mut differences: Vec<i128> = (0..40).map(|index| index % 3 - 1).collect();
+    differences.extend((0..40).map(|index| (200 + index * 37) * if index % 2 == 0 { 1 } else { -1 }));
+    differences.extend((0..30).map(|index| match index % 5 {
+        0 => 5,
+        1 => -3000,
+        2 => 1 << 40,
+        3 => -(1 << 100),
+        _ => 70,
+    }));
+    let (mut raw, mut ends) = (Vec::new(), vec![0]);
+    for &difference in &differences {
+        put_wide(&mut raw, zig_wide(difference));
+        ends.push(raw.len());
+    }
+    for start in 0..differences.len() {
+        for count in 0..=differences.len() - start {
+            let mut at = ends[start];
+            let sum = logs::sum_keys(&raw, &mut at, count as u64).unwrap();
+            assert_eq!(at, ends[start + count], "from {start}, {count} keys");
+            assert_eq!(sum, differences[start..start + count].iter().fold(0_i128, |sum, difference| sum.wrapping_add(*difference)), "from {start}, {count} keys");
+            assert_eq!(numbers::skip(&raw, ends[start], raw.len(), count), Some(ends[start + count]), "from {start}, {count} values");
+        }
+    }
+    assert_eq!(numbers::skip(&raw, 0, ends[3], 4), None, "four values past an end after three");
+}

@@ -78,22 +78,8 @@ pub struct CarrierPool {
     pub planes_raw: Option<i32>,
 }
 
-/// Caller-owned admitted capacities; acquisition never grows these slices.
-pub struct CarrierBuffers<'a> {
-    pub bases: &'a mut [CarrierBase],
-    pub registrations: &'a mut [CarrierRegistration],
-    pub pools: &'a mut [CarrierPool],
-    pub countries: &'a mut [CountryOccurrence],
-    pub names: &'a mut [u8],
-    pub indexed: &'a mut [Option<CarrierIndexedCertificate>],
-    pub resolved: &'a mut [ResolvedLink],
-    pub country_terms: &'a mut [CarrierCountryTerms],
-    pub aces: &'a mut [CarrierAceSlot],
-    pub forecasts: &'a mut [CarrierForecastSlot],
-}
-
 /// Worker-owned carrier arenas grow from original headers before admission.
-pub struct GrowingCarrierBuffers<'a> {
+pub struct CarrierBuffers<'a> {
     pub bases: &'a mut Vec<CarrierBase>,
     pub registrations: &'a mut Vec<CarrierRegistration>,
     pub pools: &'a mut Vec<CarrierPool>,
@@ -113,7 +99,7 @@ struct CaptureBuffers<'a> {
     countries: Buffer<'a, CountryOccurrence>,
     names: Buffer<'a, u8>,
     indexed: Buffer<'a, Option<CarrierIndexedCertificate>>,
-    resolved: Buffer<'a, ResolvedLink>,
+    resolved: &'a mut [ResolvedLink],
     country_terms: Buffer<'a, CarrierCountryTerms>,
     aces: Buffer<'a, CarrierAceSlot>,
     forecasts: Buffer<'a, CarrierForecastSlot>,
@@ -187,7 +173,7 @@ pub struct CarrierCapture<'a, M: Memory> {
     registrations: Buffer<'a, CarrierRegistration>,
     pools: Buffer<'a, CarrierPool>,
     dense: Buffer<'a, CountryOccurrence>,
-    names: cname_group_member::NameArena<'a>,
+    names: cname_group_member::Names<'a>,
     indexed: Buffer<'a, Option<CarrierIndexedCertificate>>,
     lengths: CarrierLengths,
     demand: CarrierDemand,
@@ -196,6 +182,7 @@ pub struct CarrierCapture<'a, M: Memory> {
 }
 
 impl<'a, M: Memory> CarrierCapture<'a, M> {
+
     pub fn new(
         memory: &'a M,
         image: usize,
@@ -203,37 +190,14 @@ impl<'a, M: Memory> CarrierCapture<'a, M> {
         countries: &'a ccountry::Reader<'a, M>,
         buffers: CarrierBuffers<'a>,
     ) -> Self {
-        Self::new_buffers(
-            memory,
-            image,
-            game_state,
-            countries,
-            CaptureBuffers {
-                bases: Buffer::Fixed(buffers.bases),
-                registrations: Buffer::Fixed(buffers.registrations),
-                pools: Buffer::Fixed(buffers.pools),
-                countries: Buffer::Fixed(buffers.countries),
-                names: Buffer::Fixed(buffers.names),
-                indexed: Buffer::Fixed(buffers.indexed),
-                resolved: Buffer::Fixed(buffers.resolved),
-                country_terms: Buffer::Fixed(buffers.country_terms),
-                aces: Buffer::Fixed(buffers.aces),
-                forecasts: Buffer::Fixed(buffers.forecasts),
-            },
-        )
-    }
-
-    pub fn new_growing(
-        memory: &'a M,
-        image: usize,
-        game_state: usize,
-        countries: &'a ccountry::Reader<'a, M>,
-        buffers: GrowingCarrierBuffers<'a>,
-    ) -> Result<Self, &'static str> {
         let [canonical, links] = countries.arrays();
-        Buffer::Growing(&mut *buffers.resolved).ensure(links.count as usize)?;
-        Buffer::Growing(&mut *buffers.country_terms).ensure(canonical.count as usize)?;
-        Ok(Self::new_buffers(
+        let refused = Buffer::Growing(&mut *buffers.resolved)
+            .ensure(links.count as usize)
+            .and_then(|_| {
+                Buffer::Growing(&mut *buffers.country_terms).ensure(canonical.count as usize)
+            })
+            .err();
+        let mut capture = Self::new_buffers(
             memory,
             image,
             game_state,
@@ -245,12 +209,16 @@ impl<'a, M: Memory> CarrierCapture<'a, M> {
                 countries: Buffer::Growing(buffers.countries),
                 names: Buffer::Growing(buffers.names),
                 indexed: Buffer::Growing(buffers.indexed),
-                resolved: Buffer::Growing(buffers.resolved),
+                resolved: buffers.resolved.as_mut_slice(),
                 country_terms: Buffer::Growing(buffers.country_terms),
                 aces: Buffer::Growing(buffers.aces),
                 forecasts: Buffer::Growing(buffers.forecasts),
             },
-        ))
+        );
+        if let Some(reason) = refused {
+            capture.demand.failure.get_or_insert(reason);
+        }
+        capture
     }
 
     fn new_buffers(
@@ -267,7 +235,7 @@ impl<'a, M: Memory> CarrierCapture<'a, M> {
             countries: dense,
             names,
             mut indexed,
-            mut resolved,
+            resolved,
             country_terms,
             aces,
             forecasts,
@@ -295,7 +263,7 @@ impl<'a, M: Memory> CarrierCapture<'a, M> {
             registrations,
             pools,
             dense,
-            names: cname_group_member::NameArena {
+            names: cname_group_member::Names {
                 bytes: names,
                 len: 0,
                 required: 0,
@@ -391,7 +359,7 @@ impl<'a, M: Memory> CarrierCapture<'a, M> {
         if source.id != base.handle || source.state.is_some() {
             return;
         }
-        let name = carrier::host_name_buffer(
+        let name = carrier::host_name(
             self.memory,
             self.image,
             &source,

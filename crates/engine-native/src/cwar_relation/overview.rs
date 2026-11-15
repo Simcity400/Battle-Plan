@@ -538,9 +538,9 @@ pub fn walk(
     memory: &impl Memory,
     base: usize,
     state: usize,
-    output: &mut [OwnedRow],
-    goals: &mut [cwar_goal::relation::Row],
-    scores: &mut [CountryRow],
+    output: &mut Vec<OwnedRow>,
+    goals: &mut Vec<cwar_goal::relation::Row>,
+    scores: &mut Vec<CountryRow>,
 ) -> [Outcome; 3] {
     let mut cache = DiscoveryCache::new(scores.len() + 1, 0);
     walk_cached(memory, base, state, output, goals, scores, &mut cache)
@@ -548,30 +548,6 @@ pub fn walk(
 
 #[allow(clippy::too_many_arguments)]
 pub fn walk_cached(
-    memory: &impl Memory,
-    base: usize,
-    state: usize,
-    output: &mut [OwnedRow],
-    goals: &mut [cwar_goal::relation::Row],
-    scores: &mut [CountryRow],
-    cache: &mut DiscoveryCache,
-) -> [Outcome; 3] {
-    walk_cached_buffer(
-        memory,
-        base,
-        state,
-        Buffer::Fixed(output),
-        Buffer::Fixed(goals),
-        Buffer::Fixed(scores),
-        cache,
-        &mut |_, _| {},
-        &mut || false,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-#[cfg(test)]
-pub fn walk_cached_growing(
     memory: &impl Memory,
     base: usize,
     state: usize,
@@ -604,7 +580,7 @@ pub fn walk_cached_growing(
 /// the held owners visited without reading any diplomacy, relation or goal;
 /// the viewpoint and the score rows are read as on every hour.
 #[allow(clippy::too_many_arguments)]
-pub fn walk_cached_growing_with_owners(
+pub fn walk_cached_with_owners(
     memory: &impl Memory,
     base: usize,
     state: usize,
@@ -629,7 +605,7 @@ pub fn walk_cached_growing_with_owners(
 }
 
 /// Publishes the held walk when `certify` and the census allow
-/// ([`walk_cached_growing_with_owners`]); false reads nothing.
+/// ([`walk_cached_with_owners`]); false reads nothing.
 #[allow(clippy::too_many_arguments)]
 fn carry_held(
     countries: &ccountry::Reader<'_, impl Memory>,

@@ -6,11 +6,11 @@ import { resolveOptions, sectionFields } from '../../dashboard/options.ts';
 import type { ArmySizeReply } from '../../generated/dashboard';
 import '../definitions.ts';
 import { definition, OPTIONS } from './definition.ts';
-import { armyAbsent, armyMeasure, armySizeRequest, armyTooltips, armyWindows, formatArmyValue, formatArmyRaw,
+import { armyAbsent, armyMeasure, armySizeRequest, armyTooltips, armyWindows, formatArmyValue, formatArmyRaw, formatArmyRawFast,
   measureChoices, mergeArmyWindows, offersMeasure, validateArmySizeReply, validateArmyWindow } from './armySizeData.ts';
 
 const REPLY: ArmySizeReply = {
-  branchId: 'synthetic', available: true, measures: ['divisions', 'strength', 'battalions'], unknownMeasures: [], warnings: [],
+  branchId: 'synthetic', available: true, measures: ['divisions', 'strength', 'battalions'], warnings: [],
   windows: [], window: 0, interval: { firstHour: 100, lastHour: 105 },
   types: [{ key: 'modded_group', name: 'Modded unit group' }],
   series: [{ tag: 'opaque tag', membership: null, segments: [{ firstHour: 100, lastHour: 105 }],
@@ -22,8 +22,6 @@ test('Army size validates capabilities alongside the shared history shape', () =
   assert.throws(() => validateArmySizeReply({ ...REPLY, measures: ['unknown'] }));
   assert.throws(() => validateArmySizeReply({ ...REPLY, available: 1 }));
   assert.throws(() => validateArmySizeReply({ ...REPLY, warnings: [1] }));
-  assert.equal(validateArmySizeReply({ ...REPLY, templateSections: ['Unused template', 'Staff and garrison', 'HQ deployment'] }).templateSections?.length, 3);
-  assert.throws(() => validateArmySizeReply({ ...REPLY, templateSections: [17] }));
   assert.throws(() => validateArmySizeReply({ ...REPLY, window: -1 }));
   assert.throws(() => validateArmySizeReply({ ...REPLY, interval: null }));
   assert.throws(() => validateArmySizeReply({ ...REPLY, types: [{ key: 'group', name: null }] }));
@@ -40,21 +38,14 @@ test('only recorded measures are offered; divisions are the fallback until manpo
   assert.equal(armyMeasure('', ['strength']), 'strength');
 });
 
-test('a measure no prepared or sampled hour has read yet is unknown, never absent', () => {
-  const preparing: ArmySizeReply = { ...REPLY, available: false, measures: ['strength'], unknownMeasures: ['manpower', 'divisions'] };
-  assert.equal(validateArmySizeReply(preparing), preparing);
-  // A measure is reported or unknown, never both.
-  assert.throws(() => validateArmySizeReply({ ...REPLY, unknownMeasures: ['divisions'] }));
-  assert.throws(() => validateArmySizeReply({ ...REPLY, unknownMeasures: ['unknown'] }));
-  assert.throws(() => validateArmySizeReply({ ...REPLY, unknownMeasures: undefined }));
-  assert.deepEqual(measureChoices(preparing).map(choice => choice.value), ['manpower', 'divisions', 'strength']);
-  assert.equal(armyMeasure('manpower', preparing.measures, preparing.unknownMeasures), 'manpower', 'an explicit choice stays chosen');
-  assert.equal(armyMeasure('', preparing.measures, preparing.unknownMeasures), 'strength', 'a default is a reported measure');
-  assert.equal(armyMeasure('battalions', preparing.measures, preparing.unknownMeasures), 'strength');
-  assert.equal(offersMeasure(preparing, 'manpower'), true);
-  assert.equal(offersMeasure(preparing, 'battalions'), false);
-  assert.equal(armyAbsent(preparing), false, 'divisions may still be found');
-  assert.equal(armyAbsent({ ...preparing, unknownMeasures: [] }), true);
+test('only the measures the recording reports are offered, and an army it does not record is absent', () => {
+  const partial: ArmySizeReply = { ...REPLY, available: false, measures: ['strength'] };
+  assert.equal(validateArmySizeReply(partial), partial);
+  assert.equal(armyMeasure('manpower', partial.measures), 'strength', 'a measure not recorded is not chosen');
+  assert.equal(armyMeasure('', partial.measures), 'strength', 'a default is a reported measure');
+  assert.equal(offersMeasure(partial, 'manpower'), false);
+  assert.equal(offersMeasure(partial, 'strength'), true);
+  assert.equal(armyAbsent(partial), true);
   assert.equal(armyAbsent(REPLY), false);
 });
 
@@ -161,4 +152,11 @@ test('large adjacent HP totals remain distinct in exact tooltips and ranking', (
   const model = countryValuesModel(reply);
   const labels = raw.map((_, index) => [...armyTooltips(model, 'Country', countryValueAt(model, `country${index}`, 100)!, 100, 'strength', new Map())][0].rows[0].value);
   assert.deepEqual(labels, ['90,071,992,547.40986', '90,071,992,547.40987']);
+});
+
+test('a race label written fast is the label formatArmyRaw writes', () => {
+  const values = [0n, 1n, 7n, 999n, 1000n, 1001n, 12_345n, 100_000n, 123_456_789n, 9_007_199_254_740_991n, 9_007_199_254_740_992n, -1n, -100_000n, -123_456_789n];
+  for (let at = 0; at < 2000; at++) values.push(BigInt(Math.floor((at * 2_654_435_761) % 10 ** (1 + at % 15))) * (at % 7 === 0 ? -1n : 1n));
+  for (const measure of ['divisions', 'strength', 'battalions', 'manpower'] as const)
+    for (const raw of values) assert.equal(formatArmyRawFast(raw, measure), formatArmyRaw(raw.toString(), measure), `${raw} ${measure}`);
 });

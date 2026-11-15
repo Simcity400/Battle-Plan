@@ -175,39 +175,27 @@ fn for_each_pool<M: Memory>(
 /// Captures every pool row, including projects never started. IDs are local to
 /// the owning country. Only capacity limits the walk; exact engine-native
 /// values are neither rounded nor inferred from the saved completion flags.
-pub fn walk(memory: &impl Memory, base: usize, game_state: usize, output: &mut [Row]) -> Outcome {
+pub fn walk(memory: &impl Memory, base: usize, game_state: usize, output: &mut Vec<Row>) -> Outcome {
     walk_tables(
         memory,
         base,
         game_state,
-        Buffer::Fixed(output),
+        Buffer::Growing(output),
         None,
         &mut |_| true,
     )
     .0
 }
 
+pub fn count_with_history(memory: &impl Memory, base: usize, game_state: usize) -> (Outcome, Outcome) {
+    walk_with_history_buffer(memory, base, game_state, Buffer::Count, Buffer::Count)
+}
+
 /// One authenticated pool census produces both tables. Lifecycle/state failures
 /// affect projects only; malformed history affects history only. Empty output
 /// slices still count omitted rows without reading their state/child payloads.
-pub fn walk_with_history(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    projects: &mut [Row],
-    histories: &mut [history::Row],
-) -> (Outcome, Outcome) {
-    walk_with_history_buffer(
-        memory,
-        base,
-        game_state,
-        Buffer::Fixed(projects),
-        Buffer::Fixed(histories),
-    )
-}
-
 #[cfg(test)]
-pub fn walk_with_history_growing(
+pub fn walk_with_history(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -805,7 +793,7 @@ mod tests {
             status: Default::default(),
         };
         let mut full = (vec![], vec![]);
-        let expected = walk_with_history_growing(&memory.memory, 0, GAME, &mut full.0, &mut full.1);
+        let expected = walk_with_history(&memory.memory, 0, GAME, &mut full.0, &mut full.1);
         let mut projects = vec![];
         let mut histories = vec![];
         let mut selected = |id: u32| id == 3;
@@ -848,8 +836,8 @@ mod tests {
             base: 0,
             bytes: &bytes,
         };
-        let mut projects = [Row::default(); MANY_COUNT];
-        let mut histories = [history::Row::default(); MANY_COUNT];
+        let mut projects = vec![Row::default(); MANY_COUNT];
+        let mut histories = vec![history::Row::default(); MANY_COUNT];
         assert_eq!(
             walk_with_history(&memory, 0, GAME, &mut projects, &mut histories),
             (
@@ -919,8 +907,8 @@ mod tests {
                     &memory,
                     0,
                     GAME,
-                    Buffer::for_worker(&mut projects, growing),
-                    Buffer::for_worker(&mut histories, growing),
+                    Buffer::Growing(&mut projects),
+                    Buffer::Growing(&mut histories),
                 );
                 assert_eq!(result.0, Outcome::Unavailable { reason });
                 assert_eq!(
@@ -943,44 +931,14 @@ mod tests {
     }
 
     #[test]
-    fn capacity_inside_a_batch_skips_invalid_omitted_state_and_counts_every_row() {
-        let mut bytes = many_projects();
-        put64(
-            &mut bytes,
-            MANY_PROJECTS + 5 * POOL_STRIDE + STATE_MACHINE,
-            u64::MAX,
-        );
-        let memory = SliceMemory {
-            base: 0,
-            bytes: &bytes,
-        };
-        assert_eq!(
-            walk_with_history(
-                &memory,
-                0,
-                GAME,
-                &mut [Row::default(); 5],
-                &mut [history::Row::default(); MANY_COUNT],
-            ),
-            (
-                Outcome::Truncated {
-                    len: 5,
-                    unread_rows: MANY_COUNT as u32 - 5,
-                },
-                Outcome::Rows { len: MANY_COUNT },
-            )
-        );
-    }
-
-    #[test]
     fn equivalent_owner_alias_is_authenticated_and_preserved_in_both_tables() {
         let bytes = fixture();
         let memory = SliceMemory {
             base: 0,
             bytes: &bytes,
         };
-        let mut projects = [Row::default(); 1];
-        let mut histories = [history::Row::default(); 1];
+        let mut projects = vec![Row::default(); 1];
+        let mut histories = vec![history::Row::default(); 1];
         assert_eq!(
             walk_with_history(&memory, 0, GAME, &mut projects, &mut histories),
             (Outcome::Rows { len: 1 }, Outcome::Rows { len: 1 })
@@ -1016,8 +974,8 @@ mod tests {
                 &memory,
                 0,
                 GAME,
-                &mut [Row::default(); 1],
-                &mut [history::Row::default(); 1],
+                &mut vec![Row::default(); 1],
+                &mut vec![history::Row::default(); 1],
             );
             match failed {
                 0 => {
@@ -1037,7 +995,7 @@ mod tests {
     }
 
     #[test]
-    fn independent_capacities_count_omissions_without_reading_omitted_state_or_history() {
+    fn each_count_probe_counts_its_table_without_reading_its_state_or_history() {
         let mut bytes = fixture();
         put64(&mut bytes, PROJECT + STATE_MACHINE, u64::MAX);
         let memory = SliceMemory {
@@ -1045,7 +1003,13 @@ mod tests {
             bytes: &bytes,
         };
         assert_eq!(
-            walk_with_history(&memory, 0, GAME, &mut [], &mut [history::Row::default(); 1]),
+            walk_with_history_buffer(
+                &memory,
+                0,
+                GAME,
+                Buffer::Count,
+                Buffer::Growing(&mut vec![history::Row::default(); 1]),
+            ),
             (
                 Outcome::Truncated {
                     len: 0,
@@ -1061,7 +1025,13 @@ mod tests {
             bytes: &bytes,
         };
         assert_eq!(
-            walk_with_history(&memory, 0, GAME, &mut [Row::default(); 1], &mut []),
+            walk_with_history_buffer(
+                &memory,
+                0,
+                GAME,
+                Buffer::Growing(&mut vec![Row::default(); 1]),
+                Buffer::Count,
+            ),
             (
                 Outcome::Rows { len: 1 },
                 Outcome::Truncated {

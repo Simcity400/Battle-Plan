@@ -349,7 +349,7 @@ fn the_states_mode_names_its_live_category_or_refuses_the_line() -> std::io::Res
             &vision,
             false,
             &Arc::new(Vec::new()),
-            &document.playback.replay_handle(),
+            &document.playback.roster_sampler(),
             &ModeHover::Location { category },
             || {},
         )
@@ -420,7 +420,7 @@ fn a_scripted_modes_hover_reads_the_viewer_and_the_hovered_state() -> std::io::R
         &vision,
         false,
         &Arc::new(Vec::new()),
-        &document.playback.replay_handle(),
+        &document.playback.roster_sampler(),
         &ModeHover::Scripted("fixture_mode".into()),
         || {},
     );
@@ -490,7 +490,7 @@ fn the_resistance_hover_shows_the_recorded_strengths() -> std::io::Result<()> {
         &vision,
         false,
         &Arc::new(Vec::new()),
-        &document.playback.replay_handle(),
+        &document.playback.roster_sampler(),
         &ModeHover::Occupation,
         || {},
     );

@@ -10,9 +10,10 @@ import { errorMessage } from '../shell/errors';
 import { newId } from '../shell/ids';
 import * as api from './api';
 import type { SettingsPatch } from './api';
-import { captureModeFixed, dateText, discardConsequence, discardDetail, followStatus, head, nextLoad, promptTitle, recordingName, recordsAutomatically, sessionLength,
+import { captureModeFixed, compressOffered, compressText, dateText, discardConsequence, discardDetail, followStatus, head, nextLoad, promptTitle, recordingName, recordsAutomatically, sessionLength,
   settingsQueue, sizeText, spanText, spoolTotalText, stopPromptVisible, stopQuestion, untilNextMinute, waitingDiscardQuestion, whatToRecord } from './status.ts';
 import type { CaptureMode, FlagImage, Head, NextLoad, RecorderSettings, Recordings, SavedRecording, Snapshot, UnsavedRecording } from './status';
+import { AUTO_COMPRESS_NOTE, COMPRESSION_NOTE } from './compression';
 import type { Compression } from './compression';
 import { setUpdateChannel, updatesAvailable } from '../update/api';
 import type { UpdateChannel, UpdateState } from '../update/api';
@@ -46,6 +47,8 @@ export interface PanelActions {
   askDiscardWaiting(recording: UnsavedRecording | null): void;
   /** Show a saved recording selected in its folder. */
   reveal(path: string): void;
+  /** Compress a saved recording to the smaller High size in the background. */
+  compress(path: string): void;
   /** Clear the command error shown. */
   dismiss(): void;
 }
@@ -199,7 +202,7 @@ export function PanelView({ snapshot, settings, view, asking, error, now, action
         </section>
         <section className="recorder-section is-last" aria-label="Saved">
           <div className="recorder-label">Saved</div>
-          {recordings && (saved.length ? saved.map(row => <SavedRow key={row.path} row={row} actions={actions} />)
+          {recordings && (saved.length ? saved.map(row => <SavedRow key={row.path} row={row} settings={settings} actions={actions} />)
             : <p className="recorder-empty">No saved recordings yet.</p>)}
         </section>
       </div>
@@ -241,9 +244,11 @@ export function PanelView({ snapshot, settings, view, asking, error, now, action
         <button type="button" className="recorder-row recorder-link" onClick={() => actions.view('record')}><span>What to record</span>
           <span className="recorder-value">{whatToRecord(settings)}<Icon name="chevron-right" /></span></button>
         <div className="recorder-row"><span>Compression</span>
-          <Segmented<Compression> label="Compression" value={settings.blockCompression ?? 'high'}
+          <Segmented<Compression> label="Compression" value={settings.liveCompression}
             options={[{ value: 'low', label: 'Low' }, { value: 'high', label: 'High' }]} onChange={compression => actions.settings({ compression })} /></div>
-        <p className="recorder-note">High makes the smallest files with more recorder CPU; Low makes larger files with less. Never in the game.</p>
+        <p className="recorder-note">{COMPRESSION_NOTE}</p>
+        {settings.liveCompression === 'low' && <Toggle label="Auto Compress" description={AUTO_COMPRESS_NOTE} checked={settings.autoCompress}
+          onChange={autoCompress => actions.settings({ autoCompress })} />}
       </section>
       <section className="recorder-section">
         <div className="recorder-label">Folders</div>
@@ -365,14 +370,19 @@ function UnsavedRow({ row, actions, confirming }: { row: UnsavedRecording; actio
   </div>;
 }
 
-function SavedRow({ row, actions }: { row: SavedRecording; actions: PanelActions }) {
+function SavedRow({ row, settings, actions }: { row: SavedRecording; settings: RecorderSettings | null; actions: PanelActions }) {
+  const kept = row.job?.state === 'kept';
   return <div className="recorder-item is-openable">
     <ItemFlag flag={row.flag} />
     <button type="button" className="recorder-item-name recorder-item-open" data-tooltip={`Open in Battle Plan · ${recordingFilename(row.path)}`}
       onClick={() => actions.open(row.path)}>{recordingDisplayName(row.path)}</button>
-    <span className="recorder-item-meta"><span>{joined([spanText(row.firstHour, row.lastHour), sizeText(row.bytes)])}</span></span>
-    <span className="recorder-item-actions"><button type="button" className="icon-button" aria-label="Show in folder" data-tooltip="Show in folder"
-      onClick={() => actions.reveal(row.path)}><Icon name="folder-open" /></button></span>
+    <span className={`recorder-item-meta${kept ? ' is-warning' : ''}`} role={row.job ? 'status' : undefined}>
+      <span>{joined([spanText(row.firstHour, row.lastHour), sizeText(row.bytes), compressText(row.job)])}</span></span>
+    <span className="recorder-item-actions">
+      {compressOffered(settings, row) && <button type="button" className="button small recorder-item-action"
+        data-tooltip="Compress to the smaller High size in the background" onClick={() => actions.compress(row.path)}>Compress</button>}
+      <button type="button" className="icon-button" aria-label="Show in folder" data-tooltip="Show in folder"
+        onClick={() => actions.reveal(row.path)}><Icon name="folder-open" /></button></span>
   </div>;
 }
 
@@ -536,6 +546,7 @@ export default function RecorderPanel() {
     },
     askDiscardWaiting: recording => setConfirmingWaiting(recording && waitingKey(recording)),
     reveal: path => run(() => api.revealRecording(path)),
+    compress: path => run(() => api.compressRecording(path)),
     dismiss: () => setError(null),
   };
   const update: PanelUpdate = {

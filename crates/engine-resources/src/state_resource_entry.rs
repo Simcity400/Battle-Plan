@@ -25,14 +25,14 @@ pub struct Row {
     pub amount: i64,
 }
 
+pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
+    walk_buffer(memory, base, game_state, crate::walk::Buffer::Count)
+}
+
 /// Reads the live template-resource count, retaining signed fixed5 amounts.
 /// Empty-key entries are native state and are retained rather than invented as
 /// absence. Duplicate resource ids are rejected instead of silently aggregated.
-pub fn walk(memory: &impl Memory, base: usize, game_state: usize, output: &mut [Row]) -> Outcome {
-    walk_buffer(memory, base, game_state, crate::walk::Buffer::Fixed(output))
-}
-
-pub fn walk_growing(
+pub fn walk(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -218,7 +218,7 @@ mod tests {
             base: 0x1000,
             bytes: &bytes,
         };
-        let mut output = [Row::default(); 3];
+        let mut output = vec![Row::default(); 3];
         assert_eq!(
             walk(&memory, 0x1000, 0x1000, &mut output),
             Outcome::Rows { len: 2 }
@@ -241,13 +241,6 @@ mod tests {
                 amount: -5_000_000_001
             }
         );
-        assert_eq!(
-            walk(&memory, 0x1000, 0x1000, &mut output[..1]),
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            }
-        );
     }
 
     #[test]
@@ -258,7 +251,7 @@ mod tests {
             0x800 + cstate_template::RESOURCE_COUNT,
             0_i32.to_le_bytes(),
         );
-        let mut output = [Row::default(); 3];
+        let mut output = vec![Row::default(); 3];
         assert_eq!(
             walk(
                 &SliceMemory {

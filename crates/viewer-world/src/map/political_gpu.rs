@@ -573,6 +573,65 @@ impl View {
         }
     }
 
+    /// The country layer of the state this view alone shows, updated for the provinces of
+    /// `provinces` (whose key in `region_of` may have changed) and the keys of `keys` (whose
+    /// colour may have); `false`, touching nothing, when the state is shared, a map mode draws, or
+    /// nothing is shown yet: the caller then shows the tables whole.
+    pub fn show_changed(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        region_of: &[u32],
+        color: &dyn Fn(u32) -> [u8; 3],
+        provinces: &[usize],
+        keys: &[u32],
+    ) -> io::Result<bool> {
+        let Some(state) = self.shown.as_ref().filter(|state| Arc::strong_count(state) == 1) else { return Ok(false) };
+        let mut fill = state.lock();
+        if fill.channels != POLITICAL || fill.shown.as_ref().is_some_and(|shown| shown.mode.is_some()) {
+            return Ok(false);
+        }
+        let field = self.base.field;
+        let layer = Layer::new(gradient::LayerKind::Country, region_of, color, &field);
+        fill.gpu.update_changed(device, queue, &layer, provinces, keys)?;
+        fill.shown = None;
+        Ok(true)
+    }
+
+    /// The naval layer of the state this view alone shows, updated for the strategic regions of
+    /// `keys` (region id plus one) whose attributes changed; `false`, touching nothing, as
+    /// [`Self::show_changed`] refuses.
+    pub fn show_naval(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        attributes: &dyn Fn(u32) -> gradient::Attributes,
+        keys: &[u32],
+    ) -> io::Result<bool> {
+        let Some(state) = self.shown.as_ref().filter(|state| Arc::strong_count(state) == 1) else { return Ok(false) };
+        let mut fill = state.lock();
+        if fill.channels != POLITICAL || fill.shown.as_ref().is_some_and(|shown| shown.mode.is_some()) {
+            return Ok(false);
+        }
+        let selected_style = |key| self.strategic_styles.get(&key);
+        let navy = |key| selected_style(key).map_or(self.base.field.navy_neutral, |s| [s.color[0], s.color[1], s.color[2]]);
+        let style = |key| {
+            let value = selected_style(key);
+            gradient::RegionStyle { alpha: value.map_or(0, |s| s.color[3]), pulse: value.is_some_and(|s| s.pulse), fill: value.map_or(1.0, |s| s.fill), thickness: None }
+        };
+        let field = self.base.field;
+        let mut layer = Layer::new(gradient::LayerKind::Fixed(field.strategic_thickness), &self.base.strategic_keys, &navy, &field);
+        layer.region_opacity = 0;
+        layer.no_region_color = field.navy_neutral;
+        layer.region_attributes = Some(attributes);
+        if !self.strategic_styles.is_empty() {
+            layer.region_style = Some(&style);
+        }
+        fill.naval.update_changed(device, queue, &layer, &[], keys)?;
+        fill.shown = None;
+        Ok(true)
+    }
+
     /// Show these tables; `true` when the view now draws a different texture pair.
     pub fn show(
         &mut self,
@@ -913,6 +972,10 @@ pub struct PoliticalGpu {
     ids: wgpu::Buffer,
     provinces: Arc<[Province]>,
     mapping: Vec<u32>,
+    /// Per region slot its provinces, and per province its place in its slot's list: a partial
+    /// update marks a restyled region's provinces without scanning the map.
+    members: Vec<Vec<u32>>,
+    member_at: Vec<u32>,
     source_keys: Vec<u32>,
     mapping_buffer: wgpu::Buffer,
     keys: HashMap<u32, usize>,
@@ -926,6 +989,8 @@ pub struct PoliticalGpu {
     alpha_stride: usize,
     capacity: usize,
     alpha_keys: HashMap<(u32, u32), usize>,
+    /// Region slots using each shape, so [`Self::update_changed`] frees a shape no region uses.
+    alpha_users: HashMap<(u32, u32), u32>,
     alpha_free: Vec<usize>,
     alpha_slots: usize,
     cells: wgpu::Buffer,
@@ -934,6 +999,8 @@ pub struct PoliticalGpu {
     dirty_buffer: wgpu::Buffer,
     indirect: wgpu::Buffer,
     dirty: Vec<bool>,
+    /// The cells `dirty` marks, so a partial update never scans the grid.
+    marked: Vec<u32>,
     copies: Vec<[u32; 4]>,
     group: wgpu::BindGroup,
     kernel: Arc<Kernel>,
@@ -1156,6 +1223,8 @@ impl PoliticalGpu {
             ids,
             provinces,
             source_keys: vec![0; mapping.len()],
+            member_at: vec![0; mapping.len()],
+            members: Vec::new(),
             mapping,
             mapping_buffer,
             keys: HashMap::from([(0, 0)]),
@@ -1169,6 +1238,7 @@ impl PoliticalGpu {
             alpha_stride,
             capacity: 1,
             alpha_keys: HashMap::new(),
+            alpha_users: HashMap::new(),
             alpha_free: Vec::new(),
             alpha_slots: 0,
             cells,
@@ -1176,6 +1246,7 @@ impl PoliticalGpu {
             dirty_buffer,
             indirect,
             dirty: vec![false; cell_count],
+            marked: Vec::new(),
             copies: Vec::new(),
             group,
             kernel,
@@ -1339,6 +1410,7 @@ impl PoliticalGpu {
         }
 
         self.dirty.fill(!self.initialized || self.pending);
+        self.marked.clear();
         let mut changed = Vec::new();
         {
             let _span = span("political_mapping");
@@ -1375,7 +1447,7 @@ impl PoliticalGpu {
                         if slot != 0 {
                             self.areas[slot] += pixels;
                         }
-                        self.mapping[province] = slot as u32;
+                        self.remap(province, slot);
                         changed.push(province);
                     }
                 }
@@ -1447,11 +1519,11 @@ impl PoliticalGpu {
                 self.thickness[slot] = shape;
             }
         }
-        let halo = (self.params.distance_cap + 1).max(
-            ((self.field.optimization_range.max(0.0) / GRID_CELL as f32).ceil() as u32)
-                .min(self.params.columns.max(self.params.rows))
-                + 1,
-        );
+        self.alpha_users.clear();
+        for &slot in self.keys.values().filter(|&&slot| slot != 0) {
+            *self.alpha_users.entry(self.thickness[slot]).or_default() += 1;
+        }
+        let halo = self.halo();
         for &province in &changed {
             self.mark(province, halo);
         }
@@ -1555,7 +1627,201 @@ impl PoliticalGpu {
         if !same_membership {
             self.source_keys.copy_from_slice(region_of);
         }
+        self.marked = dirty;
         Ok(())
+    }
+
+    fn halo(&self) -> u32 {
+        (self.params.distance_cap + 1).max(
+            ((self.field.optimization_range.max(0.0) / GRID_CELL as f32).ceil() as u32)
+                .min(self.params.columns.max(self.params.rows))
+                + 1,
+        )
+    }
+
+    /// [`Self::update`] for what a caller knows changed: the provinces of `provinces`, whose key may
+    /// differ from the one shown, and the keys of `keys`, whose colour or style may. Nothing walks
+    /// every province or every cell, but the provinces of a region whose row changed. While the
+    /// layer is not initialized, or when the region or lookup tables would grow past what the
+    /// buffers hold, it is the whole update. A key left with no province keeps its slot until the
+    /// next whole update releases it.
+    pub fn update_changed(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        layer: &Layer<'_>,
+        provinces: &[usize],
+        keys: &[u32],
+    ) -> io::Result<()> {
+        if !self.initialized
+            || self.field != *layer.field
+            || self.kind != layer.kind
+            || layer.region_of.len() < self.mapping.len()
+        {
+            return self.update(device, queue, layer);
+        }
+        if !self.pending {
+            for &cell in &self.marked {
+                self.dirty[cell as usize] = false;
+            }
+            self.marked.clear();
+        }
+        let mut touched = keys.to_vec();
+        let mut changed = Vec::new();
+        for &province in provinces {
+            if province >= self.mapping.len() {
+                continue;
+            }
+            let key = layer.region_of[province];
+            let held = self.source_keys[province];
+            if key == held {
+                continue;
+            }
+            let slot = match self.keys.get(&key) {
+                Some(&slot) => slot,
+                None => {
+                    let slot = match self.free.pop() {
+                        Some(slot) => {
+                            self.thickness[slot] = (u32::MAX, u32::MAX);
+                            slot
+                        }
+                        None if self.regions.len() < self.capacity => {
+                            self.regions.push(Region::default());
+                            self.areas.push(0);
+                            self.thickness.push((u32::MAX, u32::MAX));
+                            self.regions.len() - 1
+                        }
+                        None => return self.refill_update(device, queue, layer),
+                    };
+                    self.keys.insert(key, slot);
+                    slot
+                }
+            };
+            let old = self.mapping[province] as usize;
+            if old != slot {
+                let pixels = self.provinces[province].pixels;
+                if old != 0 {
+                    self.areas[old] -= pixels;
+                }
+                if slot != 0 {
+                    self.areas[slot] += pixels;
+                }
+                self.remap(province, slot);
+                changed.push(province);
+            }
+            self.source_keys[province] = key;
+            touched.extend([held, key]);
+        }
+        touched.sort_unstable();
+        touched.dedup();
+        let (mut affected, mut region_changes, mut alpha_changes) = (Vec::new(), Vec::new(), Vec::new());
+        for key in touched {
+            let Some(&slot) = self.keys.get(&key).filter(|_| key != 0) else { continue };
+            let t = layer.thickness(key, self.areas[slot]);
+            let field = FieldDefines { center: layer.center(key), ..*layer.field };
+            let shape = (t.to_bits(), field.center.to_bits());
+            let alpha_slot = match self.alpha_keys.get(&shape) {
+                Some(&slot) => slot,
+                None => {
+                    let slot = match self.alpha_free.pop() {
+                        Some(slot) => slot,
+                        None if ((self.alpha_slots + 1) * self.alpha_stride) as u64 <= self.alpha_buffer.size() => {
+                            self.alpha_slots += 1;
+                            self.alpha.resize(self.alpha_slots * self.alpha_stride, 0);
+                            self.alpha_slots - 1
+                        }
+                        None => return self.refill_update(device, queue, layer),
+                    };
+                    let reach = gradient::field_reach(t, &field);
+                    for (d2, a) in self.alpha[slot * self.alpha_stride..(slot + 1) * self.alpha_stride].iter_mut().enumerate() {
+                        let d = (d2 as f32).sqrt();
+                        *a = if d <= reach { gradient::field_alpha(d, t, field.center) } else { 0 };
+                    }
+                    self.alpha_keys.insert(shape, slot);
+                    alpha_changes.push(slot);
+                    slot
+                }
+            };
+            let (fx, fill) = style_words(layer.style(key));
+            let region = Region {
+                color: rgb((layer.region_color)(key)),
+                alpha_offset: (alpha_slot * self.alpha_stride / 4) as u32,
+                alpha_count: self.alpha_stride as u32,
+                radius: search_radius(t, &field, self.params.width, self.params.height),
+                attributes: layer.region_attributes.map_or(0, |read| read(key).packed()),
+                fx,
+                fill,
+            };
+            let old = self.thickness[slot];
+            if old != shape {
+                *self.alpha_users.entry(shape).or_default() += 1;
+                if let Some(users) = self.alpha_users.get_mut(&old) {
+                    *users -= 1;
+                    if *users == 0 {
+                        self.alpha_users.remove(&old);
+                        if let Some(free) = self.alpha_keys.remove(&old) {
+                            self.alpha_free.push(free);
+                        }
+                    }
+                }
+            }
+            if self.regions[slot] != region || old != shape {
+                self.regions[slot] = region;
+                self.thickness[slot] = shape;
+                affected.push(slot);
+                region_changes.push(slot);
+            }
+        }
+        let halo = self.halo();
+        for &province in &changed {
+            self.mark(province, halo);
+        }
+        for slot in affected {
+            for at in 0..self.members.get(slot).map_or(0, Vec::len) {
+                let province = self.members[slot][at] as usize;
+                self.mark(province, 1);
+            }
+        }
+        for slot in region_changes {
+            shader_pipeline::gpu::stats::write_buffer(queue, &self.region_buffer, slot as u64 * REGION_BYTES, bytemuck::bytes_of(&self.regions[slot]));
+        }
+        for slot in alpha_changes {
+            shader_pipeline::gpu::stats::write_buffer(
+                queue,
+                &self.alpha_buffer,
+                (slot * self.alpha_stride) as u64,
+                &self.alpha[slot * self.alpha_stride..(slot + 1) * self.alpha_stride],
+            );
+        }
+        changed.sort_unstable();
+        for range in runs(&changed) {
+            shader_pipeline::gpu::stats::write_buffer(queue, &self.mapping_buffer, (range.start * 4) as u64, bytemuck::cast_slice(&self.mapping[range]));
+        }
+        let _ = device;
+        let mut dirty = self.marked.clone();
+        dirty.sort_unstable();
+        self.dispatched_cells = dirty.len();
+        self.copies = copy_rects(&dirty, self.params.columns, self.params.width / 2, self.params.height / 2);
+        self.params.count = dirty.len() as u32;
+        self.pending = !dirty.is_empty();
+        if self.pending {
+            shader_pipeline::gpu::stats::write_buffer(queue, &self.dirty_buffer, 0, bytemuck::cast_slice(&dirty));
+            shader_pipeline::gpu::stats::write_buffer(queue, &self.uniform, 0, bytemuck::bytes_of(&self.params));
+            let x = self.params.count.min(self.params.dispatch_stride);
+            shader_pipeline::gpu::stats::write_buffer(queue, &self.indirect, 0, bytemuck::cast_slice(&[x, self.params.count.div_ceil(x), 1]));
+        }
+        Ok(())
+    }
+
+    /// The whole update from part way through [`Self::update_changed`]: its tables already hold
+    /// changes not yet written, which a diff against them would never write nor redraw, so the
+    /// tables go whole (they fit their buffers: the entry grows none) and every cell is redone.
+    fn refill_update(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, layer: &Layer<'_>) -> io::Result<()> {
+        shader_pipeline::gpu::stats::write_buffer(queue, &self.mapping_buffer, 0, bytemuck::cast_slice(&self.mapping));
+        shader_pipeline::gpu::stats::write_buffer(queue, &self.region_buffer, 0, bytemuck::cast_slice(&self.regions));
+        shader_pipeline::gpu::stats::write_buffer(queue, &self.alpha_buffer, 0, &self.alpha);
+        self.refill();
+        self.update(device, queue, layer)
     }
 
     /// Bytes of the buffers this layer owns and keeps between dispatches.
@@ -1575,6 +1841,27 @@ impl PoliticalGpu {
         .sum()
     }
 
+    /// `province` in region slot `slot` (0: none).
+    fn remap(&mut self, province: usize, slot: usize) {
+        let old = self.mapping[province] as usize;
+        if old != 0 {
+            let at = self.member_at[province] as usize;
+            let list = &mut self.members[old];
+            list.swap_remove(at);
+            if let Some(&moved) = list.get(at) {
+                self.member_at[moved as usize] = at as u32;
+            }
+        }
+        if slot != 0 {
+            if self.members.len() <= slot {
+                self.members.resize_with(slot + 1, Vec::new);
+            }
+            self.member_at[province] = self.members[slot].len() as u32;
+            self.members[slot].push(province as u32);
+        }
+        self.mapping[province] = slot as u32;
+    }
+
     fn mark(&mut self, province: usize, halo: u32) {
         let Province {
             pixels,
@@ -1589,7 +1876,11 @@ impl PoliticalGpu {
             for dx in 0..span {
                 let x = (i64::from(x0) - i64::from(halo) + i64::from(dx))
                     .rem_euclid(i64::from(columns)) as u32;
-                self.dirty[(y * columns + x) as usize] = true;
+                let cell = (y * columns + x) as usize;
+                if !self.dirty[cell] {
+                    self.dirty[cell] = true;
+                    self.marked.push(cell as u32);
+                }
             }
         }
     }

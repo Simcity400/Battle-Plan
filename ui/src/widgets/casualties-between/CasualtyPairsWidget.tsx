@@ -3,7 +3,6 @@ import { memo, useCallback, useEffect, useMemo, useReducer, useRef, useState } f
 import type { NarrowTable } from '../../charts/table/options';
 import { narrowTableOf } from '../../charts/table/options.ts';
 import WidgetState from '../../components/WidgetState';
-import { useParityRows } from '../../dashboard/parityRows';
 import { useContextMenu } from '../../components/ContextMenu';
 import ChordChart from '../../charts/chord/ChordChart';
 import type { ChordFrame } from '../../charts/chord/ChordChart';
@@ -12,7 +11,7 @@ import type { ChordData } from '../../charts/chord/layout';
 import DrillHost from '../../charts/drill/DrillHost';
 import { CLOSED, drillHour, reduceDrill } from '../../charts/drill/drillState';
 import { dayLabel, drawBands, drawPlayhead } from '../../charts/draw';
-import { compactStackExtent, forEachCompactStackSegment, stackEdges } from '../../charts/stack';
+import { compactStackExtent, forEachCompactStackSegment, forEachJoinedSegment, stackEdges } from '../../charts/stack';
 import { runAt } from '../../charts/series';
 import { heldStackSegment } from '../../charts/race/countryRace';
 import TimeChart from '../../charts/TimeChart';
@@ -29,60 +28,73 @@ import type { CountryLabel } from '../../dashboard/countryFlagsAt';
 import { nameKey, useCountryFactsAt } from '../../dashboard/countryNamesAt';
 import { STYLES } from '../../dashboard/useCountriesAt';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { MEMBERSHIP_PREPARING, worldFilterQuery, worldRequestTags } from '../../dashboard/groups.ts';
+import { worldFilterQuery, worldRequestTags } from '../../dashboard/groups.ts';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
-import { usePlaybackHour, usePlaybackMotion } from '../../dashboard/playback';
+import { usePlaybackMotion } from '../../dashboard/playback';
+import { useHeadHour } from '../army-size/headHour.ts';
 import { useProduct } from '../../dashboard/products';
 import { useProductWindows } from '../../dashboard/productWindows';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
-import { preparedPrefix, preparedThrough } from '../../dashboard/preparedPrefix';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { viewChange, viewWindows } from '../casualties-breakdown/casualtiesBreakdownData';
-import { CasualtyPairsCursor, casualtyPairsAt, casualtyPairWindows, exactCount, pairAmount, validateCasualtyPairs } from './casualtyPairsData.ts';
+import { CasualtyPairsCursor, casualtyPairsAt, casualtyPairTags, casualtyPairWindows, exactCount, pairAmount, validateCasualtyPairs } from './casualtyPairsData.ts';
 import type { CasualtyPairsReply, PairFlow } from './casualtyPairsData';
-import { CasualtyChordCache, CasualtyChordSegmentCache, chordPairs, pairTooltip } from './casualtyChord.ts';
+import { CasualtyChordCache, CasualtyChordSegmentCache, chordNameHour, chordNamesAsked, chordPairs, pairTooltip } from './casualtyChord.ts';
+import { useIdentityHour, useIdentityKey } from '../../dashboard/atHead.ts';
 import type { CasualtyChord } from './casualtyChord';
-import { casualtyPairIds, pairHistory, pinPairs, readPairSelection } from './casualtyPairDrill';
+import { casualtyPairIds, pairDrillAt, pairHistory, pinPairs, readPairSelection } from './casualtyPairDrill';
+import LiveText from '../../charts/LiveText';
+import type { LiveTexts } from '../../charts/LiveText';
+import { liveAt, mapLive, valuesOf } from '../../charts/live.ts';
+import type { Live, LiveValues } from '../../charts/live';
+import type { SortValue } from '../../charts/table/logic';
 import { definition, DETAIL } from './definition';
 import './casualtyPairs.css';
-import { useReplyGaps } from '../../dashboard/replyGaps';
+import { useShownEachFrame } from '../../dashboard/widgetPerf';
+import { trackHourOf } from '../../dashboard/settledHour';
 
 const SORT = { column: 'value', direction: 'descending' } as const;
 const pairKey = (flow: PairFlow) => flow.id;
+const flowOf = (key: string) => key.split('\u0000')[0];
 // Columns that name no country keep their accessors: arriving labels never re-sort by them.
 const AMOUNT: TableColumn<PairFlow> = { key: 'value', header: 'Casualties', label: 'Casualties', numeric: true, width: 'max-content',
   value: flow => flow.value, render: pairAmount };
 
 /** The selected pairs' exact signed rows. Built only once the breakdown mounts,
  * and again only when the rows, their labels or colours change. */
-const PairRows = memo(function PairRows({ rows, label, hour, colors, columns, speed, height, onPick, runtime, trackId, narrow }: {
+const PairRows = memo(function PairRows({ rows, label, hour, colors, columns, speed, height, onPick, runtime, trackId, narrow, live, totals }: {
   rows: readonly PairFlow[]; label: CountryLabel; hour: number; colors: ReadonlyMap<string, string>;
   columns: readonly TableColumn<PairFlow>[]; speed: number | undefined; height: number; onPick: (hour: number) => void;
   runtime: WidgetProps['runtime']; trackId: string; narrow: NarrowTable;
+  /** Following, each flow's amount and share at the head, and the total line: painted each frame, never rendered. */
+  live?: Live<LiveValues<SortValue>>; totals?: LiveTexts;
 }) {
   const subtotal = rows.some(row => row.incomplete);
   const total = useMemo(() => exactCount(rows.reduce((sum, row) => sum + row.value, 0n)), [rows]);
   const tableColumns = useMemo(() => {
     const positive = rows.reduce((sum, row) => sum + (row.value > 0n ? row.value : 0n), 0n);
+    const incomplete = new Set(rows.filter(row => row.incomplete).map(row => row.id));
     return [...columns.map(column => column.key === 'value' ? { ...column,
       render: (flow: PairFlow) => <span><i className="casualty-pair-swatch" style={{ background: colors.get(flow.id) }} aria-hidden="true" />{pairAmount(flow)}</span>,
+      paint: (value: NonNullable<SortValue>, key: string) => pairAmount({ value: BigInt(value), incomplete: incomplete.has(flowOf(key)) }),
     } : column), { key: 'share', label: 'Share', header: 'Share', numeric: true, width: 'max-content', priority: 1,
       value: (flow: PairFlow) => subtotal || positive === 0n || flow.value <= 0n ? null : Number(flow.value * 1000n / positive) / 10,
       render: (flow: PairFlow) => subtotal || positive === 0n || flow.value <= 0n ? '—' : `${Number(flow.value * 1000n / positive) / 10}%`,
+      paint: (value: NonNullable<SortValue>) => `${value}%`,
     }];
   }, [rows, columns, subtotal, colors]);
   const menu = useCallback((flow: PairFlow) => [{ label: 'Show this day', run: () => onPick(flow.readHour) }, jumpItem(runtime, trackId, flow.readHour)],
     [onPick, runtime, trackId]);
   const tooltip = useCallback((flow: PairFlow) => fitTooltip([pairTooltip([flow], label, hour)], height), [label, hour, height]);
-  return <><p className="casualty-breakdown-total">{subtotal ? 'Recorded subtotal' : 'Signed total'}: <b>{total}</b></p>
+  return <><p className="casualty-breakdown-total">{totals ? <b><LiveText live={totals} at="total" /></b>
+    : <>{subtotal ? 'Recorded subtotal' : 'Signed total'}: <b>{total}</b></>}</p>
     <div className="casualty-pair-table"><Table rowRevision={row => [row, tableColumns]} label="Casualty pairs" rows={rows} rowKey={pairKey}
-      sort={SORT} hoursPerSecond={speed} cellBars={false} rankMarkers={false} menu={menu} tooltip={tooltip} columns={tableColumns} narrow={narrow} /></div></>;
+      sort={SORT} hoursPerSecond={speed} cellBars={false} rankMarkers={false} menu={menu} tooltip={tooltip} columns={tableColumns} narrow={narrow} live={live} /></div></>;
 });
 
 export default function CasualtyPairsWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
-  const playback = usePlaybackHour(runtime.clock, active && (widget.time.mode === 'follow' || drill.breakdown !== null && drill.follow));
   const speed = usePlaybackMotion(runtime.clock);
   const options = resolveOptions(definition.options, widget.options);
   const tokens = useChartTokens(), height = useViewportHeight();
@@ -97,8 +109,18 @@ export default function CasualtyPairsWidget({ widget, runtime, active, onDiagnos
   const chordCache = useMemo(() => new CasualtyChordCache(), []);
   const segmentCache = useMemo(() => new CasualtyChordSegmentCache(), []);
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
-  // Its charts draw casualty-pairs replies: cut only where the families they read lost hours.
-  const gaps = useReplyGaps(track?.source.id, track?.branch.id, 'casualty-pairs');
+useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtime.tracks, runtime.clock.getHour()) : null);
+  const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'casualty-pairs',
+    params: { branchId: track.branch.id, tags: [], between: false, window: null } } : null;
+  const manifest = useProduct<CasualtyPairsReply>(runtime.client, request, active, validateCasualtyPairs, track?.source);
+  // Following, the widget renders when the head enters another window (the chord paints the hours inside one from the
+  // clock), and a breakdown that follows renders at most four times a second.
+  const drillFollows = drill.breakdown !== null && drill.follow;
+  const headWindow = useCallback((at: number) => String(casualtyPairWindows(manifest.data, at, false)[0] ?? -1), [manifest.data]);
+  // A following breakdown renders where its flows (or their subtotal marks) change: its numbers are painted.
+  const drillRows = useRef<() => string>(() => '');
+  const playback = useHeadHour(runtime.clock, active && (widget.time.mode === 'follow' || drillFollows),
+    at => drillFollows ? `${headWindow(at)}:${drillRows.current()}` : headWindow(at));
   const window = track && resolveWindow(widget, track, runtime.tracks, playback);
   const hour = window?.lastHour ?? track?.branch.lastHour ?? 0;
   const pinned = options.show === DETAIL.id;
@@ -124,9 +146,6 @@ export default function CasualtyPairsWidget({ widget, runtime, active, onDiagnos
     [widget.countries, fallbackTags, groups.data, branchEnd]);
   const selection = useMemo(() => worldRequestTags(widget.countries, fallbackTags, groups.data, branchEnd),
     [widget.countries, fallbackTags, groups.data, branchEnd]);
-  const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'casualty-pairs',
-    params: { branchId: track.branch.id, tags: [], between: false, window: null } } : null;
-  const manifest = useProduct<CasualtyPairsReply>(runtime.client, request, active, validateCasualtyPairs, track?.source);
   const currentWindows = casualtyPairWindows(manifest.data, hour, widget.time.mode === 'follow');
   const detailWindows = open ? casualtyPairWindows(manifest.data, detailHour, effectiveDrill.follow) : [];
   const chartWindows = open && manifest.data ? viewWindows(manifest.data.windows, chartRange) : [];
@@ -136,12 +155,10 @@ export default function CasualtyPairsWidget({ widget, runtime, active, onDiagnos
   const identity = useMemo(() => track && selection.ready
     ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, selection.tags, between]) : null, [track, selection, between]);
   const histories = useProductWindows<CasualtyPairsReply>(runtime.client, identity, index => ({ ...request!,
-    params: { branchId: track!.branch.id, tags: selection.tags, between, window: index } }), wanted, active && manifest.data?.available === true,
+    params: { branchId: track!.branch.id, tags: selection.tags, between, window: index }, asksFrom: manifest.data?.windows[index]?.firstHour }), wanted, active && manifest.data?.available === true,
     validateCasualtyPairs, track?.source, true);
   const data = currentWindows.length ? histories.data.get(currentWindows[0]) : undefined;
-  // A window preparation has not reached answers from the prepared prefix's
-  // newest window: the flows at the prefix's last hour.
-  const through = data ? preparedThrough([data], hour) : hour;
+  const through = hour;
   // Membership at the moment the flows show, not the hour asked for.
   const filter = filterQuery.at(through);
   const error = currentWindows.length ? histories.errors.get(currentWindows[0]) : undefined;
@@ -149,30 +166,44 @@ export default function CasualtyPairsWidget({ widget, runtime, active, onDiagnos
   const detailError = detailWindows.length ? histories.errors.get(detailWindows[0]) : undefined;
   const snapshot = useMemo(() => data ? snapshotCursor.at(data, through, grouped ? filter.tags : null, between)
     : { countries: [], flows: [] }, [snapshotCursor, data, through, filter.tags, grouped, between]);
-  useParityRows(anchor, () => ({ kind: 'windowed', label: 'Casualty pairs exact values', complete: !!data,
-    total: snapshot.flows.length, rows: snapshot.flows.map(flow => ({ ...flow, value: flow.value.toString() })),
-    countries: snapshot.countries, window: data?.window, observed: data?.observed, warnings: data?.warnings }));
   const chartReplies = useMemo(() => chartWindows.flatMap(index => histories.data.has(index) ? [histories.data.get(index)!] : []),
     [chartWindows.join(','), histories.data]); // eslint-disable-line react-hooks/exhaustive-deps
   const selectedIds = useMemo(() => pinned ? savedSelection ?? casualtyPairIds([...histories.data.values()]) : detail ?? [],
     [pinned, savedSelection, histories.data, detail]);
   const selectionKey = JSON.stringify(selectedIds);
   const selected = useMemo(() => new Set(selectedIds), [selectionKey]); // eslint-disable-line react-hooks/exhaustive-deps
-  const detailThrough = detailData ? preparedThrough([detailData], detailHour) : detailHour;
+  const detailThrough = detailHour;
   const rows = useMemo(() => detailData ? casualtyPairsAt(detailData, detailThrough).flows.filter(flow => selected.has(flow.id)) : [],
     [detailData, detailThrough, selected]);
-  const facts = useMemo(() => [...snapshot.countries.map(tag => ({ tag, hour: through })),
-    ...rows.flatMap(flow => [{ tag: flow.from, hour: detailThrough }, { tag: flow.to, hour: detailThrough }])], [snapshot.countries, through, rows, detailThrough]);
+  const drillLive = useMemo(() => open && effectiveDrill.follow && track ? liveAt(runtime.clock, position => Math.floor(position) + track.axisOffset, at => {
+    const index = casualtyPairWindows(manifest.data, at, false)[0];
+    return pairDrillAt(index === undefined ? undefined : histories.data.get(index), at, selected);
+  }) : undefined, [open, effectiveDrill.follow, track, runtime.clock, manifest.data, histories.data, selected]);
+  drillRows.current = () => drillLive?.read().rows ?? '';
+  const drillValues = useMemo(() => drillLive && mapLive(drillLive, made => valuesOf<SortValue>(made.values, key => key.endsWith('share') ? '—' : 'Not recorded')),
+    [drillLive]);
+  const drillTotals = useMemo<LiveTexts | undefined>(() => drillLive && { text: () => drillLive.read().total, subscribe: drillLive.subscribe }, [drillLive]);
+  const drillDay = useMemo<LiveTexts | undefined>(() => drillLive && { text: () => dayLabel(drillLive.hour()), subscribe: drillLive.subscribe }, [drillLive]);
+  const following = active && widget.time.mode === 'follow';
+  const windowTags = useMemo(() => casualtyPairTags(currentWindows.map(index => histories.data.get(index))),
+    [currentWindows.join(','), histories.data]); // eslint-disable-line react-hooks/exhaustive-deps
+  const identityHour = useIdentityHour(runtime.client, track, windowTags, runtime.clock, following,
+    clockHour => track ? trackHourOf(widget, track, runtime.tracks, clockHour) : null);
+  const identitySince = useIdentityKey(runtime.client, track, following);
+  const named = chordNamesAsked(following, identityHour, through, windowTags, snapshot.countries);
+  const facts = useMemo(() => [...named.tags.map(tag => ({ tag, hour: named.hour })),
+    ...rows.flatMap(flow => [{ tag: flow.from, hour: detailThrough }, { tag: flow.to, hour: detailThrough }])], [named.tags, named.hour, rows, detailThrough]);
   const { labelAt } = useCountryLabelsAt(runtime.client, track, facts, active);
   const styles = useCountryFactsAt(runtime.client, track, facts, active, STYLES);
   const colorRevision = useMemo(() => ({}), [styles]);
-  const color = useCountryColours(snapshot.countries, tag => { const style = styles.get(nameKey(through, tag)); return style instanceof Error ? null : style?.color; }, tokens, colorRevision);
+  const color = useCountryColours(named.tags, tag => { const style = styles.get(nameKey(named.hour, tag)); return style instanceof Error ? null : style?.color; }, tokens, colorRevision);
   const mutedColor = useMemo(() => (_tag: string) => tokens.muted, [tokens.muted]);
   const detailLabel = useMemo(() => labelAt(detailThrough), [labelAt, detailThrough]);
   // Resolve the clock locally between React ticks. Prefetched windows carry only
   // recorded values; a gap or an unloaded window clears the graph immediately.
   const frameAt = useMemo(() => {
     let lastHour = NaN, lastSeek = -1, frame: ChordFrame = { data: null };
+    let labels: { hour: number; at: CountryLabel } | null = null;
     return (now: number): ChordFrame => {
       const clock = runtime.clock.getSnapshot();
       const seek = widget.time.mode === 'follow' ? clock.seekSequence : 0;
@@ -182,14 +213,16 @@ export default function CasualtyPairsWidget({ widget, runtime, active, onDiagnos
       if (shown === lastHour && seek === lastSeek) return { ...frame, playing };
       const index = casualtyPairWindows(manifest.data, shown, false)[0];
       const reply = index === undefined ? undefined : histories.data.get(index);
-      // A prefix reply's flows hold at its last hour.
-      const read = reply ? preparedThrough([reply], shown) : shown;
+      const read = shown;
       const span = reply?.observed.find(span => span.firstHour <= read && read <= span.lastHour);
       const selected = filterQuery.at(read);
       const at = reply && span && (!grouped || groups.data && !selected.reason)
         ? frameCursor.at(reply, read, grouped ? selected.tags : null, between) : null;
-      const exact = at ? chordCache.at(at, Number(options.mostCountries), read, labelAt(read),
-        shown === hour ? color : mutedColor, tokens.muted) : null;
+      const since = at && following ? identitySince(read, named.tags) : null;
+      const nameHour = chordNameHour(read, since === null ? null : Number(since));
+      if (at && labels?.hour !== nameHour) labels = { hour: nameHour, at: labelAt(nameHour) };
+      const exact = at && labels ? chordCache.at(at, Number(options.mostCountries), read, labels.at,
+        nameHour === named.hour ? color : mutedColor, tokens.muted) : null;
       if (exact) exactFrames.current.set(exact.data, exact);
       frame = { data: exact?.data ?? null, revision: exact, playing,
         segment: segmentCache.at(at, identity, span?.firstHour, seek) };
@@ -197,7 +230,8 @@ export default function CasualtyPairsWidget({ widget, runtime, active, onDiagnos
       return frame;
     };
   }, [runtime.clock, runtime.tracks, track, widget, manifest.data, histories.data, groups.data, grouped, filterQuery,
-    options.mostCountries, labelAt, color, mutedColor, hour, tokens.muted, identity, between, frameCursor, chordCache, segmentCache]);
+    options.mostCountries, labelAt, color, mutedColor, following, identitySince, named.tags, named.hour, tokens.muted, identity, between, frameCursor,
+    chordCache, segmentCache]);
   const chordTooltip = useCallback((hit: ChordHit, frame: ChordData) => {
     const exact = exactFrames.current.get(frame);
     return exact ? fitTooltip([pairTooltip(chordPairs(hit, exact), exact.labels, exact.hour)], height) : null;
@@ -208,10 +242,9 @@ export default function CasualtyPairsWidget({ widget, runtime, active, onDiagnos
   const layers = useMemo<ChartLayer[]>(() => [{
     draw: (ctx, frame, theme, state) => {
       const until = Math.min(frame.x[1], state.playhead ?? frame.x[1]);
-      forEachCompactStackSegment(stack, frame.x[0], until, (frame.x[1] - frame.x[0]) / Math.max(1, frame.plotWidth) / 2, piece => {
-        const held = heldStackSegment(piece);
-        drawBands(ctx, frame, theme, held.hours, held.bands, colors, held);
-      }, at => stackEdges(stack.bands.map(runs => runAt(runs, at)?.value ?? 0)));
+      forEachJoinedSegment(piece => forEachCompactStackSegment(stack, frame.x[0], until, (frame.x[1] - frame.x[0]) / Math.max(1, frame.plotWidth) / 2,
+        segment => piece(heldStackSegment(segment)), at => stackEdges(stack.bands.map(runs => runAt(runs, at)?.value ?? 0))),
+      held => drawBands(ctx, frame, theme, held.hours, held.bands, colors, held));
     }, extent: range => compactStackExtent(stack, range[0], range[1]),
   }], [stack, colors]);
   const pickOwner = useMemo(() => ({ client: runtime.client, identity, selected, stack }), [runtime.client, identity, selected, stack]);
@@ -237,16 +270,12 @@ export default function CasualtyPairsWidget({ widget, runtime, active, onDiagnos
   if (manifest.error) return <WidgetState kind="error" failure={manifest.error} onRetry={manifest.retry} />;
   const groupFailure = needsGroups && groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (groupFailure && !groups.data) return groupFailure;
-  // No pair met yet while preparation runs: later blocks may hold some.
-  if (manifest.data?.available === false) return <>{groupFailure}{preparedPrefix(manifest.data)?.pending.length
-    ? <WidgetState kind="loading" label="This range is still being prepared." />
-    : <WidgetState kind="unavailable" message="Not in this recording" />}</>;
+  if (manifest.data?.available === false) return <>{groupFailure}<WidgetState kind="unavailable" message="Not in this recording" /></>;
   if (selection.reason) return <>{groupFailure}<WidgetState kind="empty" message={selection.reason} /></>;
   if (!manifest.data || needsGroups && !groups.data) return <>{groupFailure}<WidgetState kind="loading" label="Loading casualty pairs…" /></>;
   if (pinned && options.pairSelection && !savedSelection) return <>{groupFailure}<WidgetState kind="unavailable" message="Saved pairs unavailable. Select them again." /></>;
   const body = <div className="casualty-pair-details">
-    {detailThrough < detailHour && <p className="chart-line-key" role="status">Casualties through {dayLabel(detailThrough)}; the rest is still being prepared.</p>}
-    {pinned && <p className="chart-line-key">{dayLabel(detailHour)} {!effectiveDrill.follow
+    {pinned && <p className="chart-line-key">{drillDay ? <LiveText live={drillDay} at="day" /> : dayLabel(detailHour)} {!effectiveDrill.follow
       && <button type="button" className="button small" onClick={follow}>Follow playback</button>}</p>}
     {detailOutside ? <WidgetState kind="unavailable" message="This time is outside the recording." />
       : detailError ? <WidgetState kind="error" failure={detailError} onRetry={histories.retry} />
@@ -255,8 +284,8 @@ export default function CasualtyPairsWidget({ widget, runtime, active, onDiagnos
           ? <p className="drill-empty">Casualty pairs were not recorded at {dayLabel(detailHour)}.</p>
           : !rows.length ? <p className="drill-empty">No selected casualty pairs at this time.</p>
             : <PairRows rows={rows} label={detailLabel} hour={detailThrough} colors={colorById} columns={columns} speed={speed} narrow={narrowTableOf(options)}
-              height={height} onPick={pickDay} runtime={runtime} trackId={track.id} />}
-    <div className="casualty-pair-history"><TimeChart gaps={gaps} label="Positive recorded casualties by directed pair over time"
+              height={height} onPick={pickDay} runtime={runtime} trackId={track.id} live={drillValues} totals={drillTotals} />}
+    <div className="casualty-pair-history"><TimeChart label="Positive recorded casualties by directed pair over time"
       extent={[track.branch.firstHour, track.branch.lastHour]} branchStart={track.branch.firstHour}
       playhead={effectiveDrill.follow ? clockHour : null} playback="cursor" hoursPerSecond={speed}
       axes={{ xFrom: null, xTo: null, yMin: 0, yMax: null, log: false }} layers={layers}
@@ -281,8 +310,7 @@ export default function CasualtyPairsWidget({ widget, runtime, active, onDiagnos
       : filter.reason ? <WidgetState kind="empty" message={filter.reason} />
         : !data.observed.some(span => span.firstHour <= through && through <= span.lastHour)
           ? <WidgetState kind="unavailable" message="Casualty pairs were not recorded at this moment." />
-          : !snapshot.flows.length ? grouped && !filter.known ? <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />
-            : <WidgetState kind="empty" message="No recorded country pairs at this moment." /> : <>
+          : !snapshot.flows.length ? <WidgetState kind="empty" message="No recorded country pairs at this moment." /> : <>
     <div className="casualty-pairs-chart"><ChordChart label="Casualties between countries" caption="Ribbon colour = the country dealing casualties"
       frame={{ data: null }} frameAt={frameAt}
       hoursPerSecond={speed} active={active && (!open || options.drill === 'popout') && !pinned} onError={setChartError}
@@ -297,14 +325,14 @@ export default function CasualtyPairsWidget({ widget, runtime, active, onDiagnos
       }} />
       {!snapshot.flows.some(flow => flow.value > 0n) && <WidgetState kind="empty" message="No positive attributable casualties are recorded at this moment." />}</div>
     {chartError && <WidgetState kind="error" failure={asFailure(chartError)} />}
-    {through < hour && <p className="chart-line-key" role="status">Casualties through {dayLabel(through)}; the rest is still being prepared.</p>}
     <button type="button" className="button small" onClick={() => openPairs(snapshot.flows.map(flow => flow.id), through)}>All pairs</button>
+    {data.hasGap && <p className="chart-line-key">Some losses may be missing: the casualty tables were not written at some hours of this period.</p>}
     {snapshot.flows.some(flow => flow.value < 0n) && <button type="button" className="button small"
       onClick={() => openPairs(snapshot.flows.filter(flow => flow.value < 0n).map(flow => flow.id), through)}>Corrections</button>}
   </>;
   return <div className="casualty-pairs" ref={anchor}>{groupFailure}
     {pinned ? body : <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={open} title="Casualty pairs"
-      day={dayLabel(detailHour)} following={effectiveDrill.follow} canFollow onFollow={follow}
+      day={drillDay ? <LiveText live={drillDay} at="day" /> : dayLabel(detailHour)} following={effectiveDrill.follow} canFollow onFollow={follow}
       onPin={selectedIds.length ? () => runtime.addWidgetBelow(widget.id, pinPairs(widget, track, selectedIds, detailHour, effectiveDrill.follow)) : undefined}
       onClose={() => { dispatch({ type: 'close' }); setDetail(null); }}
       returnFocus=".chord-chart canvas" anchor={anchor} main={main}>{body}</DrillHost>}

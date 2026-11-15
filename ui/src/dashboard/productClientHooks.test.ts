@@ -29,6 +29,11 @@ test('actual product and window hooks scope ready, late and retried results to t
       if (!states.has(index)) states.set(index, initial);
       return [states.get(index), (next: unknown) => { writes++; states.set(index, typeof next === 'function' ? next(states.get(index)) : next); }];
     },
+    useRef(initial?: unknown) {
+      const index = cursor++;
+      if (!states.has(index)) states.set(index, { current: initial });
+      return states.get(index);
+    },
     useMemo(run: () => unknown, deps: readonly unknown[]) {
       const index = cursor++, before = memos.get(index);
       if (!before || before.deps.length !== deps.length || before.deps.some((value, i) => !Object.is(value, deps[i])))
@@ -62,10 +67,11 @@ test('actual product and window hooks scope ready, late and retried results to t
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'product-hook-client-fixture', enforce: 'pre',
       transform(source, id) {
         const path = id.replaceAll('\\', '/');
-        if (path.endsWith('/dashboard/products.ts')) return source.replace("import { useEffect, useState } from 'react';",
-          'const { useEffect, useState } = globalThis.__productClientHooks;');
-        if (path.endsWith('/dashboard/productWindows.ts')) return source.replace("import { useEffect, useMemo, useState } from 'react';",
-          'const { useEffect, useMemo, useState } = globalThis.__productClientHooks;');
+        if (path.endsWith('/dashboard/products.ts') || path.endsWith('/dashboard/productWindows.ts')) {
+          const hooked = source.replace(/import \{ ([^}]+) \} from 'react';/, 'const { $1 } = globalThis.__productClientHooks;');
+          assert.notEqual(hooked, source, `${path} imports its hooks from React`);
+          return hooked;
+        }
         // Outside a widget frame.
         if (path.endsWith('/dashboard/heldFailures.ts')) return source.replace("import { createContext, useContext, useEffect, useState } from 'react';",
           "import { createContext } from 'react'; const { useEffect, useState } = globalThis.__productClientHooks; const useContext = () => null;");

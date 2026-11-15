@@ -13,14 +13,10 @@ import { STYLES } from './useCountriesAt';
 export function useCountryLineStyles(client: DashboardClient, track: BoundTrack | undefined, tags: string[], at: number, active: boolean) {
   const sample = track ? lookHour(track.branch, Math.max(track.branch.firstHour, Math.min(track.branch.lastHour, at))) : null;
   const hour = sample?.hour ?? null, stretch = sample?.stretch ?? null;
-  // This is the native product's per-request scheduling unit, never a country
-  // selection limit. Canonical chunks share cached replies when a list reorders.
+  // Sorted and each once, so a reordered selection is the same cached request.
   const wanted = [...new Set(tags)].sort();
-  const requests = [];
-  if (track && hour !== null) for (let index = 0; index < wanted.length; index += STYLES.perRequest) {
-    requests.push({ sourceId: track.source.id, revision: track.source.revision, product: STYLES.product,
-      params: STYLES.params(track.branch.id, hour, wanted.slice(index, index + STYLES.perRequest)) });
-  }
+  const requests = track && hour !== null && wanted.length ? [{ sourceId: track.source.id, revision: track.source.revision, product: STYLES.product,
+    params: STYLES.params(track.branch.id, hour, wanted) }] : [];
   const styles = useProducts<CountryStyleReply>(client, requests, active);
   const data = useMemo<CountryStyleReply | undefined>(() => styles.data?.length ? {
     branchId: styles.data[0].branchId, hour: styles.data[0].hour,

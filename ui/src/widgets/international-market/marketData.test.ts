@@ -1,60 +1,41 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import type { MarketHistoryReply } from '../../generated/dashboard';
-import { rosterCount, validateMarketHistory } from '../../dashboard/marketHistory.ts';
-import { cic, contractRows, levelText, offerRows } from './marketData.ts';
+import { validateMarketReply } from '../../dashboard/market.ts';
+import type { MarketAt } from '../../dashboard/market';
+import { collectedText, contractRows, offerRows } from './marketData.ts';
 
-const base = { branchId: '1', lastHour: 50, known: [[0, 50, '1']], agreements: [], warnings: [],
-  holders: { '1': [{ hour: 0, tag: 'SEL' }], '2': [{ hour: 0, tag: 'BUY' }] },
-  variants: { a1: [{ firstHour: 0, name: 'Synthetic tank', known: true, design: null }] },
-  coverage: { firstHour: 0, lastHour: 50, complete: true }, pending: [] };
+const item = (variant: string, amountRaw: string) => ({ variant, name: null, amountRaw });
+const reply: MarketAt = { ...validateMarketReply({ branchId: '1', purchasesMissing: null, unattributed: 1, warnings: [],
+  variants: [{ id: '5', hour: 7, known: true, token: 'infantry_equipment', name: 'Rifle', typeName: 'Infantry equipment', nameUnknown: null, icon: 'a', iconUnknown: null }],
+  icons: [{ key: 'a', image: 'data:rifle' }],
+  offers: [
+    { country: 44, tag: 'FRA', inventory: [item('5', '300000'), item('6', '100000')], prices: [{ variant: '6', name: null, level: 2 }], subsidies: [], subsidyTotalRaw: '0', autoSendMarketAccess: false },
+    { country: 45, tag: null, inventory: [item('5', '1')], prices: [], subsidies: [], subsidyTotalRaw: '0', autoSendMarketAccess: false },
+  ],
+  contracts: [
+    { key: '1', id: '51', seller: 'FRA', buyer: 'GER', request: false, speed: 1, equipment: [item('5', '100000'), item('6', '1')], prices: [], levels: [], subsidies: [], purchase: true },
+    { key: '2', id: '52', seller: 'FRA', buyer: null, request: true, speed: 0, equipment: [item('5', '1')], prices: [], levels: [{ variant: '5', name: null, level: 0 }], subsidies: [], purchase: false },
+    { key: '3', id: '53', seller: 'ITA', buyer: 'ENG', request: false, speed: 0, equipment: [], prices: [], levels: [], subsidies: [], purchase: false },
+  ],
+  agreements: null }), hour: 7 };
 
-test('contracts join their purchase progress and keep both parties', () => {
-  const reply = validateMarketHistory('contracts')({ ...base, view: 'contracts', offers: [], contracts: [{
-    seller: '1', id: '0000000000000009', buyer: [[10, 30, '2']], speed: [[10, 30, '3']],
-    items: [{ pool: 0, ordinal: 0, variant: 'a1', amounts: [[10, 30, '500000']] }, { pool: 0, ordinal: 1, variant: 'b2', amounts: [[10, 30, '100000']] },
-      { pool: 1, ordinal: 0, variant: 'a1', amounts: [[10, 30, '2000000']] }],
-    levels: [], purchase: [[[12, 30, '2']], [[12, 30, '4']], [[12, 30, '300000']], []],
-  }] } as unknown as MarketHistoryReply);
-  const [row] = contractRows(reply, 11, tag => tag === 'BUY').rows;
-  assert.deepEqual([row.seller, row.buyer, row.equipment.length, row.equipment[0].name, row.equipment[1].name], ['SEL', 'BUY', 2, 'Synthetic tank', null]);
-  assert.equal(cic(row.prices[0].amount), '20 CIC');
-  // Before the purchase contract's first daily read its progress is unknown.
-  assert.equal(row.assigned, null);
-  const later = contractRows(reply, 20, () => true).rows[0];
-  assert.deepEqual([later.assigned, later.convoys, later.deliveries], [2n, 4n, null]);
-  assert.deepEqual(contractRows(reply, 40, () => true), { rows: [], unattributed: 0 });
-  assert.deepEqual(contractRows(reply, 20, tag => tag === 'OTH'), { rows: [], unattributed: 0 });
+test('contracts and requests are the rows either party matches; an unnamed party may match and is counted', () => {
+  const ger = (tag: string) => tag === 'GER';
+  const contracts = contractRows(reply, 'contracts', ger);
+  assert.deepEqual(contracts.rows.map(row => row.key), ['1']);
+  assert.equal(contracts.unattributed, 0);
+  assert.deepEqual(contracts.rows[0].equipment.map(entry => [entry.name, entry.icon, entry.amount]), [['Rifle', 'data:rifle', 100000n], [null, null, 1n]]);
+  const requests = contractRows(reply, 'requests', ger);
+  assert.deepEqual([requests.rows.length, requests.unattributed], [0, 1], 'a request whose buyer has no tag may be GER\'s');
+  assert.deepEqual(contractRows(reply, 'requests', () => true).rows[0].levels, [{ variant: '5', level: 0 }]);
 });
 
-test('a contract whose buyer has no identity stands, and may be any country the seller is not', () => {
-  // The buyer is identified until 19; the contract stands, with its speed read, through 30.
-  const reply = validateMarketHistory('contracts')({ ...base, view: 'contracts', offers: [], contracts: [{
-    seller: '1', id: '0000000000000009', buyer: [[10, 19, '2']], speed: [[10, 30, '3']],
-    items: [{ pool: 0, ordinal: 0, variant: 'a1', amounts: [[10, 30, '500000']] }], levels: [], purchase: [[], [], [], []],
-  }] } as unknown as MarketHistoryReply);
-  const all = contractRows(reply, 25, () => true);
-  assert.deepEqual([all.rows.length, all.rows[0].seller, all.rows[0].buyer, all.rows[0].equipment[0].amount, all.unattributed], [1, 'SEL', null, 500000n, 0]);
-  assert.deepEqual(contractRows(reply, 25, tag => tag === 'SEL').rows.length, 1);
-  // Another country may be the buyer: not listed, but no proof of none.
-  assert.deepEqual(contractRows(reply, 25, tag => tag === 'OTH'), { rows: [], unattributed: 1 });
-  assert.deepEqual(contractRows(reply, 15, tag => tag === 'OTH'), { rows: [], unattributed: 0 });
+test('inventory lists each matching seller\'s variants in native order with their price levels; a seller with no tag is not listed', () => {
+  const rows = offerRows(reply, () => true);
+  assert.deepEqual(rows.map(row => [row.key, row.name, row.amount, row.level]), [['44:5', 'Rifle', 300000n, null], ['44:6', null, 100000n, 2]]);
+  assert.equal(rows[1].missing, 'The recording does not name this design at this hour.');
 });
 
-test('a header counts rows only over a known, prepared roster, and only as a lower bound while some cannot be attributed', () => {
-  const reply = validateMarketHistory('contracts')({ ...base, view: 'contracts', offers: [], contracts: [], known: [[0, 30, '1'], [55, 70, '1']] } as unknown as MarketHistoryReply);
-  assert.equal(rosterCount(reply, 20, 12, 0), '12');
-  assert.equal(rosterCount(reply, 20, 0, 2), '0+');
-  // A contract whose seller has no identity leaves the roster unknown: no count, not zero.
-  assert.equal(rosterCount(reply, 40, 0, 0), null);
-  // Past the prepared history nothing is counted either, though the roster was read.
-  assert.equal(rosterCount(reply, 60, 0, 0), null);
-});
-
-test('inventory lists each variant with its asking level, unset levels unknown', () => {
-  const reply = validateMarketHistory('inventory')({ ...base, view: 'inventory', contracts: [], offers: [{ seller: '1',
-    inventory: [{ pool: 0, ordinal: 0, variant: 'a1', amounts: [[0, 50, '700000']] }, { pool: 0, ordinal: 1, variant: 'b2', amounts: [[0, 50, '0']] }],
-    levels: [{ pool: 2, ordinal: 0, variant: 'a1', amounts: [[0, 50, '2']] }] }] } as unknown as MarketHistoryReply);
-  const rows = offerRows(reply, 5, () => true);
-  assert.deepEqual(rows.map(row => [row.variant, row.amount, levelText(row.level)]), [['a1', 700000n, 'High'], ['b2', 0n, '—']]);
+test('collected CIC is painted from its raw fixed5 live value', () => {
+  assert.equal(collectedText(150000), '1.5 CIC');
 });

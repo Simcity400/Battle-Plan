@@ -14,15 +14,18 @@ test('a dissolved faction shows no power projection kept from its last reply', a
     leaders: [], incomplete: [] }] } as CountryGroupReply;
   const [view] = factionViews(groups, (faction: FactionGroup) => ({ name: faction.name, reason: faction.nameReason }), () => '#123456');
   const { module, close } = await mountModule<{ default: (props: Record<string, unknown>) => ReactElement }>('/ui/src/widgets/factions/FactionDrill.tsx', {
-    // The reply read while the faction stood: what a held reply keeps showing.
-    '/dashboard/products.ts': `export const useProduct = () => ({ retry() {}, error: null, data: { faction: '5', hour: 50, projectionRaw: '1234500000',
-      goals: [], completed: [], cancelled: [], manifest: null, resources: null, logo: null } });`,
+    // The panel read while the faction stood: what a held reply would keep showing, its projection a live cell.
+    '/dashboard/factionChoice.ts': `export const useFactionDetails = () => ({ retry() {}, root() {}, at: 50, hour: null, shownAt: () => 50,
+      data: { faction: '5', branchId: '1', definitions: [], manifest: null, goals: [], completed: [], cancelled: [], goalReason: null, resources: null,
+        manpower: null, manpowerUnlocked: null, researchUnlocked: null, researchCountries: null, doctrineFolders: null, refusals: [], warnings: [], logo: null },
+      live: { read: () => ({ get: () => 12345, missing: () => '' }), subscribe: () => () => {} } });`,
+    '/dashboard/products.ts': 'export const useProduct = () => ({ retry() {} });',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',
-    '/charts/useRowTooltips.ts': 'export const useRowTooltips = () => ({ rowProps: () => ({}), descriptionId: key => key });',
+    '/charts/useRowTooltips.ts': 'export const useRowTooltips = () => ({ hovered: null, rowProps: () => ({}), descriptionId: key => key });',
   });
   try {
-    const props = { runtime: { client: {} }, track: { source: { id: 'source', revision: '1' }, branch: BRANCH }, view, names: [], at: 150, active: true,
-      gaps: [], pending: [], onBack() {} };
+    const props = { runtime: { client: {} }, widget: { id: 'factions', kind: 'factions', trackIds: ['main'], time: { mode: 'campaign' }, options: {} },
+      track: { source: { id: 'source', revision: '1' }, branch: BRANCH }, view, names: [], at: 150, active: true, gaps: [], onBack() {} };
     const markup = renderToStaticMarkup(createElement(module.default, props));
     assert.match(markup, /This faction was dissolved/);
     assert.doesNotMatch(markup, /power projection/);

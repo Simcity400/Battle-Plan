@@ -54,6 +54,18 @@ impl DailyObservers {
 }
 static DAILY_OBSERVERS: Mutex<Option<DailyObservers>> = Mutex::new(None);
 
+/// Tests that read daily observers hold this, so a parallel test's census is
+/// never their carry and each starts, as an attachment does, holding none.
+#[cfg(test)]
+pub(crate) fn test_globals() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    let guard = LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    *DAILY_OBSERVERS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    guard
+}
+
 pub const N: usize = 2;
 pub const TABLES: [TableId; N] = [TableId::LandCombatProgress, TableId::CombatLogObservers];
 

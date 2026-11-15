@@ -29,8 +29,10 @@ use std::sync::Arc;
 mod daily_status;
 pub(crate) mod held_store;
 mod movement_carry;
+mod naming;
 mod speed_terms;
 mod status_work;
+pub(crate) use naming::{NamingCarry, NamingPart};
 pub(crate) use status_work::StatusWork;
 
 /// One final-status range per available worker, sized from the live census.
@@ -238,6 +240,8 @@ struct NamingRead {
     failure: Option<&'static str>,
     cached_name: Option<cname_group_member::Span>,
     cached_failure: Option<&'static str>,
+    /// Carried from the held read, not read this hour.
+    held: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -346,7 +350,7 @@ impl Capacities {
         let mut groups = cname_group_member::GroupKeys::try_with_capacity(count, count)
             .map_err(|_| "division name sizing allocation failed")?;
         let mut names = cname_group_member::Names {
-            bytes: &mut [],
+            bytes: engine_native::walk::Buffer::Count,
             len: 0,
             required: 0,
         };
@@ -527,16 +531,12 @@ impl MovementPass {
             self.land.fail(reason);
             return report;
         }
-        if hour.is_some() {
-            self.movement_packet.enable_growth();
-            self.geometry.enable_growth();
-            if !grow_vec(&mut self.movement.rows, rows.len()) {
-                let reason = "presentation row allocation failed";
-                self.movement.outcome = Outcome::Unavailable { reason };
-                self.paths.len = 0;
-                self.land.fail(reason);
-                return report;
-            }
+        if !grow_vec(&mut self.movement.rows, rows.len()) {
+            let reason = "presentation row allocation failed";
+            self.movement.outcome = Outcome::Unavailable { reason };
+            self.paths.len = 0;
+            self.land.fail(reason);
+            return report;
         }
         if self.status {
             self.land_ticks = self.land.capture(memory, base, rows, outcome);
@@ -558,8 +558,6 @@ impl MovementPass {
             state,
             rows,
             outcome,
-            self.movement.rows.len(),
-            self.paths.first.len(),
             &mut self.geometry,
             &mut self.movement_packet,
             hour,
@@ -606,7 +604,11 @@ pub struct Captured {
     naming: Arena<NamingRead>,
     names: Arena<u8>,
     cached_names: Arena<u8>,
-    name_groups: cname_group_member::GroupKeys,
+    /// The naming of the unsplit pass, whose name-group memo sets every range's table size.
+    serial_naming: NamingPart,
+    /// The final status ranges' naming, stitched by the Presentation job.
+    naming_parts: Vec<NamingPart>,
+    naming_carry: Option<engine_allocation::SharedBox<NamingCarry>>,
     movement_packet: carmy::MovementPacket,
     transport: movement_carry::Transport,
     transport_inputs: Vec<(usize, Option<TransportInputs>)>,
@@ -634,7 +636,7 @@ pub struct Captured {
     stitch_deferred: bool,
     attack_deferred: bool,
     deferred_store: Option<held_store::Loan>,
-    deferred_inputs: Option<Arc<crate::division_census::UnitInputs>>,
+    deferred_inputs: Option<engine_allocation::SharedBox<crate::division_census::UnitInputs>>,
     deferred_context: Option<CaptureContext>,
     attack_ready: bool,
     status_part_count: usize,
@@ -666,20 +668,23 @@ pub struct Captured {
 
 impl Captured {
     #[cfg(test)]
+    /// The source census admits the first `admitted` seeds and leaves the rest unread.
     pub(super) fn capture_status_fixture(
         &mut self,
         memory: &impl Memory,
         seeds: &[DivisionSeed],
-        row_capacity: usize,
+        admitted: usize,
     ) {
-        self.status.outcome = self.status_packet.capture(
-            memory,
-            0,
-            0,
-            seeds,
-            Outcome::Rows { len: seeds.len() },
-            row_capacity,
-        );
+        let source = if admitted < seeds.len() {
+            Outcome::Truncated {
+                len: admitted,
+                unread_rows: (seeds.len() - admitted) as u32,
+            }
+        } else {
+            Outcome::Rows { len: admitted }
+        };
+        let seeds = &seeds[..admitted];
+        self.status.outcome = self.status_packet.capture(memory, 0, 0, seeds, source);
         self.capture_naming(memory, 0, &seeds[..self.status.outcome.len()]);
         self.decode_pending = true;
     }
@@ -696,7 +701,9 @@ impl Captured {
             naming: Arena::new(0),
             names: Arena::new(0),
             cached_names: Arena::new(0),
-            name_groups: cname_group_member::GroupKeys::default(),
+            serial_naming: NamingPart::default(),
+            naming_parts: Vec::new(),
+            naming_carry: None,
             movement_packet: carmy::MovementPacket::vacant(),
             transport: Default::default(),
             transport_inputs: Vec::new(),
@@ -755,12 +762,13 @@ impl Captured {
             naming: Arena::new(c.status),
             names: Arena::new(c.name_bytes),
             cached_names: Arena::new(c.cached_name_bytes),
-            name_groups: cname_group_member::GroupKeys::try_with_capacity(
-                c.name_groups,
-                c.name_groups,
-            )
-            .map_err(crate::allocation::io)
-            .unwrap_or_default(),
+            serial_naming: NamingPart::with_groups(
+                cname_group_member::GroupKeys::try_with_capacity(c.name_groups, c.name_groups)
+                    .map_err(crate::allocation::io)
+                    .unwrap_or_default(),
+            ),
+            naming_parts: Vec::new(),
+            naming_carry: None,
             movement_packet,
             transport: Default::default(),
             transport_inputs: Vec::new(),
@@ -856,7 +864,17 @@ impl Captured {
             + self.naming.allocated_bytes()
             + self.names.allocated_bytes()
             + self.cached_names.allocated_bytes()
-            + self.name_groups.allocated_bytes()
+            + self.serial_naming.allocated_bytes()
+            + self.naming_parts.capacity() * size_of::<NamingPart>()
+            + self
+                .naming_parts
+                .iter()
+                .map(NamingPart::allocated_bytes)
+                .sum::<usize>()
+            + self
+                .naming_carry
+                .as_ref()
+                .map_or(0, |carry| carry.allocated_bytes())
             + self.transport.allocated_bytes()
             + self.transport_inputs.capacity() * size_of::<(usize, Option<TransportInputs>)>()
             + self.movement_packet.allocated_bytes()
@@ -1221,7 +1239,7 @@ impl Captured {
     /// A full memo costs fresh reads, so an unreadable census cannot drop names.
     pub(crate) fn grow_name_groups(&mut self, c: &mut Capacities, templates: usize) {
         grow_capacity(&mut c.name_groups, templates);
-        let current = self.name_groups.capacities();
+        let current = self.serial_naming.groups().capacities();
         if c.name_groups != 0
             && c.name_groups
                 .checked_next_power_of_two()
@@ -1230,7 +1248,7 @@ impl Captured {
                 cname_group_member::GroupKeys::try_with_capacity(c.name_groups, c.name_groups)
                     .map_err(crate::allocation::io)
         {
-            self.name_groups = groups;
+            self.serial_naming.set_groups(groups);
         }
     }
 
@@ -1245,176 +1263,6 @@ impl Captured {
             None,
             &crate::army_stat_changes::Observer,
         );
-    }
-
-    /// The division's name member pointer leads to the naming generator. Keep its language-neutral
-    /// operands and, independently, the exact cached name (`cname_group_member::CACHED_NAME`).
-    /// Ordering, binding and rename writers refresh the member, as do template, load and pre-hourly
-    /// active-stat updates. Inputs therefore read hourly. One copy of the member span serves both
-    /// the generator operands and the cache header; the two arenas keep their refusals independent,
-    /// and a span that cannot be copied leaves the cache to its own reads.
-    ///
-    /// With the `army_stat` store, a member no hooked writer touched since the
-    /// Held read  (`engine_mutations::army_stat_mutations`: `cached-name refresh`, and the
-    /// country-wide refresh, which moves the marks' epoch) is not read: its
-    /// held span and cache text stand in for the reads, and the inputs are
-    /// derived from the span as from a read (the template's group and a heap
-    /// override are still read). The hour's take ([`super::attack_stats`])
-    /// precedes the member's reads, and a member not carried is registered
-    /// before them.
-    fn capture_naming_holding(
-        &mut self,
-        memory: &impl Memory,
-        base: usize,
-        seeds: &[DivisionSeed],
-        mut store: Option<&mut super::attack_stats::ArmyStatStore>,
-        changes: &dyn crate::army_stat_changes::Changes,
-    ) {
-        self.naming.reset();
-        self.names.reset();
-        self.name_groups.reset();
-        self.cached_names.reset();
-        if let Some(store) = store.as_deref_mut() {
-            store.begin_names();
-        }
-        self.naming.required = seeds.len();
-        if !grow_vec(&mut self.naming.first, seeds.len()) {
-            return;
-        }
-        let mut batch = cname_group_member::MemberBatch::default();
-        let mut held_indices = [None; 64];
-        for (index, (seed, row)) in seeds.iter().zip(&mut self.naming.first).enumerate() {
-            if index.is_multiple_of(64) {
-                held_indices.fill(None);
-                let mut pointers = [0_usize; 64];
-                let end = (index + 64).min(seeds.len());
-                for (slot, pending) in seeds[index..end].iter().enumerate() {
-                    let Some(pointer) = pending.name_member.filter(|&at| at != 0) else {
-                        continue;
-                    };
-                    // Decide eligibility once; the store keeps the member span and text.
-                    let held = match store.as_deref_mut() {
-                        Some(store) if self.attack.carryable => store
-                            .held_name(index + slot, pending.division)
-                            .filter(|&at| {
-                                store.held_name_record(at).member == pointer
-                                    && !self.attack.touched(pointer)
-                            }),
-                        _ => None,
-                    };
-                    held_indices[slot] = held;
-                    if held.is_none() {
-                        pointers[slot] = pointer;
-                    }
-                }
-                batch.capture(memory, &pointers[..end - index]);
-            }
-            *row = NamingRead {
-                division: seed.division,
-                country_ordinal: seed.country_ordinal,
-                ..NamingRead::default()
-            };
-            let pointer = seed
-                .name_member
-                .ok_or("division name member pointer unreadable")
-                .and_then(|pointer| {
-                    if pointer == 0 {
-                        Err("division name member pointer null")
-                    } else {
-                        Ok(pointer)
-                    }
-                });
-            // The hour's take ([`super::attack_stats::Captured::certify`])
-            // certifies a held member registered in the held capture's epoch
-            // and untouched since; any other member is registered before its
-            // read.
-            let held = held_indices[index % 64]
-                .and_then(|at| store.as_deref().map(|store| store.held_name_record(at)));
-            let registered = match (held, pointer, store.is_some()) {
-                (Some(_), _, _) => true,
-                (None, Ok(pointer), true) => changes.register(pointer),
-                _ => false,
-            };
-            let member = pointer.map(|pointer| match held {
-                Some(held) => (pointer, Ok(held.span)),
-                None => (pointer, batch.member(memory, index % 64, pointer)),
-            });
-            let result = member.and_then(|(pointer, span)| {
-                cname_group_member::inputs_growing(
-                    memory,
-                    base,
-                    pointer,
-                    &span?,
-                    &mut self.name_groups,
-                    &mut self.names.first,
-                    &mut self.names.len,
-                    &mut self.names.required,
-                )
-            });
-            match result {
-                Ok(cname_group_member::Naming::Row(inputs)) => {
-                    self.names.len += inputs.custom.1;
-                    // The reader shows the programmatic name override when
-                    // the resolved group is null.
-                    row.inputs = Some(inputs);
-                }
-                Ok(cname_group_member::Naming::DoesNotFit) => {
-                    row.failure = Some("division naming bytes do not fit arena");
-                }
-                Err(reason) => row.failure = Some(reason),
-            }
-            let cached = match (member, held, store.as_deref()) {
-                (_, Some(held), Some(store)) => cname_group_member::held_cached_name_growing(
-                    store.held_name_text(held),
-                    &mut self.cached_names.first,
-                    self.cached_names.len,
-                    &mut self.cached_names.required,
-                ),
-                (Ok((_, Ok(span))), _, _) => cname_group_member::cached_name_from_member_growing(
-                    memory,
-                    base,
-                    &span,
-                    &mut self.cached_names.first,
-                    &mut self.cached_names.len,
-                    &mut self.cached_names.required,
-                ),
-                _ => seed
-                    .name_member
-                    .ok_or("division cached name member pointer unreadable")
-                    .and_then(|pointer| {
-                        cname_group_member::cached_name_growing(
-                            memory,
-                            base,
-                            pointer,
-                            &mut self.cached_names.first,
-                            &mut self.cached_names.len,
-                            &mut self.cached_names.required,
-                        )
-                    }),
-            };
-            match cached {
-                Ok(Some(span)) => {
-                    row.cached_name = Some(span);
-                    self.cached_names.len += span.1;
-                }
-                Ok(None) => {
-                    row.cached_failure = Some("division cached name bytes do not fit arena")
-                }
-                Err(reason) => row.cached_failure = Some(reason),
-            }
-            let text = row
-                .cached_name
-                .map(|(start, len)| &self.cached_names.first[start..start + len]);
-            if held.is_some() {
-                self.attack.status_counts.names_reused += 1;
-            }
-            if let (Some(store), true, Ok((pointer, Ok(span))), Some(text)) =
-                (store.as_deref_mut(), registered, member, text)
-            {
-                store.keep_name(seed.division, pointer, &span, text);
-            }
-            self.naming.len += 1;
-        }
     }
 
     /// [`Self::capture_owned_observed`] without an `army_stat` store.
@@ -1606,6 +1454,11 @@ impl Captured {
                     .get_mut(index)
                     .map(std::mem::take)
                     .unwrap_or_default(),
+                naming: std::mem::take(&mut self.naming_parts[index]),
+                carry: self.naming_carry(),
+                store: self
+                    .preparation_store_loaned
+                    .then(|| Arc::clone(self.preparation_store.as_ref().unwrap())),
             }
         }
     }
@@ -1613,8 +1466,14 @@ impl Captured {
     pub(crate) fn restore_status_part(&mut self, index: usize, work: StatusWork, ticks: u64) {
         match work {
             StatusWork::Preparation { part, .. } => self.preparation_parts[index] = part,
-            StatusWork::Status { part, attack, .. } => {
+            StatusWork::Status {
+                part,
+                attack,
+                naming,
+                ..
+            } => {
                 self.status_parts[index] = part;
+                self.naming_parts[index] = naming;
                 if let Some(destination) = self.attack_parts.get_mut(index) {
                     *destination = attack;
                     self.attack_ready = true;
@@ -1660,11 +1519,14 @@ impl Captured {
     ) -> CaptureReport {
         let (rows, outcome) = (sources.rows, sources.outcome);
         let status = if self.status_prepared && self.status_part_count == 0 {
+            self.restore_preparation_store(army_stats.as_deref_mut());
             self.status_prepared = false;
             0
         } else if self.status_prepared {
             let _status_reads = crate::read_accounting::table(TableId::DivisionStatus);
             let started = qpc();
+            // The final ranges named under the store's loan; it returns before the stitch.
+            self.restore_preparation_store(army_stats.as_deref_mut());
             let prepared = self.prepared_status.as_mut().expect("status prepared");
             std::mem::swap(
                 &mut self.status_packet,
@@ -1680,13 +1542,14 @@ impl Captured {
                     .stitch_status_parts(&self.status_parts[..self.status_part_count])
             };
             let named = qpc();
-            self.capture_naming_holding(
-                memory,
-                context.base,
-                &rows[..self.status.outcome.len()],
+            let mut naming = std::mem::take(&mut self.naming_parts);
+            let count = self.status_part_count.min(naming.len());
+            self.stitch_naming(
+                &mut naming[..count],
+                self.status.outcome.len(),
                 army_stats.as_deref_mut(),
-                changes,
             );
+            self.naming_parts = naming;
             if !self.owned_settlement
                 && let Some(store) = army_stats
             {
@@ -1955,13 +1818,9 @@ impl Captured {
         self.supply_grace =
             engine_sites::at(base, engine_land_inputs::carmy_attrition::SUPPLY_GRACE_RVA)
                 .and_then(|address| engine_native::read::<i32>(memory, address));
-        // Only the test fixture omits the worker's sample hour and uses fixed storage.
-        if hour.is_some() {
-            self.status_packet.enable_growth();
-            if !grow_vec(&mut self.status.rows, rows.len()) {
-                self.fail_owned_capture("presentation row allocation failed");
-                return 0;
-            }
+        if !grow_vec(&mut self.status.rows, rows.len()) {
+            self.fail_owned_capture("presentation row allocation failed");
+            return 0;
         }
         self.source_required = self.source_required.max(rows.len());
         let _status_reads = crate::read_accounting::table(TableId::DivisionStatus);
@@ -2046,6 +1905,7 @@ impl Captured {
             prepared,
             self.owned_settlement && prepare_only && ready,
         );
+        let certify_finished = qpc();
         self.daily_status.prepare(
             &mut self.status_packet,
             army_stats.as_deref_mut(),
@@ -2066,7 +1926,17 @@ impl Captured {
         self.phase_ticks[4] = certified.saturating_sub(sources_finished).max(0) as u64;
         self.phase_ticks[10..13].copy_from_slice(&self.attack.certify_ticks());
         if prepare_only {
-            self.status.outcome = self.status_packet.prepare_holding(
+            let staged = |index: usize| {
+                ready
+                    .then(|| {
+                        probes[..preparation_count]
+                            .iter()
+                            .find(|part| part.range.contains(&index))
+                            .and_then(|part| part.maxima(index))
+                    })
+                    .flatten()
+            };
+            self.status.outcome = self.status_packet.prepare_holding_staged(
                 memory,
                 base,
                 state,
@@ -2074,6 +1944,7 @@ impl Captured {
                 outcome,
                 &self.attack.held_maxima,
                 &self.attack.exercise_experience,
+                &staged,
             );
             let native_finished = qpc();
             self.phase_ticks[5] = native_finished.saturating_sub(certified).max(0) as u64;
@@ -2098,22 +1969,33 @@ impl Captured {
                 self.attack_parts
                     .resize_with(self.attack_parts.len().max(count), Default::default);
             }
-            // Optional attack staging never changes the original ordered
-            // acquisition's admission or failure result.
+            // Optional attack staging, in each final range, never changes the original
+            // ordered acquisition's admission or failure result.
             for (index, part) in self.attack_parts.iter_mut().take(count).enumerate() {
                 part.range = rows.len() * index / count..rows.len() * (index + 1) / count;
-                part.prepare(
-                    rows,
-                    hour.expect("status preparation hour"),
-                    &self.attack,
-                    army_stats.as_deref(),
-                    |index| self.status_packet.unit_maxima(index),
-                );
             }
             self.phase_ticks[13] = qpc().saturating_sub(native_finished).max(0) as u64;
             let admitted = self.status_packet.prepared_units();
             for (part, work) in self.status_parts[..count].iter_mut().enumerate() {
                 work.range = admitted * part / count..admitted * (part + 1) / count;
+            }
+            // Naming and attack staging run in the same ranges, reading the held store through
+            // a shared loan, which returns before the Presentation job stitches them.
+            if let Err(reason) =
+                self.arm_naming(admitted, count, hour.expect("status preparation hour"))
+            {
+                self.fail_owned_capture(reason);
+                return 0;
+            }
+            if let Some(store) = army_stats.as_deref_mut() {
+                let held = self
+                    .preparation_store
+                    .get_or_insert_with(|| Arc::new(super::attack_stats::ArmyStatStore::new()));
+                std::mem::swap(
+                    store,
+                    Arc::get_mut(held).expect("preparation observations joined"),
+                );
+                self.preparation_store_loaned = true;
             }
             let prepared = self
                 .prepared_status
@@ -2123,7 +2005,14 @@ impl Captured {
                 Arc::get_mut(prepared).expect("status parts joined"),
             );
             self.status_part_count = count;
-            self.phase_ticks[0] += qpc().saturating_sub(start).max(0) as u64;
+            let armed = qpc();
+            self.phase_ticks[0] += armed.saturating_sub(start).max(0) as u64;
+            use crate::hour_stages::{Part, record_part};
+            record_part(Part::SettleSources, start, sources_finished);
+            record_part(Part::SettleCertify, sources_finished, certify_finished);
+            record_part(Part::SettleDaily, certify_finished, certified);
+            record_part(Part::SettleMaxima, certified, native_finished);
+            record_part(Part::SettleRanges, native_finished, armed);
             return self.phase_ticks[0];
         }
         self.status.outcome = self.status_packet.capture_holding(
@@ -2132,7 +2021,6 @@ impl Captured {
             state,
             rows,
             outcome,
-            self.status.rows.len(),
             &self.attack.held_maxima,
             &self.attack.exercise_experience,
         );
@@ -2191,7 +2079,7 @@ impl Captured {
     pub(crate) fn retain_owned_settlement(
         &mut self,
         mut store: held_store::Loan,
-        inputs: Option<Arc<crate::division_census::UnitInputs>>,
+        inputs: Option<engine_allocation::SharedBox<crate::division_census::UnitInputs>>,
         context: CaptureContext,
     ) -> Option<held_store::Loan> {
         if !self.sources_deferred
@@ -2508,7 +2396,7 @@ impl Captured {
             start.checked_add(len).and_then(|end| names.get(start..end))
         };
         let cached_name = |r: &carmy::StatusRow, index: usize| {
-            let row = self.naming.first.get(index)?;
+            let row = self.naming.first.get(..self.naming.len)?.get(index)?;
             if row.division != r.division {
                 return None;
             }
@@ -3259,6 +3147,91 @@ mod tests {
         assert_eq!(read, [true, false, false]);
         assert_eq!(counts.names_reused, 2);
         assert!(!watches.poisoned());
+    }
+
+    /// A naming range whose staging for the store cannot grow refuses the hour's naming by
+    /// name instead of aborting the game. On the base, its unchecked growth aborted the process.
+    #[test]
+    fn naming_staging_that_cannot_grow_refuses_the_range_instead_of_aborting() {
+        use crate::army_stat_changes::Watches;
+        const CHILD: &str = "BATTLE_PLAN_NAMING_STAGING_REFUSAL_TEST";
+        if std::env::var_os(CHILD).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "extended::division_presentation::tests::naming_staging_that_cannot_grow_refuses_the_range_instead_of_aborting",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .status()
+                .unwrap();
+            assert!(status.success(), "the denied naming hour ended the process: {status}");
+            return;
+        }
+        let mut world = scale_fixture::build(scale_fixture::Shape {
+            countries: 2,
+            divisions: 3,
+            wings: 1,
+            planes: 1,
+            ships: 0,
+        });
+        let _registry = template_registry(&mut world);
+        let mut members = division_name_members(&mut world);
+        let text = b"Heap cached division name";
+        let heap = [&text[..], &[0_u8][..]].concat();
+        let cache = cname_group_member::CACHED_NAME;
+        for member in &mut members {
+            member[cache..cache + 8].copy_from_slice(&(heap.as_ptr() as u64).to_le_bytes());
+            member[cache + 16..cache + 24].copy_from_slice(&(text.len() as u64).to_le_bytes());
+            member[cache + 24..cache + 32].copy_from_slice(&(text.len() as u64).to_le_bytes());
+        }
+        let live = world.live();
+        let seeds: Vec<_> = world
+            .armies
+            .iter()
+            .enumerate()
+            .map(|(index, &army)| DivisionSeed {
+                pointer: army,
+                division: (index as u64 + 1) << 32,
+                name_member: Some(members[index].as_ptr() as usize),
+                ..Default::default()
+            })
+            .collect();
+        let watches = Watches::enabled(16);
+        let mut store = super::super::attack_stats::ArmyStatStore::new();
+        let mut captured = Captured::with_capacities(&Capacities {
+            status: seeds.len(),
+            name_groups: world.shape.countries,
+            cached_name_bytes: 64,
+            ..Capacities::default()
+        });
+        let outcome = Outcome::Rows { len: seeds.len() };
+        store.observations.finish();
+        captured
+            .attack
+            .certify(&live, world.base, &seeds, outcome, Some(&mut store), &watches);
+        captured.capture_naming_holding(&live, world.base, &seeds, Some(&mut store), &watches);
+        assert_eq!(captured.naming.len, seeds.len(), "the first hour names every division");
+        store.hold(captured.attack.epoch());
+        store.observations.finish();
+        captured
+            .attack
+            .certify(&live, world.base, &seeds, outcome, Some(&mut store), &watches);
+        let mut part = std::mem::take(&mut captured.serial_naming);
+        part.range = 0..seeds.len();
+        part.forget_staging();
+        let carry = super::naming::Carry {
+            carryable: captured.attack.carryable,
+            touched: captured.attack.touched_receivers(),
+            groups: part.groups().capacities(),
+            seeds: seeds.len(),
+            bytes: [0, 0],
+        };
+        crate::test_support::with_allocations_denied(|| {
+            part.capture(&live, world.base, &seeds, carry, Some(&store), &watches);
+        });
+        assert!(crate::test_support::DENIALS.load(std::sync::atomic::Ordering::Relaxed) > 0);
+        assert_eq!(part.named(), None, "the range is refused, not named in part");
     }
 
     #[test]
@@ -4088,7 +4061,7 @@ mod tests {
             let mut census = crate::division_census::Census::new();
             loop {
                 census.clear();
-                census.capture(&memory, world.base, world.state, divisions);
+                census.capture(&memory, world.base, world.state);
                 if !census.overflowed {
                     break;
                 }
@@ -4197,7 +4170,7 @@ mod tests {
             let mut census = crate::division_census::Census::new();
             loop {
                 census.clear();
-                census.capture(&memory, world.base, world.state, shape.divisions);
+                census.capture(&memory, world.base, world.state);
                 if !census.overflowed {
                     break;
                 }
@@ -4221,7 +4194,6 @@ mod tests {
             };
             let mut capture = Captured::with_capacities(&capacity);
             capture.reserve_sources(shape.divisions);
-            capture.status_packet.enable_growth();
             // Both timers run the same production status callback. Only the
             // second includes the actual hourly naming reader and arena writes.
             for form in ["generated_shared_group", "inline_player_renames"] {
@@ -4238,7 +4210,6 @@ mod tests {
                             world.state,
                             inputs.seeds(),
                             inputs.outcome(),
-                            shape.divisions,
                         ),
                         Outcome::Rows {
                             len: shape.divisions
@@ -4292,8 +4263,8 @@ mod tests {
             ..DivisionSeed::default()
         };
         let mut bytes = vec![0; 0x400];
-        // Status authenticates the country/link roots even when its row
-        // capacity admits no unit. Supply the required null/sentinel slots.
+        // Status authenticates the country/link roots before its first unit.
+        // Supply the required null/sentinel slots.
         for (offset, data, count) in [
             (engine_native::cgame_state::COUNTRIES, 0x1380_u64, 2_u32),
             (engine_native::cgame_state::COUNTRY_LINKS, 0x1390_u64, 1_u32),
@@ -4450,7 +4421,7 @@ mod tests {
             let mut census = crate::division_census::Census::new();
             loop {
                 census.clear();
-                census.capture(&world.live(), world.base, world.state, shape.divisions);
+                census.capture(&world.live(), world.base, world.state);
                 if !census.overflowed {
                     break;
                 }
@@ -4569,6 +4540,50 @@ mod tests {
                         split.restore_status_part(index, part, 0);
                     }
                     if stage == 0 {
+                        // The preparation ranges read every block the held capture cannot
+                        // carry, so the ordered settle reads none of them.
+                        let ranges = &split.preparation_parts[..split.status_part_count()];
+                        let staged = (0..rows.len())
+                            .filter(|&index| ranges.iter().any(|part| part.maxima(index).is_some()))
+                            .count();
+                        let identity = engine_sites::at(
+                            populated.world.base,
+                            engine_native::carmy::VTABLE_RVA,
+                        )
+                        .map(|at| at as u64);
+                        let readable = rows
+                            .iter()
+                            .filter(|seed| {
+                                seed.stat_block.is_some_and(|block| block != 0)
+                                    && seed.primary_vtable == identity
+                                    && seed.handle == Some(seed.division)
+                                    && seed.division != 0
+                            })
+                            .count();
+                        assert_ne!(readable, 0);
+                        if hour == 1 {
+                            assert_eq!(staged, readable, "workers={workers}");
+                        } else if hour >= 4 {
+                            assert!(staged < readable, "workers={workers}, hour={hour}");
+                        }
+                    }
+                    if stage == 1 {
+                        // Attack staging ran in the final ranges, every range its share.
+                        assert!(
+                            split.attack_parts[..split.status_part_count()]
+                                .iter()
+                                .all(|part| part.is_prepared()),
+                            "workers={workers}, hour={hour}"
+                        );
+                        // Naming ran in the final ranges, every admitted division once.
+                        let named: usize = split.naming_parts[..split.status_part_count()]
+                            .iter()
+                            .map(|part| part.named().expect("each final range names its divisions"))
+                            .sum();
+                        let admitted = split.prepared_status.as_ref().unwrap().prepared_units();
+                        assert_eq!(named, admitted, "workers={workers}, hour={hour}");
+                    }
+                    if stage == 0 {
                         split.prepare_status_observed(
                             &memory,
                             context,
@@ -4589,10 +4604,10 @@ mod tests {
                 serial.decode_inputs();
                 let returned = split.retain_owned_settlement(
                     split_store,
-                    Some(Arc::new(crate::division_census::UnitInputs::fixture(
+                    Some(engine_allocation::shared(crate::division_census::UnitInputs::fixture(
                         rows.to_vec(),
                         inputs.outcome(),
-                    ))),
+                    )).unwrap()),
                     context,
                 );
                 split.decode_inputs();
@@ -4956,21 +4971,21 @@ mod tests {
     #[test]
     fn map_presentation_reads_only_the_movement_full_reads() {
         let populated = Populated::new();
-        let inputs = std::sync::Arc::clone(populated.census.unit_inputs().unwrap());
+        let inputs = engine_allocation::SharedBox::clone(populated.census.unit_inputs().unwrap());
         let sources = || Sources {
             rows: inputs.seeds(),
             outcome: inputs.outcome(),
         };
         let memory = engine_native::read_counts::CountedMemory::new(populated.world.live());
-        let countries = std::sync::Arc::new(
+        let countries = engine_allocation::shared(
             engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
-        );
+        ).unwrap();
         let mut runs = Vec::new();
         for map in [false, true] {
             let mut captured =
                 super::super::Captured::with_capacities(&super::super::Capacities::default());
             captured.division_presentation = populated.capture();
-            captured.install_unit_inputs(Some(std::sync::Arc::clone(&inputs)));
+            captured.install_unit_inputs(Some(engine_allocation::SharedBox::clone(&inputs)));
             let context = populated.context();
             let mut request = captured.take_presentation_request(
                 &countries,
@@ -5049,15 +5064,15 @@ mod tests {
     fn a_failed_presentation_job_publishes_no_presentation_table() {
         use crate::acquisition::Failure;
         let populated = Populated::new();
-        let inputs = std::sync::Arc::clone(populated.census.unit_inputs().unwrap());
+        let inputs = engine_allocation::SharedBox::clone(populated.census.unit_inputs().unwrap());
         let sources = || Sources {
             rows: inputs.seeds(),
             outcome: inputs.outcome(),
         };
         let memory = populated.world.live();
-        let countries = std::sync::Arc::new(
+        let countries = engine_allocation::shared(
             engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
-        );
+        ).unwrap();
         for (status_failure, movement_failure, speed_failure) in [
             (Some(Failure::Stopped), None, None),
             (None, Some(Failure::Panicked), None),
@@ -5073,7 +5088,7 @@ mod tests {
             let mut captured =
                 super::super::Captured::with_capacities(&super::super::Capacities::default());
             captured.division_presentation = populated.capture();
-            captured.install_unit_inputs(Some(std::sync::Arc::clone(&inputs)));
+            captured.install_unit_inputs(Some(engine_allocation::SharedBox::clone(&inputs)));
             let context = populated.context();
             let mut request = captured.take_presentation_request(
                 &countries,
@@ -5184,9 +5199,9 @@ mod tests {
             captured.reserve_sources(1);
             let mut request = crate::acquisition_jobs::PresentationRequest {
                 dispatch: Default::default(),
-                countries: std::sync::Arc::new(
+                countries: engine_allocation::shared(
                     engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
-                ),
+                ).unwrap(),
                 context,
                 captured,
                 inputs: None,
@@ -5288,11 +5303,13 @@ mod tests {
             },
         );
         assert_eq!(capture.outcomes()[0], Outcome::Rows { len: 1 });
+        // Status grows from no room to the seed, whose census left its stat block unread.
+        assert_eq!(seeds[0].stat_block, None);
+        assert_eq!(capture.status_packet.required_capacities().units, 1);
         assert_eq!(
             capture.outcomes()[1],
-            Outcome::Truncated {
-                len: 0,
-                unread_rows: 1
+            Outcome::Unavailable {
+                reason: "division presentation field unreadable"
             }
         );
         assert_eq!(

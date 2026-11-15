@@ -14,11 +14,9 @@ fn equivalent_mount_notation_preserves_root_membership_and_priority() {
     assert!(mounts_match(&actual, &expected));
     assert!(mounts_match(&[text(b"F:/")], &[r"\\?\F:\".to_owned()]));
     assert_eq!(mount_path("/"), Some("/".to_owned()));
-    assert!(!mounts_match(&[text(b"F:/")], &["F:".to_owned()]));
-    assert!(!mounts_match(
-        &[text(b"F:/game/")],
-        &[r"\\?\C:\game".to_owned()]
-    ));
+    // Paths that differ as written are left to the disk, so these depend on no drive.
+    assert_ne!(mount_path("F:/"), mount_path("F:"));
+    assert_ne!(mount_path("F:/game/"), mount_path(r"\\?\C:\game"));
     assert!(!mounts_match(
         &actual,
         &[expected[1].clone(), expected[0].clone()]
@@ -36,9 +34,228 @@ fn equivalent_mount_notation_preserves_root_membership_and_priority() {
         &["F:/game\0".to_owned()]
     ));
     assert!(mounts_match(&[text(b"F:/game")], &[r"F:\game".to_owned()]));
-    assert!(!mounts_match(&[text(b"F:/game")], &["F:/GAME".to_owned()]));
+    assert_ne!(mount_path("F:/game"), mount_path("F:/GAME"));
     // Empty lists cannot establish even the vanilla root.
     assert!(!mounts_match::<Descriptor>(&[], &[]));
+}
+
+fn mount(path: &str) -> Descriptor {
+    let mut text = Descriptor::default();
+    text.bytes[..path.len()].copy_from_slice(path.as_bytes());
+    text.len = path.len();
+    text
+}
+
+/// A folder under the temporary folder, removed with what it holds when dropped.
+struct Scratch(std::path::PathBuf);
+impl Scratch {
+    fn new(name: &str) -> Self {
+        let path = std::env::temp_dir().join(format!(
+            "hoi4-engine-dlc-{name}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir_all(&path).unwrap();
+        Self(path)
+    }
+}
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A directory junction at `link` to `target`; making one needs no privilege.
+fn junction(link: &std::path::Path, target: &std::path::Path) {
+    let output = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(link)
+        .arg(target)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "mklink /J {} {}: {}{}",
+        link.display(),
+        target.display(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// The 8.3 spelling of `path`, which is `path` itself where the volume makes no short names.
+fn short_path(path: &std::path::Path) -> std::path::PathBuf {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    use windows_sys::Win32::Storage::FileSystem::GetShortPathNameW;
+    let long: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+    let mut short = vec![0_u16; 32768];
+    let length =
+        unsafe { GetShortPathNameW(long.as_ptr(), short.as_mut_ptr(), short.len() as u32) };
+    assert!(
+        length > 0 && (length as usize) < short.len(),
+        "GetShortPathNameW {}",
+        path.display()
+    );
+    std::ffi::OsString::from_wide(&short[..length as usize]).into()
+}
+
+/// The game names its profile mount by the path it was given (8.3 names, a junction), the
+/// recorder by the canonical path: one folder, two spellings, one mount.
+#[test]
+fn another_spelling_of_the_same_folder_is_the_same_mount() {
+    let root = Scratch::new("mount-spellings");
+    let long = root.0.join("a-profile-folder-with-a-long-name");
+    let (base, elsewhere) = (long.join("base"), root.0.join("elsewhere").join("base"));
+    for folder in [&base, &elsewhere] {
+        std::fs::create_dir_all(folder).unwrap();
+    }
+    let link = root.0.join("junction");
+    junction(&link, &long);
+    let mut spellings = vec![link.clone()];
+    let short = short_path(&long);
+    if !short
+        .file_name()
+        .unwrap()
+        .eq_ignore_ascii_case(long.file_name().unwrap())
+    {
+        spellings.push(short);
+    }
+    let canonical = |path: &std::path::Path| {
+        std::fs::canonicalize(path)
+            .unwrap()
+            .into_os_string()
+            .into_string()
+            .unwrap()
+    };
+    let game = |path: &std::path::Path| mount(&path.to_str().unwrap().replace('\\', "/"));
+    let (expected, other) = (canonical(&base), canonical(&elsewhere));
+    let gone = format!(r"{}\gone", canonical(&long));
+    for spelling in spellings {
+        let spelled = game(&spelling.join("base"));
+        let what = spelling.display();
+        assert!(
+            mounts_match(&[spelled.clone()], std::slice::from_ref(&expected)),
+            "{what}"
+        );
+        assert!(
+            mounts_match(
+                &[spelled.clone(), game(&elsewhere)],
+                &[expected.clone(), other.clone()]
+            ),
+            "{what}"
+        );
+        assert!(
+            !mounts_match(&[spelled.clone()], std::slice::from_ref(&other)),
+            "{what}"
+        );
+        assert!(
+            !mounts_match(
+                &[spelled.clone(), game(&elsewhere)],
+                &[other.clone(), expected.clone()]
+            ),
+            "{what}"
+        );
+        assert!(
+            !mounts_match(&[spelled.clone()], &[expected.clone(), other.clone()]),
+            "{what}"
+        );
+        assert!(
+            !mounts_match(&[spelled], std::slice::from_ref(&gone)),
+            "{what}"
+        );
+        assert!(
+            !mounts_match(&[game(&spelling.join("gone"))], std::slice::from_ref(&gone)),
+            "{what}"
+        );
+    }
+}
+
+#[test]
+fn a_differing_mount_is_named_by_its_position_paths_and_what_the_disk_says() {
+    let root = Scratch::new("mount-difference");
+    let (one, two) = (root.0.join("one"), root.0.join("two"));
+    for folder in [&one, &two] {
+        std::fs::create_dir_all(folder).unwrap();
+    }
+    let link = root.0.join("link-to-one");
+    junction(&link, &one);
+    let text = |path: &std::path::Path| path.to_str().unwrap().to_owned();
+    let (one, two, link, gone) = (
+        text(&one),
+        text(&two),
+        text(&link),
+        text(&root.0.join("gone")),
+    );
+    let observed = [mount(&link), mount(&two)];
+    assert_eq!(
+        mount_difference(&observed, &[one.clone(), two.clone()]),
+        None
+    );
+    assert_eq!(
+        mount_difference(&observed, &[two.clone(), one.clone()]),
+        Some(MountDifference::Differs {
+            position: 0,
+            observed: link.as_bytes(),
+            expected: &two,
+            folders: Folders::Different,
+        })
+    );
+    assert_eq!(
+        mount_difference(&observed, &[one.clone(), gone.clone()]),
+        Some(MountDifference::Differs {
+            position: 1,
+            observed: two.as_bytes(),
+            expected: &gone,
+            folders: Folders::Unopened {
+                observed: true,
+                expected: false,
+            },
+        })
+    );
+    let unmounted = format!("{link}/gone");
+    assert_eq!(
+        mount_difference(&[mount(&unmounted)], std::slice::from_ref(&gone)),
+        Some(MountDifference::Differs {
+            position: 0,
+            observed: unmounted.as_bytes(),
+            expected: &gone,
+            folders: Folders::Unopened {
+                observed: false,
+                expected: false,
+            },
+        })
+    );
+    assert_eq!(
+        mount_difference(&observed[..1], &[one.clone(), two.clone()]),
+        Some(MountDifference::Missing {
+            position: 1,
+            expected: &two,
+        })
+    );
+    assert_eq!(
+        mount_difference(&observed, std::slice::from_ref(&one)),
+        Some(MountDifference::Extra {
+            position: 1,
+            observed: two.as_bytes(),
+        })
+    );
+    let mut unreadable = mount(&one);
+    unreadable.bytes[unreadable.len] = 0xff;
+    unreadable.len += 1;
+    assert_eq!(
+        mount_difference(&[unreadable], std::slice::from_ref(&one)),
+        Some(MountDifference::Differs {
+            position: 0,
+            observed: &unreadable.bytes[..unreadable.len],
+            expected: &one,
+            folders: Folders::Unreadable,
+        })
+    );
+    assert_eq!(
+        mount_difference::<Descriptor>(&[], &[]),
+        Some(MountDifference::NoneExpected)
+    );
 }
 
 struct SearchPathMemory<'a> {

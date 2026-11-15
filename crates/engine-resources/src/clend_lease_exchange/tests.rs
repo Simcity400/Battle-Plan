@@ -127,7 +127,7 @@ fn row(exchange: u32, kind: u8, variant: u32, receiver: u32, amount_raw: i64) ->
 #[test]
 fn reads_every_outgoing_exchange_delivered_then_sunk() {
     let f = fixture();
-    let mut rows = [Row::default(); 8];
+    let mut rows = vec![Row::default(); 8];
     assert_eq!(walk(&f, 0, 0x1000, &mut rows), Outcome::Rows { len: 4 });
     assert_eq!(
         rows[..4],
@@ -141,21 +141,8 @@ fn reads_every_outgoing_exchange_delivered_then_sunk() {
 }
 
 #[test]
-fn truncation_keeps_a_prefix_and_counts_the_rest() {
-    let f = fixture();
-    let mut rows = [Row::default(); 2];
-    assert_eq!(
-        walk(&f, 0, 0x1000, &mut rows),
-        Outcome::Truncated {
-            len: 2,
-            unread_rows: 2
-        }
-    );
-}
-
-#[test]
 fn refuses_unexpected_forms() {
-    let unavailable = |f: &Fixture| match walk(f, 0, 0x1000, &mut [Row::default(); 8]) {
+    let unavailable = |f: &Fixture| match walk(f, 0, 0x1000, &mut vec![Row::default(); 8]) {
         Outcome::Unavailable { reason } => reason,
         other => panic!("{other:?}"),
     };
@@ -187,24 +174,20 @@ fn worker_pool_growth_precedes_first_and_later_publication() {
     let mut rows = Vec::new();
     assert_eq!(row_demand(&fixture, 0, 0x1000), Ok(4));
     assert_eq!(
-        walk_growing(&fixture, 0, 0x1000, &mut rows),
+        walk(&fixture, 0, 0x1000, &mut rows),
         Outcome::Rows { len: 4 }
     );
     let entries: Vec<_> = (1..=5_000).map(|id| (id, i64::from(id))).collect();
     pool_at(&mut fixture, EXCHANGES + DELIVERED, 0x10_0000, &entries);
     assert_eq!(row_demand(&fixture, 0, 0x1000), Ok(5_002));
     assert_eq!(
-        walk_growing(&fixture, 0, 0x1000, &mut rows),
+        walk(&fixture, 0, 0x1000, &mut rows),
         Outcome::Rows { len: 5_002 }
     );
     assert_eq!(
         (rows[4_999].variant, rows[4_999].amount_raw),
         (5_000, 5_000)
     );
-    assert!(matches!(
-        walk(&fixture, 0, 0x1000, &mut [Row::default(); 4]),
-        Outcome::Truncated { .. }
-    ));
 }
 
 #[test]

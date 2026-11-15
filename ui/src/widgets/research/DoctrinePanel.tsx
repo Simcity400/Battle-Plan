@@ -3,7 +3,7 @@ import type { ComponentType } from 'react';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import { resolveWindow } from '../../dashboard/model';
-import { usePlaybackHour } from '../../dashboard/playback';
+import { useHeadHour } from '../army-size/headHour';
 import { useProduct } from '../../dashboard/products';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import WidgetState from '../../components/WidgetState';
@@ -26,7 +26,9 @@ export function ResearchWithDoctrines({ body: Body, ...props }: WidgetProps & { 
 
 function DoctrinePanel({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const [open, setOpen] = useState(false);
-  const playbackHour = usePlaybackHour(runtime.clock, active && open && widget.time.mode === 'follow');
+  // Following, doctrines are asked for the hour playback stopped or stepped at, never while it plays.
+  const clock = runtime.clock;
+  const playbackHour = useHeadHour(clock, active && open && widget.time.mode === 'follow', at => clock.getSnapshot().playing ? 'playing' : String(Math.floor(at)));
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryTag(track);
   const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);

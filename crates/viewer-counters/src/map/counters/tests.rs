@@ -1542,6 +1542,7 @@ fn draw_land_action_fixture_with(
                 stacks: vec![stack],
                 styles: vec![style],
                 sprites: vec![None],
+                plans: vec![None],
                 flotillas: Vec::new(),
                 positions: Vec::new(),
                 units: Vec::new(),
@@ -1710,6 +1711,7 @@ pub(super) fn with_counter_inputs_fixture<R>(
         schedule: &schedule,
         movement_history: &movement_history,
         visibility: Visibility::POLITICAL,
+        art: 0,
     };
     run(inputs)
 }
@@ -2691,7 +2693,11 @@ fn gun_sub_unit_tokens_name_their_authored_key_under_the_lexers_fold() {
     // The spelling differs from the authored key only in ASCII case.
     assert_eq!(
         inputs.names,
-        BTreeMap::from([(3, "railway_gun".to_owned())])
+        BTreeMap::from([
+            (3, Ok("railway_gun".to_owned())),
+            (4, Err("sub-unit armored_train is not authored".to_owned())),
+            (8, Err("token 8 is not in LexicalTokens".to_owned())),
+        ])
     );
     assert_eq!(
         inputs.refused,
@@ -2703,11 +2709,12 @@ fn gun_sub_unit_tokens_name_their_authored_key_under_the_lexers_fold() {
     // That authored key is what the class-13 join compares and what names
     // the counter's icon; a refused gun has none and draws no counter.
     let rows = inputs.rows.as_ref().expect("the census is complete");
-    assert_eq!(inputs.name_of(&rows[0]), Some("railway_gun"));
-    assert_eq!(inputs.name_of(&rows[1]), None);
+    let name_of = |gun: &RailwayGunCounterInputRow| inputs.names[&gun.subunit_token].as_deref().ok();
+    assert_eq!(name_of(&rows[0]), Some("railway_gun"));
+    assert_eq!(name_of(&rows[1]), None);
     let countries = countries([(1, Allegiance::Allied)]);
     let templates = TemplateIcons::default();
-    let folded = gun_unit(1, 1, inputs.name_of(&rows[0]).unwrap(), 1, 0);
+    let folded = gun_unit(1, 1, name_of(&rows[0]).unwrap(), 1, 0);
     let authored = gun_unit(2, 1, "railway_gun", 1, 0);
     assert!(
         folded
@@ -2732,7 +2739,7 @@ fn gun_sub_unit_tokens_name_their_authored_key_under_the_lexers_fold() {
         assert_eq!(icon.frame, frame);
     }
     let unloaded = gun_inputs(&frame, &BTreeMap::new(), Err("no units"));
-    assert!(unloaded.names.is_empty());
+    assert!(unloaded.names.values().all(Result::is_err));
     assert!(
         unloaded
             .refused
@@ -2744,7 +2751,7 @@ fn gun_sub_unit_tokens_name_their_authored_key_under_the_lexers_fold() {
         "RAILWAY_GUN".to_owned(),
     ]));
     let refused = gun_inputs(&frame, &BTreeMap::new(), Ok(&ambiguous));
-    assert!(refused.names.is_empty());
+    assert!(refused.names.values().all(Result::is_err));
     assert!(refused.refused.contains(
         "railway gun sub-unit: token Railway_Gun names several content keys: RAILWAY_GUN, railway_gun"
     ));
@@ -2895,7 +2902,7 @@ fn gun_inputs_need_the_whole_census_and_keep_rail_status_per_province() {
     assert_eq!(inputs.rows.as_ref().map(Vec::len), Some(1));
     assert_eq!(
         inputs.names,
-        BTreeMap::from([(3, "railway_gun".to_owned())])
+        BTreeMap::from([(3, Ok("railway_gun".to_owned()))])
     );
     // The cooldown census is unavailable, so no province's rail status is known.
     assert_eq!(inputs.rail, None);

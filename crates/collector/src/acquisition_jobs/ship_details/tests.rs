@@ -12,7 +12,7 @@ fn request(ships: usize) -> ShipModelsRequest {
     let mut captured = ship_models::Captured::with_capacities(&Default::default());
     captured.begin_sources();
     for index in 0..ships {
-        captured.visit_source_growing(
+        captured.visit_source(
             0x1000 * (index + 1),
             &engine_native::cship::Row {
                 id: index as u64 + 1,
@@ -23,7 +23,10 @@ fn request(ships: usize) -> ShipModelsRequest {
     }
     captured.finish_sources(Outcome::Rows { len: ships });
     ShipModelsRequest {
-        countries: Arc::new(engine_native::country_memory::Cache::try_with_capacity(0).unwrap()),
+        countries: engine_allocation::shared(
+            engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+        )
+        .unwrap(),
         context: ship_models::CaptureContext::new(11),
         game_state: 0x1000,
         captured,

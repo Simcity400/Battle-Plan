@@ -6,7 +6,8 @@
 //! inside the quiescent hourly callback, before the trampoline resumes the game.
 //! This cache is not a synchronization mechanism or a cross-hour address cache.
 
-use std::{cell::RefCell, sync::Arc};
+use engine_allocation::SharedBox;
+use std::cell::RefCell;
 
 use crate::{Memory, ccountry, cpdx_array::Array};
 
@@ -69,17 +70,18 @@ pub struct Cache {
 impl Cache {
     /// Prepare one owned authentication snapshot before dispatching any readers.
     /// Every previous lease must have been returned: refusing a busy snapshot
-    /// leaves its bytes and observations unchanged. Cloning the resulting Arc
+    /// leaves its bytes and observations unchanged. Cloning the resulting owner
     /// allocates nothing and does not extend any live game-pointer lifetime.
     pub fn prepare_shared<M: Memory>(
-        storage: &mut Arc<Self>,
+        storage: &mut SharedBox<Self>,
         source: &M,
         base: usize,
         game_state: usize,
-    ) -> Result<Arc<Self>, &'static str> {
-        let cache = Arc::get_mut(storage).ok_or("country snapshot still leased by a reader")?;
+    ) -> Result<SharedBox<Self>, &'static str> {
+        let cache =
+            SharedBox::get_mut(storage).ok_or("country snapshot still leased by a reader")?;
         cache.prepare(source, base, game_state);
-        Ok(Arc::clone(storage))
+        Ok(SharedBox::clone(storage))
     }
 
     /// Borrow the immutable observations from the current acquisition epoch.
@@ -172,7 +174,7 @@ impl Cache {
     }
 
     /// Owned entry/filter storage plus derived roster storage and context.
-    /// Excludes allocator metadata and the shared owner's Arc control block.
+    /// Excludes allocator metadata and the shared owner's count.
     pub fn allocated_bytes(&self) -> usize {
         std::mem::size_of_val(self.entries.as_ref())
             + std::mem::size_of_val(self.filter.as_ref())

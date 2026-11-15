@@ -1,32 +1,36 @@
-import type { ResearchCoverage, ResearchEntry, ResearchSlotHistory, ResearchSlotState } from '../../generated/dashboard';
-import { isUnjoinedResearch, researchLatestProgress, researchRateAt, researchStateAt } from '../research/researchData.ts';
+import type { ResearchHistory, ResearchSlotHistory, ResearchSlotsAt } from '../research/types';
+import { isUnjoinedResearch, researchAt, researchEntryAt, researchRateAt } from '../research/researchData.ts';
+import { coverageAt } from '../research/researchLayout.ts';
+import type { ResearchEntry, ResearchSlotNow } from '../../generated/dashboard';
 
-/** What one slot is doing at an hour. A technology held without its recorded
- * occurrence (older recordings) has no entry, so no history to open. */
+/** What one slot is doing at the hour of `read`. Its moving numbers (progress, days left, saved days) are painted
+ * from the read (`slotNumbers`), not held here. */
 export type ActiveSlot =
-  | { kind: 'researching'; slot: ResearchSlotHistory; state: ResearchSlotState; entry: ResearchEntry | null; token: string;
-    progress: { fraction: number; hour: number } | null; left: number | null; aheadOf: number | null }
-  | { kind: 'idle'; slot: ResearchSlotHistory; savedRaw: bigint }
-  | { kind: 'unavailable'; slot: ResearchSlotHistory };
+  | { kind: 'researching'; slot: ResearchSlotHistory; read: ResearchSlotNow; entry: ResearchEntry | null; token: string; aheadOf: number | null }
+  | { kind: 'idle'; slot: ResearchSlotHistory; read: ResearchSlotNow }
+  | { kind: 'unavailable'; slot: ResearchSlotHistory; reason: string };
 
-/** One card per slot open at `hour`, in slot order. At an hour without a read,
- * the slots open at the last read show as unavailable; a slot that had closed
- * by then is not shown. `slots` and `coverage` are clipped at `hour`. */
-export function activeSlots(slots: readonly ResearchSlotHistory[], coverage: readonly ResearchCoverage[], hour: number): ActiveSlot[] {
-  const read = coverage.some(span => span.firstHour <= hour && hour <= span.lastHour);
+/** One card per slot open at the slots' hour, in slot order, from the whole `history` and the slots' latest read
+ * `now`. At an hour no read covers, the slots open at the last read show as unavailable; a slot closed by then is
+ * not shown. */
+export function activeSlots(history: ResearchHistory, now: ResearchSlotsAt): ActiveSlot[] {
+  const hour = now.hour;
+  const coverage = coverageAt(history.coverage, hour);
+  const covered = coverage.some(span => span.firstHour <= hour && hour <= span.lastHour);
   const lastRead = [...coverage].reverse().find(span => span.lastHour < hour)?.lastHour;
-  return [...slots].sort((a, b) => a.index - b.index).flatMap((slot): ActiveSlot[] => {
-    if (!read) return lastRead !== undefined && slot.availability.some(span => span.lastHour === lastRead) ? [{ kind: 'unavailable', slot }] : [];
+  const reads = new Map(now.slots.map(read => [read.index, read]));
+  return researchAt(history, hour).sort((a, b) => a.index - b.index).flatMap((slot): ActiveSlot[] => {
+    if (!covered) return lastRead !== undefined && slot.availability.some(span => span.lastHour === lastRead)
+      ? [{ kind: 'unavailable', slot, reason: 'Not recorded at this hour' }] : [];
     if (!slot.availability.some(span => span.firstHour <= hour && hour <= span.lastHour)) return [];
-    const state = researchStateAt(slot, hour);
-    if (!state) return [{ kind: 'unavailable', slot }];
-    const entry = slot.entries.find(candidate => candidate.outcome === 'active'
-      && candidate.firstObservedHour === state.entryFirstObservedHour && candidate.token === state.token) ?? null;
-    if (!entry && !isUnjoinedResearch(state)) return [{ kind: 'idle', slot, savedRaw: BigInt(state.bankedDaysRaw) }];
-    const rate = researchRateAt(state, hour);
-    return [{ kind: 'researching', slot, state, entry, token: entry?.token ?? state.token!, progress: researchLatestProgress(slot, state, hour),
-      left: state.details?.remainingDays ?? null,
+    const read = reads.get(slot.index);
+    if (!read) return [{ kind: 'unavailable', slot, reason: now.missing ?? 'Not recorded at this hour' }];
+    const full = history.slots.find(owner => owner.index === slot.index) ?? slot;
+    const entry = researchEntryAt(full, read.state, hour);
+    if (!entry && !isUnjoinedResearch(read.state)) return [{ kind: 'idle', slot, read }];
+    const rate = researchRateAt(read.state, hour);
+    return [{ kind: 'researching', slot, read, entry, token: entry?.token ?? read.state.token!,
       // The ahead-of-time penalty applies at this hour: the technology's year is still to come.
-      aheadOf: rate && BigInt(rate.penaltyRaw) > 0n ? state.details!.modifiers!.year : null }];
+      aheadOf: rate && BigInt(rate.penaltyRaw) > 0n ? read.state.details!.modifiers!.year : null }];
   });
 }

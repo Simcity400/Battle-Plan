@@ -10,23 +10,27 @@ import { CLOSED } from '../../charts/drill/drillState.ts';
 import { readSelection, tradeContext } from './tradeDrill.ts';
 
 test('market moment respects pin/campaign/range while closed and pins/restores each selected row', async () => {
-  const state = { drill: CLOSED as DrillState, selected: null as string | null, override: undefined as number | undefined,
+  const state = { drill: CLOSED as DrillState, selected: null as string | null, asked: undefined as number | null | undefined,
     hour: 45, shownHour: 0, pins: [] as WidgetSpec[], views: [] as { data: { hour: number }; selected?: string; onPick?: (key: string) => void }[],
-    host: null as null | { onPin?: () => void; onClose: () => void; onFollow?: () => void; open: boolean } };
+    product: '', host: null as null | { onPin?: () => void; onClose: () => void; onFollow?: () => void; open: boolean } };
   const globals = globalThis as typeof globalThis & { __marketWidget?: typeof state }; globals.__marketWidget = state;
   const replacements: Record<string, string> = {
-    '/widgets/trade-flows/useTradeFlows.ts': `import { resolveWindow } from '../../dashboard/model.ts';
-      export const tradeFlowsRequest = () => { throw Error('resource request in market view'); };
-      export const useTradeFlows = (widget, runtime, _active, hour) => {
-        const state = globalThis.__marketWidget, track = runtime.tracks[0]; state.override = hour;
-        const at = hour ?? Math.floor(resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour()).lastHour); state.shownHour = at;
-        return { track, all: true, resolved: null, groups: {}, scope: null, retry() {}, market: { data: { branchId: '1', hour: at, offers: [], contracts: [], agreements: [], deliveries: [], warnings: [] } } };
+    '/widgets/trade-flows/useTradeFlows.ts': `export const tradeFlowsRequest = () => { throw Error('resource request in market view'); };
+      export const useTradeWindows = (_client, _track, _tags, _from, _to, enabled) => { if (enabled) throw Error('resource request in market view'); return { data: undefined, retry() {} }; };
+      export const useTradeFlows = (_widget, runtime) => ({ track: runtime.tracks[0], all: true, resolved: null, groups: {}, scope: null, data: undefined, retry() {}, extent: [0, 100] });`,
+    '/dashboard/headProduct.ts': `import { resolveWindow } from './model.ts';
+      export const useHeadProduct = (runtime, widget, product, params, options) => {
+        const state = globalThis.__marketWidget, track = runtime.tracks[0]; state.asked = options.hoverHour; state.product = product;
+        const at = options.hoverHour ?? Math.floor(resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour()).lastHour); state.shownHour = at;
+        return { data: params ? { branchId: '1', offers: [], contracts: [], agreements: [], purchasesMissing: null, unattributed: 0, variants: [], icons: [], warnings: [] } : undefined,
+          at, live: { read: () => ({ get() {}, missing: () => 'Not read yet' }), subscribe: () => () => {} }, retry() {}, root() {} };
       };`,
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => globalThis.__marketWidget.hour;',
+    '/dashboard/MarketOccurrences.tsx': 'export default () => null;',
     '/dashboard/contentRevision.ts': 'export const useContentRevision = () => 0;',
     '/dashboard/countryFlagsAt.ts': 'export const flagReadMetadata = () => ({}); export const useCountryLabelsAt = () => ({ labelAt: () => () => ({}) });',
+    '/dashboard/countryFlags.ts': 'export const useCountryFlagsRead = () => new Map();',
     '/dashboard/countryNamesAt.ts': 'export const nameKey = () => ""; export const useCountryFactsRead = () => new Map();',
-    '/dashboard/products.ts': 'export const useProduct = () => ({ retry() {} }); export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
+    '/dashboard/products.ts': 'export const useProduct = () => ({ retry() {} });',
     '/charts/useChartTokens.ts': 'export const useChartTokens = () => ({ categories: [], surface: "#000000", text: "#ffffff", countryColours: "raw" }); export const useViewportHeight = () => 1000;',
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ menu: null, open() {} });',
     '/charts/drill/DrillHost.tsx': `import { createElement } from 'react'; export default props => { globalThis.__marketWidget.host = props; return createElement('div', null, props.open ? props.children : props.main); };`,
@@ -40,6 +44,7 @@ test('market moment respects pin/campaign/range while closed and pins/restores e
       if (path.endsWith('/widgets/trade-flows/TradeFlowsWidget.tsx')) return code
         .replace(/const \[marketSelection, setMarketSelection\] = useState<.*>\(null\);/, 'const [marketSelection, setMarketSelection] = [globalThis.__marketWidget.selected, key => { globalThis.__marketWidget.selected = key; }];')
         .replace(/\buseReducer\(/g, '((reduce) => [globalThis.__marketWidget.drill, action => { globalThis.__marketWidget.drill = reduce(globalThis.__marketWidget.drill, action); }])(')
+        .replace(/\buseSyncExternalStore\(/g, '((_subscribe, read) => read())(')
         .replace(/\buseEffect\(/g, '(() => {})(');
     } }] });
   try {
@@ -47,24 +52,25 @@ test('market moment respects pin/campaign/range while closed and pins/restores e
     const { definition } = await vite.ssrLoadModule('/ui/src/widgets/trade-flows/definition.ts');
     registerWidgets([definition]);
     const { default: Widget } = await vite.ssrLoadModule('/ui/src/widgets/trade-flows/TradeFlowsWidget.tsx');
-    const track = { id: 't', selectedTag: 'AAA', axisOffset: 0, branch: { id: '1', firstHour: 0, lastHour: 100 }, source: { id: 'source', revision: 'r', metadata: { campaignKey: 'campaign', countries: [] } } };
+    const track = { id: 't', selectedTag: 'AAA', axisOffset: 0, branch: { id: '1', firstHour: 0, lastHour: 100, gaps: [] }, source: { id: 'source', revision: 'r', metadata: { campaignKey: 'campaign', countries: [] } } };
+    const clock = { getHour: () => state.hour, getSnapshot: () => ({ position: state.hour, hour: state.hour, playing: false, hoursPerSecond: 0 }), subscribe: () => () => {}, subscribeFrame: () => () => {} };
     const props = { widget: { id: 'market', kind: 'trade-flows', title: 'Market', configVersion: 1, trackIds: ['t'], countries: { kind: 'all' }, options: { view: 'market' }, time: { mode: 'pin', windows: { t: { firstOffset: 17, lastOffset: 17 } } } },
-      runtime: { client: {}, tracks: [track], clock: { getHour: () => state.hour, getSnapshot: () => ({ position: state.hour, playing: false, hoursPerSecond: 0 }) }, addWidgetBelow: (_id: string, pin: WidgetSpec) => state.pins.push(pin) }, active: true, onDiagnostics() {} } as unknown as WidgetProps;
+      runtime: { client: {}, tracks: [track], clock, addWidgetBelow: (_id: string, pin: WidgetSpec) => state.pins.push(pin) }, active: true, onDiagnostics() {} } as unknown as WidgetProps;
     const render = () => { state.views = []; renderToStaticMarkup(createElement(Widget, props)); };
-    render(); assert.equal(state.override, undefined); assert.equal(state.shownHour, 17);
+    render(); assert.equal(state.product, 'market-lendlease'); assert.equal(state.asked, null); assert.equal(state.shownHour, 17);
     props.widget.time = { mode: 'campaign' }; render(); assert.equal(state.shownHour, 100);
     props.widget.time = { mode: 'range', firstOffset: 20, lastOffset: 30 }; render(); assert.equal(state.shownHour, 30);
     for (const key of ['offer:5000', 'contract:false:0011', 'agreement:0012']) {
       state.drill = CLOSED; state.selected = null;
       props.widget.options = { view: 'market' }; props.widget.time = { mode: 'pin', windows: { t: { firstOffset: 17, lastOffset: 17 } } };
       render(); state.views[0].onPick!(key); render();
-      assert.equal(state.override, 17); assert.equal(state.views[0].selected, key);
+      assert.equal(state.asked, 17); assert.equal(state.views[0].selected, key);
       state.host!.onPin!();
       const pin = state.pins.at(-1)!;
       assert.equal(pin.kind, 'trade-flows'); assert.equal(pin.options!.view, 'market'); assert.equal(pin.options!.show, 'contributions');
       assert.deepEqual(readSelection(pin.options!.tradeSelection, tradeContext(track as never)), { kind: 'market', key });
       props.widget = JSON.parse(JSON.stringify(pin)); state.drill = CLOSED; state.selected = null; render();
-      assert.equal(state.override, undefined); assert.equal(state.shownHour, 17); assert.equal(state.views[0].selected, key);
+      assert.equal(state.asked, null); assert.equal(state.shownHour, 17); assert.equal(state.views[0].selected, key);
       state.host!.onFollow!(); render(); assert.equal(state.shownHour, 45); assert.equal(state.views[0].selected, key);
     }
   } finally { await vite.close(); delete globals.__marketWidget; }

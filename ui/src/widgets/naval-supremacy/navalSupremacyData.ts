@@ -1,94 +1,136 @@
-import { runAtHour, validateKeyedWindow } from '../../dashboard/keyedHistory.ts';
-import type { KeyedRun, KeyedWindow } from '../../dashboard/keyedHistory';
-import type { KeyedDay } from '../../dashboard/keyedDays';
-import type { HeatCell, HeatRow } from '../../charts/heat/layout';
+import type { HeatCell, HeatPeriod, HeatRow } from '../../charts/heat/layout';
 import type { TooltipContent } from '../../charts/tooltip';
+import type { NavalSupremacyReply, SupremacyRegion, SupremacyRun } from '../../generated/dashboard';
 
-export interface Choice { id: string; name: string }
-export interface SupremacyReply { window: KeyedWindow; dayHours: number; regions: readonly Choice[]; scale: number; warnings: readonly string[] }
 export type Control = 'friendly' | 'enemy' | 'neither';
 
-const isChoice = (value: unknown): value is Choice => !!value && typeof value === 'object'
-  && typeof (value as Choice).id === 'string' && typeof (value as Choice).name === 'string';
+/** Following playback, the chart's end moves by whole months: a render per month of travel, never per hour. */
+export const STEP = 24 * 30;
 
-export function validateSupremacy(value: unknown): SupremacyReply {
-  const reply = value as SupremacyReply;
-  if (!reply || typeof reply !== 'object' || !Array.isArray(reply.regions) || !reply.regions.every(isChoice)
-    || !Number.isSafeInteger(reply.dayHours) || reply.dayHours <= 0 || !Number.isSafeInteger(reply.scale) || reply.scale <= 0
-    || !Array.isArray(reply.warnings) || !reply.warnings.every(warning => typeof warning === 'string'))
+/** The hour a following view ends at: the end of the head's month while playing, the head itself at a pause. */
+export const followedEnd = (hour: number, playing: boolean) => playing ? Math.floor(hour / STEP) * STEP + STEP - 1 : Math.floor(hour);
+
+const text = (value: unknown): value is string => typeof value === 'string';
+const optionalDecimal = (value: unknown) => value === null || text(value) && /^-?\d+$/u.test(value);
+const day = (value: unknown) => Number.isSafeInteger(value) && (value as number) >= 0;
+
+export function validateSupremacy(value: unknown): NavalSupremacyReply {
+  const reply = value as NavalSupremacyReply;
+  const run = (item: SupremacyRun) => !!item && day(item.firstDay) && day(item.lastDay) && item.firstDay <= item.lastDay && item.lastDay < reply.days
+    && (item.control === null || [1, 0, -1].includes(item.control)) && optionalDecimal(item.friendly) && optionalDecimal(item.enemy)
+    && optionalDecimal(item.share) && optionalDecimal(item.own);
+  if (!reply || typeof reply !== 'object' || !Number.isSafeInteger(reply.firstHour) || !Number.isSafeInteger(reply.lastHour) || (reply.firstHour > reply.lastHour && reply.days > 0)
+    || !Number.isSafeInteger(reply.firstDayHour) || !Number.isSafeInteger(reply.dayHours) || reply.dayHours <= 0 || !day(reply.days)
+    || !Number.isSafeInteger(reply.scale) || reply.scale <= 0 || !Array.isArray(reply.warnings) || !reply.warnings.every(text)
+    || !Array.isArray(reply.unknown) || !reply.unknown.every(span => !!span && day(span.firstDay) && day(span.lastDay) && span.firstDay <= span.lastDay && text(span.reason))
+    || !Array.isArray(reply.regions) || !reply.regions.every((region: SupremacyRegion) => !!region && text(region.id) && text(region.name) && Array.isArray(region.runs) && region.runs.every(run)))
     throw new Error('The naval supremacy reply is malformed.');
-  return { ...reply, window: validateKeyedWindow(reply.window) };
+  return reply;
 }
 
-/** One region's day: the game's control outcome from the viewer's point of view, the control
- * rule's sums, the explanatory share (the game's own quotient) and its parts, and the viewer's
- * own current, each null where the read holds none (a refused operand leaves the others). */
-export interface RegionDay { control: Control | null; friendly: bigint | null; enemy: bigint | null; share: bigint | null; shareNum: bigint | null; shareDen: bigint | null; own: bigint | null }
-
-export function regionSeries(window: KeyedWindow): Map<string, Map<string, readonly KeyedRun[]>> {
-  const out = new Map<string, Map<string, readonly KeyedRun[]>>();
-  for (const series of window.series) {
-    const [region, field] = series.name.split('|');
-    if (!field) continue;
-    const names = out.get(region) ?? new Map<string, readonly KeyedRun[]>();
-    names.set(field, series.runs);
-    out.set(region, names);
+/** The reply's days within `extent` as heat periods, clipped to it; a day not known has no read. */
+export function supremacyDays(reply: NavalSupremacyReply, extent: readonly [number, number]): (HeatPeriod & { index: number })[] {
+  const unknown = new Set(reply.unknown.flatMap(span => Array.from({ length: span.lastDay - span.firstDay + 1 }, (_, at) => span.firstDay + at)));
+  const out: (HeatPeriod & { index: number })[] = [];
+  const from = Math.max(extent[0], reply.firstHour), to = Math.min(extent[1], reply.lastHour);
+  for (let index = Math.max(0, Math.floor((from - reply.firstDayHour) / reply.dayHours)); index < reply.days; index++) {
+    const start = reply.firstDayHour + index * reply.dayHours;
+    if (start > to) break;
+    const firstHour = Math.max(start, from), lastHour = Math.min(start + reply.dayHours - 1, to);
+    out.push({ index, firstHour, lastHour, readHour: unknown.has(index) ? null : lastHour });
   }
   return out;
 }
 
-export function regionDay(names: ReadonlyMap<string, readonly KeyedRun[]> | undefined, hour: number): RegionDay {
-  const value = (field: string) => { const run = runAtHour(names?.get(field) ?? [], hour); return run ? BigInt(run[2]) : null; };
-  const control = value('control');
-  return { control: control === null ? null : control > 0n ? 'friendly' : control < 0n ? 'enemy' : 'neither',
-    friendly: value('friendly'), enemy: value('enemy'), share: value('share'), shareNum: value('shareNum'), shareDen: value('shareDen'), own: value('own') };
+/** The run of `runs` holding day `index`. */
+export function runOn(runs: readonly SupremacyRun[], index: number): SupremacyRun | null {
+  let low = 0, high = runs.length - 1;
+  while (low <= high) {
+    const middle = (low + high) >> 1, run = runs[middle];
+    if (index < run.firstDay) high = middle - 1; else if (index > run.lastDay) low = middle + 1; else return run;
+  }
+  return null;
 }
 
-/** Heat rows: each region's daily control outcome as one colour; a read day without an admitted
- * control, whether or not the region has values on other days, is hatched. */
-export function supremacyRows(reply: SupremacyReply, regions: readonly Choice[], days: readonly KeyedDay[],
-  colours: Record<Control, string>, labels: Record<Control, string>): HeatRow[] {
-  const series = regionSeries(reply.window);
+export const controlOf = (run: SupremacyRun | null): Control | null => run?.control == null ? null : run.control > 0 ? 'friendly' : run.control < 0 ? 'enemy' : 'neither';
+
+/** Heat rows: each region's daily control as one colour; a known day without an admitted control is hatched. */
+export function supremacyRows(regions: readonly SupremacyRegion[], days: readonly (HeatPeriod & { index: number })[], colours: Record<Control, string>, labels: Record<Control, string>): HeatRow[] {
   const blank: HeatCell = { parts: [] }, unknown: HeatCell = { parts: [], unknown: true };
   const cells: Record<Control, HeatCell> = {
     friendly: { parts: [{ id: 'friendly', label: labels.friendly, color: colours.friendly, share: 1 }] },
     enemy: { parts: [{ id: 'enemy', label: labels.enemy, color: colours.enemy, share: 1 }] },
     neither: { parts: [{ id: 'neither', label: labels.neither, color: colours.neither, share: 1 }] },
   };
-  return regions.map(region => {
-    const names = series.get(region.id);
-    return { id: region.id, label: region.name, cells: days.map(day => {
-      if (day.readHour === null) return blank;
-      const control = regionDay(names, day.at).control;
-      return control === null ? unknown : cells[control];
-    }) };
-  });
+  return regions.map(region => ({ id: region.id, label: region.name, cells: days.map(item => {
+    if (item.readHour === null) return blank;
+    const control = controlOf(runOn(region.runs, item.index));
+    return control === null ? unknown : cells[control];
+  }) }));
 }
 
-/** A fixed-point amount on the reply's scale. */
-export function amountText(value: bigint | null, scale: number): string {
+export function amountText(value: string | null, scale: number): string {
   if (value === null) return 'Not recorded';
   return (Number(value) / scale).toLocaleString('en-US', { maximumFractionDigits: 2 });
 }
 
-/** The explanatory share as a percent: the backend's native fixed-point quotient, shown as is. */
-export function shareText(day: RegionDay, scale: number): string {
-  if (day.share === null) return 'Not recorded';
-  return `${(Number(day.share) / scale * 100).toLocaleString('en-US', { maximumFractionDigits: 1 })}%`;
+export function shareText(value: string | null, scale: number): string {
+  if (value === null) return 'Not recorded';
+  return `${(Number(value) / scale * 100).toLocaleString('en-US', { maximumFractionDigits: 1 })}%`;
 }
 
-export function supremacyTooltip(region: Choice, day: RegionDay | null, viewer: string, labels: Record<Control, string>, scale: number, date: string, readDate: string | null): TooltipContent {
-  if (!day) return { title: region.name, rows: [{ label: date }, { label: 'Not recorded' }] };
-  return {
-    title: region.name,
-    rows: [
-      { label: date },
-      { label: 'Control', value: day.control === null ? 'Not recorded' : labels[day.control] },
-      { label: `Friendly to ${viewer}`, value: amountText(day.friendly, scale) },
-      { label: `Enemies of ${viewer}`, value: amountText(day.enemy, scale) },
-      { label: 'Supremacy share', value: shareText(day, scale) },
-      { label: `${viewer}'s own`, value: amountText(day.own, scale) },
-      ...readDate ? [{ label: 'As of', value: readDate }] : [],
-    ],
-  };
+export function supremacyTooltip(region: SupremacyRegion, run: SupremacyRun | null, viewer: string, labels: Record<Control, string>, scale: number, date: string, reason: string | null): TooltipContent {
+  if (reason !== null || !run) return { title: region.name, rows: [{ label: date }, { label: reason ?? 'Not recorded' }] };
+  const control = controlOf(run);
+  return { title: region.name, rows: [
+    { label: date },
+    { label: 'Control', value: control === null ? 'Not recorded' : labels[control] },
+    { label: `Friendly to ${viewer}`, value: amountText(run.friendly, scale) },
+    { label: `Enemies of ${viewer}`, value: amountText(run.enemy, scale) },
+    { label: 'Supremacy share', value: shareText(run.share, scale) },
+    { label: `${viewer}'s own`, value: amountText(run.own, scale) },
+  ] };
+}
+
+/** Why day `index` is not known, if it is not. */
+export function unknownReason(reply: NavalSupremacyReply, index: number): string | null {
+  return reply.unknown.find(span => span.firstDay <= index && index <= span.lastDay)?.reason ?? null;
+}
+
+/** The windows held (`../../dashboard/heldWindows.ts`), joined in hour order into one reply of their days: each
+ * window's days placed after the first's, runs and unknown days continuing the one before with the same values joined.
+ * Null while none is held. */
+export function mergeSupremacy(windows: ReadonlyMap<number, NavalSupremacyReply>): NavalSupremacyReply | null {
+  const held = [...windows].sort((a, b) => a[0] - b[0]).map(([, reply]) => reply).filter(reply => reply.days > 0);
+  const first = held[0];
+  if (!first) return windows.values().next().value ?? null;
+  const base = first.firstDayHour, dayHours = first.dayHours;
+  const regions = new Map<string, SupremacyRegion>();
+  const unknown: NavalSupremacyReply['unknown'] = [];
+  const warnings = new Set<string>();
+  let days = first.days, lastHour = first.lastHour;
+  const same = (a: SupremacyRun, b: SupremacyRun) => a.control === b.control && a.friendly === b.friendly && a.enemy === b.enemy && a.share === b.share && a.own === b.own;
+  for (const reply of [...windows.values()]) for (const warning of reply.warnings) warnings.add(warning);
+  for (const reply of held) {
+    const offset = Math.round((reply.firstDayHour - base) / dayHours);
+    days = Math.max(days, offset + reply.days);
+    lastHour = Math.max(lastHour, reply.lastHour);
+    for (const region of reply.regions) {
+      let into = regions.get(region.id);
+      if (!into) regions.set(region.id, into = { id: region.id, name: region.name, runs: [] });
+      for (const run of region.runs) {
+        const placed = { ...run, firstDay: run.firstDay + offset, lastDay: run.lastDay + offset };
+        const open = into.runs.at(-1);
+        if (open && open.lastDay + 1 === placed.firstDay && same(open, placed)) into.runs[into.runs.length - 1] = { ...open, lastDay: placed.lastDay };
+        else into.runs.push(placed);
+      }
+    }
+    for (const span of reply.unknown) {
+      const placed = { ...span, firstDay: span.firstDay + offset, lastDay: span.lastDay + offset };
+      const open = unknown.at(-1);
+      if (open && open.lastDay + 1 === placed.firstDay && open.reason === placed.reason) unknown[unknown.length - 1] = { ...open, lastDay: placed.lastDay };
+      else unknown.push(placed);
+    }
+  }
+  return { ...first, lastHour, days, unknown, regions: [...regions.values()], warnings: [...warnings] };
 }

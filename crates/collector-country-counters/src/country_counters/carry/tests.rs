@@ -219,7 +219,7 @@ struct Hour {
 
 fn hour(world: &World, store: Option<&mut CounterStore>, at: i32, fault: Option<usize>) -> Hour {
     let memory = world.memory(fault);
-    let mut naming = ccountry::read_reserved_naming(&memory, 0, STATE, &mut []);
+    let mut naming = ccountry::read_reserved_naming_observed_inner(&memory, 0, STATE, engine_native::walk::Buffer::Count, None);
     let observed = naming
         .visibility
         .take()

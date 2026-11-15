@@ -129,7 +129,7 @@ fn memory(bytes: &[u8], fault: Option<usize>) -> MemoryProbe<'_> {
     }
 }
 fn observation(memory: &impl Memory) -> ccountry::ReservedVisibilityObservation {
-    let mut naming = ccountry::read_reserved_naming(memory, 0, STATE, &mut []);
+    let mut naming = ccountry::read_reserved_naming_observed_inner(memory, 0, STATE, engine_native::walk::Buffer::Count, None);
     let observed = naming
         .visibility
         .take()
@@ -139,7 +139,7 @@ fn observation(memory: &impl Memory) -> ccountry::ReservedVisibilityObservation 
 }
 
 #[test]
-fn short_matrix_and_failed_prefix_skip_body_keep_full_demand_and_clear_previous_cells() {
+fn short_matrix_grows_in_the_pass_and_failed_prefix_skips_body_and_clears_previous_cells() {
     let bytes = world(3);
     let memory = memory(&bytes, None);
     let observed = observation(&memory);
@@ -147,18 +147,12 @@ fn short_matrix_and_failed_prefix_skip_body_keep_full_demand_and_clear_previous_
     let source = capture
         .prepare(&memory, Some(51), Some(observed), true)
         .unwrap();
-    capture.capture_cell(&source, &memory, 0, None, 0, None);
-    assert_eq!((capture.cells.required, memory.body_reads.get()), (3, 0));
-    assert!(capture.projection().unwrap().is_none());
-    let mut capacity = 1;
-    capture.grow(&mut capacity);
+    assert_eq!(capture.cells.required, 3);
     assert!(capture.cells.first.len() >= 3);
-    drop(source);
-    let source = capture
-        .prepare(&memory, Some(52), Some(observed), true)
-        .unwrap();
     capture.capture_cell(&source, &memory, 0, None, 0, None);
+    assert!(memory.body_reads.get() > 0);
     let owned = capture.projection().unwrap().unwrap();
+    assert_eq!(owned.cells.len(), 3);
     assert!(owned.cells[0].is_some());
     let old_reads = memory.body_reads.get();
     drop(source);
@@ -191,12 +185,12 @@ fn same_pointer_forward_failure_is_not_retried() {
     let countries = ccountry::Reader::new(&memory, 0, STATE).unwrap();
     let country = countries.resolve(1).unwrap();
     let mut forward = crelation_status::ForwardZeroObservation::default();
-    let inputs = crelation_status::co_belligerent_inputs_observed(
+    let inputs = crelation_status::co_belligerent_inputs_observed_buffer(
         &memory,
         0,
         &countries,
         country,
-        &mut [0; 2],
+        engine_native::walk::Buffer::Growing(&mut vec![0; 2]),
         &mut forward,
     );
     assert!(inputs.zero_war.is_err());
@@ -323,8 +317,7 @@ fn integration_starts_after_all_positive_prefixes_and_successive_growth_uses_liv
     capture.grow(&mut capacity);
     let retained = capacity;
     assert_eq!(capture.cells.first.len(), retained);
-    // The full initial arena has acquired growth headroom. Demand must
-    // exceed that retained storage to reach a genuine whole-M refusal.
+    // A matrix larger than the retained storage grows in the same pass.
     let next_slots = retained.checked_add(1).unwrap();
     let bytes = world(u32::try_from(next_slots).unwrap());
     let memory = self::memory(&bytes, None);
@@ -332,26 +325,10 @@ fn integration_starts_after_all_positive_prefixes_and_successive_growth_uses_liv
         .prepare(&memory, Some(102), Some(observation(&memory)), true)
         .unwrap();
     assert_eq!(capture.cells.required, next_slots);
-    assert!(capture.cells.required > capture.cells.first.len());
+    assert!(capture.cells.first.len() >= next_slots);
     let body_reads = memory.body_reads.get();
     capture.capture_cell(&source, &memory, 0, None, 0, None);
-    assert_eq!(
-        memory.body_reads.get(),
-        body_reads,
-        "whole-M refusal skips the body"
-    );
-    assert_eq!(
-        capture.refusal(),
-        Some("reserved reverse visibility arena capacity exceeded")
-    );
-    assert!(capture.projection().unwrap().is_none());
-    drop(source);
-    capture.grow(&mut capacity);
-    assert!(capacity >= next_slots && capacity >= retained);
-    let source = capture
-        .prepare(&memory, Some(103), Some(observation(&memory)), true)
-        .unwrap();
-    capture.capture_cell(&source, &memory, 0, None, 0, None);
+    assert!(capture.refusal().is_none());
     let packet = capture.projection().unwrap().unwrap();
     assert_eq!(packet.cells.len(), next_slots);
     assert_eq!(packet.cells[0].unwrap().target, Some(0));
@@ -361,8 +338,11 @@ fn integration_starts_after_all_positive_prefixes_and_successive_growth_uses_liv
     );
     assert!(
         memory.body_reads.get() > body_reads,
-        "admitted fresh pass reaches the body"
+        "the grown pass reaches the body"
     );
+    drop(source);
+    capture.grow(&mut capacity);
+    assert!(capacity >= next_slots && capacity >= retained);
     let before = capture.allocated_bytes();
     capture.reset();
     capture.grow(&mut capacity);
@@ -471,7 +451,7 @@ fn original_reserved_matrix_grows_before_first_or_later_cell_publication() {
         let memory = memory(&bytes, None);
         let observed = observation(&memory);
         let source = capture
-            .prepare_growing(&memory, Some(151), Some(observed), true)
+            .prepare(&memory, Some(151), Some(observed), true)
             .unwrap();
         assert_eq!(capture.cells.required, slots as usize);
         assert_eq!(capture.cells.len, slots as usize);

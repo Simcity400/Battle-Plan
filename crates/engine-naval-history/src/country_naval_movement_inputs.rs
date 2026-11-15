@@ -1,7 +1,7 @@
 //! The strategic navy manager's physical slots of one frozen pass.
 //!
 //! Construction creates navies per physical slot 1..count and leaves slot zero
-//! null. Each slot's authenticated navy lends its mission ledgers and owner to
+//! null. Each slot's authenticated navy lends its mission ledgers to
 //! the naval mission readers and slot zero's launch naval bases to the reserved
 //! country. Neither the province roster nor a navy's access modes is read: only
 //! the retired selected transport and route previews consumed them.
@@ -155,7 +155,6 @@ impl<'a, M: Memory> Reader<'a, M> {
             present: true,
             launch_navy: Some(navy),
             ledger_navy: Some(navy),
-            original_owner: None,
             ledgers: Some(array(
                 self.memory,
                 navy,
@@ -179,7 +178,6 @@ pub struct NavyInputs {
     // Already authenticated manager selection, never serialized or reacquired.
     launch_navy: Option<usize>,
     ledger_navy: Option<usize>,
-    original_owner: Option<Result<u32, &'static str>>,
     ledgers: Option<Result<Array, &'static str>>,
 }
 
@@ -190,7 +188,6 @@ impl NavyInputs {
             present: false,
             launch_navy: Some(0),
             ledger_navy: Some(0),
-            original_owner: None,
             ledgers: Some(Ok(Array::default())),
         }
     }
@@ -198,7 +195,6 @@ impl NavyInputs {
     pub fn clear(&mut self) {
         self.launch_navy = None;
         self.ledger_navy = None;
-        self.original_owner = None;
         self.ledgers = None;
     }
 
@@ -207,25 +203,6 @@ impl NavyInputs {
     /// not retire it. The source owner clears it before returning the callback.
     pub fn ledger_navy(&self) -> Result<usize, &'static str> {
         self.ledger_navy.ok_or(CONSUMED)
-    }
-
-    /// Strict icon owner authentication on this SAME physical control. The
-    /// transport null/alias domain does not require or weaken this observation.
-    pub fn observe_owner(&mut self, memory: &impl Memory) -> Result<u32, &'static str> {
-        if let Some(original) = self.original_owner {
-            return original;
-        }
-        let original = self.ledger_navy().and_then(|navy| {
-            if navy == 0 {
-                return Err("country navy absent or unreadable");
-            }
-            let address = navy
-                .checked_add(cstrategic_navy::OWNER)
-                .ok_or("navy owner overflow")?;
-            read(memory, address).ok_or("navy owner unreadable")
-        });
-        self.original_owner = Some(original);
-        original
     }
 
     /// Consume the original outer header once; absence is the native empty list.
@@ -237,21 +214,6 @@ impl NavyInputs {
     /// explicit observation; an empty list exits before the owner read.
     /// Movement header/province faults are not prerequisites.
     pub fn capture_launch(
-        &mut self,
-        memory: &impl Memory,
-        base: usize,
-        scratch: &mut [ccountry::launch_sources::Occurrence],
-        output: &mut [ccountry::launch_sources::LaunchNavalBase],
-    ) -> ccountry::launch_sources::NavalCapture {
-        self.capture_launch_buffer(
-            memory,
-            base,
-            crate::walk::Buffer::Fixed(scratch),
-            crate::walk::Buffer::Fixed(output),
-        )
-    }
-
-    pub fn capture_launch_growing(
         &mut self,
         memory: &impl Memory,
         base: usize,

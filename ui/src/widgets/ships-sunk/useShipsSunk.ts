@@ -1,33 +1,34 @@
 import type { OptionChoices, WidgetRuntime } from '../../dashboard/definitions.ts';
-import type { BoundTrack, WidgetSpec } from '../../dashboard/model.ts';
+import type { WidgetSpec } from '../../dashboard/model.ts';
 import { setToken } from '../../dashboard/options.ts';
 import { useProduct } from '../../dashboard/products.ts';
-import type { ShipsSunkBattleTitlesReply, ShipsSunkReply } from '../../generated/dashboard.ts';
-import { shipClassChoices, validateShipBattleTitlesReply, validateShipsSunkReply } from './shipsSunkData.ts';
+import { drawableIcon } from '../../dashboard/artwork.ts';
+import { manifestClassChoices, validateShipsSunkReply } from './shipsSunkData.ts';
 import { isOrderedSpans } from '../../charts/series.ts';
-import { isPreparationExtent, preparedPending } from '../../dashboard/preparedPrefix.ts';
-import type { PreparedCoverage } from '../../shell/preparation/contract.ts';
 import { int, object } from '../../dashboard/validation.ts';
+import type { ShipsSunkManifestReply, ShipsSunkReply } from '../../generated/dashboard';
 
-interface SinkingPrefix { coverage?: PreparedCoverage; pending?: readonly { firstHour: number; lastHour: number }[] }
-export interface ShipsSunkWindowReply extends SinkingPrefix { window: number; indices: number[]; reply: ShipsSunkReply }
-export interface ShipsSunkManifestReply extends SinkingPrefix { windows: { firstHour: number; lastHour: number }[]; classes: ShipsSunkReply }
-function sinkingPrefix(value: Record<string, unknown>): SinkingPrefix {
-  const pending = preparedPending(value);
-  if (value.coverage !== undefined && !isPreparationExtent(value.coverage)) throw new Error('The ships sunk coverage is malformed.');
-  return value.coverage === undefined ? {} : { coverage: value.coverage as PreparedCoverage, pending };
-}
+/** A window's sinkings, each row keyed by its window and its place in it. */
+export interface ShipsSunkWindowReply { window: number; indices: number[]; reply: ShipsSunkReply }
+
+/** Room for every row of a window below the next window's keys. */
+const WINDOW_KEYS = 2 ** 32;
+
 export function validateSinkingWindow(value: unknown): ShipsSunkWindowReply {
-  if (!object(value) || !int(value.window) || value.window < 0 || !Array.isArray(value.indices)
-    || !value.indices.every(index => int(index) && index >= 0 && index <= 0xffffffff)
-    || new Set(value.indices).size !== value.indices.length) throw new Error('The ships sunk window is malformed.');
-  const reply = validateShipsSunkReply(value.reply);
-  if (value.indices.length !== reply.rows.length) throw new Error('The ships sunk row indices are malformed.');
-  return { window: value.window, indices: value.indices, reply, ...sinkingPrefix(value) };
+  const reply = validateShipsSunkReply(value);
+  if (!int(reply.window) || reply.window < 0) throw new Error('The ships sunk window is malformed.');
+  return { window: reply.window, indices: reply.rows.map((_, index) => reply.window * WINDOW_KEYS + index), reply };
 }
 export function validateSinkingManifest(value: unknown): ShipsSunkManifestReply {
-  if (!object(value) || !isOrderedSpans(value.windows)) throw new Error('The ships sunk manifest is malformed.');
-  return { windows: value.windows, classes: validateShipsSunkReply(value.classes), ...sinkingPrefix(value) };
+  const text = (v: unknown) => v === null || typeof v === 'string';
+  if (!object(value) || typeof value.branchId !== 'string' || !isOrderedSpans(value.windows) || typeof value.available !== 'boolean'
+    || !(value.firstRead === null || int(value.firstRead))
+    || !Array.isArray(value.classes) || !value.classes.every(type => object(type) && int(type.token) && text(type.key) && text(type.name) && text(type.icon))
+    || !Array.isArray(value.recordedNames) || !value.recordedNames.every(name => typeof name === 'string')
+    || !Array.isArray(value.warnings) || !value.warnings.every(warning => typeof warning === 'string')) throw new Error('The ships sunk manifest is malformed.');
+  const manifest = value as unknown as ShipsSunkManifestReply;
+  for (const type of manifest.classes) type.icon = drawableIcon(type.icon);
+  return manifest;
 }
 export function useShipsSunk(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
@@ -36,10 +37,5 @@ export function useShipsSunk(widget: WidgetSpec, runtime: WidgetRuntime, active:
 }
 export function useShipClassChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {
   const { track, data } = useShipsSunk(widget, runtime, true);
-  return { classes: shipClassChoices(data?.classes, track?.source.metadata.campaignKey ?? '').map(choice => ({ ...choice, value: setToken(choice.value) })) };
-}
-export function useShipsSunkBattleTitles(runtime: WidgetRuntime, track: BoundTrack | undefined, rows: readonly number[], active: boolean) {
-  const request = track && rows.length ? { sourceId: track.source.id, revision: track.source.revision, product: 'ships-sunk-battle-titles',
-    params: { branchId: track.branch.id, rows } } : null;
-  return useProduct<ShipsSunkBattleTitlesReply>(runtime.client, request, active, validateShipBattleTitlesReply);
+  return { classes: manifestClassChoices(data, track?.source.metadata.campaignKey ?? '').map(choice => ({ ...choice, value: setToken(choice.value) })) };
 }

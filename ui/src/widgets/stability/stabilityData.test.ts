@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import type { BreakdownLine, StabilityBreakdown } from '../../generated/dashboard';
-import { breakdownRows, formatPercent, lineName, linesPerMeasure, percentRuns, rawAt, zoomRange } from './stabilityData.ts';
+import { breakdownRows, formatPercent, lineName, linesPerMeasure, percentRuns, rawAt, readHourOf, stabilityEnd, zoomRange } from './stabilityData.ts';
+import type { ChartBucket, ChartSummary } from '../../charts/chartSummary';
 import { resolveCountries } from '../../dashboard/groups.ts';
 import { definition } from './definition.ts';
+import type { BreakdownLine, StabilityBreakdown } from '../../generated/dashboard';
 
 const line = (position: number, kind: string, valueRaw: string, extra: Partial<BreakdownLine> = {}): BreakdownLine => ({
   line: position, kind, identity: '', identityId: 0, secondaryRaw: '0', valueRaw, text: null, label: null, group: null, groupKind: null, ...extra });
@@ -107,3 +108,23 @@ test('zoom fits both bounds of the values in view, even beyond 0-100% in a mod',
   assert.equal(zoomRange(null), null);
 });
 
+
+test('an hour between reads of the inputs carries the read before it; before the first read nothing is known', () => {
+  const reads = [{ firstHour: 100, lastHour: 100 }, { firstHour: 124, lastHour: 130 }];
+  assert.equal(readHourOf(reads, 100), 100);
+  assert.equal(readHourOf(reads, 110), 100);
+  assert.equal(readHourOf(reads, 127), 127);
+  assert.equal(readHourOf(reads, 200), 130);
+  assert.equal(readHourOf(reads, 99), null);
+});
+
+test('an end label reads the value where the line ends, never that value taken for an hour', () => {
+  const bucket = (firstHour: number, value: number): ChartBucket => ({ firstHour, lastHour: firstHour + 23, lastValueHour: firstHour + 23, minHour: firstHour,
+    maxHour: firstHour, firstValue: value, lastValue: value, minValue: value, maxValue: value, firstBreak: false, hasBreak: false });
+  const summary: ChartSummary = { from: 5000, to: 5047, width: 2, buckets: [bucket(5000, 0.452), bucket(5024, 0.613)] };
+  assert.deepEqual(stabilityEnd(summary, 5047, 5), { value: 0.613, raw: '61300' });
+  assert.equal(formatPercent(stabilityEnd(summary, 5047, 5)!.raw, 5), formatPercent('61300', 5));
+  assert.deepEqual(stabilityEnd(summary, 5010, 5), { value: 0.452, raw: '45200' }, 'the last bin begun by the end');
+  assert.equal(stabilityEnd(summary, 4000, 5), null, 'before the line nothing is labelled');
+  assert.equal(stabilityEnd(undefined, 5047, 5), null);
+});

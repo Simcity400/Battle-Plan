@@ -129,8 +129,11 @@ test('how comes from the settlement: release, new subject and the content’s ow
   peace.items.push({ derived: true, dates: { beforeHour: 100, afterHour: 101 }, winner: 'WIN', action: { kind: 'newSubject', key: null, name: null },
     change: { kind: 'newSubject', overlord: 'WIN', subject: 'NEW', autonomyState: 'mod_level', startHour: 101 } });
   peace.captured = { hour: 101, publicationHour: 101, winners: [], losers: [], subjects: [], transfers: [], actions: [
-    { derived: false, country: 2, countryTag: 'WIN', turn: 1, ordinal: 1, token: 9, tokenName: null, nameKey: 'mod_take', name: 'Annex Province Group', taker: 2, giver: 1, negotiator: 2,
+    { derived: false, country: 2, countryTag: 'WIN', turn: 1, ordinal: 1, token: 9, tokenName: null, nameKey: 'mod_take', name: 'Annex Province Group', nameCountry: null, taker: 2, giver: 1, negotiator: 2,
       takerTag: 'WIN', giverTag: 'LOS', negotiatorTag: 'WIN', status: 0, cost: 0, form: 0, state: 1, flags: null, countryOperand: null, countryOperandTag: null, puppetAuxiliary: null, ship: null, ratio: null },
+    // A puppet demand naming the released country is not the release's action.
+    { derived: false, country: 2, countryTag: 'WIN', turn: 1, ordinal: 2, token: 10, tokenName: 'puppet', nameKey: null, name: 'Puppet {COUNTRY}', nameCountry: 'NEW', taker: 2, giver: 1, negotiator: 2,
+      takerTag: 'WIN', giverTag: 'LOS', negotiatorTag: 'WIN', status: 0, cost: 0, form: 2, state: null, flags: null, countryOperand: 3, countryOperandTag: 'NEW', puppetAuxiliary: null, ship: null, ratio: null },
   ] };
   const data = decodeTransfers(reply([peace]));
   const of = (state: number) => transferHow(data.all.find(occurrence => occurrence.state === state)!, data.deals.get('peace'));

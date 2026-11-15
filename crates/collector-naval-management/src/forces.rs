@@ -150,7 +150,6 @@ pub struct Session<'a, M: Memory> {
     store: MutexGuard<'static, Store>,
     observed: bool,
     navies: Option<Result<engine_native::cpdx_array::Array, &'static str>>,
-    countries: Option<Result<ccountry::Reader<'a, M>, &'static str>>,
 }
 impl<'a, M: Memory> Session<'a, M> {
     /// Worker only, before the selecting core census. No fallback scan when a writer domain
@@ -181,7 +180,6 @@ impl<'a, M: Memory> Session<'a, M> {
                     store,
                     observed: false,
                     navies: None,
-                    countries: None,
                 };
             }
             store = RETURNED
@@ -223,7 +221,6 @@ impl<'a, M: Memory> Session<'a, M> {
             store,
             observed,
             navies: None,
-            countries: None,
         };
         if observed {
             // Lifetime marks take precedence over every value mark from this interval.
@@ -421,19 +418,7 @@ impl<'a, M: Memory> Session<'a, M> {
                 {
                     return Err("naval repair production owner identity mismatch");
                 }
-                engine_native::cstrategic_navy::authenticate_owner_with_countries(
-                    self.memory,
-                    self.base,
-                    self.state,
-                    navy,
-                    country,
-                    self.countries
-                        .get_or_insert_with(|| {
-                            ccountry::Reader::new(self.memory, self.base, self.state)
-                        })
-                        .as_ref()
-                        .map_err(|reason| *reason)?,
-                )?;
+                engine_native::cstrategic_navy::authenticate(self.memory, self.base, navy)?;
                 let (maximum, used) = native::repair_dockyards(self.memory, navy)?;
                 let row = NavalRepairCountryRow {
                     country: country.id,

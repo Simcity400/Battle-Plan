@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { WarContributionCountry, WarContributionGroup, WarObservation, WarTimeline, WarsReply } from '../../generated/dashboard';
 import { warContributions } from '../wars/warsData.ts';
-import { CATEGORIES, chosenWar, contributionRows, readHourFor, rowLengths, shareText, sideMagnitude } from './warContributionData.ts';
+import { CATEGORIES, chosenWar, contributionItems, contributionRows, contributionStructure, readHourFor, rowLengths, shareText, sideMagnitude } from './warContributionData.ts';
 
 const score = (tag: string, side: WarContributionCountry['side'], values: Partial<Record<keyof WarContributionCountry, string>> = {}): WarContributionCountry => ({
   tag, side, equipmentDamage: '0', occupation: '0', airDamage: '0', strategicBombing: '0', shipDamage: '0', convoyDamage: '0',
@@ -14,7 +14,7 @@ const observation = (first: number, last: number, viewpointSide: string[], oppos
 } as WarObservation);
 const war = (id: string, first: number, last: number, sides: [string[], string[]]): WarTimeline => ({
   id, firstHour: first, lastHour: last, startedBy: false, endedBy: false, observations: [observation(first, last, ...sides)],
-  casualties: [], participants: [], capitulations: [],
+  participants: [], capitulations: [],
 } as unknown as WarTimeline);
 
 test('each term sums its side once per participant, keeping every member part and unknown casualties apart', () => {
@@ -89,4 +89,22 @@ test('a negative score keeps its bar, drawn by magnitude and outlined, never zer
   assert.equal(sideMagnitude(cancelling.left), 200000n, 'parts that cancel out keep their length');
   assert.deepEqual(rowLengths(cancelling, 'share'), { left: 1, right: 1 });
   assert.deepEqual(rowLengths(cancelling, 'totals'), { left: 1, right: 0.5 });
+});
+
+test('the bars of a group give each member its part and hatch unknown casualties, and only its members make its structure', () => {
+  const group: WarContributionGroup = { viewpointSide: ['A', 'B'], opposingSide: ['C'], reason: null, participants: [
+    score('A', 'viewpoint', { equipmentDamage: '100000', casualties: '-100000', unknownCasualties: '50000' }),
+    score('B', 'viewpoint', { equipmentDamage: '300000' }),
+    score('C', 'opponent', { equipmentDamage: '200000' }),
+  ] };
+  const items = contributionItems(contributionRows(group), 'totals', { colour: tag => `colour:${tag}` }, 'muted');
+  const equipment = items.find(item => item.id === 'equipmentDamage')!;
+  assert.deepEqual(equipment.leftParts!.map(part => [part.id, part.value, part.color]), [['A', 1, 'colour:A'], ['B', 3, 'colour:B']]);
+  assert.deepEqual([equipment.left, equipment.right], [1, 0.5]);
+  const casualties = items.find(item => item.id === 'casualties')!;
+  assert.deepEqual(casualties.leftParts!.map(part => [part.id, part.negative ?? false, part.hatched ?? false]), [['A', true, false], ['A:unknown', false, true], ['B', false, false]]);
+  const moved = { ...group, participants: group.participants.map(row => ({ ...row, equipmentDamage: '900000' })) };
+  assert.equal(contributionStructure(moved, true), contributionStructure(group, true), 'numbers moving is no new structure');
+  assert.notEqual(contributionStructure({ ...group, viewpointSide: ['A'] }, true), contributionStructure(group, true));
+  assert.notEqual(contributionStructure(null, true), contributionStructure(null, false));
 });

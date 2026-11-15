@@ -2,7 +2,7 @@
 use crate::map::tables::rows;
 use replay_data::{
     rows::LandCombatDetailsRow, rows::LandCombatDivisionRow, rows::LandCombatMember,
-    rows::LandCombatMemberValues, rows::LandDivisionContext, rows::tables,
+    rows::LandCombatMemberValues, rows::LandCombatSideDetails, rows::LandDivisionContext, rows::tables,
 };
 use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, io};
@@ -192,27 +192,53 @@ impl ScoreGap {
     }
 }
 
+/// What the survival estimate reads of a combat's members and divisions.
+pub trait ScoreJoins {
+    /// A member's stat values (none when neither its row nor its division's rows hold them) and
+    /// scales; `None` without its `LandCombatDivisions` row.
+    fn member(&self, side: u8, division: u64) -> Option<(Option<[i64; 5]>, [i64; 4])>;
+    fn condition(&self, division: u64) -> Option<Condition>;
+}
+
+struct RowJoins<'a, 'b> {
+    divisions: &'a Divisions<'b>,
+    conditions: &'a Conditions,
+}
+
+impl ScoreJoins for RowJoins<'_, '_> {
+    fn member(&self, side: u8, division: u64) -> Option<(Option<[i64; 5]>, [i64; 4])> {
+        self.divisions.get(&(side, division)).map(|member| (member.values.map(|values| values.stat_values), member.scales))
+    }
+
+    fn condition(&self, division: u64) -> Option<Condition> {
+        self.conditions.get(&division).copied()
+    }
+}
+
+/// A combat's detail operands the estimate reads.
+#[derive(Clone, Copy)]
+pub struct ScoreDetail<'a> {
+    pub attacker_bonus: i64,
+    pub defender_bonus: i64,
+    pub sides: &'a [LandCombatSideDetails; 2],
+}
+
 fn early_damage(
-    detail: &LandCombatDetailsRow,
-    divisions: &Divisions<'_>,
-    conditions: &Conditions,
+    detail: ScoreDetail<'_>,
+    joins: &impl ScoreJoins,
     firing_side: usize,
     defines: ScoreDefines,
 ) -> Result<i64, ScoreGap> {
     let member = |side: usize, id: u64| {
-        divisions
-            .get(&(side as u8, id))
-            .copied()
-            .ok_or(ScoreGap::Member {
-                side: side as u8,
-                division: id,
-            })
+        joins.member(side as u8, id).ok_or(ScoreGap::Member {
+            side: side as u8,
+            division: id,
+        })
     };
     let numbers = |side: usize, id: u64| -> Result<([i64; 5], [i64; 4]), ScoreGap> {
-        let member = member(side, id)?;
-        member
-            .values
-            .map(|values| (values.stat_values, member.scales))
+        let (values, scales) = member(side, id)?;
+        values
+            .map(|values| (values, scales))
             .ok_or(ScoreGap::Numbers {
                 side: side as u8,
                 division: id,
@@ -259,7 +285,7 @@ fn early_damage(
                 ),
                 1_000,
             );
-            let condition = conditions.get(id).ok_or(ScoreGap::Division(*id))?;
+            let condition = joins.condition(*id).ok_or(ScoreGap::Division(*id))?;
             let maximum = condition
                 .max_strength
                 .ok_or(ScoreGap::MaximumStrength(*id))?;
@@ -315,6 +341,21 @@ pub fn side_scores<'a>(
         .filter(|row| row.combat == detail.combat)
         .map(|row| ((row.side, row.division), row))
         .collect();
+    side_scores_of(
+        ScoreDetail { attacker_bonus: detail.attacker_bonus, defender_bonus: detail.defender_bonus, sides: &detail.sides },
+        &RowJoins { divisions: &divisions, conditions },
+        participants,
+        defines,
+    )
+}
+
+/// [`side_scores`] from values: the detail's operands and the combat's members and divisions.
+pub fn side_scores_of(
+    detail: ScoreDetail<'_>,
+    joins: &impl ScoreJoins,
+    participants: [&[u64]; 2],
+    defines: ScoreDefines,
+) -> Result<[i64; 2], ScoreGap> {
     let mut scores = [0; 2];
     for side in 0..2 {
         let state = &detail.sides[side];
@@ -322,14 +363,14 @@ pub fn side_scores<'a>(
         // never maximum organisation.
         let organisation = participants[side].iter().try_fold(0_i64, |sum, id| {
             Ok(sum.wrapping_add(
-                conditions
-                    .get(id)
+                joins
+                    .condition(*id)
                     .ok_or(ScoreGap::Division(*id))?
                     .organisation,
             ))
         })?;
         if state.organisation_loss_count < 24 {
-            let damage = early_damage(detail, &divisions, conditions, 1 - side, defines)?;
+            let damage = early_damage(detail, joins, 1 - side, defines)?;
             scores[side] = if damage > 99 {
                 comparison_ratio(organisation, damage)
             } else {

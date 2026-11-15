@@ -4,6 +4,7 @@
  * what none has asked for. Kept apart from the product cache, bounded by hours. */
 import type { DashboardClient } from './client';
 import type { Failure } from './queryError';
+import { PerClient } from './prepare.ts';
 
 export interface FactFailure { error: Failure; retryable: boolean }
 
@@ -126,7 +127,7 @@ function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T | 
 
 /** Each client's shared facts, by source, then fact spec, then the recording's revision, branch
  * and content revision. */
-const shared = new WeakMap<DashboardClient, Map<string, WeakMap<object, Map<string, SharedFacts<unknown>>>>>();
+const shared = new PerClient<Map<string, WeakMap<object, Map<string, SharedFacts<unknown>>>>>();
 /** Recordings' revisions, branches and contents kept per spec and source, the latest used first. */
 const KEPT_SCOPES = 4;
 

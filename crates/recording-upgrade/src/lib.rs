@@ -8,7 +8,10 @@ use std::{
 };
 
 use installed_content_core::content::{ResolveOptions, facts, proof};
-use replay::campaign::{CampaignWriter, Replay};
+use replay::campaign::{Replay, writer};
+
+/// The system error for a file another process holds against this open.
+const SHARING_VIOLATION: i32 = 32;
 
 /// Where an upgrade looks for what a recording needs: game folders, newest first, which may
 /// hold older versions of the game, and the user folder whose mods they mount.
@@ -39,13 +42,15 @@ struct Step {
 
 const STEPS: &[Step] = &[Step {
     name: "game facts",
+    // A recording carrying facts this build reads keeps them; a pack rebuilt from installations
+    // now could only withhold layers they carry.
     applies: |replay| replay.fact_packs.is_empty(),
     add: add_facts,
 }];
 
 /// Upgrades the recording at `path` in place.
 pub fn upgrade(path: &Path, folders: &Folders) -> io::Result<Outcome> {
-    let opened = Replay::open_path(path)?;
+    let opened = Replay::open_newest(path)?;
     if STEPS.iter().all(|step| !(step.applies)(&opened)) {
         return Ok(Outcome::Current);
     }
@@ -57,7 +62,7 @@ pub fn upgrade(path: &Path, folders: &Folders) -> io::Result<Outcome> {
     let _names = replay::recording_files::NamesLock::wait(folder)?;
     let mut steps = Vec::new();
     for step in STEPS {
-        let replay = Replay::open_path(path)?;
+        let replay = Replay::open_newest(path)?;
         uncontinued(path, &replay)?;
         if !(step.applies)(&replay) {
             continue;
@@ -73,29 +78,25 @@ pub fn upgrade(path: &Path, folders: &Folders) -> io::Result<Outcome> {
     })
 }
 
-/// Refuses a recording an unsaved recording is, or continues: that continuation must go on
-/// holding it unchanged, so it is upgraded once its unsaved hours are saved or discarded.
+/// Refuses a recording that holds hours not saved: a discard cuts them away with whatever
+/// followed them, so it is upgraded once they are saved or discarded.
 fn uncontinued(path: &Path, replay: &Replay) -> io::Result<()> {
     // Its own folder, however `path` was spelled.
     let path = std::fs::canonicalize(path)?;
     let folder = path.parent().unwrap_or_else(|| Path::new("."));
-    let deferred = |why: String| Err(io::Error::new(io::ErrorKind::WouldBlock, why));
+    let deferred = |why: &str| Err(io::Error::new(io::ErrorKind::WouldBlock, why));
     if folder.file_name() == replay::publication::unsaved_folder(Path::new("")).file_name() {
-        return deferred("unsaved hours are upgraded once they are saved".to_owned());
+        return deferred("unsaved hours are upgraded once they are saved");
     }
-    match replay::recording_files::unsaved_recording(folder, &replay.campaign_id) {
-        Ok(None) => Ok(()),
-        Ok(Some(_)) => deferred(
-            "unsaved hours continue it; it is upgraded once they are saved or discarded".to_owned(),
-        ),
-        Err(error) => deferred(format!("its unsaved hours cannot be told apart ({error})")),
+    if replay.unsaved() {
+        return deferred("it holds unsaved hours; it is upgraded once they are saved or discarded");
     }
+    Ok(())
 }
 
 /// Adds the game facts the recording depends on, proven layer by layer from whichever game
 /// folders still hold each as recorded; facts no folder holds are withheld by name.
 fn add_facts(replay: &Replay, path: &Path, folders: &Folders) -> io::Result<String> {
-
     let identity = &replay.identity;
     let mut candidates = Vec::new();
     let mut unusable = Vec::new();
@@ -133,16 +134,18 @@ fn add_facts(replay: &Replay, path: &Path, folders: &Folders) -> io::Result<Stri
         .map(|settings| settings.compression)
         .unwrap_or_default()
         .level();
-    let mut writer = CampaignWriter::resume(replay, path, level)?;
-    let before = replay.revision();
-    if let Err(error) = writer
-        .add_facts(&pack)
-        .and_then(|()| writer.revise(|file| file.sync_data()))
-    {
-        drop(writer);
-        let _ = replay::campaign::writer::roll_back(path, before);
-        return Err(error);
-    }
+    let addition = writer::Addition {
+        facts: Some(&pack),
+        ..writer::Addition::default()
+    };
+    // A recorder writing the recording holds it against every other writer.
+    writer::revise(path, (replay.recording().root(), replay.revision()), &addition, true, level).map_err(|error| match error.raw_os_error() {
+        Some(SHARING_VIOLATION) => io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "a recorder is writing it; it is upgraded once the game has left it",
+        ),
+        _ => error,
+    })?;
     let opened = facts::Pack::open(std::sync::Arc::new(pack), 0, stats.pack_bytes)?;
     let mut summary = format!(
         "{} files, {:.1} MB, carried in {:.1} MB",
@@ -162,4 +165,93 @@ fn add_facts(replay: &Replay, path: &Path, folders: &Folders) -> io::Result<Stri
         summary.push_str(&format!("; not used: {line}"));
     }
     Ok(summary)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use installed_content_core::{GatherOptions, gather};
+    use replay::spool::Record;
+    use replay_data::{identity::CaptureMode, identity::SampleBoundary, identity::SessionStart, rows::CampaignRow, rows::TableId, rows::TableRows};
+    use replay_frame::{branches::BranchReason, branches::BranchStart, branches::Parentage, frame::Frame, frame::Metrics, frame::TableUpdate};
+    use std::{collections::BTreeMap, fs, sync::Arc};
+
+    const CAMPAIGN: &[u8] = b"upgrade-test";
+
+    /// `pack`, written by this build without equipment facts, as the version before them packed
+    /// it: its manifest without the equipment section.
+    fn unequipped(pack: &[u8]) -> Vec<u8> {
+        let why = facts::Pack::open(Arc::new(pack.to_vec()), 0, pack.len() as u64).unwrap().sub_unit_needs().unwrap_err();
+        let compressed = u32::from_le_bytes(pack[6..10].try_into().unwrap()) as usize;
+        let raw = u32::from_le_bytes(pack[10..14].try_into().unwrap()) as usize;
+        let mut manifest = zstd::bulk::decompress(&pack[14..14 + compressed], raw).unwrap();
+        manifest.truncate(manifest.len() - (1 + 4 + why.len()));
+        let packed = zstd::bulk::compress(&manifest, 1).unwrap();
+        let mut out = pack[..4].to_vec();
+        out.extend_from_slice(&1_u16.to_le_bytes());
+        out.extend_from_slice(&(packed.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(manifest.len() as u32).to_le_bytes());
+        out.extend_from_slice(&packed);
+        out.extend_from_slice(&pack[14 + compressed..]);
+        out
+    }
+
+    /// A recording already carrying readable game facts of the version before is left as it is
+    /// when one of its mods has changed since: the upgrade never stacks over them a pack rebuilt
+    /// from the installation that withholds the layer they carry.
+    #[test]
+    fn a_recording_carrying_older_facts_keeps_every_layer_they_carry_when_a_mod_changed() {
+        let root = std::env::temp_dir().join(format!("hoi4-upgrade-older-facts-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let write = |path: &str, text: &str| {
+            let path = root.join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, text).unwrap();
+        };
+        write("game/hoi4.exe", "synthetic executable");
+        write("game/common/ideas/base.txt", "ideas = { base = {} }");
+        fs::create_dir_all(root.join("game/dlc")).unwrap();
+        write("user/settings.txt", "language=l_english");
+        write("user/dlc_load.json", r#"{"enabled_mods":["mod/changed.mod"],"disabled_dlcs":[]}"#);
+        write("user/mod/changed.mod", r#"name="Changed" path="changed""#);
+        write("user/changed/common/ideas/mod.txt", "ideas = { first = {} }");
+        let folders = Folders { games: vec![root.join("game")], user: root.join("user"), cache: root.join("cache") };
+        let content = gather(&GatherOptions { game_dir: root.join("game"), user_dir: root.join("user"), cache_dir: folders.cache.clone(), dlc_order: None }).unwrap();
+        let identity = content.identity("build".into(), [1; 32], 20, "test".into(), [2; 32]).unwrap();
+        let source = facts::Source { layers: &content.layers, withheld: BTreeMap::new() };
+        let (pack, _) = facts::write(&source, &identity, Err("no tables".to_owned()), &folders.cache, &|| false).unwrap();
+        let older = unequipped(&pack);
+        let session = SessionStart {
+            id: 1,
+            process_id: 1,
+            process_start_time: 1,
+            qpc_frequency: 10_000_000,
+            sample_boundary: SampleBoundary::EndOfHour,
+            capture_mode: CaptureMode::Full,
+            identity,
+        };
+        let mut tables = std::array::from_fn(|_| TableUpdate::Unavailable { reason: "not read".into() });
+        tables[TableId::Campaign.index()] = TableUpdate::Snapshot(TableRows::Campaign(vec![CampaignRow { id: CAMPAIGN.into() }]));
+        let records = vec![
+            Record::SessionStart(session),
+            Record::BranchStart(BranchStart { id: 1, session: 1, loaded_hour: None, first_hour: 100, parent: Parentage::Unknown, reason: BranchReason::SessionStart }),
+            Record::Frame(Frame { branch: 1, hour: 100, keyframe: true, metrics: Metrics::default(), tables }),
+        ];
+        let path = root.join("recordings/synthetic.battleplan");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        Replay::from_records(CAMPAIGN.into(), &[records]).unwrap().write_atomic(&path).unwrap();
+        let recorded = Replay::open_newest(&path).unwrap();
+        let addition = writer::Addition { facts: Some(&older), ..writer::Addition::default() };
+        let level = replay::compression::Compression::default().level();
+        writer::revise(&path, (recorded.recording().root(), recorded.revision()), &addition, true, level).unwrap();
+        drop(recorded);
+        write("user/changed/common/ideas/mod.txt", "ideas = { second = {} }");
+
+        assert!(matches!(upgrade(&path, &folders).unwrap(), Outcome::Current));
+        let kept = Replay::open_newest(&path).unwrap().newest_facts().unwrap().unwrap();
+        assert_eq!(kept, older, "the facts the recording carried are still its newest");
+        let kept = facts::Pack::open(Arc::new(kept), 0, older.len() as u64).unwrap();
+        assert!(kept.layers.iter().all(|layer| layer.withheld().is_none()), "{:?}", kept.layers);
+        fs::remove_dir_all(&root).unwrap();
+    }
 }

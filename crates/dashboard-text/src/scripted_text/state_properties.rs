@@ -16,7 +16,7 @@ impl ScriptedText<'_> {
             &recorded::<tables::StateResistance>(self.frame, RESISTANCE)?,
             u128::from(id),
         )?
-        .ok_or_else(|| format!("Occupied: StateResistance lacks state {id}"))?;
+        .ok_or_else(|| format!("Occupied: state resistance lacks state {id}"))?;
         let country = if row.country == 0 {
             0
         } else {
@@ -32,7 +32,7 @@ impl ScriptedText<'_> {
             .ok_or_else(|| format!("GetContinent: States lacks state {id}"))?;
         let token = row
             .continent
-            .require("GetContinent: States.continent")?
+            .require("GetContinent: continent of states")?
             .ok_or("GetContinent: continent capture unavailable")?;
         if token == 0 {
             return Ok(String::new());
@@ -70,7 +70,7 @@ impl ScriptedText<'_> {
             .ok_or_else(|| format!("GetCapitalVictoryPointName: States lacks state {id}"))?;
         let index = row
             .best_vp_index
-            .require("GetCapitalVictoryPointName: States.best_vp_index")?
+            .require("GetCapitalVictoryPointName: best vp index of states")?
             .ok_or(
                 "GetCapitalVictoryPointName: cached index was not demanded or its capture failed",
             )?;

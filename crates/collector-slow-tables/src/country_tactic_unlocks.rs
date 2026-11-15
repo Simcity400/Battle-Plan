@@ -55,17 +55,7 @@ impl Capacities {
         base: usize,
         state: usize,
     ) -> Result<(), &'static str> {
-        let demand = native::capture(
-            memory,
-            base,
-            state,
-            native::Buffers {
-                rows: &mut [],
-                unlocks: &mut [],
-                registry: &mut [],
-                list: &mut [],
-            },
-        );
+        let demand = native::count(memory, base, state);
         if let Outcome::Unavailable { reason } = demand.outcome {
             return Err(reason);
         }
@@ -178,7 +168,7 @@ impl Captured {
             return [0; N];
         }
         let begin = qpc();
-        let result = native::capture_growing(
+        let result = native::capture(
             memory,
             base,
             state,

@@ -110,7 +110,7 @@ const DISPLAY: usize = 0x48;
 fn text(memory: &impl Memory, address: usize) -> Result<Vec<u8>, &'static str> {
     let mut bytes = Vec::new();
     let mut used = 0;
-    msvc_string::append_growing(memory, address, &mut bytes, &mut used)?;
+    msvc_string::append(memory, address, &mut bytes, &mut used)?;
     bytes.truncate(used);
     Ok(bytes)
 }

@@ -217,6 +217,9 @@ pub struct ModelMesh {
     pub convoy_radius: Option<f32>,
     /// How many attached entities were composed into this mesh, at any depth.
     pub attachments: usize,
+    /// The root mesh's squared cull distance (`cull_distance`, or the engine's default): a figure
+    /// whose bounding sphere's centre lies this far from the eye or farther is not drawn.
+    pub cull_distance_squared: f32,
 }
 
 /// Every entity, shared sub-mesh, material and texture one layer draws.
@@ -972,6 +975,9 @@ impl ModelLibrary {
         let namespace = self
             .asset_namespace
             .get_or_insert_with(|| identity::namespace(layers));
+        let cull_distance_squared = descriptors
+            .resolve_entity(name)
+            .map_or(mesh::DEFAULT_CULL_DISTANCE_SQUARED, |entity| entity.definition.cull_distance_squared);
         self.meshes.push(ModelMesh {
             asset: AssetKey::selected(name, Arc::clone(namespace), self.decode),
             name: name.to_owned(),
@@ -986,6 +992,7 @@ impl ModelLibrary {
             bound: reach.bound,
             convoy_radius: reach.collision_radius(),
             attachments: reach.attachments,
+            cull_distance_squared,
         });
         Ok(())
     }
@@ -1972,6 +1979,56 @@ pub struct ModelFrame<'a> {
     pub alpha: f32,
 }
 
+/// The game's per-figure cull for one frame, for the lit figures and the shadow casters alike: the
+/// camera's eye and its four side planes, each of unit normal and inside non-negative. A figure
+/// is drawn only when its bounding sphere's centre lies nearer the eye than its mesh's cull
+/// distance and the sphere is inside all four planes: no near or far plane, as the game tests.
+/// `x` is the x of the camera it was made for: a traversal whose camera stands on another map copy
+/// moves its figures onto this one before the test ([`ModelPass::game_culled`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GameCull {
+    pub eye: [f32; 3],
+    pub sides: [[f32; 4]; 4],
+    pub x: f32,
+}
+
+/// Why a figure is not drawn by the game's cull.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Culled {
+    Distance,
+    Planes,
+}
+
+impl GameCull {
+    /// The frame's cull for `camera` seen through `viewport`.
+    pub fn of(camera: &Camera, viewport: [u32; 2]) -> Self {
+        let planes = view_cone(camera, viewport);
+        Self { eye: camera.eye(), sides: [planes[0], planes[1], planes[2], planes[3]], x: camera.center[0] }
+    }
+
+    /// Whether a figure whose bounding sphere has `centre` and `radius`, of a mesh culled beyond
+    /// `cull_distance_squared`, is culled, and why.
+    pub fn test(&self, centre: [f32; 3], radius: f32, cull_distance_squared: f32) -> Option<Culled> {
+        let [dx, dy, dz] = [centre[0] - self.eye[0], centre[1] - self.eye[1], centre[2] - self.eye[2]];
+        if dx * dx + dy * dy + dz * dz >= cull_distance_squared {
+            return Some(Culled::Distance);
+        }
+        self.sides
+            .iter()
+            .any(|[a, b, c, d]| a * centre[0] + b * centre[1] + c * centre[2] + d < -radius)
+            .then_some(Culled::Planes)
+    }
+}
+
+/// The view volume's planes, inside non-negative and each of unit normal, so a sphere's centre
+/// stands its radius outside a plane it is wholly behind.
+pub fn view_cone(camera: &Camera, viewport: [u32; 2]) -> [[f32; 4]; 6] {
+    camera.frustum_planes(viewport).map(|[a, b, c, d]| {
+        let length = (a * a + b * b + c * c).sqrt().max(f32::MIN_POSITIVE);
+        [a / length, b / length, c / length, d / length]
+    })
+}
+
 /// One frame's refused actors by instance and node, with the reason.
 type ActorRefusals = BTreeSet<(usize, usize, String)>;
 type ActorPoses = Arc<[super::mesh_pose::Actor]>;
@@ -2188,7 +2245,7 @@ pub struct ModelPass {
     /// Whether shader and pipeline builds run in place, as a capture needs, rather than off the
     /// window thread while the frame draws without the part.
     settled: Cell<bool>,
-    /// Meshes whose builds are made ([`ModelPass::warm_pipelines`], [`ModelPass::warm_added`]).
+    /// Meshes whose builds are made or under way ([`ModelPass::warm_pipelines`], [`ModelPass::warm_added`]).
     warmed: Cell<usize>,
     material_refusals: BTreeMap<usize, String>,
     meshes: Vec<ModelMesh>,
@@ -2201,7 +2258,24 @@ pub struct ModelPass {
     keyed: Vec<KeyedInstance>,
     alive: Vec<(usize, u32, u32)>,
     drawn: Cell<u32>,
+    /// This frame's game cull, set by the scene ([`ModelPass::set_cull`]).
+    cull: Cell<Option<GameCull>>,
     refusals: RefCell<(u64, ActorRefusals)>,
+    /// Actor refusals made, ever: a caster walk that made one is walked again.
+    refused: Cell<u64>,
+    /// Raised by every change a caster walk reads beyond the camera, actor poses and the
+    /// figures placed: hidden actors, redirects, the content stack, a library that did more than
+    /// grow, too many actors given a player unread.
+    revision: u64,
+    /// Actors given a player since the caster list last read them: each such figure is walked
+    /// again alone, its pose now moving.
+    born: RefCell<Vec<(usize, u32, u32)>>,
+    /// The field as the caster list last read it.
+    walked: RefCell<WalkedField>,
+    /// Whether a writer placed the field since the caster list last read it.
+    written: Cell<bool>,
+    /// The field's change for this frame's retained lists.
+    frame_change: RefCell<FrameChange>,
     /// Actor poses by instance for one arena frame: animation happens before encoding, so
     /// the caster, regular and alternate queues and every wrap view share them.
     poses: RefCell<(u64, Vec<Option<ActorPoses>>)>,
@@ -2216,7 +2290,7 @@ pub struct ModelPass {
     /// ([`ModelPass::prepare_default_states`]).
     default_appeared: BTreeMap<(usize, u32, u32), f32>,
     /// Each mesh's default-state play, worked out when its first actor needs it.
-    default_plays: Vec<Option<Option<DefaultPlay>>>,
+    default_plays: Vec<Option<(Option<Arc<Rig>>, Option<DefaultPlay>)>>,
     /// This frame's default-state actors refused, by why, with their count.
     pub default_state_refusals: BTreeMap<String, usize>,
     pub events: Vec<entity_animation::Event>,
@@ -2265,9 +2339,15 @@ impl ModelPass {
         player: Option<&entity_animation::Player>,
         frozen_animation: bool,
     ) -> ActorPoses {
-        if player.is_some() {
-            return super::mesh_pose::actors(rig, player, frozen_animation);
+        use viewer_foundation::view_record::add;
+        // What a figure's actors cost this frame: evaluated, held from an earlier frame (its
+        // samples draw the same), or its mesh's static actors.
+        if let Some(player) = player {
+            let (actors, held) = player.native_actors_held(rig);
+            add(self.label, if held { "poses_held" } else { "poses_evaluated" }, 1);
+            return actors;
         }
+        add(self.label, "actors_static", 1);
         Arc::clone(
             self.static_actors
                 .borrow_mut()
@@ -2541,6 +2621,7 @@ impl ModelPass {
                 .iter()
                 .any(|offset| visible(group, *offset, rectangle))
         };
+        let born = self.born.get_mut();
         let palette = if matches!(self.label, "unit models" | "map buildings")
             && self.animation_dispatch.animate(
                 &mut self.players,
@@ -2564,8 +2645,15 @@ impl ModelPass {
                 &mut self.events,
                 workers,
                 true,
+                born,
             )
         };
+        born.extend_from_slice(self.animation_dispatch.created());
+        // Never read while the casters are not drawn: past one a figure, it is a whole change.
+        if born.len() > self.field.instances.len() {
+            born.clear();
+            self.raise();
+        }
         for event in &mut self.events {
             event.key.pass = self.event_namespace;
         }
@@ -2613,13 +2701,13 @@ impl ModelPass {
             if self.default_plays.len() <= group.mesh {
                 self.default_plays.resize_with(group.mesh + 1, || None);
             }
-            let play = self.default_plays[group.mesh].get_or_insert_with(|| {
-                DefaultPlay::of(
-                    self.rigs.get(group.mesh).map(|rig| &**rig),
-                    self.meshes.get(group.mesh),
-                )
-            });
-            let Some(play) = play.as_ref() else {
+            // A mesh's play is made from the rig the pass holds for it, and again when it holds another.
+            let rig = self.rigs.get(group.mesh);
+            let made = &mut self.default_plays[group.mesh];
+            if made.as_ref().is_none_or(|(from, _)| !same_rig(from.as_ref(), rig)) {
+                *made = Some((rig.cloned(), DefaultPlay::of(rig.map(|rig| &**rig), self.meshes.get(group.mesh))));
+            }
+            let Some(play) = made.as_ref().and_then(|(_, play)| play.as_ref()) else {
                 continue;
             };
             if play.refusal.is_some() {
@@ -2642,10 +2730,10 @@ impl ModelPass {
             native.insert(key, play.native);
         }
         for (mesh, count) in stilled {
-            if let Some(Some(DefaultPlay {
+            if let Some((_, Some(DefaultPlay {
                 refusal: Some(refusal),
                 ..
-            })) = &self.default_plays[mesh]
+            }))) = &self.default_plays[mesh]
             {
                 *self
                     .default_state_refusals
@@ -2757,7 +2845,14 @@ impl ModelPass {
             keyed: Vec::new(),
             alive: Vec::new(),
             drawn: Cell::new(0),
+            cull: Cell::new(None),
             refusals: Default::default(),
+            refused: Cell::new(0),
+            revision: 0,
+            born: RefCell::default(),
+            walked: RefCell::default(),
+            written: Cell::new(true),
+            frame_change: RefCell::default(),
             poses: Default::default(),
             static_actors: Default::default(),
             label,
@@ -2797,6 +2892,7 @@ impl ModelPass {
                 bound: 0.,
                 convoy_radius: None,
                 attachments: 0,
+                cull_distance_squared: installed_content_core::mesh::DEFAULT_CULL_DISTANCE_SQUARED,
             });
         }
         let mut pass = Self::new(&library, label);
@@ -2821,6 +2917,9 @@ impl ModelPass {
     /// Placed actors, keyed `(mesh, seed, identity)`, that keep their players, clocks and
     /// events but neither draw nor cast shadows until shown again.
     pub fn set_hidden(&mut self, hidden: BTreeSet<(usize, u32, u32)>) {
+        if hidden != self.hidden {
+            self.raise();
+        }
         self.hidden = hidden;
         self.redirect_field();
         self.refresh_hidden_actors();
@@ -2857,8 +2956,20 @@ impl ModelPass {
     fn sync(&mut self, library: &ModelLibrary) {
         // A library built empty takes its content stack with its first bake, after this pass was
         // made over it; its entities draw from that stack.
-        if self.layers.is_none() {
+        if self.layers.is_none() && library.layers.is_some() {
             self.layers = library.layers.clone();
+            self.raise();
+        }
+        // A library that only grew leaves every drawn figure's draw as it was: a figure of a new
+        // entity is walked as it joins.
+        let grew = self.meshes.len() <= library.meshes.len()
+            && self.textures.len() <= library.textures.len()
+            && appended_only(
+                (&self.default_palette, self.meshes.len()),
+                (&library.palette, library.meshes.len()),
+            );
+        if !grew || self.alternatives.len() != library.alternatives.len() {
+            self.raise();
         }
         // Recorded before the mesh arrays are extended below.
         let known_meshes = self.meshes.len();
@@ -2962,6 +3073,8 @@ impl ModelPass {
         if self.resident.get(mesh).copied().unwrap_or(false) {
             return Ok(());
         }
+        // No kept caster draw changes: one drawn before its textures were made refused, and a
+        // list a walk refused in is never kept.
         // A mod entity's recorded counterpart is resident with it, to draw the moment the mod's
         // draw is refused.
         if let Some(&counterpart) = self.alternatives.get(&mesh) {
@@ -3057,6 +3170,23 @@ impl ModelPass {
         Ok(())
     }
 
+    /// This frame's game cull: every figure is tested by it before anything is prepared for it.
+    pub fn set_cull(&self, cull: Option<GameCull>) {
+        self.cull.set(cull);
+    }
+
+    /// Whether the figure of `instance` (of `mesh`, in the view moved by `offset` from the
+    /// traversal's `camera`) is culled by this frame's game cull, and why; none without one. The
+    /// sphere is centred half the bounds' height above the origin and reaches every point of them
+    /// from there.
+    pub(super) fn game_culled(&self, mesh: usize, instance: &ModelInstance, offset: f32, camera: &Camera) -> Option<Culled> {
+        let cull = self.cull.get()?;
+        let mesh = self.meshes.get(mesh)?;
+        let scale = instance.scale.abs();
+        let centre = [instance.position[0] + offset + cull.x - camera.center[0], instance.position[1] + mesh.height * scale * 0.5, instance.position[2]];
+        cull.test(centre, (mesh.bound + mesh.height * 0.5) * scale, mesh.cull_distance_squared)
+    }
+
     /// Instances the last frame drew, for reporting.
     pub fn drawn(&self) -> u32 {
         self.drawn.get()
@@ -3075,7 +3205,18 @@ impl ModelPass {
         name: &str,
         why: impl std::fmt::Display,
     ) {
-        let why = format!("refused actor {name}: {why}");
+        let reason = why.to_string();
+        // Each refusal by its reason and by its entity, for the flight record.
+        if viewer_foundation::view_record::on() {
+            viewer_foundation::view_record::add_named(self.label, &format!("refused: {reason}"), 1);
+            viewer_foundation::view_record::add_named(self.label, &format!("refused {name}: {reason}"), 1);
+        }
+        let why = format!("refused actor {name}: {reason}");
+        count(Count::RefusedActors, 1);
+        if crate::map::models::profiling_refusals() {
+            let mut named = REFUSALS.lock().unwrap_or_else(|error| error.into_inner());
+            *named.entry(format!("{} {why}", self.label)).or_default() += 1;
+        }
         match mesh.filter(|&mesh| {
             self.meshes.get(mesh).is_some_and(|mesh| mesh.visual)
                 && self.alternatives.contains_key(&mesh)
@@ -3094,6 +3235,7 @@ impl ModelPass {
             *refusals = (arena.frame(), BTreeSet::new());
         }
         refusals.1.insert((instance, node, why));
+        self.refused.set(self.refused.get() + 1);
     }
 
     /// Draws each mod entity refused since the last frame from its recorded counterpart, named.
@@ -3118,6 +3260,7 @@ impl ModelPass {
             }
         }
         if changed {
+            self.raise();
             self.redirect_field();
         }
     }
@@ -3202,6 +3345,85 @@ impl ModelPass {
             &self.redirects,
             &self.hidden,
         );
+        self.written.set(true);
+    }
+
+    /// A change a caster walk reads that only a new walk can follow.
+    fn raise(&mut self) {
+        self.revision += 1;
+    }
+
+    /// How the field differs from the one the caster list last read, with the instances and
+    /// groups that changed. Compared only when a writer placed the field since, so a field
+    /// handed over and placed again in one frame is compared once, as drawn.
+    fn field_change(&self, changed: &mut Changed) -> Change {
+        changed.clear();
+        if !self.written.replace(false) {
+            return Change::Same;
+        }
+        let mut walked = self.walked.borrow_mut();
+        let change = walked.note(&self.field, changed);
+        if viewer_foundation::view_record::on() {
+            use viewer_foundation::view_record::add;
+            add(self.label, "field_placed", 1);
+            add(self.label, "field_instances", self.field.instances.len() as u64);
+            match change {
+                Change::Same => add(self.label, "field_same", 1),
+                Change::Changed => {
+                    add(self.label, "field_changed", 1);
+                    add(self.label, "field_changed_instances", changed.instances.len() as u64);
+                    add(self.label, "field_moved_groups", changed.groups.len() as u64);
+                }
+                Change::Whole => {
+                    add(self.label, "field_whole", 1);
+                    add(self.label, FIELD_WHOLE[walked.whole], 1);
+                    let [joined, left, reordered] = walked.reshaped;
+                    add(self.label, "field_joined", joined);
+                    add(self.label, "field_left", left);
+                    add(self.label, "field_reordered", reordered);
+                }
+            }
+        }
+        if self.label == "unit models" {
+            count(Count::UnitInstances, self.field.instances.len() as u64);
+            match change {
+                Change::Same => count(Count::UnitFieldSame, 1),
+                Change::Changed => {
+                    count(Count::UnitFieldChanged, 1);
+                    count(Count::UnitChanged, changed.instances.len() as u64);
+                }
+                Change::Whole => {
+                    count(Count::UnitFieldWhole, 1);
+                    let [joined, left, reordered] = walked.reshaped;
+                    count(Count::UnitJoined, joined);
+                    count(Count::UnitLeft, left);
+                    count(Count::UnitReordered, reordered);
+                }
+            }
+        }
+        change
+    }
+
+    /// How the field changed for this frame's retained lists, against the field they last read:
+    /// made by the first list that asks in `frame`, then the same for every other.
+    fn frame_change(&self, frame: u64) -> std::cell::Ref<'_, FrameChange> {
+        if self.frame_change.borrow().frame != Some(frame) {
+            let mut cached = self.frame_change.borrow_mut();
+            let cached = &mut *cached;
+            cached.since = cached.frame;
+            cached.frame = Some(frame);
+            cached.change = self.field_change(&mut cached.changed);
+            self.take_born(&mut cached.born);
+        }
+        self.frame_change.borrow()
+    }
+
+    /// The actors given a player since the casters last read them, sorted, into `born`.
+    fn take_born(&self, born: &mut Vec<(usize, u32, u32)>) {
+        born.clear();
+        std::mem::swap(born, &mut *self.born.borrow_mut());
+        born.sort_unstable();
+        born.dedup();
     }
 
     pub fn refusal_lines(&self, frame: u64) -> Vec<String> {
@@ -3237,15 +3459,312 @@ impl ModelPass {
         frame: ModelFrame<'_>,
         native: NativeInputs<'_>,
     ) -> io::Result<()> {
-        self.record_native(
-            arena,
-            pass,
-            frame,
-            native,
-            NativeQueue::Caster,
-            &mut NativeObjectConstants::default(),
-        )
+        self.record_casters(arena, pass, frame, native)
     }
+}
+
+/// What a caster walk reads of a field: each instance but its palette offset (which animation
+/// writes every frame and native draws never read), the walk order and each group's mesh, range
+/// and bounds. Placements made again unchanged every frame leave it as it was.
+#[derive(Default)]
+struct WalkedField {
+    instances: Vec<ModelInstance>,
+    order: Vec<(usize, usize)>,
+    groups: Vec<(usize, Range<u32>, [u32; 4])>,
+    /// The last whole change's instances joined, left and out of their order, for the counts.
+    reshaped: [u64; 3],
+    /// What made the last change whole ([`FIELD_WHOLE`]).
+    whole: usize,
+}
+
+/// What makes a field's change whole, in the flight record: another count of instances, of groups
+/// or a group's mesh or range, another walk order, or an instance placed for another actor.
+const FIELD_WHOLE: [&str; 4] = ["field_whole_count", "field_whole_groups", "field_whole_order", "field_whole_actor"];
+
+/// How a field differs from the last one a caster walk read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Change {
+    Same,
+    /// The same instances, actors and groups in the same order; some instances' own values
+    /// (transform, animation state, flags) changed: listed in [`Changed`].
+    Changed,
+    /// Instances joined, left or changed their order, group or actor. The actors in both fields
+    /// whose own values changed are listed in [`Changed`], by their index in the new field.
+    Whole,
+}
+
+/// How the field changed for one frame's retained lists ([`ModelPass::frame_change`]).
+struct FrameChange {
+    frame: Option<u64>,
+    /// The frame the field was read before: a list that followed that change follows this one.
+    pub since: Option<u64>,
+    pub change: Change,
+    pub changed: Changed,
+    pub born: Vec<(usize, u32, u32)>,
+}
+
+impl Default for FrameChange {
+    fn default() -> Self {
+        Self {
+            frame: None,
+            since: None,
+            change: Change::Whole,
+            changed: Changed::default(),
+            born: Vec::new(),
+        }
+    }
+}
+
+/// The instances whose own values changed, and the groups whose bounds moved (in a whole
+/// change, every group is new and none is listed).
+#[derive(Default)]
+pub(super) struct Changed {
+    pub instances: Vec<usize>,
+    pub groups: Vec<usize>,
+}
+
+impl Changed {
+    fn clear(&mut self) {
+        self.instances.clear();
+        self.groups.clear();
+    }
+}
+
+/// The actor an instance is: what its player, hidden state and identity follow.
+fn actor(instance: &ModelInstance) -> (u32, u32, u32) {
+    (
+        instance.animation_seed,
+        instance.animation_identity,
+        instance.animation_epoch,
+    )
+}
+
+impl WalkedField {
+    /// Takes `field`, listing the instances and groups that changed when the instances, their
+    /// actors and their order are the same.
+    fn note(&mut self, field: &ModelField, changed: &mut Changed) -> Change {
+        let walked = |instance: &ModelInstance| ModelInstance {
+            palette_offset: 0,
+            ..*instance
+        };
+        let unshaped = if self.instances.len() != field.instances.len() {
+            Some(0)
+        } else if self.groups.len() != field.groups.len()
+            || !self.groups.iter().zip(&field.groups).all(|(kept, now)| kept.0 == now.mesh && kept.1 == now.range)
+        {
+            Some(1)
+        } else if self.order != field.native_order {
+            Some(2)
+        } else {
+            None
+        };
+        if let Some(whole) = unshaped {
+            self.whole = whole;
+            self.reshape(field, changed);
+            return Change::Whole;
+        }
+        for (index, (kept, now)) in self.instances.iter().zip(&field.instances).enumerate() {
+            let now = walked(now);
+            if bytemuck::bytes_of(kept) == bytemuck::bytes_of(&now) {
+                continue;
+            }
+            if actor(kept) != actor(&now) {
+                self.whole = 3;
+                self.reshape(field, changed);
+                return Change::Whole;
+            }
+            changed.instances.push(index);
+        }
+        for &index in &changed.instances {
+            self.instances[index] = walked(&field.instances[index]);
+        }
+        for (at, (kept, now)) in self.groups.iter_mut().zip(&field.groups).enumerate() {
+            let bounds = now.bounds.map(f32::to_bits);
+            if kept.2 != bounds {
+                kept.2 = bounds;
+                changed.groups.push(at);
+            }
+        }
+        if changed.instances.is_empty() && changed.groups.is_empty() {
+            Change::Same
+        } else {
+            Change::Changed
+        }
+    }
+
+    /// Takes a field of other instances or order, counting what joined, left and moved in it
+    /// and listing the actors in both whose own values changed. An actor placed twice is
+    /// matched by its place in each field.
+    fn reshape(&mut self, field: &ModelField, changed: &mut Changed) {
+        changed.clear();
+        let keyed = |instances: &[ModelInstance], groups: &mut dyn Iterator<Item = (usize, Range<u32>)>| {
+            let mut keyed = Vec::with_capacity(instances.len());
+            for (mesh, range) in groups {
+                for at in range.start..range.end {
+                    if let Some(instance) = instances.get(at as usize) {
+                        keyed.push(((mesh, actor(instance)), at as usize));
+                    }
+                }
+            }
+            keyed.sort_unstable();
+            keyed
+        };
+        let before = keyed(
+            &self.instances,
+            &mut self.groups.iter().map(|(mesh, range, _)| (*mesh, range.clone())),
+        );
+        let after = keyed(
+            &field.instances,
+            &mut field.groups.iter().map(|group| (group.mesh, group.range.clone())),
+        );
+        let (mut joined, mut left, mut kept) = (0, 0, Vec::new());
+        let (mut a, mut b) = (0, 0);
+        while a < before.len() || b < after.len() {
+            match (before.get(a), after.get(b)) {
+                (Some(old), Some(new)) if old.0 == new.0 => {
+                    let now = ModelInstance {
+                        palette_offset: 0,
+                        ..field.instances[new.1]
+                    };
+                    if bytemuck::bytes_of(&self.instances[old.1]) != bytemuck::bytes_of(&now) {
+                        changed.instances.push(new.1);
+                    }
+                    kept.push((old.1, new.1));
+                    a += 1;
+                    b += 1;
+                }
+                (Some(old), Some(new)) if old.0 < new.0 => {
+                    left += 1;
+                    a += 1;
+                }
+                (Some(_), None) => {
+                    left += 1;
+                    a += 1;
+                }
+                _ => {
+                    joined += 1;
+                    b += 1;
+                }
+            }
+        }
+        // Out of order: the kept instances outside the longest run that keeps its order.
+        kept.sort_unstable();
+        let mut tails: Vec<usize> = Vec::new();
+        for &(_, new) in &kept {
+            let at = tails.partition_point(|&tail| tail < new);
+            if at == tails.len() {
+                tails.push(new);
+            } else {
+                tails[at] = new;
+            }
+        }
+        self.reshaped = [joined, left, (kept.len() - tails.len()) as u64];
+        changed.instances.sort_unstable();
+        self.take(field);
+    }
+
+    fn take(&mut self, field: &ModelField) {
+        self.order.clone_from(&field.native_order);
+        self.instances.clear();
+        self.instances.extend(field.instances.iter().map(|instance| ModelInstance {
+            palette_offset: 0,
+            ..*instance
+        }));
+        self.groups.clear();
+        self.groups.extend(
+            field
+                .groups
+                .iter()
+                .map(|group| (group.mesh, group.range.clone(), group.bounds.map(f32::to_bits))),
+        );
+    }
+}
+
+/// What the paced report counts of the retained casters, each frame ([`take_counts`]).
+#[derive(Clone, Copy)]
+pub(super) enum Count {
+    CasterWalks,
+    CasterKept,
+    CasterRewritten,
+    CasterSpliced,
+    CasterFiguresWalked,
+    CasterFiguresLeft,
+    LitWalks,
+    LitKept,
+    LitSpliced,
+    LitFiguresWalked,
+    LitFiguresLeft,
+    FirstParts,
+    FirstGeometryBytes,
+    PackedHere,
+    WarmedNodes,
+    RefusedActors,
+    UnitFieldSame,
+    UnitFieldChanged,
+    UnitFieldWhole,
+    UnitChanged,
+    UnitJoined,
+    UnitLeft,
+    UnitReordered,
+    UnitInstances,
+}
+
+const COUNT_NAMES: [&str; 24] = [
+    "caster_walks",
+    "caster_kept",
+    "caster_rewritten",
+    "caster_spliced",
+    "caster_figures_walked",
+    "caster_figures_left",
+    "lit_walks",
+    "lit_kept",
+    "lit_spliced",
+    "lit_figures_walked",
+    "lit_figures_left",
+    "first_parts",
+    "first_geometry_bytes",
+    "packed_here",
+    "warmed_nodes",
+    "refused_actors",
+    "unit_field_same",
+    "unit_field_changed",
+    "unit_field_whole",
+    "unit_changed",
+    "unit_joined",
+    "unit_left",
+    "unit_reordered",
+    "unit_instances",
+];
+
+static COUNTS: [std::sync::atomic::AtomicU64; COUNT_NAMES.len()] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; COUNT_NAMES.len()];
+
+pub(super) fn count(what: Count, n: u64) {
+    COUNTS[what as usize].fetch_add(n, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Actor refusals met since the last [`take_refusals`], by pass, entity and reason.
+static REFUSALS: std::sync::Mutex<BTreeMap<String, u64>> = std::sync::Mutex::new(BTreeMap::new());
+
+/// Whether refusals are named for the paced report (while the harness profiles).
+fn profiling_refusals() -> bool {
+    viewer_foundation::profile_writer::profiling()
+}
+
+/// The actor refusals met since the last call, by pass, entity and reason, with how often: a
+/// refusal met every frame is a part walked again every frame, and possibly a model missing.
+pub fn take_refusals() -> BTreeMap<String, u64> {
+    std::mem::take(&mut *REFUSALS.lock().unwrap_or_else(|error| error.into_inner()))
+}
+
+/// The retained lists' counts since the last call, by name: walks and kept frames of every
+/// pass's casters and lit walks, nodes rewritten in kept frames, lists spliced by figure with
+/// the figures walked into them and left out, and how the unit models' field changed (same, by
+/// instance, whole) with its instances changed, joined, left and out of order.
+pub fn take_counts() -> impl Iterator<Item = (&'static str, u64)> {
+    COUNT_NAMES.iter().zip(&COUNTS).map(|(name, count)| {
+        (*name, count.swap(0, std::sync::atomic::Ordering::Relaxed))
+    })
 }
 
 /// [`ModelPass::sync`]'s history rule for a library that changed from
@@ -3306,6 +3825,7 @@ pub fn animate_players(
         events,
         &Default::default(),
         false,
+        &mut Vec::new(),
     )
 }
 
@@ -3323,6 +3843,7 @@ fn animate_players_with_workers(
     events: &mut Vec<entity_animation::Event>,
     workers: &viewer_foundation::parallel::Workers,
     native_only: bool,
+    created: &mut Vec<(usize, u32, u32)>,
 ) -> Vec<PaletteJoint> {
     struct Call<'a> {
         key: (usize, u32, u32),
@@ -3404,6 +3925,7 @@ fn animate_players_with_workers(
         }
         alive.insert(key);
         let player = players.entry(key).or_insert_with(|| {
+            created.push(key);
             if request.is_some() {
                 entity_animation::Player::native_choice(rig)
             } else {
@@ -3506,7 +4028,10 @@ fn animate_players_with_workers(
         };
         players
             .entry(key)
-            .or_insert_with(|| entity_animation::Player::new(rig))
+            .or_insert_with(|| {
+                created.push(key);
+                entity_animation::Player::new(rig)
+            })
             .advance_hidden(rig, clock);
         alive.insert(key);
     }
@@ -3530,6 +4055,15 @@ struct DefaultPlay {
     requests: Arc<Vec<entity_animation::Request>>,
     native: u32,
     refusal: Option<String>,
+}
+
+/// Whether a play was made from `rig`: the same rig, or none for none.
+fn same_rig(made: Option<&Arc<Rig>>, rig: Option<&Arc<Rig>>) -> bool {
+    match (made, rig) {
+        (Some(made), Some(rig)) => Arc::ptr_eq(made, rig),
+        (None, None) => true,
+        _ => false,
+    }
 }
 
 impl DefaultPlay {
@@ -3660,6 +4194,7 @@ mod parallel_animation_tests {
                 bound: 1.,
                 convoy_radius: None,
                 attachments: 1,
+                cull_distance_squared: installed_content_core::mesh::DEFAULT_CULL_DISTANCE_SQUARED,
             }],
             ..Default::default()
         };
@@ -3843,6 +4378,7 @@ mod parallel_animation_tests {
                 &mut b,
                 &workers,
                 true,
+                &mut Vec::new(),
             );
             assert!(
                 unused.is_empty(),
@@ -3982,6 +4518,7 @@ mod parallel_animation_tests {
                 &mut b,
                 &workers,
                 false,
+                &mut Vec::new(),
             );
             assert_eq!(
                 bytemuck::cast_slice::<_, u8>(&a_palette),

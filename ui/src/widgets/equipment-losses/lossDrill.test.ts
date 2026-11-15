@@ -13,15 +13,15 @@ import { lossAmount, lossItems, lossKey, lossesTotal, lossWindow, validateLosses
 import { lossHistory, lossNumbers, lossParts, lossRows, lossSegments, pinLosses, readLossSelection } from './lossDrill.ts';
 
 function reply(count = 1): LossesReply {
-  return { branchId: 'b', tag: 'opaque tag', amountScale: 100000, retainedMonths: 6, warnings: [],
+  return { branchId: 'b', tag: 'opaque tag', ships: [], from: 100, to: 110, width: 64, exactHours: [], restarts: [], amountScale: 100000, retainedMonths: 6, warnings: [],
     landSource: 'combatLog', landLowerBound: null, destructionCountedFrom: 100,
     coverage: [{ firstHour: 100, lastHour: 110, coverage: 'logged' }],
     destructionCoverage: [{ firstHour: 100, lastHour: 110, reason: null }],
     designs: Array.from({ length: count }, (_, index) => ({ variant: index + 1, equipment: 'mod/item', archetype: 'mod/type', archetypeName: 'Mod type',
-      names: [{ firstHour: 100, name: `Design ${index}`, known: true, design: null }] })),
+      names: [{ firstHour: 100, name: `Design ${index}`, known: true }] })),
     causes: [{ source: { kind: 'combatLog', reason: 0 }, domain: 'land', name: { key: 'mod/cause', template: 'Mod cause', text: 'Mod cause' },
       loss: true, unknown: null, unknownSpans: [], group: null,
-      leaves: Array.from({ length: count }, (_, design) => ({ design, lowerBoundFrom: null,
+      leaves: Array.from({ length: count }, (_, design) => ({ design, key: String(design), lowerBoundFrom: null,
         points: [{ hour: 100, totalRaw: '100000' }, { hour: 104, totalRaw: '150000' }, { hour: 108, totalRaw: '50000' }] })) }] };
 }
 const window = { first: 100, hour: 110, end: 110, campaign: true, from: null };

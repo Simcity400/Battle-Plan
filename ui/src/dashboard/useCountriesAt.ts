@@ -19,9 +19,9 @@ import { heldFacts } from './countryTimeline.ts';
 /** How often names and flags follow a moving hour, in milliseconds. */
 export const FOLLOW_MS = 400;
 
-/** Styles from `country-styles`, which names at most 64 countries per request. */
+/** Styles from `country-styles`, every country in one request. */
 export const STYLES: FactSpec<CountryStyle> = {
-  product: 'country-styles', perRequest: 64, shared: true,
+  product: 'country-styles', perRequest: Infinity, shared: true,
   params: (branchId, hour, tags) => ({ branchId, hour, tags }),
   extract: data => new Map((data as CountryStyleReply).styles.map(style => [style.tag, style] as const)),
   held: heldFacts(({ tag, name, color }) => ({ tag, name, color })),

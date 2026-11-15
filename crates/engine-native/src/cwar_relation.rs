@@ -62,53 +62,11 @@ pub struct Row {
     pub first_was_instigator: u8,
 }
 
-/// Enumerates each canonical country's owned relations and emits active wars
-/// once, from their first endpoint. Both endpoints must contain the same pointer
-/// exactly once, with matching matrix and native ownership cross-links.
-/// No pointers escape the read; native country reference order and bytes remain.
-/// Without caller-owned storage every country and diplomacy occurrence is
-/// authenticated with the original uncached readers.
-pub fn walk(memory: &impl Memory, base: usize, game_state: usize, output: &mut [Row]) -> Outcome {
-    walk_from(
-        memory,
-        memory,
-        base,
-        game_state,
-        crate::walk::Buffer::Fixed(output),
-        &mut crelation_status::Resolver::default(),
-        None,
-        None,
-    )
-}
-
-/// Owned-vector acquisition and successful endpoint-status validation within
-/// the quiescent callback. Every new pass discards the retained results.
-/// Country resolution uses the same callback's authentication view, retaining
-/// cached native-id aliases while payload reads bypass unrelated cache probes.
-pub fn walk_owned(
-    memory: &impl Memory,
-    country_memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut [Row],
-    scratch: &mut OwnedSnapshotScratch,
-) -> Outcome {
-    walk_owned_buffer(
-        memory,
-        country_memory,
-        base,
-        game_state,
-        crate::walk::Buffer::Fixed(output),
-        scratch,
-        None,
-    )
-}
-
 /// [`walk_owned`] into growing rows, with each row's war pointer, when `wars`
 /// is given, at the row's index, for [`read_casualties`] on a later hour. A
 /// pointer that cannot be stored leaves `wars` shorter than the rows; the
 /// rows are unaffected.
-pub fn walk_owned_growing(
+pub fn walk_owned(
     memory: &impl Memory,
     country_memory: &impl Memory,
     base: usize,
@@ -209,7 +167,6 @@ fn walk_owned_buffer(
     wars: Option<&mut Vec<usize>>,
 ) -> Outcome {
     scratch.begin();
-    scratch.worker_growth(output.is_growing());
     // Moving the vectors out and back keeps the scratch one borrow for the
     // membership snapshot; no storage is allocated or freed.
     let mut resolver = std::mem::take(&mut scratch.resolver);
@@ -298,20 +255,18 @@ struct StatusGraph {
     diplomacies: [usize; 2],
 }
 
-/// Pooled initialized heap storage. Worker acquisitions may also grow from
-/// their original membership headers; fixed callback readers never allocate.
-/// Keys and logical snapshots are discarded at every optimized pass.
+/// Pooled initialized heap storage, which also grows in the pass from the
+/// original membership headers. Keys and logical snapshots are discarded at
+/// every optimized pass.
 /// Default owns no heap storage, allowing allocation-free ownership transfers.
 ///
 /// Every size is taken from what a walk observed: the live country census and
 /// link headers, the owned vectors' counts and the wars validated. There is no
-/// chosen country, word or war budget. Fixed storage keeps the original complete
-/// scan for an uncovered vector. Worker storage
-/// grows before that original scan; optional status-graph cache misses retain
-/// the complete native validation and never limit recorded rows.
+/// chosen country, word or war budget. Storage grows before the original
+/// complete scan; optional status-graph cache misses retain the complete
+/// native validation and never limit recorded rows.
 #[derive(Default)]
 pub struct OwnedSnapshotScratch {
-    worker_growth: bool,
     vectors: Vec<OwnedVector>,
     roots: Vec<usize>,
     words: Vec<usize>,
@@ -327,8 +282,6 @@ pub struct OwnedSnapshotScratch {
     /// enough to size every later snapshot, however small the storage was.
     observed_words: usize,
     observed_cells: usize,
-    /// Words consumed by complete native rescans when optional storage is short.
-    rescanned_words: usize,
     /// Dense country authentication cells, sized from the observed headers.
     pub(crate) resolver: crelation_status::Resolver,
 }
@@ -357,7 +310,6 @@ impl OwnedSnapshotScratch {
     pub fn try_with_capacity(countries: usize) -> std::io::Result<Self> {
         let slots = open_table_slots(countries)?;
         Ok(Self {
-            worker_growth: false,
             vectors: crate::allocation::vec(countries)?,
             roots: crate::allocation::filled(slots, usize::MAX)?,
             words: Vec::new(),
@@ -368,7 +320,6 @@ impl OwnedSnapshotScratch {
             required_graphs: 0,
             observed_words: 0,
             observed_cells: 0,
-            rescanned_words: 0,
             resolver: crelation_status::Resolver::try_with_capacity(countries)?,
         })
     }
@@ -437,12 +388,6 @@ impl OwnedSnapshotScratch {
         Ok(())
     }
 
-    /// Allocating acquisitions enable this before the original membership walk.
-    /// Fixed callback storage keeps its bounded fallback and shortage outcomes.
-    pub(crate) fn worker_growth(&mut self, enabled: bool) {
-        self.worker_growth = enabled;
-    }
-
     fn grow_membership(&mut self, words: usize, cells: usize) -> Result<(), &'static str> {
         let required = self
             .vectors
@@ -486,7 +431,6 @@ impl OwnedSnapshotScratch {
         self.required_graphs = 0;
         self.observed_words = 0;
         self.observed_cells = 0;
-        self.rescanned_words = 0;
     }
 
     /// Records one country's owned-relation header count, as read by the
@@ -567,8 +511,9 @@ impl OwnedSnapshotScratch {
     }
 
     /// Checks that `root`'s owned-relation vector holds `war` exactly once.
-    /// The first query of a root performs the original complete scan and, when
-    /// storage allows, installs a counted snapshot; later queries compare the
+    /// The first query of a root performs the original complete scan and
+    /// installs a counted snapshot of a vector of more than one entry; later
+    /// queries compare the
     /// fresh header with the snapshot and look the pointer up in O(1).
     pub(crate) fn membership(
         &mut self,
@@ -606,7 +551,7 @@ impl OwnedSnapshotScratch {
             .checked_mul(2)
             .and_then(usize::checked_next_power_of_two)
             .unwrap_or(usize::MAX);
-        if self.worker_growth && wanted_words > 1 {
+        if wanted_words > 1 {
             self.grow_membership(wanted_words, wanted_cells)?;
         }
         let root_slot = self.root_slot(root);
@@ -647,9 +592,6 @@ impl OwnedSnapshotScratch {
         if !can_capture {
             self.stats.fallbacks += 1;
             // Zero- and one-entry vectors cost the same scanned or snapshotted.
-            if wanted_words > 1 {
-                self.rescanned_words = self.rescanned_words.saturating_add(wanted_words);
-            }
             return scan_occurrence(memory, array, war, 1, reasons, |_| {
                 self.stats.acquisition_words += 1
             });
@@ -690,7 +632,11 @@ impl OwnedSnapshotScratch {
     }
 }
 
-#[allow(clippy::too_many_arguments)] // Both memories, the census, its outcome and the held wars.
+/// The relations without the owned-root snapshot: the reference the owned walk equals.
+pub fn walk(memory: &impl Memory, base: usize, game_state: usize, output: &mut Vec<Row>) -> Outcome {
+    walk_from(memory, memory, base, game_state, crate::walk::Buffer::Growing(output), &mut crelation_status::Resolver::default(), None, None)
+}
+
 fn walk_from(
     memory: &impl Memory,
     country_memory: &impl Memory,

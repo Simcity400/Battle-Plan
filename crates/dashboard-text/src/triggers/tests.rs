@@ -366,7 +366,7 @@ fn has_elections_reads_the_recorded_test_and_refuses_older_recordings_by_name() 
         check(&frame, "", 1, "has_elections = yes")
             .decided()
             .unwrap_err()
-            .contains("Politics.has_elections not recorded")
+            .contains("has elections of politics not recorded")
     );
     assert_eq!(check(&frame, "", 2, "has_elections = no"), Eval::True);
 }
@@ -436,18 +436,19 @@ fn ruling_leader_traits_use_role_key_and_definition_identity() {
             role: Some(-7),
             ..Default::default()
         }]));
+    // Rows in key order, as a recording holds them: role -7 keys as its unsigned bits, after 3.
     *frame.tables[TableId::CountryLeaderRoles.index()] =
         TableView::Complete(TableRows::CountryLeaderRoles(vec![
             CountryLeaderRoleRow {
                 character: 1,
                 country: 100,
-                ideology: -7,
+                ideology: 3,
                 current_ideology: replay_data::rows::Recorded::Value(Some(Some(99))),
             },
             CountryLeaderRoleRow {
                 character: 1,
                 country: 100,
-                ideology: 3,
+                ideology: -7,
                 current_ideology: replay_data::rows::Recorded::Value(Some(Some(99))),
             },
         ]));
@@ -478,8 +479,8 @@ fn ruling_leader_traits_use_role_key_and_definition_identity() {
     // on another role. The old token-only projection answered true.
     *frame.tables[TableId::CharacterRoleTraits.index()] =
         TableView::Complete(TableRows::CharacterRoleTraits(vec![
-            row((-7_i32) as u32, 2),
             row(3, 1),
+            row((-7_i32) as u32, 2),
         ]));
     assert_eq!(evaluate(&frame), Eval::False);
     *frame.tables[TableId::CharacterRoleTraits.index()] = TableView::Complete(
@@ -574,7 +575,7 @@ fn unknown_pool_inputs_keep_dashboard_boolean_rules() {
     with_world(&frame, "", Err("none"), |world| {
         let unknown = world.evaluate(&items("AAA = { always = yes }"), Scopes::empty());
         assert!(
-            matches!(unknown, Eval::Unknown(ref reasons) if reasons.iter().any(|r| r.contains("Countries"))),
+            matches!(unknown, Eval::Unknown(ref reasons) if reasons.iter().any(|r| r.names("Countries"))),
             "{unknown:?}"
         );
     });
@@ -871,6 +872,7 @@ fn conditionals_load_limits_and_alternative_chains() {
 
 /// Colour callbacks retain raw input refusals even when their final Boolean
 /// result is known. Each missing input appears once, independently of outputs.
+/// `inputs` spell each input's identity ([`super::refusal::Failure::names`]).
 fn colour_refusals(eval: &Evaluator, scopes: Scopes, body: &str, inputs: &[&str]) {
     let Eval::Unknown(reasons) = eval.evaluate_colour(&items(body), scopes, &[]) else {
         panic!("colour should refuse {inputs:?}: {body}");
@@ -878,7 +880,7 @@ fn colour_refusals(eval: &Evaluator, scopes: Scopes, body: &str, inputs: &[&str]
     assert_eq!(reasons.len(), inputs.len(), "{reasons:?}");
     for input in inputs {
         assert_eq!(
-            reasons.iter().filter(|why| why.contains(input)).count(),
+            reasons.iter().filter(|why| why.names(input)).count(),
             1,
             "{reasons:?}"
         );
@@ -1045,7 +1047,7 @@ fn calculated_stability_and_its_modifier_callback_share_the_missing_field_identi
             failures
                 .first()
                 .unwrap()
-                .contains("CountryStabilityInputs.stability_factor")
+                .names("CountryStabilityInputs.stability_factor")
         );
     });
 }
@@ -1090,7 +1092,7 @@ fn cached_core_gaps_and_direct_table_reads_keep_one_source_identity() {
                 assert!(super::world::table::<tables::CountryLinks>(world.tables(), 0).is_err());
             });
             assert_eq!(failures.len(), 1, "{failures:?}");
-            assert!(failures.first().unwrap().contains("CountryLinks"));
+            assert!(failures.first().unwrap().names("CountryLinks"));
         }
     });
 }
@@ -1203,11 +1205,15 @@ fn colour_callbacks_identify_roster_failures_across_iterators_and_builtin_arrays
         ), scopes, &[]) else { panic!("both country rosters must refuse") };
         assert_eq!(reasons.len(), 2, "{reasons:?}");
         assert!(
-            reasons.iter().any(|why| why.contains("Country(1)")),
+            reasons
+                .iter()
+                .any(|why| why.names("CountryCounterInputs.owned_states (Country(1))")),
             "{reasons:?}"
         );
         assert!(
-            reasons.iter().any(|why| why.contains("Country(2)")),
+            reasons
+                .iter()
+                .any(|why| why.names("CountryCounterInputs.owned_states (Country(2))")),
             "{reasons:?}"
         );
     });
@@ -1504,7 +1510,7 @@ fn original_predicate_selects_both_countries_and_compares_raw_aliases() {
         check(&f, "", 1, "original_tag = SOV")
             .decided()
             .unwrap_err()
-            .contains("original_tag_reference not recorded")
+            .contains("original tag reference of country appearance not recorded")
     );
 }
 
@@ -1555,7 +1561,7 @@ fn original_predicate_resolves_a_known_null_operand_through_reserved_original() 
         check(&f, "ALI = { always = no }", 1, "original_tag = ALI")
             .decided()
             .unwrap_err()
-            .contains("ReservedCountryNaming.original_tag_reference not recorded")
+            .contains("original tag reference of reserved country naming not recorded")
     );
 }
 
@@ -1589,7 +1595,7 @@ fn reserved_world_owned_count_preserves_signed_values_and_independent_refusals()
                     world
                         .owned_state_count(0)
                         .unwrap_err()
-                        .contains("ReservedCountryNaming.owned_state_count")
+                        .contains("owned state count of reserved country naming")
                 ),
             }
         });
@@ -1707,7 +1713,7 @@ fn original_aliases_and_null_iterators_read_later_membership_only_when_reached()
         )
         .decided()
         .unwrap_err()
-        .contains("original_tag_reference not recorded")
+        .contains("original tag reference of reserved country naming not recorded")
     );
 }
 
@@ -1786,7 +1792,7 @@ fn aliases_use_exact_bucket_and_physical_array_order_with_first_tie() {
         check(&f, "ALI = { always = yes }", 3, "tag = ALI")
             .decided()
             .unwrap_err()
-            .contains("country_array not recorded")
+            .contains("country array of reserved country naming not recorded")
     );
 }
 
@@ -2148,9 +2154,9 @@ fn recorded_builtin_faction_leader_encodes_first_member_and_requires_membership(
         reason: "synthetic gap".into(),
     };
     let why = check(&f, "", 3, "check_variable = { faction_leader = 0 }")
-        .decided()
+        .decided_input()
         .unwrap_err();
-    assert!(why.contains("FactionMembers"), "{why}");
+    assert!(why.names("FactionMembers"), "{why}");
 }
 
 #[test]
@@ -2229,13 +2235,13 @@ fn recorded_builtin_owned_controlled_states_counts_aliases_and_requires_complete
     };
     states[0].controller = 999;
     let trigger = "check_variable = { num_owned_controlled_states = 2 }";
-    let why = check(&f, "", 1, trigger).decided().unwrap_err();
-    assert!(why.contains("CountryLinks"), "{why}");
+    let why = check(&f, "", 1, trigger).decided_input().unwrap_err();
+    assert!(why.names("CountryLinks"), "{why}");
     *f.tables[TableId::States.index()] = TableView::Unavailable {
         reason: "not sampled".into(),
     };
-    let why = check(&f, "", 1, trigger).decided().unwrap_err();
-    assert!(why.contains("States"), "{why}");
+    let why = check(&f, "", 1, trigger).decided_input().unwrap_err();
+    assert!(why.names("States"), "{why}");
 }
 
 /// Built-in game variables shadow the stored keys and are
@@ -2250,9 +2256,11 @@ fn runtime_only_operands_are_refused_by_name() {
         reason: "not sampled".into(),
     };
     let why = |trigger: &str| check(&frame, "", 0, trigger).decided().unwrap_err();
-    let builtin = why("check_variable = { stability > 0 }");
+    let builtin = check(&frame, "", 0, "check_variable = { stability > 0 }")
+        .decided_input()
+        .unwrap_err();
     assert!(
-        builtin.contains("stability") && builtin.contains("CountryStabilityInputs"),
+        builtin.contains("stability") && builtin.names("CountryStabilityInputs"),
         "{builtin}"
     );
     assert_eq!(
@@ -2730,7 +2738,8 @@ fn format99_has_ideology_reads_current_pointer_independently_of_map_key() {
     };
     rows[0].current_ideology = Recorded::Value(None);
     assert!(matches!(evaluate(&frame), Eval::Unknown(reasons)
-        if reasons.iter().any(|reason| reason.contains("CountryLeaderRoles.current_ideology capture unavailable"))));
+        if reasons.iter().any(|reason| reason.names("CountryLeaderRoles.current_ideology (Character(7))")
+            && reason.contains("not captured"))));
     let TableView::Complete(TableRows::CountryLeaderRoles(rows)) =
         &mut *frame.tables[TableId::CountryLeaderRoles.index()]
     else {
@@ -2738,7 +2747,8 @@ fn format99_has_ideology_reads_current_pointer_independently_of_map_key() {
     };
     rows[0].current_ideology = Recorded::NotRecorded;
     assert!(matches!(evaluate(&frame), Eval::Unknown(reasons)
-        if reasons.iter().any(|reason| reason.contains("CountryLeaderRoles.current_ideology"))));
+        if reasons.iter().any(|reason| reason.names("CountryLeaderRoles.current_ideology (Character(7))")
+            && reason.contains("not recorded"))));
 }
 
 #[test]
@@ -2870,17 +2880,17 @@ fn country_flag_and_completed_focus_require_only_their_recorded_inputs() {
             *missing.tables[table.index()] = TableView::Unavailable {
                 reason: "required predicate input missing".into(),
             };
-            let why = check(&missing, "", 0, body).decided().unwrap_err();
-            assert!(why.contains(&format!("{table:?}")), "{body}: {why}");
+            let why = check(&missing, "", 0, body).decided_input().unwrap_err();
+            assert!(why.names(&format!("{table:?}")), "{body}: {why}");
         }
         let mut missing_link = healthy.clone();
         *missing_link.tables[TableId::CountryLinks.index()] =
             TableView::Complete(TableRows::CountryLinks(vec![]));
         assert!(
             check(&missing_link, "", 0, body)
-                .decided()
+                .decided_input()
                 .unwrap_err()
-                .contains("CountryLinks")
+                .names("CountryLinks")
         );
         let mut missing_country = healthy.clone();
         *missing_country.tables[TableId::Countries.index()] =
@@ -2906,7 +2916,7 @@ fn a_state_trigger_reading_no_provinces_is_answered_without_them() {
     let TableView::Complete(TableRows::ReservedCountryNaming(rows)) =
         &mut *f.tables[TableId::ReservedCountryNaming.index()]
     else {
-        panic!("the fixture records ReservedCountryNaming");
+        panic!("the fixture records reserved country naming");
     };
     rows[0].owned_state_count = Recorded::Value(Some(2));
     *f.tables[TableId::States.index()] = TableView::Complete(TableRows::States(vec![StateRow {
@@ -3030,7 +3040,7 @@ fn continent_reads_the_retained_token_and_names_missing_operands() {
             None => {
                 let why = result.unwrap_err();
                 assert!(
-                    why.contains("continent") || why.contains("States.continent"),
+                    why.contains("continent") || why.contains("continent of states"),
                     "{why}"
                 );
             }
@@ -3063,9 +3073,9 @@ fn continent_reads_the_retained_token_and_names_missing_operands() {
                 &items("is_on_continent = first_mod_continent"),
                 Scopes::of(Scope::State(64))
             )
-            .decided()
+            .decided_input()
             .unwrap_err()
-            .contains("States")
+            .names("States")
     );
 }
 
@@ -3346,7 +3356,7 @@ fn country_government_and_numeric_original_keep_local_table_admission() {
         check(&healthy, "", 0, "original_tag=THIS ")
             .decided()
             .unwrap_err()
-            .contains("ReservedCountryNaming")
+            .contains("reserved country naming")
     );
 }
 
@@ -3617,7 +3627,7 @@ fn leader_visibility_steps_decide_as_the_roster_check() {
             Eval::unknown(why),
         )
     };
-    let unlinked = "a UnitLeaders row's country 999 has no CountryLinks row";
+    let unlinked = "unit leaders names a country that no recorded country link holds";
     with_world(&frame, "", Ok(&roles), |world| {
         for (row, visibility, verdict) in [
             (
@@ -3685,7 +3695,6 @@ fn hours_reading_one_lexer_table_share_its_folds() {
     let read = |frame| World::read(frame, ContentFacts::content_only(&dlcs, &names, &aliases));
     let folds = |world: &World| match world.names().unwrap() {
         world::Names::Own(folds) => Arc::as_ptr(folds),
-        world::Names::Shared(..) => unreachable!("a decoded frame reads its own folds"),
     };
     let (earlier, later) = (read(&first), read(&next));
     assert_eq!(folds(&earlier), folds(&later));
@@ -3817,7 +3826,7 @@ fn claimed_by_tests_the_states_recorded_claims_by_canonical_slot() {
         state(&f, "is_claimed_by = GER")
             .decided()
             .unwrap_err()
-            .contains("claims is not recorded")
+            .contains("claims of state cores is not recorded")
     );
 }
 

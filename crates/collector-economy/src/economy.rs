@@ -93,18 +93,18 @@ impl Capacities {
             crate::table_capture::grow_capacity(&mut self.rows[index], demand);
         }
         for (index, outcome) in [
-            (2, sprovince_supply_data::walk(memory, base, state, &mut [])),
+            (2, sprovince_supply_data::count(memory, base, state)),
             (
                 3,
-                ccountry_supply_system::walk(memory, base, state, &mut []),
+                ccountry_supply_system::count(memory, base, state),
             ),
             (
                 4,
-                disrupted_supply_bucket::walk(memory, base, state, &mut []),
+                disrupted_supply_bucket::count(memory, base, state),
             ),
             (
                 9,
-                cpurchase_contract::walk(memory, base, state, &mut [], &mut []),
+                cpurchase_contract::count(memory, base, state),
             ),
         ] {
             crate::table_capture::grow_capacity(&mut self.rows[index], rows(outcome)?);
@@ -249,7 +249,6 @@ impl Captured {
     }
 
     /// Bounded acquisition without allocation, encoding or I/O; returns QPC ticks.
-    #[cfg(test)]
     pub fn capture(
         &mut self,
         memory: &impl Memory,
@@ -258,18 +257,7 @@ impl Captured {
         hour: i32,
         force_full: bool,
     ) -> [u64; N] {
-        self.capture_buffers(memory, base, game_state, hour, force_full, false)
-    }
-
-    pub fn capture_growing(
-        &mut self,
-        memory: &impl Memory,
-        base: usize,
-        game_state: usize,
-        hour: i32,
-        force_full: bool,
-    ) -> [u64; N] {
-        self.capture_buffers(memory, base, game_state, hour, force_full, true)
+        self.capture_buffers(memory, base, game_state, hour, force_full)
     }
 
     pub fn fail_final_capture(&mut self, hour: i32, force_full: bool, reason: &'static str) {
@@ -287,7 +275,6 @@ impl Captured {
         game_state: usize,
         hour: i32,
         force_full: bool,
-        growing: bool,
     ) -> [u64; N] {
         self.reset();
         self.set_schedule(hour, force_full);
@@ -295,11 +282,8 @@ impl Captured {
         if self.other_active {
             let _reads = read_accounting::table(TABLES[0]);
             let begin = qpc();
-            if growing {
-                self.demand.capture_growing(memory, base, game_state, hour);
-            } else {
-                self.demand.capture(memory, base, game_state, hour);
-            }
+            self.demand.capture(memory, base, game_state, hour);
+            
             ticks[0] = elapsed(begin);
         }
         // A staged payload is installed by the decode worker.
@@ -311,11 +295,8 @@ impl Captured {
                 let _reads = read_accounting::table(TABLES[$index]);
                 let begin = qpc();
                 capture_rows(&mut self.$field, |rows| {
-                    if growing {
-                        $worker(memory, base, game_state, rows)
-                    } else {
-                        $fixed(memory, base, game_state, rows)
-                    }
+                    $worker(memory, base, game_state, rows)
+                    
                 });
                 ticks[$index] = elapsed(begin);
             }};
@@ -323,33 +304,33 @@ impl Captured {
         if self.other_active {
             let _reads = read_accounting::table(TABLES[0]);
             let begin = qpc();
-            self.capture_fuel_buffers(memory, base, game_state, growing);
+            self.capture_fuel_buffers(memory, base, game_state);
             ticks[0] = ticks[0].saturating_add(elapsed(begin));
             plain!(
                 1,
                 experience,
                 ccountry_experience_status::walk,
-                ccountry_experience_status::walk_growing
+                ccountry_experience_status::walk
             );
         }
         plain!(
             2,
             supply,
             sprovince_supply_data::walk,
-            sprovince_supply_data::walk_growing
+            sprovince_supply_data::walk
         );
         if self.other_active {
             plain!(
                 3,
                 hubs,
                 ccountry_supply_system::walk,
-                ccountry_supply_system::walk_growing
+                ccountry_supply_system::walk
             );
             plain!(
                 4,
                 disrupted,
                 disrupted_supply_bucket::walk,
-                disrupted_supply_bucket::walk_growing
+                disrupted_supply_bucket::walk
             );
             let _reads = read_accounting::table(TABLES[5]);
             let begin = qpc();
@@ -357,8 +338,8 @@ impl Captured {
                 memory,
                 base,
                 game_state,
-                engine_native::walk::Buffer::for_worker(&mut self.foreign.rows, growing),
-                engine_native::walk::Buffer::for_worker(&mut self.sources.first, growing),
+                engine_native::walk::Buffer::Growing(&mut self.foreign.rows),
+                engine_native::walk::Buffer::Growing(&mut self.sources.first),
             );
             self.foreign.outcome = bounded(acquired.outcome, self.foreign.rows.len());
             self.sources.len = acquired.bytes_len;
@@ -382,7 +363,7 @@ impl Captured {
                 cstrategic_resource::walk_buffer(
                     memory,
                     base,
-                    engine_native::walk::Buffer::for_worker(rows, growing),
+                    engine_native::walk::Buffer::Growing(rows),
                 )
             });
             ticks[6] = elapsed(begin);
@@ -399,7 +380,7 @@ impl Captured {
                         base,
                         game_state,
                         descriptors,
-                        engine_native::walk::Buffer::for_worker(rows, growing),
+                        engine_native::walk::Buffer::Growing(rows),
                     )
                 });
             } else {
@@ -415,11 +396,8 @@ impl Captured {
                         base,
                         game_state,
                         descriptors,
-                        engine_native::walk::Buffer::for_worker(&mut self.exchanges.rows, growing),
-                        engine_native::walk::Buffer::for_worker(
-                            &mut self.exchange_scratch,
-                            growing,
-                        ),
+                        engine_native::walk::Buffer::Growing(&mut self.exchanges.rows),
+                        engine_native::walk::Buffer::Growing(&mut self.exchange_scratch),
                     ),
                     self.exchanges.rows.len(),
                 );
@@ -436,8 +414,8 @@ impl Captured {
                     memory,
                     base,
                     game_state,
-                    engine_native::walk::Buffer::for_worker(rows, growing),
-                    engine_native::walk::Buffer::for_worker(&mut self.purchase_scratch, growing),
+                    engine_native::walk::Buffer::Growing(rows),
+                    engine_native::walk::Buffer::Growing(&mut self.purchase_scratch),
                 )
             });
             ticks[9] = elapsed(begin);
@@ -451,22 +429,13 @@ impl Captured {
         memory: &impl Memory,
         base: usize,
         game_state: usize,
-        growing: bool,
     ) {
         let outcomes = ccountry_fuel_status::walk_buffer(
             memory,
             base,
             game_state,
-            if growing {
-                engine_native::walk::Buffer::Growing(&mut self.fuel.rows)
-            } else {
-                engine_native::walk::Buffer::Fixed(&mut self.fuel.rows)
-            },
-            if growing {
-                engine_native::walk::Buffer::Growing(&mut self.fuel_consumers.rows)
-            } else {
-                engine_native::walk::Buffer::Fixed(&mut self.fuel_consumers.rows)
-            },
+            engine_native::walk::Buffer::Growing(&mut self.fuel.rows),
+            engine_native::walk::Buffer::Growing(&mut self.fuel_consumers.rows),
         );
         self.fuel.outcome = bounded(outcomes.fuel, self.fuel.rows.len());
         self.fuel_consumers.outcome = bounded(outcomes.consumers, self.fuel_consumers.rows.len());
@@ -823,12 +792,10 @@ mod owned;
 
 #[cfg(test)]
 use owned::OwnedResources;
-#[cfg(any(test, feature = "test-support"))]
-pub use owned::copy_economy_rest_refresh;
 use owned::skipped;
 pub use owned::{
     EconomyRestCopyContext, EconomyRestCopyReport, EconomyRestJob,
-    copy_economy_rest_refresh_growing,
+    copy_economy_rest_refresh,
 };
 
 #[cfg(test)]

@@ -55,6 +55,7 @@ struct Store {
     sync_gate: Option<(Arc<Gate>, bool)>,
     create_gate: Option<(u32, Arc<Gate>, bool)>,
     closed: usize,
+    refuse_poll: Option<std::sync::mpsc::Sender<()>>,
 }
 struct Backend {
     store: Arc<Mutex<Store>>,
@@ -148,6 +149,15 @@ impl SegmentSink for Sink {
     fn start_sync(&mut self) -> io::Result<()> {
         Ok(())
     }
+    fn poll_sync(&mut self) -> io::Result<bool> {
+        let refuse = self.store.lock().unwrap().refuse_poll.take();
+        let Some(refused) = refuse else {
+            return Ok(true);
+        };
+        let error = engine_allocation::vec::<u64>(usize::MAX).unwrap_err();
+        refused.send(()).unwrap();
+        Err(error)
+    }
     fn sync_all(&mut self) -> io::Result<()> {
         let gate = self.store.lock().unwrap().sync_gate.take();
         if let Some((gate, fail)) = gate {
@@ -198,12 +208,11 @@ fn processor() -> (Processor, Arc<Mutex<Store>>) {
         suppress_origin: false,
         retry_full: false,
         unpublished_families: 0,
-        helper: None,
-        second_helper: None,
+        helpers: Vec::new(),
         backlogged: false,
         comparison: Box::default(),
         writer: writer(&store),
-        durability: crate::columnar::Durability::start().unwrap(),
+        journal_thread: crate::columnar::JournalThread::start().unwrap(),
         queued: std::collections::VecDeque::new(),
         flight: None,
         writer_error: None,
@@ -236,6 +245,16 @@ fn replay(store: &Arc<Mutex<Store>>) -> replay::campaign::Replay {
         .collect::<Vec<_>>();
     replay::campaign::Replay::from_recovered(ID.to_vec(), &segments).unwrap()
 }
+/// After its last job the writer's idle sync refuses an allocation, on the writer thread.
+pub(crate) fn idle_sync_refused() {
+    let (mut processor, store) = processor();
+    processor.frame(&campaign_frame(ID, 7, 10)).unwrap();
+    processor.writer.drain().unwrap();
+    let (refused, polled) = std::sync::mpsc::channel();
+    store.lock().unwrap().refuse_poll = Some(refused);
+    polled.recv().unwrap();
+}
+
 fn block(store: &Arc<Mutex<Store>>, hour: i32, fail: bool) -> Release {
     let gate = Arc::new(Gate::default());
     store.lock().unwrap().gate = Some((hour, Arc::clone(&gate), fail));
@@ -963,9 +982,9 @@ fn large_receipt(processor: &mut Processor, hour: i32, bytes: usize) -> Prepared
 fn deferred_observer_payloads_share_the_byte_budget_and_pool_charge_until_applied() {
     const BASELINE: u64 = 1234;
     const PAYLOAD: usize = 8 * 1024 * 1024;
-    let counter = Arc::new(AtomicU64::new(BASELINE));
+    let counter = engine_allocation::shared(AtomicU64::new(BASELINE)).unwrap();
     let (mut processor, store) = processor();
-    processor.account_writer(Arc::clone(&counter));
+    processor.account_writer(counter.clone());
     processor.frame(&campaign_frame(ID, 7, 10)).unwrap();
     let release = block(&store, 11, false);
     let prepared = large_receipt(&mut processor, 11, PAYLOAD);
@@ -1001,9 +1020,9 @@ fn deferred_observer_payloads_share_the_byte_budget_and_pool_charge_until_applie
 #[test]
 fn a_real_write_keeps_its_deferred_storage_charged_until_the_spool_applies_the_receipt() {
     for fail in [false, true] {
-        let counter = Arc::new(AtomicU64::new(0));
+        let counter = engine_allocation::shared(AtomicU64::new(0)).unwrap();
         let (mut processor, store) = processor();
-        processor.account_writer(Arc::clone(&counter));
+        processor.account_writer(counter.clone());
         processor.frame(&campaign_frame(ID, 7, 10)).unwrap();
         let release = block(&store, 11, fail);
         let prepared = large_receipt(&mut processor, 11, 1024 * 1024);
@@ -1034,9 +1053,9 @@ fn a_real_write_keeps_its_deferred_storage_charged_until_the_spool_applies_the_r
 #[test]
 fn a_queued_close_keeps_its_pending_context_charged_until_its_receipt_is_applied() {
     for fail in [false, true] {
-        let counter = Arc::new(AtomicU64::new(0));
+        let counter = engine_allocation::shared(AtomicU64::new(0)).unwrap();
         let (mut processor, store) = processor();
-        processor.account_writer(Arc::clone(&counter));
+        processor.account_writer(counter.clone());
         processor.frame(&campaign_frame(ID, 7, 10)).unwrap();
         let id = std::str::from_utf8(ID).unwrap();
         let campaign = processor.campaigns.get_mut(id).unwrap();
@@ -1161,7 +1180,6 @@ fn command_declarations_wait_for_parent_hours_and_remain_immutable_across_retry(
     let branch = campaign.tracker.current_branch().unwrap();
     let start = campaign.tracker.branch_start(branch).unwrap().clone();
     assert!(matches!(start.parent, Parentage::Probable { hour: 11, .. }));
-    let columns = campaign.directory.join("columnar.0.h4col");
     let mut packet = replay::commands::Packet::pack(
         branch,
         1,
@@ -1200,9 +1218,18 @@ fn command_declarations_wait_for_parent_hours_and_remain_immutable_across_retry(
     release.0.release();
     processor.drain_writer().unwrap();
     assert_eq!(parent(&mut processor, branch), Parentage::Unknown);
-    store.lock().unwrap().fail_commands = true;
+    // Held at the standalone segment's creation, the command fails only after its close is queued.
+    let starting = Release(Arc::new(Gate::default()));
+    {
+        let mut store = store.lock().unwrap();
+        let next = store.files.keys().filter(|(campaign, _)| campaign == ID).count() as u32;
+        store.fail_commands = true;
+        store.create_gate = Some((next, Arc::clone(&starting.0), false));
+    }
     processor.submit_commands().unwrap();
+    starting.0.release();
     processor.drain_writer().unwrap();
+    assert!(store.lock().unwrap().create_gate.is_none());
     let failed = &processor.command_ready[&(100, 0)];
     assert!(failed.attempted);
     let record = failed.record.clone();
@@ -1225,15 +1252,4 @@ fn command_declarations_wait_for_parent_hours_and_remain_immutable_across_retry(
         unreachable!()
     };
     assert!(rows.controls.contains(&control));
-    let columns = replay::commands::Recording::open_path(&columns).unwrap();
-    assert_eq!(
-        columns
-            .branches
-            .iter()
-            .find(|start| start.id == branch)
-            .unwrap()
-            .parent,
-        Parentage::Unknown
-    );
-    assert!(columns.controls.contains(&control));
 }

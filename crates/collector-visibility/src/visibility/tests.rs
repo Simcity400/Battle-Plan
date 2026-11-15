@@ -362,17 +362,17 @@ fn quiet_region_access_hours_publish_the_held_read() {
         bytes: &[],
     };
     let mut captured = Captured::with_capacities(&fixture_capacities());
-    captured.capture_naval_access(&memory, 0, 0x1000, false, true, &changes, &held);
+    captured.capture_naval_access(&memory, 0, 0x1000, false, &changes, &held);
     assert_eq!(captured.naval_access.outcome, Outcome::Rows { len: 1 });
     assert_eq!(captured.naval_access.rows[0], row);
     // A full hour reads.
-    captured.capture_naval_access(&memory, 0, 0x1000, true, true, &changes, &held);
+    captured.capture_naval_access(&memory, 0, 0x1000, true, &changes, &held);
     assert!(matches!(
         captured.naval_access.outcome,
         Outcome::Unavailable { .. }
     ));
     // The failed read held nothing, so the next quiet hour reads too.
-    captured.capture_naval_access(&memory, 0, 0x1000, false, true, &changes, &held);
+    captured.capture_naval_access(&memory, 0, 0x1000, false, &changes, &held);
     assert!(matches!(
         captured.naval_access.outcome,
         Outcome::Unavailable { .. }

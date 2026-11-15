@@ -53,32 +53,16 @@ pub fn group_tables(name: &str) -> Vec<TableId> {
     }
 }
 
-/// Whether `frame` read the daily `table`: at its own slot hour by the
-/// cadence, since the slot's walk is always taken, or off it when its own walk
-/// or another table of its slot was timed (a forced full hour). A timing alone
-/// is no proof either way: a shared read is charged to one anchor, which can
-/// be an hourly table (the economy-rest raw-copy split charges the Daily(17)
-/// tables' read to ProvinceSupply). CountryIntel's walk can move off its slot
-/// alone, so it is read only where its own walk was timed, and it and the
-/// other tables of its slot are no evidence for each other.
-pub fn daily_read(hour: Hour, metrics: &replay_frame::frame::Metrics, table: TableId) -> bool {
-    let timed = |table: TableId| metrics.table_ns[table.index()] != 0;
-    if table == TableId::CountryIntel {
-        return timed(table);
-    }
-    let cadence = replay_data::cadence::cadence(table);
-    cadence.is_refresh(hour)
-        || TableId::ALL.into_iter().any(|other| {
-            other != TableId::CountryIntel
-                && replay_data::cadence::cadence(other) == cadence
-                && timed(other)
-        })
+/// Whether the hour of `metrics` read `table`: the collector marks every table it read in the
+/// hour it read it, whichever table its walk's time was charged to.
+pub fn daily_read(metrics: &replay_frame::frame::Metrics, table: TableId) -> bool {
+    metrics.table_ns[table.index()] != 0
 }
 
 /// Per daily table, the last hour at or before `hour` on `branch` whose frame
-/// read it ([`daily_read`]). Blocks are read newest first, keeping frame
-/// metrics and no table payloads, and the scan stops once every daily table
-/// has a read hour (a branch starts with a full read).
+/// read it ([`daily_read`]). Blocks are read newest first with every daily
+/// table selected, and the scan stops once every daily table has a read hour
+/// (a branch starts with a full read).
 pub fn last_read_hours(
     replay: &Replay,
     branch: BranchId,
@@ -106,13 +90,13 @@ pub fn last_read_hours(
         }
         replay.read_block_alone(
             index,
-            &[],
+            &daily,
             |_, frame| {
                 if frame.hour > hour {
                     return Ok(());
                 }
                 for &table in &daily {
-                    if daily_read(frame.hour, &frame.metrics, table) {
+                    if daily_read(&frame.metrics, table) {
                         let entry = last.entry(table).or_insert(frame.hour);
                         *entry = (*entry).max(frame.hour);
                     }
@@ -142,6 +126,13 @@ pub fn recorded_table_counts(frame: &DecodedFrame) -> BTreeMap<TableId, Result<u
             (table, count)
         })
         .collect()
+}
+
+/// [`Report::load_hour`] for `hour` on `branch`.
+pub fn is_load_hour(branch: &replay_frame::branches::BranchStart, hour: Hour) -> bool {
+    branch.reason == replay_frame::branches::BranchReason::LoadSignal
+        && branch.loaded_hour == Some(hour)
+        && branch.first_hour == hour
 }
 
 #[derive(Debug, Default)]
@@ -275,9 +266,7 @@ impl Report {
     }
 
     pub fn set_load_hour(&mut self, branch: &replay_frame::branches::BranchStart) {
-        self.load_hour = branch.reason == replay_frame::branches::BranchReason::LoadSignal
-            && branch.loaded_hour == Some(self.hour)
-            && branch.first_hour == self.hour;
+        self.load_hour = is_load_hour(branch, self.hour);
     }
 
     pub fn attempt_table(
@@ -432,9 +421,10 @@ impl Report {
         // Every daily table is walked off its slot only on a forced full hour,
         // except CountryIntel, whose walk moves to the next hour when its
         // shared buffer is held (`daily_intel::Loan::borrow`). The frame has
-        // no explicit full-refresh flag, so this is inferred from timings: a
-        // full hour whose every off-slot daily walk timed zero (a cancelled
-        // job at detach, say) is not recognised: its off-slice rowless
+        // no explicit full-refresh flag, so this is inferred from the tables
+        // marked read: a full hour none of whose off-slot daily tables is
+        // marked read (a cancelled job at detach, say) is not recognised: its
+        // off-slice rowless
         // owners are then left uncompared, and with read hours supplied its
         // off-slot daily groups are reported carried, rather than compared
         // wrongly.
@@ -454,13 +444,12 @@ impl Report {
             | replay_frame::frame::TableView::Truncated { rows, .. } =
                 &*frame.tables[table.index()]
             {
-                for (field, count) in rows.field_gaps() {
-                    let name = if field.contains('.') {
-                        field.to_owned()
-                    } else {
-                        format!("{table:?}.{field}")
-                    };
-                    *field_gaps.entry(name).or_default() += count;
+                let (fields, nested) = rows.field_gaps_by_level();
+                for (field, count) in fields {
+                    *field_gaps.entry(format!("{table:?}.{field}")).or_default() += count;
+                }
+                for (field, count) in nested {
+                    *field_gaps.entry(field.to_owned()).or_default() += count;
                 }
             }
             if table != TableId::CountryIntel

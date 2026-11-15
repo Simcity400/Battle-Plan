@@ -108,7 +108,12 @@ pub struct Shelf {
 }
 
 /// One pool's held walk, which every frame's hourly capture takes and returns.
-pub type Home = std::sync::Arc<std::sync::Mutex<Shelf>>;
+pub type Home = engine_allocation::SharedBox<std::sync::Mutex<Shelf>>;
+
+/// A pool's empty home; a refused allocation is the collector's allocation failure.
+pub fn new_home() -> std::io::Result<Home> {
+    engine_allocation::shared(std::sync::Mutex::default())
+}
 
 fn shelf(home: &Home) -> std::sync::MutexGuard<'_, Shelf> {
     home.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -142,12 +147,13 @@ impl Captured {
 
     pub fn with_capacities(c: &Capacities) -> Self {
         Self {
-            home: Some(Home::default()),
+            home: new_home().ok(),
             ..Self::without_home(c)
         }
     }
 
-    fn without_home(c: &Capacities) -> Self {
+    /// A frame's capture with no held walk until the pool shares its home ([`Self::share_home`]).
+    pub fn without_home(c: &Capacities) -> Self {
         Self {
             home: None,
             provinces: CaptureRows::new(c.provinces),
@@ -203,7 +209,7 @@ impl Captured {
 
     /// Take and return the held walk of `home`, shared with the pool's other frames.
     pub fn share_home(&mut self, home: &Home) {
-        self.home = Some(std::sync::Arc::clone(home));
+        self.home = Some(home.clone());
     }
 
     /// The hourly capture, the marks' one consumer.
@@ -232,11 +238,11 @@ impl Captured {
         let middle = qpc();
         let walked = {
             let _reads = crate::read_accounting::table(TABLES[1]);
-            transfers::walk_growing(
+            transfers::walk(
                 memory,
                 base,
                 state,
-                transfers::GrowingBuffers {
+                transfers::Buffers {
                     combats: &mut self.combats.rows,
                     transfer_handles: &mut self.transfer_handles.first,
                     transfers: &mut self.transfers.rows,
@@ -275,7 +281,7 @@ impl Captured {
             .clone()
             .filter(|_| province_combat_changes::CARRY);
         let (Some(home), Some(changes)) = (home, changes) else {
-            return cprovince::walk_direct_combats_growing(
+            return cprovince::walk_direct_combats(
                 memory,
                 base,
                 state,
@@ -321,7 +327,7 @@ impl Captured {
             }
             _ => false,
         };
-        let walk = cprovince::walk_direct_combats_growing(
+        let walk = cprovince::walk_direct_combats(
             memory,
             base,
             state,

@@ -2,9 +2,9 @@
 
 use installed_content_country_names::country_names::{self, CountryNames, Operands};
 use installed_content_localisation::localisation::Localisation;
-use replay::{campaign::Replay, campaign::SeekResult, recording_files, spool::Placement};
-use replay_data::{BranchId, Hour, rows::TableId, rows::tables};
-use replay_frame::frame::{DecodedFrame, Frame, FrameDecoder, TableView};
+use replay::{campaign::Replay, campaign::SeekResult, recording_files};
+use replay_data::{Hour, rows::TableId, rows::tables};
+use replay_frame::frame::{DecodedFrame, TableView};
 use std::{collections::BTreeMap, io};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -53,6 +53,11 @@ fn years((first, last): (Hour, Hour)) -> Option<(i32, i32)> {
 }
 
 /// The tables the recording player's country is named from.
+/// The tables a recording's name reads of an hour.
+pub fn name_tables() -> Vec<TableId> {
+    country_tables()
+}
+
 fn country_tables() -> Vec<TableId> {
     let mut tables = country_names::TABLES.to_vec();
     tables.push(TableId::LocalPlayer);
@@ -207,7 +212,6 @@ pub fn known_multiplayer(replay: &Replay, blocks: usize) -> io::Result<Option<bo
     replay.visit_blocks(
         &chosen,
         &[TableId::Players],
-        None,
         |_, _, frame| {
             match roster(frame) {
                 Some(true) => multiplayer = true,
@@ -226,12 +230,19 @@ pub fn known_multiplayer(replay: &Replay, blocks: usize) -> io::Result<Option<bo
 
 /// Whether an hour of the first `blocks` held more than one human; stops at the first.
 pub fn multiplayer(replay: &Replay, blocks: usize) -> io::Result<bool> {
+    multiplayer_among(replay, replay.index.iter().take(blocks).collect())
+}
+
+/// Whether an hour after the first `read` blocks held more than one human; stops at the first.
+pub fn multiplayer_after(replay: &Replay, read: usize) -> io::Result<bool> {
+    multiplayer_among(replay, replay.index.iter().skip(read).collect())
+}
+
+fn multiplayer_among(replay: &Replay, chosen: Vec<&replay::campaign::BlockIndex>) -> io::Result<bool> {
     let mut multiplayer = false;
-    let chosen: Vec<_> = replay.index.iter().take(blocks).collect();
     replay.visit_blocks(
         &chosen,
         &[TableId::Players],
-        None,
         |_, _, frame| {
             multiplayer = more_than_one_player(frame);
             Ok(!multiplayer)
@@ -313,6 +324,18 @@ impl Contents {
         }
     }
 
+    /// Hours a recorder applied and has not read back: their span, whether one held more than
+    /// one human, and the latest of them as `frame`.
+    pub fn recording(span: (Hour, Hour), multiplayer: bool, frame: &DecodedFrame) -> Self {
+        let country = Country::of(frame);
+        Self {
+            span: Some(span),
+            multiplayer: Some(multiplayer),
+            country_known: Country::known(frame, country.as_ref()),
+            country,
+        }
+    }
+
     pub fn for_prediction(replay: &Replay) -> io::Result<Self> {
         let multiplayer = known_multiplayer(replay, replay.index.len())?;
         let mut contents = Self::of(replay, multiplayer == Some(true))?;
@@ -347,147 +370,4 @@ pub fn recording_name(
     multiplayer: bool,
 ) -> io::Result<RecordingName> {
     Ok(Contents::of(replay, multiplayer)?.name(localisation))
-}
-
-/// A growing spool's name: reading notes span, roster and latest frames; the country decodes when asked.
-#[derive(Default)]
-pub struct SpoolName {
-    span: Option<(Hour, Hour)>,
-    players: Option<FrameDecoder>,
-    multiplayer: bool,
-    /// A roster could not be read, so a single-player spool cannot be told from a multiplayer one.
-    roster_lost: bool,
-    /// The latest hour's branch and its frames since their keyframe, by segment.
-    branch: Option<BranchId>,
-    frames: Vec<(u32, Placement)>,
-    /// Decoded through `frames[..done]`, and the country at the last of them.
-    decoded: Option<(FrameDecoder, usize)>,
-    country: Option<Country>,
-    country_known: bool,
-}
-
-impl SpoolName {
-    pub fn observe(&mut self, segment: u32, placement: Placement, frame: &Frame) {
-        let latest = self.span.is_none_or(|(_, last)| frame.hour >= last);
-        self.span = Some(self.span.map_or((frame.hour, frame.hour), |(first, last)| {
-            (first.min(frame.hour), last.max(frame.hour))
-        }));
-        let players = self
-            .players
-            .get_or_insert_with(|| FrameDecoder::for_tables(&[TableId::Players]));
-        match players.advance(frame) {
-            Ok(decoded) => match roster(decoded) {
-                Some(multiplayer) => self.multiplayer |= multiplayer,
-                None => self.roster_lost = true,
-            },
-            Err(_) => {
-                self.players = None;
-                self.roster_lost = true;
-            }
-        }
-        if !latest {
-            return;
-        }
-        if frame.keyframe || self.branch != Some(frame.branch) {
-            self.frames.clear();
-            self.decoded = None;
-            self.country = None;
-            self.country_known = false;
-            // Only a keyframe starts frames that can be decoded.
-            self.branch = frame.keyframe.then_some(frame.branch);
-        }
-        if self.branch.is_some() {
-            self.frames.push((segment, placement));
-        }
-    }
-
-    pub fn last_hour(&self) -> Option<Hour> {
-        self.span.map(|(_, last)| last)
-    }
-
-    pub fn summary(&self) -> Option<Contents> {
-        if self.roster_lost && !self.multiplayer {
-            return None;
-        }
-        Some(Contents {
-            span: Some(self.span?),
-            multiplayer: Some(self.multiplayer),
-            ..Contents::default()
-        })
-    }
-
-    /// Decodes the latest hour's frames not decoded yet; `None` before the first frame, and while
-    /// its roster or the latest hour's country cannot be read.
-    pub fn contents(
-        &mut self,
-        mut read: impl FnMut(u32, Placement) -> io::Result<Frame>,
-    ) -> Option<Contents> {
-        let span = self.span?;
-        if self.frames.is_empty() || (self.roster_lost && !self.multiplayer) {
-            return None;
-        }
-        let (decoder, done) = self
-            .decoded
-            .get_or_insert_with(|| (FrameDecoder::for_tables(&country_tables()), 0));
-        while *done < self.frames.len() {
-            let (segment, placement) = self.frames[*done];
-            let frame = match read(segment, placement) {
-                Ok(frame) => frame,
-                Err(error) if invalid_frame(&error) => {
-                    self.forget_frames();
-                    return None;
-                }
-                // Unread, so the decoder still holds the frame before: read it again next time.
-                Err(_) => return None,
-            };
-            *done += 1;
-            match decoder.advance(&frame).map(|decoded| {
-                (*done == self.frames.len()).then(|| {
-                    let country = Country::of(decoded);
-                    let known = Country::known(decoded, country.as_ref());
-                    (country, known)
-                })
-            }) {
-                Ok(Some((country, known))) => {
-                    self.country = country;
-                    self.country_known = known;
-                }
-                Ok(None) => {}
-                Err(error) if invalid_frame(&error) => {
-                    self.forget_frames();
-                    return None;
-                }
-                // A refused advance may have spent its baseline: decode again from the keyframe.
-                Err(_) => {
-                    self.decoded = None;
-                    return None;
-                }
-            }
-        }
-        if !self.country_known {
-            return None;
-        }
-        Some(Contents {
-            span: Some(span),
-            multiplayer: Some(self.multiplayer),
-            country_known: self.country_known,
-            country: self.country.clone(),
-        })
-    }
-
-    /// Drops the latest hour's frames once one of them cannot be decoded.
-    fn forget_frames(&mut self) {
-        self.frames.clear();
-        self.decoded = None;
-        self.country = None;
-        self.country_known = false;
-    }
-}
-
-/// Recorded bytes that cannot be a frame, unlike a read that failed for now.
-fn invalid_frame(error: &io::Error) -> bool {
-    matches!(
-        error.kind(),
-        io::ErrorKind::InvalidData | io::ErrorKind::UnexpectedEof
-    )
 }

@@ -1,20 +1,33 @@
 import type { TimelineLane, TimelineSpan } from '../../charts/timeline/layout';
 import type { CountryFlagLook } from '../../components/countryFlagPresentation';
-import type { DiplomacyKind, DiplomacyPact } from '../../generated/dashboard';
+import type { DiplomacyKind, DiplomacyPact, DiplomacyPactsReply } from '../../generated/dashboard';
 
 type Pact = DiplomacyPact;
 
-export type PactState = { state: 'present' } | { state: 'gone'; by: number } | { state: 'unknown'; since: number }
-  /** Listed at the last prepared read (`since`); later hours are still being prepared. */
-  | { state: 'preparing'; since: number };
+export type PactState = { state: 'present' } | { state: 'gone'; by: number } | { state: 'unknown'; since: number };
+
+const object = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
+const hour = (value: unknown) => Number.isSafeInteger(value);
+const hourOrNull = (value: unknown) => value === null || Number.isSafeInteger(value);
+const textOrNull = (value: unknown) => value === null || typeof value === 'string';
+
+/** Checks a `diplomatic-pacts` reply's shape, so a reply from another version is refused rather than read wrongly. */
+export function validatePacts(data: unknown): DiplomacyPactsReply {
+  if (!object(data) || !Array.isArray(data.warnings) || !Array.isArray(data.unobserved) || !Array.isArray(data.kinds) || !Array.isArray(data.pacts)
+    || !data.kinds.every(kind => object(kind) && typeof kind.kind === 'string' && hour(kind.count) && textOrNull(kind.name) && textOrNull(kind.reason))
+    || !data.pacts.every(pact => object(pact) && typeof pact.kind === 'string' && textOrNull(pact.first) && textOrNull(pact.second)
+      && hourOrNull(pact.startHour) && hourOrNull(pact.endHour) && hour(pact.firstSeen) && hour(pact.lastSeen) && hourOrNull(pact.goneBy)
+      && typeof pact.presentAtEnd === 'boolean' && typeof pact.endedBy === 'boolean'))
+    throw new Error('The diplomatic agreements reply is malformed.');
+  return data as unknown as DiplomacyPactsReply;
+}
 
 /** Whether the recording lists a pact at `at`: listed through its last read (or still at the
  * last read); gone once a later read of its owner no longer lists it, dated by that read; and
  * unknown in between or where its owner was not read again, never assumed gone. Nothing is
  * said about the game's own state words. */
-export function pactState(pact: Pact, at: number, through = Infinity): PactState {
-  if (at <= pact.lastSeen) return { state: 'present' };
-  if (pact.presentAtEnd) return at <= through ? { state: 'present' } : { state: 'preparing', since: through };
+export function pactState(pact: Pact, at: number): PactState {
+  if (at <= pact.lastSeen || pact.presentAtEnd) return { state: 'present' };
   // An episode a recording gap ended proves no absence: the next read may list it again.
   if (pact.endedBy) return { state: 'unknown', since: pact.lastSeen };
   return pact.goneBy !== null && pact.goneBy <= at ? { state: 'gone', by: pact.goneBy } : { state: 'unknown', since: pact.lastSeen };
@@ -61,8 +74,8 @@ export interface Agreement {
 }
 
 /** The chosen country's agreements at `at`: those listed by then, offers turned round,
- * kinds shown elsewhere left out, and one per relation. `through` is the last prepared hour. */
-export function agreementsOf(pacts: readonly Pact[], tag: string, at: number, kinds: ReadonlySet<string> | null, through = Infinity): Agreement[] {
+ * kinds shown elsewhere left out, and one per relation. */
+export function agreementsOf(pacts: readonly Pact[], tag: string, at: number, kinds: ReadonlySet<string> | null): Agreement[] {
   const joined = new Map<string, { pacts: Pact[]; kind: string; outgoing: boolean; partner: string | null }>();
   for (const pact of pacts) {
     if (pact.firstSeen > at || ELSEWHERE.has(pact.kind)) continue;
@@ -81,7 +94,7 @@ export function agreementsOf(pacts: readonly Pact[], tag: string, at: number, ki
     const since = Math.min(...entry.pacts.map(pactSince));
     const expiry = latest.endHour != null && latest.endHour > since ? latest.endHour : null;
     return { key, kind: entry.kind, outgoing: entry.outgoing, partner: entry.partner, since, sinceBound: latest.startHour == null,
-      expires: expiry, lastSeen: latest.lastSeen, state: pactState(latest, at, through), pact: latest };
+      expires: expiry, lastSeen: latest.lastSeen, state: pactState(latest, at), pact: latest };
   });
 }
 
@@ -96,13 +109,13 @@ export interface AgreementText {
 }
 
 const faded = (color: string) => /^#[0-9a-f]{6}$/i.test(color) ? `${color}66` : color;
-/** Listed at the hour shown, or at the last prepared read with nothing known since. */
-const live = (item: Agreement) => item.state.state === 'present' || item.state.state === 'preparing';
+/** Listed at the hour shown. */
+const live = (item: Agreement) => item.state.state === 'present';
 const order = (a: Agreement, b: Agreement) => Number(!live(a)) - Number(!live(b)) || a.since - b.since;
 
 /** A section per kind (headed by how many are in force), split by direction where the
  * kind has one, and a lane per partner with its bar from start to end. A pact still listed
- * at the last known read runs open to `knownLastHour`: the branch end once prepared. */
+ * at the timeline's end runs open to `knownLastHour`. */
 export function agreementLanes(agreements: readonly Agreement[], ended: boolean, knownLastHour: number, text: AgreementText) {
   const lanes: TimelineLane[] = [];
   const info = new Map<string, AgreementLaneInfo>();
@@ -154,3 +167,15 @@ export function agreementKinds(kinds: readonly DiplomacyKind[]): { kind: string;
 
 /** Whether a reply warning is about a kind the widget leaves out. */
 export const aboutElsewhere = (warning: string) => [...ELSEWHERE].some(kind => warning.includes(`Relation ${kind}:`));
+
+/** Every hour from which what the agreements timeline shows may differ: an agreement listed, starting, expiring or
+ * gone, the hour after it was last listed, a stretch not recorded starting or ending. Ascending, distinct. */
+export function changeHours(reply: Pick<DiplomacyPactsReply, 'pacts' | 'unobserved'>): number[] {
+  const hours = new Set<number>();
+  for (const pact of reply.pacts) {
+    hours.add(pact.firstSeen); hours.add(pact.lastSeen + 1);
+    for (const hour of [pact.startHour, pact.endHour, pact.goneBy]) if (hour != null) hours.add(hour);
+  }
+  for (const span of reply.unobserved) { hours.add(span.firstHour); hours.add(span.lastHour + 1); }
+  return [...hours].sort((a, b) => a - b);
+}

@@ -14,12 +14,12 @@ fn assert_missing_reference(table: TableId, read: impl FnOnce() -> Result<String
     let (result, failures) = crate::triggers::refusal::capture(read);
     assert_eq!(
         result.unwrap_err(),
-        format!("{table:?}: referenced object is not recorded")
+        format!("{}: the object it refers to is not recorded", table.words())
     );
     assert_eq!(failures.len(), 1, "{failures:?}");
     assert_eq!(
         failures.first().unwrap().to_string(),
-        format!("{table:?}: input unavailable or refused")
+        format!("{}: not available or refused", table.words())
     );
 }
 
@@ -345,7 +345,7 @@ fn unit_carrier_uses_retained_army_names_without_generator_content() {
         (Recorded::Value(Some(Vec::new())), Ok("")),
         (
             Recorded::Value(None),
-            Err("DivisionStatus.name unavailable"),
+            Err("name of division status unavailable"),
         ),
     ] {
         *f.frame.tables[TableId::DivisionStatus.index()] =

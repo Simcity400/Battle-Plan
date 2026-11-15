@@ -17,7 +17,7 @@ collector_primitives::capacity_max!(Capacities { rows });
 impl Capacities {
     pub fn presize(&mut self, memory: &impl Memory, base: usize) -> Result<(), &'static str> {
         let count = collector_extended_support::demand::rows(
-            engine_native::corders_group::walk_roots(memory, base, &mut []),
+            engine_native::corders_group::count_roots(memory, base),
         )?;
         crate::table_capture::grow_capacity(&mut self.rows, count);
         Ok(())
@@ -73,7 +73,7 @@ impl Captured {
         let _reads = crate::read_accounting::table(TABLES[0]);
         let begin = qpc();
         self.rows.outcome = match sources {
-            Some(sources) => cunit_leader::walk_portrait_paths_memo_growing(
+            Some(sources) => cunit_leader::walk_portrait_paths_memo(
                 memory,
                 base,
                 state,

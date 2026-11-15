@@ -183,25 +183,33 @@ try {
     if ($LASTEXITCODE -ne 0) { $substDrive = $null; throw 'Subst test prerequisite: could not create the synthetic drive.' }
     Assert-Launch 'subst profile names the drive' "UserDirectory is on subst drive ${substDrive}." ($substDrive + '\physical profile')
     Assert-ScratchRefusal ($substDrive + '\')
-    # The staged viewer finds the compiler beside itself, or the override names it.
+    # The staged viewer takes the compiler's two DLLs along from beside the build, or is refused.
     $built = Join-Path $root 'built'; $staged = Join-Path $root 'staged'
-    $null = New-Item -ItemType Directory -Path (Join-Path $built 'shader-tools\dxc') -Force
+    $null = New-Item -ItemType Directory -Path $built -Force
     $null = New-Item -ItemType Directory -Path $staged
-    foreach ($name in @('dxc.exe', 'dxcompiler.dll', 'dxil.dll')) { [IO.File]::WriteAllText((Join-Path $built "shader-tools\dxc\$name"), $name) }
+    [IO.File]::WriteAllText((Join-Path $built 'dxcompiler.dll'), 'dxcompiler.dll')
     $refused = $null
-    try { $null = Copy-ShaderCompiler $staged $root '' } catch { $refused = $_.Exception.Message }
-    if ($refused -notlike '*needs the pinned shader compiler*') { throw "A build without the compiler was not refused: $refused" }
-    $refused = $null
-    try { $null = Copy-ShaderCompiler $built $staged (Join-Path $root 'absent.exe') } catch { $refused = $_.Exception.Message }
-    if ($refused -ne 'BATTLE_PLAN_SHADER_COMPILER names no file.' -or (Test-Path -LiteralPath (Join-Path $staged 'shader-tools'))) { throw "A missing override was not refused: $refused" }
-    $override = Join-Path $built 'shader-tools\dxc\dxc.exe'
-    if ((Copy-ShaderCompiler $built $staged $override) -cne $override -or (Test-Path -LiteralPath (Join-Path $staged 'shader-tools'))) { throw 'An override was not used as it is.' }
-    $compiler = Copy-ShaderCompiler $built $staged ''
-    if ($compiler -cne (Join-Path $staged 'shader-tools\dxc\dxc.exe')) { throw "Staged compiler path: $compiler" }
-    foreach ($name in @('dxc.exe', 'dxcompiler.dll', 'dxil.dll')) {
-        if ([IO.File]::ReadAllText((Join-Path $staged "shader-tools\dxc\$name")) -cne $name) { throw "The staged compiler lacks $name." }
+    try { $null = Copy-ShaderCompiler $built $staged } catch { $refused = $_.Exception.Message }
+    if ($refused -notlike '*needs the pinned shader compiler*' -or (Test-Path -LiteralPath (Join-Path $staged 'dxcompiler.dll'))) { throw "A build without dxil.dll was not refused: $refused" }
+    [IO.File]::WriteAllText((Join-Path $built 'dxil.dll'), 'dxil.dll')
+    $compiler = Copy-ShaderCompiler $built $staged
+    if ($compiler -cne (Join-Path $staged 'dxcompiler.dll')) { throw "Staged compiler path: $compiler" }
+    foreach ($name in @('dxcompiler.dll', 'dxil.dll')) {
+        if ([IO.File]::ReadAllText((Join-Path $staged $name)) -cne $name) { throw "The staged compiler lacks $name." }
     }
+    if (Test-Path -LiteralPath (Join-Path $staged 'shader-tools')) { throw 'The staged viewer took a shader-tools folder.' }
     $script:Passed++; Write-Host 'PASS the staged viewer takes the shader compiler along'
+    # The clock reader's lines: a field the recorder left out stays absent, never zero.
+    . (Join-Path (Split-Path -Parent $Driver) 'game-clock.ps1')
+    $withheld = '{"paused":"command_inputs::IDLER_RVA withheld: unresolved"}' | ConvertFrom-Json
+    $bare = ConvertTo-GameClock ('{"game_state":4096,"hour":1936,"play_time":77,"seed":-5,"speed":3,"tick_busy":0,"play_session_started_at":1778888888}' | ConvertFrom-Json) $withheld
+    if ($null -ne $bare.paused -or $bare.presentation_valid -or $null -ne $bare.eye -or $null -ne $bare.viewport -or $bare.hour -ne 1936 -or $bare.seed -ne -5) { throw 'A clock without its presentation was not left absent.' }
+    $named = @(Get-ClockWithheld ([pscustomobject]@{ Withheld = $withheld }))
+    if ($named.Count -ne 1 -or $named[0] -cne 'paused: command_inputs::IDLER_RVA withheld: unresolved') { throw 'A withheld clock field was not named.' }
+    $full = ConvertTo-GameClock ('{"game_state":4096,"hour":1936,"play_time":77,"seed":-5,"speed":3,"tick_busy":0,"play_session_started_at":1778888888,"paused":false,"eye":[1500.5,320.0,900.25],"look_at":[1500.5,0.0,1010.75],"viewport":[0,0,2560,1440]}' | ConvertFrom-Json) $null
+    if ($full.paused -ne 0 -or $null -eq $full.paused -or -not $full.presentation_valid -or $full.eye[2] -ne 900.25 -or $full.viewport[3] -ne 1440) { throw 'A full clock line was not read.' }
+    if ($full.Same($bare) -or -not $full.Same($full) -or $null -ne (ConvertTo-GameClock $null $null)) { throw 'Clock agreement or an unreadable clock was misread.' }
+    $script:Passed++; Write-Host 'PASS clock lines keep withheld fields absent and named'
     Write-Host "$script:Passed offline checks passed."
 } finally {
     if ($substDrive) { & (Join-Path $env:SystemRoot 'System32\subst.exe') $substDrive /D }

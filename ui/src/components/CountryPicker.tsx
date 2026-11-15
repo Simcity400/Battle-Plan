@@ -1,6 +1,5 @@
 import { ABSENT_NAME, nameReadFailure, nameReadMetadata, type NameRead } from '../dashboard/nameReads.ts';
 import { type Failure, asFailure, failureText, failureDetails } from '../dashboard/queryError.ts';
-import { useParityRows } from '../dashboard/parityRows';
 import { Popover, usePopover } from './Popover';
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CountryMetadata } from '../shell/api';
@@ -85,8 +84,6 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
       return { country: { ...country, name }, search: `${name} ${country.tag}`.toLowerCase() };
     });
   }, [countries, roster, sourceKey, allowedTags, flagAt?.branchId, flagAt?.hour, heldNames, choiceReads, choiceTrack]); // eslint-disable-line react-hooks/exhaustive-deps
-  useParityRows(listbox, () => ({ kind: 'table', label: 'Land-owning countries', complete: !loading && roster.key === sourceKey,
-    total: roster.countries.length, rows: roster.key === sourceKey ? roster.countries : [] }));
   const byTag = useMemo(() => new Map(choices.map(({ country }) => [country.tag, country])), [choices]);
   const selected = useMemo(() => selectedTag == null ? countries.find((country) => country.id === playerCountryId)
     : byTag.get(selectedTag) ?? countries.find((country) => country.tag === selectedTag), [countries, playerCountryId, selectedTag, byTag]);

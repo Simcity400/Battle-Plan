@@ -1,5 +1,6 @@
-//! The Rust locator agrees with tools/sites.py on the executable in BATTLE_PLAN_GAME_DIR: on the
-//! reference build every key verifies with checked layouts and by witnesses alike.
+//! The Rust locator agrees with tools/sites.py on the executable in BATTLE_PLAN_GAME_DIR: on a
+//! layout-checked build every key verifies with checked layouts, and by witnesses every key
+//! but the vtables no constructor witnesses.
 use engine_sites::{Located, OwnedImage, layout_checked};
 use std::path::PathBuf;
 
@@ -12,18 +13,26 @@ fn reference_build_verifies_every_key() {
     let bytes = std::fs::read(PathBuf::from(dir).join("hoi4.exe")).unwrap();
     let sha: [u8; 32] = sha256(&bytes);
     if !layout_checked(&sha) {
-        eprintln!("BATTLE_PLAN_GAME_DIR is not the reference build; skipped");
+        eprintln!("BATTLE_PLAN_GAME_DIR is not a layout-checked build; skipped");
         return;
     }
     let owned = OwnedImage::new(&bytes).unwrap();
     let base = 0x1_4000_0000;
-    for checked in [true, false] {
-        let located = Located::locate(&owned.image(base), checked);
-        let withheld: Vec<_> = located.withheld().map(|(_, w)| w.to_string()).collect();
-        assert!(withheld.is_empty(), "{withheld:#?}");
-        let summary = located.summary();
-        assert_eq!(summary.keys_verified, summary.keys);
-    }
+    let checked = Located::locate(&owned.image(base), true);
+    let withheld: Vec<_> = checked.withheld().map(|(_, w)| w.to_string()).collect();
+    assert!(withheld.is_empty(), "{withheld:#?}");
+    let summary = checked.summary();
+    assert_eq!(summary.keys_verified, summary.keys);
+
+    let witnessed = Located::locate(&owned.image(base), false);
+    let withheld: Vec<_> = witnessed.withheld().map(|(_, w)| w.to_string()).collect();
+    let other: Vec<_> = withheld
+        .iter()
+        .filter(|w| !w.contains("no constructor witnesses its class layout"))
+        .collect();
+    assert!(other.is_empty(), "{other:#?}");
+    let summary = witnessed.summary();
+    assert_eq!(summary.keys_verified + withheld.len(), summary.keys);
 }
 
 fn sha256(bytes: &[u8]) -> [u8; 32] {

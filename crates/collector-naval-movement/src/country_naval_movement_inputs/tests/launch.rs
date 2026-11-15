@@ -180,7 +180,7 @@ fn short_physical_arena_still_transfers_the_fixed_slot_zero_attempt_once() {
 }
 
 #[test]
-fn fixed_launch_capacity_grows_both_arenas_without_body_reads_or_hot_growth() {
+fn short_launch_storage_grows_both_arenas_and_later_hours_reuse_it() {
     fn capture_fixed(memory: &TestMemory, launch: &mut Launch, hour: i32) {
         let reader = native::Reader::new(memory, 0, STATE);
         let mut observed = reader.observe_navy(0).unwrap();
@@ -203,10 +203,8 @@ fn fixed_launch_capacity_grows_both_arenas_without_body_reads_or_hot_growth() {
     let (_, mut launch_capacity) = capacity();
     let mut launch = Launch::new(launch_capacity);
     capture_fixed(&memory, &mut launch, 71);
-    assert!(words(&launch).is_none());
     assert_eq!(launch.required().launch_bases, 3);
-    assert!(!memory.touched(LAUNCH_POINTERS, LAUNCH_POINTERS + 3 * 8));
-    assert!(!memory.touched(0x17080, 0x17080 + 8));
+    assert_eq!(words(&launch), Some(vec![(-1, 999), (0, 999), (-1, 999)]));
     launch.grow(&mut launch_capacity);
     assert!(launch.launch_bases.first.len() >= 3 && launch.launch_scratch.first.len() >= 3);
     let allocated = launch.allocated_bytes();

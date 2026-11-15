@@ -32,37 +32,19 @@ pub fn walk_unit_order(
     memory: &impl Memory,
     base: usize,
     state: usize,
-    output: &mut [UnitOrderRow],
-    handles: &mut [u64],
+    output: &mut Vec<UnitOrderRow>,
+    handles: &mut Vec<u64>,
 ) -> UnitOrderWalk {
     walk_unit_order_with_land(memory, base, state, output, handles, |_, _| Ok(()))
 }
 
-/// Same observations, with an acquisition-only visitor for authenticated
-/// class0 occurrences. It adds no native read or replay field.
-pub fn walk_unit_order_with_land(
-    memory: &impl Memory,
-    base: usize,
-    state: usize,
-    output: &mut [UnitOrderRow],
-    handles: &mut [u64],
-    land: impl FnMut(u32, u64) -> Result<(), &'static str>,
-) -> UnitOrderWalk {
-    unit_order(
-        memory,
-        base,
-        state,
-        crate::walk::Buffer::Fixed(output),
-        crate::walk::Buffer::Fixed(handles),
-        |_| None,
-        land,
-        None,
-    )
+pub fn count_unit_order_with_land(memory: &impl Memory, base: usize, state: usize, land: impl FnMut(u32, u64) -> Result<(), &'static str>) -> UnitOrderWalk {
+    unit_order(memory, base, state, crate::walk::Buffer::Count, crate::walk::Buffer::Count, |_| None, land, None)
 }
 
 /// Worker storage grows from acquired province and occupant headers; mixed
 /// and naval vectors preserve original order.
-pub fn walk_unit_order_growing_with_land(
+pub fn walk_unit_order_with_land(
     memory: &impl Memory,
     base: usize,
     state: usize,
@@ -70,7 +52,7 @@ pub fn walk_unit_order_growing_with_land(
     handles: &mut Vec<u64>,
     land: impl FnMut(u32, u64) -> Result<(), &'static str>,
 ) -> UnitOrderWalk {
-    walk_unit_order_growing_with_known(memory, base, state, output, handles, |_| None, land)
+    walk_unit_order_with_known(memory, base, state, output, handles, |_| None, land)
 }
 
 /// A division the caller's census authenticated at this same boundary: a CArmy (both vtables) of
@@ -84,12 +66,12 @@ pub struct KnownUnit {
     pub location: usize,
 }
 
-/// [`walk_unit_order_growing_with_land`], taking each occupant `known`
+/// [`walk_unit_order_with_land`], taking each occupant `known`
 /// returns from the caller's census. The other occupants (task forces,
 /// railway guns, a division the census did not hold) are authenticated as
 /// before; every row, handle, demand and refusal is the plain walk's over the
 /// same memory.
-pub fn walk_unit_order_growing_with_known(
+pub fn walk_unit_order_with_known(
     memory: &impl Memory,
     base: usize,
     state: usize,
@@ -427,37 +409,9 @@ pub struct DirectCombatsWalk {
     pub required: usize,
 }
 
-/// Caller-owned arenas of [`walk_direct_combats`]: one handle and one kind per entry.
-pub struct DirectCombatArenas<'a> {
-    pub handles: &'a mut [u64],
-    pub kinds: &'a mut [u8],
-}
-
-/// Province combat icons visit the province vector before the global registry,
-/// admitting naval entries. Rotation counts engaged entries across all combat
-/// classes; a nonzero count raises a sea province's retained result marker.
-/// Province slots and identities are read in batches. A nonempty vector costs
-/// one read per entry for vtable and handle. Unsupported combat classes refuse.
-pub fn walk_direct_combats(
-    memory: &impl Memory,
-    base: usize,
-    state: usize,
-    output: &mut [DirectCombatsRow],
-    arenas: DirectCombatArenas<'_>,
-) -> DirectCombatsWalk {
-    walk_direct_combats_buffer(
-        memory,
-        base,
-        state,
-        crate::walk::Buffer::Fixed(output),
-        crate::walk::Buffer::Fixed(arenas.handles),
-        crate::walk::Buffer::Fixed(arenas.kinds),
-    )
-}
-
 /// `listed`, ascending, visits only those provinces; every other province is
 /// the caller's to vouch for.
-pub fn walk_direct_combats_growing(
+pub fn walk_direct_combats(
     memory: &impl Memory,
     base: usize,
     state: usize,
@@ -840,24 +794,7 @@ impl Capture {
     }
 
     /// One province walk filling both outputs.
-    pub fn walk(&mut self, memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
-        let (outcome, conflicts) = walk_with_conflicts_buffer(
-            memory,
-            base,
-            game_state,
-            crate::walk::Buffer::Fixed(&mut self.rows),
-            ConflictBuffers {
-                rows: crate::walk::Buffer::Fixed(&mut self.conflicts),
-                groups: crate::walk::Buffer::Fixed(&mut self.groups),
-            },
-            crate::walk::Buffer::Fixed(&mut self.areas),
-            None,
-        );
-        self.conflict_walk = conflicts;
-        outcome
-    }
-
-    pub fn walk_growing(
+    pub fn walk(
         &mut self,
         memory: &impl Memory,
         base: usize,
@@ -879,9 +816,9 @@ impl Capture {
         outcome
     }
 
-    /// [`Self::walk_growing`] carrying the rows of [`Self::province_store`]
+    /// [`Self::walk`] carrying the rows of [`Self::province_store`]
     /// ([`carry`]) the hour's territory `take` certifies. Without a store it
-    /// is [`Self::walk_growing`].
+    /// is [`Self::walk`].
     pub fn walk_carrying(
         &mut self,
         memory: &impl Memory,
@@ -939,12 +876,6 @@ impl Capture {
     }
 }
 
-/// Caller-owned bounded storage for [`ConflictRow`]s and their group handles.
-pub struct ConflictOutput<'a> {
-    pub rows: &'a mut [ConflictRow],
-    pub groups: &'a mut [u64],
-}
-
 struct ConflictBuffers<'a> {
     rows: crate::walk::Buffer<'a, ConflictRow>,
     groups: crate::walk::Buffer<'a, u64>,
@@ -966,27 +897,15 @@ pub struct Names {
     pub required_bytes: usize,
 }
 
+pub fn count_names(memory: &impl Memory, base: usize, game_state: usize) -> Names {
+    walk_names_buffer(memory, base, game_state, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
+}
+
 /// A bounded, allocation-free census of CProvince name overrides. Reads only
 /// the live object's native string, never a localization fallback or GUI cache.
 /// The pointer census and its root are authenticated once per acquisition at
 /// the quiescent boundary. A later callback acquires current names again.
 pub fn walk_names(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut [NameRow],
-    bytes: &mut [u8],
-) -> Names {
-    walk_names_buffer(
-        memory,
-        base,
-        game_state,
-        crate::walk::Buffer::Fixed(output),
-        crate::walk::Buffer::Fixed(bytes),
-    )
-}
-
-pub fn walk_names_growing(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -1750,44 +1669,13 @@ pub(crate) fn walk(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    output: &mut [Row],
+    output: &mut Vec<Row>,
 ) -> Outcome {
-    walk_with_conflicts(
-        memory,
-        base,
-        game_state,
-        output,
-        ConflictOutput {
-            rows: &mut [],
-            groups: &mut [],
-        },
-    )
+    walk_with_conflicts_buffer(memory, base, game_state, crate::walk::Buffer::Growing(output), ConflictBuffers {
+            rows: crate::walk::Buffer::Count,
+            groups: crate::walk::Buffer::Count,
+        }, crate::walk::Buffer::Count, None)
     .0
-}
-
-/// Copies exact province fields in bounded batches and reuses authenticated
-/// state identity/ownership within this walk at the quiescent boundary. Each
-/// acquisition starts with an empty state cache. Also records every province
-/// whose border-conflict set is nonempty with the orders groups its combats admit.
-pub fn walk_with_conflicts(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut [Row],
-    conflicts: ConflictOutput<'_>,
-) -> (Outcome, ConflictWalk) {
-    walk_with_conflicts_buffer(
-        memory,
-        base,
-        game_state,
-        crate::walk::Buffer::Fixed(output),
-        ConflictBuffers {
-            rows: crate::walk::Buffer::Fixed(conflicts.rows),
-            groups: crate::walk::Buffer::Fixed(conflicts.groups),
-        },
-        crate::walk::Buffer::Fixed(&mut []),
-        None,
-    )
 }
 
 /// `areas` receives each row's [`crate::controller_areas::Pointers`] when it
@@ -2307,9 +2195,8 @@ fn geometry_memo<T: Copy>(
 /// prefixes. Movement and ETA consume returned operands; this is not a Memory
 /// implementation and no native walker is replayed over recorded reads.
 ///
-/// Fixed callback packets refuse and count shortage. Worker-owned packets grow
-/// from their original province and adjacency controls before publication.
-/// `begin` retains allocations and clears previous inputs; failed observations
+/// The packet grows from its original province and adjacency controls before
+/// publication. `begin` retains allocations and clears previous inputs; failed observations
 /// never fall back to another native read.
 pub struct GeometryPacket {
     base: usize,
@@ -2326,7 +2213,6 @@ pub struct GeometryPacket {
     provinces: Vec<GeometryProvince>,
     neighbours: Vec<crate::province_neighbour::GeometryFields>,
     counters: GeometryCounters,
-    growing: bool,
     held: HeldIdentities,
     holding: bool,
     /// This pass's ids answered from the held ones and authenticated afresh.
@@ -2368,16 +2254,10 @@ impl GeometryPacket {
             provinces: Vec::new(),
             neighbours: Vec::new(),
             counters: GeometryCounters::default(),
-            growing: false,
             held: HeldIdentities::default(),
             holding: false,
             held_counts: [0; 2],
         }
-    }
-
-    /// Enable allocating acquisition on the worker that owns this packet.
-    pub fn enable_growth(&mut self) {
-        self.growing = true;
     }
 
     /// For this pass, answer ids held for `world` without a read and hold the ones it reads.
@@ -2480,9 +2360,7 @@ impl GeometryPacket {
             .and_then(|address| crate::read(memory, address))
             .and_then(|header| Array::from_header(header, 8))
             .ok_or("unit geometry province root invalid");
-        if self.growing
-            && let Ok(root) = self.root
-        {
+        if let Ok(root) = self.root {
             self.grow(GeometryCapacities {
                 provinces: root.count as usize,
                 neighbour_entries: self.capacities.neighbour_entries,
@@ -2511,12 +2389,9 @@ impl GeometryPacket {
             .required
             .provinces
             .max(self.slots.len().saturating_add(1));
-        if self.growing && self.required.provinces > self.capacities.provinces {
+        if self.required.provinces > self.capacities.provinces {
             self.grow(self.required)
                 .map_err(|_| "unit geometry allocation failed")?;
-        }
-        if self.slots.len() == self.capacities.provinces {
-            return Err("unit geometry province capacity exhausted");
         }
         let value = batch
             .and_then(|batch| batch.slot(id))
@@ -2542,12 +2417,9 @@ impl GeometryPacket {
             .required
             .provinces
             .max(self.provinces.len().saturating_add(1));
-        if self.growing && self.required.provinces > self.capacities.provinces {
+        if self.required.provinces > self.capacities.provinces {
             self.grow(self.required)
                 .map_err(|_| "unit geometry allocation failed")?;
-        }
-        if self.provinces.len() == self.capacities.provinces {
-            return Err("unit geometry province capacity exhausted");
         }
         let index = self.provinces.len();
         self.provinces.push(GeometryProvince {
@@ -2844,23 +2716,21 @@ impl GeometryPacket {
         if negative_absent && (target as i32) < 0 {
             return Ok(None);
         }
-        if self.growing {
-            // Speed selection searches the original adjacency. Retain its acquired
-            // prefix and reserve remaining header demand without retry.
-            let additional = (neighbours.count as usize)
-                .saturating_sub(self.provinces[province].fields.prefix_len);
-            let required = self
-                .neighbours
-                .len()
-                .checked_add(additional)
-                .ok_or("unit geometry adjacency demand overflow")?;
-            self.required.neighbour_entries = self.required.neighbour_entries.max(required);
-            self.grow(GeometryCapacities {
-                provinces: self.capacities.provinces,
-                neighbour_entries: required,
-            })
-            .map_err(|_| "unit geometry allocation failed")?;
-        }
+        // Speed selection searches the original adjacency. Retain its acquired
+        // prefix and reserve remaining header demand without retry.
+        let additional =
+            (neighbours.count as usize).saturating_sub(self.provinces[province].fields.prefix_len);
+        let required = self
+            .neighbours
+            .len()
+            .checked_add(additional)
+            .ok_or("unit geometry adjacency demand overflow")?;
+        self.required.neighbour_entries = self.required.neighbour_entries.max(required);
+        self.grow(GeometryCapacities {
+            provinces: self.capacities.provinces,
+            neighbour_entries: required,
+        })
+        .map_err(|_| "unit geometry allocation failed")?;
         let mut link = self.provinces[province].fields.prefix_start;
         let mut previous: Option<usize> = None;
         for slot in 0..neighbours.count as usize {
@@ -2874,9 +2744,6 @@ impl GeometryPacket {
                     .required
                     .neighbour_entries
                     .max(self.neighbours.len().saturating_add(1));
-                if self.neighbours.len() == self.capacities.neighbour_entries {
-                    return Err("unit geometry adjacency capacity exhausted");
-                }
                 let index = self.neighbours.len();
                 self.neighbours
                     .push(crate::province_neighbour::GeometryFields::default());

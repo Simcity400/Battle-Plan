@@ -155,8 +155,8 @@ impl NativeHost {
     /// The number of the viewer running now while it can take the controller: ready and showing
     /// the full map, with no dashboard in front.
     fn pad_viewer(&self) -> Option<u64> {
-        let inner = self.shared.0.lock().unwrap_or_else(|e| e.into_inner());
-        (inner.process.is_some()
+        let inner = self.shared.lock().unwrap_or_else(|e| e.into_inner());
+        (inner.map.is_some()
             && !inner.shutting_down
             && !inner.active_dashboard
             && inner.status.ready
@@ -167,19 +167,18 @@ impl NativeHost {
     /// Queues `message` for viewer `viewer`, merged with any still waiting; `false` when another
     /// viewer runs now, or none.
     fn send_gamepad(&self, viewer: u64, message: GamepadMessage) -> bool {
-        let mut inner = self.shared.0.lock().unwrap_or_else(|e| e.into_inner());
-        if inner.process.is_none() || inner.shutting_down || inner.generation != viewer {
+        let mut inner = self.shared.lock().unwrap_or_else(|e| e.into_inner());
+        if inner.map.is_none() || inner.shutting_down || inner.generation != viewer {
             return false;
         }
         inner.pending.gamepad = Some(GamepadMessage::merge(inner.pending.gamepad.take(), message));
         drop(inner);
-        self.shared.1.notify_all();
+        self.flush();
         true
     }
 
     fn stopping(&self) -> bool {
         self.shared
-            .0
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .shutting_down

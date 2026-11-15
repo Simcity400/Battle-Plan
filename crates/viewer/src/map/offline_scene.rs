@@ -229,13 +229,15 @@ fn render(layers: &ResolvedLayers, input: &Input, warnings: &mut Vec<String>) ->
         ));
     }
     pollster::block_on(async {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let lifecycle = shader_pipeline::gpu::device_lifecycle();
+        let instance = shader_pipeline::gpu::instance();
         let adapters = instance.enumerate_adapters(wgpu::Backends::all()).await;
         let adapter = select_adapter(&adapters, None)?;
         let (device, queue) = adapter
             .request_device(&map_device_descriptor(&adapter))
             .await
             .map_err(io::Error::other)?;
+        drop(lifecycle);
         let mut scene = scene::Scene::new(
             &device,
             &queue,

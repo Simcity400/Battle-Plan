@@ -1,47 +1,49 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useContextMenu } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
 import { dayLabel } from '../../charts/draw';
 import { runAt } from '../../charts/series';
 import { jumpItem } from '../../charts/jump';
 import Legend from '../../charts/Legend';
-import { bandMaxOf, runState, startUnseen, stretchAt } from '../../charts/timeline/runState';
+import { bandMaxOf, changesBy, runState, startUnseen, stretchAt } from '../../charts/timeline/runState';
 import { laneRequests } from '../../charts/timeline/laneRequests';
 import Timeline from '../../charts/timeline/Timeline';
 import { fitTooltip } from '../../charts/tooltip';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
-import { PreparedKey } from '../../charts/PreparedKey';
-import { preparedPrefix } from '../../dashboard/preparedPrefix';
-import type { HourSpan } from '../../generated/dashboard';
 import type { ColourScope } from '../../dashboard/campaignSettings';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { UNNAMED_FACTION } from '../../dashboard/factionNames';
 import { useFactionColours } from '../../dashboard/FactionColours';
-import { groupsKnownAt, groupsSettled, MEMBERSHIP_PREPARING, worldFilter } from '../../dashboard/groups';
+import { worldFilter } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
-import { usePlaybackHour } from '../../dashboard/playback';
 import { useCountriesAt } from '../../dashboard/useCountriesAt';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useHoverLabels } from '../../dashboard/useHoverLabels';
+import { useShownEachFrame } from '../../dashboard/widgetPerf';
+import { useHeadHour } from '../army-size/headHour';
 import { OPTIONS } from './definition';
-import { LEADER_GLYPH, factionGaps, factionLabel, factionLanes, factionViews, laneCountries, leaderAt, leadershipParts, membersAt, membersHeld, tagAt } from './factionsData';
+import { LEADER_GLYPH, factionChangeHours, factionGaps, factionLabel, factionLanes, factionViews, laneCountries, leaderAt, leadershipParts, membersAt,
+  membersHeld, tagAt } from './factionsData';
 import type { FactionOrder, MemberOrder } from './factionsData';
 import './factions.css';
 import FactionDrill from './FactionDrill';
 import { motionOf } from '../../charts/easing.ts';
 
 const NO_WARNINGS: string[] = [];
-const NO_SPANS: readonly HourSpan[] = [];
 
-/** Every recorded faction over time: a band per faction
- * whose thickness follows its member count, and a lane per member from join to
- * leave, the leader's stretch marked. Factions founded and dissolved partway through
- * are included; names, members and leaders come from the recording. */
+/** Every recorded faction over time: a band per faction whose thickness follows its member count, and a lane per member
+ * from join to leave, the leader's stretch marked. Factions founded and dissolved partway through are included; names,
+ * members and leaders come from the recording. The `country-groups` history is read once; following playback, the
+ * widget renders only when the head passes a faction or membership change (paced), never because the hour moved
+ * inside one, and the playhead moves with the clock each frame. */
 export default function FactionsWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
-  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const clock = runtime.clock;
+  const followsClock = widget.time.mode === 'follow';
+  const structure = useRef<(hour: number) => string>(() => '');
+  const playbackHour = useHeadHour(clock, active && followsClock, hour => structure.current(hour));
   const options = resolveOptions(OPTIONS, widget.options);
   const viewport = useViewportHeight();
   const tokens = useChartTokens();
@@ -57,13 +59,14 @@ export default function FactionsWidget({ widget, runtime, active, onDiagnostics 
   const extent: [number, number] = [first, Math.max(first + 1, options.grow && playhead != null ? playhead : last + 1)];
   const data = groups.data;
   const { colours, names } = factionColours;
-  // Keep member preparation independent of the playhead; names resolve locally by hour.
-  // Campaign colours follow the complete history; until then lanes are muted.
+  // Names resolve locally by hour; campaign colours follow the complete history.
   const views = useMemo(() => data ? factionViews(data, names, id => colours.get(id) ?? tokens.muted) : [], [data, names, colours, tokens.muted]);
-  // Before preparation covers the branch, the prefix is exact, later blocks are
-  // their keyframes' (approximate), and unsampled hours are still being prepared.
-  const prefix = useMemo(() => preparedPrefix(data), [data]);
-  const approximate = (data as { approximate?: readonly HourSpan[] } | undefined)?.approximate;
+  const axisOffset = track?.axisOffset ?? 0;
+  const changes = useMemo(() => data ? factionChangeHours(data, views) : [], [data, views]);
+  structure.current = hour => `${changesBy(changes, Math.floor(hour + axisOffset))}:${clock.getSnapshot().playing ? '' : hour}`;
+  const liveHead = useMemo(() => followsClock && track ? { read: () => clock.getSnapshot().position + axisOffset,
+    subscribe: (changed: () => void) => clock.subscribeFrame(changed) } : undefined, [followsClock, track, clock, axisOffset]);
+  useShownEachFrame(clock, () => data && track ? liveHead ? Math.floor(Math.min(liveHead.read(), track.branch.lastHour)) : at : null);
   const dashboardTag = track ? defaultCountryTag(track) : null;
   const lastHour = track?.branch.lastHour ?? 0;
   const filter = useMemo(() => worldFilter(widget.countries, dashboardTag ? [dashboardTag] : [], data, at, lastHour), [widget.countries, dashboardTag, data, at, lastHour]);
@@ -84,13 +87,13 @@ export default function FactionsWidget({ widget, runtime, active, onDiagnostics 
   const gaps = useMemo(() => data ? factionGaps(data) : [], [data]);
   const { lanes, info } = useMemo(() => factionLanes(views, at, {
     order: options.order as FactionOrder, members: options.members as MemberOrder, ended: options.ended === 'shown', countries: filter.tags, countryIds: filter.countryIds,
-  }, { country, day: dayLabel }, gaps, branchFirstHour), [views, at, options.order, options.members, options.ended, filter.tags, filter.countryIds, country, gaps, branchFirstHour]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, { country, day: dayLabel }, gaps, branchFirstHour), [views, at, options.order, options.members, options.ended, filter.tags, filter.countryIds, country, gaps, branchFirstHour]);
   const requests = laneRequests(lanes, inView);
   const wantedKey = JSON.stringify(laneCountries(requests.looks, info, at));
   const sortNamesKey = JSON.stringify(laneCountries(requests.names, info, at));
   useEffect(() => { setNamed(JSON.parse(wantedKey) as string[]); }, [wantedKey]);
   useEffect(() => { setSortNames(JSON.parse(sortNamesKey) as string[]); }, [sortNamesKey]);
-  const onLanesInView = useCallback((first: number, last: number) => setInView([first, last]), []);
+  const onLanesInView = useCallback((start: number, end: number) => setInView([start, end]), []);
   const menu = useContextMenu('Timeline actions');
   const bandMax = useMemo(() => bandMaxOf(views.map(view => view.counts)), [views]);
 
@@ -108,21 +111,16 @@ export default function FactionsWidget({ widget, runtime, active, onDiagnostics 
   if (!data) return <>{failure}<WidgetState kind="loading" label="Loading factions…" /></>;
   const opened = drill == null ? null : views.find(view => view.id === drill);
   if (opened) return <div className="factions-widget">
-    <FactionDrill runtime={runtime} track={track} view={opened} names={data.factions.find(faction => faction.id === opened.id)?.names ?? []}
-      at={at} active={active} gaps={gaps} pending={prefix?.pending ?? NO_SPANS} onBack={() => setDrill(null)} /></div>;
+    <FactionDrill runtime={runtime} widget={widget} track={track} view={opened} names={data.factions.find(faction => faction.id === opened.id)?.names ?? []}
+      at={at} active={active} gaps={gaps} liveHead={liveHead} onBack={() => setDrill(null)} /></div>;
   if (filter.reason) return <>{failure}<WidgetState kind="unavailable" message={filter.reason} /></>;
-  // Factions, and the countries chosen, at hours still being prepared are not known yet: none is not proof of none.
-  const preparing = failure ?? <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
-  if (!data.factions.length && !groupsSettled(data)) return preparing;
   if (!data.factions.length) return <>{failure}<WidgetState kind="empty" message={data.warnings.length ? 'Faction data unavailable.' : 'No factions recorded.'} /></>;
-  if (!lanes.length && (!filter.known || !groupsKnownAt(data, at))) return preparing;
   if (!lanes.length) return <>{failure}<WidgetState kind="empty" message={filter.tags ? 'None of the chosen countries has been in a faction yet.' : 'No factions yet.'} /></>;
 
   // The legend names each visible faction; leader details belong to the timeline.
   const shownFactions = new Set(lanes.filter(lane => !lane.depth).map(lane => info.get(lane.id)!.faction.id));
   const legend = views.filter(view => shownFactions.has(view.id)).map(view => {
-    const named = view.nameAt(at);
-    const name = named.name ?? UNNAMED_FACTION;
+    const name = factionLabel(view, at);
     return {
       id: view.id, label: name, color: view.color,
       // For every campaign by default, or this one only (the widget's setting).
@@ -193,13 +191,13 @@ export default function FactionsWidget({ widget, runtime, active, onDiagnostics 
     {failure}
     {/* Shown for one faction too: its swatch is where its colour is changed. */}
     {options.legend === true && <Legend label="Factions" items={legend} always />}
-    <Timeline key={`${track.source.id}:${track.source.revision}:${track.branch.id}`} label="Faction membership" extent={extent} playhead={playhead} labelHour={at} preserveZoomOnExtentChange={options.grow === true} lanes={lanes} showIcons={false} showNames={false} description={description}
-      unobserved={unobserved} approximate={approximate} pending={prefix?.pending} bandMax={bandMax} hoursPerSecond={motionOf(runtime.clock.getSnapshot())} active={active}
+    <Timeline key={`${track.source.id}:${track.source.revision}:${track.branch.id}`} label="Faction membership" extent={extent} playhead={playhead} liveHead={liveHead}
+      labelHour={liveHead ? undefined : at} preserveZoomOnExtentChange={options.grow === true} lanes={lanes} showIcons={false} showNames={false} description={description}
+      unobserved={unobserved} bandMax={bandMax} hoursPerSecond={motionOf(runtime.clock.getSnapshot())} active={active}
       revision={`${revision}:${hover.revision}:${views.length}`} onLanesInView={onLanesInView}
       tooltip={(lane, _span, hour, full) => tooltip(lane.id, hour, full === true)}
       onLaneActivate={lane => { const about = info.get(lane.id); if (about && !about.member) setDrill(about.faction.id); }}
       onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)])} />
-    <PreparedKey approximate={approximate} pending={prefix?.pending} />
     {menu.menu}
   </div>;
 }

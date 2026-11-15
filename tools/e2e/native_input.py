@@ -14,6 +14,7 @@ carries the epoch milliseconds each event was sent at, the clock the viewer stam
     {"op": "drag", "points": [[x, y], ...], "interval_ms": 16}          (a middle-button drag)
     {"op": "click", "x": x, "y": y}                                     (a primary click on the map)
     {"op": "save_dialog", "path": "C:/...png", "seconds": 20}          (fills and confirms the host's save dialog)
+    {"op": "color_dialog", "rgb": [r, g, b], "seconds": 10}            (fills and confirms a colour input's dialog)
 """
 
 import argparse
@@ -43,25 +44,10 @@ u.ClientToScreen.argtypes = [w.HWND, c.POINTER(w.POINT)]
 u.ScreenToClient.argtypes = [w.HWND, c.POINTER(w.POINT)]
 u.SendMessageW.argtypes = [w.HWND, w.UINT, w.WPARAM, w.LPARAM]
 u.SendMessageW.restype = w.LPARAM
-k = c.WinDLL("kernel32", use_last_error=True)
-k.OpenProcess.argtypes = [w.DWORD, w.BOOL, w.DWORD]
-k.OpenProcess.restype = w.HANDLE
-k.QueryFullProcessImageNameW.argtypes = [w.HANDLE, w.DWORD, w.LPWSTR, c.POINTER(w.DWORD)]
-k.CloseHandle.argtypes = [w.HANDLE]
 WM_SETTEXT, BM_CLICK = 0x000C, 0x00F5
-# The native map draws in its own process; its windows are found by that process's program.
-MAP_PROGRAM = "viewer.exe"
-
-
-def program(pid):
-    handle = k.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
-    if not handle:
-        return None
-    try:
-        name, size = c.create_unicode_buffer(1024), w.DWORD(1024)
-        return name.value.rsplit("\\", 1)[-1].lower() if k.QueryFullProcessImageNameW(handle, 0, name, c.byref(size)) else None
-    finally:
-        k.CloseHandle(handle)
+# The map draws in the app's own process, in a child window of the app's window with this title
+# (viewer::host::MAP_WINDOW_TITLE).
+MAP_TITLE = "Battle Plan map"
 
 
 def checked(value):
@@ -120,12 +106,10 @@ class Desktop:
             raise RuntimeError("the app's window is gone")
         point = w.POINT(round(x), round(y))
         checked(u.ClientToScreen(main, c.byref(point)))
-        programs = {}
-        under = [(hwnd, (r[2] - r[0]) * (r[3] - r[1])) for hwnd, pid, r, *_ in self.windows()
-                 if r[0] <= point.x < r[2] and r[1] <= point.y < r[3]
-                 and programs.setdefault(pid, program(pid)) == MAP_PROGRAM]
+        under = [(hwnd, (r[2] - r[0]) * (r[3] - r[1])) for hwnd, pid, r, title, *_ in self.windows()
+                 if r[0] <= point.x < r[2] and r[1] <= point.y < r[3] and pid == self.app_pid and title == MAP_TITLE]
         if not under:
-            raise RuntimeError(f"no {MAP_PROGRAM} window under screen point {point.x},{point.y}")
+            raise RuntimeError(f"no map window under screen point {point.x},{point.y}")
         checked(u.ScreenToClient(min(under, key=lambda item: item[1])[0], c.byref(point)))
         return [point.x, point.y]
 
@@ -189,6 +173,46 @@ class Desktop:
         raise RuntimeError(f"no save dialog within {seconds} s")
 
 
+    def color_dialog(self, rgb, seconds):
+        """Fills the colour dialog's red, green and blue fields and confirms it, as a user does. The dialog opens with its
+        custom colour fields folded away: they are opened through its own "Define Custom Colors" button. A dialog that
+        shows and offers no fields fails at once, and is cancelled so the app is not left behind a modal dialog."""
+        deadline = time.monotonic() + seconds
+        expanded = False
+        # A dialog builds and shows its controls a moment after its own window: it is judged once it has had this long.
+        settled = None
+        while time.monotonic() < deadline:
+            dialogs = [entry for entry in self.windows() if entry[4] == "#32770"]
+            if not dialogs:
+                settled = None
+            else:
+                settled = settled or time.monotonic() + 1.0
+                children = [entry for entry in self.windows() if entry[0] != dialogs[0][0]]
+                # The dialog's own red, green and blue fields (COLOR_RED, COLOR_GREEN, COLOR_BLUE) and its OK button.
+                fields = {entry[5]: entry for entry in children if entry[4] == "Edit" and entry[5] in (706, 707, 708)}
+                button = next((entry for entry in children if entry[4] == "Button" and entry[5] == 1), None)
+                if len(fields) == 3 and button:
+                    for control, value in zip((706, 707, 708), rgb):
+                        buffer = c.create_unicode_buffer(str(int(value)))
+                        u.SendMessageW(fields[control][0], WM_SETTEXT, 0, c.cast(buffer, c.c_void_p).value)
+                    u.SendMessageW(button[0], BM_CLICK, 0, 0)
+                    return {"chosen": list(rgb)}
+                # COLOR_MIX: "Define Custom Colors >>", which shows the fields.
+                mix = next((entry for entry in children if entry[4] == "Button" and entry[5] == 719), None)
+                if mix and not expanded:
+                    u.SendMessageW(mix[0], BM_CLICK, 0, 0)
+                    expanded = True
+                    settled = time.monotonic() + 1.0
+                elif button and time.monotonic() > settled:
+                    cancel = next((entry for entry in children if entry[4] == "Button" and entry[5] == 2), None)
+                    if cancel:
+                        u.SendMessageW(cancel[0], BM_CLICK, 0, 0)
+                    shown = sorted({f"{entry[4]} {entry[5]}" for entry in children})
+                    raise RuntimeError(f"the colour dialog showed no red, green and blue fields{' after Define Custom Colors' if expanded else ''} (it holds {', '.join(shown[:12])})")
+            time.sleep(0.05)
+        raise RuntimeError(f"no colour dialog with red, green and blue fields within {seconds} s")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--desktop", required=True)
@@ -203,7 +227,7 @@ def main():
             command = json.loads(line)
             op = command.pop("op")
             reply = {"move": desktop.move, "wheel": desktop.wheel, "keys": desktop.keys, "drag": desktop.drag, "click": desktop.click,
-                     "save_dialog": desktop.save_dialog}[op](**command)
+                     "save_dialog": desktop.save_dialog, "color_dialog": desktop.color_dialog}[op](**command)
         except Exception as error:
             reply = {"error": f"{type(error).__name__}: {error}"}
         print(json.dumps(reply), flush=True)

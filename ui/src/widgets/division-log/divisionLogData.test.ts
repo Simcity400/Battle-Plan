@@ -1,112 +1,84 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { deepFreeze } from '../../testFrozen.ts';
-import type { DivisionLogEntry, DivisionLogReply } from '../../generated/dashboard';
-import { divisionRows, divisionStatus, divisionTooltip, selectedTemplates, templateToken, validateDivisionLog,
-  validateDivisionManifest, validateDivisionTotals } from './divisionLogData.ts';
-import { OPTIONS, definition } from './definition.ts';
-import { resolveOptions } from '../../dashboard/options.ts';
-import { battleWindows } from '../land-battles/landBattlesData.ts';
+import type { LogPage } from '../../charts/log/logData';
+import type { LogCounts, LogReplyRow } from '../../charts/log/logSource';
+import { divisionEntry, divisionFacets, divisionNamedRows, divisionPlace, divisionStatus, gapWarnings, kindTotals, selectedTemplates, shownKinds, templateToken,
+  divisionPlaces, validateDivisionManifest } from './divisionLogData.ts';
+import type { DivisionKind, DivisionLogEntry } from './divisionLogData';
 
-const entry = (id = '1'): DivisionLogEntry => ({ id, division: id, readHour: 12, hour: 11, by: false, afterHour: null,
-  kind: 'lost', status: 'division_destroyed', tag: 'mod/tag', countryHour: 12, name: 'Guards', nameMissing: null,
-  icon: null, iconMissing: 'Not recorded', presentationHour: 10, template: '99', templateName: 'Guards template',
-  templateMissing: null, templateHour: 10, province: 17, placeHour: 11, placeAtEvent: true,
-  killerTag: 'other', killerHour: 12, killerDivision: '2' });
-const reply = (rows = [entry()], window = 0): DivisionLogReply => ({ window, interval: { firstHour: 10, lastHour: 20 }, rows, warnings: [], contentWarnings: [] });
-const rows = (at = 12, first = 10, events = 'both', templates: string[] | null = null, all = true) =>
-  divisionRows(new Map([[0, reply()]]), at, first, events, templates, () => false, all);
+const reply = (key: string, hour: number, kind: number, more: Record<string, LogReplyRow['cells'][string]> = {}): LogReplyRow => ({ key, hour, fields: {}, cells: {
+  division: { kind: 'text', value: key }, kind: { kind: 'number', value: String(kind) }, status: { kind: 'text', value: kind === 0 ? 'first_observed' : 'division_destroyed' },
+  hour: { kind: 'number', value: String(hour) }, by: { kind: 'number', value: '1' }, readHour: { kind: 'number', value: String(hour) },
+  tag: { kind: 'text', value: 'GER' }, placeAtEvent: { kind: 'number', value: kind === 0 ? '1' : '0' }, ...more,
+} });
 
-test('division rows and objects persist between supplying reads and replacement replies are picked up', () => {
-  const data = deepFreeze(reply([entry(), { ...entry('2'), hour: 18, readHour: 20 }]));
-  const windows = deepFreeze(new Map([[0, data]])), matches = () => true;
-  const at = (hour: number) => divisionRows(windows, hour, 10, 'both', null, matches, true);
-  const first = at(12);
-  assert.equal(at(19), first);
-  const crossed = at(20);
-  assert.equal(crossed.length, 2);
-  assert.equal(crossed[1], first[0]);
-  const replacement = deepFreeze(new Map([[0, { ...data, rows: data.rows.map(row => ({ ...row, name: 'Replacement' })) }]]));
-  assert.equal(divisionRows(replacement, 20, 10, 'both', null, matches, true)[0].item.name, 'Replacement');
+test('a page row is placed at its read, dated by its own hour, and names nothing it was not given', () => {
+  const row = divisionEntry(reply('7', 120, 1, { hour: { kind: 'number', value: '119' }, by: { kind: 'number', value: '0' },
+    killerTag: { kind: 'text', value: 'SOV' }, nameMissing: { kind: 'text', value: 'Division names unavailable' } }));
+  assert.equal(row.hour, 120);
+  assert.equal(row.item.hour, 119);
+  assert.equal(row.item.by, false);
+  assert.equal(row.item.kind, 'lost');
+  assert.equal(row.item.killerTag, 'SOV');
+  assert.equal(row.item.name, null);
+  assert.equal(row.item.nameMissing, 'Division names unavailable');
+  assert.equal(row.item.province, null);
+  assert.equal(divisionStatus(row.item), 'Destroyed');
 });
 
-test('death dates do not make their later captured read visible early', () => {
-  assert.equal(rows(11).length, 0);
-  assert.equal(rows(12).length, 1);
-  assert.equal(rows(12, 12).length, 0);
-  assert.equal(rows(12, 10, 'created').length, 0);
-  assert.equal(rows(12, 10, 'lost').length, 1);
-});
-test('country and template filters retain unknowns only in all-country logs', () => {
-  assert.equal(rows(12, 10, 'both', ['other']).length, 0);
-  assert.equal(rows(12, 10, 'both', []).length, 0);
-  assert.equal(rows(12, 10, 'both', ['99']).length, 1);
-  assert.equal(rows(12, 10, 'both', null, false).length, 0);
-  const unknown = reply([{ ...entry(), tag: null }]);
-  assert.equal(divisionRows(new Map([[0, unknown]]), 12, 10, 'both', null, () => true, false).length, 0);
-  const reads: number[] = [];
-  divisionRows(new Map([[0, reply()]]), 12, 10, 'both', null, (_tag, hour) => { reads.push(hour); return true; }, false);
-  assert.deepEqual(reads, [12]);
-});
-test('window completion order does not change newest-first order or omit 5000 countries', () => {
-  const first = reply(Array.from({ length: 5000 }, (_, i) => ({ ...entry(String(i + 1)), tag: `mod/tag-${i}`,
-    hour: 10, readHour: 10, countryHour: 10, placeHour: 10, killerHour: 10 })));
-  const next = reply([{ ...entry('5001'), hour: 12, readHour: 12 }], 1);
-  const ordered = divisionRows(new Map([[1, next], [0, first]]), 12, 10, 'both', null, () => true, true);
-  assert.equal(ordered.length, 5001);
-  assert.equal(ordered[0].key, '5001');
-  assert.equal(validateDivisionLog(first).rows.length, 5000);
-  assert.equal(new Set(first.rows.map(row => row.tag)).size, 5000);
-});
-test('template handles are scoped to campaign and branch, and unavailable choices select none', () => {
-  const chosen = templateToken('c0ffee', '1', '99');
-  assert.deepEqual(selectedTemplates(chosen, 'c0ffee', '1'), ['99']);
-  assert.deepEqual(selectedTemplates(chosen, 'beef', '1'), []);
-  assert.deepEqual(selectedTemplates(chosen, 'c0ffee', '2'), []);
-  assert.equal(selectedTemplates('', 'c0ffee', '1'), null);
-});
-test('malformed replies and future presentation dates refuse', () => {
-  assert.throws(() => validateDivisionLog(reply([entry(), entry()])), /malformed/);
-  assert.throws(() => validateDivisionLog(reply([{ ...entry(), presentationHour: 13 }])), /malformed/);
-  assert.throws(() => validateDivisionTotals({ created: -1, lost: 0, transferred: 0, since: null, warnings: [] }), /malformed/);
-  assert.throws(() => validateDivisionTotals({ created: 1, lost: 0, transferred: 0, since: 1.5, warnings: [] }), /malformed/);
-  assert.equal(validateDivisionTotals({ created: 5000, lost: 3, transferred: 2, since: null, warnings: [] }).created, 5000);
-  assert.equal(validateDivisionTotals({ created: 5, lost: 0, transferred: 0, since: 400, warnings: [] }).since, 400);
-  assert.throws(() => validateDivisionManifest({ windows: [], available: true, lossesAvailable: true,
-    templates: [{ id: '99', name: 'A' }, { id: '99', name: 'B' }], contentWarnings: [] }), /malformed/);
-});
-test('tooltips retain native disposition, bounded dates and the supplying read', () => {
-  assert.equal(divisionStatus({ ...entry(), status: 'division_disbanded' }), 'Disbanded');
-  assert.equal(divisionStatus({ ...entry(), status: 'first_observed' }), 'First seen');
-  assert.equal(divisionStatus({ ...entry(), status: 'volunteer_transferred' }), 'Volunteer transfer');
-  const tooltip = divisionTooltip({ ...entry(), by: true, afterHour: 10, placeAtEvent: false }, { name: 'Owner' }, { name: 'Enemy' }, 'A place');
-  assert.ok(tooltip.rows.some(row => row.label === 'Last seen at'));
-  assert.ok(!tooltip.rows.some(row => ['Available from', 'Template read', 'Division presentation read'].includes(row.label)));
-  assert.ok(tooltip.rows.some(row => row.label === 'When' && row.value?.startsWith('By ')));
-});
-test('country tooltip flags retain pending and named failure state without replacing division artwork', () => {
-  const country = { name: 'Owner', flagPending: true };
-  const killer = { name: 'Enemy', flagPending: false, flagReason: 'The flag request failed.' };
-  const tooltip = divisionTooltip({ ...entry(), icon: 'http://artwork.localhost/dddddddddddddddddddddddddddddddd.png' }, country, killer, 'A place');
-  assert.equal(tooltip.icon, 'http://artwork.localhost/dddddddddddddddddddddddddddddddd.png');
-  assert.deepEqual(tooltip.rows.find(row => row.label === 'Country')?.countryFlag,
-    { flag: undefined, flagReason: undefined, flagPending: true });
-  assert.deepEqual(tooltip.rows.find(row => row.label === 'Killer')?.countryFlag,
-    { flag: undefined, flagReason: 'The flag request failed.', flagPending: false });
-  const unknown = divisionTooltip({ ...entry(), tag: null, killerTag: null }, country, killer, 'A place');
-  assert.equal(unknown.rows.find(row => row.label === 'Country')?.countryFlag, undefined);
-  assert.equal(unknown.rows.find(row => row.label === 'Killer')?.countryFlag, undefined);
+test('the log is asked for the kinds shown, the chosen templates and the countries by tag', () => {
+  assert.deepEqual(shownKinds('lost'), ['lost', 'transfer']);
+  assert.deepEqual(divisionFacets(['created'], null, null), [{ name: 'kind', values: [0], tags: [] }]);
+  assert.deepEqual(divisionFacets(['lost', 'transfer'], ['31', '40'], ['GER']), [
+    { name: 'kind', values: [1, 2], tags: [] }, { name: 'template', values: [31, 40], tags: [] }, { name: 'slot', values: [], tags: ['GER'] }]);
+  const token = templateToken('campaign', '1', '31');
+  assert.deepEqual(selectedTemplates(token, 'campaign', '1'), ['31']);
+  assert.deepEqual(selectedTemplates(token, 'campaign', '2'), []);
 });
 
-test('shared log defaults and bounded history windows match style five', () => {
-  const options = resolveOptions(OPTIONS, {});
-  assert.equal(options.density, 'comfortable');
-  assert.equal(options.months, false);
-  assert.equal(options.chips, true);
-  assert.equal(options.rowAnimation, true);
-  assert.equal(options.events, 'both');
-  assert.equal(options.totals, false);
-  assert.equal(definition.countries.max, Number.MAX_SAFE_INTEGER);
-  const windows = Array.from({ length: 5000 }, (_, i) => ({ firstHour: i * 10, lastHour: i * 10 + 9 }));
-  assert.deepEqual(battleWindows({ windows }, 1000, true), [99, 100, 101]);
+test('each kind is counted through the hour from its bins and the held rows of the bin at the hour', () => {
+  const counts = (values: number[]): LogCounts => ({ firstHour: 0, binHours: 6, counts: values, total: values.reduce((a, b) => a + b, 0), before: 0, missing: [] });
+  const list = counts([2, 3]);
+  const kinds = new Map<DivisionKind, LogCounts>([['created', counts([1, 2])], ['lost', counts([1, 1])]]);
+  const entry = (hour: number, kind: number) => divisionEntry(reply(`${hour}:${kind}`, hour, kind));
+  const page: LogPage<DivisionLogEntry> = { key: '0', start: 0, end: 4, count: 5, rows: [entry(1, 0), entry(2, 1), entry(6, 0), entry(7, 1), entry(9, 0)] };
+  assert.deepEqual(kindTotals(list, kinds, [page], 4, 8), new Map([['created', 2], ['lost', 2]]));
+  assert.deepEqual(kindTotals(list, kinds, [page], 2, 5), new Map([['created', 1], ['lost', 1]]));
+  assert.deepEqual(kindTotals(list, kinds, [page], 5, null), new Map([['created', 3], ['lost', 2]]));
+  assert.equal(kindTotals(list, kinds, [{ ...page, rows: undefined }], 4, 8), null, 'a bin whose rows are not loaded is not counted as empty');
+});
+
+test('the manifest names the hours divisions were not read, within the hours shown', () => {
+  const manifest = validateDivisionManifest({ available: true, lossesAvailable: false, warnings: [], templates: [{ id: '31', name: null }],
+    gaps: [{ firstHour: 10, lastHour: 20, reason: 'Divisions not read' }, { firstHour: 400, lastHour: 410, reason: 'Divisions not read' }] });
+  assert.equal(gapWarnings(manifest, 0, 100).length, 1);
+  assert.throws(() => validateDivisionManifest({ ...manifest, templates: [{ id: 'x', name: null }] }));
+});
+
+test('a place still being read shows as loading, never as an unnamed province; a read that named nothing, or left it out, gives its reason', () => {
+  const row = divisionEntry(reply('7', 120, 0, { province: { kind: 'number', value: '42' }, placeHour: { kind: 'number', value: '118' } })).item;
+  const reading = { pending: true, failed: false }, answered = { pending: false, failed: false };
+  assert.equal(divisionPlace(row, new Map(), reading), 'Loading place…');
+  assert.equal(divisionPlace(row, new Map(), { pending: false, failed: true }), 'Place name couldn’t load');
+  // PB7: a place a landed reply left out stayed "Loading place…" for ever.
+  assert.equal(divisionPlace(row, new Map(), answered), 'Unnamed province (the names reply left it out)', 'a place the reply left out is settled, never loading for ever');
+  const key = JSON.stringify([42, 118]);
+  assert.equal(divisionPlace(row, new Map([[key, { provinceId: 42, hour: 118, name: 'Brest', missing: null }]]), answered), 'Brest');
+  assert.equal(divisionPlace(row, new Map([[key, { provinceId: 42, hour: 118, name: null, missing: 'Province names unavailable' }]]), answered), 'Province names unavailable');
+  assert.equal(divisionPlace(divisionEntry(reply('8', 120, 0)).item, new Map(), reading), 'Location not recorded');
+  assert.deepEqual(divisionPlaces([divisionEntry(reply('7', 120, 0, { province: { kind: 'number', value: '42' }, placeHour: { kind: 'number', value: '118' } })),
+    divisionEntry(reply('9', 121, 0, { province: { kind: 'number', value: '42' }, placeHour: { kind: 'number', value: '118' } })), divisionEntry(reply('8', 120, 0))]),
+  [{ provinceId: 42, hour: 118 }], 'each place once, none for a row without one');
+  const placed = (key: string, hour: number, province: number) => divisionEntry(reply(key, hour, 0, { province: { kind: 'number', value: String(province) },
+    placeHour: { kind: 'number', value: String(hour) } }));
+  assert.deepEqual(divisionPlaces([placed('a', 100, 1), placed('b', 105, 2), placed('c', 110, 3), placed('d', 104, 4)], 105).map(place => place.provinceId), [2, 4, 1, 3],
+    'following, the rows at the top of the list lead: those through the hour of its block, newest first, then those held past it');
+});
+
+test('following, the rows named are those of the newest pages held, before the list draws them, and any drawn beyond them', () => {
+  const rows = [0, 1, 2, 3, 4, 5].map(at => divisionEntry(reply(String(at), 100 + at, 0)));
+  const pages: LogPage<DivisionLogEntry>[] = [{ key: '0', start: 0, end: 2, count: 3, rows: rows.slice(0, 3) }, { key: '1', start: 3, end: 5, count: 3, rows: rows.slice(3) }];
+  assert.deepEqual(divisionNamedRows(true, pages, 3, []).map(row => row.key), ['3', '4', '5'], 'named with the block, nothing drawn yet');
+  assert.deepEqual(divisionNamedRows(true, pages, 3, [rows[4], rows[1]]).map(row => row.key), ['3', '4', '5', '1'], 'a row scrolled to beyond them');
+  assert.deepEqual(divisionNamedRows(false, pages, 3, [rows[1]]).map(row => row.key), ['1'], 'paused or browsing: the rows drawn');
 });

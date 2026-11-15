@@ -79,18 +79,7 @@ impl Demand {
         base: usize,
         game_state: usize,
     ) -> Result<Self, &'static str> {
-        let walk = native::walk(
-            memory,
-            base,
-            game_state,
-            native::Buffers {
-                traits: &mut [],
-                trait_values: &mut [],
-                operatives: &mut [],
-                definitions: &mut [],
-                bytes: &mut [],
-            },
-        );
+        let walk = native::count(memory, base, game_state);
         let rows = |outcome: Outcome| match outcome {
             Outcome::Rows { len } => Ok(len),
             Outcome::Truncated { len, unread_rows } => len
@@ -218,7 +207,27 @@ impl Captured {
         hour: i32,
         force_full: bool,
     ) -> [u64; N] {
-        self.capture_mode(memory, base, game_state, hour, force_full, true)
+        self.held = None;
+        self.reset();
+        let Some(walked) = self.walked(hour, force_full) else {
+            return [0; N];
+        };
+        let _reads = crate::read_accounting::table(TABLES[0]);
+        let started = qpc();
+        let walk = native::walk(
+            memory,
+            base,
+            game_state,
+            native::Buffers {
+                traits: &mut self.traits.rows,
+                trait_values: &mut self.values.first,
+                operatives: &mut self.operatives.rows,
+                definitions: &mut self.definitions.first,
+                bytes: &mut self.bytes.first,
+            },
+        );
+        self.install(walked, walk);
+        [qpc().saturating_sub(started).max(0) as u64, 0]
     }
 
     /// The hour's walk over the roster job's admitted role census, carrying
@@ -273,7 +282,7 @@ impl Captured {
         };
         let _reads = crate::read_accounting::table(TABLES[0]);
         let started = qpc();
-        let mut walk = native::CensusWalk::growing(native::GrowingBuffers {
+        let mut walk = native::CensusWalk::new(native::Buffers {
             traits: &mut self.traits.rows,
             trait_values: &mut self.values.first,
             operatives: &mut self.operatives.rows,
@@ -329,53 +338,6 @@ impl Captured {
             return None;
         }
         Some(walked)
-    }
-
-    fn capture_mode(
-        &mut self,
-        memory: &impl Memory,
-        base: usize,
-        game_state: usize,
-        hour: i32,
-        force_full: bool,
-        growing: bool,
-    ) -> [u64; N] {
-        self.held = None;
-        self.reset();
-        let Some(walked) = self.walked(hour, force_full) else {
-            return [0; N];
-        };
-        let _reads = crate::read_accounting::table(TABLES[0]);
-        let started = qpc();
-        let walk = if growing {
-            native::walk_growing(
-                memory,
-                base,
-                game_state,
-                native::GrowingBuffers {
-                    traits: &mut self.traits.rows,
-                    trait_values: &mut self.values.first,
-                    operatives: &mut self.operatives.rows,
-                    definitions: &mut self.definitions.first,
-                    bytes: &mut self.bytes.first,
-                },
-            )
-        } else {
-            native::walk(
-                memory,
-                base,
-                game_state,
-                native::Buffers {
-                    traits: &mut self.traits.rows,
-                    trait_values: &mut self.values.first,
-                    operatives: &mut self.operatives.rows,
-                    definitions: &mut self.definitions.first,
-                    bytes: &mut self.bytes.first,
-                },
-            )
-        };
-        self.install(walked, walk);
-        [qpc().saturating_sub(started).max(0) as u64, 0]
     }
 
     fn install(&mut self, walked: [bool; N], walk: native::Walk) {

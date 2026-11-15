@@ -387,6 +387,12 @@ impl Schedule {
         !self.clean.contains(&province)
     }
 
+    /// Whether `province` is dirty out of view: a coming frame's phase cleans it, and its owners'
+    /// icons kept off screen are erased then. A dirty province in view stays dirty while it is.
+    pub fn cleans(&self, province: u32) -> bool {
+        self.dirty(province) && self.update(province) != Some(Update::InView)
+    }
+
     /// Reset listed provinces, or every province, to dirty bit two.
     pub fn reset(&mut self, provinces: Option<&BTreeSet<u32>>) {
         match provinces {
@@ -820,6 +826,20 @@ mod tests {
         schedule.advance([5], |_| false, false);
         assert!(!schedule.listed(5));
         assert_eq!(schedule.forced.get(&5), Some(&2));
+    }
+
+    /// A province dirty in view stays dirty and does not clean; one dirty out of view cleans until
+    /// its phase updates it out of view, which makes it clean.
+    #[test]
+    fn a_province_cleans_only_while_dirty_out_of_view() {
+        let mut schedule = Schedule::default();
+        schedule.advance([1, 2], |id| id == 1, false);
+        assert!(schedule.dirty(1) && !schedule.cleans(1), "dirty in view");
+        assert!(schedule.dirty(2) && schedule.cleans(2), "dirty out of view, before its phase");
+        schedule.advance([1, 2], |id| id == 1, false);
+        assert_eq!(schedule.update(2), Some(Update::OffScreen), "its phase");
+        assert!(!schedule.dirty(2) && !schedule.cleans(2), "cleaned at its phase");
+        assert!(!schedule.cleans(1));
     }
 
     #[test]

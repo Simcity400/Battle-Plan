@@ -1,158 +1,117 @@
-import type { DayLeftOut, FuelAwardTotals, FuelAwardsReply, FuelAwardHistoryReply, FuelAwardRun, FuelLabel, FuelRead, FuelReply } from '../../generated/dashboard';
-import type { CountrySelection } from '../../dashboard/model';
-import type { ResolvedCountries } from '../../dashboard/groups';
-import { isMember } from '../../dashboard/groups.ts';
-import { object, signed32, unsigned32, unsigned64 } from '../../dashboard/validation.ts';
-import { clipToSpans, runAt } from '../../charts/series.ts';
-import type { Run, Span } from '../../charts/series';
+import type { ChartSummary } from '../../charts/chartSummary';
+import type { Run } from '../../charts/series';
 import type { StripBar } from '../../charts/strip';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import { formatAmount, formatSigned, rescale } from '../../charts/valueAxis.ts';
 import type { OptionField, OptionValue } from '../../dashboard/options';
+import { object } from '../../dashboard/validation.ts';
+import type { CountryFuelReply, DayLeftOut, FuelAwardHistoryReply, FuelAwardsReply, FuelLabel, FuelReadAt } from '../../generated/dashboard';
 
-/** Fuel amounts are written in whole numbers unless the widget's settings ask for
- * decimals. Only the writing rounds: totals, shares, bars and order use the exact
- * recorded amounts. Gains are recorded in fixed5, so 5 places reach every gain digit. */
+/** Fuel amounts are written in whole numbers unless the widget's settings ask for decimals. Only the writing rounds:
+ * totals, shares, bars and order use the exact recorded amounts. Gains are fixed5, so 5 places reach every digit. */
 const MOST_FUEL_DECIMALS = 5;
 export const FUEL_DECIMALS_OPTION: OptionField = { key: 'fuelDecimals', section: 'options', label: 'Fuel decimals',
   hint: 'Decimal places in fuel amounts.', kind: 'number', min: 0, max: MOST_FUEL_DECIMALS, step: 1, default: 0 };
 
-/** The decimals chosen (`resolveOptions`), within the option's range. */
+/** The decimals chosen, within the option's range. */
 export function fuelDecimals(options: Readonly<Record<string, OptionValue>>): number {
   const chosen = options[FUEL_DECIMALS_OPTION.key];
   return typeof chosen === 'number' && Number.isInteger(chosen) ? Math.max(0, Math.min(MOST_FUEL_DECIMALS, chosen)) : 0;
 }
 
-/** Content labels reload independently of recorded amounts and native identity. */
-const labelNumbers = (label: FuelLabel): FuelLabel => ({ ...label, template: null, reason: null });
-export const fuelNumbers = (replies: FuelReply[]): FuelReply[] => replies.map(reply => ({ ...reply,
-  consumerNames: [null, null, null], warnings: [],
-  gainLabels: reply.gainLabels.map(labelNumbers) as FuelReply['gainLabels'],
-  transferLabels: reply.transferLabels.map(labelNumbers) as FuelReply['transferLabels'] }));
-export const fuelAwardNumbers = (reply: FuelAwardsReply): FuelAwardsReply => ({ ...reply, warnings: [],
-  awards: { ...reply.awards, recipients: reply.awards.recipients.map(part => ({ ...part, recordedName: null, nameReason: null })) } });
+/** The declared series the widget draws: the tank's level and capacity, and each day's measures (`FuelDayRow::measures`). */
+export const COUNTRY_FUEL = 'country-fuel';
+export const FUEL_DAYS = 'fuel-days';
+export const FUEL_DEMAND_TOTALS = 'fuel-demand-totals';
+/** The tank's units per fuel (/32768) and the gains' (fixed5). */
+export const QUANTITY_SCALE = 32768;
+export const GAIN_SCALE = 100000;
+/** The day measures' units per fuel: quantity times gain units, so neither loses a digit. */
+export const PART_SCALE = QUANTITY_SCALE * GAIN_SCALE;
 
-/** The candidate source is branch-wide, so ordinary playback does not change it. */
-export function fuelChoiceKey(selection: CountrySelection, countries: Pick<ResolvedCountries, 'tags' | 'membership'>, capacity: boolean): string {
-  return JSON.stringify([selection, countries.tags, countries.membership ? [...countries.membership].map(([tag, runs]) =>
-    [tag, runs.map(run => [run.firstHour, run.lastHour])]) : null, capacity]);
-}
+/** The parts of a day each breakdown charts, as the series `fuel-days` names them, and the reply's parts they match. */
+export const GAIN_PARTS = [['gainBase', 'gain-0'], ['gainStates', 'gain-1'], ['gainOil', 'gain-2'], ['gainNegativeCost', 'gain-3'],
+  ['unidentified', 'unidentified']] as const;
+export const BURN_PARTS = [['consumerArmy', 'consumer-0'], ['consumerAir', 'consumer-1'], ['consumerNavy', 'consumer-2'],
+  ['outgoing', 'outgoing'], ['flat', 'flat'], ['other', 'other'], ['conversion', 'conversion']] as const;
+/** Each family's projected demand, clamped at zero, as `fuel-demand-totals` names it. */
+export const FAMILY_MEASURES = ['positiveArmy', 'positiveAir', 'positiveNavy'] as const;
 
 const RAW = /^-?\d{1,39}$/;
-const RAW_MAX = (1n << 127n) - 1n;
-const RAW_MIN = -RAW_MAX - 1n;
-/** Applied daily operands are summed into signed i128, beyond one native i64. */
-export function isRaw(value: unknown): value is string {
-  if (typeof value !== 'string' || !RAW.test(value)) return false;
-  const raw = BigInt(value);
-  return raw >= RAW_MIN && raw <= RAW_MAX;
-}
-/** Why a day is left out, as the tooltip says it: its row's value and its note. */
-const LEFT_OUT: Readonly<Record<DayLeftOut, (dayHours: number) => { value: string; note: string }>> = {
-  overlaps: () => ({ value: 'Counted in another day',
-    note: 'Included in another day.' }),
-  notUpdated: () => ({ value: 'Not updated',
-    note: 'Fuel was not updated while no states were owned.' }),
-  ownershipNotRecorded: () => ({ value: 'Not known',
-    note: 'Daily data incomplete.' }),
-};
+export const isRaw = (value: unknown): value is string => typeof value === 'string' && RAW.test(value);
+const rawOrNull = (value: unknown) => value === null || isRaw(value);
+const text = (value: unknown) => value === null || typeof value === 'string';
+const int = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value);
+const hourOrNull = (value: unknown) => value === null || int(value);
+const triple = (value: unknown, each: (item: unknown) => boolean) => Array.isArray(value) && value.length === 3 && value.every(each);
+const strings = (value: unknown) => Array.isArray(value) && value.every(item => typeof item === 'string');
+const isLabel = (value: unknown): value is FuelLabel => object(value) && typeof value.key === 'string' && text(value.template)
+  && Array.isArray(value.arguments) && value.arguments.every(arg => arg === 'NUM' || arg === 'OIL') && text(value.reason);
+const LEFT_OUT_KINDS: readonly DayLeftOut[] = ['overlaps', 'notUpdated', 'ownershipNotRecorded', 'notRecorded'];
 
-const nullableText = (value: unknown) => value === null || typeof value === 'string';
-const raws = (value: unknown, length: number) => Array.isArray(value) && value.length === length && value.every(isRaw);
-const countryReference = (value: unknown) => unsigned64(value) && BigInt(value) < (1n << 32n);
-const span = (value: Record<string, unknown>) => signed32(value.firstHour) && signed32(value.lastHour) && value.firstHour <= value.lastHour;
-const isAwards = (value: unknown): value is FuelAwardTotals => object(value) && raws(value.gainsRaw, 4)
-  && isRaw(value.ownGainRaw) && isRaw(value.ownGainQuantityRaw) && raws(value.transfersRaw, 4)
-  && isRaw(value.consumedRaw) && raws(value.receivedRaw, 3);
-
-const isRead = (value: unknown): value is FuelRead => object(value) && span(value) && typeof value.startsSegment === 'boolean'
-  && countryReference(value.country) && (value.countryInstance === null || unsigned32(value.countryInstance))
-  && (value.continuityStartHour === null || signed32(value.continuityStartHour)) && nullableText(value.awardsReason)
-  && isRaw(value.fuelRaw) && isRaw(value.capacityRaw) && isRaw(value.lendLeaseRaw)
-  // A read has its day, or says why it is left out. Applied operands must agree with the authoritative daily totals.
-  && (value.day === null ? typeof value.leftOut === 'string' && Object.hasOwn(LEFT_OUT, value.leftOut)
-    : value.leftOut === null && object(value.day) && isRaw(value.day.gainedRaw) && isRaw(value.day.burnedRaw)
-      && isRaw(value.day.otherRaw) && raws(value.day.receivedRaw, 3)
-      && (value.day.awards === null ? typeof value.awardsReason === 'string'
-        : isAwards(value.day.awards) && value.countryInstance !== null && value.continuityStartHour !== null && value.awardsReason === null
-          && value.day.awards.ownGainRaw === value.day.gainedRaw && value.day.awards.consumedRaw === value.day.burnedRaw
-          && value.day.awards.transfersRaw[3] === value.day.otherRaw
-          && value.day.awards.receivedRaw.every((raw, i) => raw === (value.day as FuelRead['day'])!.receivedRaw[i])));
-
-/** The lazy recipient reply retains the native identity and each refused name beside its exact amount. */
-export function validateFuelAwardsReply(data: unknown): FuelAwardsReply {
-  const reply = data as FuelAwardsReply;
-  if (!object(data) || typeof reply.branchId !== 'string' || typeof reply.tag !== 'string' || !signed32(reply.hour)
-    || !object(reply.awards) || !isAwards(reply.awards.totals) || !Array.isArray(reply.awards.recipients)
-    || !reply.awards.recipients.every(part => object(part) && span(part) && unsigned32(part.kind) && part.kind <= 2
-      && unsigned64(part.reference) && countryReference(part.owner) && unsigned64(part.host) && isRaw(part.amountRaw)
-      && typeof part.key === 'string' && part.key.length > 0 && nullableText(part.recordedName) && nullableText(part.nameReason))
-    || new Set(reply.awards.recipients.map(part => part.key)).size !== reply.awards.recipients.length
-    || !Array.isArray(reply.warnings) || !reply.warnings.every(note => typeof note === 'string')) {
-    throw new Error('The fuel recipient reply is malformed.');
-  }
-  return reply;
+function isRead(value: unknown): value is FuelReadAt {
+  if (!object(value)) return false;
+  const day = value.day;
+  const awards = object(day) ? day.awards : null;
+  return hourOrNull(value.readHour) && int(value.country) && (value.countryInstance === null || int(value.countryInstance))
+    && isRaw(value.fuelRaw) && isRaw(value.capacityRaw) && isRaw(value.lendLeaseRaw) && hourOrNull(value.dayHour)
+    && text(value.awardsReason) && hourOrNull(value.continuityStartHour)
+    && (day === null ? typeof value.leftOut === 'string' && LEFT_OUT_KINDS.includes(value.leftOut as DayLeftOut)
+      : value.leftOut === null && object(day) && isRaw(day.gainedRaw) && isRaw(day.burnedRaw) && isRaw(day.otherRaw) && triple(day.receivedRaw, isRaw)
+        && (awards === null || object(awards) && Array.isArray(awards.gainsRaw) && awards.gainsRaw.length === 4 && awards.gainsRaw.every(isRaw)
+          && isRaw(awards.ownGainRaw) && isRaw(awards.ownGainQuantityRaw) && Array.isArray(awards.transfersRaw) && awards.transfersRaw.length === 4
+          && awards.transfersRaw.every(isRaw) && isRaw(awards.consumedRaw) && triple(awards.receivedRaw, isRaw)));
 }
 
-/** A selected native recipient has exact held daily reads or explicit unknowns. */
-export function validateFuelAwardHistory(data: unknown): FuelAwardHistoryReply {
-  const reply = data as FuelAwardHistoryReply;
-  if (!object(data) || typeof reply.branchId !== 'string' || typeof reply.tag !== 'string' || !signed32(reply.hour)
-    || !countryReference(reply.country) || !unsigned32(reply.countryInstance) || !signed32(reply.continuityStartHour) || !signed32(reply.window)
-    || typeof reply.recipientKey !== 'string' || !reply.recipientKey || !span(reply as unknown as Record<string, unknown>)
-    || !Array.isArray(reply.runs) || !reply.runs.every((run, i) => object(run) && span(run) && typeof run.startsSegment === 'boolean'
-      && (run.amountRaw === null ? typeof run.reason === 'string' : isRaw(run.amountRaw) && run.reason === null)
-      && (i === 0 || reply.runs[i - 1].lastHour < run.firstHour))
-    || !Array.isArray(reply.warnings) || !reply.warnings.every(note => typeof note === 'string')) {
-    throw new Error('The fuel recipient history is malformed.');
-  }
-  return reply;
-}
-
-const isLabel = (value: unknown) => object(value) && typeof value.key === 'string' && nullableText(value.template)
-  && Array.isArray(value.arguments) && value.arguments.every(arg => arg === 'NUM' || arg === 'OIL') && nullableText(value.reason);
-
-/** Checks the reply's shape; reads must be in hour order and never overlap. */
-export function validateFuelReply(data: unknown): FuelReply {
-  const reply = data as FuelReply;
-  const scale = (value: unknown) => unsigned32(value) && value > 0;
-  const ok = typeof reply === 'object' && reply != null && typeof reply.branchId === 'string' && typeof reply.tag === 'string'
-    && scale(reply.quantityScale) && scale(reply.gainScale) && scale(reply.dayHours) && scale(reply.detailHours)
+/** A `country-fuel` reply: the read at an hour, or why none; never a zero for what was not recorded. */
+export function validateCountryFuel(data: unknown): CountryFuelReply {
+  const reply = data as CountryFuelReply;
+  const consumption = object(data) ? data.consumption : null;
+  const ok = object(data) && typeof reply.tag === 'string' && int(reply.quantityScale) && reply.quantityScale > 0 && int(reply.gainScale) && reply.gainScale > 0
+    && int(reply.dayHours) && reply.dayHours > 0 && int(reply.detailHours) && reply.detailHours > 0 && triple(reply.consumerNames, text)
     && Array.isArray(reply.gainLabels) && reply.gainLabels.length === 4 && reply.gainLabels.every(isLabel)
     && Array.isArray(reply.transferLabels) && reply.transferLabels.length === 3 && reply.transferLabels.every(isLabel)
-    && Array.isArray(reply.consumerNames) && reply.consumerNames.length === 3 && reply.consumerNames.every(name => name === null || typeof name === 'string')
-    && Array.isArray(reply.warnings) && reply.warnings.every(warning => typeof warning === 'string')
-    && Array.isArray(reply.reads) && reply.reads.every(isRead)
-    && reply.reads.every((read, index) => index === 0 || reply.reads[index - 1].lastHour < read.firstHour);
+    && (reply.read === null ? typeof reply.missing === 'string' : isRead(reply.read) && reply.missing === null)
+    && (consumption === null ? typeof reply.consumptionMissing === 'string' : object(consumption) && triple(consumption.nativeDailyRaw, rawOrNull)
+      && triple(consumption.knownDailyRaw, rawOrNull) && triple(consumption.positiveDailyRaw, rawOrNull) && triple(consumption.reasons, text))
+    && strings(reply.warnings);
   if (!ok) throw new Error('The fuel reply is malformed.');
   return reply;
 }
 
-/** What a fuel widget shows of a reply inside [from, to]: the reads cut to it (for
- * lines and lookups), the hours they were read (for dating and keyboard stops), and
- * each kept day as a bar from `dayHours` before its read to the read: gained up,
- * burned down. A day is known only at its read, so a bar shows only when its read
- * is inside, cut to the range's start. */
-export function fuelView(reply: FuelReply, from: number, to: number) {
-  const range = [{ firstHour: from, lastHour: to }];
-  const bars: StripBar[] = reply.reads.flatMap(read => read.day && read.firstHour >= from && read.firstHour <= to
-    ? [{ firstHour: read.firstHour - reply.dayHours, lastHour: read.firstHour,
-      up: Number(read.day.gainedRaw) / reply.gainScale, down: Number(read.day.burnedRaw) / reply.quantityScale }] : []);
-  return { reads: clipToSpans(reply.reads, range), readHours: reply.reads.map(read => read.firstHour), bars: clipToSpans(bars, range) };
+export function validateFuelAwards(data: unknown): FuelAwardsReply {
+  const reply = data as FuelAwardsReply;
+  if (!object(data) || typeof reply.tag !== 'string' || !int(reply.readHour) || !int(reply.country) || !int(reply.countryInstance)
+    || !triple(reply.receivedRaw, isRaw) || !Array.isArray(reply.recipients) || !strings(reply.warnings)
+    || !reply.recipients.every(part => object(part) && typeof part.key === 'string' && part.key.length > 0 && int(part.kind) && part.kind >= 0 && part.kind <= 2
+      && typeof part.reference === 'string' && int(part.owner) && typeof part.host === 'string' && int(part.firstHour) && int(part.lastHour)
+      && isRaw(part.amountRaw) && text(part.recordedName) && text(part.nameReason))
+    || new Set(reply.recipients.map(part => part.key)).size !== reply.recipients.length) throw new Error('The fuel recipient reply is malformed.');
+  return reply;
 }
 
-/** Runs of the tank's level or its capacity, as plotting numbers; labels use the exact raws. */
-export function fuelRuns(reads: readonly FuelRead[], scale: number, of: 'fuel' | 'capacity'): Run[] {
-  return reads.map(read => ({ firstHour: read.firstHour, lastHour: read.lastHour, value: Number(of === 'fuel' ? read.fuelRaw : read.capacityRaw) / scale,
-    breakBefore: read.startsSegment }));
+export function validateFuelAwardHistory(data: unknown): FuelAwardHistoryReply {
+  const reply = data as FuelAwardHistoryReply;
+  if (!object(data) || typeof reply.tag !== 'string' || !int(reply.country) || !int(reply.window) || typeof reply.recipientKey !== 'string'
+    || !int(reply.firstHour) || !int(reply.lastHour) || !Array.isArray(reply.runs) || !strings(reply.warnings)
+    || !reply.runs.every((run, i) => object(run) && int(run.firstHour) && int(run.lastHour) && run.firstHour <= run.lastHour && typeof run.startsSegment === 'boolean'
+      && (run.amountRaw === null ? typeof run.reason === 'string' : isRaw(run.amountRaw) && run.reason === null)
+      && (i === 0 || reply.runs[i - 1].lastHour < run.firstHour))) throw new Error('The fuel recipient history is malformed.');
+  return reply;
 }
+
+/** Why a day is left out, as the tooltip says it: its row's value and its note. */
+export const LEFT_OUT: Readonly<Record<DayLeftOut, { value: string; note: string }>> = {
+  overlaps: { value: 'Counted in another day', note: 'Included in another day.' },
+  notUpdated: { value: 'Not updated', note: 'Fuel was not updated while no states were owned.' },
+  ownershipNotRecorded: { value: 'Not known', note: 'Daily data incomplete.' },
+  notRecorded: { value: 'Not recorded', note: 'The day before this read was not recorded.' },
+};
 
 /** A recorded fuel quantity, rounded once to `digits` decimals (none when whole). */
-export const formatFuel = (raw: string, scale: number, digits: number) => formatAmount(rescale(raw, scale, digits), digits, digits);
+export const formatFuel = (raw: string | bigint, scale: number, digits: number) => formatAmount(rescale(BigInt(raw), BigInt(scale), digits), digits, digits);
 
-/** A fuel amount over `scale`, rounded once to `digits` decimals; without `digits`,
- * the exact finite decimal, whose common denominator may retain more places than
- * either native scale alone. No plotting number supplies the text. */
+/** A fuel amount over `scale`, rounded once to `digits` decimals; without `digits`, the exact finite decimal. */
 export function formatFuelPart(raw: bigint, scale: bigint, digits?: number): string {
   if (digits !== undefined) return formatAmount(rescale(raw, scale, digits), digits, digits);
   let denominator = scale, twos = 0, fives = 0;
@@ -163,124 +122,78 @@ export function formatFuelPart(raw: bigint, scale: bigint, digits?: number): str
   return formatAmount(rescale(raw, scale, places), places, places);
 }
 
-export const fuelPartShare = (raw: bigint, total: bigint) => total === 0n ? '\u2014' : `${formatAmount(rescale(raw * (total < 0n ? -100n : 100n), total < 0n ? -total : total, 1), 1, 1)}%`;
+export const fuelPartShare = (raw: bigint, total: bigint) => total === 0n ? '—'
+  : `${formatAmount(rescale(raw * (total < 0n ? -100n : 100n), total < 0n ? -total : total, 1), 1, 1)}%`;
 
-/** The day before a read in units of 10^-`digits` fuel: gained, burned and the net,
- * each rounded once from the recorded values, never from the rounded parts, and
- * whether the exact net is above zero. */
-export function dayAmounts(reply: Pick<FuelReply, 'quantityScale' | 'gainScale'>, read: Pick<FuelRead, 'day'>, digits: number) {
+/** The day before a read in units of 10^-`digits` fuel: gained, burned and the net, each rounded once from the recorded
+ * values, and whether the exact net is above zero. The net of an applied day is its converted own gain less burned. */
+export function dayAmounts(reply: Pick<CountryFuelReply, 'quantityScale' | 'gainScale'>, read: Pick<FuelReadAt, 'day'>, digits: number) {
   if (!read.day) return null;
   const [gainScale, quantityScale] = [BigInt(reply.gainScale), BigInt(reply.quantityScale)];
-  const gained = BigInt(read.day.gainedRaw);
-  const burned = BigInt(read.day.burnedRaw);
+  const gained = BigInt(read.day.gainedRaw), burned = BigInt(read.day.burnedRaw);
   const [net, netScale] = read.day.awards ? [BigInt(read.day.awards.ownGainQuantityRaw) - burned, quantityScale]
     : [gained * quantityScale - burned * gainScale, gainScale * quantityScale];
-  return {
-    gained: rescale(gained, gainScale, digits),
-    burned: rescale(burned, quantityScale, digits),
-    net: rescale(net, netScale, digits),
-    gaining: net > 0n,
-  };
+  return { gained: rescale(gained, gainScale, digits), burned: rescale(burned, quantityScale, digits), net: rescale(net, netScale, digits), gaining: net > 0n };
 }
 
 /** How full the tank is, as a whole percent; null without a capacity. */
-export function percentFull(read: Pick<FuelRead, 'fuelRaw' | 'capacityRaw'>): bigint | null {
+export function percentFull(read: Pick<FuelReadAt, 'fuelRaw' | 'capacityRaw'>): bigint | null {
   const capacity = BigInt(read.capacityRaw);
   return capacity > 0n ? rescale(BigInt(read.fuelRaw) * 100n, capacity, 0) : null;
 }
 
 export interface FuelPart { id: string; label: string; raw: bigint; consumer?: number; muted?: boolean; reason?: string | null }
-export type FuelPartLabels = Pick<FuelReply, 'gainLabels' | 'transferLabels'>;
 
-/** Fuel labels use NUM and, for oil, OIL placeholders. The recorded catalogue
- * has already expanded references and removed markup. NUM is written like the
- * amounts (`formatFuelPart`). */
+/** A fuel label with its NUM written like the amounts; the OIL count is not recorded. */
 export function fuelLabel(label: FuelLabel | undefined, raw: bigint, scale: bigint, digits?: number): string | null {
   return label?.template?.replaceAll('{NUM}', formatFuelPart(raw, scale, digits)).replaceAll('{OIL}', '?') ?? null;
 }
 
-/** Common-denominator operands retain each hourly conversion residual. Incoming
- * lend-lease is separate from own production and its share denominator. */
-export function fuelParts(reply: FuelReply, read: FuelRead, measure: 'gain' | 'burn', labels: FuelPartLabels = reply, digits?: number):
+/** A day's parts over a common denominator, so each hourly conversion's residual stays exact. Incoming lend-lease is apart
+ * from own production and its shares. */
+export function fuelParts(reply: CountryFuelReply, read: FuelReadAt, measure: 'gain' | 'burn', digits?: number):
   { scale: bigint; total: bigint; parts: FuelPart[]; transfer: FuelPart | null; reason: string | null } | null {
   if (!read.day) return null;
   const gain = BigInt(reply.gainScale), quantity = BigInt(reply.quantityScale), awards = read.day.awards;
-  const named = (id: string, raw: bigint, label: string | null | undefined, reason?: string | null): FuelPart => ({ id, raw,
-    label: label ?? 'Other', muted: label == null, reason });
+  const named = (id: string, raw: bigint, label: string | null | undefined, reason?: string | null): FuelPart => ({ id, raw, label: label ?? 'Other', muted: label == null, reason });
   if (measure === 'gain') return { scale: gain, total: BigInt(read.day.gainedRaw),
-    parts: awards ? awards.gainsRaw.map((raw, i) => named(`gain-${i}`, BigInt(raw), fuelLabel(labels.gainLabels[i], BigInt(raw), gain, digits), labels.gainLabels[i].reason))
+    parts: awards ? awards.gainsRaw.map((raw, i) => named(`gain-${i}`, BigInt(raw), fuelLabel(reply.gainLabels[i], BigInt(raw), gain, digits), reply.gainLabels[i].reason))
       : [{ id: 'unidentified', label: 'Other', raw: BigInt(read.day.gainedRaw), muted: true }],
-    transfer: awards ? named('incoming', BigInt(awards.transfersRaw[0]), fuelLabel(labels.transferLabels[0], BigInt(awards.transfersRaw[0]), quantity, digits), labels.transferLabels[0].reason) : null,
+    transfer: awards ? named('incoming', BigInt(awards.transfersRaw[0]), fuelLabel(reply.transferLabels[0], BigInt(awards.transfersRaw[0]), quantity, digits), reply.transferLabels[0].reason) : null,
     reason: awards ? null : read.awardsReason };
   const total = BigInt(read.day.burnedRaw) * gain;
   const received = read.day.receivedRaw.map((raw, index) => ({ ...named(`consumer-${index}`, BigInt(raw) * quantity, reply.consumerNames[index]), consumer: index }));
   const other = BigInt(read.day.otherRaw) * gain;
   const residual = total - other - received.reduce((sum, part) => sum + part.raw, 0n);
-  const transfers: FuelPart[] = awards ? [named('outgoing', BigInt(awards.transfersRaw[1]) * gain, fuelLabel(labels.transferLabels[1], BigInt(awards.transfersRaw[1]), quantity, digits), labels.transferLabels[1].reason),
-    named('flat', BigInt(awards.transfersRaw[2]) * gain, fuelLabel(labels.transferLabels[2], BigInt(awards.transfersRaw[2]), quantity, digits), labels.transferLabels[2].reason),
+  const transfers: FuelPart[] = awards ? [
+    named('outgoing', BigInt(awards.transfersRaw[1]) * gain, fuelLabel(reply.transferLabels[1], BigInt(awards.transfersRaw[1]), quantity, digits), reply.transferLabels[1].reason),
+    named('flat', BigInt(awards.transfersRaw[2]) * gain, fuelLabel(reply.transferLabels[2], BigInt(awards.transfersRaw[2]), quantity, digits), reply.transferLabels[2].reason),
     { id: 'other', label: 'Other', raw: other - (BigInt(awards.transfersRaw[1]) + BigInt(awards.transfersRaw[2])) * gain, muted: true }]
     : [{ id: 'other', label: 'Other', raw: other, muted: true }];
-  return { scale: gain * quantity, total, parts: [...received, ...transfers,
-    { id: 'conversion', label: 'Hourly conversion difference', raw: residual }], transfer: null, reason: awards ? null : read.awardsReason };
+  return { scale: gain * quantity, total, parts: [...received, ...transfers, { id: 'conversion', label: 'Hourly conversion difference', raw: residual }],
+    transfer: null, reason: awards ? null : read.awardsReason };
 }
 
-/** Missing source rows never borrow the separate transfer's label or amount. */
-export const fuelHistoryRow = (values: ReturnType<typeof fuelParts>, id: string, transfer: boolean) =>
-  values?.parts.find(part => part.id === id) ?? (transfer ? values?.transfer ?? null : null);
-
-/** Current text and chart hover share membership and unknown-run semantics. */
-export function fuelRecipientAmount(runs: readonly FuelAwardRun[], hour: number | null, within: readonly Span[] | null | undefined, gainScale: number) {
-  const missing = (text: string) => ({ raw: null, value: null, text });
-  if (hour === null) return missing('No selected moment');
-  if (!isMember(within ?? undefined, hour)) return missing('Outside the selected group membership');
-  const run = runAt(runs, hour);
-  if (run?.amountRaw == null) return missing('History unavailable');
-  const raw = BigInt(run.amountRaw);
-  return { raw, value: Number(raw) / gainScale, text: formatFuelPart(raw, BigInt(gainScale)) };
+/** Which parts a day shows and how each is named: what a breakdown renders on; their amounts are painted. */
+export function partsStructure(reply: CountryFuelReply | undefined, measure: 'gain' | 'burn'): string {
+  const read = reply?.read;
+  const values = reply && read ? fuelParts(reply, read, measure) : null;
+  return JSON.stringify([reply?.missing ?? null, read?.leftOut ?? null, read?.day?.awards ? 1 : 0, values?.reason ?? null,
+    values?.parts.map(part => [part.id, part.label, part.reason ?? null]) ?? null, values?.transfer?.label ?? null, reply?.consumerNames ?? null]);
 }
 
-/** A part is absent when its attribution was not recorded, never a known zero.
- * Daily histories use stable source keys across legacy and actual accounting. */
-export function fuelPartHistory(reply: FuelReply, measure: 'gain' | 'burn', labels: FuelPartLabels = reply, digits?: number) {
-  const parts = new Map<string, { id: string; label: string; runs: Run[]; transfer: boolean }>();
-  for (const read of reply.reads) {
-    const values = fuelParts(reply, read, measure, labels, digits);
-    if (!values) continue;
-    for (const part of [...values.parts, ...(values.transfer ? [values.transfer] : [])]) {
-      const transfer = part === values.transfer;
-      let series = parts.get(part.id);
-      if (!series) { series = { id: part.id, label: part.label, runs: [], transfer }; parts.set(part.id, series); }
-      const previous = series.runs.at(-1);
-      series.runs.push({ firstHour: read.firstHour, lastHour: read.lastHour,
-        breakBefore: read.startsSegment || !previous || previous.lastHour + 1 !== read.firstHour,
-        value: Math.max(0, Number(part.raw) / Number(transfer ? BigInt(reply.quantityScale) : values.scale)) });
-    }
-  }
-  return [...parts.values()];
-}
-
-/** Lazy requests always name the original supplying read, including at carried display hours. */
-export function fuelAwardBasis(reply: Pick<FuelReply, 'branchId' | 'tag'>, read: FuelRead | null | undefined) {
-  return read?.day?.awards && read.countryInstance !== null && read.continuityStartHour !== null ? { branchId: reply.branchId, tag: reply.tag,
-    hour: read.firstHour, country: read.country, countryInstance: read.countryInstance } : null;
-}
-
-/** Full and compact tooltip forms: the tank, then the day before its read, with
- * amounts written to `digits` decimals. */
-export function fuelTooltips(reply: FuelReply, reads: readonly FuelRead[], hour: number, title: string,
-  colors: { fuel: string; capacity: string; gained: string; burned: string }, digits: number,
-  amounts?: Pick<FuelRead,'fuelRaw'|'capacityRaw'>): TooltipContent[] {
-  const read = runAt(reads, hour);
-  const level = read ?? amounts;
-  if (!level) return [{ title, rows: [{ label: 'Not recorded at this time', tone: 'muted' }] }];
-  const full = percentFull(level);
+/** Full and compact tooltip forms: the tank, then the day before its read, written to `digits` decimals. */
+export function fuelTooltips(reply: CountryFuelReply, title: string,
+  colors: { fuel: string; capacity: string; gained: string; burned: string }, digits: number): TooltipContent[] {
+  const read = reply.read;
+  if (!read) return [{ title, rows: [{ label: reply.missing ?? 'Not recorded at this time', tone: 'muted' }] }];
+  const full = percentFull(read);
   const tank: TooltipRow[] = [
-    { label: 'Fuel', value: formatFuel(level.fuelRaw, reply.quantityScale, digits), swatch: colors.fuel },
-    { label: 'Capacity', value: formatFuel(level.capacityRaw, reply.quantityScale, digits), swatch: colors.capacity, tone: 'muted' },
+    { label: 'Fuel', value: formatFuel(read.fuelRaw, reply.quantityScale, digits), swatch: colors.fuel },
+    { label: 'Capacity', value: formatFuel(read.capacityRaw, reply.quantityScale, digits), swatch: colors.capacity, tone: 'muted' },
     { label: 'Full', value: full == null ? 'No capacity' : `${full}%` },
   ];
-  if (!read) return [{title,rows:[...tank,{label:'Gained and burned',value:'Still being prepared',tone:'muted',divider:true}]}];
-  const notes: (string | undefined)[] = [];
+  const notes: string[] = [];
   const day = dayAmounts(reply, read, digits);
   let rows: TooltipRow[];
   if (day) {
@@ -291,18 +204,65 @@ export function fuelTooltips(reply: FuelReply, reads: readonly FuelRead[], hour:
     notes.push(`Previous ${reply.dayHours} hours; excludes incoming lend-lease.`);
     if (read.fuelRaw === read.capacityRaw && day.gaining) notes.push('The tank was full: the game discards fuel beyond its capacity.');
   } else {
-    const why = LEFT_OUT[read.leftOut ?? 'notUpdated'](reply.dayHours);
+    const why = LEFT_OUT[read.leftOut ?? 'notRecorded'];
     rows = [...tank, { label: 'Gained and burned', value: why.value, tone: 'muted', divider: true }];
     notes.push(why.note);
   }
   const incoming = read.day?.awards?.transfersRaw[0];
-  if (day && incoming !== undefined) {
-    rows.push({ label: 'Lend-lease received (separate)', value: formatSigned(rescale(incoming, reply.quantityScale, digits), digits, digits) });
-  } else {
-    const lendLease = BigInt(read.lendLeaseRaw);
-    if (day && lendLease !== 0n) notes.push('Daily lend-lease total unavailable.');
-  }
-  const note = notes.filter(Boolean).join(' ');
-  // In a short window the day's total stays, with the tank's level above it.
+  if (day && incoming !== undefined) rows.push({ label: 'Lend-lease received (separate)', value: formatSigned(rescale(BigInt(incoming), BigInt(reply.quantityScale), digits), digits, digits) });
+  else if (day && BigInt(read.lendLeaseRaw) !== 0n) notes.push('Daily lend-lease total unavailable.');
+  const note = notes.join(' ');
   return [{ title, rows, note }, { title, rows: [tank[0], rows.find(row => row.strong) ?? rows.at(-1)!], note }];
+}
+
+/** A summary's values over `scale`, its tiles' head left out (a breakdown is not followed at the head). */
+export function scaledSummary(summary: ChartSummary | undefined, scale: number): ChartSummary | undefined {
+  return summary && { ...summary, tiles: undefined, runs: summary.runs?.map(run => ({ ...run, value: run.value / scale })),
+    buckets: summary.buckets.map(bucket => bucket && ({ ...bucket, firstValue: bucket.firstValue / scale, lastValue: bucket.lastValue / scale,
+      minValue: bucket.minValue / scale, maxValue: bucket.maxValue / scale })) };
+}
+
+/** A summary as runs: its exact runs, else each bucket's first, least, greatest and last points in hour order. */
+export function summaryRuns(summary: ChartSummary | undefined): Run[] {
+  if (!summary) return [];
+  if (summary.runs) return [...summary.runs];
+  return summary.buckets.flatMap(bucket => {
+    if (!bucket) return [];
+    const ordered = [...new Map([[bucket.firstHour, bucket.firstValue], [bucket.minHour, bucket.minValue], [bucket.maxHour, bucket.maxValue],
+      [bucket.lastValueHour, bucket.lastValue], [bucket.lastHour, bucket.lastValue]])].sort((a, b) => a[0] - b[0]);
+    return ordered.map(([hour, value], index) => ({ firstHour: hour, lastHour: bucket.hasBreak ? hour : ordered[index + 1] ? ordered[index + 1][0] - 1 : bucket.lastHour,
+      value, breakBefore: bucket.hasBreak || index === 0 && bucket.firstBreak }));
+  });
+}
+
+/** The gain and burn strip from the day series' summaries: a bar a read, from `dayHours` before it to it, gained up and
+ * burned down. A bin of many reads is a span bar over its hours with each half's greatest read: its summary knows only
+ * the bucket that read fell in, never its day. */
+export function stripBars(gain: ChartSummary | undefined, burn: ChartSummary | undefined, dayHours: number): StripBar[] {
+  const bars = new Map<number, StripBar>();
+  for (const [summary, field, scale] of [[gain, 'up', GAIN_SCALE], [burn, 'down', QUANTITY_SCALE]] as const) {
+    const points = summary?.runs?.map(run => [run.firstHour - dayHours, run.firstHour, run.value, false] as const)
+      ?? summary?.buckets.flatMap(bucket => bucket ? [[bucket.firstHour - 1, bucket.lastHour, bucket.maxValue, true] as const] : []) ?? [];
+    for (const [first, hour, value, span] of points) {
+      const bar = bars.get(hour) ?? { firstHour: first, lastHour: hour, up: 0, down: 0, ...span ? { span: true as const } : {} };
+      bar.firstHour = Math.min(bar.firstHour, first);
+      bar[field] = value / scale;
+      bars.set(hour, bar);
+    }
+  }
+  return [...bars.values()].sort((a, b) => a.lastHour - b.lastHour);
+}
+
+/** The state of one day series' lines for the strip: `landed` once its first lines are held, `unrecorded` why none
+ * holds a value in view, `failure` the message of a read that failed. */
+export interface StripLines { landed: boolean; unrecorded: string | null; failure: string | null }
+
+/** What the gain and burn strip writes where it draws no bar, so it is never a blank band: why the bars are missing
+ * (the tooltip's reason), or that they are loading. Null when a bar is drawn. */
+export function stripNote(bars: number, gain: StripLines, burn: StripLines): { text: string; reason: string | null } | null {
+  if (bars > 0) return null;
+  const failure = gain.failure ?? burn.failure;
+  if (failure) return { text: 'Gain and burn could not be loaded', reason: failure };
+  if (!gain.landed || !burn.landed) return { text: 'Loading gain and burn…', reason: null };
+  return { text: 'Gain and burn not recorded', reason: gain.unrecorded ?? burn.unrecorded ?? 'No day of fuel was read in these hours.' };
 }

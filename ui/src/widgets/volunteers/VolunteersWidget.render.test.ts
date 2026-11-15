@@ -4,14 +4,14 @@ import { createElement } from 'react';
 import type { ReactElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { WidgetProps } from '../../dashboard/definitions';
-import type { VolunteersExpeditionariesReply } from '../../generated/dashboard';
 import { BRANCH, KNOWN_HOUR, humansBy, mountModule, pendingGroups } from '../../dashboard/pendingGroups.fixture.ts';
+import type { CountryGroupReply, VolunteersExpeditionariesReply } from '../../generated/dashboard';
 
-test('members ever, known so far but not yet all found, leave a moment with no volunteers loading, not empty', async () => {
-  // ENG sends volunteers at the prepared hour 150; whether ENG is ever a human player is known only once the whole branch is.
+test('human players load until the groups come, then count a member’s volunteers ever or only while a member, never none for a member’s', async () => {
+  // ENG sends 2 divisions to FRA at 140-160, around the hour shown (150); GER, a human player, sends none.
   const reply = { tallies: [], unobserved: [], warnings: [], links: [{ key: 'ef', sender: 'ENG', senderSlot: 2, senderCountryId: 102, host: 'FRA', hostSlot: 3,
     hostCountryId: 103, runs: [{ firstHour: 140, lastHour: 160, divisions: 2, startsSegment: false }] }] } as unknown as VolunteersExpeditionariesReply;
-  const state = { groups: pendingGroups(), reply };
+  const state: { groups: CountryGroupReply | undefined; reply: VolunteersExpeditionariesReply } = { groups: undefined, reply };
   const host = globalThis as typeof globalThis & { __volunteersPending?: typeof state }; host.__volunteersPending = state;
   const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/volunteers/VolunteersWidget.tsx', {
     '/dashboard/products.ts': 'export const useProduct = (_client, request) => ({ data: request ? globalThis.__volunteersPending.reply : undefined, retry() {} }); export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
@@ -30,16 +30,20 @@ test('members ever, known so far but not yet all found, leave a moment with no v
     const props = { widget: { id: 'volunteers', kind: 'volunteers', trackIds: ['main'], countries: humansBy('ever'), time: { mode: 'follow' }, options: {} },
       runtime: { tracks: [{ id: 'main', axisOffset: 0, source: { id: 'source', revision: '1', metadata: { countries: [] } }, branch: { ...BRANCH, gaps: [] } }],
         client: {}, clock: { getHour: () => KNOWN_HOUR, getSnapshot: () => ({ playing: false, hoursPerSecond: 0 }) } }, active: true, onDiagnostics() {} } as unknown as WidgetProps;
-    const render = () => renderToStaticMarkup(createElement(module.default, props));
-    // GER, a member already found, makes the request; ENG may still be found later.
-    const pending = render();
-    assert.match(pending, /This range is still being prepared\./);
-    assert.doesNotMatch(pending, /No volunteers abroad/);
-    // The final reply proves ENG never was a human player.
+    const render = (membership: 'hour' | 'ever' = 'ever') => renderToStaticMarkup(createElement(module.default,
+      { ...props, widget: { ...props.widget, countries: humansBy(membership) } }));
+    // No groups reply yet: loading, never a roster with no volunteers.
+    const loading = render();
+    assert.match(loading, /aria-label="Loading volunteers…"/);
+    assert.doesNotMatch(loading, /No volunteers abroad|links drawn/);
+    // GER is the only human player: ENG's volunteers are not counted, and none is said.
     state.groups = pendingGroups({ final: true });
     assert.match(render(), /No volunteers abroad at this date\./);
-    // Found a member later, its volunteers at 150 show.
-    state.groups = pendingGroups({ final: true, humans: [{ tag: 'GER', firstHour: 0, lastHour: 160 }, { tag: 'ENG', firstHour: 180, lastHour: 200 }] });
+    // ENG a human player from 180: counted ever, its volunteers at 150 show; counted at each hour, not before it joins.
+    state.groups = pendingGroups({ final: true, humans: [{ tag: 'GER', firstHour: 0, lastHour: 200 }, { tag: 'ENG', firstHour: 180, lastHour: 200 }] });
     assert.match(render(), /links drawn/);
+    const hourly = render('hour');
+    assert.match(hourly, /No volunteers abroad at this date\./);
+    assert.doesNotMatch(hourly, /links drawn/);
   } finally { await close(); delete host.__volunteersPending; }
 });

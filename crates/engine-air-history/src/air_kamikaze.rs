@@ -397,45 +397,24 @@ impl WindowState {
     }
 }
 
-/// The history in each of `regions` (sorted, distinct IDs in the low 32
-/// bits) of every root in `roots`: one gather of table headers per
-/// `BATCH` roots and one gather of slots per `BATCH` (root, region)
-/// pairs. A null slot, the game's own absence test, is skipped. `each` gets
-/// the root's index in `roots`, in root then region order.
+/// Region slots copied per contiguous read of one history table.
+const SLOT_CHUNK: usize = 512;
+
+/// The history in every region slot of each root in `roots`: one gather of
+/// table headers per `BATCH` roots, then each table's slots in contiguous
+/// reads of up to [`SLOT_CHUNK`]. A null slot, the game's own absence test,
+/// is skipped. `each` gets the root's index in `roots`, in root then region
+/// order.
 pub fn region_slots(
     memory: &impl Memory,
     roots: &[usize],
-    regions: &[u64],
     mut each: impl FnMut(usize, u32, usize) -> Result<(), &'static str>,
 ) -> Result<(), &'static str> {
     const TABLE: [RecordField; 1] = [field(cstrategic_air::HISTORY_TABLE, 0, 16)];
     const TABLE_LAYOUT: RecordLayout<'static> =
         RecordLayout::new(&TABLE, 16).expect("valid layout");
     let mut table_bytes = [0_u8; BATCH * 16];
-    let mut pending = [(0_usize, 0_u32); BATCH];
-    let mut slots = [0_usize; BATCH];
-    let mut slot_bytes = [0_u8; BATCH * 8];
-    let mut len = 0;
-    let mut flush = |pending: &[(usize, u32)], slots: &[usize]| {
-        if slots.is_empty() {
-            return Ok(());
-        }
-        gather(
-            memory,
-            slots,
-            &QWORD_LAYOUT,
-            1,
-            &mut slot_bytes[..slots.len() * 8],
-            "air history slot unreadable",
-        )?;
-        for (index, &(root, region)) in pending.iter().enumerate() {
-            let history = address(&slot_bytes, index * 8)?;
-            if history != 0 {
-                each(root, region, history)?;
-            }
-        }
-        Ok::<_, &'static str>(())
-    };
+    let mut slot_bytes = [0_u8; SLOT_CHUNK * 8];
     for (first, chunk) in (0..).step_by(BATCH).zip(roots.chunks(BATCH)) {
         gather(
             memory,
@@ -447,31 +426,22 @@ pub fn region_slots(
         )?;
         for index in 0..chunk.len() {
             let table = header(&table_bytes, index * 16)?;
-            let wanted = regions.partition_point(|&region| (region as u32) < table.count);
-            let count = if regions.is_empty() {
-                table.count as usize
-            } else {
-                wanted
-            };
-            for wanted_index in 0..count {
-                let region = if regions.is_empty() {
-                    wanted_index as u64
-                } else {
-                    regions[wanted_index]
-                };
-                pending[len] = (first + index, region as u32);
-                slots[len] = table
-                    .element(region as u32, 8)
-                    .ok_or("air history slot overflow")?;
-                len += 1;
-                if len == BATCH {
-                    flush(&pending, &slots)?;
-                    len = 0;
+            for start in (0..table.count).step_by(SLOT_CHUNK) {
+                let len = ((table.count - start) as usize).min(SLOT_CHUNK);
+                let at = table.element(start, 8).ok_or("air history slot overflow")?;
+                if !read_slice(memory, at, &mut slot_bytes[..len * 8]) {
+                    return Err("air history slot unreadable");
+                }
+                for slot in 0..len {
+                    let history = address(&slot_bytes, slot * 8)?;
+                    if history != 0 {
+                        each(first + index, start + slot as u32, history)?;
+                    }
                 }
             }
         }
     }
-    flush(&pending[..len], &slots[..len])
+    Ok(())
 }
 
 /// Histories read per chunk by [`history_windows`].

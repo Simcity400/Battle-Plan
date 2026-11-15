@@ -832,6 +832,14 @@ pub fn compare_division_status(
     Ok(())
 }
 
+/// The collector records a crew only under the crew writers' quiet token; the game always holds
+/// a number, so a `None` crew is that refusal (the row encoder has no not-recorded cell).
+const CREW_NOT_RECORDED: &str = "crew not recorded at this hour: the crew writers were not observed, or one ran across the read";
+
+/// The collector records a demanded stop flag only under a wing-registry certificate or quiet
+/// token; the game always holds the byte, so a missing one is that refusal.
+const TRAINING_STOP_NOT_RECORDED: &str = "air wing stop_training_at_max_xp not recorded at this hour: the wing writers were not observed, one ran across the read, or the byte was unreadable";
+
 /// Every `DivisionStatusRow::move_flags` bit the format defines.
 const DEFINED_MOVE_FLAGS: u8 = DivisionStatusRow::MOVE_EXILED
     | DivisionStatusRow::MOVE_CAN_EXFILTRATE_FROM_COAST
@@ -1902,13 +1910,16 @@ pub fn compare_naval_units(
                 expected.max_manpower,
             ),
         ] {
-            if matches!(actual, Recorded::Value(None)) {
-                report.difference(format!("{label}.{field}"), "crew read refused", expected);
-                continue;
-            }
-            report.compared(&format!("Ships.{field}"), 1);
-            if actual.require(field).ok().copied().flatten() != expected {
-                report.difference(format!("{label}.{field}"), actual, expected);
+            match *actual {
+                Recorded::NotRecorded | Recorded::Value(None) => {
+                    report.limitation(CREW_NOT_RECORDED, format!("{label}.{field}"));
+                }
+                Recorded::Value(Some(value)) => {
+                    report.compared(&format!("Ships.{field}"), 1);
+                    if Some(value) != expected {
+                        report.difference(format!("{label}.{field}"), value, expected);
+                    }
+                }
             }
         }
         if actual.task_force != expected.task_force {
@@ -2215,16 +2226,12 @@ pub fn compare_air_wings(
             continue;
         };
         report.air_wings += 1;
-        report.compared("AirWings.acquired_manpower", 1);
-        report.compared("AirWings.exile_country", 1);
-        match actual
-            .exile_country
-            .require("wing exile country")
-            .ok()
-            .copied()
-            .flatten()
-        {
-            Some(raw) => {
+        match actual.exile_country {
+            Recorded::NotRecorded | Recorded::Value(None) => {
+                report.limitation(CREW_NOT_RECORDED, format!("{label}.government_in_exile_tag"));
+            }
+            Recorded::Value(Some(raw)) => {
+                report.compared("AirWings.exile_country", 1);
                 let tag = if raw > 0 {
                     Some(required_country_tag(raw as u32, links)?)
                 } else {
@@ -2238,25 +2245,17 @@ pub fn compare_air_wings(
                     );
                 }
             }
-            None => report.difference(
-                format!("{label}.government_in_exile_tag: capture unavailable"),
-                actual.exile_country,
-                &expected.government_in_exile_tag,
-            ),
         }
-        if actual
-            .acquired_manpower
-            .require("wing manpower")
-            .ok()
-            .copied()
-            .flatten()
-            != expected.manpower
-        {
-            report.difference(
-                format!("{label}.manpower"),
-                actual.acquired_manpower,
-                expected.manpower,
-            );
+        match actual.acquired_manpower {
+            Recorded::NotRecorded | Recorded::Value(None) => {
+                report.limitation(CREW_NOT_RECORDED, format!("{label}.manpower"));
+            }
+            Recorded::Value(Some(value)) => {
+                report.compared("AirWings.acquired_manpower", 1);
+                if Some(value) != expected.manpower {
+                    report.difference(format!("{label}.manpower"), value, expected.manpower);
+                }
+            }
         }
         report.compared("AirWings.replacement_setting", 1);
         let setting = match &actual.replacement_setting {
@@ -2355,13 +2354,21 @@ pub fn compare_air_wings(
             );
         }
         if actual.mission_mask & 0x800 != 0 {
-            report.compared("AirWings.training_stop", 1);
-            if actual.training_stop() != Some(expected.stop_training_at_max_xp) {
-                report.difference(
+            match actual.training_stop() {
+                None => report.limitation(
+                    TRAINING_STOP_NOT_RECORDED,
                     format!("{label}.stop_training_at_max_xp"),
-                    actual.training_stop(),
-                    expected.stop_training_at_max_xp,
-                );
+                ),
+                Some(stop) => {
+                    report.compared("AirWings.training_stop", 1);
+                    if stop != expected.stop_training_at_max_xp {
+                        report.difference(
+                            format!("{label}.stop_training_at_max_xp"),
+                            stop,
+                            expected.stop_training_at_max_xp,
+                        );
+                    }
+                }
             }
         }
         if actual.mission_region != expected.mission_region {

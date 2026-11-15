@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { resolveOptions } from '../../dashboard/options.ts';
 import { definition, OPTIONS } from './definition.ts';
-import { formatHullTick, formatNavyValue, navyChartOptions, navyRequest, validateNavyReply } from './navyData.ts';
+import { formatHullTick, formatNavyValue, navyChartOptions, navyRequest, navyTotals, validateNavyReply } from './navyData.ts';
 
 test('navy defaults to roster ships, authored content classes and the shared top-ten race', () => {
   const options = resolveOptions(OPTIONS, {});
@@ -20,6 +20,13 @@ test('navy logical ownership and broad-role strength choices preserve opaque cou
     { branchId: 'branch', tags: ['tag , with space'], top: null, ownership: 'logical', grouping: 'type', measure: 'strength' });
   assert.equal(resolveOptions(OPTIONS, { grouping: 'unknown' }).grouping, 'class');
   assert.throws(() => validateNavyReply([]), /malformed/);
+  assert.deepEqual(navyTotals(resolveOptions(OPTIONS, { ownership: 'logical', measure: 'strength' })), { kind: 'navy-totals', measure: 'logicalStrength', decimals: 5 });
+  assert.deepEqual(navyTotals(resolveOptions(OPTIONS, {})), { kind: 'navy-totals', measure: 'rosterShips', decimals: 0 });
+  const window = { branchId: '1', windows: [], window: 0, interval: { firstHour: 0, lastHour: 9 }, parts: [], warnings: [],
+    series: [{ tag: 'GER', identities: [], segments: [{ firstHour: 0, lastHour: 9 }], membership: null,
+      runs: [{ firstHour: 0, lastHour: 9, startsSegment: true, total: 0, values: [] }] }] };
+  assert.throws(() => validateNavyReply(window), /malformed/, 'a navy run without its maximum is refused');
+  validateNavyReply({ ...window, series: [{ ...window.series[0], runs: [{ ...window.series[0].runs[0], referenceTotal: null }] }] });
 });
 
 
@@ -39,7 +46,7 @@ test('hull HP formatting preserves every fixed5 digit and missing maximum stays 
   assert.equal(formatNavyValue(100_000_000, options), '1,000');
   assert.equal(formatHullTick(100_000, [0, 100_000, 200_000]), '1');
   assert.notEqual(formatHullTick(.1, [.1, .2]), formatHullTick(.2, [.1, .2]));
-  const data = { branchId: '1', parts: [], warnings: [], series: [{ tag: 'mod country',
+  const data = { branchId: '1', windows: [], window: 0, interval: { firstHour: 0, lastHour: 0 }, parts: [], warnings: [], series: [{ tag: 'mod country',
     identities: [{ firstHour: 0, lastHour: 0, slot: 1, countryId: 2 }],
     segments: [{ firstHour: 0, lastHour: 0 }], membership: null,
     runs: [{ firstHour: 0, lastHour: 0, startsSegment: true, total: 0, values: [], referenceTotal: null }] }] };

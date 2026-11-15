@@ -1,17 +1,16 @@
-import { preparedPrefix } from '../../dashboard/preparedPrefix.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { deepFreeze } from '../../testFrozen.ts';
-import type { NavalBattleHistory, NavalBattleRun, NavalBattlesReply, NavalBattlesManifestReply, NavalBattlesRankingReply } from '../../generated/dashboard';
-import { navalBattleMeasureText, navalBattleRows, navalBattleSize, navalBattleWarnings, navalBattleWindows,
+import { navalBattleChanges, navalBattleMeasureText, navalBattleRow, navalBattleRows, navalBattleSize, navalBattleWarnings, navalBattleWindows,
   rankedNavalBattleRows, shownNavalCensusHour, validateNavalBattlesManifest, validateNavalBattlesRanking, validateNavalBattlesReply,
   NAVAL_BATTLE_DEFAULT_MEASURE } from './navalBattlesData.ts';
-import { battlePlaceRequests, namedBattles, isBattleRow } from '../battles/battleRows.ts';
+import { battleChangeHours, battlePlaceRequests, namedBattles, isBattleRow } from '../battles/battleRows.ts';
 import { validatePlaceNamesReply } from '../../dashboard/placeNamesData.ts';
 import { registerWidgets, widgetUnavailable } from '../../dashboard/definitions.ts';
 import { createWidget, resolveWindow } from '../../dashboard/model.ts';
 import type { BoundTrack } from '../../dashboard/model';
 import { definition } from './definition.ts';
+import type { NavalBattleHistory, NavalBattleRun, NavalBattlesManifestReply, NavalBattlesRankingReply, NavalBattlesReply } from '../../generated/dashboard';
 
 test('Naval supports Pin and retains its exact moment as playback moves', () => {
   registerWidgets([definition]);
@@ -50,6 +49,10 @@ test('naval playback retains settled rows and preserves ongoing reads, range adm
   const data = deepFreeze(reply()), windows = deepFreeze(new Map([[0, data]])), matches = () => true;
   const at = (hour: number, from: number | null = null) => navalBattleRows(windows, hour, matches, true, from);
   for (const hour of [99, 100, 105, 109, 110, 120, 105]) assert.deepEqual(at(hour), rows(data, hour));
+  // One battle read alone is the row the whole read lists: listed, gone once its run ends unended, admitted by the range.
+  for (const from of [null, 105]) for (let hour = 98; hour <= 112; hour++) for (const id of ['combat:900:100', 'result:800']) {
+    assert.deepEqual(navalBattleRow(windows, id, hour, matches, true, from), at(hour, from).find(row => row.id === id) ?? null, `${id} at ${hour}`);
+  }
   assert.notEqual(at(105), at(106));
   assert.equal(at(110), at(120));
   assert.equal(at(104, 105).length, 0);
@@ -234,9 +237,15 @@ test('all three replies preserve content diagnostics and refuse malformed diagno
   assert.deepEqual(navalBattleWarnings(new Map([[1, later], [0, data]]), 110, 119), contentWarnings);
 });
 
-test('cold naval windows preserve the ordinary empty-prefix metadata', () => {
-  const prefix = { coverage: { firstHour: 100, lastHour: 99, complete: false }, pending: [{ firstHour: 100, lastHour: 120 }] };
-  const value = { ...prefix, window: 0, interval: { firstHour: 100, lastHour: 120 }, rows: [], observed: [], reasons: [], warnings: [], contentWarnings: [] };
-  assert.deepEqual(preparedPrefix(validateNavalBattlesReply(value)), prefix);
-  assert.doesNotThrow(() => validateNavalBattlesManifest({ ...prefix, windows: [value.interval], available: false, unavailable: null, contentWarnings: [] }));
+test('the log renders at window starts, reads and each battle run edge, never hourly', () => {
+  const run = (firstHour: number, lastHour: number) => ({ firstHour, lastHour }) as NavalBattleRun;
+  const window = { window: 0, interval: { firstHour: 100, lastHour: 819 }, observed: [[100, 400], [420, 819]] as [number, number][],
+    rows: [{ id: 'combat:1:110', provinceId: 5, runs: [run(110, 150), run(151, 300)] }] as NavalBattleHistory[],
+    warnings: [], contentWarnings: [] } satisfies NavalBattlesReply;
+  const changes = navalBattleChanges(new Map([[0, window]]));
+  assert.deepEqual(battleChangeHours(changes), [100, 110, 151, 301, 420]);
+  assert.deepEqual([...changes.whole].sort((a, b) => a - b), [100, 420], 'every battle where a window begins or is read');
+  assert.deepEqual([...changes.battles.keys()].sort((a, b) => a - b), [110, 151, 301], 'the battle alone at its runs\' edges');
+  assert.throws(() => validateNavalBattlesManifest({ windows: [], available: false, unavailable: null, contentWarnings: [] }),
+    'an unavailable manifest names why');
 });

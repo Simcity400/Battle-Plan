@@ -1,7 +1,7 @@
 //! Prepare exact prior branch history before installing the hourly hook.
 
 use crate::spooling::campaign_name;
-use replay::{campaign::Replay, recording_files};
+use replay::{campaign::Replay, columnar_frames::Pool, recording_files};
 use replay_data::{
     codec::invalid, identity::Identity, identity::SessionStart,
 };
@@ -13,6 +13,7 @@ use std::{
     io,
     os::windows::fs::OpenOptionsExt,
     path::{Path, PathBuf},
+    sync::Arc,
     time::{Duration, Instant},
 };
 use windows_sys::Win32::Storage::FileSystem::{
@@ -94,11 +95,22 @@ impl PreparedCampaigns {
         let mut event_feed_generation = None;
         let mut event_feed_counts = replay_data::event_feed_rows::EventFeedCounts::default();
         let mut map_events = (0, 0);
+        // Threads of the load's own, joined when it returns: rayon's global ones would outlive
+        // the collector's unload and run in its freed image.
+        let pool = if paths.is_empty() {
+            None
+        } else {
+            Some(Arc::new(Pool::new(
+                std::thread::available_parallelism().map_or(1, usize::from),
+                "hoi4-history-load",
+                crate::private_heap::off_hold_path,
+            )?))
+        };
         for (id, path) in paths {
             let deadline = Instant::now() + Duration::from_secs(2);
             let prepared = loop {
                 progress(&id)?;
-                match Self::read(&path, &id, session).map_err(engine_allocation::allocation_error) {
+                match Self::read(&path, &id, session, pool.clone()).map_err(engine_allocation::allocation_error) {
                     Err(error)
                         if matches!(error.raw_os_error(), Some(5 | 32 | 33))
                             && Instant::now() < deadline =>
@@ -106,7 +118,7 @@ impl PreparedCampaigns {
                         std::thread::sleep(Duration::from_millis(100));
                     }
                     Err(error) if error.kind() == io::ErrorKind::OutOfMemory => return Err(error),
-                    result => break result.map_err(|error| error.to_string()),
+                    result => break result.map_err(|error| format!("{}: {error}", path.display())),
                 }
             };
             if let Ok(prepared) = &prepared {
@@ -151,10 +163,16 @@ impl PreparedCampaigns {
         })
     }
 
-    fn read(path: &Path, name: &str, session: &SessionStart) -> io::Result<Prepared> {
+    fn read(
+        path: &Path,
+        name: &str,
+        session: &SessionStart,
+        pool: Option<Arc<Pool>>,
+    ) -> io::Result<Prepared> {
         // The file only grows by later revisions, so the one opened stays readable as it was.
         let lease = lease(path)?;
-        let replay = Replay::open_path(path)?;
+        let mut replay = Replay::open_newest(path)?;
+        replay.set_pool(pool);
         let completion_sequence = completion_sequence(&replay)?;
         let naval_result_sequence = naval_result_sequence(&replay)?;
         let event_ledger_sequences = event_ledger_sequences(&replay)?;
@@ -331,10 +349,23 @@ fn recordings(folder: &Path) -> io::Result<Vec<(String, PathBuf)>> {
         if !entry.file_type()?.is_file() || !recording_files::is_recording(&path) {
             continue;
         }
-        // One that cannot be read may be any campaign's: preparation fails.
-        if let Some(id) =
-            recording_files::campaign_of(&path)?.and_then(|id| campaign_name(&id).ok())
-        {
+        // One that cannot be read may be any campaign's: preparation fails. One no revision
+        // verifies in is the campaign its name gives, whose history alone then fails, by name.
+        let id = match recording_files::campaign_of(&path) {
+            Ok(id) => id,
+            Err(error) => match recording_files::uncommitted(&path) {
+                Ok(true) => Some(
+                    path.file_stem()
+                        .and_then(|stem| stem.to_str())
+                        .filter(|stem| replay_data::identity::is_campaign_uuid(stem.as_bytes()))
+                        .ok_or(error)?
+                        .as_bytes()
+                        .to_vec(),
+                ),
+                _ => return Err(error),
+            },
+        };
+        if let Some(id) = id.and_then(|id| campaign_name(&id).ok()) {
             engine_allocation::reserve(&mut paths, 1)?;
             paths.push((id, path));
         }
@@ -383,7 +414,6 @@ fn completion_sequence(replay: &Replay) -> io::Result<u64> {
     replay.visit_blocks(
         &blocks,
         &selected,
-        None,
         |_, _, decoded| {
             if let Ok(rows) = decoded.complete::<tables::OperationCompletions>() {
                 maximum = maximum.max(rows.iter().map(|row| row.sequence).max().unwrap_or(0));
@@ -403,7 +433,6 @@ fn map_event_history(replay: &Replay) -> io::Result<(u64, u64)> {
     replay.visit_blocks(
         &blocks,
         &selected,
-        None,
         |_, _, decoded| {
             if let Ok([row]) = decoded.complete::<tables::MapEvents>() {
                 latest = (
@@ -425,7 +454,6 @@ fn politics_epoch(replay: &Replay) -> io::Result<u64> {
     replay.visit_blocks(
         &blocks,
         &selected,
-        None,
         |_, _, decoded| {
             for table in selected {
                 let rows = match &*decoded.tables[table.index()] {
@@ -467,7 +495,6 @@ fn naval_result_sequence(replay: &Replay) -> io::Result<u64> {
     replay.visit_blocks(
         &blocks,
         &selected,
-        None,
         |_, _, decoded| {
             if let TableView::Complete(rows) | TableView::Truncated { rows, .. } =
                 &*decoded.tables[TableId::NavalResultSources.index()]
@@ -493,7 +520,6 @@ fn event_ledger_sequences(replay: &Replay) -> io::Result<[Option<u64>; 4]> {
     replay.visit_blocks(
         &blocks,
         &selected,
-        None,
         |_, _, decoded| {
             for (index, table) in selected.into_iter().enumerate() {
                 let rows = match &*decoded.tables[table.index()] {
@@ -562,7 +588,6 @@ fn event_feed_history(
     replay.visit_blocks(
         &blocks,
         &selected,
-        None,
         |_, _, decoded| {
             if let TableView::Complete(rows) | TableView::Truncated { rows, .. } =
                 &*decoded.tables[TableId::EventFeedHistory.index()]

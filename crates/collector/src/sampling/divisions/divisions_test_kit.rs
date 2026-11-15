@@ -337,7 +337,6 @@ pub(crate) fn split(
     let ctx = DivisionsCopyContext {
         base: BASE,
         game_state: GAME_STATE,
-        row_capacity: lens[0],
         source_capacity: lens[0],
         detail_capacities: lens[1..].try_into().unwrap(),
         details_active: true,

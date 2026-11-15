@@ -70,35 +70,6 @@ pub struct TokenWalk {
     pub required_bytes: usize,
 }
 
-/// Reads one authenticated country's embedded active-ability array. The caller
-/// supplies the CCountry array-header address and aggregates countries. Empty
-/// arrays are valid; there is no reserved slot and no arbitrary record limit.
-///
-/// No allocation, engine call or retry occurs. The first row or arena capacity
-/// miss stops the row walk; the native vector count gives the remaining row
-/// count. Unread rows are then visited only for their definition's token
-/// length (record definition pointer, definition vtable and string header).
-/// Caster/region identities and token payload are read only for rows that fit.
-/// A failed read of a row that fits makes this country's result unavailable,
-/// never a prefix.
-pub fn walk(
-    memory: &impl Memory,
-    base: usize,
-    country: u32,
-    array_address: usize,
-    output: &mut [Row],
-    tokens: &mut [u8],
-) -> TokenWalk {
-    walk_buffer(
-        memory,
-        base,
-        country,
-        array_address,
-        crate::walk::Buffer::Fixed(output),
-        crate::walk::Buffer::Fixed(tokens),
-    )
-}
-
 pub fn walk_buffer(
     memory: &impl Memory,
     base: usize,
@@ -595,25 +566,18 @@ mod tests {
         bytes
     }
 
-    fn run(bytes: &[u8], output: &mut [Row], tokens: &mut [u8]) -> TokenWalk {
-        walk(
-            &SliceMemory {
+    fn run(bytes: &[u8], output: &mut Vec<Row>, tokens: &mut Vec<u8>) -> TokenWalk {
+        walk_buffer(&SliceMemory {
                 base: MEMORY_BASE,
                 bytes,
-            },
-            0,
-            42,
-            ARRAY,
-            output,
-            tokens,
-        )
+            }, 0, 42, ARRAY, crate::walk::Buffer::Growing(output), crate::walk::Buffer::Growing(tokens))
     }
 
     #[test]
     fn preserves_native_values_ordinals_and_absent_references() {
         let bytes = fixture();
-        let mut rows = [Row::default(); 2];
-        let mut tokens = [0; 14];
+        let mut rows = vec![Row::default(); 2];
+        let mut tokens = vec![0; 14];
         let result = run(&bytes, &mut rows, &mut tokens);
         assert_eq!(
             result,
@@ -655,33 +619,20 @@ mod tests {
     }
 
     #[test]
-    fn capacities_stop_rows_at_the_first_omission_but_count_every_token() {
+    fn the_count_probe_counts_every_row_and_token() {
         let bytes = fixture();
-        let mut rows = [Row::default(); 2];
-        let result = run(&bytes, &mut rows, &mut [0; 13]);
         assert_eq!(
-            result,
-            TokenWalk {
-                outcome: Outcome::Truncated {
-                    len: 1,
-                    unread_rows: 1
+            walk_buffer(
+                &SliceMemory {
+                    base: MEMORY_BASE,
+                    bytes: &bytes,
                 },
-                bytes_len: 7,
-                required_bytes: 14
-            }
-        );
-        let result = run(&bytes, &mut rows[..1], &mut [0; 14]);
-        assert_eq!(
-            result.outcome,
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            }
-        );
-        // The unread row's token still counts, so one growth step suffices.
-        assert_eq!(result.required_bytes, 14);
-        assert_eq!(
-            run(&bytes, &mut [], &mut []),
+                0,
+                42,
+                ARRAY,
+                crate::walk::Buffer::Count,
+                crate::walk::Buffer::Count,
+            ),
             TokenWalk {
                 outcome: Outcome::Truncated {
                     len: 0,
@@ -709,7 +660,7 @@ mod tests {
             Default::default(),
         );
         assert_eq!(
-            walk(&observed, 0, 42, ARRAY, &mut [], &mut []).required_bytes,
+            walk_buffer(&observed, 0, 42, ARRAY, crate::walk::Buffer::Count, crate::walk::Buffer::Count).required_bytes,
             14
         );
         let mut expected = vec![ARRAY];
@@ -721,17 +672,6 @@ mod tests {
             ]);
         }
         assert_eq!(*observed.1.borrow(), expected);
-        let mut invalid_tail = bytes;
-        put(&mut invalid_tail, DEFINITION_B, &0_u64.to_le_bytes());
-        let result = run(&invalid_tail, &mut rows[..1], &mut [0; 14]);
-        assert_eq!(
-            result.outcome,
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            }
-        );
-        assert_eq!(result.required_bytes, 7);
     }
 
     #[test]
@@ -747,9 +687,9 @@ mod tests {
                 &0_i64.to_le_bytes(),
             );
         }
-        let mut rows = [Row::default(); 2];
+        let mut rows = vec![Row::default(); 2];
         assert_eq!(
-            run(&bytes, &mut rows, &mut [0; 14]).outcome,
+            run(&bytes, &mut rows, &mut vec![0; 14]).outcome,
             Outcome::Rows { len: 2 }
         );
         assert!(rows.iter().all(|row| row.caster.is_none()
@@ -779,8 +719,8 @@ mod tests {
         );
         put(&mut bytes, HEAP_TOKEN, &token);
         put(&mut bytes, RECORDS + PHASE, &[255]);
-        let mut rows = [Row::default(); 2];
-        let mut tokens = [0; 307];
+        let mut rows = vec![Row::default(); 2];
+        let mut tokens = vec![0; 307];
         assert_eq!(
             run(&bytes, &mut rows, &mut tokens).outcome,
             Outcome::Rows { len: 2 }
@@ -788,18 +728,6 @@ mod tests {
         assert_eq!(rows[0].phase, 255);
         assert_eq!(rows[0].token_len, 300);
         assert_eq!(&tokens[..300], token.as_slice());
-        let result = run(&bytes, &mut rows, &mut [0; 299]);
-        assert_eq!(
-            result,
-            TokenWalk {
-                outcome: Outcome::Truncated {
-                    len: 0,
-                    unread_rows: 2
-                },
-                bytes_len: 0,
-                required_bytes: 307,
-            }
-        );
     }
 
     #[test]
@@ -807,7 +735,7 @@ mod tests {
         for address in [DEFINITION_B, LEADER, REGION] {
             let mut bytes = fixture();
             put(&mut bytes, address, &0_u64.to_le_bytes());
-            let result = run(&bytes, &mut [Row::default(); 2], &mut [0; 14]);
+            let result = run(&bytes, &mut vec![Row::default(); 2], &mut vec![0; 14]);
             assert!(matches!(result.outcome, Outcome::Unavailable { .. }));
             assert_eq!(result.bytes_len, 0);
         }
@@ -818,7 +746,7 @@ mod tests {
             let mut bytes = fixture();
             put(&mut bytes, address, &999_u32.to_le_bytes());
             assert!(matches!(
-                run(&bytes, &mut [Row::default(); 2], &mut [0; 14]).outcome,
+                run(&bytes, &mut vec![Row::default(); 2], &mut vec![0; 14]).outcome,
                 Outcome::Unavailable { .. }
             ));
         }
@@ -829,7 +757,7 @@ mod tests {
         let mut bytes = fixture();
         put(&mut bytes, ARRAY, &[0; 16]);
         assert_eq!(
-            run(&bytes, &mut [], &mut []).outcome,
+            run(&bytes, &mut Vec::new(), &mut Vec::new()).outcome,
             Outcome::Rows { len: 0 }
         );
         for (address, value) in [
@@ -843,7 +771,7 @@ mod tests {
             let mut bytes = fixture();
             put(&mut bytes, address, value);
             assert!(matches!(
-                run(&bytes, &mut [Row::default(); 2], &mut [0; 14]).outcome,
+                run(&bytes, &mut vec![Row::default(); 2], &mut vec![0; 14]).outcome,
                 Outcome::Unavailable { .. }
             ));
         }
@@ -875,7 +803,7 @@ mod tests {
             },
             hole: phase..phase + 1,
         };
-        let result = walk(&fault, 0, 42, ARRAY, &mut [Row::default(); 2], &mut [0; 14]);
+        let result = walk_buffer(&fault, 0, 42, ARRAY, crate::walk::Buffer::Growing(&mut vec![Row::default(); 2]), crate::walk::Buffer::Growing(&mut vec![0; 14]));
         assert_eq!(
             result.outcome,
             Outcome::Unavailable {
@@ -895,7 +823,7 @@ mod tests {
                     },
                     hole: address..address + length,
                 };
-                let result = walk(&fault, 0, 42, ARRAY, &mut [Row::default(); 2], &mut [0; 14]);
+                let result = walk_buffer(&fault, 0, 42, ARRAY, crate::walk::Buffer::Growing(&mut vec![Row::default(); 2]), crate::walk::Buffer::Growing(&mut vec![0; 14]));
                 assert_eq!(
                     result.outcome,
                     Outcome::Unavailable {
@@ -922,7 +850,7 @@ mod tests {
             },
             hole: HEAP_TOKEN..HEAP_TOKEN + 7,
         };
-        let result = walk(&fault, 0, 42, ARRAY, &mut [Row::default(); 2], &mut [0; 14]);
+        let result = walk_buffer(&fault, 0, 42, ARRAY, crate::walk::Buffer::Growing(&mut vec![Row::default(); 2]), crate::walk::Buffer::Growing(&mut vec![0; 14]));
         assert_eq!(
             result.outcome,
             Outcome::Unavailable {

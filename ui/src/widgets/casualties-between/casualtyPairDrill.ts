@@ -5,7 +5,8 @@ import { contentKey, setToken } from '../../dashboard/options.ts';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
 import type { CasualtyPairsReply } from './casualtyPairsData';
 import { DETAIL } from './definition.ts';
-import { pairFlowId } from './casualtyPairsData.ts';
+import { casualtyPairsAt, exactCount, pairFlowId } from './casualtyPairsData.ts';
+import { liveKey } from '../../charts/live.ts';
 
 export const casualtyPairIds = (replies: readonly CasualtyPairsReply[]) => [...new Set(replies.flatMap(reply => reply.pairs.flatMap(pair => [
   pairFlowId(pair.identity, 'first'), pairFlowId(pair.identity, 'second'),
@@ -82,4 +83,22 @@ export function pairHistory(replies: readonly CasualtyPairsReply[], ids: readonl
     model.breakBefore.push(false);
   }
   return model;
+}
+
+/** The drill's selected flows at `hour` of `reply` (none where the window is not loaded or not recorded): the
+ * flows present with their subtotal marks (`rows`, the drill's structure), each one's amount and share keyed as its
+ * table paints them, and the total line. */
+export function pairDrillAt(reply: CasualtyPairsReply | undefined, hour: number, selected: ReadonlySet<string>): {
+  rows: string; values: Map<string, bigint | number>; total: string;
+} {
+  const flows = reply ? casualtyPairsAt(reply, hour).flows.filter(flow => selected.has(flow.id)) : [];
+  const subtotal = flows.some(flow => flow.incomplete);
+  const positive = flows.reduce((sum, flow) => sum + (flow.value > 0n ? flow.value : 0n), 0n);
+  const values = new Map<string, bigint | number>();
+  for (const flow of flows) {
+    values.set(liveKey(flow.id, 'value'), flow.value);
+    if (!subtotal && positive > 0n && flow.value > 0n) values.set(liveKey(flow.id, 'share'), Number(flow.value * 1000n / positive) / 10);
+  }
+  const total = `${subtotal ? 'Recorded subtotal' : 'Signed total'}: ${exactCount(flows.reduce((sum, flow) => sum + flow.value, 0n))}`;
+  return { rows: flows.map(flow => `${flow.id}${flow.incomplete ? '!' : ''}`).sort().join(','), values, total };
 }

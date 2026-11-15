@@ -36,14 +36,14 @@ impl Row {
     }
 }
 
+pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
+    walk_buffer(memory, base, game_state, crate::walk::Buffer::Count)
+}
+
 /// Reads the authoritative region roster and each completed sorted value array.
 /// Country references retain their raw engine bits. The spool validates unique
 /// row identities off-thread; capacity never changes or allocates on this path.
-pub fn walk(memory: &impl Memory, base: usize, game_state: usize, output: &mut [Row]) -> Outcome {
-    walk_buffer(memory, base, game_state, crate::walk::Buffer::Fixed(output))
-}
-
-pub fn walk_growing(
+pub fn walk(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -285,14 +285,14 @@ mod tests {
         bytes
     }
 
-    fn sample(bytes: &[u8], rows: &mut [Row]) -> Outcome {
+    fn sample(bytes: &[u8], rows: &mut Vec<Row>) -> Outcome {
         walk(&SliceMemory { base: ROOT, bytes }, 0, ROOT, rows)
     }
 
     #[test]
     fn daily_cache_preserves_signed_qwords_and_distinct_authored_region_and_slot() {
         let bytes = fixture();
-        let mut rows = [Row::default(); 2];
+        let mut rows = vec![Row::default(); 2];
         assert_eq!(sample(&bytes, &mut rows), Outcome::Rows { len: 2 });
         assert_eq!(
             rows[0],
@@ -333,24 +333,15 @@ mod tests {
         put64(&mut bytes, 0x1b00, VTABLE_RVA.0 as u64);
         put64(&mut bytes, 0x1b00 + REGION, second_region as u64);
         array(&mut bytes, 0x1b00 + ENTRIES, 0x3000, 3, 3);
-        let mut row = [Row::default(); 1];
         assert_eq!(
-            sample(&bytes, &mut row),
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 4
-            }
-        );
-        assert_eq!(row[0].country, u32::MAX);
-        assert_eq!(
-            sample(&bytes, &mut []),
+            count(&SliceMemory { base: ROOT, bytes: &bytes }, 0, ROOT),
             Outcome::Truncated {
                 len: 0,
                 unread_rows: 5
             }
         );
         assert!(matches!(
-            sample(&bytes, &mut [Row::default(); 5]),
+            sample(&bytes, &mut vec![Row::default(); 5]),
             Outcome::Unavailable { .. }
         ));
     }
@@ -366,7 +357,7 @@ mod tests {
             let mut bytes = original.clone();
             put64(&mut bytes, address, value);
             assert!(matches!(
-                sample(&bytes, &mut [Row::default(); 2]),
+                sample(&bytes, &mut vec![Row::default(); 2]),
                 Outcome::Unavailable { .. }
             ));
         }
@@ -379,20 +370,20 @@ mod tests {
             let mut bytes = original.clone();
             put32(&mut bytes, address, value);
             assert!(matches!(
-                sample(&bytes, &mut [Row::default(); 2]),
+                sample(&bytes, &mut vec![Row::default(); 2]),
                 Outcome::Unavailable { .. }
             ));
         }
         assert!(matches!(
             sample(
                 &original[..ROWS - ROOT + 2 * entry::STRIDE - 1],
-                &mut [Row::default(); 2]
+                &mut vec![Row::default(); 2]
             ),
             Outcome::Unavailable { .. }
         ));
         let mut empty = original;
         put32(&mut empty, DOMINANCE + ENTRY_COUNT, 0);
-        assert_eq!(sample(&empty, &mut []), Outcome::Rows { len: 0 });
+        assert_eq!(sample(&empty, &mut Vec::new()), Outcome::Rows { len: 0 });
     }
 
     #[test]
@@ -418,16 +409,8 @@ mod tests {
                 base: ROOT,
                 bytes: &bytes,
             };
-            let mut fixed = [Row::default(); 1];
             assert_eq!(
-                walk(&memory, 0, ROOT, &mut fixed),
-                Outcome::Truncated {
-                    len: 1,
-                    unread_rows: count - 1
-                }
-            );
-            assert_eq!(
-                walk_growing(&memory, 0, ROOT, &mut output),
+                walk(&memory, 0, ROOT, &mut output),
                 Outcome::Rows {
                     len: count as usize
                 }

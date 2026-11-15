@@ -115,7 +115,7 @@ fn growing_players_preserve_the_original_complete_read_protocol() {
     let fixed = walk(&fixed_memory, BASE, GS, &mut fixed_rows, &mut fixed_names);
     let mut growing_rows = Vec::new();
     let mut growing_names = Vec::new();
-    let growing = walk_growing(
+    let growing = walk(
         &growing_memory,
         BASE,
         GS,
@@ -126,32 +126,15 @@ fn growing_players_preserve_the_original_complete_read_protocol() {
     assert_eq!(growing_rows, fixed_rows);
     assert_eq!(growing_names, fixed_names);
     assert_eq!(*growing_memory.reads.borrow(), *fixed_memory.reads.borrow());
-    assert_eq!(
-        walk(
-            &world.memory(),
-            BASE,
-            GS,
-            &mut fixed_rows[..40],
-            &mut fixed_names
-        )
-        .outcome,
-        Outcome::Truncated {
-            len: 40,
-            unread_rows: 10
-        }
-    );
 }
 
 #[test]
-fn growing_controllers_keep_original_count_bounds_and_fixed_shortage_behavior() {
+fn growing_controllers_keep_original_count_bounds() {
     let mut world = World::new(50, 1, 29);
-    let mut rows = vec![ControllerRow::default(); 40];
+    let mut rows = Vec::new();
     assert_eq!(
         walk_controllers(&world.memory(), BASE, GS, &mut rows),
-        Outcome::Truncated {
-            len: 40,
-            unread_rows: 10
-        }
+        Outcome::Rows { len: 50 }
     );
     world.put(GS + cgame_state::HUMAN_STATUS + 12, &50_u32.to_le_bytes());
     let memory = TraceMemory {
@@ -159,7 +142,7 @@ fn growing_controllers_keep_original_count_bounds_and_fixed_shortage_behavior() 
         reads: RefCell::new(Vec::new()),
     };
     assert_eq!(
-        walk_controllers_growing(&memory, BASE, GS, &mut Vec::new()),
+        walk_controllers(&memory, BASE, GS, &mut Vec::new()),
         Outcome::Unavailable {
             reason: "human controller count unreadable or outside array"
         }

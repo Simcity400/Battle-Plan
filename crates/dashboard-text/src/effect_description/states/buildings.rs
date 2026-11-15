@@ -695,7 +695,7 @@ impl Renderer<'_, '_, '_> {
 
     fn building_tag_refusal(&self, item: &Item) -> String {
         format!(
-            "{} tag-selected building helper is unavailable; multiple matching targets need the ordered building roster, unrecorded by StateBuildings/ProvinceBuildings",
+            "{} tag-selected building helper is unavailable; multiple matching targets need the ordered building roster, unrecorded by state buildings/province buildings",
             self.building_effect_name(item)
         )
     }
@@ -727,7 +727,7 @@ impl Renderer<'_, '_, '_> {
         .map(|row| row.id as i32)
             .ok_or_else(|| {
                 format!(
-                    "modify_building resource {name} has no recorded database index in ResourceDefinitions"
+                    "modify_building resource {name} has no recorded database index in resource definitions"
                 )
             })
     }

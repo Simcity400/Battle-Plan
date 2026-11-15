@@ -33,7 +33,7 @@ struct Slot {
 
 impl Slot {
     fn run(&self) {
-        crate::worker_priority::normal_priority();
+        crate::worker_priority::enter(crate::worker_priority::Class::FrameWork);
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         loop {
             if let Some(job) = state.job.take() {

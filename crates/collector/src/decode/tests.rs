@@ -1,23 +1,5 @@
 use super::*;
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
-
-#[test]
-fn terminal_failure_releases_a_decode_handoff_waiting_on_a_full_queue() {
-    let ready = crossbeam_queue::ArrayQueue::new(1);
-    ready.push(7).unwrap();
-    let completed = std::sync::atomic::AtomicI64::new(99);
-    let mut checks = 0;
-    assert!(!publish_ready(&ready, 8, &completed, 123, || {
-        checks += 1;
-        checks == 2
-    }));
-    assert_eq!(completed.load(Ordering::Acquire), 0);
-    assert_eq!(ready.pop(), Some(7));
-    assert!(publish_ready(&ready, 8, &completed, 123, || false));
-    assert_eq!(completed.load(Ordering::Acquire), 123);
-    assert_eq!(ready.pop(), Some(8));
-}
 
 #[test]
 fn required_project_freeze_failure_is_terminal_before_ready_publication() {
@@ -31,9 +13,11 @@ fn required_project_freeze_failure_is_terminal_before_ready_publication() {
         assert!(status.success());
         return;
     }
+    let shared = Shared::new(0, 0, 1);
+    let index = shared.frames.pop().unwrap();
     for ordinal in [1, 2] {
-        let ready = crossbeam_queue::ArrayQueue::new(1);
-        let completed = std::sync::atomic::AtomicI64::new(99);
+        let completed = &shared.frames.slot(index).completed;
+        completed.store(99, Ordering::Release);
         let mut captured = collector_projects::projects::deferred_variable_allocation_fixture();
         crate::allocation::reset();
         crate::allocation::install_hooks();
@@ -47,14 +31,8 @@ fn required_project_freeze_failure_is_terminal_before_ready_publication() {
         let failure = crate::allocation::failure().unwrap();
         assert_eq!(failure.phase, crate::allocation::Phase::Decode as u8);
         assert_eq!(failure.code, crate::allocation::Code::Reserve as u8);
-        assert!(!publish_ready(
-            &ready,
-            0,
-            &completed,
-            123,
-            crate::allocation::failed
-        ));
-        assert_eq!(ready.pop(), None);
+        assert!(!publish_ready(&shared, index, 123));
+        assert!(shared.frames.ready_is_empty());
         assert_eq!(completed.load(Ordering::Acquire), 0);
         engine_allocation::set_hooks(None, None);
         engine_allocation::set_stop_hook(None);
@@ -66,8 +44,8 @@ fn required_project_freeze_failure_is_terminal_before_ready_publication() {
 fn process_test_job(shared: &Shared, job: &mut DecodeJob, memo: &mut AirBasesMemo) {
     process_job(shared, job, memo);
     if !crate::allocation::failed() {
-        shared.ready.push(job.index).unwrap();
-        shared.completed[job.index].store(job.game_elapsed.max(1), Ordering::Release);
+        shared.frames.push_ready(job.index);
+        shared.frames.slot(job.index).completed.store(job.game_elapsed.max(1), Ordering::Release);
     }
 }
 
@@ -76,7 +54,7 @@ fn copy_divisions_worker_refresh(
     ctx: crate::sampling::DivisionsCopyContext,
     payload: &mut crate::sampling::DivisionsJob,
 ) -> crate::sampling::DivisionsCopyReport {
-    crate::sampling::copy_divisions_inputs_refresh_growing(memory, ctx, payload);
+    crate::sampling::copy_divisions_inputs_refresh(memory, ctx, payload);
     crate::sampling::copy_divisions_core_refresh(memory, ctx, payload)
 }
 
@@ -87,12 +65,12 @@ static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
 fn decode_panic_retains_its_lease_and_first_cause_across_later_drain() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     failure::reset();
     let _hook = PanicHook::install();
     let shared = Shared::new(0, 0, 1);
-    let interrupted = shared.free.pop().unwrap();
-    let queued = shared.free.pop().unwrap();
+    let interrupted = shared.frames.pop().unwrap();
+    let queued = shared.frames.pop().unwrap();
     let frame = unsafe { &mut *shared.frames[interrupted].load(Ordering::Acquire) };
     frame.world_generation = 12;
     frame.clock = Some(engine_native::cgame_state::Clock {
@@ -115,9 +93,9 @@ fn decode_panic_retains_its_lease_and_first_cause_across_later_drain() {
         });
     }))
     .unwrap_err();
-    assert_eq!(shared.ready.pop(), None);
-    assert_eq!(shared.completed[interrupted].load(Ordering::Acquire), 0);
-    assert!(!shared.free.take(interrupted, false));
+    assert_eq!(shared.frames.pop_ready(), None);
+    assert_eq!(shared.frames.slot(interrupted).completed.load(Ordering::Acquire), 0);
+    assert!(!shared.frames.take(interrupted, 0));
     let first = failure::joined(panic, "worker failed");
     for expected in [
         "worker=decode worker",
@@ -144,24 +122,24 @@ fn decode_panic_retains_its_lease_and_first_cause_across_later_drain() {
             bare_job(queued, 75, 100, 19),
             &mut AirBasesMemo::default(),
         );
-        assert_eq!(shared.ready.pop(), Some(queued));
+        assert_eq!(shared.frames.pop_ready(), Some(queued));
         failure::stage("drain progress", None);
         panic!("later drain failure");
     }))
     .unwrap_err();
     assert_eq!(failure::joined(later, "drain failed"), first);
     assert_eq!(panic_failure(), Some(first));
-    assert_eq!(shared.completed[interrupted].load(Ordering::Acquire), 0);
+    assert_eq!(shared.frames.slot(interrupted).completed.load(Ordering::Acquire), 0);
     failure::reset();
 }
 
 #[test]
 fn decode_failure_context_ends_at_handoff_and_ignores_contained_panics() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     failure::reset();
     let _hook = PanicHook::install();
     let shared = Shared::new(0, 0, 1);
-    let index = shared.free.pop().unwrap();
+    let index = shared.frames.pop().unwrap();
     let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         failure::worker(|| {
             let _ = std::panic::catch_unwind(|| panic!("contained inner panic"));
@@ -171,7 +149,7 @@ fn decode_failure_context_ends_at_handoff_and_ignores_contained_panics() {
                 bare_job(index, 3, 4, 5),
                 &mut AirBasesMemo::default(),
             );
-            assert_eq!(shared.ready.pop(), Some(index));
+            assert_eq!(shared.frames.pop_ready(), Some(index));
             panic!("after handoff");
         });
     }))
@@ -189,7 +167,7 @@ fn decode_failure_context_ends_at_handoff_and_ignores_contained_panics() {
 
 #[test]
 fn decode_join_preserves_string_and_opaque_payloads_without_running_their_drop() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     struct Payload;
     impl Drop for Payload {
         fn drop(&mut self) {
@@ -213,15 +191,12 @@ fn decode_join_preserves_string_and_opaque_payloads_without_running_their_drop()
 
 #[test]
 fn decode_detach_keeps_worker_panic_after_drain_panic_and_a_later_empty_drain() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     failure::reset();
     let _hook = PanicHook::install();
     let shared = Shared::new(0, 0, 1);
-    let index = shared.free.pop().unwrap();
-    shared
-        .decode_queue
-        .push(bare_job(index, 10, 20, 30))
-        .unwrap();
+    let index = shared.frames.pop().unwrap();
+    push(&shared, bare_job(index, 10, 20, 30));
     assert!(sampling::SHARED.load(Ordering::Acquire).is_null());
     assert!(WORKER.lock().unwrap().is_none());
     *WORKER.lock().unwrap() = Some(std::thread::spawn(|| {
@@ -234,14 +209,14 @@ fn decode_detach_keeps_worker_panic_after_drain_panic_and_a_later_empty_drain() 
     assert!(first.contains("original worker failure"), "{first}");
     assert!(!first.contains("later detach progress failure"), "{first}");
     assert_eq!(later, Err(first));
-    assert_eq!(shared.ready.pop(), Some(index));
-    assert_eq!(shared.completed[index].load(Ordering::Acquire), 30);
+    assert_eq!(shared.frames.pop_ready(), Some(index));
+    assert_eq!(shared.frames.slot(index).completed.load(Ordering::Acquire), 30);
     failure::reset();
 }
 
 #[test]
 fn advisor_payload_storage_survives_pool_preparation_and_recycling() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let saved = std::mem::take(&mut CHARACTERS_JOB_POOL.lock().unwrap()[2]);
     release_characters_job(CharactersJob::new_part(2));
     for _ in 0..2 {
@@ -257,16 +232,18 @@ fn advisor_payload_storage_survives_pool_preparation_and_recycling() {
 }
 
 #[test]
-fn retirement_capacity_covers_every_character_part_and_owned_frame() {
-    let _guard = TEST_LOCK.lock().unwrap();
-    prepare_retirement();
+fn retirement_takes_a_backlog_beyond_the_steady_frames() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    prepare_retirement().unwrap();
     reclaim_payloads();
     let retired = unsafe { &*RETIRED_PAYLOADS.load(Ordering::Acquire) };
     // Full refreshes can recur on loads or discontinuities. If staging
-    // overflows or has no reusable storage, every owned frame can retire
-    // one object for each handoff before the decode worker makes progress.
+    // overflows or has no reusable storage, every frame in flight can retire
+    // one object for each handoff before the decode worker makes progress,
+    // and a backlog holds more frames than the pool keeps.
     // Empty payloads exercise the real retirement path without large arenas.
-    for _ in 0..BUFFERS {
+    let frames = 3 * crate::frame_pool::STEADY;
+    for _ in 0..frames {
         recycle_relations_job(RelationsJob::default());
         for part in 0..CHARACTER_PARTS {
             let mut job = CharactersJob::default();
@@ -292,40 +269,59 @@ fn retirement_capacity_covers_every_character_part_and_owned_frame() {
         recycle_weather_job(WeatherJob::default());
         recycle_capitulation_job(CapitulationJob::default());
     }
-    assert_eq!(retired.len(), RETIREMENT_CAPACITY);
-    assert!(retired.is_full());
+    assert_eq!(retired.len(), frames * PAYLOADS_PER_FRAME);
     reclaim_payloads();
     assert!(retired.is_empty());
 }
 
+/// A payload retired on the game thread while the decode worker takes the retired ones never
+/// waits for it: it is freed where it is, losing only its storage.
 #[test]
-fn cold_growing_weather_jobs_survive_pool_preparation_and_recycling() {
-    let _guard = TEST_LOCK.lock().unwrap();
+fn a_retirement_finding_the_worker_draining_never_waits() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    prepare_retirement().unwrap();
+    reclaim_payloads();
+    let retired = unsafe { &*RETIRED_PAYLOADS.load(Ordering::Acquire) };
+    let draining = retired.lock();
+    std::thread::spawn(|| recycle_weather_job(WeatherJob::default())).join().unwrap();
+    drop(draining);
+    assert!(retired.is_empty(), "the retirement was freed where it was");
+    recycle_weather_job(WeatherJob::default());
+    assert_eq!(retired.len(), 1, "an uncontended retirement is held for the worker");
+    reclaim_payloads();
+}
+
+#[test]
+fn weather_jobs_are_pooled_once_their_log_holds_storage() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let saved = std::mem::take(&mut *WEATHER_JOB_POOL.lock().unwrap());
     release_weather_job(WeatherJob::new());
+    release_weather_job(WeatherJob::default());
+    assert!(
+        WEATHER_JOB_POOL.lock().unwrap().is_empty(),
+        "an unused job holds nothing to reuse"
+    );
+    let mut job = WeatherJob::new();
+    let bytes = [0u8; 2];
+    let memory = engine_native::memory::SliceMemory {
+        base: 0x1000,
+        bytes: &bytes,
+    };
+    assert!(job.log.take(&memory, 0x1000, 2, 1).is_some());
+    release_weather_job(job);
     for _ in 0..2 {
         assert_eq!(WEATHER_JOB_POOL.lock().unwrap().len(), 1);
         let job = acquire_weather_job();
-        assert!(
-            job.is_provisioned(),
-            "cold worker job must retain growth admission"
-        );
-        assert_eq!(job.log.spans.capacity(), 0);
-        assert_eq!(job.log.bytes.capacity(), 0);
+        assert_ne!(job.log.spans.capacity(), 0);
+        assert_eq!(job.log.spans.len(), 0, "a pooled job is cleared");
         release_weather_job(job);
     }
-    release_weather_job(WeatherJob::default());
-    assert_eq!(
-        WEATHER_JOB_POOL.lock().unwrap().len(),
-        1,
-        "empty fixed fallback must still be discarded"
-    );
     *WEATHER_JOB_POOL.lock().unwrap() = saved;
 }
 
 #[test]
 fn exhausted_or_contended_payload_pools_decline_without_allocating() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
     fn check<J>(pool: &Mutex<Vec<J>>, acquire: fn() -> J, vacant: impl Fn(J)) {
         let mut locked = pool.lock().unwrap();
@@ -337,8 +333,7 @@ fn exhausted_or_contended_payload_pools_decline_without_allocating() {
         *pool.lock().unwrap() = owned;
     }
     check(&LEXICAL_JOB_POOL, acquire_lexical_job, |job| {
-        assert!(!job.initialized());
-        assert_eq!(job.capacities(), (0, 0));
+        assert!(!job.has_storage());
     });
     check(&DIVISIONS_JOB_POOL, acquire_divisions_job, |job| {
         assert!(!job.initialized());
@@ -356,10 +351,10 @@ fn exhausted_or_contended_payload_pools_decline_without_allocating() {
 #[test]
 fn worker_recycles_captured_payload_and_drains_vacant_retirements_before_publication() {
     use crate::extended::air::{AirStatsCopyContext, stats_test_kit as kit};
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
     let shared = Shared::new(kit::BASE, 0, 1);
-    let index = shared.free.pop().expect("pooled frame");
+    let index = shared.frames.pop().expect("pooled frame");
     RELATIONS_JOB_POOL.lock().unwrap().clear();
     CHARACTERS_JOB_POOL
         .lock()
@@ -387,7 +382,7 @@ fn worker_recycles_captured_payload_and_drains_vacant_retirements_before_publica
     let bytes = kit::fixture();
     let mut air = AirStatsJob::new();
     assert!(
-        crate::extended::air::copy_air_stats_refresh_growing(
+        crate::extended::air::copy_air_stats_refresh(
             &kit::memory(&bytes),
             AirStatsCopyContext {
                 base: kit::BASE,
@@ -431,11 +426,11 @@ fn worker_recycles_captured_payload_and_drains_vacant_retirements_before_publica
     recycle_lexical_job(LexicalJob::default());
     let retirement = unsafe { &*RETIRED_PAYLOADS.load(Ordering::Acquire) };
     assert_eq!(retirement.len(), 1);
-    assert_eq!(shared.ready.pop(), None);
+    assert_eq!(shared.frames.pop_ready(), None);
     process_owned_job(&shared, job, &mut AirBasesMemo::default());
     assert!(retirement.is_empty());
-    assert_eq!(shared.ready.pop(), Some(index));
-    assert_eq!(shared.completed[index].load(Ordering::Acquire), 17);
+    assert_eq!(shared.frames.pop_ready(), Some(index));
+    assert_eq!(shared.frames.slot(index).completed.load(Ordering::Acquire), 17);
     for (name, len) in [
         ("relations", RELATIONS_JOB_POOL.lock().unwrap().len()),
         ("characters", CHARACTERS_JOB_POOL.lock().unwrap()[0].len()),
@@ -469,8 +464,8 @@ fn worker_recycles_captured_payload_and_drains_vacant_retirements_before_publica
 }
 
 #[test]
-fn overflow_growth_is_deferred_and_keeps_its_flag_until_reclaimed() {
-    let _guard = TEST_LOCK.lock().unwrap();
+fn a_retired_grown_job_is_reusable_only_after_it_is_reclaimed() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
     AIR_STATS_JOB_POOL.lock().unwrap().clear();
     let mut job = AirStatsJob::new();
@@ -481,7 +476,7 @@ fn overflow_growth_is_deferred_and_keeps_its_flag_until_reclaimed() {
         bytes: &bytes,
     };
     assert!(job.log.take(&memory, 0x1000, 1, 1).is_some());
-    assert!(job.log.take(&memory, 0x1001, 1, 1).is_none());
+    assert!(job.log.take(&memory, 0x1001, 1, 1).is_some());
     recycle_air_stats_job(job);
     // The game-side retirement neither grows nor publishes a reusable job.
     assert!(AIR_STATS_JOB_POOL.lock().unwrap().is_empty());
@@ -496,7 +491,7 @@ fn overflow_growth_is_deferred_and_keeps_its_flag_until_reclaimed() {
 
 #[test]
 fn fifo_absent_daily_payloads_preserve_skipped_outcomes_and_idle_pools() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
     let daily_pool_lengths = || {
         [
@@ -512,7 +507,7 @@ fn fifo_absent_daily_payloads_preserve_skipped_outcomes_and_idle_pools() {
     };
     let idle_pools = daily_pool_lengths();
     let shared = Shared::new(0, 0, 1);
-    let index = shared.free.pop().expect("pooled buffer");
+    let index = shared.frames.pop().expect("pooled buffer");
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     frame
         .extended
@@ -529,12 +524,12 @@ fn fifo_absent_daily_payloads_preserve_skipped_outcomes_and_idle_pools() {
         assert!(enqueue(&shared, job).is_none());
         process_owned_job(
             &shared,
-            shared.decode_queue.pop().expect("queued skipped frame"),
+            pop(&shared).expect("queued skipped frame"),
             &mut AirBasesMemo::default(),
         );
-        assert_eq!(shared.ready.pop(), Some(index));
-        assert_eq!(shared.ready.pop(), None);
-        assert_eq!(shared.completed[index].load(Ordering::Acquire), 29);
+        assert_eq!(shared.frames.pop_ready(), Some(index));
+        assert_eq!(shared.frames.pop_ready(), None);
+        assert_eq!(shared.frames.slot(index).completed.load(Ordering::Acquire), 29);
         assert!(retired.is_empty());
         assert_eq!(daily_pool_lengths(), idle_pools);
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
@@ -546,7 +541,7 @@ fn fifo_absent_daily_payloads_preserve_skipped_outcomes_and_idle_pools() {
 fn lazy_world_request_acquires_only_scheduled_parts_and_retires_them_once() {
     use crate::read_accounting;
 
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
     let pool_lengths = || {
         [
@@ -557,9 +552,12 @@ fn lazy_world_request_acquires_only_scheduled_parts_and_retires_them_once() {
     };
     let idle = pool_lengths();
     let retired = unsafe { &*RETIRED_PAYLOADS.load(Ordering::Acquire) };
-    let countries = Arc::new(engine_native::country_memory::Cache::try_with_capacity(16).unwrap());
+    let countries = engine_allocation::shared(
+        engine_native::country_memory::Cache::try_with_capacity(16).unwrap(),
+    )
+    .unwrap();
     let shared = Shared::new(0, 0, 1);
-    let index = shared.free.pop().expect("pooled buffer");
+    let index = shared.frames.pop().expect("pooled buffer");
     for (hour, force_full, parts, economy) in [
         // CountryResources, its census and the exchanges are hourly; the
         // other economy tables publish in their daily slot.
@@ -604,7 +602,7 @@ fn lazy_world_request_acquires_only_scheduled_parts_and_retires_them_once() {
             std::array::from_fn(|slot| idle[slot].saturating_sub(usize::from(owned[slot])));
         assert_eq!(pool_lengths(), after_acquire);
         assert!(retired.is_empty(), "absent parts must not retire a payload");
-        assert_eq!(Arc::strong_count(&countries), 3);
+        assert_eq!(engine_allocation::SharedBox::strong_count(&countries), 3);
         if let Some(part) = request.production {
             recycle_production_rest_job(part.payload);
         }
@@ -614,7 +612,7 @@ fn lazy_world_request_acquires_only_scheduled_parts_and_retires_them_once() {
         recycle_economy_rest_job(economy_request.payload);
         drop(request.countries);
         drop(economy_request.countries);
-        assert_eq!(Arc::strong_count(&countries), 1);
+        assert_eq!(engine_allocation::SharedBox::strong_count(&countries), 1);
         assert_eq!(pool_lengths(), after_acquire);
         assert_eq!(
             retired.len(),
@@ -623,16 +621,13 @@ fn lazy_world_request_acquires_only_scheduled_parts_and_retires_them_once() {
         assert!(enqueue(&shared, bare_job(index, next_seq(), hour, 31)).is_none());
         process_owned_job(
             &shared,
-            shared
-                .decode_queue
-                .pop()
-                .expect("queued retirement boundary"),
+            pop(&shared).expect("queued retirement boundary"),
             &mut AirBasesMemo::default(),
         );
-        assert_eq!(shared.ready.pop(), Some(index));
-        assert_eq!(shared.ready.pop(), None);
-        assert_eq!(shared.completed[index].load(Ordering::Acquire), 31);
-        assert!(shared.decode_queue.is_empty());
+        assert_eq!(shared.frames.pop_ready(), Some(index));
+        assert_eq!(shared.frames.pop_ready(), None);
+        assert_eq!(shared.frames.slot(index).completed.load(Ordering::Acquire), 31);
+        assert!((shared.frames.decode_len() == 0));
         assert!(retired.is_empty());
         assert_eq!(pool_lengths(), idle);
         assert_eq!(reads.finish(), read_accounting::ZERO);
@@ -644,10 +639,13 @@ fn the_economy_rest_is_its_own_job_and_each_failure_refuses_only_its_tables() {
     use crate::extended::{economy, production};
     use engine_native::walk::Outcome;
 
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
     let retired = unsafe { &*RETIRED_PAYLOADS.load(Ordering::Acquire) };
-    let countries = Arc::new(engine_native::country_memory::Cache::try_with_capacity(16).unwrap());
+    let countries = engine_allocation::shared(
+        engine_native::country_memory::Cache::try_with_capacity(16).unwrap(),
+    )
+    .unwrap();
     let reason = "acquisition worker panicked";
     let world_tables = || PRODUCTION_REST.into_iter().chain(CONSTRUCTION_REST);
     for (world_failed, economy_failed) in
@@ -779,7 +777,7 @@ fn the_economy_rest_is_its_own_job_and_each_failure_refuses_only_its_tables() {
         }
         assert_eq!(retired.len(), 3);
         reclaim_payloads();
-        assert_eq!(Arc::strong_count(&countries), 1);
+        assert_eq!(engine_allocation::SharedBox::strong_count(&countries), 1);
     }
     assert!(retired.is_empty());
 }
@@ -788,10 +786,10 @@ fn the_economy_rest_is_its_own_job_and_each_failure_refuses_only_its_tables() {
 fn missing_declared_payloads_fail_only_the_frozen_active_tables() {
     use engine_native::walk::Outcome;
 
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
     let shared = Shared::new(0, 0, 1);
-    let index = shared.free.pop().expect("pooled buffer");
+    let index = shared.frames.pop().expect("pooled buffer");
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     let characters = [true, false, false, true, false, true];
     let relations = [false, true];
@@ -815,9 +813,9 @@ fn missing_declared_payloads_fail_only_the_frozen_active_tables() {
     job.air_bases_refresh = true;
     job.naval_refresh = true;
     process_owned_job(&shared, job, &mut AirBasesMemo::default());
-    assert_eq!(shared.ready.pop(), Some(index));
-    assert_eq!(shared.ready.pop(), None);
-    assert_eq!(shared.completed[index].load(Ordering::Acquire), 37);
+    assert_eq!(shared.frames.pop_ready(), Some(index));
+    assert_eq!(shared.frames.pop_ready(), None);
+    assert_eq!(shared.frames.slot(index).completed.load(Ordering::Acquire), 37);
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     let missing = Outcome::Unavailable {
         reason: MISSING_PAYLOAD_REASON,
@@ -965,11 +963,11 @@ fn fifo_hands_off_every_frame_in_production_order_without_reorder() {
     let shared = Shared::new(0, 0, 1);
     let mut indices = Vec::new();
     for _ in 0..4 {
-        indices.push(shared.free.pop().expect("pooled buffer"));
+        indices.push(shared.frames.pop().expect("pooled buffer"));
     }
     // Enqueue out-of-seq labels; handoff order must still be FIFO.
     for (order, index) in indices.iter().enumerate() {
-        shared.completed[*index].store(0, Ordering::Relaxed);
+        shared.frames.slot(*index).completed.store(0, Ordering::Relaxed);
         let job = DecodeJob {
             queued_qpc: 0,
             index: *index,
@@ -1018,144 +1016,37 @@ fn fifo_hands_off_every_frame_in_production_order_without_reorder() {
             weather_payload: None,
             capitulation_payload: None,
         };
-        shared.decode_queue.push(job).unwrap();
+        push(&shared, job);
     }
     let mut handed = Vec::new();
-    while let Some(job) = shared.decode_queue.pop() {
+    while let Some(job) = pop(&shared) {
         let index = job.index;
         process_owned_job(&shared, job, &mut AirBasesMemo::default());
         handed.push(index);
     }
     assert_eq!(handed, indices);
     for index in indices {
-        assert_eq!(shared.ready.pop(), Some(index));
-        assert_eq!(shared.completed[index].load(Ordering::Acquire), 7);
+        assert_eq!(shared.frames.pop_ready(), Some(index));
+        assert_eq!(shared.frames.slot(index).completed.load(Ordering::Acquire), 7);
     }
-    assert!(shared.ready.pop().is_none());
-}
-
-#[test]
-fn queue_full_returns_the_job_for_the_existing_gap_path() {
-    let _guard = TEST_LOCK.lock().unwrap();
-    reset_for_test();
-    let shared = Shared::new(0, 0, 1);
-    for seq in 0..BUFFERS {
-        let job = DecodeJob {
-            queued_qpc: 0,
-            index: 0,
-            seq: seq as u64,
-            hour: 0,
-            relations_refresh: false,
-            characters_refresh: [false; CHARACTER_PARTS],
-            projects_refresh: false,
-            lexical_refresh: false,
-            divisions_refresh: false,
-            air_wing_refresh: false,
-            air_stats_refresh: false,
-            naval_refresh: false,
-            players_refresh: false,
-            session_refresh: false,
-            production_rest_refresh: false,
-            construction_rest_refresh: false,
-            economy_rest_refresh: false,
-            air_bases_refresh: false,
-            supremacy_refresh: false,
-            sunk_refresh: false,
-            radar_refresh: false,
-            intel_refresh: false,
-            weather_refresh: false,
-            capitulation_refresh: false,
-            force_full: false,
-            game_elapsed: 1,
-            relations_payload: None,
-            characters_payload: [const { None }; CHARACTER_PARTS],
-            projects_payload: None,
-            lexical_payload: None,
-            divisions_payload: None,
-            air_wing_payload: None,
-            air_stats_payload: None,
-            naval_payload: None,
-            players_payload: None,
-            session_payload: None,
-            production_rest_payload: None,
-            construction_rest_payload: None,
-            economy_rest_payload: None,
-            air_bases_payload: None,
-            supremacy_payload: None,
-            sunk_payload: None,
-            radar_payload: None,
-            intel_payload: None,
-            weather_payload: None,
-            capitulation_payload: None,
-        };
-        assert!(shared.decode_queue.push(job).is_ok());
-    }
-    let job = DecodeJob {
-        queued_qpc: 0,
-        index: 0,
-        seq: u64::MAX,
-        hour: 0,
-        relations_refresh: false,
-        characters_refresh: [false; CHARACTER_PARTS],
-        projects_refresh: false,
-        lexical_refresh: false,
-        divisions_refresh: false,
-        air_wing_refresh: false,
-        air_stats_refresh: false,
-        naval_refresh: false,
-        players_refresh: false,
-        session_refresh: false,
-        production_rest_refresh: false,
-        construction_rest_refresh: false,
-        economy_rest_refresh: false,
-        air_bases_refresh: false,
-        supremacy_refresh: false,
-        sunk_refresh: false,
-        radar_refresh: false,
-        intel_refresh: false,
-        weather_refresh: false,
-        capitulation_refresh: false,
-        force_full: false,
-        game_elapsed: 1,
-        relations_payload: None,
-        characters_payload: [const { None }; CHARACTER_PARTS],
-        projects_payload: None,
-        lexical_payload: None,
-        divisions_payload: None,
-        air_wing_payload: None,
-        air_stats_payload: None,
-        naval_payload: None,
-        players_payload: None,
-        session_payload: None,
-        production_rest_payload: None,
-        construction_rest_payload: None,
-        economy_rest_payload: None,
-        air_bases_payload: None,
-        supremacy_payload: None,
-        sunk_payload: None,
-        radar_payload: None,
-        intel_payload: None,
-        weather_payload: None,
-        capitulation_payload: None,
-    };
-    assert!(enqueue(&shared, job).is_some());
+    assert!(shared.frames.pop_ready().is_none());
 }
 
 #[test]
 fn worker_decodes_a_relations_refresh_payload_into_the_same_typed_rows() {
     use crate::extended::intel::relations_test_kit;
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
     let bytes = relations_test_kit::opinionated_fixture();
     let memory = relations_test_kit::memory(&bytes);
     let shared = Shared::new(relations_test_kit::BASE, 0, 1);
-    let index = shared.free.pop().expect("pooled buffer");
+    let index = shared.frames.pop().expect("pooled buffer");
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     // The fixed reference holds the complete two-row fixture.
     let direct = relations_test_kit::direct(&memory, 2, 2);
     let (report, first) = relations_test_kit::split(&memory, frame.extended.relations_pilot());
     assert!(report.raw_ok);
-    shared.completed[index].store(0, Ordering::Relaxed);
+    shared.frames.slot(index).completed.store(0, Ordering::Relaxed);
     let mut job = DecodeJob {
         queued_qpc: 0,
         index,
@@ -1205,8 +1096,8 @@ fn worker_decodes_a_relations_refresh_payload_into_the_same_typed_rows() {
         capitulation_payload: None,
     };
     process_test_job(&shared, &mut job, &mut AirBasesMemo::default());
-    assert_eq!(shared.ready.pop(), Some(index));
-    assert_eq!(shared.completed[index].load(Ordering::Acquire), 17);
+    assert_eq!(shared.frames.pop_ready(), Some(index));
+    assert_eq!(shared.frames.slot(index).completed.load(Ordering::Acquire), 17);
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     relations_test_kit::assert_matches_direct(frame.extended.relations_pilot(), &direct);
 }
@@ -1217,12 +1108,12 @@ fn worker_relations_mixed_payload_keeps_hourly_tuples_and_skips_opinions() {
     use engine_native::walk::Outcome;
     use intel::relations_test_kit as kit;
 
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
     let bytes = kit::opinionated_fixture();
     let memory = kit::memory(&bytes);
     let shared = Shared::new(kit::BASE, 0, 1);
-    let index = shared.free.pop().expect("pooled buffer");
+    let index = shared.frames.pop().expect("pooled buffer");
     for opinions_active in [false, true, false] {
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
         let captured = frame.extended.relations_pilot();
@@ -1255,8 +1146,8 @@ fn worker_relations_mixed_payload_keeps_hourly_tuples_and_skips_opinions() {
         job.relations_refresh = true;
         job.relations_payload = Some(payload);
         process_owned_job(&shared, job, &mut AirBasesMemo::default());
-        assert_eq!(shared.ready.pop(), Some(index));
-        assert_eq!(shared.completed[index].load(Ordering::Acquire), 35);
+        assert_eq!(shared.frames.pop_ready(), Some(index));
+        assert_eq!(shared.frames.slot(index).completed.load(Ordering::Acquire), 35);
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
         kit::assert_matches_direct(frame.extended.relations_pilot(), &direct);
         assert!(!frame.extended.relations_pilot().relations_raw_mode);
@@ -1265,14 +1156,15 @@ fn worker_relations_mixed_payload_keeps_hourly_tuples_and_skips_opinions() {
 
 #[test]
 fn worker_decodes_a_characters_refresh_payload_into_the_same_typed_rows() {
+    let _globals = crate::extended::characters::test_globals();
     use crate::extended::characters::characters_test_kit;
     use crate::extended::characters::{CharactersCopyContext, CharactersJob};
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
     let bytes = characters_test_kit::mapped_fixture();
     let memory = characters_test_kit::memory(&bytes);
     let shared = Shared::new(characters_test_kit::BASE, 0, 1);
-    let index = shared.free.pop().expect("pooled buffer");
+    let index = shared.frames.pop().expect("pooled buffer");
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     let capacities = crate::extended::characters::Capacities {
         rows: [4096; crate::extended::characters::N],
@@ -1287,17 +1179,14 @@ fn worker_decodes_a_characters_refresh_payload_into_the_same_typed_rows() {
     let family_bytes_before = frame.extended.characters_pilot().allocated_bytes();
     shared.measure_frame(index);
     let pool_bytes_before = shared.pool_owned();
-    let (trait_rows, trait_bytes) = direct.trait_capture_capacities();
     let ctx = CharactersCopyContext {
         force_full: false,
         base: characters_test_kit::BASE,
         game_state: characters_test_kit::GAME_STATE,
         active: [true; crate::extended::characters::N],
-        trait_rows,
-        trait_bytes,
     };
     let mut first = CharactersJob::new();
-    let report = crate::extended::characters::copy_characters_growing(
+    let report = crate::extended::characters::copy_characters(
         &memory,
         ctx,
         &mut first,
@@ -1305,7 +1194,7 @@ fn worker_decodes_a_characters_refresh_payload_into_the_same_typed_rows() {
     );
     assert!(report.raw_ok);
     frame.extended.characters_pilot().raw_active = [true; crate::extended::characters::N];
-    shared.completed[index].store(0, Ordering::Relaxed);
+    shared.frames.slot(index).completed.store(0, Ordering::Relaxed);
     let mut job = DecodeJob {
         queued_qpc: 0,
         index,
@@ -1355,8 +1244,8 @@ fn worker_decodes_a_characters_refresh_payload_into_the_same_typed_rows() {
         capitulation_payload: None,
     };
     process_test_job(&shared, &mut job, &mut AirBasesMemo::default());
-    assert_eq!(shared.ready.pop(), Some(index));
-    assert_eq!(shared.completed[index].load(Ordering::Acquire), 19);
+    assert_eq!(shared.frames.pop_ready(), Some(index));
+    assert_eq!(shared.frames.slot(index).completed.load(Ordering::Acquire), 19);
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     characters_test_kit::assert_matches_direct(frame.extended.characters_pilot(), &direct);
     let grown = frame.extended.characters_pilot().allocated_bytes() - family_bytes_before;
@@ -1378,12 +1267,13 @@ fn worker_decodes_a_characters_refresh_payload_into_the_same_typed_rows() {
 
 #[test]
 fn independent_character_handoffs_isolate_a_missing_part_before_publication() {
+    let _globals = crate::extended::characters::test_globals();
     use crate::extended::characters::{self, CharactersCopyContext};
     use characters::characters_test_kit as kit;
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
     let shared = Shared::new(kit::BASE, 0, 1);
-    let index = shared.free.pop().expect("pooled buffer");
+    let index = shared.frames.pop().expect("pooled buffer");
     let capacities = characters::Capacities {
         rows: [4096; crate::extended::characters::N],
         bytes: [131_072; crate::extended::characters::N],
@@ -1400,7 +1290,6 @@ fn independent_character_handoffs_isolate_a_missing_part_before_publication() {
         captured.set_character_activity([true; crate::extended::characters::N]);
         captured.raw_active = [true; crate::extended::characters::N];
         captured.capture(&memory, kit::BASE, kit::GAME_STATE, 0, false);
-        let (trait_rows, trait_bytes) = captured.trait_capture_capacities();
         let mut job = bare_job(index, next_seq(), 0, 37);
         job.characters_refresh = [true; CHARACTER_PARTS];
         for (part, payload) in job.characters_payload.iter_mut().enumerate() {
@@ -1408,15 +1297,13 @@ fn independent_character_handoffs_isolate_a_missing_part_before_publication() {
                 continue;
             }
             let mut owned = CharactersJob::new_part(part);
-            let report = characters::copy_characters_growing(
+            let report = characters::copy_characters(
                 &memory,
                 CharactersCopyContext {
                     force_full: false,
                     base: kit::BASE,
                     game_state: kit::GAME_STATE,
                     active: CHARACTER_MASKS[part],
-                    trait_rows,
-                    trait_bytes,
                 },
                 &mut owned,
                 crate::extended::characters::Roles::Independent,
@@ -1428,8 +1315,8 @@ fn independent_character_handoffs_isolate_a_missing_part_before_publication() {
         expected.fail_character_tables(missing_mask, MISSING_PAYLOAD_REASON);
         drop(bytes);
         process_owned_job(&shared, job, &mut AirBasesMemo::default());
-        assert_eq!(shared.ready.pop(), Some(index));
-        assert_eq!(shared.ready.pop(), None);
+        assert_eq!(shared.frames.pop_ready(), Some(index));
+        assert_eq!(shared.frames.pop_ready(), None);
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
         kit::assert_matches_direct(frame.extended.characters_pilot(), &expected);
         assert_eq!(
@@ -1441,16 +1328,17 @@ fn independent_character_handoffs_isolate_a_missing_part_before_publication() {
 
 #[test]
 fn worker_characters_mixed_payload_matches_native_with_frozen_activity() {
+    let _globals = crate::extended::characters::test_globals();
     use crate::extended::characters::{self, CharactersCopyContext, CharactersJob};
     use characters::characters_test_kit as kit;
     use engine_native::walk::Outcome;
 
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
     let bytes = kit::mapped_fixture();
     let memory = kit::memory(&bytes);
     let shared = Shared::new(kit::BASE, 0, 1);
-    let index = shared.free.pop().expect("pooled buffer");
+    let index = shared.frames.pop().expect("pooled buffer");
     let capacities = characters::Capacities {
         rows: [4096; crate::extended::characters::N],
         bytes: [131_072; crate::extended::characters::N],
@@ -1462,17 +1350,14 @@ fn worker_characters_mixed_payload_matches_native_with_frozen_activity() {
         direct.capture(&memory, kit::BASE, kit::GAME_STATE, hour, force_full);
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
         *frame.extended.characters_pilot() = characters::Captured::with_capacities(&capacities);
-        let (trait_rows, trait_bytes) = direct.trait_capture_capacities();
         let mut payload = CharactersJob::new();
-        let report = characters::copy_characters_growing(
+        let report = characters::copy_characters(
             &memory,
             CharactersCopyContext {
                 force_full: false,
                 base: kit::BASE,
                 game_state: kit::GAME_STATE,
                 active,
-                trait_rows,
-                trait_bytes,
             },
             &mut payload,
             crate::extended::characters::Roles::Independent,
@@ -1489,8 +1374,8 @@ fn worker_characters_mixed_payload_matches_native_with_frozen_activity() {
         job.characters_refresh = [true, false, false, false];
         job.characters_payload = [Some(payload), None, None, None];
         process_owned_job(&shared, job, &mut AirBasesMemo::default());
-        assert_eq!(shared.ready.pop(), Some(index));
-        assert_eq!(shared.completed[index].load(Ordering::Acquire), 39);
+        assert_eq!(shared.frames.pop_ready(), Some(index));
+        assert_eq!(shared.frames.slot(index).completed.load(Ordering::Acquire), 39);
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
         let actual = frame.extended.characters_pilot();
         kit::assert_matches_direct(actual, &direct);
@@ -1512,12 +1397,12 @@ fn worker_characters_mixed_payload_matches_native_with_frozen_activity() {
 fn worker_decodes_a_projects_refresh_payload_into_the_same_typed_rows() {
     use crate::extended::projects::projects_test_kit;
     use crate::extended::projects::{ProjectsCopyContext, ProjectsJob};
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
     let bytes = projects_test_kit::fixture();
     let memory = projects_test_kit::memory(&bytes);
     let shared = Shared::new(projects_test_kit::BASE, 0, 1);
-    let index = shared.free.pop().expect("pooled buffer");
+    let index = shared.frames.pop().expect("pooled buffer");
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     let capacities = crate::extended::projects::Capacities {
         rows: [256; crate::extended::projects::N],
@@ -1540,7 +1425,7 @@ fn worker_decodes_a_projects_refresh_payload_into_the_same_typed_rows() {
     let report = crate::extended::projects::copy_projects_refresh(&memory, ctx, &mut first);
     assert!(report.raw_ok);
     frame.extended.projects_pilot().raw_mode = true;
-    shared.completed[index].store(0, Ordering::Relaxed);
+    shared.frames.slot(index).completed.store(0, Ordering::Relaxed);
     let mut job = DecodeJob {
         queued_qpc: 0,
         index,
@@ -1590,8 +1475,8 @@ fn worker_decodes_a_projects_refresh_payload_into_the_same_typed_rows() {
         capitulation_payload: None,
     };
     process_test_job(&shared, &mut job, &mut AirBasesMemo::default());
-    assert_eq!(shared.ready.pop(), Some(index));
-    assert_eq!(shared.completed[index].load(Ordering::Acquire), 23);
+    assert_eq!(shared.frames.pop_ready(), Some(index));
+    assert_eq!(shared.frames.slot(index).completed.load(Ordering::Acquire), 23);
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     projects_test_kit::assert_matches_direct(frame.extended.projects_pilot(), &direct);
     // The worker clears the raw-mode gate it consumed.
@@ -1602,11 +1487,11 @@ fn worker_decodes_a_projects_refresh_payload_into_the_same_typed_rows() {
 fn worker_decodes_a_lexical_refresh_payload_into_the_same_typed_rows() {
     use crate::extended::lexical::lexical_test_kit;
     use crate::extended::lexical::{LexicalCopyContext, LexicalJob};
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
     let memory = lexical_test_kit::KitMemory::fixture();
     let shared = Shared::new(lexical_test_kit::BASE, 0, 1);
-    let index = shared.free.pop().expect("pooled buffer");
+    let index = shared.frames.pop().expect("pooled buffer");
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     let capacities = crate::extended::lexical::Capacities {
         rows: 256,
@@ -1620,7 +1505,7 @@ fn worker_decodes_a_lexical_refresh_payload_into_the_same_typed_rows() {
     let report = crate::extended::lexical::copy_lexical_refresh(&memory, ctx, &mut first);
     assert!(report.raw_ok);
     frame.extended.lexical_pilot().raw_mode = true;
-    shared.completed[index].store(0, Ordering::Relaxed);
+    shared.frames.slot(index).completed.store(0, Ordering::Relaxed);
     let mut job = DecodeJob {
         queued_qpc: 0,
         index,
@@ -1670,8 +1555,8 @@ fn worker_decodes_a_lexical_refresh_payload_into_the_same_typed_rows() {
         capitulation_payload: None,
     };
     process_test_job(&shared, &mut job, &mut AirBasesMemo::default());
-    assert_eq!(shared.ready.pop(), Some(index));
-    assert_eq!(shared.completed[index].load(Ordering::Acquire), 29);
+    assert_eq!(shared.frames.pop_ready(), Some(index));
+    assert_eq!(shared.frames.slot(index).completed.load(Ordering::Acquire), 29);
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     lexical_test_kit::assert_matches_direct(frame.extended.lexical_pilot(), &direct);
     // The worker clears the raw-mode gate it consumed.
@@ -1681,12 +1566,12 @@ fn worker_decodes_a_lexical_refresh_payload_into_the_same_typed_rows() {
 #[test]
 fn worker_preserves_already_typed_wars_rows() {
     use crate::sampling::wars_test_kit;
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
     let bytes = wars_test_kit::fixture();
     let memory = wars_test_kit::memory(&bytes);
     let shared = Shared::new(wars_test_kit::BASE, 0, 1);
-    let index = shared.free.pop().expect("pooled buffer");
+    let index = shared.frames.pop().expect("pooled buffer");
     let direct = wars_test_kit::direct(&memory, 2);
     {
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
@@ -1694,7 +1579,7 @@ fn worker_preserves_already_typed_wars_rows() {
         frame.wars.clone_from(&direct.owned);
         frame.table_ns[TableId::WarRelations.index()] = 601;
     }
-    shared.completed[index].store(0, Ordering::Relaxed);
+    shared.frames.slot(index).completed.store(0, Ordering::Relaxed);
     let mut job = DecodeJob {
         queued_qpc: 0,
         index,
@@ -1744,8 +1629,8 @@ fn worker_preserves_already_typed_wars_rows() {
         capitulation_payload: None,
     };
     process_test_job(&shared, &mut job, &mut AirBasesMemo::default());
-    assert_eq!(shared.ready.pop(), Some(index));
-    assert_eq!(shared.completed[index].load(Ordering::Acquire), 43);
+    assert_eq!(shared.frames.pop_ready(), Some(index));
+    assert_eq!(shared.frames.slot(index).completed.load(Ordering::Acquire), 43);
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     assert_eq!(frame.wars_result, direct.owned_outcome);
     assert_eq!(&frame.wars[..direct.owned.len()], &direct.owned[..]);
@@ -1755,17 +1640,16 @@ fn worker_preserves_already_typed_wars_rows() {
 #[test]
 fn worker_decodes_a_divisions_refresh_payload_into_the_same_typed_rows() {
     use crate::sampling::{DivisionsCopyContext, DivisionsJob, divisions_test_kit};
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
     let bytes = divisions_test_kit::fixture();
     let memory = divisions_test_kit::memory(&bytes);
     let shared = Shared::new(divisions_test_kit::BASE, 0, 1);
-    let index = shared.free.pop().expect("pooled buffer");
+    let index = shared.frames.pop().expect("pooled buffer");
     let direct = divisions_test_kit::direct(&memory, [64; 6]);
     let ctx = DivisionsCopyContext {
         base: divisions_test_kit::BASE,
         game_state: divisions_test_kit::GAME_STATE,
-        row_capacity: 64,
         source_capacity: 64,
         detail_capacities: [64, 0, 64, 64, 64],
         details_active: true,
@@ -1778,7 +1662,7 @@ fn worker_decodes_a_divisions_refresh_payload_into_the_same_typed_rows() {
     let before_bytes = frame.allocated_bytes();
     shared.measure_frame(index);
     let pool_before = shared.pool_owned();
-    shared.completed[index].store(0, Ordering::Relaxed);
+    shared.frames.slot(index).completed.store(0, Ordering::Relaxed);
     let mut job = DecodeJob {
         queued_qpc: 0,
         index,
@@ -1828,8 +1712,8 @@ fn worker_decodes_a_divisions_refresh_payload_into_the_same_typed_rows() {
         capitulation_payload: None,
     };
     process_test_job(&shared, &mut job, &mut AirBasesMemo::default());
-    assert_eq!(shared.ready.pop(), Some(index));
-    assert_eq!(shared.completed[index].load(Ordering::Acquire), 47);
+    assert_eq!(shared.frames.pop_ready(), Some(index));
+    assert_eq!(shared.frames.slot(index).completed.load(Ordering::Acquire), 47);
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     shared.measure_frame(index);
     assert_eq!(
@@ -1888,12 +1772,12 @@ fn fifo_uses_frozen_division_detail_activity_and_retires_the_owned_core_once() {
     use crate::sampling::{DivisionsCopyContext, divisions_test_kit as kit};
     use engine_native::walk::Outcome;
 
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
     let bytes = kit::fixture();
     let memory = kit::memory(&bytes);
     let shared = Shared::new(kit::BASE, 0, 1);
-    let index = shared.free.pop().expect("pooled buffer");
+    let index = shared.frames.pop().expect("pooled buffer");
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     let skipped = Outcome::Unavailable {
         reason: replay_data::cadence::SKIPPED_REASON,
@@ -1913,7 +1797,6 @@ fn fifo_uses_frozen_division_detail_activity_and_retires_the_owned_core_once() {
     let context = DivisionsCopyContext {
         base: kit::BASE,
         game_state: kit::GAME_STATE,
-        row_capacity: 64,
         source_capacity: 64,
         // Inactive detail capacities do not constrain the hourly core.
         detail_capacities: [usize::MAX; 5],
@@ -1931,12 +1814,12 @@ fn fifo_uses_frozen_division_detail_activity_and_retires_the_owned_core_once() {
     assert!(enqueue(&shared, job).is_none());
     process_owned_job(
         &shared,
-        shared.decode_queue.pop().expect("queued core payload"),
+        pop(&shared).expect("queued core payload"),
         &mut AirBasesMemo::default(),
     );
-    assert_eq!(shared.ready.pop(), Some(index));
-    assert_eq!(shared.ready.pop(), None);
-    assert_eq!(shared.completed[index].load(Ordering::Acquire), 43);
+    assert_eq!(shared.frames.pop_ready(), Some(index));
+    assert_eq!(shared.frames.pop_ready(), None);
+    assert_eq!(shared.frames.slot(index).completed.load(Ordering::Acquire), 43);
     assert_eq!(DIVISIONS_JOB_POOL.lock().unwrap().len(), pool_len);
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     assert_eq!(frame.divisions_result, Outcome::Rows { len: 3 });
@@ -1960,7 +1843,7 @@ fn prior_active_division_details_stay_skipped_through_core_failure_and_retiremen
         read_accounting,
         sampling::{
             DivisionsCopyContext, copy_divisions_core_refresh,
-            copy_divisions_inputs_refresh_growing, divisions_test_kit as kit,
+            copy_divisions_inputs_refresh, divisions_test_kit as kit,
         },
     };
     use engine_native::{Memory, memory::CountedMemory, memory::ReadCounts, walk::Outcome};
@@ -1992,18 +1875,17 @@ fn prior_active_division_details_stay_skipped_through_core_failure_and_retiremen
         }
     }
 
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
     let bytes = kit::fixture();
     let shared = Shared::new(kit::BASE, 0, 1);
-    let index = shared.free.pop().expect("pooled buffer");
+    let index = shared.frames.pop().expect("pooled buffer");
     let pool_len = DIVISIONS_JOB_POOL.lock().unwrap().len().max(1);
     let retired = unsafe { &*RETIRED_PAYLOADS.load(Ordering::Acquire) };
     for (active_hour, reject_context) in [(2, false), (26, true)] {
         let context = DivisionsCopyContext {
             base: kit::BASE,
             game_state: kit::GAME_STATE,
-            row_capacity: 64,
             source_capacity: 64,
             detail_capacities: [64; 5],
             details_active: true,
@@ -2032,11 +1914,11 @@ fn prior_active_division_details_stay_skipped_through_core_failure_and_retiremen
         assert!(enqueue(&shared, active).is_none());
         process_owned_job(
             &shared,
-            shared.decode_queue.pop().expect("queued active details"),
+            pop(&shared).expect("queued active details"),
             &mut AirBasesMemo::default(),
         );
-        assert_eq!(shared.ready.pop(), Some(index));
-        assert!(shared.ready.is_empty());
+        assert_eq!(shared.frames.pop_ready(), Some(index));
+        assert!(shared.frames.ready_is_empty());
         assert_eq!(DIVISIONS_JOB_POOL.lock().unwrap().len(), pool_len);
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
         assert_eq!(frame.divisions_result, Outcome::Rows { len: 3 });
@@ -2068,21 +1950,21 @@ fn prior_active_division_details_stay_skipped_through_core_failure_and_retiremen
         });
         let reads = read_accounting::Capture::new();
         let mut payload = acquire_divisions_job();
-        assert!(copy_divisions_inputs_refresh_growing(
+        assert!(copy_divisions_inputs_refresh(
             &memory,
             context,
             &mut payload
         ));
         assert_eq!(memory.0.fault_attempts.get(), 0);
-        let lease = Arc::clone(payload.census.unit_inputs().unwrap());
-        let input_pointer = Arc::as_ptr(&lease);
-        frame.extended.install_unit_inputs(Some(Arc::clone(&lease)));
-        assert_eq!(Arc::strong_count(&lease), 3);
+        let lease = engine_allocation::SharedBox::clone(payload.census.unit_inputs().unwrap());
+        let input_pointer = engine_allocation::SharedBox::as_ptr(&lease);
+        frame.extended.install_unit_inputs(Some(engine_allocation::SharedBox::clone(&lease)));
+        assert_eq!(engine_allocation::SharedBox::strong_count(&lease), 3);
         let report = if reject_context {
             copy_divisions_core_refresh(
                 &NoRead,
                 DivisionsCopyContext {
-                    row_capacity: 0,
+                    game_state: context.game_state + 8,
                     ..context
                 },
                 &mut payload,
@@ -2098,7 +1980,10 @@ fn prior_active_division_details_stay_skipped_through_core_failure_and_retiremen
         assert_eq!(repeated.copy_ticks, report.copy_ticks);
         assert_eq!(read_accounting::snapshot(), before_repeat);
         assert_eq!(memory.0.fault_attempts.get(), usize::from(!reject_context));
-        assert!(Arc::ptr_eq(&lease, payload.census.unit_inputs().unwrap()));
+        assert!(engine_allocation::SharedBox::ptr_eq(
+            &lease,
+            payload.census.unit_inputs().unwrap(),
+        ));
 
         frame.extended.set_divisions_raw_mode(true);
         assert_eq!(
@@ -2149,7 +2034,10 @@ fn prior_active_division_details_stay_skipped_through_core_failure_and_retiremen
         frame.table_reads = counts;
         frame.extended.release_unit_inputs();
         drop(lease);
-        assert_eq!(Arc::strong_count(payload.census.unit_inputs().unwrap()), 1);
+        assert_eq!(
+            engine_allocation::SharedBox::strong_count(payload.census.unit_inputs().unwrap()),
+            1
+        );
         assert!(retired.is_empty());
 
         let mut failed = bare_job(index, next_seq(), hour, 43);
@@ -2166,21 +2054,23 @@ fn prior_active_division_details_stay_skipped_through_core_failure_and_retiremen
         let decoding = read_accounting::Capture::new();
         process_owned_job(
             &shared,
-            shared.decode_queue.pop().expect("queued failed core"),
+            pop(&shared).expect("queued failed core"),
             &mut AirBasesMemo::default(),
         );
         assert_eq!(decoding.finish(), read_accounting::ZERO);
-        assert_eq!(shared.ready.pop(), Some(index));
-        assert_eq!(shared.ready.pop(), None);
-        assert!(shared.decode_queue.is_empty());
-        assert_eq!(shared.completed[index].load(Ordering::Acquire), 43);
+        assert_eq!(shared.frames.pop_ready(), Some(index));
+        assert_eq!(shared.frames.pop_ready(), None);
+        assert!((shared.frames.decode_len() == 0));
+        assert_eq!(shared.frames.slot(index).completed.load(Ordering::Acquire), 43);
         assert!(retired.is_empty());
         assert_eq!(DIVISIONS_JOB_POOL.lock().unwrap().len(), pool_len);
         reclaim_payloads();
         let pool = DIVISIONS_JOB_POOL.lock().unwrap();
         assert_eq!(pool.len(), pool_len);
         assert_eq!(
-            Arc::as_ptr(pool.last().unwrap().census.unit_inputs().unwrap()),
+            engine_allocation::SharedBox::as_ptr(
+                pool.last().unwrap().census.unit_inputs().unwrap(),
+            ),
             input_pointer
         );
         drop(pool);
@@ -2215,26 +2105,17 @@ fn prior_active_division_details_stay_skipped_through_core_failure_and_retiremen
 fn cold_worker_payload_grows_from_native_headers_before_publication_and_reuses_storage() {
     use crate::extended::air::{AirStatsCopyContext, Capacities, stats_test_kit as kit};
     use engine_native::walk::Outcome;
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
     let saved = std::mem::take(&mut *AIR_STATS_JOB_POOL.lock().unwrap());
     let shared = Shared::new(kit::BASE, 0, 1);
-    let index = shared.free.pop().expect("pooled frame");
+    let index = shared.frames.pop().expect("pooled frame");
     let context = AirStatsCopyContext {
         base: kit::BASE,
         game_state: kit::GAME_STATE,
         hour: 0,
         force_full: true,
     };
-    let mut fixed = AirStatsJob::default();
-    let bytes = kit::mod_fixture(5_000);
-    assert!(
-        !crate::extended::air::copy_air_stats_refresh(&kit::memory(&bytes), context, &mut fixed,)
-            .raw_ok
-    );
-    assert!(fixed.log.overflowed);
-    drop(bytes);
-
     let mut retained = None;
     for (step, count) in [5_000, 5_000, 11_003].into_iter().enumerate() {
         let mut payload = if step == 0 {
@@ -2257,7 +2138,7 @@ fn cold_worker_payload_grows_from_native_headers_before_publication_and_reuses_s
         let direct = kit::direct(&memory, &capacities);
         assert_eq!(direct.outcome, Outcome::Rows { len: count });
         let report =
-            crate::extended::air::copy_air_stats_refresh_growing(&memory, context, &mut payload);
+            crate::extended::air::copy_air_stats_refresh(&memory, context, &mut payload);
         assert!(report.raw_ok);
         assert!(!payload.log.overflowed);
         retained = Some((
@@ -2267,13 +2148,13 @@ fn cold_worker_payload_grows_from_native_headers_before_publication_and_reuses_s
         ));
         // Publication and decoding use only the owned original observations.
         drop(bytes);
-        assert_eq!(shared.ready.pop(), None);
+        assert_eq!(shared.frames.pop_ready(), None);
         let mut job = bare_job(index, next_seq(), 0, step as i64 + 1);
         job.force_full = true;
         job.air_stats_refresh = true;
         job.air_stats_payload = Some(payload);
         process_owned_job(&shared, job, &mut AirBasesMemo::default());
-        assert_eq!(shared.ready.pop(), Some(index));
+        assert_eq!(shared.frames.pop_ready(), Some(index));
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
         kit::assert_captured_matches_direct(frame.extended.air_stats_pilot(), &direct);
         assert_eq!(AIR_STATS_JOB_POOL.lock().unwrap().len(), 1);
@@ -2284,12 +2165,12 @@ fn cold_worker_payload_grows_from_native_headers_before_publication_and_reuses_s
 #[test]
 fn worker_decodes_a_wing_pack_payload_into_the_same_typed_rows() {
     use crate::extended::air::{AirWingCopyContext, wing_test_kit};
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
     let bytes = wing_test_kit::fixture();
     let memory = wing_test_kit::memory(&bytes);
     let shared = Shared::new(wing_test_kit::BASE, 0, 1);
-    let index = shared.free.pop().expect("pooled buffer");
+    let index = shared.frames.pop().expect("pooled buffer");
     let direct = wing_test_kit::direct(&memory);
     let ctx = AirWingCopyContext {
         base: wing_test_kit::BASE,
@@ -2297,13 +2178,12 @@ fn worker_decodes_a_wing_pack_payload_into_the_same_typed_rows() {
         hour: 0,
         force_full: true,
         limits: [1024, 8192, 4096],
-        naval_limit: 4096,
         game_score: false,
     };
     let mut first = acquire_air_wing_job();
-    let report = crate::extended::air::copy_air_refresh_growing(&memory, ctx, &mut first);
+    let report = crate::extended::air::copy_air_refresh(&memory, ctx, &mut first);
     assert!(report.raw_ok);
-    shared.completed[index].store(0, Ordering::Relaxed);
+    shared.frames.slot(index).completed.store(0, Ordering::Relaxed);
     let mut job = DecodeJob {
         queued_qpc: 0,
         index,
@@ -2353,8 +2233,8 @@ fn worker_decodes_a_wing_pack_payload_into_the_same_typed_rows() {
         air_stats_payload: None,
     };
     process_test_job(&shared, &mut job, &mut AirBasesMemo::default());
-    assert_eq!(shared.ready.pop(), Some(index));
-    assert_eq!(shared.completed[index].load(Ordering::Acquire), 31);
+    assert_eq!(shared.frames.pop_ready(), Some(index));
+    assert_eq!(shared.frames.slot(index).completed.load(Ordering::Acquire), 31);
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     wing_test_kit::assert_captured_matches_direct(frame.extended.air_wing_pilot(), &direct);
     recycle_air_wing_job(job.air_wing_payload.unwrap());
@@ -2363,12 +2243,12 @@ fn worker_decodes_a_wing_pack_payload_into_the_same_typed_rows() {
 #[test]
 fn worker_decodes_an_air_stats_payload_into_the_same_typed_rows() {
     use crate::extended::air::{AirStatsCopyContext, stats_test_kit};
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
     let bytes = stats_test_kit::fixture();
     let memory = stats_test_kit::memory(&bytes);
     let shared = Shared::new(stats_test_kit::BASE, 0, 1);
-    let index = shared.free.pop().expect("pooled buffer");
+    let index = shared.frames.pop().expect("pooled buffer");
     let mut capacities = crate::extended::air::Capacities::default();
     capacities.rows[air_slot(replay_data::rows::TableId::AirStatistics)] = 2;
     let direct = stats_test_kit::direct(&memory, &capacities);
@@ -2379,9 +2259,9 @@ fn worker_decodes_an_air_stats_payload_into_the_same_typed_rows() {
         force_full: true,
     };
     let mut first = acquire_air_stats_job();
-    let report = crate::extended::air::copy_air_stats_refresh_growing(&memory, ctx, &mut first);
+    let report = crate::extended::air::copy_air_stats_refresh(&memory, ctx, &mut first);
     assert!(report.raw_ok);
-    shared.completed[index].store(0, Ordering::Relaxed);
+    shared.frames.slot(index).completed.store(0, Ordering::Relaxed);
     let mut job = DecodeJob {
         queued_qpc: 0,
         index,
@@ -2431,8 +2311,8 @@ fn worker_decodes_an_air_stats_payload_into_the_same_typed_rows() {
         capitulation_payload: None,
     };
     process_test_job(&shared, &mut job, &mut AirBasesMemo::default());
-    assert_eq!(shared.ready.pop(), Some(index));
-    assert_eq!(shared.completed[index].load(Ordering::Acquire), 59);
+    assert_eq!(shared.frames.pop_ready(), Some(index));
+    assert_eq!(shared.frames.slot(index).completed.load(Ordering::Acquire), 59);
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     stats_test_kit::assert_captured_matches_direct(frame.extended.air_stats_pilot(), &direct);
     assert!(!frame.extended.air_stats_pilot().stats_raw_mode);
@@ -2444,12 +2324,12 @@ fn worker_decodes_an_air_stats_payload_into_the_same_typed_rows() {
 #[test]
 fn worker_decodes_a_naval_pack_payload_into_the_same_typed_rows() {
     use crate::extended::naval_history::{NavalCopyContext, naval_test_kit};
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
     let bytes = naval_test_kit::fixture();
     let memory = naval_test_kit::memory(&bytes);
     let shared = Shared::new(naval_test_kit::BASE, 0, 1);
-    let index = shared.free.pop().expect("pooled buffer");
+    let index = shared.frames.pop().expect("pooled buffer");
     let direct = naval_test_kit::direct(&memory);
     let ctx = NavalCopyContext {
         base: naval_test_kit::BASE,
@@ -2460,9 +2340,9 @@ fn worker_decodes_a_naval_pack_payload_into_the_same_typed_rows() {
     let mut first = acquire_naval_job();
     naval_test_kit::stage_wings(&memory, &mut first);
     let report =
-        crate::extended::naval_history::copy_naval_refresh_growing(&memory, ctx, &mut first);
+        crate::extended::naval_history::copy_naval_refresh(&memory, ctx, &mut first);
     assert!(report.raw_ok);
-    shared.completed[index].store(0, Ordering::Relaxed);
+    shared.frames.slot(index).completed.store(0, Ordering::Relaxed);
     let mut job = DecodeJob {
         queued_qpc: 0,
         index,
@@ -2512,8 +2392,8 @@ fn worker_decodes_a_naval_pack_payload_into_the_same_typed_rows() {
         capitulation_payload: None,
     };
     process_test_job(&shared, &mut job, &mut AirBasesMemo::default());
-    assert_eq!(shared.ready.pop(), Some(index));
-    assert_eq!(shared.completed[index].load(Ordering::Acquire), 37);
+    assert_eq!(shared.frames.pop_ready(), Some(index));
+    assert_eq!(shared.frames.slot(index).completed.load(Ordering::Acquire), 37);
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     naval_test_kit::assert_captured_matches_direct(frame.extended.naval_pilot(), &direct);
     recycle_naval_job(job.naval_payload.unwrap());
@@ -2524,7 +2404,7 @@ fn retained_air_naval_payload_caps_fit_the_force_full_hour_live_set() {
     // Independent fixture worlds exercise each retained consumer pool.
     use crate::extended::air::{AirWingCopyContext, wing_test_kit as air_kit};
     use crate::extended::naval_history::{NavalCopyContext, naval_test_kit as naval_kit};
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
     let air_bytes = air_kit::fixture();
     let air_memory = air_kit::memory(&air_bytes);
@@ -2535,11 +2415,10 @@ fn retained_air_naval_payload_caps_fit_the_force_full_hour_live_set() {
         hour: 0,
         force_full: true,
         limits: [1024, 8192, 4096],
-        naval_limit: 4096,
         game_score: false,
     };
     let air_report =
-        crate::extended::air::copy_air_refresh_growing(&air_memory, air_ctx, &mut air_job);
+        crate::extended::air::copy_air_refresh(&air_memory, air_ctx, &mut air_job);
     assert!(
         air_report.raw_ok,
         "wing force-full live set must fit owned storage"
@@ -2555,7 +2434,7 @@ fn retained_air_naval_payload_caps_fit_the_force_full_hour_live_set() {
         force_full: true,
     };
     naval_kit::stage_wings(&naval_memory, &mut naval_job);
-    let naval_report = crate::extended::naval_history::copy_naval_refresh_growing(
+    let naval_report = crate::extended::naval_history::copy_naval_refresh(
         &naval_memory,
         naval_ctx,
         &mut naval_job,
@@ -2572,7 +2451,7 @@ fn retained_air_naval_payload_caps_fit_the_force_full_hour_live_set() {
 #[test]
 fn worker_decodes_a_production_rest_payload_into_the_same_typed_rows() {
     use crate::extended::production::{ProductionRestCopyContext, production_rest_test_kit as kit};
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
     let bytes = kit::fixture();
     let memory = engine_native::memory::SliceMemory {
@@ -2580,7 +2459,7 @@ fn worker_decodes_a_production_rest_payload_into_the_same_typed_rows() {
         bytes: &bytes,
     };
     let shared = Shared::new(0, 0, 1);
-    let index = shared.free.pop().expect("pooled buffer");
+    let index = shared.frames.pop().expect("pooled buffer");
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     let direct = kit::direct(&memory, &kit::capacities());
     let ctx = ProductionRestCopyContext {
@@ -2589,10 +2468,10 @@ fn worker_decodes_a_production_rest_payload_into_the_same_typed_rows() {
     };
     let mut first = acquire_production_rest_job();
     let report =
-        crate::extended::production::copy_production_rest_refresh_growing(&memory, ctx, &mut first);
+        crate::extended::production::copy_production_rest_refresh(&memory, ctx, &mut first);
     assert!(report.raw_ok);
     frame.extended.production_rest_pilot().rest_raw_mode = true;
-    shared.completed[index].store(0, Ordering::Relaxed);
+    shared.frames.slot(index).completed.store(0, Ordering::Relaxed);
     let mut job = DecodeJob {
         queued_qpc: 0,
         index,
@@ -2642,8 +2521,8 @@ fn worker_decodes_a_production_rest_payload_into_the_same_typed_rows() {
         capitulation_payload: None,
     };
     process_test_job(&shared, &mut job, &mut AirBasesMemo::default());
-    assert_eq!(shared.ready.pop(), Some(index));
-    assert_eq!(shared.completed[index].load(Ordering::Acquire), 31);
+    assert_eq!(shared.frames.pop_ready(), Some(index));
+    assert_eq!(shared.frames.slot(index).completed.load(Ordering::Acquire), 31);
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     kit::assert_matches_direct(frame.extended.production_rest_pilot(), &direct);
     assert!(!frame.extended.production_rest_pilot().rest_raw_mode);
@@ -2654,7 +2533,7 @@ fn worker_decodes_a_construction_rest_payload_into_the_same_typed_rows() {
     use crate::extended::construction::{
         ConstructionRestCopyContext, construction_rest_test_kit as kit,
     };
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
     let bytes = kit::fixture();
     let memory = engine_native::memory::SliceMemory {
@@ -2662,7 +2541,7 @@ fn worker_decodes_a_construction_rest_payload_into_the_same_typed_rows() {
         bytes: &bytes,
     };
     let shared = Shared::new(0, 0, 1);
-    let index = shared.free.pop().expect("pooled buffer");
+    let index = shared.frames.pop().expect("pooled buffer");
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     // Runtime presizes the occupied-country arena before admission. This
     // synthetic Shared has no live sizing observer; install the same fixture
@@ -2675,12 +2554,12 @@ fn worker_decodes_a_construction_rest_payload_into_the_same_typed_rows() {
         game_state: kit::BASE,
     };
     let mut first = acquire_construction_rest_job();
-    let report = crate::extended::construction::copy_construction_rest_refresh_growing(
+    let report = crate::extended::construction::copy_construction_rest_refresh(
         &memory, ctx, &mut first,
     );
     assert!(report.raw_ok);
     frame.extended.construction_rest_pilot().rest_raw_mode = true;
-    shared.completed[index].store(0, Ordering::Relaxed);
+    shared.frames.slot(index).completed.store(0, Ordering::Relaxed);
     let mut job = DecodeJob {
         queued_qpc: 0,
         index,
@@ -2730,8 +2609,8 @@ fn worker_decodes_a_construction_rest_payload_into_the_same_typed_rows() {
         capitulation_payload: None,
     };
     process_test_job(&shared, &mut job, &mut AirBasesMemo::default());
-    assert_eq!(shared.ready.pop(), Some(index));
-    assert_eq!(shared.completed[index].load(Ordering::Acquire), 37);
+    assert_eq!(shared.frames.pop_ready(), Some(index));
+    assert_eq!(shared.frames.slot(index).completed.load(Ordering::Acquire), 37);
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     kit::assert_matches_direct(frame.extended.construction_rest_pilot(), &direct);
     assert!(!frame.extended.construction_rest_pilot().rest_raw_mode);
@@ -2748,7 +2627,7 @@ fn worker_decodes_two_payloads_in_one_job_with_copy_only_table_ns() {
     // own fixture memory and compared against its own typed reference).
     use crate::extended::air::{AirWingCopyContext, wing_test_kit as air_kit};
     use crate::extended::naval_history::{NavalCopyContext, naval_test_kit as naval_kit};
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
     // Stage each payload from its own fixture memory (separate address
     // spaces; the kits share BASE/GAME_STATE values but not objects).
@@ -2761,12 +2640,11 @@ fn worker_decodes_two_payloads_in_one_job_with_copy_only_table_ns() {
         hour: 0,
         force_full: true,
         limits: [1024, 8192, 4096],
-        naval_limit: 4096,
         game_score: false,
     };
     let mut air_job = acquire_air_wing_job();
     let air_report =
-        crate::extended::air::copy_air_refresh_growing(&air_memory, air_ctx, &mut air_job);
+        crate::extended::air::copy_air_refresh(&air_memory, air_ctx, &mut air_job);
     assert!(air_report.raw_ok);
     let naval_bytes = naval_kit::fixture();
     let naval_memory = naval_kit::memory(&naval_bytes);
@@ -2779,7 +2657,7 @@ fn worker_decodes_two_payloads_in_one_job_with_copy_only_table_ns() {
     };
     let mut naval_job = acquire_naval_job();
     naval_kit::stage_wings(&naval_memory, &mut naval_job);
-    let naval_report = crate::extended::naval_history::copy_naval_refresh_growing(
+    let naval_report = crate::extended::naval_history::copy_naval_refresh(
         &naval_memory,
         naval_ctx,
         &mut naval_job,
@@ -2788,8 +2666,8 @@ fn worker_decodes_two_payloads_in_one_job_with_copy_only_table_ns() {
     // One Shared serves both: BASE coincides (0 == 0), so no mismatch.
     assert_eq!(air_kit::BASE, naval_kit::BASE);
     let shared = Shared::new(air_kit::BASE, 0, 1);
-    let index = shared.free.pop().expect("pooled buffer");
-    shared.completed[index].store(0, Ordering::Relaxed);
+    let index = shared.frames.pop().expect("pooled buffer");
+    shared.frames.slot(index).completed.store(0, Ordering::Relaxed);
     let mut job = DecodeJob {
         queued_qpc: 0,
         index,
@@ -2839,8 +2717,8 @@ fn worker_decodes_two_payloads_in_one_job_with_copy_only_table_ns() {
         capitulation_payload: None,
     };
     process_test_job(&shared, &mut job, &mut AirBasesMemo::default());
-    assert_eq!(shared.ready.pop(), Some(index));
-    assert_eq!(shared.completed[index].load(Ordering::Acquire), 53);
+    assert_eq!(shared.frames.pop_ready(), Some(index));
+    assert_eq!(shared.frames.slot(index).completed.load(Ordering::Acquire), 53);
     // Both families' rows install identically in the one frame.
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     air_kit::assert_captured_matches_direct(frame.extended.air_wing_pilot(), &air_direct);
@@ -2916,13 +2794,13 @@ fn bare_job(index: usize, seq: u64, hour: i32, game_elapsed: i64) -> DecodeJob {
 fn worker_air_stats_keeps_current_daily_payloads_and_explicit_missing_results() {
     use crate::extended::air::{AirStatsCopyContext, Capacities, stats_test_kit as kit};
     use engine_native::walk::Outcome;
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
     let mut bytes = kit::fixture();
     let mut capacities = Capacities::default();
     capacities.rows[air_slot(replay_data::rows::TableId::AirStatistics)] = 2;
     let shared = Shared::new(kit::BASE, 0, 1);
-    let index = shared.free.pop().expect("pooled buffer");
+    let index = shared.frames.pop().expect("pooled buffer");
     let mut bases_memo = AirBasesMemo::default();
     for (step, hour) in [5, 29, 30, 53, 77, 101, 125, 149].into_iter().enumerate() {
         let mut job = bare_job(index, step as u64 + 1, hour, 41);
@@ -2936,7 +2814,7 @@ fn worker_air_stats_keeps_current_daily_payloads_and_explicit_missing_results() 
             kit::set_first_value(&mut bytes, -(step as i64 + 1));
             let memory = kit::memory(&bytes);
             let mut payload = AirStatsJob::new();
-            let report = crate::extended::air::copy_air_stats_refresh_growing(
+            let report = crate::extended::air::copy_air_stats_refresh(
                 &memory,
                 AirStatsCopyContext {
                     base: kit::BASE,
@@ -2963,8 +2841,8 @@ fn worker_air_stats_keeps_current_daily_payloads_and_explicit_missing_results() 
             captured.fail_air_stats_capture(replay_data::cadence::SKIPPED_REASON);
         }
         process_test_job(&shared, &mut job, &mut bases_memo);
-        assert_eq!(shared.ready.pop(), Some(index));
-        assert_eq!(shared.completed[index].load(Ordering::Acquire), 41);
+        assert_eq!(shared.frames.pop_ready(), Some(index));
+        assert_eq!(shared.frames.slot(index).completed.load(Ordering::Acquire), 41);
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
         let captured = frame.extended.air_stats_pilot();
         if step == 2 || step == 5 {
@@ -2992,11 +2870,11 @@ fn worker_air_bases_memo_invalidates_on_skip_missing_payload_and_ace_mask_change
         AirBasesCopyContext, Capacities, Captured, air_bases_test_kit as kit,
     };
     use engine_native::walk::Outcome;
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
     let bytes = kit::fixture();
     let shared = Shared::new(kit::BASE, 0, 1);
-    let index = shared.free.pop().expect("pooled buffer");
+    let index = shared.frames.pop().expect("pooled buffer");
     let reference = kit::direct(&kit::memory(&bytes));
     let mut capacities = Capacities::default();
     capacities.rows[1] = reference.bases_outcome.len();
@@ -3017,7 +2895,7 @@ fn worker_air_bases_memo_invalidates_on_skip_missing_payload_and_ace_mask_change
                 hour: if (9..=10).contains(&step) { 21 } else { 0 },
                 force_full: false,
             };
-            let report = crate::extended::air::copy_air_bases_refresh_growing(
+            let report = crate::extended::air::copy_air_bases_refresh(
                 &kit::memory(&bytes),
                 ctx,
                 &mut payload,
@@ -3031,8 +2909,8 @@ fn worker_air_bases_memo_invalidates_on_skip_missing_payload_and_ace_mask_change
             job.air_bases_payload = Some(payload);
         }
         process_test_job(&shared, &mut job, &mut memo);
-        assert_eq!(shared.ready.pop(), Some(index));
-        assert_eq!(shared.completed[index].load(Ordering::Acquire), 41);
+        assert_eq!(shared.frames.pop_ready(), Some(index));
+        assert_eq!(shared.frames.slot(index).completed.load(Ordering::Acquire), 41);
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
         if !(9..=10).contains(&step) {
             assert_eq!(
@@ -3057,14 +2935,14 @@ fn worker_air_bases_memo_invalidates_on_skip_missing_payload_and_ace_mask_change
 fn worker_decodes_a_shared_bases_payload_into_the_same_typed_rows() {
     use crate::extended::air::air_bases_test_kit as kit;
     use replay_frame::frame::TableView;
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
     let bytes = kit::fixture();
     let memory = kit::memory(&bytes);
     let direct = kit::direct(&memory);
     let shared = Shared::new(kit::BASE, 0, 1);
-    let index = shared.free.pop().expect("pooled buffer");
-    shared.completed[index].store(0, Ordering::Relaxed);
+    let index = shared.frames.pop().expect("pooled buffer");
+    shared.frames.slot(index).completed.store(0, Ordering::Relaxed);
     // Stage through the real game-thread entry point (cross-pack copy).
     let ctx = crate::extended::air::AirBasesCopyContext {
         base: kit::BASE,
@@ -3074,7 +2952,7 @@ fn worker_decodes_a_shared_bases_payload_into_the_same_typed_rows() {
     };
     let mut first = acquire_air_bases_job();
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
-    let report = crate::extended::air::copy_air_bases_refresh_growing(&memory, ctx, &mut first);
+    let report = crate::extended::air::copy_air_bases_refresh(&memory, ctx, &mut first);
     assert!(report.raw_ok);
     frame.extended.air_bases_pilot().bases_raw_mode = true;
     frame.extended.radar_pilot().registrations_raw_mode = true;
@@ -3082,8 +2960,8 @@ fn worker_decodes_a_shared_bases_payload_into_the_same_typed_rows() {
     job.air_bases_refresh = true;
     job.air_bases_payload = Some(first);
     process_test_job(&shared, &mut job, &mut AirBasesMemo::default());
-    assert_eq!(shared.ready.pop(), Some(index));
-    assert_eq!(shared.completed[index].load(Ordering::Acquire), 41);
+    assert_eq!(shared.frames.pop_ready(), Some(index));
+    assert_eq!(shared.frames.slot(index).completed.load(Ordering::Acquire), 41);
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     // Both packs' views install identically: bases and aces in air,
     // registrations in fog, with the worker clearing both raw gates.
@@ -3111,14 +2989,14 @@ fn worker_decodes_a_shared_bases_payload_into_the_same_typed_rows() {
 fn worker_decodes_a_supremacy_payload_into_the_same_typed_rows() {
     use crate::extended::naval_history::supremacy_test_kit as kit;
     use replay_frame::frame::TableView;
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
     let bytes = kit::fixture();
     let memory = kit::memory(&bytes);
     let direct = kit::direct(&memory);
     let shared = Shared::new(kit::BASE, 0, 1);
-    let index = shared.free.pop().expect("pooled buffer");
-    shared.completed[index].store(0, Ordering::Relaxed);
+    let index = shared.frames.pop().expect("pooled buffer");
+    shared.frames.slot(index).completed.store(0, Ordering::Relaxed);
     let ctx = crate::extended::naval_history::SupremacyCopyContext {
         base: kit::BASE,
         game_state: kit::GAME_STATE,
@@ -3128,15 +3006,15 @@ fn worker_decodes_a_supremacy_payload_into_the_same_typed_rows() {
     let mut first = acquire_supremacy_job();
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     let report =
-        crate::extended::naval_history::copy_supremacy_refresh_growing(&memory, ctx, &mut first);
+        crate::extended::naval_history::copy_supremacy_refresh(&memory, ctx, &mut first);
     assert!(report.raw_ok);
     frame.extended.supremacy_pilot().supremacy_raw_mode = true;
     let mut job = bare_job(index, next_seq(), 7, 53);
     job.supremacy_refresh = true;
     job.supremacy_payload = Some(first);
     process_test_job(&shared, &mut job, &mut AirBasesMemo::default());
-    assert_eq!(shared.ready.pop(), Some(index));
-    assert_eq!(shared.completed[index].load(Ordering::Acquire), 53);
+    assert_eq!(shared.frames.pop_ready(), Some(index));
+    assert_eq!(shared.frames.slot(index).completed.load(Ordering::Acquire), 53);
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     let naval = frame.extended.supremacy_pilot().tables();
     assert!(matches!(naval[0], TableView::Complete(_)));
@@ -3152,14 +3030,14 @@ fn worker_decodes_a_supremacy_payload_into_the_same_typed_rows() {
 fn worker_decodes_a_sunk_payload_into_the_same_typed_rows() {
     use crate::extended::naval_history::sunk_test_kit as kit;
     use replay_frame::frame::TableView;
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
     let bytes = kit::fixture();
     let memory = kit::memory(&bytes);
     let direct = kit::direct(&memory);
     let shared = Shared::new(kit::BASE, 0, 1);
-    let index = shared.free.pop().expect("pooled buffer");
-    shared.completed[index].store(0, Ordering::Relaxed);
+    let index = shared.frames.pop().expect("pooled buffer");
+    shared.frames.slot(index).completed.store(0, Ordering::Relaxed);
     let ctx = crate::extended::naval_history::SunkCopyContext {
         base: kit::BASE,
         game_state: kit::GAME_STATE,
@@ -3169,15 +3047,15 @@ fn worker_decodes_a_sunk_payload_into_the_same_typed_rows() {
     let mut first = acquire_sunk_job();
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     let report =
-        crate::extended::naval_history::copy_sunk_refresh_growing(&memory, ctx, &mut first);
+        crate::extended::naval_history::copy_sunk_refresh(&memory, ctx, &mut first);
     assert!(report.raw_ok);
     frame.extended.sunk_pilot().sunk_raw_mode = true;
     let mut job = bare_job(index, next_seq(), 7, 59);
     job.sunk_refresh = true;
     job.sunk_payload = Some(first);
     process_test_job(&shared, &mut job, &mut AirBasesMemo::default());
-    assert_eq!(shared.ready.pop(), Some(index));
-    assert_eq!(shared.completed[index].load(Ordering::Acquire), 59);
+    assert_eq!(shared.frames.pop_ready(), Some(index));
+    assert_eq!(shared.frames.slot(index).completed.load(Ordering::Acquire), 59);
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     // The sunk table is pack slot 13; the singleton conversion owns the
     // single row, so compare the converted view (one row, two entries).
@@ -3203,29 +3081,29 @@ fn worker_decodes_a_sunk_payload_into_the_same_typed_rows() {
 fn worker_decodes_a_radar_payload_into_the_same_typed_rows() {
     use crate::extended::fog::radar_test_kit as kit;
     use replay_frame::frame::TableView;
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
     let bytes = kit::fixture();
     let memory = kit::memory(&bytes);
     let direct = kit::direct(&memory);
     let shared = Shared::new(kit::BASE, 0, 1);
-    let index = shared.free.pop().expect("pooled buffer");
-    shared.completed[index].store(0, Ordering::Relaxed);
+    let index = shared.frames.pop().expect("pooled buffer");
+    shared.frames.slot(index).completed.store(0, Ordering::Relaxed);
     let mut first = acquire_radar_job();
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     let ctx = frame
         .extended
         .radar_pilot()
         .radar_copy_context(kit::BASE, kit::GAME_STATE, 0, true);
-    let report = crate::extended::fog::copy_radar_refresh_growing(&memory, ctx, &mut first);
+    let report = crate::extended::fog::copy_radar_refresh(&memory, ctx, &mut first);
     assert!(report.raw_ok);
     frame.extended.radar_pilot().radar_raw_mode = true;
     let mut job = bare_job(index, next_seq(), 7, 61);
     job.radar_refresh = true;
     job.radar_payload = Some(first);
     process_test_job(&shared, &mut job, &mut AirBasesMemo::default());
-    assert_eq!(shared.ready.pop(), Some(index));
-    assert_eq!(shared.completed[index].load(Ordering::Acquire), 61);
+    assert_eq!(shared.frames.pop_ready(), Some(index));
+    assert_eq!(shared.frames.slot(index).completed.load(Ordering::Acquire), 61);
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     let fog = frame.extended.radar_pilot().tables();
     assert!(matches!(fog[0], TableView::Complete(_)));
@@ -3238,21 +3116,21 @@ fn worker_decodes_a_radar_payload_into_the_same_typed_rows() {
 fn worker_decodes_an_intel_payload_into_the_same_typed_rows() {
     use crate::extended::fog::intel_test_kit as kit;
     use replay_frame::frame::TableView;
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
     let bytes = kit::fixture();
     let memory = kit::memory(&bytes);
     let direct = kit::direct(&memory);
     let shared = Shared::new(kit::BASE, 0, 1);
-    let index = shared.free.pop().expect("pooled buffer");
-    shared.completed[index].store(0, Ordering::Relaxed);
+    let index = shared.frames.pop().expect("pooled buffer");
+    shared.frames.slot(index).completed.store(0, Ordering::Relaxed);
     let mut first = acquire_intel_job();
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     let ctx = frame
         .extended
         .intel_pilot()
         .intel_copy_context(kit::BASE, kit::GAME_STATE);
-    let report = crate::extended::fog::copy_intel_refresh_with_divisions_growing(
+    let report = crate::extended::fog::copy_intel_refresh_with_divisions(
         &memory, ctx, &mut first, None,
     );
     assert!(report.raw_ok);
@@ -3261,8 +3139,8 @@ fn worker_decodes_an_intel_payload_into_the_same_typed_rows() {
     job.intel_refresh = true;
     job.intel_payload = Some(first);
     process_test_job(&shared, &mut job, &mut AirBasesMemo::default());
-    assert_eq!(shared.ready.pop(), Some(index));
-    assert_eq!(shared.completed[index].load(Ordering::Acquire), 67);
+    assert_eq!(shared.frames.pop_ready(), Some(index));
+    assert_eq!(shared.frames.slot(index).completed.load(Ordering::Acquire), 67);
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     // UnitIntel is fog pack slot 4.
     let fog = frame.extended.intel_pilot().tables();
@@ -3275,8 +3153,8 @@ fn worker_decodes_an_intel_payload_into_the_same_typed_rows() {
 pub(crate) fn retire_and_reacquire_two_carrier_jobs_for_test(
     jobs: [AirBasesJob; 2],
 ) -> [AirBasesJob; 2] {
-    let _guard = TEST_LOCK.lock().unwrap();
-    prepare_retirement();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    prepare_retirement().unwrap();
     reclaim_payloads();
 
     struct RestorePool(Vec<AirBasesJob>);
@@ -3316,41 +3194,31 @@ pub(crate) fn retire_and_reacquire_two_carrier_jobs_for_test(
 }
 
 /// The hourly body fills its job where the worker reads it: a reservation
-/// publishes in place, and an unpublished one returns its slot vacant.
+/// publishes in place, and an unpublished one leaves its frame's job vacant.
 #[test]
 fn a_reserved_job_publishes_in_place_and_an_unpublished_one_returns_vacant() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
     let shared = Shared::new(0, 0, 1);
-    let queue = &shared.decode_queue;
-    let mut reserved = queue.reserve().expect("free decode slot");
+    let index = shared.frames.pop().expect("pooled frame");
+    let mut reserved = reserve(&shared, index);
     reserved.job().players_payload = Some(PlayersJob::new());
     reserved.job().seq = 5;
     drop(reserved);
-    let mut every: Vec<_> = (0..BUFFERS)
-        .map(|_| queue.reserve().expect("free decode slot"))
-        .collect();
-    assert!(queue.reserve().is_none());
-    assert!(
-        every
-            .iter_mut()
-            .all(|reserved| reserved.job().players_payload.is_none())
-    );
-    drop(every);
-    let mut reserved = queue.reserve().expect("free decode slot");
+    assert!(reserve(&shared, index).job().players_payload.is_none());
+    let mut reserved = reserve(&shared, index);
     let job = reserved.job();
-    job.index = 1;
+    job.index = index;
     job.seq = 9;
     job.hour = 4;
     job.players_payload = Some(PlayersJob::new());
     assert!(enqueue_reserved(&shared, reserved));
-    assert_eq!(queue.len(), 1);
-    let job = queue.pop().expect("published job");
-    assert_eq!((job.index, job.seq, job.hour), (1, 9, 4));
+    assert_eq!(shared.frames.decode_len(), 1);
+    let job = pop(&shared).expect("published job");
+    assert_eq!((job.index, job.seq, job.hour), (index, 9, 4));
     assert!(job.players_payload.is_some());
-    assert!(queue.is_empty());
-    let every: Vec<_> = (0..BUFFERS).filter_map(|_| queue.reserve()).collect();
-    assert_eq!(every.len(), BUFFERS);
+    assert_eq!(shared.frames.decode_len(), 0);
+    assert!(pop(&shared).is_none());
 }
 
 /// The air pack's slot of `table`, so fixtures follow the pack's order.
@@ -3380,8 +3248,8 @@ fn project_variables_survive_production_fifo_recycling_and_terminal_decode_denia
     let shared = Shared::new(0, 0, 1);
     let memory = kit::Fixture::new(0x1000, 7);
     // Hold every free lease so recycling must return the exact frame below.
-    let leases = (0..shared.free.len())
-        .map(|_| shared.free.pop().unwrap())
+    let leases = (0..shared.frames.len())
+        .map(|_| shared.frames.pop().unwrap())
         .collect::<Vec<_>>();
     let mut expected = Vec::new();
     for (&index, seed) in leases[..2].iter().zip([7, 9]) {
@@ -3403,11 +3271,11 @@ fn project_variables_survive_production_fifo_recycling_and_terminal_decode_denia
     let reads = memory.reads.get();
     let mut memo = AirBasesMemo::default();
     for (&index, bytes) in leases[..2].iter().zip(&expected) {
-        let job = shared.decode_queue.pop().expect("production FIFO");
+        let job = pop(&shared).expect("production FIFO");
         assert_eq!(job.index, index);
         process_owned_job(&shared, job, &mut memo);
-        assert_eq!(shared.ready.pop(), Some(index));
-        assert!(shared.completed[index].load(Ordering::Acquire) > 0);
+        assert_eq!(shared.frames.pop_ready(), Some(index));
+        assert!(shared.frames.slot(index).completed.load(Ordering::Acquire) > 0);
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
         assert_eq!(kit::encoded(frame.extended.projects_pilot()), *bytes);
         assert_eq!(
@@ -3419,12 +3287,12 @@ fn project_variables_survive_production_fifo_recycling_and_terminal_decode_denia
         );
         shared.recycle_frame_prepared(index);
     }
-    assert!(shared.decode_queue.is_empty() && shared.ready.is_empty());
+    assert!((shared.frames.decode_len() == 0) && shared.frames.ready_is_empty());
     assert_eq!(memory.reads.get(), reads);
     // The frame recycled last is the next one taken.
-    let index = shared.free.pop().unwrap();
+    let index = shared.frames.pop().unwrap();
     assert_eq!(index, leases[1]);
-    shared.completed[index].store(0, Ordering::Relaxed);
+    shared.frames.slot(index).completed.store(0, Ordering::Relaxed);
     memory.refuse.set(false);
     memory.written(13);
     let bytes = kit::reference(&memory);
@@ -3436,8 +3304,8 @@ fn project_variables_survive_production_fifo_recycling_and_terminal_decode_denia
     memory.replace(15);
     memory.refuse.set(true);
     let reads = memory.reads.get();
-    process_owned_job(&shared, shared.decode_queue.pop().unwrap(), &mut memo);
-    assert_eq!(shared.ready.pop(), Some(index));
+    process_owned_job(&shared, pop(&shared).unwrap(), &mut memo);
+    assert_eq!(shared.frames.pop_ready(), Some(index));
     {
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
         assert_eq!(kit::encoded(frame.extended.projects_pilot()), bytes);
@@ -3445,20 +3313,20 @@ fn project_variables_survive_production_fifo_recycling_and_terminal_decode_denia
     assert_eq!(memory.reads.get(), reads);
     // Reacquiring the same frame must not expose its previous successful store.
     shared.recycle_frame_prepared(index);
-    let recycled = shared.free.pop().unwrap();
+    let recycled = shared.frames.pop().unwrap();
     assert_eq!(recycled, index);
-    shared.completed[recycled].store(0, Ordering::Relaxed);
+    shared.frames.slot(recycled).completed.store(0, Ordering::Relaxed);
     let frame = unsafe { &mut *shared.frames[recycled].load(Ordering::Acquire) };
     kit::acquire(frame.extended.projects_pilot(), &memory, true);
     assert!(enqueue(&shared, bare_job(recycled, 16, 16, 16)).is_none());
-    process_owned_job(&shared, shared.decode_queue.pop().unwrap(), &mut memo);
-    assert_eq!(shared.ready.pop(), Some(recycled));
+    process_owned_job(&shared, pop(&shared).unwrap(), &mut memo);
+    assert_eq!(shared.frames.pop_ready(), Some(recycled));
     let frame = unsafe { &mut *shared.frames[recycled].load(Ordering::Acquire) };
     assert!(kit::variables(frame.extended.projects_pilot()).is_none());
     shared.recycle_frame_prepared(recycled);
-    let index = shared.free.pop().unwrap();
+    let index = shared.frames.pop().unwrap();
     assert_eq!(index, recycled);
-    shared.completed[index].store(0, Ordering::Relaxed);
+    shared.frames.slot(index).completed.store(0, Ordering::Relaxed);
     memory.refuse.set(false);
     memory.written(17);
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
@@ -3466,7 +3334,7 @@ fn project_variables_survive_production_fifo_recycling_and_terminal_decode_denia
     assert!(enqueue(&shared, bare_job(index, 17, 17, 17)).is_none());
     memory.replace(19);
     memory.refuse.set(true);
-    let job = shared.decode_queue.pop().unwrap();
+    let job = pop(&shared).unwrap();
     crate::allocation::install_hooks();
     let denied = crate::test_support::NullGuard::new(1);
     process_owned_job(&shared, job, &mut memo);
@@ -3476,8 +3344,8 @@ fn project_variables_survive_production_fifo_recycling_and_terminal_decode_denia
     let failure = crate::allocation::failure().unwrap();
     assert_eq!(failure.phase, crate::allocation::Phase::Decode as u8);
     assert_eq!(failure.code, crate::allocation::Code::Reserve as u8);
-    assert!(shared.ready.is_empty() && shared.decode_queue.is_empty());
-    assert_eq!(shared.completed[index].load(Ordering::Acquire), 0);
+    assert!(shared.frames.ready_is_empty() && (shared.frames.decode_len() == 0));
+    assert_eq!(shared.frames.slot(index).completed.load(Ordering::Acquire), 0);
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     assert!(kit::variables(frame.extended.projects_pilot()).is_none());
     assert_eq!(
@@ -3485,7 +3353,72 @@ fn project_variables_survive_production_fifo_recycling_and_terminal_decode_denia
         0,
         "production decode reached freezing"
     );
-    assert_ne!(shared.free.pop(), Some(index));
+    assert_ne!(shared.frames.pop(), Some(index));
     engine_allocation::set_hooks(None, None);
     engine_allocation::set_stop_hook(None);
+}
+
+/// A backlog deeper than the pool's steady payloads: once its payloads come back the pool
+/// keeps one for every frame the backlog held, so the next backlog allocates none, and it trims
+/// back to the steady count once the frames do. On the base the pool kept 3 and freed the rest.
+#[test]
+fn payload_pools_keep_a_payload_for_every_frame_a_backlog_holds_and_trim_back() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    reset_for_test();
+    CAPITULATION_JOB_POOL.lock().unwrap().clear();
+    let shared = Shared::new(0, 0, 1);
+    let deeper = 3;
+    let frames: Vec<_> = (0..crate::frame_pool::STEADY + deeper)
+        .map(|_| shared.take_frame(&mut 0).unwrap())
+        .collect();
+    sampling::SHARED.store((&shared as *const Shared).cast_mut(), Ordering::Release);
+    let sized = || {
+        let mut job = CapitulationJob::new();
+        job.log = crate::raw::RawLog::new(4, 64);
+        job
+    };
+    for _ in 0..JOB_POOL_STEADY + deeper {
+        release_capitulation_job(sized());
+    }
+    let held = CAPITULATION_JOB_POOL.lock().unwrap().len();
+    for index in frames {
+        shared.recycle_frame(index);
+    }
+    assert_eq!(shared.frames.live(), crate::frame_pool::STEADY);
+    release_capitulation_job(sized());
+    let trimmed = CAPITULATION_JOB_POOL.lock().unwrap().len();
+    sampling::SHARED.store(std::ptr::null_mut(), Ordering::Release);
+    assert_eq!(held, JOB_POOL_STEADY + deeper);
+    assert_eq!(trimmed, JOB_POOL_STEADY);
+    // A miss still hands out a job, which grows as its copy reads.
+    CAPITULATION_JOB_POOL.lock().unwrap().clear();
+    let missed = acquire_capitulation_job();
+    assert_eq!(missed.log.spans.capacity(), 0);
+}
+
+/// A refused index allocation of a payload's raw log refuses the tables that read it by the
+/// log's own name, not with read failures from an empty log. On the base `Recorded::build`
+/// returned an empty log and Capitulation failed with its walk's read reason.
+#[test]
+fn a_refused_raw_log_index_refuses_its_tables_by_name() {
+    use engine_native::{memory::SliceMemory, walk::Outcome};
+    let bytes = [7_u8; 64];
+    let memory = SliceMemory {
+        base: 0x1000,
+        bytes: &bytes,
+    };
+    let mut job = CapitulationJob::new();
+    job.log = crate::raw::RawLog::new(4, 64);
+    assert!(job.log.take(&memory, 0x1000, 8, 1).is_some());
+    let mut frame = sampling::Captured::new();
+    let capitulation = frame.extended.capitulation_pilot();
+    crate::test_support::with_allocations_denied(|| {
+        capitulation.decode_capitulation_payload(0, &job, &mut [0; 1]);
+    });
+    assert_eq!(
+        frame.extended.outcomes()[CAPITULATION[0].index()],
+        Outcome::Unavailable {
+            reason: "recorded span index allocation failed"
+        }
+    );
 }

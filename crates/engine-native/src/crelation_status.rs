@@ -124,9 +124,9 @@ pub struct WarRow {
 
 /// Caller-owned bounded storage for the war rows the relation-link walk produces.
 pub struct WarOutput<'a> {
-    pub rows: &'a mut [WarRow],
+    pub rows: &'a mut Vec<WarRow>,
     /// Every row's enemy links.
-    pub countries: &'a mut [u32],
+    pub countries: &'a mut Vec<u32>,
 }
 
 /// Independent outcomes of the one diplomacy pass behind RelationLinks and CountryWars.
@@ -137,8 +137,8 @@ pub struct WarBuffers<'a> {
 impl<'a> From<WarOutput<'a>> for WarBuffers<'a> {
     fn from(wars: WarOutput<'a>) -> Self {
         Self {
-            rows: Buffer::Fixed(wars.rows),
-            countries: Buffer::Fixed(wars.countries),
+            rows: Buffer::Growing(wars.rows),
+            countries: Buffer::Growing(wars.countries),
         }
     }
 }
@@ -418,79 +418,10 @@ fn for_each_link(
     Ok(())
 }
 
-/// Presence of attache, air-base access, military access and docking-rights
-/// slots supplies fog, province and naval-base visibility predicates. The same
-/// pass records occupation rules and enemy sets where derivation is unavailable.
-/// Only the corresponding relation links set these slots, and both endpoints
-/// own each relation, so sparse owned vectors name every potentially set status.
-/// Emit only set slots without walking the dense matrix.
-/// Batches use stack storage and the caller resolver. Worker target bitmaps
-/// follow acquired country extent, set on emitted rows and clear after each
-/// country. A short output counts each relation naming the missing pair, so
-/// unread demand can overstate required growth but cannot understate it.
-pub fn links(
+pub fn count_links_observed_transport(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    output: &mut [LinkRow],
-    wars: WarOutput<'_>,
-    resolver: &mut Resolver,
-) -> LinkWalk {
-    links_observed_inner(
-        memory,
-        base,
-        game_state,
-        Buffer::Fixed(output),
-        wars.into(),
-        resolver,
-        None,
-        None,
-    )
-}
-
-/// Same authenticated diplomacy pass, with complete ordered enemy-vector occurrences for every
-/// authenticated positive receiver and actual reserved receiver. Old set-only callers stay
-/// unchanged.
-#[cfg(test)]
-pub fn links_observed_current(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut [LinkRow],
-    wars: WarOutput<'_>,
-    resolver: &mut Resolver,
-    hour: i32,
-) -> LinkWalk {
-    links_observed_inner(
-        memory,
-        base,
-        game_state,
-        Buffer::Fixed(output),
-        wars.into(),
-        resolver,
-        Some(hour),
-        None,
-    )
-}
-
-/// Same original pass, with subject shared-vision inputs and one owner certificate. Subject
-/// application and clearing install/remove `SUBJECT_RELATION` through the same owned relation
-/// lifetime as relation replacement. The installing setter, used by application helpers and
-/// clearing, removes the old subrelation, owner and serializable-relation memberships before
-/// first-owner destruction, and registers a replacement in the subrelations and the owner. Reset
-/// calls each subject's link clearing before directly clearing `SUBJECT_RELATION`; destruction
-/// calls that reset. Loading constructs through the relation factory, reads the relation, then
-/// initialization unless duplicated dispatches subject application, so loading uses the same
-/// installer. No status/subject pointer or seen bitmap crosses this callback; Resolver::begin
-/// retires prior country/diplomacy identities. Dates and the retired byte never enter the
-/// shared-vision predicates. These source paths do not independently prove the collector boundary's
-/// thread quiescence.
-pub fn links_observed_transport(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut [LinkRow],
-    wars: WarOutput<'_>,
     resolver: &mut Resolver,
     sample_hour: i32,
 ) -> LinkWalk {
@@ -498,8 +429,11 @@ pub fn links_observed_transport(
         memory,
         base,
         game_state,
-        Buffer::Fixed(output),
-        wars.into(),
+        Buffer::Count,
+        WarBuffers {
+            rows: Buffer::Count,
+            countries: Buffer::Count,
+        },
         resolver,
         Some(sample_hour),
         Some(sample_hour),
@@ -508,7 +442,7 @@ pub fn links_observed_transport(
 
 /// Same original transport pass with worker-owned storage; native
 /// observations are never restarted.
-pub fn links_observed_transport_growing(
+pub fn links_observed_transport(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -1254,8 +1188,8 @@ pub fn walk(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    opinions: &mut [OpinionRow],
-    tuples: &mut [TupleRow],
+    opinions: &mut Vec<OpinionRow>,
+    tuples: &mut Vec<TupleRow>,
     active: [bool; 2],
 ) -> Walk {
     walk_with(
@@ -1272,46 +1206,25 @@ pub fn walk(
     )
 }
 
-/// `walk` with caller-owned resolution storage and opinion baseline. Rows,
-/// order and outcomes are identical for every storage size and observation;
-/// they only remove repeated reads.
-///
-/// `select` names the owners (native country IDs) this walk reads: the
-/// relations are read once a day, one owner slice per hour
-/// (`replay_data::cadence::Cadence::Sliced`). An unselected owner is not read and
-/// has no rows; every country still counts toward the matrix bound check, and
-/// the baseline keeps an unselected owner's rows and marks for its own slice.
-#[allow(clippy::too_many_arguments)]
-pub fn walk_with(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    opinions: &mut [OpinionRow],
-    tuples: &mut [TupleRow],
-    active: [bool; 2],
-    resolved: &mut Resolver,
-    baseline: &mut Baseline,
-    observed: Option<Observation<'_>>,
-    select: impl Fn(u32) -> bool,
-) -> Walk {
+pub fn count(memory: &impl Memory, base: usize, game_state: usize, active: [bool; 2]) -> Walk {
     walk_buffers(
         memory,
         base,
         game_state,
-        Buffer::Fixed(opinions),
-        Buffer::Fixed(tuples),
+        Buffer::Count,
+        Buffer::Count,
         active,
-        resolved,
-        baseline,
-        observed,
-        select,
+        &mut Resolver::default(),
+        &mut Baseline::default(),
+        None,
+        |_| true,
     )
 }
 
 /// Worker output grows at each original nonzero opinion or serializable
 /// occurrence without another read.
 #[allow(clippy::too_many_arguments)]
-pub fn walk_growing_with(
+pub fn walk_with(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -2363,38 +2276,22 @@ pub fn co_belligerent_inputs(
     base: usize,
     countries: &ccountry::Reader<'_, impl Memory>,
     country: ccountry::Country,
-    output: &mut [u32],
-) -> CoBelligerentInputs {
-    co_belligerent_inputs_observed(
-        memory,
-        base,
-        countries,
-        country,
-        output,
-        &mut ForwardZeroObservation::default(),
-    )
-}
-
-/// The original reader with its exact attempted pointed operands retained
-/// for one matching reverse cell. Outputs, source order and faults are
-/// identical to [`co_belligerent_inputs`]; no new native reads or allocation.
-pub fn co_belligerent_inputs_observed(
-    memory: &impl Memory,
-    base: usize,
-    countries: &ccountry::Reader<'_, impl Memory>,
-    country: ccountry::Country,
-    output: &mut [u32],
-    observed: &mut ForwardZeroObservation,
+    output: &mut Vec<u32>,
 ) -> CoBelligerentInputs {
     co_belligerent_inputs_observed_buffer(
         memory,
         base,
         countries,
         country,
-        Buffer::Fixed(output),
-        observed,
+        Buffer::Growing(output),
+        &mut ForwardZeroObservation::default(),
     )
 }
+#[cfg(test)]
+pub(crate) fn co_belligerent_inputs_observed(memory: &impl Memory, base: usize, countries: &ccountry::Reader<'_, impl Memory>, country: ccountry::Country, output: &mut Vec<u32>, observed: &mut ForwardZeroObservation) -> CoBelligerentInputs {
+    co_belligerent_inputs_observed_buffer(memory, base, countries, country, Buffer::Growing(output), observed)
+}
+
 
 pub fn co_belligerent_inputs_observed_buffer(
     memory: &impl Memory,
@@ -2916,13 +2813,13 @@ pub fn co_belligerents(
     base: usize,
     countries: &ccountry::Reader<'_, impl Memory>,
     country: ccountry::Country,
-    output: &mut [u32],
+    output: &mut Vec<u32>,
 ) -> Result<(usize, usize), &'static str> {
-    co_belligerents_with(
+    co_belligerents_buffer(
         memory,
         base,
         country,
-        output,
+        Buffer::Growing(output),
         |raw| {
             countries
                 .link(raw)?
@@ -2932,31 +2829,13 @@ pub fn co_belligerents(
     )
 }
 
-/// Native raw-zero / alias-to-zero consuming law used by invasion route
-/// operands. Slot-zero candidates are skipped before status reads because
-/// `zero_relation` captures that independent slot. Positive status targets
-/// still require a nonzero raw reference and its exact canonical slot.
-/// Like [`co_belligerents`], required is exact when the output fits; shortage
-/// retains the established conservative upper bound because duplicate targets
-/// outside the stored prefix are not tracked. Such a prefix is never complete.
-pub fn co_belligerents_native(
-    memory: &impl Memory,
-    base: usize,
-    countries: &ccountry::NativeReferenceContext<'_, impl Memory>,
-    country: ccountry::Country,
-    output: &mut [u32],
-) -> Result<(usize, usize), &'static str> {
-    co_belligerents_native_buffer(
-        memory,
-        base,
-        countries,
-        country,
-        crate::walk::Buffer::Fixed(output),
-    )
-}
-
 /// Invasion worker retains original candidate traversal, growing slots as
 /// each distinct status authenticates.
+#[cfg(test)]
+pub(crate) fn co_belligerents_native(memory: &impl Memory, base: usize, countries: &ccountry::NativeReferenceContext<'_, impl Memory>, country: ccountry::Country, output: &mut Vec<u32>) -> Result<(usize, usize), &'static str> {
+    co_belligerents_native_buffer(memory, base, countries, country, crate::walk::Buffer::Growing(output))
+}
+
 pub fn co_belligerents_native_buffer(
     memory: &impl Memory,
     base: usize,
@@ -2974,24 +2853,6 @@ pub fn co_belligerents_native_buffer(
         output,
         |raw| countries.canonical_slot(raw),
         |raw| countries.canonical_slot(raw).map(Some),
-    )
-}
-
-fn co_belligerents_with(
-    memory: &impl Memory,
-    base: usize,
-    country: ccountry::Country,
-    output: &mut [u32],
-    canonical_candidate: impl FnMut(u32) -> Result<u32, &'static str>,
-    canonical_target: impl FnMut(u32) -> Result<Option<u32>, &'static str>,
-) -> Result<(usize, usize), &'static str> {
-    co_belligerents_buffer(
-        memory,
-        base,
-        country,
-        crate::walk::Buffer::Fixed(output),
-        canonical_candidate,
-        canonical_target,
     )
 }
 

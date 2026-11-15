@@ -1,202 +1,210 @@
-import { preparedPrefix, pendingAt, fieldPreparing } from '../../dashboard/preparedPrefix';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef } from 'react';
 import ArtFallback from '../../components/ArtFallback';
 import { ChipSet } from '../../components/ChipSet';
 import ContentSetPicker from '../../components/ContentSetPicker';
 import { CountryFlagUrl } from '../../components/CountryFlag';
 import WidgetState from '../../components/WidgetState';
-import LogList, { PreparedLogCoverage } from '../../charts/log/LogList';
-import type { LogListProps } from '../../charts/log/LogList';
+import LiveText, { liveTexts } from '../../charts/LiveText';
+import LogList from '../../charts/log/LogList';
+import { AHEAD_ROWS, useRevealClock } from '../../charts/reveal';
+import LogGaps from '../../charts/log/LogGaps';
 import { logCountryRequests } from '../../charts/log/logData';
 import type { LogRow } from '../../charts/log/logData';
 import { logSettings } from '../../charts/log/logOptions';
-import { useTableHour } from '../../charts/table/useTableHour';
+import { countsAhead, validateLogCounts } from '../../charts/log/logSource';
+import type { LogCounts } from '../../charts/log/logSource';
 import { jumpItem } from '../../charts/jump';
-import { useContentRevision } from '../../dashboard/contentRevision';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { MAX_NAME_HOURS } from '../../dashboard/countryFacts';
 import { selectedTags } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { countryMatch, countryMatchFilter } from '../../dashboard/groups';
+import { countryMatchFilter } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { contentSet, resolveOptions, toggleContentSet } from '../../dashboard/options';
-import { useFollowedProduct, useProduct } from '../../dashboard/products';
-import { useProductWindows } from '../../dashboard/productWindows';
-import { useCountryGroups } from '../../dashboard/useCountryGroups';
-import { useParityRows } from '../../dashboard/parityRows';
-import { parityWindowCoverage, parityWindowIndices, useParityPreparation } from '../../dashboard/parityPreparation';
-import type { DivisionLogManifestReply, DivisionLogReply, DivisionLogTotalsReply, PlaceNamesReply } from '../../generated/dashboard';
-import { battleWindowIndex, battleWindows } from '../land-battles/landBattlesData';
 import { placeKey, validatePlaceNamesReply } from '../../dashboard/placeNamesData';
+import type { DivisionLogManifestReply, PlaceName, PlaceNamesReply } from '../../generated/dashboard';
+import { useContentRevision } from '../../dashboard/contentRevision';
+import { loadProduct, useProduct, useProducts } from '../../dashboard/products';
+import { useKeyedPainter, useKeyedReads } from '../../dashboard/keyedReads';
+import { useCountryGroups } from '../../dashboard/useCountryGroups';
+import { useDiagnostics } from '../../dashboard/useDiagnostics';
+import { countBinHours, useLogPages } from '../../dashboard/useLogPages';
+import type { LogCut, LogSpec } from '../../dashboard/useLogPages';
 import { OPTIONS } from './definition';
-import { sinceLabel } from '../../dashboard/stretch';
-import { divisionName, divisionStatus, divisionRows, divisionTooltip, selectedTemplates, templateToken,
-  validateDivisionLog, validateDivisionManifest, validateDivisionTotals } from './divisionLogData.ts';
-import type { DivisionLogItem } from './divisionLogData';
+import { divisionEntry, divisionFacets, divisionName, divisionNamedRows, divisionPlace, divisionStatus, divisionTooltip, gapWarnings, kindTotals, KINDS,
+  selectedTemplates, shownKinds, templateToken, divisionPlaces, divisionPlaceText, PLACE_LOADING, validateDivisionManifest } from './divisionLogData.ts';
+import type { DivisionKind, DivisionLogEntry } from './divisionLogData';
 import './divisionLog.css';
+import { useShownEachFrame } from '../../dashboard/widgetPerf';
+import { trackHourOf } from '../../dashboard/settledHour';
+import { useStructureState } from '../../dashboard/structurePace';
 
-const NO_ROWS: readonly LogRow<DivisionLogItem>[] = [];
-const NO_WARNINGS: string[] = [];
+const NO_ROWS: readonly LogRow<DivisionLogEntry>[] = [];
+const sameKeys = (held: readonly LogRow<DivisionLogEntry>[], next: readonly LogRow<DivisionLogEntry>[]) => held.length === next.length
+  && held.every((row, index) => row.key === next[index].key);
+const VANISHED = 3;
 
+/** Every division first seen, lost or transferred through the hour shown: pages of the recorder's division log,
+ * following the head a block of rows at a time revealed by the clock, with the totals of each kind from the log's
+ * counts and the rows the list already holds, painted each frame. */
 export default function DivisionLogWidget({ widget, runtime, active, onDiagnostics, setOption }: WidgetProps) {
-  const live = widget.time.mode === 'follow';
-  const playback = useTableHour(runtime.clock, active && live);
-  const contentRevision = useContentRevision(runtime.client);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
+useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtime.tracks, runtime.clock.getHour()) : null);
   const options = resolveOptions(OPTIONS, widget.options);
   const log = logSettings(options);
-  const window = track && resolveWindow(widget, track, runtime.tracks, playback);
-  const hour = window ? Math.floor(window.lastHour) : null;
+  const follow = widget.time.mode === 'follow';
+  const window = track && !follow ? resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour()) : null;
   const first = widget.time.mode === 'range' && window ? Math.floor(window.firstHour) : track?.branch.firstHour ?? 0;
-  const parity = import.meta.env.MODE === 'parity' ? useParityPreparation() : null;
-  const groups = useCountryGroups(runtime, track, active && widget.countries.kind !== 'all');
-  const fallbackKey = JSON.stringify(selectedTags(widget.countries, track));
-  const fallback = useMemo<string[]>(() => JSON.parse(fallbackKey), [fallbackKey]);
-  const match = useMemo(() => countryMatch(widget.countries, fallback, groups.data, track?.branch.lastHour ?? 0),
-    [widget.countries, fallback, groups.data, track?.branch.lastHour]);
+  const last = track?.branch.lastHour ?? 0;
+  const cut: LogCut = follow ? { follow: true, offset: track?.axisOffset ?? 0 }
+    : { follow: false, hour: widget.time.mode === 'campaign' || !window ? null : Math.floor(window.lastHour) };
   const manifest = useProduct<DivisionLogManifestReply>(runtime.client, track ? { sourceId: track.source.id, revision: track.source.revision,
     product: 'division-log-manifest', params: { branchId: track.branch.id } } : null, active, validateDivisionManifest);
-  const identity = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, contentRevision]) : null;
-  const playheadWindow = battleWindowIndex(manifest.data?.windows ?? [], hour ?? first);
-  const [browse, setBrowse] = useState<{ identity: string | null; hour: number | null }>({ identity: null, hour: null });
-  const shownHour = !parity?.requested && browse.identity === identity && browse.hour !== null ? Math.min(browse.hour, hour ?? browse.hour) : hour;
-  const browseIndex = battleWindowIndex(manifest.data?.windows ?? [], shownHour ?? first);
-  const [visibleWindows, setVisibleWindows] = useState<{ identity: string | null; at: number; windows: number[] }>({ identity: null, at: -1, windows: [] });
-  const visibleIndices = visibleWindows.identity === identity && visibleWindows.at === playheadWindow ? visibleWindows.windows : [];
-  const parityWindows = import.meta.env.MODE === 'parity' ? parityWindowIndices(manifest.data?.windows, first, hour ?? first) : [];
-  const wantedWindows = parity?.requested ? parityWindows
-    : battleWindows(manifest.data, hour ?? first, live, [...visibleIndices, ...(browse.identity === identity && browse.hour !== null ? [browseIndex] : [])], first);
-  const history = useProductWindows<DivisionLogReply>(runtime.client, identity, index => ({ sourceId: track!.source.id, revision: track!.source.revision,
-    product: 'division-log', params: { branchId: track!.branch.id, window: index } }), wantedWindows,
-  active && manifest.data?.available === true, validateDivisionLog, track?.source, true);
-  const templatesValue = typeof options.templates === 'string' ? options.templates : '';
   const campaign = track?.source.metadata.campaignKey ?? '';
   const branch = track?.branch.id ?? '';
+  const templatesValue = typeof options.templates === 'string' ? options.templates : '';
   const templates = useMemo(() => selectedTemplates(templatesValue, campaign, branch), [templatesValue, campaign, branch]);
   const chosen = useMemo(() => contentSet(templatesValue), [templatesValue]);
   const templateChoices = useMemo(() => (manifest.data?.templates ?? []).map(template => ({
     value: templateToken(campaign, branch, template.id), label: template.name ?? `Unnamed template (${template.id})`,
   })), [manifest.data, campaign, branch]);
   const events = String(options.events);
-  const rows = useMemo(() => shownHour === null || !match.ready ? NO_ROWS : divisionRows(history.data, shownHour, first, events,
-    templates, match.matches, widget.countries.kind === 'all'), [history.data, shownHour, first, events, templates, match, widget.countries.kind]);
-  const countries = useMemo(() => countryMatchFilter(widget.countries, fallback, groups.data, track?.branch.lastHour ?? 0,
-    undefined, track?.branch.firstHour), [widget.countries, fallback, groups.data, track?.branch.lastHour, track?.branch.firstHour]);
-  const totals = useFollowedProduct<DivisionLogTotalsReply>(runtime.client, track && hour !== null ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'division-log-totals', params: { branchId: branch, firstHour: first, lastHour: hour, countries, templates } } : null, ['lastHour'],
-  active && options.totals === true && match.ready && !match.reason && manifest.data?.available === true, validateDivisionTotals);
-  const [visible, setVisible] = useState<readonly LogRow<DivisionLogItem>[]>(NO_ROWS);
-  const currentRows = useMemo(() => new Map(rows.map(row => [row.key, row])), [rows]);
-  const drawn = useMemo(() => visible.flatMap(row => { const current = currentRows.get(row.key); return current ? [current] : []; }), [visible, currentRows]);
-  const wanted = useMemo(() => [...logCountryRequests(drawn, row => ({ hour: row.item.countryHour, tags: [row.item.tag] })),
-    ...logCountryRequests(drawn, row => ({ hour: row.item.killerHour ?? row.item.readHour, tags: [row.item.killerTag] }))], [drawn]);
+  const groups = useCountryGroups(runtime, track, active && (widget.countries.kind === 'group' || widget.countries.kind === 'factions'));
+  // A group's members over the branch: a country is listed by the tags it held at its rows' hours.
+  const tags = useMemo<string[] | null>(() => {
+    if (widget.countries.kind === 'all') return null;
+    if (widget.countries.kind !== 'group' && widget.countries.kind !== 'factions') return selectedTags(widget.countries, track);
+    if (!groups.data) return null;
+    const filter = countryMatchFilter(widget.countries, [], groups.data, last, undefined, track?.branch.firstHour);
+    return [...new Set(filter.membership?.map(run => run.tag) ?? [])].sort();
+  }, [widget.countries, track, groups.data, last]);
+  const waiting = tags === null && widget.countries.kind !== 'all';
+  const kinds = useMemo(() => shownKinds(events), [events]);
+  const losses = manifest.data?.lossesAvailable === true;
+  const facets = useMemo(() => divisionFacets(losses ? kinds : kinds.filter(kind => kind === 'created'), templates, tags), [kinds, losses, templates, tags]);
+  const spec = useMemo<LogSpec | null>(() => track && manifest.data?.available && !waiting && facets[0].values.length
+    ? { source: track.source, branchId: track.branch.id, log: 'division-events', product: 'division-log', facets, firstHour: first, lastHour: last } : null,
+  [track, manifest.data?.available, waiting, facets, first, last]);
+  const list = useLogPages<DivisionLogEntry>(runtime.client, runtime.clock, spec, cut, active, divisionEntry);
+  // Each kind's counts on the list's bins, and the rows that left the census unwitnessed: one request a kind per span.
+  const counted = useMemo(() => [...(options.totals === true ? facets[0].values : []), VANISHED], [options.totals, facets]);
+  const countRequests = useMemo(() => spec ? counted.map(kind => ({ sourceId: spec.source.id, revision: spec.source.revision, product: 'log-counts',
+    params: { branchId: spec.branchId, log: spec.log, facets: [{ name: 'kind', values: [kind], tags: [] }, ...facets.slice(1)],
+      from: first, to: last, binHours: countBinHours(first, last) } })) : [], [spec, counted, facets, first, last]);
+  const validateCounts = useCallback((value: unknown) => validateLogCounts(value, first, last), [first, last]);
+  const kindCounts = useProducts<LogCounts>(runtime.client, countRequests, active, validateCounts, track?.source);
+  const until = cut.follow ? Math.floor(runtime.clock.getHour()) + cut.offset : cut.hour;
+  const offset = cut.follow ? cut.offset : 0;
+  const trackHour = useCallback((clockHour: number) => Math.floor(clockHour) + offset, [offset]);
+  const reveal = useRevealClock(runtime.clock, cut.follow, trackHour);
+  const totals = useMemo(() => {
+    if (!list.counts || !kindCounts.data) return null;
+    const byKind = new Map<DivisionKind, LogCounts>();
+    counted.forEach((kind, index) => { if (kind !== VANISHED) byKind.set((Object.keys(KINDS) as DivisionKind[])[kind], kindCounts.data![index]); });
+    return kindTotals(list.counts, byKind, list.pages, list.shown, list.at);
+  }, [list.counts, list.pages, list.shown, list.at, kindCounts.data, counted]);
+  // Following, each kind's total is painted each frame: the totals at the block's hour and the rows revealed since.
+  const liveTotals = useMemo(() => totals ? countsAhead(totals, list.ahead, row => row.item.kind) : null, [totals, list.ahead]);
+  const totalTexts = useMemo(() => liveTexts(runtime.clock, () => follow ? trackHour(runtime.clock.getHour()) : 0, hour => {
+    const at = liveTotals?.(hour);
+    return new Map((Object.keys(KINDS) as DivisionKind[]).map(kind => [kind, at?.get(kind)?.toLocaleString() ?? 'Loading…']));
+  }), [runtime.clock, follow, trackHour, liveTotals]);
+  const vanished = useMemo(() => {
+    const counts = kindCounts.data?.[counted.length - 1];
+    if (!counts) return 0;
+    const bin = until === null ? counts.counts.length : Math.floor((until - counts.firstHour) / counts.binHours);
+    return counts.counts.slice(0, Math.max(0, bin)).reduce((sum, count) => sum + count, 0);
+  }, [kindCounts.data, counted.length, until]);
+
+  // Following, the newest rows held (the block drawn and a view beneath it) are named with the block, before the list
+  // draws them; only rows scrolled to beyond them are named as they come into view. Else the rows drawn.
+  const newest = list.ahead.length + 2 * AHEAD_ROWS;
+  const [visible, setVisible] = useStructureState<readonly LogRow<DivisionLogEntry>[]>(runtime.clock, NO_ROWS, sameKeys);
+  const named = useMemo(() => divisionNamedRows(follow, list.pages, newest, visible), [follow, list.pages, newest, visible]);
+  const namedKeys = useMemo(() => follow ? new Set(named.map(row => row.key)) : null, [follow, named]);
+  // The list reports a new array whenever it lays out again; following, only rows the block did not name are news.
+  const onVisible = useCallback((rows: readonly LogRow<DivisionLogEntry>[]) => {
+    if (namedKeys && rows.every(row => namedKeys.has(row.key))) return;
+    setVisible(rows);
+  }, [namedKeys, setVisible]);
+  const wanted = useMemo(() => [...logCountryRequests(named, row => ({ hour: row.item.readHour, tags: [row.item.tag, row.item.killerTag] }))], [named]);
   const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active, Math.max(MAX_NAME_HOURS, new Set(wanted.map(country => country.hour)).size));
-  const places = useMemo(() => [...new Map(drawn.flatMap(row => row.item.province === null || row.item.placeHour === null ? []
-    : [[placeKey(row.item.province, row.item.placeHour), { provinceId: row.item.province, hour: row.item.placeHour }] as const])).values()], [drawn]);
-  const placeData = useProduct<PlaceNamesReply>(runtime.client, track && places.length ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'place-names', params: { branchId: branch, places, states: [] } } : null, active, validatePlaceNamesReply);
-  const namedPlaces = useMemo(() => new Map(placeData.data?.places.map(place => [placeKey(place.provinceId, place.hour), place])), [placeData.data]);
-  const labels = useCallback((row: DivisionLogItem) => {
-    const killer = row.killerTag === null ? { name: 'Killer not known' } : labelAt(row.killerHour ?? row.readHour)(row.killerTag);
+  // Each place is asked once, the first time a row named wants it, those at the list's top leading; a read in flight is
+  // never cancelled by a page landing or a block moving on, so the rows of a log opened, sought or switched to are named
+  // when their read lands.
+  const content = useContentRevision(runtime.client);
+  const placesOwner = track ? JSON.stringify([track.source.id, track.source.revision, branch, content]) : null;
+  const placesAt = follow ? list.at : null;
+  const places = useMemo(() => divisionPlaces(named, placesAt), [named, placesAt]);
+  const readPlaces = useCallback((asked: readonly { provinceId: number; hour: number }[], signal: AbortSignal) => loadProduct<PlaceNamesReply>(runtime.client,
+    { sourceId: track!.source.id, revision: track!.source.revision, product: 'place-names', params: { branchId: branch, places: asked, states: [] } },
+    signal, validatePlaceNamesReply, track?.source).then(reply => ({ values: reply.places.map(place => [placeKey(place.provinceId, place.hour), place] as const), warnings: reply.warnings })),
+  [runtime.client, track, branch]);
+  // Landings are painted into the rows at once and commit in the widget's structure slot (`runtime.clock` as the pace).
+  const placeReads = useKeyedReads<{ provinceId: number; hour: number }, PlaceName>(placesOwner, places, active, place => placeKey(place.provinceId, place.hour), readPlaces,
+    undefined, undefined, runtime.clock);
+  const root = useRef<HTMLDivElement>(null);
+  useKeyedPainter(placeReads.reads as never, root, 'place', key => {
+    const reads = placeReads.reads, text = divisionPlaceText(reads.values.get(key), { pending: reads.pendingKey(key), failed: reads.failures.has(key) });
+    return { text, loading: text === PLACE_LOADING };
+  });
+  const knownPlaces = placeReads.reads.values;
+  const labels = useCallback((row: DivisionLogEntry) => {
+    const ask = row.province === null || row.placeHour === null ? null : { provinceId: row.province, hour: row.placeHour };
     return {
-      country: row.tag === null ? { name: 'Country not known' } : labelAt(row.countryHour)(row.tag),
-      killer: row.killerHour === null ? { ...killer, name: 'Killer not known' } : killer,
-      place: row.province === null || row.placeHour === null ? 'Location not recorded'
-        : namedPlaces.get(placeKey(row.province, row.placeHour))?.name ?? 'Unnamed province',
+      country: row.tag === null ? { name: 'Country not known' } : labelAt(row.readHour)(row.tag),
+      killer: row.killerTag === null ? { name: 'Killer not known' } : labelAt(row.readHour)(row.killerTag),
+      place: divisionPlace(row, knownPlaces, { pending: ask !== null && placeReads.reads.pending(ask), failed: ask !== null && placeReads.reads.failure(ask) !== undefined }),
     };
-  }, [labelAt, namedPlaces]);
-  const parityTotalsRoot = import.meta.env.MODE === 'parity' ? useRef<HTMLDivElement>(null) : null;
-  if (import.meta.env.MODE === 'parity') {
-    const complete = parity!.requested && totals.data !== undefined && match.ready && manifest.data?.available === true;
-    useParityRows(parityTotalsRoot!, () => ({ kind: 'table', label: 'Division totals', complete,
-      total: events === 'created' ? 1 : events === 'lost' ? 2 : 3,
-      rows: [
-        ...(events !== 'lost' ? [{ label: 'Created', value: totals.data?.created ?? null }] : []),
-        ...(events !== 'created' ? [
-          { label: 'Lost / removed', value: manifest.data?.lossesAvailable ? totals.data?.lost ?? null : null },
-          { label: 'Transferred / merged', value: manifest.data?.lossesAvailable ? totals.data?.transferred ?? null : null },
-        ] : []),
-      ],
-    }), { prepare: parity!.prepare, ready: () => complete, error: () => totals.error ?? manifest.error ?? null });
-  }
-  let parityHistoryComplete = false;
-  let paritySemantic: LogListProps<DivisionLogItem>['paritySemantic'];
-  if (import.meta.env.MODE === 'parity') {
-    const requested = parity!.requested;
-    const coverage = parityWindowCoverage(parityWindows, history.data, history.errors);
-    parityHistoryComplete = manifest.data !== undefined && manifest.data.available && coverage.complete;
-    const fullRows = useMemo(() => hour === null || !match.ready ? NO_ROWS : divisionRows(history.data, hour, first, events,
-      templates, match.matches, widget.countries.kind === 'all'), [history.data, hour, first, events, templates, match, widget.countries.kind]);
-    const complete = requested && parityHistoryComplete && match.ready;
-    paritySemantic = { rows: fullRows, complete,
-      preparation: { prepare: parity!.prepare, ready: () => complete, error: () => manifest.error ?? coverage.error },
-      item: ({ item: row }) => { const { icon: _icon, ...operands } = row; return operands; },
-      reads: { windows: coverage.outcomes } };
-  }
-  const onVisible = useCallback((drawn: readonly LogRow<DivisionLogItem>[]) => {
-    setVisible(previous => previous.length === drawn.length && previous.every((row, index) => row === drawn[index]) ? previous : drawn);
-    if (parity?.requested) return;
-    const windows = [...new Set(drawn.map(row => row.item.windowIndex))].sort((a, b) => a - b);
-    setVisibleWindows(previous => previous.identity === identity && previous.at === playheadWindow && JSON.stringify(previous.windows) === JSON.stringify(windows)
-      ? previous : { identity, at: playheadWindow, windows });
-  }, [identity, playheadWindow, parity?.requested]);
-  const warnings = useMemo(() => [...new Set([...(manifest.data?.contentWarnings ?? NO_WARNINGS),
-    ...[...history.data.values()].flatMap(reply => [...reply.contentWarnings, ...reply.warnings.filter(w => w.hour >= first && w.hour <= (hour ?? first)).map(w => `${w.reason} (${w.count})`)]),
-    ...[...history.errors].filter(([index]) => index <= playheadWindow).map(([, reason]) => `Division log window: ${reason.message}`),
-    ...(options.totals === true ? totals.data?.warnings ?? NO_WARNINGS : NO_WARNINGS), ...(placeData.data?.warnings ?? NO_WARNINGS),
-    ...(placeData.error ? [`Place names: ${placeData.error.message}`] : [])])], [manifest.data, history.data, history.errors, playheadWindow, first, hour, options.totals, totals.data, placeData.data, placeData.error]);
-  useEffect(() => { onDiagnostics(warnings); return () => onDiagnostics(NO_WARNINGS); }, [warnings, onDiagnostics]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- a new identity as each read's places are taken in
+  }, [labelAt, knownPlaces, placeReads.reads, placeReads.version]);
+  const warnings = useMemo(() => [...new Set([...(manifest.data?.warnings ?? []),
+    ...(manifest.data ? gapWarnings(manifest.data, first, until ?? last) : []),
+    ...list.pages.flatMap(page => page.error ? [`Division log: ${page.error.message}`] : []),
+    ...(vanished ? [`Division left the census without a removal witness; no loss inferred (${vanished})`] : []),
+    ...placeReads.reads.warnings, ...[...placeReads.reads.failures.values()].map(error => `Place names: ${error.message}`)])],
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- the reads' warnings grow as each lands
+  [manifest.data, first, until, last, list.pages, vanished, placeReads.reads, placeReads.version]);
+  useDiagnostics(onDiagnostics, warnings);
 
   if (!track) return <WidgetState kind="empty" icon="shield" message="Load a campaign to see its divisions." />;
   if (manifest.error) return <WidgetState kind="error" failure={manifest.error} onRetry={manifest.retry} />;
-  const groupFailure = widget.countries.kind !== 'all' && groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
-  if (groupFailure && !groups.data) return groupFailure;
-  if (!window) return <>{groupFailure}<WidgetState kind="unavailable" message="This time is outside the recording." /></>;
-  if (match.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={match.reason} /></>;
-  if (!manifest.data || !match.ready) return <>{groupFailure}<WidgetState kind="loading" label="Loading division log…" /></>;
-  if (!manifest.data.available && preparedPrefix(manifest.data)?.pending.length) return <>{groupFailure}<PreparedLogCoverage coverage={preparedPrefix(manifest.data)?.coverage} /></>;
-  if (!manifest.data.lossesAvailable && events === 'lost' && preparedPrefix(manifest.data)?.pending.length) return <>{groupFailure}<PreparedLogCoverage coverage={preparedPrefix(manifest.data)?.coverage} /></>;
-  if (!manifest.data.available || events === 'lost' && !manifest.data.lossesAvailable) return <>{groupFailure}<WidgetState kind="unavailable" message="Not in this recording" /></>;
-  const error = history.errors.get(browseIndex);
-  if (error) return <>{groupFailure}<WidgetState kind="error" failure={error} onRetry={history.retry} /></>;
-  if (browseIndex >= 0 && !history.data.has(browseIndex)) return <>{groupFailure}<WidgetState kind="loading" label="Loading division log…" /></>;
-  const preceding = wantedWindows.filter(index => index <= browseIndex);
-  const oldest = preceding.length ? Math.min(...preceding) : 0;
-  const earlier = oldest > 0 && manifest.data.windows[oldest - 1].lastHour >= first;
-  const renderRow = ({ item: row }: LogRow<DivisionLogItem>) => {
+  if (widget.countries.kind !== 'all' && groups.error && !groups.data) return <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;
+  if (!manifest.data || waiting) return <WidgetState kind="loading" label="Loading division log…" />;
+  if (!manifest.data.available || events === 'lost' && !losses) return <WidgetState kind="unavailable" message="Not in this recording" />;
+  if (list.error) return <WidgetState kind="error" failure={list.error} onRetry={list.retry} />;
+  const total = (kind: DivisionKind) => <LiveText live={totalTexts} at={kind} />;
+  const renderRow = ({ item: row }: LogRow<DivisionLogEntry>) => {
     const { country, killer, place } = labels(row);
     return <><span className="log-art" aria-hidden="true">{row.icon ? <img src={row.icon} alt="" /> : <ArtFallback icon="helmet" />}</span>
       <span className="log-text">{row.tag !== null && <CountryFlagUrl className="log-flag" url={country.flag} detail={country.flagDetail} reason={country.flagReason} pending={country.flagPending} />}<b>{country.name}</b>: <b>{divisionName(row)}</b>
-        {' · '}{row.templateName ?? 'Template not recorded'}{' · '}{row.placeAtEvent ? 'at ' : 'last seen at '}{place}
+        {' · '}{row.templateName ?? 'Template not recorded'}{' · '}{row.placeAtEvent ? 'at ' : 'last seen at '}{row.province === null || row.placeHour === null ? place
+          : <span className={place === PLACE_LOADING ? 'is-loading' : undefined} data-keyed="place" data-keyed-key={placeKey(row.province, row.placeHour)}>{place}</span>}
         {row.killerTag !== null && <>{' · by '}<CountryFlagUrl className="log-flag" url={killer.flag} detail={killer.flagDetail} reason={killer.flagReason} pending={killer.flagPending} />{killer.name}</>}
       </span><span className="log-tag">{divisionStatus(row)}</span></>;
   };
-  return <div className="log-widget division-log">{groupFailure}
-    <PreparedLogCoverage coverage={preparedPrefix(manifest.data)?.coverage} exact={(history.data.get(browseIndex) as { exact?: number } | undefined)?.exact} />
-    {options.totals === true && <div ref={parityTotalsRoot} className="division-log-summary" aria-live="polite">
-      {totals.error ? <WidgetState kind="error" what="division totals" failure={totals.error} onRetry={totals.retry} /> : !totals.data ? 'Loading totals…' : fieldPreparing(totals.data, 'created') ? 'Totals are still being prepared.' : <>
-        {events !== 'lost' && <span><b>{(totals.data.created?.toLocaleString() ?? 'Still being prepared')}</b> created</span>}
-        {events !== 'created' && <><span><b>{manifest.data.lossesAvailable ? (totals.data.lost?.toLocaleString() ?? 'Still being prepared') : 'Not recorded'}</b> lost / removed</span>
-          <span><b>{manifest.data.lossesAvailable ? (totals.data.transferred?.toLocaleString() ?? 'Still being prepared') : 'Not recorded'}</b> transferred / merged</span></>}
-        {totals.data.since !== null && <span className="division-log-since">{sinceLabel(totals.data.since)}, after hours the recording lost</span>}
+  return <div ref={root} className="log-widget division-log">
+    {options.totals === true && <div className="division-log-summary" aria-live="polite">
+      {kindCounts.error ? <WidgetState kind="error" what="division totals" failure={kindCounts.error} onRetry={kindCounts.retry} /> : <>
+        {events !== 'lost' && <span><b>{total('created')}</b> created</span>}
+        {events !== 'created' && <><span><b>{losses ? total('lost') : 'Not recorded'}</b> lost / removed</span>
+          <span><b>{losses ? total('transfer') : 'Not recorded'}</b> transferred / merged</span></>}
       </>}
     </div>}
-    {!manifest.data.lossesAvailable && events !== 'created' && <p className="division-log-note">Losses and transfers: {preparedPrefix(manifest.data)?.pending.length ? 'Still being prepared.' : 'Not in this recording.'}</p>}
+    {!losses && events !== 'created' && <p className="division-log-note">Losses and transfers: Not in this recording.</p>}
     {log.chips && <div className="log-chips"><ChipSet label="Division events" chips={[{ value: 'both', label: 'Both' }, { value: 'created', label: 'Created' }, { value: 'lost', label: 'Lost / transferred' }]}
       selected={[events]} max={1} full={false} onToggle={value => setOption?.('events', value)} />
       {chosen.length > 0 && <ContentSetPicker label="Division template types" automatic="All templates" choices={templateChoices} selected={chosen}
         onReset={() => setOption?.('templates', '')} onToggle={value => {
           const next = toggleContentSet(templatesValue, value, Number.MAX_SAFE_INTEGER); if (next !== null) setOption?.('templates', next);
         }} />}</div>}
-    {(earlier || shownHour !== hour) && <div className="division-log-navigation">
-      {earlier && <button type="button" className="button small" onClick={() => { setBrowse({ identity, hour: manifest.data!.windows[oldest - 1].lastHour }); setVisibleWindows({ identity, at: playheadWindow, windows: [] }); }}>Earlier divisions</button>}
-      {shownHour !== hour && <button type="button" className="button small" onClick={() => { setBrowse({ identity, hour: null }); setVisibleWindows({ identity, at: playheadWindow, windows: [] }); }}>Latest divisions</button>}
-    </div>}
-    <LogList rows={rows} label="Division log" density={log.density} months={log.months} animate={log.animate && live && shownHour === hour}
-      {...import.meta.env.MODE === 'parity' ? { parityHistoryComplete, paritySemantic } : {}}
-      columns="var(--space-6) minmax(0, 1fr) auto" renderRow={renderRow} anchorRows onVisible={onVisible}
+    <LogGaps missing={list.missing} until={until} subject="Division events are not recorded whole" />
+    <LogList pages={list.pages} onWantedPages={list.onWantedPages} label="Division log" density={log.density} months={log.months}
+      animate={log.animate && follow} playhead={cut.follow ? until : null} reveal={reveal}
+      columns="var(--space-6) minmax(0, 1fr) auto" renderRow={renderRow} onVisible={onVisible}
       describe={({ item: row }) => { const named = labels(row); return `${named.country.name}: ${divisionName(row)}, ${divisionStatus(row)}, ${row.templateName ?? 'template not recorded'}, ${named.place}, ${named.killer.name}.`; }}
       tooltip={({ item: row }) => { const named = labels(row); return [divisionTooltip(row, named.country, named.killer, named.place)]; }}
-      menu={({ item: row }) => [jumpItem(runtime, track.id, row.readHour)]} empty={pendingAt(preparedPrefix(history.data.get(browseIndex)), shownHour ?? first) || !match.known(first, shownHour ?? first) ? "This range is still being prepared." : "No recorded division events match these settings."} />
+      menu={({ item: row }) => [jumpItem(runtime, track.id, row.readHour)]}
+      empty={list.counts ? 'No recorded division events match these settings.' : <WidgetState kind="loading" label="Loading division log…" />} />
   </div>;
 }

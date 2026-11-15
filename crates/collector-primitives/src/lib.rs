@@ -9,6 +9,7 @@ pub mod country_slots;
 pub mod first_reason;
 pub mod raw_memory;
 pub mod shared_lane;
+pub mod spill_stack;
 pub mod table_capture;
 pub mod table_hash;
 

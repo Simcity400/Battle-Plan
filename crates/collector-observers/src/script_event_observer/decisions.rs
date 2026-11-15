@@ -944,7 +944,7 @@ mod tests {
     fn reduce(store: &mut Store, state: &mut DecisionState) -> Vec<(Operation, u8, Option<u32>)> {
         let mut snapshot = Snapshot::new(0);
         store
-            .snapshot_growing(
+            .snapshot(
                 &mut snapshot,
                 OwnerBoundary {
                     generation: 1,
@@ -989,6 +989,7 @@ mod tests {
 
     #[test]
     fn reenable_erase_observation_retires_last_expiry_and_does_not_duplicate_nonlast_expiry() {
+        let _globals = crate::event_feed_observer::test_globals();
         for expired in [4, 0] {
             let mut memory = Fixture::new(if expired == 4 {
                 [11, 0, 19, 0, 1]
@@ -1132,7 +1133,7 @@ mod tests {
     ) -> crate::event_feed_history::Prepared {
         let mut snapshot = Snapshot::new(0);
         store
-            .snapshot_growing(
+            .snapshot(
                 &mut snapshot,
                 OwnerBoundary {
                     generation: 1,
@@ -1150,6 +1151,7 @@ mod tests {
 
     #[test]
     fn a_result_for_an_uncertified_owner_keeps_its_occurrence_and_refuses_only_that_owner() {
+        let _globals = crate::event_feed_observer::test_globals();
         const REASON: &str = "decision result reached an uncertified owner";
         let first = replay_data::event_feed_rows::EventFeedCountry {
             reference: 1,
@@ -1326,6 +1328,7 @@ mod tests {
     }
     #[test]
     fn a_retired_member_of_an_uncertified_owner_leaves_a_reused_address_a_fresh_label() {
+        let _globals = crate::event_feed_observer::test_globals();
         const REASON: &str = "decision result reached an uncertified owner";
         let memory = Fixture::new([11, 0, 19, 0, 1]);
         let mut store = Store::new(None).unwrap();
@@ -1430,6 +1433,7 @@ mod tests {
 
     #[test]
     fn an_uncertified_owners_member_follows_its_transfer_into_its_owner_local_result() {
+        let _globals = crate::event_feed_observer::test_globals();
         let memory = Fixture::new([11, 0, 19, 0, 1]);
         let mut store = Store::new(None).unwrap();
         store.prepare_capacity(64).unwrap();
@@ -1498,6 +1502,7 @@ mod tests {
 
     #[test]
     fn reenable_iteration_erasure_requires_the_active_owners_single_tail_slot() {
+        let _globals = crate::event_feed_observer::test_globals();
         let mut memory = Fixture::new([11, 0, 19, 0, 1]);
         let header = STATUS + runtime::HEADERS[rows::REENABLE as usize];
         let other_header = STATUS + runtime::HEADERS[rows::REMOVAL as usize];

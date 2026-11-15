@@ -1,7 +1,7 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
 import { AFTER_PLAYHEAD_OPTION, choiceVariants } from '../../dashboard/options.ts';
 import type { OptionField, OptionValue } from '../../dashboard/options';
-import { FUEL_DECIMALS_OPTION } from '../fuel/fuelData.ts';
+import { FUEL_DECIMALS_OPTION } from './fuelBranchesData.ts';
 import { DRILL_OPTION } from '../../charts/drill/drillState.ts';
 
 export const CONSUMPTION = { id: 'consumption', label: 'Current consumption' };

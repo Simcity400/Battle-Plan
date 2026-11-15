@@ -1,9 +1,9 @@
 //! A persistent conversion helper for the spool thread; the spool thread
-//! starts two ([`Helpers`]).
+//! starts a pool of them ([`pool_size`], [`Helpers`]).
 //!
 //! [`SpoolHelper::join`] runs a borrowed job on the helper while the calling
 //! spool thread runs its own share, and returns only after both finished. The
-//! helper is started once, before hooks are published, and parks between
+//! helpers are started once, before hooks are published, and park between
 //! hours: an hour allocates nothing and spawns nothing. Frame conversion is
 //! adaptively promoted by the frame pipeline, without EcoQoS or CPU-set confinement.
 //! Output placement is fixed by the caller, so the result is identical to
@@ -19,24 +19,74 @@ use std::{
 /// A job borrowed for one [`SpoolHelper::join`] call.
 pub(crate) type Job<'a> = dyn Fn() + Sync + 'a;
 
+/// The helpers to start: one per CPU the game process may run on beyond the
+/// spool thread's own, and no more than an hour has movable packs for.
+pub(crate) fn pool_size() -> usize {
+    crate::acquisition::usable_cpus()
+        .saturating_sub(1)
+        .min(crate::pack_conversion::MAX_HELPERS)
+}
+
+/// The helpers the comparison and the encoders share their work with.
+const ENCODING_HELPERS: usize = 2;
+
 /// The conversion helpers a spool frame may use and the spool thread's
 /// backlog verdict, which they follow.
 #[derive(Clone, Copy)]
 pub(crate) struct Helpers<'a> {
-    pub(crate) first: &'a SpoolHelper,
-    pub(crate) second: Option<&'a SpoolHelper>,
+    /// Never empty.
+    pub(crate) pool: &'a [SpoolHelper],
     pub(crate) backlogged: bool,
 }
 
 impl<'a> Helpers<'a> {
-    /// Run `job` on every helper and `own` on this thread; return after all
-    /// finished. A panic on any side is resumed after every job finished.
+    /// The threads the comparison and the encoders use: this one and its helpers.
+    pub(crate) fn encoding_lanes(self) -> usize {
+        1 + self.pool.len().min(ENCODING_HELPERS)
+    }
+
+    /// Run `job` on the comparison's and encoders' helpers and `own` on this
+    /// thread; return after all finished. A panic on any side is resumed
+    /// after every job finished.
     pub(crate) fn join_each<R>(self, job: &'a Job<'a>, own: impl FnOnce() -> R) -> R {
-        match self.second {
-            Some(second) => self.first.join(self.backlogged, job, || {
-                second.join(self.backlogged, job, own)
-            }),
-            None => self.first.join(self.backlogged, job, own),
+        self.join_some(ENCODING_HELPERS, &|_: usize| job(), own)
+    }
+
+    /// Run `job(n)` on each of the first `count` helpers, `n` from 0, and
+    /// `own` on this thread; return after all finished. A panic on any side
+    /// is resumed after every job finished.
+    pub(crate) fn join_some<R>(
+        self,
+        count: usize,
+        job: &(dyn Fn(usize) + Sync),
+        own: impl FnOnce() -> R,
+    ) -> R {
+        let mut own = Some(own);
+        let mut result = None;
+        let helpers = &self.pool[..count.min(self.pool.len())];
+        join_from(helpers, 0, self.backlogged, job, &mut || {
+            result = own.take().map(|own| own());
+        });
+        result.expect("the own share ran once")
+    }
+}
+
+/// Run `job(at)` on `helpers[at]` and on every later helper, nested, and `own`
+/// innermost on this thread.
+fn join_from(
+    helpers: &[SpoolHelper],
+    at: usize,
+    backlogged: bool,
+    job: &(dyn Fn(usize) + Sync),
+    own: &mut dyn FnMut(),
+) {
+    match helpers.get(at) {
+        None => own(),
+        Some(helper) => {
+            let mine = || job(at);
+            helper.join(backlogged, &mine, || {
+                join_from(helpers, at + 1, backlogged, job, own)
+            });
         }
     }
 }
@@ -79,7 +129,7 @@ impl SpoolHelper {
     /// Start the helper thread and wait for its id.
     pub(crate) fn start(
         priority: Option<(
-            Arc<crate::frame_priority::Pipeline>,
+            engine_allocation::SharedBox<crate::frame_priority::Pipeline>,
             crate::frame_priority::Role,
         )>,
     ) -> io::Result<Self> {
@@ -90,6 +140,7 @@ impl SpoolHelper {
             .name("hoi4-spool-helper".into())
             .stack_size(crate::runtime::BACKGROUND_STACK_BYTES)
             .spawn(move || {
+                crate::private_heap::off_hold_path();
                 #[cfg(feature = "worker_sampler")]
                 let _sampler_exit = crate::thread_cpu::StopOnThreadExit;
                 // SAFETY: GetCurrentThreadId has no preconditions.
@@ -189,10 +240,11 @@ impl Drop for SpoolHelper {
 fn serve(
     shared: &Shared,
     pipeline: Option<(
-        Arc<crate::frame_priority::Pipeline>,
+        engine_allocation::SharedBox<crate::frame_priority::Pipeline>,
         crate::frame_priority::Role,
     )>,
 ) {
+    let _phase = crate::allocation::enter(crate::allocation::Phase::SpoolHelper);
     let mut priority = crate::runtime::OwnPriority::frame_pipeline();
     let mut refresh = || {
         if let Some((pipeline, role)) = &pipeline {
@@ -298,6 +350,37 @@ mod tests {
         assert!(own_panic.is_err());
         // Unwinding past join waited for the borrowed job to finish.
         assert_eq!(finished.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn join_some_runs_each_index_once_on_its_own_helper_beside_the_own_share() {
+        let pool = [
+            SpoolHelper::start(None).unwrap(),
+            SpoolHelper::start(None).unwrap(),
+            SpoolHelper::start(None).unwrap(),
+        ];
+        let helpers = Helpers {
+            pool: &pool,
+            backlogged: false,
+        };
+        for count in [1, 2, 3, 7] {
+            let ran: [AtomicU32; 3] = std::array::from_fn(|_| AtomicU32::new(0));
+            let runs = AtomicUsize::new(0);
+            let job = |index: usize| {
+                runs.fetch_add(1, Ordering::Relaxed);
+                let id = unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() };
+                assert_eq!(ran[index].swap(id, Ordering::Relaxed), 0);
+            };
+            let own = helpers.join_some(count, &job, || count * 10);
+            assert_eq!(own, count * 10);
+            let used = count.min(pool.len());
+            assert_eq!(runs.load(Ordering::Relaxed), used);
+            for (index, helper) in pool.iter().enumerate() {
+                let expected = if index < used { helper.thread_id() } else { 0 };
+                assert_eq!(ran[index].load(Ordering::Relaxed), expected);
+            }
+        }
+        assert_eq!(helpers.encoding_lanes(), 1 + ENCODING_HELPERS);
     }
 
     #[test]

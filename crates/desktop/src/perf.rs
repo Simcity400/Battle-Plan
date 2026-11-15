@@ -1,4 +1,4 @@
-//! Opt-in playback measurement (`BATTLE_PLAN_PERF_LOG=<file>`); each viewer process writes `<file>.map.<pid>.jsonl`.
+//! Opt-in playback measurement (`BATTLE_PLAN_PERF_LOG=<file>`); each map writes `<file>.map.<map>.jsonl`.
 
 use serde_json::{Value, json};
 use std::{
@@ -8,7 +8,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex, OnceLock,
-        atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc::{self, Receiver, Sender},
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -23,9 +23,6 @@ const PENDING_BYTES: usize = 32 << 20;
 const PAGE_WAIT: Duration = Duration::from_secs(5);
 /// How long a stop waits for every viewer's file to pass its end.
 const MAP_WAIT: Duration = Duration::from_secs(2);
-
-const EXIT_RUNNING: u8 = 1;
-const EXIT_DONE: u8 = 2;
 
 enum Message {
     /// Lines, and how many of the pending bytes they hold.
@@ -101,7 +98,6 @@ pub struct PerfLog {
     queue: Sender<Message>,
     backlog: Arc<Backlog>,
     summarized: AtomicBool,
-    exit: AtomicU8,
     page_final: Mutex<Option<Sender<bool>>>,
 }
 
@@ -156,7 +152,6 @@ fn open() -> Option<PerfLog> {
         queue,
         backlog,
         summarized: AtomicBool::new(false),
-        exit: AtomicU8::new(0),
         page_final: Mutex::new(None),
     };
     log.write(
@@ -229,9 +224,7 @@ pub fn init() {
                     "compute_ms": timing.compute_ms,
                     "deliver_ms": timing.deliver_ms,
                     "total_ms": timing.total_ms,
-                    "sampled": timing.sampled,
                     "bytes": timing.bytes,
-                    "disk_cached": timing.disk_cached,
                 })
                 .to_string(),
             );
@@ -239,12 +232,12 @@ pub fn init() {
     }));
 }
 
-/// The prefix each viewer process names its frame file from.
+/// The prefix each map names its frame file from.
 pub fn map_prefix() -> Option<&'static Path> {
     log().map(|log| log.map_prefix.as_path())
 }
 
-/// The viewer frame files, `<prefix>.<pid>.jsonl`.
+/// The maps' frame files, `<prefix>.<map>.jsonl`.
 fn map_files(prefix: &Path) -> Vec<PathBuf> {
     let Some(name) = prefix.file_name().and_then(|name| name.to_str()) else {
         return Vec::new();
@@ -263,7 +256,7 @@ fn map_files(prefix: &Path) -> Vec<PathBuf> {
                 file.strip_prefix(name)
                     .and_then(|rest| rest.strip_prefix('.'))
                     .and_then(|rest| rest.strip_suffix(".jsonl"))
-                    .is_some_and(|pid| !pid.is_empty() && pid.bytes().all(|byte| byte.is_ascii_digit()))
+                    .is_some_and(|map| !map.is_empty() && map.bytes().all(|byte| byte.is_ascii_digit()))
             })
         })
         .map(|entry| entry.path())
@@ -854,16 +847,16 @@ fn summarize(window: &Window, all: &[Value], map: &[Value], page_flushed: Option
         })
         .collect();
 
-    // One entry per viewer process: the main map and any pop-out.
-    let mut processes: BTreeMap<String, Vec<&Value>> = BTreeMap::new();
+    // One entry per map: the main map and any pop-out.
+    let mut by_map: BTreeMap<String, Vec<&Value>> = BTreeMap::new();
     for record in map {
-        processes.entry(record["pid"].to_string()).or_default().push(record);
+        by_map.entry(record["map"].to_string()).or_default().push(record);
     }
     let mut roles = BTreeSet::new();
-    let map_frames: serde_json::Map<String, Value> = processes
+    let map_frames: serde_json::Map<String, Value> = by_map
         .into_iter()
         .filter(|(_, records)| records.iter().any(|record| window.holds(record)))
-        .map(|(pid, records)| {
+        .map(|(map_id, records)| {
             let role = records
                 .iter()
                 .find(|record| kind(record) == "map_open")
@@ -892,7 +885,7 @@ fn summarize(window: &Window, all: &[Value], map: &[Value], page_flushed: Option
                 kind(record) == "map_close" || at(record).is_some_and(|when| when >= window.end)
             });
             (
-                pid,
+                map_id,
                 json!({
                     "role": role,
                     "work_ms": stats(work.collect()),
@@ -1081,37 +1074,16 @@ pub async fn perf_stop() -> Result<Value, String> {
     .map_err(|error| error.to_string())?
 }
 
-/// Ends a measured run off the event loop: `stop` ends the service and viewers, the page writes
-/// what it holds, then the summary; the app exits after. False when measurement is off or done.
-pub fn finish_before_exit(app: &AppHandle, stop: fn(&AppHandle)) -> bool {
+/// Ends a measured run once its service and viewers have ended: the page writes what it holds,
+/// then the summary. Nothing when measurement is off or the summary is written.
+pub fn finish(app: &AppHandle) {
     let Some(log) = log() else {
-        return false;
+        return;
     };
-    match log
-        .exit
-        .compare_exchange(0, EXIT_RUNNING, Ordering::AcqRel, Ordering::Acquire)
-    {
-        Ok(_) => {}
-        Err(EXIT_RUNNING) => return true,
-        Err(_) => return false,
+    let page = log.finish_page(app);
+    if !log.summarized.swap(true, Ordering::AcqRel) {
+        let _ = log.summarize(Some(epoch_ms()), false, page);
     }
-    let handle = app.clone();
-    let spawned = std::thread::Builder::new()
-        .name("perf exit".into())
-        .spawn(move || {
-            stop(&handle);
-            let page = log.finish_page(&handle);
-            if !log.summarized.swap(true, Ordering::AcqRel) {
-                let _ = log.summarize(Some(epoch_ms()), false, page);
-            }
-            log.exit.store(EXIT_DONE, Ordering::Release);
-            handle.exit(0);
-        });
-    if spawned.is_err() {
-        log.exit.store(EXIT_DONE, Ordering::Release);
-        return false;
-    }
-    true
 }
 
 /// Summarizes at exit what no stop has, when the ordered exit did not run.

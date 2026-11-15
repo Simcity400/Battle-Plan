@@ -199,7 +199,7 @@ impl PreparedRaids {
             .as_ref()
             .and_then(|bound| bound.as_ref().ok())
             .map(|bound| bound.frame);
-        let mut drawn = view.present(
+        view.present_recorded(
             context,
             &Plan {
                 name: WINDOW,
@@ -227,20 +227,29 @@ impl PreparedRaids {
                     context.resources,
                 )
             },
+            |owner| {
+                let icon = &placed[owner].1.icon;
+                (icon.frame, icon.enabled, icon.glyph.clone(), icon.plus)
+            },
+            false,
             &mut report.reasons,
         );
+        if view.quiet() {
+            return 0;
+        }
+        let (mut drawn, painted) = view.painted();
         // Sort and reverse-attach visible windows before GUI painting; hit-test
         // the paint list backwards. Pool/live order can differ after camera moves
         // or slot reuse, so hover follows draw rank.
-        drawn.sort_by_key(|drawn| placed[&drawn.owner].0);
+        drawn.sort_by_key(|(drawn, _)| placed[&drawn.owner].0);
         let mut count = 0;
-        for drawn in drawn {
+        for (drawn, generation) in drawn {
             let (ordinal, placed) = placed[&drawn.owner];
-            batch.at_layer(sprites::layer(priority, ordinal as u32, 0));
+            let key = sprites::layer(priority, ordinal as u32, 0);
+            batch.at_layer(key);
             batch.at_anchor(Some(placed.anchor));
-            if let Err(why) =
-                native_gui::draw(&drawn.layout, drawn.origin, context.resources, batch)
-            {
+            let draw = |batch: &mut Batch| native_gui::draw(&drawn.layout, drawn.origin, context.resources, batch);
+            if let Err(why) = painted.paint(drawn.owner, generation, key, Some(placed.anchor), batch, draw) {
                 count_refused(&mut report.reasons, WINDOW, &[why]);
                 continue;
             }
@@ -264,6 +273,7 @@ impl PreparedRaids {
             }
         }
         batch.at_anchor(None);
+        painted.finish();
         count
     }
 }

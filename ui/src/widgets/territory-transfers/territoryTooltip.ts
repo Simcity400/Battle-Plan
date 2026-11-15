@@ -3,9 +3,9 @@ import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import { usNumber } from '../../charts/numberFormat.ts';
 import { formatDateTime } from '../../dashboard/calendar.ts';
 import type { NameAt } from '../../dashboard/countryFacts';
-import type { PeaceDeal } from '../../generated/dashboard';
 import { transferHow, transferIsBy } from './territoryData.ts';
 import type { CountryBalance, Counterpart, TransferOccurrence, TransferSide } from './territoryData';
+import type { PeaceDeal } from '../../generated/dashboard';
 
 export interface TransferStateAt { hour: number; state: number }
 export interface TransferTipRequest { countries: NameAt[]; states: TransferStateAt[] }

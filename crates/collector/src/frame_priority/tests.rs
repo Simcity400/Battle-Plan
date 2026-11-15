@@ -1,11 +1,12 @@
 use super::*;
+use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
 fn fixture(high: bool) -> Arc<Pipeline> {
     let pipeline = Arc::new(Pipeline::new());
     if !high {
-        for index in 0..crate::sampling::BUFFERS {
-            pipeline.publish(index);
+        for _ in 0..crate::frame_pool::STEADY {
+            pipeline.publish();
         }
     }
     // These synthetic handles reach only mock setters, never native priority changes.
@@ -14,11 +15,7 @@ fn fixture(high: bool) -> Arc<Pipeline> {
 }
 fn change(pipeline: &Pipeline, high: bool) {
     pipeline.available.store(
-        if high {
-            0
-        } else {
-            (1 << crate::sampling::BUFFERS) - 1
-        },
+        if high { 0 } else { crate::frame_pool::STEADY },
         Ordering::SeqCst,
     );
     pipeline.refresh();
@@ -38,20 +35,18 @@ fn apply(pipeline: &Pipeline, budget: &mut Budget, now: u64, native: &AtomicU32)
 #[test]
 fn pressure_is_early_targeted_and_only_during_capture() {
     assert_eq!(
-        (0..=4).map(|free| level(free, 0)).collect::<Vec<_>>(),
+        (0..=4).map(level).collect::<Vec<_>>(),
         [2, 2, 1, 0, 0]
     );
     let pipeline = fixture(false);
-    pipeline.expect_store(&AtomicBool::new(true));
     assert_eq!(pipeline.pressure(), 0);
     let callback = pipeline.callback();
-    assert_eq!(for_role(pipeline.pressure(), Role::Decode as usize), 2);
-    assert_eq!(for_role(pipeline.pressure(), Role::Sizing as usize), 0);
-    pipeline.store_returned();
-    assert_eq!(pipeline.pressure(), 0);
-    pipeline.claim(0);
-    pipeline.claim(1);
-    assert_eq!(for_role(pipeline.pressure(), Role::Spool as usize), 1);
+    assert_eq!(for_role(pipeline.pressure(), Role::Decode.slot()), 0);
+    assert_eq!(for_role(pipeline.pressure(), Role::Sizing.slot()), 0);
+    pipeline.claim();
+    pipeline.claim();
+    assert_eq!(for_role(pipeline.pressure(), Role::Spool.slot()), 1);
+    assert_eq!(for_role(pipeline.pressure(), Role::Decode.slot()), 1);
     drop(callback);
     assert_eq!(pipeline.pressure(), 0);
 }
@@ -154,7 +149,7 @@ fn a_target_registered_after_the_final_read_is_not_lost() {
     assert!(pipeline.pending.load(Ordering::SeqCst));
     apply(&pipeline, &mut budget, 0, &AtomicU32::new(0));
     assert_eq!(
-        pipeline.targets[Role::Sizing as usize]
+        pipeline.targets[Role::Sizing.slot()]
             .get()
             .unwrap()
             .applied
@@ -181,7 +176,7 @@ fn failed_syscalls_stay_unknown_and_retry_without_another_refresh() {
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert!(pipeline.pending.load(Ordering::SeqCst));
     assert_eq!(
-        pipeline.targets[Role::Decode as usize]
+        pipeline.targets[Role::Decode.slot()]
             .get()
             .unwrap()
             .applied
@@ -195,13 +190,13 @@ fn failed_syscalls_stay_unknown_and_retry_without_another_refresh() {
 }
 
 #[test]
-fn a_pass_is_bounded_to_five_setters_and_steady_refreshes_do_not_set_or_wake() {
+fn a_pass_sets_each_registered_worker_once_and_steady_refreshes_do_not_set_or_wake() {
     let pipeline = fixture(true);
     let callback = pipeline.callback();
     for role in [
         Role::Spool,
-        Role::FirstHelper,
-        Role::SecondHelper,
+        Role::Helper(0),
+        Role::Helper(1),
         Role::Sizing,
     ] {
         pipeline.register(role);
@@ -289,20 +284,15 @@ fn callback_end_demotes_mid_item_and_notifications_and_unwind_allocate_nothing()
     apply(&pipeline, &mut budget, 0, &native);
     crate::test_support::with_allocations_denied(|| {
         pipeline.refresh();
-        let waiting = pipeline.wait_for_store();
-        waiting.retry();
-        drop(waiting);
         drop(callback);
         apply(&pipeline, &mut budget, 0, &native);
     });
     assert_eq!(native.load(Ordering::SeqCst), 0);
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let _callback = pipeline.callback();
-        let _waiting = pipeline.wait_for_store();
         panic!("synthetic unwind");
     }));
     assert_eq!(pipeline.callbacks.load(Ordering::SeqCst), 0);
-    assert_eq!(pipeline.store_waiters.load(Ordering::SeqCst), 0);
     assert_eq!(pipeline.pressure(), 0);
 }
 
@@ -327,8 +317,8 @@ fn shutdown_racing_the_last_write_still_gets_a_normal_pass() {
 
 #[test]
 fn the_owned_reconciler_starts_boost_disabled_and_joins_without_targets() {
-    let pipeline = Arc::new(Pipeline::new());
-    let mut worker = Reconciler::start(Arc::clone(&pipeline)).unwrap();
+    let pipeline = engine_allocation::shared(Pipeline::new()).unwrap();
+    let mut worker = Reconciler::start(pipeline.clone()).unwrap();
     assert_ne!(worker.thread_id(), 0);
     let mut disabled = 0;
     // SAFETY: this handle belongs to the test's own reconciler and remains joined below.
@@ -367,24 +357,22 @@ fn a_delayed_announcer_cannot_hide_a_later_real_change() {
 }
 
 #[test]
-fn availability_publication_cannot_undo_a_racing_claim() {
+fn availability_counts_every_published_frame_and_each_claim() {
     let pipeline = Pipeline::new();
     let _callback = pipeline.callback();
-    pipeline.publish(0);
+    pipeline.publish();
     assert_eq!(pipeline.free_count(), 1);
     assert_eq!(for_role(pipeline.pressure(), 0), 2);
-    pipeline.publish(1);
-    pipeline.claim(0);
+    pipeline.publish();
+    pipeline.claim();
     assert_eq!(pipeline.free_count(), 1);
-    pipeline.claim(1);
+    pipeline.claim();
     assert_eq!(pipeline.free_count(), 0);
-    pipeline.publish(0);
-    pipeline.claim(0);
+    pipeline.claim();
     assert_eq!(pipeline.free_count(), 0);
-    pipeline.publish(0);
-    pipeline.publish(1);
-    pipeline.publish(2);
-    pipeline.publish(3);
-    assert_eq!(pipeline.free_count(), 4);
+    for _ in 0..crate::frame_pool::STEADY * 3 {
+        pipeline.publish();
+    }
+    assert_eq!(pipeline.free_count(), crate::frame_pool::STEADY * 3);
     assert_eq!(pipeline.pressure(), 0);
 }

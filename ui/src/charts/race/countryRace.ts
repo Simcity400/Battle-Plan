@@ -4,7 +4,7 @@ import type { RaceItem } from './race';
 import type { CountryFlagLook } from '../../components/CountryFlag';
 import type { Run } from '../series';
 import { lineEndHour, runAt } from '../series.ts';
-import { buildStack, compactStack, compactStackExtent, forEachCompactStackSegment, stackExtent, stackedSegments } from '../stack.ts';
+import { buildStack, compactStack, compactStackExtent, forEachCompactStackSegment, forEachJoinedSegment, stackExtent, stackedSegments } from '../stack.ts';
 import type { StackSegment } from '../stack';
 import type { CompactStackModel, StackModel } from '../stack';
 
@@ -27,32 +27,18 @@ export function forEachCountryRaceSegment(stack: StackModel | CompactStackModel,
     segment => visit(held ? heldStackSegment(segment) : segment));
   else countryRaceSegments(stack, from, to, hoursPerPixel, held).forEach(visit);
 }
-/** The same pieces joined into one per unbroken stretch: filled apart, two pieces
- * that meet at a shared edge leave a hairline seam there (anti-aliasing on both
- * sides), so a stack that changes at every read would show vertical stripes. */
+/** The same pieces joined into one per unbroken stretch (`forEachJoinedSegment`). */
 export function forEachJoinedCountryRaceSegment(stack: StackModel | CompactStackModel, from: number, to: number, hoursPerPixel: number,
   held: boolean, visit: (segment: StackSegment) => void): void {
-  let joined: StackSegment | null = null;
-  forEachCountryRaceSegment(stack, from, to, hoursPerPixel, held, segment => {
-    if (joined && !segment.start && joined.end !== true && joined.hours.at(-1) === segment.hours[0] && joined.bands.length === segment.bands.length) {
-      for (let index = 1; index < segment.hours.length; index++) joined.hours.push(segment.hours[index]);
-      segment.bands.forEach((band, layer) => {
-        for (let index = 1; index < band.low.length; index++) { joined!.bands[layer].low.push(band.low[index]); joined!.bands[layer].high.push(band.high[index]); }
-      });
-      joined.end = segment.end;
-      return;
-    }
-    if (joined) visit(joined);
-    joined = { ...segment, hours: [...segment.hours], bands: segment.bands.map(band => ({ low: [...band.low], high: [...band.high] })) };
-  });
-  if (joined) visit(joined);
+  forEachJoinedSegment(piece => forEachCountryRaceSegment(stack, from, to, hoursPerPixel, held, piece), visit);
 }
 
 export function countryRaceStackExtent(stack: StackModel | CompactStackModel, from: number, to: number): [number, number] | null {
   return 'bands' in stack ? compactStackExtent(stack, from, to) : stackExtent(stack, from, to);
 }
 
-export interface CountryRacePart { id: string; label: string; color?: string; value?: string }
+/** A part's key entry; its value text, or a `LiveText` painting it at the head. */
+export interface CountryRacePart { id: string; label: string; color?: string; value?: import('react').ReactNode }
 export interface CountryRaceEntry {
   tag: string; value: number; label: string; stretch: number | string | null;
   /** Animation identity; the dated tag still owns content and interactions. */
@@ -63,6 +49,16 @@ export interface CountryRaceEntry {
   inset?: number;
   parts?: readonly { id: string; value: number; hatched?: number; hatchInside?: boolean; color?: string }[];
 }
+/** A race's entries at the head, read as the chart draws: the race follows them without rendering. */
+export interface LiveRaceEntries {
+  /** The entries ranked at the hour shown now (each with its `hour`); the same array while they are unchanged. */
+  entries(): readonly CountryRaceEntry[];
+  /** The hour they are at. */
+  hour(): number;
+  /** Lets the source wake the chart when its entries move between clock frames (a pushed answer); returns how to stop. */
+  bind(wake: () => void): () => void;
+}
+
 export interface CountryRaceLine {
   tag: string; runs: readonly Run[];
   /** Distinguishes several measures of the same country; tag remains its opaque identity. */
@@ -91,9 +87,13 @@ export function partColours(parts: readonly CountryRacePart[], palette: readonly
 
 const insideHatch = (value: number, hatched: number) => value > 0 ? Math.min(Math.max(0, hatched), value) : 0;
 
-export function countryRaceItems(entries: readonly CountryRaceEntry[], colours: ReadonlyMap<string, string>, country: (tag: string) => string,
-  missingColour: string, exact = true): RaceItem[] {
-  return entries.map(entry => ({ key: entry.entityKey ?? entry.tag, tag: entry.tag, hour: entry.hour, value: entry.value, label: entry.label,
+export const countryRaceItems = (entries: readonly CountryRaceEntry[], colours: ReadonlyMap<string, string>, country: (tag: string) => string,
+  missingColour: string, exact = true): RaceItem[] => entries.map(entry => countryRaceItem(entry, colours, country, missingColour, exact));
+
+/** One entry's race item: `countryRaceItems` of one. */
+export function countryRaceItem(entry: CountryRaceEntry, colours: ReadonlyMap<string, string>, country: (tag: string) => string,
+  missingColour: string, exact = true): RaceItem {
+  return ({ key: entry.entityKey ?? entry.tag, tag: entry.tag, hour: entry.hour, value: entry.value, label: entry.label,
     // Null prevents amount easing; the race still eases rows to their ranks.
     stretch: exact ? null : entry.stretch,
     ...(entry.inset !== undefined ? { inset: { value: entry.inset, color: country(entry.tag) } } : {}),
@@ -103,7 +103,7 @@ export function countryRaceItems(entries: readonly CountryRaceEntry[], colours: 
         color: part.color ?? colours.get(part.id) ?? missingColour };
     }) ?? [{ id: 'total', value: entry.value - insideHatch(entry.value, entry.hatched ?? 0), color: country(entry.tag),
       ...(entry.hatched !== undefined ? { hatched: insideHatch(entry.value, entry.hatched) } : {}) }],
-  }));
+  });
 }
 
 /** Keyboard stops use only changes; stack boundary stops remain opt-in. */
@@ -154,4 +154,9 @@ export function heldStackSegment(segment: StackSegment): StackSegment {
     bands.forEach((band, layer) => { band.low.push(segment.bands[layer].low[index]); band.high.push(segment.bands[layer].high[index]); });
   });
   return { ...segment, hours, bands };
+}
+
+/** A race's accessible label at the hour it shows: a dated label is read at that hour, never at the hour it rendered. */
+export function raceLabelAt(label: string | ((hour: number) => string) | undefined, hour: number): string | undefined {
+  return typeof label === 'function' ? label(hour) : label;
 }

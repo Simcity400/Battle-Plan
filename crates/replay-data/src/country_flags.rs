@@ -5,7 +5,7 @@
 
 use crate::rows::{
     CountryAppearanceRow, CountryLinkRow, CountryRow, LocalPlayerRow, PoliticalPartyRow,
-    PoliticsRow,
+    PoliticsRow, Recorded,
 };
 
 /// Read the original-or-own tag bytes. An unread or historically absent
@@ -14,18 +14,30 @@ pub fn original_tag<'a>(
     country: &'a CountryRow,
     appearance: &'a CountryAppearanceRow,
 ) -> Result<&'a str, String> {
-    let reference = appearance
-        .original_tag_reference
-        .require("CountryAppearance.original_tag_reference")?
-        .ok_or("CountryAppearance.original_tag_reference capture refused")?;
+    original_tag_of(
+        &appearance.original_tag_reference,
+        &appearance.original_tag,
+        &country.tag,
+    )
+}
+
+/// The original-or-own tag from its operands: CountryAppearance's reference word and original
+/// tag, and the country's own tag.
+pub fn original_tag_of<'a>(
+    reference: &Recorded<Option<i32>>,
+    original: &'a Recorded<Option<Vec<u8>>>,
+    own: &'a [u8],
+) -> Result<&'a str, String> {
+    let reference = reference
+        .require("original tag reference of country appearance")?
+        .ok_or("original tag reference of country appearance capture refused")?;
     let bytes = if reference > 0 {
-        appearance
-            .original_tag
-            .require("CountryAppearance.original_tag")?
+        original
+            .require("original tag of country appearance")?
             .as_ref()
-            .ok_or("CountryAppearance.original_tag capture refused")?
+            .ok_or("original tag of country appearance capture refused")?
     } else {
-        &country.tag
+        own
     };
     std::str::from_utf8(bytes).map_err(|_| "country original-or-own tag is not UTF-8".into())
 }
@@ -58,7 +70,7 @@ pub fn viewed_country<'a>(
     parties: &'a [PoliticalPartyRow],
 ) -> Result<FlagOperands<'a>, String> {
     let [player] = local else {
-        return Err("LocalPlayer has no single row".into());
+        return Err("local player has no single row".into());
     };
     let raw = player
         .viewing_country()
@@ -67,7 +79,7 @@ pub fn viewed_country<'a>(
         .iter()
         .rev()
         .find(|link| link.id == raw)
-        .ok_or("the viewed country has no CountryLinks row")?
+        .ok_or("the viewed country has no country links row")?
         .canonical_slot;
     let country = countries
         .iter()
@@ -84,7 +96,7 @@ pub fn viewed_country<'a>(
         .iter()
         .rev()
         .find(|row| row.country == owner)
-        .ok_or_else(|| format!("country {owner} flag needs its CountryAppearance row"))?;
+        .ok_or_else(|| format!("country {owner} flag needs its country appearance row"))?;
     let cosmetic = std::str::from_utf8(&appearance.cosmetic_tag)
         .map_err(|_| "country cosmetic tag is not UTF-8")?;
     let ruling = politics
@@ -99,7 +111,7 @@ pub fn viewed_country<'a>(
         .rev()
         .find(|row| row.country == owner && row.id == ruling)
         .ok_or_else(|| {
-            format!("country {owner} flag needs PoliticalParties ruling group {ruling}")
+            format!("country {owner} flag needs political parties ruling group {ruling}")
         })?;
     let group = std::str::from_utf8(&party.token)
         .map_err(|_| format!("country {owner} flag ruling group is not UTF-8"))?;
@@ -233,7 +245,7 @@ mod tests {
         assert!(rows.viewed().unwrap_err().contains("ruling group 2"));
         let mut rows = Rows::new();
         rows.appearances.clear();
-        assert!(rows.viewed().unwrap_err().contains("CountryAppearance"));
+        assert!(rows.viewed().unwrap_err().contains("country appearance row"));
         let mut rows = Rows::new();
         rows.countries[0].id = 0;
         assert!(rows.viewed().unwrap_err().contains("no country object"));

@@ -38,6 +38,21 @@ pub fn script_fixed5(bytes: &[u8]) -> Option<i64> {
     })
 }
 
+/// Authored fixed5 decimals keep the first five fractional digits. Save
+/// Decimal refuses lossy input, so authored digits past the fifth are
+/// truncated before it is used.
+pub fn authored_fixed5(bytes: &[u8]) -> std::io::Result<i64> {
+    let bytes = if let Some(dot) = bytes.iter().position(|byte| *byte == b'.')
+        && bytes.len() > dot + 6
+        && bytes[dot + 1..].iter().all(u8::is_ascii_digit)
+    {
+        &bytes[..dot + 6]
+    } else {
+        bytes
+    };
+    Ok(crate::parser::decimal::Decimal::parse(bytes)?.raw)
+}
+
 /// Decimal fixed5 conversion of a value token never fails:
 ///
 /// - The whole part accepts leading white space, a sign and decimal digits, saturating

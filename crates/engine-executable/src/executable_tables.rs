@@ -578,29 +578,38 @@ mod runtime_table_tests {
     use super::RuntimeTable;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    // A view is kept per recording's tables, so each test works inside one scope.
+    fn in_scope(work: impl FnOnce()) {
+        super::scope(Some(super::unscoped()), work);
+    }
+
     #[test]
     fn failed_view_initialization_can_be_retried_and_then_is_shared() {
         static ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
-        let table = RuntimeTable::new(|| {
-            let attempt = ATTEMPTS.fetch_add(1, Ordering::Relaxed);
-            assert_ne!(attempt, 0, "first metadata view initialization fails");
-            Ok(7usize)
+        in_scope(|| {
+            let table = RuntimeTable::new(|| {
+                let attempt = ATTEMPTS.fetch_add(1, Ordering::Relaxed);
+                assert_ne!(attempt, 0, "first metadata view initialization fails");
+                Ok(7usize)
+            });
+            assert!(std::panic::catch_unwind(|| *table).is_err());
+            assert_eq!(*table, 7);
+            assert_eq!(*table, 7);
+            assert_eq!(ATTEMPTS.load(Ordering::Relaxed), 2);
         });
-        assert!(std::panic::catch_unwind(|| *table).is_err());
-        assert_eq!(*table, 7);
-        assert_eq!(*table, 7);
-        assert_eq!(ATTEMPTS.load(Ordering::Relaxed), 2);
     }
 
     #[test]
     fn a_withheld_view_is_kept_and_stops_its_caller_with_the_reason() {
-        let table: RuntimeTable<usize> =
-            RuntimeTable::new(|| Err(super::Withheld::new("synthetic table", "absent")));
-        assert_eq!(table.get().unwrap_err().reason, "absent");
-        let stopped = std::panic::catch_unwind(|| *table).unwrap_err();
-        assert_eq!(
-            stopped.downcast_ref::<String>().unwrap(),
-            "synthetic table withheld: absent"
-        );
+        in_scope(|| {
+            let table: RuntimeTable<usize> =
+                RuntimeTable::new(|| Err(super::Withheld::new("synthetic table", "absent")));
+            assert_eq!(table.get().unwrap_err().reason, "absent");
+            let stopped = std::panic::catch_unwind(|| *table).unwrap_err();
+            assert_eq!(
+                stopped.downcast_ref::<String>().unwrap(),
+                "synthetic table withheld: absent"
+            );
+        });
     }
 }

@@ -1,102 +1,122 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo } from 'react';
 import WidgetState from '../../components/WidgetState';
-import { MEMBERSHIP_PREPARING } from '../../dashboard/groups';
 import Sunburst from '../../charts/sunburst/Sunburst';
-import type { SunburstProps, SunburstText } from '../../charts/sunburst/Sunburst';
+import type { SunburstProps, SunburstText, SunburstValues } from '../../charts/sunburst/Sunburst';
 import { sliceTooltip } from '../../charts/sunburst/layout';
 import { levelsShown, sunburstSettings } from '../../charts/sunburst/sunburstOptions';
 import { dayLabel } from '../../charts/draw';
+import { liveAt } from '../../charts/live.ts';
+import LiveText, { liveTexts } from '../../charts/LiveText';
+import { motionOf } from '../../charts/easing.ts';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { ideaTooltip } from '../../dashboard/ideaTooltip';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
-import { usePlaybackHour } from '../../dashboard/playback';
-import { categoryLabel, spendingAt, spendingCostNotes, spendingGapNote, spendingGaps, spendingGroups, spendingItems, spendingSummary } from '../../dashboard/politicsSpending';
-import { powerGain } from '../../dashboard/powerBalance';
-import type { PowerGain } from '../../dashboard/powerBalance';
+import { ideaTooltip } from '../../dashboard/ideaTooltip';
+import { useIdeaTooltips } from '../../dashboard/useIdeaTooltips';
+import { categoryLabel, firstPaid, groupAt, groupCostNotes, mergedIdeaTooltips, powerGains, sameSpendingItems, spendingGapNote, spendingGaps, spendingGroups,
+  spendingItems } from '../../dashboard/powerSpending.ts';
+import type { PowerGain } from '../../dashboard/powerSpending';
 import { formatPower, powerDecimals } from '../../dashboard/powerDecimals';
-import { usePoliticsSpending, useSpendingIdeaTooltips } from '../../dashboard/usePoliticsSpending';
+import { usePowerSpending } from '../../dashboard/usePowerSpending.ts';
+import { useShownHour } from '../../dashboard/widgetPerf.ts';
+import { useHeadHour } from '../army-size/headHour.ts';
 import { OPTIONS } from './definition';
-import { preparedThrough } from '../../dashboard/preparedPrefix';
-import { useParityRows } from '../../dashboard/parityRows';
-import { motionOf } from '../../charts/easing.ts';
 
 const NO_WARNINGS: string[] = [];
 const LEVELS = ['categoryLevel', 'itemLevel'];
 const ROOT = { id: 'all', label: 'Spent' };
 
 /** What was gained beside what was spent, in one plain line. */
-export function gainNote(gain: PowerGain | null, digits: number): string | null {
-  if (!gain) return null;
+export function gainNote(gain: PowerGain | null, digits: number): string {
+  if (!gain) return '';
   const gained = `Gained ${formatPower(gain.gained, digits)} PP over the same period`;
   if (!gain.lost) return `${gained}.`;
   return gain.lost === gain.gained ? `${gained}; all of it was lost at the cap.` : `${gained}; ${formatPower(gain.lost, digits)} PP of it was lost at the cap.`;
 }
 
+/** Political power spending by category and the item it shows as. Following playback, slices grow, the gain and the
+ * notes move as each frame paints; the widget renders only where it goes from nothing spent to slices, and the chart's
+ * legend takes a new slice at most four times a second. */
 export default function PoliticalPowerSpendingBreakdownWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
-  const parityRoot = useRef<HTMLDivElement>(null);
-  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const options = resolveOptions(OPTIONS, widget.options);
   const settings = sunburstSettings(options);
   const digits = powerDecimals(options);
   const text = useMemo<SunburstText>(() => ({ format: (value, exact) => formatPower(exact ?? BigInt(Math.round(value)), digits),
     unit: 'PP', valueLabel: 'Spent', countLabel: 'Payments' }), [digits]);
-  const { track, tags, data, finalData, error, groupError, retry, ready, reason, known, selection, groupWarnings, shownHour } = usePoliticsSpending(widget, runtime, active, true);
-  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
-  const hour = window?.lastHour;
-  const from = widget.time.mode === 'range' ? window?.firstHour ?? null : null;
-  const end = widget.time.mode === 'range' ? hour : track?.branch.lastHour;
-  // Ledgers kept while the next hour loads answer their own hour.
-  const answered = widget.time.mode === 'range' ? shownHour : end;
-  const items = useMemo(() => data && shownHour != null && answered != null ? spendingItems(data, 'Political', { from, hour: shownHour, end: answered }, selection, finalData ?? data) : [],
-    [data, finalData, from, shownHour, answered, selection]);
-  const spends = useMemo(() => data && shownHour != null ? spendingAt(data, 'Political', shownHour, from, selection) : [], [data, shownHour, from, selection]);
-  // Before preparation reaches the hour shown, the totals are those of the
-  // prepared prefix: the hours after it are still being prepared, not unrecorded.
-  const through = useMemo(() => shownHour == null ? shownHour : preparedThrough(data, shownHour), [data, shownHour]);
-  const gaps = useMemo(() => data && through != null ? spendingGaps(data, 'Political', { from, hour: through }, selection) : [], [data, through, from, selection]);
-  const gain = useMemo(() => data && through != null ? powerGain(data, 'Political', { from, hour: through }, selection) : null, [data, through, from, selection]);
-  const grouped = useMemo(() => spendingGroups(spends), [spends]);
-  useParityRows(parityRoot, () => ({ kind: 'chart', label: 'Political power spending breakdown totals', scope: 'displayed-hour', hour,
-    complete: !!data && !!finalData && ready, total: grouped.size, rows: [...grouped].map(([id, group]) => ({ id,
-      amountRaw: group.recordedCharge.toString(), count: group.rows, knownCharges: group.knownCharges, missingCharges: group.missingCharges,
-      latestHour: group.latest.spend.hour, latestReadHour: group.latest.readHour })) }));
-  const ideas = useSpendingIdeaTooltips(widget, runtime, active, data);
-  const tooltip = useCallback<NonNullable<SunburstProps['tooltip']>>((node, focus, shown) => {
-    const base = sliceTooltip(node, focus, shown);
-    const group = grouped.get(node.key);
-    const at = group?.latest;
-    const subtitle = at && `${categoryLabel(at.category, at.identified)} · most recent ${dayLabel(at.spend.hour)}`;
-    if (!at || node.other) return base;
-    if (!at.item.tooltipToken || !ideas) return base.map(form => ({ ...form, subtitle }));
-    const info = ideas.infos.get(at.item.tooltipToken);
-    const description = ideas.art.get(at.item.tooltipToken)?.description;
-    return base.map((form, index) => ideaTooltip({ title: at.item.name ?? form.title, icon: at.item.icon, subtitle }, info, ideas.sources, description,
-      form.rows, form.note, at.spend.hour, index === 0 ? Infinity : undefined));
-  }, [grouped, ideas]);
+  const { track, tags, ledgers, error, groupError, retry, ready, reason, selection, groupWarnings, span } = usePowerSpending(widget, runtime, active, 'Political');
+  const following = widget.time.mode === 'follow';
+  const from = widget.time.mode === 'range' ? span?.firstHour ?? null : null;
+  // The whole the slices grow toward: the end of what is read.
+  const end = span?.lastHour ?? null;
+  const hourAt = useCallback((clockHour: number) => track ? resolveWindow(widget, track, runtime.tracks, clockHour)?.lastHour ?? null : null,
+    [widget, track, runtime.tracks]);
+  const groups = useMemo(() => ledgers ? spendingGroups(ledgers, from, selection) : null, [ledgers, from, selection]);
+  const paidFrom = useMemo(() => groups ? firstPaid(groups) : null, [groups]);
+  const gains = useMemo(() => ledgers ? powerGains(ledgers, from, selection) : null, [ledgers, from, selection]);
+  // Following, the widget renders only where what it shows changes kind: outside the recording, nothing paid yet, slices.
+  const branch = track ? [track.branch.firstHour, track.branch.lastHour] as const : null;
+  const headHour = useHeadHour(runtime.clock, active && following && !!ledgers, useCallback(clock => {
+    const at = hourAt(clock);
+    return at === null || !branch || at < branch[0] || at > branch[1] ? 'out' : paidFrom !== null && at >= paidFrom ? 'paid' : 'none';
+  }, [hourAt, paidFrom, branch?.[0], branch?.[1]])); // eslint-disable-line react-hooks/exhaustive-deps
+  const hour = following ? hourAt(headHour) : hourAt(runtime.clock.getHour());
+  // The slices a render names; their amounts at the head come from `live`.
+  const items = useMemo(() => groups && hour !== null && end !== null ? spendingItems(groups, hour, end) : [], [groups, hour, end]);
+  const shown = useShownHour();
+  useEffect(() => { if (!following) shown(ledgers ? hour : null); }, [following, ledgers, hour, shown]);
+  const paintedHour = useCallback((position: number) => (following ? hourAt(position) : hour) ?? Number.NaN, [following, hourAt, hour]);
+  // The slices as the head paints them.
+  const live = useMemo(() => groups && end !== null ? liveAt<SunburstValues>(runtime.clock, paintedHour, at => {
+    if (following) shown(Number.isNaN(at) ? null : at);
+    return { items: Number.isNaN(at) ? [] : spendingItems(groups, at, end) };
+  }, (a, b) => sameSpendingItems(a.items, b.items)) : undefined, [groups, end, runtime.clock, paintedHour, following, shown]);
+  // The gain beside the slices and the notes under them, painted at the hour shown.
+  const texts = useMemo(() => liveTexts(runtime.clock, () => paintedHour(runtime.clock.getSnapshot().position), at => {
+    const values = new Map<string, string>();
+    if (!ledgers || !groups || !gains || Number.isNaN(at)) return values;
+    values.set('gain', gainNote(gains(at), digits));
+    values.set('notes', [spendingGapNote(spendingGaps(ledgers, { from, hour: at }, selection)), ...groupCostNotes(groups, at)].filter(Boolean).join(' '));
+    return values;
+  }), [runtime.clock, paintedHour, ledgers, groups, gains, from, selection, digits]);
+  const ideaData = useMemo(() => mergedIdeaTooltips(ledgers), [ledgers]);
+  const ideas = useIdeaTooltips(ideaData, track, runtime.client, active, tag => tag);
+  const tooltip = useCallback<NonNullable<SunburstProps['tooltip']>>((node, focus, shownText) => {
+    const base = sliceTooltip(node, focus, shownText);
+    const group = groups?.get(node.key);
+    const at = group && hour !== null ? groupAt(group, paintedHour(runtime.clock.getSnapshot().position)) : null;
+    if (!group || !at || node.other) return base;
+    const subtitle = `${categoryLabel(group.category.name, group.category.identified)} · most recent ${dayLabel(at.latestHour)}`;
+    const target = group.latest.targetTag ? [{ label: `Against ${group.latest.targetName ?? group.latest.targetTag}` }] : [];
+    const token = group.latest.tooltipToken;
+    const icon = group.image;
+    if (token && ideas) {
+      const info = ideas.infos.get(token);
+      const description = ideas.art.get(token)?.description;
+      return base.map((form, index) => ideaTooltip({ title: group.latest.name ?? form.title, icon, subtitle }, info, ideas.sources, description,
+        [...form.rows, ...target], form.note, at.latestHour, index === 0 ? Infinity : undefined));
+    }
+    return base.map(form => ({ ...form, title: group.latest.name ?? form.title, subtitle, rows: [...form.rows, ...target],
+      note: group.latest.unknown ?? form.note }));
+  }, [groups, hour, paintedHour, runtime.clock, ideas]);
   const levelKey = LEVELS.map(level => options[level] !== false).join();
   const levels = useMemo(() => levelsShown(options, LEVELS), [levelKey]); // eslint-disable-line react-hooks/exhaustive-deps
-  const warnings = useMemo(() => [...(data?.flatMap(reply => reply.warnings) ?? []), ...groupWarnings], [data, groupWarnings]);
+  const warnings = useMemo(() => [...(ledgers?.flatMap(ledger => ledger.warnings) ?? []), ...groupWarnings], [ledgers, groupWarnings]);
   useEffect(() => { onDiagnostics(warnings); return () => onDiagnostics(NO_WARNINGS); }, [warnings, onDiagnostics]);
   if (!track) return <WidgetState kind="empty" icon="sunburst" message="Load a campaign and choose a country to see its political power spending." />;
   if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
   const groupNotice = groupError && <WidgetState kind="error" failure={groupError} onRetry={retry} />;
   if (!ready) return <>{groupNotice}<WidgetState kind="loading" label="Loading spending…" /></>;
   if (reason) return <>{groupNotice}<WidgetState kind="empty" message={reason} /></>;
-  // A group's members at hours still being prepared are not known yet: no country, or nothing spent, is not proof of none.
-  if (!tags.length) return <>{groupNotice}{known(track.branch.firstHour, track.branch.lastHour)
-    ? <WidgetState kind="empty" message="Choose a country to see its political power spending." /> : <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />}</>;
-  if (!data) return <>{groupNotice}<WidgetState kind="loading" label="Loading political power spending…" /></>;
-  if (hour == null || hour < track.branch.firstHour || hour > track.branch.lastHour) return <>{groupNotice}<WidgetState kind="unavailable" message="This time is outside the recording." /></>;
-  if (through != null && through < track.branch.firstHour) return <>{groupNotice}<WidgetState kind="loading" label="This range is still being prepared." /></>;
-  if (data.every(reply => !reply.spendingCoverage.length)) return <>{groupNotice}<WidgetState kind="unavailable" message="Political power spending wasn’t recorded." /></>;
-  if (through != null && from != null && from > through) return <>{groupNotice}<WidgetState kind="loading" label="This range is still being prepared." /></>;
-  const notes = [through != null && shownHour != null && through < shownHour ? `Spent through ${dayLabel(through)}; the rest is still being prepared.` : null,
-    gainNote(gain, digits), spendingGapNote(gaps), ...spendingCostNotes(spendingSummary(spends))].filter(Boolean);
-  if (!items.some(item => item.present) && !known(from ?? track.branch.firstHour, end ?? hour)) return <>{groupNotice}<WidgetState kind="loading" label={MEMBERSHIP_PREPARING} /></>;
+  if (!tags.length) return <>{groupNotice}<WidgetState kind="empty" message="Choose a country to see its political power spending." /></>;
+  if (!ledgers) return <>{groupNotice}<WidgetState kind="loading" label="Loading political power spending…" /></>;
+  if (hour === null || hour < track.branch.firstHour || hour > track.branch.lastHour) return <>{groupNotice}<WidgetState kind="unavailable" message="This time is outside the recording." /></>;
+  if (ledgers.every(ledger => !ledger.coverage.length)) return <>{groupNotice}<WidgetState kind="unavailable" message="Political power spending wasn’t recorded." /></>;
+  const notes = <LiveText live={texts} at="notes" />;
+  const gain = <p className="chart-line-key"><LiveText live={texts} at="gain" /></p>;
   if (!items.some(item => item.present)) {
-    return <div ref={parityRoot} style={{ height: '100%' }}>{groupNotice}<WidgetState kind="empty" icon="sunburst" message="No political power spent in this period." detail={notes.length ? notes.join(' ') : undefined} /></div>;
+    return <div style={{ height: '100%' }}>{groupNotice}<WidgetState kind="empty" icon="sunburst" message="No political power spent in this period." detail={notes} />{gain}</div>;
   }
-  return <div ref={parityRoot} style={{ height: '100%' }}>{groupNotice}<Sunburst label="Political power spending breakdown" items={items} root={ROOT} levels={levels} text={text} settings={settings}
-    hoursPerSecond={motionOf(runtime.clock.getSnapshot())} active={active} footnote={notes.length ? notes.join(' ') : undefined} tooltip={tooltip} /></div>;
+  return <div style={{ height: '100%' }}>{groupNotice}<Sunburst label="Political power spending breakdown" items={items} root={ROOT} levels={levels} text={text} settings={settings}
+    hoursPerSecond={motionOf(runtime.clock.getSnapshot())} active={active} footnote={notes} tooltip={tooltip}
+    live={live} legendExtra={gain} /></div>;
 }

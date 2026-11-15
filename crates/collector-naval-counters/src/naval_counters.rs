@@ -8,6 +8,7 @@ use crate::{
     table_conversion::{table, unavailable},
 };
 use engine_allocation::{collect_vec, copy_vec, owned_vec};
+use collector_observers::fleet_region_changes::Certificate as FleetCertificate;
 use engine_native::{Memory, cfleet, ctask_force, cunit::FirstCombatMemo, walk::Outcome};
 use replay_data::{
     rows::FleetCounterInputRow, rows::FreshTaskForceCounterEta, rows::NavalEngagementTarget,
@@ -282,7 +283,7 @@ impl Capacities {
 #[derive(Clone)]
 struct HeldFleetRegions {
     pointer: usize,
-    certificate: Option<(u64, u64)>,
+    certificate: Option<FleetCertificate>,
     regions: Option<std::sync::Arc<Vec<u32>>>,
 }
 
@@ -292,8 +293,8 @@ fn observe_fleet_regions(
     store: &mut std::collections::BTreeMap<u64, HeldFleetRegions>,
     pointer: usize,
     id: u64,
-    before_header: Option<(u64, u64)>,
-    mut certificate: impl FnMut() -> Option<(u64, u64)>,
+    before_header: Option<FleetCertificate>,
+    mut certificate: impl FnMut() -> Option<FleetCertificate>,
     read: impl FnOnce() -> Result<Vec<u32>, &'static str>,
 ) -> Option<(usize, usize)> {
     let after_header = certificate();
@@ -661,7 +662,7 @@ impl Captured {
         let (mut visited, mut missions_ticks, mut motion_ticks) = (0_u64, 0_u64, 0_u64);
         // The certified censuses this frame held and may serve this hour.
         self.censuses.prepare();
-        let mut motion = ctask_force::MapMotionCollector::new_growing(
+        let mut motion = ctask_force::MapMotionCollector::new(
             memory,
             base,
             state,
@@ -684,7 +685,7 @@ impl Captured {
         if let Some(hour) = hour {
             motion = motion.with_fresh_hour(hour);
         }
-        let mut missions = ctask_force::MissionCollector::new_growing(
+        let mut missions = ctask_force::MissionCollector::new(
             memory,
             base,
             state,
@@ -692,7 +693,7 @@ impl Captured {
             &mut self.regions.first,
         )
         .with_region_ids(&mut self.region_ids);
-        let mut names = engine_native::cname_group_member::NameArena {
+        let mut names = engine_native::cname_group_member::Names {
             bytes: engine_native::walk::Buffer::Growing(&mut self.names.first),
             len: 0,
             required: 0,
@@ -703,7 +704,7 @@ impl Captured {
             required: 0,
         };
         let mut port = hour.map(|hour| {
-            ctask_force::port_mission::Collector::new_growing(
+            ctask_force::port_mission::Collector::new(
                 memory,
                 base,
                 hour,
@@ -713,7 +714,7 @@ impl Captured {
                 &mut self.port_answers.first,
             )
         });
-        let captured = cfleet::walk_counter_inputs_with_port_and_fleet_observed_growing(
+        let captured = cfleet::walk_counter_inputs_with_port_and_fleet_observed(
             memory,
             base,
             state,
@@ -2285,6 +2286,9 @@ mod tests {
         assert_eq!((served, reads), (RECEIVERS as u64, RECEIVERS));
         assert_eq!(store.held.len(), RECEIVERS);
     }
+    fn fleet(epoch: u64, sequence: u64) -> FleetCertificate {
+        FleetCertificate::Fleet { epoch, sequence }
+    }
     #[test]
     fn quiet_fleet_region_payloads_carry_without_reads_or_allocations() {
         use std::sync::Arc;
@@ -2293,8 +2297,8 @@ mod tests {
             &mut store,
             16,
             7,
-            Some((1, 2)),
-            || Some((1, 2)),
+            Some(fleet(1, 2)),
+            || Some(fleet(1, 2)),
             || Ok(vec![3, 3, 4]),
         );
         let held = store[&7].regions.clone().unwrap();
@@ -2303,8 +2307,8 @@ mod tests {
                 &mut store,
                 16,
                 7,
-                Some((1, 2)),
-                || Some((1, 2)),
+                Some(fleet(1, 2)),
+                || Some(fleet(1, 2)),
                 || panic!("quiet fleet payload reread"),
             );
             assert!(Arc::ptr_eq(store[&7].regions.as_ref().unwrap(), &held));
@@ -2315,8 +2319,8 @@ mod tests {
             &mut store,
             16,
             7,
-            Some((1, 3)),
-            || Some((1, 3)),
+            Some(fleet(1, 3)),
+            || Some(fleet(1, 3)),
             || Ok(vec![3, 4]),
         );
         assert_eq!(store[&7].regions.as_ref().unwrap().as_slice(), [3, 4]);
@@ -2334,10 +2338,10 @@ mod tests {
             &mut store,
             16,
             7,
-            Some((1, 1)),
+            Some(fleet(1, 1)),
             || {
                 calls += 1;
-                Some((1, calls))
+                Some(fleet(1, calls))
             },
             || Ok(vec![5]),
         );
@@ -2374,7 +2378,7 @@ mod tests {
             changed: Cell::new(false),
             reads: Cell::new(0),
         };
-        let token = || Some((1, memory.sequence.get()));
+        let token = || Some(fleet(1, memory.sequence.get()));
         let mut store = std::collections::BTreeMap::new();
         // Include a quiet held value: a race must not return it as if the
         // original header had been acquired under the writer's new token.

@@ -1,0 +1,152 @@
+use super::*;
+use crate::sampling::Shared;
+
+#[test]
+fn free_frames_hand_out_the_newest_and_idle_leases_keep_their_age() {
+    let shared = Shared::new(0, 0, 1);
+    let free = &shared.frames;
+    let all: Vec<_> = std::iter::from_fn(|| free.pop()).collect();
+    assert_eq!(all.len(), STEADY);
+    for index in 0..STEADY {
+        free.push(index).unwrap();
+    }
+    assert_eq!(free.restore(0), Err(0));
+    assert_eq!(free.len(), STEADY);
+    assert!(free.take(1, 1));
+    assert!(!free.take(1, 0));
+    // Three free: a take that must leave three is refused.
+    assert!(!free.take(2, STEADY - 1));
+    assert_eq!(free.len(), STEADY - 1);
+    // A return while the lease is out is newer than the leased frame.
+    let newest = free.pop().unwrap();
+    assert_eq!(newest, STEADY - 1);
+    free.push(newest).unwrap();
+    free.restore(1).unwrap();
+    assert_eq!(free.restore(1), Err(1));
+    assert!(free.take(STEADY - 1, 0));
+    free.restore(STEADY - 1).unwrap();
+    let newest_first: Vec<_> = std::iter::from_fn(|| free.pop()).collect();
+    assert_eq!(newest_first, (0..STEADY).rev().collect::<Vec<_>>());
+    assert_eq!(free.len(), 0);
+    assert!(!free.take(0, 0));
+    // The frame returned last is the next one taken.
+    free.push(2).unwrap();
+    free.push(0).unwrap();
+    assert_eq!(free.pop(), Some(0));
+    free.push(0).unwrap();
+    assert_eq!(free.pop(), Some(0));
+    // The last free frame stays for the game.
+    assert!(!free.take(2, 1));
+    assert!(free.take(2, 0));
+    assert_eq!(free.len(), 0);
+    for index in 0..STEADY {
+        free.push(index).unwrap();
+    }
+}
+
+#[test]
+fn slots_keep_their_place_as_segments_are_added() {
+    for index in 0..10_000 {
+        let (segment, offset) = locate(index);
+        assert!(offset < STEADY << segment, "slot {index}");
+        assert_eq!(STEADY * ((1 << segment) - 1) + offset, index);
+    }
+    let pool = FramePool::new();
+    let first = pool.vacant().unwrap();
+    let address = pool.slot(first) as *const Slot;
+    let made: Vec<_> = (0..200).map(|_| pool.vacant().unwrap()).collect();
+    assert_eq!(made, (1..=200).collect::<Vec<_>>());
+    assert_eq!(pool.slot(first) as *const Slot, address);
+    assert_eq!(pool.made(), 201);
+    assert_eq!(pool.live(), 0);
+    // A slot given up goes back to vacant and is the next one handed out.
+    pool.abandon(57);
+    assert_eq!(pool.vacant().unwrap(), 57);
+    assert!(pool.slot_bytes() >= 201 * size_of::<Slot>() as u64);
+}
+
+/// The game thread and the sizing thread make slots at once: each slot goes to exactly one of
+/// them, every segment is installed once, and none waits on the other. On the base a second
+/// caller could hand out the slot the first was making.
+#[test]
+fn two_builders_making_slots_at_once_never_share_one() {
+    let pool = std::sync::Arc::new(FramePool::new());
+    let per_builder = 40 * STEADY;
+    let start = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let builders: Vec<_> = (0..2)
+        .map(|_| {
+            let pool = std::sync::Arc::clone(&pool);
+            let start = std::sync::Arc::clone(&start);
+            std::thread::spawn(move || {
+                start.wait();
+                (0..per_builder)
+                    .map(|_| pool.vacant().unwrap())
+                    .collect::<Vec<_>>()
+            })
+        })
+        .collect();
+    let mut made: Vec<_> = builders
+        .into_iter()
+        .flat_map(|builder| builder.join().unwrap())
+        .collect();
+    made.sort_unstable();
+    assert_eq!(made, (0..2 * per_builder).collect::<Vec<_>>());
+    assert_eq!(pool.made(), 2 * per_builder);
+    let segments = pool
+        .segments
+        .iter()
+        .take_while(|segment| !segment.load(Ordering::Acquire).is_null())
+        .count();
+    assert_eq!(locate(2 * per_builder - 1).0 + 1, segments);
+    // A slot given back is claimed by one builder only.
+    pool.abandon(5);
+    let (first, second) = std::thread::scope(|scope| {
+        let first = scope.spawn(|| pool.vacant().unwrap());
+        let second = scope.spawn(|| pool.vacant().unwrap());
+        (first.join().unwrap(), second.join().unwrap())
+    });
+    assert_ne!(first, second);
+    assert!(first == 5 || second == 5);
+}
+
+#[test]
+fn fifos_keep_order_while_a_producer_pushes_and_never_fill() {
+    let pool = std::sync::Arc::new(FramePool::new());
+    let count = 50 * STEADY;
+    for _ in 0..count {
+        pool.vacant().unwrap();
+    }
+    assert_eq!(pool.pop_decode(), None);
+    let producer = {
+        let pool = std::sync::Arc::clone(&pool);
+        std::thread::spawn(move || {
+            for index in 0..count {
+                pool.push_decode(index);
+            }
+        })
+    };
+    let deadline = std::time::Instant::now() + crate::TEST_HANG_GUARD;
+    let mut popped = Vec::new();
+    while popped.len() < count {
+        assert!(std::time::Instant::now() < deadline, "the FIFO lost an index");
+        match pool.pop_decode() {
+            Some(index) => {
+                popped.push(index);
+                // Each frame goes on to the ready FIFO, as decode hands it to the spool.
+                pool.push_ready(index);
+            }
+            None => std::thread::yield_now(),
+        }
+    }
+    producer.join().unwrap();
+    assert_eq!(popped, (0..count).collect::<Vec<_>>());
+    assert_eq!(pool.decode_len(), 0);
+    assert_eq!(pool.ready_len(), count);
+    let ready: Vec<_> = std::iter::from_fn(|| pool.pop_ready()).collect();
+    assert_eq!(ready, (0..count).collect::<Vec<_>>());
+    assert!(pool.ready_is_empty());
+    // An index popped is free to queue again, in either FIFO.
+    pool.push_decode(3);
+    pool.push_decode(1);
+    assert_eq!((pool.pop_decode(), pool.pop_decode(), pool.pop_decode()), (Some(3), Some(1), None));
+}

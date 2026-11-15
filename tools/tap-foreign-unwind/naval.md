@@ -14,7 +14,7 @@ Each path verifies normal arguments/return, original RSP's exact depth from that
 invocation's measured caller RSP, alignment and registered return PC. C++ and SEH
 have different outer native handler frames; their absolute stack addresses need
 not agree. It also verifies skipped continuation, one actual `Call` cleanup, zero
-ACTIVE, poison/unwind refusal, queued event bytes and current/offered storage
+ACTIVE, poison/unwind refusal, folded event bytes and the drain's storage
 ownership. While native original code is active, a diagnostic-only flag change
 isolates ACTIVE's release veto; it restores the flags before native dispatch.
 After dispatch, the test-owned installed-site flag independently vetoes release.

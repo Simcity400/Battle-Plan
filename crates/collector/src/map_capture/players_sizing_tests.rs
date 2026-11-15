@@ -142,8 +142,8 @@ fn player_raw_fault_prefix_matches_direct_and_keeps_independent_controllers() {
             &direct_memory,
             0,
             GS,
-            &mut [chuman::Row::default(); 2],
-            &mut [0; 128],
+            &mut vec![chuman::Row::default(); 2],
+            &mut vec![0; 128],
         );
         let raw_memory = TraceMemory {
             memory: world.memory(),

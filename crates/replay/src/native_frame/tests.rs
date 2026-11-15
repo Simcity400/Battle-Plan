@@ -1,11 +1,55 @@
 use super::*;
 use crate::{
-    columnar_frames::{Views, schema},
+    columnar_file::HourWriter,
+    columnar_frames::fixtures,
     frame::{DecodedFrame, FrameDecoder, FrameEncoder, TableSegment},
     rows::{CountryRow, DivisionRow, ResearchInputRow, TableRows, sample_extended_table, tables},
 };
-use replay_columnar::{manifest::Manifest, walk::State, writer::Work};
+use replay_columnar::{envelope, writer::Work};
 use std::sync::Arc;
+
+/// The recorder's own store taking each hour's journal, as the live writer does, and its frame
+/// of `tables` after each hour: what a reader of the recording reads back there.
+struct Applied {
+    writer: HourWriter<std::io::Cursor<Vec<u8>>>,
+    tables: Vec<TableId>,
+    mode: CaptureMode,
+    running: bool,
+}
+
+impl Applied {
+    fn new(tables: &[TableId], mode: CaptureMode) -> Self {
+        Self { writer: fixtures::writer(fixtures::identity(b"native frame", mode.byte()), |_| {}), tables: tables.to_vec(), mode, running: false }
+    }
+
+    /// The next hour starts another run.
+    fn cut(&mut self) {
+        self.running = false;
+    }
+
+    fn hour(&mut self, input: &FrameInput, prepared: &FrameHour) -> DecodedFrame {
+        if !self.running {
+            self.writer.start_run(input.branch, envelope::epoch::START, input.hour).unwrap();
+            self.running = true;
+        }
+        let sections: Vec<u8> = prepared.sections().flat_map(|(_, bytes)| bytes.iter().copied()).collect();
+        self.writer.hour(&prepared.manifest, &sections).unwrap();
+        let mut frame = self.writer.frame(&self.tables, (input.branch, input.hour), self.mode).unwrap();
+        // The hour's metrics as a reader takes them: the clock's, and a read table's time unknown.
+        let columns: Vec<usize> = crate::columnar_frames::schema().unwrap().iter().map(Vec::len).collect();
+        let manifest = replay_columnar::manifest::Manifest::read(&prepared.manifest, &columns).unwrap();
+        frame.metrics.total_ns = manifest.total_ns;
+        frame.metrics.pool_bytes = manifest.pool_bytes;
+        frame.metrics.dropped_frames = manifest.dropped_frames;
+        for &table in &self.tables {
+            let index = table.index();
+            if manifest.read.get(index / 64).is_some_and(|word| word >> (index % 64) & 1 != 0) {
+                frame.metrics.table_ns[index] = crate::frame::READ_TIME_NOT_RECORDED;
+            }
+        }
+        frame
+    }
+}
 
 const TABLES: [TableId; 3] = [
     TableId::Countries,
@@ -26,8 +70,7 @@ struct Paths {
     /// The same hours, each prepared and committed on three threads, its complete tables diffed
     /// with the row encoder's baselines: the same bytes again.
     laned: FrameWriter,
-    state: State,
-    views: Views,
+    applied: Applied,
     tables: Vec<TableId>,
     mode: CaptureMode,
 }
@@ -45,8 +88,7 @@ impl Paths {
             rows: FrameWriter::with_staging(native_columns::Staging::Rows).unwrap(),
             swept: FrameWriter::with_sweep(Sweep::Every).unwrap(),
             laned: FrameWriter::new().unwrap(),
-            state: State::new(schema().unwrap()).unwrap(),
-            views: Views::new(tables, FormatVersion::CURRENT, mode).unwrap(),
+            applied: Applied::new(tables, mode),
             tables: tables.to_vec(),
             mode,
         }
@@ -108,12 +150,7 @@ impl Paths {
             assert_eq!(other.manifest, prepared.manifest, "hour {}", input.hour);
             assert!(other.sections().eq(prepared.sections()), "hour {}", input.hour);
         }
-        let columnar = {
-            let manifest = Manifest::read(&prepared.manifest, self.writer.columns()).unwrap();
-            let sections: Vec<&[u8]> = prepared.sections().map(|(_, bytes)| bytes).collect();
-            self.state.apply(&manifest, |at| Ok(sections[at])).unwrap();
-            self.views.advance(&self.state, &manifest, first).unwrap()
-        };
+        let columnar = self.applied.hour(&input, &prepared);
         self.writer.commit(prepared).unwrap();
         self.rows.commit(staged).unwrap();
         self.swept.commit(swept).unwrap();
@@ -1103,10 +1140,7 @@ struct Conversion {
     decoder: FrameDecoder,
     writer: FrameWriter,
     laned: FrameWriter,
-    state: State,
-    views: Views,
-    /// The next hour starts the converted run.
-    starts: bool,
+    applied: Applied,
 }
 
 impl Conversion {
@@ -1116,9 +1150,7 @@ impl Conversion {
             decoder: FrameDecoder::new(),
             writer: FrameWriter::new().unwrap(),
             laned: FrameWriter::new().unwrap(),
-            state: State::new(schema().unwrap()).unwrap(),
-            views: Views::new(&TABLES, FormatVersion::CURRENT, CaptureMode::Full).unwrap(),
-            starts: true,
+            applied: Applied::new(&TABLES, CaptureMode::Full),
         }
     }
 
@@ -1126,9 +1158,7 @@ impl Conversion {
     fn cut(&mut self) {
         self.writer = FrameWriter::new().unwrap();
         self.laned = FrameWriter::new().unwrap();
-        self.state = State::new(schema().unwrap()).unwrap();
-        self.views = Views::new(&TABLES, FormatVersion::CURRENT, CaptureMode::Full).unwrap();
-        self.starts = true;
+        self.applied.cut();
     }
 
     /// The hour as the row recording decodes it, stored as a keyframe when `keyframe` says,
@@ -1161,15 +1191,9 @@ impl Conversion {
         let on_lanes = self.laned.hour_on(&input, &recorded, None, &Threads).unwrap();
         assert_eq!(on_lanes.manifest, prepared.manifest, "hour {hour}");
         assert!(on_lanes.sections().eq(prepared.sections()), "hour {hour}");
-        let walked = {
-            let manifest = Manifest::read(&prepared.manifest, self.writer.columns()).unwrap();
-            let sections: Vec<&[u8]> = prepared.sections().map(|(_, bytes)| bytes).collect();
-            self.state.apply(&manifest, |at| Ok(sections[at])).unwrap();
-            self.views.advance(&self.state, &manifest, self.starts).unwrap()
-        };
+        let walked = self.applied.hour(&input, &prepared);
         self.writer.commit(prepared).unwrap();
         self.laned.commit_on(on_lanes, &Threads).unwrap();
-        self.starts = false;
         (decoded, walked)
     }
 }
@@ -1382,10 +1406,11 @@ fn lanes_that_stop_leave_their_tables_to_the_caller() {
     assert_eq!(lanes.steps.load(SeqCst), 8);
 }
 
-/// An unread table the row encoder writes at a keyframe, as after a spool restart within a
-/// columnar run, has no sample hour in either recording, though its rows did not change.
+/// An unread table the row encoder writes anew at a keyframe, as at a page's first hour or after
+/// a spool restart, keeps its sample hour in the columnar recording: its rows did not change. The
+/// row decoder, starting there, has none. A daily table's consumers refused every such hour.
 #[test]
-fn an_unread_table_at_a_row_keyframe_keeps_no_sample() {
+fn an_unread_table_at_a_row_keyframe_keeps_its_sample() {
     let mut paths = Paths::new();
     let tables = |read: bool| {
         vec![
@@ -1397,8 +1422,14 @@ fn an_unread_table_at_a_row_keyframe_keeps_no_sample() {
     paths.check(1, tables(true));
     paths.check(2, tables(false));
     paths.restart_rows();
-    paths.check(3, tables(false));
-    paths.check(4, tables(false));
+    let at = TableId::Countries.index();
+    for hour in [3, 4] {
+        let input = paths.frame(hour, tables(false));
+        let (rows, columnar) = paths.hour(input);
+        assert_eq!(*columnar.tables[at], *rows.tables[at], "hour {hour}");
+        assert_eq!(rows.tables[at].sampled_at(), None, "hour {hour}");
+        assert_eq!(columnar.tables[at].sampled_at(), Some(1), "hour {hour}");
+    }
 }
 
 /// The row encoder's baselines are taken only when they are the writer's last committed hour:

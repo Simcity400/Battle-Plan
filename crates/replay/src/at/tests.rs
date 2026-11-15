@@ -1,0 +1,291 @@
+use super::*;
+use crate::{
+    columnar_frames::{Frames, fixtures},
+    rows::{CountryRow, TableRows},
+};
+use replay_columnar::envelope::UNIT_ORDINALS;
+
+const TABLES: [TableId; 2] = [TableId::Countries, TableId::WorldTension];
+
+/// Two runs over blocks of a fixture whose rows leave and come back, whose world tension goes
+/// unavailable by name and back, and whose tables are restored at block ends.
+fn recording() -> Recording {
+    const RUNS: [(u64, i32, u32); 2] = [(1, 100, 5), (2, 50_000, 3)];
+    Recording::open(fixtures::churned(&RUNS).0).unwrap()
+}
+
+/// Hours of each run across its blocks: first and last of a block, a restore's next hour, the run's last.
+fn ordinals(ordinals: u32) -> Vec<u32> {
+    let block = UNIT_ORDINALS;
+    let mut out: Vec<u32> = [0, 1, 299, 300, 450, block - 1, block, 1000, 2 * block, 3 * block - 1, 3 * block, 3 * block + 1, 4 * block + 77]
+        .into_iter()
+        .chain([ordinals - 1])
+        .filter(|&ordinal| ordinal < ordinals)
+        .collect();
+    out.dedup();
+    out
+}
+
+/// The frame of every row of chosen tables is the frame a seek of those tables builds: rows,
+/// cells, unavailable reasons, status, sample hour and metrics, at hours across blocks and after a
+/// restore.
+#[test]
+fn a_frame_at_an_hour_is_the_seek_of_its_tables() {
+    let recording = recording();
+    let reads = TABLES.map(Read::all);
+    let mut compared = 0;
+    for run in 0..recording.run_count() {
+        let held = recording.run(run).unwrap();
+        for ordinal in ordinals(held.ordinals) {
+            let hour = held.first_hour + ordinal as i32;
+            let mut seek = Frames::new(&recording, &TABLES).unwrap();
+            seek.seek(run, ordinal).unwrap();
+            let expected = seek.frame(held.branch).unwrap();
+            assert_eq!(frame(&recording, run, hour, &reads).unwrap(), expected, "run {run} hour {hour}");
+            compared += 1;
+        }
+    }
+    assert!(compared > 10);
+}
+
+/// A cursor's frame at each hour is that hour's frame, whether the hours come in order across
+/// blocks and restores, run after run, or back again (sought), of every row or of some keys.
+#[test]
+fn a_cursors_frames_at_hours_in_turn_are_each_hours_frame() {
+    let recording = recording();
+    let asked = [4_u128, 2, 9];
+    let some = [Read { table: TableId::Countries, columns: None, keys: Keys::These(&asked) }, Read::all(TableId::WorldTension)];
+    let hours: Vec<(u32, i32)> = (0..recording.run_count())
+        .flat_map(|run| {
+            let held = recording.run(run).unwrap();
+            ordinals(held.ordinals).into_iter().map(move |ordinal| (run, held.first_hour + ordinal as i32))
+        })
+        .collect();
+    let mut compared = 0;
+    for reads in [TABLES.map(Read::all), some] {
+        let mut cursor = Cursor::new(&recording, &reads).unwrap();
+        for &(run, hour) in hours.iter().chain(hours.iter().rev()) {
+            assert_eq!(cursor.frame(run, hour).unwrap(), frame(&recording, run, hour, &reads).unwrap(), "run {run} hour {hour}");
+            compared += 1;
+        }
+    }
+    assert!(compared > 40);
+    // In order, a reader restores only where a restore lies nearer than the hour it holds, never once an hour.
+    let held = recording.run(0).unwrap();
+    let forward = ordinals(held.ordinals);
+    let mut cursor = Cursor::new(&recording, &TABLES.map(Read::all)).unwrap();
+    for &ordinal in &forward {
+        cursor.frame(0, held.first_hour + ordinal as i32).unwrap();
+    }
+    let (_, readers) = cursor.readers.as_ref().unwrap();
+    for reader in readers.iter().flatten() {
+        assert!((reader.restores() as usize) < forward.len(), "{:?} restored {} times for {} hours", reader.table(), reader.restores(), forward.len());
+    }
+}
+
+/// A cursor resumed from the readers another left gives each hour's frame, later or earlier, and
+/// restores no table the one cursor asking every hour would not; readers of other columns, or of a
+/// cursor whose frame failed, are not taken.
+#[test]
+fn a_cursor_resumed_from_anothers_readers_restores_nothing_again() {
+    let recording = recording();
+    let reads = TABLES.map(Read::all);
+    let held = recording.run(0).unwrap();
+    let hours: Vec<i32> = ordinals(held.ordinals).into_iter().map(|ordinal| held.first_hour + ordinal as i32).collect();
+    let (first, second) = hours.split_at(hours.len() / 2);
+    let restores = |cursor: &Cursor<'_, '_>| cursor.readers.as_ref().unwrap().1.iter().flatten().map(|reader| (reader.table(), reader.restores())).collect::<Vec<_>>();
+
+    let mut whole = Cursor::new(&recording, &reads).unwrap();
+    for &hour in &hours {
+        whole.frame(0, hour).unwrap();
+    }
+    let mut earlier = Cursor::new(&recording, &reads).unwrap();
+    for &hour in first {
+        earlier.frame(0, hour).unwrap();
+    }
+    let left = earlier.into_readers().expect("a cursor that read leaves its readers");
+    let mut later = Cursor::resume(&recording, &reads, Some(left)).unwrap();
+    for &hour in second {
+        assert_eq!(later.frame(0, hour).unwrap(), frame(&recording, 0, hour, &reads).unwrap(), "hour {hour}");
+    }
+    assert_eq!(restores(&later), restores(&whole));
+    let mut back = Cursor::resume(&recording, &reads, later.into_readers()).unwrap();
+    for &hour in first.iter().rev() {
+        assert_eq!(back.frame(0, hour).unwrap(), frame(&recording, 0, hour, &reads).unwrap(), "hour {hour} after later hours");
+    }
+
+    let columns = [0_usize];
+    let other = [Read { table: TableId::Countries, columns: Some(&columns), keys: Keys::All }, Read::all(TableId::WorldTension)];
+    let mut fresh = Cursor::resume(&recording, &other, back.into_readers()).unwrap();
+    assert!(fresh.readers.is_none(), "readers of other columns are not taken");
+    assert_eq!(fresh.frame(0, hours[0]).unwrap(), frame(&recording, 0, hours[0], &other).unwrap());
+
+    let mut failing = Cursor::new(&recording, &reads).unwrap();
+    failing.frame(0, hours[0]).unwrap();
+    assert!(failing.frame(0, held.first_hour - 1).is_err());
+    assert!(failing.into_readers().is_none(), "a cursor whose frame failed hands on no reader");
+}
+
+/// A seeker's frame at each hour is that hour's frame of whatever reads the hour asks (tables
+/// joining and leaving, keys changing), in order across blocks and runs or back again; asked in
+/// order, a table restores no more than a cursor of it would, never once an hour.
+#[test]
+fn a_seekers_frames_of_changing_reads_are_each_hours_frame() {
+    let recording = recording();
+    let (two, four) = ([2_u128], [4_u128, 9]);
+    let asked: [Vec<Read<'_>>; 4] = [
+        TABLES.map(Read::all).to_vec(),
+        vec![Read { table: TableId::Countries, columns: None, keys: Keys::These(&two) }],
+        vec![Read::all(TableId::WorldTension), Read { table: TableId::Countries, columns: None, keys: Keys::These(&four) }],
+        vec![Read { table: TableId::Countries, columns: None, keys: Keys::Range(2, 3) }],
+    ];
+    let hours: Vec<(u32, i32)> = (0..recording.run_count())
+        .flat_map(|run| {
+            let held = recording.run(run).unwrap();
+            ordinals(held.ordinals).into_iter().map(move |ordinal| (run, held.first_hour + ordinal as i32))
+        })
+        .collect();
+    let mut seeker = Seeker::new(&recording).unwrap();
+    let mut compared = 0;
+    for (at, &(run, hour)) in hours.iter().chain(hours.iter().rev()).enumerate() {
+        let reads = &asked[at % asked.len()];
+        assert_eq!(seeker.frame(run, hour, reads).unwrap(), frame(&recording, run, hour, reads).unwrap(), "run {run} hour {hour} reads {at}");
+        compared += 1;
+    }
+    assert!(compared > 40);
+    let held = recording.run(0).unwrap();
+    let forward = ordinals(held.ordinals);
+    let mut seeker = Seeker::new(&recording).unwrap();
+    let mut cursor = Cursor::new(&recording, &TABLES.map(Read::all)).unwrap();
+    for (at, &ordinal) in forward.iter().enumerate() {
+        let hour = held.first_hour + ordinal as i32;
+        seeker.frame(0, hour, &asked[at % 2]).unwrap();
+        cursor.frame(0, hour).unwrap();
+    }
+    let (_, readers) = cursor.readers.as_ref().unwrap();
+    let countries = |restores: &[(TableId, u32)]| restores.iter().find(|(table, _)| *table == TableId::Countries).map(|(_, count)| *count);
+    let by_cursor: Vec<(TableId, u32)> = readers.iter().flatten().map(|reader| (reader.table(), reader.restores())).collect();
+    let by_seeker = seeker.restores();
+    assert_eq!(countries(&by_seeker), countries(&by_cursor), "a table read at every hour restores as a cursor's does, whatever its keys");
+    for (table, restores) in by_seeker {
+        assert!((restores as usize) < forward.len(), "{table:?} restored {restores} times for {} hours", forward.len());
+    }
+    assert!(seeker.frame(0, held.first_hour - 1, &asked[0]).is_err(), "an hour the run does not hold is refused");
+}
+
+fn countries(frame: &DecodedFrame) -> Vec<CountryRow> {
+    match &*frame.tables[TableId::Countries.index()] {
+        TableView::Complete(TableRows::Countries(rows)) => rows.clone(),
+        other => panic!("Countries is not complete: {other:?}"),
+    }
+}
+
+/// A frame of some keys holds exactly the whole table's rows of those keys, the other tables as
+/// a frame of every row holds them; keys asked that no row holds are not made up.
+#[test]
+fn a_frame_of_some_keys_is_the_whole_table_filtered() {
+    let recording = recording();
+    let asked = [4_u128, 2, 9];
+    let ranges = [(1_u128, 1), (3, 4), (6, 9)];
+    let filters: [(Keys<'_>, fn(u128) -> bool); 4] = [
+        (Keys::These(&asked), |key| [2, 4].contains(&key)),
+        (Keys::Range(2, 3), |key| (2..=3).contains(&key)),
+        (Keys::Range(5, 8), |_| false),
+        (Keys::Ranges(&ranges), |key| [1, 3, 4].contains(&key)),
+    ];
+    let mut compared = 0;
+    for run in 0..recording.run_count() {
+        let held = recording.run(run).unwrap();
+        for ordinal in ordinals(held.ordinals) {
+            let hour = held.first_hour + ordinal as i32;
+            let whole = frame(&recording, run, hour, &TABLES.map(Read::all)).unwrap();
+            for (keys, wanted) in filters {
+                let reads = [Read { table: TableId::Countries, columns: None, keys }, Read::all(TableId::WorldTension)];
+                let filtered = frame(&recording, run, hour, &reads).unwrap();
+                let expected: Vec<CountryRow> = countries(&whole).into_iter().filter(|row| wanted(u128::from(row.id))).collect();
+                assert_eq!(countries(&filtered), expected, "run {run} hour {hour} {keys:?}");
+                assert_eq!(filtered.tables[TableId::WorldTension.index()], whole.tables[TableId::WorldTension.index()]);
+                assert_eq!(filtered.metrics, whole.metrics);
+                compared += 1;
+            }
+        }
+    }
+    assert!(compared > 30);
+}
+
+/// Countries rows of a complete or partly read view, and its missing count when read in part.
+fn shown(frame: &DecodedFrame) -> Option<(Vec<CountryRow>, Option<u32>)> {
+    match &*frame.tables[TableId::Countries.index()] {
+        TableView::Complete(TableRows::Countries(rows)) => Some((rows.clone(), None)),
+        TableView::Truncated { rows: TableRows::Countries(rows), missing } => Some((rows.clone(), Some(*missing))),
+        _ => None,
+    }
+}
+
+/// Over hours read in part, refused for an hour, after a block end that packed the table and
+/// restored it whole: a frame of every row is the seek's, and a frame of some keys is its rows of
+/// those keys, as complete or as partly read, or refused as it is.
+#[test]
+fn a_frame_over_partial_and_refused_hours_is_the_seek_filtered() {
+    let recording = Recording::open(fixtures::edited(3).0).unwrap();
+    let held = recording.run(0).unwrap();
+    let asked = [3_u128, 12, 150, 999];
+    let filters: [(Keys<'_>, fn(u128) -> bool); 2] = [(Keys::These(&asked), |key| [3, 12, 150].contains(&key)), (Keys::Range(5, 15), |key| (5..=15).contains(&key))];
+    let (mut partial, mut refused) = (0, 0);
+    let block = UNIT_ORDINALS;
+    for ordinal in [0, 9, 10, 15, 30, 45, 91, 106, block - 1, block, block + 12, block + 30, 2 * block + 8, 2 * block + 47, 3 * block - 1] {
+        let hour = held.first_hour + ordinal as i32;
+        let mut seek = Frames::new(&recording, &[TableId::Countries]).unwrap();
+        seek.seek(0, ordinal).unwrap();
+        let whole = seek.frame(held.branch).unwrap();
+        assert_eq!(frame(&recording, 0, hour, &[Read::all(TableId::Countries)]).unwrap(), whole, "hour {hour}");
+        for (keys, wanted) in filters {
+            let filtered = frame(&recording, 0, hour, &[Read { table: TableId::Countries, columns: None, keys }]).unwrap();
+            match shown(&whole) {
+                Some((rows, missing)) => {
+                    let expected: Vec<CountryRow> = rows.into_iter().filter(|row| wanted(u128::from(row.id))).collect();
+                    assert_eq!(shown(&filtered), Some((expected, missing)), "hour {hour} {keys:?}");
+                    partial += usize::from(missing.is_some());
+                }
+                None => {
+                    assert_eq!(filtered.tables[TableId::Countries.index()], whole.tables[TableId::Countries.index()], "hour {hour}");
+                    refused += 1;
+                }
+            }
+        }
+    }
+    assert!(partial > 0 && refused > 0, "{partial} partly read, {refused} refused");
+}
+
+/// A read of some columns builds its rows from those columns alone: every other field holds its
+/// row's default and is never decoded, so an opaque field left unread (an air score's contribution
+/// menu) neither fails the frame nor reads as recorded.
+#[test]
+fn a_read_of_some_columns_decodes_those_fields_alone() {
+    use crate::{
+        columnar_frames::synthetic::{Input, Sample},
+        rows::{AirPowerContribution, AirPowerMenu, RaidAirScoreRow, Recorded},
+    };
+    use std::sync::Arc;
+    let table = TableId::RaidAirScores;
+    let menu = AirPowerMenu { coverage: 7, reductions: [1, 2, 3, 4], contributions: [vec![AirPowerContribution { country: 9, amount: 40 }], Vec::new()] };
+    let rows = [
+        RaidAirScoreRow { country: 9, region: 3, friendly: 120, enemy: 80, impact: Recorded::Value(5), friendly_missions: 2, enemy_missions: 1, air_spotting_scale: Some(6), menu: Recorded::Value(Some(Arc::new(menu))) },
+        RaidAirScoreRow { country: 9, region: 4, friendly: 0, enemy: 30, impact: Recorded::Value(0), friendly_missions: 0, enemy_missions: 3, air_spotting_scale: None, menu: Recorded::Value(None) },
+    ];
+    let (bytes, _) = fixtures::written(b"some columns", &[(1, 100, 2)], &[table], |synthetic, _, _| {
+        synthetic.table(table, Input::Snapshot { rows: &rows, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
+    });
+    let recording = Recording::open(bytes).unwrap();
+    let field = |name: &str| (0..table.field_count()).find(|&field| table.field_name(field) == Some(name)).unwrap();
+    let columns = [field("friendly"), field("enemy")];
+    let expected: Vec<RaidAirScoreRow> = rows.iter().map(|row| RaidAirScoreRow { country: row.country, region: row.region, friendly: row.friendly, enemy: row.enemy, ..Default::default() }).collect();
+    let held = recording.run(0).unwrap();
+    for ordinal in 0..held.ordinals {
+        let hour = held.first_hour + ordinal as i32;
+        let whole = frame(&recording, 0, hour, &[Read::all(table)]).unwrap();
+        assert_eq!(*whole.tables[table.index()], TableView::Complete(TableRows::RaidAirScores(rows.to_vec())), "hour {hour}");
+        let some = frame(&recording, 0, hour, &[Read { table, columns: Some(&columns), keys: Keys::All }]).unwrap();
+        assert_eq!(*some.tables[table.index()], TableView::Complete(TableRows::RaidAirScores(expected.clone())), "hour {hour}");
+    }
+}

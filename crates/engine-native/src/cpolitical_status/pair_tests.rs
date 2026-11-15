@@ -197,13 +197,13 @@ fn literal_invalid_headers_stop_before_payload_acquisition() {
 }
 
 #[test]
-fn idea_capacity_still_validates_tokens_without_reading_omitted_heap_payloads() {
+fn the_idea_count_probe_still_validates_tokens_without_reading_heap_payloads() {
     const POINTERS: usize = 0x6000;
     const IDEA: usize = 0x7000;
     const HEAP: usize = 0x8000;
     for inline in [true, false] {
         for terminated in [true, false] {
-            for (rows, bytes) in [(0, 3), (1, 0), (1, 3)] {
+            for count in [true, false] {
                 let mut memory = TraceMemory::default();
                 let mut array = [0; 16];
                 array[..8].copy_from_slice(&(POINTERS as u64).to_le_bytes());
@@ -233,21 +233,25 @@ fn idea_capacity_still_validates_tokens_without_reading_omitted_heap_payloads() 
                     country: COUNTRY_POINTER,
                     status: STATUS,
                 };
-                let mut output = [IdeaRow::default()];
-                let mut arena = [0; 3];
-                let walked = reader.ideas(&mut output[..rows], &mut arena[..bytes]);
+                let mut output = Vec::new();
+                let mut arena = Vec::new();
+                let walked = if count {
+                    reader.ideas_buffer(crate::walk::Buffer::Count, crate::walk::Buffer::Count)
+                } else {
+                    reader.ideas(&mut output, &mut arena)
+                };
                 let expected = if !terminated {
                     Outcome::Unavailable {
                         reason: "politics string terminator unreadable or invalid",
                     }
-                } else if rows == 0 || bytes == 0 {
+                } else if count {
                     assert_eq!(walked.required_bytes, 3);
                     Outcome::Truncated {
                         len: 0,
                         unread_rows: 1,
                     }
                 } else if inline {
-                    assert_eq!(arena, [0xff, 0, b'a']);
+                    assert_eq!(arena[..3], [0xff, 0, b'a']);
                     Outcome::Rows { len: 1 }
                 } else {
                     Outcome::Unavailable {
@@ -257,7 +261,7 @@ fn idea_capacity_still_validates_tokens_without_reading_omitted_heap_payloads() 
                 assert_eq!(walked.outcome, expected);
                 assert_eq!(
                     memory.reads.borrow().contains(&(HEAP, 3)),
-                    !inline && terminated && rows != 0 && bytes != 0
+                    !inline && terminated && !count
                 );
             }
         }

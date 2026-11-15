@@ -1,12 +1,4 @@
 .production-lines { height: 100%; min-height: 0; overflow: auto; }
-.equipment-design-detail { padding: var(--space-3); border-top: 1px solid var(--border); font-size: var(--type-sm); }
-.equipment-design-detail summary { cursor: pointer; }
-.equipment-design-choices { display: flex; flex-wrap: wrap; gap: var(--space-3); padding: var(--space-3) 0; }
-.equipment-design-choices label { display: flex; flex-direction: column; gap: var(--space-1); }
-.equipment-design-section h4 { margin: var(--space-3) 0 var(--space-2); font-weight: 500; }
-.equipment-design-section dl { margin: 0; }
-.equipment-design-section dl > div { display: grid; grid-template-columns: minmax(8em, 1fr) minmax(8em, 2fr); gap: var(--space-3); padding: var(--space-1) 0; border-top: 1px solid var(--border); }
-.equipment-design-section dd { margin: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
 .production-caption { margin: 0; padding: var(--space-1) var(--space-3) 0; color: var(--muted); font-size: var(--type-xs); min-height: 1.2em; }
 .production-history { padding: var(--space-1) 0 var(--space-2); }
 
@@ -41,3 +33,4 @@
 .production-factor:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .production-drill { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
 .production-drill-chart { height: 280px; min-height: 180px; }
+.production-live { min-height: 0; }

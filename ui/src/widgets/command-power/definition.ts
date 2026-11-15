@@ -1,7 +1,6 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
 import { MEASURE_OPTIONS } from '../country-measure/options.ts';
-import { breakdownVariants } from '../../charts/drill/drillState.ts';
 
 export const OPTIONS: readonly OptionField[] = [...MEASURE_OPTIONS,
   { key: 'ceiling', section: 'options', label: 'Maximum', kind: 'toggle', default: true }];
@@ -12,5 +11,5 @@ export const definition = {
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 8, h: 10 },
   countries: { max: Number.MAX_SAFE_INTEGER },
-  options: OPTIONS, variants: breakdownVariants('Command power', OPTIONS),
+  options: OPTIONS,
 } as const satisfies WidgetMeta;

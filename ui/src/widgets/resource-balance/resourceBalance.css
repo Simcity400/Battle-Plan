@@ -29,3 +29,4 @@
 .resource-deal-rows b, .resource-deal-rows small { font-variant-numeric: tabular-nums; text-align: right; }
 .resource-deal-rows b.is-negative { color: var(--error); }
 .resource-deal-rows small { color: var(--muted); }
+.resource-balance-host { display: flex; flex-direction: column; height: 100%; min-height: 0; }

@@ -84,8 +84,8 @@ fn fixture() -> Fixture {
 #[test]
 fn only_clones_that_differ_from_their_global_definition_are_rows() {
     let memory = fixture();
-    let mut rows = [LocalSubunitRow::default(); 2];
-    let mut requirements = [LocalRequirement::default(); 4];
+    let mut rows = vec![LocalSubunitRow::default(); 2];
+    let mut requirements = vec![LocalRequirement::default(); 4];
     let walk = walk_local_subunits(&memory, 0, 0x1000, &mut rows, &mut requirements);
     assert_eq!(walk.outcome, Outcome::Rows { len: 1 });
     assert_eq!((rows[0].country, rows[0].token), (1, 5));
@@ -95,15 +95,6 @@ fn only_clones_that_differ_from_their_global_definition_are_rows() {
             archetype_token: 71,
             amount_raw: 300_000
         }]
-    );
-    // No room: the row is counted with its demand, never published partially.
-    let walk = walk_local_subunits(&memory, 0, 0x1000, &mut rows, &mut []);
-    assert_eq!(
-        walk.outcome,
-        Outcome::Truncated {
-            len: 0,
-            unread_rows: 1
-        }
     );
     assert_eq!((walk.required_rows, walk.required_requirements), (1, 1));
 }
@@ -117,8 +108,8 @@ fn a_country_with_two_differing_clones_of_one_token_is_refused() {
             &memory,
             0,
             0x1000,
-            &mut [LocalSubunitRow::default(); 2],
-            &mut [LocalRequirement::default(); 4]
+            &mut vec![LocalSubunitRow::default(); 2],
+            &mut vec![LocalRequirement::default(); 4]
         )
         .outcome,
         Outcome::Unavailable {
@@ -131,7 +122,7 @@ fn a_country_with_two_differing_clones_of_one_token_is_refused() {
 fn a_clone_that_is_its_global_definition_or_names_no_entry_is_refused() {
     let mut memory = fixture();
     memory.word(0x3a08, 0x4000);
-    let outcome = walk_local_subunits(&memory, 0, 0x1000, &mut [], &mut []).outcome;
+    let outcome = walk_local_subunits(&memory, 0, 0x1000, &mut Vec::new(), &mut Vec::new()).outcome;
     assert_eq!(
         outcome,
         Outcome::Unavailable {
@@ -144,7 +135,7 @@ fn a_clone_that_is_its_global_definition_or_names_no_entry_is_refused() {
         &9_i32.to_le_bytes(),
     );
     assert!(matches!(
-        walk_local_subunits(&memory, 0, 0x1000, &mut [], &mut []).outcome,
+        walk_local_subunits(&memory, 0, 0x1000, &mut Vec::new(), &mut Vec::new()).outcome,
         Outcome::Unavailable { .. }
     ));
 }
@@ -153,10 +144,10 @@ fn a_clone_that_is_its_global_definition_or_names_no_entry_is_refused() {
 fn growing_local_clone_rows_reserve_the_original_changed_requirement_header() {
     let mut memory = fixture();
     let (mut rows, mut requirements) = (Vec::new(), Vec::new());
-    let first = walk_local_subunits_growing(&memory, 0, 0x1000, &mut rows, &mut requirements);
+    let first = walk_local_subunits(&memory, 0, 0x1000, &mut rows, &mut requirements);
     assert_eq!(first.outcome, Outcome::Rows { len: 1 });
     memory.subunit(0x6000, 5, &vec![(ARCHETYPE, 300_000); 512]);
-    let later = walk_local_subunits_growing(&memory, 0, 0x1000, &mut rows, &mut requirements);
+    let later = walk_local_subunits(&memory, 0, 0x1000, &mut rows, &mut requirements);
     assert_eq!(later.outcome, Outcome::Rows { len: 1 });
     assert_eq!(later.requirements_len, 512);
     assert_eq!(requirements[511].amount_raw, 300_000);
@@ -190,7 +181,7 @@ fn selected_walks_carry_confirm_or_read_each_country() {
     };
     let walk = |memory: &Fixture, selection: LocalSelection<'_>| {
         let (mut rows, mut requirements, mut visits) = (Vec::new(), Vec::new(), Vec::new());
-        let walk = walk_local_subunits_selected_growing(
+        let walk = walk_local_subunits_selected(
             memory,
             0,
             0x1000,

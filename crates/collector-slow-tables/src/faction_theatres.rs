@@ -47,7 +47,7 @@ impl Capacities {
         base: usize,
         state: usize,
     ) -> Result<(), &'static str> {
-        let demand = native::walk(memory, base, state, &mut [], &mut [], &mut [], &mut []);
+        let demand = native::count(memory, base, state);
         if let Outcome::Unavailable { reason } = demand.outcome {
             return Err(reason);
         }
@@ -149,7 +149,7 @@ impl Captured {
         if should_walk(TABLES[0], hour, force_full) {
             let _reads = crate::read_accounting::table(TABLES[0]);
             let started = qpc();
-            let walk = native::walk_growing(
+            let walk = native::walk(
                 memory,
                 base,
                 game_state,
@@ -175,7 +175,7 @@ impl Captured {
         if should_walk(TABLES[1], hour, force_full) {
             let _reads = crate::read_accounting::table(TABLES[1]);
             let started = qpc();
-            let walk = cfaction::walk_advisors_growing(
+            let walk = cfaction::walk_advisors(
                 memory,
                 base,
                 game_state,

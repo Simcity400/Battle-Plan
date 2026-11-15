@@ -96,8 +96,7 @@ fn populated_cohort(countries: usize) -> (WarImage, Vec<ccountry::Country>) {
 }
 
 fn populated_recovery(countries: usize) {
-    let _guard = crate::hook::FAMILY_TEST.lock().unwrap();
-    let _slots = collector_primitives::country_slots::hint_guard();
+    let _globals = crate::event_feed_observer::test_globals();
     collector_primitives::country_slots::note_slots(countries + 1);
     let (image, owners) = populated_cohort(countries);
     let mut store = census_store(4096);
@@ -173,7 +172,7 @@ fn prepared_owner_recovery_covers_the_live_439_owner_5977_emission_cohort() {
 
 #[test]
 fn prepared_owner_shortage_keeps_local_control_space_and_never_publishes_a_prefix() {
-    let _guard = crate::hook::FAMILY_TEST.lock().unwrap();
+    let _globals = crate::event_feed_observer::test_globals();
     let mut image = owners_image(1);
     let timers = [0xd0000, 0xd1000, 0xd2000, 0xd3000, 0xd4000];
     for timer in timers {
@@ -242,7 +241,7 @@ fn prepared_owner_shortage_keeps_local_control_space_and_never_publishes_a_prefi
 
 #[test]
 fn prepared_owner_publication_rechecks_the_writer_cut_without_native_reads() {
-    let _guard = crate::hook::FAMILY_TEST.lock().unwrap();
+    let _globals = crate::event_feed_observer::test_globals();
     let image = member_image(1);
     let mut store = census_store(64);
     store
@@ -275,7 +274,7 @@ fn prepared_owner_publication_rechecks_the_writer_cut_without_native_reads() {
 
 #[test]
 fn older_pressure_does_not_refuse_a_smaller_selected_owner_that_fits() {
-    let _guard = crate::hook::FAMILY_TEST.lock().unwrap();
+    let _globals = crate::event_feed_observer::test_globals();
     let image = owners_image(1);
     let mut store = census_store(64);
     store
@@ -304,7 +303,7 @@ fn older_pressure_does_not_refuse_a_smaller_selected_owner_that_fits() {
 
 #[test]
 fn private_owner_allocation_failure_uses_the_prepared_local_control_space() {
-    let _guard = crate::hook::FAMILY_TEST.lock().unwrap();
+    let _globals = crate::event_feed_observer::test_globals();
     let image = owners_image(1);
     let mut store = census_store(8);
     store
@@ -331,8 +330,7 @@ fn private_owner_allocation_failure_uses_the_prepared_local_control_space() {
 
 fn consecutive_private_owner_failures(tokens_tight: bool) {
     const HOUR: i32 = 2;
-    let _guard = crate::hook::FAMILY_TEST.lock().unwrap();
-    let _slots = collector_primitives::country_slots::hint_guard();
+    let _globals = crate::event_feed_observer::test_globals();
     let (mut image, owners) = populated_cohort(4);
     collector_primitives::country_slots::note_slots(owners.len() + 1);
     let mut store = census_store(64);
@@ -369,7 +367,7 @@ fn consecutive_private_owner_failures(tokens_tight: bool) {
     entries.append(&mut store.entries);
     store.entries = entries;
     if tokens_tight {
-        store.script_tokens.truncate(demand[1]);
+        tight_tokens(&mut store, demand[1]);
     }
     crate::test_support::with_allocations_denied(|| {
         store
@@ -460,8 +458,7 @@ fn consecutive_private_failures_keep_census_sized_token_controls_after_a_near_fu
 
 #[test]
 fn failure_to_grow_the_census_refusal_reserve_stays_local_and_retries_unwritten_controls() {
-    let _guard = crate::hook::FAMILY_TEST.lock().unwrap();
-    let _slots = collector_primitives::country_slots::hint_guard();
+    let _globals = crate::event_feed_observer::test_globals();
     let (mut image, owners) = populated_cohort(8);
     // Initially only the first live owner was observed by the sizing census.
     collector_primitives::country_slots::note_slots(2);
@@ -476,7 +473,7 @@ fn failure_to_grow_the_census_refusal_reserve_stays_local_and_retries_unwritten_
     let mut entries = Vec::with_capacity(demand[0]);
     entries.append(&mut store.entries);
     store.entries = entries;
-    store.script_tokens.truncate(demand[1]);
+    tight_tokens(&mut store, demand[1]);
     store
         .publish_owner(&NoReads, BASE, 7, 1, &mut healthy)
         .unwrap();
@@ -553,8 +550,7 @@ fn failure_to_grow_the_census_refusal_reserve_stays_local_and_retries_unwritten_
 
 #[test]
 fn ordinary_occurrences_cannot_spend_reserved_control_entries_or_token_bytes() {
-    let _guard = crate::hook::FAMILY_TEST.lock().unwrap();
-    let _slots = collector_primitives::country_slots::hint_guard();
+    let _globals = crate::event_feed_observer::test_globals();
     collector_primitives::country_slots::note_slots(CENSUS.len() + 1);
     for tokens_tight in [false, true] {
         let image = owners_image(1);
@@ -569,7 +565,7 @@ fn ordinary_occurrences_cannot_spend_reserved_control_entries_or_token_bytes() {
         entries.append(&mut store.entries);
         store.entries = entries;
         if tokens_tight {
-            store.script_tokens.truncate(demand[1]);
+            tight_tokens(&mut store, demand[1]);
         }
         store
             .publish_owner(&NoReads, BASE, 7, 1, &mut plan)
@@ -598,7 +594,10 @@ fn ordinary_occurrences_cannot_spend_reserved_control_entries_or_token_bytes() {
                         .token_unrecorded
                 );
             } else {
-                assert_eq!(result, Err("Event feed callback storage needs growth"));
+                assert_eq!(
+                    result,
+                    Err(crate::event_feed_history::OCCURRENCE_ALLOCATION)
+                );
                 assert_eq!(store.entries.len(), entries);
             }
         });
@@ -610,7 +609,7 @@ fn ordinary_occurrences_cannot_spend_reserved_control_entries_or_token_bytes() {
 
 #[test]
 fn prepared_read_failure_retries_and_recovers_while_keeping_the_other_family() {
-    let _guard = crate::hook::FAMILY_TEST.lock().unwrap();
+    let _globals = crate::event_feed_observer::test_globals();
     let memory = FlightReads::stable(member_image(1), MEMBER_DEFINITION);
     let mut store = census_store(64);
     store
@@ -662,7 +661,7 @@ fn prepared_read_failure_retries_and_recovers_while_keeping_the_other_family() {
 
 #[test]
 fn every_private_owner_growth_failure_remains_retryable_and_owner_local() {
-    let _guard = crate::hook::FAMILY_TEST.lock().unwrap();
+    let _globals = crate::event_feed_observer::test_globals();
     let image = member_image(1);
     let country = CENSUS[1];
     let track = collector_test_support::NullGuard::new(usize::MAX);
@@ -698,7 +697,7 @@ fn every_private_owner_growth_failure_remains_retryable_and_owner_local() {
 
 #[test]
 fn prepared_recovery_after_a_loss_never_reuses_a_member_label() {
-    let _guard = crate::hook::FAMILY_TEST.lock().unwrap();
+    let _globals = crate::event_feed_observer::test_globals();
     let mut image = member_image(1);
     let mut store = census_store(64);
     store

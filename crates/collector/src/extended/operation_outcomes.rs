@@ -77,7 +77,7 @@ impl Captured {
         hooks::invalidate();
         self.handoff = Some(Err(reason));
     }
-    pub(crate) fn capture_growing(&mut self) -> u64 {
+    pub(crate) fn capture(&mut self) -> u64 {
         let started = crate::sampling::qpc();
         self.handoff = Some(hooks::handoff_growing(&mut self.cursors));
         crate::sampling::qpc().saturating_sub(started).max(0) as u64
@@ -125,7 +125,7 @@ pub(crate) fn reset_admitted() {
     hooks::reset_admitted();
 }
 impl Ledger {
-    /// Spool worker only. A lost/short/overflown interval yields no event rows;
+    /// Spool worker only. A lost or short interval yields no event rows;
     /// it never publishes the successfully copied subset as a complete batch.
     pub(crate) fn assemble_owned(
         &mut self,

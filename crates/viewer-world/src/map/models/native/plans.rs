@@ -63,7 +63,7 @@ impl Scratch {
 }
 
 #[derive(Clone, Copy)]
-enum Source {
+pub(super) enum Source {
     Frame(usize),
     Grid,
     Object(usize),
@@ -88,6 +88,13 @@ impl PendingSources {
         &mut self, mask: u32, view: usize, scratch: &Scratch,
         instance: usize, node: usize,
     ) {
+        self.constants_mask_at(mask, view, scratch.current, scratch.pixel, instance, node);
+    }
+    /// [`Self::constants_mask`] with the vertex and pixel blocks' origins given.
+    pub fn constants_mask_at(
+        &mut self, mask: u32, view: usize, current: usize, pixel: Option<usize>,
+        instance: usize, node: usize,
+    ) {
         for slot in 0..6 {
             if mask & (1 << slot) == 0
                 || (slot / 2 == 0 && self.state.frame == Some(view))
@@ -95,8 +102,8 @@ impl PendingSources {
             { continue; }
             self.sources[slot] = Some(match slot {
                 0 | 1 => Source::Frame(view),
-                2 => Source::Object(scratch.current),
-                3 => Source::Object(scratch.pixel.expect("a supplied PS snapshot has an origin")),
+                2 => Source::Object(current),
+                3 => Source::Object(pixel.expect("a supplied PS snapshot has an origin")),
                 4 => Source::Skin(instance, node),
                 5 => Source::Grid,
                 _ => unreachable!(),
@@ -104,6 +111,10 @@ impl PendingSources {
         }
         self.state.frame = Some(view);
         self.state.grid |= mask & (1 << 5) != 0;
+    }
+    /// Each slot's bytes by its source.
+    pub fn resolve_with<'a>(&self, bytes: impl Fn(Source) -> &'a [u8]) -> Constants<'a> {
+        std::array::from_fn(|slot| self.sources[slot].map(&bytes))
     }
     pub fn resolve<'a>(
         &self,

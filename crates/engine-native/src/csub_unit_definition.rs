@@ -123,6 +123,23 @@ impl MaximaBatch {
     }
 }
 
+/// The maxima of each pointer, as the status pass's ordered admission reads them: gathered in
+/// batches, each incomplete record read alone.
+pub fn stage_division_maxima(
+    memory: &impl crate::Memory,
+    base: usize,
+    pointers: &[usize],
+    out: &mut [Result<DivisionMaxima, &'static str>],
+) {
+    let mut batch = MaximaBatch::new();
+    for (pointers, out) in pointers.chunks(64).zip(out.chunks_mut(64)) {
+        batch.capture(memory, pointers);
+        for (row, (&pointer, out)) in pointers.iter().zip(out).enumerate() {
+            *out = batch.read(memory, base, pointer, row);
+        }
+    }
+}
+
 impl DivisionMaxima {
     pub fn effective(self) -> (i64, i64) {
         (self.strength.max(100), self.organisation.max(100))

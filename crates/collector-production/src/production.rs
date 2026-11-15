@@ -9,6 +9,7 @@ use crate::{
     table_capture::{Arena, CaptureRows},
     table_conversion::{table, unavailable},
 };
+use collector_projection::table_clock::timed;
 use engine_allocation::{copy_vec, owned_vec};
 use engine_deployment::{
     army_upgrade_request_row, carmy_upgrades_requests, carmy_upgrades_status, cdeployment_status,
@@ -99,21 +100,21 @@ impl Capacities {
         for (index, outcome) in [
             (
                 0,
-                cproduction_status::walk_lines(memory, base, state, &mut []),
+                cproduction_status::count_lines(memory, base, state),
             ),
             (
                 1,
-                cequipment_variant_pool::walk_stockpiles(memory, base, state, &mut []),
+                cequipment_variant_pool::count_stockpiles(memory, base, state),
             ),
             (
                 11,
-                cproduction_status::walk_licenses(memory, base, state, &mut []),
+                cproduction_status::count_licenses(memory, base, state),
             ),
         ] {
             crate::table_capture::grow_capacity(&mut self.rows[index], required(outcome)?);
         }
         let licenses =
-            cproduction_status::walk_license_records(memory, base, state, &mut [], &mut []);
+            cproduction_status::count_license_records(memory, base, state);
         crate::table_capture::grow_capacity(&mut self.rows[16], required(licenses.outcome)?);
         let countries = ccountry::Reader::new(memory, base, state)?;
         let mut demand = [0_usize; 5];
@@ -165,16 +166,8 @@ impl Capacities {
                         template: 0,
                     }];
                     let equipment =
-                        cequipment_variant_pool::walk_divisions(memory, base, &source, &mut []);
-                    let upgrades = carmy_upgrades_status::walk(
-                        memory,
-                        base,
-                        &source,
-                        &mut [],
-                        &mut [],
-                        &mut [],
-                        &mut [],
-                    );
+                        cequipment_variant_pool::count_divisions(memory, base, &source);
+                    let upgrades = carmy_upgrades_status::count(memory, base, &source);
                     for (total, outcome) in demand.iter_mut().zip([
                         equipment,
                         upgrades.groups,
@@ -403,9 +396,15 @@ impl Variants {
             context,
             setup,
             None::<fn(ColdStorage, &mut dyn FnMut())>,
+            &mut |_, _, _| {},
         )
     }
 
+    /// `mark` receives each serial phase after the census: its begin and end ticks.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the capture context, its four dispatches and the phase marks"
+    )]
     pub fn capture_deferred_overlapped(
         &mut self,
         memory: &impl Memory,
@@ -418,6 +417,7 @@ impl Variants {
         mut context: impl FnMut(Vec<DesignContextPart>) -> Result<Vec<DesignContextPart>, &'static str>,
         mut setup: impl FnMut(Vec<ColdSetupPart>) -> Result<Vec<ColdSetupPart>, &'static str>,
         mut overlap: Option<impl FnMut(ColdStorage, &mut dyn FnMut())>,
+        mark: &mut dyn FnMut(VariantPhase, i64, i64),
     ) -> [u64; N] {
         self.baseline_admitted = false;
         let recovery = design_changes::needs_full();
@@ -441,11 +441,21 @@ impl Variants {
         self.fog = design_fog::capture(memory, base);
         let registry = variants.rows;
         let outcome = variants.outcome;
+        let begin = qpc();
+        let mut returned = begin;
         let ticks = if lanes > 1 && matches!(outcome, Outcome::Rows { .. }) {
-            self.capture_partitioned(base, variants, hour, full, !forced, lanes, &mut acquire)
+            let mut timed = |parts| {
+                let parts = acquire(parts);
+                returned = qpc();
+                parts
+            };
+            self.capture_partitioned(base, variants, hour, full, !forced, lanes, &mut timed)
         } else {
             self.capture_state_carried(memory, base, variants, hour, full, !forced)
         };
+        let joined = qpc();
+        mark(VariantPhase::Lanes, begin, returned.max(begin));
+        mark(VariantPhase::Join, returned.max(begin), joined);
         match bonus_snapshots::snapshot() {
             Ok(snapshot) => self.dictionary = snapshot,
             Err(reason) => {
@@ -464,6 +474,7 @@ impl Variants {
                     })
             })
             .sum();
+        mark(VariantPhase::Snapshot, joined, qpc());
         if let Outcome::Rows { len } = outcome
             && [
                 self.definitions.outcome,
@@ -479,6 +490,7 @@ impl Variants {
                     .then(|| design_changes::cold_storage(&registry[..len]))
                     .flatten()
             });
+            let seeded = qpc();
             let mut seed = || {
                 (self.context, self.templates) =
                     design_context::seed_partitioned(memory, base, self, full, lanes, &mut context)
@@ -489,12 +501,15 @@ impl Variants {
             } else {
                 seed();
             }
+            let prepared = qpc();
+            mark(VariantPhase::Context, seeded, prepared);
             if design_changes::enabled() {
                 design_changes::prepare_partitioned(&registry[..len], self, &mut setup);
                 self.baseline_admitted = full && design_changes::baseline_admitted();
                 self.liveness = design_changes::liveness::observation()
                     .unwrap_or_else(|_| design_changes::liveness::Observation::refused());
             }
+            mark(VariantPhase::Setup, prepared, qpc());
         } else if full {
             // A failed recovery can leave shared forwarding withdrawn during
             // the following native interval. Its old object proofs cannot
@@ -630,6 +645,21 @@ impl Variants {
         ticks[4] = elapsed(begin);
         ticks
     }
+}
+
+/// The serial phases of a variant capture after its census, for the hour's stages.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VariantPhase {
+    /// The census's lanes, from dispatch until the last returned.
+    Lanes,
+    /// Joining the lanes' rows in census order.
+    Join,
+    /// The bonus dictionary's snapshot and the rows' heap accounting.
+    Snapshot,
+    /// The design context's seed and its lanes.
+    Context,
+    /// The design change store's preparation and its lanes.
+    Setup,
 }
 
 #[derive(Default)]
@@ -876,20 +906,7 @@ impl Captured {
         hour: i32,
         force_full: bool,
     ) -> [u64; N] {
-        self.acquire_buffers(memory, base, game_state, divisions, hour, force_full, true)
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    pub(super) fn acquire_fixed(
-        &mut self,
-        memory: &impl Memory,
-        base: usize,
-        game_state: usize,
-        divisions: Sources<'_, cequipment_variant_pool::DivisionSource>,
-        hour: i32,
-        force_full: bool,
-    ) -> [u64; N] {
-        self.acquire_buffers(memory, base, game_state, divisions, hour, force_full, false)
+        self.acquire_buffers(memory, base, game_state, divisions, hour, force_full)
     }
 
     #[allow(
@@ -904,7 +921,6 @@ impl Captured {
         divisions: Sources<'_, cequipment_variant_pool::DivisionSource>,
         hour: i32,
         force_full: bool,
-        growing: bool,
     ) -> [u64; N] {
         let mut ticks = [0; N];
         let rest_active =
@@ -937,7 +953,7 @@ impl Captured {
                     memory,
                     base,
                     game_state,
-                    engine_native::walk::Buffer::for_worker(rows, growing),
+                    engine_native::walk::Buffer::Growing(rows),
                 )
             });
             ticks[0] = elapsed(begin);
@@ -948,7 +964,7 @@ impl Captured {
                     memory,
                     base,
                     game_state,
-                    engine_native::walk::Buffer::for_worker(rows, growing),
+                    engine_native::walk::Buffer::Growing(rows),
                 )
             });
             ticks[1] = elapsed(begin);
@@ -958,12 +974,6 @@ impl Captured {
             let begin = qpc();
             let source = complete_source(divisions.rows, divisions.outcome);
             self.division_equipment.outcome = match source {
-                Ok(source) if growing => cequipment_variant_pool::walk_divisions_growing(
-                    memory,
-                    base,
-                    source,
-                    &mut self.division_equipment.rows,
-                ),
                 Ok(source) => cequipment_variant_pool::walk_divisions(
                     memory,
                     base,
@@ -976,15 +986,6 @@ impl Captured {
             reads.select(TABLES[7]);
             let begin = qpc();
             let result = match source {
-                Ok(source) if growing => carmy_upgrades_status::walk_growing(
-                    memory,
-                    base,
-                    source,
-                    &mut self.groups.rows,
-                    &mut self.requests.rows,
-                    &mut self.deliveries.rows,
-                    &mut self.produced.rows,
-                ),
                 Ok(source) => carmy_upgrades_status::walk(
                     memory,
                     base,
@@ -1010,15 +1011,15 @@ impl Captured {
                     memory,
                     base,
                     game_state,
-                    engine_native::walk::Buffer::for_worker(rows, growing),
+                    engine_native::walk::Buffer::Growing(rows),
                 )
             });
             let records = cproduction_status::walk_license_records_buffer(
                 memory,
                 base,
                 game_state,
-                engine_native::walk::Buffer::for_worker(&mut self.license_records.rows, growing),
-                engine_native::walk::Buffer::for_worker(&mut self.license_handles.first, growing),
+                engine_native::walk::Buffer::Growing(&mut self.license_records.rows),
+                engine_native::walk::Buffer::Growing(&mut self.license_handles.first),
             );
             self.license_records.outcome = records.outcome;
             self.license_handles.len = records.handles_len;
@@ -1026,7 +1027,7 @@ impl Captured {
             ticks[11] = elapsed(begin);
             reads.select(TABLES[12]);
             let begin = qpc();
-            let deployment = self.deployment(memory, base, game_state, growing);
+            let deployment = self.deployment(memory, base, game_state);
             self.conveyors.outcome = deployment.conveyors;
             self.deployment_lines.outcome = deployment.lines;
             self.deployment_manpower.outcome = deployment.manpower;
@@ -1046,21 +1047,17 @@ impl Captured {
         memory: &impl Memory,
         base: usize,
         game_state: usize,
-        growing: bool,
     ) -> cdeployment_status::Outcomes {
         cdeployment_status::walk_buffer(
             memory,
             base,
             game_state,
-            engine_native::walk::Buffer::for_worker(&mut self.conveyors.rows, growing),
-            engine_native::walk::Buffer::for_worker(&mut self.deployment_lines.rows, growing),
-            engine_native::walk::Buffer::for_worker(&mut self.deployment_manpower.rows, growing),
-            engine_native::walk::Buffer::for_worker(&mut self.deployment_equipment.rows, growing),
-            engine_native::walk::Buffer::for_worker(&mut self.conveyor_name_bytes.first, growing),
-            engine_native::walk::Buffer::for_worker(
-                &mut self.line_custom_name_bytes.first,
-                growing,
-            ),
+            engine_native::walk::Buffer::Growing(&mut self.conveyors.rows),
+            engine_native::walk::Buffer::Growing(&mut self.deployment_lines.rows),
+            engine_native::walk::Buffer::Growing(&mut self.deployment_manpower.rows),
+            engine_native::walk::Buffer::Growing(&mut self.deployment_equipment.rows),
+            engine_native::walk::Buffer::Growing(&mut self.conveyor_name_bytes.first),
+            engine_native::walk::Buffer::Growing(&mut self.line_custom_name_bytes.first),
         )
     }
 
@@ -1077,15 +1074,18 @@ impl Captured {
         decode_ticks: &mut [u64; 8],
     ) {
         let started = qpc();
-        let recorded = crate::raw::Recorded::build(&job.log);
+        let recorded = match crate::raw::Recorded::build(&job.log) {
+            Ok(recorded) => recorded,
+            Err(reason) => {
+                self.fail_production_rest_capture(reason);
+                return;
+            }
+        };
         self.lines.outcome = cproduction_status::walk_lines_buffer(
             &recorded,
             base,
             game_state,
-            engine_native::walk::Buffer::for_worker(
-                &mut self.lines.rows,
-                job.log.worker_growth_enabled(),
-            ),
+            engine_native::walk::Buffer::Growing(&mut self.lines.rows),
         );
         decode_ticks[0] += elapsed(started);
         let started = qpc();
@@ -1093,10 +1093,7 @@ impl Captured {
             &recorded,
             base,
             game_state,
-            engine_native::walk::Buffer::for_worker(
-                &mut self.stockpiles.rows,
-                job.log.worker_growth_enabled(),
-            ),
+            engine_native::walk::Buffer::Growing(&mut self.stockpiles.rows),
         );
         decode_ticks[1] += elapsed(started);
         let started = qpc();
@@ -1104,23 +1101,14 @@ impl Captured {
             &recorded,
             base,
             game_state,
-            engine_native::walk::Buffer::for_worker(
-                &mut self.licenses.rows,
-                job.log.worker_growth_enabled(),
-            ),
+            engine_native::walk::Buffer::Growing(&mut self.licenses.rows),
         );
         let result = cproduction_status::walk_license_records_buffer(
             &recorded,
             base,
             game_state,
-            engine_native::walk::Buffer::for_worker(
-                &mut self.license_records.rows,
-                job.log.worker_growth_enabled(),
-            ),
-            engine_native::walk::Buffer::for_worker(
-                &mut self.license_handles.first,
-                job.log.worker_growth_enabled(),
-            ),
+            engine_native::walk::Buffer::Growing(&mut self.license_records.rows),
+            engine_native::walk::Buffer::Growing(&mut self.license_handles.first),
         );
         self.license_records.outcome = result.outcome;
         self.license_handles.len = result.handles_len;
@@ -1131,30 +1119,12 @@ impl Captured {
             &recorded,
             base,
             game_state,
-            engine_native::walk::Buffer::for_worker(
-                &mut self.conveyors.rows,
-                job.log.worker_growth_enabled(),
-            ),
-            engine_native::walk::Buffer::for_worker(
-                &mut self.deployment_lines.rows,
-                job.log.worker_growth_enabled(),
-            ),
-            engine_native::walk::Buffer::for_worker(
-                &mut self.deployment_manpower.rows,
-                job.log.worker_growth_enabled(),
-            ),
-            engine_native::walk::Buffer::for_worker(
-                &mut self.deployment_equipment.rows,
-                job.log.worker_growth_enabled(),
-            ),
-            engine_native::walk::Buffer::for_worker(
-                &mut self.conveyor_name_bytes.first,
-                job.log.worker_growth_enabled(),
-            ),
-            engine_native::walk::Buffer::for_worker(
-                &mut self.line_custom_name_bytes.first,
-                job.log.worker_growth_enabled(),
-            ),
+            engine_native::walk::Buffer::Growing(&mut self.conveyors.rows),
+            engine_native::walk::Buffer::Growing(&mut self.deployment_lines.rows),
+            engine_native::walk::Buffer::Growing(&mut self.deployment_manpower.rows),
+            engine_native::walk::Buffer::Growing(&mut self.deployment_equipment.rows),
+            engine_native::walk::Buffer::Growing(&mut self.conveyor_name_bytes.first),
+            engine_native::walk::Buffer::Growing(&mut self.line_custom_name_bytes.first),
         );
         self.conveyors.outcome = walked.conveyors;
         self.deployment_lines.outcome = walked.lines;
@@ -1177,11 +1147,9 @@ mod design_fog;
 mod design_template_changes;
 pub mod registry;
 mod rest;
-#[cfg(any(test, feature = "test-support"))]
-pub use rest::copy_production_rest_refresh;
 pub use rest::{
     ProductionRestCopyContext, ProductionRestCopyReport, ProductionRestJob,
-    copy_production_rest_refresh_growing,
+    copy_production_rest_refresh,
 };
 
 impl Captured {
@@ -1326,14 +1294,16 @@ impl Captured {
             }
         )
         .then(|| design_changes::project_history(&self.changes, history, projection.as_deref()));
-        let history_input = if self.variants.baseline_admitted
-            && matches!(self.changes.outcome, Outcome::Unavailable { .. })
-        {
-            TableView::Complete(rows::TableRows::VariantChanges(Vec::new())).into()
-        } else {
-            self.changes
-                .table_input_history(history, projection.as_deref())
-        };
+        let history_input = timed(TableId::VariantChanges, || {
+            if self.variants.baseline_admitted
+                && matches!(self.changes.outcome, Outcome::Unavailable { .. })
+            {
+                TableView::Complete(rows::TableRows::VariantChanges(Vec::new())).into()
+            } else {
+                self.changes
+                    .table_input_history(history, projection.as_deref())
+            }
+        });
         let dictionary =
             bonus_snapshots::latest(self.variants.dictionary(), self.changes.dictionary());
         let mut inputs = [
@@ -1379,11 +1349,13 @@ impl Captured {
                     amount_raw: r.amount_raw,
                 },
             ),
-            definitions_input(
-                projection.as_deref(),
-                &self.variants.definitions,
-                &self.variants.definition_bytes,
-            ),
+            timed(TableId::VariantDefinitions, || {
+                definitions_input(
+                    projection.as_deref(),
+                    &self.variants.definitions,
+                    &self.variants.definition_bytes,
+                )
+            }),
             table::<tables::VariantModules, _>(
                 self.variants.modules.outcome,
                 &self.variants.modules.rows,

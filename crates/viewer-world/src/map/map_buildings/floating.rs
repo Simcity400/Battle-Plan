@@ -10,21 +10,39 @@ impl PartialEq for Paint {
         self.0.same_bits(&other.0)
     }
 }
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
-struct Counts {
-    fogged: usize,
-    placed: usize,
-    unknown_fog: usize,
-    unknown_deployment: usize,
+/// A floating harbour's or a set of harbours' counts for the layer's summary.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HarbourCounts {
+    pub fogged: usize,
+    pub placed: usize,
+    pub unknown_fog: usize,
+    pub unknown_deployment: usize,
 }
-impl Counts {
-    fn add(&mut self, other: Self) {
+impl HarbourCounts {
+    /// Adds the counts to `summary`, with the words of the undecided harbours.
+    pub fn apply(&self, summary: &mut MapBuildingSummary) {
+        summary.fogged += self.fogged;
+        summary.placed += self.placed;
+        if self.unknown_fog != 0 {
+            *summary
+                .unknown_floating_harbors
+                .entry("the fog byte of the harbour's sea province is unknown")
+                .or_default() += self.unknown_fog;
+        }
+        if self.unknown_deployment != 0 {
+            *summary
+                .unknown_floating_harbors
+                .entry("the controller's floating-harbour deployment is unknown")
+                .or_default() += self.unknown_deployment;
+        }
+    }
+    pub fn add(&mut self, other: Self) {
         self.fogged += other.fogged;
         self.placed += other.placed;
         self.unknown_fog += other.unknown_fog;
         self.unknown_deployment += other.unknown_deployment;
     }
-    fn remove(&mut self, other: Self) {
+    pub fn remove(&mut self, other: Self) {
         self.fogged -= other.fogged;
         self.placed -= other.placed;
         self.unknown_fog -= other.unknown_fog;
@@ -36,8 +54,8 @@ pub(super) struct Output {
     campaign: ViewIdentity,
     by_province_slot: CopyIndex<(u32, u32), ()>,
     slots: ValueIndex<u32, Retained<Paint>>,
-    counts: CopyIndex<u32, Counts>,
-    totals: Counts,
+    counts: CopyIndex<u32, HarbourCounts>,
+    totals: HarbourCounts,
     pub(super) changes: Retained<Vec<(u32, PreparedSlot)>>,
 }
 impl Output {
@@ -45,20 +63,7 @@ impl Output {
         self.slots.values().map(|value| &(**value).0)
     }
     pub(super) fn apply(&self, summary: &mut MapBuildingSummary) {
-        summary.fogged += self.totals.fogged;
-        summary.placed += self.totals.placed;
-        if self.totals.unknown_fog != 0 {
-            *summary
-                .unknown_floating_harbors
-                .entry("the fog byte of the harbour's sea province is unknown")
-                .or_default() += self.totals.unknown_fog;
-        }
-        if self.totals.unknown_deployment != 0 {
-            *summary
-                .unknown_floating_harbors
-                .entry("the controller's floating-harbour deployment is unknown")
-                .or_default() += self.totals.unknown_deployment;
-        }
+        self.totals.apply(summary);
     }
     pub(super) fn read(
         assets: &MapBuildingAssets,
@@ -94,7 +99,7 @@ impl Output {
         }
         let mut slots = old.map_or_else(ValueIndex::default, |old| old.slots.clone());
         let mut counts = old.map_or_else(CopyIndex::default, |old| old.counts.clone());
-        let mut totals = old.map_or_else(Counts::default, |old| old.totals);
+        let mut totals = old.map_or_else(HarbourCounts::default, |old| old.totals);
         let mut changes = Vec::with_capacity(dirty.len());
         let ordinary = assets.ordinary_slot_count();
         for (&index, _) in dirty.iter() {
@@ -105,7 +110,12 @@ impl Output {
                     .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?,
             )
             .map_err(|_| invalid("floating harbour slot identity exceeds u32"))?;
-            let (paint, tally) = evaluate(assets, vision, inputs, position, id)?;
+            let (paint, tally) = assets.harbour(
+                position,
+                id,
+                |province| vision.province_byte(province),
+                |province| inputs.deployed(province),
+            );
             if let Some(before) = counts.get(&index) {
                 totals.remove(*before);
             }
@@ -130,68 +140,69 @@ impl Output {
         })
     }
 }
-fn evaluate(
-    assets: &MapBuildingAssets,
-    vision: &Vision,
-    floating: &FloatingInputs,
-    position: &BuildingPosition,
-    id: u32,
-) -> io::Result<(PreparedSlot, Counts)> {
-    let mut tally = Counts::default();
-    let entity = (|| {
-        let province = position.adjacent_sea;
-        if (province as i32) <= 0 {
-            return None;
-        }
-        match vision
-            .province_byte(province)
-            .map(|byte| byte >= FLOATING_HARBOR_VISIBILITY)
-        {
-            Some(true) => {}
-            Some(false) => {
-                tally.fogged = 1;
+impl MapBuildingAssets {
+    /// A floating harbour's slot `id` from values: `byte(sea)` is the viewer's fog byte of its sea
+    /// province, `deployed(sea)` whether its controller deployed it (`None` when undecided).
+    pub(super) fn harbour(
+        &self,
+        position: &BuildingPosition,
+        id: u32,
+        byte: impl FnOnce(u32) -> Option<u8>,
+        deployed: impl FnOnce(u32) -> Option<bool>,
+    ) -> (PreparedSlot, HarbourCounts) {
+        let mut tally = HarbourCounts::default();
+        let entity = (|| {
+            let province = position.adjacent_sea;
+            if (province as i32) <= 0 {
                 return None;
             }
-            None => {
-                tally.unknown_fog = 1;
-                return None;
+            match byte(province).map(|byte| byte >= FLOATING_HARBOR_VISIBILITY) {
+                Some(true) => {}
+                Some(false) => {
+                    tally.fogged = 1;
+                    return None;
+                }
+                None => {
+                    tally.unknown_fog = 1;
+                    return None;
+                }
             }
-        }
-        let deployed = floating.deployed(province);
-        if deployed.is_none() {
-            tally.unknown_deployment = 1;
-        }
-        let mesh = assets.floating_mesh.filter(|_| deployed == Some(true))?;
-        tally.placed = 1;
-        let selection = Selection {
-            admitted: true,
-            mesh,
-            definition: mesh,
-            variant: 0,
-        };
-        Some(PreparedEntity {
-            healthy: selection,
-            ruined: selection,
-            destroyed: false,
-            uncertain: false,
-            damaged: false,
-            disable_grow_animation: false,
-            instance: ModelInstance {
-                position: [position.x, position.y, position.z],
-                rotation: position.rotation,
-                scale: 1.0,
-                animation_seed: id,
-                ..Default::default()
+            let deployed = deployed(province);
+            if deployed.is_none() {
+                tally.unknown_deployment = 1;
+            }
+            let mesh = self.floating_mesh.filter(|_| deployed == Some(true))?;
+            tally.placed = 1;
+            let selection = Selection {
+                admitted: true,
+                mesh,
+                definition: mesh,
+                variant: 0,
+            };
+            Some(PreparedEntity {
+                healthy: selection,
+                ruined: selection,
+                destroyed: false,
+                uncertain: false,
+                damaged: false,
+                disable_grow_animation: false,
+                instance: ModelInstance {
+                    position: [position.x, position.y, position.z],
+                    rotation: position.rotation,
+                    scale: 1.0,
+                    animation_seed: id,
+                    ..Default::default()
+                },
+            })
+        })();
+        (
+            PreparedSlot {
+                source: None,
+                id,
+                drawn_at_distance: Some(false),
+                entity: entity.map(PreparedEntity::retain),
             },
-        })
-    })();
-    Ok((
-        PreparedSlot {
-            source: None,
-            id,
-            drawn_at_distance: Some(false),
-            entity: entity.map(PreparedEntity::retain),
-        },
-        tally,
-    ))
+            tally,
+        )
+    }
 }

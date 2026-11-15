@@ -23,13 +23,13 @@ impl Capacities {
                 }
             }};
         }
-        let subjects = csubject_relation::walk(memory, base, state, &mut [], &mut []);
+        let subjects = csubject_relation::count(memory, base, state);
         count!(1, 1, subjects.outcome);
         raise(&mut self.subject_names, rows(subjects.required_bytes, 1));
-        let autonomy = ccurrent_autonomy_status::walk(memory, base, state, &mut [], &mut []);
+        let autonomy = ccurrent_autonomy_status::count(memory, base, state);
         count!(2, 2, autonomy.outcome);
         raise(&mut self.autonomy_names, rows(autonomy.required_bytes, 1));
-        let agency = cintelligence_agency::walk(memory, base, state, &mut [], &mut []);
+        let agency = cintelligence_agency::count(memory, base, state);
         count!(3, 3, agency.outcome);
         raise(&mut self.agency_names, rows(agency.required_bytes, 1));
         match agency_upgrade_levels::native_demand(memory, base, state) {
@@ -44,7 +44,7 @@ impl Capacities {
                 failure.get_or_insert(reason);
             }
         }
-        let operatives = coperative_leader::walk(memory, base, state, &mut [], &mut []);
+        let operatives = coperative_leader::count(memory, base, state);
         count!(
             4,
             4,
@@ -57,7 +57,7 @@ impl Capacities {
         count!(
             5,
             16,
-            cintelligence_agency::walk_captured_operatives(memory, base, state, &mut [])
+            cintelligence_agency::count_captured_operatives(memory, base, state)
         );
         let missions = operative_mission_demand(memory, base, state);
         count!(13, 18, missions.outcome);
@@ -65,26 +65,26 @@ impl Capacities {
             &mut self.operative_mission_bytes,
             rows(missions.required_bytes, 1),
         );
-        count!(6, 5, ccryptology::walk(memory, base, state, &mut []));
+        count!(6, 5, ccryptology::count(memory, base, state));
         count!(
             7,
             6,
-            ccountry_intel_network::walk(memory, base, state, &mut [])
+            ccountry_intel_network::count(memory, base, state)
         );
-        let buffered = agency_operation_buffers::walk(memory, base, state, &mut [], &mut []);
+        let buffered = agency_operation_buffers::count(memory, base, state);
         count!(15, 20, buffered.outcome);
         raise(
             &mut self.agency_operation_entries,
             rows(buffered.required_entries, 1),
         );
-        let strategic = strategic_operatives::walk(memory, base, state, &mut [], &mut []);
+        let strategic = strategic_operatives::count(memory, base, state);
         count!(14, 19, strategic.outcome);
         raise(
             &mut self.strategic_operative_entries,
             rows(strategic.required_entries, 1),
         );
         count!(8, 7, flag_demand(memory, base, state));
-        let variables = cvariables::walk_scopes(memory, base, state, &mut [], &mut [], &mut []);
+        let variables = cvariables::count_scopes(memory, base, state);
         count!(9, 8, variables.outcome);
         if let Ok(scopes) = count(variables.outcome) {
             crate::variable_changes::offer_scopes(scopes);
@@ -94,15 +94,7 @@ impl Capacities {
             rows(variables.required_entries, 1),
         );
         raise(&mut self.variable_names, rows(variables.required_bytes, 1));
-        let operations = ccountry_operation_manager::walk(
-            memory,
-            base,
-            state,
-            &mut [],
-            &mut [],
-            &mut [],
-            &mut [],
-        );
+        let operations = ccountry_operation_manager::count(memory, base, state);
         count!(10, 9, operations.outcome);
         count!(10, 10, operations.assignments);
         raise(
@@ -113,14 +105,14 @@ impl Capacities {
             &mut self.operation_parts,
             rows(operations.required_parts, 1),
         );
-        let tokens = ccountry_operation_token_manager::walk(memory, base, state, &mut [], &mut []);
+        let tokens = ccountry_operation_token_manager::count(memory, base, state);
         count!(11, 11, tokens.outcome);
         raise(&mut self.tokens, rows(tokens.required_tokens, 1));
         // Retain every original nonnull native index.
         count!(
             12,
             12,
-            incoming_diplomatic_action_queue::walk(memory, base, state, &mut [])
+            incoming_diplomatic_action_queue::count(memory, base, state)
         );
         failure.map_or(Ok(()), Err)
     }

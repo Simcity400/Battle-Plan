@@ -62,11 +62,7 @@ pub struct Row {
 /// caller-owned rows. A readable zero-length roster is empty; an unreadable or
 /// unauthenticated nonzero entry is unavailable. No UI state or pointers enter
 /// the rows. Capacity stops the walk and reports every remaining roster entry.
-pub fn walk(memory: &impl Memory, base: usize, game_state: usize, output: &mut [Row]) -> Outcome {
-    walk_buffer(memory, base, game_state, crate::walk::Buffer::Fixed(output))
-}
-
-pub fn walk_growing(
+pub fn walk(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -214,14 +210,14 @@ mod tests {
         bytes
     }
 
-    fn capture(bytes: &[u8], output: &mut [Row]) -> Outcome {
+    fn capture(bytes: &[u8], output: &mut Vec<Row>) -> Outcome {
         walk(&SliceMemory { base: GAME, bytes }, BASE, GAME, output)
     }
 
     #[test]
     fn native_ids_turns_finalized_bytes_and_roster_order_survive() {
         let bytes = fixture();
-        let mut output = [Row::default(); 2];
+        let mut output = vec![Row::default(); 2];
         assert_eq!(capture(&bytes, &mut output), Outcome::Rows { len: 2 });
         assert_eq!(
             output[0],
@@ -244,28 +240,24 @@ mod tests {
     }
 
     #[test]
-    fn capacity_reports_unread_conferences_without_touching_their_fields() {
+    fn the_count_probe_reports_unread_conferences_without_touching_their_fields() {
         let bytes = fixture();
-        // The second object is inaccessible, but lies beyond caller capacity.
+        // The second object is inaccessible; the count probe reads no conference.
         let bytes = &bytes[..SECOND - GAME];
-        let mut output = [Row::default(); 1];
         assert_eq!(
-            capture(bytes, &mut output),
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            }
-        );
-        assert_eq!(output[0].ordinal, 0);
-        assert_eq!(
-            capture(bytes, &mut []),
+            walk_buffer(
+                &SliceMemory { base: GAME, bytes },
+                BASE,
+                GAME,
+                crate::walk::Buffer::Count,
+            ),
             Outcome::Truncated {
                 len: 0,
                 unread_rows: 2
             }
         );
         assert!(matches!(
-            capture(bytes, &mut [Row::default(); 2]),
+            capture(bytes, &mut vec![Row::default(); 2]),
             Outcome::Unavailable { .. }
         ));
     }
@@ -283,7 +275,7 @@ mod tests {
             GAME + cgame_state::PEACE_CONFERENCES_DATA,
             0_u64.to_le_bytes(),
         );
-        assert_eq!(capture(&bytes, &mut []), Outcome::Rows { len: 0 });
+        assert_eq!(capture(&bytes, &mut Vec::new()), Outcome::Rows { len: 0 });
         for count in [1_u32, 3, u32::MAX] {
             put(
                 &mut bytes,
@@ -291,7 +283,7 @@ mod tests {
                 count.to_le_bytes(),
             );
             assert!(matches!(
-                capture(&bytes, &mut []),
+                capture(&bytes, &mut Vec::new()),
                 Outcome::Unavailable { .. }
             ));
         }
@@ -303,7 +295,7 @@ mod tests {
                 },
                 BASE,
                 0,
-                &mut []
+                &mut Vec::new()
             ),
             Outcome::Unavailable { .. }
         ));
@@ -319,14 +311,14 @@ mod tests {
         ] {
             let mut bytes = fixture();
             put(&mut bytes, address, value.to_le_bytes());
-            let outcome = capture(&bytes, &mut [Row::default(); 2]);
+            let outcome = capture(&bytes, &mut vec![Row::default(); 2]);
             assert!(matches!(outcome, Outcome::Unavailable { .. }));
             assert_eq!(outcome.len(), 0);
         }
         let bytes = fixture();
         let bytes = &bytes[..SECOND + FINALIZED - GAME];
         assert!(matches!(
-            capture(bytes, &mut [Row::default(); 2]),
+            capture(bytes, &mut vec![Row::default(); 2]),
             Outcome::Unavailable { .. }
         ));
     }

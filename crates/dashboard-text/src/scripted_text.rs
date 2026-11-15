@@ -130,7 +130,8 @@ mod numeric;
 pub mod operands;
 pub use entries::{
     Environment, StateContent, StateNameUsage, StateNames, live_state_warnings,
-    province_primary_name, read_state_content, state_display_name, victory_point_name,
+    plain_state_name_of, province_primary_name, read_state_content, state_display_name,
+    victory_point_name,
 };
 mod properties;
 pub mod random;
@@ -668,8 +669,6 @@ pub struct ScriptedText<'a> {
     reserved_tag: std::sync::OnceLock<Result<String, String>>,
     root: u32,
     pub(crate) nato_counters: bool,
-    /// The walk's lexer folds, given to the trigger world it builds.
-    lexicon: Option<&'a dashboard_world::Lexicon>,
     world: std::sync::OnceLock<Result<crate::triggers::World<'a>, String>>,
 }
 
@@ -920,7 +919,6 @@ impl<'a> ScriptedText<'a> {
             reserved_tag: std::sync::OnceLock::new(),
             root,
             nato_counters: installed_content_settings::settings::MapOptions::DEFAULT.nato_counters,
-            lexicon: None,
             world: std::sync::OnceLock::new(),
         };
         // Reads made while recording stay the answer's inputs; the others wait for first use.
@@ -962,17 +960,10 @@ impl<'a> ScriptedText<'a> {
             reserved_tag: std::sync::OnceLock::new(),
             root,
             nato_counters: self.nato_counters,
-            lexicon: self.lexicon,
             world: std::sync::OnceLock::new(),
         }
     }
 
-    /// This text on a walk's frame, its trigger world finding tokens by the walk's lexer folds
-    /// ([`crate::triggers::World::with_lexicon`]).
-    pub fn with_lexicon(mut self, lexicon: Option<&'a dashboard_world::Lexicon>) -> Self {
-        self.lexicon = lexicon;
-        self
-    }
 
     /// Unit-bonus icons, including nested effect descriptions, follow the view.
     pub fn with_nato_counters(mut self, nato: bool) -> Self {
@@ -1004,13 +995,13 @@ impl<'a> ScriptedText<'a> {
             .complete::<tables::IndustrialOrganisations>(ORGANISATION)
             .map_err(|why| why.to_string())?;
         let row = keyed(&organisations, u128::from(reference))?
-            .ok_or_else(|| format!("IndustrialOrganisations lacks organisation {reference:#x}"))?;
+            .ok_or_else(|| format!("industrial organisations lacks organisation {reference:#x}"))?;
         let name = if row.name.is_empty() {
             let tokens = self
                 .frame
                 .complete::<tables::LexicalTokens>(0)
                 .map_err(|why| why.to_string())?;
-            spelled(&tokens, row.token)?.ok_or("LexicalTokens lacks industrial organisation name")?
+            spelled(&tokens, row.token)?.ok_or("lexical tokens lacks industrial organisation name")?
         } else {
             row.name.as_slice()
         };
@@ -1019,7 +1010,7 @@ impl<'a> ScriptedText<'a> {
         let owner = self
             .scopes
             .slot(row.owner)
-            .ok_or("CountryLinks lacks industrial organisation owner")?;
+            .ok_or("country links lacks industrial organisation owner")?;
         let tagged = format!("{}_{name}", self.country_tag(owner)?);
         let key = if owner > 0 && self.localisation.get(&tagged).is_some() {
             tagged.as_str()
@@ -1674,7 +1665,7 @@ impl<'a> ScriptedText<'a> {
         }
         if let Some(gap) = self.countries_gap() {
             return Err(format!(
-                "{segment}: whether it is a country tag is unknown: Countries {gap}"
+                "{segment}: whether it is a country tag is unknown: countries: {gap}"
             ));
         }
         if (*event_active || matches!(object, Object::Country(_)))
@@ -1697,7 +1688,7 @@ impl<'a> ScriptedText<'a> {
                 // A positive id no state holds is a null state object.
                 return Ok(Object::State(None));
             }
-            return Err(format!("state {segment} is unknown: States {gap}"));
+            return Err(format!("state {segment} is unknown: states: {gap}"));
         }
         // 4. Event context only: saved event targets use their own object
         // selector, including text kinds unsupported by the trigger evaluator.
@@ -1741,7 +1732,7 @@ impl<'a> ScriptedText<'a> {
                 let (found, complete, gap) = self.state_record(id as u32);
                 if !found && !complete {
                     return Err(format!(
-                        "saved event target {name}: state {id} is unknown: States {gap}"
+                        "saved event target {name}: state {id} is unknown: states: {gap}"
                     ));
                 }
                 Ok(Object::State(found.then_some(id as u32)))
@@ -1957,7 +1948,7 @@ impl<'a> ScriptedText<'a> {
         let (politics, gap) = rows::<tables::Politics>(self.frame, POLITICS);
         let row = first(&politics, |key| self.scopes.slot(key as u32) == Some(slot))?
             .ok_or_else(|| {
-                format!("the capital of country slot {slot} is unknown: Politics {gap}")
+                format!("the capital of country slot {slot} is unknown: politics: {gap}")
             })?;
         let capital = if original && row.original_capital != 0 {
             row.original_capital
@@ -1980,7 +1971,7 @@ impl<'a> ScriptedText<'a> {
         let (appearance, gap) = rows::<tables::CountryAppearance>(self.frame, APPEARANCE);
         let row = first(&appearance, |key| self.scopes.slot(key as u32) == Some(slot))?
             .ok_or_else(|| {
-                format!("the overlord of country slot {slot} is unknown: CountryAppearance {gap}")
+                format!("the overlord of country slot {slot} is unknown: country appearance: {gap}")
             })?;
         // A positive overlord becomes the context; none
         // is logged and leaves it unchanged.
@@ -1991,7 +1982,7 @@ impl<'a> ScriptedText<'a> {
         let (_, links) = rows::<tables::CountryLinks>(self.frame, 0);
         self.scopes.slot(link).map(Some).ok_or_else(|| {
             format!(
-                "the overlord link {link} of country slot {slot} resolves to no country: CountryLinks {links}"
+                "the overlord link {link} of country slot {slot} resolves to no country: country links: {links}"
             )
         })
     }
@@ -2009,18 +2000,15 @@ impl<'a> ScriptedText<'a> {
             return Ok(Some(row));
         }
         if !complete::<T>(self.frame) {
-            return Err(format!("{:?} {gap}", T::ID));
+            return Err(format!("{}: {gap}", T::ID.words()));
         }
         if !complete::<tables::CountryLinks>(self.frame)
-            && let Some(link) = found
-                .keys()
-                .map(|key| key as u32)
-                .find(|&link| self.scopes.slot(link).is_none())
+            && found.keys().any(|key| self.scopes.slot(key as u32).is_none())
         {
             let (_, links) = rows::<tables::CountryLinks>(self.frame, 0);
             return Err(format!(
-                "a {:?} row's country link {link} resolves to no country: CountryLinks {links}",
-                T::ID,
+                "{} names a country that no recorded country link holds: country links: {links}",
+                T::ID.words(),
             ));
         }
         Ok(None)
@@ -2112,7 +2100,7 @@ impl<'a> ScriptedText<'a> {
                 let row = keyed(&leaders, u128::from(reference))?
                     .ok_or_else(|| {
                         format!(
-                            "{name}: unit leader {reference:#x} is not recorded: UnitLeaders {gap}"
+                            "{name}: unit leader {reference:#x} is not recorded: unit leaders: {gap}"
                         )
                     })?;
                 Object::Character(row.character_id)
@@ -2144,19 +2132,19 @@ impl<'a> ScriptedText<'a> {
         let (players, gap) = rows::<tables::LocalPlayer>(self.frame, PLAYER);
         if !complete::<tables::LocalPlayer>(self.frame) {
             return Err(format!(
-                "the local player's country is not recorded this hour: LocalPlayer {gap}"
+                "the local player's country is not recorded this hour: local player: {gap}"
             ));
         }
         if players.len() != 1 {
             return Err(format!(
-                "LocalPlayer holds {} rows where the game state holds one local player",
+                "local player holds {} rows where the game state holds one local player",
                 players.len()
             ));
         }
         let player = each(players)
             .next()
             .transpose()?
-            .ok_or("LocalPlayer holds no row")?;
+            .ok_or("local player holds no row")?;
         let raw = if (player.country as i32) > 0 {
             player.country
         } else {
@@ -2168,7 +2156,7 @@ impl<'a> ScriptedText<'a> {
         }
         self.scopes
             .slot(raw)
-            .ok_or_else(|| format!("the local player's country link {raw} has no CountryLinks row"))
+            .ok_or_else(|| "the local player's country has no recorded country link".to_owned())
     }
 
     /// A character of the current country, else of the active event scope's
@@ -2261,7 +2249,7 @@ impl<'a> ScriptedText<'a> {
                         let (_, links) = rows::<tables::CountryLinks>(self.frame, 0);
                         unknown.get_or_insert_with(|| {
                             format!(
-                                "character {}'s country link {} resolves to no country: CountryLinks {links}",
+                                "character {}'s country link {} resolves to no country: country links: {links}",
                                 row.id, row.country
                             )
                         });
@@ -2288,8 +2276,9 @@ impl<'a> ScriptedText<'a> {
                 None => {
                     unknown.get_or_insert_with(|| {
                         format!(
-                            "character {}'s script token {token} is not spelled: LexicalTokens {lexical_gap}",
-                            row.id
+                            "character {}'s script token {token} is not spelled: {}: {lexical_gap}",
+                            row.id,
+                            tables::LexicalTokens::ID.words()
                         )
                     });
                 }
@@ -2298,7 +2287,7 @@ impl<'a> ScriptedText<'a> {
         let unknown = if self.frame.status(tables::Characters::ID).is_table_complete() {
             unknown
         } else {
-            Some(format!("Characters {gap}"))
+            Some(format!("{}: {gap}", tables::Characters::ID.words()))
         };
         match unknown {
             Some(reason) => Err(match country {
@@ -2333,14 +2322,14 @@ impl<'a> ScriptedText<'a> {
     ) -> Result<String, String> {
         let (politics, gap) = rows::<tables::Politics>(self.frame, POLITICS);
         let politics = first(&politics, |key| self.scopes.slot(key as u32) == Some(slot))?
-            .ok_or_else(|| format!("the ruling party of {tag} is unknown: Politics {gap}"))?;
+            .ok_or_else(|| format!("the ruling party of {tag} is unknown: politics: {gap}"))?;
         let Some(party) = politics.ruling_party else {
             return Err(format!("{tag} has no ruling party"));
         };
         let (parties, gap) = rows::<tables::PoliticalParties>(self.frame, PARTY);
         let party = keyed(&parties, u128::from(politics.country) << 32 | u128::from(party))?
             .ok_or_else(|| {
-                format!("the ruling party of {tag} has no PoliticalParties row: {gap}")
+                format!("the ruling party of {tag} has no political parties row: {gap}")
             })?;
         self.party_name(&party, tag, long)
     }
@@ -2363,10 +2352,7 @@ impl<'a> ScriptedText<'a> {
             0
         } else {
             self.scopes.slot(party.tag).ok_or_else(|| {
-                format!(
-                    "the ruling party of {tag}: tag link {} has no CountryLinks row",
-                    party.tag
-                )
+                format!("the ruling party of {tag}: its country has no recorded country link")
             })?
         };
         let naming = crate::party_names::PartyNaming {

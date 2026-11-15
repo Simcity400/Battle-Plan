@@ -5,19 +5,20 @@ import { amountText, arcTargets, foldTree, groupTree, listed, sliceColours, slic
 import { resolveOptions } from '../../dashboard/options.ts';
 import { sunburstSettings, levelsShown } from '../../charts/sunburst/sunburstOptions.ts';
 import { definition, OPTIONS } from './definition.ts';
+import { nearest, shipLeaves, stepHours, withEdges } from './lossesData.ts';
 import { LEVELS, causeName, destructionCoverageAt, destructionCoverageHours, coverageAt, coverageHours, coverageLegend, destructionLegend, destructionCountingNote, formatLosses, landNote, lossItems, lossesTotal, lossesFootnote, lossKey, pointAt, unknownCauses, validateLossesReply } from './lossesData.ts';
 
 const ROOT = { id: 'all', label: 'All losses' };
 const TOKENS = { positive: '#00aa00', warning: '#aaaa00', error: '#aa0000', surface: '#000000', text: '#ffffff' };
 const live = (hour: number) => ({ first: 100, hour, end: 109, campaign: false });
 const whole = { ...live(109), campaign: true };
-const leaf = (extra: Partial<LossLeaf> = {}): LossLeaf => ({ design: 0, points: [{ hour: 100, totalRaw: '200000' }, { hour: 105, totalRaw: '350001' }], lowerBoundFrom: null, ...extra });
+const leaf = (extra: Partial<LossLeaf> = {}): LossLeaf => ({ design: 0, key: '0', points: [{ hour: 100, totalRaw: '200000' }, { hour: 105, totalRaw: '350001' }], lowerBoundFrom: null, ...extra });
 const cause = (extra: Partial<LossCause> = {}): LossCause => ({ source: { kind: 'combatLog', reason: 0 }, domain: 'land', name: { key: 'mod_loss_combat', template: 'Mod combat', text: 'Mod combat' },
   group: null, loss: true, unknown: null, unknownSpans: [], leaves: [leaf()], ...extra });
 const reply = (): LossesReply => ({
-  branchId: 'mod-branch', tag: 'opaque: tag / 1', amountScale: 100_000, landSource: 'combatLog', landLowerBound: null, destructionCountedFrom: 100, destructionCoverage: [{ firstHour: 100, lastHour: 109, reason: null }], retainedMonths: 7, warnings: [],
+  branchId: 'mod-branch', ships: [], from: 100, to: 110, width: 64, exactHours: [], restarts: [], tag: 'opaque: tag / 1', amountScale: 100_000, landSource: 'combatLog', landLowerBound: null, destructionCountedFrom: 100, destructionCoverage: [{ firstHour: 100, lastHour: 109, reason: null }], retainedMonths: 7, warnings: [],
   designs: [{ variant: 91001, equipment: 'mod_walkers_v2', archetype: 'mod_walkers', archetypeName: 'Walking machines',
-    names: [{ firstHour: 100, name: 'First walker', known: true, design: 'fingerprint-one' }, { firstHour: 105, name: 'Renamed walker', known: true, design: 'fingerprint-one' }] }],
+    names: [{ firstHour: 100, name: 'First walker', known: true }, { firstHour: 105, name: 'Renamed walker', known: true }] }],
   coverage: [{ firstHour: 100, lastHour: 109, coverage: 'logged' }],
   causes: [cause(), cause({ source: { kind: 'sunkConvoys' }, domain: 'naval', name: { key: 'mod_sunk', template: 'Mod sinkings', text: 'Mod sinkings' },
     leaves: [leaf({ design: null, points: [{ hour: 104, totalRaw: '100000' }] })] }),
@@ -37,7 +38,8 @@ test('validates the contract and refuses malformed amounts, names, indices, span
     (bad: LossesReply) => { bad.causes[0].leaves[0].points[0].totalRaw = '1.25'; },
     (bad: LossesReply) => { bad.causes[0].leaves[0].points.reverse(); },
     (bad: LossesReply) => { bad.designs[0].names.reverse(); },
-    (bad: LossesReply) => { bad.designs[0].names[0].design = ''; },
+    (bad: LossesReply) => { bad.ships = [{ signature: 's', listedHour: 100, sinkHour: 99, design: 9, count: 1 }]; },
+    (bad: LossesReply) => { delete (bad.causes[0].leaves[0] as Partial<LossLeaf>).key; },
     (bad: LossesReply) => { bad.coverage[0].lastHour = 99; },
     (bad: LossesReply) => { bad.coverage.push({ firstHour: 105, lastHour: 110, coverage: 'unknown' }); },
     (bad: LossesReply) => { bad.causes[2].unknown = 'Not available.'; bad.causes[2].leaves = [leaf()]; },
@@ -70,9 +72,17 @@ test('totals grow on the recorded hour, without interpolation; campaign includes
   assert.equal(treeAt(data, 105).exact, 450001n);
   const campaign = groupTree(lossItems(data, whole), ROOT);
   assert.equal(campaign.exact, 450001n);
-  assert.equal(amountText(campaign, TEXT), '4.50001');
+  assert.equal(amountText(campaign, TEXT), '4.5');
   assert.equal(treeAt(data, 100).final, campaign.value);
-  assert.equal(formatLosses(Number(9007199254741499n), 9007199254741499n, 100_000), '90,071,992,547.41499');
+  assert.equal(formatLosses(Number(9007199254741499n), 9007199254741499n, 100_000), '90,071,992,547');
+});
+
+test('losses read as whole units from ten, and a fraction of a unit never reads as none', () => {
+  assert.equal(formatLosses(0, 39_831_823_130n, 100_000), '398,318');
+  assert.equal(formatLosses(0, 22_156_862_990n, 100_000), '221,569');
+  assert.equal(formatLosses(0, 250_000n, 100_000), '2.5');
+  assert.equal(formatLosses(0, 9_560n, 100_000), '0.096');
+  assert.equal(formatLosses(0, -1_278_460n, 100_000), 'Returned: −13');
 });
 
 test('a recorded correction to zero preserves earlier slice colours and folding without changing final totals', () => {
@@ -91,9 +101,9 @@ test('names are content types and the design name recorded at the hour shown, ne
   const data = reply();
   assert.deepEqual(lossItems(data, live(104))[1].path.map(key => key.label), ['Mod combat', 'Walking machines', 'First walker']);
   assert.equal(lossItems(data, whole)[1].path[2].label, 'Renamed walker');
-  data.designs[0].names = [{ firstHour: 105, name: 'Future name', known: true, design: null }];
+  data.designs[0].names = [{ firstHour: 105, name: 'Future name', known: true }];
   assert.equal(lossItems(data, live(104))[1].path[2].label, 'Name unavailable');
-  data.designs[0].names.unshift({ firstHour: 100, name: null, known: false, design: null });
+  data.designs[0].names.unshift({ firstHour: 100, name: null, known: false });
   assert.equal(lossItems(data, live(104))[1].path[2].label, 'Name unavailable');
   data.designs[0].archetypeName = null;
   assert.equal(lossItems(data, live(104))[1].path[1].label, 'Equipment type name unavailable');
@@ -194,7 +204,7 @@ test('lend-lease incomplete subtotals retain exact amounts and named notes throu
   const root = treeAt(data, 105);
   const lease = root.children.find(node => node.label === 'Mod combat')!;
   for (const node of walk(lease)) assert.match(node.notes.join(' '), /Incomplete total/i);
-  assert.equal(amountText(root, TEXT), '4.50001');
+  assert.equal(root.exact, 450001n);
   assert.equal(root.finalUnknown, true);
   assert.match(sliceTooltip(lease, root, TEXT)[0].note!, /Incomplete total/i);
   const folded = foldTree(groupTree(lossItems(data, live(105)), ROOT), 1);
@@ -271,7 +281,7 @@ test('complete supplemental destruction has no permanent deletion or paradrop ex
   const data = destruction();
   const root = treeAt(data, 105);
   assert.equal(lossesTotal(lossItems(data, live(105))).incomplete, false);
-  assert.equal(amountText(root, TEXT), '4.50001');
+  assert.equal(root.exact, 450001n);
   assert.equal(landNote(data, 100, 105), undefined);
   assert.equal(lossesFootnote(data, whole), '');
   assert.doesNotMatch(root.notes.join(' '), /Not included/);
@@ -521,7 +531,7 @@ test('negative corrections retain exact digits, legend access and zero arc geome
   assert.equal(listed(part), true);
   assert.equal(arcTargets(root, root, 'share').get(part.id)!.shown, false);
   const text = TEXT;
-  assert.equal(amountText(part, text), 'Returned: \u221290,071,992,547.41499');
+  assert.equal(amountText(part, text), 'Returned: \u221290,071,992,547');
   assert.match(sunburstSummary(root, text), /Returned:.*90,071,992,547/);
   assert.equal(sliceTooltip(part, root, text)[0].rows.some(row => row.label.startsWith('Of ')), false);
   const folded = foldTree(root, 1);
@@ -550,9 +560,35 @@ test('a measured subtotal keeps exact signed data and Fill uncertainty without c
   const items = lossItems(data, live(105)), total = lossesTotal(items);
   const root = groupTree(items, ROOT, [], total);
   const text = { ...TEXT, shares: !total.incomplete };
-  assert.equal(amountText(root, text), '4.50001');
+  assert.equal(root.exact, 450001n);
   assert.equal(root.finalUnknown, true);
   assert.equal(arcTargets(root, root, 'share').get(root.children[0].id)!.shown, true);
   assert.equal(sliceTooltip(root.children[0], root, text)[0].rows.some(row => row.label.startsWith('Of ')), false);
   assert.doesNotMatch(sunburstSummary(root, text), /%/);
+});
+
+test('the keyboard steps through sunk ships beside the series, the nearer answer winning', () => {
+  const hours = [105, 110, 120];
+  assert.equal(stepHours(hours, 'Home', null, 100, 130), 105);
+  assert.equal(stepHours(hours, 'End', null, 100, 115), 110);
+  assert.equal(stepHours(hours, 'ArrowRight', 110, 100, 130), 120);
+  assert.equal(stepHours(hours, 'ArrowLeft', 110, 100, 130), 105);
+  assert.equal(stepHours(hours, 'ArrowLeft', 105, 100, 130), null);
+  assert.equal(nearest('ArrowRight', 118, 120), 118);
+  assert.equal(nearest('ArrowLeft', 118, null), 118);
+  assert.equal(nearest('End', 118, 120), 120);
+});
+
+test('ships count the most one read listed, dated at their sinking whichever read listed them', () => {
+  const leaves = shipLeaves([
+    { signature: 'a', listedHour: 100, sinkHour: 90, design: 0, count: 1 },
+    { signature: 'a', listedHour: 104, sinkHour: 90, design: 0, count: 2 },
+    { signature: 'b', listedHour: 108, sinkHour: 95, design: 0, count: 1 },
+  ], 100000);
+  assert.deepEqual(leaves.map(leaf => leaf.points), [[{ hour: 90, totalRaw: '200000' }, { hour: 95, totalRaw: '300000' }]]);
+  assert.equal(withEdges('Home', 120, null, 100), 100);
+  assert.equal(withEdges('End', null, null, 100), 100);
+  assert.equal(withEdges('ArrowLeft', null, 110, 100), 100);
+  assert.equal(withEdges('ArrowRight', null, 110, 100), 110);
+  assert.equal(withEdges('ArrowRight', 115, 110, 100), 115);
 });

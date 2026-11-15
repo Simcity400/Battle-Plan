@@ -460,7 +460,7 @@ pub fn direct(memory: &impl engine_native::Memory, capacities: &Capacities) -> C
         rows: &[],
         outcome: Outcome::Rows { len: 0 },
     };
-    let _ = captured.acquire_fixed(memory, 0, BASE, divisions, 0, true);
+    let _ = captured.acquire(memory, 0, BASE, divisions, 0, true);
     captured.rest_raw_mode = false;
     captured
 }
@@ -492,7 +492,7 @@ pub fn split(
         rows: &[],
         outcome: Outcome::Rows { len: 0 },
     };
-    let _ = captured.acquire_fixed(memory, 0, BASE, divisions, 0, true);
+    let _ = captured.acquire(memory, 0, BASE, divisions, 0, true);
     let mut ticks = [0u64; 8];
     captured.decode_production_rest_payload(0, BASE, &first, &mut ticks);
     (captured, report, first)

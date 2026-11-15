@@ -6,3 +6,6 @@
 /* Narrow: the type line hides; names keep their tooltip. */
 .equipment-designs { container-type: inline-size; }
 @container (max-width: 420px) { .equipment-designs .stockpile-equipment small { display: none; } }
+.design-name { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
+.design-name > img, .design-name > .art-fallback { flex: none; width: 48px; height: 22px; object-fit: contain; }
+.design-name small { color: var(--muted); }

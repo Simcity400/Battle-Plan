@@ -23,6 +23,15 @@ export function readDatedCountry(token: unknown, campaign: string, branch: strin
   } catch { return null; }
 }
 
+/** The country a choice that saves one shows: the one saved, else (its automatic choice) the widget's own country `tag` as
+ * it was at `origin`, the hour the choice was first shown. Null when neither is known. */
+export function chosenDatedCountry(token: unknown, campaign: string, branch: string, countries: CountrySelection, tag: string | undefined,
+  firstHour: number, lastHour: number, origin: number): DatedCountrySelection | null {
+  if (typeof token === 'string' && token) return readDatedCountry(token, campaign, branch, countries);
+  if (!tag || !Number.isSafeInteger(origin) || origin < firstHour || origin > lastHour) return null;
+  return { campaign, branch, tag, originOffset: origin - firstHour };
+}
+
 /** Strict native coverage: missing origins and conflicting aliases never fall back to a tag segment. */
 export function datedCountrySpans(histories: readonly CountryIdentityHistory[], selection: DatedCountrySelection,
   firstHour: number, lastHour: number, membership?: ReadonlyMap<string, readonly Span[]> | null): ReadonlyMap<string, readonly Span[]> | null {

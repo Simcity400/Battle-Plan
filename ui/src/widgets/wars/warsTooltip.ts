@@ -6,15 +6,12 @@ import type { HourSpan, WarCasualtyRun, WarObservation, WarParticipantRun, WarTi
 import { labelObservationAt, sideLabel } from './warsData.ts';
 
 type Country = CountryLabel;
-const STILL_PREPARING = 'Still being prepared';
 type Day = (hour: number) => string;
 const singularSide = (label: string) => label === 'Attackers' ? 'Attacker' : label === 'Defenders' ? 'Defender' : label;
 
-/** A last observation is a bound, never an invented peace or departure date.
- * A run reaching a prepared prefix's last hour (`through`) has no end yet. */
+/** A last observation is a bound, never an invented peace or departure date. */
 function endLabel(run: { firstHour: number; lastHour: number }, by: boolean, until: number, branchLast: number,
-  gaps: readonly HourSpan[], day: Day, participant = false, through: number | null = null): string {
-  if (through != null && run.lastHour >= through && until > through) return STILL_PREPARING;
+  gaps: readonly HourSpan[], day: Day, participant = false): string {
   const ongoing = run.lastHour >= branchLast && until >= branchLast ? "Ongoing at the recording’s end"
     : participant ? 'Still fighting' : 'Ongoing';
   return describeRun([run], Math.min(until, branchLast), {
@@ -43,6 +40,8 @@ export interface WarTooltipInput {
   observation: WarObservation | null;
   losses: WarCasualtyRun | null;
   lossesPending?: boolean;
+  /** Why the war's casualties at the hour are not known, when the reply says. */
+  lossesReason?: string | null;
   hour: number;
   until: number;
   branchLast: number;
@@ -52,8 +51,6 @@ export interface WarTooltipInput {
   country: Country;
   day: Day;
   participant?: { tag: string; run: WarParticipantRun | null; capitulations?: readonly number[] };
-  /** The prepared prefix's last hour while the hours after it are still being prepared. */
-  preparedThrough?: number | null;
   contributions?: WarContributionGroup | null;
   contributionsPending?: boolean;
 }
@@ -63,15 +60,13 @@ export function warTooltip(input: WarTooltipInput): TooltipContent {
   const coversHour = (gap: HourSpan) => gap.firstHour <= hour && hour <= gap.lastHour;
   const inGap = unobserved.some(coversHour) || input.branchGaps?.some(coversHour)
     || (!observation && war.firstHour <= hour && hour <= war.lastHour);
-  const through = input.preparedThrough ?? null;
-  const absent = through != null && hour > through ? STILL_PREPARING
-    : inGap ? 'Not recorded' : hour < war.firstHour ? 'Not started' : hour > war.lastHour ? 'Ended' : null;
+  const absent = inGap ? 'Not recorded' : hour < war.firstHour ? 'Not started' : hour > war.lastHour ? 'Ended' : null;
   const labelled = inGap ? null : hour > war.lastHour ? labelObservationAt(war, hour) : observation;
   const sides: [string, string] = [sideLabel('viewpoint', labelled, country), sideLabel('opponent', labelled, country)];
   const title = absent === 'Not started' ? absent : labelled?.name.known ? labelled.name.text : 'Not recorded';
   const rows: TooltipRow[] = [
     { label: 'Started', value: `${war.startedBy ? 'by ' : ''}${day(war.firstHour)}` },
-    { label: 'Ended', value: endLabel(war, war.endedBy, until, branchLast, unobserved, day, false, through) },
+    { label: 'Ended', value: endLabel(war, war.endedBy, until, branchLast, unobserved, day, false) },
   ];
   const missingCaps = capitulationsUnobserved.some(gap => gap.firstHour <= Math.min(war.lastHour, until) && gap.lastHour >= war.firstHour);
   if (participant) {
@@ -80,7 +75,7 @@ export function warTooltip(input: WarTooltipInput): TooltipContent {
     const side = !run ? outside : singularSide(sideLabel(run.side, labelled, country));
     rows.unshift({ label: 'Side', value: side });
     rows.push({ label: 'Joined', value: run ? `${run.joinedBy ? 'by ' : ''}${day(run.firstHour)}` : outside },
-      { label: 'Left', value: run ? endLabel(run, run.leftBy, until, branchLast, unobserved, day, true, through) : outside });
+      { label: 'Left', value: run ? endLabel(run, run.leftBy, until, branchLast, unobserved, day, true) : outside });
     if (run && !absent) {
       const contribution = input.contributions?.participants.find(row => row.tag === participant.tag);
       if (contribution) {
@@ -115,7 +110,8 @@ export function warTooltip(input: WarTooltipInput): TooltipContent {
   }
   const notes = [
     !absent ? input.contributions?.reason : null,
-    losses && !participant && !absent ? `Casualties as recorded ${day(losses[0])} – ${day(losses[1])}.` : null,
+    losses && !participant && !absent && losses[0] !== losses[1] ? `Casualties as recorded ${day(losses[0])} – ${day(losses[1])}.` : null,
+    !losses && !participant && !absent && !input.lossesPending ? input.lossesReason : null,
     missingCaps ? 'Some capitulations may be missing.' : null,
   ].filter(Boolean).join(' ');
   const participantName = participant ? country(participant.tag) : null;

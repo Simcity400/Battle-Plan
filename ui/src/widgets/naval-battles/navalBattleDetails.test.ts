@@ -1,19 +1,25 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import type { NavalBattleDetail } from '../../generated/dashboard';
 import { navalDetailTooltip, navalFleetDescription, validateNavalBattleDetails } from './navalBattleDetails.ts';
+import type { NavalBattleDetail } from '../../generated/dashboard';
 
 const detail: NavalBattleDetail = { id: 'result:15', hour: 43, rosterHour: 8,
   fleets: [{ names: ['Recorded fleet'], unknown: null }, { names: [], unknown: 'Fleet name not recorded' }],
   namedShips: [{ sinkHour: 9, knownAt: 19, name: 'Recorded ship', className: 'Mod ship class' }], shipRead: 43, unavailable: null };
 test('fleet and sinking details preserve names and sinking dates without supplying dates', () => {
   assert.equal(validateNavalBattleDetails({ rows: [detail], warnings: [] }).rows[0], detail);
-  assert.equal(navalFleetDescription(detail), 'Recorded fleet v Fleet names not recorded');
+  assert.equal(navalFleetDescription(detail, { pending: false }), 'Recorded fleet v Fleet names not recorded');
   const rows = navalDetailTooltip(detail);
   assert.ok(rows.some(row => row.label === 'Recorded ship' && row.value === 'Mod ship class'));
   assert.ok(!rows.some(row => row.label === 'Fleet roster read'));
   assert.ok(!rows.some(row => row.label === 'Recorded at'));
   assert.ok(rows.some(row => row.label === 'Sunk'));
+});
+
+test('a row whose details are not held says so as its subtitle: loading, the failure, or not answered; never nothing (run 12: every subtitle gone)', () => {
+  assert.equal(navalFleetDescription(undefined, { pending: true }), 'Loading fleets…');
+  assert.equal(navalFleetDescription(undefined, { pending: false, error: new Error('private backend error') }), 'Fleets couldn’t load');
+  assert.equal(navalFleetDescription(undefined, { pending: false }), 'Fleets not read for this battle');
 });
 
 test('detail failures and missing fleets hide backend reasons without claiming no losses', () => {

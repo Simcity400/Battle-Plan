@@ -175,12 +175,12 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 .complete::<tables::ReservedCountryNaming>(RESERVED_LOOK)
                 .map_err(|why| why.to_string())?;
             if rows.len() != 1 {
-                return Err("ReservedCountryNaming has no singleton row for country zero".into());
+                return Err("reserved country naming has no singleton row for country zero".into());
             }
             reserved = each(rows)
                 .next()
                 .transpose()?
-                .ok_or("ReservedCountryNaming has no singleton row for country zero")?;
+                .ok_or("reserved country naming has no singleton row for country zero")?;
             let row = &reserved;
             Some(CountryLook {
                 name_tag: std::str::from_utf8(&row.name_tag)
@@ -1381,20 +1381,20 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     ) -> Result<String, String> {
         let cache = row
             .modifier_cache
-            .require("AdvisorRoles.modifier_cache")?
+            .require("modifier cache of advisor roles")?
             .as_ref()
-            .ok_or("AdvisorRoles.modifier_cache unavailable")?;
+            .ok_or("modifier cache of advisor roles unavailable")?;
         let keys = row
             .tooltip_keys
-            .require("AdvisorRoles.tooltip_keys")?
+            .require("tooltip keys of advisor roles")?
             .as_ref()
-            .ok_or("AdvisorRoles.tooltip_keys capture unavailable")?;
+            .ok_or("tooltip keys of advisor roles capture unavailable")?;
         let tooltips = keys
             .iter()
             .map(|key| {
                 std::str::from_utf8(installed_content_core::parser::c_string(key))
                     .map(str::to_owned)
-                    .map_err(|_| "AdvisorRoles tooltip key is not UTF-8".to_owned())
+                    .map_err(|_| "advisor roles tooltip key is not UTF-8".to_owned())
             })
             .collect::<Result<Vec<_>, String>>()?;
         self.cached_modifier_description(
@@ -1547,7 +1547,7 @@ fn feature_enabled(frame: HourFrame<'_>, definition: &ModifierDefinitionRow) -> 
         .complete::<tables::SimulationFeatures>(FEATURES)
         .map_err(|why| why.to_string())?;
     let (1, Some(features)) = (features.len(), each(features).next().transpose()?) else {
-        return Err("SimulationFeatures has no unique feature mask".into());
+        return Err("simulation features has no unique feature mask".into());
     };
     Ok(features.dlc_mask & definition.feature_selector != 0)
 }

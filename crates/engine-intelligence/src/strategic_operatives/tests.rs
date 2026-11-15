@@ -96,7 +96,7 @@ fn fixture() -> Fixture {
     }
 }
 
-fn run(fixture: &Fixture, rows: &mut [Row], entries: &mut [Entry]) -> Walk {
+fn run(fixture: &Fixture, rows: &mut Vec<Row>, entries: &mut Vec<Entry>) -> Walk {
     walk(
         &fixture.world.memory(),
         0,
@@ -109,8 +109,8 @@ fn run(fixture: &Fixture, rows: &mut [Row], entries: &mut [Entry]) -> Walk {
 fn refusal(fixture: &Fixture) -> Outcome {
     run(
         fixture,
-        &mut [Row::default(); 4],
-        &mut [Entry::default(); 8],
+        &mut vec![Row::default(); 4],
+        &mut vec![Entry::default(); 8],
     )
     .outcome
 }
@@ -118,8 +118,8 @@ fn refusal(fixture: &Fixture) -> Outcome {
 #[test]
 fn every_slot_reads_its_activity_and_both_maps_in_table_order() {
     let fixture = fixture();
-    let mut rows = [Row::default(); 3];
-    let mut entries = [Entry::default(); 4];
+    let mut rows = vec![Row::default(); 3];
+    let mut entries = vec![Entry::default(); 4];
     let read = run(&fixture, &mut rows, &mut entries);
     assert_eq!(read.outcome, Outcome::Rows { len: 2 });
     assert_eq!((read.entries_len, read.required_entries), (3, 3));
@@ -176,8 +176,8 @@ fn a_null_manager_or_slot_has_no_rows() {
     let mut fixture = fixture();
     let vector = fixture.vector;
     fixture.world.u64(vector + 2 * 8, 0);
-    let mut rows = [Row::default(); 3];
-    let read = run(&fixture, &mut rows, &mut [Entry::default(); 4]);
+    let mut rows = vec![Row::default(); 3];
+    let read = run(&fixture, &mut rows, &mut vec![Entry::default(); 4]);
     assert_eq!(read.outcome, Outcome::Rows { len: 1 });
     assert_eq!(rows[0].slot, 1);
     let state = fixture.world.game_state();
@@ -188,20 +188,9 @@ fn a_null_manager_or_slot_has_no_rows() {
 }
 
 #[test]
-fn capacity_omits_whole_rows_with_exact_entry_demand() {
+fn the_count_probe_counts_whole_rows_with_exact_entry_demand_and_storage_grows() {
     let fixture = fixture();
-    let mut rows = [Row::default(); 2];
-    let short = run(&fixture, &mut rows, &mut [Entry::default(); 2]);
-    assert_eq!(
-        short.outcome,
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 1
-        }
-    );
-    assert_eq!((short.entries_len, short.required_entries), (0, 3));
-    assert_eq!((rows[0].slot, rows[0].entries_start), (2, 0));
-    let sizing = run(&fixture, &mut [], &mut []);
+    let sizing = count(&fixture.world.memory(), 0, fixture.world.game_state());
     assert_eq!(
         sizing.outcome,
         Outcome::Truncated {
@@ -211,7 +200,7 @@ fn capacity_omits_whole_rows_with_exact_entry_demand() {
     );
     assert_eq!(sizing.required_entries, 3);
     let (mut rows, mut entries) = (Vec::new(), Vec::new());
-    let grown = walk_growing(
+    let grown = walk(
         &fixture.world.memory(),
         0,
         fixture.world.game_state(),

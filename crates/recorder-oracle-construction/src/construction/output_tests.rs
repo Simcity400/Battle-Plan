@@ -12,7 +12,7 @@ fn frame(hour: i32, amount: i64, produced: i64, level: i16, railway: bool) -> De
         tables: std::array::from_fn(|i| TableView::Complete(TableRows::empty(TableId::ALL[i])))
             .map(Into::into),
     };
-    frame.metrics.table_ns[TableId::BuildingConstruction.index()] = 1;
+    construction_walk(&mut frame, true);
     *frame.tables[TableId::ConstructionLineOutput.index()] =
         TableView::Complete(TableRows::ConstructionLineOutput(vec![
             ConstructionLineOutputRow {
@@ -66,6 +66,18 @@ fn frame(hour: i32, amount: i64, produced: i64, level: i16, railway: bool) -> De
             }]));
     }
     frame
+}
+/// Every table of the construction slot marked read, as the collector marks a walk of it, or
+/// none, as at an hour that carried them; an hourly table read either way.
+fn construction_walk(frame: &mut DecodedFrame, read: bool) {
+    let slot = replay_data::cadence::cadence(TableId::ConstructionLineOutput);
+    frame.metrics.table_ns.fill(0);
+    frame.metrics.table_ns[TableId::ProvinceSupply.index()] = 1;
+    for table in TableId::ALL {
+        if replay_data::cadence::cadence(table) == slot {
+            frame.metrics.table_ns[table.index()] = u64::from(read);
+        }
+    }
 }
 fn output(frame: &mut DecodedFrame) -> &mut ConstructionLineOutputRow {
     let TableView::Complete(TableRows::ConstructionLineOutput(rows)) =
@@ -432,46 +444,37 @@ fn script_target_growth_does_not_spend_the_waiting_lines_ic() {
         assert_eq!(checked(&frames).differences.len(), 1);
     }
 }
+/// The output is read in the hours the recording marks it read: a slot read and a forced
+/// refresh off the slot; an hour that carried it is no read, though another table was read then.
 #[test]
-fn output_reads_follow_the_daily_slot_and_forced_refresh_not_the_timing_anchor() {
-    let slot = match replay_data::cadence::cadence(TableId::ConstructionLineOutput) {
-        replay_data::cadence::Cadence::Daily(slot) => i32::try_from(slot).unwrap(),
-        _ => panic!("construction output must share the construction census slot"),
-    };
+fn output_reads_are_the_hours_the_recording_marks_it_read() {
+    let slot = slot();
     for rail in [false, true] {
         let mut frames = [
             frame(120 + slot, 0, 100, 1, rail),
             frame(144 + slot, 350, 450, 1, rail),
         ];
-        for f in &mut frames {
-            f.metrics.table_ns.fill(0);
-            // A shared read can charge an hourly anchor instead of the census.
-            f.metrics.table_ns[TableId::ProvinceSupply.index()] = 1;
-        }
         let report = checked(&frames);
         assert!(report.differences.is_empty());
         assert_eq!(report.compared_tables["ConstructionLineOutput"], 1);
         output(&mut frames[1]).construction_raw += 1;
         assert_eq!(checked(&frames).differences.len(), 1);
 
-        // Between census reads the rows are carried; an hourly anchor's
-        // timing alone cannot date a new publication.
         let mut carried = frame(121 + slot, 900, 999, 1, rail);
-        carried.metrics.table_ns.fill(0);
-        carried.metrics.table_ns[TableId::ProvinceSupply.index()] = 1;
+        construction_walk(&mut carried, false);
         output(&mut frames[1]).construction_raw -= 1;
         let report = checked(&[frames[0].clone(), carried.clone(), frames[1].clone()]);
         assert!(report.differences.is_empty());
         assert_eq!(report.compared_tables["ConstructionLineOutput"], 1);
 
-        // An off-slot full refresh is dated by a timed table of the slot.
-        carried.metrics.table_ns[TableId::BuildingConstruction.index()] = 1;
-        output(&mut carried).construction_raw = 899;
-        let report = checked(&[frames[0].clone(), carried.clone()]);
+        let mut forced = carried;
+        construction_walk(&mut forced, true);
+        output(&mut forced).construction_raw = 899;
+        let report = checked(&[frames[0].clone(), forced.clone()]);
         assert!(report.differences.is_empty());
         assert_eq!(report.compared_tables["ConstructionLineOutput"], 1);
-        output(&mut carried).construction_raw += 1;
-        let report = checked(&[frames[0].clone(), carried]);
+        output(&mut forced).construction_raw += 1;
+        let report = checked(&[frames[0].clone(), forced]);
         assert_eq!(report.differences.len(), 1);
         assert_eq!(report.compared_tables["ConstructionLineOutput"], 0);
     }
@@ -775,7 +778,27 @@ fn a_completion_beside_a_count_addition_is_its_exact_cost_debit_under_the_level_
     };
     rows.clear();
     output(&mut ended[2]).ended = true;
-    assert_eq!(checked(&ended).differences.len(), 1);
+    // A line that ended before the compared hour is in neither the read nor
+    // the save, which keeps no deleted line: its count cannot be certified.
+    let report = checked(&ended);
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert_eq!(
+        report.limitations[ENDED_ADDITION],
+        ["ConstructionLineOutput 1 completion beside an unwitnessed count addition 100..124"]
+    );
+    let mut vanished = ended.clone();
+    let TableView::Complete(TableRows::ConstructionLineOutput(rows)) =
+        &mut *vanished[2].tables[TableId::ConstructionLineOutput.index()]
+    else {
+        unreachable!()
+    };
+    rows.clear();
+    assert!(
+        checked(&vanished)
+            .differences
+            .iter()
+            .any(|difference| difference.contains("unwitnessed count addition 100..124"))
+    );
     // A later window still checks the count: a stale count that a fresh
     // read lowers without a completion is an unexplained decrease.
     let mut later = frames.to_vec();
@@ -803,6 +826,60 @@ fn a_completion_beside_a_count_addition_is_its_exact_cost_debit_under_the_level_
     rows[0].level = 1;
     rows[0].healthy_level = 1;
     assert_eq!(checked(&flat).differences.len(), 1);
+}
+
+fn slot() -> i32 {
+    match replay_data::cadence::cadence(TableId::ConstructionLineOutput) {
+        replay_data::cadence::Cadence::Daily(slot) => i32::try_from(slot).unwrap(),
+        _ => panic!("construction output must share the construction census slot"),
+    }
+}
+
+/// The 9b session: a count addition between two slot reads, then a full
+/// refresh off the slot whose read publishes the line live. That read
+/// certifies the count.
+#[test]
+fn a_refreshed_compared_hour_off_the_slot_certifies_a_count_addition_by_its_own_read() {
+    let compared = 144 + slot() + 7;
+    assert!(!replay_data::cadence::is_refresh(
+        TableId::ConstructionLineOutput,
+        compared
+    ));
+    let mut frames = [
+        frame(120 + slot(), 0, 900_000, 1, false),
+        frame(144 + slot(), 200_350, 100_350, 2, false),
+        frame(compared, 200_350, 100_350, 2, false),
+    ];
+    for frame in &mut frames {
+        set_amount(frame, 2);
+    }
+    let report = checked(&frames);
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert_eq!(
+        report.compared_tables["ConstructionLineOutput completions beside count additions"],
+        1
+    );
+    assert_eq!(report.compared_tables["ConstructionLineOutput"], 2);
+}
+
+/// A forced read of the construction slot dates every table it read in the
+/// branch scan of last reads.
+#[test]
+fn a_forced_construction_read_dates_its_tables_last_read() {
+    let compared = 144 + slot() + 7;
+    let frames = vec![
+        frame(120 + slot(), 0, 100, 1, false),
+        frame(compared, 350, 450, 1, false),
+    ];
+    let hours =
+        recorder_oracle_support::report::last_read_hours(&replay_of(frames), 1, compared).unwrap();
+    for table in [
+        TableId::ConstructionLineOutput,
+        TableId::BuildingConstruction,
+        TableId::StateBaseResources,
+    ] {
+        assert_eq!(hours.get(&table), Some(&compared), "{table:?}");
+    }
 }
 
 #[test]

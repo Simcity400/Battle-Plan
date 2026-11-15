@@ -1,9 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useContextMenu } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
 import { dayLabel } from '../../charts/draw';
 import { jumpItem } from '../../charts/jump';
-import { PreparedKey } from '../../charts/PreparedKey';
 import Timeline from '../../charts/timeline/Timeline';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import { useChartTokens } from '../../charts/useChartTokens';
@@ -12,22 +11,29 @@ import { defaultCountryTag } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
 import { contentKey, contentSet, resolveOptions } from '../../dashboard/options';
-import { usePlaybackHour } from '../../dashboard/playback';
-import { preparedPrefix } from '../../dashboard/preparedPrefix';
+import { useHeadHour } from '../army-size/headHour';
+import { useShownEachFrame } from '../../dashboard/widgetPerf';
+import { changesBy } from '../../charts/timeline/runState';
 import { useProduct } from '../../dashboard/products';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
-import type { DiplomacyPactsReply } from '../../generated/dashboard';
 import { OPTIONS } from './definition';
-import { aboutElsewhere, agreementLanes, agreementsOf } from './pactsData';
+import { aboutElsewhere, agreementLanes, agreementsOf, changeHours, validatePacts } from './pactsData';
 import './diplomaticPacts.css';
 import { motionOf } from '../../charts/easing.ts';
+import type { DiplomacyPactsReply } from '../../generated/dashboard';
+import { useChangedState } from '../../dashboard/changedState.ts';
 
 const NO_WARNINGS: string[] = [];
 
 /** One country's diplomatic agreements over time: a section per kind of relation, split by
  * which side holds it, and a bar per partner from when it started to when it was last listed. */
 export default function DiplomaticPactsWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
-  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const clock = runtime.clock;
+  // The widget renders when an agreement starts, ends or is last listed by the head (paced; any hour while paused), never
+  // because the hour moved inside one; the playhead and the bars move with the clock each frame (`liveHead`).
+  const followsClock = widget.time.mode === 'follow';
+  const structure = useRef<(hour: number) => string>(() => '');
+  const playbackHour = useHeadHour(clock, active && followsClock, hour => structure.current(hour));
   const options = resolveOptions(OPTIONS, widget.options);
   const tokens = useChartTokens();
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
@@ -40,16 +46,19 @@ export default function DiplomaticPactsWidget({ widget, runtime, active, onDiagn
   const extent: [number, number] = [first, Math.max(first + 1, last + 1)];
   const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] ?? null : defaultCountryTag(track);
   const reply = useProduct<DiplomacyPactsReply>(runtime.client, track && tag ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'diplomacy-state', params: { view: 'pacts', branchId: track.branch.id, tags: [tag] } } : null, active, undefined, track?.source);
+    product: 'diplomatic-pacts', params: { branchId: track.branch.id, tag } } : null, active, validatePacts, track?.source);
   const data = reply.data;
+  const axisOffset = track?.axisOffset ?? 0;
+  const changes = useMemo(() => data ? changeHours(data) : [], [data]);
+  structure.current = hour => `${changesBy(changes, Math.floor(hour + axisOffset))}:${clock.getSnapshot().playing ? '' : hour}`;
+  const liveHead = useMemo(() => followsClock && track ? { read: () => clock.getSnapshot().position + axisOffset,
+    subscribe: (changed: () => void) => clock.subscribeFrame(changed) } : undefined, [followsClock, track, clock, axisOffset]);
+  useShownEachFrame(clock, () => data && track ? liveHead ? Math.floor(Math.min(liveHead.read(), track.branch.lastHour)) : at : null);
   const kinds = useMemo(() => { const chosen = contentSet(options.kinds).map(contentKey); return chosen.length ? new Set(chosen) : null; }, [options.kinds]);
-  const prefix = useMemo(() => preparedPrefix(data), [data]);
-  // A prefix reply lists pacts only through its last prepared hour.
-  const through = prefix?.pending.length ? prefix.coverage.lastHour : Infinity;
-  const agreements = useMemo(() => data && tag ? agreementsOf(data.pacts, tag, at, kinds, through) : [], [data, tag, at, kinds, through]);
+  const agreements = useMemo(() => data && tag ? agreementsOf(data.pacts, tag, at, kinds) : [], [data, tag, at, kinds]);
   // Partners are named as they were when last listed (or at the hour shown, if earlier):
   // a tag a later country takes never renames an earlier agreement's partner.
-  const [inView, setInView] = useState<[number, number]>([0, 40]);
+  const [inView, setInView] = useChangedState<[number, number]>([0, 40]);
   const [shown, setShown] = useState('[]');
   const wanted = useMemo(() => [...(tag ? [{ hour: at, tag }] : []),
     ...(JSON.parse(shown) as [string, number][]).map(([partner, lastSeen]) => ({ hour: Math.min(at, lastSeen), tag: partner }))], [shown, tag, at]);
@@ -60,10 +69,10 @@ export default function DiplomaticPactsWidget({ widget, runtime, active, onDiagn
     return named.known === undefined ? { ...named, name: 'Loading name…' } : named;
   }, [labelAt, at]);
   const kindNames = useMemo(() => new Map(data?.kinds.map(kind => [kind.kind, kind.name]) ?? []), [data]);
-  const { lanes, info } = useMemo(() => agreementLanes(agreements, options.ended !== 'hidden', Math.min(track?.branch.lastHour ?? at, through), {
+  const { lanes, info } = useMemo(() => agreementLanes(agreements, options.ended !== 'hidden', track?.branch.lastHour ?? at, {
     name: tag ? country(tag, at).name : '', country, colors: tokens.categories,
     kindName: kind => kindNames.get(kind) ?? 'Relation name unavailable',
-  }), [agreements, options.ended, track?.branch.lastHour, through, at, tag, country, tokens.categories, kindNames]);
+  }), [agreements, options.ended, track?.branch.lastHour, at, tag, country, tokens.categories, kindNames]);
   // Only the partners of lanes in view (and a margin) are named and flagged.
   const visible = lanes.slice(Math.max(0, inView[0] - 8), inView[1] + 9).flatMap(lane => info.get(lane.id)?.agreement ?? []);
   const visibleKey = JSON.stringify(visible.flatMap(item => item.partner ? [[item.partner, item.lastSeen]] : []));
@@ -79,9 +88,7 @@ export default function DiplomaticPactsWidget({ widget, runtime, active, onDiagn
   if (!tag) return <WidgetState kind="empty" icon="link" message="Choose a country in widget settings." />;
   if (reply.error) return <WidgetState kind="error" failure={reply.error} onRetry={reply.retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading diplomacy…" />;
-  if (!lanes.length) return prefix?.pending.some(span => span.firstHour <= at)
-    ? <WidgetState kind="loading" label="This range is still being prepared." />
-    : <WidgetState kind="empty" icon="link" message={`${country(tag, at).name} has no ${agreements.length ? 'agreements in force' : 'recorded agreements'} at this time.`} />;
+  if (!lanes.length) return <WidgetState kind="empty" icon="link" message={`${country(tag, at).name} has no ${agreements.length ? 'agreements in force' : 'recorded agreements'} at this time.`} />;
   const tooltip = (laneId: string): TooltipContent | null => {
     const about = info.get(laneId);
     if (!about) return null;
@@ -93,7 +100,6 @@ export default function DiplomaticPactsWidget({ widget, runtime, active, onDiagn
       { label: 'Since', value: `${item.sinceBound ? 'by ' : ''}${dayLabel(item.since)}` },
       ...(item.expires != null ? [{ label: 'Expires', value: dayLabel(item.expires) }] : []),
       state.state === 'present' ? { label: 'Status', value: 'In force' }
-        : state.state === 'preparing' ? { label: 'Status', value: `In force on ${dayLabel(state.since)}; later still being prepared`, tone: 'muted' as const }
         : state.state === 'gone' ? { label: 'Ended', value: `by ${dayLabel(state.by)}` }
           : { label: 'Last recorded', value: dayLabel(state.since), tone: 'muted' as const },
     ];
@@ -102,11 +108,10 @@ export default function DiplomaticPactsWidget({ widget, runtime, active, onDiagn
   const description = `${dayLabel(at)}: ${lanes.filter(lane => lane.heading && !lane.depth).map(lane => lane.identity?.label).join('. ')}.`;
   return <div className="diplomatic-pacts">
     <Timeline key={`${track.source.id}:${track.source.revision}:${track.branch.id}:${tag}`} label="Diplomatic agreements" extent={extent} playhead={playhead}
-      labelHour={at} lanes={lanes} showIcons={false} showNames={false} description={description} unobserved={data.unobserved} pending={prefix?.pending}
+      liveHead={liveHead} labelHour={liveHead ? undefined : at} lanes={lanes} showIcons={false} showNames={false} description={description} unobserved={data.unobserved}
       hoursPerSecond={motionOf(runtime.clock.getSnapshot())} active={active} revision={looksKey}
       onLanesInView={onLanesInView} tooltip={lane => tooltip(lane.id)}
       onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)])} />
-    <PreparedKey pending={prefix?.pending} />
     {menu.menu}
   </div>;
 }

@@ -1,5 +1,24 @@
 use super::*;
-use crate::ccountry::{CounterInputsRow, synthetic::World, walk_counter_inputs_with_rosters};
+use crate::ccountry::{CounterInputsRow, synthetic::World};
+
+fn walk_counter_inputs_with_rosters(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    output: &mut Vec<CounterInputsRow>,
+    rosters: &mut CounterRosters<'_>,
+) -> Outcome {
+    crate::ccountry::walk_counter_inputs_inner(
+        memory,
+        base,
+        game_state,
+        Buffer::Growing(output),
+        Some(rosters),
+        None,
+        None,
+        None,
+    )
+}
 use crate::read;
 use crate::walk::Outcome;
 
@@ -100,28 +119,21 @@ fn effect_rosters_preserve_order_and_fail_independently() {
     let mut rosters = CounterRosters {
         capture_sent_expeditionaries: true,
 
-        states: Buffer::Fixed(&mut states),
-        leaders: Buffer::Fixed(&mut leaders),
+        states: Buffer::Growing(&mut states),
+        leaders: Buffer::Growing(&mut leaders),
         state_len: 0,
         leader_len: 0,
         required: Default::default(),
     };
     let mut effects = EffectRosters {
-        neighbors: Buffer::Fixed(&mut neighbors),
-        policies: Buffer::Fixed(&mut policies),
+        neighbors: Buffer::Growing(&mut neighbors),
+        policies: Buffer::Growing(&mut policies),
         neighbor_len: 0,
         policy_len: 0,
         required: Default::default(),
     };
     assert_eq!(
-        crate::ccountry::walk_counter_inputs_with_effect_rosters(
-            &world.memory(),
-            world.module,
-            world.game_state(),
-            &mut rows,
-            &mut rosters,
-            &mut effects
-        ),
+        crate::ccountry::walk_counter_inputs_inner(&world.memory(), world.module, world.game_state(), crate::walk::Buffer::Growing(&mut rows), Some(&mut rosters), Some(&mut effects), None, None),
         Outcome::Rows { len: 4 }
     );
     for row in &rows {
@@ -136,21 +148,14 @@ fn effect_rosters_preserve_order_and_fail_independently() {
             &[row.country + 80_000; 2]
         );
     }
-    effects.neighbors = Buffer::Fixed(&mut []);
+    effects.neighbors = Buffer::Count;
     effects.neighbor_len = 0;
     effects.policy_len = 0;
     effects.required = Default::default();
     rosters.state_len = 0;
     rosters.leader_len = 0;
     assert_eq!(
-        crate::ccountry::walk_counter_inputs_with_effect_rosters(
-            &world.memory(),
-            world.module,
-            world.game_state(),
-            &mut rows,
-            &mut rosters,
-            &mut effects
-        ),
+        crate::ccountry::walk_counter_inputs_inner(&world.memory(), world.module, world.game_state(), crate::walk::Buffer::Growing(&mut rows), Some(&mut rosters), Some(&mut effects), None, None),
         Outcome::Rows { len: 4 }
     );
     assert_eq!(effects.required.neighbors, 12);
@@ -163,14 +168,7 @@ fn effect_rosters_preserve_order_and_fail_independently() {
     rosters.state_len = 0;
     rosters.leader_len = 0;
     assert_eq!(
-        crate::ccountry::walk_counter_inputs_with_effect_rosters(
-            &world.memory(),
-            world.module,
-            world.game_state(),
-            &mut rows,
-            &mut rosters,
-            &mut effects
-        ),
+        crate::ccountry::walk_counter_inputs_inner(&world.memory(), world.module, world.game_state(), crate::walk::Buffer::Growing(&mut rows), Some(&mut rosters), Some(&mut effects), None, None),
         Outcome::Rows { len: 4 }
     );
     assert_eq!(
@@ -198,8 +196,8 @@ fn five_native_order_rosters_cover_every_country_without_fabricating_handles() {
     let mut rosters = CounterRosters {
         capture_sent_expeditionaries: true,
 
-        states: Buffer::Fixed(&mut states),
-        leaders: Buffer::Fixed(&mut leaders),
+        states: Buffer::Growing(&mut states),
+        leaders: Buffer::Growing(&mut leaders),
         state_len: 0,
         leader_len: 0,
         required: Default::default(),
@@ -240,16 +238,16 @@ fn five_native_order_rosters_cover_every_country_without_fabricating_handles() {
 }
 
 #[test]
-fn a_short_arena_and_invalid_leaders_preserve_country_scalars() {
+fn a_short_arena_grows_and_invalid_leaders_preserve_country_scalars() {
     let (mut world, leader_objects) = fixture(2);
-    let mut rows = [CounterInputsRow::default(); 2];
-    let mut states = [0; 17];
-    let mut leaders = [0; 12];
+    let mut rows = vec![CounterInputsRow::default(); 2];
+    let mut states = vec![0; 17];
+    let mut leaders = vec![0; 12];
     let mut rosters = CounterRosters {
         capture_sent_expeditionaries: true,
 
-        states: Buffer::Fixed(&mut states),
-        leaders: Buffer::Fixed(&mut leaders),
+        states: Buffer::Growing(&mut states),
+        leaders: Buffer::Growing(&mut leaders),
         state_len: 0,
         leader_len: 0,
         required: Default::default(),
@@ -272,12 +270,9 @@ fn a_short_arena_and_invalid_leaders_preserve_country_scalars() {
         }
     );
     assert!(rows[0].state_rosters.is_some());
-    assert_eq!(rows[1].state_rosters, None);
-    assert_eq!(rows[1].leader_rosters, None);
-    assert_eq!(
-        rows[1].roster_reason,
-        Some("country state roster arena capacity exceeded")
-    );
+    assert!(rows[1].state_rosters.is_some());
+    assert!(rows[1].leader_rosters.is_some());
+    assert_eq!(rows[1].roster_reason, None);
     assert_eq!(
         (rows[1].owned_state_count, rows[1].controlled_state_count),
         (3, 3)
@@ -330,8 +325,8 @@ fn absent_arenas_preserve_all_scalar_rows() {
     let mut rosters = CounterRosters {
         capture_sent_expeditionaries: true,
 
-        states: Buffer::Fixed(&mut []),
-        leaders: Buffer::Fixed(&mut []),
+        states: Buffer::Count,
+        leaders: Buffer::Count,
         state_len: 0,
         leader_len: 0,
         required: Default::default(),
@@ -369,12 +364,12 @@ fn absent_arenas_preserve_all_scalar_rows() {
 #[test]
 fn observed_empty_and_null_character_rosters_are_present_empty_spans() {
     let world = World::new(0x4000_0000, 1, 0x1100);
-    let mut rows = [CounterInputsRow::default()];
+    let mut rows = vec![CounterInputsRow::default(); 1];
     let mut rosters = CounterRosters {
         capture_sent_expeditionaries: true,
 
-        states: Buffer::Fixed(&mut []),
-        leaders: Buffer::Fixed(&mut []),
+        states: Buffer::Count,
+        leaders: Buffer::Count,
         state_len: 0,
         leader_len: 0,
         required: Default::default(),
@@ -418,12 +413,12 @@ fn a_short_member_copy_cannot_publish_empty_rosters_and_demand_never_follows_mem
             leaders: 6,
         })
     );
-    let mut rows = [CounterInputsRow::default()];
+    let mut rows = vec![CounterInputsRow::default(); 1];
     let mut rosters = CounterRosters {
         capture_sent_expeditionaries: true,
 
-        states: Buffer::Fixed(&mut [0; 9]),
-        leaders: Buffer::Fixed(&mut [0; 6]),
+        states: Buffer::Growing(&mut vec![0; 9]),
+        leaders: Buffer::Growing(&mut vec![0; 6]),
         state_len: 0,
         leader_len: 0,
         required: Default::default(),
@@ -468,7 +463,7 @@ fn growing_civil_wars_capture_every_native_roster_and_same_hour_expansion() {
     }
     let mut rows = Vec::new();
     assert_eq!(
-        crate::ccountry::walk_civil_wars_growing(
+        crate::ccountry::walk_civil_wars(
             &world.memory(),
             world.module,
             world.game_state(),
@@ -482,7 +477,7 @@ fn growing_civil_wars_capture_every_native_roster_and_same_hour_expansion() {
         1_024,
     );
     assert_eq!(
-        crate::ccountry::walk_civil_wars_growing(
+        crate::ccountry::walk_civil_wars(
             &world.memory(),
             world.module,
             world.game_state(),
@@ -519,27 +514,20 @@ fn counter_walk(memory: &impl Memory, world: &World) -> (Outcome, Vec<CounterInp
     let mut rosters = CounterRosters {
         capture_sent_expeditionaries: true,
 
-        states: Buffer::Fixed(&mut states),
-        leaders: Buffer::Fixed(&mut leaders),
+        states: Buffer::Growing(&mut states),
+        leaders: Buffer::Growing(&mut leaders),
         state_len: 0,
         leader_len: 0,
         required: Default::default(),
     };
     let mut effects = EffectRosters {
-        neighbors: Buffer::Fixed(&mut neighbors),
-        policies: Buffer::Fixed(&mut policies),
+        neighbors: Buffer::Growing(&mut neighbors),
+        policies: Buffer::Growing(&mut policies),
         neighbor_len: 0,
         policy_len: 0,
         required: Default::default(),
     };
-    let outcome = crate::ccountry::walk_counter_inputs_with_effect_rosters(
-        memory,
-        world.module,
-        world.game_state(),
-        &mut rows,
-        &mut rosters,
-        &mut effects,
-    );
+    let outcome = crate::ccountry::walk_counter_inputs_inner(memory, world.module, world.game_state(), crate::walk::Buffer::Growing(&mut rows), Some(&mut rosters), Some(&mut effects), None, None);
     (outcome, rows)
 }
 
@@ -622,13 +610,13 @@ fn a_page_of_leaders_reads_their_identities_in_one_guarded_batch() {
         memory: world.memory(),
         guards: Default::default(),
     };
-    let mut rows = [CounterInputsRow::default(); 1];
-    let (mut states, mut leaders) = ([0; 16], [0; 70]);
+    let mut rows = vec![CounterInputsRow::default(); 1];
+    let (mut states, mut leaders) = (vec![0; 16], vec![0; 70]);
     let mut rosters = CounterRosters {
         capture_sent_expeditionaries: true,
 
-        states: Buffer::Fixed(&mut states),
-        leaders: Buffer::Fixed(&mut leaders),
+        states: Buffer::Growing(&mut states),
+        leaders: Buffer::Growing(&mut leaders),
         state_len: 0,
         leader_len: 0,
         required: Default::default(),
@@ -673,8 +661,8 @@ fn manpower_sent_expeditionaries_keep_raw_reference_order() {
     let mut rosters = CounterRosters {
         capture_sent_expeditionaries: true,
 
-        states: Buffer::Fixed(&mut states),
-        leaders: Buffer::Fixed(&mut leaders),
+        states: Buffer::Growing(&mut states),
+        leaders: Buffer::Growing(&mut leaders),
         state_len: 0,
         leader_len: 0,
         required: Default::default(),
@@ -702,13 +690,13 @@ fn manpower_sent_expeditionaries_keep_raw_reference_order() {
 fn manpower_unreadable_expeditionary_references_keep_state_and_leader_rosters() {
     let (mut world, _) = fixture(2);
     world.array(world.object(1) + SENT_EXPEDITIONARIES, 0xdead_beef, 1);
-    let mut rows = [CounterInputsRow::default(); 2];
-    let mut states = [0; 18];
-    let mut leaders = [0; 13];
+    let mut rows = vec![CounterInputsRow::default(); 2];
+    let mut states = vec![0; 18];
+    let mut leaders = vec![0; 13];
     let mut rosters = CounterRosters {
         capture_sent_expeditionaries: true,
-        states: Buffer::Fixed(&mut states),
-        leaders: Buffer::Fixed(&mut leaders),
+        states: Buffer::Growing(&mut states),
+        leaders: Buffer::Growing(&mut leaders),
         state_len: 0,
         leader_len: 0,
         required: Default::default(),
@@ -753,13 +741,13 @@ fn manpower_without_a_certificate_reads_no_sent_reference_header() {
             world.object(2) + SENT_EXPEDITIONARIES,
         ],
     };
-    let mut rows = [CounterInputsRow::default(); 2];
-    let mut states = [0; 18];
-    let mut leaders = [0; 12];
+    let mut rows = vec![CounterInputsRow::default(); 2];
+    let mut states = vec![0; 18];
+    let mut leaders = vec![0; 12];
     let mut rosters = CounterRosters {
         capture_sent_expeditionaries: false,
-        states: Buffer::Fixed(&mut states),
-        leaders: Buffer::Fixed(&mut leaders),
+        states: Buffer::Growing(&mut states),
+        leaders: Buffer::Growing(&mut leaders),
         state_len: 0,
         leader_len: 0,
         required: Default::default(),

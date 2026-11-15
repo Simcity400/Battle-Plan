@@ -348,30 +348,12 @@ fn arena_malformed_unused_suffix_precedes_later_batch_fault() {
 }
 
 #[test]
-fn arena_reports_capacity_without_retry_and_grows_outside_capture() {
+fn short_arena_grows_in_the_capture_and_try_grow_expires_its_observations() {
     let memory = SnapshotMemory::new(2, None);
     let mut arena = SnapshotArena::new(SnapshotCapacity {
         nodes: 1,
         entries: 1,
     });
-    assert_eq!(
-        arena.capture(&memory, 0x1000, 1),
-        Err("modifier snapshot entry capacity exceeded")
-    );
-    assert_eq!(memory.calls.get(), 1);
-    assert!(arena.capture(&memory, 0x1000, 2).is_err());
-    assert_eq!(
-        arena.capture(&memory, 0x2000, 1),
-        Err("modifier snapshot node capacity exceeded")
-    );
-    assert_eq!(memory.calls.get(), 1);
-    let required = SnapshotCapacity {
-        nodes: 2,
-        entries: 2,
-    };
-    assert_eq!(arena.required_capacity(), required);
-    arena.grow(required);
-    assert_eq!(arena.capacity(), required);
     let present = arena.capture(&memory, 0x1000, 2).unwrap();
     assert_eq!(
         arena.value(present),
@@ -380,7 +362,19 @@ fn arena_reports_capacity_without_retry_and_grows_outside_capture() {
             present: true,
         })
     );
+    assert_eq!(memory.calls.get(), 3);
+    assert_eq!(
+        arena.capture(&memory, 0x2000, 1),
+        Err("modifier accumulator header unreadable or invalid")
+    );
     assert_eq!(memory.calls.get(), 4);
+    let required = SnapshotCapacity {
+        nodes: 2,
+        entries: 2,
+    };
+    assert_eq!(arena.required_capacity(), required);
+    assert_eq!(arena.capacity(), required);
+    assert_eq!(arena.value(present).unwrap().raw, -15);
     arena.grow(required);
     assert_eq!(
         arena.value(present),
@@ -1010,7 +1004,6 @@ fn snapshot_population_demand_excludes_allocator_spare_capacity() {
         nodes: 1,
         entries: 0,
     });
-    arena.enable_worker_growth();
     crate::allocation::reserve_exact(&mut arena.entries, 30_000).unwrap();
     arena.capture(&memory, 0x1000, 1).unwrap();
     assert_eq!(arena.capacity().entries, 5_001);
@@ -1020,6 +1013,24 @@ fn snapshot_population_demand_excludes_allocator_spare_capacity() {
         arena.try_grow(demand).unwrap();
         assert_eq!(arena.capacity(), demand);
     }
+}
+
+#[test]
+fn demand_counts_entries_read_not_a_header_count_nothing_backs() {
+    let memory = SnapshotMemory::new(70, None);
+    let claimed = i32::MAX as u32;
+    memory.bytes.borrow_mut()[ccountry::MODIFIER_ACCUMULATOR + 8..][..8]
+        .copy_from_slice(&(u64::from(claimed) | u64::from(claimed) << 32).to_le_bytes());
+    let mut arena = SnapshotArena::new(SnapshotCapacity {
+        nodes: 1,
+        entries: 0,
+    });
+    assert_eq!(
+        arena.capture(&memory, 0x1000, 1),
+        Err("modifier accumulator entry unreadable")
+    );
+    assert_eq!(arena.required_capacity().entries, 70);
+    assert_eq!(arena.capacity().entries, 70);
 }
 
 /// An observation held from an earlier capture serves its address without a

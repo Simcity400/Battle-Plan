@@ -1,6 +1,6 @@
-import type { GrantInventory } from '../../generated/dashboard';
 import { contentTitle, contentTitleHint } from '../../dashboard/contentTitles';
 import { researchNumber } from '../research/researchBreakdown';
+import type { GrantInventory } from '../../generated/dashboard';
 
 const plural = (count: number, noun: string) => `${count} ${count === 1 ? noun : `${noun}s`}`;
 type Grant = GrantInventory['grants'][number];
@@ -13,8 +13,7 @@ function effects(grant: Grant): string {
     grant.costReductionRaw !== null ? `Cost reduction ${researchNumber(BigInt(grant.costReductionRaw) * 100n)}%` : null].filter(Boolean).join(' · ');
 }
 
-export default function ResearchGrants({ inventory, loading = false }: { inventory?: GrantInventory; loading?: boolean }) {
-  if (!inventory) return <p role="status">{loading ? 'Loading research bonuses…' : 'Research bonuses are still being prepared.'}</p>;
+export default function ResearchGrants({ inventory }: { inventory: GrantInventory }) {
   if (inventory.unavailable) return <p role="status">Research bonuses unavailable: {inventory.unavailable}</p>;
   return <details className="research-grants" open>
     <summary>Research bonuses <span className="pill">{inventory.grants.length} held</span></summary>

@@ -51,6 +51,8 @@ pub(crate) struct SpoolFrame {
     pub cycles: Option<u64>,
     pub spool: [(&'static str, u64); 4],
     pub helper: [(&'static str, u64); 4],
+    /// The costliest of the hour's pack conversion; None for work between frames.
+    pub conversion: Option<crate::pack_conversion::HourTop>,
 }
 
 /// The spool thread's clocks at the start of a frame.
@@ -94,6 +96,7 @@ impl SpoolWatch {
             cycles: crate::spool_phases::cycles_since(self.cycles),
             spool: top(&self.spool, crate::spool_phases::SPOOL.walls()),
             helper: top(&self.helper, crate::spool_phases::HELPER.walls()),
+            conversion: None,
         })
     }
 }
@@ -110,6 +113,7 @@ impl SpoolFrame {
             "cycles": self.cycles,
             "spool_steps_ns": steps(&self.spool),
             "helper_steps_ns": steps(&self.helper),
+            "conversion": self.conversion.as_ref().map(crate::pack_conversion::HourTop::status),
         })
     }
 }
@@ -193,7 +197,7 @@ impl Slow {
             "seq": self.seq,
             "held_ns": self.held_ns,
             "entry_ns": phases.entry_ns,
-            "buffer_wait_ns": phases.buffer_wait_ns,
+            "frame_grow_ns": phases.frame_grow_ns,
             "free_frames": phases.free_frames,
             "setup_ns": phases.setup_ns,
             "parallel_ns": phases.parallel_ns,
@@ -211,7 +215,10 @@ impl Slow {
                 "step": crate::status::DebugValue(step),
                 "ns": ns,
             })),
-            "allocator_wait_ns": phases.allocator_wait_ns,
+            "heap_calls": phases.heap_calls,
+            "heap_ns": phases.heap_ns,
+            "page_calls": phases.page_calls,
+            "page_ns": phases.page_ns,
             "cycles": phases.cycles,
             "force_full": phases.force_full,
             "retry_cause": match phases.retry_cause {
@@ -257,10 +264,17 @@ impl Slow {
                 "lane_ns": phases.variant.lane_ns.as_slice(),
             }),
             "holders": phases.holders.map(|holders| crate::status::status!({
-                "frames": crate::status::sequence(holders.frames.into_iter().map(|(stage, ns)| crate::status::status!({
-                    "stage": crate::status::DebugValue(stage),
-                    "for_ns": ns,
-                }))),
+                "stages": crate::status::sequence(
+                    crate::frame_pool::FramePool::STAGES
+                        .into_iter()
+                        .zip(holders.stages)
+                        .filter(|(_, (frames, _))| *frames != 0)
+                        .map(|(stage, (frames, ns))| crate::status::status!({
+                            "stage": crate::status::DebugValue(stage),
+                            "frames": frames,
+                            "longest_ns": ns,
+                        })),
+                ),
                 "spool_step": crate::status::DebugValue(holders.spool),
                 "helper_step": crate::status::DebugValue(holders.helper),
                 "sizing_step": crate::status::DebugValue(holders.sizing),

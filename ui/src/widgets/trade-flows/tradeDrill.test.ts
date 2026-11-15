@@ -6,11 +6,10 @@ import { countryIdentityIndex } from '../../dashboard/countryIdentity.ts';
 import { registerWidgets } from '../../dashboard/definitions.ts';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
 import { parseStoredOptions, resolveOptions } from '../../dashboard/options.ts';
-import type { TradeFlowsReply } from '../../generated/dashboard';
 import { definition, OPTIONS } from './definition.ts';
 import { buildDiagram, decodeTrade, flowCountryAt, flowValue } from './tradeData.ts';
 import { contributionAmounts, contributionCountryTag, contributionExtent, contributionHistory, contributionHour, linkSelection, nodeSelections,
-  contributionMeasureExtent, contributionMeasureModel, forEachContributionMeasureSegment, preparedContributionStack,
+  contributionMeasureExtent, contributionMeasureModel, forEachContributionMeasureSegment,
   observedTradeSpans, openContributions, pinContributions, readSelection, selectedContributors, selectionToken, tradeContext } from './tradeDrill.ts';
 import { createElement } from 'react';
 import type { ComponentProps } from 'react';
@@ -19,6 +18,7 @@ import { createServer } from 'vite';
 import type TradeDrill from './TradeDrillView';
 import type { TimeChartProps } from '../../charts/TimeChart';
 import { TOOLTIP_LIMIT } from './tradeTooltip.ts';
+import type { TradeFlowsReply } from '../../generated/dashboard';
 
 const identity = (slot: number) => JSON.stringify([slot, slot + 1]);
 const CONTEXT = { campaignKey: 'campaign-one', branchId: 'b' };
@@ -40,7 +40,7 @@ function reply(count: number): TradeFlowsReply {
   const countries = Array.from({ length: count + 1 }, (_, slot) => `Country ${String(slot).padStart(5, '0')}`);
   return { branchId: 'b', decimals: 0, countries,
     countryIdentities: countries.map((tag, slot) => ({ tag, runs: [{ firstHour: 0, lastHour: 100, slot, countryId: slot + 1 }] })),
-    resources: [{ id: 7, token: 'mod/resource', ordinal: 1, name: null, icon: null }], reads: [0, 24, 48],
+    resources: [{ id: 7, token: 'mod/resource', ordinal: 1, name: null, icon: null }], firstHour: 0, lastHour: 100,
     known: [{ firstHour: 0, lastHour: 71 }], partial: [], warnings: [],
     flows: Array.from({ length: count }, (_, seller) => ({ seller, buyer: count, sellerIdentity: identity(seller), buyerIdentity: identity(count),
       sellerTags: [seller], buyerTags: [count], resource: 7, firstHours: [0], lastHours: [47], deliveredRaw: [String(count - seller)],
@@ -67,7 +67,7 @@ test('trade drill hovers show a positive more count and keep the trading-day uni
       const trade = decodeTrade(reply(count));
       const track = { id: 'main', source: { id: 'source', revision: '1' }, branch: { id: 'b', firstHour: 0, lastHour: 71, gaps: [] } } as unknown as BoundTrack;
       const props = { flows: trade.flows, trade, track, runtime: { client: {}, clock: { getSnapshot: () => ({ hoursPerSecond: 0 }) } },
-        measure: 'average', from: 0, hour: 5, extent: [0, 71], playhead: null, known: trade.reply.known, colours: new Map(),
+        measure: 'average', from: 0, hour: 5, live: null, extent: [0, 71], known: trade.reply.known, colours: new Map(),
         tokens: { muted: '#888888' }, active: true, onPick() {}, onContextMenu() {} } as unknown as ComponentProps<typeof TradeDrill>;
       const html = renderToStaticMarkup(createElement(Component, props));
       assert.match(html, /Average per trading day/);
@@ -75,14 +75,11 @@ test('trade drill hovers show a positive more count and keep the trading-day uni
       const tip = state.chart!.tooltip!(5, undefined as never, [])!;
       assert.equal(tip.note, count > TOOLTIP_LIMIT ? '2 more trades' : undefined);
       assert.equal(tip.rows.at(-1)?.label, 'Average per trading day');
-      const pending = renderToStaticMarkup(createElement(Component, { ...props, prepared: { hasExactHour: () => false } }));
-      assert.match(pending, /Loading trade amounts/);
-      assert.ok(state.chart?.layers?.length, 'pending exact amounts keep the accepted history chart mounted');
     }
   } finally { delete host.__tradeDrillPresentation; await vite.close(); }
 });
 
-test('contributor totals wait while their prefixes are prepared, and a gap hides only the current amount', async () => {
+test('contributor totals add the recorded hours before a gap, which hides only the current amount', async () => {
   const state = { chart: undefined as TimeChartProps | undefined };
   const host = globalThis as typeof globalThis & { __tradeDrillPresentation?: typeof state }; host.__tradeDrillPresentation = state;
   const replacements: Record<string, string> = {
@@ -101,8 +98,8 @@ test('contributor totals wait while their prefixes are prepared, and a gap hides
     // Recorded 0–20 and 31–71: hours 21–30 are a gap.
     const trade = decodeTrade({ ...reply(2), known: [{ firstHour: 0, lastHour: 20 }, { firstHour: 31, lastHour: 71 }] });
     const track = { id: 'main', source: { id: 'source', revision: '1' }, branch: { id: 'b', firstHour: 0, lastHour: 71, gaps: [] } } as unknown as BoundTrack;
-    const props = (measure: string, flows = trade.flows) => ({ flows, trade, track, runtime: { client: {}, clock: { getSnapshot: () => ({ hoursPerSecond: 0 }) } },
-      measure, from: 0, hour: 25, extent: [0, 71], playhead: null, known: trade.reply.known, colours: new Map(),
+    const props = (measure: string) => ({ flows: trade.flows, trade, track, runtime: { client: {}, clock: { getSnapshot: () => ({ hoursPerSecond: 0 }) } },
+      measure, from: 0, hour: 25, live: null, extent: [0, 71], known: trade.reply.known, colours: new Map(),
       tokens: { muted: '#888888' }, active: true, onPick() {}, onContextMenu() {} }) as unknown as ComponentProps<typeof TradeDrill>;
     const tip = () => state.chart!.tooltip!(25, undefined as never, [])!;
     // Totals so far still add the recorded hours before the gap.
@@ -110,12 +107,6 @@ test('contributor totals wait while their prefixes are prepared, and a gap hides
     assert.notEqual(tip().rows[0]?.value, 'Not recorded');
     renderToStaticMarkup(createElement(Component, props('current')));
     assert.equal(tip().rows[0]?.value, 'Not recorded', 'only the current amount is unrecorded in a gap');
-    // While the cumulative prefixes are prepared, nothing is summed and nothing throws.
-    const pending = trade.flows.map(flow => ({ ...flow, prepared: { prefixes: {}, scoped: false, cumulativePending: true } }));
-    for (const measure of ['total', 'average']) {
-      assert.match(renderToStaticMarkup(createElement(Component, props(measure, pending))), /Trade totals and averages are still being prepared\./);
-      assert.equal(tip().rows[0]?.value, 'Still being prepared');
-    }
   } finally { delete host.__tradeDrillPresentation; await vite.close(); }
 });
 
@@ -387,31 +378,3 @@ test('a country view saves one native holder, selects both its sides and pins fo
   assert.equal(contributionCountryTag(index, 'X', { kind: 'country', holder: identity(1) }, 70), null, 'a later holder of the tag is not this country');
 });
 
-test('prepared trade stack keeps dense contributor extrema without inventing an Other band', async () => {
-  const { preparedContributionStack } = await import('./tradeDrill.ts');
-  const { compactStackExtent } = await import('../../charts/stack.ts');
-  const bucket = { firstHour: 0, lastHour: 31, firstValue: 2, lastValue: 3, lastValueHour: 30,
-    minHour: 9, minValue: -7, maxHour: 21, maxValue: 11, firstBreak: false, hasBreak: false };
-  const summary = { from: 0, to: 31, width: 1, buckets: [bucket] };
-  const flows = Array.from({ length: 5000 }, () => ({ prepared: { summary, prefixes: {}, scoped: false } }));
-  const stack = preparedContributionStack(flows as unknown as Parameters<typeof preparedContributionStack>[0])!;
-  assert.ok(stack.model.hours.length < 20);
-  const values = stack.model.hours.filter((_hour, index) => stack.model.bounds[index] !== null).map(hour => stack.sample(hour));
-  assert.ok(values.every(edges => edges.length === 5000));
-  assert.ok(values.some(edges => edges[0].high === 11));
-  assert.ok(values.every(edges => edges.every(edge => edge.low >= 0)), 'negative amounts remain outside positive chart geometry');
-  assert.equal(compactStackExtent(stack.model, 0, 31)![1], 55_000);
-});
-
-test('rough trade runs activate the shared stack with all approximate spans', () => {
-  const summary = { from: 0, to: 19, width: 20, buckets: [{ firstHour: 0, lastHour: 19,
-    firstValue: 2, lastValue: 2, minValue: 2, maxValue: 2, minHour: 0, maxHour: 0, lastValueHour: 0, firstBreak: true, hasBreak: false }],
-    runs: [{ firstHour: 0, lastHour: 19, value: 2, breakBefore: true }], approximate: [{ firstHour: 10, lastHour: 19 }] };
-  const flows = [{ prepared: { summary, prefixes: {}, scoped: false } }];
-  const stack = preparedContributionStack(flows as unknown as Parameters<typeof preparedContributionStack>[0]);
-  assert.ok(stack, 'width-sized rough runs must draw through shared approximate geometry');
-  assert.deepEqual(stack.approximate, summary.approximate);
-  const expanded = preparedContributionStack([...flows, { prepared: { prefixes: {}, scoped: false } }] as unknown as Parameters<typeof preparedContributionStack>[0]);
-  assert.ok(expanded, 'a flow discovered only by the exact hover page cannot remove accepted rough geometry');
-  assert.deepEqual(expanded.approximate, summary.approximate);
-});

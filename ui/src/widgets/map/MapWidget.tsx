@@ -1,4 +1,4 @@
-import { useCallback, useLayoutEffect, useMemo, useRef } from 'react';
+import { useCallback, useLayoutEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { Icon } from '../../components/Icons';
 import { formatDateTime } from '../../dashboard/calendar';
@@ -6,14 +6,18 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import { useMapsHidden, useMapState } from '../../dashboard/geometry';
 import type { MapTarget } from '../../dashboard/geometry';
 import { resolveWindow } from '../../dashboard/model';
-import { usePlaybackHour } from '../../dashboard/playback';
 import type { PlaybackController } from '../../dashboard/playback';
-import { mapPresentationMatches } from './presentation';
+import { mapFrameOnScreen, mapPresentationMatches } from './presentation';
 
 /** The native map's body: the renderer draws into this rectangle; React shows its state. */
-export default function MapWidget({ widget, runtime, active, mapOptions }: WidgetProps) {
+export default function MapWidget({ widget, runtime, mapOptions }: WidgetProps) {
   const body = useRef<HTMLDivElement>(null);
-  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  // The placeholder matches the map against the clock's anchor; forward playback renders nothing here.
+  const anchor = useCallback(() => {
+    const clock = runtime.clock.getSnapshot();
+    return widget.time.mode === 'follow' ? `${clock.playing}:${clock.seekSequence}:${clock.playing ? '' : clock.hour}` : '';
+  }, [runtime.clock, widget.time.mode]);
+  useSyncExternalStore(runtime.clock.subscribe, anchor, anchor);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const staticSequence = useMemo(() => runtime.clock.getSnapshot().sequence, [runtime.clock, widget, track]);
   const target = useCallback((clock: ReturnType<PlaybackController['getSnapshot']>): MapTarget | null => {
@@ -45,14 +49,17 @@ export default function MapWidget({ widget, runtime, active, mapOptions }: Widge
   const desired = target(runtime.clock.getSnapshot());
   const matched = mapPresentationMatches(state, desired);
   const nativeUnavailable = !runtime.client.available || runtime.client.nativeMaps === false;
-  return <div className="dash-map-widget">
+  // A frame of another hour stays on screen, dated and marked "Updating…", while the viewer builds this one.
+  const framed = !nativeUnavailable && mapFrameOnScreen(state);
+  const preparing = !hidden && !framed && (state?.loading || (desired && !matched && !nativeUnavailable));
+  return <div className="dash-map-widget" data-map-current={matched}>
     <div className="dash-map-surface" ref={body}>
       <div className="dash-map-placeholder" role={state?.error ? undefined : 'status'}>{state?.error
         ? <WidgetState kind="error" failure={new Error(state.error)} onRetry={() => runtime.maps.retry(widget.id)} />
-        : <><span className="empty-icon">{!hidden && (state?.loading || (desired && !matched && !nativeUnavailable)) ? <span className="spinner" /> : <Icon name="map" />}</span>
+        : <><span className="empty-icon">{preparing ? <span className="spinner" /> : <Icon name="map" />}</span>
         <strong>{nativeUnavailable ? 'Map available in the desktop app.' : runtime.nativeHidden ? 'Map hidden for layout controls'
           : hidden ? 'Map hidden while a menu is open'
-          : !track ? 'Load a campaign' : !desired ? 'No map at this time' : matched ? 'Campaign map' : 'Preparing this map…'}</strong>
+          : !track ? 'Load a campaign' : !desired ? 'No map at this time' : matched || framed ? 'Campaign map' : 'Preparing this map…'}</strong>
         <p>{nativeUnavailable ? 'Open a recording in the desktop app to explore its campaign map.'
           : !desired && track ? 'Choose another time.' : null}</p></>}
       </div>

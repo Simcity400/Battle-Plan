@@ -1,16 +1,13 @@
-import type { NavyParams } from '../../generated/dashboard';
-import { validateNativePartsRaceReply } from '../../charts/race/partsRaceDrill.ts';
-import type { NativePartsRaceReply } from '../../charts/race/partsRaceDrill';
+import { validateForceReply } from '../../charts/race/forceRace.ts';
+import type { ForceParams } from '../../charts/race/forceRace';
 import type { OptionValue } from '../../dashboard/options';
 import { formatAxisValue, formatFixed } from '../../charts/valueAxis.ts';
 import { usNumber } from '../../charts/numberFormat.ts';
+import type { ForceSizeReply } from '../../generated/dashboard';
 
-export function validateNavyReply(data: unknown): NativePartsRaceReply {
-  const reply = validateNativePartsRaceReply(data);
-  if (reply.series.some(series => series.runs.some(run => run.referenceTotal === undefined))) {
-    throw new Error('The navy size reply is malformed.');
-  }
-  return reply;
+/** Every run carries the maximum hull HP beside its total (null for ships, or where not recorded). */
+export function validateNavyReply(data: unknown): ForceSizeReply {
+  return validateForceReply(data, true);
 }
 
 /** Hull HP is fixed5; preserve all five recorded decimals. */
@@ -30,8 +27,15 @@ export const formatHullTick = (value: number, ticks: readonly number[]) =>
   formatAxisValue(value / 100_000, ticks.map(tick => tick / 100_000));
 
 export function navyRequest(branchId: string, resolved: { tags: readonly string[]; top?: number },
-  options: Readonly<Record<string, OptionValue>>): NavyParams {
+  options: Readonly<Record<string, OptionValue>>): ForceParams {
   return { branchId, tags: resolved.top == null ? [...resolved.tags] : [], top: resolved.top ?? null,
     ownership: options.ownership === 'logical' ? 'logical' : 'roster', grouping: options.grouping === 'type' ? 'type' : 'class',
     measure: options.measure === 'strength' ? 'strength' : 'ships' };
+}
+
+/** The declared totals a line of chosen countries reads; hull HP is fixed5. */
+export function navyTotals(options: Readonly<Record<string, OptionValue>>) {
+  const owner = options.ownership === 'logical' ? 'logical' : 'roster';
+  return options.measure === 'strength' ? { kind: 'navy-totals', measure: `${owner}Strength`, decimals: 5 }
+    : { kind: 'navy-totals', measure: `${owner}Ships`, decimals: 0 };
 }

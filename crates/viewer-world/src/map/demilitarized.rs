@@ -198,6 +198,37 @@ impl ZonePlan {
         highlight: impl Fn(u32, u32) -> bool,
         include_hidden: bool,
     ) -> Self {
+        let draws = BorderClass::ALL
+            .iter()
+            .map(|&class| (meshes.mesh(class), false))
+            .chain(include_hidden.then_some((&meshes.hidden, true)))
+            .flat_map(|(mesh, hidden)| mesh.draws.iter().map(move |draw| (mesh, hidden, draw)));
+        Self::gather(draws, highlight, |a, b| land_class(regions, a, b))
+    }
+
+    /// The plan [`Self::new`] makes, from `draws` alone (each a class and the draw's index in that
+    /// class's mesh): equal to it when `draws` holds every draw `splits` keeps, such as the draws of
+    /// the zone's provinces. `land` is the land class of a province mesh draw's two provinces.
+    pub fn of_draws(
+        meshes: &BorderMeshes,
+        mut draws: Vec<(BorderClass, u32)>,
+        splits: impl Fn(u32, u32) -> bool,
+        land: impl Fn(u32, u32) -> BorderClass,
+    ) -> Self {
+        draws.sort_unstable_by_key(|&(class, at)| (class.bucket(), at));
+        draws.dedup();
+        let draws = draws.into_iter().filter_map(|(class, at)| {
+            let mesh = meshes.mesh(class);
+            mesh.draws.get(at as usize).map(|draw| (mesh, false, draw))
+        });
+        Self::gather(draws, splits, land)
+    }
+
+    fn gather<'a>(
+        draws: impl Iterator<Item = (&'a super::borders::BorderMesh, bool, &'a super::borders::BorderDraw)>,
+        highlight: impl Fn(u32, u32) -> bool,
+        land: impl Fn(u32, u32) -> BorderClass,
+    ) -> Self {
         let mut plan = Self::default();
         // One bucket per base material; a land edge's material is the hour's own class, every other
         // edge keeps the class the content settled at trace time.
@@ -207,46 +238,38 @@ impl ZonePlan {
             .collect();
         // Material 0xff is remapped to Province only when a custom highlight
         // claims it; retaining these strips closes coasts and isolated islands.
-        for (mesh, hidden) in BorderClass::ALL
-            .iter()
-            .map(|&class| (meshes.mesh(class), false))
-            .chain(include_hidden.then_some((&meshes.hidden, true)))
-        {
-            for draw in &mesh.draws {
-                if !highlight(draw.province_a, draw.province_b) {
-                    continue;
-                }
-                let Some(chunk) = mesh.chunks.get(draw.chunk as usize) else {
-                    continue;
-                };
-                let first = draw.base_vertex as usize;
-                let last = first + draw.vertex_count as usize;
-                let Some(strip) = chunk.get(first..last) else {
-                    continue;
-                };
-                let class = match (mesh.class, hidden) {
-                    (_, true) => BorderClass::Province,
-                    (BorderClass::Province, false) => {
-                        land_class(regions, draw.province_a, draw.province_b)
-                    }
-                    (other, false) => other,
-                };
-                let (vertices, indices) = &mut per_class[class.bucket()];
-                let base = vertices.len() as u32;
-                vertices.extend_from_slice(strip);
-                for segment in 0..(draw.vertex_count / 2).saturating_sub(1) {
-                    let quad = base + segment * 2;
-                    indices.extend_from_slice(&[
-                        quad,
-                        quad + 2,
-                        quad + 1,
-                        quad + 2,
-                        quad + 3,
-                        quad + 1,
-                    ]);
-                }
-                plan.edges += 1;
+        for (mesh, hidden, draw) in draws {
+            if !highlight(draw.province_a, draw.province_b) {
+                continue;
             }
+            let Some(chunk) = mesh.chunks.get(draw.chunk as usize) else {
+                continue;
+            };
+            let first = draw.base_vertex as usize;
+            let last = first + draw.vertex_count as usize;
+            let Some(strip) = chunk.get(first..last) else {
+                continue;
+            };
+            let class = match (mesh.class, hidden) {
+                (_, true) => BorderClass::Province,
+                (BorderClass::Province, false) => land(draw.province_a, draw.province_b),
+                (other, false) => other,
+            };
+            let (vertices, indices) = &mut per_class[class.bucket()];
+            let base = vertices.len() as u32;
+            vertices.extend_from_slice(strip);
+            for segment in 0..(draw.vertex_count / 2).saturating_sub(1) {
+                let quad = base + segment * 2;
+                indices.extend_from_slice(&[
+                    quad,
+                    quad + 2,
+                    quad + 1,
+                    quad + 2,
+                    quad + 3,
+                    quad + 1,
+                ]);
+            }
+            plan.edges += 1;
         }
         for (class, (vertices, indices)) in BorderClass::ALL.iter().zip(per_class) {
             if indices.is_empty() {

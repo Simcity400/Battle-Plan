@@ -47,16 +47,7 @@ impl Categories {
         base: usize,
         required: &mut usize,
     ) -> Result<(), &'static str> {
-        self.load_buffer(memory, base, required, false)
-    }
-
-    pub fn load_growing(
-        &mut self,
-        memory: &impl Memory,
-        base: usize,
-        required: &mut usize,
-    ) -> Result<(), &'static str> {
-        self.load_buffer(memory, base, required, true)
+        self.load_buffer(memory, base, required)
     }
 
     fn load_buffer(
@@ -64,7 +55,6 @@ impl Categories {
         memory: &impl Memory,
         base: usize,
         required: &mut usize,
-        growing: bool,
     ) -> Result<(), &'static str> {
         self.entries.clear();
         let registry = engine_sites::at(base, REGISTRY_RVA)
@@ -76,10 +66,9 @@ impl Categories {
             Array::read(memory, registry, 8).ok_or("acclimatization category registry invalid")?;
         let count = array.count as usize;
         *required = (*required).max(count);
-        if growing {
-            crate::allocation::reserve(&mut self.entries, count)
-                .map_err(|_| "acclimatization category allocation failed")?;
-        }
+        crate::allocation::reserve(&mut self.entries, count)
+            .map_err(|_| "acclimatization category allocation failed")?;
+        
         if count > self.entries.capacity() {
             return Err("acclimatization category capacity exceeded");
         }

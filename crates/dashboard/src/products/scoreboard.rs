@@ -1,44 +1,25 @@
-//! An exact table of shared per-country measures. There is no overall score.
-//! Factories reuse the game's whole-count parts and count modes.
-//! Political/command balances reuse country_measure's stored fixed5 values;
-//! stability, war support and nukes reuse their shared arithmetic.
-//! Equipment totals reuse the cached production scan and its exact delivered-unit
-//! helper, never another production walk. Owned states use the recorded roster
-//! count, excluding zero-province templates.
-//! This uses the shared unambiguous country-link join. Identities are independent
-//! of value coverage, so unknown amounts rank last, never zero.
+//! The scoreboard: countries side by side across declared measures, at one hour. Each column is
+//! a declared series' measure; there is no overall score. `scoreboard-columns` names the columns
+//! (labels from the recording's localisation where the game has one) and the series each reads, so
+//! the widget follows exactly those at the head; `scoreboard` answers one hour (a pin, a hover, a
+//! pause): the chosen countries or the greatest by one column, with every column's value
+//! ([`dashboard_query::series::board`]). Unknown is a named reason, never zero, and never ranks.
 
-use super::{
-    LoadContext, MAX_PRODUCT_REPLY_BYTES, Product, air_force,
-    country_factories::{self, FactoryCount},
-    country_groups::HourSpan,
-    country_history::{self, CountryIdentityRun, RecordedHistories},
-    country_nukes, equipment_produced, navy, validate_tag, war_casualties,
-};
-#[cfg(test)]
-use crate::products::country_factories::FactoryGroupKey;
-use crate::{
-    Source,
-    catalogue::{self, Catalogue},
-    ranking,
-    transport::json_len,
+use super::{BranchParams, LoadContext, Product};
+use crate::{Source, catalogue};
+use dashboard_query::{
+    Query,
+    series::{
+        Line,
+        board::{self, Rows},
+    },
 };
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    io,
-    sync::atomic::AtomicBool,
-};
+use std::{io, sync::atomic::AtomicBool};
 use ts_rs::TS;
-#[cfg(test)]
-use {
-    super::{country_measure::FixedRun, country_stability, equipment},
-    std::sync::atomic::Ordering,
-};
 
-pub struct Scoreboard;
-pub(crate) mod prepared;
-pub mod served;
+#[cfg(test)]
+mod tests;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, TS)]
 #[serde(rename_all = "camelCase")]
@@ -61,56 +42,100 @@ pub enum ScoreboardColumnKey {
     Nukes,
 }
 
-impl ScoreboardColumnKey {
-    pub const ALL: [Self; 16] = [
-        Self::Factories,
-        Self::ArmySize,
-        Self::Territory,
-        Self::Casualties,
-        Self::CasualtiesDealt,
-        Self::CasualtiesTaken,
-        Self::Planes,
-        Self::Ships,
-        Self::FactoriesBuilt,
-        Self::FactoriesTopbar,
-        Self::EquipmentProduced,
-        Self::PoliticalPower,
-        Self::CommandPower,
-        Self::Stability,
-        Self::WarSupport,
-        Self::Nukes,
-    ];
-
-    fn unavailable_reason(self) -> Option<&'static str> {
-        (self == Self::Casualties)
-            .then_some("Choose Casualties dealt or Casualties taken in settings.")
-    }
-
-    fn factory_count(self) -> Option<FactoryCount> {
-        match self {
-            Self::Factories => Some(FactoryCount::Free),
-            Self::FactoriesBuilt => Some(FactoryCount::Built),
-            Self::FactoriesTopbar => Some(FactoryCount::TopBar),
-            _ => None,
-        }
-    }
+/// A column as the registry defines it: the declared measure it reads, and what marks a value a
+/// partial subtotal.
+struct Def {
+    key: ScoreboardColumnKey,
+    /// Its heading where the game has none, or none is recorded.
+    label: &'static str,
+    /// The localisation key of the game's own heading.
+    localised: Option<&'static str>,
+    unit: &'static str,
+    measure: Option<(&'static str, &'static str)>,
+    partial: Option<(&'static str, &'static str)>,
+    /// Why it shows no value, when it is not a measure.
+    reason: Option<&'static str>,
+    note: Option<&'static str>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ScoreboardTop {
-    pub count: u32,
-    pub sort: ScoreboardColumnKey,
-    pub descending: bool,
+const DEALT_NOTE: &str = "Recorded casualties dealt across land, naval and air. † marks a partial recorded subtotal; missing history may omit positive losses or negative corrections.";
+const TAKEN_NOTE: &str = "Recorded casualties taken across land, naval and air with a known attacker, as in the Casualties widget's default. Losses without a recorded attacker are excluded; † marks a partial recorded subtotal.";
+const PARTIAL: Option<(&str, &str)> = Some(("casualty-totals", "partial"));
+
+const fn def(key: ScoreboardColumnKey, label: &'static str, unit: &'static str, measure: (&'static str, &'static str)) -> Def {
+    Def { key, label, localised: None, unit, measure: Some(measure), partial: None, reason: None, note: None }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ScoreboardParams {
-    pub branch_id: String,
-    pub columns: Vec<ScoreboardColumnKey>,
-    pub tags: Vec<String>,
-    pub top: Option<ScoreboardTop>,
+/// Every column, in the order the settings list them.
+static DEFS: [Def; 16] = {
+    use ScoreboardColumnKey::*;
+    [
+        def(Factories, "Factories", "factories", ("country-factories", "free7")),
+        Def {
+            note: Some("Manpower in the field, attributed to each division's owner, as in the Army size widget's default."),
+            ..def(ArmySize, "Army size", "people", ("army-totals", "ownerManpower"))
+        },
+        def(Territory, "States owned", "states", ("territory", "ownedStates")),
+        Def {
+            key: Casualties,
+            label: "Casualties",
+            localised: None,
+            unit: "people",
+            measure: None,
+            partial: None,
+            reason: Some("Choose Casualties dealt or Casualties taken in settings."),
+            note: None,
+        },
+        Def { partial: PARTIAL, note: Some(DEALT_NOTE), ..def(CasualtiesDealt, "Casualties dealt", "people", ("casualty-totals", "dealt")) },
+        Def { partial: PARTIAL, note: Some(TAKEN_NOTE), ..def(CasualtiesTaken, "Casualties taken", "people", ("casualty-totals", "taken")) },
+        def(Planes, "Number of planes", "planes", ("air-force-totals", "rosterPlanes")),
+        def(Ships, "Number of ships", "ships", ("navy-totals", "rosterShips")),
+        def(FactoriesBuilt, "Factories built", "factories", ("country-factories", "built7")),
+        def(FactoriesTopbar, "Factories in top bar", "factories", ("country-factories", "topBar7")),
+        def(EquipmentProduced, "Equipment produced", "units", ("production-country-totals", "unitsWithoutRefits")),
+        Def { localised: Some("POLITICAL_POWER"), ..def(PoliticalPower, "Political power", "points", ("country-measure", "politicalPower")) },
+        Def { localised: Some("COMMAND_POWER"), ..def(CommandPower, "Command power", "points", ("country-measure", "commandPower")) },
+        Def { localised: Some("STABILITY"), ..def(Stability, "Stability", "percent", ("country-stability", "stability")) },
+        Def { localised: Some("WAR_SUPPORT"), ..def(WarSupport, "War support", "percent", ("country-stability", "warSupport")) },
+        def(Nukes, "Nukes", "nukes", ("country-nuke-totals", "total")),
+    ]
+};
+
+const DEFAULT_COLUMNS: [ScoreboardColumnKey; 7] = {
+    use ScoreboardColumnKey::*;
+    [Factories, ArmySize, Territory, CasualtiesDealt, CasualtiesTaken, Planes, Ships]
+};
+const DEFAULT_SORT: ScoreboardColumnKey = ScoreboardColumnKey::Factories;
+
+/// The localisation keys of the game's own column headings.
+pub(crate) fn localised_keys() -> impl Iterator<Item = &'static str> {
+    DEFS.iter().filter_map(|def| def.localised)
+}
+
+fn def_of(key: ScoreboardColumnKey) -> &'static Def {
+    DEFS.iter().find(|def| def.key == key).expect("every column is defined")
+}
+
+/// A declared measure as a request names it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ScoreboardFamily {
+    pub kind: String,
+    pub measure: String,
+}
+
+/// The declared measure `(kind, measure)` names, or why it cannot be read.
+fn declared(measure: (&str, &str)) -> Result<(&'static dashboard_declare::Series, &'static dashboard_declare::Measure), String> {
+    let series = dashboard_declare::series(measure.0).ok_or_else(|| format!("The series {} is not declared", measure.0))?;
+    if series.parts.is_some() || series.key == dashboard_declare::Key::Singleton {
+        return Err(format!("{} is not one value a country", measure.0));
+    }
+    let declared = series.measure(measure.1).ok_or_else(|| format!("{} declares no measure {}", measure.0, measure.1))?;
+    Ok((series, declared))
+}
+
+fn family(measure: (&str, &str)) -> ScoreboardFamily {
+    ScoreboardFamily { kind: measure.0.to_owned(), measure: measure.1.to_owned() }
 }
 
 #[derive(Clone, Debug, Serialize, TS)]
@@ -119,1067 +144,272 @@ pub struct ScoreboardColumn {
     pub key: ScoreboardColumnKey,
     pub label: String,
     pub unit: String,
+    /// Fixed-point decimals of its raw values.
     pub decimals: u8,
     pub available: bool,
     pub reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub note: Option<String>,
-}
-
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
-#[serde(rename_all = "camelCase")]
-pub struct ScoreboardRun {
-    pub first_hour: i32,
-    pub last_hour: i32,
-    /// Exact signed integer in units of 10^-decimals. None is unknown.
-    pub amount: Option<String>,
-    pub starts_segment: bool,
-    /// Legacy wire name: true marks a partial recorded subtotal, not a lower bound.
-    #[ts(optional, as = "Option<_>")]
-    pub at_least: bool,
-}
-
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
-#[serde(rename_all = "camelCase")]
-pub struct ScoreboardReadRun {
-    pub first_hour: i32,
-    pub last_hour: i32,
-    pub read_hour: i32,
-    /// Every hour is a supplying read; otherwise read_hour supplies this span.
-    pub hourly: bool,
+    /// The declared measure its values are, followed at the head.
+    pub family: Option<ScoreboardFamily>,
+    /// The declared measure whose nonzero value marks its value a partial subtotal.
+    pub partial: Option<ScoreboardFamily>,
 }
 
 #[derive(Clone, Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct ScoreboardColumnSeries {
-    pub key: ScoreboardColumnKey,
-    pub runs: Vec<ScoreboardRun>,
-    pub read_runs: Vec<ScoreboardReadRun>,
+pub struct ScoreboardColumnsReply {
+    pub branch_id: String,
+    pub default_columns: Vec<ScoreboardColumnKey>,
+    pub default_sort: ScoreboardColumnKey,
+    pub columns: Vec<ScoreboardColumn>,
+    pub warnings: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+/// The column registry, its headings in the recording's language where `label` finds one.
+fn registry(label: impl Fn(&str) -> Option<String>) -> Vec<ScoreboardColumn> {
+    DEFS.iter()
+        .map(|def| {
+            let measure = def.measure.map(declared);
+            let reason = match &measure {
+                None => def.reason.map(str::to_owned),
+                Some(Err(reason)) => Some(reason.clone()),
+                Some(Ok(_)) => None,
+            };
+            ScoreboardColumn {
+                key: def.key,
+                label: def.localised.and_then(&label).unwrap_or_else(|| def.label.to_owned()),
+                unit: def.unit.to_owned(),
+                decimals: match &measure {
+                    Some(Ok((_, measure))) => measure.decimals,
+                    _ => 0,
+                },
+                available: reason.is_none(),
+                reason,
+                note: def.note.map(str::to_owned),
+                family: def.measure.filter(|_| matches!(measure, Some(Ok(_)))).map(family),
+                partial: def.partial.filter(|partial| declared(*partial).is_ok()).map(family),
+            }
+        })
+        .collect()
+}
+
+pub struct ScoreboardColumns;
+
+impl Product for ScoreboardColumns {
+    const KEY: &'static str = "scoreboard-columns";
+    const CONTENT_DEPENDENT: bool = true;
+    type Params = BranchParams;
+    type Reply = ScoreboardColumnsReply;
+
+    fn types() -> Vec<String> {
+        vec![ScoreboardColumnsReply::decl(), ScoreboardColumn::decl(), ScoreboardColumnKey::decl(), ScoreboardFamily::decl()]
+    }
+
+    fn validate(params: &Self::Params) -> Result<(), &'static str> {
+        params.validate()
+    }
+
+    fn load(source: &Source, params: &Self::Params, context: &LoadContext, _cancelled: &AtomicBool) -> io::Result<Self::Reply> {
+        let mut warnings = Vec::new();
+        let catalogue = match context.content.as_ref() {
+            Some(options) => match catalogue::catalogue(source, options) {
+                Ok(catalogue) => {
+                    warnings.extend(catalogue.refusal_lines());
+                    Some(catalogue)
+                }
+                Err(error) => {
+                    warnings.push(format!("The game's column names are unavailable: {error}"));
+                    None
+                }
+            },
+            None => {
+                warnings.push("The game's column names are unavailable until the game folders are chosen; plain names are shown.".into());
+                None
+            }
+        };
+        let columns = registry(|key| catalogue.as_ref().and_then(|catalogue| catalogue.localised(key, catalogue::View::Plain)));
+        Ok(ScoreboardColumnsReply {
+            branch_id: params.branch_id.clone(),
+            default_columns: DEFAULT_COLUMNS.to_vec(),
+            default_sort: DEFAULT_SORT,
+            columns,
+            warnings,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ScoreboardTop {
+    pub count: u32,
+    /// The column it ranks by.
+    pub sort: ScoreboardColumnKey,
+    /// The greatest first; else the least, least first.
+    pub descending: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ScoreboardParams {
+    pub branch_id: String,
+    pub hour: i32,
+    pub columns: Vec<ScoreboardColumnKey>,
+    /// The countries shown, in order; ignored with `top`.
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    #[ts(optional)]
+    pub top: Option<ScoreboardTop>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct ScoreboardSeries {
+pub struct ScoreboardCell {
+    pub value_raw: Option<String>,
+    /// Why there is no value: never zero.
+    pub missing: Option<String>,
+    /// A subtotal of what was recorded (shown with †).
+    pub partial: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ScoreboardRow {
     pub tag: String,
-    pub segments: Vec<HourSpan>,
-    pub identities: Vec<CountryIdentityRun>,
-    pub membership: Option<Vec<HourSpan>>,
-    pub columns: Vec<ScoreboardColumnSeries>,
+    /// One a column asked, in its order.
+    pub cells: Vec<ScoreboardCell>,
 }
 
 #[derive(Clone, Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ScoreboardReply {
     pub branch_id: String,
-    pub default_columns: Vec<ScoreboardColumnKey>,
-    pub default_sort: ScoreboardColumnKey,
-    /// The one complete column registry, also returned for settings-only reads.
-    pub columns: Vec<ScoreboardColumn>,
-    pub series: Vec<ScoreboardSeries>,
+    pub hour: i32,
+    /// Why the hour holds no rows.
+    pub missing: Option<String>,
+    /// A top's countries greatest first; chosen countries in their order, each held at the hour.
+    pub rows: Vec<ScoreboardRow>,
     pub warnings: Vec<String>,
 }
 
-/// UI words for counts with no matching game label; native GUI label bindings
-/// are resolved from the recorded content by registry(). No vanilla text is
-/// used as a content lookup key.
-/// The owned-state roster count uses the plain UI description "States owned".
-struct ColumnDescriptor {
-    label: &'static str,
-    unit: &'static str,
-    decimals: u8,
-}
+dashboard_base::reply_warnings!(ScoreboardColumnsReply, ScoreboardReply);
 
-fn descriptor(key: ScoreboardColumnKey) -> ColumnDescriptor {
-    use ScoreboardColumnKey::*;
-    match key {
-        Factories => ColumnDescriptor {
-            label: "Factories",
-            unit: "factories",
-            decimals: 0,
-        },
-        FactoriesBuilt => ColumnDescriptor {
-            label: "Factories built",
-            unit: "factories",
-            decimals: 0,
-        },
-        FactoriesTopbar => ColumnDescriptor {
-            label: "Factories in top bar",
-            unit: "factories",
-            decimals: 0,
-        },
-        Territory => ColumnDescriptor {
-            label: "States owned",
-            unit: "states",
-            decimals: 0,
-        },
-        ArmySize => ColumnDescriptor {
-            label: "Army size",
-            unit: "people",
-            decimals: 0,
-        },
-        Casualties => ColumnDescriptor {
-            label: "Casualties",
-            unit: "people",
-            decimals: 0,
-        },
-        CasualtiesDealt => ColumnDescriptor {
-            label: "Casualties dealt",
-            unit: "people",
-            decimals: 0,
-        },
-        CasualtiesTaken => ColumnDescriptor {
-            label: "Casualties taken",
-            unit: "people",
-            decimals: 0,
-        },
-        Planes => ColumnDescriptor {
-            label: "Number of planes",
-            unit: "planes",
-            decimals: 0,
-        },
-        Ships => ColumnDescriptor {
-            label: "Number of ships",
-            unit: "ships",
-            decimals: 0,
-        },
-        EquipmentProduced => ColumnDescriptor {
-            label: "Equipment produced",
-            unit: "units",
-            decimals: 0,
-        },
-        PoliticalPower => ColumnDescriptor {
-            label: "Political power",
-            unit: "points",
-            decimals: 5,
-        },
-        CommandPower => ColumnDescriptor {
-            label: "Command power",
-            unit: "points",
-            decimals: 5,
-        },
-        Stability => ColumnDescriptor {
-            label: "Stability",
-            unit: "percent",
-            decimals: 5,
-        },
-        WarSupport => ColumnDescriptor {
-            label: "War support",
-            unit: "percent",
-            decimals: 5,
-        },
-        Nukes => ColumnDescriptor {
-            label: "Nukes",
-            unit: "nukes",
-            decimals: 0,
-        },
-    }
-}
-
-pub(crate) fn registry(catalogue: Option<&Catalogue>) -> Vec<ScoreboardColumn> {
-    ScoreboardColumnKey::ALL
-        .into_iter()
-        .map(|key| {
-            let description = descriptor(key);
-            let reason = key.unavailable_reason().map(str::to_owned);
-            // Political, stability, war-support and command-power headings use
-            // their localisation keys; every translation is recorded content.
-            let native_key = match key {
-                ScoreboardColumnKey::PoliticalPower => Some("POLITICAL_POWER"),
-                ScoreboardColumnKey::CommandPower => Some("COMMAND_POWER"),
-                ScoreboardColumnKey::Stability => Some("STABILITY"),
-                ScoreboardColumnKey::WarSupport => Some("WAR_SUPPORT"),
-                _ => None,
-            };
-            let label = native_key
-                .and_then(|key| {
-                    catalogue.and_then(|cat| cat.localised(key, catalogue::View::Plain))
-                })
-                .unwrap_or_else(|| description.label.into());
-            ScoreboardColumn {
-                key,
-                label,
-                unit: description.unit.into(),
-                decimals: description.decimals,
-                available: reason.is_none(),
-                reason,
-                note: match key {
-                    ScoreboardColumnKey::ArmySize => Some(
-                        "Manpower in the field, attributed to each division's owner, as in the Army size widget's default.".into(),
-                    ),
-                    ScoreboardColumnKey::CasualtiesDealt => Some(
-                        "Recorded casualties dealt across land, naval and air. † marks a partial recorded subtotal; missing history may omit positive losses or negative corrections.".into(),
-                    ),
-                    ScoreboardColumnKey::CasualtiesTaken => Some(
-                        "Recorded casualties taken across land, naval and air with a known attacker, as in the Casualties widget's default. Losses without a recorded attacker are excluded; † marks a partial recorded subtotal.".into(),
-                    ),
-                    _ => None,
-                },
-            }
-        })
-        .collect()
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct ValueRun {
-    first_hour: i32,
-    last_hour: i32,
-    amount: Option<i128>,
-    starts_segment: bool,
-    at_least: bool,
-}
-
-struct ColumnData {
-    key: ScoreboardColumnKey,
-    runs: Vec<ValueRun>,
-    read_runs: Vec<ScoreboardReadRun>,
-}
-
-impl ColumnData {
-    fn reply(self) -> ScoreboardColumnSeries {
-        ScoreboardColumnSeries {
-            key: self.key,
-            runs: self
-                .runs
-                .into_iter()
-                .map(|run| ScoreboardRun {
-                    first_hour: run.first_hour,
-                    last_hour: run.last_hour,
-                    amount: run.amount.map(|amount| amount.to_string()),
-                    starts_segment: run.starts_segment,
-                    at_least: run.at_least,
-                })
-                .collect(),
-            read_runs: self.read_runs,
-        }
-    }
-}
-
-#[cfg(test)]
-fn numeric_fixed_runs(runs: &[FixedRun]) -> io::Result<Vec<ValueRun>> {
-    runs.iter()
-        .map(|run| {
-            Ok(ValueRun {
-                first_hour: run.first_hour,
-                last_hour: run.last_hour,
-                amount: Some(run.value_raw.parse().map_err(|_| {
-                    io::Error::other("The shared fixed5 measure is not a signed native integer")
-                })?),
-                starts_segment: run.starts_segment,
-                at_least: false,
-            })
-        })
-        .collect()
-}
-
-/// Merge sorted value coverage and held-read intervals in one forward walk.
-/// The read cursor stays on a carried interval spanning several value runs.
-#[cfg(test)]
-fn stability_reads(
-    runs: &[ValueRun],
-    carried: &[country_stability::ReadRun],
-) -> Vec<ScoreboardReadRun> {
-    let mut out = Vec::new();
-    let mut cursor = 0;
-    for run in runs {
-        let mut first = i64::from(run.first_hour);
-        while cursor < carried.len() && carried[cursor].last_hour < run.first_hour {
-            cursor += 1;
-        }
-        while first <= i64::from(run.last_hour) && cursor < carried.len() {
-            let held = &carried[cursor];
-            if held.first_hour > run.last_hour {
-                break;
-            }
-            let start = i64::from(held.first_hour).max(first);
-            if first < start {
-                out.push(ScoreboardReadRun {
-                    first_hour: first as i32,
-                    last_hour: start as i32 - 1,
-                    read_hour: first as i32,
-                    hourly: true,
-                });
-            }
-            let end = held.last_hour.min(run.last_hour);
-            out.push(ScoreboardReadRun {
-                first_hour: start as i32,
-                last_hour: end,
-                read_hour: held.read_hour,
-                hourly: false,
-            });
-            first = i64::from(end) + 1;
-            if end == held.last_hour {
-                cursor += 1;
-            }
-        }
-        if first <= i64::from(run.last_hour) {
-            out.push(ScoreboardReadRun {
-                first_hour: first as i32,
-                last_hour: run.last_hour,
-                read_hour: first as i32,
-                hourly: true,
-            });
-        }
-    }
-    out
-}
-
-#[cfg(test)]
-fn hourly_reads(runs: &[ValueRun]) -> Vec<ScoreboardReadRun> {
-    let mut out: Vec<ScoreboardReadRun> = Vec::new();
-    for run in runs {
-        if let Some(last) = out.last_mut()
-            && !run.starts_segment
-            && last.last_hour.checked_add(1) == Some(run.first_hour)
-        {
-            last.last_hour = run.last_hour;
-        } else {
-            out.push(ScoreboardReadRun {
-                first_hour: run.first_hour,
-                last_hour: run.last_hour,
-                read_hour: run.first_hour,
-                hourly: true,
-            });
-        }
-    }
-    out
-}
-
-#[cfg(test)]
-fn read_spans(runs: &[ValueRun], reads: &[i32]) -> Vec<ScoreboardReadRun> {
-    let mut out = Vec::new();
-    for run in runs {
-        let mut first = run.first_hour;
-        let mut index = reads.partition_point(|read| *read <= first);
-        while first <= run.last_hour {
-            let Some(read) = index.checked_sub(1).map(|i| reads[i]) else {
-                break;
-            };
-            let last = reads
-                .get(index)
-                .and_then(|read| read.checked_sub(1))
-                .map_or(run.last_hour, |end| end.min(run.last_hour));
-            out.push(ScoreboardReadRun {
-                first_hour: first,
-                last_hour: last,
-                read_hour: read,
-                hourly: false,
-            });
-            let Some(next) = last.checked_add(1) else {
-                break;
-            };
-            first = next;
-            index += 1;
-        }
-    }
-    out
-}
-
-#[cfg(test)]
-type ColumnValues = BTreeMap<String, ColumnData>;
-
-fn factory_warnings(scanned: &country_factories::ScannedFactories, warnings: &mut Vec<String>) {
-    if scanned.unreadable > 0 {
-        warnings.push(format!("{} factory rows were unresolved, ambiguous or outside the game's displayed whole-count domain", scanned.unreadable));
-    }
-}
-fn nuke_warnings(scanned: &country_nukes::ScannedNukes, warnings: &mut Vec<String>) {
-    for (kind, count) in &scanned.refused {
-        warnings.push(format!(
-            "{count} unsupported nuclear array entries of recorded ordinal {kind}"
-        ));
-    }
-}
-fn casualty_warnings(incomplete: bool, warnings: &mut Vec<String>) {
-    if incomplete {
-        warnings.push("Casualty history has gaps; wars entirely inside a gap may be missing. Partial recorded subtotals are marked †. Missing history may omit positive losses or negative corrections.".into());
-    }
-}
-
-#[cfg(test)]
-fn values(
-    source: &Source,
-    branch: u64,
-    key: ScoreboardColumnKey,
-    tags: &[String],
-    history: &RecordedHistories,
-    cancelled: &AtomicBool,
-    warnings: &mut Vec<String>,
-) -> io::Result<ColumnValues> {
-    let mut out = BTreeMap::new();
-    if matches!(
-        key,
-        ScoreboardColumnKey::ArmySize | ScoreboardColumnKey::Planes | ScoreboardColumnKey::Ships
-    ) {
-        if tags.is_empty() {
-            return Ok(out);
-        }
-        for tag in tags {
-            out.insert(
-                tag.clone(),
-                ColumnData {
-                    key,
-                    runs: Vec::new(),
-                    read_runs: Vec::new(),
-                },
-            );
-        }
-        let mut visit = |tag: &str,
-                         first_hour: i32,
-                         last_hour: i32,
-                         starts_segment: bool,
-                         amount: Option<i128>| {
-            let runs = &mut out.get_mut(tag).expect("requested force tag").runs;
-            if let Some(last) = runs.last_mut()
-                && !starts_segment
-                && last.last_hour.checked_add(1) == Some(first_hour)
-                && last.amount == amount
-            {
-                last.last_hour = last_hour;
-            } else {
-                runs.push(ValueRun {
-                    first_hour,
-                    last_hour,
-                    amount,
-                    starts_segment,
-                    at_least: false,
-                });
-            }
-            Ok(())
-        };
-        match key {
-            // Army size is prepared only, by its series family: the oracle knows none of it.
-            ScoreboardColumnKey::ArmySize => {}
-            ScoreboardColumnKey::Planes => air_force::visit_plane_runs(
-                source,
-                branch,
-                tags,
-                cancelled,
-                |tag, first, last, starts, amount| {
-                    visit(tag, first, last, starts, amount.map(i128::from))
-                },
-            )?,
-            ScoreboardColumnKey::Ships => navy::visit_ship_runs(
-                source,
-                branch,
-                tags,
-                cancelled,
-                |tag, first, last, starts, amount| {
-                    visit(tag, first, last, starts, amount.map(i128::from))
-                },
-            )?,
-            _ => unreachable!(),
-        }
-        return Ok(out);
-    }
-    if let Some(mode) = key.factory_count() {
-        let scanned = country_factories::scanned_branch(source, branch, cancelled)?;
-        factory_warnings(&scanned, warnings);
-        for tag in tags {
-            let runs: Vec<_> = scanned
-                .series
-                .get(tag)
-                .into_iter()
-                .flatten()
-                .map(|run| ValueRun {
-                    first_hour: run.first_hour,
-                    last_hour: run.last_hour,
-                    starts_segment: run.starts_segment,
-                    amount: Some(
-                        FactoryGroupKey::ALL
-                            .iter()
-                            .map(|group| country_factories::group_count(&run.values, *group, mode))
-                            .map(i128::from)
-                            .sum::<i128>(),
-                    ),
-                    at_least: false,
-                })
-                .collect();
-            out.insert(
-                tag.clone(),
-                ColumnData {
-                    key,
-                    runs,
-                    read_runs: Vec::new(),
-                },
-            );
-        }
-        return Ok(out);
-    }
-    match key {
-        ScoreboardColumnKey::PoliticalPower
-        | ScoreboardColumnKey::CommandPower
-        | ScoreboardColumnKey::Territory => {
-            for tag in tags {
-                let runs = history
-                    .countries
-                    .get(tag)
-                    .map(|country| {
-                        match key {
-                            ScoreboardColumnKey::PoliticalPower => &country.political_power.runs,
-                            ScoreboardColumnKey::CommandPower => &country.command_power.runs,
-                            _ => &country.territory,
-                        }
-                        .iter()
-                        .map(|run| ValueRun {
-                            first_hour: run.first_hour,
-                            last_hour: run.last_hour,
-                            amount: Some(i128::from(run.value)),
-                            starts_segment: run.starts_segment,
-                            at_least: false,
-                        })
-                        .collect()
-                    })
-                    .unwrap_or_default();
-                out.insert(
-                    tag.clone(),
-                    ColumnData {
-                        key,
-                        runs,
-                        read_runs: Vec::new(),
-                    },
-                );
-            }
-        }
-        ScoreboardColumnKey::Stability | ScoreboardColumnKey::WarSupport => {
-            let found = country_stability::histories(source, branch, tags, cancelled)?;
-            for tag in tags {
-                let Some(country) = found.get(tag) else {
-                    continue;
-                };
-                let runs = numeric_fixed_runs(if key == ScoreboardColumnKey::Stability {
-                    &country.stability
-                } else {
-                    &country.war_support
-                })?;
-                out.insert(
-                    tag.clone(),
-                    ColumnData {
-                        key,
-                        runs,
-                        read_runs: Vec::new(),
-                    },
-                );
-            }
-        }
-        ScoreboardColumnKey::Nukes => {
-            let scanned = country_nukes::scanned_branch(source, branch, cancelled)?;
-            for tag in tags {
-                let runs: Vec<_> = scanned
-                    .series
-                    .get(tag)
-                    .into_iter()
-                    .flatten()
-                    .map(|run| ValueRun {
-                        first_hour: run.first_hour,
-                        last_hour: run.last_hour,
-                        amount: run.total.map(i128::from),
-                        starts_segment: run.starts_segment,
-                        at_least: false,
-                    })
-                    .collect();
-                out.insert(
-                    tag.clone(),
-                    ColumnData {
-                        key,
-                        runs,
-                        read_runs: Vec::new(),
-                    },
-                );
-            }
-            nuke_warnings(&scanned, warnings);
-        }
-        ScoreboardColumnKey::EquipmentProduced => {
-            let scanned = equipment::production::scanned(source, branch, cancelled)?;
-            warnings.extend(equipment_produced::recording_warnings(&scanned));
-            let found = equipment_produced::country_totals(&scanned, tags, cancelled)?;
-            for (tag, entries) in found {
-                let runs: Vec<_> = entries
-                    .into_iter()
-                    .map(|run| ValueRun {
-                        first_hour: run.first_hour,
-                        last_hour: run.last_hour,
-                        amount: run.amount.map(i128::from),
-                        starts_segment: run.starts_segment,
-                        at_least: false,
-                    })
-                    .collect();
-                out.insert(
-                    tag,
-                    ColumnData {
-                        key,
-                        runs,
-                        read_runs: Vec::new(),
-                    },
-                );
-            }
-        }
-        ScoreboardColumnKey::CasualtiesDealt | ScoreboardColumnKey::CasualtiesTaken => {
-            let scanned = war_casualties::scanned_branch(source, branch, cancelled)?;
-            casualty_warnings(scanned.has_gap(), warnings);
-            for tag in tags {
-                let mut runs: Vec<ValueRun> = Vec::new();
-                scanned.for_each_country_run(tag, cancelled, |run| {
-                    let amount = Some(if key == ScoreboardColumnKey::CasualtiesDealt {
-                        run.value.dealt
-                    } else {
-                        run.value.taken
-                    });
-                    if let Some(last) = runs.last_mut()
-                        && !run.starts_segment
-                        && last.last_hour.checked_add(1) == Some(run.first_hour)
-                        && last.amount == amount
-                        && last.at_least == run.value.at_least
-                    {
-                        last.last_hour = run.last_hour;
-                    } else {
-                        runs.push(ValueRun {
-                            first_hour: run.first_hour,
-                            last_hour: run.last_hour,
-                            amount,
-                            starts_segment: run.starts_segment,
-                            at_least: run.value.at_least,
-                        });
-                    }
-                    Ok(())
-                })?;
-                out.insert(
-                    tag.clone(),
-                    ColumnData {
-                        key,
-                        runs,
-                        read_runs: Vec::new(),
-                    },
-                );
-            }
-        }
-        _ => {}
-    }
-    Ok(out)
-}
-
-/// Supplying dates are needed only for countries returned to the table, never
-/// for the whole ranking universe. Shared scans/cache lookups do not re-read data.
-#[cfg(test)]
-fn fill_read_runs(
-    source: &Source,
-    branch: u64,
-    key: ScoreboardColumnKey,
-    tags: &[String],
-    columns: &mut ColumnValues,
-    cancelled: &AtomicBool,
-) -> io::Result<()> {
-    match key {
-        ScoreboardColumnKey::Stability | ScoreboardColumnKey::WarSupport => {
-            let histories = country_stability::histories(source, branch, tags, cancelled)?;
-            for tag in tags {
-                if let (Some(column), Some(history)) = (columns.get_mut(tag), histories.get(tag)) {
-                    column.read_runs = stability_reads(&column.runs, &history.carried);
-                }
-            }
-        }
-        ScoreboardColumnKey::EquipmentProduced => {
-            let scanned = equipment::production::scanned(source, branch, cancelled)?;
-            for tag in tags {
-                if let Some(column) = columns.get_mut(tag) {
-                    column.read_runs = read_spans(&column.runs, &scanned.reads);
-                }
-            }
-        }
-        ScoreboardColumnKey::CasualtiesDealt | ScoreboardColumnKey::CasualtiesTaken => {
-            let scanned = war_casualties::scanned_branch(source, branch, cancelled)?;
-            for tag in tags {
-                if let Some(column) = columns.get_mut(tag) {
-                    scanned.for_each_country_run(tag, cancelled, |run| {
-                        column.read_runs.push(ScoreboardReadRun {
-                            first_hour: run.first_hour,
-                            last_hour: run.last_hour,
-                            read_hour: run.value.read_hour,
-                            hourly: false,
-                        });
-                        Ok(())
-                    })?;
-                }
-            }
-        }
-        _ => {
-            for tag in tags {
-                if let Some(column) = columns.get_mut(tag) {
-                    column.read_runs = hourly_reads(&column.runs);
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Rank identity-present countries, inserting explicit unknown pieces where the
-/// sort measure has no value. Values stay exact signed integers throughout.
-#[cfg(test)]
-fn ranking_runs(
-    history: &RecordedHistories,
-    values: &ColumnValues,
-) -> BTreeMap<String, Vec<(i32, i32, Option<i128>)>> {
-    history
-        .countries
-        .iter()
-        .map(|(tag, country)| {
-            let measures = values
-                .get(tag)
-                .map(|column| column.runs.as_slice())
-                .unwrap_or(&[]);
-            let mut out = Vec::new();
-            let mut cursor = 0;
-            for segment in country.segments.iter() {
-                let mut hour = segment.first_hour;
-                while hour <= segment.last_hour {
-                    while measures.get(cursor).is_some_and(|run| run.last_hour < hour) {
-                        cursor += 1;
-                    }
-                    let next = measures.get(cursor);
-                    let (last, amount) = match next {
-                        Some(run) if run.first_hour <= hour => {
-                            (run.last_hour.min(segment.last_hour), run.amount)
-                        }
-                        Some(run) => (segment.last_hour.min(run.first_hour - 1), None),
-                        None => (segment.last_hour, None),
-                    };
-                    out.push((hour, last, amount));
-                    let Some(next) = last.checked_add(1) else {
-                        break;
-                    };
-                    hour = next;
-                }
-            }
-            (tag.clone(), out)
-        })
-        .collect()
-}
-
-#[cfg(test)]
-fn clip_column(
-    column: ColumnData,
-    spans: &[HourSpan],
-    cancelled: &AtomicBool,
-) -> io::Result<ColumnData> {
-    let mut runs = Vec::new();
-    ranking::for_each_piece(
-        &column.runs,
-        spans,
-        |run| (run.first_hour, run.last_hour),
-        cancelled,
-        |run, first_hour, last_hour| {
-            runs.push(ValueRun {
-                first_hour,
-                last_hour,
-                amount: run.amount,
-                starts_segment: run.starts_segment && first_hour == run.first_hour,
-                at_least: run.at_least,
-            });
-            Ok(())
-        },
-    )?;
-    let mut read_runs = Vec::new();
-    ranking::for_each_piece(
-        &column.read_runs,
-        spans,
-        |run| (run.first_hour, run.last_hour),
-        cancelled,
-        |run, first_hour, last_hour| {
-            read_runs.push(ScoreboardReadRun {
-                first_hour,
-                last_hour,
-                read_hour: if run.hourly {
-                    first_hour
-                } else {
-                    run.read_hour
-                },
-                hourly: run.hourly,
-            });
-            Ok(())
-        },
-    )?;
-    Ok(ColumnData {
-        key: column.key,
-        runs,
-        read_runs,
-    })
-}
-
-fn history_warnings(history: &RecordedHistories, warnings: &mut Vec<String>) {
-    if history.unreadable_territory > 0 {
-        warnings.push(format!(
-            "{} owned-state count rows were unresolved or ambiguous; their totals are unknown",
-            history.unreadable_territory
-        ));
-    }
-    if history.unnamed > 0 {
-        warnings.push(format!(
-            "{} country-hours have non-UTF-8 tags and cannot be named",
-            history.unnamed
-        ));
-    }
-    if history.unresolved_countries > 0 {
-        warnings.push(format!(
-            "{} country-hours have unresolved country links; their identity and values are unknown",
-            history.unresolved_countries
-        ));
-    }
-}
-
-fn metadata(
-    source: &Source,
-    branch_id: &str,
-    context: &LoadContext,
-) -> (ScoreboardReply, Option<std::sync::Arc<Catalogue>>) {
-    let mut warnings = Vec::new();
-    let cat =
-        context
-            .content
-            .as_ref()
-            .and_then(|options| match catalogue::catalogue(source, options) {
-                Ok(cat) => Some(cat),
-                Err(error) => {
-                    warnings.push(format!(
-                        "Column labels cannot read recorded content: {error}"
-                    ));
-                    None
-                }
-            });
-    if cat.is_none() {
-        warnings.push("Game label translations are unavailable without the recorded content stack; plain column names are UI descriptions".into());
-    }
-    let columns = registry(cat.as_deref());
-    let default_columns = vec![
-        ScoreboardColumnKey::Factories,
-        ScoreboardColumnKey::ArmySize,
-        ScoreboardColumnKey::Territory,
-        ScoreboardColumnKey::CasualtiesDealt,
-        ScoreboardColumnKey::CasualtiesTaken,
-        ScoreboardColumnKey::Planes,
-        ScoreboardColumnKey::Ships,
-    ];
-    (
-        ScoreboardReply {
-            branch_id: branch_id.into(),
-            default_columns,
-            default_sort: ScoreboardColumnKey::Factories,
-            columns,
-            series: Vec::new(),
-            warnings,
-        },
-        cat,
-    )
-}
+pub struct Scoreboard;
 
 impl Product for Scoreboard {
     const KEY: &'static str = "scoreboard";
-    const CONTENT_DEPENDENT: bool = true;
-    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> = Some(&served::PLAN);
+    const CONTENT_DEPENDENT: bool = false;
+    const INTERACTIVE: bool = true;
     type Params = ScoreboardParams;
     type Reply = ScoreboardReply;
 
     fn types() -> Vec<String> {
         vec![
-            ScoreboardColumnKey::decl(),
-            ScoreboardTop::decl(),
             ScoreboardParams::decl(),
-            ScoreboardColumn::decl(),
-            ScoreboardRun::decl(),
-            ScoreboardReadRun::decl(),
-            CountryIdentityRun::decl(),
-            ScoreboardColumnSeries::decl(),
-            ScoreboardSeries::decl(),
             ScoreboardReply::decl(),
-            prepared::ScoreboardPreparedParams::decl(),
-            prepared::ScoreboardPreparedReply::decl(),
+            ScoreboardTop::decl(),
+            ScoreboardRow::decl(),
+            ScoreboardCell::decl(),
+            ScoreboardColumnKey::decl(),
         ]
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        params
-            .branch_id
-            .parse::<u64>()
-            .map_err(|_| "Invalid scoreboard branch")?;
-        for tag in &params.tags {
-            validate_tag(tag)?;
+        params.branch_id.parse::<u64>().map_err(|_| "Invalid branch")?;
+        if params.columns.is_empty() {
+            return Err("A scoreboard names at least one column");
         }
-        let mut unique = BTreeSet::new();
-        if params.columns.iter().any(|column| !unique.insert(*column)) {
-            return Err("Invalid scoreboard columns");
+        if params.top.as_ref().is_some_and(|top| top.count == 0) {
+            return Err("A scoreboard's top names at least one country");
         }
-        if let Some(top) = &params.top
-            && (!params.tags.is_empty()
-                || top.count == 0
-                || !params.columns.contains(&top.sort)
-                || top.sort.unavailable_reason().is_some())
+        params.tags.iter().try_for_each(|tag| super::validate_tag(tag))
+    }
+
+    fn load(source: &Source, params: &Self::Params, _context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
+        let query = crate::answer::query(source, params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid branch"))?)?;
+        let mut reply = answer(&query, params)?;
+        crate::metadata::check_cancel(cancelled)?;
+        reply.branch_id.clone_from(&params.branch_id);
+        dashboard_base::products::check_reply_budget(&reply)?;
+        Ok(reply)
+    }
+}
+
+/// `params` answered over `query`: the board of the measures asked, and the rank column's when a
+/// top ranks by one not shown.
+pub(crate) fn answer(query: &Query<'_>, params: &ScoreboardParams) -> io::Result<ScoreboardReply> {
+    let mut keys: Vec<ScoreboardColumnKey> = Vec::new();
+    let mut columns = Vec::new();
+    let mut add = |key: ScoreboardColumnKey| -> io::Result<()> {
+        let def = def_of(key);
+        if keys.contains(&key) {
+            return Ok(());
+        }
+        if let Some(measure) = def.measure
+            && let Some(line) = line_of(query, measure)?
         {
-            return Err("Invalid scoreboard top countries");
+            keys.push(key);
+            let partial = def.partial.map(|partial| line_of(query, partial)).transpose()?.flatten();
+            columns.push(board::Column { line, partial });
         }
         Ok(())
+    };
+    for key in &params.columns {
+        add(*key)?;
     }
+    let rows = match &params.top {
+        Some(top) => {
+            add(top.sort)?;
+            let by = keys.iter().position(|key| *key == top.sort).ok_or_else(|| dashboard_core::invalid(format!("{} is not a measure to rank by", def_of(top.sort).label)))?;
+            Rows::Top { by, n: top.count as usize, least: !top.descending }
+        }
+        None => Rows::Tags(&params.tags),
+    };
+    let board = if columns.is_empty() { unmeasured(query, &params.tags, params.hour) } else { board::at(&columns, rows, params.hour)? };
+    let rows = board
+        .rows
+        .into_iter()
+        .map(|row| ScoreboardRow {
+            tag: row.tag,
+            cells: params
+                .columns
+                .iter()
+                .map(|key| match keys.iter().position(|held| held == key) {
+                    Some(at) => {
+                        let cell = &row.cells[at];
+                        ScoreboardCell { value_raw: cell.value_raw.clone(), missing: cell.missing.clone(), partial: cell.partial }
+                    }
+                    None => ScoreboardCell { value_raw: None, missing: Some(unavailable(*key)), partial: false },
+                })
+                .collect(),
+        })
+        .collect();
+    Ok(ScoreboardReply { branch_id: String::new(), hour: params.hour, missing: board.missing, rows, warnings: Vec::new() })
+}
 
-    #[cfg(test)]
-    fn load(
-        source: &Source,
-        params: &Self::Params,
-        context: &LoadContext,
-        cancelled: &AtomicBool,
-    ) -> io::Result<Self::Reply> {
-        let branch = params.branch_id.parse::<u64>().expect("validated branch");
-        let (metadata, cat) = metadata(source, &params.branch_id, context);
-        if params.tags.is_empty() && params.top.is_none() {
-            return checked_reply(metadata);
-        }
-        let ScoreboardReply {
-            columns,
-            default_columns,
-            mut warnings,
-            ..
-        } = metadata;
-        if cancelled.load(Ordering::Acquire) {
-            return Err(io::Error::new(
-                io::ErrorKind::Interrupted,
-                "Scoreboard cancelled",
-            ));
-        }
-        let measures: Vec<_> = params
-            .columns
-            .iter()
-            .filter_map(|key| match key {
-                ScoreboardColumnKey::PoliticalPower => {
-                    Some(super::country_measure::Measure::PoliticalPower)
-                }
-                ScoreboardColumnKey::CommandPower => {
-                    Some(super::country_measure::Measure::CommandPower)
-                }
-                _ => None,
-            })
-            .collect();
-        let history = country_history::branch_histories(
-            source,
-            branch,
-            params.columns.contains(&ScoreboardColumnKey::Territory),
-            &measures,
-            cancelled,
-        )?;
-        history_warnings(&history, &mut warnings);
-        let mut values_by_key = BTreeMap::new();
-        let membership = if let Some(top) = &params.top {
-            let tags: Vec<_> = history.countries.keys().cloned().collect();
-            let found = values(
-                source,
-                branch,
-                top.sort,
-                &tags,
-                &history,
-                cancelled,
-                &mut warnings,
-            )?;
-            let members = ranking::top_membership_exact(
-                &ranking_runs(&history, &found),
-                top.count as usize,
-                |run| (run.0, run.1),
-                |run| run.2,
-                top.descending,
-                cancelled,
-            )?;
-            values_by_key.insert(top.sort, found);
-            Some(members)
-        } else {
-            None
-        };
-        let tags: Vec<_> = match &membership {
-            Some(members) => members.keys().cloned().collect(),
-            None => country_history::selected_aliases(&history, &params.tags),
-        };
-        for key in &params.columns {
-            if !values_by_key.contains_key(key) {
-                values_by_key.insert(
-                    *key,
-                    values(
-                        source,
-                        branch,
-                        *key,
-                        &tags,
-                        &history,
-                        cancelled,
-                        &mut warnings,
-                    )?,
-                );
-            }
-        }
-        let mut series = Vec::new();
-        for key in &params.columns {
-            fill_read_runs(
-                source,
-                branch,
-                *key,
-                &tags,
-                values_by_key.get_mut(key).expect("requested column"),
-                cancelled,
-            )?;
-        }
-        for tag in tags {
-            let Some(country) = history.countries.get(&tag) else {
-                continue;
-            };
-            let member = membership
-                .as_ref()
-                .and_then(|members| members.get(&tag))
-                .cloned();
-            let mut shown = Vec::new();
-            for key in &params.columns {
-                let column = values_by_key
-                    .get_mut(key)
-                    .and_then(|values| values.remove(&tag))
-                    .unwrap_or(ColumnData {
-                        key: *key,
-                        runs: Vec::new(),
-                        read_runs: Vec::new(),
-                    });
-                let column = match &member {
-                    Some(spans) => clip_column(column, spans, cancelled)?,
-                    None => column,
-                };
-                shown.push(column.reply());
-            }
-            let entry = ScoreboardSeries {
-                tag,
-                segments: country.segments.as_ref().clone(),
-                identities: country.identities.as_ref().clone(),
-                membership: member,
-                columns: shown,
-            };
-            series.push(entry);
-        }
-        warnings.sort();
-        warnings.dedup();
-        if let Some(cat) = cat {
-            warnings.extend(cat.refusal_lines());
-        }
-        let reply = ScoreboardReply {
-            branch_id: params.branch_id.clone(),
-            default_columns,
-            default_sort: ScoreboardColumnKey::Factories,
-            columns,
-            series,
-            warnings,
-        };
-        checked_reply(reply)
+fn line_of<'q, 'a>(query: &'q Query<'a>, measure: (&str, &str)) -> io::Result<Option<Line<'q, 'a>>> {
+    match declared(measure) {
+        Ok((series, declared)) => Line::new(query, series, declared).map(Some),
+        Err(_) => Ok(None),
     }
 }
 
-/// Serialize once against the shared budget; no count or scan caps substitute
-/// for the size of the exact reply, including a registry-only response.
-fn checked_reply(reply: ScoreboardReply) -> io::Result<ScoreboardReply> {
-    if json_len(&reply, MAX_PRODUCT_REPLY_BYTES).is_none() {
-        return Err(io::Error::other(
-            "The scoreboard exceeds MAX_PRODUCT_REPLY_BYTES (24 MiB reply budget); choose fewer columns or countries",
-        ));
+/// The chosen countries held at `hour`, for columns none of which is a measure.
+fn unmeasured(query: &Query<'_>, tags: &[String], hour: i32) -> board::Board {
+    if query.timeline.at(hour).is_none() {
+        return board::Board { rows: Vec::new(), missing: Some(query.timeline.reason(hour)) };
     }
-    Ok(reply)
+    let rows = tags.iter().filter(|tag| query.holders.at(tag, hour).is_some()).map(|tag| board::Row { tag: tag.clone(), cells: Vec::new() }).collect();
+    board::Board { rows, missing: None }
 }
 
-#[cfg(test)]
-mod tests;
+/// Why a column is not read.
+fn unavailable(key: ScoreboardColumnKey) -> String {
+    let def = def_of(key);
+    match def.measure.map(declared) {
+        Some(Err(reason)) => reason,
+        _ => def.reason.unwrap_or("This column has no measure").to_owned(),
+    }
+}

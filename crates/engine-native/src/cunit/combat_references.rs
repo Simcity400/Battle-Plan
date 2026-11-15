@@ -76,9 +76,6 @@ pub struct CombatReferencesCapture<'a> {
     pub failure: Option<&'static str>,
 }
 impl<'a> CombatReferencesCapture<'a> {
-    pub fn new(entries: &'a mut [MapCombatReference]) -> Self {
-        Self::new_buffer(crate::walk::Buffer::Fixed(entries))
-    }
     pub fn new_buffer(entries: crate::walk::Buffer<'a, MapCombatReference>) -> Self {
         Self {
             entries,
@@ -165,10 +162,11 @@ pub(crate) fn read_unit_combat_references(
     unit: usize,
     header: [u8; 16],
     first: usize,
-    output: &mut [MapCombatReference],
+    output: &mut Vec<MapCombatReference>,
+    start: usize,
     memo: &mut MapCombatIdentityMemo,
 ) -> Result<usize, &'static str> {
-    read_unit_combat_references_with(memory, unit, header, first, output, |pointer| {
+    read_unit_combat_references_with(memory, unit, header, first, output, start, |pointer| {
         memo.identity(memory, base, pointer)
     })
 }
@@ -178,11 +176,13 @@ fn read_unit_combat_references_with(
     unit: usize,
     header: [u8; 16],
     first: usize,
-    output: &mut [MapCombatReference],
+    output: &mut Vec<MapCombatReference>,
+    start: usize,
     mut identity: impl FnMut(usize) -> Result<(u64, u8), &'static str>,
 ) -> Result<usize, &'static str> {
     let vector = Array::from_header(header, 8).ok_or("unit combat-reference vector invalid")?;
-    let mut capture = CombatReferencesCapture::new(output);
+    let mut capture =
+        CombatReferencesCapture::new_buffer(crate::walk::Buffer::GrowingFrom(output, start));
     capture.begin(vector.count);
     if capture.failure.is_none() {
         for index in 0..vector.count {

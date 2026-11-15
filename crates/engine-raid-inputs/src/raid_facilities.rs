@@ -67,11 +67,11 @@ fn row(
     })
 }
 
-pub fn walk(memory: &impl Memory, base: usize, game: usize, output: &mut [Row]) -> Outcome {
-    walk_buffer(memory, base, game, crate::walk::Buffer::Fixed(output))
+pub fn count(memory: &impl Memory, base: usize, game: usize) -> Outcome {
+    walk_buffer(memory, base, game, crate::walk::Buffer::Count)
 }
 
-pub fn walk_growing(
+pub fn walk(
     memory: &impl Memory,
     base: usize,
     game: usize,
@@ -224,14 +224,14 @@ mod tests {
                 bytes: &bytes,
             };
             assert_eq!(
-                walk(&memory, 0, 0x1000, &mut []),
+                count(&memory, 0, 0x1000),
                 Outcome::Truncated {
                     len: 0,
                     unread_rows: countries as u32 * 2
                 }
             );
             assert_eq!(
-                walk_growing(&memory, 0, 0x1000, &mut rows),
+                walk(&memory, 0, 0x1000, &mut rows),
                 Outcome::Rows { len: countries * 2 }
             );
             assert_eq!(rows[countries * 2 - 1].country, countries as u32);
@@ -244,20 +244,13 @@ mod tests {
         let (mut bytes, start) = fixture(3);
         let mut rows = vec![Row::default(); 6];
         let run =
-            |bytes: &[u8], rows: &mut [Row]| walk(&SliceMemory { base: 0, bytes }, 0, 0x1000, rows);
+            |bytes: &[u8], rows: &mut Vec<Row>| walk(&SliceMemory { base: 0, bytes }, 0, 0x1000, rows);
         assert_eq!(run(&bytes, &mut rows), Outcome::Rows { len: 6 });
         for (index, row) in rows.iter().enumerate() {
             assert_eq!(row.country, (index / 2 + 1) as u32);
             assert_eq!(row.ordinal, (index % 2) as u32);
             assert_eq!(row.id, row.country);
         }
-        assert_eq!(
-            run(&bytes, &mut rows[..3]),
-            Outcome::Truncated {
-                len: 3,
-                unread_rows: 3
-            }
-        );
         bytes[start + 0x1100] ^= 1;
         assert_eq!(
             run(&bytes, &mut rows),

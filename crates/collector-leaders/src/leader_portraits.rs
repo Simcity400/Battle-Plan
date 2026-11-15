@@ -24,7 +24,7 @@ impl Capacities {
     pub fn presize(&mut self, memory: &impl Memory, base: usize) -> Result<(), &'static str> {
         // Select at most one leader per orders root.
         let count = collector_extended_support::demand::rows(
-            engine_native::corders_group::walk_roots(memory, base, &mut []),
+            engine_native::corders_group::count_roots(memory, base),
         )?;
         crate::table_capture::grow_capacity(&mut self.rows, count);
         crate::table_capture::grow_capacity(&mut self.sources, count);
@@ -90,7 +90,7 @@ impl Captured {
         if let Outcome::Rows { len } = outcome
             && let Some(roots) = roots.get(..len)
         {
-            let acquired = cunit_leader::walk_hq_portraits_growing(
+            let acquired = cunit_leader::walk_hq_portraits(
                 memory,
                 base,
                 roots,

@@ -15,8 +15,8 @@ loaded `Probe` lifetime.
   through `Hook::new`. An authored eight-slot native caller forwards four register
   and four stack arguments through the production shim, Rust body, pre observation,
   relocated original and post path. Native mutation precedes the real C++ throw
-  or SEH raise. Foreign cleanup must retain ACTIVE while releasing observation
-  and boundary admission, refusing the incomplete interval and retaining storage.
+  or SEH raise. Foreign cleanup must retain ACTIVE while closing the observation,
+  refusing the incomplete interval and retaining storage.
 - `production_verdict_indirect_foreign_unwind` installs the real leader resolver
   stub at an authored six-byte indirect CALL. The relay returns to the padding after the five-byte CALL
   and continues after the six-byte CALL on normal return. Native resolver arguments, leader
@@ -27,9 +27,9 @@ loaded `Probe` lifetime.
 - `production_return_call_foreign_unwind` patches an authored five-byte CALL
   with the real HQ return wrapper. Its authenticated pre read establishes an
   unsettled source head before native reserve credit and the foreign raise.
-  Cleanup must retain ACTIVE, keep the source unavailable across gaps and loads,
-  refuse drain and retain charged storage. A load cannot prove that Windows has
-  finished traversing the callback or permit unload.
+  Cleanup must retain ACTIVE, refuse drain, keep the source unavailable across a
+  gap until a load clears it, and retain charged storage. A load cannot prove that
+  Windows has finished traversing the callback or permit unload.
 
 Typed assignments require the actual Rust bodies and original entry declarations
 to remain `system-unwind`; the former `system` types cannot satisfy them. The

@@ -7,19 +7,18 @@ import { forgetFlags } from './countryFlags.ts';
 import { forgetFacts } from './sharedFacts.ts';
 import { forgetTimelines } from './countryTimeline.ts';
 import { forgetReplySizes } from './replySizes.ts';
+import { tileCache } from './tiles/view.ts';
 import { contentRevision, useContentRevision } from './contentRevision.ts';
-import { isPreparedProduct, preparedSeriesQuery } from './preparedSeries.ts';
 import { validateCountryGroupReply } from './groupsReply.ts';
 import { pageJoin } from './pageJoins.ts';
 import { CONTENT_PRODUCTS } from '../generated/dashboard.ts';
-import { newId } from '../shell/ids.ts';
-import { finalPreparedReply } from './preparedPrefix.ts';
 import { useHeldFailure, useHeldFailures } from './heldFailures.ts';
 import { useViewRead, type Holds } from './viewRead.ts';
 import { inFrame } from './frameUpdates.ts';
 import { perfLog } from '../shell/perf.ts';
-import { countWork, measuredWidget } from './widgetPerf.ts';
+import { countRead, countWork, measuredWidget } from './widgetPerf.ts';
 import { keepDigest } from './replyDigest.ts';
+import { askedByPage, baseClient, noteRead } from './prepare.ts';
 
 /** Each reply's length as the transport received it, so the cache sizes a reply
  * without serialising it again; a reply without one is measured by serialising. */
@@ -39,6 +38,7 @@ function receivedLength(reply: ProductReply<unknown>): number | undefined {
 const caches = new WeakMap<DashboardClient, { shared: ResourceCache<ProductReply<unknown>>; hours: ResourceCache<ProductReply<unknown>> }>();
 const replySize = (reply: ProductReply<unknown>) => (receivedLength(reply) ?? JSON.stringify(reply).length) * 2;
 function cache(client: DashboardClient, hours = false): ResourceCache<ProductReply<unknown>> {
+  client = baseClient(client);
   let entry = caches.get(client);
   if (!entry) {
     // Sized to hold every page's replies for one campaign and country (a 13-year campaign's tour of
@@ -51,33 +51,11 @@ function cache(client: DashboardClient, hours = false): ResourceCache<ProductRep
 
 const contentProducts: ReadonlySet<string> = new Set(CONTENT_PRODUCTS);
 
-export function productKey(request: ProductRequest, content = 0, prepared = false): string {
+export function productKey(request: ProductRequest, content = 0): string {
   const key: unknown[] = [request.sourceId, request.revision, request.product, request.params];
-  const contentProduct = request.product === 'ships-sunk-manifest' ? 'ships-sunk' : request.product;
-  if (contentProducts.has(contentProduct) || prepared || (request.params as { family?: { kind?: string } } | null)?.family?.kind === 'naval-losses') key.push(content);
-  if (prepared) key.push('prepared');
+  if (contentProducts.has(request.product)) key.push(content);
   return JSON.stringify(key);
 }
-
-function usesPrepared(client: DashboardClient, request: ProductRequest, source?: DashboardSource): boolean {
-  const prepared = isPreparedProduct(request.product) || (!!client.preparedQuery && (request.product === 'politics-ledger' || request.product === 'politics-state-history' || request.product === 'civil-wars')) || (!!source && !!client.preparedQuery && (request.product === 'army-size' || request.product === 'supply-health' || request.product === 'series-summary' || request.product === 'military-air-ledger' || request.product === 'air-aces' || request.product === 'air-ace-portraits' || request.product === 'raids' || request.product === 'air-superiority' || request.product === 'casualty-pairs' || request.product === 'equipment-losses' || request.product === 'subjects' || request.product === 'wars' || request.product === 'country-groups' || request.product === 'party-history' || request.product === 'scoreboard' || request.product === 'series-state' || request.product === 'unit-leaders' || request.product === 'construction-log' || request.product === 'construction-log-manifest' || request.product === 'construction-spending' || request.product === 'resource-balance' || request.product === 'trade-flows' || request.product === 'production-spending' || request.product === 'dockyard-spending' || request.product === 'military-factory-spending' || request.product === 'equipment-produced' || request.product === 'casualty-breakdown' || request.product === 'series-next-change' || request.product === 'events-page' || request.product === 'events-clusters' || request.product === 'occupied-states' || request.product === 'occupied-states-manifest' || request.product === 'land-owners' || request.product === 'espionage-log' || request.product === 'operative-placements' || request.product === 'operatives-roster' || request.product === 'agency-comparison' || request.product === 'decryption'));
-  if (prepared && source && (source.id !== request.sourceId || source.revision !== request.revision)) throw new Error('The prepared product source does not match its request.');
-  return prepared;
-}
-
-interface ProgressiveListener { publish: (value: unknown) => void; pending?: () => void }
-/** A mounted prepared read in flight, which every mount asking the same thing joins. */
-interface ProgressiveRead {
-  users: number;
-  /** The newest reply published, for a mount joining late. */
-  latest?: { value: unknown };
-  /** Whether it waits for preparation to cover it. */
-  waiting: boolean;
-  listeners: Set<ProgressiveListener>;
-  controller: AbortController;
-  done: Promise<unknown>;
-}
-const progressive = new WeakMap<DashboardClient, Map<string, ProgressiveRead>>();
 
 /** What each validator made of a reply's data, or why it refused: caches hold raw replies, and each
  * consumer is given the data its own validator makes, never another's, validated once. */
@@ -110,19 +88,14 @@ function untilAborted<V>(promise: Promise<V>, signal: AbortSignal): Promise<V> {
 
 function pagedKind(request: ProductRequest): string | null {
   if (request.product === 'resource-balance' || request.product === 'trade-flows') return request.product;
-  // Only leader choices are paged; every other unit-leaders view is one reply.
-  if (request.product === 'unit-leaders') return (request.params as { view?: unknown } | null)?.view === 'choices' ? 'unit-leaders-choices' : null;
   if (request.product !== 'series-summary') return null;
   const kind = (request.params as { family?: { kind?: unknown } } | null)?.family?.kind;
   return typeof kind === 'string' ? kind : null;
 }
 
-/** One-shot loads return their first replies. Mounted prepared loads publish each
- * accepted extent; only final replies enter a bounded cache, the hours' own for a read that
- * follows the playhead (`hours`). Mounts asking the same thing share one read, each told every
- * extent and, while it waits for preparation to cover it, `pending`; a one-shot load may join
- * another's request and is told nothing. A paged reply is read page after page, each published
- * joined to the pages before it. */
+/** A product's reply, from a bounded cache, the hours' own for a read that follows the playhead
+ * (`hours`); mounts asking the same thing share one request. A paged reply is read page after
+ * page, each published joined to the pages before it. */
 export async function loadProduct<T>(client: DashboardClient, request: ProductRequest, signal: AbortSignal, validate?: (data: unknown) => T, source?: DashboardSource, restart = false, publish?: (data: T) => void, pending?: () => void, hours = false): Promise<T> {
   const kind = pagedKind(request);
   if (kind === null) return loadPage(client, request, signal, validate, source, restart, publish, pending, hours);
@@ -145,106 +118,71 @@ export async function loadProduct<T>(client: DashboardClient, request: ProductRe
   }
 }
 
-async function loadPage<T>(client: DashboardClient, request: ProductRequest, signal: AbortSignal, validate?: (data: unknown) => T, source?: DashboardSource, restart = false, publish?: (data: T) => void, pending?: () => void, hours = false): Promise<T> {
-  const prepared = usesPrepared(client, request, source);
-  const replies = cache(client, hours), key = productKey(request, contentRevision(client).snapshot(), prepared);
+async function loadPage<T>(client: DashboardClient, request: ProductRequest, signal: AbortSignal, validate?: (data: unknown) => T, _source?: DashboardSource, _restart = false, publish?: (data: T) => void, _pending?: () => void, hours = false): Promise<T> {
+  const replies = cache(client, hours), key = productKey(request, contentRevision(client).snapshot());
+  noteRead(client, request);
   // A final reply either cache holds answers at once, whichever kind of read settled it.
   const settled = () => replies.getSettled(key) ?? cache(client, !hours).getSettled(key);
   const told = (data: unknown) => validatedData(data, validate);
-  if (prepared && publish) {
-    if (signal.aborted) throw new DOMException('Request cancelled', 'AbortError');
-    const cached = settled();
-    if (cached) {
-      perfLog?.cached(request, 'hit');
-      const reply = await untilAborted(cached, signal);
-      // An abort after the reply settled but before this continuation still cancels.
-      if (signal.aborted) throw new DOMException('Request cancelled', 'AbortError');
-      const data = told(reply.data);
-      publish(data);
-      return data;
-    }
-    // Mounts asking for what another is reading join its read, whichever cache it lands in: each
-    // is told every reply it publishes, validated its own way. A retry reads afresh. No partial
-    // reply is cached.
-    const reads = progressive.get(client) ?? new Map<string, ProgressiveRead>();
-    progressive.set(client, reads);
-    let read = restart ? undefined : reads.get(key);
-    if (read) perfLog?.cached(request, 'joined');
-    if (!read) {
-      const created: ProgressiveRead = { users: 0, waiting: false, listeners: new Set(), controller: new AbortController(), done: Promise.resolve(undefined) };
-      // A unique in-flight entry keeps source release cancellation in the same
-      // cache machinery. It retains no result; the final reply uses the real key.
-      created.done = replies.get(JSON.stringify([request.sourceId, key, newId()]), async shared => {
-        const data = await preparedSeriesQuery(client, source ?? { id: request.sourceId, revision: request.revision } as DashboardSource,
-          request.product as Parameters<typeof preparedSeriesQuery>[2], request.params, shared, restart, () => {
-            created.waiting = true;
-            for (const listener of created.listeners) listener.pending?.();
-          }, undefined, value => {
-            created.latest = { value };
-            for (const listener of created.listeners) listener.publish(value);
-          });
-        if (shared.aborted) throw new DOMException('Request cancelled', 'AbortError');
-        // A final reply the first mount's validation refuses stays uncached; the others still take it.
-        if (finalPreparedReply(data)) {
-          let accepted = true;
-          try { told(data); } catch { accepted = false; }
-          if (accepted) replies.put(key, { ...request, data });
-        }
-        return { ...request, data };
-      }, created.controller.signal, () => false).then(reply => reply.data).finally(() => { if (reads.get(key) === created) reads.delete(key); });
-      if (!restart) reads.set(key, created);
-      read = created;
-    }
-    const joined = read;
-    // What this mount is told failing fails this mount alone.
-    let fail!: (error: unknown) => void;
-    const failed = new Promise<never>((_, reject) => { fail = reject; });
-    const guarded = (tell: () => void) => {
-      try { tell(); } catch (error) { joined.listeners.delete(mine); fail(error); }
-    };
-    const mine: ProgressiveListener = { publish: value => guarded(() => { if (!signal.aborted) publish(told(value)); }),
-      pending: pending && (() => guarded(pending)) };
-    try {
-      joined.users++;
-      joined.listeners.add(mine);
-      // A mount joining late is told what the read has published so far.
-      if (joined.latest) mine.publish(joined.latest.value);
-      if (joined.waiting) mine.pending?.();
-      const value = await untilAborted(Promise.race([joined.done, failed]), signal);
-      return told(value);
-    } finally {
-      joined.listeners.delete(mine);
-      joined.users--;
-      // React effect replay can rejoin before shared work is cancelled.
-      queueMicrotask(() => {
-        if (joined.users) return;
-        if (reads.get(key) === joined) reads.delete(key);
-        joined.controller.abort();
-      });
-    }
-  }
   const held = settled();
   if (held) {
     perfLog?.cached(request, 'hit');
     return untilAborted(held, signal).then(reply => {
       if (signal.aborted) throw new DOMException('Request cancelled', 'AbortError');
-      return told(reply.data);
+      const data = told(reply.data);
+      publish?.(data);
+      return data;
     });
   }
-  let final = true;
   // A load going in the other cache is joined there: one request, kept where it was started.
   const other = cache(client, !hours);
   const holder = !replies.holds(key) && other.holds(key) ? other : replies;
-  if (perfLog && holder.holds(key)) perfLog.cached(request, 'joined');
-  return holder.get(key, async shared => {
-    const reply = prepared ? { ...request, data: await preparedSeriesQuery(client, source ?? { id: request.sourceId, revision: request.revision } as DashboardSource,
-      request.product as Parameters<typeof preparedSeriesQuery>[2], request.params, shared, restart) }
-      : validateProductReply(await client.product<unknown>(request, shared), request);
-    final = !prepared || finalPreparedReply(reply.data);
-    // A reply this load's validation refuses fails it, and is never held.
-    told(reply.data);
-    return reply;
-  }, signal, () => final).then(reply => told(reply.data));
+  if (holder.holds(key)) {
+    perfLog?.cached(request, 'joined');
+    askedByPage(client, request);
+  }
+  // A reply the starting mount's validation refuses is never held; every mount it reaches judges it its own way.
+  const accepted = (reply: ProductReply<unknown>) => { try { told(reply.data); return true; } catch { return false; } };
+  return holder.get(key, async shared => validateProductReply(await client.product<unknown>(request, shared), request), signal, accepted).then(reply => {
+    const data = told(reply.data);
+    publish?.(data);
+    return data;
+  });
+}
+
+/** The reply settled under `key` (`productKey`) in either cache, as `validate` makes it, at once; undefined while none
+ * is, or the reply is one `validate` refuses, or a paged reply joined from several. */
+export function peekProduct<T>(client: DashboardClient, request: ProductRequest, key: string, validate?: (data: unknown) => T): T | undefined {
+  if (pagedKind(request) !== null) return undefined;
+  const reply = cache(client).peek(key) ?? cache(client, true).peek(key);
+  if (!reply) return undefined;
+  // One reply peeked again (every render until its read settles) is the same data: a new object each render would
+  // re-run every memo and effect keyed on it, a render and a read per frame while playing.
+  let byValidator = peeked.get(reply);
+  if (!byValidator) peeked.set(reply, byValidator = new Map());
+  const as = validate ?? NO_VALIDATION;
+  if (byValidator.has(as)) return byValidator.get(as) as T | undefined;
+  let data: T | undefined;
+  try { data = validatedData(reply.data, validate); } catch { data = undefined; }
+  byValidator.set(as, data);
+  return data;
+}
+const NO_VALIDATION = (data: unknown) => data;
+const peeked = new WeakMap<ProductReply<unknown>, Map<(data: unknown) => unknown, unknown>>();
+
+/** Holds, past the caches' bounds, the replies of `requests` for `owner` in place of what it held: the prepare lane's
+ * replies for each page, so what it holds is what the campaign's pages show at one hour. */
+export function pinProducts(client: DashboardClient, owner: object, requests: readonly ProductRequest[]): void {
+  const content = contentRevision(client).snapshot();
+  const keys = requests.map(request => productKey(request, content));
+  cache(client).pin(owner, keys);
+  cache(client, true).pin(owner, keys);
+}
+
+/** Lets go of what `owner` pinned. */
+export function unpinProducts(client: DashboardClient, owner: object): void {
+  cache(client).unpin(owner);
+  cache(client, true).unpin(owner);
 }
 
 /** Prepared smart groups share the ordinary content/source cache and cancellation.
@@ -259,8 +197,7 @@ export function loadCountryGroups(client: DashboardClient, source: import('./cli
 
 /** Load one product without caching it: for per-hour requests that follow playback
  * and would otherwise push the full-branch products out of the shared cache. */
-export async function loadTransientProduct<T>(client: DashboardClient, request: ProductRequest, signal: AbortSignal, source?: DashboardSource): Promise<T> {
-  if (usesPrepared(client, request, source)) return await preparedSeriesQuery(client, source ?? { id: request.sourceId, revision: request.revision } as DashboardSource, request.product as Parameters<typeof preparedSeriesQuery>[2], request.params, signal) as T;
+export async function loadTransientProduct<T>(client: DashboardClient, request: ProductRequest, signal: AbortSignal, _source?: DashboardSource): Promise<T> {
   return validateProductReply(await client.product<unknown>(request, signal), request).data as T;
 }
 
@@ -272,6 +209,7 @@ export function forgetProducts(client: DashboardClient, sourceId: string): void 
   forgetFacts(client, sourceId);
   forgetTimelines(client, sourceId);
   forgetReplySizes(client, sourceId);
+  tileCache(client).forget(`${sourceId}|`);
 }
 
 /** Forget completed products of a source so they are requested again; loads in flight are untouched. */
@@ -307,7 +245,7 @@ const NO_ERRORS: readonly Failure[] = [];
 export function useProducts<T>(client: DashboardClient, requests: readonly ProductRequest[], active: boolean, validate?: (data: unknown) => T, source?: DashboardSource): ProductState<T[]> {
   const content = useContentRevision(client);
   // Every request uses the current content revision, never its array index.
-  const key = JSON.stringify(requests.map(request => productKey(request, content, !!source && !!client.preparedQuery)));
+  const key = JSON.stringify(requests.map(request => productKey(request, content)));
   const widget = measuredWidget();
   const [state, setState] = useState<{ client: DashboardClient; key: string; data?: T[]; errors?: readonly Failure[] }>();
   const [attempt, setAttempt] = useState(0);
@@ -340,7 +278,7 @@ export function useProducts<T>(client: DashboardClient, requests: readonly Produ
     };
     requests.forEach((request, index) => {
       const publish = (value: T) => { if (!controller.signal.aborted) { values.set(index, value); commit(); } };
-      countWork(widget, 'read');
+      countRead(widget, request);
       void loadProduct<T>(client, request, controller.signal, validate, source, attempt > 0, publish).then(publish,
         error => { if (!controller.signal.aborted) { failures.set(index, asFailure(error)); commit(); } }).finally(settled);
     });
@@ -348,7 +286,14 @@ export function useProducts<T>(client: DashboardClient, requests: readonly Produ
     // The structured key names the requests and their order.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client, key, run.wanted, attempt]);
-  const current = requests.length && state?.client === client && state.key === key ? state : undefined;
+  const kept = requests.length && state?.client === client && state.key === key ? state : undefined;
+  // Every reply already held shows from the first render, never a loading state; peeked once a key, as `useViewRead` does.
+  const peeked = useRef<{ key: string; data: T[] | undefined } | null>(null);
+  if (!kept?.data && requests.length && peeked.current?.key !== key) {
+    const values = requests.map(request => peekProduct(client, request, productKey(request, content), validate));
+    peeked.current = { key, data: values.every(value => value !== undefined) ? values as T[] : undefined };
+  }
+  const current = kept?.data || !peeked.current?.data || peeked.current.key !== key ? kept : { client, key, data: peeked.current.data, errors: undefined };
   const retry = () => { setState(undefined); setAttempt(value => value + 1); };
   const held = current?.data !== undefined;
   const errors = current?.errors ?? NO_ERRORS;
@@ -359,7 +304,7 @@ export function useProducts<T>(client: DashboardClient, requests: readonly Produ
 /** Inside a frame, later failures leave published data intact and are reported by the frame. */
 export function useProduct<T>(client: DashboardClient, request: ProductRequest | null, active: boolean, validate?: (data: unknown) => T, source?: DashboardSource): ProductState<T> {
   const content = useContentRevision(client);
-  const key = request ? productKey(request, content,!!source) : null;
+  const key = request ? productKey(request, content) : null;
   const widget = measuredWidget();
   const [state, setState] = useState<{ client: DashboardClient; key: string; data?: T; error?: Failure }>();
   const [attempt, setAttempt] = useState(0);
@@ -373,7 +318,7 @@ export function useProduct<T>(client: DashboardClient, request: ProductRequest |
       countWork(widget, 'reply');
       setState(previous => previous?.client === client && previous.key === key && previous.data === data && !previous.error ? previous : { client, key, data });
     });
-    countWork(widget, 'read');
+    countRead(widget, request);
     void loadProduct<T>(client, request, controller.signal, validate, source, attempt > 0, publish).then(
       publish,
       error => inFrame(() => controller.signal.aborted || setState(previous => ({ client, key,
@@ -384,7 +329,12 @@ export function useProduct<T>(client: DashboardClient, request: ProductRequest |
     // The request object is recreated each render; its key is the identity.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [run.wanted, client, key, attempt]);
-  const current = state?.client === client && state.key === key ? state : undefined;
+  const kept = state?.client === client && state.key === key ? state : undefined;
+  // A reply already held shows from the first render, never a loading state; peeked once a key, as `useViewRead` does.
+  const peeked = useRef<{ key: string; data: T | undefined } | null>(null);
+  if (kept?.data === undefined && request && key && peeked.current?.key !== key) peeked.current = { key, data: peekProduct(client, request, key, validate) };
+  const heldData = kept?.data === undefined && key && peeked.current?.key === key ? peeked.current.data : undefined;
+  const current = heldData === undefined ? kept : { ...kept, client, key: key!, data: heldData };
   // A failed load already left the cache; retrying only asks again.
   const retry = () => { setState(undefined); setAttempt(value => value + 1); };
   const error = useHeldFailure(current?.error, current?.data !== undefined, retry);
@@ -403,7 +353,8 @@ export function useFollowedProduct<T>(client: DashboardClient, request: ProductR
     Object.entries(params).filter(([name]) => !moving.includes(name))]) : null;
   const viewKey = JSON.stringify(moving.map(name => params[name]));
   const read = useViewRead<ProductRequest, T>(lane, request, viewKey, active,
-    (at, signal, publish, restart) => loadProduct<T>(client, at, signal, validate, source, restart, publish, undefined, true), client, holds);
+    (at, signal, publish, restart) => loadProduct<T>(client, at, signal, validate, source, restart, publish, undefined, true), client, holds,
+    at => peekProduct(client, at, productKey(at, content), validate));
   // A failure belongs to the moment it was asked for; a newer moment is still loading.
   const error = useHeldFailure(read.errorKey === viewKey ? read.error : undefined, read.data !== undefined, read.retry);
   return { data: read.data, error, retry: read.retry, moment: read.viewKey, asking: read.asking };

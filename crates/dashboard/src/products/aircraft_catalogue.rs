@@ -240,7 +240,7 @@ impl Content {
         let layers = &catalogue.content.layers;
         let roster = layers.descriptor_roster()?;
         let mut warnings = Vec::new();
-        let equipment = crate::products::equipment::units_of(catalogue).unwrap_or_else(|why| {
+        let equipment = crate::catalogue::equipment_units(catalogue).unwrap_or_else(|why| {
             warnings.push(format!(
                 "Which names are aircraft cannot be told from equipment: the equipment database is refused ({why}); every entity and mesh is still listed"
             ));
@@ -325,7 +325,7 @@ fn recorded_designs(source: &Source, cancelled: &AtomicBool) -> io::Result<Vec<(
                         else {
                             continue;
                         };
-                        let kind = crate::products::equipment::variant_token(variant, lexical);
+                        let kind = variant_token(variant, lexical);
                         designs.insert((kind, model.to_owned()));
                     }
                 }
@@ -554,3 +554,12 @@ fn search_text(entry: &AircraftEntry) -> String {
 
 #[cfg(test)]
 mod tests;
+
+/// The equipment type token a variant definition names, spelled; empty where not recorded.
+fn variant_token(definition: &replay_data::rows::VariantDefinitionRow, lexical: &[replay_data::rows::LexicalTokenRow]) -> String {
+    lexical
+        .binary_search_by_key(&definition.equipment_token, |row| row.token)
+        .ok()
+        .and_then(|index| std::str::from_utf8(&lexical[index].literal).ok().map(str::to_owned))
+        .unwrap_or_default()
+}

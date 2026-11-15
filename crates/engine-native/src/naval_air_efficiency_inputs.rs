@@ -278,25 +278,6 @@ pub fn append_kills(
     )
 }
 
-#[cfg(test)]
-fn capture_kills(
-    memory: &impl Memory,
-    base: usize,
-    plane: usize,
-    output: &mut [WingKill],
-    used: &mut usize,
-    demand: &mut usize,
-) -> Result<[usize; 2], &'static str> {
-    capture_kills_buffer(
-        memory,
-        base,
-        plane,
-        crate::walk::Buffer::Fixed(output),
-        used,
-        demand,
-    )
-}
-
 fn capture_kills_buffer(
     memory: &impl Memory,
     base: usize,
@@ -445,10 +426,10 @@ mod tests {
     fn kills_preserve_full_wing_category_duplicates_and_signed_counts() {
         let fixture = Fixture::new();
         let census = ReadCensus::new(&fixture);
-        let mut rows = [WingKill::default(); 2];
+        let mut rows = vec![WingKill::default(); 2];
         let (mut used, mut required) = (0, 0);
         assert_eq!(
-            capture_kills(&census, 0, PLANE, &mut rows, &mut used, &mut required),
+            capture_kills_buffer(&census, 0, PLANE, crate::walk::Buffer::Growing(&mut rows), &mut used, &mut required),
             Ok([0, 2])
         );
         assert_eq!((used, required), (2, 2));
@@ -482,7 +463,7 @@ mod tests {
             let mut rows = vec![WingKill::default(); wings * kills];
             let (mut used, mut required) = (0, 0);
             assert_eq!(
-                capture_kills(&fixture, 0, PLANE, &mut rows, &mut used, &mut required),
+                capture_kills_buffer(&fixture, 0, PLANE, crate::walk::Buffer::Growing(&mut rows), &mut used, &mut required),
                 Ok([0, wings * kills])
             );
             assert_eq!((used, required), (wings * kills, wings * kills));
@@ -494,19 +475,17 @@ mod tests {
     fn pressure_preserves_whole_plane_and_invalid_wing_is_a_failure() {
         let mut fixture = Fixture::new();
         let census = ReadCensus::new(&fixture);
-        let mut rows = [WingKill::default(); 1];
         let (mut used, mut required) = (0, 0);
         assert_eq!(
-            capture_kills(&census, 0, PLANE, &mut rows, &mut used, &mut required),
+            capture_kills_buffer(&census, 0, PLANE, crate::walk::Buffer::Count, &mut used, &mut required),
             Err(crate::cfex_member::DETAIL_ARENA_CAPACITY)
         );
         assert_eq!((used, required), (0, 2));
-        assert_eq!(rows, [WingKill::default()]);
         assert_eq!((census.calls(), census.bytes()), (11, 122));
         fixture.q(WING, 0);
         let census = ReadCensus::new(&fixture);
         assert_eq!(
-            capture_kills(&census, 0, PLANE, &mut [], &mut 0, &mut 0),
+            capture_kills_buffer(&census, 0, PLANE, crate::walk::Buffer::Count, &mut 0, &mut 0),
             Err("naval air source identity mismatch")
         );
         assert_eq!((census.calls(), census.bytes()), (8, 90));
@@ -514,10 +493,10 @@ mod tests {
         let mut fixture = Fixture::new();
         fixture.bytes.truncate(0x5000 + 31);
         let census = ReadCensus::new(&fixture);
-        let mut rows = [WingKill::default(); 2];
+        let mut rows = vec![WingKill::default(); 2];
         let (mut used, mut required) = (0, 0);
         assert_eq!(
-            capture_kills(&census, 0, PLANE, &mut rows, &mut used, &mut required),
+            capture_kills_buffer(&census, 0, PLANE, crate::walk::Buffer::Growing(&mut rows), &mut used, &mut required),
             Err("naval air kill entries unreadable")
         );
         assert_eq!((used, required), (0, 2));

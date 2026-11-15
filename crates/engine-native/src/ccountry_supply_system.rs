@@ -65,23 +65,13 @@ pub struct FloatingHarborDeployment {
     pub status: u8,
 }
 
+pub fn count_floating_harbor_deployments(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
+    walk_floating_harbor_deployments_buffer(memory, base, game_state, crate::walk::Buffer::Count)
+}
+
 /// Reads every country supply system's deployment records in slot and array order. A short
 /// output reports the exact number of records it did not read.
 pub fn walk_floating_harbor_deployments(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut [FloatingHarborDeployment],
-) -> Outcome {
-    walk_floating_harbor_deployments_buffer(
-        memory,
-        base,
-        game_state,
-        crate::walk::Buffer::Fixed(output),
-    )
-}
-
-pub fn walk_floating_harbor_deployments_growing(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -168,15 +158,15 @@ pub struct Row {
     pub level: u8,
 }
 
+pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
+    walk_buffer(memory, base, game_state, crate::walk::Buffer::Count)
+}
+
 /// Reads explicit hub settings through the canonical-country-indexed supply
 /// vector. Empty maps emit no rows: absence does not imply level zero. Capacity
 /// limits only stored output; remaining map counts determine the exact shortfall.
 /// No allocation, retry, inferred motorization or pointer escapes occur.
-pub fn walk(memory: &impl Memory, base: usize, game_state: usize, output: &mut [Row]) -> Outcome {
-    walk_buffer(memory, base, game_state, crate::walk::Buffer::Fixed(output))
-}
-
-pub fn walk_growing(
+pub fn walk(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -441,29 +431,7 @@ fn sparse_access(
 /// census. Arena or row pressure omits whole countries, reports `Truncated` and
 /// keeps the exact demand so the collector grows its buffers off-thread; an
 /// omitted country's access array is still read to measure that demand.
-#[cfg(test)]
 pub fn walk_trains(
-    memory: &impl Memory,
-    base: usize,
-    state: usize,
-    output: &mut [TrainRow],
-    entries: &mut [crate::supply_train_entry::Row],
-    access: &mut [u8],
-    runs: &mut [[u32; 2]],
-) -> TrainReport {
-    walk_trains_buffer(
-        memory,
-        base,
-        state,
-        crate::walk::Buffer::Fixed(output),
-        crate::walk::Buffer::Fixed(entries),
-        crate::walk::Buffer::Fixed(access),
-        crate::walk::Buffer::Fixed(runs),
-        None,
-    )
-}
-
-pub fn walk_trains_growing(
     memory: &impl Memory,
     base: usize,
     state: usize,
@@ -484,12 +452,12 @@ pub fn walk_trains_growing(
     )
 }
 
-/// [`walk_trains_growing`] for the countries `select` admits by native
+/// [`walk_trains`] for the countries `select` admits by native
 /// country id: an unselected slot's supply objects are not read, and it is
 /// neither a row nor an unread row. A selected country's row equals the
 /// whole walk's.
 #[allow(clippy::too_many_arguments)]
-pub fn walk_trains_selected_growing(
+pub fn walk_trains_selected(
     memory: &impl Memory,
     base: usize,
     state: usize,
@@ -512,7 +480,7 @@ pub fn walk_trains_selected_growing(
 }
 
 /// `select`, when present, admits countries by native id before their supply
-/// objects are read ([`walk_trains_selected_growing`]); without it every
+/// objects are read ([`walk_trains_selected`]); without it every
 /// slot is read and checked.
 #[allow(clippy::too_many_arguments)]
 pub fn walk_trains_buffer(
@@ -614,8 +582,8 @@ pub fn walk_trains_buffer(
                 (access.suffix(used_access), runs.suffix(used_runs))
             } else {
                 (
-                    crate::walk::Buffer::Fixed(&mut []),
-                    crate::walk::Buffer::Fixed(&mut []),
+                    crate::walk::Buffer::Count,
+                    crate::walk::Buffer::Count,
                 )
             };
             let sparse = sparse_access(memory, controllers, values, spans)?;

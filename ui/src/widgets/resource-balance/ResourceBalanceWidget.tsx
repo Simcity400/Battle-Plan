@@ -1,508 +1,489 @@
-import { createContext, useContext, useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { setAttr, setStyle, setText } from '../../charts/domText';
+import { createPortal } from 'react-dom';
+import WidgetState from '../../components/WidgetState';
 import { Select } from '../../components/Select';
 import '../../components/ChipSet.css';
-import type { CSSProperties } from 'react';
-import { createPortal } from 'react-dom';
 import { useContextMenu } from '../../components/ContextMenu';
-import WidgetState from '../../components/WidgetState';
-import { useHeldFailure } from '../../dashboard/heldFailures';
-import BreakdownChart from '../../charts/drill/BreakdownChart';
-import type { BreakdownSeries } from '../../charts/drill/BreakdownChart';
 import DrillHost from '../../charts/drill/DrillHost';
-import DrillParts from '../../charts/drill/DrillParts';
 import { CLOSED, pinnedBreakdown, reduceDrill } from '../../charts/drill/drillState';
-import { dayLabel, drawGapFill, drawLine } from '../../charts/draw';
-import { easeTau, motionOf } from '../../charts/easing';
+import { dayLabel } from '../../charts/draw';
+import { drawGapSummary, drawLineSummary, pickSummaryLines } from '../../charts/chartSummary';
 import { jumpItem } from '../../charts/jump';
 import Legend from '../../charts/Legend';
-import { drawGapSummary, drawLineSummary, extentOfSummary, pickSummaryLines } from '../../charts/chartSummary';
-import type { PreparedResourceReply } from './useResourceBalance';
-import { useParityRows } from '../../dashboard/parityRows';
-import { pickLines } from '../../charts/linePick';
-import { lineStyles } from '../../charts/palette';
-import { clipToSpans, extentOfAll, runAt, sameStretch } from '../../charts/series';
+import type { Live, LiveValues } from '../../charts/live';
+import { SECONDARY_DASH } from '../../charts/palette';
 import TimeChart from '../../charts/TimeChart';
 import type { ChartLayer } from '../../charts/TimeChart';
-import type { ChartTokens } from '../../charts/tokens';
 import { tooltipText } from '../../charts/tooltip';
-import { useRowTooltips } from '../../charts/useRowTooltips';
 import type { TooltipContent } from '../../charts/tooltip';
 import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
-import { fixedNumber, formatAmount, formatSigned } from '../../charts/valueAxis';
+import type { ChartTokens } from '../../charts/tokens';
+import { useRowTooltips } from '../../charts/useRowTooltips';
 import { shownUntil } from '../../charts/view';
 import type { PlaybackMode } from '../../charts/view';
-import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
-import { countryDrillTagAt } from '../../dashboard/countryIdentity';
-import DatedCountryChip from '../../dashboard/DatedCountryChip';
-import type { CountryLabel } from '../../dashboard/countryFlagsAt';
-import type { NameAt } from '../../dashboard/countryNamesAt';
-import type { WidgetProps } from '../../dashboard/definitions';
+import { formatAmount, formatSigned } from '../../charts/valueAxis';
+import { easeTau, motionOf } from '../../charts/easing.ts';
+import type { CSSProperties } from 'react';
 import CountryComparisons from '../../dashboard/CountryComparisons';
 import type { ComparisonProps } from '../../dashboard/CountryComparisons';
+import DatedCountryChip from '../../dashboard/DatedCountryChip';
+import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
+import { selectedTags } from '../../dashboard/countrySelection';
+import { datedCountryToken, readDatedCountry } from '../../dashboard/datedCountry';
+import type { DatedCountrySelection } from '../../dashboard/datedCountry';
+import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
-import type { BoundTrack, CountrySelection } from '../../dashboard/model';
+import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
 import { contentKey, contentSet, resolveOptions, setToken } from '../../dashboard/options';
-import { usePlaybackHour } from '../../dashboard/playback';
-import type { ResourceBalanceReply, ResourceInfo } from '../../generated/dashboard';
-import { balanceOf, barParts, barScale, changeHours, chosenLines, chosenResources, dealsKnown, orderResources, overTimeTooltip, resourceName,
-  resourcePartGroups, resourceParts, RESOURCE_PARTS, resourceTooltip, supplyDemandRuns, toggleChosen, tooltipPartners, tradeIndex, tradesAt } from './balanceData.ts';
-import type { Balance, RowOrder } from './balanceData';
+import { useProduct } from '../../dashboard/products';
+import { useDiagnostics } from '../../dashboard/useDiagnostics';
+import { useHeadProduct } from '../../dashboard/headProduct';
+import { keyId } from '../../dashboard/keyedSeriesData';
+import { useKeyedSeries } from '../../dashboard/keyedSeries';
+import { useFallbackHour } from '../../dashboard/follow/useFollow';
+import { repliedCells, reporting } from '../../dashboard/follow/liveCells';
+import { useShownHour } from '../../dashboard/widgetPerf';
 import { BREAKDOWN, OPTIONS } from './definition';
-import { useResourceBalance, useResourceCountry } from './useResourceBalance';
-import { clipResourceTrades, readResourceCountry, resourceCountryToken, resourceExtent, resourceMoment } from './resourceDrill';
-import type { ResourceCountrySelection } from './resourceDrill';
-import ResourceDeals from './ResourceDealsView';
+import { RESOURCE_BALANCE, RESOURCE_SIZES, automaticResource, balanceOf, barParts, barStructure, campaignScale, chosenResources, dealsOf, momentScale,
+  orderResources, overTimeTooltip, partWidth, poolsAt, poolsMissing, poolsOf, resourceName, resourceTooltip, toggleResource, validateResourceBalance,
+  validateResourceSizes } from './resourceData';
+import type { Balance, LineAt, RowOrder } from './resourceData';
+import ResourceBreakdown from './ResourceBreakdown';
 import './resourceBalance.css';
+import type { ResourceBalanceReply, ResourceInfo } from '../../generated/dashboard';
 
-const NO_WARNINGS: string[] = [];
-const ResourceGroup = createContext<CountrySelection | null>(null);
-type PartnerTargets = (hour: number | null, content?: TooltipContent | null) => void;
-type SummaryView = { from: number; to: number; width: number };
+const NO_WARNINGS: readonly string[] = [];
+const SUPPLY = { kind: RESOURCE_BALANCE, measure: 'supply' } as const;
+const DEMAND = { kind: RESOURCE_BALANCE, measure: 'demand' } as const;
 
-/** A summary view clipped to the widget's hours: an axis dragged past them reads nothing beyond. */
-function viewWithin(view: SummaryView, extent: readonly [number, number]): SummaryView | null {
-  const from = Math.max(view.from, Math.ceil(extent[0])), to = Math.min(view.to, Math.floor(extent[1]));
-  return from <= to ? { from, to, width: view.width } : null;
-}
-
-/** One country's resources: per resource, supply (produced, then imported) against
- * demand (needed, then exported) with the game's surplus or deficit, or supply and
- * demand over time. The hover lists each trade partner. */
+/** One country's resources: per resource, supply against demand with the game's surplus or deficit, or supply and
+ * demand over time; a resource opens its breakdown (parts, deals, parts over time), which can be pinned as a widget of
+ * its own for that country. */
 export default function ResourceBalanceWidget(props: WidgetProps) {
-  return props.widget.options?.show === BREAKDOWN.id && (props.widget.options.resourceCountry
-    || props.widget.countries.kind === 'tags' && props.widget.countries.tags.length === 1)
-    ? <ResourceBalanceCountry {...props} /> : <ResourceGroup.Provider value={props.widget.countries}><CountryComparisons {...props} component={ResourceBalanceCountry} /></ResourceGroup.Provider>;
+  return props.widget.options?.show === BREAKDOWN.id ? <ResourceCountry {...props} /> : <CountryComparisons {...props} component={ResourceCountry} />;
 }
 
-function ResourceBreakdown({ data, resource, hour, tokens, runtime, track, ...chart }: {
-  data: ResourceBalanceReply; resource: ResourceInfo; hour: number | null; tokens: ChartTokens; runtime: WidgetProps['runtime']; track: BoundTrack;
-} & Omit<Parameters<typeof BreakdownChart>[0], 'series' | 'axes' | 'label'>) {
-  const recorded = data.series.find(series => series.id === resource.id);
-  const summary = (data as PreparedResourceReply).summaries?.find(series => series.id === resource.id);
-  const parts = useMemo<BreakdownSeries[]>(() => {
-    if (!recorded && !summary) return [];
-    return RESOURCE_PARTS.map((part, index) => ({ id: part.id, label: part.label, color: tokens.categories[index % tokens.categories.length],
-      runs: (recorded?.runs ?? []).map(run => ({ firstHour: run.firstHour, lastHour: run.lastHour, breakBefore: run.startsSegment,
-        value: fixedNumber(resourceParts(run)[index].raw, data.decimals) })),
-      amount: at => {
-        const run = runAt(recorded?.runs ?? [], at);
-        return run ? formatSigned(resourceParts(run)[index].raw, data.decimals, data.decimals) : 'Not recorded';
-      },
-    }));
-  }, [recorded, summary, tokens.categories, data.decimals]);
-  const run = hour !== null && recorded ? runAt(recorded.runs, hour) : null;
-  const balance = run && balanceOf(run);
-  const values = run && resourceParts(run);
-  const groups = run ? resourcePartGroups(run) : [];
-  const deals = useMemo(() => hour !== null && dealsKnown(data, hour) ? tradesAt(tradeIndex(data), resource.id, hour) : null,
-    [data, resource.id, hour]);
-  return <>
-    {groups.map(group => <div key={group.title}>
-      <DrillParts parts={group.values.map(part => ({ id: part.id, label: part.label, color: parts.find(series => series.id === part.id)?.color,
-        value: fixedNumber(part.raw, data.decimals), text: formatAmount(part.raw, data.decimals, data.decimals) }))}
-        format={String} total={fixedNumber(group.total, data.decimals)} totalRow={{ label: group.title, value: formatAmount(group.total, data.decimals, data.decimals) }} />
-    </div>)}
-    {values && balance && values.at(-1)!.raw !== 0n && <DrillParts parts={[{ id: 'unidentified', label: 'Other', muted: true,
-      value: fixedNumber(values.at(-1)!.raw, data.decimals), text: formatSigned(values.at(-1)!.raw, data.decimals, data.decimals), color: parts.at(-1)?.color }]}
-      total={fixedNumber(balance.net, data.decimals)} format={String} />}
-    {balance ? <p className="drill-empty">Net: {formatSigned(balance.net, data.decimals, data.decimals)} per day.</p>
-      : <p className="drill-empty">No resources were recorded for this moment.</p>}
-    {deals && hour !== null ? (['imports', 'exports'] as const).map(direction => {
-      const pool = balance ? direction === 'imports' ? balance.imported : balance.exported : null;
-      return <ResourceDeals key={direction} deals={deals[direction]} pool={pool} decimals={data.decimals} hour={hour}
-        direction={direction} runtime={runtime} track={track} active={chart.active} />;
-    }) : <p className="drill-empty">{hour !== null && (data as PreparedResourceReply).coverage !== undefined && !(data as PreparedResourceReply).coverage?.complete
-      && hour > ((data as PreparedResourceReply).coverage?.lastHour ?? -Infinity) ? 'Trade partners are still being prepared.' : 'Trade partners were not recorded at this hour.'}</p>}
-    <BreakdownChart {...chart} series={parts} summaries={summary ? { parts: summary.parts, total: summary.total } : undefined} selectedHour={hour} label={`${resourceName(resource)} parts over time`}
-      axes={{ xFrom: null, xTo: null, yMin: null, yMax: null, log: false }} />
-  </>;
-}
+const isMember = (within: ComparisonProps['within'], hour: number | null) =>
+  !within || hour === null || within.some(span => span.firstHour <= hour && hour <= span.lastHour);
 
-function ResourceBalanceCountry({ widget, runtime, active, countrySlot, onDiagnostics, setOption, within }: ComparisonProps) {
-  const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
-  const clockHour = usePlaybackHour(runtime.clock, active && (widget.time.mode === 'follow' || drill.breakdown !== null && drill.follow));
-  const tokens = useChartTokens();
-  const viewport = useViewportHeight();
+/** The pinned breakdown's country: its saved choice, or the widget's one country. */
+function savedCountryOf(widget: WidgetSpec, track: BoundTrack): DatedCountrySelection | null {
   const options = resolveOptions(OPTIONS, widget.options);
-  const incoming = useResourceBalance(widget, runtime, active, within);
-  const { track, tag, data: reply, numbers, contentPending, retry } = incoming;
-  const error = useHeldFailure(incoming.error, reply !== undefined, retry);
-  const data = useMemo(() => reply && within ? { ...reply, series: reply.series.map(series => ({ ...series, runs: clipToSpans(series.runs, within) })),
-    trades: clipResourceTrades(reply.trades, within), dealHours: clipToSpans(reply.dealHours, within) } : reply, [reply, within]);
-  const window = track && resolveWindow(widget, track, runtime.tracks, clockHour);
+  return readDatedCountry(options.resourceCountry, track.source.metadata.campaignKey, track.branch.id)
+    ?? (widget.countries.kind === 'tags' && widget.countries.tags.length === 1
+      ? { campaign: track.source.metadata.campaignKey, branch: track.branch.id, tag: widget.countries.tags[0], originOffset: 0 } : null);
+}
+
+function ResourceCountry(props: ComparisonProps) {
+  const { widget, runtime } = props;
+  const options = resolveOptions(OPTIONS, widget.options);
+  const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const saved = options.show === BREAKDOWN.id;
-  const savedCountry = useMemo<ResourceCountrySelection | null>(() => {
-    if (!saved || !track) return null;
-    if (options.resourceCountry) return readResourceCountry(options.resourceCountry, track.source.metadata.campaignKey, track.branch.id, widget.countries);
-    return widget.time.mode === 'pin' && window && widget.countries.kind === 'tags' && widget.countries.tags.length === 1
-      ? { campaign: track.source.metadata.campaignKey, branch: track.branch.id, tag: widget.countries.tags[0], originOffset: window.lastHour - track.branch.firstHour } : null;
-  }, [saved, options.resourceCountry, widget.countries, widget.time.mode, window?.lastHour, track?.source.metadata.campaignKey, track?.branch.id, track?.branch.firstHour]); // eslint-disable-line react-hooks/exhaustive-deps
-  const heldExtent = track ? resourceExtent(savedCountry, track.branch.firstHour, track.branch.lastHour) : null;
-  const following = widget.time.mode === 'follow' || widget.time.mode === 'pin';
-  const playhead = window && following ? window.lastHour : null;
-  const extent: [number, number] = heldExtent ?? (track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : [track.branch.firstHour, track.branch.lastHour]) : [0, 1]);
-  const head = Math.floor(playhead ?? extent[1]);
-  const anchor = useRef<HTMLDivElement>(null);
-  useParityRows(anchor, () => ({ kind: 'chart', label: 'Resource balance values', complete: incoming.parityComplete,
-    total: data?.series.reduce((count, series) => count + series.runs.length, 0) ?? 0,
-    rows: data ? [{ branchId: data.branchId, tag: data.tag, decimals: data.decimals, resources: data.resources, series: data.series, dealHours: data.dealHours, trades: data.trades, warnings: data.warnings }] : [] }), { prepare: incoming.parityPrepare, ready: () => incoming.parityComplete, error: () => error ?? null });
-  const [resourceId, setResourceId] = useState<number>();
-  const savedKey = contentKey(String(options.partResource ?? ''));
-  const picked = saved && savedKey ? data?.resources.find(resource => JSON.stringify([resource.token, resource.ordinal]) === savedKey)
-    : data?.resources.find(resource => resource.id === resourceId) ?? data?.resources[0];
-  const actualHour = track ? Math.floor(clockHour) + track.axisOffset : 0;
-  const drillAt = resourceMoment(drill, saved, head, actualHour);
-  const [countryPick, setCountryPick] = useState<ResourceCountrySelection | null>(null);
-  const selectedCountry = saved ? savedCountry : countryPick;
-  const originalGroup = useContext(ResourceGroup);
-  const actor = useResourceCountry(selectedCountry, runtime, track, active, originalGroup, incoming.view, drillAt);
-  const detailData = selectedCountry ? actor.data : data;
-  const headerTag = selectedCountry && actor.spans && drillAt !== null ? countryDrillTagAt(actor.spans, drillAt) : selectedCountry ? null : tag;
-  const headerReason = saved && !savedCountry ? 'Saved country selection unavailable. Choose it again.'
-    : selectedCountry ? actor.reason ?? (headerTag ? null : 'Country unavailable at this time.') : null;
-  const header = useCountryLabelsAt(runtime.client, track, saved && countrySlot && !headerReason && headerTag && drillAt !== null
-    ? [{ tag: headerTag, hour: drillAt }] : [], active);
-  const pinnedHeader = saved && countrySlot ? createPortal(<DatedCountryChip failure={actor.error} hour={drillAt} reason={headerReason}
-    label={!headerReason && headerTag && drillAt !== null ? header.labelAt(drillAt)(headerTag) : null} />, countrySlot) : null;
-  const detailScope = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, data?.tag, picked?.id, options.show]);
-  const selectedCountryKey = JSON.stringify(selectedCountry);
-  const detailPickOwner = useMemo(() => ({ scope: detailScope, numbers: selectedCountry ? actor.numbers : numbers, within, selectedCountryKey }),
-    [detailScope, selectedCountryKey, actor.numbers, numbers, within]);
-  useEffect(() => { dispatch({ type: 'close' }); setResourceId(undefined); setCountryPick(null); },
-    [runtime.client, track?.source.id, track?.source.revision, track?.branch.id, tag, options.show]);
-  const [wantedPartners, setWantedPartners] = useState<NameAt[]>([]);
-  const onPartners = useCallback<PartnerTargets>((hour, content) => {
-    const wanted = hour === null ? [] : tooltipPartners(content ?? null).map(tag => ({ tag, hour }));
-    setWantedPartners(previous => previous.length === wanted.length && previous.every((item, index) =>
-      item.tag === wanted[index].tag && item.hour === wanted[index].hour) ? previous : wanted);
-  }, []);
-  const shownPartners = useMemo<NameAt[]>(() => {
-    if (saved || options.view === 'time' || !data || !dealsKnown(data, head)) return [];
-    const index = tradeIndex(data);
-    return data.resources.flatMap(resource => {
-      const deals = tradesAt(index, resource.id, head);
-      return [...deals.imports, ...deals.exports].map(trade => ({ tag: trade.partner, hour: head }));
-    });
-  }, [data, head, saved, options.view]);
-  const partnerKey = JSON.stringify([...new Set([...shownPartners, ...wantedPartners].map(item => JSON.stringify([item.hour, item.tag])))].sort());
-  const partnerRequests = useMemo<NameAt[]>(() => (JSON.parse(partnerKey) as string[]).map(key => {
-    const [hour, tag] = JSON.parse(key) as [number, string]; return { hour, tag };
-  }), [partnerKey]);
-  const partners = useCountryLabelsAt(runtime.client, track, partnerRequests, active);
+  const savedCountry = saved && track ? savedCountryOf(widget, track) : null;
+  const tag = saved ? savedCountry?.tag ?? null : selectedTags(widget.countries, track)[0] ?? null;
+  if (!track) return <WidgetState kind="empty" icon="layers" message="Load a campaign to see resources." />;
+  if (saved && !savedCountry) return <WidgetState kind="unavailable" message="Saved country selection unavailable. Choose it again." />;
+  if (!tag) return <WidgetState kind="empty" message="Choose a country in widget settings." />;
+  return <ResourceCountryView {...props} track={track} tag={tag} saved={savedCountry} />;
+}
+
+function partColours(tokens: ChartTokens): Map<string, string> {
+  const [supply, demand] = [tokens.categories[0], tokens.categories[1]];
+  return new Map([
+    ['produced', supply], ['subjects', `color-mix(in srgb, ${supply} 75%, ${tokens.surface})`], ['imported', `color-mix(in srgb, ${supply} 50%, ${tokens.surface})`],
+    ['needed', demand], ['overlord', `color-mix(in srgb, ${demand} 75%, ${tokens.surface})`], ['exported', `color-mix(in srgb, ${demand} 50%, ${tokens.surface})`],
+  ]);
+}
+
+/** One country's view and its breakdown host. The breakdown reads its own product: followed with the head while it
+ * follows playback, else asked for the day picked. */
+function ResourceCountryView(props: ComparisonProps & { track: BoundTrack; tag: string; saved: DatedCountrySelection | null }) {
+  const { widget, runtime, active, countrySlot, track, tag, saved } = props;
+  const options = resolveOptions(OPTIONS, widget.options);
+  const tokens = useChartTokens();
   const menu = useContextMenu('Resource actions');
-  useEffect(() => {
-    onDiagnostics(contentPending ? ['Resource names and artwork are updating from the recorded content.']
-      : data?.warnings.length ? data.warnings : NO_WARNINGS);
-    return () => onDiagnostics(NO_WARNINGS);
-  }, [data, contentPending, onDiagnostics]);
-  // A widget out of view shows no tooltip, so it needs no partner names either.
-  useEffect(() => { if (!active) onPartners(null); }, [active, onPartners]);
-  // One resource's breakdown at an hour. It changes only with the reply, the partners'
-  // names and the window, so the breakdowns built for an hour are reused while the
-  // pointer moves; the deals come from the reply's index, never a scan.
-  const breakdown = useCallback((resource: ResourceInfo, hour: number): TooltipContent | null => {
-    if (!data) return null;
-    const series = data.series.find(item => item.id === resource.id);
-    const run = series && runAt(series.runs, hour);
-    if (!run) return { title: resourceName(resource), icon: resource.icon ?? undefined, subtitle: dayLabel(hour), rows: [{ label: 'Not recorded at this time', tone: 'muted' }] };
-    // As much as fits the window, with the surplus or deficit always shown.
-    return resourceTooltip({ title: resourceName(resource), icon: resource.icon ?? undefined, subtitle: `Per day · ${dayLabel(hour)}` },
-      balanceOf(run), dealsKnown(data, hour) ? tradesAt(tradeIndex(data), resource.id, hour) : null, data.decimals, partners.labelAt(hour), viewport);
-  }, [data, partners.labelAt, viewport]);
+  const anchor = useRef<HTMLDivElement>(null);
+  const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
+  const [resourceId, setResourceId] = useState<number>();
+  const following = widget.time.mode === 'follow';
+  const paced = useFallbackHour(runtime.clock, active && !following && widget.time.mode !== 'campaign');
+  const window = resolveWindow(widget, track, runtime.tracks, paced);
+  const savedExtent = saved?.extent ? [track.branch.firstHour + saved.extent[0], track.branch.firstHour + saved.extent[1]] as [number, number] : null;
+  const extent: [number, number] = savedExtent && savedExtent[0] >= track.branch.firstHour && savedExtent[1] <= track.branch.lastHour ? savedExtent
+    : widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : [track.branch.firstHour, track.branch.lastHour];
+  const playhead = window && (following || widget.time.mode === 'pin') ? Math.floor(window.lastHour) : null;
+  useEffect(() => { dispatch({ type: 'close' }); setResourceId(undefined); }, [track.source.id, track.source.revision, track.branch.id, tag, options.show]);
 
-  if (!track || !tag) return <>{pinnedHeader}<WidgetState kind="empty" icon="layers" message="Load a campaign and choose a country to see its resources." /></>;
-  if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <>{pinnedHeader}<WidgetState kind="unavailable" message="This time is outside the recording." /></>;
-  if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <>{pinnedHeader}<WidgetState kind="unavailable" message="Choose another time in widget settings." /></>;
-  if (error) return <>{pinnedHeader}<WidgetState kind="error" failure={error} onRetry={retry} /></>;
-  if (!data) return <>{pinnedHeader}<WidgetState kind="loading" label="Loading resources…" /></>;
-  if ((!data.series.some(series => series.runs.length) && !(data as PreparedResourceReply).summaries?.some(item => item.supply.buckets.some(Boolean) || item.demand.buckets.some(Boolean)))
-    || !data.resources.length) return <>{pinnedHeader}<WidgetState kind="unavailable" message="Resources weren’t recorded for this country." /></>;
+  // The breakdown's hour: the head while it follows a following widget, else the day picked or the one the widget shows.
+  const shown = !!saved || drill.breakdown !== null;
+  const drillFollows = following && (drill.breakdown === null ? !!saved : drill.follow);
+  const drillAt = drillFollows ? null : drill.breakdown !== null && drill.hour !== null ? drill.hour : playhead ?? extent[1];
+  const followSpec = useMemo<WidgetSpec>(() => ({ ...widget, time: { mode: 'follow' } }), [widget]);
+  const breakdown = useHeadProduct<ResourceBalanceReply>(runtime, drillFollows ? followSpec : widget, RESOURCE_BALANCE, shown ? { tag } : null,
+    { active: active && shown, validate: validateResourceBalance, hoverHour: drillFollows ? null : drillAt });
+  const drillData = breakdown.data;
+  const savedKey = contentKey(String(options.partResource ?? ''));
+  const picked = saved && savedKey ? drillData?.resources.find(resource => JSON.stringify([resource.token, resource.ordinal]) === savedKey)
+    : drillData?.resources.find(resource => resource.id === resourceId) ?? drillData?.resources[0];
+  const dayAt = drillFollows ? breakdown.at : drillAt;
+  const header = useCountryLabelsAt(runtime.client, track, saved && countrySlot && dayAt !== null ? [{ tag, hour: dayAt }] : [], active);
+  const pinnedHeader = saved && countrySlot ? createPortal(<DatedCountryChip failure={breakdown.error} hour={dayAt} reason={null}
+    label={dayAt !== null ? header.labelAt(dayAt)(tag) : null}
+    live={drillFollows ? { read: () => breakdown.shownAt(), subscribe: changed => breakdown.live.subscribe(changed) } : undefined} />, countrySlot) : null;
+  const axisOffset = track.axisOffset ?? 0;
+  const liveHead = useMemo(() => following ? { read: () => runtime.clock.getSnapshot().position + axisOffset, subscribe: runtime.clock.subscribeFrame } : undefined,
+    [following, runtime.clock, axisOffset]);
 
-  const jump = (hour: number) => [jumpItem(runtime, track.id, hour)];
-  const open = (resource: ResourceInfo, hour: number) => {
+  const open = (resource: ResourceInfo, hour: number | null) => {
     setResourceId(resource.id);
-    setCountryPick({ campaign: track.source.metadata.campaignKey, branch: track.branch.id, tag, originOffset: hour - track.branch.firstHour,
-      extent: extent.map(at => at - track.branch.firstHour) as [number, number] });
-    dispatch({ type: 'open', breakdown: BREAKDOWN.id, hour, playing: runtime.clock.getSnapshot().playing,
-      playhead: widget.time.mode === 'follow' ? playhead : null });
+    const at = hour ?? Math.floor(runtime.clock.getHour() + axisOffset);
+    dispatch({ type: 'open', breakdown: BREAKDOWN.id, hour: at, playing: runtime.clock.getSnapshot().playing, playhead: following ? at : null });
   };
+  const jump = (hour: number) => [jumpItem(runtime, track.id, hour)];
 
-  const main = <>
-    {options.view === 'time'
-      ? <OverTime data={data} tokens={tokens} viewport={viewport} options={options} runtime={runtime} track={track} extent={extent} playhead={playhead} active={active}
-        numbers={numbers} within={within} incoming={incoming}
-        partnerAt={partners.labelAt} partnersRevision={partners.revision} onPartners={onPartners}
-        onMenu={(hour, x, y) => menu.open(x, y, jump(hour))} setOption={setOption} onPick={open} />
-      : <BalanceBars data={data} tokens={tokens} hour={head} order={options.order as RowOrder} scale={options.scale === 'moment' ? 'moment' : 'campaign'}
-        hideEmpty={options.hideEmpty === true} owner={`resource-balance:${widget.id}:${tag}`} breakdown={breakdown} onPartners={onPartners} active={active}
-        hoursPerSecond={motionOf(runtime.clock.getSnapshot())} onMenu={(hour, x, y) => menu.open(x, y, jump(hour))} onPick={open} />}
-  </>;
-  const identityNotice = selectedCountry && actor.identityError ? <WidgetState kind="error" failure={actor.identityError} onRetry={actor.identityRetry} /> : null;
-  const detail = saved && !savedCountry ? <WidgetState kind="unavailable" message={headerReason!} />
-    : selectedCountry && actor.error ? <WidgetState kind="error" failure={actor.error} onRetry={actor.retry} />
-    : selectedCountry && actor.preparing ? <WidgetState kind="loading" label={actor.reason!} />
-    : selectedCountry && actor.reason ? <WidgetState kind="unavailable" message="Country unavailable at this time." />
-    : picked && detailData ? <ResourceBreakdown data={detailData} resource={picked} hour={drillAt} tokens={tokens}
-    extent={extent} playhead={drill.breakdown !== null && drill.follow ? actualHour : playhead} playback={options.playback as PlaybackMode} afterPlayhead={options.afterPlayhead === true}
-    windowHours={Number(options.windowDays ?? 365) * 24} branchStart={track.branch.firstHour} hoursPerSecond={motionOf(runtime.clock.getSnapshot())}
-    active={active} runtime={runtime} track={track} pickOwner={detailPickOwner}
-    onSummaryView={incoming.onSummaryView && picked ? view => { const shown = viewWithin(view, extent); if (shown) incoming.onSummaryView!(shown, [picked.id]); } : undefined} onHover={incoming.onHover}
-    onNavigateHour={incoming.onNavigateHour && picked ? (action, from, x, until) => incoming.onNavigateHour!([picked.id], action, from, x, until) : undefined}
-    keyboardHour={incoming.keyboardHour} keyboardRevision={incoming.keyboardRevision} onPick={hour => dispatch(saved
-      ? { type: 'open', breakdown: BREAKDOWN.id, hour, playing: false, playhead: null } : { type: 'pick', hour })}
-    onContextMenu={(hour, x, y) => menu.open(x, y, jump(hour))} /> : <p className="drill-empty">Resource unavailable. Choose another in settings.</p>;
-  return <div ref={anchor} className="resource-balance">
-    {saved ? <div className="drill-body">
+  const detail = breakdown.error ? <WidgetState kind="error" failure={breakdown.error} onRetry={breakdown.retry} />
+    : breakdown.read === 'off' && !drillData ? <WidgetState kind="unavailable" message="This time is outside the recording." />
+      : !drillData ? <WidgetState kind="loading" label="Loading resources…" />
+        : drillData.poolsMissing ? <WidgetState kind="unavailable" message={drillData.poolsMissing} />
+          : !picked ? <p className="drill-empty">Resource unavailable. Choose another in settings.</p>
+            : <ResourceBreakdown runtime={runtime} track={track} active={active} tag={tag} resource={picked} data={drillData} live={breakdown.live}
+              hour={dayAt} following={drillFollows} tokens={tokens} extent={extent} playhead={drillFollows ? null : drillAt} liveHead={drillFollows ? liveHead : undefined}
+              playback={(options.playback as PlaybackMode) ?? 'draw-in'} afterPlayhead={options.afterPlayhead === true} windowHours={Number(options.windowDays ?? 365) * 24}
+              hoursPerSecond={motionOf(runtime.clock.getSnapshot())}
+              onPick={hour => dispatch(drill.breakdown !== null ? { type: 'pick', hour } : { type: 'open', breakdown: BREAKDOWN.id, hour, playing: false, playhead: null })}
+              onContextMenu={(hour, x, y) => menu.open(x, y, jump(hour))} />;
+
+  if (saved) return <div ref={anchor} className="resource-balance">
+    <div className="drill-body" ref={breakdown.root}>
       {pinnedHeader}
-      {(drill.breakdown === null ? widget.time.mode !== 'follow' : !drill.follow) && <button type="button" className="button small quiet" onClick={() => dispatch({ type: 'open', breakdown: BREAKDOWN.id,
-        hour: actualHour, playing: true, playhead: actualHour })}>Follow playback</button>}{identityNotice}{detail}
-    </div> : <DrillHost anchor={anchor} mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown !== null}
-      title={picked ? resourceName(picked) : 'Resource breakdown'} day={drillAt === null ? '' : dayLabel(drillAt)} following={drill.follow} canFollow
+      {following && !drillFollows && <button type="button" className="button small quiet" onClick={() => dispatch({ type: 'close' })}>Follow playback</button>}
+      {detail}
+    </div>
+    {menu.menu}
+  </div>;
+
+  const main = options.view === 'time'
+    ? <ResourcesOverTime {...props} extent={extent} playhead={playhead} liveHead={liveHead} onPick={open} />
+    : <ResourceBars {...props} onPick={open} />;
+  return <div ref={anchor} className="resource-balance-host">
+    <DrillHost anchor={anchor} mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown !== null}
+      title={picked ? resourceName(picked) : 'Resource breakdown'} day={dayAt === null ? '' : dayLabel(dayAt)} following={drillFollows} canFollow={following}
       onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })} main={main}
-      onPin={picked && selectedCountry && !actor.reason ? () => {
+      onPin={picked ? () => {
         const pinned = pinnedBreakdown(widget, { ...BREAKDOWN, label: resourceName(picked) }, track.id);
-        pinned.options = { ...pinned.options, partResource: setToken(JSON.stringify([picked.token, picked.ordinal])), resourceCountry: resourceCountryToken(selectedCountry) };
-        if (!drill.follow && drillAt !== null) pinned.time = { mode: 'pin', windows: { [track.id]: { firstOffset: drillAt - track.branch.firstHour, lastOffset: drillAt - track.branch.firstHour } } };
-        if (drill.follow) pinned.time = { mode: 'follow' };
+        const origin = (dayAt ?? extent[1]) - track.branch.firstHour;
+        pinned.countries = { kind: 'tags', tags: [tag] };
+        pinned.options = { ...pinned.options, partResource: setToken(JSON.stringify([picked.token, picked.ordinal])),
+          resourceCountry: datedCountryToken({ campaign: track.source.metadata.campaignKey, branch: track.branch.id, tag, originOffset: origin,
+            extent: [extent[0] - track.branch.firstHour, extent[1] - track.branch.firstHour] }) };
+        pinned.time = drillFollows ? { mode: 'follow' } : { mode: 'pin', windows: { [track.id]: { firstOffset: origin, lastOffset: origin } } };
         runtime.addWidgetBelow(widget.id, pinned);
       } : undefined}>
-      <div className="select-row">Resource <Select label="Resource" value={String(picked?.id ?? '')} onChange={value => setResourceId(Number(value))}
-        options={data.resources.map(resource => ({ value: String(resource.id), label: resourceName(resource) }))} /></div>
-      {identityNotice}{detail}
-    </DrillHost>}
+      <div ref={breakdown.root}>
+        <div className="select-row">Resource <Select label="Resource" value={String(picked?.id ?? '')} onChange={value => setResourceId(Number(value))}
+          options={(drillData?.resources ?? []).map(resource => ({ value: String(resource.id), label: resourceName(resource) }))} /></div>
+        {detail}
+      </div>
+    </DrillHost>
     {menu.menu}
   </div>;
 }
 
-/** Per resource, a supply bar above a demand bar on a shared scale, with the net at
- * the right. Rows are focusable: hover or focus shows the
- * breakdown, right-click or the context-menu key jumps to the hour shown. */
-function BalanceBars({ data, tokens, hour, order, scale, hideEmpty, owner, breakdown, onPartners, active, hoursPerSecond, onMenu, onPick }: {
-  data: ResourceBalanceReply; tokens: ChartTokens; hour: number; order: RowOrder; scale: 'campaign' | 'moment'; hideEmpty: boolean; owner: string;
-  breakdown: (resource: ResourceInfo, hour: number) => TooltipContent | null; onPartners: PartnerTargets; active: boolean;
-  hoursPerSecond: number | undefined; onMenu: (hour: number, x: number, y: number) => void;
-  onPick: (resource: ResourceInfo, hour: number) => void;
+/** The painted parts of one resource's row: each bar part by id, the net, and the missing note. */
+interface RowCells { parts: Map<string, HTMLElement>; net: HTMLElement | null }
+
+/** The balance bars at the head (a pushed panel naming which resources show and in which order, rendering only when
+ * that changes; every amount painted each frame from its live cells), or at the pinned, ranged or hovered hour. */
+function ResourceBars({ widget, runtime, active, onDiagnostics, within, tag, track, onPick }: ComparisonProps & {
+  tag: string; track: BoundTrack; onPick: (resource: ResourceInfo, hour: number | null) => void;
 }) {
-  const campaignScale = useMemo(() => {
-    const sizes = (data as PreparedResourceReply).campaignSizes;
-    const observed = barScale(data.series, null);
-    return sizes ? Object.values(sizes).reduce((largest, raw) => BigInt(raw) > largest ? BigInt(raw) : largest, observed) : observed;
-  }, [data]);
-  const largest = scale === 'moment' ? barScale(data.series, hour) : campaignScale;
-  // The hour drawn last, so a bar glides only from a value of the same stretch of recording.
-  const drawnHour = useRef(hour);
-  useEffect(() => { drawnHour.current = hour; }, [hour]);
-  const rows = orderResources(data, hour, order).map(resource => {
-    const series = data.series.find(item => item.id === resource.id);
-    const run = series ? runAt(series.runs, hour) : null;
-    return { resource, balance: run ? balanceOf(run) : null, glides: series != null && sameStretch(series.runs, drawnHour.current, hour) };
-  }).filter(row => !hideEmpty || !row.balance || row.balance.supply !== 0n || row.balance.demand !== 0n);
-  // Every row's breakdown and its spoken text, built once per hour (and reply, names
-  // and window); moving the pointer reuses them.
-  const described = useMemo(() => new Map(data.resources.map(resource => {
-    const content = breakdown(resource, hour);
-    return [resource.id, { content, text: tooltipText(content ?? { title: resourceName(resource), rows: [] }) }] as const;
-  })), [data, breakdown, hour]);
-  // Hover and focus follow playback: the row shown is re-described whenever the hour changes (the kit's row tooltips).
-  const content = useCallback((id: number) => described.get(id)?.content ?? null, [described]);
-  const rowTips = useRowTooltips<number>({ owner, active, content, revision: `${hour}:${data.branchId}`, onMenu: (_, x, y) => onMenu(hour, x, y) });
-  // Every row's spoken breakdown names its partners, so all of them are asked for at the shown hour.
-  const tipHour = active ? hour : null;
-  const tipContent = useMemo<TooltipContent>(() => ({ title: '', rows: [...described.values()].flatMap(item => item.content?.rows ?? []) }), [described]);
-  useEffect(() => onPartners(tipHour, tipContent), [tipHour, tipContent, onPartners]);
-  useEffect(() => () => onPartners(null), [onPartners]);
-  const any = (pick: (balance: Balance) => bigint) => rows.some(row => row.balance && pick(row.balance) !== 0n);
-  const [supplyColor, demandColor] = [tokens.categories[0], tokens.categories[1]];
-  const legend = [
-    { id: 'produced', label: 'Produced', color: supplyColor },
-    ...(any(balance => balance.fromSubjects) ? [{ id: 'subjects', label: 'From subjects', color: `color-mix(in srgb, ${supplyColor} 75%, ${tokens.surface})` }] : []),
-    { id: 'imported', label: 'Imported', color: `color-mix(in srgb, ${supplyColor} 50%, ${tokens.surface})` },
-    { id: 'needed', label: 'Needed', color: demandColor },
-    ...(any(balance => balance.toOverlord) ? [{ id: 'overlord', label: 'To the overlord', color: `color-mix(in srgb, ${demandColor} 75%, ${tokens.surface})` }] : []),
-    { id: 'exported', label: 'Exported', color: `color-mix(in srgb, ${demandColor} 50%, ${tokens.surface})` },
-  ];
-  const colour = new Map(legend.map(item => [item.id, item.color]));
-  // Bars glide over the app's motion time; numbers are exact at once.
-  const glide = { '--resource-glide': `${Math.round(3 * easeTau(tokens.motion, hoursPerSecond, tokens.reducedMotion))}ms` } as CSSProperties;
-  const width = (raw: bigint) => largest > 0n ? `${Number((raw < 0n ? -raw : raw) * 100000n / largest) / 1000}%` : '0%';
-  // A negative recorded part keeps its length and is drawn outlined, as the caption says.
-  const negative = rows.some(row => row.balance && [...barParts(row.balance).supply, ...barParts(row.balance).demand].some(([, raw]) => raw < 0n));
-  // Every part stays mounted so it glides in and out; only a shown part is set apart by a hairline.
-  const segments = (parts: readonly [string, bigint][]) => parts.map(([id, raw], index) =>
-    <i key={id} style={{ width: width(raw), marginLeft: index > 0 && raw !== 0n ? 1 : 0,
-      ...(raw < 0n ? { boxShadow: `inset 0 0 0 1.5px ${colour.get(id)}` } : { background: colour.get(id) }) }} />);
-  const describe = (resource: ResourceInfo, balance: Balance | null) => balance
-    ? `${resourceName(resource)}: supply ${formatAmount(balance.supply, data.decimals)}, demand ${formatAmount(balance.demand, data.decimals)}, ${balance.net < 0n ? 'deficit' : 'surplus'} ${formatSigned(balance.net, data.decimals)}`
-    : `${resourceName(resource)}: not recorded at this time`;
-  return <>
-    <p className="resource-caption">Per day{negative ? ' · outlined parts are negative' : ''}</p>
-    <Legend label="Bar parts" items={legend} />
-    <ol className="resource-bars" style={glide} aria-label={`Resources on ${dayLabel(hour)}`}>
-      {rows.map(({ resource, balance, glides }) => <li key={resource.id} role="button" aria-label={describe(resource, balance)} {...rowTips.rowProps(resource.id)}
-        onClick={() => onPick(resource, hour)} onKeyDown={event => {
-          if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onPick(resource, hour); }
-          else rowTips.rowProps(resource.id).onKeyDown(event);
-        }}
-        // Across a gap or a change of country the bar jumps, as a line breaks there.
-        style={glides ? undefined : { '--resource-glide': '0ms' } as CSSProperties}>
-        {/* The breakdown the focus tooltip shows, in full even where the window trims it (the tooltip layer is not read out). */}
-        <span id={rowTips.descriptionId(resource.id)} className="sr-only">{described.get(resource.id)?.text}</span>
-        <span className="resource-name">{resource.icon ? <img src={resource.icon} alt="" /> : null}
-          <span>{resourceName(resource)}</span></span>
-        {balance ? <>
-          <span className="resource-track" aria-hidden="true">
-            <span className="resource-bar">{segments(barParts(balance).supply)}</span>
-            <span className="resource-bar">{segments(barParts(balance).demand)}</span>
-          </span>
-          <b className={balance.net < 0n ? 'is-negative' : 'is-positive'}>{formatSigned(balance.net, data.decimals)}</b>
-        </> : <span className="resource-missing">Not recorded</span>}
-      </li>)}
-    </ol>
-  </>;
+  const options = resolveOptions(OPTIONS, widget.options);
+  const order = (options.order as RowOrder) ?? 'game';
+  const hideEmpty = options.hideEmpty === true;
+  const campaign = options.scale !== 'moment';
+  const tokens = useChartTokens();
+  const viewport = useViewportHeight();
+  const menu = useContextMenu('Resource actions');
+  const owner = useId();
+  const sizes = useProduct(runtime.client, campaign ? { sourceId: track.source.id, revision: track.source.revision, product: RESOURCE_SIZES,
+    params: { branchId: track.branch.id, tag } } : null, active, validateResourceSizes, track.source);
+  const colours = useMemo(() => partColours(tokens), [tokens]);
+  const cells = useRef(new Map<number, RowCells>());
+  const head = useHeadProduct<ResourceBalanceReply>(runtime, widget, RESOURCE_BALANCE, { tag, order, ...hideEmpty ? { hideEmpty } : {} },
+    { active, validate: validateResourceBalance, structure: barStructure });
+  const data = head.data;
+  const report = useShownHour();
+  const shownAt = useRef(head.shownAt);
+  shownAt.current = head.shownAt;
+  const live = useMemo(() => reporting(head.live, () => report(shownAt.current())), [head.live, report]);
+  const scaleOf = useCallback((reply: ResourceBalanceReply, values: LiveValues<number>) => {
+    const whole = campaign ? campaignScale(sizes.data) : 0n, moment = momentScale(poolsOf(reply, values));
+    return whole > moment ? whole : moment;
+  }, [campaign, sizes.data]);
+  // Every amount is written into the page in the frame its cells move: no render.
+  useLayoutEffect(() => {
+    if (!data) return undefined;
+    const paint = () => {
+      const values = live.read(), scale = scaleOf(data, values);
+      for (const [id, held] of cells.current) {
+        const pools = poolsAt(values, id);
+        const balance = pools && balanceOf(pools), parts = balance ? barParts(balance) : null;
+        for (const [part, raw] of parts ? [...parts.supply, ...parts.demand] : []) {
+          const element = held.parts.get(part);
+          setStyle(element, 'width', partWidth(raw, scale));
+        }
+        if (!held.parts.size || !held.net) continue;
+        if (!balance) for (const element of held.parts.values()) setStyle(element, 'width', '0%');
+        setText(held.net, balance ? formatSigned(balance.net, data.decimals) : '—');
+        setAttr(held.net, 'class', !balance ? 'is-missing' : balance.net < 0n ? 'is-negative' : 'is-positive');
+        setAttr(held.net, 'title', balance ? '' : poolsMissing(values, id));
+      }
+    };
+    paint();
+    return live.subscribe(paint);
+  }, [data, live, scaleOf]);
+  useDiagnostics(onDiagnostics, data ? [...data.warnings, ...(sizes.data?.warnings ?? [])] : NO_WARNINGS);
+  const hour = head.at ?? Math.floor(runtime.clock.getHour());
+  const partners = useMemo(() => [...new Set(data?.deals.map(deal => deal.partner) ?? [])].map(partner => ({ tag: partner, hour })), [data?.deals, hour]);
+  const labels = useCountryLabelsAt(runtime.client, track, partners, active);
+  const breakdown = useCallback((resource: ResourceInfo): TooltipContent | null => {
+    const values = live.read();
+    const pools = data ? poolsAt(values, resource.id) : null;
+    if (!data || !pools) return { title: resourceName(resource), rows: [{ label: data?.poolsMissing ?? (data ? poolsMissing(values, resource.id) : 'Not recorded at this time'), tone: 'muted' }] };
+    return resourceTooltip({ title: resourceName(resource), icon: resource.icon ?? undefined, subtitle: `Per day · ${dayLabel(hour)}` },
+      balanceOf(pools), dealsOf(data, resource.id, values), data.decimals, labels.labelAt(hour), viewport);
+  }, [data, live, labels, hour, viewport]);
+  const rowTips = useRowTooltips<number>({ owner, active, revision: `${hour}:${data ? barStructure(data) : ''}:${labels.revision}`,
+    content: id => { const resource = data?.resources.find(item => item.id === id); return resource ? breakdown(resource) : null; },
+    onMenu: (_, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)]) });
+
+  let body;
+  if (head.error) body = <WidgetState kind="error" failure={head.error} onRetry={head.retry} />;
+  else if (head.read === 'off' && !data) body = <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  else if (!data) body = <WidgetState kind="loading" label="Loading resources…" />;
+  else if (!isMember(within, head.at)) body = <WidgetState kind="unavailable" message="This country is not in the group at this date." />;
+  else if (data.poolsMissing) body = <WidgetState kind="unavailable" message={data.poolsMissing} />;
+  else {
+    const values = live.read();
+    const held = new Set(data.pools);
+    const rows = orderResources(data).map(resource => {
+      const pools = held.has(resource.id) ? poolsAt(values, resource.id) : null;
+      return { resource, held: held.has(resource.id), balance: pools ? balanceOf(pools) : null };
+    });
+    const scale = scaleOf(data, values);
+    const any = (pick: (balance: Balance) => bigint) => rows.some(row => row.balance && pick(row.balance) !== 0n);
+    const legend = [
+      { id: 'produced', label: 'Produced', color: colours.get('produced')! },
+      ...(any(balance => balance.fromSubjects) ? [{ id: 'subjects', label: 'From subjects', color: colours.get('subjects')! }] : []),
+      { id: 'imported', label: 'Imported', color: colours.get('imported')! },
+      { id: 'needed', label: 'Needed', color: colours.get('needed')! },
+      ...(any(balance => balance.toOverlord) ? [{ id: 'overlord', label: 'To the overlord', color: colours.get('overlord')! }] : []),
+      { id: 'exported', label: 'Exported', color: colours.get('exported')! },
+    ];
+    const cellsOf = (id: number) => {
+      const entry = cells.current.get(id) ?? { parts: new Map<string, HTMLElement>(), net: null };
+      cells.current.set(id, entry);
+      return entry;
+    };
+    const zero = { produced: 0n, fromSubjects: 0n, toOverlord: 0n, imported: 0n, exportReserve: 0n, exported: 0n, available: 0n, projects: 0n, production: 0n,
+      supply: 0n, demand: 0n, net: 0n } satisfies Balance;
+    const segments = (id: number, parts: readonly [string, bigint][]) => parts.map(([part, raw], index) =>
+      <i key={part} ref={element => { if (element) cellsOf(id).parts.set(part, element); else cellsOf(id).parts.delete(part); }}
+        style={{ width: partWidth(raw, scale), marginLeft: index > 0 ? 1 : 0, ...(raw < 0n ? { boxShadow: `inset 0 0 0 1.5px ${colours.get(part)}` } : { background: colours.get(part) }) }} />);
+    const describe = (resource: ResourceInfo, balance: Balance | null) => balance
+      ? `${resourceName(resource)}: supply ${formatAmount(balance.supply, data.decimals)}, demand ${formatAmount(balance.demand, data.decimals)}, ${balance.net < 0n ? 'deficit' : 'surplus'} ${formatSigned(balance.net, data.decimals)}`
+      : `${resourceName(resource)}: not recorded at this time`;
+    body = <div className="resource-balance">
+      <p className="resource-caption">Per day · outlined parts are negative{data.dealsMissing ? ` · ${data.dealsMissing}` : ''}</p>
+      <Legend label="Bar parts" items={legend} />
+      <ol className="resource-bars" aria-label={head.at === null ? 'Resources' : `Resources on ${dayLabel(head.at)}`}
+        style={{ '--resource-glide': `${Math.round(3 * easeTau(tokens.motion, motionOf(runtime.clock.getSnapshot()), tokens.reducedMotion))}ms` } as CSSProperties}>
+        {rows.map(({ resource, held: has, balance }) => <li key={resource.id} role="button" aria-label={describe(resource, balance)} {...rowTips.rowProps(resource.id)}
+          onClick={() => onPick(resource, head.hour)} onKeyDown={event => {
+            if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onPick(resource, head.hour); }
+            else rowTips.rowProps(resource.id).onKeyDown(event);
+          }}>
+          <span id={rowTips.descriptionId(resource.id)} className="sr-only">{tooltipText(breakdown(resource) ?? { title: resourceName(resource), rows: [] })}</span>
+          <span className="resource-name">{resource.icon ? <img src={resource.icon} alt="" /> : null}<span>{resourceName(resource)}</span></span>
+          {has ? <>
+            <span className="resource-track" aria-hidden="true">
+              <span className="resource-bar">{segments(resource.id, barParts(balance ?? zero).supply)}</span>
+              <span className="resource-bar">{segments(resource.id, barParts(balance ?? zero).demand)}</span>
+            </span>
+            <b ref={element => { cellsOf(resource.id).net = element; }} className={!balance ? 'is-missing' : balance.net < 0n ? 'is-negative' : 'is-positive'}>
+              {balance ? formatSigned(balance.net, data.decimals) : '—'}</b>
+          </> : <span className="resource-missing">Not recorded</span>}
+        </li>)}
+      </ol>
+      {menu.menu}
+    </div>;
+  }
+  return <div ref={head.root} className="resource-balance-host">{body}</div>;
 }
 
-/** Supply (solid) and demand (dashed) over time for the chosen resources, each in
- * its own palette colour; with one resource the gap between them is shaded. */
-function OverTime({ data, numbers, within, incoming, tokens, viewport, options, runtime, track, extent, playhead, active, partnerAt, partnersRevision, onPartners, onMenu, setOption, onPick }: {
-  data: ResourceBalanceReply; tokens: ChartTokens; options: Record<string, unknown>; runtime: WidgetProps['runtime']; track: BoundTrack;
-  numbers: ResourceBalanceReply | undefined; within?: ComparisonProps['within']; incoming?: ReturnType<typeof useResourceBalance>;
-  extent: [number, number]; playhead: number | null; active: boolean; partnerAt: (hour: number) => CountryLabel; partnersRevision: number;
-  onPartners: PartnerTargets; onMenu: (hour: number, x: number, y: number) => void; setOption: WidgetProps['setOption']; viewport: number;
-  onPick: (resource: ResourceInfo, hour: number) => void;
+/** Supply (solid) and demand (dashed) over time for the chosen resources, each in its own palette colour, from the
+ * declared series' tiles; with one resource the gap between them is shaded. The chips carry each chosen resource's
+ * net at the head, painted from the head product's live cells; a line picked opens its breakdown. */
+function ResourcesOverTime({ widget, runtime, active, onDiagnostics, within, tag, track, extent, playhead, liveHead, setOption, onPick }: ComparisonProps & {
+  tag: string; track: BoundTrack; extent: [number, number]; playhead: number | null; liveHead?: { read(): number; subscribe(changed: () => void): () => void };
+  onPick: (resource: ResourceInfo, hour: number | null) => void;
 }) {
+  const options = resolveOptions(OPTIONS, widget.options);
+  const tokens = useChartTokens();
+  const viewport = useViewportHeight();
+  const menu = useContextMenu('Resource actions');
+  const following = widget.time.mode === 'follow';
+  const [hoverHour, setHoverHour] = useState<number | null>(null);
+  const [rootElement, setRoot] = useState<HTMLDivElement | null>(null);
+  const root = useMemo(() => ({ current: rootElement }), [rootElement]);
+  const atHead = useHeadProduct<ResourceBalanceReply>(runtime, widget, RESOURCE_BALANCE, { tag }, { active, validate: validateResourceBalance,
+    structure: reply => JSON.stringify([reply.resources, reply.pools, reply.poolsMissing]) });
+  const request = (hour: number) => ({ sourceId: track.source.id, revision: track.source.revision, product: RESOURCE_BALANCE, params: { branchId: track.branch.id, tag, hour } });
+  const sizes = useProduct(runtime.client, { sourceId: track.source.id, revision: track.source.revision, product: RESOURCE_SIZES,
+    params: { branchId: track.branch.id, tag, from: extent[0], to: extent[1] } }, active, validateResourceSizes, track.source);
+  const hovered = useProduct(runtime.client, hoverHour === null ? null : request(Math.floor(hoverHour)), active, validateResourceBalance, track.source);
+  useDiagnostics(onDiagnostics, atHead.data ? [...atHead.data.warnings, ...(sizes.data?.warnings ?? [])] : NO_WARNINGS);
+  const resources = useMemo(() => atHead.data?.resources ?? [], [atHead.data]);
   const storedText = typeof options.resources === 'string' ? options.resources : '';
   const stored = useMemo(() => contentSet(storedText), [storedText]);
-  const chosen = useMemo(() => chosenResources(data, stored), [data, stored]);
+  const automatic = useMemo(() => automaticResource(resources, sizes.data), [resources, sizes.data]);
+  const chosen = useMemo(() => chosenResources(resources, stored, automatic), [resources, stored, automatic]);
+  const chosenInfo = useMemo(() => chosen.flatMap(token => resources.filter(item => item.token === token)), [chosen, resources]);
+  const keys = useMemo(() => chosenInfo.map(resource => ({ tag, part: String(resource.id) })), [chosenInfo, tag]);
+  const membership = useMemo(() => within ? new Map(keys.map(key => [keyId(key), within])) : undefined, [keys, within]);
+  const spec = (family: typeof SUPPLY | typeof DEMAND) => keys.length ? { source: track.source, branchId: track.branch.id, family, keys, partBits: 32,
+    within: membership, lastHour: track.branch.lastHour, axisOffset: track.axisOffset } : null;
+  const head = following ? null : playhead ?? extent[1];
+  const supply = useKeyedSeries(runtime.client, runtime.clock, spec(SUPPLY), head, hoverHour, following, active, root);
+  const demand = useKeyedSeries(runtime.client, runtime.clock, spec(DEMAND), head, hoverHour, following, active, root);
+  const lines = useMemo(() => chosenInfo.map((resource, index) => ({ resource, key: keys[index], color: tokens.categories[index % tokens.categories.length] })),
+    [chosenInfo, keys, tokens.categories]);
+  const partners = useMemo(() => hoverHour === null ? [] : [...new Set(hovered.data?.deals.map(deal => deal.partner) ?? [])].map(partner => ({ tag: partner, hour: Math.floor(hoverHour) })),
+    [hovered.data, hoverHour]);
+  const labels = useCountryLabelsAt(runtime.client, track, partners, active);
   const playback = (options.playback as PlaybackMode) ?? 'draw-in';
   const until = shownUntil(playhead, playback, options.afterPlayhead === true);
-  // Each line keeps its colour from the game's order where it is free; lines past the
-  // palette (a repeated token's extra lines) take other dashes, so no two look alike.
-  const chosenInfo = useMemo(() => chosenLines(data, chosen), [data, chosen]);
-  const pickScope = JSON.stringify([track.source.id, track.source.revision, track.branch.id, data.tag, chosenInfo.map(item => item.id)]);
-  const pickOwner = useMemo(() => ({ scope: pickScope, numbers, within }), [pickScope, numbers, within]);
-  const [selection, setSelection] = useState<{ hour: number; ids: readonly string[] } | null>(null);
-  useEffect(() => setSelection(null), [pickOwner, extent[0], extent[1]]);
-  const styles = useMemo(() => lineStyles(chosenInfo.map(item => ({ key: item.id, preferred: data.resources.indexOf(item) })), tokens.categories), [data, chosenInfo, tokens]);
-  // Only the hours shown (a date range, or the branch): an axis dragged past a range
-  // draws, shades, fits and describes nothing beyond it.
-  const lines = useMemo(() => chosenInfo.flatMap(resource => {
-    const recorded = data.series.find(item => item.id === resource.id);
-    const series = recorded && { id: recorded.id, runs: clipToSpans(recorded.runs, [{ firstHour: extent[0], lastHour: extent[1] }]) };
-    const style = styles.get(resource.id)!;
-    const summary = (data as PreparedResourceReply).summaries?.find(item => item.id === resource.id);
-    return series ? [{ resource, series, summary, color: style.color, dashes: style, ...supplyDemandRuns(series, data.decimals) }] : [];
-  }), [chosenInfo, data, styles, extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
-  // The keyboard steps where a chosen resource's values or deals change; the kit adds
-  // the start of a range or zoom that begins between two, so the value going on into
-  // it is reachable too.
-  const keyHours = useMemo(() => changeHours(data, chosenInfo.map(item => item.id)), [data, chosenInfo]);
-  useEffect(() => () => onPartners(null), [onPartners]);
   const shade = lines.length === 1 && options.gap !== false;
-  const layers = useMemo<ChartLayer[]>(() => {
-    const list: ChartLayer[] = [];
-    // Prepared summaries, like the exact runs, end where the widget's hours do.
-    const drawnUntil = (playhead: number | null) => Math.min(playhead ?? extent[1], extent[1]);
-    if (shade) {
-      // Bounded by the very curves the two lines are drawn with, green where supply is higher.
-      const line = lines[0];
-      list.push({ draw: (ctx, frame, chartTokens, state) => {
-        if (line.summary) drawGapSummary(ctx, frame, chartTokens, line.summary.supply, line.summary.demand, chartTokens.positive, chartTokens.error, drawnUntil(state.playhead));
-        else drawGapFill(ctx, frame, line.supply, line.demand, chartTokens.positive, chartTokens.error, { until: drawnUntil(state.playhead) });
-      } });
-    }
-    for (const line of lines) {
-      list.push({
-        draw: (ctx, frame, chartTokens, state) => {
-          if (line.summary) {
-            drawLineSummary(ctx, frame, chartTokens, line.summary.supply, line.color, false, drawnUntil(state.playhead), { dash: line.dashes.primary });
-            drawLineSummary(ctx, frame, chartTokens, line.summary.demand, line.color, false, drawnUntil(state.playhead), { dash: line.dashes.secondary, endDot: false });
-            return;
-          }
-          drawLine(ctx, frame, chartTokens, line.supply, line.color, { until: drawnUntil(state.playhead), dash: line.dashes.primary.length ? line.dashes.primary : undefined });
-          drawLine(ctx, frame, chartTokens, line.demand, line.color, { until: drawnUntil(state.playhead), dash: line.dashes.secondary, endDot: false });
-        },
-        extent: x => {
-          const last = Math.min(x[1], drawnUntil(until));
-          if (!line.summary) return extentOfAll([line.supply, line.demand], x[0], last);
-          const values = [line.summary.supply, line.summary.demand].map(summary => extentOfSummary(summary, x[0], last)).filter((value): value is [number, number] => value !== null);
-          return values.length ? [Math.min(...values.map(value => value[0])), Math.max(...values.map(value => value[1]))] : null;
-        },
-      });
-    }
-    return list;
-  }, [lines, shade, data.decimals, until, extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
-  // Only the clicked resource changes: saved resources this campaign lacks are kept,
-  // and one this campaign shows always stays chosen. A chip whose
-  // click cannot act is disabled and says why, pressed or not.
-  // Each selected declaration keeps its name, value and two curve styles.
-  // Toggling any declaration still selects or clears its whole token.
-  const chips = data.resources.filter(item => item.ordinal === 1 || chosen.includes(item.token));
-  const actions = new Map(chips.map(item => [item.token, toggleChosen(data, stored, chosen, item.token, Number.MAX_SAFE_INTEGER)]));
-  const pick = (token: string) => {
-    const action = actions.get(token);
-    if (action && 'value' in action && setOption) setOption('resources', action.value);
+  const layers = useMemo<ChartLayer[]>(() => [
+    ...shade ? [{ draw: (ctx, frame, chartTokens, state) => {
+      const id = keyId(lines[0].key), high = supply.summaryOf(id), low = demand.summaryOf(id);
+      if (high && low) drawGapSummary(ctx, frame, chartTokens, high, low, chartTokens.positive, chartTokens.error, state.playhead);
+    } } satisfies ChartLayer] : [],
+    ...lines.flatMap(line => [
+      { draw: (ctx, frame, chartTokens, state) => {
+        const drawn = supply.summaryOf(keyId(line.key));
+        if (drawn) drawLineSummary(ctx, frame, chartTokens, drawn, line.color, false, state.playhead);
+      } },
+      { draw: (ctx, frame, chartTokens, state) => {
+        const drawn = demand.summaryOf(keyId(line.key));
+        if (drawn) drawLineSummary(ctx, frame, chartTokens, drawn, line.color, false, state.playhead, { dash: SECONDARY_DASH, endDot: false });
+      } },
+    ] satisfies ChartLayer[]),
+  ], [lines, shade, supply.summaryOf, demand.summaryOf]);
+  const [selection, setSelection] = useState<{ hour: number; ids: readonly string[] } | null>(null);
+  useEffect(() => setSelection(null), [chosen, extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
+  const chipValues = useRef(new Map<number, HTMLElement>());
+  const report = useShownHour();
+  const shownAt = useRef(atHead.shownAt);
+  shownAt.current = atHead.shownAt;
+  // Each chosen chip's net at the head, written in the frame its cells move.
+  useLayoutEffect(() => {
+    const data = atHead.data;
+    if (!data) return undefined;
+    const paint = () => {
+      const values = atHead.live.read();
+      report(shownAt.current());
+      for (const [id, element] of chipValues.current) {
+        const pools = poolsAt(values, id);
+        const text = pools ? formatSigned(balanceOf(pools).net, data.decimals) : 'Not recorded';
+        if (element.textContent !== text) element.textContent = text;
+      }
+    };
+    paint();
+    return atHead.live.subscribe(paint);
+  }, [atHead.data, atHead.live, report]);
+
+  if (atHead.error) return <WidgetState kind="error" failure={atHead.error} onRetry={atHead.retry} />;
+  if (!atHead.data) return <WidgetState kind="loading" label="Loading resources…" />;
+  if (!lines.length) return <WidgetState kind="empty" icon="layers" message="This recording names no resources." />;
+  const error = supply.error ?? demand.error;
+  if (error && !supply.summaryByKey.size) return <WidgetState kind="error" failure={error} onRetry={() => { supply.retry(); demand.retry(); }} />;
+  const data = atHead.data;
+  const tooltip = (at: number) => {
+    const reply = hovered.data;
+    const values = reply ? repliedValues(reply) : null;
+    const shown: LineAt[] = lines.map(line => {
+      const pools = values && poolsAt(values, line.resource.id);
+      return { resource: line.resource, color: line.color, balance: pools ? balanceOf(pools) : null, deals: reply && values ? dealsOf(reply, line.resource.id, values) : null,
+        missing: !reply ? 'Loading…' : !isMember(within, at) ? 'Not in the group at this date' : reply.poolsMissing ?? (values ? poolsMissing(values, line.resource.id) : null) };
+    });
+    return overTimeTooltip(`${dayLabel(at)} · per day`, shown, data.decimals, labels.labelAt(at), viewport);
   };
-  const head = Math.floor(playhead ?? extent[1]);
-  return <>
+  const chips = resources.filter(item => item.ordinal === 1 || chosen.includes(item.token));
+  const pick = (token: string) => {
+    const action = toggleResource(resources, stored, chosen, token);
+    if ('value' in action) setOption?.('resources', action.value);
+  };
+  const initial = atHead.live.read();
+  return <div className="resource-balance" ref={setRoot}>
     <div className="chip-set" role="group" aria-label="Resources">{chips.map(item => {
-      const action = actions.get(item.token);
-      const reason = !setOption ? 'Resource selection unavailable.' : action && 'reason' in action ? action.reason : undefined;
+      const action = toggleResource(resources, stored, chosen, item.token);
+      const reason = !setOption ? 'Resource selection unavailable.' : 'reason' in action ? action.reason : undefined;
       const selected = chosen.includes(item.token);
-      const line = lines.find(line => line.resource.id === item.id);
-      const run = line && runAt(line.series.runs, head);
-      const value = run ? formatSigned(balanceOf(run).net, data.decimals) : 'Not recorded';
-      const style = styles.get(item.id);
+      const line = lines.find(each => each.resource.id === item.id);
+      const pools = poolsAt(initial, item.id);
       return <button key={item.id} type="button" className="chip" aria-pressed={selected} aria-disabled={reason ? true : undefined}
-        aria-label={`${resourceName(item)}${selected ? `, net ${value} per day` : ''}`}
-        data-tooltip={reason} onClick={() => { if (!reason && setOption) pick(item.token); }}>
-        {selected && style && <svg className="resource-series-key" width="28" height="14" aria-hidden="true">
-          <line x1="0" y1="3" x2="28" y2="3" stroke={style.color} strokeWidth="2" strokeDasharray={style.primary.join(' ')} />
-          <line x1="0" y1="11" x2="28" y2="11" stroke={style.color} strokeWidth="2" strokeDasharray={style.secondary.join(' ')} />
+        aria-label={resourceName(item)} data-tooltip={reason} onClick={() => { if (!reason) pick(item.token); }}>
+        {selected && line && <svg className="resource-series-key" width="28" height="14" aria-hidden="true">
+          <line x1="0" y1="3" x2="28" y2="3" stroke={line.color} strokeWidth="2" />
+          <line x1="0" y1="11" x2="28" y2="11" stroke={line.color} strokeWidth="2" strokeDasharray={SECONDARY_DASH.join(' ')} />
         </svg>}
         {item.icon && <img src={item.icon} alt="" />}{resourceName(item)}
-        {selected && <span className="resource-chip-value">{value}</span>}
+        {selected && <span className="resource-chip-value" ref={element => { if (element) chipValues.current.set(item.id, element); else chipValues.current.delete(item.id); }}>
+          {pools ? formatSigned(balanceOf(pools).net, data.decimals) : 'Not recorded'}</span>}
       </button>;
     })}</div>
-    <p className="chart-line-key">Supply above demand in each key · per day</p>
-    {lines.some(line => line.summary?.supply.approximate?.length || line.summary?.demand.approximate?.length) && <p className="chart-line-key"><i className="is-dashed" aria-hidden="true" />Approximate</p>}
+    <p className="resource-caption">Per day · solid: supply · dashed: demand{shade ? ' · shaded: surplus and shortfall' : ''}</p>
     {selection && <div className="select-row">Choose a drawn resource on {dayLabel(selection.hour)} <Select autoFocus label="Drawn resource" value="" onChange={id => {
-      const resource = chosenInfo.find(resource => String(resource.id) === id);
-      if (resource && selection.ids.includes(String(resource.id))) { onPick(resource, selection.hour); setSelection(null); }
+      const resource = chosenInfo.find(each => String(each.id) === id);
+      if (resource && selection.ids.includes(id)) { onPick(resource, selection.hour); setSelection(null); }
     }} options={[{ value: '', label: 'Choose resource…', disabled: true },
       ...chosenInfo.filter(resource => selection.ids.includes(String(resource.id))).map(resource => ({ value: String(resource.id), label: resourceName(resource) }))]} /></div>}
-    {/* The tooltip closes when the pointer leaves: its partners' names and flags are released. */}
-    <div className="resource-chart" onPointerLeave={() => onPartners(null)}>
-      <TimeChart label={`Resource supply and demand: ${lines.map(line => resourceName(line.resource)).join(', ')}`} extent={extent} playhead={playhead}
+    <div className="resource-chart">
+      <TimeChart label={`Resources of ${tag} over time`} extent={extent} playhead={playhead} liveHead={liveHead}
         playback={playback} afterPlayhead={options.afterPlayhead === true} windowHours={Number(options.windowDays ?? 365) * 24}
         hoursPerSecond={motionOf(runtime.clock.getSnapshot())} branchStart={track.branch.firstHour}
         axes={{ xFrom: null, xTo: null, yMin: options.yMin as number | null, yMax: options.yMax as number | null, log: options.log === true }}
-        layers={layers} active={active} revision={`${head}:${data.branchId}:${chosen.join(' ')}:${shade}:${partnersRevision}:${viewport}`}
-        onSummaryView={incoming?.onSummaryView ? view => { const shown = viewWithin(view, extent); if (shown) incoming.onSummaryView!(shown, chosenInfo.map(item => item.id)); } : undefined} onHover={incoming?.onHover}
-        onNavigateHour={incoming?.onNavigateHour ? (action, from, x, until) => incoming.onNavigateHour!(chosenInfo.map(item => item.id), action, from, x, until) : undefined}
-        keyboardHour={incoming?.keyboardHour} keyboardRevision={incoming?.keyboardRevision}
-        keyHours={keyHours} pickOwner={pickOwner} onPick={(hour, context) => {
-          const ids = lines.some(line => line.summary) ? pickSummaryLines(lines.flatMap(line => line.summary ? [line.summary.supply, line.summary.demand].map(summary => ({ key: String(line.resource.id), summary })) : []),
-            hour, new Set(lines.filter(line => runAt(line.series.runs, hour)).map(line => String(line.resource.id))), context) : pickLines(lines.flatMap(line => [line.supply, line.demand].map(runs => ({ key: String(line.resource.id), runs }))), hour, context);
+        layers={layers} active={active} pickOwner={supply.owner} notRecorded={supply.unrecorded && demand.unrecorded ? supply.unrecorded : null}
+        onSummaryView={view => { supply.onSummaryView(view); demand.onSummaryView(view); }}
+        onNavigateHour={supply.onNavigateHour} keyboardHour={supply.keyboardHour} keyboardRevision={supply.keyboardRevision}
+        onHover={setHoverHour}
+        onPick={(hour, context) => {
+          const drawn = lines.flatMap(line => [supply.summaryOf(keyId(line.key)), demand.summaryOf(keyId(line.key))]
+            .flatMap(summary => summary ? [{ key: String(line.resource.id), summary }] : []));
+          const ids = pickSummaryLines(drawn, hour, new Set(lines.map(line => String(line.resource.id))), context);
           if (ids.length === 1) {
-            const resource = chosenInfo.find(resource => String(resource.id) === ids[0]);
-            if (resource) { setSelection(null); onPick(resource, hour); }
-          } else setSelection(ids.length ? { hour, ids } : null);
+            const resource = chosenInfo.find(each => String(each.id) === ids[0]);
+            if (resource) { setSelection(null); onPick(resource, Math.floor(hour)); }
+          } else setSelection(ids.length ? { hour: Math.floor(hour), ids } : null);
         }}
-        tooltip={hour => {
-          if (hour < extent[0] || hour > extent[1]) { onPartners(null); return null; }
-          if (incoming?.hasExactHour && !incoming.hasExactHour(hour)) {
-            onPartners(null); return { title: dayLabel(hour), rows: [{ label: 'Resource amounts', value: 'Loading...', tone: 'muted' }] };
-          }
-          const partner = partnerAt(hour);
-          const known = dealsKnown(data, hour);
-          const content = overTimeTooltip(`${dayLabel(hour)} · per day`, lines.map(line => {
-            const run = runAt(line.series.runs, hour);
-            return { resource: line.resource, color: line.color, balance: run ? balanceOf(run) : null, deals: run && known ? tradesAt(tradeIndex(data), line.resource.id, hour) : null };
-          }), data.decimals, partner, viewport);
-          onPartners(hour, content);
-          return content;
-        }}
-        onContextMenu={(hour, x, y) => onMenu(hour, x, y)} />
+        revision={`${track.branch.id}:${tag}:${lines.map(line => line.key.part).join(',')}:${shade}:${until}:${hovered.data ? 'hover' : ''}:${labels.revision}`}
+        tooltip={at => tooltip(Math.floor(at))}
+        onContextMenu={(at, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, at)])} />
     </div>
-  </>;
+    {menu.menu}
+  </div>;
+}
+
+/** A reply's own cells, read at its hour. */
+function repliedValues(reply: ResourceBalanceReply): LiveValues<number> {
+  return repliedCellsOf(reply).read();
+}
+
+const replied = new WeakMap<object, Live<LiveValues<number>>>();
+function repliedCellsOf(reply: ResourceBalanceReply): Live<LiveValues<number>> {
+  let live = replied.get(reply);
+  if (!live) { live = repliedCells(reply); replied.set(reply, live); }
+  return live;
 }

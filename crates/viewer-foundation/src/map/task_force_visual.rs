@@ -87,65 +87,7 @@ impl TaskForceMotions {
         scale: &dyn Fn(u32, u32) -> f32,
     ) -> Result<Placement, &'static str> {
         let row = self.row(force.id)?;
-        let route = UnitRoute::task_force(row);
-        let class = CounterClass::TaskForce;
-        let animator = if route.display_path().is_empty() {
-            Some(RouteSample::default())
-        } else {
-            world.and_then(|world| {
-                Motion::route_sample(
-                    force.province,
-                    route.display_path(),
-                    &|id| anchor(id, class.standstill(land(id))),
-                    world,
-                )
-            })
-        };
-        let placed = movement.and_then(|movement| {
-            animator.and_then(|animator| {
-                route.stack_kind_from_animator(force.province, &movement.map, animator.sample_count)
-            })
-        });
-        let here = land(force.province);
-        // An unplaceable route stands on its province, as a division's does; the combat
-        // stand-off kinds need no geometry.
-        let kind = placed.unwrap_or_else(|| {
-            counter_move::stack_kind(StackKindInputs {
-                class,
-                combat_role: route.combat_role,
-                combat_count: route.combat_count,
-                terrain_flags: u8::from(here),
-                ..Default::default()
-            })
-        });
-        let mut position = world
-            .and_then(|world| route.position(force.province, kind, world, anchor))
-            .or_else(|| {
-                route
-                    .standing(force.province, here, kind, anchor)
-                    .map(Position::still)
-            })
-            .ok_or("task-force province has no unit-stack anchor")?;
-        let standing_scale = |province| scale(province, class.standstill(land(province)));
-        position.scale_route([
-            standing_scale(force.province),
-            route
-                .display_path()
-                .first()
-                .map_or(1.0, |&next| standing_scale(next)),
-        ]);
-        Ok(Placement {
-            kind,
-            position,
-            animator,
-            unplaced_route: (placed.is_none() && !route.display_path().is_empty()).then_some(
-                if movement.is_none() {
-                    "the content movement map is not loaded"
-                } else {
-                    "the content movement map cannot place its route (a province without terrain, neighbours or a stack anchor, or a first step to a province that is not a neighbour)"
-                },
-            ),
-        })
+        visual_of(force.province, &UnitRoute::task_force(row), movement, world, anchor, land, scale)
     }
 
     /// The settled task-force point shared with carrier take-off. An
@@ -170,6 +112,76 @@ impl TaskForceMotions {
     pub fn docked(&self, force: u64) -> Result<bool, &'static str> {
         self.row(force).map(|row| row.path.is_empty())
     }
+}
+
+/// Where a task force on `province` with `route` stands: [`TaskForceMotions::visual`] from values.
+pub fn visual_of(
+    province: u32,
+    route: &UnitRoute<'_>,
+    movement: Option<&MovementContent>,
+    world: Option<&RouteWorld<'_>>,
+    anchor: &dyn Fn(u32, u32) -> Option<[f32; 3]>,
+    land: &dyn Fn(u32) -> bool,
+    scale: &dyn Fn(u32, u32) -> f32,
+) -> Result<Placement, &'static str> {
+    let class = CounterClass::TaskForce;
+    let animator = if route.display_path().is_empty() {
+        Some(RouteSample::default())
+    } else {
+        world.and_then(|world| {
+            Motion::route_sample(
+                province,
+                route.display_path(),
+                &|id| anchor(id, class.standstill(land(id))),
+                world,
+            )
+        })
+    };
+    let placed = movement.and_then(|movement| {
+        animator.and_then(|animator| {
+            route.stack_kind_from_animator(province, &movement.map, animator.sample_count)
+        })
+    });
+    let here = land(province);
+    // An unplaceable route stands on its province, as a division's does; the combat
+    // stand-off kinds need no geometry.
+    let kind = placed.unwrap_or_else(|| {
+        counter_move::stack_kind(StackKindInputs {
+            class,
+            combat_role: route.combat_role,
+            combat_count: route.combat_count,
+            terrain_flags: u8::from(here),
+            ..Default::default()
+        })
+    });
+    let mut position = world
+        .and_then(|world| route.position(province, kind, world, anchor))
+        .or_else(|| {
+            route
+                .standing(province, here, kind, anchor)
+                .map(Position::still)
+        })
+        .ok_or("task-force province has no unit-stack anchor")?;
+    let standing_scale = |province| scale(province, class.standstill(land(province)));
+    position.scale_route([
+        standing_scale(province),
+        route
+            .display_path()
+            .first()
+            .map_or(1.0, |&next| standing_scale(next)),
+    ]);
+    Ok(Placement {
+        kind,
+        position,
+        animator,
+        unplaced_route: (placed.is_none() && !route.display_path().is_empty()).then_some(
+            if movement.is_none() {
+                "the content movement map is not loaded"
+            } else {
+                "the content movement map cannot place its route (a province without terrain, neighbours or a stack anchor, or a first step to a province that is not a neighbour)"
+            },
+        ),
+    })
 }
 
 /// This hour's operands of 's mission skip, which the counter pass and the ship
@@ -210,23 +222,8 @@ impl MissionSkips {
     /// recorded skip flag, an active mission, the invasion-support region when applicable, and
     /// matching patrol region. Missing counter inputs or current region leave the result unavailable.
     pub fn skip(&self, force: &TaskForceRow, kind: u32, region: Option<u32>) -> Option<bool> {
-        if kind == ATTACKING || kind == DEFENDING {
-            return Some(false);
-        }
-        let (is_in_regions, bombardment_region) = *self.inputs.get(&force.id)?;
-        if !mission_active(is_in_regions, force.mission, bombardment_region) {
-            return Some(false);
-        }
-        if force.mission != PATROL {
-            return Some(true);
-        }
-        let current = self
-            .current_regions
-            .as_ref()?
-            .get(&force.id)
-            .copied()
-            .unwrap_or(0);
-        Some(current != 0 && Some(current) == region)
+        let current = self.current_regions.as_ref().map(|regions| regions.get(&force.id).copied().unwrap_or(0));
+        skip_of(kind, self.inputs.get(&force.id).copied(), force.mission, current, region)
     }
 
     /// The skip operands of a fixture: `inputs` by task force and complete current regions.
@@ -455,4 +452,22 @@ mod tests {
         );
         assert!(TaskForceMotions::default().docked(7).is_err());
     }
+}
+
+/// [`MissionSkips::skip`] from values: the task force's counter inputs (is in regions, bombardment
+/// region), its mission, and its current patrol region (zero for none; `None` while the mission
+/// census is incomplete).
+pub fn skip_of(kind: u32, inputs: Option<(u8, u32)>, mission: u32, current: Option<u32>, region: Option<u32>) -> Option<bool> {
+    if kind == ATTACKING || kind == DEFENDING {
+        return Some(false);
+    }
+    let (is_in_regions, bombardment_region) = inputs?;
+    if !mission_active(is_in_regions, mission, bombardment_region) {
+        return Some(false);
+    }
+    if mission != PATROL {
+        return Some(true);
+    }
+    let current = current?;
+    Some(current != 0 && Some(current) == region)
 }

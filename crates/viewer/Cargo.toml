@@ -8,15 +8,20 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
+foldhash = "0.2"
+dashboard-base.workspace = true
 job-priority.workspace = true
 engine-allocation.workspace = true
 map-display-data.workspace = true
 map-products.workspace = true
 map-snow.workspace = true
 replay.workspace = true
+replay-columnar.workspace = true
+playhead = { path = "../playhead" }
 engine-executable.workspace = true
 installed-content-abilities.workspace = true
 installed-content-core.workspace = true
+installed-content-country-names.workspace = true
 installed-content-division-names.workspace = true
 installed-content-focus.workspace = true
 installed-content-gfx.workspace = true
@@ -48,13 +53,14 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sha2.workspace = true
 dashboard.workspace = true
-dashboard-base.workspace = true
+dashboard-follow = { path = "../dashboard-follow" }
 engine-heap.workspace = true
 raw-window-handle = "0.6"
-windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_Threading", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader", "Win32_System_Threading", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 [dev-dependencies]
 engine-native.workspace = true
+playhead = { path = "../playhead", features = ["test-support"] }
 installed-content-abilities = { workspace = true, features = ["test-support"] }
 installed-content-core = { workspace = true, features = ["test-support"] }
 installed-content-division-names = { workspace = true, features = ["test-support"] }
@@ -84,42 +90,16 @@ uuid = { workspace = true, features = ["v4"] }
 # `cargo test --workspace` resolves for crates these tests build, so `cargo test -p`
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
-dashboard-air-aces = { workspace = true, features = ["test-support"] }
-dashboard-air-superiority = { workspace = true, features = ["test-support"] }
-dashboard-army = { workspace = true, features = ["test-support"] }
-dashboard-country-fuel = { workspace = true, features = ["test-support"] }
-dashboard-country-nukes = { workspace = true, features = ["test-support"] }
-dashboard-economy = { workspace = true, features = ["test-support"] }
-dashboard-equipment-losses = { workspace = true, features = ["test-support"] }
-dashboard-forces = { workspace = true, features = ["test-support"] }
-dashboard-game-score = { workspace = true, features = ["test-support"] }
-dashboard-ideas = { workspace = true, features = ["test-support"] }
-dashboard-intelligence = { workspace = true, features = ["test-support"] }
-dashboard-keyed = { workspace = true, features = ["test-support"] }
-dashboard-manpower = { workspace = true, features = ["test-support"] }
-dashboard-military-air-ledger = { workspace = true, features = ["test-support"] }
-dashboard-naval = { workspace = true, features = ["test-support"] }
-dashboard-occupation = { workspace = true, features = ["test-support"] }
-dashboard-party-history = { workspace = true, features = ["test-support"] }
-dashboard-peace-deals = { workspace = true, features = ["test-support"] }
-dashboard-place-names = { workspace = true, features = ["test-support"] }
-dashboard-politics = { workspace = true, features = ["test-support"] }
-dashboard-politics-ledger = { workspace = true, features = ["test-support"] }
-dashboard-raids = { workspace = true, features = ["test-support"] }
-dashboard-resource-balance = { workspace = true, features = ["test-support"] }
-dashboard-special-projects = { workspace = true, features = ["test-support"] }
-dashboard-stability = { workspace = true, features = ["test-support"] }
-dashboard-subjects = { workspace = true, features = ["test-support"] }
-dashboard-unit-leaders = { workspace = true, features = ["test-support"] }
-dashboard-world-tension = { workspace = true, features = ["test-support"] }
+dashboard-base = { workspace = true, features = ["test-support"] }
 engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
 installed-content-naval-combat-defines = { workspace = true, features = ["test-support"] }
 installed-content-naval-path = { workspace = true, features = ["test-support"] }
+recorder-derive = { workspace = true, features = ["test-support"] }
 replay = { workspace = true, features = ["test-support"] }
 replay-data = { workspace = true, features = ["test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
-store = { path = "../store", features = ["test-support"] }
 test-unify = { workspace = true }
+unify-bitflags-2 = { workspace = true }
 unify-dpi = { workspace = true }
 unify-indexmap = { workspace = true }
 unify-once_cell = { workspace = true }
@@ -128,3 +108,4 @@ unify-winapi-util = { workspace = true }
 unify-windows = { workspace = true }
 unify-windows-sys-0-52 = { workspace = true }
 unify-windows-sys-0-59 = { workspace = true }
+uuid = { version = "1.26.0", default-features = false, features = ["default", "rng", "serde", "std", "v4"] }

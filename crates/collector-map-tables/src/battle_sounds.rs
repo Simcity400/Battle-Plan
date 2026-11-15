@@ -68,7 +68,7 @@ impl Captured {
         let begin = qpc();
         self.reset();
         let walk =
-            native::walk_growing(memory, base, &mut self.rows.rows, &mut self.provinces.first);
+            native::walk(memory, base, &mut self.rows.rows, &mut self.provinces.first);
         self.rows.outcome = walk.outcome;
         self.provinces.len = walk.provinces;
         self.provinces.required = walk.required.provinces;

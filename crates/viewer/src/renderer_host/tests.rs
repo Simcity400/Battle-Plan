@@ -31,7 +31,7 @@ fn render_states(
 ) -> (MutexGuard<'static, ()>, [egui_wgpu::RenderState; 2]) {
     let serial = viewer_foundation::map::test_support::serial();
     let state = pollster::block_on(async {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let instance = shader_pipeline::gpu::instance();
         let available_adapters = instance.enumerate_adapters(wgpu::Backends::all()).await;
         let adapter = select_adapter(&available_adapters, None).unwrap();
         let (device, queue) = adapter

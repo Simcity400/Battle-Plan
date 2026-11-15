@@ -119,20 +119,6 @@ pub fn demand(memory: &impl Memory, state: usize) -> Result<Demand, &'static str
 pub fn capture(
     memory: &impl Memory,
     state: usize,
-    buckets: &mut [Bucket],
-    members: &mut [u32],
-) -> Capture {
-    capture_buffer(
-        memory,
-        state,
-        crate::walk::Buffer::Fixed(buckets),
-        crate::walk::Buffer::Fixed(members),
-    )
-}
-
-pub fn capture_growing(
-    memory: &impl Memory,
-    state: usize,
     buckets: &mut Vec<Bucket>,
     members: &mut Vec<u32>,
 ) -> Capture {

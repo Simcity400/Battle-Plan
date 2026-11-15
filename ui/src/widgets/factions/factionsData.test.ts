@@ -7,7 +7,7 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import type { TimelineProps } from '../../charts/timeline/Timeline';
 import type { LegendItem } from '../../charts/Legend';
 import type { CountryGroupReply, FactionGroup } from '../../generated/dashboard';
-import { LEADER_GLYPH, UNNAMED, factionGaps, factionLabel, factionLanes, factionViews, laneCountries, leaderAt, leadershipParts, membersAt, membersHeld, tagAt } from './factionsData.ts';
+import { LEADER_GLYPH, UNNAMED, factionChangeHours, factionGaps, factionLabel, factionLanes, factionViews, laneCountries, leaderAt, leadershipParts, membersAt, membersHeld, tagAt } from './factionsData.ts';
 import type { LaneOptions } from './factionsData';
 import { worldFilter } from '../../dashboard/groups.ts';
 import { factionNameAt } from '../../dashboard/factionNames.ts';
@@ -48,7 +48,8 @@ test('the faction legend names factions, retains colour editing and shows one co
       colours: new Map(), warnings: [], setColour: (...args) => { globalThis.__factionColour = args; } });`,
     '/dashboard/useCountriesAt.ts': 'export const useCountriesAt = () => ({ country: tag => ({ name: tag }), revision: 0 });',
     '/dashboard/useHoverLabels.ts': 'export const useHoverLabels = () => ({ ask() {}, labelAt: () => tag => ({ name: tag }), revision: 0 });',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
+    '/widgets/army-size/headHour.ts': 'export const useHeadHour = clock => clock.getHour();',
+    '/dashboard/widgetPerf.ts': 'export const useShownEachFrame = () => {};',
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open() {}, menu: null });',
     '/charts/useChartTokens.ts': 'export const useViewportHeight = () => 1000; export const useChartTokens = () => ({ muted: "#777777" });',
     '/charts/Legend.tsx': 'export default props => { globalThis.__factionLegend = props.items; return null; };',
@@ -79,6 +80,14 @@ test('the faction legend names factions, retains colour editing and shows one co
     delete host.__factionLegend; delete host.__factionTimeline; delete host.__factionColour;
     await vite.close();
   }
+});
+
+test('a faction that has ended keeps the name it ended with, and one never named stays unnamed', () => {
+  const dated = factionViews(reply, (faction, hour) => factionNameAt(faction, hour), id => `colour-${id}`);
+  const pact = dated.find(view => view.id === factions[1].id)!, template = dated.find(view => view.id === factions[0].id)!;
+  assert.equal(factionLabel(pact, 250), 'Pact of Steel Reforged');
+  assert.equal(factionLabel(pact, 400), 'Pact of Steel Reforged', 'dissolved at 299, never unnamed after');
+  assert.equal(factionLabel(template, 400), UNNAMED);
 });
 
 test('a late recorded name outside the window moves its member from Zulu to Aardvark', () => {
@@ -279,16 +288,27 @@ test('a membership continued across unrecorded hours is not said to have ended',
   assert.equal(membersAt(view, 205), null);
 });
 
-test('hours still being prepared after a prefix are not a dissolution, a departure or an empty roster', () => {
-  const prefix = { ...reply, identityChanges: [], unobserved: { humans: [], factions: [], wars: [] },
-    countryIdentities: [holder('AAA', 1, 0, 19)], coverage: { firstHour: 0, lastHour: 9, complete: false }, pending: [{ firstHour: 10, lastHour: 19 }],
+test('hours the rosters were not recorded after a faction was last seen are not a dissolution, a departure or an empty roster', () => {
+  const unrecorded = { ...reply, identityChanges: [], unobserved: { humans: [], factions: [{ firstHour: 10, lastHour: 19 }], wars: [] },
+    countryIdentities: [holder('AAA', 1, 0, 19)],
     factions: [{ id: '1', name: 'Pact', recordedName: 'Pact', firstHour: 0, lastHour: 9, nameReason: null, names: [{ firstHour: 0, lastHour: 9, name: 'Pact', reason: null }],
       incomplete: [], members: [run('AAA', 0, 9)], leaders: [] }] } as CountryGroupReply;
-  assert.deepEqual(factionGaps(prefix), [{ firstHour: 10, lastHour: 19 }]);
-  const [view] = factionViews(prefix, summaryName, id => id);
-  assert.equal(membersAt(view, 15), null, 'a pending roster is not known to be empty');
-  const lanes = factionLanes([view], 15, options, text, factionGaps(prefix), 0).lanes.map(lane => lane.label);
+  assert.deepEqual(factionGaps(unrecorded), [{ firstHour: 10, lastHour: 19 }]);
+  const [view] = factionViews(unrecorded, summaryName, id => id);
+  assert.equal(membersAt(view, 15), null, 'an unrecorded roster is not known to be empty');
+  const lanes = factionLanes([view], 15, options, text, factionGaps(unrecorded), 0).lanes.map(lane => lane.label);
   assert.deepEqual(lanes, ['Last recorded day 9', 'Last recorded day 9'], 'neither the faction dissolved nor its member left at 10');
+});
+
+test('the widget renders only when the head passes a faction, name, roster, leader or gap edge', () => {
+  const hours = factionChangeHours(reply, views);
+  assert.deepEqual(hours, [...hours].sort((a, b) => a - b), 'sorted');
+  assert.equal(new Set(hours).size, hours.length, 'each once');
+  // Founded, joined, led and left: the first faction's edges, its unknown hour, the second faction's, and the gap.
+  for (const hour of [100, 120, 150, 250, 300, 350, 351, 401, 200, 220, 260, 270]) assert.ok(hours.includes(hour), `${hour} is a change`);
+  for (const hour of [101, 175, 330]) assert.ok(!hours.includes(hour), `${hour} changes nothing`);
+  const between = (hour: number) => factionLanes(views, hour, options, text, factionGaps(reply), 0).lanes.map(lane => `${lane.id}|${lane.label}`);
+  assert.deepEqual(between(160), between(175), 'between two changes the lanes are the same');
 });
 
 test('a same-tag native replacement starts its own membership without a rename event', () => {

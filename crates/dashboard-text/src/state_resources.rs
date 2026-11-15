@@ -265,34 +265,15 @@ impl<'a> StateResources<'a> {
     fn grants(&self, links: &impl Links) -> Result<&Grants, crate::triggers::Failure> {
         get(&self.grants, || {
             let resources = self.resource_database()?;
-            let mut out = Grants::new();
-            for (name, building) in &self.buildings.types {
-                let Some(token) = links.token_input(name.as_bytes())? else {
-                    continue;
-                };
-                let grants = if let Some(reason) = &building.raid_refused {
-                    Err(format!("building {name}'s resource grants are refused: {reason}").into())
-                } else if !building.local_resources.is_empty()
-                    && self.buildings.ambiguous_slots.contains(name)
-                {
-                    Err(
-                        format!("building {name} is declared more than once with resource grants")
-                            .into(),
-                    )
-                } else {
-                    let mut grants = Vec::new();
-                    for (resource, amount) in &building.local_resources {
-                        if let Some(token) = links.token_input(resource.as_bytes())?
-                            && resources.get(&token).is_some_and(|&active| active != 0)
-                        {
-                            grants.push((token, *amount));
-                        }
-                    }
-                    Ok(grants)
-                };
-                out.insert(token, grants);
-            }
-            Ok(out)
+            let lists = grant_lists(
+                self.buildings,
+                |token| resources.get(&token).is_some_and(|&active| active != 0),
+                |name| links.token_input(name),
+            )?;
+            Ok(lists
+                .into_iter()
+                .map(|(token, grants)| (token, grants.map_err(Into::into)))
+                .collect::<Grants>())
         })
     }
 
@@ -342,25 +323,22 @@ impl<'a> StateResources<'a> {
         let base = table::<tables::StateBaseResources>(self.frame, BASE)?
             .get(key)
             .map_err(walked::<tables::StateBaseResources>)?;
-        let operand =
-            |field: fn(&StateResourceRow) -> i64| stored.as_deref().map_or(0, |row| field(row));
-        Ok(ResourceOperands {
-            template: base.map_or(0, |row| row.amount),
-            pool: operand(|row| row.pool),
-            gate: input.gate != 0,
-            additive: operand(|row| row.additive),
-            factor: operand(|row| row.factor),
-            global_factor: input.global_factor,
-            origin: (input.origin != 0).then_some(OriginFactors {
-                infrastructure: input
+        Ok(resource_operands(
+            base.map_or(0, |row| row.amount),
+            stored
+                .as_deref()
+                .map(|row| [row.pool, row.additive, row.factor, row.cost]),
+            input.gate != 0,
+            input.global_factor,
+            (input.origin != 0).then_some((
+                input
                     .infrastructure_level
                     .map(|level| (level, input.infrastructure_modifier)),
-                supply_route: input.supply_route != 0,
-                bonuses: self.resource_bonuses,
-            }),
-            cost: operand(|row| row.cost),
-            grants: self.building_grants(state, resource, controller, links)?,
-        })
+                input.supply_route != 0,
+            )),
+            self.resource_bonuses,
+            self.building_grants(state, resource, controller, links)?,
+        ))
     }
 
     /// The state's buildings' grants of one resource, with the controller's overrides.
@@ -405,35 +383,132 @@ impl<'a> StateResources<'a> {
             .map(Vec::as_slice)
             .unwrap_or(&[]);
         let grants = self.grants(links)?;
-        let mut total = 0_i64;
-        for &(building, healthy) in buildings.get(&state).map(Vec::as_slice).unwrap_or(&[]) {
-            let list = grants
-                .get(&building)
-                .ok_or_else(|| format!("state {state} has a building type the content lacks"))?
-                .as_ref()
-                .map_err(|failure| {
-                    failure.reached();
-                    failure.clone()
-                })?;
-            let Some(&(_, amount)) = list.iter().find(|(token, _)| *token == resource) else {
-                continue;
-            };
-            // Override presence reads the first entry; value lookup reads the
-            // first matching element.
-            // The amounts are the country's at the frame's hour.
-            let bonus = overrides
-                .iter()
-                .find(|row| row.1 == building)
-                .filter(|row| row.2 != 0)
-                .map(|_| {
-                    overrides
-                        .iter()
-                        .find(|row| row.1 == building && row.2 != 0 && row.3 == resource)
-                        .map_or(0, |row| row.4)
-                });
-            total = total.wrapping_add(building_grant(healthy, amount, bonus));
-        }
-        Ok(total)
+        building_grants_from(
+            buildings.get(&state).map(Vec::as_slice).unwrap_or(&[]),
+            overrides,
+            resource,
+            |building| {
+                let list = grants
+                    .get(&building)
+                    .ok_or_else(|| {
+                        crate::triggers::Failure::from(format!(
+                            "state {state} has a building type the content lacks"
+                        ))
+                    })?
+                    .as_ref()
+                    .map_err(|failure| {
+                        failure.reached();
+                        failure.clone()
+                    })?;
+                Ok(grant_of(list, resource))
+            },
+        )
+    }
+}
+
+/// The amount a building's grant list gives of `resource`, if it names it.
+pub fn grant_of(list: &[(u32, i64)], resource: u32) -> Option<i64> {
+    list.iter()
+        .find(|(token, _)| *token == resource)
+        .map(|&(_, amount)| amount)
+}
+
+/// A state's buildings' grants of one resource: each building (type token, healthy level)
+/// whose `grant` names the resource, under the controller's `overrides` (ordinal, building,
+/// count, resource, amount, in native order).
+pub fn building_grants_from<E>(
+    buildings: &[(u32, i16)],
+    overrides: &[(u32, u32, u32, u32, i64)],
+    resource: u32,
+    mut grant: impl FnMut(u32) -> Result<Option<i64>, E>,
+) -> Result<i64, E> {
+    let mut total = 0_i64;
+    for &(building, healthy) in buildings {
+        let Some(amount) = grant(building)? else {
+            continue;
+        };
+        // Override presence reads the first entry; value lookup reads the
+        // first matching element.
+        // The amounts are the country's at the frame's hour.
+        let bonus = overrides
+            .iter()
+            .find(|row| row.1 == building)
+            .filter(|row| row.2 != 0)
+            .map(|_| {
+                overrides
+                    .iter()
+                    .find(|row| row.1 == building && row.2 != 0 && row.3 == resource)
+                    .map_or(0, |row| row.4)
+            });
+        total = total.wrapping_add(building_grant(healthy, amount, bonus));
+    }
+    Ok(total)
+}
+
+/// Each building type's `local_resources` grants by its token, the game dropping a name that is
+/// not an active resource; a building whose grants are refused holds the reason. `token_of`
+/// spells a name to its lexer token.
+pub fn grant_lists<E>(
+    buildings: &Buildings,
+    active: impl Fn(u32) -> bool,
+    mut token_of: impl FnMut(&[u8]) -> Result<Option<u32>, E>,
+) -> Result<BTreeMap<u32, Result<Vec<(u32, i64)>, String>>, E> {
+    let mut out = BTreeMap::new();
+    for (name, building) in &buildings.types {
+        let Some(token) = token_of(name.as_bytes())? else {
+            continue;
+        };
+        let grants = if let Some(reason) = &building.raid_refused {
+            Err(format!("building {name}'s resource grants are refused: {reason}"))
+        } else if !building.local_resources.is_empty() && buildings.ambiguous_slots.contains(name)
+        {
+            Err(format!(
+                "building {name} is declared more than once with resource grants"
+            ))
+        } else {
+            let mut grants = Vec::new();
+            for (resource, amount) in &building.local_resources {
+                if let Some(token) = token_of(resource.as_bytes())?
+                    && active(token)
+                {
+                    grants.push((token, *amount));
+                }
+            }
+            Ok(grants)
+        };
+        out.insert(token, grants);
+    }
+    Ok(out)
+}
+
+/// The operands of one state resource from its recorded values: the template amount, the
+/// retained (pool, additive, factor, cost), the state's resource inputs (gate, global factor,
+/// and, when the controller holds an origin, the infrastructure level with its modifier and the
+/// supply-route flag) and the building grants.
+pub fn resource_operands(
+    template: i64,
+    stored: Option<[i64; 4]>,
+    gate: bool,
+    global_factor: i64,
+    origin: Option<(Option<(i32, i64)>, bool)>,
+    bonuses: [i64; 2],
+    grants: i64,
+) -> ResourceOperands {
+    let [pool, additive, factor, cost] = stored.unwrap_or_default();
+    ResourceOperands {
+        template,
+        pool,
+        gate,
+        additive,
+        factor,
+        global_factor,
+        origin: origin.map(|(infrastructure, supply_route)| OriginFactors {
+            infrastructure,
+            supply_route,
+            bonuses,
+        }),
+        cost,
+        grants,
     }
 }
 

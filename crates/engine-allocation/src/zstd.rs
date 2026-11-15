@@ -188,6 +188,17 @@ impl Compressor {
         self.set(ZSTD_cParameter::ZSTD_c_windowLog, log as i32)
     }
 
+    /// Frames from now on use windows of 2^`log` bytes and the match tables `level` sizes for a
+    /// source of that size, with or without a prefix: zstd otherwise sizes the tables for the
+    /// prefix and the window together.
+    pub fn cap_window(&mut self, level: i32, log: u32) -> io::Result<()> {
+        // SAFETY: a pure function of its arguments.
+        let params = unsafe { zstd_sys::ZSTD_getCParams(level, 1 << log, 0) };
+        self.set(ZSTD_cParameter::ZSTD_c_windowLog, log as i32)?;
+        self.set(ZSTD_cParameter::ZSTD_c_chainLog, params.chainLog as i32)?;
+        self.set(ZSTD_cParameter::ZSTD_c_hashLog, params.hashLog as i32)
+    }
+
     /// `src` as one frame into `dst`: the bytes written.
     pub fn compress(&mut self, dst: &mut [u8], src: &[u8]) -> Result<usize, Error> {
         // SAFETY: both buffers are live for their lengths.
@@ -217,6 +228,21 @@ impl Compressor {
             out.set_len(at + written);
             Ok(written)
         }
+    }
+
+    /// [`Self::compress_append`] with `prefix` as the frame's prefix: the reader decompresses it
+    /// with the same prefix ([`Decompressor::decompress_append_prefixed`]).
+    pub fn compress_append_prefixed(&mut self, prefix: &[u8], src: &[u8], out: &mut Vec<u8>) -> Result<usize, Error> {
+        // SAFETY: a live context; zstd keeps a reference to the prefix for the next frame only,
+        // which ends before this call returns.
+        checked(unsafe { zstd_sys::ZSTD_CCtx_refPrefix(self.0.as_ptr(), prefix.as_ptr().cast(), prefix.len()) })?;
+        self.compress_append(src, out)
+    }
+
+    /// The context's own bytes.
+    pub fn bytes(&self) -> usize {
+        // SAFETY: a live context.
+        unsafe { zstd_sys::ZSTD_sizeof_CCtx(self.0.as_ptr()) }
     }
 }
 

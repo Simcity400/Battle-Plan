@@ -2,11 +2,11 @@
 //! Registration order is significant: a negative total restarts before the next
 //! wrapping addition. A signed nonpositive mission mask admits no mission.
 
-use replay_data::rows::{AirRegionalMissionRow, AirWingRow};
+use replay_data::rows::{AirMissionCountRow, AirRegionalMissionRow, AirWingRow};
 use std::collections::{BTreeMap, HashMap};
 
 /// The supported native mission-bit domain, including unnamed kinds.
-pub const MISSIONS: usize = 18;
+pub const MISSIONS: usize = AirMissionCountRow::MISSIONS;
 
 /// The regional map's per-mission GUI template. Its `button` names the mission
 /// strip sprite and draws mission bit `b` at the strip's one-based frame `b + 1`.
@@ -18,14 +18,33 @@ pub type OwnerRegions<'a> = BTreeMap<u32, (RegionalCounts, RegionalWings<'a>)>;
 
 /// Selected bits receive the wing's whole aircraft count, including zero.
 pub fn count(counts: &mut Counts, wing: &AirWingRow) {
-    if (wing.mission_mask as i32) <= 0 {
-        return;
+    count_of(counts, wing.planes, wing.mission_mask);
+}
+
+/// [`count`] from a wing's aircraft count and mission mask.
+pub fn count_of(counts: &mut Counts, planes: i32, mission_mask: u32) {
+    AirMissionCountRow::count(counts, mission_mask, planes);
+}
+
+/// One registration's part of [`regional_counts`], from values: the registered wing's owner
+/// and mission region when it has an AirWings row. `Ok(Some(region))` counts it in our
+/// region, `Ok(None)` is another owner's, and an error withholds the whole projection.
+pub fn registration(
+    wing: u64,
+    row: Option<(u32, Option<u32>)>,
+    ours: u32,
+    slot: impl Fn(u32) -> Option<u32>,
+) -> Result<Option<u32>, String> {
+    let (owner, region) =
+        row.ok_or_else(|| format!("registered wing {wing} has no AirWings row"))?;
+    let owner =
+        slot(owner).ok_or_else(|| format!("registered wing {wing} has an unresolved owner"))?;
+    if owner != ours {
+        return Ok(None);
     }
-    for (bit, total) in counts.iter_mut().enumerate() {
-        if wing.mission_mask & (1 << bit) != 0 {
-            *total = (*total).max(0).wrapping_add(wing.planes);
-        }
-    }
+    region
+        .map(Some)
+        .ok_or_else(|| format!("registered wing {wing} has no mission region"))
 }
 
 /// Read all owners with one wing index and one stable registration sort.
@@ -70,17 +89,17 @@ pub fn regional_counts<'a>(
     let mut regions = BTreeMap::new();
     let mut regional_wings = RegionalWings::new();
     for row in registrations {
-        let wing = wings
-            .get(&row.wing)
-            .ok_or_else(|| format!("registered wing {} has no AirWings row", row.wing))?;
-        let owner = slot(wing.owner)
-            .ok_or_else(|| format!("registered wing {} has an unresolved owner", wing.id))?;
-        if owner != ours {
+        let found = wings.get(&row.wing);
+        let Some(region) = registration(
+            row.wing,
+            found.map(|wing| (wing.owner, wing.mission_region)),
+            ours,
+            &slot,
+        )?
+        else {
             continue;
-        }
-        let region = wing
-            .mission_region
-            .ok_or_else(|| format!("registered wing {} has no mission region", wing.id))?;
+        };
+        let wing = found.expect("a counted registration has its wing");
         count(regions.entry(region).or_insert([-1; MISSIONS]), wing);
         regional_wings.entry(region).or_default().push(*wing);
     }

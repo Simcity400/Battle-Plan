@@ -124,32 +124,11 @@ fn the_counter_pass_leaves_a_patrol_here_to_the_mission_icon() {
         ..Default::default()
     };
     let skips = MissionSkips::fixture([(patrol.id, (1, 0))], [(patrol.id, 79)]);
-    let mut report = CounterReport::default();
-    assert!(!stays_a_source(&skips, &patrol, 0, Some(79), &mut report));
-    assert!(stays_a_source(&skips, &patrol, 0, Some(76), &mut report));
-    assert!(stays_a_source(
-        &skips,
-        &patrol,
-        DEFENDING,
-        Some(79),
-        &mut report
-    ));
-    assert!(report.unplaced_task_forces.is_empty());
-    assert!(!stays_a_source(
-        &MissionSkips::default(),
-        &patrol,
-        0,
-        Some(79),
-        &mut report
-    ));
-    assert_eq!(
-        report
-            .unplaced_task_forces
-            .values()
-            .flatten()
-            .collect::<Vec<_>>(),
-        [&patrol.id]
-    );
+    let sea = |kind, region, skips: &MissionSkips| naval_members::Fake { kind, region, skips: skips.clone(), ..naval_members::Fake::new(&patrol) }.sea();
+    assert_eq!(sea(0, Some(79), &skips), naval_members::Sea::Out(naval_members::ON_MISSION));
+    assert!(matches!(sea(0, Some(76), &skips), naval_members::Sea::Source { .. }));
+    assert!(matches!(sea(DEFENDING, Some(79), &skips), naval_members::Sea::Source { .. }));
+    assert_eq!(sea(0, Some(79), &MissionSkips::default()), naval_members::Sea::Refused(naval_members::SKIP_UNRECORDED));
 }
 
 /// A reset group's number keeps its raw bits through `frame update`'s `int`: `0xFFFFFFFF` is -1,

@@ -60,7 +60,7 @@ impl Evaluator<'_, '_> {
                 .ok_or("state builtin lacks its States row")?;
             return match name {
                 b"state_population" => Ok(Some(
-                    i64::from(*row.population.require("States.population").map_err(|why| {
+                    i64::from(*row.population.require("population of states").map_err(|why| {
                         Failure::input(
                             replay_data::rows::TableId::States,
                             "population",
@@ -70,7 +70,7 @@ impl Evaluator<'_, '_> {
                     })?) * 100_000,
                 )),
                 b"state_population_k" => Ok(Some(
-                    i64::from(*row.population.require("States.population").map_err(|why| {
+                    i64::from(*row.population.require("population of states").map_err(|why| {
                         Failure::input(
                             replay_data::rows::TableId::States,
                             "population",
@@ -156,7 +156,7 @@ impl Evaluator<'_, '_> {
         for advisor in hired {
             let owner = world
                 .slot(advisor.country)
-                .ok_or("HiredAdvisors country is unresolved")?;
+                .ok_or("hired advisors country is unresolved")?;
             if owner != slot {
                 continue;
             }
@@ -188,7 +188,7 @@ impl Evaluator<'_, '_> {
         for row in active {
             let owner = world
                 .slot(row.country)
-                .ok_or("ActiveIdeas country is unresolved")?;
+                .ok_or("active ideas country is unresolved")?;
             if owner != slot {
                 continue;
             }
@@ -262,7 +262,7 @@ impl Evaluator<'_, '_> {
             }
             let area = province
                 .controller_area
-                .require("Provinces.controller_area")
+                .require("controller area of provinces")
                 .map_err(|why| {
                     Failure::input(
                         replay_data::rows::TableId::Provinces,
@@ -286,7 +286,7 @@ impl Evaluator<'_, '_> {
             .get(first)
             .ok_or("home area first province is absent")?
             .controller_area
-            .require("Provinces.controller_area")
+            .require("controller area of provinces")
             .map_err(|why| {
                 Failure::input(
                     replay_data::rows::TableId::Provinces,
@@ -308,7 +308,7 @@ impl Evaluator<'_, '_> {
                 replay_data::rows::TableId::SimulationFeatures,
                 "",
                 None,
-                "SimulationFeatures lacks its singleton",
+                "simulation features lacks its singleton",
             ));
         };
         if features.human_ai != 0 {
@@ -320,7 +320,7 @@ impl Evaluator<'_, '_> {
             mask::<replay_data::rows::RaidCountryInputRow>(&["autonomous"]),
             u128::from(slot),
         )?
-        .ok_or("RaidCountryInputs lacks AI-control country")?
+        .ok_or("raid country inputs lacks AI-control country")?
         .autonomous;
         if let Some(flag) = flag {
             let rows = recorded::<tables::HumanControllers>(
@@ -330,7 +330,7 @@ impl Evaluator<'_, '_> {
             let row = rows
                 .iter()
                 .find(|row| self.world().slot(row.country) == Some(slot))
-                .ok_or("HumanControllers lacks the AI-control country")?;
+                .ok_or("human controllers lacks the AI-control country")?;
             return Ok(flag != 0 && row.count == 0);
         }
         // The raid census leaves this flag absent only outside the native
@@ -376,20 +376,20 @@ impl Evaluator<'_, '_> {
         }) {
             let owner = world
                 .slot(row.country)
-                .ok_or_else(|| world.unlinked("ResearchModifiers sharing-roster", row.country))?;
+                .ok_or_else(|| world.unlinked("research modifiers sharing-roster", row.country))?;
             if owner != slot {
                 continue;
             }
             if row.raw == -1 {
                 if witness.replace(row.count).is_some() {
                     return Err(
-                        "ResearchModifiers has duplicate sharing-roster acquisition witnesses"
+                        "research modifiers has duplicate sharing-roster acquisition witnesses"
                             .into(),
                     );
                 }
             } else {
                 let id = u32::try_from(row.raw)
-                    .map_err(|_| "ResearchModifiers has an invalid sharing-roster group ID")?;
+                    .map_err(|_| "research modifiers has an invalid sharing-roster group ID")?;
                 seen += 1;
                 matched |= Some(id) == token;
             }
@@ -400,13 +400,13 @@ impl Evaluator<'_, '_> {
                 replay_data::rows::TableId::ResearchModifiers,
                 "sharing_roster",
                 Some(Store::Country(slot)),
-                "ResearchModifiers sharing-roster membership is incomplete",
+                "research modifiers sharing-roster membership is incomplete",
             )),
             None => Err(Failure::input(
                 replay_data::rows::TableId::ResearchModifiers,
                 "sharing_roster",
                 Some(Store::Country(slot)),
-                "ResearchModifiers sharing-roster witness unavailable: the fact was not demanded or its capture failed",
+                "research modifiers sharing-roster witness unavailable: the fact was not demanded or its capture failed",
             )),
         }
     }
@@ -482,12 +482,12 @@ impl Evaluator<'_, '_> {
                     replay_data::rows::TableId::SimulationFeatures,
                     "",
                     None,
-                    "SimulationFeatures lacks its singleton",
+                    "simulation features lacks its singleton",
                 ));
             };
             let count = features
                 .state_array_len
-                .require("SimulationFeatures.state_array_len")
+                .require("state array len of simulation features")
                 .map_err(|why| {
                     Failure::input(
                         replay_data::rows::TableId::SimulationFeatures,
@@ -521,7 +521,7 @@ impl Evaluator<'_, '_> {
                     mask::<replay_data::rows::StateCoreRow>(&["cores"]),
                     u128::from(state),
                 )?
-                .ok_or("core_countries lacks its StateCores row")?;
+                .ok_or("core_countries lacks its state cores row")?;
                 (true, std::borrow::Cow::Owned(row.into_owned().cores))
             }
             (Store::Global, b"countries") => (
@@ -569,7 +569,7 @@ impl Evaluator<'_, '_> {
                 0
             } else {
                 world.slot(raw).ok_or_else(|| -> Failure {
-                    world.unlinked("ReservedCountryNaming.country_array", raw)
+                    world.unlinked("country array of reserved country naming", raw)
                 })?
             })
         } else {
@@ -585,12 +585,12 @@ impl Evaluator<'_, '_> {
                 .ordered_country_states(slot, name == b"controlled_states");
         }
         let (field_name, what) = match name {
-            b"owned_states" => ("owned_states", "CountryCounterInputs.owned_states"),
+            b"owned_states" => ("owned_states", "owned states of country counter inputs"),
             b"controlled_states" => (
                 "controlled_states",
-                "CountryCounterInputs.controlled_states",
+                "controlled states of country counter inputs",
             ),
-            _ => ("core_states", "CountryCounterInputs.core_states"),
+            _ => ("core_states", "core states of country counter inputs"),
         };
         (|| {
             let inputs = self.world().country_counter_inputs(slot)?;
@@ -667,7 +667,7 @@ impl Evaluator<'_, '_> {
                     replay_data::rows::TableId::CountryStabilityInputs,
                     "",
                     Some(Store::Country(slot)),
-                    "CountryStabilityInputs lacks the country",
+                    "country stability inputs lacks the country",
                 )
             })
     }
@@ -688,7 +688,7 @@ impl Evaluator<'_, '_> {
                 replay_data::rows::TableId::CountryStabilityInputs,
                 field,
                 Some(Store::Country(slot)),
-                format!("CountryStabilityInputs.{field} capture unavailable"),
+                format!("{} capture unavailable", replay_data::rows::TableId::CountryStabilityInputs.field_words(field)),
             )
         })
     }
@@ -742,10 +742,10 @@ impl Evaluator<'_, '_> {
             }
             let first = world
                 .slot(row.first_country)
-                .ok_or("WarRelations first country is unresolved")?;
+                .ok_or("war relations first country is unresolved")?;
             let second = world
                 .slot(row.second_country)
-                .ok_or("WarRelations second country is unresolved")?;
+                .ok_or("war relations second country is unresolved")?;
             if first == slot || second == slot {
                 return Ok(true);
             }
@@ -759,7 +759,7 @@ impl Evaluator<'_, '_> {
             let inputs = world.country_counter_inputs(slot)?;
             inputs
                 .neighbors
-                .require("CountryCounterInputs.neighbors")
+                .require("neighbors of country counter inputs")
                 .map_err(|why| {
                     Failure::input(
                         replay_data::rows::TableId::CountryCounterInputs,
@@ -774,7 +774,7 @@ impl Evaluator<'_, '_> {
                         replay_data::rows::TableId::CountryCounterInputs,
                         "neighbors",
                         Some(Store::Country(slot)),
-                        "CountryCounterInputs.neighbors capture unavailable",
+                        "neighbors of country counter inputs capture unavailable",
                     )
                 })?
                 .iter()
@@ -783,7 +783,7 @@ impl Evaluator<'_, '_> {
                         Ok(0)
                     } else {
                         world.slot(raw).ok_or_else(|| -> Failure {
-                            world.unlinked("CountryCounterInputs.neighbors", raw)
+                            world.unlinked("neighbors of country counter inputs", raw)
                         })
                     }
                 })
@@ -808,7 +808,7 @@ impl Evaluator<'_, '_> {
                 mask::<replay_data::rows::StateCoreRow>(&["cores"]),
                 u128::from(state),
             )?
-            .ok_or("StateCores lacks iterator state")?;
+            .ok_or("state cores lacks iterator state")?;
             row.cores
                 .iter()
                 .map(|&raw| {
@@ -817,7 +817,7 @@ impl Evaluator<'_, '_> {
                     } else {
                         world
                             .slot(raw)
-                            .ok_or_else(|| -> Failure { world.unlinked("StateCores", raw) })
+                            .ok_or_else(|| -> Failure { world.unlinked("state cores", raw) })
                     }
                 })
                 .collect::<Result<Vec<_>, Failure>>()?

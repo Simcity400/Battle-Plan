@@ -1,5 +1,3 @@
-import { failureText, type Failure } from '../../dashboard/queryError.ts';
-import type { ShipBattleTitle, ShipClassInfo, ShipsSunkBattleTitlesReply, ShipsSunkReply, ShipsSunkRow } from '../../generated/dashboard';
 import type { LogRow } from '../../charts/log/logData';
 import { logCountryRequests, newestFirst } from '../../charts/log/logData.ts';
 import type { CountryLabel } from '../../dashboard/countryFlagsAt';
@@ -10,6 +8,7 @@ import { formatDateTime } from '../../dashboard/calendar.ts';
 import { isOrderedSpans } from '../../charts/series.ts';
 import { int, object } from '../../dashboard/validation.ts';
 import { contentTitleHint } from '../../dashboard/contentTitles.ts';
+import type { ShipClassInfo, ShipsSunkManifestReply, ShipsSunkReply, ShipsSunkRow } from '../../generated/dashboard';
 
 export type CountryRole = 'victim' | 'sinker' | 'both';
 const text = (value: unknown) => value === null || typeof value === 'string';
@@ -39,28 +38,8 @@ export function validateShipsSunkReply(data: unknown): ShipsSunkReply {
   return reply;
 }
 
-export function validateShipBattleTitlesReply(data: unknown): ShipsSunkBattleTitlesReply {
-  const reply = data as ShipsSunkBattleTitlesReply;
-  if (!object(reply) || !Array.isArray(reply.warnings) || !reply.warnings.every(warning => typeof warning === 'string')
-    || !Array.isArray(reply.rows) || !reply.rows.every(row => object(row) && int(row.index) && row.index >= 0 && row.index <= 0xffffffff
-      && int(row.hour) && text(row.name) && text(row.missing) && (row.name === null || row.missing === null))
-    || new Set(reply.rows.map(row => row.index)).size !== reply.rows.length) throw new Error('The ships sunk battle-title reply is malformed.');
-  return reply;
-}
-
 function currentRows(rows: readonly LogRow<ShipsSunkRow>[], reply: ShipsSunkReply | undefined) {
   return rows.filter(row => reply?.rows[Number(row.key)] === row.item);
-}
-
-/** Stable scan indices, only for drawn rows of the current source reply. */
-export function shipBattleRequests(rows: readonly LogRow<ShipsSunkRow>[], reply: ShipsSunkReply | undefined): number[] {
-  return [...new Set(currentRows(rows, reply).map(row => Number(row.key)))].sort((a, b) => a - b);
-}
-
-/** The native title is already formatted by content; keep its supplying date explicit. */
-export function shipBattleLabel(row: ShipsSunkRow, battle: ShipBattleTitle | undefined): string | undefined {
-  if (!battle || battle.name === null) return undefined;
-  return `${battle.name}${battle.hour === row.sinkHour ? '' : ` (as of ${formatDateTime(battle.hour)})`}`;
 }
 
 /** Content keys survive other recordings; unresolved lexical tokens stay branch-specific. */
@@ -72,6 +51,14 @@ export function shipClassName(reply: ShipsSunkReply, row: ShipsSunkRow): string 
   const type = reply.classes[row.classIndex];
   const recorded = row.recordedNameIndex === null ? null : reply.recordedNames[row.recordedNameIndex];
   return type.name ?? recorded ?? 'Class name unavailable';
+}
+
+/** The class choice over the whole branch, from the manifest's classes. */
+export function manifestClassChoices(manifest: ShipsSunkManifestReply | undefined, campaignKey: string): { value: string; label: string; icon: string | null; hint?: string }[] {
+  if (!manifest) return [];
+  const choices = manifest.classes.map(type => ({ value: type.key ?? campaignToken(campaignKey, `${manifest.branchId}:${type.token}`),
+    label: type.name ?? 'Class name unavailable', icon: type.icon, hint: contentTitleHint(type.key ?? type.token) }));
+  return [...new Map(choices.map(choice => [choice.value, choice])).values()].sort((a, b) => a.label.localeCompare(b.label));
 }
 
 export function shipClassChoices(reply: ShipsSunkReply | undefined, campaignKey: string): { value: string; label: string; icon: string | null; hint?: string }[] {
@@ -153,15 +140,12 @@ export function shipAction(row: ShipsSunkRow, attacker: string): string {
   return `sunk by ${attacker}`;
 }
 
-export function shipDescription(reply: ShipsSunkReply, row: ShipsSunkRow, victim: string, attacker: string, battle?: ShipBattleTitle): string {
+export function shipDescription(reply: ShipsSunkReply, row: ShipsSunkRow, victim: string, attacker: string): string {
   const attribution = row.cause === 'cause' && row.attacker !== null ? `; attributed to ${attacker}` : '';
-  const title = shipBattleLabel(row, battle);
-  return `${shipName(row)}, ${shipClassName(reply, row)}, ${victim}, ${shipAction(row, attacker)}${attribution} in ${shipPlace(reply, row)}${title ? `, ${title}` : ''}, ${formatDateTime(row.sinkHour)}`;
+  return `${shipName(row)}, ${shipClassName(reply, row)}, ${victim}, ${shipAction(row, attacker)}${attribution} in ${shipPlace(reply, row)}, ${formatDateTime(row.sinkHour)}`;
 }
 
-export function shipTooltip(reply: ShipsSunkReply, row: ShipsSunkRow, victim: string, attacker: string,
-  battle?: ShipBattleTitle, titleError?: Failure): TooltipContent {
-  const title = shipBattleLabel(row, battle);
+export function shipTooltip(reply: ShipsSunkReply, row: ShipsSunkRow, victim: string, attacker: string): TooltipContent {
   return { title: shipName(row), icon: reply.classes[row.classIndex].icon ?? undefined, subtitle: formatDateTime(row.sinkHour), rows: [
     { label: 'Class', value: shipClassName(reply, row) },
     { label: 'Class key', value: reply.classes[row.classIndex].key ?? String(reply.classes[row.classIndex].token) },
@@ -170,6 +154,5 @@ export function shipTooltip(reply: ShipsSunkReply, row: ShipsSunkRow, victim: st
     { label: 'Cause', value: row.cause === 'cause' ? row.attributionName ?? 'Not recorded' : shipCauseLabel(row) },
     ...(row.cause === 'cause' && row.assistedKill ? [{ label: 'Assisted kill', value: 'Yes' }] : []),
     { label: 'Sea zone / region', value: shipPlace(reply, row) },
-    ...(title ? [{ label: 'Battle', value: title }] : !battle && row.cause !== 'cause' && titleError ? [{ detail: titleError.message, label: failureText(titleError, 'Couldn’t load the battle title.') }] : []),
   ] };
 }

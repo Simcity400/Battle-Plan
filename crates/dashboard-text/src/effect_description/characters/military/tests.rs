@@ -568,10 +568,10 @@ fn army_name_consumers_share_names_and_field_level_compatibility() {
             assert!(out.text.is_empty());
             let reason = if unavailable {
                 format!(
-                    "DivisionStatus.naming unavailable for UNIT {unit:#x}: guarded read or arena shortage"
+                    "naming of division status unavailable for UNIT {unit:#x}: guarded read or arena shortage"
                 )
             } else {
-                "DivisionStatus.naming not recorded".to_owned()
+                "naming of division status not recorded".to_owned()
             };
             assert_eq!(out.refusals.len(), 1);
             let (why, count) = out.refusals.iter().next().unwrap();

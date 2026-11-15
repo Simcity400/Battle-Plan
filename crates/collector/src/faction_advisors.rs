@@ -28,6 +28,8 @@ pub(crate) struct Store {
     owners: Vec<Owner>,
     before: Option<Certificate>,
     quiet: Option<Certificate>,
+    /// An owner was carried on the family token alone, which must then hold to the walk's end.
+    quiet_carried: bool,
     generation: u64,
     force: bool,
     pending: bool,
@@ -47,10 +49,11 @@ impl Store {
             self.null_date_epoch = self.before.map(|value| value.0);
         }
         self.force = force;
+        self.quiet_carried = false;
         self.failure = None;
         self.generation = self.generation.checked_add(1).unwrap_or(0);
         if self.before.is_none() || self.generation == 0 {
-            self.failure = Some("faction advisor writer observation unavailable");
+            self.failure = Some("faction advisors could not be followed in the game");
         }
     }
     pub fn visit(
@@ -90,6 +93,7 @@ impl Store {
             && owner.certificate.is_some()
             && self.before == self.quiet
         {
+            self.quiet_carried = true;
             return;
         }
         let Some(receiver) = pointer.checked_add(native::STATUS) else {
@@ -176,6 +180,9 @@ impl Store {
                 self.failure = Some(why);
             }
         }
+        if changes.sequence(11, receiver) != owner.certificate {
+            self.failure = Some("faction advisor structure changed during acquisition");
+        }
     }
     pub fn finish(&mut self, complete: bool, changes: &impl Changes) {
         crate::faction_companion_changes::demand(
@@ -186,7 +193,7 @@ impl Store {
         if !complete {
             self.failure = Some("faction advisor identity roster incomplete");
         }
-        if self.before.is_none() || self.before != changes.quiet(11) {
+        if self.before.is_none() || (self.quiet_carried && self.before != changes.quiet(11)) {
             self.failure = Some("faction advisor observation changed during acquisition");
         }
         if self.failure.is_some() {
@@ -324,6 +331,7 @@ mod tests {
     use super::*;
     use crate::watch_registry::WatchRegistry;
     use std::cell::Cell;
+    use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
     const OWNER: usize = 0x1000;
     const DATA: usize = 0x3000;
     struct Observed(WatchRegistry);
@@ -480,5 +488,92 @@ mod tests {
         drop(changes.0.notify(slot));
         acquire(&mut store, &memory, &changes, true);
         assert!(store.output().0.is_some());
+    }
+    struct Interrupting<'a> {
+        changes: &'a Observed,
+        at: usize,
+        writer: usize,
+        fired: AtomicBool,
+    }
+    impl Changes for Interrupting<'_> {
+        fn take_accounts(&self, _: &mut dyn FnMut(usize)) -> Option<u64> {
+            None
+        }
+        fn quiet(&self, family: usize) -> Option<Certificate> {
+            self.changes.quiet(family)
+        }
+        fn sequence(&self, family: usize, address: usize) -> Option<Certificate> {
+            if address == self.at && !self.fired.swap(true, SeqCst) {
+                drop(self.changes.0.notify(self.writer));
+            }
+            self.changes.sequence(family, address)
+        }
+    }
+    /// A forced hour reads each owner and slot under its own certificate; another advisor
+    /// writer during the walk left those exact rows refused. An owner carried on the family
+    /// token still refuses.
+    #[test]
+    fn advisor_owners_read_under_their_own_certificates_survive_other_writers_during_the_walk() {
+        let (mut memory, changes) = fixture(2);
+        put(
+            &mut memory.bytes,
+            DATA + native::SLOT_STRIDE + native::SLOT_COUNTRY,
+            19u32.to_le_bytes(),
+        );
+        let unrelated = 0x10_0000;
+        let mut store = Store::default();
+        store.begin(&changes, true);
+        store.visit(&memory, 0, OWNER, 7, &changes);
+        drop(changes.0.notify(unrelated));
+        store.finish(true, &changes);
+        assert_eq!(store.output().1, None);
+        let rows = store.output().0.unwrap();
+        let rows = rows.rows::<tables::FactionAdvisorModifiers>().unwrap();
+        assert_eq!(rows.len(), 6);
+        assert!(rows.iter().all(|row| row.faction == 7));
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row.kind == 0)
+                .map(|row| (row.slot, row.country))
+                .collect::<Vec<_>>(),
+            [(0, 0), (1, 19)]
+        );
+
+        acquire(&mut store, &memory, &changes, true);
+        assert_eq!(store.output().1, None);
+        let reads = memory.reads.get();
+        store.begin(&changes, false);
+        store.visit(&memory, 0, OWNER, 7, &changes);
+        assert_eq!(memory.reads.get(), reads, "a quiet family carries the owner");
+        drop(changes.0.notify(unrelated));
+        store.finish(true, &changes);
+        assert_eq!(
+            store.output().1,
+            Some("faction advisor observation changed during acquisition")
+        );
+    }
+    /// The owner's structure certifies the slot array its slots are read through, so a
+    /// structure writer before those reads refuses even an hour that carried nothing.
+    #[test]
+    fn advisor_structure_writer_before_slot_reads_refuses_a_forced_hour() {
+        let (memory, changes) = fixture(2);
+        let interrupting = Interrupting {
+            changes: &changes,
+            at: DATA,
+            writer: OWNER + native::STATUS,
+            fired: AtomicBool::new(false),
+        };
+        let mut store = Store::default();
+        store.begin(&interrupting, true);
+        store.visit(&memory, 0, OWNER, 7, &interrupting);
+        store.finish(true, &interrupting);
+        assert!(interrupting.fired.load(SeqCst));
+        assert!(store.output().0.is_none());
+        assert_eq!(
+            store.output().1,
+            Some("faction advisor structure changed during acquisition")
+        );
+        acquire(&mut store, &memory, &changes, true);
+        assert_eq!(store.output().1, None);
     }
 }

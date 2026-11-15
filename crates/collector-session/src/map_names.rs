@@ -40,7 +40,7 @@ impl Capacities {
         state: usize,
     ) -> Result<(), &'static str> {
         // Retain each override's observed string length.
-        let demand = cprovince::walk_names(memory, base, state, &mut [], &mut []);
+        let demand = cprovince::count_names(memory, base, state);
         let rows = collector_extended_support::demand::rows(demand.outcome)?;
         crate::country_scale::raise(&mut self.rows, rows);
         crate::country_scale::raise(&mut self.bytes, demand.required_bytes);
@@ -143,7 +143,7 @@ impl Captured {
             };
             return [qpc().saturating_sub(started).max(0) as u64];
         }
-        let first = cprovince::walk_names_growing(
+        let first = cprovince::walk_names(
             memory,
             base,
             game_state,

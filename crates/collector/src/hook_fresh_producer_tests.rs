@@ -149,7 +149,7 @@ fn failed_ship_observer_rejects_carry_and_publishes_changed_native_models() {
             addresses: RefCell::default(),
         };
         capture.begin_sources();
-        capture.visit_source_growing(ship, &census);
+        capture.visit_source(ship, &census);
         capture.finish_sources(Outcome::Rows { len: 1 });
         capture.capture_owned(&reads, CaptureContext::new(SHIP_BASE));
         assert_eq!(capture.outcomes(), [Outcome::Rows { len: 1 }]);
@@ -175,7 +175,7 @@ fn failed_ship_observer_rejects_carry_and_publishes_changed_native_models() {
     }
     world.0.word(ship, 0);
     capture.begin_sources();
-    capture.visit_source_growing(ship, &census);
+    capture.visit_source(ship, &census);
     capture.finish_sources(Outcome::Rows { len: 1 });
     capture.capture_owned(&world, CaptureContext::new(SHIP_BASE));
     let mut frame = source(12);

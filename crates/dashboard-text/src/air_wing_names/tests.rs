@@ -61,10 +61,11 @@ fn legacy_frame(bytes: &[u8]) -> DecodedFrame {
 fn stored_names_keep_empty_text_and_full_handles() {
     let mut frame = legacy_frame(b"Raid text");
     let requested: HashSet<_> = (1..=24).map(|index| (index << 32) | 70).collect();
+    let mut ids: Vec<_> = requested.iter().copied().collect();
+    ids.sort_unstable();
     *frame.tables[TableId::AirWings.index()] = TableView::Complete(TableRows::AirWings(
-        requested
-            .iter()
-            .map(|&id| AirWingRow {
+        ids.into_iter()
+            .map(|id| AirWingRow {
                 id,
                 name: Recorded::Value(Some(if id == WING {
                     Vec::new()
@@ -150,19 +151,22 @@ fn historical_names_share_authenticated_active_raid_inputs() {
 }
 
 #[test]
-fn incomplete_and_duplicate_wing_rosters_do_not_supply_guessed_names() {
+fn incomplete_and_missing_wing_rosters_do_not_supply_guessed_names() {
     let mut frame = legacy_frame(b"Historical text");
     let TableView::Complete(TableRows::AirWings(rows)) =
         &mut *frame.tables[TableId::AirWings.index()]
     else {
         unreachable!()
     };
-    let mut duplicate = rows[0].clone();
-    duplicate.name = Recorded::Value(Some(b"Conflicting direct text".to_vec()));
-    rows.push(duplicate);
+    rows.clear();
     let mut refused = Refusals::default();
     assert!(recorded_names(&frame, &HashSet::from([WING]), &mut refused).is_empty());
-    assert!(refused.lines("wing names")[0].contains("duplicate wing references"));
+    assert_eq!(
+        refused.lines("wing names"),
+        [format!(
+            "1 wing names not shown: air wings lacks WING {WING:#x}; {WING}"
+        )]
+    );
     *frame.tables[TableId::AirWings.index()] = TableView::Unavailable {
         reason: "synthetic roster fault".into(),
     };

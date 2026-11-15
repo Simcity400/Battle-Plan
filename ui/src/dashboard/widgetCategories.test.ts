@@ -1,6 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { catalogueEntries, matchesWidget, placedCount, widgetGroups } from './widgetCategories.ts';
+import type { Page } from './pages.ts';
+
+// The test's own page table, so grouping is checked whatever the built-in pages hold.
+const page = (id: string, label: string, icon: Page['icon'], ...kinds: string[]): Page => ({ id, label, icon, panels: kinds.map((kind, row) => [kind, 0, row, 12, 1]) });
+const pages = [
+  page('overview', 'Overview', 'grid', 'map', 'territory', 'wars'), page('politics', 'Politics', 'parliament', 'political-power', 'idea-timeline'),
+  page('diplomacy', 'Diplomacy', 'handshake', 'wars'), page('research', 'Research', 'flask', 'research'),
+  page('air', 'Air', 'plane', 'aces'), page('occupation', 'Occupation', 'flag', 'territory'),
+];
 
 const widget = (kind: string, title: string, category?: string) => ({ kind, title, description: `${title} over time.`, category });
 
@@ -9,7 +18,7 @@ test('the picker groups widgets by subject in the sidebar page order', () => {
     widget('aces', 'Aces'), widget('map', 'Campaign map'), widget('research', 'Research'),
     widget('territory', 'Territory'), widget('wars', 'Wars timeline'), widget('faction-strength', 'Faction strength', 'Diplomacy'),
     widget('unplaced', 'Unplaced'), widget('mod-widget', 'Mod widget', 'Logistics'), widget('political-power', 'Political power'),
-  ]);
+  ], pages);
   assert.deepEqual(groups.map(group => [group.label, group.items.map(item => item.kind)]), [
     ['Overview', ['map']],
     ['Politics', ['political-power']],
@@ -33,7 +42,7 @@ test('picker search needs every word somewhere in the title, description or cate
 });
 
 test('a content-derived widget becomes one card per preset, and each card counts its own copies on the page', () => {
-  const groups = widgetGroups([widget('idea-timeline', 'Idea timeline'), widget('political-power', 'Political power')]);
+  const groups = widgetGroups([widget('idea-timeline', 'Idea timeline'), widget('political-power', 'Political power')], pages);
   const presets = new Map([['idea-timeline', { reason: null, presets: [
     { key: 'laws', initial: { title: 'Laws', options: { category: 'laws' } } },
     { key: 'mod council,elite:20:seat', initial: { title: 'Extra council', options: { category: 'mod council,elite:20:seat' } } }] }]]);
@@ -71,7 +80,7 @@ test('a widget keeps its own card and lists each of its views right after it', (
     'each card counts the copies showing its view, reading a missing or illegal value as the default');
 
   const ideas = { ...widget('idea-timeline', 'Idea timeline'), variants: [{ key: 'view=list', initial: { title: 'Idea list', options: { view: 'list' } } }] };
-  const [politics] = catalogueEntries(widgetGroups([ideas]), new Map([['idea-timeline', { reason: null,
+  const [politics] = catalogueEntries(widgetGroups([ideas], pages), new Map([['idea-timeline', { reason: null,
     presets: [{ key: 'laws', initial: { title: 'Laws', options: { category: 'laws' } } }] }]]));
   assert.deepEqual(politics.map(entry => entry.key), ['idea-timeline:laws', 'idea-timeline:view=list'], 'content presets still replace the own card; views follow them');
 });

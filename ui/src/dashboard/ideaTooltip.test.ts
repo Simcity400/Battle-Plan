@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import type { IdeaInfo, ModifierFormat } from '../generated/dashboard';
 import { fixed5Of, fixed5Text, formatModifier, ideaEffectRows, ideaTooltip, ideaTooltipSources, ideaTargetTags, tooltipRowBudget, tooltipText } from './ideaTooltip.ts';
+import type { IdeaInfo, ModifierFormat } from '../generated/dashboard';
 
 // Modifier definitions covering the formatting flags.
 const format = (key: string, index: number, flags: number, precision: number, label: string, postfix: string | null = null): ModifierFormat =>
@@ -41,7 +41,7 @@ test('each flag changes the value as the game shows it', () => {
 });
 
 const idea = (extra: Partial<IdeaInfo>): IdeaInfo => ({ token: 'idea', category: 'country', slot: null, law: false, designer: false,
-  effects: [], targeted: [], equipment: [], research: [], traits: [], tooltips: [], effectsKnown: true, unknown: null, ...extra });
+  effects: [], targeted: [], equipment: [], research: [], traits: [], tooltips: [], effectsKnown: true, unknown: null, nameMissing: null, ...extra });
 /** One modifier as the dashboard sends it: merged by the game's identity, its stored value. */
 const line = (key: string, value: number, hidden = false) => ({ key, fixed5: String(fixed5Of(value)), hidden });
 const sources = ideaTooltipSources({

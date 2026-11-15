@@ -303,7 +303,7 @@ impl Hooks {
                 watches.set_enabled(false);
             }
         }
-        if !Hook::set_enabled_iter_attach_tracking_busy(
+        if !Hook::set_enabled_iter_tracking_busy(
             self.hooks.iter_mut().map(|(_, hook)| hook.hook()),
             enabled,
         )
@@ -750,13 +750,57 @@ unsafe extern "system-unwind" fn projection_factory(
 #[cfg(test)]
 mod tests {
     use super::*;
+    unsafe extern "system" fn busy_original() -> usize {
+        7
+    }
+    unsafe extern "system" fn busy_callback() -> usize {
+        19
+    }
+
+    /// A call in flight through a site holds its publication back. The family reports that
+    /// as not ready, never as an error, so attach retries it: on its own, and from an attach
+    /// round, whose collect pass goes on past the publication and whose report says busy.
     #[test]
     fn busy_attach_publication_remains_retryable() {
-        let _round = crate::hook::shared::Round::collect_attach().expect("own attach round");
+        static FLIGHT: AtomicUsize = AtomicUsize::new(1);
+        let _guard = crate::hook::FAMILY_TEST
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let code = crate::hook::TestCode::new();
+        let (site, bytes) = code.stub(0, busy_original as *const () as usize);
+        let callback = busy_callback as *const () as usize;
+        let hook = unsafe {
+            Hook::new_with_safety(
+                site,
+                callback,
+                bytes,
+                crate::hook::TapSafety {
+                    in_flight: &FLIGHT,
+                    stub: callback..callback + 1,
+                },
+            )
+        }
+        .unwrap();
+        let family = MUTATIONS[0].1;
+        let mut available = [false; FAMILIES];
+        available[family as usize] = true;
         let mut hooks = ManuallyDrop::new(Hooks {
-            hooks: Vec::new(),
-            available: [false; FAMILIES],
+            hooks: vec![(family, OwnedHook::Entry(hook))],
+            available,
         });
         assert_eq!(hooks.set_enabled(true), Ok(false));
+        assert_eq!(hooks.busy_sites(), [MUTATIONS[0].0.name]);
+        {
+            let mut round = crate::hook::shared::Round::collect_attach().expect("own attach round");
+            crate::hook::publication::select_family(Some("faction_companions"));
+            assert_eq!(hooks.set_enabled(true), Ok(true), "collect records it and goes on");
+            round.publish();
+            assert_eq!(hooks.set_enabled(true), Ok(false), "the round held it back");
+        }
+        crate::hook::publication::select_family(None);
+        assert!(!hooks.hooks[0].1.hook().is_enabled());
+        FLIGHT.store(0, Ordering::SeqCst);
+        assert_eq!(hooks.set_enabled(true), Ok(true));
+        assert_eq!(hooks.set_enabled(false), Ok(true));
     }
 }

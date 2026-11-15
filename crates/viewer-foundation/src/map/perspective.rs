@@ -261,31 +261,11 @@ pub fn viewer(
     tags: &BTreeMap<u32, String>,
     country: &Country,
 ) -> io::Result<(u32, Resolution)> {
-    let default = || -> io::Result<(u32, bool)> {
-        match allegiance::perspective(frame, links)? {
-            Some(slot) => Ok((slot, true)),
-            None => tags
-                .keys()
-                .next()
-                .map(|slot| (*slot, false))
-                .ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("hour {} records no country to view the map as", frame.hour),
-                    )
-                }),
-        }
-    };
-    Ok(match country {
-        Country::Recorded => match default()? {
-            (slot, true) => (slot, Resolution::Recorded),
-            (slot, false) => (slot, Resolution::NoPlayer),
-        },
-        // Tags compare case-insensitively: a mod may define a lower-case tag.
-        Country::Tag(tag) => match tags.iter().find(|(_, name)| name.eq_ignore_ascii_case(tag)) {
-            Some((slot, _)) => (*slot, Resolution::Requested),
-            None => (default()?.0, Resolution::Absent(tag.clone())),
-        },
+    crate::fold_tables::resolve(allegiance::perspective(frame, links)?, tags, country).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("hour {} records no country to view the map as", frame.hour),
+        )
     })
 }
 
@@ -343,7 +323,149 @@ pub struct Vision {
     province_controllers: Values<u32, u32>,
 }
 
+/// Every part of a [`Vision`], for a reader that keeps them itself (the map's vision layer).
+#[derive(Clone, Debug, Default)]
+pub struct Parts {
+    pub ours: u32,
+    pub resolution: Resolution,
+    pub fog: bool,
+    pub undecided: Option<&'static str>,
+    pub shares: BTreeMap<u32, ()>,
+    pub wars: BTreeMap<u32, ()>,
+    pub relations_gap: Option<&'static str>,
+    pub levels: BTreeMap<u64, i8>,
+    pub unit_modifier: i64,
+    pub visibility: BTreeMap<u32, u8>,
+    pub visibility_gap: Option<&'static str>,
+    pub sight_provinces: BTreeMap<u64, u32>,
+    pub truncated: Vec<&'static str>,
+    pub air_intel: Option<BTreeMap<u32, i64>>,
+    pub air_defines: Option<AirDefines>,
+    pub navy_intel: Option<BTreeMap<u32, i64>>,
+    pub naval_defines: Option<NavalDefines>,
+    pub air_access: Option<BTreeMap<u32, ()>>,
+    pub province_controllers: BTreeMap<u32, u32>,
+}
+
+/// The army intel cutoff of `MAP_INTEL_VISIBILITY_CUTOFFS` pairs for an intel fraction: the value
+/// of the first pair whose threshold exceeds it, otherwise the last; zero without a pair.
+pub fn map_cutoff(cutoffs: &[i64], fraction: i64) -> i32 {
+    let mut result = 0;
+    for pair in cutoffs.chunks_exact(2) {
+        result = visibility::rounded(pair[1]);
+        if pair[0] > fraction {
+            break;
+        }
+    }
+    result
+}
+
+/// An occupied state's network term from its cutoff and network modifier.
+pub fn network_term(cutoff: i32, modifier: i64) -> i32 {
+    visibility::network_term(cutoff, modifier)
+}
+
+/// A province byte with an additive term, saturated.
+pub fn saturate(current: u8, term: i32) -> u8 {
+    visibility::saturate(current, term)
+}
+
+pub use replay_derive::visibility::{active_war, intel_fraction, map_intel_subject};
+
 impl Vision {
+    pub fn from_parts(parts: Parts) -> Self {
+        Self {
+            ours: parts.ours,
+            resolution: parts.resolution,
+            fog: parts.fog,
+            undecided: parts.undecided,
+            shares: Values::from_iter(parts.shares),
+            wars: Values::from_iter(parts.wars),
+            relations_gap: parts.relations_gap,
+            levels: Values::from_iter(parts.levels),
+            unit_modifier: parts.unit_modifier,
+            visibility: Arc::new(Values::from_iter(parts.visibility)),
+            visibility_gap: parts.visibility_gap,
+            sight_provinces: Values::from_iter(parts.sight_provinces),
+            truncated: parts.truncated,
+            air_intel: parts.air_intel.map(Values::from_iter),
+            air_defines: parts.air_defines,
+            navy_intel: parts.navy_intel.map(Values::from_iter),
+            naval_defines: parts.naval_defines,
+            air_access: parts.air_access.map(Values::from_iter),
+            province_controllers: Values::from_iter(parts.province_controllers),
+        }
+    }
+
+    /// Entries of `self` that differ from `other`'s, and the first few described.
+    pub fn differences(&self, other: &Self) -> (u64, Vec<String>) {
+        fn maps<K: values::Key + fmt::Debug, V: Clone + Eq + fmt::Debug>(name: &str, a: &Values<K, V>, b: &Values<K, V>, count: &mut u64, out: &mut Vec<String>) {
+            let (a, b) = (a.flat(), b.flat());
+            for (key, value) in a {
+                if b.get(key) != Some(value) {
+                    *count += 1;
+                    if out.len() < 8 {
+                        out.push(format!("{name}[{key:?}]: {value:?} against {:?}", b.get(key)));
+                    }
+                }
+            }
+            for (key, value) in b {
+                if !a.contains_key(key) {
+                    *count += 1;
+                    if out.len() < 8 {
+                        out.push(format!("{name}[{key:?}]: absent against {value:?}"));
+                    }
+                }
+            }
+        }
+        fn optional<K: values::Key + fmt::Debug, V: Clone + Eq + fmt::Debug>(name: &str, a: &Option<Values<K, V>>, b: &Option<Values<K, V>>, count: &mut u64, out: &mut Vec<String>) {
+            match (a, b) {
+                (Some(a), Some(b)) => maps(name, a, b, count, out),
+                (None, None) => {}
+                _ => {
+                    *count += 1;
+                    out.push(format!("{name}: held {} against {}", a.is_some(), b.is_some()));
+                }
+            }
+        }
+        let (mut count, mut out) = (0, Vec::new());
+        let scalars = [
+            ("ours", self.ours.to_string(), other.ours.to_string()),
+            ("resolution", format!("{:?}", self.resolution), format!("{:?}", other.resolution)),
+            ("fog", self.fog.to_string(), other.fog.to_string()),
+            ("undecided", format!("{:?}", self.undecided), format!("{:?}", other.undecided)),
+            ("relations_gap", format!("{:?}", self.relations_gap), format!("{:?}", other.relations_gap)),
+            ("unit_modifier", self.unit_modifier.to_string(), other.unit_modifier.to_string()),
+            ("visibility_gap", format!("{:?}", self.visibility_gap), format!("{:?}", other.visibility_gap)),
+            ("truncated", format!("{:?}", self.truncated), format!("{:?}", other.truncated)),
+            ("air_defines", format!("{:?}", self.air_defines), format!("{:?}", other.air_defines)),
+            ("naval_defines", format!("{:?}", self.naval_defines), format!("{:?}", other.naval_defines)),
+        ];
+        for (name, a, b) in scalars {
+            if a != b {
+                count += 1;
+                out.push(format!("{name}: {a} against {b}"));
+            }
+        }
+        optional("air_intel", &self.air_intel, &other.air_intel, &mut count, &mut out);
+        optional("navy_intel", &self.navy_intel, &other.navy_intel, &mut count, &mut out);
+        optional("air_access", &self.air_access, &other.air_access, &mut count, &mut out);
+        maps("shares", &self.shares, &other.shares, &mut count, &mut out);
+        maps("wars", &self.wars, &other.wars, &mut count, &mut out);
+        maps("levels", &self.levels, &other.levels, &mut count, &mut out);
+        maps("visibility", &self.visibility, &other.visibility, &mut count, &mut out);
+        maps("sight_provinces", &self.sight_provinces, &other.sight_provinces, &mut count, &mut out);
+        maps("province_controllers", &self.province_controllers, &other.province_controllers, &mut count, &mut out);
+        (count, out)
+    }
+
+    /// The entries [`Self::differences`] compares.
+    pub fn entries(&self) -> u64 {
+        let maps = [self.shares.flat().len(), self.wars.flat().len(), self.levels.flat().len(), self.visibility.flat().len(), self.sight_provinces.flat().len(), self.province_controllers.flat().len()];
+        let optional = [self.air_intel.as_ref(), self.navy_intel.as_ref()].into_iter().flatten().map(|values| values.flat().len()).sum::<usize>() + self.air_access.as_ref().map_or(0, |values| values.flat().len());
+        10 + (maps.iter().sum::<usize>() + optional) as u64
+    }
+
     /// Resolves `choice` against one decoded hour. `fog` is the content half
     /// of the fog rebuild, or the reason it failed to load. The only error is
     /// an hour with no country at all.

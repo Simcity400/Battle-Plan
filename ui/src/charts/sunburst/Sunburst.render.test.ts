@@ -6,6 +6,12 @@ import { createServer } from 'vite';
 import { tokensFromValues } from '../tokens.ts';
 import type { SunburstProps } from './Sunburst';
 
+/** An element's style as the chart reads and writes it. */
+function styleOf() {
+  const values = new Map<string, string>();
+  return { getPropertyValue: (name: string) => values.get(name) ?? '', setProperty: (name: string, value: string) => { values.set(name, value); } };
+}
+
 test('sunburst centre qualifies a known subtotal without an omitted-count inventory', async () => {
   const state = { effects: [] as (() => unknown)[], refs: [] as {current: unknown}[], texts: [] as string[],
     tokens: {...tokensFromValues(() => '#777777', 'sans-serif'), reducedMotion: true},
@@ -32,7 +38,7 @@ test('sunburst centre qualifies a known subtotal without an omitted-count invent
     const {default: Sunburst} = await vite.ssrLoadModule('/ui/src/charts/sunburst/Sunburst.tsx') as typeof import('./Sunburst.tsx');
     const context = new Proxy({measureText: (text: string) => ({width: text.length * 6}), fillText: (text: string) => state.texts.push(text)},
       {get: (target, key) => key in target ? target[key as keyof typeof target] : () => {}});
-    const canvas = {clientWidth: 600, clientHeight: 600, width: 600, height: 600, style: {}, getContext: () => context,
+    const canvas = {clientWidth: 600, clientHeight: 600, width: 600, height: 600, style: styleOf(), getContext: () => context,
       getBoundingClientRect: () => ({width: 600, height: 600}), addEventListener() {}, removeEventListener() {}};
     const props: SunburstProps = {label: 'Synthetic subtotal', root: {id: 'all', label: 'All'}, active: true, fold: false,
       items: [{path: [{id: 'a', label: 'Known'}], value: 30, exact: 30n, unknown: {unavailable: 2}}],

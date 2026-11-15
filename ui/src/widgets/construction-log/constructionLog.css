@@ -13,6 +13,8 @@
 .construction-name, .construction-ellipsis { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .construction-name { font-weight: 500; }
 .construction-levels { flex: none; color: var(--muted); font-size: var(--type-sm); font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* Painted each frame: a row with no levels to show leaves no gap. */
+.construction-levels:has(> span:empty) { display: none; }
 .construction-place { display: flex; align-items: center; gap: 5px; min-width: 0; color: var(--muted); font-size: var(--type-xs); line-height: 1.25; }
 .construction-place-country { display: none; align-items: center; gap: 5px; min-width: 0; }
 .construction-place .log-flag { flex: none; width: 15px; height: 10px; margin: 0; }
@@ -47,3 +49,6 @@
   .construction-place-country { display: flex; }
   .construction-status .pill { max-width: 8.5em; }
 }
+
+/* What the recording does not hold, above the rows. */
+.construction-note { margin: 0 0 6px; color: var(--muted); font-size: var(--type-xs); }

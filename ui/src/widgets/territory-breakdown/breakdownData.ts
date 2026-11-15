@@ -1,188 +1,139 @@
-import type { CountryLabel } from '../../dashboard/countryFlagsAt';
-import type { CountryGroupReply, FactionGroup, HourSpan, TerritoryBreakdownReply, TerritoryMeasure, TerritoryRule } from '../../generated/dashboard';
-import type { SunburstItem, SunburstKey, SunburstTotal } from '../../charts/sunburst/Sunburst';
-import { isOrderedSpans, overlayRuns, runAt, stretchAt, stretchStarts } from '../../charts/series.ts';
-import type { Breakable } from '../../charts/series';
-import { fractionSum } from '../../charts/valueAxis.ts';
-import { intervalIndexOf } from '../../charts/intervalIndex.ts';
-import { object, opaqueTag, unsigned32, unsigned64, signed32, signed64 } from '../../dashboard/validation.ts';
-import { countryIdentityIndex, overlayCountryIdentities } from '../../dashboard/countryIdentity.ts';
-import type { CountryIdentityIndex } from '../../dashboard/countryIdentity.ts';
-import { territoryColumn, validateTerritoryReply } from '../territory/territoryData.ts';
+import type { SunburstItem, SunburstKey } from '../../charts/sunburst/layout';
+import { liveKey } from '../../charts/live.ts';
+import type { LiveValues } from '../../charts/live';
+import { NO_ROW } from '../../dashboard/follow/liveCells.ts';
+import type { TerritoryMeasure } from '../../dashboard/territoryMeasure';
+import type { CountryGroupReply, FactionGroup } from '../../generated/dashboard';
+import type { TerritoryBreakdownReply } from './types';
 
-const text = (value: unknown) => value === null || typeof value === 'string';
-export function validateBreakdownReply(value: unknown): TerritoryBreakdownReply {
-  if (!object(value) || typeof value.branchId !== 'string' || !Array.isArray(value.regions)
-    || !value.regions.every(r => object(r) && unsigned32(r.id) && text(r.name) && text(r.missing))
-    || new Set(value.regions.map(r => r.id)).size !== value.regions.length || !Array.isArray(value.series)
-    || !value.series.every(s => object(s) && (s.tag === null || opaqueTag(s.tag)) && (s.region === null || unsigned32(s.region))
-      && text(s.missing) && Array.isArray(s.runs) && s.runs.every((r, i) => object(r) && signed32(r.firstHour) && signed32(r.lastHour)
-        && r.firstHour <= r.lastHour && (i === 0 || (s.runs as { lastHour: number }[])[i - 1].lastHour < r.firstHour)
-        && typeof r.startsSegment === 'boolean' && Array.isArray(r.values) && r.values.length === 6
-        && r.values.every((n, column) => n === null || signed64(n) && (column % 3 === 1 || BigInt(n) >= 0n))
-        && Array.isArray(r.stateShares) && r.stateShares.length === 2 && r.stateShares.every(terms => terms === null
-          || Array.isArray(terms) && terms.every((term, index) => object(term) && unsigned64(term.numerator)
-            && unsigned32(term.denominator) && term.denominator > 0
-            && (index === 0 || (terms[index - 1] as { denominator: number }).denominator < term.denominator)))))
-    || !Array.isArray(value.observed) || value.observed.length !== 8 || !value.observed.every(isOrderedSpans)
-    || new Set(value.series.map(s => JSON.stringify([s.tag, s.region, s.missing]))).size !== value.series.length)
-    throw new Error('The territory breakdown reply is malformed.');
-  validateTerritoryReply({ ...value, series: value.countries });
-  return value as unknown as TerritoryBreakdownReply;
-}
+export type RegionalRule = 'controlled' | 'owned';
 
-/** Only overlapping spans join; adjacent spans remain distinct segments. */
-function unionSpans(a: readonly HourSpan[], b: readonly HourSpan[]): HourSpan[] {
-  const joined: HourSpan[] = [];
-  for (const span of [...a, ...b].sort((x, y) => x.firstHour - y.firstHour)) {
-    const previous = joined.at(-1);
-    if (previous && span.firstHour <= previous.lastHour) previous.lastHour = Math.max(previous.lastHour, span.lastHour);
-    else joined.push({ ...span });
-  }
-  return joined;
-}
+/** A country's faction at an hour, or that it is not known (memberships not read, a roster incomplete, two factions). */
+export type Affiliation = { faction?: FactionGroup; unknown: boolean };
 
-const sameValues = (a: { values: unknown; stateShares?: unknown }, b: { values: unknown; stateShares?: unknown }) =>
-  JSON.stringify([a.values, a.stateShares]) === JSON.stringify([b.values, b.stateShares]);
-
-/** Each reply has its own sampled tail; overlay the ending read without discarding either prefix. */
-export function mergeBreakdownReplies(current: TerritoryBreakdownReply, ending: TerritoryBreakdownReply): TerritoryBreakdownReply {
-  const runs = <T extends Breakable & { values: unknown; stateShares?: unknown }>(a: readonly T[], b: readonly T[]) => overlayRuns(a, b, sameValues);
-  const series = new Map(current.series.map(line => [JSON.stringify([line.tag, line.region, line.missing]), line]));
-  for (const line of ending.series) {
-    const key = JSON.stringify([line.tag, line.region, line.missing]), before = series.get(key);
-    series.set(key, before ? { ...line, runs: runs(before.runs, line.runs) } : line);
-  }
-  const histories = (reply: TerritoryBreakdownReply) => reply.countries.flatMap(line => line.identities ? [{ tag: line.tag, identities: line.identities }] : []);
-  const identities = new Map(overlayCountryIdentities(histories(current), histories(ending)).map(history => [history.tag, history.identities]));
-  const countries = new Map(current.countries.map(line => [line.tag, line]));
-  for (const line of ending.countries) {
-    const before = countries.get(line.tag);
-    countries.set(line.tag, before ? { ...line, runs: runs(before.runs, line.runs), segments: unionSpans(before.segments, line.segments),
-      membership: before.membership === null ? line.membership : line.membership === null ? before.membership : unionSpans(before.membership, line.membership) } : line);
-  }
-  return { ...current, series: [...series.values()],
-    countries: [...countries.values()].map(line => { const known = identities.get(line.tag); return known ? { ...line, identities: known } : line; }),
-    worldTotals: runs(current.worldTotals, ending.worldTotals),
-    observed: current.observed.map((spans, index) => unionSpans(spans, ending.observed[index] ?? [])),
-    warnings: [...new Set([...current.warnings, ...ending.warnings])] };
-}
-
-function affiliation(groups: CountryGroupReply, hour: number): (tag: string) => { faction?: FactionGroup; unknown: boolean } {
-  const unread = !!runAt(groups.unobserved.factions, hour);
-  const active = intervalIndexOf(groups.factions, () => groups.factions).at(hour);
-  const incomplete = unread || active.some(f => !!runAt(f.incomplete, hour));
+export function affiliation(groups: CountryGroupReply, hour: number): (tag: string) => Affiliation {
+  const covers = (spans: readonly { firstHour: number; lastHour: number }[]) => spans.some(span => span.firstHour <= hour && hour <= span.lastHour);
+  const unread = covers(groups.unobserved.factions);
+  const active = groups.factions.filter(faction => faction.firstHour <= hour && hour <= faction.lastHour);
+  const incomplete = unread || active.some(faction => covers(faction.incomplete));
   const members = new Map<string, FactionGroup[]>();
-  for (const faction of active) for (const member of intervalIndexOf(faction.members, () => faction.members).at(hour)) {
-    const list = members.get(member.tag) ?? []; list.push(faction); members.set(member.tag, list);
+  for (const faction of active) for (const member of faction.members) {
+    if (member.firstHour > hour || hour > member.lastHour) continue;
+    const list = members.get(member.tag) ?? [];
+    list.push(faction);
+    members.set(member.tag, list);
   }
-  return tag => { const found = members.get(tag) ?? []; return { faction: found.length === 1 ? found[0] : undefined, unknown: incomplete || found.length > 1 }; };
+  return tag => {
+    const found = members.get(tag) ?? [];
+    return { faction: found.length === 1 ? found[0] : undefined, unknown: incomplete || found.length > 1 };
+  };
+}
+
+/** The hours at which `affiliation` can answer differently, ascending: each span's first hour and the hour after its last. */
+export function affiliationEpochs(groups: CountryGroupReply): number[] {
+  const hours = new Set<number>();
+  const add = (span: { firstHour: number; lastHour: number }) => { hours.add(span.firstHour); hours.add(span.lastHour + 1); };
+  for (const span of groups.unobserved.factions) add(span);
+  for (const faction of groups.factions) {
+    add(faction);
+    for (const span of faction.incomplete) add(span);
+    for (const member of faction.members) add(member);
+  }
+  return [...hours].sort((a, b) => a - b);
+}
+
+/** Which stretch between `epochs` holds `hour`: equal for two hours `affiliation` answers alike at. */
+export function epochOf(epochs: readonly number[], hour: number): number {
+  let low = 0, high = epochs.length;
+  while (low < high) {
+    const mid = (low + high) >> 1;
+    if (epochs[mid]! <= hour) low = mid + 1; else high = mid;
+  }
+  return low;
+}
+
+export interface Amount { value: number; exact: bigint; denominator: bigint }
+
+const NOTHING: Amount = { value: 0, exact: 0n, denominator: 1n };
+const whole = (value: number) => BigInt(Math.trunc(value));
+
+/** The amount of row `key` the live values hold: states an exact fraction of whole states, the rest whole; nothing
+ * where the table holds no row of the key any more; null where it is not known, never zero. */
+export function rowAmount(values: LiveValues<number>, key: string, measure: TerritoryMeasure): Amount | null {
+  const at = liveKey(key, 'value');
+  const amount = values.get(at);
+  if (amount === undefined) return values.missing(at) === NO_ROW ? NOTHING : null;
+  if (measure !== 'states') return { value: amount, exact: whole(amount), denominator: 1n };
+  const denominator = values.get(liveKey(key, 'denominator'));
+  if (denominator === undefined || denominator <= 0) return null;
+  return { value: amount / denominator, exact: whole(amount), denominator: whole(denominator) };
 }
 
 export interface BreakdownLooks {
-  country: (tag: string, hour: number) => ReturnType<CountryLabel>;
-  faction: (faction: FactionGroup, hour: number) => { name: string | null; reason: string | null };
+  country: (tag: string) => NonNullable<SunburstKey['countryFlag']> & { name: string };
+  faction: (faction: FactionGroup) => string;
   colour: (id: string) => string | undefined;
-  selected: (tag: string | null, hour: number) => boolean;
-}
-/** Resolve the chosen column and its unbroken stretches once per reply. */
-export function breakdownModel(data: TerritoryBreakdownReply, measure: TerritoryMeasure, rule: TerritoryRule) {
-  if (rule === 'occupied') throw new Error('Occupied territory has no regional breakdown.');
-  const regions = new Map(data.regions.map(region => [region.id, region]));
-  const countries = new Map(data.countries.map(country => [country.tag, country]));
-  const identities = countryIdentityIndex(data.countries.map(country => ({ tag: country.tag, identities: country.identities ?? [] })));
-  const column = territoryColumn(measure, rule);
-  const regionRuns = new Map(data.series.map(series => [series, series.runs.map(run => {
-    if (measure === 'states') {
-      const terms = run.stateShares[rule === 'owned' ? 1 : 0];
-      const exact = terms === null ? null : fractionSum(terms.map(term => [BigInt(term.numerator), term.denominator] as const));
-      const value = terms === null ? null : terms.reduce((sum, term) => sum + Number(term.numerator) / term.denominator, 0);
-      return { ...run, exact, value };
-    }
-    const raw = run.values[column - (rule === 'owned' ? 2 : 1)];
-    return { ...run, exact: raw === null ? null : [BigInt(raw), 1n] as const, value: raw === null ? null : Number(raw) };
-  })]));
-  const knownRuns = new Map([...regionRuns].map(([series, runs]) => [series, runs.filter(run => run.value !== null)]));
-  const starts = new Map([...knownRuns].map(([series, runs]) => [series, stretchStarts(runs)]));
-  const countryRuns = new Map(data.countries.map(country => [country.tag, country.runs.filter(run => run.values[column] !== null)]));
-  const countryStarts = new Map([...countryRuns].map(([tag, runs]) => [tag, stretchStarts(runs)]));
-  return { data, regions, countries, identities, column, regionRuns, knownRuns, starts, countryRuns, countryStarts };
+  /** Whether a holder is among the countries shown (none: land no country holds). */
+  selected: (tag: string | null) => boolean;
 }
 
-export function breakdownItems(model: ReturnType<typeof breakdownModel>, groups: CountryGroupReply, hour: number, end: number,
-  looks: BreakdownLooks): { items: SunburstItem[] } {
-  const { data, regions, countries, column, regionRuns, knownRuns, starts, countryRuns, countryStarts } = model;
+/** The sunburst's items: the reply's rows (faction, country, strategic region) with their amounts from the live
+ * values. A holding not known is an unknown value, never zero; land no country holds is "Unassigned territory". */
+export function breakdownItems(reply: TerritoryBreakdownReply, values: LiveValues<number>, measure: TerritoryMeasure,
+  factionOf: (tag: string) => Affiliation, looks: BreakdownLooks): SunburstItem[] {
+  const regions = new Map(reply.regions.map(region => [region.id, region]));
   const items: SunburstItem[] = [];
-  for (const [at, final] of [[hour, false], [end, true]] as const) {
-    const factionOf = affiliation(groups, at);
-    for (const series of data.series) {
-      if (!looks.selected(series.tag, at)) continue;
-      const run = runAt(regionRuns.get(series)!, at);
-      // Complete country/world totals also prove an absent region contributes zero.
-      // Missing whole readings do not establish that absence.
-      const whole = series.tag !== null ? runAt(countries.get(series.tag)?.runs ?? [], at)?.values[column]
-        : runAt(data.worldTotals, at)?.values[column];
-      const absent = !run && whole === 0 && series.tag !== null && !runAt(countries.get(series.tag)?.segments ?? [], at);
-      // Complete holder and geographic inputs prove unlisted anonymous parts absent.
-      const present = !absent && (series.tag !== null || (run ? run.value !== 0 : !runAt(data.observed[column], at)));
-      const exact = run ? run.exact : whole != null || !present ? [0n, 1n] as const : null;
-      const value = run ? run.value : exact === null ? null : 0;
-      const holderUnknown = series.tag === null && !!series.missing?.startsWith('Country holder');
-      const member = series.tag !== null ? factionOf(series.tag) : { unknown: holderUnknown, faction: undefined };
-      const faction = member.faction ? looks.faction(member.faction, at) : null;
-      const country = series.tag !== null ? looks.country(series.tag, at) : { name: holderUnknown ? 'Country not recorded' : 'Unassigned territory', flag: undefined };
-      const region = series.region === null ? null : regions.get(series.region);
-      const path: SunburstKey[] = [
-        { id: member.unknown ? 'faction-unknown' : member.faction ? `faction:${member.faction.id}` : series.tag !== null ? 'non-aligned' : 'unassigned-territory',
-          label: member.unknown ? 'Faction not recorded' : faction ? faction.name ?? 'Unnamed faction' : series.tag !== null ? 'Non-aligned' : 'Unassigned territory',
-          colour: member.faction && !member.unknown ? looks.colour(member.faction.id) : undefined },
-        { id: JSON.stringify(series.tag !== null ? ['country', series.tag] : ['holder', holderUnknown ? 'unknown' : 'unassigned']), label: country.name,
-          countryFlag: series.tag !== null ? country : undefined,
-          stretch: series.tag !== null ? stretchAt(countryRuns.get(series.tag) ?? [], countryStarts.get(series.tag) ?? [], at) : null },
-        { id: series.region === null ? 'region-unattributed' : String(series.region), label: region?.name ?? (series.region === null ? 'Unknown region' : `Region ${series.region}`),
-          stretch: stretchAt(knownRuns.get(series)!, starts.get(series)!, at) },
-      ];
-      const unknownLevels = [present && member.unknown, present && holderUnknown, false];
-      items.push({ path, value: final ? 0 : value, exact: final ? 0n : exact?.[0] ?? null,
-        exactDenominator: final ? undefined : exact?.[1],
-        unknownValue: !final && present && exact === null, unknownLevels: final ? undefined : unknownLevels,
-        final: final ? value : 0,
-        finalUnknown: final && present && exact === null, finalUnknownLevels: final ? unknownLevels : undefined,
-        present: !final && present });
-    }
+  for (const row of reply.rows) {
+    if (!looks.selected(row.tag)) continue;
+    const amount = rowAmount(values, row.key, measure);
+    if (amount && amount.exact === 0n) continue;
+    const held = row.slot !== null;
+    const member: Affiliation = row.tag !== null ? factionOf(row.tag) : { unknown: false };
+    const country = row.tag !== null ? looks.country(row.tag) : null;
+    const region = row.region === null ? null : regions.get(row.region);
+    const path: SunburstKey[] = [
+      { id: member.unknown ? 'faction-unknown' : member.faction ? `faction:${member.faction.id}` : held ? 'non-aligned' : 'unassigned-territory',
+        label: member.unknown ? 'Faction not recorded' : member.faction ? looks.faction(member.faction) : held ? 'Non-aligned' : 'Unassigned territory',
+        ...(member.faction && !member.unknown && looks.colour(member.faction.id) ? { colour: looks.colour(member.faction.id) } : {}) },
+      { id: JSON.stringify(row.tag !== null ? ['country', row.tag] : held ? ['slot', row.slot] : ['unassigned']),
+        label: country?.name ?? (held ? 'Country not named at this hour' : 'Unassigned territory'), ...(country ? { countryFlag: country } : {}) },
+      { id: row.region === null ? 'region-unattributed' : String(row.region),
+        label: region?.name ?? (row.region === null ? 'Unknown region' : `Region ${row.region}`) },
+    ];
+    items.push(amount ? { path, value: amount.value, exact: amount.exact, ...(amount.denominator !== 1n ? { exactDenominator: amount.denominator } : {}),
+      unknownLevels: [member.unknown, false, false] } : { path, value: null, exact: null, unknownValue: true });
   }
-  return { items };
+  return items;
 }
 
-export function breakdownWhole(data: TerritoryBreakdownReply, hour: number, end: number,
-  measure: TerritoryMeasure, rule: TerritoryRule): SunburstTotal {
-  const column = territoryColumn(measure, rule);
-  const value = runAt(data.worldTotals, hour)?.values[column] ?? null;
-  const final = runAt(data.worldTotals, end)?.values[column] ?? null;
-  return { value, exact: value === null ? null : BigInt(value), unknownValue: value === null,
-    final, finalUnknown: final === null, note: value === null ? 'World territory not recorded at this hour' : undefined };
+const pathKey = (item: SunburstItem) => item.path.map(key => key.id).join('\u0000');
+
+/** Fill's items: those at the hour shown, each with its amount at the view's end as its final (none there: a final of
+ * zero), and those held only at the end at none now, so the whole is the end's and each slice fills toward it. A final
+ * not known is said so, never zero. */
+export function withFinals(items: readonly SunburstItem[], ending: readonly SunburstItem[]): SunburstItem[] {
+  const finals = new Map(ending.map(item => [pathKey(item), item]));
+  const out: SunburstItem[] = items.map(item => {
+    const end = finals.get(pathKey(item));
+    finals.delete(pathKey(item));
+    return end?.unknownValue ? { ...item, final: null, finalUnknown: true } : { ...item, final: end?.value ?? 0 };
+  });
+  for (const end of finals.values()) out.push(end.unknownValue ? { path: end.path, value: 0, exact: 0n, final: null, finalUnknown: true }
+    : { path: end.path, value: 0, exact: 0n, final: end.value });
+  return out;
 }
 
-/** Chosen-country totals stay independent of unresolved faction/region attribution. */
-export function breakdownSelectedWhole(data: TerritoryBreakdownReply, hour: number, end: number,
-  measure: TerritoryMeasure, rule: TerritoryRule, selected: BreakdownLooks['selected'], identities: CountryIdentityIndex): SunburstTotal {
-  const column = territoryColumn(measure, rule);
-  const total = (at: number) => {
-    if (!runAt(data.observed[column], at)) return null;
-    let exact = 0n;
-    for (const country of data.countries) {
-      const value = runAt(country.runs, at)?.values[column];
-      if (identities.keyAt(country.tag, at) === null) {
-        // A complete absent-country zero needs no holder attribution.
-        if (value !== 0 || runAt(country.segments, at)) return null;
-      } else if (selected(country.tag, at)) {
-        if (value == null) return null;
-        exact += BigInt(value);
-      }
-    }
-    return exact;
-  };
-  const value = total(hour), final = total(end);
-  return { value: value === null ? null : Number(value), exact: value, unknownValue: value === null,
-    final: final === null ? null : Number(final), finalUnknown: final === null };
+const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
+const text = (value: unknown) => value === null || typeof value === 'string';
+const count = (value: unknown) => Number.isSafeInteger(value);
+
+/** The breakdown reply, checked whole: rows and names only; its live cells are checked where they are read. */
+export function validateBreakdownReply(value: unknown): TerritoryBreakdownReply {
+  if (!object(value) || typeof value.measure !== 'string' || typeof value.rule !== 'string'
+    || !Array.isArray(value.regions) || !value.regions.every(region => object(region) && count(region.id) && text(region.name) && text(region.missing))
+    || !Array.isArray(value.rows) || !value.rows.every(row => object(row) && typeof row.key === 'string' && text(row.tag)
+      && (row.slot === null || count(row.slot)) && (row.region === null || count(row.region)))
+    || !text(value.missing) || !text(value.areaReason) || !Array.isArray(value.warnings) || !value.warnings.every(item => typeof item === 'string'))
+    throw new Error('The territory breakdown reply is malformed.');
+  return value as unknown as TerritoryBreakdownReply;
 }

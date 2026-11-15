@@ -1,55 +1,170 @@
-import { useParityRows } from '../../dashboard/parityRows';
-import { useCallback, useMemo, useRef } from 'react';
+import { useCallback, useMemo } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { useContextMenu } from '../../components/ContextMenu';
-import { PreparedKey } from '../../charts/PreparedKey';
 import HeatChart from '../../charts/heat/HeatChart';
+import type { HeatPeriod, HeatRow, HeatTail } from '../../charts/heat/layout';
 import { jumpItem } from '../../charts/jump';
 import { hatchStyle } from '../../charts/hatch';
+import type { Live } from '../../charts/live';
+import type { LiveHead } from '../../charts/TimeChart';
+import { fitTooltip } from '../../charts/tooltip';
+import { useViewportHeight } from '../../charts/useChartTokens';
 import { mix } from '../../shell/appearance/color';
 import type { WidgetProps } from '../../dashboard/definitions';
+import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
-import { useAir } from '../../dashboard/useAirSuperiority';
+import { useAtHead } from '../../dashboard/atHead';
+import { defaultCountryTag, selectedTags } from '../../dashboard/countrySelection';
+import { usePlaybackMotion } from '../../dashboard/playback';
+import { useFollowedProduct, useProduct } from '../../dashboard/products';
+import { useProductWindows } from '../../dashboard/productWindows';
+import { useHeadProduct } from '../../dashboard/headProduct';
+import { useDiagnostics } from '../../dashboard/useDiagnostics';
+import { useShownEachFrame } from '../../dashboard/widgetPerf';
+import { airSummaryTooltip, airTooltip, momentRows, regionLabel, sideOrder, validateAirSuperiority } from '../../dashboard/airSuperiority';
+import { airMode, airParams, useAirLooks } from '../../dashboard/useAirSuperiority';
+import type { AirRankingReply, AirSide, AirSuperiorityReply, AirTimelineReply } from '../../generated/dashboard';
+import { STEP, cellAt, dayOf, dayView, followedEnd, headTail, joinTiles, validateAirRanking, validateAirTimeline, viewTiles } from './airTimelineData';
 import { OPTIONS } from './definition';
+import { stickyLimit, useStickyMembers } from '../../dashboard/follow/stickyMembers.ts';
 import './airSuperiorityTimeline.css';
+
+const NO_SIDES: AirSide[] = [];
+const RANKING_MOVES = ['lastHour'] as const;
+
+/** Each day's air scores of the most active regions (or the chosen ones), in each side's colour or split into
+ * shares. The regions are one reply over the view (`air-superiority-ranking`), their days one reply a tile of 256 days
+ * (a tile once whole is asked once however the view grows); following, the view ends at the end of the head's step of 256
+ * days while playing and at the head at a pause, and the head's own day is painted from the moment's followed
+ * values each frame, with no render. */
 export default function AirSuperiorityTimelineWidget(props: WidgetProps) {
-  const options = resolveOptions(OPTIONS, props.widget.options);
-  const air = useAir(props, options, false);
+  const { widget, runtime, active, onDiagnostics } = props;
+  const options = resolveOptions(OPTIONS, widget.options);
+  const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
+  const campaign = track?.source.metadata.campaignKey ?? '';
+  const currentCountry = selectedTags(widget.countries, track)[0] ?? defaultCountryTag(track);
+  const mode = useMemo(() => airMode(options, campaign, currentCountry),
+    [options.mode, options.viewpoint, options.sides, options.regions, options.theatres, campaign, currentCountry]); // eslint-disable-line react-hooks/exhaustive-deps
+  const needsViewpoint = mode.mode === 'viewpoint' && !mode.viewpoint;
+  const following = widget.time.mode === 'follow';
+  const hoursPerSecond = usePlaybackMotion(runtime.clock);
+  const position = useAtHead(runtime.clock, active && following, hour => followedEnd(hour, runtime.clock.getSnapshot().playing));
+  const window = track && resolveWindow(widget, track, runtime.tracks, following ? position : runtime.clock.getSnapshot().position);
+  const firstHour = track ? widget.time.mode === 'range' && window ? window.firstHour : track.branch.firstHour : 0;
+  const lastHour = !track || !window ? 0 : widget.time.mode === 'campaign' ? track.branch.lastHour : Math.min(window.lastHour, track.branch.lastHour);
+  const beforeBranch = !!track && lastHour < firstHour;
+  const params = useMemo(() => track && window && !beforeBranch && !needsViewpoint ? { branchId: track.branch.id, firstHour, lastHour, ...airParams(mode),
+    ...(mode.regions.length ? {} : { top: Number(options.regionCount) }) } : null, [track, window, beforeBranch, needsViewpoint, firstHour, lastHour, mode, options.regionCount]);
+  // Held while a moved view's ranking loads, so the chart and its follow never drop at a tile's end.
+  const ranking = useFollowedProduct<AirRankingReply>(runtime.client, track && params ? { sourceId: track.source.id, revision: track.source.revision,
+    product: 'air-superiority-ranking', params } : null, RANKING_MOVES, active, validateAirRanking, track?.source);
+  const regionsKey = ranking.data ? JSON.stringify(ranking.data.rows.map(row => [row.region, regionLabel({ id: row.region, name: row.name })])) : null;
+  const regions = useMemo(() => regionsKey === null ? [] : (JSON.parse(regionsKey) as [number, string][]).map(([id, name]) => ({ id, name })), [regionsKey]);
+  const regionNames = useMemo(() => regions.map(region => String(region.id)), [regions]);
+  // The tiles hold every region the ranking has named since the view was set (`stickyMembers`): a ranking naming other
+  // regions at a tile's end asks the tiles again only for a region never named before, and the rows show its own.
+  const tileScope = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, mode, firstHour]);
+  const tileRegions = useStickyMembers(tileScope, regionNames, stickyLimit(Math.max(1, Number(options.regionCount) || regionNames.length)));
+  const regionIds = useMemo(() => tileRegions.map(Number).sort((a, b) => a - b), [tileRegions]);
+  const tiling = useMemo(() => viewTiles(firstHour, lastHour), [firstHour, lastHour]);
+  const tileParams = useMemo(() => track && params && regionIds.length ? { branchId: track.branch.id, firstHour, ...airParams(mode), regions: regionIds } : null,
+    [track, params, regionIds, firstHour, mode]);
+  const identity = track && tileParams ? JSON.stringify([track.source.id, track.source.revision, tileParams]) : null;
+  const tileRequest = useCallback((tile: number) => ({ sourceId: track!.source.id, revision: track!.source.revision, product: 'air-superiority-timeline',
+    params: { ...tileParams!, lastHour: tile * STEP + STEP - 1, tile } }), [track, tileParams]);
+  const tiles = useProductWindows<AirTimelineReply>(runtime.client, identity, tileRequest, tiling.whole, active, validateAirTimeline, track?.source);
+  const cut = useProduct<AirTimelineReply>(runtime.client, track && tileParams && tiling.cut !== null ? { sourceId: track.source.id, revision: track.source.revision,
+    product: 'air-superiority-timeline', params: { ...tileParams, lastHour, tile: tiling.cut } } : null, active, validateAirTimeline, track?.source);
+  const order = useMemo(() => [...tiling.whole, ...(tiling.cut === null ? [] : [tiling.cut])], [tiling]);
+  const replies = useMemo(() => order.map(tile => tile === tiling.cut ? cut.data : tiles.data.get(tile)), [order, tiling.cut, cut.data, tiles.data]);
+  const spans = useMemo(() => order.map(tile => ({ firstHour: Math.max(firstHour, tile * STEP), lastHour: Math.min(lastHour, tile * STEP + STEP - 1) })), [order, firstHour, lastHour]);
+  const data = ranking.data && regions.length ? [...replies].reverse().find((reply): reply is AirTimelineReply => reply !== undefined) : undefined;
+  // The head's day: the moment of every region the settings show (the region widget's own follow), the rows' regions
+  // picked from it where painted, so a ranking naming other regions at a tile's end follows nothing again. It renders
+  // only when its regions or sides change; each region's cells are read from the newest push.
+  const hasData = data !== undefined;
+  const heading = following && hasData && !needsViewpoint && regions.length > 0;
+  const momentParams = useMemo(() => heading ? airParams(mode) : null, [heading, mode]);
+  const head = useHeadProduct<AirSuperiorityReply>(runtime, widget, 'air-superiority', momentParams, { active, validate: validateAirSuperiority, structure: momentRows });
+  const moment = momentParams ? head.data : undefined;
+  const newest = head.current;
+  const lastRead = useMemo(() => data?.days.reduce<number | null>((held, read) => read ?? held, null) ?? null, [data]);
+  const sides = useMemo(() => {
+    const held: AirSide[] = [];
+    for (const side of [...replies.flatMap(reply => reply?.sides ?? NO_SIDES), ...(moment?.sides ?? NO_SIDES)]) if (!held.some(known => known.key === side.key)) held.push(side);
+    return held;
+  }, [replies, moment]);
+  const viewpoint = useMemo(() => {
+    const side = data?.viewpoint == null ? null : data.sides[data.viewpoint];
+    const at = side ? sides.findIndex(held => held.key === side.key) : -1;
+    return at < 0 ? null : at;
+  }, [data, sides]);
+  const air = useAirLooks(props, data ? { sides, viewpoint } : undefined, lastRead, mode);
+  const { looks, tokens } = air;
+  const joined = useMemo(() => joinTiles(replies, spans, looks, regions), [replies, spans, looks, regions]);
+  const { rows, periods } = joined;
+  const labels = useMemo(() => regions.map(region => region.name), [regions]);
+  const live = head.live;
+  const liveTail = useMemo<Live<HeatTail | null> | undefined>(() => moment && data ? {
+    read: () => {
+      const at = head.shownAt();
+      return at === null ? null : headTail(newest() ?? moment, live.read(), looks, regions, at, data.dayHours).tail;
+    },
+    subscribe: live.subscribe,
+  } : undefined, [moment, data, live, looks, regions, head.shownAt, newest]); // eslint-disable-line react-hooks/exhaustive-deps
+  const axisOffset = track?.axisOffset ?? 0;
+  const liveHead = useMemo<LiveHead | undefined>(() => track && widget.time.mode !== 'pin'
+    ? { read: () => runtime.clock.getSnapshot().position + axisOffset, subscribe: runtime.clock.subscribeFrame } : undefined, [track, widget.time.mode, runtime.clock, axisOffset]);
+  const playhead = !track || !window ? null : widget.time.mode === 'pin' ? window.lastHour : Math.floor(runtime.clock.getSnapshot().position + axisOffset);
+  const extent: [number, number] = [firstHour, widget.time.mode === 'range' ? lastHour : track?.branch.lastHour ?? lastHour];
+  useShownEachFrame(runtime.clock, () => moment ? head.shownAt() : lastRead, head.live);
+  useDiagnostics(onDiagnostics, useMemo(() => [...(ranking.data?.warnings ?? []), ...replies.flatMap(reply => reply?.warnings ?? []), ...(moment?.warnings ?? []), ...air.warnings],
+    [ranking.data, replies, moment, air.warnings]));
   const menu = useContextMenu('Air superiority timeline');
   const onMenu = useCallback((hour: number, x: number, y: number) => {
-    if (air.track) menu.open(x, y, [jumpItem(props.runtime, air.track.id, hour)]);
-  }, [air.track, menu.open, props.runtime]);
-  const legend = useMemo(() => [...air.legend, ...(options.look === 'split' ? [] : [{ id: 'contested', label: 'Contested (small lead)', color: mix(air.tokens.surface, air.tokens.text, 0.2) }]),
-    ...(air.mode.theatres.length ? [{ id: 'filtered', label: 'Outlined = outside selected theatres' }] : [])],
-    [air.legend, air.mode.theatres.length, options.look, air.tokens.surface, air.tokens.text]);
-  const tooltip = useCallback((row: { id: string }, period: { firstHour: number } | null, hour: number) => air.tooltip(Number(row.id), period?.firstHour ?? hour), [air.tooltip]);
-  const root = useRef<HTMLDivElement>(null);
-  useParityRows(root, () => ({ kind: 'chart', label: 'Air superiority daily values', complete: !!air.data,
-    hour: air.hour, total: air.data?.view === 'timeline' ? air.data.rows.length : 0,
-    rows: air.data?.view === 'timeline' ? air.data.rows : [] }));
-  if (air.needsViewpoint) return <WidgetState kind="empty" icon="plane" message="Choose a dashboard country or a viewpoint in the widget settings." />;
-  if (!air.track) return <WidgetState kind="empty" icon="plane" message="Load a campaign to see its air superiority." />;
-  if (!air.window || air.beforeBranch) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  if (air.error) return <WidgetState kind="error" failure={air.error} onRetry={air.retry} />;
-  // Rows the held reply lacks may be in the days still loading: no empty result is shown before they are read.
-  if (!air.data || !air.projectedTimeline || !air.labelCatalogue || (air.timelineBehind && !air.loading.length)
-    || (air.loading.length && !air.projectedTimeline.rows.length)) return <WidgetState kind="loading" label="Loading air superiority…" />;
-  if (!air.data.available) return air.data.view === 'timeline' && air.data.rowsApproximate
-    ? <WidgetState kind="loading" label="Air superiority is still being prepared." /> : <WidgetState kind="unavailable" />;
-  if (!air.projectedTimeline.rows.length) return <div>{air.data.view === 'timeline' && <PreparedKey approximate={air.data.approximate} pending={air.data.pending} />}
-    <WidgetState kind="empty" message={air.data.view === 'timeline' && air.data.rowsApproximate ? 'No air regions in the sampled reads.' : 'No air regions match these filters.'} /></div>;
-  return <div ref={root} className="air-timeline">
-    {air.data.view === 'timeline' && air.data.rowsApproximate && <p className="chart-line-key" role="status">Most-active regions and historical side identities are approximate.</p>}
+    if (track) menu.open(x, y, [jumpItem(runtime, track.id, hour)]);
+  }, [track, menu.open, runtime]); // eslint-disable-line react-hooks/exhaustive-deps
+  const viewport = useViewportHeight();
+  const tooltip = useCallback((row: HeatRow, period: HeatPeriod | null, hour: number) => {
+    if (!data) return null;
+    const regionId = Number(row.id);
+    const region = { name: row.label };
+    const at = moment ? head.shownAt() : null;
+    let view;
+    if (moment && at !== null && hour >= Math.floor(at / data.dayHours) * data.dayHours) {
+      view = headTail(newest() ?? moment, live.read(), looks, regions, at, data.dayHours).views.get(regionId);
+    } else {
+      const reply = replies.find(item => item && dayOf(item, period?.firstHour ?? hour) !== null);
+      const day = reply ? dayOf(reply, period?.firstHour ?? hour) : null;
+      const timelineRow = reply?.rows.find(item => item.region === regionId);
+      const cell = day === null || !timelineRow ? undefined : cellAt(timelineRow, day);
+      view = !reply || day === null || cell === undefined ? undefined : dayView(cell, reply, looks, sideOrder(reply.sides), day);
+    }
+    if (!view) return null;
+    const full = airTooltip(region, view, mode.mode === 'viewpoint', air.country, !!mode.sides.length, air.faction);
+    return fitTooltip([airSummaryTooltip(full, view)], viewport, { keep: 1, full });
+  }, [data, replies, moment, head.shownAt, live, looks, regions, mode.mode, mode.sides.length, air.country, air.faction, viewport]); // eslint-disable-line react-hooks/exhaustive-deps
+  const legend = useMemo(() => [...air.legend,
+    ...(options.look === 'split' ? [] : [{ id: 'contested', label: 'Contested (small lead)', color: mix(tokens.surface, tokens.text, 0.2) }]),
+    ...(mode.theatres.length ? [{ id: 'filtered', label: 'Outlined = outside selected theatres' }] : [])],
+  [air.legend, mode.theatres.length, options.look, tokens.surface, tokens.text]);
+  if (needsViewpoint) return <WidgetState kind="empty" icon="plane" message="Choose a dashboard country or a viewpoint in the widget settings." />;
+  if (!track) return <WidgetState kind="empty" icon="plane" message="Load a campaign to see its air superiority." />;
+  if (!window || beforeBranch) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  const error = ranking.error ?? [...tiles.errors.values()][0] ?? cut.error;
+  if (error) return <WidgetState kind="error" failure={error} onRetry={() => { ranking.retry(); tiles.retry(); cut.retry(); }} />;
+  if (!ranking.data) return <WidgetState kind="loading" label="Loading air superiority…" />;
+  if (!rows.length) return <WidgetState kind="empty" message="No air regions match these filters." />;
+  if (!data) return <WidgetState kind="loading" label="Loading air superiority…" />;
+  return <div ref={head.root} className="air-timeline">
     <div className="air-pattern-key" aria-label="Data states">
-      <span><i aria-hidden="true" style={{ background: air.tokens.surface }} />No activity</span>
-      <span><i aria-hidden="true" style={{ background: `color-mix(in srgb, ${air.tokens.error} ${air.tokens.gapOpacity * 100}%, ${air.tokens.surface})` }} />Not recorded</span>
-      <span><i aria-hidden="true" style={hatchStyle(air.tokens)} />Unknown</span>
+      <span><i aria-hidden="true" style={{ background: tokens.surface }} />No activity</span>
+      <span><i aria-hidden="true" style={{ background: `color-mix(in srgb, ${tokens.error} ${tokens.gapOpacity * 100}%, ${tokens.surface})` }} />Not recorded</span>
+      <span><i aria-hidden="true" style={hatchStyle(tokens)} />Unknown</span>
     </div>
-    <div className="air-timeline-chart"><HeatChart label="Air superiority timeline" rows={air.projectedTimeline.rows} periods={air.projectedTimeline.periods} tail={air.projectedTimeline.tail} labelCatalogue={air.labelCatalogue}
-      extent={air.extent} playhead={air.playhead} branchStart={air.track.branch.firstHour} legend={legend} afterPlayhead={props.widget.time.mode !== 'follow'} look={options.look === 'split' ? 'split' : 'margin'}
-      active={props.active} revision={air.hoverRevision} hoursPerSecond={air.hoursPerSecond}
-      approximate={air.data.view === 'timeline' ? air.data.approximate : undefined} pending={air.data.view === 'timeline' ? air.data.pending : undefined}
-      loading={air.loading} tooltip={tooltip} onContextMenu={onMenu} /></div>
+    <div className="air-timeline-chart"><HeatChart label="Air superiority timeline" rows={rows} periods={periods} liveTail={liveTail} labelCatalogue={labels}
+      extent={extent} playhead={playhead} liveHead={liveHead} branchStart={track.branch.firstHour} legend={legend} afterPlayhead={!following} loading={joined.loading}
+      look={options.look === 'split' ? 'split' : 'margin'} active={active} revision={joined} hoursPerSecond={hoursPerSecond} tooltip={tooltip} onContextMenu={onMenu} /></div>
     {menu.menu}
   </div>;
 }

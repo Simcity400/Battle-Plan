@@ -40,8 +40,8 @@ fn attach_outcome_retains_typed_rollback_before_reference_rebuilding() {
     let mut round = Round::collect_attach().unwrap();
     publication::select_family(Some("experience_gains"));
     assert_eq!(
-        Hook::set_enabled_batch_attach(&mut [&mut hooks[0]], true),
-        Ok(false)
+        Hook::set_enabled_batch(&mut [&mut hooks[0]], true),
+        Ok(true)
     );
     fail_flushes(2);
     round.publish();
@@ -503,12 +503,12 @@ fn attach_many_families_and_taps_share_one_measured_suspension() {
         let mut round = Round::collect_attach().unwrap();
         for (name, family) in NAMES.iter().zip(&mut families) {
             publication::select_family(Some(name));
-            assert_eq!(Hook::set_family_enabled_shared(family, true), Ok(false));
+            assert_eq!(Hook::set_family_enabled_shared(family, true), Ok(true));
         }
         publication::select_family(Some("mixed_taps"));
         assert_eq!(
-            Hook::set_enabled_batch_attach(&mut [tap.publication_hook(), &mut ordinary], true),
-            Ok(false)
+            Hook::set_enabled_batch(&mut [tap.publication_hook(), &mut ordinary], true),
+            Ok(true)
         );
         assert_eq!(round.publish().families, NAMES.len() + 1);
         for (name, family) in NAMES.iter().zip(&mut families) {
@@ -536,6 +536,56 @@ fn attach_many_families_and_taps_share_one_measured_suspension() {
         Hook::set_enabled_batch(&mut [tap.publication_hook(), &mut ordinary], false),
         Ok(true)
     );
+}
+
+/// A family that publishes its own hooks and then sub-families through plain
+/// publications, with a step between that waits on the first outcome, takes
+/// one suspension in attach; each publication reports its own outcome.
+#[test]
+fn attach_takes_one_suspension_for_a_family_of_several_publications() {
+    let _guard = lock();
+    let code = TestCode::new();
+    let (main_site, main_hook) = hook_at(&code, 0, original as *const () as usize);
+    let (radar_site, radar_hook) = hook_at(&code, 64, original as *const () as usize);
+    let (crews_site, crews_hook) = hook_at(&code, 128, original as *const () as usize);
+    let (later_site, later_hook) = hook_at(&code, 192, original as *const () as usize);
+    let mut main = vec![main_hook];
+    let mut radar = radar_hook;
+    let mut crews = vec![crews_hook];
+    let mut later = vec![later_hook];
+    let set_enabled = |main: &mut Vec<Hook>, radar: &mut Hook, crews: &mut Vec<Hook>| {
+        publication::select_family(Some("missions"));
+        let mut steps = 0;
+        if !Hook::set_family_enabled_shared(main, true)? {
+            return Ok((false, steps));
+        }
+        steps += 1;
+        if !radar.set_enabled(true)? {
+            return Ok((false, steps));
+        }
+        Hook::set_family_enabled(crews, true).map(|ready| (ready, steps))
+    };
+    let before = suspensions();
+    {
+        let mut round = Round::collect_attach().unwrap();
+        assert_eq!(set_enabled(&mut main, &mut radar, &mut crews), Ok((true, 1)));
+        publication::select_family(Some("later"));
+        assert_eq!(Hook::set_family_enabled_shared(&mut later, true), Ok(true));
+        assert_eq!(round.publish().families, 4);
+        assert_eq!(suspensions() - before, 1);
+        assert_eq!(set_enabled(&mut main, &mut radar, &mut crews), Ok((true, 1)));
+        publication::select_family(Some("later"));
+        assert_eq!(Hook::set_family_enabled_shared(&mut later, true), Ok(true));
+    }
+    publication::select_family(None);
+    assert_eq!(suspensions() - before, 1, "every publication in one suspension");
+    for site in [main_site, radar_site, crews_site, later_site] {
+        assert_eq!(unsafe { invoke(site) }, 19);
+    }
+    assert_eq!(Hook::set_family_enabled(&mut main, false), Ok(true));
+    assert_eq!(radar.set_enabled(false), Ok(true));
+    assert_eq!(Hook::set_family_enabled(&mut crews, false), Ok(true));
+    assert_eq!(Hook::set_family_enabled(&mut later, false), Ok(true));
 }
 
 #[test]
@@ -868,11 +918,11 @@ fn attach_recording_allocation_failure_abandons_the_whole_batch() {
     {
         let mut round = Round::collect_attach().unwrap();
         publication::select_family(Some("allocation_first"));
-        assert_eq!(Hook::set_family_enabled_shared(&mut first, true), Ok(false));
+        assert_eq!(Hook::set_family_enabled_shared(&mut first, true), Ok(true));
         publication::select_family(Some("allocation_middle"));
         crate::test_support::with_allocations_denied(|| {
             assert_eq!(
-                Hook::set_enabled_batch_attach(&mut [&mut middle], true),
+                Hook::set_enabled_batch(&mut [&mut middle], true),
                 Ok(false)
             );
         });
@@ -888,7 +938,7 @@ fn attach_recording_allocation_failure_abandons_the_whole_batch() {
         assert_eq!(Hook::set_family_enabled_shared(&mut first, true), Ok(true));
         publication::select_family(Some("allocation_middle"));
         assert_eq!(
-            Hook::set_enabled_batch_attach(&mut [&mut middle], true),
+            Hook::set_enabled_batch(&mut [&mut middle], true),
             Ok(true)
         );
         publication::select_family(Some("allocation_later"));
@@ -1042,7 +1092,7 @@ fn named_publication_reports_failing_site_and_cause_after_shared_resume() {
                     "occupation_changes",
                     &["healthy", "failed_writer"]
                 ),
-                Ok(false)
+                Ok(true)
             );
             round.publish();
         }
@@ -1100,7 +1150,7 @@ fn named_publication_reports_preparation_site_without_reading_refused_memory() {
             "naval_tree_changes",
             &["healthy", "unwritable"]
         ),
-        Ok(false)
+        Ok(true)
     );
     round.publish();
     let error = Hook::set_family_enabled_shared_named(

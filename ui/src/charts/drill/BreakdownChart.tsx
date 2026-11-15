@@ -1,10 +1,10 @@
-import { useMemo } from 'react';
+import { useMemo, useRef } from 'react';
 import { drawBands, drawPlayhead } from '../draw';
 import { clipToSpans, runAt } from '../series';
 import type { Run, Span } from '../series';
-import { drawApproximateSpans, exactRuns, summaryStack, summaryFits } from '../chartSummary';
+import { exactRuns, summaryStack, summaryFits } from '../chartSummary';
 import type { ChartSummary } from '../chartSummary';
-import { compactStackExtent, forEachCompactStackSegment, buildStack, stackExtent } from '../stack';
+import { compactStackExtent, forEachCompactStackStretch, buildStack, stackExtent } from '../stack';
 import { countryRaceSegments } from '../race/countryRace';
 import { shownUntil } from '../view';
 import TimeChart from '../TimeChart';
@@ -30,18 +30,23 @@ export default function BreakdownChart({ series, within, selectedHour, tooltipHe
   }), [series, within, props.extent]);
   const stack = useMemo(() => buildStack(parts.map(part => part.runs)), [parts]);
   const dense = useMemo(() => summaries && summaries.parts.length === parts.length
-    && summaries.parts.some(part => exactRuns(part) === null || !!part.approximate?.length)
+    && summaries.parts.some(part => exactRuns(part) === null)
     ? summaryStack(summaries.total ? summaries.parts.slice(0, -1) : summaries.parts, summaries.total) : null, [parts, summaries]);
   const until = shownUntil(props.playhead, props.playback, props.afterPlayhead === true);
+  // The value axis fits what is drawn up to the live head while one moves it, as the layers draw.
+  const live = props.liveHead;
+  const reach = useRef(() => until);
+  reach.current = () => live && props.playhead != null
+    ? shownUntil(Math.max(props.extent[0], Math.min(props.extent[1], live.read())), props.playback, props.afterPlayhead === true) : until;
   const layers = useMemo(() => [{
     draw: (ctx: CanvasRenderingContext2D, frame: Parameters<typeof drawBands>[1], tokens: Parameters<typeof drawBands>[2], state: { playhead: number | null }) => {
       if (dense) {
         const view = summaries!.parts[0];
         if (!summaryFits(frame, view, state.playhead ?? null)) return;
-        drawApproximateSpans(ctx, frame, dense.approximate, state.playhead, () => forEachCompactStackSegment(dense.model, frame.x[0], Math.min(frame.x[1], state.playhead ?? frame.x[1]),
+        forEachCompactStackStretch(dense.model, frame.x[0], Math.min(frame.x[1], state.playhead ?? frame.x[1]),
           (frame.x[1] - frame.x[0]) / Math.max(1, frame.plotWidth), segment => {
-            drawBands(ctx, frame, tokens, segment.hours, segment.bands, parts.map(part => part.color));
-          }, dense.sample));
+            drawBands(ctx, frame, tokens, segment.hours, segment.bands, parts.map(part => part.color), segment);
+          }, dense.sample);
         return;
       }
       for (const segment of countryRaceSegments(stack, frame.x[0], Math.min(frame.x[1], state.playhead ?? frame.x[1]),
@@ -50,19 +55,21 @@ export default function BreakdownChart({ series, within, selectedHour, tooltipHe
       }
     },
     extent: (x: readonly [number, number]) => {
-      const end = Math.min(x[1], until ?? x[1]);
+      const shown = reach.current();
+      const end = Math.min(x[1], shown ?? x[1]);
       if (end < x[0]) return null;
       const own = dense ? compactStackExtent(dense.model, x[0], end) : stackExtent(stack, x[0], end);
       const extra = overlayExtent?.([x[0], end]) ?? null;
       return own && extra ? [Math.min(own[0], extra[0]), Math.max(own[1], extra[1])] as [number, number] : own ?? extra;
     },
   }], [stack, dense, parts, until, summaries, overlayExtent]);
-  return <div className="breakdown-chart">{!!dense?.approximate.length && <p className="chart-line-key"><i className="is-dashed" aria-hidden="true" />Approximate</p>}
+  return <div className="breakdown-chart">
     <TimeChart {...props} layers={layers} keyHours={props.keyHours ?? dense?.model.hours ?? stack.hours} revision={parts}
     overlay={(ctx, frame, tokens) => {
       props.overlay?.(ctx, frame, tokens);
+      const shown = reach.current();
       if (selectedHour != null && selectedHour >= props.extent[0] && selectedHour <= props.extent[1]
-        && (until === null || selectedHour <= until)) drawPlayhead(ctx, frame, tokens, selectedHour);
+        && (shown === null || selectedHour <= shown)) drawPlayhead(ctx, frame, tokens, selectedHour);
     }}
     tooltip={hour => {
       if (hour < props.extent[0] || hour > props.extent[1]) return null;

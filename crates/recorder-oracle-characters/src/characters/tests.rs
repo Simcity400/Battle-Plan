@@ -552,7 +552,14 @@ fn fixture() -> (DecodedFrame, saved::Pack, CountryRow) {
         }),
         abilities: BTreeMap::from([(b"GER".to_vec(), Vec::new())]),
         appointed_advisors: BTreeMap::from([(b"GER".to_vec(), Vec::new())]),
-        character_status: BTreeMap::from([(b"GER".to_vec(), Vec::new())]),
+        character_status: BTreeMap::from([(
+            b"GER".to_vec(),
+            vec![saved::CharacterStatus {
+                character,
+                advisor: None,
+                unit_leader: Some(true),
+            }],
+        )]),
         retired_character_status: BTreeMap::from([(b"GER".to_vec(), Vec::new())]),
     };
     let country = CountryRow {
@@ -1012,8 +1019,8 @@ fn character_template_tag_compares_with_the_saved_template() {
     assert!(run(&absent, &pack).differences.is_empty());
 }
 
-/// The owner compares with the saved character's country; an army
-/// leader's captured byte with `captured=yes`.
+/// The owner compares with the country whose saved active roster lists the
+/// character; an army leader's captured byte with `captured=yes`.
 #[test]
 fn leader_owner_and_captured_byte_compare_with_the_save() {
     let (frame, mut pack, country) = fixture();
@@ -1040,8 +1047,76 @@ fn leader_owner_and_captured_byte_compare_with_the_save() {
         frame
     };
     assert!(run(&frame, &pack).is_empty());
-    let other = run(&edit(&|row| row.owner = 0), &pack);
+    let unowned = edit(&|row| row.owner = 0);
+    let other = run(&unowned, &pack);
     assert!(other.len() == 1 && other[0].contains("owner"), "{other:?}");
+    // Loading sets the owner only for a character on a country's active
+    // roster; the character's own `country=` never sets it.
+    let owners = |frame: &DecodedFrame, pack: &saved::Pack| {
+        let mut report = Report::default();
+        compare_leaders(
+            frame,
+            pack.manager.as_ref().unwrap(),
+            &pack.character_status,
+            &links,
+            &mut report,
+        )
+        .unwrap();
+        report
+    };
+    let rostered = pack.character_status[b"GER".as_slice()].clone();
+    let mut off_roster = pack.clone();
+    let character = off_roster
+        .manager
+        .as_mut()
+        .unwrap()
+        .characters
+        .values_mut()
+        .next()
+        .unwrap();
+    character.country = Some(b"LPR".to_vec());
+    off_roster.character_status =
+        BTreeMap::from([(b"GER".to_vec(), Vec::new()), (b"LPR".to_vec(), Vec::new())]);
+    off_roster.retired_character_status = BTreeMap::from([(b"LPR".to_vec(), rostered.clone())]);
+    let report = owners(&unowned, &off_roster);
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    let owned = owners(&frame, &off_roster).differences;
+    assert!(owned.len() == 1 && owned[0].contains("owner"), "{owned:?}");
+    let mut on_roster = off_roster.clone();
+    on_roster.character_status = BTreeMap::from([(b"LPR".to_vec(), rostered.clone())]);
+    let missing = owners(&unowned, &on_roster).differences;
+    assert!(
+        missing.len() == 1 && missing[0].contains("owner: replay None"),
+        "{missing:?}"
+    );
+    let mut run_time = off_roster.clone();
+    run_time
+        .manager
+        .as_mut()
+        .unwrap()
+        .characters
+        .values_mut()
+        .next()
+        .unwrap()
+        .country = Some(b"GER".to_vec());
+    let report = owners(&frame, &run_time);
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert!(
+        report
+            .limitations
+            .keys()
+            .any(|reason| reason.contains("off-roster character's country"))
+    );
+    let mut both = pack.clone();
+    both.character_status.insert(b"LPR".to_vec(), rostered);
+    let report = owners(&unowned, &both);
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert!(
+        report
+            .limitations
+            .keys()
+            .any(|reason| reason.contains("several countries' rosters"))
+    );
     // A navy leader has no captured byte.
     let navy = run(&edit(&|row| row.captured = 1), &pack);
     assert!(navy.len() == 1 && navy[0].contains("captured"), "{navy:?}");
@@ -1077,7 +1152,14 @@ fn exile_country_tag_compares_exactly_and_nonpositive_omission_is_limited() {
     };
     let run = |frame: &DecodedFrame, pack: &saved::Pack| {
         let mut report = Report::default();
-        compare_leaders(frame, pack.manager.as_ref().unwrap(), &links, &mut report).unwrap();
+        compare_leaders(
+            frame,
+            pack.manager.as_ref().unwrap(),
+            &pack.character_status,
+            &links,
+            &mut report,
+        )
+        .unwrap();
         report
     };
     set(&mut frame, replay_data::rows::Recorded::Value(102));
@@ -1453,4 +1535,111 @@ fn experience_factor_oracle_compares_repeated_override_positions_and_raw_values(
     compare_trait_progress(&frame, manager, &tokens, &mut report).unwrap();
     assert_eq!(report.differences.len(), 1);
     assert!(report.differences[0].contains("experience"));
+}
+
+/// Two characters no country lists, saved without a name like a total
+/// conversion's unrecruited advisors, around one a country lists.
+const UNNAMED_ROSTER: &[u8] =
+    br#"countries={ANT={characters={character_status={character={id=2 type=73} advisor=yes}}}}
+character_manager={historical={
+character={id={id=1 type=73} token="ANJ_air_chief" gender=male}
+character={id={id=2 type=73} token="ANT_air_chief" name="Kenny Bousquet" country="ANT" gender=male}
+character={id={id=3 type=73} token="FEZ_air_chief" gender=male}
+}}"#;
+
+fn unnamed_roster_row(id: u32, ordinal: u32) -> CharacterRow {
+    let (country, name_token_id, token) = match id {
+        1 => (0, 11, &b""[..]),
+        2 => (7, 12, &b"Kenny Bousquet"[..]),
+        _ => (0, 13, &b""[..]),
+    };
+    CharacterRow {
+        id,
+        country,
+        name_token_id,
+        gender: 1,
+        roster: 0,
+        ordinal,
+        token: token.to_vec(),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn a_saved_character_no_country_lists_is_compared_as_the_memory_that_wrote_or_loaded_the_save() {
+    let document = installed_content_core::parser::parse(UNNAMED_ROSTER).unwrap();
+    let pack = saved::parse(&document.items).unwrap();
+    let country = CountryRow {
+        id: 7,
+        tag: b"ANT".to_vec(),
+        ..Default::default()
+    };
+    let links = BTreeMap::from([(7, &country)]);
+    let tokens = BTreeMap::from([
+        (11, b"ANJ_air_chief".as_slice()),
+        (12, b"ANT_air_chief"),
+        (13, b"FEZ_air_chief"),
+    ]);
+    let run = |ids: &[(u32, u32)], load_hour: bool| {
+        let mut frame = DecodedFrame {
+            branch: 1,
+            hour: 1,
+            tables: std::array::from_fn(|index| {
+                TableView::Complete(TableRows::empty(TableId::ALL[index]))
+            })
+            .map(Into::into),
+            metrics: Metrics::default(),
+        };
+        *frame.tables[TableId::Characters.index()] = TableView::Complete(TableRows::Characters(
+            ids.iter()
+                .map(|&(id, ordinal)| unnamed_roster_row(id, ordinal))
+                .collect(),
+        ));
+        let mut manager = pack.manager.clone().unwrap();
+        let roster = fit_saved_roster(&frame, &mut manager, load_hour);
+        let mut report = Report::default();
+        compare_characters(&frame, &manager, &links, &tokens, &mut report).unwrap();
+        (roster, report.differences)
+    };
+    let written = [(1, 0), (2, 1), (3, 2)];
+    // The memory that wrote the save holds both, each with no country.
+    assert_eq!(
+        run(&written, false),
+        (Some(SavedRoster::Written { unloadable: 2 }), Vec::new())
+    );
+    // Loading the save destroyed both (the Millennium Dawn session).
+    for load_hour in [false, true] {
+        assert_eq!(
+            run(&[(2, 0)], load_hour),
+            (Some(SavedRoster::Loaded { unloadable: 2 }), Vec::new())
+        );
+    }
+    // A frame lacking one of them names it.
+    assert_eq!(
+        run(&[(1, 0), (2, 1)], false),
+        (
+            Some(SavedRoster::Written { unloadable: 2 }),
+            vec![format!(
+                "character {} membership: replay false, save true",
+                handle(73, 3)
+            )]
+        )
+    );
+    // At a load hour a frame holding them holds characters the game destroyed.
+    let (roster, differences) = run(&written, true);
+    assert_eq!(roster, Some(SavedRoster::Loaded { unloadable: 2 }));
+    assert_eq!(
+        differences,
+        [
+            format!(
+                "character {} membership: replay true, save false",
+                handle(73, 1)
+            ),
+            format!("character {}.ordinal: replay 1, save 0", handle(73, 2)),
+            format!(
+                "character {} membership: replay true, save false",
+                handle(73, 3)
+            ),
+        ]
+    );
 }

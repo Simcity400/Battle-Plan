@@ -45,25 +45,15 @@ use crate::{
     table_capture::{CaptureRows, grow_capacity},
 };
 use engine_allocation::{copy_vec, filled, owned_vec, reserve, resize_default};
-#[cfg(test)]
-use engine_native::memory::RecordField;
 use engine_native::{
     Memory, cship, memory::RecordLayout, memory::RecordSources,
-    modifier_accumulator::SNAPSHOT_ENTRY_CAPACITY, modifier_accumulator::SNAPSHOT_NODE_CAPACITY,
     modifier_accumulator::SnapshotArena, modifier_accumulator::SnapshotCapacity,
     modifier_accumulator::Value, walk::Outcome,
 };
 use std::{
-    cell::{Cell, RefCell},
+    cell::RefCell,
     sync::{Arc, OnceLock},
 };
-
-// Fixed-budget fixtures and the initial optional cache floor. Worker-owned
-// source/detail acquisition grows from original observations without these limits.
-const COPY_LIMIT: usize = 128 * 1024 * 1024;
-const READ_LIMIT: usize = 4_000_000;
-#[cfg(test)]
-const BUDGET_EXCEEDED: &str = "ShipModels aggregate read budget exceeded";
 
 /// Detail parts at most; each runs on its own worker.
 pub const MAX_PARTS: usize = 4;
@@ -83,240 +73,10 @@ pub fn parts_for(ships: usize) -> usize {
 fn part_rows(rows: usize) -> usize {
     rows.min(SHIPS_PER_PART).max(rows.div_ceil(MAX_PARTS))
 }
-// Fixed-reader memo storage can fall back before copying a source. Worker
-// acquisition enables original-header growth before reading ship details.
-const SNAPSHOT_LIMITS: SnapshotCapacity = SnapshotCapacity {
-    nodes: READ_LIMIT / 4,
-    entries: COPY_LIMIT / (2 * std::mem::size_of::<[u8; 16]>()),
-};
-
-fn bounded_snapshot_capacity(capacity: SnapshotCapacity) -> SnapshotCapacity {
-    SnapshotCapacity {
-        nodes: capacity.nodes.min(SNAPSHOT_LIMITS.nodes),
-        entries: capacity.entries.min(SNAPSHOT_LIMITS.entries),
-    }
-}
 
 fn grow_snapshot_capacity(capacity: &mut SnapshotCapacity, required: SnapshotCapacity) {
-    let requested = bounded_snapshot_capacity(required);
-    grow_capacity(&mut capacity.nodes, requested.nodes);
-    grow_capacity(&mut capacity.entries, requested.entries);
-    *capacity = bounded_snapshot_capacity(*capacity);
-}
-
-#[cfg(test)]
-fn acquisition_failure(copied: (usize, usize), reason: &'static str) -> &'static str {
-    // SnapshotArena validates successful read-ahead in source order. A bad key
-    // precedes a later batch fault/refusal; budget saturation must not replace
-    // that already established source error.
-    if copied == (READ_LIMIT, COPY_LIMIT)
-        && reason != "modifier accumulator keys not positive and increasing"
-    {
-        BUDGET_EXCEEDED
-    } else {
-        reason
-    }
-}
-
-#[cfg(test)]
-struct BoundedMemory<'a, M> {
-    inner: &'a M,
-    used: &'a Cell<(usize, usize)>,
-}
-#[cfg(test)]
-impl<M: Memory> BoundedMemory<'_, M> {
-    fn fits(&self, calls: usize, bytes: usize) -> bool {
-        let used = self.used.get();
-        calls <= READ_LIMIT.saturating_sub(used.0) && bytes <= COPY_LIMIT.saturating_sub(used.1)
-    }
-
-    fn charge(&self, calls: usize, bytes: usize) {
-        let used = self.used.get();
-        self.used.set((used.0 + calls, used.1 + bytes));
-    }
-
-    fn copy_records_individually(
-        &self,
-        sources: RecordSources<'_>,
-        layout: &RecordLayout<'_>,
-        destination: &mut [u8],
-    ) -> usize {
-        let mut completed = 0;
-        for row in 0..sources.len() {
-            for field in layout.fields() {
-                if field.len != 0 {
-                    let Some(address) = record_address(sources, row, field) else {
-                        return completed;
-                    };
-                    let start = row * layout.stride() + field.destination_offset;
-                    if !self.copy(address, &mut destination[start..start + field.len]) {
-                        return completed;
-                    }
-                }
-                completed += 1;
-            }
-        }
-        completed
-    }
-}
-
-#[cfg(test)]
-fn record_address(sources: RecordSources<'_>, row: usize, field: &RecordField) -> Option<usize> {
-    sources
-        .pointer(row)
-        .filter(|&p| p != 0)
-        .and_then(|p| p.checked_add(field.source_offset))
-        .filter(|&p| p.checked_add(field.len).is_some())
-}
-
-#[cfg(test)]
-impl<M: Memory> Memory for BoundedMemory<'_, M> {
-    #[inline]
-    fn read_scalar<T: engine_native::memory::Raw>(&self, address: usize) -> Option<T> {
-        let (calls, bytes) = self.used.get();
-        let len = std::mem::size_of::<T>();
-        if calls >= READ_LIMIT || len > COPY_LIMIT.saturating_sub(bytes) {
-            self.used.set((READ_LIMIT, COPY_LIMIT));
-            return None;
-        }
-        self.used.set((calls + 1, bytes + len));
-        self.inner.read_scalar::<T>(address)
-    }
-
-    fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-        let (calls, bytes) = self.used.get();
-        if calls >= READ_LIMIT || output.len() > COPY_LIMIT.saturating_sub(bytes) {
-            self.used.set((READ_LIMIT, COPY_LIMIT));
-            return false;
-        }
-        self.used.set((calls + 1, bytes + output.len()));
-        self.inner.copy(address, output)
-    }
-
-    fn authenticated_countries(
-        &self,
-        base: usize,
-        state: usize,
-    ) -> Option<engine_native::ccountry::AuthenticatedRoster<'_>> {
-        // Forward the callback's current authenticated roster without extending it.
-        self.inner.authenticated_countries(base, state)
-    }
-
-    fn authenticated_reserved_country(
-        &self,
-        base: usize,
-        state: usize,
-    ) -> Option<Result<engine_native::ccountry::Country, &'static str>> {
-        self.inner.authenticated_reserved_country(base, state)
-    }
-    fn authenticated_reserved_country_observation(
-        &self,
-        base: usize,
-        state: usize,
-    ) -> Option<engine_native::ccountry::ReservedCountryObservation> {
-        self.inner
-            .authenticated_reserved_country_observation(base, state)
-    }
-
-    fn copy_scattered<const N: usize>(
-        &self,
-        addresses: [usize; N],
-        destinations: &mut [&mut [u8]; N],
-    ) -> usize {
-        let calls = destinations.iter().filter(|d| !d.is_empty()).count();
-        let bytes = destinations
-            .iter()
-            .fold(0usize, |n, d| n.saturating_add(d.len()));
-        if !self.fits(calls, bytes) {
-            // Metadata admission observes no source bytes. At a budget edge,
-            // retain scalar order: an earlier source fault wins over a later
-            // budget refusal, and empty/invalid fields consume no copy budget.
-            for (index, (address, destination)) in addresses
-                .into_iter()
-                .zip(destinations.iter_mut())
-                .enumerate()
-            {
-                if !destination.is_empty()
-                    && (address == 0
-                        || address.checked_add(destination.len()).is_none()
-                        || !self.copy(address, destination))
-                {
-                    return index;
-                }
-            }
-            return N;
-        }
-        let completed = self.inner.copy_scattered(addresses, destinations);
-        let attempted = completed
-            + usize::from(
-                completed < N
-                    && !destinations[completed].is_empty()
-                    && addresses[completed] != 0
-                    && addresses[completed]
-                        .checked_add(destinations[completed].len())
-                        .is_some(),
-            );
-        // Charge a partially failed copy in full, exactly like copy(). Source
-        // arithmetic rejection and later fields did not attempt a copy.
-        self.charge(
-            destinations[..attempted]
-                .iter()
-                .filter(|d| !d.is_empty())
-                .count(),
-            destinations[..attempted].iter().map(|d| d.len()).sum(),
-        );
-        completed
-    }
-
-    fn copy_records(
-        &self,
-        sources: RecordSources<'_>,
-        layout: &RecordLayout<'_>,
-        destination: &mut [u8],
-    ) -> usize {
-        let fields = layout.fields();
-        let Some(count) = sources.len().checked_mul(fields.len()) else {
-            return 0;
-        };
-        if sources
-            .len()
-            .checked_mul(layout.stride())
-            .is_none_or(|n| n > destination.len())
-        {
-            return 0;
-        }
-        let nonempty = fields.iter().filter(|f| f.len != 0).count();
-        if count == 0 || nonempty == 0 {
-            return count;
-        }
-        if !self.fits(
-            sources.len().saturating_mul(nonempty),
-            layout.completed_bytes(count),
-        ) {
-            return self.copy_records_individually(sources, layout, destination);
-        }
-        let completed = self.inner.copy_records(sources, layout, destination);
-        let attempted = completed
-            + usize::from(
-                completed < count
-                    && fields[completed % fields.len()].len != 0
-                    && record_address(
-                        sources,
-                        completed / fields.len(),
-                        &fields[completed % fields.len()],
-                    )
-                    .is_some(),
-            );
-        self.charge(
-            attempted / fields.len() * nonempty
-                + fields[..attempted % fields.len()]
-                    .iter()
-                    .filter(|f| f.len != 0)
-                    .count(),
-            layout.completed_bytes(attempted),
-        );
-        completed
-    }
+    grow_capacity(&mut capacity.nodes, required.nodes);
+    grow_capacity(&mut capacity.entries, required.entries);
 }
 
 /// Only raw modifier arrays are shared; metadata and source graph checks still
@@ -391,11 +151,11 @@ impl<M: Memory> Memory for ModifierMemory<'_, M> {
                 key,
             ));
         }
-        match arena.capture_at(self.inner, address, key) {
-            Ok(observation) => Some(arena.value(observation)),
-            Err(SNAPSHOT_NODE_CAPACITY | SNAPSHOT_ENTRY_CAPACITY) => None,
-            Err(reason) => Some(Err(reason)),
-        }
+        Some(
+            arena
+                .capture_at(self.inner, address, key)
+                .and_then(|observation| arena.value(observation)),
+        )
     }
 }
 use replay_data::{rows::ShipModelRow, rows::TableId, rows::tables};
@@ -552,7 +312,7 @@ struct CarryCost {
 
 #[cfg(any(test, feature = "test-support"))]
 thread_local! {
-    static CARRY_COST: Cell<CarryCost> = const { Cell::new(CarryCost {
+    static CARRY_COST: std::cell::Cell<CarryCost> = const { std::cell::Cell::new(CarryCost {
         searches: 0, cold_ship_bytes: 0, cold_organisation_bytes: 0,
         cold_terms_bytes: 0, variant_compares: 0,
         terms_compares: 0, row_clones: 0,
@@ -1041,10 +801,8 @@ fn receivers(pointer: usize, fields: &cship::HeldShip) -> [usize; 3] {
 }
 
 pub struct Captured {
-    worker_growth: bool,
     defer_owned: bool,
     pending_owned: bool,
-    copied: Cell<(usize, usize)>,
     modifiers: RefCell<SnapshotArena>,
     required_modifiers: SnapshotCapacity,
     optional_refusals: [u64; OPTIONAL_REFUSAL_REASONS.len()],
@@ -1146,25 +904,23 @@ impl Captured {
             },
         };
         Self {
-            extra: (1..MAX_PARTS)
-                .map(|range| Self {
+            extra: owned_vec(engine_allocation::collect_vec((1..MAX_PARTS).map(
+                |range| Self {
                     range,
                     ..Self::part(&share)
-                })
-                .collect(),
+                },
+            ))),
             ..Self::part(capacity)
         }
     }
     fn part(capacity: &Capacities) -> Self {
         Self {
-            copied: Cell::new((0, 0)),
             modifiers: RefCell::new(
-                SnapshotArena::try_new(bounded_snapshot_capacity(capacity.modifiers))
+                SnapshotArena::try_new(capacity.modifiers)
                     .map_err(crate::allocation::io)
                     .unwrap_or_else(|_| SnapshotArena::vacant()),
             ),
             required_modifiers: SnapshotCapacity::default(),
-            worker_growth: false,
             defer_owned: false,
             pending_owned: false,
             optional_refusals: [0; OPTIONAL_REFUSAL_REASONS.len()],
@@ -1287,7 +1043,6 @@ impl Captured {
         }
         self.witness = None;
         self.defer_owned = false;
-        self.worker_growth = false;
         self.terminal_failure = None;
         self.context = None;
         self.release_seed_pointers();
@@ -1299,22 +1054,9 @@ impl Captured {
         self.missing = 0;
         self.parent = super::MISSING;
     }
-    /// Retain the map's native source order; only acquisition follows seed pointers.
+    /// Retain the map's native source order, every original census occurrence
+    /// included; only acquisition follows seed pointers. No native read is restarted.
     pub fn visit_source(&mut self, pointer: usize, source: &cship::Row) {
-        if self.seed_len == self.seeds.len() {
-            self.missing = self.missing.saturating_add(1);
-            return;
-        }
-        self.seeds[self.seed_len] = Seed {
-            pointer,
-            row: *source,
-        };
-        self.seed_len += 1;
-    }
-    /// The worker retains every original census occurrence, including a
-    /// population increase between storage hints. No native read is restarted.
-    pub fn visit_source_growing(&mut self, pointer: usize, source: &cship::Row) {
-        self.worker_growth = true;
         if self.terminal_failure.is_some() {
             return;
         }
@@ -1329,7 +1071,11 @@ impl Captured {
             self.terminal_failure = Some(reason);
             return;
         }
-        self.visit_source(pointer, source);
+        self.seeds[self.seed_len] = Seed {
+            pointer,
+            row: *source,
+        };
+        self.seed_len += 1;
     }
 
     pub fn finish_sources(&mut self, parent: Outcome) {
@@ -1390,7 +1136,6 @@ impl Captured {
             let (first, end) = (bound(part), bound(part + 1));
             let capture = &mut self.extra[part - 1];
             capture.begin_sources();
-            capture.worker_growth = self.worker_growth;
             capture.context = self.context;
             capture.split = parts;
             capture.required_rows = capture.required_rows.max(end - first);
@@ -1456,20 +1201,12 @@ impl Captured {
         self.len = 0;
         self.unchanged_rows = 0;
         self.failure = None;
-        // Clear the fixed-fixture accounting for every part.
-        self.copied.set((0, 0));
         self.modifiers.get_mut().clear();
-        if self.worker_growth {
-            self.modifiers.get_mut().enable_worker_growth();
-        }
         self.optional_refusals = [0; OPTIONAL_REFUSAL_REASONS.len()];
         self.doctrine = cship::OrganisationMemo::default();
         // Keep the worker's memo storage; every observation and pointer key
         // of the previous capture is forgotten.
         self.model.reset();
-        if self.worker_growth {
-            self.model.enable_worker_growth();
-        }
     }
     /// Before the first ship of a task force in the range: finish the
     /// previous task force, then serve this one's held terms that still hold:
@@ -2402,14 +2139,10 @@ impl Captured {
                 None
             }
         };
-        row.naval_power = if self.worker_growth {
-            selected.and_then(|source| {
-                cship::read_naval_power(memory, base, source, &mut self.naval_power)
-            })
-        } else {
-            None
-        };
-        if self.worker_growth && selected.is_some() && row.naval_power.is_none() {
+        row.naval_power = selected.and_then(|source| {
+            cship::read_naval_power(memory, base, source, &mut self.naval_power)
+        });
+        if selected.is_some() && row.naval_power.is_none() {
             self.optional_refusals[14] += 1;
         }
         row.hull_variant = selected.and_then(|selected| {
@@ -2586,7 +2319,7 @@ impl Captured {
             self.store = held.store;
             self.air_capacity = held.air_capacity;
         }
-        let power_certificate = self.worker_growth.then(naval_power_certificate).flatten();
+        let power_certificate = naval_power_certificate();
         self.naval_power.prepare(power_certificate);
         if self.store.naval_power != power_certificate {
             self.store.forget();
@@ -2598,7 +2331,7 @@ impl Captured {
             .store
             .rows
             .map(|generation| (generation, self.store.hot.len()));
-        self.air_capacity.begin(self.detail_len, self.worker_growth);
+        self.air_capacity.begin(self.detail_len);
         // One range's gathered objects; nothing outlives this capture.
         let mut fields = cship::ShipFields::new(context.base);
         if power_certificate.is_some() {
@@ -2679,7 +2412,7 @@ impl Captured {
                 }
             },
         );
-        if self.worker_growth && naval_power_certificate() != power_certificate {
+        if naval_power_certificate() != power_certificate {
             for row in &mut self.rows.rows[..self.len] {
                 self.optional_refusals[14] += u64::from(row.naval_power.take().is_some());
             }

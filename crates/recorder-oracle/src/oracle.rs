@@ -100,10 +100,7 @@ use self::core::{
 #[cfg(test)]
 use self::report::recorded_table_counts;
 
-#[cfg(test)]
-use self::report::daily_read;
-
-use self::report::{Report, last_read_hours};
+use self::report::{Report, is_load_hour, last_read_hours};
 
 pub const USAGE: &str = "recorder oracle <campaign.battleplan> <save.hoi4> [--hour n] [--branch id] [--game-dir <directory>] [--user-dir <directory>]";
 
@@ -179,6 +176,12 @@ pub fn command(args: Vec<OsString>) -> io::Result<()> {
     }
     let mut save = parse_country_emissions(&save_document, &frame)?;
     validate_identity(&frame, &save)?;
+    let load_hour = is_load_hour(branch, hour);
+    let saved_roster = save
+        .characters
+        .manager
+        .as_mut()
+        .and_then(|manager| characters::fit_saved_roster(&frame, manager, load_hour));
     let options = ResolveOptions {
         game_dir: game_dir
             .map(Ok)
@@ -255,6 +258,9 @@ pub fn command(args: Vec<OsString>) -> io::Result<()> {
         Some(read_hours),
     )?;
     report.set_load_hour(branch);
+    if let Some(roster) = saved_roster {
+        characters::note_saved_roster(&mut report, roster);
+    }
     // A naval binding refusal leaves only its own comparison group incomplete.
     report.attempt_table(TableId::NavalMissionTaskForces, |_| {
         bind_raiding_save_fields(&frame, &save_document, &mut save)

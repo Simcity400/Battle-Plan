@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { CountryFlagUrl } from '../../components/CountryFlag';
 import type { MovingRow } from '../rowMotion';
+import { atNextSlot, structureOpen } from '../../dashboard/structurePace.ts';
+import type { Live } from '../live';
 import WindowedRows from '../WindowedRows';
-import { drillPartShare, drillPartsTotal, orderedDrillParts } from './parts';
-import type { DrillPart } from './parts';
+import { drillPartShare, drillPartsTotal, drillRows } from './parts';
+import type { DrillPart, DrillUnattributed } from './parts';
 import '../charts.css';
 import './drill.css';
 
@@ -11,11 +13,14 @@ import './drill.css';
  * formats one, and its colour in the widget's chart (shown as a swatch too). */
 export type { DrillPart } from './parts';
 
+/** A breakdown's values at the head, read as a frame paints; the same object while nothing moved. */
+export type LiveDrillParts = Live<{ parts: readonly DrillPart[]; unattributed?: DrillUnattributed; total?: number | null; totalText?: string }>;
+
 /** The parts of a value at one moment, largest first, each with its amount and its
  * share of the total. Labels come from the game or the recording only; whatever the
  * recording cannot attribute is shown as its own row, never folded into another. */
 export default function DrillParts({ parts, format, total, unattributed, totalRow, showShares = true, virtual = false,
-  positiveBars = false, signedShares = false, active = true, onVisible, onPick }: {
+  positiveBars = false, signedShares = false, active = true, onVisible, onPick, live }: {
   parts: readonly DrillPart[]; format: (value: number) => string; total?: number | null;
   /** Incomplete totals cannot supply a percentage. */
   showShares?: boolean;
@@ -27,20 +32,70 @@ export default function DrillParts({ parts, format, total, unattributed, totalRo
   /** Corrections retain selectable exact rows, without positive amount geometry. */
   positiveBars?: boolean; signedShares?: boolean;
   /** The part of the total no recorded source explains, with the game's own label if it has one. */
-  unattributed?: { label: string; value: number; raw?: bigint | null; text?: string; shareText?: string; color?: string };
+  unattributed?: DrillUnattributed;
   /** A closing total row. */
   totalRow?: { label: string; value: string };
+  /** Painted at the head: rendered only when its rows change, their values painted in each frame they move; their
+   * order follows the live values at most four times a second. */
+  live?: LiveDrillParts;
 }) {
-  const rows = useMemo(() => {
-    const ordered = orderedDrillParts(parts).map(item => ({ key: JSON.stringify(['part', item.id]), item }));
-    if (unattributed && (unattributed.raw === undefined ? unattributed.value !== 0 : unattributed.raw !== 0n)) ordered.push({ key: 'unattributed',
-      item: { id: '', label: unattributed.label, value: unattributed.value, raw: unattributed.raw, text: unattributed.text,
-        shareText: unattributed.shareText, color: unattributed.color, muted: true } });
-    return ordered;
-  }, [parts, unattributed]);
+  // The live values a render last took its rows from: kept while the live source and the parts given hold.
+  const [adopted, setAdopted] = useState<{ live: LiveDrillParts; parts: readonly DrillPart[]; now: ReturnType<LiveDrillParts['read']> } | null>(null);
+  const taken = live && adopted?.live === live && adopted.parts === parts ? adopted.now : null;
+  const shownParts = taken?.parts ?? parts, shownUnattributed = taken ? taken.unattributed : unattributed;
+  const rows = useMemo(() => drillRows(shownParts, shownUnattributed), [shownParts, shownUnattributed]);
+  const rowKeys = rows.map(row => row.key).join('\u0000');
+  const given = useRef({ parts, rowKeys });
+  given.current = { parts, rowKeys };
   const magnitude = (value: number | null) => positiveBars ? Math.max(0, value ?? 0) : Math.abs(value ?? 0);
-  const widest = rows.reduce((result, row) => Math.max(result, magnitude(row.item.value)), 1e-12);
-  const sum = total === undefined ? drillPartsTotal(rows.map(row => row.item)) : total;
+  const scaleOf = (shown: readonly { item: DrillPart }[], given: number | null | undefined) => ({
+    widest: shown.reduce((result, row) => Math.max(result, magnitude(row.item.value)), 1e-12),
+    sum: given === undefined ? drillPartsTotal(shown.map(row => row.item)) : given });
+  const { widest, sum } = scaleOf(rows, total);
+  // What a row's cells show at a scale, the same at a render and at a frame's paint.
+  const look = (row: DrillPart, scale: { widest: number; sum: number | null }) => ({ amount: amount(row),
+    share: showShares ? row.shareText ?? drillPartShare(row.value, scale.sum, signedShares) : '',
+    width: `${magnitude(row.value) / scale.widest * 100}%`, negative: row.value != null && row.value < 0,
+    background: row.color ?? (row.value != null && row.value < 0 ? 'var(--error)' : 'var(--positive)') });
+  const cells = useRef(new Map<string, { amount?: HTMLElement | null; share?: HTMLElement | null; bar?: HTMLElement | null; pick?: HTMLElement | null }>());
+  const cell = (key: string, part: 'amount' | 'share' | 'bar' | 'pick') => (node: HTMLElement | null) => {
+    const held = cells.current.get(key) ?? {};
+    held[part] = node;
+    cells.current.set(key, held);
+  };
+  const totalCell = useRef<HTMLElement | null>(null);
+  const looks = useRef({ look, scaleOf });
+  looks.current = { look, scaleOf };
+  useLayoutEffect(() => {
+    if (!live) return;
+    let read: ReturnType<LiveDrillParts['read']> | null = null;
+    let held: (() => void) | null = null;
+    const paint = () => {
+      const now = live.read();
+      if (now === read) return;
+      read = now;
+      const shown = drillRows(now.parts, now.unattributed), scale = looks.current.scaleOf(shown, now.total);
+      // Rows in another order, or other rows, are structure: taken in the slot's task, read again there.
+      if (shown.map(row => row.key).join('\u0000') !== given.current.rowKeys) {
+        if (structureOpen()) setAdopted({ live, parts: given.current.parts, now });
+        else held ??= atNextSlot(() => { held = null; read = null; paint(); });
+      }
+      for (const { key, item } of shown) {
+        const held = cells.current.get(key);
+        if (!held) continue;
+        const next = looks.current.look(item, scale);
+        if (held.amount && held.amount.textContent !== next.amount) held.amount.textContent = next.amount;
+        held.amount?.classList.toggle('is-negative', next.negative);
+        if (held.share && held.share.textContent !== next.share) held.share.textContent = next.share;
+        if (held.bar) { held.bar.style.width = next.width; held.bar.style.background = next.background; }
+        held.pick?.setAttribute('aria-label', `${item.label}, ${next.amount}`);
+      }
+      if (totalCell.current && now.totalText !== undefined && totalCell.current.textContent !== now.totalText) totalCell.current.textContent = now.totalText;
+    };
+    paint();
+    const stop = live.subscribe(paint);
+    return () => { stop(); held?.(); };
+  }, [live, rows]);
   const reported = useRef<{ callback: typeof onVisible; ids: readonly string[] } | null>(null);
   const publishVisible = useCallback((ids: readonly string[]) => {
     const previous = reported.current;
@@ -62,26 +117,28 @@ export default function DrillParts({ parts, format, total, unattributed, totalRo
   }, [active, virtual, rows, publishVisible]);
   const selectable = (row: DrillPart) => onPick !== undefined && row.id !== '' && row.selectable !== false;
   const amount = (row: DrillPart) => row.text ?? (row.value == null ? 'Not known' : format(row.value));
-  const content = (row: DrillPart) => <>
-    <span className="drill-part-label" data-detail={row.detail ?? row.countryFlag?.nameFailure?.message}>{row.countryFlag !== undefined
-      ? <CountryFlagUrl className="drill-part-flag" url={row.countryFlag.flag} detail={row.countryFlag.flagDetail} reason={row.countryFlag.flagReason} pending={row.countryFlag.flagPending} />
-      : row.icon && <img src={row.icon} alt="" />}{row.color && <i className="drill-part-swatch" aria-hidden="true" style={{ background: row.color }} />}
-      {selectable(row) ? <button type="button" tabIndex={0} className="drill-part-pick" aria-label={`${row.label}, ${amount(row)}`}
-        onClick={() => onPick?.(row.id)}>{row.label}</button> : row.label}</span>
-    <span className="drill-part-bar" aria-hidden="true"><i style={{ width: `${magnitude(row.value) / widest * 100}%`,
-      background: row.color ?? (row.value != null && row.value < 0 ? 'var(--error)' : 'var(--positive)') }} /></span>
-    <b className={row.value != null && row.value < 0 ? 'is-negative' : undefined}>{amount(row)}</b>
-    <small>{showShares ? row.shareText ?? drillPartShare(row.value, sum, signedShares) : null}</small>
-  </>;
-  const closing = totalRow && <div className="drill-parts drill-total"><span className="drill-part-label" >{totalRow.label}</span><span /><b>{totalRow.value}</b><small /></div>;
+  const content = (row: DrillPart, key: string) => {
+    const shown = look(row, { widest, sum });
+    return <>
+      <span className="drill-part-label" data-detail={row.detail ?? row.countryFlag?.nameFailure?.message}>{row.countryFlag !== undefined
+        ? <CountryFlagUrl className="drill-part-flag" url={row.countryFlag.flag} detail={row.countryFlag.flagDetail} reason={row.countryFlag.flagReason} pending={row.countryFlag.flagPending} />
+        : row.icon && <img src={row.icon} alt="" />}{row.color && <i className="drill-part-swatch" aria-hidden="true" style={{ background: row.color }} />}
+        {selectable(row) ? <button ref={cell(key, 'pick')} type="button" tabIndex={0} className="drill-part-pick" aria-label={`${row.label}, ${shown.amount}`}
+          onClick={() => onPick?.(row.id)}>{row.label}</button> : row.label}</span>
+      <span className="drill-part-bar" aria-hidden="true"><i ref={cell(key, 'bar')} style={{ width: shown.width, background: shown.background }} /></span>
+      <b ref={cell(key, 'amount')} className={shown.negative ? 'is-negative' : undefined}>{shown.amount}</b>
+      <small ref={cell(key, 'share')}>{showShares ? shown.share : null}</small>
+    </>;
+  };
+  const closing = totalRow && <div className="drill-parts drill-total"><span className="drill-part-label" >{totalRow.label}</span><span /><b ref={totalCell}>{totalRow.value}</b><small /></div>;
   if (!rows.length && !totalRow) return <p className="drill-empty">Nothing recorded for this day.</p>;
   if (virtual) return <div className="drill-inventory">
     <WindowedRows items={active ? rows : []} rowHeight={32} label="Recorded parts" onVisibleRows={visible}>{({ item, key }) => <div tabIndex={selectable(item) ? undefined : 0}
-      className={`drill-parts drill-part-row${key === 'unattributed' ? ' is-unattributed' : item.muted || item.value == null ? ' is-muted' : ''}`}>{content(item)}</div>}</WindowedRows>
+      className={`drill-parts drill-part-row${key === 'unattributed' ? ' is-unattributed' : item.muted || item.value == null ? ' is-muted' : ''}`}>{content(item, key)}</div>}</WindowedRows>
     {closing}
   </div>;
   return <ol className="drill-parts">{rows.map(({ key, item }) => <li key={key} tabIndex={selectable(item) ? undefined : 0}
-    className={key === 'unattributed' ? 'is-unattributed' : item.muted || item.value == null ? 'is-muted' : undefined}>{content(item)}</li>)}
-    {totalRow && <li className="is-total"><span className="drill-part-label" >{totalRow.label}</span><span /><b>{totalRow.value}</b><small /></li>}
+    className={key === 'unattributed' ? 'is-unattributed' : item.muted || item.value == null ? 'is-muted' : undefined}>{content(item, key)}</li>)}
+    {totalRow && <li className="is-total"><span className="drill-part-label" >{totalRow.label}</span><span /><b ref={totalCell}>{totalRow.value}</b><small /></li>}
   </ol>;
 }

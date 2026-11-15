@@ -1,132 +1,114 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import WidgetState from '../../components/WidgetState';
-import { useHeldFailure } from '../../dashboard/heldFailures';
 import CountryPicker from '../../components/CountryPicker';
-import CountryRaceView from '../../charts/race/CountryRaceView';
+import MeasureRace from '../../charts/race/MeasureRace';
+import { mixCountry } from '../../charts/race/options.ts';
 import type { RaceView } from '../../charts/race/options';
-import { formatAxisPercent } from '../../charts/valueAxis';
+import type { LabelAt } from '../../charts/race/lines';
+import { countryDrillSpans } from '../../dashboard/countryIdentity.ts';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { countryMatchFilter, isMember, MEMBERSHIP_PREPARING, noMembersAt, projectResolvedCountries, rankedCandidates, resolveCountries } from '../../dashboard/groups';
-import NoMembersState from '../../dashboard/NoMembersState';
-import { countryDrillTagAt, countryIdentityIndex } from '../../dashboard/countryIdentity';
-import { resolveWindow } from '../../dashboard/model';
+import { repliedCells } from '../../dashboard/follow/liveCells.ts';
 import { resolveOptions } from '../../dashboard/options';
-import { usePlaybackHour } from '../../dashboard/playback';
-import { usePreparedOccupation } from './preparedOccupation';
-import { useParityRows } from '../../dashboard/parityRows';
+import { usePlaybackMotion, useTransitionValue } from '../../dashboard/playback';
+import { useProduct } from '../../dashboard/products';
+import { countryMatch } from '../../dashboard/groups';
+import { resolveWindow } from '../../dashboard/model';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { OPTIONS } from './definition';
-import { measureName, occupationEntries, occupationHolderMix, occupationLines, occupationLineTooltip, occupationModel, occupationRequest, occupationSegmentAt,
-  occupationTooltip, occupationTooltipTags, rankingMeasure } from './occupationTrendData.ts';
-import type { OccupationMeasure, ShownMeasure } from './occupationTrendData';
+import { SERIES, measureName, occupationLineTooltip, occupationPercent, occupationTooltip, otherMeasure, rankingMeasure, validateOccupationDetail } from './occupationTrendData.ts';
+import type { DetailAt, OccupationMeasure, ShownMeasure } from './occupationTrendData';
+import type { OccupationDetailReply } from '../../generated/dashboard';
+import '../../charts/race/countryRace.css';
+import { useChangedState } from '../../dashboard/changedState.ts';
 
 const NO_WARNINGS: string[] = [];
+
+/** Average resistance and compliance of each occupier's occupied states: the declared series `occupier-totals` raced,
+ * drawn per country (both measures, compliance dashed) or for one country across its tags. A reader pointing at an hour
+ * reads that hour's totals and collaboration (`occupation-at`); nothing is read for the moving head. */
 export default function OccupationTrendWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
-  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const options = resolveOptions(OPTIONS, widget.options);
-  const view = options.view as RaceView;
+  const view = (options.view as RaceView) ?? 'lines';
   const shown = options.measure as ShownMeasure;
   const rank = rankingMeasure(shown, options.rankingMeasure as OccupationMeasure);
   const collaboration = options.collaboration === true;
   const digits = Number(options.digits);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
-  const playhead = window && (widget.time.mode === 'follow' || widget.time.mode === 'pin') ? window.lastHour : null;
-  const extent: [number, number] = track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour]
-    : [track.branch.firstHour, track.branch.lastHour]) : [0, 1];
-  const moment = Math.floor(playhead ?? extent[1]);
-  const all = widget.countries.kind === 'all';
-  const grouped = widget.countries.kind === 'group' && widget.countries.group.type !== 'top';
-  const groups = useCountryGroups(runtime, track, active && grouped);
+  const playing = (usePlaybackMotion(runtime.clock) ?? 0) > 0;
+  const measure = useMemo(() => ({ kind: SERIES, measure: rank }), [rank]);
+  const second = useMemo(() => shown === 'both' && view !== 'race' ? { kind: SERIES, measure: otherMeasure(rank) } : undefined, [shown, view, rank]);
+  const format = useCallback((raw: string) => occupationPercent(raw, digits), [digits]);
+  const formatValue = useCallback((value: number) => `${value.toFixed(digits)}%`, [digits]);
+
+  // One country's mix: the chosen country, the dashboard's, or one picked; its aliases over the spans its holder held them.
+  const groups = useCountryGroups(runtime, track, active && view === 'mix');
   const fallback = defaultCountryTag(track);
-  const resolved = useMemo(() => resolveCountries(widget.countries, fallback ? [fallback] : [], groups.data, track?.branch.lastHour ?? 0, Number.MAX_SAFE_INTEGER),
+  // The hour the mix's choices are of: the moment shown, read while paused, pinned or on a range; held while playing.
+  const readHour = useCallback(() => track ? Math.floor(resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour())?.lastHour ?? track.branch.lastHour) : 0,
+    [widget, track, runtime.tracks, runtime.clock]);
+  const settled = useTransitionValue(view === 'mix' && !playing ? runtime.clock.subscribe : null, readHour);
+  const held = useRef(settled);
+  if (!playing) held.current = settled;
+  const choiceHour = held.current;
+  const occupiers = useProduct<OccupationDetailReply>(runtime.client, view === 'mix' && track ? { sourceId: track.source.id, revision: track.source.revision,
+    product: 'occupation-at', params: { branchId: track.branch.id, hour: choiceHour, tags: [], collaboration: false } } : null, active, validateOccupationDetail, track?.source);
+  const match = useMemo(() => countryMatch(widget.countries, fallback ? [fallback] : [], groups.data, track?.branch.lastHour ?? 0),
     [widget.countries, fallback, groups.data, track?.branch.lastHour]);
-  // The request retains literal roots. Expanding aliases here would select
-  // unrelated holders which merely reused one of those aliases.
-  const requested = { tags: all ? [] : resolved.tags,
-    ready: all || resolved.top != null || (!grouped || !!groups.data) && resolved.tags.length > 0,
-    reason: all ? null : resolved.reason };
-  const request = track && requested.ready && !requested.reason ? { sourceId: track.source.id, revision: track.source.revision, product: 'occupation-trend',
-    params: occupationRequest(track.branch.id, requested.tags, resolved.top, rank, collaboration) } : null;
-  const prepared = usePreparedOccupation(runtime.client, track, request?.params ?? null, shown, moment, active, resolved.membership ?? undefined);
-  // A head kept while playback's newest loads is ranked and judged at the hour it answers.
-  const shownMoment = view === 'lines' ? moment : prepared.headHour ?? moment;
-  const { data, retry } = prepared;
-  const error = useHeldFailure(prepared.error, data !== undefined, retry);
-  const parityRoot = useRef<HTMLDivElement>(null);
-  useParityRows(parityRoot, () => ({ kind: 'chart', label: 'Occupation trend values', complete: !!data, total: data?.series.length ?? 0,
-    hour: moment, rows: data?.series ?? [] }));
-  const model = useMemo(() => data ? occupationModel(data) : null, [data]);
-  const identities = useMemo(() => grouped && groups.data ? countryIdentityIndex(groups.data.countryIdentities) : model?.identities ?? null,
-    [grouped, groups.data, model]);
-  const counted = useMemo(() => projectResolvedCountries(resolved, countryMatchFilter(widget.countries, fallback ? [fallback] : [],
-    groups.data, track?.branch.lastHour ?? 0, identities, track?.branch.firstHour ?? 0)),
-    [resolved, widget.countries, fallback, groups.data, track?.branch.lastHour, track?.branch.firstHour, identities]);
-  const slots = resolved.top ?? Math.max(1, all ? model?.tags.length ?? 0 : counted.tags.length);
-  const ranked = useMemo(() => model ? occupationEntries(model, all ? model.tags : rankedCandidates(counted, shownMoment, model.tags), shownMoment, rank, slots, digits) : [],
-    [model, all, counted, shownMoment, rank, slots, digits]);
-  const range = useMemo(() => ({ firstHour: extent[0], lastHour: extent[1] }), [extent[0], extent[1]]);
-  const lines = useMemo(() => model ? occupationLines(model, all || resolved.top != null ? model.tags : counted.tags,
-    shown, range, counted.membership, digits, prepared.lineSummaries) : [], [model, all, resolved.top, counted, shown, range, digits, prepared.lineSummaries]);
-  const mixScopeKey = JSON.stringify([request, widget.countries, widget.time]);
-  const mixScope = useMemo(() => ({ client: runtime.client, key: mixScopeKey }), [runtime.client, mixScopeKey]);
-  const [choice, setChoice] = useState<{ scope: typeof mixScope; tag: string; hour: number } | null>(null);
-  const mixCandidates = useMemo(() => !model ? [] : resolved.top != null ? ranked.map(row => row.tag)
-    : (all ? model.tags : rankedCandidates(counted, shownMoment, model.tags)).filter(tag => occupationSegmentAt(model, tag, shownMoment) !== null),
-    [model, resolved.top, ranked, all, counted, shownMoment]);
-  const selected = choice?.scope === mixScope ? choice : mixCandidates.length === 1 ? { scope: mixScope, tag: mixCandidates[0], hour: shownMoment } : null;
-  const mixTag = selected?.tag, mixOriginHour = selected?.hour;
-  const mix = useMemo(() => model && mixTag && mixOriginHour !== undefined ? occupationHolderMix(model, mixTag, mixOriginHour, shownMoment, shown, range, counted.membership, digits, prepared.lineSummaries)
-    : null, [model, mixTag, mixOriginHour, shownMoment, shown, range, counted.membership, digits, prepared.lineSummaries]);
-  useEffect(()=>{prepared.onSummaryMembership(view==='mix' ? mix?.membership : resolved.membership ?? undefined);},[view,mix?.membership,resolved.membership,prepared.onSummaryMembership]);
+  // As main: the countries of the choice holding an occupation at that moment.
+  const candidates = useMemo(() => (occupiers.data?.occupiers ?? []).filter(row => row.missing === null && match.matches(row.tag, choiceHour)).map(row => row.tag),
+    [occupiers.data, match, choiceHour]);
+  const [picked, setPicked] = useState<{ tag: string; hour: number } | null>(null);
+  const originHour = picked?.hour ?? choiceHour;
+  const resolvedTag = mixCountry(widget.countries, fallback, candidates.map(tag => ({ tag })));
+  const mixTag = picked && candidates.includes(picked.tag) ? picked.tag : resolvedTag !== null && candidates.includes(resolvedTag) ? resolvedTag : candidates.length === 1 ? candidates[0] : null;
+  const mixOrigin = picked?.tag === mixTag ? originHour : choiceHour;
+  const spans = useMemo(() => view === 'mix' && mixTag && groups.data ? countryDrillSpans(groups.data.countryIdentities, mixTag, mixOrigin) : null,
+    [view, mixTag, mixOrigin, groups.data]);
+  const spansKey = spans ? JSON.stringify([...spans]) : null;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const mix = useMemo(() => mixTag && spans ? { tag: mixTag, spans } : null, [mixTag, spansKey]);
+
+  // The totals and collaboration of the hour pointed at: on the lines, the hovered hour; on the race, the hour a tooltip
+  // opens at, never while playing (the head would be a read every frame).
+  const [detailHour, setDetailHour] = useState<number | null>(null);
+  const asked = useRef<number | null>(null);
+  const ask = useCallback((hour: number | null) => {
+    const at = hour === null ? null : Math.floor(hour);
+    if (asked.current === at) return;
+    asked.current = at;
+    queueMicrotask(() => setDetailHour(at));
+  }, []);
+  const request = track && detailHour !== null ? { sourceId: track.source.id, revision: track.source.revision, product: 'occupation-at',
+    params: { branchId: track.branch.id, hour: detailHour, tags: [], collaboration } } : null;
+  const read = useProduct<OccupationDetailReply>(runtime.client, request, active, validateOccupationDetail, track?.source);
+  const detail = useMemo<DetailAt | null>(() => read.data && detailHour !== null ? { hour: detailHour, reply: read.data, values: repliedCells(read.data).read() } : null,
+    [read.data, detailHour]);
+  const tooltip = useCallback((tag: string, hour: number, _name: string, labelAt: LabelAt) => {
+    if (!playing || view !== 'race') ask(hour);
+    return [occupationTooltip(tag, Math.floor(hour), detail, labelAt, shown, collaboration)];
+  }, [playing, view, ask, detail, shown, collaboration]);
+  const lineTooltip = useCallback((hour: number, tags: readonly string[], labelAt: LabelAt, colour: (tag: string) => string) =>
+    [occupationLineTooltip(Math.floor(hour), tags, detail, labelAt, colour, shown, rank, collaboration)], [detail, shown, rank, collaboration]);
+
+  const [warnings, setWarnings] = useChangedState<readonly string[]>(NO_WARNINGS);
+  const onWarnings = useCallback((items: readonly string[]) => setWarnings(before => before.join('\0') === items.join('\0') ? before : items), []);
+  const diagnosticKey = JSON.stringify([...warnings, ...(read.data?.warnings ?? [])]);
   useEffect(() => {
-    if (active && view === 'mix' && choice?.scope !== mixScope && mixCandidates.length === 1) {
-      setChoice({ scope: mixScope, tag: mixCandidates[0], hour: shownMoment });
-    }
-  }, [active, view, choice, mixScope, mixCandidates, shownMoment]);
-  const chooserKey = JSON.stringify([mixCandidates, shownMoment]);
-  const segmentAt = useCallback((tag: string, hour: number) => occupationSegmentAt(model, tag, hour), [model]);
-  const relatedTags = useCallback((hour: number, tags: readonly string[]) => model ? occupationTooltipTags(model, hour, tags, collaboration) : [], [model, collaboration]);
-  useEffect(() => {
-    const warnings = [...(data?.warnings ?? []), ...(groups.data?.warnings ?? [])];
-    onDiagnostics(warnings.length ? warnings : NO_WARNINGS);
+    const all = JSON.parse(diagnosticKey) as string[];
+    onDiagnostics(all.length ? all : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);
-  }, [data, groups.data, onDiagnostics]);
-  const none = all ? null : noMembersAt(widget.countries, resolved, groups.data, shownMoment, track?.branch.lastHour ?? 0);
-  const state = !track ? <WidgetState kind="empty" icon="globe" message="Load a campaign to see occupation trends." />
-    : (widget.time.mode === 'range' || widget.time.mode === 'pin') && !window ? <WidgetState kind="unavailable" message="The chosen moment is not in this campaign." />
-    : error ? <WidgetState kind="error" failure={error} onRetry={retry} />
-    : grouped && groups.error && !groups.data ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />
-    : requested.reason ? <WidgetState kind="empty" icon="globe" message={requested.reason} />
-    // A group with no member found yet asks for nothing, so no reply will come.
-    : none ? <NoMembersState reason={none.reason} icon="globe" />
-    : !model || (grouped && !groups.data) ? <WidgetState kind="loading" label="Loading occupation trends…" /> : null;
-  const chooserOwner = useMemo(() => ({ scope: mixScope, key: chooserKey, model, active, available: !state }),
-    [mixScope, chooserKey, model, active, !state]);
-  const chooserRef = useRef(chooserOwner);
-  chooserRef.current = chooserOwner;
-  const mixChooser = view === 'mix' && track && model && !state ? <CountryPicker countries={track.source.metadata.countries}
-    allowedTags={mixCandidates} selectedTag={mix?.available ? mix.tag : null} playerCountryId={null} source={track.source} client={runtime.client}
-    field flagAt={{ branchId: track.branch.id, hour: shownMoment }} onChange={tag => {
-      if (!active || state || chooserRef.current !== chooserOwner || !tag || !mixCandidates.includes(tag) || occupationSegmentAt(model, tag, shownMoment) === null) return;
-      setChoice({ scope: mixScope, tag, hour: shownMoment });
-    }} /> : null;
-  return <div ref={parityRoot}>{grouped && groups.error && groups.data ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null}<CountryRaceView pending={data?.pending} lineSummaries={prepared.lineSummaries} onSummaryView={prepared.onSummaryView}
-    onReachHour={prepared.onReachHour} navigation={prepared.navigation} runtime={runtime} track={track} active={active} options={options} view={view} extent={extent} playhead={playhead}
-    moment={shownMoment} slots={slots} ranked={ranked} lines={lines} mix={mix} segmentAt={segmentAt} tooltipTags={relatedTags} state={state}
-    presentation={{ exact: false, held: false }}
-    label={`Average ${measureName(rank).toLowerCase()}`} empty={counted.known(shownMoment) ? 'No occupied-state data at this time.' : MEMBERSHIP_PREPARING}
-    lineEmpty={{ icon: 'globe', message: counted.known(extent[0], extent[1]) ? 'No occupied-state data for these countries.' : MEMBERSHIP_PREPARING }}
-    mixEmpty={{ icon: 'globe', message: counted.known(shownMoment) ? 'Choose an occupier.' : MEMBERSHIP_PREPARING, unavailable: () => 'No occupied-state data at this time.' }}
-    countryTags={view === 'mix' ? [...new Set(mix?.lines.map(line => line.tag) ?? [])] : undefined}
-    beforeChart={<>{data?.preparing?.length ? <p className="chart-line-key">Country identity history is still being prepared.</p> : null}{mixChooser}{view === 'mix' && mix && !mix.available ? <p className="chart-line-key">Country unavailable at this time.</p> : null}
-      {shown === 'both' && view !== 'race' ? <p className="chart-line-key"><i aria-hidden="true" />Solid: resistance · <i className="is-dashed" aria-hidden="true" />dashed: compliance</p> : null}</>}
-    formatAxis={formatAxisPercent} formatValue={String}
-    tooltip={(tag, hour, _name, _colours, labelAt) => {
-      const alias = view === 'mix' && mix ? countryDrillTagAt(mix.membership, hour) : tag;
-      if (!model || !alias || !isMember(model.series.get(alias)?.membership ?? counted.membership?.get(alias), hour)) return null;
-      const tip = occupationTooltip(model, alias, hour, labelAt, shown, collaboration);
-      return tip ? [tip] : null;
-    }} lineTooltip={(hour, tags, labelAt, colour) => model ? [occupationLineTooltip(model, hour, tags, labelAt, colour, shown, rank, collaboration)] : []} /></div>;
+  }, [diagnosticKey, onDiagnostics]);
+
+  const legend = shown === 'both' && view !== 'race'
+    ? <p className="chart-line-key"><i aria-hidden="true" />Solid: {measureName(rank).toLowerCase()} · <i className="is-dashed" aria-hidden="true" />dashed: {measureName(otherMeasure(rank)).toLowerCase()}</p> : null;
+  const chooser = view === 'mix' && track ? <CountryPicker countries={track.source.metadata.countries} allowedTags={candidates} selectedTag={mixTag} playerCountryId={null}
+    source={track.source} client={runtime.client} field flagAt={{ branchId: track.branch.id, hour: choiceHour }}
+    onChange={tag => { if (tag && candidates.includes(tag)) setPicked({ tag, hour: choiceHour }); }} /> : null;
+  const unavailable = view === 'mix' && occupiers.data && !candidates.length ? <p className="chart-line-key">No occupied-state data at this time.</p>
+    : view === 'mix' && !mixTag ? <p className="chart-line-key">Choose an occupier.</p>
+    : view === 'mix' && groups.data && spans && spans.size === 0 ? <p className="chart-line-key">Country unavailable at this time.</p> : null;
+  return <MeasureRace widget={widget} runtime={runtime} active={active} measure={measure} decimals={5} view={view}
+    options={options} label={`Average ${measureName(rank).toLowerCase()}`} icon="globe" format={format} formatValue={formatValue}
+    onWarnings={onWarnings} second={second} mix={mix} tooltip={tooltip} lineTooltip={lineTooltip} onHover={ask}
+    beforeChart={<>{chooser}{unavailable}{legend}{read.error ? <p className="chart-line-key">Occupation details could not be read: {read.error.message}</p> : null}</>} />;
 }

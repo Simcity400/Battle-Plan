@@ -34,11 +34,11 @@ pub struct Row {
     pub value: i64,
 }
 
-pub fn walk(memory: &impl Memory, base: usize, game_state: usize, output: &mut [Row]) -> Outcome {
-    walk_buffer(memory, base, game_state, crate::walk::Buffer::Fixed(output))
+pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
+    walk_buffer(memory, base, game_state, crate::walk::Buffer::Count)
 }
 
-pub fn walk_growing(
+pub fn walk(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -99,9 +99,9 @@ pub(crate) fn read_country(
     memory: &impl Memory,
     pointer: usize,
     country: u32,
-    output: &mut [Row],
+    output: &mut Vec<Row>,
 ) -> Outcome {
-    read_country_buffer(memory, pointer, country, crate::walk::Buffer::Fixed(output))
+    read_country_buffer(memory, pointer, country, crate::walk::Buffer::Growing(output))
 }
 
 pub(crate) fn read_country_buffer(
@@ -255,7 +255,7 @@ mod tests {
         bytes
     }
 
-    fn capture(bytes: &[u8], output: &mut [Row]) -> Outcome {
+    fn capture(bytes: &[u8], output: &mut Vec<Row>) -> Outcome {
         read_country(
             &SliceMemory {
                 base: COUNTRY,
@@ -267,10 +267,22 @@ mod tests {
         )
     }
 
+    fn count(bytes: &[u8]) -> Outcome {
+        read_country_buffer(
+            &SliceMemory {
+                base: COUNTRY,
+                bytes,
+            },
+            COUNTRY,
+            19,
+            crate::walk::Buffer::Count,
+        )
+    }
+
     #[test]
     fn collision_chain_preserves_signed_i64_and_exact_omitted_count() {
         let bytes = memory();
-        let mut rows = [Row::default(); 2];
+        let mut rows = vec![Row::default(); 2];
         assert_eq!(capture(&bytes, &mut rows), Outcome::Rows { len: 2 });
         assert_eq!(
             (rows[0].country, rows[0].province, rows[0].value),
@@ -281,14 +293,7 @@ mod tests {
             (2, 5, i64::MIN)
         );
         assert_eq!(
-            capture(&bytes, &mut rows[..1]),
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            }
-        );
-        assert_eq!(
-            capture(&bytes, &mut []),
+            count(&bytes),
             Outcome::Truncated {
                 len: 0,
                 unread_rows: 2
@@ -302,14 +307,14 @@ mod tests {
         let key = BUCKETS - COUNTRY + 2 * STRIDE + PROVINCE;
         bytes[key..key + 4].copy_from_slice(&1_u32.to_le_bytes());
         assert_eq!(
-            capture(&bytes, &mut []),
+            count(&bytes),
             Outcome::Unavailable {
                 reason: "duplicate disrupted supply key"
             }
         );
         bytes[key..key + 4].copy_from_slice(&2_u32.to_le_bytes());
         assert_eq!(
-            capture(&bytes, &mut []),
+            count(&bytes),
             Outcome::Unavailable {
                 reason: "disrupted supply key probe distance differs"
             }
@@ -318,7 +323,7 @@ mod tests {
         bytes[country_supply::DISRUPTED_COUNT..country_supply::DISRUPTED_COUNT + 4]
             .copy_from_slice(&1_u32.to_le_bytes());
         assert_eq!(
-            capture(&bytes, &mut []),
+            count(&bytes),
             Outcome::Unavailable {
                 reason: "disrupted supply occupied count differs"
             }
@@ -326,7 +331,7 @@ mod tests {
         bytes = memory();
         bytes[BUCKETS - COUNTRY + 6 * STRIDE + DISTANCE_PLUS_ONE] = EMPTY;
         assert_eq!(
-            capture(&bytes, &mut []),
+            count(&bytes),
             Outcome::Unavailable {
                 reason: "disrupted supply end sentinel invalid"
             }
@@ -337,9 +342,9 @@ mod tests {
     fn retained_empty_table_does_not_touch_old_buckets_and_fault_is_unavailable() {
         let mut bytes = memory();
         bytes[country_supply::DISRUPTED_COUNT..country_supply::DISRUPTED_COUNT + 4].fill(0);
-        assert_eq!(capture(&bytes[..0x200], &mut []), Outcome::Rows { len: 0 });
+        assert_eq!(count(&bytes[..0x200]), Outcome::Rows { len: 0 });
         assert_eq!(
-            capture(&bytes[..country_supply::DISRUPTED_MAX_DISTANCE], &mut []),
+            count(&bytes[..country_supply::DISRUPTED_MAX_DISTANCE]),
             Outcome::Unavailable {
                 reason: "disrupted supply header unreadable"
             }
@@ -347,7 +352,7 @@ mod tests {
         bytes[country_supply::DISRUPTED_COUNT..country_supply::DISRUPTED_COUNT + 4]
             .copy_from_slice(&2_u32.to_le_bytes());
         assert_eq!(
-            capture(&bytes[..0x200], &mut []),
+            count(&bytes[..0x200]),
             Outcome::Unavailable {
                 reason: "disrupted supply end sentinel invalid"
             }

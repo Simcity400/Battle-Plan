@@ -13,13 +13,6 @@ use engine_native::{
 };
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
-use std::sync::Mutex;
-static REFUSALS: Mutex<std::collections::BTreeMap<&'static str, u64>> =
-    Mutex::new(std::collections::BTreeMap::new());
-fn refused(reason: &'static str) {
-    let mut counts = REFUSALS.lock().unwrap_or_else(|error| error.into_inner());
-    *counts.entry(reason).or_default() += 1;
-}
 use cair_base::{CarrierIndexedCertificate, CarrierPool, CarrierRegistration, ContainerFuel};
 
 #[derive(Debug, Default)]
@@ -149,9 +142,6 @@ impl Store {
                     countries.as_ref().expect("changed base demands countries"),
                     &mut self.resolved,
                 );
-                if let Err(reason) = containers.as_ref() {
-                    refused(reason);
-                }
                 engine_allocation::reserve_map(&mut self.bases, 1)
                     .map_err(|_| "state air-base metadata storage unavailable")?;
                 self.bases.insert(
@@ -279,13 +269,6 @@ fn gather_fuel(
         };
         first = failed + 1;
     }
-    for row in rows.iter().take(pointers.len()) {
-        for value in [row.fuel.demand, row.fuel.allocated] {
-            if let Err(reason) = value {
-                refused(reason);
-            }
-        }
-    }
 }
 
 /// The AirBaseRegistrations cadence audit puts FUEL_DEMAND_RAW in the hourly
@@ -300,7 +283,7 @@ fn update_fuel(memory: &impl Memory, pointer: usize) -> ContainerFuel {
             .checked_add(offset)
             .filter(|at| at.checked_add(8).is_some())
     });
-    let fuel = if let [Some(demand), Some(allocated)] = addresses {
+    if let [Some(demand), Some(allocated)] = addresses {
         let mut words = [[0; 8]; 2];
         let completed = memory.copy_scattered(
             [demand, allocated],
@@ -324,13 +307,7 @@ fn update_fuel(memory: &impl Memory, pointer: usize) -> ContainerFuel {
             demand: scalar(memory, pointer, container::FUEL_DEMAND_RAW),
             allocated: scalar(memory, pointer, container::FUEL_ALLOCATED_RAW),
         }
-    };
-    for value in [fuel.demand, fuel.allocated] {
-        if let Err(reason) = value {
-            refused(reason);
-        }
     }
-    fuel
 }
 
 fn scalar(memory: &impl Memory, pointer: usize, offset: usize) -> Result<i64, &'static str> {
@@ -572,9 +549,6 @@ fn read_membership<M: Memory>(
             countries,
             resolved,
         );
-        if let Err(reason) = pools.as_ref() {
-            refused(reason);
-        }
         result.push(Container {
             pointer,
             country,
@@ -636,30 +610,28 @@ fn read_pools<M: Memory>(
 pub(crate) fn capture(job: &mut AirBasesJob, memory: &impl Memory, image: usize) {
     job.state_fuel.clear();
     if job.log.overflowed || job.registration_demand.is_none() {
-        refused("state air-base original registration snapshot unavailable");
         return;
     }
     let Some(store) = job.registration_store.as_deref_mut() else {
-        refused("state air-base registration writer certificate unavailable");
         return;
     };
-    if store.bases() > job.segments.len() {
-        refused("state air-base registration segment certificate unavailable");
-    }
     let counted = Counted {
         memory,
         bytes: Cell::new(0),
     };
     let _reads = crate::read_accounting::table(replay_data::rows::TableId::AirBaseRegistrations);
-    if let Err(reason) = store.state_inputs.capture(
-        &counted,
-        image,
-        job.game_state,
-        &job.log,
-        &job.segments,
-        &mut job.state_fuel,
-    ) {
-        refused(reason);
+    if store
+        .state_inputs
+        .capture(
+            &counted,
+            image,
+            job.game_state,
+            &job.log,
+            &job.segments,
+            &mut job.state_fuel,
+        )
+        .is_err()
+    {
         job.state_fuel.clear();
     }
     job.state_fuel.native_bytes = counted.bytes.get();
@@ -894,11 +866,6 @@ mod tests {
         assert_eq!(recovered.demand, Ok(i64::MIN));
         assert_eq!(recovered.allocated, Ok(i64::MAX));
         assert_eq!(memory.reads.get(), 6);
-        let counts = REFUSALS.lock().unwrap();
-        assert_eq!(
-            counts.get("state air-base fuel scalar unreadable"),
-            Some(&2)
-        );
     }
 
     #[test]

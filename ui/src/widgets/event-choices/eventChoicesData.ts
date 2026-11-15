@@ -1,14 +1,14 @@
 import type { LogRow } from '../../charts/log/logData';
-import { newestFirst } from '../../charts/log/logData.ts';
-import type { PlaybackBounds } from '../../charts/playbackIntervals';
+import type { LogReplyRow } from '../../charts/log/logSource';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import { formatDateTime } from '../../dashboard/calendar.ts';
-import type { EventFeedItem, EventFeedKind, ScriptEdge, ScriptOccurrence, ScriptOccurrenceReply } from '../../generated/dashboard';
-import { beforeBreak, breakAfter, dayOf, daysBetween, daysText, edgesAt, lastEdge, occurrenceItem, occurrenceMatches } from '../event-feed/scriptOccurrences.ts';
+import { beforeBreak, breakAfter, dayOf, daysBetween, daysText, edgesAt, occurrenceItem, occurrenceMatches, occurrenceOf } from '../event-feed/scriptOccurrences.ts';
 import type { RecordingBreak } from '../event-feed/scriptOccurrences';
+import { plainScripted, reasonRows } from '../event-feed/scriptedGaps.ts';
+import type { EventFeedItem, ScriptEdge, ScriptOccurrence } from '../../generated/dashboard';
 
-export const TITLE_UNAVAILABLE = 'Title unavailable';
-export const OPTION_UNAVAILABLE = 'Option text unavailable';
+export const TITLE_UNAVAILABLE = 'Title not recorded';
+export const OPTION_UNAVAILABLE = 'Option text not recorded';
 
 /** One recorded delivery of an event to one country, with the option it chose. */
 export interface ChoiceCard {
@@ -24,8 +24,8 @@ export interface ChoiceCard {
   sender: string | null;
 }
 
-/** A card as the reads by the playback hour show it. `pause` is a break in the
- * recording after the firing, while no choice is recorded: a choice then is unknown. */
+/** A card as the reads by the hour shown show it. `pause` is a break in the recording after the firing, while no choice
+ * is recorded: a choice then is unknown. */
 export interface ChoiceAt {
   card: ChoiceCard;
   hour: number;
@@ -33,63 +33,48 @@ export interface ChoiceAt {
   pause: RecordingBreak | null;
 }
 
-export interface ChoiceFilter {
-  /** The opening kinds shown: country events, news or both. */
-  kinds: ReadonlySet<EventFeedKind>;
-  country: (tag: string, hour: number) => boolean;
-  allCountries: boolean;
-  firstHour: number | null;
-}
-
 const isChoice = (edge: ScriptEdge) => edge.row.kind === 'eventOptionSelected' && (edge.option === null || edge.option >= 0);
 
-/** The edge a card is dated by: its firing where recorded, else its first choice.
- * Immediate effects with neither are no card: they are part of a dispatch, never a choice. */
+/** The edge a card is dated by: its firing where recorded, else its first choice. Immediate effects with neither are no
+ * card: they are part of a dispatch, never a choice. */
 const cardEdge = (occurrence: ScriptOccurrence): ScriptEdge | null =>
   occurrence.opened ? occurrence.edges[0] : occurrence.edges.find(isChoice) ?? null;
 
-/** Each page's cards once per filter, newest first by firing date. A choice
- * whose firing was not recorded is its own card. */
-export function prepareChoices(reply: ScriptOccurrenceReply, filter: ChoiceFilter): ReadonlyArray<LogRow<ChoiceAt>> {
-  return newestFirst(reply.occurrences.flatMap(occurrence => {
-    const first = cardEdge(occurrence);
-    if (!first) return [];
-    const fired = occurrence.opened ? first : null;
-    if (fired && !filter.kinds.has(fired.row.kind)) return [];
-    if (filter.firstHour !== null && first.row.hour < filter.firstHour) return [];
-    if (!filter.allCountries && !occurrenceMatches(occurrence, filter.country)) return [];
-    const roles = first.row.participants ?? [null, null];
-    const country = fired ? roles[1] : roles[0];
-    const sender = fired && roles[0] !== null && roles[0] !== country ? roles[0] : null;
-    const card: ChoiceCard = { occurrence, item: occurrenceItem(reply, occurrence), first, fired, country, sender };
-    return [{ key: occurrence.id, id: occurrence.id, hour: first.row.hour, revealedHour: first.row.readHour, by: false,
-      item: { card, hour: first.row.readHour, choice: null, pause: null } }];
-  }));
+/** A page row's card; null for a row that is no card. */
+export function choiceCard(occurrence: ScriptOccurrence | null): ChoiceCard | null {
+  if (!occurrence) return null;
+  const first = cardEdge(occurrence);
+  if (!first) return null;
+  const fired = occurrence.opened ? first : null;
+  const roles = first.row.participants ?? [null, null];
+  const country = fired ? roles[1] : roles[0];
+  const sender = fired && roles[0] !== null && roles[0] !== country ? roles[0] : null;
+  return { occurrence, item: occurrenceItem(occurrence), first, fired, country, sender };
 }
 
-/** A card at the playback hour: shown from its first read, chosen from the read
- * that shows the choice. `awaiting` keeps only cards still awaiting a choice. */
-export function choiceAt(row: LogRow<ChoiceAt>, hour: number, breaks: readonly RecordingBreak[], awaiting: boolean): LogRow<ChoiceAt> | null {
-  const { card } = row.item;
-  if ((row.revealedHour ?? row.hour) > hour) return null;
-  const edges = edgesAt(card.occurrence.edges, hour);
-  const choice = edges.filter(isChoice).at(-1) ?? null;
+/** A row of an `event-choices` page, dated by its card's firing (or first choice). */
+export function choiceRow(reply: LogReplyRow): LogRow<ChoiceCard | null> {
+  const card = choiceCard(occurrenceOf(reply));
+  return { key: reply.key, id: card?.occurrence.id ?? reply.key, hour: card?.first.row.hour ?? reply.hour, revealedHour: card?.first.row.readHour ?? reply.hour,
+    by: false, item: card };
+}
+
+/** A card at `hour`: shown from its first read, chosen from the read that shows the choice; matched to the chosen countries.
+ * `awaiting` keeps only cards still awaiting a choice. */
+export function choiceAt(row: LogRow<ChoiceCard | null>, hour: number, breaks: readonly RecordingBreak[], awaiting: boolean,
+  country: ((tag: string, hour: number) => boolean) | null): LogRow<ChoiceAt> | null {
+  const card = row.item;
+  if (!card || (row.revealedHour ?? row.hour) > hour || (country && !occurrenceMatches(card.occurrence, country))) return null;
+  const choice = edgesAt(card.occurrence.edges, hour).filter(isChoice).at(-1) ?? null;
   const pause = choice ? null : breakAfter(breaks, row.revealedHour ?? row.hour, hour);
   if (awaiting && (choice || pause)) return null;
   return { ...row, item: { card, hour, choice, pause } };
 }
 
 export const isOpen = (at: ChoiceAt) => !at.choice && !at.pause;
-export function choicePlaybackBounds(rows: ReadonlyArray<LogRow<ChoiceAt>>, hour: number): PlaybackBounds {
-  let first = -Infinity, end = Infinity;
-  for (const row of rows) if (isOpen(row.item)) {
-    const start = (Math.floor(row.item.card.first.row.hour / 24) + 1) * 24;
-    if (hour < start) end = Math.min(end, start);
-    else { first = Math.floor(hour / 24) * 24; end = Math.min(end, first + 24); }
-  }
-  return { first, end };
-}
 export const choiceTitle = (card: ChoiceCard) => card.item?.name ?? TITLE_UNAVAILABLE;
+/** The title as plain words, every gap written out. */
+export const choiceText = (card: ChoiceCard) => plainScripted(choiceTitle(card));
 
 /** "A", "B", … "Z", "AA": an option's place in the game's order. */
 export function optionLetter(index: number): string {
@@ -100,8 +85,7 @@ export function optionLetter(index: number): string {
 
 export interface OptionLine { key: string; letter: string | null; text: string; missing: boolean; chosen: boolean }
 
-/** Every authored option in the game's order, the chosen one marked. A chosen
- * option the content does not list is its own line. */
+/** Every authored option in the game's order, the chosen one marked. A chosen option the content does not list is its own line. */
 export function optionLines(at: ChoiceAt): OptionLine[] {
   const authored = at.card.item?.options ?? [];
   const chosen = at.choice?.option ?? null;
@@ -125,10 +109,9 @@ export function choiceDates(at: ChoiceAt): string {
   return dayOf(start);
 }
 
-/** The open card's pill: "Awaiting choice · N days open" up to the playback date. */
+/** The open card's pill: "Awaiting choice · N days open" up to the date shown. */
 export function awaitingText(at: ChoiceAt): string {
-  const days = daysBetween(at.card.first.row.hour, at.hour);
-  return `Awaiting choice · ${daysText(Math.max(0, days))} open`;
+  return `Awaiting choice · ${daysText(Math.max(0, daysBetween(at.card.first.row.hour, at.hour)))} open`;
 }
 
 /** What the options say when none is chosen. */
@@ -137,12 +120,12 @@ export const noChoiceText = (at: ChoiceAt) => at.pause ? 'No choice recorded' : 
 export function choiceDescription(at: ChoiceAt, name: (tag: string, hour: number) => string): string {
   const country = at.card.country === null ? 'A country not identified' : name(at.card.country, at.card.first.row.nameHour);
   const chosen = optionLines(at).find(line => line.chosen);
-  return `${country}: ${choiceTitle(at.card)}, ${choiceDates(at)}${at.choice ? `, ${chosen?.letter ? `${chosen.letter}. ` : ''}${chosen?.text}`
+  return `${country}: ${choiceText(at.card)}, ${choiceDates(at)}${at.choice ? `, ${chosen?.letter ? `${chosen.letter}. ` : ''}${plainScripted(chosen?.text ?? '')}`
     : isOpen(at) ? `, ${awaitingText(at)}` : `, ${noChoiceText(at)}`}`;
 }
 
-/** The event feed's tooltip form: title, dates, the option taken, countries and Content
- * identity. Each country is named at the fact naming it: the chooser at its choice. */
+/** Title, dates, the option taken, countries and Content identity. Each country is named at the row naming it: the chooser at
+ * its choice. */
 export function choiceTooltip(at: ChoiceAt, name: (tag: string, hour: number) => string): TooltipContent[] {
   const { card, choice } = at;
   const fired = card.first.row.nameHour;
@@ -155,33 +138,31 @@ export function choiceTooltip(at: ChoiceAt, name: (tag: string, hour: number) =>
     const chooser = choice.row.participants?.[0] ?? null;
     if (chooser !== card.country) rows.push({ label: 'Chosen by', value: who(chooser, choice.row.nameHour) });
     const line = optionLines(at).find(line => line.chosen);
-    if (line) rows.push({ label: 'Option taken', value: `${line.letter ? `${line.letter}. ` : ''}${line.text}`, tone: line.missing || !line.letter ? 'muted' : undefined });
+    if (line) rows.push({ label: 'Option taken', value: `${line.letter ? `${line.letter}. ` : ''}${plainScripted(line.text)}`, tone: line.missing || !line.letter ? 'muted' : undefined });
   } else if (at.pause) {
     rows.push({ label: 'Chosen', value: 'Not recorded', tone: 'muted' });
     rows.push({ label: 'Recording paused', value: `${formatDateTime(at.pause.firstHour)} to ${formatDateTime(at.pause.lastHour)}`, tone: 'muted' });
   } else rows.push({ label: 'Chosen', value: 'Not yet', tone: 'muted' });
   if (card.item?.token) rows.push({ label: 'Content identity', value: card.item.token });
-  if (card.item?.description) rows.push({ label: card.item.description });
-  return [{ title: choiceTitle(card), icon: card.item?.icon ?? undefined, rows }];
+  rows.push(...reasonRows(card.item));
+  if (card.item?.description) rows.push({ label: plainScripted(card.item.description) });
+  return [{ title: choiceText(card), icon: card.item?.icon ?? undefined, rows }];
 }
 
 /** The menu's dates: when it fired and when it was chosen. */
 export const choiceJumps = (at: ChoiceAt): number[] => [...new Set([at.card.fired?.row.hour, at.choice?.row.hour]
   .filter((hour): hour is number => hour !== undefined))];
 
-/** Titles and option texts the content could not resolve, named by the event's
- * Content identity and counted once per card. */
-export function choiceDiagnostics(replies: readonly ScriptOccurrenceReply[]): string[] {
+/** Titles and option texts the content could not resolve, named by the event's Content identity and counted once per card. */
+export function choiceDiagnostics(cards: readonly ChoiceCard[]): string[] {
   const titles = new Map<string, number>(), options = new Map<string, number>();
   const count = (map: Map<string, number>, key: string) => map.set(key, (map.get(key) ?? 0) + 1);
-  for (const reply of replies) for (const occurrence of reply.occurrences) {
-    if (!cardEdge(occurrence)) continue;
-    const item = occurrenceItem(reply, occurrence);
-    const name = item?.token ?? 'an event not identified';
-    if (!item?.name) count(titles, name);
-    const chosen = lastEdge(occurrence.edges.filter(isChoice), ['eventOptionSelected'])?.option ?? null;
-    if (!item?.options || item.options.some(option => option.name === null)
-      || (chosen !== null && !item.options.some(option => option.ordinal === chosen))) count(options, name);
+  for (const card of cards) {
+    const name = card.item?.token ?? 'an event not identified';
+    if (!card.item?.name) count(titles, name);
+    const chosen = card.occurrence.edges.filter(isChoice).at(-1)?.option ?? null;
+    if (!card.item?.options || card.item.options.some(option => option.name === null)
+      || (chosen !== null && !card.item.options.some(option => option.ordinal === chosen))) count(options, name);
   }
   const line = (label: string, map: Map<string, number>) => map.size ? [`${label}: ${[...map.keys()].sort().join(', ')} (${[...map.values()].reduce((a, b) => a + b, 0).toLocaleString()} counted)`] : [];
   return [...line('Event title unavailable', titles), ...line('Event option text unavailable', options)];

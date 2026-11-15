@@ -78,6 +78,11 @@ impl Index {
     pub fn capacity(&self) -> usize {
         self.slots.len() / 2
     }
+    /// Whether one more member, under a possibly new owner, would find a
+    /// table full; `prepare` must grow first.
+    fn needs_room(&self) -> bool {
+        self.live >= self.capacity() || self.owner_count >= self.owners.len() / 2
+    }
     pub fn bytes(&self) -> u64 {
         crate::raw_memory::vector_bytes(&self.slots) + crate::raw_memory::vector_bytes(&self.owners)
     }
@@ -532,11 +537,11 @@ impl Store {
         country: usize,
         pointer: usize,
         change: DecisionChange,
-        growing: bool,
+        baseline: bool,
         results: (Option<i32>, Option<i32>),
     ) -> Result<(), &'static str> {
         self.decision_selected_source(
-            world, memory, base, generation, country, pointer, change, growing, results, None,
+            world, memory, base, generation, country, pointer, change, baseline, results, None,
         )
     }
     pub(crate) fn decision_selected_source<M: Memory>(
@@ -548,7 +553,7 @@ impl Store {
         country: usize,
         pointer: usize,
         mut change: DecisionChange,
-        growing: bool,
+        baseline: bool,
         results: (Option<i32>, Option<i32>),
         source: Option<EventFeedSource>,
     ) -> Result<(), &'static str> {
@@ -558,14 +563,13 @@ impl Store {
         let supplied_update = change.operation == Operation::Update;
         let old = self.decisions.find(pointer);
         let row = native::record(memory, base, pointer, change.container)?;
-        if self.grows(growing)
-            && change.container != 0
-            && self.decisions.live + 1 > self.decisions.capacity()
-        {
+        if change.container != 0 && self.decisions.needs_room() {
             self.prepare_decisions(
-                (self.decisions.live + 1).max(self.decisions.capacity().saturating_mul(2)),
+                (self.decisions.live + 1)
+                    .max(self.decisions.owner_count + 1)
+                    .max(self.decisions.capacity().saturating_mul(2)),
             )
-            .map_err(|_| "decision baseline certificate allocation failed")?;
+            .map_err(|_| "decision certificate allocation failed")?;
         }
         let (mut slot, new) = if change.container == 0 {
             (
@@ -600,7 +604,7 @@ impl Store {
         if change.operation != Operation::Store
             && change.container != 0
             && old.is_none()
-            && !growing
+            && !baseline
         {
             return Err("decision writer has no retained instance certificate");
         }
@@ -615,7 +619,7 @@ impl Store {
             supplied_update,
             source,
         )?;
-        self.script_mode(memory, base, generation, world.hour()?, value, growing)
+        self.script_known(memory, base, generation, world.hour()?, value)
     }
     /// A native result store. A certified owner carries the retained delta;
     /// an uncertified owner's exact member keeps its occurrence and refuses
@@ -666,7 +670,7 @@ impl Store {
             Some(source),
         )?;
         self.refuse_decision_owner(
-            memory, base, generation, hour, slot.owner, owner, reason, true, false,
+            memory, base, generation, hour, slot.owner, owner, reason, true,
         )?;
         self.script_known(memory, base, generation, hour, value)?;
         Ok(true)
@@ -684,7 +688,6 @@ impl Store {
         owner: CountryIdentity,
         reason: &'static str,
         count: bool,
-        growing: bool,
     ) -> Result<(), &'static str> {
         super::recovery_needed();
         let Some(_) = self.decisions.refuse(pointer) else {
@@ -701,7 +704,7 @@ impl Store {
             DecisionChange::new(Operation::Refused, 0),
             None,
         );
-        self.script_text(memory, base, generation, hour, marker, reason, growing)
+        self.script_text(memory, base, generation, hour, marker, reason)
     }
     /// The census visit's decision half: a certified owner reads only its
     /// scalar political balance; uncertified owners retry their baseline.
@@ -748,7 +751,6 @@ impl Store {
             .ok_or("decision country surrender target unreadable");
         match identity {
             Ok(owner) => {
-                // Not growing: recovery allocates nothing under the lease.
                 let _ = self.refuse_decision_owner(
                     memory,
                     base,
@@ -758,7 +760,6 @@ impl Store {
                     owner,
                     refusal.reason,
                     !refusal.counted,
-                    false,
                 );
             }
             // A refusal must name its owner.
@@ -830,7 +831,6 @@ impl Store {
         definition: usize,
         target: u32,
         count: Option<i32>,
-        growing: bool,
     ) -> Result<(), &'static str> {
         let mut change = DecisionChange::new(
             if count.is_some() {
@@ -849,7 +849,7 @@ impl Store {
                 .ok_or("decision random token overflow")?,
         )?;
         value.script.days = count;
-        self.script_mode(memory, base, generation, world.hour()?, value, growing)
+        self.script_known(memory, base, generation, world.hour()?, value)
     }
     pub(crate) fn decision_baseline(
         &mut self,
@@ -890,7 +890,7 @@ impl Store {
         {
             return Err("decision baseline status identity differs");
         }
-        self.script_growing(
+        self.script_known(
             memory,
             base,
             generation,
@@ -965,7 +965,6 @@ impl Store {
                 definition,
                 target,
                 Some(count),
-                true,
             )?;
         }
         if engine_native::cpdx_array::Array::read(
@@ -978,7 +977,7 @@ impl Store {
         }
         self.decision_roster_baseline(&world, memory, base, generation, country.pointer, status)?;
         Self::certifies(cut)?;
-        self.script_growing(
+        self.script_known(
             memory,
             base,
             generation,
@@ -1095,7 +1094,6 @@ impl Store {
         change: DecisionChange,
         token: engine_native::msvc_string::Descriptor,
         root: Option<u32>,
-        growing: bool,
     ) -> Result<(), &'static str> {
         let mut value = fact(memory, world.country_object(country)?, change, None);
         value.token = token;
@@ -1106,7 +1104,7 @@ impl Store {
         {
             value.target = world.country(change.ordinal)?;
         }
-        self.script_mode(memory, base, generation, world.hour()?, value, growing)
+        self.script_known(memory, base, generation, world.hour()?, value)
     }
     fn decision_roster_baseline<M: Memory>(
         &mut self,
@@ -1156,7 +1154,6 @@ impl Store {
                     },
                     token,
                     Some(root),
-                    true,
                 )?;
             }
             if engine_native::cpdx_array::Array::read(
@@ -1190,7 +1187,6 @@ impl Store {
                 },
                 engine_native::msvc_string::Descriptor::read(memory, at)?,
                 None,
-                true,
             )?;
         }
         if engine_native::cpdx_array::Array::read(memory, country + native::IGNORED_TOKENS, 40)
@@ -1225,6 +1221,7 @@ mod tests {
     }
     #[test]
     fn owner_certificates_reset_only_the_marked_chain() {
+        let _globals = crate::event_feed_observer::test_globals();
         let mut index = Index::default();
         index.prepare(40).unwrap();
         index.reset(7);
@@ -1248,6 +1245,7 @@ mod tests {
     }
     #[test]
     fn prepared_growth_keeps_owner_links_and_reused_addresses_get_new_id() {
+        let _globals = crate::event_feed_observer::test_globals();
         let mut index = Index::default();
         index.prepare(4).unwrap();
         index.reset(1);
@@ -1268,6 +1266,7 @@ mod tests {
     }
     #[test]
     fn political_balance_forwards_only_demanded_matching_certificates() {
+        let _globals = crate::event_feed_observer::test_globals();
         let mut index = Index::default();
         index.prepare(5000).unwrap();
         index.reset(7);
@@ -1301,6 +1300,7 @@ mod tests {
     }
     #[test]
     fn a_balance_written_while_revoked_is_carried_into_the_next_certificate() {
+        let _globals = crate::event_feed_observer::test_globals();
         let mut index = Index::default();
         index.prepare(8).unwrap();
         index.reset(7);
@@ -1319,6 +1319,7 @@ mod tests {
     }
     #[test]
     fn decision_labels_outlive_a_same_world_loss_and_restart_only_for_a_new_world() {
+        let _globals = crate::event_feed_observer::test_globals();
         let mut index = Index::default();
         index.prepare(8).unwrap();
         index.reset(7);
@@ -1346,6 +1347,7 @@ mod tests {
     }
     #[test]
     fn revocation_keeps_exact_slots_and_retryable_owners_while_a_loss_clears_them() {
+        let _globals = crate::event_feed_observer::test_globals();
         let mut index = Index::default();
         index.prepare(8).unwrap();
         index.reset(7);
@@ -1371,6 +1373,7 @@ mod tests {
     }
     #[test]
     fn every_status_reset_ends_member_attribution_whatever_the_owner_state() {
+        let _globals = crate::event_feed_observer::test_globals();
         let mut index = Index::default();
         index.prepare(8).unwrap();
         index.reset(7);
@@ -1392,6 +1395,7 @@ mod tests {
     }
     #[test]
     fn a_certified_owner_missing_a_member_is_not_an_uncertified_slot() {
+        let _globals = crate::event_feed_observer::test_globals();
         let mut index = Index::default();
         index.prepare(8).unwrap();
         index.reset(7);
@@ -1406,6 +1410,7 @@ mod tests {
     }
     #[test]
     fn surrender_target_changes_preserve_decisions_and_reused_links_recover() {
+        let _globals = crate::event_feed_observer::test_globals();
         let mut index = Index::default();
         index.prepare(1500).unwrap();
         index.reset(1);

@@ -52,17 +52,8 @@ pub struct Snapshot {
     pub failure: Option<&'static str>,
 }
 
-pub struct Output<'a> {
-    pub winners: &'a mut [u32],
-    pub losers: &'a mut [u32],
-    pub actions: &'a mut [Action],
-    pub transfers: &'a mut [Transfer],
-    pub subjects: &'a mut [Subject],
-    pub name_bytes: &'a mut [u8],
-}
-
 /// Worker resident-bid buffers sized from original country/action counts and retained name lengths.
-pub struct GrowingOutput<'a> {
+pub struct Output<'a> {
     pub winners: crate::walk::Buffer<'a, u32>,
     pub losers: crate::walk::Buffer<'a, u32>,
     pub actions: crate::walk::Buffer<'a, Action>,
@@ -70,20 +61,6 @@ pub struct GrowingOutput<'a> {
     pub subjects: crate::walk::Buffer<'a, Subject>,
     pub name_bytes: crate::walk::Buffer<'a, u8>,
 }
-impl<'a> From<Output<'a>> for GrowingOutput<'a> {
-    fn from(output: Output<'a>) -> Self {
-        use crate::walk::Buffer::Fixed;
-        Self {
-            winners: Fixed(output.winners),
-            losers: Fixed(output.losers),
-            actions: Fixed(output.actions),
-            transfers: Fixed(output.transfers),
-            subjects: Fixed(output.subjects),
-            name_bytes: Fixed(output.name_bytes),
-        }
-    }
-}
-
 fn array(
     memory: &impl Memory,
     pointer: usize,
@@ -117,6 +94,20 @@ fn validate_last<T: crate::memory::Raw>(
     Ok(())
 }
 
+/// A growing destination reserves for `required` only once the array's last
+/// element reads, so a header nothing backs never sizes an allocation.
+fn reserve<T: Default, E: crate::memory::Raw>(
+    memory: &impl Memory,
+    destination: &mut crate::walk::Buffer<'_, T>,
+    required: usize,
+    array: Array,
+) -> Result<bool, &'static str> {
+    if destination.is_growing() && required > destination.len() {
+        validate_last::<E>(memory, array)?;
+    }
+    destination.ensure(required)
+}
+
 fn remember_node(seen: &mut HashSet<usize>, node: usize) -> Result<(), &'static str> {
     if seen.contains(&node) {
         return Err("peace history cycle");
@@ -126,28 +117,22 @@ fn remember_node(seen: &mut HashSet<usize>, node: usize) -> Result<(), &'static 
     Ok(())
 }
 
-/// One attempt, no allocation, retries, game calls or live pointers in output.
-pub fn copy(memory: &impl Memory, base: usize, pointer: usize, output: Output<'_>) -> Snapshot {
-    copy_internal(memory, base, pointer, output.into(), true, false)
-}
-
-/// Resident pre-finalization bids, including statuses excluded from settlement.
-/// Used only for the independent fresh-save comparison, at their sampled hour.
-pub fn copy_bids(
+/// [`copy`] into storage that grows to what the backed arrays hold.
+pub fn copy(
     memory: &impl Memory,
     base: usize,
     pointer: usize,
     output: Output<'_>,
 ) -> Snapshot {
-    copy_internal(memory, base, pointer, output.into(), false, false)
+    copy_internal(memory, base, pointer, output, true, false)
 }
 
 /// Worker-only continuation from the first acquired headers, without retries.
-pub fn copy_bids_growing(
+pub fn copy_bids(
     memory: &impl Memory,
     base: usize,
     pointer: usize,
-    output: GrowingOutput<'_>,
+    output: Output<'_>,
 ) -> Snapshot {
     copy_internal(memory, base, pointer, output, false, false)
 }
@@ -164,14 +149,13 @@ fn demand_advisory(memory: &impl Memory, base: usize, pointer: usize) -> Snapsho
         base,
         pointer,
         Output {
-            winners: &mut [],
-            losers: &mut [],
-            actions: &mut [],
-            transfers: &mut [],
-            subjects: &mut [],
-            name_bytes: &mut [],
-        }
-        .into(),
+            winners: crate::walk::Buffer::Count,
+            losers: crate::walk::Buffer::Count,
+            actions: crate::walk::Buffer::Count,
+            transfers: crate::walk::Buffer::Count,
+            subjects: crate::walk::Buffer::Count,
+            name_bytes: crate::walk::Buffer::Count,
+        },
         false,
         true,
     )
@@ -188,7 +172,7 @@ fn copy_internal(
     memory: &impl Memory,
     base: usize,
     pointer: usize,
-    mut output: GrowingOutput<'_>,
+    mut output: Output<'_>,
     settled: bool,
     measuring: bool,
 ) -> Snapshot {
@@ -227,7 +211,7 @@ fn copy_internal(
                 *count = countries.count as usize;
                 continue;
             }
-            destination.ensure(countries.count as usize)?;
+            reserve::<_, u32>(memory, destination, countries.count as usize, countries)?;
             for index in 0..countries.count as usize {
                 if *count == destination.len() {
                     result.omitted = countries.count as usize - index;
@@ -307,11 +291,14 @@ fn copy_internal(
                     }
                     continue;
                 }
-                output.actions.ensure(
+                reserve::<_, u64>(
+                    memory,
+                    &mut output.actions,
                     result
                         .actions
                         .checked_add(actions.count as usize)
                         .ok_or("peace action size overflow")?,
+                    actions,
                 )?;
                 for ordinal in 0..actions.count as usize {
                     let action_pointer =
@@ -438,11 +425,14 @@ fn copy_internal(
                 validate_last::<u64>(memory, participants)?;
             }
             if !measuring && offset == conference::SUBJECT_PARTICIPANTS {
-                output.subjects.ensure(
+                reserve::<_, u64>(
+                    memory,
+                    &mut output.subjects,
                     result
                         .subjects
                         .checked_add(participants.count as usize)
                         .ok_or("peace subject size overflow")?,
+                    participants,
                 )?;
             }
             for index in 0..participants.count as usize {
@@ -491,11 +481,14 @@ fn copy_internal(
                     validate_last::<u64>(memory, states)?;
                     add_count(&mut result.transfers, states.count as usize)?;
                 } else {
-                    output.transfers.ensure(
+                    reserve::<_, u64>(
+                        memory,
+                        &mut output.transfers,
                         result
                             .transfers
                             .checked_add(states.count as usize)
                             .ok_or("peace transfer size overflow")?,
+                        states,
                     )?;
                 }
                 for state_index in 0..if measuring { 0 } else { states.count as usize } {
@@ -530,11 +523,14 @@ fn copy_internal(
                         validate_last::<i32>(memory, states)?;
                         add_count(&mut result.transfers, states.count as usize)?;
                     } else {
-                        output.transfers.ensure(
+                        reserve::<_, i32>(
+                            memory,
+                            &mut output.transfers,
                             result
                                 .transfers
                                 .checked_add(states.count as usize)
                                 .ok_or("peace transfer size overflow")?,
+                            states,
                         )?;
                     }
                     for state_index in 0..if measuring { 0 } else { states.count as usize } {

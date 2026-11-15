@@ -1,48 +1,43 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import type { CountryGroupReply, MeasureSeries } from '../../generated/dashboard';
-import { segments } from '../../charts/series.ts';
-import { clipRuns, isMember, resolveCountries as resolveAny } from '../../dashboard/groups.ts';
+import type { CountryGroupReply } from '../../generated/dashboard';
+import { isMember, resolveCountries as resolveAny } from '../../dashboard/groups.ts';
 import type { CountrySelection } from '../../dashboard/model';
 import { definition as politicalPower } from '../political-power/definition.ts';
 import { definition as commandPower } from '../command-power/definition.ts';
-import { formatBalance, nearestDrop, netSpend, rawAt, toRuns, validateMeasureReply } from './measureData.ts';
+import { changesRange, formatBalance, netSpend, rawOf, summaryEnd } from './measureData.ts';
+import type { ChartBucket, ChartSummary } from '../../charts/chartSummary';
+import { reachedLines, validateMeasureStates } from './measureSeriesData.ts';
 
 const resolveCountries = (selection: CountrySelection, fallback: string[], groups: CountryGroupReply | undefined, lastHour: number) =>
   resolveAny(selection, fallback, groups, lastHour, Number.MAX_SAFE_INTEGER);
 
-const SERIES: MeasureSeries = {
-  tag: 'GER',
-  runs: [{ firstHour: 100, lastHour: 101, valueRaw: '1000000', startsSegment: true }, { firstHour: 102, lastHour: 102, valueRaw: '900001', startsSegment: false },
-    { firstHour: 110, lastHour: 120, valueRaw: '-50000', startsSegment: true }],
-  drops: [{ hour: 102, beforeRaw: '1000000', afterRaw: '900001' }],
-};
-
-test('replies are validated, including run order', () => {
-  assert.equal(validateMeasureReply({ branchId: '1', decimals: 5, series: [SERIES], warnings: [] }).series[0].tag, 'GER');
-  for (const bad of [null, { branchId: '1', decimals: 5, series: [{ ...SERIES, runs: [...SERIES.runs].reverse() }], warnings: [] },
-    { branchId: '1', decimals: 5, series: [{ ...SERIES, runs: [{ firstHour: 1, lastHour: 2, valueRaw: '1.5' }] }], warnings: [] },
-    { branchId: '1', decimals: 99, series: [], warnings: [] }]) {
-    assert.throws(() => validateMeasureReply(bad));
-  }
+test('balances are whole numbers by default and exact to the digits asked', () => {
+  assert.equal(formatBalance('900001', 5), '9');
+  assert.equal(formatBalance('900001', 5, 5), '9.00001');
+  assert.equal(formatBalance('-50000', 5, 1), '−0.5');
+  const drop = { hour: 102, beforeRaw: '1000000', afterRaw: '900001' };
+  assert.equal(netSpend(drop, 5), '−1');
+  assert.equal(netSpend(drop, 5, 5), '−0.99999');
 });
 
-test('values are exact at every recorded hour and missing between runs', () => {
-  assert.equal(rawAt(SERIES, 101), '1000000');
-  assert.equal(rawAt(SERIES, 105), null);
-  assert.equal(formatBalance(rawAt(SERIES, 102)!, 5), '9', 'balances are whole numbers by default');
-  assert.equal(formatBalance(rawAt(SERIES, 102)!, 5, 5), '9.00001', 'decimals raise the written digits only');
-  assert.equal(formatBalance(rawAt(SERIES, 115)!, 5, 1), '−0.5');
-  assert.deepEqual(toRuns(SERIES, 5).map(run => run.value), [10, 9.00001, -0.5]);
-  assert.equal(netSpend(SERIES.drops[0], 5), '−1', 'a net drop is whole by default');
-  assert.equal(netSpend(SERIES.drops[0], 5, 5), '−0.99999');
-  assert.equal(nearestDrop(SERIES.drops, 99, 5)?.hour, 102);
-  assert.equal(nearestDrop(SERIES.drops, 90, 5), null);
+test('values come only from the exact runs of the hours read, and a missing hour keeps its reason', () => {
+  const run = (firstHour: number, lastHour: number, valueRaw: string) => ({ firstHour, lastHour, valueRaw, slot: 1, countryId: 10, startsSegment: true,
+    segmentFirstHour: firstHour, firstExact: true, lastExact: true });
+  const states = validateMeasureStates({ branchId: '1', measure: 'politicalPower', decimals: 5, states: [
+    { tag: 'GER', hour: 100, run: run(90, 120, '100000'), drop: null, missing: null },
+    { tag: 'GER', hour: 110, run: run(90, 120, '100000'), drop: null, missing: null },
+    { tag: 'GER', hour: 130, run: null, drop: null, missing: 'The recorder lost these hours' },
+    { tag: 'ITA', hour: 100, run: run(100, 100, '5'), drop: { hour: 100, beforeRaw: '9', afterRaw: '5' }, missing: null }] });
+  const [ger, ita, fra] = reachedLines(['GER', 'ITA', 'FRA'], states);
+  assert.deepEqual(ger.runs.map(item => [item.firstHour, item.lastHour]), [[90, 120]], 'a run read at two hours is one run');
+  assert.equal(ger.missing.get(130), 'The recorder lost these hours');
+  assert.deepEqual(ita.drops.map(item => item.hour), [100]);
+  assert.deepEqual([fra.runs, fra.drops], [[], []], 'a country not read has no value, never a zero');
+  assert.throws(() => validateMeasureStates({ branchId: '1', measure: 'politicalPower', decimals: 5, states: [{ tag: 'GER', hour: 1, run: run(1, 1, '1.5'), drop: null, missing: null }] }));
 });
 
 test('group members draw only while they belong', () => {
-  const runs = toRuns(SERIES, 5);
-  assert.deepEqual(clipRuns(runs, [{ tag: 'GER', firstHour: 101, lastHour: 112 }]).map(run => [run.firstHour, run.lastHour]), [[101, 101], [102, 102], [110, 112]]);
   const groups: CountryGroupReply = { branchId: '1', warnings: [], warStarts: [], capitulations: [], identityChanges: [], humans: [], wars: [], unobserved: { humans: [], factions: [], wars: [] },
     countryIdentities: [{ tag: 'GER', identities: [{ firstHour: 0, lastHour: 200, slot: 1, countryId: 10 }] },
       { tag: 'ITA', identities: [{ firstHour: 50, lastHour: 80, slot: 2, countryId: 20 }] }],
@@ -73,17 +68,42 @@ test('political and command power offer every chosen country without a widget li
   }
 });
 
-test('a new country identity breaks the line even between consecutive hours', () => {
-  const series: MeasureSeries = { tag: 'GER', drops: [], runs: [
-    { firstHour: 100, lastHour: 101, valueRaw: '100000', startsSegment: true },
-    { firstHour: 102, lastHour: 103, valueRaw: '200000', startsSegment: false },
-    { firstHour: 104, lastHour: 105, valueRaw: '300000', startsSegment: true }] };
-  assert.deepEqual(segments(toRuns(series, 5), 100, 105).map(segment => segment.length), [2, 1]);
-});
-
 test('membership limits which hours a group member shows', () => {
   const membership = [{ tag: 'ITA', firstHour: 50, lastHour: 80 }];
   assert.equal(isMember(membership, 60), true);
   assert.equal(isMember(membership, 102), false);
   assert.equal(isMember(undefined, 102), true);
+});
+
+test('the balance changes a list opens on end at the last the head has reached, never past it', () => {
+  // Tiles hold clusters past the head: the head at hour 270 has passed the first, is inside the second (its bins
+  // to 220 and 260 passed, 300 not), and has not reached the third.
+  const marks = { from: 0, to: 600, width: 600, tiles: true as const, clusters: [
+    { firstHour: 0, lastHour: 100, firstOrdinal: '0', count: '3' },
+    { firstHour: 200, lastHour: 300, firstOrdinal: '3', count: '4', bins: [[220, 1], [260, 2], [300, 1]] as const },
+    { firstHour: 400, lastHour: 500, firstOrdinal: '7', count: '2' },
+  ] };
+  assert.deepEqual(changesRange(marks, null, 270), { first: '0', end: '6' }, 'through the 3 of the first cluster and the 1 + 2 of the bins the head passed');
+  assert.deepEqual(changesRange(marks, null, 350), { first: '0', end: '7' }, 'past the second cluster whole');
+  assert.deepEqual(changesRange(marks, null, 150), { first: '0', end: '3' });
+  assert.deepEqual(changesRange(marks, null, null), { first: '0', end: '9' }, 'no head: every cluster');
+  assert.deepEqual(changesRange({ ...marks, tiles: undefined }, null, 270), { first: '0', end: '9' }, 'a summary not of tiles holds only what is shown');
+  assert.deepEqual(changesRange(marks, marks.clusters[0]!, 270), { first: '0', end: '3' }, 'a hovered cluster is its own');
+  assert.deepEqual(changesRange(undefined, null, 270), { first: '0', end: undefined }, 'nothing drawn: every change');
+});
+
+test('a line ends at the value its painter draws: the followed head inside the head bin, else the last value of the bin before', () => {
+  const bucket = (firstHour: number, lastValue: number): ChartBucket => ({ firstHour, lastHour: firstHour + 11, lastValueHour: firstHour + 11, minHour: firstHour,
+    maxHour: firstHour, firstValue: lastValue, lastValue, minValue: lastValue, maxValue: lastValue, firstBreak: false, hasBreak: false });
+  const buckets = [bucket(0, 1.5), bucket(12, 2.25), null, bucket(36, 4)];
+  let head: number | null | undefined = 7.125;
+  const summary: ChartSummary = { from: 0, to: 47, width: 4, buckets, tiles: { binHours: 12, valueAt: () => head ?? null } };
+  assert.equal(summaryEnd(summary, 40), 7.125, 'inside the head bin: the followed value');
+  head = null;
+  assert.equal(summaryEnd(summary, 40), null, 'a head the followed answer holds no value at draws nothing');
+  assert.equal(summaryEnd(summary, 30), 2.25, 'past a gap: the last value of the last bin before');
+  assert.equal(summaryEnd({ ...summary, tiles: undefined }, 40), 4, 'not tiled: the bin\'s own last value');
+  assert.equal(summaryEnd(summary, -1), null);
+  assert.equal(formatBalance(rawOf(2.25, 3), 3, 2), '2.25');
+  assert.equal(rawOf(-0.1 + 0.3, 5), '20000', 'a value that is not exact in binary comes back as its raw');
 });

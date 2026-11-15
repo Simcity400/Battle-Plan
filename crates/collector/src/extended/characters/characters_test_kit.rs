@@ -3,7 +3,7 @@ use super::tests::{
 };
 use super::{
     Buffer, Capacities, Captured, CharactersCopyContext, CharactersCopyReport, CharactersJob, N,
-    copy_characters_refresh, walk_family,
+    Roles, copy_characters, walk_family,
 };
 use engine_native::{
     cadvisor, carmy_leader, ccharacter, ccharacter_manager, ccountry_leader,
@@ -279,23 +279,20 @@ pub(crate) fn direct(memory: &impl engine_native::Memory, capacities: &Capacitie
     captured
 }
 
-/// Capture one owned payload and decode into fresh pooled buffers.
+/// Capture one owned payload the product's way and decode into fresh pooled buffers.
 pub(crate) fn split(
     memory: &impl engine_native::Memory,
     capacities: &Capacities,
 ) -> (Captured, CharactersCopyReport, CharactersJob) {
     let mut captured = Captured::with_capacities(capacities);
-    let (trait_rows, trait_bytes) = captured.trait_capture_capacities();
     let ctx = CharactersCopyContext {
         force_full: false,
         base: BASE,
         game_state: GAME_STATE,
         active: [true; N],
-        trait_rows,
-        trait_bytes,
     };
     let mut first = CharactersJob::new();
-    let report = copy_characters_refresh(memory, ctx, &mut first);
+    let report = copy_characters(memory, ctx, &mut first, Roles::Independent);
     assert!(report.raw_ok);
     let mut ticks = [0u64; N];
     captured.decode_characters_payload(BASE, &first, &mut ticks);

@@ -1,14 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { deepFreeze } from '../../testFrozen.ts';
-import { peacePlayback } from './peaceData.ts';
+import { peaceBlockRows, peaceChangeHours, peacePlayback } from './peaceData.ts';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 import type { WidgetProps } from '../../dashboard/definitions';
 import type { TooltipContent } from '../../charts/tooltip';
 import { tooltipText } from '../../charts/tooltip.ts';
-import type { PeaceCapturedAction, PeaceDeal, PeaceDealsReply, PeaceItem } from '../../generated/dashboard';
 import { peaceCaptureLabel as captureLabel, peaceDealHour, peaceDealKnownAt, peaceDealLabel, validatePeaceDealsReply } from '../../dashboard/peaceDealsData.ts';
 import { validateStateNamesReply } from '../../dashboard/stateNamesData.ts';
 import { contentKey, storableToken } from '../../dashboard/options.ts';
@@ -16,6 +15,7 @@ import { chipsByValue, derivedNote, filterPeaceLog, peaceActionChoices, peaceAct
 import { definition } from './definition.ts';
 import { resolveWindow } from '../../dashboard/model.ts';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
+import type { PeaceCapturedAction, PeaceDeal, PeaceDealsReply, PeaceItem } from '../../generated/dashboard';
 
 test('Peace deals metadata keeps the whole recorded country roster', () => {
   assert.equal(definition.countries.max, Number.MAX_SAFE_INTEGER);
@@ -30,7 +30,7 @@ function deal(id = 'conference', hour = 20): PeaceDeal {
   return { id, derived: true, observation: 'recordedConference', conferenceId: id, warName: null, firstObservedHour: hour - 5,
     lastObservedHour: hour - 1, currentTurn: 2, finalized: null, firstFinalizedHour: null, endHour: hour, endIsBy: true,
     firstAbsentHour: hour, participantsDerived: true, winners: ['winner/opaque'], losers: ['loser:opaque'], items: [item(1, hour)],
-    captured: null, captureUnavailable: null, transfers: { nodes: [], links: [] }, limitations: [], preparing: [] };
+    captured: null, captureUnavailable: null, transfers: { nodes: [], links: [] }, limitations: [] };
 }
 function reply(deals = [deal()]): PeaceDealsReply {
   return { branchId: '1', derived: true, deals, transfers: { nodes: [], links: [] }, warnings: [],
@@ -38,7 +38,7 @@ function reply(deals = [deal()]): PeaceDealsReply {
 }
 function capturedAction(state = 4): PeaceCapturedAction {
   return { derived: false, country: 1, countryTag: 'winner/opaque', turn: 1, ordinal: state, token: 900,
-    tokenName: 'opaque-action', nameKey: 'MODDED_KEY', name: 'A game action', taker: 1, takerTag: 'winner/opaque',
+    tokenName: 'opaque-action', nameKey: 'MODDED_KEY', name: 'A game action', nameCountry: null, taker: 1, takerTag: 'winner/opaque',
     giver: 2, giverTag: 'loser:opaque', negotiator: 1, negotiatorTag: 'winner/opaque', status: 1, cost: 10, form: 1,
     state, flags: null, countryOperand: null, countryOperandTag: null, puppetAuxiliary: null, ship: null, ratio: null };
 }
@@ -52,6 +52,19 @@ test('peace playback retains visible content until another deal or capture refus
   assert.notEqual(playback.at(25), visible);
   assert.equal(playback.at(25), playback.at(29));
   assert.equal(playback.at(30), playback.at(50));
+});
+
+test('following, a block draws the states of each conference once, and its clock shows at every hour exactly the cards of that hour', () => {
+  const first = Object.assign(deal('first', 20), { captureUnavailable: 'Capture unavailable', captureUnavailableHour: 25 });
+  const log = deepFreeze(preparePeaceLog(deepFreeze(reply([first, deal('next', 30)]))));
+  const changes = peaceChangeHours(log, -Infinity);
+  assert.ok(changes.includes(25) && changes.every((hour, index) => index === 0 || changes[index - 1] < hour), `the capture refusal is a change: ${changes}`);
+  const block = peaceBlockRows(log, -Infinity, 19, 50, changes);
+  for (let hour = 19; hour <= 50; hour++) {
+    const shown = block.filter(row => Math.max(row.hour, row.revealedHour ?? row.hour) <= hour && (row.leftHour === undefined || row.leftHour > hour));
+    assert.deepEqual(shown.map(row => [row.id, row.item.deal]), peaceRowsAt(log, hour).map(row => [row.key, row.item.deal]), `the cards at ${hour}`);
+  }
+  assert.equal(new Set(block.map(row => row.key)).size, block.length, 'each state its own key');
 });
 
 test('one card per conference newest first, Live cutoff, whole campaign and honest dates', () => {
@@ -454,4 +467,23 @@ test('actual Peace HTML: refusal metadata, an empty state without cadence rows a
     assert.match(noted, /data-tooltip="Not fully recorded between Hour 5 and Hour 6\."/, 'a later gap stays out of the shown time');
     assert.match(noted, /No peace conferences yet\./);
   } finally { await vite.close(); delete host.__peaceFixture; delete host.__peaceTips; }
+});
+
+test('a puppet demand is named with the country it puppets, at its hour, one row each', () => {
+  const card = deal();
+  card.derived = false;
+  card.items = [];
+  const puppet = (ordinal: number, tag: string): PeaceCapturedAction => ({ ...capturedAction(), ordinal, state: null, tokenName: 'puppet', nameKey: null,
+    name: 'Puppet {COUNTRY}', nameCountry: tag, form: 2, countryOperand: ordinal, countryOperandTag: tag });
+  card.captured = { hour: 19, publicationHour: 20, winners: [1], losers: [2], transfers: [], subjects: [], actions: [puppet(30, 'SLO'), puppet(31, 'CRO')] };
+  validatePeaceDealsReply(reply([card]));
+  const rows = peaceActions(card);
+  const named = (at: { hour: number; tag: string }) => `${at.tag === 'SLO' ? 'Slovakia' : 'Croatia'} at ${at.hour}`;
+  assert.deepEqual(rows.map(row => peaceActionName(row, named)), ['Puppet Slovakia at 19', 'Puppet Croatia at 19']);
+  assert.deepEqual(rows.map(row => peaceActionName(row)), ['Puppet', 'Puppet'], 'without a country name the label stands without it, never its placeholder');
+  const log = preparePeaceLog(reply([card]));
+  assert.deepEqual(peaceActionChoices(log).map(choice => choice.label), ['Puppet']);
+  assert.ok(peaceWanted(log.rows).countries.some(at => at.tag === 'SLO' && at.hour === 19));
+  const tooltip = peaceTooltipRows(log.rows[0].item, () => tag => ({ name: tag === 'SLO' ? 'Slovakia' : tag }), chip => chip.key);
+  assert.ok(tooltip.some(row => row.value === 'Puppet Slovakia'));
 });

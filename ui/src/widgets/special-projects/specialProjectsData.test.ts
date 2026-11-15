@@ -1,17 +1,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { deepFreeze } from '../../testFrozen.ts';
-import { countryGroupReply } from '../../dashboard/countryGroups.fixture.ts';
 import type { CountryGroupReply, SpecialProjectRun, SpecialProjectsReply } from '../../generated/dashboard';
-import type { CountryLabel } from '../../dashboard/countryFlagsAt';
-import { closedLane, currentProjectReply, completedWhenFirstRecorded, currentProjects, earlierBound, historyCard, historyTooltip, iterationCount, observedAt, projectCountries, projectCountryHour, projectHeading, projectHistory, projectHistoryExtent, projectTooltip, validateSpecialProjectsReply } from './specialProjectsData.ts';
+import type { CountryLabelValue } from '../../dashboard/countryLabelData.ts';
+import { closedLane, completedWhenFirstRecorded, currentKey, currentProjects, earlierBound, historyCard, historyKey, historyTooltip, iterationCount, observedAt, projectCountries, projectCountryHour, projectHeading, projectHistory, projectHistoryExtent, projectTooltip, runningValues, validateSpecialProjectsReply } from './specialProjectsData.ts';
 import { OPTIONS, definition } from './definition.ts';
 import { resolveOptions } from '../../dashboard/options.ts';
 import { dayLabel } from '../../charts/draw.ts';
 
 const fixture = (): SpecialProjectsReply => ({ branchId: '1', tag: 'tag with spaces', unavailable: null, warnings: [],
   identities: [{firstHour:100,lastHour:199,slot:5,countryId:10},{firstHour:220,lastHour:300,slot:5,countryId:10}],
-  available: [{firstHour:100,lastHour:199},{firstHour:220,lastHour:300}], readHours:[100,124,148,172,196,220,244,268,292],
+  available: [{firstHour:100,lastHour:199},{firstHour:220,lastHour:300}],
   iterationTexts:{2:'Mod iterations: 2',3:'Mod iterations: 3'},
   people:[{assigned:true,id:77,name:'Mod scientist',portrait:null,missing:'Portrait not recorded.'}],
   presentations:[{name:'Mod project name',specialization:'mod_kind',specializationName:'Mod science',icon:null,iconMissing:'Missing mod icon',scientist:0,scientistAsOf:null}],
@@ -67,7 +66,7 @@ test('validator rejects bad references, overlaps, missing and invented percentag
     (data:SpecialProjectsReply)=>{data.presentations[0].scientist=1;},
     (data:SpecialProjectsReply)=>{data.projects[0].runs[1].firstHour=100;},
     (data:SpecialProjectsReply)=>{data.projects[0].runs[0].progress=101;},
-    (data:SpecialProjectsReply)=>{data.readHours.push(100);},
+    (data:SpecialProjectsReply)=>{data.available[1].firstHour=150;},
     (data:SpecialProjectsReply)=>{data.projects[0].runs[1].completion!.hour=200;},
     (data:SpecialProjectsReply)=>{data.projects[0].runs[1].state='running';},
     (data:SpecialProjectsReply)=>{data.identities[1].firstHour=190;},
@@ -133,6 +132,9 @@ test('group membership clips timeline bars and unassigned is an explicit flag', 
   assert.equal(projectHistory(data,120).lanes[0].label,'Scientist unknown');
 });
 
+const countryGroupReply = (overrides: Partial<CountryGroupReply>): CountryGroupReply => ({ branchId: '1', warnings: [], warStarts: [], capitulations: [],
+  identityChanges: [], factions: [], wars: [], humans: [], countryIdentities: [], unobserved: { humans: [], factions: [], wars: [] }, ...overrides });
+
 const countryGroups = (): CountryGroupReply => countryGroupReply({
   humans: [{ tag: 'X', firstHour: 100, lastHour: 109 }, { tag: 'Y', firstHour: 110, lastHour: 114 }],
   countryIdentities: [
@@ -146,7 +148,6 @@ test('manual project requests retain original roots and all their holders withou
   assert.equal(scope.ready, true);
   assert.deepEqual(scope.roots, ['X']);
   assert.deepEqual(scope.tags, ['X', 'Y']);
-  assert.deepEqual([...scope.rootsFor], [['X', ['X']], ['Y', ['X']]]);
   assert.equal(scope.match.matches('Y', 110), true);
   assert.equal(scope.match.matches('Y', 115), false, 'identity gaps acquire nobody');
   assert.equal(scope.match.matches('Y', 118), true);
@@ -178,7 +179,7 @@ test('a comparison heading carries complete flag status at the selected holder d
   assert.equal(projectCountryHour(data, 219), 199);
   assert.equal(projectCountryHour(data, 99), null);
   assert.equal(projectCountryHour(data, 250, [{ firstHour: 110, lastHour: 115 }]), 115);
-  const labels: ReturnType<CountryLabel>[] = [{ name: 'Known', flag: 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png', flagPending: true },
+  const labels: CountryLabelValue[] = [{ name: 'Known', flag: 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png', flagPending: true },
     { name: '', flagPending: false, flagReason: 'The supplying flag read refused its native inputs.' }];
   for (const label of labels) {
     const heading = projectHeading('country', label, '');
@@ -239,14 +240,13 @@ test('History keeps its campaign axis by default and grows only from an availabl
   assert.deepEqual(projectHistoryExtent(100, 300, 100, true), [100, 101]);
 });
 
-test('5000 project choices reuse the native catalogue without repeating every root in each request', () => {
+test('5000 project choices resolve through the native catalogue', () => {
   const groups = countryGroups();
   groups.countryIdentities = Array.from({ length: 5000 }, (_, index) => ({ tag: `mod-country-${index}`,
     identities: [{ firstHour: 100, lastHour: 300, slot: index, countryId: index + 5000 }] }));
   const roots = groups.countryIdentities.map(history => history.tag);
   const scope = projectCountries({ kind: 'tags', tags: roots }, [], groups, 100, 300);
   assert.equal(scope.tags.length, 5000);
-  assert.equal([...scope.rootsFor.values()].reduce((count, roots) => count + roots.length, 0), 5000);
   assert.equal(scope.match.matches('mod-country-4999', 300), true);
 });
 
@@ -326,16 +326,42 @@ test('History lanes run in start order, split at each progress step and fold pro
   assert.equal(closedLane('closed', projectHistory(fixture(), 199)), null);
 });
 
-test('cold current cards validate separately from an empty prepared history and mark the start pending', () => {
-  const frame = fixture();
-  frame.identities = [{ firstHour: 147, lastHour: 147, slot: 5, countryId: 10 }];
-  frame.available = [{ firstHour: 147, lastHour: 147 }]; frame.readHours = [147];
-  frame.projects = [{ id: '@147:episode', start: { hour: 147, exact: false }, runs: [{ ...frame.projects[0].runs[0], firstHour: 147, lastHour: 147 }] }];
-  const reply = validateSpecialProjectsReply({ ...fixture(), identities: [], available: [], readHours: [], projects: [],
-    coverage: { firstHour: 100, lastHour: 99, complete: false }, pending: [{ firstHour: 100, lastHour: 300 }], current: frame });
-  const current = currentProjectReply(reply)!;
-  assert.equal(currentProjects(current, 147).running[0].run.progress, 17);
-  const card = currentProjects(current, 147).running[0];
-  assert.equal(projectTooltip(current, card, true).rows?.find(row => row.label === 'Started')?.value, 'Still being prepared');
-  assert.throws(() => validateSpecialProjectsReply({ ...reply, current: { ...frame, current: frame } }));
+test('Current renders again only when a section, order, name, scientist, state or date changes, never for progress alone', () => {
+  const data = projects();
+  // beta's progress steps from 0 to 30 at 150 and its iterations at 173, behind gamma both times: nothing to render.
+  assert.equal(currentKey(data, 149), currentKey(data, 150));
+  assert.equal(currentKey(data, 172), currentKey(data, 173));
+  // done completes at 160: it leaves the running cards for the completed rows.
+  assert.notEqual(currentKey(data, 159), currentKey(data, 160));
+  // A project overtaking another reorders the cards.
+  const overtaking = projects();
+  overtaking.projects[2].runs[2] = { ...overtaking.projects[2].runs[2], progress: 60 };
+  assert.notEqual(currentKey(overtaking, 172), currentKey(overtaking, 173));
+  assert.equal(currentKey(data, 200), 'unobserved', 'an hour not recorded shows no cards');
+});
+
+test('a running card paints its progress, bar and iterations at the hour, and nothing where the hour holds no run', () => {
+  const data = projects();
+  const beta = data.projects[2];
+  assert.deepEqual(runningValues(beta, 149), { progress: '0%', fill: 0, iterations: '0 iterations' });
+  assert.deepEqual(runningValues(beta, 180), { progress: '30%', fill: 0.3, iterations: '1 iteration' });
+  assert.equal(runningValues(beta, 100), null);
+  const backwards = { ...beta, runs: [{ ...beta.runs[0], progress: -20 }] };
+  assert.equal(runningValues(backwards, 130)?.fill, 0, 'a negative prototype progress draws an empty bar, its percent as recorded');
+  assert.equal(runningValues(backwards, 130)?.progress, '-20%');
+});
+
+test('History following the head keeps bars past the shown hour for the chart to cut, and renders again only at a start, an end or a new scientist', () => {
+  const data = projects();
+  const live = projectHistory(data, 159, undefined, -Infinity, true);
+  const done = live.lanes.find(lane => lane.id === 'done')!;
+  assert.deepEqual(done.spans.map(span => [span.firstHour, span.lastHour, span.positive]), [[100, 159, false]], 'a completion after the hour is not shown yet');
+  const beta = live.lanes.find(lane => lane.id === 'beta')!;
+  assert.deepEqual(beta.spans.map(span => [span.firstHour, span.lastHour]), [[120, 149], [150, 199]], 'the running bar reaches past the hour');
+  assert.deepEqual(projectHistory(data, 159).lanes.find(lane => lane.id === 'beta')!.spans.map(span => span.lastHour), [149, 159]);
+  assert.equal(historyKey(data, 150), historyKey(data, 159), 'a progress step renders nothing');
+  assert.notEqual(historyKey(data, 159), historyKey(data, 160), 'a completion renders');
+  assert.notEqual(historyKey(data, 119), historyKey(data, 120), 'a project starting renders');
+  assert.deepEqual(projectHistory(data, 160, undefined, -Infinity, true).lanes.find(lane => lane.id === 'done')!.spans.map(span => [span.lastHour, span.positive, span.endLabel]),
+    [[159, true, '✓']]);
 });

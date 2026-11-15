@@ -745,17 +745,28 @@ mod tests {
         store.epoch = EPOCH.load(Ordering::SeqCst);
         store.failure = FAILED.load(Ordering::SeqCst);
         store.published = ORDER.load(Ordering::SeqCst).wrapping_sub(1);
-        store.lanes[0].reserve().unwrap().publish(Event {
-            order: ORDER.load(Ordering::SeqCst),
-            object: 17,
-            lifetime: 2,
-        });
+        // A burst past the prepared lane: every destroy is read and sizes the next lane.
+        let burst = 4 * store.lanes[0].len() + 3;
+        for _ in 0..burst {
+            store.lanes[0].reserve().unwrap().publish(Event {
+                order: ORDER.load(Ordering::SeqCst),
+                object: 17,
+                lifetime: 2,
+            });
+        }
+        assert_eq!(
+            store.lanes[0].published(|event| event.order).unwrap().len(),
+            burst
+        );
         ENABLED.store(true, Ordering::SeqCst);
         let mut rows = Vec::new();
         assert_eq!(
             capture_store(&mut store, &NoRead, 0, &mut rows),
             Outcome::Rows { len: 0 }
         );
+        assert!(store.lanes[0].is_drained());
+        assert_eq!(store.lanes[0].rejected(), 0);
+        assert!(store.lanes.last().unwrap().len() >= burst);
         store.published = ORDER.load(Ordering::SeqCst).wrapping_sub(1);
         store.lanes[0].reserve().unwrap().publish(Event {
             order: ORDER.load(Ordering::SeqCst),

@@ -1,15 +1,21 @@
-import type { AirForceParams } from '../../generated/dashboard';
-import { validateNativePartsRaceReply } from '../../charts/race/partsRaceDrill.ts';
-import type { NativePartsRaceReply } from '../../charts/race/partsRaceDrill';
+import { validateForceReply } from '../../charts/race/forceRace.ts';
+import type { ForceParams } from '../../charts/race/forceRace';
 import type { OptionValue } from '../../dashboard/options';
+import type { ForceSizeReply } from '../../generated/dashboard';
 
-export function validateAirForceReply(data: unknown): NativePartsRaceReply {
-  return validateNativePartsRaceReply(data);
+export function validateAirForceReply(data: unknown): ForceSizeReply {
+  return validateForceReply(data);
 }
 
-/** Country choices are opaque tags; top N asks the product to rank the native measure. */
+/** Country choices are opaque tags; top N asks the product to rank the declared measure. */
 export function airForceRequest(branchId: string, resolved: { tags: readonly string[]; top?: number },
-  options: Readonly<Record<string, OptionValue>>): AirForceParams {
+  options: Readonly<Record<string, OptionValue>>): ForceParams {
   return { branchId, tags: resolved.top == null ? [...resolved.tags] : [], top: resolved.top ?? null,
     measure: options.measure === 'wings' ? 'wings' : 'planes', ownership: options.ownership === 'effective' ? 'effective' : 'roster' };
+}
+
+/** The declared totals a line of chosen countries reads. */
+export function airForceTotals(options: Readonly<Record<string, OptionValue>>) {
+  const owner = options.ownership === 'effective' ? 'effective' : 'roster';
+  return { kind: 'air-force-totals', measure: `${owner}${options.measure === 'wings' ? 'Wings' : 'Planes'}`, decimals: 0 };
 }

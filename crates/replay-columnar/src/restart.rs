@@ -1,13 +1,16 @@
-//! A restart: a table's whole state at a block's first hour, decodable with nothing
-//! earlier, so a walker can start at any block.
+//! A restore: a table's whole state at a block's end, decodable with nothing earlier, so a
+//! reader of the table can start at the block after it.
 //!
 //! Layout: status | acquisition (last read hour, availability start, refusal reason) |
-//! the table ([`write_table`]: slot count (varint) | live bits (one per slot) | the live rows'
-//! keys in slot order ([`Writer::keys`]) | every column's values for the live slots in slot
-//! order, as a run carries them | every column's unrecorded live slots ([`Writer::slots`])) |
-//! for a truncated table, the slots its view holds | its last complete read ([`Last`]): 0 when
-//! there is none or the view is it, read at its last read hour; 1 and the read's hour when the
-//! table's rows are it; 2, the read's hour and its table when reads since changed the rows.
+//! the strings its live text cells and refusal name (count, then ascending ids as gaps, each
+//! string length-prefixed) | the table ([`write_table`]: slot count (varint) | live bits (one
+//! per slot) | the live rows' keys in slot order ([`Writer::keys`]) | each column's byte length
+//! (varint), then every column's values for the live slots in slot order, as a run carries them,
+//! so a reader of some columns skips the others | every column's unrecorded live slots
+//! ([`Writer::slots`])) | for a truncated table, the slots its view holds | its last complete read
+//! ([`Last`]): 0 when there is none or the view is it, read at its last read hour; 1 and the
+//! read's hour when the table's rows are it; 2, the read's hour and its table when reads since
+//! changed the rows.
 
 use crate::{
     leaf::{Reader, Writer},
@@ -123,7 +126,18 @@ fn write_table(writer: &mut Writer, table: &Table) -> io::Result<()> {
             .map(|&slot| table.key(slot).expect("live slot")),
     )?;
     writer.keys(&keys)?;
-    table.write_columns(writer, &slots)?;
+    let mut columns = engine_allocation::vec(table.kinds().count())?;
+    for column in 0..table.kinds().count() {
+        let mut bytes = Writer::new();
+        table.write_column(column, &mut bytes, &slots)?;
+        columns.push(bytes.into_bytes());
+    }
+    for bytes in &columns {
+        writer.varint(bytes.len() as u64)?;
+    }
+    for bytes in &columns {
+        writer.raw(bytes)?;
+    }
     // A column's unrecorded slots are live slots, so one reservation holds every column's.
     let mut unrecorded = engine_allocation::vec(slots.len())?;
     for column in 0..table.kinds().count() {
@@ -134,8 +148,14 @@ fn write_table(writer: &mut Writer, table: &Table) -> io::Result<()> {
     Ok(())
 }
 
-/// What [`write_table`] wrote.
-fn read_table(reader: &mut Reader<'_>, kinds: &[Kind], scratch: &mut Scratch) -> io::Result<Table> {
+/// What [`write_table`] wrote; a column `wanted` leaves out is skipped, its live cells
+/// unrecorded.
+fn read_table(
+    reader: &mut Reader<'_>,
+    kinds: &[Kind],
+    scratch: &mut Scratch,
+    wanted: Option<&[bool]>,
+) -> io::Result<Table> {
     let slots = reader.count()?;
     let mut live: Vec<u64> = Vec::new();
     reader.values(slots.div_ceil(64), &mut live)?;
@@ -144,9 +164,20 @@ fn read_table(reader: &mut Reader<'_>, kinds: &[Kind], scratch: &mut Scratch) ->
     reader.keys(live.count(), &mut keys)?;
     let mut table = Table::with_rows(kinds, slots, live, &keys)?;
     let live_slots = engine_allocation::collect_vec(table.live().ones())?;
+    let mut lengths = engine_allocation::vec(kinds.len())?;
+    for _ in kinds {
+        lengths.push(reader.count()?);
+    }
     for (column, &kind) in kinds.iter().enumerate() {
-        let values = read_values(reader, scratch, kind, live_slots.len())?;
-        table.set(column, &live_slots, values)?;
+        let bytes = reader.raw(lengths[column])?;
+        if wanted.is_some_and(|wanted| !wanted.get(column).copied().unwrap_or(false)) {
+            table.unrecord(column, &live_slots)?;
+            continue;
+        }
+        let mut values = Reader::new(bytes);
+        let read = read_values(&mut values, scratch, kind, live_slots.len())?;
+        table.set(column, &live_slots, read)?;
+        values.finish()?;
     }
     let mut unrecorded = Vec::new();
     for column in 0..kinds.len() {
@@ -174,6 +205,19 @@ pub fn write_with(
     view: &[u32],
     last: Option<&Last>,
 ) -> io::Result<Vec<u8>> {
+    write_named(table, status, acquisition, view, last, &[])
+}
+
+/// [`write_with`], holding `strings` (id and text, ascending by id): those its text cells and
+/// refusal name.
+pub fn write_named(
+    table: &Table,
+    status: Status,
+    acquisition: &Acquisition,
+    view: &[u32],
+    last: Option<&Last>,
+    strings: &[(u32, &[u8])],
+) -> io::Result<Vec<u8>> {
     let truncated = matches!(status, Status::Truncated { .. });
     if !truncated && !view.is_empty() {
         return Err(crate::invalid(
@@ -199,6 +243,17 @@ pub fn write_with(
             .refusal
             .map_or(0, |reason| u64::from(reason) + 1),
     )?;
+    writer.varint(strings.len() as u64)?;
+    let mut next = 0_u64;
+    for &(id, text) in strings {
+        if u64::from(id) < next {
+            return Err(crate::invalid("A restore's strings are not ascending"));
+        }
+        writer.varint(u64::from(id) - next)?;
+        next = u64::from(id) + 1;
+        writer.varint(text.len() as u64)?;
+        writer.raw(text)?;
+    }
     write_table(&mut writer, table)?;
     if truncated {
         writer.slots(view)?;
@@ -237,6 +292,8 @@ pub struct Restored {
     pub view: Vec<u32>,
     /// Its last complete read: the view itself when complete, else what the restart kept.
     pub last: Option<Last>,
+    /// The strings it names, ascending by id.
+    pub strings: Vec<(u32, Box<[u8]>)>,
 }
 
 /// A [`Restored`] whose tables' pages are held weakly: what walks starting at one restart
@@ -259,6 +316,7 @@ impl Restored {
             acquisition: self.acquisition,
             view: engine_allocation::copy_vec(&self.view)?,
             last: self.last.as_ref().map(Last::share).transpose()?,
+            strings: Vec::new(),
         })
     }
 
@@ -297,6 +355,7 @@ impl WeakRestored {
             acquisition: self.acquisition,
             view: engine_allocation::copy_vec(&self.view)?,
             last,
+            strings: Vec::new(),
         }))
     }
 
@@ -344,10 +403,38 @@ fn head(reader: &mut Reader<'_>) -> io::Result<(Status, Acquisition)> {
 }
 
 pub fn read(bytes: &[u8], kinds: &[Kind], scratch: &mut Scratch) -> io::Result<Restored> {
+    read_projected(bytes, kinds, scratch, None)
+}
+
+fn read_strings(reader: &mut Reader<'_>) -> io::Result<Vec<(u32, Box<[u8]>)>> {
+    let count = reader.count()?;
+    if count > reader.left() {
+        return Err(crate::invalid("A restore counts more strings than it holds"));
+    }
+    let mut strings = engine_allocation::vec(count)?;
+    let mut next = 0_u64;
+    for _ in 0..count {
+        let id = u32::try_from(next + reader.varint()?)
+            .map_err(|_| crate::invalid("A restore's string id passes 2^32"))?;
+        next = u64::from(id) + 1;
+        let length = reader.count()?;
+        strings.push((id, engine_allocation::copy_vec(reader.raw(length)?)?.into_boxed_slice()));
+    }
+    Ok(strings)
+}
+
+/// [`read`] of the columns `wanted` marks only; the others hold every live cell unrecorded.
+pub fn read_projected(
+    bytes: &[u8],
+    kinds: &[Kind],
+    scratch: &mut Scratch,
+    wanted: Option<&[bool]>,
+) -> io::Result<Restored> {
     let mut reader = Reader::new(bytes);
     let (status, acquisition) = head(&mut reader)?;
     let last_read = acquisition.last_read;
-    let table = read_table(&mut reader, kinds, scratch)?;
+    let strings = read_strings(&mut reader)?;
+    let table = read_table(&mut reader, kinds, scratch, wanted)?;
     let mut view = Vec::new();
     if matches!(status, Status::Truncated { .. }) {
         reader.slots(&mut view)?;
@@ -363,7 +450,7 @@ pub fn read(bytes: &[u8], kinds: &[Kind], scratch: &mut Scratch) -> io::Result<R
         2 if status != Status::Complete => {
             let read = get_hour(&mut reader)?;
             Some(Last::Apart(
-                Box::new(read_table(&mut reader, kinds, scratch)?),
+                Box::new(read_table(&mut reader, kinds, scratch, wanted)?),
                 read,
             ))
         }
@@ -380,5 +467,6 @@ pub fn read(bytes: &[u8], kinds: &[Kind], scratch: &mut Scratch) -> io::Result<R
         acquisition,
         view,
         last,
+        strings,
     })
 }

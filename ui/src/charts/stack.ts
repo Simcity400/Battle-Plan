@@ -324,6 +324,32 @@ export function forEachCompactStackSegment(model: CompactStackModel, from: numbe
   close();
 }
 
+/** The pieces `pieces` visits, joined into one per unbroken stretch: a stack is filled and outlined once per band and
+ * stretch. Drawn apart, two pieces meeting at an edge leave a hairline seam, and two-point pieces cost a fill and a
+ * stroke per band per pixel column, every frame a chart moves. */
+export function forEachJoinedSegment(pieces: (visit: (segment: StackSegment) => void) => void, visit: (segment: StackSegment) => void): void {
+  let joined: StackSegment | null = null;
+  pieces(segment => {
+    if (joined && !segment.start && joined.end !== true && joined.hours.at(-1) === segment.hours[0] && joined.bands.length === segment.bands.length) {
+      for (let index = 1; index < segment.hours.length; index++) joined.hours.push(segment.hours[index]);
+      segment.bands.forEach((band, layer) => {
+        for (let index = 1; index < band.low.length; index++) { joined!.bands[layer].low.push(band.low[index]); joined!.bands[layer].high.push(band.high[index]); }
+      });
+      joined.end = segment.end;
+      return;
+    }
+    if (joined) visit(joined);
+    joined = { ...segment, hours: [...segment.hours], bands: segment.bands.map(band => ({ low: [...band.low], high: [...band.high] })) };
+  });
+  if (joined) visit(joined);
+}
+
+/** `forEachCompactStackSegment`'s pieces joined per unbroken stretch (`forEachJoinedSegment`): what a chart draws. */
+export function forEachCompactStackStretch(model: CompactStackModel, from: number, to: number, minHours: number,
+  visit: (segment: StackSegment) => void, sample?: (hour: number) => Edge[]): void {
+  forEachJoinedSegment(piece => forEachCompactStackSegment(model, from, to, minHours, piece, sample), visit);
+}
+
 export function compactStackExtent(model: CompactStackModel, from: number, to: number): [number, number] | null {
   let low = Infinity;
   let high = -Infinity;

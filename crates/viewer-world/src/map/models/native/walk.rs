@@ -22,6 +22,8 @@ pub(in crate::map::models) struct Layout {
     libraries: Vec<usize>,
     keyed: Vec<(PlayerKey, usize)>,
     pub(super) installed: bool,
+    /// Each group's route positions, in walk order.
+    pub(super) by_group: Vec<Vec<usize>>,
 }
 
 pub(super) enum Routes<'a> {
@@ -64,6 +66,13 @@ impl Layout {
         self.players.clear();
         self.keyed.clear();
         self.libraries.clear();
+        self.by_group.clear();
+        self.by_group.resize_with(field.groups.len(), Vec::new);
+        for (position, &(group, _)) in field.native_order.iter().enumerate() {
+            if let Some(positions) = self.by_group.get_mut(group) {
+                positions.push(position);
+            }
+        }
         // This is optional acceleration metadata. A failed reserve selects the
         // direct walk at its ordinary use point, not a new content refusal.
         let count = field.native_order.len();

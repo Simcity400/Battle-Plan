@@ -105,8 +105,8 @@ fn controls_cleared(buckets: &[Bucket]) {
 fn capture_preserves_every_bucket_raw_word_order_and_repeated_occurrence() {
     let bytes = fixture();
     let memory = Traced::new(&bytes);
-    let mut buckets = [Bucket::default(); 3];
-    let mut members = [123; 6];
+    let mut buckets = vec![Bucket::default(); 3];
+    let mut members = vec![123; 6];
     let captured = capture(&memory, STATE, &mut buckets, &mut members);
     assert_eq!(captured.len, Ok(3));
     assert_eq!(
@@ -118,7 +118,7 @@ fn capture_preserves_every_bucket_raw_word_order_and_repeated_occurrence() {
     );
     assert_eq!(members, [0, 7, 7, u32::MAX, 9, 1]);
     assert_eq!(
-        buckets.map(|bucket| (bucket.start, bucket.len)),
+        buckets.iter().map(|bucket| (bucket.start, bucket.len)).collect::<Vec<_>>(),
         [(0, 4), (4, 0), (4, 2)]
     );
     controls_cleared(&buckets);
@@ -136,45 +136,13 @@ fn capture_preserves_every_bucket_raw_word_order_and_repeated_occurrence() {
 }
 
 #[test]
-fn either_short_arena_counts_all_headers_without_reading_any_payload() {
-    let bytes = fixture();
-    for (bucket_capacity, member_capacity, expected) in [
-        (0, 6, BUCKET_CAPACITY),
-        (2, 6, BUCKET_CAPACITY),
-        (3, 0, MEMBER_CAPACITY),
-        (3, 5, MEMBER_CAPACITY),
-    ] {
-        let memory = Traced::new(&bytes);
-        let mut buckets = [Bucket::default(); 3];
-        let mut members = [123; 6];
-        let captured = capture(
-            &memory,
-            STATE,
-            &mut buckets[..bucket_capacity],
-            &mut members[..member_capacity],
-        );
-        assert_eq!(captured.len, Err(expected));
-        assert_eq!(
-            captured.demand,
-            Demand {
-                buckets: 3,
-                members: 6
-            }
-        );
-        assert_eq!(members, [123; 6]);
-        no_payload(&memory);
-        controls_cleared(&buckets);
-    }
-}
-
-#[test]
-fn payload_fault_withholds_the_whole_field_without_retry_or_old_prefix_changes() {
+fn payload_fault_withholds_the_whole_field_without_retry() {
     let bytes = fixture();
     let mut memory = Traced::new(&bytes);
     memory.fault = Some(MEMBERS + 0x40);
-    let mut buckets = [Bucket::default(); 3];
-    let mut members = [123; 8];
-    let captured = capture(&memory, STATE, &mut buckets, &mut members[2..]);
+    let mut buckets = vec![Bucket::default(); 3];
+    let mut members = Vec::new();
+    let captured = capture(&memory, STATE, &mut buckets, &mut members);
     assert_eq!(captured.len, Err("original-tag member payload unreadable"));
     assert_eq!(
         captured.demand,
@@ -183,9 +151,6 @@ fn payload_fault_withholds_the_whole_field_without_retry_or_old_prefix_changes()
             members: 6
         }
     );
-    assert_eq!(&members[..2], &[123; 2]);
-    assert_eq!(&members[2..6], &[0, 7, 7, u32::MAX]);
-    assert_eq!(&members[6..], &[123; 2]);
     assert_eq!(
         memory
             .calls
@@ -204,7 +169,7 @@ fn native_empty_outer_registry_is_available_and_malformed_headers_are_not() {
     put_header(&mut bytes, STATE + BUCKETS, 0, 0);
     let memory = Traced::new(&bytes);
     assert_eq!(
-        capture(&memory, STATE, &mut [], &mut []),
+        capture(&memory, STATE, &mut Vec::new(), &mut Vec::new()),
         Capture {
             len: Ok(0),
             demand: Demand::default()
@@ -217,8 +182,8 @@ fn native_empty_outer_registry_is_available_and_malformed_headers_are_not() {
         let mut bytes = fixture();
         bytes[address + 8..address + 12].copy_from_slice(&u32::MAX.to_le_bytes());
         let memory = Traced::new(&bytes);
-        let mut buckets = [Bucket::default(); 3];
-        let mut members = [123; 6];
+        let mut buckets = vec![Bucket::default(); 3];
+        let mut members = vec![123; 6];
         let captured = capture(&memory, STATE, &mut buckets, &mut members);
         assert_eq!(captured.len, Err("original-tag array header invalid"));
         assert_eq!(
@@ -265,8 +230,8 @@ fn header_only_demand_and_capture_refuse_changed_selectors() {
         no_payload(&memory);
         let mut memory = Traced::new(&bytes);
         memory.changed_header = Some(address);
-        let mut buckets = [Bucket::default(); 3];
-        let mut members = [123; 6];
+        let mut buckets = vec![Bucket::default(); 3];
+        let mut members = vec![123; 6];
         let captured = capture(&memory, STATE, &mut buckets, &mut members);
         assert_eq!(
             captured.len,

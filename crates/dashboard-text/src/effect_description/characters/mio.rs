@@ -38,7 +38,7 @@ impl Renderer<'_, '_, '_> {
             let organisation = world
                 .token(row.token)
                 .map_err(|why| why.to_string())?
-                .ok_or("LexicalTokens lacks industrial organisation template")?;
+                .ok_or("lexical tokens lacks industrial organisation template")?;
             let organisation = std::str::from_utf8(organisation)
                 .map_err(|_| "industrial organisation template is not UTF-8")?;
             let catalogue = self
@@ -54,7 +54,7 @@ impl Renderer<'_, '_, '_> {
                 } else {
                     world
                         .slot(row.owner)
-                        .ok_or("CountryLinks lacks MIO owner")?
+                        .ok_or("country links lacks MIO owner")?
                 };
                 let spelling = world
                     .token_of(token.as_bytes())
@@ -63,7 +63,7 @@ impl Renderer<'_, '_, '_> {
                     .transpose()
                     .map_err(|why| why.to_string())?
                     .flatten()
-                    .ok_or("LexicalTokens lacks MIO trait spelling")?;
+                    .ok_or("lexical tokens lacks MIO trait spelling")?;
                 let spelling =
                     std::str::from_utf8(spelling).map_err(|_| "MIO trait spelling is not UTF-8")?;
                 let candidates = trait_.name_candidates(

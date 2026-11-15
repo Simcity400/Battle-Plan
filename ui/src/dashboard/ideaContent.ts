@@ -1,5 +1,5 @@
-import type { EffectGroup, EffectLine, IdeaInfo, LocalisedText, ModifierFormat, TraitEffects } from '../generated/dashboard';
 import { int, object } from './validation.ts';
+import type { EffectGroup, EffectLine, IdeaInfo, LocalisedText, ModifierFormat, TraitEffects } from '../generated/dashboard';
 
 const text = (value: unknown): value is string | null => value === null || typeof value === 'string';
 const strings = (value: unknown): value is string[] => Array.isArray(value) && value.every(item => typeof item === 'string');

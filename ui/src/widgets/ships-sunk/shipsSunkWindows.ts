@@ -1,10 +1,10 @@
-import type { ShipsSunkReply, ShipsSunkRow } from '../../generated/dashboard';
 import type { LogRow } from '../../charts/log/logData.ts';
 import { newestFirst } from '../../charts/log/logData.ts';
 import type { CountryRole } from './shipsSunkData.ts';
 import { shipLogRows } from './shipsSunkData.ts';
 import type { ShipsSunkWindowReply } from './useShipsSunk';
 import { LogPlayback } from '../../charts/log/logPlayback.ts';
+import type { ShipsSunkReply, ShipsSunkRow } from '../../generated/dashboard';
 
 export interface SinkingItem extends ShipsSunkRow { index: number; windowIndex: number; page: ShipsSunkReply }
 type SinkingPages = ReadonlyMap<number, ShipsSunkWindowReply>;
@@ -23,6 +23,7 @@ export function sinkingWindowRows(pages: ReadonlyMap<number, ShipsSunkWindowRepl
   if (!playback) {
     const rows = newestFirst([...pages.values()].flatMap(page => shipLogRows(page.reply, Infinity, classes, role, country, first, undefined, campaign)
       .map(row => { const index = page.indices[Number(row.key)]; return { key: String(index), hour: row.hour,
+        ...(row.item.knownAt > row.hour ? { revealedHour: row.item.knownAt } : {}),
         item: { ...row.item, index, windowIndex: page.window, page: page.reply } }; })));
     playback = new LogPlayback(rows, row => Math.max(row.hour, row.item.knownAt));
     bySettings.set(key, playback);

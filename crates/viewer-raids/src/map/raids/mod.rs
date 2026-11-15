@@ -601,7 +601,7 @@ impl RaidAssets {
     /// ([`refused`]).
     pub fn raid_type(&self, world: &World<'_>, token: u32) -> Result<TypeToken, String> {
         let spelling = spelling(world, token, "raid type")?;
-        let keys = self.type_keys.get_or_init(|| {
+        let keys = made_once(&self.type_keys, || {
             TokenKeys::new(
                 self.catalog
                     .types
@@ -630,18 +630,17 @@ impl RaidAssets {
     /// [`Self::raid_type`] matches types; refusals are by name.
     pub fn building(&self, world: &World<'_>, token: u32) -> Result<&BuildingType, String> {
         let spelling = spelling(world, token, "building template")?;
-        let mut names = self
+        let known = self
             .template_names
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(known) = names.get(spelling.as_bytes()) {
-            return known
-                .clone()
-                .map(|key| &self.trigger_content.buildings.types[&key]);
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(spelling.as_bytes())
+            .cloned();
+        if let Some(known) = known {
+            return known.map(|key| &self.trigger_content.buildings.types[&key]);
         }
-        let keys = self
-            .template_keys
-            .get_or_init(|| TokenKeys::new(self.trigger_content.buildings.types.keys()));
+        // Resolved with no lock held: a second caller meanwhile resolves it too.
+        let keys = made_once(&self.template_keys, || TokenKeys::new(self.trigger_content.buildings.types.keys()));
         let key = keys
             .resolve(spelling)
             .map_err(|reason| refused(format!("building template {reason}")))
@@ -652,23 +651,26 @@ impl RaidAssets {
                     ))
                 })
             });
-        names.insert(spelling.as_bytes().into(), key.clone());
+        self.template_names
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(spelling.as_bytes().into(), key.clone());
         key.map(|key| &self.trigger_content.buildings.types[&key])
     }
 
     /// [`Self::glyph_key`] of catalogue type `index`, found once per type
     /// and template.
     fn glyph_key_of(&self, index: usize, template: Option<&str>) -> Arc<str> {
-        let mut keys = self
-            .glyph_keys
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let key = (index, template.map(str::to_owned));
-        if let Some(known) = keys.get(&key) {
+        if let Some(known) = self.glyph_keys.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).get(&key) {
             return Arc::clone(known);
         }
+        // Found with no lock held: a second caller meanwhile finds it too.
         let glyph: Arc<str> = self.glyph_key(&self.catalog.types[index], template).into();
-        keys.insert(key, Arc::clone(&glyph));
+        self.glyph_keys
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(key, Arc::clone(&glyph));
         glyph
     }
 
@@ -1619,3 +1621,13 @@ mod tests;
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
+
+/// `cell`'s value, made by a caller that finds it unmade rather than waited on while another
+/// makes it ([`std::sync::OnceLock::get_or_init`] waits); the first made is kept.
+fn made_once<T>(cell: &std::sync::OnceLock<T>, make: impl FnOnce() -> T) -> &T {
+    if let Some(made) = cell.get() {
+        return made;
+    }
+    let _ = cell.set(make());
+    cell.get().expect("set above or by another caller")
+}

@@ -5,6 +5,7 @@ use crate::map::test_support::TEST_HANG_GUARD;
 #[test]
 fn playing_finishes_in_flight_hours_at_or_before_the_playhead() {
     let old = Want {
+        layered: Default::default(),
         branch: 1,
         hour: 10,
         ahead: 0,
@@ -14,7 +15,13 @@ fn playing_finishes_in_flight_hours_at_or_before_the_playhead() {
         map_mode: Default::default(),
         diplomatic_selected: None,
         show_allied_plans: false,
+        units_by_layers: false,
+        plans_by_layers: false,
+        routes_by_layers: false,
+        by_layers: Default::default(),
+        parts: Default::default(),
         counters: Default::default(),
+        counter_kinds: Default::default(),
         view: test_view(),
         have: vec![],
         received: 0,
@@ -438,6 +445,7 @@ fn dropping_requests_stops_a_coordinator_that_keeps_an_internal_sender() {
 #[test]
 fn perspective_changes_discard_old_hour_acknowledgements() {
     let old = Want {
+        layered: Default::default(),
         branch: 1,
         hour: 10,
         ahead: 2,
@@ -447,7 +455,13 @@ fn perspective_changes_discard_old_hour_acknowledgements() {
         map_mode: Default::default(),
         diplomatic_selected: None,
         show_allied_plans: false,
+        units_by_layers: false,
+        plans_by_layers: false,
+        routes_by_layers: false,
+        by_layers: Default::default(),
+        parts: Default::default(),
         counters: Default::default(),
+        counter_kinds: Default::default(),
         view: test_view(),
         have: vec![10, 11],
         received: 2,
@@ -638,6 +652,21 @@ fn the_decode_lane_decodes_wanted_hours_ahead_and_serves_any_other() {
     }
 }
 
+/// A read the playback fails, other than a cancellation, is that hour's failure carrying the
+/// error's text: only an hour the recording does not hold is a gap.
+#[test]
+fn a_failed_read_is_the_hour_s_failure_by_name_not_a_gap() {
+    let replay = Arc::new(crate::playback::tests::fixture());
+    let lane = lane_over(&replay);
+    match frame_within(&lane, 9, 100) {
+        Current::Refused { branch: 9, hour: 100, reason } => {
+            assert!(reason.contains("unknown branch 9"), "{reason}");
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(matches!(frame_within(&lane, 1, 103), Current::Gap { .. }));
+}
+
 #[test]
 fn the_lane_window_retains_exactly_its_adaptive_required_hours() {
     let mut state = LaneState::default();
@@ -753,6 +782,7 @@ fn a_failed_part_of_every_name_is_an_error_not_a_value() {
 #[test]
 fn playing_targets_consecutive_hours_from_the_playhead_and_stops_at_the_branch_end() {
     let want = Want {
+        layered: Default::default(),
         branch: 1,
         hour: 100,
         ahead: playback_ahead(8),
@@ -762,7 +792,13 @@ fn playing_targets_consecutive_hours_from_the_playhead_and_stops_at_the_branch_e
         map_mode: Default::default(),
         diplomatic_selected: None,
         show_allied_plans: false,
+        units_by_layers: false,
+        plans_by_layers: false,
+        routes_by_layers: false,
+        by_layers: Default::default(),
+        parts: Default::default(),
         counters: Default::default(),
+        counter_kinds: Default::default(),
         view: test_view(),
         have: vec![],
         received: 0,
@@ -876,6 +912,7 @@ fn sparse_playback_decode_is_identical_to_an_independent_paused_seek_at_every_sa
 #[test]
 fn same_hour_seeks_discard_ready_acknowledgements_just_like_other_history_resets() {
     let old = Want {
+        layered: Default::default(),
         branch: 1,
         hour: 10,
         ahead: 2,
@@ -885,7 +922,13 @@ fn same_hour_seeks_discard_ready_acknowledgements_just_like_other_history_resets
         map_mode: Default::default(),
         diplomatic_selected: None,
         show_allied_plans: false,
+        units_by_layers: false,
+        plans_by_layers: false,
+        routes_by_layers: false,
+        by_layers: Default::default(),
+        parts: Default::default(),
         counters: Default::default(),
+        counter_kinds: Default::default(),
         view: test_view(),
         have: vec![10, 11],
         received: 2,

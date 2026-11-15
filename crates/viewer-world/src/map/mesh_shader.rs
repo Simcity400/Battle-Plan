@@ -532,7 +532,7 @@ pub(crate) mod tests {
         );
         let selection = replacement.select("Up").unwrap().unwrap();
         let geometry = Geometry::from_mesh(&triangle(), 1.0).unwrap();
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let instance = shader_pipeline::gpu::instance();
         let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
         let (device, _queue) =
             pollster::block_on(adapter.request_device(&Default::default())).unwrap();

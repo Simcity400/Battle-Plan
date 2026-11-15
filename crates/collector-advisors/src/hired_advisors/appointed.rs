@@ -167,7 +167,7 @@ pub fn capture(
             required_bytes: held.bytes.len(),
         };
     }
-    let walk = native::walk_growing(memory, base, game_state, rows, bytes);
+    let walk = native::walk(memory, base, game_state, rows, bytes);
     counts.read = 1;
     counts.read_rows = walk.outcome.len() as u64;
     let complete = match walk.outcome {

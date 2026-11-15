@@ -11,9 +11,16 @@ doctest = false
 
 [features]
 # Shared synthetic row fixtures and decode observations for replay integration tests.
-test-support = []
+test-support = ["replay-rows/test-support", "replay-rows-derived/test-support"]
 
 [dependencies]
+replay-rows.workspace = true
+replay-rows-derived.workspace = true
+replay-tables-a.workspace = true
+replay-tables-b.workspace = true
+replay-tables-c.workspace = true
+replay-tables-d.workspace = true
+replay-tables-e.workspace = true
 replay-spool.workspace = true
 serde = { workspace = true, features = ["derive"] }
 crc32fast = "1"

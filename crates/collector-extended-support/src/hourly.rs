@@ -1,7 +1,8 @@
-//! The hourly boundary's shared state: the frame pool's size and whether the
-//! calling thread runs the native tick.
+//! The hourly boundary's shared state: the frame pool's steady size and whether
+//! the calling thread runs the native tick.
 
-// Reuse a bounded producer/consumer pool; a burst waits rather than dropping an hour.
+/// The frames the pool keeps once the spool has caught up; a backlog takes more and
+/// they are freed again as it drains.
 pub const BUFFERS: usize = 4;
 std::thread_local! {
     /// This thread is running the hourly original, the native tick.

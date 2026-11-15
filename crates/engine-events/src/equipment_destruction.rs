@@ -283,6 +283,21 @@ pub const HQ_RETURN: Site = Site {
     rva: Rva(0xc49bec),
 };
 
+fn merge_inputs(memory: &impl Memory, argument: usize) -> Result<(usize, Array), &'static str> {
+    let at = argument
+        .checked_add(8)
+        .ok_or("merge input address overflow")?;
+    Ok((
+        at,
+        Array::read(memory, at, 8).ok_or("merge input array unreadable")?,
+    ))
+}
+
+/// The armies a merge's input names; `merge_armies` needs one more slot, for the survivor.
+pub fn merge_input_count(memory: &impl Memory, argument: usize) -> Result<usize, &'static str> {
+    merge_inputs(memory, argument).map(|(_, array)| array.count as usize)
+}
+
 /// Selected pools have matching location pointers. Read each physical pool
 /// once, even when the input repeats a pointer.
 pub fn merge_armies(
@@ -294,10 +309,7 @@ pub fn merge_armies(
     let survivor = pointer(memory, argument, 0)?;
     army_identity(memory, base, survivor)?;
     let location = pointer(memory, survivor, crate::cunit::LOCATION)?;
-    let array_address = argument
-        .checked_add(8)
-        .ok_or("merge input address overflow")?;
-    let array = Array::read(memory, array_address, 8).ok_or("merge input array unreadable")?;
+    let (array_address, array) = merge_inputs(memory, argument)?;
     let first = output.first_mut().ok_or("merge army scratch too short")?;
     *first = survivor;
     let mut len = 1;
@@ -1056,94 +1068,6 @@ pub fn removals(
         }
     }
     Ok(())
-}
-
-/// Live counts only; these are capacity observations, never recorded facts.
-pub fn design_count(memory: &impl Memory, base: usize) -> Option<usize> {
-    let state = usize::try_from(read::<u64>(
-        memory,
-        engine_sites::at(base, crate::cgame_state::SINGLETON_RVA)?,
-    )?)
-    .ok()?;
-    if state == 0 {
-        return Some(0);
-    }
-    let header = read(
-        memory,
-        state.checked_add(crate::cgame_state::EQUIPMENT_VARIANTS)?,
-    )?;
-    Some(Array::from_header(header, 8)?.count as usize)
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Population {
-    pub divisions: usize,
-    pub division_pool_entries: usize,
-    pub stockpile_entries: usize,
-    pub delivery_pool_entries: usize,
-}
-
-/// Off-thread sizing only: sum live division-roster counts and equipment-pool
-/// rows once per canonical country, retaining stockpile demand separately.
-pub fn population(memory: &impl Memory, base: usize) -> Option<Population> {
-    let state = usize::try_from(read::<u64>(
-        memory,
-        engine_sites::at(base, crate::cgame_state::SINGLETON_RVA)?,
-    )?)
-    .ok()?;
-    if state == 0 {
-        return Some(Population::default());
-    }
-    let countries = Array::read(memory, state.checked_add(crate::cgame_state::COUNTRIES)?, 8)?;
-    if countries.count < 2 {
-        return Some(Population::default());
-    }
-    let reader = crate::ccountry::Reader::new(memory, base, state).ok()?;
-    let mut demand = Population::default();
-    for slot in 1..reader.count() {
-        if let Some(country) = reader.at(slot).ok()? {
-            let roster = Array::read(
-                memory,
-                country.pointer.checked_add(crate::ccountry::DIVISIONS)?,
-                8,
-            )?;
-            demand.divisions = demand.divisions.checked_add(roster.count as usize)?;
-            for index in 0..roster.count {
-                let army = usize::try_from(read::<u64>(memory, roster.element(index, 8)?)?).ok()?;
-                if army != 0 {
-                    let pool = army.checked_add(carmy::EQUIPMENT_POOL)?;
-                    let entries = cequipment_variant_pool::entries(memory, base, pool).ok()?;
-                    canceled_delivery_pools(memory, base, army, true, |pool| {
-                        let entries = cequipment_variant_pool::entries(memory, base, pool)?;
-                        demand.delivery_pool_entries = demand
-                            .delivery_pool_entries
-                            .checked_add(entries.count as usize)
-                            .ok_or("merge delivery census overflow")?;
-                        Ok(())
-                    })
-                    .ok()?;
-                    demand.division_pool_entries = demand
-                        .division_pool_entries
-                        .checked_add(entries.count as usize)?;
-                }
-            }
-            let manager = usize::try_from(read::<u64>(
-                memory,
-                country
-                    .pointer
-                    .checked_add(crate::ccountry::PRODUCTION_STATUS)?,
-            )?)
-            .ok()?;
-            if manager != 0 {
-                let pool = manager.checked_add(crate::cproduction_status::STOCKPILE_POOL)?;
-                let entries = cequipment_variant_pool::entries(memory, base, pool).ok()?;
-                demand.stockpile_entries = demand
-                    .stockpile_entries
-                    .checked_add(entries.count as usize)?;
-            }
-        }
-    }
-    Some(demand)
 }
 
 #[cfg(test)]

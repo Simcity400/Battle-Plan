@@ -123,29 +123,12 @@ pub struct AdvisorRow {
     pub token_len: usize,
 }
 
-/// Every faction's occupied advisor slots, in roster and slot order: each
-/// non-null slot advisor must be an authenticated CAdvisor, whose idea token
-/// is copied exactly. A slot that does not fit (either buffer) is counted,
-/// with its validated token length added to `required_bytes`, so empty
-/// buffers yield the live demand.
-pub fn walk_advisors(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut [AdvisorRow],
-    bytes: &mut [u8],
-) -> NameWalk {
-    walk_advisors_buffer(
-        memory,
-        base,
-        game_state,
-        crate::walk::Buffer::Fixed(output),
-        crate::walk::Buffer::Fixed(bytes),
-    )
+pub fn count_advisors(memory: &impl Memory, base: usize, game_state: usize) -> NameWalk {
+    walk_advisors_buffer(memory, base, game_state, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
 }
 
 /// Worker storage grows from the original native headers before publication.
-pub fn walk_advisors_growing(
+pub fn walk_advisors(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -271,28 +254,16 @@ pub struct NameWalk {
     pub required_bytes: usize,
 }
 
+pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> NameWalk {
+    walk_buffer(memory, base, game_state, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
+}
+
 /// Copies current literal names into preallocated storage, without an engine call
 /// or allocation. Names are never shortened or converted lossily. Template-bound
 /// localisation and the separately updated display cache are not literal names.
 /// Capacity failures omit whole rows; required_bytes lets the spool thread grow
 /// the arena. All live pointer slots and string headers remain checked.
 pub fn walk(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut [Row],
-    names: &mut [u8],
-) -> NameWalk {
-    walk_buffer(
-        memory,
-        base,
-        game_state,
-        crate::walk::Buffer::Fixed(output),
-        crate::walk::Buffer::Fixed(names),
-    )
-}
-
-pub fn walk_growing(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -321,7 +292,7 @@ fn walk_buffer(
 /// Worker acquisition sharing each faction's authenticated pointer and full
 /// handle with demanded companions. The boolean certifies the complete identity
 /// roster independently of names. No companion must repeat this native census.
-pub fn walk_growing_with(
+pub fn walk_with(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -652,17 +623,9 @@ mod advisor_tests {
     }
 
     #[test]
-    fn advisor_slots_truncate_and_count_their_bytes() {
-        let (walk, ..) = run(&fixture(), 1, 64);
-        assert_eq!(
-            walk.outcome,
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            }
-        );
-        assert_eq!(walk.required_bytes, 12 + LONG.len());
-        let (walk, ..) = run(&fixture(), 0, 0);
+    fn the_advisor_count_probe_counts_rows_and_bytes_and_empty_slots_have_no_rows() {
+        let bytes = fixture();
+        let walk = count_advisors(&SliceMemory { base: 0, bytes: &bytes }, 0, GS);
         assert_eq!(
             walk.outcome,
             Outcome::Truncated {

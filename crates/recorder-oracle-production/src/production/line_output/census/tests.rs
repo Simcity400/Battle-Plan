@@ -14,7 +14,13 @@ fn frame(hour: Hour, read: bool, lines: &[u64], output: &[(u64, bool)]) -> Decod
         .map(Into::into),
     };
     if read {
-        frame.metrics.table_ns[TableId::ProductionLines.index()] = 1;
+        // The collector marks every table of the production slot's walk read.
+        let slot = replay_data::cadence::cadence(TableId::ProductionLines);
+        for table in TableId::ALL {
+            if replay_data::cadence::cadence(table) == slot {
+                frame.metrics.table_ns[table.index()] = 1;
+            }
+        }
     }
     *frame.tables[TableId::ProductionLines.index()] =
         TableView::Complete(TableRows::ProductionLines(

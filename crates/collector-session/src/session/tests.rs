@@ -95,7 +95,7 @@ fn small() -> (Capacities, Captured) {
     (capacities, captured)
 }
 
-fn fixed_job() -> SessionJob {
+fn presized_job() -> SessionJob {
     SessionJob {
         log: RawLog::new(256, 16 * 1024),
         ..Default::default()
@@ -119,7 +119,7 @@ fn session_is_read_every_hour() {
         bytes: &bytes,
     };
     let (capacities, mut captured) = small();
-    let mut job = fixed_job();
+    let mut job = presized_job();
     for force_full in [false, true] {
         for hour in 0..24 {
             let ctx = SessionCopyContext {
@@ -155,7 +155,7 @@ fn quiet_tension_hours_publish_the_held_read_without_copying() {
     let (capacities, mut captured) = small();
     let mut job = SessionJob {
         observed: Observed { changes, held },
-        ..fixed_job()
+        ..presized_job()
     };
     /// One hour's copy and decode; whether it copied nothing.
     fn hour_at(
@@ -251,7 +251,7 @@ fn manager_sources_and_aggregates_keep_raw_operands_and_literal_reasons() {
 }
 
 #[test]
-fn capacity_truncation_and_a_broken_root_stay_distinct_and_grow_off_thread() {
+fn short_reason_storage_grows_and_a_broken_root_stays_distinct() {
     let (mut capacities, mut captured) = small();
     capacities.reason_bytes = 2;
     let mut captured_small = Captured::with_capacities(&capacities);
@@ -261,18 +261,9 @@ fn capacity_truncation_and_a_broken_root_stay_distinct_and_grow_off_thread() {
         bytes: &bytes,
     };
     let _ticks = captured_small.capture(&memory, 0, BASE, 0, true);
-    // The five-byte reason does not fit; its row is omitted and counted.
-    assert_eq!(
-        captured_small.outcomes()[1],
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 1
-        }
-    );
-    assert!(matches!(
-        captured_small.tables()[1],
-        TableView::Truncated { missing: 1, .. }
-    ));
+    // The five-byte reason grows its two-byte storage.
+    assert_eq!(captured_small.outcomes()[1], Outcome::Rows { len: 2 });
+    assert!(matches!(captured_small.tables()[1], TableView::Complete(_)));
     captured_small.grow(&mut capacities);
     assert!(capacities.reason_bytes >= 5);
 
@@ -319,7 +310,7 @@ fn split(memory: &impl Memory, capacities: &Capacities) -> (Captured, SessionCop
         base: 0,
         game_state: BASE,
     };
-    let mut first = fixed_job();
+    let mut first = presized_job();
     let report = copy_session_refresh(memory, ctx, &mut first);
     assert!(report.raw_ok);
     captured.raw_mode = report.raw_ok;
@@ -405,30 +396,6 @@ fn session_split_copy_matches_direct_walk() {
 }
 
 #[test]
-fn session_staging_overflow_falls_back_to_typed_walk() {
-    let bytes = fixture();
-    let memory = SliceMemory {
-        base: BASE,
-        bytes: &bytes,
-    };
-    let ctx = SessionCopyContext {
-        hour: 0,
-        force_full: true,
-        base: 0,
-        game_state: BASE,
-    };
-    let mut tiny = SessionJob {
-        log: crate::raw::RawLog::new(8, 8),
-        game_state: 0,
-        ..Default::default()
-    };
-    let report = copy_session_refresh(&memory, ctx, &mut tiny);
-    assert!(!report.raw_ok);
-    assert!(tiny.log.overflowed);
-    assert!(tiny.grow_for_next());
-}
-
-#[test]
 fn session_truncation_matrix_matches_direct_with_same_caps() {
     // B3: zero/one/exact-fit/overflow-by-one/massive run typed AND
     // copy→decode against the SAME memory with the SAME pooled caps,
@@ -462,7 +429,7 @@ fn session_truncation_matrix_matches_direct_with_same_caps() {
             base: 0,
             game_state: BASE,
         };
-        let mut first = fixed_job();
+        let mut first = presized_job();
         let report = copy_session_refresh(&memory, ctx, &mut first);
         assert!(report.raw_ok, "rows={rows:?}");
         split.raw_mode = true;
@@ -511,7 +478,7 @@ fn session_copy_sizes_cover_documented_read_set() {
         },
         sizes: std::cell::RefCell::new(BTreeSet::new()),
     };
-    let mut job = fixed_job();
+    let mut job = presized_job();
     copy_pass(&memory, 0, BASE, &mut job.log);
     assert!(job.log.raw_bytes.iter().any(|&b| b > 0));
     let sizes = memory.sizes.borrow().clone();
@@ -526,7 +493,6 @@ fn session_copy_sizes_cover_documented_read_set() {
 #[test]
 fn session_cold_job_is_provisioned_without_content_guesses() {
     let job = SessionJob::new();
-    assert!(job.is_provisioned());
     assert_eq!(job.log.spans.capacity(), 0);
     assert_eq!(job.log.bytes.capacity(), 0);
     let capacities = Capacities::default();
@@ -547,10 +513,10 @@ fn session_bulk_header_serves_enclosed_length_word() {
         base: BASE,
         bytes: &bytes,
     };
-    let mut job = fixed_job();
+    let mut job = presized_job();
     copy_pass(&memory, 0, BASE, &mut job.log);
     assert!(job.log.has_bulk);
-    let recorded = crate::raw::Recorded::build(&job.log);
+    let recorded = crate::raw::Recorded::build(&job.log).unwrap();
     // Find a 32 B bulk header span and read an enclosed 8 B word at an
     // unaligned offset inside it.
     let header = job
@@ -567,7 +533,7 @@ fn session_bulk_header_serves_enclosed_length_word() {
 }
 
 #[test]
-fn session_growing_source_fault_is_not_retried_and_preserves_aggregate_sibling() {
+fn session_source_fault_is_not_retried_and_preserves_aggregate_sibling() {
     use std::cell::Cell;
     struct FaultOnce<'a> {
         inner: SliceMemory<'a>,
@@ -594,7 +560,7 @@ fn session_growing_source_fault_is_not_retried_and_preserves_aggregate_sibling()
     };
     let mut job = SessionJob::default();
     assert!(
-        copy_session_refresh_growing(
+        copy_session_refresh(
             &memory,
             SessionCopyContext {
                 base: 0,

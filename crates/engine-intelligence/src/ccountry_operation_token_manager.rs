@@ -32,28 +32,16 @@ pub struct Walk {
     pub required_tokens: usize,
 }
 
+pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Walk {
+    walk_buffer(memory, base, game_state, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
+}
+
 /// Reads each canonical country's authenticated manager once. Missing arena capacity omits a whole
 /// target row. Empty vectors, raw country aliases and repeated token values remain exact. Resolve
 /// distinct token names through the shared callback dictionary when enabling this table; its slot
 /// in COperationToken is not used as an assumed authored id. Normal effect/lifecycle writer closure
 /// and live consistency/cost assessment remain prerequisites to collection.
 pub fn walk(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut [Row],
-    tokens: &mut [u32],
-) -> Walk {
-    walk_buffer(
-        memory,
-        base,
-        game_state,
-        crate::walk::Buffer::Fixed(output),
-        crate::walk::Buffer::Fixed(tokens),
-    )
-}
-
-pub fn walk_growing(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -323,7 +311,7 @@ mod tests {
         bytes
     }
 
-    fn capture(bytes: &[u8], output: &mut [Row], tokens: &mut [u32]) -> Walk {
+    fn capture(bytes: &[u8], output: &mut Vec<Row>, tokens: &mut Vec<u32>) -> Walk {
         walk(&SliceMemory { base: 0, bytes }, BASE, GAME, output, tokens)
     }
 
@@ -352,11 +340,11 @@ mod tests {
                     &(index as u32).to_le_bytes(),
                 );
             }
-            let mut expected_rows = [Row::default(); 2];
+            let mut expected_rows = vec![Row::default(); 2];
             let mut expected_tokens = vec![0; count];
             let expected = capture(&bytes, &mut expected_rows, &mut expected_tokens);
             assert_eq!(expected.outcome, Outcome::Rows { len: 2 });
-            let actual = walk_growing(
+            let actual = walk(
                 &SliceMemory {
                     base: 0,
                     bytes: &bytes,
@@ -375,8 +363,8 @@ mod tests {
     #[test]
     fn target_entries_preserve_empty_vectors_aliases_and_ordered_repeated_ids() {
         let bytes = fixture();
-        let mut rows = [Row::default(); 4];
-        let mut tokens = [0; 140];
+        let mut rows = vec![Row::default(); 4];
+        let mut tokens = vec![0; 140];
         let result = capture(&bytes, &mut rows, &mut tokens);
         assert_eq!(result.outcome, Outcome::Rows { len: 2 });
         assert_eq!(result.tokens_len, 130);
@@ -407,32 +395,9 @@ mod tests {
     }
 
     #[test]
-    fn arena_or_row_shortage_omits_whole_targets_and_reports_exact_requirements() {
+    fn the_count_probe_reports_exact_requirements() {
         let bytes = fixture();
-        let mut rows = [Row::default(); 4];
-        let mut short_tokens = [7; 129];
-        let result = capture(&bytes, &mut rows, &mut short_tokens);
-        assert_eq!(
-            result.outcome,
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            }
-        );
-        assert_eq!((result.tokens_len, result.required_tokens), (0, 130));
-        assert_eq!(rows[0].target, 0);
-        assert_eq!(short_tokens, [7; 129]);
-        let mut tokens = [0; 130];
-        let result = capture(&bytes, &mut rows[..1], &mut tokens);
-        assert_eq!(
-            result.outcome,
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            }
-        );
-        assert_eq!((result.tokens_len, result.required_tokens), (130, 130));
-        let result = capture(&bytes, &mut [], &mut tokens);
+        let result = count(&SliceMemory { base: 0, bytes: &bytes }, BASE, GAME);
         assert_eq!(
             result.outcome,
             Outcome::Truncated {
@@ -454,7 +419,7 @@ mod tests {
         );
         put(&mut bytes, header + operation_token_map::COUNT, &[0; 9]);
         assert_eq!(
-            capture(&bytes, &mut [], &mut []).outcome,
+            capture(&bytes, &mut Vec::new(), &mut Vec::new()).outcome,
             Outcome::Rows { len: 0 }
         );
         put(
@@ -463,7 +428,7 @@ mod tests {
             &0_u64.to_le_bytes(),
         );
         assert!(matches!(
-            capture(&bytes, &mut [], &mut []).outcome,
+            capture(&bytes, &mut Vec::new(), &mut Vec::new()).outcome,
             Outcome::Unavailable { .. }
         ));
     }
@@ -471,8 +436,8 @@ mod tests {
     #[test]
     fn broken_map_geometry_probe_and_late_payload_fail_the_complete_table() {
         let valid = fixture();
-        let mut rows = [Row::default(); 4];
-        let mut tokens = [0; 140];
+        let mut rows = vec![Row::default(); 4];
+        let mut tokens = vec![0; 140];
         for (address, replacement) in [
             (
                 FIRST_MANAGER + TARGETS + operation_token_map::COUNT,
@@ -516,8 +481,8 @@ mod tests {
     #[test]
     fn duplicate_target_keys_and_unresolvable_countries_are_unavailable() {
         let valid = fixture();
-        let mut rows = [Row::default(); 4];
-        let mut tokens = [0; 140];
+        let mut rows = vec![Row::default(); 4];
+        let mut tokens = vec![0; 140];
         let mut duplicate = valid.clone();
         put(
             &mut duplicate,

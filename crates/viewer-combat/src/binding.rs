@@ -17,7 +17,7 @@ use {super::content::Content as StaticContent, viewer_foundation::map::tables::r
 /// multiplier, opposing silhouette and content minimum.
 pub(super) type NavalPenalty = (i64, i32, i32);
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct Bindings {
     pub(super) air_chart: Option<super::air_menu::Chart>,
     pub values: Values,
@@ -123,6 +123,7 @@ pub enum NavalLayout {
     AirRight,
 }
 
+#[derive(Debug)]
 pub struct NavalEntry {
     pub layout: NavalLayout,
     /// Combat group side and hidden-incoming identity; never inferred from a

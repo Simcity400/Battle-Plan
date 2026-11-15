@@ -323,19 +323,12 @@ impl Memory for MemoryFixture {
     }
 }
 
-fn capture(bytes: Vec<u8>, fault: Option<usize>, rows: &mut [Row], paths: &mut [u32]) -> Walk {
-    walk(
-        &MemoryFixture { bytes, fault },
-        0,
-        STATE,
-        rows,
-        paths,
-        &mut cunit::FirstCombatMemo::new(4),
-    )
+fn capture(bytes: Vec<u8>, fault: Option<usize>, rows: &mut Vec<Row>, paths: &mut Vec<u32>) -> Walk {
+    walk_impl(&MemoryFixture { bytes, fault }, 0, STATE, crate::walk::Buffer::Growing(rows), crate::walk::Buffer::Growing(paths), &mut cunit::FirstCombatMemo::new(4), None, None, None)
 }
 
 fn outcome(bytes: Vec<u8>, fault: Option<usize>) -> Outcome {
-    capture(bytes, fault, &mut [Row::default(); 1], &mut [0; 3]).outcome
+    capture(bytes, fault, &mut vec![Row::default(); 1], &mut vec![0; 3]).outcome
 }
 
 fn stored_name(bytes: &mut [u8], gun: usize, text: &[u8], heap: usize) {
@@ -428,43 +421,34 @@ fn eta_fixture() -> EtaFixture {
     }
 }
 
-fn fresh_capture(image: &EtaFixture, hour: Option<i32>, observation_count: usize) -> Row {
-    let mut rows = [Row::default(); 1];
-    let mut paths = [0; 3];
-    let mut roots = [(0, 0); 1];
-    let mut observations = [FreshEtaObservations::default(); 1];
-    let mut name_bytes = [0; 3];
+fn fresh_capture(image: &EtaFixture, hour: Option<i32>) -> Row {
+    let mut rows = vec![Row::default(); 1];
+    let mut paths = vec![0; 3];
+    let mut roots = vec![(0, 0); 1];
+    let mut observations = Vec::new();
+    let mut name_bytes = vec![0; 3];
     let mut names = NameArena {
-        bytes: crate::walk::Buffer::Fixed(&mut name_bytes),
+        bytes: crate::walk::Buffer::Growing(&mut name_bytes),
         used: 0,
         required: 0,
         failures: 0,
     };
     let mut layout = None;
     let mut scratch = TooltipScratch {
-        guns: crate::walk::Buffer::Fixed(&mut roots),
-        fresh_observations: crate::walk::Buffer::Fixed(&mut observations[..observation_count]),
+        guns: crate::walk::Buffer::Growing(&mut roots),
+        fresh_observations: crate::walk::Buffer::Growing(&mut observations),
         sample_hour: hour,
         named: crate::railway_gun_speed::NamedBonuses {
-            pointers: crate::walk::Buffer::Fixed(&mut []),
+            pointers: crate::walk::Buffer::Count,
             required: 0,
         },
         layout: &mut layout,
         layout_buffer: &mut [],
-        supply_origins: crate::walk::Buffer::Fixed(&mut []),
+        supply_origins: crate::walk::Buffer::Count,
         supply_origins_len: 0,
         required_supply_origins: 0,
     };
-    let walk = walk_with_tooltip_inputs(
-        image,
-        0,
-        STATE,
-        &mut rows,
-        &mut paths,
-        &mut cunit::FirstCombatMemo::new(1),
-        &mut names,
-        &mut scratch,
-    );
+    let walk = walk_impl(image, 0, STATE, crate::walk::Buffer::Growing(&mut rows), crate::walk::Buffer::Growing(&mut paths), &mut cunit::FirstCombatMemo::new(1), Some(&mut names), Some(&mut scratch), None);
     assert_eq!(walk.outcome, Outcome::Rows { len: 1 });
     assert_eq!(&*scratch.guns, &[(0, 0)]);
     assert!(
@@ -487,7 +471,7 @@ fn fresh_common_operands_reuse_success_and_failure_without_poisoning_other_field
     ] {
         let mut image = eta_fixture();
         image.memory.fault = fault;
-        let row = fresh_capture(&image, Some(-17), 1);
+        let row = fresh_capture(&image, Some(-17));
         let fresh = row.fresh.expect("independent current-hour packet");
         assert_eq!(fresh.sample_hour, -17);
         assert_eq!(
@@ -575,7 +559,7 @@ fn idle_ordinary_route_keeps_fresh_railway_domains_without_first_edge_reads() {
             GROUP as u64,
         );
         image.memory.fault = fault;
-        let row = fresh_capture(&image, Some(123), 1);
+        let row = fresh_capture(&image, Some(123));
         assert_eq!((row.ordinary_len, row.alternate_len), (0, 0));
         assert_eq!(row.eta, None);
         let profile = row.fresh.expect("idle railway profile remains acquired");
@@ -617,8 +601,8 @@ fn idle_ordinary_route_keeps_fresh_railway_domains_without_first_edge_reads() {
             1
         );
         drop(reads);
-        let mut prefix = [Row::default(); 1];
-        let baseline = capture(image.memory.bytes.clone(), fault, &mut prefix, &mut []);
+        let mut prefix = vec![Row::default(); 1];
+        let baseline = capture(image.memory.bytes.clone(), fault, &mut prefix, &mut Vec::new());
         assert_eq!(
             baseline,
             Walk {
@@ -657,13 +641,13 @@ fn fresh_genuine_orders_group_is_independent_of_the_railway_assignee() {
         GUN + carmy::ORDERS_GROUP,
         GROUP as u64,
     );
-    let row = fresh_capture(&image, Some(123), 1);
+    let row = fresh_capture(&image, Some(123));
     assert_eq!(row.assignee_group, 0);
     assert_eq!(row.fresh.unwrap().orders_group, Some(GROUP_HANDLE));
 
     put64(&mut image.memory.bytes, GROUP, 0);
     image.reads.borrow_mut().clear();
-    let row = fresh_capture(&image, Some(124), 1);
+    let row = fresh_capture(&image, Some(124));
     assert_eq!(row.fresh.unwrap().orders_group, None);
     assert!(row.fresh_failures[2].is_some());
     assert!(row.eta.is_some());
@@ -675,7 +659,7 @@ fn stored_first_sea_edge_does_not_withhold_fresh_land_operands() {
     image.memory.bytes[DEFINITION + province_definition::TERRAIN_FLAGS] = 0;
     // Its unavailable transport context withholds the stored edge only; a
     // fresh route can still need land speed after that edge.
-    let row = fresh_capture(&image, Some(15), 1);
+    let row = fresh_capture(&image, Some(15));
     assert!(row.eta.is_none());
     let fresh = row.fresh.unwrap();
     assert_eq!(fresh.maximum_speed, Some(0));
@@ -694,7 +678,7 @@ fn fresh_supply_preserves_native_lazy_branches_and_transfer_skips() {
         image.memory.bytes[GUN + cunit::EXILED] = u8::from(exiled);
         put64(&mut image.memory.bytes, GUN + 0x400, capacity);
         put64(&mut image.memory.bytes, GUN + 0x410, remaining);
-        let row = fresh_capture(&image, Some(88), 1);
+        let row = fresh_capture(&image, Some(88));
         assert_eq!(row.fresh.unwrap().land_supply_factor, Some(expected));
         for (address, count) in [
             (GUN + 0x400, capacity_reads),
@@ -720,7 +704,7 @@ fn fresh_supply_preserves_native_lazy_branches_and_transfer_skips() {
         TRANSFER as u64,
     );
     image.memory.fault = Some(GUN + carmy::MOVEMENT_NUMERATOR);
-    let row = fresh_capture(&image, Some(89), 1);
+    let row = fresh_capture(&image, Some(89));
     let fresh = row.fresh.unwrap();
     assert_eq!(
         (fresh.maximum_speed, fresh.land_supply_factor),
@@ -734,15 +718,13 @@ fn fresh_supply_preserves_native_lazy_branches_and_transfer_skips() {
 }
 
 #[test]
-fn missing_callback_hour_or_observation_room_preserves_legacy_eta() {
-    for (hour, count) in [(None, 1), (Some(2), 0)] {
-        let image = eta_fixture();
-        let row = fresh_capture(&image, hour, count);
-        assert_eq!(row.fresh, None);
-        assert!(row.fresh_failure.is_some());
-        assert!(row.eta.is_some());
-        assert!(row.supply.is_some());
-    }
+fn missing_callback_hour_preserves_legacy_eta() {
+    let image = eta_fixture();
+    let row = fresh_capture(&image, None);
+    assert_eq!(row.fresh, None);
+    assert!(row.fresh_failure.is_some());
+    assert!(row.eta.is_some());
+    assert!(row.supply.is_some());
 }
 
 #[test]
@@ -822,56 +804,46 @@ fn tooltip_suffixes_preserve_prefixes_and_independent_fragments() {
     put64(&mut image.memory.bytes, GUN + 0x338, 0);
     image.memory.bytes[GUN + cunit::WITHDRAWAL] = 0xfe;
     image.memory.bytes[SECOND_GUN + cunit::WITHDRAWAL] = 2;
-    let mut output = [Row::default(); 2];
-    let mut paths = [0; 2];
-    let mut name_storage = [0; 6];
-    let mut guns = [(0, 0); 2];
-    let mut named = [];
+    let mut output = vec![Row::default(); 2];
+    let mut paths = vec![0; 2];
+    let mut name_storage = vec![0; 6];
+    let mut guns = vec![(0, 0); 2];
+    let mut named = vec![];
     let mut layout = None;
-    let mut origins = [Origin::default(); 3];
-    for (fault, origin_capacity) in [
-        (None, 3),
-        (Some(GUN + carmy::MOVEMENT_NUMERATOR), 3),
-        (Some(GUN + 0x410), 3),
-        (Some(GUN + NAME + 16), 3),
-        (Some(GUN + supply::ASKED), 3),
-        (Some(GUN + cunit::WITHDRAWAL), 3),
-        (Some(GUN + supply::ORIGINS), 3),
-        (Some(FIRST_ORIGINS + supply::ORIGIN_REQUESTED), 3),
-        (None, 1),
+    let mut origins = Vec::new();
+    for fault in [
+        None,
+        Some(GUN + carmy::MOVEMENT_NUMERATOR),
+        Some(GUN + 0x410),
+        Some(GUN + NAME + 16),
+        Some(GUN + supply::ASKED),
+        Some(GUN + cunit::WITHDRAWAL),
+        Some(GUN + supply::ORIGINS),
+        Some(FIRST_ORIGINS + supply::ORIGIN_REQUESTED),
     ] {
         image.memory.fault = fault;
         image.reads.borrow_mut().clear();
         let mut names = NameArena {
-            bytes: crate::walk::Buffer::Fixed(&mut name_storage),
+            bytes: crate::walk::Buffer::Growing(&mut name_storage),
             used: 0,
             required: 0,
             failures: 0,
         };
         let mut scratch = TooltipScratch {
-            guns: crate::walk::Buffer::Fixed(&mut guns),
-            fresh_observations: crate::walk::Buffer::Fixed(&mut []),
+            guns: crate::walk::Buffer::Growing(&mut guns),
+            fresh_observations: crate::walk::Buffer::Count,
             sample_hour: None,
             named: crate::railway_gun_speed::NamedBonuses {
-                pointers: crate::walk::Buffer::Fixed(&mut named),
+                pointers: crate::walk::Buffer::Growing(&mut named),
                 required: 0,
             },
             layout: &mut layout,
             layout_buffer: &mut [],
-            supply_origins: crate::walk::Buffer::Fixed(&mut origins[..origin_capacity]),
+            supply_origins: crate::walk::Buffer::Growing(&mut origins),
             supply_origins_len: 0,
             required_supply_origins: 0,
         };
-        let walked = walk_with_tooltip_inputs(
-            &image,
-            0,
-            STATE,
-            &mut output,
-            &mut paths,
-            &mut cunit::FirstCombatMemo::new(2),
-            &mut names,
-            &mut scratch,
-        );
+        let walked = walk_impl(&image, 0, STATE, crate::walk::Buffer::Growing(&mut output), crate::walk::Buffer::Growing(&mut paths), &mut cunit::FirstCombatMemo::new(2), Some(&mut names), Some(&mut scratch), None);
         assert_eq!(walked.outcome, Outcome::Rows { len: 2 });
         assert_eq!((output[0].gun, output[1].gun), (GUN_HANDLE, second_handle));
         assert_eq!(
@@ -905,9 +877,7 @@ fn tooltip_suffixes_preserve_prefixes_and_independent_fragments() {
             assert_eq!((first.asked, first.received), (700_000, 300_000));
             assert_eq!(
                 first.origins_len,
-                if origin_capacity == 1 {
-                    Err(Failure::OriginsCapacity { required: 2 })
-                } else if fault == Some(GUN + supply::ORIGINS)
+                if fault == Some(GUN + supply::ORIGINS)
                     || fault == Some(FIRST_ORIGINS + supply::ORIGIN_REQUESTED)
                 {
                     Err(Failure::Unreadable)
@@ -931,9 +901,6 @@ fn tooltip_suffixes_preserve_prefixes_and_independent_fragments() {
                 received: 75_000
             }
         );
-        if origin_capacity == 1 {
-            assert_eq!(scratch.required_supply_origins, 3);
-        }
         let reads = image.reads.borrow();
         let last_name = reads
             .iter()
@@ -1047,36 +1014,28 @@ fn stored_names_preserve_all_bytes_and_fail_independently_of_old_operands() {
     ] {
         let mut bytes = fixture();
         stored_name(&mut bytes, GUN, text, 0x10000);
-        let mut old = [Row::default(); 1];
-        let mut old_paths = [0; 3];
+        let mut old = vec![Row::default(); 1];
+        let mut old_paths = vec![0; 3];
         let old_walk = capture(bytes.clone(), None, &mut old, &mut old_paths);
         for (capacity, fault) in [(text.len(), None), (0, Some(GUN + NAME + 16)), (0, None)] {
             let mut storage = vec![0; capacity];
             let mut arena = NameArena {
-                bytes: crate::walk::Buffer::Fixed(&mut storage),
+                bytes: crate::walk::Buffer::Growing(&mut storage),
                 used: 0,
                 required: 0,
                 failures: 0,
             };
-            let mut rows = [Row::default(); 1];
-            let mut paths = [0; 3];
-            let walked = walk_with_names(
-                &MemoryFixture {
+            let mut rows = vec![Row::default(); 1];
+            let mut paths = vec![0; 3];
+            let walked = walk_impl(&MemoryFixture {
                     bytes: bytes.clone(),
                     fault,
-                },
-                0,
-                STATE,
-                &mut rows,
-                &mut paths,
-                &mut cunit::FirstCombatMemo::new(4),
-                &mut arena,
-            );
+                }, 0, STATE, crate::walk::Buffer::Growing(&mut rows), crate::walk::Buffer::Growing(&mut paths), &mut cunit::FirstCombatMemo::new(4), Some(&mut arena), None, None);
             assert_eq!(walked, old_walk);
             assert_eq!(paths, old_paths);
             let name = rows[0].name.take();
             assert_eq!(rows, old);
-            if fault.is_some() || capacity < text.len() {
+            if fault.is_some() {
                 assert_eq!(name, None);
                 assert_eq!(arena.failures, 1);
             } else {
@@ -1107,20 +1066,12 @@ fn names_count_full_demand_even_when_the_route_or_row_arena_is_short() {
     stored_name(&mut bytes, GUN, b"full name demand", 0x10000);
     let memory = MemoryFixture { bytes, fault: None };
     let mut arena = NameArena {
-        bytes: crate::walk::Buffer::Fixed(&mut []),
+        bytes: crate::walk::Buffer::Count,
         used: 0,
         required: 0,
         failures: 0,
     };
-    let walked = walk_with_names(
-        &memory,
-        0,
-        STATE,
-        &mut [],
-        &mut [],
-        &mut cunit::FirstCombatMemo::new(4),
-        &mut arena,
-    );
+    let walked = walk_impl(&memory, 0, STATE, crate::walk::Buffer::Count, crate::walk::Buffer::Count, &mut cunit::FirstCombatMemo::new(4), Some(&mut arena), None, None);
     assert!(matches!(
         walked.outcome,
         Outcome::Truncated {
@@ -1133,8 +1084,8 @@ fn names_count_full_demand_even_when_the_route_or_row_arena_is_short() {
 
 #[test]
 fn captures_the_roster_gun_motion_and_first_combat_without_map_entity_state() {
-    let mut rows = [Row::default(); 1];
-    let mut paths = [0; 3];
+    let mut rows = vec![Row::default(); 1];
+    let mut paths = vec![0; 3];
     assert_eq!(
         capture(fixture(), None, &mut rows, &mut paths),
         Walk {
@@ -1206,14 +1157,7 @@ fn read_calls(mut bytes: Vec<u8>, guns: usize) -> u64 {
     let mut rows = vec![Row::default(); guns];
     let mut paths = vec![0; 3 * guns];
     ReadCounts::take_current();
-    let result = walk(
-        &CountedMemory::new(MemoryFixture { bytes, fault: None }),
-        0,
-        STATE,
-        &mut rows,
-        &mut paths,
-        &mut cunit::FirstCombatMemo::new(4),
-    );
+    let result = walk_impl(&CountedMemory::new(MemoryFixture { bytes, fault: None }), 0, STATE, crate::walk::Buffer::Growing(&mut rows), crate::walk::Buffer::Growing(&mut paths), &mut cunit::FirstCombatMemo::new(4), None, None, None);
     let reads = ReadCounts::take_current();
     assert_eq!(result.outcome, Outcome::Rows { len: guns });
     reads.copy_calls + reads.scattered_calls + reads.record_calls + reads.plan_calls
@@ -1233,14 +1177,14 @@ fn read_calls_per_hour_and_per_gun_are_pinned() {
         "railway gun inputs: standing {standing_hour} calls for one gun, {standing_gun} per \
          further gun; moving in combat {moving_hour}, {moving_gun} per further gun"
     );
-    assert_eq!((standing_hour, standing_gun), (57, 40));
-    assert_eq!((moving_hour, moving_gun), (94, 54));
+    assert_eq!((standing_hour, standing_gun), (55, 39));
+    assert_eq!((moving_hour, moving_gun), (91, 53));
 }
 
 #[test]
 fn standing_gun_keeps_null_links_as_zero() {
-    let mut rows = [Row::default(); 1];
-    let walk = capture(standing(), None, &mut rows, &mut []);
+    let mut rows = vec![Row::default(); 1];
+    let walk = capture(standing(), None, &mut rows, &mut Vec::new());
     assert_eq!(walk.outcome, Outcome::Rows { len: 1 });
     let row = rows[0];
     assert_eq!(row.target, 0);
@@ -1276,9 +1220,9 @@ fn rail_level_preserves_null_links_and_signed_values() {
     ] {
         let mut bytes = standing();
         put(&mut bytes, at, &value);
-        let mut rows = [Row::default(); 1];
+        let mut rows = vec![Row::default(); 1];
         assert_eq!(
-            capture(bytes, None, &mut rows, &mut []).outcome,
+            capture(bytes, None, &mut rows, &mut Vec::new()).outcome,
             Outcome::Rows { len: 1 },
             "mutation at {at:#x}"
         );
@@ -1320,9 +1264,9 @@ fn unlocated_gun_needs_no_rail_manager() {
     let mut bytes = standing();
     put64(&mut bytes, GUN + cunit::LOCATION, 0);
     put64(&mut bytes, RAIL_MANAGER, 0);
-    let mut rows = [Row::default(); 1];
+    let mut rows = vec![Row::default(); 1];
     assert_eq!(
-        capture(bytes, None, &mut rows, &mut []).outcome,
+        capture(bytes, None, &mut rows, &mut Vec::new()).outcome,
         Outcome::Rows { len: 1 }
     );
     assert_eq!(
@@ -1388,27 +1332,7 @@ fn malformed_identity_owner_and_location_fail_instead_of_relabelling() {
 }
 
 #[test]
-fn short_arenas_truncate_with_demand_and_bad_routes_never_become_stationary() {
-    let walk = capture(fixture(), None, &mut [Row::default(); 1], &mut [0; 2]);
-    assert_eq!(
-        walk.outcome,
-        Outcome::Truncated {
-            len: 0,
-            unread_rows: 1
-        }
-    );
-    assert_eq!(walk.required_paths, 3);
-    let walk = capture(fixture(), None, &mut [], &mut [0; 3]);
-    assert_eq!(
-        (walk.outcome, walk.required_paths),
-        (
-            Outcome::Truncated {
-                len: 0,
-                unread_rows: 1
-            },
-            3
-        )
-    );
+fn bad_routes_never_become_stationary() {
     assert_eq!(
         outcome(fixture(), Some(ORDINARY)),
         Outcome::Unavailable {
@@ -1448,9 +1372,9 @@ fn first_combat_side_follows_attacker_membership_and_needs_both_identities() {
         GUN + cunit::COMBAT_REFERENCE_COUNT,
         &1_u32.to_le_bytes(),
     );
-    let mut rows = [Row::default(); 1];
+    let mut rows = vec![Row::default(); 1];
     assert_eq!(
-        capture(bytes.clone(), None, &mut rows, &mut [0; 3]).outcome,
+        capture(bytes.clone(), None, &mut rows, &mut vec![0; 3]).outcome,
         Outcome::Rows { len: 1 }
     );
     assert_eq!((rows[0].combat_role, rows[0].combat_province), (2, 2));
@@ -1483,7 +1407,7 @@ fn first_combat_side_follows_attacker_membership_and_needs_both_identities() {
     );
     put(&mut bytes, SIDE_TWO_COUNTRY, &1_u32.to_le_bytes());
     assert_eq!(
-        capture(bytes.clone(), None, &mut rows, &mut [0; 3]).outcome,
+        capture(bytes.clone(), None, &mut rows, &mut vec![0; 3]).outcome,
         Outcome::Rows { len: 1 }
     );
     assert_eq!((rows[0].combat_role, rows[0].combat_province), (2, 2));
@@ -1491,14 +1415,14 @@ fn first_combat_side_follows_attacker_membership_and_needs_both_identities() {
     // A later combat's province is never read: an unregistered one does not fail the gun.
     put64(&mut bytes, COMBAT_TWO + cland_combat::PROVINCE, 0x10);
     assert_eq!(
-        capture(bytes.clone(), None, &mut rows, &mut [0; 3]).outcome,
+        capture(bytes.clone(), None, &mut rows, &mut vec![0; 3]).outcome,
         Outcome::Rows { len: 1 }
     );
     assert_eq!((rows[0].combat_province, rows[0].attacking), (2, true));
     // A later combat that cannot be read fails the gun rather than reading as defence.
     put64(&mut bytes, COMBAT_TWO, 0x10);
     assert_eq!(
-        capture(bytes, None, &mut rows, &mut [0; 3]).outcome,
+        capture(bytes, None, &mut rows, &mut vec![0; 3]).outcome,
         Outcome::Unavailable {
             reason: "division first combat identity mismatch"
         }
@@ -1532,8 +1456,8 @@ fn the_first_combat_answer_is_shared_through_the_capture_memo() {
         bytes: fixture(),
         fault: None,
     };
-    let mut rows = [Row::default(); 1];
-    let walk = walk(&memory, 0, STATE, &mut rows, &mut [0; 3], &mut memo);
+    let mut rows = vec![Row::default(); 1];
+    let walk = walk_impl(&memory, 0, STATE, crate::walk::Buffer::Growing(&mut rows), crate::walk::Buffer::Growing(&mut vec![0; 3]), &mut memo, None, None, None);
     assert_eq!(walk.outcome, Outcome::Rows { len: 1 });
     assert_eq!(memo.entries.len(), 1);
     // A second unit of the same owner in the same combat is answered from the memo, even
@@ -1542,14 +1466,14 @@ fn the_first_combat_answer_is_shared_through_the_capture_memo() {
     put64(&mut bytes, SIDE, 0);
     let memory = MemoryFixture { bytes, fault: None };
     assert_eq!(
-        super::walk(&memory, 0, STATE, &mut rows, &mut [0; 3], &mut memo).outcome,
+        super::walk_impl(&memory, 0, STATE, crate::walk::Buffer::Growing(&mut rows), crate::walk::Buffer::Growing(&mut vec![0; 3]), &mut memo, None, None, None).outcome,
         Outcome::Rows { len: 1 }
     );
     assert_eq!((rows[0].combat_role, rows[0].combat_province), (1, 2));
     // A failed answer is never memoised.
     let mut fresh = cunit::FirstCombatMemo::new(4);
     assert!(matches!(
-        super::walk(&memory, 0, STATE, &mut rows, &mut [0; 3], &mut fresh).outcome,
+        super::walk_impl(&memory, 0, STATE, crate::walk::Buffer::Growing(&mut rows), crate::walk::Buffer::Growing(&mut vec![0; 3]), &mut fresh, None, None, None).outcome,
         Outcome::Unavailable { .. }
     ));
     assert!(fresh.entries.is_empty());

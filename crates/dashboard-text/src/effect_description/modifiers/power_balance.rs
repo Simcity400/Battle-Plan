@@ -61,7 +61,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 .text
                 .recorded()
                 .slot(member.country)
-                .ok_or_else(|| format!("CountryLinks lacks balance member {}", member.country))?;
+                .ok_or_else(|| format!("country links lacks balance member {}", member.country))?;
             if slot == country {
                 record = Some(record.map_or(member.record, |old: u32| old.min(member.record)));
             }
@@ -70,7 +70,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         match record {
             Some(record) => keyed(&rows, u128::from(record))?
                 .map(Some)
-                .ok_or_else(|| format!("PowerBalances lacks member record {record}")),
+                .ok_or_else(|| format!("power balances lacks member record {record}")),
             None => Ok(None),
         }
     }
@@ -239,7 +239,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             }
             if old.is_empty() && definition.sides.iter().any(Vec::is_empty) {
                 return Err(
-                    "PowerBalances lacks the valid/null identity of an unnamed current side".into(),
+                    "power balances lacks the valid/null identity of an unnamed current side".into(),
                 );
             }
             if !old.is_empty() {
@@ -345,7 +345,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 .range(&definition.id, &row.identity)?
             else {
                 return Err(
-                    "PowerBalanceRanges has an unnamed runtime range; range identity is unrecorded"
+                    "power balance ranges has an unnamed runtime range; range identity is unrecorded"
                         .into(),
                 );
             };

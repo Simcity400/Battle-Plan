@@ -83,6 +83,43 @@ pub struct Core {
     filtered: Vec<u32>,
     fallback: Option<Fallback>,
     packed_inputs: [super::vertices::Packing; 4],
+    /// What the pipeline leaves unwritten of its pass's depth-stencil attachment, as a render
+    /// bundle drawing with it declares it.
+    read_only: ReadOnly,
+}
+
+/// What a pipeline leaves unwritten of its pass's depth-stencil attachment, by wgpu's own rule
+/// ([`wgpu::DepthStencilState::is_depth_read_only`], [`wgpu::DepthStencilState::is_stencil_read_only`]).
+/// A render bundle declares read-only what none of its pipelines writes, so it executes in every
+/// pass its draws could be drawn in directly: a pass reading an aspect only takes a bundle that
+/// reads it only, and a pipeline writing it is refused there either way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReadOnly {
+    pub depth: bool,
+    pub stencil: bool,
+}
+
+impl ReadOnly {
+    /// Nothing written.
+    pub const ALL: Self = Self { depth: true, stencil: true };
+
+    /// What a pipeline made for `pass` leaves unwritten.
+    pub fn of(pass: &Pass) -> Self {
+        pass.depth_stencil.as_ref().map_or(Self::ALL, |state| Self {
+            depth: state.is_depth_read_only(),
+            stencil: state.is_stencil_read_only(pass.primitive.cull_mode),
+        })
+    }
+
+    /// Unwritten by both.
+    pub fn and(self, other: Self) -> Self {
+        Self { depth: self.depth && other.depth, stencil: self.stencil && other.stencil }
+    }
+
+    /// A bundle's depth-stencil attachment of `format`, declared so.
+    pub fn bundle(self, format: wgpu::TextureFormat) -> wgpu::RenderBundleDepthStencil {
+        wgpu::RenderBundleDepthStencil { format, depth_read_only: self.depth, stencil_read_only: self.stencil }
+    }
 }
 
 impl std::ops::Deref for Pipeline {
@@ -287,6 +324,42 @@ impl Bindings {
             }
         }
     }
+
+    /// What the pipeline these bindings set leaves unwritten of its pass's depth and stencil.
+    pub fn read_only(&self) -> ReadOnly {
+        self.resources.get().read_only
+    }
+
+    /// [`Self::bind_after`] into a render bundle, counting nothing (a bundle's commands are
+    /// counted where it is executed); returns the pipeline and the bind group sets it made.
+    pub fn bundle_after<'a>(
+        &'a self,
+        bundle: &mut wgpu::RenderBundleEncoder<'a>,
+        previous: Option<&'a Self>,
+    ) -> [u64; 2] {
+        let resources = self.resources.get();
+        let before = previous.map(|previous| previous.resources.get());
+        let mut made = [0; 2];
+        if before.is_none_or(|previous| previous.pipeline != resources.pipeline) {
+            made[0] += 1;
+            bundle.set_pipeline(&resources.pipeline);
+        }
+        let offsets = &self.offsets[..self.count];
+        if previous.is_none_or(|previous| {
+            previous.resources.get().groups[0] != resources.groups[0]
+                || previous.offsets[..previous.count] != *offsets
+        }) {
+            made[1] += 1;
+            bundle.set_bind_group(0, &resources.groups[0], offsets);
+        }
+        for index in 1..3 {
+            if before.is_none_or(|previous| previous.groups[index] != resources.groups[index]) {
+                made[1] += 1;
+                bundle.set_bind_group(index as u32, &resources.groups[index], &[]);
+            }
+        }
+        made
+    }
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -317,6 +390,7 @@ use session::{GroupClock, GroupResources, GroupStamp, ResolvedGroups, ResourceHa
 #[derive(Clone)]
 pub struct BindingProgram {
     pipeline: wgpu::RenderPipeline,
+    read_only: ReadOnly,
     samplers: wgpu::BindGroup,
     textures: wgpu::BindGroup,
     views: Vec<wgpu::TextureView>,
@@ -412,6 +486,45 @@ impl BindingProgram {
         })
     }
 
+    /// Bindings of constants a caller placed in a buffer it keeps and writes itself, as the arena
+    /// places them: each read's bytes at its offset, zero-filled to the read's declared size.
+    /// `blocks` gives each read's bytes and offset in [`Self::constant_reads`] order.
+    pub fn bind_buffer(
+        &self,
+        arena: &Arena,
+        buffer: &wgpu::Buffer,
+        blocks: &[(&[u8], u32)],
+    ) -> Result<Bindings, String> {
+        if blocks.len() != self.buffers.len() {
+            return Err(format!(
+                "{}: {} constant blocks for {} reads",
+                self.label,
+                blocks.len(),
+                self.buffers.len()
+            ));
+        }
+        let mut offsets = [0; BUFFERS];
+        for (slot, (_, offset)) in offsets.iter_mut().zip(blocks) {
+            *slot = *offset;
+        }
+        let resolved = self
+            .resolve_groups(arena, buffer.clone(), false)
+            .map_err(|reason| format!("{}: {reason}", self.label))?;
+        #[cfg(any(test, feature = "test-support"))]
+        let sized: Vec<_> = blocks
+            .iter()
+            .zip(&self.buffers)
+            .map(|((bytes, _), spec)| (*bytes, u64::from(spec.size)))
+            .collect();
+        Ok(Bindings {
+            resources: ResourceHandle::Inline(resolved.resources),
+            offsets,
+            count: self.buffers.len(),
+            #[cfg(any(test, feature = "test-support"))]
+            proof: preparation_bytes(&self.buffers, &sized),
+        })
+    }
+
     fn resolve_groups(
         &self,
         arena: &Arena,
@@ -501,6 +614,7 @@ impl BindingProgram {
         Ok(ResolvedGroups {
             resources: GroupResources {
                 pipeline: self.pipeline.clone(),
+                read_only: self.read_only,
                 groups: [constants, textures, self.samplers.clone()],
             },
             constants: constants_stamp,
@@ -758,11 +872,12 @@ impl Source {
         gui: bool,
     ) -> Arc<Self> {
         let samplers: Vec<_> = read_samplers(state, Some(compiled)).collect();
+        let mut retired = Retired(Vec::new());
         let mut devices = SOURCES.lock().unwrap_or_else(|error| error.into_inner());
-        devices.retain_mut(|entry| {
+        retired.0.extend(devices.extract_if(.., |entry| {
             entry.sources.retain(|source| source.strong_count() != 0);
-            !entry.sources.is_empty()
-        });
+            entry.sources.is_empty()
+        }));
         let entry = match devices.iter().position(|entry| entry.device == *device) {
             Some(index) => &mut devices[index],
             None => {
@@ -934,15 +1049,16 @@ impl DeviceCores {
         key: impl FnOnce() -> PipelineKey,
         create: impl FnOnce() -> (Result<Arc<Core>, String>, Diagnostics),
     ) -> (Result<Arc<Core>, String>, Diagnostics) {
+        let mut retired = Retired(Vec::new());
         let mut devices = self.lock();
         loop {
-            devices.retain_mut(|entry| {
+            retired.0.extend(devices.extract_if(.., |entry| {
                 entry.cores.retain(|_, cores| {
                     cores.retain(|(_, core, _)| core.strong_count() != 0);
                     !cores.is_empty()
                 });
-                !entry.cores.is_empty() || !entry.building.is_empty() || entry.device == *device
-            });
+                entry.cores.is_empty() && entry.building.is_empty() && entry.device != *device
+            }));
             let at = match devices.iter().position(|entry| entry.device == *device) {
                 Some(at) => at,
                 None => {
@@ -1891,6 +2007,7 @@ impl Core {
                 super::vertices::Packing::new(declaration, &compiled.vertex.inputs)
             }),
             fallback: None,
+            read_only: ReadOnly::of(pass),
         })
     }
 }
@@ -2151,6 +2268,7 @@ impl Pipeline {
             .store(true, std::sync::atomic::Ordering::Release);
         let program = capture.then(|| BindingProgram {
             pipeline: self.pipeline.clone(),
+            read_only: self.read_only,
             samplers: self.samplers.clone(),
             textures: textures.clone(),
             views: views.iter().flatten().map(|view| (*view).clone()).collect(),
@@ -2166,6 +2284,7 @@ impl Pipeline {
             Bindings {
                 resources: ResourceHandle::Inline(GroupResources {
                     pipeline: self.pipeline.clone(),
+                    read_only: self.read_only,
                     groups: [constants, textures, self.samplers.clone()],
                 }),
                 offsets,
@@ -2225,6 +2344,38 @@ impl Pipeline {
         crate::gpu::stats::draw();
         pass.draw(0..draw.count, 0..1);
     }
+}
+
+/// Held while a device on the process's instance is made or let go: the main map and a pop-out
+/// start and stop on threads of their own, once each, so they take turns. Never held while another
+/// lock is taken.
+pub fn device_lifecycle() -> std::sync::MutexGuard<'static, ()> {
+    static LIFECYCLE: Mutex<()> = Mutex::new(());
+    LIFECYCLE.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Cache entries that hold a device, let go under [`device_lifecycle`] once the cache's own lock
+/// is released: declared before that lock is taken, it drops after it.
+pub struct Retired<T>(pub Vec<T>);
+
+impl<T> Drop for Retired<T> {
+    fn drop(&mut self) {
+        if !self.0.is_empty() {
+            let _held = device_lifecycle();
+            self.0.clear();
+        }
+    }
+}
+
+/// The process's one wgpu instance, which every device it makes comes from. wgpu tells devices
+/// apart by an id each instance numbers in a registry of its own, and the device-keyed caches here
+/// and in the map compare devices by it: a device from a second instance can take the id of one
+/// from the first, and be handed that device's pipelines, layouts and views.
+pub fn instance() -> wgpu::Instance {
+    static INSTANCE: OnceLock<wgpu::Instance> = OnceLock::new();
+    INSTANCE
+        .get_or_init(|| wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()))
+        .clone()
 }
 
 /// DX11 reads explicit null SRVs as zero; WebGPU zero-initialises resources.

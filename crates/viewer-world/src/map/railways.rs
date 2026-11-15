@@ -156,6 +156,55 @@ pub struct RailMesh {
     pub native_runs: Vec<Range<u32>>,
 }
 
+impl RailMesh {
+    fn with_capacity(vertices: usize, runs: usize, bridges: usize) -> io::Result<Self> {
+        use engine_native::allocation;
+        Ok(Self {
+            native_vertices: allocation::vec(vertices)?,
+            native_runs: allocation::vec(runs)?,
+            bridges: allocation::vec(bridges)?,
+            ..Self::default()
+        })
+    }
+
+    fn push_run(&mut self, vertices: &[[f32; 6]], segments: usize, unanchored: usize, samples: usize) {
+        self.segments += segments;
+        self.unanchored += unanchored;
+        self.samples += samples;
+        if !vertices.is_empty() {
+            let first = self.native_vertices.len() as u32;
+            self.native_vertices.extend_from_slice(vertices);
+            self.native_runs.push(first..self.native_vertices.len() as u32);
+        }
+    }
+
+    /// The bounds, folded in the vertices' emission order, and the bridges in pair order.
+    fn finish(&mut self, bridges: impl IntoIterator<Item = Bridge>) {
+        self.bounds = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+        for vertex in &self.native_vertices {
+            self.bounds[0] = self.bounds[0].min(vertex[0]);
+            self.bounds[1] = self.bounds[1].min(vertex[2]);
+            self.bounds[2] = self.bounds[2].max(vertex[0]);
+            self.bounds[3] = self.bounds[3].max(vertex[2]);
+        }
+        if self.native_vertices.is_empty() {
+            self.bounds = [0.0; 4];
+        }
+        self.bridges.extend(bridges);
+    }
+
+    /// The mesh [`RailGeometry::build`] makes, from every rail province's run in province order
+    /// and the bridges in pair order.
+    pub fn assemble<'a>(runs: impl ExactSizeIterator<Item = &'a RailRun> + Clone, bridges: impl ExactSizeIterator<Item = Bridge>) -> io::Result<Self> {
+        let mut mesh = Self::with_capacity(runs.clone().map(|run| run.vertices.len()).sum(), runs.clone().filter(|run| !run.vertices.is_empty()).count(), bridges.len())?;
+        for run in runs {
+            mesh.push_run(&run.vertices, run.segments, run.unanchored, run.samples);
+        }
+        mesh.finish(bridges);
+        Ok(mesh)
+    }
+}
+
 /// Authored adjacency kind used for bridge selection.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum BridgeKind {
@@ -424,6 +473,10 @@ impl RailNetwork {
     pub fn display(&self) -> &map_display_data::landscape::RailGraph {
         &self.resolved
     }
+    /// The graph to edit in place: a map layer keeps one network and follows the hour's changes.
+    pub fn graph_mut(&mut self) -> &mut map_display_data::landscape::RailGraph {
+        Arc::make_mut(&mut self.resolved)
+    }
     pub fn shared_display(&self) -> Arc<map_display_data::landscape::RailGraph> {
         Arc::clone(&self.resolved)
     }
@@ -454,9 +507,18 @@ impl RailNetwork {
     }
 }
 
+/// One province's railway strip and its counts, as the whole build emits them.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RailRun {
+    pub vertices: Vec<[f32; 6]>,
+    pub segments: usize,
+    pub unanchored: usize,
+    pub samples: usize,
+}
+
 /// The rail centre line a train follows, and whether it stops short of its
 /// last route province because that province's railway lacks the segment.
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct TrainRoute {
     pub points: Vec<[f32; 3]>,
     pub open_end: bool,
@@ -773,6 +835,26 @@ impl RailGeometry {
         Ok(())
     }
 
+    /// `province`'s strip over `network`; none when it has no edge.
+    pub fn run(&self, network: &RailNetwork, province: u32) -> io::Result<Option<RailRun>> {
+        let Some(neighbors) = network.graph.get(&province) else {
+            return Ok(None);
+        };
+        let run = self.province_run(network, province, neighbors, &self.heights())?;
+        Ok(Some(RailRun {
+            vertices: Arc::unwrap_or_clone(run.vertices),
+            segments: run.segments,
+            unanchored: run.unanchored,
+            samples: run.samples,
+        }))
+    }
+
+    /// The bridge on the pair `key` (lower province first), whatever edges the pair holds.
+    pub fn bridge(&self, network: &RailNetwork, key: (u32, u32)) -> Option<Bridge> {
+        self.pair_bridge(network, key, &self.heights())
+            .map(|(_, bridge)| bridge)
+    }
+
     fn province_run(
         &self,
         network: &RailNetwork,
@@ -930,24 +1012,13 @@ impl RailGeometry {
                 )?
             }
         };
-        let total = runs.iter().map(|run| run.vertices.len()).sum();
-        let drawn = runs.iter().filter(|run| !run.vertices.is_empty()).count();
-        let mut mesh = RailMesh {
-            native_vertices: allocation::vec(total)?,
-            native_runs: allocation::vec(drawn)?,
-            bridges: allocation::vec(bridges.len())?,
-            ..RailMesh::default()
-        };
+        let mut mesh = RailMesh::with_capacity(
+            runs.iter().map(|run| run.vertices.len()).sum(),
+            runs.iter().filter(|run| !run.vertices.is_empty()).count(),
+            bridges.len(),
+        )?;
         for run in &runs {
-            mesh.segments += run.segments;
-            mesh.unanchored += run.unanchored;
-            mesh.samples += run.samples;
-            if !run.vertices.is_empty() {
-                let first = mesh.native_vertices.len() as u32;
-                mesh.native_vertices.extend_from_slice(&run.vertices);
-                mesh.native_runs
-                    .push(first..mesh.native_vertices.len() as u32);
-            }
+            mesh.push_run(&run.vertices, run.segments, run.unanchored, run.samples);
             #[cfg(test)]
             {
                 let offset = mesh.vertices.len() as u32;
@@ -956,19 +1027,7 @@ impl RailGeometry {
                     .extend(run.test.1.iter().map(|index| index + offset));
             }
         }
-        // Fold bounds in the full build's vertex emission order.
-        mesh.bounds = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
-        for vertex in &mesh.native_vertices {
-            mesh.bounds[0] = mesh.bounds[0].min(vertex[0]);
-            mesh.bounds[1] = mesh.bounds[1].min(vertex[2]);
-            mesh.bounds[2] = mesh.bounds[2].max(vertex[0]);
-            mesh.bounds[3] = mesh.bounds[3].max(vertex[2]);
-        }
-        if mesh.native_vertices.is_empty() {
-            mesh.bounds = [0.0; 4];
-        }
-        mesh.bridges
-            .extend(bridges.iter().map(|(_, bridge)| *bridge));
+        mesh.finish(bridges.iter().map(|(_, bridge)| *bridge));
         Ok((
             mesh,
             RailBase {
@@ -1469,9 +1528,13 @@ impl Bridges {
         }
     }
     pub fn field(&self, mesh: &RailMesh) -> ModelField {
-        let placed = mesh
-            .bridges
-            .iter()
+        self.field_of(&mesh.bridges)
+    }
+
+    /// The placements of `bridges`, in their order.
+    pub fn field_of<'b>(&self, bridges: impl IntoIterator<Item = &'b Bridge>) -> ModelField {
+        let placed = bridges
+            .into_iter()
             .filter_map(|bridge| {
                 self.library.slot(self.entity(bridge.kind)).map(|slot| {
                     (
@@ -1494,12 +1557,41 @@ impl Bridges {
 
 // ------------------------------------------------------------------- the pass
 
+/// Every run's vertices in order, each run closed by the restart index, so one indexed call of
+/// the strip topology draws each run as its own strip.
+pub fn strip_indices(runs: &[Range<u32>]) -> Vec<u32> {
+    let mut indices =
+        Vec::with_capacity(runs.iter().map(|run| run.len() + 1).sum::<usize>());
+    for run in runs {
+        indices.extend(run.clone());
+        indices.push(u32::MAX);
+    }
+    indices
+}
+
+/// The joined strips' index buffer and length, made with the runs they draw.
+fn strips(device: &wgpu::Device, runs: &[Range<u32>]) -> io::Result<Option<(wgpu::Buffer, u32)>> {
+    if runs.is_empty() {
+        return Ok(None);
+    }
+    let indices = strip_indices(runs);
+    let count = u32::try_from(indices.len()).map_err(|_| invalid("rail strip indices exceed u32"))?;
+    let indices = buffer(
+        device,
+        "native rail strip indices",
+        wgpu::BufferUsages::INDEX,
+        bytemuck::cast_slice(&indices),
+    )?;
+    Ok(Some((indices, count)))
+}
+
 /// Immutable uploaded railway strips and their province-ordered draw runs.
 /// Hour builders create this independently of the pass's textures and shaders.
 #[derive(Default)]
 pub struct PreparedRailGeometry {
     native_vertices: Option<wgpu::Buffer>,
-    native_runs: Vec<Range<u32>>,
+    /// The runs joined into one index list ([`strip_indices`]), with its length.
+    strips: Option<(wgpu::Buffer, u32)>,
 }
 
 impl PreparedRailGeometry {
@@ -1518,10 +1610,25 @@ impl PreparedRailGeometry {
                 bytemuck::cast_slice(&mesh.native_vertices),
             )?)
         };
-        Ok(Self {
-            native_vertices,
-            native_runs: mesh.native_runs.clone(),
-        })
+        let strips = match &native_vertices {
+            Some(_) => strips(device, &mesh.native_runs)?,
+            None => None,
+        };
+        Ok(Self { native_vertices, strips })
+    }
+
+    /// Strips a caller keeps in its own buffer, drawn in the order of `runs`; their joined index
+    /// list is made here, with the runs.
+    pub fn kept(
+        device: &wgpu::Device,
+        vertices: Option<wgpu::Buffer>,
+        runs: Vec<Range<u32>>,
+    ) -> io::Result<Self> {
+        let strips = match &vertices {
+            Some(_) => strips(device, &runs)?,
+            None => None,
+        };
+        Ok(Self { native_vertices: vertices, strips })
     }
 
     /// CPU-only hour builders can defer preparation until a device is available.
@@ -1656,7 +1763,11 @@ impl RailPass {
                 inputs,
                 super::rail_shader::Geometry {
                     vertices,
-                    runs: &self.geometry.native_runs,
+                    strips: self
+                        .geometry
+                        .strips
+                        .as_ref()
+                        .map(|(indices, count)| (indices, *count)),
                 },
             )
     }

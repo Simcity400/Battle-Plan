@@ -38,6 +38,9 @@ breakdown_witness = ["collector-governance/breakdown_witness"]
 # (DivisionStatus.name_template), which only the fresh-save oracle reads, to compare a member that
 # names a deleted template.
 name_template_witness = []
+# Verification only, off in the product: convert ScriptVariables both ways every hour and count
+# and name their differences in status.json's `conversion_check`.
+conversion_check = ["collector-intel/conversion_check"]
 # Diagnostic checked-allocation injection; absent from normal builds.
 alloc-fault-injection = ["engine-air-history/alloc-fault-injection", "engine-allocation/alloc-fault-injection", "engine-characters/alloc-fault-injection", "engine-decisions/alloc-fault-injection", "engine-deployment/alloc-fault-injection", "engine-dlc/alloc-fault-injection", "engine-events/alloc-fault-injection", "engine-fixed-layout/alloc-fault-injection", "engine-fuel/alloc-fault-injection", "engine-intelligence/alloc-fault-injection", "engine-land-inputs/alloc-fault-injection", "engine-map-air/alloc-fault-injection", "engine-mutations/alloc-fault-injection", "engine-native/alloc-fault-injection", "engine-naval-history/alloc-fault-injection", "engine-occupation/alloc-fault-injection", "engine-peace/alloc-fault-injection", "engine-production/alloc-fault-injection", "engine-raid-inputs/alloc-fault-injection", "engine-railways/alloc-fault-injection", "engine-research/alloc-fault-injection", "engine-resources/alloc-fault-injection", "engine-scripts/alloc-fault-injection", "engine-stability/alloc-fault-injection", "engine-visibility/alloc-fault-injection", "collector-memory/alloc-fault-injection"]
 # Parent-run synthetic exception oracle; its native DLL is built separately.
@@ -310,10 +313,9 @@ collector-hooks.workspace = true
 collector-primitives.workspace = true
 collector-status.workspace = true
 retour = "0.3"
-crossbeam-queue = "0.3"
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Threading", "Win32_System_LibraryLoader", "Win32_System_Performance", "Win32_System_Diagnostics_Debug", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Memory", "Win32_System_SystemInformation"] }
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Kernel", "Win32_System_Threading", "Win32_System_LibraryLoader", "Win32_System_Performance", "Win32_System_Diagnostics_Debug", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Memory", "Win32_System_SystemInformation", "Win32_System_SystemServices"] }
 
 [[example]]
 name = "tap_foreign_unwind"
@@ -393,7 +395,7 @@ collector-division-parts = { workspace = true, features = ["army_stat_changes", 
 collector-governance = { workspace = true, features = ["advisor_changes", "character_changes", "default", "party_changes", "party_leader_changes", "test-support"] }
 collector-intel = { workspace = true, features = ["default", "flag_changes", "opinion_changes", "test-support", "variable_changes"] }
 collector-model-inputs = { workspace = true, features = ["default", "local_subunit_changes", "test-support"] }
-collector-observers = { workspace = true, features = ["advisor_changes", "advisor_pool_changes", "air_base_carry_changes", "appearance_changes", "area_changes", "census_changes", "character_changes", "counter_changes", "country_input_changes", "default", "focus_changes", "naval_tree_changes", "opinion_changes", "political_status_changes", "projects_changes", "province_changes", "province_combat_changes", "raid_changes", "rail_changes", "retreat_ban_changes", "roster_changes", "ship_model_changes", "technology_changes", "territory_changes", "test-support", "unit_leader_changes", "unit_leader_trait_changes", "visibility_changes", "war_changes", "weather_changes", "wing_changes", "world_input_changes"] }
+collector-observers = { workspace = true, features = ["advisor_changes", "advisor_pool_changes", "air_base_carry_changes", "appearance_changes", "area_changes", "census_changes", "character_changes", "counter_changes", "country_input_changes", "default", "focus_changes", "naval_tree_changes", "opinion_changes", "order_membership_changes", "political_status_changes", "projects_changes", "province_changes", "province_combat_changes", "raid_changes", "rail_changes", "retreat_ban_changes", "roster_changes", "ship_model_changes", "technology_changes", "territory_changes", "test-support", "unit_leader_changes", "unit_leader_trait_changes", "visibility_changes", "war_changes", "weather_changes", "wing_changes", "world_input_changes"] }
 collector-politics = { workspace = true, features = ["default", "politics_capture", "test-support"] }
 collector-projects = { workspace = true, features = ["default", "naval_tree_changes", "raid_intel_changes", "test-support"] }
 collector-ship-models = { workspace = true, features = ["default", "ship_model_changes", "test-support"] }
@@ -401,10 +403,17 @@ collector-visibility = { workspace = true, features = ["country_input_changes", 
 engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
 installed-content-country-names = { workspace = true, features = ["test-support"] }
 installed-content-localisation = { workspace = true, features = ["test-support"] }
+installed-content-province-area = { workspace = true, features = ["test-support"] }
+installed-content-regions = { workspace = true, features = ["test-support"] }
+recorder-derive = { workspace = true, features = ["test-support"] }
 replay = { workspace = true, features = ["test-support"] }
 replay-data = { workspace = true, features = ["test-support"] }
 replay-derive = { workspace = true, features = ["test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
+unify-bitflags-2 = { workspace = true }
+unify-either = { workspace = true }
+unify-num-traits = { workspace = true }
 unify-proc-macro2 = { workspace = true }
+unify-smallvec = { workspace = true }
 unify-windows-sys-0-52 = { workspace = true }

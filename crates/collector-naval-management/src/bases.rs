@@ -242,7 +242,6 @@ impl<'a, M: Memory> Session<'a, M> {
                 tables: std::array::from_fn(|_| Err(reason)),
             };
         }
-        changes::base_demand(self.store.entries.len());
         self.store.publish()
     }
     pub fn finish_owned(mut self, parent: engine_native::walk::Outcome) -> (Captured, Option<Owned>) {
@@ -254,7 +253,6 @@ impl<'a, M: Memory> Session<'a, M> {
                 None,
             );
         }
-        changes::base_demand(self.store.entries.len());
         if !self.store.changed {
             return (self.store.snapshot.clone(), None);
         }
@@ -270,8 +268,11 @@ impl<'a, M: Memory> Session<'a, M> {
     }
     fn failure(&mut self, parent: engine_native::walk::Outcome) -> Option<&'static str> {
         if !self.observed {
-            Some(changes::UNAVAILABLE)
-        } else if !matches!(parent, engine_native::walk::Outcome::Rows { .. }) {
+            return Some(changes::UNAVAILABLE);
+        }
+        // Every base seen, refused ones included: only this offer grows a table too small for them.
+        changes::base_demand(self.store.entries.len());
+        if !matches!(parent, engine_native::walk::Outcome::Rows { .. }) {
             self.store.epoch = None;
             Some("naval repair source base census incomplete")
         } else {

@@ -12,8 +12,8 @@ test('country comparison headers retain neutral missing flags and request only m
       transform(source, id) {
         const path = id.replaceAll('\\', '/');
         if (path.endsWith('/dashboard/CountryComparisons.tsx') || path.endsWith('/dashboard/useDiagnostics.ts')) return source.replace(/import \{ [^}]+ \} from 'react';/,
-          'const useEffect = () => {}, useMemo = build => build(), useRef = current => ({ current }), useState = value => [value, () => {}];');
-        if (path.endsWith('/dashboard/playback.ts')) return 'export const usePlaybackHour = clock => clock.getHour();';
+          'const useEffect = () => {}, useMemo = build => build(), useCallback = callback => callback, useRef = current => ({ current }), useState = value => [value, () => {}];');
+        if (path.endsWith('/dashboard/atHead.ts')) return 'export const useIdentityHour = (_client, _track, _tags, clock, _on, trackHour) => trackHour(clock.getHour());';
         if (path.endsWith('/dashboard/comparisonCountries.ts')) return `export const useComparisonCountries = () => ({
           countries: { tags: globalThis.__comparisonHeaders.tags }, retry() {}, pending: false });`;
         if (path.endsWith('/dashboard/countryFlagsAt.ts')) return `export const useCountryLabelsAt = (client, track, wanted) => {
@@ -25,7 +25,7 @@ test('country comparison headers retain neutral missing flags and request only m
   try {
     const { default: CountryComparisons } = await vite.ssrLoadModule('/ui/src/dashboard/CountryComparisons.tsx');
     const html = renderToStaticMarkup(CountryComparisons({ component: () => null, active: true, onDiagnostics() {},
-      widget: { time: { mode: 'campaign' } }, runtime: { clock: { getHour: () => 0 } } }));
+      widget: { time: { mode: 'campaign' } }, runtime: { clock: { getHour: () => 0 }, tracks: [] } }));
     assert.ok(state.wanted.length > 0 && state.wanted.length < 10);
     assert.equal((html.match(/country-flag-unavailable/g) ?? []).length, state.wanted.length);
     assert.match(html, /Flag unavailable/);

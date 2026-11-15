@@ -33,6 +33,7 @@ pub mod cair_regional_mission;
 pub mod cair_theatre;
 pub mod cair_wing;
 pub mod cair_wing_pool;
+pub mod camera_root;
 pub mod capture_text;
 pub mod carmy;
 pub mod carmy_combat_inputs;

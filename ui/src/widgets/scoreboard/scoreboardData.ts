@@ -1,68 +1,51 @@
-import { isOrderedSpans, runAt, spansCovered } from '../../charts/series.ts';
-import { sortRows } from '../../charts/table/logic.ts';
 import type { Sort } from '../../charts/table/logic';
+import { noValues } from '../../charts/live.ts';
+import type { LiveValues } from '../../charts/live';
+import type { TooltipContent } from '../../charts/tooltip';
 import { formatAmount } from '../../charts/valueAxis.ts';
+import { formatDateTime } from '../../dashboard/calendar.ts';
+import { CELL, cellState, cellValue, rowName, rowReason } from '../../dashboard/follow/message.ts';
+import type { FollowedAnswer } from '../../dashboard/follow/message';
 import { contentKey, contentSet } from '../../dashboard/options.ts';
 import type { OptionValue } from '../../dashboard/options';
-import { readRunAt } from '../../dashboard/reads.ts';
-import { countryIdentityKey } from '../../dashboard/countryIdentity.ts';
-import { formatDateTime } from '../../dashboard/calendar.ts';
 import { int, object } from '../../dashboard/validation.ts';
-import type { ResolvedCountries } from '../../dashboard/groups';
-import type { ScoreboardColumn, ScoreboardColumnKey, ScoreboardReply } from '../../generated/dashboard';
 import { DEFAULT_SORT } from './definition.ts';
+import type { ScoreboardColumn, ScoreboardColumnKey, ScoreboardColumnsReply, ScoreboardParams, ScoreboardReply } from '../../generated/dashboard';
 
-/** Only the backend registry owns measures and their content-derived labels. */
-export function validateScoreboardReply(value: unknown): ScoreboardReply {
-  if (!object(value) || typeof value.branchId !== 'string' || !Array.isArray(value.columns) || !Array.isArray(value.series)
-    || !Array.isArray(value.warnings) || !value.warnings.every(warning => typeof warning === 'string')) throw new Error('Invalid Scoreboard reply.');
+const family = (value: unknown) => value === null || (object(value) && typeof value.kind === 'string' && typeof value.measure === 'string');
+
+/** The registry: only the service names the columns, their labels and the measures they read. */
+export function validateColumnsReply(value: unknown): ScoreboardColumnsReply {
+  if (!object(value) || typeof value.branchId !== 'string' || !Array.isArray(value.columns) || !Array.isArray(value.warnings)
+    || !value.warnings.every(warning => typeof warning === 'string')) throw new Error('Invalid Scoreboard columns.');
   const keys = new Set<string>();
   for (const column of value.columns) {
     if (!object(column) || typeof column.key !== 'string' || keys.has(column.key) || typeof column.label !== 'string'
       || typeof column.unit !== 'string' || !int(column.decimals) || column.decimals < 0 || column.decimals > 18
       || typeof column.available !== 'boolean' || !(column.reason === null || typeof column.reason === 'string')
-      || !(column.note === undefined || typeof column.note === 'string')) throw new Error('Invalid Scoreboard column.');
+      || !(column.note === undefined || typeof column.note === 'string') || !family(column.family) || !family(column.partial)
+      || column.available !== (column.family !== null)) throw new Error('Invalid Scoreboard column.');
     keys.add(column.key);
   }
   if (!Array.isArray(value.defaultColumns) || !value.defaultColumns.every(key => typeof key === 'string' && keys.has(key))
-    || typeof value.defaultSort !== 'string' || !keys.has(value.defaultSort)
-    || !value.columns.some(column => object(column) && column.key === value.defaultSort && column.available === true)) throw new Error('Invalid Scoreboard defaults.');
+    || typeof value.defaultSort !== 'string' || !keys.has(value.defaultSort)) throw new Error('Invalid Scoreboard defaults.');
+  return value as unknown as ScoreboardColumnsReply;
+}
+
+/** A reply at an hour: every row holds one cell per column asked, each a value or why it has none. */
+export function validateScoreboardReply(value: unknown, columns: number): ScoreboardReply {
+  if (!object(value) || typeof value.branchId !== 'string' || !int(value.hour) || !(value.missing === null || typeof value.missing === 'string')
+    || !Array.isArray(value.rows) || !Array.isArray(value.warnings)) throw new Error('Invalid Scoreboard reply.');
   const tags = new Set<string>();
-  for (const series of value.series) {
-    if (!object(series) || typeof series.tag !== 'string' || tags.has(series.tag) || !isOrderedSpans(series.segments)
-      || !(series.membership === null || isOrderedSpans(series.membership)) || !isOrderedSpans(series.identities)
-      || !series.identities.every(identity => int(identity.slot) && identity.slot >= 0 && int(identity.countryId) && identity.countryId >= 0)
-      || !spansCovered(series.identities, series.segments) || !Array.isArray(series.columns)) throw new Error('Invalid Scoreboard country.');
-    tags.add(series.tag);
-    const present = new Set<string>();
-    for (const column of series.columns) {
-      if (!object(column) || typeof column.key !== 'string' || !keys.has(column.key) || present.has(column.key)
-        || !isOrderedSpans(column.runs) || !isOrderedSpans(column.readRuns)
-        || !spansCovered(column.runs, series.segments) || !spansCovered(column.readRuns, series.segments)
-        || !column.runs.every(run => (run.amount === null || (typeof run.amount === 'string' && /^-?\d{1,39}$/.test(run.amount)
-          && BigInt(run.amount) >= -(1n << 127n) && BigInt(run.amount) < (1n << 127n))) && typeof run.startsSegment === 'boolean'
-          && (run.atLeast === undefined || typeof run.atLeast === 'boolean'))
-        || !column.readRuns.every(read => int(read.readHour) && read.readHour <= read.firstHour && typeof read.hourly === 'boolean'
-          && (!read.hourly || read.readHour === read.firstHour))) throw new Error('Invalid Scoreboard values.');
-      present.add(column.key);
-    }
+  for (const row of value.rows) {
+    if (!object(row) || typeof row.tag !== 'string' || tags.has(row.tag) || !Array.isArray(row.cells) || row.cells.length !== columns
+      || !row.cells.every(cell => object(cell) && typeof cell.partial === 'boolean'
+        && (typeof cell.valueRaw === 'string' ? /^-?\d{1,39}$/.test(cell.valueRaw) && cell.missing === null : cell.valueRaw === null && typeof cell.missing === 'string')))
+      throw new Error('Invalid Scoreboard row.');
+    tags.add(row.tag);
   }
   return value as unknown as ScoreboardReply;
 }
-
-export interface ScoreboardCell { amount: bigint | null; readHour: number | null; atLeast: boolean }
-export interface ScoreboardRow { key: string; tag: string; hour: number; cells: ReadonlyMap<string, ScoreboardCell> }
-export function scoreboardModel(reply: ScoreboardReply) {
-  return {
-    reply, tags: reply.series.map(series => series.tag),
-    series: new Map(reply.series.map(series => [series.tag, {
-      ...series, columns: new Map(series.columns.map(column => [column.key, { ...column,
-        runs: column.runs.map(run => ({ ...run, amount: run.amount === null ? null : BigInt(run.amount) })),
-      }])),
-    }])),
-  };
-}
-export type ScoreboardModel = ReturnType<typeof scoreboardModel>;
 
 export function selectedColumns(registry: readonly ScoreboardColumn[], stored: OptionValue, defaults: readonly ScoreboardColumnKey[]): ScoreboardColumn[] {
   const selected = contentSet(stored).map(contentKey);
@@ -77,71 +60,105 @@ export function scoreboardSort(registry: readonly ScoreboardColumn[], shown: rea
   return { column: fallback?.key ?? 'country', direction: DEFAULT_SORT.direction };
 }
 
-/** Country and unavailable-column sorting retain an available numerical top N. */
-export function rankingSort(registry: readonly ScoreboardColumn[], sort: Sort, stored: OptionValue, defaultColumn: ScoreboardColumnKey | ''): Sort & { column: ScoreboardColumnKey } {
+/** The measure a top N ranks by: the sorted column when it is one, else the chosen measure, else the default. */
+export function rankingColumn(registry: readonly ScoreboardColumn[], sort: Sort, stored: OptionValue, defaultColumn: ScoreboardColumnKey | ''): ScoreboardColumn | undefined {
   const sorted = registry.find(column => column.key === sort.column && column.available);
-  if (sorted) return { column: sorted.key, direction: sort.direction };
+  if (sorted) return sorted;
   const key = typeof stored === 'string' && stored ? contentKey(stored) : defaultColumn;
-  const available = registry.find(column => column.key === key && column.available)
+  return registry.find(column => column.key === key && column.available)
     ?? registry.find(column => column.key === defaultColumn && column.available)
     ?? registry.find(column => column.available);
-  return { column: (available?.key ?? defaultColumn) as ScoreboardColumnKey, direction: DEFAULT_SORT.direction };
 }
 
-export function scoreboardRequest(branchId: string, resolved: ResolvedCountries, columns: readonly ScoreboardColumn[], rank: ScoreboardColumnKey, direction: Sort['direction']) {
-  const requested = [...new Set([...columns.map(column => column.key), ...(resolved.top != null ? [rank] : [])])];
-  return { branchId, columns: requested, tags: resolved.top == null ? resolved.tags : [],
-    top: resolved.top == null ? null : { count: resolved.top, sort: rank, descending: direction === 'descending' } };
+/** Whether a top is the greatest: the sorted column's direction when it ranks by it, else the greatest. */
+export const rankingDescending = (sort: Sort, rank: ScoreboardColumn | undefined) => !rank || sort.column !== rank.key || sort.direction === 'descending';
+
+/** The request at `hour`: the columns shown, of the chosen countries or of the top `top` by `rank`. */
+export function scoreboardParams(branchId: string, hour: number, columns: readonly ScoreboardColumn[], tags: readonly string[],
+  top: number | null, rank: ScoreboardColumn | undefined, descending = true): ScoreboardParams | null {
+  if (!columns.length || (top == null ? !tags.length : !rank)) return null;
+  const keys = columns.map(column => column.key);
+  return top == null ? { branchId, hour, columns: keys, tags: [...tags] }
+    : { branchId, hour, columns: keys, tags: [], top: { count: top, sort: rank!.key, descending } };
 }
 
-export function scoreboardRows(model: ScoreboardModel, tags: readonly string[], hour: number, rank: ScoreboardColumnKey, direction: Sort['direction'], top?: number, amountsOnly = false): ScoreboardRow[] {
-  const rows: ScoreboardRow[] = [];
-  for (const tag of tags) {
-    const series = model.series.get(tag);
-    if (!series || !runAt(series.segments, hour) || (series.membership !== null && !runAt(series.membership, hour))) continue;
-    const identity = runAt(series.identities, hour);
-    if (!identity) continue;
-    const cells = new Map<string, ScoreboardCell>();
-    for (const [key, column] of series.columns) {
-      const run = runAt(column.runs, hour);
-      const readHour = readRunAt(column.readRuns, hour);
-      cells.set(key, { amount: readHour === null && !amountsOnly ? null : run?.amount ?? null, readHour, atLeast: readHour !== null && run?.atLeast === true });
-    }
-    rows.push({ key: countryIdentityKey(identity), tag, hour, cells });
+/** A country's value of a column: its raw amount, or why there is none. */
+export interface Cell { amount: bigint | null; missing: string | null; partial: boolean }
+/** A row is a country, keyed by its tag; its cells come from a reply, or are painted from followed values. */
+export interface BoardRow { key: string; tag: string; hour: number; cells: ReadonlyMap<string, Cell> }
+
+const NO_CELLS: ReadonlyMap<string, Cell> = new Map();
+
+/** A reply's rows, their cells by the keys asked. */
+export function replyRows(reply: ScoreboardReply, asked: readonly ScoreboardColumnKey[]): BoardRow[] {
+  return reply.rows.map(row => ({ key: row.tag, tag: row.tag, hour: reply.hour,
+    cells: new Map(asked.map((key, at) => {
+      const cell = row.cells[at]!;
+      return [key, { amount: cell.valueRaw === null ? null : BigInt(cell.valueRaw), missing: cell.missing, partial: cell.partial }];
+    })) }));
+}
+
+/** A followed row: its values are painted, never held. */
+export const followedRow = (tag: string, hour: number): BoardRow => ({ key: tag, tag, hour, cells: NO_CELLS });
+
+/** A followed `series-state` answer's raw values by tag; a country it holds no value for is missing for its reason. */
+export function followedValues(answer: FollowedAnswer | undefined): LiveValues<bigint> {
+  if (!answer) return noValues('Not read yet');
+  if (answer.kind === 'notRecorded') return noValues(answer.reason);
+  const rows = new Map<string, number>();
+  for (let row = 0; row < answer.rows; row++) {
+    const tag = rowName(answer, row);
+    if (tag !== null && !rows.has(tag)) rows.set(tag, row);
   }
-  const ordered = sortRows(rows, row => row.cells.get(rank)?.amount, direction, row => row.key, row => row.tag);
-  return top == null ? ordered : ordered.slice(0, top);
-}
-
-export function formatCell(column: ScoreboardColumn, amount: bigint | null, atLeast = false): string {
-  if (amount === null) return '—';
-  const percent = column.unit === 'percent';
-  return `${atLeast ? '† ' : ''}${formatAmount(percent ? amount * 100n : amount, column.decimals, column.decimals)}${percent ? '%' : ''}`;
-}
-
-export function scoreboardTooltip(row: ScoreboardRow, columns: readonly ScoreboardColumn[], name: string) {
   return {
-    title: name, subtitle: formatDateTime(row.hour),
-    rows: columns.flatMap(column => {
-      const cell = row.cells.get(column.key);
-      const pending = !cell || cell.amount !== null && cell.readHour === null;
-      const value = pending ? '\u2026' : formatCell(column, cell.amount, cell.atLeast);
-      const note = !column.available ? 'Unavailable'
-        : pending ? 'Loading value' : cell?.amount == null ? 'Not available at this time' : undefined;
-      const description = column.available ? scoreboardColumnNote(column) : undefined;
-      return [{ label: column.label, value }, ...(note ? [{ label: note, tone: 'muted' as const }] : []),
-        ...(cell?.amount != null && cell.atLeast ? [{ label: '† Partial total; some losses or corrections may be missing.', tone: 'muted' as const }] : []),
-        ...(description ? [{ label: description, tone: 'muted' as const }] : [])];
-    }),
+    get: tag => {
+      const row = rows.get(tag);
+      return row !== undefined && cellState(answer, row * answer.columns) === CELL.value ? cellValue(answer, row * answer.columns) : undefined;
+    },
+    missing: tag => {
+      const row = rows.get(tag);
+      if (row === undefined) return 'Not in the answer';
+      return rowReason(answer, row) ?? (cellState(answer, row * answer.columns) === CELL.missing ? 'No value' : 'Not recorded at this hour');
+    },
   };
 }
 
-export function scoreboardColumnNote(column: ScoreboardColumn): string | undefined {
-  if (!column.available) return 'Unavailable';
-  switch (column.key) {
-    case 'armySize': return 'Manpower in deployed divisions, counted by owner.';
-    case 'casualtiesDealt': return 'Land, naval and air casualties dealt. † Partial total.';
-    case 'casualtiesTaken': return 'Casualties taken with a known attacker. † Partial total.';
-    default: return undefined;
+/** The countries a ranked answer names, greatest first. */
+export function rankedTags(answer: FollowedAnswer | undefined): string[] {
+  if (!answer || answer.kind === 'notRecorded') return [];
+  const out: string[] = [];
+  for (let row = 0; row < answer.rows; row++) {
+    const tag = rowName(answer, row);
+    if (tag && cellState(answer, row * answer.columns) === CELL.value) out.push(tag);
   }
+  return out;
+}
+
+/** A partial mark's value: a subtotal wherever it is known and not zero. */
+export const isPartial = (mark: bigint | undefined) => mark !== undefined && mark !== 0n;
+
+export function formatCell(column: Pick<ScoreboardColumn, 'unit' | 'decimals'>, amount: bigint | null, partial = false): string {
+  if (amount === null) return '—';
+  const percent = column.unit === 'percent';
+  return `${partial ? '† ' : ''}${formatAmount(percent ? amount * 100n : amount, column.decimals, column.decimals)}${percent ? '%' : ''}`;
+}
+
+export function scoreboardColumnNote(column: ScoreboardColumn): string | undefined {
+  if (!column.available) return column.reason ?? 'Unavailable';
+  return column.note;
+}
+
+/** A row's tooltip: every column's value at its hour, with why a value is missing and which are partial subtotals. */
+export function scoreboardTooltip(cell: (key: ScoreboardColumnKey) => Cell, columns: readonly ScoreboardColumn[], name: string, hour: number): TooltipContent {
+  return {
+    title: name, subtitle: formatDateTime(hour),
+    rows: columns.flatMap(column => {
+      const value = cell(column.key);
+      const note = !column.available ? 'Unavailable' : value.amount === null ? value.missing ?? 'Not available at this time' : undefined;
+      const description = scoreboardColumnNote(column);
+      return [{ label: column.label, value: formatCell(column, value.amount, value.partial) }, ...(note ? [{ label: note, tone: 'muted' as const }] : []),
+        ...(value.amount !== null && value.partial ? [{ label: '† Partial total; some losses or corrections may be missing.', tone: 'muted' as const }] : []),
+        ...(description && description !== note ? [{ label: description, tone: 'muted' as const }] : [])];
+    }),
+  };
 }

@@ -43,14 +43,14 @@ export function placeLaneWindow(style: Pick<CSSStyleDeclaration, 'top' | 'height
 
 /** Measure after placing the window; backing writes reset the drawing context. */
 export function sizeLaneWindow(canvas: Pick<HTMLCanvasElement, 'style' | 'clientWidth' | 'clientHeight' | 'getBoundingClientRect' | 'width' | 'height'>,
-  window: LaneWindow, offset: number, devicePixelRatio: number) {
+  window: LaneWindow, offset: number, devicePixelRatio: number, backing: { width: number; height: number } = canvas) {
   placeLaneWindow(canvas.style, window, offset);
   const layoutWidth = canvas.clientWidth, layoutHeight = canvas.clientHeight;
   if (!layoutWidth || !layoutHeight) return null;
   const rect = canvas.getBoundingClientRect();
   const size = backingSize({ layoutWidth, layoutHeight, rectWidth: rect.width, rectHeight: rect.height, devicePixelRatio });
-  if (canvas.width !== size.width) canvas.width = size.width;
-  if (canvas.height !== size.height) canvas.height = size.height;
+  if (backing.width !== size.width) backing.width = size.width;
+  if (backing.height !== size.height) backing.height = size.height;
   return { ...size, layoutWidth, layoutHeight };
 }
 

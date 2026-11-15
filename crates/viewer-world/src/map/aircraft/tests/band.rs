@@ -73,7 +73,7 @@ fn place(rig: &Rig, key: &str, explode: Explode) -> (AircraftPlan, Random) {
     };
     let mut out = AircraftPlan::default();
     let mut random = Random::new(37);
-    out.place(&batch, 1, &mut random, &placement);
+    out.place(&batch, 1, &mut random, &placement, &mut Keeping::default());
     (out, random)
 }
 
@@ -240,7 +240,7 @@ fn the_anchor_and_route_take_the_game_s_clamped_terrain_sample() {
         defender: None,
     };
     let mut plan = AircraftPlan::default();
-    plan.place(&batch, 1, &mut Random::new(37), &placement);
+    plan.place(&batch, 1, &mut Random::new(37), &placement, &mut Keeping::default());
     let [x, _, z] = plan.flights[0].origin;
     assert_eq!(plan.flights[0].origin[1], heights.native_height(x, z));
     assert_ne!(heights.native_height(x, z), heights.height_at_world(x, z));

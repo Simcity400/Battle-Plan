@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { breakdownWindows, lossDrillAt, lossItems, lossesAt, lossStack, validateBreakdown } from './casualtiesBreakdownData.ts';
+import { liveKey } from '../../charts/live.ts';
 import type { CasualtyBreakdownReply, CasualtyBreakdownSeries } from '../../generated/dashboard';
-import { breakdownWindows, lossItems, lossesAt, lossStack, validateBreakdown } from './casualtiesBreakdownData.ts';
 
 const series = (id: string, value: string, enemyIdentity = id): CasualtyBreakdownSeries => ({ id, countryIdentity: '1:10',
   enemyTag: `synthetic enemy ${id}`, enemyIdentity, runs: [{ firstHour: 100, lastHour: 102, readHour: 100, hourly: true,
@@ -26,6 +27,13 @@ test('signed corrections and zero rows remain exact while geometry includes only
   assert.equal(items.reduce((sum, item) => sum + (item.value ?? 0), 0), 12);
   assert.ok(items.every(item => item.value === null || item.value >= 0));
   assert.equal(lossesAt(data, 103), null);
+});
+
+test('a holder with no losses read shows the empty state unless its losses are incomplete', () => {
+  const quiet = reply(); quiet.series = [];
+  assert.equal(lossesAt(validateBreakdown(quiet), 101), null);
+  const missing = reply(); missing.series = []; missing.countries[0].incomplete = true;
+  assert.equal(lossesAt(validateBreakdown(missing), 101)?.incomplete, true);
 });
 
 test('an ended relation keeps its supplied name and removed enemy facts without future backfill', () => {
@@ -84,4 +92,13 @@ test('an incomplete final snapshot retains positive ordering weights without cla
   assert.equal(items.reduce((sum, item) => sum + (item.final ?? 0), 0), 12);
   assert.equal(items.reduce((sum, item) => sum + (item.exact ?? 0n), 0n), 12n);
   assert.equal(end.total, 9n);
+});
+
+test('a following drill paints each lifetime losses at the hour and renders only where its rows change', () => {
+  const at = lossDrillAt(reply(), 101);
+  assert.equal(at.values.get(liveKey('correction', 'losses')), -3n);
+  assert.equal(at.total, 'Losses taken: 9');
+  assert.equal(lossDrillAt(reply(), 102).rows, at.rows, 'the same rows at another hour are the same structure');
+  const none = lossDrillAt(reply(), 103);
+  assert.deepEqual([none.rows, none.values.size, none.total], ['', 0, ''], 'an hour not recorded shows no row, never a zero');
 });

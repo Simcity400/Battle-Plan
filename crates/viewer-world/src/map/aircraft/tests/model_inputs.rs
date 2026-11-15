@@ -71,7 +71,7 @@ fn fixture(hour: i32) -> DecodedFrame {
 }
 
 #[test]
-fn memo_and_primary_index_keep_fixed_multi_hour_aircraft_and_failure_order() {
+fn memo_primary_index_and_kept_placements_keep_fixed_multi_hour_aircraft_and_failure_order() {
     engine_executable::executable_tables::initialize_for_tests().unwrap();
     let map = MapData {
         width: 4,
@@ -144,9 +144,12 @@ fn memo_and_primary_index_keep_fixed_multi_hour_aircraft_and_failure_order() {
         },
     );
     let mut previous: Option<AircraftPlan> = None;
-    for (hour, designer) in [(100, "DesignerA"), (101, "DesignerB"), (102, "DesignerA")] {
+    // One worker's placements across the hours: only the scenarios whose model changed are placed
+    // again, and the plan is the plan made anew.
+    let mut kept = Kept::default();
+    for (hour, designer, placed) in [(100, "DesignerA", (4, 0)), (101, "DesignerB", (2, 2)), (102, "DesignerA", (2, 2))] {
         let frame = fixture(hour);
-        let build = || {
+        let build = |kept: &mut Kept| {
             let memo = super::super::model_inputs::ModelMemo::default();
             let calls = Cell::new(0);
             let select = |variant, country| {
@@ -177,22 +180,35 @@ fn memo_and_primary_index_keep_fixed_multi_hour_aircraft_and_failure_order() {
                     )
                 })
             };
-            let plan = AircraftPlan::build(
+            let plan = AircraftPlan::make(
                 &frame,
                 &assets,
                 &[(1, 7)].into(),
                 &geometry,
                 &heights,
-                &Vision::default(),
+                0,
                 &select,
                 &|_| panic!("unreached carrier"),
                 &|_| None,
+                kept,
             )
             .unwrap();
             assert_eq!(calls.get(), 3);
             plan
         };
-        let mut plan = build();
+        let mut plan = build(&mut Kept::default());
+        let keeping = build(&mut kept);
+        assert_eq!(
+            (keeping.marks.scenarios, keeping.marks.kept),
+            placed,
+            "scenarios placed anew and kept at hour {hour}"
+        );
+        assert_eq!(
+            keeping.differ(&plan).1,
+            0,
+            "kept at hour {hour}: {:?}",
+            keeping.differ(&plan).2
+        );
         assert_eq!(
             plan.flights
                 .iter()

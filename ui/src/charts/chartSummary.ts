@@ -1,6 +1,6 @@
 import type { PlotFrame } from './frame.ts';
 import type { ChartTokens } from './tokens.ts';
-import { drawGapFill, drawLine, tracePath } from './draw.ts';
+import { dayLabel, drawGapFill, drawLine, spanLabel, tracePath } from './draw.ts';
 import { ordinates } from './linePick.ts';
 import { clipToSpans, curveSegments, extentOf, heldSegments, isOrderedSpans, runAt } from './series.ts';
 import type { PathCommand, Point, Run } from './series.ts';
@@ -31,6 +31,15 @@ export interface ChartSummary {
   /** Original supplying runs when every requested bin is one recorded hour. */
   runs?: readonly Run[];
   approximate?: readonly { firstHour: number; lastHour: number }[];
+  /** Assembled from tiles: its bins are whole tiles', past the hours shown; a painter clips them at the head and
+   * draws the head's own bin at `valueAt(head)`. */
+  tiles?: TiledSummary;
+}
+
+export interface TiledSummary {
+  binHours: number;
+  /** The line's value at the head, drawn from the head bin's first hour to the head. */
+  valueAt(hour: number): number | null;
 }
 
 const decoded = new WeakMap<object, ChartSummary | null>();
@@ -57,6 +66,9 @@ export function chartSummaryRecord(value: unknown): Record<string, ChartSummary>
   }
   return record;
 }
+
+/** A reply line as the UI holds it: its wire `summary` decoded. */
+export type Decoded<L extends { summary: unknown }> = Omit<L, 'summary'> & { summary: ChartSummary };
 
 /** Lines holding a wire `summary` each, decoded, or null when any line fails `valid` or its summary is malformed. */
 export function chartSummaryLines<L extends { summary: ChartSummary }>(value: unknown, valid: (line: Record<string, unknown>) => boolean): L[] | null {
@@ -109,6 +121,19 @@ function decodeSummary(summary: WireSummary): ChartSummary | null {
 /** Bucket extrema alone lose supplying bounds and equal plotted-value boundaries. */
 export const exactRuns = (summary: ChartSummary): readonly Run[] | null => summary.runs ?? null;
 
+/** The bin of `summary` holding `hour`, or null. */
+export const binAt = (summary: ChartSummary | null | undefined, hour: number): ChartBucket | null =>
+  summary?.buckets.find(bin => bin && bin.firstHour <= hour && hour <= bin.lastHour) ?? null;
+
+/** When the values of `bins` (each line's bin holding `hour`) were so: the days their hours span, since a bin's value
+ * and its extremes' hours are known only to the bin (its summary's 6- or 96-hour bucket at best); `hour`'s day where
+ * no bin is wider than one hour. */
+export function binsLabel(hour: number, bins: readonly (ChartBucket | null | undefined)[]): string {
+  let first = Infinity, last = -Infinity;
+  for (const bin of bins) if (bin) { first = Math.min(first, bin.firstHour); last = Math.max(last, bin.lastHour); }
+  return first < last ? spanLabel(first, last) : dayLabel(hour);
+}
+
 function approximateUnion(spans: ChartSummary['approximate']) {
   const union: NonNullable<ChartSummary['approximate']>[number][] = [];
   for (const span of [...(spans ?? [])].sort((a, b) => a.firstHour - b.firstHour)) {
@@ -125,18 +150,49 @@ export function extentOfSummary(summary: ChartSummary, from = summary.from, to =
   // The inclusive hours exact runs use; a bucket partly in them keeps its whole envelope.
   const first = Math.floor(from);
   let low = Infinity, high = -Infinity;
+  if (summary.tiles) {
+    // Tiled bins run past `to`: only those wholly before its bin, then the value drawn at it.
+    const { binHours } = summary.tiles, cut = Math.floor(to / binHours) * binHours;
+    const start = Math.max(0, Math.floor(first / binHours) - Math.floor(summary.from / binHours));
+    for (let at = start; at < summary.buckets.length; at++) {
+      const bucket = summary.buckets[at];
+      if (!bucket) continue;
+      if (bucket.lastHour >= cut) break;
+      low = Math.min(low, bucket.minValue); high = Math.max(high, bucket.maxValue);
+    }
+    const head = summary.tiles.valueAt(to);
+    if (head !== null && Number.isFinite(head)) { low = Math.min(low, head); high = Math.max(high, head); }
+    return low <= high ? [low, high] : null;
+  }
   for (const bucket of summary.buckets) {
     if (bucket && bucket.lastHour >= first && bucket.firstHour <= to) { low = Math.min(low, bucket.minValue); high = Math.max(high, bucket.maxValue); }
   }
   return low <= high ? [low, high] : null;
 }
 
+/** `summary` drawn in another unit: every value times `factor`, the head a tiled summary draws at included. */
+export function scaleSummary(summary: ChartSummary, factor: number): ChartSummary {
+  if (factor === 1) return summary;
+  const tiles = summary.tiles;
+  return { ...summary, buckets: summary.buckets.map(bucket => bucket && { ...bucket, firstValue: bucket.firstValue * factor,
+    lastValue: bucket.lastValue * factor, minValue: bucket.minValue * factor, maxValue: bucket.maxValue * factor }),
+  ...(summary.runs ? { runs: summary.runs.map(run => ({ ...run, value: run.value * factor })) } : {}),
+  ...(tiles ? { tiles: { ...tiles, valueAt: (hour: number) => { const value = tiles.valueAt(hour); return value === null ? null : value * factor; } } } : {}) };
+}
+
+/** A layer's value extent of `summary` in a frame showing `x` up to `until`: none when it cannot be drawn there. */
+export function summaryExtent(summary: ChartSummary, x: readonly [number, number], until: number | null): [number, number] | null {
+  const end = Math.min(x[1], until ?? x[1]);
+  if (summary.tiles) return summary.from > x[1] || summary.to < x[0] ? null : extentOfSummary(summary, x[0], end);
+  return summary.to > end || summary.to < x[0] ? null : extentOfSummary(summary);
+}
+
 /** Whether a summary can be drawn in this frame: one requested at the plot's width
  * that overlaps it and ends at or before the hours shown end. Its geometry is placed
  * by hour, so a summary asked for a moment ago (the view has moved on during
  * playback or a zoom) draws in place, never past the playhead, until the next arrives. */
-export const summaryFits = (frame: Pick<PlotFrame, 'x' | 'plotWidth'>, summary: { from: number; to: number; width: number }, until: number | null) => summary.width === Math.ceil(frame.plotWidth)
-  && summary.to <= Math.min(frame.x[1], until ?? frame.x[1]) && summary.to >= frame.x[0] && summary.from <= frame.x[1];
+export const summaryFits = (frame: Pick<PlotFrame, 'x' | 'plotWidth'>, summary: { from: number; to: number; width: number; tiles?: unknown }, until: number | null) => summary.width === Math.ceil(frame.plotWidth)
+  && (summary.tiles !== undefined || summary.to <= Math.min(frame.x[1], until ?? frame.x[1])) && summary.to >= frame.x[0] && summary.from <= frame.x[1];
 
 /** A dense summary's drawing in hours and values: a frame only places it, so it is built once
  * per summary and step kind. Joined columns continue one polyline, so a line strokes once per
@@ -165,6 +221,16 @@ function summaryShape(summary: ChartSummary, held: boolean): SummaryShape {
   if (known) return known;
   const points: number[] = [], starts: number[] = [], dots: number[] = [];
   const step = held ? 1 : 0;
+  // Tiled bins run on past the hours shown; their own last hour ends them.
+  const to = summary.tiles ? Infinity : summary.to;
+  // A vertex the polyline already ends at is left out, and one inside a level run moves the run's end: the stroke
+  // is the same, with far fewer vertices for a frame to place.
+  const vertex = (hour: number, value: number) => {
+    const at = points.length, open = at - 2 * starts[starts.length - 1];
+    if (open >= 2 && points[at - 2] === hour && points[at - 1] === value) return;
+    if (open >= 4 && points[at - 1] === value && points[at - 3] === value && points[at - 2] <= hour) { points[at - 2] = hour; return; }
+    points.push(hour, value);
+  };
   let previous: ChartBucket | null = null;
   let end: [number, number] | null = null;
   for (const bucket of summary.buckets) {
@@ -186,17 +252,17 @@ function summaryShape(summary: ChartSummary, held: boolean): SummaryShape {
         if (points[at] !== previous.lastHour + step || points[at + 1] !== previous.lastValue) {
           starts.push(points.length / 2); points.push(previous.lastHour + step, previous.lastValue);
         }
-        points.push(bucket.firstHour, previous.lastValue, bucket.firstHour, bucket.firstValue);
+        vertex(bucket.firstHour, previous.lastValue); vertex(bucket.firstHour, bucket.firstValue);
       } else { starts.push(points.length / 2); points.push(bucket.firstHour, bucket.firstValue); }
       let value = bucket.firstValue;
       for (const corner of corners) {
-        if (held) points.push(corner.hour, value);
-        points.push(corner.hour, corner.value); value = corner.value;
+        if (held) vertex(corner.hour, value);
+        vertex(corner.hour, corner.value); value = corner.value;
       }
-      points.push(Math.min(summary.to, bucket.lastHour + step), bucket.lastValue);
+      vertex(Math.min(to, bucket.lastHour + step), bucket.lastValue);
       previous = bucket;
     }
-    end = [Math.min(summary.to, bucket.lastHour + step), bucket.lastValue];
+    end = [Math.min(to, bucket.lastHour + step), bucket.lastValue];
   }
   starts.push(points.length / 2);
   let low = Infinity, high = -Infinity;
@@ -212,11 +278,12 @@ const placeable = (frame: PlotFrame, shape: SummaryShape) => shape.low > shape.h
   || Number.isFinite(frame.toY(shape.low)) && Number.isFinite(frame.toY(shape.high));
 
 /** Column by column geometry, for a frame that cannot place some value: such a column is only its placed dots. */
-function columnGeometry(frame: PlotFrame, summary: ChartSummary, held: boolean): { paths: PathCommand[][]; dots: Point[]; end: Point | null } {
+function columnGeometry(frame: PlotFrame, summary: ChartSummary, held: boolean, before = Infinity): { paths: PathCommand[][]; dots: Point[]; end: Point | null } {
   const paths: PathCommand[][] = [], dots: Point[] = [], step = held ? 1 : 0;
   let previous: ChartBucket | null = null, end: Point | null = null;
   for (const bucket of summary.buckets) {
     if (!bucket) { previous = null; continue; }
+    if (bucket.lastHour >= before) break;
     const corners = [
       { hour: bucket.firstHour, value: bucket.firstValue, order: 0 },
       { hour: bucket.minHour, value: bucket.minValue, order: 1 },
@@ -315,6 +382,8 @@ export function drawLineSummary(ctx: CanvasRenderingContext2D, frame: PlotFrame,
   summary: ChartSummary, color: string, held = false, until: number | null = null,
   options: SummaryLineOptions = {}): Point | null {
   if (!summaryFits(frame, summary, until)) return null;
+  // A tiled hourly line is its runs, drawn to the head as runs are; binned tiles stop at the head bin.
+  if (summary.tiles && !summary.runs) return drawTiledHead(ctx, frame, tokens, summary, summary.tiles, color, held, until ?? frame.x[1], options);
   const runs = exactRuns(summary);
   const shape = runs ? null : summaryShape(summary, held);
   const paint = (drawn: SummaryLineOptions) => !shape ? drawLine(ctx, frame, tokens, runs!, color, { ...drawn, held, until: until ?? undefined })
@@ -361,17 +430,26 @@ function strokeColumns(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: 
   return lineEnd(ctx, tokens, geometry.end, options);
 }
 
-/** Strokes each polyline of `shape` placed in `frame`, with its area, broken columns' dots and end dot. */
+/** Strokes each polyline of `shape` placed in `frame`, with its area, broken columns' dots and end dot; with
+ * `hours`, only the vertices about them (a tiled shape runs far past the frame). */
 function strokeShape(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, shape: SummaryShape,
-  color: string, options: SummaryLineOptions): Point | null {
+  color: string, options: SummaryLineOptions, hours?: readonly [number, number]): Point | null {
   const { points, starts, dots } = shape;
   const baseline = lineStyle(ctx, frame, tokens, color, options);
   const trace = (from: number, to: number) => {
     ctx.moveTo(frame.toX(points[2 * from]), frame.toY(points[2 * from + 1]));
     for (let vertex = from + 1; vertex < to; vertex++) ctx.lineTo(frame.toX(points[2 * vertex]), frame.toY(points[2 * vertex + 1]));
   };
-  for (let line = 0; line + 1 < starts.length; line++) {
-    const from = starts[line], to = starts[line + 1];
+  const lines = starts.length - 1, hourAt = (vertex: number) => points[2 * vertex];
+  for (let line = hours ? lower(lines, index => hourAt(starts[index + 1] - 1) < hours[0]) : 0; line < lines; line++) {
+    let from = starts[line], to = starts[line + 1];
+    if (hours) {
+      if (hourAt(from) > hours[1]) break;
+      // From the vertex before the first hour through the first vertex past the last.
+      const start = from;
+      from = Math.max(start, start + lower(to - start, index => hourAt(start + index) < hours[0]) - 1);
+      to = Math.min(to, start + lower(to - start, index => hourAt(start + index) <= hours[1]) + 1);
+    }
     if (options.area) {
       ctx.beginPath(); trace(from, to);
       ctx.lineTo(frame.toX(points[2 * (to - 1)]), baseline); ctx.lineTo(frame.toX(points[2 * from]), baseline); ctx.closePath();
@@ -379,10 +457,34 @@ function strokeShape(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: Ch
     }
     ctx.beginPath(); trace(from, to); ctx.stroke();
   }
-  for (let at = 0; at < dots.length; at += 2) {
+  for (let at = hours ? 2 * lower(dots.length / 2, index => dots[2 * index] < hours[0]) : 0; at < dots.length && (!hours || dots[at] <= hours[1]); at += 2) {
     ctx.beginPath(); ctx.arc(frame.toX(dots[at]), frame.toY(dots[at + 1]), tokens.lineWidth.series / 2, 0, Math.PI * 2); ctx.fill();
   }
-  return lineEnd(ctx, tokens, shapeEnd(frame, shape), options);
+  return lineEnd(ctx, tokens, hours ? null : shapeEnd(frame, shape), options);
+}
+
+/** A tiled line up to the head: its bins wholly before the head's bin, clipped there, then the head's bin from its
+ * first hour to the head at the value at the head. Only vertices in the frame are placed. */
+function drawTiledHead(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, summary: ChartSummary,
+  tiles: TiledSummary, color: string, held: boolean, until: number, options: SummaryLineOptions): Point | null {
+  const cut = Math.floor(until / tiles.binHours) * tiles.binHours;
+  const shape = summaryShape(summary, held);
+  ctx.save();
+  ctx.beginPath(); ctx.rect(frame.plotLeft, frame.plotTop, Math.max(0, frame.toX(cut) - frame.plotLeft), frame.plotHeight); ctx.clip();
+  if (placeable(frame, shape)) strokeShape(ctx, frame, tokens, shape, color, { ...options, endDot: false }, [frame.x[0], cut]);
+  else strokeColumns(ctx, frame, tokens, columnGeometry(frame, summary, held, cut), color, { ...options, endDot: false });
+  ctx.restore();
+  const value = tiles.valueAt(until), y = value === null ? NaN : frame.toY(value);
+  if (!Number.isFinite(y)) return null;
+  const baseline = lineStyle(ctx, frame, tokens, color, options);
+  // From the last hour of the bin before, which the clip leaves out of the line's join.
+  const left = frame.toX(Math.max(cut - 1, frame.x[0])), right = frame.toX(Math.min(until, frame.x[1]));
+  if (right < left) { ctx.restore(); return null; }
+  if (options.area) {
+    ctx.globalAlpha = 0.12; ctx.fillRect(left, Math.min(y, baseline), right - left, Math.abs(baseline - y)); ctx.globalAlpha = 1;
+  }
+  ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(right, y); ctx.stroke();
+  return lineEnd(ctx, tokens, { x: right, y }, options);
 }
 
 /** The first of `count` indices `before` no longer holds for; it holds for a prefix. */

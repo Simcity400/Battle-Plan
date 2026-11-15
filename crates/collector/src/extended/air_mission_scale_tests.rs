@@ -621,6 +621,8 @@ impl Scale {
         let parent = Outcome::Rows { len: census.len() };
         air.reset();
         air.prepare_hour(HOUR, false);
+        air.bases_raw_mode = true;
+        air.stats_raw_mode = true;
         air.install_owned_mission_identities(&mut job);
         air.finish_wings(parent);
         air.capture_missions(
@@ -774,6 +776,8 @@ fn mission_pack(scale: &Scale, memory: &impl Memory) -> Captured {
     let parent = Outcome::Rows { len };
     air.reset();
     air.prepare_hour(HOUR, false);
+    air.bases_raw_mode = true;
+    air.stats_raw_mode = true;
     air.install_owned_mission_identities(&mut job);
     air.finish_wings(parent);
     air.capture_missions(
@@ -790,95 +794,15 @@ fn mission_pack(scale: &Scale, memory: &impl Memory) -> Captured {
     air
 }
 
-/// Every read's address in order; `fault` fails the first read of one
-/// address once, as a one-shot guard page does.
-struct Ordered<'a> {
-    world: &'a World,
-    reads: std::cell::RefCell<Vec<usize>>,
-    fault: Option<usize>,
-    faulted: Cell<bool>,
-}
-
-impl<'a> Ordered<'a> {
-    fn new(world: &'a World, fault: Option<usize>) -> Self {
-        Self {
-            world,
-            reads: Default::default(),
-            fault,
-            faulted: Cell::new(false),
-        }
-    }
-}
-
-impl Memory for Ordered<'_> {
-    fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
-        self.reads.borrow_mut().push(address);
-        if self.fault == Some(address) && !self.faulted.replace(true) {
-            return false;
-        }
-        self.world.copy(address, destination)
-    }
-}
-
-/// Without a mission job the Late job captures the missions itself and
-/// meets every shared read where it did: the joins run after the AirBases,
-/// AirAces and AirStatistics walks, so a one-shot fault on the air manager
-/// fails AirBases, as before, and not the joins.
-#[test]
-fn without_the_mission_job_late_meets_shared_reads_in_their_old_order() {
-    let scale = Scale::new();
-    let game_state = scale.world.game_state;
-    // The read order of the whole fallback: the missions, then the capture.
-    let ordered = Ordered::new(&scale.world, None);
-    let mut clean = mission_pack(&scale, &ordered);
-    clean.capture(
-        &ordered,
-        BASE,
-        game_state,
-        HOUR,
-        false,
-        Some(&mut Default::default()),
-    );
-    let reads = ordered.reads.into_inner();
-    let manager = engine_native::read::<u64>(&scale.world, game_state + gs::STRATEGIC_AIR_MANAGER)
-        .unwrap() as usize;
-    let bases = reads
-        .iter()
-        .position(|&at| at == manager + cstrategic_air_manager::STATE_AIR_BASES)
-        .expect("the AirBases walk");
-    let witnesses = reads
-        .iter()
-        .position(|&at| at == BASE + registry::LOW_ROOTS_RVA.0 + cair_base::TYPE as usize * 8)
-        .expect("the base witnesses");
-    assert!(bases < witnesses, "{bases} {witnesses}");
-    // The capture's first read of the manager pointer faults once.
-    let mut faulted = mission_pack(&scale, &scale.world);
-    let memory = Ordered::new(&scale.world, Some(game_state + gs::STRATEGIC_AIR_MANAGER));
-    faulted.capture(
-        &memory,
-        BASE,
-        game_state,
-        HOUR,
-        false,
-        Some(&mut Default::default()),
-    );
-    assert!(memory.faulted.get());
-    let (outcomes, expected) = (faulted.outcomes(), clean.outcomes());
-    assert!(matches!(outcomes[1], Outcome::Unavailable { .. }));
-    assert_ne!(outcomes[1], expected[1]);
-    assert_eq!(outcomes[6..12], expected[6..12]);
-    assert_eq!(faulted.tables()[6..12], clean.tables()[6..12]);
-}
-
 /// The joins resolve their countries from the hour's snapshot bytes: the
 /// same tables with fewer reads of the game.
 #[test]
 fn the_mission_joins_take_country_bytes_from_the_hours_snapshot() {
     let scale = Scale::new();
     let game_state = scale.world.game_state;
-    let mut storage = std::sync::Arc::new(
+    let mut storage = engine_allocation::shared(
         engine_native::country_memory::Cache::try_with_capacity(1 << 18).unwrap(),
-    );
+    ).unwrap();
     let snapshot = engine_native::country_memory::Cache::prepare_shared(
         &mut storage,
         &scale.world,
@@ -996,15 +920,7 @@ fn base_witnesses_at_scale_read_each_distinct_handle_once() {
     let memory = Counted::new(&scale.world);
     let mut handles = vec![0; wings.len() * 2];
     let mut output = vec![BaseWitness::default(); expected.len()];
-    let outcome = capture_references(
-        &memory,
-        BASE,
-        scale.world.game_state,
-        &wings,
-        Some(&registrations),
-        &mut handles,
-        &mut output,
-    );
+    let outcome = capture_references_buffer(&memory, BASE, scale.world.game_state, &wings, Some(&registrations), engine_native::walk::Buffer::Growing(&mut handles), engine_native::walk::Buffer::Growing(&mut output), None);
     assert_eq!(
         outcome,
         Ok(Outcome::Rows {
@@ -1022,59 +938,6 @@ fn base_witnesses_at_scale_read_each_distinct_handle_once() {
         .collect();
     assert_eq!(*memory.fields.borrow(), fields);
 
-    // A short output keeps the first probes; every other handle is still
-    // read and counted as unread.
-    let memory = Counted::new(&scale.world);
-    let short = expected.len() / 3;
-    let outcome = capture_references(
-        &memory,
-        BASE,
-        scale.world.game_state,
-        &wings,
-        Some(&registrations),
-        &mut handles,
-        &mut output[..short],
-    );
-    assert_eq!(
-        outcome,
-        Ok(Outcome::Truncated {
-            len: short,
-            unread_rows: (expected.len() - short) as u32
-        })
-    );
-    assert_eq!(witnessed(&output[..short]), expected[..short]);
-    assert_eq!(memory.roots.get(), 1);
-
-    // Scratch too small for every probe, duplicates included, reads nothing.
-    let probes = registered
-        + scale
-            .census
-            .iter()
-            .filter(|source| source.row.air_base != 0)
-            .count()
-        + scale
-            .census
-            .iter()
-            .filter(|source| source.row.base_override != 0)
-            .count();
-    let memory = Counted::new(&scale.world);
-    assert_eq!(
-        capture_references(
-            &memory,
-            BASE,
-            scale.world.game_state,
-            &wings,
-            Some(&registrations),
-            &mut handles[..probes - 1],
-            &mut output,
-        ),
-        Ok(Outcome::Truncated {
-            len: 0,
-            unread_rows: probes as u32
-        })
-    );
-    assert_eq!(memory.roots.get(), 0);
-
     // A registered wing without a pool base is an error.
     let mut null = wings.clone();
     let at = null
@@ -1082,15 +945,7 @@ fn base_witnesses_at_scale_read_each_distinct_handle_once() {
         .unwrap();
     null[at].air_base = 0;
     assert_eq!(
-        capture_references(
-            &scale.world,
-            BASE,
-            scale.world.game_state,
-            &null,
-            Some(&registrations),
-            &mut handles,
-            &mut output,
-        )
+        capture_references_buffer(&scale.world, BASE, scale.world.game_state, &null, Some(&registrations), engine_native::walk::Buffer::Growing(&mut handles), engine_native::walk::Buffer::Growing(&mut output), None)
         .err(),
         Some("registered wing has a null pool base")
     );
@@ -1103,15 +958,7 @@ fn base_witnesses_at_scale_read_each_distinct_handle_once() {
     let ship = scale.world.ships[&base.unwrap().host];
     scale.world.u64(ship + cship::HANDLE, 0);
     assert_eq!(
-        capture_references(
-            &scale.world,
-            BASE,
-            scale.world.game_state,
-            &wings,
-            Some(&registrations),
-            &mut handles,
-            &mut output,
-        )
+        capture_references_buffer(&scale.world, BASE, scale.world.game_state, &wings, Some(&registrations), engine_native::walk::Buffer::Growing(&mut handles), engine_native::walk::Buffer::Growing(&mut output), None)
         .err(),
         Some("carrier host reference handle mismatch")
     );
@@ -1140,7 +987,7 @@ fn base_witnesses_at_scale_read_each_distinct_handle_once() {
             &wings,
             Some(&registrations),
             &mut handles,
-            &mut output[..1],
+            &mut output,
         )
         .err(),
         Some(reason)

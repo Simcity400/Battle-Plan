@@ -60,22 +60,13 @@ pub struct Row {
 /// row is omitted and counted, exactly as a full row buffer omits one. The
 /// returned `wanted` is the reason's full length either way, so the spool thread
 /// can grow the arena without a second engine read.
-pub(crate) fn read_row(
+pub(crate) fn count_row(
     memory: &impl Memory,
     base: usize,
     ordinal: u32,
     pointer: usize,
-    reasons: &mut [u8],
-    used: usize,
 ) -> Result<(Option<Row>, usize, usize), &'static str> {
-    read_row_buffer(
-        memory,
-        base,
-        ordinal,
-        pointer,
-        &mut Buffer::Fixed(reasons),
-        used,
-    )
+    read_row_buffer(memory, base, ordinal, pointer, &mut Buffer::Count, 0)
 }
 
 pub(crate) fn read_row_buffer(
@@ -167,6 +158,17 @@ mod tests {
     use super::*;
     use crate::memory::SliceMemory;
 
+    fn read_row(
+        memory: &impl Memory,
+        base: usize,
+        ordinal: u32,
+        pointer: usize,
+        reasons: &mut Vec<u8>,
+        used: usize,
+    ) -> Result<(Option<Row>, usize, usize), &'static str> {
+        read_row_buffer(memory, base, ordinal, pointer, &mut Buffer::Growing(reasons), used)
+    }
+
     const BASE: usize = 0x1000;
     const SOURCE: usize = BASE + 0x80;
 
@@ -199,7 +201,7 @@ mod tests {
             base: BASE,
             bytes: &bytes,
         };
-        let mut arena = [0; 16];
+        let mut arena = vec![0; 16];
         let (row, used, wanted) = read_row(&memory, 0, 3, SOURCE, &mut arena, 4).unwrap();
         assert_eq!(wanted, 5);
         assert_eq!(
@@ -240,17 +242,8 @@ mod tests {
     }
 
     #[test]
-    fn broken_headers_short_arenas_and_missing_terminators_fail_explicitly() {
+    fn broken_headers_and_missing_terminators_fail_explicitly() {
         let bytes = fixture(b"Peace\0");
-        let memory = SliceMemory {
-            base: BASE,
-            bytes: &bytes,
-        };
-        // A reason that does not fit omits its row and still reports the need.
-        assert_eq!(
-            read_row(&memory, 0, 0, SOURCE, &mut [0; 4], 0),
-            Ok((None, 0, 5))
-        );
         for (offset, value, reason) in [
             (0_usize, 1_u8, "threat source vtable mismatch"),
             (
@@ -275,7 +268,7 @@ mod tests {
                     0,
                     0,
                     SOURCE,
-                    &mut [0; 16],
+                    &mut vec![0; 16],
                     0
                 ),
                 Err(reason)
@@ -290,7 +283,7 @@ mod tests {
                 0,
                 0,
                 SOURCE,
-                &mut [0; 16],
+                &mut vec![0; 16],
                 0
             ),
             Err("threat source fields unreadable")

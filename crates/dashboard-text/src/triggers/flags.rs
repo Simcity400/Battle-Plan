@@ -131,7 +131,7 @@ impl Evaluator<'_, '_> {
                             let country = self
                                 .world()
                                 .slot(raw)
-                                .ok_or("dynamic flag capital owner has no CountryLinks row")?;
+                                .ok_or("dynamic flag capital owner has no country links row")?;
                             match self.enter_flat(
                                 &installed_content_core::scope::Scope::Keyword(Keyword::CapitalScope),
                                 Scopes::of(Scope::Country(country)),
@@ -180,7 +180,7 @@ impl Evaluator<'_, '_> {
             let slot = self
                 .world()
                 .slot(raw)
-                .ok_or("dynamic flag country has no CountryLinks row")?;
+                .ok_or("dynamic flag country has no country links row")?;
             // Canonical aliases do not carry the raw registry's tag spelling.
             if self.world().raw_country(slot) != Some(raw) {
                 return Err(refused(format!(

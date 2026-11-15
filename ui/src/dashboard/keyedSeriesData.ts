@@ -1,0 +1,107 @@
+import type { HourSpan, SeriesDrop, SeriesRun } from '../generated/dashboard';
+import { type FollowedAnswer, rowKey, rowName } from './follow/message.ts';
+import type { TileReply } from './tiles/tile';
+
+/** A line of a sub-keyed series: its owner's tag and the part (the rest of the row's key, as the service names it:
+ * a variant, a resource, a region). */
+export interface SeriesKey { tag: string; part: string }
+
+/** One text per key, where a tile, a summary and a legend row are kept. */
+export const keyId = (key: SeriesKey) => `${key.tag}\u0000${key.part}`;
+
+/** A key's value at a read hour, as `series-state` answers a `{tag, part, hour}` read. */
+export interface KeyedState { tag: string; part: string; hour: number; run: SeriesRun | null; drop: SeriesDrop | null; missing: string | null }
+export interface KeyedStates { branchId: string; decimals: number; states: readonly KeyedState[] }
+
+/** A part an owner held in a span (`series-parts`): its key, the content id its key holds (a token or text id the
+ * reader names), and the first and last hours it held a row. */
+export interface SeriesPart { part: string; id: string | null; firstHour: number; lastHour: number }
+/** An owner's parts in a span, the hours its line has no holder with why, and the bits of a row key below its owner
+ * (a followed row's part is its key's low `partBits` bits). */
+export interface SeriesParts { tag: string; parts: readonly SeriesPart[]; missing: readonly { firstHour: number; lastHour: number; reason: string }[]; partBits: number }
+
+const object = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
+const hour = (value: unknown): value is number => Number.isSafeInteger(value);
+const raw = (value: unknown): value is string => typeof value === 'string' && /^-?\d+$/.test(value);
+const run = (value: unknown): value is SeriesRun => object(value) && hour(value.firstHour) && hour(value.lastHour)
+  && value.firstHour <= value.lastHour && raw(value.valueRaw) && typeof value.firstExact === 'boolean' && typeof value.lastExact === 'boolean';
+const drop = (value: unknown): value is SeriesDrop => object(value) && hour(value.hour) && raw(value.beforeRaw) && raw(value.afterRaw);
+
+export function validateKeyedStates(value: unknown): KeyedStates {
+  if (!object(value) || typeof value.branchId !== 'string' || !Number.isInteger(value.decimals) || (value.decimals as number) < 0
+    || (value.decimals as number) > 12 || !Array.isArray(value.states) || !value.states.every(state => object(state)
+      && typeof state.tag === 'string' && typeof state.part === 'string' && hour(state.hour) && (state.run === null || run(state.run))
+      && (state.drop === null || drop(state.drop)) && (state.missing === null || typeof state.missing === 'string')))
+    throw new Error('The keyed series state reply is malformed.');
+  return value as unknown as KeyedStates;
+}
+
+/** A `series-parts` reply asked for `tag` alone. */
+export function validateSeriesParts(value: unknown, tag: string): SeriesParts {
+  const owner = object(value) && Array.isArray(value.owners) && value.owners.length === 1 ? value.owners[0] : undefined;
+  if (!object(value) || !Number.isInteger(value.partBits) || (value.partBits as number) < 1 || (value.partBits as number) > 127
+    || !object(owner) || owner.tag !== tag || !Array.isArray(owner.parts) || !owner.parts.every(part => object(part)
+    && raw(part.part) && (part.id === undefined || typeof part.id === 'string') && hour(part.firstHour) && hour(part.lastHour)
+    && part.firstHour <= part.lastHour) || new Set(owner.parts.map(part => (part as SeriesPart).part)).size !== owner.parts.length
+    || !Array.isArray(owner.missing) || !owner.missing.every(span => object(span) && hour(span.firstHour) && hour(span.lastHour)
+      && typeof span.reason === 'string'))
+    throw new Error('The series parts reply is malformed.');
+  const parts = (owner.parts as Record<string, unknown>[]).map(part => ({ part: part.part as string, id: (part.id as string | undefined) ?? null,
+    firstHour: part.firstHour as number, lastHour: part.lastHour as number }));
+  return { tag, parts, missing: owner.missing as SeriesParts['missing'], partBits: value.partBits as number };
+}
+
+/** A tile request's lines for `keys` and the spans each tag's lines are drawn over: the service draws a tag's parts
+ * over one set of spans, so keys of one tag asking different spans are refused. */
+export function keyedTileParams(keys: readonly SeriesKey[], within: Readonly<Record<string, readonly HourSpan[]>> | undefined) {
+  const lines = keys.map(({ tag, part }) => ({ tag, part }));
+  if (!within) return { lines };
+  const byTag: Record<string, readonly HourSpan[]> = {};
+  for (const key of keys) {
+    const spans = within[keyId(key)] ?? [];
+    const held = byTag[key.tag];
+    if (held && JSON.stringify(held) !== JSON.stringify(spans)) throw new Error(`The parts of ${key.tag} are drawn over one set of spans.`);
+    byTag[key.tag] = spans;
+  }
+  return { lines, within: byTag };
+}
+
+/** The row of `key` in a followed answer of its owners' parts (rows named by tag, keyed by the whole row key), or -1
+ * when the head holds no row of it. */
+export function followedRow(answer: FollowedAnswer | undefined, key: SeriesKey, partBits: number): number {
+  if (!answer || answer.kind === 'notRecorded') return -1;
+  const mask = (1n << BigInt(partBits)) - 1n, part = BigInt(key.part);
+  for (let row = 0; row < answer.rows; row++) {
+    if (rowName(answer, row) === key.tag && (rowKey(answer, row) & mask) === part && rowKey(answer, row) >> BigInt(partBits) !== 0n) return row;
+  }
+  return -1;
+}
+
+/** A tile reply for `keys` (in the order asked) with each line named by its key's id, as the tile view keeps lines;
+ * a reply whose lines are not the keys asked is refused. */
+export function keyedTileReply(reply: TileReply & { lines: readonly { tag: string; part?: unknown }[] }, keys: readonly SeriesKey[]): TileReply {
+  if (!object(reply) || !Array.isArray(reply.lines) || reply.lines.length !== keys.length
+    || !reply.lines.every((line, at) => object(line) && line.tag === keys[at].tag && (line as { part?: unknown }).part === keys[at].part))
+    throw new Error('The keyed tile reply is malformed.');
+  return { ...reply, lines: reply.lines.map((line, at) => ({ ...line, tag: keyId(keys[at]) })) } as TileReply;
+}
+
+/** A key's exact runs and drops among the hours read, and why each read hour without a value has none. */
+export interface ReachedKeyLine { key: SeriesKey; runs: SeriesRun[]; drops: SeriesDrop[]; missing: Map<number, string> }
+
+export function reachedKeyLines(keys: readonly SeriesKey[], states: KeyedStates | undefined): ReachedKeyLine[] {
+  const byKey = new Map<string, KeyedState[]>();
+  for (const state of states?.states ?? []) {
+    const id = keyId(state);
+    const held = byKey.get(id);
+    if (held) held.push(state); else byKey.set(id, [state]);
+  }
+  return keys.map(key => {
+    const reached = byKey.get(keyId(key)) ?? [];
+    const unique = new Map<string, SeriesRun>();
+    for (const state of reached) if (state.run) unique.set(`${state.run.firstHour}|${state.run.lastHour}|${state.run.valueRaw}`, state.run);
+    return { key, runs: [...unique.values()].sort((a, b) => a.firstHour - b.firstHour),
+      drops: reached.flatMap(state => state.drop ? [state.drop] : []),
+      missing: new Map(reached.flatMap(state => state.missing === null ? [] : [[state.hour, state.missing] as const])) };
+  });
+}

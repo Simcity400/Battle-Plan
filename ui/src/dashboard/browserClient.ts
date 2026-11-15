@@ -1,18 +1,15 @@
 import { queryFailure } from './queryError.ts';
-import { validatePreparationReply, validatePreparationPreferences } from '../shell/preparation/contract.ts';
-import { preparedReplyData, validateProductReply } from './client.ts';
-import type { PreparationAction, PreparationRequest, PreparationReply, PreparationPreferences } from '../shell/preparation/contract';
 import type { SourceReply } from '../generated/dashboard';
-import type { DashboardClient, DashboardSource, MapSettingsReply, PreparedQueryOptions, ProductReply, ProductRequest, ReplayLibrary } from './client';
+import type { DashboardClient, DashboardSource, MapSettingsReply, ProductReply, ProductRequest, ReplayLibrary } from './client';
 import { replyLengths } from './products.ts';
 import { parseReplyBytes } from './replyParse.ts';
 import { contentRevision } from './contentRevision.ts';
 import { forgetReplySizes } from './replySizes.ts';
-import { forgetReplyGaps } from './replyGaps.ts';
-import { INTERACTIVE_PRODUCTS } from '../generated/dashboard.ts';
+import { INTERACTIVE_PRODUCTS, REPLAY_PRODUCTS } from '../generated/dashboard.ts';
 import { BrowserRequestQueue } from './browserRequestQueue.ts';
 import type { BrowserRequestLane } from './browserRequestQueue';
 import { newId } from '../shell/ids.ts';
+import { busy } from '../shell/busy.ts';
 
 const requests = new BrowserRequestQueue();
 /** This page load, which owns the recordings it opens and imports. The bridge outlives the page, so a page that goes
@@ -29,6 +26,7 @@ function ownRecordings(): void {
   });
 }
 const interactiveProducts: ReadonlySet<string> = new Set(INTERACTIVE_PRODUCTS);
+const replayProducts: ReadonlySet<string> = new Set(REPLAY_PRODUCTS);
 
 function chooseRecording(): Promise<string | null> {
   return new Promise((resolve, reject) => {
@@ -56,8 +54,10 @@ function chooseRecording(): Promise<string | null> {
 async function request<T>(body: { type: string; request?: ProductRequest; sourceId?: string; [key: string]: unknown }, signal?: AbortSignal,
   releaseLate?: (value: T) => Promise<void>): Promise<T> {
   const lane: BrowserRequestLane = body.type === 'release' ? 'control'
-    : body.type === 'preparedQuery' || body.type === 'preparation' || body.type === 'product' && interactiveProducts.has(body.request!.product) ? 'interactive' : 'history';
+    : body.type === 'product' && replayProducts.has(body.request!.product) ? 'replays'
+    : body.type === 'product' && interactiveProducts.has(body.request!.product) ? 'interactive' : 'history';
   ownRecordings();
+  const done = busy('requests');
   return requests.run(lane, async active => {
     const response = await fetch('/api/recordings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: active });
     const bytes = await response.arrayBuffer();
@@ -66,11 +66,7 @@ async function request<T>(body: { type: string; request?: ProductRequest; source
     if (!response.ok) throw queryFailure(data?.error as Parameters<typeof queryFailure>[0]);
     if (data && typeof data === 'object') replyLengths.set(data, length);
     return data as T;
-  }, { signal, sourceId: body.type === 'release' ? undefined : body.request?.sourceId ?? body.sourceId, refresh: body.refresh === true, onCancelledValue: releaseLate });
-}
-
-async function preparation(action: PreparationAction, query: PreparationRequest, signal: AbortSignal) {
-  return validatePreparationReply(await request<PreparationReply>({ type: 'preparation', id: query.requestId, sourceId: query.sourceId, revision: query.revision, action }, signal), query);
+  }, { signal, sourceId: body.type === 'release' ? undefined : body.request?.sourceId ?? body.sourceId, refresh: body.refresh === true, onCancelledValue: releaseLate }).finally(done);
 }
 
 export const browserDashboardClient: DashboardClient = {
@@ -83,17 +79,7 @@ export const browserDashboardClient: DashboardClient = {
   setReplayFolder: folder => request<ReplayLibrary>({ type: 'setReplayFolder', folder }),
   chooseReplayFolder: (initial = '') => request({ type: 'chooseFolder', kind: 'replay', initial }),
 
-  preparationPreferences: async (enabled, signal) => validatePreparationPreferences(await request<PreparationPreferences>({ type: 'preparationPreferences', id: crypto.randomUUID(), enabled }, signal)),
   chooseHistory: async (path, segmentId, choice, signal) => { await request<unknown>({ type: 'historyChoice', id: crypto.randomUUID(), path, segmentId, choice }, signal); },
-  preparationStatus: (query, signal) => preparation('status', query, signal),
-  async preparedQuery<T>(source: DashboardSource, product: string, params: unknown, options: PreparedQueryOptions): Promise<T> {
-    const query = { sourceId: source.id, revision: source.revision, product, params };
-    const reply = await request<ProductReply<T>>({ type: 'preparedQuery', request: query, refresh: options.refresh ?? false }, options.signal);
-    return preparedReplyData(validateProductReply(reply, query), options, params);
-  },
-  prepareSource: (query, signal) => preparation('start', query, signal),
-  cancelPreparation: (query, signal) => preparation('cancel', query, signal),
-  clearPreparation: (query, signal) => preparation('clear', query, signal),
   async mapSettings(sourceId, revision, settings, signal, target = { scope: 'campaign' }) {
     const reply = await request<MapSettingsReply>({ type: 'mapSettings', sourceId, revision, settings, flip: null, target }, signal);
     if (reply.sourceId !== sourceId || reply.revision !== revision) throw new Error('Map settings do not match this campaign');
@@ -125,7 +111,6 @@ export const browserDashboardClient: DashboardClient = {
 
   async releaseSource(sourceId) {
     forgetReplySizes(browserDashboardClient, sourceId);
-    forgetReplyGaps(sourceId);
     requests.cancelSource(sourceId);
     await request({ type: 'release', sourceId });
   },

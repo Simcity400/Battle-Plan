@@ -163,7 +163,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                             let row = row?;
                             let owner = world.slot(row.country).ok_or_else(|| {
                                 format!(
-                                    "CountryLinks lacks character roster country {}",
+                                    "country links lacks character roster country {}",
                                     row.country
                                 )
                             })?;
@@ -174,7 +174,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                                 continue;
                             };
                             let character = keyed(&characters, u128::from(id))?.ok_or_else(|| {
-                                format!("CountryCharacters references missing character {id}")
+                                format!("country characters references missing character {id}")
                             })?;
                             if character.name_token_id as u32 == token
                                 && selected
@@ -321,7 +321,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 .world()?
                 .slot(character.country)
                 .ok_or_else(|| {
-                    format!("CountryLinks lacks character country {}", character.country)
+                    format!("country links lacks character country {}", character.country)
                 })?;
             self.country_name(slot, false)?
         };

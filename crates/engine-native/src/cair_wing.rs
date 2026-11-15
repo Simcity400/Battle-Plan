@@ -251,7 +251,7 @@ pub struct Row {
 
 /// Allocation-free name acquisition into caller-owned live-sized storage.
 pub struct NameArena<'a> {
-    pub bytes: &'a mut [u8],
+    pub bytes: &'a mut Vec<u8>,
     pub used: usize,
     pub required: usize,
     pub failures: usize,
@@ -302,7 +302,7 @@ impl NameArena<'_> {
             memory,
             pointer,
             header,
-            Buffer::Fixed(self.bytes),
+            Buffer::Growing(&mut *self.bytes),
             &mut self.used,
             &mut self.required,
         ) {
@@ -373,9 +373,8 @@ pub fn name_demand(memory: &impl Memory, base: usize, state: usize) -> Result<us
         memory,
         base,
         state,
-        &mut [],
-        &mut [],
-        usize::MAX,
+        Buffer::Count,
+        Buffer::Count,
         |pointer, _, _, admitted| {
             if let Ok(bytes) = required {
                 required = (|| {
@@ -535,8 +534,26 @@ pub fn read_equipment(
 /// silently lose null entries. Duplicate handles are checked when the spool
 /// sorts rows. A full buffer counts omitted pointer slots without reading
 /// their wing fields, allocating, retrying or calling the engine.
-pub fn walk(memory: &impl Memory, base: usize, game_state: usize, output: &mut [Row]) -> Outcome {
+pub fn walk(memory: &impl Memory, base: usize, game_state: usize, output: &mut Vec<Row>) -> Outcome {
     walk_with(memory, base, game_state, output, |_, _, _| {})
+}
+
+pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
+    walk_projected(
+        memory,
+        base,
+        game_state,
+        EVERY_OWNER,
+        Buffer::Count,
+        None,
+        false,
+        |_, _, _, _| {},
+        |_, _| {},
+        false,
+        |_, _| {},
+    )
+    .shared
+    .map
 }
 
 /// Shares the authenticated wing walk with independent state extensions. The
@@ -549,7 +566,7 @@ pub fn walk_with(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    output: &mut [Row],
+    output: &mut Vec<Row>,
     mut visit: impl FnMut(usize, usize, &Row),
 ) -> Outcome {
     walk_projected(
@@ -557,12 +574,12 @@ pub fn walk_with(
         base,
         game_state,
         EVERY_OWNER,
-        Buffer::Fixed(output),
+        Buffer::Growing(output),
         None,
-        None,
+        false,
         |pointer, pool, row, _| visit(pointer, pool, row),
         |_, _| {},
-        None,
+        false,
         |_, _| {},
     )
     .shared
@@ -584,9 +601,8 @@ pub fn walk_shared(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    output: &mut [Row],
-    sources: &mut [Source],
-    naval_limit: usize,
+    output: Buffer<'_, Row>,
+    sources: Buffer<'_, Source>,
     mut visit: impl FnMut(usize, usize, &Row, Admitted),
 ) -> SharedWalk {
     walk_projected(
@@ -594,12 +610,12 @@ pub fn walk_shared(
         base,
         game_state,
         EVERY_OWNER,
-        Buffer::Fixed(output),
-        Some(Buffer::Fixed(sources)),
-        Some(naval_limit),
+        output,
+        Some(sources),
+        true,
         |pointer, pool, row, admitted| visit(pointer, pool, row, admitted),
         |_, _| {},
-        None,
+        false,
         |_, _| {},
     )
     .shared
@@ -610,7 +626,7 @@ pub fn walk_with_names(
     memory: &impl Memory,
     base: usize,
     state: usize,
-    output: &mut [Row],
+    output: &mut Vec<Row>,
     names: &mut NameArena<'_>,
     mut visit: impl FnMut(usize, usize, &Row),
 ) -> Outcome {
@@ -619,15 +635,15 @@ pub fn walk_with_names(
         base,
         state,
         EVERY_OWNER,
-        Buffer::Fixed(output),
+        Buffer::Growing(output),
         None,
-        None,
+        false,
         |pointer, pool, row, admitted| {
             row.name = names.capture(memory, pointer, admitted.name_header);
             visit(pointer, pool, row);
         },
         |_, _| {},
-        None,
+        false,
         |_, _| {},
     )
     .shared
@@ -643,9 +659,8 @@ pub fn walk_shared_names_with_operands(
     memory: &impl Memory,
     base: usize,
     state: usize,
-    output: &mut [Row],
-    sources: &mut [Source],
-    naval_limit: usize,
+    output: &mut Vec<Row>,
+    sources: &mut Vec<Source>,
     names: &mut NameArena<'_>,
     mut visit: impl FnMut(usize, usize, &mut Row, Admitted),
 ) -> SharedWalk {
@@ -654,9 +669,9 @@ pub fn walk_shared_names_with_operands(
         base,
         state,
         EVERY_OWNER,
-        Buffer::Fixed(output),
-        Some(Buffer::Fixed(sources)),
-        Some(naval_limit),
+        Buffer::Growing(output),
+        Some(Buffer::Growing(sources)),
+        true,
         |pointer, pool, row, admitted| {
             if admitted.map {
                 row.name = names.capture(memory, pointer, admitted.name_header);
@@ -664,22 +679,23 @@ pub fn walk_shared_names_with_operands(
             visit(pointer, pool, row, admitted);
         },
         |_, _| {},
-        None,
+        false,
         |_, _| {},
     )
     .shared
 }
 
-/// Independently captures minimal score leaves in the same authenticated walk.
-/// None disables score reads; a full score arena still counts remaining demand.
+/// Independently captures minimal score leaves in the same authenticated walk;
+/// `scored` false disables score reads.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
-pub fn walk_game_score_with_owners(
+pub(crate) fn walk_game_score_with_owners(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    output: &mut [Row],
+    output: &mut Vec<Row>,
     mut names: Option<&mut NameArena<'_>>,
-    score_limit: Option<usize>,
+    scored: bool,
     mut visit: impl FnMut(usize, usize, &mut Row),
     score_visit: impl FnMut(usize, &ScoreLeaf),
     owners: impl FnMut(u32, Option<usize>),
@@ -689,9 +705,9 @@ pub fn walk_game_score_with_owners(
         base,
         game_state,
         EVERY_OWNER,
-        Buffer::Fixed(output),
+        Buffer::Growing(output),
         None,
-        None,
+        false,
         |pointer, pool, row, admitted| {
             if let Some(names) = &mut names {
                 row.name = names.capture(memory, pointer, admitted.name_header);
@@ -699,44 +715,12 @@ pub fn walk_game_score_with_owners(
             visit(pointer, pool, row);
         },
         owners,
-        score_limit,
+        scored,
         score_visit,
     )
 }
 
-#[cfg(test)]
-#[allow(clippy::too_many_arguments)]
-pub fn walk_shared_game_score_with_owners(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut [Row],
-    sources: &mut [Source],
-    naval_limit: usize,
-    names: Option<&mut NameArena<'_>>,
-    score_limit: Option<usize>,
-    visit: impl FnMut(usize, usize, &mut Row, Admitted),
-    score_visit: impl FnMut(usize, &ScoreLeaf),
-    owners: impl FnMut(u32, Option<usize>),
-) -> GameScoreWalk {
-    walk_shared_game_score_buffers_with_owners(
-        memory,
-        base,
-        game_state,
-        EVERY_OWNER,
-        Buffer::Fixed(output),
-        Buffer::Fixed(sources),
-        naval_limit,
-        names,
-        score_limit,
-        visit,
-        score_visit,
-        owners,
-    )
-}
-
-/// Allocating worker projections grow from each original pool header while
-/// fixed projections preserve the existing callback refusal semantics.
+/// Worker projections grow from each original pool header.
 ///
 /// `slots` are the owner (country) slots walked after the shared manager and
 /// roster headers, which every part reads. Parts over consecutive slot ranges,
@@ -744,6 +728,12 @@ pub fn walk_shared_game_score_with_owners(
 /// are the serial walk when every projection grows: each admits every wing
 /// until it fails, so no part's admissions depend on an earlier part's rows.
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn walk_shared_game_score_with_owners(memory: &impl Memory, base: usize, game_state: usize, output: &mut Vec<Row>, sources: &mut Vec<Source>, names: Option<&mut NameArena<'_>>, scored: bool, visit: impl FnMut(usize, usize, &mut Row, Admitted), score_visit: impl FnMut(usize, &ScoreLeaf), owners: impl FnMut(u32, Option<usize>)) -> GameScoreWalk {
+    walk_shared_game_score_buffers_with_owners(memory, base, game_state, EVERY_OWNER, Buffer::Growing(output), Buffer::Growing(sources), names, scored, visit, score_visit, owners)
+}
+
 pub fn walk_shared_game_score_buffers_with_owners(
     memory: &impl Memory,
     base: usize,
@@ -751,9 +741,8 @@ pub fn walk_shared_game_score_buffers_with_owners(
     slots: std::ops::Range<u32>,
     output: Buffer<'_, Row>,
     sources: Buffer<'_, Source>,
-    naval_limit: usize,
     mut names: Option<&mut NameArena<'_>>,
-    score_limit: Option<usize>,
+    scored: bool,
     mut visit: impl FnMut(usize, usize, &mut Row, Admitted),
     score_visit: impl FnMut(usize, &ScoreLeaf),
     owners: impl FnMut(u32, Option<usize>),
@@ -765,7 +754,7 @@ pub fn walk_shared_game_score_buffers_with_owners(
         slots,
         output,
         Some(sources),
-        Some(naval_limit),
+        true,
         |pointer, pool, row, admitted| {
             if admitted.map
                 && let Some(names) = &mut names
@@ -775,7 +764,7 @@ pub fn walk_shared_game_score_buffers_with_owners(
             visit(pointer, pool, row, admitted);
         },
         owners,
-        score_limit,
+        scored,
         score_visit,
     )
 }
@@ -940,18 +929,17 @@ fn walk_projected(
     slots: std::ops::Range<u32>,
     mut output: Buffer<'_, Row>,
     mut sources: Option<Buffer<'_, Source>>,
-    naval_limit: Option<usize>,
+    naval: bool,
     mut visit: impl FnMut(usize, usize, &mut Row, Admitted),
     mut owner_visit: impl FnMut(u32, Option<usize>),
-    score_limit: Option<usize>,
+    scored: bool,
     mut score_visit: impl FnMut(usize, &ScoreLeaf),
 ) -> GameScoreWalk {
-    let growing_sources = matches!(&sources, Some(Buffer::Growing(_)));
-    let scored = score_limit.is_some();
     let mut map = Projection::new(output.len());
     let mut source = sources.as_ref().map(|rows| Projection::new(rows.len()));
-    let mut naval = naval_limit.map(Projection::new);
-    let mut score = score_limit.map(Projection::new);
+    // The naval and score projections admit every wing: their storage grows with them.
+    let mut naval = naval.then(|| Projection::new(usize::MAX));
+    let mut score = scored.then(|| Projection::new(usize::MAX));
     #[cfg(test)]
     if SERIAL.get() {
         return serial_reference::walk_projected(
@@ -961,10 +949,10 @@ fn walk_projected(
             slots,
             output,
             sources,
-            naval_limit,
+            naval.is_some(),
             visit,
             owner_visit,
-            score_limit,
+            scored,
             score_visit,
         );
     }
@@ -1028,12 +1016,6 @@ fn walk_projected(
                                 .ok_or("air wing source demand overflow")?;
                             sources.ensure(required)?;
                             source.capacity = sources.len();
-                        }
-                        if growing_sources && let Some(naval) = &mut naval {
-                            naval.capacity = naval
-                                .len
-                                .checked_add(count as usize)
-                                .ok_or("air wing naval source demand overflow")?;
                         }
                         if let Err(reason) = air_base {
                             map.fail(reason);

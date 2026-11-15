@@ -1,15 +1,10 @@
 import { runAt } from '../../charts/series.ts';
-import type { ProductRequest } from '../../dashboard/client';
-import type { Artwork, CountryParams, ResearchReply } from '../../generated/dashboard';
+import type { Artwork, ResearchBreakdownReply, ResearchCoverage, ResearchReply, ResearchSlotState } from '../../generated/dashboard';
+import type { ResearchSlotsReply } from '../../generated/dashboard';
 import { artworkEntry, keepDrawableIcons } from '../../dashboard/artwork.ts';
 import { contentTitle } from '../../dashboard/contentTitles.ts';
-
-export const PRODUCT = 'research';
-
-export function researchRequest(sourceId: string, revision: string, params: CountryParams): ProductRequest<CountryParams> {
-  return { sourceId, revision, product: PRODUCT, params };
-}
-import type { ResearchHistory, ResearchSlotHistory, ResearchSlotState } from '../../generated/dashboard';
+import { researchGrants } from '../active-research/researchGrants.ts';
+import type { ResearchData, ResearchHistory, ResearchSlotHistory } from './types';
 
 /** Playback never exposes future outcomes, assignments, or slot additions.
  * History up to `hour` stays known when that hour itself has no read: only
@@ -18,8 +13,8 @@ export function researchAt(history: ResearchHistory, hour: number): ResearchSlot
   return history.slots.filter(s => s.availability[0]?.firstHour <= hour).map(slot => ({
     ...slot,
     availability: slot.availability.filter(c => c.firstHour <= hour).map(c => ({ ...c, lastHour: Math.min(c.lastHour, hour) })),
-    states: (slot.states ?? []).filter(s => s.firstHour <= hour).map(s => ({ ...s, lastHour: Math.min(s.lastHour, hour) })),
-    progress: (slot.progress ?? []).filter(p => p.firstHour <= hour).map(p => ({ ...p, lastHour: Math.min(p.lastHour, hour) })),
+    states: slot.states.filter(s => s.firstHour <= hour).map(s => ({ ...s, lastHour: Math.min(s.lastHour, hour) })),
+    progress: slot.progress.filter(p => p.firstHour <= hour).map(p => ({ ...p, lastHour: Math.min(p.lastHour, hour) })),
     entries: slot.entries.filter(e => e.firstObservedHour <= hour).map(e => ({ ...e,
       lastObservedHour: Math.min(e.lastObservedHour, hour),
       endedByHour: e.endedByHour !== null && e.endedByHour <= hour ? e.endedByHour : null,
@@ -27,6 +22,29 @@ export function researchAt(history: ResearchHistory, hour: number): ResearchSlot
         ? e.outcomeObservedHour != null && e.outcomeObservedHour > hour ? 'unknown' : e.outcome : 'active',
     })),
   }));
+}
+
+/** `slots` with the slot reads of `now` joined: each slot's state and progress at the hour shown. A slot the reads
+ * name that the history has not listed yet is left out. */
+export function withSlotReads(slots: readonly ResearchSlotHistory[], now: ResearchSlotsReply | undefined): ResearchSlotHistory[] {
+  if (!now) return [...slots];
+  const reads = new Map(now.slots.map(slot => [slot.index, slot]));
+  return slots.map(slot => {
+    const read = reads.get(slot.index);
+    return read ? { ...slot, states: [read.state], progress: read.progress ? [read.progress] : [] } : { ...slot, states: [], progress: [] };
+  });
+}
+
+/** `slots` with each breakdown part's reads joined to its slot. */
+export function withBreakdown(slots: readonly ResearchSlotHistory[], breakdown: ResearchBreakdownReply | undefined): ResearchSlotHistory[] {
+  if (!breakdown) return [...slots];
+  return slots.map(slot => {
+    const parts = breakdown.parts.filter(part => part.slot === slot.index);
+    if (!parts.length) return slot;
+    const states = parts.flatMap(part => part.states).sort((a, b) => a.firstHour - b.firstHour);
+    const progress = parts.flatMap(part => part.progress).sort((a, b) => a.firstHour - b.firstHour);
+    return { ...slot, states, progress };
+  });
 }
 
 /** Resolve one assignment without visiting the slot's full history. */
@@ -41,9 +59,8 @@ export function researchEntryAt(slot: ResearchSlotHistory, state: ResearchSlotSt
   return null;
 }
 
-/** A slot state naming a technology that no assignment joins: the recording
- * did not identify which occurrence of it the slot held. It is shown, but its
- * progress and completion stay unknown. */
+/** A slot state naming a technology that no assignment joins (one the slot holds already completed, say): it is
+ * shown, but its progress and completion stay unknown. */
 export function isUnjoinedResearch(state: ResearchSlotState | null): state is ResearchSlotState & { token: string } {
   return !!state?.token && state.entryFirstObservedHour === null;
 }
@@ -51,7 +68,7 @@ export function isUnjoinedResearch(state: ResearchSlotState | null): state is Re
 export function researchStateAt(slot: ResearchSlotHistory, hour: number): ResearchSlotState | null {
   if (Number.isNaN(hour)) return null;
   if (!runAt(slot.availability, hour)) return null;
-  const state = runAt(slot.states ?? [], hour);
+  const state = runAt(slot.states, hour);
   if (!state) return null;
   return state.details?.remainingDays == null ? state : { ...state, details: { ...state.details,
     remainingDays: Math.max(0, state.details.remainingDays - Math.floor((hour - state.firstHour) / 24)),
@@ -63,7 +80,7 @@ export function researchStateAt(slot: ResearchSlotHistory, hour: number): Resear
  * never carried across hours that were not recorded. */
 export function researchProgressAt(slot: ResearchSlotHistory, entryFirstObservedHour: number, hour: number): number | null {
   if (Number.isNaN(hour)) return null;
-  const sample = runAt(slot.progress ?? [], hour);
+  const sample = runAt(slot.progress, hour);
   if (!sample?.baseDaysRaw || sample.entryFirstObservedHour !== entryFirstObservedHour) return null;
   const base = BigInt(sample.baseDaysRaw), done = BigInt(sample.progressRaw);
   if (base <= 0n || done < 0n) return null;
@@ -84,61 +101,14 @@ export function researchRateAt(state: ResearchSlotState, hour: number): { rateRa
   return { rateRaw: (rate > minimum ? rate : minimum).toString(), penaltyRaw: penalty.toString(), floored: rate < minimum };
 }
 
-/** A run of reads in which a slot held one technology without its recorded
- * occurrence (older recordings). `endedByHour` is the read at which it had left
- * the slot; null when the run ends at a gap or the slot closing, where the
- * recording does not say. */
-export interface ResearchHeldRun { token: string; firstHour: number; lastHour: number; endedByHour: number | null }
-const heldIndexes = new WeakMap<ResearchSlotHistory, ResearchHeldRun[]>();
-
-/** Consecutive slot states holding the same technology without a joined
- * assignment, one run each. Never joined across a break in the slot's states. */
-export function researchHeldRuns(slot: ResearchSlotHistory): ResearchHeldRun[] {
-  const indexed = heldIndexes.get(slot);
-  if (indexed) return indexed;
-  const runs: ResearchHeldRun[] = [];
-  let open: ResearchHeldRun | null = null;
-  for (const state of slot.states ?? []) {
-    const contiguous = open !== null && open.lastHour + 1 === state.firstHour;
-    if (open && contiguous && isUnjoinedResearch(state) && state.token === open.token) { open.lastHour = state.lastHour; continue; }
-    if (open) { if (contiguous) open.endedByHour = state.firstHour; runs.push(open); open = null; }
-    if (isUnjoinedResearch(state)) open = { token: state.token, firstHour: state.firstHour, lastHour: state.lastHour, endedByHour: null };
-  }
-  if (open) runs.push(open);
-  heldIndexes.set(slot, runs);
-  return runs;
-}
-
-const progressIndexes = new WeakMap<ResearchSlotHistory, Map<number | null, ResearchSlotHistory['progress']>>();
-
-/** The latest recorded progress of what `state` holds, at or before `hour`, with
- * the hour of the read it came from: the assignment's own samples, or for a
- * technology held without its recorded occurrence, the samples since the slot
- * has held it without a break. Never interpolated or taken from another
- * technology; null without a sample or a known positive cost. */
+/** The latest recorded progress of the assignment `state` joins, at or before `hour`, with the hour of the read it
+ * came from. Never interpolated or taken from another assignment; null without a sample or a known positive cost. */
 export function researchLatestProgress(slot: ResearchSlotHistory, state: ResearchSlotState, hour: number): { fraction: number; hour: number } | null {
-  let since = -Infinity;
-  if (state.entryFirstObservedHour === null) {
-    if (!state.token) return null;
-    const run = runAt(researchHeldRuns(slot), hour);
-    if (run?.token !== state.token) return null;
-    if (!run) return null;
-    since = run.firstHour;
-  }
-  let index = progressIndexes.get(slot);
-  if (!index) {
-    index = new Map();
-    for (const sample of slot.progress ?? []) {
-      const samples = index.get(sample.entryFirstObservedHour) ?? [];
-      samples.push(sample); index.set(sample.entryFirstObservedHour, samples);
-    }
-    progressIndexes.set(slot, index);
-  }
-  const samples = index.get(state.entryFirstObservedHour) ?? [];
+  if (state.entryFirstObservedHour === null) return null;
+  const samples = slot.progress.filter(sample => sample.entryFirstObservedHour === state.entryFirstObservedHour);
   let low = 0, high = samples.length;
   while (low < high) { const mid = (low + high) >>> 1; if (samples[mid].firstHour <= hour) low = mid + 1; else high = mid; }
   const sample = samples[low - 1];
-  if (sample && sample.lastHour < since) return null;
   if (!sample?.baseDaysRaw) return null;
   const base = BigInt(sample.baseDaysRaw), done = BigInt(sample.progressRaw);
   if (base <= 0n || done < 0n) return null;
@@ -207,16 +177,12 @@ export function researchArtwork(reply: Pick<ResearchReply, 'artwork' | 'definiti
   return Object.assign(artwork, { definitions });
 }
 
-/** Null marks an unassigned use; tokens with no recorded definition are omitted. */
+/** Each technology's recorded template indices, ascending. */
 export function researchRecordedTemplates(history: ResearchHistory | null | undefined): Map<string, (number | null)[]> {
-  const recorded = new Map<string, Set<number | null>>();
-  const hold = (token: string, index: number | null) => recorded.set(token, (recorded.get(token) ?? new Set<number | null>()).add(index));
-  for (const slot of history?.slots ?? []) {
-    for (const entry of slot.entries) hold(entry.token, entry.databaseIndex ?? null);
-    for (const state of slot.states ?? []) if (state.token != null && state.entryFirstObservedHour == null) hold(state.token, null);
-  }
-  return new Map([...recorded].flatMap(([token, uses]) => [...uses].some(index => index != null)
-    ? [[token, [...uses].sort((a, b) => (a ?? 0) - (b ?? 0))] as const] : []));
+  const recorded = new Map<string, Set<number>>();
+  for (const slot of history?.slots ?? []) for (const entry of slot.entries)
+    recorded.set(entry.token, (recorded.get(entry.token) ?? new Set<number>()).add(entry.databaseIndex));
+  return new Map([...recorded].map(([token, uses]) => [token, [...uses].sort((a, b) => a - b)]));
 }
 
 /** Without a recorded index, conflicting technology definitions must stay refused by name. */
@@ -244,98 +210,108 @@ export function researchArtworkTokens(slots: readonly ResearchSlotHistory[] | nu
     if (entry) tokens.push(entry.token);
     else if (isUnjoinedResearch(current)) tokens.push(current.token);
   }
-  for (const slot of ordered) {
-    for (const entry of slot.entries) if (entry.outcome === 'completed') tokens.push(entry.token);
-    // A technology still held at this hour is not yet history.
-    for (const run of researchHeldRuns(slot)) if (run.lastHour < hour) tokens.push(run.token);
-  }
+  for (const slot of ordered) for (const entry of slot.entries) if (entry.outcome === 'completed') tokens.push(entry.token);
   return [...new Set(tokens)];
 }
 
-/** Shape checks on the product payload; identity is checked by the transport. */
-export function validateResearchReply(input: unknown): ResearchReply {
+const hour = (n: unknown): n is number => Number.isInteger(n) && (n as number) >= -2147483648 && (n as number) <= 2147483647;
+const fixed = (value: unknown): value is string => typeof value === 'string' && /^-?\d{1,19}$/.test(value)
+  && BigInt(value) >= -9223372036854775808n && BigInt(value) <= 9223372036854775807n;
+/** A recorded template index: one past its place in the technology database, after the null template. */
+const templateIndex = (value: unknown): value is number => Number.isInteger(value) && (value as number) >= 1 && (value as number) <= 4294967295;
+const text = (value: unknown, limit = 4096) => value === null || (typeof value === 'string' && value.length <= limit);
+/** Any number of spans: a long modded campaign is bounded only by the reply's own budget. */
+const intervals = (spans: ResearchCoverage[]) => {
+  let last = -Infinity;
+  return Array.isArray(spans) && spans.every(s => {
+    const valid = hour(s.firstHour) && hour(s.lastHour) && s.firstHour > last && s.lastHour >= s.firstHour;
+    last = s.lastHour;
+    return valid;
+  });
+};
+
+function validState(state: ResearchSlotState): boolean {
+  const details = state.details;
+  return hour(state.firstHour) && hour(state.lastHour) && state.lastHour >= state.firstHour
+    && (state.token === null || (typeof state.token === 'string' && state.token.length > 0 && state.token.length <= 512))
+    && (state.entryFirstObservedHour === null || hour(state.entryFirstObservedHour))
+    && fixed(state.speedMultiplierRaw) && fixed(state.bankedDaysRaw) && fixed(state.appliedDaysRaw)
+    && (state.aheadReductionYearsRaw === null || fixed(state.aheadReductionYearsRaw))
+    && (details === null || (
+      (details.remainingDays === null || (Number.isInteger(details.remainingDays) && details.remainingDays >= 0 && details.remainingDays <= 4294967295))
+      && (details.modifiers === null || (hour(details.modifiers.year)
+        && fixed(details.modifiers.totalBonusRaw) && fixed(details.modifiers.aheadFactorRaw) && fixed(details.modifiers.minimumSpeedRaw)
+        && Array.isArray(details.modifiers.components) && details.modifiers.components.length === 8
+        && new Set(details.modifiers.components.map(c => c.kind)).size === 8
+        && details.modifiers.components.every(c => ['country', 'category', 'designTeam', 'experience', 'license', 'scientist', 'applied', 'sharing'].includes(c.kind)
+          && fixed(c.raw) && Array.isArray(c.sources) && c.sources.every(source => fixed(source.raw) && text(source.token, 512) && text(source.name)))))
+      && (details.bonuses === null || (Array.isArray(details.bonuses)
+        && details.bonuses.every(b => Number.isInteger(b.id) && b.id >= -2147483648 && b.id <= 2147483647 && text(b.token, 512) && text(b.name)
+          && (b.speedBonusRaw === null || fixed(b.speedBonusRaw)) && (b.costReductionRaw === null || fixed(b.costReductionRaw))
+          && (b.aheadReductionYearsRaw === null || fixed(b.aheadReductionYearsRaw)))))));
+}
+
+const validProgress = (sample: { firstHour: number; lastHour: number; entryFirstObservedHour: number | null; baseDaysRaw: string | null; progressRaw: string }) =>
+  hour(sample.firstHour) && hour(sample.lastHour) && sample.lastHour >= sample.firstHour
+  && (sample.entryFirstObservedHour === null || hour(sample.entryFirstObservedHour))
+  && fixed(sample.progressRaw) && (sample.baseDaysRaw === null || (fixed(sample.baseDaysRaw) && BigInt(sample.baseDaysRaw) > 0n));
+
+/** Shape checks on the history reply, its slots made ready to join reads to; identity is checked by the transport. */
+export function validateResearchReply(input: unknown): ResearchData {
   const reply = input as ResearchReply;
-  const hour = (n: number) => Number.isInteger(n) && n >= -2147483648 && n <= 2147483647;
-  // Any number of rows: a long modded campaign is bounded only by the reply's own budget.
-  const intervals = (spans: ResearchHistory['coverage']) => {
-    let last = -Infinity;
-    return Array.isArray(spans) && spans.every(s => {
-      const valid = hour(s.firstHour) && hour(s.lastHour) && s.firstHour > last && s.lastHour >= s.firstHour;
-      last = s.lastHour;
-      return valid;
-    });
-  };
-  const fixed = (value: unknown): value is string => typeof value === 'string' && /^-?\d{1,19}$/.test(value)
-    && BigInt(value) >= -9223372036854775808n && BigInt(value) <= 9223372036854775807n;
-  // A recorded template index: one past its place in the technology database, after the null template.
-  const templateIndex = (value: unknown): value is number => Number.isInteger(value) && (value as number) >= 1 && (value as number) <= 4294967295;
   let index = -1;
   const valid = !!reply && typeof reply === 'object' && Array.isArray(reply.artwork) && Array.isArray(reply.history?.slots)
+    && Array.isArray(reply.warnings) && reply.warnings.every(warning => typeof warning === 'string')
     // Any number of slots: content and effects set how many a country has.
     && intervals(reply.history.coverage) && reply.history.slots.every(s => {
       let last = -Infinity;
       const valid = Number.isInteger(s.index) && s.index > index && s.availability.length > 0 && intervals(s.availability)
-        && s.entries.every(e => {
+        && Array.isArray(s.entries) && s.entries.every(e => {
           const ok = typeof e.token === 'string' && e.token.length > 0 && e.token.length <= 512 && Number.isInteger(e.level)
             && Number.isInteger(e.technologyHandle) && e.technologyHandle >= 0 && e.technologyHandle <= 4294967295
-            && (e.databaseIndex == null || templateIndex(e.databaseIndex))
+            && templateIndex(e.databaseIndex)
             && hour(e.continuityStartHour) && e.continuityStartHour <= e.firstObservedHour
             && hour(e.firstObservedHour) && e.firstObservedHour >= last && hour(e.lastObservedHour) && e.lastObservedHour >= e.firstObservedHour
             && (e.startedAfterHour === null || (hour(e.startedAfterHour) && e.startedAfterHour < e.firstObservedHour))
-            && (e.outcomeObservedHour == null || (hour(e.outcomeObservedHour) && e.endedByHour !== null && e.outcomeObservedHour >= e.endedByHour))
+            && (e.outcomeObservedHour === null || (hour(e.outcomeObservedHour) && e.endedByHour !== null && e.outcomeObservedHour >= e.endedByHour))
             && ['active', 'completed', 'switched', 'unknown'].includes(e.outcome)
             && (e.endedByHour === null ? e.outcome === 'active' : hour(e.endedByHour) && e.endedByHour >= e.lastObservedHour && e.outcome !== 'active');
           last = e.endedByHour ?? Infinity;
           return ok;
-        }) && intervals(s.progress) && s.progress.every(sample => {
-          // A sample without an assignment belongs to the technology the slot
-          // held without its recorded occurrence; that hour's state names it.
-          return (sample.entryFirstObservedHour === null
-            ? Array.isArray(s.states) && s.states.some(state => state.entryFirstObservedHour === null && typeof state.token === 'string'
-              && state.firstHour <= sample.firstHour && sample.firstHour <= state.lastHour)
-            : s.entries.some(e => e.firstObservedHour === sample.entryFirstObservedHour
-              && sample.firstHour >= e.firstObservedHour
-              && sample.lastHour <= (e.endedByHour ?? e.lastObservedHour)))
-            && s.availability.some(span => span.firstHour <= sample.firstHour && sample.lastHour <= span.lastHour)
-            && fixed(sample.progressRaw) && (sample.baseDaysRaw === null || (fixed(sample.baseDaysRaw) && BigInt(sample.baseDaysRaw) > 0n));
-        }) && (s.states === undefined || (intervals(s.states) && s.states.every(state => {
-          return (state.token === null || (typeof state.token === 'string' && state.token.length > 0 && state.token.length <= 512))
-            && (state.entryFirstObservedHour === null || s.entries.some(e => e.firstObservedHour === state.entryFirstObservedHour && e.token === state.token))
-            && s.availability.some(span => span.firstHour <= state.firstHour && state.lastHour <= span.lastHour)
-            && fixed(state.speedMultiplierRaw) && fixed(state.bankedDaysRaw) && fixed(state.appliedDaysRaw)
-            && (state.aheadReductionYearsRaw === null || fixed(state.aheadReductionYearsRaw))
-            && (state.details == null || (
-              (state.details.remainingDays === null || (Number.isInteger(state.details.remainingDays) && state.details.remainingDays >= 0 && state.details.remainingDays <= 4294967295))
-              && (state.details.modifiers == null || (hour(state.details.modifiers.year)
-                && fixed(state.details.modifiers.totalBonusRaw) && fixed(state.details.modifiers.aheadFactorRaw) && fixed(state.details.modifiers.minimumSpeedRaw)
-                && Array.isArray(state.details.modifiers.components) && state.details.modifiers.components.length === 8
-                && new Set(state.details.modifiers.components.map(c => c.kind)).size === 8
-                && state.details.modifiers.components.every(c => ['country', 'category', 'designTeam', 'experience', 'license', 'scientist', 'applied', 'sharing'].includes(c.kind)
-                  && fixed(c.raw) && Array.isArray(c.sources) && c.sources.every(source => fixed(source.raw)
-                    && (source.token === null || (typeof source.token === 'string' && source.token.length <= 512))
-                    && (source.name === null || (typeof source.name === 'string' && source.name.length <= 4096))))))
-              && (state.details.bonuses === null || (Array.isArray(state.details.bonuses)
-                && state.details.bonuses.every(b => Number.isInteger(b.id) && b.id >= -2147483648 && b.id <= 2147483647
-                  && (b.token === null || (typeof b.token === 'string' && b.token.length <= 512))
-                  && (b.name === null || (typeof b.name === 'string' && b.name.length <= 4096))
-                  && (b.speedBonusRaw === null || fixed(b.speedBonusRaw))
-                  && (b.costReductionRaw == null || fixed(b.costReductionRaw))
-                  && (b.aheadReductionYearsRaw === null || fixed(b.aheadReductionYearsRaw)))))));
-        })));
+        });
       index = s.index;
       return valid;
-    // Text-only history titles cover every technology reached by the history.
     // Each entry must have the product's shape; only an icon it cannot draw becomes missing art.
     }) && reply.artwork.every(artworkEntry)
-    && Array.isArray(reply.folders) && reply.folders.every(folder => typeof folder?.key === 'string' && folder.key.length > 0
-      && (folder.name === null || typeof folder.name === 'string'))
+    && Array.isArray(reply.folders) && reply.folders.every(folder => typeof folder?.key === 'string' && folder.key.length > 0 && text(folder.name))
     && Array.isArray(reply.technologyFolders) && reply.technologyFolders.every(item => typeof item?.token === 'string' && item.token.length > 0
       && (item.databaseIndex == null || templateIndex(item.databaseIndex))
       && (item.folder === null || (typeof item.folder === 'string' && item.folder.length > 0)))
     && (reply.definitions === undefined || (Array.isArray(reply.definitions) && reply.definitions.every(item =>
       typeof item?.token === 'string' && item.token.length > 0 && item.token.length <= 512 && templateIndex(item.databaseIndex)
-      && (item.name === null || typeof item.name === 'string') && (item.description === null || typeof item.description === 'string'))));
+      && text(item.name, Infinity) && text(item.description, Infinity))));
   if (!valid) throw new Error('Research history does not match this country and recording.');
   keepDrawableIcons(reply.artwork);
+  return { ...reply, history: { coverage: reply.history.coverage, slots: reply.history.slots.map(slot => ({ ...slot, states: [], progress: [] })) } };
+}
+
+/** Shape checks on a reply of the slots at an hour. */
+export function validateResearchSlots(input: unknown): ResearchSlotsReply {
+  const reply = input as ResearchSlotsReply;
+  const valid = !!reply && typeof reply.tag === 'string' && (reply.readHour === null || hour(reply.readHour))
+    && text(reply.missing) && Array.isArray(reply.warnings) && reply.warnings.every(warning => typeof warning === 'string')
+    && Array.isArray(reply.slots) && reply.slots.every((slot, at) => Number.isInteger(slot.index) && (at === 0 || slot.index > reply.slots[at - 1].index)
+      && !!slot.state && validState(slot.state) && (slot.progress === null || validProgress(slot.progress)))
+    && !!reply.grants;
+  if (!valid) throw new Error('Research slots do not match this country and recording.');
+  return { ...reply, grants: researchGrants(reply.grants) };
+}
+
+/** Shape checks on a reply of an assignment's reads. */
+export function validateResearchBreakdown(input: unknown): ResearchBreakdownReply {
+  const reply = input as ResearchBreakdownReply;
+  const valid = !!reply && Array.isArray(reply.parts) && reply.parts.every(part => Number.isInteger(part.slot) && hour(part.firstObservedHour)
+    && text(part.missing) && intervals(part.states) && part.states.every(validState) && intervals(part.progress) && part.progress.every(validProgress));
+  if (!valid) throw new Error('Research breakdown does not match this assignment.');
   return reply;
 }

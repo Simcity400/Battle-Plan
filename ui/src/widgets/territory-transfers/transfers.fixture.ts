@@ -1,6 +1,6 @@
+import type { PeaceChange, PeaceDeal, PeaceDealsReply, PeaceItem, PeaceTransferCountry, PeaceTransferGraph, PeaceTransferredState, PeaceUnobserved } from '../../generated/dashboard';
 // Synthetic peace-deals replies shaped as the product writes them, for the
 // Territory transfers tests. Nothing here comes from a game or a recording.
-import type { PeaceChange, PeaceDeal, PeaceDealsReply, PeaceItem, PeaceTransferCountry, PeaceTransferGraph, PeaceTransferredState, PeaceUnobserved } from '../../generated/dashboard';
 
 export const holder = (slot: number, tag: string, hour: number, countryId = 1000 + slot): PeaceTransferCountry => ({ slot, countryId, tag, hour });
 export interface Move {
@@ -57,7 +57,7 @@ export function deal(id: string, moves: readonly Move[], extra: Partial<PeaceDea
   const hour = Math.max(...moves.map(move => move.after), extra.firstObservedHour ?? 0);
   return { id, derived: true, observation: 'recordedConference', conferenceId: id, warName: null, firstObservedHour: hour, lastObservedHour: hour,
     currentTurn: null, finalized: null, firstFinalizedHour: null, endHour: hour, endIsBy: true, firstAbsentHour: null, participantsDerived: true,
-    winners: [], losers: [], items, captured: null, captureUnavailable: null, transfers: graph(moves), limitations: [], preparing: [], ...extra };
+    winners: [], losers: [], items, captured: null, captureUnavailable: null, transfers: graph(moves), limitations: [], ...extra };
 }
 
 export const noGaps = (): PeaceUnobserved => ({ settlements: [], conferences: [], ownership: [], wars: [], subjects: [], governments: [], existence: [], victoryPoints: [] });

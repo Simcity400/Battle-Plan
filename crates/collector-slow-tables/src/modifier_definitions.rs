@@ -94,7 +94,7 @@ impl Captured {
         }
         let _reads = crate::read_accounting::table(TABLES[0]);
         let started = qpc();
-        let walk = native::walk_growing(memory, base, &mut self.rows.rows, &mut self.text.first);
+        let walk = native::walk(memory, base, &mut self.rows.rows, &mut self.text.first);
         self.rows.outcome = walk.outcome;
         self.text.len = walk.text_len;
         self.text.required = walk.text_required;

@@ -159,6 +159,13 @@ export const exactCount = (value: number | bigint) => usNumber.format(value);
 export const pairAmount = (flow: Pick<PairFlow, 'value' | 'incomplete'>) =>
   `${flow.incomplete ? 'Recorded subtotal · ' : ''}${exactCount(flow.value)}`;
 
+/** Every country the pairs of `replies` name, in tag order: each a chord drawn from them can show at any of their hours. */
+export function casualtyPairTags(replies: readonly (CasualtyPairsReply | undefined)[]): readonly string[] {
+  const tags = new Set<string>();
+  for (const reply of replies) if (reply) for (const pair of reply.pairs) { tags.add(pair.firstCountry); tags.add(pair.secondCountry); }
+  return [...tags].sort(compareTags);
+}
+
 export function casualtyPairWindows(reply: CasualtyPairsReply | undefined, hour: number, following: boolean): number[] {
   const current = reply?.windows.findIndex(span => span.firstHour <= hour && hour <= span.lastHour) ?? -1;
   return current < 0 ? [] : following && current + 1 < reply!.windows.length ? [current, current + 1] : [current];

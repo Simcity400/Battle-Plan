@@ -27,7 +27,7 @@ fn fixture(text: &[u8]) -> Vec<u8> {
 fn acquire(bytes: &[u8], capacity: usize) -> (Result<Option<Span>, &'static str>, Vec<u8>, usize) {
     let mut owned = vec![0; capacity];
     let mut names = Names {
-        bytes: &mut owned,
+        bytes: crate::walk::Buffer::Growing(&mut owned),
         len: 0,
         required: 0,
     };
@@ -107,7 +107,10 @@ fn cached_task_force_name_demand_reads_only_authenticated_header_and_boundaries(
             .iter()
             .any(|&(address, len)| address == HEAP && len == text.len())
     );
-    assert_eq!(acquire(&bytes, 3), (Ok(None), vec![0; 3], text.len()));
+    assert_eq!(
+        acquire(&bytes, 3),
+        (Ok(Some((0, text.len()))), text.to_vec(), text.len())
+    );
     let mut bad = bytes.clone();
     bad[0x400 + text.len()] = 1;
     assert_eq!(acquire(&bad, 3).0, Err(ERRORS[3]));

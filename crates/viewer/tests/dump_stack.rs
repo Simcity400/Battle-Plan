@@ -9,7 +9,10 @@ use std::{path::PathBuf, process::Command};
 fn a_debug_dump_loads_and_renders_on_the_main_thread_stack() {
     let var = |name| std::env::var_os(name).unwrap_or_else(|| panic!("{name} is unset"));
     let out = std::env::temp_dir().join(format!("viewer-dump-stack-{}.png", std::process::id()));
-    let status = Command::new(env!("CARGO_BIN_EXE_viewer"))
+    // A test built on Boat runs here, where boat.py test names the delivered viewer.
+    let viewer = std::env::var_os("CARGO_BIN_EXE_viewer")
+        .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_viewer")), PathBuf::from);
+    let status = Command::new(viewer)
         .arg("--dump")
         .arg(PathBuf::from(var("BATTLE_PLAN_DUMP_REPLAY").or_else(|_| var("HOI4_DUMP_REPLAY"))))
         .arg("--hour")

@@ -5,44 +5,6 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 import type { LegendItem } from './Legend';
 import type { MovingRow } from './rowMotion';
-import type { ParityList } from '../dashboard/parityRows';
-
-test('eager and automatic windowed Legends expose exact items only in parity builds', async () => {
-  const state = { read: undefined as (() => ParityList) | undefined };
-  const host = globalThis as typeof globalThis & { __eagerLegend?: typeof state };
-  host.__eagerLegend = state;
-  const items: LegendItem[] = Array.from({ length: 5000 }, (_, index) => ({ id: `mod_series_${index}`,
-    label: index ? `Recorded ${index}` : '', value: String(index), tooltip: `Exact ${index}` }));
-  try {
-    for (const count of [20, 5000]) {
-      let instrumentedMarkup: string | undefined;
-      const selected = items.slice(0, count);
-      for (const mode of ['parity', 'production']) {
-        const vite = await createServer({ configFile: false, mode, optimizeDeps: { noDiscovery: true },
-          server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'eager-legend-model', enforce: 'pre',
-            transform(_source, id) {
-              if (id.replaceAll('\\', '/').endsWith('/charts/useChartTokens.ts'))
-                return 'export const useChartTokens = () => ({ reducedMotion: true, fontSize: { small: 10 } });';
-              if (id.replaceAll('\\', '/').endsWith('/dashboard/parityRows.ts'))
-                return 'export const useParityRows = (_root, read) => { globalThis.__eagerLegend.read = read; };';
-            },
-          }] });
-        try {
-          state.read = undefined;
-          const { default: Legend } = await vite.ssrLoadModule('/ui/src/charts/Legend.tsx');
-          const markup = renderToStaticMarkup(createElement(Legend, { items: selected, label: 'Recorded series' }));
-          if (mode === 'production') { assert.equal(state.read, undefined); assert.equal(markup, instrumentedMarkup, 'instrumentation leaves ordinary DOM unchanged'); }
-          else {
-            instrumentedMarkup = markup;
-            const list = state.read!();
-            assert.equal(list.complete, true); assert.equal(list.total, count);
-            assert.deepEqual(list.rows, selected.map((item, index) => ({ key: item.id, index, item })));
-          }
-        } finally { await vite.close(); }
-      }
-    }
-  } finally { delete host.__eagerLegend; }
-});
 
 test('windowed Legend reports mounted and leaving entries, releases unmount and hides small inventories', async () => {
   const state = { effects: [] as (() => unknown)[], layouts: [] as (() => unknown)[], rows: undefined as {

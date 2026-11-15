@@ -936,7 +936,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
     fn resource_index(&self, token: u32) -> Result<Option<u32>, Failure> {
         let definitions = counted::<tables::ResourceDefinitions>(
             self.world,
-            "ResourceDefinitions",
             replay_data::rows::mask::<replay_data::rows::ResourceDefinitionRow>(&[
                 "token", "active",
             ]),
@@ -1007,7 +1006,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
                     .slot(raw)
                     .map(|slot| Some(Scope::Country(slot)))
                     .ok_or_else(|| -> Failure {
-                        format!("CountryLinks lacks scope owner {raw}").into()
+                        format!("country links lacks scope owner {raw}").into()
                     });
             }
         }
@@ -1335,13 +1334,13 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             Some(owner) => Ok(owner == slot),
             None => Err(match self.world.table_gap("CountryLinks") {
                 Some(gap) => gap.context(|gap| {
-                    format!("country link {link} has no CountryLinks row, and {gap}")
+                    format!("country link {link} has no country links row, and {gap}")
                 }),
                 None => Failure::input(
                     replay_data::rows::TableId::CountryLinks,
                     "canonical_slot",
                     None,
-                    format!("country link {link} has no CountryLinks row"),
+                    format!("country link {link} has no country links row"),
                 ),
             }),
         }
@@ -1377,7 +1376,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
                 if in_states {
                     for state in counted::<tables::States>(
                         world,
-                        "States",
                         replay_data::rows::mask::<replay_data::rows::StateRow>(&["owner"]),
                     )? {
                         if self.owned_by(state.owner, slot).map_err(|why| {
@@ -1425,11 +1423,11 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         };
         let mut sum = 0_i32;
         if in_states {
-            let rows = counted::<tables::StateBuildings>(world, "StateBuildings", LEVEL)?;
+            let rows = counted::<tables::StateBuildings>(world, LEVEL)?;
             sum = sum.wrapping_add(level(&rows, &states));
         }
         if in_provinces {
-            let rows = counted::<tables::ProvinceBuildings>(world, "ProvinceBuildings", LEVEL)?;
+            let rows = counted::<tables::ProvinceBuildings>(world, LEVEL)?;
             sum = sum.wrapping_add(level(&rows, &provinces));
         }
         Ok(sum)
@@ -1458,7 +1456,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         };
         let rows = counted::<tables::CountryResources>(
             self.world,
-            "CountryResources",
             replay_data::rows::mask::<replay_data::rows::CountryResourceRow>(&[
                 "produced",
                 "adjustment",
@@ -1467,14 +1464,14 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         let mut found = None;
         for row in rows.iter().filter(|row| row.resource == index) {
             if self.owned_by(row.country, slot).map_err(|why| {
-                why.context(|why| format!("a CountryResources row of resource {index}: {why}"))
+                why.context(|why| format!("a country resources row of resource {index}: {why}"))
             })? {
                 found = Some(row);
                 break;
             }
         }
         let row = found.ok_or_else(|| -> Failure {
-            format!("CountryResources has no row for resource {index} of country slot {slot}")
+            format!("country resources has no row for resource {index} of country slot {slot}")
                 .into()
         })?;
         Ok(row.produced.wrapping_add(row.adjustment))
@@ -1485,7 +1482,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
     /// join through CountryLinks, which must be whole, since a row of a
     /// country it lacks could be the controller's.
     fn state_resource_amount(&self, state: u32, token: u32) -> Result<i64, Failure> {
-        self.core().map_err(|why| why.context(|why| format!("the controllers' building overrides (CountryBuildingResources) join through CountryLinks: {why}")))?;
+        self.core().map_err(|why| why.context(|why| format!("the controllers' building overrides (country building resources) join through country links: {why}")))?;
         let world = self.world;
         let (_, controller) = world
             .state_row(state)
@@ -1494,7 +1491,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             0 => None,
             link => Some(world.slot(link).ok_or_else(|| -> Failure {
                 format!(
-                    "the controller of state {state}: country link {link} has no CountryLinks row"
+                    "the controller of state {state}: country link {link} has no country links row"
                 )
                 .into()
             })?),
@@ -1514,7 +1511,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         };
         let parties = counted::<tables::PoliticalParties>(
             self.world,
-            "PoliticalParties",
             replay_data::rows::mask::<replay_data::rows::PoliticalPartyRow>(&[
                 "token",
                 "popularity",
@@ -1523,7 +1519,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         let (mut total, mut matching) = (0_i64, 0_i64);
         for party in parties {
             if !self.owned_by(party.country, slot).map_err(|why| {
-                why.context(|why| format!("the country of a PoliticalParties row: {why}"))
+                why.context(|why| format!("the country of a political parties row: {why}"))
             })? {
                 continue;
             }
@@ -1720,7 +1716,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
                     0 => Ok(None),
                     link => self.world.slot(link).map(Some).ok_or_else(|| -> Failure {
                         format!(
-                            "the operand is the scope selector {name}, and the owner link {link} of state {id} has no CountryLinks row"
+                            "the operand is the scope selector {name}, and the owner link {link} of state {id} has no country links row"
                         ).into()
                     }),
                 }
@@ -1768,7 +1764,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             0 => Ok(None),
             link => self.world.slot(link).map(Some).ok_or_else(|| -> Failure {
                 format!(
-                    "the operand is the scope selector {name}, and state {state}'s link {link} has no CountryLinks row"
+                    "the operand is the scope selector {name}, and state {state}'s link {link} has no country links row"
                 ).into()
             }),
         }
@@ -1920,11 +1916,10 @@ impl<'e, 'a> Evaluator<'e, 'a> {
                         let token = self
                             .world
                             .token_of(bytes)?
-                            .ok_or("has_ideology content token is absent from LexicalTokens")?;
+                            .ok_or("has_ideology content token is absent from lexical tokens")?;
                         let mut found = false;
                         for role in counted::<tables::CountryLeaderRoles>(
                             self.world,
-                            "CountryLeaderRoles",
                             replay_data::rows::mask::<replay_data::rows::CountryLeaderRoleRow>(
                                 &["current_ideology"],
                             ),
@@ -1978,12 +1973,11 @@ impl<'e, 'a> Evaluator<'e, 'a> {
 /// why not.
 fn counted<'a, T: replay_data::rows::TableSchema>(
     world: &World<'a>,
-    name: &str,
     mask: u64,
 ) -> Result<Vec<std::borrow::Cow<'a, T::Row>>, Failure> {
     table::<T>(world.tables(), mask)
         .map_err(|error| {
-            error.context(|error| format!("{name} is not complete this hour: {error}"))
+            error.context(|error| format!("{} is not complete this hour: {error}", T::ID.words()))
         })?
         .iter()
         .map(|row| row.map_err(|why| super::refusal::input_error(T::ID, why)))

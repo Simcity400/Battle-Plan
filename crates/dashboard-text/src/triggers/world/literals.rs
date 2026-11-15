@@ -11,8 +11,6 @@ pub(super) enum Lookup<'a> {
 impl<'a> Lookup<'a> {
     pub(super) fn new(rows: Rowset<'a, LexicalTokenRow>) -> Self {
         match rows {
-            // A walk's views hold each token once, ascending by it.
-            Rowset::Walked(..) => Self::Sorted(rows),
             Rowset::Decoded(slice) if slice.is_sorted_by(|a, b| a.token < b.token) => {
                 Self::Sorted(rows)
             }

@@ -606,19 +606,47 @@ pub const FAMILIES: &[Family] = &[
 /// Playback authenticates expected modifier names against recorded definitions.
 /// A partial or absent table is not evidence of a matching layout.
 pub fn validate_recording(frame: &dyn DecodedSource, family: Family) -> Result<(), String> {
+    let definitions = frame
+        .complete::<tables::ModifierDefinitions>()
+        .map_err(|e| e.to_string());
+    let tokens = frame.lexical().map_err(|e| e.to_string());
+    let whole = match (&definitions, &tokens) {
+        (Err(error), _) | (_, Err(error)) => Err(error.clone()),
+        _ => Ok(()),
+    };
+    validate_definitions(
+        family,
+        whole,
+        |index| {
+            let definitions = definitions.as_ref().ok()?;
+            let at = definitions.binary_search_by_key(&index, |row| row.index).ok()?;
+            Some(definitions[at].token)
+        },
+        |token, name| {
+            let tokens = tokens.as_ref().ok()?;
+            let at = tokens.binary_search_by_key(&token, |row| row.token).ok()?;
+            Some(tokens[at].literal == name)
+        },
+    )
+}
+
+/// [`validate_recording`] over any reading of the recorded definitions: `whole`, whether
+/// ModifierDefinitions and LexicalTokens are both complete (the first's gap first); `token`, the
+/// token of the definition at a modifier index; `spells`, whether a token's literal is a script
+/// name, none when LexicalTokens has no row for the token.
+pub fn validate_definitions(
+    family: Family,
+    whole: Result<(), String>,
+    token: impl Fn(u32) -> Option<u32>,
+    spells: impl Fn(u32, &[u8]) -> Option<bool>,
+) -> Result<(), String> {
     let validate = || -> Result<(), String> {
         if !engine_executable::executable_tables::is_initialized() {
             return Err("executable metadata unavailable; choose the game folder".into());
         }
-        let definitions = frame
-            .complete::<tables::ModifierDefinitions>()
-            .map_err(|e| e.to_string())?;
-        let tokens = frame.lexical().map_err(|e| e.to_string())?;
+        whole?;
         let gap = engine_fixed_layout::fixed_layout::GAP;
-        if definitions
-            .binary_search_by_key(&gap, |row| row.index)
-            .is_ok()
-        {
+        if token(gap).is_some() {
             return Err(format!("modifier definition gap ({gap:#x}) is registered"));
         }
         for key in keys::all()
@@ -626,16 +654,11 @@ pub fn validate_recording(frame: &dyn DecodedSource, family: Family) -> Result<(
             .filter(|key| family.keys.contains(&key.index))
         {
             let failure = |reason| format!("{} ({:#x}): {reason}", key.name, key.index);
-            let row = definitions
-                .binary_search_by_key(&key.index, |row| row.index)
-                .map(|at| &definitions[at])
-                .map_err(|_| failure("definition row missing"))?;
-            let token = tokens
-                .binary_search_by_key(&row.token, |row| row.token)
-                .map(|at| &tokens[at])
-                .map_err(|_| failure("definition token missing from LexicalTokens"))?;
-            if token.literal != key.name.as_bytes() {
-                return Err(failure("definition token spells a different script name"));
+            let token = token(key.index).ok_or_else(|| failure("definition row missing"))?;
+            match spells(token, key.name.as_bytes()) {
+                None => return Err(failure("definition token missing from LexicalTokens")),
+                Some(false) => return Err(failure("definition token spells a different script name")),
+                Some(true) => {}
             }
         }
         Ok(())

@@ -1,4 +1,14 @@
 use super::super::gui_windows::{BG_FRAME, FRAME_BTN, GRIDS, PROGRESS};
+
+/// The naval windows' own admissions (combats, bases, results), not the pools': an icon kept off
+/// screen asks for frames only while its province is dirty out of view; an icon admitted on screen
+/// never asks by admission.
+#[test]
+fn a_naval_icon_kept_off_screen_asks_only_while_its_province_will_be_cleaned() {
+    for (off_screen, cleans, asks) in [(false, false, false), (false, true, false), (true, true, true), (true, false, false)] {
+        assert_eq!(keeps_asking(off_screen, cleans), asks, "off screen {off_screen}, cleans {cleans}");
+    }
+}
 use super::*;
 use std::collections::BTreeSet;
 use viewer_foundation::map::gui_resources::contains;

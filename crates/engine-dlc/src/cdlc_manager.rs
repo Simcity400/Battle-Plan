@@ -1,11 +1,13 @@
 //! Passive DLC/mod observations used by the engine's startup roster report.
 //!
-//! `reported_active` follows the game's active-content diagnostics. Entries
-//! retain map enumeration order; that order and descriptor requests establish
-//! neither VFS mounting order nor successful mounts. `observe_search_path`
-//! reads successful PhysicsFS mounts in search order, highest priority first.
-//! `dlc_filter_strings` combines initial descriptor requests and runtime display
-//! names; it is not the launcher's disabled list.
+//! `reported_active` is a DLC entry's own flag before exclusion: the game's
+//! rules (`has_dlc`, the runtime DLC mask) count a DLC only while it is set and
+//! the entry's descriptor is byte-equal to none of `dlc_filter_strings`. Those
+//! begin as the launcher's disabled descriptors (and `-exclude_dlc`); startup
+//! then appends the counted DLC's display names. Entries retain map enumeration
+//! order; that order establishes neither VFS mounting order nor successful
+//! mounts. `observe_search_path` reads successful PhysicsFS mounts in search
+//! order, highest priority first.
 
 use crate::{
     Memory,
@@ -308,22 +310,115 @@ fn search_path_inner<M: Memory, T>(
     result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
 }
 
-/// Whether an observed successful search path equals the expected mounts in
+/// Whether an observed successful search path is the expected mounts in
 /// membership and priority order. Shared by the collector's roster check and
-/// the recorder's out-of-process movement oracle.
+/// the recorder's out-of-process witnesses.
 pub fn mounts_match<T: Value>(observed: &[T], expected: &[String]) -> bool {
-    // Empty lists cannot establish even the vanilla content root. Normalize only
-    // equivalent Windows path notation, without case folding, component
-    // resolution, or replacement of invalid UTF-8.
-    !expected.is_empty()
-        && observed.len() == expected.len()
-        && observed.iter().zip(expected).all(|(actual, wanted)| {
-            let actual = std::str::from_utf8(actual.as_bytes())
-                .ok()
-                .and_then(mount_path);
-            let wanted = mount_path(wanted);
-            actual.is_some() && actual == wanted
-        })
+    mount_difference(observed, expected).is_none()
+}
+
+/// Where an observed successful search path first departs from the expected
+/// mounts, positions counted from 0, highest priority first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MountDifference<'a> {
+    /// Nothing was expected, so not even the vanilla content root is proven.
+    NoneExpected,
+    /// The observed list ends where `expected` is due.
+    Missing { position: usize, expected: &'a str },
+    /// The observed list goes on past every expected mount.
+    Extra { position: usize, observed: &'a [u8] },
+    Differs {
+        position: usize,
+        observed: &'a [u8],
+        expected: &'a str,
+        folders: Folders,
+    },
+}
+
+/// What the disk says of two mount paths that differ as written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Folders {
+    /// One is no path: empty, not UTF-8, or holding a control character.
+    Unreadable,
+    /// Whether each opened as a folder; one at least did not.
+    Unopened { observed: bool, expected: bool },
+    /// Both open as folders, different ones.
+    Different,
+}
+
+/// `None` when the observed search path is the expected mounts, position by
+/// position: two paths are one mount when they are equal in Windows notation or
+/// open the same folder (another spelling: 8.3 names, a junction, a `subst` drive).
+pub fn mount_difference<'a, T: Value>(
+    observed: &'a [T],
+    expected: &'a [String],
+) -> Option<MountDifference<'a>> {
+    if expected.is_empty() {
+        return Some(MountDifference::NoneExpected);
+    }
+    for (position, (actual, wanted)) in observed.iter().zip(expected).enumerate() {
+        if let Err(folders) = same_mount(actual.as_bytes(), wanted) {
+            return Some(MountDifference::Differs {
+                position,
+                observed: actual.as_bytes(),
+                expected: wanted,
+                folders,
+            });
+        }
+    }
+    let position = observed.len().min(expected.len());
+    match (observed.get(position), expected.get(position)) {
+        (Some(actual), _) => Some(MountDifference::Extra {
+            position,
+            observed: actual.as_bytes(),
+        }),
+        (None, Some(wanted)) => Some(MountDifference::Missing {
+            position,
+            expected: wanted,
+        }),
+        (None, None) => None,
+    }
+}
+
+fn same_mount(observed: &[u8], expected: &str) -> Result<(), Folders> {
+    let observed = std::str::from_utf8(observed).map_err(|_| Folders::Unreadable)?;
+    // Equal notation needs no disk, so a mount the recorder cannot open still matches.
+    match (mount_path(observed), mount_path(expected)) {
+        (Some(actual), Some(wanted)) if actual == wanted => return Ok(()),
+        (Some(_), Some(_)) => {}
+        _ => return Err(Folders::Unreadable),
+    }
+    match (folder(observed), folder(expected)) {
+        (Some(actual), Some(wanted)) if actual == wanted => Ok(()),
+        (Some(_), Some(_)) => Err(Folders::Different),
+        (actual, wanted) => Err(Folders::Unopened {
+            observed: actual.is_some(),
+            expected: wanted.is_some(),
+        }),
+    }
+}
+
+/// The volume serial number and file index of the folder `path` opens, links followed.
+fn folder(path: &str) -> Option<(u32, u64)> {
+    use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_DIRECTORY, FILE_FLAG_BACKUP_SEMANTICS,
+        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, GetFileInformationByHandle,
+    };
+    let opened = std::fs::OpenOptions::new()
+        .access_mode(0)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)
+        .ok()?;
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    let read = unsafe { GetFileInformationByHandle(opened.as_raw_handle(), &mut info) };
+    (read != 0 && info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0).then(|| {
+        (
+            info.dwVolumeSerialNumber,
+            (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+        )
+    })
 }
 
 fn mount_path(path: &str) -> Option<String> {

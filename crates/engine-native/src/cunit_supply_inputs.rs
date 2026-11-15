@@ -137,23 +137,6 @@ const ORIGIN_LAYOUT: RecordLayout<'static> = match RecordLayout::new(&ORIGIN_FIE
     None => panic!("valid supply origin layout"),
 };
 
-/// Read one already authenticated primary CUnit root. The caller owns both its
-/// unit census and the reusable origin arena. A shortage returns the exact live
-/// count without copying a misleading partial vector. Origin failures withhold
-/// only the node fragment; scalar lines stay available. Partially written arena
-/// bytes are unusable. Scalar-copy failure withholds this unit's scalar pack.
-///
-/// All entries are retained, including duplicate provinces and nonpositive
-/// amounts: totals consume every entry, while the footer's displayed hub list
-/// consumes only positive receipts. No native array size becomes an allocation.
-pub fn capture(
-    memory: &impl Memory,
-    pointer: usize,
-    origins: &mut [Origin],
-) -> Result<Inputs, Failure> {
-    capture_buffer(memory, pointer, crate::walk::Buffer::Fixed(origins))
-}
-
 pub fn capture_buffer(
     memory: &impl Memory,
     pointer: usize,
@@ -339,17 +322,15 @@ fn unit_scalars(record: &[u8]) -> Inputs {
 /// than the arena admits or different after its payload, or a faulting
 /// payload row, withholds only its origin rows. A fault fails only its own
 /// unit: the rest of a gather is read again. Every native row is retained in
-/// order, duplicates and nonpositive amounts included. A growing arena
-/// doubles from its original header demand; a fixed one reports the rows a
-/// shortage needs. No native count becomes a limit.
+/// order, duplicates and nonpositive amounts included. The arena doubles from
+/// its original header demand. No native count becomes a limit.
 pub fn capture_units(
     memory: &impl Memory,
     pointer: impl Fn(usize) -> usize,
     units: &mut [UnitCapture],
     origins: &mut Vec<Origin>,
-    growing: bool,
 ) -> OriginsUse {
-    capture_selected_units(memory, pointer, |_| true, units, origins, growing)
+    capture_selected_units(memory, pointer, |_| true, units, origins)
 }
 
 /// The same batches for selected units only. A carried footer omits its entire
@@ -360,7 +341,6 @@ pub fn capture_selected_units(
     selected: impl Fn(usize) -> bool,
     units: &mut [UnitCapture],
     origins: &mut Vec<Origin>,
-    growing: bool,
 ) -> OriginsUse {
     let mut pointers = [0usize; BATCH];
     let mut indices = [0usize; BATCH];
@@ -447,10 +427,6 @@ pub fn capture_selected_units(
             continue;
         };
         if end > origins.len() {
-            if !growing {
-                inputs.origins_len = Err(Failure::OriginsCapacity { required: count });
-                continue;
-            }
             let len = origins.len().saturating_mul(2).max(end);
             if crate::allocation::resize_default(origins, len).is_err() {
                 inputs.origins_len = Err(Failure::Allocation);

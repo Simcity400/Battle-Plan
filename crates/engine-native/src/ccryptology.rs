@@ -38,14 +38,14 @@ pub struct Row {
     pub ordinal: u32,
 }
 
+pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
+    walk_buffer(memory, base, game_state, crate::walk::Buffer::Count)
+}
+
 /// Reads each authenticated country's inline decryption states without allocation.
 /// Zero progress and inactive states are retained; days-to-decrypt is derived by
 /// the engine and is deliberately not substituted for a native stored field.
-pub fn walk(memory: &impl Memory, base: usize, game_state: usize, output: &mut [Row]) -> Outcome {
-    walk_buffer(memory, base, game_state, crate::walk::Buffer::Fixed(output))
-}
-
-pub fn walk_growing(
+pub fn walk(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -392,13 +392,6 @@ mod tests {
         assert_eq!(new_reads.copy_calls + 8 * n, old_reads.copy_calls);
         assert_eq!(new_reads.record_calls, old_reads.record_calls + 2 * n);
         assert_eq!(new_reads.spans + 2 * n, old_reads.spans);
-        // A buffer that ends inside a country's states truncates both alike.
-        let [batched, serial] = both(&w.memory(), &w.memory(), &w, rows - 2);
-        assert_eq!(batched, serial);
-        assert!(matches!(
-            batched.0,
-            Outcome::Truncated { unread_rows: 2, .. }
-        ));
     }
 
     /// Country `slot`'s decryption state `index` in
@@ -523,18 +516,6 @@ mod tests {
             );
             assert_eq!(fallbacks() - before, counted, "site {site}");
         }
-        // Country 1 stores 64 rows; its state 65 is never read.
-        let unread = state_at(&w, 1, 65);
-        let memory = Faulty::new(
-            w.memory(),
-            std::iter::once(unread..unread + 32).collect(),
-            false,
-        );
-        let before = fallbacks();
-        let [batched, serial] = both(&memory, &memory, &w, 64);
-        assert_eq!(batched, serial);
-        assert!(matches!(batched.0, Outcome::Truncated { len: 64, .. }));
-        assert_eq!(fallbacks() - before, 0);
     }
 
     #[test]
@@ -655,14 +636,14 @@ mod tests {
         bytes
     }
 
-    fn run(bytes: &[u8], output: &mut [Row]) -> Outcome {
+    fn run(bytes: &[u8], output: &mut Vec<Row>) -> Outcome {
         walk(&SliceMemory { base: 0, bytes }, 0, GS, output)
     }
 
     #[test]
     fn native_values_alias_owner_zero_progress_and_live_count_are_preserved() {
         let bytes = fixture();
-        let mut rows = [Row::default(); 3];
+        let mut rows = vec![Row::default(); 3];
         assert_eq!(run(&bytes, &mut rows), Outcome::Rows { len: 2 });
         assert_eq!(
             rows[0],
@@ -684,7 +665,7 @@ mod tests {
     #[test]
     fn absent_manager_and_empty_array_are_measured_empty() {
         let original = fixture();
-        let mut rows = [Row::default(); 2];
+        let mut rows = vec![Row::default(); 2];
         let mut bytes = original.clone();
         p64(&mut bytes, AGENCY + agency::CRYPTOLOGY, 0);
         assert_eq!(run(&bytes, &mut rows), Outcome::Rows { len: 0 });
@@ -699,7 +680,7 @@ mod tests {
     #[test]
     fn corrupt_headers_objects_and_country_links_are_unavailable() {
         let original = fixture();
-        let mut rows = [Row::default(); 3];
+        let mut rows = vec![Row::default(); 3];
         for (at, value) in [
             (CRYPTO + DECRYPTION_STATE_COUNT, 4),
             (CRYPTO + DECRYPTION_STATE_COUNT, u32::MAX),
@@ -732,9 +713,9 @@ mod tests {
     }
 
     #[test]
-    fn repeated_target_aliases_fail_and_capacity_reports_omitted_rows() {
+    fn repeated_target_aliases_fail_the_table() {
         let original = fixture();
-        let mut rows = [Row::default(); 2];
+        let mut rows = vec![Row::default(); 2];
         let mut bytes = original.clone();
         p32(&mut bytes, STATES + state::TARGET_COUNTRY, 1);
         p32(
@@ -748,21 +729,6 @@ mod tests {
                 reason: "duplicate cryptology target"
             }
         );
-        assert_eq!(
-            run(&original, &mut rows[..1]),
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            }
-        );
-        assert_eq!(rows[0].owner_country, 4);
-        assert_eq!(
-            run(&original, &mut []),
-            Outcome::Truncated {
-                len: 0,
-                unread_rows: 2
-            }
-        );
     }
 
     #[test]
@@ -771,7 +737,7 @@ mod tests {
         assert!(matches!(
             run(
                 &bytes[..STATES + state::STRIDE + 31],
-                &mut [Row::default(); 2]
+                &mut vec![Row::default(); 2]
             ),
             Outcome::Unavailable {
                 reason: "cryptology state unreadable"

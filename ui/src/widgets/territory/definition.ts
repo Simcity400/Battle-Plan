@@ -1,22 +1,21 @@
 import { DATE_OVERLAY_OPTION, RACE_AXIS_OPTIONS, RACE_TIME_OPTIONS, raceViewOption, TOP_COUNTRIES, raceViewVariants } from '../../charts/race/options.ts';
 import type { WidgetMeta } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
-import { factionMemberChoice, factionMemberOptions } from '../../charts/race/factionPartsOptions.ts';
+import { MEASURES, RULES } from '../../dashboard/territoryMeasure.ts';
+import { factionMemberChoice, factionMemberOptions } from '../../charts/race/factionMembersOptions.ts';
 
 const linesOnly = (option: OptionField): OptionField => ({ ...option,
   visibleWhen: options => options.view === 'lines' && (option.visibleWhen?.(options) ?? true) });
 export const OPTIONS: readonly OptionField[] = [
   raceViewOption(undefined, 'race', [{ value: 'share', label: 'Share' }]),
-  { key: 'measure', section: 'options', label: 'Measure', kind: 'content-choice', automatic: 'States', default: '' },
+  { key: 'measure', section: 'options', label: 'Measure', kind: 'choice', default: 'states', choices: MEASURES },
   { key: 'rule', section: 'options', label: 'Territory rule', kind: 'choice', default: 'controlled',
-    hint: 'Occupied counts what a country controls that another country owns, allies’ and subjects’ land included.',
-    choices: [{ value: 'controlled', label: 'Controlled' }, { value: 'owned', label: 'Owned' }, { value: 'occupied', label: 'Occupied' }] },
+    hint: 'Occupied counts what a country controls that another country owns, allies’ and subjects’ land included.', choices: RULES },
   DATE_OVERLAY_OPTION,
   { key: 'endLabels', section: 'options', label: 'Names at line ends', kind: 'toggle', default: true, visibleWhen: options => options.view === 'lines' },
   ...RACE_TIME_OPTIONS.map(linesOnly),
   ...RACE_AXIS_OPTIONS.map(linesOnly),
-  ...factionMemberOptions.map(option => ({ ...option, visibleWhen: (options, countries) => factionMemberChoice(countries)
-    && (option.visibleWhen?.(options, countries) ?? true) } satisfies OptionField)),
+  ...factionMemberOptions.map(option => ({ ...option, visibleWhen: (_options: Readonly<Record<string, unknown>>, countries?: Parameters<typeof factionMemberChoice>[0]) => factionMemberChoice(countries) })),
 ];
 
 export const definition = {

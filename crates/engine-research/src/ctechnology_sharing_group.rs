@@ -52,6 +52,10 @@ pub struct Walk {
     pub members: Outcome,
 }
 
+pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Walk {
+    walk_buffer(memory, base, game_state, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
+}
+
 /// A direct census of the native groups and their ordered member/bonus pairs.
 /// Authentication uses the same country-link resolver as the country table.
 /// Capacity is independent for both tables; no allocation, retry or engine call
@@ -59,22 +63,6 @@ pub struct Walk {
 /// The group's native lexer ordinal is retained without accessing the global
 /// lexical dictionary; spelling has an independent availability outcome.
 pub fn walk(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    groups: &mut [Row],
-    members: &mut [MemberRow],
-) -> Walk {
-    walk_buffer(
-        memory,
-        base,
-        game_state,
-        crate::walk::Buffer::Fixed(groups),
-        crate::walk::Buffer::Fixed(members),
-    )
-}
-
-pub fn walk_growing(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -294,8 +282,8 @@ mod tests {
     #[test]
     fn paired_members_preserve_alias_handles_native_order_and_signed_precision() {
         let memory = fixture();
-        let mut groups = [Row::default(); 1];
-        let mut members = [MemberRow::default(); 2];
+        let mut groups = vec![Row::default(); 1];
+        let mut members = vec![MemberRow::default(); 2];
         let result = walk(&memory, BASE, GAME, &mut groups, &mut members);
         assert_eq!(result.groups, Outcome::Rows { len: 1 });
         assert_eq!(result.members, Outcome::Rows { len: 2 });
@@ -322,26 +310,9 @@ mod tests {
     }
 
     #[test]
-    fn capacities_are_independent_of_each_other_and_lexer_availability() {
+    fn the_count_probe_counts_each_table_without_the_lexer() {
         let memory = fixture();
-        let mut groups = [];
-        let mut members = [MemberRow::default(); 1];
-        let result = walk(&memory, BASE, GAME, &mut groups, &mut members);
-        assert_eq!(
-            result.groups,
-            Outcome::Truncated {
-                len: 0,
-                unread_rows: 1
-            }
-        );
-        assert_eq!(
-            result.members,
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            }
-        );
-        let result = walk(&memory, BASE, GAME, &mut [], &mut []);
+        let result = count(&memory, BASE, GAME);
         assert_eq!(
             result.groups,
             Outcome::Truncated {
@@ -361,8 +332,8 @@ mod tests {
     #[test]
     fn mismatched_pairs_invalid_country_and_negative_counts_are_unavailable() {
         let mut memory = fixture();
-        let mut groups = [Row::default(); 1];
-        let mut members = [MemberRow::default(); 2];
+        let mut groups = vec![Row::default(); 1];
+        let mut members = vec![MemberRow::default(); 2];
         memory.put(GROUP + BONUS_COUNT, &1_u32.to_le_bytes());
         assert!(matches!(
             walk(&memory, BASE, GAME, &mut groups, &mut members).members,
@@ -387,7 +358,7 @@ mod tests {
     fn authenticated_empty_roster_does_not_require_unrelated_roots() {
         let mut memory = MemoryImage::default();
         memory.array(GAME + cgame_state::TECH_SHARING_GROUPS, 0, 0);
-        let result = walk(&memory, BASE, GAME, &mut [], &mut []);
+        let result = walk(&memory, BASE, GAME, &mut Vec::new(), &mut Vec::new());
         assert_eq!(result.groups, Outcome::Rows { len: 0 });
         assert_eq!(result.members, Outcome::Rows { len: 0 });
         memory.put(
@@ -395,7 +366,7 @@ mod tests {
             &1_u32.to_le_bytes(),
         );
         assert!(matches!(
-            walk(&memory, BASE, GAME, &mut [], &mut []).groups,
+            walk(&memory, BASE, GAME, &mut Vec::new(), &mut Vec::new()).groups,
             Outcome::Unavailable { .. }
         ));
     }

@@ -1,4 +1,3 @@
-import { licenceRevision } from './licencesData.ts';
 import { createPortal } from 'react-dom';
 import { useCallback, useMemo, useReducer, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
@@ -13,79 +12,82 @@ import { useCountryColours } from '../../charts/race/countryColours';
 import Table, { CountryCell } from '../../charts/table/Table';
 import type { TableColumn } from '../../charts/table/Table';
 import { narrowTableOf } from '../../charts/table/options';
-import { useTableHour } from '../../charts/table/useTableHour';
 import { countryNameDetails, fitTooltip } from '../../charts/tooltip.ts';
 import type { TooltipContent } from '../../charts/tooltip';
 import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
 import { useContextMenu } from '../../components/ContextMenu';
+import { useAtHead, useIdentityHour } from '../../dashboard/atHead';
+import { trackHourOf } from '../../dashboard/settledHour';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
-import { useCountryLooks } from '../../dashboard/countryLooks';
+import { lookHour, looksRead, useCountryLooks } from '../../dashboard/countryLooks';
 import { selectedTags } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { groupReasonAt, preparedAt, tagAt } from '../../dashboard/economyHistory';
-import { EQUIPMENT_UNNAMED } from '../../dashboard/EquipmentCell';
-import { countryMatch, MEMBERSHIP_PREPARING } from '../../dashboard/groups';
-import { resolveWindow } from '../../dashboard/model';
+import { countryMatch } from '../../dashboard/groups';
+import { useHeadProduct } from '../../dashboard/headProduct';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackMotion } from '../../dashboard/playback';
 import { useProduct } from '../../dashboard/products';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
-import type { ProductionCatalogueReply } from '../../generated/dashboard';
+import { useShownEachFrame } from '../../dashboard/widgetPerf.ts';
 import { COUNTRY, OPTIONS } from './definition';
-import { holderLicencesAt, holdersAt, licencePairs, licencesAt, PRODUCTION_CATALOGUE, rosterKnown, validateLicences } from './licencesData';
-import type { LicenceAt, LicenceWidth } from './licencesData';
-import '../trade-flows/tradeFlows.css';
+import { countryLicences, groupReasonAt, licencePairs, licenceRevision, licencesAt, pickedTag, PRODUCTION_LICENCES, slotOf, validateLicences } from './licencesData';
+import type { LicenceRow, LicenceWidth, PickedCountry } from './licencesData';
 import './productionLicences.css';
 
 const NO_WARNINGS: readonly string[] = [];
 const NO_LICENCES: ReturnType<typeof licencesAt> = { rows: [], unattributed: 0 };
 const OTHER = '\u0000other';
-// The node of every licence party with no identity or no tag at the hour.
+// The node of every licence party with no country at the hour.
 const UNNAMED = '\u0000unnamed';
 const UNNAMED_COUNTRY = 'Country name unavailable';
+const DESIGN_UNNAMED = 'Design name unavailable';
+const PARAMS = {};
 const nodeTag = (tag: string | null) => tag ?? UNNAMED;
-const PARAMS_VIEW = 'licences';
+const designsText = (row: LicenceRow) => row.designs.map(design => design.name ?? DESIGN_UNNAMED).join(', ') || DESIGN_UNNAMED;
 
-/** Who builds whose designs under licence at the moment shown: licensors left,
- * licensees right, a ribbon per pair; a country's flag or name opens its licences. */
+/** Who builds whose designs under licence at the moment shown: licensors left, licensees right, a ribbon per pair; a
+ * country's flag or name opens its licences, kept by its canonical slot through a change of tag. Followed at the head as
+ * a pushed panel; names, colours and group membership at a 30-day step of the head. A drill not following playback
+ * shows its own day, asked once. */
 export default function ProductionLicencesWidget({ widget, runtime, active, headerSlot, onDiagnostics }: WidgetProps) {
-  const playbackHour = useTableHour(runtime.clock, active && widget.time.mode === 'follow');
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const tokens = useChartTokens();
   const viewport = useViewportHeight();
   const options = resolveOptions(OPTIONS, widget.options);
   const width: LicenceWidth = options.width === 'factories' ? 'factories' : 'licences';
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
-  const hour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
+  const head = useHeadProduct(runtime, widget, PRODUCTION_LICENCES, track ? PARAMS : null, { active, validate: validateLicences });
+  // Names, colours and group membership are read at a coarse step of the head: they change rarely.
+  const following = active && widget.time.mode === 'follow';
+  const stepped = useAtHead(runtime.clock, following, clockHour => {
+    const at = track ? trackHourOf(widget, track, runtime.tracks, clockHour) : null;
+    return at === null || !track ? null : lookHour(track.branch, at)?.hour ?? null;
+  });
+  const hour = head.hour ?? stepped ?? track?.branch.lastHour ?? 0;
+  useShownEachFrame(runtime.clock, head.shownAt, head.live);
   const anchor = useRef<HTMLDivElement>(null);
   const menu = useContextMenu('Licence actions');
-  const [savedDrill, dispatch] = useReducer(reduceDrill, CLOSED);
-  // A country is picked as its holders in one recording's branch, so a rename keeps it and another branch drops it.
-  const scope = useMemo(() => ({}), [runtime.client, track?.source.id, track?.source.revision, track?.branch.id]);
-  const [choice, setChoice] = useState<{ scope: object; tag: string; hour: number; holders: readonly string[] } | null>(null);
-  const picked = choice?.scope === scope ? choice : null;
-  const drill = picked ? savedDrill : CLOSED;
+  const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
+  const [picked, setPicked] = useState<PickedCountry | null>(null);
   const [capacity, setCapacity] = useState(8);
   const needsGroups = widget.countries.kind !== 'all';
   const groups = useCountryGroups(runtime, track, active && needsGroups);
   const fallback = useMemo(() => selectedTags(widget.countries, track), [widget.countries, track]);
-  const match = useMemo(() => countryMatch(widget.countries, fallback, groups.data, track?.branch.lastHour ?? hour),
-    [widget.countries, fallback, groups.data, track?.branch.lastHour, hour]);
-  const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: PRODUCTION_CATALOGUE,
-    params: { branchId: track.branch.id, view: PARAMS_VIEW, tags: [] } } : null;
-  const { data, error, retry } = useProduct<ProductionCatalogueReply>(runtime.client, request, active, validateLicences, track?.source);
+  const match = useMemo(() => countryMatch(widget.countries, fallback, groups.data, track?.branch.lastHour ?? hour), [widget.countries, fallback, groups.data, track?.branch.lastHour, hour]);
+  const data = head.data;
   const listed = useMemo(() => data && match.ready && !match.reason ? licencesAt(data, hour, match.matches) : NO_LICENCES, [data, match, hour]);
   const rows = listed.rows;
-  // A licence whose party has no tag at this hour may be one the widget keeps: counted, never drawn.
-  const warnings = useMemo(() => listed.unattributed
-    ? [...data?.warnings ?? [], `${listed.unattributed} licences whose countries were not recorded at this date may also match`]
+  const warnings = useMemo(() => listed.unattributed ? [...data?.warnings ?? [], `${listed.unattributed} licences whose countries were not recorded at this date may also match`]
     : data?.warnings ?? NO_WARNINGS, [listed.unattributed, data]);
   useDiagnostics(onDiagnostics, warnings);
   const pairs = useMemo(() => licencePairs(rows, width).filter(pair => pair.width > 0), [rows, width]);
   const tags = useMemo(() => [...new Set(rows.flatMap(row => [row.licensor, row.licensee]).filter((tag): tag is string => tag !== null))], [rows]);
-  const looks = useCountryLooks(runtime.client, track, tags, hour, active);
+  // At the head the parties are named as they are at the hour shown: read where one of them last changed.
+  const identityHour = useIdentityHour(runtime.client, track, tags, runtime.clock, following && head.hour === null,
+    clockHour => track ? trackHourOf(widget, track, runtime.tracks, clockHour) : null);
+  const lookRead = looksRead(following && head.hour === null, identityHour, hour);
+  const looks = useCountryLooks(runtime.client, track, tags, lookRead.hour, active, undefined, undefined, lookRead.exact);
   const colour = useCountryColours(tags, looks.color, tokens, looks);
   const partyName = useCallback((tag: string | null) => tag === null ? UNNAMED_COUNTRY : looks.name(tag, hour), [looks, hour]);
   const { nodes, links } = useMemo(() => {
@@ -94,20 +96,20 @@ export default function ProductionLicencesWidget({ widget, runtime, active, head
       const sums = new Map<string, number>();
       for (const pair of pairs) sums.set(nodeTag(pair[side]), (sums.get(nodeTag(pair[side])) ?? 0) + pair.width);
       const ranked = [...sums].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
-      const kept = new Set(ranked.length > perSide ? ranked.slice(0, perSide - 1).map(([tag]) => tag) : ranked.map(([tag]) => tag));
-      return { kept, folded: ranked.length > kept.size };
+      return new Set(ranked.length > perSide ? ranked.slice(0, perSide - 1).map(([tag]) => tag) : ranked.map(([tag]) => tag));
     };
     const left = totals('licensor'), right = totals('licensee');
     const node = (tag: string, side: 'source' | 'target'): FlowNode => tag === OTHER ? { id: `${side}:${OTHER}`, side, label: 'Other', color: tokens.muted, order: '~', last: true }
       : tag === UNNAMED ? { id: `${side}:${UNNAMED}`, side, label: UNNAMED_COUNTRY, color: tokens.muted, order: '~~', last: true }
-      : { id: `${side}:${tag}`, side, label: looks.name(tag, hour), color: colour(tag, hour), flag: looks.flag(tag, hour), order: tag,
-        countryFlag: { nameFailure: looks.nameFailure?.(tag, hour), flagDetail: looks.flagDetail?.(tag, hour), flag: looks.flag(tag, hour), flagReason: looks.flagReason?.(tag, hour), flagPending: looks.flagPending?.(tag, hour) } };
+        : { id: `${side}:${tag}`, side, label: looks.name(tag, hour), color: colour(tag, hour), flag: looks.flag(tag, hour), order: tag,
+          countryFlag: { nameFailure: looks.nameFailure?.(tag, hour), flagDetail: looks.flagDetail?.(tag, hour), flag: looks.flag(tag, hour), flagReason: looks.flagReason?.(tag, hour), flagPending: looks.flagPending?.(tag, hour) } };
     const nodeMap = new Map<string, FlowNode>();
     const linkMap = new Map<string, FlowLink>();
     for (const pair of pairs) {
-      const source = left.kept.has(nodeTag(pair.licensor)) ? nodeTag(pair.licensor) : OTHER, target = right.kept.has(nodeTag(pair.licensee)) ? nodeTag(pair.licensee) : OTHER;
-      const from = node(source, 'source'), to = node(target, 'target');
-      nodeMap.set(from.id, from); nodeMap.set(to.id, to);
+      const from = node(left.has(nodeTag(pair.licensor)) ? nodeTag(pair.licensor) : OTHER, 'source');
+      const to = node(right.has(nodeTag(pair.licensee)) ? nodeTag(pair.licensee) : OTHER, 'target');
+      nodeMap.set(from.id, from);
+      nodeMap.set(to.id, to);
       const id = `${from.id}>${to.id}`;
       const held = linkMap.get(id);
       linkMap.set(id, held ? { ...held, value: held.value + pair.width } : { id, source: from.id, target: to.id, value: pair.width, color: from.color, order: id });
@@ -115,46 +117,48 @@ export default function ProductionLicencesWidget({ widget, runtime, active, head
     return { nodes: [...nodeMap.values()], links: [...linkMap.values()] };
   }, [pairs, capacity, looks, colour, tokens.muted, hour]);
   const tooltip = useCallback((hit: FlowHit): TooltipContent | null => {
-    const inside = (row: LicenceAt, id: string, side: 'licensor' | 'licensee') => {
+    const inside = (row: LicenceRow, id: string, side: 'licensor' | 'licensee') => {
       const tag = id.slice(id.indexOf(':') + 1);
       return tag === OTHER ? !nodes.some(node => node.id === `${side === 'licensor' ? 'source' : 'target'}:${nodeTag(row[side])}`) : nodeTag(row[side]) === tag;
     };
     const chosen = hit.kind === 'node' ? rows.filter(row => inside(row, hit.node.id, hit.node.side === 'source' ? 'licensor' : 'licensee'))
       : rows.filter(row => inside(row, hit.link.source, 'licensor') && inside(row, hit.link.target, 'licensee'));
     const title = hit.kind === 'node' ? hit.node.label : `${nodes.find(node => node.id === hit.link.source)?.label} → ${nodes.find(node => node.id === hit.link.target)?.label}`;
-    return fitTooltip([{ title, ...countryNameDetails(...chosen.flatMap(row => [row.licensor, row.licensee].map(tag => ({ nameFailure: tag === null ? undefined : looks.nameFailure?.(tag, hour) })))), subtitle: dayLabel(hour), rows: chosen.flatMap(row => [{ label: row.designs.map(design => design.name ?? EQUIPMENT_UNNAMED).join(', ') || EQUIPMENT_UNNAMED, strong: true },
+    return fitTooltip([{ title, ...countryNameDetails(...chosen.flatMap(row => [row.licensor, row.licensee].map(tag => ({ nameFailure: tag === null ? undefined : looks.nameFailure?.(tag, hour) })))),
+      subtitle: dayLabel(hour), rows: chosen.flatMap(row => [{ label: designsText(row), strong: true },
       { label: `${partyName(row.licensor)} → ${partyName(row.licensee)}`, tone: 'muted' as const },
-      { label: 'Civilian factories', value: row.lent === null ? '—' : row.lent.toString() },
-      ...row.since !== null ? [{ label: 'Since', value: dayLabel(row.since) }] : []]) }], viewport);
+      { label: 'Civilian factories', value: row.lent.toString() }, { label: 'Since', value: dayLabel(row.since) }]) }], viewport);
   }, [rows, nodes, partyName, looks, hour, viewport]);
   const openCountry = (node: FlowNode) => {
     const tag = node.id.slice(node.id.indexOf(':') + 1);
     if (tag === OTHER || tag === UNNAMED || !data) return;
-    setChoice({ scope, tag, hour, holders: holdersAt(data, tag, hour) });
+    setPicked({ slot: slotOf(data, tag), tag });
     dispatch({ type: 'open', breakdown: COUNTRY.id, hour, playing: runtime.clock.getSnapshot().playing, playhead: widget.time.mode === 'follow' ? hour : null });
   };
   const at = drillHour(drill, hour) ?? hour;
   const drillAt = drill.follow ? hour : at;
-  const drillTag = data && picked ? picked.holders.map(holder => tagAt(data.holders[holder], drillAt)).find(tag => tag !== null) ?? null : null;
-  const titleRead = picked ? { tag: drillTag ?? picked.tag, hour: drillTag === null ? picked.hour : drillAt } : null;
+  // A drill on a day of its own asks for that day once; following playback, it reads the panel.
+  const ownDay = picked !== null && drill.breakdown !== null && !drill.follow && track ? { sourceId: track.source.id, revision: track.source.revision,
+    product: PRODUCTION_LICENCES, params: { branchId: track.branch.id, hour: drillAt } } : null;
+  const own = useProduct(runtime.client, ownDay, active, validateLicences, track?.source);
+  const drillData = ownDay ? own.data : data;
+  const drillTag = drillData && picked ? pickedTag(drillData, picked) : null;
+  const titleRead = picked ? { tag: drillTag ?? picked.tag, hour: drillAt } : null;
   const titleNames = useCountryLabelsAt(runtime.client, track, titleRead ? [titleRead] : [], active);
 
   if (!track) return <WidgetState kind="empty" icon="factory" message="Load a campaign to see licences." />;
-  if (!window) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
+  if (head.read === 'off') return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  if (head.error) return <WidgetState kind="error" failure={head.error} onRetry={head.retry} />;
   const groupFailure = needsGroups && groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (groupFailure && !groups.data) return groupFailure;
   if (match.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={match.reason} /></>;
-  if (!data || !match.ready) return <>{groupFailure}<WidgetState kind="loading" label="Loading licences…" /></>;
-  if (!preparedAt(data, hour)) return <>{groupFailure}<WidgetState kind="loading" label="This range is still being prepared." /></>;
-  // A group whose membership at this hour is unrecorded or empty says so, never "none";
-  // membership still being prepared is neither.
-  if (!rows.length && !match.known(hour)) return groupFailure ?? <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
+  if (!data || !match.ready) return <div ref={head.root}>{groupFailure}<WidgetState kind="loading" label="Loading licences…" /></div>;
+  // A group whose membership at this hour is unrecorded or empty says so, never "none".
   const groupReason = groupReasonAt(widget.countries, groups.data, hour, track.branch.lastHour);
-  if (groupReason) return <>{groupFailure}<WidgetState kind={groupReason.kind} message={groupReason.message} /></>;
-  if (!rosterKnown(data, hour)) return <>{groupFailure}<WidgetState kind="unavailable" message="Licences were not recorded at this date." /></>;
+  if (groupReason) return <div ref={head.root}>{groupFailure}<WidgetState kind={groupReason.kind} message={groupReason.message} /></div>;
+  if (data.missing) return <div ref={head.root}>{groupFailure}<WidgetState kind="unavailable" message={data.missing} /></div>;
   const header = headerSlot && createPortal(<span className="pill">{rows.length.toLocaleString()}{listed.unattributed ? '+' : ''} licences</span>, headerSlot);
-  const main = <div className="production-licences">
+  const main = <div ref={head.root} className="production-licences">
     <FlowDiagram label="Production licences: licensors to licensees" nodes={nodes} links={links} stretch={width} slots={capacity + 1} hour={hour}
       hoursPerSecond={hoursPerSecond} active={active && !(drill.breakdown && options.drill !== 'popout')} tooltip={tooltip} onCapacity={setCapacity}
       message={rows.length && !pairs.length ? 'No licence lends civilian factories at this date.' : rows.length ? null
@@ -166,44 +170,41 @@ export default function ProductionLicencesWidget({ widget, runtime, active, head
   return <div ref={anchor} className="production-licences-host">{groupFailure}
     {header}
     <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown !== null && picked !== null} anchor={anchor}
-      title={titleRead ? `${titleNames.labelAt(titleRead.hour)(titleRead.tag).name}: licences` : COUNTRY.label} day={dayLabel(at)} following={drill.follow} canFollow={widget.time.mode === 'follow'}
-      onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })} main={main}>
-      {picked && <CountryLicences data={data} holders={picked.holders} tag={drillTag} hour={drillAt} runtime={runtime} track={track} active={active} narrow={narrowTableOf(options)} />}
+      title={titleRead ? `${titleNames.labelAt(titleRead.hour)(titleRead.tag).name}: licences` : COUNTRY.label} day={dayLabel(drillAt)} following={drill.follow}
+      canFollow={widget.time.mode === 'follow'} onClose={() => { dispatch({ type: 'close' }); setPicked(null); }} onFollow={() => dispatch({ type: 'follow' })} main={main}>
+      {picked && (own.error && ownDay ? <WidgetState kind="error" failure={own.error} onRetry={own.retry} />
+        : !drillData ? <WidgetState kind="loading" label="Loading licences…" />
+          : drillData.missing ? <p className="drill-empty">{drillData.missing}</p>
+            : <CountryLicences data={drillData} picked={picked} tag={drillTag} hour={drillAt} runtime={runtime} track={track} active={active} narrow={narrowTableOf(options)} />)}
     </DrillHost>
   </div>;
 }
 
-/** One country's licences granted and held at the drill's hour, by its holders' tags then. */
-function CountryLicences({ data, holders, tag, hour, runtime, track, active, narrow }: {
-  data: ProductionCatalogueReply; holders: readonly string[]; tag: string | null; hour: number; runtime: WidgetProps['runtime']; track: NonNullable<ReturnType<WidgetProps['runtime']['tracks']['find']>>;
-  active: boolean; narrow: ReturnType<typeof narrowTableOf>;
+/** One country's licences granted and held at the drill's hour, by its canonical slot; parties by the tags they hold then. */
+function CountryLicences({ data, picked, tag, hour, runtime, track, active, narrow }: {
+  data: NonNullable<ReturnType<typeof validateLicences>>; picked: PickedCountry; tag: string | null; hour: number; runtime: WidgetProps['runtime'];
+  track: NonNullable<ReturnType<WidgetProps['runtime']['tracks']['find']>>; active: boolean; narrow: ReturnType<typeof narrowTableOf>;
 }) {
   const viewport = useViewportHeight();
-  const held = useMemo(() => holderLicencesAt(data, holders, hour), [data, holders, hour]);
+  const held = useMemo(() => countryLicences(data, picked), [data, picked]);
   const rows = held.rows;
-  const wanted = useMemo(() => [...new Set(rows.flatMap(row => [row.licensor, row.licensee]).filter((tag): tag is string => tag !== null))]
-    .map(country => ({ hour, tag: country })), [rows, hour]);
+  const wanted = useMemo(() => [...new Set(rows.flatMap(row => [row.licensor, row.licensee]).filter((party): party is string => party !== null))].map(party => ({ hour, tag: party })), [rows, hour]);
   const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active);
-  const columns = useMemo<readonly TableColumn<LicenceAt>[]>(() => [
+  const columns = useMemo<readonly TableColumn<LicenceRow>[]>(() => [
     { key: 'licensor', header: 'Licensor', label: 'Licensor', width: 'minmax(var(--table-name-min), 1fr)', value: row => row.licensor, renderMissing: true,
       render: row => row.licensor === null ? UNNAMED_COUNTRY : <CountryCell {...labelAt(hour)(row.licensor)} /> },
     { key: 'licensee', header: 'Licensee', label: 'Licensee', width: 'minmax(var(--table-name-min), 1fr)', value: row => row.licensee, renderMissing: true,
       render: row => row.licensee === null ? UNNAMED_COUNTRY : <CountryCell {...labelAt(hour)(row.licensee)} /> },
     { key: 'design', header: 'Design', label: 'Design', width: 'minmax(var(--table-name-min), 1.4fr)', value: row => row.designs[0]?.name ?? null, renderMissing: true,
-      text: row => row.designs.map(design => design.name ?? EQUIPMENT_UNNAMED).join(', '), render: row => row.designs.map(design => design.name ?? EQUIPMENT_UNNAMED).join(', ') || EQUIPMENT_UNNAMED },
-    { key: 'factories', header: 'Factories', label: 'Civilian factories', numeric: true, width: 'max-content', priority: 2, renderMissing: true,
-      value: row => row.lent, render: row => row.lent === null ? '—' : row.lent.toString() },
-    { key: 'since', header: 'Since', label: 'Since', numeric: true, width: 'max-content', priority: 1, value: row => row.since,
-      text: row => row.since === null ? '—' : dayLabel(row.since), render: row => row.since === null ? '—' : dayLabel(row.since) },
+      text: designsText, render: designsText },
+    { key: 'factories', header: 'Factories', label: 'Civilian factories', numeric: true, width: 'max-content', priority: 2, value: row => row.lent, render: row => row.lent.toString() },
+    { key: 'since', header: 'Since', label: 'Since', numeric: true, width: 'max-content', priority: 1, value: row => row.since, text: row => dayLabel(row.since), render: row => dayLabel(row.since) },
   ], [labelAt, hour]);
-  if (tag === null) return <p className="drill-empty">This country was not recorded at this date.</p>;
-  if (!rosterKnown(data, hour)) return <p className="drill-empty">Licences were not recorded at this date.</p>;
   if (!rows.length) return <p className="drill-empty">{held.unattributed ? "Some licences' licensors were not recorded at this date." : 'No licences at this date.'}</p>;
   return <div className="production-licences-table"><Table rowRevision={row => [...licenceRevision(row), row.licensor === null ? null : labelAt(hour)(row.licensor),
-    row.licensee === null ? null : labelAt(hour)(row.licensee)]} label={`Licences of ${tag}`} rows={rows} columns={columns} rowKey={row => row.key}
+    row.licensee === null ? null : labelAt(hour)(row.licensee)]} label={`Licences of ${tag ?? picked.tag}`} rows={rows} columns={columns} rowKey={row => row.key}
     sort={{ column: 'since', direction: 'descending' }} narrow={narrow}
-    tooltip={row => fitTooltip([{ title: row.designs.map(design => design.name ?? EQUIPMENT_UNNAMED).join(', ') || EQUIPMENT_UNNAMED,
-      rows: [{ label: 'Civilian factories lent', value: row.lent === null ? '—' : row.lent.toString() }, { label: 'Required', value: row.required === null ? '—' : row.required.toString() },
-        ...row.since !== null ? [{ label: 'Since', value: dayLabel(row.since) }] : []] }], viewport)}
-    menu={row => row.since === null ? [] : [jumpItem(runtime, track.id, row.since)]} /></div>;
+    tooltip={row => fitTooltip([{ title: designsText(row), rows: [{ label: 'Civilian factories lent', value: row.lent.toString() }, { label: 'Required', value: row.required.toString() },
+      { label: 'Since', value: dayLabel(row.since) }] }], viewport)}
+    menu={row => [jumpItem(runtime, track.id, row.since)]} /></div>;
 }

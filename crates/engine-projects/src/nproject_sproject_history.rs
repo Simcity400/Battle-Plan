@@ -29,8 +29,15 @@ pub struct Row {
 
 /// Walks each authenticated country-local project history once. No project
 /// definition or reward identity is substituted for the owner-local row key.
-pub fn walk(memory: &impl Memory, base: usize, game_state: usize, output: &mut [Row]) -> Outcome {
-    nproject_cproject::walk_with_history(memory, base, game_state, &mut [], output).1
+pub fn walk(memory: &impl Memory, base: usize, game_state: usize, output: &mut Vec<Row>) -> Outcome {
+    nproject_cproject::walk_with_history_buffer(
+        memory,
+        base,
+        game_state,
+        crate::walk::Buffer::Count,
+        crate::walk::Buffer::Growing(output),
+    )
+    .1
 }
 
 /// The parent supplies the joined country and local project identity. History

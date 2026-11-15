@@ -16,6 +16,12 @@ const link = (source: string, target: string, value: number, order = ''): FlowLi
 const geometry: FlowGeometry = { left: 100, right: 300, top: 0, bottom: 114, nodeWidth: 10, gap: 10 };
 const nodes = [node('A', 'source'), node('B', 'source'), node('X', 'target'), node('Y', 'target')];
 
+/** An element's style as the chart reads and writes it. */
+function styleOf() {
+  const values = new Map<string, string>();
+  return { getPropertyValue: (name: string) => values.get(name) ?? '', setProperty: (name: string, value: string) => { values.set(name, value); } };
+}
+
 test('slots put the largest first, ties by key and a last node at the end', () => {
   const sizes = new Map([['A', 1], ['B', 5], ['C', 5], ['O', 99]]);
   const order = slotOrder([node('C', 'source'), node('O', 'source', { last: true }), node('A', 'source'), node('B', 'source'), node('X', 'target')], sizes, 'source');
@@ -145,7 +151,7 @@ test('a backward drawn cutoff clears a vanished keyed tooltip with a stable call
   const context = new Proxy({ measureText: (text: string) => ({ width: text.length * 7 }) },
     { get: (target, key) => Reflect.get(target, key) ?? (() => {}) });
   const handlers = new Map<string, (event: unknown) => void>();
-  const canvas = { clientWidth: 600, clientHeight: 360, offsetWidth: 600, width: 0, height: 0, style: {},
+  const canvas = { clientWidth: 600, clientHeight: 360, offsetWidth: 600, width: 0, height: 0, style: styleOf(),
     getContext: () => context, getBoundingClientRect: () => ({ left: 0, top: 0, width: 600, height: 360 }),
     addEventListener(name: string, handler: (event: unknown) => void) { handlers.set(name, handler); },
     removeEventListener(name: string) { handlers.delete(name); } };
@@ -223,7 +229,7 @@ test('a drawn flag or name opens its node only where the diagram asks, and a bar
   const context = new Proxy({ measureText: (text: string) => ({ width: text.length * 7 }) },
     { get: (target, key) => Reflect.get(target, key) ?? (() => {}) });
   const handlers = new Map<string, (event: unknown) => void>();
-  const canvas = { clientWidth: 600, clientHeight: 360, offsetWidth: 600, width: 0, height: 0, style: {},
+  const canvas = { clientWidth: 600, clientHeight: 360, offsetWidth: 600, width: 0, height: 0, style: styleOf(),
     getContext: () => context, getBoundingClientRect: () => ({ left: 0, top: 0, width: 600, height: 360 }),
     addEventListener(name: string, handler: (event: unknown) => void) { handlers.set(name, handler); },
     removeEventListener(name: string) { handlers.delete(name); } };

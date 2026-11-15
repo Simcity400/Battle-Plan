@@ -66,12 +66,14 @@ impl Spooled for SharedView {
         self.0.spool(out)?;
         self.1.spool(out)?;
         self.2.spool(out)?;
-        self.3.spool(out)
+        self.3.spool(out)?;
+        self.4.spool(out)
     }
 
     fn unspool(input: &mut Reader<'_>) -> io::Result<Self> {
         Ok(Self(
             Arc::unspool(input)?,
+            Spooled::unspool(input)?,
             Spooled::unspool(input)?,
             Spooled::unspool(input)?,
             Spooled::unspool(input)?,

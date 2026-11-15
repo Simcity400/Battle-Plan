@@ -131,55 +131,9 @@ fn hours_apply_their_sections_and_appends_and_clear_the_last_hours_changes() {
     );
 }
 
-#[test]
-fn restarts_and_dictionary_chunks_restore_the_state() {
-    let mut walked = State::new(schema()).unwrap();
-    let inserted = write(
-        &schema()[0],
-        &TableHour {
-            read: None,
-            changed: &[],
-            deleted: &[],
-            inserted: &[0],
-            keys: &[30],
-            inserts: &[Values::U32(&[9]), Values::Bytes(&[2])],
-            runs: &[],
-            touched: &[],
-            unrecorded: &[],
-        },
-    )
-    .unwrap();
-    let hour = Manifest {
-        appends: vec![&b"a"[..], &b""[..], &b"Reich"[..]],
-        sections: vec![section_entry(0, &inserted, 0b11)],
-        ..quiet(5)
-    };
-    walked.apply(&hour, |_| Ok(inserted.as_slice())).unwrap();
 
-    let mut started = State::new(schema()).unwrap();
-    let restart = restart::write(
-        walked.table(0).unwrap(),
-        Status::Complete,
-        &Acquisition::default(),
-        &[],
-    )
-    .unwrap();
-    started.restore(0, &restart).unwrap();
-    let first = walked.dictionary().chunk(0).unwrap();
-    started.restore_dictionary([first.as_slice()]).unwrap();
-    assert_eq!(started.table(0), walked.table(0));
-    assert_eq!(started.dictionary(), walked.dictionary());
-    assert_eq!(started.dictionary().get(2), Some(&b"Reich"[..]));
-    assert_eq!(started.dictionary().get(3), None);
-    assert_eq!(walked.dictionary().chunk(3).unwrap(), [0]);
-    assert!(
-        started.restore(2, &restart).is_err(),
-        "a table past the schema"
-    );
-}
-
-/// A recording of fewer columns reads as the schema: its sections and restarts decode as it
-/// wrote them, and the columns past its own hold no recorded cell.
+/// A journal of fewer columns applies as the schema: its sections apply as it wrote them, and
+/// the columns past its own hold no recorded cell.
 #[test]
 fn a_recording_of_fewer_columns_leaves_the_later_columns_unrecorded() {
     let older = vec![vec![Kind::U32], vec![Kind::I64]];
@@ -203,7 +157,6 @@ fn a_recording_of_fewer_columns_leaves_the_later_columns_unrecorded() {
         ..quiet(5)
     };
     let mut wide = State::recorded(schema(), vec![1, 1]).unwrap();
-    assert_eq!(wide.columns(), [1, 1]);
     wide.apply(&hour, |_| Ok(inserted.as_slice())).unwrap();
     let table = wide.table(0).unwrap();
     assert_eq!(table.kinds().collect::<Vec<_>>(), schema()[0]);
@@ -211,18 +164,6 @@ fn a_recording_of_fewer_columns_leaves_the_later_columns_unrecorded() {
     assert!(table.recorded(0, 1));
     assert!(!table.recorded(1, 0) && !table.recorded(1, 1));
 
-    let mut narrow = State::new(older).unwrap();
-    narrow.apply(&hour, |_| Ok(inserted.as_slice())).unwrap();
-    let restart = restart::write(
-        narrow.table(0).unwrap(),
-        Status::Complete,
-        &Acquisition::default(),
-        &[],
-    )
-    .unwrap();
-    let mut restored = State::recorded(schema(), vec![1, 1]).unwrap();
-    restored.restore(0, &restart).unwrap();
-    assert_eq!(restored.table(0), wide.table(0));
     assert!(State::recorded(schema(), vec![3, 1]).is_err());
 }
 
@@ -252,10 +193,10 @@ fn sample_hours_follow_reads_and_listed_samples() {
     assert_eq!((state.sampled_at(0), state.sampled_at(1)), (None, Some(4)));
 }
 
-/// A truncated table's view is the rows its hour read or added; a restart carries it, and
-/// a truncated table with no section is refused.
+/// A truncated table's view is the rows its hour read or added, and a truncated table with no
+/// section is refused.
 #[test]
-fn a_truncated_view_is_the_hours_rows_read_and_restarts_with_them() {
+fn a_truncated_view_is_the_hours_rows_read() {
     let mut walked = State::new(schema()).unwrap();
     let first = write(
         &schema()[0],
@@ -303,16 +244,6 @@ fn a_truncated_view_is_the_hours_rows_read_and_restarts_with_them() {
         .apply(&truncated, |_| Ok(partial.as_slice()))
         .unwrap();
     assert_eq!(walked.truncated_view(0), Some(&[1, 2][..]));
-    let restart = restart::write(
-        walked.table(0).unwrap(),
-        walked.status(0).unwrap(),
-        &Acquisition::default(),
-        walked.truncated_view(0).unwrap(),
-    )
-    .unwrap();
-    let mut started = State::new(schema()).unwrap();
-    started.restore(0, &restart).unwrap();
-    assert_eq!(started.truncated_view(0), Some(&[1, 2][..]));
     let silent = Manifest {
         statuses: vec![Status::Truncated { missing: 1 }, Status::Complete],
         ..quiet(3)
@@ -380,7 +311,7 @@ fn fill_targets_clear_with_the_next_hour() {
 }
 
 /// A truncated hour that deletes a row it read, and one that fills the freed slot again,
-/// keep views of live rows, once each, which restart.
+/// keep views of live rows, once each.
 #[test]
 fn a_truncated_view_drops_deleted_rows_and_holds_a_reused_slot_once() {
     let mut walked = State::new(schema()).unwrap();
@@ -405,18 +336,6 @@ fn a_truncated_view_drops_deleted_rows_and_holds_a_reused_slot_once() {
         ..quiet(1)
     };
     walked.apply(&hour, |_| Ok(first.as_slice())).unwrap();
-    let restarts = |walked: &State| {
-        let restart = restart::write(
-            walked.table(0).unwrap(),
-            walked.status(0).unwrap(),
-            &Acquisition::default(),
-            walked.truncated_view(0).unwrap(),
-        )
-        .unwrap();
-        let mut started = State::new(schema()).unwrap();
-        started.restore(0, &restart).unwrap();
-        started.truncated_view(0).map(<[u32]>::to_vec)
-    };
     for (read, deleted, inserted, keys, view) in [
         (&[0, 1][..], &[0][..], &[][..], &[][..], &[1][..]),
         (&[1][..], &[1][..], &[1][..], &[12][..], &[1][..]),
@@ -449,51 +368,5 @@ fn a_truncated_view_drops_deleted_rows_and_holds_a_reused_slot_once() {
             .apply(&truncated, |_| Ok(partial.as_slice()))
             .unwrap();
         assert_eq!(walked.truncated_view(0), Some(view));
-        assert_eq!(restarts(&walked).as_deref(), Some(view));
     }
-}
-
-/// A skipped table's sections are not asked for: it keeps its rows and records no changes,
-/// while its status follows the hour and the tables read apply as before.
-#[test]
-fn a_skipped_table_keeps_its_rows_and_records_no_changes() {
-    let mut state = State::new(schema()).unwrap();
-    state.skip(&[false, true]).unwrap();
-    let first = write(
-        &schema()[0],
-        &TableHour {
-            read: None,
-            changed: &[],
-            deleted: &[],
-            inserted: &[0],
-            keys: &[10],
-            inserts: &[Values::U32(&[1]), Values::Bytes(&[0])],
-            runs: &[],
-            touched: &[],
-            unrecorded: &[],
-        },
-    )
-    .unwrap();
-    let hour = Manifest {
-        appends: vec![&b"GER"[..]],
-        statuses: vec![Status::Complete, Status::Unavailable { reason: 0 }],
-        sections: vec![
-            section_entry(0, &first, 0b11),
-            section_entry(1, b"unread", 1),
-        ],
-        ..quiet(100)
-    };
-    state
-        .apply(&hour, |index| {
-            assert_eq!(index, 0, "a skipped table's section is never read");
-            Ok(first.as_slice())
-        })
-        .unwrap();
-    assert!(state.skips(1) && !state.skips(0));
-    assert_eq!(state.table(0).unwrap().slot(10), Some(0));
-    assert_eq!(state.changes(0).unwrap().inserted, [0]);
-    assert_eq!(state.table(1).unwrap().live().count(), 0);
-    assert!(state.changes(1).unwrap().inserted.is_empty());
-    assert_eq!(state.status(1), Some(Status::Unavailable { reason: 0 }));
-    assert!(state.skip(&[false]).is_err());
 }

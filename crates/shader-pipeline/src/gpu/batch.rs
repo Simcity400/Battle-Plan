@@ -17,6 +17,17 @@ pub enum Packet {
     Batched(Data),
 }
 
+impl Packet {
+    /// The data of a batched packet.
+    fn batched(&self) -> Option<&Data> {
+        match self {
+            Self::Native { .. } => None,
+            Self::Batched(data) => Some(data),
+        }
+    }
+}
+
+#[derive(Clone)]
 pub struct Data {
     pipeline: Arc<Pipeline>,
     program: Arc<Program>,
@@ -179,10 +190,25 @@ impl Pipeline {
     }
 }
 
+impl Data {
+    /// What the packet uploads: each binding's constants, the packed vertices and their count.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn proof(&self) -> (Vec<(u32, Vec<u8>)>, Vec<f32>, usize) {
+        (self.constants.clone(), self.vertices.clone(), self.count)
+    }
+}
+
 impl Packet {
+    /// The data of a batched packet.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn data(&self) -> Option<&Data> {
+        self.batched()
+    }
+
     pub fn source_draws(&mut self, count: u64) {
-        if let Self::Batched(data) = self {
-            data.source_draws = count;
+        match self {
+            Self::Native { .. } => {}
+            Self::Batched(data) => data.source_draws = count,
         }
     }
 }
@@ -238,11 +264,11 @@ impl Batch {
             && rows <= u32::MAX as usize
     }
 
-    fn append(&mut self, data: Data, layers: &[u32], scissor: [u32; 4]) {
+    fn append(&mut self, data: &Data, layers: &[u32], scissor: [u32; 4]) {
         for ((target, (_, bytes)), (_, stride)) in self
             .constants
             .iter_mut()
-            .zip(data.constants)
+            .zip(&data.constants)
             .zip(&self.program.shader.buffers)
         {
             let at = target.len();
@@ -390,6 +416,7 @@ impl Batch {
             bindings: Bindings {
                 resources: ResourceHandle::Inline(GroupResources {
                     pipeline: self.source.pipeline.clone(),
+                    read_only: self.source.read_only,
                     groups: [constants, textures, self.source.samplers.clone()],
                 }),
                 offsets,
@@ -502,9 +529,7 @@ impl OverlapIndex {
 }
 
 fn bounds(item: &Item, size: [u32; 2], scratch: &mut Vec<(f64, f64)>) -> Option<[f32; 4]> {
-    let Packet::Batched(data) = &item.packet else {
-        return None;
-    };
+    let data = item.packet.batched()?;
     let bounds = data
         .program
         .shader
@@ -547,7 +572,7 @@ pub fn prepare(
     let mut failed = vec![false; items.len()];
     for (index, (item, bounds)) in items.iter().zip(&bounds).enumerate() {
         if bounds.is_some()
-            && let Packet::Batched(data) = &item.packet
+            && let Some(data) = item.packet.batched()
         {
             for view in &data.textures {
                 let result = views.reserve(arena.device(), view);
@@ -574,7 +599,8 @@ pub fn prepare(
                 ordered.push(Ordered::Native(pipeline, draw, item.scissor));
                 previous.clear();
             }
-            Packet::Batched(data) => {
+            packet => {
+                let data = packet.batched().expect("a native packet is matched above");
                 let Some(bounds) = bounds else {
                     continue;
                 };

@@ -1,19 +1,16 @@
 //! A frame's tables read row by row wherever they are held ([`Tables`]): a decoded frame lends
-//! its rows; a columnar walk's views build each row of the fields its reader names alone
-//! ([`Rowset`]). Readers shared by both paths read through it.
+//! its rows ([`Rowset`]).
 
-use super::{ColumnFrame, Columns, DecodedFrame, DecodedSource, Metrics, OperandStatus, TableView};
+use super::{DecodedFrame, DecodedSource, Metrics, OperandStatus, TableView};
 use crate::{
     BranchId, Hour,
     rows::{RowCodec, TableId, TableSchema},
 };
 use std::{borrow::Cow, io};
 
-/// One table's rows in key order: a decoded frame's, or a walk's view building each row of the
-/// fields `mask` names, every other default.
+/// One table's rows in key order, lent by a decoded frame.
 pub enum Rowset<'a, R> {
     Decoded(&'a [R]),
-    Walked(Columns<'a>, u64),
 }
 
 impl<R> Clone for Rowset<'_, R> {
@@ -25,11 +22,14 @@ impl<R> Clone for Rowset<'_, R> {
 impl<R> Copy for Rowset<'_, R> {}
 
 impl<'a, R: RowCodec> Rowset<'a, R> {
-    pub fn len(&self) -> usize {
-        match self {
-            Self::Decoded(rows) => rows.len(),
-            Self::Walked(rows, _) => rows.len(),
+    fn rows(&self) -> &'a [R] {
+        match *self {
+            Self::Decoded(rows) => rows,
         }
+    }
+
+    pub fn len(&self) -> usize {
+        self.rows().len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -38,318 +38,149 @@ impl<'a, R: RowCodec> Rowset<'a, R> {
 
     /// The rows keyed from `low` through `high`, in key order.
     pub fn span(self, low: u128, high: u128) -> Self {
-        match self {
-            Self::Decoded(rows) => {
-                let start = rows.partition_point(|row| row.key() < low);
-                let end = rows.partition_point(|row| row.key() <= high);
-                Self::Decoded(&rows[start..end.max(start)])
-            }
-            Self::Walked(rows, mask) => Self::Walked(rows.span(low, high), mask),
-        }
+        let rows = self.rows();
+        let start = rows.partition_point(|row| row.key() < low);
+        let end = rows.partition_point(|row| row.key() <= high);
+        Self::Decoded(&rows[start..end.max(start)])
     }
 
-    /// The text field of the row keyed `key`, borrowed where it is held: `field` of a decoded
-    /// row, column `column` of a walked one; never a copy of the row.
-    pub fn text(
-        &self,
-        key: u128,
-        field: fn(&R) -> &[u8],
-        column: usize,
-    ) -> io::Result<Option<&'a [u8]>> {
-        match *self {
-            Self::Decoded(rows) => Ok(rows
-                .binary_search_by_key(&key, RowCodec::key)
-                .ok()
-                .map(|at| field(&rows[at]))),
-            Self::Walked(rows, _) => match rows.find(key) {
-                Some(slot) => rows.text(slot, column).map(Some),
-                None => Ok(None),
-            },
-        }
+    /// The text field `field` of the row keyed `key`, borrowed; never a copy of the row.
+    pub fn text(&self, key: u128, field: fn(&R) -> &[u8], column: usize) -> io::Result<Option<&'a [u8]>> {
+        let rows = self.rows();
+        super::undeclared::column_read(rows.as_ptr() as usize, column);
+        Ok(rows.binary_search_by_key(&key, RowCodec::key).ok().map(|at| field(&rows[at])))
     }
 
-    /// The same rows, a walk's building the fields `mask` names in place of its own.
-    pub fn with_mask(self, mask: u64) -> Self {
-        match self {
-            Self::Walked(rows, _) => Self::Walked(rows, mask),
-            decoded => decoded,
-        }
+    /// The same rows: a mask names fields only a built row would leave out.
+    pub fn with_mask(self, _mask: u64) -> Self {
+        self
     }
 
     /// Each row, in key order.
     pub fn iter(&self) -> RowsetIter<'a, R> {
-        RowsetIter(match *self {
-            Self::Decoded(rows) => Iter::Decoded(rows.iter()),
-            Self::Walked(rows, mask) => Iter::Walked(rows, mask, rows.slots().iter()),
-        })
+        RowsetIter(self.rows().iter())
     }
 
     /// Each row's key, in order.
     pub fn keys(&self) -> impl Iterator<Item = u128> + use<'a, R> {
-        let (decoded, walked) = match *self {
-            Self::Decoded(rows) => (rows, None),
-            Self::Walked(rows, _) => (&[][..], Some(rows)),
-        };
-        decoded.iter().map(RowCodec::key).chain(
-            walked
-                .into_iter()
-                .flat_map(|rows| rows.slots().iter().map(move |&slot| rows.key(slot))),
-        )
+        self.rows().iter().map(RowCodec::key)
     }
 
     /// The row keyed `key`.
     pub fn get(&self, key: u128) -> io::Result<Option<Cow<'a, R>>> {
-        match *self {
-            Self::Decoded(rows) => Ok(rows
-                .binary_search_by_key(&key, RowCodec::key)
-                .ok()
-                .map(|at| Cow::Borrowed(&rows[at]))),
-            Self::Walked(rows, mask) => match rows.find(key) {
-                Some(slot) => rows.row(slot, mask).map(|row| Some(Cow::Owned(row))),
-                None => Ok(None),
-            },
-        }
+        let rows = self.rows();
+        Ok(rows.binary_search_by_key(&key, RowCodec::key).ok().map(|at| Cow::Borrowed(&rows[at])))
     }
 
-    /// Each row's text field, in key order, borrowed where it is held: `field` of a decoded row,
-    /// column `column` of a walked one; never a copy of the row.
-    pub fn texts(
-        &self,
-        field: fn(&R) -> &[u8],
-        column: usize,
-    ) -> impl Iterator<Item = io::Result<&'a [u8]>> + use<'a, R> {
-        let (decoded, walked) = match *self {
-            Self::Decoded(rows) => (rows, None),
-            Self::Walked(rows, _) => (&[][..], Some(rows)),
-        };
-        decoded.iter().map(move |row| Ok(field(row))).chain(
-            walked.into_iter().flat_map(move |rows| {
-                rows.slots().iter().map(move |&slot| rows.text(slot, column))
-            }),
-        )
+    /// Each row's text field `field`, in key order, borrowed; never a copy of the row.
+    pub fn texts(&self, field: fn(&R) -> &[u8], column: usize) -> impl Iterator<Item = io::Result<&'a [u8]>> + use<'a, R> {
+        let rows = self.rows();
+        super::undeclared::column_read(rows.as_ptr() as usize, column);
+        rows.iter().map(move |row| Ok(field(row)))
     }
 
-    /// The rows whose keys `keep` passes, in key order: a walk builds only those.
-    pub fn keyed<'k>(
-        &self,
-        mut keep: impl FnMut(u128) -> bool + 'k,
-    ) -> Box<dyn Iterator<Item = io::Result<Cow<'a, R>>> + 'k>
+    /// The rows whose keys `keep` passes, in key order.
+    pub fn keyed<'k>(&self, mut keep: impl FnMut(u128) -> bool + 'k) -> Box<dyn Iterator<Item = io::Result<Cow<'a, R>>> + 'k>
     where
         'a: 'k,
         R: 'k,
     {
-        match *self {
-            Self::Decoded(rows) => Box::new(
-                rows.iter()
-                    .filter(move |row| keep(row.key()))
-                    .map(|row| Ok(Cow::Borrowed(row))),
-            ),
-            Self::Walked(rows, mask) => Box::new(
-                rows.slots()
-                    .iter()
-                    .filter(move |&&slot| keep(rows.key(slot)))
-                    .map(move |&slot| rows.row(slot, mask).map(Cow::Owned)),
-            ),
-        }
+        Box::new(self.rows().iter().filter(move |row| keep(row.key())).map(|row| Ok(Cow::Borrowed(row))))
     }
 
-    /// The rows keyed within `keys`, in key order: a walk builds only those.
+    /// The rows keyed within `keys`, in key order.
     pub fn range(&self, keys: std::ops::RangeInclusive<u128>) -> RowsetIter<'a, R> {
         let (low, high) = (*keys.start(), *keys.end());
-        RowsetIter(match *self {
-            Self::Decoded(rows) => {
-                let first = rows.partition_point(|row| row.key() < low);
-                let end = first + rows[first..].partition_point(|row| row.key() <= high);
-                Iter::Decoded(rows[first..end].iter())
-            }
-            Self::Walked(rows, mask) => {
-                let first = rows.position(low).unwrap_or_else(|at| at);
-                let end = match rows.position(high) {
-                    Ok(at) => at + 1,
-                    Err(at) => at,
-                }
-                .max(first);
-                Iter::Walked(rows, mask, rows.slots()[first..end].iter())
-            }
-        })
+        let rows = self.rows();
+        let first = rows.partition_point(|row| row.key() < low);
+        let end = first + rows[first..].partition_point(|row| row.key() <= high);
+        RowsetIter(rows[first..end].iter())
     }
 
     /// Whether it holds a row keyed `key`.
     pub fn contains(&self, key: u128) -> bool {
-        match *self {
-            Self::Decoded(rows) => rows.binary_search_by_key(&key, RowCodec::key).is_ok(),
-            Self::Walked(rows, _) => rows.find(key).is_some(),
-        }
+        self.rows().binary_search_by_key(&key, RowCodec::key).is_ok()
     }
 }
 
-/// A [`Rowset`]'s rows in key order; a walk's built as they are reached.
-pub struct RowsetIter<'a, R>(Iter<'a, R>);
-
-enum Iter<'a, R> {
-    Decoded(std::slice::Iter<'a, R>),
-    Walked(Columns<'a>, u64, std::slice::Iter<'a, u32>),
-}
+/// A [`Rowset`]'s rows in key order.
+pub struct RowsetIter<'a, R>(std::slice::Iter<'a, R>);
 
 impl<'a, R: RowCodec> Iterator for RowsetIter<'a, R> {
     type Item = io::Result<Cow<'a, R>>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match &mut self.0 {
-            Iter::Decoded(rows) => rows.next().map(|row| Ok(Cow::Borrowed(row))),
-            Iter::Walked(rows, mask, slots) => slots
-                .next()
-                .map(|&slot| rows.row(slot, *mask).map(Cow::Owned)),
-        }
+        self.0.next().map(|row| Ok(Cow::Borrowed(row)))
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let len = match &self.0 {
-            Iter::Decoded(rows) => rows.len(),
-            Iter::Walked(_, _, slots) => slots.len(),
-        };
+        let len = self.0.len();
         (len, Some(len))
     }
 }
 
 impl<R: RowCodec> DoubleEndedIterator for RowsetIter<'_, R> {
     fn next_back(&mut self) -> Option<Self::Item> {
-        match &mut self.0 {
-            Iter::Decoded(rows) => rows.next_back().map(|row| Ok(Cow::Borrowed(row))),
-            Iter::Walked(rows, mask, slots) => slots
-                .next_back()
-                .map(|&slot| rows.row(slot, *mask).map(Cow::Owned)),
-        }
+        self.0.next_back().map(|row| Ok(Cow::Borrowed(row)))
     }
 }
 
 impl<R: RowCodec> ExactSizeIterator for RowsetIter<'_, R> {}
 
 impl<'a, R: RowCodec> Rowset<'a, R> {
-    /// The list field of the row keyed `key`, borrowed where it is held: `field` of a decoded
-    /// row, column `column` of a walked one.
-    pub fn u32s(
-        &self,
-        key: u128,
-        field: fn(&R) -> &[u32],
-        column: usize,
-    ) -> io::Result<Option<&'a [u32]>> {
-        match *self {
-            Self::Decoded(rows) => Ok(rows
-                .binary_search_by_key(&key, RowCodec::key)
-                .ok()
-                .map(|at| field(&rows[at]))),
-            Self::Walked(rows, _) => match rows.find(key) {
-                Some(slot) => rows.u32s(slot, column)?.map(Some).ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("{:?} column {column} was not recorded", rows.id()),
-                    )
-                }),
-                None => Ok(None),
-            },
-        }
+    /// The list field `field` of the row keyed `key`, borrowed.
+    pub fn u32s(&self, key: u128, field: fn(&R) -> &[u32], column: usize) -> io::Result<Option<&'a [u32]>> {
+        let rows = self.rows();
+        super::undeclared::column_read(rows.as_ptr() as usize, column);
+        Ok(rows.binary_search_by_key(&key, RowCodec::key).ok().map(|at| field(&rows[at])))
     }
 
     /// [`Self::u32s`] of a list of 64-bit words.
-    pub fn u64s(
-        &self,
-        key: u128,
-        field: fn(&R) -> &[u64],
-        column: usize,
-    ) -> io::Result<Option<&'a [u64]>> {
-        match *self {
-            Self::Decoded(rows) => Ok(rows
-                .binary_search_by_key(&key, RowCodec::key)
-                .ok()
-                .map(|at| field(&rows[at]))),
-            Self::Walked(rows, _) => match rows.find(key) {
-                Some(slot) => rows.u64s(slot, column)?.map(Some).ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("{:?} column {column} was not recorded", rows.id()),
-                    )
-                }),
-                None => Ok(None),
-            },
-        }
+    pub fn u64s(&self, key: u128, field: fn(&R) -> &[u64], column: usize) -> io::Result<Option<&'a [u64]>> {
+        let rows = self.rows();
+        super::undeclared::column_read(rows.as_ptr() as usize, column);
+        Ok(rows.binary_search_by_key(&key, RowCodec::key).ok().map(|at| field(&rows[at])))
     }
 
     /// Its rows at positions `at` in key order.
     pub fn within(self, at: std::ops::Range<usize>) -> Self {
-        match self {
-            Self::Decoded(rows) => Self::Decoded(&rows[at]),
-            Self::Walked(rows, mask) => Self::Walked(rows.within(at), mask),
-        }
+        Self::Decoded(&self.rows()[at])
     }
 
-    /// Each row with its text field, the text borrowed where it is held: `field` of a decoded
-    /// row, column `column` of a walked one, which its mask need not name.
-    pub fn with_text(
-        self,
-        field: fn(&R) -> &[u8],
-        column: usize,
-    ) -> impl Iterator<Item = io::Result<(Cow<'a, R>, &'a [u8])>> + use<'a, R> {
-        self.iter()
-            .zip(self.texts(field, column))
-            .map(|(row, text)| Ok((row?, text?)))
+    /// Each row with its text field `field`, the text borrowed.
+    pub fn with_text(self, field: fn(&R) -> &[u8], column: usize) -> impl Iterator<Item = io::Result<(Cow<'a, R>, &'a [u8])>> + use<'a, R> {
+        self.iter().zip(self.texts(field, column)).map(|(row, text)| Ok((row?, text?)))
     }
 
     /// The row at position `at` in key order.
     pub fn nth(&self, at: usize) -> io::Result<Option<Cow<'a, R>>> {
-        match *self {
-            Self::Decoded(rows) => Ok(rows.get(at).map(Cow::Borrowed)),
-            Self::Walked(rows, mask) => rows
-                .slot(at)
-                .map(|slot| rows.row(slot, mask).map(Cow::Owned))
-                .transpose(),
-        }
+        Ok(self.rows().get(at).map(Cow::Borrowed))
     }
 
-    /// The rows keyed from `low` through `high`, borrowed where a decoded frame holds them.
+    /// The rows keyed from `low` through `high`, borrowed.
     pub fn slice(self, low: u128, high: u128) -> io::Result<Cow<'a, [R]>>
     where
         R: Clone,
     {
-        match self.span(low, high) {
-            Self::Decoded(rows) => Ok(Cow::Borrowed(rows)),
-            walked => walked
-                .iter()
-                .map(|row| row.map(Cow::into_owned))
-                .collect::<io::Result<Vec<_>>>()
-                .map(Cow::Owned),
-        }
+        Ok(Cow::Borrowed(self.span(low, high).rows()))
     }
 
     /// The position of the row keyed `key` among its rows, in key order.
     pub fn position_of(&self, key: u128) -> Option<usize> {
-        match *self {
-            Self::Decoded(rows) => rows.binary_search_by_key(&key, RowCodec::key).ok(),
-            Self::Walked(rows, _) => rows.position(key).ok(),
-        }
+        self.rows().binary_search_by_key(&key, RowCodec::key).ok()
     }
 }
 
-/// One hour's tables as the scripted-text engine reads them: a decoded frame's, or a columnar
-/// walk's views of the tables its lanes declared. Copying it copies a reference or a walk's
-/// frame; every row it lends lives as long as the frame.
+/// One hour's tables as the scripted-text engine reads them: a decoded frame's. Copying it
+/// copies a reference; every row it lends lives as long as the frame.
 #[derive(Clone, Copy)]
 pub enum HourFrame<'a> {
     Decoded(&'a dyn DecodedSource),
-    Walked(ColumnFrame<'a>),
 }
 
 impl std::fmt::Debug for HourFrame<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let kind = match self {
-            Self::Decoded(_) => "Decoded",
-            Self::Walked(_) => "Walked",
-        };
-        f.debug_struct("HourFrame")
-            .field("kind", &kind)
-            .field("branch", &self.branch())
-            .field("hour", &self.hour())
-            .finish()
+        f.debug_struct("HourFrame").field("kind", &"Decoded").field("branch", &self.branch()).field("hour", &self.hour()).finish()
     }
 }
 
@@ -365,75 +196,49 @@ impl<'a> From<&'a DecodedFrame> for HourFrame<'a> {
     }
 }
 
-impl<'a> From<ColumnFrame<'a>> for HourFrame<'a> {
-    fn from(frame: ColumnFrame<'a>) -> Self {
-        Self::Walked(frame)
-    }
-}
-
 impl<'a> HourFrame<'a> {
-    pub fn hour(self) -> Hour {
+    fn frame(self) -> &'a dyn DecodedSource {
         match self {
-            Self::Decoded(frame) => frame.hour(),
-            Self::Walked(frame) => frame.hour,
+            Self::Decoded(frame) => frame,
         }
+    }
+
+    pub fn hour(self) -> Hour {
+        self.frame().hour()
     }
 
     pub fn branch(self) -> BranchId {
-        match self {
-            Self::Decoded(frame) => frame.branch(),
-            Self::Walked(frame) => frame.branch,
-        }
+        self.frame().branch()
     }
 
     pub fn metrics(self) -> &'a Metrics {
-        match self {
-            Self::Decoded(frame) => &frame.decoded_frame().metrics,
-            Self::Walked(frame) => frame.metrics,
-        }
+        &self.frame().decoded_frame().metrics
     }
 
-    /// The decoded frame it reads, if it reads one.
+    /// The decoded frame it reads.
     pub fn decoded(self) -> Option<&'a dyn DecodedSource> {
-        match self {
-            Self::Decoded(frame) => Some(frame),
-            Self::Walked(_) => None,
-        }
+        Some(self.frame())
     }
 
     /// `table`'s status this hour.
     pub fn status(self, table: TableId) -> OperandStatus<'a> {
-        match self {
-            Self::Decoded(frame) => frame.status(table),
-            Self::Walked(frame) => frame.view(table).status(),
-        }
+        self.frame().status(table)
     }
 
     /// The hour of `table`'s last complete acquisition, when known.
     pub fn sampled_at(self, table: TableId) -> Option<Hour> {
-        match self {
-            Self::Decoded(frame) => frame.sampled_at(table.index()),
-            Self::Walked(frame) => frame.sampled_at(table),
-        }
+        self.frame().sampled_at(table.index())
     }
 
-    /// A decoded view's allocation identity; a walk's views have none.
+    /// A decoded view's allocation identity.
     pub fn identity(self, table: TableId) -> Option<super::ViewIdentity> {
-        match self {
-            Self::Decoded(frame) => frame.identity(table.index()),
-            Self::Walked(_) => None,
-        }
+        self.frame().identity(table.index())
     }
 
-    /// The rows of `T` the hour holds, a complete table's or those a truncated one read, a
-    /// walk's building the fields `mask` names; None where it holds none.
+    /// The rows of `T` the hour holds, a complete table's or those a truncated one read; None
+    /// where it holds none.
     pub fn rows<T: TableSchema>(self, mask: u64) -> Option<Rowset<'a, T::Row>> {
-        match self {
-            Self::Decoded(frame) => {
-                <dyn DecodedSource as Tables>::rows::<T>(frame, mask)
-            }
-            Self::Walked(frame) => frame.view(T::ID).rows().map(|rows| Rowset::Walked(rows, mask)),
-        }
+        <dyn DecodedSource as Tables>::rows::<T>(self.frame(), mask)
     }
 
     /// [`Self::rows`], empty where the hour holds none.
@@ -441,13 +246,10 @@ impl<'a> HourFrame<'a> {
         self.rows::<T>(mask).unwrap_or(Rowset::Decoded(&[]))
     }
 
-    /// The rows of `T` when complete, a walk's building the fields `mask` names; refused,
-    /// saying why, otherwise, as a decoded frame refuses.
+    /// The rows of `T` when complete, reading the fields `mask` names; refused, saying why,
+    /// otherwise.
     pub fn complete<T: TableSchema>(self, mask: u64) -> io::Result<Rowset<'a, T::Row>> {
-        match self {
-            Self::Decoded(frame) => frame.decoded_frame().complete::<T>().map(Rowset::Decoded),
-            Self::Walked(frame) => frame.complete(T::ID).map(|rows| Rowset::Walked(rows, mask)),
-        }
+        self.frame().decoded_frame().complete_fields::<T>(mask).map(Rowset::Decoded)
     }
 }
 
@@ -520,17 +322,22 @@ impl Tables for DecodedFrame {
         self.tables[table.index()].sampled_at()
     }
 
-    fn rows<T: TableSchema>(&self, _: u64) -> Option<Rowset<'_, T::Row>> {
-        match &*self.tables[T::ID.index()] {
+    fn rows<T: TableSchema>(&self, mask: u64) -> Option<Rowset<'_, T::Row>> {
+        match super::undeclared::reading(mask, || &*self.tables[T::ID.index()]) {
             TableView::Complete(rows) | TableView::Truncated { rows, .. } => {
-                rows.rows::<T>().map(Rowset::Decoded)
+                let rows = rows.rows::<T>()?;
+                if let Some(held) = self.tables[T::ID.index()].fields() {
+                    let range = rows.as_ptr_range();
+                    super::undeclared::held_rows(range.start as usize..range.end as usize, T::ID, held);
+                }
+                Some(Rowset::Decoded(rows))
             }
             TableView::Unavailable { .. } | TableView::NotRecorded { .. } => None,
         }
     }
 
-    fn complete_rows<T: TableSchema>(&self, _: u64) -> io::Result<Rowset<'_, T::Row>> {
-        self.complete::<T>().map(Rowset::Decoded)
+    fn complete_rows<T: TableSchema>(&self, mask: u64) -> io::Result<Rowset<'_, T::Row>> {
+        self.complete_fields::<T>(mask).map(Rowset::Decoded)
     }
 }
 
@@ -561,36 +368,6 @@ impl Tables for dyn DecodedSource + '_ {
 
     fn complete_rows<T: TableSchema>(&self, mask: u64) -> io::Result<Rowset<'_, T::Row>> {
         self.decoded_frame().complete_rows::<T>(mask)
-    }
-}
-
-impl Tables for ColumnFrame<'_> {
-    fn of_branch(&self) -> BranchId {
-        self.branch
-    }
-
-    fn at_hour(&self) -> Hour {
-        self.hour
-    }
-
-    fn metrics(&self) -> &Metrics {
-        self.metrics
-    }
-
-    fn table_status(&self, table: TableId) -> OperandStatus<'_> {
-        self.view(table).status()
-    }
-
-    fn table_sampled_at(&self, table: TableId) -> Option<Hour> {
-        ColumnFrame::sampled_at(self, table)
-    }
-
-    fn rows<T: TableSchema>(&self, mask: u64) -> Option<Rowset<'_, T::Row>> {
-        self.view(T::ID).rows().map(|rows| Rowset::Walked(rows, mask))
-    }
-
-    fn complete_rows<T: TableSchema>(&self, mask: u64) -> io::Result<Rowset<'_, T::Row>> {
-        self.complete(T::ID).map(|rows| Rowset::Walked(rows, mask))
     }
 }
 

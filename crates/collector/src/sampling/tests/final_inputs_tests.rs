@@ -30,8 +30,6 @@ fn character(part: usize, dispatch: &Arc<acquisition::FinalInputsDispatch>) -> a
             game_state: 0,
             force_full: false,
             active: extended::characters::PART_MASKS[part],
-            trait_rows: 0,
-            trait_bytes: 0,
         },
         payload: extended::characters::CharactersJob::vacant(part),
         roles: extended::characters::Roles::Independent,
@@ -44,7 +42,7 @@ fn final_request() -> extended::FinalInputsRequest {
         ..Default::default()
     });
     captured.take_final_inputs_request(
-        &Arc::new(Cache::try_with_capacity(0).unwrap()),
+        &engine_allocation::shared(Cache::try_with_capacity(0).unwrap()).unwrap(),
         0,
         0,
         41,
@@ -205,7 +203,7 @@ fn final_inputs_publication_waits_for_every_part_and_the_admission_fence_without
                 );
             }
             let request = final_request();
-            let countries = Arc::clone(&request.countries);
+            let countries = engine_allocation::SharedBox::clone(&request.countries);
             let bytes = request.allocated_bytes();
             crate::test_support::with_allocations_denied(|| {
                 dispatch.arm(request, required);
@@ -240,7 +238,7 @@ fn final_inputs_publication_waits_for_every_part_and_the_admission_fence_without
             let acquisition::Job::FinalInputs(request) = completed.request else {
                 panic!()
             };
-            assert!(Arc::ptr_eq(&request.countries, &countries));
+            assert!(engine_allocation::SharedBox::ptr_eq(&request.countries, &countries));
             assert_eq!(request.allocated_bytes(), bytes);
             let calibration = pool.calibration();
             assert_eq!(calibration.executor.uncollected, 0);
@@ -305,7 +303,7 @@ fn final_inputs_failed_incomplete_and_unnotified_characters_return_the_unrun_loa
             pending
         };
         let request = final_request();
-        let countries = Arc::clone(&request.countries);
+        let countries = engine_allocation::SharedBox::clone(&request.countries);
         let bytes = request.allocated_bytes();
         dispatch.arm(request, 1 << 2);
         // Collection joins the failed producer but performs no successor admission.
@@ -313,7 +311,7 @@ fn final_inputs_failed_incomplete_and_unnotified_characters_return_the_unrun_loa
         let (pending, request) = dispatch.take();
         assert!(pending.is_none());
         let request = request.unwrap();
-        assert!(Arc::ptr_eq(&request.countries, &countries));
+        assert!(engine_allocation::SharedBox::ptr_eq(&request.countries, &countries));
         assert_eq!(request.allocated_bytes(), bytes);
         assert_eq!(
             pool.calibration().roles[acquisition::Role::FinalInputs as usize]
@@ -335,7 +333,7 @@ fn final_inputs_rejected_successor_uses_the_existing_parked_failure_without_nati
     let dispatch = batch.final_inputs();
     batch.stop_for_contained_panic(acquisition::Role::OrdersStitch);
     let request = final_request();
-    let countries = Arc::clone(&request.countries);
+    let countries = engine_allocation::SharedBox::clone(&request.countries);
     dispatch.arm(request, 0);
     let (pending, request) = dispatch.take();
     assert!(request.is_none());
@@ -351,7 +349,7 @@ fn final_inputs_rejected_successor_uses_the_existing_parked_failure_without_nati
     let acquisition::Job::FinalInputs(request) = completed.request else {
         panic!()
     };
-    assert!(Arc::ptr_eq(&request.countries, &countries));
+    assert!(engine_allocation::SharedBox::ptr_eq(&request.countries, &countries));
     let calibration = pool.calibration();
     assert_eq!(calibration.executor.uncollected, 0);
     assert_eq!(calibration.executor.caller_executed, 0);
@@ -392,7 +390,7 @@ fn final_inputs_unadopted_successors_drain_on_unwind_and_pool_storage_rearms() {
             let reads = Capture::new();
             *gate.open.lock().unwrap() = false;
             let request = final_request();
-            let countries = Arc::clone(&request.countries);
+            let countries = engine_allocation::SharedBox::clone(&request.countries);
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let mut batch = acquisition::Batch::new(&pool);
                 // Declared after Batch: a successor cannot leave its gate until
@@ -417,7 +415,7 @@ fn final_inputs_unadopted_successors_drain_on_unwind_and_pool_storage_rearms() {
                 panic!("synthetic parent unwind with unadopted successor");
             }));
             assert!(result.is_err());
-            assert_eq!(Arc::strong_count(&countries), 1);
+            assert_eq!(engine_allocation::SharedBox::strong_count(&countries), 1);
             let stats = pool.calibration();
             assert_eq!(
                 (

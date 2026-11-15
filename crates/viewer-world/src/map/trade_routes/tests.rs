@@ -119,7 +119,7 @@ fn each_layer_takes_the_viewed_countrys_clients_and_its_route_kinds() {
         // Somebody else's trade.
         client(9, IMPORT, 20, 30, (20, 1, 30), false),
     ];
-    let tables = Tables {
+    let tables: Tables<'_> = Tables {
         origins: &origins,
         clients: &clients,
         routes: &routes,
@@ -198,7 +198,7 @@ fn import_and_lend_lease_direction_uses_the_native_client_country() {
         client(4, SUPPLY_TRANSFER, 10, 0, (10, 2, 3), false),
         client(5, MARKET, 10, 20, (10, 1, 20), false),
     ];
-    let tables = Tables {
+    let tables: Tables<'_> = Tables {
         origins: &[],
         clients: &clients,
         routes: &routes,
@@ -227,7 +227,7 @@ fn lend_lease_delivery_keeps_giver_to_receiver_direction_in_both_views() {
     let links = links();
     let routes = vec![route(10, 1, 20, NAVAL_ROUTE)];
     let clients = vec![client(1, LEND_LEASE, 10, 20, (10, 1, 20), false)];
-    let tables = Tables {
+    let tables: Tables<'_> = Tables {
         origins: &[],
         clients: &clients,
         routes: &routes,
@@ -243,7 +243,7 @@ fn lend_lease_delivery_keeps_giver_to_receiver_direction_in_both_views() {
     // Link equivalence of the receiver and giver still controls the reverse branch.
     let clients = vec![client(1, LEND_LEASE, 10, 11, (10, 1, 11), false)];
     let routes = vec![route(10, 1, 11, NAVAL_ROUTE)];
-    let tables = Tables {
+    let tables: Tables<'_> = Tables {
         clients: &clients,
         routes: &routes,
         ..tables
@@ -264,7 +264,7 @@ fn lend_lease_delivery_keeps_giver_to_receiver_direction_in_both_views() {
 fn an_unresolved_country_is_refused_by_name() {
     let links = links();
     let clients = vec![client(1, IMPORT, 99, 20, (20, 1, 99), false)];
-    let tables = Tables {
+    let tables: Tables<'_> = Tables {
         origins: &[],
         clients: &clients,
         routes: &[],
@@ -703,7 +703,7 @@ fn swap_removed_origins_keep_native_shared_corridor_displacement() {
     }
     origins.sort_by_key(|row| row.state); // Recorder row keys deliberately differ from list order.
     let routes = vec![route(10, 0, 2, NAVAL_ROUTE), route(10, 0, 3, NAVAL_ROUTE)];
-    let tables = Tables {
+    let tables: Tables<'_> = Tables {
         origins: &origins,
         clients: &[],
         routes: &routes,
@@ -740,7 +740,7 @@ fn directional_order_precedes_handles_and_missing_positions_are_refused() {
         ];
         clients[0].other_ordinal = Some(1);
         clients[1].other_ordinal = Some(0);
-        let tables = Tables {
+        let tables: Tables<'_> = Tables {
             origins: &[],
             clients: &clients,
             routes: &routes,
@@ -756,7 +756,7 @@ fn directional_order_precedes_handles_and_missing_positions_are_refused() {
             [30, 20]
         );
         clients[1].other_ordinal = None;
-        let tables = Tables {
+        let tables: Tables<'_> = Tables {
             origins: &[],
             clients: &clients,
             routes: &routes,
@@ -841,7 +841,7 @@ fn market_groups_native_state_endpoints_across_country_keys_and_keeps_the_first_
         clients[0].other_ordinal = Some(1);
         clients[1].owner_ordinal = Some(0);
         clients[1].other_ordinal = Some(0);
-        let tables = Tables {
+        let tables: Tables<'_> = Tables {
             origins: &[],
             clients: &clients,
             routes: &routes,
@@ -874,7 +874,7 @@ fn market_groups_native_state_endpoints_across_country_keys_and_keeps_the_first_
         let mut missing_routes = routes.clone();
         missing_routes[0].source_state = None;
         missing_routes[1].destination_state = None;
-        let tables = Tables {
+        let tables: Tables<'_> = Tables {
             origins: &[],
             clients: &clients,
             routes: &missing_routes,

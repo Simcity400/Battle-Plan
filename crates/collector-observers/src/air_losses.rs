@@ -134,14 +134,9 @@ pub fn boundary(clock: Option<Clock>) {
     }
     LEDGER.boundary(clock);
 }
-#[cfg(any(test, feature = "test-support"))]
 pub fn drain(output: &mut Vec<Entry>) -> Result<usize, &'static str> {
     drain_admitted()?;
     LEDGER.drain(output)
-}
-pub fn drain_growing(output: &mut Vec<Entry>) -> Result<usize, &'static str> {
-    drain_admitted()?;
-    LEDGER.drain_growing(output)
 }
 fn drain_admitted() -> Result<(), &'static str> {
     #[cfg(test)]

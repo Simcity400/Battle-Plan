@@ -423,40 +423,10 @@ pub struct Walk {
     pub outcome: Outcome,
 }
 
-/// Every naval invasion of a complete ArmyOrders census of this pass, in
-/// census order. The province table is read only once an invasion is found.
-/// Country references share the pass's lazy native reference context: raw
-/// zero never requires the positive country/link headers. A row that does not
-/// fit is counted; any failure makes the table unavailable.
-#[allow(clippy::too_many_arguments)]
-pub fn walk(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    visits: &[corder_instance::Visit],
-    census: &[u32],
-    source: Outcome,
-    memo: &DefinitionMemo,
-    countries: &ccountry::NativeReferenceContext<'_, impl Memory>,
-    output: &mut [Row],
-) -> Walk {
-    walk_buffer(
-        memory,
-        base,
-        game_state,
-        visits,
-        census,
-        source,
-        memo,
-        countries,
-        crate::walk::Buffer::Fixed(output),
-    )
-}
-
 /// Worker acquisition follows the same complete order census and original
 /// route-check unit, without publishing a capacity-short hour.
 #[allow(clippy::too_many_arguments)]
-pub fn walk_growing(
+pub fn walk(
     memory: &impl Memory,
     base: usize,
     game_state: usize,

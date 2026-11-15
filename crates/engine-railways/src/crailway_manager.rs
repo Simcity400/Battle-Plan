@@ -467,7 +467,7 @@ pub struct HeldBatch<'a> {
 }
 
 /// A caller's held outputs per rail info and per slot batch of
-/// [`PROVINCE_BATCH`] slots ([`walk_with_selection_growing_carried`]).
+/// [`PROVINCE_BATCH`] slots ([`walk_with_selection_carried`]).
 pub trait RailCarry {
     /// The authenticated header, once per walk before any batch.
     fn tables(&mut self, _header: &RailHeader) {}
@@ -664,15 +664,15 @@ pub fn walk(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    province_output: &mut [info::Row],
-    edge_output: &mut [edge::Row],
+    province_output: &mut Vec<info::Row>,
+    edge_output: &mut Vec<edge::Row>,
 ) -> Outcomes {
     walk_inner(
         memory,
         base,
         game_state,
-        Buffer::Fixed(province_output),
-        Buffer::Fixed(edge_output),
+        Buffer::Growing(province_output),
+        Buffer::Growing(edge_output),
         None,
         None,
         &mut Fresh,
@@ -686,68 +686,35 @@ pub fn walk_with_buildings(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    province_output: &mut [info::Row],
-    edge_output: &mut [edge::Row],
-    building_output: &mut [fresh_inputs::RailwayBuildingRow],
+    province_output: &mut Vec<info::Row>,
+    edge_output: &mut Vec<edge::Row>,
+    building_output: &mut Vec<fresh_inputs::RailwayBuildingRow>,
 ) -> BuildingOutcomes {
     building_output.fill(fresh_inputs::RailwayBuildingRow::default());
     walk_inner(
         memory,
         base,
         game_state,
-        Buffer::Fixed(province_output),
-        Buffer::Fixed(edge_output),
-        Some(Buffer::Fixed(building_output)),
+        Buffer::Growing(province_output),
+        Buffer::Growing(edge_output),
+        Some(Buffer::Growing(building_output)),
         None,
         &mut Fresh,
     )
 }
 
-/// Selected operands share this same info identity, cooldown, pair-count and
-/// building pass. No current unit census or attach-time baseline is required.
-#[cfg(test)]
-pub fn walk_with_selection(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    province_output: &mut [info::Row],
-    edge_output: &mut [edge::Row],
-    building_output: &mut [fresh_inputs::RailwayBuildingRow],
-    levels: &mut selected_inputs::Levels<'_>,
-) -> BuildingOutcomes {
-    building_output.fill(fresh_inputs::RailwayBuildingRow::default());
-    let mut buffer = selected_inputs::LevelBuffer {
-        values: Buffer::Fixed(levels.values),
-        len: 0,
-        required: 0,
-    };
-    let outcomes = walk_inner(
-        memory,
-        base,
-        game_state,
-        Buffer::Fixed(province_output),
-        Buffer::Fixed(edge_output),
-        Some(Buffer::Fixed(building_output)),
-        Some(&mut buffer),
-        &mut Fresh,
-    );
-    levels.len = buffer.len;
-    levels.required = buffer.required;
-    outcomes
-}
-
 /// Worker province rows follow live province extent. Edges and indexed
 /// levels grow from original headers before dependent rows are published.
-pub fn walk_with_selection_growing(
+pub fn walk_with_selection(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
     province_output: &mut Vec<info::Row>,
     edge_output: &mut Vec<edge::Row>,
     building_output: &mut Vec<fresh_inputs::RailwayBuildingRow>,
-    levels: &mut selected_inputs::GrowingLevels<'_>,
+    levels: &mut selected_inputs::Levels<'_>,
 ) -> BuildingOutcomes {
-    walk_with_selection_growing_carried(
+    walk_with_selection_carried(
         memory,
         base,
         game_state,
@@ -759,7 +726,7 @@ pub fn walk_with_selection_growing(
     )
 }
 
-/// [`walk_with_selection_growing`] with `carry` supplying held outputs. A
+/// [`walk_with_selection`] with `carry` supplying held outputs. A
 /// batch of [`PROVINCE_BATCH`] slots the carry proves untouched
 /// ([`RailCarry::quiet_batch`]) is published from its held outputs without
 /// reading any of its slots. In every other batch each slot's info
@@ -769,14 +736,14 @@ pub fn walk_with_selection_growing(
 /// edges, indexed levels and building are not read. Held outputs take the
 /// places a fresh read would give them.
 #[allow(clippy::too_many_arguments)]
-pub fn walk_with_selection_growing_carried(
+pub fn walk_with_selection_carried(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
     province_output: &mut Vec<info::Row>,
     edge_output: &mut Vec<edge::Row>,
     building_output: &mut Vec<fresh_inputs::RailwayBuildingRow>,
-    levels: &mut selected_inputs::GrowingLevels<'_>,
+    levels: &mut selected_inputs::Levels<'_>,
     carry: &mut impl RailCarry,
 ) -> BuildingOutcomes {
     building_output.fill(fresh_inputs::RailwayBuildingRow::default());

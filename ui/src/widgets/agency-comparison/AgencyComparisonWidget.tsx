@@ -1,121 +1,120 @@
-import { nameReadText } from '../../dashboard/nameReads.ts';
-import { asFailure } from '../../dashboard/queryError.ts';
-import { pendingAt, preparedPrefix } from '../../dashboard/preparedPrefix';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import Table, { CellBar, CountryCell } from '../../charts/table/Table';
 import type { TableColumn } from '../../charts/table/Table';
 import { narrowTableOf, tableSortOf } from '../../charts/table/options';
-import { useTableHour } from '../../charts/table/useTableHour';
 import { jumpItem } from '../../charts/jump';
-import { runAt } from '../../charts/series';
-import { countryNameDetails, fitTooltip } from '../../charts/tooltip.ts';
+import { countryNameDetails, fitTooltip } from '../../charts/tooltip';
 import { useViewportHeight } from '../../charts/useChartTokens';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt';
 import { selectedTags } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { MEMBERSHIP_PREPARING, worldFilter } from '../../dashboard/groups';
-import { resolveWindow } from '../../dashboard/model';
+import { countryMatch } from '../../dashboard/groups';
+import { useHeadProduct } from '../../dashboard/headProduct';
+import { usePushedLooksHour } from '../../dashboard/pushedLooks.ts';
+import { nameReadText } from '../../dashboard/nameReads';
 import { resolveOptions } from '../../dashboard/options';
-import { useProduct } from '../../dashboard/products';
-import { useParityRows } from '../../dashboard/parityRows';
 import { usePlaybackMotion } from '../../dashboard/playback';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
-import type { AgencyComparisonReply, AgencyRankField } from '../../generated/dashboard';
+import { useDiagnostics } from '../../dashboard/useDiagnostics';
+import { useShownEachFrame, useWhyCommit } from '../../dashboard/widgetPerf';
 import { DEFAULT_SORT, OPTIONS } from './definition';
-import { agencyRequestParams, agencyRows, agencyTooltip, operativesCell, upgradesCell, validateAgencyComparisonReply } from './agencyData';
-import type { AgencyRow } from './agencyData';
+import { agencyName, agencyRows, agencyStructure, agencyTooltip, operativesCell, upgradesCell, validateAgencies } from './agencyData';
+import type { AgencyRankField } from './types';
 import './agencyComparison.css';
 import IntelSection from './IntelSection';
+import type { Agency, AgencyComparisonReply } from '../../generated/dashboard';
 
-const NO_WARNINGS: string[] = [];
-const NO_ROWS: readonly AgencyRow[] = [];
-const rowKey = (row: AgencyRow) => row.key;
+const NO_ROWS: readonly Agency[] = [];
+const rowKey = (agency: Agency) => String(agency.country.id);
+const UNNAMED = (agency: Agency) => ({ name: `Country ${agency.country.id}` });
 
-function AgencyTable({ widget, runtime, active, onDiagnostics, setOption }: WidgetProps) {
-  const playbackHour = useTableHour(runtime.clock, active && widget.time.mode === 'follow');
+/** Every country's agency at the hour shown, as the agency screen shows it: a pushed panel at the head that renders only when an agency's
+ * shown values change (they move at game events, never hour by hour). */
+export default function AgencyComparisonWidget({ widget, runtime, active, onDiagnostics, setOption }: WidgetProps) {
+  const options = resolveOptions(OPTIONS, widget.options);
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const viewport = useViewportHeight();
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const options = resolveOptions(OPTIONS, widget.options);
+  const lastHour = track?.branch.lastHour ?? 0;
   const sort = tableSortOf(options.tableSort, DEFAULT_SORT);
-  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
-  const hour = window?.lastHour ?? track?.branch.lastHour ?? 0;
+  const live = widget.time.mode === 'follow';
   const top = widget.countries.kind === 'group' && widget.countries.group.type === 'top' ? widget.countries.group.count : null;
-  const topField: AgencyRankField = options.topMeasure === 'active' || options.topMeasure === 'maximum' ? options.topMeasure : 'defense';
+  const field: AgencyRankField = options.topMeasure === 'active' || options.topMeasure === 'maximum' ? options.topMeasure : 'defense';
   const needsGroups = widget.countries.kind !== 'all' && top === null;
   const groups = useCountryGroups(runtime, track, active && needsGroups);
   const selected = selectedTags(widget.countries, track);
   const selectedKey = JSON.stringify(selected);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const fallback = useMemo(() => selected, [selectedKey]);
-  const params = track && agencyRequestParams(track.branch.id, widget.countries, fallback, groups.data, track.branch.lastHour, options.includeUncreated === true, topField);
-  const first = track ? track.branch.firstHour + Math.floor((hour - track.branch.firstHour) / 24) * 24 : hour;
-  const request = track && params ? { sourceId: track.source.id, revision: track.source.revision, product: 'agency-comparison', params: runtime.client.preparedQuery
-    ? { selection: params, firstHour: first, lastHour: Math.min(first + 23, track.branch.lastHour) } : params } : null;
-  const { data, error, retry } = useProduct<AgencyComparisonReply>(runtime.client, request, active, validateAgencyComparisonReply, track?.source);
-  const filter = useMemo(() => top !== null ? { tags: null, reason: null, known: true }
-    : worldFilter(widget.countries, fallback, groups.data, hour, track?.branch.lastHour ?? hour),
-  [top, widget.countries, fallback, groups.data, hour, track?.branch.lastHour]);
-  const rows = useMemo(() => data && (!needsGroups || groups.data) && !filter.reason ? agencyRows(data, hour, filter.tags) : NO_ROWS,
-    [data, needsGroups, groups.data, filter, hour]);
-  const root = useRef<HTMLDivElement>(null);
-  useParityRows(root, () => ({ kind: 'table', label: 'Agency comparison values',
-    complete: Boolean(data && (!needsGroups || groups.data) && !filter.reason), total: rows.length, rows: [...rows],
-  }));
-  const [visible, setVisible] = useState<readonly AgencyRow[]>(NO_ROWS);
-  const onVisible = useCallback((rows: readonly AgencyRow[]) => setVisible(rows), []);
-  const wanted = useMemo(() => visible.map(row => ({ hour: row.hour, tag: row.tag })), [visible]);
+  const match = useMemo(() => countryMatch(widget.countries, fallback, groups.data, lastHour), [widget.countries, fallback, groups.data, lastHour]);
+  const includeUncreated = options.includeUncreated === true;
+  const params = useMemo(() => track ? { includeUncreated } : null, [track, includeUncreated]);
+  const head = useHeadProduct<AgencyComparisonReply>(runtime, widget, 'agency-comparison', params, { active, validate: validateAgencies, structure: agencyStructure });
+  useShownEachFrame(runtime.clock, () => head.shownAt(), head.live);
+  const hour = head.at ?? head.hour ?? lastHour;
+  const ready = top !== null || match.ready;
+  const rows = useMemo(() => ready ? agencyRows(head.data, hour, match.matches, widget.countries.kind === 'all', top === null ? null : { count: top, field }) : NO_ROWS,
+    [ready, head.data, hour, match, widget.countries.kind, top, field]);
+  const [visible, setVisible] = useState<readonly Agency[]>(NO_ROWS);
+  const onVisible = useCallback((shown: readonly Agency[]) => setVisible(shown), []);
+  // Pushed at the head, every row is named, at the last hour one of them changed: a push (a new hour each time) or a row
+  // scrolling into view asks for no name and renders nothing more.
+  const pushed = head.read === 'followed';
+  // Rows are made again at each push's hour: the countries they name are the same list while their order and set hold.
+  const rowTagsKey = (pushed ? rows : visible).flatMap(agency => agency.country.tag ? [agency.country.tag] : []).join(',');
+  const rowTags = useMemo(() => rowTagsKey ? rowTagsKey.split(',') : [], [rowTagsKey]);
+  const nameHour = usePushedLooksHour(runtime, widget, track, rowTags, active && pushed, hour).hour;
+  const wanted = useMemo(() => rowTags.map(tag => ({ hour: nameHour, tag })), [rowTags, nameHour]);
   const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active);
-  // A name sort needs all names; flags are still requested only for mounted rows.
-  const sortingNames = useMemo(() => sort.column === 'country' ? rows.map(row => ({ hour: row.hour, tag: row.tag })) : [], [rows, sort.column]);
+  useWhyCommit('AgencyComparisonWidget', { reply: head.data, at: head.at, read: head.read, groups: groups.data, visible, nameHour, labels: labelAt });
+  // A sort by name needs every name; flags are asked only for the rows drawn.
+  const sortingNames = useMemo(() => sort.column === 'country' ? rows.flatMap(agency => agency.country.tag ? [{ hour: nameHour, tag: agency.country.tag }] : []) : [],
+    [rows, sort.column, nameHour]);
   const names = useCountryNamesAt(runtime.client, track, sortingNames, active);
-  const columns = useMemo<readonly TableColumn<AgencyRow>[]>(() => [
+  const label = useCallback((agency: Agency) => agency.country.tag ? labelAt(nameHour)(agency.country.tag) : UNNAMED(agency), [labelAt, nameHour]);
+  const cellBars = options.cellBars === true;
+  const columns = useMemo<readonly TableColumn<Agency>[]>(() => [
     { key: 'country', header: 'Country', label: 'Country', width: 'minmax(var(--table-name-min), 2fr)',
-      value: row => nameReadText(names.get(nameKey(row.hour, row.tag))), text: row => labelAt(row.hour)(row.tag).name,
-      render: row => <CountryCell {...labelAt(row.hour)(row.tag)} /> },
-    { key: 'agency', header: 'Agency', label: 'Agency', renderMissing: true, width: 'minmax(var(--table-name-min), 2fr)', priority: 3, text: row => row.value.name ?? 'Unknown',
-      value: row => row.value.name, render: row => <span title={row.value.name ?? 'Unknown'}>{row.value.name ?? 'Unknown'}</span> },
+      value: agency => agency.country.tag ? nameReadText(names.get(nameKey(nameHour, agency.country.tag))) : `Country ${agency.country.id}`,
+      text: agency => label(agency).name, render: agency => <CountryCell {...label(agency)} /> },
+    { key: 'agency', header: 'Agency', label: 'Agency', renderMissing: true, width: 'minmax(var(--table-name-min), 2fr)', priority: 3, text: agencyName,
+      value: agency => agency.name, render: agency => <span title={agency.nameMissing ?? agencyName(agency)}>{agencyName(agency)}</span> },
     { key: 'upgrades', header: 'Agency upgrades', label: 'Agency upgrades', numeric: true, renderMissing: true, width: 'max-content', priority: 2, inTooltip: true,
-      widthKey: row => [row.value.upgrades.nonnegativeLevelSum, row.value.upgrades.readHour === null, row.value.upgrades.unavailable],
-      value: row => row.value.upgrades.nonnegativeLevelSum === null ? null : BigInt(row.value.upgrades.nonnegativeLevelSum),
-      render: row => <span className={row.value.upgrades.nonnegativeLevelSum === null ? 'agency-unknown' : undefined}>{upgradesCell(row.value)}</span> },
-    { key: 'defense', header: data?.defenseLabel ?? 'Defence', label: data?.defenseLabel ?? 'Defence', numeric: true, bar: 'visible', width: 'max-content',
-      widthKey: row => [row.value.defenseValue], value: row => BigInt(row.value.defenseRaw), render: row => row.value.defenseValue ?? 'Unknown' },
+      value: agency => agency.upgrades?.nonnegativeLevelSum == null ? null : BigInt(agency.upgrades.nonnegativeLevelSum), text: upgradesCell,
+      render: agency => <span className={agency.upgrades?.nonnegativeLevelSum == null ? 'agency-unknown' : undefined}
+        title={agency.upgrades?.unavailable ?? (agency.upgrades ? undefined : head.data?.upgradesMissing ?? undefined)}>{upgradesCell(agency)}</span> },
+    { key: 'defense', header: head.data?.defenseLabel ?? 'Defence', label: head.data?.defenseLabel ?? 'Defence', numeric: true, bar: 'visible', width: 'max-content',
+      value: agency => BigInt(agency.defenseRaw), text: agency => agency.defenseValue ?? 'Unknown', render: agency => agency.defenseValue ?? 'Unknown' },
     { key: 'active', header: 'Operatives active / maximum', label: 'Operatives active / maximum', numeric: true, width: 'max-content', priority: 1, inTooltip: true,
-      widthKey: row => [row.value.activeCount, row.value.maximum], value: row => row.value.activeCount,
-      render: row => <CellBar value={options.cellBars === true && row.value.maximum > 0 ? row.value.activeCount : null} maximum={row.value.maximum}>{operativesCell(row.value)}</CellBar> },
-  ], [names, labelAt, options.cellBars, data?.defenseLabel]);
-  const tooltip = useCallback((row: AgencyRow) => fitTooltip([{ ...agencyTooltip(row, labelAt(row.hour)(row.tag).name), ...countryNameDetails(labelAt(row.hour)(row.tag)) }], viewport), [labelAt, viewport]);
-  useEffect(() => {
-    onDiagnostics(data?.warnings.length ? data.warnings : NO_WARNINGS);
-    return () => onDiagnostics(NO_WARNINGS);
-  }, [data, onDiagnostics]);
+      value: agency => agency.activeCount, text: operativesCell,
+      render: agency => <CellBar value={cellBars && agency.maximum > 0 ? agency.activeCount : null} maximum={agency.maximum}>{operativesCell(agency)}</CellBar> },
+  ], [names, nameHour, label, cellBars, head.data?.defenseLabel, head.data?.upgradesMissing]);
+  const tooltip = useCallback((agency: Agency) => fitTooltip([{ ...agencyTooltip(agency, label(agency).name, head.data?.upgradesMissing ?? null),
+    ...countryNameDetails(label(agency)) }], viewport), [label, viewport, head.data?.upgradesMissing]);
+  useDiagnostics(onDiagnostics, head.data?.warnings ?? null);
 
-  if (!track) return <WidgetState kind="empty" icon="shield" message="Load a campaign to compare its intelligence agencies." />;
-  if (!window) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  if (error) return <WidgetState kind="error" failure={asFailure(error)} onRetry={retry} />;
-  const groupFailure = needsGroups && groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
-  if (groupFailure && !groups.data) return groupFailure;
-  if (filter.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={filter.reason} /></>;
-  if (!data || (needsGroups && !groups.data)) return <>{groupFailure}<WidgetState kind="loading" label="Loading intelligence agencies…" /></>;
-  if (pendingAt(preparedPrefix(data), hour)) return <>{groupFailure}<WidgetState kind="loading" label="This range is still being prepared." /></>;
-  if (!data.available) return <>{groupFailure}<WidgetState kind="unavailable" message={preparedPrefix(data) && !preparedPrefix(data)?.coverage?.complete
-    ? 'Agency values were not recorded at this time.' : 'Intelligence agencies are not in this recording.'} /></>;
-  if (!runAt(data.observed, hour)) return <>{groupFailure}<WidgetState kind="unavailable" message="Agency values were not recorded at this time." /></>;
-  if (!rows.length && !filter.known) return groupFailure ?? <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
-  if (!rows.length) return <>{groupFailure}<WidgetState kind="empty" icon="shield" message="No recorded agencies match these countries and settings at this hour." /></>;
-  return <div ref={root} className="agency-comparison">{groupFailure}
-    <Table rowRevision={row => [row.value, labelAt(row.hour)(row.tag), options.cellBars]} key={`${track.source.id}:${track.branch.id}`} label="Intelligence agencies" rows={rows} rowKey={rowKey} columns={columns} sort={sort} setOption={setOption}
-      cellBars={options.cellBars === true} rank rankMarkers={options.rankMarkers === true}
-      density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)} muted={row => !row.value.created}
-      menu={row => [jumpItem(runtime, track.id, row.hour)]} tooltip={tooltip} onVisibleRows={onVisible} hoursPerSecond={hoursPerSecond} />
-  </div>;
-}
-
-export default function AgencyComparisonWidget(props: WidgetProps) {
+  const body = () => {
+    if (!track) return <WidgetState kind="empty" icon="shield" message="Load a campaign to compare its intelligence agencies." />;
+    if (head.read === 'off') return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+    if (head.error) return <WidgetState kind="error" failure={head.error} onRetry={head.retry} />;
+    const groupFailure = needsGroups && groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
+    if (groupFailure && !groups.data) return groupFailure;
+    if (needsGroups && match.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={match.reason} /></>;
+    if (!head.data || !ready) return <>{groupFailure}<WidgetState kind="loading" label="Loading intelligence agencies…" /></>;
+    if (head.data.missing) return <>{groupFailure}<WidgetState kind="unavailable" message="Agency values were not recorded at this time." detail={head.data.missing} /></>;
+    if (!rows.length) return <>{groupFailure}<WidgetState kind="empty" icon="shield" message="No recorded agencies match these countries and settings at this hour." /></>;
+    return <>{groupFailure}
+      <Table key={`${track.source.id}:${track.branch.id}`} label="Intelligence agencies" rows={rows} rowKey={rowKey} columns={columns} sort={sort} setOption={setOption}
+        rowRevision={agency => [agency, label(agency), cellBars]} cellBars={cellBars} rank rankMarkers={options.rankMarkers === true}
+        density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)} muted={agency => !agency.created}
+        menu={() => [jumpItem(runtime, track.id, hour)]} tooltip={tooltip} onVisibleRows={pushed ? undefined : onVisible} hoursPerSecond={hoursPerSecond} />
+    </>;
+  };
+  const table = <div ref={head.root} className="agency-comparison">{body()}</div>;
   // The raw intel records are diagnostic; they show only when asked for.
-  if (resolveOptions(OPTIONS, props.widget.options).intelRecords !== true) return <AgencyTable {...props} />;
-  return <div className="agency-comparison-product"><div className="agency-table-section"><AgencyTable {...props} /></div><IntelSection {...props} /></div>;
+  if (options.intelRecords !== true) return table;
+  return <div className="agency-comparison-product"><div className="agency-table-section">{table}</div>
+    <IntelSection widget={widget} runtime={runtime} active={active} hour={track ? hour : null} playing={live && (hoursPerSecond ?? 0) > 0} /></div>;
 }

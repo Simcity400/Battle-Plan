@@ -14,6 +14,8 @@ type Key = (usize, u32, u32);
 #[derive(Default)]
 pub(super) struct Dispatch {
     layout: Option<Layout>,
+    /// The actors the last animation made a player for.
+    created: Vec<Key>,
 }
 
 struct Layout {
@@ -188,6 +190,8 @@ impl Dispatch {
         events: &mut Vec<entity_animation::Event>,
         workers: &Workers,
     ) -> bool {
+        self.created.clear();
+        let created = &mut self.created;
         let plan_span = viewer_foundation::profiling::span("animation_dispatch_plan");
         if self
             .layout
@@ -238,6 +242,7 @@ impl Dispatch {
             }
             let task = &mut layout.tasks[task_at];
             let player = players.entry(source.key).or_insert_with(|| {
+                created.push(source.key);
                 if request.is_some() {
                     entity_animation::Player::native_choice(&task.rig)
                 } else {
@@ -310,7 +315,10 @@ impl Dispatch {
             };
             players
                 .entry(key)
-                .or_insert_with(|| entity_animation::Player::new(rig))
+                .or_insert_with(|| {
+                    created.push(key);
+                    entity_animation::Player::new(rig)
+                })
                 .advance_hidden(rig, clock);
         }
         players.retain(|key, _| {
@@ -323,6 +331,11 @@ impl Dispatch {
         });
         drop(run_span);
         true
+    }
+
+    /// The actors the last animation made a player for.
+    pub fn created(&self) -> &[Key] {
+        &self.created
     }
 }
 

@@ -11,6 +11,15 @@ impl Memory for Menu {
     }
 }
 
+fn assert_burst(output: &[Entry], count: usize) {
+    assert!(
+        output[..count]
+            .iter()
+            .enumerate()
+            .all(|(index, entry)| entry.line == index as u64 + 1 && entry.amount == index as i64)
+    );
+}
+
 fn append_burst(count: usize) {
     let _writer = OBSERVATION.enter();
     for index in 0..count {
@@ -23,7 +32,7 @@ fn append_burst(count: usize) {
 }
 
 #[test]
-fn zero_native_demand_installs_empty_storage_and_full_rejected_bursts_grow() {
+fn zero_native_demand_installs_empty_storage_and_a_burst_into_it_is_kept_whole() {
     let _lock = test_lock();
     observe_for_test(true, 0);
     reset_log_for_test(0);
@@ -34,28 +43,29 @@ fn zero_native_demand_installs_empty_storage_and_full_rejected_bursts_grow() {
     assert!(log().is_some());
     assert_eq!(capacity(), 0);
     let mut output = Vec::new();
-    assert!(drain_growing(&mut output).unwrap().complete());
+    assert!(drain(&mut output).unwrap().complete());
 
-    let rejected = REJECTED.load(Ordering::Relaxed);
+    let spilled = SPILLED.load(Ordering::Relaxed);
     append_burst(10_003);
-    assert_eq!(REJECTED.load(Ordering::Relaxed) - rejected, 10_003);
+    assert_eq!(SPILLED.load(Ordering::Relaxed) - spilled, 10_003);
     assert_eq!(OBSERVATION.required.load(Ordering::Acquire), 10_003);
-    let loss = drain_growing(&mut output).unwrap();
-    assert_eq!(
-        (loss.pending, loss.copied, loss.first),
-        (10_003, 0, loss.cursor)
-    );
+    let kept = drain(&mut output).unwrap();
+    assert_eq!((kept.pending, kept.copied), (10_003, 10_003));
+    assert!(kept.complete());
+    assert_burst(&output, 10_003);
     presize(0);
     install_offered();
     assert_eq!(capacity(), 10_003);
     collect();
-    let grown = drain_growing(&mut output).unwrap();
-    assert_eq!((grown.epoch, grown.first), (loss.epoch, loss.cursor));
+    let grown = drain(&mut output).unwrap();
+    assert_eq!((grown.epoch, grown.first), (kept.epoch, kept.cursor));
+    let spilled = SPILLED.load(Ordering::Relaxed);
     append_burst(10_003);
-    let recovered = drain_growing(&mut output).unwrap();
-    assert!(recovered.complete());
-    assert_eq!(recovered.copied, 10_003);
-    assert_eq!(output[10_002].line, 10_003);
+    assert_eq!(SPILLED.load(Ordering::Relaxed), spilled);
+    let ringed = drain(&mut output).unwrap();
+    assert!(ringed.complete());
+    assert_eq!(ringed.copied, 10_003);
+    assert_burst(&output, 10_003);
     observe_for_test(false, 0);
 }
 
@@ -71,7 +81,7 @@ fn live_growth_preserves_pending_entries_cursor_epoch_and_retired_storage() {
     install_offered();
     assert_eq!(capacity(), 5_000);
     let mut output = Vec::new();
-    assert_eq!(drain_growing(&mut output).unwrap().copied, 5_000);
+    assert_eq!(drain(&mut output).unwrap().copied, 5_000);
     let writer = OBSERVATION.enter();
     install_offered();
     assert_eq!(capacity(), 5_000);
@@ -90,7 +100,7 @@ fn live_growth_preserves_pending_entries_cursor_epoch_and_retired_storage() {
     assert_eq!(capacity(), 60_006);
     collect();
     append_burst(30_003);
-    let result = drain_growing(&mut output).unwrap();
+    let result = drain(&mut output).unwrap();
     assert_eq!(
         (result.epoch, result.first, result.copied),
         (epoch, cursor, 30_003)
@@ -100,21 +110,21 @@ fn live_growth_preserves_pending_entries_cursor_epoch_and_retired_storage() {
 }
 
 #[test]
-fn original_overflow_demand_survives_consumption_with_unchanged_native_hint() {
+fn a_burst_past_the_log_is_kept_whole_and_its_demand_survives_consumption() {
     let _lock = test_lock();
     observe_for_test(true, 0);
     reset_log_for_test(5_000);
     append_burst(70_003);
     let mut output = Vec::new();
-    let loss = drain_growing(&mut output).unwrap();
-    assert_eq!((loss.copied, loss.pending), (0, 70_003));
-    assert!(output.is_empty());
+    let loss = drain(&mut output).unwrap();
+    assert_eq!((loss.copied, loss.pending), (70_003, 70_003));
+    assert_burst(&output, 70_003);
     assert_eq!(OBSERVATION.required.load(Ordering::Acquire), 70_003);
     presize(1);
     install_offered();
     collect();
     assert_eq!(capacity(), 70_003);
-    let after = drain_growing(&mut output).unwrap();
+    let after = drain(&mut output).unwrap();
     assert_eq!((after.epoch, after.first), (loss.epoch, loss.cursor));
     observe_for_test(false, 0);
 }
@@ -126,7 +136,9 @@ fn failed_live_hint_retains_full_original_burst_pressure() {
     reset_log_for_test(0);
     append_burst(10_003);
     let mut output = Vec::new();
-    let loss = drain_growing(&mut output).unwrap();
+    let loss = drain(&mut output).unwrap();
+    assert_eq!(loss.copied, 10_003);
+    assert_burst(&output, 10_003);
     let missing = engine_native::memory::SliceMemory {
         base: 0,
         bytes: &[],
@@ -139,7 +151,7 @@ fn failed_live_hint_retains_full_original_burst_pressure() {
     install_offered();
     collect();
     assert_eq!(capacity(), 10_003);
-    let after = drain_growing(&mut output).unwrap();
+    let after = drain(&mut output).unwrap();
     assert_eq!((after.epoch, after.first), (loss.epoch, loss.cursor));
     observe_for_test(false, 0);
 }

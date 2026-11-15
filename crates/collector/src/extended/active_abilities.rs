@@ -9,7 +9,7 @@ use engine_native::{Memory, walk::Outcome};
 use replay_data::{rows::TableId, rows::tables};
 use replay_frame::frame::TableView;
 
-use super::characters::{Buffer, ability_row, valid, view, walk_abilities_growing};
+use super::characters::{Buffer, ability_row, valid, view, walk_abilities};
 
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::ActiveAbilities];
@@ -71,7 +71,7 @@ impl Captured {
     pub fn capture(&mut self, memory: &impl Memory, base: usize, game_state: usize) -> [u64; N] {
         let _reads = crate::read_accounting::table(TABLES[0]);
         let begin = qpc();
-        let result = walk_abilities_growing(
+        let result = walk_abilities(
             memory,
             base,
             game_state,
@@ -237,12 +237,12 @@ mod tests {
                 bytes: &bytes,
             };
             // Sized for every census read, as the collector sizes it from the live registry.
-            let mut storage = std::sync::Arc::new(
+            let mut storage = engine_allocation::shared(
                 engine_native::country_memory::Cache::try_with_capacity(
                     (countries as usize + 1) * 16,
                 )
                 .unwrap(),
-            );
+            ).unwrap();
             let cache = engine_native::country_memory::Cache::prepare_shared(
                 &mut storage,
                 &memory,

@@ -79,7 +79,64 @@ pub fn content_identity(
     (options, identity)
 }
 
-/// Open frames against an English synthetic content root.
+/// Writes to `path` the recording of `input` carrying the game facts of the content `options`
+/// name, as a recorder adds them to a recording of `identity`: what its content plays back.
+pub fn write_with_facts(
+    path: &std::path::Path,
+    options: &crate::products::ContentOptions,
+    identity: &replay_data::identity::Identity,
+    input: Vec<Record>,
+) {
+    let gathered = installed_content_core::gather(&installed_content_core::GatherOptions {
+        game_dir: options.options.game_dir.clone(),
+        user_dir: options.options.user_dir.clone(),
+        cache_dir: options.options.cache_dir.clone(),
+        dlc_order: Some(Vec::new()),
+    })
+    .unwrap();
+    let (pack, _) = installed_content_core::content::facts::write(
+        &installed_content_core::content::facts::Source {
+            layers: &gathered.layers,
+            withheld: Default::default(),
+        },
+        identity,
+        Err("a test carries no executable tables".to_owned()),
+        &options.options.cache_dir,
+        &|| false,
+    )
+    .unwrap();
+    let replay = replay::campaign::Replay::from_records(CAMPAIGN.into(), &[input]).unwrap();
+    std::fs::write(path, replay.bytes()).unwrap();
+    replay::campaign::writer::revise(
+        path,
+        (replay.recording().root(), replay.revision()),
+        &replay::campaign::writer::Addition {
+            facts: Some(&pack),
+            ..Default::default()
+        },
+        true,
+        3,
+    )
+    .unwrap();
+}
+
+/// [`write_with_facts`], held in memory.
+pub fn with_facts(
+    options: &crate::products::ContentOptions,
+    identity: &replay_data::identity::Identity,
+    input: Vec<Record>,
+) -> replay::campaign::Replay {
+    let path = std::env::temp_dir().join(format!(
+        "hoi4-fixture-{}.battleplan",
+        uuid::Uuid::new_v4()
+    ));
+    write_with_facts(&path, options, identity, input);
+    let bytes = std::fs::read(&path).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    replay::campaign::Replay::open(bytes).unwrap()
+}
+
+/// Open frames against an English synthetic content root, the recording carrying its facts.
 pub fn source_with_content(
     frames: Vec<DecodedFrame>,
     root: &std::path::Path,
@@ -103,16 +160,14 @@ pub fn source_with_content(
     let Record::SessionStart(session) = &mut input[0] else {
         unreachable!()
     };
-    session.identity = identity;
+    session.identity = identity.clone();
     let source = crate::Source::from_replay(
         crate::SourceKey {
             source_id: "content-fixture".into(),
             revision: "1".into(),
         },
         "memory.battleplan".into(),
-        std::sync::Arc::new(
-            replay::campaign::Replay::from_records(CAMPAIGN.into(), &[input]).unwrap(),
-        ),
+        std::sync::Arc::new(with_facts(&options, &identity, input)),
         &std::sync::atomic::AtomicBool::new(false),
     )
     .unwrap();

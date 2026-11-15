@@ -6,15 +6,15 @@ pub(super) fn walk(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    output: &mut [Row],
-    names: &mut [u8],
+    output: &mut Vec<Row>,
+    names: &mut Vec<u8>,
 ) -> crate::csubject_relation::NameWalk {
     walk_shared(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Fixed(output),
-        crate::walk::Buffer::Fixed(names),
+        crate::walk::Buffer::Growing(output),
+        crate::walk::Buffer::Growing(names),
         |_, _| {},
     )
 }

@@ -1,159 +1,82 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { cellRuns, heatNavigation, periodAt } from '../../charts/heat/layout.ts';
-import { MAX_NAME_HOURS, wantedHours } from '../../dashboard/countryFacts.ts';
-import { convoyPending, convoyRows, dayPeriods, exportersAt, heatRows, labelDates, periodPending, shownPeriods, validateConvoys } from './convoyData.ts';
+import { convoyRows, dayPeriods, factsOrReason, heatRows, labelDates, validateConvoys } from './convoyData.ts';
 
-const base = { branchId: '1', lastHour: 95, tag: 'IMP', scale: 100000, warnings: [], known: [[[0, 95, '1']], [[0, 95, '1']], [[0, 95, '1']]], holders: { '1': [{ hour: 0, tag: 'IMP' }], '2': [{ hour: 0, tag: 'EXP' }] },
-  coverage: { firstHour: 0, lastHour: 95, complete: true }, pending: [] };
-const names = { country: (tag: string | null) => ({ name: tag ?? '?' }) };
+const all = [{ firstHour: 0, lastHour: 95 }];
+const base = { branchId: '1', tag: 'IMP', firstHour: 0, lastHour: 95, scale: 100000, warnings: [], known: [all, all, all], unheld: [] };
+const names = (tag: string | null) => ({ name: tag ?? '?' });
 
 test('days read their last recorded hour and a day the recording missed is a gap', () => {
   const periods = dayPeriods([0, 95], [{ firstHour: 20, lastHour: 47 }]);
   assert.deepEqual(periods.map(period => period.readHour), [19, null, 71, 95]);
 });
 
-test('regions draw their share, blank where not read, never 100%', () => {
+test('regions draw their share, blank where not read, never 100%, and rank over the whole span', () => {
   const reply = validateConvoys('regions')({ ...base, view: 'regions', deals: [], leases: [], resources: [],
-    regions: [{ region: 7, name: 'Synthetic Sea', efficiency: [[0, 50, '40000']] }, { region: 8, name: null, efficiency: [[90, 95, '100000']] }] });
-  const periods = dayPeriods([0, 95], []);
-  const rows = heatRows(convoyRows(reply, names), periods, '#000', 10);
+    regions: [{ region: 7, name: 'Synthetic Sea', missing: null, efficiency: [[0, 50, 40000]] },
+      { region: 8, name: null, missing: 'Region 8 absent from the recorded stack', efficiency: [[90, 95, 100000]] }] });
+  const rows = heatRows(convoyRows(reply, names), dayPeriods([0, 95], []), '#000', 10, reply.scale);
   assert.deepEqual(rows.map(row => row.label), ['Synthetic Sea', 'Sea region 8']);
   assert.deepEqual(rows[0].cells.map(cell => cell.parts[0]?.share ?? null), [0.4, 0.4, null, null]);
-  // Following at hour 40, only completed days rank: the later region is left out.
-  assert.deepEqual(heatRows(convoyRows(reply, names), periods, '#000', 10, 40).map(row => row.label), ['Synthetic Sea']);
+  assert.deepEqual(heatRows(convoyRows(reply, names), dayPeriods([0, 95], []), '#000', 1, reply.scale).map(row => row.label), ['Synthetic Sea']);
+  assert.equal(convoyRows(reply, names)[1].nameDetail, 'Region 8 absent from the recorded stack');
 });
 
 test('each deal is its own row and lend-lease is hatched as not recorded', () => {
   const reply = validateConvoys('trade')({ ...base, view: 'trade', regions: [],
     resources: [{ id: 0, token: 'synthetic_ore', name: 'Synthetic ore' }],
-    deals: [{ id: '0000000000000001', exporter: [[0, 95, '2']], resource: [[0, 95, '0']], efficiency: [[0, 95, '50000']], factors: [[[0, 95, '99999']], [[0, 95, '50001']]], convoys: [[[0, 95, '3']], [[0, 95, '5']]] }],
-    leases: [{ handle: '9', giver: [[24, 95, '2']], bad: [[24, 95, '1']], convoys: [[[24, 95, '1']], [[24, 95, '4']]] }] });
+    deals: [{ id: '0000000000000001', exporter: [{ firstHour: 0, lastHour: 95, tag: 'EXP' }], resource: [[0, 95, 0]], efficiency: [[0, 95, 50000]],
+      factors: [[[0, 95, 99999]], [[0, 95, 50001]]], convoys: [[[0, 95, 3]], [[0, 95, 5]]] }],
+    leases: [{ handle: '9', giver: [{ firstHour: 24, lastHour: 95, tag: 'EXP' }], bad: [[24, 95, 1]], convoys: [[[24, 95, 1]], [[24, 95, 4]]] }] });
   const rows = convoyRows(reply, names);
   assert.deepEqual(rows.map(row => row.label), ['EXP · Synthetic ore', 'Lend-lease from EXP']);
-  const heat = heatRows(rows, dayPeriods([0, 95], []), '#000', 10);
+  const heat = heatRows(rows, dayPeriods([0, 95], []), '#000', 10, reply.scale);
   assert.equal(heat[0].cells[0].parts[0].share, 0.5);
   assert.deepEqual(heat[1].cells.map(cell => cell.unknown === true), [false, true, true, true]);
-  assert.equal(rows[0].detail(10)[2].value, '99.99% × 50%');
-  assert.equal(rows[0].detail(10)[3].value, '3 of 5');
-  assert.deepEqual(rows[1].detail(10), []);
-  assert.equal(rows[1].detail(30)[0].value, 'Not recorded');
+  assert.equal(rows[0].facts(10)[2].value, '99.99% × 50.00%');
+  assert.equal(rows[0].facts(10)[3].value, '3 of 5');
+  assert.deepEqual(rows[1].facts(10), []);
+  assert.equal(rows[1].facts(30)[0].value, 'Not recorded');
+  assert.equal(rows[1].facts(30)[1].value, 'Drawn as a bad route');
 });
 
-test('a lend-lease client whose giver has no identity keeps its route and convoys', () => {
+test('a lend-lease client whose giver has no tag keeps its route and convoys', () => {
   const reply = validateConvoys('trade')({ ...base, view: 'trade', regions: [], resources: [], deals: [],
-    leases: [{ handle: '9', giver: [], bad: [[0, 95, '0']], convoys: [[[0, 95, '1']], [[0, 95, '4']]] }] });
+    leases: [{ handle: '9', giver: [{ firstHour: 0, lastHour: 95, tag: null }], bad: [[0, 95, 0]], convoys: [[[0, 95, 1]], [[0, 95, 4]]] }] });
   const [row] = convoyRows(reply, names);
   assert.equal(row.label, 'Lend-lease from ?');
   assert.equal(row.unknownAt(10), true);
-  assert.equal(row.detail(10).at(-1)!.value, '1 of 4');
+  assert.equal(row.facts(10).at(-1)!.value, '1 of 4');
 });
 
-test('a region cell where the table was not read is unknown, never blank', () => {
-  const reply = validateConvoys('regions')({ ...base, view: 'regions', deals: [], leases: [], resources: [],
-    known: [[[0, 47, '1']], [], []], regions: [{ region: 7, name: 'Synthetic Sea', efficiency: [[0, 23, '40000']] }] });
-  const [row] = heatRows(convoyRows(reply, names), dayPeriods([0, 95], []), '#000', 10);
-  // Day 1 was read (no bad route: blank); days 2 and 3 were not read: unknown.
+test('a cell where the table was not read is unknown, never blank, and an unheld day says why', () => {
+  const reply = validateConvoys('regions')({ ...base, view: 'regions', deals: [], leases: [], resources: [], unheld: [{ firstHour: 72, lastHour: 95 }],
+    known: [[{ firstHour: 0, lastHour: 47 }], [], []], regions: [{ region: 7, name: 'Synthetic Sea', missing: null, efficiency: [[0, 23, 40000]] }] });
+  const rows = convoyRows(reply, names);
+  const periods = dayPeriods([0, 95], []);
+  const [row] = heatRows(rows, periods, '#000', 10, reply.scale);
   assert.deepEqual(row.cells.map(cell => cell.unknown === true ? 'unknown' : cell.parts.length ? 'value' : 'blank'), ['value', 'blank', 'unknown', 'unknown']);
+  assert.equal(factsOrReason(rows[0], periods[1], reply).reason, 'No bad convoy route here');
+  assert.equal(factsOrReason(rows[0], periods[2], reply).reason, 'Not recorded');
+  assert.equal(factsOrReason(rows[0], periods[3], reply).reason, 'The country was not held then');
+  assert.equal(factsOrReason(rows[0], periods[0], reply).facts[0].value, '40.00%');
 });
 
-test('labels ask names at the dates they show', () => {
+test('labels ask names at the end of each run that names a country', () => {
   const reply = validateConvoys('trade')({ ...base, view: 'trade', regions: [], resources: [],
-    deals: [{ id: '1', exporter: [[0, 40, '2'], [50, 95, '2']], resource: [[0, 95, '0']], efficiency: [[0, 95, '50000']], factors: [[], []], convoys: [[], []] }],
-    leases: [{ handle: '9', giver: [[24, 60, '2']], bad: [], convoys: [[], []] }] });
-  assert.deepEqual(labelDates(reply), { wanted: [{ hour: 95, tag: 'EXP' }, { hour: 60, tag: 'EXP' }], maxHours: MAX_NAME_HOURS });
+    deals: [{ id: '1', exporter: [{ firstHour: 0, lastHour: 40, tag: 'OLD' }, { firstHour: 41, lastHour: 95, tag: 'NEW' }], resource: [], efficiency: [[0, 95, 1]], factors: [[], []], convoys: [[], []] }],
+    leases: [{ handle: '9', giver: [{ firstHour: 0, lastHour: 10, tag: null }], bad: [[0, 10, 0]], convoys: [[], []] }] });
+  assert.deepEqual(labelDates(reply), [{ hour: 40, tag: 'OLD' }, { hour: 95, tag: 'NEW' }]);
   const asked: [string | null, number][] = [];
-  convoyRows(reply, { country: (tag, hour) => { asked.push([tag, hour]); return { name: tag ?? '?' }; } });
-  assert.deepEqual(asked, [['EXP', 95], ['EXP', 60]]);
+  const [deal] = convoyRows(reply, (tag, hour) => { asked.push([tag, hour]); return { name: tag ?? '?' }; });
+  assert.equal(deal.label, 'NEW · Resource name unavailable');
+  asked.length = 0;
+  assert.equal(deal.facts(20)[0].value, 'OLD');
+  assert.deepEqual(asked, [['OLD', 40]]);
 });
 
-test('every deal asks its name at its own date, however many dates there are', () => {
-  const count = MAX_NAME_HOURS + 36;
-  const reply = validateConvoys('trade')({ ...base, lastHour: count - 1, coverage: { firstHour: 0, lastHour: count - 1, complete: true }, view: 'trade', regions: [], resources: [], leases: [],
-    deals: Array.from({ length: count }, (_, index) => ({ id: String(index + 1), exporter: [[0, index, '2']], resource: [], efficiency: [], factors: [[], []], convoys: [[], []] })) });
-  const { wanted, maxHours } = labelDates(reply);
-  assert.equal(wanted.length, count);
-  assert.equal(maxHours, count);
-  assert.deepEqual(wantedHours(wanted, maxHours), Array.from({ length: count }, (_, hour) => hour));
-});
-
-test('the first day under way shows its reached read, not no activity', () => {
-  const reply = validateConvoys('regions')({ ...base, view: 'regions', deals: [], leases: [], resources: [],
-    regions: [{ region: 7, name: 'Synthetic Sea', efficiency: [[0, 95, '40000']] }] });
-  const periods = shownPeriods(dayPeriods([0, 95], []), [], 10, []);
-  const rows = heatRows(convoyRows(reply, names), periods, '#000', 10, 10);
-  assert.equal(rows.length, 1);
-  assert.equal(rows[0].cells[0].parts[0].share, 0.4);
-  // The chart draws the day under way: its read is the hour reached, not the day's end.
-  assert.equal(periods[0].readHour, 10);
-  const drawn = cellRuns(rows[0], periods, 10);
-  assert.equal(drawn.length, 1);
-  assert.equal(drawn[0].period.readHour, 10);
-  // A pick or tooltip on that day carries the reached read, and keys step to it.
-  assert.equal(periods[periodAt(periods, 5)!].readHour, 10);
-  assert.ok(heatNavigation(periods).keyHours.includes(10));
-  // Only that day changes; days not reached stay as they were and draw nothing yet.
-  assert.deepEqual(periods.slice(1), dayPeriods([0, 95], []).slice(1));
-});
-
-test('the day under way reads the latest recorded hour reached, skipping a gap', () => {
-  const days = dayPeriods([0, 95], [{ firstHour: 30, lastHour: 33 }]);
-  const shown = shownPeriods(days, [{ firstHour: 30, lastHour: 33 }], 32, []);
-  assert.equal(shown[1].readHour, 29);
-  // Reached nothing recorded yet that day: blank, never a future read.
-  assert.equal(shownPeriods(dayPeriods([0, 95], [{ firstHour: 24, lastHour: 33 }]), [{ firstHour: 24, lastHour: 33 }], 30, [])[1].readHour, null);
-  // A finished day and no playhead keep the same periods.
-  assert.equal(shownPeriods(days, [], 47, []), days);
-  assert.equal(shownPeriods(days, [], null, []), days);
-});
-
-test('a day prepared partway reads its prepared part, and pending days draw as pending, not unrecorded', () => {
-  // Prepared through 20, pending 21–95, playhead at 30.
-  const reply = validateConvoys('regions')({ ...base, view: 'regions', deals: [], leases: [], resources: [], lastHour: 20,
-    known: [[[0, 20, '1']], [], []], pending: [{ firstHour: 21, lastHour: 95 }],
-    regions: [{ region: 7, name: 'Synthetic Sea', efficiency: [[0, 20, '40000']] }] });
-  const pending = convoyPending(reply, [{ firstHour: 21, lastHour: 95 }], [0, 95]);
-  const periods = shownPeriods(dayPeriods([0, 95], []), [], 30, pending);
-  // The first day reads its last prepared hour, not hour 23.
-  assert.equal(periods[0].readHour, 20);
-  // The day under way and later days have nothing prepared: no read, and pending.
-  assert.deepEqual(periods.slice(1).map(period => period.readHour), [null, null, null]);
-  assert.ok(periods.slice(1).every(period => periodPending(period, pending)));
-  assert.equal(periodPending(periods[0], [{ firstHour: 40, lastHour: 95 }]), false);
-  const [row] = heatRows(convoyRows(reply, names), periods, '#000', 10, 30);
-  // The known part draws its value; pending days draw no cell, never the unknown hatch.
-  assert.equal(row.cells[0].parts[0].share, 0.4);
-  assert.ok(row.cells.slice(1).every(cell => !cell.parts.length && !cell.unknown));
-  const drawn = cellRuns(row, periods, 30);
-  assert.deepEqual(drawn.map(({ period }) => [period.firstHour, period.readHour]), [[0, 20]]);
-  // Keys stop at prepared reads; a pick on the first day carries hour 20.
-  assert.deepEqual(heatNavigation(periods).keyHours, [20]);
-  assert.equal(periods[periodAt(periods, 10)!].readHour, 20);
-});
-
-test('the pending tail after the last prepared hour joins the reply\'s pending spans', () => {
-  assert.deepEqual(convoyPending({ lastHour: 40 }, [{ firstHour: 10, lastHour: 12 }], [0, 95]),
-    [{ firstHour: 10, lastHour: 12 }, { firstHour: 41, lastHour: 95 }]);
-  assert.deepEqual(convoyPending({ lastHour: null }, [], [0, 95]), [{ firstHour: 0, lastHour: 95 }]);
-  assert.deepEqual(convoyPending({ lastHour: 95 }, [], [0, 95]), []);
-});
-
-test('a past day names its exporter as it was then, not as it was last read', () => {
-  const reply = validateConvoys('trade')({ ...base, view: 'trade', regions: [], resources: [], leases: [],
-    holders: { ...base.holders, '2': [{ hour: 0, tag: 'OLD' }, { hour: 50, tag: 'NEW' }] },
-    deals: [{ id: '1', exporter: [[0, 95, '2']], resource: [[0, 95, '0']], efficiency: [[0, 95, '50000']], factors: [[], []], convoys: [[], []] }] });
-  assert.deepEqual(exportersAt(reply, 30), [{ hour: 30, tag: 'OLD' }]);
-  const [deal] = convoyRows(reply, { country: (tag, hour) => ({ name: `${tag} at ${hour}` }) });
-  assert.equal(deal.label.startsWith('NEW at 95'), true, 'the row is labelled as last read');
-  assert.equal(deal.detail(30).find(row => row.label === 'Exporter')?.value, 'OLD at 30');
-  assert.equal(deal.detail(60).find(row => row.label === 'Exporter')?.value, 'NEW at 60');
-});
-
-test('convoy row labels and dated exporter tooltip facts retain name failure details', () => {
-  const failure = new Error('Synthetic convoy name decoder failure');
-  const reply = validateConvoys('trade')({ ...base, view: 'trade', regions: [], resources: [], leases: [],
-    deals: [{ id: '1', exporter: [[0, 95, '2']], resource: [[0, 95, '0']], efficiency: [[0, 95, '50000']], factors: [[], []], convoys: [[], []] }] });
-  const [deal] = convoyRows(reply, { country: () => ({ name: 'Couldn’t load country name.', nameFailure: failure }) });
-  assert.equal(deal.nameDetail, failure.message);
-  assert.equal(deal.detail(30).find(row => row.label === 'Exporter')?.detail, failure.message);
+test('a reply of another view or with a malformed run is refused', () => {
+  assert.throws(() => validateConvoys('trade')({ ...base, view: 'regions', regions: [], deals: [], leases: [], resources: [] }));
+  assert.throws(() => validateConvoys('regions')({ ...base, view: 'regions', deals: [], leases: [], resources: [],
+    regions: [{ region: 7, name: null, missing: null, efficiency: [[5, 4, 1]] }] }));
 });

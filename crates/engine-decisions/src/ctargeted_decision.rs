@@ -15,6 +15,9 @@ pub const COUNTRY_TARGET: usize = 0x20;
 pub const NUMERIC_TARGET: usize = 0x24;
 /// Instance-relative selector view passed to authored effect execution.
 pub const SELECTOR_VIEW: usize = 0x18;
+/// Target-selector vtable: the instance's selector view and the standalone
+/// target the select command builds, which execution receives in its place.
+pub const TARGET_VTABLE_RVA: Rva = Rva(0x027e_3640);
 /// Target-selector view passed to authored effect functions.
 pub const SELECTOR_COUNTRY: usize = 0x08;
 pub const SELECTOR_NUMERIC: usize = 0x0c;

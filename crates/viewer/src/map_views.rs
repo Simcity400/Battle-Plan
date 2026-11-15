@@ -105,10 +105,12 @@ const OWNER_TABLES: [replay_data::rows::TableId; 3] = [
 ];
 
 /// A view's resolved counter owners, read again only when the filter or one of the tables they
-/// come from changes, so a frame never re-reads the hour's tables.
+/// come from changes, so a frame never re-reads the hour's tables. While the map's playhead is on
+/// they are read from its rows at the head, four times a second at most while playing.
 #[derive(Debug, Default)]
 pub struct CounterOwners {
     resolved: Option<ResolvedOwners>,
+    head: Option<crate::playhead_host::rows::AtHead>,
 }
 
 /// The table allocations and filter the owners were read for, and the owners. An allocation
@@ -121,7 +123,27 @@ type ResolvedOwners = (
 );
 
 impl CounterOwners {
+    /// The owners at `head`'s rows while the map's playhead is open, the last resolved while they
+    /// load; at `today` with no open map.
     pub fn get(
+        &mut self,
+        today: Option<&replay_frame::frame::DecodedFrame>,
+        head: Option<(&Arc<crate::playhead_host::Entry>, crate::playhead_host::rows::Recording)>,
+        filter: &dashboard::protocol::CounterFilter,
+    ) -> Option<Arc<BTreeSet<u32>>> {
+        use crate::playhead_host::rows::{AtHead, Cadence};
+        let Some((entry, recording)) = head else {
+            self.head = None;
+            return today.and_then(|frame| self.read(frame, filter));
+        };
+        let at = self.head.get_or_insert_with(|| AtHead::new(&OWNER_TABLES, Cadence::Ready));
+        match at.frame(entry, recording) {
+            Some(rows) => self.read(&rows, filter),
+            None => self.resolved.as_ref().and_then(|(_, _, owners)| owners.clone()),
+        }
+    }
+
+    fn read(
         &mut self,
         frame: &replay_frame::frame::DecodedFrame,
         filter: &dashboard::protocol::CounterFilter,
@@ -177,6 +199,33 @@ impl Views {
         retries
     }
 
+    /// Presents the next frames for the pools' passes alone ([`PoolView::set_quiet`]).
+    pub(crate) fn set_quiet(&mut self, quiet: bool) {
+        self.naval.set_quiet(quiet);
+        self.labels.set_quiet(quiet);
+        self.pings.set_quiet(quiet);
+        self.raids.set_quiet(quiet);
+        self.bases.set_quiet(quiet);
+        self.land_combats.set_quiet(quiet);
+        self.adjacency_rules.set_quiet(quiet);
+    }
+
+    /// Whether a window changed on its own at the last frame, not cleared: beside it a family runs
+    /// only for its manager's pass (a dirty province keeping an icon off screen). The intel and
+    /// occupation views count any running as changed.
+    pub(crate) fn running_visibly(&self) -> bool {
+        self.naval.running_visibly()
+            || self.labels.running_visibly()
+            || self.pings.running_visibly()
+            || self.raids.running_visibly()
+            || self.intel.running()
+            || self.bases.running_visibly()
+            || self.land_combats.running_visibly()
+            || self.resources.running_visibly()
+            || self.occupation.running()
+            || self.adjacency_rules.running_visibly()
+    }
+
     pub fn take_running(&mut self) -> bool {
         let naval = self.naval.take_active();
         let labels = self.labels.take_running();
@@ -188,6 +237,20 @@ impl Views {
         let resources = self.resources.take_running();
         let occupation = self.occupation.take_running();
         let adjacency_rules = self.adjacency_rules.take_running();
+        for (running, name) in [
+            (naval, "running.naval"),
+            (labels, "running.labels"),
+            (pings, "running.pings"),
+            (raids, "running.raids"),
+            (intel, "running.intel"),
+            (bases, "running.bases"),
+            (land_combats, "running.land_combats"),
+            (resources, "running.resources"),
+            (occupation, "running.occupation"),
+            (adjacency_rules, "running.adjacency_rules"),
+        ] {
+            viewer_foundation::map::redraws::note(name, u64::from(running));
+        }
         naval
             || labels
             || pings
@@ -229,23 +292,75 @@ impl Presentation {
         &self.movement
     }
 
+    /// Memories of its own over this view's province schedule and movement history: what lays the
+    /// overlay out off the frame thread prepares on it, so the frame thread never waits for the
+    /// view's own memory ([`Self::take_memory`]).
+    pub(crate) fn sharing(&self) -> Self {
+        Self {
+            windows: Default::default(),
+            counters: Default::default(),
+            schedule: Arc::clone(&self.schedule),
+            movement: Arc::clone(&self.movement),
+        }
+    }
+
+    /// A presentation standing on its own: a copy of this one's province schedule, no unit
+    /// animation, no window history and no memory, for drawing a layout apart from the view
+    /// ([`crate::app::laid_proof`]).
+    pub(crate) fn snapshot(&self) -> Self {
+        let schedule = self.schedule.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+        Self {
+            windows: Default::default(),
+            counters: Default::default(),
+            schedule: Arc::new(Mutex::new(schedule)),
+            movement: Default::default(),
+        }
+    }
+
+    /// Takes the counters' memory `laid` laid an overlay out on, which is bound to that overlay's
+    /// tables, and gives it this one's; the memory taken keeps the products this view was given
+    /// since.
+    pub(crate) fn take_memory(&self, laid: &Presentation) {
+        let mut ours = self.counters.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut theirs = laid.counters.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::mem::swap(&mut *ours, &mut *theirs);
+        ours.adopt_layered(&theirs);
+    }
+
+    /// Gives `laid`'s counters' memory the products this view shows, before it lays out on it.
+    pub(crate) fn lend_layered(&self, laid: &Presentation) {
+        let ours = self.counters.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        laid.counters.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).adopt_layered(&ours);
+    }
+
     /// Whether a map-icon window changed on its own or a unit still moves at the last presented
     /// frame, cleared: a view draws its retained overlay again on the next one while one does, as
     /// the game ticks every window and animator each frame. The hour/camera preparation does not
     /// read those clocks.
-    pub fn take_running(&self) -> bool {
-        let windows = self
-            .windows
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take_running();
+    pub fn take_running(&self) -> Running {
+        let (windows, visible) = {
+            let mut views = self.windows.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let visible = views.running_visibly();
+            (views.take_running(), visible)
+        };
         let moving = self
             .movement
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .running();
-        windows || moving
+        viewer_foundation::map::redraws::note("running.movement", u64::from(moving));
+        Running { any: windows || moving, visible: visible || moving }
     }
+}
+
+/// What runs at the last presented frame ([`Presentation::take_running`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Running {
+    /// Something asks for the next frame.
+    pub any: bool,
+    /// Something it shows changes: a window on its own, a unit moving. Without it the next frame
+    /// asks only for the pools' passes.
+    pub visible: bool,
 }
 
 /// One map view's counter options and memory, which its overlays are laid out with. Two views
@@ -272,6 +387,11 @@ pub struct CounterView {
 }
 
 impl CounterView {
+    /// The counter kinds the map's layers draw, which the hour's tables then leave out.
+    pub fn layered(&self) -> viewer_counters::map::counters::Kinds {
+        self.presentation.counters.lock().unwrap_or_else(|error| error.into_inner()).drawing()
+    }
+
     /// Resolve the mode together so shared visibility cannot hide a label-mode change.
     pub fn set_mode(&mut self, mode: &viewer_world::map::map_mode::MapMode) {
         use viewer_world::map::{

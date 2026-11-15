@@ -1,18 +1,21 @@
 // The suite's report: a table per area with each item's timings and verdict, failures with their
 // screenshots, and the run's duration. Exits 0 when everything passed, 1 otherwise.
-// usage: node tools/e2e/report.mjs --run <run.json> --sweeps <dir> --perf <work dir> --prep <prep.json> --history <prep-history.jsonl> --out <dir> [--record]
+// usage: node tools/e2e/report.mjs --run <run.json> --sweeps <dir> --perf <work dir> --out <dir> [--baseline <dir>] [--history <file>]
 // Each app session's results are <dir>/sweep-<session>.json and its perf logs <work dir>/perf-<session>.jsonl(.map.<pid>.jsonl).
-// --record appends this run's preparation to the history the next runs' baseline comes from.
+// Only the phases the run asked for are judged. `--history` gets this run's failing steps added (`coverage.mjs`).
 import { createReadStream, existsSync } from 'node:fs';
-import { appendFile, readFile, readdir, writeFile } from 'node:fs/promises';
+import { readFile, readdir, writeFile } from 'node:fs/promises';
 import readline from 'node:readline';
 import path from 'node:path';
 import { compareCaptures } from '../../ui/e2e/compare.mjs';
-import { MAP_FRAME_MS, MAP_P99_MS, UNPRESENTED, catalogueHour, framesLate, handledAt, freshnessByKind, hoursInstalled, losses, mapFrames, popoutPresented, presentedAt, sessionStart } from './verdicts.mjs';
-import { BUDGET_MS, FRAME_BUDGET_MS, SUSTAINED_DROPS, consoleFailures, droppedFrames, failedReplies, firstContent, frameTimes, freshness, groupBy, item, mapAcks, mapSeek, preparation, quantiles } from './verdicts.mjs';
+import { mergeHistory, readHistory, slowestCards } from './coverage.mjs';
+import { MAP_FRAME_MS, MAP_P99_MS, UNPRESENTED, asked, catalogueHour, machineLine, framesLate, handledAt, freshnessByKind, hoursInstalled, losses, mapFrames, phaseSeconds, popoutPresented, presentedAt, sessionStart } from './verdicts.mjs';
+import { BUDGET_MS, FRAME_BUDGET_MS, SUSTAINED_DROPS, consoleFailures, droppedFrames, failedReplies, firstContent, frameTimes, freshness, groupBy, item, mapAcks, mapSeek, quantiles } from './verdicts.mjs';
+import { FAIL, PARTIAL, dashboardRows } from './playbackVerdicts.mjs';
+import { perFrame } from './trace.mjs';
 
 const flag = name => { const at = process.argv.indexOf(name); return at < 0 ? null : process.argv[at + 1]; };
-const files = Object.fromEntries(['run', 'sweeps', 'perf', 'prep', 'history', 'out', 'baseline'].map(name => [name, flag(`--${name}`)]));
+const files = Object.fromEntries(['run', 'sweeps', 'perf', 'out', 'baseline', 'history'].map(name => [name, flag(`--${name}`)]));
 const readJSON = async file => (file && existsSync(file) ? JSON.parse(await readFile(file, 'utf8')) : null);
 
 const run = await readJSON(files.run) ?? {};
@@ -26,9 +29,6 @@ async function sweeps(folder) {
   return { meta, results: parts.flatMap(part => part.results), console: parts.flatMap(part => part.console) };
 }
 const sweep = await sweeps(files.sweeps);
-const prep = await readJSON(files.prep);
-const history = files.history && existsSync(files.history)
-  ? (await readFile(files.history, 'utf8')).split('\n').filter(Boolean).map(line => JSON.parse(line)) : [];
 
 /** The records this report reads from every session's perf logs, the page's and its viewers'; the rest pass by as they
  * stream. Sessions never overlap in time, so their records read as one. */
@@ -71,23 +71,11 @@ const sections = [];
 const fmt = value => (value === null || value === undefined || !Number.isFinite(value) ? '–' : String(Math.round(value)));
 const verdict = pass => (pass ? 'pass' : '**FAIL**');
 const why = reasons => (reasons ?? []).slice(0, 4).join('; ').replace(/\|/g, '\\|').replace(/\n/g, ' ') + ((reasons?.length ?? 0) > 4 ? `; and ${reasons.length - 4} more` : '');
-const section = (title, columns, rows, note = null) => { sections.push({ title, columns, rows, note }); return rows; };
+/** The phases the sections that follow judge: a section of phases the run did not ask for is left out (`asked`). */
+let judging = null;
+const under = (...phases) => { judging = phases.length ? phases : null; };
+const section = (title, columns, rows, note = null) => { sections.push({ title, columns, rows, note, phases: judging }); return rows; };
 const quantileCells = q => [q.n, fmt(q.p50), fmt(q.p95), fmt(q.max)];
-
-// Preparation.
-let prepVerdict = null;
-if (prep) {
-  // Only preparations of tonight's fixture are its baseline.
-  const sameFixture = entry => JSON.stringify(entry.fixture ?? null) === JSON.stringify(run.fixture ?? null);
-  prepVerdict = preparation(prep, history.filter(sameFixture));
-  section('Preparation', ['Measure', 'Value', 'Baseline (median of passing runs)', 'Limit', 'Result'], [
-    { cells: ['State', `${prep.state}${prep.error ? `: ${prep.error}` : ''}`, '', '', verdict(prep.state === 'ready' && !prep.error)], pass: prep.state === 'ready' && !prep.error },
-    { cells: ['Sections and exit', `${(prep.failedSections ?? []).length} sections not ready; the app exited ${prep.exitCode ?? 'only when stopped'}`, '', '',
-      verdict((prep.failedSections ?? []).length === 0 && prep.exitCode === 0)], pass: (prep.failedSections ?? []).length === 0 && prep.exitCode === 0 },
-    ...prepVerdict.metrics.map(metric => ({ pass: metric.pass, cells: [metric.metric, metric.value?.toFixed(2) ?? '–',
-      metric.baseline === null ? 'none yet: this run starts it' : `${metric.baseline.toFixed(2)} over ${metric.runs} runs`, metric.limit?.toFixed(2) ?? '–', verdict(metric.pass)] })),
-  ], prepVerdict.reasons.length ? why(prepVerdict.reasons) : null);
-} else section('Preparation', ['Measure', 'Result'], [{ cells: ['Preparation', '**FAIL**: it did not run'], pass: false }]);
 
 const results = sweep?.results ?? [];
 // A step that ends in a map frame ends when the viewer presented it: its frame log times the paint after the frame's
@@ -136,29 +124,37 @@ if (sweep) {
   const catalogue = sweep.meta.catalogue ?? [];
   const catalogueAdds = area('catalogue').filter(result => result.label === 'add');
   const showedContent = catalogueAdds.filter(result => result.widgets?.some(widget => (widget.end === 'content' || widget.end === 'empty') && !widget.errors?.length));
+  // The quick tier's catalogue adds only the slowest cards: its coverage is of those.
+  const addedCards = new Set(area('catalogue').filter(result => result.item !== 'setup').map(result => result.item));
+  const offered = run.tier === 'quick' ? catalogue.filter(card => addedCards.has(`${card.view ? 'view' : 'widget'}/${card.title}`)) : catalogue;
+  const playedPages = new Set(area('playback').map(result => result.page)).size;
   section('Coverage', ['Area', 'Covered', 'Result'], [
-    { cells: ['Pages', `${new Set(area('pages').map(result => result.item.split('/')[1])).size} of ${sweep.meta.pages.length}, cold and warm`], pass: true },
-    { cells: ['Widget kinds on default pages', `${kinds.size} kinds, ${placements.filter(p => p.visit === 'cold').length} placements`], pass: true },
-    { cells: ['Catalogue', `${catalogue.filter(card => card.view).length} views and ${catalogue.filter(card => !card.view).length} widget cards; ${showedContent.length} of ${catalogue.length} added showed content (their timings are judged below)`], pass: showedContent.length === catalogue.length },
-    { cells: ['Control cases', `${new Set(area('controls').map(result => result.item)).size} cases, ${area('controls').length} actions`], pass: true },
-    { cells: ['Seeks', `${area('seeks').length} (${sweep.meta.seeks.map(([label]) => label).join(', ')} on every page)`], pass: true },
-    { cells: ['Playback', `${area('playback').length} runs (${sweep.meta.speeds.join(' and ')} h/s on every page)`], pass: true },
+    ...(asked(run, 'pages') ? [{ cells: ['Pages', `${new Set(area('pages').map(result => result.item.split('/')[1])).size} of ${sweep.meta.pages.length}, cold and warm`], pass: true },
+      { cells: ['Widget kinds on default pages', `${kinds.size} kinds, ${placements.filter(p => p.visit === 'cold').length} placements`], pass: true }] : []),
+    ...(asked(run, 'catalogue') ? [{ cells: ['Catalogue', `${offered.filter(card => card.view).length} views and ${offered.filter(card => !card.view).length} widget cards; ${showedContent.length} of ${offered.length} added showed content (their timings are judged below)`], pass: showedContent.length === offered.length }] : []),
+    ...(asked(run, 'controls') ? [{ cells: ['Control cases', `${new Set(area('controls').map(result => result.item)).size} cases, ${area('controls').length} actions`], pass: true }] : []),
+    ...(asked(run, 'seeks') ? [{ cells: ['Seeks', `${area('seeks').length} (${sweep.meta.seeks.map(([label]) => label).join(', ')} on every page)`], pass: true }] : []),
+    ...(area('pages-at').length ? [{ cells: ['Pages at a chosen hour', `${new Set(area('pages-at').map(result => result.item.split('/')[1])).size} of ${sweep.meta.pages.length}`], pass: true }] : []),
+    ...(asked(run, 'playback') ? [{ cells: ['Playback', `${area('playback').length} runs (${sweep.meta.speeds.join(' and ')} h/s on ${playedPages === sweep.meta.pages.length ? 'every page' : `${playedPages} pages`})`], pass: true },
+      { cells: ['Browser trace', `${area('trace').filter(result => result.trace).length} of ${playedPages} pages traced playing`],
+        pass: area('trace').filter(result => result.trace).length >= playedPages }] : []),
   ].map(row => ({ ...row, cells: [...row.cells, verdict(row.pass)] })));
 
   // Every session starts cold.
-  section('Cold sessions (each a fresh app on the prepared profile; everything it times first is timed cold)', ['Session', 'Phases', 'Started with', 'Opened campaign (ms)', 'Took', 'App exit', 'Result'],
+  section('Cold sessions (each a fresh app on the profile; everything it times first is timed cold)', ['Session', 'Phases', 'Started with', 'Opened campaign (ms)', 'Took', 'App exit', 'Result'],
     (run.sessions ?? []).map(entry => {
       const opened = results.find(result => result.area === 'startup' && result.session === entry.name.replace(/ /g, '-'));
       const pass = !entry.error && entry.sweepExit === 0 && entry.appExit === 0;
       const failure = entry.error ? `it could not start: ${entry.error}` : entry.sweepExit !== 0 ? `the sweep exited ${entry.sweepExit}` : `the app exited ${entry.appExit ?? 'only when stopped'}`;
       return { pass, cells: [entry.name, entry.phases.join(', '), `emptied: ${entry.emptied.join(', ')}; kept only: ${entry.kept.join(', ')}`,
         fmt(opened?.ms), `${Math.round(entry.seconds)} s`, entry.appExit ?? '–', pass ? 'pass' : `**FAIL**: ${why([failure])}`] };
-    }), 'Before each session the suite deletes the content cache (HOI4Replay\\viewer under the profile\'s local app data), the shader cache, the WebView2 profile with its HTTP and code caches, and the app\'s settings, and checks they are gone. Kept: the prepared store, the recording, and the artwork preparation drew (prepared stores link to it), restored from a copy taken right after preparing. Reply and answer caches live in the app\'s memory and start empty with each session. The user\'s own HOI4Replay folder is never used: the profile has its own local app data.');
+    }), 'Before each session the suite deletes the content cache (HOI4Replay\\viewer under the profile\'s local app data), the shader cache, the WebView2 profile with its HTTP and code caches, and the app\'s settings, and checks they are gone. Kept: the recording. Reply and answer caches live in the app\'s memory and start empty with each session. The user\'s own HOI4Replay folder is never used: the profile has its own local app data.');
 
   // Opening the campaign from the library.
   section('Opening the campaign (ms from the click on its library row to the dashboard and its visible widgets showing content, in each cold session)', ['Session', 'Step', 'ms', 'Result', 'Why'],
     area('startup').map(result => ({ pass: result.pass, cells: [result.session, result.label ?? result.item, fmt(result.ms), verdict(result.pass), why(result.reasons)] })));
 
+  under('pages');
   // Pages: the switch is the slowest visible widget's first content; scrolling, each turn's.
   const pageRows = [];
   for (const page of sweep.meta.pages) {
@@ -178,6 +174,30 @@ if (sweep) {
   }
   section('Pages (ms from the click or wheel turn to the slowest visible widget\'s content; cold judged, warm beside it)', ['Page', 'Cold switch', 'Cold scroll max', 'Warm switch', 'Warm scroll max', 'Widgets', 'Result', 'Why'], pageRows);
 
+  under();
+  // Pages at a chosen hour: every page's first visit at that hour, judged as a cold visit; each widget by where it first
+  // showed itself, as the page pass counts them.
+  const pagesAt = (sweep.meta.sessions ?? []).find(meta => meta.pagesAt)?.pagesAt;
+  if (pagesAt || area('pages-at').length) {
+    const hours = [...new Set(pagesAt?.hours ?? [])];
+    section(`Pages at ${pagesAt?.fraction ?? '?'} of the timeline (hour ${hours.join(', ') || '?'}; ms from the click or wheel turn to the slowest visible widget's content, after one seek there per page)`,
+      ['Page', 'Switch', 'Scroll max', 'Widgets', 'Content', 'Empty', 'Unavailable', 'Other', 'Result', 'Why'],
+      sweep.meta.pages.map(page => {
+        const steps = area('pages-at').filter(result => result.item === `at/${page}`);
+        const switchStep = steps.find(result => result.label === 'switch');
+        const widgets = new Map();
+        for (const step of steps) for (const widget of step.widgets ?? []) if (!widgets.has(widget.id)) widgets.set(widget.id, widget.end);
+        const ends = [...widgets.values()];
+        const count = end => ends.filter(value => value === end).length;
+        const reasons = steps.filter(result => !result.pass).map(result => `${result.label}: ${why(result.reasons)}`);
+        if (!switchStep) reasons.push('never visited');
+        const pass = reasons.length === 0;
+        return { pass, cells: [page, fmt(switchStep?.ms), fmt(item('scroll', steps.filter(result => result.label.startsWith('scroll'))).max), widgets.size,
+          count('content'), count('empty'), count('unavailable'), ends.length - count('content') - count('empty') - count('unavailable'), verdict(pass), why(reasons)] };
+      }));
+  }
+
+  under('pages');
   // First content by widget kind, cold and warm.
   const byKind = groupBy(placements, placement => placement.kind);
   section('First content by widget kind (ms from input; every placement on the default pages; the 100 ms rule judges cold, warm is beside it)', ['Kind', 'Placements', 'Cold p50', 'Cold p95', 'Cold max', 'Warm p50', 'Warm p95', 'Warm max', 'Result', 'Why'],
@@ -187,6 +207,7 @@ if (sweep) {
       return { pass, cells: [kind, cold.n, fmt(cold.p50), fmt(cold.p95), fmt(cold.max), fmt(warm.p50), fmt(warm.p95), fmt(warm.max), verdict(pass), why([...cold.reasons.map(r => `cold ${r}`), ...warm.reasons.map(r => `warm ${r}`)])] };
     }));
 
+  under('seeks');
   // Seeks. A widget that reports the hour it shows has finished a seek only once it shows the sought hour.
   const shownBy = records ? groupBy(records.filter(record => record.t === 'shown').sort((a, b) => a.at - b.at), record => record.widget) : new Map();
   const sought = result => {
@@ -217,6 +238,7 @@ if (sweep) {
         fmt(summary.p50), fmt(summary.p95), fmt(summary.max), verdict(pass), why([...summary.reasons, ...warmFailures])] };
     }));
 
+  under('controls');
   // Interactions: each control's first use is cold and judged; the revisit that puts it back is warm, beside it.
   const controls = groupBy(area('controls'), result => result.item);
   const warmOf = list => list.filter(result => result.check === false), coldOf = list => list.filter(result => result.check !== false);
@@ -239,6 +261,7 @@ if (sweep) {
         verdict(!reasons.length), why(reasons)] };
     }));
 
+  under('catalogue');
   // Catalogue.
   section('Catalogue (ms from Add to the added view showing content; the hour it reports showing against the clock)', ['Entry', 'ms', 'Hour shown', 'Result', 'Why'],
     area('catalogue').filter(result => result.label === 'add').map(result => {
@@ -256,6 +279,7 @@ if (sweep) {
   section('Catalogue editing', ['Item', 'Actions', 'p50', 'p95', 'Max', 'Result', 'Why'],
     [{ pass: catalogueSetup.pass, cells: ['open, delete, cancel', ...quantileCells(catalogueSetup), verdict(catalogueSetup.pass), why(catalogueSetup.reasons)] }]);
 
+  under('seeks');
   // Map.
   const mapRows = [];
   if (records) {
@@ -273,6 +297,7 @@ if (sweep) {
   const seekTimes = quantiles(mapRows.filter(row => row.judged).map(row => Number(row.cells[2])).filter(Number.isFinite));
   section('Map seeks (ms from the timeline click to the present of the frame drawing the sought hour; warm seeks beside the cold ones, not judged)', ['Item', 'View', 'ms', 'Result', 'Why'], mapRows,
     `Cold seeks: p50 ${fmt(seekTimes.p50)}, p95 ${fmt(seekTimes.p95)}, max ${fmt(seekTimes.max)} ms.`);
+  under('map');
   const modes = area('map').filter(result => result.item.startsWith('mode: '));
   const modeSummary = item('map modes', modes.filter(result => !result.unavailable));
   section(`Map modes (ms from the view's options sent with the mode, as the host sends them, to the present of the first frame the viewer drew in it): p50 ${fmt(modeSummary.p50)}, p95 ${fmt(modeSummary.p95)}, max ${fmt(modeSummary.max)}`,
@@ -294,6 +319,7 @@ if (sweep) {
       return { pass, cells: [result.item.slice(13), result.label, frames?.frames ?? '–', ms(frames?.work.p50), ms(frames?.work.p99), ms(frames?.work.max),
         ms(frames?.gpu.p99), ms(frames?.gpu.max), frames ? `${frames.dropped} of ${frames.frames}` : '–', verdict(pass), why(reasons)] };
     }), "Pointer and key input to the native map (zoom, pan, Fly and Walk, hover, clicks) enters through the viewer's suite input channel (BATTLE_PLAN_E2E_INPUT, off for users) as egui's own events, where the windowing library's translated input arrives; everything after it runs as for a user. Only the windowing library's translation of real input is untested: the suite runs on a desktop of its own, without a cursor.");
+  under('mapfps');
   const uncapped = area('mapfps');
   // Reported beside the 120 Hz verdicts above, which judge the same interactions' frame work.
   section('Map frame rate achieved, presented uncapped (the viewer without vsync, in a session of its own)', ['Interaction', 'While', 'Frames', 'FPS', 'Work p99', 'Note'],
@@ -303,6 +329,7 @@ if (sweep) {
       return { pass: ran, cells: [result.item.slice(13), result.label, frames?.frames ?? '–', frames?.frames ? Math.round(frames.fps) : '–', frames?.work.p99?.toFixed(1) ?? '–',
         ran ? '' : `**FAIL**: ${why([...result.reasons, ...(frames?.frames ? [] : ['no frames recorded'])])}`] };
     }) : [{ pass: false, cells: ['–', '–', '–', '–', '–', '**FAIL**: the uncapped session did not run'] }]);
+  under('map');
   section('Map hover (ms from the pointer moving onto it, after the game\'s tooltip delay for a tooltip, to the present of the frame drawing it; it must be the next frame and within 100 ms)', ['Target', 'Highlight', 'ms', 'Frames late', 'Result', 'Why'],
     area('map').filter(result => result.item.startsWith('hover: ')).map(result => {
       const late = result.drawnAt != null && result.deadline != null ? framesLate(mapRecords, result.deadline, result.drawnAt) : null;
@@ -313,6 +340,7 @@ if (sweep) {
   section('Pop-out map', ['Step', 'ms', 'Result', 'Why'], area('map').filter(result => result.item === 'pop-out' || result.item === 'phase')
     .map(result => ({ pass: result.pass, cells: [result.label ?? result.item, fmt(result.ms), verdict(result.pass), why(result.reasons)] })));
 
+  under('playback');
   // Playback. A widget's reports count only within its own app session.
   const starts = (sweep.meta.sessions ?? []).map(meta => Date.parse(meta.started)).filter(Number.isFinite);
   const refresh = run.refreshHz ?? null;
@@ -362,12 +390,60 @@ if (sweep) {
         fresh ? `${fresh.widgets.filter(widget => widget.pass).length} of ${fresh.widgets.length} reporting` : '–', verdict(pass), why(reasons)] };
     }));
 
+  // The browser's own trace of one playing window a page: where a frame's main-thread time goes beyond the app's painting.
+  const ms2 = value => (value === null || value === undefined || !Number.isFinite(value) ? '–' : value.toFixed(2));
+  section("Browser trace (one playing window a page under the DevTools trace, apart from the timed windows; ms a frame on the page's main thread unless named off it; the app's painting from the perf log over the same window)",
+    ['Page', 'h/s', 'Frames', 'Main busy', 'App painting', 'Script outside painting', 'Recalc style', 'Layout', 'Pre-paint, layers', 'Paint', 'Composite', 'GC', 'Other', 'Raster (off main)', 'GPU (off main)', 'Raw trace', 'What forces style and layout, and the longest scripts'],
+    area('trace').map(result => {
+      if (!result.trace) return { pass: false, cells: [result.page, result.speed, '–', '–', '–', '–', '–', '–', '–', '–', '–', '–', '–', '–', '–', '–', why(result.reasons)] };
+      const each = perFrame(result.trace);
+      const frames = records ? records.filter(record => record.t === 'frame' && record.at >= result.from && record.at <= result.to) : [];
+      const painting = frames.length ? frames.reduce((sum, record) => sum + (record.paint_ms ?? 0), 0) / frames.length : null;
+      const scripts = (result.trace.scripts ?? []).slice(0, 3).map(entry => `${entry.what} ${entry.ms} ms ×${entry.count}`);
+      return { pass: result.pass, cells: [result.page, result.speed, result.trace.frames ?? '–', ms2(each.main), ms2(painting),
+        ms2(each.script === null || painting === null ? null : Math.max(0, each.script - painting)), ms2(each.style), ms2(each.layout), ms2(each.prePaint),
+        ms2(each.paint), ms2(each.composite), ms2(each.gc), ms2(each.other), ms2(each.raster), ms2(each.gpu), result.file ? `[trace](${result.file.replaceAll('\\', '/')})` : '–',
+        why([[...result.reasons, ...each.causes.slice(0, 6), ...scripts].join('; ')])] };
+    }), area('trace').length ? null : 'No playing window was traced.');
+
+  // The dashboard's bars of "completely smooth" over each playing window, from that session's whole page log.
+  const sessionLogs = new Map();
+  const sessionLog = async name => {
+    if (!sessionLogs.has(name)) {
+      const file = files.perf ? path.join(files.perf, `perf-${name}.jsonl`) : null;
+      let log = null;
+      if (file && existsSync(file)) {
+        log = { records: [], cut: false };
+        for (const line of (await readFile(file, 'utf8')).split(/\r?\n/)) {
+          if (!line.trim()) continue;
+          try { log.records.push(JSON.parse(line)); } catch { log.cut = true; }
+        }
+      }
+      sessionLogs.set(name, log);
+    }
+    return sessionLogs.get(name);
+  };
+  const barRows = [];
+  for (const result of area('playback').filter(result => result.from != null && result.to != null)) {
+    const log = await sessionLog(result.session);
+    const label = `${result.page} ${result.speed} h/s`;
+    if (!log) { barRows.push({ pass: false, cells: [label, '–', '–', '–', verdict(false), 'no perf log for this session'] }); continue; }
+    for (const entry of dashboardRows(log, { page: label, refreshHz: refresh, window: { from: result.from, to: result.to } }).rows) {
+      const pass = entry.verdict !== FAIL && entry.verdict !== PARTIAL;
+      barRows.push({ pass, cells: [entry.page, entry.bar, entry.measured, entry.limit, pass ? entry.verdict : `**${entry.verdict}**`, why([entry.note])] });
+    }
+  }
+  section('Playback bars of the dashboard (section 10 of the playback design, tools/e2e/playbackVerdicts.mjs, over each playing window)',
+    ['Page', 'Bar', 'Measured', 'The bar', 'Verdict', 'Note'], barRows.length ? barRows : [{ pass: false, cells: ['–', '–', '–', '–', verdict(false), 'no playback window was measured'] }]);
+
+  under('playback', 'visual');
   // Freshness by widget kind: every kind must report the hour it shows.
   const freshKinds = records ? freshnessByKind(records, area('playback'), area('hours'), starts) : null;
   section('Freshness by widget kind (paused at the picture hour, every placement reports showing the clock hour; playing, each in view lags it by under one tick)', ['Kind', 'Placements', 'Worst lag p95 (h)', 'Result', 'Why'],
     freshKinds === null ? [{ pass: false, cells: ['–', '–', '–', verdict(false), 'no perf log'] }]
       : freshKinds.sort((a, b) => a.kind.localeCompare(b.kind)).map(kind => ({ pass: kind.pass, cells: [kind.kind, kind.placements, kind.worst === null ? '–' : kind.worst >= Number.MAX_VALUE ? 'none' : kind.worst, verdict(kind.pass), why(kind.reasons)] })));
 
+  under(...(run.tier === 'quick' ? ['visual'] : ['visual', 'catalogue']));
   // The visual check against the accepted baseline.
   const visualRows = [];
   let visualNote = null;
@@ -385,6 +461,7 @@ if (sweep) {
   }
   section('Visual check (pages, widgets, catalogue views, open states and the map at fixed hours and cameras, against the accepted baseline)', ['Capture', 'Kind', 'Result', 'Why', 'Diff'], visualRows, visualNote ?? (visualRows.length ? null : 'All the same.'));
 
+  under();
   // Measurement losses.
   const lost = records ? losses(records) : [];
   section('Measurement losses (records the perf logs dropped: any can hide a failed reply or a slow frame)', ['Source', 'Records', 'From', 'To'],
@@ -397,7 +474,7 @@ if (sweep) {
     ? [{ pass: false, cells: ['–', '–', 'no perf log: replies could not be checked', ''] }]
     : replies.map(reply => ({ pass: false, cells: [reply.product, reply.count, why([reply.first]), reply.hours.join(', ')] })),
     `${replies?.length === 0 ? 'None. ' : ''}Replies still unanswered when a session's sweep finished were cut off by the suite closing that app, and are not counted.`);
-  const messages = consoleFailures([...(prep?.console ?? []), ...(sweep.console ?? [])]);
+  const messages = consoleFailures(sweep.console ?? []);
   const byText = groupBy(messages, message => `${message.type}|${message.text}`);
   section('Console errors and warnings', ['Type', 'Count', 'First during', 'Message'],
     [...byText].map(([, list]) => ({ pass: false, cells: [list[0].type, list.length, list[0].during, why([list[0].text])] })), byText.size ? null : 'None.');
@@ -409,24 +486,31 @@ if (sweep) {
     failing.length > 400 ? `The first 400 of ${failing.length}; sweep.json holds them all.` : null);
 }
 
-const failed = sections.flatMap(entry => entry.rows).filter(row => !row.pass).length;
+const judged = sections.filter(entry => !entry.phases || entry.phases.some(phase => asked(run, phase)));
+const failed = judged.flatMap(entry => entry.rows).filter(row => !row.pass).length;
 const passed = failed === 0;
 const duration = run.seconds ? `${Math.round(run.seconds / 60)} min (${Object.entries(run.phases ?? {}).map(([name, seconds]) => `${name} ${Math.round(seconds)} s`).join(', ')})` : 'unknown';
+const phaseLine = phaseSeconds(sweep?.meta.sessions).map(([name, seconds]) => `${name} ${Math.round(seconds)} s`).join(', ');
 const lines = [
-  `# Acceptance suite: ${passed ? 'PASSED' : 'FAILED'}`, '',
+  `# Acceptance suite${run.tier === 'quick' ? ' (quick tier)' : ''}: ${passed ? 'PASSED' : 'FAILED'}`, '',
   `${run.commit ? `main ${run.commit.slice(0, 10)}. ` : ''}Duration ${duration}.${sweep ? ` Sweep ${Math.round(sweep.meta.seconds ?? 0)} s, viewport ${sweep.meta.viewport?.width}×${sweep.meta.viewport?.height} at ${sweep.meta.viewport?.dpr}×, display ${run.refreshHz ?? '?'} Hz.` : ''}`,
+  `Phases: ${phaseLine || 'none ran'}.`,
+  machineLine(run),
+  ...(run.shell ? [`Measuring shell ${run.shell.folder} (${run.shell.revision?.slice(0, 10) ?? 'revision unknown'}) serving the production bundle ${run.shell.ui.folder}, built ${run.shell.ui.built}, ${run.shell.ui.files} files.`] : []),
   `${failed} failing rows. Budget: ${BUDGET_MS} ms for anything a user waits on.`, '',
 ];
-for (const entry of sections) {
+for (const entry of judged) {
   lines.push(`## ${entry.title}`, '');
   if (entry.note) lines.push(entry.note, '');
   if (entry.rows.length) lines.push(`| ${entry.columns.join(' | ')} |`, `|${entry.columns.map(() => '---').join('|')}|`, ...entry.rows.map(row => `| ${row.cells.join(' | ')} |`), '');
 }
 await writeFile(path.join(files.out, 'e2e.md'), lines.join('\n'));
-await writeFile(path.join(files.out, 'e2e.json'), JSON.stringify({ passed, failed, run, sections }, null, 1));
-if (prep && files.history && process.argv.includes('--record')) {
-  await appendFile(files.history, JSON.stringify({ at: new Date().toISOString(), commit: run.commit ?? null, fixture: run.fixture ?? null, wallSeconds: prep.wallSeconds, cpuSeconds: prep.cpuSeconds,
-    peakCommitGb: prep.peakCommitGb, pass: prepVerdict.pass }) + '\n');
+await writeFile(path.join(files.out, 'e2e.json'), JSON.stringify({ passed, failed, run, sections: judged }, null, 1));
+// Every step that failed, added to the cases never left out as repeats; a full catalogue names the slowest cards.
+if (files.history && sweep) {
+  const before = readHistory(await readJSON(files.history), files.history);
+  const wholeCatalogue = run.tier !== 'quick' && asked(run, 'catalogue') && area('catalogue').some(result => result.label === 'add');
+  await writeFile(files.history, JSON.stringify(mergeHistory(before, results, { slowest: wholeCatalogue ? slowestCards(results) : null, at: new Date().toISOString() }), null, 1));
 }
 console.log(`${passed ? 'passed' : 'failed'}: ${failed} failing rows; report ${path.join(files.out, 'e2e.md')}`);
 process.exitCode = passed ? 0 : 1;

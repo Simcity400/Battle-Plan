@@ -113,25 +113,8 @@ pub struct Row {
     pub available_raw: Option<i64>,
 }
 
-/// Reads the current daily record of the stock and balance series of every
-/// authenticated canonical country IsCountryAIControlled calls not
-/// AI-controlled, one row per archetype in record order, and names each
-/// index through the equipment database's archetype list. AI-controlled
-/// countries have no rows and none of their logistics memory is read.
-///
-/// The layout is authenticated from the status to each value: vtables, the
-/// constructed 19 series, the owner and self references, each series' roll-up
-/// mode, the 30-record daily window, the current slot's record, the two
-/// series' agreement on that slot, and records sized by the database's
-/// archetype count; every archetype must be one at its own index. Any other
-/// form, and any failed read, makes the table unavailable. A country whose rows
-/// do not fit is counted unread and its values are not read.
-pub fn walk(memory: &impl Memory, base: usize, game_state: usize, rows: &mut [Row]) -> Outcome {
-    walk_buffer(memory, base, game_state, crate::walk::Buffer::Fixed(rows))
-}
-
 /// Worker storage grows from the original native headers before publication.
-pub fn walk_growing(
+pub fn walk(
     memory: &impl Memory,
     base: usize,
     game_state: usize,

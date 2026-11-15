@@ -21,8 +21,7 @@ use replay_data::{
     rows::ProvinceRow, rows::Recorded, rows::RowCodec, rows::ScriptVariablesRow, rows::StateRow,
     rows::TableSchema, rows::column, rows::mask, rows::tables,
 };
-use dashboard_world::{Found, Lexicon};
-use replay_frame::frame::{Columns, HourFrame, Leader, OperandStatus, Province, Rowset};
+use replay_frame::frame::{HourFrame, Leader, OperandStatus, Province, Rowset};
 use replay_frame::{frame::DecodedFrame, frame::TableView, frame::ViewIdentity};
 
 use super::{Eval, Scope, ongoing, variables::Store};
@@ -111,11 +110,9 @@ thread_local! {
     static FOLDS: RefCell<Vec<(ViewIdentity, Arc<Folds>)>> = const { RefCell::new(Vec::new()) };
 }
 
-/// The lexer folds a World finds tokens by: read from its frame, or the walk's own
-/// ([`World::with_lexicon`]) over the rows its frame reads.
-pub(in crate::triggers) enum Names<'a> {
+/// The lexer folds a World finds tokens by, read from its frame.
+pub(in crate::triggers) enum Names {
     Own(Arc<Folds>),
-    Shared(&'a Lexicon, Columns<'a>),
 }
 /// An index of rows joined through `CountryLinks`, and why some row's link
 /// did not resolve: an answer the index does not hold is then unknown, since
@@ -412,17 +409,18 @@ type CoreRows<'f> = (
     Rowset<'f, StateRow>,
 );
 
-/// Why `table` (`name`) is not complete at `status`, if it is not; a table of another layout's
-/// rows holds none, without a gap.
-fn core_reason(status: OperandStatus<'_>, name: &str) -> Option<String> {
+/// Why `table` is not complete at `status`, if it is not, in plain words; a table of another
+/// layout's rows holds none, without a gap.
+fn core_reason(status: OperandStatus<'_>, table: replay_data::rows::TableId) -> Option<String> {
+    let what = table.words();
     match status {
         OperandStatus::Complete | OperandStatus::WrongLayout => None,
         OperandStatus::Truncated(missing) | OperandStatus::TruncatedWrongLayout(missing) => {
-            Some(format!("{name} is truncated ({missing} rows missing)"))
+            Some(format!("{what}: read only in part ({missing} rows missing)"))
         }
-        OperandStatus::Unavailable(reason) => Some(format!("{name} is unavailable: {reason}")),
+        OperandStatus::Unavailable(reason) => Some(format!("{what}: not available: {reason}")),
         OperandStatus::NotRecorded(mode) => {
-            Some(format!("{name} is not recorded in a {mode} recording"))
+            Some(format!("{what}: not recorded in a {mode} recording"))
         }
     }
 }
@@ -436,7 +434,7 @@ fn core_tables(frame: HourFrame<'_>) -> (CoreRows<'_>, Vec<(&'static str, Failur
         name: &'static str,
         gaps: &mut Vec<(&'static str, Failure)>,
     ) -> Rowset<'f, T::Row> {
-        if let Some(reason) = core_reason(frame.status(T::ID), name) {
+        if let Some(reason) = core_reason(frame.status(T::ID), T::ID) {
             gaps.push((name, Failure::input(T::ID, "", None, reason)));
         }
         frame.held::<T>(mask)
@@ -466,15 +464,10 @@ fn core_gap_of<'f>(
 ) -> Option<String> {
     use replay_data::rows::TableId;
     let gaps = super::refusal::deferred(|| {
-        [
-            (TableId::CountryLinks, "CountryLinks"),
-            (TableId::Countries, "Countries"),
-            (TableId::Provinces, "Provinces"),
-            (TableId::States, "States"),
-        ]
+        [TableId::CountryLinks, TableId::Countries, TableId::Provinces, TableId::States]
         .into_iter()
-        .filter_map(|(table, name)| {
-            core_reason(status(table), name).map(|reason| Failure::input(table, "", None, reason))
+        .filter_map(|table| {
+            core_reason(status(table), table).map(|reason| Failure::input(table, "", None, reason))
         })
         .collect::<Vec<_>>()
     });
@@ -599,9 +592,7 @@ pub struct World<'a> {
     /// The hour's scope facts ([`RecordedScopes`]).
     recorded: OnceLock<RecordedScopes<'a>>,
     /// The lexer folds ([`Names`]).
-    names: Index<Names<'a>>,
-    /// The walk's lexer folds, for a walked frame.
-    lexicon: Option<&'a Lexicon>,
+    names: Index<Names>,
     literals: Index<literals::Lookup<'a>>,
     factions: Index<Linked<BTreeMap<u32, u64>>>,
     wars: Index<Linked<BTreeSet<(u32, u32)>>>,
@@ -1075,9 +1066,7 @@ impl World<'_> {
             }
             Query::Token(token) => super::inputs::digest(&self.token_unrecorded(*token)),
             Query::TokenOf(name) => super::inputs::digest(&self.token_of_unrecorded(name)),
-            Query::Unlinked(table, raw) => {
-                super::inputs::digest(&self.unlinked_unrecorded(table, *raw))
-            }
+            Query::Unlinked(table, _) => super::inputs::digest(&self.unlinked_unrecorded(table)),
             Query::Faction(slot) => super::inputs::digest(&self.faction_unrecorded(*slot)),
             Query::SameFaction(a, b) => {
                 super::inputs::digest(&self.same_faction_unrecorded(*a, *b))
@@ -1242,7 +1231,8 @@ impl<'a> World<'a> {
                 "acquisition",
                 None,
                 format!(
-                    "{table:?}: no current-hour read or writer certificate; its carried values cannot answer this scripted callback exactly"
+                    "{}: not read this hour, so the values carried from an earlier hour cannot answer this exactly",
+                    table.words()
                 ),
             ))
         }
@@ -1314,7 +1304,7 @@ impl<'a> World<'a> {
             .get(&state)
             .ok_or_else(|| -> Failure { format!("state {state} is not recorded").into() })?;
         row.continent
-            .require("States.continent")
+            .require("continent of states")
             .map_err(|why| {
                 Failure::input(
                     replay_data::rows::TableId::States,
@@ -1501,7 +1491,7 @@ impl<'a> World<'a> {
             for province in province_values(self.frame)? {
                 let area = province?
                     .controller_area
-                    .require("Provinces.controller_area")
+                    .require("controller area of provinces")
                     .map_err(|why| {
                         Failure::input(
                             replay_data::rows::TableId::Provinces,
@@ -1670,7 +1660,6 @@ impl<'a> World<'a> {
             aliases: content.tag_aliases,
             recorded: OnceLock::new(),
             names: OnceLock::new(),
-            lexicon: None,
             literals: OnceLock::new(),
             factions: OnceLock::new(),
             wars: OnceLock::new(),
@@ -1808,24 +1797,15 @@ impl<'a> World<'a> {
         })
     }
 
-    /// The hour's tables, a decoded frame's or a walk's views.
+    /// The hour's tables.
     pub fn tables(&self) -> HourFrame<'a> {
         self.frame
     }
 
-    /// The decoded frame it reads, for readers not yet reading [`Self::tables`]. A walk's world
-    /// lends a frame whose every table is not selected: such a reader refuses, as it would a
-    /// table its lane did not ask for.
+    /// The decoded frame it reads.
     pub fn frame(&self) -> &'a dyn replay_frame::frame::DecodedSource {
-        static UNSELECTED: OnceLock<DecodedFrame> = OnceLock::new();
         match self.frame {
             HourFrame::Decoded(frame) => frame,
-            HourFrame::Walked(_) => UNSELECTED.get_or_init(|| DecodedFrame {
-                branch: 0,
-                hour: 0,
-                tables: std::array::from_fn(|_| replay_frame::frame::not_selected()),
-                metrics: Default::default(),
-            }),
         }
     }
 
@@ -1997,7 +1977,7 @@ impl<'a> World<'a> {
         if slot.is_none() && raw != 0 {
             let failure = self
                 .table_gap("CountryLinks")
-                .unwrap_or_else(|| self.unlinked_unrecorded("country reference", raw));
+                .unwrap_or_else(|| self.unlinked_unrecorded("a country reference"));
             failure.resolution_failed();
         }
         slot
@@ -2111,25 +2091,10 @@ impl<'a> World<'a> {
                     Err(reason.clone())
                 }
             },
-            Names::Shared(lexicon, rows) => {
-                match lexicon
-                    .find(*rows, name)
-                    .map_err(walked::<tables::LexicalTokens>)?
-                {
-                    Found::None => Ok(None),
-                    Found::One(token) => Ok(Some(token)),
-                    Found::Several(literal) => {
-                        // Read folds build it deferred, and record it once it is reached.
-                        let reason = super::refusal::deferred(|| folds::several(literal));
-                        reason.reached();
-                        Err(reason)
-                    }
-                }
-            }
         }
     }
 
-    pub(super) fn names(&self) -> Result<&Names<'a>, Failure> {
+    pub(super) fn names(&self) -> Result<&Names, Failure> {
         super::inputs::table(self.frame, replay_data::rows::TableId::LexicalTokens);
         get(&self.names, || {
             let view = self.frame.identity(replay_data::rows::TableId::LexicalTokens);
@@ -2143,15 +2108,6 @@ impl<'a> World<'a> {
                 return Ok(Names::Own(folds));
             }
             let rows = lexical(self.frame)?;
-            if view.is_none()
-                && let (Some(lexicon), Rowset::Walked(columns, _)) = (self.lexicon, rows)
-                && lexicon.indexes((self.frame.branch(), self.frame.hour()), columns)
-            {
-                if let Some(why) = lexicon.fault(columns) {
-                    return Err(walked::<tables::LexicalTokens>(why));
-                }
-                return Ok(Names::Shared(lexicon, columns));
-            }
             let out = Arc::new(Folds::read(
                 rows.len(),
                 // LexicalTokens is keyed by its token.
@@ -2175,16 +2131,16 @@ impl<'a> World<'a> {
     pub(super) fn unlinked(&self, table: &str, raw: u32) -> Failure {
         super::inputs::query_resolved(
             || super::inputs::Key::World(Query::Unlinked(table.to_owned(), raw)),
-            || self.unlinked_unrecorded(table, raw),
+            || self.unlinked_unrecorded(table),
         )
     }
 
-    fn unlinked_unrecorded(&self, table: &str, raw: u32) -> Failure {
+    fn unlinked_unrecorded(&self, table: &str) -> Failure {
         Failure::input(
             replay_data::rows::TableId::CountryLinks,
             "canonical_slot",
             None,
-            format!("a {table} row's country {raw} has no CountryLinks row"),
+            format!("{table} names a country that no recorded country link holds"),
         )
     }
 
@@ -2203,13 +2159,13 @@ impl<'a> World<'a> {
             let Some(reserved) =
                 only::<tables::ReservedCountryNaming>(table::<tables::ReservedCountryNaming>(self.frame, RESERVED)?)?
             else {
-                return Err("ReservedCountryNaming does not hold one reserved country".into());
+                return Err("reserved country naming does not hold one reserved country".into());
             };
             // The positive membership census does not reverse-certify Country0
             // absence. Its authenticated faction getter does, including null.
             return reserved
                 .faction
-                .require("ReservedCountryNaming.faction")
+                .require("faction of reserved country naming")
                 .map_err(|why| {
                     Failure::input(
                         replay_data::rows::TableId::ReservedCountryNaming,
@@ -2223,7 +2179,7 @@ impl<'a> World<'a> {
                         replay_data::rows::TableId::ReservedCountryNaming,
                         "faction",
                         None,
-                        "ReservedCountryNaming.faction capture unavailable",
+                        "faction of reserved country naming capture unavailable",
                     )
                 })
                 .map(|faction| (faction != 0).then_some(faction));
@@ -2242,7 +2198,7 @@ impl<'a> World<'a> {
                     Some(slot) => {
                         out.insert(slot, row.faction);
                     }
-                    None => unresolved = Some(self.unlinked("FactionMembers", row.country)),
+                    None => unresolved = Some(self.unlinked("faction members", row.country)),
                 }
             }
             Ok((out, unresolved))
@@ -2282,10 +2238,10 @@ impl<'a> World<'a> {
                         out.insert((x.min(y), x.max(y)));
                     }
                     (None, _) => {
-                        unresolved = Some(self.unlinked("WarRelations", row.first_country))
+                        unresolved = Some(self.unlinked("war relations", row.first_country))
                     }
                     (_, None) => {
-                        unresolved = Some(self.unlinked("WarRelations", row.second_country));
+                        unresolved = Some(self.unlinked("war relations", row.second_country));
                     }
                 }
             }
@@ -2320,8 +2276,8 @@ impl<'a> World<'a> {
                     (Some(subject), Some(overlord)) => {
                         out.insert(subject, overlord);
                     }
-                    (None, _) => unresolved = Some(self.unlinked("Subjects", row.subject)),
-                    (_, None) => unresolved = Some(self.unlinked("Subjects", row.overlord)),
+                    (None, _) => unresolved = Some(self.unlinked("subjects", row.subject)),
+                    (_, None) => unresolved = Some(self.unlinked("subjects", row.overlord)),
                 }
             }
             Ok((out, unresolved))
@@ -2354,11 +2310,11 @@ impl<'a> World<'a> {
             ORIGINAL,
             Some(Store::Country(slot)),
             |row| row.country == country.id,
-            format!("country slot {slot} has no CountryAppearance row"),
+            format!("country slot {slot} has no country appearance row"),
         )?;
         let raw = row
             .original_tag_reference
-            .require("CountryAppearance.original_tag_reference")
+            .require("original tag reference of country appearance")
             .map_err(|why| {
                 Failure::input(
                     replay_data::rows::TableId::CountryAppearance,
@@ -2372,7 +2328,7 @@ impl<'a> World<'a> {
                     replay_data::rows::TableId::CountryAppearance,
                     "original_tag_reference",
                     Some(Store::Country(slot)),
-                    "CountryAppearance.original_tag_reference capture refused",
+                    "original tag reference of country appearance capture refused",
                 )
             })?;
         Ok(if raw > 0 { raw } else { country.id as i32 })
@@ -2424,7 +2380,7 @@ impl<'a> World<'a> {
         }
         let unresolved = countries
             .unlinked
-            .map(|(_, last)| self.unlinked("CompletedFocuses", last));
+            .map(|(_, last)| self.unlinked("completed focuses", last));
         Ok(linked(found.then_some(()), &unresolved)?.is_some())
     }
 
@@ -2441,7 +2397,7 @@ impl<'a> World<'a> {
                     Some(slot) => {
                         out.insert((slot, token));
                     }
-                    None => unresolved = Some(self.unlinked("CompletedFocuses", row.country)),
+                    None => unresolved = Some(self.unlinked("completed focuses", row.country)),
                 }
             }
             Ok((out, unresolved))
@@ -2547,7 +2503,7 @@ impl<'a> World<'a> {
                     Some(slot) => {
                         out.insert((slot, row.definition_id));
                     }
-                    None => unresolved = Some(self.unlinked("Projects", row.owner)),
+                    None => unresolved = Some(self.unlinked("projects", row.owner)),
                 }
             }
             Ok((out, unresolved))
@@ -2609,7 +2565,7 @@ impl<'a> World<'a> {
                     && !previous.eq_ignore_ascii_case(token)
                 {
                     return Err(format!(
-                        "PoliticalParties ideology ID {} has conflicting tokens",
+                        "political parties ideology ID {} has conflicting tokens",
                         row.id
                     )
                     .into());
@@ -2618,7 +2574,7 @@ impl<'a> World<'a> {
                     && previous != row.id
                 {
                     return Err(format!(
-                        "PoliticalParties ideology {} has conflicting native IDs",
+                        "political parties ideology {} has conflicting native IDs",
                         String::from_utf8_lossy(token)
                     )
                     .into());
@@ -2630,7 +2586,7 @@ impl<'a> World<'a> {
                             out.ruling.insert(slot, row.id);
                         }
                     }
-                    None => out.unresolved = Some(self.unlinked("PoliticalParties", row.country)),
+                    None => out.unresolved = Some(self.unlinked("political parties", row.country)),
                 }
             }
             Ok(out)
@@ -2705,7 +2661,7 @@ impl<'a> World<'a> {
                     Some(slot) => {
                         out.insert(slot, row.ruling_party);
                     }
-                    None => unresolved = Some(self.unlinked("Politics", row.country)),
+                    None => unresolved = Some(self.unlinked("politics", row.country)),
                 }
             }
             Ok((out, unresolved))
@@ -2742,7 +2698,7 @@ impl<'a> World<'a> {
             .ok_or("Politics lacks ruling ideology")?;
         let parties = self.political_parties()?;
         if !parties.members.contains(&(slot, id)) {
-            return Err("PoliticalParties lacks ruling ideology".into());
+            return Err("political parties lacks ruling ideology".into());
         }
         Ok((id, parties.ids[&id]))
     }
@@ -2767,14 +2723,14 @@ impl<'a> World<'a> {
                     Some(slot) => {
                         out.insert(slot, row.has_elections);
                     }
-                    None => unresolved = Some(self.unlinked("Politics", row.country)),
+                    None => unresolved = Some(self.unlinked("politics", row.country)),
                 }
             }
             Ok((out, unresolved))
         })?;
         linked(elections.get(&slot).copied(), unresolved)?
             .ok_or_else(|| -> Failure { format!("Politics lacks country slot {slot}").into() })?
-            .require("Politics.has_elections")
+            .require("has elections of politics")
             .map_err(|why| {
                 Failure::input(
                     replay_data::rows::TableId::Politics,
@@ -2861,7 +2817,7 @@ impl<'a> World<'a> {
             Ok((modifiers, unlinked))
         })?;
         let entries = modifiers.get(&(slot, name)).map_or(&[][..], Vec::as_slice);
-        let found = self.modifier_matches(entries, target, "DynamicModifiers");
+        let found = self.modifier_matches(entries, target, "dynamic modifiers");
         // A row of an unlinked owner may belong to this country. With no
         // target it may precede the known first entry; with an explicit
         // target a proven match anywhere already answers true.
@@ -2869,7 +2825,7 @@ impl<'a> World<'a> {
             if target.is_some() && found == Ok(true) {
                 return found;
             }
-            return Err(self.unlinked("DynamicModifiers", *raw));
+            return Err(self.unlinked("dynamic modifiers", *raw));
         }
         found
     }
@@ -2913,7 +2869,7 @@ impl<'a> World<'a> {
         self.modifier_matches(
             modifiers.get(&(state, name)).map_or(&[][..], Vec::as_slice),
             target,
-            "StateDynamicModifiers",
+            "state dynamic modifiers",
         )
     }
 
@@ -3150,7 +3106,7 @@ impl<'a> World<'a> {
                 replay_data::rows::TableId::CountryCounterInputs,
                 "",
                 Some(Store::Country(slot)),
-                format!("country {raw} has no CountryCounterInputs row"),
+                format!("country {raw} has no country counter inputs row"),
             )
         })
     }
@@ -3170,7 +3126,7 @@ impl<'a> World<'a> {
             "owned_states"
         };
         states_of(&inputs, controlled)
-            .require(&format!("CountryCounterInputs.{field}"))
+            .require(&replay_data::rows::TableId::CountryCounterInputs.field_words(field))
             .map_err(|why| {
                 Failure::input(
                     replay_data::rows::TableId::CountryCounterInputs,
@@ -3185,7 +3141,7 @@ impl<'a> World<'a> {
                     replay_data::rows::TableId::CountryCounterInputs,
                     field,
                     Some(Store::Country(slot)),
-                    format!("CountryCounterInputs.{field} capture unavailable"),
+                    format!("{} capture unavailable", replay_data::rows::TableId::CountryCounterInputs.field_words(field)),
                 )
             })?;
         Ok(part(inputs, |inputs| state_list(inputs, controlled)))
@@ -3211,9 +3167,9 @@ impl<'a> World<'a> {
     ) -> Result<Option<Cow<'a, [u32]>>, Failure> {
         let inputs = self.country_counter_inputs(slot)?;
         let name = if controlled {
-            "CountryCounterInputs.controlled_states"
+            "controlled states of country counter inputs"
         } else {
-            "CountryCounterInputs.owned_states"
+            "owned states of country counter inputs"
         };
         match states_of(&inputs, controlled) {
             Recorded::NotRecorded => Ok(None),
@@ -3270,11 +3226,11 @@ impl<'a> World<'a> {
             let Some(reserved) =
                 only::<tables::ReservedCountryNaming>(table::<tables::ReservedCountryNaming>(self.frame, COUNT)?)?
             else {
-                return Err("ReservedCountryNaming does not hold one reserved country".into());
+                return Err("reserved country naming does not hold one reserved country".into());
             };
             let count = reserved
                 .land_theatre_count
-                .require("ReservedCountryNaming.land_theatre_count")
+                .require("land theatre count of reserved country naming")
                 .map_err(|why| {
                     Failure::input(
                         replay_data::rows::TableId::ReservedCountryNaming,
@@ -3288,7 +3244,7 @@ impl<'a> World<'a> {
                         replay_data::rows::TableId::ReservedCountryNaming,
                         "land_theatre_count",
                         None,
-                        "ReservedCountryNaming.land_theatre_count capture unavailable",
+                        "land theatre count of reserved country naming capture unavailable",
                     )
                 })?;
             if count == 0 {
@@ -3298,7 +3254,7 @@ impl<'a> World<'a> {
                     for row in each::<tables::LandTheatres>(rows) {
                         if row?.owner == 0 {
                             return Err(
-                                "reserved-country LandTheatres contradict their certificate".into()
+                                "reserved-country land theatres contradict their certificate".into()
                             );
                         }
                     }
@@ -3316,12 +3272,12 @@ impl<'a> World<'a> {
                     continue;
                 }
                 if row.ordinal >= count || !ids.insert(row.id) || !ordinals.insert(row.ordinal) {
-                    return Err("reserved-country LandTheatres contradict their certificate".into());
+                    return Err("reserved-country land theatres contradict their certificate".into());
                 }
             }
             if ids.len() != count as usize {
                 return Err(
-                    "reserved-country LandTheatres do not match their certified count".into(),
+                    "reserved-country land theatres do not match their certified count".into(),
                 );
             }
         }
@@ -3340,7 +3296,7 @@ impl<'a> World<'a> {
                     Some(owner) => {
                         theatres.insert(row.id, owner);
                     }
-                    None => unresolved = Some(self.unlinked("LandTheatres", row.owner)),
+                    None => unresolved = Some(self.unlinked("land theatres", row.owner)),
                 }
             }
             let mut out: Invasions<'a> = BTreeMap::new();
@@ -3371,7 +3327,7 @@ impl<'a> World<'a> {
                         .u32s(u128::from(handle), |row| &row.primary_orders, ROOTS)
                         .map_err(walked::<tables::OrdersGroupPlans>)?
                         .ok_or_else(|| -> Failure {
-                            format!("orders group {handle:#x} has no OrdersGroupPlans row").into()
+                            format!("orders group {handle:#x} has no orders group plans row").into()
                         })?;
                     let mut pending: Vec<u32> = first.iter().rev().copied().collect();
                     let mut seen = BTreeSet::new();
@@ -3387,7 +3343,7 @@ impl<'a> World<'a> {
                         let order = keyed::<tables::ArmyOrders>(&instances, at)?.ok_or_else(
                             || -> Failure {
                                 format!(
-                                    "order {instance} of group {handle:#x} has no ArmyOrders row"
+                                    "order {instance} of group {handle:#x} has no army orders row"
                                 )
                                 .into()
                             },
@@ -3409,7 +3365,7 @@ impl<'a> World<'a> {
                         let plan = keyed::<tables::ArmyOrderPlans>(&plans, at)?.ok_or_else(
                             || -> Failure {
                                 format!(
-                                    "order {instance} of group {handle:#x} has no ArmyOrderPlans row"
+                                    "order {instance} of group {handle:#x} has no army order plans row"
                                 )
                                 .into()
                             },
@@ -3466,7 +3422,7 @@ impl<'a> World<'a> {
         )?
         .ok_or_else(|| -> Failure {
             format!(
-                "invasion order {} of group {:#x} has no InvasionPreparations row",
+                "invasion order {} of group {:#x} has no invasion preparations row",
                 key.1, key.0
             )
             .into()
@@ -3545,7 +3501,7 @@ impl<'a> World<'a> {
         }
         if let Store::Project { owner, id } = store {
             let project = self.project(owner, id)?;
-            let runtime = project.runtime.require("Projects.runtime")?;
+            let runtime = project.runtime.require("runtime of projects")?;
             let variables = runtime.variables.as_ref().ok_or_else(|| {
                 format!("project {owner}:{id} variable store capture unavailable")
             })?;
@@ -3577,7 +3533,7 @@ impl<'a> World<'a> {
     fn variable_seed_unrecorded(&self, store: Store) -> Result<u32, Failure> {
         if let Store::Project { owner, id } = store {
             let project = self.project(owner, id)?;
-            let runtime = project.runtime.require("Projects.runtime").map_err(|why| {
+            let runtime = project.runtime.require("runtime of projects").map_err(|why| {
                 Failure::input(
                     replay_data::rows::TableId::Projects,
                     "runtime",
@@ -3601,7 +3557,7 @@ impl<'a> World<'a> {
         let variables = self.variable_store(store)?;
         variables
             .seed
-            .require("ScriptVariables.seed")
+            .require("seed of script variables")
             .map_err(|why| {
                 Failure::input(
                     replay_data::rows::TableId::ScriptVariables,
@@ -3615,7 +3571,7 @@ impl<'a> World<'a> {
                     replay_data::rows::TableId::ScriptVariables,
                     "seed",
                     Some(store),
-                    "ScriptVariables.seed capture unavailable",
+                    "seed of script variables capture unavailable",
                 )
             })
     }
@@ -3648,7 +3604,7 @@ impl<'a> World<'a> {
                     "",
                     Some(store),
                     format!(
-                        "the script variable store of scope {kind}:{id} has no ScriptVariables row"
+                        "the script variable store of scope {kind}:{id} has no script variables row"
                     ),
                 )
             })
@@ -3680,7 +3636,7 @@ impl<'a> World<'a> {
     /// A raw country link's canonical slot, or why it has none.
     pub(super) fn canonical(&self, raw: u32) -> Result<u32, Failure> {
         self.slot(raw).ok_or_else(|| -> Failure {
-            format!("country link {raw} has no CountryLinks row").into()
+            format!("country link {raw} has no country links row").into()
         })
     }
 
@@ -3984,7 +3940,7 @@ impl<'a> World<'a> {
             return self.party_leaders_scanned(slot);
         };
         if let Some((_, raw)) = by_party.first_unlinked() {
-            return Err(self.unlinked("PoliticalParties", raw));
+            return Err(self.unlinked("political parties", raw));
         }
         let raws = self.slot_links(slot);
         let mut parties = BTreeMap::new();
@@ -4013,14 +3969,14 @@ impl<'a> World<'a> {
                 if let Some((first, raw)) = unlinked
                     && first < at
                 {
-                    return Err(self.unlinked("PartyLeaders", raw));
+                    return Err(self.unlinked("party leaders", raw));
                 }
                 let row = row?;
                 parties
                     .get_mut(&row.party)
                     .ok_or_else(|| -> Failure {
                         format!(
-                            "PartyLeaders party {} has no PoliticalParties row",
+                            "party leaders party {} has no political parties row",
                             row.party
                         )
                         .into()
@@ -4035,7 +3991,7 @@ impl<'a> World<'a> {
             }
         }
         if let Some((_, raw)) = unlinked {
-            return Err(self.unlinked("PartyLeaders", raw));
+            return Err(self.unlinked("party leaders", raw));
         }
         Ok(parties.into_values().collect())
     }
@@ -4057,7 +4013,7 @@ impl<'a> World<'a> {
                     );
                 }
                 Some(_) => {}
-                None => return Err(self.unlinked("PoliticalParties", row.country)),
+                None => return Err(self.unlinked("political parties", row.country)),
             }
         }
         for row in each::<tables::PartyLeaders>(table::<tables::PartyLeaders>(self.frame, PARTY_LEADER)?) {
@@ -4067,7 +4023,7 @@ impl<'a> World<'a> {
                     .get_mut(&row.party)
                     .ok_or_else(|| -> Failure {
                         format!(
-                            "PartyLeaders party {} has no PoliticalParties row",
+                            "party leaders party {} has no political parties row",
                             row.party
                         )
                         .into()
@@ -4080,7 +4036,7 @@ impl<'a> World<'a> {
                         id: row.leader_id,
                     }),
                 Some(_) => {}
-                None => return Err(self.unlinked("PartyLeaders", row.country)),
+                None => return Err(self.unlinked("party leaders", row.country)),
             }
         }
         Ok(parties.into_values().collect())
@@ -4104,7 +4060,7 @@ impl<'a> World<'a> {
             return self.country_characters_scanned(slot);
         };
         if let Some((_, raw)) = countries.first_unlinked() {
-            return Err(self.unlinked("CountryCharacters", raw));
+            return Err(self.unlinked("country characters", raw));
         }
         let mut out = Vec::new();
         for &raw in self.slot_links(slot) {
@@ -4124,7 +4080,7 @@ impl<'a> World<'a> {
             match self.slot(row.country) {
                 Some(country) if country == slot => out.push(row.character),
                 Some(_) => {}
-                None => return Err(self.unlinked("CountryCharacters", row.country)),
+                None => return Err(self.unlinked("country characters", row.country)),
             }
         }
         Ok(out)
@@ -4177,7 +4133,7 @@ impl<'a> World<'a> {
             .contains((u128::from(character) << 32) | u128::from(role as u32))
         {
             return Err(
-                format!("party leader {character}/{role} has no CountryLeaderRoles row").into(),
+                format!("party leader {character}/{role} has no country leader roles row").into(),
             );
         }
         const HELD: u64 =
@@ -4324,7 +4280,7 @@ impl<'a> World<'a> {
                     .iter()
                     .map(|&raw| {
                         self.slot(raw)
-                            .ok_or_else(|| -> Failure { self.unlinked("CountryWars", raw) })
+                            .ok_or_else(|| -> Failure { self.unlinked("country wars", raw) })
                     })
                     .collect();
             }
@@ -4340,7 +4296,7 @@ impl<'a> World<'a> {
                 (Some(a), Some(b)) if a == slot => out.push(b),
                 (Some(a), Some(b)) if b == slot => out.push(a),
                 (Some(_), Some(_)) => {}
-                _ => return Err(self.unlinked("WarRelations", row.first_country)),
+                _ => return Err(self.unlinked("war relations", row.first_country)),
             }
         }
         Ok(out)
@@ -4402,9 +4358,9 @@ impl<'a> World<'a> {
             }
         }
         match (found, countries.first_unlinked()) {
-            (Some(at), Some((first, raw))) if first < at => Err(self.unlinked("ActiveIdeas", raw)),
+            (Some(at), Some((first, raw))) if first < at => Err(self.unlinked("active ideas", raw)),
             (Some(_), _) => Ok(true),
-            (None, Some((_, raw))) => Err(self.unlinked("ActiveIdeas", raw)),
+            (None, Some((_, raw))) => Err(self.unlinked("active ideas", raw)),
             (None, None) => Ok(false),
         }
     }
@@ -4418,7 +4374,7 @@ impl<'a> World<'a> {
             match self.slot(row.country) {
                 Some(country) if country == slot && token == name => return Ok(true),
                 Some(_) => {}
-                None => return Err(self.unlinked("ActiveIdeas", row.country)),
+                None => return Err(self.unlinked("active ideas", row.country)),
             }
         }
         Ok(false)
@@ -4443,7 +4399,7 @@ impl<'a> World<'a> {
         keyed::<tables::CountryCounterInputs>(&rows, u128::from(raw))?
             .map(|row| i64::from(row.controlled_state_count))
             .ok_or_else(|| -> Failure {
-                format!("country {raw} has no CountryCounterInputs row").into()
+                format!("country {raw} has no country counter inputs row").into()
             })
     }
 
@@ -4458,7 +4414,7 @@ impl<'a> World<'a> {
     fn opinion_unrecorded(&self, owner: u32, target: Option<u32>) -> Result<i64, Failure> {
         let Some(target) = target.filter(|&slot| slot != 0) else {
             return Err(refused(
-                "opinion: country zero reads reserved relation slot zero, which RelationOpinions does not record",
+                "opinion: country zero reads reserved relation slot zero, which relation opinions does not record",
             ));
         };
         for slot in [owner, target] {
@@ -4478,10 +4434,10 @@ impl<'a> World<'a> {
                         out.insert((owner, target), row.opinion);
                     }
                     (None, _) => {
-                        unresolved = Some(self.unlinked("RelationOpinions", row.owner_country))
+                        unresolved = Some(self.unlinked("relation opinions", row.owner_country))
                     }
                     (_, None) => {
-                        unresolved = Some(self.unlinked("RelationOpinions", row.target_country))
+                        unresolved = Some(self.unlinked("relation opinions", row.target_country))
                     }
                 }
             }
@@ -4513,13 +4469,13 @@ impl<'a> World<'a> {
                 }
                 let owner = self
                     .slot(row.owner)
-                    .ok_or_else(|| -> Failure { self.unlinked("States", row.owner) })?;
+                    .ok_or_else(|| -> Failure { self.unlinked("states", row.owner) })?;
                 if row.controller == 0 {
                     continue;
                 }
                 let controller = self
                     .slot(row.controller)
-                    .ok_or_else(|| -> Failure { self.unlinked("States", row.controller) })?;
+                    .ok_or_else(|| -> Failure { self.unlinked("states", row.controller) })?;
                 if owner == controller {
                     let count = out.entry(owner).or_default();
                     *count = count.wrapping_add(1);
@@ -4568,7 +4524,7 @@ impl<'a> World<'a> {
                 let row = keyed::<tables::CountryFactories>(&rows, u128::from(raw))?
                     .ok_or_else(|| -> Failure {
                         format!(
-                            "num_of_controlled_factories: country {raw} has no CountryFactories row"
+                            "num_of_controlled_factories: country {raw} has no country factories row"
                         )
                         .into()
                     })?;
@@ -4582,13 +4538,6 @@ impl<'a> World<'a> {
             }
             _ => Ok(None),
         }
-    }
-
-    /// This World on a walk's frame, finding tokens by the walk's lexer folds
-    /// ([`dashboard_world::World::lexicon`]) in place of folds read from the frame.
-    pub fn with_lexicon(mut self, lexicon: Option<&'a Lexicon>) -> Self {
-        self.lexicon = lexicon;
-        self
     }
 
     pub(crate) fn with_template_names(
@@ -4621,7 +4570,7 @@ impl<'a> World<'a> {
         for row in each::<tables::DivisionTemplates>(rows) {
             let row = row?;
             let Some(owner) = self.slot(row.owner) else {
-                unknown = Some(self.unlinked("DivisionTemplates", row.owner));
+                unknown = Some(self.unlinked("division templates", row.owner));
                 continue;
             };
             if owner != slot {
@@ -4636,7 +4585,7 @@ impl<'a> World<'a> {
             let name = (|| -> Result<String, Failure> {
                 let name_key =
                     row.name_key
-                        .require("DivisionTemplates.name_key")
+                        .require("name key of division templates")
                         .map_err(|why| {
                             Failure::input(
                                 replay_data::rows::TableId::DivisionTemplates,
@@ -4663,7 +4612,7 @@ impl<'a> World<'a> {
                 let icon = keyed::<tables::DivisionTemplateIcons>(&icons, u128::from(row.template))?
                     .ok_or_else(|| -> Failure {
                         format!(
-                            "template {} has no DivisionTemplateIcons country",
+                            "template {} has no division template icons country",
                             row.template
                         )
                         .into()
@@ -4672,7 +4621,7 @@ impl<'a> World<'a> {
                     std::str::from_utf8(name_key).map_err(|_| "template name_key is not UTF-8")?;
                 let country = match u32::try_from(icon.country).ok().filter(|raw| *raw > 0) {
                     Some(raw) => Some(self.slot(raw).ok_or_else(|| -> Failure {
-                        self.unlinked("DivisionTemplateIcons", raw)
+                        self.unlinked("division template icons", raw)
                     })?),
                     None => None,
                 };
@@ -4743,16 +4692,16 @@ impl<'a> World<'a> {
                     Some(slot) => {
                         out.insert(slot, key);
                     }
-                    None => unresolved = Some(self.unlinked("CountryAppearance", country)),
+                    None => unresolved = Some(self.unlinked("country appearance", country)),
                 }
             }
             Ok((out, unresolved))
         })?;
         let key = linked(rows.get(&slot).copied(), unresolved)?.ok_or_else(|| -> Failure {
-            format!("country slot {slot} has no CountryAppearance row").into()
+            format!("country slot {slot} has no country appearance row").into()
         })?;
         keyed::<tables::CountryAppearance>(&table, key)?.ok_or_else(|| -> Failure {
-            format!("country slot {slot} has no CountryAppearance row").into()
+            format!("country slot {slot} has no country appearance row").into()
         })
     }
 
@@ -4772,8 +4721,8 @@ impl<'a> World<'a> {
         let cores = table::<tables::StateCores>(self.frame, 0)?
             .u32s(u128::from(state), |row| &row.cores, CORES)
             .map_err(walked::<tables::StateCores>)?
-            .ok_or_else(|| -> Failure { format!("state {state} has no StateCores row").into() })?;
-        Ok(self.lists(cores, country, "StateCores"))
+            .ok_or_else(|| -> Failure { format!("state {state} has no state cores row").into() })?;
+        Ok(self.lists(cores, country, "state cores"))
     }
 
     /// The claimant trigger tests one of the state's claims (its claim vector) as the core-owner
@@ -4791,13 +4740,13 @@ impl<'a> World<'a> {
         // Keyed by the state.
         let rows = table::<tables::StateCores>(self.frame, CLAIMS)?;
         let row = keyed::<tables::StateCores>(&rows, u128::from(state))?
-            .ok_or_else(|| -> Failure { format!("state {state} has no StateCores row").into() })?;
+            .ok_or_else(|| -> Failure { format!("state {state} has no state cores row").into() })?;
         let Recorded::Value(claims) = &row.claims else {
             return Ok(Eval::unknown(
-                "StateCores.claims is not recorded".to_owned(),
+                "claims of state cores is not recorded".to_owned(),
             ));
         };
-        Ok(self.lists(claims, country, "StateCores.claims"))
+        Ok(self.lists(claims, country, "claims of state cores"))
     }
 
     /// Whether `country` is one of a state's raw country references, by

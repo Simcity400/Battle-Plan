@@ -3298,6 +3298,20 @@ impl ResolvedLayers {
         self.shared_read(relative, false)
     }
 
+    /// [`Self::read`] handed to `piece` in file order: a played-back layer's covered fact a chunk
+    /// of the recording's pack at a time, never whole, verified at its end (a refusal voids the
+    /// pieces handed); any other file read whole and handed once.
+    pub fn read_pieces(&self, relative: &str, piece: &mut dyn FnMut(&[u8]) -> io::Result<()>) -> io::Result<()> {
+        let path = sanitize(relative.as_bytes()).ok_or_else(|| not_found(relative.as_bytes()))?;
+        if self.covered_path(&path)
+            && let Some(hit) = self.lookup_path(&path)?
+            && let (Some(fact), Some(facts)) = (hit.fact, self.layers[hit.layer].facts.as_ref())
+        {
+            return facts.pack.read_pieces(fact, piece);
+        }
+        piece(&self.read(relative)?)
+    }
+
     pub fn read_paths<P: AsRef<[u8]> + Sync>(&self, paths: &[P]) -> Vec<io::Result<Bytes>> {
         crate::parallel::map(paths, |path| self.read_path(path.as_ref()))
     }
@@ -3313,6 +3327,10 @@ impl ResolvedLayers {
         self.product("effective file resolution", 1, &parameters, |reader| {
             let mut observed = reader.observation();
             let hit = if uncovered && !reader.covered_path(&path) {
+                // An older coverage policy left out a path that is a fact now: never the installed one.
+                if reader.recorded_fact(&path) {
+                    return Err(unproven(&path, reader.coverage));
+                }
                 reader
                     .scan_uncovered(&path, &mut observed)
                     .map_err(|failure| failure.error)?

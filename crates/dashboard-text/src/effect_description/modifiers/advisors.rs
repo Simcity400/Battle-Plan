@@ -52,7 +52,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         for row in retired {
             let Some(character) = row.character else {
                 return Err(format!(
-                    "CountryRetiredCharacters advisor record {}:{} has no character",
+                    "country retired characters advisor record {}:{} has no character",
                     raw, row.ordinal
                 ));
             };
@@ -173,12 +173,12 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 .span(low, low | u128::from(u32::MAX)),
             |row| row.idea.eq_ignore_ascii_case(token.as_bytes()),
         )?
-        .ok_or_else(|| format!("AdvisorRoles lacks character {} idea {token}", character.id))?;
+        .ok_or_else(|| format!("advisor roles lacks character {} idea {token}", character.id))?;
         let cache = role
             .modifier_cache
-            .require("AdvisorRoles.modifier_cache")?
+            .require("modifier cache of advisor roles")?
             .as_ref()
-            .ok_or("AdvisorRoles.modifier_cache unavailable")?;
+            .ok_or("modifier cache of advisor roles unavailable")?;
         let class = if show {
             "idea tooltip"
         } else if remove {
@@ -191,10 +191,10 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         // leave the numeric fragment readable and retain a counted refusal.
         let numeric = match role
             .tooltip_keys
-            .require("AdvisorRoles.tooltip_keys")
+            .require("tooltip keys of advisor roles")
             .and_then(|keys| {
                 keys.as_ref()
-                    .ok_or_else(|| "AdvisorRoles.tooltip_keys capture unavailable".to_owned())
+                    .ok_or_else(|| "tooltip keys of advisor roles capture unavailable".to_owned())
             }) {
             Ok(_) => self.advisor_cache_description(&role)?,
             Err(why) => {

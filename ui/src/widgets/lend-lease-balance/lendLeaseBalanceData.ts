@@ -1,43 +1,37 @@
-import type { CountryGroupReply, LendLeaseBalanceReply, LendLeaseHistory } from '../../generated/dashboard';
+import type { CountryGroupReply, LendLeaseBalanceReply, LendLeasePartner, LendLeasePartnersReply } from '../../generated/dashboard';
+import type { Run } from '../../charts/series';
 import type { CountrySelection } from '../../dashboard/model';
 import { groupMembers, groupRuns, groupUnobserved } from '../../dashboard/groups.ts';
-import { object } from '../../dashboard/validation.ts';
 import { formatAmount, rescale } from '../../charts/valueAxis.ts';
-import { bigAt, fixedText, isEconomyRuns, isHolderTags, runAt, tagAt, validateEconomyReply } from '../../dashboard/economyHistory.ts';
 
 export const LEND_LEASE_BALANCE = 'lend-lease-balance';
 export type BalanceMeasure = 'industry' | 'fuel';
+const PLACES = 5;
+
+const object = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
+const raw = (value: unknown) => typeof value === 'string' && /^-?\d+$/.test(value);
 
 export function validateLendLeaseBalance(value: unknown): LendLeaseBalanceReply {
-  return validateEconomyReply<LendLeaseBalanceReply>(value, reply => Number.isSafeInteger(reply.scale) && (reply.scale as number) > 0 && isEconomyRuns(reply.known)
-    && (reply.holder === null || typeof reply.holder === 'string')
-    && Array.isArray(reply.histories) && reply.histories.every(history => object(history) && typeof history.holder === 'string'
-      && isHolderTags(history.tags) && Array.isArray(history.values) && history.values.length === 4 && history.values.every(runs => isEconomyRuns(runs))),
-  'lend-lease balance');
+  if (!object(value) || value.scale !== 100000 || !(value.holder === null || typeof value.holder === 'string')
+    || !(value.missing === null || typeof value.missing === 'string') || !Array.isArray(value.warnings)
+    || !Array.isArray(value.rows) || !value.rows.every((row, at, rows) => object(row) && Number.isSafeInteger(row.slot)
+      && (at === 0 || (rows[at - 1] as { slot: number }).slot < (row.slot as number)) && (row.tag === null || typeof row.tag === 'string')
+      && Array.isArray(row.values) && row.values.length === 4 && row.values.every(raw)))
+    throw new Error('The lend-lease balance reply is malformed.');
+  return value as unknown as LendLeaseBalanceReply;
 }
 
-/** One country's (or partner's) cumulative totals at an hour, in one measure. */
-export interface BalanceRow {
-  holder: string;
-  tag: string;
-  sent: bigint | null;
-  received: bigint | null;
-}
+/** One country's (or partner's) cumulative totals at the reply's hour, in one measure. */
+export interface BalanceRow { slot: number; tag: string; sent: bigint; received: bigint }
 
-/** The game's recorded histories of `measure` at `hour`: sent then received. */
-export function balanceAt(history: LendLeaseHistory, measure: BalanceMeasure, hour: number): BalanceRow | null {
-  const tag = tagAt(history.tags, hour);
-  if (tag === null) return null;
+/** Each row in `measure` with a tag: sent then received. */
+export function balanceRows(reply: LendLeaseBalanceReply, measure: BalanceMeasure): BalanceRow[] {
   const offset = measure === 'industry' ? 0 : 1;
-  const sent = bigAt(history.values[offset], hour), received = bigAt(history.values[2 + offset], hour);
-  if (sent === null && received === null) return null;
-  return { holder: history.holder, tag, sent, received };
+  return reply.rows.flatMap(row => row.tag === null ? [] : [{ slot: row.slot, tag: row.tag, sent: BigInt(row.values[offset]), received: BigInt(row.values[2 + offset]) }]);
 }
 
-const total = (row: BalanceRow) => (row.sent ?? 0n) + (row.received ?? 0n);
-
-/** The countries a selection names at `hour`: chosen tags (null for every
- * country) and a top group's count; null while the groups load. */
+/** The countries a selection names at `hour`: chosen tags (null for every country) and a top group's count; null while
+ * the groups load. */
 export function balanceSelection(selection: CountrySelection, fallback: readonly string[], groups: CountryGroupReply | undefined,
   hour: number, lastHour: number): { tags: Set<string> | null; limit: number; membersUnknown?: true } | null {
   if (selection.kind === 'tags') return { tags: new Set(selection.tags), limit: Infinity };
@@ -47,62 +41,86 @@ export function balanceSelection(selection: CountrySelection, fallback: readonly
   if (!groups) return null;
   const runs = groupRuns(groups, selection.group);
   const members = runs && groupMembers(runs, selection.membership, hour, lastHour, Infinity, groupUnobserved(groups, selection.group));
-  // Membership not observed at the hour: no country is shown, and none is known.
   return members ? { tags: new Set(members), limit: Infinity } : { tags: new Set(), limit: Infinity, membersUnknown: true };
 }
 
-/** Rows at `hour` ranked by sent plus received, ties by holder: those the selection
- * keeps, at most a top group's count. A country with neither leaves the chart. */
-export function rankedAt(reply: LendLeaseBalanceReply, measure: BalanceMeasure, hour: number, selection: CountrySelection,
-  fallback: readonly string[], groups: CountryGroupReply | undefined, lastHour: number): BalanceRow[] | null {
-  const chosen = balanceSelection(selection, fallback, groups, hour, lastHour);
-  if (!chosen) return null;
-  const { tags, limit } = chosen;
-  const rows = reply.histories.map(history => balanceAt(history, measure, hour))
-    .filter((row): row is BalanceRow => row !== null && (row.sent ?? 0n) !== 0n || row !== null && (row.received ?? 0n) !== 0n)
-    .filter(row => !tags || tags.has(row.tag));
-  rows.sort((a, b) => { const x = total(a), y = total(b); return x === y ? Number(a.holder) - Number(b.holder) : x > y ? -1 : 1; });
-  return rows.slice(0, limit);
+const total = (row: BalanceRow) => row.sent + row.received;
+
+/** Rows ranked by sent plus received, ties by slot: those the selection keeps, at most a top group's count. A country
+ * with neither leaves the chart. */
+export function rankedRows(rows: readonly BalanceRow[], chosen: { tags: Set<string> | null; limit: number }): BalanceRow[] {
+  return rows.filter(row => (row.sent !== 0n || row.received !== 0n) && (!chosen.tags || chosen.tags.has(row.tag)))
+    .sort((a, b) => { const x = total(a), y = total(b); return x === y ? a.slot - b.slot : x > y ? -1 : 1; })
+    .slice(0, chosen.limit);
 }
 
-export type EmptyBalance = 'unrecorded' | 'members-unrecorded' | 'zero' | 'partial' | 'none-recorded';
+export type EmptyBalance = 'members-unrecorded' | 'zero' | 'partial' | 'none-recorded';
 
-/** Why no bar shows at `hour`, from the selected countries' own histories: not
- * read then ('unrecorded'); every selected country's recorded totals are exactly
- * zero ('zero', proven); some are zero and the rest have no recorded total
- * ('partial'); or none has one (outside the war rosters the game keeps them for,
- * 'none-recorded'). A group whose membership was not observed then is
- * 'members-unrecorded'. Every country, or a top group, proves zero from every
- * history recorded then. */
-export function emptyBalance(reply: LendLeaseBalanceReply, measure: BalanceMeasure, hour: number, selection: CountrySelection,
-  fallback: readonly string[], groups: CountryGroupReply | undefined, lastHour: number): EmptyBalance {
-  if (!runAt(reply.known, hour)) return 'unrecorded';
-  const chosen = balanceSelection(selection, fallback, groups, hour, lastHour);
-  if (!chosen) return 'none-recorded';
+/** Why no bar shows: every selected country's recorded totals are zero ('zero', proven by the rosters); some are zero
+ * and the rest have no recorded total ('partial'); none has one ('none-recorded'); or a group's membership was not
+ * recorded then. */
+export function emptyBalance(rows: readonly BalanceRow[], chosen: { tags: Set<string> | null; membersUnknown?: true }): EmptyBalance {
   if (chosen.membersUnknown) return 'members-unrecorded';
-  const rows = new Map<string, BalanceRow>();
-  for (const history of reply.histories) {
-    const row = balanceAt(history, measure, hour);
-    if (row && (!chosen.tags || chosen.tags.has(row.tag))) rows.set(row.tag, row);
-  }
-  const zero = (row: BalanceRow | undefined) => !!row && row.sent === 0n && row.received === 0n;
-  const proven = [...rows.values()].filter(zero).length;
-  const wanted = chosen.tags ? chosen.tags.size : rows.size;
-  return proven === 0 ? 'none-recorded' : proven === wanted ? 'zero' : 'partial';
+  const shown = rows.filter(row => !chosen.tags || chosen.tags.has(row.tag));
+  const zero = shown.filter(row => row.sent === 0n && row.received === 0n).length;
+  const wanted = chosen.tags ? chosen.tags.size : shown.length;
+  return zero === 0 ? 'none-recorded' : zero === wanted ? 'zero' : 'partial';
 }
+
+export const LEND_LEASE_PARTNERS = 'lend-lease-partners';
+
+const runs = (value: unknown) => Array.isArray(value) && value.every((run, at, all) => Array.isArray(run) && run.length === 3
+  && Number.isSafeInteger(run[0]) && Number.isSafeInteger(run[1]) && run[0] <= run[1] && raw(run[2]) && (at === 0 || (all[at - 1] as number[])[1] < run[0]));
+const spans = (value: unknown) => Array.isArray(value) && value.every(span => object(span) && Number.isSafeInteger(span.firstHour) && Number.isSafeInteger(span.lastHour));
+
+export function validateLendLeasePartners(value: unknown): LendLeasePartnersReply {
+  if (!object(value) || typeof value.holder !== 'string' || value.scale !== 100000 || !spans(value.known) || !Array.isArray(value.warnings)
+    || !Array.isArray(value.totals) || value.totals.length !== 2 || !value.totals.every(runs)
+    || !Array.isArray(value.partners) || !value.partners.every(partner => object(partner) && Number.isSafeInteger(partner.slot)
+      && Array.isArray(partner.tags) && partner.tags.every(tag => object(tag) && Number.isSafeInteger(tag.firstHour) && (tag.tag === null || typeof tag.tag === 'string'))
+      && Array.isArray(partner.values) && partner.values.length === 2 && partner.values.every(runs)))
+    throw new Error('The lend-lease partners reply is malformed.');
+  return value as unknown as LendLeasePartnersReply;
+}
+
+type ValueRuns = readonly (readonly [number, number, string])[];
+
+/** The value a run holds at `hour`, or null where none does. */
+export function valueAt(list: ValueRuns, hour: number): bigint | null {
+  let low = 0, high = list.length;
+  while (low < high) { const middle = (low + high) >> 1; if (list[middle][1] < hour) low = middle + 1; else high = middle; }
+  const run = list[low];
+  return run && run[0] <= hour ? BigInt(run[2]) : null;
+}
+
+/** A partner's tag at `hour`, or null where none holds its slot then. */
+export const partnerTagAt = (partner: LendLeasePartner, hour: number): string | null =>
+  partner.tags.find(tag => tag.firstHour <= hour && hour <= tag.lastHour)?.tag ?? null;
+
+/** Each partner at `hour` in the reply's measure, largest sent plus received first (ties by slot): those with a
+ * recorded value and a tag, a partner whose row left held at zero as the game drops it. */
+export function partnersAt(reply: LendLeasePartnersReply, hour: number): BalanceRow[] {
+  return reply.partners.flatMap(partner => {
+    const tag = partnerTagAt(partner, hour), sent = valueAt(partner.values[0], hour), received = valueAt(partner.values[1], hour);
+    return tag === null || sent === null || received === null ? [] : [{ slot: partner.slot, tag, sent, received }];
+  }).sort((a, b) => { const x = total(a), y = total(b); return x === y ? a.slot - b.slot : x > y ? -1 : 1; });
+}
+
+/** The holder's sent and received totals over time in the reply's measure, as plotted runs. */
+export function totalsOverTime(reply: LendLeasePartnersReply): { sent: Run[]; received: Run[] } {
+  const plotted = (list: ValueRuns): Run[] => list.map(([firstHour, lastHour, value]) => ({ firstHour, lastHour, value: Number(BigInt(value)) / reply.scale }));
+  return { sent: plotted(reply.totals[0]), received: plotted(reply.totals[1]) };
+}
+
+/** The first hour the holder has a recorded partner, or null. */
+export const firstRecorded = (reply: LendLeasePartnersReply): number | null => reply.totals[0][0]?.[0] ?? null;
 
 /** Bars draw positive amounts only; the written values stay exact and signed. */
-export const barValue = (value: bigint | null) => value === null ? null : Number(value > 0n ? value : 0n) / 100000;
-export const amountText = (value: bigint | null, scale: number) => value === null ? '—' : fixedText(value, BigInt(scale));
+export const barValue = (value: bigint) => Number(value > 0n ? value : 0n) / 100000;
+export const amountText = (value: bigint) => formatAmount(value, PLACES, PLACES);
 /** A bar label: two decimals at most, and the exact amount when that would read 0. */
-export function amountLabel(value: bigint | null, scale: number): string {
-  if (value === null) return '—';
-  const hundredths = rescale(value, scale, 2);
-  return hundredths === 0n && value !== 0n ? amountText(value, scale) : formatAmount(hundredths, 2);
+export function amountLabel(value: bigint): string {
+  const hundredths = rescale(value, 100000, 2);
+  return hundredths === 0n && value !== 0n ? amountText(value) : formatAmount(hundredths, 2);
 }
 
-/** The first hour any measure of the history was recorded. */
-export const firstRecorded = (history: LendLeaseHistory): number | null => {
-  const starts = history.values.flatMap(runs => runs.length ? [runs[0][0]] : []);
-  return starts.length ? Math.min(...starts) : null;
-};

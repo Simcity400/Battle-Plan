@@ -1,31 +1,14 @@
-import type { LedgerGovernment, PoliticsLedgerReply } from '../../generated/dashboard';
 import type { EventBadge } from '../../charts/badges';
 import type { TooltipRow } from '../../charts/tooltip';
 import { formatDateTime } from '../../dashboard/calendar.ts';
-import { object, opaqueTag, signed32, unsigned32, unsigned64 } from '../../dashboard/validation.ts';
+import type { LedgerGovernment } from './partyTypes';
 
-const optionalText = (value: unknown) => value == null || typeof value === 'string';
+const NO_GOVERNMENTS: readonly LedgerGovernment[] = [];
 
-/** Government-only projection of the shared native power ledger scan. */
-export function validateGovernmentLedger(data: unknown, expected?: Pick<PoliticsLedgerReply, 'branchId' | 'tag'>): PoliticsLedgerReply {
-  const reply = data as PoliticsLedgerReply;
-  if (!object(reply) || !unsigned64(reply.branchId) || !opaqueTag(reply.tag)
-    || (expected && (reply.branchId !== expected.branchId || reply.tag !== expected.tag))
-    || !Array.isArray(reply.warnings) || !reply.warnings.every(value => typeof value === 'string')
-    || (reply.governments !== undefined && (!Array.isArray(reply.governments) || !reply.governments.every(row => object(row)
-      && signed32(row.hour) && signed32(row.readHour) && row.readHour >= row.hour
-      && unsigned32(row.country) && unsigned32(row.instance) && unsigned64(row.epoch) && unsigned64(row.sequence)
-      && typeof row.cause === 'string' && optionalText(row.beforeToken) && optionalText(row.afterToken) && typeof row.covered === 'boolean')))) {
-    throw new Error('The government history reply is malformed.');
-  }
-  const marks = reply.governmentMarks;
-  if (marks != null && (!object(marks) || !Number.isFinite(marks.from) || !Number.isFinite(marks.to) || marks.from > marks.to
-    || !unsigned32(marks.width) || marks.width === 0 || !Array.isArray(marks.clusters) || marks.clusters.length > Math.ceil(marks.width / 18)
-    || !marks.clusters.every(cluster => object(cluster) && signed32(cluster.firstHour) && signed32(cluster.lastHour)
-      && cluster.firstHour <= cluster.lastHour && unsigned64(cluster.firstOrdinal) && unsigned64(cluster.count) && cluster.count !== '0'))) {
-    throw new Error('The government marks are malformed.');
-  }
-  return reply;
+/** The recorded changes of government with their execution causes: the politics ledger's (not served yet), the one
+ * place its rows join the ruling party widget. */
+export function governmentChanges(): readonly LedgerGovernment[] {
+  return NO_GOVERNMENTS;
 }
 
 /** Neither a census change nor an election date supplies an execution cause. */

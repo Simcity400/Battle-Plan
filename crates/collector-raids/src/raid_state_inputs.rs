@@ -230,10 +230,7 @@ impl Captured {
         self.capture_sliced(memory, base, game_state, hour, force_full, None)
     }
 
-    /// Scan the state and country censuses into `stores` with a constant
-    /// print, then read this hour's owner slice and every new or unpublished
-    /// owner.
-    #[cfg(any(test, feature = "test-support"))]
+    /// Worker-only: continue each original walk in its owned growing storage.
     pub fn capture_sliced(
         &mut self,
         memory: &impl Memory,
@@ -243,20 +240,7 @@ impl Captured {
         force_full: bool,
         stores: Option<Stores<'_>>,
     ) -> [u64; N] {
-        self.capture_sliced_with(memory, base, game_state, hour, force_full, stores, false)
-    }
-
-    /// Worker-only: continue each original walk in its owned growing storage.
-    pub fn capture_sliced_growing(
-        &mut self,
-        memory: &impl Memory,
-        base: usize,
-        game_state: usize,
-        hour: i32,
-        force_full: bool,
-        stores: Option<Stores<'_>>,
-    ) -> [u64; N] {
-        self.capture_sliced_with(memory, base, game_state, hour, force_full, stores, true)
+        self.capture_sliced_with(memory, base, game_state, hour, force_full, stores)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -268,7 +252,6 @@ impl Captured {
         hour: i32,
         force_full: bool,
         mut stores: Option<Stores<'_>>,
-        growing: bool,
     ) -> [u64; N] {
         use crate::raid_changes::Family;
         let _reads = crate::read_accounting::table(TABLES[0]);
@@ -374,8 +357,6 @@ impl Captured {
                 token_bytes: 0,
                 required: native::Capacity::zero(),
             }
-        } else if growing {
-            native::walk_growing(memory, base, game_state, &mut self.buffers, select)
         } else {
             native::walk(memory, base, game_state, &mut self.buffers, select)
         };
@@ -408,16 +389,6 @@ impl Captured {
                     },
                 }
             }
-            Ok(()) if growing => native::state_cores_growing(
-                memory,
-                base,
-                game_state,
-                &self.census,
-                &|state| states.contains(state),
-                &mut self.cores,
-                &mut self.core_links,
-                &mut self.core_required,
-            ),
             Ok(()) => native::state_cores(
                 memory,
                 base,

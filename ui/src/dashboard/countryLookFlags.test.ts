@@ -69,7 +69,7 @@ test('visible sampled flags retain backend reasons, clear current failures and n
     const render = () => { state.cursor = 0; state.requests = []; renderToStaticMarkup(createElement(Probe)); return state.current!; };
     let look = render();
     assert.equal(state.requests.find(row => row.product === 'country-styles')!.tags.length, 5000);
-    assert.equal(state.requests.find(row => row.product === 'country-styles')!.batch, 64);
+    assert.equal(state.requests.find(row => row.product === 'country-styles')!.batch, Infinity, 'one request names every country');
     assert.deepEqual(look.warnings, ['native_4999: Synthetic mod name refusal']);
     const { RefusedError } = await vite.ssrLoadModule('/ui/src/dashboard/queryError.ts') as typeof import('./queryError.ts');
     const refusal = new RefusedError('Synthetic country styles are not recorded');

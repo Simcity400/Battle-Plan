@@ -1,16 +1,9 @@
-//! Certificates for acquired air/naval crews. The native country-input hooks
+//! The quiet token of acquired air/naval crews. The native country-input hooks
 //! own the refresh/damage writers; equipment destruction forwards aircraft
-//! removal. A disabled or full registry refuses capture instead of polling.
+//! removal. While either family is unobserved no crew read is certified.
 use crate::watch_registry::{Notification, WatchRegistry};
 use std::sync::atomic::{AtomicBool, Ordering};
 static WATCHES: WatchRegistry = WatchRegistry::new();
-static READS: [std::sync::atomic::AtomicU64; 3] =
-    [const { std::sync::atomic::AtomicU64::new(0) }; 3];
-pub fn record(counts: [u64; 3]) {
-    for (total, count) in READS.iter().zip(counts) {
-        total.fetch_add(count, Ordering::Relaxed);
-    }
-}
 static OWN: AtomicBool = AtomicBool::new(false);
 static KILLS: AtomicBool = AtomicBool::new(false);
 fn apply() {
@@ -27,11 +20,9 @@ pub fn observe_kills(value: bool) {
 pub fn notify(object: usize) -> Notification<'static> {
     WATCHES.notify(object)
 }
-pub fn sequence(object: usize) -> Option<(u64, u64)> {
-    WATCHES.register(object).map(|(token, _)| token)
-}
-pub fn offer(demand: usize) {
-    WATCHES.offer(demand.saturating_add(WATCHES.registered()));
+/// `(epoch, revision)` while every crew writer is observed and none runs.
+pub fn quiet() -> Option<(u64, u64)> {
+    WATCHES.quiet()
 }
 pub fn boundary(invalidate: bool) {
     WATCHES.boundary(invalidate);

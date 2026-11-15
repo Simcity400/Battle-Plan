@@ -130,13 +130,15 @@ fn name(memory: &mut Memory, bytes: &[u8]) -> native::StoredName {
 }
 
 #[test]
-fn stored_names_and_signed_awards_survive_short_handover_and_later_rename() {
+fn stored_names_and_signed_awards_survive_a_growing_handover_and_later_rename() {
     let log = Log::new(2);
+    let spill = Spill::new();
     let buffer = Buffer::new(2, 16, Default::default()).unwrap();
     let mut memory = Memory(vec![0; 0x400]);
     let first = name(&mut memory, b"before");
     append_buffer(
         &log,
+        &spill,
         &buffer,
         Entry {
             amount: 0,
@@ -148,6 +150,7 @@ fn stored_names_and_signed_awards_survive_short_handover_and_later_rename() {
     let second = name(&mut memory, b"after");
     append_buffer(
         &log,
+        &spill,
         &buffer,
         Entry {
             amount: -9,
@@ -156,30 +159,30 @@ fn stored_names_and_signed_awards_survive_short_handover_and_later_rename() {
         Some(second),
         &memory,
     );
-    let mut output = [Entry::default()];
-    let mut names = [0; 16];
-    let (drained, len, required) = handover(&log, &buffer, &mut output, &mut names, None).unwrap();
+    let mut output = vec![Entry::default()];
+    let mut names = vec![0; 16];
+    let (drained, len, required) =
+        handover_buffers(&log, &spill, &buffer, None, engine_native::walk::Buffer::Growing(&mut output), engine_native::walk::Buffer::Growing(&mut names), None).unwrap();
     assert_eq!(
         (drained.copied, drained.pending, len, required),
-        (1, 2, 6, 11)
+        (2, 2, 11, 11)
     );
     assert_eq!(output[0].amount, 0);
-    assert_eq!(&names[..6], b"before");
-    let (drained, len, _) = handover(&log, &buffer, &mut output, &mut names, None).unwrap();
-    assert_eq!((drained.first, drained.cursor, len), (1, 2, 5));
-    assert_eq!(output[0].amount, -9);
-    assert_eq!(output[0].name, Some((0, 5)));
-    assert_eq!(&names[..5], b"after");
+    assert_eq!(output[1].amount, -9);
+    assert_eq!(output[1].name, Some((6, 5)));
+    assert_eq!(&names[..11], b"beforeafter");
 }
 
 #[test]
-fn name_shortage_keeps_money_and_refuses_text_without_truncating_it() {
+fn a_name_past_the_stride_is_kept_whole_with_its_money() {
     let log = Log::new(1);
+    let spill = Spill::new();
     let buffer = Buffer::new(1, 2, Default::default()).unwrap();
     let mut memory = Memory(vec![0; 0x400]);
     let stored = name(&mut memory, b"long");
-    append_buffer(
+    assert!(append_buffer(
         &log,
+        &spill,
         &buffer,
         Entry {
             amount: -1,
@@ -187,19 +190,70 @@ fn name_shortage_keeps_money_and_refuses_text_without_truncating_it() {
         },
         Some(stored),
         &memory,
-    );
-    let mut output = [Entry::default()];
-    let mut names = [0; 2];
-    let (_, _, required) = handover(&log, &buffer, &mut output, &mut names, None).unwrap();
-    assert_eq!(required, 4);
+    ));
+    let mut output = vec![Entry::default()];
+    let mut names = vec![0; 4];
+    let (drained, len, required) =
+        handover_buffers(&log, &spill, &buffer, None, engine_native::walk::Buffer::Growing(&mut output), engine_native::walk::Buffer::Growing(&mut names), None).unwrap();
+    assert_eq!((drained.copied, len, required), (1, 4, 4));
     assert_eq!(output[0].amount, -1);
-    assert_eq!(output[0].name, None);
-    assert_eq!(
-        output[0].name_reason,
-        Some("fuel recipient stored name does not fit")
-    );
-    log.invalidate();
-    assert_eq!(log.epoch.load(Ordering::SeqCst), 2);
+    assert_eq!(output[0].name, Some((0, 4)));
+    assert_eq!(output[0].name_reason, None);
+    assert_eq!(&names, b"long");
+    assert!(spill.held().entries.is_empty());
+    assert_eq!(log.epoch.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn a_spill_never_waits_for_the_drain_and_a_burst_keeps_every_receipt_and_name_in_order() {
+    let log = Log::new(1);
+    let spill = Spill::new();
+    let buffer = Buffer::new(1, 2, Default::default()).unwrap();
+    let mut memory = Memory(vec![0; 0x400]);
+    name(&mut memory, b"long");
+    // The drain's spilled receipts stay held through the whole burst.
+    let consumer = spill.held.lock().unwrap();
+    let (done, finished) = std::sync::mpsc::channel();
+    std::thread::scope(|scope| {
+        let (log, spill, buffer, memory) = (&log, &spill, &buffer, &memory);
+        scope.spawn(move || {
+            for amount in 1..=50 {
+                // The first fits the buffer; every later one, and every name, spills.
+                let stored = (amount > 1).then(|| native::stored_name(memory, 0x100, 2).unwrap());
+                let entry = Entry {
+                    amount,
+                    ..Default::default()
+                };
+                assert!(append_buffer(log, spill, buffer, entry, stored, memory));
+            }
+            done.send(()).unwrap();
+        });
+        finished
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("a fuel receipt spill waited for the drain's lock");
+        drop(consumer);
+    });
+    let mut output = Vec::new();
+    let mut names = Vec::new();
+    let (drained, len, required) = handover_buffers(
+        &log,
+        &spill,
+        &buffer,
+        None,
+        engine_native::walk::Buffer::Growing(&mut output),
+        engine_native::walk::Buffer::Growing(&mut names),
+        None,
+    )
+    .unwrap();
+    assert_eq!((drained.copied, drained.pending, len, required), (50, 50, 196, 196));
+    assert_eq!((output[0].amount, output[0].name), (1, None));
+    for (n, entry) in output[1..50].iter().enumerate() {
+        assert_eq!(entry.amount, n as i64 + 2);
+        assert_eq!(entry.name, Some((n * 4, 4)));
+    }
+    assert_eq!(names[..196], b"long".repeat(49)[..]);
+    assert!(spill.held().entries.is_empty());
+    assert_eq!(log.epoch.load(Ordering::SeqCst), 1);
 }
 
 #[test]
@@ -222,56 +276,100 @@ fn fuel_buffer_charge_follows_offer_live_retirement_and_actual_release() {
 }
 
 #[test]
-fn lost_reset_overflow_withholds_interval_and_retains_actual_growth_demand() {
+fn a_burst_past_the_buffer_is_handed_over_whole_and_only_failed_storage_withholds_it() {
     let _guard = EXCLUSIVE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let settled_before = COUNTERS[2].load(Ordering::Relaxed);
     let overflow_before = COUNTERS[10].load(Ordering::Relaxed);
     let log = Log::new(1);
+    let spill = Spill::new();
     let buffer = Buffer::new(1, 0, Default::default()).unwrap();
     let memory = Memory(Vec::new());
-    append_buffer(
-        &log,
-        &buffer,
+    let reset = Entry {
+        reset: true,
+        started: native::Started {
+            status: 0x1000,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let burst = [
         Entry {
             amount: 1,
             ..Default::default()
         },
-        None,
-        &memory,
-    );
-    append_buffer(
-        &log,
-        &buffer,
-        Entry {
-            reset: true,
-            started: native::Started {
-                status: 0x1000,
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-        None,
-        &memory,
-    );
-    append_buffer(
-        &log,
-        &buffer,
+        reset,
         Entry {
             amount: 2,
             ..Default::default()
         },
-        None,
-        &memory,
-    );
-    let mut output = [Entry::default()];
-    let (drained, _, _) = handover(&log, &buffer, &mut output, &mut [], None).unwrap();
-    assert_eq!(drained.copied, 0);
-    assert_eq!(drained.pending, 3);
+    ];
+    for entry in burst {
+        assert!(append_buffer(&log, &spill, &buffer, entry, None, &memory));
+    }
+    let mut output = vec![Entry::default(); 3];
+    let (drained, _, _) = handover_buffers(&log, &spill, &buffer, None, engine_native::walk::Buffer::Growing(&mut output), engine_native::walk::Buffer::Count, None).unwrap();
+    assert_eq!((drained.copied, drained.pending), (3, 3));
+    assert_eq!(output[0].amount, 1);
+    assert!(output[1].reset && output[1].started.status == 0x1000);
+    assert_eq!(output[2].amount, 2);
     assert_eq!(buffer.entries_required.load(Ordering::Relaxed), 3);
+    assert_eq!(COUNTERS[10].load(Ordering::Relaxed), overflow_before);
+    // Storage that cannot be allocated withholds the whole interval.
+    spill.release();
+    assert!(append_buffer(&log, &spill, &buffer, burst[0], None, &memory));
+    crate::test_support::with_allocations_denied(|| {
+        assert!(!append_buffer(&log, &spill, &buffer, reset, None, &memory));
+    });
+    let (drained, _, _) = handover_buffers(&log, &spill, &buffer, None, engine_native::walk::Buffer::Growing(&mut output), engine_native::walk::Buffer::Count, None).unwrap();
+    assert_eq!((drained.first, drained.cursor, drained.copied), (5, 5, 0));
     assert_eq!(COUNTERS[2].load(Ordering::Relaxed), settled_before);
     assert_eq!(COUNTERS[10].load(Ordering::Relaxed), overflow_before + 1);
+    assert_eq!(spill.lost.load(Ordering::Acquire), u64::MAX);
+}
+
+/// Receipts that come before any buffer is installed wait in the spill, and
+/// the first buffer installs over them.
+#[test]
+fn receipts_before_the_first_buffer_are_handed_over_after_it_installs() {
+    let _guard = EXCLUSIVE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    release().unwrap();
+    for amount in [3, -4] {
+        assert!(append(
+            &LOG.enter(),
+            Entry {
+                amount,
+                ..Default::default()
+            },
+            None,
+            &Memory(Vec::new())
+        ));
+    }
+    offer(1, 0);
+    install_offered();
+    assert!(!LIVE.load(Ordering::SeqCst).is_null());
+    assert!(append(
+        &LOG.enter(),
+        Entry {
+            amount: 5,
+            ..Default::default()
+        },
+        None,
+        &Memory(Vec::new())
+    ));
+    LOG.enabled.store(true, Ordering::SeqCst);
+    let mut entries = Vec::new();
+    let (drained, _, _) = drain(&mut entries, &mut Vec::new()).unwrap();
+    LOG.enabled.store(false, Ordering::SeqCst);
+    assert_eq!((drained.copied, drained.pending), (3, 3));
+    assert_eq!(
+        entries[..3].iter().map(|entry| entry.amount).collect::<Vec<_>>(),
+        [3, -4, 5]
+    );
+    release().unwrap();
 }
 
 fn started(root: u64) -> Pending {
@@ -365,8 +463,8 @@ fn worker_storage_lease_cannot_lose_native_recipient_or_terminal_root() {
     drop(worker);
     assert_eq!(COUNTERS[6].load(Ordering::Relaxed), busy_before);
     assert_eq!(LOG.epoch.load(Ordering::SeqCst), epoch);
-    let mut entries = [Entry::default(); 2];
-    let mut names = [0; 8];
+    let mut entries = vec![Entry::default(); 2];
+    let mut names = vec![0; 8];
     LOG.enabled.store(true, Ordering::SeqCst);
     let (drained, len, required) = drain(&mut entries, &mut names).unwrap();
     LOG.enabled.store(false, Ordering::SeqCst);
@@ -440,8 +538,8 @@ fn hourly_storage_lease_cannot_lose_recipient_terminal_root_or_reset() {
     );
     assert_eq!(LOG.epoch.load(Ordering::SeqCst), epoch);
     LOG.enabled.store(true, Ordering::SeqCst);
-    let mut entries = [Entry::default(); 4];
-    let (drained, _, _) = drain(&mut entries, &mut []).unwrap();
+    let mut entries = vec![Entry::default(); 4];
+    let (drained, _, _) = drain(&mut entries, &mut Vec::new()).unwrap();
     LOG.enabled.store(false, Ordering::SeqCst);
     assert_eq!((drained.copied, drained.pending), (3, 3));
     assert_eq!(entries[0].amount, -7);
@@ -456,6 +554,7 @@ fn rejected_country_receipt_burst_preserves_growth_after_failed_census() {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     release().unwrap();
+    NAME_STRIDE.store(8, Ordering::Release);
     offer(1, 1);
     install_offered();
     let mut memory = Memory(vec![0; 0x400]);
@@ -495,9 +594,9 @@ fn rejected_country_receipt_burst_preserves_growth_after_failed_census() {
     presize(&unreadable, 0);
     let (entries, names) = capacities();
     assert!(entries >= 10 && names >= 40);
-    let mut output = [Entry::default()];
+    let mut output = vec![Entry::default()];
     LOG.enabled.store(true, Ordering::SeqCst);
-    let (drained, _, required) = drain(&mut output, &mut []).unwrap();
+    let (drained, _, required) = drain(&mut output, &mut Vec::new()).unwrap();
     LOG.enabled.store(false, Ordering::SeqCst);
     assert_eq!(
         (drained.copied, drained.pending, required),
@@ -509,11 +608,9 @@ fn rejected_country_receipt_burst_preserves_growth_after_failed_census() {
         assert!(append(&LOG.enter(), Entry::default(), None, &memory));
     }
     LOG.enabled.store(true, Ordering::SeqCst);
-    let (drained, _, required) = drain(&mut output, &mut []).unwrap();
-    assert_eq!((drained.copied, drained.pending, required), (1, 2, 0));
-    let (drained, _, _) = drain(&mut output, &mut []).unwrap();
+    let (drained, _, required) = drain(&mut output, &mut Vec::new()).unwrap();
     LOG.enabled.store(false, Ordering::SeqCst);
-    assert_eq!((drained.copied, drained.pending), (1, 1));
+    assert_eq!((drained.copied, drained.pending, required), (2, 2, 0));
     assert_eq!(ENTRY_DEMAND.load(Ordering::Acquire), 10);
     assert_eq!(NAME_DEMAND.load(Ordering::Acquire), 40);
     release().unwrap();
@@ -575,9 +672,9 @@ fn empty_drain_preserves_attempts_of_an_active_native_callback() {
     ENTRY_ATTEMPTS.store(1, Ordering::SeqCst);
     ENTRY_DEMAND.store(1, Ordering::Release);
     LOG.cursor.fetch_add(1, Ordering::SeqCst);
-    let mut output = [Entry::default(); 2];
+    let mut output = vec![Entry::default(); 2];
     LOG.enabled.store(true, Ordering::SeqCst);
-    let (drained, _, _) = drain(&mut output, &mut []).unwrap();
+    let (drained, _, _) = drain(&mut output, &mut Vec::new()).unwrap();
     LOG.enabled.store(false, Ordering::SeqCst);
     assert_eq!((drained.copied, drained.pending), (0, 1));
     assert_eq!(ENTRY_CONSUMED.load(Ordering::Relaxed), 0);
@@ -616,7 +713,7 @@ fn country_reset_burst_survives_the_hourly_owner_lease() {
     drop(current);
     let mut entries = vec![Entry::default(); 5];
     LOG.enabled.store(true, Ordering::SeqCst);
-    let (drained, _, _) = drain(&mut entries, &mut []).unwrap();
+    let (drained, _, _) = drain(&mut entries, &mut Vec::new()).unwrap();
     LOG.enabled.store(false, Ordering::SeqCst);
     assert_eq!((drained.copied, drained.pending), (5, 5));
     assert_eq!(LOG.epoch.load(Ordering::SeqCst), epoch);
@@ -650,6 +747,7 @@ fn stale_callback_pointer_follows_prepared_growth_without_epoch_loss() {
     crate::test_support::with_allocations_denied(|| {
         assert!(append_buffer(
             &LOG,
+            &SPILL,
             lease.0,
             Entry {
                 amount: -19,
@@ -662,8 +760,8 @@ fn stale_callback_pointer_follows_prepared_growth_without_epoch_loss() {
     drop(lease);
     drop(call);
     LOG.enabled.store(true, Ordering::SeqCst);
-    let mut entries = [Entry::default(); 2];
-    let (drained, _, _) = drain(&mut entries, &mut []).unwrap();
+    let mut entries = vec![Entry::default(); 2];
+    let (drained, _, _) = drain(&mut entries, &mut Vec::new()).unwrap();
     LOG.enabled.store(false, Ordering::SeqCst);
     assert_eq!(drained.copied, 1);
     assert_eq!(entries[0].amount, -19);
@@ -711,8 +809,8 @@ fn publication_between_empty_check_and_seal_survives_growth_and_collection() {
         &Memory(Vec::new())
     ));
     LOG.enabled.store(true, Ordering::SeqCst);
-    let mut entries = [Entry::default(); 2];
-    let (drained, _, _) = drain(&mut entries, &mut []).unwrap();
+    let mut entries = vec![Entry::default(); 2];
+    let (drained, _, _) = drain(&mut entries, &mut Vec::new()).unwrap();
     LOG.enabled.store(false, Ordering::SeqCst);
     assert_eq!((drained.copied, drained.pending), (2, 2));
     assert_eq!((entries[0].amount, entries[1].amount), (17, -23));
@@ -727,11 +825,13 @@ fn publication_between_empty_check_and_seal_survives_growth_and_collection() {
 #[test]
 fn stale_publisher_can_fill_successor_before_the_boundary_publishes_it() {
     let log = Log::new(1);
+    let spill = Spill::new();
     let old = Buffer::new(1, 0, Default::default()).unwrap();
     let mut fresh = Buffer::new(2, 0, Default::default()).unwrap();
     let memory = Memory(Vec::new());
     assert!(append_buffer(
         &log,
+        &spill,
         &old,
         Entry {
             amount: 5,
@@ -749,6 +849,7 @@ fn stale_publisher_can_fill_successor_before_the_boundary_publishes_it() {
     let lease = publishing(&old).unwrap();
     assert!(append_buffer(
         &log,
+        &spill,
         lease.0,
         Entry {
             amount: 9,
@@ -764,6 +865,7 @@ fn stale_publisher_can_fill_successor_before_the_boundary_publishes_it() {
     let mut entries = Vec::new();
     let (drained, _, _) = handover_buffers(
         &log,
+        &spill,
         &fresh,
         Some(&old),
         engine_native::walk::Buffer::Growing(&mut entries),
@@ -823,8 +925,8 @@ fn concurrent_callbacks_and_short_drains_keep_all_receipts_and_name_bytes() {
     let epoch = LOG.epoch.load(Ordering::SeqCst);
     let done = AtomicUsize::new(0);
     let mut seen = vec![false; 5000];
-    let mut output = [Entry::default(); 137];
-    let mut names = [0; 137 * 6];
+    let mut output = vec![Entry::default(); 137];
+    let mut names = vec![0; 137 * 6];
     let mut count = 0;
     struct Done<'a>(&'a AtomicUsize);
     impl Drop for Done<'_> {
@@ -910,10 +1012,10 @@ fn spool_sizing_and_capacity_reads_never_refuse_the_hourly_drain_or_growth() {
     // The spool holds its sizing lock across the whole parked boundary.
     let spool = SIZING.lock().unwrap();
     LOG.enabled.store(true, Ordering::SeqCst);
-    let mut entries = [Entry::default(); 2];
+    let mut entries = vec![Entry::default(); 2];
     let (drained, _, _) = crate::test_support::with_allocations_denied(|| {
         assert_eq!(capacities(), (4, 0));
-        let drained = drain(&mut entries, &mut []);
+        let drained = drain(&mut entries, &mut Vec::new());
         install_offered();
         drained
     })
@@ -946,7 +1048,7 @@ fn refused_drain_is_named_and_counted() {
     let refused = DRAIN_REFUSALS.load(Ordering::Relaxed);
     let detach = CURRENT.lock().unwrap();
     assert_eq!(
-        drain(&mut [Entry::default()], &mut []).unwrap_err(),
+        drain(&mut vec![Entry::default()], &mut Vec::new()).unwrap_err(),
         "fuel observation storage busy"
     );
     drop(detach);
@@ -1093,7 +1195,7 @@ fn hook_cost_fuel_awards() {
     });
     let mut entries = Vec::new();
     let mut names = Vec::new();
-    let (drained, _, _) = drain_growing(&mut entries, &mut names).unwrap();
+    let (drained, _, _) = drain(&mut entries, &mut names).unwrap();
     LOG.enabled.store(false, Ordering::SeqCst);
     assert_eq!(drained.copied, 3 * 8 * COUNTRIES);
     assert!(entries.iter().all(|entry| !entry.refused));

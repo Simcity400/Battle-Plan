@@ -17,8 +17,8 @@
 //!
 //! A part whose owner does not forward, whose read fails or whose call goes
 //! unobserved is recorded as a refusal of that part. A strike whose own
-//! operands cannot be read, a full ledger or overlapping calls make the
-//! interval unavailable ([`EventLedger`]). Callbacks never allocate.
+//! operands cannot be read, a ledger whose storage could not grow or
+//! overlapping calls make the interval unavailable ([`EventLedger`]).
 use crate::{
     event_ledger::{Event, EventLedger},
     hook::Hook,
@@ -183,11 +183,11 @@ pub fn boundary(clock: Option<Clock>) {
         LEDGER.boundary(clock);
     }
 }
-pub fn drain_growing(output: &mut Vec<Entry>) -> Result<usize, &'static str> {
+pub fn drain(output: &mut Vec<Entry>) -> Result<usize, &'static str> {
     if foreign_test() || UNHOOKED.get().is_some() || !ENABLED.load(Ordering::SeqCst) {
         return Err("nuclear strike hooks unavailable (see status unhooked)");
     }
-    LEDGER.drain_growing(output)
+    LEDGER.drain(output)
 }
 
 /// An owning family says whether it forwards `part`'s writer.
@@ -547,6 +547,7 @@ unsafe extern "system-unwind" fn impact(
     r8: usize,
     r9: usize,
 ) -> usize {
+    let _hook = crate::hook_timing::label();
     LEDGER.enter();
     open(nuke, province);
     let _opened = Opened;
@@ -562,6 +563,7 @@ unsafe extern "system-unwind" fn notify(
     r8: usize,
     r9: usize,
 ) -> usize {
+    let _hook = crate::hook_timing::label();
     close();
     run(1, nuke, province, r8, r9)
 }
@@ -571,6 +573,7 @@ unsafe extern "system-unwind" fn unit_damage(
     r8: usize,
     r9: usize,
 ) -> usize {
+    let _hook = crate::hook_timing::label();
     let call = current().then(|| CALLS.fetch_add(1, Ordering::Relaxed));
     if let Some(call) = call {
         units(province, Phase::Before, call);

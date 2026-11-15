@@ -1,7 +1,6 @@
 import { campaignToken } from './chosen.ts';
 import { contentKey, setToken } from './options.ts';
 import type { OptionField } from './options';
-import type { DashboardClient } from './client';
 
 /** Shared semantic settings; the two widgets keep independent saved choices. */
 export const AIR_OPTIONS: readonly OptionField[] = [
@@ -19,15 +18,4 @@ export const airChoiceToken = (campaign: string, key: string) => setToken(campai
 export function airChoiceKey(campaign: string, value: string): string | null {
   const key = contentKey(value), prefix = campaignToken(campaign, '');
   return key.startsWith(prefix) ? key.slice(prefix.length) : null;
-}
-
-/** Follow requests change once per calendar day, not once per played hour. */
-export function timelineRequestLast(hour: number, dayHours: number): number {
-  return Math.floor(hour / dayHours) * dayHours;
-}
-
-/** Held replies are scoped to the same client, recording, comparison and content. */
-export function heldAirReply<K extends 'timeline' | 'day'>(held: { client: DashboardClient; identity: string; timeline?: import('./airSuperiority').AirTimeline; day?: import('./airSuperiority').AirMoment } | undefined,
-  client: DashboardClient, identity: string, kind: K): NonNullable<typeof held>[K] | undefined {
-  return held?.client === client && held.identity === identity ? held[kind] : undefined;
 }

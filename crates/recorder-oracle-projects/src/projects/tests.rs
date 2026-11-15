@@ -508,6 +508,38 @@ fn raid_target_fields_are_compared_against_the_saved_target_block() {
     assert!(report.differences.is_empty(), "{:?}", report.differences);
 }
 
+/// An ended raid appends its target's country to `show_for` even when the
+/// target has none; the save writer writes only positive country handles, so
+/// those entries are skipped as it skips them and the rest compared in order.
+#[test]
+fn raid_show_for_skips_the_entries_without_a_country_as_the_save_does() {
+    let (frame, mut pack, country) = raid_fixture();
+    let countries = BTreeMap::from([(102, &country)]);
+    pack.raids.as_mut().unwrap()[0].instances[0].show_for = vec![b"GER".to_vec()];
+    let run = |show_for: Vec<u32>| {
+        let mut frame = frame.clone();
+        let TableView::Complete(TableRows::Raids(rows)) =
+            &mut *frame.tables[TableId::Raids.index()]
+        else {
+            panic!("fixture holds complete raids");
+        };
+        rows[0].show_for = show_for;
+        let mut report = Report::default();
+        compare(&frame, &pack, &countries, &BTreeMap::new(), &mut report).unwrap();
+        report
+    };
+    let report = run(vec![102, 0]);
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert_eq!(
+        report.limitations["the save writes no show_for entry without a country; those entries are not compared"],
+        ["Raid 18446744069414584404.show_for"]
+    );
+    assert!(run(vec![u32::MAX, 102]).differences.is_empty());
+    assert!(run(vec![102]).limitations.keys().all(|reason| !reason.contains("show_for")));
+    assert!(run(vec![102, 102]).differences[0].contains("show_for"));
+    assert!(run(vec![0]).differences[0].contains("show_for"));
+}
+
 /// The travelled distance compares exactly with the saved `distance`
 /// (raw / 100000); an absent one is zero, and an unread one is named.
 #[test]

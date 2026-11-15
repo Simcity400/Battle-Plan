@@ -1,24 +1,16 @@
-import { DATE_OVERLAY_OPTION, RACE_AXIS_OPTIONS, RACE_TIME_OPTIONS, raceViewOption, TOP_COUNTRIES, raceViewVariants } from '../../charts/race/options.ts';
+import { TOP_COUNTRIES, raceViewVariants } from '../../charts/race/options.ts';
+import { partsRaceOptions } from '../../charts/race/partsRaceOptions.ts';
+import { breakdownOption, breakdownVariants } from '../../charts/drill/drillState.ts';
 import type { WidgetMeta } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
-import { breakdownOption, DRILL_OPTION, breakdownVariants } from '../../charts/drill/drillState.ts';
 
-export const OPTIONS: readonly OptionField[] = [
-  { ...raceViewOption('nuke type'), visibleWhen: options => options.show === 'main' },
-  breakdownOption([{ id: 'breakdown', label: 'Weapon types' }], 'Country totals'),
-  { key: 'drillOriginHour', section: 'options', label: 'Country selected at hour', kind: 'number',
-    min: -2147483648, max: 2147483647, step: 1, default: null, visibleWhen: () => false },
-  { ...DATE_OVERLAY_OPTION, visibleWhen: options => options.show === 'main' && options.view === 'race' },
-  { key: 'endLabels', section: 'options', label: 'Names at line ends', kind: 'toggle', default: true,
-    visibleWhen: options => options.show === 'main' && options.view === 'lines' },
-  ...[...RACE_TIME_OPTIONS, ...RACE_AXIS_OPTIONS].map(field => ({ ...field,
-    visibleWhen: (options, countries) => field.visibleWhen?.({ ...options, view: options.show === 'breakdown' ? 'mix' : options.view }, countries) ?? true } satisfies OptionField)),
-  { ...DRILL_OPTION, visibleWhen: options => options.show === 'main' },
-];
+export const OPTIONS: readonly OptionField[] = partsRaceOptions('nuke type').map(field => field.key === 'show'
+  ? breakdownOption([{ id: 'breakdown', label: 'Weapon types' }], 'Country totals')
+  : field.key === 'split' ? { ...field, label: 'Show weapon types', hint: 'Split each stockpile into its weapon types.', default: true } as OptionField : field);
 
 export const definition = {
-  kind: 'nuclear-arsenal', version: 1, title: 'Nuclear arsenal', icon: 'target',
-  description: 'Nuclear stockpiles by country and weapon type.',
+  kind: 'nuclear-arsenal', version: 3, title: 'Nuclear arsenal', icon: 'target',
+  description: 'Nuclear stockpiles by country and weapon type, as the top bar shows them.',
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 6, h: 12 },
   countries: { max: Number.MAX_SAFE_INTEGER, ranked: true }, defaultCountries: TOP_COUNTRIES, options: OPTIONS,

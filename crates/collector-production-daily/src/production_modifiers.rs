@@ -156,7 +156,7 @@ impl Part {
         self.outcome = super::failed_capture(TABLES[0], hour, full, reason);
     }
     /// The capture of census slots `slots`, with `provided` defines when
-    /// the capture is split ([`native::capture_growing_slots`]).
+    /// the capture is split ([`native::capture_slots`]).
     #[allow(clippy::too_many_arguments)]
     pub fn capture(
         &mut self,
@@ -179,7 +179,7 @@ impl Part {
         let started = qpc();
         let result = (|| {
             let mut context = None;
-            let mut inputs = native::GrowingBuffers {
+            let mut inputs = native::Buffers {
                 countries: &mut self.countries.first,
                 country_len: 0,
                 country_required: 0,
@@ -195,7 +195,7 @@ impl Part {
                 archetypes: &mut self.archetypes.first,
                 archetype_required: 0,
             };
-            let result = native::capture_growing_slots(
+            let result = native::capture_slots(
                 memory,
                 base,
                 state,

@@ -160,15 +160,15 @@ impl Fixture {
     }
     fn capture(
         &self,
-        rows: &mut [Row],
+        rows: &mut Vec<Row>,
         catalog: &mut Catalog,
     ) -> cintelligence_agency::UpgradeWalk {
         let captured = cintelligence_agency::walk_with_upgrades(
             self,
             self.world.module,
             self.world.game_state(),
-            &mut [],
-            &mut [],
+            &mut Vec::new(),
+            &mut Vec::new(),
             rows,
             catalog,
         );
@@ -193,7 +193,7 @@ fn worker_grows_first_capture_and_later_catalog_at_unchanged_countries() {
     let mut names = Vec::new();
     let mut rows = Vec::new();
     let mut catalog = Catalog::new(0);
-    let first = cintelligence_agency::walk_with_upgrades_growing(
+    let first = cintelligence_agency::walk_with_upgrades(
         &fixture,
         fixture.world.module,
         fixture.world.game_state(),
@@ -262,19 +262,7 @@ fn worker_grows_first_capture_and_later_catalog_at_unchanged_countries() {
             catalog: COUNTRIES + 3
         })
     );
-    let fixed = fixture.capture(&mut rows[..3 * COUNTRIES], &mut Catalog::new(3));
-    assert_eq!(
-        fixed.upgrades.outcome,
-        Outcome::Truncated {
-            len: 3 * COUNTRIES,
-            unread_rows: 7 * COUNTRIES as u32
-        }
-    );
-    assert_eq!(
-        fixed.upgrades.refusal_counts[CATALOG_CAPACITY as usize],
-        10 * COUNTRIES as u32
-    );
-    let later = cintelligence_agency::walk_with_upgrades_growing(
+    let later = cintelligence_agency::walk_with_upgrades(
         &fixture,
         fixture.world.module,
         fixture.world.game_state(),
@@ -356,40 +344,24 @@ fn agency_upgrade_levels_every_country_preserves_branch_duplicates_raw_levels_an
 }
 
 #[test]
-fn agency_upgrade_levels_capacity_demand_is_exact_without_clamping_raw_rows() {
+fn agency_upgrade_levels_short_storage_grows_to_the_exact_demand_without_clamping_raw_rows() {
     let fixture = Fixture::new(2);
-    let mut rows = [Row::default(); 4];
+    let mut rows = vec![Row::default(); 4];
     let mut catalog = Catalog::new(2);
     let captured = fixture.capture(&mut rows, &mut catalog);
     assert_eq!(captured.upgrades.required_rows, 6);
     assert_eq!(catalog.required_capacity(), 3);
+    assert_eq!(captured.upgrades.outcome, Outcome::Rows { len: 6 });
+    assert_eq!(captured.upgrades.omitted_rows, 0);
+    assert_eq!(captured.upgrades.refused_rows, 0);
     assert_eq!(
         captured.upgrades.refusal_counts[CATALOG_CAPACITY as usize],
-        6
+        0
     );
     assert_eq!(
-        captured.upgrades.outcome,
-        Outcome::Truncated {
-            len: 4,
-            unread_rows: 2
-        }
+        rows[..6].iter().map(|r| r.level).collect::<Vec<_>>(),
+        [-7, i32::MAX, 0, -7, i32::MAX, 0]
     );
-    assert_eq!(captured.upgrades.omitted_rows, 2);
-    assert_eq!(
-        rows.iter().map(|r| r.level).collect::<Vec<_>>(),
-        [-7, i32::MAX, 0, -7]
-    );
-    catalog.resize(3);
-    assert!(catalog.allocated_bytes() >= 3 * std::mem::size_of::<Identity>());
-    let captured = fixture.capture(&mut rows, &mut catalog);
-    assert_eq!(
-        captured.upgrades.outcome,
-        Outcome::Truncated {
-            len: 4,
-            unread_rows: 2
-        }
-    );
-    assert_eq!(captured.upgrades.refused_rows, 0);
 }
 
 #[test]
@@ -399,7 +371,7 @@ fn agency_upgrade_levels_null_and_unregistered_entries_are_retained_named_and_co
     fixture
         .world
         .u64(fixture.entries + ENTRY_STRIDE, 0xfeed_cafe);
-    let mut rows = [Row::default(); 3];
+    let mut rows = vec![Row::default(); 3];
     let captured = fixture.capture(&mut rows, &mut Catalog::new(3));
     assert_eq!(captured.upgrades.outcome, Outcome::Rows { len: 3 });
     assert_eq!(captured.upgrades.required_rows, 3);
@@ -445,7 +417,7 @@ fn agency_upgrade_levels_refuses_definition_forms_owner_and_lexical_identity_wit
             BRANCH_TOKEN_UNAVAILABLE => fixture.world.u32(fixture.branches[0] + TOKEN, 100_000),
             _ => unreachable!(),
         }
-        let mut rows = [Row::default(); 3];
+        let mut rows = vec![Row::default(); 3];
         let captured = fixture.capture(&mut rows, &mut Catalog::new(3));
         assert_eq!(
             captured.upgrades.outcome,
@@ -468,7 +440,7 @@ fn agency_upgrade_levels_reset_empty_created_and_uncreated_skip_the_database_and
  {
     let mut fixture = Fixture::new(2);
     let mut catalog = Catalog::new(3);
-    let mut rows = [Row::default(); 6];
+    let mut rows = vec![Row::default(); 6];
     assert_eq!(
         fixture.capture(&mut rows, &mut catalog).upgrades.outcome,
         Outcome::Rows { len: 6 }
@@ -495,7 +467,7 @@ fn agency_upgrade_levels_bad_owner_and_short_acquired_reads_are_unavailable() {
         fixture.agencies[0] + cintelligence_agency::OWNER_COUNTRY,
         fixture.world.object(1) as u64 + 8,
     );
-    let mut rows = [Row::default(); 3];
+    let mut rows = vec![Row::default(); 3];
     let captured = fixture.capture(&mut rows, &mut Catalog::new(3));
     assert_eq!(
         captured.agencies.outcome,
@@ -523,7 +495,7 @@ fn agency_upgrade_levels_bad_owner_and_short_acquired_reads_are_unavailable() {
 fn agency_upgrade_levels_changed_dictionary_preserves_raw_entries_and_withholds_identity() {
     let mut fixture = Fixture::new(1);
     fixture.changed_lexer = true;
-    let mut rows = [Row::default(); 3];
+    let mut rows = vec![Row::default(); 3];
     let captured = fixture.capture(&mut rows, &mut Catalog::new(3));
     assert_eq!(captured.upgrades.outcome, Outcome::Rows { len: 3 });
     assert_eq!(captured.upgrades.refusal_counts[LEXER_CHANGED as usize], 3);
@@ -533,18 +505,6 @@ fn agency_upgrade_levels_changed_dictionary_preserves_raw_entries_and_withholds_
     );
     assert_eq!(rows[0].level, -7);
     assert_eq!(rows[1].definition_pointer, fixture.definitions[2] as u64);
-    fixture.witness_reads.set(0);
-    let captured = fixture.capture(&mut rows[..1], &mut Catalog::new(3));
-    assert_eq!(
-        captured.upgrades.outcome,
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 2
-        }
-    );
-    assert_eq!(captured.upgrades.refused_rows, 3);
-    assert_eq!(captured.upgrades.omitted_rows, 2);
-    assert_eq!(captured.upgrades.refusal_counts[LEXER_CHANGED as usize], 3);
 }
 
 #[test]
@@ -576,7 +536,7 @@ fn agency_upgrade_levels_database_forms_and_duplicate_memberships_have_named_cou
             }
             _ => unreachable!(),
         }
-        let mut rows = [Row::default(); 3];
+        let mut rows = vec![Row::default(); 3];
         let captured = fixture.capture(&mut rows, &mut Catalog::new(3));
         let refused = if status == DUPLICATE_MEMBERSHIP { 2 } else { 3 };
         assert_eq!(captured.upgrades.outcome, Outcome::Rows { len: 3 });

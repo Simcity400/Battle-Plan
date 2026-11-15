@@ -7,9 +7,10 @@ import { useMotionNow } from '../liveMotion.ts';
 import { canvasImage } from '../images';
 import { countryTooltipContent, drawCountryFlag } from '../countryFlag';
 import { ellipsise, layoutEndLabels } from '../labels';
+import type { Live } from '../live';
 import { scheduler } from '../scheduler';
 import type { FrameInfo, FrameTask } from '../scheduler';
-import { backingSize, toLocal } from '../surface';
+import { drawingSurface, sizeCanvas, toLocal, watchCanvasSize } from '../surface';
 import { readTokens, subscribeTokens } from '../tokens';
 import { hideTooltip, scrollTooltip, showTooltip, tooltipStore, tooltipText } from '../tooltip';
 import type { TooltipContent } from '../tooltip';
@@ -17,6 +18,8 @@ import { flowCapacity, flowPlaybackSnap, FlowMotion, flowStops, labelAt, linkAt,
 import type { FlowFrame, FlowLink, FlowNode, FlowStop, LabelBox, LinkShape, NodeBox } from './layout';
 import { FlowTooltipCache } from './tooltipCache';
 import '../charts.css';
+import { textWidth } from '../textWidth.ts';
+import { setStyle } from '../domText.ts';
 
 export type { FlowLink, FlowNode } from './layout';
 
@@ -59,7 +62,16 @@ export interface FlowDiagramProps {
   /** Told how many nodes a side can show at the diagram's size (`flowCapacity`) when
    * that changes: the widget folds the rest into one node. */
   onCapacity?: (perSide: number) => void;
+  /** The playhead's nodes, ribbons and hours, read as each frame draws in place of the same props: the ribbons grow
+   * and shrink with no render. A ribbon or node it does not hold is not drawn; `message` says why nothing is. */
+  live?: Live<FlowValues>;
 }
+
+/** What moves at the playhead: the nodes and ribbons, the hours they are at, and why nothing shows. */
+export type FlowValues = Pick<FlowDiagramProps, 'nodes' | 'links' | 'hour' | 'playbackHour' | 'message'>;
+
+/** `props` with the live values now, when it reads them. */
+const withLive = (props: FlowDiagramProps): FlowDiagramProps => props.live ? { ...props, ...props.live.read() } : props;
 
 const NODE_WIDTH = 12;
 const PAD = 8;
@@ -99,7 +111,8 @@ export default function FlowDiagram(props: FlowDiagramProps) {
 
   useEffect(() => {
     const element = canvas.current!;
-    const context = element.getContext('2d')!;
+    const paper = drawingSurface(element), context = paper.context!;
+    const sized = watchCanvasSize(element, () => { if (task.current) scheduler.wake(task.current); });
     let tokens = readTokens();
     const motion = new FlowMotion();
     let pointer: { x: number; y: number; clientX: number; clientY: number } | null = null;
@@ -131,21 +144,17 @@ export default function FlowDiagram(props: FlowDiagramProps) {
     };
 
     const draw = (info: FrameInfo): boolean => {
-      const p = latest.current;
-      const width = element.clientWidth;
-      const height = element.clientHeight;
+      const p = withLive(latest.current);
+      const { layoutWidth: width, layoutHeight: height, backing: size } = sized.read();
       if (!width || !height) return false;
-      const rect = element.getBoundingClientRect();
-      const size = backingSize({ layoutWidth: width, layoutHeight: height, rectWidth: rect.width, rectHeight: rect.height, devicePixelRatio: window.devicePixelRatio || 1 });
-      if (element.width !== size.width) element.width = size.width;
-      if (element.height !== size.height) element.height = size.height;
+      sizeCanvas(paper.canvas, size.width, size.height);
       context.setTransform(size.scaleX, 0, 0, size.scaleY, 0, 0);
       context.clearRect(0, 0, width, height);
 
       // Label columns as wide as the longest name shown so far, so they never jump
       // back and forth during playback; at most a third of the width each side.
       context.font = font(tokens, tokens.fontSize.body, 500);
-      for (const node of p.nodes) labelWidth = Math.max(labelWidth, context.measureText(node.label).width + FLAG_WIDTH + LABEL_GAP * 2);
+      for (const node of p.nodes) labelWidth = Math.max(labelWidth, textWidth(context, node.label) + FLAG_WIDTH + LABEL_GAP * 2);
       const column = Math.min(labelWidth, width / 3);
       const geometry = { left: PAD + column + NODE_WIDTH, right: width - PAD - column - NODE_WIDTH, top: PAD, bottom: height - PAD,
         nodeWidth: NODE_WIDTH, gap: Math.max(2, Math.min(10, height / 40)), slots: p.slots, scale: p.scale };
@@ -215,9 +224,9 @@ export default function FlowDiagram(props: FlowDiagramProps) {
           context.fillStyle = tokens.text; context.font = font(tokens, tokens.fontSize.body, 500); context.textBaseline = 'middle';
           context.textAlign = side === 'source' ? 'right' : 'left';
           const room = Math.max(8, column - FLAG_WIDTH - LABEL_GAP * 2);
-          const label = ellipsise(box.node.label, room, text => context.measureText(text).width);
+          const label = ellipsise(box.node.label, room, text => textWidth(context, text));
           context.fillText(label, side === 'source' ? flagX - LABEL_GAP / 2 : flagX + FLAG_WIDTH + LABEL_GAP / 2, at);
-          const text = context.measureText(label).width + LABEL_GAP / 2;
+          const text = textWidth(context, label) + LABEL_GAP / 2;
           labels.push({ id: box.id, node: box.node, x: side === 'source' ? flagX - text : flagX, y: at - lineHeight / 2,
             width: FLAG_WIDTH + text, height: lineHeight, alpha: box.alpha });
         }
@@ -236,7 +245,7 @@ export default function FlowDiagram(props: FlowDiagramProps) {
       } else if (!hit) {
         keyed.current = null; tooltips.clear(); hideTooltip(owner); setSpoken('');
       } else if (p.tooltip !== keyedTooltip) { keyedTooltip = p.tooltip; queueMicrotask(() => showKeyed.current()); }
-      element.style.cursor = hit ? 'pointer' : 'default';
+      setStyle(element, 'cursor', hit ? 'pointer' : 'default');
       return !frame.settled;
     };
     let keyedTooltip: FlowDiagramProps['tooltip'];
@@ -246,8 +255,6 @@ export default function FlowDiagram(props: FlowDiagramProps) {
     const wake = () => { scheduler.wake(current); if (keyed.current) queueMicrotask(() => showKeyed.current()); };
     const remove = scheduler.add(current, element);
     const unsubscribe = subscribeTokens(next => { tokens = next; labelWidth = 0; wake(); });
-    const observer = new ResizeObserver(() => wake());
-    observer.observe(element);
     const local = (event: PointerEvent | MouseEvent) => ({ ...toLocal(event.clientX, event.clientY, element.getBoundingClientRect(), element.clientWidth, element.clientHeight), clientX: event.clientX, clientY: event.clientY });
     const move = (event: PointerEvent) => {
       // Moving the pointer hands the tooltip back to it.
@@ -284,7 +291,7 @@ export default function FlowDiagram(props: FlowDiagramProps) {
     element.addEventListener('contextmenu', menu);
     element.addEventListener('click', pick);
     return () => {
-      remove(); unsubscribe(); observer.disconnect(); hideTooltip(owner);
+      remove(); unsubscribe(); sized.disconnect(); hideTooltip(owner);
       element.removeEventListener('pointermove', move);
       element.removeEventListener('pointerleave', leave);
       element.removeEventListener('wheel', wheel);
@@ -299,6 +306,7 @@ export default function FlowDiagram(props: FlowDiagramProps) {
     if (!props.active) { hideTooltip(owner); keyed.current = null; setSpoken(''); }
   }, [props.active, owner]);
   useEffect(() => { if (task.current) scheduler.wake(task.current); });
+  useEffect(() => props.live?.subscribe(() => { if (task.current) scheduler.wake(task.current); }), [props.live]);
 
   // The keyboard's stop: its tooltip beside it, read out in full.
   const stopHit = (stop: FlowStop): { hit: FlowHit; x: number; y: number } | null => {

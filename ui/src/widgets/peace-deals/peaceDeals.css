@@ -44,7 +44,7 @@
 
 /* A conference with nothing recorded to show is one line. */
 .peace-quiet { display: flex; align-items: center; gap: 8px; padding: 8px 0; min-width: 0; font-size: var(--type-sm); }
-.peace-quiet time { width: 7.5em; flex: none; }
+.peace-quiet time { min-width: 11em; flex: none; }
 .peace-quiet > svg { width: 14px; height: 14px; flex: none; color: var(--muted); }
 .peace-quiet .peace-side { flex: 0 1 auto; }
 .peace-quiet-note { margin-left: auto; padding-left: 8px; color: var(--muted); font-size: var(--type-xs); white-space: nowrap; }

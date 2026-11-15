@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { colourOf, coloursIn, flagIn, forgetTimelines, heldFacts, heldStyles, heldTimeline, validateCountryFacts, watchTimeline } from './countryTimeline.ts';
+import { colourOf, coloursIn, flagIn, forgetTimelines, heldFacts, heldStyles, heldTimeline, identitySince, stylesIn, validateCountryFacts, watchTimeline } from './countryTimeline.ts';
+import type { CountryTimeline } from './countryTimeline';
 import { answerHeld } from './countryNamesAt.ts';
 import { FactRequests, HourStore, MAX_NAME_HOURS, nameKey, readFacts } from './countryFacts.ts';
 import type { FactSpec } from './countryFacts';
 import type { CountryFactsReply, CountryStyle, CountryStyleReply } from '../generated/dashboard';
-import type { DashboardClient, DashboardSource } from './client';
+import type { DashboardClient, DashboardSource, ProductRequest } from './client';
 
 /** GER named Germany, then German Reich from 15 under another flag, losing its colour at 35; D01 a
  * country from 32, drawn as GER was first. */
@@ -20,13 +21,16 @@ const REPLY: CountryFactsReply = {
   warnings: ['content'],
 };
 
-/** A client answering `country-facts` with `reply`, complete unless preparation is still `growing`, counting what it is asked. */
-function facts(reply: CountryFactsReply = REPLY, growing = false) {
+/** A `country-facts` reply to `request`, as the client gives it. */
+const replyTo = (request: ProductRequest, data: unknown) => ({ sourceId: request.sourceId, revision: request.revision, product: request.product, data });
+
+/** A client answering `country-facts` with `reply`, counting what it is asked. */
+function facts(reply: CountryFactsReply = REPLY) {
   const asked: unknown[] = [];
   const client = {
-    preparedQuery: async (_source: DashboardSource, product: string, params: unknown) => {
-      asked.push([product, params]);
-      return { ...reply, coverage: { firstHour: 10, lastHour: 40, complete: !growing }, pending: growing ? [{ firstHour: 41, lastHour: 60 }] : [] };
+    product: async (request: ProductRequest) => {
+      asked.push([request.product, request.params]);
+      return replyTo(request, reply);
     },
   } as unknown as DashboardClient;
   return { client, asked };
@@ -83,8 +87,11 @@ test('thousands of held hours are told through the scheduler without asking, and
     flags: [], countries: [{ tag: 'GER', runs: [[0, 0, 0x336699, -1, -1]] }], warnings: [] };
   const asked: unknown[] = [];
   const client = {
-    preparedQuery: async () => ({ ...reply, coverage: { firstHour: 0, lastHour: hours, complete: true }, pending: [] }),
-    product: async (request: unknown) => { asked.push(request); throw new Error('asked for an hour the timeline holds'); },
+    product: async (request: ProductRequest) => {
+      if (request.product === 'country-facts') return replyTo(request, reply);
+      asked.push(request);
+      throw new Error('asked for an hour the timeline holds');
+    },
   } as unknown as DashboardClient;
   const source = { sourceId: 'many', revision: 'r1', branchId: '1', content: 0 };
   const recording = { id: 'many', revision: 'r1' } as DashboardSource;
@@ -114,8 +121,7 @@ test('a timeline still being read survives forgetting what settled, and another 
   const replies: (() => void)[] = [];
   let asked = 0;
   const client = {
-    preparedQuery: () => { asked++; return new Promise(resolve => replies.push(() => resolve(
-      { ...REPLY, coverage: { firstHour: 10, lastHour: 40, complete: true }, pending: [] }))); },
+    product: (request: ProductRequest) => { asked++; return new Promise(resolve => replies.push(() => resolve(replyTo(request, REPLY)))); },
   } as unknown as DashboardClient;
   const source = { sourceId: 'settled', revision: 'r1', branchId: '1', content: 0 };
   const recording = { id: 'settled', revision: 'r1' } as DashboardSource;
@@ -199,16 +205,10 @@ test('each run names the flag preparation chose for it, and a tag that is not a 
   assert.deepEqual(flagIn(timeline, 12, 'ENG'), { reason: 'not a country at this hour' });
   assert.deepEqual(flagIn(timeline, 25, 'GER'), { reason: 'country facts were not recorded at this hour' },
     'an hour a finished preparation holds no facts of says so');
-  const growing = facts(REPLY, true).client;
-  heldStyles(growing, source, recording, 12, ['GER']);
-  await settle();
-  assert.equal(flagIn(heldTimeline(growing, source)!, 25, 'GER'), undefined, 'an hour a growing preparation does not hold yet is not known');
 });
 
-test('a held timeline gives each country its packed map colour, one object per colour, kept as it grows and released with it', async t => {
-  t.mock.timers.enable({ apis: ['Date'], now: 0 });
-  // Preparation still covers more, so an hour the timeline does not hold reads it again once its wait is over.
-  const { client } = facts(REPLY, true);
+test('a held timeline gives each country its packed map colour, one object per colour, released with it', async () => {
+  const { client } = facts();
   heldStyles(client, source, recording, 12, ['GER']);
   await settle();
   const timeline = heldTimeline(client, source)!;
@@ -218,15 +218,26 @@ test('a held timeline gives each country its packed map colour, one object per c
   const colour = colourOf(timeline, 0x336699);
   assert.deepEqual(colour, { color: [0x33, 0x66, 0x99] });
   assert.equal(colourOf(timeline, 0x336699), colour, 'every country and hour drawn in a colour shares it');
-  // A re-read while preparation grows keeps the table; a forgotten timeline takes it with it.
-  t.mock.timers.tick(60_000);
-  heldStyles(client, source, recording, 25, ['GER']);
-  await settle();
-  const grown = heldTimeline(client, source)!;
-  assert.notEqual(grown, timeline);
-  assert.equal(colourOf(grown, 0x336699), colour);
+  // A forgotten timeline takes its colours with it.
   forgetTimelines(client, 'timeline');
   heldStyles(client, source, recording, 12, ['GER']);
   await settle();
   assert.notEqual(colourOf(heldTimeline(client, source)!, 0x336699), colour);
+});
+
+test('identities at the head are read at the hour one last changed, which reads the same as the head', () => {
+  const timeline = { reply: REPLY, runs: new Map(REPLY.countries.map(country => [country.tag, country.runs as [number, number, number, number, number][]])),
+    final: true, colours: new Map() } as CountryTimeline;
+  for (const tags of [['GER'], ['D01'], ['GER', 'D01']]) {
+    const seen = new Set<number>();
+    for (let hour = 0; hour <= 50; hour++) {
+      const since = identitySince(timeline, hour, tags);
+      if (since === undefined) { assert.equal(stylesIn(timeline, hour, tags), undefined, `${hour} is not held`); continue; }
+      seen.add(since);
+      assert.ok(since <= hour);
+      assert.deepEqual(stylesIn(timeline, since, tags), stylesIn(timeline, hour, tags), `${tags} at ${hour} and at ${since}`);
+      for (const tag of tags) assert.deepEqual(flagIn(timeline, since, tag), flagIn(timeline, hour, tag));
+    }
+    assert.deepEqual([...seen], { GER: [10, 15, 30, 35], D01: [10, 30, 32], 'GER,D01': [10, 15, 30, 32, 35] }[tags.join()], `${tags} moves only when one changes`);
+  }
 });

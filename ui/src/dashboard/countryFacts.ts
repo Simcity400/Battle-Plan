@@ -14,6 +14,7 @@ import type { FactFailure } from './sharedFacts';
 import { inFrame } from './frameUpdates.ts';
 import { askTimeline } from './countryTimeline.ts';
 import type { HeldLookup } from './countryTimeline';
+import { busyWait } from '../shell/busy.ts';
 
 /** A country at an hour. */
 export interface NameAt { hour: number; tag: string }
@@ -203,7 +204,7 @@ export interface FactClock {
 }
 const REAL_CLOCK: FactClock = {
   now: () => (typeof performance !== 'undefined' ? performance.now() : Date.now()),
-  after: (ms, run) => { const timer = setTimeout(run, ms); return () => clearTimeout(timer); },
+  after: (ms, run) => busyWait(run, ms),
   frame: typeof requestAnimationFrame === 'function' ? inFrame : undefined,
 };
 

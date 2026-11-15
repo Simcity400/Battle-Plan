@@ -103,7 +103,7 @@ impl Fixture {
             ..Default::default()
         }
     }
-    fn capture(&self, inputs: &[research_inputs::Row], rows: &mut [Row]) -> Outcome {
+    fn capture(&self, inputs: &[research_inputs::Row], rows: &mut Vec<Row>) -> Outcome {
         let countries = ccountry::Reader::new(self, 0, GAME).unwrap();
         walk_country(
             self,
@@ -203,7 +203,7 @@ fn gap_research_grants_grant_inventory_captures_unused_kinds_restrictions_and_co
         country: 1,
         source_pointer: 0x9000,
         resolved: 1,
-        value: bonus::value(&f, 0x9000, -3, true).unwrap(),
+        value: bonus::value(&f, 0x9000, -3).unwrap(),
         ..Default::default()
     };
     f.reads.borrow_mut().clear();
@@ -299,9 +299,9 @@ impl Memory for Fixture {
     }
 }
 
-fn capture_growing(f: &Fixture, rows: &mut Vec<Row>) -> Outcome {
+fn capture(f: &Fixture, rows: &mut Vec<Row>) -> Outcome {
     let countries = ccountry::Reader::new(f, 0, GAME).unwrap();
-    walk_country_growing(
+    walk_country(
         f,
         0,
         &countries,
@@ -350,7 +350,7 @@ fn growing_modifier_sources_keep_mod_sized_fanout_text_and_later_growth() {
             f.put(POINTERS + index * 8, (SOURCE as u64).to_le_bytes());
         }
         f.reads.borrow_mut().clear();
-        let result = capture_growing(&f, &mut rows);
+        let result = capture(&f, &mut rows);
         assert!(matches!(result, Outcome::Rows { .. }), "{result:?}");
         let sources: Vec<_> = rows[..result.len()]
             .iter()
@@ -371,10 +371,6 @@ fn growing_modifier_sources_keep_mod_sized_fanout_text_and_later_growth() {
             1
         );
     }
-    assert!(matches!(
-        f.capture(&[f.input()], &mut []),
-        Outcome::Unavailable { .. }
-    ));
 }
 
 #[test]
@@ -391,7 +387,7 @@ fn growing_source_stack_has_no_chosen_depth_and_keeps_cycles_named() {
         f.put(node + 0x80, ((node + 0x100) as u64).to_le_bytes());
     }
     let mut rows = Vec::new();
-    let expected = capture_growing(&f, &mut rows);
+    let expected = capture(&f, &mut rows);
     assert!(matches!(expected, Outcome::Rows { .. }));
     assert_eq!(
         f.capture(&[f.input()], &mut vec![Row::default(); expected.len()]),
@@ -401,7 +397,7 @@ fn growing_source_stack_has_no_chosen_depth_and_keeps_cycles_named() {
     f.array(last + 0x28, last + 0x80, 1);
     f.put(last + 0x80, (FIRST as u64).to_le_bytes());
     assert_eq!(
-        capture_growing(&f, &mut rows),
+        capture(&f, &mut rows),
         Outcome::Unavailable {
             reason: "research modifier source cycle"
         }
@@ -426,7 +422,7 @@ fn growing_sharing_groups_and_category_rosters_follow_native_counts() {
         f.put(CATEGORIES + index * 40 + 32, (index as u32).to_le_bytes());
     }
     let mut rows = Vec::new();
-    let result = capture_growing(&f, &mut rows);
+    let result = capture(&f, &mut rows);
     assert!(matches!(result, Outcome::Rows { .. }), "{result:?}");
     assert_eq!(
         rows[..result.len()]
@@ -467,7 +463,7 @@ fn scientist_categories_batch_the_entire_mod_population() {
     f.put(0xa010, 1_u32.to_le_bytes());
     f.put(0xa088, 0xa100_u64.to_le_bytes());
     let mut rows = Vec::new();
-    let result = capture_growing(&f, &mut rows);
+    let result = capture(&f, &mut rows);
     assert!(matches!(result, Outcome::Rows { .. }), "{result:?}");
     let categories: Vec<_> = rows[..result.len()]
         .iter()
@@ -491,7 +487,7 @@ fn growing_script_sources_have_no_chosen_population_limit() {
         f.text(entry + 8, b"script_source");
     }
     let mut rows = Vec::new();
-    let result = capture_growing(&f, &mut rows);
+    let result = capture(&f, &mut rows);
     assert!(matches!(result, Outcome::Rows { .. }), "{result:?}");
     let scripts: Vec<_> = rows[..result.len()]
         .iter()
@@ -680,7 +676,7 @@ fn every_short_read_refuses_a_complete_breakdown_and_capacity_reports_demand() {
     let mut f = Fixture::new();
     let mut rows = vec![Row::default(); 64];
     let input = f.input();
-    let result = f.capture(std::slice::from_ref(&input), &mut rows);
+    f.capture(std::slice::from_ref(&input), &mut rows);
     let reads = f.reads.borrow().clone();
     for (at, _) in reads.into_iter().skip(2) {
         f.fault = Some(at);
@@ -692,14 +688,6 @@ fn every_short_read_refuses_a_complete_breakdown_and_capacity_reports_demand() {
             "{at:x}"
         );
     }
-    f.fault = None;
-    assert_eq!(
-        f.capture(std::slice::from_ref(&input), &mut rows[..1]),
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: result.len() as u32 - 1
-        }
-    );
 }
 
 #[test]
@@ -731,6 +719,72 @@ fn selected_idea_and_script_sources_retain_names_without_reading_catalogues() {
             .any(|r| r.kind == Kind::ScriptSource
                 && r.raw == 25_000
                 && r.name.as_bytes() == b"script_bonus")
+    );
+}
+
+fn walk_buffer(
+    f: &Fixture,
+    input: &research_inputs::Row,
+    output: crate::walk::Buffer<'_, Row>,
+) -> Outcome {
+    let countries = ccountry::Reader::new(f, 0, GAME).unwrap();
+    walk_country_buffer(
+        f,
+        0,
+        &countries,
+        ccountry::Country {
+            pointer: COUNTRY,
+            id: 1,
+            canonical_slot: 1,
+        },
+        Ok(Context {
+            minimum: 10_000,
+            license: 20_000,
+            sharing_maximum: 50_000,
+            ahead_factor: 200_000,
+        }),
+        std::slice::from_ref(input),
+        output,
+    )
+}
+
+#[test]
+fn idea_text_past_512_bytes_is_whole_in_exact_and_count_walks() {
+    const NAME: usize = 0x30000;
+    let mut f = Fixture::new();
+    f.array(TECH + 0x110, 0x8000, 1);
+    f.put(0x8000, 0x8100_u64.to_le_bytes());
+    f.put(0x8138, (-15_000_i64).to_le_bytes());
+    f.put(0x8140, 0x8200_u64.to_le_bytes());
+    f.put(0x8200, (crate::cidea::VTABLE_RVA.0 as u64).to_le_bytes());
+    let descriptor = 0x8200 + crate::cidea::TOKEN;
+    f.put(descriptor, (NAME as u64).to_le_bytes());
+    f.put(descriptor + 16, 2_048_u64.to_le_bytes());
+    f.put(descriptor + 24, 2_048_u64.to_le_bytes());
+    f.bytes[NAME..NAME + 2_048].fill(b'i');
+    let input = f.input();
+    let mut grown = Vec::new();
+    let expected = f.capture(std::slice::from_ref(&input), &mut grown);
+    let Outcome::Rows { len } = expected else {
+        panic!("{expected:?}");
+    };
+    assert!(
+        grown[..len]
+            .iter()
+            .any(|r| r.kind == Kind::IdeaSource && r.name.as_bytes() == [b'i'; 2_048])
+    );
+    let mut exact = vec![Row::default(); len];
+    assert_eq!(
+        walk_buffer(&f, &input, crate::walk::Buffer::Exact(&mut exact)),
+        expected
+    );
+    assert_eq!(exact[..], grown[..len]);
+    assert_eq!(
+        walk_buffer(&f, &input, crate::walk::Buffer::Count),
+        Outcome::Truncated {
+            len: 0,
+            unread_rows: len as u32
+        }
     );
 }
 
@@ -1184,7 +1238,7 @@ fn batch_capture(
             country,
             context,
             inputs,
-            crate::walk::Buffer::Fixed(&mut rows),
+            crate::walk::Buffer::Growing(&mut rows),
         )
     } else {
         walk_country(memory, 0, &countries, country, context, inputs, &mut rows)

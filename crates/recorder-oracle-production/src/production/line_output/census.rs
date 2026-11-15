@@ -44,7 +44,7 @@ impl CensusCheck {
     /// lines' daily slot published the table; carried hours repeat the last
     /// read.
     pub(super) fn observe(&mut self, frame: &DecodedFrame, report: &mut Report) -> io::Result<()> {
-        if !daily_read(frame.hour, &frame.metrics, TableId::ProductionLineOutput) {
+        if !daily_read(&frame.metrics, TableId::ProductionLineOutput) {
             return Ok(());
         }
         if self.branch.is_some_and(|branch| branch != frame.branch) {

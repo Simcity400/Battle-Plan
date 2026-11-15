@@ -75,6 +75,19 @@ export class CasualtyChordSegmentCache {
   }
 }
 
+/** The countries a chord asks names and colours for, and the hour. Following with `identityHour` known (the last hour at
+ * or before the head at which one of `windowTags`' identities changed), every country of the windows held, there: each
+ * reads there as at every hour since, so entering a window asks nothing and nothing is asked again until an identity
+ * changes. Otherwise the countries shown (`shownTags`) at `hour`, the hour shown. */
+export function chordNamesAsked(following: boolean, identityHour: number | null, hour: number, windowTags: readonly string[],
+  shownTags: readonly string[]): { readonly hour: number; readonly tags: readonly string[] } {
+  return following && identityHour !== null ? { hour: identityHour, tags: windowTags } : { hour, tags: shownTags };
+}
+
+/** The hour a chord frame at `read` names its countries at: following, `since`, the last hour at or before `read` at
+ * which one of their identities changed; else `read`. Its names and colours are exact where that is the hour asked. */
+export const chordNameHour = (read: number, since: number | null) => since ?? read;
+
 export function chordPairs(hit: ChordHit, chord: CasualtyChord): PairFlow[] {
   if (hit.kind === 'flow') return (chord.flows.get(hit.id) ?? []).map(id => chord.exact.get(id)!);
   const members = new Set((chord.nodes.get(hit.id) ?? []).map(id => chord.countries.get(id)!));

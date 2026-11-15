@@ -210,7 +210,7 @@ enum Census {
 fn ships(memory: &impl Memory, base: usize, state: usize) -> (Census, Vec<Ship>) {
     let (mut fleets, mut tasks, mut rows, mut names, mut ships) =
         (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
-    let walked = cfleet::walk_timed_growing_with_names(
+    let walked = cfleet::walk_timed_with_names(
         memory,
         base,
         state,
@@ -645,7 +645,9 @@ fn compare(report: &Report, replay: &Replay, hour: i32, branch: u64) -> Result<C
             .refusals
             .push("recording process session or end-of-hour boundary differs from witness".into());
     }
-    if replay.damaged_parts != 0 || !replay.recovery_notes.is_empty() || !replay.warnings.is_empty()
+    // A recorder restarted while the game ran loses nothing: its note is no damage.
+    let damage_notes = replay.recovery_notes.iter().filter(|note| !recorder_replay::replay_io::is_restart(note)).count();
+    if replay.damaged_parts != 0 || damage_notes != 0 || !replay.warnings.is_empty()
     {
         result
             .refusals

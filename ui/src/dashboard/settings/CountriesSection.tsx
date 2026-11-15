@@ -9,9 +9,9 @@ import type { CountryGroupReply } from '../../generated/dashboard';
 import { defaultCountryTag, selectedTags, singleCountryChoice } from '../countrySelection';
 import { countrySelectionFor, countrySelectionMode, countrySelectionModes, DEFAULT_TOP } from '../groups';
 import { useCampaignSettings } from '../campaignSettings';
-import { factionNameAt, UNNAMED_FACTION } from '../factionNames';
+import { factionChoiceLabel } from '../factionNames';
 import { resolveWindow } from '../model';
-import { usePlaybackHour } from '../playback';
+import { useAtHead } from '../atHead.ts';
 import { useCountryGroups } from '../useCountryGroups';
 import type { BoundTrack, CountryGroup, CountrySelection, GroupMembership, WidgetSpec } from '../model';
 import type { WidgetMeta, WidgetRuntime } from '../definitions';
@@ -98,15 +98,15 @@ function GroupFields({ widget, selection, reference, runtime, limits, onChange }
   widget: WidgetSpec; selection: Extract<CountrySelection, { kind: 'group' }>; reference: BoundTrack | undefined; runtime: WidgetRuntime; limits: Limits;
   onChange: (countries: CountrySelection) => void;
 }) {
-  const playbackHour = usePlaybackHour(runtime.clock, widget.time.mode === 'follow');
   const settings = useCampaignSettings();
-  const hour = reference ? resolveWindow(widget, reference, runtime.tracks, playbackHour)?.lastHour ?? Number.NaN : undefined;
   const overrides = settings.campaigns[reference?.source.metadata.campaignKey ?? '']?.factions;
   const groups = useCountryGroups(runtime, reference);
   const source = reference?.source;
   const set = (patch: Partial<Extract<CountrySelection, { kind: 'group' }>>) => onChange({ ...selection, ...patch });
   const group = selection.group;
-  const kinds = groupKinds(groups.data, limits, hour, overrides);
+  // The factions' names at the head are read each frame and render only when one changes.
+  const kinds = [...useAtHead(runtime.clock, widget.time.mode === 'follow', clockHour => groupKinds(groups.data, limits,
+    reference ? resolveWindow(widget, reference, runtime.tracks, clockHour)?.lastHour ?? Number.NaN : undefined, overrides), sameKinds)];
   // A saved faction this branch did not record (or that is still loading) stays
   // visible as the selection instead of the list silently showing another group.
   if (group.type === 'faction' && !kinds.some(kind => kind.value === `faction:${group.id}`)) {
@@ -135,16 +135,16 @@ function GroupFields({ widget, selection, reference, runtime, limits, onChange }
   </>;
 }
 
+const sameKinds = (a: readonly { value: string; label: string }[], b: readonly { value: string; label: string }[]) =>
+  a.length === b.length && a.every((kind, index) => kind.value === b[index].value && kind.label === b[index].label);
+
 /** The groups a widget can offer: human players, each recorded faction, at war
  * with a country, and top N when the widget ranks countries. */
 export function groupKinds(reply: CountryGroupReply | undefined, limits: Limits, hour?: number,
   overrides?: Readonly<Record<string, { name?: string }>>): { value: string; label: string }[] {
   return [
     { value: 'humans', label: 'Human players' },
-    ...(reply?.factions ?? []).map(faction => {
-      const named = factionNameAt(faction, hour, overrides?.[faction.id]?.name);
-      return { value: `faction:${faction.id}`, label: named.name ?? UNNAMED_FACTION };
-    }),
+    ...(reply?.factions ?? []).map(faction => ({ value: `faction:${faction.id}`, label: factionChoiceLabel(faction, hour, overrides?.[faction.id]?.name) })),
     { value: 'war', label: 'At war with a country' },
     ...(limits.ranked ? [{ value: 'top', label: 'Top countries' }] : []),
   ];

@@ -88,7 +88,7 @@ impl Section {
     }
     fn with_capacity(rows: usize, bytes: usize, characters: usize) -> Self {
         let mut cache = Self {
-            plan: crate::snapshot_plan::SnapshotPlan::new(characters * 6, characters * 96),
+            plan: crate::snapshot_plan::SnapshotPlan::default(),
             geometry: (0, 0),
             census: false,
             #[cfg(feature = "advisor_profile")]
@@ -228,7 +228,7 @@ impl Section {
         source: Source<'_>,
         count_only: bool,
     ) {
-        self.capture_section_mode(memory, context, observer, source, count_only, false)
+        self.capture_section_mode(memory, context, observer, source, count_only)
     }
 
     fn capture_section_mode(
@@ -238,11 +238,7 @@ impl Section {
         observer: &dyn Changes,
         source: Source<'_>,
         count_only: bool,
-        growing: bool,
     ) {
-        if growing {
-            self.plan.enable_worker_growth();
-        }
         let scope = (context.base, context.game_state);
         let before = observer.quiet();
         let counted = Counted::new(memory);
@@ -349,21 +345,22 @@ impl Section {
             Source::Roster { roster, .. } => roster.count() as usize,
             Source::Census { range, .. } => range.len(),
         };
-        if growing && reserve(&mut self.current.entries, characters).is_err() {
+        if reserve(&mut self.current.entries, characters).is_err() {
             self.result = ReadResult::rows(Outcome::Unavailable {
                 reason: "collector allocation failed",
             });
             return;
         }
         let mut batch = if count_only {
-            Batch::new(&mut [], &mut [])
-        } else if growing {
+            Batch::storage(
+                engine_native::walk::Buffer::Count,
+                engine_native::walk::Buffer::Count,
+            )
+        } else {
             Batch::storage(
                 engine_native::walk::Buffer::Growing(&mut self.current.rows),
                 engine_native::walk::Buffer::Growing(&mut self.current.bytes),
             )
-        } else {
-            Batch::new(&mut self.current.rows, &mut self.current.bytes)
         };
         self.characters = match &source {
             Source::Roster { roster, .. } => roster.count() as usize,
@@ -390,7 +387,7 @@ impl Section {
                     } else {
                         observer.revision(character.pointer + ccharacter::ADVISOR_MAP_HEAD)
                     };
-                    if growing && let Some(entry) = previous {
+                    if let Some(entry) = previous {
                         batch.rows.ensure(
                             batch
                                 .len
@@ -445,7 +442,7 @@ impl Section {
                         self.counts.reused += 1;
                         self.counts.roles += rows as u64;
                     } else {
-                        batch.append_buffer(
+                        batch.append(
                             |rows, bytes| {
                                 // Role payloads cannot select another character's
                                 // controls. Their future reuse is certified by the
@@ -823,7 +820,7 @@ impl Modifiers {
     /// completed and certified a row; the held arena, as large, takes this
     /// capture. Without a held arena that large (and no growth allowed)
     /// nothing is held and every role is read.
-    fn begin(&mut self, growing: bool) {
+    fn begin(&mut self) {
         self.held.rows = 0;
         let rows = self.required_rows.min(self.spans.len());
         if !self.complete
@@ -834,8 +831,7 @@ impl Modifiers {
             return;
         }
         if (self.held.spans.len() < self.spans.len() || self.held.bytes.len() < self.bytes.len())
-            && (!growing
-                || engine_native::walk::Buffer::Growing(&mut self.held.spans)
+            && (engine_native::walk::Buffer::Growing(&mut self.held.spans)
                     .ensure(self.spans.len())
                     .is_err()
                 || engine_native::walk::Buffer::Growing(&mut self.held.bytes)
@@ -904,7 +900,7 @@ impl Modifiers {
         memory: &impl Memory,
         rows: impl Iterator<Item = &'a cadvisor::Row> + Clone,
     ) {
-        self.capture_mode(memory, rows.map(|row| (None, row)), false)
+        self.capture_mode(memory, rows.map(|row| (None, row)))
     }
 
     /// `rows` pairs each role with the character whose advisor map holds it,
@@ -913,9 +909,8 @@ impl Modifiers {
         &mut self,
         memory: &impl Memory,
         rows: impl Iterator<Item = (Option<usize>, &'a cadvisor::Row)> + Clone,
-        growing: bool,
     ) {
-        self.begin(growing);
+        self.begin();
         self.len = 0;
         self.required_rows = 0;
         self.required_bytes = 0;
@@ -954,15 +949,14 @@ impl Modifiers {
                     .checked_add(len)
                     .ok_or("advisor byte count overflow")?;
                 self.required_rows = index.checked_add(1).ok_or("advisor row count overflow")?;
-                if growing {
-                    engine_native::walk::Buffer::Growing(&mut self.spans)
-                        .ensure(self.required_rows)?;
-                    engine_native::walk::Buffer::Growing(&mut self.bytes).ensure(
-                        self.len
-                            .checked_add(len)
-                            .ok_or("advisor byte count overflow")?,
-                    )?;
-                }
+                engine_native::walk::Buffer::Growing(&mut self.spans)
+                    .ensure(self.required_rows)?;
+                engine_native::walk::Buffer::Growing(&mut self.bytes).ensure(
+                    self.len
+                        .checked_add(len)
+                        .ok_or("advisor byte count overflow")?,
+                )?;
+                
                 let mut span = ModifierSpan {
                     certificate,
                     carried: carried.is_some(),
@@ -997,13 +991,7 @@ impl Modifiers {
             }
             for (index, (_, row)) in rows.enumerate() {
                 let mut span = self.spans.get(index).copied().unwrap_or_default();
-                let mut destination = if growing {
-                    engine_native::walk::Buffer::GrowingFrom(&mut self.bytes, self.len)
-                } else if index < self.spans.len() {
-                    engine_native::walk::Buffer::Fixed(&mut self.bytes[self.len..])
-                } else {
-                    engine_native::walk::Buffer::Fixed(&mut [])
-                };
+                let mut destination = engine_native::walk::Buffer::GrowingFrom(&mut self.bytes, self.len);
                 let read = if span.carried {
                     let held = self.held.spans[index];
                     let len = held.tooltip_len;
@@ -1098,6 +1086,15 @@ struct Quiet {
 }
 static LIVE_DEFINITIONS: [[std::sync::atomic::AtomicUsize; 3]; 2] =
     [const { [const { std::sync::atomic::AtomicUsize::new(0) }; 3] }; 2];
+#[cfg(test)]
+pub(super) fn forget_live() {
+    for hint in [&LIVE_MODIFIER_ROWS, &LIVE_MODIFIER_BYTES, &LIVE_TOOLTIP_BYTES]
+        .into_iter()
+        .chain(LIVE_DEFINITIONS.iter().flatten())
+    {
+        hint.store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+}
 pub(super) fn remember_definition_demand(demand: [cadvisor::DefinitionDemand; 2]) {
     for (storage, demand) in LIVE_DEFINITIONS.iter().zip(demand) {
         for (target, count) in storage
@@ -1202,17 +1199,7 @@ impl Cache {
         observer: &dyn Changes,
         loaned: Option<census::Admitted<'_>>,
     ) {
-        self.capture_mode(memory, context, observer, loaned, false)
-    }
-
-    pub fn capture_growing(
-        &mut self,
-        memory: &impl Memory,
-        context: CharactersCopyContext,
-        observer: &dyn Changes,
-        loaned: Option<census::Admitted<'_>>,
-    ) {
-        self.capture_mode(memory, context, observer, loaned, true)
+        self.capture_mode(memory, context, observer, loaned)
     }
 
     fn capture_mode(
@@ -1221,7 +1208,6 @@ impl Cache {
         context: CharactersCopyContext,
         observer: &dyn Changes,
         loaned: Option<census::Admitted<'_>>,
-        growing: bool,
     ) {
         self.counts = Counts::default();
         let counted = Counted::new(memory);
@@ -1287,7 +1273,6 @@ impl Cache {
                     observer,
                     source,
                     unread != 0,
-                    growing,
                 );
                 #[cfg(feature = "advisor_profile")]
                 {
@@ -1366,7 +1351,6 @@ impl Cache {
                             (character, row)
                         })
                 }),
-                growing,
             );
             if let Some(reason) = self.modifiers.failure {
                 self.result = ReadResult::rows(Outcome::Unavailable { reason });
@@ -1376,12 +1360,11 @@ impl Cache {
                 }
             }
         }
-        if growing {
-            for section in &mut self.sections {
-                section.update_charge();
-            }
-            self.modifiers.update_charge();
+        for section in &mut self.sections {
+            section.update_charge();
         }
+        self.modifiers.update_charge();
+        
         // Everything this capture published was certified from the census,
         // with no writer running: later quiet hours carry it.
         self.quiet = quiet.filter(|_| {

@@ -39,17 +39,17 @@ fn request() -> acquisition::PresentationRequest {
     captured.status_workers = 3;
     acquisition::PresentationRequest {
         dispatch: Default::default(),
-        countries: Arc::new(Cache::try_with_capacity(0).unwrap()),
+        countries: engine_allocation::shared(Cache::try_with_capacity(0).unwrap()).unwrap(),
         context: extended::division_presentation::CaptureContext {
             base: 0,
             game_state: 0,
             hour: 1,
         },
         captured,
-        inputs: Some(Arc::new(crate::division_census::UnitInputs::fixture(
+        inputs: Some(engine_allocation::shared(crate::division_census::UnitInputs::fixture(
             vec![engine_native::carmy::DivisionSeed::default(); 1_536],
             engine_native::walk::Outcome::Rows { len: 1_536 },
-        ))),
+        )).unwrap()),
         army_stats: Some(extended::division_presentation::held_store::Loan::fixture(Box::new(extended::attack_stats::ArmyStatStore::new()))),
     }
 }
@@ -107,7 +107,7 @@ fn presentation_readiness_never_joins_preparation_before_unrelated_dispatches() 
     });
     let mut batch = acquisition::Batch::new(&pool);
     let request = request();
-    let inputs = Arc::clone(request.inputs.as_ref().unwrap());
+    let inputs = engine_allocation::SharedBox::clone(request.inputs.as_ref().unwrap());
     let store = request.army_stats.as_deref().unwrap() as *const _;
     let mut presentation = PresentationPending {
         // SAFETY: synthetic worker reads only the fixture; batch drains all tickets.
@@ -169,7 +169,7 @@ fn presentation_readiness_never_joins_preparation_before_unrelated_dispatches() 
         presentation.finish(&shared, &mut batch)
     });
     assert!(report.is_ok());
-    assert!(Arc::ptr_eq(request.inputs.as_ref().unwrap(), &inputs));
+    assert!(engine_allocation::SharedBox::ptr_eq(request.inputs.as_ref().unwrap(), &inputs));
     assert_eq!(request.army_stats.as_deref().unwrap() as *const _, store);
     assert_eq!(pool.calibration().executor.uncollected, 0);
     assert_eq!(pool.calibration().executor.caller_executed, 0);
@@ -199,7 +199,7 @@ fn presentation_readiness_failed_preparation_or_range_returns_its_loan_without_r
         let mut batch = acquisition::Batch::new(&pool);
         let mut request = request();
         batch.arm_presentation(&mut request);
-        let inputs = Arc::clone(request.inputs.as_ref().unwrap());
+        let inputs = engine_allocation::SharedBox::clone(request.inputs.as_ref().unwrap());
         let mut presentation = PresentationPending {
             // SAFETY: synthetic requests only; batch drains all accepted ranges.
             prepare: Some(unsafe {
@@ -216,7 +216,7 @@ fn presentation_readiness_failed_preparation_or_range_returns_its_loan_without_r
         if fail_prepare {
             assert!(matches!(report, Err(acquisition::Failure::Panicked)));
         }
-        assert!(Arc::ptr_eq(request.inputs.as_ref().unwrap(), &inputs));
+        assert!(engine_allocation::SharedBox::ptr_eq(request.inputs.as_ref().unwrap(), &inputs));
         request
             .captured
             .fail_owned_capture("division presentation acquisition failed");
@@ -238,7 +238,7 @@ fn presentation_readiness_rejected_preparation_never_runs_inline_or_retries() {
     pool.shutdown().unwrap();
     let mut batch = acquisition::Batch::new(&pool);
     let request = request();
-    let inputs = Arc::clone(request.inputs.as_ref().unwrap());
+    let inputs = engine_allocation::SharedBox::clone(request.inputs.as_ref().unwrap());
     let mut presentation = PresentationPending {
         // SAFETY: the stopped pool cannot read native memory.
         prepare: Some(unsafe {
@@ -254,7 +254,7 @@ fn presentation_readiness_rejected_preparation_never_runs_inline_or_retries() {
         presentation.finish(&shared, &mut batch)
     });
     assert!(matches!(report, Err(acquisition::Failure::Stopped)));
-    assert!(Arc::ptr_eq(request.inputs.as_ref().unwrap(), &inputs));
+    assert!(engine_allocation::SharedBox::ptr_eq(request.inputs.as_ref().unwrap(), &inputs));
     assert!(presentation.parts.iter().all(Option::is_none));
     assert_eq!(pool.calibration().executor.uncollected, 0);
     assert_eq!(pool.calibration().executor.caller_executed, 0);
@@ -266,7 +266,7 @@ fn presentation_readiness_batch_drain_owns_parked_preparation_and_all_range_leas
     let pool =
         acquisition::Pool::with_test_runner(3, |job| acquisition::run_for_test(job, &Unreadable));
     let mut request = request();
-    let inputs = Arc::clone(request.inputs.as_ref().unwrap());
+    let inputs = engine_allocation::SharedBox::clone(request.inputs.as_ref().unwrap());
     {
         let mut batch = acquisition::Batch::new(&pool);
         batch.arm_presentation(&mut request);
@@ -288,7 +288,7 @@ fn presentation_readiness_batch_drain_owns_parked_preparation_and_all_range_leas
         // The callback may leave before collecting a single range. No request
         // or source lease is hidden in the ticket-only scheduler on that exit.
     }
-    assert_eq!(Arc::strong_count(&inputs), 1);
+    assert_eq!(engine_allocation::SharedBox::strong_count(&inputs), 1);
     assert_eq!(pool.calibration().executor.uncollected, 0);
 }
 
@@ -490,7 +490,7 @@ fn settle_worker_releases_status_without_callback_collection_and_drains_its_chil
             let mut batch = acquisition::Batch::new(&pool);
             let mut presentation = PresentationPending::default();
             let request = request();
-            inputs = Arc::clone(request.inputs.as_ref().unwrap());
+            inputs = engine_allocation::SharedBox::clone(request.inputs.as_ref().unwrap());
             // SAFETY: synthetic memory; both the Batch and its child's ledger drain.
             presentation.prepare = Some(unsafe {
                 submit_acquisition(&shared, &mut batch, acquisition::Job::PresentationPrepare(request))
@@ -510,7 +510,7 @@ fn settle_worker_releases_status_without_callback_collection_and_drains_its_chil
                 assert!(unsafe { presentation.finish(&shared, &mut batch) }.1.is_ok());
             }
         }
-        assert_eq!(Arc::strong_count(&inputs), 1);
+        assert_eq!(engine_allocation::SharedBox::strong_count(&inputs), 1);
         assert_eq!(pool.calibration().executor.uncollected, 0);
         assert_eq!(pool.calibration().executor.caller_executed, 0);
     }
@@ -556,11 +556,12 @@ fn armed_setup_children_drain_without_collection_even_if_the_parent_fails_after_
             }
         });
         let mut request = request();
-        let inputs = Arc::clone(request.inputs.as_ref().unwrap());
+        let inputs = engine_allocation::SharedBox::clone(request.inputs.as_ref().unwrap());
         let slot = extended::division_presentation::held_store::Slot::new(Box::new(
             extended::attack_stats::ArmyStatStore::new(),
-        ));
+        )).unwrap();
         request.army_stats = slot.take();
+        let lent = request.army_stats.as_deref().unwrap() as *const extended::attack_stats::ArmyStatStore;
         {
             let mut batch = acquisition::Batch::new(&pool);
             let _release = ReleaseOnDrop(&children, &parent);
@@ -591,8 +592,9 @@ fn armed_setup_children_drain_without_collection_even_if_the_parent_fails_after_
             // Batch exit owns setup and every unadopted range, including the
             // parent-panic path. No callback collection installs the children.
         }
-        assert_eq!(Arc::strong_count(&inputs), 1);
-        drop(slot.take().unwrap());
+        assert_eq!(engine_allocation::SharedBox::strong_count(&inputs), 1);
+        // The lent store came back: a take never waits, so a store still out would be another.
+        assert_eq!(&*slot.take().unwrap() as *const _, lent);
         let stats = pool.calibration();
         assert_eq!(
             (
@@ -644,7 +646,7 @@ fn presentation_continuations_reuse_pool_storage_without_callback_allocations() 
         acquisition::Pool::with_test_runner(3, |job| acquisition::run_for_test(job, &Unreadable));
     for _ in 0..2 {
         let request = request();
-        let inputs = Arc::clone(request.inputs.as_ref().unwrap());
+        let inputs = engine_allocation::SharedBox::clone(request.inputs.as_ref().unwrap());
         let mut batch =
             crate::test_support::with_allocations_denied(|| acquisition::Batch::new(&pool));
         let request = crate::test_support::with_allocations_denied(|| {
@@ -668,7 +670,7 @@ fn presentation_continuations_reuse_pool_storage_without_callback_allocations() 
         assert!(report.is_ok());
         drop(request);
         drop(batch);
-        assert_eq!(Arc::strong_count(&inputs), 1);
+        assert_eq!(engine_allocation::SharedBox::strong_count(&inputs), 1);
         assert_eq!(pool.calibration().executor.uncollected, 0);
     }
 }
@@ -695,7 +697,7 @@ fn input_publishers_release_presentation_before_callback_collection_and_drain_on
             ..Default::default()
         };
         let mut reference = DivisionsJob::new_worker();
-        assert!(copy_divisions_inputs_refresh_growing(
+        assert!(copy_divisions_inputs_refresh(
             &kit::memory(&bytes),
             context,
             &mut reference
@@ -755,7 +757,10 @@ fn input_publishers_release_presentation_before_callback_collection_and_drain_on
             request.inputs = None;
             batch.arm_presentation(&mut request);
             let dispatch = batch.arm_presentation_inputs(request, 1, None, false);
-            let countries = Arc::new(Cache::try_with_capacity(0).unwrap());
+            let countries = engine_allocation::shared(
+                Cache::try_with_capacity(0).unwrap(),
+            )
+            .unwrap();
             let mut payload = DivisionsJob::new_worker();
             payload.slots = Some((1, 2));
             payload.presentation = Some(Arc::clone(&dispatch));
@@ -764,7 +769,7 @@ fn input_publishers_release_presentation_before_callback_collection_and_drain_on
                     &shared,
                     &mut batch,
                     acquisition::Job::DivisionInputs(acquisition::RawRequest {
-                        countries: Arc::clone(&countries),
+                        countries: engine_allocation::SharedBox::clone(&countries),
                         context,
                         payload,
                     }),
@@ -825,8 +830,14 @@ fn input_publishers_release_presentation_before_callback_collection_and_drain_on
                     handoff.take_dispatched().unwrap();
                 drop(handoff);
                 assert!(split);
-                assert!(Arc::ptr_eq(movement.inputs.as_ref().unwrap(), inputs));
-                assert!(Arc::ptr_eq(speed_terms.inputs.as_ref().unwrap(), inputs));
+                assert!(engine_allocation::SharedBox::ptr_eq(
+                    movement.inputs.as_ref().unwrap(),
+                    inputs,
+                ));
+                assert!(engine_allocation::SharedBox::ptr_eq(
+                    speed_terms.inputs.as_ref().unwrap(),
+                    inputs,
+                ));
                 // The callback restores the entire census and releases the
                 // other input consumers while Prepare itself remains blocked.
                 let consumers = [
@@ -901,7 +912,7 @@ fn input_publishers_without_the_status_side_join_the_census_and_submit_nothing()
         ..Default::default()
     };
     let mut reference = DivisionsJob::new_worker();
-    assert!(copy_divisions_inputs_refresh_growing(
+    assert!(copy_divisions_inputs_refresh(
         &kit::memory(&bytes),
         context,
         &mut reference
@@ -925,7 +936,7 @@ fn input_publishers_without_the_status_side_join_the_census_and_submit_nothing()
         request.inputs = None;
         request.army_stats = None;
         let dispatch = batch.arm_presentation_inputs(request, 1, None, true);
-        let countries = Arc::new(Cache::try_with_capacity(0).unwrap());
+        let countries = engine_allocation::shared(Cache::try_with_capacity(0).unwrap()).unwrap();
         let mut payload = DivisionsJob::new_worker();
         payload.slots = Some((1, 2));
         payload.presentation = Some(Arc::clone(&dispatch));
@@ -934,7 +945,7 @@ fn input_publishers_without_the_status_side_join_the_census_and_submit_nothing()
                 &shared,
                 &mut batch,
                 acquisition::Job::DivisionInputs(acquisition::RawRequest {
-                    countries: Arc::clone(&countries),
+                    countries: engine_allocation::SharedBox::clone(&countries),
                     context,
                     payload,
                 }),
@@ -1041,7 +1052,7 @@ fn final_status_worker_failure_returns_the_original_loan_without_stitch_or_retry
     let mut batch = acquisition::Batch::new(&pool);
     let request = request();
     let store = request.army_stats.as_deref().unwrap() as *const _;
-    let inputs = Arc::clone(request.inputs.as_ref().unwrap());
+    let inputs = engine_allocation::SharedBox::clone(request.inputs.as_ref().unwrap());
     let mut presentation = PresentationPending {
         prepare: Some(unsafe {
             submit_acquisition(
@@ -1062,7 +1073,7 @@ fn final_status_worker_failure_returns_the_original_loan_without_stitch_or_retry
     release.open();
     let (request, report) = unsafe { presentation.finish(&shared, &mut batch) };
     assert!(matches!(report, Err(acquisition::Failure::Panicked)));
-    assert!(Arc::ptr_eq(request.inputs.as_ref().unwrap(), &inputs));
+    assert!(engine_allocation::SharedBox::ptr_eq(request.inputs.as_ref().unwrap(), &inputs));
     assert_eq!(request.army_stats.as_deref().unwrap() as *const _, store);
     assert_eq!(stitches.load(Ordering::Relaxed), 0);
     assert_eq!(pool.calibration().executor.uncollected, 0);

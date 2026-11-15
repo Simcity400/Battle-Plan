@@ -163,14 +163,16 @@ pub fn percentage(raw: i64, speed: i64, mode: Mode) -> String {
     text
 }
 
-fn admitted(row: &rows::StateResistanceRow, reenable: i64) -> Result<bool, String> {
-    if row.country as i32 <= 0 {
+/// Whether a state's resistance shows: an occupier, and a level, a compliance or a cached target
+/// at the re-enable threshold.
+fn admitted(country: u32, level: i64, compliance: i64, map: &Recorded<Option<rows::OccupationMap>>, reenable: i64) -> Result<bool, String> {
+    if country as i32 <= 0 {
         return Ok(false);
     }
-    if row.level != 0 || row.compliance > 0 {
+    if level != 0 || compliance > 0 {
         return Ok(true);
     }
-    let Recorded::Value(Some(map)) = &row.map else {
+    let Recorded::Value(Some(map)) = map else {
         return Err("occupation map cached target is not recorded".into());
     };
     Ok(map
@@ -214,6 +216,80 @@ fn badges(content: &Content, tokens: &[Vec<u8>]) -> Result<Vec<Badge>, BTreeMap<
 }
 
 pub fn prepare(inputs: &Inputs<'_>, frame: &DecodedFrame) -> PreparedOccupationIcons {
+    if inputs.mode.is_none() || (inputs.camera.free().is_none() && inputs.camera.height >= inputs.content.defines.cutoff) {
+        return PreparedOccupationIcons { priority: inputs.content.defines.priority, ..Default::default() };
+    }
+    lay_out(inputs, &hour_marks(frame, inputs.content))
+}
+
+/// What one state's occupation icon reads at an hour, apart from the camera and the viewer.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Mark {
+    /// The state's controller, raw, and its canonical slot when CountryLinks names it.
+    pub controller: u32,
+    pub slot: Option<u32>,
+    /// None when StateResistance has no row for the state; else whether it shows, and its values.
+    pub resistance: Option<Result<Option<Occupation>, String>>,
+}
+
+/// A shown state's resistance and compliance, and its badges in each mode.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Occupation {
+    pub level: i64,
+    pub speed: i64,
+    pub compliance: i64,
+    /// The resistance mode's badges, then the compliance mode's.
+    pub badges: [Result<Vec<Badge>, BTreeMap<String, usize>>; 2],
+}
+
+/// Every state's mark at an hour (by state id), each canonical slot's first Countries row, and a
+/// StateResistance not complete.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HourMarks {
+    pub marks: BTreeMap<u32, Mark>,
+    pub viewers: BTreeMap<u32, u32>,
+    pub resistance: Option<String>,
+}
+
+/// The hour's marks, or why no icon is drawn.
+pub type Marks = Result<HourMarks, String>;
+
+/// A shown state's values from its StateResistance cells; none when it does not show.
+pub fn occupation(content: &Content, country: u32, level: i64, speed: i64, compliance: i64, map: &Recorded<Option<rows::OccupationMap>>) -> Result<Option<Occupation>, String> {
+    if !admitted(country, level, compliance, map, content.defines.reenable)? {
+        return Ok(None);
+    }
+    let badges = |tokens: fn(&rows::OccupationMap) -> &Vec<Vec<u8>>| match map {
+        Recorded::Value(Some(map)) => badges(content, tokens(map)),
+        _ => Err(BTreeMap::from([("occupation map active definitions are not recorded".into(), 1)])),
+    };
+    Ok(Some(Occupation { level, speed, compliance, badges: [badges(|map| &map.resistance), badges(|map| &map.compliance)] }))
+}
+
+/// The marks of the hour `frame` holds.
+pub fn hour_marks(frame: &DecodedFrame, content: &Content) -> Marks {
+    let states = frame.complete::<tables::States>().map_err(|e| e.to_string())?;
+    let links: HashMap<u32, u32> = frame.complete::<tables::CountryLinks>().map_err(|e| e.to_string())?.iter().map(|row| (row.id, row.canonical_slot)).collect();
+    let mut viewers = BTreeMap::new();
+    for country in frame.complete::<tables::Countries>().map_err(|e| e.to_string())? {
+        viewers.entry(country.canonical_slot).or_insert(country.id);
+    }
+    let (resistance, by_state): (Option<String>, HashMap<u32, &rows::StateResistanceRow>) = match frame.complete::<tables::StateResistance>() {
+        Ok(rows) => (None, rows.iter().map(|row| (row.state, row)).collect()),
+        Err(why) => (Some(why.to_string()), HashMap::new()),
+    };
+    let marks = states
+        .iter()
+        .map(|state| {
+            let resistance = by_state.get(&state.id).map(|row| occupation(content, row.country, row.level, row.speed, row.compliance, &row.map));
+            (state.id, Mark { controller: state.controller, slot: links.get(&state.controller).copied(), resistance })
+        })
+        .collect();
+    Ok(HourMarks { marks, viewers, resistance })
+}
+
+/// The marks laid out for the camera and viewing country of `inputs`.
+pub fn lay_out(inputs: &Inputs<'_>, marks: &Marks) -> PreparedOccupationIcons {
     let mut out = PreparedOccupationIcons {
         priority: inputs.content.defines.priority,
         ..Default::default()
@@ -227,85 +303,68 @@ pub fn prepare(inputs: &Inputs<'_>, frame: &DecodedFrame) -> PreparedOccupationI
         return out;
     }
     let run = (|| -> Result<(), String> {
-        let states = frame
-            .complete::<tables::States>()
-            .map_err(|e| e.to_string())?;
-        let links = frame
-            .complete::<tables::CountryLinks>()
-            .map_err(|e| e.to_string())?;
-        let countries = frame
-            .complete::<tables::Countries>()
-            .map_err(|e| e.to_string())?;
-        let viewing_raw = countries
-            .iter()
-            .find(|country| country.canonical_slot == inputs.country)
-            .map(|country| country.id)
+        let marks = marks.as_ref().map_err(Clone::clone)?;
+        let viewing_raw = *marks
+            .viewers
+            .get(&inputs.country)
             .ok_or_else(|| format!("Countries lacks occupation viewing slot {}", inputs.country))?;
-        let resistance = frame
-            .complete::<tables::StateResistance>()
-            .map_err(|e| e.to_string())?;
-        let by_state: HashMap<_, _> = resistance.iter().map(|row| (row.state, row)).collect();
-        let links: HashMap<_, _> = links
-            .iter()
-            .map(|row| (row.id, row.canonical_slot))
-            .collect();
+        if let Some(why) = &marks.resistance {
+            return Err(why.clone());
+        }
         let anchors = anchor_provinces(
             inputs.state_provinces,
             inputs.centroid,
             inputs.camera.map.width as f32,
         )?;
         let extent = gui_viewport(inputs.viewport, inputs.ui_scale);
-        for state in states {
-            let controlled = if state.controller == viewing_raw {
+        for (&state, mark) in &marks.marks {
+            let controlled = if mark.controller == viewing_raw {
                 true
-            } else if state.controller == 0 || viewing_raw == 0 {
+            } else if mark.controller == 0 || viewing_raw == 0 {
                 false
             } else {
-                *links.get(&state.controller).ok_or_else(|| {
+                mark.slot.ok_or_else(|| {
                     format!(
                         "CountryLinks lacks occupation controller {}",
-                        state.controller
+                        mark.controller
                     )
                 })? == inputs.country
             };
             if !controlled {
                 continue;
             }
-            let Some(row) = by_state.get(&state.id) else {
+            let Some(resistance) = &mark.resistance else {
                 out.report.refuse(format!(
-                    "{WINDOW} state {}: StateResistance is absent",
-                    state.id
+                    "{WINDOW} state {state}: StateResistance is absent"
                 ));
                 continue;
             };
-            match admitted(row, defines.reenable) {
-                Ok(false) => continue,
+            let row = match resistance {
+                Ok(None) => continue,
                 Err(why) => {
                     out.report
-                        .refuse(format!("{WINDOW} state {}: {why}", state.id));
+                        .refuse(format!("{WINDOW} state {state}: {why}"));
                     continue;
                 }
-                Ok(true) => {}
-            }
-            let world = match inputs.state_provinces.get(&state.id) {
+                Ok(Some(row)) => row,
+            };
+            let world = match inputs.state_provinces.get(&state) {
                 Some(members) if members.is_empty() => [0.; 3],
                 Some(_) => match anchors
-                    .get(&state.id)
+                    .get(&state)
                     .and_then(|&province| (inputs.centroid)(province))
                 {
                     Some(world) => world,
                     None => {
                         out.report.refuse(format!(
-                            "{WINDOW} state {}: graphical-state anchor is absent",
-                            state.id
+                            "{WINDOW} state {state}: graphical-state anchor is absent"
                         ));
                         continue;
                     }
                 },
                 None => {
                     out.report.refuse(format!(
-                        "{WINDOW} state {}: recorded state members are absent",
-                        state.id
+                        "{WINDOW} state {state}: recorded state members are absent"
                     ));
                     continue;
                 }
@@ -317,25 +376,11 @@ pub fn prepare(inputs: &Inputs<'_>, frame: &DecodedFrame) -> PreparedOccupationI
                 continue;
             };
             let distance = inputs.camera.icon_distance(world);
-            let shown = distance < defines.cutoff;
-            if !shown {
+            if distance >= defines.cutoff {
                 continue;
             }
             let active = if distance < defines.badge_cutoff {
-                match &row.map {
-                    Recorded::Value(Some(map)) => badges(
-                        inputs.content,
-                        if mode == Mode::Resistance {
-                            &map.resistance
-                        } else {
-                            &map.compliance
-                        },
-                    ),
-                    _ => Err(BTreeMap::from([(
-                        "occupation map active definitions are not recorded".into(),
-                        1,
-                    )])),
-                }
+                row.badges[usize::from(mode == Mode::Compliance)].clone()
             } else {
                 Ok(Vec::new())
             };
@@ -345,7 +390,7 @@ pub fn prepare(inputs: &Inputs<'_>, frame: &DecodedFrame) -> PreparedOccupationI
                     for (why, count) in refused {
                         *out.report
                             .refused
-                            .entry(format!("{WINDOW} state {} badges: {why}", state.id))
+                            .entry(format!("{WINDOW} state {state} badges: {why}"))
                             .or_default() += count;
                     }
                     Vec::new()
@@ -360,7 +405,7 @@ pub fn prepare(inputs: &Inputs<'_>, frame: &DecodedFrame) -> PreparedOccupationI
             // Percentage text uses the gradient's RGB independently of map-fill alpha.
             color[3] = 1.0;
             out.placed.push(Placed {
-                state: state.id,
+                state,
                 screen: projection.position,
                 depth: projection.depth,
                 anchor: IconAnchor {
@@ -397,6 +442,11 @@ struct Entry {
     definition: Option<String>,
 }
 impl OccupationIconView {
+    /// Whether a window changed on its own at the last frame, not cleared.
+    pub fn running(&self) -> bool {
+        self.active
+    }
+
     pub fn retry(&self) -> Option<Retry> {
         self.pool.as_ref().and_then(Pool::retry)
     }

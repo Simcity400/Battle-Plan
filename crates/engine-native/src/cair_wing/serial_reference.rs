@@ -12,17 +12,16 @@ pub(super) fn walk_projected(
     slots: std::ops::Range<u32>,
     mut output: Buffer<'_, Row>,
     mut sources: Option<Buffer<'_, Source>>,
-    naval_limit: Option<usize>,
+    naval: bool,
     mut visit: impl FnMut(usize, usize, &mut Row, Admitted),
     mut owner_visit: impl FnMut(u32, Option<usize>),
-    score_limit: Option<usize>,
+    scored: bool,
     mut score_visit: impl FnMut(usize, &ScoreLeaf),
 ) -> GameScoreWalk {
-    let growing_sources = matches!(&sources, Some(Buffer::Growing(_)));
     let mut map = Projection::new(output.len());
     let mut source = sources.as_ref().map(|rows| Projection::new(rows.len()));
-    let mut naval = naval_limit.map(Projection::new);
-    let mut score = score_limit.map(Projection::new);
+    let mut naval = naval.then(|| Projection::new(usize::MAX));
+    let mut score = scored.then(|| Projection::new(usize::MAX));
     let result = (|| {
         let reader = Reader {
             memory,
@@ -118,12 +117,6 @@ pub(super) fn walk_projected(
                         .ok_or("air wing source demand overflow")?;
                     sources.ensure(required)?;
                     source.capacity = sources.len();
-                }
-                if growing_sources && let Some(naval) = &mut naval {
-                    naval.capacity = naval
-                        .len
-                        .checked_add(wings.count as usize)
-                        .ok_or("air wing naval source demand overflow")?;
                 }
                 let air_base = match reader.field::<u64>(pool, cair_wing_pool::AIR_BASE_REFERENCE) {
                     Ok(value) => value,

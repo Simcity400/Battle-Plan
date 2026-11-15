@@ -12,7 +12,7 @@
 //! that read, never zero and never part of a sum. Every product that turns a daily
 //! table into runs builds them here.
 
-use crate::products::country_groups::HourSpan;
+use crate::span::HourSpan;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use ts_rs::TS;
@@ -329,52 +329,6 @@ mod tests {
         assert_eq!(deferred.spans, hourly.spans);
         assert_eq!(deferred.runs[&2][0].last_hour, 20);
         assert_eq!(deferred.runs[&1].last().unwrap().last_hour, 45);
-    }
-
-    #[test]
-    fn deferred_carry_work_is_flat_over_unchanged_frames_and_closed_history() {
-        use crate::prepared::observer_tests::{self, Work};
-        let frame = crate::test_fixtures::scale_frame(1, 0, 1);
-        let format = crate::test_fixtures::replay(vec![frame.clone()]).format;
-        observer_tests::assert_flat(
-            observer_tests::scaled_work(10, |hours| {
-                let mut runs = ReadRuns::new();
-                runs.read(0, (0..100).map(|key| (key, Some(7))));
-                let measured = observer_tests::unchanged_frames(
-                    Work::default(),
-                    &frame,
-                    hours as i32,
-                    format,
-                    |frame, _changes| {
-                        runs.advance(frame.hour);
-                        Ok(Work {
-                            history_visits: runs.open_visits,
-                            ..Default::default()
-                        })
-                    },
-                )?;
-                assert_eq!(measured.history_visits, 0);
-                runs.seal();
-                assert_eq!(runs.open_visits, 100);
-                Ok(measured)
-            })
-            .unwrap(),
-        );
-        observer_tests::assert_flat(
-            observer_tests::scaled_work(100, |history| {
-                let mut runs = ReadRuns::new();
-                runs.read(0, (0..history as u32).map(|key| (key, Some(7))));
-                runs.close();
-                runs.read(1, [(u32::MAX, Some(8))]);
-                runs.advance(2);
-                runs.seal();
-                Ok(Work {
-                    history_visits: runs.open_visits,
-                    ..Default::default()
-                })
-            })
-            .unwrap(),
-        );
     }
 
     fn runs(built: &ReadRuns<u32>, key: u32) -> Vec<(i32, i32, Option<&str>)> {

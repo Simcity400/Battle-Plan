@@ -36,5 +36,9 @@ test('technical errors stay generic with Retry and named refusals have no Retry'
       assert.ok(html.includes('<small><span data-detail="Synthetic country styles decoder failed">Couldn’t load country name.</span></small>'));
       assert.doesNotMatch(html, /is-error|role="alert"/);
     }
+    // A recorded group with no one in it is an empty selection wherever a widget shows it, never missing data.
+    const { NO_MEMBERS } = await vite.ssrLoadModule('/ui/src/dashboard/noMembers.ts') as typeof import('../dashboard/noMembers');
+    for (const message of Object.values(NO_MEMBERS)) assert.match(render({ kind: 'unavailable', message }), /data-state="empty"/);
+    assert.match(render({ kind: 'unavailable', message: 'Group membership is unavailable at this time.' }), /data-state="unavailable"/);
   } finally { await vite.close(); }
 });

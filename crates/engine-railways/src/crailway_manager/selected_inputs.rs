@@ -126,17 +126,9 @@ impl Default for SelectionRow {
     }
 }
 
-/// Caller-owned live-sized arena. A short arena refuses a whole province's
-/// domain, retains total demand, and never retries or allocates in the callback.
-pub struct Levels<'a> {
-    pub values: &'a mut [i32],
-    pub len: usize,
-    pub required: usize,
-}
-
 /// Worker indexed levels grow after the fixed reader's authenticated header
 /// read; serialization retains the full signed array.
-pub struct GrowingLevels<'a> {
+pub struct Levels<'a> {
     pub values: &'a mut Vec<i32>,
     pub len: usize,
     pub required: usize,

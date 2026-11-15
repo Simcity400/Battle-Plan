@@ -15,7 +15,6 @@ use engine_native::{Memory, walk::Outcome};
 use replay_data::rows::TABLE_COUNT;
 use replay_data::rows::TableId;
 use std::mem::size_of;
-use std::sync::Arc;
 
 impl Captured {
     /// A missing Slow job refuses its tables, and (through `slow_refusal`)
@@ -127,7 +126,7 @@ impl Captured {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn take_countries_request(
         &mut self,
-        countries: &Arc<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
         base: usize,
         state: usize,
         rows: &mut Vec<engine_native::ccountry::Row>,
@@ -163,7 +162,7 @@ impl Captured {
     /// ([`Captured::take_preacquired_templates`]).
     pub(crate) fn take_templates_request(
         &mut self,
-        countries: &Arc<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
         base: usize,
         state: usize,
         clock: (i32, bool),
@@ -193,7 +192,7 @@ impl Captured {
     /// the navy part.
     pub(crate) fn take_ordinary_parts(
         &mut self,
-        countries: &Arc<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
         base: usize,
         state: usize,
         hour: i32,
@@ -210,7 +209,7 @@ impl Captured {
             part.swap(self);
             part.begin(&mut naval_missions);
             crate::acquisition_jobs::OrdinaryPartRequest {
-                countries: Arc::clone(countries),
+                countries: engine_allocation::SharedBox::clone(countries),
                 base,
                 game_state: state,
                 hour,
@@ -224,7 +223,7 @@ impl Captured {
     /// restored the naming buffers its reserved visibility reads.
     pub(crate) fn take_ordinary_request(
         &mut self,
-        countries: &Arc<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
         base: usize,
         state: usize,
         hour: i32,
@@ -234,7 +233,7 @@ impl Captured {
         packs.ticks = [0; TABLE_COUNT];
         packs.failure = None;
         crate::acquisition_jobs::OrdinaryRequest {
-            countries: Arc::clone(countries),
+            countries: engine_allocation::SharedBox::clone(countries),
             base,
             game_state: state,
             hour,
@@ -314,7 +313,7 @@ impl Captured {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn capture_ordinary_inline(
         &mut self,
-        countries: &Arc<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
         memory: &impl Memory,
         base: usize,
         state: usize,
@@ -378,7 +377,7 @@ impl Captured {
     /// Loan the slow packs with their advisor and local sub-unit stores.
     pub(crate) fn take_slow_request(
         &mut self,
-        countries: &Arc<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
         base: usize,
         state: usize,
         hour: i32,
@@ -391,7 +390,7 @@ impl Captured {
         packs.ticks = [0; TABLE_COUNT];
         packs.capture_mode = self.capture_mode;
         crate::acquisition_jobs::SlowRequest {
-            countries: Arc::clone(countries),
+            countries: engine_allocation::SharedBox::clone(countries),
             base,
             game_state: state,
             hour,
@@ -457,7 +456,7 @@ impl Captured {
     /// early reads for this hour.
     pub(crate) fn take_stability_request(
         &mut self,
-        countries: &Arc<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
         base: usize,
         state: usize,
         hour: i32,
@@ -472,7 +471,7 @@ impl Captured {
         self.swap_stability(&mut packs);
         packs.ticks = [0; TABLE_COUNT];
         crate::acquisition_jobs::StabilityRequest {
-            countries: Arc::clone(countries),
+            countries: engine_allocation::SharedBox::clone(countries),
             base,
             game_state: state,
             hour,
@@ -519,7 +518,7 @@ impl Captured {
     /// Loan MIO first, before the daily pack leaves with modifier range zero.
     pub(crate) fn take_industrial_organisations_request(
         &mut self,
-        countries: &Arc<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
         base: usize,
         state: usize,
         hour: i32,
@@ -530,7 +529,7 @@ impl Captured {
             industrial_organisations::Captured::vacant(),
         );
         crate::acquisition_jobs::IndustrialOrganisationsRequest {
-            countries: Arc::clone(countries),
+            countries: engine_allocation::SharedBox::clone(countries),
             base,
             game_state: state,
             hour,
@@ -555,7 +554,7 @@ impl Captured {
     /// Loan modifier range zero and the daily group's late-join storage.
     pub(crate) fn take_production_daily_request(
         &mut self,
-        countries: &Arc<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
         base: usize,
         state: usize,
         hour: i32,
@@ -570,7 +569,7 @@ impl Captured {
         packs.ticks = [0; TABLE_COUNT];
         packs.industrial_organisations_completed = None;
         crate::acquisition_jobs::ProductionDailyRequest {
-            countries: Arc::clone(countries),
+            countries: engine_allocation::SharedBox::clone(countries),
             base,
             game_state: state,
             hour,
@@ -619,7 +618,7 @@ impl Captured {
     pub(crate) fn take_production_modifier_part(
         &mut self,
         part: usize,
-        countries: &Arc<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
         base: usize,
         state: usize,
         hour: i32,
@@ -627,7 +626,7 @@ impl Captured {
     ) -> crate::acquisition_jobs::ProductionModifierPartRequest {
         let (captured, slots, provided) = self.production_modifiers.take_part(part);
         crate::acquisition_jobs::ProductionModifierPartRequest {
-            countries: Arc::clone(countries),
+            countries: engine_allocation::SharedBox::clone(countries),
             base,
             game_state: state,
             hour,
@@ -683,7 +682,7 @@ impl Captured {
     /// first burst, so it runs beside Slow.
     pub(crate) fn take_war_overview_request(
         &mut self,
-        countries: &Arc<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
         base: usize,
         state: usize,
         hour: i32,
@@ -697,7 +696,7 @@ impl Captured {
         self.swap_war_overview(&mut packs);
         packs.ticks = [0; TABLE_COUNT];
         crate::acquisition_jobs::WarOverviewRequest {
-            countries: Arc::clone(countries),
+            countries: engine_allocation::SharedBox::clone(countries),
             base,
             game_state: state,
             hour,
@@ -729,7 +728,7 @@ impl Captured {
     /// beside the sliced raid families rather than after them.
     pub(crate) fn take_raid_targets_request(
         &mut self,
-        countries: &Arc<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
         base: usize,
         state: usize,
         hour: i32,
@@ -746,7 +745,7 @@ impl Captured {
         );
         packs.ticks = [0; TABLE_COUNT];
         crate::acquisition_jobs::RaidTargetsRequest {
-            countries: Arc::clone(countries),
+            countries: engine_allocation::SharedBox::clone(countries),
             base,
             game_state: state,
             hour,
@@ -782,7 +781,7 @@ impl Captured {
     /// stores, to their own pool job.
     pub(crate) fn take_raid_state_request(
         &mut self,
-        countries: &Arc<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
         base: usize,
         state: usize,
         hour: i32,
@@ -797,7 +796,7 @@ impl Captured {
         self.swap_raid_state(&mut packs);
         packs.ticks = [0; TABLE_COUNT];
         crate::acquisition_jobs::RaidStateRequest {
-            countries: Arc::clone(countries),
+            countries: engine_allocation::SharedBox::clone(countries),
             base,
             game_state: state,
             hour,
@@ -854,7 +853,7 @@ impl Captured {
     /// Loan the sliced raid launch inputs and their store to their own job.
     pub(crate) fn take_raid_launch_request(
         &mut self,
-        countries: &Arc<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
         base: usize,
         state: usize,
         hour: i32,
@@ -869,7 +868,7 @@ impl Captured {
         std::mem::swap(&mut self.raid_launch_inputs, &mut packs.raid_launch_inputs);
         packs.ticks = [0; TABLE_COUNT];
         crate::acquisition_jobs::RaidLaunchRequest {
-            countries: Arc::clone(countries),
+            countries: engine_allocation::SharedBox::clone(countries),
             base,
             game_state: state,
             hour,
@@ -946,7 +945,7 @@ impl Captured {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn take_late_request(
         &mut self,
-        countries: &Arc<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
         orders: &mut Orders,
         naval_raw: bool,
         base: usize,
@@ -960,7 +959,7 @@ impl Captured {
         packs.naval_raw = naval_raw;
         packs.ticks = [0; TABLE_COUNT];
         crate::acquisition_jobs::LateRequest {
-            countries: Arc::clone(countries),
+            countries: engine_allocation::SharedBox::clone(countries),
             inputs: self.unit_inputs.clone(),
             base,
             game_state: state,
@@ -1032,7 +1031,7 @@ impl Captured {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn take_scores_rails_request(
         &mut self,
-        countries: &std::sync::Arc<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
         base: usize,
         state: usize,
         hour: i32,
@@ -1041,7 +1040,7 @@ impl Captured {
         rail_store: Option<Box<naval_history::RailStore>>,
     ) -> crate::acquisition_jobs::ScoresRailsRequest {
         crate::acquisition_jobs::ScoresRailsRequest {
-            countries: std::sync::Arc::clone(countries),
+            countries: engine_allocation::SharedBox::clone(countries),
             base,
             game_state: state,
             hour,
@@ -1066,12 +1065,12 @@ impl Captured {
     /// reads only the game state; the air pack keeps the other until its join.
     pub(crate) fn take_air_supply_request(
         &mut self,
-        countries: &std::sync::Arc<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
         base: usize,
         state: usize,
     ) -> crate::acquisition_jobs::AirSupplyRequest {
         crate::acquisition_jobs::AirSupplyRequest {
-            countries: std::sync::Arc::clone(countries),
+            countries: engine_allocation::SharedBox::clone(countries),
             base,
             game_state: state,
             capture: self.air_supply_spare.take().unwrap_or_default(),
@@ -1133,7 +1132,7 @@ impl Captured {
         hour: i32,
         force_full: bool,
         project_fingerprints: Box<crate::slicing::SliceFingerprints>,
-        countries: Option<std::sync::Arc<engine_native::country_memory::Cache>>,
+        countries: Option<engine_allocation::SharedBox<engine_native::country_memory::Cache>>,
     ) -> crate::acquisition_jobs::GatedRequest {
         self.gated_ticks = None;
         let mut packs = self.gated_spare.take().expect("gated spare present");
@@ -1247,7 +1246,6 @@ impl Captured {
         std::mem::swap(&mut self.air, &mut packs.air);
         std::mem::swap(&mut self.naval_history, &mut packs.naval_history);
         std::mem::swap(&mut self.army_icon_inputs, &mut packs.army_icon_inputs);
-        std::mem::swap(&mut self.air_root, &mut packs.air_root);
         std::mem::swap(orders, &mut packs.orders);
     }
 }
@@ -1304,12 +1302,13 @@ impl OrdinaryPacks {
         if crate::allocation::failed() {
             return None;
         }
-        Some(Box::new(Self {
+        engine_allocation::boxed(Self {
             country_appearance: country_appearance::Captured::vacant(),
             country_counters: country_counters::Captured::vacant(),
             ticks: [0; TABLE_COUNT],
             failure: None,
-        }))
+        })
+        .ok()
     }
 
     /// [`Self::capture_at_carried`] without held counter rows.
@@ -1444,19 +1443,23 @@ impl OrdinaryPart {
             return [const { None }; ORDINARY_PARTS];
         }
         [
-            Some(Self::Combat(Box::new(OrdinaryCombatPacks {
+            engine_allocation::boxed(OrdinaryCombatPacks {
                 combat_details: combat_details::Captured::vacant(),
                 ticks: [0; TABLE_COUNT],
                 failure: None,
-            }))),
-            Some(Self::Naval(Box::new(OrdinaryNavalPacks {
+            })
+            .ok()
+            .map(Self::Combat),
+            engine_allocation::boxed(OrdinaryNavalPacks {
                 naval_details: naval_details::Captured::vacant(),
                 naval_result_details: naval_result_details::Captured::vacant(),
                 naval_combat_sources: naval_combat_sources::Captured::vacant(),
                 ticks: [0; TABLE_COUNT],
                 failure: None,
-            }))),
-            Some(Self::Map(Box::new(OrdinaryMapPacks {
+            })
+            .ok()
+            .map(Self::Naval),
+            engine_allocation::boxed(OrdinaryMapPacks {
                 naval_bases: naval_bases::Captured::vacant(),
                 map_facilities: map_facilities::Captured::vacant(),
                 railway_guns: railway_guns::Captured::vacant(),
@@ -1467,20 +1470,26 @@ impl OrdinaryPart {
                 battle_sounds: battle_sounds::Captured::vacant(),
                 ticks: [0; TABLE_COUNT],
                 failure: None,
-            }))),
-            Some(Self::TaskForces(Box::new(OrdinaryTaskForcePacks {
+            })
+            .ok()
+            .map(Self::Map),
+            engine_allocation::boxed(OrdinaryTaskForcePacks {
                 naval_counters: naval_counters::Captured::vacant(),
                 ticks: [0; TABLE_COUNT],
                 failure: None,
-            }))),
-            Some(Self::Navies(Box::new(OrdinaryNavyPacks {
+            })
+            .ok()
+            .map(Self::TaskForces),
+            engine_allocation::boxed(OrdinaryNavyPacks {
                 naval_mission_inputs: naval_mission_inputs::Captured::vacant(),
                 navies: None,
                 launch: super::country_naval_movement_inputs::Launch::new(Default::default()),
                 naval_missions: None,
                 ticks: [0; TABLE_COUNT],
                 failure: None,
-            }))),
+            })
+            .ok()
+            .map(Self::Navies),
         ]
     }
 
@@ -1718,7 +1727,7 @@ impl OrdinaryPart {
                     navies.begin(memory, base, game_state, hour, &mut packs.launch);
                 scatter(
                     &naval_mission_inputs::TABLES,
-                    packs.naval_mission_inputs.acquire_with_navies_growing(
+                    packs.naval_mission_inputs.acquire_with_navies(
                         memory,
                         base,
                         game_state,
@@ -1834,10 +1843,11 @@ impl StabilityPacks {
         if crate::allocation::failed() {
             return None;
         }
-        Some(Box::new(Self {
+        engine_allocation::boxed(Self {
             country_stability: country_stability::Captured::vacant(),
             ticks: [0; TABLE_COUNT],
-        }))
+        })
+        .ok()
     }
 
     /// The family's walk with the loaned store; without one only the hour's
@@ -1883,10 +1893,11 @@ impl WarOverviewPacks {
         if crate::allocation::failed() {
             return None;
         }
-        Some(Box::new(Self {
+        engine_allocation::boxed(Self {
             war_overview: war_overview::Captured::vacant(),
             ticks: [0; TABLE_COUNT],
-        }))
+        })
+        .ok()
     }
 
     pub(crate) fn capture(
@@ -1941,12 +1952,13 @@ impl ProductionDailyPacks {
         if crate::allocation::failed() {
             return None;
         }
-        Some(Box::new(Self {
+        engine_allocation::boxed(Self {
             industrial_organisations: industrial_organisations::Captured::vacant(),
             industrial_organisations_completed: None,
             production_modifiers: production_modifiers::Captured::vacant(),
             ticks: [0; TABLE_COUNT],
-        }))
+        })
+        .ok()
     }
 
     /// Whether the slot's walks run this hour: the job is queued exactly then.
@@ -2006,10 +2018,11 @@ impl RaidTargetPacks {
         if crate::allocation::failed() {
             return None;
         }
-        Some(Box::new(Self {
+        engine_allocation::boxed(Self {
             raid_target_statuses: raid_target_statuses::Captured::vacant(),
             ticks: [0; TABLE_COUNT],
-        }))
+        })
+        .ok()
     }
 
     pub(crate) fn capture(
@@ -2048,11 +2061,12 @@ impl RaidStatePacks {
         if crate::allocation::failed() {
             return None;
         }
-        Some(Box::new(Self {
+        engine_allocation::boxed(Self {
             raid_state_inputs: raid_state_inputs::Captured::vacant(),
             resource_map: resource_map::Captured::vacant(),
             ticks: [0; TABLE_COUNT],
-        }))
+        })
+        .ok()
     }
 
     pub(crate) fn capture(
@@ -2066,7 +2080,7 @@ impl RaidStatePacks {
     ) {
         let _allocation_phase = crate::allocation::enter(crate::allocation::Phase::Extended);
         let mut ticks = [0; TABLE_COUNT];
-        let cost = self.raid_state_inputs.capture_sliced_growing(
+        let cost = self.raid_state_inputs.capture_sliced(
             memory,
             base,
             game_state,
@@ -2110,10 +2124,11 @@ impl RaidLaunchPacks {
         if crate::allocation::failed() {
             return None;
         }
-        Some(Box::new(Self {
+        engine_allocation::boxed(Self {
             raid_launch_inputs: raid_launch_inputs::Captured::vacant(),
             ticks: [0; TABLE_COUNT],
-        }))
+        })
+        .ok()
     }
 
     pub(crate) fn capture(
@@ -2181,7 +2196,7 @@ impl SlowPacks {
         if crate::allocation::failed() {
             return None;
         }
-        Some(Box::new(Self {
+        engine_allocation::boxed(Self {
             peace_bids: peace_bids::Captured::vacant(),
             map_names: map_names::Captured::vacant(),
             visibility: visibility::Captured::vacant(),
@@ -2195,7 +2210,8 @@ impl SlowPacks {
             country_tactic_unlocks: country_tactic_unlocks::Captured::vacant(),
             capture_mode: replay_data::scope::CaptureMode::Full,
             ticks: [0; TABLE_COUNT],
-        }))
+        })
+        .ok()
     }
 
     pub(crate) fn capture(
@@ -2212,7 +2228,7 @@ impl SlowPacks {
         scatter(
             &super::visibility::TABLES,
             self.visibility
-                .capture_growing(memory, base, game_state, hour, force_full),
+                .capture(memory, base, game_state, hour, force_full),
             &mut ticks,
         );
         let recorded = |tables: &[TableId]| super::records_any(self.capture_mode, tables);
@@ -2308,10 +2324,11 @@ impl ScoresRailsParts {
         if crate::allocation::failed() {
             return None;
         }
-        Some(Box::new(Self {
+        engine_allocation::boxed(Self {
             scores: air::ScorePart::vacant(),
             rails: naval_history::RailPart::vacant(),
-        }))
+        })
+        .ok()
     }
 
     pub(crate) fn allocated_bytes(&self) -> usize {
@@ -2328,7 +2345,6 @@ pub(crate) struct LatePacks {
     pub(crate) air: air::Captured,
     pub(crate) naval_history: naval_history::Captured,
     pub(crate) army_icon_inputs: army_icon_inputs::Captured,
-    pub(crate) air_root: Option<Outcome>,
     /// The walked order census; the naval order sources read its roots.
     pub(crate) orders: Orders,
     /// The Naval raw job staged the order-of-battle sources itself.
@@ -2361,17 +2377,17 @@ impl LatePacks {
         if crate::allocation::failed() {
             return None;
         }
-        Some(Box::new(Self {
+        engine_allocation::boxed(Self {
             leader_portraits: leader_portraits::Captured::vacant(),
             leader_paths: leader_paths::Captured::vacant(),
             air: air::Captured::vacant(),
             naval_history: naval_history::Captured::vacant(),
             army_icon_inputs: army_icon_inputs::Captured::vacant(),
-            air_root: None,
             orders: Orders::vacant(),
             naval_raw: false,
             ticks: [0; TABLE_COUNT],
-        }))
+        })
+        .ok()
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2408,7 +2424,7 @@ impl LatePacks {
                 self.orders.root_outcome,
             );
         }
-        let parent = self.air_root.unwrap_or(MISSING);
+        let parent = MISSING;
         self.air.finish_wings(parent);
         // Without the AirMissions job the history parts get no regions.
         if !self.air.missions_captured() {
@@ -2470,7 +2486,7 @@ pub(crate) struct GatedPacks {
 /// ([`super::character_inputs::RoleStore`]; absent reads every role afresh).
 #[derive(Default)]
 pub(crate) struct CharacterInputRoles {
-    pub(crate) census: Option<Arc<super::characters::census::RoleCensus>>,
+    pub(crate) census: Option<engine_allocation::SharedBox<super::characters::census::RoleCensus>>,
     pub(crate) store: Option<Box<super::character_inputs::RoleStore>>,
 }
 
@@ -2528,13 +2544,14 @@ impl GatedPacks {
         if crate::allocation::failed() {
             return None;
         }
-        Some(Box::new(Self {
+        engine_allocation::boxed(Self {
             fog: fog::Captured::vacant(),
             projects: projects::Captured::vacant(),
             construction: construction::Captured::vacant(),
             projects_recorded: true,
             ticks: [0; TABLE_COUNT],
-        }))
+        })
+        .ok()
     }
 
     pub(crate) fn capture(
@@ -2550,13 +2567,13 @@ impl GatedPacks {
         scatter(
             &fog::TABLES,
             self.fog
-                .capture_growing(memory, base, game_state, hour, force_full),
+                .capture(memory, base, game_state, hour, force_full),
             &mut ticks,
         );
         scatter(
             &construction::TABLES,
             self.construction
-                .capture_growing(memory, base, game_state, hour, force_full),
+                .capture(memory, base, game_state, hour, force_full),
             &mut ticks,
         );
         self.ticks = ticks;
@@ -2582,7 +2599,7 @@ pub(crate) struct FinalInputsReport {
 }
 
 pub(crate) struct FinalInputsRequest {
-    pub countries: Arc<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
     base: usize,
     state: usize,
     hour: i32,
@@ -2643,11 +2660,11 @@ impl FinalInputsRequest {
         self.finished[2] = true;
         let economy =
             self.economy
-                .capture_growing(memory, self.base, self.state, self.hour, self.force_full);
+                .capture(memory, self.base, self.state, self.hour, self.force_full);
         self.finished[3] = true;
         let session =
             self.session
-                .capture_growing(memory, self.base, self.state, self.hour, self.force_full);
+                .capture(memory, self.base, self.state, self.hour, self.force_full);
         self.finished[4] = true;
         let characters = self.characters.capture_growing(
             memory,
@@ -2659,17 +2676,17 @@ impl FinalInputsRequest {
         self.finished[5] = true;
         let destruction = self
             .destruction
-            .capture_growing(memory, self.base, self.state);
+            .capture(memory, self.base, self.state);
         self.finished[6] = true;
         let naval_sources = self
             .naval_sources
-            .capture_growing(memory, self.base, self.state);
+            .capture(memory, self.base, self.state);
         self.finished[7] = true;
         let air_losses = self
             .air_losses
-            .capture_growing(memory, self.base, self.state);
+            .capture(memory, self.base, self.state);
         self.finished[8] = true;
-        let bombing = self.bombing.capture_growing(memory, self.base, self.state);
+        let bombing = self.bombing.capture(memory, self.base, self.state);
         self.finished[9] = true;
         let intel_delegated = self
             .intel
@@ -2688,11 +2705,11 @@ impl FinalInputsRequest {
             self.air_records
                 .capture(memory, self.base, self.state, self.hour, self.force_full);
         self.finished[11] = true;
-        let nuclear = self.nuclear.capture_growing(memory, self.base, self.state);
+        let nuclear = self.nuclear.capture(memory, self.base, self.state);
         self.finished[12] = true;
         let market =
             self.market
-                .capture_growing(memory, self.base, self.state, self.hour, self.force_full);
+                .capture(memory, self.base, self.state, self.hour, self.force_full);
         self.finished[13] = true;
         FinalInputsReport {
             snapshots: [new_divisions, experience],
@@ -2715,7 +2732,7 @@ impl Captured {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn take_final_inputs_request(
         &mut self,
-        countries: &Arc<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
         base: usize,
         state: usize,
         hour: i32,
@@ -2727,7 +2744,7 @@ impl Captured {
         self.production.restore_variants(variants);
         self.production.restore_design_changes(changes);
         FinalInputsRequest {
-            countries: Arc::clone(countries),
+            countries: engine_allocation::SharedBox::clone(countries),
             base,
             state,
             hour,

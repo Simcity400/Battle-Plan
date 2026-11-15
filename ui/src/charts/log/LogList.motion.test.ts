@@ -4,11 +4,12 @@ import { createServer } from 'vite';
 import type { LogListProps } from './LogList';
 
 test('log windows settle when an overscanned row adds a horizontal scrollbar', async () => {
-  type Effect = { deps: readonly unknown[]; run: () => void | (() => void); cleanup?: () => void };
+  type Effect = { deps: readonly unknown[] | undefined; run: () => void | (() => void); cleanup?: () => void };
   const slots = new Map<number, unknown>(), layouts = new Map<number, Effect>(), effects = new Map<number, Effect>();
   const pendingLayouts = new Map<number, Effect>(), pendingEffects = new Map<number, Effect>();
   let cursor = 0, dirty = true;
-  const changed = (before: readonly unknown[] | undefined, after: readonly unknown[]) => !before
+  // An effect without dependencies runs after every render.
+  const changed = (before: readonly unknown[] | undefined, after: readonly unknown[] | undefined) => !before || !after
     || before.length !== after.length || after.some((value, index) => !Object.is(value, before[index]));
   const fixture = {
     useState(initial: unknown) {
@@ -36,13 +37,13 @@ test('log windows settle when an overscanned row adds a horizontal scrollbar', a
       return (slots.get(index) as { value: unknown }).value;
     },
     useCallback(callback: unknown, deps: readonly unknown[]) { return fixture.useMemo(() => callback, deps); },
-    useLayoutEffect(run: Effect['run'], deps: readonly unknown[]) {
+    useLayoutEffect(run: Effect['run'], deps?: readonly unknown[]) {
       const index = cursor++;
-      if (changed(layouts.get(index)?.deps, deps)) pendingLayouts.set(index, { deps: [...deps], run });
+      if (changed(layouts.get(index)?.deps, deps)) pendingLayouts.set(index, { deps: deps && [...deps], run });
     },
-    useEffect(run: Effect['run'], deps: readonly unknown[]) {
+    useEffect(run: Effect['run'], deps?: readonly unknown[]) {
       const index = cursor++;
-      if (changed(effects.get(index)?.deps, deps)) pendingEffects.set(index, { deps: [...deps], run });
+      if (changed(effects.get(index)?.deps, deps)) pendingEffects.set(index, { deps: deps && [...deps], run });
     },
   };
   const commit = (held: Map<number, Effect>, pending: Map<number, Effect>) => {
@@ -75,16 +76,19 @@ test('log windows settle when an overscanned row adds a horizontal scrollbar', a
   }
   const host = globalThis as typeof globalThis & { __logMotionHooks?: typeof fixture };
   host.__logMotionHooks = fixture;
-  const globals = ['window', 'ResizeObserver', 'requestAnimationFrame'].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)] as const);
+  const globals = ['window', 'ResizeObserver', 'requestAnimationFrame', 'cancelAnimationFrame'].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)] as const);
   Object.defineProperty(globalThis, 'window', { configurable: true, value: { setTimeout: () => 0, clearTimeout() {} } });
   Object.defineProperty(globalThis, 'ResizeObserver', { configurable: true, value: Observer });
-  Object.defineProperty(globalThis, 'requestAnimationFrame', { configurable: true, value: () => 0 });
+  const frames: (() => void)[] = [];
+  Object.defineProperty(globalThis, 'requestAnimationFrame', { configurable: true, value: (frame: () => void) => frames.push(frame) });
+  Object.defineProperty(globalThis, 'cancelAnimationFrame', { configurable: true, value: () => {} });
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'log-motion-fixture', enforce: 'pre',
       transform(source, id) {
         const path = id.replaceAll('\\', '/');
-        if (path.endsWith('/log/LogList.tsx') || path.endsWith('/charts/useRowMotion.ts')) {
-          return source.replace(/import \{ ([^}]+) \} from 'react';/, 'const { $1 } = globalThis.__logMotionHooks;');
+        // Every hook the list calls, its own and those of the modules it calls them from, is the fixture's.
+        if (path.endsWith('/log/LogList.tsx') || path.endsWith('/charts/useRowMotion.ts') || path.endsWith('/dashboard/widgetPerf.ts')) {
+          return source.replace(/import \{ ([^}]+) \} from 'react';/, "import * as React from 'react'; const { $1 } = { ...React, ...globalThis.__logMotionHooks };");
         }
         if (path.endsWith('/components/ContextMenu.tsx')) return 'export const useContextMenu = () => ({ open() {}, menu: null });';
         if (path.endsWith('/charts/useChartTokens.ts')) return `export const useViewportHeight = () => 1000;
@@ -103,12 +107,16 @@ test('log windows settle when an overscanned row adds a horizontal scrollbar', a
         const list = nodes.find(node => node.props.role === 'listbox')!;
         if (attached !== list.props.ref) { attached = list.props.ref; (attached as (node: unknown) => void)(scroller); }
         commit(layouts, pendingLayouts); commit(effects, pendingEffects);
+        // Updates queued for the next frame (`inFrame`) land in it.
+        for (const frame of frames.splice(0)) frame();
         if (dirty) continue;
         // ResizeObserver reports the post-layout client size, including changes
         // to the scrollbar. An asynchronous oscillation must fail this test too.
         if (observedHeight !== scroller.clientHeight) {
           observedHeight = scroller.clientHeight;
           for (const observer of observers) observer.update();
+          // What the observer queued for its frame lands in it.
+          for (const frame of frames.splice(0)) frame();
           if (dirty) continue;
         }
         return;
@@ -119,10 +127,11 @@ test('log windows settle when an overscanned row adds a horizontal scrollbar', a
     assert.equal(scroller.clientHeight, 110);
     assert.equal(nodes.filter(node => node.props.role === 'option').length, 10);
     assert.equal(observers.size, 1, 'the viewport keeps one observer through measured height updates');
-    outerHeight = 200;
+    // Grown past what the rows drawn cover (a resize that still covers draws nothing): more rows are drawn.
+    outerHeight = 400;
     for (const observer of observers) observer.update();
     settle();
-    assert.equal(nodes.filter(node => node.props.role === 'option').length, 12, 'real outer resizes still update row demand');
+    assert.equal(nodes.filter(node => node.props.role === 'option').length, 17, 'real outer resizes still update row demand');
     outerHeight = 120;
     for (const observer of observers) observer.update();
     settle();
@@ -135,12 +144,16 @@ test('log windows settle when an overscanned row adds a horizontal scrollbar', a
     props = { ...props, rows: [{ key: 'new', hour: 101, item: 'New row' }, ...props.rows!] };
     settle();
     // Move back to the top to see the arriving row's normal shared motion.
+    // As a reader scrolls: the wheel, then the scroll it moves (the list reads back only a scroll the reader made).
+    const scrolling = nodes.find(node => node.props.role === 'listbox')!;
+    (scrolling.props.onWheel as (event: unknown) => void)({ currentTarget: scroller, deltaY: -760 });
     scroller.scrollTop = 0;
-    (nodes.find(node => node.props.role === 'listbox')!.props.onScroll as (event: unknown) => void)({ currentTarget: scroller });
+    (scrolling.props.onScroll as (event: unknown) => void)({ currentTarget: scroller });
     settle();
     assert.match(String(nodes.find(node => node.props['data-log-key'] === 'new')?.props.className), /is-entering/);
   } finally {
     for (const effect of [...layouts.values(), ...effects.values()]) effect.cleanup?.();
+    for (const frame of frames.splice(0)) frame();
     await vite.close(); delete host.__logMotionHooks;
     for (const [key, descriptor] of globals) {
       if (descriptor) Object.defineProperty(globalThis, key, descriptor);

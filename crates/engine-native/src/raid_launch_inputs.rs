@@ -2027,12 +2027,12 @@ pub(crate) mod tests {
         selected: &dyn Fn(u32) -> bool,
         keys: &Keys,
     ) -> Run {
-        let mut countries = [CountryRow::default(); 2];
-        let mut command_power = [CommandPowerRow::default(); 2];
+        let mut countries = vec![CountryRow::default(); 2];
+        let mut command_power = vec![CommandPowerRow::default(); 2];
         let mut pairs = vec![0; reservations];
-        let mut archetypes = [ArchetypeRow::default(); 2];
-        let mut sites = [SiteRow::default(); 2];
-        let mut aces = [AceRow::default(); 2];
+        let mut archetypes = vec![ArchetypeRow::default(); 2];
+        let mut sites = vec![SiteRow::default(); 2];
+        let mut aces = vec![AceRow::default(); 2];
         let walk = walk(
             memory,
             0,
@@ -2041,12 +2041,12 @@ pub(crate) mod tests {
                 memo: &DefinitionMemo::default(),
                 keys,
                 essentials: &mut Vec::new(),
-                countries: crate::walk::Buffer::Fixed(&mut countries),
-                command_power: crate::walk::Buffer::Fixed(&mut command_power),
-                reservations: crate::walk::Buffer::Fixed(&mut pairs),
-                archetypes: crate::walk::Buffer::Fixed(&mut archetypes),
-                sites: crate::walk::Buffer::Fixed(&mut sites),
-                aces: crate::walk::Buffer::Fixed(&mut aces),
+                countries: crate::walk::Buffer::Growing(&mut countries),
+                command_power: crate::walk::Buffer::Growing(&mut command_power),
+                reservations: crate::walk::Buffer::Growing(&mut pairs),
+                archetypes: crate::walk::Buffer::Growing(&mut archetypes),
+                sites: crate::walk::Buffer::Growing(&mut sites),
+                aces: crate::walk::Buffer::Growing(&mut aces),
             },
             selected,
         );
@@ -2219,10 +2219,6 @@ pub(crate) mod tests {
         let words = required_reservations(&memory, 0, GS).unwrap();
         assert_eq!(words, 2);
         assert_eq!(run(&memory, words).walk.countries, Outcome::Rows { len: 1 });
-        assert!(matches!(
-            run(&memory, words - 1).walk.countries,
-            Outcome::Truncated { .. }
-        ));
     }
 
     #[test]
@@ -2279,15 +2275,9 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_short_reservation_arena_withholds_the_country_and_reports_demand() {
+    fn a_short_reservation_arena_grows_to_the_country_demand() {
         let run = run(&fixture(), 1);
-        assert_eq!(
-            run.walk.countries,
-            Outcome::Truncated {
-                len: 0,
-                unread_rows: 1
-            }
-        );
+        assert_eq!(run.walk.countries, Outcome::Rows { len: 1 });
         assert_eq!(run.walk.required_reservations, 2);
     }
 
@@ -2799,12 +2789,12 @@ pub(crate) mod tests {
     fn raid_launch_inputs_bench() {
         for countries in [1_500, 5_000] {
             let memory = Counted::new(scaled(countries));
-            let mut rows = [CountryRow::default()].repeat(countries);
-            let mut command_power = [CommandPowerRow::default()].repeat(countries);
+            let mut rows = vec![CountryRow::default()].repeat(countries);
+            let mut command_power = vec![CommandPowerRow::default()].repeat(countries);
             let mut pairs = vec![0; countries * RESERVATIONS_PER_COUNTRY * 2];
-            let mut archetypes = [ArchetypeRow::default()].repeat(countries * ARCHETYPES);
-            let mut sites = [SiteRow::default()].repeat(countries * SITES_PER_COUNTRY);
-            let mut aces = [AceRow::default()].repeat(countries * ACES_PER_COUNTRY);
+            let mut archetypes = vec![ArchetypeRow::default()].repeat(countries * ARCHETYPES);
+            let mut sites = vec![SiteRow::default()].repeat(countries * SITES_PER_COUNTRY);
+            let mut aces = vec![AceRow::default()].repeat(countries * ACES_PER_COUNTRY);
             let mut last = None;
             let ms = median_ms(20, || {
                 memory.reset();
@@ -2816,12 +2806,12 @@ pub(crate) mod tests {
                         memo: &DefinitionMemo::default(),
                         keys: &KEYS,
                         essentials: &mut Vec::new(),
-                        countries: crate::walk::Buffer::Fixed(&mut rows),
-                        command_power: crate::walk::Buffer::Fixed(&mut command_power),
-                        reservations: crate::walk::Buffer::Fixed(&mut pairs),
-                        archetypes: crate::walk::Buffer::Fixed(&mut archetypes),
-                        sites: crate::walk::Buffer::Fixed(&mut sites),
-                        aces: crate::walk::Buffer::Fixed(&mut aces),
+                        countries: crate::walk::Buffer::Growing(&mut rows),
+                        command_power: crate::walk::Buffer::Growing(&mut command_power),
+                        reservations: crate::walk::Buffer::Growing(&mut pairs),
+                        archetypes: crate::walk::Buffer::Growing(&mut archetypes),
+                        sites: crate::walk::Buffer::Growing(&mut sites),
+                        aces: crate::walk::Buffer::Growing(&mut aces),
                     },
                     &|_| true,
                 ));
@@ -2900,12 +2890,12 @@ pub(crate) mod tests {
                     memo: &DefinitionMemo::default(),
                     keys: &KEYS,
                     essentials: &mut Vec::new(),
-                    countries: crate::walk::Buffer::Fixed(&mut self.countries),
-                    command_power: crate::walk::Buffer::Fixed(&mut self.command_power),
-                    reservations: crate::walk::Buffer::Fixed(&mut self.pairs),
-                    archetypes: crate::walk::Buffer::Fixed(&mut self.archetypes),
-                    sites: crate::walk::Buffer::Fixed(&mut self.sites),
-                    aces: crate::walk::Buffer::Fixed(&mut self.aces),
+                    countries: crate::walk::Buffer::Growing(&mut self.countries),
+                    command_power: crate::walk::Buffer::Growing(&mut self.command_power),
+                    reservations: crate::walk::Buffer::Growing(&mut self.pairs),
+                    archetypes: crate::walk::Buffer::Growing(&mut self.archetypes),
+                    sites: crate::walk::Buffer::Growing(&mut self.sites),
+                    aces: crate::walk::Buffer::Growing(&mut self.aces),
                 },
                 selected,
             )

@@ -16,16 +16,12 @@ struct Entry {
 pub(crate) struct Store {
     previous: Vec<Entry>,
     current: Vec<Entry>,
-    enabled: bool,
 }
 impl Store {
-    pub fn begin(&mut self, ships: usize, grow: bool) {
-        self.enabled = grow;
+    pub fn begin(&mut self, ships: usize) {
         std::mem::swap(&mut self.previous, &mut self.current);
         self.current.clear();
-        if grow {
-            let _ = allocation::advisory(|| allocation::reserve(&mut self.current, ships));
-        }
+        let _ = allocation::advisory(|| allocation::reserve(&mut self.current, ships));
     }
     pub fn clear(&mut self) {
         self.previous.clear();
@@ -69,10 +65,6 @@ impl Store {
         }
         if row.formation_flags & 0x80 != 0 {
             // Already recorded in formation_flags; no duplicate wire value.
-            return None;
-        }
-        // Fixed/synchronous fallback never acquires this optional suffix.
-        if !self.enabled {
             return None;
         }
         self.capture_with(
@@ -125,7 +117,7 @@ mod tests {
     #[test]
     fn quiet_carriers_do_not_read_and_dirty_or_reused_hosts_do() {
         let mut store = Store::default();
-        store.begin(20, true);
+        store.begin(20);
         for ship in 1..=20 {
             assert_eq!(
                 store.capture_with(ship as usize * 4096, ship, |_| Some((1, 0)), || Some(2)),
@@ -133,7 +125,7 @@ mod tests {
             );
         }
         store.finish();
-        store.begin(20, true);
+        store.begin(20);
         for ship in 1..=20 {
             assert_eq!(
                 store.capture_with(
@@ -146,7 +138,7 @@ mod tests {
             );
         }
         store.finish();
-        store.begin(20, true);
+        store.begin(20);
         let mut reads = 0;
         assert_eq!(
             store.capture_with(
@@ -177,7 +169,7 @@ mod tests {
     #[test]
     fn uncertified_capture_never_polls_and_running_writers_refuse_the_field() {
         let mut store = Store::default();
-        store.begin(2, true);
+        store.begin(2);
         assert_eq!(
             store.capture_with(4096, 1, |_| None, || panic!("uncertified read")),
             None
@@ -205,10 +197,10 @@ mod tests {
             store.capture_with(4096, 1, |_| Some((1, 0)), || panic!("no storage")),
             None
         );
-        store.begin(1, true);
+        store.begin(1);
         assert_eq!(store.capture_with(4096, 1, |_| Some((1, 0)), || None), None);
         store.finish();
-        store.begin(1, true);
+        store.begin(1);
         assert_eq!(
             store.capture_with(
                 4096,
@@ -219,7 +211,7 @@ mod tests {
             None
         );
         store.finish();
-        store.begin(1, true);
+        store.begin(1);
         assert_eq!(
             store.capture_with(4096, 1, |_| Some((2, 0)), || Some(2)),
             Some(2)

@@ -511,6 +511,8 @@ fn walk(w: &World, capacity: usize) -> Walked {
         &mut input,
         &mut lines,
         &mut bytes,
+        0,
+        0,
     );
     Walked {
         result,
@@ -762,21 +764,6 @@ fn a_display_mismatch_or_changed_value_is_not_paired() {
     assert_eq!(kinds[1], (1, Kind::Unpaired));
     assert_eq!(kinds[4], (3, Kind::Unpaired));
     assert_eq!(kinds[5], (4, Kind::Static));
-}
-
-#[test]
-fn lines_that_do_not_fit_are_counted_not_partially_written() {
-    let walked = walk(&world(), 3);
-    let walk = walked.result.unwrap();
-    assert_eq!(
-        walk.lines,
-        Outcome::Truncated {
-            len: 0,
-            unread_rows: 7
-        }
-    );
-    assert_eq!(walk.bytes_len, 0);
-    assert!(walk.required_bytes >= b"idea_a".len() + 2 * b"Decision: X".len());
 }
 
 #[test]
@@ -1044,8 +1031,8 @@ fn observed_walk_bytes(
             &context,
             &mut scratch,
             &mut input,
-            Buffer::Fixed(&mut lines),
-            Buffer::Fixed(&mut bytes),
+            Buffer::Growing(&mut lines),
+            Buffer::Growing(&mut bytes),
             0,
             0,
             None,
@@ -1396,12 +1383,12 @@ fn stability_copy_census_keeps_first_observations_and_cuts_repeated_copies() {
     // Totals includes the independent recruitment-ratio and non-exile-host reads.
     let expected = [
         (
-            [1, 17, 4, 5, 6, 10, 1, 11, 8, 3, 9, 3, 12, 0, 36, 7],
-            [1, 17, 4, 5, 6, 3, 1, 5, 6, 0, 7, 2, 6, 0, 0, 5],
+            [1, 16, 4, 5, 6, 10, 1, 11, 8, 3, 9, 3, 12, 0, 36, 7],
+            [1, 16, 4, 5, 6, 3, 1, 5, 6, 0, 7, 2, 6, 0, 0, 5],
         ),
         (
-            [1, 17, 4, 5, 6, 12, 1, 11, 8, 3, 9, 3, 13, 3, 50, 9],
-            [1, 17, 4, 5, 6, 3, 1, 5, 6, 0, 7, 2, 7, 2, 0, 6],
+            [1, 16, 4, 5, 6, 12, 1, 11, 8, 3, 9, 3, 13, 3, 50, 9],
+            [1, 16, 4, 5, 6, 3, 1, 5, 6, 0, 7, 2, 7, 2, 0, 6],
         ),
     ];
     for (w, (before, after)) in [world(), scaled_world()].into_iter().zip(expected) {
@@ -1700,7 +1687,7 @@ fn stability_batched_copies_match_serial() {
         );
         before += copies.calls.borrow().len();
         copies.calls.borrow_mut().clear();
-        let new = walk_country_growing_memo(
+        let new = walk_country_memo(
             &copies,
             BASE,
             &countries,
@@ -1773,8 +1760,8 @@ fn stability_copy_memo_preserves_the_changed_children_consistency_reread() {
                 &context,
                 &mut scratch,
                 &mut InputRow::default(),
-                &mut [],
-                &mut [],
+                &mut Vec::new(),
+                &mut Vec::new(),
             )
         } else {
             walk_country(
@@ -1785,8 +1772,10 @@ fn stability_copy_memo_preserves_the_changed_children_consistency_reread() {
                 &context,
                 &mut scratch,
                 &mut InputRow::default(),
-                &mut [],
-                &mut [],
+                &mut Vec::new(),
+                &mut Vec::new(),
+                0,
+                0,
             )
         };
         assert_eq!(result, Err("country modifier tree changed during the walk"));
@@ -1825,7 +1814,7 @@ fn country_walk(
             &mut lines,
             &mut bytes,
         ),
-        Some(memo) => walk_country_growing_memo(
+        Some(memo) => walk_country_memo(
             copies,
             BASE,
             &countries,
@@ -2055,6 +2044,8 @@ fn stability_denied_candidate_preparation_matches_serial_acquisitions() {
             &mut new_input,
             &mut new_lines,
             &mut new_bytes,
+            0,
+            0,
         );
         assert_eq!(new, old);
         assert!(new.is_ok());

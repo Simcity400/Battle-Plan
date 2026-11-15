@@ -39,7 +39,7 @@ fn raw_zero_first_member_clears_only_the_event_selector() {
         scopes
             .faction_leader(1)
             .unwrap_err()
-            .contains("CountryLinks")
+            .contains("the faction leader link 0 resolves to no country: country links")
     );
     for context in [
         Context::country(1),
@@ -86,7 +86,7 @@ fn typed_reserved_faction_keeps_null_and_faults_distinct() {
             scopes
                 .faction(0)
                 .unwrap_err()
-                .contains("ReservedCountryNaming.faction")
+                .contains("faction of reserved country naming")
         );
         // A positive member's faction does not demand the reserved getter.
         assert_eq!(scopes.faction(1), Ok(Some(5)));
@@ -114,7 +114,7 @@ fn typed_reserved_faction_keeps_null_and_faults_distinct() {
             RecordedScopes::read(&frame, Arc::default())
                 .faction(0)
                 .unwrap_err()
-                .contains("ReservedCountryNaming")
+                .contains("reserved country naming")
         );
     }
 }

@@ -78,9 +78,9 @@ test('only products declared to read content change their request identity', () 
     const request = { sourceId: 'same', revision: 'same', product, params: {} };
     assert.notEqual(productKey(request, 1), productKey(request, 2));
   }
-  // Counts are recorded, but this reply also names content building definitions.
-  assert.ok(CONTENT_PRODUCTS.includes('country-factories'));
-  assert.ok(CONTENT_PRODUCTS.includes('country-fuel'));
+  // Holders and runs are recorded, but these replies also name countries and factions in the reader's language.
+  assert.ok(CONTENT_PRODUCTS.includes('country-styles'));
+  assert.ok(CONTENT_PRODUCTS.includes('country-groups'));
 });
 
 test('a recording-only product keeps its settled cache and pending load across content changes', async () => {

@@ -14,8 +14,8 @@ pub fn walk_country<M: Memory>(
     context: &Context,
     scratch: &mut Scratch,
     input: &mut InputRow,
-    lines: &mut [LineRow],
-    bytes: &mut [u8],
+    lines: &mut Vec<LineRow>,
+    bytes: &mut Vec<u8>,
 ) -> Result<CountryWalk, &'static str> {
     walk_country_buffers(
         memory,
@@ -25,8 +25,8 @@ pub fn walk_country<M: Memory>(
         context,
         scratch,
         input,
-        Buffer::Fixed(lines),
-        Buffer::Fixed(bytes),
+        Buffer::Growing(lines),
+        Buffer::Growing(bytes),
         0,
         0,
     )

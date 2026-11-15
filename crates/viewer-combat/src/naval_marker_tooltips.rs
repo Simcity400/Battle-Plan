@@ -7,10 +7,7 @@ use replay_data::{
     rows::TaskForceCounterInputRow, rows::TaskForceRow, rows::tables,
 };
 use replay_frame::frame::DecodedFrame;
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    sync::Arc,
-};
+use std::collections::{BTreeMap, BTreeSet};
 use viewer_foundation::engaged::Engaged;
 use viewer_foundation::engagement_history::{self, History};
 use viewer_foundation::map::tables::core;
@@ -171,143 +168,120 @@ fn seen(
     Ok(text)
 }
 
-type CacheKey = (replay_data::BranchId, i32, u32, u64, bool);
-
-#[derive(Default)]
-pub struct Cache {
-    held: Option<(CacheKey, Arc<Tooltip>)>,
-}
-
-impl Cache {
-    pub fn request(
-        &mut self,
-        static_content: &Arc<StaticContent>,
-        frame: &DecodedFrame,
-        viewer: u32,
-        id: u64,
-        index: Option<&History>,
-    ) -> Arc<Tooltip> {
-        let key = (
-            frame.branch,
-            frame.hour,
+/// The naval marker hover of combat `id` for the viewing country `viewer`.
+pub fn build(
+    static_content: &StaticContent,
+    frame: &DecodedFrame,
+    viewer: u32,
+    id: u64,
+    index: Option<&History>,
+) -> Tooltip {
+    let mut text = Tooltip::default();
+    let result: Result<String, String> = (|| {
+        let links = core::<tables::CountryLinks>(frame).map_err(|e| e.to_string())?;
+        let links: BTreeMap<_, _> = links
+            .iter()
+            .map(|row| (row.id, row.canonical_slot))
+            .collect();
+        let relations = Relations::read(frame, &links);
+        let (flags, provenance) = engagement_history::combats(
+            frame,
+            engagement_history::NAVAL,
             viewer,
-            id,
-            index.is_some_and(|index| index.covers(frame.branch, frame.hour)),
-        );
-        if let Some((held, text)) = &self.held
-            && *held == key
-        {
-            return Arc::clone(text);
+            &links,
+            relations.as_ref().map_err(|e| *e),
+            index,
+        )
+        .map_err(|e| e.to_string())?;
+        if let Some(why) = provenance.limitation() {
+            text.refused.insert(format!("naval marker {id}: {why}"), 1);
         }
-        let mut text = Tooltip::default();
-        let result: Result<String, String> = (|| {
-            let links = core::<tables::CountryLinks>(frame).map_err(|e| e.to_string())?;
-            let links: BTreeMap<_, _> = links
-                .iter()
-                .map(|row| (row.id, row.canonical_slot))
-                .collect();
-            let relations = Relations::read(frame, &links);
-            let (flags, provenance) = engagement_history::combats(
-                frame,
-                engagement_history::NAVAL,
-                viewer,
-                &links,
-                relations.as_ref().map_err(|e| *e),
-                index,
-            )
-            .map_err(|e| e.to_string())?;
-            if let Some(why) = provenance.limitation() {
-                text.refused.insert(format!("naval marker {id}: {why}"), 1);
-            }
-            if let Some(title) = land_marker_tooltips::intel(
-                static_content.assets.as_ref(),
-                &static_content.localisation,
-                flags.get(&id).copied().unwrap_or(Engaged::Unknown),
-            )? {
-                return Ok(title);
-            }
-            let details = rows::<tables::NavalCombatDetails>(frame).map_err(|e| e.to_string())?;
-            let detail = details
-                .rows()
-                .iter()
-                .find(|row| row.combat == id)
-                .ok_or_else(|| {
-                    whole(&details, "NavalCombatDetails")
-                        .err()
-                        .unwrap_or_else(|| format!("NavalCombatDetails lacks combat {id}"))
-                })?;
-            let member_rows = rows::<tables::NavalCombatShips>(frame).map_err(|e| e.to_string())?;
-            let mut members: Vec<_> = whole(&member_rows, "NavalCombatShips")?
-                .iter()
-                .filter(|row| {
-                    row.combat == id && row.member_source == 0 && row.group_index != u32::MAX
-                })
-                .collect();
-            members.sort_by_key(|row| (row.side, row.group_index, row.member_index));
-            let mut primary_side = None;
-            for (side, value) in detail.sides.iter().enumerate() {
-                if contains(&value.summary.countries, viewer, &links)? {
-                    primary_side = Some(side as u8);
-                    break;
-                }
-            }
-            let hq = if primary_side.is_some_and(|side| {
-                members
-                    .iter()
-                    .any(|row| row.side == side && row.live_ship != 0)
-            }) {
-                let ships = rows::<tables::Ships>(frame).map_err(|e| e.to_string())?;
-                let forces = rows::<tables::TaskForces>(frame).map_err(|e| e.to_string())?;
-                let inputs =
-                    rows::<tables::TaskForceCounterInputs>(frame).map_err(|e| e.to_string())?;
-                let ships = whole(&ships, "Ships")?
-                    .iter()
-                    .map(|row| (row.id, row))
-                    .collect();
-                let forces = whole(&forces, "TaskForces")?
-                    .iter()
-                    .map(|row| (row.id, row))
-                    .collect();
-                let inputs = whole(&inputs, "TaskForceCounterInputs")?
-                    .iter()
-                    .map(|row| (row.task_force, row))
-                    .collect();
-                hq_count(detail, &members, viewer, &links, &ships, &forces, &inputs)?
-            } else {
-                0
-            };
-            let membership = detail.sides.each_ref().map(|side| {
-                Ok(contains(&side.summary.countries, viewer, &links)?
-                    || contains(&side.summary.secondary_countries, viewer, &links)?)
-            });
-            let [a, b]: [Result<bool, String>; 2] = membership;
-            let names = CountryNames::read(frame, &static_content.localisation);
-            seen(
-                static_content.assets.as_ref(),
-                &static_content.localisation,
-                detail,
-                &members,
-                hq,
-                [a?, b?],
-                &|raw| {
-                    names.name(
-                        *links
-                            .get(&raw)
-                            .ok_or_else(|| format!("CountryLinks lacks participant {raw}"))?,
-                    )
-                },
-            )
-        })();
-        match result {
-            Ok(body) => text.body = body, // Native writes only delayed output.
-            Err(why) => {
-                text.refused.insert(format!("naval marker {id}: {why}"), 1);
+        if let Some(title) = land_marker_tooltips::intel(
+            static_content.assets.as_ref(),
+            &static_content.localisation,
+            flags.get(&id).copied().unwrap_or(Engaged::Unknown),
+        )? {
+            return Ok(title);
+        }
+        let details = rows::<tables::NavalCombatDetails>(frame).map_err(|e| e.to_string())?;
+        let detail = details
+            .rows()
+            .iter()
+            .find(|row| row.combat == id)
+            .ok_or_else(|| {
+                whole(&details, "NavalCombatDetails")
+                    .err()
+                    .unwrap_or_else(|| format!("NavalCombatDetails lacks combat {id}"))
+            })?;
+        let member_rows = rows::<tables::NavalCombatShips>(frame).map_err(|e| e.to_string())?;
+        let mut members: Vec<_> = whole(&member_rows, "NavalCombatShips")?
+            .iter()
+            .filter(|row| {
+                row.combat == id && row.member_source == 0 && row.group_index != u32::MAX
+            })
+            .collect();
+        members.sort_by_key(|row| (row.side, row.group_index, row.member_index));
+        let mut primary_side = None;
+        for (side, value) in detail.sides.iter().enumerate() {
+            if contains(&value.summary.countries, viewer, &links)? {
+                primary_side = Some(side as u8);
+                break;
             }
         }
-        let text = Arc::new(text);
-        self.held = Some((key, Arc::clone(&text)));
-        text
+        let hq = if primary_side.is_some_and(|side| {
+            members
+                .iter()
+                .any(|row| row.side == side && row.live_ship != 0)
+        }) {
+            let ships = rows::<tables::Ships>(frame).map_err(|e| e.to_string())?;
+            let forces = rows::<tables::TaskForces>(frame).map_err(|e| e.to_string())?;
+            let inputs =
+                rows::<tables::TaskForceCounterInputs>(frame).map_err(|e| e.to_string())?;
+            let ships = whole(&ships, "Ships")?
+                .iter()
+                .map(|row| (row.id, row))
+                .collect();
+            let forces = whole(&forces, "TaskForces")?
+                .iter()
+                .map(|row| (row.id, row))
+                .collect();
+            let inputs = whole(&inputs, "TaskForceCounterInputs")?
+                .iter()
+                .map(|row| (row.task_force, row))
+                .collect();
+            hq_count(detail, &members, viewer, &links, &ships, &forces, &inputs)?
+        } else {
+            0
+        };
+        let membership = detail.sides.each_ref().map(|side| {
+            Ok(contains(&side.summary.countries, viewer, &links)?
+                || contains(&side.summary.secondary_countries, viewer, &links)?)
+        });
+        let [a, b]: [Result<bool, String>; 2] = membership;
+        let names = CountryNames::read(frame, &static_content.localisation);
+        seen(
+            static_content.assets.as_ref(),
+            &static_content.localisation,
+            detail,
+            &members,
+            hq,
+            [a?, b?],
+            &|raw| {
+                names.name(
+                    *links
+                        .get(&raw)
+                        .ok_or_else(|| format!("CountryLinks lacks participant {raw}"))?,
+                )
+            },
+        )
+    })();
+    match result {
+        Ok(body) => text.body = body, // Native writes only delayed output.
+        Err(why) => {
+            text.refused.insert(format!("naval marker {id}: {why}"), 1);
+        }
     }
+    text
 }
 
 #[cfg(test)]

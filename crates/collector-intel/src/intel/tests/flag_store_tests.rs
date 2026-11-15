@@ -109,7 +109,7 @@ fn walk_with(bytes: &[u8], store: &mut FlagStore, watches: &Watches) -> (Hour, u
     };
     let mut rows = Vec::new();
     let mut scratch = Vec::new();
-    let outcome = walk_flags_growing(
+    let outcome = walk_flags(
         &memory,
         BASE,
         GAME,
@@ -181,6 +181,7 @@ fn first_hour(bytes: &[u8], store: &mut FlagStore, watches: &Watches) -> Hour {
 
 #[test]
 fn quiet_hours_read_no_manager_and_publish_identical_rows() {
+    let _globals = crate::flag_changes::test_globals();
     let bytes = flag_scopes();
     let watches = Watches::enabled(16);
     let mut store = FlagStore::new();
@@ -206,6 +207,7 @@ fn quiet_hours_read_no_manager_and_publish_identical_rows() {
 
 #[test]
 fn a_hooked_write_rereads_only_its_manager() {
+    let _globals = crate::flag_changes::test_globals();
     let mut bytes = flag_scopes();
     let watches = Watches::enabled(16);
     let mut store = FlagStore::new();
@@ -235,6 +237,7 @@ fn a_hooked_write_rereads_only_its_manager() {
 
 #[test]
 fn an_invalidating_hour_rereads_every_manager() {
+    let _globals = crate::flag_changes::test_globals();
     let bytes = flag_scopes();
     let watches = Watches::enabled(16);
     let mut store = FlagStore::new();
@@ -253,6 +256,7 @@ fn an_invalidating_hour_rereads_every_manager() {
 
 #[test]
 fn a_changed_scope_identity_is_read_afresh() {
+    let _globals = crate::flag_changes::test_globals();
     let mut bytes = flag_scopes();
     let watches = Watches::enabled(16);
     let mut store = FlagStore::new();
@@ -274,6 +278,7 @@ fn a_changed_scope_identity_is_read_afresh() {
 
 #[test]
 fn an_unobserved_write_is_carried_stale() {
+    let _globals = crate::flag_changes::test_globals();
     // Guards the premise of the family: only hooked writers move a
     // certificate, so a missed writer would be carried until an
     // invalidation, which is why every writer site is hooked.
@@ -289,6 +294,7 @@ fn an_unobserved_write_is_carried_stale() {
 
 #[test]
 fn a_failed_walk_holds_nothing() {
+    let _globals = crate::flag_changes::test_globals();
     let mut bytes = flag_scopes();
     let watches = Watches::enabled(16);
     let mut store = FlagStore::new();
@@ -313,6 +319,7 @@ fn a_failed_walk_holds_nothing() {
 
 #[test]
 fn every_site_names_its_manager() {
+    let _globals = crate::flag_changes::test_globals();
     use engine_mutations::{
         script_flag_mutations::MUTATIONS, script_flag_mutations::Receiver,
         script_flag_mutations::manager,
@@ -342,6 +349,7 @@ fn every_site_names_its_manager() {
 /// hour.
 #[test]
 fn a_quiet_hour_walks_no_scope_and_publishes_identical_rows() {
+    let _globals = crate::flag_changes::test_globals();
     let bytes = flag_scopes();
     let watches = Watches::enabled(16);
     let mut store = FlagStore::new();
@@ -369,6 +377,7 @@ fn a_quiet_hour_walks_no_scope_and_publishes_identical_rows() {
 /// walks every scope.
 #[test]
 fn a_flag_write_rereads_its_manager_and_a_roster_write_walks_every_scope() {
+    let _globals = crate::flag_changes::test_globals();
     let mut bytes = flag_scopes();
     let watches = Watches::enabled(16);
     let mut store = FlagStore::new();
@@ -481,6 +490,7 @@ fn a_flag_write_rereads_its_manager_and_a_roster_write_walks_every_scope() {
 /// nothing else.
 #[test]
 fn a_quiet_hour_needs_the_held_countries_in_walk_order() {
+    let _globals = crate::flag_changes::test_globals();
     let bytes = flag_scopes();
     let memory = SliceMemory {
         base: 0,
@@ -503,6 +513,7 @@ fn a_quiet_hour_needs_the_held_countries_in_walk_order() {
 /// manager.
 #[test]
 fn a_quiet_hour_carries_an_unhooked_character_flag_write() {
+    let _globals = crate::flag_changes::test_globals();
     let mut bytes = flag_scopes();
     let watches = Watches::enabled(16);
     let mut store = FlagStore::new();
@@ -521,6 +532,7 @@ fn a_quiet_hour_carries_an_unhooked_character_flag_write() {
 /// every hour's rows are a fresh walk's.
 #[test]
 fn a_quiet_hour_visits_only_the_scopes_it_reads() {
+    let _globals = crate::flag_changes::test_globals();
     let mut bytes = flag_scopes();
     let watches = Watches::enabled(16);
     let mut store = FlagStore::new();
@@ -577,6 +589,7 @@ fn a_quiet_hour_visits_only_the_scopes_it_reads() {
 /// waiting for the first capture leaves growth stuck until an invalidation.
 #[test]
 fn preinstall_flag_sizing_includes_empty_scopes_and_embedded_stores() {
+    let _globals = crate::flag_changes::test_globals();
     let bytes = with_empty_characters(5_000);
     let memory = SliceMemory {
         base: 0,
@@ -613,6 +626,7 @@ fn preinstall_flag_sizing_includes_empty_scopes_and_embedded_stores() {
 
 #[test]
 fn refused_flag_sizing_keeps_the_prior_watch_demand() {
+    let _globals = crate::flag_changes::test_globals();
     let mut bytes = with_empty_characters(5_000);
     // The last manager's invalid header refuses the entire sizing census,
     // not a successful partial scope count.
@@ -636,6 +650,7 @@ fn refused_flag_sizing_keeps_the_prior_watch_demand() {
 
 #[test]
 fn refused_flag_watches_read_fresh_instead_of_certifying_a_quiet_hour() {
+    let _globals = crate::flag_changes::test_globals();
     use crate::flag_changes::Changes;
     let mut bytes = flag_scopes();
     let watches = Watches::enabled(1);
@@ -662,6 +677,7 @@ fn refused_flag_watches_read_fresh_instead_of_certifying_a_quiet_hour() {
 
 #[test]
 fn a_marked_flag_read_refusal_never_publishes_the_held_table() {
+    let _globals = crate::flag_changes::test_globals();
     let mut bytes = flag_scopes();
     let watches = Watches::enabled(16);
     let mut store = FlagStore::new();
@@ -697,6 +713,7 @@ fn a_marked_flag_read_refusal_never_publishes_the_held_table() {
 
 #[test]
 fn a_daily_expiry_mark_refreshes_the_countdown_and_removal_only() {
+    let _globals = crate::flag_changes::test_globals();
     let mut bytes = flag_scopes();
     put(
         &mut bytes,

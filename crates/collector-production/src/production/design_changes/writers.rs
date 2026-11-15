@@ -79,11 +79,17 @@ pub(super) fn release() {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = State::default();
     }
 }
+/// A full claim table grows in the callback; only a failed allocation leaves
+/// the writer unobserved.
 fn room(state: &mut State, additional: usize) -> bool {
     state.required = state
         .required
         .max(state.claims.len().saturating_add(additional));
-    if state.required > state.claims.capacity() {
+    let additional = state.required.saturating_sub(state.claims.len());
+    if state.required > state.claims.capacity()
+        && engine_allocation::advisory(|| engine_allocation::reserve_map(&mut state.claims, additional))
+            .is_err()
+    {
         CLAIM_CAPACITY_REFUSALS.fetch_add(1, Ordering::Relaxed);
         unobserved!();
         return false;
@@ -321,6 +327,9 @@ mod tests {
 
     #[test]
     fn claim_growth_allows_callback_entry_and_revalidates_running_flights() {
+        if !isolated() {
+            return;
+        }
         use std::sync::Barrier;
         prepare(1).unwrap();
         let capacity = WRITERS.get().unwrap().lock().unwrap().claims.capacity();
@@ -353,6 +362,9 @@ mod tests {
     }
     #[test]
     fn prepared_claims_cover_designs_without_callback_growth() {
+        if !isolated() {
+            return;
+        }
         let population = 5;
         prepare(population).unwrap();
         let mut flights = Vec::with_capacity(population);
@@ -382,6 +394,9 @@ mod tests {
 
     #[test]
     fn full_claim_storage_admits_nested_operands_without_growth_and_retains_overflow_demand() {
+        if !isolated() {
+            return;
+        }
         prepare(1).unwrap();
         let capacity = WRITERS.get().unwrap().lock().unwrap().claims.capacity();
         let mut flights = Vec::with_capacity(capacity);
@@ -407,7 +422,30 @@ mod tests {
     }
 
     #[test]
+    fn claims_past_the_prepared_table_grow_in_the_callback() {
+        if !isolated() {
+            return;
+        }
+        prepare(1).unwrap();
+        let capacity = WRITERS.get().unwrap().lock().unwrap().claims.capacity();
+        let mut flights = Vec::with_capacity(capacity + 2);
+        for pointer in 1..=capacity + 2 {
+            let flight = enter(pointer, None, Footprint::Design).unwrap();
+            assert!(flight.admitted());
+            flights.push(flight);
+        }
+        assert!(WRITERS.get().unwrap().lock().unwrap().claims.capacity() >= capacity + 2);
+        for flight in flights.drain(..) {
+            assert!(!flight.finish_with_dependency().0);
+        }
+        assert!(WRITERS.get().unwrap().lock().unwrap().claims.is_empty());
+    }
+
+    #[test]
     fn an_unmatched_full_claim_refuses_without_callback_growth() {
+        if !isolated() {
+            return;
+        }
         prepare(1).unwrap();
         let capacity = WRITERS.get().unwrap().lock().unwrap().claims.capacity();
         let mut flights = Vec::with_capacity(capacity);

@@ -129,7 +129,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("Artwork: {error}");
     }
     let service = Service::new(Arc::new(|event| emit(&event)))?;
-    service.apply_saved_preparation()?;
     if let Err(error) = service.configure_content(&config, false) {
         eprintln!("{error}");
     }

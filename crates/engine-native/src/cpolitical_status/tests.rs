@@ -30,7 +30,7 @@ fn timed_ideas_keep_stored_days_order_and_live_demand() {
     );
     let mut rows = Vec::new();
     let mut tokens = Vec::new();
-    let walk = walk_timed_ideas_growing(
+    let walk = walk_timed_ideas(
         &world.memory(),
         BASE,
         world.game_state(),
@@ -49,21 +49,6 @@ fn timed_ideas_keep_stored_days_order_and_live_demand() {
             b"idea\xff"
         );
     }
-    let short = walk_timed_ideas(
-        &world.memory(),
-        BASE,
-        world.game_state(),
-        &mut rows[..1],
-        &mut tokens[..5],
-    );
-    assert_eq!(
-        short.outcome,
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 7
-        }
-    );
-    assert_eq!(short.required_bytes, 40);
     for country in 1..=4 {
         let status = crate::read::<u64>(
             &world.memory(),
@@ -81,23 +66,7 @@ fn timed_ideas_keep_stored_days_order_and_live_demand() {
             world.put(entry + 16, &(-(ordinal as i32)).to_le_bytes());
         }
     }
-    assert!(rows.len() < 40);
-    assert!(tokens.len() < 200);
-    assert_eq!(
-        walk_timed_ideas(
-            &world.memory(),
-            BASE,
-            world.game_state(),
-            &mut rows[..8],
-            &mut tokens[..40]
-        )
-        .outcome,
-        Outcome::Truncated {
-            len: 8,
-            unread_rows: 32
-        }
-    );
-    let later = walk_timed_ideas_growing(
+    let later = walk_timed_ideas(
         &world.memory(),
         BASE,
         world.game_state(),
@@ -263,9 +232,9 @@ fn native_roster_count_and_precision_survive_without_vanilla_projection() {
     assert_eq!(row.last_election, -400);
     assert_eq!(row.capital, -17);
     assert_eq!(row.ruling_party, Some(44));
-    let mut rows = [cpolitical_party::Row::default(); 8];
-    let mut arena = [0; 32];
-    let walked = reader.parties(&mut rows, &mut arena);
+    let mut rows = vec![cpolitical_party::Row::default(); 8];
+    let mut arena = vec![0; 32];
+    let walked = reader.parties(&mut rows, 0, &mut arena, 0);
     assert_eq!(walked.outcome, Outcome::Rows { len: 5 });
     assert_eq!(walked.required_bytes, 11);
     for (index, expected) in tokens.iter().enumerate() {
@@ -280,24 +249,6 @@ fn native_roster_count_and_precision_survive_without_vanilla_projection() {
         assert_eq!(row.name_default, 1);
         assert_eq!((row.name_len, row.long_name_len), (0, 0));
     }
-    let limited = reader.parties(&mut rows[..2], &mut arena);
-    assert_eq!(
-        limited.outcome,
-        Outcome::Truncated {
-            len: 2,
-            unread_rows: 3
-        }
-    );
-    assert_eq!(limited.required_bytes, 11);
-    let limited = reader.parties(&mut rows, &mut arena[..1]);
-    assert_eq!(
-        limited.outcome,
-        Outcome::Truncated {
-            len: 0,
-            unread_rows: 5
-        }
-    );
-    assert_eq!(limited.required_bytes, 11);
 }
 
 #[test]
@@ -328,9 +279,9 @@ fn renamed_party_keys_are_copied_exactly_and_count_toward_the_arena() {
         bytes: &bytes,
     };
     let reader = Reader::new(&memory, BASE, COUNTRY_POINTER).unwrap();
-    let mut rows = [cpolitical_party::Row::default(); 2];
-    let mut arena = [0; 64];
-    let walked = reader.parties(&mut rows, &mut arena);
+    let mut rows = vec![cpolitical_party::Row::default(); 2];
+    let mut arena = vec![0; 64];
+    let walked = reader.parties(&mut rows, 0, &mut arena, 0);
     assert_eq!(walked.outcome, Outcome::Rows { len: 2 });
     assert_eq!(walked.required_bytes, 2 + 13 + long.len());
     fn text(arena: &[u8], start: usize, len: usize) -> &[u8] {
@@ -347,16 +298,6 @@ fn renamed_party_keys_are_copied_exactly_and_count_toward_the_arena() {
     );
     assert_eq!(text(&arena, rows[1].token_start, rows[1].token_len), b"y");
     assert_eq!(rows[1].name_default, 1);
-    // The keys are part of a row's bytes: a row that does not fit is unread.
-    let limited = reader.parties(&mut rows, &mut arena[..20]);
-    assert_eq!(
-        limited.outcome,
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 1
-        }
-    );
-    assert_eq!(text(&arena, rows[0].token_start, rows[0].token_len), b"y");
     put(&mut bytes, 0x4000 + cpolitical_party::NAME_DEFAULT, [2]);
     let memory = SliceMemory {
         base: COUNTRY_POINTER,
@@ -364,7 +305,7 @@ fn renamed_party_keys_are_copied_exactly_and_count_toward_the_arena() {
     };
     let reader = Reader::new(&memory, BASE, COUNTRY_POINTER).unwrap();
     assert_eq!(
-        reader.parties(&mut rows, &mut arena).outcome,
+        reader.parties(&mut rows, 0, &mut arena, 0).outcome,
         Outcome::Unavailable {
             reason: "political party default name flag is not a boolean"
         }
@@ -381,11 +322,11 @@ fn authenticated_empty_and_unreadable_state_are_distinct_per_table() {
     let reader = Reader::new(&memory, BASE, COUNTRY_POINTER).unwrap();
     assert_eq!(reader.row().unwrap().ruling_party, None);
     assert_eq!(
-        reader.parties(&mut [], &mut []).outcome,
+        reader.parties(&mut Vec::new(), 0, &mut Vec::new(), 0).outcome,
         Outcome::Rows { len: 0 }
     );
     assert_eq!(
-        reader.ideas(&mut [], &mut []).outcome,
+        reader.ideas(&mut Vec::new(), &mut Vec::new()).outcome,
         Outcome::Rows { len: 0 }
     );
     // A byte other than 0 or 1 is true, as the elections predicate tests it.
@@ -397,7 +338,7 @@ fn authenticated_empty_and_unreadable_state_are_distinct_per_table() {
     let reader = Reader::new(&memory, BASE, COUNTRY_POINTER).unwrap();
     assert!(reader.row().unwrap().has_elections);
     assert_eq!(
-        reader.ideas(&mut [], &mut []).outcome,
+        reader.ideas(&mut Vec::new(), &mut Vec::new()).outcome,
         Outcome::Rows { len: 0 }
     );
     array(&mut bytes, STATUS + PARTIES, 0x3800, 1, 1);
@@ -407,7 +348,7 @@ fn authenticated_empty_and_unreadable_state_are_distinct_per_table() {
     };
     let reader = Reader::new(&memory, BASE, COUNTRY_POINTER).unwrap();
     assert!(matches!(
-        reader.parties(&mut [], &mut []).outcome,
+        reader.parties(&mut Vec::new(), 0, &mut Vec::new(), 0).outcome,
         Outcome::Unavailable { .. }
     ));
     put(&mut bytes, STATUS + COUNTRY, 0_u64.to_le_bytes());
@@ -455,22 +396,13 @@ fn active_idea_secondary_base_and_heap_tokens_are_copied_exactly() {
         bytes: &bytes,
     };
     let reader = Reader::new(&memory, BASE, COUNTRY_POINTER).unwrap();
-    let mut rows = [IdeaRow::default(); 2];
-    let mut arena = [0; 128];
+    let mut rows = vec![IdeaRow::default(); 2];
+    let mut arena = vec![0; 128];
     let walk = reader.ideas(&mut rows, &mut arena);
     assert_eq!(walk.outcome, Outcome::Rows { len: 2 });
     assert_eq!(&arena[..8], b"idea_one");
     assert_eq!(&arena[rows[1].token_start..walk.bytes_len], token);
     assert_eq!(rows[1].ordinal, 1);
-    let walk = reader.ideas(&mut rows, &mut arena[..8]);
-    assert_eq!(
-        walk.outcome,
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 1
-        }
-    );
-    assert_eq!(walk.required_bytes, token.len() + 8);
     put(&mut bytes, 0x4000, 0_u64.to_le_bytes());
     let memory = SliceMemory {
         base: COUNTRY_POINTER,
@@ -644,21 +576,16 @@ fn party_leaders_keep_party_and_vector_order_null_parents_and_ids() {
 }
 
 #[test]
-fn party_leaders_truncate_and_count_later_leaders_from_headers() {
-    let (outcome, rows) = walk_leaders(&leader_fixture(), 1);
-    assert_eq!(
-        outcome,
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 2
-        }
-    );
-    assert_eq!(rows[0].character, Some(1482));
-    // No storage: the live total, without reading any leader.
+fn the_party_leader_count_probe_counts_the_live_total_without_reading_a_leader() {
     let mut bytes = leader_fixture();
     put(&mut bytes, LEADERS[1], 0_u64.to_le_bytes());
+    let memory = SliceMemory {
+        base: COUNTRY_POINTER,
+        bytes: &bytes,
+    };
+    let reader = Reader::new(&memory, BASE, COUNTRY_POINTER).unwrap();
     assert_eq!(
-        walk_leaders(&bytes, 0).0,
+        reader.party_leaders_buffer(9, crate::walk::Buffer::Count),
         Outcome::Truncated {
             len: 0,
             unread_rows: 3

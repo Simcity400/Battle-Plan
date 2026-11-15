@@ -11,7 +11,7 @@ function data(count: number) {
   const countries = Array.from({ length: count }, (_, slot) => `mod-country-${slot}`);
   return decodeTrade({ branchId: 'b', decimals: 0, countries,
     countryIdentities: countries.map((tag, slot) => ({ tag, runs: [{ firstHour: 0, lastHour: 2000, slot, countryId: slot + 1 }] })),
-    resources: [], reads: [0], known: [{ firstHour: 0, lastHour: 2000 }], partial: [], warnings: [], flows: [] } as TradeFlowsReply);
+    resources: [], firstHour: 0, lastHour: 2000, known: [{ firstHour: 0, lastHour: 2000 }], partial: [], warnings: [], flows: [] } as TradeFlowsReply);
 }
 function styles(plan: ReturnType<typeof tradeColourPlan>) {
   return new Map<string, CountryStyle>(plan.wanted.map(sample => [nameKey(sample.hour, sample.tag),
@@ -53,7 +53,7 @@ test('reused aliases keep dated native holders separate and pending colours neve
   const trade = decodeTrade({ branchId: 'b', decimals: 0, countries: ['same-tag'],
     countryIdentities: [{ tag: 'same-tag', runs: [{ firstHour: 0, lastHour: 23, slot: 0, countryId: 1 },
       { firstHour: 24, lastHour: 100, slot: 1, countryId: 2 }] }],
-    resources: [], reads: [0], known: [{ firstHour: 0, lastHour: 100 }], partial: [], warnings: [], flows: [] } as TradeFlowsReply);
+    resources: [], firstHour: 0, lastHour: 2000, known: [{ firstHour: 0, lastHour: 100 }], partial: [], warnings: [], flows: [] } as TradeFlowsReply);
   const plan = tradeColourPlan(trade, branch, 80, true);
   assert.deepEqual(plan.wanted.map(sample => sample.hour), [0, 24]);
   const answered = styles(plan);

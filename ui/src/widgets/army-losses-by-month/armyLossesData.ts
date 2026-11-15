@@ -3,7 +3,19 @@ import type { ColumnPeriod } from '../../charts/columns';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import { fixedNumber, formatFixed } from '../../charts/valueAxis.ts';
 import { firstHourOfMonth, formatDate, formatDateTime, gameDate, monthAt, monthIndex, monthNames } from '../../dashboard/calendar.ts';
-import type { ArmyLossesReply, LossArmy } from '../../generated/dashboard';
+import { liveKey } from '../../charts/live.ts';
+import type { LiveValues } from '../../charts/live';
+import type { ArmyLossesReply, LossArmy, LossDesign, LossEquipment, LossManpower, LossView } from './types';
+
+/** An equipment row with its design's names. */
+export type DesignRow = Omit<LossEquipment, 'design'> & LossDesign;
+
+/** The reply with its amounts read: a channel or amount without a value is null, its month then not known. */
+export interface ArmyLossesData extends Omit<ArmyLossesReply, 'manpower' | 'equipment' | 'designs'> {
+  hour: number;
+  manpower: (LossManpower & { losses: [number, number, number] | null })[];
+  equipment: (DesignRow & { amountRaw: string | null })[];
+}
 
 export type Measure = 'manpower' | 'equipment';
 export type ManpowerStack = 'channel' | 'armyGroup';
@@ -19,22 +31,47 @@ export const LEDGER_LABELS: Readonly<Record<Ledger, string>> = {
 export const CHANNELS = [{ key: 'ground', label: 'Ground' }, { key: 'air', label: 'Air' }, { key: 'navy', label: 'Navy' }] as const;
 export const INDEPENDENT = 'independent', UNRESOLVED = 'unresolved', UNCLASSIFIED = 'unclassified', OTHER = 'other';
 
+/** What the chart of `measure` in `ledger` asks: only that measure's months, never every ledger's designs. */
+export function chartView(measure: Measure, ledger: Ledger): LossView {
+  return measure === 'manpower' ? { kind: 'manpower' } : { kind: 'equipment', ledgers: [...LEDGERS[ledger]] };
+}
+
+/** What the drill of `month` asks: its manpower and every ledger's designs, for that month alone. */
+export const monthView = (month: number): LossView => ({ kind: 'month', month });
+
 const isArray = Array.isArray;
 export function validateArmyLosses(value: unknown): ArmyLossesReply {
   const reply = value as ArmyLossesReply;
-  if (!reply || typeof reply.branchId !== 'string' || !Number.isInteger(reply.hour) || typeof reply.tag !== 'string' || typeof reply.absent !== 'boolean'
-    || !isArray(reply.armies) || !isArray(reply.manpower) || !isArray(reply.equipment) || !isArray(reply.emptyMonths) || !isArray(reply.unknownMonths)
-    || !isArray(reply.warnings)
-    || reply.manpower.some(row => !Number.isInteger(row.month) || !isArray(row.losses) || row.losses.length !== 3 || !row.losses.every(Number.isInteger))
-    || reply.equipment.some(row => !Number.isInteger(row.month) || typeof row.amountRaw !== 'string'))
+  if (!reply || typeof reply.tag !== 'string' || typeof reply.absent !== 'boolean'
+    || !isArray(reply.armies) || !isArray(reply.manpower) || !isArray(reply.equipment) || !isArray(reply.designs)
+    || !isArray(reply.emptyMonths) || !isArray(reply.unknownMonths)
+    || !isArray(reply.warnings) || !reply.availability || typeof reply.availability !== 'object'
+    || reply.manpower.some(row => !Number.isInteger(row.month) || typeof row.key !== 'string')
+    || reply.equipment.some(row => !Number.isInteger(row.month) || typeof row.key !== 'string'
+      || !Number.isInteger(row.design) || row.design < 0 || row.design >= reply.designs.length))
     throw new Error('Invalid army losses reply');
   return reply;
+}
+
+/** The reply's structure with its amounts at `hour` from its live cells; a cell without a value is null. */
+export function resolveArmyLosses(reply: ArmyLossesReply, hour: number, values: LiveValues<number>): ArmyLossesData {
+  const whole = (key: string, column: string) => { const value = values.get(liveKey(key, column)); return value === undefined ? null : Math.round(value); };
+  const { designs, ...rest } = reply;
+  return { ...rest, hour,
+    manpower: reply.manpower.map(row => {
+      const losses = CHANNELS.map(channel => whole(row.key, channel.key));
+      return { ...row, losses: losses.every(value => value !== null) ? losses as [number, number, number] : null };
+    }),
+    equipment: reply.equipment.map(({ design, ...row }) => {
+      const amount = whole(row.key, 'amount');
+      return { ...row, ...designs[design], amountRaw: amount === null ? null : String(amount) };
+    }) };
 }
 
 /** The armies whose logs make the country's total: every distinct ordinary army of
  * the country once, whether it has an army group or not. Army groups keep no log
  * of their own, so no parent is ever added beside its armies. */
-export function countedArmies(reply: ArmyLossesReply): ReadonlyMap<string, LossArmy> {
+export function countedArmies(reply: Pick<ArmyLossesData, 'armies'>): ReadonlyMap<string, LossArmy> {
   return new Map(reply.armies.map(army => [army.reference, army]));
 }
 
@@ -63,7 +100,7 @@ const plotted = (raw: bigint, measure: Measure) => measure === 'manpower' ? Numb
  * never written), which is not a known zero. So is a month any counted army's ledger
  * holds unwitnessed amounts for: the others alone are not its total. `limit` folds the
  * smallest parts into Other. Amounts add exactly; only plotting makes them numbers. */
-export function monthBars(reply: ArmyLossesReply, measure: Measure, stack: ManpowerStack | EquipmentStack, ledger: Ledger,
+export function monthBars(reply: ArmyLossesData, measure: Measure, stack: ManpowerStack | EquipmentStack, ledger: Ledger,
   firstHour: number, lastHour: number, limit: number): MonthBars {
   const armies = countedArmies(reply);
   const first = monthOf(firstHour), last = monthOf(lastHour);
@@ -86,6 +123,7 @@ export function monthBars(reply: ArmyLossesReply, measure: Measure, stack: Manpo
     for (const row of reply.manpower) {
       const army = armies.get(row.army);
       if (!army) continue;
+      if (!row.losses) { unknown.add(row.month); continue; }
       known.add(row.month);
       const losses = row.losses.map(value => BigInt(value));
       if (stack === 'channel') CHANNELS.forEach((channel, index) => add(row.month, channel.key, losses[index]));
@@ -99,6 +137,7 @@ export function monthBars(reply: ArmyLossesReply, measure: Measure, stack: Manpo
     for (const row of reply.equipment) {
       const army = armies.get(row.army);
       if (!army || !kinds.includes(row.ledger)) continue;
+      if (row.amountRaw === null) { unknown.add(row.month); continue; }
       known.add(row.month);
       const amount = BigInt(row.amountRaw);
       if (stack === 'type') {
@@ -166,12 +205,12 @@ export function monthTooltip(period: MonthPeriod, parts: readonly Part[], measur
 
 /** One army's retained month: its channels, its ledgers' designs, the ledgers whose amounts
  * were not witnessed, and its exact amount in the chosen ledgers, for the drill. */
-export interface MonthArmy { army: LossArmy; losses: [number, number, number] | null; designs: { name: string; amountRaw: string; ledger: number }[];
+export interface MonthArmy { army: LossArmy; losses: [number, number, number] | null; designs: { name: string; amountRaw: string | null; ledger: number }[];
   unknown: number[]; amount: bigint | null }
 
 /** Every counted army with a retained entry in `month`. Its amount in `kinds` is unknown, never
  * zero, when its own amounts there were not witnessed or no army kept the month there (as `monthBars`). */
-export function monthArmies(reply: ArmyLossesReply, month: number, kinds: readonly number[]): MonthArmy[] {
+export function monthArmies(reply: ArmyLossesData, month: number, kinds: readonly number[]): MonthArmy[] {
   const out = new Map<string, MonthArmy>();
   const entry = (army: LossArmy) => out.get(army.reference)
     ?? (out.set(army.reference, { army, losses: null, designs: [], unknown: [], amount: null }), out.get(army.reference)!);
@@ -179,7 +218,7 @@ export function monthArmies(reply: ArmyLossesReply, month: number, kinds: readon
   let kept = false;
   for (const row of reply.manpower) {
     const army = armies.get(row.army);
-    if (army && row.month === month) entry(army).losses = [row.losses[0], row.losses[1], row.losses[2]];
+    if (army && row.month === month) entry(army).losses = row.losses;
   }
   for (const row of reply.equipment) {
     const army = armies.get(row.army);
@@ -197,8 +236,11 @@ export function monthArmies(reply: ArmyLossesReply, month: number, kinds: readon
     const army = armies.get(row.army);
     if (army && row.month === month) entry(army).unknown.push(row.ledger);
   }
-  return [...out.values()].map(row => ({ ...row, amount: !kept || row.unknown.some(ledger => kinds.includes(ledger)) ? null
-    : row.designs.filter(design => kinds.includes(design.ledger)).reduce((sum, design) => sum + BigInt(design.amountRaw), 0n) }))
+  return [...out.values()].map(row => {
+    const designs = row.designs.filter(design => kinds.includes(design.ledger));
+    return { ...row, amount: !kept || row.unknown.some(ledger => kinds.includes(ledger)) || designs.some(design => design.amountRaw === null) ? null
+      : designs.reduce((sum, design) => sum + BigInt(design.amountRaw!), 0n) };
+  })
     .sort((a, b) => a.army.ordinal - b.army.ordinal);
 }
 

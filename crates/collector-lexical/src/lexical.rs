@@ -327,15 +327,12 @@ pub struct LexicalJob {
     tokens: Vec<TokenPacket>,
     before: WitnessPacket,
     after: WitnessPacket,
-    span_limit: usize,
     spans: usize,
     raw_bytes: u64,
     fault: bool,
+    /// Storage could not be allocated, or a span would end past a `u32` offset.
     overflowed: bool,
-    span_exhausted: bool,
-    required_bytes: usize,
     has_bulk: bool,
-    worker_growth: bool,
     charge: crate::raw_memory::Charge,
     #[cfg(any(test, feature = "test-support"))]
     reconstructions: std::cell::Cell<usize>,
@@ -343,28 +340,7 @@ pub struct LexicalJob {
 
 impl LexicalJob {
     pub fn new() -> Self {
-        let mut job = Self {
-            worker_growth: true,
-            ..Default::default()
-        };
-        job.update_charge();
-        job
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    fn with_capacity(spans: usize, bytes: usize) -> Self {
-        let mut job = Self {
-            bytes: owned_vec(engine_allocation::vec(bytes)),
-            tokens: owned_vec(engine_allocation::vec(spans.saturating_add(1))),
-            // Every completed chunk contains 2048 token terminator reads;
-            // an incomplete chunk stops the capture. This bounds descriptors
-            // using the unchanged logical span budget, including failed reads.
-            chunks: owned_vec(engine_allocation::vec(
-                spans / (TABLE_CHUNK / TOKEN_NAME_STRIDE) + 2,
-            )),
-            span_limit: spans,
-            ..Default::default()
-        };
+        let mut job = Self::default();
         job.update_charge();
         job
     }
@@ -378,13 +354,9 @@ impl LexicalJob {
         });
     }
 
-    pub fn initialized(&self) -> bool {
-        self.worker_growth || self.span_limit != 0
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn capacities(&self) -> (usize, usize) {
-        (self.span_limit, self.bytes.capacity())
+    /// Whether a pass left storage worth reusing.
+    pub fn has_storage(&self) -> bool {
+        self.bytes.capacity() != 0
     }
 
     pub fn clear(&mut self) {
@@ -398,60 +370,17 @@ impl LexicalJob {
         self.raw_bytes = 0;
         self.fault = false;
         self.overflowed = false;
-        self.span_exhausted = false;
-        self.required_bytes = 0;
         self.has_bulk = false;
     }
 
-    pub fn grow_for_next(&self) -> bool {
-        self.overflowed && !self.fault && self.required_bytes <= u32::MAX as usize
-    }
-
-    pub fn grow(&mut self) {
-        if self.span_exhausted {
-            self.span_limit = self.span_limit.max(1).saturating_mul(2);
-        }
-        if self.required_bytes > self.bytes.capacity() {
-            let target = self.required_bytes;
-            let additional = target - self.bytes.len();
-            if engine_allocation::reserve_exact(&mut self.bytes, additional).is_err() {
-                return;
-            }
-        }
-        let tokens = self.span_limit.saturating_add(1);
-        if tokens > self.tokens.capacity() {
-            let additional = tokens - self.tokens.len();
-            if engine_allocation::reserve_exact(&mut self.tokens, additional).is_err() {
-                return;
-            }
-        }
-        let chunks = self.span_limit / (TABLE_CHUNK / TOKEN_NAME_STRIDE) + 2;
-        if chunks > self.chunks.capacity() {
-            let additional = chunks - self.chunks.len();
-            if engine_allocation::reserve_exact(&mut self.chunks, additional).is_err() {
-                return;
-            }
-        }
-        self.update_charge();
-    }
-
     fn failed(&mut self) -> Observation {
-        if self.worker_growth && self.spans == self.span_limit {
-            self.span_limit = self.span_limit.saturating_mul(2).max(self.spans + 1);
-        }
-        if self.spans == self.span_limit {
-            self.span_exhausted = true;
-            self.overflowed = true;
-            Observation::Missing
-        } else {
-            self.spans += 1;
-            self.fault = true;
-            Observation::Failed
-        }
+        self.spans += 1;
+        self.fault = true;
+        Observation::Failed
     }
 
-    /// Preserve RawLog's source-check, logical-span and byte-budget order.
-    /// Native destinations are initialized; failed partial bytes are discarded.
+    /// Preserve RawLog's source-check and storage order. Native destinations
+    /// are initialized; failed partial bytes are discarded.
     #[inline]
     fn take(&mut self, memory: &impl Memory, address: usize, len: usize) -> Observation {
         if self.overflowed {
@@ -470,31 +399,21 @@ impl LexicalJob {
         {
             return self.failed();
         }
-        if self.worker_growth {
-            if self.spans == self.span_limit {
-                self.span_limit = self.span_limit.saturating_mul(2).max(self.spans + 1);
-            }
-            if len > self.bytes.capacity().saturating_sub(self.bytes.len()) {
-                if engine_allocation::reserve(&mut self.bytes, len).is_err() {
-                    self.overflowed = true;
-                    return Observation::Missing;
-                }
-                self.update_charge();
-            }
-        }
-        if self.spans == self.span_limit
-            || self
-                .bytes
-                .len()
-                .checked_add(len)
-                .is_none_or(|end| end > self.bytes.capacity() || end > u32::MAX as usize)
+        let start = self.bytes.len();
+        if start
+            .checked_add(len)
+            .is_none_or(|end| end > u32::MAX as usize)
         {
-            self.span_exhausted = self.spans == self.span_limit;
-            self.required_bytes = self.bytes.len().saturating_add(len);
             self.overflowed = true;
             return Observation::Missing;
         }
-        let start = self.bytes.len();
+        if len > self.bytes.capacity() - start {
+            if engine_allocation::reserve(&mut self.bytes, len).is_err() {
+                self.overflowed = true;
+                return Observation::Missing;
+            }
+            self.update_charge();
+        }
         // Retain the measured fixed-width append behavior of the replaced log.
         match len {
             1 => self.bytes.push(0),
@@ -520,77 +439,42 @@ impl LexicalJob {
     }
 
     fn take_payload(&mut self, memory: &impl Memory, address: usize, len: usize) -> Observation {
-        if self.worker_growth
-            && !self.overflowed
-            && len <= u32::MAX as usize
-            && address != 0
-            && address.checked_add(len).is_some()
-            && crate::raw::is_canonical_range(address, len)
-            && len > self.bytes.capacity().saturating_sub(self.bytes.len())
-        {
-            // Foreign length alone is not allocation evidence. Continue one
-            // native payload observation through successfully copied chunks.
-            let start = self.bytes.len();
-            if start
-                .checked_add(len)
-                .is_none_or(|end| end > u32::MAX as usize)
-            {
-                self.overflowed = true;
-                return Observation::Missing;
-            }
-            let mut scratch = [0u8; 4096];
-            for first in (0..len).step_by(scratch.len()) {
-                let count = (len - first).min(scratch.len());
-                if !memory.copy(address + first, &mut scratch[..count]) {
-                    self.bytes.truncate(start);
-                    return self.failed();
-                }
-                if engine_allocation::reserve(&mut self.bytes, count).is_err() {
-                    self.overflowed = true;
-                    return Observation::Missing;
-                }
-                self.bytes.extend_from_slice(&scratch[..count]);
-            }
-            self.spans += 1;
-            self.span_limit = self.span_limit.max(self.spans);
-            self.raw_bytes += len as u64;
-            self.update_charge();
-            return Observation::Copied(start as u32);
-        }
         if self.overflowed
             || len > u32::MAX as usize
             || address == 0
             || address.checked_add(len).is_none()
             || !crate::raw::is_canonical_range(address, len)
-            || len <= self.bytes.capacity().saturating_sub(self.bytes.len())
+            || len <= self.bytes.capacity() - self.bytes.len()
         {
             return self.take(memory, address, len);
         }
-        if self.spans == self.span_limit {
-            self.span_exhausted = true;
+        // Foreign length alone is not allocation evidence. Continue one
+        // native payload observation through successfully copied chunks.
+        let start = self.bytes.len();
+        if start
+            .checked_add(len)
+            .is_none_or(|end| end > u32::MAX as usize)
+        {
             self.overflowed = true;
             return Observation::Missing;
         }
-        match cpdx_lexer::probe_growth_prefix(
-            memory,
-            address,
-            len,
-            self.bytes.len(),
-            self.bytes.capacity(),
-        ) {
-            Ok(required) => {
-                self.required_bytes = required;
+        let mut scratch = [0u8; 4096];
+        for first in (0..len).step_by(scratch.len()) {
+            let count = (len - first).min(scratch.len());
+            if !memory.copy(address + first, &mut scratch[..count]) {
+                self.bytes.truncate(start);
+                return self.failed();
+            }
+            if engine_allocation::reserve(&mut self.bytes, count).is_err() {
                 self.overflowed = true;
-                Observation::Missing
+                return Observation::Missing;
             }
-            Err(_) => {
-                // An unreadable subset proves that the original full request
-                // failed. Preserve that terminal failure for owned replay; it
-                // must not become raw overflow and trigger a typed live retry.
-                self.required_bytes = 0;
-                self.failed()
-            }
+            self.bytes.extend_from_slice(&scratch[..count]);
         }
+        self.spans += 1;
+        self.raw_bytes += len as u64;
+        self.update_charge();
+        Observation::Copied(start as u32)
     }
 
     fn witness(&self, packet: WitnessPacket) -> Option<cpdx_lexer::PreparedWitness> {
@@ -710,21 +594,22 @@ impl LexicalJob {
             "Lexical",
             crate::raw::Growth::Raw(crate::raw::RawGrowth {
                 spans: self.spans,
-                span_capacity: self.span_limit,
+                span_capacity: self.spans,
                 bytes: self.bytes.len(),
                 byte_capacity: self.bytes.capacity(),
                 faults: crate::raw::Faults::Packet([self.fault]),
-                growing: self.grow_for_next(),
+                growing: false,
                 first_failed_address: first_failed.map(|value| value.0),
                 first_failed_length: first_failed.map(|value| value.1),
                 first_failed_mask: first_failed.map(|_| 1),
                 last_address: last.map(|value| value.0),
                 last_length: last.map(|value| value.1),
                 last_mask: last.map(|_| 1),
-                span_capacity_scope: Some("logical observation budget; no Span vector in packet"),
+                span_capacity_scope: Some("no span budget; no Span vector in packet"),
                 packet_inline_bytes_excluded_from_vector_accounting: Some(
                     std::mem::size_of::<Self>(),
                 ),
+                refusal: None,
             }),
         );
     }
@@ -847,7 +732,16 @@ impl LexicalJob {
             return walked;
         }
         let log = self.reconstruct();
-        let recorded = crate::raw::Recorded::build(&log);
+        let recorded = match crate::raw::Recorded::build(&log) {
+            Ok(recorded) => recorded,
+            Err(reason) => {
+                return cpdx_lexer::Walk {
+                    outcome: Outcome::Unavailable { reason },
+                    text_len: 0,
+                    text_required: 0,
+                };
+            }
+        };
         let walked = cpdx_lexer::walk(&recorded, base, rows, text);
         // Recorded repeats its final exact observation after exhaustion. If
         // acquisition stopped before the closing witness, a short destination
@@ -939,25 +833,18 @@ fn copy_pass(memory: &impl Memory, base: usize, job: &mut LexicalJob) {
     let Some(witness) = witness else { return };
     job.has_bulk = true;
     let total = witness.maximum() as usize + 1;
-    if job.worker_growth {
-        // Reverse-table growth recomputes its maximum. Retain this original
-        // writer-free witness.
-        let chunks = total.div_ceil(TABLE_CHUNK / TOKEN_NAME_STRIDE);
-        if engine_allocation::reserve(&mut job.tokens, total).is_err()
-            || engine_allocation::reserve(&mut job.chunks, chunks).is_err()
-        {
-            job.overflowed = true;
-            return;
-        }
-        job.update_charge();
+    // Reverse-table growth recomputes its maximum. Retain this original
+    // writer-free witness.
+    let chunks = total.div_ceil(TABLE_CHUNK / TOKEN_NAME_STRIDE);
+    if engine_allocation::reserve(&mut job.tokens, total).is_err()
+        || engine_allocation::reserve(&mut job.chunks, chunks).is_err()
+    {
+        job.overflowed = true;
+        return;
     }
+    job.update_charge();
     let mut first = 0;
     while first < total {
-        if job.chunks.len() == job.chunks.capacity() {
-            job.span_exhausted = true;
-            job.overflowed = true;
-            return;
-        }
         let count = (total - first).min(TABLE_CHUNK / TOKEN_NAME_STRIDE);
         let Some(address) = witness.table().checked_add(first * TOKEN_NAME_STRIDE) else {
             return;
@@ -968,11 +855,6 @@ fn copy_pass(memory: &impl Memory, base: usize, job: &mut LexicalJob) {
             return;
         }
         for index in 0..count {
-            if job.tokens.len() == job.tokens.capacity() {
-                job.span_exhausted = true;
-                job.overflowed = true;
-                return;
-            }
             let header_address = address + index * TOKEN_NAME_STRIDE;
             let header = match bulk {
                 Observation::Copied(start) => {
@@ -997,15 +879,6 @@ fn copy_pass(memory: &impl Memory, base: usize, job: &mut LexicalJob) {
 }
 
 /// Acquire one refresh into its owned payload.
-pub fn copy_lexical_refresh_growing(
-    memory: &impl Memory,
-    ctx: LexicalCopyContext,
-    job: &mut LexicalJob,
-) -> LexicalCopyReport {
-    job.worker_growth = true;
-    copy_lexical_refresh(memory, ctx, job)
-}
-
 pub fn copy_lexical_refresh(
     memory: &impl Memory,
     ctx: LexicalCopyContext,
@@ -1013,9 +886,7 @@ pub fn copy_lexical_refresh(
 ) -> LexicalCopyReport {
     let started = qpc();
     copy_pass(memory, ctx.base, job);
-    if job.worker_growth {
-        job.update_charge();
-    }
+    job.update_charge();
     LexicalCopyReport {
         raw_ok: !job.overflowed,
         copy_ticks: [elapsed(started)],
@@ -1237,7 +1108,7 @@ pub mod lexical_test_kit {
         text: usize,
     ) -> impl FnOnce() -> bool + Send + 'static {
         let memory = KitMemory::fixture();
-        let mut packet = LexicalJob::with_capacity(32, 512);
+        let mut packet = LexicalJob::new();
         let report = copy_lexical_refresh(&memory, LexicalCopyContext { base: BASE }, &mut packet);
         let expected = packet.complete_output_sizes();
         let mut captured = Captured::with_capacities(&Capacities { rows, text });
@@ -1309,11 +1180,18 @@ mod tests {
         }
     }
 
+    /// A pooled packet, holding `bytes` of storage from an earlier pass.
+    fn recycled(bytes: usize) -> LexicalJob {
+        let mut job = LexicalJob::new();
+        engine_allocation::reserve_exact(&mut job.bytes, bytes).unwrap();
+        job.update_charge();
+        job
+    }
+
     fn assert_packet_trace(
         memory: lexical_test_kit::KitMemory,
         faults: &[usize],
         replacements: &[(usize, Vec<u8>)],
-        spans: usize,
         bytes: usize,
     ) -> LexicalJob {
         let traced = |inner| TracedMemory {
@@ -1324,10 +1202,10 @@ mod tests {
         };
         let reference_memory = traced(memory.clone());
         let packet_memory = traced(memory);
-        let mut reference = RawLog::<1>::new(spans, bytes);
+        let mut reference = RawLog::<1>::new(0, 0);
         let terminal =
             scalar_reference::copy_pass(&reference_memory, lexical_test_kit::BASE, &mut reference);
-        let mut packet = LexicalJob::with_capacity(spans, bytes);
+        let mut packet = recycled(bytes);
         copy_pass(&packet_memory, lexical_test_kit::BASE, &mut packet);
         assert_eq!(
             *packet_memory.calls.borrow(),
@@ -1347,13 +1225,12 @@ mod tests {
         assert_eq!(reconstructed.fault, reference.fault);
         assert_eq!(reconstructed.has_bulk, reference.has_bulk);
         assert_eq!(packet.overflowed, reference.overflowed);
-        assert_eq!(packet.grow_for_next(), reference.grow_for_next());
         for (rows, bytes) in [(0, 0), (1, 0), (1, 2), (2, 4), (3, 21), (4, 128)] {
             let mut expected_rows = vec![cpdx_lexer::Row::default(); rows];
             let mut actual_rows = expected_rows.clone();
             let mut expected_text = vec![0xcc; bytes];
             let mut actual_text = expected_text.clone();
-            let recorded = crate::raw::Recorded::build(&reference);
+            let recorded = crate::raw::Recorded::build(&reference).unwrap();
             let mut expected = cpdx_lexer::walk(
                 &recorded,
                 lexical_test_kit::BASE,
@@ -1377,19 +1254,6 @@ mod tests {
                 "written arena including discarded prefix"
             );
         }
-        if packet.grow_for_next() {
-            let prior_spans = packet.span_limit;
-            let prior_bytes = packet.bytes.capacity();
-            let span_exhausted = packet.span_exhausted;
-            packet.grow();
-            reference.grow();
-            if span_exhausted {
-                assert!(packet.span_limit > prior_spans);
-                assert!(reference.spans.capacity() > prior_spans);
-            }
-            assert!(packet.bytes.capacity() >= prior_bytes);
-            assert!(packet.bytes.capacity() <= reference.bytes.capacity());
-        }
         packet
     }
 
@@ -1407,23 +1271,20 @@ mod tests {
     }
 
     #[test]
-    fn packet_matches_scalar_at_every_fault_and_tight_pool_boundary() {
+    fn packet_matches_scalar_at_every_fault_and_retained_byte_capacity() {
         use lexical_test_kit::KitMemory;
-        assert_packet_trace(KitMemory::fixture(), &[], &[], 32, 512);
+        assert_packet_trace(KitMemory::fixture(), &[], &[], 0);
         for fault in 0..11 {
-            assert_packet_trace(KitMemory::fixture(), &[fault], &[], 32, 512);
+            assert_packet_trace(KitMemory::fixture(), &[fault], &[], 0);
         }
         // The first failed bulk switches to exact headers. Fail every later
         // observation too, including all closing-witness components.
         for fault in 4..14 {
-            assert_packet_trace(KitMemory::fixture(), &[3, fault], &[], 32, 512);
-        }
-        for spans in 0..16 {
-            assert_packet_trace(KitMemory::fixture(), &[], &[], spans, 512);
-            assert_packet_trace(KitMemory::fixture(), &[3], &[], spans, 512);
+            assert_packet_trace(KitMemory::fixture(), &[3, fault], &[], 0);
         }
         for bytes in 0..264 {
-            assert_packet_trace(KitMemory::fixture(), &[], &[], 32, bytes);
+            assert_packet_trace(KitMemory::fixture(), &[], &[], bytes);
+            assert_packet_trace(KitMemory::fixture(), &[3], &[], bytes);
         }
     }
 
@@ -1437,8 +1298,7 @@ mod tests {
                 KitMemory::fixture(),
                 &[],
                 &[(ordinal, 1_u32.to_le_bytes().to_vec())],
-                32,
-                512,
+                0,
             );
             assert!(job.complete_output_sizes().is_none());
             let walked = job.decode(BASE, &mut [cpdx_lexer::Row::default(); 3], &mut [0; 32]);
@@ -1447,7 +1307,7 @@ mod tests {
         let mut changed = KitMemory::fixture().header_before;
         let offset = witness_offset(TOKEN_NAMES_RVA);
         changed[offset..offset + 8].copy_from_slice(&0x20010000_u64.to_le_bytes());
-        let job = assert_packet_trace(KitMemory::fixture(), &[], &[(9, changed.to_vec())], 32, 512);
+        let job = assert_packet_trace(KitMemory::fixture(), &[], &[(9, changed.to_vec())], 0);
         assert!(job.complete_output_sizes().is_none());
         let walked = job.decode(BASE, &mut [cpdx_lexer::Row::default(); 3], &mut [0; 32]);
         assert_eq!(
@@ -1460,7 +1320,7 @@ mod tests {
 
     #[test]
     fn packet_normal_complete_decode_never_reconstructs_a_recorded_index() {
-        let mut job = LexicalJob::with_capacity(32, 512);
+        let mut job = LexicalJob::new();
         copy_pass(
             &lexical_test_kit::KitMemory::fixture(),
             lexical_test_kit::BASE,
@@ -1489,7 +1349,7 @@ mod tests {
         use lexical_test_kit::KitMemory;
         let mut nonzero = KitMemory::fixture();
         nonzero.table[2] = 1;
-        let job = assert_packet_trace(nonzero, &[], &[], 32, 512);
+        let job = assert_packet_trace(nonzero, &[], &[], 0);
         assert!(
             job.after.again.start().is_some(),
             "nonzero byte does not stop capture"
@@ -1500,7 +1360,7 @@ mod tests {
         );
         let mut malformed = KitMemory::fixture();
         malformed.table[48..56].copy_from_slice(&100u64.to_le_bytes());
-        let job = assert_packet_trace(malformed, &[], &[], 32, 512);
+        let job = assert_packet_trace(malformed, &[], &[], 0);
         assert_eq!(job.after, WitnessPacket::default());
         let walked = job.decode(
             lexical_test_kit::BASE,
@@ -1526,7 +1386,7 @@ mod tests {
                 reason: "lexer token string header invalid"
             }
         );
-        let job = assert_packet_trace(KitMemory::fixture(), &[3], &[], 32, 512);
+        let job = assert_packet_trace(KitMemory::fixture(), &[3], &[], 0);
         assert!(
             job.fault,
             "successful scalar fallback never clears failed bulk"
@@ -1543,7 +1403,7 @@ mod tests {
         heap_source(&mut header_alias, 0, 0x20000020, 32);
         let mut replacement = vec![0; 32];
         KitMemory::inline(&mut replacement, 0, b"changed");
-        let job = assert_packet_trace(header_alias, &[], &[(5, replacement)], 32, 1024);
+        let job = assert_packet_trace(header_alias, &[], &[(5, replacement)], 1024);
         assert!(
             job.fast_decode(&mut [cpdx_lexer::Row::default(); 3], &mut [0; 128])
                 .is_none()
@@ -1553,7 +1413,7 @@ mod tests {
             heap_source(&mut memory, 0, source, len);
             // The terminator is an independent exact source, potentially
             // outside KitMemory's tiny regions; explicitly provide its byte.
-            let job = assert_packet_trace(memory, &[], &[(4, vec![0])], 32, 1024);
+            let job = assert_packet_trace(memory, &[], &[(4, vec![0])], 1024);
             assert!(
                 job.fast_decode(&mut [cpdx_lexer::Row::default(); 3], &mut [0; 128])
                     .is_none()
@@ -1571,7 +1431,7 @@ mod tests {
         // one-byte payload. Token 2 then reuses both exact keys yet again.
         heap_source(&mut shared, 1, 0x30000000, 0);
         heap_source(&mut shared, 2, 0x30000000, 1);
-        let job = assert_packet_trace(shared, &[], &[(6, vec![0]), (8, vec![b'y'])], 32, 512);
+        let job = assert_packet_trace(shared, &[], &[(6, vec![0]), (8, vec![b'y'])], 0);
         let mut rows = [cpdx_lexer::Row::default(); 3];
         let mut text = [0; 16];
         let before = job.reconstructions.get();
@@ -1580,8 +1440,8 @@ mod tests {
         assert_eq!(&text[..2], b"xy");
         assert_eq!(job.reconstructions.get(), before);
         let log = job.reconstruct();
-        let first = crate::raw::Recorded::build(&log);
-        let second = crate::raw::Recorded::build(&log);
+        let first = crate::raw::Recorded::build(&log).unwrap();
+        let second = crate::raw::Recorded::build(&log).unwrap();
         let mut one = [0];
         let mut two = [0];
         for expected in [b'x', 0, b'y', b'y'] {
@@ -1601,7 +1461,7 @@ mod tests {
             KitMemory::inline(&mut memory.table, token, b"a");
         }
         memory.header_before = KitMemory::header(2048, 0x20000000, 2049);
-        let mut job = assert_packet_trace(memory, &[], &[], 4096, 100_000);
+        let mut job = assert_packet_trace(memory, &[], &[], 100_000);
         assert_eq!(job.chunks.len(), 2);
         assert_eq!(job.chunks[1].count, 1);
         let log = job.reconstruct();
@@ -1650,7 +1510,7 @@ mod tests {
             // token1's independent terminator is ordinal6.
             replacements: vec![(6, vec![0])],
         };
-        let mut job = LexicalJob::with_capacity(32, 16384);
+        let mut job = recycled(16384);
         copy_pass(&memory, BASE, &mut job);
         assert!(!job.fault && !job.overflowed);
         assert!(job.complete_output_sizes().is_none());
@@ -1668,7 +1528,7 @@ mod tests {
     }
 
     #[test]
-    fn unacquired_huge_payload_requires_readable_prefix_before_any_growth() {
+    fn unacquired_huge_payload_grows_only_through_its_readable_prefix() {
         use lexical_test_kit::{BASE, KitMemory};
         const HEAP: usize = 0x30000000;
         const DECLARED: usize = 1 << 30;
@@ -1702,32 +1562,24 @@ mod tests {
                 readable,
                 probes: std::cell::Cell::new(0),
             };
-            let mut job = LexicalJob::with_capacity(32, 512);
+            let mut job = LexicalJob::new();
             let mut capacities = Capacities { rows: 3, text: 32 };
             let mut captured = Captured::with_capacities(&capacities);
             for attempt in 0..3 {
                 memory.probes.set(0);
                 copy_pass(&memory, BASE, &mut job);
-                let may_grow = readable != 0 && attempt == 0;
-                assert_eq!(job.grow_for_next(), may_grow);
-                assert_eq!(job.overflowed, may_grow);
-                assert_eq!(job.fault, !may_grow);
-                assert_eq!(
-                    memory.probes.get(),
-                    if readable == 0 || attempt == 0 { 1 } else { 2 }
-                );
+                // The payload is copied chunk by chunk, so the unreadable one
+                // fails it after at most one readable chunk is held.
+                assert!(job.fault && !job.overflowed);
+                assert_eq!(memory.probes.get(), if readable == 0 { 1 } else { 2 });
+                assert!(job.bytes.capacity() < 4 * 4096);
                 assert!(matches!(
                     job.decode(BASE, &mut [cpdx_lexer::Row::default(); 3], &mut [0; 32])
                         .outcome,
                     Outcome::Unavailable { .. }
                 ));
-                // Repeated recycle calls cannot increase a failed capture's pool.
-                job.grow();
-                let allocated = job.bytes.capacity();
-                job.grow();
-                assert_eq!(job.bytes.capacity(), allocated);
-                assert_eq!(allocated, if readable == 0 { 512 } else { 4096 });
 
+                let may_grow = readable != 0 && attempt == 0;
                 memory.probes.set(0);
                 captured.capture(&memory, BASE, 0, 0, true);
                 assert_eq!(
@@ -1748,37 +1600,22 @@ mod tests {
     }
 
     #[test]
-    fn packet_invalid_addresses_and_default_budget_decline_without_native_reads() {
+    fn packet_invalid_addresses_fail_without_native_reads() {
         let memory = TracedMemory {
             inner: lexical_test_kit::KitMemory::fixture(),
             calls: Default::default(),
             faults: vec![],
             replacements: vec![],
         };
-        let mut empty = LexicalJob::default();
-        copy_pass(&memory, lexical_test_kit::BASE, &mut empty);
-        assert!(!empty.initialized() && empty.overflowed);
-        assert!(memory.calls.borrow().is_empty());
-        assert_eq!(
-            (
-                empty.bytes.capacity(),
-                empty.tokens.capacity(),
-                empty.chunks.capacity()
-            ),
-            (0, 0, 0)
-        );
         for source in [0, usize::MAX, 0x0000_8000_0000_0000] {
-            for spans in [0, 1, 8] {
-                let mut job = LexicalJob::with_capacity(spans, 128);
-                let mut raw = RawLog::<1>::new(spans, 128);
-                let result = job.take(&memory, source, 4);
-                let expected = raw.take(&memory, source, 4, 1);
-                assert_eq!(result.start(), expected);
-                assert_eq!(job.spans, raw.spans.len());
-                assert_eq!([job.fault], raw.fault);
-                assert_eq!(job.overflowed, raw.overflowed);
-                assert_eq!(job.grow_for_next(), raw.grow_for_next());
-            }
+            let mut job = LexicalJob::new();
+            let mut raw = RawLog::<1>::new(0, 0);
+            let result = job.take(&memory, source, 4);
+            let expected = raw.take(&memory, source, 4, 1);
+            assert_eq!(result.start(), expected);
+            assert_eq!(job.spans, raw.spans.len());
+            assert_eq!([job.fault], raw.fault);
+            assert_eq!(job.overflowed, raw.overflowed);
         }
         assert!(memory.calls.borrow().is_empty());
         assert_eq!(
@@ -1791,47 +1628,32 @@ mod tests {
     fn packet_vector_lifetime_charge_survives_clear_and_releases_on_drop() {
         use crate::raw_memory::{Capacity, Charge, Tracker, vector_bytes};
         static LOCAL: Tracker = Tracker::new();
-        let mut job = LexicalJob::with_capacity(32, 512);
+        let mut job = LexicalJob::new();
         job.charge = Charge::empty_on(&LOCAL);
         job.update_charge();
-        let expected = Capacity {
-            payload_vectors: vector_bytes(&job.bytes),
-            auxiliary_vectors: vector_bytes(&job.tokens) + vector_bytes(&job.chunks),
-            ..Default::default()
-        };
-        assert_eq!(LOCAL.snapshot().current, expected);
-        let charged = LOCAL.snapshot();
+        assert_eq!(LOCAL.snapshot().current, Capacity::default());
         copy_pass(
             &lexical_test_kit::KitMemory::fixture(),
             lexical_test_kit::BASE,
             &mut job,
         );
-        assert_eq!(LOCAL.snapshot(), charged);
-        job.clear();
-        assert_eq!(LOCAL.snapshot(), charged);
-        let memory = lexical_test_kit::KitMemory::fixture();
-        for _ in 0..=job.span_limit {
-            job.take(&memory, lexical_test_kit::BASE + WRITER_FLAG_RVA.0, 4);
-        }
-        assert!(job.grow_for_next());
-        assert_eq!(
-            LOCAL.snapshot(),
-            charged,
-            "overflow performs no accounting update"
-        );
-        job.grow();
         let grown = Capacity {
             payload_vectors: vector_bytes(&job.bytes),
             auxiliary_vectors: vector_bytes(&job.tokens) + vector_bytes(&job.chunks),
             ..Default::default()
         };
-        assert_eq!(LOCAL.snapshot().current, grown);
-        assert!(grown.auxiliary_vectors > expected.auxiliary_vectors);
+        assert_eq!(
+            LOCAL.snapshot().current,
+            grown,
+            "the pass charges its growth"
+        );
+        assert!(grown.auxiliary_vectors > 0);
+        let charged = LOCAL.snapshot();
         job.clear();
+        assert_eq!(LOCAL.snapshot(), charged);
+        let memory = lexical_test_kit::KitMemory::fixture();
         let required = job.bytes.capacity() + 1;
         job.take(&memory, 0x20000000, required);
-        assert!(job.grow_for_next());
-        job.grow();
         assert_eq!(
             LOCAL.snapshot().current.payload_vectors,
             vector_bytes(&job.bytes)
@@ -1982,32 +1804,11 @@ mod tests {
             if log.take(memory, end, 1, 0x01).is_none() {
                 return false;
             }
-            if len != 0 && capacity != msvc_string::INLINE_CAPACITY {
-                if len > log.bytes.capacity().saturating_sub(log.bytes.len())
-                    && log.spans.len() < log.spans.capacity()
-                    && cpdx_lexer::probe_growth_prefix(
-                        memory,
-                        source,
-                        len,
-                        log.bytes.len(),
-                        log.bytes.capacity(),
-                    )
-                    .is_err()
-                {
-                    log.spans.push(crate::raw::Span {
-                        addr: source,
-                        len: len as u32,
-                        ok: false,
-                        mask: 1,
-                        start: 0,
-                        bulk: false,
-                    });
-                    log.fault = [true];
-                    return false;
-                }
-                if log.take(memory, source, len, 0x01).is_none() {
-                    return false;
-                }
+            if len != 0
+                && capacity != msvc_string::INLINE_CAPACITY
+                && log.take(memory, source, len, 0x01).is_none()
+            {
+                return false;
             }
             // The replay validates the terminator byte itself from the recorded
             // spans; identical bytes give the identical verdict.
@@ -2273,7 +2074,7 @@ mod tests {
         copy_pass(&memory, kit::BASE, &mut job);
         assert!(job.has_bulk);
         let log = job.reconstruct();
-        let recorded = crate::raw::Recorded::build(&log);
+        let recorded = crate::raw::Recorded::build(&log).unwrap();
         let chunk = log
             .spans
             .iter()
@@ -2334,18 +2135,6 @@ mod tests {
     }
 
     #[test]
-    fn staging_overflow_falls_back_to_typed_walk() {
-        use super::lexical_test_kit as kit;
-        let memory = kit::KitMemory::fixture();
-        let ctx = LexicalCopyContext { base: kit::BASE };
-        let mut tiny = LexicalJob::with_capacity(8, 8);
-        let report = copy_lexical_refresh(&memory, ctx, &mut tiny);
-        assert!(!report.raw_ok);
-        assert!(tiny.overflowed);
-        assert!(tiny.grow_for_next());
-    }
-
-    #[test]
     fn live_lexical_demand_and_same_payload_growth_keep_mod_dictionary() {
         use super::lexical_test_kit as kit;
         let mut job = LexicalJob::default();
@@ -2362,28 +2151,30 @@ mod tests {
             capacity.presize(&memory, kit::BASE, 0).unwrap();
             assert!(capacity.rows >= count && capacity.text >= count * 15);
             assert!(
-                copy_lexical_refresh_growing(
-                    &memory,
-                    LexicalCopyContext { base: kit::BASE },
-                    &mut job
-                )
-                .raw_ok
+                copy_lexical_refresh(&memory, LexicalCopyContext { base: kit::BASE }, &mut job)
+                    .raw_ok
             );
             captured.decode_lexical_payload(kit::BASE, &job, &mut [0]);
             assert_eq!(captured.rows.outcome, Outcome::Rows { len: count });
             assert_eq!(captured.text.len, count * 15);
             assert_eq!(captured.rows.rows[count - 1].token, count as u32 - 1);
-            assert!(job.initialized());
-            assert!(!job.grow_for_next());
+            assert!(job.has_storage());
+            assert!(!job.overflowed);
         }
     }
 
     #[test]
-    fn lexical_cold_storage_is_provisioned_without_content_guesses() {
+    fn lexical_cold_storage_holds_no_content_guesses() {
         let job = LexicalJob::new();
-        assert!(job.initialized());
-        assert_eq!(job.capacities(), (0, 0));
-        assert_eq!((job.tokens.capacity(), job.chunks.capacity()), (0, 0));
+        assert!(!job.has_storage());
+        assert_eq!(
+            (
+                job.bytes.capacity(),
+                job.tokens.capacity(),
+                job.chunks.capacity()
+            ),
+            (0, 0, 0)
+        );
         let capacity = Capacities::default();
         assert_eq!((capacity.rows, capacity.text), (0, 0));
     }

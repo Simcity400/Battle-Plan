@@ -15,9 +15,9 @@ test('live meters animate only when their consumer opts into a sweep', () => {
   assert.match(swept, /class="progress-meter is-live has-sweep"/);
   const css = readFileSync(new URL('./meter.css', import.meta.url), 'utf8');
   const liveRules = css.match(/[^{}]*\.is-live[^{}]*\{[^{}]*\}/g)!;
-  assert.equal(liveRules.length, 2);
+  assert.equal(liveRules.length, 3);
   for (const rule of liveRules) assert.match(rule.split('{')[0], /\.is-live\.has-sweep/);
-  assert.match(liveRules[1], /data-motion='reduced'.*animation:none/);
+  assert.match(liveRules[2], /data-motion='reduced'.*content:none/);
 });
 
 test('vertical meters fill downward and place their milestones along the track', () => {

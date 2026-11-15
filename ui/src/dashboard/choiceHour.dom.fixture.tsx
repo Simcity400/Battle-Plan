@@ -1,0 +1,107 @@
+/** Four followed panels held unchanged (one push at hour 100, never another) while the head plays on across an hourly
+ * humans group: POL, GER and MOD join it at 125, and its history is not recorded over 110..120. Each panel's rows are
+ * chosen at the hour its values are current through, moved only where the group changes (`useChoiceHour`). */
+import { useMemo } from 'react';
+import { createRoot } from 'react-dom/client';
+import type { Root } from 'react-dom/client';
+import { useChoiceHour } from './atHead';
+import { countryMatch, countryMatchChangeHours, membershipUnrecordedAt } from './groups';
+import { validateMarketReply } from './market';
+import type { MarketAt } from './market';
+import type { CountryGroupReply, LeaseTerms } from '../generated/dashboard';
+import { exilesAt } from '../widgets/governments-in-exile/governmentsInExileData';
+import { balanceRows } from '../widgets/balance-of-power/balanceOfPowerData';
+import { occupiedRows } from '../widgets/occupied-states/occupiedStatesData';
+import type { OccupiedStatesReply } from '../widgets/occupied-states/occupiedStatesData';
+import { agreementRows } from '../widgets/lend-lease-agreements/agreementsData';
+
+const native = window.requestAnimationFrame.bind(window);
+const frame = () => new Promise<void>(resolve => native(() => resolve()));
+const PUSHED = 100;
+
+class Clock {
+  position = PUSHED;
+  private readonly frames = new Set<() => void>();
+  getSnapshot = () => ({ position: this.position, hour: this.position, fraction: 0, playing: false, hoursPerSecond: 1, sequence: 0, seekSequence: 0,
+    bounds: { firstHour: 0, lastHour: 200 } });
+  getHour = () => this.position;
+  subscribe = () => () => {};
+  subscribeFrame = (listener: () => void) => { this.frames.add(listener); return () => { this.frames.delete(listener); }; };
+  seek(hour: number) { this.position = hour; for (const listener of [...this.frames]) listener(); }
+}
+
+const humans = { kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false } as const;
+const tags = ['POL', 'GER', 'MOD', 'ENG'];
+const groups: CountryGroupReply = { branchId: '1', warnings: [], humans: ['POL', 'GER', 'MOD'].map(tag => ({ tag, firstHour: 125, lastHour: 200 })),
+  factions: [], wars: [], warStarts: [], capitulations: [], identityChanges: [],
+  countryIdentities: tags.map((tag, slot) => ({ tag, identities: [{ firstHour: 0, lastHour: 200, slot, countryId: slot + 1 }] })),
+  unobserved: { humans: [{ firstHour: 110, lastHour: 120 }], factions: [], wars: [] } };
+// The panels, each pushed once at 100 and held: the same objects at every hour.
+const exiles = { exiles: [{ id: '7', tag: 'POL', host: null }], hour: PUSHED } as never;
+const balances = { balances: [{ ordinal: 0, token: 'guild', name: null, range: null, trending: null, members: [{ tag: 'MOD' }] }], hour: PUSHED } as never;
+const occupied = { states: [{ state: 1, occupier: 'GER', occupied: 'ENG' }] } as unknown as OccupiedStatesReply;
+const lease = (key: string, giver: string, receiver: string): LeaseTerms => ({ key, id: key.padStart(16, '0'), giver, receiver, revision: '0', activeSince: 10,
+  lastDelivery: 0, monthly: [{ variant: '6', name: null, amountRaw: '500000' }], percentage: [], once: [], delivered: [], sunk: [], fuelDailyRaw: '0', fuelPercentageRaw: '0', lastFuelDeliveredRaw: '0' });
+const market: MarketAt = { ...validateMarketReply({ branchId: '1', offers: null, contracts: null, purchasesMissing: null, unattributed: 0, warnings: [], icons: [],
+  variants: [{ id: '6', hour: 50, known: true, token: 'tank', name: 'Tank', typeName: null, nameUnknown: null, icon: null, iconUnknown: null }],
+  agreements: [lease('1', 'GER', 'ENG')] }), hour: PUSHED };
+
+let clock = new Clock();
+/** The followed entry as the store holds it: the hour its panel was pushed at and the hour its values are through. A
+ * panel landed again unchanged at another hour moves both and tells only the live listeners (`landPanel`). */
+const entry = { hour: PUSHED, through: PUSHED };
+const live = new Set<() => void>();
+const watchLive = (changed: () => void) => { live.add(changed); return () => { live.delete(changed); }; };
+const tellLive = () => { for (const changed of [...live]) changed(); };
+let renders = 0;
+
+/** What each widget would show: its rows' keys, the group's unavailable state, or "none". */
+function Panels() {
+  renders++;
+  const match = useMemo(() => countryMatch(humans, [], groups, 200), []);
+  const at = useChoiceHour(clock as never, true, () => entry.hour, () => entry.through, countryMatchChangeHours(match.matches), watchLive);
+  const unrecorded = (hour: number) => membershipUnrecordedAt(humans, groups, hour);
+  const shown = (view: { rows: readonly { key: string }[]; membership: string | null }) =>
+    view.rows.length ? view.rows.map(row => row.key).join(',') : view.membership ?? 'none';
+  const exile = shown(exilesAt({ ...(exiles as { exiles: [] }), hour: at } as never, match.matches, unrecorded));
+  const balance = shown(balanceRows({ ...(balances as { balances: [] }), hour: at } as never, match.matches, unrecorded));
+  const state = shown(occupiedRows(occupied, tag => match.matches(tag, at), 'occupier', unrecorded(at)));
+  const agreement = shown(agreementRows({ ...market, hour: at }, undefined, 'sent', match.matches, false, unrecorded));
+  return <output data-at={at}>{JSON.stringify({ exile, balance, state, agreement })}</output>;
+}
+
+let root: Root | null = null;
+let host: HTMLDivElement | null = null;
+
+export const fixture = {
+  async mount() {
+    root?.unmount(); host?.remove();
+    clock = new Clock(); entry.hour = PUSHED; entry.through = PUSHED; renders = 0;
+    host = document.body.appendChild(document.createElement('div'));
+    root = createRoot(host);
+    root.render(<Panels />);
+    for (let at = 0; at < 4; at++) await frame();
+  },
+  /** The head and the panel's values reach `hour`; no panel is pushed. */
+  async play(hour: number) {
+    clock.seek(hour);
+    entry.through = hour;
+    tellLive();
+    for (let at = 0; at < 4; at++) await frame();
+  },
+  /** Paused, the panel pushed again with no change at `hour` (its values through it), as after a seek forward. */
+  async land(hour: number) {
+    clock.seek(hour);
+    entry.hour = entry.through = hour;
+    tellLive();
+    for (let at = 0; at < 4; at++) await frame();
+  },
+  /** The widget rendered for its own reasons, as a push that changed its structure renders it. */
+  async rerender() {
+    root!.render(<Panels />);
+    for (let at = 0; at < 4; at++) await frame();
+  },
+  shown: () => ({ ...JSON.parse(host!.querySelector('output')!.textContent!), at: Number(host!.querySelector('output')!.dataset.at) }),
+  renders: () => renders,
+};
+(window as unknown as { choiceHour: typeof fixture }).choiceHour = fixture;

@@ -14,18 +14,47 @@
 //!
 //! Terrain and arrows use this grid. Other map passes retain their own light
 //! bindings. Content resolves all light definitions and event names.
-/// The two point-light textures, shared by every lit effect. Rewritten in place
-/// so camera movement does not allocate or rebuild bind groups.
+
 pub struct PointLightMaps {
     pub indices: Bound,
     pub data: Bound,
+    /// What the two textures hold now.
+    written: Written,
+}
+
+/// The tiles a pair of light textures holds, so tiles equal to them are not written again.
+#[derive(Default)]
+struct Written {
+    indices: Vec<u8>,
+    data: Vec<[f32; 4]>,
+}
+
+impl Written {
+    /// Whether the textures must be written to hold `tiles`, taking them as held: the index and
+    /// data textures, apart.
+    fn take(&mut self, tiles: &Tiles) -> [bool; 2] {
+        let indices = self.indices != tiles.indices;
+        if indices {
+            self.indices.clone_from(&tiles.indices);
+        }
+        let data = bytemuck::cast_slice::<_, u8>(self.data.as_slice())
+            != bytemuck::cast_slice::<_, u8>(tiles.data.as_slice());
+        if data {
+            self.data.clear();
+            self.data.extend_from_slice(&tiles.data);
+        }
+        [indices, data]
+    }
 }
 
 impl PointLightMaps {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> io::Result<Self> {
         use self::{DATA_WIDTH, INDEX_SIZE, Tiles};
         let tiles = Tiles::default();
+        let mut written = Written::default();
+        written.take(&tiles);
         Ok(Self {
+            written,
             indices: data_texture(
                 device,
                 queue,
@@ -45,22 +74,28 @@ impl PointLightMaps {
         })
     }
 
-    pub fn write(&self, queue: &wgpu::Queue, tiles: &Tiles) {
+    /// Writes `tiles` into the textures, each only when it differs from what it holds.
+    pub fn write(&mut self, queue: &wgpu::Queue, tiles: &Tiles) {
         use self::{DATA_WIDTH, INDEX_SIZE};
-        write_data(
-            queue,
-            &self.indices.texture,
-            [INDEX_SIZE, INDEX_SIZE],
-            4,
-            &tiles.indices,
-        );
-        write_data(
-            queue,
-            &self.data.texture,
-            [DATA_WIDTH, 1],
-            16,
-            bytemuck::cast_slice(&tiles.data),
-        );
+        let [indices, data] = self.written.take(tiles);
+        if indices {
+            write_data(
+                queue,
+                &self.indices.texture,
+                [INDEX_SIZE, INDEX_SIZE],
+                4,
+                &tiles.indices,
+            );
+        }
+        if data {
+            write_data(
+                queue,
+                &self.data.texture,
+                [DATA_WIDTH, 1],
+                16,
+                bytemuck::cast_slice(&tiles.data),
+            );
+        }
     }
 }
 
@@ -179,6 +214,18 @@ impl Tiles {
 mod tests {
     use super::*;
     use viewer_foundation::map::camera::MapSize;
+
+    #[test]
+    fn tiles_equal_to_those_written_are_not_written_again() {
+        let mut written = Written::default();
+        let mut tiles = Tiles::default();
+        assert_eq!(written.take(&tiles), [true, true], "the textures hold nothing yet");
+        assert_eq!(written.take(&tiles), [false, false], "the same tiles write nothing");
+        tiles.indices[0] = 3;
+        assert_eq!(written.take(&tiles), [true, false], "a changed index map alone");
+        tiles.data[1][2] = 0.5;
+        assert_eq!(written.take(&tiles), [false, true], "changed light data alone");
+    }
 
     fn light(x: f32, z: f32) -> Light {
         Light {

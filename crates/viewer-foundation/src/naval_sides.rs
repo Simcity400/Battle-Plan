@@ -29,7 +29,7 @@
 use super::engaged::{self, Removal};
 use crate::map::tables::rows;
 use replay_data::{rows::TableId, rows::tables};
-use replay_frame::frame::DecodedFrame;
+use replay_frame::frame::{DecodedFrame, Tables};
 use std::{collections::BTreeMap, io};
 
 pub struct NavalSides;
@@ -60,8 +60,10 @@ impl engaged::Sides for NavalSides {
     }
 }
 
-fn naval_sides(frame: &DecodedFrame) -> io::Result<engaged::HourSides> {
-    let combats = rows::<tables::NavalCombats>(frame)?;
+/// [`NavalSides::sides`] from any source of the hour's tables.
+pub fn naval_sides<F: Tables + ?Sized>(frame: &F) -> io::Result<engaged::HourSides> {
+    use crate::fold_tables::available as rows;
+    let combats = rows::<tables::NavalCombats, F>(frame)?;
     let mut out = engaged::HourSides {
         sides: BTreeMap::new(),
         complete: combats.is_complete(),
@@ -71,12 +73,12 @@ fn naval_sides(frame: &DecodedFrame) -> io::Result<engaged::HourSides> {
     if combats.rows().is_empty() {
         return Ok(out);
     }
-    let details: BTreeMap<u64, _> = rows::<tables::NavalCombatDetails>(frame)?
+    let details: BTreeMap<u64, _> = rows::<tables::NavalCombatDetails, F>(frame)?
         .rows()
         .iter()
         .map(|row| (row.combat, row))
         .collect();
-    let participants = rows::<tables::NavalCombatParticipants>(frame)?;
+    let participants = rows::<tables::NavalCombatParticipants, F>(frame)?;
     // Convoy members (no ship) by side, their battle slots sorted; only a
     // complete census can show a slot the previous hour lacked.
     let mut convoys: BTreeMap<(u64, u8), Vec<u64>> = BTreeMap::new();
@@ -93,7 +95,7 @@ fn naval_sides(frame: &DecodedFrame) -> io::Result<engaged::HourSides> {
     }
     // Only the task forces the sides name are read, each found in the census,
     // which is key-sorted by id.
-    let forces = rows::<tables::TaskForces>(frame)?.rows();
+    let forces = rows::<tables::TaskForces, F>(frame)?.rows();
     // lists from the remaining task forces alone; `None` when one
     // of them is not in the census.
     let unit_lists = |units: &[u64]| {

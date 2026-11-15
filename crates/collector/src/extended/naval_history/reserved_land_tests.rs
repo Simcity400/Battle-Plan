@@ -109,7 +109,7 @@ fn typed(memory: &Observed<'_>, land_capacity: usize) -> Captured {
         ordinal: 0,
     };
     captured.land.outcome = Outcome::Rows { len: 1 };
-    let mut roots = [corders_group::Root::default(); 8];
+    let mut roots = vec![corders_group::Root::default(); 8];
     let outcome = corders_group::walk_roots(memory, kit::BASE, &mut roots);
     captured.set_order_sources(memory, kit::BASE, &roots, outcome);
     memory.calls.borrow_mut().clear();
@@ -286,7 +286,7 @@ fn genuine_empty_country_zero_does_not_demand_unrelated_oob_success() {
 }
 
 #[test]
-fn optional_shortages_grow_without_promoting_positive_faults() {
+fn optional_shortages_grow_in_the_pass_without_promoting_positive_faults() {
     let bytes = fixture(1);
     let memory = Observed {
         bytes: &bytes,
@@ -317,15 +317,12 @@ fn optional_shortages_grow_without_promoting_positive_faults() {
     kit::stage_wings(&memory, &mut job);
     assert!(copy_naval_refresh(&memory, context(), &mut job).raw_ok);
     assert!(job.log.fault.iter().any(|fault| *fault));
-    assert!(job.reserved_capacity_short);
-    assert!(!job.log.grow_for_next());
-    assert!(job.grow_for_next());
+    // The short log grows in the pass.
+    assert!(!job.reserved_capacity_short);
     let mut captured = Captured::with_capacities(&Capacities::fixture());
     decode_naval_payload(&mut captured, kit::BASE, &job, &mut [0; NAVAL_PACK_N]);
     assert_eq!(captured.land.outcome, Outcome::Rows { len: 1 });
     assert_eq!(captured.reserved_land_count(), None);
-    job.grow();
-    assert!(job.log.bytes.capacity() > prefix_bytes + 48);
 }
 
 #[test]

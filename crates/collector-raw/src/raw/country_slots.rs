@@ -206,7 +206,6 @@ mod tests {
 
     fn census(memory: &impl Memory) -> (RawLog<1>, Option<Vec<usize>>) {
         let mut log = RawLog::<1>::new(0, 0);
-        log.enable_worker_growth();
         let countries = Array::read(memory, STATE + cgame_state::COUNTRIES, 8).unwrap();
         let links = Array::read(memory, STATE + cgame_state::COUNTRY_LINKS, 4).unwrap();
         for (address, len) in [
@@ -251,7 +250,7 @@ mod tests {
         assert_eq!(admitted, Some(expected.clone()));
         assert_eq!(reader(&memory), Ok(expected.clone()));
         // The reader replayed over the recorded spans alone admits the same countries.
-        assert_eq!(reader(&Recorded::build(&log)), Ok(expected));
+        assert_eq!(reader(&Recorded::build(&log).unwrap()), Ok(expected));
     }
 
     #[test]
@@ -266,7 +265,7 @@ mod tests {
         let live = ccountry::Reader::new(&memory, BASE, STATE).unwrap();
         assert_eq!(live.resolve(2).unwrap().pointer, object(2));
         let replayed = |log: &RawLog<1>| {
-            ccountry::Reader::new(&Recorded::build(log), BASE, STATE)
+            ccountry::Reader::new(&Recorded::build(log).unwrap(), BASE, STATE)
                 .unwrap()
                 .resolve(2)
         };

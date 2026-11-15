@@ -7,7 +7,8 @@ use std::{
     sync::OnceLock,
 };
 type Fact<T> = Result<T, String>;
-const NAVAL_BLOCKADE_RELATION_TYPE: u32 = 0x27f8;
+/// RelationTuples' type of a naval blockade.
+pub const NAVAL_BLOCKADE_RELATION_TYPE: u32 = 0x27f8;
 
 pub struct Snapshot<'a> {
     pub rows: Vec<&'a NavalSupremacyRow>,
@@ -25,7 +26,7 @@ impl<'a> Snapshot<'a> {
         links: &BTreeMap<u32, u32>,
     ) -> Fact<Self> {
         let rows = regional_rows(frame, region)?;
-        let mut context = ControlContext::new(frame, viewer, links);
+        let context = ControlContext::new(frame, viewer, links);
         let (friendly, enemy) = context.rows(&rows)?;
         let (ratio_friendly, ratio_enemy) = context.share_rows(&rows, minimum)?;
         Ok(Self {
@@ -83,106 +84,213 @@ pub fn control_sums(
 ) -> Fact<(i64, i64)> {
     control_rows(frame, viewer, &regional_rows(frame, region)?, links)
 }
-/// Admissions reused across regions of one immutable frame and viewer: the control's directed
-/// families and owners, and the explanatory share's group, enemy roster and blockaders.
-pub struct ControlContext<'a> {
+/// What the rule reads of one frame alike for every viewer, read once and shared by the viewers'
+/// contexts ([`ControlContext::shared`]): the faction and subject rosters, each NavalSupremacy
+/// owner's directed wars, the share's families with each faction's linked members, and the
+/// blockades by blockaded country.
+pub struct World<'a> {
     frame: &'a DecodedFrame,
     links: &'a BTreeMap<u32, u32>,
-    viewer: u32,
     factions: OnceLock<Fact<Families>>,
     subjects: OnceLock<Fact<Families>>,
-    owners: BTreeMap<u32, Fact<Owner<'a>>>,
-    group: OnceLock<Fact<BTreeSet<u32>>>,
-    enemies: OnceLock<Fact<Vec<u32>>>,
-    blockaders: OnceLock<Fact<BTreeSet<u32>>>,
+    /// Each NavalSupremacy row's owner, its directed wars admitted when first reached.
+    owners: BTreeMap<u32, OnceLock<Fact<Owner<'a>>>>,
+    group: OnceLock<Fact<Group>>,
+    blockaders: OnceLock<Fact<BTreeMap<u32, BTreeSet<u32>>>>,
 }
-impl<'a> ControlContext<'a> {
-    pub fn new(frame: &'a DecodedFrame, viewer: u32, links: &'a BTreeMap<u32, u32>) -> Self {
+
+/// The share's families, the linked slots and each faction's linked members.
+struct Group {
+    families: Families,
+    live: BTreeSet<u32>,
+    members: BTreeMap<u64, BTreeSet<u32>>,
+}
+
+impl<'a> World<'a> {
+    pub fn new(frame: &'a DecodedFrame, links: &'a BTreeMap<u32, u32>) -> Self {
+        let owners = frame
+            .complete::<tables::NavalSupremacy>()
+            .map(|rows| rows.iter().map(|row| (row.country, OnceLock::new())).collect())
+            .unwrap_or_default();
         Self {
             frame,
-            viewer,
             links,
             factions: OnceLock::new(),
             subjects: OnceLock::new(),
-            owners: BTreeMap::new(),
+            owners,
             group: OnceLock::new(),
-            enemies: OnceLock::new(),
             blockaders: OnceLock::new(),
         }
     }
-    pub fn sums(&mut self, region: u32) -> Fact<(i64, i64)> {
-        self.rows(&regional_rows(self.frame, region)?)
+
+    fn owner(&self, raw: u32) -> Fact<&Owner<'a>> {
+        self.owners
+            .get(&raw)
+            .ok_or_else(|| format!("naval dominance owner {raw} holds no NavalSupremacy row"))?
+            .get_or_init(|| Owner::new(self.frame, raw))
+            .as_ref()
+            .map_err(Clone::clone)
     }
-    fn rows(&mut self, rows: &[&NavalSupremacyRow]) -> Fact<(i64, i64)> {
+
+    /// The explanatory ratio's country group of `viewer`: itself, its recorded allies, and every
+    /// linked slot of its family by unique membership, independently of the control's directed
+    /// family predicate.
+    fn group(&self, viewer: u32) -> Fact<BTreeSet<u32>> {
+        let mut group = BTreeSet::from([viewer]);
+        for row in rows_of(self.frame, viewer, AirCountryRelationRow::ALLY)? {
+            if (row.other as i32) > 0 {
+                group.insert(canonical(self.links, row.other)?);
+            }
+        }
+        let shared = self
+            .group
+            .get_or_init(|| {
+                let mut families = Families::default();
+                families
+                    .read_factions(self.frame, self.links)
+                    .map_err(str::to_owned)?;
+                families
+                    .read_subjects(self.frame, self.links)
+                    .map_err(str::to_owned)?;
+                let live: BTreeSet<u32> = self.links.values().copied().collect();
+                let mut members: BTreeMap<u64, BTreeSet<u32>> = BTreeMap::new();
+                for (slot, faction) in families.members() {
+                    if live.contains(&slot) {
+                        members.entry(faction).or_default().insert(slot);
+                    }
+                }
+                Ok(Group {
+                    families,
+                    live,
+                    members,
+                })
+            })
+            .as_ref()
+            .map_err(Clone::clone)?;
+        group.extend(
+            shared
+                .families
+                .partners(viewer)
+                .filter(|slot| shared.live.contains(slot)),
+        );
+        if let Some(faction) = shared.families.faction(viewer) {
+            group.extend(shared.members.get(&faction).into_iter().flatten());
+        }
+        Ok(group)
+    }
+
+    /// The canonical countries blockading `viewer`.
+    fn blockaders(&self, viewer: u32) -> Fact<Option<&BTreeSet<u32>>> {
+        let by = self
+            .blockaders
+            .get_or_init(|| {
+                let mut by: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::new();
+                for tuple in self
+                    .frame
+                    .complete::<tables::RelationTuples>()
+                    .map_err(|e| e.to_string())?
+                {
+                    if tuple.type_id != NAVAL_BLOCKADE_RELATION_TYPE {
+                        continue;
+                    }
+                    if let (Ok(blockaded), Ok(blockader)) = (
+                        canonical(self.links, tuple.second_country),
+                        canonical(self.links, tuple.first_country),
+                    ) {
+                        by.entry(blockaded).or_default().insert(blockader);
+                    }
+                }
+                Ok(by)
+            })
+            .as_ref()
+            .map_err(Clone::clone)?;
+        Ok(by.get(&viewer))
+    }
+}
+
+/// A context's world: its own, or one shared by every viewer of a frame.
+enum Held<'w, 'a> {
+    Own(Box<World<'a>>),
+    Shared(&'w World<'a>),
+}
+
+impl<'a> std::ops::Deref for Held<'_, 'a> {
+    type Target = World<'a>;
+    fn deref(&self) -> &World<'a> {
+        match self {
+            Self::Own(world) => world,
+            Self::Shared(world) => world,
+        }
+    }
+}
+
+/// One viewer's admissions over a frame, reused across its regions: the control's directed
+/// families and owners (its world's), and the explanatory share's group and enemy roster.
+pub struct ControlContext<'w, 'a> {
+    world: Held<'w, 'a>,
+    viewer: u32,
+    group: OnceLock<Fact<BTreeSet<u32>>>,
+    enemies: OnceLock<Fact<Vec<u32>>>,
+}
+impl<'a> ControlContext<'a, 'a> {
+    pub fn new(frame: &'a DecodedFrame, viewer: u32, links: &'a BTreeMap<u32, u32>) -> Self {
+        Self::held(Held::Own(Box::new(World::new(frame, links))), viewer)
+    }
+}
+impl<'w, 'a> ControlContext<'w, 'a> {
+    /// `viewer`'s context over `world`, which every viewer of the frame may share.
+    pub fn shared(world: &'w World<'a>, viewer: u32) -> Self {
+        Self::held(Held::Shared(world), viewer)
+    }
+
+    fn held(world: Held<'w, 'a>, viewer: u32) -> Self {
+        Self {
+            world,
+            viewer,
+            group: OnceLock::new(),
+            enemies: OnceLock::new(),
+        }
+    }
+
+    pub fn sums(&mut self, region: u32) -> Fact<(i64, i64)> {
+        self.rows(&regional_rows(self.world.frame, region)?)
+    }
+    fn rows(&self, rows: &[&NavalSupremacyRow]) -> Fact<(i64, i64)> {
+        let world = &*self.world;
         let (mut friendly, mut enemy) = (0_i64, 0_i64);
         for row in rows {
             if row.current == 0 {
                 continue;
             }
-            let slot = canonical(self.links, row.country)?;
+            let slot = canonical(world.links, row.country)?;
             if family(
-                self.frame,
-                self.links,
+                world.frame,
+                world.links,
                 slot,
                 self.viewer,
-                &self.factions,
-                &self.subjects,
+                &world.factions,
+                &world.subjects,
             )? {
                 friendly = friendly.wrapping_add(row.current);
-            } else {
-                let owner = self
-                    .owners
-                    .entry(row.country)
-                    .or_insert_with(|| Owner::new(self.frame, row.country))
-                    .as_ref()
-                    .map_err(Clone::clone)?;
-                if owner.pointer_active_slot(self.viewer)? {
-                    enemy = enemy.wrapping_add(row.current);
-                }
+            } else if world.owner(row.country)?.pointer_active_slot(self.viewer)? {
+                enemy = enemy.wrapping_add(row.current);
             }
         }
         Ok((friendly, enemy))
     }
     /// Explanatory ratio operands retain ordered enemy occurrences and their floor.
     pub fn share(&self, region: u32, minimum: i64) -> Fact<(i64, i64)> {
-        self.share_rows(&regional_rows(self.frame, region)?, minimum)
+        self.share_rows(&regional_rows(self.world.frame, region)?, minimum)
     }
     fn share_rows(&self, rows: &[&NavalSupremacyRow], minimum: i64) -> Fact<(i64, i64)> {
         if rows.iter().all(|row| row.current == 0) {
             return Ok((0, 0_i64.max(minimum)));
         }
-        let (frame, links, viewer) = (self.frame, self.links, self.viewer);
-        // The explanatory ratio uses the country group's unique membership,
-        // independently of the control's directed family predicate.
+        let (world, viewer) = (&*self.world, self.viewer);
+        let links = world.links;
         let group = self
             .group
-            .get_or_init(|| {
-                let mut group = BTreeSet::from([viewer]);
-                for row in frame
-                    .complete::<tables::AirCountryRelations>()
-                    .map_err(|e| e.to_string())?
-                {
-                    if row.country == viewer
-                        && row.kind == AirCountryRelationRow::ALLY
-                        && (row.other as i32) > 0
-                    {
-                        group.insert(canonical(links, row.other)?);
-                    }
-                }
-                let mut family_group = Families::default();
-                family_group
-                    .read_factions(frame, links)
-                    .map_err(str::to_owned)?;
-                family_group
-                    .read_subjects(frame, links)
-                    .map_err(str::to_owned)?;
-                for &slot in links.values() {
-                    if family_group.family(slot, viewer) {
-                        group.insert(slot);
-                    }
-                }
-                Ok(group)
-            })
+            .get_or_init(|| world.group(viewer))
             .as_ref()
             .map_err(Clone::clone)?;
         let mut ratio_friendly = 0_i64;
@@ -197,7 +305,7 @@ impl<'a> ControlContext<'a> {
         let enemies = self
             .enemies
             .get_or_init(|| {
-                raw_roster(frame, viewer, AirCountryRelationRow::ENEMY)?
+                raw_roster(world.frame, viewer, AirCountryRelationRow::ENEMY)?
                     .into_iter()
                     .map(|raw| canonical(links, raw))
                     .collect()
@@ -208,25 +316,11 @@ impl<'a> ControlContext<'a> {
         for slot in enemies {
             ratio_enemy = ratio_enemy.wrapping_add(first_current.get(slot).copied().unwrap_or(0));
         }
-        let blockaders = self
-            .blockaders
-            .get_or_init(|| {
-                Ok(frame
-                    .complete::<tables::RelationTuples>()
-                    .map_err(|e| e.to_string())?
-                    .iter()
-                    .filter(|tuple| {
-                        tuple.type_id == NAVAL_BLOCKADE_RELATION_TYPE
-                            && canonical(links, tuple.second_country) == Ok(viewer)
-                    })
-                    .filter_map(|tuple| canonical(links, tuple.first_country).ok())
-                    .collect())
-            })
-            .as_ref()
-            .map_err(Clone::clone)?;
-        for row in rows {
-            if canonical(links, row.country).is_ok_and(|slot| blockaders.contains(&slot)) {
-                ratio_enemy = ratio_enemy.wrapping_add(row.current);
+        if let Some(blockaders) = world.blockaders(viewer)? {
+            for row in rows {
+                if canonical(links, row.country).is_ok_and(|slot| blockaders.contains(&slot)) {
+                    ratio_enemy = ratio_enemy.wrapping_add(row.current);
+                }
             }
         }
         Ok((ratio_friendly, ratio_enemy.max(minimum)))
@@ -242,14 +336,19 @@ fn control_rows(
     ControlContext::new(frame, viewer, links).rows(rows)
 }
 
+/// The recorded diplomacy rows of `country` of `kind`, in key order.
+fn rows_of(frame: &DecodedFrame, country: u32, kind: u8) -> Fact<&[AirCountryRelationRow]> {
+    let rows = frame
+        .complete::<tables::AirCountryRelations>()
+        .map_err(|e| e.to_string())?;
+    let first = rows.partition_point(|row| (row.country, row.kind) < (country, kind));
+    let end = first + rows[first..].partition_point(|row| (row.country, row.kind) == (country, kind));
+    Ok(&rows[first..end])
+}
+
 /// The raw recorded diplomacy vector, preserving aliases and occurrences.
 pub fn raw_roster(frame: &DecodedFrame, viewer: u32, kind: u8) -> Fact<Vec<u32>> {
-    let mut rows: Vec<_> = frame
-        .complete::<tables::AirCountryRelations>()
-        .map_err(|e| e.to_string())?
-        .iter()
-        .filter(|row| row.country == viewer && row.kind == kind)
-        .collect();
+    let mut rows: Vec<_> = rows_of(frame, viewer, kind)?.iter().collect();
     rows.sort_by_key(|row| row.ordinal);
     if rows
         .iter()
@@ -508,7 +607,7 @@ mod tests {
     }
     #[test]
     fn one_context_shares_every_region_as_a_fresh_one_does() {
-        use replay_data::rows::{RelationTupleRow, TableId, TableRows};
+        use replay_data::rows::{FactionMemberRow, RelationTupleRow, TableId, TableRows};
         use replay_frame::frame::{SharedView, TableView};
         let mut frame = DecodedFrame {
             branch: 1,
@@ -585,5 +684,23 @@ mod tests {
             .into();
         // Friendly: the viewer and its ally; enemy: the roster's enemy and the blockader, floored.
         assert_eq!(shares(&frame), [Ok((15, 10)), Ok((0, 4)), Ok((0, 2))]);
+        // Contexts sharing one world answer each viewer as contexts of their own do, a faction's
+        // members included.
+        frame.tables[TableId::FactionMembers.index()] =
+            TableView::Complete(TableRows::FactionMembers(vec![
+                FactionMemberRow { country: 103, faction: 9, ordinal: 0 },
+                FactionMemberRow { country: 104, faction: 9, ordinal: 1 },
+            ]))
+            .into();
+        let world = World::new(&frame, &links);
+        for viewer in [1, 2, 3, 4, 5] {
+            let mut own = ControlContext::new(&frame, viewer, &links);
+            let mut shared = ControlContext::shared(&world, viewer);
+            for region in regions {
+                assert_eq!(shared.sums(region), own.sums(region), "viewer {viewer} region {region}");
+                assert_eq!(shared.share(region, 2), own.share(region, 2), "viewer {viewer} region {region}");
+            }
+        }
+        assert_eq!(ControlContext::shared(&world, 3).share(7, 2), Ok((10, 2)));
     }
 }

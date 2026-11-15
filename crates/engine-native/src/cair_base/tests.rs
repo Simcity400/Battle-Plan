@@ -331,7 +331,7 @@ fn carrier_walk_fixture_with_storage(
         reads: std::cell::RefCell::default(),
     };
     let countries = ccountry::Reader::new(&optional, IMAGE, GAME).unwrap();
-    let mut source = [Row::default(); 4];
+    let mut source = vec![Row::default(); 4];
     let source_walk = walk(&memory, IMAGE, GAME, &mut source);
     let source_len = match source_walk {
         Outcome::Rows { len } => len,
@@ -343,10 +343,10 @@ fn carrier_walk_fixture_with_storage(
     let mut bases = vec![CarrierBase::default(); 4];
     let mut registrations = vec![CarrierRegistration::default(); 4];
     let mut pools = vec![CarrierPool::default(); 4];
-    let mut dense = [CountryOccurrence::default(); 8];
-    let mut names = [0; 16];
+    let mut dense = vec![CountryOccurrence::default(); 8];
+    let mut names = vec![0; 16];
     let mut indexed = vec![None; indexed_len];
-    let mut optional_resolved = [None; 10];
+    let mut optional_resolved = vec![None; 10];
     let mut country_terms = vec![CarrierCountryTerms::default(); storage.country_terms];
     let mut aces = vec![CarrierAceSlot::default(); storage.aces];
     let mut forecasts = vec![CarrierForecastSlot::default(); storage.forecasts];
@@ -589,35 +589,6 @@ fn denied_transport_carrier_demand_keeps_legacy_fuel_and_never_reads_unreached_p
 }
 
 #[test]
-fn carrier_short_certificate_arena_refuses_dense_proof_without_erasing_name_or_scalars() {
-    let bytes = host_registration_fixture();
-    // An unreadable dense payload must not be visited by the sizing path.
-    let observed = carrier_walk_fixture(&bytes, Some(0x2b00), 0, 4);
-    assert_eq!(observed.main.outcome, Outcome::Rows { len: 2 });
-    assert!(observed.bases[0].countries.is_err());
-    assert_eq!(observed.bases[0].host_name, Ok(Some((0, 0))));
-    assert_eq!(observed.registrations[0].fuel.demand, Ok(-7));
-    assert_eq!(observed.demand.indexed, 4);
-    assert_eq!(observed.demand.country_terms, 3);
-    assert_eq!(
-        observed.demand.countries, 2,
-        "first-pass header-only demand survives short certificates"
-    );
-    assert_eq!(observed.demand.failure, None);
-    assert!(
-        observed
-            .optional_reads
-            .contains(&(HOST_BASE + REGISTERED_CONTAINERS))
-    );
-    assert!(
-        !observed
-            .optional_reads
-            .iter()
-            .any(|address| (0x2b00..0x2b10).contains(address))
-    );
-}
-
-#[test]
 fn carrier_name_survives_original_indexed_header_failure() {
     let mut bytes = host_registration_fixture();
     dword(&mut bytes, HOST_BASE + COUNTRY_CONTAINERS_COUNT, 5);
@@ -637,18 +608,15 @@ fn carrier_name_survives_original_indexed_header_failure() {
 }
 
 #[test]
-fn carrier_short_certificate_dense_header_fault_keeps_primary_reason_and_unknown_demand() {
+fn carrier_dense_header_fault_names_the_inventory_field_and_keeps_scalars() {
     let bytes = host_registration_fixture();
     let observed = carrier_walk_fixture(&bytes, Some(HOST_BASE + REGISTERED_CONTAINERS), 0, 4);
     assert_eq!(observed.main.outcome, Outcome::Rows { len: 2 });
     assert_eq!(
         observed.bases[0].countries,
-        Err("carrier indexed registrations incomplete")
+        Err("carrier inventory field unreadable or address overflow")
     );
-    assert_eq!(
-        observed.demand.failure,
-        Some("carrier inventory field unreadable or address overflow")
-    );
+    assert_eq!(observed.demand.failure, None);
     assert_eq!(observed.bases[0].host_name, Ok(Some((0, 0))));
     assert_eq!(observed.registrations[0].fuel.demand, Ok(-7));
     assert_eq!(observed.registrations[0].fuel.allocated, Ok(11));
@@ -733,15 +701,6 @@ fn attach_carrier_hint_preserves_first_pass_fuel_with_each_transport_admission()
     assert_eq!((hint.aces, hint.forecasts), (6, 6));
     assert_eq!((hint.registrations, hint.pools), (2, 2));
     for admission in [Ok(()), Err("transport admission refused")] {
-        let cold = carrier_walk_fixture_with_storage(
-            &bytes,
-            None,
-            4,
-            4,
-            admission,
-            CarrierDemand::default(),
-        );
-        assert_eq!(cold.pools[0].fuel.maximum, None);
         let first = carrier_walk_fixture_with_storage(
             &bytes,
             None,
@@ -888,7 +847,7 @@ fn state_holes_and_dense_hosts_preserve_native_fields_and_count() {
         base: GAME,
         bytes: &bytes,
     };
-    let mut output = [Row::default(); 4];
+    let mut output = vec![Row::default(); 4];
     assert_eq!(
         walk(&memory, IMAGE, GAME, &mut output),
         Outcome::Rows { len: 2 }
@@ -916,14 +875,7 @@ fn state_holes_and_dense_hosts_preserve_native_fields_and_count() {
         }
     );
     assert_eq!(
-        walk(&memory, IMAGE, GAME, &mut output[..1]),
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 1,
-        }
-    );
-    assert_eq!(
-        walk(&memory, IMAGE, GAME, &mut []),
+        count(&memory, IMAGE, GAME),
         Outcome::Truncated {
             len: 0,
             unread_rows: 2,
@@ -934,7 +886,7 @@ fn state_holes_and_dense_hosts_preserve_native_fields_and_count() {
 #[test]
 fn malformed_membership_and_failed_rows_do_not_become_absence() {
     let mut bytes = fixture();
-    let mut output = [Row::default(); 4];
+    let mut output = vec![Row::default(); 4];
     qword(&mut bytes, HOST_TABLE, 0);
     assert!(matches!(
         walk(
@@ -1281,7 +1233,7 @@ fn registration_scratch_reuse_preserves_shorter_bases_and_fault_prefixes() {
             let countries = ccountry::Reader::new(&memory, IMAGE, GAME).unwrap();
             let mut cells = [None; 16];
             let mut resolved = Resolver {
-                cells: crate::walk::Buffer::Fixed(&mut cells),
+                cells: &mut cells,
             };
             let mut state = RegistrationState::default();
             state.scratch.container_bytes.fill(0xa5);
@@ -2024,16 +1976,8 @@ fn growing_air_bases_follow_mod_stateless_rosters_before_first_publication() {
             base: GAME,
             bytes: &bytes,
         };
-        let mut fixed = [Row::default(); 1];
         assert_eq!(
-            walk(&memory, IMAGE, GAME, &mut fixed),
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: count
-            }
-        );
-        assert_eq!(
-            walk_growing(&memory, IMAGE, GAME, &mut rows),
+            walk(&memory, IMAGE, GAME, &mut rows),
             Outcome::Rows {
                 len: count as usize + 1
             }

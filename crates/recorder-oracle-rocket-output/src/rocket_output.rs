@@ -25,7 +25,6 @@ pub fn compare(replay: &Replay, frame: &DecodedFrame, report: &mut Report) -> io
         replay.visit_blocks(
             &[block],
             &selected,
-            None,
             |_, _, hour_frame| {
             if hour_frame.hour > frame.hour {
                 return Ok(false);
@@ -63,7 +62,7 @@ impl Continuity {
         }) {
             self.previous.clear();
         }
-        if !daily_read(frame.hour, &frame.metrics, TableId::RocketProductionOutput) {
+        if !daily_read(&frame.metrics, TableId::RocketProductionOutput) {
             return Ok(());
         }
         self.read = Some(frame.hour);
@@ -240,5 +239,54 @@ mod tests {
         assert!(run(Vec::new()).is_err());
         assert!(run(vec![(102, 103)]).is_err());
         assert_eq!(run(vec![(100, 101)]).unwrap(), 6);
+    }
+
+    /// A full refresh off the production slot marks the rocket output it read, which is
+    /// checked there; an hour that read only another table of the slot is not.
+    #[test]
+    fn a_refresh_off_the_slot_is_checked_where_the_rocket_output_is_marked_read() {
+        use replay::spool::Record;
+        use replay_data::rows::TableRows;
+        use replay_frame::frame::TableUpdate;
+        let scope = |country| RocketProductionOutputRow {
+            country,
+            since_hour: 2,
+            ..Default::default()
+        };
+        let rows = vec![
+            scope(0),
+            scope(5001),
+            RocketProductionOutputRow {
+                since_hour: 2,
+                ..design()
+            },
+        ];
+        let mut records = crate::test_support::allocation_records();
+        for record in &mut records {
+            if let Record::Frame(frame) = record {
+                assert!(!replay_data::cadence::is_refresh(
+                    TableId::RocketProductionOutput,
+                    frame.hour
+                ));
+                frame.tables[TableId::RocketProductionOutput.index()] =
+                    TableUpdate::Snapshot(TableRows::RocketProductionOutput(rows.clone()));
+                frame.metrics.table_ns[TableId::ProductionLines.index()] = 1;
+                if frame.hour != 3 {
+                    frame.metrics.table_ns[TableId::RocketProductionOutput.index()] = 1;
+                }
+            }
+        }
+        let replay = crate::test_support::replay(records);
+        let mut frame = crate::test_support::frame([TableRows::RocketProductionOutput(rows)]);
+        (frame.branch, frame.hour) = (9, 4);
+        let mut report = Report::default();
+        compare(&replay, &frame, &mut report).unwrap();
+        assert_eq!(
+            report
+                .compared_tables
+                .get("RocketProductionOutput continuity")
+                .copied(),
+            Some(6)
+        );
     }
 }

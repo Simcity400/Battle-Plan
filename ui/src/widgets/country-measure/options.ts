@@ -1,13 +1,6 @@
 import { END_LABELS_OPTION, LINE_AXIS_OPTIONS, LINE_TIME_OPTIONS } from '../../dashboard/lineChartOptions.ts';
-import { breakdownOption, DRILL_OPTION } from '../../charts/drill/drillState.ts';
-import type { Breakdown } from '../../charts/drill/drillState';
 import type { OptionField } from '../../dashboard/options';
 import { POWER_DECIMALS_OPTION } from '../../dashboard/powerDecimals.ts';
-
-export const POWER_BREAKDOWNS: readonly Breakdown[] = [
-  { id: 'income', label: 'Daily income and costs' },
-  { id: 'spending', label: 'Spending that day' },
-];
 
 /** Settings every balance widget (political power, command power) offers. */
 export const MEASURE_OPTIONS: readonly OptionField[] = [
@@ -17,6 +10,4 @@ export const MEASURE_OPTIONS: readonly OptionField[] = [
   END_LABELS_OPTION,
   POWER_DECIMALS_OPTION,
   ...LINE_AXIS_OPTIONS,
-  breakdownOption(POWER_BREAKDOWNS, 'Balance'),
-  DRILL_OPTION,
 ];

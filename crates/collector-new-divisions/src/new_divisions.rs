@@ -147,7 +147,7 @@ impl Captured {
                 reason: "division census incomplete",
             },
             (Mark::Above(counters), Outcome::Rows { len }) => match sources.get(..len) {
-                Some(sources) => pool::walk_divisions_where_growing(
+                Some(sources) => pool::walk_divisions_where(
                     memory,
                     base,
                     sources,

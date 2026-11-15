@@ -18,6 +18,10 @@ pub struct Summary {
     pub longest_synchronization_ns: u64,
     pub slowest_context_ns: u64,
     pub slowest_context_thread_id: u32,
+    /// The slowest thread's own priority, before synchronization raised it.
+    pub slowest_context_priority: i32,
+    /// Raised threads whose own priority could not be put back before they resumed.
+    pub priority_restore_failures: u64,
 }
 impl Summary {
     fn merge(&mut self, other: Self) {
@@ -33,7 +37,11 @@ impl Summary {
         {
             self.slowest_context_ns = other.slowest_context_ns;
             self.slowest_context_thread_id = other.slowest_context_thread_id;
+            self.slowest_context_priority = other.slowest_context_priority;
         }
+        self.priority_restore_failures = self
+            .priority_restore_failures
+            .saturating_add(other.priority_restore_failures);
     }
 }
 
@@ -156,12 +164,16 @@ impl Attempt {
             self.sample.longest_hold_ns = self.sample.longest_hold_ns.max(elapsed);
         }
     }
-    pub fn context(&mut self, begin: u64, id: u32) {
+    pub fn context(&mut self, begin: u64, id: u32, priority: i32) {
         let elapsed = self.elapsed(begin);
         if self.sample.slowest_context_thread_id == 0 || elapsed > self.sample.slowest_context_ns {
             self.sample.slowest_context_ns = elapsed;
             self.sample.slowest_context_thread_id = id;
+            self.sample.slowest_context_priority = priority;
         }
+    }
+    pub fn priority_restore_failed(&mut self) {
+        self.sample.priority_restore_failures = self.sample.priority_restore_failures.saturating_add(1);
     }
     /// Called by Threads::drop after its unconditional resume and handle cleanup.
     pub fn finish(&mut self) {

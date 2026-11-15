@@ -3,7 +3,8 @@ import test from 'node:test';
 import { createServer } from 'vite';
 import type { DashboardClient, ProductReply, ProductRequest } from '../../dashboard/client';
 import type { BoundTrack } from '../../dashboard/model';
-import type { Artwork, ResearchEntry, ResearchHistory } from '../../generated/dashboard';
+import type { Artwork, ResearchEntry } from '../../generated/dashboard';
+import type { ResearchHistory } from './types';
 import { researchAt, researchArtworkTokens } from './researchData.ts';
 
 type Effect = { deps: readonly unknown[]; run: () => void | (() => void); cleanup?: () => void };
@@ -71,17 +72,17 @@ test('technology artwork reports failed batches without losing successful text a
     }) } as unknown as DashboardClient;
     const track = { source: { id: 'source', revision: 'revision' }, branch: { id: 'branch' } } as BoundTrack;
     const entries: ResearchEntry[] = Array.from({ length: 9 }, (_, i) => ({
-      token: `tech${String(i).padStart(2, '0')}`, technologyHandle: i, continuityStartHour: 100, level: 0,
+      token: `tech${String(i).padStart(2, '0')}`, technologyHandle: i, databaseIndex: i + 1, outcomeObservedHour: null, continuityStartHour: 100, level: 0,
       firstObservedHour: 100 + i * 2, startedAfterHour: 99 + i * 2, lastObservedHour: 101 + i * 2, endedByHour: 102 + i * 2, outcome: 'completed',
     }));
     const history: ResearchHistory = { coverage: [{ firstHour: 100, lastHour: 400 }], slots: [{ index: 0,
       availability: [{ firstHour: 100, lastHour: 400 }], progress: [], entries: [...entries,
-        { token: 'zz_current', technologyHandle: 9, continuityStartHour: 100, level: 0, firstObservedHour: 118,
+        { token: 'zz_current', technologyHandle: 9, databaseIndex: 10, outcomeObservedHour: null, continuityStartHour: 100, level: 0, firstObservedHour: 118,
           startedAfterHour: 117, lastObservedHour: 239, endedByHour: 240, outcome: 'switched' },
-        { token: 'a_future', technologyHandle: 10, continuityStartHour: 100, level: 0, firstObservedHour: 240,
+        { token: 'a_future', technologyHandle: 10, databaseIndex: 11, outcomeObservedHour: null, continuityStartHour: 100, level: 0, firstObservedHour: 240,
           startedAfterHour: 239, lastObservedHour: 299, endedByHour: 300, outcome: 'completed' },
       ], states: [{ firstHour: 118, lastHour: 239, token: 'zz_current', entryFirstObservedHour: 118,
-        speedMultiplierRaw: '100000', bankedDaysRaw: '0', appliedDaysRaw: '0', aheadReductionYearsRaw: '0' }] }] };
+        speedMultiplierRaw: '100000', bankedDaysRaw: '0', appliedDaysRaw: '0', aheadReductionYearsRaw: '0', details: null }] }] };
     const tokens = researchArtworkTokens(researchAt(history, 150), 150, true);
     const render = () => { cursor = 0; return useTechnologyArtwork(client, track, tokens, true); };
     const art = (token: string): Artwork => ({ token, name: token === 'tech07' ? '' : 'Stored literal title', description: '', baseDurationDays: null,

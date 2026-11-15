@@ -1,7 +1,7 @@
-import type { PeopleFact, PeopleReply } from '../../generated/dashboard';
 import { dayLabel } from '../../charts/draw.ts';
 import { usNumber } from '../../charts/numberFormat.ts';
 import { formatNativeFixed5 } from '../../charts/valueAxis.ts';
+import type { PeopleFact, PeopleReply } from '../../generated/dashboard';
 
 export function peopleValue(fact: Pick<PeopleFact, 'value' | 'unit'>): string {
   if (fact.value === null) return 'Not recorded';
@@ -32,4 +32,16 @@ export function validatePeople(value: unknown): PeopleReply {
   if (!Array.isArray(reply.exiles) || reply.exiles.some(exile => !exile || typeof exile.tag !== 'string' || exile.host !== null && typeof exile.host !== 'string'
     || !raw(exile.legitimacy) || ![exile.manpower, exile.cap, exile.leaders, exile.deployedAir, exile.readHour].every(optional))) return fail();
   return reply;
+}
+
+/** Each fact's shown text, by label: what a followed reply paints. */
+export function factTexts(facts: readonly PeopleFact[]): Map<string, string> {
+  return new Map(facts.map(fact => [fact.label, peopleValue(fact)]));
+}
+
+/** What a followed view renders: its facts' labels and units, and the lists beneath them (state pools for manpower,
+ * exiles for both); the facts' values are painted between renders. */
+export function peopleStructure(reply: PeopleReply, view: 'manpower' | 'politics'): string {
+  return JSON.stringify([reply.tag, reply.branchId, reply[view].map(fact => [fact.label, fact.unit]), view === 'manpower' ? [reply.states, reply.readHour === reply.hour] : null,
+    reply.exiles, reply.warnings]);
 }

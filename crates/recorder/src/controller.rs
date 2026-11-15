@@ -118,6 +118,25 @@ impl Probe {
         self.process.path.parent().map(Path::to_path_buf)
     }
 
+    /// The in-game idler's sites, which the pause state and camera read through, or why they are
+    /// withheld on this build.
+    pub fn presentation_sites(&self) -> Result<(), &'static str> {
+        engine_native::command_inputs::idler_sites(self.base)
+    }
+
+    /// The clock when two reads agree, with the pause state and camera when `presentation` and
+    /// they read; none once the game has exited or while its clock is unreadable.
+    pub(crate) fn clock(&self, presentation: bool) -> Option<crate::clock::Sample> {
+        if self.process.handle.signaled().unwrap_or(true) {
+            return None;
+        }
+        crate::clock::sample(
+            &ProcessMemory(&self.process.handle),
+            self.base,
+            presentation,
+        )
+    }
+
     /// The loaded campaign when two reads agree on a campaign identity; none
     /// at the menu, while loading or when unreadable.
     pub fn loaded(&self) -> Option<LoadedCampaign> {
@@ -161,23 +180,16 @@ pub fn session_identity(session: &Path) -> Result<replay_data::identity::Identit
     Ok(start.identity)
 }
 
-/// The campaign a session loaded first, as its spool shows by clock witness
-/// time, so one that recorded and ended before any probe still counts. Reads
-/// only the first records of each campaign's spool; safe while recording.
+/// The campaign a session loaded first, as the loads its writers met show by clock witness
+/// time, so one that recorded and ended before any probe still counts.
 pub fn first_loaded_campaign(session: &Path) -> Option<String> {
-    crate::replay_io::first_spooled_campaign(session)
+    crate::replay_io::first_loaded_campaign(session)
 }
 
-/// The capture mode a session's campaign folder spools; `None` when it cannot be read.
-pub fn spool_capture_mode(campaign_dir: &Path) -> Option<CaptureMode> {
-    crate::replay_io::spool_capture_mode(campaign_dir)
-}
-
-/// Unsaved spool bytes in a session's campaign folder; `None` when unreadable.
-pub fn unsaved_spool_bytes(campaign_dir: &Path) -> Option<u64> {
-    crate::replay_io::unsaved_segments(campaign_dir)
-        .ok()
-        .map(|segments| segments.iter().map(|(_, _, bytes)| bytes).sum())
+/// The bytes a session's unsaved hours of a campaign take on disk, in its journal and in the
+/// campaign's recording in `target`; `None` when unreadable.
+pub fn unsaved_bytes(session: &Path, target: &Path, campaign: &str) -> Option<u64> {
+    crate::replay_io::unsaved_bytes(session, target, campaign)
 }
 
 /// A campaign identity read twice the same, in the recorded UUID form.

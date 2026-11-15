@@ -659,10 +659,27 @@ impl Certificates {
         ] {
             reserve(list, capacity.countries)?;
         }
-        reserve(&mut scratch.addresses, capacity.histories)?;
+        for list in [
+            &mut scratch.addresses,
+            &mut scratch.retry,
+            &mut scratch.fallback,
+            &mut scratch.fallback_addresses,
+        ] {
+            reserve(list, capacity.histories)?;
+        }
+        // Also the refreshed countries' air objects, authenticated before any patch.
+        reserve(
+            &mut scratch.patch_addresses,
+            capacity.histories.max(capacity.countries),
+        )?;
         reserve(&mut scratch.doubted, capacity.histories)?;
         reserve(&mut scratch.found, capacity.histories)?;
+        reserve(&mut scratch.patch_found, capacity.histories)?;
         reserve(&mut scratch.sequences, capacity.histories)?;
+        reserve(&mut scratch.listed, capacity.histories)?;
+        reserve(&mut scratch.merged, capacity.histories)?;
+        reserve(&mut scratch.owners, capacity.histories)?;
+        reserve(&mut scratch.patch_owners, capacity.histories)?;
         if countries.len() < capacity.countries {
             reserve(countries, capacity.countries)?;
             countries.resize_with(capacity.countries, Default::default);
@@ -944,7 +961,7 @@ fn stage_part(
     addresses.clear();
     found.clear();
     sequences.clear();
-    native::region_slots(memory, targets, &[], |at, region, history| {
+    native::region_slots(memory, targets, |at, region, history| {
         push(
             sequences,
             (
@@ -988,7 +1005,7 @@ fn stage_part(
     reserve(targets, refresh.len())?;
     targets.extend(refresh.iter().map(|&index| roots[index]));
     listed.clear();
-    native::region_slots(memory, targets, &[], |at, region, history| {
+    native::region_slots(memory, targets, |at, region, history| {
         push(listed, (at, region, history))
     })?;
     addresses.clear();
@@ -1085,7 +1102,9 @@ fn stage_part(
             push(&mut staging.dropped, (slot(index), certificate.region))?;
             held += 1;
         }
-        std::mem::swap(&mut country.histories, merged);
+        country.histories.clear();
+        reserve_pushes(&mut country.histories, merged.len())?;
+        country.histories.extend_from_slice(merged);
         cursor = end;
     }
     staging.patch(
@@ -1123,9 +1142,9 @@ impl Captured {
         Self {
             rows: CaptureRows::new(capacity.rows),
             selection: SliceSelection::new(true),
-            parts: (0..PARTS)
-                .map(|_| Staging::with_capacities(capacity))
-                .collect(),
+            parts: allocation::owned_vec(allocation::collect_vec(
+                (0..PARTS).map(|_| Staging::with_capacities(capacity)),
+            )),
             staged: false,
         }
     }
@@ -2552,14 +2571,22 @@ pub mod hour {
             Self::counts(frame).read
         }
 
-        /// Nonzero entries held.
+        /// Nonzero entries held: every window's of a menu copy, the daily
+        /// ring's of a ring copy.
         pub fn held_rows(&self) -> usize {
             let histories = self
                 .held
                 .countries
                 .iter()
                 .flat_map(|country| &country.histories);
-            histories.map(|history| history.records.len()).sum()
+            histories
+                .map(|history| {
+                    history
+                        .menu
+                        .as_ref()
+                        .map_or(history.records.len(), |menu| menu.records.len())
+                })
+                .sum()
         }
 
         /// Histories held after the last decode, as a fresh copy would hold them.

@@ -435,21 +435,23 @@ fn division_presentation_oracle_checks_prefix_census_exact_values_and_omissions(
         );
     }
     // The exact remaining grace compares below its display step, and is kept exactly
-    // when days out of supply are nonzero; the exact ratio must round to the row's
-    // stepped ratio.
-    for (grace, exact, ratio, difference) in [
+    // when days out of supply are nonzero; the exact pair holds the shown ratio, so the
+    // row keeps no stepped one beside it.
+    for (grace, exact, ratio, stepped, difference) in [
         (
             &b"0.5"[..],
             Some(0),
             Some(0),
+            None,
             "supply_exact.grace_remaining",
         ),
-        (&b"0"[..], None, None, "supply_exact"),
+        (&b"0"[..], None, None, None, "supply_exact"),
         (
             &b"0"[..],
             Some(0),
             Some(50_000),
-            "supply_exact.ratio stepped",
+            Some(50_000),
+            "supply_exact shown",
         ),
     ] {
         let mut changed = saved.clone();
@@ -462,6 +464,7 @@ fn division_presentation_oracle_checks_prefix_census_exact_values_and_omissions(
         let mut status = status.clone();
         status.supply_ratio_exact = Recorded::Value(ratio);
         status.supply_grace_exact = Recorded::Value(exact);
+        status.supply_ratio = stepped;
         let mut frame = frame.clone();
         *frame.tables[TableId::DivisionStatus.index()] =
             TableView::Complete(TableRows::DivisionStatus(vec![status]));
@@ -3486,7 +3489,7 @@ fn air_sortie_oracle_compares_the_saved_penalty_and_checks_operand_keys() {
         wing,
         save::AirWing {
             government_in_exile_tag: None,
-            manpower: None,
+            manpower: Some(40),
             reinforcement_setting: Some(0),
             name: None,
             id: wing,
@@ -3519,6 +3522,7 @@ fn air_sortie_oracle_compares_the_saved_penalty_and_checks_operand_keys() {
     set(
         &mut frame,
         TableRows::AirWings(vec![replay_data::rows::AirWingRow {
+            acquired_manpower: Some(40).into(),
             exile_country: Some(0).into(),
             replacement_setting: replay_data::rows::Recorded::Value(Some(0)),
             id: wing,
@@ -3697,7 +3701,7 @@ fn air_and_naval_oracle_compares_native_values_and_slot_identity() {
         wing,
         save::AirWing {
             government_in_exile_tag: None,
-            manpower: None,
+            manpower: Some(40),
             reinforcement_setting: Some(0),
             name: Some(wing_name.clone()),
             id: wing,
@@ -3731,6 +3735,7 @@ fn air_and_naval_oracle_compares_native_values_and_slot_identity() {
     });
     *frame.tables[TableId::AirWings.index()] =
         TableView::Complete(TableRows::AirWings(vec![replay_data::rows::AirWingRow {
+            acquired_manpower: Some(40).into(),
             exile_country: Some(0).into(),
             replacement_setting: replay_data::rows::Recorded::Value(Some(0)),
             base_range_raw: 0,

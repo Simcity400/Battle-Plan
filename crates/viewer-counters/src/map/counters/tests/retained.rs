@@ -173,6 +173,408 @@ fn retained_semantic_plans_match_fresh_through_camera_thresholds_and_admission()
     );
 }
 
+#[test]
+fn a_new_land_product_lays_out_and_draws_again_only_the_column_whose_members_changed() {
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    let guis = layout_gui(br#"guiTypes={
+        containerWindowType={name=unit_mapicon size={width=81 height=29}
+            gridBoxType={name=units_box size={width=81 height=290}
+                slotsize={width=81 height=1} max_slots_horizontal=1 format=UPPER_LEFT}
+        }
+        positionType={name=unit_counter_zoomed_in_offset position={x=0 y=0}}
+        containerWindowType={name=unit_counter_navy size={width=20 height=10}}
+        containerWindowType={name=naval_headquarter_mapicon size={width=81 height=29}
+            buttonType={name=bg_btn spriteType=GFX_synthetic_plate}}
+        containerWindowType={name=naval_combat_mapicon size={width=20 height=10}}
+        containerWindowType={name=unit_counter size={width=81 height=29}
+            buttonType={name=count_bg spriteType=GFX_synthetic_plate}
+            iconType={name=onmap_action_icon spriteType=GFX_synthetic_actions position={x=57 y=9} frame=12}
+            iconType={name=counter_overlay spriteType=GFX_synthetic_overlay position={x=3 y=4}}
+        }
+    }"#);
+    with_counter_inputs_fixture(
+        guis,
+        |assets| {
+            assets.layouts = Layouts::read(&assets.windows);
+        },
+        |content| {
+            let points = [(1, [2., 9.5, 2.]), (2, [3., 9.5, 2.]), (3, [2., 9.5, 3.])];
+            content.default_anchors = Arc::new(points.into());
+            content.bounds = Arc::new(
+                points
+                    .into_iter()
+                    .map(|(id, [x, _, z])| (id, [x - 0.4, z - 0.4, x + 0.4, z + 0.4]))
+                    .collect(),
+            );
+            content.region_of = Arc::new([(1, 1), (2, 2), (3, 3)].into());
+        },
+        |mut inputs| {
+            use crate::map::counters::preparation::plan_probe;
+            use replay_data::rows::{TableId, TableRows};
+            use replay_frame::frame::TableView;
+            let frame = DecodedFrame {
+                branch: 1,
+                hour: 11,
+                metrics: Default::default(),
+                tables: TableId::ALL.map(|table| TableView::Complete(TableRows::empty(table)).into()),
+            };
+            let mut tables = synthetic_hour(&inputs, &frame);
+            tables.countries = Arc::new(countries([(1, Allegiance::Ours)]));
+            inputs.settings.color_mode = CounterColorMode::Allegiance;
+            inputs.camera.height = 80.;
+            inputs.camera.center = [2., 2.];
+            let empty = BTreeSet::new();
+            let schedules: [Shared; 2] = std::array::from_fn(|_| Shared::default());
+            let mut inputs = CounterInputs { selected: &empty, schedule: &schedules[0], ..inputs };
+            let source = |units: &[u64]| -> Arc<[(Member, counter_action::Action)]> {
+                units.iter().map(|&id| (land_unit(id, 1, 10, 10, true).member(), Ok(1))).collect::<Vec<_>>().into()
+            };
+            let first: LandStacks = [
+                ((1, STANDSTILL), source(&[10, 11])),
+                ((2, STANDSTILL), source(&[12])),
+                ((3, STANDSTILL), source(&[13])),
+            ]
+            .into();
+            // Division 10 weakens: only its source is a new allocation, as the counters layer publishes.
+            let mut weaker = first.clone();
+            let mut members = weaker[&(1, STANDSTILL)].to_vec();
+            members[0].0.hp = counter_status::FIXED / 2;
+            weaker.insert((1, STANDSTILL), members.into());
+            let products = [first, weaker.clone(), weaker];
+            let mut retained = Preparation::default();
+            let mut windows = [naval_windows::Windows::default(), naval_windows::Windows::default()];
+            let mut pings = [PoolView::default(), PoolView::default()];
+            let mut bases = [BaseView::default(), BaseView::default()];
+            let mut combats = [land_windows::View::default(), land_windows::View::default()];
+            let mut held: Option<PreparedCounters> = None;
+            let mut plates = Vec::new();
+            for (at, stacks) in products.into_iter().enumerate() {
+                let published = Layered { land: Some(Arc::new(stacks)), ..Layered::default() };
+                retained.set_layered(published.clone(), Kinds::LAND, Kinds::default());
+                let (mut kept, prepared) = plan_probe::collect(|| prepare_retained(&inputs, &frame, &tables, 0, &mut retained).unwrap());
+                let mut made = Preparation::default();
+                made.set_layered(published, Kinds::LAND, Kinds::default());
+                let mut fresh = prepare_retained(&inputs, &frame, &tables, 0, &mut made).unwrap();
+                assert_eq!(kept.fixed.report, fresh.fixed.report, "prepare {at}");
+                assert!(prepared.ordered_groups >= 3, "three sources apart, each its own column: {prepared:?}");
+                let missed = prepared.semantic_plans - prepared.semantic_plan_hits;
+                assert_eq!(missed, [prepared.semantic_plans, 1, 0][at], "plans laid out again at {at}: {prepared:?}");
+                if let Some(mut old) = held.take() {
+                    kept.keep_drawn(&mut old);
+                }
+                let time = at as f32 / 240.;
+                inputs.schedule = &schedules[0];
+                let ((), drawn) = plan_probe::collect(|| {
+                    kept.draw(&inputs, time, &mut windows[0], &mut pings[0], &mut bases[0], &mut combats[0]).unwrap()
+                });
+                inputs.schedule = &schedules[1];
+                fresh.draw(&inputs, time, &mut windows[1], &mut pings[1], &mut bases[1], &mut combats[1]).unwrap();
+                assert_eq!(fresh.drawn.report, kept.drawn.report, "draw {at}");
+                for (a, b) in [
+                    (&fresh.fixed.pings, &kept.fixed.pings),
+                    (&fresh.fixed.bases, &kept.fixed.bases),
+                    (&fresh.fixed.combats, &kept.fixed.combats),
+                    (&fresh.drawn.batch, &kept.drawn.batch),
+                    (&fresh.drawn.combats, &kept.drawn.combats),
+                ] {
+                    assert_quad_bits(a, b);
+                }
+                plates.push(drawn.plates_drawn);
+                held = Some(kept);
+            }
+            assert!(plates[0] >= 3, "every plate on screen is drawn first: {plates:?}");
+            assert!(plates[1] >= 1 && plates[1] < plates[0], "the changed column's plates alone are drawn again: {plates:?}");
+            assert_eq!(plates[2], 0, "an unchanged product draws no plate again: {plates:?}");
+        },
+    );
+}
+
+/// One frame of [`land_plates_against_fresh`]: the land stacks, the camera's centre and height,
+/// and a free eye's pitch when it tilts.
+struct LandFrame {
+    stacks: LandStacks,
+    center: [f32; 2],
+    height: f32,
+    pitch: Option<f32>,
+}
+
+/// Three provinces' stacks, province 2 with `extra` divisions beside division 12. Each call makes
+/// new allocations; a frame whose stacks did not change reuses the last frame's (`clone`), as the
+/// counters layer publishes them, which the column plans are keyed on.
+fn land_stacks(extra: &[u64]) -> LandStacks {
+    let source = |units: &[u64]| -> Arc<[(Member, counter_action::Action)]> {
+        units.iter().map(|&id| (land_unit(id, 1, 10, 10, true).member(), Ok(1))).collect::<Vec<_>>().into()
+    };
+    let second: Vec<u64> = std::iter::once(12).chain(extra.iter().copied()).collect();
+    [((1, STANDSTILL), source(&[10, 11])), ((2, STANDSTILL), source(&second)), ((3, STANDSTILL), source(&[13]))].into()
+}
+
+/// Each frame drawn by a retained preparation against a fresh preparation; the two must be equal
+/// (reports, and quads by bits). `overlay` is the plate's `counter_overlay` icon's placement and
+/// `extra` more of the plate's children. Returns each frame's plan and draw counts.
+fn land_plates_against_fresh(
+    overlay: &str,
+    extra: &str,
+    frames: Vec<LandFrame>,
+) -> Vec<(crate::map::counters::preparation::plan_probe::Counts, crate::map::counters::preparation::plan_probe::Counts)> {
+    use crate::map::counters::preparation::plan_probe;
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    let guis = layout_gui(
+        format!(
+            r#"guiTypes={{
+        containerWindowType={{name=unit_mapicon size={{width=81 height=29}}
+            gridBoxType={{name=units_box size={{width=81 height=290}}
+                slotsize={{width=81 height=1}} max_slots_horizontal=1 format=UPPER_LEFT}}
+        }}
+        positionType={{name=unit_counter_zoomed_in_offset position={{x=0 y=0}}}}
+        containerWindowType={{name=unit_counter_navy size={{width=20 height=10}}}}
+        containerWindowType={{name=naval_headquarter_mapicon size={{width=81 height=29}}
+            buttonType={{name=bg_btn spriteType=GFX_synthetic_plate}}}}
+        containerWindowType={{name=naval_combat_mapicon size={{width=20 height=10}}}}
+        containerWindowType={{name=unit_counter size={{width=81 height=29}}
+            buttonType={{name=count_bg spriteType=GFX_synthetic_plate}}
+            iconType={{name=onmap_action_icon spriteType=GFX_synthetic_actions position={{x=57 y=9}} frame=12}}
+            iconType={{name=counter_overlay spriteType=GFX_synthetic_overlay {overlay}}}
+            {extra}
+        }}
+    }}"#
+        )
+        .as_bytes(),
+    );
+    with_counter_inputs_fixture(
+        guis,
+        |assets| {
+            assets.layouts = Layouts::read(&assets.windows);
+        },
+        |content| {
+            let points = [(1, [2., 9.5, 2.]), (2, [3., 9.5, 2.]), (3, [2., 9.5, 3.])];
+            content.default_anchors = Arc::new(points.into());
+            content.bounds = Arc::new(
+                points
+                    .into_iter()
+                    .map(|(id, [x, _, z])| (id, [x - 0.4, z - 0.4, x + 0.4, z + 0.4]))
+                    .collect(),
+            );
+            content.region_of = Arc::new([(1, 1), (2, 2), (3, 3)].into());
+        },
+        |mut inputs| {
+            use replay_data::rows::{TableId, TableRows};
+            use replay_frame::frame::TableView;
+            use viewer_foundation::map::camera::{Free, Lens, Pose};
+            let frame = DecodedFrame {
+                branch: 1,
+                hour: 11,
+                metrics: Default::default(),
+                tables: TableId::ALL.map(|table| TableView::Complete(TableRows::empty(table)).into()),
+            };
+            let mut tables = synthetic_hour(&inputs, &frame);
+            tables.countries = Arc::new(countries([(1, Allegiance::Ours)]));
+            inputs.settings.color_mode = CounterColorMode::Allegiance;
+            let empty = BTreeSet::new();
+            let schedules: [Shared; 2] = std::array::from_fn(|_| Shared::default());
+            let mut inputs = CounterInputs { selected: &empty, schedule: &schedules[0], ..inputs };
+            let mut retained = Preparation::default();
+            let mut windows = [naval_windows::Windows::default(), naval_windows::Windows::default()];
+            let mut pings = [PoolView::default(), PoolView::default()];
+            let mut bases = [BaseView::default(), BaseView::default()];
+            let mut combats = [land_windows::View::default(), land_windows::View::default()];
+            let mut held: Option<PreparedCounters> = None;
+            let mut out = Vec::new();
+            for (at, step) in frames.into_iter().enumerate() {
+                inputs.camera.center = step.center;
+                inputs.camera.height = step.height;
+                if let Some(pitch) = step.pitch {
+                    inputs.camera.pose = Pose::Free(Free::new(0., pitch, Lens::MAP));
+                }
+                let published = Layered { land: Some(Arc::new(step.stacks)), ..Layered::default() };
+                retained.set_layered(published.clone(), Kinds::LAND, Kinds::default());
+                let (mut kept, prepared) =
+                    plan_probe::collect(|| prepare_retained(&inputs, &frame, &tables, 0, &mut retained).unwrap());
+                if let Some(mut old) = held.take() {
+                    kept.keep_drawn(&mut old);
+                }
+                let mut made = Preparation::default();
+                made.set_layered(published, Kinds::LAND, Kinds::default());
+                let mut fresh = prepare_retained(&inputs, &frame, &tables, 0, &mut made).unwrap();
+                let time = at as f32 / 240.;
+                inputs.schedule = &schedules[0];
+                let ((), drawn) = plan_probe::collect(|| {
+                    kept.draw(&inputs, time, &mut windows[0], &mut pings[0], &mut bases[0], &mut combats[0]).unwrap()
+                });
+                inputs.schedule = &schedules[1];
+                fresh.draw(&inputs, time, &mut windows[1], &mut pings[1], &mut bases[1], &mut combats[1]).unwrap();
+                assert_eq!(fresh.drawn.report, kept.drawn.report, "frame {at}");
+                assert_quad_bits(&fresh.drawn.batch, &kept.drawn.batch);
+                out.push((prepared, drawn));
+                held = Some(kept);
+            }
+            out
+        },
+    )
+}
+
+/// With the camera still, grouping re-forming (a division joining province 2's column) lays out
+/// that column alone: its plan is made again and its plates drawn, the other columns' plates are
+/// not drawn; the same grouping again draws nothing.
+#[test]
+fn grouping_re_forming_lays_out_only_the_re_formed_columns() {
+    let first = land_stacks(&[]);
+    // Province 2's stack alone is a new allocation; the same grouping again reuses it.
+    let mut reformed = first.clone();
+    reformed.insert((2, STANDSTILL), land_stacks(&[14])[&(2, STANDSTILL)].clone());
+    let at = |stacks: &LandStacks| LandFrame { stacks: stacks.clone(), center: [2., 2.], height: 80., pitch: None };
+    let counts = land_plates_against_fresh("position={x=3 y=4}", "", vec![at(&first), at(&reformed), at(&reformed)]);
+    let [(_, first), (formed, reformed), (_, again)] = counts[..] else {
+        panic!("three frames");
+    };
+    assert_eq!(formed.semantic_plans - formed.semantic_plan_hits, 1, "the re-formed column alone is laid out again: {formed:?}");
+    assert!(reformed.plates_drawn >= 1 && reformed.plates_drawn < first.plates_drawn, "its plates alone are drawn again: {first:?} {reformed:?}");
+    assert_eq!(again.plates_drawn, 0, "the same grouping draws nothing again: {again:?}");
+}
+
+#[test]
+fn another_hour_s_layout_draws_again_only_the_plates_whose_stacks_changed() {
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    let guis = layout_gui(br#"guiTypes={
+        containerWindowType={name=unit_mapicon size={width=81 height=29}
+            gridBoxType={name=units_box size={width=81 height=290}
+                slotsize={width=81 height=1} max_slots_horizontal=1 format=UPPER_LEFT}
+        }
+        positionType={name=unit_counter_zoomed_in_offset position={x=0 y=0}}
+        containerWindowType={name=unit_counter_navy size={width=20 height=10}}
+        containerWindowType={name=naval_headquarter_mapicon size={width=81 height=29}
+            buttonType={name=bg_btn spriteType=GFX_synthetic_plate}}
+        containerWindowType={name=naval_combat_mapicon size={width=20 height=10}}
+        containerWindowType={name=unit_counter size={width=81 height=29}
+            buttonType={name=count_bg spriteType=GFX_synthetic_plate}
+            iconType={name=onmap_action_icon spriteType=GFX_synthetic_actions position={x=57 y=9} frame=12}
+            iconType={name=counter_overlay spriteType=GFX_synthetic_overlay position={x=3 y=4}}
+        }
+    }"#);
+    with_counter_inputs_fixture(
+        guis,
+        |assets| {
+            assets.layouts = Layouts::read(&assets.windows);
+        },
+        |content| {
+            let points = [(1, [2., 9.5, 2.]), (2, [3., 9.5, 2.]), (3, [2., 9.5, 3.])];
+            content.default_anchors = Arc::new(points.into());
+            content.bounds = Arc::new(
+                points
+                    .into_iter()
+                    .map(|(id, [x, _, z])| (id, [x - 0.4, z - 0.4, x + 0.4, z + 0.4]))
+                    .collect(),
+            );
+            content.region_of = Arc::new([(1, 1), (2, 2), (3, 3)].into());
+        },
+        |mut inputs| {
+            use crate::map::counters::preparation::plan_probe;
+            use replay_data::rows::{TableId, TableRows};
+            use replay_frame::frame::TableView;
+            let frame = DecodedFrame {
+                branch: 1,
+                hour: 11,
+                metrics: Default::default(),
+                tables: TableId::ALL.map(|table| TableView::Complete(TableRows::empty(table)).into()),
+            };
+            let mut tables = synthetic_hour(&inputs, &frame);
+            tables.countries = Arc::new(countries([(1, Allegiance::Ours)]));
+            inputs.settings.color_mode = CounterColorMode::Allegiance;
+            inputs.camera.height = 80.;
+            inputs.camera.center = [2., 2.];
+            let empty = BTreeSet::new();
+            let schedules: [Shared; 2] = std::array::from_fn(|_| Shared::default());
+            let mut inputs = CounterInputs { selected: &empty, schedule: &schedules[0], ..inputs };
+            let source = |units: &[u64]| -> Arc<[(Member, counter_action::Action)]> {
+                units.iter().map(|&id| (land_unit(id, 1, 10, 10, true).member(), Ok(1))).collect::<Vec<_>>().into()
+            };
+            let first: LandStacks = [
+                ((1, STANDSTILL), source(&[10, 11])),
+                ((2, STANDSTILL), source(&[12])),
+                ((3, STANDSTILL), source(&[13])),
+            ]
+            .into();
+            // Division 10 weakens: only its source is a new allocation, as the counters layer publishes.
+            let mut weaker = first.clone();
+            let mut members = weaker[&(1, STANDSTILL)].to_vec();
+            members[0].0.hp = counter_status::FIXED / 2;
+            weaker.insert((1, STANDSTILL), members.into());
+            let products = [first, weaker.clone(), weaker];
+            // Each hour's tables are new (another epoch, countries in another allocation with the
+            // same values); the template icons are the memo's, unchanged with their table.
+            let icons = Arc::clone(&tables.icons);
+            let hour_tables = |inputs: &CounterInputs<'_>| {
+                let mut tables = synthetic_hour(inputs, &frame);
+                tables.countries = Arc::new(countries([(1, Allegiance::Ours)]));
+                tables.icons = Arc::clone(&icons);
+                tables
+            };
+            let mut windows = [naval_windows::Windows::default(), naval_windows::Windows::default()];
+            let mut pings = [PoolView::default(), PoolView::default()];
+            let mut bases = [BaseView::default(), BaseView::default()];
+            let mut combats = [land_windows::View::default(), land_windows::View::default()];
+            let mut held: Option<PreparedCounters> = None;
+            let mut plates = Vec::new();
+            for (at, stacks) in products.into_iter().enumerate() {
+                let published = Layered { land: Some(Arc::new(stacks)), ..Layered::default() };
+                // A new hour: new tables, laid out on a memory of its own, as the tables' worker does.
+                let tables = hour_tables(&inputs);
+                let mut laid = Preparation::default();
+                laid.set_layered(published.clone(), Kinds::LAND, Kinds::default());
+                let mut kept = prepare_retained(&inputs, &frame, &tables, 0, &mut laid).unwrap();
+                let mut made = Preparation::default();
+                made.set_layered(published, Kinds::LAND, Kinds::default());
+                let mut fresh = prepare_retained(&inputs, &frame, &tables, 0, &mut made).unwrap();
+                assert_eq!(kept.fixed.report, fresh.fixed.report, "prepare {at}");
+                if let Some(mut old) = held.take() {
+                    kept.keep_drawn_by_value(&mut old);
+                }
+                let time = at as f32 / 240.;
+                inputs.schedule = &schedules[0];
+                let ((), drawn) = plan_probe::collect(|| {
+                    kept.draw(&inputs, time, &mut windows[0], &mut pings[0], &mut bases[0], &mut combats[0]).unwrap()
+                });
+                inputs.schedule = &schedules[1];
+                fresh.draw(&inputs, time, &mut windows[1], &mut pings[1], &mut bases[1], &mut combats[1]).unwrap();
+                assert_eq!(fresh.drawn.report, kept.drawn.report, "draw {at}");
+                for (a, b) in [
+                    (&fresh.fixed.pings, &kept.fixed.pings),
+                    (&fresh.fixed.bases, &kept.fixed.bases),
+                    (&fresh.fixed.combats, &kept.fixed.combats),
+                    (&fresh.drawn.batch, &kept.drawn.batch),
+                    (&fresh.drawn.combats, &kept.drawn.combats),
+                ] {
+                    assert_quad_bits(a, b);
+                }
+                plates.push(drawn.plates_drawn);
+                held = Some(kept);
+            }
+            assert!(plates[0] >= 3, "every plate on screen is drawn first: {plates:?}");
+            assert!(plates[1] >= 1 && plates[1] < plates[0], "the changed stack's plates alone are drawn again: {plates:?}");
+            assert_eq!(plates[2], 0, "an hour whose stacks are the same draws no plate again: {plates:?}");
+        },
+    );
+}
+
+/// `batch` with the frame's clock set aside: each draw's `Time` constant and its time since its
+/// state's restart, which only a program that has not settled reads.
+fn clockless(batch: &Batch) -> Batch {
+    use viewer_foundation::map::native_shader::draw::SPRITE_TIME;
+    let mut batch = batch.clone();
+    for quad in &mut batch.quads {
+        if let Some(exact) = &mut quad.exact {
+            exact.inputs[0] = 0.;
+            if let Some(native) = &mut exact.native {
+                let native = Arc::make_mut(native);
+                if let Some(time) = native.constants.get_mut(SPRITE_TIME as usize / 4) {
+                    *time = 0.;
+                }
+            }
+        }
+    }
+    batch
+}
+
 /// Structural equality plus all floating payloads by bits, including recursive native bakes.
 /// This is deliberately independent of SpritePass's retained-upload equality.
 fn assert_quad_bits(a: &Batch, b: &Batch) {
@@ -1041,6 +1443,7 @@ fn base_icon_sorted_lookups_keep_expected_state_refusals_and_output_across_hours
                     country_ids: &ids,
                     relations: Err("fixture relations unavailable"),
                     order: order.as_ref(),
+                    carry_tokens: false,
                 };
                 let actual = BaseIcons::read_profiled(
                     &frame,
@@ -1194,5 +1597,185 @@ fn base_icon_sorted_lookups_keep_expected_state_refusals_and_output_across_hours
                 "must prove decided/refused/error and nonempty drawing branches: {errors}/{refused}/{admitted}/{naval}/{emitted}"
             );
         },
+    );
+}
+
+/// The base windows' pools keep what they laid out while they stand still, and a changed offer
+/// lays out its own family's windows alone, kept again once the window it changed settles on the
+/// clock; every frame equals a view whose pools lay out every frame (its `art` moves each frame,
+/// which writes every window again). Before, the clock stood still, and a window changed by its
+/// offer never settled.
+#[test]
+fn base_windows_standing_still_are_kept_and_a_changed_offer_lays_out_its_family_alone() {
+    use crate::map::counters::base_windows::{Family, PreparedBases, State};
+    use crate::map::counters::preparation::plan_probe;
+    with_base_windows("base-windows-kept", |mut inputs| {
+        inputs.camera.height = 80.;
+        inputs.camera.center = [2., 2.];
+        let offers = |inputs: &CounterInputs<'_>, facility_enabled: bool| {
+            let mut bases = PreparedBases::default();
+            bases.offer(inputs, Family::Headquarter, 1, 1, [2., 9.5, 2.], State { frame: 1, enabled: true, sprite: None, air: None });
+            bases.offer(
+                inputs,
+                Family::Facility,
+                3,
+                3,
+                [3., 9.5, 2.],
+                State { frame: 1, enabled: facility_enabled, sprite: Some("GFX_mapicon_facility_air".into()), air: None },
+            );
+            bases
+        };
+        // A schedule never advanced holds every province dirty, and a dirty owner lays its pool
+        // out: the window's advance cleans an off-screen province, steadily here.
+        inputs.schedule.lock().unwrap().advance([1, 3], |_| false, true);
+        // (the facility enabled, the camera moved, the pools expected to keep their windows at
+        // the first frame of these offers; none: frames of them until both families keep their
+        // windows, a window changed by its offer settling on the clock). The clock moves a
+        // sixtieth of a second a frame, as the window's does.
+        let phases = [
+            (true, false, Some(0)),
+            (true, false, Some(2)),
+            (true, false, Some(2)),
+            (false, false, Some(1)),
+            (false, false, None),
+            (false, true, Some(0)),
+            (false, true, None),
+        ];
+        let mut views = [BaseView::default(), BaseView::default()];
+        let mut drawn = 0;
+        let mut at = 0usize;
+        for (phase, (enabled, moved, expected)) in phases.into_iter().enumerate() {
+            if moved {
+                inputs.camera.center = [2.25, 2.];
+            }
+            let bases = offers(&inputs, enabled);
+            for frame in 0..60 {
+                let mut out: [(Batch, CounterReport); 2] = Default::default();
+                let mut kept = 0;
+                for (side, (view, (batch, report))) in views.iter_mut().zip(out.iter_mut()).enumerate() {
+                    inputs.art = if side == 0 { 0 } else { at as u64 + 1 };
+                    let time = 1. + at as f32 / 60.;
+                    let ((), counts) = plan_probe::collect(|| bases.draw(&inputs, view, time, None, batch, report));
+                    if side == 0 {
+                        assert_eq!(counts.pools_presented, 7, "frame {at}: one pool per family");
+                        kept = counts.pools_kept;
+                        let dirty = [1, 3].map(|province| inputs.schedule.lock().unwrap().dirty(province));
+                        let state = format!("{counts:?}; each family's reason it laid out {:?}; provinces 1 and 3 dirty {dirty:?}", view.unkept());
+                        match expected {
+                            Some(expected) => assert_eq!(kept, expected, "frame {at}, phase {phase}: {state}"),
+                            None => assert!(frame < 59 || kept == 2, "phase {phase}: both families did not keep their windows within 60 frames of the change: {state}"),
+                        }
+                    } else {
+                        assert_eq!(counts.pools_kept, 0, "frame {at}: the art moved, every window is written again");
+                    }
+                }
+                let [(kept_batch, kept_report), (laid_batch, laid_report)] = &out;
+                assert_eq!(kept_report, laid_report, "frame {at}");
+                // A kept window's draws carry the clock of the frame that laid them out: a
+                // settled program's output does not read it (`Effect::settles`).
+                if kept > 0 {
+                    assert_quad_bits(&clockless(kept_batch), &clockless(laid_batch));
+                } else {
+                    assert_quad_bits(kept_batch, laid_batch);
+                }
+                drawn += kept_batch.quads.len();
+                at += 1;
+                if expected.is_some() || kept == 2 {
+                    break;
+                }
+            }
+        }
+        assert!(drawn > 0, "the fixture must draw base windows");
+    });
+}
+
+/// The base windows' fixture: a headquarter's and a facility's windows over a plate sprite, with
+/// the effect a disabled button draws.
+fn with_base_windows(name: &str, run: impl FnOnce(CounterInputs<'_>)) {
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    let stack = installed_content_core::test_support::Stack::new(name);
+    let base = stack.base();
+    stack.write(&base, "gfx/FX/defines_hlsl_dx11.fxh", "");
+    // A disabled button draws `Disable`, which the game's effect declares: without it the draw keeps
+    // the previous program, whose clock is unknown, and the window never settles.
+    stack.write(
+        &base,
+        "gfx/FX/buttonstate.shader",
+        r#"
+        VertexStruct I { float3 p : POSITION; };
+        VertexStruct O { float4 p : SV_POSITION; };
+        VertexShader = { MainCode V [[ O main(I v) { O o; o.p=float4(v.p,1); return o; } ]] }
+        PixelShader = { MainCode P [[ float4 main(O v) : SV_TARGET { return float4(0,1,0,1); } ]] }
+        Effect Up { VertexShader = V PixelShader = P }
+        Effect Disable { VertexShader = V PixelShader = P }
+    "#,
+    );
+    stack.write(
+        &base,
+        "interface/base-icons.gfx",
+        r#"spriteTypes={
+        spriteType={name=GFX_synthetic_plate textureFile="gfx/plate.tga"}
+        spriteType={name=GFX_mapicon_facility_air textureFile="gfx/plate.tga"}
+        spriteType={name=GFX_mapicon_facility_naval textureFile="gfx/plate.tga"}
+    }"#,
+    );
+    let mut image = vec![0_u8; 18];
+    image[2] = 2;
+    image[12..14].copy_from_slice(&81_u16.to_le_bytes());
+    image[14..16].copy_from_slice(&29_u16.to_le_bytes());
+    image[16] = 32;
+    image[17] = 8;
+    image.resize(18 + 81 * 29 * 4, 255);
+    std::fs::write(base.join("gfx/plate.tga"), image).unwrap();
+    let layers = stack.layers(&[]);
+    let guis = layout_gui(
+        br#"guiTypes={
+        containerWindowType={name=unit_mapicon size={width=81 height=29}
+            gridBoxType={name=units_box size={width=81 height=290}
+                slotsize={width=81 height=1} max_slots_horizontal=1 format=UPPER_LEFT}}
+        positionType={name=unit_counter_zoomed_in_offset position={x=0 y=0}}
+        containerWindowType={name=unit_counter_navy size={width=20 height=10}}
+        containerWindowType={name=naval_combat_mapicon size={width=20 height=10}}
+        containerWindowType={name=unit_counter size={width=81 height=29}
+            buttonType={name=count_bg quadTextureSprite=GFX_synthetic_plate}
+            iconType={name=onmap_action_icon spriteType=GFX_synthetic_actions frame=12}
+            iconType={name=counter_overlay spriteType=GFX_synthetic_overlay}}
+        containerWindowType={name=naval_headquarter_mapicon size={width=81 height=29}
+            buttonType={name=bg_btn quadTextureSprite=GFX_synthetic_plate}}
+        containerWindowType={name=special_facility_mapicon size={width=81 height=29}
+            buttonType={name=bg_btn quadTextureSprite=GFX_synthetic_plate}}
+        containerWindowType={name=naval_base_mapicon size={width=81 height=29}
+            buttonType={name=bg_btn quadTextureSprite=GFX_synthetic_plate}}
+    }"#,
+    );
+    with_counter_inputs_fixture(
+        guis,
+        |assets| {
+            assets.layouts = Layouts::read(&assets.windows);
+            assets.gui = viewer_foundation::map::native_resources::GuiResources::new(
+                native::resources::Registry::load(&layers).unwrap(),
+                b"english",
+                [4, 4],
+                Default::default(),
+            );
+            assets
+                .gui
+                .load(
+                    &layers,
+                    &viewer_foundation::map::native_gui::Assets {
+                        sprites: [
+                            b"GFX_synthetic_plate".to_vec(),
+                            b"GFX_mapicon_facility_air".to_vec(),
+                            b"GFX_mapicon_facility_naval".to_vec(),
+                        ]
+                        .into(),
+                        ..Default::default()
+                    },
+                    &mut Vec::new(),
+                )
+                .unwrap();
+        },
+        |_| {},
+        run,
     );
 }

@@ -69,25 +69,13 @@ pub struct Membership {
     matches: u32,
 }
 
+pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
+    walk_buffer(memory, base, game_state, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
+}
+
 /// Reads all native owned contracts, including countries beyond the static
 /// country set. Capacity is caller-owned; no allocation, retry or polling occurs.
 pub fn walk(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut [Row],
-    scratch: &mut [Membership],
-) -> Outcome {
-    walk_buffer(
-        memory,
-        base,
-        game_state,
-        crate::walk::Buffer::Fixed(output),
-        crate::walk::Buffer::Fixed(scratch),
-    )
-}
-
-pub fn walk_growing(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -371,15 +359,15 @@ mod tests {
         }
         bytes
     }
-    fn run(bytes: &[u8], output: &mut [Row]) -> Outcome {
-        let mut scratch = [Membership::default(); 2];
+    fn run(bytes: &[u8], output: &mut Vec<Row>) -> Outcome {
+        let mut scratch = vec![Membership::default(); 2];
         walk(&SliceMemory { base: 0, bytes }, 0, GS, output, &mut scratch)
     }
 
     #[test]
     fn native_progress_and_alias_country_references_are_lossless() {
         let bytes = fixture();
-        let mut output = [Row::default(); 2];
+        let mut output = vec![Row::default(); 2];
         assert_eq!(run(&bytes, &mut output), Outcome::Rows { len: 2 });
         assert_eq!(
             output[0],
@@ -402,27 +390,18 @@ mod tests {
     }
 
     #[test]
-    fn capacity_stops_before_unread_contract_fields_and_counts_the_remaining_rows() {
+    fn the_count_probe_reads_no_contract_fields_and_counts_every_row() {
         let mut bytes = fixture();
         p64(&mut bytes, CONTRACT2, 0);
         assert_eq!(
-            run(&bytes, &mut []),
+            count(&SliceMemory { base: 0, bytes: &bytes }, 0, GS),
             Outcome::Truncated {
                 len: 0,
                 unread_rows: 2
             }
         );
-        let mut output = [Row::default(); 1];
-        assert_eq!(
-            run(&bytes, &mut output),
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            }
-        );
-        assert_eq!(output[0].id >> 32, 2);
         assert!(matches!(
-            run(&bytes, &mut [Row::default(); 2]),
+            run(&bytes, &mut vec![Row::default(); 2]),
             Outcome::Unavailable { .. }
         ));
     }
@@ -431,12 +410,12 @@ mod tests {
     fn empty_owner_census_requires_an_authenticated_manager() {
         let mut bytes = fixture();
         header(&mut bytes, MANAGER, 0, 0);
-        assert_eq!(run(&bytes, &mut []), Outcome::Rows { len: 0 });
+        assert_eq!(run(&bytes, &mut Vec::new()), Outcome::Rows { len: 0 });
         p64(&mut bytes, 0x8000 + cequipment_market_status::MANAGER, 1);
-        assert!(matches!(run(&bytes, &mut []), Outcome::Unavailable { .. }));
+        assert!(matches!(run(&bytes, &mut Vec::new()), Outcome::Unavailable { .. }));
         let mut bytes = fixture();
         p32(&mut bytes, MANAGER + 12, u32::MAX);
-        assert!(matches!(run(&bytes, &mut []), Outcome::Unavailable { .. }));
+        assert!(matches!(run(&bytes, &mut Vec::new()), Outcome::Unavailable { .. }));
     }
 
     #[test]
@@ -453,7 +432,7 @@ mod tests {
             p64(&mut bytes, address, value);
             assert!(
                 matches!(
-                    run(&bytes, &mut [Row::default(); 2]),
+                    run(&bytes, &mut vec![Row::default(); 2]),
                     Outcome::Unavailable { .. }
                 ),
                 "accepted corruption at {address:x}"
@@ -463,7 +442,7 @@ mod tests {
         assert!(matches!(
             run(
                 &bytes[..CONTRACT2 + COMPLETED + 3],
-                &mut [Row::default(); 2]
+                &mut vec![Row::default(); 2]
             ),
             Outcome::Unavailable { .. }
         ));
@@ -512,8 +491,8 @@ mod tests {
                 p64(&mut bytes, vector + index * 8, pointer as u64);
             }
         }
-        let mut output = [Row::default(); COUNT];
-        let mut scratch = [Membership::default(); COUNT];
+        let mut output = vec![Row::default(); COUNT];
+        let mut scratch = vec![Membership::default(); COUNT];
         let counted = Counted {
             memory: SliceMemory {
                 base: 0,
@@ -556,29 +535,18 @@ mod tests {
     }
 
     #[test]
-    fn membership_scratch_capacity_is_honest_and_unrelated_index_entries_remain_ignored() {
+    fn membership_scratch_grows_and_unrelated_index_entries_remain_ignored() {
         let mut bytes = fixture();
-        let mut output = [Row::default(); 2];
-        let mut scratch = [Membership::default(); 1];
+        let mut output = vec![Row::default(); 2];
         let memory = SliceMemory {
             base: 0,
             bytes: &bytes,
         };
         assert_eq!(
-            walk(&memory, 0, GS, &mut output, &mut scratch),
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            }
+            walk(&memory, 0, GS, &mut output, &mut vec![Membership::default(); 1]),
+            Outcome::Rows { len: 2 }
         );
-        assert_eq!(output[0].id >> 32, 2);
-        assert_eq!(
-            walk(&memory, 0, GS, &mut output, &mut []),
-            Outcome::Truncated {
-                len: 0,
-                unread_rows: 2
-            }
-        );
+        assert_eq!(count(&memory, 0, GS), Outcome::Truncated { len: 0, unread_rows: 2 });
         // A complete pointer census still checks unreadable unrelated slots,
         // while an unrelated readable pointer is not treated as an owned row.
         header(&mut bytes, 0xa100 + 0x18, SELLERS, 3);
@@ -587,7 +555,7 @@ mod tests {
             base: 0,
             bytes: &bytes,
         };
-        let mut scratch = [Membership::default(); 2];
+        let mut scratch = vec![Membership::default(); 2];
         assert_eq!(
             walk(&memory, 0, GS, &mut output, &mut scratch),
             Outcome::Rows { len: 2 }

@@ -663,7 +663,7 @@ fn capture_node<const N: usize>(
     // interior node and an all-zero leaf never need display bytes.
     let name = if children.count == 0 && values.iter().any(|&value| value != 0) {
         let mut used = text.len();
-        let span = msvc_string::append_growing(memory, at(address, 0x48)?, text, &mut used)?;
+        let span = msvc_string::append(memory, at(address, 0x48)?, text, &mut used)?;
         text.truncate(used);
         [span.0, span.1]
     } else {

@@ -8,7 +8,7 @@ import { canvasPage } from '../../../tools/canvas-page.ts';
 import type { PanelActions, PanelViewProps } from './RecorderPanel';
 import type { RecorderSettings, Snapshot } from './status';
 
-const settings: RecorderSettings = { recordEveryCampaign: true, autoSave: true, startWithWindows: false, startWithReplay: true, captureMode: 'full',
+const settings: RecorderSettings = { recordEveryCampaign: true, autoSave: true, startWithWindows: false, startWithReplay: true, captureMode: 'full', liveCompression: 'low', autoCompress: true,
   campaigns: {}, effectiveSaveFolder: 'C:\\Recordings' };
 const snapshot: Snapshot = { phase: 'waiting', campaign: null, recording: null, name: null, continued: false, hour: null, firstHour: null,
   savedBytes: null, spoolBytes: null, progress: null, startedAt: null, stopping: false, problem: null, automatic: true, session: null, flag: null,

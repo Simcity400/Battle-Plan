@@ -39,7 +39,7 @@ export function airLossDrillHistory(index: LedgerIndex, identity: string, from: 
     parts.push(part); causes.set(part.cause, parts);
   }
   return [...causes].sort(([a], [b]) => a - b).map(([cause, parts]) => ({ id: String(cause), cause, label: airCauseName(cause), parts,
-    runs: ledgerRuns({ country, parts, points: ledgerTotals(parts) }, from, end, dealt, ledgerScale('airLosses')) }));
+    runs: ledgerRuns({ country, parts, points: ledgerTotals(parts), openings: [] }, from, end, dealt, ledgerScale('airLosses')) }));
 }
 
 /** A range retains its native-date lower bound; a held moment uses branch offsets. */

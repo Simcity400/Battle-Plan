@@ -393,13 +393,13 @@ impl Store {
         memory: &impl Memory,
         base: usize,
         state: usize,
-        rows: &mut [CountryExperienceGainRow],
+        rows: &mut Vec<CountryExperienceGainRow>,
     ) -> Result<usize, &'static str> {
         self.snapshot_buffer(
             memory,
             base,
             state,
-            engine_native::walk::Buffer::Fixed(rows),
+            engine_native::walk::Buffer::Growing(rows),
         )
     }
     fn snapshot_buffer(
@@ -491,14 +491,14 @@ impl Store {
         memory: &impl Memory,
         base: usize,
         state: usize,
-        rows: &mut [CountryExperienceGainRow],
+        rows: &mut Vec<CountryExperienceGainRow>,
         refused: bool,
     ) -> Result<usize, &'static str> {
         self.snapshot_interval_buffer(
             memory,
             base,
             state,
-            engine_native::walk::Buffer::Fixed(rows),
+            engine_native::walk::Buffer::Growing(rows),
             refused,
         )
     }
@@ -767,7 +767,7 @@ impl Hooks {
             None => {
                 // A failed batch may have published a tap; retain storage until quiet.
                 self.publication_attempted |= enabled;
-                Hook::set_enabled_iter_attach(
+                Hook::set_enabled_iter(
                     self.taps.iter_mut().map(Tap::publication_hook),
                     enabled,
                 )
@@ -1330,10 +1330,6 @@ mod tests {
             base: 0,
             bytes: &bytes,
         };
-        assert_eq!(
-            growing_store.snapshot(&cache.prepare(&initial_memory, 0, 0), 0, 0, &mut []),
-            Err("experience gain country identity storage too small")
-        );
         for _ in 0..2 {
             assert_eq!(
                 growing_store
@@ -1490,13 +1486,6 @@ mod tests {
             .snapshot_interval(&cache.prepare(&memory, 0, 0), 0, 0, &mut rows, true)
             .unwrap();
         assert!(rows[..LAST].iter().all(|row| row.complete == 0));
-        store.owners.truncate(COUNT - 1);
-        assert_eq!(
-            store.snapshot_interval(&cache.prepare(&memory, 0, 0), 0, 0, &mut rows, false,),
-            Err("experience gain country identity storage too small")
-        );
-        // Loader/spool growth supplies the full live census, without a cap.
-        store.owners.resize(COUNT, None);
         clock.hour += 1;
         store.boundary(clock);
         store
@@ -1529,7 +1518,7 @@ mod tests {
         let sample = |store: &mut Store,
                       cache: &mut Cache,
                       bytes: &[u8],
-                      rows: &mut [CountryExperienceGainRow]| {
+                      rows: &mut Vec<CountryExperienceGainRow>| {
             let memory = SliceMemory { base: 0, bytes };
             store
                 .snapshot_interval(&cache.prepare(&memory, 0, 0), 0, 0, rows, false)

@@ -125,7 +125,7 @@ fn complete_plan_loans_geometry_for_decode_and_returns_it_before_reuse_or_retire
         log.finish_planned_capture();
         fresh.complete();
         assert_eq!(log.spans.as_ptr(), geometry);
-        let recorded = Recorded::build(&log);
+        let recorded = Recorded::build(&log).unwrap();
         let mut bytes = [0; 4];
         assert!(recorded.copy(0x2000, &mut bytes));
         assert_eq!(bytes, [value; 4]);
@@ -326,7 +326,7 @@ fn prefix_descriptor_mismatch_blocks_all_later_reads_and_retires_plan() {
 }
 
 #[test]
-fn planned_prefix_then_payload_overflow_forbids_retry_without_preventing_growth() {
+fn planned_prefix_then_torn_payload_is_unreadable_and_retires_the_plan() {
     let mut log = RawLog::<2>::new(4, 8);
     log.initialize_read_plan(4, 4, 8);
     let first = Script::new(vec![(0x10, Some(vec![1])), (0x20, Some(vec![7]))]);
@@ -342,34 +342,31 @@ fn planned_prefix_then_payload_overflow_forbids_retry_without_preventing_growth(
     assert!(!log.begin_planned_capture(&changed, [0; 4]));
     let root = log.take(&changed, 0x10, 1, 1).unwrap();
     assert_eq!(log.bytes[root], 2);
-    let overflowing_len = log.bytes.capacity();
-    assert_eq!(log.take(&changed, 0x20, overflowing_len, 1), None);
-    assert_eq!(log.take(&changed, 0x30, 1, 1), None);
+    let torn_len = u32::MAX as usize + 1;
+    // The torn payload reads nothing: its table fails as unreadable.
+    assert_eq!(log.take(&changed, 0x20, torn_len, 1), None);
     log.finish_planned_capture();
     changed.complete();
-    assert!(log.overflowed);
-    assert!(log.planned_capture_requires_no_retry());
+    assert!(!log.overflowed);
+    assert!(!log.grow_for_next());
+    assert_eq!(log.refusal(), Some(TORN_READ));
+    assert_eq!(log.fault, [true, false]);
     assert!(!log.planned_capture_failed());
-    assert_eq!(log.fault, [false; 2]);
-    assert!(log.grow_for_next());
     log.prepare_read_plan();
     assert!(log.plan.compiled.is_none());
-    log.grow();
-    assert!(log.bytes.capacity() > overflowing_len);
     log.clear();
     assert!(!log.planned_capture_requires_no_retry());
 
-    // The same ordinary overflow keeps the existing fallback contract.
+    // An unplanned capture refuses it the same way.
     let ordinary = Script::new(vec![(0x10, Some(vec![2]))]);
     assert!(!log.begin_planned_capture(&ordinary, [0; 4]));
     log.take(&ordinary, 0x10, 1, 1);
-    let overflowing_len = log.bytes.capacity();
-    log.take(&ordinary, 0x20, overflowing_len, 1);
+    log.take(&ordinary, 0x20, torn_len, 1);
     log.finish_planned_capture();
     ordinary.complete();
-    assert!(log.overflowed);
-    assert!(!log.planned_capture_requires_no_retry());
-    assert!(log.grow_for_next());
+    assert!(!log.overflowed);
+    assert_eq!(log.refusal(), Some(TORN_READ));
+    assert_eq!(log.fault, [true, false]);
 }
 
 #[test]

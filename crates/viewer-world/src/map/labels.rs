@@ -266,7 +266,7 @@ pub struct LabelReport {
 }
 
 mod projection;
-pub use projection::{LabelTables, note_withheld_capitals, unreadable_overrides};
+pub use projection::{LabelTables, NO_VICTORY_POINTS, TIED_VICTORY_POINTS, note_withheld, note_withheld_capitals, unreadable_overrides};
 #[cfg(test)]
 use projection::{capital_provinces, withheld_capitals};
 #[cfg(test)]
@@ -431,11 +431,43 @@ pub struct PreparedLabels {
 pub struct LabelView {
     pools: [PoolView; 2],
     texts: [BTreeMap<SlotId, String>; 2],
+    /// What each pool's update last wrote to each live owner's window: the same again is no
+    /// change ([`PoolView::present_kept`]).
+    written: [HashMap<u32, Written>; 2],
+    /// What each pool's windows drew, handed again while a window keeps its layout and anchors.
+    painted: [viewer_foundation::map::icon_windows::Painted<u32, [IconAnchor; 2]>; 2],
     labels: HashMap<u32, usize>,
     owners: Vec<viewer_foundation::map::icon_windows::Owner>,
 }
 
+/// One label window's update as last written: its slot, its dot's frame and its name.
+#[derive(Debug)]
+struct Written {
+    slot: SlotId,
+    frame: i32,
+    text: Option<Arc<str>>,
+}
+
 impl LabelView {
+    /// Presents the next frames for the pools' passes alone ([`PoolView::set_quiet`]).
+    pub fn set_quiet(&mut self, quiet: bool) {
+        for pool in &mut self.pools {
+            pool.set_quiet(quiet);
+        }
+    }
+
+    /// Whether a label the next present names stands in a province a coming phase cleans
+    /// ([`PoolView::set_cleaning`], [`PreparedLabels::cleaning`]).
+    pub fn set_cleaning(&mut self, cleaning: bool) {
+        for pool in &mut self.pools {
+            pool.set_cleaning(cleaning);
+        }
+    }
+
+    pub fn running_visibly(&self) -> bool {
+        self.pools.iter().any(PoolView::running_visibly)
+    }
+
     pub fn retries(&self) -> Vec<Retry> {
         self.pools.iter().filter_map(PoolView::retry).collect()
     }
@@ -460,6 +492,11 @@ impl PreparedLabels {
 
     /// Snapshot just this layer's dirty bits before borrowed workers read the schedule.
     /// No worker keeps the shared schedule locked through GUI layout or resource requests.
+    /// Whether a placed label stands in a province dirty out of view ([`Schedule::cleans`]).
+    pub fn cleaning(&self, schedule: &Schedule) -> bool {
+        self.placed.iter().any(|label| schedule.cleans(label.province))
+    }
+
     pub fn dirty(&self, schedule: &Schedule) -> Vec<bool> {
         self.placed
             .iter()
@@ -477,16 +514,16 @@ impl PreparedLabels {
         assert_eq!(dirty.len(), self.placed.len());
         use viewer_foundation::map::icon_windows::{Owner, Plan};
         let mut report = self.report.clone();
-        let mut drawn = Vec::with_capacity(self.placed.len());
+        view.labels.clear();
         for (index, name) in [VICTORY_POINT_WINDOW, CAPITAL_WINDOW]
             .into_iter()
             .enumerate()
         {
             if !view.pools[index].same(context) {
                 view.texts[index].clear();
+                view.written[index].clear();
             }
             let labels = &mut view.labels;
-            labels.clear();
             view.owners.clear();
             for (at, label) in self
                 .placed
@@ -510,7 +547,8 @@ impl PreparedLabels {
                     .ok_or_else(|| format!("no text box named {TEXT}"))?;
                 Ok::<_, String>((icon, text))
             });
-            let layouts = view.pools[index].present(
+            let held = std::cell::RefCell::new(std::mem::take(&mut view.written[index]));
+            view.pools[index].present_kept(
                 context,
                 &Plan {
                     name,
@@ -537,6 +575,7 @@ impl PreparedLabels {
                         .as_ref()
                         .map_err(Clone::clone)?;
                     let label = &self.placed[labels[&owner]];
+                    held.borrow_mut().remove(&owner);
                     instance.set_frame(root, icon, label.frame)?;
                     let text = label.text.as_deref().unwrap_or_default();
                     if view.texts[index].get(&slot).map_or("", String::as_str) != text {
@@ -551,24 +590,57 @@ impl PreparedLabels {
                         }
                         view.texts[index].insert(slot, text.to_owned());
                     }
+                    held.borrow_mut().insert(
+                        owner,
+                        Written {
+                            slot,
+                            frame: label.frame,
+                            text: label.text.clone(),
+                        },
+                    );
                     Ok(())
+                },
+                |owner, slot| {
+                    let label = &self.placed[labels[owner]];
+                    held.borrow().get(owner).is_some_and(|written| {
+                        written.slot == slot
+                            && written.frame == label.frame
+                            && written.text == label.text
+                    })
                 },
                 &mut report.refused_gui,
             );
-            drawn.extend(
-                layouts
-                    .into_iter()
-                    .map(|drawn| (&self.placed[labels[&drawn.owner]], drawn)),
-            );
+            let written = &mut view.written[index];
+            *written = held.into_inner();
+            if written.len() > view.owners.len() {
+                let live: std::collections::HashSet<u32> =
+                    view.pools[index].live().into_iter().map(|(owner, _)| owner).collect();
+                written.retain(|owner, _| live.contains(owner));
+            }
         }
+        // A quiet frame ran the passes; what the labels drew before stands.
+        if view.pools[0].quiet() {
+            return report;
+        }
+        let labels = &view.labels;
+        let mut drawn: Vec<_> = view
+            .pools
+            .iter()
+            .enumerate()
+            .flat_map(|(pool, view)| view.drawn_generations().map(move |drawn| (pool, drawn)))
+            .map(|(pool, (drawn, generation))| (&self.placed[labels[&drawn.owner]], drawn, pool, generation))
+            .collect();
         // Sort both label families by depth.
         drawn.sort_by(|a, b| b.0.depth.total_cmp(&a.0.depth));
-        for (ordinal, (label, drawn)) in drawn.into_iter().enumerate() {
-            batch.at_layer(sprites::layer(label.priority, ordinal as u32, 0));
+        let painted = &mut view.painted;
+        for (ordinal, (label, drawn, pool, generation)) in drawn.into_iter().enumerate() {
+            let layer = sprites::layer(label.priority, ordinal as u32, 0);
+            batch.at_layer(layer);
             batch.at_anchor(Some(label.anchors[0]));
             // The name stands with the dot and fades by the name's cutoff.
             batch.at_part_anchor(TEXT_PART, label.anchors[1]);
-            match native_gui::draw(&drawn.layout, drawn.origin, context.resources, batch) {
+            let draw = |batch: &mut Batch| native_gui::draw(&drawn.layout, drawn.origin, context.resources, batch);
+            match painted[pool].paint(drawn.owner, generation, layer, label.anchors, batch, draw) {
                 Ok(()) => {
                     report.icons += 1;
                     report.texts +=
@@ -586,6 +658,9 @@ impl PreparedLabels {
             }
         }
         batch.at_anchor(None);
+        for painted in painted {
+            painted.finish();
+        }
         report
     }
 }
@@ -877,6 +952,73 @@ pub(crate) mod tests {
             format!("{:?}", serial_batch.quads),
             format!("{:?}", parallel_batch.quads)
         );
+    }
+
+    #[test]
+    fn labels_that_stood_still_are_kept_and_an_off_screen_dirty_capital_lays_out_its_window_alone() {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let resources = gui::fixture();
+        let windows = gui::windows(
+            br#"guiTypes = {
+            containerWindowType = { name = victory_point_mapicon size = { width = 40 height = 20 }
+                iconType = { name = icon spriteType = GFX_even }
+                instantTextBoxType = { name = text font = Main_14 } }
+            containerWindowType = { name = capital_mapicon size = { width = 40 height = 20 }
+                iconType = { name = icon spriteType = GFX_even }
+                instantTextBoxType = { name = text font = Main_14 } }
+        }"#,
+        );
+        let context = native_resources::Context {
+            resources: &resources,
+            windows: &windows,
+            viewport: [400, 400],
+            time: Some(0.),
+        };
+        let label = |province, screen, capital, frame, text: Option<&str>| Label {
+            province,
+            screen,
+            depth: province as f32,
+            capital,
+            frame,
+            priority: 5,
+            text: text.map(Arc::from),
+            anchors: [UNANCHORED; 2],
+        };
+        let hour = |berlin: &str| PreparedLabels {
+            report: Default::default(),
+            placed: vec![
+                label(1, [100., 100.], false, 1, Some(berlin)),
+                label(2, [200., 200.], false, 1, None),
+                label(3, [300., 150.], true, 1, Some("Paris")),
+                // Off screen: requested and erased on every frame, kept off screen while dirty.
+                label(4, [-5000., 150.], true, 1, None),
+            ],
+        };
+        // (Berlin's name, the off-screen capital's province dirty, why each pool laid out)
+        let frames = [
+            ("Berlin", false, [Some("no frame presented yet"), Some("no frame presented yet")]),
+            ("Berlin", false, [None, None]),
+            ("Potsdam", false, [Some("an owner's offer changed"), None]),
+            ("Potsdam", false, [None, None]),
+            ("Potsdam", true, [None, Some("a dirty province kept an icon off screen")]),
+            ("Potsdam", true, [None, None]),
+            ("Potsdam", false, [None, None]),
+        ];
+        let mut view = LabelView::default();
+        for (at, (berlin, dirty, unkept)) in frames.into_iter().enumerate() {
+            let labels = hour(berlin);
+            let dirty = [false, false, false, dirty];
+            let mut batch = Batch::default();
+            let report = labels.draw_scheduled(&context, &dirty, &mut view, &mut batch);
+            assert_eq!(view.pools.each_ref().map(PoolView::unkept), unkept, "frame {at}");
+            // The same hour drawn by a view with no history.
+            let mut fresh = Batch::default();
+            let fresh_report =
+                labels.draw_scheduled(&context, &dirty, &mut LabelView::default(), &mut fresh);
+            assert_eq!(report, fresh_report, "frame {at}");
+            assert_eq!(format!("{:?}", batch.quads), format!("{:?}", fresh.quads), "frame {at}");
+        }
     }
 
     #[test]

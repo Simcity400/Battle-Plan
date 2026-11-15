@@ -3,12 +3,80 @@
 export const BUDGET_MS = 100;
 /** One frame at 95 Hz, the host's frame budget (crates/desktop/src/perf.rs). */
 export const FRAME_BUDGET_MS = 1000 / 95;
-/** Preparation regressions beyond these shares of the baseline fail; wall time is the noisiest. */
-export const PREP_MARGINS = { wallSeconds: 0.25, cpuSeconds: 0.15, peakCommitGb: 0.10 };
-/** The baseline is the median of this many latest passing preparations. */
-export const PREP_HISTORY = 5;
 /** How long a seek may take the map to present its hour. */
 export const MAP_WAIT_MS = 10_000;
+
+/** A page expression that holds once dashboard page `page` is the one shown: its sidebar row current and its grid laid
+ * out. A page switch waits on it (run 13: the click on Overview, made while the Campaign map was opening, left the map
+ * shown, and the step settled on no widget at all). */
+export const pageShown = page => `(document.querySelector('.sidebar-page-list button[aria-current=page]')?.textContent.trim() === ${JSON.stringify(page)}
+  && (document.querySelector('.dash-grid-scroll')?.getClientRects().length ?? 0) > 0)`;
+
+/** Whether a widget has drawn a setting it was given: its article's `data-drawn` (the settings its body last painted
+ * with) equals its `data-settings`, which moved off `before`, and it shows no loading. Self-contained: it runs in the page. */
+export function settingDrawn({ settings, drawn, state }, before) {
+  return drawn !== null && drawn !== undefined && drawn === settings && settings !== before && state !== 'loading';
+}
+
+/** How long a widget that reports drawing a setting has to show it changed before the step is a no-op. A change later than
+ * this is over the 100 ms rule anyway. */
+export const DRAWN_GRACE_MS = 500;
+
+/** Whether a measured step is over at a frame's sample, from what the probe saw: `settled` (no visible widget loading, and
+ * its completion held), `busy` (the app's count of what it has in flight, `window.__busy`; null where the app has none),
+ * how many samples in a row were settled with nothing in flight (`idle`), and how long it has been settled (`heldMs`).
+ * With the count, it is over one frame after it reaches zero: a request counts from the moment it is asked, so a late
+ * start is seen. Without it, once it has held for `wait` ms, the window a late start had to show in. Self-contained: it
+ * runs in the page. */
+export function stepOver({ settled, busy, idle, heldMs, wait }) {
+  if (!settled) return false;
+  return busy === null || busy === undefined ? heldMs >= wait : busy === 0 && idle >= 2;
+}
+
+/** Why a step that never settled had not: what the app still had in flight, by kind (`window.__busy.kinds()`). */
+export const stillInFlight = (kinds, timeout) => `still in flight after ${Math.round(timeout / 1000)} s: ${Object.entries(kinds).filter(([, n]) => n > 0).map(([kind, n]) => `${kind} ${n}`).join(', ')}`;
+
+/** Why a setting showed no visible change, from the widget's settings signature before and after it. */
+export const noVisibleChange = (settingsBefore, settingsNow) => settingsNow !== null && settingsNow === settingsBefore
+  ? 'no visible change after the setting: the widget was never given it'
+  : 'no visible change after the setting: the widget took it, and nothing it shows changed';
+
+/** Each phase's seconds over a run's sessions, in the order they ran: [phase, seconds]. */
+export const phaseSeconds = sessions => (sessions ?? []).flatMap(meta => (meta.phases ?? [])
+  .filter(phase => Number.isFinite(meta[`${phase}Seconds`])).map(phase => [phase, meta[`${phase}Seconds`]]));
+
+/** The machine a run measured on, for the report header: load and Battle Plan apps before its first app started and
+ * before its last closed; what was not recorded is said so, never shown as idle. */
+export function machineLine(run) {
+  const machine = run?.machine;
+  const count = value => Number.isFinite(value) ? value : 'not recorded';
+  const sample = (when, at) => !at ? `${when} not recorded`
+    : `${when} CPU ${Number.isFinite(at.cpuPercent) ? `${at.cpuPercent}%` : 'not recorded'}, memory ${count(at.memoryPercent)}${Number.isFinite(at.memoryPercent) ? '%' : ''}, `
+      + `apps ${count(at.apps?.thisRun)} of this run, ${count(at.apps?.otherRuns)} of other suite runs, ${count(at.apps?.machine)} on the machine`;
+  if (!machine) return 'Machine: not recorded.';
+  return `Machine (${count(machine.logicalCpus)} logical CPUs): ${sample('before the first app', machine.start)}; ${sample('before the last app closed', machine.end)}.`;
+}
+
+/** Whether a run asked for `phase`: a section of a phase not asked for (the quick tier's) is left out, never failed. */
+export const asked = (run, phase) => !Array.isArray(run?.requested) || run.requested.includes(phase);
+
+/** A value with its object keys sorted, so equal settings compare equal whatever order each side wrote them in. */
+const canonical = value => Array.isArray(value) ? value.map(canonical)
+  : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
+
+/** Why map state `state` does not show it drew with every setting of `expected`, the settings menu's saved rows as
+ * [setting, JSON value] (`graphics.<key>`, `audio.<key>`, `counters`, `visualMods`, a set); null when it does. */
+export function mapDrew(state, expected) {
+  if (!state?.applied) return 'its map reports no settings it drew with';
+  for (const [setting, json] of expected) {
+    const [group, key] = setting.split('.');
+    const reported = key === undefined ? state.applied[group] : state.applied[group]?.[key];
+    let got = reported ?? null, want = JSON.parse(json);
+    if (group === 'visualMods') { got = [...got ?? []].sort(); want = [...want].sort(); }
+    if (JSON.stringify(canonical(got)) !== JSON.stringify(canonical(want))) return `it drew ${setting} as ${JSON.stringify(reported ?? null)}, the menu saved ${json}`;
+  }
+  return null;
+}
 
 /** Nearest-rank percentiles, as the host's perf summary computes them. */
 export function quantiles(values) {
@@ -129,7 +197,7 @@ export const MAP_P99_MS = 7;
  * the CPU part of its paint) and GPU time per frame. A
  * frame whose work exceeds one 120 Hz frame is a dropped frame at 120 Hz, whatever the display shows. `fps` is the
  * frame rate achieved, meaningful when the viewer presents uncapped.
- * GPU time arrives later than its frame: each `map` record names its own `frame` (counted per viewer process), and a
+ * GPU time arrives later than its frame: each `map` record names its own `frame` (counted per map), and a
  * later record carries `gpu_frame` (the frame measured) with its `gpu_ms` once that frame's timestamps resolve, or
  * null `gpu_ms` with why it has none (`gpu_error`). The process's `map_open` says whether it can time the GPU at all
  * (`gpu_timer`). */
@@ -331,22 +399,3 @@ export function failedReplies(records, sessions = []) {
 /** Console output from our code: everything but the browser's own advice, which `cdp.mjs` already left out. */
 export const consoleFailures = messages => messages.map(message => ({ ...message, pass: false }));
 
-/** A preparation against the median of the latest passing ones. The first run has no baseline and says so. */
-export function preparation(prep, history) {
-  const reasons = [];
-  if (prep.state !== 'ready') reasons.push(`ended ${prep.state}${prep.error ? `: ${prep.error}` : ''}`);
-  for (const failed of prep.failedSections ?? []) reasons.push(failed);
-  if (prep.exitCode !== 0 && prep.exitCode !== undefined) reasons.push(`the app exited with ${prep.exitCode} after preparing`);
-  const passing = history.filter(entry => entry.pass).slice(-PREP_HISTORY);
-  const metrics = Object.entries(PREP_MARGINS).map(([metric, margin]) => {
-    const values = passing.map(entry => entry[metric]).filter(Number.isFinite).sort((a, b) => a - b);
-    const baseline = values.length ? values[Math.floor((values.length - 1) / 2)] : null;
-    const value = prep[metric];
-    const limit = baseline === null ? null : baseline * (1 + margin);
-    const over = limit !== null && Number.isFinite(value) && value > limit;
-    if (!Number.isFinite(value)) reasons.push(`${metric} was not measured`);
-    if (over) reasons.push(`${metric} ${value.toFixed(2)} over ${limit.toFixed(2)} (baseline ${baseline.toFixed(2)} + ${Math.round(margin * 100)}%)`);
-    return { metric, value, baseline, margin, limit, runs: values.length, pass: !over && Number.isFinite(value) };
-  });
-  return { pass: reasons.length === 0, reasons, metrics, baselineRuns: passing.length };
-}

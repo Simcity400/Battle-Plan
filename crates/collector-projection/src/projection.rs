@@ -67,8 +67,6 @@ struct Ordering {
     held: Option<Held>,
     republished: u64,
     held_converted: u64,
-    /// Time spent projecting the table.
-    ns: u64,
     /// A [`Ledgers`] of the table's comparison inputs.
     ledger: Option<Box<dyn std::any::Any + Send>>,
 }
@@ -96,13 +94,6 @@ impl ProjectionScratch {
     pub fn republish_counts(&self, table: TableId) -> [u64; 2] {
         let order = self.table(table);
         [order.republished, order.held_converted]
-    }
-
-    fn charge(&self, table: TableId, started: std::time::Instant) {
-        let mut order = self.table(table);
-        order.ns = order
-            .ns
-            .saturating_add(started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64);
     }
 
     /// Withdraw `table`'s recorded capture: the next hour converts it.
@@ -214,7 +205,13 @@ impl<'a> Projection<'a> {
         &self,
         snapshot: &crate::certified::Snapshot<S::Row>,
     ) -> TableInput {
-        let started = std::time::Instant::now();
+        crate::table_clock::timed(S::ID, || self.certified_input::<S>(snapshot))
+    }
+
+    fn certified_input<S: TableSchema>(
+        &self,
+        snapshot: &crate::certified::Snapshot<S::Row>,
+    ) -> TableInput {
         let mut scratch = self.scratch.table(S::ID);
         let baseline = self
             .encoder
@@ -264,9 +261,6 @@ impl<'a> Projection<'a> {
             }
             _ => scratch.converted = scratch.converted.saturating_add(1),
         }
-        scratch.ns = scratch
-            .ns
-            .saturating_add(started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64);
         input
     }
 
@@ -626,14 +620,13 @@ pub fn project_table<S: TableSchema, T>(
     let Some(projection) = projection else {
         return table::<S, _>(outcome, source, convert).into();
     };
-    let started = std::time::Instant::now();
-    let input = if replay_data::sliced::takes_keyed_updates(S::ID) {
-        projection.keyed_table::<S, _>(outcome, source, key, equal, convert)
-    } else {
-        projection.table::<S, _>(outcome, source, key, equal, convert)
-    };
-    projection.scratch.charge(S::ID, started);
-    input
+    crate::table_clock::timed(S::ID, || {
+        if replay_data::sliced::takes_keyed_updates(S::ID) {
+            projection.keyed_table::<S, _>(outcome, source, key, equal, convert)
+        } else {
+            projection.table::<S, _>(outcome, source, key, equal, convert)
+        }
+    })
 }
 
 /// The variable-length comparison inputs of one row, appended to its table's ledger.
@@ -966,14 +959,21 @@ pub fn ledger_table<S: TableSchema, T, C: Copy + PartialEq + Send + 'static>(
     let Some(projection) = projection else {
         return table::<S, _>(outcome, source, convert).into();
     };
-    let started = std::time::Instant::now();
-    let input = projection.ledger_table::<S, T, C>(outcome, source, key, record, convert);
-    projection.scratch.charge(S::ID, started);
-    input
+    crate::table_clock::timed(S::ID, || {
+        projection.ledger_table::<S, T, C>(outcome, source, key, record, convert)
+    })
 }
 
 /// [`Projection::republish`], else `convert`, recorded by [`Projection::retain`].
 pub fn held_input<'p, S: TableSchema>(
+    projection: Option<&mut Projection<'p>>,
+    witness: Option<Witness>,
+    convert: impl FnOnce(Option<&mut Projection<'p>>) -> TableInput,
+) -> TableInput {
+    crate::table_clock::timed(S::ID, || held::<S>(projection, witness, convert))
+}
+
+fn held<'p, S: TableSchema>(
     projection: Option<&mut Projection<'p>>,
     witness: Option<Witness>,
     convert: impl FnOnce(Option<&mut Projection<'p>>) -> TableInput,

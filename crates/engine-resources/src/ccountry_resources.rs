@@ -139,22 +139,6 @@ pub fn walk(
     base: usize,
     game_state: usize,
     descriptors: &[cstrategic_resource::Row],
-    output: &mut [Row],
-) -> Outcome {
-    walk_buffer(
-        memory,
-        base,
-        game_state,
-        descriptors,
-        crate::walk::Buffer::Fixed(output),
-    )
-}
-
-pub fn walk_growing(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    descriptors: &[cstrategic_resource::Row],
     output: &mut Vec<Row>,
 ) -> Outcome {
     walk_buffer(
@@ -698,8 +682,8 @@ pub(crate) mod test_support {
             f.u32(0xe200, 19);
             f
         }
-        pub fn descriptors(&self) -> [cstrategic_resource::Row; 1] {
-            let mut rows = [cstrategic_resource::Row::default(); 1];
+        pub fn descriptors(&self) -> Vec<cstrategic_resource::Row> {
+            let mut rows = vec![cstrategic_resource::Row::default(); 1];
             let result = cstrategic_resource::walk(self, 0, &mut rows);
             assert_eq!(result, Outcome::Rows { len: 1 });
             rows
@@ -739,7 +723,7 @@ mod tests {
             0,
             w.game_state(),
             descriptors,
-            crate::walk::Buffer::Fixed(&mut serial),
+            crate::walk::Buffer::Growing(&mut serial),
         );
         [(new, batched), (old, serial)]
     }
@@ -767,7 +751,7 @@ mod tests {
             0,
             w.game_state(),
             &descriptors,
-            crate::walk::Buffer::Fixed(&mut serial),
+            crate::walk::Buffer::Growing(&mut serial),
         );
         let old_reads = ReadCounts::take_current();
         prior.add_current();
@@ -780,13 +764,6 @@ mod tests {
         assert_eq!(new_reads.record_calls, old_reads.record_calls);
         assert_eq!(new_reads.scattered_calls, old_reads.scattered_calls + n);
         assert_eq!(new_reads.spans + 54 * n, old_reads.spans);
-        // A buffer that holds part of a country's rows truncates both alike.
-        let [batched, serial] = both(&w.memory(), &w.memory(), &w, &descriptors, rows - 3);
-        assert_eq!(batched, serial);
-        assert!(matches!(
-            batched.0,
-            Outcome::Truncated { unread_rows: 3, .. }
-        ));
     }
 
     /// The faults the equality tests place: a value record's padding, which
@@ -895,18 +872,6 @@ mod tests {
         assert_eq!(batched.0, Outcome::Rows { len: all });
         assert!(matches!(serial.0, Outcome::Unavailable { .. }));
         assert_eq!(fallbacks() - before, 1);
-        // Country 3 stores five rows; its twentieth value is never read.
-        let unread = record(&w, 3, 0, 20);
-        let memory = Faulty::new(
-            w.memory(),
-            std::iter::once(unread..unread + 12).collect(),
-            false,
-        );
-        let before = fallbacks();
-        let [batched, serial] = both(&memory, &memory, &w, &descriptors, 66 + 5);
-        assert_eq!(batched, serial);
-        assert!(matches!(batched.0, Outcome::Truncated { len: 71, .. }));
-        assert_eq!(fallbacks() - before, 0);
     }
 
     /// A null census slot and an alias slot are skipped as the serial walk
@@ -986,7 +951,7 @@ mod tests {
                         base,
                         state,
                         &descriptors,
-                        crate::walk::Buffer::Fixed(&mut rows),
+                        crate::walk::Buffer::Growing(&mut rows),
                     )
                 };
                 samples.push(start.elapsed().as_nanos() as f64);
@@ -1012,7 +977,7 @@ mod tests {
         let mut fixture = Fixture::new();
         let descriptors = fixture.descriptors();
         fixture.u64(0x10090, (-4_294_967_297_i64) as u64);
-        let mut rows = [Row::default(); 2];
+        let mut rows = vec![Row::default(); 2];
         assert_eq!(
             walk(&fixture, 0, 0x1000, &descriptors, &mut rows),
             Outcome::Rows { len: 2 }
@@ -1022,13 +987,6 @@ mod tests {
         assert_eq!(rows[0].adjustment, -4_294_967_297);
         assert_eq!(rows[0].exported, 4_294_967_305);
         assert_eq!(rows[1].country, 2);
-        assert_eq!(
-            walk(&fixture, 0, 0x1000, &descriptors, &mut rows[..1]),
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            }
-        );
     }
 
     /// Several descriptors share one gather, so a fault in a later descriptor
@@ -1054,7 +1012,7 @@ mod tests {
             ..Default::default()
         };
         let descriptors = [descriptor(1), descriptor(2)];
-        let mut rows = [Row::default(); 4];
+        let mut rows = vec![Row::default(); 4];
         assert_eq!(
             walk(&fixture, 0, 0x1000, &descriptors, &mut rows),
             Outcome::Rows { len: 4 }
@@ -1076,7 +1034,7 @@ mod tests {
                 0,
                 0x1000,
                 &[descriptor(1), descriptor(2), descriptor(3)],
-                &mut [Row::default(); 6]
+                &mut vec![Row::default(); 6]
             ),
             Outcome::Unavailable {
                 reason: "resource pool count disagrees with database or capacity"
@@ -1095,7 +1053,7 @@ mod tests {
     fn pool_tokens_headers_and_resource_census_cannot_silently_shift_values() {
         let mut fixture = Fixture::new();
         let descriptors = fixture.descriptors();
-        let mut rows = [Row::default(); 2];
+        let mut rows = vec![Row::default(); 2];
         fixture.u32(0x10018, 20);
         assert!(matches!(
             walk(&fixture, 0, 0x1000, &descriptors, &mut rows),

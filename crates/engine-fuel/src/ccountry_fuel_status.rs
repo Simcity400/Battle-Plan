@@ -126,22 +126,6 @@ pub fn walk(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    rows: &mut [Row],
-    consumers: &mut [ConsumerRow],
-) -> Outcomes {
-    walk_buffer(
-        memory,
-        base,
-        game_state,
-        crate::walk::Buffer::Fixed(rows),
-        crate::walk::Buffer::Fixed(consumers),
-    )
-}
-
-pub fn walk_growing(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
     rows: &mut Vec<Row>,
     consumers: &mut Vec<ConsumerRow>,
 ) -> Outcomes {

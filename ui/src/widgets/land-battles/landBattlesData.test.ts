@@ -1,18 +1,19 @@
-import { preparedPrefix } from '../../dashboard/preparedPrefix.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { deepFreeze } from '../../testFrozen.ts';
-import type { LandBattlesManifestReply, CountryGroupReply } from '../../generated/dashboard';
+import type { CountryGroupReply, LandBattlesManifestReply } from '../../generated/dashboard';
 import type { CountrySelection } from '../../dashboard/model';
-import type { LandBattle, LandBattlesWindow } from './landBattlesData.ts';
-import { battleWarnings, battleWindowIndex, battleWindows, rankedLandBattleRows, landBattleRows, landBattlePlaceRequests, namedLandBattles,
+import type { LandBattle, LandBattleRow, LandBattlesWindow } from './landBattlesData.ts';
+import type { BattleValue } from '../battles/battleRows.ts';
+import { battleChangeHours, battleState, battleStateRows } from '../battles/battleRows.ts';
+import { battleWarnings, battleWindowIndex, battleWindows, rankedLandBattleRows, landBattleChanges, landBattleRow, landBattleRows, landBattlePlaceRequests, landWindowPlaces, namedLandBattles,
   shownCensusHour, validateLandBattlesReply, validateLandBattlesManifest, validateLandBattlesRanking } from './landBattlesData.ts';
 import { validatePlaceNamesReply } from '../../dashboard/placeNamesData.ts';
 import { casualtyRankingNote, landCasualtiesMissing, landCasualtyText, landDivisionText, landLossText } from './landBattlesData.ts';
 import { formatDateTime } from '../../dashboard/calendar.ts';
 import { OPTIONS, definition } from './definition.ts';
 import { resolveOptions } from '../../dashboard/options.ts';
-import { countryMatch, countryMatchFilter } from '../../dashboard/groups.ts';
+import { countryMatch, countryMatchFilter, countryScope } from '../../dashboard/groups.ts';
 
 const history = (id = 'episode'): LandBattle => ({ id, provinceId: 17, start: { hour: 10, bound: 'exact' }, end: { hour: 21, bound: 'exact' },
   endUnknownHour: null, counterBase: 0, priorPeak: null, priorSidePeaks: null, losses: [], result: null,
@@ -221,6 +222,16 @@ test('only drawn province/hour pairs ask for names and names never backfill earl
   assert.throws(() => validatePlaceNamesReply({ ...places, places: [places.places[0], places.places[0]] }), /malformed/);
 });
 
+test('following, every battle the held windows hold asks its place once, so the place each drawn row names is already asked', () => {
+  const later = { ...history('later'), provinceId: 9, start: { hour: 30, bound: 'exact' as const } };
+  const windows = new Map([[0, reply([history(), history('again')])], [1, reply([later], 1)]]);
+  const held = landWindowPlaces(windows);
+  assert.deepEqual(held, [{ provinceId: 17, hour: 10 }, { provinceId: 9, hour: 30 }], 'each place once, in hour order, from every window');
+  const keys = new Set(held.map(place => `${place.provinceId}@${place.hour}`));
+  for (const hour of [10, 20, 35]) for (const row of landBattleRows(windows, hour, () => true, true))
+    assert.ok(keys.has(`${row.provinceId}@${row.place.namedAt ?? row.place.hour}`), `the row ${row.id} at ${hour} names a place already asked`);
+});
+
 test('place names require state/hour replies, retain renames and accept every requested state', () => {
   const states = [{ stateId: 17, hour: 10, name: 'First state name', missing: null },
     { stateId: 17, hour: 19, name: 'Renamed state', missing: null },
@@ -264,12 +275,13 @@ test('at the last complete census open battles remain ongoing; hidden subsequent
   assert.equal(read(h, 19)[0].sides[0].countries[0].hour, 19);
 });
 
-test('nine years wants playhead, next Live and drawn history only; release scrolled windows', () => {
+test('nine years wants playhead, next two Live and drawn history only; release scrolled windows', () => {
   const manifest: LandBattlesManifestReply = { available: true, unavailable: null, contentWarnings: [],
     windows: Array.from({ length: 110 }, (_, i) => ({ firstHour: i * 720, lastHour: i * 720 + 719 })) };
   assert.equal(validateLandBattlesManifest(manifest).windows.length, 110);
   assert.deepEqual(battleWindows(manifest, 78_000, false), [107, 108]);
   assert.deepEqual(battleWindows(manifest, 78_000, true), [107, 108, 109]);
+  assert.deepEqual(battleWindows(manifest, 70_000, true), [96, 97, 98, 99], 'following, the two windows after the playhead\'s');
   assert.deepEqual(battleWindows(manifest, 78_000, true, [106]), [105, 106, 108, 109]);
   assert.deepEqual(battleWindows(manifest, 78_000, true, [104]), [103, 104, 108, 109]);
   assert.deepEqual(battleWindows(manifest, 78_000, false, [], 78_000), [108]);
@@ -290,6 +302,14 @@ test('server ranking predicate equals countryMatch, and ranked summaries retain 
   assert.deepEqual(filter, { tags: null, membership: groups.humans, unobserved: groups.unobserved.humans });
   assert.deepEqual(countryMatchFilter({ kind: 'tags', tags: ['other'] }, [], groups, 40), { tags: null,
     membership: [{ tag: 'former/other', firstHour: 1, lastHour: 9 }, { tag: 'other', firstHour: 10, lastHour: 40 }], unobserved: [] });
+  // The scope a server keeps a log to admits a country at exactly the hours countryMatch does: a group counted at each
+  // hour loses the hours its history was not recorded; a pick keeps every tag its country held.
+  const scope = countryScope(selection, [], groups, 40)!;
+  assert.deepEqual(scope, [{ tag: 'other', firstHour: 10, lastHour: 18 }, { tag: 'other', firstHour: 21, lastHour: 40 }]);
+  const matches = countryMatch(selection, [], groups, 40).matches;
+  for (let hour = 0; hour <= 41; hour++) assert.equal(scope.some(run => run.firstHour <= hour && hour <= run.lastHour), matches('other', hour), `hour ${hour}`);
+  assert.deepEqual(countryScope({ kind: 'tags', tags: ['other'] }, [], groups, 40), countryMatchFilter({ kind: 'tags', tags: ['other'] }, [], groups, 40).membership);
+  assert.equal(countryScope({ kind: 'all' }, [], groups, 40), null, 'every country asks no scope');
   const ranked = { labels: [], rows: [history()], censusHour: 20, effectiveMeasure: 'Peak size', warnings: [], contentWarnings: [] };
   const ranking = validateLandBattlesRanking(ranked);
   assert.equal(rankedLandBattleRows(ranking, 20)[0].peak.value, 5);
@@ -419,9 +439,50 @@ test('loss read validation refuses malformed sides, ambiguous labels, orphan cha
 });
 
 
-test('cold land windows preserve the ordinary empty-prefix metadata', () => {
-  const prefix = { coverage: { firstHour: 100, lastHour: 99, complete: false }, pending: [{ firstHour: 100, lastHour: 120 }] };
-  const value = { ...prefix, window: 0, interval: { firstHour: 100, lastHour: 120 }, rows: [], observed: [], reasons: [], warnings: [], contentWarnings: [] };
-  assert.deepEqual(preparedPrefix(validateLandBattlesReply(value)), prefix);
-  assert.doesNotThrow(() => validateLandBattlesManifest({ ...prefix, windows: [value.interval], available: false, unavailable: null, contentWarnings: [] }));
+test('the rows change structure only where a battle begins, its countries change, its census stops, or it ends or is decided', () => {
+  const window = validateLandBattlesReply(wire([{ ...history(), runs: [
+    { firstHour: 10, lastHour: 12, counts: [2, 1], rosterUnknown: false, countries: [['GER'], ['POL']], countriesUnknown: [false, false], duration: 0 },
+    { firstHour: 13, lastHour: 15, counts: [3, 1], rosterUnknown: false, countries: [['GER'], ['POL']], countriesUnknown: [false, false], duration: 3 },
+    { firstHour: 16, lastHour: 18, counts: [3, 1], rosterUnknown: false, countries: [['GER'], ['POL', 'ENG']], countriesUnknown: [false, false], duration: 6 },
+  ] }]));
+  const changes = new Set(battleChangeHours(landBattleChanges(new Map([[0, window]]))));
+  assert.ok(changes.has(10) && changes.has(16) && changes.has(19), 'start, a new country, the census stopping');
+  assert.ok(!changes.has(13), 'a size change is painted, not a new structure');
+});
+
+test('one battle read at its own changes is the row the whole read lists, so a block reads only the battles that change', () => {
+  const manpower = (attacker: number | null, defender: number): [BattleValue[], BattleValue[]] => [
+    [attacker === null ? { label: 'Manpower lost', value: null, unknown: 'Hourly losses not recorded' } : { label: 'Manpower lost', value: attacker }],
+    [{ label: 'Manpower lost', value: defender }]];
+  // a: GER v POL from 10, sizes change at 13 and ENG joins at 16; losses read at 11, again at 14, not read at 17; won and ended at 19.
+  const a: LandBattle = { ...history('a'), end: { hour: 19, bound: 'exact' }, result: { hour: 19, duration: 9, winner: { side: 0 }, countries: [['GER'], ['POL', 'ENG']], countriesUnknown: [false, false] },
+    losses: [{ hour: 11, terminal: false, sides: manpower(100, 50) }, { hour: 14, terminal: false, sides: manpower(180, 90) }, { hour: 17, terminal: false, sides: manpower(null, 120) }],
+    runs: [
+      { firstHour: 10, lastHour: 12, counts: [2, 1], rosterUnknown: false, countries: [['GER'], ['POL']], countriesUnknown: [false, false], duration: 0 },
+      { firstHour: 13, lastHour: 15, counts: [3, 1], rosterUnknown: false, countries: [['GER'], ['POL']], countriesUnknown: [false, false], duration: 3 },
+      { firstHour: 16, lastHour: 18, counts: [3, 1], rosterUnknown: false, countries: [['GER'], ['POL', 'ENG']], countriesUnknown: [false, false], duration: 6 }] };
+  // b: ITA v FRA from 14, its census stopping after 25 with no ending read.
+  const b: LandBattle = { ...history('b'), start: { hour: 14, bound: 'exact' }, end: null,
+    runs: [{ firstHour: 14, lastHour: 25, counts: [4, 4], rosterUnknown: false, countries: [['ITA'], ['FRA']], countriesUnknown: [false, false], duration: 0 }] };
+  const windows = new Map([[0, { ...reply([a, b]), interval: { firstHour: 10, lastHour: 30 }, observed: [[10, 30]] as [number, number][] }]]);
+  const all = () => true, onlyEng = (tag: string) => tag === 'ENG';
+  for (const [matches, every, from] of [[all, true, null], [onlyEng, false, null], [all, true, 15]] as const) {
+    for (let at = 9; at <= 32; at++) for (const id of ['a', 'b']) {
+      assert.deepEqual(landBattleRow(windows, id, at, matches, every, from), landBattleRows(windows, at, matches, every, from).find(row => row.id === id) ?? null, `${id} at ${at}`);
+    }
+  }
+  const changes = landBattleChanges(windows);
+  assert.ok(changes.battles.get(17)?.includes('a') && !changes.battles.get(14)?.includes('a'), 'losses no longer known change the row; new numbers are painted');
+  assert.deepEqual(changes.battles.get(14), ['b']);
+  const whole = new Set(changes.whole);
+  const hours = [10, ...battleChangeHours(changes).filter(hour => hour > 10 && hour <= 32)];
+  const state = (row: LandBattleRow) => battleState(row, true);
+  const rowsAt = (at: number) => landBattleRows(windows, at, all, true);
+  const byBattle = battleStateRows(hours, rowsAt, true, state, at => whole.has(at) ? null : changes.battles.get(at) ?? [], (id, at) => landBattleRow(windows, id, at, all, true));
+  assert.deepEqual(byBattle.map(row => [row.key, row.revealedHour ?? null, row.leftHour ?? null]),
+    battleStateRows(hours, rowsAt, true, state).map(row => [row.key, row.revealedHour ?? null, row.leftHour ?? null]));
+  for (let at = 10; at <= 32; at++) {
+    const shown = byBattle.filter(row => Math.max(row.hour, row.revealedHour ?? row.hour) <= at && (row.leftHour ?? Infinity) > at);
+    assert.deepEqual(shown.map(row => state(row.item)).sort(), rowsAt(at).map(state).sort(), `every battle in the state the whole read gives at ${at}`);
+  }
 });

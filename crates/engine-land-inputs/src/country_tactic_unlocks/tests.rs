@@ -1,6 +1,6 @@
 use super::*;
 use crate::{country_memory::Cache, memory::SliceMemory};
-use std::{cell::RefCell, collections::BTreeMap, sync::Arc};
+use std::{cell::RefCell, collections::BTreeMap};
 
 const GAME: usize = 0x1000;
 const COUNTRIES: usize = 0x2000;
@@ -149,17 +149,21 @@ impl Owned {
             memory,
             base,
             game,
-            Buffers {
-                rows: &mut self.rows,
-                unlocks: &mut self.unlocks,
-                registry: &mut self.registry,
-                list: &mut self.list,
-            },
+            &mut self.rows,
+            &mut self.unlocks,
+            &mut self.registry,
+            &mut self.list,
         )
     }
     fn fixture(&mut self, memory: &Fixture) -> Capture {
         self.capture(memory, 0, GAME)
     }
+}
+
+/// The count-only probe of every table.
+fn count(memory: &Fixture) -> Capture {
+    use crate::walk::Buffer;
+    capture_buffer(memory, 0, GAME, Buffer::Count, Buffer::Count, Buffer::Count, Buffer::Count)
 }
 
 #[test]
@@ -169,7 +173,7 @@ fn census_records_saved_database_ids_in_native_order_with_one_copy_per_list() {
     let result = owned.fixture(&memory);
     assert_eq!(result.outcome, Outcome::Rows { len: 2 });
     assert_eq!(
-        owned.rows,
+        owned.rows[..2],
         [
             Row {
                 country: 2,
@@ -237,7 +241,7 @@ fn the_null_tactic_is_database_entry_zero_and_records_id_zero() {
 #[test]
 fn pressure_preserves_exact_demand_and_cannot_hide_an_unknown_tactic() {
     let memory = Fixture::new();
-    let result = Owned::new(0, 0, 0, 0).fixture(&memory);
+    let result = count(&memory);
     assert_eq!(
         result.outcome,
         Outcome::Truncated {
@@ -254,28 +258,25 @@ fn pressure_preserves_exact_demand_and_cannot_hide_an_unknown_tactic() {
         ),
         (2, 3, 8, 24)
     );
-    // Only the unlock arena is short: every list is still authenticated.
+    // Every list is authenticated.
     let mut memory = Fixture::new();
     memory.put(LIST + 8, (FOREIGN as u64).to_le_bytes());
     assert_eq!(
-        Owned::new(2, 0, 8, 24).fixture(&memory).outcome,
+        Owned::fits().fixture(&memory).outcome,
         Outcome::Unavailable {
             reason: "country tactic unlock names no loaded tactic"
         }
     );
     // A null pointer is corrupt input, separate from the authenticated nonzero
-    // null tactic with ID 0, regardless of unlock-arena capacity.
+    // null tactic with ID 0.
     let mut memory = Fixture::new();
     memory.put(LIST + 8, 0u64.to_le_bytes());
-    for owned in [Owned::fits(), Owned::new(2, 0, 8, 24)] {
-        let mut owned = owned;
-        assert_eq!(
-            owned.fixture(&memory).outcome,
-            Outcome::Unavailable {
-                reason: "country tactic unlock names no loaded tactic"
-            }
-        );
-    }
+    assert_eq!(
+        Owned::fits().fixture(&memory).outcome,
+        Outcome::Unavailable {
+            reason: "country tactic unlock names no loaded tactic"
+        }
+    );
 }
 
 /// A list that does not fit the staging counts as demand only once its
@@ -286,7 +287,7 @@ fn pressure_preserves_exact_demand_and_cannot_hide_an_unknown_tactic() {
 fn an_unfit_list_is_demand_only_once_its_ends_read() {
     let mut memory = Fixture::new();
     memory.array(Fixture::row(1) + TACTICS, 0x7fff_0000, i32::MAX as u32);
-    let result = Owned::new(0, 0, 0, 0).fixture(&memory);
+    let result = count(&memory);
     assert_eq!(
         result.outcome,
         Outcome::Unavailable {
@@ -296,7 +297,7 @@ fn an_unfit_list_is_demand_only_once_its_ends_read() {
     assert!(result.required_list < 1 << 20);
     // The same readable list reports its exact demand, as before.
     let memory = Fixture::new();
-    assert_eq!(Owned::new(0, 0, 0, 0).fixture(&memory).required_list, 24);
+    assert_eq!(count(&memory).required_list, 24);
 }
 
 #[test]
@@ -467,10 +468,10 @@ fn each_country_costs_two_copies() {
         base: WORLD,
         bytes: &bytes,
     };
-    let mut storage = Arc::new(Cache::with_capacity(Cache::cells_for_countries(
+    let mut storage = engine_allocation::shared(Cache::with_capacity(Cache::cells_for_countries(
         COUNTRIES + 1,
         8192,
-    )));
+    ))).unwrap();
     let snapshot = Cache::prepare_shared(&mut storage, &source, base, game).unwrap();
     let memory = Counted {
         memory: snapshot.roster_view(&source),

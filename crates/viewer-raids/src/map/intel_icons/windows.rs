@@ -130,6 +130,11 @@ pub struct IntelView {
 }
 
 impl IntelView {
+    /// Whether a window changed on its own at the last frame, not cleared.
+    pub fn running(&self) -> bool {
+        self.active
+    }
+
     fn same<R>(&self, context: &Context<'_, R>) -> bool {
         self.built.as_ref().is_some_and(|(windows, viewport)| {
             windows.same(context.windows) && *viewport == context.viewport

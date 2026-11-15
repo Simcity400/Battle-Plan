@@ -26,3 +26,7 @@ engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
 installed-content-unit-path = { workspace = true, features = ["test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
+unify-bitflags-2 = { workspace = true }
+unify-either = { workspace = true }
+unify-num-traits = { workspace = true }
+unify-smallvec = { workspace = true }

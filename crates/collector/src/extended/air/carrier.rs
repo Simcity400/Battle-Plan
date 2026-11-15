@@ -3,7 +3,7 @@
 
 use super::*;
 use engine_native::{
-    cair_base::CarrierAceSlot, cair_base::CarrierBase, cair_base::CarrierBuffers,
+    cair_base::CarrierAceSlot, cair_base::CarrierBase,
     cair_base::CarrierCountryTerms, cair_base::CarrierDemand, cair_base::CarrierForecastSlot,
     cair_base::CarrierIndexedCertificate, cair_base::CarrierLengths, cair_base::CarrierPool,
     cair_base::CarrierRegistration, cair_base::CountryOccurrence,
@@ -38,38 +38,50 @@ impl Bases {
     }
     /// Reserve all state-summary output and byte scratch in bulk before the
     /// memo's capacity fingerprint. Reads only the already owned log.
-    pub fn prepare_states(&mut self, job: &super::AirBasesJob) {
+    pub fn prepare_states(&mut self, job: &super::AirBasesJob) -> Result<(), &'static str> {
         self.state_segments.clear();
-        if allocation::reserve(&mut self.state_segments, job.segments.len()).is_ok() {
-            self.state_segments.extend(
-                job.segments
-                    .iter()
-                    .map(|segment| (segment.handle, segment.pointer)),
-            );
-            self.state_segments
-                .sort_unstable_by_key(|(handle, _)| *handle);
-        }
-        let recorded = crate::raw::Recorded::build(&job.log);
-        let count = job.segments.iter().try_fold(0_usize, |sum, segment| {
-            sum.checked_add(
-                engine_native::cair_base::state_country_order_demand(&recorded, segment.pointer)
+        allocation::reserve(&mut self.state_segments, job.segments.len())
+            .map_err(|_| ALLOCATION_FAILED)?;
+        self.state_segments.extend(
+            job.segments
+                .iter()
+                .map(|segment| (segment.handle, segment.pointer)),
+        );
+        self.state_segments
+            .sort_unstable_by_key(|(handle, _)| *handle);
+        let recorded = crate::raw::Recorded::build(&job.log)?;
+        let count = job
+            .segments
+            .iter()
+            .try_fold(0_usize, |sum, segment| {
+                sum.checked_add(
+                    engine_native::cair_base::state_country_order_demand(
+                        &recorded,
+                        segment.pointer,
+                    )
                     .unwrap_or(0),
-            )
-        });
-        if let Some(count) = count {
-            if let Some(total) = job.carrier.demand.countries.checked_add(count) {
-                prepare(&mut self.countries, total);
-            }
-            if let Some(bytes) = count
+                )
+            })
+            .ok_or(DEMAND_OVERFLOW)?;
+        let demand = job.carrier.demand;
+        prepare(
+            &mut self.countries,
+            demand.countries.checked_add(count).ok_or(DEMAND_OVERFLOW)?,
+        )?;
+        prepare(
+            &mut self.names,
+            count
                 .checked_mul(8)
-                .and_then(|bytes| job.carrier.demand.name_bytes.checked_add(bytes))
-            {
-                prepare(&mut self.names, bytes);
-            }
-            if let Some(rows) = job.carrier.demand.bases.checked_add(job.segments.len()) {
-                prepare(&mut self.rows, rows);
-            }
-        }
+                .and_then(|bytes| demand.name_bytes.checked_add(bytes))
+                .ok_or(DEMAND_OVERFLOW)?,
+        )?;
+        prepare(
+            &mut self.rows,
+            demand
+                .bases
+                .checked_add(job.segments.len())
+                .ok_or(DEMAND_OVERFLOW)?,
+        )
     }
 
     /// Append state bases' insertion order to the existing independent packet.
@@ -80,8 +92,8 @@ impl Bases {
         image: usize,
         source: &[engine_native::cair_base::Row],
         resolved: &mut [engine_native::cair_base::ResolvedLink],
-    ) {
-        let log = crate::raw::Recorded::build(&job.log);
+    ) -> Result<(), &'static str> {
+        let log = crate::raw::Recorded::build(&job.log)?;
         // The census took the callback's roster when it had one.
         let recorded = crate::extended::roster_replay::RosterReplay::new(
             &log,
@@ -128,6 +140,7 @@ impl Bases {
             self.len += 1;
         }
         self.index_rows();
+        Ok(())
     }
 
     pub fn reset(&mut self) {
@@ -154,13 +167,14 @@ impl Bases {
         self.demand = demand;
         self.indexed = false;
     }
-    pub fn prepare(&mut self, demand: CarrierDemand) {
-        prepare(&mut self.rows, demand.bases);
-        prepare(&mut self.countries, demand.countries);
-        prepare(&mut self.names, demand.name_bytes);
+    pub fn prepare(&mut self, demand: CarrierDemand) -> Result<(), &'static str> {
+        prepare(&mut self.rows, demand.bases)?;
+        prepare(&mut self.countries, demand.countries)?;
+        prepare(&mut self.names, demand.name_bytes)
     }
+    /// A hint: the decode prepares again and refuses by name.
     pub fn grow(&mut self) {
-        self.prepare(self.demand);
+        let _ = self.prepare(self.demand);
     }
     pub fn bytes(&self) -> usize {
         self.rows.capacity() * size_of::<CarrierBase>()
@@ -292,12 +306,13 @@ impl Registrations {
         self.demand = demand;
         self.indexed = false;
     }
-    pub fn prepare(&mut self, demand: CarrierDemand) {
-        prepare(&mut self.rows, demand.registrations);
-        prepare(&mut self.pools, demand.pools);
+    pub fn prepare(&mut self, demand: CarrierDemand) -> Result<(), &'static str> {
+        prepare(&mut self.rows, demand.registrations)?;
+        prepare(&mut self.pools, demand.pools)
     }
+    /// A hint: the decode prepares again and refuses by name.
     pub fn grow(&mut self) {
-        self.prepare(self.demand);
+        let _ = self.prepare(self.demand);
     }
     pub fn bytes(&self) -> usize {
         self.state.bytes() as usize
@@ -312,18 +327,20 @@ impl Registrations {
         self.rows[..self.len].sort_unstable_by_key(|row| (row.base, row.slot));
         self.indexed = true;
     }
-    pub(crate) fn install_states(&mut self, packet: &super::state_fuel_inputs::Packet) {
+    pub(crate) fn install_states(
+        &mut self,
+        packet: &super::state_fuel_inputs::Packet,
+    ) -> Result<(), &'static str> {
         self.state.clear();
-        if allocation::reserve(&mut self.state.rows, packet.rows.len()).is_err()
-            || allocation::reserve(&mut self.state.pools, packet.pools.len()).is_err()
-        {
-            return;
-        }
+        allocation::reserve(&mut self.state.rows, packet.rows.len())
+            .and_then(|()| allocation::reserve(&mut self.state.pools, packet.pools.len()))
+            .map_err(|_| ALLOCATION_FAILED)?;
         self.state.rows.extend_from_slice(&packet.rows);
         self.state.pools.extend_from_slice(&packet.pools);
         self.state
             .rows
             .sort_unstable_by_key(|row| (row.base, row.slot));
+        Ok(())
     }
     /// Resolve once for both the optional packet and independent state scalars.
     pub(crate) fn registration(&self, source: &cair_base::RegistrationRow) -> Registration<'_> {
@@ -497,12 +514,12 @@ impl Scratch {
             forecasts: Vec::new(),
         }
     }
-    pub fn prepare(&mut self, demand: CarrierDemand) {
-        prepare(&mut self.indexed, demand.indexed);
-        prepare(&mut self.resolved, demand.resolved);
-        prepare(&mut self.country_terms, demand.country_terms);
-        prepare(&mut self.aces, demand.aces);
-        prepare(&mut self.forecasts, demand.forecasts);
+    pub fn prepare(&mut self, demand: CarrierDemand) -> Result<(), &'static str> {
+        prepare(&mut self.indexed, demand.indexed)?;
+        prepare(&mut self.resolved, demand.resolved)?;
+        prepare(&mut self.country_terms, demand.country_terms)?;
+        prepare(&mut self.aces, demand.aces)?;
+        prepare(&mut self.forecasts, demand.forecasts)
     }
     pub fn capacity(&self) -> [usize; 5] {
         [
@@ -526,8 +543,8 @@ pub(crate) fn buffers<'a>(
     bases: &'a mut Bases,
     registrations: &'a mut Registrations,
     scratch: &'a mut Scratch,
-) -> CarrierBuffers<'a> {
-    CarrierBuffers {
+) -> cair_base::CarrierBuffers<'a> {
+    cair_base::CarrierBuffers {
         bases: &mut bases.rows,
         registrations: &mut registrations.rows,
         pools: &mut registrations.pools,
@@ -541,29 +558,15 @@ pub(crate) fn buffers<'a>(
     }
 }
 
-pub(crate) fn buffers_growing<'a>(
-    bases: &'a mut Bases,
-    registrations: &'a mut Registrations,
-    scratch: &'a mut Scratch,
-) -> cair_base::GrowingCarrierBuffers<'a> {
-    cair_base::GrowingCarrierBuffers {
-        bases: &mut bases.rows,
-        registrations: &mut registrations.rows,
-        pools: &mut registrations.pools,
-        countries: &mut bases.countries,
-        names: &mut bases.names,
-        indexed: &mut scratch.indexed,
-        resolved: &mut scratch.resolved,
-        country_terms: &mut scratch.country_terms,
-        aces: &mut scratch.aces,
-        forecasts: &mut scratch.forecasts,
-    }
-}
+const ALLOCATION_FAILED: &str = "capture buffer allocation failed";
+const DEMAND_OVERFLOW: &str = "carrier state demand overflow";
 
-fn prepare<T: Default>(rows: &mut Vec<T>, required: usize) {
+pub(crate) fn prepare<T: Default>(rows: &mut Vec<T>, required: usize) -> Result<(), &'static str> {
     let mut capacity = rows.len();
     crate::table_capture::grow_capacity(&mut capacity, required);
-    crate::table_capture::grow_vec(rows, capacity);
+    crate::table_capture::grow_vec(rows, capacity)
+        .then_some(())
+        .ok_or(ALLOCATION_FAILED)
 }
 fn span<T>(rows: &[T], len: usize, (start, count): (usize, usize)) -> Option<&[T]> {
     let end = start.checked_add(count)?;
@@ -612,15 +615,16 @@ impl Default for Job {
     }
 }
 impl Job {
+    /// Hints: the acquisition's growing walk refuses by name.
     pub(crate) fn presize(&mut self, demand: CarrierDemand) {
-        self.bases.prepare(demand);
-        self.registrations.prepare(demand);
-        self.scratch.prepare(demand);
+        let _ = self.bases.prepare(demand);
+        let _ = self.registrations.prepare(demand);
+        let _ = self.scratch.prepare(demand);
         self.log
             .get_mut()
             .presize(demand.raw_spans, demand.raw_bytes);
         if let Ok(required) = allocation::mul(demand.raw_spans, 2) {
-            prepare(&mut self.index, required);
+            let _ = prepare(&mut self.index, required);
             self.index.fill(usize::MAX);
         }
     }
@@ -653,13 +657,14 @@ impl Job {
             || demand.aces > self.scratch.aces.len()
             || demand.forecasts > self.scratch.forecasts.len()
     }
+    /// Hints: the acquisition's growing walk refuses by name.
     pub fn grow(&mut self) {
         self.log.get_mut().grow();
-        prepare(&mut self.index, self.required_index);
+        let _ = prepare(&mut self.index, self.required_index);
         self.index.fill(usize::MAX);
-        self.bases.prepare(self.demand);
-        self.registrations.prepare(self.demand);
-        self.scratch.prepare(self.demand);
+        let _ = self.bases.prepare(self.demand);
+        let _ = self.registrations.prepare(self.demand);
+        let _ = self.scratch.prepare(self.demand);
     }
     pub fn bytes(&self) -> u64 {
         (self.index.capacity() * size_of::<usize>()

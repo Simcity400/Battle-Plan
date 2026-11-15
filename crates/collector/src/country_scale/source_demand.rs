@@ -47,7 +47,7 @@ impl Demand {
         // Faction names share the observer-owner census. Indexed registry
         // floors and conflict groups still feed fixed consumers; keep these
         // reads on the fast cadence, unlike the independent worker-only walks.
-        let factions = engine_native::cfaction::walk(memory, base, state, &mut [], &mut []);
+        let factions = engine_native::cfaction::count(memory, base, state);
         let faction_rows =
             table_demand::rows(factions.outcome).map(|rows| (rows, factions.required_bytes));
         if let Ok(accounts) = engine_native::cfaction_system::accounts(memory, base, state) {
@@ -70,7 +70,7 @@ impl Demand {
             factions: faction_rows,
             faction_members: capacity_census.then(|| {
                 table_demand::rows(
-                    engine_native::cfaction_system::walk_members(memory, base, state, &mut []),
+                    engine_native::cfaction_system::count_members(memory, base, state),
                 )
             }),
             wars: capacity_census.then(|| {

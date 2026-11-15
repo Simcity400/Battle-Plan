@@ -15,14 +15,6 @@ use crate::{
 use power_balance_definition::Token;
 
 pub struct Buffers<'a> {
-    pub records: &'a mut [power_balance_record::Row],
-    pub members: &'a mut [power_balance_record::MemberRow],
-    pub ranges: &'a mut [power_balance_range::Row],
-    pub overrides: &'a mut [power_balance_gfx_override::Row],
-    pub text: &'a mut [u8],
-}
-
-pub struct GrowingBuffers<'a> {
     pub records: crate::walk::Buffer<'a, power_balance_record::Row>,
     pub members: crate::walk::Buffer<'a, power_balance_record::MemberRow>,
     pub ranges: crate::walk::Buffer<'a, power_balance_range::Row>,
@@ -73,26 +65,11 @@ impl Count {
 /// their exact count; a failed dependency refuses the census, never an empty
 /// success. There are no allocations, engine calls, retries or display getters.
 /// The caller owns hourly consistency and measures this walk with its other tables.
-pub fn walk(memory: &impl Memory, base: usize, game_state: usize, output: Buffers<'_>) -> Census {
-    walk_buffer(
-        memory,
-        base,
-        game_state,
-        GrowingBuffers {
-            records: crate::walk::Buffer::Fixed(output.records),
-            members: crate::walk::Buffer::Fixed(output.members),
-            ranges: crate::walk::Buffer::Fixed(output.ranges),
-            overrides: crate::walk::Buffer::Fixed(output.overrides),
-            text: crate::walk::Buffer::Fixed(output.text),
-        },
-    )
-}
-
-pub fn walk_buffer(
+pub fn walk(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    mut output: GrowingBuffers<'_>,
+    mut output: Buffers<'_>,
 ) -> Census {
     let result = (|| {
         let manager = game_state
@@ -639,34 +616,24 @@ mod tests {
         m
     }
 
+    #[derive(Default)]
     struct Output {
-        records: [power_balance_record::Row; 2],
-        members: [power_balance_record::MemberRow; 2],
-        ranges: [power_balance_range::Row; 2],
-        overrides: [power_balance_gfx_override::Row; 3],
-        text: [u8; 256],
-    }
-
-    impl Default for Output {
-        fn default() -> Self {
-            Self {
-                records: [power_balance_record::Row::default(); 2],
-                members: [power_balance_record::MemberRow::default(); 2],
-                ranges: [power_balance_range::Row::default(); 2],
-                overrides: [power_balance_gfx_override::Row::default(); 3],
-                text: [0; 256],
-            }
-        }
+        records: Vec<power_balance_record::Row>,
+        members: Vec<power_balance_record::MemberRow>,
+        ranges: Vec<power_balance_range::Row>,
+        overrides: Vec<power_balance_gfx_override::Row>,
+        text: Vec<u8>,
     }
 
     impl Output {
         fn buffers(&mut self) -> Buffers<'_> {
+            use crate::walk::Buffer;
             Buffers {
-                records: &mut self.records,
-                members: &mut self.members,
-                ranges: &mut self.ranges,
-                overrides: &mut self.overrides,
-                text: &mut self.text,
+                records: Buffer::Growing(&mut self.records),
+                members: Buffer::Growing(&mut self.members),
+                ranges: Buffer::Growing(&mut self.ranges),
+                overrides: Buffer::Growing(&mut self.overrides),
+                text: Buffer::Growing(&mut self.text),
             }
         }
     }
@@ -680,11 +647,11 @@ mod tests {
         let mut ranges = Vec::new();
         let mut overrides = Vec::new();
         let mut text = Vec::new();
-        let first = walk_buffer(
+        let first = walk(
             &memory,
             0,
             GS,
-            GrowingBuffers {
+            Buffers {
                 records: Buffer::Growing(&mut records),
                 members: Buffer::Growing(&mut members),
                 ranges: Buffer::Growing(&mut ranges),
@@ -704,30 +671,11 @@ mod tests {
             (0..5_000).flat_map(|_| template.iter().copied()).collect(),
         );
         memory.header(MANAGER + RECORDS, data, 5_000);
-        let fixed = walk(
+        let later = walk(
             &memory,
             0,
             GS,
             Buffers {
-                records: &mut records[..1],
-                members: &mut members[..1],
-                ranges: &mut ranges[..1],
-                overrides: &mut overrides[..2],
-                text: &mut text[..first.required_text],
-            },
-        );
-        assert_eq!(
-            fixed.records,
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 4_999
-            }
-        );
-        let later = walk_buffer(
-            &memory,
-            0,
-            GS,
-            GrowingBuffers {
                 records: Buffer::Growing(&mut records),
                 members: Buffer::Growing(&mut members),
                 ranges: Buffer::Growing(&mut ranges),
@@ -793,59 +741,6 @@ mod tests {
         assert_eq!(
             output.overrides[1].gfx.bytes(&output.text),
             Some([0xff, 0, b'X'].as_slice())
-        );
-    }
-
-    #[test]
-    fn capacity_reports_whole_rows_and_exact_arena_growth_without_shortening_tokens() {
-        let m = fixture();
-        let mut output = Output::default();
-        let expected = walk(&m, 0, GS, output.buffers()).required_text;
-        let census = walk(
-            &m,
-            0,
-            GS,
-            Buffers {
-                records: &mut output.records[..0],
-                members: &mut output.members[..0],
-                ranges: &mut output.ranges[..0],
-                overrides: &mut output.overrides[..1],
-                text: &mut output.text[..4],
-            },
-        );
-        assert_eq!(
-            census.records,
-            Outcome::Truncated {
-                len: 0,
-                unread_rows: 1
-            }
-        );
-        assert_eq!(
-            census.members,
-            Outcome::Truncated {
-                len: 0,
-                unread_rows: 1
-            }
-        );
-        assert_eq!(
-            census.ranges,
-            Outcome::Truncated {
-                len: 0,
-                unread_rows: 1
-            }
-        );
-        assert_eq!(
-            census.overrides,
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            }
-        );
-        assert_eq!(census.required_text, expected);
-        assert_eq!(census.text_len, 4);
-        assert_eq!(
-            output.overrides[0].side.bytes(&output.text),
-            Some(b"left".as_slice())
         );
     }
 

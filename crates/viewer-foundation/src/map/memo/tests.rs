@@ -307,3 +307,24 @@ fn concurrent_callers_of_one_key_share_one_build() {
     assert_eq!(builds.load(std::sync::atomic::Ordering::SeqCst), 1);
     assert!(values.iter().all(|value| Arc::ptr_eq(value, &values[0])));
 }
+
+/// A caller that never waits, asking for a key another caller is building (here its own build,
+/// where a caller that waited would wait forever), builds its own copy; the first build is kept.
+#[test]
+fn a_caller_that_never_waits_builds_its_own_copy_while_another_builds_the_key() {
+    let recent = Recent::<u32, u32>::new();
+    let first = recent
+        .get_or_insert_without_waiting(1, || {
+            let own = recent
+                .get_or_insert_without_waiting(1, || Ok::<_, ()>(Arc::new(7)))
+                .unwrap();
+            assert_eq!(*own, 7, "built for itself");
+            Ok::<_, ()>(Arc::new(42))
+        })
+        .unwrap();
+    assert_eq!(*first, 42);
+    let again = recent
+        .get_or_insert_without_waiting(1, || Ok::<_, ()>(Arc::new(0)))
+        .unwrap();
+    assert!(Arc::ptr_eq(&first, &again), "the first build is the one kept");
+}

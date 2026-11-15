@@ -92,40 +92,77 @@ fn an_uncommitted_interval_is_copied_again_and_a_failed_writer_takes_no_number()
 }
 
 #[test]
-fn a_full_lane_refuses_without_overwriting_and_its_demand_grows_the_next_generation() {
+fn a_full_lane_spills_without_overwriting_and_its_demand_grows_the_next_generation() {
     let _lock = LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_tests();
     grow(1, MINIMUM_LANE_BYTES).unwrap();
     let payload = vec![7_u8; MINIMUM_LANE_BYTES / 4];
-    let mut published = 0;
-    while event(6, 9, &payload).is_ok() {
-        published += 1;
+    for sequence in 1..=3 {
+        assert_eq!(event(6, 9, &payload), Ok(sequence));
     }
-    assert_eq!(published, 3);
-    assert_eq!(event(6, 9, &payload), Err(Refusal::Capacity));
-    // Nothing the full lane refused was taken or overwritten.
+    // The fourth does not fit the lane: it spills whole, numbered in order, and nothing in
+    // the lane is overwritten.
+    assert_eq!(event(6, 9, &payload), Ok(4));
     let before = capacity();
-    assert_eq!(before.sequence, 3);
+    assert_eq!(
+        (before.sequence, before.spilled, before.spill_pending),
+        (4, 1, 1)
+    );
     assert!(grow(1, MINIMUM_LANE_BYTES).unwrap());
     let after = capacity();
     assert_eq!(after.generations, 2);
     assert!(after.lane_bytes > before.lane_bytes);
-    // Callbacks move to the new generation; the old one drains, then unlinks.
-    assert_eq!(event(6, 10, &payload), Ok(4));
+    // Callbacks move to the new generation; the old one drains, spill included, then unlinks.
+    assert_eq!(event(6, 10, &payload), Ok(5));
     let rows = drained(seal());
     assert_eq!(
         rows.iter()
-            .map(|row| (row.0, row.3.len()))
+            .map(|row| (row.0, row.3.clone()))
             .collect::<Vec<_>>(),
-        (1..=4)
-            .map(|sequence| (sequence, payload.len()))
+        (1..=5)
+            .map(|sequence| (sequence, payload.clone()))
             .collect::<Vec<_>>()
     );
     assert_eq!(capacity().generations, 1);
+    assert_eq!(capacity().spill_pending, 0);
     // An unchanged demand installs nothing.
     assert!(!grow(1, MINIMUM_LANE_BYTES).unwrap());
+}
+
+#[test]
+fn a_spill_never_waits_for_the_spool_and_a_burst_keeps_every_event_in_order() {
+    let _lock = LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    reset_for_tests();
+    grow(1, MINIMUM_LANE_BYTES).unwrap();
+    let log = unsafe { &*CURRENT.load(Ordering::SeqCst) };
+    let payload = |n: u64| vec![n as u8; MINIMUM_LANE_BYTES / 4];
+    // The spool's spilled events stay held through the whole burst.
+    let consumer = log.spill.lock().unwrap();
+    let (done, finished) = std::sync::mpsc::channel();
+    std::thread::scope(|scope| {
+        scope.spawn(move || {
+            for n in 1..=20 {
+                assert_eq!(event(6, 9, &payload(n)), Ok(n));
+            }
+            done.send(()).unwrap();
+        });
+        finished
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("a map event spill waited for the spool's lock");
+        drop(consumer);
+    });
+    let rows = drained(seal());
+    assert_eq!(
+        rows.iter()
+            .map(|row| (row.0, row.3.clone()))
+            .collect::<Vec<_>>(),
+        (1..=20).map(|n| (n, payload(n))).collect::<Vec<_>>()
+    );
+    assert_eq!(capacity().spill_pending, 0);
 }
 
 #[test]
@@ -234,7 +271,8 @@ fn queued_intervals_copy_disjointly_and_hold_their_space_until_written() {
         2
     );
     assert_eq!(event(0, 3, &quarter), Ok(5));
-    assert_eq!(event(0, 3, &quarter), Err(Refusal::Capacity));
+    // The queued intervals hold the lane's space, so the next event spills.
+    assert_eq!(event(0, 3, &quarter), Ok(6));
     first.commit();
     assert_eq!(
         log.lanes[0].consumed.load(Ordering::Acquire),
@@ -250,13 +288,18 @@ fn queued_intervals_copy_disjointly_and_hold_their_space_until_written() {
         [4]
     );
     // Only the written interval's space came back.
-    assert_eq!(event(0, 3, &quarter), Ok(6));
-    assert_eq!(event(0, 3, &quarter), Err(Refusal::Capacity));
+    assert_eq!(event(0, 3, &quarter), Ok(7));
+    assert_eq!(event(0, 3, &quarter), Ok(8));
+    assert_eq!(capacity().spill_pending, 2);
     second.commit();
     quiet.commit();
     assert_eq!(ADMITTED.load(Ordering::Acquire), 0);
     let rows = drained(seal());
-    assert_eq!(rows.iter().map(|row| row.0).collect::<Vec<_>>(), [5, 6]);
+    assert_eq!(
+        rows.iter().map(|row| row.0).collect::<Vec<_>>(),
+        [5, 6, 7, 8]
+    );
+    assert!(log.spill().is_empty());
     assert!(
         log.shared
             .published(|record| record.sequence)

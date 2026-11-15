@@ -71,7 +71,7 @@ fn append_definitions(
         }
         let mut token = Vec::new();
         let mut len = 0;
-        msvc_string::append_growing(
+        msvc_string::append(
             memory,
             at(definition, DEFINITION_NAME)?,
             &mut token,

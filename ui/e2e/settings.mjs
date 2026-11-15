@@ -11,7 +11,6 @@ export const fixture = {
     return existsSync(current) ? current : underCaptures('widgetsyear/library/GER 1943-10-24 to 1944-10-24.hoi4replay');
   },
   get bridge() { return (process.env.BATTLE_PLAN_PARITY_BRIDGE ?? process.env.HOI4_PARITY_BRIDGE) || underCaptures('bridge-release/dashboard-bridge.exe'); },
-  get shaderTools() { return underCaptures('bridge-release/shader-tools'); },
   get cache() { return (process.env.BATTLE_PLAN_PARITY_CACHE ?? process.env.HOI4_PARITY_CACHE) || underCaptures('parity-baselines'); },
   gameDir: (process.env.BATTLE_PLAN_GAME_DIR ?? process.env.HOI4_GAME_DIR) || '', userDir: (process.env.BATTLE_PLAN_USER_DIR ?? process.env.HOI4_USER_DIR) || '',
   nativeSeed: (process.env.BATTLE_PLAN_PARITY_NATIVE_SEED ?? process.env.HOI4_PARITY_NATIVE_SEED) || process.env.LOCALAPPDATA,

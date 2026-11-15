@@ -21,7 +21,7 @@ export interface CountryValueSeries {
 }
 export interface CountryValuesReply { types: CountryValueType[]; series: CountryValueSeries[] }
 
-/** Structural reply accepted by PartsRaceView's recorded-count model. */
+/** Structural reply accepted by the recorded-count model of a parts race. */
 export interface CountryPartsReply {
   branchId: string;
   parts: (CountryValueType & { unresolved: boolean })[];

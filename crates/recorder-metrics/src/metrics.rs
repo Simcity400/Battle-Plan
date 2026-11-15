@@ -53,10 +53,12 @@ pub fn percentiles_ns(values: &mut [u64]) -> Option<[u64; 3]> {
     ])
 }
 
+/// The collector's capture: a table the recorder derives is not the collector's to fail.
 fn capture_counted(table: TableId) -> bool {
-    replay_data::format::FormatVersion::CURRENT
-        .table_refusal(table)
-        .is_none()
+    !table.is_derived()
+        && replay_data::format::FormatVersion::CURRENT
+            .table_refusal(table)
+            .is_none()
 }
 
 fn report(replay: &Replay, branch: BranchId, first: Hour, last: Hour) -> io::Result<Value> {
@@ -113,7 +115,6 @@ fn report(replay: &Replay, branch: BranchId, first: Hour, last: Hour) -> io::Res
     replay.visit_blocks(
         &blocks,
         &TableId::ALL,
-        None,
         |_, _, frame| {
             if !(first..=last).contains(&frame.hour) {
                 return Ok(true);
@@ -299,12 +300,12 @@ mod tests {
         let mut bytes = good.bytes().to_vec();
         bytes[4..6].copy_from_slice(&(replay_data::FORMAT_VERSION + 1).to_le_bytes());
         assert!(Replay::open(bytes).is_err());
+        // A block page is always stored and checked against its digest when a walk reads it;
+        // opening the recording reads no page.
         let mut bytes = good.bytes().to_vec();
-        let page = good
-            .recording()
-            .page(good.index[0].run, good.index[0].page as usize)
-            .unwrap();
-        bytes[page.records.offset as usize] ^= 1;
+        let run = good.recording().run(good.index[0].run).unwrap();
+        let page = run.directory().open[good.index[0].page as usize];
+        bytes[(page.offset + page.stored / 2) as usize] ^= 1;
         assert!(report(&Replay::open(bytes).unwrap(), 9, 2, 4).is_err());
     }
 

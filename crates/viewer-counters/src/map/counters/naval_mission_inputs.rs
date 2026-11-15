@@ -111,6 +111,9 @@ pub(super) struct Hour<'a> {
     ships: OnceLock<Fact<HashMap<u64, Vec<&'a ShipRow>>>>,
     fleets: Fact<HashMap<u64, &'a FleetRow>>,
     flags: OnceLock<Fact<HashMap<u64, u64>>>,
+    /// This build's own sea distances, for the queries made while another build holds the shared
+    /// ones ([`Content`]'s): never waited on.
+    own_distances: Mutex<Option<installed_content_naval_path::naval_path::Distances>>,
     definitions: Fact<HashMap<u32, &'a ModifierDefinitionRow>>,
     names: Fact<TokenNames<'a>>,
     features: Option<u32>,
@@ -168,6 +171,7 @@ impl<'a> Hour<'a> {
             fleets: data::<tables::Fleets>(frame)
                 .map(|rows| rows.iter().map(|row| (row.id, row)).collect()),
             flags: OnceLock::new(),
+            own_distances: Mutex::new(None),
             definitions: data::<tables::ModifierDefinitions>(frame)
                 .map(|rows| rows.iter().map(|row| (row.index, row)).collect()),
             names: TokenNames::new(frame).map_err(|error| error.to_string()),
@@ -885,7 +889,7 @@ impl<'a> Hour<'a> {
             return Ok(false);
         }
         let hubs = &self.country(row.mission_owner)?.hubs;
-        let mut distances = self
+        let shared = self
             .content
             .distances
             // Port sea provinces come from the resolved map definition. Fixed recorded
@@ -894,9 +898,17 @@ impl<'a> Hour<'a> {
                 Mutex::new(installed_content_naval_path::naval_path::Distances::new(
                     geometry, ports,
                 ))
-            })
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            });
+        let mut shared = match shared.try_lock() {
+            Ok(held) => Some(held),
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) => None,
+        };
+        let mut own = self.own_distances.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let distances = match shared.as_deref_mut() {
+            Some(shared) => shared,
+            None => own.get_or_insert_with(|| installed_content_naval_path::naval_path::Distances::new(geometry, ports)),
+        };
         for province in sea {
             for &base in std::iter::once(&fleet.home_base).chain(hubs.iter()) {
                 if bases.contains(&base)

@@ -1,5 +1,6 @@
 import { ellipsise } from './labels.ts';
-import { formatDate, gameDate } from '../dashboard/calendar.ts';
+import { formatDate, gameDate, monthNames } from '../dashboard/calendar.ts';
+import type { GameDate } from '../dashboard/calendar.ts';
 import { chartBottom } from './frame.ts';
 import type { PlotFrame } from './frame.ts';
 import { layoutEndLabels } from './labels.ts';
@@ -8,6 +9,7 @@ import type { PathCommand, Run } from './series.ts';
 import { timeTicks } from './timeAxis.ts';
 import type { ChartTokens } from './tokens.ts';
 import { linearTicks, logTicks, thinLogTicks } from './valueAxis.ts';
+import { textWidth } from './textWidth.ts';
 
 /** Canvas drawing shared by every chart. Everything takes its colours and sizes
  * from the tokens and works in layout pixels. */
@@ -62,7 +64,7 @@ export function valueLabelWidth(ctx: CanvasRenderingContext2D, frame: PlotFrame,
   ctx.save();
   ctx.font = font(tokens, tokens.fontSize.small);
   const values = valueTicks(frame, tokens);
-  const width = Math.max(0, ...values.map(value => ctx.measureText(formatValue(value, values)).width));
+  const width = Math.max(0, ...values.map(value => textWidth(ctx, formatValue(value, values))));
   ctx.restore();
   return width;
 }
@@ -94,12 +96,12 @@ export function drawAxes(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens
     if (!cached || cached.font !== ctx.font || cached.width !== width) { cached = { font: ctx.font, width, labels: new Map() }; rowLabels.set(ctx, cached); }
     rows.forEach((label, index) => {
       let fitted = cached.labels.get(label);
-      if (fitted === undefined) { fitted = ellipsise(label, width, text => ctx.measureText(text).width); cached.labels.set(label, fitted); }
+      if (fitted === undefined) { fitted = ellipsise(label, width, text => textWidth(ctx, text)); cached.labels.set(label, fitted); }
       ctx.fillStyle = tokens.text;
       ctx.fillText(fitted, plotLeft - VALUE_LABEL_GAP, plotTop + (index + 0.5) / Math.max(1, rows.length) * plotHeight);
     });
   }
-  const ticks = timeTicks(frame.x[0], frame.x[1], plotWidth, text => ctx.measureText(text).width);
+  const ticks = timeTicks(frame.x[0], frame.x[1], plotWidth, text => textWidth(ctx, text));
   const dates = frame.timeAxisTop ? plotTop - tokens.fontSize.small * 2 : chartBottom(frame);
   ctx.strokeStyle = tokens.grid;
   for (const hour of ticks.grid) {
@@ -311,7 +313,7 @@ export function drawEndLabels(ctx: CanvasRenderingContext2D, frame: PlotFrame, t
     }
     ctx.fillStyle = label.muted ? tokens.muted : tokens.text;
     const room = frame.padding.right - 14, suffix = label.suffix ? ` ${label.suffix}` : '';
-    const measure = (text: string) => ctx.measureText(text).width;
+    const measure = (text: string) => textWidth(ctx, text);
     const text = room > 0 ? ellipsise(label.text, room - measure(suffix), measure) : label.text;
     ctx.fillText(`${text}${suffix}`.trimStart(), x, label.y);
   }
@@ -334,4 +336,15 @@ export function placeEndLabels(ctx: CanvasRenderingContext2D, frame: PlotFrame, 
 export function dayLabel(hour: number): string {
   const date = gameDate(Math.floor(hour));
   return date ? formatDate(date) : `Hour ${Math.floor(hour)}`;
+}
+
+/** The days from `first` to `last` for what is known only somewhere within them, such as a bin's value: the day's own
+ * label when they share it, else "3–9 Jan 1941", "28 Feb – 3 Mar 1941" or "30 Dec 1940 – 2 Jan 1941". */
+export function spanLabel(first: number, last: number): string {
+  const [from, to] = [gameDate(Math.floor(first)), gameDate(Math.floor(last))];
+  if (!from || !to) return dayLabel(first) === dayLabel(last) ? dayLabel(first) : `${dayLabel(first)} – ${dayLabel(last)}`;
+  if (from.year !== to.year) return `${formatDate(from)} – ${formatDate(to)}`;
+  const month = (date: GameDate) => monthNames[date.month - 1].slice(0, 3);
+  if (from.month !== to.month) return `${from.day} ${month(from)} – ${to.day} ${month(to)} ${to.year}`;
+  return from.day === to.day ? formatDate(from) : `${from.day}–${to.day} ${month(to)} ${to.year}`;
 }

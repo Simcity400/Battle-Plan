@@ -115,7 +115,11 @@ fn map_figures_read_the_model_witness_as_full_reads_division_status() {
             witness(3, None, Some(0)),
             witness(4, shown, None),
         ]));
-    let (map_figures, map_errors) = assert_reads_recorded(&map, &[], || figures(&assets, &map));
+    // A maker keeps its last hour's frame and answers; a recording is one capture mode, so the
+    // Map frames have a maker of their own, never one that held a Full hour.
+    let (map_root, map_assets) = figure_assets("model_witness_figures_map");
+    let (map_figures, map_errors) =
+        assert_reads_recorded(&map, &[], || figures(&map_assets, &map));
     // Prepared playback projects the tables it does not select, keeping DivisionStatus's
     // marker: a frame that no longer names one capture mode draws the same figures.
     let mut projected = map.clone();
@@ -133,7 +137,7 @@ fn map_figures_read_the_model_witness_as_full_reads_division_status() {
     }
     assert!(projected.capture_mode().is_err());
     assert_eq!(
-        assert_reads_recorded(&projected, &[], || figures(&assets, &projected)),
+        assert_reads_recorded(&projected, &[], || figures(&map_assets, &projected)),
         (map_figures.clone(), map_errors.clone())
     );
 
@@ -161,4 +165,5 @@ fn map_figures_read_the_model_witness_as_full_reads_division_status() {
         ])
     );
     std::fs::remove_dir_all(root).unwrap();
+    std::fs::remove_dir_all(map_root).unwrap();
 }

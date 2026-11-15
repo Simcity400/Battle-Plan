@@ -360,14 +360,14 @@ fn order_membership_preserves_native_list_and_parent_precedence() {
     let mut index = OrdersIndex::read(&frame).unwrap();
     // List order beats numeric instance order; parent primary beats own fallback.
     for (division, expected) in [(1, (10, 9)), (2, (20, 3)), (3, (10, 2)), (4, (20, 4))] {
-        assert_eq!(index.resolved_order(division, 10), Some(Some(expected)));
+        assert_eq!(resolved_order(&index, division, 10), Some(Some(expected)));
     }
     assert_eq!(
-        index.resolved_order(5, 10),
+        resolved_order(&index, 5, 10),
         Some(None),
         "no grandparent lookup"
     );
-    assert_eq!(index.resolved_order(1, 0), Some(None));
+    assert_eq!(resolved_order(&index, 1, 0), Some(None));
     assert_eq!(parent_branch(1, 10, &index), Some(false));
     assert_eq!(parent_branch(2, 10, &index), Some(true));
     assert_eq!(parent_branch(4, 10, &index), Some(true));
@@ -377,14 +377,14 @@ fn order_membership_preserves_native_list_and_parent_precedence() {
     assert_eq!(parent_branch(1, 0, &index), Some(false));
     index.groups.get_mut(&10).unwrap().parent = 10;
     assert_eq!(
-        index.resolved_order(5, 10),
+        resolved_order(&index, 5, 10),
         Some(None),
         "self-cycle terminates"
     );
     index.groups.get_mut(&10).unwrap().parent = 20;
     index.groups.get_mut(&20).unwrap().parent = 10;
     assert_eq!(
-        index.resolved_order(5, 10),
+        resolved_order(&index, 5, 10),
         Some(None),
         "parent cycle terminates"
     );
@@ -439,8 +439,8 @@ fn truncated_order_memberships_use_only_proven_prefix_matches() {
         *frame.tables[table.index()] = TableView::Truncated { rows, missing: 1 };
     }
     let index = OrdersIndex::read(&frame).unwrap();
-    assert_eq!(index.resolved_order(2, 10), Some(Some((20, 3))));
-    assert_eq!(index.resolved_order(6, 10), Some(None));
+    assert_eq!(resolved_order(&index, 2, 10), Some(Some((20, 3))));
+    assert_eq!(resolved_order(&index, 6, 10), Some(None));
     // The earlier root remains usable; a missing later root blocks only unresolved members.
     let TableView::Truncated {
         rows: TableRows::ArmyOrderPlans(plans),
@@ -451,8 +451,8 @@ fn truncated_order_memberships_use_only_proven_prefix_matches() {
     };
     plans.retain(|row| (row.owner_group, row.instance) != (10, 1));
     let index = OrdersIndex::read(&frame).unwrap();
-    assert_eq!(index.resolved_order(1, 10), Some(Some((10, 9))));
-    assert_eq!(index.resolved_order(2, 10), None);
+    assert_eq!(resolved_order(&index, 1, 10), Some(Some((10, 9))));
+    assert_eq!(resolved_order(&index, 2, 10), None);
     // A missing earlier root prevents a later matching root from winning.
     let TableView::Truncated {
         rows: TableRows::OrdersGroupPlans(groups),
@@ -468,7 +468,7 @@ fn truncated_order_memberships_use_only_proven_prefix_matches() {
         .primary_orders
         .reverse();
     assert_eq!(
-        OrdersIndex::read(&frame).unwrap().resolved_order(1, 10),
+        resolved_order(&OrdersIndex::read(&frame).unwrap(), 1, 10),
         None
     );
 }
@@ -495,13 +495,13 @@ fn empty_order_lists_are_known_but_missing_parent_operands_are_not() {
         reason: "unused".into(),
     };
     let mut index = OrdersIndex::read(&frame).unwrap();
-    assert_eq!(index.resolved_order(1, 10), Some(None));
+    assert_eq!(resolved_order(&index, 1, 10), Some(None));
     index.memberships.remove(&20);
-    assert_eq!(index.resolved_order(1, 10), None);
+    assert_eq!(resolved_order(&index, 1, 10), None);
     index.groups.get_mut(&10).unwrap().parent = 0;
-    assert_eq!(index.resolved_order(1, 10), Some(None));
+    assert_eq!(resolved_order(&index, 1, 10), Some(None));
     index.memberships.remove(&10);
-    assert_eq!(index.resolved_order(1, 10), None);
+    assert_eq!(resolved_order(&index, 1, 10), None);
     assert_eq!(
         parent_branch(1, 10, &index),
         Some(false),

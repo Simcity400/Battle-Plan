@@ -10,9 +10,7 @@
 //! reinitialize) starts a new anchor holding the hour's words, as does every [`ANCHOR_HOURS`] hours
 //! so that a frame needs at most that many hours of passes.
 
-use std::sync::Arc;
-
-use engine_allocation as allocation;
+use engine_allocation::{self as allocation, SharedBox};
 use replay_data::{
     rows::{TemperaturePass, TemperatureWitness},
     temperature::{State, window_span, witness},
@@ -45,15 +43,14 @@ struct Read {
 }
 
 /// The words an hour's rows hold and the pass its slot 0 carries.
-pub type Anchored<'a> = (Arc<Vec<State>>, &'a TemperaturePass);
+pub type Anchored<'a> = (SharedBox<Vec<State>>, &'a TemperaturePass);
 
 #[derive(Debug, Default)]
 pub struct Tracker {
     previous: Option<Read>,
-    /// The anchor's words, shared with every frame that holds them; the pass holds its hour,
-    /// cursor and the hours since.
-    anchor: Arc<Vec<State>>,
-    pass: Option<TemperaturePass>,
+    /// The anchor's words, shared with every frame that holds them, and the pass, which holds
+    /// its hour, cursor and the hours since.
+    anchored: Option<(SharedBox<Vec<State>>, TemperaturePass)>,
 }
 
 impl Tracker {
@@ -74,40 +71,42 @@ impl Tracker {
             .previous
             .as_ref()
             .and_then(|previous| classify(previous, hour, words, states));
-        let extend = proven.zip(self.pass.as_ref()).is_some_and(|(_, pass)| {
+        let extend = proven.zip(self.anchored.as_ref()).is_some_and(|(_, (_, pass))| {
             i64::from(hour) - i64::from(pass.anchor) < i64::from(ANCHOR_HOURS)
         });
-        if let (true, Some(entry), Some(pass)) = (extend, proven, self.pass.as_mut()) {
+        if let (true, Some(entry), Some((_, pass))) = (extend, proven, self.anchored.as_mut()) {
             if let Err(error) = allocation::reserve(&mut pass.hours, 1) {
                 self.forget();
                 return Err(error);
             }
             pass.hours.push(entry);
         } else {
-            let anchor = allocation::copy_vec(states).inspect_err(|_| self.forget())?;
-            self.anchor = Arc::new(anchor);
-            self.pass = Some(TemperaturePass {
+            let anchor = allocation::copy_vec(states)
+                .and_then(allocation::shared)
+                .inspect_err(|_| self.forget())?;
+            let pass = TemperaturePass {
                 anchor: hour,
                 cursor: words.cursor,
                 // The anchor hour's own ordinary pass, when the hour before proves it.
                 anchor_seed: proven.flatten(),
                 hours: Vec::new(),
                 witness: TemperatureWitness::default(),
-            });
+            };
+            self.anchored = Some((anchor, pass));
         }
-        let pass = self.pass.as_mut().expect("extended or anchored");
+        let (anchor, pass) = self.anchored.as_mut().expect("extended or anchored");
         pass.witness =
             TemperatureWitness::new(witness(states.iter().map(|state| state.temperature)));
         let previous = self.previous.get_or_insert_with(Read::default);
         previous.hour = hour;
         previous.words = Some(words);
         std::mem::swap(&mut previous.states, states);
-        Ok(Some((Arc::clone(&self.anchor), pass)))
+        Ok(Some((anchor.clone(), pass)))
     }
 
     fn forget(&mut self) {
         self.previous = None;
-        self.pass = None;
+        self.anchored = None;
     }
 }
 

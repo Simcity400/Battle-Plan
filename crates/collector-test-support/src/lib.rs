@@ -2,19 +2,33 @@
 
 use std::{
     alloc::{GlobalAlloc, Layout, System},
+    cell::Cell,
     ptr,
-    sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicU8, Ordering},
 };
-use windows_sys::Win32::System::Threading::GetCurrentThreadId;
 
 pub struct FailingAllocator;
 
 // Only the prepared-buffer child interval denies allocations. Fixed controls,
 // paths, thread creation and recovery run outside that accepted boundary.
-static OWNER: AtomicU32 = AtomicU32::new(0);
-static ORDINAL: AtomicUsize = AtomicUsize::new(usize::MAX);
-pub static ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
-pub static DENIALS: AtomicUsize = AtomicUsize::new(0);
+// Each test thread owns its interval and counts: tests run in parallel, and
+// one test's guard must neither take, end nor reset another's.
+thread_local! {
+    static ORDINAL: Cell<Option<usize>> = const { Cell::new(None) };
+    static ATTEMPT: Cell<usize> = const { Cell::new(0) };
+    static DENIED: Cell<usize> = const { Cell::new(0) };
+}
+/// The calling thread's count from its latest [`NullGuard`].
+pub struct Count(&'static std::thread::LocalKey<Cell<usize>>);
+impl Count {
+    pub fn load(&self, _: Ordering) -> usize {
+        self.0.with(Cell::get)
+    }
+}
+/// Allocation attempts on this thread since its latest guard began.
+pub static ATTEMPTS: Count = Count(&ATTEMPT);
+/// Of those, the attempts denied.
+pub static DENIALS: Count = Count(&DENIED);
 pub fn with_allocations_denied<T>(run: impl FnOnce() -> T) -> T {
     let guard = NullGuard::new(1);
     let output = run();
@@ -22,15 +36,20 @@ pub fn with_allocations_denied<T>(run: impl FnOnce() -> T) -> T {
     output
 }
 fn deny() -> bool {
-    if OWNER.load(Ordering::Relaxed) != unsafe { GetCurrentThreadId() } {
+    let Ok(Some(ordinal)) = ORDINAL.try_with(Cell::get) else {
+        return false;
+    };
+    let Ok(attempt) = ATTEMPT.try_with(|attempt| {
+        attempt.set(attempt.get() + 1);
+        attempt.get()
+    }) else {
+        return false;
+    };
+    if attempt < ordinal {
         return false;
     }
-    let attempt = ATTEMPTS.fetch_add(1, Ordering::Relaxed) + 1;
-    if attempt >= ORDINAL.load(Ordering::Relaxed) {
-        DENIALS.fetch_add(1, Ordering::Relaxed);
-        return true;
-    }
-    false
+    let _ = DENIED.try_with(|denied| denied.set(denied.get() + 1));
+    true
 }
 unsafe impl GlobalAlloc for FailingAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
@@ -61,16 +80,15 @@ unsafe impl GlobalAlloc for FailingAllocator {
 pub struct NullGuard;
 impl NullGuard {
     pub fn new(ordinal: usize) -> Self {
-        ORDINAL.store(ordinal, Ordering::Relaxed);
-        ATTEMPTS.store(0, Ordering::Relaxed);
-        DENIALS.store(0, Ordering::Relaxed);
-        OWNER.store(unsafe { GetCurrentThreadId() }, Ordering::Relaxed);
+        ATTEMPT.set(0);
+        DENIED.set(0);
+        ORDINAL.set(Some(ordinal));
         Self
     }
 }
 impl Drop for NullGuard {
     fn drop(&mut self) {
-        OWNER.store(0, Ordering::Relaxed);
+        ORDINAL.set(None);
     }
 }
 

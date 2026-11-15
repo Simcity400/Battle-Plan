@@ -3,7 +3,7 @@
 .lb-cells { display: contents; cursor: pointer; }
 .lb-cells > * { min-width: 0; }
 .lb-place { display: flex; flex-direction: column; min-width: 0; }
-.lb-place .log-text.is-loading { color: var(--muted); font-weight: 500; }
+.lb-place .is-loading { color: var(--muted); font-weight: 500; }
 .lb-place small { overflow: hidden; color: var(--muted); font-size: var(--type-xs); text-overflow: ellipsis; white-space: nowrap; }
 .log.is-compact .lb-place small { display: none; }
 .lb-rank { margin-right: var(--space-3); color: var(--muted); font-weight: 400; font-variant-numeric: tabular-nums; }

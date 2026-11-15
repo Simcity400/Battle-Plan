@@ -136,7 +136,6 @@ pub struct AssignedSources {
     used: usize,
     required: usize,
     failure: Option<&'static str>,
-    worker_growth: bool,
 }
 impl AssignedSources {
     pub fn try_with_capacity(capacity: usize) -> std::io::Result<Self> {
@@ -149,9 +148,6 @@ impl AssignedSources {
         self.used = 0;
         self.required = 0;
         self.failure = None;
-    }
-    pub fn enable_worker_growth(&mut self) {
-        self.worker_growth = true;
     }
     /// A worker failure invalidates the verdict, retaining observed growth demand.
     pub fn fail(&mut self, reason: &'static str) {
@@ -180,7 +176,6 @@ impl AssignedSources {
             used,
             required: used,
             failure: None,
-            worker_growth: false,
         }
     }
     pub fn allocated_bytes(&self) -> usize {
@@ -194,7 +189,7 @@ impl AssignedSources {
     }
     fn retain(&mut self, ordinal: usize, pointer: usize) {
         if ordinal == self.used && self.failure.is_none() {
-            if self.worker_growth && ordinal == self.pointers.len() {
+            if ordinal == self.pointers.len() {
                 let result = crate::allocation::add(ordinal, 1)
                     .and_then(|len| crate::allocation::resize_default(&mut self.pointers, len));
                 if result.is_err() {
@@ -202,12 +197,8 @@ impl AssignedSources {
                     return;
                 }
             }
-            if let Some(slot) = self.pointers.get_mut(ordinal) {
-                *slot = pointer;
-                self.used += 1;
-            } else {
-                self.failure = Some("plan assigned host capacity exceeded");
-            }
+            self.pointers[ordinal] = pointer;
+            self.used += 1;
         }
     }
 }
@@ -1085,13 +1076,13 @@ pub fn walk_plans_ordered_with_sources(
                             .checked_add(offset)
                             .ok_or("plan name address overflow")?;
                         *span = match names_record.get::<[u8; crate::msvc_string::STRIDE]>(offset) {
-                            Some(header) => crate::msvc_string::append_growing_with_header(
+                            Some(header) => crate::msvc_string::append_with_header(
                                 memory,
                                 &header,
                                 names,
                                 &mut report.names,
                             )?,
-                            None => crate::msvc_string::append_growing(
+                            None => crate::msvc_string::append(
                                 memory,
                                 address,
                                 names,
@@ -1890,15 +1881,15 @@ pub struct Walk {
 /// separate successor and virtual-successor graphs. Geometry retains ordered
 /// u32 arrays, including empty arrays and the separate paradrop target. Both
 /// arrays and the target are initialized for all types.
-/// Row, geometry and graph storage grows on the acquisition worker from each
-/// admitted observation, with geometry copied in bounded batches before growth.
-/// Group root storage remains explicitly bounded.
+/// Row, geometry, group and graph storage grows on the acquisition worker from
+/// each admitted observation, with geometry copied in bounded batches before
+/// growth.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
     output: &mut Vec<Row>,
     geometry: &mut Vec<u32>,
-    groups: &mut [corders_group::Root],
+    groups: &mut Vec<corders_group::Root>,
     visits: &mut Vec<Visit>,
 ) -> Walk {
     walk_census(memory, base, output, geometry, groups, visits, None)
@@ -1914,7 +1905,7 @@ pub fn walk_listing_successors(
     base: usize,
     output: &mut Vec<Row>,
     geometry: &mut Vec<u32>,
-    groups: &mut [corders_group::Root],
+    groups: &mut Vec<corders_group::Root>,
     visits: &mut Vec<Visit>,
     lists: &mut SuccessorLists,
 ) -> Walk {
@@ -2279,7 +2270,7 @@ fn walk_census(
     base: usize,
     output: &mut Vec<Row>,
     geometry: &mut Vec<u32>,
-    groups: &mut [corders_group::Root],
+    groups: &mut Vec<corders_group::Root>,
     visits: &mut Vec<Visit>,
     lists: Option<&mut SuccessorLists>,
 ) -> Walk {

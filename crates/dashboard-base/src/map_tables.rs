@@ -67,6 +67,7 @@ pub fn selected_tables() -> &'static [TableId] {
             TableId::Fronts,
             TableId::HumanControllers,
             TableId::IntelContributions,
+            TableId::IntelNetworkAuxiliaries,
             TableId::IntelNetworks,
             TableId::IntelligenceAgencies,
             TableId::IntelNetworkSummaries,
@@ -178,6 +179,7 @@ pub fn selected_tables() -> &'static [TableId] {
             TableId::SimulationFeatures,
             TableId::StateResistance,
             TableId::Subjects,
+            TableId::WarRelations,
             // The resources map mode's origins, icons and hover
             // (viewer_foundation::resource_origins) and the trade routes and their convoys
             // (viewer_world::map::trade_routes).

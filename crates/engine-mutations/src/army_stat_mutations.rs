@@ -30,7 +30,8 @@
 //! - Country-wide name refresh rewrites matching name-group members inline
 //!   without cached-name refresh. It runs from template-update commands and
 //!   hourly country-update workers when the group tracker is dirty. It names
-//!   no member, so it revokes every certificate.
+//!   no member, only its country (RDX), whose division roster holds every
+//!   member it rewrites: the collector marks those once it returns.
 //! - Other member writers reach only new divisions (two helpers, one from
 //!   deployment) or loads. The collector reads those afresh or invalidates.
 

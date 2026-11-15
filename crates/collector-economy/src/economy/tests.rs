@@ -305,37 +305,6 @@ impl Memory for ResourceTrace<'_> {
 }
 
 #[test]
-fn owned_resource_preflight_refuses_before_reads_and_grows_only_when_recycled() {
-    let source = resource_fixture::Fixture::new();
-    for slot in 0..4 {
-        let memory = engine_native::memory::CountedMemory::new(ResourceTrace {
-            source: &source,
-            reads: Default::default(),
-            fault: None,
-        });
-        let mut captured = Captured::with_capacities(&e_capacities());
-        let ctx = captured.resource_copy_context(0, 0x1000, 0, true);
-        let mut job = resource_job();
-        match slot {
-            0 => job.resources.definitions.clear(),
-            1 => job.resources.resources.clear(),
-            2 => job.resources.exchanges.clear(),
-            _ => job.resources.scratch.clear(),
-        }
-        let native = read_accounting::Capture::new();
-        let report = copy_economy_rest_refresh(&memory, ctx, &mut job);
-        assert!(!report.raw_ok);
-        assert_eq!(native.finish(), read_accounting::ZERO);
-        assert!(memory.0.reads.borrow().is_empty());
-        assert!(job.grow_for_next());
-        job.grow();
-        assert!(!job.resources.needs_growth());
-        job.clear();
-        assert_eq!(job.resources.outcomes, [None; 3]);
-    }
-}
-
-#[test]
 fn cold_resource_worker_consumes_original_headers_when_the_frame_has_nonzero_live_grants() {
     let source = resource_fixture::Fixture::new();
     let memory = engine_native::memory::CountedMemory::new(ResourceTrace {
@@ -353,7 +322,7 @@ fn cold_resource_worker_consumes_original_headers_when_the_frame_has_nonzero_liv
     assert!(job.resources.exchanges.is_empty());
     assert!(job.resources.scratch.is_empty());
     let native = read_accounting::Capture::new();
-    assert!(copy_economy_rest_refresh_growing(&memory, ctx, &mut job).raw_ok);
+    assert!(copy_economy_rest_refresh(&memory, ctx, &mut job).raw_ok);
     let reads = read_accounting::snapshot();
     captured.decode_economy_rest_payload(0, &job, &mut [0; N]);
     assert_eq!(native.finish(), reads);
@@ -404,15 +373,6 @@ fn every_hour_publishes_the_census_with_its_hourly_consumers() {
     assert_eq!(direct.definitions.outcome, captured.definitions.outcome);
     assert_eq!(direct.resources.outcome, captured.resources.outcome);
     assert_eq!(direct.exchanges.outcome, captured.exchanges.outcome);
-
-    job.resources.definitions.clear();
-    job.resources.resources.clear();
-    job.resources.exchanges.clear();
-    job.resources.scratch.clear();
-    let context = captured.resource_copy_context(0, 0x1000, 10, false);
-    let native = read_accounting::Capture::new();
-    assert!(!copy_economy_rest_refresh(&memory, context, &mut job).raw_ok);
-    assert_eq!(native.finish(), read_accounting::ZERO);
 }
 
 /// A value fault stays local to CountryResources. Under the relaxed read
@@ -473,17 +433,10 @@ fn owned_resource_value_faults_recover_once_and_remain_local() {
         before,
         "decode does not read native memory"
     );
-    captured.definitions.rows.clear();
-    captured.decode_economy_rest_payload(0, &job, &mut [0; N]);
-    assert!(
-        captured.outcomes()[6..9]
-            .iter()
-            .all(|outcome| matches!(outcome, Outcome::Unavailable { .. }))
-    );
 }
 
 #[test]
-fn owned_resource_raw_shortage_never_starts_group_and_shared_fault_is_terminal() {
+fn owned_resource_shared_fault_is_terminal() {
     let source = resource_fixture::Fixture::new();
     let mut captured = Captured::with_capacities(&e_capacities());
     let ctx = captured.resource_copy_context(0, 0x1000, 0, true);
@@ -524,30 +477,6 @@ fn owned_resource_raw_shortage_never_starts_group_and_shared_fault_is_terminal()
             .iter()
             .all(|o| matches!(o, Outcome::Unavailable { .. }))
     );
-
-    let memory = ResourceTrace {
-        source: &source,
-        reads: Default::default(),
-        fault: None,
-    };
-    let mut job = resource_job();
-    job.log = RawLog::new(8, 128);
-    assert!(copy_economy_rest_refresh(&memory, ctx, &mut job).raw_ok);
-    assert!(job.staging_failure.is_some());
-    assert!(
-        !memory
-            .reads
-            .borrow()
-            .contains(&engine_resources::cstrategic_resource_database::SINGLETON_RVA.0)
-    );
-    assert_eq!(job.resources.outcomes, [None; 3]);
-    decoded.decode_economy_rest_payload(0, &job, &mut [0; N]);
-    assert!(
-        decoded
-            .outcomes()
-            .iter()
-            .all(|o| matches!(o, Outcome::Unavailable { .. }))
-    );
 }
 
 #[test]
@@ -585,7 +514,7 @@ fn worker_supply_growth_stages_and_decodes_mod_sized_rows_in_the_same_hour() {
         resources_active: false,
         other_active: false,
     };
-    assert!(copy_economy_rest_refresh_growing(&memory, context, &mut job).raw_ok);
+    assert!(copy_economy_rest_refresh(&memory, context, &mut job).raw_ok);
     assert!(!job.log.overflowed);
     let native_reads = memory.reads.borrow().len();
     let mut capacity = e_capacities();
@@ -620,7 +549,7 @@ fn failed_daily_country_header_keeps_hourly_supply_and_first_fault() {
     source.put(SUPPLY, &[0; 3 * sprovince_supply_data::STRIDE]);
     source.u64(SUPPLY + sprovince_supply_data::STRIDE, 5);
     source.u64(SUPPLY + 2 * sprovince_supply_data::STRIDE, 9);
-    let mut expected = [sprovince_supply_data::Row::default(); 2];
+    let mut expected = vec![sprovince_supply_data::Row::default(); 2];
     assert_eq!(
         sprovince_supply_data::walk(&source, 0, GAME, &mut expected),
         Outcome::Rows { len: 2 }
@@ -1435,22 +1364,15 @@ fn economy_fuel_arrays_copy_matches_direct_walk_with_independent_failures() {
                 direct.fuel_consumers.rows[..direct.fuel_consumers.outcome.len()]
             );
             let outcomes = direct.outcomes();
-            match (case, fuel_rows) {
-                ("unreadable ring", 4) => assert_eq!(
+            // Every starting storage grows to both countries' rows.
+            match case {
+                "unreadable ring" => assert_eq!(
                     outcomes[0],
                     Outcome::Unavailable {
                         reason: "fuel history ring unreadable"
                     }
                 ),
-                // The second ring is never reached while its row cannot fit.
-                (_, 1) => assert_eq!(
-                    outcomes[0],
-                    Outcome::Truncated {
-                        len: 1,
-                        unread_rows: 1
-                    }
-                ),
-                (_, 4) => {
+                _ => {
                     assert_eq!(outcomes[0], Outcome::Rows { len: 2 }, "{case}");
                     // Ring entry i holds 3 * offset - 11 in every qword.
                     let sum = |field: usize| {
@@ -1466,7 +1388,6 @@ fn economy_fuel_arrays_copy_matches_direct_walk_with_independent_failures() {
                         sum(fuel_history_entry::RECEIVED + 16)
                     );
                 }
-                _ => {}
             }
             if case == "unreadable consumer entries" {
                 assert!(matches!(
@@ -1580,7 +1501,7 @@ fn economy_supply_is_hourly_with_daily_gates_and_identical_truncation() {
             split.decode_economy_rest_payload(E_BASE, &job, &mut decode_ticks);
             assert_eq!(read_accounting::snapshot(), raw_counts);
             assert_eq!(split.supply.outcome, direct.supply.outcome);
-            assert_eq!(split.supply.outcome.len(), supply_capacity.min(2));
+            assert_eq!(split.supply.outcome.len(), 2, "capacity {supply_capacity}");
             assert_eq!(
                 split.supply.rows[..split.supply.outcome.len()],
                 direct.supply.rows[..direct.supply.outcome.len()],
@@ -1714,28 +1635,6 @@ fn economy_truncation_matrix_matches_direct_with_same_caps() {
         let (split, _) = e_split(&memory, &cap);
         assert_eq!(split.fuel.outcome, direct.fuel.outcome, "rows={rows}");
     }
-}
-
-#[test]
-fn economy_staging_overflow_falls_back_to_typed_walk() {
-    use engine_native::memory::SliceMemory;
-    let mut bytes = vec![0; 0x8000];
-    e_census(&mut bytes);
-    let memory = SliceMemory {
-        base: E_GAME,
-        bytes: &bytes,
-    };
-    let cap = e_capacities();
-    let mut captured = Captured::with_capacities(&cap);
-    let ctx = captured.resource_copy_context(E_BASE, E_GAME, 0, true);
-    let mut tiny = EconomyRestJob {
-        log: crate::raw::RawLog::new(8, 8),
-        ..e_job()
-    };
-    let report = crate::economy::copy_economy_rest_refresh(&memory, ctx, &mut tiny);
-    assert!(!report.raw_ok);
-    assert!(tiny.log.overflowed);
-    assert!(tiny.grow_for_next());
 }
 
 #[test]

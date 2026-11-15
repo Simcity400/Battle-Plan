@@ -6,7 +6,8 @@ import { createWidget, resolveWindow } from '../../dashboard/model.ts';
 import type { BoundTrack } from '../../dashboard/model';
 import type { CasualtyPairsReply } from './casualtyPairsData';
 import { casualtyPairsAt } from './casualtyPairsData.ts';
-import { casualtyPairIds, pairHistory, pinPairs, readPairSelection } from './casualtyPairDrill.ts';
+import { casualtyPairIds, pairDrillAt, pairHistory, pinPairs, readPairSelection } from './casualtyPairDrill.ts';
+import { liveKey } from '../../charts/live.ts';
 import '../definitions.ts';
 import { deepFreeze } from '../../testFrozen.ts';
 
@@ -54,4 +55,17 @@ test('pair Pin retains directed identities, branch-relative day and explicit Fol
   const live = pinPairs(source, track, ids, 127, true);
   assert.deepEqual(live.time, { mode: 'follow' });
   assert.equal(resolveWindow(live, track, [track], 170)?.lastHour, 200);
+});
+
+test('a following drill paints each selected flow and its share at the hour, and renders only where its flows change', () => {
+  const held = reply(0, 'a', 100, 119, '30');
+  const ids = new Set(casualtyPairIds([held]));
+  const at = pairDrillAt(held, 105, ids);
+  const id = casualtyPairsAt(held, 105).flows.find(flow => flow.value === 30n)!.id;
+  assert.equal(at.values.get(liveKey(id, 'value')), 30n);
+  assert.equal(at.values.get(liveKey(id, 'share')), 100);
+  assert.equal(at.total, 'Signed total: 30');
+  assert.equal(pairDrillAt(held, 110, ids).rows, at.rows, 'the same flows at another hour are the same structure');
+  const none = pairDrillAt(undefined, 105, ids);
+  assert.deepEqual([none.rows, none.values.size], ['', 0], 'a window not loaded shows no flow, never a zero');
 });

@@ -35,6 +35,10 @@ pub struct PreparationPart {
     supply_order: ScalarOrder,
     sources: crate::panel_sources::Preparation,
     source_ready: bool,
+    /// Per seed: the stat-block maxima this range read for a seed the held capture cannot carry.
+    maxima: Vec<Option<Result<DivisionMaxima, &'static str>>>,
+    maxima_pointers: Vec<usize>,
+    maxima_reads: Vec<Result<DivisionMaxima, &'static str>>,
 }
 impl Default for PreparationPart {
     fn default() -> Self {
@@ -46,6 +50,9 @@ impl Default for PreparationPart {
             supply_order: Default::default(),
             sources: Default::default(),
             source_ready: false,
+            maxima: Vec::new(),
+            maxima_pointers: Vec::new(),
+            maxima_reads: Vec::new(),
         }
     }
 }
@@ -61,6 +68,11 @@ impl PreparationPart {
                 .iter()
                 .map(ScalarOrder::allocated_bytes)
                 .sum::<usize>()
+            + self.maxima.capacity()
+                * std::mem::size_of::<Option<Result<DivisionMaxima, &'static str>>>()
+            + self.maxima_pointers.capacity() * std::mem::size_of::<usize>()
+            + self.maxima_reads.capacity()
+                * std::mem::size_of::<Result<DivisionMaxima, &'static str>>()
     }
     pub fn get(&self, index: usize) -> Option<&PreparedDivision> {
         self.rows.get(index.checked_sub(self.range.start)?)
@@ -75,6 +87,63 @@ impl PreparationPart {
     pub fn source_reads(&self) -> Option<&crate::panel_sources::Preparation> {
         self.source_ready.then_some(&self.sources)
     }
+    /// Seed `index`'s maxima as this range read them; `None` when it did not read its block.
+    pub fn maxima(&self, index: usize) -> Option<Result<DivisionMaxima, &'static str>> {
+        self.maxima
+            .get(index.checked_sub(self.range.start)?)
+            .copied()
+            .flatten()
+    }
+    /// Reads the maxima of every authenticated seed's block the held capture cannot carry, so
+    /// the ordered admission reads none of them. Optional: a refused scratch stages nothing.
+    fn stage_maxima(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        seeds: &[DivisionSeed],
+        store: &ArmyStatStore,
+    ) {
+        self.maxima.clear();
+        self.maxima_pointers.clear();
+        self.maxima_reads.clear();
+        if engine_allocation::advisory(|| {
+            engine_allocation::reserve(&mut self.maxima, seeds.len())?;
+            engine_allocation::reserve(&mut self.maxima_pointers, seeds.len())?;
+            engine_allocation::reserve(&mut self.maxima_reads, seeds.len())
+        })
+        .is_err()
+        {
+            return;
+        }
+        let identity =
+            engine_sites::at(base, engine_native::carmy::VTABLE_RVA).map(|at| at as u64);
+        let mut shift = 0;
+        for (offset, seed) in seeds.iter().enumerate() {
+            let pointer = seed.stat_block.filter(|&pointer| {
+                pointer != 0
+                    && seed.primary_vtable == identity
+                    && seed.handle == Some(seed.division)
+                    && seed.division != 0
+                    && !store.may_carry_maxima(&mut shift, self.range.start + offset, seed)
+            });
+            if let Some(pointer) = pointer {
+                self.maxima_pointers.push(pointer);
+            }
+            self.maxima
+                .push(pointer.map(|_| Err("division maxima unstaged")));
+        }
+        self.maxima_reads
+            .resize(self.maxima_pointers.len(), Err("division maxima unstaged"));
+        engine_native::csub_unit_definition::stage_division_maxima(
+            memory,
+            base,
+            &self.maxima_pointers,
+            &mut self.maxima_reads,
+        );
+        for (slot, read) in self.maxima.iter_mut().flatten().zip(&self.maxima_reads) {
+            *slot = *read;
+        }
+    }
     pub fn capture(
         &mut self,
         memory: &impl Memory,
@@ -87,6 +156,7 @@ impl PreparationPart {
         self.rows.clear();
         self.supply.clear();
         self.supply_order.clear();
+        self.maxima.clear();
         self.source_ready = false;
         for order in &mut self.orders {
             order.clear();
@@ -185,17 +255,17 @@ impl PreparationPart {
             }
             let experience_certificate = match experience_quiet {
                 Some((certificate, _)) => Some(certificate),
-                None => changes.experience_observed_sequence(seed.pointer),
+                None => changes.experience_range_sequence(seed.pointer),
             };
             let progression_certificate = match progression_quiet {
                 Some((certificate, _)) => Some(certificate),
-                None => changes.progression_observed_sequence(seed.pointer),
+                None => changes.progression_range_sequence(seed.pointer),
             };
             let experience_acquired = experience_certificate.is_some();
             let progression_acquired = progression_certificate.is_some();
             let officer_certificate = match officer_quiet {
                 Some((certificate, _)) => Some(certificate),
-                None => officer_receiver.and_then(history_changes::observed_sequence),
+                None => officer_receiver.and_then(history_changes::range_sequence),
             };
             let officer_acquired = officer_certificate.is_some();
             let career_quiet = experience_certificate
@@ -215,7 +285,7 @@ impl PreparationPart {
             let career_certificate = match career_quiet {
                 Some((certificate, _)) => Some(certificate),
                 None => experience_certificate
-                    .and_then(|_| history_changes::observed_sequence(seed.pointer)),
+                    .and_then(|_| history_changes::range_sequence(seed.pointer)),
             };
             let career_acquired = career_certificate.is_some();
             // A quiet value is the held one a query would have found; only its query is skipped.
@@ -303,6 +373,7 @@ impl PreparationPart {
                     }),
             });
         }
+        self.stage_maxima(memory, base, seeds, store);
     }
 }
 
@@ -317,19 +388,19 @@ mod tests {
         progression: AtomicUsize,
     }
     impl Changes for Warm {
-        fn experience_observed_sequence(&self, _: usize) -> Option<(u64, u64)> {
+        fn experience_range_sequence(&self, _: usize) -> Option<(u64, u64)> {
             self.experience.fetch_add(1, Relaxed);
             self.present.then_some((1, 1))
         }
-        fn progression_observed_sequence(&self, _: usize) -> Option<(u64, u64)> {
+        fn progression_range_sequence(&self, _: usize) -> Option<(u64, u64)> {
             self.progression.fetch_add(1, Relaxed);
             self.present.then_some((1, 1))
         }
         fn experience_sequence(&self, _: usize) -> Option<(u64, u64)> {
-            panic!("range must neither register cold receivers nor re-query warm ones")
+            panic!("a range takes its certificates once, through its own lookup")
         }
         fn progression_sequence(&self, _: usize) -> Option<(u64, u64)> {
-            panic!("range must neither register cold receivers nor re-query warm ones")
+            panic!("a range takes its certificates once, through its own lookup")
         }
         fn take(&self, _: &mut dyn FnMut(usize)) -> Option<u64> {
             panic!("range must not consume marks")
@@ -339,10 +410,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn preparation_queries_each_warm_scalar_once_and_leaves_cold_admission_ordered() {
-        const COUNT: usize = 5_000;
-        let seeds: Vec<_> = (1..=COUNT)
+    fn seeds(count: usize) -> Vec<DivisionSeed> {
+        (1..=count)
             .map(|id| DivisionSeed {
                 division: id as u64,
                 pointer: id * 0x1000,
@@ -352,7 +421,60 @@ mod tests {
                 secondary_vtable: Some(engine_native::carmy::SECONDARY_VTABLE_RVA.0 as u64),
                 ..Default::default()
             })
-            .collect();
+            .collect()
+    }
+
+    /// A fresh attach: no receiver is watched yet. The ranges register their divisions' stored
+    /// XP and previous-template receivers as they read them, in parallel, so the ordered pass
+    /// finds every one staged under the certificate its own lookup now gives, and the table
+    /// offered for the census refuses none.
+    #[test]
+    fn a_fresh_attach_registers_cold_receivers_across_the_ranges() {
+        const COUNT: usize = 5_000;
+        let seeds = seeds(COUNT);
+        let memory = engine_native::memory::SliceMemory {
+            base: 0,
+            bytes: &[],
+        };
+        for parts in [1, 2, 7] {
+            let watches = crate::army_stat_changes::Watches::enabled(COUNT);
+            let mut store = ArmyStatStore::default();
+            store.experience.begin(COUNT).unwrap();
+            store.progression.begin(COUNT).unwrap();
+            store.experience.finish(true);
+            store.progression.finish(true);
+            let mut captures: Vec<_> = (0..parts)
+                .map(|part| PreparationPart {
+                    range: COUNT * part / parts..COUNT * (part + 1) / parts,
+                    ..Default::default()
+                })
+                .collect();
+            std::thread::scope(|scope| {
+                for capture in &mut captures {
+                    let (memory, seeds, store, watches) = (&memory, &seeds, &store, &watches);
+                    scope.spawn(move || capture.capture(memory, 0, 0, seeds, Some(store), watches));
+                }
+            });
+            for capture in &captures {
+                for index in capture.range.clone() {
+                    let row = capture.get(index).unwrap();
+                    let pointer = seeds[index].pointer;
+                    assert_eq!(row.acquired[..2], [true; 2], "{parts} parts, {index}");
+                    assert!(row.experience_certificate.is_some());
+                    assert_eq!(row.experience_certificate, watches.experience_sequence(pointer));
+                    assert_eq!(
+                        row.progression_certificate,
+                        watches.progression_sequence(pointer)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn preparation_queries_each_scalar_once_through_its_range_lookup() {
+        const COUNT: usize = 5_000;
+        let seeds = seeds(COUNT);
         let mut store = ArmyStatStore::default();
         store.experience.begin(COUNT).unwrap();
         store.progression.begin(COUNT).unwrap();
@@ -436,11 +558,12 @@ impl AttackPart {
                 })
                 .sum::<usize>()
     }
+    /// `held_index` is [`Captured::held_index`] of the hour's certification.
     pub fn prepare(
         &mut self,
         seeds: &[DivisionSeed],
         hour: i32,
-        captured: &Captured,
+        held_index: &[Option<u32>],
         store: Option<&ArmyStatStore>,
         maxima: impl Fn(usize) -> Option<DivisionMaxima>,
     ) {
@@ -465,8 +588,7 @@ impl AttackPart {
             }
             let held = store
                 .and_then(|store| {
-                    captured
-                        .held_index
+                    held_index
                         .get(index)
                         .copied()
                         .flatten()
@@ -495,6 +617,10 @@ impl AttackPart {
     }
     pub fn is_prepared(&self) -> bool {
         self.len == self.range.len()
+    }
+    /// Stages nothing this hour: the ordered pass reads every row of the range.
+    pub fn clear(&mut self) {
+        self.len = 0;
     }
     pub fn get(&self, index: usize) -> Option<Result<&stats::AttackStats, &'static str>> {
         let index = index.checked_sub(self.range.start)?;

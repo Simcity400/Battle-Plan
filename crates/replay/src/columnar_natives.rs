@@ -1,4 +1,4 @@
-//! A campaign recording's hours read in place: [`Natives`] places its runs, [`Cursor`] walks them.
+//! A campaign recording's hours read in place: [`Natives`] places its runs, [`Cursor`] reads them.
 
 use crate::{campaign::Replay, columnar_frames::Recording, rows::TableId};
 use std::io;
@@ -7,7 +7,7 @@ mod cursor;
 #[cfg(test)]
 mod tests;
 
-pub use cursor::{Costs, Cursor};
+pub use cursor::Cursor;
 
 fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())

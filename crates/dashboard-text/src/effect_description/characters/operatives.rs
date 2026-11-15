@@ -188,7 +188,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 } else {
                     world
                         .slot(raw)
-                        .ok_or("CountryLinks lacks captured-operative owner")?
+                        .ok_or("country links lacks captured-operative owner")?
                 };
                 if country == owner {
                     found = true;
@@ -439,7 +439,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             self.context
                 .world()?
                 .slot(leader.owner())
-                .ok_or("CountryLinks lacks event caster owner")?
+                .ok_or("country links lacks event caster owner")?
         } else {
             0
         };

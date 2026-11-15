@@ -8,35 +8,35 @@ import { formatDate, gameDate } from '../../dashboard/calendar';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import { resolveWindow } from '../../dashboard/model';
-import { usePlaybackHour } from '../../dashboard/playback';
+import { useHeadHour } from '../army-size/headHour';
+import { setAttr, setHidden, setStyle, setText } from '../../charts/domText';
 import { useProduct } from '../../dashboard/products';
 import { contentTitle, contentTitleHint } from '../../dashboard/contentTitles';
 import { useContentRevision } from '../../dashboard/contentRevision';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
-import { focusParityModel } from './focusParityModel';
-import { useParityRows } from '../../dashboard/parityRows';
+import { useShownEachFrame } from '../../dashboard/widgetPerf';
 import type { Artwork, FocusDatabase, FocusEntry, FocusOrder, FocusReply } from '../../generated/dashboard';
 import { nameKey, isFailedFact } from '../../dashboard/countryFacts.ts';
 import type { NameAt } from '../../dashboard/countryFacts';
 import { useContinuousFocusArtwork, useFocusArtwork } from './useFocusArtwork';
-import { activeFocus, focusSegmentAt, focusCompletion, focusProgressAt, focusRequest, validateFocusReply } from './focusData';
-import type { FocusProgressState } from './focusData';
+import { activeFocus, continuousArtAsks, focusAheadUntil, focusArtAsks, focusAsksAhead, focusDays, focusProgressAt, focusProgressView, focusReadHours, focusRequest, focusShownAt, validateFocusReply } from './focusData';
+import type { FocusProgressState, SegmentHours } from './focusData';
+import { AHEAD_SECONDS } from '../../charts/reveal';
 import WidgetState from '../../components/WidgetState';
 import ListSkeleton from '../../components/Skeleton';
 import { Icon } from '../../components/Icons';
 import { useContextMenu } from '../../components/ContextMenu';
 import { rowJumpProps } from '../../charts/jump';
-import { enTwoDecimals } from '../../charts/numberFormat';
 import './nationalFocus.css';
-import PreparedFocusWidget from './PreparedFocusWidget';
-import type { FocusPreparedClient } from './preparedFocusData';
 
 const NO_WARNINGS: string[] = [];
-const NO_WANTED: readonly NameAt[] = [];
-const days = (value: number) => `${enTwoDecimals.format(value)} ${value === 1 ? 'day' : 'days'}`;
+const sameAsks = (held: NameAt[], next: NameAt[]) => held.length === next.length && held.every((ask, at) => ask.tag === next[at].tag && ask.hour === next[at].hour) ? held : next;
 export type FocusListItem = { kind: 'completed'; entry: FocusEntry } | { kind: 'unfinished'; token: string };
 export const isCompletedFocus = (item: FocusListItem) => item.kind === 'completed';
 const disclosureKey = (entry: FocusEntry, readHour: number) => JSON.stringify([entry.ordinal, nameKey(readHour, entry.token)]);
+
+/** The progress at the moment a frame paints, and the signal that it may have moved. */
+export interface FocusLiveProgress { at(): FocusProgressState | null; subscribe(changed: () => void): () => void }
 
 export function FocusArt({ art, size }: { art: Artwork | undefined; size: 'large' | 'small' }) {
   return <span className={`focus-art is-${size}`}>{art?.icon ? <img src={art.icon} alt="" /> : <ArtFallback icon="target" />}</span>;
@@ -50,8 +50,8 @@ export function FocusFailureNotices({ errors }: { errors: readonly Failure[] }) 
   return errors.map(error => <span key={failureKey(error)} data-detail={error.message}>{failureText(error, 'Couldn’t load focus details.')}</span>);
 }
 
-export function FocusCompletion({ entry, art, reason, failure, failures, titleFailure, pending, datePreparing, description, open, onToggle }: {
-  entry: FocusEntry; art?: Artwork; reason?: string; failure?: Failure; failures?: readonly Failure[]; titleFailure?: Failure; pending?: boolean; datePreparing?: boolean; description?: string | null;
+export function FocusCompletion({ entry, art, reason, failure, failures, titleFailure, pending, description, open, onToggle }: {
+  entry: FocusEntry; art?: Artwork; reason?: string; failure?: Failure; failures?: readonly Failure[]; titleFailure?: Failure; pending?: boolean; description?: string | null;
   open: boolean; onToggle: (open: boolean) => void;
 }) {
   const errors = focusErrors(failure, failures);
@@ -61,65 +61,111 @@ export function FocusCompletion({ entry, art, reason, failure, failures, titleFa
       <span className="focus-number" aria-label={`Focus ${entry.ordinal + 1}`}>{String(entry.ordinal + 1).padStart(2, '0')}</span>
       <FocusArt art={art} size="small" />
       <span className="focus-label"><strong data-tooltip={contentTitleHint(entry.token, reason)}>{contentTitle((titleFailure ?? (pending && art?.name == null ? undefined : art ? art.name : failure)), entry.token, 'Focus name unavailable', pending)}</strong>
-        <span className="focus-date" data-tooltip={datePreparing ? 'Completion date is still being prepared.' : date == null ? 'Completion date unknown.'
+        <span className="focus-date" data-tooltip={date == null ? 'Completion date unknown: the list was first read here, or changed other than by a completion.'
           : 'Completed by this date. Focuses are read once a game day, so it may have finished a day or so earlier.'}>
-          {datePreparing ? 'Still being prepared' : date == null ? 'Date not recorded' : formatDate(date)}
+          {date == null ? 'Date not recorded' : formatDate(date)}
         </span>
       </span>
       <FocusFailureNotices errors={errors} />
       <svg className="focus-chevron" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="m4 6 4 4 4-4" /></svg>
     </summary>
     <div className="focus-description">
-      <div className="focus-duration">{art?.baseDurationDays != null ? <>Base duration <strong>{days(art.baseDurationDays)}</strong></> : 'Duration unavailable'}</div>
+      <div className="focus-duration">{art?.baseDurationDays != null ? <>Base duration <strong>{focusDays(art.baseDurationDays)}</strong></> : 'Duration unavailable'}</div>
       {description && <p>{description}</p>}
     </div>
   </details>;
 }
 
-/** Live or pinned: the focus being worked on at that hour, with the game's progress line along its lower edge. */
-export function CurrentFocus({ order, art, state, live, reason, failure, failures, titleFailure, pending }: { order: FocusOrder; art: Artwork | undefined; state: FocusProgressState | null; live: boolean; reason?: string; failure?: Failure; failures?: readonly Failure[]; titleFailure?: Failure; pending?: boolean }) {
+/** Live or pinned: the focus being worked on, with the game's progress line along its lower edge. The
+ * progress is painted each frame from `progress`, never rendered for. */
+export function CurrentFocus({ order, art, progress, live, reason, failure, failures, titleFailure, pending }: { order: Pick<FocusOrder, 'current' | 'continuous' | 'paused'>; art: Artwork | undefined; progress?: FocusLiveProgress; live: boolean; reason?: string; failure?: Failure; failures?: readonly Failure[]; titleFailure?: Failure; pending?: boolean }) {
   const errors = focusErrors(failure, failures);
   const token = order.current ?? order.continuous;
   const continuous = !order.current && !!order.continuous;
-  const completion = order.current && state && art?.baseDurationDays != null ? focusCompletion(state, art.baseDurationDays) : null;
+  const duration = order.current ? art?.baseDurationDays : null;
+  const shown = focusProgressView(progress?.at() ?? null, duration, !!order.current || continuous);
+  const days = useRef<HTMLSpanElement>(null), left = useRef<HTMLSpanElement>(null), value = useRef<HTMLElement>(null), unit = useRef<HTMLElement>(null);
+  const bar = useRef<HTMLSpanElement>(null), banked = useRef<HTMLSpanElement>(null);
+  useLayoutEffect(() => {
+    if (!progress) return;
+    // A frame paints only when the state it reads moved (once a game hour at most), and writes only what changed: the
+    // bar's own transition carries the motion between readings.
+    let painted: FocusProgressState | null | undefined;
+    const paint = () => {
+      const state = progress.at();
+      if (state === painted) return;
+      painted = state;
+      const now = focusProgressView(state, duration, !!order.current || continuous);
+      setHidden(days.current, now.days === null); setText(days.current, now.days ?? '');
+      if (left.current) {
+        setHidden(left.current, now.left === null);
+        setAttr(left.current, 'data-tooltip', now.left?.estimated ? 'Estimated at current focus speed.' : '');
+        setText(value.current, now.left?.value ?? '');
+        setText(unit.current, now.left?.unit ?? '');
+      }
+      setHidden(bar.current, now.fraction === null);
+      setAttr(bar.current, 'aria-valuenow', String(Math.round((now.fraction ?? 0) * 100)));
+      setStyle(bar.current, '--focus-progress', String(now.fraction ?? 0));
+      setText(banked.current, now.banked ?? '');
+    };
+    paint();
+    return progress.subscribe(paint);
+    // The paint reads only `progress`, `duration` and the order's fields.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [progress, duration, order.current, order.continuous]);
   if (!token) {
-    const banked = state && state.progress > 0n ? Number(state.progress / 100_000n) : 0;
     return <div className="focus-now is-idle" role="status">
       <span className="focus-art is-large"><span className="focus-missing-art"><Icon name="pause" /></span></span>
       <span className="focus-now-text"><strong>No national focus selected</strong>
-        <span>{banked > 0 ? `${days(banked)} of progress saved for the next focus` : null}</span></span>
+        <span ref={banked}>{shown.banked}</span></span>
     </div>;
   }
   const status = continuous ? 'Continuous focus' : order.paused ? 'Paused' : 'In progress';
   const name = contentTitle((titleFailure ?? (pending && art?.name == null ? undefined : art ? art.name : failure)), token, 'Focus name unavailable', pending);
+  const timed = !!order.current && duration != null;
   return <div data-detail={failureDetails(errors)} className={`focus-now${order.paused ? ' is-paused' : ''}`} aria-live="polite">
     <FocusArt art={art} size="large" />
     <span className="focus-now-text"><strong data-tooltip={contentTitleHint(token, reason)}>{name}</strong>
       <FocusFailureNotices errors={errors} />
       <span className="focus-now-status">{live && !continuous && !order.paused && <span className="live-dot" />}{status}
-        {completion && <span className="focus-now-days">· Day {Math.min(completion.elapsedDays + 1, Math.ceil(completion.totalDays))} of {enTwoDecimals.format(completion.totalDays)}</span>}</span></span>
-    {completion && <span className="focus-now-left" data-tooltip={completion.daysLeft == null ? undefined : 'Estimated at current focus speed.'}>
-      {completion.daysLeft == null ? <><strong>{Math.round(completion.fraction * 100)}%</strong><small>complete</small></>
-        : <><strong>{completion.daysLeft}</strong><small>{completion.daysLeft === 1 ? 'day left' : 'days left'}</small></>}
+        {timed && <span ref={days} className="focus-now-days" hidden={shown.days === null}>{shown.days}</span>}</span></span>
+    {timed && <span ref={left} className="focus-now-left" hidden={shown.left === null} data-tooltip={shown.left?.estimated ? 'Estimated at current focus speed.' : undefined}>
+      <strong ref={value}>{shown.left?.value}</strong><small ref={unit}>{shown.left?.unit}</small>
     </span>}
-    {completion && <span className="focus-progress" role="progressbar" aria-label={`${name} progress`} aria-valuemin={0} aria-valuemax={100}
-      aria-valuenow={Math.round(completion.fraction * 100)} style={{ '--focus-progress': completion.fraction } as CSSProperties}><span /><i /></span>}
+    {timed && <span ref={bar} className="focus-progress" role="progressbar" aria-label={`${name} progress`} aria-valuemin={0} aria-valuemax={100} hidden={shown.fraction === null}
+      aria-valuenow={Math.round((shown.fraction ?? 0) * 100)} style={{ '--focus-progress': shown.fraction ?? 0 } as CSSProperties}><span /><i /></span>}
   </div>;
 }
 
-export function LegacyNationalFocusWidget({ widget, runtime, active, headerSlot, onDiagnostics }: WidgetProps) {
+/** One country's national focuses over the branch, read once (`national-focus`). Following playback it renders
+ * only where the shown order changes; the progress line is painted each frame. */
+export default function NationalFocusWidget({ widget, runtime, active, headerSlot, onDiagnostics }: WidgetProps) {
   const menu = useContextMenu('National focus actions');
-  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
   const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryTag(track) ?? undefined;
-  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
-  const hour = window?.lastHour;
   const live = widget.time.mode === 'follow';
   // A pinned moment shows the focus in progress then, like Live but held still.
   const moment = live || widget.time.mode === 'pin';
-  const inRange = track && hour != null && hour >= track.branch.firstHour && hour <= track.branch.lastHour;
   const request = track && tag ? focusRequest(track.source.id, track.source.revision, { branchId: track.branch.id, tag }) : null;
   const { data, error, retry } = useProduct<FocusReply>(runtime.client, request, active, validateFocusReply);
+  const trackHour = (clockHour: number): number | null => {
+    const hour = track ? resolveWindow(widget, track, runtime.tracks, clockHour)?.lastHour : undefined;
+    return hour === undefined || !track || hour < track.branch.firstHour || hour > track.branch.lastHour ? null : Math.floor(hour);
+  };
+  useShownEachFrame(runtime.clock, () => data ? trackHour(runtime.clock.getHour()) : null);
+  // Following, the widget renders where the shown order changes, at most four times a second of playback.
+  const headHour = useHeadHour(runtime.clock, active && live && !!data, clockHour => data ? focusShownAt(data, trackHour(clockHour)) : '');
+  // Off the head the hour is the pin's or the campaign's end, read as rendered.
+  const settled = live ? null : trackHour(runtime.clock.getHour());
+  const key = data ? focusShownAt(data, live ? trackHour(headHour) : settled) : '';
+  const segmentIndex = data && key.startsWith('s') ? Number(key.slice(1)) : -1;
+  const segment = data && segmentIndex >= 0 ? data.history.segments[segmentIndex] : null;
+  const missing = data && key.startsWith('m') ? data.missing[Number(key.slice(1))] : null;
+  const order = segment?.order ?? null;
+  const readingHour = segment?.firstHour;
+  const readHours = useMemo(() => data ? focusReadHours(data.history) : [], [data]);
+  const hours = segmentIndex >= 0 ? readHours[segmentIndex] : undefined;
+  const completedHour = (entry: FocusEntry) => hours?.completed[entry.ordinal] ?? entry.completedByHour ?? readingHour!;
   const contentRevision = useContentRevision(runtime.client);
   const detailsIdentity = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, tag, contentRevision]) : '';
   const [opened, setOpened] = useState<{ identity: string; client: typeof runtime.client; rows: Set<string> } | null>(null);
@@ -131,61 +177,68 @@ export function LegacyNationalFocusWidget({ widget, runtime, active, headerSlot,
   }, [data]);
   // A continuous focus is looked up in its own database, never as a national focus of the same id.
   const continuousMetadata = useMemo(() => new Map(data?.continuousStaticText.map(item => [item.token, item])), [data]);
-  const segment = data && hour != null ? focusSegmentAt(data.history, hour) : null;
-  const order = segment?.order ?? null;
-  const state = data && hour != null && moment ? focusProgressAt(data.history, hour) : null;
-  const currentHour = Math.floor(hour ?? 0);
-  const readingHour = segment?.firstHour;
-  const wanted = useMemo(() => {
-    const rows = order?.completed.map(entry => ({ tag: entry.token, hour: entry.completedByHour ?? readingHour! })) ?? [];
-    // Follow scrolls to the newest completion; schedule that end of the list first.
-    // Presentation keeps the recorded ordinal order in every time mode.
-    if (live) rows.reverse();
-    const current = activeFocus(order);
-    if (current?.database === 'national' && current.token && hour != null) {
-      const item = { tag: current.token, hour: currentHour };
-      if (moment) rows.unshift(item);
-      else rows.push(item);
-    }
-    return rows.filter(row => Number.isInteger(row.hour));
-  }, [order, readingHour, hour, currentHour, moment, live]);
-  const continuousWanted = useMemo(() => {
-    const current = activeFocus(order);
-    return current?.database === 'continuous' && current.token && hour != null ? [{ tag: current.token, hour: currentHour }] : NO_WANTED;
-  }, [order, hour, currentHour]);
+  const progress = useMemo<FocusLiveProgress | undefined>(() => {
+    if (!data || !moment) return undefined;
+    // The same state while the hour stands, so a frame inside an hour paints nothing.
+    let held: { hour: number | null; state: FocusProgressState | null } | null = null;
+    const at = () => {
+      const hour = live ? trackHour(runtime.clock.getHour()) : settled;
+      if (held?.hour !== hour) held = { hour, state: hour === null ? null : focusProgressAt(data.history, hour) };
+      return held.state;
+    };
+    return { at, subscribe: changed => {
+      if (!live) return () => {};
+      const stops = [runtime.clock.subscribeFrame(changed), runtime.clock.subscribe(changed)];
+      return () => { for (const stop of stops) stop(); };
+    } };
+    // `trackHour` reads the track and the widget's time, named by its text.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data, moment, live, settled, runtime.clock, track, JSON.stringify(widget.time)]);
+  // The asks keep their identity while what they name stands, so a new segment sharing its focuses asks nothing.
+  const asked = useRef<{ wanted: NameAt[]; continuous: NameAt[] }>({ wanted: [], continuous: [] });
+  // Following, the art of what the head reaches within the lists' read-ahead is asked with what is shown, a stretch at a
+  // time: a focus begun or completed while playing is never asked for at the head, and the reads land once a stretch.
+  const aheadUntil = live && segment ? focusAheadUntil(segment.lastHour + 1, runtime.clock.getSnapshot().hoursPerSecond, AHEAD_SECONDS) : -Infinity;
+  const ahead = (asks: NameAt[], asksOf: (order: FocusOrder, hours: SegmentHours) => NameAt[]) => data
+    ? focusAsksAhead(asks, data.history.segments, readHours, segmentIndex, aheadUntil, asksOf) : asks;
+  const wanted = sameAsks(asked.current.wanted, ahead(focusArtAsks(order, hours, live, moment), (next, held) => focusArtAsks(next, held, live, moment)));
+  const continuousWanted = sameAsks(asked.current.continuous, ahead(continuousArtAsks(order, hours), continuousArtAsks));
+  asked.current = { wanted, continuous: continuousWanted };
   // Repeated completions may share dated text, but their disclosure state must stay separate.
   const openRows = opened?.identity === detailsIdentity && opened.client === runtime.client ? opened.rows : null;
   const detailsWanted = useMemo(() => {
     const rows = openRows ? order?.completed.flatMap(entry => {
-      const hour = entry.completedByHour ?? readingHour!;
+      const hour = completedHour(entry);
       return Number.isInteger(hour) && openRows.has(disclosureKey(entry, hour)) ? [{ tag: entry.token, hour }] : [];
     }) ?? [] : [];
     // Follow schedules the newest end of the list first, as `wanted` does.
     return live ? rows.reverse() : rows;
-  }, [openRows, order, readingHour, live]);
-  const detailsKeys = useMemo(() => new Set(detailsWanted.map(item => nameKey(item.hour, item.tag))), [detailsWanted]);
-  const dated = useFocusArtwork(runtime.client, track, tag, wanted, active && inRange === true, detailsWanted, data?.staticText);
-  const continuousDated = useContinuousFocusArtwork(runtime.client, track, tag, continuousWanted, active && inRange === true, data?.continuousStaticText);
+    // `completedHour` reads `hours` and `readingHour`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openRows, order, hours, readingHour, live]);
+  const inRange = key !== 'out';
+  const dated = useFocusArtwork(runtime.client, track, tag, wanted, active && inRange, detailsWanted, data?.staticText);
+  const continuousDated = useContinuousFocusArtwork(runtime.client, track, tag, continuousWanted, active && inRange, data?.continuousStaticText);
   // Descriptions rows have shown, used while their read has no answer: closing releases the demand, yet the row
   // closes with its text, and reopening shows the same reading at once. Another identity or client starts empty.
-  const shown = useRef<{ identity: string; client: typeof runtime.client; texts: Map<string, string> } | null>(null);
-  if (shown.current?.identity !== detailsIdentity || shown.current.client !== runtime.client) {
-    shown.current = { identity: detailsIdentity, client: runtime.client, texts: new Map() };
+  const shownTexts = useRef<{ identity: string; client: typeof runtime.client; texts: Map<string, string> } | null>(null);
+  if (shownTexts.current?.identity !== detailsIdentity || shownTexts.current.client !== runtime.client) {
+    shownTexts.current = { identity: detailsIdentity, client: runtime.client, texts: new Map() };
   }
-  const shownTexts = shown.current.texts;
-  const toggleDetails = (key: string, open: boolean) => setOpened(previous => {
+  const texts = shownTexts.current.texts;
+  const toggleDetails = (disclosure: string, open: boolean) => setOpened(previous => {
     const rows = previous?.identity === detailsIdentity && previous.client === runtime.client ? previous.rows : new Set<string>();
-    if (rows.has(key) === open && previous?.identity === detailsIdentity && previous.client === runtime.client) return previous;
+    if (rows.has(disclosure) === open && previous?.identity === detailsIdentity && previous.client === runtime.client) return previous;
     const next = new Set(rows);
-    if (open) next.add(key); else next.delete(key);
+    if (open) next.add(disclosure); else next.delete(disclosure);
     return { identity: detailsIdentity, client: runtime.client, rows: next };
   });
   const at = (database: FocusDatabase, token: string, readHour: number) => {
     const item = (database === 'national' ? dated : continuousDated).read.get(nameKey(readHour, token));
     const fallback = (database === 'national' ? metadata : continuousMetadata).get(token);
     return item && !isFailedFact(item) ? { art: { ...item.artwork, description: item.artwork.description ?? fallback?.description ?? null },
-      titleFailure: item.titleFailure, failures: [item.titleFailure, item.imageFailure, item.descriptionFailure].filter(isFailedFact), failure: item.titleFailure ?? item.imageFailure ?? item.descriptionFailure, reason: [item.titlePending ? 'Loading focus name\u2026' : item.titleReason, item.reason].filter(Boolean).join('; ') || undefined, pending: item.titlePending ?? false }
-      : { art: fallback, titleFailure: isFailedFact(item) ? item : undefined, failures: isFailedFact(item) ? [item] : [], failure: isFailedFact(item) ? item : undefined, pending: active && !!track && !!tag && item === undefined, reason: active && !!track && !!tag && item === undefined ? 'Loading focus name\u2026'
+      titleFailure: item.titleFailure, failures: [item.titleFailure, item.imageFailure, item.descriptionFailure].filter(isFailedFact), failure: item.titleFailure ?? item.imageFailure ?? item.descriptionFailure, reason: [item.titlePending ? 'Loading focus name…' : item.titleReason, item.reason].filter(Boolean).join('; ') || undefined, pending: item.titlePending ?? false }
+      : { art: fallback, titleFailure: isFailedFact(item) ? item : undefined, failures: isFailedFact(item) ? [item] : [], failure: isFailedFact(item) ? item : undefined, pending: active && !!track && !!tag && item === undefined, reason: active && !!track && !!tag && item === undefined ? 'Loading focus name…'
         : isFailedFact(item) ? failureText(item, 'Focus name request failed.') : 'Focus name was not recorded at this hour.' };
   };
   const unavailable = useMemo(() => {
@@ -208,14 +261,6 @@ export function LegacyNationalFocusWidget({ widget, runtime, active, headerSlot,
   const list = useRef<HTMLDivElement>(null);
   const listIdentity = useMemo(() => ({}), [detailsIdentity, runtime.client]);
   const count = order?.completed.length ?? 0;
-  if (import.meta.env.MODE === 'parity') {
-    useParityRows(list, () => focusParityModel(order, state, readingHour, currentHour, moment, data?.staticText ?? [],
-      data?.continuousStaticText ?? [], (database, token, date) => {
-        const value = at(database, token, date);
-        return { artwork: value.art ?? null, pending: value.pending, reason: value.reason ?? null,
-          descriptionDemanded: database === 'national' && detailsKeys.has(nameKey(date, token)) };
-      }));
-  }
   const listItems = useMemo<FocusListItem[]>(() => {
     const items: FocusListItem[] = order?.completed.map(entry => ({ kind: 'completed', entry })) ?? [];
     if (!moment && order?.current) items.push({ kind: 'unfinished', token: order.current });
@@ -228,19 +273,21 @@ export function LegacyNationalFocusWidget({ widget, runtime, active, headerSlot,
     seen.current = count;
   }, [live, count]);
   if (!track || !tag) return <div className="dash-empty" role="status"><span className="empty-icon"><Icon name="target" /></span><p>Load a campaign and choose a country to see its national focuses.</p></div>;
-  if (!inRange) return <div className="dash-empty" role="status">This time is outside the recording.</div>;
   if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
   if (!data) return <ListSkeleton label="Loading national focuses…" />;
-  if (!order) return <div className="dash-empty" role="status">No complete focus data recorded at this date.</div>;
+  if (!inRange) return <div className="dash-empty" role="status">This time is outside the recording.</div>;
+  if (!order || readingHour === undefined) {
+    return <div className="dash-empty" role="status" data-detail={missing?.reason}>No complete focus data recorded at this date.{missing && <small className="focus-missing-reason">{missing.reason}</small>}</div>;
+  }
   const newest = live ? order.completed.at(-1)?.ordinal : undefined;
   const shownFocus = activeFocus(order);
-  const currentArt = at(shownFocus?.database ?? 'national', shownFocus?.token ?? '', currentHour);
+  const currentArt = at(shownFocus?.database ?? 'national', shownFocus?.token ?? '', hours?.active ?? readingHour);
   return <section key={detailsIdentity} className="national-focus" aria-label="National focus">
     {headerSlot && createPortal(<span className="pill focus-header-count">{order.completed.length} completed</span>, headerSlot)}
-    {moment && <CurrentFocus order={order} art={currentArt.art} state={state} live={live} reason={currentArt.reason} failure={currentArt.failure} failures={currentArt.failures} titleFailure={currentArt.titleFailure} pending={currentArt.pending} />}
+    {moment && <CurrentFocus order={order} art={currentArt.art} progress={progress} live={live} reason={currentArt.reason} failure={currentArt.failure} failures={currentArt.failures} titleFailure={currentArt.titleFailure} pending={currentArt.pending} />}
     <div className="focus-scroll" ref={list}>
       {listItems.length ? <VirtualList identity={listIdentity} retainExpansion={false} items={listItems} itemKey={item => item.kind === 'completed'
-        ? `${item.entry.ordinal}:${item.entry.completedByHour ?? readingHour}` : `unfinished:${item.token}`} estimate={62} label="Completed focuses in order" className="focus-list" scrollRef={list}
+        ? `${item.entry.ordinal}:${completedHour(item.entry)}` : `unfinished:${item.token}`} estimate={52} label="Completed focuses in order" className="focus-list" scrollRef={list}
         isInteractive={isCompletedFocus} rowProps={item => item.kind === 'unfinished' ? { className: 'focus-entry is-unfinished' }
           : ({ className: `focus-entry${item.entry.ordinal === newest ? ' is-newest' : ''}`, ...rowJumpProps(runtime, track.id, item.entry.completedByHour, menu.open) })}>{item => {
         // The unfinished focus is the final noninteractive ordered row.
@@ -252,20 +299,14 @@ export function LegacyNationalFocusWidget({ widget, runtime, active, headerSlot,
           <FocusFailureNotices errors={focusErrors(currentArt.failure, currentArt.failures)} />
         </div>;
         const entry = item.entry;
-        const readHour = entry.completedByHour ?? readingHour!, key = nameKey(readHour, entry.token), disclosure = disclosureKey(entry, readHour);
+        const readHour = completedHour(entry), textKey = nameKey(readHour, entry.token), disclosure = disclosureKey(entry, readHour);
         const { art, reason, failure, failures, titleFailure, pending } = at('national', entry.token, readHour);
-        if (art?.description) shownTexts.set(key, art.description);
-        const description = art?.description ?? (dated.details?.get(key) === undefined ? shownTexts.get(key) : undefined);
+        if (art?.description) texts.set(textKey, art.description);
+        const description = art?.description ?? (dated.details?.get(textKey) === undefined ? texts.get(textKey) : undefined);
         return <FocusCompletion entry={entry} art={art} reason={reason} failure={failure} failures={failures} titleFailure={titleFailure} pending={pending} description={description}
           open={!!openRows?.has(disclosure)} onToggle={open => toggleDetails(disclosure, open)} />;
       }}</VirtualList> : <p className="focus-empty">No completed focuses recorded at this point.</p>}
     </div>
     {menu.menu}
   </section>;
-}
-
-/** The historical product remains available for clients without prepared queries. */
-export default function NationalFocusWidget(props: WidgetProps) {
-  return (props.runtime.client as FocusPreparedClient).preparedQuery
-    ? <PreparedFocusWidget {...props} /> : <LegacyNationalFocusWidget {...props} />;
 }

@@ -13,7 +13,47 @@ use replay_data::rows::RailwayGunCounterInputRow;
 /// actions can differ and still join. Route or combat presence wins over the
 /// reference-entry state, as the game evaluates it.
 pub fn join_action(row: &RailwayGunCounterInputRow) -> u8 {
-    if !crate::map::unit_rules::idle(row.ordinary_path.len() as u32, row.combat_count) {
+    join_action_of(&GunOperands::of(row))
+}
+
+/// The gun operands its counter's children read, as values.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GunOperands {
+    /// The ordinary route's length.
+    pub path: u32,
+    pub combat_count: u32,
+    pub reference_entry_count: i32,
+    pub attacking: u8,
+    pub target: u32,
+    pub retreat: u8,
+    pub strategic_redeployment: u8,
+    pub naval_transfer: u8,
+    pub transfer_action_status: u8,
+    pub exiled: u8,
+    pub railway_building_level: Option<i16>,
+}
+
+impl GunOperands {
+    pub fn of(row: &RailwayGunCounterInputRow) -> Self {
+        Self {
+            path: row.ordinary_path.len() as u32,
+            combat_count: row.combat_count,
+            reference_entry_count: row.reference_entry_count,
+            attacking: row.attacking,
+            target: row.target,
+            retreat: row.retreat,
+            strategic_redeployment: row.strategic_redeployment,
+            naval_transfer: row.naval_transfer,
+            transfer_action_status: row.transfer_action_status,
+            exiled: row.exiled,
+            railway_building_level: row.railway_building_level,
+        }
+    }
+}
+
+/// [`join_action`] from values.
+pub fn join_action_of(row: &GunOperands) -> u8 {
+    if !crate::map::unit_rules::idle(row.path, row.combat_count) {
         2
     } else if row.reference_entry_count > 0 {
         12
@@ -29,7 +69,12 @@ pub fn action_code(
     row: &RailwayGunCounterInputRow,
     destination_enemy: Result<bool, &'static str>,
 ) -> Action {
-    if row.ordinary_path.is_empty() {
+    action_code_of(&GunOperands::of(row), destination_enemy)
+}
+
+/// [`action_code`] from values.
+pub fn action_code_of(row: &GunOperands, destination_enemy: Result<bool, &'static str>) -> Action {
+    if row.path == 0 {
         return if !crate::map::unit_rules::idle(0, row.combat_count) {
             Ok(if row.attacking != 0 { 5 } else { 2 })
         } else {
@@ -70,16 +115,24 @@ pub struct RailStatus {
 
 impl RailStatus {
     pub fn read(row: &replay_data::rows::RailCooldownRow, hour: i32) -> Result<Self, String> {
-        if row
-            .selection_hour
+        Self::of(&row.selection_hour, &row.selection, row.cooldown_ticks, hour)
+    }
+
+    /// [`Self::read`] from a row's values.
+    pub fn of(
+        selection_hour: &replay_data::rows::Recorded<Option<i32>>,
+        selection: &replay_data::rows::Recorded<Option<replay_data::rows::RailwaySelectionInputs>>,
+        cooldown_ticks: i32,
+        hour: i32,
+    ) -> Result<Self, String> {
+        if selection_hour
             .require("RailCooldowns.selection_hour")?
             .ok_or("railway raw pair-count sample hour capture refused")?
             != hour
         {
             return Err("railway raw pair-count sample is stale".into());
         }
-        let inputs = row
-            .selection
+        let inputs = selection
             .require("RailCooldowns.selection")?
             .as_ref()
             .ok_or("railway raw pair-count input capture refused")?;
@@ -87,7 +140,7 @@ impl RailStatus {
             neighbor_pairs: inputs
                 .pair_count
                 .ok_or("railway raw pair count capture refused")?,
-            cooldown_ticks: row.cooldown_ticks,
+            cooldown_ticks,
         })
     }
 }
@@ -100,7 +153,12 @@ pub fn location_warning(
     land: bool,
     rail: Option<RailStatus>,
 ) -> Option<bool> {
-    if !row.ordinary_path.is_empty() || row.naval_transfer != 0 || row.exiled != 0 || !land {
+    location_warning_of(&GunOperands::of(row), land, rail)
+}
+
+/// [`location_warning`] from values.
+pub fn location_warning_of(row: &GunOperands, land: bool, rail: Option<RailStatus>) -> Option<bool> {
+    if row.path != 0 || row.naval_transfer != 0 || row.exiled != 0 || !land {
         return Some(false);
     }
     match row.railway_building_level {

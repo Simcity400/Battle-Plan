@@ -132,18 +132,30 @@ fn hour_frame(step: i32) -> Captured {
     source
 }
 
-/// Conversion with the helper fills every table slot the single-thread order
-/// fills, with equal values, including a failed ordinary job's refusal, which
-/// must cover helper packs converted after the spool thread's share.
+/// Conversion split over the helpers fills every table slot the single-thread
+/// order fills, with equal values, whatever the plan: the order the threads
+/// take the movable packs in and how many helpers take them. That includes a
+/// failed ordinary job's refusal, which must cover packs converted after the
+/// spool thread's own share. Each movable pack is converted once, by a thread
+/// of the plan, and every other pack by the spool thread.
 #[test]
-fn the_conversion_helper_reproduces_single_thread_conversion() {
-    use crate::extended::capture_live_shape;
+fn the_conversion_helpers_reproduce_single_thread_conversion_whatever_the_plan() {
+    use crate::extended::{HELPER_PACKS, PACK_NAMES, capture_live_shape};
+    use crate::pack_conversion::{MAX_THREADS, Plan};
     use crate::projection::{Projection, ProjectionScratch};
-    let first = crate::spool_helper::SpoolHelper::start(None).unwrap();
-    let second = crate::spool_helper::SpoolHelper::start(None).unwrap();
+    let pool = [
+        crate::spool_helper::SpoolHelper::start(None).unwrap(),
+        crate::spool_helper::SpoolHelper::start(None).unwrap(),
+        crate::spool_helper::SpoolHelper::start(None).unwrap(),
+    ];
     let helper_calls = crate::spool_phases::HELPER
         .phase(crate::spool_phases::Phase::ConvertPacks)
         .0;
+    let packs = PACK_NAMES.len();
+    let later_first: [Option<u64>; PACK_NAMES.len()] =
+        std::array::from_fn(|pack| Some(pack as u64 + 1));
+    let earlier_first: [Option<u64>; PACK_NAMES.len()] =
+        std::array::from_fn(|pack| Some((packs - pack) as u64));
     for ordinary_failure in [None, Some("synthetic ordinary acquisition failure")] {
         let mut source = hour_frame(3);
         capture_live_shape(&mut source.extended);
@@ -167,17 +179,35 @@ fn the_conversion_helper_reproduces_single_thread_conversion() {
                     helper,
                 },
             )
-            .0
         };
-        let serial = convert(None);
-        for (backlogged, second) in [(false, None), (true, None), (false, Some(&second))] {
-            let split = convert(Some(crate::spool_helper::Helpers {
-                first: &first,
-                second,
-                backlogged,
-            }));
-            assert_eq!(split.tables, serial.tables, "{ordinary_failure:?}");
-            assert_eq!(split.metrics, serial.metrics);
+        let (serial, _) = convert(None);
+        for estimates in [&later_first, &earlier_first] {
+            for helpers in 1..=pool.len() {
+                let plan = Plan::new(estimates, helpers);
+                assert_eq!(plan.helpers(), helpers);
+                let (split, costs) = convert(Some(HelperSplit {
+                    helpers: crate::spool_helper::Helpers {
+                        pool: &pool,
+                        backlogged: helpers % 2 == 0,
+                    },
+                    plan,
+                }));
+                assert_eq!(split.tables, serial.tables, "{ordinary_failure:?}, {helpers}");
+                assert_eq!(split.metrics, serial.metrics);
+                for ((name, movable), converted) in
+                    PACK_NAMES.iter().zip(HELPER_PACKS).zip(costs.converted_by())
+                {
+                    let (_, thread) = converted.unwrap_or_else(|| panic!("{name} not converted"));
+                    if movable {
+                        assert!(thread <= helpers, "{name} on thread {thread}");
+                    } else {
+                        assert_eq!(thread, crate::pack_conversion::SPOOL, "{name}");
+                    }
+                }
+                let walls: Vec<bool> = costs.walls().map(|wall| wall.is_some()).collect();
+                let expected: Vec<bool> = (0..MAX_THREADS).map(|thread| thread <= helpers).collect();
+                assert_eq!(walls, expected);
+            }
         }
         if let Some(reason) = ordinary_failure {
             assert!(serial.tables.iter().any(|table| matches!(
@@ -194,6 +224,6 @@ fn the_conversion_helper_reproduces_single_thread_conversion() {
         crate::spool_phases::HELPER
             .phase(crate::spool_phases::Phase::ConvertPacks)
             .0
-            >= helper_calls + 7
+            >= helper_calls + 24
     );
 }

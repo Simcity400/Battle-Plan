@@ -42,7 +42,7 @@ pub fn recorded_names<F: Tables + ?Sized>(
         let wing = wings.get(u128::from(reference));
         let reason = match wing {
             Err(why) => Some(why.to_string()),
-            Ok(None) => Some(format!("AirWings lacks WING {reference:#x}")),
+            Ok(None) => Some(format!("air wings lacks WING {reference:#x}")),
             Ok(Some(wing)) => match &wing.name {
                 Recorded::Value(Some(bytes)) => {
                     names.insert(reference, bytes.clone());

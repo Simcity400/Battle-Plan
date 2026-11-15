@@ -4,13 +4,10 @@ import { validateIdeaHistoryReply, validateIdeaTooltipData } from './ideaHistory
 
 const reply = { branchId: '1', tag: 'GER', spans: [], ideas: [], artwork: [], holders: [], categories: [], unobserved: [], identityStarts: [], modifiers: [], texts: [], warnings: [] };
 
-test('idea first views retain approximate lanes and mark held order and acquisition pending', () => {
-  const held = { hour: 200, slot: 7, countryId: 9001, spans: [{ token: 'mod_spirit', firstHour: 200, lastHour: 200, slot: null, character: null }], preparing: ['order', 'acquired', 'acquisitionContext'] };
-  const first = validateIdeaHistoryReply({ ...reply, held, approximate: [{ firstHour: 101, lastHour: 200 }] });
-  assert.deepEqual(first.held, held);
-  assert.deepEqual(first.approximate, [{ firstHour: 101, lastHour: 200 }]);
-  assert.throws(() => validateIdeaHistoryReply({ ...reply, held: { ...held, hour: 201 } }), /malformed/);
-  assert.throws(() => validateIdeaHistoryReply({ ...reply, approximate: [{ firstHour: 101, lastHour: 100 }] }), /malformed/);
+test('an idea history reply with unordered unobserved hours is refused', () => {
+  assert.deepEqual(validateIdeaHistoryReply({ ...reply, unobserved: [{ firstHour: 101, lastHour: 102 }] }).unobserved, [{ firstHour: 101, lastHour: 102 }]);
+  assert.throws(() => validateIdeaHistoryReply({ ...reply, unobserved: [{ firstHour: 101, lastHour: 100 }] }), /malformed/);
+  assert.throws(() => validateIdeaHistoryReply({ ...reply, unobserved: [{ firstHour: 101, lastHour: 110 }, { firstHour: 105, lastHour: 120 }] }), /malformed/);
 });
 
 test('an idea history reply without per-holder artwork is refused, not rendered', () => {
@@ -22,7 +19,7 @@ test('an idea history reply without per-holder artwork is refused, not rendered'
 
 test('shared tooltip data checks effect shapes and keeps mod text when its art cannot be drawn', () => {
   const sources = { ideas: [{ token: 'mod_idea', category: 'mod_category', slot: null, law: true, designer: false,
-    effectsKnown: true, unknown: null, effects: [{ key: 'mod_effect', fixed5: '-123456', hidden: false }], targeted: [], equipment: [],
+    effectsKnown: true, unknown: null, nameMissing: null, effects: [{ key: 'mod_effect', fixed5: '-123456', hidden: false }], targeted: [], equipment: [],
     research: [], traits: [], tooltips: [] }], modifiers: [], texts: [],
   artwork: [{ token: 'mod_idea', name: 'Mod idea', icon: 'file:///mod/icon', description: 'Mod description', baseDurationDays: null }] };
   const data = validateIdeaTooltipData(sources);

@@ -76,6 +76,7 @@ use std::cell::{OnceCell, RefCell};
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::OnceLock;
 use std::sync::RwLock;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -96,15 +97,15 @@ use installed_content_image::native::Decode;
 use installed_content_localisation::localisation::Localisation;
 use replay_data::{
     rows::DivisionModelInputRow, rows::DivisionStatusRow, rows::DivisionTemplateIconRow,
-    rows::TableId, rows::VariantDefinitionRow, rows::tables,
+    rows::TableId, rows::tables,
 };
-use replay_frame::frame::DecodedFrame;
+use replay_frame::frame::{DecodedFrame, SharedView, ViewIdentity, view_reads};
 
 mod ships;
 mod retained_bridge;
 use model_selection::profile::{Stage, Stages};
 
-pub use ships::ShipPlaces;
+pub use ships::{Force, ForcePart, ResolvedHull, ResolvedRoster, ShipGround, ShipPlaces, naval_differ};
 
 use {
     crate::map::camouflage, crate::map::equipment_graphics, crate::map::equipment_graphics::bridge,
@@ -167,24 +168,53 @@ impl<'a> ModelStatus<'a> {
         }
     }
 
-    /// The hour's statuses: DivisionStatus's, or the witness's where the recording leaves
-    /// DivisionStatus out.
-    fn read(frame: &'a DecodedFrame) -> io::Result<BTreeMap<u64, Self>> {
+}
+
+/// The provinces whose owner links to the viewer's canonical slot `ours`.
+fn owned(hour: &Hour<'_>, frame: &DecodedFrame, ours: u32) -> io::Result<BTreeSet<u32>> {
+    Ok(core::<tables::Provinces>(frame)?
+        .iter()
+        .filter(|row| hour.country.links.get(&row.owner) == Some(&ours))
+        .map(|row| row.id)
+        .collect())
+}
+
+/// The hour's statuses by division: DivisionStatus's rows, or the witness's where the recording
+/// leaves DivisionStatus out, each looked up alone in the frame's rows (ascending by division).
+#[derive(Clone, Copy)]
+enum Statuses<'a> {
+    Status(&'a [DivisionStatusRow]),
+    Witness(&'a [DivisionModelInputRow]),
+}
+
+impl Default for Statuses<'_> {
+    fn default() -> Self {
+        Self::Status(&[])
+    }
+}
+
+impl<'a> Statuses<'a> {
+    fn read(frame: &'a DecodedFrame) -> io::Result<Self> {
         Ok(
             if frame.recorded(replay_data::rows::TableId::DivisionStatus) {
-                rows::<tables::DivisionStatus>(frame)?
-                    .rows()
-                    .iter()
-                    .map(|row| (row.division, Self::Status(row)))
-                    .collect()
+                Self::Status(rows::<tables::DivisionStatus>(frame)?.rows())
             } else {
-                rows::<tables::DivisionModelInputs>(frame)?
-                    .rows()
-                    .iter()
-                    .map(|row| (row.division, Self::Witness(row)))
-                    .collect()
+                Self::Witness(rows::<tables::DivisionModelInputs>(frame)?.rows())
             },
         )
+    }
+
+    fn get(self, division: u64) -> Option<ModelStatus<'a>> {
+        match self {
+            Self::Status(rows) => rows
+                .binary_search_by_key(&division, |row| row.division)
+                .ok()
+                .map(|at| ModelStatus::Status(&rows[at])),
+            Self::Witness(rows) => rows
+                .binary_search_by_key(&division, |row| row.division)
+                .ok()
+                .map(|at| ModelStatus::Witness(&rows[at])),
+        }
     }
 }
 
@@ -527,8 +557,25 @@ pub struct ModelReport {
 }
 
 impl ModelReport {
-    fn error(&mut self, reason: impl Into<String>) {
+    pub fn error(&mut self, reason: impl Into<String>) {
         *self.selection_errors.entry(reason.into()).or_default() += 1;
+    }
+
+    /// Adds another part's counts to these.
+    pub fn absorb(&mut self, other: &Self) {
+        let counts = [(&mut self.stacks, other.stacks), (&mut self.ship_hulls, other.ship_hulls), (&mut self.sprite_key, other.sprite_key), (&mut self.transports, other.transports), (&mut self.moving, other.moving), (&mut self.untemplated, other.untemplated), (&mut self.unknown_identity, other.unknown_identity), (&mut self.unanchored, other.unanchored), (&mut self.unseen, other.unseen), (&mut self.attached, other.attached), (&mut self.rigs, other.rigs), (&mut self.undecided_mission_formations, other.undecided_mission_formations), (&mut self.support_locator_rng, other.support_locator_rng)];
+        for (mine, theirs) in counts {
+            *mine += theirs;
+        }
+        for (level, count) in &other.by_level {
+            *self.by_level.entry(*level).or_default() += count;
+        }
+        for (name, count) in &other.by_entity {
+            *self.by_entity.entry(name.clone()).or_default() += count;
+        }
+        for (reason, count) in &other.selection_errors {
+            *self.selection_errors.entry(reason.clone()).or_default() += count;
+        }
     }
 
     /// The stacks omitted for a missing or refused input, one diagnostics
@@ -574,7 +621,7 @@ pub struct UnitModelAssets {
     conventional: retained_bridge::RetainedBridge,
     /// The last built hour's stack selections, kept while what they read is unchanged. Hours
     /// built side by side each start from them.
-    selections: Mutex<Option<Arc<Selections>>>,
+    selections: KeptChoices,
     roster: Arc<mesh::Roster>,
     /// The content the library bakes from.
     layers: ResolvedLayers,
@@ -740,7 +787,7 @@ impl UnitModelAssets {
             bakes: Mutex::new(BTreeMap::new()),
             bake_warnings: Mutex::default(),
             conventional: retained_bridge::RetainedBridge::default(),
-            selections: Mutex::new(None),
+            selections: KeptChoices::default(),
             roster: Arc::new(mesh::Roster::default()),
             layers: ResolvedLayers::default(),
             sub_units: model_selection::Content::default(),
@@ -813,7 +860,7 @@ impl UnitModelAssets {
             bakes: Mutex::new(BTreeMap::new()),
             bake_warnings: Mutex::default(),
             conventional: retained_bridge::RetainedBridge::default(),
-            selections: Mutex::new(None),
+            selections: KeptChoices::default(),
             sub_units,
             gates: Gates::read(defines)?,
             bounds: Arc::new(province_boxes(&ProvinceMap {
@@ -989,9 +1036,28 @@ impl UnitModelAssets {
         Ok(graphics_model(self, &hour, pair, None, country)?.map(|(_, name)| name))
     }
 
+    /// The countries' geography joined at `frame`, as an aircraft's model reads it unnoted: a keeper
+    /// of the models compares it whole.
+    pub(crate) fn aircraft_geography(
+        &self,
+        frame: &DecodedFrame,
+    ) -> Result<context::Prepared, String> {
+        replay_frame::frame::view_reads::unrecorded(|| {
+            context::Prepared::read(frame, &self.geography)
+        })
+    }
+
+    /// The equipment census at `frame`, which a model's census reads ([`CensusRead`]) are judged by.
+    pub(crate) fn census(&self, frame: &DecodedFrame) -> Result<Arc<bridge::Retained>, String> {
+        self.conventional.read(frame, &self.sub_units)
+    }
+
     /// The complete airborne ladder, shared by conventional wings and raids.
     /// All pool context is the supplied country, rather than
     /// the variant creator used by the earlier designer branch.
+    /// Inside a [`kept::record`] it notes the variant's row and the fields of Countries and
+    /// PoliticalParties it reads; the joined geography ([`Self::aircraft_geography`]) and the
+    /// pools its limits decide it reads unnoted.
     pub fn aircraft_entity(
         &self,
         frame: &DecodedFrame,
@@ -1002,6 +1068,7 @@ impl UnitModelAssets {
         if let Some(reason) = &self.disabled {
             return Err(reason.clone());
         }
+        kept::note_row(TableId::VariantDefinitions, u128::from(variant), u64::MAX);
         let definitions = frame
             .complete::<tables::VariantDefinitions>()
             .map_err(|error| error.to_string())?;
@@ -1009,6 +1076,23 @@ impl UnitModelAssets {
             .iter()
             .find(|row| row.id == variant)
             .ok_or_else(|| format!("equipment variant {variant} has no definition"))?;
+        // All the choice reads of these three below: a change elsewhere in them keeps the model.
+        kept::note_row(
+            TableId::LexicalTokens,
+            u128::from(row.equipment_token),
+            replay_data::rows::mask::<replay_data::rows::LexicalTokenRow>(&["literal"]),
+        );
+        kept::note_table(
+            TableId::CountryLinks,
+            replay_data::rows::mask::<replay_data::rows::CountryLinkRow>(&["canonical_slot"]),
+        );
+        kept::note_table(
+            TableId::CountryAppearance,
+            replay_data::rows::mask::<replay_data::rows::CountryAppearanceRow>(&[
+                "cosmetic_tag",
+                "graphical_culture",
+            ]),
+        );
         let [features] = frame
             .complete::<tables::SimulationFeatures>()
             .map_err(|error| error.to_string())?
@@ -1048,7 +1132,13 @@ impl UnitModelAssets {
                 })
                 .ok_or_else(|| "aircraft country has no CountryAppearance row".to_owned())
         };
-        let designer = || self.aircraft_variant_model(frame, limits, variant, raw_country);
+        // Recorded apart: its reads reach a recording around this one whole, not under the notes below.
+        let designer = || {
+            kept::record::<CensusRead, _>(frame, || {
+                self.aircraft_variant_model(frame, limits, variant, raw_country)
+            })
+            .0
+        };
         let graphical = || {
             let key = key()?;
             let appearance = appearance()?;
@@ -1058,6 +1148,13 @@ impl UnitModelAssets {
                 .complete::<tables::CountryLinks>()
                 .map_err(|error| error.to_string())?;
             let slot = slot()?;
+            kept::note_table(
+                TableId::PoliticalParties,
+                replay_data::rows::mask::<replay_data::rows::PoliticalPartyRow>(&[
+                    "is_ruling",
+                    "token",
+                ]),
+            );
             let parties = frame
                 .complete::<tables::PoliticalParties>()
                 .map_err(|error| error.to_string())?;
@@ -1093,7 +1190,7 @@ impl UnitModelAssets {
                         .transpose()?,
                 ))
             };
-            let geography = context::Prepared::read(frame, &self.geography)?;
+            let geography = self.aircraft_geography(frame)?;
             let geography = geography.context(raw_country)?;
             self.graphics.aircraft_override(
                 &equipment_graphics::Context {
@@ -1122,6 +1219,13 @@ impl UnitModelAssets {
                 &|| text(&appearance()?.cosmetic_tag).map(str::to_owned),
                 &|| {
                     let slot = slot()?;
+                    kept::note_table(
+                        TableId::Countries,
+                        replay_data::rows::mask::<replay_data::rows::CountryRow>(&[
+                            "canonical_slot",
+                            "tag",
+                        ]),
+                    );
                     let countries = frame
                         .complete::<tables::Countries>()
                         .map_err(|error| error.to_string())?;
@@ -1375,20 +1479,20 @@ impl UnitModelAssets {
         lap: &mut dyn FnMut(&'static str),
         spans: &mut BuilderSpans,
     ) -> io::Result<PreparedModels> {
+        self.prepare_naval_or_not(inputs, true, lap, spans)
+    }
+
+    /// The same preparation; without `naval` the hour's ships are not made (the map's ships layer
+    /// draws them) and the result says so ([`PreparedModels::naval`]).
+    pub fn prepare_naval_or_not(
+        &self,
+        inputs: PrepareInputs<'_>,
+        naval: bool,
+        lap: &mut dyn FnMut(&'static str),
+        spans: &mut BuilderSpans,
+    ) -> io::Result<PreparedModels> {
         if let Some(reason) = &self.disabled {
-            return Ok(PreparedModels {
-                staged_field: Mutex::new(None),
-                targets: None,
-                raid: Vec::new(),
-                convoys: None,
-                placed: Vec::new(),
-                ships: NavalSources::default(),
-                owned: BTreeSet::new(),
-                report: ModelReport {
-                    disabled: Some(reason.clone()),
-                    ..ModelReport::default()
-                },
-            });
+            return Ok(PreparedModels::disabled(reason));
         }
         let PrepareInputs {
             frame,
@@ -1402,7 +1506,16 @@ impl UnitModelAssets {
             ships,
             localisation,
         } = inputs;
-        let mut hour = Hour::read_profiled(self, frame, terrain, limits, localisation, lap)?;
+        let country = self.selections.country();
+        let mut hour = Hour::read_profiled(
+            self,
+            frame,
+            terrain,
+            limits,
+            localisation,
+            country.as_ref(),
+            lap,
+        )?;
         hour.spans = RefCell::new(spans.fork());
         hour.selection = Stages::new(spans.enabled());
         // The game reads the ordinary route count and movement-target pointer,
@@ -1443,7 +1556,7 @@ impl UnitModelAssets {
             if division.province == 0 {
                 continue;
             }
-            let Some(slot) = hour.links.get(&division.logical_owner).copied() else {
+            let Some(slot) = hour.country.links.get(&division.logical_owner).copied() else {
                 continue;
             };
             let route = movements.get(&division.id);
@@ -1485,180 +1598,54 @@ impl UnitModelAssets {
             stacks: stacks.len(),
             ..ModelReport::default()
         };
-        let view = model_multi_fallback::view_country_ref(frame, vision);
-        let census = hour
-            .retained_conventional()
-            .map(|(retained, _)| Arc::clone(retained))
-            .map_err(Clone::clone);
-        let now = Arc::new(frame.clone());
-        // Kept answers stand while the hour's country context is the same and every row,
-        // range and census entry they read reads the same ([`kept`]).
-        let held = self
-            .selections
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone()
-            .filter(|kept| {
-                kept.context.same(&hour, &view) && hour.limits.decide_the_same(&kept.decided)
-            });
-        let (context, then, held_census, chosen_answers, graphical_answers, fallback_answers) =
-            match held {
-                Some(held) => (
-                    Some(Arc::clone(&held.context)),
-                    Arc::clone(&held.frame),
-                    held.census.clone(),
-                    held.chosen.clone(),
-                    held.graphical.clone(),
-                    held.fallbacks.clone(),
-                ),
-                None => (
-                    None,
-                    Arc::clone(&now),
-                    Err(String::new()),
-                    kept::Kept::checked(),
-                    kept::Kept::checked(),
-                    kept::Kept::checked(),
-                ),
-            };
-        let between = kept::Between::new(&then, &now);
-        let census_changed: &dyn Fn(&CensusRead) -> bool = &|read| match (&held_census, &census) {
-            (Ok(was), Ok(is)) => !(Arc::ptr_eq(was, is) || was.same_read(is, read)),
-            (Err(was), Err(is)) => was != is,
-            _ => true,
-        };
-        let mut chosen_answers = chosen_answers.hour(&between, census_changed);
-        let graphical_answers = RefCell::new(graphical_answers.hour(&between, census_changed));
-        let fallback_answers = RefCell::new(fallback_answers.hour(&between, census_changed));
-        let mut selector = Selector {
-            assets: self,
-            hour: &hour,
-            frame,
-            vision,
-            graphical: BTreeMap::new(),
-            fallbacks: BTreeMap::new(),
-            view: Some(view.clone()),
-            graphical_answers: &graphical_answers,
-            fallback_answers: &fallback_answers,
-        };
-        let mut templates = BTreeMap::new();
         // Selection first; the chosen entities are then baked in one batch.
         let mut chosen = Vec::new();
-        for ((province, owner, _), stack) in &stacks {
-            if stack.visible == 0 {
-                report.unseen += 1;
-                continue;
-            }
-            let transport = stack
-                .route
-                .as_ref()
-                .is_some_and(|route| route.naval_transfer);
-            if transport {
-                report.transports += 1;
-            }
-            let key = SelectionKey {
-                transport,
-                template: stack.template,
-                oldest: stack.oldest,
-                roster_owner: stack.roster_owner,
-                expeditionary_owner: stack.expeditionary_owner,
-            };
-            let selected = match chosen_answers.get(&key) {
-                Some(answer) => answer.value,
-                None => {
-                    let (selected, reads) = kept::record::<CensusRead, _>(frame, || {
-                        let selected = if transport {
-                            selector.transport(stack)
-                        } else {
-                            selector.land(stack, &mut templates)
-                        };
-                        selected.map(|selected| {
-                            selected.map(|(level, name, key)| (level, name, key.map(str::to_owned)))
-                        })
-                    });
-                    chosen_answers.put(key, selected, reads).value
-                }
-            };
-            let (level, mut name) = match &*selected {
-                Ok(Some((level, name, _))) => (*level, name.clone()),
-                Ok(None) => {
-                    report.unknown_identity += 1;
+        self.with_land_models(&hour, vision.ours(), &self.selections, None, &mut |_| {}, |models| {
+            for ((province, owner, _), stack) in &stacks {
+                if stack.visible == 0 {
+                    report.unseen += 1;
                     continue;
                 }
-                Err(Missing::Template) => {
-                    report.untemplated += 1;
-                    continue;
+                let transport = stack
+                    .route
+                    .as_ref()
+                    .is_some_and(|route| route.naval_transfer);
+                if transport {
+                    report.transports += 1;
                 }
-                Err(Missing::Input(reason)) => {
-                    report.error(reason.clone());
-                    continue;
-                }
-            };
-            let base = name.clone();
-            if !transport {
-                let Some(&status) = hour.statuses.get(&stack.oldest) else {
-                    report.error("division acclimatization status is unavailable");
-                    continue;
+                let key = SelectionKey {
+                    transport,
+                    template: stack.template,
+                    oldest: stack.oldest,
+                    roster_owner: stack.roster_owner,
+                    expeditionary_owner: stack.expeditionary_owner,
                 };
-                let camouflaged = hour.selection.measure(Stage::Camouflage, || {
-                    hour.camouflage
-                        .suffix(&self.camouflage, hour.sources.tokens, status, *province)
-                        .map(|suffix| {
-                            camouflage::entity(&name, suffix, |candidate| {
-                                self.registered(candidate)
-                            })
-                        })
-                });
-                match camouflaged {
-                    Ok(selected) => name = selected,
-                    Err(error) => {
-                        report.error(error.to_string());
-                        continue;
+                match models.choose(*province, key) {
+                    StackModel::Chosen(model) => {
+                        chosen.push((*province, *owner, stack, model, transport));
                     }
+                    StackModel::UnknownIdentity => report.unknown_identity += 1,
+                    StackModel::Untemplated => report.untemplated += 1,
+                    StackModel::Withheld(reason) => report.error(reason),
                 }
             }
-            chosen.push((*province, *owner, stack, level, name, base, selected, transport));
-        }
-        drop(selector);
-        let (chosen_answers, graphical_answers, fallback_answers) = (
-            chosen_answers.finish(),
-            graphical_answers.into_inner().finish(),
-            fallback_answers.into_inner().finish(),
-        );
-        drop(between);
-        let selections = Selections {
-            context: context.unwrap_or_else(|| Arc::new(SelectionContext::capture(&hour, view))),
-            frame: now,
-            decided: hour.limits.decided(),
-            census,
-            chosen: chosen_answers,
-            graphical: graphical_answers,
-            fallbacks: fallback_answers,
-        };
-        *self
-            .selections
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Arc::new(selections));
+        });
         lap("um_selection");
         spans.append(hour.spans.replace(spans.fork()));
         hour.selection.append_to(spans);
-        let names: Vec<String> = chosen.iter().map(|chosen| chosen.4.clone()).collect();
+        let names: Vec<String> = chosen.iter().map(|chosen| chosen.3.entity.clone()).collect();
         self.ensure_with_spans(&names, spans);
         lap("um_ensure");
         let library = self.library();
         let clock_unavailable = counter_move::MovementFrame::clock_speed(frame).is_none();
         let mut placed = Vec::new();
-        for (province, owner, stack, level, name, base, selected, transport) in chosen {
-            let key = match &*selected {
-                Ok(Some((_, _, key))) => key.as_deref(),
-                _ => None,
-            };
-            if let Some(reason) = self.refusal(&name) {
-                report.error(reason);
-                continue;
-            }
-            let Some(slot) = library.slot(&name) else {
-                report.error(format!("registered entity {name} did not bake"));
-                continue;
+        for (province, owner, stack, model, transport) in chosen {
+            let slot = match self.chosen_slot(&library, &model.entity) {
+                Ok(slot) => slot,
+                Err(reason) => {
+                    report.error(reason);
+                    continue;
+                }
             };
             if !self.bounds.contains_key(&province) {
                 report.error(format!(
@@ -1666,33 +1653,45 @@ impl UnitModelAssets {
                 ));
                 continue;
             }
-            if key
-                .and_then(|key| self.sub_units.subunit(key))
-                .is_some_and(|unit| {
-                    unit.sprite != unit.key && base.ends_with(&entity_name("", &unit.sprite))
-                })
-            {
+            if model.sprite_keyed(self) {
                 report.sprite_key += 1;
             }
-            let position = match &stack.route {
-                Some(route) => route.position(province, world, anchor),
-                None => anchor(province, STANDSTILL).map(counter_move::Position::still),
-            };
-            let Some(position) = position else {
-                report.unanchored += 1;
-                continue;
-            };
-            let training = hour
-                .statuses
-                .get(&stack.oldest)
-                .and_then(|status| status.exercising());
-            let Some(animation) = animation_state(
-                movements.get(&stack.oldest),
-                combat_states.get(&stack.oldest).copied(),
-                training,
-            ) else {
-                report.error("division exercise is unavailable this hour");
-                continue;
+            let ChosenModel {
+                level,
+                entity: name,
+                ..
+            } = model;
+            let figure = land_figure(
+                &LandStack {
+                    province,
+                    owner,
+                    oldest: stack.oldest,
+                    route: stack.route.as_ref(),
+                    combat: combat_states.get(&stack.oldest).copied(),
+                    training: hour
+                        .statuses
+                        .get(stack.oldest)
+                        .and_then(|status| status.exercising()),
+                    uv_moving: uv_moving.contains(&stack.oldest),
+                    scale: if transport {
+                        self.gates.transport_scale
+                    } else {
+                        1.0
+                    },
+                },
+                world,
+                anchor,
+            );
+            let (mut target, position) = match figure {
+                Ok(figure) => figure,
+                Err(Unplaced::Unanchored) => {
+                    report.unanchored += 1;
+                    continue;
+                }
+                Err(Unplaced::Exercise) => {
+                    report.error("division exercise is unavailable this hour");
+                    continue;
+                }
             };
             if position.motion.is_some() {
                 report.moving += 1;
@@ -1708,62 +1707,33 @@ impl UnitModelAssets {
                     report.attached += 1;
                 }
             }
-            // `mesh::Descriptors::resolve` applies the whole `clone` chain's
-            // scale and `crate::map::models` bakes it into the vertices, so the only
-            // instance scale left is the transport one.
-            let scale = if transport {
-                self.gates.transport_scale
-            } else {
-                1.0
-            };
             *report.by_level.entry(level).or_default() += 1;
             *report.by_entity.entry(name).or_default() += 1;
-            placed.push((
-                Target {
-                    province,
-                    identity: stack.oldest,
-                    order: stack
-                        .route
-                        .as_ref()
-                        .map_or(STANDSTILL, |route| route.stack_kind),
-                    occupant: stack.oldest,
-                    part: 0,
-                    kind: Kind::Land,
-                    mesh: slot,
-                    origin: position.standing,
-                    instance: ModelInstance {
-                        position: position.standing,
-                        native_flags: 1 | (u32::from(uv_moving.contains(&stack.oldest)) << 1),
-                        rotation: hash_rotation(province.wrapping_mul(2_654_435_761) ^ owner),
-                        scale,
-                        pitch: 0.0,
-                        train_clip: [0.0; 4],
-                        animation,
-                        animation_seed: stack.oldest as u32 ^ (stack.oldest >> 32) as u32,
-                        ..ModelInstance::default()
-                    },
-                },
-                position,
-            ));
+            target.mesh = slot;
+            placed.push((target, position));
         }
         drop(library);
         lap("um_targets");
-        let ships = self.prepare_naval_with_spans(
-            frame,
-            vision,
-            anchor,
-            world,
-            ships,
-            Some(&hour),
-            &mut report,
-            spans,
-        );
-        spans.append(hour.spans.replace(spans.fork()));
-        let ships = ships?;
+        let ships = if naval {
+            let ships = self.prepare_naval_with_spans(
+                frame,
+                vision,
+                anchor,
+                world,
+                ships,
+                Some(&hour),
+                &mut report,
+                spans,
+            );
+            spans.append(hour.spans.replace(spans.fork()));
+            ships?
+        } else {
+            NavalSources::default()
+        };
         lap("um_naval");
         let owned = core::<tables::Provinces>(frame)?
             .iter()
-            .filter(|row| hour.links.get(&row.owner) == Some(&vision.ours()))
+            .filter(|row| hour.country.links.get(&row.owner) == Some(&vision.ours()))
             .map(|row| row.id)
             .collect();
         lap("um_owned");
@@ -1775,9 +1745,576 @@ impl UnitModelAssets {
             convoys: None,
             placed,
             ships,
+            naval,
             owned,
             report,
         })
+    }
+
+    /// The hour's models without its land stacks, whose models the map's units layer chooses a
+    /// stack at a time ([`Self::land_models`]): the ships with `naval` (otherwise the map's ships
+    /// layer draws them) and the provinces the viewer owns, over the joins the ships read alone.
+    pub fn prepare_without_land(
+        &self,
+        inputs: PrepareInputs<'_>,
+        naval: bool,
+    ) -> io::Result<PreparedModels> {
+        if let Some(reason) = &self.disabled {
+            return Ok(PreparedModels::disabled(reason));
+        }
+        let PrepareInputs {
+            frame,
+            limits,
+            vision,
+            anchor,
+            world,
+            terrain,
+            ships,
+            localisation,
+            ..
+        } = inputs;
+        let hour = Hour::read_naval(self, frame, terrain, limits, localisation)?;
+        let mut report = ModelReport::default();
+        let ships = if naval {
+            self.prepare_naval_with_spans(
+                frame,
+                vision,
+                anchor,
+                world,
+                ships,
+                Some(&hour),
+                &mut report,
+                &mut BuilderSpans::new(false),
+            )?
+        } else {
+            NavalSources::default()
+        };
+        let owned = owned(&hour, frame, vision.ours())?;
+        report.bake_warnings = self.bake_warnings();
+        Ok(PreparedModels {
+            staged_field: Mutex::new(None),
+            targets: None,
+            raid: Vec::new(),
+            convoys: None,
+            placed: Vec::new(),
+            ships,
+            naval,
+            owned,
+            report,
+        })
+    }
+
+    /// [`Self::prepare_without_land`] without the ships (the map's ships layer draws them): the
+    /// provinces the viewer whose canonical slot is `ours` owns. It reads of the viewer only whose
+    /// country it is, so it is given that and no vision.
+    pub fn prepare_shipless(
+        &self,
+        frame: &DecodedFrame,
+        ours: u32,
+        terrain: &BTreeMap<u32, String>,
+        limits: equipment_graphics::Limits<'_>,
+        localisation: &Localisation,
+    ) -> io::Result<PreparedModels> {
+        if let Some(reason) = &self.disabled {
+            return Ok(PreparedModels::disabled(reason));
+        }
+        let hour = Hour::read_naval(self, frame, terrain, limits, localisation)?;
+        let owned = owned(&hour, frame, ours)?;
+        let report = ModelReport { bake_warnings: self.bake_warnings(), ..ModelReport::default() };
+        Ok(PreparedModels {
+            staged_field: Mutex::new(None),
+            targets: None,
+            raid: Vec::new(),
+            convoys: None,
+            placed: Vec::new(),
+            ships: NavalSources::default(),
+            naval: false,
+            owned,
+            report,
+        })
+    }
+
+    /// Chooses land stacks' models one at a time over `inputs`' hour: `choose` is handed the
+    /// session ([`LandModels::choose`]), which starts from the answers `kept` holds and leaves
+    /// there what it made or kept, for the caller's next session. `told` names the rows made anew
+    /// since the frame the answers were kept at, so the answers they reach are found without
+    /// comparing tables; a table it does not name is compared.
+    pub fn land_models<R>(
+        &self,
+        inputs: SelectInputs<'_>,
+        kept: &KeptChoices,
+        told: &Told,
+        choose: impl FnOnce(&mut LandModels<'_, '_, '_>) -> R,
+    ) -> io::Result<R> {
+        if let Some(reason) = &self.disabled {
+            return Err(io::Error::other(reason.clone()));
+        }
+        let SelectInputs {
+            frame,
+            limits,
+            ours,
+            terrain,
+            localisation,
+            divisions,
+            lap,
+        } = inputs;
+        let mut untimed = |_: &'static str| {};
+        let lap: &mut dyn FnMut(&'static str) = match lap {
+            Some(lap) => lap,
+            None => &mut untimed,
+        };
+        let country = kept.country();
+        lap("um_start");
+        let mut hour = Hour::read_profiled(
+            self,
+            frame,
+            terrain,
+            limits,
+            localisation,
+            country.as_ref(),
+            lap,
+        )?;
+        lap("um_joins_rest");
+        if let Ok(equipment) = &mut hour.equipment {
+            equipment.asked = divisions;
+        }
+        Ok(self.with_land_models(&hour, ours, kept, Some(told), lap, choose))
+    }
+
+    /// The library slots of chosen `entities`, baked in one batch first ([`Self::chosen_slot`]).
+    pub fn chosen_meshes(&self, entities: &[String]) -> Vec<Result<usize, String>> {
+        self.ensure_with_spans(entities, &mut BuilderSpans::new(false));
+        let library = self.library();
+        entities
+            .iter()
+            .map(|entity| self.chosen_slot(&library, entity))
+            .collect()
+    }
+
+    /// One session of land selections over `hour` for the viewer whose canonical slot is `ours`:
+    /// the answers `kept` holds stand while the hour's country context is the same, less those
+    /// the changes since they were kept reach (every store is indexed by the rows, ranges and
+    /// census entries its answers read, [`kept`]); what `choose` made or kept is kept for the next.
+    fn with_land_models<'a, R>(
+        &'a self,
+        hour: &Hour<'a>,
+        ours: u32,
+        kept: &KeptChoices,
+        told: Option<&Told>,
+        lap: &mut dyn FnMut(&'static str),
+        choose: impl FnOnce(&mut LandModels<'_, '_, '_>) -> R,
+    ) -> R {
+        let frame = hour.frame;
+        let view = model_multi_fallback::view_country_ref(frame, ours);
+        lap("um_view");
+        let census = hour
+            .retained_conventional()
+            .map(|(retained, _)| Arc::clone(retained))
+            .map_err(Clone::clone);
+        lap("um_census");
+        let now = Arc::new(frame.clone());
+        let held = kept
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+            .filter(|kept| {
+                kept.context.same(hour, &view) && hour.limits.decide_the_same(&kept.decided)
+            });
+        lap("um_context");
+        let (context, then, held_census, chosen_answers, graphical_answers, fallback_answers) =
+            match &held {
+                Some(held) => (
+                    Some(Arc::clone(&held.context)),
+                    Arc::clone(&held.frame),
+                    held.census.clone(),
+                    held.chosen.clone(),
+                    held.graphical.clone(),
+                    held.fallbacks.clone(),
+                ),
+                None => (
+                    None,
+                    Arc::clone(&now),
+                    Err(String::new()),
+                    kept::Kept::indexed(),
+                    kept::Kept::indexed(),
+                    kept::Kept::indexed(),
+                ),
+            };
+        let (members, camouflaged) = match held {
+            Some(held) => (held.members.clone(), held.camouflage.clone()),
+            None => (kept::Kept::checked(), kept::Kept::indexed()),
+        };
+        let between = ToldChanges {
+            between: kept::Between::new(&then, &now),
+            then: &then,
+            told,
+        };
+        let census_changed: &dyn Fn(&CensusRead) -> bool = &|read| match (&held_census, &census) {
+            (Ok(was), Ok(is)) => !(Arc::ptr_eq(was, is) || was.same_read(is, read)),
+            (Err(was), Err(is)) => was != is,
+            _ => true,
+        };
+        let graphical_answers = RefCell::new(graphical_answers.hour(&between, census_changed));
+        let fallback_answers = RefCell::new(fallback_answers.hour(&between, census_changed));
+        let mut models = LandModels {
+            selector: Selector {
+                assets: self,
+                hour,
+                frame,
+                graphical: BTreeMap::new(),
+                fallbacks: BTreeMap::new(),
+                view: view.clone(),
+                graphical_answers: &graphical_answers,
+                fallback_answers: &fallback_answers,
+            },
+            chosen: chosen_answers.hour(&between, census_changed),
+            templates: BTreeMap::new(),
+            members: members.hour(&between, census_changed),
+            state_members: None,
+            camouflages: camouflaged.hour(&between, census_changed),
+            made: Made {
+                contexts: usize::from(
+                    kept.country()
+                        .is_none_or(|was| !Arc::ptr_eq(&was, &hour.country)),
+                ),
+                ..Made::default()
+            },
+        };
+        lap("um_kept_answers");
+        let chose = choose(&mut models);
+        lap("um_session");
+        let LandModels {
+            selector,
+            chosen,
+            members,
+            camouflages,
+            ..
+        } = models;
+        drop(selector);
+        let (chosen_answers, graphical_answers, fallback_answers) = (
+            chosen.finish(),
+            graphical_answers.into_inner().finish(),
+            fallback_answers.into_inner().finish(),
+        );
+        let (members, camouflage) = (members.finish(), camouflages.finish());
+        drop(between);
+        // The context the answers stand under, its countries those this hour read or kept.
+        let context = match context {
+            Some(context) if Arc::ptr_eq(&context.country, &hour.country) => context,
+            Some(context) => Arc::new(SelectionContext {
+                country: Arc::clone(&hour.country),
+                ..SelectionContext::clone(&context)
+            }),
+            None => Arc::new(SelectionContext::capture(hour, view)),
+        };
+        let selections = Selections {
+            context,
+            frame: now,
+            decided: hour.limits.decided(),
+            census,
+            chosen: chosen_answers,
+            graphical: graphical_answers,
+            fallbacks: fallback_answers,
+            members,
+            camouflage,
+        };
+        *kept
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Arc::new(selections));
+        lap("um_keep");
+        chose
+    }
+
+    /// The library slot of a chosen `entity`, or why it has none: a refused entity
+    /// ([`Self::refusal`]), or one that did not bake.
+    pub fn chosen_slot(&self, library: &ModelLibrary, entity: &str) -> Result<usize, String> {
+        if let Some(reason) = self.refusal(entity) {
+            return Err(reason);
+        }
+        library
+            .slot(entity)
+            .ok_or_else(|| format!("registered entity {entity} did not bake"))
+    }
+}
+
+/// The answers a caller's land selections keep from one session to its next
+/// ([`UnitModelAssets::land_models`]): each caller holds its own, so two that read different frames
+/// never check their answers against each other's.
+#[derive(Default)]
+pub struct KeptChoices(Mutex<Option<Arc<Selections>>>);
+
+impl KeptChoices {
+    /// The country context its answers were kept under.
+    fn country(&self) -> Option<Arc<CountryContext>> {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .map(|kept| Arc::clone(&kept.context.country))
+    }
+}
+
+/// The rows of some tables made anew since a frame, as the maker of the rows told them: per table
+/// the view they changed from, and the rows, ascending by key, each with the fields written
+/// (every field, [`u64::MAX`], for a row inserted or deleted). A session whose kept frame holds
+/// that view takes the rows as the table's changes and compares nothing; otherwise it compares.
+#[derive(Clone, Default)]
+pub struct Told(Vec<(TableId, SharedView, Vec<(u128, u64)>)>);
+
+impl Told {
+    pub fn new(mut tables: Vec<(TableId, SharedView, Vec<(u128, u64)>)>) -> Self {
+        tables.sort_unstable_by_key(|(table, ..)| table.index());
+        Self(tables)
+    }
+
+    /// The rows told of `table` since `then`'s view of it.
+    fn rows(&self, table: TableId, then: &DecodedFrame) -> Option<&[(u128, u64)]> {
+        let at = self
+            .0
+            .binary_search_by_key(&table.index(), |(held, ..)| held.index())
+            .ok()?;
+        let (_, from, rows) = &self.0[at];
+        SharedView::ptr_eq(from, &then.tables[table.index()]).then_some(rows.as_slice())
+    }
+}
+
+/// The changes since the kept frame: the rows told where they were told from it, the two frames
+/// compared otherwise.
+struct ToldChanges<'a> {
+    between: kept::Between<'a>,
+    then: &'a DecodedFrame,
+    told: Option<&'a Told>,
+}
+
+impl ToldChanges<'_> {
+    fn told(&self, table: TableId) -> Option<&[(u128, u64)]> {
+        self.told?.rows(table, self.then)
+    }
+}
+
+impl kept::Changes for ToldChanges<'_> {
+    fn table(&self, table: TableId) -> kept::Change<'_> {
+        match self.told(table) {
+            Some([]) => kept::Change::Same,
+            Some(rows) => kept::Change::Rows(rows, &[]),
+            None => self.between.table(table),
+        }
+    }
+
+    fn rows(&self, table: TableId) -> Option<(&[(u128, u64)], &[u128])> {
+        match self.told(table) {
+            Some(rows) => Some((rows, &[][..])),
+            None => self.between.rows(table),
+        }
+    }
+
+    fn same_rows(&self, table: TableId, from: u128, to: u128, fields: u64) -> Option<bool> {
+        match self.told(table) {
+            Some(_) => None,
+            None => self.between.same_rows(table, from, to, fields),
+        }
+    }
+}
+
+/// The hour a land stack's model is chosen over ([`UnitModelAssets::land_models`]).
+pub struct SelectInputs<'a> {
+    pub frame: &'a DecodedFrame,
+    pub limits: equipment_graphics::Limits<'a>,
+    /// The viewing country's canonical slot, whose rosters the fallback reads.
+    pub ours: u32,
+    /// Each province's authored terrain, for camouflage conditions.
+    pub terrain: &'a BTreeMap<u32, String>,
+    /// The display language the fallback option labels read.
+    pub localisation: &'a Localisation,
+    /// The divisions whose equipment the frame holds, when it holds the equipment tables' rows of
+    /// those alone (rows at the head by key): any other is refused by name, never read as having
+    /// none. None: the frame holds the tables whole.
+    pub divisions: Option<&'a BTreeSet<u64>>,
+    /// Called with each part's name as it ends, for the caller's timings ([`UnitModelAssets::land_models`]).
+    pub lap: Option<&'a mut dyn FnMut(&'static str)>,
+}
+
+/// One hour's land selections, a stack at a time ([`UnitModelAssets::land_models`]).
+pub struct LandModels<'a, 'h, 'k> {
+    selector: Selector<'a, 'h, 'k>,
+    chosen: CensusChecked<'k, SelectionKey, Chosen>,
+    /// Each template resolved against content once a session.
+    templates: Templates<'a>,
+    /// The states' provinces, kept while no province changes state, and taken this session.
+    members: CensusChecked<'k, (), camouflage::StateMembers>,
+    state_members: Option<Arc<camouflage::StateMembers>>,
+    /// Each division's camouflage where it stands, kept until a row it read changes.
+    camouflages: CensusChecked<'k, u64, Camouflaged>,
+    made: Made,
+}
+
+/// What a session made rather than kept.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Made {
+    /// Stack selections.
+    pub selections: usize,
+    /// Camouflages, each one division's at one province.
+    pub camouflages: usize,
+    /// Country contexts read: none when the one kept stood.
+    pub contexts: usize,
+}
+
+impl LandModels<'_, '_, '_> {
+    /// What the session made so far rather than kept.
+    pub fn made(&self) -> Made {
+        self.made
+    }
+
+    /// Whether the land stack `key` standing in `province` keeps the model it was last chosen,
+    /// asking nothing: its kept selection, and its camouflage there, both still stand.
+    pub fn stands(&mut self, province: u32, key: SelectionKey) -> bool {
+        self.chosen.get(&key).is_some()
+            && (key.transport
+                || self
+                    .camouflages
+                    .get(&key.oldest)
+                    .is_some_and(|answer| answer.value.0 == province))
+    }
+
+    /// The model of the land stack `key` standing in `province`: its kept answer while what it
+    /// read reads the same, or the selection's, then the camouflage at `province` for one not in
+    /// naval transfer: the oldest member's kept while what it read reads the same.
+    pub fn choose(&mut self, province: u32, key: SelectionKey) -> StackModel {
+        let Self {
+            selector,
+            chosen,
+            templates,
+            members,
+            state_members,
+            camouflages,
+            made,
+        } = self;
+        let selected = match chosen.get(&key) {
+            Some(answer) => answer.value,
+            None => {
+                made.selections += 1;
+                let (selected, reads) = kept::record::<CensusRead, _>(selector.frame, || {
+                    let selected = if key.transport {
+                        selector.transport(&key)
+                    } else {
+                        selector.land(&key, templates)
+                    };
+                    selected.map(|selected| {
+                        selected.map(|(level, name, key)| (level, name, key.map(str::to_owned)))
+                    })
+                });
+                chosen.put(key, selected, reads).value
+            }
+        };
+        let (level, base) = match &*selected {
+            Ok(Some((level, name, _))) => (*level, name.clone()),
+            Ok(None) => return StackModel::UnknownIdentity,
+            Err(Missing::Template) => return StackModel::Untemplated,
+            Err(Missing::Input(reason)) => return StackModel::Withheld(reason.clone()),
+        };
+        let mut entity = base.clone();
+        if !key.transport {
+            let (assets, hour) = (selector.assets, selector.hour);
+            let held = camouflages
+                .get(&key.oldest)
+                .filter(|answer| answer.value.0 == province);
+            let answer = match held {
+                Some(answer) => answer.value,
+                None => {
+                    made.camouflages += 1;
+                    let (suffix, reads) = kept::record::<CensusRead, _>(hour.frame, || {
+                        hour.selection.measure(Stage::Camouflage, || {
+                            let fields = camouflage::fields();
+                            let division = u128::from(key.oldest);
+                            kept::note_row(TableId::DivisionStatus, division, fields.status);
+                            kept::note_row(TableId::DivisionModelInputs, division, fields.witness);
+                            let status = hour.statuses.get(key.oldest).ok_or_else(|| {
+                                "division acclimatization status is unavailable".to_owned()
+                            })?;
+                            let members = state_members.get_or_insert_with(|| {
+                                members.get_or_build((), hour.frame, || {
+                                    camouflage::StateMembers::read(hour.camouflage.provinces())
+                                })
+                            });
+                            hour.camouflage
+                                .suffix(
+                                    &assets.camouflage,
+                                    hour.sources.tokens,
+                                    status,
+                                    province,
+                                    members,
+                                )
+                                .map(|suffix| suffix.map(str::to_owned))
+                                .map_err(|error| error.to_string())
+                        })
+                    });
+                    camouflages.put(key.oldest, (province, suffix), reads).value
+                }
+            };
+            match &answer.1 {
+                Ok(suffix) => {
+                    entity = camouflage::entity(&base, suffix.as_deref(), |candidate| {
+                        assets.registered(candidate)
+                    });
+                }
+                Err(reason) => return StackModel::Withheld(reason.clone()),
+            }
+        }
+        StackModel::Chosen(ChosenModel {
+            level,
+            entity,
+            base,
+            answer: selected,
+        })
+    }
+}
+
+/// A land stack's model, or why it has none.
+#[derive(Clone, Debug)]
+pub enum StackModel {
+    Chosen(ChosenModel),
+    /// Its model country's operands are unavailable.
+    UnknownIdentity,
+    /// The hour does not record its template.
+    Untemplated,
+    /// A recorded or authored input is missing or refused, by name.
+    Withheld(String),
+}
+
+/// A land stack's chosen entity, camouflaged, and the level of the ladder it came from.
+#[derive(Clone)]
+pub struct ChosenModel {
+    pub level: Level,
+    pub entity: String,
+    /// The entity before its camouflage.
+    base: String,
+    answer: Arc<Chosen>,
+}
+
+impl std::fmt::Debug for ChosenModel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ChosenModel")
+            .field("level", &self.level)
+            .field("entity", &self.entity)
+            .field("base", &self.base)
+            .finish()
+    }
+}
+
+impl ChosenModel {
+    /// Whether it took `<sprite>_entity` because its sub-unit has no entity of its own.
+    fn sprite_keyed(&self, assets: &UnitModelAssets) -> bool {
+        let subunit = match &*self.answer {
+            Ok(Some((_, _, key))) => key.as_deref(),
+            _ => None,
+        };
+        subunit
+            .and_then(|key| assets.sub_units.subunit(key))
+            .is_some_and(|unit| {
+                unit.sprite != unit.key && self.base.ends_with(&entity_name("", &unit.sprite))
+            })
     }
 }
 
@@ -1786,21 +2323,20 @@ impl UnitModelAssets {
 /// One hour's joined tables. The tables a selection step needs but this hour
 /// lacks are kept as their reason, so only the stacks that reach them fail.
 struct Hour<'a> {
-    links: BTreeMap<u32, u32>,
-    countries: BTreeMap<u32, ModelCountry>,
-    templates: BTreeMap<u64, &'a DivisionTemplateIconRow>,
+    country: Arc<CountryContext>,
+    /// The templates' rows, ascending by template ([`Self::template`]).
+    templates: &'a [DivisionTemplateIconRow],
     sources: model_selection::Sources<'a>,
-    variants: BTreeMap<u64, &'a VariantDefinitionRow>,
+    variants: model_selection::Variants<'a>,
     /// Spells the variants' equipment type tokens.
     tokens: TokenNames<'a>,
     equipment: Result<Equipment<'a>, String>,
-    statuses: BTreeMap<u64, ModelStatus<'a>>,
+    statuses: Statuses<'a>,
     camouflage: camouflage::Context<'a>,
     spans: RefCell<BuilderSpans>,
     selection: Stages,
     classification: OnceCell<Option<model_selection::facts::Hour>>,
     /// Joined on first use: most hours need neither.
-    geography: OnceCell<Result<context::Prepared, String>>,
     conventional: OnceCell<Result<(Arc<bridge::Retained>, bridge::Prepared<'a>), String>>,
     assets: &'a UnitModelAssets,
     frame: &'a DecodedFrame,
@@ -1817,44 +2353,41 @@ impl<'a> Hour<'a> {
         limits: equipment_graphics::Limits<'a>,
         localisation: &'a Localisation,
     ) -> io::Result<Self> {
-        Self::read_profiled(assets, frame, terrain, limits, localisation, &mut |_| {})
+        Self::read_profiled(assets, frame, terrain, limits, localisation, None, &mut |_| {})
     }
 
+    /// The hour's joins, its country context `kept` while every view that was read from is
+    /// `frame`'s.
     fn read_profiled(
         assets: &'a UnitModelAssets,
         frame: &'a DecodedFrame,
         terrain: &'a BTreeMap<u32, String>,
         limits: equipment_graphics::Limits<'a>,
         localisation: &'a Localisation,
+        kept: Option<&Arc<CountryContext>>,
         lap: &mut dyn FnMut(&'static str),
     ) -> io::Result<Self> {
         let equipment = Equipment::read(frame)?;
         lap("um_equipment");
+        let country = match kept.filter(|kept| kept.stands(frame)) {
+            Some(kept) => Arc::clone(kept),
+            None => Arc::new(CountryContext::read(frame)?),
+        };
         Ok(Self {
             labels: model_labels::Labels::read(
                 frame,
                 localisation,
                 assets.dynamic_tags.as_ref().map_err(Clone::clone),
             ),
-            links: core::<tables::CountryLinks>(frame)?
-                .iter()
-                .map(|link| (link.id, link.canonical_slot))
-                .collect(),
-            countries: model_countries::read(frame)?,
-            templates: rows::<tables::DivisionTemplateIcons>(frame)?
-                .rows()
-                .iter()
-                .map(|row| (row.template, row))
-                .collect(),
+            country,
+            templates: rows::<tables::DivisionTemplateIcons>(frame)?.rows(),
             sources: model_selection::Sources::read(frame)?,
-            variants: rows::<tables::VariantDefinitions>(frame)?
-                .rows()
-                .iter()
-                .map(|row| (row.id, row))
-                .collect(),
+            variants: model_selection::Variants::new(
+                rows::<tables::VariantDefinitions>(frame)?.rows(),
+            ),
             tokens: TokenNames::new(frame)?,
             equipment,
-            statuses: ModelStatus::read(frame)?,
+            statuses: Statuses::read(frame)?,
             camouflage: {
                 lap("um_model_joins");
                 let camouflage = camouflage::Context::read(frame, terrain)?;
@@ -1864,7 +2397,41 @@ impl<'a> Hour<'a> {
             spans: RefCell::new(BuilderSpans::new(false)),
             selection: Stages::new(false),
             classification: OnceCell::new(),
-            geography: OnceCell::new(),
+            conventional: OnceCell::new(),
+            assets,
+            frame,
+            limits,
+        })
+    }
+
+    /// The joins the ships read; the land selection's (templates, equipment, statuses,
+    /// camouflage) are left empty, which no ship reads.
+    fn read_naval(
+        assets: &'a UnitModelAssets,
+        frame: &'a DecodedFrame,
+        terrain: &'a BTreeMap<u32, String>,
+        limits: equipment_graphics::Limits<'a>,
+        localisation: &'a Localisation,
+    ) -> io::Result<Self> {
+        Ok(Self {
+            labels: model_labels::Labels::read(
+                frame,
+                localisation,
+                assets.dynamic_tags.as_ref().map_err(Clone::clone),
+            ),
+            country: Arc::new(CountryContext::read(frame)?),
+            templates: &[],
+            sources: model_selection::Sources::read(frame)?,
+            variants: model_selection::Variants::new(
+                rows::<tables::VariantDefinitions>(frame)?.rows(),
+            ),
+            tokens: TokenNames::new(frame)?,
+            equipment: Err("division equipment is not read for ships".into()),
+            statuses: Statuses::default(),
+            camouflage: camouflage::Context::none(terrain),
+            spans: RefCell::new(BuilderSpans::new(false)),
+            selection: Stages::new(false),
+            classification: OnceCell::new(),
             conventional: OnceCell::new(),
             assets,
             frame,
@@ -1873,18 +2440,23 @@ impl<'a> Hour<'a> {
     }
 
     fn geography(&self) -> Result<&context::Prepared, String> {
-        self.geography
+        self.country
+            .geography
             .get_or_init(|| {
                 self.spans
                     .borrow_mut()
                     .measure("units.selection.geography_read", |_| {
-                        // Kept selections compare the joined context whole each hour
-                        // ([`SelectionContext::same`]) rather than record what joining read.
-                        replay_frame::frame::view_reads::unrecorded(|| {
-                            context::Prepared::read(self.frame, &self.assets.geography)
+                        // Kept selections keep or compare the joined context whole
+                        // ([`SelectionContext::same`]) rather than note what joining read: its
+                        // views are recorded for itself alone.
+                        view_reads::unrecorded(|| {
+                            view_reads::record(|| {
+                                context::Prepared::read(self.frame, &self.assets.geography)
+                            })
                         })
                     })
             })
+            .0
             .as_ref()
             .map_err(Clone::clone)
     }
@@ -1923,10 +2495,68 @@ impl<'a> Hour<'a> {
             .as_ref()
     }
 
+    /// The template's row this hour.
+    fn template(&self, template: u64) -> Option<&'a DivisionTemplateIconRow> {
+        self.templates
+            .binary_search_by_key(&template, |row| row.template)
+            .ok()
+            .map(|at| &self.templates[at])
+    }
+
     fn country(&self, raw: u32) -> Option<&ModelCountry> {
-        self.links
+        self.country
+            .links
             .get(&raw)
-            .and_then(|slot| self.countries.get(slot))
+            .and_then(|slot| self.country.countries.get(slot))
+    }
+}
+
+/// The countries a selection reads beyond the rows it notes: each country link's slot, each slot's
+/// model country and, joined on first use, their geography. Kept from session to session while
+/// every view each part was read from is the frame's, so an hour whose country tables stand reads
+/// none of it again.
+struct CountryContext {
+    links: BTreeMap<u32, u32>,
+    countries: BTreeMap<u32, ModelCountry>,
+    /// The views the links and countries were read from.
+    views: Vec<ViewIdentity>,
+    /// The geography and the views it was read from.
+    geography: OnceLock<(Result<context::Prepared, String>, Vec<ViewIdentity>)>,
+}
+
+impl CountryContext {
+    fn read(frame: &DecodedFrame) -> io::Result<Self> {
+        let (read, views) = view_reads::record(|| -> io::Result<_> {
+            let links: BTreeMap<u32, u32> = core::<tables::CountryLinks>(frame)?
+                .iter()
+                .map(|link| (link.id, link.canonical_slot))
+                .collect();
+            Ok((links, model_countries::read(frame)?))
+        });
+        let (links, countries) = read?;
+        Ok(Self {
+            links,
+            countries,
+            views,
+            geography: OnceLock::new(),
+        })
+    }
+
+    /// The geography, once joined.
+    fn joined(&self) -> Option<Result<&context::Prepared, &str>> {
+        self.geography
+            .get()
+            .map(|(geography, _)| geography.as_ref().map_err(String::as_str))
+    }
+
+    /// Whether every view it was read from is `frame`'s.
+    fn stands(&self, frame: &DecodedFrame) -> bool {
+        let held = |view: &ViewIdentity| frame.tables.iter().any(|table| view.is(table));
+        self.views.iter().all(held)
+            && self
+                .geography
+                .get()
+                .is_none_or(|(_, views)| views.iter().all(held))
     }
 }
 
@@ -1971,7 +2601,11 @@ fn graphics_model_for_country(
             ),
         ));
         let (ideology, culture) =
-            model_multi_fallback::creator_operands(pair.variant, &hour.links, &hour.countries)?;
+            model_multi_fallback::creator_operands(
+                pair.variant,
+                &hour.country.links,
+                &hour.country.countries,
+            )?;
         let geography = hour.geography()?.context(raw_country)?;
         let graphical = hour.selection.measure(Stage::GraphicsRules, || {
             assets.graphics.lookup_with_limits(
@@ -2017,14 +2651,17 @@ fn graphics_model_for_country(
     })
 }
 
-/// Every division's equipment rows: the daily census, joined with the hourly
-/// rows of divisions minted since it. With both complete, a division in
-/// neither holds no equipment; without the hourly table, a division absent
-/// from the daily one is unknown. A division in both takes the hourly rows
-/// alone: they are the newer capture, and its rows are never doubled.
+/// A division's equipment rows: the daily census, or the hourly rows of divisions minted since
+/// it, each looked up alone in the frame's rows (ascending by division, then ordinal). With both
+/// complete, a division in neither holds no equipment; without the hourly table, a division absent
+/// from the daily one is unknown. A division in both takes the hourly rows alone: they are the
+/// newer capture, and its rows are never doubled.
 struct Equipment<'a> {
-    by_division: BTreeMap<u64, Vec<&'a replay_data::rows::DivisionEquipmentRow>>,
+    daily: &'a [replay_data::rows::DivisionEquipmentRow],
+    new: &'a [replay_data::rows::DivisionEquipmentRow],
     new_complete: bool,
+    /// The divisions the rows were made for, when they are not the whole tables.
+    asked: Option<&'a BTreeSet<u64>>,
 }
 
 impl<'a> Equipment<'a> {
@@ -2042,25 +2679,34 @@ impl<'a> Equipment<'a> {
         new: &'a [replay_data::rows::DivisionEquipmentRow],
         new_complete: bool,
     ) -> Self {
-        let mut by_division: BTreeMap<u64, Vec<_>> = BTreeMap::new();
-        for row in new {
-            by_division.entry(row.division).or_default().push(row);
-        }
-        let hourly: BTreeSet<u64> = by_division.keys().copied().collect();
-        for row in daily.iter().filter(|row| !hourly.contains(&row.division)) {
-            by_division.entry(row.division).or_default().push(row);
-        }
         Self {
-            by_division,
+            daily,
+            new,
             new_complete,
+            asked: None,
         }
     }
 
-    fn of(&self, division: u64) -> Result<&[&'a replay_data::rows::DivisionEquipmentRow], String> {
-        match self.by_division.get(&division) {
-            Some(rows) => Ok(rows),
-            None if self.new_complete => Ok(&[]),
-            None => Err("division equipment unknown until the next daily refresh".to_owned()),
+    fn of(&self, division: u64) -> Result<&'a [replay_data::rows::DivisionEquipmentRow], String> {
+        if self.asked.is_some_and(|asked| !asked.contains(&division)) {
+            return Err(format!("division {division}'s equipment was not asked of the rows at the head"));
+        }
+        fn rows_of(
+            rows: &[replay_data::rows::DivisionEquipmentRow],
+            division: u64,
+        ) -> &[replay_data::rows::DivisionEquipmentRow] {
+            let start = rows.partition_point(|row| row.division < division);
+            let end = start + rows[start..].partition_point(|row| row.division == division);
+            &rows[start..end]
+        }
+        let new = rows_of(self.new, division);
+        if !new.is_empty() {
+            return Ok(new);
+        }
+        match rows_of(self.daily, division) {
+            [] if self.new_complete => Ok(&[]),
+            [] => Err("division equipment unknown until the next daily refresh".to_owned()),
+            daily => Ok(daily),
         }
     }
 }
@@ -2069,6 +2715,8 @@ impl<'a> Equipment<'a> {
 type Chosen = Result<Option<(Level, String, Option<String>)>, Missing>;
 type GraphicalAnswer = Result<Option<(Level, String)>, String>;
 type FallbackAnswer = Result<Option<model_multi_fallback::Resolved>, String>;
+/// A division's camouflage suffix at the province it was made for, or why it has none.
+type Camouflaged = (u32, Result<Option<String>, String>);
 
 /// The selections and answers an hour made, kept while what each read reads the same.
 struct Selections {
@@ -2083,39 +2731,53 @@ struct Selections {
     graphical: kept::Kept<GraphicalAnswerKey, GraphicalAnswer, CensusRead>,
     /// Fallback answers by template.
     fallbacks: kept::Kept<u64, FallbackAnswer, CensusRead>,
+    /// The states' provinces the camouflages test.
+    members: kept::Kept<(), camouflage::StateMembers, CensusRead>,
+    /// Each division's camouflage by its oldest-member key, indexed by the rows it read: a
+    /// change of one of them drops it and no other.
+    camouflage: kept::Kept<u64, Camouflaged, CensusRead>,
 }
 
 /// What a stack selection reads of the hour beyond the rows and census entries it notes.
+#[derive(Clone)]
 struct SelectionContext {
     view: Result<u32, String>,
-    links: BTreeMap<u32, u32>,
-    countries: BTreeMap<u32, ModelCountry>,
+    country: Arc<CountryContext>,
     labels: (BTreeMap<u32, model_labels::Country>, Option<String>),
     sources: Option<Arc<model_selection::SourceIndex>>,
     tokens: Option<replay_frame::frame::SharedView>,
-    geography: Result<context::Prepared, String>,
 }
 
 impl SelectionContext {
     fn capture(hour: &Hour<'_>, view: Result<u32, String>) -> Self {
         let (labels, unavailable) = hour.labels.operands();
+        // The geography is part of the context: joined now, as the comparison needs it.
+        let _ = hour.geography();
         Self {
             view,
-            links: hour.links.clone(),
-            countries: hour.countries.clone(),
+            country: Arc::clone(&hour.country),
             labels: (labels.clone(), unavailable.cloned()),
             sources: Some(Arc::clone(hour.sources.index())),
             tokens: Some(hour.frame.tables[TableId::LexicalTokens.index()].clone()),
-            geography: hour.geography().cloned(),
         }
+    }
+
+    /// The countries kept stand for the hour's (the same context), or read the same.
+    fn same_countries(&self, hour: &Hour<'_>) -> bool {
+        if Arc::ptr_eq(&self.country, &hour.country) {
+            return true;
+        }
+        let _ = hour.geography();
+        self.country.links == hour.country.links
+            && self.country.countries == hour.country.countries
+            && self.country.joined() == hour.country.joined()
     }
 
     fn same(&self, hour: &Hour<'_>, view: &Result<u32, String>) -> bool {
         let (labels, unavailable) = hour.labels.operands();
         let tokens = &hour.frame.tables[TableId::LexicalTokens.index()];
         self.view == *view
-            && self.links == hour.links
-            && self.countries == hour.countries
+            && self.same_countries(hour)
             && self.labels.0 == *labels
             && self.labels.1.as_ref() == unavailable
             && self.sources.as_ref().is_some_and(|sources| {
@@ -2124,22 +2786,18 @@ impl SelectionContext {
             && self.tokens.as_ref().is_some_and(|was| {
                 replay_frame::frame::SharedView::ptr_eq(was, tokens) || **was == **tokens
             })
-            && match (&self.geography, hour.geography()) {
-                (Ok(was), Ok(now)) => was == now,
-                (Err(was), Err(now)) => *was == now,
-                _ => false,
-            }
     }
 }
 
-/// A stack selection's identity: what it is selected for.
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-struct SelectionKey {
-    transport: bool,
-    template: u64,
-    oldest: u64,
-    roster_owner: u32,
-    expeditionary_owner: u32,
+/// A land stack selection's identity: what it is selected for. Its oldest seen member, that
+/// member's preferred template and owners, and whether it is in naval transfer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct SelectionKey {
+    pub transport: bool,
+    pub template: u64,
+    pub oldest: u64,
+    pub roster_owner: u32,
+    pub expeditionary_owner: u32,
 }
 
 /// Why a stack has no figure.
@@ -2181,11 +2839,11 @@ struct Selector<'a, 'h, 'k> {
     assets: &'a UnitModelAssets,
     hour: &'h Hour<'a>,
     frame: &'a DecodedFrame,
-    vision: &'a Vision,
     /// This hour's answers by pair, and what each read, for every stack the pair serves.
     graphical: BTreeMap<GraphicalKey, kept::Answer<GraphicalAnswer, CensusRead>>,
     fallbacks: BTreeMap<u64, kept::Answer<FallbackAnswer, CensusRead>>,
-    view: Option<Result<u32, String>>,
+    /// The viewing country's raw reference, or why it has none.
+    view: Result<u32, String>,
     /// The graphics and fallback answers kept from earlier hours, and this hour's.
     graphical_answers: &'h RefCell<CensusChecked<'k, GraphicalAnswerKey, GraphicalAnswer>>,
     fallback_answers: &'h RefCell<CensusChecked<'k, u64, FallbackAnswer>>,
@@ -2193,14 +2851,14 @@ struct Selector<'a, 'h, 'k> {
 
 /// One hour's check of kept answers whose own reads are census entries.
 type CensusChecked<'h, K, V> =
-    kept::Checked<'h, K, V, CensusRead, kept::Between<'h>, &'h dyn Fn(&CensusRead) -> bool>;
+    kept::Checked<'h, K, V, CensusRead, ToldChanges<'h>, &'h dyn Fn(&CensusRead) -> bool>;
 
 impl<'a> Selector<'a, '_, '_> {
     fn exists(&self, name: &str) -> bool {
         self.assets.registered(name)
     }
 
-    fn transport(&self, stack: &Stack) -> Selected<'a> {
+    fn transport(&self, stack: &SelectionKey) -> Selected<'a> {
         let hour = self.hour;
         hour.selection.measure(Stage::Transport, || {
             let raw = model_owner(stack.roster_owner, stack.expeditionary_owner, true);
@@ -2221,7 +2879,7 @@ impl<'a> Selector<'a, '_, '_> {
         })
     }
 
-    fn land(&mut self, stack: &Stack, templates: &mut Templates<'a>) -> Selected<'a> {
+    fn land(&mut self, stack: &SelectionKey, templates: &mut Templates<'a>) -> Selected<'a> {
         let hour = self.hour;
         hour.selection.measure(Stage::Land, || {
             kept::note_row(
@@ -2229,10 +2887,9 @@ impl<'a> Selector<'a, '_, '_> {
                 u128::from(stack.template),
                 u64::MAX,
             );
-            let template = *self
+            let template = self
                 .hour
-                .templates
-                .get(&stack.template)
+                .template(stack.template)
                 .ok_or(Missing::Template)?;
             if template.model_unreadable != 0 {
                 return Err(Missing::Input(
@@ -2279,7 +2936,7 @@ impl<'a> Selector<'a, '_, '_> {
                 template.model_category,
                 &template.excluded_variants,
                 equipment,
-                &self.hour.variants,
+                self.hour.variants,
                 &self.hour.tokens,
                 &self.hour.selection,
                 facts,
@@ -2313,7 +2970,7 @@ impl<'a> Selector<'a, '_, '_> {
 
     fn paired(
         &mut self,
-        stack: &Stack,
+        stack: &SelectionKey,
         composition: &Template<'a>,
         pair: SelectedPair<'a>,
     ) -> Selected<'a> {
@@ -2392,12 +3049,7 @@ impl<'a> Selector<'a, '_, '_> {
                 let answer = match kept {
                     Some(kept) => kept,
                     None => {
-                        let view = self
-                            .view
-                            .get_or_insert_with(|| {
-                                model_multi_fallback::view_country_ref(self.frame, self.vision)
-                            })
-                            .clone();
+                        let view = self.view.clone();
                         let (resolved, reads) = kept::record::<CensusRead, _>(self.frame, || {
                             kept::note_row(
                                 TableId::DivisionTemplateIcons,
@@ -2412,9 +3064,9 @@ impl<'a> Selector<'a, '_, '_> {
                                     graphics: &self.assets.graphics,
                                     geography: self.hour.geography()?,
                                     conventional: self.hour.conventional()?,
-                                    countries: &self.hour.countries,
-                                    links: &self.hour.links,
-                                    definitions: &self.hour.variants,
+                                    countries: &self.hour.country.countries,
+                                    links: &self.hour.country.links,
+                                    definitions: self.hour.variants,
                                     tokens: &self.hour.tokens,
                                     viewing_country_ref: view,
                                     limits: &self.hour.limits,
@@ -2433,7 +3085,7 @@ impl<'a> Selector<'a, '_, '_> {
     }
 
     /// The numbered model ladder with the stored number, for `country`.
-    fn numbered(&self, stack: &Stack, country: u32, subunit: &'a SubUnit) -> Selected<'a> {
+    fn numbered(&self, stack: &SelectionKey, country: u32, subunit: &'a SubUnit) -> Selected<'a> {
         let hour = self.hour;
         hour.selection.measure(Stage::Numbered, || {
             let Some(model_country) = self.hour.country(country) else {
@@ -2445,7 +3097,7 @@ impl<'a> Selector<'a, '_, '_> {
             ] {
                 kept::note_row(table, u128::from(stack.oldest), u64::MAX);
             }
-            let status = self.hour.statuses.get(&stack.oldest).ok_or_else(|| {
+            let status = self.hour.statuses.get(stack.oldest).ok_or_else(|| {
                 Missing::Input("division model number status is unavailable".into())
             })?;
             let number = status.model_number().ok_or_else(|| {
@@ -2501,6 +3153,9 @@ pub struct PreparedModels {
         std::sync::Mutex<Option<crate::map::trade_routes::ConvoyFleet>>,
     )>,
     placed: Vec<(Target, counter_move::Position)>,
+    /// Whether `ships` are this hour's own: false when made without them for the map's ships
+    /// layer, which then hands its own over ([`Self::with_ships`]).
+    naval: bool,
     /// The viewing country's provinces, whose unit slots a switch to it
     /// clears ([`viewer_foundation::map::presentation::UnitRestart::ViewingCountry`]).
     owned: BTreeSet<u32>,
@@ -2512,26 +3167,76 @@ struct StagedField {
 }
 
 impl PreparedModels {
+    /// No models: the layer is turned off for `reason`.
+    fn disabled(reason: &str) -> Self {
+        Self {
+            staged_field: Mutex::new(None),
+            targets: None,
+            raid: Vec::new(),
+            convoys: None,
+            placed: Vec::new(),
+            ships: NavalSources::default(),
+            naval: true,
+            owned: BTreeSet::new(),
+            report: ModelReport {
+                disabled: Some(reason.to_owned()),
+                ..ModelReport::default()
+            },
+        }
+    }
+
+    /// The hour's ships: candidates, formations, their placements and naval combats.
+    pub fn ships(&self) -> &NavalSources {
+        &self.ships
+    }
+
+    /// Whether its ships are the hour's own (or handed over): false when it was made without them.
+    pub fn naval(&self) -> bool {
+        self.naval
+    }
+
+    /// The same figures, raid units and convoys with `ships` in place of its own, their counts in
+    /// its report. The convoys' sailing state starts anew: carry it with [`Self::inherit_convoys`].
+    pub fn with_ships(&self, ships: NavalSources, report: &ModelReport) -> Self {
+        let mut joined = self.report.clone();
+        joined.absorb(report);
+        Self {
+            staged_field: Mutex::new(None),
+            targets: self.targets.clone(),
+            raid: self.raid.clone(),
+            convoys: self.convoys.as_ref().map(|(lines, defines, _)| (lines.clone(), *defines, std::sync::Mutex::new(None))),
+            placed: self.placed.clone(),
+            ships,
+            naval: true,
+            owned: self.owned.clone(),
+            report: joined,
+        }
+    }
+
     /// Each figure and formation's hour placement, root rotation and settled stack scale, for
     /// its animator.
     pub fn movement_positions(
         &self,
     ) -> impl Iterator<Item = (Unit, &counter_move::Position, f32, f32)> {
-        let land = self.placed.iter().map(|(target, position)| {
-            let rotation = position.motion.map_or(target.instance.rotation, |motion| {
-                motion.position_heading().1 + MESH_FORWARD_OFFSET
-            });
-            (Unit::Division(target.identity), position, rotation, 1.0)
-        });
-        let ships = self.ships.positions.iter().map(|placed| {
+        let land = self
+            .placed
+            .iter()
+            .map(|(target, position)| land_movement(target, position));
+        land.chain(self.ship_movement_positions())
+    }
+
+    /// The formations' part of [`Self::movement_positions`].
+    pub fn ship_movement_positions(
+        &self,
+    ) -> impl Iterator<Item = (Unit, &counter_move::Position, f32, f32)> {
+        self.ships.positions.iter().map(|placed| {
             (
                 Unit::TaskForce(placed.force),
                 &placed.position,
                 placed.rotation,
                 placed.scale,
             )
-        });
-        land.chain(ships)
+        })
     }
 
     /// Materializes the upload field on the hour builder, after raids and convoys
@@ -2732,19 +3437,35 @@ impl PreparedModels {
         let targets = self.targets.clone().unwrap_or_else(|| {
             self.placed
                 .iter()
-                .map(|(target, position)| {
-                    let mut target = *target;
-                    if let Some((at, heading)) =
-                        position.motion.as_ref().map(|m| m.position_heading())
-                    {
-                        target.instance.position = at;
-                        target.instance.rotation = heading + MESH_FORWARD_OFFSET;
-                    }
-                    target
-                })
+                .map(|(target, position)| drawn(*target, position))
                 .collect::<Vec<_>>()
                 .into()
         });
+        self.field_of(assets, targets)
+    }
+
+    /// None of the hour's: the map's layers draw the unit models.
+    pub fn drawn_by_layers() -> Self {
+        Self {
+            staged_field: Mutex::new(None),
+            targets: None,
+            raid: Vec::new(),
+            convoys: None,
+            placed: Vec::new(),
+            ships: NavalSources::default(),
+            naval: false,
+            owned: BTreeSet::new(),
+            report: ModelReport::default(),
+        }
+    }
+
+    /// The field with `land` in place of the hour's own land figures, beside its ships, raid
+    /// units and convoys.
+    pub fn field_with_land(&self, assets: &UnitModelAssets, land: Vec<Target>) -> Field {
+        self.field_of(assets, land.into())
+    }
+
+    fn field_of(&self, assets: &UnitModelAssets, targets: Targets) -> Field {
         let raids = self.raid_units(assets, None);
         // The raid meshes are uploaded with the hour's, so they are resident.
         let mut models: Vec<_> = targets.iter().map(|t| (t.mesh, t.instance)).collect();
@@ -2793,6 +3514,7 @@ impl PreparedModels {
 
 /// A raid arrow's unit: its entity, the instance the hour placed and what
 /// places it again.
+#[derive(Clone)]
 struct RaidModel {
     slot: usize,
     instance: ModelInstance,
@@ -2833,6 +3555,92 @@ impl RaidModel {
             ..self.instance
         }
     }
+}
+
+/// What places a land stack's figure: its province and owner slot, its oldest visible member,
+/// that member's route, combat side and exercise, whether the game lets its texture move, and
+/// its instance scale (the transport one in naval transfer).
+pub struct LandStack<'a> {
+    pub province: u32,
+    pub owner: u32,
+    pub oldest: u64,
+    pub route: Option<&'a Route>,
+    pub combat: Option<u32>,
+    pub training: Option<bool>,
+    pub uv_moving: bool,
+    pub scale: f32,
+}
+
+/// Why a land stack whose model is chosen has no figure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unplaced {
+    /// Its province has no anchor.
+    Unanchored,
+    /// Its state rests on an exercise the hour does not hold.
+    Exercise,
+}
+
+/// A land stack's figure as the hour places it, its mesh left 0 for the selection to fill, and
+/// the position its animator starts from.
+pub fn land_figure(
+    stack: &LandStack<'_>,
+    world: Option<&counter_move::RouteWorld<'_>>,
+    anchor: &dyn Fn(u32, u32) -> Option<[f32; 3]>,
+) -> Result<(Target, counter_move::Position), Unplaced> {
+    let province = stack.province;
+    let position = match stack.route {
+        Some(route) => route.position(province, world, anchor),
+        None => anchor(province, STANDSTILL).map(counter_move::Position::still),
+    }
+    .ok_or(Unplaced::Unanchored)?;
+    let animation =
+        animation_state(stack.route, stack.combat, stack.training).ok_or(Unplaced::Exercise)?;
+    // `mesh::Descriptors::resolve` applies the whole `clone` chain's
+    // scale and `crate::map::models` bakes it into the vertices, so the only
+    // instance scale left is the transport one.
+    let target = Target {
+        province,
+        identity: stack.oldest,
+        order: stack.route.map_or(STANDSTILL, |route| route.stack_kind),
+        occupant: stack.oldest,
+        part: 0,
+        kind: Kind::Land,
+        mesh: 0,
+        origin: position.standing,
+        instance: ModelInstance {
+            position: position.standing,
+            native_flags: 1 | (u32::from(stack.uv_moving) << 1),
+            rotation: hash_rotation(province.wrapping_mul(2_654_435_761) ^ stack.owner),
+            scale: stack.scale,
+            pitch: 0.0,
+            train_clip: [0.0; 4],
+            animation,
+            animation_seed: stack.oldest as u32 ^ (stack.oldest >> 32) as u32,
+            ..ModelInstance::default()
+        },
+    };
+    Ok((target, position))
+}
+
+/// A placed land figure as its animator reads it: its unit, its hour placement, its root rotation
+/// (along its motion while it moves) and its scale.
+pub fn land_movement<'p>(
+    target: &Target,
+    position: &'p counter_move::Position,
+) -> (Unit, &'p counter_move::Position, f32, f32) {
+    let rotation = position.motion.map_or(target.instance.rotation, |motion| {
+        motion.position_heading().1 + MESH_FORWARD_OFFSET
+    });
+    (Unit::Division(target.identity), position, rotation, 1.0)
+}
+
+/// `target` as the field draws it: a moving figure at its settled point, facing its route.
+pub fn drawn(mut target: Target, position: &counter_move::Position) -> Target {
+    if let Some((at, heading)) = position.motion.as_ref().map(|m| m.position_heading()) {
+        target.instance.position = at;
+        target.instance.rotation = heading + MESH_FORWARD_OFFSET;
+    }
+    target
 }
 
 /// One division's route this hour, shared with the counter layer.
@@ -2925,7 +3733,7 @@ mod aircraft_ladder_tests {
     use super::*;
     use replay_data::{
         rows::CountryAppearanceRow, rows::CountryLinkRow, rows::LexicalTokenRow,
-        rows::SimulationFeatureRow, rows::TableId, rows::TableRows,
+        rows::SimulationFeatureRow, rows::TableId, rows::TableRows, rows::VariantDefinitionRow,
     };
     use replay_frame::{frame::Metrics, frame::TableView};
 
@@ -3027,6 +3835,70 @@ mod aircraft_ladder_tests {
             assets.aircraft_entity(&frame, limits(&values), 5, 100),
             Ok(Some("COS_frame_entity".to_owned()))
         );
+    }
+
+    #[test]
+    fn a_kept_aircraft_model_is_chosen_again_only_when_a_row_it_read_changes() {
+        use crate::map::aircraft::{KeptModels, ModelsMade};
+        let assets = UnitModelAssets {
+            disabled: None,
+            registered: ["COS_frame_entity".to_owned(), "NEW_frame_entity".to_owned()].into(),
+            sub_units: model_selection::Content::from_test_documents(&[
+                b"equipments = { frame = { is_archetype = yes sprite = unused } }",
+            ]),
+            ..UnitModelAssets::off(String::new())
+        };
+        let appearance = |cosmetic: &[u8]| -> replay_frame::frame::SharedView {
+            TableView::Complete(TableRows::CountryAppearance(vec![CountryAppearanceRow {
+                country: 100,
+                cosmetic_tag: cosmetic.to_vec(),
+                ..Default::default()
+            }]))
+            .into()
+        };
+        let mut first = frame(0, b"");
+        first.tables[TableId::CountryLinks.index()] =
+            TableView::Complete(TableRows::CountryLinks(vec![CountryLinkRow {
+                id: 100,
+                canonical_slot: 1,
+            }]))
+            .into();
+        first.tables[TableId::CountryAppearance.index()] = appearance(b"COS");
+        first.tables[TableId::LexicalTokens.index()] =
+            TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
+                token: 7,
+                literal: b"frame".to_vec(),
+            }]))
+            .into();
+        // Another variant defined and a table it never reads recorded: no row it read changed.
+        let mut second = first.clone();
+        second.tables[TableId::VariantDefinitions.index()] =
+            TableView::Complete(TableRows::VariantDefinitions(vec![
+                VariantDefinitionRow { id: 5, equipment_token: 7, ..Default::default() },
+                VariantDefinitionRow { id: 6, equipment_token: 7, ..Default::default() },
+            ]))
+            .into();
+        second.tables[TableId::Factions.index()] =
+            TableView::Complete(TableRows::empty(TableId::Factions)).into();
+        // The country's appearance changed: a row it read.
+        let mut third = second.clone();
+        third.tables[TableId::CountryAppearance.index()] = appearance(b"NEW");
+        let mut kept = KeptModels::default();
+        for (frame, model, made) in [
+            (&first, "COS_frame_entity", ModelsMade { kept: 0, chosen: 1 }),
+            (&second, "COS_frame_entity", ModelsMade { kept: 1, chosen: 0 }),
+            (&third, "NEW_frame_entity", ModelsMade { kept: 0, chosen: 1 }),
+        ] {
+            let values = equipment_graphics::LimitValues::default();
+            let (chose, _, did) = kept.session(&assets, frame, limits(&values), |model| {
+                [model(5, 100), model(5, 100)]
+            });
+            let fresh = equipment_graphics::LimitValues::default();
+            let fresh = assets.aircraft_entity(frame, limits(&fresh), 5, 100);
+            assert_eq!(fresh, Ok(Some(model.to_owned())));
+            assert_eq!(chose, [fresh.clone(), fresh], "a kept model is the model chosen anew");
+            assert_eq!(did, made, "{model}: kept while no row it read changed, chosen once a build");
+        }
     }
 }
 #[cfg(test)]

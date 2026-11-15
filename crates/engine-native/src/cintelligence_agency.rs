@@ -68,24 +68,8 @@ pub struct Row {
     pub name: crate::csubject_relation::Name,
 }
 
-/// Reads the minimum agency scalars without rounding or calling engine code.
-/// Null agency pointers mean no object. A non-null invalid object is unavailable.
-/// The name is copied at its native length; icon, upgrade and operative records have separate readers.
-pub fn walk(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut [Row],
-    names: &mut [u8],
-) -> crate::csubject_relation::NameWalk {
-    walk_shared(
-        memory,
-        base,
-        game_state,
-        crate::walk::Buffer::Fixed(output),
-        crate::walk::Buffer::Fixed(names),
-        |_, _| {},
-    )
+pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> crate::csubject_relation::NameWalk {
+    walk_shared(memory, base, game_state, crate::walk::Buffer::Count, crate::walk::Buffer::Count, |_, _| {})
 }
 
 pub struct UpgradeWalk {
@@ -95,28 +79,7 @@ pub struct UpgradeWalk {
 
 /// Entries and scalar rows share one country census and authenticated
 /// agency root. The created byte filters neither table.
-#[cfg(any(test, feature = "test-support"))]
 pub fn walk_with_upgrades(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut [Row],
-    names: &mut [u8],
-    upgrades: &mut [crate::agency_upgrade_levels::Row],
-    catalog: &mut crate::agency_upgrade_levels::Catalog,
-) -> UpgradeWalk {
-    walk_with_upgrades_buffer(
-        memory,
-        base,
-        game_state,
-        crate::walk::Buffer::Fixed(output),
-        crate::walk::Buffer::Fixed(names),
-        crate::walk::Buffer::Fixed(upgrades),
-        catalog,
-    )
-}
-
-pub fn walk_with_upgrades_growing(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -281,7 +244,7 @@ pub fn captured_operative_demand(
     base: usize,
     game_state: usize,
 ) -> Result<usize, &'static str> {
-    match walk_captured_operatives(memory, base, game_state, &mut []) {
+    match count_captured_operatives(memory, base, game_state) {
         Outcome::Rows { len } => Ok(len),
         Outcome::Truncated { len, unread_rows } => len
             .checked_add(unread_rows as usize)
@@ -290,19 +253,14 @@ pub fn captured_operative_demand(
     }
 }
 
+pub fn count_captured_operatives(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
+    walk_captured_operatives_buffer(memory, base, game_state, crate::walk::Buffer::Count)
+}
+
 /// Walk the captured-operative array (`CAPTURED_OPERATIVE_REFERENCES`, with its count), stride
 /// 0x38, resolve each entry's handle and read the operative's raw owner
 /// (`coperative_leader::OWNER_COUNTRY`). Never call the game.
 pub fn walk_captured_operatives(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut [CapturedOperativeRow],
-) -> Outcome {
-    walk_captured_operatives_buffer(memory, base, game_state, crate::walk::Buffer::Fixed(output))
-}
-
-pub fn walk_captured_operatives_growing(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -715,7 +673,7 @@ mod tests {
     ) -> [(crate::csubject_relation::NameWalk, Vec<Row>, Vec<u8>); 2] {
         let mut walks = [(); 2].map(|_| (vec![Row::default(); rows], vec![0; names]));
         let [(new_rows, new_names), (old_rows, old_names)] = &mut walks;
-        let new = super::walk(memory, 0, w.game_state(), new_rows, new_names);
+        let new = super::walk_shared(memory, 0, w.game_state(), crate::walk::Buffer::Growing(new_rows), crate::walk::Buffer::Growing(new_names), |_, _| {});
         let old = baseline::walk(serial_memory, 0, w.game_state(), old_rows, old_names);
         let [(new_rows, new_names), (old_rows, old_names)] = walks;
         [(new, new_rows, new_names), (old, old_rows, old_names)]
@@ -734,7 +692,7 @@ mod tests {
         let prior = ReadCounts::take_current();
         let mut rows = vec![Row::default(); COUNT as usize];
         let mut names = vec![0; COUNT as usize * 6];
-        let new = super::walk(&memory, 0, w.game_state(), &mut rows, &mut names);
+        let new = super::walk_shared(&memory, 0, w.game_state(), crate::walk::Buffer::Growing(&mut rows), crate::walk::Buffer::Growing(&mut names), |_, _| {});
         let new_reads = ReadCounts::take_current();
         let mut old_rows = vec![Row::default(); COUNT as usize];
         let mut old_names = vec![0; COUNT as usize * 6];
@@ -752,18 +710,6 @@ mod tests {
         assert_eq!(new_reads.copy_calls + 8 * n, old_reads.copy_calls);
         assert_eq!(new_reads.record_calls, old_reads.record_calls);
         assert_eq!(new_reads.spans + 8 * n, old_reads.spans);
-        let [batched, serial] = both(
-            &w.memory(),
-            &w.memory(),
-            &w,
-            COUNT as usize - 2,
-            (COUNT as usize - 2) * 6,
-        );
-        assert_eq!(batched, serial);
-        assert!(matches!(
-            batched.0.outcome,
-            Outcome::Truncated { unread_rows: 2, .. }
-        ));
     }
 
     /// The faults the equality tests place: agency bytes the serial walk
@@ -892,10 +838,10 @@ mod tests {
             let memory = Faulty::new(w.memory(), range.into_iter().collect(), false);
             let run = |serial: bool| {
                 let mut visits = Vec::new();
-                let mut rows = [Row::default(); 6];
-                let mut names = [0; 78];
+                let mut rows = vec![Row::default(); 6];
+                let mut names = vec![0; 78];
                 let (rows_buffer, names_buffer) =
-                    (Buffer::Fixed(&mut rows), Buffer::Fixed(&mut names));
+                    (Buffer::Growing(&mut rows), Buffer::Growing(&mut names));
                 let visit = |country: u32, agency: usize| visits.push((country, agency));
                 let walk = if serial {
                     baseline::walk_shared(
@@ -943,7 +889,7 @@ mod tests {
                 ReadCounts::take_current();
                 let start = std::time::Instant::now();
                 let walk = if gathered {
-                    super::walk(&memory, offset, state, &mut rows, &mut names)
+                    super::walk_shared(&memory, offset, state, crate::walk::Buffer::Growing(&mut rows), crate::walk::Buffer::Growing(&mut names), |_, _| {})
                 } else {
                     baseline::walk(&memory, offset, state, &mut rows, &mut names)
                 };
@@ -968,8 +914,12 @@ mod tests {
         }
     }
 
-    fn walk(memory: &impl Memory, base: usize, state: usize, rows: &mut [Row]) -> Outcome {
-        super::walk(memory, base, state, rows, &mut []).outcome
+    fn walk(memory: &impl Memory, base: usize, state: usize, rows: &mut Vec<Row>) -> Outcome {
+        super::walk_shared(memory, base, state, crate::walk::Buffer::Growing(rows), crate::walk::Buffer::Count, |_, _| {}).outcome
+    }
+
+    fn count(memory: &impl Memory, base: usize, state: usize) -> Outcome {
+        super::walk_shared(memory, base, state, crate::walk::Buffer::Count, crate::walk::Buffer::Count, |_, _| {}).outcome
     }
 
     fn put<const N: usize>(bytes: &mut [u8], offset: usize, value: [u8; N]) {
@@ -1050,11 +1000,11 @@ mod tests {
                 base: 0,
                 bytes: &bytes,
             };
-            let mut expected_rows = [Row::default(); 1];
+            let mut expected_rows = vec![Row::default(); 1];
             let mut expected_names = vec![0; count];
-            let expected = super::walk(&memory, 0, 0x100, &mut expected_rows, &mut expected_names);
+            let expected = super::walk_shared(&memory, 0, 0x100, crate::walk::Buffer::Growing(&mut expected_rows), crate::walk::Buffer::Growing(&mut expected_names), |_, _| {});
             assert_eq!(expected.outcome, Outcome::Rows { len: 1 });
-            let actual = walk_with_upgrades_growing(
+            let actual = walk_with_upgrades(
                 &memory,
                 0,
                 0x100,
@@ -1136,22 +1086,15 @@ mod tests {
             0xa000 + coperative_leader::OWNER_COUNTRY,
             &5000_u32.to_le_bytes(),
         );
-        let mut rows = [CapturedOperativeRow::default(); 3];
+        let mut rows = vec![CapturedOperativeRow::default(); 3];
         assert_eq!(
             walk_captured_operatives(&memory, 0, 0x100, &mut rows),
             Outcome::Rows { len: 3 }
         );
-        assert_eq!(rows.map(|row| row.owner), [None, Some(5000), None]);
-        assert_eq!(rows.map(|row| row.ordinal), [0, 1, 2]);
+        assert_eq!(rows.iter().map(|row| row.owner).collect::<Vec<_>>(), [None, Some(5000), None]);
+        assert_eq!(rows.iter().map(|row| row.ordinal).collect::<Vec<_>>(), [0, 1, 2]);
         assert_eq!(rows[1].operative, handle);
         assert_eq!(captured_operative_demand(&memory, 0, 0x100), Ok(3));
-        assert_eq!(
-            walk_captured_operatives(&memory, 0, 0x100, &mut rows[..1]),
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 2
-            }
-        );
         memory.put(0xa008, &0_u64.to_le_bytes());
         assert_eq!(
             walk_captured_operatives(&memory, 0, 0x100, &mut rows),
@@ -1182,7 +1125,7 @@ mod tests {
             base: 0,
             bytes: &bytes,
         };
-        let mut rows = [Row::default(); 1];
+        let mut rows = vec![Row::default(); 1];
         assert_eq!(walk(&memory, 0, 0x100, &mut rows), Outcome::Rows { len: 1 });
         assert_eq!(
             rows[0],
@@ -1198,7 +1141,7 @@ mod tests {
             }
         );
         assert_eq!(
-            walk(&memory, 0, 0x100, &mut []),
+            count(&memory, 0, 0x100),
             Outcome::Truncated {
                 len: 0,
                 unread_rows: 1
@@ -1218,7 +1161,7 @@ mod tests {
                 },
                 0,
                 0x100,
-                &mut [Row::default()]
+                &mut vec![Row::default()]
             ),
             Outcome::Unavailable {
                 reason: "agency owner pointer mismatch"
@@ -1233,7 +1176,7 @@ mod tests {
                 },
                 0,
                 0x100,
-                &mut [Row::default()]
+                &mut vec![Row::default()]
             ),
             Outcome::Unavailable { .. }
         ));
@@ -1250,7 +1193,7 @@ mod tests {
                 },
                 0,
                 0x100,
-                &mut [Row::default()]
+                &mut vec![Row::default()]
             ),
             Outcome::Rows { len: 0 }
         );
@@ -1272,51 +1215,21 @@ mod tests {
             0x5000 + NAME + 24,
             (text.len() as u64).to_le_bytes(),
         );
-        let mut rows = [Row::default()];
+        let mut rows = vec![Row::default()];
         let mut names = vec![0; text.len()];
-        let read = super::walk(
-            &SliceMemory {
+        let read = super::walk_shared(&SliceMemory {
                 base: 0,
                 bytes: &bytes,
-            },
-            0,
-            0x100,
-            &mut rows,
-            &mut names,
-        );
+            }, 0, 0x100, crate::walk::Buffer::Growing(&mut rows), crate::walk::Buffer::Growing(&mut names), |_, _| {});
         assert_eq!(read.outcome, Outcome::Rows { len: 1 });
         assert_eq!(read.required_bytes, text.len());
         assert_eq!(names, text);
-        let short = super::walk(
-            &SliceMemory {
-                base: 0,
-                bytes: &bytes,
-            },
-            0,
-            0x100,
-            &mut rows,
-            &mut names[..39_999],
-        );
-        assert_eq!(
-            short.outcome,
-            Outcome::Truncated {
-                len: 0,
-                unread_rows: 1
-            }
-        );
-        assert_eq!((short.bytes_len, short.required_bytes), (0, text.len()));
         bytes[0x6000 + text.len()] = 1;
         assert!(matches!(
-            super::walk(
-                &SliceMemory {
+            super::walk_shared(&SliceMemory {
                     base: 0,
                     bytes: &bytes
-                },
-                0,
-                0x100,
-                &mut rows,
-                &mut names
-            )
+                }, 0, 0x100, crate::walk::Buffer::Growing(&mut rows), crate::walk::Buffer::Growing(&mut names), |_, _| {})
             .outcome,
             Outcome::Unavailable { .. }
         ));

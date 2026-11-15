@@ -10,10 +10,7 @@ pub(crate) fn allocation_failure_exercise() {
         base: 0x1000,
         bytes: &[0x11; 32],
     };
-    let mut plan = SnapshotPlan::new(8, 32);
-    if crate::allocation::failed() {
-        return;
-    }
+    let mut plan = SnapshotPlan::default();
     plan.begin(&memory, false);
     let mut output = [0; 4];
     let view = plan.view(&memory);
@@ -36,17 +33,6 @@ pub(crate) fn allocation_failure_exercise() {
     let complete = view.copy(0x1000, &mut output) && view.copy(0x1010, &mut output);
     plan.finish(complete);
     plan.prepare();
-    if crate::allocation::failed() {
-        return;
-    }
-    let mut growing = SnapshotPlan::new(0, 0);
-    growing.enable_worker_growth();
-    growing.begin(&memory, false);
-    let view = growing.view(&memory);
-    view.prefetch(0x1000, 32);
-    let complete = view.copy(0x1000, &mut output) && view.copy(0x1010, &mut output);
-    growing.finish(complete);
-    growing.prepare();
 }
 
 #[test]
@@ -70,11 +56,12 @@ fn portrait_dependencies_preserve_each_primary_fault_and_sorted_rows() {
         memory: &impl Memory,
     ) -> (
         engine_native::cprovince::UnitOrderWalk,
-        [ccharacter::PortraitRow; 4],
-        [character_portrait_entry::Row; 4],
+        Vec<ccharacter::PortraitRow>,
+        Vec<character_portrait_entry::Row<engine_native::capture_text::Owned>>,
     ) {
-        let mut rows = [ccharacter::PortraitRow::default(); 4];
-        let mut entries = [character_portrait_entry::Row::default(); 4];
+        let mut rows = vec![ccharacter::PortraitRow::default(); 4];
+        let mut entries =
+            vec![character_portrait_entry::Row::<engine_native::capture_text::Owned>::default(); 4];
         let result = ccharacter::walk_portraits(
             memory,
             kit::BASE,
@@ -99,7 +86,7 @@ fn portrait_dependencies_preserve_each_primary_fault_and_sorted_rows() {
         .map(Some)
         .chain([None])
     {
-        let mut plan = SnapshotPlan::new(128, 2048);
+        let mut plan = SnapshotPlan::default();
         assert!(!plan.begin(&kit::memory(&bytes), false));
         let baseline = walk(&plan.view(&kit::memory(&bytes)));
         assert!(plan.finish(true));

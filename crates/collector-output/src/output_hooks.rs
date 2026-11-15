@@ -187,7 +187,7 @@ impl<const N: usize> Hooks<N> {
             return Ok(true);
         }
         let publication = if matches!(domain.failure, Failure::Propagate) {
-            Hook::set_family_enabled_attach(&mut self.hooks, enabled)
+            Hook::set_family_enabled(&mut self.hooks, enabled)
         } else {
             Hook::set_family_enabled(&mut self.hooks, enabled)
         };

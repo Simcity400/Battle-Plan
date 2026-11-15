@@ -509,7 +509,7 @@ fn invalid_or_overflowing_addresses_never_escape_guarded_spans() {
 }
 
 #[test]
-fn a_worker_reuses_each_complete_packet_of_the_capture_but_never_a_refused_one() {
+fn each_complete_packet_of_the_capture_is_reused_but_never_a_refused_one() {
     const OTHER: usize = 0x60_0000;
     let mut world = World::fixture();
     let copy = world.regions[0].1.clone();
@@ -521,41 +521,31 @@ fn a_worker_reuses_each_complete_packet_of_the_capture_but_never_a_refused_one()
         token: TOKEN.to_le_bytes(),
     };
     world.put(OTHER + 8, &other().handle.to_le_bytes());
-    for growing in [false, true] {
-        let mut memo = ModelMemo::default();
-        if growing {
-            memo.enable_worker_growth();
-        }
-        world.reads.borrow_mut().clear();
-        for source in [world.source(), other()] {
-            assert_eq!(
-                read_hull_variant(&world, BASE, &source, &mut memo),
-                Some(expected())
-            );
-        }
-        let count = world.reads.borrow().len();
-        assert_eq!(count, 28);
-        // The first variant again after a different one: the fixed reader
-        // keeps only the last observation, a worker the whole capture's.
+    let mut memo = ModelMemo::default();
+    world.reads.borrow_mut().clear();
+    for source in [world.source(), other()] {
         assert_eq!(
-            read_hull_variant(&world, BASE, &world.source(), &mut memo),
+            read_hull_variant(&world, BASE, &source, &mut memo),
             Some(expected())
         );
-        assert_eq!(
-            world.reads.borrow().len(),
-            if growing { count } else { count + 14 }
-        );
-        // The next capture forgets every observation and pointer key.
-        memo.reset();
-        assert!(!memo.growing && memo.hull_variant.complete.is_empty());
-        memo.enable_worker_growth();
-        let count = world.reads.borrow().len();
-        assert_eq!(
-            read_hull_variant(&world, BASE, &other(), &mut memo),
-            Some(expected())
-        );
-        assert_eq!(world.reads.borrow().len(), count + 14);
     }
+    let count = world.reads.borrow().len();
+    assert_eq!(count, 28);
+    // The first variant again after a different one is the capture's.
+    assert_eq!(
+        read_hull_variant(&world, BASE, &world.source(), &mut memo),
+        Some(expected())
+    );
+    assert_eq!(world.reads.borrow().len(), count);
+    // The next capture forgets every observation and pointer key.
+    memo.reset();
+    assert!(memo.hull_variant.complete.is_empty());
+    let count = world.reads.borrow().len();
+    assert_eq!(
+        read_hull_variant(&world, BASE, &other(), &mut memo),
+        Some(expected())
+    );
+    assert_eq!(world.reads.borrow().len(), count + 14);
 
     // A refused field stays only for the adjacent same-key observation.
     for failed in [0, 9] {
@@ -565,7 +555,6 @@ fn a_worker_reuses_each_complete_packet_of_the_capture_but_never_a_refused_one()
         world.put(OTHER + 8, &other().handle.to_le_bytes());
         world.fault = Some((failed, 0));
         let mut memo = ModelMemo::default();
-        memo.enable_worker_growth();
         let refused = read_hull_variant(&world, BASE, &world.source(), &mut memo);
         assert_ne!(refused, Some(expected()));
         assert_eq!(

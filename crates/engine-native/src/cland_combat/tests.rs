@@ -397,9 +397,7 @@ fn details_leaf_batches_match_scalar_values_every_fault_and_changed_read() {
             assert_detail_attempt(&fixture, &overrides, Some(ordinal), None, 8);
             assert_detail_attempt(&fixture, &overrides, None, Some((ordinal, 0)), 8);
         }
-        for capacity in 0..=3 {
-            assert_detail_attempt(&fixture, &overrides, None, None, capacity);
-        }
+
     }
 }
 
@@ -537,7 +535,7 @@ fn growing_map_census_starts_without_optional_pointers_and_keeps_later_demand() 
         // separately from a mod-sized registry with empty side vectors.
         fixture.array(STATE + cgame_state::COMBATS + 8, registry, 1);
         let mut visited = 0;
-        let capture = walk_with_growing(
+        let capture = walk_with(
             &fixture.memory(),
             BASE,
             STATE,
@@ -556,7 +554,7 @@ fn growing_map_census_starts_without_optional_pointers_and_keeps_later_demand() 
         );
         fixture.array(STATE + cgame_state::COMBATS + 8, registry, count as u32);
         fixture.array(ATTACK + cland_combatant::UNITS, 0, 0);
-        let capture = walk_with_growing(
+        let capture = walk_with(
             &fixture.memory(),
             BASE,
             STATE,
@@ -580,9 +578,9 @@ fn growing_map_census_preserves_sufficient_fixed_reads_and_every_original_fault(
     let fixture = Fixture::new();
     let source = fixture.memory();
     let fixed = Observed::new(&source, &[]);
-    let mut fixed_rows = [Row::default(); 2];
-    let mut fixed_participants = [0; 8];
-    let mut fixed_classes = [0; 8];
+    let mut fixed_rows = vec![Row::default(); 2];
+    let mut fixed_participants = vec![0; 8];
+    let mut fixed_classes = vec![0; 8];
     let expected = walk_with(
         &fixed,
         BASE,
@@ -615,7 +613,7 @@ fn growing_map_census_preserves_sufficient_fixed_reads_and_every_original_fault(
         let mut rows = Vec::new();
         let mut participants = Vec::new();
         let mut classes = Vec::new();
-        let actual = walk_with_growing(
+        let actual = walk_with(
             &growing,
             BASE,
             STATE,
@@ -706,15 +704,15 @@ impl Fixture {
         }
     }
 
-    fn capture(&self) -> (Walk, [Row; 2], [u64; 8]) {
+    fn capture(&self) -> (Walk, Vec<Row>, Vec<u64>) {
         let (captured, rows, participants, _) = self.capture_classes();
         (captured, rows, participants)
     }
 
-    fn capture_classes(&self) -> (Walk, [Row; 2], [u64; 8], [u32; 8]) {
-        let mut rows = [Row::default(); 2];
-        let mut participants = [0; 8];
-        let mut classes = [u32::MAX; 8];
+    fn capture_classes(&self) -> (Walk, Vec<Row>, Vec<u64>, Vec<u32>) {
+        let mut rows = vec![Row::default(); 2];
+        let mut participants = vec![0; 8];
+        let mut classes = vec![u32::MAX; 8];
         let captured = walk(
             &self.memory(),
             BASE,
@@ -775,13 +773,13 @@ fn a_non_division_participant_is_kept_with_its_class() {
         &classes[..3],
         &[DIVISION_CLASS, RAILWAY_GUN_CLASS, TASK_FORCE_CLASS]
     );
-    let mut pointers = [0; 8];
+    let mut pointers = vec![0; 8];
     let members = walk_members(
         &fixture.memory(),
         BASE,
         STATE,
-        &mut [Row::default(); 2],
-        &mut [0; 8],
+        &mut vec![Row::default(); 2],
+        &mut vec![0; 8],
         &mut pointers,
         |_, _| {},
     );
@@ -938,21 +936,7 @@ fn details_preserve_native_order_bytes_damage_and_loss_history() {
     assert_eq!(row.sides[0].damage[0], i64::MAX);
     assert_eq!(row.sides[0].organisation_loss[0], i64::MIN);
     assert_eq!(row.sides[1].organisation_loss_count, 0);
-    // A short participant arena keeps the exact demand and stays incomplete.
-    let mut short = Arenas::new();
-    short.participants.truncate(2);
-    let mut view = short.view();
-    read_details(
-        &memory,
-        BASE,
-        source,
-        &Members::none(),
-        &mut Commanders::default(),
-        &mut view,
-    )
-    .unwrap();
-    assert!(!view.complete());
-    assert_eq!((view.used.participants, view.required.participants), (2, 3));
+
     let mut roles = Vec::new();
     assert_eq!(
         visit_units(
@@ -1179,7 +1163,7 @@ fn commander_fixture() -> Fixture {
 /// than the arenas is still authenticated, reports its exact demand and
 /// leaves the arenas incomplete, so the caller publishes nothing partial.
 #[test]
-fn commander_trait_lists_report_exact_demand_beyond_any_arena() {
+fn commander_trait_lists_grow_every_short_arena_to_the_exact_demand() {
     const TIMED: usize = 0xf100;
     const COUNT: usize = 100;
     let mut fixture = commander_fixture();
@@ -1266,7 +1250,7 @@ fn commander_trait_lists_report_exact_demand_beyond_any_arena() {
             &mut short,
         )
         .unwrap();
-        assert!(!short.complete(), "{field}");
+        assert!(short.complete(), "{field}");
         assert_eq!(short.required, demand, "{field}");
     }
 }
@@ -1645,10 +1629,6 @@ fn selected_commander_texts_keep_native_length_and_name_their_field() {
     const TERRAIN: usize = 5;
     const OTHER: usize = TERRAIN + 10 + 4;
 
-    // Too small: counted whole, not stored, the row still read.
-    let (details, used, required, _) = read(&fixture, 64);
-    assert!(!details.unwrap().0);
-    assert_eq!((used, required), (OTHER, 300 + OTHER));
 
     let (details, used, required, text) = read(&fixture, 512);
     let (complete, side) = details.unwrap();
@@ -1806,24 +1786,18 @@ fn country_set(fixture: &mut Fixture, side: usize, offset: usize, nodes: usize, 
 fn country_sets(
     fixture: &Fixture,
     max_len: usize,
-    tags: &mut [u32],
+    tags: &mut Vec<u32>,
 ) -> Result<(CountrySetsRow, usize), CountrySetError> {
     let mut result = None;
     walk_with(
         &fixture.memory(),
         BASE,
         STATE,
-        &mut [Row::default(); 2],
-        &mut [0; 8],
-        &mut [0; 8],
+        &mut vec![Row::default(); 2],
+        &mut vec![0; 8],
+        &mut vec![0; 8],
         |source| {
-            result = Some(read_country_sets(
-                &fixture.memory(),
-                BASE,
-                source,
-                max_len,
-                tags,
-            ));
+            result = Some(read_country_sets_buffer(&fixture.memory(), BASE, source, max_len, crate::walk::Buffer::Growing(&mut *tags)));
         },
     );
     result.expect("one land combat")
@@ -1857,19 +1831,12 @@ fn country_sets_keep_native_order_raw_tags_and_empty_sets() {
     fixture.u32(COMBAT + INDICATOR_FRAME_HIGH, 0x0102_0304);
     fixture.u32(ATTACK + cland_combatant::FLAGS, 0x4000);
     fixture.u32(DEFEND + cland_combatant::FLAGS, 0x800);
-    let mut tags = [u32::MAX; 8];
+    let mut tags = vec![u32::MAX; 8];
     let (row, used) = country_sets(&fixture, 4, &mut tags).unwrap();
     assert_eq!((row.indicator, row.flags), (4, [0x4000, 0x800]));
     assert_eq!(row.lens, [3, 1, 2, 0]);
     assert_eq!(used, 6);
     assert_eq!(&tags[..6], &[7, 0, 3, 9, 4, 2]);
-    // Capacity is reported before any node is followed; no prefix is kept.
-    let mut short = [u32::MAX; 5];
-    assert_eq!(
-        country_sets(&fixture, 4, &mut short),
-        Err(CountrySetError::Truncated { required: 6 })
-    );
-    assert_eq!(short, [u32::MAX; 5]);
     // A set longer than the country table allows is refused.
     assert!(matches!(
         country_sets(&fixture, 2, &mut tags),
@@ -1897,7 +1864,7 @@ fn country_sets_refuse_broken_links_and_keep_what_the_game_stored() {
         );
         edit(&mut fixture);
         matches!(
-            country_sets(&fixture, 8, &mut [0; 8]),
+            country_sets(&fixture, 8, &mut vec![0; 8]),
             Err(CountrySetError::Unavailable(_))
         )
     };
@@ -1938,47 +1905,6 @@ fn border_war_has_native_dynamic_type_and_subclass_sides() {
         fixture.capture().0.outcome,
         Outcome::Unavailable { .. }
     ));
-}
-
-#[test]
-fn row_and_arena_capacities_omit_whole_combats_and_report_growth() {
-    let mut fixture = Fixture::new();
-    fixture.u64(ATTACK_UNITS, 1);
-    fixture.u64(COMBAT + PROVINCE, 1);
-    let mut rows = [Row::default(); 1];
-    let mut participants = [0; 2];
-    let captured = walk(
-        &fixture.memory(),
-        BASE,
-        STATE,
-        &mut rows,
-        &mut participants,
-        &mut [0; 2],
-    );
-    assert_eq!(
-        captured,
-        Walk {
-            outcome: Outcome::Truncated {
-                len: 0,
-                unread_rows: 1
-            },
-            participants_len: 0,
-            required_participants: 3,
-        }
-    );
-    assert_eq!(
-        walk(
-            &fixture.memory(),
-            BASE,
-            STATE,
-            &mut [],
-            &mut [0; 8],
-            &mut [0; 8]
-        ),
-        captured
-    );
-    assert_eq!(participants, [0; 2]);
-    assert_eq!(rows, [Row::default(); 1]);
 }
 
 #[test]
@@ -2032,9 +1958,9 @@ fn bad_objects_fail_the_table_instead_of_producing_a_partial_census() {
             &fixture.memory(),
             BASE,
             usize::MAX,
-            &mut [],
-            &mut [],
-            &mut []
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new()
         )
         .outcome,
         Outcome::Unavailable { .. }

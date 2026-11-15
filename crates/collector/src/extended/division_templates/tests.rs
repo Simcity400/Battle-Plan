@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::Arc;
 use engine_native::{
     ccountry, cgame_state, csub_unit_definition as subunit, memory::CountedMemory,
     memory::SliceMemory,
@@ -100,7 +101,7 @@ fn owned_template_tails_match_synchronous_rows_and_survive_later_writer_marks() 
     let mut deferred = Captured::with_capacities(&capacity());
     for hour in 0..3 {
         synchronous.capture_original(&source, 0, 0x1000, hour, false, &changes);
-        deferred.capture_observed(&source, 0, 0x1000, hour, false, &changes);
+        deferred.capture_observed(&source, 0, 0x1000, hour, false, &changes, None);
         drop(changes.templates.notify(0x5000, 1));
         source.bytes[0x6008..0x600c].copy_from_slice(&(hour + 7).to_le_bytes());
         deferred.settle_owned();
@@ -110,7 +111,7 @@ fn owned_template_tails_match_synchronous_rows_and_survive_later_writer_marks() 
         deferred.settle_owned();
         assert_eq!(deferred.tables(), synchronous.tables());
     }
-    deferred.capture_observed(&source, 0, 0x1000, 3, false, &changes);
+    deferred.capture_observed(&source, 0, 0x1000, 3, false, &changes, None);
     deferred.reset();
     assert!(!deferred.pending_owned);
     deferred.capture_original(&source, 0, 0x1000, 4, false, &changes);
@@ -687,7 +688,6 @@ fn every_hour_reads_both_tables_and_bad_memory_cannot_claim_empty() {
 fn hourly_template_job_publishes_direct_walk_rows() {
     use crate::acquisition_jobs::TemplatesRequest;
     use engine_native::country_memory::Cache;
-    use std::sync::Arc;
 
     let mut source = fixture();
     let mut capture = Captured::vacant();
@@ -695,7 +695,10 @@ fn hourly_template_job_publishes_direct_walk_rows() {
         set_name(&mut source, literal, b"fallback");
         source.bytes[0x5000 + native::CUSTOM_ICON..][..4]
             .copy_from_slice(&custom_icon.to_le_bytes());
-        let mut countries = Arc::new(Cache::try_with_capacity(256).unwrap());
+        let mut countries = engine_allocation::shared(
+            Cache::try_with_capacity(256).unwrap(),
+        )
+        .unwrap();
         let countries = Cache::prepare_shared(&mut countries, &source, 0, 0x1000).unwrap();
         let mut request = TemplatesRequest::take(&countries, 0, 0x1000, &mut capture, hour, false);
         request.run(&source);
@@ -1208,11 +1211,209 @@ fn large_content(countries: usize, per_country: usize) -> Fixture {
     source
 }
 
+/// `large_content`'s world with each country's own deployment status, so every country's
+/// configuration and its templates' cores are certified and carried.
+fn deployed_content(countries: usize, per_country: usize) -> Fixture {
+    fn word(bytes: &mut [u8], at: usize, value: u64) {
+        bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+    }
+    fn array(bytes: &mut [u8], at: usize, data: usize, count: usize) {
+        word(bytes, at, data as u64);
+        word(bytes, at + 8, (count as u64) | ((count as u64) << 32));
+    }
+    let mut source = fixture();
+    let template = source.bytes[0x5000..0x5400].to_vec();
+    let slots = countries + 1;
+    let registry = 0x10000;
+    let links = registry + slots * 8;
+    let owners = (links + slots * 4).next_multiple_of(0x1000);
+    let statuses = owners + countries * 0x1000;
+    let rosters = statuses + countries * 0x200;
+    let templates = rosters + countries * per_country * 8;
+    source
+        .bytes
+        .resize(templates + countries * per_country * template.len(), 0);
+    array(&mut source.bytes, 0x1000 + cgame_state::COUNTRIES, registry, slots);
+    array(&mut source.bytes, 0x1000 + cgame_state::COUNTRY_LINKS, links, slots);
+    for country in 0..countries {
+        let id = country + 1;
+        let owner = owners + country * 0x1000;
+        let status = statuses + country * 0x200;
+        word(&mut source.bytes, registry + id * 8, owner as u64);
+        source.bytes[links + id * 4..links + id * 4 + 4]
+            .copy_from_slice(&(id as u32).to_le_bytes());
+        word(&mut source.bytes, owner, ccountry::VTABLE_RVA.0 as u64);
+        word(&mut source.bytes, owner + ccountry::ID, id as u64);
+        word(&mut source.bytes, owner + ccountry::DEPLOYMENT_MANAGER, status as u64);
+        word(
+            &mut source.bytes,
+            status,
+            engine_deployment::cdeployment_status::VTABLE_RVA.0 as u64,
+        );
+        word(
+            &mut source.bytes,
+            status + engine_deployment::cdeployment_status::OWNER,
+            owner as u64,
+        );
+        let roster = rosters + country * per_country * 8;
+        array(
+            &mut source.bytes,
+            owner + ccountry::DIVISION_TEMPLATES,
+            roster,
+            per_country,
+        );
+        for ordinal in 0..per_country {
+            let index = country * per_country + ordinal;
+            let at = templates + index * template.len();
+            source.bytes[at..at + template.len()].copy_from_slice(&template);
+            word(
+                &mut source.bytes,
+                at + native::TYPE,
+                ((index as u64 + 1) << 32) | native::REFERENCE_TYPE as u64,
+            );
+            word(&mut source.bytes, roster + ordinal * 8, at as u64);
+        }
+    }
+    source
+}
+
+/// The walk split by country slot ranges across 1, 2, 3, 7 and 15 workers equals the serial walk
+/// on every hour: its rows (raw, spans included), tables, country rows, model failures, speed keys
+/// and carried and read occurrences, so its stores decide as the serial walk's do. The hours: a
+/// forced one; a carried one; writers on templates of three ranges; a template listed by two
+/// countries (left to the serial walk); a refused roster entry in a middle country (the first
+/// failure: no later range's rows or store changes); and recovery. Each range walks its share.
+#[test]
+fn split_walk_equals_the_serial_walk_and_every_range_walks_its_share() {
+    const COUNTRIES: usize = 40;
+    const PER_COUNTRY: usize = 24;
+    const TOTAL: usize = COUNTRIES * PER_COUNTRY;
+    fn word(source: &Fixture, at: usize) -> usize {
+        u64::from_le_bytes(source.bytes[at..at + 8].try_into().unwrap()) as usize
+    }
+    fn set(source: &mut Fixture, at: usize, value: usize) {
+        source.bytes[at..at + 8].copy_from_slice(&(value as u64).to_le_bytes());
+    }
+    // A country's roster entry: its address and the template it lists.
+    let entry = |source: &Fixture, country: usize, ordinal: usize| {
+        let owner = word(source, 0x10000 + (country + 1) * 8);
+        let at = word(source, owner + ccountry::DIVISION_TEMPLATES) + ordinal * 8;
+        (at, word(source, at))
+    };
+    for lanes in [1, 2, 3, 7, 15] {
+        let mut source = deployed_content(COUNTRIES, PER_COUNTRY);
+        let changes = CoreChanges::sized(4096, 256);
+        let mut direct = Captured::with_capacities(&capacity());
+        let mut split = Captured::with_capacities(&capacity());
+        let (duplicate, listed) = entry(&source, 30, 0);
+        let (refused, kept) = entry(&source, 20, 3);
+        for hour in 0..7 {
+            match hour {
+                2 => {
+                    for country in [0, 19, 39] {
+                        let (_, template) = entry(&source, country, 5);
+                        source.bytes[template + native::FORMATION_DIVISION_COUNT..][..4]
+                            .copy_from_slice(&(hour + country as i32).to_le_bytes());
+                        drop(
+                            changes
+                                .templates
+                                .notify(template, site("rebuild_template_caches")),
+                        );
+                    }
+                }
+                // Country 30 lists country 5's first template for two hours: on the second,
+                // its range decides on the stores the hour began with, which the earlier
+                // occurrence changes.
+                3 => {
+                    let (_, other) = entry(&source, 5, 0);
+                    set(&mut source, duplicate, other);
+                }
+                5 => {
+                    set(&mut source, duplicate, listed);
+                    set(&mut source, refused, 0);
+                }
+                6 => set(&mut source, refused, kept),
+                _ => {}
+            }
+            let force = hour == 0;
+            direct.capture_original(&source, 0, 0x1000, hour, force, &changes);
+            let mut shares = Vec::new();
+            let mut walk = |mut parts: Vec<WalkPart>| {
+                std::thread::scope(|scope| {
+                    for part in parts.iter_mut() {
+                        let (source, changes) = (&source, &changes);
+                        scope.spawn(move || part.capture(source, 0, changes));
+                    }
+                });
+                shares.extend(parts.iter().map(WalkPart::visited));
+                // Workers return their parts in any order.
+                parts.reverse();
+                Ok::<_, &'static str>(parts)
+            };
+            split.capture_observed(
+                &source,
+                0,
+                0x1000,
+                hour,
+                force,
+                &changes,
+                Some(TemplateWorkers {
+                    lanes,
+                    walk: &mut walk,
+                }),
+            );
+            split.settle_owned();
+            let label = format!("{lanes} workers, hour {hour}");
+            let len = direct.icon_rows.outcome.len();
+            assert_eq!(split.outcomes(), direct.outcomes(), "{label}");
+            assert_eq!(
+                split.icon_rows.rows[..len],
+                direct.icon_rows.rows[..len],
+                "{label}"
+            );
+            assert_eq!(split.tables(), direct.tables(), "{label}");
+            assert_eq!(split.country_state(), direct.country_state(), "{label}");
+            assert_eq!(split.model_failures(), direct.model_failures(), "{label}");
+            assert_eq!(split.speed_spans(), direct.speed_spans(), "{label}");
+            assert_eq!(split.occurrences(), direct.occurrences(), "{label}");
+            // Only one lane leaves an hour to the serial walk; a template listed twice splits.
+            use crate::hour_stages::TemplateFallback;
+            let fallback = (lanes == 1).then_some(TemplateFallback::OneLane);
+            assert_eq!(split.split_fallback(), fallback, "{label}");
+            if lanes > 1 && hour == 4 {
+                assert!(split.taken_again() > 0, "{label}");
+            }
+            match hour {
+                0 => assert_eq!(direct.occurrences(), [0, TOTAL as u64], "{label}"),
+                1 => assert_eq!(direct.occurrences(), [TOTAL as u64, 0], "{label}"),
+                6 => assert!(direct.occurrences()[0] > 0, "{label}"),
+                5 => assert!(
+                    matches!(direct.outcomes()[1], Outcome::Unavailable { .. }),
+                    "{label}"
+                ),
+                _ => {}
+            }
+            if lanes == 1 {
+                assert!(shares.is_empty(), "{label}");
+            } else if hour == 0 {
+                let parts = lanes.min(TOTAL / 64);
+                assert_eq!(shares.len(), parts, "{label}");
+                assert_eq!(shares.iter().sum::<usize>(), TOTAL, "{label}");
+                assert!(
+                    shares
+                        .iter()
+                        .all(|&share| share + 2 * PER_COUNTRY >= TOTAL / parts),
+                    "{label}: {shares:?}"
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn promoted_template_worker_matches_direct_rows_and_faults() {
     use crate::acquisition_jobs::{Batch, Job, Pool, Report, Role, TemplatesRequest};
     use engine_native::country_memory::Cache;
-    use std::sync::Arc;
 
     fn word(source: &Fixture, at: usize) -> usize {
         u64::from_le_bytes(source.bytes[at..at + 8].try_into().unwrap()) as usize
@@ -1247,7 +1448,10 @@ fn promoted_template_worker_matches_direct_rows_and_faults() {
             };
             for hour in [7, 8] {
                 direct.capture(source.as_ref(), 0, 0x1000, hour, false);
-                let mut cache = Arc::new(Cache::try_with_capacity(countries + 1).unwrap());
+                let mut cache = engine_allocation::shared(
+                    Cache::try_with_capacity(countries + 1).unwrap(),
+                )
+                .unwrap();
                 let cache =
                     Cache::prepare_shared(&mut cache, source.as_ref(), 0, 0x1000).unwrap();
                 let mut request = Some(Job::Templates(TemplatesRequest::take(
@@ -1341,9 +1545,13 @@ struct CoreChanges {
 }
 impl CoreChanges {
     fn new() -> Self {
+        Self::sized(64, 16)
+    }
+
+    fn sized(templates: usize, locals: usize) -> Self {
         Self {
-            templates: crate::template_changes::Watches::enabled(64),
-            locals: crate::local_subunit_changes::Watches::enabled(16),
+            templates: crate::template_changes::Watches::enabled(templates),
+            locals: crate::local_subunit_changes::Watches::enabled(locals),
         }
     }
 }
@@ -1356,6 +1564,9 @@ impl crate::template_changes::Changes for CoreChanges {
     }
     fn core_dependencies(&self) -> Option<(u64, u64)> {
         crate::local_subunit_changes::Changes::quiet(&self.locals)
+    }
+    fn deployment_reset_sequence(&self, status: usize) -> Option<(u64, u64)> {
+        crate::local_subunit_changes::Changes::sequence(&self.locals, status)
     }
 }
 
@@ -1440,6 +1651,11 @@ fn held_templates_read_nothing_and_every_other_template_is_read_in_full() {
         // The templates this hour reads in full.
         let read: &[usize] = match hour {
             0 => &[A],
+            // Another country's clone writer leaves this country's templates carried.
+            1 => {
+                drop(changes.locals.notify(Some(0x9900), 1));
+                &[]
+            }
             2 => {
                 source.bytes[0x6008..0x600c].copy_from_slice(&7_i32.to_le_bytes());
                 drop(changes.templates.notify(A, site("rebuild_template_caches")));
@@ -1636,6 +1852,9 @@ fn fresh_only_observation_reads_every_template() {
         }
         fn core_dependencies(&self) -> Option<(u64, u64)> {
             self.0.core_dependencies()
+        }
+        fn deployment_reset_sequence(&self, status: usize) -> Option<(u64, u64)> {
+            self.0.deployment_reset_sequence(status)
         }
     }
     let changes = FreshOnly(CoreChanges::new());

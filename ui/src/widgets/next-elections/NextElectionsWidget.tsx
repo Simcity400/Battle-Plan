@@ -1,83 +1,120 @@
 import { nameReadText } from '../../dashboard/nameReads.ts';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { jumpItem } from '../../charts/jump';
+import LiveText, { liveTexts } from '../../charts/LiveText';
+import type { LiveTexts, TextClock } from '../../charts/LiveText';
+import { liveAt } from '../../charts/live';
 import ProgressMeter from '../../charts/meter/ProgressMeter';
+import { meterValue } from '../../charts/meter/meterValue';
 import Table, { CountryCell } from '../../charts/table/Table';
 import type { TableColumn } from '../../charts/table/Table';
 import { narrowTableOf, tableSortOf } from '../../charts/table/options';
-import { useTableHour } from '../../charts/table/useTableHour';
 import { dayLabel } from '../../charts/draw';
 import { fitTooltip } from '../../charts/tooltip';
 import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
+import { useAtHead } from '../../dashboard/atHead';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import type { CountryLabel } from '../../dashboard/countryFlagsAt';
 import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt';
 import { selectedTags } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { countryMatch, MEMBERSHIP_PREPARING } from '../../dashboard/groups';
+import { countryMatch, countryMatchChangeHours, membershipUnrecordedAt } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackMotion } from '../../dashboard/playback';
-import { POLITICS_HISTORY, preparedThroughHour, readAt } from '../../dashboard/politicsHistory';
+import { POLITICS_HISTORY, readAt } from '../../dashboard/politicsHistory';
 import { useProduct } from '../../dashboard/products';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
-import type { PoliticsHistoryReply } from '../../generated/dashboard';
 import { DEFAULT_SORT, OPTIONS } from './definition';
-import { daysText, ELECTION_VALUES, electionsAt, electionTooltip, electionWarnings, termText, validateElectionsReply } from './nextElectionsData';
+import { changeHours, countdownTexts, electionValues, electionsAt, electionsState, electionTooltip, electionWarnings, settledHour, termAt, termSortValues, termText, validateElectionsReply } from './nextElectionsData';
 import type { ElectionRow } from './nextElectionsData';
 import './nextElections.css';
+import type { PoliticsHistoryReply } from '../../generated/dashboard';
 
 const NO_ROWS: readonly ElectionRow[] = [];
 const NO_WARNINGS: string[] = [];
+const NO_HOURS: readonly number[] = [];
 const rowKey = (row: ElectionRow) => row.key;
 const tieKey = (row: ElectionRow) => row.tag;
 
-/** The table's columns: each country by `label` (sorted by `sortName`), the hiding
- * columns' values in the row tooltip. */
-export function electionColumns(sortName: (tag: string) => string, label: CountryLabel, cellBars: boolean): TableColumn<ElectionRow>[] {
+/** The term passed as text and, with `cellBars`, a meter, both painted each frame at `shown()`, never rendered for. */
+function TermCell({ row, live, clock, shown, cellBars }: { row: ElectionRow; live: LiveTexts; clock: TextClock; shown: () => number; cellBars: boolean }) {
+  const cell = useRef<HTMLSpanElement>(null);
+  useLayoutEffect(() => {
+    if (!cellBars) return;
+    const paint = () => {
+      const meter = cell.current?.querySelector<HTMLElement>('.progress-meter'), fill = meter?.querySelector('i');
+      const ratio = meterValue(termAt(row, shown()));
+      if (!meter || !fill || ratio === null || fill.style.width === `${ratio * 100}%`) return;
+      fill.style.width = `${ratio * 100}%`;
+      meter.setAttribute('aria-valuenow', String(ratio));
+    };
+    paint();
+    const stops = [clock.subscribeFrame(paint), clock.subscribe(paint)];
+    return () => stops.forEach(stop => stop());
+  }, [row, clock, shown, cellBars]);
+  return <span ref={cell} className="election-term"><LiveText live={live} at={`term\u0000${row.key}`} />
+    {cellBars && <ProgressMeter value={termAt(row, shown())} state="live" label="Term passed" />}</span>;
+}
+
+/** The table's columns: each country by `label` (sorted by `sortName`), the hiding columns' values in the row
+ * tooltip. Days left and the term passed are painted each frame from `live` and `clock`, never rendered for; a Term
+ * sort follows the table's live values (`termSortValues`), the others read `shown()`. */
+export function electionColumns(sortName: (tag: string) => string, label: CountryLabel, cellBars: boolean, live: LiveTexts, clock: TextClock,
+  shown: () => number): TableColumn<ElectionRow>[] {
+  const at = (column: 'term' | 'days' | 'next') => (row: ElectionRow) => electionValues(shown())[column](row);
   return [
     { key: 'country', header: 'Country', label: 'Country', width: 'minmax(var(--table-name-min), 2fr)',
       value: row => sortName(row.tag), text: row => label(row.tag).name, render: row => <CountryCell {...label(row.tag)} /> },
     { key: 'term', header: 'Term', label: 'Term', numeric: true, renderMissing: true, width: 'minmax(calc(var(--space-6) * 3), 1fr)', priority: 1,
-      value: ELECTION_VALUES.term, text: row => row.term === null ? null : termText(row.term),
-      render: row => <span className="election-term"><span>{row.term === null ? '—' : termText(row.term)}</span>
-        {cellBars && <ProgressMeter value={row.term} state="live" label="Term passed" />}</span> },
+      value: at('term'), sortsLive: true, text: row => { const term = termAt(row, shown()); return term === null ? null : termText(term); },
+      render: row => <TermCell row={row} live={live} clock={clock} shown={shown} cellBars={cellBars} /> },
     { key: 'days', header: 'Days left', label: 'Days left', numeric: true, width: 'max-content', priority: 2, inTooltip: true,
-      value: ELECTION_VALUES.days, render: row => daysText(row.hoursLeft!) },
+      value: at('days'), render: row => <LiveText live={live} at={`days\u0000${row.key}`} /> },
     { key: 'next', header: 'Next election', label: 'Next election', numeric: true, width: 'max-content', priority: 3, inTooltip: true,
-      value: ELECTION_VALUES.next, render: row => dayLabel(row.next!) },
+      value: at('next'), render: row => dayLabel(row.next!) },
   ];
 }
 
+/** Every country holding elections at the playback date: the whole branch's schedules are read once; following
+ * playback, the table renders only at the hours a schedule changes, its countdown painted between. */
 export default function NextElectionsWidget({ widget, runtime, active, setOption, onDiagnostics }: WidgetProps) {
-  const playbackHour = useTableHour(runtime.clock, active && widget.time.mode === 'follow');
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const tokens = useChartTokens();
   const viewport = useViewportHeight();
   const options = resolveOptions(OPTIONS, widget.options);
   const sort = tableSortOf(options.tableSort, DEFAULT_SORT);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
-  const hour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
-  const inside = !!track && !!window && track.branch.firstHour <= hour && hour <= track.branch.lastHour;
+  const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: POLITICS_HISTORY,
+    params: { branchId: track.branch.id, mode: 'elections' } } : null;
+  const { data, error, retry } = useProduct<PoliticsHistoryReply>(runtime.client, request, active, validateElectionsReply, track?.source);
   const needsGroups = widget.countries.kind !== 'all';
   const groups = useCountryGroups(runtime, track, active && needsGroups);
   const selected = selectedTags(widget.countries, track);
   const selectedKey = JSON.stringify(selected);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const fallback = useMemo(() => selected, [selectedKey]);
-  const match = useMemo(() => countryMatch(widget.countries, fallback, groups.data, track?.branch.lastHour ?? hour),
-    [widget.countries, fallback, groups.data, track?.branch.lastHour, hour]);
-  // The whole branch's schedules once; playback only looks them up locally.
-  const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: POLITICS_HISTORY,
-    params: { branchId: track.branch.id, mode: 'elections' } } : null;
-  const { data, error, retry } = useProduct<PoliticsHistoryReply>(runtime.client, request, active, validateElectionsReply, track?.source);
-  const prepared = !!data && preparedThroughHour(data, hour);
+  const match = useMemo(() => countryMatch(widget.countries, fallback, groups.data, track?.branch.lastHour ?? 0),
+    [widget.countries, fallback, groups.data, track?.branch.lastHour]);
+  // The rows change where a schedule or the countries chosen do.
+  const hours = useMemo(() => data ? changeHours(data, countryMatchChangeHours(match.matches)) : NO_HOURS, [data, match]);
+  const trackHour = useCallback((clockHour: number) => {
+    const window = track && resolveWindow(widget, track, runtime.tracks, clockHour);
+    return Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
+  }, [widget, track, runtime.tracks]);
+  const following = widget.time.mode === 'follow';
+  const hour = useAtHead(runtime.clock, active && following, clockHour => settledHour(hours, trackHour(clockHour)));
+  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const inside = !!track && !!window && track.branch.firstHour <= hour && hour <= track.branch.lastHour;
   const read = !!data && readAt(data.known, hour);
-  const view = useMemo(() => data && prepared && read && match.ready && !match.reason ? electionsAt(data, hour, match.matches) : null,
-    [data, prepared, read, hour, match]);
+  const view = useMemo(() => data && read && match.ready && !match.reason ? electionsAt(data, hour, match.matches) : null,
+    [data, read, hour, match]);
   const rows = view?.rows ?? NO_ROWS;
+  const shown = useCallback(() => trackHour(runtime.clock.getHour()), [runtime.clock, trackHour]);
+  const live = useMemo(() => liveTexts(runtime.clock, shown, at => countdownTexts(rows, at)), [runtime.clock, shown, rows]);
+  // The term order moves with the shown hour between the hours the rows change: the table re-sorts by it as it plays.
+  const sortLive = useMemo(() => liveAt(runtime.clock, () => shown(), termSortValues(rows)), [runtime.clock, shown, rows]);
   const [visible, setVisible] = useState<readonly ElectionRow[]>(NO_ROWS);
   const onVisibleRows = useCallback((rows: readonly ElectionRow[]) => setVisible(rows), []);
   const wanted = useMemo(() => visible.map(row => ({ hour, tag: row.tag })), [visible, hour]);
@@ -85,9 +122,9 @@ export default function NextElectionsWidget({ widget, runtime, active, setOption
   // A name sort needs every name; flags still load only for mounted rows.
   const sortingNames = useMemo(() => sort.column === 'country' ? rows.map(row => ({ hour, tag: row.tag })) : [], [rows, sort.column, hour]);
   const names = useCountryNamesAt(runtime.client, track, sortingNames, active);
-  const columns = useMemo(() => electionColumns(tag => nameReadText(names.get(nameKey(hour, tag))), labelAt(hour), options.cellBars === true),
-    [names, labelAt, hour, options.cellBars]);
-  const tooltip = useCallback((row: ElectionRow) => fitTooltip([electionTooltip(row, labelAt(hour)(row.tag))], viewport), [labelAt, hour, viewport]);
+  const columns = useMemo(() => electionColumns(tag => nameReadText(names.get(nameKey(hour, tag))), labelAt(hour), options.cellBars === true, live,
+    runtime.clock, shown), [names, labelAt, hour, options.cellBars, live, runtime.clock, shown]);
+  const tooltip = useCallback((row: ElectionRow) => fitTooltip([electionTooltip(row, labelAt(hour)(row.tag), shown())], viewport), [labelAt, hour, viewport, shown]);
   const menu = useCallback((row: ElectionRow) => {
     if (!track || row.next === null) return [];
     const item = jumpItem(runtime, track.id, row.next);
@@ -106,16 +143,13 @@ export default function NextElectionsWidget({ widget, runtime, active, setOption
   if (groupFailure && !groups.data) return groupFailure;
   if (match.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={match.reason} /></>;
   if (!data || !match.ready) return <>{groupFailure}<WidgetState kind="loading" label="Loading elections…" /></>;
-  if (!prepared) return <>{groupFailure}<WidgetState kind="loading" label="This range is still being prepared." /></>;
   if (!read) return <>{groupFailure}<WidgetState kind="unavailable" message="Election schedules were not recorded at this date." /></>;
-  if (!rows.length && !match.known(hour)) return groupFailure ?? <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
-  // A country whose eligibility was not read may hold elections: no row is not proof of none.
-  if (!rows.length && view?.unknown) return <>{groupFailure}<WidgetState kind="unavailable" message="Election eligibility was not recorded at this date." /></>;
-  if (!rows.length) return <>{groupFailure}<WidgetState kind="empty" icon="ballot" message="No country holds elections at this date." /></>;
+  const state = view && electionsState(view, membershipUnrecordedAt(widget.countries, groups.data, hour));
+  if (state) return <>{groupFailure}{state.kind === 'empty' ? <WidgetState kind="empty" icon="ballot" message={state.message} /> : <WidgetState kind="unavailable" message={state.message} />}</>;
   return <div className="next-elections">{groupFailure}
     <Table rowRevision={row => [row, columns]} key={`${track.source.id}:${track.branch.id}`} label="Next elections" rows={rows} columns={columns} rowKey={rowKey} tieKey={tieKey}
       sort={sort} setOption={setOption} cellBars={options.cellBars === true} rank rankMarkers={options.rankMarkers === true}
       density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)} rowHeight={2 * (tokens.fontSize.title + tokens.fontSize.small)}
-      menu={menu} tooltip={tooltip} onVisibleRows={onVisibleRows} hoursPerSecond={hoursPerSecond} />
+      menu={menu} tooltip={tooltip} onVisibleRows={onVisibleRows} hoursPerSecond={hoursPerSecond} live={sortLive} />
   </div>;
 }

@@ -4,9 +4,9 @@
 //! Widgets follow the campaign's resolved visual mod selection, the one its Campaign map shows
 //! (the game, global, then campaign; a dashboard map's own widget scope is the map's alone). The
 //! service binds each source to its own campaign's identity ([`crate::Source::bind`]),
-//! so a selection never leaks from one source to another. Game-look artwork, interface, fonts
-//! and native-window text read the presentation stack; recorded facts, simulation and analytics
-//! labels keep reading the recorded layers.
+//! so a selection never leaks from one source to another. Art (textures, fonts, shaders) reads
+//! the presentation stack; recorded facts (interface declarations and text among them),
+//! simulation and analytics labels are the recording's, which a visual mod never replaces.
 
 pub use dashboard_core::presentation::{
     Admitted, Binding, Cancel, Config, Presentation, Presented, rebind, recorded_mods,

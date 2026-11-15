@@ -179,13 +179,6 @@ test('a manually picked recording follows its file when renamed', async () => fi
   assert.deepEqual(view.updates, [['C:/elsewhere/Picked.battleplan', 'C:/elsewhere/Renamed pick.battleplan']]);
 }));
 
-test('loaded and archive recordings expose real preparation and storage when the client supports it', async () => fixture(async view => {
-  for (const row of [view.loaded, view.archived]) assert.ok(!view.menu(row()).some((item: MenuItem) => item.label === 'Preparation and storage'));
-  view.props.client.preparationStatus = async () => { throw new Error('Test does not request backend state'); };
-  view.render();
-  for (const row of [view.loaded, view.archived]) assert.ok(view.menu(row()).some((item: MenuItem) => item.label === 'Preparation and storage'));
-}));
-
 test('a picked recording follows a rename the dashboard followed, and only that', async () => fixture(async view => {
   view.find((node: Element) => node.props['aria-label'] === 'Open a recording').props.onClick(); await settle(); view.render();
   const picked = 'C:/elsewhere/Picked.battleplan', saved = 'C:/elsewhere/Germany 1936–1937.battleplan';

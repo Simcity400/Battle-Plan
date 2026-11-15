@@ -29,13 +29,13 @@
 .faction-drill-empty { margin: 0; color: var(--muted); font-size: var(--type-sm); }
 
 .faction-growth-plot { position: relative; }
-.faction-growth-plot svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+.faction-growth-plot svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: hidden; }
 .faction-growth-join { position: absolute; display: flex; gap: 2px; }
 .faction-growth-flag { display: inline-flex; border-radius: 2px; outline-offset: 2px; }
 .faction-growth-flag.is-former { opacity: .45; }
 .faction-growth-crown { position: absolute; top: -4px; transform: translateX(-50%); color: var(--warning); }
 .faction-growth-crown svg { width: 12px; height: 12px; }
-.faction-growth-axis { position: relative; height: 16px; margin-top: 3px; color: var(--muted); font-size: 10.5px; }
+.faction-growth-axis { position: relative; overflow: hidden; height: 16px; margin-top: 3px; color: var(--muted); font-size: 10.5px; }
 .faction-growth-axis span { position: absolute; transform: translateX(-50%); opacity: .8; }
 
 .faction-manifest-name { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px; }

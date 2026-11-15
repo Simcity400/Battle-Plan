@@ -81,8 +81,8 @@ mod tests {
             ..Default::default()
         });
         let registered = [1, 2, 3, 4].map(|wing| cair_regional_mission::Row { wing, ordinal: 0 });
-        let mut demand = [Demand::default(); 4];
-        let mut output = [const {
+        let mut demand = vec![Demand::default(); 4];
+        let mut output = vec![const {
             rows::AirGroundCrewRow {
                 supply: rows::Recorded::Value(None),
                 country: 0,
@@ -94,8 +94,8 @@ mod tests {
         let outcome = capture(
             &wings,
             Some(&registered),
-            Buffer::Fixed(&mut demand),
-            Buffer::Fixed(&mut output),
+            Buffer::Growing(&mut demand),
+            Buffer::Growing(&mut output),
             |country, region| {
                 calls.push((country, region));
                 match region {

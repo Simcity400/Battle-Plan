@@ -24,15 +24,6 @@ pub fn walk(
     memory: &impl Memory,
     base: usize,
     manager: usize,
-    output: &mut [cscript_flag::Row],
-) -> Outcome {
-    walk_buffer(memory, base, manager, crate::walk::Buffer::Fixed(output))
-}
-
-pub fn walk_growing(
-    memory: &impl Memory,
-    base: usize,
-    manager: usize,
     output: &mut Vec<cscript_flag::Row>,
 ) -> Outcome {
     walk_buffer(memory, base, manager, crate::walk::Buffer::Growing(output))
@@ -211,7 +202,7 @@ mod tests {
         bytes
     }
 
-    fn sample(bytes: &[u8], output: &mut [cscript_flag::Row]) -> Outcome {
+    fn sample(bytes: &[u8], output: &mut Vec<cscript_flag::Row>) -> Outcome {
         walk(
             &SliceMemory {
                 base: MANAGER,
@@ -271,7 +262,7 @@ mod tests {
                 }
             );
             assert_eq!(
-                walk_growing(&memory, BASE, MANAGER, &mut rows),
+                walk(&memory, BASE, MANAGER, &mut rows),
                 Outcome::Rows {
                     len: count as usize
                 }
@@ -283,7 +274,7 @@ mod tests {
     #[test]
     fn preserves_independent_signed_fields_and_full_token_identity() {
         let bytes = fixture(&[u32::MAX, 0]);
-        let mut output = [cscript_flag::Row::default(); 2];
+        let mut output = vec![cscript_flag::Row::default(); 2];
         assert_eq!(sample(&bytes, &mut output), Outcome::Rows { len: 2 });
         assert_eq!(
             output[0],
@@ -298,23 +289,9 @@ mod tests {
     }
 
     #[test]
-    fn truncation_does_not_touch_unreadable_omitted_rows() {
-        let bytes = fixture(&[3, 4, 5]);
-        let mut output = [cscript_flag::Row::default(); 1];
-        assert_eq!(
-            sample(&bytes[..0x70], &mut output),
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 2
-            }
-        );
-        assert_eq!(output[0].token, 3);
-    }
-
-    #[test]
     fn rejects_duplicate_tokens_and_wrong_row_types() {
         let mut bytes = fixture(&[7, 7]);
-        let mut output = [cscript_flag::Row::default(); 2];
+        let mut output = vec![cscript_flag::Row::default(); 2];
         assert_eq!(
             sample(&bytes, &mut output),
             Outcome::Unavailable {
@@ -369,7 +346,7 @@ mod tests {
             bytes: &bytes,
         };
         let census = crate::read_census::ReadCensus::new(&source);
-        let mut rows = [cscript_flag::Row::default(); ROWS];
+        let mut rows = vec![cscript_flag::Row::default(); ROWS];
         assert_eq!(
             walk(&census, BASE, MANAGER, &mut rows),
             Outcome::Rows { len: ROWS }
@@ -408,16 +385,16 @@ mod tests {
     fn distinguishes_empty_invalid_and_unreadable_managers() {
         let mut bytes = fixture(&[]);
         bytes[8..16].fill(0);
-        assert_eq!(sample(&bytes, &mut []), Outcome::Rows { len: 0 });
+        assert_eq!(sample(&bytes, &mut Vec::new()), Outcome::Rows { len: 0 });
         bytes[20..24].copy_from_slice(&(-1_i32).to_le_bytes());
         assert_eq!(
-            sample(&bytes, &mut []),
+            sample(&bytes, &mut Vec::new()),
             Outcome::Unavailable {
                 reason: "flag manager header invalid"
             }
         );
         assert_eq!(
-            sample(&bytes[..23], &mut []),
+            sample(&bytes[..23], &mut Vec::new()),
             Outcome::Unavailable {
                 reason: "flag manager header unreadable"
             }

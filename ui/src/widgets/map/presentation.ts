@@ -9,3 +9,9 @@ export function mapPresentationMatches(state: DashboardMapState | null, desired:
   if (state.sourceId !== desired.sourceId || state.revision !== desired.revision || state.branchId !== desired.branchId) return false;
   return desired.playing || state.hour === desired.hour && state.sequence >= desired.sequence;
 }
+
+/** Whether the map has a frame on screen, of any hour: the viewer keeps presenting it while it builds the next, so the
+ * widget labels it as not yet current rather than covering it with a loading placeholder. */
+export function mapFrameOnScreen(state: DashboardMapState | null): boolean {
+  return !!state && !state.error && state.hour != null && state.branchId != null;
+}

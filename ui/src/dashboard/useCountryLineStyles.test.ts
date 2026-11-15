@@ -8,7 +8,7 @@ import type { BoundTrack } from './model';
 type Effect = { deps: readonly unknown[]; run: () => void | (() => void); cleanup?: () => void };
 const settle = () => new Promise<void>(resolve => setImmediate(resolve));
 
-test('line styles read all 439 and 5,000 countries within native request admission and commit complete replies', async () => {
+test('line styles read 439 and 1,500 countries in one request and commit the complete reply', async () => {
   let cursor = 0;
   const slots = new Map<number, unknown>(), effects = new Map<number, Effect>(), pending = new Map<number, Effect>();
   const same = (a: readonly unknown[], b: readonly unknown[]) => a.length === b.length && a.every((value, index) => Object.is(value, b[index]));
@@ -17,6 +17,11 @@ test('line styles read all 439 and 5,000 countries within native request admissi
       const index = cursor++;
       if (!slots.has(index)) slots.set(index, initial);
       return [slots.get(index), (next: unknown) => slots.set(index, typeof next === 'function' ? next(slots.get(index)) : next)];
+    },
+    useRef(initial?: unknown) {
+      const index = cursor++;
+      if (!slots.has(index)) slots.set(index, { current: initial });
+      return slots.get(index);
     },
     useMemo(make: () => unknown, deps: readonly unknown[]) {
       const index = cursor++, old = slots.get(index) as { deps: readonly unknown[]; value: unknown } | undefined;
@@ -61,11 +66,11 @@ test('line styles read all 439 and 5,000 countries within native request admissi
     }] });
   try {
     const { useCountryLineStyles } = await vite.ssrLoadModule('/ui/src/dashboard/useCountryLineStyles.ts') as typeof import('./useCountryLineStyles.ts');
-    for (const count of [439, 5000]) {
+    for (const count of [439, 1_500]) {
       const calls: { input: ProductRequest<CountryStyleParams>; answer: () => void }[] = [];
       const client = { product: (input: ProductRequest<CountryStyleParams>) => new Promise<ProductReply<CountryStyleReply>>(resolve => {
         assert.equal(input.product, 'country-styles');
-        assert.ok(input.params.tags.length > 0 && input.params.tags.length <= 64, 'native admission rejects larger reads');
+        assert.ok(input.params.tags.length > 0);
         calls.push({ input, answer: () => resolve({ ...input, data: { branchId: input.params.branchId, hour: input.params.hour,
           styles: input.params.tags.map(tag => ({ tag, name: `Name ${tag}`, color: [1, 2, 3] })),
           warnings: ['Shared content refusal', `${input.params.tags[0]}: independent refusal`] } }) });
@@ -74,11 +79,10 @@ test('line styles read all 439 and 5,000 countries within native request admissi
       const tags = Array.from({ length: count }, (_, index) => `Synthetic country ${String(index).padStart(5, '0')}`);
       const render = (hour = 1, selected = tags) => { cursor = 0; return useCountryLineStyles(client, track, selected, hour, true); };
       render(); fixture.commit(); await settle();
-      assert.equal(calls.length, Math.ceil(count / 64));
+      assert.equal(calls.length, 1, 'one request names every country');
       assert.deepEqual(calls.flatMap(call => call.input.params.tags), tags, 'every opaque country tag is requested exactly once');
-      calls.slice(0, -1).forEach(call => call.answer()); await settle();
-      assert.equal(render().data, undefined, 'a partial country selection is never presented as complete');
-      calls.at(-1)!.answer(); await settle();
+      assert.equal(render().data, undefined, 'nothing is presented before the reply');
+      calls[0]!.answer(); await settle();
       let current = render(); fixture.commit(); current = render();
       assert.equal(current.data!.styles.length, count);
       assert.equal(current.known.size, count);

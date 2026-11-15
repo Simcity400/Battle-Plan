@@ -183,3 +183,92 @@ pub(super) fn compare(
     report.compared("DivisionHistory", rows.len());
     Ok(())
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use replay_data::rows::TableRows;
+    use replay_frame::frame::TableView;
+    use std::sync::Arc;
+
+    /// The game grows its latest career entry's provinces in place: a recording that kept the
+    /// entry as first written differs from the save.
+    #[test]
+    fn a_latest_career_entry_short_of_a_province_the_game_added_in_place_is_named() {
+        let (mut frame, mut saved, ..) = crate::fixtures::fixture();
+        let id = (7_u64 << 32) | 51;
+        let hour = frame.hour;
+        let entry = |provinces: Vec<u32>| installed_content_save::DivisionHistoryEntry {
+            name: Some(b"subject".to_vec()),
+            custom_name: None,
+            kind: 11,
+            target_country: b"---".to_vec(),
+            hour,
+            medal: None,
+            medal_count: false,
+            inherit: false,
+            multiplier: None,
+            orders: None,
+            provinces,
+            sunk_ship: None,
+        };
+        let zero = || installed_content_save::Decimal::parse(b"0").unwrap();
+        saved.divisions.insert(
+            id,
+            installed_content_save::Division {
+                id,
+                roster_owner: b"GER".to_vec(),
+                logical_owner: b"GER".to_vec(),
+                expeditionary_owner: None,
+                province: None,
+                template: None,
+                alternate_template: None,
+                separate_counter: false,
+                hit_points: zero(),
+                organisation: zero(),
+                country_intel: Vec::new(),
+                presentation: installed_content_save::DivisionPresentation {
+                    history: Some(installed_content_save::DivisionHistory {
+                        amount: None,
+                        career: vec![entry(vec![5]), entry(vec![9263, 362])],
+                        awards: Vec::new(),
+                    }),
+                    ..Default::default()
+                },
+            },
+        );
+        let career = |ordinal: u32, provinces: Vec<u32>| {
+            Arc::new(DivisionHistoryRow {
+                division: id,
+                list: DivisionHistoryRow::CAREER,
+                ordinal,
+                available: 1,
+                name: b"subject".to_vec(),
+                kind: 11,
+                hour,
+                multiplier: 100_000,
+                provinces,
+                ..Default::default()
+            })
+        };
+        let mut differences = |latest: Vec<u32>| {
+            *frame.tables[TableId::DivisionHistory.index()] =
+                TableView::Complete(TableRows::DivisionHistory(vec![
+                    Arc::new(DivisionHistoryRow {
+                        division: id,
+                        available: 1,
+                        ..Default::default()
+                    }),
+                    career(0, vec![5]),
+                    career(1, latest),
+                ]));
+            let mut report = Report::default();
+            compare(&frame, &saved, &BTreeMap::new(), &mut report).unwrap();
+            report.differences
+        };
+        let short = differences(vec![9263]);
+        assert_eq!(short.len(), 1, "{short:?}");
+        assert!(short[0].contains("[1].location"), "{short:?}");
+        let whole = differences(vec![9263, 362]);
+        assert!(whole.is_empty(), "{whole:?}");
+    }
+}

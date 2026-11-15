@@ -13,6 +13,8 @@ use viewer_foundation::map::test_support::test_tga_rgba8;
 #[derive(Default)]
 pub(super) struct Sprite {
     pub(super) origin: [f32; 2],
+    /// The column priority its quads' layers were ranked with.
+    pub(super) priority: i8,
     pub(super) batch: Batch,
     pub(super) presented: Presented,
 }

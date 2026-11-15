@@ -662,3 +662,67 @@ fn hook_cost_map_events() {
         rejected - native
     );
 }
+
+/// The spool writes nothing for three hours while each publishes more events than a lane
+/// holds: every event is kept in order and every interval is complete.
+#[test]
+fn a_burst_past_the_lanes_with_hours_in_flight_keeps_every_event_and_completes_every_interval() {
+    use replay_data::rows::MapEventCriticalBombardment;
+    let _lock = LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    reset();
+    let family = Family::CriticalShoreBombardment;
+    let world = crate::world_lifetime::generation();
+    drain(1);
+    let missed = hooks::missed(family);
+    // 29-byte frames: a 64 KiB lane holds 2,259 of them unwritten.
+    let per_hour = 3_000_u32;
+    let mut queued = Vec::new();
+    let mut province = 0_u32;
+    for hour in 2..5 {
+        let mut expected = Vec::new();
+        for _ in 0..per_hour {
+            province += 1;
+            // As the callback does: a refusal is counted and marks the interval.
+            match hooks::publish_in_world(family, hour, world, 4, |writer| {
+                writer.u32(province);
+                Ok(())
+            }) {
+                Ok(sequence) => expected.push((sequence, province)),
+                Err(refusal) => hooks::refuse_for_tests(family, refusal),
+            }
+        }
+        let sealed = interval::seal(hour, Some(world));
+        let mut assembled = lanes::Assembled::default();
+        lanes::assemble(sealed.seal, &mut assembled).unwrap();
+        let row = interval::row(&sealed, &assembled).unwrap();
+        assert_eq!(expected.len(), per_hour as usize, "hour {hour}");
+        assert_eq!(
+            row.events
+                .iter()
+                .map(|event| (event.sequence, event.payload.clone()))
+                .collect::<Vec<_>>(),
+            expected
+                .iter()
+                .map(|&(sequence, province)| (
+                    sequence,
+                    MapEventPayload::CriticalShoreBombardment(MapEventCriticalBombardment {
+                        province
+                    })
+                ))
+                .collect::<Vec<_>>(),
+            "hour {hour}"
+        );
+        assert!(row.health[family.index()].complete, "hour {hour}");
+        assembled.admitted();
+        queued.push(assembled);
+    }
+    assert_eq!(hooks::missed(family), missed);
+    assert!(lanes::capacity().spill_pending > 0);
+    for assembled in queued {
+        assembled.commit();
+    }
+    assert_eq!(lanes::capacity().spill_pending, 0);
+    assert!(drain(5).events.is_empty());
+}

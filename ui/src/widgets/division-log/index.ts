@@ -1,8 +1,8 @@
 import type { WidgetRenderer } from '../../dashboard/definitions';
 import { useProduct } from '../../dashboard/products';
-import type { DivisionLogManifestReply } from '../../generated/dashboard';
 import { templateToken, validateDivisionManifest } from './divisionLogData';
 import DivisionLogWidget from './DivisionLogWidget';
+import type { DivisionLogManifestReply } from '../../generated/dashboard';
 
 export default { render: DivisionLogWidget, useOptionChoices: (widget, runtime) => {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);

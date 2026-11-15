@@ -9,14 +9,14 @@ import type { CountryFlagLook } from '../../components/CountryFlag';
 import { revealRow } from '../../components/countryList';
 import { scheduler } from '../scheduler';
 import type { FrameInfo, FrameTask } from '../scheduler';
-import { toLocal, watchCanvasSize } from '../surface';
+import { drawingSurface, sizeCanvas, toLocal, watchCanvasSize } from '../surface';
 import { readTokens, subscribeTokens } from '../tokens';
 import type { ChartTokens } from '../tokens';
 import { fitTooltip, hideTooltip, showTooltip, tooltipStore, tooltipText } from '../tooltip';
 import type { TooltipContent } from '../tooltip';
 import { formatAxisValue } from '../valueAxis';
 import { ellipsise } from '../labels';
-import { drawDateOverlay, drawRaceBar, drawRaceGrid, FLAG, MIN_LABEL, NAME_PAD, NAME_X, VALUE_GAP, VALUE_PAD } from './draw';
+import { drawDateOverlay, drawRaceBar, drawRaceEmpty, drawRaceGrid, FLAG, MIN_LABEL, NAME_PAD, NAME_X, VALUE_GAP, VALUE_PAD } from './draw';
 import { keyedEntry, paintOrder, raceHeight, raceLayout, raceMoving, raceText, rowAt, rowCentre, rowInView, rowSeen, selectRaceRow, stepRace } from './race';
 import type { RaceItem, RaceLayout, RaceRow, RaceState } from './race';
 import type { PlaybackController } from '../../dashboard/playback';
@@ -105,6 +105,8 @@ export default function RaceChart(props: RaceChartProps) {
   latest.current = props;
   const motionNow = useMotionNow();
   const task = useRef<FrameTask | null>(null);
+  // Whether the next frame draws whatever it shows: anything but the live entries woke it.
+  const forced = useRef(true);
   // Who drives the hover: the pointer, or the keyboard's entry (read out).
   const hover = useRef<{ pointer: Pointer | null; keyed: string | null; menuKey: boolean }>({ pointer: null, keyed: null, menuKey: false });
   const shown = useRef<{ layout: RaceLayout; rows: readonly RaceRow[]; items: readonly RaceItem[]; min: number; max: number; height: number;
@@ -125,7 +127,7 @@ export default function RaceChart(props: RaceChartProps) {
 
   useEffect(() => {
     const element = canvas.current!;
-    const context = element.getContext('2d')!;
+    const paper = drawingSurface(element), context = paper.context!;
     let tokens: ChartTokens = readTokens();
     let state: RaceState | null = null;
     let stateKey = props.resetKey;
@@ -137,6 +139,17 @@ export default function RaceChart(props: RaceChartProps) {
     // font: a long list is measured once per moment, not in every frame.
     let measured: { items: readonly RaceItem[]; name: RaceChartProps['name']; nameSamples: RaceChartProps['nameSamples']; tokens: ChartTokens } | null = null;
     const nameWidths = new Map<string, number>();
+    // The rows of a live race whose names are measured, while its names and theme stay the same.
+    const namedKeys = new Set<string>();
+    // Each value label's width in the value font, while the theme holds.
+    const labelWidths = new Map<string, number>();
+    let labelTokens: ChartTokens | null = null;
+    // Digits of one width make a label's width its shape's, each digit read as 0.
+    let tabular: boolean | null = null;
+    // What the last frame drew: a live frame with the same picture draws nothing.
+    let painted: unknown[] | null = null;
+    // Each name as it fits the name column, made once per name and column width.
+    const fitted: { width: number; tokens: ChartTokens | null; names: Map<string, string> } = { width: -1, tokens: null, names: new Map() };
     let spokenItems: readonly RaceItem[] | null = null, spokenAt = -Infinity, extentRows = -1;
     let tooltipFor: { key: string; item: RaceItem; props: RaceChartProps; content: TooltipContent | null } | null = null;
 
@@ -150,13 +163,11 @@ export default function RaceChart(props: RaceChartProps) {
       }
       const { layoutWidth, layoutHeight, backing: size } = surface.read();
       if (!layoutWidth || !layoutHeight) return false;
-      if (element.width !== size.width) element.width = size.width;
-      if (element.height !== size.height) element.height = size.height;
+      sizeCanvas(paper.canvas, size.width, size.height);
       context.setTransform(size.scaleX, 0, 0, size.scaleY, 0, 0);
 
       const tau = easeTau(tokens.motion, motionNow(p.hoursPerSecond), tokens.reducedMotion);
       const items = p.live ? p.live.items() : p.items;
-      state = stepRace(state, items, info.now, info.dt, tau);
       // The scroll reaches only the entries there are.
       if (p.live && items.length !== extentRows && extent.current) { extentRows = items.length; extent.current.style.height = `calc(${raceHeight(items.length)}px - 100%)`; }
       if (p.live && items !== spokenItems && (info.now - spokenAt >= SPOKEN_MS || !p.live.clock.getSnapshot().playing)) {
@@ -165,29 +176,37 @@ export default function RaceChart(props: RaceChartProps) {
         if (ranked.current) ranked.current.textContent = raceText(items, p.name) || p.empty || '';
       }
       // Columns fitted to the widest name and value seen.
-      if (columns.key !== (p.resetKey ?? '')) { columns = { key: p.resetKey ?? '', label: MIN_LABEL, value: 0 }; measured = null; }
+      if (columns.key !== (p.resetKey ?? '')) { columns = { key: p.resetKey ?? '', label: MIN_LABEL, value: 0 }; measured = null; namedKeys.clear(); }
       if (!measured || measured.items !== items || measured.name !== p.name || measured.nameSamples !== p.nameSamples || measured.tokens !== tokens) {
-        if (p.remoteRows || measured && measured.tokens !== tokens) nameWidths.clear();
-        context.font = font(tokens, tokens.fontSize.body, LABEL_WEIGHT);
+        if (p.remoteRows || measured && measured.tokens !== tokens) { nameWidths.clear(); namedKeys.clear(); }
+        if (measured && (measured.name !== p.name || measured.nameSamples !== p.nameSamples)) namedKeys.clear();
+        let fontSet = false;
         if (items.length) for (const name of p.nameSamples ?? []) {
+          if (!fontSet) { context.font = font(tokens, tokens.fontSize.body, LABEL_WEIGHT); fontSet = true; }
           let width = nameWidths.get(name);
           if (width === undefined) nameWidths.set(name, width = context.measureText(name).width);
           columns.label = Math.max(columns.label, NAME_X + width + NAME_PAD);
         }
         for (const item of items) {
+          // A live race measures a row's name once: its values move every frame, its rows rarely.
+          if (p.live) { if (namedKeys.has(item.key)) continue; namedKeys.add(item.key); }
+          if (!fontSet) { context.font = font(tokens, tokens.fontSize.body, LABEL_WEIGHT); fontSet = true; }
           const name = p.name(item.key, item);
           let width = nameWidths.get(name);
           if (width === undefined) nameWidths.set(name, width = context.measureText(name).width);
           columns.label = Math.max(columns.label, NAME_X + width + NAME_PAD);
         }
-        context.font = font(tokens, tokens.fontSize.body, VALUE_WEIGHT);
-        for (const item of items) columns.value = Math.max(columns.value, context.measureText(item.label).width + VALUE_GAP + VALUE_PAD);
+        // A live race's values move every frame: their labels are measured as they are drawn, below.
+        if (!p.live) context.font = font(tokens, tokens.fontSize.body, VALUE_WEIGHT);
+        if (!p.live) for (const item of items) columns.value = Math.max(columns.value, context.measureText(item.label).width + VALUE_GAP + VALUE_PAD);
         measured = { items, name: p.name, nameSamples: p.nameSamples, tokens };
       }
       const labelWidth = Math.min(columns.label, Math.max(MIN_LABEL, layoutWidth * MAX_LABEL_SHARE));
       const remote = p.remoteRows;
       // Rows are sized for the top N, so they keep their height while entries come and go.
       const layout = raceLayout(layoutWidth, layoutHeight, Math.max(1, p.slots, remote?.total ?? items.length), labelWidth, Math.max(columns.value, 24), scrollTop.current, remote?.total ?? items.length);
+      state = stepRace(state, items, info.now, info.dt, tau, undefined,
+        remote ? undefined : { from: (layout.view.top - layout.top) / layout.slot, to: (layout.view.bottom - layout.top) / layout.slot });
       const rows = remote ? state.rows.map(row => ({ ...row, y: row.y + remote.offset, target: row.target + remote.offset })) : state.rows;
       const min = remote ? Math.min(0, remote.min) * 1.06 : state.min;
       const max = remote ? Math.max(1, remote.max) * 1.06 : state.max;
@@ -205,19 +224,23 @@ export default function RaceChart(props: RaceChartProps) {
       shown.current = { layout, rows, items, min, max, height: layoutHeight,
         owner: remote?.owner ?? p.pickOwner, resetKey: p.resetKey };
 
-      context.clearRect(0, 0, layoutWidth, layoutHeight);
       const overlay = p.live ? p.live.overlay() : p.dateOverlay;
+      // The live picture is its rows in view, as drawn, with everything around them.
+      const inView = rows.filter(row => rowInView(layout, rowCentre(layout, row.y)));
+      const pointed = hover.current.pointer ?? hover.current.keyed;
+      const picture: unknown[] = [layoutWidth, layoutHeight, size.width, size.height, layout.top, layout.left, layout.right, min, max, tokens, overlay,
+        items.length === 0, pointed, p.name, p.countryFlag, p.flag];
+      for (const row of inView) picture.push(row.key, row.y, row.alpha, row.widths, row.inset, row.item.label, row.item.segments);
+      if (p.live && !forced.current && painted && painted.length === picture.length && painted.every((value, at) => Object.is(value, picture[at]))) {
+        shown.current = { layout, rows, items, min, max, height: layoutHeight, owner: remote?.owner ?? p.pickOwner, resetKey: p.resetKey };
+        return raceMoving(state);
+      }
+      painted = picture; forced.current = false;
+      if (labelTokens !== tokens) { labelWidths.clear(); labelTokens = tokens; tabular = null; }
+      context.clearRect(0, 0, layoutWidth, layoutHeight);
       if (overlay) drawDateOverlay(context, layout, tokens, overlay);
       drawRaceGrid(context, layout, tokens, min, max, p.formatTick ?? formatAxisValue);
-      if (!items.length && (!remote || remote.total === 0) && p.empty) {
-        context.save();
-        context.font = font(tokens, tokens.fontSize.body);
-        context.fillStyle = tokens.muted;
-        context.textAlign = 'center';
-        context.textBaseline = 'middle';
-        context.fillText(p.empty, (layout.left + layout.right) / 2, (layout.view.top + layout.view.bottom) / 2, layout.right - layout.left);
-        context.restore();
-      }
+      if (!items.length && (!remote || remote.total === 0) && p.empty) drawRaceEmpty(context, layout, tokens, p.empty);
 
       // The row the hover is about: under the pointer, else the one the keys reached.
       // The keys let go of a row scrolled out of view, so its tooltip goes and the keys
@@ -231,19 +254,24 @@ export default function RaceChart(props: RaceChartProps) {
       context.beginPath();
       context.rect(0, layout.view.top - 4, layoutWidth, layout.view.bottom - layout.view.top + 8);
       context.clip();
-      // Where each bar's value label ends, for the keyboard's tooltip.
+      // Where each bar's value label ends, for the keyboard's tooltip, and the widest label drawn.
       const ends = new Map<string, number>();
+      let widest = 0;
       // Lower rows first, so a row moving up passes over the others; hovering reads
       // the same order backwards (`rowAt`).
-      for (const row of paintOrder(rows)) {
+      // Rows in view, lower rows first, so a row moving up passes over the others' bars; hovering reads the same
+      // order backwards (`rowAt`). Drawn in passes, flags, names, bars, then values, so the font is set twice a frame,
+      // not twice a row: names and bars hold their own columns, and a value is never hidden under a passing bar.
+      const drawn = paintOrder(inView);
+      const alpha = (row: RaceRow) => Math.max(0, Math.min(1, row.alpha));
+      for (const row of drawn) {
         const centre = rowCentre(layout, row.y);
-        if (!rowInView(layout, centre)) continue;
-        context.globalAlpha = Math.max(0, Math.min(1, row.alpha));
+        context.globalAlpha = alpha(row);
         if (row === hovered) {
           context.fillStyle = tokens.text;
           context.globalAlpha *= 0.05;
           context.fillRect(0, centre - layout.slot / 2, layoutWidth, layout.slot);
-          context.globalAlpha = Math.max(0, Math.min(1, row.alpha));
+          context.globalAlpha = alpha(row);
         }
         const countryFlag = p.countryFlag?.(row.key, row.item);
         if (countryFlag) drawCountryFlag(context, countryFlag, FLAG.x, centre - FLAG.height / 2, FLAG.width, FLAG.height, tokens, wake);
@@ -252,19 +280,45 @@ export default function RaceChart(props: RaceChartProps) {
           const image = url ? canvasImage(url, wake) : null;
           if (image) context.drawImage(image, FLAG.x, centre - FLAG.height / 2, FLAG.width, FLAG.height);
         }
-        context.fillStyle = tokens.text;
-        context.font = font(tokens, tokens.fontSize.body, LABEL_WEIGHT);
-        context.textAlign = 'left';
-        context.textBaseline = 'middle';
-        context.fillText(ellipsise(p.name(row.key, row.item), layout.left - NAME_X - NAME_PAD, text => context.measureText(text).width), NAME_X, centre);
-        const tip = drawRaceBar(context, layout, tokens, row, min, max);
-        context.fillStyle = tokens.text;
-        context.font = font(tokens, tokens.fontSize.body, VALUE_WEIGHT);
-        context.fillText(row.item.label, tip + VALUE_GAP, centre);
-        ends.set(row.key, tip + VALUE_GAP + context.measureText(row.item.label).width);
       }
+      context.fillStyle = tokens.text;
+      context.font = font(tokens, tokens.fontSize.body, LABEL_WEIGHT);
+      context.textAlign = 'left';
+      context.textBaseline = 'middle';
+      const nameWidth = layout.left - NAME_X - NAME_PAD;
+      if (fitted.width !== nameWidth || fitted.tokens !== tokens) { fitted.names.clear(); fitted.width = nameWidth; fitted.tokens = tokens; }
+      for (const row of drawn) {
+        const name = p.name(row.key, row.item);
+        let shown = fitted.names.get(name);
+        if (shown === undefined) {
+          if (fitted.names.size > 4096) fitted.names.clear();
+          fitted.names.set(name, shown = ellipsise(name, nameWidth, text => context.measureText(text).width));
+        }
+        context.globalAlpha = alpha(row);
+        context.fillText(shown, NAME_X, rowCentre(layout, row.y));
+      }
+      const tips: number[] = [];
+      for (const row of drawn) { context.globalAlpha = alpha(row); tips.push(drawRaceBar(context, layout, tokens, row, min, max)); }
+      context.fillStyle = tokens.text;
+      context.font = font(tokens, tokens.fontSize.body, VALUE_WEIGHT);
+      drawn.forEach((row, at) => {
+        context.globalAlpha = alpha(row);
+        context.fillText(row.item.label, tips[at] + VALUE_GAP, rowCentre(layout, row.y));
+        tabular ??= new Set([...'0123456789'].map(digit => context.measureText(digit).width)).size === 1;
+        const shape = tabular ? row.item.label.replace(/[0-9]/g, '0') : row.item.label;
+        let labelWidth = labelWidths.get(shape);
+        if (labelWidth === undefined) {
+          if (labelWidths.size > 4096) labelWidths.clear();
+          labelWidths.set(shape, labelWidth = context.measureText(row.item.label).width);
+        }
+        ends.set(row.key, tips[at] + VALUE_GAP + labelWidth);
+        widest = Math.max(widest, labelWidth + VALUE_GAP + VALUE_PAD);
+      });
       context.restore();
       context.globalAlpha = 1;
+      // A live label wider than its column widens it, and the frame is drawn again to fit.
+      const grew = !!p.live && widest > columns.value;
+      if (grew) columns.value = widest;
 
       const heldTooltip = tooltipStore.get();
       if (hovered && p.tooltip && (pointer || keyIntent.current || heldTooltip == null || heldTooltip.owner === owner)) {
@@ -289,11 +343,11 @@ export default function RaceChart(props: RaceChartProps) {
         if (text !== spokenText.current) { spokenText.current = text; setSpoken(text); }
       } else { tooltipFor = null; hideTooltip(owner); }
       keyIntent.current = false;
-      return raceMoving(state);
+      return raceMoving(state) || grew;
     };
     const current: FrameTask = { frame: draw };
     task.current = current;
-    const wake = () => scheduler.wake(current);
+    const wake = () => { forced.current = true; scheduler.wake(current); };
     const remove = scheduler.add(current, element);
     const unsubscribe = subscribeTokens(next => { tokens = next; wake(); });
     const local = (event: PointerEvent | MouseEvent): Pointer => ({
@@ -341,7 +395,7 @@ export default function RaceChart(props: RaceChartProps) {
     // An inactive chart no longer draws, so it must not leave its tooltip on screen.
     if (!props.active) hideTooltip(owner);
   }, [props.active, owner]);
-  useEffect(() => { if (task.current) scheduler.wake(task.current); });
+  useEffect(() => { forced.current = true; if (task.current) scheduler.wake(task.current); });
   // A live chart wakes when the clock's frame brings other entries, or entries or labels land.
   const live = props.live;
   useEffect(() => {
@@ -355,7 +409,7 @@ export default function RaceChart(props: RaceChartProps) {
     return () => { for (const stop of stops) stop(); };
   }, [live]);
 
-  const wake = () => { if (task.current) scheduler.wake(task.current); };
+  const wake = () => { forced.current = true; if (task.current) scheduler.wake(task.current); };
   const clearKeyed = () => {
     pendingKey.current = null;
     hover.current = { ...hover.current, keyed: null };

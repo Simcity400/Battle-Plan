@@ -214,16 +214,16 @@ fn unit_order_lookahead_keeps_chunk_boundaries_duplicates_capacity_and_primary_r
             expected.iter().map(|&(_, len, _)| len).sum::<usize>(),
             68 + 72 * total + 26 * usize::from(total != 0)
         );
-        for (rows, capacity) in [(1, total), (0, total), (1, total.saturating_sub(1))] {
+        for (rows, capacity) in [(1, total)] {
             let memory = Observed {
                 bytes: &bytes,
                 reads: RefCell::new(Vec::new()),
                 fault_at: None,
                 change_at: None,
             };
-            let mut output = [UnitOrderRow::default(); 1];
+            let mut output = vec![UnitOrderRow::default(); rows];
             let mut handles = vec![u64::MAX; capacity];
-            let result = walk_unit_order(&memory, 0, STATE, &mut output[..rows], &mut handles);
+            let result = walk_unit_order(&memory, 0, STATE, &mut output, &mut handles);
             assert_eq!(result.required, total);
             let admitted = rows != 0 && capacity >= total;
             let observed: Vec<_> = if admitted {
@@ -277,7 +277,7 @@ fn unit_order_empty_headers_keep_capacity_pointer_and_identity_validation() {
             [i32::MAX as u32 + 1, 0],
             [0, u32::MAX],
         ] {
-            for rows in [0, 1] {
+            for rows in [1] {
                 let mut bytes = fixture([0, 0]);
                 for (lane, offset) in [OCCUPANTS, NAVAL_OCCUPANTS].into_iter().enumerate() {
                     put(&mut bytes, PROVINCE + offset, &data.to_le_bytes());
@@ -293,8 +293,8 @@ fn unit_order_empty_headers_keep_capacity_pointer_and_identity_validation() {
                     fault_at: None,
                     change_at: None,
                 };
-                let mut output = [UnitOrderRow::default(); 1];
-                let result = walk_unit_order(&memory, 0, STATE, &mut output[..rows], &mut []);
+                let mut output = vec![UnitOrderRow::default(); rows];
+                let result = walk_unit_order(&memory, 0, STATE, &mut output, &mut Vec::new());
                 assert_eq!(*memory.reads.borrow(), expected);
                 assert_eq!((result.len, result.required), (0, 0));
                 let valid = capacities.into_iter().all(|n| n <= i32::MAX as u32);
@@ -326,7 +326,7 @@ fn unit_order_empty_headers_keep_capacity_pointer_and_identity_validation() {
             fault_at: Some(fault_at),
             change_at: None,
         };
-        let result = walk_unit_order(&memory, 0, STATE, &mut [], &mut []);
+        let result = walk_unit_order(&memory, 0, STATE, &mut Vec::new(), &mut Vec::new());
         assert_eq!(*memory.reads.borrow(), expected[..=fault_at]);
         assert_eq!(
             result.outcome,
@@ -342,7 +342,7 @@ fn unit_order_empty_headers_keep_capacity_pointer_and_identity_validation() {
             fault_at: None,
             change_at: Some((identity_read, 0)),
         };
-        let result = walk_unit_order(&memory, 0, STATE, &mut [], &mut []);
+        let result = walk_unit_order(&memory, 0, STATE, &mut Vec::new(), &mut Vec::new());
         assert_eq!(*memory.reads.borrow(), expected);
         assert_eq!(
             result.outcome,
@@ -402,7 +402,7 @@ fn unit_order_strided_census_keeps_batch_order_short_tails_and_failure_prefixes(
                 change_at: None,
             };
             let mut output = vec![UnitOrderRow::default(); count];
-            let result = walk_unit_order(&memory, 0, STATE, &mut output, &mut []);
+            let result = walk_unit_order(&memory, 0, STATE, &mut output, &mut Vec::new());
             assert_eq!((result.len, result.required), (0, 0));
             if let Some(at) = fault_at {
                 assert_eq!(*memory.reads.borrow(), addresses[..=at]);
@@ -447,7 +447,7 @@ fn unit_order_lookahead_keeps_every_failed_copy_prefix_and_partial_handle_count(
             fault_at: Some(fault_at),
             change_at: None,
         };
-        let mut output = [UnitOrderRow::default(); 1];
+        let mut output = vec![UnitOrderRow::default(); 1];
         let mut handles = vec![u64::MAX; all_handles.len()];
         let result = walk_unit_order(&memory, 0, STATE, &mut output, &mut handles);
         assert_eq!(*memory.reads.borrow(), addresses[..=fault_at]);
@@ -527,8 +527,8 @@ fn unit_order_lookahead_retains_class_registry_and_backlink_short_circuits() {
             &memory,
             0,
             STATE,
-            &mut [UnitOrderRow::default(); 1],
-            &mut [0; 72],
+            &mut vec![UnitOrderRow::default(); 1],
+            &mut vec![0; 72],
         );
         assert_eq!(result.outcome, Outcome::Unavailable { reason });
         assert_eq!(*memory.reads.borrow(), addresses[..=last]);
@@ -556,8 +556,8 @@ fn unit_order_lookahead_retains_class_registry_and_backlink_short_circuits() {
         &memory,
         0,
         STATE,
-        &mut [UnitOrderRow::default(); 1],
-        &mut [0; 72],
+        &mut vec![UnitOrderRow::default(); 1],
+        &mut vec![0; 72],
     );
     assert_eq!(
         result.outcome,
@@ -583,8 +583,8 @@ fn unit_order_lookahead_retains_class_registry_and_backlink_short_circuits() {
         &memory,
         0,
         STATE,
-        &mut [UnitOrderRow::default(); 1],
-        &mut [0; 72],
+        &mut vec![UnitOrderRow::default(); 1],
+        &mut vec![0; 72],
     );
     assert_eq!(
         result.outcome,
@@ -608,8 +608,8 @@ fn unit_order_reacquires_changed_registry_header_on_each_walk() {
             },
             0,
             STATE,
-            &mut [UnitOrderRow::default(); 1],
-            &mut [0; 1],
+            &mut vec![UnitOrderRow::default(); 1],
+            &mut vec![0; 1],
         )
         .outcome
     };
@@ -652,7 +652,7 @@ fn worker_province_order_population_jump_grows_from_original_headers() {
     );
     let (mut rows, mut handles) = (Vec::new(), Vec::new());
     let actual =
-        walk_unit_order_growing_with_land(&grown, 0, STATE, &mut rows, &mut handles, |_, _| Ok(()));
+        walk_unit_order_with_land(&grown, 0, STATE, &mut rows, &mut handles, |_, _| Ok(()));
     assert_eq!(actual, expected);
     assert_eq!(actual.outcome, Outcome::Rows { len: 1 });
     assert_eq!(rows[..1], expected_rows);
@@ -679,7 +679,7 @@ fn census_divisions_take_identity_and_backlink_from_the_census_without_reads() {
     let plain = observed(&bytes);
     let (mut rows, mut handles) = (Vec::new(), Vec::new());
     let mut plain_land = Vec::new();
-    let expected = walk_unit_order_growing_with_land(
+    let expected = walk_unit_order_with_land(
         &plain,
         0,
         STATE,
@@ -698,7 +698,7 @@ fn census_divisions_take_identity_and_backlink_from_the_census_without_reads() {
     let census = observed(&bytes);
     let (mut known_rows, mut known_handles) = (Vec::new(), Vec::new());
     let mut land = Vec::new();
-    let actual = walk_unit_order_growing_with_known(
+    let actual = walk_unit_order_with_known(
         &census,
         0,
         STATE,
@@ -742,7 +742,7 @@ fn census_divisions_take_identity_and_backlink_from_the_census_without_reads() {
     // the naval lane, is the walk's backlink refusal, without reading it.
     for (unit, location) in [(UNITS[0], PROVINCE + 8), (UNITS[1], PROVINCE)] {
         let census = observed(&bytes);
-        let refused = walk_unit_order_growing_with_known(
+        let refused = walk_unit_order_with_known(
             &census,
             0,
             STATE,
@@ -784,7 +784,7 @@ fn province_order_demand_has_no_chosen_occupant_or_aggregate_ceiling() {
         base: 0,
         bytes: &bytes,
     };
-    let demand = walk_unit_order_with_land(&memory, 0, STATE, &mut [], &mut [], |_, _| Ok(()));
+    let demand = count_unit_order_with_land(&memory, 0, STATE, |_, _| Ok(()));
     assert_eq!(demand.required, count as usize);
     assert_eq!(
         demand.outcome,
@@ -811,7 +811,7 @@ fn listed_provinces_read_only_their_slots() {
     let bytes = fixture([5, 2]);
     let plain = observed(&bytes);
     let (mut rows, mut handles, mut land) = (Vec::new(), Vec::new(), Vec::new());
-    let expected = walk_unit_order_growing_with_land(
+    let expected = walk_unit_order_with_land(
         &plain,
         0,
         STATE,

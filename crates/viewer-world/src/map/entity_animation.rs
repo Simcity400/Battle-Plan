@@ -850,9 +850,23 @@ impl Player {
         }
     }
 
-    /// The actor-local native matrices shared by events and every draw queue.
-    /// Only the immutable rig and played pose inputs participate in this cache.
     pub(super) fn native_actors(&self, rig: &Rig) -> Arc<[super::mesh_pose::Actor]> {
+        self.native_actors_held(rig).0
+    }
+
+    /// [`Self::native_actors`], and whether they were held from an earlier frame (this frame's
+    /// samples draw the same) rather than evaluated.
+    pub(super) fn native_actors_held(&self, rig: &Rig) -> (Arc<[super::mesh_pose::Actor]>, bool) {
+        if let Some(held) = self.held_actors(rig) {
+            return (held, true);
+        }
+        let actors: Arc<[super::mesh_pose::Actor]> = super::mesh_pose::actors_uncached(rig, Some(self), false).into();
+        self.hold_actors(rig, &actors);
+        (actors, false)
+    }
+
+    /// The pose held from an earlier frame when this frame's samples draw the same.
+    fn held_actors(&self, rig: &Rig) -> Option<Arc<[super::mesh_pose::Actor]>> {
         fn same_sample(node: &Node, a: Option<NativeSample>, b: Option<NativeSample>) -> bool {
             if node
                 .native
@@ -888,29 +902,34 @@ impl Player {
                 _ => false,
             }
         }
+        let cache = self.native_actors.borrow();
+        let rig_key = std::ptr::from_ref(rig) as usize;
+        cache
+            .as_ref()
+            .filter(|held| {
+                held.rig == rig_key
+                    && held
+                        .samples
+                        .iter()
+                        .zip(&self.native_samples)
+                        .zip(&rig.nodes)
+                        .all(|((&a, &b), node)| same_sample(node, a, b))
+            })
+            .map(|held| Arc::clone(&held.actors))
+    }
+
+    /// Holds `actors` as the pose of this frame's samples.
+    fn hold_actors(&self, rig: &Rig, actors: &Arc<[super::mesh_pose::Actor]>) {
         let mut cache = self.native_actors.borrow_mut();
         let rig_key = std::ptr::from_ref(rig) as usize;
-        if let Some(held) = cache.as_ref()
-            && held.rig == rig_key
-            && held
-                .samples
-                .iter()
-                .zip(&self.native_samples)
-                .zip(&rig.nodes)
-                .all(|((&a, &b), node)| same_sample(node, a, b))
-        {
-            return Arc::clone(&held.actors);
-        }
-        let actors = super::mesh_pose::actors_uncached(rig, Some(self), false).into();
         let held = cache.get_or_insert_with(|| NativeActors {
             rig: rig_key,
             samples: Vec::new(),
-            actors: Arc::clone(&actors),
+            actors: Arc::clone(actors),
         });
         held.rig = rig_key;
         held.samples.clone_from(&self.native_samples);
-        held.actors = Arc::clone(&actors);
-        actors
+        held.actors = Arc::clone(actors);
     }
 
     pub fn native_locals(
@@ -918,7 +937,17 @@ impl Player {
         rig: &Rig,
         index: usize,
     ) -> std::io::Result<Option<super::mesh_pose::Locals>> {
-        let Some(playing) = self.native_samples[index] else {
+        locals_of(&self.native_samples, rig, index)
+    }
+}
+
+/// The local poses node `index` of `rig` plays at `samples`' sample, as a player's own.
+fn locals_of(
+    samples: &[Option<NativeSample>],
+    rig: &Rig,
+    index: usize,
+) -> std::io::Result<Option<super::mesh_pose::Locals>> {
+        let Some(playing) = samples[index] else {
             return Ok(None);
         };
         let node = &rig.nodes[index];
@@ -955,8 +984,9 @@ impl Player {
             poses: locals,
             crossfade: playing.previous.is_some(),
         }))
-    }
+}
 
+impl Player {
     /// The root animation's current clip phase, not entity age.
     pub fn root_clip_phase(&self, rig: &Rig) -> f64 {
         let Some((sample, root)) = self

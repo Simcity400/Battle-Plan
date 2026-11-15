@@ -7,13 +7,30 @@ pub use dashboard_text::subunit_requirements::{
 };
 use installed_content_core::ResolvedLayers;
 use replay_data::rows::{DivisionEquipmentRow, VariantDefinitionRow};
-use std::{cmp::Reverse, collections::BTreeMap, io, ops::Deref};
+use std::{cmp::Reverse, io, ops::Deref};
 use viewer_foundation::table_access::TokenNames;
 
 pub(crate) mod facts;
 pub(crate) mod model_facts;
 pub(crate) mod profile;
 use profile::{Stage, Stages};
+
+/// The hour's variant definitions by id: the frame's rows, ascending by id, each looked up alone.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Variants<'a>(&'a [VariantDefinitionRow]);
+
+impl<'a> Variants<'a> {
+    pub fn new(rows: &'a [VariantDefinitionRow]) -> Self {
+        Self(rows)
+    }
+
+    pub fn get(self, id: u64) -> Option<&'a VariantDefinitionRow> {
+        self.0
+            .binary_search_by_key(&id, |row| row.id)
+            .ok()
+            .map(|at| &self.0[at])
+    }
+}
 
 #[derive(Clone, Debug, Default)]
 pub struct Content(shared::Content, facts::Retained, model_facts::Retained);
@@ -58,8 +75,8 @@ impl Content {
         template: &Template<'a>,
         model_category: Option<u64>,
         excluded_variants: &[u64],
-        equipment: &[&DivisionEquipmentRow],
-        variants: &BTreeMap<u64, &'a VariantDefinitionRow>,
+        equipment: &[DivisionEquipmentRow],
+        variants: Variants<'a>,
         tokens: &TokenNames<'_>,
     ) -> io::Result<Option<SelectedPair<'a>>> {
         self.select_pair_profiled(
@@ -81,8 +98,8 @@ impl Content {
         template: &Template<'a>,
         model_category: Option<u64>,
         excluded_variants: &[u64],
-        equipment: &[&DivisionEquipmentRow],
-        variants: &BTreeMap<u64, &'a VariantDefinitionRow>,
+        equipment: &[DivisionEquipmentRow],
+        variants: Variants<'a>,
         tokens: &TokenNames<'_>,
         stages: &Stages,
     ) -> io::Result<Option<SelectedPair<'a>>> {
@@ -99,8 +116,8 @@ impl Content {
         template: &Template<'a>,
         model_category: Option<u64>,
         excluded_variants: &[u64],
-        equipment: &[&DivisionEquipmentRow],
-        variants: &BTreeMap<u64, &'a VariantDefinitionRow>,
+        equipment: &[DivisionEquipmentRow],
+        variants: Variants<'a>,
         tokens: &TokenNames<'_>,
         stages: &Stages,
         facts: Option<&facts::Hour>,
@@ -125,7 +142,7 @@ impl Content {
                     u128::from(row.variant_handle),
                     u64::MAX,
                 );
-                let variant = *variants.get(&row.variant_handle).ok_or_else(|| {
+                let variant = variants.get(row.variant_handle).ok_or_else(|| {
                     invalid(format!("missing equipment variant {}", row.variant_handle))
                 })?;
                 let (key, archetype, cached_category) = match facts {
@@ -151,7 +168,7 @@ impl Content {
                     None => largest == Some(archetype),
                 };
                 if matches {
-                    candidates.push((*row, variant, key, archetype));
+                    candidates.push((row, variant, key, archetype));
                 }
             }
             Ok(candidates)

@@ -46,7 +46,7 @@ fn seal_hour(store: &mut Store, hour: i32) -> Prepared {
     output.reserve(store.seal_demand().unwrap()).unwrap();
     crate::test_support::with_allocations_denied(|| {
         store.install_receipts(&mut spare);
-        store.seal(&mut output, boundary(hour), false)
+        store.seal(&mut output, boundary(hour))
     })
     .unwrap();
     drop(spare);
@@ -87,6 +87,7 @@ fn backlog(batched: bool) -> (Store, Vec<Prepared>) {
 
 #[test]
 fn a_write_behind_backlog_seals_every_hour_without_a_receipt_cap() {
+    let _globals = crate::event_feed_observer::test_globals();
     let (mut store, packs) = backlog(true);
     assert_eq!(store.unacknowledged(), 1);
     assert_eq!(
@@ -107,6 +108,7 @@ fn a_write_behind_backlog_seals_every_hour_without_a_receipt_cap() {
 
 #[test]
 fn batched_receipts_match_receipts_applied_one_at_a_time() {
+    let _globals = crate::event_feed_observer::test_globals();
     let (mut batched, _) = backlog(true);
     let (mut single, _) = backlog(false);
     assert_eq!(batched.unacknowledged(), single.unacknowledged());
@@ -119,6 +121,7 @@ fn batched_receipts_match_receipts_applied_one_at_a_time() {
 
 #[test]
 fn repeated_unknown_and_in_flight_receipts_change_nothing() {
+    let _globals = crate::event_feed_observer::test_globals();
     let mut store = ready();
     let pack = seal_hour(&mut store, 1);
     let publication = pack.publication();
@@ -137,7 +140,8 @@ fn repeated_unknown_and_in_flight_receipts_change_nothing() {
 }
 
 #[test]
-fn a_seal_without_grown_receipt_room_refuses_without_allocating() {
+fn a_seal_whose_receipt_room_cannot_grow_refuses_by_name() {
+    let _globals = crate::event_feed_observer::test_globals();
     let mut store = ready();
     while store.receipt_room().is_none() {
         seal_hour(&mut store, 1);
@@ -147,11 +151,7 @@ fn a_seal_without_grown_receipt_room_refuses_without_allocating() {
         .unwrap();
     let mut output = Snapshot::new(0);
     assert_eq!(
-        crate::test_support::with_allocations_denied(|| store.seal(
-            &mut output,
-            boundary(2),
-            false
-        )),
+        crate::test_support::with_allocations_denied(|| store.seal(&mut output, boundary(2))),
         Err(RECEIPT_STORAGE)
     );
 }

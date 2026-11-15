@@ -12,7 +12,7 @@ const OTHER = '00000000-0000-4000-8000-000000000001';
 const PATH = `C:\\Recordings\\Germany 1936–1943.battleplan`;
 const STARTED = Date.UTC(2026, 9, 12, 12, 0);
 const MB = 2 ** 20;
-const settings: RecorderSettings = { recordEveryCampaign: true, autoSave: true, startWithWindows: false, startWithReplay: true, captureMode: 'full',
+const settings: RecorderSettings = { recordEveryCampaign: true, autoSave: true, startWithWindows: false, startWithReplay: true, captureMode: 'full', liveCompression: 'low', autoCompress: true,
   campaigns: {}, effectiveSaveFolder: 'C:\\Recordings' };
 const recording: Snapshot = { phase: 'recording', campaign: CAMPAIGN, recording: PATH, name: 'Germany 1936–1943', continued: true, hour: 59_000_000,
   firstHour: null, savedBytes: 214 * MB, spoolBytes: 1229 * MB, progress: null, startedAt: STARTED, stopping: false, problem: null, automatic: true,
@@ -27,7 +27,7 @@ const listed: Recordings = {
     { session: 'C:\\Recordings\\sessions\\1-1', campaign: OTHER, recording: null, name: null, firstHour: START, lastHour: NOW, spoolBytes: 2253 * MB,
       status: 'waiting', flag: null },
   ],
-  saved: [{ path: PATH, firstHour: START, lastHour: NOW, bytes: 412 * MB, flag }],
+  saved: [{ path: PATH, firstHour: START, lastHour: NOW, bytes: 412 * MB, flag, level: 7, job: null }],
 };
 const actions = new Proxy({}, { get: () => () => {} }) as PanelActions;
 const text = (html: string) => html.replace(/<[^>]*>/g, ' ').replace(/&#x27;/g, '\'').replace(/\s+/g, ' ');
@@ -104,12 +104,17 @@ test('the panel draws each state, and the Stop prompt replaces everything under 
     const panelSettings = text(render({ view: 'settings' }));
     assert.match(panelSettings, /Settings Recording Auto record Records each campaign when it loads\. Auto save Saves when you load another campaign or close the game\./);
     // Every group is named; What to record stands with the other recording settings.
-    assert.match(panelSettings, /close the game\. What to record Full Compression Low High High makes the smallest files with more recorder CPU; Low makes larger files with less\. Never in the game\./);
+    assert.match(panelSettings, /close the game\. What to record Full Compression Low High Low: the recorder keeps pace with the game\. High: a smaller file, and the recorder can fall behind at full speed\./);
+    // Auto Compress is offered while Compression is Low, on by default, and hidden while High.
+    assert.match(panelSettings, /fall behind at full speed\. Auto Compress After saving, compresses the recording to the smaller High size in the background; usable at once meanwhile\. Folders/);
+    assert.match(render({ view: 'settings' }), /Auto Compress<\/span><small>[^<]*<\/small><\/span><input type="checkbox" role="switch" checked=""/);
+    assert.doesNotMatch(render({ view: 'settings', settings: { ...settings, autoCompress: false } }), /Auto Compress<\/span><small>[^<]*<\/small><\/span><input type="checkbox" role="switch" checked=""/);
+    assert.doesNotMatch(text(render({ view: 'settings', settings: { ...settings, liveCompression: 'high' } })), /Auto Compress/);
     assert.match(panelSettings, /Folders Save to C:\\Recordings Paradox user folder Automatic/);
     assert.doesNotMatch(panelSettings, /File size|Fast|Small/);
     assert.match(panelSettings, /Start automatically With Windows With Battle Plan Open Battle Plan $/);
-    assert.match(render({ view: 'settings' }), /role="group" aria-label="Compression"><button type="button" aria-pressed="false">Low<\/button><button type="button" aria-pressed="true">High/);
-    assert.match(render({ view: 'settings', settings: { ...settings, blockCompression: 'low' } }), /aria-pressed="true">Low<\/button><button type="button" aria-pressed="false">High/);
+    assert.match(render({ view: 'settings' }), /role="group" aria-label="Compression"><button type="button" aria-pressed="true">Low<\/button><button type="button" aria-pressed="false">High/);
+    assert.match(render({ view: 'settings', settings: { ...settings, liveCompression: 'high' } }), /aria-pressed="false">Low<\/button><button type="button" aria-pressed="true">High/);
     assert.match(text(render({ view: 'settings', settings: { ...settings, captureMode: 'map' } })), /What to record Map/,
       'the summary names the mode');
     assert.match(render({ view: 'settings' }), /role="switch" checked=""[^>]*\/>[\s\S]*role="switch" checked=""/, 'both are on by default');
@@ -160,8 +165,8 @@ test('the recordings view lists what is not saved yet and what is saved, each wi
     assert.match(text(asked), /New recording Discard this recording\? This can't be undone\. Cancel Discard Saved/);
     assert.match(asked, /class="button small quiet recorder-item-action" autofocus="">Cancel<\/button><button type="button" class="button small is-danger recorder-item-action">Discard/);
     assert.match(text(asked), /Germany 1936–1943 Recording · 12 Jun 1941 · 1\.2 GB New recording/, 'only the asked recording changes');
-    // Saved: its name opens it, its folder shows it.
-    assert.match(text(view), /Saved Germany 1936–1943 1936 – Jun 1941 · 412 MB/);
+    // Saved: its name opens it, its folder shows it, and while Compression is Low it compresses.
+    assert.match(text(view), /Saved Germany 1936–1943 1936 – Jun 1941 · 412 MB Compress/);
     assert.match(view, /data-tooltip="Open in Battle Plan · Germany 1936–1943\.battleplan"/);
     assert.match(view, /aria-label="Show in folder"/);
     assert.match(view, /class="recorder-item is-openable"/, 'a saved row opens from anywhere on it');
@@ -170,6 +175,23 @@ test('the recordings view lists what is not saved yet and what is saved, each wi
     assert.match(view, /class="recorder-item-flag is-empty"/, 'no flag resolved: a quiet placeholder');
     assert.match(view, /class="recorder-list themed-scrollbar"/, 'long lists scroll inside the view');
     assert.match(view, /class="recorder-top" data-tauri-drag-region="deep"/);
+
+    // Compress: shown only while Compression is Low, never on a file at High's level or on its way
+    // there; kept as recorded, the row says why and offers it again.
+    const saved = listed.saved[0];
+    const compress = (row: Partial<typeof saved>, low = true) => render({ recordings: { unsaved: [], saved: [{ ...saved, ...row }] },
+      settings: { ...settings, liveCompression: low ? 'low' : 'high' } });
+    assert.equal((view.match(/>Compress</g) ?? []).length, 1);
+    assert.doesNotMatch(compress({}, false), />Compress</, 'hidden while Compression is High');
+    assert.doesNotMatch(compress({ level: 19 }), />Compress</, 'not on a recording at level 19');
+    assert.match(compress({ level: null }), />Compress</, 'a file recording no level is offered it');
+    const running = compress({ job: { state: 'compressing', units: 1, total: 4 } });
+    assert.match(text(running), /412 MB · Compressing 25%/);
+    assert.doesNotMatch(running, />Compress</);
+    assert.match(text(compress({ job: { state: 'queued' } })), /Compress waiting/);
+    const kept = compress({ job: { state: 'kept', reason: 'open in the desktop app or another program' } });
+    assert.match(text(kept), /412 MB · Kept as recorded: open in the desktop app or another program Compress/);
+    assert.match(kept, /class="recorder-item-meta is-warning" role="status"/);
 
     const empty = text(render({ recordings: { unsaved: [], saved: [] } }));
     assert.match(empty, /Not saved yet Nothing is waiting to be saved\. Saved No saved recordings yet\./);

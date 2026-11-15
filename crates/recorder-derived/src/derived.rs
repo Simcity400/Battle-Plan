@@ -402,7 +402,6 @@ fn run(
     replay.visit_blocks(
         &blocks,
         read,
-        None,
         |_, recorded, decoded| {
             hours += 1;
             if census {

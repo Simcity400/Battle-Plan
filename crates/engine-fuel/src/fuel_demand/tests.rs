@@ -27,62 +27,62 @@ impl Memory for Map {
 }
 
 fn buffers<'a>(
-    countries: &'a mut [Country],
-    contexts: &'a mut [Context],
-    context_slots: &'a mut [usize],
+    countries: Buffer<'a, Country>,
+    contexts: Buffer<'a, Context>,
+    context_slots: Buffer<'a, usize>,
 ) -> Buffers<'a> {
     Buffers {
         countries: BufferRows {
-            rows: Buffer::Fixed(countries),
+            rows: countries,
             len: 0,
             required: 0,
         },
         contexts: BufferRows {
-            rows: Buffer::Fixed(contexts),
+            rows: contexts,
             len: 0,
             required: 0,
         },
         divisions: BufferRows {
-            rows: Buffer::Fixed(&mut []),
+            rows: Buffer::Count,
             len: 0,
             required: 0,
         },
         fleets: BufferRows {
-            rows: Buffer::Fixed(&mut []),
+            rows: Buffer::Count,
             len: 0,
             required: 0,
         },
         tasks: BufferRows {
-            rows: Buffer::Fixed(&mut []),
+            rows: Buffer::Count,
             len: 0,
             required: 0,
         },
         sites: BufferRows {
-            rows: Buffer::Fixed(&mut []),
+            rows: Buffer::Count,
             len: 0,
             required: 0,
         },
         wings: BufferRows {
-            rows: Buffer::Fixed(&mut []),
+            rows: Buffer::Count,
             len: 0,
             required: 0,
         },
         weather: BufferRows {
-            rows: Buffer::Fixed(&mut []),
+            rows: Buffer::Count,
             len: 0,
             required: 0,
         },
-        context_slots: Buffer::Fixed(context_slots),
-        names: Buffer::Fixed(&mut []),
+        context_slots,
+        names: Buffer::Count,
         name_len: 0,
         name_required: 0,
-        roots: Buffer::Fixed(&mut []),
-        groups: Buffer::Fixed(&mut []),
-        members: Buffer::Fixed(&mut []),
-        children: Buffer::Fixed(&mut []),
-        roster_scratch: Buffer::Fixed(&mut []),
-        group_names: Buffer::Fixed(&mut []),
-        group_countries: Buffer::Fixed(&mut []),
+        roots: Buffer::Count,
+        groups: Buffer::Count,
+        members: Buffer::Count,
+        children: Buffer::Count,
+        roster_scratch: Buffer::Count,
+        group_names: Buffer::Count,
+        group_countries: Buffer::Count,
         group_owner_reason: None,
         group_outcomes: None,
         roots_outcome: None,
@@ -96,9 +96,11 @@ fn cold_and_later_context_index_growth_keeps_original_contexts_and_cached_faults
     const REGIONS: usize = 0x100000;
     let mut contexts = Vec::new();
     let mut slots = Vec::new();
-    let mut out = buffers(&mut [], &mut [], &mut []);
-    out.contexts.rows = Buffer::Growing(&mut contexts);
-    out.context_slots = Buffer::Growing(&mut slots);
+    let mut out = buffers(
+        Buffer::Count,
+        Buffer::Growing(&mut contexts),
+        Buffer::Growing(&mut slots),
+    );
     for count in [8_usize, 40] {
         let mut memory = Map::default();
         memory.span(STATE, 0x800);
@@ -192,9 +194,13 @@ fn captured_empty_and_negative_region_counts_do_not_dereference_weather_manager(
             &50_000_i64.to_le_bytes(),
         );
         // The manager pointer is readable and null; its object is absent.
-        let mut contexts = [Context::default()];
-        let mut slots = [0; 2];
-        let mut out = buffers(&mut [], &mut contexts, &mut slots);
+        let mut contexts = Vec::new();
+        let mut slots = Vec::new();
+        let mut out = buffers(
+            Buffer::Count,
+            Buffer::Growing(&mut contexts),
+            Buffer::Growing(&mut slots),
+        );
         let (_, context) = super::air::context(&memory, 0, STATE, REGION, &mut out).unwrap();
         let input = AirInputs {
             reached: true,

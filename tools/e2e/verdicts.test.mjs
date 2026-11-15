@@ -1,6 +1,88 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { shownHours, catalogueHour, droppedFrames, failedReplies, firstContent, framesLate, freshness, freshnessByKind, item, losses, mapFrames, mapSeek, preparation, presentedAt, quantiles, UNPRESENTED } from './verdicts.mjs';
+import { takesShot } from './session.mjs';
+import { shownHours, catalogueHour, droppedFrames, failedReplies, firstContent, framesLate, freshness, freshnessByKind, item, losses, mapDrew, mapFrames, mapSeek, pageShown, presentedAt, quantiles, UNPRESENTED } from './verdicts.mjs';
+import { asked, machineLine, noVisibleChange, phaseSeconds, settingDrawn, stepOver, stillInFlight } from './verdicts.mjs';
+
+test('a setting that changed nothing is known once its widget reports drawing it, never while it loads or before it took it', () => {
+  // The page evaluates it from its source: it must stand alone.
+  const inPage = new Function(`return (${settingDrawn.toString()});`)();
+  for (const drawn of [settingDrawn, inPage]) {
+    assert.equal(drawn({ settings: 'b', drawn: 'b', state: 'content' }, 'a'), true);
+    assert.equal(drawn({ settings: 'b', drawn: 'b', state: 'empty' }, 'a'), true, 'an empty notice is what it drew');
+    assert.equal(drawn({ settings: 'b', drawn: 'b', state: 'loading' }, 'a'), false, 'still loading what the setting asked for');
+    assert.equal(drawn({ settings: 'b', drawn: 'a', state: 'content' }, 'a'), false, 'committed, not yet painted');
+    assert.equal(drawn({ settings: 'a', drawn: 'a', state: 'content' }, 'a'), false, 'never given the setting: only the timeout tells');
+    // An app that reports no drawn settings leaves the step to its timeout, as before.
+    assert.equal(drawn({ settings: 'b', drawn: null, state: 'content' }, 'a'), false);
+  }
+  assert.equal(noVisibleChange('a', 'a'), 'no visible change after the setting: the widget was never given it');
+  assert.equal(noVisibleChange('a', 'b'), 'no visible change after the setting: the widget took it, and nothing it shows changed');
+  assert.equal(noVisibleChange('a', null), 'no visible change after the setting: the widget took it, and nothing it shows changed');
+});
+
+test('the report header gives each phase its seconds, in the order the sessions ran them', () => {
+  const sessions = [{ phases: ['pages'], pagesSeconds: 68.8 }, { phases: ['visual', 'map', 'playback'], visualSeconds: 129, mapSeconds: 44.9 }];
+  // A phase that stopped before it recorded its time is left out, not shown as nothing.
+  assert.deepEqual(phaseSeconds(sessions), [['pages', 68.8], ['visual', 129], ['map', 44.9]]);
+  assert.deepEqual(phaseSeconds(undefined), []);
+});
+
+test('the report header says the load and the apps running beside a run, and what was not recorded', () => {
+  const start = { cpuPercent: 23.5, memoryPercent: 61, apps: { thisRun: 0, otherRuns: 1, machine: 3 } };
+  const end = { cpuPercent: null, memoryPercent: 64, apps: { thisRun: 1, otherRuns: 1, machine: null } };
+  assert.equal(machineLine({ machine: { logicalCpus: 16, start, end } }),
+    'Machine (16 logical CPUs): before the first app CPU 23.5%, memory 61%, apps 0 of this run, 1 of other suite runs, 3 on the machine; '
+    + 'before the last app closed CPU not recorded, memory 64%, apps 1 of this run, 1 of other suite runs, not recorded on the machine.');
+  assert.equal(machineLine({ machine: { logicalCpus: 16, start, end: null } }).endsWith('before the last app closed not recorded.'), true);
+  assert.equal(machineLine({}), 'Machine: not recorded.');
+});
+
+test('a phase the run did not ask for is not judged; one asked for is, whether or not its session started', () => {
+  const quick = { tier: 'quick', requested: ['glance', 'playback', 'catalogue', 'controls'] };
+  assert.equal(asked(quick, 'playback'), true);
+  assert.equal(asked(quick, 'seeks'), false);
+  assert.equal(asked(quick, 'mapfps'), false);
+  // A run from before the field judges everything, as it did.
+  assert.equal(asked({}, 'mapfps'), true);
+  assert.equal(asked({ requested: ['mapfps'] }, 'mapfps'), true, 'asked for: its failure to start fails it');
+});
+
+test('a page pass step saves its screenshot whether it passed, ran over time or failed; elsewhere only a failure does', () => {
+  // A page visit's steps ask for one (session.step's `shot`), so a passing or merely slow step is still pictured.
+  assert.equal(takesShot({ pass: true, screenshot: true }), true);
+  assert.equal(takesShot({ pass: false, screenshot: true }), true);
+  assert.equal(takesShot({ pass: false, screenshot: undefined }), true);
+  // A step failing on its time alone, and a passing step, save none unless asked.
+  assert.equal(takesShot({ pass: false, screenshot: false }), false);
+  assert.equal(takesShot({ pass: true, screenshot: undefined }), false);
+});
+
+test('a page switch is done only once the page it clicked is the one shown, its grid laid out', () => {
+  // A page as the probe evaluates the expression: the sidebar row marked current, and the dashboard grid (none on the Campaign map).
+  const shown = (current, grid) => new Function('document', `return ${pageShown('Overview')};`)({
+    querySelector: selector => selector.includes('aria-current') ? (current === null ? null : { textContent: ` ${current} ` })
+      : selector === '.dash-grid-scroll' ? (grid === null ? null : { getClientRects: () => grid ? [{}] : [] }) : null,
+  });
+  // Run 13: the Overview click made while the Campaign map was opening; the map stayed, and the step settled on no widget.
+  assert.equal(shown(null, null), false, 'the Campaign map shown: no page row current, no grid');
+  assert.equal(shown('Overview', false), false, 'the row current, its grid not laid out yet');
+  assert.equal(shown('Politics', true), false, 'another page shown');
+  assert.equal(shown('Overview', true), true);
+});
+
+test('a saved map setting is drawn once the map reports every setting the menu saved', () => {
+  const state = { applied: { graphics: { shadows: false, samples: 2, natoCounters: null }, audio: { music: 15 },
+    counters: { tags: ['B', 'A'], kind: 'countries' }, visualMods: ['workshop/2', 'workshop/1'] } };
+  const expected = [['graphics.shadows', 'false'], ['graphics.samples', '2'], ['graphics.natoCounters', 'null'], ['audio.music', '15'],
+    ['counters', '{"kind":"countries","tags":["B","A"]}'], ['visualMods', '["workshop/1","workshop/2"]']];
+  assert.equal(mapDrew(state, expected), null);
+  // A setting the map still draws as it was names itself; a map state without settings is unobserved, never drawn.
+  assert.equal(mapDrew(state, [['graphics.shadows', 'true']]), 'it drew graphics.shadows as false, the menu saved true');
+  assert.equal(mapDrew(state, [['counters', '{"kind":"countries","tags":["A","B"]}']]), 'it drew counters as {"tags":["B","A"],"kind":"countries"}, the menu saved {"kind":"countries","tags":["A","B"]}');
+  assert.equal(mapDrew(state, [['visualMods', '[]']]), 'it drew visualMods as ["workshop/2","workshop/1"], the menu saved []');
+  assert.equal(mapDrew({ hour: 5 }, expected), 'its map reports no settings it drew with');
+});
 
 test('quantiles are nearest-rank, as the host summary computes them', () => {
   assert.deepEqual(quantiles([5, 1, 4, 2, 3]), { n: 5, p50: 3, p95: 5, max: 5 });
@@ -54,19 +136,6 @@ test('freshness counts hours behind the clock per playing frame, and frames with
   const result = freshness(records, 0, 1000);
   assert.equal(result.step, 6);
   assert.deepEqual(result.widgets.map(w => [w.title, w.frames, w.p95, w.pass]), [['Widget', 4, 6, true]]);
-});
-
-test('preparation is judged against the median of the latest passing runs, beyond each margin', () => {
-  const prep = { state: 'ready', error: null, failedSections: [], exitCode: 0, wallSeconds: 100, cpuSeconds: 1000, peakCommitGb: 8 };
-  const first = preparation(prep, []);
-  assert.equal(first.pass, true);
-  assert.equal(first.metrics[0].baseline, null);
-  const history = [90, 400, 80, 100, 95, 85].map((wallSeconds, index) => ({ wallSeconds, cpuSeconds: 1000, peakCommitGb: 8, pass: index !== 1 }));
-  assert.equal(preparation(prep, history).metrics[0].baseline, 90);
-  const slow = preparation({ ...prep, wallSeconds: 120 }, history);
-  assert.equal(slow.pass, false);
-  assert.match(slow.reasons[0], /wallSeconds 120.00 over 112.50/);
-  assert.equal(preparation({ ...prep, state: 'failed', error: 'disk' }, history).reasons[0], 'ended failed: disk');
 });
 
 test('a dropped frame is an interval over 1.5 refreshes, and three in a row fail as stutter', () => {
@@ -167,4 +236,19 @@ test('a map reports the hour it shows through its acknowledged frames', () => {
 test('every record a perf log dropped is a loss by its source', () => {
   const found = losses([{ t: 'lost', source: 'ui', count: 3, from: 10, to: 20 }, { t: 'lost', source: 'ui', count: 2, at: 30 }, { t: 'q' }]);
   assert.deepEqual(found, [{ source: 'ui', count: 5, from: 10, to: 30 }]);
+});
+
+test('with the app\'s count of what it has in flight, a step is over one frame after it reaches zero; without it, after its quiet window', () => {
+  // The page evaluates it from its source: it must stand alone.
+  const inPage = new Function(`return (${stepOver.toString()});`)();
+  for (const over of [stepOver, inPage]) {
+    assert.equal(over({ settled: true, busy: 0, idle: 1, heldMs: 0, wait: 200 }), false, 'zero for one sample: a request may start on the next');
+    assert.equal(over({ settled: true, busy: 0, idle: 2, heldMs: 17, wait: 200 }), true, 'one frame later, without the 200 ms window');
+    assert.equal(over({ settled: true, busy: 1, idle: 0, heldMs: 900, wait: 200 }), false, 'a late request in flight holds the step however long it looked settled');
+    assert.equal(over({ settled: false, busy: 0, idle: 0, heldMs: 0, wait: 200 }), false, 'a widget still loading, or its change not shown');
+    // An app with no count: the quiet window, as before.
+    assert.equal(over({ settled: true, busy: null, idle: 0, heldMs: 199, wait: 200 }), false);
+    assert.equal(over({ settled: true, busy: null, idle: 0, heldMs: 200, wait: 200 }), true);
+  }
+  assert.equal(stillInFlight({ requests: 2, updates: 0, commits: 0, draws: 1, follow: 0, waits: 0 }, 6000), 'still in flight after 6 s: requests 2, draws 1');
 });

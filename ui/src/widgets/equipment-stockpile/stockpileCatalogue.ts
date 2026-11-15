@@ -1,6 +1,7 @@
-import type { EquipmentStockpileReply, StockpileCatalogueReply, StockpileChoicePeak, StockpileHolder, StockVariant, TypeLogistics } from '../../generated/dashboard';
+import type { EquipmentStockpileReply, StockpileCatalogueReply, StockVariant, TypeLogistics } from './types';
 import type { Span } from '../../charts/series';
 import type { StockGroup } from './stockpileData';
+import type { StockpileChoicePeak, StockpileHolder } from '../../generated/dashboard';
 
 /** What the widget reads of the whole branch besides an hour's values (`equipment-stockpile-catalogue`). */
 export interface StockpilePrepared {
@@ -55,7 +56,6 @@ export function stockpileView(catalogue: StockpileCatalogueReply, at: EquipmentS
   const logistics: TypeLogistics[] = catalogue.logistics.map(item => records.get(item.key) ?? { key: item.key, balance: [], stock: [], available: [] });
   for (const item of at?.logistics ?? []) if (!keys.has(item.key)) logistics.push(item);
   const typeKeys = new Set(catalogue.types.map(type => type.key));
-  const prefix = at as (EquipmentStockpileReply & { coverage?: unknown; pending?: unknown; approximate?: unknown }) | undefined;
   const view: PreparedStockpileReply = {
     branchId: catalogue.branchId, tag, campaignKey: catalogue.campaignKey, decimals: catalogue.decimals,
     types: [...catalogue.types, ...(at?.types ?? []).filter(type => !typeKeys.has(type.key))], variants, logistics,
@@ -67,8 +67,5 @@ export function stockpileView(catalogue: StockpileCatalogueReply, at: EquipmentS
       nonzeroLogistics: catalogue.logistics.filter(item => item.nonzero).map(item => item.key), choices: catalogue.choices,
       designs: Object.fromEntries(catalogue.variants.map(variant => [variant.id, variant.designs])) },
   };
-  // The hour's prepared prefix, which says where its values are still approximate.
-  if (prefix && 'pending' in prefix) Object.assign(view, { coverage: prefix.coverage, pending: prefix.pending,
-    ...(prefix.approximate === undefined ? {} : { approximate: prefix.approximate }) });
   return view;
 }

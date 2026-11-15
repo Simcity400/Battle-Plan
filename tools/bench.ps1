@@ -43,6 +43,8 @@ through its menu as "save_name" (default BENCH_H<hour>) in the user directory, a
 resumes; the pause counts toward neither the screen's duration nor its elapsed time.
 The name is a plain file name; a trailing .hoi4 is dropped. The UI config then needs
 save_menu, save_name and save_confirm.
+-ClockDirectory holds the recorder.exe whose clock command reads the game clock
+(default: this checkout's .cargo-target/release); it is also passed to smoke.ps1.
 Ordinary recorder candidates require -MetricsTool pointing to a reader built for
 their replay format. Missing or incomplete metrics, failed drains, drops and write
 errors fail the screen. Bare-game references do not need a metrics reader.
@@ -89,6 +91,7 @@ param(
     [Parameter(Mandatory = $true)][string]$UserDirectory,
     [string]$UiConfig = '',
     [string]$MetricsTool = '',
+    [string]$ClockDirectory = '',
     [string]$LadderDir = '',
     [string]$InputShimDir = '',
     [string]$MenuPatch = '',
@@ -161,13 +164,14 @@ $lock = [IO.Path]::GetFullPath($GameLock)
 if (-not $SummarizeOnly -and (-not $LockOwner -or -not (Test-Path -LiteralPath (Join-Path $lock 'owner')) -or [IO.File]::ReadAllText((Join-Path $lock 'owner')).Trim() -cne $LockOwner)) { throw "Supply the exact LockOwner token from your game-lock acquisition: $lock" }
 
 # Reuse the smoke driver's read-only clock reader and guarded input helper.
+. (Join-Path $scriptDir 'game-clock.ps1')
+$clockRecorder = if ($SummarizeOnly) { $null } else { Resolve-ClockRecorder $ClockDirectory }
 $driverSource = Get-Content -LiteralPath $smoke -Encoding UTF8 -Raw
 foreach ($definition in [regex]::Matches($driverSource, "(?s)Add-Type -TypeDefinition @'\r?\n(.*?)\r?\n'@")) {
     $source = $definition.Groups[1].Value
-    if ($source -match 'class Hoi4ClockBaseline' -and -not ('Hoi4ClockBaseline' -as [type])) { Add-Type -TypeDefinition $source }
     if ($source -match 'class Hoi4ProbeInput' -and -not ('Hoi4ProbeInput' -as [type])) { Add-Type -TypeDefinition $source }
 }
-if (-not ('Hoi4ClockBaseline' -as [type]) -or -not ('Hoi4ProbeInput' -as [type])) { throw 'Could not load the smoke driver helper classes.' }
+if (-not ('Hoi4ProbeInput' -as [type])) { throw 'Could not load the smoke driver helper classes.' }
 [void][Hoi4ProbeInput]::SetProcessDPIAware()
 
 # Input shim: while attached (smoke Launch injects it), the game's user32 import thunks answer from this
@@ -210,7 +214,7 @@ $script:freshLaunch = $false
 function Start-SaveLaunch {
     $extra = @('-start_save=' + [string]$spec.save)
     if ($spec.PSObject.Properties['launch_args'] -and $spec.launch_args) { $extra += @($spec.launch_args | ForEach-Object { [string]$_ }) }   # e.g. -debug_smooth=no
-    & $smoke -GameExe $GameExe -CaptureRoot $CaptureRoot -InputShimDir $InputShimDir -Action Launch -UserDirectory $userPath -ExtraArgs $extra -Foreground:(-not $Background)
+    & $smoke -GameExe $GameExe -CaptureRoot $CaptureRoot -InputShimDir $InputShimDir -BinaryDirectory (Split-Path -Parent $clockRecorder) -Action Launch -UserDirectory $userPath -ExtraArgs $extra -Foreground:(-not $Background)
 }
 function Connect-Game {
     $games = @(Get-Process -Name the game -ErrorAction SilentlyContinue)
@@ -241,7 +245,7 @@ function Connect-Game {
         if (-not $ok) { Start-Sleep -Milliseconds 500 }
         if ([DateTime]::UtcNow -gt $limit) { throw 'The game window did not appear.' }
     } while (-not $ok)
-    $script:reader = [Hoi4ClockBaseline]::new([uint32]$script:game.Id, [uint64]$script:game.MainModule.BaseAddress.ToInt64())
+    $script:reader = Open-GameClock $script:game.Id $clockRecorder
     $script:rect = $r
     $w = $r.Right - $r.Left; $h = $r.Bottom - $r.Top
     if ($w -ne [int]$ui.width -or $h -ne [int]$ui.height) { throw "Game window is ${w}x${h}; UI calibration expects $($ui.width)x$($ui.height)." }
@@ -251,7 +255,7 @@ function Read-Clock([int]$timeoutSeconds = 10) {
     do {
         $script:game.Refresh(); if ($script:game.HasExited) { throw 'The game exited.' }
         $clock = $script:reader.Sample()
-        if ($null -ne $clock -and $clock.paused -le 1 -and $clock.tick_busy -eq 0) { return $clock }
+        if ($null -ne $clock -and $null -ne $clock.paused -and $clock.tick_busy -eq 0) { return $clock }
         Start-Sleep -Milliseconds 10
     } while ([DateTime]::UtcNow -lt $limit)
     throw 'No stable authenticated game clock.'
@@ -454,7 +458,7 @@ function Invoke-Reload([string]$runDir, [bool]$attached = $false, [bool]$referen
     $reloadUi | Add-Member -NotePropertyName expected_seed -NotePropertyValue $expectedSeed -Force
     $config=Join-Path $runDir 'reload-ui.json'
     Write-Json $config $reloadUi
-    $reload=& $smoke -Action Reload -GameExe $GameExe -UserDirectory $userPath -GameId $script:game.Id -GameLock $lock -LockOwner $LockOwner -UiConfig $config -MenuPatch $MenuPatch -MenuPatchOrigin $MenuPatchOrigin -InputShimDir $InputShimDir -CaptureRoot $CaptureRoot -ExpectedSave ([string]$spec.save) -Out $runDir
+    $reload=& $smoke -Action Reload -BinaryDirectory (Split-Path -Parent $clockRecorder) -GameExe $GameExe -UserDirectory $userPath -GameId $script:game.Id -GameLock $lock -LockOwner $LockOwner -UiConfig $config -MenuPatch $MenuPatch -MenuPatchOrigin $MenuPatchOrigin -InputShimDir $InputShimDir -CaptureRoot $CaptureRoot -ExpectedSave ([string]$spec.save) -Out $runDir
     Write-Json (Join-Path $runDir 'reload.json') $reload
     return $reload.Clock
 }
@@ -865,7 +869,7 @@ function Save-Game($clock) {
     if (Test-Path -LiteralPath $path) { throw "The plan's save already exists: $path" }
     $paused = Set-Paused $true
     # Only the confirmed-paused stretch is left out; running time either side still counts.
-    $pausedAt = [Hoi4ClockBaseline]::Qpc()
+    $pausedAt = [Diagnostics.Stopwatch]::GetTimestamp()
     Log "Saving at hour $($paused.hour) as $name."
     # The menu keeps the game focused; hand the foreground back before resuming.
     $previous = [Hoi4ProbeInput]::AcquireTargetFocus($script:window, [uint32]$script:game.Id)
@@ -897,7 +901,7 @@ function Save-Game($clock) {
     }
     if ((Read-Clock).hour -ne $paused.hour) { throw 'The game advanced during the save.' }
     Send-Move $ui.cursor_park
-    $resumedAt = [Hoi4ClockBaseline]::Qpc()
+    $resumedAt = [Diagnostics.Stopwatch]::GetTimestamp()
     $null = Set-Paused $false; Set-Speed $speed
     Log "Saved $path."
     [pscustomobject]@{ path = $path; paused_ticks = $resumedAt - $pausedAt }
@@ -933,7 +937,7 @@ function Invoke-Screen($attached, [string]$runDir) {
     # External profilers key their recording windows on this line.
     Log 'Timed window started.'
     $null = Set-Paused $false
-    $startQpc = [Hoi4ClockBaseline]::Qpc()
+    $startQpc = [Diagnostics.Stopwatch]::GetTimestamp()
     $frequency = [double]$script:reader.Frequency
     $nextGuard = $startQpc
     $nextMemory = $startQpc + [int64]$frequency
@@ -948,9 +952,9 @@ function Invoke-Screen($attached, [string]$runDir) {
     $stopReason = 'duration_limit'
     try {
         # Active time: a plan save's pause counts toward neither the duration nor the samples.
-        while (([Hoi4ClockBaseline]::Qpc() - $pausedTicks - $startQpc) / $frequency -lt $seconds) {
+        while (([Diagnostics.Stopwatch]::GetTimestamp() - $pausedTicks - $startQpc) / $frequency -lt $seconds) {
             if ($null -ne $last -and ([int64]$last.hour - [int64]$first.hour) -ge $maxHours) { $stopReason = 'max_hours'; break }
-            $qpcNow = [Hoi4ClockBaseline]::Qpc()
+            $qpcNow = [Diagnostics.Stopwatch]::GetTimestamp()
             if ($qpcNow -ge $nextGuard) {
                 if ($attached -and $attached.diagnostic -and $attached.process.HasExited) { throw 'Diagnostic recorder exited during the timed window.' }
                 foreach ($name in (Get-BuildProcesses)) { $contaminants[$name] = $true }
@@ -961,7 +965,7 @@ function Invoke-Screen($attached, [string]$runDir) {
                 $nextOtherCpu = $qpcNow + 5 * [int64]$frequency
             }
             $clock = $script:reader.Sample()
-            $wallQpc = [Hoi4ClockBaseline]::Qpc()
+            $wallQpc = [Diagnostics.Stopwatch]::GetTimestamp()
             $qpc = $wallQpc - $pausedTicks
             if ($null -eq $clock) { $missing++ }
             else {
@@ -1020,7 +1024,7 @@ function Invoke-Screen($attached, [string]$runDir) {
     }
     $lastFaults = & $gameFaults
     Update-OtherCpu $otherCpu (Get-OtherCpuSnapshot)
-    $otherCpuWindow = Measure-OtherCpu $otherCpu (([Hoi4ClockBaseline]::Qpc() - $startQpc) / $frequency) ([Environment]::ProcessorCount)
+    $otherCpuWindow = Measure-OtherCpu $otherCpu (([Diagnostics.Stopwatch]::GetTimestamp() - $startQpc) / $frequency) ([Environment]::ProcessorCount)
     $statusAfter = $null
     if ($attached) { $statusAfter = Read-Status $attached.status; Write-Json (Join-Path $runDir 'status_after.json') $statusAfter }
     if ($null -eq $first -or $null -eq $last -or $lastQpc -le $firstQpc) { throw 'No valid timed samples.' }

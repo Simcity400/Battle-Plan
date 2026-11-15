@@ -125,15 +125,26 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 name = "app-update"
 version = "0.1.0"
 dependencies = [
+ "adler2",
  "base64 0.22.1",
  "bitflags 1.3.2",
+ "crossbeam-utils",
+ "fdeflate",
+ "flate2",
  "hashbrown 0.17.1",
+ "lock_api",
  "log",
  "minisign-verify",
+ "miniz_oxide 0.8.9",
+ "miniz_oxide 0.9.1",
+ "parking_lot",
  "reqwest",
+ "rustc-hash 2.1.3",
  "semver",
  "serde",
  "serde_json",
+ "simd-adler32",
+ "smallvec",
  "tauri",
  "test-unify",
  "uuid",
@@ -594,6 +605,7 @@ dependencies = [
 name = "collector"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "collector-advisors",
  "collector-air-histories",
  "collector-air-records",
@@ -652,7 +664,7 @@ dependencies = [
  "collector-visibility",
  "collector-war-overview",
  "collector-weather",
- "crossbeam-queue",
+ "either",
  "engine-air-history",
  "engine-allocation",
  "engine-characters",
@@ -683,7 +695,11 @@ dependencies = [
  "engine-visibility",
  "installed-content-country-names",
  "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
+ "num-traits",
  "proc-macro2",
+ "recorder-derive",
  "recorder-replay",
  "replay",
  "replay-columnar",
@@ -694,6 +710,7 @@ dependencies = [
  "retour",
  "serde",
  "serde_json",
+ "smallvec",
  "syn 2.0.119",
  "test-unify",
  "windows-sys 0.52.0",
@@ -715,6 +732,7 @@ dependencies = [
  "collector-projection",
  "collector-test-support",
  "collector-timing",
+ "crossbeam-utils",
  "engine-allocation",
  "engine-characters",
  "engine-mutations",
@@ -800,6 +818,7 @@ dependencies = [
  "collector-status",
  "collector-test-support",
  "collector-timing",
+ "crossbeam-utils",
  "engine-air-history",
  "engine-allocation",
  "engine-events",
@@ -852,6 +871,7 @@ dependencies = [
  "collector-raw",
  "collector-test-support",
  "collector-timing",
+ "crossbeam-utils",
  "engine-native",
  "replay-data",
  "replay-frame",
@@ -895,6 +915,7 @@ dependencies = [
  "collector-status",
  "collector-test-support",
  "collector-timing",
+ "crossbeam-utils",
  "engine-allocation",
  "engine-executable",
  "engine-land-inputs",
@@ -923,6 +944,7 @@ dependencies = [
  "collector-status",
  "collector-test-support",
  "collector-timing",
+ "crossbeam-utils",
  "engine-allocation",
  "engine-dlc",
  "engine-land-inputs",
@@ -956,6 +978,7 @@ dependencies = [
  "collector-status",
  "collector-test-support",
  "collector-timing",
+ "crossbeam-utils",
  "engine-allocation",
  "engine-deployment",
  "engine-intelligence",
@@ -991,6 +1014,7 @@ dependencies = [
  "collector-status",
  "collector-test-support",
  "collector-timing",
+ "crossbeam-utils",
  "engine-allocation",
  "engine-executable",
  "engine-native",
@@ -1022,6 +1046,7 @@ dependencies = [
  "collector-status",
  "collector-test-support",
  "collector-timing",
+ "crossbeam-utils",
  "engine-allocation",
  "engine-deployment",
  "engine-executable",
@@ -1055,6 +1080,7 @@ dependencies = [
  "collector-raw",
  "collector-test-support",
  "collector-timing",
+ "crossbeam-utils",
  "engine-allocation",
  "engine-events",
  "engine-fuel",
@@ -1131,6 +1157,7 @@ dependencies = [
  "collector-status",
  "collector-test-support",
  "collector-timing",
+ "crossbeam-utils",
  "engine-allocation",
  "engine-fuel",
  "engine-native",
@@ -1160,6 +1187,7 @@ dependencies = [
  "collector-status",
  "collector-test-support",
  "collector-timing",
+ "crossbeam-utils",
  "engine-allocation",
  "engine-decisions",
  "engine-focus",
@@ -1190,8 +1218,10 @@ dependencies = [
  "collector-test-support",
  "engine-allocation",
  "engine-events",
+ "engine-executable",
  "engine-mutations",
  "engine-native",
+ "engine-sites",
  "retour",
  "serde",
  "serde_json",
@@ -1218,6 +1248,7 @@ dependencies = [
  "collector-status",
  "collector-test-support",
  "collector-timing",
+ "crossbeam-utils",
  "engine-allocation",
  "engine-events",
  "engine-intelligence",
@@ -1261,6 +1292,7 @@ dependencies = [
 name = "collector-ledger-tables"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "collector-certificates",
  "collector-extended-support",
  "collector-hooks",
@@ -1271,18 +1303,27 @@ dependencies = [
  "collector-projection",
  "collector-test-support",
  "collector-timing",
+ "either",
  "engine-air-history",
  "engine-allocation",
  "engine-events",
  "engine-native",
  "engine-production",
  "engine-scripts",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
+ "num-traits",
+ "recorder-derive",
  "replay",
  "replay-data",
+ "replay-derive",
  "replay-frame",
  "replay-identity",
  "serde",
  "serde_json",
+ "smallvec",
  "test-unify",
  "windows-sys 0.52.0",
 ]
@@ -1314,6 +1355,7 @@ version = "0.1.0"
 dependencies = [
  "collector-hooks",
  "collector-lifetime",
+ "collector-memory",
  "collector-primitives",
  "collector-status",
  "collector-test-support",
@@ -1322,6 +1364,8 @@ dependencies = [
  "engine-mutations",
  "engine-native",
  "engine-sites",
+ "replay-data",
+ "replay-identity",
  "serde",
  "test-unify",
  "windows-sys 0.52.0",
@@ -1333,6 +1377,7 @@ name = "collector-logistics"
 version = "0.1.0"
 dependencies = [
  "collector-hooks",
+ "collector-memory",
  "collector-primitives",
  "collector-status",
  "collector-test-support",
@@ -1341,6 +1386,8 @@ dependencies = [
  "engine-land-inputs",
  "engine-native",
  "engine-sites",
+ "replay-data",
+ "replay-identity",
  "serde",
  "test-unify",
  "windows-sys 0.52.0",
@@ -1353,6 +1400,7 @@ dependencies = [
  "collector-hooks",
  "collector-lifetime",
  "collector-map-events",
+ "collector-memory",
  "collector-primitives",
  "collector-status",
  "collector-test-support",
@@ -1478,6 +1526,7 @@ dependencies = [
  "collector-projection",
  "collector-status",
  "collector-test-support",
+ "crossbeam-utils",
  "engine-allocation",
  "engine-native",
  "replay-data",
@@ -1507,6 +1556,7 @@ dependencies = [
  "collector-status",
  "collector-test-support",
  "collector-timing",
+ "crossbeam-utils",
  "engine-allocation",
  "engine-executable",
  "engine-native",
@@ -1527,6 +1577,7 @@ version = "0.1.0"
 dependencies = [
  "collector-certificates",
  "collector-hooks",
+ "collector-memory",
  "collector-naval-management",
  "collector-primitives",
  "collector-status",
@@ -1597,6 +1648,7 @@ dependencies = [
  "collector-test-support",
  "collector-timing",
  "crossbeam-queue",
+ "crossbeam-utils",
  "engine-air-history",
  "engine-allocation",
  "engine-decisions",
@@ -1638,6 +1690,7 @@ dependencies = [
  "collector-status",
  "collector-test-support",
  "collector-timing",
+ "crossbeam-utils",
  "engine-allocation",
  "engine-native",
  "engine-production",
@@ -1693,6 +1746,7 @@ dependencies = [
  "collector-status",
  "collector-test-support",
  "collector-timing",
+ "crossbeam-utils",
  "engine-allocation",
  "engine-decisions",
  "engine-events",
@@ -1743,6 +1797,7 @@ dependencies = [
  "collector-raw",
  "collector-test-support",
  "collector-timing",
+ "crossbeam-utils",
  "engine-allocation",
  "engine-deployment",
  "engine-equipment",
@@ -1777,6 +1832,7 @@ dependencies = [
  "collector-raw",
  "collector-test-support",
  "collector-timing",
+ "crossbeam-utils",
  "engine-allocation",
  "engine-native",
  "engine-production",
@@ -1823,6 +1879,7 @@ dependencies = [
  "collector-status",
  "collector-test-support",
  "collector-timing",
+ "crossbeam-utils",
  "engine-allocation",
  "engine-characters",
  "engine-events",
@@ -1858,6 +1915,7 @@ dependencies = [
  "collector-raids",
  "collector-test-support",
  "collector-timing",
+ "crossbeam-utils",
  "engine-allocation",
  "engine-mutations",
  "engine-native",
@@ -1886,6 +1944,7 @@ dependencies = [
  "collector-railway-guns",
  "collector-status",
  "collector-test-support",
+ "crossbeam-utils",
  "engine-allocation",
  "engine-executable",
  "engine-fixed-layout",
@@ -1936,6 +1995,7 @@ dependencies = [
  "collector-session",
  "collector-test-support",
  "collector-timing",
+ "crossbeam-utils",
  "engine-allocation",
  "engine-native",
  "engine-stability",
@@ -1965,6 +2025,7 @@ dependencies = [
  "collector-status",
  "collector-test-support",
  "collector-timing",
+ "crossbeam-utils",
  "engine-allocation",
  "engine-executable",
  "engine-mutations",
@@ -1996,6 +2057,7 @@ dependencies = [
  "collector-slow-tables",
  "collector-test-support",
  "collector-timing",
+ "crossbeam-utils",
  "engine-allocation",
  "engine-land-inputs",
  "engine-native",
@@ -2034,6 +2096,7 @@ dependencies = [
  "collector-status",
  "collector-test-support",
  "collector-timing",
+ "crossbeam-utils",
  "engine-allocation",
  "engine-native",
  "engine-stability",
@@ -2082,21 +2145,20 @@ dependencies = [
 [[package]]
 name = "collector-test-support"
 version = "0.1.0"
-dependencies = [
- "test-unify",
- "windows-sys 0.61.2",
-]
 
 [[package]]
 name = "collector-timing"
 version = "0.1.0"
 dependencies = [
+ "collector-memory",
  "collector-primitives",
  "collector-status",
  "collector-test-support",
  "collector-timing",
  "engine-allocation",
  "engine-native",
+ "replay-data",
+ "replay-identity",
  "serde",
  "serde_json",
  "test-unify",
@@ -2119,6 +2181,7 @@ dependencies = [
  "collector-test-support",
  "collector-timing",
  "collector-visibility",
+ "crossbeam-utils",
  "engine-allocation",
  "engine-dlc",
  "engine-land-inputs",
@@ -2149,6 +2212,7 @@ dependencies = [
  "collector-test-support",
  "collector-timing",
  "collector-war-overview",
+ "crossbeam-utils",
  "engine-allocation",
  "engine-mutations",
  "engine-native",
@@ -2178,6 +2242,7 @@ dependencies = [
  "collector-test-support",
  "collector-timing",
  "collector-weather",
+ "crossbeam-utils",
  "engine-allocation",
  "engine-executable",
  "engine-native",
@@ -2229,13 +2294,17 @@ checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
 name = "content-witness"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-allocation",
  "engine-native",
  "installed-content-core",
+ "num-traits",
  "product-codec",
  "replay-data",
  "replay-identity",
  "sha2",
+ "smallvec",
  "test-unify",
 ]
 
@@ -2289,23 +2358,6 @@ name = "core-foundation-sys"
 version = "0.8.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
-
-[[package]]
-name = "core-gate-memory"
-version = "0.1.0"
-dependencies = [
- "engine-native",
- "hashbrown 0.17.1",
- "replay",
- "replay-columnar",
- "replay-data",
- "replay-identity",
- "serde",
- "serde_json",
- "test-unify",
- "toml 0.8.2",
- "zstd",
-]
 
 [[package]]
 name = "core-graphics"
@@ -2608,62 +2660,31 @@ name = "dashboard"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "bitflags 2.13.1",
  "blake3",
- "dashboard-air-aces",
- "dashboard-air-operations",
- "dashboard-air-superiority",
- "dashboard-army",
  "dashboard-base",
- "dashboard-construction",
  "dashboard-core",
- "dashboard-country-fuel",
- "dashboard-country-nukes",
- "dashboard-diplomacy",
- "dashboard-doctrine-mastery",
- "dashboard-economy",
- "dashboard-equipment-losses",
- "dashboard-equipment-stockpile",
- "dashboard-factions",
- "dashboard-forces",
- "dashboard-game-score",
- "dashboard-game-window",
- "dashboard-ideas",
- "dashboard-intelligence",
- "dashboard-keyed",
- "dashboard-land-battles",
- "dashboard-manpower",
- "dashboard-measure",
- "dashboard-military-air-ledger",
- "dashboard-naval",
- "dashboard-naval-regions",
- "dashboard-naval-yards",
- "dashboard-occupation",
- "dashboard-party-history",
- "dashboard-peace-deals",
- "dashboard-place-names",
- "dashboard-politics",
- "dashboard-politics-ledger",
- "dashboard-raids",
- "dashboard-resource-balance",
- "dashboard-series",
- "dashboard-special-projects",
- "dashboard-stability",
- "dashboard-subjects",
+ "dashboard-declare",
+ "dashboard-follow",
+ "dashboard-query",
  "dashboard-text",
- "dashboard-unit-leaders",
- "dashboard-wars",
- "dashboard-weather",
- "dashboard-world",
- "dashboard-world-tension",
- "dpi",
+ "either",
+ "engine-air-history",
  "engine-allocation",
  "engine-executable",
+ "engine-fuel",
  "engine-heap",
+ "engine-intelligence",
+ "engine-land-inputs",
  "engine-native",
+ "engine-power-balance",
+ "engine-projects",
  "engine-research",
+ "engine-resources",
  "engine-stability",
  "installed-content-core",
  "installed-content-country-names",
+ "installed-content-division-names",
  "installed-content-equipment-graphics",
  "installed-content-events",
  "installed-content-focus",
@@ -2671,6 +2692,7 @@ dependencies = [
  "installed-content-image",
  "installed-content-localisation",
  "installed-content-province-area",
+ "installed-content-raids",
  "installed-content-regions",
  "installed-content-settings",
  "installed-content-states",
@@ -2678,13 +2700,20 @@ dependencies = [
  "installed-content-weather",
  "indexmap 2.14.2",
  "job-priority",
+ "log",
  "map-snow",
+ "num-traits",
  "once_cell",
+ "playhead",
  "png 0.18.1",
+ "rayon",
+ "recorder-derive",
  "recorder-platform",
  "recording-upgrade",
  "replay",
+ "replay-columnar",
  "replay-data",
+ "replay-derive",
  "replay-frame",
  "replay-identity",
  "replay-spool",
@@ -2693,184 +2722,28 @@ dependencies = [
  "serde_json",
  "sha2",
  "shader-pipeline",
- "store",
+ "smallvec",
  "test-unify",
- "tracing",
  "ts-rs",
  "uuid",
- "viewer-counter-products",
- "viewer-world",
+ "wgpu",
  "winapi-util",
  "windows 0.62.2",
- "windows-sys 0.52.0",
- "windows-sys 0.59.0",
+ "windows-core 0.62.2",
  "windows-sys 0.61.2",
  "zstd",
-]
-
-[[package]]
-name = "dashboard-air-aces"
-version = "0.1.0"
-dependencies = [
- "dashboard-air-aces",
- "dashboard-base",
- "dashboard-core",
- "dashboard-text",
- "dashboard-world",
- "engine-executable",
- "engine-heap",
- "engine-native",
- "installed-content-core",
- "installed-content-localisation",
- "indexmap 2.14.2",
- "log",
- "once_cell",
- "replay",
- "replay-data",
- "replay-derive",
- "replay-frame",
- "replay-identity",
- "replay-spool",
- "serde",
- "serde_json",
- "shader-pipeline",
- "store",
- "test-unify",
- "ts-rs",
- "wgpu",
- "winapi-util",
- "windows 0.62.2",
- "windows-core 0.62.2",
- "zstd",
-]
-
-[[package]]
-name = "dashboard-air-operations"
-version = "0.1.0"
-dependencies = [
- "dashboard-base",
- "dashboard-core",
- "dashboard-keyed",
- "dashboard-series",
- "dashboard-text",
- "dpi",
- "engine-air-history",
- "engine-executable",
- "engine-heap",
- "engine-native",
- "installed-content-core",
- "installed-content-localisation",
- "indexmap 2.14.2",
- "once_cell",
- "replay",
- "replay-data",
- "replay-derive",
- "replay-frame",
- "replay-identity",
- "replay-spool",
- "serde",
- "serde_json",
- "shader-pipeline",
- "store",
- "test-unify",
- "tracing",
- "ts-rs",
- "viewer-foundation",
- "winapi-util",
- "windows 0.62.2",
- "windows-core 0.62.2",
- "windows-sys 0.52.0",
- "windows-sys 0.59.0",
-]
-
-[[package]]
-name = "dashboard-air-superiority"
-version = "0.1.0"
-dependencies = [
- "dashboard-air-superiority",
- "dashboard-base",
- "dashboard-core",
- "dashboard-text",
- "dashboard-world",
- "engine-executable",
- "engine-heap",
- "engine-native",
- "installed-content-core",
- "installed-content-localisation",
- "installed-content-regions",
- "indexmap 2.14.2",
- "log",
- "once_cell",
- "replay",
- "replay-data",
- "replay-derive",
- "replay-frame",
- "replay-identity",
- "replay-spool",
- "serde",
- "serde_json",
- "shader-pipeline",
- "store",
- "test-unify",
- "ts-rs",
- "wgpu",
- "winapi-util",
- "windows 0.62.2",
- "windows-core 0.62.2",
- "zstd",
-]
-
-[[package]]
-name = "dashboard-army"
-version = "0.1.0"
-dependencies = [
- "dashboard-army",
- "dashboard-base",
- "dashboard-core",
- "dashboard-forces",
- "dashboard-keyed",
- "dashboard-land-battles",
- "dashboard-series",
- "dashboard-text",
- "dashboard-world",
- "engine-allocation",
- "engine-executable",
- "engine-heap",
- "engine-native",
- "installed-content-core",
- "installed-content-division-names",
- "installed-content-localisation",
- "indexmap 2.14.2",
- "log",
- "once_cell",
- "replay",
- "replay-data",
- "replay-derive",
- "replay-frame",
- "replay-identity",
- "replay-spool",
- "serde",
- "serde_json",
- "shader-pipeline",
- "store",
- "test-unify",
- "ts-rs",
- "wgpu",
- "winapi-util",
- "windows 0.62.2",
- "windows-core 0.62.2",
 ]
 
 [[package]]
 name = "dashboard-base"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "blake3",
  "dashboard-base",
  "dashboard-core",
- "dashboard-series",
  "dashboard-text",
- "dashboard-world",
+ "either",
  "engine-allocation",
  "engine-dlc",
  "engine-events",
@@ -2895,10 +2768,12 @@ dependencies = [
  "indexmap 2.14.2",
  "job-priority",
  "log",
+ "num-traits",
  "once_cell",
  "png 0.18.1",
  "proc-macro2",
  "product-codec",
+ "recorder-derive",
  "replay",
  "replay-data",
  "replay-derive",
@@ -2909,7 +2784,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
- "store",
+ "smallvec",
  "syn 2.0.119",
  "test-unify",
  "ts-rs",
@@ -2923,62 +2798,34 @@ dependencies = [
 ]
 
 [[package]]
-name = "dashboard-construction"
-version = "0.1.0"
-dependencies = [
- "dashboard-base",
- "dashboard-core",
- "dashboard-series",
- "dashboard-text",
- "dashboard-world",
- "engine-executable",
- "engine-heap",
- "engine-native",
- "installed-content-core",
- "installed-content-gfx",
- "installed-content-image",
- "installed-content-states",
- "indexmap 2.14.2",
- "log",
- "once_cell",
- "png 0.18.1",
- "replay",
- "replay-data",
- "replay-derive",
- "replay-frame",
- "replay-identity",
- "replay-spool",
- "serde",
- "serde_json",
- "shader-pipeline",
- "store",
- "test-unify",
- "ts-rs",
- "wgpu",
- "winapi-util",
- "windows 0.62.2",
- "windows-core 0.62.2",
-]
-
-[[package]]
 name = "dashboard-core"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "dashboard-core",
+ "either",
  "engine-allocation",
  "engine-executable",
  "engine-heap",
  "engine-native",
  "installed-content-core",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
  "installed-content-settings",
  "job-priority",
+ "num-traits",
+ "recorder-derive",
  "replay",
  "replay-data",
+ "replay-derive",
  "replay-frame",
  "replay-identity",
  "replay-spool",
  "serde",
  "serde_json",
+ "smallvec",
  "test-unify",
  "ts-rs",
  "uuid",
@@ -2986,1190 +2833,72 @@ dependencies = [
 ]
 
 [[package]]
-name = "dashboard-country-fuel"
+name = "dashboard-declare"
 version = "0.1.0"
 dependencies = [
- "dashboard-base",
- "dashboard-core",
- "dashboard-country-fuel",
- "dashboard-series",
- "dashboard-text",
- "dashboard-world",
- "engine-allocation",
- "engine-fuel",
- "engine-heap",
  "engine-native",
- "installed-content-localisation",
- "indexmap 2.14.2",
- "log",
- "once_cell",
- "replay",
+ "replay-columnar",
  "replay-data",
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "replay-spool",
- "serde",
- "serde_json",
- "shader-pipeline",
- "store",
  "test-unify",
- "ts-rs",
- "uuid",
- "wgpu",
- "winapi-util",
- "windows 0.62.2",
- "windows-core 0.62.2",
 ]
 
 [[package]]
-name = "dashboard-country-nukes"
+name = "dashboard-follow"
 version = "0.1.0"
 dependencies = [
- "dashboard-base",
- "dashboard-core",
- "dashboard-country-nukes",
- "dashboard-series",
- "dashboard-text",
- "dashboard-world",
- "engine-heap",
+ "bitflags 2.13.1",
+ "dashboard-declare",
+ "dashboard-query",
+ "either",
  "engine-native",
- "installed-content-core",
- "installed-content-localisation",
- "indexmap 2.14.2",
- "log",
- "once_cell",
- "replay",
- "replay-data",
- "replay-derive",
- "replay-frame",
- "replay-identity",
- "replay-spool",
- "serde",
- "serde_json",
- "shader-pipeline",
- "store",
- "test-unify",
- "ts-rs",
- "wgpu",
- "winapi-util",
- "windows 0.62.2",
- "windows-core 0.62.2",
-]
-
-[[package]]
-name = "dashboard-diplomacy"
-version = "0.1.0"
-dependencies = [
- "dashboard-base",
- "dashboard-core",
- "dashboard-series",
- "dashboard-text",
- "dashboard-world",
- "engine-native",
- "installed-content-core",
- "installed-content-localisation",
- "indexmap 2.14.2",
- "log",
- "once_cell",
- "replay",
- "replay-data",
- "replay-derive",
- "replay-frame",
- "replay-identity",
- "replay-spool",
- "serde",
- "serde_json",
- "shader-pipeline",
- "store",
- "test-unify",
- "ts-rs",
- "uuid",
- "wgpu",
- "winapi-util",
- "windows 0.62.2",
- "windows-core 0.62.2",
-]
-
-[[package]]
-name = "dashboard-doctrine-mastery"
-version = "0.1.0"
-dependencies = [
- "dashboard-base",
- "dashboard-core",
- "dashboard-keyed",
- "dashboard-text",
- "engine-executable",
- "engine-heap",
- "engine-native",
- "installed-content-core",
- "indexmap 2.14.2",
- "log",
- "once_cell",
- "replay",
- "replay-data",
- "replay-derive",
- "replay-frame",
- "replay-identity",
- "replay-spool",
- "serde",
- "serde_json",
- "shader-pipeline",
- "store",
- "test-unify",
- "ts-rs",
- "wgpu",
- "winapi-util",
- "windows 0.62.2",
- "windows-core 0.62.2",
-]
-
-[[package]]
-name = "dashboard-economy"
-version = "0.1.0"
-dependencies = [
- "dashboard-base",
- "dashboard-core",
- "dashboard-country-fuel",
- "dashboard-economy",
- "dashboard-series",
- "dashboard-text",
- "dashboard-world",
- "engine-allocation",
- "engine-heap",
- "engine-native",
- "engine-resources",
- "installed-content-core",
- "indexmap 2.14.2",
- "log",
- "once_cell",
- "replay",
- "replay-data",
- "replay-derive",
- "replay-frame",
- "replay-identity",
- "replay-spool",
- "serde",
- "serde_json",
- "shader-pipeline",
- "store",
- "test-unify",
- "ts-rs",
- "uuid",
- "wgpu",
- "winapi-util",
- "windows 0.62.2",
- "windows-core 0.62.2",
-]
-
-[[package]]
-name = "dashboard-equipment-losses"
-version = "0.1.0"
-dependencies = [
- "dashboard-base",
- "dashboard-core",
- "dashboard-equipment-losses",
- "dashboard-text",
- "dashboard-world",
- "engine-allocation",
- "engine-dlc",
- "engine-executable",
- "engine-heap",
- "engine-land-inputs",
- "engine-native",
- "engine-resources",
- "installed-content-core",
- "indexmap 2.14.2",
- "job-priority",
- "log",
- "once_cell",
- "replay",
- "replay-data",
- "replay-derive",
- "replay-frame",
- "replay-identity",
- "replay-spool",
- "serde",
- "serde_json",
- "shader-pipeline",
- "store",
- "test-unify",
- "ts-rs",
- "wgpu",
- "winapi-util",
- "windows 0.62.2",
- "windows-core 0.62.2",
-]
-
-[[package]]
-name = "dashboard-equipment-stockpile"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "dashboard-base",
- "dashboard-core",
- "dashboard-series",
- "dashboard-text",
- "dashboard-world",
- "engine-allocation",
- "engine-executable",
- "engine-heap",
- "engine-native",
- "installed-content-core",
- "indexmap 2.14.2",
- "log",
- "once_cell",
- "replay",
- "replay-data",
- "replay-derive",
- "replay-frame",
- "replay-identity",
- "replay-spool",
- "serde",
- "serde_json",
- "shader-pipeline",
- "store",
- "test-unify",
- "ts-rs",
- "uuid",
- "wgpu",
- "winapi-util",
- "windows 0.62.2",
- "windows-core 0.62.2",
-]
-
-[[package]]
-name = "dashboard-factions"
-version = "0.1.0"
-dependencies = [
- "dashboard-base",
- "dashboard-series",
- "dashboard-world",
- "engine-native",
- "engine-projects",
- "indexmap 2.14.2",
- "log",
- "once_cell",
- "replay",
- "replay-data",
- "replay-derive",
- "replay-frame",
- "replay-identity",
- "replay-spool",
- "serde",
- "serde_json",
- "shader-pipeline",
- "store",
- "test-unify",
- "ts-rs",
- "wgpu",
- "winapi-util",
- "windows 0.62.2",
- "windows-core 0.62.2",
-]
-
-[[package]]
-name = "dashboard-forces"
-version = "0.1.0"
-dependencies = [
- "dashboard-base",
- "dashboard-core",
- "dashboard-forces",
- "dashboard-series",
- "dashboard-text",
- "dashboard-world",
- "engine-allocation",
- "engine-executable",
- "engine-heap",
- "engine-native",
- "installed-content-core",
- "indexmap 2.14.2",
- "log",
- "once_cell",
- "replay",
- "replay-data",
- "replay-derive",
- "replay-frame",
- "replay-identity",
- "replay-spool",
- "serde",
- "serde_json",
- "shader-pipeline",
- "store",
- "test-unify",
- "ts-rs",
- "uuid",
- "wgpu",
- "winapi-util",
- "windows 0.62.2",
- "windows-core 0.62.2",
-]
-
-[[package]]
-name = "dashboard-game-score"
-version = "0.1.0"
-dependencies = [
- "dashboard-base",
- "dashboard-core",
- "dashboard-game-score",
- "dashboard-series",
- "dashboard-text",
- "dashboard-wars",
- "dashboard-world",
- "engine-heap",
- "engine-native",
- "installed-content-core",
  "installed-content-country-names",
  "installed-content-localisation",
- "indexmap 2.14.2",
- "log",
- "once_cell",
- "replay",
- "replay-data",
- "replay-derive",
- "replay-frame",
- "replay-identity",
- "replay-spool",
- "serde",
- "serde_json",
- "shader-pipeline",
- "store",
- "test-unify",
- "ts-rs",
- "wgpu",
- "winapi-util",
- "windows 0.62.2",
- "windows-core 0.62.2",
-]
-
-[[package]]
-name = "dashboard-game-window"
-version = "0.1.0"
-dependencies = [
- "dashboard-army",
- "dashboard-base",
- "dashboard-forces",
- "dashboard-keyed",
- "dashboard-land-battles",
- "dashboard-text",
- "dpi",
- "engine-executable",
- "engine-heap",
- "engine-native",
- "installed-content-core",
- "installed-content-gfx",
- "installed-content-image",
- "installed-content-localisation",
- "installed-content-settings",
- "installed-content-weather",
- "indexmap 2.14.2",
- "job-priority",
- "map-display-data",
- "map-products",
- "once_cell",
- "png 0.18.1",
- "pollster 0.4.0",
- "product-codec",
- "replay",
- "replay-data",
- "replay-frame",
- "replay-identity",
- "serde",
- "serde_json",
- "shader-pipeline",
- "store",
- "test-unify",
- "tracing",
- "ts-rs",
- "uuid",
- "viewer-counter-products",
- "viewer-foundation",
- "viewer-world",
- "wgpu",
- "winapi-util",
- "windows 0.62.2",
- "windows-sys 0.52.0",
- "windows-sys 0.59.0",
- "windows-sys 0.61.2",
- "zstd",
-]
-
-[[package]]
-name = "dashboard-ideas"
-version = "0.1.0"
-dependencies = [
- "dashboard-base",
- "dashboard-core",
- "dashboard-ideas",
- "dashboard-series",
- "dashboard-text",
- "dashboard-world",
- "engine-heap",
- "engine-native",
- "installed-content-core",
- "indexmap 2.14.2",
- "log",
- "once_cell",
- "replay",
- "replay-data",
- "replay-derive",
- "replay-frame",
- "replay-identity",
- "replay-spool",
- "serde",
- "serde_json",
- "shader-pipeline",
- "store",
- "test-unify",
- "wgpu",
- "winapi-util",
- "windows 0.62.2",
- "windows-core 0.62.2",
-]
-
-[[package]]
-name = "dashboard-intelligence"
-version = "0.1.0"
-dependencies = [
- "dashboard-base",
- "dashboard-core",
- "dashboard-intelligence",
- "dashboard-keyed",
- "dashboard-text",
- "dashboard-world",
- "engine-executable",
- "engine-heap",
- "engine-intelligence",
- "engine-native",
- "installed-content-core",
- "installed-content-country-names",
- "installed-content-gfx",
- "installed-content-localisation",
- "indexmap 2.14.2",
- "log",
- "once_cell",
- "replay",
- "replay-data",
- "replay-derive",
- "replay-frame",
- "replay-identity",
- "replay-spool",
- "serde",
- "serde_json",
- "shader-pipeline",
- "store",
- "test-unify",
- "ts-rs",
- "uuid",
- "wgpu",
- "winapi-util",
- "windows 0.62.2",
- "windows-core 0.62.2",
- "zstd",
-]
-
-[[package]]
-name = "dashboard-keyed"
-version = "0.1.0"
-dependencies = [
- "dashboard-base",
- "dashboard-core",
- "dashboard-keyed",
- "dashboard-series",
- "dashboard-text",
- "dashboard-world",
- "engine-allocation",
- "engine-heap",
- "engine-native",
- "indexmap 2.14.2",
- "log",
- "once_cell",
- "replay",
- "replay-data",
- "replay-derive",
- "replay-frame",
- "replay-identity",
- "replay-spool",
- "serde",
- "serde_json",
- "shader-pipeline",
- "store",
- "test-unify",
- "ts-rs",
- "wgpu",
- "winapi-util",
- "windows 0.62.2",
- "windows-core 0.62.2",
-]
-
-[[package]]
-name = "dashboard-land-battles"
-version = "0.1.0"
-dependencies = [
- "dashboard-base",
- "dashboard-core",
- "dashboard-land-battles",
- "dashboard-text",
- "dashboard-world",
- "engine-executable",
- "engine-heap",
- "engine-land-inputs",
- "engine-native",
- "foldhash 0.2.0",
- "installed-content-core",
- "installed-content-division-names",
- "indexmap 2.14.2",
- "log",
- "once_cell",
- "replay",
- "replay-data",
- "replay-derive",
- "replay-frame",
- "replay-identity",
- "replay-spool",
- "serde",
- "serde_json",
- "shader-pipeline",
- "store",
- "test-unify",
- "ts-rs",
- "wgpu",
- "winapi-util",
- "windows 0.62.2",
- "windows-core 0.62.2",
-]
-
-[[package]]
-name = "dashboard-manpower"
-version = "0.1.0"
-dependencies = [
- "dashboard-base",
- "dashboard-core",
- "dashboard-manpower",
- "dashboard-politics",
- "dashboard-series",
- "dashboard-text",
- "dashboard-world",
- "engine-heap",
- "engine-native",
- "indexmap 2.14.2",
- "log",
- "once_cell",
- "replay",
- "replay-data",
- "replay-derive",
- "replay-frame",
- "replay-identity",
- "replay-spool",
- "serde",
- "serde_json",
- "shader-pipeline",
- "store",
- "test-unify",
- "ts-rs",
- "wgpu",
- "winapi-util",
- "windows 0.62.2",
- "windows-core 0.62.2",
-]
-
-[[package]]
-name = "dashboard-measure"
-version = "0.1.0"
-dependencies = [
- "dashboard-base",
- "dashboard-core",
- "dashboard-series",
- "dashboard-text",
- "dashboard-world",
- "engine-heap",
- "engine-native",
- "indexmap 2.14.2",
- "log",
- "once_cell",
- "replay",
- "replay-data",
- "replay-derive",
- "replay-frame",
- "replay-identity",
- "replay-spool",
- "serde",
- "serde_json",
- "shader-pipeline",
- "store",
- "test-unify",
- "wgpu",
- "winapi-util",
- "windows 0.62.2",
- "windows-core 0.62.2",
-]
-
-[[package]]
-name = "dashboard-military-air-ledger"
-version = "0.1.0"
-dependencies = [
- "dashboard-base",
- "dashboard-core",
- "dashboard-military-air-ledger",
- "dashboard-series",
- "dashboard-text",
- "dashboard-world",
- "engine-air-history",
- "engine-heap",
- "engine-native",
- "installed-content-core",
+ "installed-content-province-area",
  "installed-content-regions",
- "indexmap 2.14.2",
- "log",
- "once_cell",
+ "num-traits",
+ "playhead",
+ "recorder-derive",
  "replay",
+ "replay-columnar",
  "replay-data",
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "replay-spool",
- "serde",
  "serde_json",
- "shader-pipeline",
- "store",
+ "smallvec",
  "test-unify",
- "ts-rs",
- "wgpu",
  "winapi-util",
- "windows 0.62.2",
- "windows-core 0.62.2",
 ]
 
 [[package]]
-name = "dashboard-naval"
+name = "dashboard-query"
 version = "0.1.0"
 dependencies = [
- "dashboard-base",
- "dashboard-core",
- "dashboard-land-battles",
- "dashboard-naval",
- "dashboard-series",
- "dashboard-text",
- "dashboard-world",
- "engine-executable",
- "engine-heap",
+ "bitflags 2.13.1",
+ "dashboard-declare",
+ "either",
  "engine-native",
- "installed-content-core",
+ "installed-content-country-names",
  "installed-content-localisation",
+ "installed-content-province-area",
  "installed-content-regions",
- "indexmap 2.14.2",
- "log",
- "once_cell",
+ "num-traits",
+ "recorder-derive",
  "replay",
- "replay-data",
- "replay-derive",
- "replay-frame",
- "replay-identity",
- "replay-spool",
- "serde",
- "serde_json",
- "shader-pipeline",
- "store",
- "test-unify",
- "ts-rs",
- "uuid",
- "wgpu",
- "winapi-util",
- "windows 0.62.2",
- "windows-core 0.62.2",
- "zstd",
-]
-
-[[package]]
-name = "dashboard-naval-regions"
-version = "0.1.0"
-dependencies = [
- "dashboard-base",
- "dashboard-core",
- "dashboard-keyed",
- "dashboard-text",
- "engine-executable",
- "engine-heap",
- "engine-native",
- "installed-content-core",
- "indexmap 2.14.2",
- "log",
- "once_cell",
- "replay",
+ "replay-columnar",
  "replay-data",
  "replay-derive",
  "replay-frame",
  "replay-identity",
  "serde",
  "serde_json",
- "shader-pipeline",
- "store",
+ "smallvec",
  "test-unify",
  "ts-rs",
- "wgpu",
  "winapi-util",
- "windows 0.62.2",
- "windows-core 0.62.2",
-]
-
-[[package]]
-name = "dashboard-naval-yards"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "dashboard-base",
- "dashboard-core",
- "dashboard-forces",
- "dashboard-keyed",
- "dashboard-series",
- "dashboard-text",
- "dashboard-world",
- "engine-allocation",
- "engine-executable",
- "engine-heap",
- "engine-native",
- "installed-content-core",
- "installed-content-country-names",
- "installed-content-division-names",
- "indexmap 2.14.2",
- "log",
- "once_cell",
- "replay",
- "replay-data",
- "replay-derive",
- "replay-frame",
- "replay-identity",
- "replay-spool",
- "serde",
- "serde_json",
- "shader-pipeline",
- "store",
- "test-unify",
- "ts-rs",
- "wgpu",
- "winapi-util",
- "windows 0.62.2",
- "windows-core 0.62.2",
-]
-
-[[package]]
-name = "dashboard-occupation"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "dashboard-base",
- "dashboard-core",
- "dashboard-keyed",
- "dashboard-occupation",
- "dashboard-series",
- "dashboard-text",
- "dashboard-world",
- "engine-executable",
- "engine-heap",
- "engine-native",
- "installed-content-core",
- "installed-content-gfx",
- "installed-content-image",
- "installed-content-localisation",
- "indexmap 2.14.2",
- "log",
- "once_cell",
- "replay",
- "replay-data",
- "replay-derive",
- "replay-frame",
- "replay-identity",
- "replay-spool",
- "serde",
- "serde_json",
- "shader-pipeline",
- "store",
- "test-unify",
- "ts-rs",
- "wgpu",
- "winapi-util",
- "windows 0.62.2",
- "windows-core 0.62.2",
-]
-
-[[package]]
-name = "dashboard-party-history"
-version = "0.1.0"
-dependencies = [
- "dashboard-base",
- "dashboard-core",
- "dashboard-party-history",
- "dashboard-series",
- "dashboard-text",
- "dashboard-world",
- "engine-executable",
- "engine-heap",
- "engine-native",
- "installed-content-core",
- "installed-content-country-names",
- "indexmap 2.14.2",
- "log",
- "once_cell",
- "replay",
- "replay-data",
- "replay-derive",
- "replay-frame",
- "replay-identity",
- "replay-spool",
- "serde",
- "serde_json",
- "shader-pipeline",
- "store",
- "test-unify",
- "ts-rs",
- "uuid",
- "wgpu",
- "winapi-util",
- "windows 0.62.2",
- "windows-core 0.62.2",
-]
-
-[[package]]
-name = "dashboard-peace-deals"
-version = "0.1.0"
-dependencies = [
- "dashboard-base",
- "dashboard-core",
- "dashboard-peace-deals",
- "dashboard-series",
- "dashboard-text",
- "dashboard-world",
- "engine-heap",
- "engine-native",
- "engine-peace",
- "installed-content-core",
- "installed-content-localisation",
- "indexmap 2.14.2",
- "log",
- "once_cell",
- "replay",
- "replay-data",
- "replay-derive",
- "replay-frame",
- "replay-identity",
- "replay-spool",
- "serde",
- "serde_json",
- "shader-pipeline",
- "store",
- "test-unify",
- "ts-rs",
- "uuid",
- "wgpu",
- "winapi-util",
- "windows 0.62.2",
- "windows-core 0.62.2",
-]
-
-[[package]]
-name = "dashboard-place-names"
-version = "0.1.0"
-dependencies = [
- "dashboard-base",
- "dashboard-core",
- "dashboard-place-names",
- "dashboard-series",
- "dashboard-world",
- "engine-heap",
- "engine-native",
- "indexmap 2.14.2",
- "log",
- "once_cell",
- "replay",
- "replay-data",
- "replay-derive",
- "replay-frame",
- "replay-identity",
- "replay-spool",
- "shader-pipeline",
- "store",
- "test-unify",
- "wgpu",
- "winapi-util",
- "windows 0.62.2",
- "windows-core 0.62.2",
-]
-
-[[package]]
-name = "dashboard-politics"
-version = "0.1.0"
-dependencies = [
- "dashboard-base",
- "dashboard-core",
- "dashboard-politics",
- "dashboard-series",
- "dashboard-text",
- "dashboard-world",
- "engine-executable",
- "engine-heap",
- "engine-native",
- "engine-power-balance",
- "installed-content-core",
- "indexmap 2.14.2",
- "log",
- "once_cell",
- "replay",
- "replay-data",
- "replay-derive",
- "replay-frame",
- "replay-identity",
- "replay-spool",
- "serde",
- "serde_json",
- "shader-pipeline",
- "store",
- "test-unify",
- "ts-rs",
- "wgpu",
- "winapi-util",
- "windows 0.62.2",
- "windows-core 0.62.2",
-]
-
-[[package]]
-name = "dashboard-politics-ledger"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "dashboard-base",
- "dashboard-core",
- "dashboard-politics-ledger",
- "dashboard-series",
- "dashboard-text",
- "dashboard-world",
- "engine-executable",
- "engine-heap",
- "engine-native",
- "installed-content-core",
- "installed-content-country-names",
- "installed-content-localisation",
- "indexmap 2.14.2",
- "log",
- "once_cell",
- "replay",
- "replay-data",
- "replay-derive",
- "replay-frame",
- "replay-identity",
- "replay-spool",
- "serde",
- "serde_json",
- "shader-pipeline",
- "store",
- "test-unify",
- "ts-rs",
- "wgpu",
- "winapi-util",
- "windows 0.62.2",
- "windows-core 0.62.2",
-]
-
-[[package]]
-name = "dashboard-raids"
-version = "0.1.0"
-dependencies = [
- "dashboard-base",
- "dashboard-core",
- "dashboard-keyed",
- "dashboard-raids",
- "dashboard-series",
- "dashboard-text",
- "dashboard-world",
- "engine-executable",
- "engine-heap",
- "engine-native",
- "installed-content-core",
- "installed-content-localisation",
- "installed-content-raids",
- "installed-content-states",
- "indexmap 2.14.2",
- "log",
- "once_cell",
- "replay",
- "replay-data",
- "replay-derive",
- "replay-frame",
- "replay-identity",
- "replay-spool",
- "serde",
- "serde_json",
- "shader-pipeline",
- "store",
- "test-unify",
- "ts-rs",
- "uuid",
- "wgpu",
- "winapi-util",
- "windows 0.62.2",
- "windows-core 0.62.2",
-]
-
-[[package]]
-name = "dashboard-resource-balance"
-version = "0.1.0"
-dependencies = [
- "dashboard-base",
- "dashboard-core",
- "dashboard-resource-balance",
- "dashboard-series",
- "dashboard-text",
- "dashboard-world",
- "engine-heap",
- "engine-native",
- "engine-production",
- "indexmap 2.14.2",
- "log",
- "once_cell",
- "replay",
- "replay-data",
- "replay-derive",
- "replay-frame",
- "replay-identity",
- "replay-spool",
- "serde",
- "serde_json",
- "shader-pipeline",
- "store",
- "test-unify",
- "ts-rs",
- "wgpu",
- "winapi-util",
- "windows 0.62.2",
- "windows-core 0.62.2",
-]
-
-[[package]]
-name = "dashboard-series"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "engine-allocation",
- "engine-native",
- "replay",
- "replay-data",
- "replay-identity",
- "replay-spool",
- "store",
- "test-unify",
-]
-
-[[package]]
-name = "dashboard-special-projects"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "dashboard-base",
- "dashboard-core",
- "dashboard-series",
- "dashboard-special-projects",
- "dashboard-text",
- "dashboard-world",
- "engine-executable",
- "engine-heap",
- "engine-native",
- "engine-projects",
- "installed-content-core",
- "installed-content-country-names",
- "installed-content-gfx",
- "installed-content-localisation",
- "indexmap 2.14.2",
- "log",
- "once_cell",
- "png 0.18.1",
- "replay",
- "replay-data",
- "replay-derive",
- "replay-frame",
- "replay-identity",
- "replay-spool",
- "serde",
- "serde_json",
- "shader-pipeline",
- "store",
- "test-unify",
- "ts-rs",
- "wgpu",
- "winapi-util",
- "windows 0.62.2",
- "windows-core 0.62.2",
-]
-
-[[package]]
-name = "dashboard-stability"
-version = "0.1.0"
-dependencies = [
- "dashboard-base",
- "dashboard-core",
- "dashboard-series",
- "dashboard-stability",
- "dashboard-text",
- "dashboard-world",
- "engine-executable",
- "engine-heap",
- "engine-native",
- "engine-stability",
- "installed-content-core",
- "indexmap 2.14.2",
- "log",
- "once_cell",
- "replay",
- "replay-data",
- "replay-derive",
- "replay-frame",
- "replay-identity",
- "replay-spool",
- "serde",
- "serde_json",
- "shader-pipeline",
- "store",
- "test-unify",
- "ts-rs",
- "wgpu",
- "winapi-util",
- "windows 0.62.2",
- "windows-core 0.62.2",
-]
-
-[[package]]
-name = "dashboard-subjects"
-version = "0.1.0"
-dependencies = [
- "dashboard-base",
- "dashboard-core",
- "dashboard-series",
- "dashboard-subjects",
- "dashboard-text",
- "dashboard-world",
- "engine-executable",
- "engine-heap",
- "engine-native",
- "installed-content-core",
- "installed-content-country-names",
- "indexmap 2.14.2",
- "log",
- "once_cell",
- "replay",
- "replay-data",
- "replay-derive",
- "replay-frame",
- "replay-identity",
- "replay-spool",
- "serde",
- "serde_json",
- "shader-pipeline",
- "store",
- "test-unify",
- "ts-rs",
- "uuid",
- "wgpu",
- "winapi-util",
- "windows 0.62.2",
- "windows-core 0.62.2",
 ]
 
 [[package]]
@@ -4177,10 +2906,11 @@ name = "dashboard-text"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "bitflags 2.13.1",
  "blake3",
  "dashboard-core",
  "dashboard-text",
- "dashboard-world",
+ "either",
  "engine-allocation",
  "engine-executable",
  "engine-heap",
@@ -4198,6 +2928,7 @@ dependencies = [
  "installed-content-gfx",
  "installed-content-image",
  "installed-content-localisation",
+ "installed-content-province-area",
  "installed-content-raids",
  "installed-content-regions",
  "installed-content-save",
@@ -4209,8 +2940,10 @@ dependencies = [
  "indexmap 2.14.2",
  "job-priority",
  "log",
+ "num-traits",
  "once_cell",
  "png 0.18.1",
+ "recorder-derive",
  "replay",
  "replay-data",
  "replay-derive",
@@ -4220,6 +2953,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
+ "smallvec",
  "test-unify",
  "uuid",
  "wgpu",
@@ -4227,170 +2961,6 @@ dependencies = [
  "windows 0.62.2",
  "windows-core 0.62.2",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "dashboard-unit-leaders"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "dashboard-base",
- "dashboard-core",
- "dashboard-text",
- "dashboard-unit-leaders",
- "dashboard-world",
- "engine-executable",
- "engine-heap",
- "engine-native",
- "installed-content-core",
- "installed-content-image",
- "indexmap 2.14.2",
- "log",
- "once_cell",
- "png 0.18.1",
- "replay",
- "replay-data",
- "replay-derive",
- "replay-frame",
- "replay-identity",
- "replay-spool",
- "serde",
- "serde_json",
- "shader-pipeline",
- "store",
- "test-unify",
- "ts-rs",
- "wgpu",
- "winapi-util",
- "windows 0.62.2",
- "windows-core 0.62.2",
- "zstd",
-]
-
-[[package]]
-name = "dashboard-wars"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "dashboard-base",
- "dashboard-core",
- "dashboard-series",
- "dashboard-text",
- "dashboard-wars",
- "dashboard-world",
- "engine-executable",
- "engine-heap",
- "engine-native",
- "foldhash 0.2.0",
- "installed-content-core",
- "installed-content-country-names",
- "installed-content-localisation",
- "installed-content-wargoals",
- "indexmap 2.14.2",
- "log",
- "once_cell",
- "replay",
- "replay-data",
- "replay-derive",
- "replay-frame",
- "replay-identity",
- "replay-spool",
- "serde",
- "serde_json",
- "shader-pipeline",
- "store",
- "test-unify",
- "ts-rs",
- "wgpu",
- "winapi-util",
- "windows 0.62.2",
- "windows-core 0.62.2",
- "zstd",
-]
-
-[[package]]
-name = "dashboard-weather"
-version = "0.1.0"
-dependencies = [
- "dashboard-air-operations",
- "dashboard-base",
- "dashboard-core",
- "dashboard-keyed",
- "dashboard-text",
- "engine-executable",
- "engine-heap",
- "engine-native",
- "installed-content-core",
- "installed-content-localisation",
- "installed-content-regions",
- "installed-content-weather",
- "indexmap 2.14.2",
- "log",
- "once_cell",
- "replay",
- "replay-data",
- "replay-derive",
- "replay-frame",
- "replay-identity",
- "replay-spool",
- "serde",
- "serde_json",
- "shader-pipeline",
- "store",
- "test-unify",
- "ts-rs",
- "wgpu",
- "winapi-util",
- "windows 0.62.2",
- "windows-core 0.62.2",
-]
-
-[[package]]
-name = "dashboard-world"
-version = "0.1.0"
-dependencies = [
- "engine-allocation",
- "engine-native",
- "replay",
- "replay-data",
- "replay-frame",
- "replay-identity",
- "replay-spool",
- "test-unify",
-]
-
-[[package]]
-name = "dashboard-world-tension"
-version = "0.1.0"
-dependencies = [
- "dashboard-base",
- "dashboard-core",
- "dashboard-series",
- "dashboard-text",
- "dashboard-world",
- "dashboard-world-tension",
- "engine-heap",
- "engine-native",
- "engine-stability",
- "indexmap 2.14.2",
- "log",
- "once_cell",
- "replay",
- "replay-data",
- "replay-derive",
- "replay-frame",
- "replay-identity",
- "replay-spool",
- "serde",
- "serde_json",
- "shader-pipeline",
- "store",
- "test-unify",
- "ts-rs",
- "wgpu",
- "winapi-util",
- "windows 0.62.2",
- "windows-core 0.62.2",
 ]
 
 [[package]]
@@ -4873,6 +3443,7 @@ dependencies = [
  "engine-native",
  "engine-sites",
  "test-unify",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5487,6 +4058,8 @@ dependencies = [
 name = "installed-content"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-executable",
  "engine-native",
  "installed-content-abilities",
@@ -5510,9 +4083,11 @@ dependencies = [
  "installed-content-unit-path",
  "installed-content-wargoals",
  "installed-content-weather",
+ "num-traits",
  "replay-data",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -5520,11 +4095,15 @@ dependencies = [
 name = "installed-content-abilities"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-allocation",
  "engine-executable",
  "installed-content-abilities",
  "installed-content-core",
+ "num-traits",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -5532,6 +4111,8 @@ dependencies = [
 name = "installed-content-core"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-allocation",
  "engine-executable",
  "engine-heap",
@@ -5540,11 +4121,13 @@ dependencies = [
  "job-priority",
  "miniz_oxide 0.8.9",
  "mlua",
+ "num-traits",
  "replay-identity",
  "replay-spool",
  "serde",
  "serde_json",
  "sha2",
+ "smallvec",
  "test-unify",
  "windows-sys 0.61.2",
  "zstd",
@@ -5554,14 +4137,18 @@ dependencies = [
 name = "installed-content-country-names"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-native",
  "installed-content-core",
  "installed-content-country-names",
  "installed-content-localisation",
+ "num-traits",
  "replay-data",
  "replay-frame",
  "replay-identity",
  "replay-spool",
+ "smallvec",
  "test-unify",
 ]
 
@@ -5569,11 +4156,15 @@ dependencies = [
 name = "installed-content-division-names"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-allocation",
  "engine-executable",
  "installed-content-core",
  "installed-content-division-names",
+ "num-traits",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -5581,15 +4172,19 @@ dependencies = [
 name = "installed-content-equipment-graphics"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-executable",
  "engine-native",
  "installed-content-core",
  "installed-content-equipment-graphics",
  "installed-content-states",
+ "num-traits",
  "replay-data",
  "replay-frame",
  "replay-identity",
  "replay-spool",
+ "smallvec",
  "test-unify",
 ]
 
@@ -5597,11 +4192,15 @@ dependencies = [
 name = "installed-content-events"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-allocation",
  "engine-executable",
  "installed-content-core",
  "installed-content-events",
+ "num-traits",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -5609,12 +4208,16 @@ dependencies = [
 name = "installed-content-focus"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-allocation",
  "engine-executable",
  "installed-content-core",
  "installed-content-focus",
  "job-priority",
+ "num-traits",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -5622,11 +4225,15 @@ dependencies = [
 name = "installed-content-gfx"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-allocation",
  "engine-executable",
  "installed-content-core",
  "installed-content-gfx",
+ "num-traits",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -5634,6 +4241,7 @@ dependencies = [
 name = "installed-content-image"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "installed-content-image",
  "miniz_oxide 0.8.9",
  "png 0.18.1",
@@ -5645,11 +4253,15 @@ dependencies = [
 name = "installed-content-localisation"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "blake3",
+ "either",
  "engine-allocation",
  "installed-content-core",
  "installed-content-localisation",
+ "num-traits",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -5657,10 +4269,14 @@ dependencies = [
 name = "installed-content-naval-combat-defines"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-allocation",
  "installed-content-core",
  "installed-content-naval-combat-defines",
+ "num-traits",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -5668,10 +4284,14 @@ dependencies = [
 name = "installed-content-naval-path"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-allocation",
  "installed-content-core",
  "installed-content-naval-path",
+ "num-traits",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -5679,11 +4299,15 @@ dependencies = [
 name = "installed-content-province-area"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-allocation",
  "engine-executable",
  "installed-content-core",
  "installed-content-province-area",
+ "num-traits",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -5691,6 +4315,8 @@ dependencies = [
 name = "installed-content-raids"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-executable",
  "engine-native",
  "installed-content-core",
@@ -5698,9 +4324,11 @@ dependencies = [
  "installed-content-division-names",
  "installed-content-localisation",
  "installed-content-raids",
+ "num-traits",
  "replay-data",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -5708,10 +4336,14 @@ dependencies = [
 name = "installed-content-regions"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-allocation",
  "installed-content-core",
  "installed-content-regions",
+ "num-traits",
  "replay-identity",
+ "smallvec",
  "test-unify",
  "weather-period",
 ]
@@ -5720,13 +4352,17 @@ dependencies = [
 name = "installed-content-save"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-allocation",
  "engine-executable",
  "engine-native",
  "installed-content-core",
  "installed-content-states",
+ "num-traits",
  "replay-data",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -5734,11 +4370,15 @@ dependencies = [
 name = "installed-content-scripted-localisation"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-allocation",
  "engine-executable",
  "installed-content-core",
  "installed-content-scripted-localisation",
+ "num-traits",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -5746,13 +4386,17 @@ dependencies = [
 name = "installed-content-settings"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-allocation",
  "engine-executable",
  "installed-content-core",
  "installed-content-settings",
+ "num-traits",
  "replay-identity",
  "serde",
  "serde_json",
+ "smallvec",
  "test-unify",
  "windows-sys 0.61.2",
 ]
@@ -5761,12 +4405,16 @@ dependencies = [
 name = "installed-content-sound"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "bytemuck",
+ "either",
  "engine-allocation",
  "engine-executable",
  "installed-content-core",
  "log",
+ "num-traits",
  "replay-identity",
+ "smallvec",
  "symphonia",
  "test-unify",
 ]
@@ -5775,11 +4423,15 @@ dependencies = [
 name = "installed-content-state-categories"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-allocation",
  "engine-executable",
  "installed-content-core",
  "installed-content-state-categories",
+ "num-traits",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -5787,11 +4439,15 @@ dependencies = [
 name = "installed-content-states"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-allocation",
  "engine-executable",
  "installed-content-core",
  "installed-content-states",
+ "num-traits",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -5799,10 +4455,14 @@ dependencies = [
 name = "installed-content-unit-path"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-allocation",
  "installed-content-core",
  "installed-content-unit-path",
+ "num-traits",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -5810,11 +4470,15 @@ dependencies = [
 name = "installed-content-wargoals"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-allocation",
  "engine-executable",
  "installed-content-core",
  "installed-content-wargoals",
+ "num-traits",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -5822,14 +4486,18 @@ dependencies = [
 name = "installed-content-weather"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-allocation",
  "engine-executable",
  "engine-native",
  "installed-content-core",
  "installed-content-regions",
  "installed-content-weather",
+ "num-traits",
  "replay-data",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -7125,6 +5793,7 @@ dependencies = [
 name = "map-products"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "content-witness",
  "dashboard-text",
  "dpi",
@@ -7134,6 +5803,7 @@ dependencies = [
  "installed-content-equipment-graphics",
  "installed-content-image",
  "installed-content-localisation",
+ "installed-content-province-area",
  "installed-content-regions",
  "installed-content-sound",
  "installed-content-states",
@@ -7143,6 +5813,7 @@ dependencies = [
  "map-snow",
  "once_cell",
  "product-codec",
+ "recorder-derive",
  "replay",
  "replay-data",
  "replay-frame",
@@ -7165,15 +5836,19 @@ dependencies = [
 name = "map-snow"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-native",
  "installed-content-core",
  "installed-content-image",
  "installed-content-regions",
  "map-display-data",
+ "num-traits",
  "product-codec",
  "replay-data",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -8207,6 +6882,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
+name = "playhead"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.13.1",
+ "either",
+ "engine-native",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
+ "num-traits",
+ "playhead",
+ "recorder-derive",
+ "replay",
+ "replay-columnar",
+ "replay-data",
+ "replay-derive",
+ "replay-identity",
+ "serde_json",
+ "smallvec",
+ "test-unify",
+]
+
+[[package]]
 name = "plist"
 version = "1.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8512,7 +7211,9 @@ dependencies = [
 name = "recorder"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "dashboard-core",
+ "either",
  "engine-allocation",
  "engine-dlc",
  "engine-executable",
@@ -8522,6 +7223,7 @@ dependencies = [
  "installed-content-country-names",
  "installed-content-division-names",
  "installed-content-localisation",
+ "installed-content-province-area",
  "installed-content-raids",
  "installed-content-regions",
  "installed-content-scripted-localisation",
@@ -8529,6 +7231,8 @@ dependencies = [
  "installed-content-states",
  "installed-content-weather",
  "job-priority",
+ "num-traits",
+ "recorder-derive",
  "recorder-derived",
  "recorder-metrics",
  "recorder-movement-oracle",
@@ -8545,6 +7249,7 @@ dependencies = [
  "replay-identity",
  "serde",
  "serde_json",
+ "smallvec",
  "test-unify",
  "uuid",
  "winapi-util",
@@ -8559,12 +7264,14 @@ dependencies = [
  "app-update",
  "bitflags 1.3.2",
  "dashboard-core",
+ "either",
  "engine-native",
  "installed-content-core",
  "installed-content-country-names",
  "installed-content-division-names",
  "installed-content-image",
  "installed-content-localisation",
+ "installed-content-province-area",
  "installed-content-raids",
  "installed-content-regions",
  "installed-content-scripted-localisation",
@@ -8573,7 +7280,9 @@ dependencies = [
  "installed-content-weather",
  "hashbrown 0.17.1",
  "log",
+ "num-traits",
  "recorder",
+ "recorder-derive",
  "recorder-oracle-support",
  "replay",
  "replay-data",
@@ -8582,6 +7291,7 @@ dependencies = [
  "rfd",
  "serde",
  "serde_json",
+ "smallvec",
  "tauri",
  "tauri-build",
  "test-unify",
@@ -8590,20 +7300,56 @@ dependencies = [
 ]
 
 [[package]]
+name = "recorder-derive"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.13.1",
+ "either",
+ "engine-allocation",
+ "engine-dlc",
+ "engine-executable",
+ "engine-fuel",
+ "engine-land-inputs",
+ "engine-native",
+ "installed-content-core",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
+ "num-traits",
+ "recorder-derive",
+ "replay-columnar",
+ "replay-data",
+ "replay-derive",
+ "replay-frame",
+ "replay-identity",
+ "smallvec",
+ "test-unify",
+]
+
+[[package]]
 name = "recorder-derived"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-executable",
  "engine-native",
  "installed-content-core",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
  "installed-content-regions",
  "installed-content-weather",
+ "num-traits",
+ "recorder-derive",
  "recorder-platform",
  "replay",
  "replay-data",
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -8611,14 +7357,24 @@ dependencies = [
 name = "recorder-metrics"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-allocation",
  "engine-native",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
+ "num-traits",
+ "recorder-derive",
  "recorder-test-support",
  "replay",
  "replay-data",
+ "replay-derive",
  "replay-frame",
  "replay-identity",
  "serde_json",
+ "smallvec",
  "test-unify",
 ]
 
@@ -8626,16 +7382,26 @@ dependencies = [
 name = "recorder-movement-oracle"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-dlc",
  "engine-executable",
  "engine-native",
  "engine-sites",
  "installed-content-core",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
+ "num-traits",
+ "recorder-derive",
  "recorder-platform",
  "replay",
  "replay-data",
+ "replay-derive",
  "replay-identity",
  "serde_json",
+ "smallvec",
  "test-unify",
 ]
 
@@ -8643,17 +7409,22 @@ dependencies = [
 name = "recorder-oracle"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-executable",
  "engine-native",
  "installed-content-core",
  "installed-content-country-names",
  "installed-content-division-names",
  "installed-content-localisation",
+ "installed-content-province-area",
  "installed-content-raids",
  "installed-content-regions",
  "installed-content-save",
  "installed-content-states",
  "installed-content-weather",
+ "num-traits",
+ "recorder-derive",
  "recorder-oracle-air",
  "recorder-oracle-air-ledger",
  "recorder-oracle-air-missions",
@@ -8706,6 +7477,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -8713,16 +7485,25 @@ dependencies = [
 name = "recorder-oracle-air"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-native",
  "installed-content-core",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
  "installed-content-save",
  "installed-content-states",
+ "num-traits",
+ "recorder-derive",
  "recorder-oracle-support",
  "recorder-test-support",
  "replay-data",
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -8730,18 +7511,27 @@ dependencies = [
 name = "recorder-oracle-air-ledger"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-air-history",
  "engine-native",
  "installed-content-core",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
  "installed-content-regions",
  "installed-content-save",
  "installed-content-states",
+ "num-traits",
+ "recorder-derive",
  "recorder-oracle-support",
  "recorder-test-support",
  "replay",
  "replay-data",
+ "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -8749,15 +7539,25 @@ dependencies = [
 name = "recorder-oracle-air-missions"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-native",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
  "installed-content-save",
  "installed-content-states",
+ "num-traits",
+ "recorder-derive",
  "recorder-oracle-relations",
  "recorder-oracle-support",
  "replay",
  "replay-data",
+ "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -8765,16 +7565,26 @@ dependencies = [
 name = "recorder-oracle-characters"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-native",
  "installed-content-core",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
  "installed-content-save",
  "installed-content-states",
+ "num-traits",
+ "recorder-derive",
  "recorder-oracle-intel",
  "recorder-oracle-support",
  "replay",
  "replay-data",
+ "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -8782,15 +7592,25 @@ dependencies = [
 name = "recorder-oracle-combat-details"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-native",
  "installed-content-core",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
  "installed-content-save",
  "installed-content-states",
+ "num-traits",
+ "recorder-derive",
  "recorder-oracle-support",
  "replay",
  "replay-data",
+ "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -8798,17 +7618,27 @@ dependencies = [
 name = "recorder-oracle-combat-log"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-land-inputs",
  "engine-native",
  "engine-resources",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
  "installed-content-save",
  "installed-content-states",
+ "num-traits",
+ "recorder-derive",
  "recorder-oracle-naval-history",
  "recorder-oracle-support",
  "replay",
  "replay-data",
+ "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -8816,17 +7646,27 @@ dependencies = [
 name = "recorder-oracle-construction"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-executable",
  "engine-native",
  "engine-resources",
  "installed-content-core",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
  "installed-content-save",
  "installed-content-states",
+ "num-traits",
+ "recorder-derive",
  "recorder-oracle-support",
  "replay",
  "replay-data",
+ "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -8834,15 +7674,25 @@ dependencies = [
 name = "recorder-oracle-core"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-native",
  "installed-content-core",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
  "installed-content-save",
  "installed-content-states",
+ "num-traits",
+ "recorder-derive",
  "recorder-oracle-support",
  "replay",
  "replay-data",
+ "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -8850,15 +7700,25 @@ dependencies = [
 name = "recorder-oracle-counters"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-native",
  "installed-content-core",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
  "installed-content-save",
  "installed-content-states",
+ "num-traits",
+ "recorder-derive",
  "recorder-oracle-support",
  "replay",
  "replay-data",
+ "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -8866,15 +7726,25 @@ dependencies = [
 name = "recorder-oracle-country-rosters"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-native",
  "installed-content-core",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
  "installed-content-save",
  "installed-content-states",
+ "num-traits",
+ "recorder-derive",
  "recorder-oracle-characters",
  "recorder-oracle-support",
  "replay",
  "replay-data",
+ "replay-derive",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -8882,18 +7752,28 @@ dependencies = [
 name = "recorder-oracle-economy"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-air-history",
  "engine-native",
  "engine-production",
  "installed-content-core",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
  "installed-content-save",
  "installed-content-states",
+ "num-traits",
+ "recorder-derive",
  "recorder-oracle-fuel-demand",
  "recorder-oracle-support",
  "replay",
  "replay-data",
+ "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -8901,14 +7781,24 @@ dependencies = [
 name = "recorder-oracle-equipment-destruction"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-native",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
  "installed-content-save",
  "installed-content-states",
+ "num-traits",
+ "recorder-derive",
  "recorder-oracle-support",
  "replay",
  "replay-data",
+ "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -8916,14 +7806,24 @@ dependencies = [
 name = "recorder-oracle-event-feed"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-native",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
  "installed-content-save",
  "installed-content-states",
+ "num-traits",
+ "recorder-derive",
  "recorder-oracle-support",
  "replay",
  "replay-data",
+ "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -8931,14 +7831,24 @@ dependencies = [
 name = "recorder-oracle-faction-theatres"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-native",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
  "installed-content-save",
  "installed-content-states",
+ "num-traits",
+ "recorder-derive",
  "recorder-oracle-support",
  "replay",
  "replay-data",
+ "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -8946,16 +7856,26 @@ dependencies = [
 name = "recorder-oracle-factories"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-executable",
  "engine-native",
  "installed-content-core",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
  "installed-content-save",
  "installed-content-states",
+ "num-traits",
+ "recorder-derive",
  "recorder-oracle-support",
  "replay",
  "replay-data",
+ "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -8963,14 +7883,24 @@ dependencies = [
 name = "recorder-oracle-fog"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-native",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
  "installed-content-save",
  "installed-content-states",
+ "num-traits",
+ "recorder-derive",
  "recorder-oracle-support",
  "recorder-test-support",
  "replay-data",
+ "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -8978,15 +7908,25 @@ dependencies = [
 name = "recorder-oracle-fuel-demand"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-native",
  "installed-content-core",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
  "installed-content-save",
  "installed-content-states",
+ "num-traits",
+ "recorder-derive",
  "recorder-oracle-support",
  "replay",
  "replay-data",
+ "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -8994,14 +7934,24 @@ dependencies = [
 name = "recorder-oracle-game-score"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-native",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
  "installed-content-save",
  "installed-content-states",
+ "num-traits",
+ "recorder-derive",
  "recorder-oracle-support",
  "replay",
  "replay-data",
+ "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9009,18 +7959,28 @@ dependencies = [
 name = "recorder-oracle-governance"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-executable",
  "engine-land-inputs",
  "engine-native",
  "engine-research",
  "installed-content-core",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
  "installed-content-save",
  "installed-content-states",
+ "num-traits",
+ "recorder-derive",
  "recorder-oracle-support",
  "replay",
  "replay-data",
+ "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9028,16 +7988,26 @@ dependencies = [
 name = "recorder-oracle-intel"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-intelligence",
  "engine-native",
  "installed-content-core",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
  "installed-content-save",
  "installed-content-states",
+ "num-traits",
+ "recorder-derive",
  "recorder-oracle-support",
  "replay",
  "replay-data",
+ "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9045,17 +8015,27 @@ dependencies = [
 name = "recorder-oracle-land"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-land-inputs",
  "engine-native",
  "installed-content-core",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
  "installed-content-save",
  "installed-content-states",
+ "num-traits",
+ "recorder-derive",
  "recorder-oracle-support",
  "replay",
  "replay-data",
+ "replay-derive",
  "replay-frame",
  "replay-identity",
  "serde_json",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9063,15 +8043,25 @@ dependencies = [
 name = "recorder-oracle-map-inputs"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-native",
  "installed-content-core",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
  "installed-content-save",
  "installed-content-states",
+ "num-traits",
+ "recorder-derive",
  "recorder-oracle-support",
  "replay",
  "replay-data",
+ "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9079,18 +8069,28 @@ dependencies = [
 name = "recorder-oracle-military"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-executable",
  "engine-native",
  "installed-content-core",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
  "installed-content-save",
  "installed-content-states",
+ "num-traits",
+ "recorder-derive",
  "recorder-oracle-combat-details",
  "recorder-oracle-naval-history",
  "recorder-oracle-support",
  "replay",
  "replay-data",
+ "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9098,15 +8098,25 @@ dependencies = [
 name = "recorder-oracle-modifier-breakdowns"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-native",
  "installed-content-core",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
  "installed-content-save",
  "installed-content-states",
+ "num-traits",
+ "recorder-derive",
  "recorder-oracle-support",
  "replay",
  "replay-data",
+ "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9114,15 +8124,25 @@ dependencies = [
 name = "recorder-oracle-modifiers"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-native",
  "installed-content-core",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
  "installed-content-save",
  "installed-content-states",
+ "num-traits",
+ "recorder-derive",
  "recorder-oracle-support",
  "replay",
  "replay-data",
+ "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9130,15 +8150,25 @@ dependencies = [
 name = "recorder-oracle-naval-history"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-native",
  "installed-content-core",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
  "installed-content-save",
  "installed-content-states",
+ "num-traits",
+ "recorder-derive",
  "recorder-oracle-support",
  "replay",
  "replay-data",
+ "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9146,16 +8176,25 @@ dependencies = [
 name = "recorder-oracle-naval-missions"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-executable",
  "engine-native",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
  "installed-content-save",
  "installed-content-states",
+ "num-traits",
+ "recorder-derive",
  "recorder-oracle-support",
  "replay",
  "replay-data",
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9163,13 +8202,23 @@ dependencies = [
 name = "recorder-oracle-naval-result-sources"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-native",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
  "installed-content-states",
+ "num-traits",
+ "recorder-derive",
  "recorder-oracle-support",
  "replay",
  "replay-data",
+ "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9177,10 +8226,18 @@ dependencies = [
 name = "recorder-oracle-pass-inputs"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-native",
  "installed-content-core",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
  "installed-content-save",
  "installed-content-states",
+ "num-traits",
+ "recorder-derive",
  "recorder-oracle-counters",
  "recorder-oracle-country-rosters",
  "recorder-oracle-naval-missions",
@@ -9191,6 +8248,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9198,15 +8256,25 @@ dependencies = [
 name = "recorder-oracle-peace"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-native",
  "installed-content-core",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
  "installed-content-save",
  "installed-content-states",
+ "num-traits",
+ "recorder-derive",
  "recorder-oracle-support",
  "replay",
  "replay-data",
+ "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9214,15 +8282,25 @@ dependencies = [
 name = "recorder-oracle-plans"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-native",
  "installed-content-core",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
  "installed-content-save",
  "installed-content-states",
+ "num-traits",
+ "recorder-derive",
  "recorder-oracle-support",
  "replay",
  "replay-data",
+ "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9230,17 +8308,27 @@ dependencies = [
 name = "recorder-oracle-politics"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-executable",
  "engine-native",
  "installed-content-core",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
  "installed-content-save",
  "installed-content-states",
+ "num-traits",
+ "recorder-derive",
  "recorder-oracle-characters",
  "recorder-oracle-support",
  "replay",
  "replay-data",
+ "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9248,14 +8336,24 @@ dependencies = [
 name = "recorder-oracle-power-ledger"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-native",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
  "installed-content-save",
  "installed-content-states",
+ "num-traits",
+ "recorder-derive",
  "recorder-oracle-support",
  "replay",
  "replay-data",
+ "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9263,17 +8361,27 @@ dependencies = [
 name = "recorder-oracle-production"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-executable",
  "engine-native",
  "engine-scripts",
  "installed-content-core",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
  "installed-content-save",
  "installed-content-states",
+ "num-traits",
+ "recorder-derive",
  "recorder-oracle-support",
  "replay",
  "replay-data",
+ "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9281,16 +8389,26 @@ dependencies = [
 name = "recorder-oracle-projects"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-native",
  "engine-projects",
  "installed-content-core",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
  "installed-content-save",
  "installed-content-states",
+ "num-traits",
+ "recorder-derive",
  "recorder-oracle-support",
  "replay",
  "replay-data",
+ "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9298,15 +8416,25 @@ dependencies = [
 name = "recorder-oracle-railway-guns"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-native",
  "installed-content-core",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
  "installed-content-save",
  "installed-content-states",
+ "num-traits",
+ "recorder-derive",
  "recorder-oracle-support",
  "replay",
  "replay-data",
+ "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9314,15 +8442,25 @@ dependencies = [
 name = "recorder-oracle-relations"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-native",
  "installed-content-core",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
  "installed-content-save",
  "installed-content-states",
+ "num-traits",
+ "recorder-derive",
  "recorder-oracle-support",
  "replay",
  "replay-data",
+ "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9330,14 +8468,24 @@ dependencies = [
 name = "recorder-oracle-rocket-output"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-native",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
  "installed-content-states",
+ "num-traits",
+ "recorder-derive",
  "recorder-oracle-support",
  "recorder-test-support",
  "replay",
  "replay-data",
+ "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9345,15 +8493,25 @@ dependencies = [
 name = "recorder-oracle-saved-event-targets"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-native",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
  "installed-content-save",
  "installed-content-states",
+ "num-traits",
+ "recorder-derive",
  "recorder-oracle-counters",
  "recorder-oracle-support",
  "replay",
  "replay-data",
+ "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9361,15 +8519,25 @@ dependencies = [
 name = "recorder-oracle-selected-routes"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-native",
  "installed-content-core",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
  "installed-content-save",
  "installed-content-states",
+ "num-traits",
+ "recorder-derive",
  "recorder-oracle-support",
  "replay",
  "replay-data",
+ "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9377,14 +8545,24 @@ dependencies = [
 name = "recorder-oracle-session"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-native",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
  "installed-content-save",
  "installed-content-states",
+ "num-traits",
+ "recorder-derive",
  "recorder-oracle-support",
  "replay",
  "replay-data",
+ "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9392,14 +8570,24 @@ dependencies = [
 name = "recorder-oracle-stability"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-native",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
  "installed-content-save",
  "installed-content-states",
+ "num-traits",
+ "recorder-derive",
  "recorder-oracle-support",
  "replay",
  "replay-data",
+ "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9407,15 +8595,25 @@ dependencies = [
 name = "recorder-oracle-supply-trains"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-native",
  "installed-content-core",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
  "installed-content-save",
  "installed-content-states",
+ "num-traits",
+ "recorder-derive",
  "recorder-oracle-support",
  "replay",
  "replay-data",
+ "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9423,16 +8621,26 @@ dependencies = [
 name = "recorder-oracle-support"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-executable",
  "engine-native",
  "installed-content-core",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
  "installed-content-save",
  "installed-content-states",
+ "num-traits",
+ "recorder-derive",
  "recorder-oracle-support",
  "replay",
  "replay-data",
+ "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9440,13 +8648,23 @@ dependencies = [
 name = "recorder-oracle-unit-combat-references"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-native",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
  "installed-content-states",
+ "num-traits",
+ "recorder-derive",
  "recorder-oracle-support",
  "replay",
  "replay-data",
+ "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9454,14 +8672,24 @@ dependencies = [
 name = "recorder-oracle-visibility"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-native",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
  "installed-content-save",
  "installed-content-states",
+ "num-traits",
+ "recorder-derive",
  "recorder-oracle-support",
  "replay",
  "replay-data",
+ "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9469,14 +8697,24 @@ dependencies = [
 name = "recorder-oracle-wars"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-native",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
  "installed-content-save",
  "installed-content-states",
+ "num-traits",
+ "recorder-derive",
  "recorder-oracle-support",
  "replay",
  "replay-data",
+ "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9484,18 +8722,26 @@ dependencies = [
 name = "recorder-oracle-weather"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-native",
  "installed-content-core",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
  "installed-content-regions",
  "installed-content-save",
  "installed-content-states",
  "installed-content-weather",
+ "num-traits",
+ "recorder-derive",
  "recorder-oracle-support",
  "replay",
  "replay-data",
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9503,10 +8749,20 @@ dependencies = [
 name = "recorder-platform"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-native",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
+ "num-traits",
+ "recorder-derive",
  "replay",
  "replay-data",
+ "replay-derive",
  "replay-identity",
+ "smallvec",
  "test-unify",
  "windows-sys 0.61.2",
 ]
@@ -9515,19 +8771,27 @@ dependencies = [
 name = "recorder-replay"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-allocation",
  "engine-native",
  "installed-content-country-names",
  "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
+ "num-traits",
+ "recorder-derive",
  "recorder-metrics",
  "recorder-platform",
  "recorder-test-support",
  "replay",
  "replay-columnar",
  "replay-data",
+ "replay-derive",
  "replay-frame",
  "replay-identity",
  "serde_json",
+ "smallvec",
  "test-unify",
  "weather-period",
  "windows-sys 0.61.2",
@@ -9537,12 +8801,22 @@ dependencies = [
 name = "recorder-sizes"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-native",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
+ "num-traits",
+ "recorder-derive",
  "replay",
  "replay-columnar",
  "replay-data",
+ "replay-derive",
  "replay-identity",
  "serde_json",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9550,11 +8824,21 @@ dependencies = [
 name = "recorder-test-support"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-native",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
+ "num-traits",
+ "recorder-derive",
  "replay",
  "replay-data",
+ "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9562,13 +8846,25 @@ dependencies = [
 name = "recording-upgrade"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "either",
  "engine-executable",
  "engine-native",
  "installed-content-core",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
+ "num-traits",
+ "recorder-derive",
  "replay",
  "replay-data",
+ "replay-derive",
+ "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
+ "zstd",
 ]
 
 [[package]]
@@ -9685,23 +8981,34 @@ checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 name = "replay"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "blake3",
  "crc32fast",
+ "dashboard-declare",
+ "either",
  "engine-allocation",
  "engine-native",
  "engine-occupation",
  "foldhash 0.2.0",
+ "installed-content-country-names",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
  "job-priority",
+ "num-traits",
  "rayon",
+ "recorder-derive",
  "replay",
  "replay-columnar",
  "replay-data",
+ "replay-derive",
  "replay-frame",
  "replay-identity",
  "replay-spool",
  "self_cell",
  "serde",
  "serde_json",
+ "smallvec",
  "test-unify",
  "windows-sys 0.61.2",
  "zstd",
@@ -9716,6 +9023,7 @@ dependencies = [
  "foldhash 0.2.0",
  "replay-spool",
  "test-unify",
+ "zstd",
 ]
 
 [[package]]
@@ -9735,7 +9043,14 @@ dependencies = [
  "engine-scripts",
  "replay-data",
  "replay-identity",
+ "replay-rows",
+ "replay-rows-derived",
  "replay-spool",
+ "replay-tables-a",
+ "replay-tables-b",
+ "replay-tables-c",
+ "replay-tables-d",
+ "replay-tables-e",
  "serde",
  "serde_json",
  "test-unify",
@@ -9769,40 +9084,18 @@ dependencies = [
  "app-update",
  "bitflags 1.3.2",
  "dashboard",
- "dashboard-air-aces",
- "dashboard-air-superiority",
- "dashboard-army",
- "dashboard-country-fuel",
- "dashboard-country-nukes",
- "dashboard-economy",
- "dashboard-equipment-losses",
- "dashboard-forces",
- "dashboard-game-score",
- "dashboard-ideas",
- "dashboard-intelligence",
- "dashboard-keyed",
- "dashboard-manpower",
- "dashboard-military-air-ledger",
- "dashboard-naval",
- "dashboard-occupation",
- "dashboard-party-history",
- "dashboard-peace-deals",
- "dashboard-place-names",
- "dashboard-politics",
- "dashboard-politics-ledger",
- "dashboard-raids",
- "dashboard-resource-balance",
- "dashboard-special-projects",
- "dashboard-stability",
- "dashboard-subjects",
- "dashboard-unit-leaders",
- "dashboard-world-tension",
+ "dashboard-base",
+ "dashboard-follow",
  "engine-executable",
  "engine-heap",
  "engine-native",
+ "installed-content-naval-combat-defines",
+ "installed-content-naval-path",
  "installed-content-settings",
  "installed-content-weather",
  "gilrs",
+ "playhead",
+ "recorder-derive",
  "replay",
  "replay-data",
  "replay-identity",
@@ -9810,12 +9103,15 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
- "store",
  "tauri",
  "tauri-build",
  "test-unify",
  "tokio",
+ "viewer",
+ "viewer-combat",
  "viewer-counter-products",
+ "viewer-counters",
+ "viewer-raids",
  "viewer-world",
  "windows-sys 0.52.0",
  "windows-sys 0.61.2",
@@ -9850,6 +9146,45 @@ dependencies = [
 ]
 
 [[package]]
+name = "replay-rows"
+version = "0.1.0"
+dependencies = [
+ "crc32fast",
+ "engine-air-history",
+ "engine-allocation",
+ "engine-events",
+ "engine-executable",
+ "engine-fuel",
+ "engine-native",
+ "engine-naval-history",
+ "engine-occupation",
+ "engine-production",
+ "engine-scripts",
+ "replay-identity",
+ "replay-rows",
+ "replay-spool",
+ "serde",
+ "serde_json",
+ "test-unify",
+ "weather-period",
+ "zstd",
+]
+
+[[package]]
+name = "replay-rows-derived"
+version = "0.1.0"
+dependencies = [
+ "engine-allocation",
+ "engine-fuel",
+ "engine-native",
+ "replay-identity",
+ "replay-rows",
+ "replay-rows-derived",
+ "replay-spool",
+ "test-unify",
+]
+
+[[package]]
 name = "replay-spool"
 version = "0.1.0"
 dependencies = [
@@ -9859,6 +9194,62 @@ dependencies = [
 [[package]]
 name = "replay-spool-derive"
 version = "0.1.0"
+
+[[package]]
+name = "replay-tables-a"
+version = "0.1.0"
+dependencies = [
+ "engine-allocation",
+ "engine-native",
+ "replay-identity",
+ "replay-rows",
+ "test-unify",
+]
+
+[[package]]
+name = "replay-tables-b"
+version = "0.1.0"
+dependencies = [
+ "engine-allocation",
+ "engine-native",
+ "replay-identity",
+ "replay-rows",
+ "test-unify",
+]
+
+[[package]]
+name = "replay-tables-c"
+version = "0.1.0"
+dependencies = [
+ "engine-allocation",
+ "engine-native",
+ "replay-identity",
+ "replay-rows",
+ "test-unify",
+]
+
+[[package]]
+name = "replay-tables-d"
+version = "0.1.0"
+dependencies = [
+ "engine-allocation",
+ "engine-native",
+ "replay-identity",
+ "replay-rows",
+ "test-unify",
+]
+
+[[package]]
+name = "replay-tables-e"
+version = "0.1.0"
+dependencies = [
+ "engine-allocation",
+ "engine-native",
+ "replay-identity",
+ "replay-rows",
+ "replay-rows-derived",
+ "test-unify",
+]
 
 [[package]]
 name = "reqwest"
@@ -10335,7 +9726,9 @@ dependencies = [
 name = "shader-pipeline"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "bytemuck",
+ "either",
  "engine-allocation",
  "engine-executable",
  "engine-heap",
@@ -10344,6 +9737,7 @@ dependencies = [
  "job-priority",
  "log",
  "naga",
+ "num-traits",
  "once_cell",
  "pollster 0.4.0",
  "replay-identity",
@@ -10351,12 +9745,14 @@ dependencies = [
  "serde_json",
  "sha2",
  "shader-pipeline",
+ "smallvec",
  "test-unify",
  "thiserror 2.0.20",
  "uuid",
  "wgpu",
  "windows 0.62.2",
  "windows-core 0.62.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -10555,24 +9951,6 @@ name = "static_assertions"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
-
-[[package]]
-name = "store"
-version = "0.1.0"
-dependencies = [
- "engine-allocation",
- "engine-native",
- "job-priority",
- "replay",
- "replay-data",
- "replay-identity",
- "serde",
- "serde_json",
- "store",
- "test-unify",
- "uuid",
- "windows-sys 0.61.2",
-]
 
 [[package]]
 name = "string_cache"
@@ -11102,13 +10480,11 @@ dependencies = [
 name = "test-unify"
 version = "0.1.0"
 dependencies = [
- "adler2",
  "aho-corasick",
  "alloc-no-stdlib",
  "alloc-stdlib",
  "anyhow",
  "base64 0.23.1",
- "bitflags 2.13.1",
  "block-buffer",
  "brotli",
  "brotli-decompressor",
@@ -11119,7 +10495,6 @@ dependencies = [
  "cfg-if",
  "cpufeatures 0.2.17",
  "crc32fast",
- "crossbeam-utils",
  "crypto-common",
  "ctor",
  "deranged",
@@ -11127,11 +10502,8 @@ dependencies = [
  "dirs",
  "dirs-sys",
  "dunce",
- "either",
  "equivalent",
  "erased-serde",
- "fdeflate",
- "flate2",
  "fnv",
  "foldhash 0.2.0",
  "form_urlencoded",
@@ -11156,14 +10528,10 @@ dependencies = [
  "jsonptr",
  "libc",
  "litemap",
- "lock_api",
  "memchr",
- "miniz_oxide 0.8.9",
- "miniz_oxide 0.9.1",
  "num-conv",
- "num-traits",
  "option-ext",
- "parking_lot",
+ "parking_lot_core",
  "percent-encoding",
  "phf",
  "plist",
@@ -11177,6 +10545,7 @@ dependencies = [
  "regex-syntax",
  "rustc-hash 2.1.3",
  "same-file",
+ "scopeguard",
  "serde",
  "serde-untagged",
  "serde_core",
@@ -11184,7 +10553,6 @@ dependencies = [
  "serde_spanned 1.1.1",
  "serde_with",
  "sha2",
- "simd-adler32",
  "siphasher",
  "smallvec",
  "syn 2.0.119",
@@ -11782,45 +11150,21 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 name = "viewer"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "bytemuck",
  "dashboard",
- "dashboard-air-aces",
- "dashboard-air-superiority",
- "dashboard-army",
  "dashboard-base",
- "dashboard-country-fuel",
- "dashboard-country-nukes",
- "dashboard-economy",
- "dashboard-equipment-losses",
- "dashboard-forces",
- "dashboard-game-score",
- "dashboard-ideas",
- "dashboard-intelligence",
- "dashboard-keyed",
- "dashboard-manpower",
- "dashboard-military-air-ledger",
- "dashboard-naval",
- "dashboard-occupation",
- "dashboard-party-history",
- "dashboard-peace-deals",
- "dashboard-place-names",
- "dashboard-politics",
- "dashboard-politics-ledger",
- "dashboard-raids",
- "dashboard-resource-balance",
- "dashboard-special-projects",
- "dashboard-stability",
- "dashboard-subjects",
- "dashboard-unit-leaders",
- "dashboard-world-tension",
+ "dashboard-follow",
  "dpi",
  "eframe",
  "engine-allocation",
  "engine-executable",
  "engine-heap",
  "engine-native",
+ "foldhash 0.2.0",
  "installed-content-abilities",
  "installed-content-core",
+ "installed-content-country-names",
  "installed-content-division-names",
  "installed-content-focus",
  "installed-content-gfx",
@@ -11842,10 +11186,13 @@ dependencies = [
  "map-products",
  "map-snow",
  "once_cell",
+ "playhead",
  "png 0.18.1",
  "pollster 0.4.0",
  "raw-window-handle",
+ "recorder-derive",
  "replay",
+ "replay-columnar",
  "replay-data",
  "replay-frame",
  "replay-identity",
@@ -11853,7 +11200,6 @@ dependencies = [
  "serde_json",
  "sha2",
  "shader-pipeline",
- "store",
  "test-unify",
  "tracing",
  "uuid",
@@ -11875,8 +11221,10 @@ dependencies = [
 name = "viewer-audio"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "bytemuck",
  "cpal",
+ "either",
  "engine-allocation",
  "engine-heap",
  "engine-native",
@@ -11885,8 +11233,10 @@ dependencies = [
  "job-priority",
  "log",
  "map-display-data",
+ "num-traits",
  "replay-data",
  "replay-identity",
+ "smallvec",
  "test-unify",
  "windows 0.62.2",
 ]
@@ -11895,6 +11245,7 @@ dependencies = [
 name = "viewer-combat"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "dashboard-base",
  "dashboard-text",
  "dpi",
@@ -11913,16 +11264,18 @@ dependencies = [
  "installed-content-regions",
  "installed-content-weather",
  "indexmap 2.14.2",
+ "job-priority",
  "map-products",
  "once_cell",
+ "recorder-derive",
  "replay",
  "replay-data",
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "store",
  "test-unify",
  "tracing",
+ "uuid",
  "viewer-combat",
  "viewer-counter-products",
  "viewer-foundation",
@@ -11937,6 +11290,7 @@ dependencies = [
 name = "viewer-counter-products"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "dashboard-core",
  "dashboard-text",
  "dpi",
@@ -11952,13 +11306,16 @@ dependencies = [
  "installed-content-country-names",
  "installed-content-division-names",
  "installed-content-localisation",
+ "installed-content-province-area",
  "installed-content-regions",
  "installed-content-states",
  "installed-content-unit-path",
  "installed-content-weather",
  "indexmap 2.14.2",
  "job-priority",
+ "num-traits",
  "once_cell",
+ "recorder-derive",
  "replay",
  "replay-data",
  "replay-derive",
@@ -11981,6 +11338,7 @@ dependencies = [
 name = "viewer-counters"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "dashboard-core",
  "dashboard-text",
  "dpi",
@@ -11994,6 +11352,7 @@ dependencies = [
  "installed-content-image",
  "installed-content-localisation",
  "installed-content-naval-path",
+ "installed-content-province-area",
  "installed-content-regions",
  "installed-content-settings",
  "installed-content-states",
@@ -12002,6 +11361,7 @@ dependencies = [
  "job-priority",
  "map-products",
  "once_cell",
+ "recorder-derive",
  "replay",
  "replay-data",
  "replay-derive",
@@ -12025,6 +11385,7 @@ dependencies = [
 name = "viewer-foundation"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "bytemuck",
  "dashboard-core",
  "dashboard-text",
@@ -12038,6 +11399,7 @@ dependencies = [
  "installed-content-gfx",
  "installed-content-image",
  "installed-content-localisation",
+ "installed-content-province-area",
  "installed-content-raids",
  "installed-content-regions",
  "installed-content-save",
@@ -12048,8 +11410,10 @@ dependencies = [
  "job-priority",
  "map-display-data",
  "map-snow",
+ "num-traits",
  "once_cell",
  "pollster 0.4.0",
+ "recorder-derive",
  "replay",
  "replay-data",
  "replay-derive",
@@ -12072,6 +11436,7 @@ dependencies = [
 name = "viewer-raids"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "dashboard-core",
  "dashboard-text",
  "dpi",
@@ -12084,6 +11449,7 @@ dependencies = [
  "installed-content-country-names",
  "installed-content-equipment-graphics",
  "installed-content-localisation",
+ "installed-content-province-area",
  "installed-content-raids",
  "installed-content-regions",
  "installed-content-states",
@@ -12093,6 +11459,7 @@ dependencies = [
  "job-priority",
  "map-products",
  "once_cell",
+ "recorder-derive",
  "replay",
  "replay-data",
  "replay-derive",
@@ -12115,6 +11482,7 @@ dependencies = [
 name = "viewer-world"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "bytemuck",
  "dashboard-core",
  "dashboard-text",
@@ -12130,6 +11498,7 @@ dependencies = [
  "installed-content-equipment-graphics",
  "installed-content-image",
  "installed-content-localisation",
+ "installed-content-province-area",
  "installed-content-raids",
  "installed-content-regions",
  "installed-content-state-categories",
@@ -12139,9 +11508,11 @@ dependencies = [
  "job-priority",
  "map-display-data",
  "map-snow",
+ "num-traits",
  "once_cell",
  "pollster 0.4.0",
  "product-codec",
+ "recorder-derive",
  "replay",
  "replay-data",
  "replay-derive",

@@ -11,6 +11,9 @@ use ts_rs::TS;
 
 pub struct PlayerApm;
 
+#[path = "player_apm_head.rs"]
+pub mod head;
+
 #[derive(Clone, Copy, Debug, Deserialize, TS, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum ApmGroup {

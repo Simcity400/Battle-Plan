@@ -16,7 +16,7 @@ test('current and completed focuses retain successful titles and show every part
       const html = [renderToStaticMarkup(createElement(FocusCompletion, {
         entry: { ordinal: 0, token: art.token, completedByHour: null }, art, failures: errors, open: false, onToggle() {},
       })), renderToStaticMarkup(createElement(CurrentFocus, {
-        order: { current: art.token, continuous: null, paused: false, completed: [] }, art, state: null, live: false, failures: errors,
+        order: { current: art.token, continuous: null, paused: false }, art, live: false, failures: errors,
       }))];
       for (const markup of html) {
         assert.match(markup, />Recorded focus title</);

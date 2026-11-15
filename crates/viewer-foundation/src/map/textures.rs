@@ -568,7 +568,7 @@ fn bc7_mode6_block(blue: bool) -> Vec<u8> {
 fn unaligned_bc_keeps_authored_mips_faces_and_texels() {
     let _guard = GPU_TESTS.lock().unwrap();
     pollster::block_on(async {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let instance = shader_pipeline::gpu::instance();
         let adapters = instance.enumerate_adapters(wgpu::Backends::all()).await;
         let adapter = select_adapter(&adapters, None).unwrap();
         let (device, queue) = adapter

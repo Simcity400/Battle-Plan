@@ -57,7 +57,7 @@ fn hour(job: &mut CharactersJob, world: &World) -> Hour {
         characters: world.characters,
         hits: Cell::new(0),
     };
-    let report = copy_characters_growing(&memory, context(PART_MASKS[0]), job, Roles::Gather);
+    let report = copy_characters(&memory, context(PART_MASKS[0]), job, Roles::Gather);
     assert!(report.raw_ok && !report.plan_failed);
     let planned = job.log.planned_capture_succeeded();
     let mut captured = Captured::with_capacities(&capacities());
@@ -113,6 +113,7 @@ fn settle(job: &mut CharactersJob, world: &World) {
 
 #[test]
 fn quiet_hours_read_no_character_name_and_publish_the_roster_walk_rows() {
+    let _globals = crate::extended::characters::test_globals();
     static WATCHES: Watches = Watches::new();
     let world = world();
     WATCHES.enable(world.characters);
@@ -134,6 +135,7 @@ fn quiet_hours_read_no_character_name_and_publish_the_roster_walk_rows() {
 
 #[test]
 fn quiet_hours_recertify_the_carried_set_without_a_lookup() {
+    let _globals = crate::extended::characters::test_globals();
     static DOMAIN: Lookups = Lookups::new();
     let mut world = world();
     let characters = world.characters as u64;
@@ -177,6 +179,7 @@ fn quiet_hours_recertify_the_carried_set_without_a_lookup() {
 
 #[test]
 fn a_renamed_character_alone_is_read_and_a_new_world_reads_every_name() {
+    let _globals = crate::extended::characters::test_globals();
     static WATCHES: Watches = Watches::new();
     let mut world = world();
     WATCHES.enable(world.characters);
@@ -280,7 +283,7 @@ fn roster_hour(job: &mut CharactersJob, world: &World) -> RosterHour {
         leaders: Cell::new(0),
         census: Cell::new(0),
     };
-    let report = copy_characters_growing(&memory, context(PART_MASKS[0]), job, Roles::Gather);
+    let report = copy_characters(&memory, context(PART_MASKS[0]), job, Roles::Gather);
     assert!(report.raw_ok && !report.plan_failed);
     let planned = job.log.planned_capture_succeeded();
     let portraits = job.portrait_census().and_then(|census| {
@@ -345,6 +348,7 @@ fn settle_roster(job: &mut CharactersJob, world: &World) {
 /// pointer page and no character identity, where the full pass reads both.
 #[test]
 fn quiet_roster_hours_publish_the_full_pass_without_walking_the_roster() {
+    let _globals = crate::extended::characters::test_globals();
     static WATCHES: Watches = Watches::new();
     static DOMAIN: Isolated = Isolated::new();
     static NEVER: Isolated = Isolated::new();
@@ -389,6 +393,7 @@ fn quiet_roster_hours_publish_the_full_pass_without_walking_the_roster() {
 /// the same version, so a rebuild would find no held row.
 #[test]
 fn a_settled_quiet_hour_republishes_its_characters_rows() {
+    let _globals = crate::extended::characters::test_globals();
     static WATCHES: Watches = Watches::new();
     static DOMAIN: Isolated = Isolated::new();
     let world = world();
@@ -397,7 +402,7 @@ fn a_settled_quiet_hour_republishes_its_characters_rows() {
     let mut job = roster_job(&WATCHES, &DOMAIN);
     settle_roster(&mut job, &world);
     assert!(roster_hour(&mut job, &world).counts.quiet);
-    let report = copy_characters_growing(&world, context(PART_MASKS[0]), &mut job, Roles::Gather);
+    let report = copy_characters(&world, context(PART_MASKS[0]), &mut job, Roles::Gather);
     assert!(report.raw_ok && job.roster.quiet);
     assert!(job.published.matches(super::quiet::rows_key(MODULE, &job)));
     let version = job.carry.version;
@@ -414,6 +419,7 @@ fn a_settled_quiet_hour_republishes_its_characters_rows() {
 /// quiet.
 #[test]
 fn a_roster_write_reads_the_roster_again() {
+    let _globals = crate::extended::characters::test_globals();
     static WATCHES: Watches = Watches::new();
     static DOMAIN: Isolated = Isolated::new();
     let mut world = World::new(201);
@@ -450,7 +456,7 @@ fn a_roster_write_reads_the_roster_again() {
         force_full: true,
         ..context(PART_MASKS[0])
     };
-    assert!(copy_characters_growing(&world, full, &mut job, Roles::Gather).raw_ok);
+    assert!(copy_characters(&world, full, &mut job, Roles::Gather).raw_ok);
     assert!(job.roster.counts().read);
 }
 
@@ -464,6 +470,7 @@ fn a_roster_write_reads_the_roster_again() {
 /// and prepares the next program. Every hour equals the full pass.
 #[test]
 fn quiet_roster_hours_read_every_unit_leader_afresh() {
+    let _globals = crate::extended::characters::test_globals();
     static WATCHES: Watches = Watches::new();
     static DOMAIN: Isolated = Isolated::new();
     let mut world = world();
@@ -514,6 +521,7 @@ fn quiet_roster_hours_read_every_unit_leader_afresh() {
 /// one takes several calls each. It publishes the full pass's tables.
 #[test]
 fn a_settled_quiet_roster_hour_reads_every_unit_leader_in_one_program() {
+    let _globals = crate::extended::characters::test_globals();
     static WATCHES: [Watches; 2] = [const { Watches::new() }; 2];
     static DOMAINS: [Isolated; 2] = [const { Isolated::new() }; 2];
     for (index, countries) in [40, 120].into_iter().enumerate() {
@@ -527,7 +535,7 @@ fn a_settled_quiet_roster_hour_reads_every_unit_leader_in_one_program() {
             .count();
         let counting = census_tests::Counting::new(&world);
         let report =
-            copy_characters_growing(&counting, context(PART_MASKS[0]), &mut job, Roles::Gather);
+            copy_characters(&counting, context(PART_MASKS[0]), &mut job, Roles::Gather);
         assert!(report.raw_ok && !report.plan_failed);
         assert!(job.roster.counts().quiet, "{countries} countries");
         assert!(job.log.planned_capture_succeeded(), "{countries} countries");
@@ -548,6 +556,7 @@ fn a_settled_quiet_roster_hour_reads_every_unit_leader_in_one_program() {
 /// fault is gone, the next hour prepares one and the hour after runs it.
 #[test]
 fn a_unit_leader_read_failing_inside_the_program_fails_as_the_pass_does() {
+    let _globals = crate::extended::characters::test_globals();
     static WATCHES: Watches = Watches::new();
     static DOMAIN: Isolated = Isolated::new();
     static UNPLANNED: Isolated = Isolated::new();
@@ -586,6 +595,7 @@ fn a_unit_leader_read_failing_inside_the_program_fails_as_the_pass_does() {
 /// and the name afresh; the next is quiet again.
 #[test]
 fn a_renamed_character_reads_the_roster_again() {
+    let _globals = crate::extended::characters::test_globals();
     static WATCHES: Watches = Watches::new();
     static DOMAIN: Isolated = Isolated::new();
     let mut world = world();
@@ -664,6 +674,7 @@ fn leaders(world: &World) -> u64 {
 /// makes the next hour look up every one.
 #[test]
 fn quiet_hours_read_no_unchanged_unit_leader() {
+    let _globals = crate::extended::characters::test_globals();
     static WATCHES: Watches = Watches::new();
     static DOMAIN: Isolated = Isolated::new();
     static LEADERS: LeaderLookups = LeaderLookups::new();
@@ -697,6 +708,7 @@ fn quiet_hours_read_no_unchanged_unit_leader() {
 /// new row; the others stay carried.
 #[test]
 fn a_notified_leader_is_read_again() {
+    let _globals = crate::extended::characters::test_globals();
     static WATCHES: Watches = Watches::new();
     static DOMAIN: Isolated = Isolated::new();
     static LEADERS: LeaderWatches = LeaderWatches::new();
@@ -737,6 +749,7 @@ fn census_job(
 /// writer makes the next hour gather it again.
 #[test]
 fn quiet_hours_keep_the_role_census_without_gathering_it() {
+    let _globals = crate::extended::characters::test_globals();
     static WATCHES: Watches = Watches::new();
     static DOMAIN: Isolated = Isolated::new();
     static CENSUS: crate::watch_registry::WatchRegistry =
@@ -779,7 +792,7 @@ fn trait_hour(
         leaders: Cell::new(0),
         census: Cell::new(0),
     };
-    let report = copy_characters_growing(&memory, context(PART_MASKS[3]), job, Roles::Borrow(loan));
+    let report = copy_characters(&memory, context(PART_MASKS[3]), job, Roles::Borrow(loan));
     assert!(report.raw_ok && !report.plan_failed);
     let mut captured = Captured::with_capacities(&capacities());
     captured.decode_characters_payload(MODULE, job, &mut [0; N]);
@@ -820,6 +833,7 @@ fn swap_trait(world: &mut World, index: usize, other: usize) {
 /// read again; one that changed it publishes the new rows.
 #[test]
 fn unchanged_leaders_carry_their_traits_without_reading_them() {
+    let _globals = crate::extended::characters::test_globals();
     static LEADERS: LeaderWatches = LeaderWatches::new();
     let mut world = world();
     LEADERS.enable(world.characters);
@@ -856,7 +870,7 @@ fn roster_hour_into(
     world: &World,
     frame: &mut Captured,
 ) -> (TableView, TableView) {
-    let report = copy_characters_growing(world, context(PART_MASKS[0]), job, Roles::Gather);
+    let report = copy_characters(world, context(PART_MASKS[0]), job, Roles::Gather);
     assert!(report.raw_ok && !report.plan_failed);
     // The pipeline grows every frame between hours.
     frame.grow(&mut capacities());
@@ -879,6 +893,7 @@ fn roster_hour_into(
 /// rewrites the UnitLeaders table from the walk.
 #[test]
 fn a_frame_publishes_its_held_tables_without_rewriting_them() {
+    let _globals = crate::extended::characters::test_globals();
     static WATCHES: Watches = Watches::new();
     static DOMAIN: Isolated = Isolated::new();
     static LEADERS: LeaderWatches = LeaderWatches::new();
@@ -932,6 +947,7 @@ fn a_frame_publishes_its_held_tables_without_rewriting_them() {
 /// training than the next, republish the held frame unchanged.
 #[test]
 fn fresh_leader_reads_grow_for_later_training() {
+    let _globals = crate::extended::characters::test_globals();
     static WATCHES: Watches = Watches::new();
     static DOMAIN: Isolated = Isolated::new();
     static LEADERS: LeaderWatches = LeaderWatches::new();
@@ -971,6 +987,7 @@ fn fresh_leader_reads_grow_for_later_training() {
 
 #[test]
 fn quiet_leader_comparison_preserves_training_refusals() {
+    let _globals = crate::extended::characters::test_globals();
     static WATCHES: Watches = Watches::new();
     static DOMAIN: Isolated = Isolated::new();
     static LEADERS: LeaderWatches = LeaderWatches::new();
@@ -1011,6 +1028,7 @@ fn quiet_leader_comparison_preserves_training_refusals() {
 
 #[test]
 fn leader_carry_rejects_mismatched_trait_spans() {
+    let _globals = crate::extended::characters::test_globals();
     static LEADERS: LeaderWatches = LeaderWatches::new();
     LEADERS.enable(1);
     let mut carry = TraitCarry::with(&LEADERS, leader_carry::TRAITS);
@@ -1053,7 +1071,7 @@ fn trait_hour_into(
     loan: &census::RoleCensus,
     frame: &mut Captured,
 ) -> TableView {
-    let report = copy_characters_growing(world, context(PART_MASKS[3]), job, Roles::Borrow(loan));
+    let report = copy_characters(world, context(PART_MASKS[3]), job, Roles::Borrow(loan));
     assert!(report.raw_ok && !report.plan_failed);
     frame.grow(&mut capacities());
     frame.reset();
@@ -1073,6 +1091,7 @@ fn trait_hour_into(
 /// an unchanged leader is read again); a changed vector rewrites the table.
 #[test]
 fn a_frame_publishes_its_held_traits_without_rewriting_them() {
+    let _globals = crate::extended::characters::test_globals();
     static LEADERS: LeaderWatches = LeaderWatches::new();
     let mut world = world();
     LEADERS.enable(world.characters);
@@ -1104,6 +1123,7 @@ fn a_frame_publishes_its_held_traits_without_rewriting_them() {
 
 #[test]
 fn forced_full_refresh_publishes_current_training_without_a_stale_carry_key() {
+    let _globals = crate::extended::characters::test_globals();
     static WATCHES: Watches = Watches::new();
     static DOMAIN: Isolated = Isolated::new();
     static LEADERS: LeaderWatches = LeaderWatches::new();
@@ -1135,7 +1155,7 @@ fn forced_full_refresh_publishes_current_training_without_a_stale_carry_key() {
         drop(LEADERS.notify(leader, site));
         let mut ctx = context(PART_MASKS[0]);
         ctx.force_full = true;
-        let report = copy_characters_growing(&world, ctx, &mut job, Roles::Gather);
+        let report = copy_characters(&world, ctx, &mut job, Roles::Gather);
         assert!(report.raw_ok && !report.plan_failed);
         assert!(!job.roster.quiet);
         assert_eq!(quiet::census_generation(&job), generation);
@@ -1175,6 +1195,7 @@ fn forced_full_refresh_publishes_current_training_without_a_stale_carry_key() {
 
 #[test]
 fn experience_mutations_refresh_one_leader_and_carry_complete_training() {
+    let _globals = crate::extended::characters::test_globals();
     static WATCHES: Watches = Watches::new();
     static DOMAIN: Isolated = Isolated::new();
     static LEADERS: LeaderWatches = LeaderWatches::new();

@@ -73,11 +73,19 @@ std::thread_local! {
 }
 static VARIABLES_WATCH: WatchRegistry = WatchRegistry::marking();
 static VARIABLES_FORWARDED: AtomicBool = AtomicBool::new(false);
+static VARIABLES_UNOBSERVED: AtomicBool = AtomicBool::new(false);
 pub fn variable_write(at: usize) -> Notification<'static> {
     VARIABLES_WATCH.notify(at)
 }
+/// A variable store may have changed unnamed (an exception's unwinding, an
+/// unreadable context end): the next acquisition reads every contract's
+/// variables again. Seed-changing contexts run on the main thread, which the
+/// hourly acquisition holds, so the write and this flag fall on one side of it.
 pub fn variables_uncertified() {
-    VARIABLES_WATCH.poison();
+    VARIABLES_UNOBSERVED.store(true, Ordering::SeqCst);
+}
+fn take_unobserved_variables() -> bool {
+    VARIABLES_UNOBSERVED.swap(false, Ordering::SeqCst)
 }
 pub fn observe_variables(enabled: bool) {
     VARIABLES_FORWARDED.store(enabled, Ordering::SeqCst);
@@ -330,7 +338,7 @@ pub fn country_reset(country: usize) -> CountryReset {
         owner: owner.filter(|_| ENABLED.load(Ordering::SeqCst)),
     }
 }
-pub fn drain_growing(output: &mut Vec<MarketEventRow>) -> Result<usize, &'static str> {
+pub fn drain(output: &mut Vec<MarketEventRow>) -> Result<usize, &'static str> {
     if !ENABLED.load(Ordering::SeqCst)
         || !RESET_FORWARDED.load(Ordering::SeqCst)
         || !VARIABLES_FORWARDED.load(Ordering::SeqCst)
@@ -338,7 +346,7 @@ pub fn drain_growing(output: &mut Vec<MarketEventRow>) -> Result<usize, &'static
     {
         return Err("market writer coverage incomplete (see market_changes status)");
     }
-    let count = LEDGER.drain_growing(output)?;
+    let count = LEDGER.drain(output)?;
     let mut times = AMENDMENT_TIMES
         .lock()
         .map_err(|_| "market amendment timing storage poisoned")?;
@@ -1194,7 +1202,7 @@ impl Hooks {
             Some(outcome) => {
                 outcome.map_err(|reason| remember_publication_failure("publication", reason))?
             }
-            None => Hook::set_enabled_iter_attach(
+            None => Hook::set_enabled_iter(
                 self.hooks
                     .iter_mut()
                     .chain(self.taps.iter_mut().map(Tap::publication_hook)),
@@ -1230,6 +1238,7 @@ pub mod test_support {
         fn default() -> Self {
             let guard = SERIAL.lock().unwrap();
             LEDGER.reset();
+            VARIABLES_UNOBSERVED.store(false, Ordering::SeqCst);
             ENABLED.store(true, Ordering::SeqCst);
             observe_resets(true);
             observe_variables(true);
@@ -1363,7 +1372,7 @@ mod tests {
         }));
         assert!(
             LEDGER
-                .drain_growing(&mut Vec::new())
+                .drain(&mut Vec::new())
                 .unwrap_err()
                 .contains("partial")
         );
@@ -1506,7 +1515,7 @@ mod tests {
             }
         }
         let mut events = Vec::new();
-        assert_eq!(LEDGER.drain_growing(&mut events), Ok(4));
+        assert_eq!(LEDGER.drain(&mut events), Ok(4));
         assert_eq!(
             (events[0].kind, events[0].mode),
             (AMENDMENT_COST, FINAL_CONTRACT)
@@ -1642,7 +1651,7 @@ mod tests {
             ..Default::default()
         }));
         assert_eq!(
-            LEDGER.drain_growing(&mut Vec::new()),
+            LEDGER.drain(&mut Vec::new()),
             Err("event ledger first/branch/recovery interval is partial")
         );
         LEDGER.boundary(Some(engine_native::cgame_state::Clock {
@@ -1695,7 +1704,7 @@ mod tests {
             contract_created(&StackBirth, 0, CONTRACT, false).unwrap();
         });
         let mut events = Vec::new();
-        LEDGER.drain_growing(&mut events).unwrap();
+        LEDGER.drain(&mut events).unwrap();
         let births: Vec<_> = events
             .iter()
             .filter(|row| matches!(row.kind, REQUEST_CREATED | CONTRACT_CREATED))
@@ -1780,7 +1789,7 @@ mod tests {
             )
             .unwrap();
         });
-        LEDGER.drain_growing(&mut events).unwrap();
+        LEDGER.drain(&mut events).unwrap();
         assert_eq!(
             events.iter().filter(|row| row.kind == FINAL_ITEM).count(),
             10_000

@@ -1,0 +1,80 @@
+use super::*;
+
+fn part(first: i32, last: i32, starts: bool) -> Part {
+    Part { run: 0, key: 7, first, last, slot: 7, id: 70, segment_first: first, starts }
+}
+
+#[test]
+fn parts_split_a_total_only_where_their_rows_add_up_to_it() {
+    // Two variants under one archetype (group 0) and the unidentified part (group 1).
+    let held = [(0, Some(30)), (0, Some(20)), (1, Some(10))];
+    assert_eq!(split(Some(60), &held, 2), vec![Some(50), Some(10)]);
+    // A part without a row at the hour holds none while the rest add up.
+    assert_eq!(split(Some(50), &[(0, Some(50)), (1, None)], 2), vec![Some(50), Some(0)]);
+    // A part not known (its cell, or its table, not recorded): the split is not known at all.
+    assert_eq!(split(Some(60), &[(0, Some(50)), (1, None)], 2), vec![None, None]);
+    // Rows beyond the total are not a split either.
+    assert_eq!(split(Some(40), &held, 2), vec![None, None]);
+    // A total not recorded leaves every part unknown, never zero.
+    assert_eq!(split(None, &held, 2), vec![None, None]);
+    // A total of nothing with no rows is a known zero in every part.
+    assert_eq!(split(Some(0), &[], 3), vec![Some(0), Some(0), Some(0)]);
+}
+
+#[test]
+fn a_holders_runs_cut_where_its_total_reference_or_a_part_moves_and_join_where_nothing_does() {
+    let totals = vec![(0, 9, Some(10)), (10, 19, None), (20, 29, Some(12))];
+    let reference = vec![(0, 14, Some(100)), (15, 29, Some(120))];
+    let first = vec![(0, 4, Some(10)), (5, 29, Some(4))];
+    let second = vec![(0, 4, None), (5, 29, Some(6)), ];
+    let owned: Owned<'_> = vec![(0, first.as_slice()), (1, second.as_slice())];
+    let mut out = Vec::new();
+    part_runs(&part(0, 29, true), 0, 29, &totals, Some(&reference), &owned, 2, &mut out);
+    let shape: Vec<_> = out.iter().map(|run| (run.first_hour, run.last_hour, run.starts_segment, run.total, run.values.clone(), run.reference_total)).collect();
+    assert_eq!(
+        shape,
+        vec![
+            (0, 4, true, Some(10), vec![Some(10), Some(0)], Some(Some(100))),
+            (5, 9, false, Some(10), vec![Some(4), Some(6)], Some(Some(100))),
+            (10, 14, false, None, vec![None, None], Some(Some(100))),
+            (15, 19, false, None, vec![None, None], Some(Some(120))),
+            // 4 + 6 is not the total of 12: the split is not known, the total is.
+            (20, 29, false, Some(12), vec![None, None], Some(Some(120))),
+        ]
+    );
+    // Cut to a membership span inside the holder part: no segment starts where the cut does.
+    let mut cut = Vec::new();
+    part_runs(&part(0, 29, true), 6, 8, &totals, None, &owned, 2, &mut cut);
+    assert_eq!(cut, vec![ForceRun { first_hour: 6, last_hour: 8, starts_segment: false, total: Some(10), values: vec![Some(4), Some(6)], reference_total: None }]);
+}
+
+#[test]
+fn recorded_parts_group_under_their_reply_part_in_key_order() {
+    let resolved = BTreeMap::from([
+        (3u128, ForcePart { key: "fighter".into(), name: Some("Fighter".into()), unresolved: false }),
+        (1u128, ForcePart { key: "cas".into(), name: None, unresolved: false }),
+        (2u128, ForcePart { key: "fighter".into(), name: Some("Fighter".into()), unresolved: false }),
+    ]);
+    let named = Named::group(resolved);
+    assert_eq!(named.parts.iter().map(|part| part.key.as_str()).collect::<Vec<_>>(), vec!["cas", "fighter"]);
+    assert_eq!((named.of[&1], named.of[&2], named.of[&3]), (0, 1, 1));
+}
+
+#[test]
+fn every_force_family_names_its_declared_totals_and_parts() {
+    for race in [
+        air_race(AirForceMeasure::Planes, AirForceOwnership::Roster),
+        air_race(AirForceMeasure::Wings, AirForceOwnership::Effective),
+        navy_race(NavyMeasure::Ships, NavyOwnership::Roster),
+        navy_race(NavyMeasure::Strength, NavyOwnership::Logical),
+    ] {
+        let totals = declared(race.totals).unwrap();
+        assert!(measure(totals, race.total).unwrap().rank > 0, "{} is ranked", race.total);
+        if let Some(reference) = race.reference {
+            measure(totals, reference).unwrap();
+        }
+        let parts = declared(race.parts).unwrap();
+        measure(parts, race.part).unwrap();
+        assert!(race.ownership_shift + 8 <= parts.parts.unwrap().bits);
+    }
+}

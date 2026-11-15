@@ -18,6 +18,7 @@ pub(super) fn fixture_bindings() -> CharacterSourceBindings {
 
 #[test]
 fn tooltip_key_capacity_tracks_keys_instead_of_payload_bytes() {
+    let _globals = crate::extended::characters::test_globals();
     let mut captured = Captured::with_capacities(&fixture_capacities());
     let key = vec![b'x'; 40_000];
     let len = key.len() + 16;
@@ -101,18 +102,31 @@ pub(super) fn two_advisor_fixture(same_character: bool) -> Vec<u8> {
 }
 
 #[test]
-fn advisor_tooltip_shortage_preserves_all_role_names_and_numeric_caches() {
+fn advisor_short_arena_grows_to_every_role_name_numeric_cache_and_tooltip() {
+    let _globals = crate::extended::characters::test_globals();
     use super::characters_test_kit as kit;
     for same_character in [true, false] {
         let bytes = two_advisor_fixture(same_character);
-        for capacity in [38, 46, 55] {
-            let memory = kit::memory(&bytes);
-            let mut rows = [cadvisor::Row::default(); 2];
-            let mut arena = vec![0; capacity];
-            let result = cadvisor::walk(&memory, IMAGE, ADDRESS, &mut rows, &mut arena);
-            assert_eq!(result.outcome, Outcome::Rows { len: 2 });
-            assert_eq!(result.required_bytes, 55);
-            for (index, row) in rows.iter().enumerate() {
+        let memory = kit::memory(&bytes);
+        let whole = kit::direct(
+            &memory,
+            &Capacities {
+                rows: [64; N],
+                bytes: [8192; N],
+            },
+        );
+        for capacity in [1, 38, 46, 55] {
+            let direct = kit::direct(
+                &memory,
+                &Capacities {
+                    rows: [1; N],
+                    bytes: [capacity; N],
+                },
+            );
+            let advisors = &direct.advisors;
+            assert_eq!(advisors.rows.outcome, Outcome::Rows { len: 2 });
+            let arena = &advisors.bytes.first;
+            for (index, row) in advisors.rows.rows[..2].iter().enumerate() {
                 assert_eq!(
                     &arena[row.key_start..row.key_start + row.key_len],
                     if index == 0 { b"a" } else { b"b" }
@@ -122,32 +136,18 @@ fn advisor_tooltip_shortage_preserves_all_role_names_and_numeric_caches() {
                     &arena[row.modifier_start + 8..row.modifier_start + 16],
                     &if index == 0 { -17_i64 } else { 19_i64 }.to_le_bytes()
                 );
-                assert_eq!(
-                    row.tooltip_recorded,
-                    capacity >= if index == 0 { 46 } else { 55 }
-                );
-                if !row.tooltip_recorded {
-                    assert_eq!(row.tooltip_failure, Some(cadvisor::TOOLTIP_CAPACITY_REASON));
-                }
+                assert!(row.tooltip_recorded);
             }
-            if capacity == 55 {
-                assert_eq!(
-                    &arena[rows[1].tooltip_start..rows[1].tooltip_start + 9],
-                    &[1, 0, 0, 0, 0, 0, 0, 0, b'z']
-                );
-            }
-            let direct = kit::direct(
-                &memory,
-                &Capacities {
-                    rows: [64; N],
-                    bytes: [capacity; N],
-                },
-            );
-            assert_eq!(direct.advisors.rows.outcome, result.outcome);
-            assert_eq!(&direct.advisors.rows.rows[..2], &rows);
+            let last = &advisors.rows.rows[1];
             assert_eq!(
-                &direct.advisors.bytes.first[..direct.advisors.bytes.len],
-                &arena[..result.bytes_len]
+                &arena[last.tooltip_start..last.tooltip_start + 9],
+                &[1, 0, 0, 0, 0, 0, 0, 0, b'z']
+            );
+            assert_eq!(advisors.rows.outcome, whole.advisors.rows.outcome);
+            assert_eq!(&advisors.rows.rows[..2], &whole.advisors.rows.rows[..2]);
+            assert_eq!(
+                &arena[..advisors.bytes.len],
+                &whole.advisors.bytes.first[..whole.advisors.bytes.len]
             );
         }
         // The off-thread walk uses the complete owned payload, with the same
@@ -162,8 +162,12 @@ fn advisor_tooltip_shortage_preserves_all_role_names_and_numeric_caches() {
     }
 }
 
+/// A prepared program observes the old prefix before a changed key header
+/// requires a larger suffix: the log grows in the pass, and no completed
+/// prefix read is taken again.
 #[test]
-fn appended_raw_shortage_keeps_the_complete_advisor_prefix_without_live_retry() {
+fn a_changed_advisor_suffix_grows_in_the_pass_without_repeating_its_prefix() {
+    let _globals = crate::extended::characters::test_globals();
     use super::characters_test_kit as kit;
     let bytes = two_advisor_fixture(false);
     let context = CharactersCopyContext {
@@ -171,54 +175,18 @@ fn appended_raw_shortage_keeps_the_complete_advisor_prefix_without_live_retry() 
         base: IMAGE,
         game_state: ADDRESS,
         active: PART_MASKS[2],
-        trait_rows: 0,
-        trait_bytes: 0,
     };
     let mut baseline = CharactersJob::with_storage(2, 2048, 32768, false);
-    assert!(copy_characters_refresh(&kit::memory(&bytes), context, &mut baseline).raw_ok);
+    assert!(copy_characters(&kit::memory(&bytes), context, &mut baseline, Roles::Independent).raw_ok);
     let prefix_spans = baseline
         .log
         .spans
         .iter()
         .position(|span| span.addr == ADDRESS + kit::ADV_ROLE + cadvisor::TOOLTIP_KEYS + 8)
         .unwrap();
-    let prefix_bytes = baseline.log.spans[prefix_spans].start as usize;
-    let assert_prefix = |job: &CharactersJob, expect_tooltip_absence: bool| {
-        let mut captured = Captured::with_capacities(&fixture_capacities());
-        captured.decode_characters_payload(IMAGE, job, &mut [0; N]);
-        assert_eq!(captured.advisors.rows.outcome, Outcome::Rows { len: 2 });
-        for (index, row) in captured.advisors.rows.rows[..2].iter().enumerate() {
-            assert!(row.modifier_recorded);
-            assert_eq!(
-                &captured.advisors.bytes.first[row.modifier_start + 8..row.modifier_start + 16],
-                &if index == 0 { -17_i64 } else { 19_i64 }.to_le_bytes()
-            );
-            if expect_tooltip_absence {
-                assert!(!row.tooltip_recorded);
-            }
-        }
-    };
-    for (spans, capacity) in [
-        (prefix_spans, 32768),
-        (2048, prefix_bytes),
-        (2048, prefix_bytes + 17),
-    ] {
-        let mut job = CharactersJob::with_storage(2, spans, capacity, false);
-        let report = copy_characters_refresh(&kit::memory(&bytes), context, &mut job);
-        assert!(report.raw_ok && !report.plan_failed);
-        assert!(job.log.overflowed && job.appended_overflowed);
-        assert!(!job.overflowed() && !job.requires_no_retry());
-        assert!(job.grow_for_next());
-        assert_prefix(&job, true);
-    }
-
-    // A prepared program observes the old prefix before a changed key header
-    // requires a larger suffix. Its completed reads are never reacquired.
     let mut job = CharactersJob::with_storage(2, 2048, baseline.log.bytes.len() + 16, false);
-    // The small byte arena also seeds the control-observation arena. Recycle
-    // its first trace demand before requiring an executable prepared program.
     for warm in 0..3 {
-        assert!(copy_characters_refresh(&kit::memory(&bytes), context, &mut job).raw_ok);
+        assert!(copy_characters(&kit::memory(&bytes), context, &mut job, Roles::Independent).raw_ok);
         if warm == 2 {
             assert!(job.log.planned_capture_succeeded());
         }
@@ -233,11 +201,9 @@ fn appended_raw_shortage_keeps_the_complete_advisor_prefix_without_live_retry() 
     put(&mut changed, header + 24, 2048_u64.to_le_bytes());
     changed[0x9000..0x9800].fill(b'x');
     let source = WaveMemory::new(&changed, None);
-    let report = copy_characters_refresh(&source, context, &mut job);
-    assert!(job.log.planned_source_observed());
+    let report = copy_characters(&source, context, &mut job, Roles::Independent);
     assert!(report.raw_ok && !report.plan_failed);
-    assert!(job.log.overflowed && job.appended_overflowed);
-    assert_prefix(&job, true);
+    assert!(!job.log.overflowed && !job.appended_overflowed && !job.grow_for_next());
     for span in &baseline.log.spans[..prefix_spans] {
         assert_eq!(
             source
@@ -249,42 +215,6 @@ fn appended_raw_shortage_keeps_the_complete_advisor_prefix_without_live_retry() 
             1
         );
     }
-    // The first shortage proves only the first key payload's end. Once that
-    // fits, the next capture may first discover the later advisor's header
-    // shortage. Recycle that new demand without repeating any capture's reads.
-    for _ in 0..2 {
-        assert!(job.grow_for_next());
-        let capacity = job.log.bytes.capacity();
-        let copied = job.log.bytes.len();
-        job.grow();
-        assert!(job.log.bytes.capacity() > capacity);
-        job.prepare_read_plans();
-        job.clear();
-        let source = WaveMemory::new(&changed, None);
-        let report = copy_characters_refresh(&source, context, &mut job);
-        assert!(report.raw_ok && !report.plan_failed);
-        assert_prefix(&job, false);
-        for span in &baseline.log.spans[..prefix_spans] {
-            assert_eq!(
-                source
-                    .reads
-                    .borrow()
-                    .iter()
-                    .filter(|&&(address, len)| address == span.addr && len == span.len as usize)
-                    .count(),
-                1,
-                "growth never repeats a prefix observation within its capture"
-            );
-        }
-        if !job.log.overflowed {
-            break;
-        }
-        assert!(job.appended_overflowed && !job.overflowed() && !job.requires_no_retry());
-        // A later shortage follows a strictly longer copied prefix; the
-        // refused request still requires growth through the public contract.
-        assert!(job.log.bytes.len() > copied && job.log.grow_for_next());
-    }
-    assert!(!job.log.overflowed);
     let mut recovered = Captured::with_capacities(&fixture_capacities());
     recovered.decode_characters_payload(IMAGE, &job, &mut [0; N]);
     let direct = direct_advisors(&kit::memory(&changed));
@@ -293,25 +223,6 @@ fn appended_raw_shortage_keeps_the_complete_advisor_prefix_without_live_retry() 
         recovered.advisors.rows.rows[..2]
             .iter()
             .all(|row| row.modifier_recorded && row.tooltip_recorded)
-    );
-
-    let mut queued = CharactersJob::with_storage(2, 2048, 32768, false);
-    queued.appended_roles = Vec::new();
-    assert!(copy_characters_refresh(&kit::memory(&bytes), context, &mut queued).raw_ok);
-    assert_eq!(queued.appended_required, 2);
-    assert!(queued.grow_for_next());
-    assert_prefix(&queued, true);
-    queued.prepare_read_plans();
-    queued.grow();
-    queued.prepare_read_plans();
-    assert!(copy_characters_refresh(&kit::memory(&bytes), context, &mut queued).raw_ok);
-    assert_eq!(queued.appended_roles.len(), 2);
-    let mut recovered = Captured::with_capacities(&fixture_capacities());
-    recovered.decode_characters_payload(IMAGE, &queued, &mut [0; N]);
-    assert!(
-        recovered.advisors.rows.rows[..2]
-            .iter()
-            .all(|row| row.tooltip_recorded)
     );
 }
 
@@ -323,14 +234,11 @@ fn section_job() -> CharactersJob {
 }
 
 fn section_context() -> CharactersCopyContext {
-    let capacities = split_capacities();
     CharactersCopyContext {
         force_full: false,
         base: IMAGE,
         game_state: ADDRESS,
         active: PART_MASKS[2],
-        trait_rows: capacities.rows[4],
-        trait_bytes: capacities.bytes[4],
     }
 }
 
@@ -388,6 +296,7 @@ fn assert_advisors_match(job: &CharactersJob, memory: &impl Memory) {
 
 #[test]
 fn advisor_raw_copy_keeps_fresh_ordered_modifier_entries_and_owned_bytes() {
+    let _globals = crate::extended::characters::test_globals();
     let mut bytes = section_fixture();
     let data = 0x8a00;
     array(
@@ -412,10 +321,11 @@ fn advisor_raw_copy_keeps_fresh_ordered_modifier_entries_and_owned_bytes() {
             put(&mut bytes, data + 8, i64::MIN.to_le_bytes());
             expected = direct_advisors(&characters_test_kit::memory(&bytes));
         }
-        let report = copy_characters_refresh(
+        let report = copy_characters(
             &characters_test_kit::memory(&bytes),
             section_context(),
             &mut job,
+            Roles::Independent,
         );
         assert!(report.raw_ok);
         assert_advisors_match(&job, &characters_test_kit::memory(&bytes));
@@ -447,6 +357,7 @@ fn advisor_raw_copy_keeps_fresh_ordered_modifier_entries_and_owned_bytes() {
 
 #[test]
 fn advisor_projection_refuses_partial_modifier_entries() {
+    let _globals = crate::extended::characters::test_globals();
     let mut captured = Captured::with_capacities(&small_capacities());
     captured.advisors.rows.rows[0] = cadvisor::Row {
         character: 1,
@@ -481,14 +392,16 @@ fn advisor_projection_refuses_partial_modifier_entries() {
 
 #[test]
 fn advisor_roster_growth_rebuilds_only_its_section_and_reads_fresh_inactive_roles() {
+    let _globals = crate::extended::characters::test_globals();
     let mut bytes = section_fixture();
     let mut job = section_job();
     for _ in 0..2 {
         assert!(
-            copy_characters_refresh(
+            copy_characters(
                 &characters_test_kit::memory(&bytes),
                 section_context(),
-                &mut job
+                &mut job,
+                Roles::Independent,
             )
             .raw_ok
         );
@@ -512,10 +425,11 @@ fn advisor_roster_growth_rebuilds_only_its_section_and_reads_fresh_inactive_role
     );
     pointer(&mut bytes, 0x8808, 0x2300);
     assert!(
-        copy_characters_refresh(
+        copy_characters(
             &characters_test_kit::memory(&bytes),
             section_context(),
-            &mut job
+            &mut job,
+            Roles::Independent,
         )
         .raw_ok
     );
@@ -538,10 +452,11 @@ fn advisor_roster_growth_rebuilds_only_its_section_and_reads_fresh_inactive_role
         b"changed",
     );
     assert!(
-        copy_characters_refresh(
+        copy_characters(
             &characters_test_kit::memory(&bytes),
             section_context(),
-            &mut job
+            &mut job,
+            Roles::Independent,
         )
         .raw_ok
     );
@@ -566,10 +481,11 @@ fn advisor_roster_growth_rebuilds_only_its_section_and_reads_fresh_inactive_role
         );
         pointer(&mut bytes, data, CHARACTERS[1]);
         assert!(
-            copy_characters_refresh(
+            copy_characters(
                 &characters_test_kit::memory(&bytes),
                 section_context(),
-                &mut job
+                &mut job,
+                Roles::Independent,
             )
             .raw_ok
         );
@@ -582,6 +498,7 @@ fn advisor_roster_growth_rebuilds_only_its_section_and_reads_fresh_inactive_role
 
 #[test]
 fn advisor_sections_preserve_alias_occurrences_and_first_fault_without_live_retry() {
+    let _globals = crate::extended::characters::test_globals();
     let mut bytes = section_fixture();
     pointer(&mut bytes, 0x8800, CHARACTERS[0]);
     let trace = WaveMemory::new(&bytes, None);
@@ -598,10 +515,11 @@ fn advisor_sections_preserve_alias_occurrences_and_first_fault_without_live_retr
             let mut job = section_job();
             if warm {
                 assert!(
-                    copy_characters_refresh(
+                    copy_characters(
                         &characters_test_kit::memory(&bytes),
                         section_context(),
-                        &mut job
+                        &mut job,
+                        Roles::Independent,
                     )
                     .raw_ok
                 );
@@ -609,7 +527,7 @@ fn advisor_sections_preserve_alias_occurrences_and_first_fault_without_live_retr
                 job.clear();
             }
             let source = WaveMemory::new(&bytes, fault);
-            assert!(copy_characters_refresh(&source, section_context(), &mut job).raw_ok);
+            assert!(copy_characters(&source, section_context(), &mut job, Roles::Independent).raw_ok);
             assert_advisors_match(&job, &WaveMemory::new(&bytes, fault));
             if let Some(fault) = fault {
                 let reference = WaveMemory::new(&bytes, Some(fault));
@@ -636,6 +554,7 @@ fn advisor_sections_preserve_alias_occurrences_and_first_fault_without_live_retr
 
 #[test]
 fn advisor_sections_keep_original_roster_ids_and_stop_at_semantic_failures() {
+    let _globals = crate::extended::characters::test_globals();
     let original = section_fixture();
     let memory = characters_test_kit::memory(&original);
     let roster = ccharacter_manager::Roster::read(&memory, IMAGE, ADDRESS).unwrap();
@@ -656,7 +575,7 @@ fn advisor_sections_keep_original_roster_ids_and_stop_at_semantic_failures() {
         for invalid_historical in [false, true] {
             let mut job = section_job();
             if warm {
-                assert!(copy_characters_refresh(&memory, section_context(), &mut job).raw_ok);
+                assert!(copy_characters(&memory, section_context(), &mut job, Roles::Independent).raw_ok);
                 job.prepare_read_plans();
                 job.clear();
             }
@@ -666,7 +585,7 @@ fn advisor_sections_keep_original_roster_ids_and_stop_at_semantic_failures() {
                 pointer(&mut bytes, characters_test_kit::ADV_ROLE, 0);
             }
             let source = WaveMemory::new(&bytes, None);
-            assert!(copy_characters_refresh(&source, section_context(), &mut job).raw_ok);
+            assert!(copy_characters(&source, section_context(), &mut job, Roles::Independent).raw_ok);
             assert_advisors_match(&job, &source);
             if invalid_historical {
                 assert!(job.advisor_dynamic.as_ref().unwrap().log.spans.is_empty());
@@ -676,36 +595,8 @@ fn advisor_sections_keep_original_roster_ids_and_stop_at_semantic_failures() {
 }
 
 #[test]
-fn later_advisor_section_overflow_cannot_retry_an_earlier_prepared_source() {
-    let bytes = section_fixture();
-    let mut job = section_job();
-    assert!(
-        copy_characters_refresh(
-            &characters_test_kit::memory(&bytes),
-            section_context(),
-            &mut job
-        )
-        .raw_ok
-    );
-    job.prepare_read_plans();
-    job.clear();
-    job.advisor_dynamic.as_mut().unwrap().log = crate::raw::RawLog::new(1, 1);
-    let report = copy_characters_refresh(
-        &characters_test_kit::memory(&bytes),
-        section_context(),
-        &mut job,
-    );
-    assert!(job.log.planned_capture_succeeded());
-    assert!(!report.raw_ok && report.plan_failed);
-    assert!(job.grow_for_next());
-    job.grow();
-    job.prepare_read_plans();
-    job.clear();
-    assert!(job.advisor_dynamic.as_ref().unwrap().log.bytes.capacity() >= 8);
-}
-
-#[test]
 fn independent_parts_merge_fresh_rows_and_isolate_fallbacks_and_failures() {
+    let _globals = crate::extended::characters::test_globals();
     use super::characters_test_kit as kit;
     let capacities = split_capacities();
     let baseline = kit::mapped_fixture();
@@ -726,8 +617,6 @@ fn independent_parts_merge_fresh_rows_and_isolate_fallbacks_and_failures() {
         base: kit::BASE,
         game_state: kit::GAME_STATE,
         active: [true; N],
-        trait_rows: capacities.rows[4],
-        trait_bytes: capacities.bytes[4],
     };
     let mut fresh = baseline.clone();
     put(
@@ -756,7 +645,7 @@ fn independent_parts_merge_fresh_rows_and_isolate_fallbacks_and_failures() {
         for (part, job) in jobs.iter_mut().enumerate() {
             let active = PART_MASKS[part];
             let report =
-                copy_characters_refresh(&memory, CharactersCopyContext { active, ..context }, job);
+                copy_characters(&memory, CharactersCopyContext { active, ..context }, job, Roles::Independent);
             assert!(report.raw_ok && !report.plan_failed);
             for (slot, &ticks) in report.copy_ticks.iter().enumerate() {
                 if slot != anchor(active) {
@@ -782,13 +671,14 @@ fn independent_parts_merge_fresh_rows_and_isolate_fallbacks_and_failures() {
     }
     let memory = kit::memory(&fresh);
     for (part, job) in jobs.iter_mut().enumerate() {
-        let report = copy_characters_refresh(
+        let report = copy_characters(
             &memory,
             CharactersCopyContext {
                 active: PART_MASKS[part],
                 ..context
             },
             job,
+            Roles::Independent,
         );
         assert!(report.raw_ok && job.log.planned_capture_succeeded());
     }
@@ -819,15 +709,16 @@ fn independent_parts_merge_fresh_rows_and_isolate_fallbacks_and_failures() {
 
 #[test]
 fn portrait_census_is_fresh_complete_and_never_reuses_a_failed_lease() {
+    let _globals = crate::extended::characters::test_globals();
     use super::characters_test_kit as kit;
     let make = || {
         let mut log = crate::raw::RawLog::new(8192, 65536);
         log.initialize_scattered_read_plan(8192, 8192, 65536);
         CharactersJob {
             log,
-            portrait_census: Some(Arc::new(
+            portrait_census: Some(engine_allocation::shared(
                 ccharacter_manager::PortraitCensus::try_new(8).unwrap(),
-            )),
+            ).unwrap()),
             ..Default::default()
         }
     };
@@ -836,12 +727,10 @@ fn portrait_census_is_fresh_complete_and_never_reuses_a_failed_lease() {
         base: kit::BASE,
         game_state: kit::GAME_STATE,
         active: [true, false, false, true, false, true],
-        trait_rows: 0,
-        trait_bytes: 0,
     };
     let baseline = kit::mapped_fixture();
     let mut job = make();
-    copy_characters_refresh(&kit::memory(&baseline), ctx, &mut job);
+    copy_characters(&kit::memory(&baseline), ctx, &mut job, Roles::Independent);
     let rows = job
         .portrait_census()
         .unwrap()
@@ -858,7 +747,7 @@ fn portrait_census_is_fresh_complete_and_never_reuses_a_failed_lease() {
         UNITS[0] + cunit_leader::EXPERIENCE,
         987_i64.to_le_bytes(),
     );
-    copy_characters_refresh(&kit::memory(&changed), ctx, &mut job);
+    copy_characters(&kit::memory(&changed), ctx, &mut job, Roles::Independent);
     assert!(job.log.planned_capture_succeeded());
     assert_eq!(
         job.portrait_census()
@@ -870,18 +759,18 @@ fn portrait_census_is_fresh_complete_and_never_reuses_a_failed_lease() {
     // A roster reorder must rebuild occurrence order, even with the same IDs.
     pointer(&mut changed, ROSTER, CHARACTERS[1]);
     pointer(&mut changed, ROSTER + 8, CHARACTERS[0]);
-    copy_characters_refresh(&kit::memory(&changed), ctx, &mut job);
+    copy_characters(&kit::memory(&changed), ctx, &mut job, Roles::Independent);
     let reordered = job.portrait_census().unwrap();
     assert_eq!(
         reordered.rows(ctx.base, ctx.game_state).unwrap()[0],
         rows[1]
     );
     // A leaked lease cannot cause a new raw plan to certify the older census.
-    copy_characters_refresh(&kit::memory(&baseline), ctx, &mut job);
+    copy_characters(&kit::memory(&baseline), ctx, &mut job, Roles::Independent);
     assert!(job.portrait_census().is_none());
     job.log.prepare_read_plan();
     drop(reordered);
-    copy_characters_refresh(&kit::memory(&baseline), ctx, &mut job);
+    copy_characters(&kit::memory(&baseline), ctx, &mut job, Roles::Independent);
     assert!(job.log.planned_capture_succeeded());
     assert!(job.portrait_census().is_none());
     // Non-hourly passes can update the census while the old hourly plan
@@ -892,16 +781,16 @@ fn portrait_census_is_fresh_complete_and_never_reuses_a_failed_lease() {
         active: [true, true, false, true, false, true],
         ..ctx
     };
-    copy_characters_refresh(&kit::memory(&baseline), ctx, &mut job);
+    copy_characters(&kit::memory(&baseline), ctx, &mut job, Roles::Independent);
     job.log.prepare_read_plan();
-    assert!(copy_characters_refresh(&kit::memory(&baseline), daily, &mut job).raw_ok);
+    assert!(copy_characters(&kit::memory(&baseline), daily, &mut job, Roles::Independent).raw_ok);
     job.log.prepare_read_plan();
-    copy_characters_refresh(&kit::memory(&baseline), ctx, &mut job);
+    copy_characters(&kit::memory(&baseline), ctx, &mut job, Roles::Independent);
     assert!(
         job.log.planned_capture_succeeded(),
         "unchanged daily census should preserve the hourly plan"
     );
-    assert!(copy_characters_refresh(&kit::memory(&changed), daily, &mut job).raw_ok);
+    assert!(copy_characters(&kit::memory(&changed), daily, &mut job, Roles::Independent).raw_ok);
     assert_eq!(
         job.portrait_census()
             .unwrap()
@@ -910,7 +799,7 @@ fn portrait_census_is_fresh_complete_and_never_reuses_a_failed_lease() {
         rows[1]
     );
     job.log.prepare_read_plan();
-    copy_characters_refresh(&kit::memory(&baseline), ctx, &mut job);
+    copy_characters(&kit::memory(&baseline), ctx, &mut job, Roles::Independent);
     assert!(
         !job.log.planned_capture_succeeded(),
         "changed daily census must retire the old hourly association"
@@ -923,7 +812,7 @@ fn portrait_census_is_fresh_complete_and_never_reuses_a_failed_lease() {
         rows
     );
     job.log.prepare_read_plan();
-    copy_characters_refresh(&kit::memory(&baseline), ctx, &mut job);
+    copy_characters(&kit::memory(&baseline), ctx, &mut job, Roles::Independent);
     assert!(job.log.planned_capture_succeeded());
     assert_eq!(
         job.portrait_census()
@@ -938,25 +827,16 @@ fn portrait_census_is_fresh_complete_and_never_reuses_a_failed_lease() {
         ADDRESS + ROSTER,
     ] {
         let mut job = make();
-        copy_characters_refresh(&WaveMemory::new(&baseline, Some(blocked)), ctx, &mut job);
+        copy_characters(&WaveMemory::new(&baseline, Some(blocked)), ctx, &mut job, Roles::Independent);
         assert!(job.portrait_census().is_none(), "fault {blocked:x}");
     }
     let mut job = make();
-    job.portrait_census = Some(Arc::new(
+    job.portrait_census = Some(engine_allocation::shared(
         ccharacter_manager::PortraitCensus::try_new(2).unwrap(),
-    ));
-    copy_characters_refresh(&kit::memory(&baseline), ctx, &mut job);
-    assert!(
-        job.portrait_census().is_none(),
-        "bounded census must not publish a prefix"
-    );
-    // The short census demands the whole native roster and grows off-thread
-    // in one step; the next pass publishes it.
-    assert!(job.grow_for_next());
-    job.grow();
-    job.clear();
+    ).unwrap());
+    // A short census grows to the whole native roster in the pass.
+    copy_characters(&kit::memory(&baseline), ctx, &mut job, Roles::Independent);
     assert!(!job.portrait_census.as_ref().unwrap().needs_growth());
-    copy_characters_refresh(&kit::memory(&baseline), ctx, &mut job);
     assert_eq!(
         job.portrait_census()
             .unwrap()
@@ -968,6 +848,7 @@ fn portrait_census_is_fresh_complete_and_never_reuses_a_failed_lease() {
 
 #[test]
 fn hourly_plan_reads_fresh_values_and_preserves_every_fault_without_retry() {
+    let _globals = crate::extended::characters::test_globals();
     use super::characters_test_kit as kit;
     use std::cell::RefCell;
     struct Trace<'a> {
@@ -998,12 +879,10 @@ fn hourly_plan_reads_fresh_values_and_preserves_every_fault_without_retry() {
         base: kit::BASE,
         game_state: kit::GAME_STATE,
         active: [true, false, false, true, false, true],
-        trait_rows: 0,
-        trait_bytes: 0,
     };
     let baseline = kit::mapped_fixture();
     let mut first = job();
-    assert!(copy_characters_refresh(&kit::memory(&baseline), ctx, &mut first).raw_ok);
+    assert!(copy_characters(&kit::memory(&baseline), ctx, &mut first, Roles::Independent).raw_ok);
     first.log.prepare_read_plan();
     let mut fresh = baseline.clone();
     put(
@@ -1011,14 +890,14 @@ fn hourly_plan_reads_fresh_values_and_preserves_every_fault_without_retry() {
         UNITS[0] + cunit_leader::EXPERIENCE,
         123456789_i64.to_le_bytes(),
     );
-    let report = copy_characters_refresh(&kit::memory(&fresh), ctx, &mut first);
+    let report = copy_characters(&kit::memory(&fresh), ctx, &mut first, Roles::Independent);
     assert!(report.raw_ok && !report.plan_failed);
     assert!(
         first.log.planned_capture_succeeded(),
         "quiet structure must skip discovery"
     );
     let mut canonical = job();
-    assert!(copy_characters_refresh(&kit::memory(&fresh), ctx, &mut canonical).raw_ok);
+    assert!(copy_characters(&kit::memory(&fresh), ctx, &mut canonical, Roles::Independent).raw_ok);
     assert!(first.log.logs_equal(&canonical.log));
     let captured = |payload: &CharactersJob| {
         let mut result = Captured::with_capacities(&split_capacities());
@@ -1031,12 +910,12 @@ fn hourly_plan_reads_fresh_values_and_preserves_every_fault_without_retry() {
         calls: RefCell::new(vec![]),
         fault: None,
     };
-    copy_characters_refresh(&source, ctx, &mut canonical);
+    copy_characters(&source, ctx, &mut canonical, Roles::Independent);
     let reads = source.calls.into_inner();
     for rename in [false, true] {
         for fault in reads.iter().copied().map(Some).chain([None]) {
             let mut planned = job();
-            copy_characters_refresh(&kit::memory(&baseline), ctx, &mut planned);
+            copy_characters(&kit::memory(&baseline), ctx, &mut planned, Roles::Independent);
             planned.log.prepare_read_plan();
             let mut changed = fresh.clone();
             // An in-place name update must be observed even with the same
@@ -1049,7 +928,7 @@ fn hourly_plan_reads_fresh_values_and_preserves_every_fault_without_retry() {
                 calls: RefCell::new(vec![]),
                 fault,
             };
-            let report = copy_characters_refresh(&actual, ctx, &mut planned);
+            let report = copy_characters(&actual, ctx, &mut planned, Roles::Independent);
             assert!(report.raw_ok && !report.plan_failed, "fault {fault:?}");
             let reference = Trace {
                 bytes: &changed,
@@ -1057,7 +936,7 @@ fn hourly_plan_reads_fresh_values_and_preserves_every_fault_without_retry() {
                 fault,
             };
             let mut expected = job();
-            copy_characters_refresh(&reference, ctx, &mut expected);
+            copy_characters(&reference, ctx, &mut expected, Roles::Independent);
             assert_eq!(
                 *actual.calls.borrow(),
                 *reference.calls.borrow(),
@@ -1073,7 +952,7 @@ fn hourly_plan_reads_fresh_values_and_preserves_every_fault_without_retry() {
         UNITS[0] + cunit_leader::SKILL,
     ] {
         let mut planned = job();
-        copy_characters_refresh(&kit::memory(&baseline), ctx, &mut planned);
+        copy_characters(&kit::memory(&baseline), ctx, &mut planned, Roles::Independent);
         planned.log.prepare_read_plan();
         let mut changed = baseline.clone();
         put(&mut changed, field, 0_u64.to_le_bytes());
@@ -1082,7 +961,7 @@ fn hourly_plan_reads_fresh_values_and_preserves_every_fault_without_retry() {
             calls: RefCell::new(vec![]),
             fault: None,
         };
-        let report = copy_characters_refresh(&actual, ctx, &mut planned);
+        let report = copy_characters(&actual, ctx, &mut planned, Roles::Independent);
         assert!(report.raw_ok && !report.plan_failed);
         let reference = Trace {
             bytes: &changed,
@@ -1090,7 +969,7 @@ fn hourly_plan_reads_fresh_values_and_preserves_every_fault_without_retry() {
             fault: None,
         };
         let mut expected = job();
-        copy_characters_refresh(&reference, ctx, &mut expected);
+        copy_characters(&reference, ctx, &mut expected, Roles::Independent);
         assert_eq!(
             *actual.calls.borrow(),
             *reference.calls.borrow(),
@@ -1103,6 +982,7 @@ fn hourly_plan_reads_fresh_values_and_preserves_every_fault_without_retry() {
 
 #[test]
 fn template_cache_keeps_the_first_duplicate_occurrence() {
+    let _globals = crate::extended::characters::test_globals();
     let mut rows = [ccharacter::Row::default(); 64];
     let bytes = std::array::from_fn::<_, 64, _>(|index| index as u8);
     for (index, row) in rows.iter_mut().enumerate() {
@@ -1135,6 +1015,7 @@ fn template_cache_keeps_the_first_duplicate_occurrence() {
 /// and every failed template read, decodes to the live walk's rows.
 #[test]
 fn template_identities_are_read_once_per_pointer_and_again_after_a_reload() {
+    let _globals = crate::extended::characters::test_globals();
     use super::characters_test_kit as kit;
     use std::cell::RefCell;
     struct Trace<'a> {
@@ -1214,8 +1095,6 @@ fn template_identities_are_read_once_per_pointer_and_again_after_a_reload() {
         base: kit::BASE,
         game_state: kit::GAME_STATE,
         active,
-        trait_rows: 0,
-        trait_bytes: 0,
     };
     let direct = |world: &[u8]| {
         let mut captured = Captured::with_capacities(&split_capacities());
@@ -1242,7 +1121,7 @@ fn template_identities_are_read_once_per_pointer_and_again_after_a_reload() {
             calls: RefCell::new(vec![]),
             fault,
         };
-        let report = copy_characters_refresh(&source, context(force_full), job);
+        let report = copy_characters(&source, context(force_full), job, Roles::Independent);
         assert!(report.raw_ok && !report.plan_failed, "fault {fault:?}");
         let mut captured = Captured::with_capacities(&split_capacities());
         captured.decode_characters_payload(kit::BASE, job, &mut [0; N]);
@@ -1406,6 +1285,7 @@ fn template_identities_are_read_once_per_pointer_and_again_after_a_reload() {
 
 #[test]
 fn complete_family_plan_refreshes_roles_and_traits_without_retry() {
+    let _globals = crate::extended::characters::test_globals();
     use super::characters_test_kit as kit;
     use std::cell::RefCell;
     struct Trace<'a> {
@@ -1453,8 +1333,6 @@ fn complete_family_plan_refreshes_roles_and_traits_without_retry() {
             base: kit::BASE,
             game_state: kit::GAME_STATE,
             active,
-            trait_rows: capacities.rows[4],
-            trait_bytes: capacities.bytes[4],
         };
         let baseline = kit::mapped_fixture();
         let decode = |payload: &CharactersJob| {
@@ -1463,7 +1341,7 @@ fn complete_family_plan_refreshes_roles_and_traits_without_retry() {
             captured
         };
         let mut prepared = job();
-        assert!(copy_characters_refresh(&kit::memory(&baseline), context, &mut prepared).raw_ok);
+        assert!(copy_characters(&kit::memory(&baseline), context, &mut prepared, Roles::Independent).raw_ok);
         assert!(prepared.source_bindings.as_ref().unwrap().ready);
         prepared.log.prepare_read_plan();
         prepared.clear();
@@ -1474,7 +1352,7 @@ fn complete_family_plan_refreshes_roles_and_traits_without_retry() {
             123456_i64.to_le_bytes(),
         );
         put(&mut fresh, EXPERIENCE_ARRAY + 8, 654321_i64.to_le_bytes());
-        assert!(copy_characters_refresh(&kit::memory(&fresh), context, &mut prepared).raw_ok);
+        assert!(copy_characters(&kit::memory(&fresh), context, &mut prepared, Roles::Independent).raw_ok);
         assert!(prepared.log.planned_capture_succeeded());
         kit::assert_matches_direct(
             &decode(&prepared),
@@ -1486,11 +1364,11 @@ fn complete_family_plan_refreshes_roles_and_traits_without_retry() {
             calls: RefCell::new(vec![]),
             fault: None,
         };
-        copy_characters_refresh(&source, context, &mut job());
+        copy_characters(&source, context, &mut job(), Roles::Independent);
         let reads: std::collections::BTreeSet<_> = source.calls.into_inner().into_iter().collect();
         for fault in reads.into_iter().map(Some).chain([None]) {
             let mut prepared = job();
-            copy_characters_refresh(&kit::memory(&baseline), context, &mut prepared);
+            copy_characters(&kit::memory(&baseline), context, &mut prepared, Roles::Independent);
             prepared.log.prepare_read_plan();
             prepared.clear();
             let source = Trace {
@@ -1498,7 +1376,7 @@ fn complete_family_plan_refreshes_roles_and_traits_without_retry() {
                 calls: RefCell::new(vec![]),
                 fault,
             };
-            let report = copy_characters_refresh(&source, context, &mut prepared);
+            let report = copy_characters(&source, context, &mut prepared, Roles::Independent);
             assert!(report.raw_ok && !report.plan_failed, "fault {fault:?}");
             let reference = Trace {
                 bytes: &fresh,
@@ -1506,7 +1384,7 @@ fn complete_family_plan_refreshes_roles_and_traits_without_retry() {
                 fault,
             };
             let mut ordinary = job();
-            copy_characters_refresh(&reference, context, &mut ordinary);
+            copy_characters(&reference, context, &mut ordinary, Roles::Independent);
             kit::assert_matches_direct(&decode(&prepared), &decode(&ordinary));
             if let Some(fault) = fault {
                 assert!(
@@ -1535,13 +1413,13 @@ fn complete_family_plan_refreshes_roles_and_traits_without_retry() {
             kit::ADV_ROLE + cadvisor::IDEA_TOKEN,
         ] {
             let mut prepared = job();
-            copy_characters_refresh(&kit::memory(&baseline), context, &mut prepared);
+            copy_characters(&kit::memory(&baseline), context, &mut prepared, Roles::Independent);
             prepared.log.prepare_read_plan();
             let mut changed = baseline.clone();
             put(&mut changed, field, 0_u64.to_le_bytes());
             for source in [&changed, &baseline] {
                 assert!(
-                    copy_characters_refresh(&kit::memory(source), context, &mut prepared).raw_ok
+                    copy_characters(&kit::memory(source), context, &mut prepared, Roles::Independent).raw_ok
                 );
                 kit::assert_matches_direct(
                     &decode(&prepared),
@@ -1550,11 +1428,16 @@ fn complete_family_plan_refreshes_roles_and_traits_without_retry() {
                 prepared.log.prepare_read_plan();
             }
         }
-        // A recycled job must rebuild bindings after capacity changes. A
-        // truncated census cannot seed an apparently complete later plan.
+        // A recycled job rebuilds its bindings after the pool's capacities
+        // change, and the growing copy records every trait whatever the pool.
         for limit in [0, 1, 2] {
             let mut prepared = job();
-            copy_characters_refresh(&kit::memory(&baseline), context, &mut prepared);
+            copy_characters(
+                &kit::memory(&baseline),
+                context,
+                &mut prepared,
+                Roles::Independent,
+            );
             prepared.log.prepare_read_plan();
             for bytes_limit in [false, true] {
                 let mut limited = split_capacities();
@@ -1565,13 +1448,17 @@ fn complete_family_plan_refreshes_roles_and_traits_without_retry() {
                 }
                 let limited_context = CharactersCopyContext {
                     force_full: false,
-                    trait_rows: limited.rows[4],
-                    trait_bytes: limited.bytes[4],
                     ..context
                 };
                 for (ctx, caps) in [(limited_context, &limited), (context, &capacities)] {
                     assert!(
-                        copy_characters_refresh(&kit::memory(&baseline), ctx, &mut prepared).raw_ok
+                        copy_characters(
+                            &kit::memory(&baseline),
+                            ctx,
+                            &mut prepared,
+                            Roles::Independent,
+                        )
+                        .raw_ok
                     );
                     let mut actual = Captured::with_capacities(caps);
                     actual.decode_characters_payload(kit::BASE, &prepared, &mut [0; N]);
@@ -1582,19 +1469,6 @@ fn complete_family_plan_refreshes_roles_and_traits_without_retry() {
                     prepared.log.prepare_read_plan();
                 }
             }
-        }
-        if active[4] {
-            let mut bounded = job();
-            bounded.source_bindings.as_mut().unwrap().sources = Vec::with_capacity(1);
-            assert!(copy_characters_refresh(&kit::memory(&baseline), context, &mut bounded).raw_ok);
-            assert!(!bounded.source_bindings.as_ref().unwrap().ready);
-            bounded.log.prepare_read_plan();
-            assert!(copy_characters_refresh(&kit::memory(&fresh), context, &mut bounded).raw_ok);
-            assert!(!bounded.log.planned_capture_succeeded());
-            kit::assert_matches_direct(
-                &decode(&bounded),
-                &direct(&kit::memory(&fresh), &capacities, active),
-            );
         }
     }
 }
@@ -1613,7 +1487,7 @@ fn walk_units(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    units: Batch<'_, LeaderRow>,
+    units: GrowingBatch<'_, LeaderRow>,
     traits: Batch<'_, cunit_leader::TraitRow>,
 ) -> [ReadResult; 2] {
     let result = walk_family(
@@ -1621,9 +1495,9 @@ fn walk_units(
         base,
         game_state,
         Family {
-            characters: Batch::new(&mut [], &mut []),
-            leaders: Batch::new(&mut [], &mut []),
-            advisors: Batch::new(&mut [], &mut []),
+            characters: Batch::new(&mut Vec::new(), &mut Vec::new()),
+            leaders: Batch::new(&mut Vec::new(), &mut Vec::new()),
+            advisors: Batch::new(&mut Vec::new(), &mut Vec::new()),
             units,
             traits,
             training: true,
@@ -1831,6 +1705,7 @@ impl Memory for CountedMemory<'_> {
 
 #[test]
 fn shared_roster_keeps_traits_when_scalar_capacity_is_exhausted() {
+    let _globals = crate::extended::characters::test_globals();
     let bytes = fixture();
     let memory = CountedMemory {
         memory: SliceMemory {
@@ -1839,36 +1714,62 @@ fn shared_roster_keeps_traits_when_scalar_capacity_is_exhausted() {
         },
         character_header_reads: Cell::new(0),
     };
-    let mut units = [LeaderRow::default(); 1];
-    let mut names = [0; 24];
-    let mut traits = [cunit_leader::TraitRow::default(); 2];
-    let mut tokens = [0; 12];
+    let mut units = vec![LeaderRow::default(); 1];
+    let mut names = vec![0; 24];
+    let mut traits = vec![cunit_leader::TraitRow::default(); 2];
+    let mut tokens = vec![0; 12];
     let results = walk_units(
         &memory,
         IMAGE,
         ADDRESS,
-        Batch::new(&mut units, &mut names),
+        GrowingBatch::new(&mut units, &mut names),
         Batch::new(&mut traits, &mut tokens),
     );
     assert_eq!(memory.character_header_reads.get(), 2);
-    assert_eq!(
-        results[0].outcome,
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 1
-        }
-    );
+    assert_eq!(results[0].outcome, Outcome::Rows { len: 2 });
     assert_eq!(results[1].outcome, Outcome::Rows { len: 2 });
     assert_eq!(traits[1].token_start, 6);
-    assert_eq!(&tokens, b"trait\xfftrait\xff");
+    assert_eq!(&tokens[..12], b"trait\xfftrait\xff");
     assert_eq!(leader_row(&units[0], &names).experience, 0);
     assert_eq!(leader_row(&units[0], &names).inherited_text_a, b"saved1");
     assert_eq!(leader_row(&units[0], &names).inherited_text_b, b"other1");
+    assert_eq!(leader_row(&units[1], &names).inherited_text_a, b"saved2");
+    assert_eq!(leader_row(&units[1], &names).inherited_text_b, b"other2");
     assert_eq!(leader_reference(traits[0].leader_id), 0xffff_ffff_0000_1269);
 }
 
 #[test]
+fn a_roster_larger_than_the_pool_is_recorded_whole_in_the_same_hour() {
+    let _globals = crate::extended::characters::test_globals();
+    let bytes = fixture();
+    let memory = SliceMemory {
+        base: ADDRESS,
+        bytes: &bytes,
+    };
+    let mut ample = Captured::with_capacities(&fixture_capacities());
+    ample.capture(&memory, IMAGE, ADDRESS, 0, true);
+    let mut short = Captured::with_capacities(&Capacities {
+        rows: [1; N],
+        bytes: [1; N],
+    });
+    short.capture(&memory, IMAGE, ADDRESS, 0, true);
+    assert_eq!(
+        short.outcomes()[..5],
+        [
+            Outcome::Rows { len: 2 },
+            Outcome::Rows { len: 0 },
+            Outcome::Rows { len: 0 },
+            Outcome::Rows { len: 2 },
+            Outcome::Rows { len: 2 },
+        ]
+    );
+    assert_eq!(short.outcomes(), ample.outcomes());
+    assert_eq!(short.tables(), ample.tables());
+}
+
+#[test]
 fn one_trait_vector_fault_does_not_invalidate_other_family_tables() {
+    let _globals = crate::extended::characters::test_globals();
     let mut bytes = fixture();
     put(
         &mut bytes,
@@ -1879,15 +1780,15 @@ fn one_trait_vector_fault_does_not_invalidate_other_family_tables() {
         base: ADDRESS,
         bytes: &bytes,
     };
-    let mut units = [LeaderRow::default(); 2];
-    let mut names = [0; 24];
-    let mut traits = [cunit_leader::TraitRow::default(); 2];
-    let mut tokens = [0; 12];
+    let mut units = vec![LeaderRow::default(); 2];
+    let mut names = vec![0; 24];
+    let mut traits = vec![cunit_leader::TraitRow::default(); 2];
+    let mut tokens = vec![0; 12];
     let results = walk_units(
         &memory,
         IMAGE,
         ADDRESS,
-        Batch::new(&mut units, &mut names),
+        GrowingBatch::new(&mut units, &mut names),
         Batch::new(&mut traits, &mut tokens),
     );
     assert_eq!(results[0].outcome, Outcome::Rows { len: 2 });
@@ -1898,6 +1799,7 @@ fn one_trait_vector_fault_does_not_invalidate_other_family_tables() {
 
 #[test]
 fn character_parts_read_each_identity_once_per_owner_and_refresh_current_fields() {
+    let _globals = crate::extended::characters::test_globals();
     let mut bytes = fixture();
     let capacity = Capacities {
         rows: [2; N],
@@ -1936,6 +1838,7 @@ fn character_parts_read_each_identity_once_per_owner_and_refresh_current_fields(
 
 #[test]
 fn invalid_name_header_does_not_hide_roles_or_unit_state() {
+    let _globals = crate::extended::characters::test_globals();
     let mut bytes = fixture();
     put(
         &mut bytes,
@@ -1962,6 +1865,7 @@ fn invalid_name_header_does_not_hide_roles_or_unit_state() {
 
 #[test]
 fn partial_character_span_faults_are_local_and_failed_spans_are_never_retried() {
+    let _globals = crate::extended::characters::test_globals();
     let bytes = fixture();
     let capacity = Capacities {
         rows: [2; N],
@@ -2028,6 +1932,7 @@ fn partial_character_span_faults_are_local_and_failed_spans_are_never_retried() 
 
 #[test]
 fn unrelated_portrait_bytes_are_not_read() {
+    let _globals = crate::extended::characters::test_globals();
     let bytes = fixture();
     let capacity = Capacities {
         rows: [2; N],
@@ -2051,7 +1956,8 @@ fn unrelated_portrait_bytes_are_not_read() {
 }
 
 #[test]
-fn active_abilities_count_every_row_and_token_past_capacity_for_one_growth_step() {
+fn active_abilities_grow_every_row_and_token_past_the_default_storage() {
+    let _globals = crate::extended::characters::test_globals();
     use engine_land_inputs::cability;
     use engine_native::cgame_state;
     const COUNTRIES: u32 = 5000;
@@ -2135,13 +2041,7 @@ fn active_abilities_count_every_row_and_token_past_capacity_for_one_growth_step(
     let mut rows = vec![active_ability_record::Row::default(); row_capacity];
     let mut arena = vec![0; byte_capacity];
     let first = walk_abilities(&memory, 0, GAME_STATE, &mut rows, &mut arena);
-    assert_eq!(
-        first.outcome,
-        Outcome::Truncated {
-            len: row_capacity,
-            unread_rows: (total - row_capacity) as u32
-        }
-    );
+    assert_eq!(first.outcome, Outcome::Rows { len: total });
     assert_eq!(first.required_bytes, total * 7);
     crate::table_capture::grow_capacity(&mut row_capacity, total);
     crate::table_capture::grow_capacity(&mut byte_capacity, first.required_bytes);
@@ -2189,23 +2089,24 @@ fn active_abilities_count_every_row_and_token_past_capacity_for_one_growth_step(
     assert_eq!(empty.outcome, Outcome::Rows { len: 0 });
     let calls =
         |counts: engine_native::read_counts::ReadCounts| counts.copy_calls + counts.scattered_calls;
-    // Over raw memory: two registry reads, eight per country
+    // Over raw memory: two registry reads, seven per country
     // (authentication and the array header), three per record without
     // caster or region; a caster and a region add their own identity reads.
     // On the roster view the census answers the authentication, leaving
     // one call per country.
     let countries = u64::from(COUNTRIES);
-    assert_eq!(calls(countries_only), 2 + 8 * countries);
+    assert_eq!(calls(countries_only), 2 + 7 * countries);
     assert_eq!(calls(with_records) - calls(countries_only), 3 * countries);
 }
 
 #[test]
 fn byte_capacity_stops_the_prefix_and_retains_exact_omitted_count() {
-    let mut rows = [cunit_leader::TraitRow::default(); 3];
-    let mut bytes = [0; 2];
+    let _globals = crate::extended::characters::test_globals();
+    let mut rows = vec![cunit_leader::TraitRow::default(); 3];
+    let mut bytes = vec![0; 2];
     let mut output = Batch::new(&mut rows, &mut bytes);
     output.append(
-        |rows, bytes| {
+        |mut rows, mut bytes| {
             rows[0].token_len = 2;
             bytes.copy_from_slice(b"ok");
             ReadResult {
@@ -2250,6 +2151,7 @@ fn small_capacities() -> Capacities {
 
 #[test]
 fn ability_conversion_retains_presence_native_widths_and_literal_bytes() {
+    let _globals = crate::extended::characters::test_globals();
     let native = active_ability_record::Row {
         country: u32::MAX,
         ordinal: u32::MAX,
@@ -2296,6 +2198,7 @@ fn ability_conversion_retains_presence_native_widths_and_literal_bytes() {
 
 #[test]
 fn conversion_rejects_bad_ranges_and_duplicate_keys() {
+    let _globals = crate::extended::characters::test_globals();
     let mut captured = Captured::with_capacities(&small_capacities());
     // These walkers retain native traversal order. Their complete results
     // still cannot publish duplicate row keys through off-thread conversion.
@@ -2679,6 +2582,7 @@ impl Memory for CostMemory<'_> {
 
 #[test]
 fn character_nested_prefetch_selects_fixed_groups_without_rehinting_main_or_heap_scatter() {
+    let _globals = crate::extended::characters::test_globals();
     let mut bytes = fixture();
     let heap = 0x8200;
     pointer(&mut bytes, DEFINITION + cunit_leader_trait::TOKEN, heap);
@@ -2705,7 +2609,7 @@ fn character_nested_prefetch_selects_fixed_groups_without_rehinting_main_or_heap
     job.traits.definitions.result(definition).unwrap();
     job.traits
         .definitions
-        .consume(&source, definition, true)
+        .consume(&source, definition)
         .unwrap();
     job.traits.definitions.result(definition).unwrap();
     assert_eq!(source.prefetched.borrow().len(), 1);
@@ -2763,6 +2667,7 @@ fn character_nested_prefetch_selects_fixed_groups_without_rehinting_main_or_heap
 
 #[test]
 fn character_family_read_cost_stays_at_its_measured_shape() {
+    let _globals = crate::extended::characters::test_globals();
     let bytes = cost_fixture();
     let capacity = Capacities {
         rows: [4096; N],
@@ -2814,6 +2719,7 @@ fn character_family_read_cost_stays_at_its_measured_shape() {
 
 #[test]
 fn primary_growth_keeps_shared_outputs_independently_bounded() {
+    let _globals = crate::extended::characters::test_globals();
     let mut capacities = small_capacities();
     let mut captured = Captured::with_capacities(&capacities);
     captured.traits.rows.outcome = Outcome::Truncated {
@@ -2840,7 +2746,42 @@ fn split_capacities() -> Capacities {
 }
 
 #[test]
+fn a_manager_character_with_no_country_and_no_name_is_recorded_in_its_roster_position() {
+    let _globals = crate::extended::characters::test_globals();
+    use super::characters_test_kit as kit;
+    // The advisor-holding character no country lists, as a new total-conversion game holds it.
+    let mut bytes = kit::mapped_fixture();
+    put(
+        &mut bytes,
+        CHARACTERS[0] + ccharacter::COUNTRY,
+        0_u32.to_le_bytes(),
+    );
+    literal(&mut bytes, CHARACTERS[0] + ccharacter::TOKEN, b"");
+    let capacities = split_capacities();
+    let direct = kit::direct(&kit::memory(&bytes), &capacities);
+    assert_eq!(direct.characters.rows.outcome, Outcome::Rows { len: 3 });
+    let rows = &direct.characters.rows.rows[..3];
+    assert_eq!(
+        (rows[0].id, rows[0].country, rows[0].token_len),
+        (u32::MAX, 0, 0)
+    );
+    assert_eq!(
+        rows.iter()
+            .map(|row| (row.roster, row.ordinal))
+            .collect::<Vec<_>>(),
+        [(0, 0), (0, 1), (0, 2)]
+    );
+    assert_eq!(rows[1].country, 2);
+    assert_eq!(direct.advisors.rows.outcome, Outcome::Rows { len: 1 });
+    let advisor = &direct.advisors.rows.rows[0];
+    assert_eq!((advisor.character, advisor.country), (u32::MAX, 0));
+    let (split, _, _) = kit::split(&kit::memory(&bytes), &capacities);
+    kit::assert_matches_direct(&split, &direct);
+}
+
+#[test]
 fn operative_codenames_match_raw_and_typed_capture_with_heap_faults_and_growth() {
+    let _globals = crate::extended::characters::test_globals();
     use super::characters_test_kit as kit;
     use engine_native::cname_group_member as naming;
     let mut bytes = kit::mapped_fixture();
@@ -2920,19 +2861,25 @@ fn operative_codenames_match_raw_and_typed_capture_with_heap_faults_and_growth()
         assert_eq!(name.custom.as_slice(), custom.as_slice());
         assert_eq!(name.order, index as i32 - 1);
     }
+    // A pool too small for the codenames grows in the pass and keeps them whole.
     let mut small = capacities;
     small.bytes[3] = 24;
     let (mut split, _, _) = kit::split(&kit::memory(&bytes), &small);
     kit::assert_matches_direct(&split, &kit::direct(&kit::memory(&bytes), &small));
     assert_eq!(split.units.rows.outcome, Outcome::Rows { len: 2 });
-    assert!(split.units.rows.rows[..2].iter().all(|row| {
-        row.codename.is_none()
-            && row.codename_reason == Some("unit leader codename byte capacity exceeded")
-    }));
-    assert!(split.units.rows.rows[..2].iter().all(|row| {
-        leader_row(row, &split.units.bytes.first).codename
-            == replay_data::rows::Recorded::Value(None)
-    }));
+    for (index, row) in split.units.rows.rows[..2].iter().enumerate() {
+        assert_eq!(row.codename_reason, None);
+        let captured = leader_row(row, &split.units.bytes.first);
+        let name = captured
+            .codename
+            .require("UnitLeaders.codename")
+            .unwrap()
+            .as_ref()
+            .unwrap();
+        assert_eq!(name.group.as_slice(), group.as_slice());
+        assert_eq!(name.custom.as_slice(), custom.as_slice());
+        assert_eq!(name.order, index as i32 - 1);
+    }
     assert_eq!(
         leader_row(&split.units.rows.rows[1], &split.units.bytes.first).inherited_text_a,
         b"saved2"
@@ -2972,6 +2919,7 @@ fn operative_codenames_match_raw_and_typed_capture_with_heap_faults_and_growth()
 
 #[test]
 fn split_copy_matches_direct_walk_on_cost_census() {
+    let _globals = crate::extended::characters::test_globals();
     use super::characters_test_kit as kit;
     let bytes = cost_fixture();
     let memory = kit::memory(&bytes);
@@ -3010,10 +2958,8 @@ fn split_copy_matches_direct_walk_on_cost_census() {
             base: IMAGE,
             game_state: ADDRESS,
             active: [true; N],
-            trait_rows: small.rows[4],
-            trait_bytes: small.bytes[4],
         };
-        assert!(copy_characters_refresh(&memory, context, &mut job).raw_ok);
+        assert!(copy_characters(&memory, context, &mut job, Roles::Independent).raw_ok);
         assert_eq!(job.advisor_demand.rows, 22);
         assert_eq!(job.advisor_demand.bytes, 22 * 3 * COST_LITERAL.len());
         decoded.decode_characters_payload(IMAGE, &job, &mut [0; N]);
@@ -3023,6 +2969,7 @@ fn split_copy_matches_direct_walk_on_cost_census() {
 
 #[test]
 fn shared_trait_definitions_are_read_once_charged_and_fresh_after_recycling() {
+    let _globals = crate::extended::characters::test_globals();
     let mut bytes = fixture();
     let capacities = split_capacities();
     let context = CharactersCopyContext {
@@ -3030,15 +2977,13 @@ fn shared_trait_definitions_are_read_once_charged_and_fresh_after_recycling() {
         base: IMAGE,
         game_state: ADDRESS,
         active: [true; N],
-        trait_rows: capacities.rows[4],
-        trait_bytes: capacities.bytes[4],
     };
     let mut job = small_wave_job();
     for value in [b'x', b'y'] {
         bytes[DEFINITION + cunit_leader_trait::TOKEN] = value;
         let source = engine_native::memory::CountedMemory::new(WaveMemory::new(&bytes, None));
         let native = read_accounting::Capture::new();
-        let report = copy_characters_refresh(&source, context, &mut job);
+        let report = copy_characters(&source, context, &mut job, Roles::Independent);
         assert!(report.raw_ok);
         let reads = source.0.reads.borrow();
         assert_eq!(
@@ -3072,6 +3017,7 @@ fn shared_trait_definitions_are_read_once_charged_and_fresh_after_recycling() {
 
 #[test]
 fn shared_skills_keep_current_rows_native_costs_and_recycled_freshness() {
+    let _globals = crate::extended::characters::test_globals();
     use super::characters_test_kit as kit;
     let mut bytes = kit::mapped_fixture();
     pointer(&mut bytes, UNITS[1] + cunit_leader::SKILL, kit::SKILL0);
@@ -3081,8 +3027,6 @@ fn shared_skills_keep_current_rows_native_costs_and_recycled_freshness() {
         base: IMAGE,
         game_state: ADDRESS,
         active: [true; N],
-        trait_rows: capacities.rows[4],
-        trait_bytes: capacities.bytes[4],
     };
     let mut job = small_wave_job();
     for level in [-7_i32, 9] {
@@ -3092,7 +3036,7 @@ fn shared_skills_keep_current_rows_native_costs_and_recycled_freshness() {
             level.to_le_bytes(),
         );
         let source = engine_native::memory::CountedMemory::new(WaveMemory::new(&bytes, None));
-        let report = copy_characters_refresh(&source, context, &mut job);
+        let report = copy_characters(&source, context, &mut job, Roles::Independent);
         assert!(report.raw_ok);
         let skill = ADDRESS + kit::SKILL0;
         for (address, len) in [
@@ -3127,7 +3071,7 @@ fn shared_skills_keep_current_rows_native_costs_and_recycled_freshness() {
     }
     for offset in [0, cunit_leader_skill::VALID, cunit_leader_skill::LEVEL] {
         let source = WaveMemory::new(&bytes, Some(ADDRESS + kit::SKILL0 + offset));
-        let report = copy_characters_refresh(&source, context, &mut job);
+        let report = copy_characters(&source, context, &mut job, Roles::Independent);
         assert!(report.raw_ok);
         assert!(job.skills.iter().all(|skill| skill.pointer == 0));
         let mut decoded = Captured::with_capacities(&capacities);
@@ -3138,6 +3082,7 @@ fn shared_skills_keep_current_rows_native_costs_and_recycled_freshness() {
 
 #[test]
 fn shared_skill_hits_keep_alias_failures_as_separate_raw_occurrences() {
+    let _globals = crate::extended::characters::test_globals();
     use super::characters_test_kit as kit;
     let bytes = kit::mapped_fixture();
     let skill = ADDRESS + kit::SKILL0;
@@ -3163,7 +3108,7 @@ fn shared_skill_hits_keep_alias_failures_as_separate_raw_occurrences() {
     assert!(!dead.units);
     assert_eq!(source.guards.get(), 2, "cache hit makes no native calls");
     assert_eq!(job.log.raw_bytes, native_bytes);
-    let owned = crate::raw::Recorded::build(&job.log);
+    let owned = crate::raw::Recorded::build(&job.log).unwrap();
     let mut vtable = [0; 8];
     assert!(owned.copy(skill, &mut vtable));
     assert!(!owned.copy(skill, &mut vtable));
@@ -3175,7 +3120,8 @@ fn shared_skill_hits_keep_alias_failures_as_separate_raw_occurrences() {
 }
 
 #[test]
-fn trait_definition_staging_exhaustion_requires_growth_before_acceptance() {
+fn empty_trait_definition_staging_grows_in_the_pass() {
+    let _globals = crate::extended::characters::test_globals();
     let bytes = fixture();
     let capacities = split_capacities();
     let context = CharactersCopyContext {
@@ -3183,18 +3129,13 @@ fn trait_definition_staging_exhaustion_requires_growth_before_acceptance() {
         base: IMAGE,
         game_state: ADDRESS,
         active: [true; N],
-        trait_rows: capacities.rows[4],
-        trait_bytes: capacities.bytes[4],
     };
     let source = characters_test_kit::memory(&bytes);
     let mut job = small_wave_job();
     job.traits.definitions.entries = Vec::new();
     job.traits.definitions.update_charge();
-    assert!(!copy_characters_refresh(&source, context, &mut job).raw_ok);
-    assert!(!job.log.overflowed);
-    assert!(job.grow_for_next());
-    job.grow();
-    assert!(copy_characters_refresh(&source, context, &mut job).raw_ok);
+    assert!(copy_characters(&source, context, &mut job, Roles::Independent).raw_ok);
+    assert!(!job.grow_for_next());
     let mut captured = Captured::with_capacities(&capacities);
     captured.decode_characters_payload(IMAGE, &job, &mut [0; N]);
     assert_wave_rows(
@@ -3205,6 +3146,7 @@ fn trait_definition_staging_exhaustion_requires_growth_before_acceptance() {
 
 #[test]
 fn split_copy_matches_direct_walk_with_skills_kinds_and_heap_names() {
+    let _globals = crate::extended::characters::test_globals();
     use super::characters_test_kit as kit;
     let bytes = kit::mapped_fixture();
     let memory = kit::memory(&bytes);
@@ -3242,6 +3184,7 @@ fn split_copy_matches_direct_walk_with_skills_kinds_and_heap_names() {
 
 #[test]
 fn army_formation_suffix_is_fresh_in_prepared_copy_and_preserves_prefix_on_fault() {
+    let _globals = crate::extended::characters::test_globals();
     use super::characters_test_kit as kit;
     let mut bytes = kit::mapped_fixture();
     let capacities = split_capacities();
@@ -3251,8 +3194,6 @@ fn army_formation_suffix_is_fresh_in_prepared_copy_and_preserves_prefix_on_fault
         base: IMAGE,
         game_state: ADDRESS,
         active,
-        trait_rows: capacities.rows[4],
-        trait_bytes: capacities.bytes[4],
     };
     let mut job = CharactersJob::new_part(0);
     let field = UNITS[1] + carmy_leader::FORMATION_REFERENCE;
@@ -3266,7 +3207,7 @@ fn army_formation_suffix_is_fresh_in_prepared_copy_and_preserves_prefix_on_fault
     ] {
         put(&mut bytes, field, reference.to_le_bytes());
         let source = WaveMemory::new(&bytes, blocked.then_some(ADDRESS + field));
-        let report = copy_characters_refresh(&source, context, &mut job);
+        let report = copy_characters(&source, context, &mut job, Roles::Independent);
         assert!(
             report.raw_ok,
             "a formation suffix cannot withhold the old prefix"
@@ -3328,7 +3269,7 @@ fn army_formation_suffix_is_fresh_in_prepared_copy_and_preserves_prefix_on_fault
         (-1_i32).to_le_bytes(),
     );
     let source = WaveMemory::new(&bytes, Some(ADDRESS + field));
-    assert!(copy_characters_refresh(&source, context, &mut job).raw_ok);
+    assert!(copy_characters(&source, context, &mut job, Roles::Independent).raw_ok);
     let mut decoded = Captured::with_capacities(&capacities);
     decoded.decode_characters_payload(IMAGE, &job, &mut [0; N]);
     assert_eq!(decoded.units.rows.rows[1].formation_reference, None);
@@ -3344,6 +3285,7 @@ fn army_formation_suffix_is_fresh_in_prepared_copy_and_preserves_prefix_on_fault
 
 #[test]
 fn split_keeps_character_and_unit_leader_registry_ids_distinct() {
+    let _globals = crate::extended::characters::test_globals();
     use super::characters_test_kit as kit;
     let mut bytes = kit::mapped_fixture();
     for (index, unit) in UNITS.into_iter().enumerate() {
@@ -3365,8 +3307,9 @@ fn split_keeps_character_and_unit_leader_registry_ids_distinct() {
 
 #[test]
 fn characters_truncation_matrix_keeps_advisors_complete() {
-    // Other tables keep their bounded outputs. Advisors grow from this
-    // payload and match a sufficiently sized single typed walk.
+    let _globals = crate::extended::characters::test_globals();
+    // Every table grows from its pool in the pass, so each pool size
+    // matches a typed walk with advisors sized to the whole payload.
     // Cost fixture holds 32 characters, 5 leaders, 22 advisors, 3 units
     // and 6 traits. u32 unread saturation is not
     // reachable synthetically and is covered by the walk's own
@@ -3407,6 +3350,7 @@ fn characters_truncation_matrix_keeps_advisors_complete() {
 
 #[test]
 fn advisor_decode_preserves_late_failure_with_small_buffers() {
+    let _globals = crate::extended::characters::test_globals();
     use super::characters_test_kit as kit;
     let bytes = cost_fixture();
     let node = COST_ADVISOR_NODE + 0x100 + character_advisor_node::SIZE;
@@ -3540,6 +3484,7 @@ fn scalar_fixed_fields<const M: usize, const CONTINUE: bool>(
 
 #[test]
 fn heap_literal_gather_keeps_scalar_observations_faults_and_growth() {
+    let _globals = crate::extended::characters::test_globals();
     for len in [0, 1, 17, 64] {
         for span_room in 0..=4 {
             for byte_room in [0, 1, len, len + 1, 2 * (len + 1)] {
@@ -3651,14 +3596,14 @@ fn assert_fixed_fields_match_scalar<const M: usize, const CONTINUE: bool>(
         "only a whole admitted group selects the prefetched provider"
     );
     assert_eq!(scalar_memory.prefetched.get(), 0);
-    assert_eq!(actual.log.spans.capacity(), 1 + span_room);
-    assert_eq!(actual.log.bytes.capacity(), 3 + byte_room);
+    assert_eq!(actual.log.spans.capacity(), expected.log.spans.capacity());
+    assert_eq!(actual.log.bytes.capacity(), expected.log.bytes.capacity());
     // Also compare authoritative repeated-key replay, including sticky
     // terminal successes/faults, with independent reader cursors.
     {
-        let reader = crate::raw::Recorded::build(&actual.log);
-        let independent = crate::raw::Recorded::build(&actual.log);
-        let reference = crate::raw::Recorded::build(&expected.log);
+        let reader = crate::raw::Recorded::build(&actual.log).unwrap();
+        let independent = crate::raw::Recorded::build(&actual.log).unwrap();
+        let reference = crate::raw::Recorded::build(&expected.log).unwrap();
         for _ in 0..2 {
             for index in (0..M).rev() {
                 if let Some(address) = addresses[index] {
@@ -3717,6 +3662,7 @@ fn fixed_field_matrix<const M: usize, const CONTINUE: bool>(lengths: [usize; M],
 
 #[test]
 fn characters_fixed_gathers_match_scalar_at_every_field_fault_and_capacity() {
+    let _globals = crate::extended::characters::test_globals();
     fixed_field_matrix::<3, false>([12, 4, 32], MASK_TRAITS);
     fixed_field_matrix::<4, false>([8, 4, 8, 8], MASK_UNITS);
     fixed_field_matrix::<4, false>([4; 4], MASK_UNITS);
@@ -3727,6 +3673,7 @@ fn characters_fixed_gathers_match_scalar_at_every_field_fault_and_capacity() {
 
 #[test]
 fn characters_fixed_gathers_preserve_changing_repeated_observations_and_faults() {
+    let _globals = crate::extended::characters::test_globals();
     for failed in [None, Some(0), Some(1), Some(2), Some(3)] {
         for span_room in 0..=4 {
             for byte_room in [0, 7, 8, 15, 16, 23, 24, 31, 32] {
@@ -3753,6 +3700,7 @@ fn characters_fixed_gathers_preserve_changing_repeated_observations_and_faults()
 
 #[test]
 fn characters_fixed_gathers_keep_family_rows_and_faults_exact() {
+    let _globals = crate::extended::characters::test_globals();
     use super::characters_test_kit as kit;
     let bytes = kit::mapped_fixture();
     let capacities = Capacities {
@@ -3802,17 +3750,16 @@ fn characters_fixed_gathers_keep_family_rows_and_faults_exact() {
                 ..Default::default()
             };
             let mut first = make_job();
-            let report = copy_characters_refresh(
+            let report = copy_characters(
                 &memory,
                 CharactersCopyContext {
                     force_full: false,
                     base: IMAGE,
                     game_state: ADDRESS,
                     active: [true; N],
-                    trait_rows: capacities.rows[4],
-                    trait_bytes: capacities.bytes[4],
                 },
                 &mut first,
+                Roles::Independent,
             );
             assert!(report.raw_ok, "field={offset:x}/{len} byte={byte}");
             assert!(
@@ -3835,6 +3782,7 @@ fn characters_fixed_gathers_keep_family_rows_and_faults_exact() {
 
 #[test]
 fn advisor_gathers_preserve_every_partial_fault_and_exact_prefix() {
+    let _globals = crate::extended::characters::test_globals();
     use super::characters_test_kit as kit;
     let bytes = kit::mapped_fixture();
     let role_at = kit::ADV_NODE + character_advisor_node::ADVISOR;
@@ -3909,6 +3857,7 @@ fn advisor_gathers_preserve_every_partial_fault_and_exact_prefix() {
 
 #[test]
 fn advisor_gather_address_overflow_keeps_the_scalar_prefix_without_a_fault_read() {
+    let _globals = crate::extended::characters::test_globals();
     let bytes = [7; 24];
     let memory = SliceMemory {
         base: 0x1000,
@@ -3941,6 +3890,7 @@ fn advisor_gather_address_overflow_keeps_the_scalar_prefix_without_a_fault_read(
 
 #[test]
 fn split_copy_matches_direct_walk_on_fault_matrix() {
+    let _globals = crate::extended::characters::test_globals();
     use super::characters_test_kit as kit;
     // (fault offset from the image base, expected primary fault masks in
     // family order). Outcomes including reason strings must match the
@@ -4023,6 +3973,7 @@ fn split_copy_matches_direct_walk_on_fault_matrix() {
 
 #[test]
 fn failed_character_refresh_preserves_capacity() {
+    let _globals = crate::extended::characters::test_globals();
     let mut captured = Captured::with_capacities(&small_capacities());
     captured.raw_active = [true; N];
     captured.characters.rows.outcome = Outcome::Rows { len: 1 };
@@ -4061,34 +4012,6 @@ fn failed_character_refresh_preserves_capacity() {
     assert_eq!(captured.allocated_bytes(), bytes);
 }
 
-#[test]
-fn staging_overflow_falls_back_to_typed_walk() {
-    use super::characters_test_kit as kit;
-    let bytes = kit::mapped_fixture();
-    let memory = kit::memory(&bytes);
-    let capacities = split_capacities();
-    let ctx = CharactersCopyContext {
-        force_full: false,
-        base: IMAGE,
-        game_state: ADDRESS,
-        active: [true; N],
-        trait_rows: capacities.rows[4],
-        trait_bytes: capacities.bytes[4],
-    };
-    let mut first = CharactersJob {
-        log: crate::raw::RawLog::new(8, 8),
-        game_state: 0,
-        active: [true; N],
-        traits: TraitCapture::with_test_capacities(4096, 4096, 4096, 1 << 20),
-        advisor_demand: AdvisorDemand::default(),
-        skills: [SkillCopy::default(); 32],
-        ..Default::default()
-    };
-    let report = copy_characters_refresh(&memory, ctx, &mut first);
-    assert!(!report.raw_ok);
-    assert!(first.log.overflowed);
-    assert!(first.grow_for_next());
-}
 // Frozen serial family schedule. Engine field/body parsers are unchanged.
 fn serial_family_reference(
     memory: &impl Memory,
@@ -4185,8 +4108,9 @@ fn serial_family_reference(
             }
             let previous_len = units.len;
             units.append(
-                |rows, bytes| {
-                    read_unit_selected(memory, base, pointer, character_id, rows, bytes, training)
+                |rows, at, bytes, from| {
+                    read_unit_selected(memory, base, pointer, character_id, bytes, from, training)
+                        .and_then(|read| read.store(rows, at))
                 },
                 |row, offset| {
                     relocate(&mut row.text_a_start, offset)
@@ -4319,6 +4243,7 @@ fn small_wave_job() -> CharactersJob {
 
 #[test]
 fn character_family_matches_raw_and_typed_at_every_hour() {
+    let _globals = crate::extended::characters::test_globals();
     let bytes = fixture();
     let capacities = Capacities {
         rows: [4; N],
@@ -4340,17 +4265,16 @@ fn character_family_matches_raw_and_typed_at_every_hour() {
             typed.capture(&typed_memory, IMAGE, ADDRESS, hour, false);
             let raw_memory = WaveMemory::new(&bytes, blocked);
             let mut job = small_wave_job();
-            let report = copy_characters_refresh(
+            let report = copy_characters(
                 &raw_memory,
                 CharactersCopyContext {
                     force_full: false,
                     base: IMAGE,
                     game_state: ADDRESS,
                     active,
-                    trait_rows: capacities.rows[4],
-                    trait_bytes: capacities.bytes[4],
                 },
                 &mut job,
+                Roles::Independent,
             );
             assert!(report.raw_ok, "hour={hour} blocked={blocked:?}");
             let mut decoded = Captured::with_capacities(&capacities);
@@ -4377,8 +4301,6 @@ fn wave_split_once(memory: &impl Memory, capacities: &Capacities) -> Captured {
             base: IMAGE,
             game_state: ADDRESS,
             active: [true; N],
-            trait_rows: capacities.rows[4],
-            trait_bytes: capacities.bytes[4],
         },
         &mut job,
         None,
@@ -4393,11 +4315,21 @@ fn assert_wave_rows(left: &Captured, right: &Captured) {
     characters_test_kit::assert_matches_direct(left, right);
     // Preserve predecessor rows physically written before a later global
     // error, even though that unavailable outcome exposes no row prefix.
-    assert_eq!(left.characters.rows.rows, right.characters.rows.rows);
-    assert_eq!(left.leaders.rows.rows, right.leaders.rows.rows);
-    assert_eq!(left.advisors.rows.rows, right.advisors.rows.rows);
-    assert_eq!(left.units.rows.rows, right.units.rows.rows);
-    assert_eq!(left.traits.rows.rows, right.traits.rows.rows);
+    // Pools grow by their own steps, so only the written rows must agree.
+    fn written<R: PartialEq + Default + std::fmt::Debug>(name: &str, left: &[R], right: &[R]) {
+        let len = left.len().min(right.len());
+        assert_eq!(left[..len], right[..len], "{name} rows");
+        let blank = R::default();
+        assert!(
+            left[len..].iter().chain(&right[len..]).all(|row| *row == blank),
+            "{name} rows past the shorter pool"
+        );
+    }
+    written("characters", &left.characters.rows.rows, &right.characters.rows.rows);
+    written("leaders", &left.leaders.rows.rows, &right.leaders.rows.rows);
+    written("advisors", &left.advisors.rows.rows, &right.advisors.rows.rows);
+    written("units", &left.units.rows.rows, &right.units.rows.rows);
+    written("traits", &left.traits.rows.rows, &right.traits.rows.rows);
 }
 
 fn check_wave_static(bytes: &[u8], blocked: Option<usize>, capacities: &Capacities) {
@@ -4416,6 +4348,7 @@ fn check_wave_static(bytes: &[u8], blocked: Option<usize>, capacities: &Capaciti
 
 #[test]
 fn character_page_wave_matches_serial_static_rows_capacity_and_every_view_fault() {
+    let _globals = crate::extended::characters::test_globals();
     let bytes = characters_test_kit::mapped_fixture();
     let full = Capacities {
         rows: [64; N],
@@ -4500,6 +4433,7 @@ fn character_page_wave_matches_serial_static_rows_capacity_and_every_view_fault(
 
 #[test]
 fn character_page_wave_defers_global_errors_and_never_revives_failed_domains() {
+    let _globals = crate::extended::characters::test_globals();
     let full = Capacities {
         rows: [64; N],
         bytes: [8192; N],
@@ -4545,6 +4479,7 @@ fn character_page_wave_defers_global_errors_and_never_revives_failed_domains() {
 
 #[test]
 fn character_page_wave_preserves_alias_cursors_and_current_values() {
+    let _globals = crate::extended::characters::test_globals();
     let full = Capacities {
         rows: [64; N],
         bytes: [8192; N],
@@ -4648,8 +4583,6 @@ fn character_page_wave_preserves_alias_cursors_and_current_values() {
                 base: IMAGE,
                 game_state: ADDRESS,
                 active: [true; N],
-                trait_rows: full.rows[4],
-                trait_bytes: full.bytes[4],
             },
             &mut job,
             None,
@@ -4661,37 +4594,3 @@ fn character_page_wave_preserves_alias_cursors_and_current_values() {
     }
 }
 
-#[test]
-fn character_page_wave_keeps_staging_overflow_unaccepted() {
-    let bytes = characters_test_kit::mapped_fixture();
-    let capacities = Capacities {
-        rows: [64; N],
-        bytes: [8192; N],
-    };
-    for (spans, bytes_capacity) in [(0, 0), (8, 1024), (20, 1024), (8192, 128), (8192, 512)] {
-        let mut job = CharactersJob {
-            log: crate::raw::RawLog::new(spans, bytes_capacity),
-            game_state: 0,
-            active: [true; N],
-            traits: TraitCapture::with_test_capacities(4096, 4096, 4096, 1 << 20),
-            advisor_demand: AdvisorDemand::default(),
-            skills: [SkillCopy::default(); 32],
-            ..Default::default()
-        };
-        let report = copy_characters_refresh(
-            &WaveMemory::new(&bytes, None),
-            CharactersCopyContext {
-                force_full: false,
-                base: IMAGE,
-                game_state: ADDRESS,
-                active: [true; N],
-                trait_rows: capacities.rows[4],
-                trait_bytes: capacities.bytes[4],
-            },
-            &mut job,
-        );
-        assert!(!report.raw_ok, "spans {spans}, bytes {bytes_capacity}");
-        assert!(job.log.overflowed);
-        assert!(job.grow_for_next());
-    }
-}

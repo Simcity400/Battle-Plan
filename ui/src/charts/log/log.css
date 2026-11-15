@@ -10,21 +10,46 @@
 .log-scroll { position: relative; flex: 1; min-height: 0; overflow: hidden auto; padding: 0 var(--space-3) var(--space-3); outline: none; }
 .log-scroll:focus-visible { box-shadow: inset 0 0 0 2px var(--accent-line); border-radius: var(--r-sm); }
 .log-body { position: relative; }
-.log-row, .log-body > .log-month, .log-page { position: absolute; top: 0; left: 0; right: 0; }
+/* The rows' shared slide (LogList's paintItems): the one transform the rows ride, as high as nothing so it never extends
+   the scroll. Its transition is the rows' own (.moving-row), whatever a widget makes theirs. */
+.log-glide { height: 0; }
+/* Rows revealed in a row log enter through one shared layer (entryLayer.ts): the flash drawn under them, a cover in the
+   list's background over them, clearing as each row fades in. No row animates, so none is restyled while it enters. */
+.log.has-entries .moving-row[data-reveal='in'] { animation: none; }
+.log.has-entries .moving-row[data-reveal='in']::after { content: none; }
+.log-entries { position: absolute; top: 0; left: 0; width: 100%; pointer-events: none; }
+.log-entries.is-under { color: var(--row-flash, color-mix(in srgb, var(--accent) 16%, transparent)); }
+.log-row, .log-glide, .log-glide > .log-month, .log-page { position: absolute; top: 0; left: 0; right: 0; }
 .log-row { display: grid; grid-template-columns: 58px var(--log-columns, 1fr); align-items: center; gap: 10px; height: 38px; padding: 0 var(--space-3);
   border-radius: var(--r-sm); font-size: var(--type-md); line-height: 1.3; cursor: default; }
 .log.is-compact .log-row { height: 28px; font-size: var(--type-sm); gap: var(--space-3); }
 .log-row:hover { background: var(--hover); }
 .log-row.is-active { box-shadow: inset 0 0 0 1px var(--accent-line); }
 .log-row > * { min-width: 0; }
+/* One row drawn with its states: only the state the clock shows takes part in the row's grid. */
+.log-state { display: contents; }
+.log-state[hidden] { display: none; }
+.log-state > * { min-width: 0; }
 .log-when { display: flex; flex-direction: column; color: var(--muted); font-size: var(--type-sm); line-height: 1.1; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .log-when small { font-size: 0.625rem; opacity: 0.8; }
 .log.is-compact .log-when { flex-direction: row; align-items: baseline; gap: 4px; }
 .log-month { height: 24px; padding: 7px var(--space-3) 0; font-size: var(--type-xs); font-weight: 600; color: var(--muted); background: var(--panel-solid); }
 .log-month.is-sticky { position: absolute; top: 0; left: var(--space-3); right: var(--space-3); z-index: 2; }
+/* A list of sections: each heading (MONTH_HEIGHT) over its rows, a rule above every later one, and its note (ROW_HEIGHT)
+   while none of its rows shows. */
+.log-month.is-heading { padding-top: 4px; font-size: var(--type-sm); color: var(--text); }
+.log-glide > .log-month.is-heading:not([data-slot='0']) { border-top: 1px solid var(--line-soft); }
+.log-glide > .log-section-note { position: absolute; top: 0; left: 0; right: 0; display: flex; align-items: center; height: 38px; padding: 0 var(--space-3);
+  color: var(--muted); font-size: var(--type-sm); white-space: nowrap; overflow: hidden; }
+.log.is-compact .log-glide > .log-section-note { height: 28px; }
 .log.no-motion .moving-row { transition: none; animation: none; }
 .log.no-motion .moving-row.is-entering::after { content: none; }
+.log.no-motion .moving-row[data-reveal='in'] { animation: none; }
+.log.no-motion .moving-row[data-reveal='in']::after { content: none; }
 .log-empty { display: grid; flex: 1; place-items: center; padding: var(--space-5); color: var(--muted); font-size: var(--type-sm); text-align: center; }
+/* Held ahead with no row reached yet: the empty note over the hidden rows, until the frame loop reveals one. */
+.log-empty.is-over { position: absolute; inset: 0; pointer-events: none; }
+.log-empty.is-over[hidden] { display: none; }
 
 /* The parts a log row is made of: artwork, a sentence with flags, a category tag and a
    right-aligned value in tabular figures. */
@@ -52,10 +77,12 @@
    width must not change as the cards' total height crosses the viewport's. */
 .log.is-card-log .log-scroll { scrollbar-gutter: stable; }
 .log .log-row.log-card:hover { background: none; }
-.log .log-card.is-entering { animation: log-card-in 700ms cubic-bezier(.2, .8, .2, 1); }
+.log .log-card.is-entering, .log .log-card[data-reveal='in'] { animation: log-card-in 700ms cubic-bezier(.2, .8, .2, 1); }
 @keyframes log-card-in { from { opacity: 0; translate: 0 -12px; } }
 :root[data-motion='reduced'] .log .log-card.is-entering,
-.log.no-motion .log-card.is-entering { animation: none; }
+.log.no-motion .log-card.is-entering,
+:root[data-motion='reduced'] .log .log-card[data-reveal='in'],
+.log.no-motion .log-card[data-reveal='in'] { animation: none; }
 
 /* Paged windows keep their counted height while pending or refused. */
 .log.is-paged .log-scroll { overflow-anchor: none; }
@@ -65,3 +92,5 @@
 .log.is-compact .log-page > span { min-height: calc(var(--space-6) + var(--space-2)); }
 /* Rebased placement must stay immediate in compressed scroll coordinates. */
 .log.is-compressed .moving-row { transition-property: opacity; }
+.log-gaps { margin: 0 var(--space-4) var(--space-3); padding: var(--space-2) var(--space-3); border-left: 3px solid var(--error); background: var(--surface-2, transparent); color: var(--muted); font-size: var(--type-sm); }
+.log-gaps ul { margin: var(--space-1) 0; padding-left: var(--space-4); }

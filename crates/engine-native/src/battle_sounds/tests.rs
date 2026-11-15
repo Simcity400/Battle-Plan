@@ -167,7 +167,7 @@ fn battles_follow_the_tree_preorder_with_exact_bits_and_member_order() {
     let world = world(7, &placed);
     let mut rows = Vec::new();
     let mut provinces = Vec::new();
-    let walk = walk_growing(&world, 0, &mut rows, &mut provinces);
+    let walk = walk(&world, 0, &mut rows, &mut provinces);
     assert_eq!(walk.outcome, Outcome::Rows { len: 6 });
     assert_eq!(
         walk.required,
@@ -210,12 +210,12 @@ fn battles_follow_the_tree_preorder_with_exact_bits_and_member_order() {
 fn a_null_manager_holds_no_battles_and_an_unreadable_one_refuses() {
     let mut world = World::default();
     world.put(MANAGER_RVA.0, &0_u64.to_le_bytes());
-    let walk = walk(&world, 0, &mut [], &mut []);
+    let walk = walk(&world, 0, &mut Vec::new(), &mut Vec::new());
     assert_eq!(walk.outcome, Outcome::Rows { len: 0 });
     assert_eq!(walk.required, Demand::default());
     let empty = World::default();
     assert_eq!(
-        super::walk(&empty, 0, &mut [], &mut []).outcome,
+        super::walk(&empty, 0, &mut Vec::new(), &mut Vec::new()).outcome,
         Outcome::Unavailable {
             reason: "battle sound manager pointer unreadable"
         }
@@ -223,10 +223,9 @@ fn a_null_manager_holds_no_battles_and_an_unreadable_one_refuses() {
     assert_eq!(demand(&empty, 0), None);
 }
 
-/// Fixed storage keeps the prefix that fits and counts the rest; growing
-/// storage reads the whole list.
+/// Growing storage reads the whole list and reports its demand.
 #[test]
-fn short_storage_truncates_after_the_prefix_and_keeps_the_demand() {
+fn growing_storage_reads_the_whole_list_and_reports_its_demand() {
     let placed = vec![
         (0, vec![battle(1.0, 0.0, 9.0, &[1, 2])]),
         (
@@ -242,33 +241,10 @@ fn short_storage_truncates_after_the_prefix_and_keeps_the_demand() {
         battles: 3,
         provinces: 6,
     };
-    let mut rows = [Row::default(); 2];
-    let mut provinces = [0; 6];
-    let walk = super::walk(&world, 0, &mut rows, &mut provinces);
-    assert_eq!(
-        walk.outcome,
-        Outcome::Truncated {
-            len: 2,
-            unread_rows: 1
-        }
-    );
-    assert_eq!((walk.required, walk.provinces), (required, 3));
-    // A short member arena stops at the battle whose members do not fit,
-    // even when a later one would.
-    let mut rows = [Row::default(); 3];
-    let mut provinces = [0; 2];
-    let walk = super::walk(&world, 0, &mut rows, &mut provinces);
-    assert_eq!(
-        walk.outcome,
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 2
-        }
-    );
-    assert_eq!(walk.required, required);
     let (mut rows, mut provinces) = (Vec::new(), Vec::new());
-    let walk = walk_growing(&world, 0, &mut rows, &mut provinces);
+    let walk = super::walk(&world, 0, &mut rows, &mut provinces);
     assert_eq!(walk.outcome, Outcome::Rows { len: 3 });
+    assert_eq!(walk.required, required);
     assert_eq!(&provinces[..6], [1, 2, 3, 4, 5, 6]);
 }
 
@@ -279,7 +255,7 @@ fn invalid_objects_refuse_by_name() {
     let refused = |change: &dyn Fn(&mut World)| {
         let mut world = world(1, &placed);
         change(&mut world);
-        match super::walk_growing(&world, 0, &mut Vec::new(), &mut Vec::new()).outcome {
+        match super::walk(&world, 0, &mut Vec::new(), &mut Vec::new()).outcome {
             Outcome::Unavailable { reason } => reason,
             outcome => panic!("{outcome:?}"),
         }
@@ -345,7 +321,7 @@ fn battles_keep_the_preorder_from_empty_storage() {
         })
         .collect();
     let (mut rows, mut provinces) = (Vec::new(), Vec::new());
-    let walk = walk_growing(&world, 0, &mut rows, &mut provinces);
+    let walk = walk(&world, 0, &mut rows, &mut provinces);
     assert_eq!(walk.outcome, Outcome::Rows { len: BATTLES_TOTAL });
     assert_eq!(
         walk.required,

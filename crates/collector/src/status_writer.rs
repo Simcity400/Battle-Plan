@@ -108,6 +108,7 @@ impl StatusWriter {
         let thread = std::thread::Builder::new()
             .name("collector-status".into())
             .spawn(move || {
+                crate::private_heap::off_hold_path();
                 crate::runtime::OwnPriority::new().follow(false);
                 run(&worker, &write)
             })?;

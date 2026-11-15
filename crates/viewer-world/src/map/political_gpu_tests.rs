@@ -417,7 +417,7 @@ impl Fallback {
     fn open() -> Option<Self> {
         // Taken first: a skip below drops its device before the guard.
         let serial = serial();
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let instance = shader_pipeline::gpu::instance();
         let adapter =
             match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
                 force_fallback_adapter: true,
@@ -469,6 +469,7 @@ fn political_gpu_fallback_oracles() {
     political_gpu_fallback_shared_scratch(&fallback);
     political_gpu_fallback_lockstep(&fallback);
     political_gpu_fallback_pool_interleavings(&fallback);
+    political_gpu_fallback_named_changes_equal_the_whole_update(&fallback);
     membership_gpu_tests::retained_membership_keeps_exact_bytes_areas_and_refusals_across_hours(
         &fallback,
     );
@@ -477,7 +478,7 @@ fn political_gpu_fallback_oracles() {
 impl Harness {
     fn new(width: u32, height: u32) -> Self {
         let serial = serial();
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let instance = shader_pipeline::gpu::instance();
         let adapter =
             pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
                 .unwrap();
@@ -1456,4 +1457,100 @@ fn a_second_mode_layer_takes_the_country_layers_place() {
         [Held::Mode, Held::Mode]
     );
     assert_eq!(holders(POLITICAL), [Held::Naval, Held::Country]);
+}
+
+/// [`PoliticalGpu::update_changed`] given what changed, frame after frame: owners moved (to no
+/// owner, to keys new to the layer, a large country shrinking past its area's thickness), colours
+/// changed, two updates before one draw, and a draw dropped unsubmitted. Each drawn frame equals
+/// the CPU field of its tables, and most dispatch only part of the map.
+fn political_gpu_fallback_named_changes_equal_the_whole_update(fallback: &Fallback) {
+    let (width, height) = (272, 128);
+    let harness = fallback.harness(width, height);
+    let field = FieldDefines::TEST;
+    let columns = width / GRID_CELL;
+    let ids = (0..width * height)
+        .map(|i| 1 + i % width / GRID_CELL + i / width / GRID_CELL * columns)
+        .collect::<Vec<_>>();
+    let map = ProvinceMap { width, height, ids: &ids };
+    let mut keys = (0..=columns * (height / GRID_CELL))
+        .map(|id| match id % columns {
+            0 => 0,
+            x if x < columns / 2 => 1,
+            x if x < columns - 3 => 2,
+            x => 3 + x % 2,
+        })
+        .collect::<Vec<_>>();
+    let mut colors = (0..12u32).map(|key| [(key * 41) as u8, (key * 87 + 5) as u8, (key * 13 + 9) as u8]).collect::<Vec<_>>();
+    let mut gpu = {
+        let color = |key: u32| colors[key as usize];
+        PoliticalGpu::new(&harness.device, map, &Layer::new(LayerKind::Country, &keys, &color, &field)).unwrap()
+    };
+    let draw = |gpu: &mut PoliticalGpu, submitted: bool| {
+        let mut encoder = harness.device.create_command_encoder(&Default::default());
+        gpu.encode(&mut encoder, [&harness.textures[0], &harness.textures[1]], 0);
+        if !submitted {
+            drop(encoder);
+            gpu.recorded(false);
+            return None;
+        }
+        let plane = harness.read(encoder, [&harness.textures[0], &harness.textures[1]], 0);
+        gpu.recorded(true);
+        Some(plane)
+    };
+    let row = columns as usize;
+    let mut seed = 0x2545_f491_4f6c_dd1d_u64;
+    let mut next = |below: usize| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        (seed % below as u64) as usize
+    };
+    let (mut partial, mut provinces, mut recolored) = (0, Vec::new(), Vec::new());
+    for frame in 0..40 {
+        let held = keys.clone();
+        match frame {
+            12 | 20 => {
+                let (from, to, past) = if frame == 12 { (1, 2, 3) } else { (2, 1, row / 2 + 2) };
+                for id in (1..keys.len()).filter(|&id| held[id] == from && (id - 1) % row > past) {
+                    keys[id] = to;
+                }
+            }
+            _ => {
+                for _ in 0..1 + next(5) {
+                    let id = 1 + next(keys.len() - 1);
+                    keys[id] = next(12) as u32;
+                }
+            }
+        }
+        if frame % 4 == 3 {
+            let key = 1 + next(11);
+            colors[key][frame % 3] = colors[key][frame % 3].wrapping_add(97);
+            recolored.push(key as u32);
+        }
+        provinces.extend((0..keys.len()).filter(|&id| keys[id] != held[id]));
+        {
+            let color = |key: u32| colors[key as usize];
+            let layer = Layer::new(LayerKind::Country, &keys, &color, &field);
+            gpu.update_changed(&harness.device, &harness.queue, &layer, &provinces, &recolored).unwrap();
+        }
+        provinces.clear();
+        recolored.clear();
+        // Two updates before a draw, and a draw its frame dropped: the next draw covers both.
+        if frame % 9 == 4 {
+            continue;
+        }
+        if frame % 11 == 6 {
+            draw(&mut gpu, false);
+            continue;
+        }
+        if gpu.dispatched_cells > 0 && gpu.dispatched_cells < gpu.dirty.len() {
+            partial += 1;
+        }
+        let actual = draw(&mut gpu, true).unwrap();
+        let color = |key: u32| colors[key as usize];
+        let cpu = gradient::build_layer(&map, &Layer::new(LayerKind::Country, &keys, &color, &field)).unwrap();
+        compare(&cpu, &actual, &format!("named changes, frame {frame}"));
+    }
+    println!("POLITICAL named changes: {partial} of 32 drawn frames partial");
+    assert!(partial > 20, "only {partial} partial dispatches");
 }

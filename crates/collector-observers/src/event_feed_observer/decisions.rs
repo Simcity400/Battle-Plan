@@ -142,7 +142,6 @@ pub fn random(status: usize, definition: usize, target: u32) {
             definition,
             target,
             None,
-            false,
         )
     });
 }
@@ -199,7 +198,6 @@ pub fn candidate(status: usize, kind: u8, definition: usize, target: u32, root: 
                 definition + engine_decisions::cdecision::TOKEN,
             )?,
             Some(root),
-            false,
         )
     });
 }
@@ -224,7 +222,6 @@ pub fn ignored(country: usize, token: usize, ignored: bool) {
             },
             engine_native::msvc_string::Descriptor::read(memory, token)?,
             None,
-            false,
         )
     });
 }

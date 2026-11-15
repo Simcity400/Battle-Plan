@@ -6,8 +6,8 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 import type { WidgetProps } from '../../dashboard/definitions';
 import type { BoundTrack } from '../../dashboard/model';
-import type { IdeaHistoryReply, IdeaInfo } from '../../generated/dashboard';
 import type { MenuItem } from '../../components/ContextMenu';
+import type { IdeaHistoryReply, IdeaInfo } from '../../generated/dashboard';
 
 type HookSlot = { value?: unknown; deps?: readonly unknown[]; cleanup?: () => void };
 // Retain the actual component's state/effects between server renders without a browser.
@@ -32,7 +32,7 @@ function hooks() {
   };
 }
 const info = (token: string): IdeaInfo => ({ token, category: 'mod_spirits', slot: null, law: false, designer: false,
-  effects: [], targeted: [], equipment: [], research: [], traits: [], tooltips: [], effectsKnown: true, unknown: null });
+  effects: [], targeted: [], equipment: [], research: [], traits: [], tooltips: [], effectsKnown: true, unknown: null, nameMissing: null });
 function reply(next = false): IdeaHistoryReply {
   const tokens = next ? ['alpha', 'beta', 'common'] : ['alpha', 'old_only', 'common'];
   return { branchId: '1', tag: 'mod_country', unobserved: [], identityStarts: [100], modifiers: [], texts: [], warnings: [],
@@ -62,10 +62,9 @@ const host = globalThis as typeof globalThis & { __spiritHooks?: ReturnType<type
 
 test('spirit fades and tooltips belong to their recorded context; dated tiles use the shared Jump action', async () => {
   const replacements: Record<string, string> = {
-    '/dashboard/ideaHistory.ts': 'export const useIdeaHistory = () => globalThis.__spiritHistory;',
+    '/dashboard/ideaHistory.ts': `import { resolveWindow } from '/ui/src/dashboard/model.ts'; export const useIdeaHour = (widget, runtime, track) => { const hour = track ? resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour())?.lastHour : undefined; return hour === undefined || hour < track.branch.firstHour || hour > track.branch.lastHour ? null : Math.floor(hour); }; export const useIdeaHistory = () => globalThis.__spiritHistory;`,
     '/dashboard/useIdeaTooltips.ts': 'export const useIdeaTooltips = () => ({ infos: new Map(), sources: [], art: new Map() });',
     '/dashboard/ideaTooltip.ts': 'export const ideaTooltip = head => ({ ...head, rows: [] }); export const tooltipText = tip => tip.title;',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open: (_x, _y, items) => { globalThis.__spiritMenu = items; }, menu: null });',
   };
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },

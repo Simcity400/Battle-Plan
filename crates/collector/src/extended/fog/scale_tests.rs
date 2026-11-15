@@ -231,7 +231,7 @@ fn radar_growth_keeps_original_reads_and_fault_precedence() {
         let mut grown_rows = vec![radar_group::Row::default(); 1];
         let mut grown_provinces = vec![0; 1];
         let actual =
-            radar_group::walk_growing(&trace, 0, GS, &mut grown_rows, &mut grown_provinces);
+            radar_group::walk(&trace, 0, GS, &mut grown_rows, &mut grown_provinces);
         assert_eq!(actual, expected);
         assert_eq!(
             &grown_rows[..actual.outcome.len()],

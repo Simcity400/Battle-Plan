@@ -238,7 +238,7 @@ pub fn name(
     bytes: &mut Vec<u8>,
     used: &mut usize,
 ) -> Result<(usize, usize), &'static str> {
-    msvc_string::append_growing(memory, at(pointer, offset)?, bytes, used)
+    msvc_string::append(memory, at(pointer, offset)?, bytes, used)
 }
 pub fn cost(
     memory: &impl Memory,

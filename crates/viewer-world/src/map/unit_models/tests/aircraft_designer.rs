@@ -2,7 +2,7 @@ use super::*;
 use replay_data::{
     rows::CountryAppearanceRow, rows::CountryLinkRow, rows::CountryRow, rows::LexicalTokenRow,
     rows::PoliticalPartyRow, rows::PoliticsRow, rows::SimulationFeatureRow, rows::TableId,
-    rows::TableRows,
+    rows::TableRows, rows::VariantDefinitionRow,
 };
 use replay_frame::{frame::Metrics, frame::TableView};
 use viewer_foundation::map::aircraft_model::designer_entity;

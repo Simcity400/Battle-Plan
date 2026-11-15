@@ -3306,10 +3306,6 @@ fn compare_operations(
         "Operations.equipment_totals, equipment.archetype, requirements.days (equipment requirements), requirements.uses_time: runtime-only; no text-save equality claim",
     );
     report.limitation(
-        "operation target-province literal `province` is inferred from live omission shapes (all six omit it with native null); a present case is unproved",
-        "Operations.target_province",
-    );
-    report.limitation(
         "operation definition names resolve through the recorded lexical dictionary; the exact authored-name mapping remains unproved and a missing entry leaves the definition unverified",
         "Operations.definition_token",
     );
@@ -5777,9 +5773,9 @@ mod tests {
 
     /// Gated operation emission: present values compare exactly, omitted
     /// values prove sentinel/zero/empty, and any mismatch is a real
-    /// difference rather than a printed limitation (except the three proved
+    /// difference rather than a printed limitation (except the proved
     /// limitation groups: definition-token mapping, manager history/priority,
-    /// plus the unproved prep/flag and inferred province literals).
+    /// plus the unproved prep/flag literals).
     #[test]
     fn operations_present_and_omitted_compare_with_gated_emission() {
         let (_, _, countries) = operation_links();
@@ -5798,12 +5794,11 @@ mod tests {
         .unwrap();
         assert!(report.differences.is_empty(), "{:?}", report.differences);
         assert_eq!(report.compared_tables["Operations"], 1);
-        // Unrecorded manager history/priority, prep/flag, province-inference
-        // and definition-token limitations are always printed.
+        // Unrecorded manager history/priority, prep/flag and definition-token
+        // limitations are always printed.
         for text in [
             "operation-manager priority",
             "no proved save literal",
-            "inferred from live omission",
             "lexical dictionary",
         ] {
             assert!(
@@ -5815,6 +5810,15 @@ mod tests {
                 report.limitations.keys()
             );
         }
+        assert!(
+            !report
+                .limitations
+                .values()
+                .flatten()
+                .any(|field| field.contains("target_province")),
+            "{:?}",
+            report.limitations
+        );
 
         // Every exactly-compared field can differ on its own.
         type Change = fn(&mut replay_data::rows::OperationRow);

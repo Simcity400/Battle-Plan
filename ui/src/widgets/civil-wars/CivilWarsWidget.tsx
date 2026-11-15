@@ -4,7 +4,6 @@ import { useContextMenu } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
 import { dayLabel } from '../../charts/draw';
 import { jumpItem } from '../../charts/jump';
-import { PreparedKey } from '../../charts/PreparedKey';
 import { runAt } from '../../charts/series';
 import { laneRequests } from '../../charts/timeline/laneRequests';
 import Timeline from '../../charts/timeline/Timeline';
@@ -20,26 +19,27 @@ import { useCountryLooks } from '../../dashboard/countryLooks';
 import { nameKey, useCountryFactsRead } from '../../dashboard/countryNamesAt';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { MEMBERSHIP_PREPARING, worldFilter } from '../../dashboard/groups';
+import { worldFilter } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
-import { usePlaybackHour } from '../../dashboard/playback';
+import { useHeadHour } from '../army-size/headHour';
+import { useShownEachFrame } from '../../dashboard/widgetPerf';
+import { changesBy } from '../../charts/timeline/runState';
 import { tagAt, unknownHours } from '../../dashboard/politicsHistory';
-import { pendingAt, preparedPrefix } from '../../dashboard/preparedPrefix';
 import { useProduct } from '../../dashboard/products';
 import { countryReadName, STYLES, useCountriesAt } from '../../dashboard/useCountriesAt';
 import { useCountryFlagsRead } from '../../dashboard/countryFlags';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useHoverLabels } from '../../dashboard/useHoverLabels';
-import type { CivilWarsReply } from '../../generated/dashboard';
 import { mix } from '../../shell/appearance/color';
-import { warsCountryColours } from '../wars/warsColours';
+import { sideColours } from './sideColours';
 import { OPTIONS } from './definition';
-import { civilWarLanes, civilWarsAt, jumpHours, laneCountries, NAME_LOADING, NAME_NOT_KNOWN, sideNameHour, sideTooltip, summaryText,
+import { changeHours, civilWarLanes, civilWarsAt, jumpHours, laneCountries, NAME_LOADING, NAME_NOT_KNOWN, sideNameHour, sideTooltip, summaryText,
   tooltipCountries, unknownLook, validateCivilWarsReply, warTooltip } from './civilWarsData.ts';
 import type { CivilWarLaneInfo, Look } from './civilWarsData';
 import './civilWars.css';
 import { motionOf } from '../../charts/easing.ts';
+import type { CivilWarsReply } from '../../generated/dashboard';
 
 const NO_WARNINGS: string[] = [];
 const WORDS = { pending: NAME_LOADING, missing: NAME_NOT_KNOWN };
@@ -49,7 +49,12 @@ const pendingCountry = () => ({ name: NAME_LOADING });
  * default, with each side beneath it in its own colour and a breakaway indented
  * under the side it broke from. Playback looks up the one branch reply locally. */
 export default function CivilWarsWidget({ widget, runtime, active, headerSlot, onDiagnostics }: WidgetProps) {
-  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  // The widget renders when a war, a side or a name changes by the head (paced; any hour while paused), never because the
+  // hour moved inside one; the playhead and the bars move with the clock each frame (`liveHead`).
+  const clock = runtime.clock;
+  const followsClock = widget.time.mode === 'follow';
+  const structure = useRef<(hour: number) => string>(() => '');
+  const playbackHour = useHeadHour(clock, active && followsClock, hour => structure.current(hour));
   const options = resolveOptions(OPTIONS, widget.options);
   const tokens = useChartTokens();
   const viewport = useViewportHeight();
@@ -64,13 +69,18 @@ export default function CivilWarsWidget({ widget, runtime, active, headerSlot, o
   const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'civil-wars', params: { branchId: track.branch.id } } : null;
   const product = useProduct<CivilWarsReply>(runtime.client, request, active, validateCivilWarsReply, track?.source);
   const data = product.data;
-  // Hours not read and those after the prepared prefix (still being prepared) are unknown, never an ending.
-  const prefix = useMemo(() => preparedPrefix(data), [data]);
+  // Hours not read are unknown, never an ending.
   const branchFirst = track?.branch.firstHour ?? 0;
-  const unread = useMemo(() => unknownHours(track?.branch.gaps ?? [], data?.known ?? [], branchFirst, data?.lastHour ?? null, prefix?.pending ?? []),
-    [track?.branch.gaps, data, branchFirst, prefix]);
+  const unread = useMemo(() => unknownHours(track?.branch.gaps ?? [], data?.known ?? [], branchFirst, data?.lastHour ?? null),
+    [track?.branch.gaps, data, branchFirst]);
   const groups = useCountryGroups(runtime, track, active);
   const identities = useMemo(() => groups.data ? countryIdentityIndex(groups.data.countryIdentities) : null, [groups.data]);
+  const axisOffset = track?.axisOffset ?? 0;
+  const changes = useMemo(() => data ? changeHours(data, unread, groups.data?.identityChanges) : [], [data, unread, groups.data]);
+  structure.current = hour => `${changesBy(changes, Math.floor(hour + axisOffset))}:${clock.getSnapshot().playing ? '' : hour}`;
+  const liveHead = useMemo(() => followsClock && track ? { read: () => clock.getSnapshot().position + axisOffset,
+    subscribe: (changed: () => void) => clock.subscribeFrame(changed) } : undefined, [followsClock, track, clock, axisOffset]);
+  useShownEachFrame(clock, () => data && track ? liveHead ? Math.floor(Math.min(liveHead.read(), track.branch.lastHour)) : at : null);
   const dashboardTag = track ? defaultCountryTag(track) : null;
   const lastHour = track?.branch.lastHour ?? 0;
   const filter = useMemo(() => worldFilter(widget.countries, dashboardTag ? [dashboardTag] : [], groups.data, at, lastHour, identities),
@@ -120,7 +130,7 @@ export default function CivilWarsWidget({ widget, runtime, active, headerSlot, o
         return [nameKey(pair.hour, pair.tag), style && !(style instanceof Error) ? style.color : null] as const;
       }),
     ]);
-    return warsCountryColours(keys, key => recorded.get(key) ?? null, tokens.surface, fixed);
+    return sideColours(keys, key => recorded.get(key) ?? null, tokens.surface, fixed);
   }, [wanted, looks, at, styles, tokens.surface, fixed]);
   const dated = useCallback((tag: string, hour: number): Look => {
     const key = nameKey(hour, tag);
@@ -174,14 +184,12 @@ export default function CivilWarsWidget({ widget, runtime, active, headerSlot, o
     if (!data || !view || narrowing && !identities) return <WidgetState kind="loading" label="Loading civil wars…" />;
     if (narrowing && filter.reason) return <WidgetState kind="unavailable" message={filter.reason} />;
     if (!lanes.length) {
-      if (data.lastHour === null || pendingAt(prefix, at)) return <WidgetState kind="loading" label="This range is still being prepared." />;
-      if (narrowing && !filter.known) return <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
       const message = view.reached && narrowing && !view.total ? 'No civil wars for these countries.'
         : view.total ? 'No ongoing civil wars.'
           : playhead != null ? 'No civil wars yet.' : widget.time.mode === 'range' ? 'No civil wars in this range.' : 'No civil wars in this campaign.';
       return <WidgetState kind="empty" icon="flag-torn" message={message} />;
     }
-    const text = { dated, day: dayLabel, branchFirst, unread, pending: (hour: number) => pendingAt(prefix, hour) };
+    const text = { dated, day: dayLabel, branchFirst, unread };
     const tooltip = (lane: TimelineLane, _span: TimelineSpan | null, hovered: number, full = false): TooltipContent | null => {
       const about = info.get(lane.id);
       if (!about) return null;
@@ -204,9 +212,10 @@ export default function CivilWarsWidget({ widget, runtime, active, headerSlot, o
       else said.at(-1)?.sides.push(lane.pill ? `${lane.identity?.label}, ${lane.pill.text}` : `${lane.identity?.label}, ${lane.label}`);
     }
     return <>
-      <Timeline key={`${track.source.id}:${track.source.revision}:${track.branch.id}`} label="Civil wars" extent={extent} playhead={playhead} labelHour={at}
+      <Timeline key={`${track.source.id}:${track.source.revision}:${track.branch.id}`} label="Civil wars" extent={extent} playhead={playhead} liveHead={liveHead}
+        labelHour={liveHead ? undefined : at}
         preserveZoomOnExtentChange={options.grow === true} lanes={lanes} showIcons={false} showNames={false} active={active}
-        unobserved={unread} pending={prefix?.pending} approximate={prefix?.approximate}
+        unobserved={unread}
         hoursPerSecond={motionOf(runtime.clock.getSnapshot())}
         onLaneActivate={activate} onLanesInView={onLanesInView}
         revision={`${revision}:${looks.revision}:${styles.size}:${flags.size}:${hover.revision}`} tooltip={tooltip}
@@ -217,7 +226,6 @@ export default function CivilWarsWidget({ widget, runtime, active, headerSlot, o
           menu.open(x, y, [jumpItem(runtime, track.id, bounded), ...(about ? jumpHours(about).map(item =>
             ({ ...jumpItem(runtime, track.id, item.hour), label: `Jump to ${item.label} · ${dayLabel(item.hour)}` })) : [])]);
         }} />
-      <PreparedKey approximate={prefix?.approximate} pending={prefix?.pending} />
     </>;
   })();
   return <div className="civil-wars-widget">

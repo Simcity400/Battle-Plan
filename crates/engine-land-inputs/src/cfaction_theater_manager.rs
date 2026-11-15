@@ -75,31 +75,12 @@ impl Walk {
     }
 }
 
-/// Copies every faction's theatres into preallocated storage without an
-/// engine call or allocation. A row that does not fit the row buffer or any
-/// arena is omitted whole and counted; its headers remain validated.
-pub fn walk(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut [Row],
-    icons: &mut [u8],
-    regions: &mut [u32],
-    hidden: &mut [u32],
-) -> Walk {
-    walk_buffer(
-        memory,
-        base,
-        game_state,
-        crate::walk::Buffer::Fixed(output),
-        crate::walk::Buffer::Fixed(icons),
-        crate::walk::Buffer::Fixed(regions),
-        crate::walk::Buffer::Fixed(hidden),
-    )
+pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Walk {
+    walk_buffer(memory, base, game_state, crate::walk::Buffer::Count, crate::walk::Buffer::Count, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
 }
 
 /// Worker storage grows from the original native headers before publication.
-pub fn walk_growing(
+pub fn walk(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -397,10 +378,10 @@ mod tests {
 
     fn run(
         bytes: &[u8],
-        rows: &mut [Row],
-        icons: &mut [u8],
-        regions: &mut [u32],
-        hidden: &mut [u32],
+        rows: &mut Vec<Row>,
+        icons: &mut Vec<u8>,
+        regions: &mut Vec<u32>,
+        hidden: &mut Vec<u32>,
     ) -> Walk {
         walk(
             &SliceMemory { base: 0, bytes },
@@ -441,7 +422,7 @@ mod tests {
                 0,
                 0,
             );
-            let walk = walk_growing(
+            let walk = walk(
                 &SliceMemory {
                     base: 0,
                     bytes: &bytes,
@@ -467,7 +448,7 @@ mod tests {
                 [3, 0x8000_0007].repeat(count as usize)
             );
             assert!(
-                matches!(run(&bytes, &mut [], &mut [], &mut [], &mut []).outcome, Outcome::Truncated { unread_rows, .. } if unread_rows == count)
+                matches!(super::count(&SliceMemory { base: 0, bytes: &bytes }, 0, GS).outcome, Outcome::Truncated { unread_rows, .. } if unread_rows == count)
             );
         }
     }
@@ -475,10 +456,10 @@ mod tests {
     #[test]
     fn theatres_keep_native_order_raw_ids_counts_and_one_icon_per_faction() {
         let bytes = fixture();
-        let mut rows = [Row::default(); 3];
-        let mut icons = [0; 31];
-        let mut regions = [0; 5];
-        let mut hidden = [0; 2];
+        let mut rows = vec![Row::default(); 3];
+        let mut icons = vec![0; 31];
+        let mut regions = vec![0; 5];
+        let mut hidden = vec![0; 2];
         let walk = run(&bytes, &mut rows, &mut icons, &mut regions, &mut hidden);
         assert_eq!(
             walk,
@@ -537,49 +518,25 @@ mod tests {
     }
 
     #[test]
-    fn any_short_buffer_omits_whole_rows_and_reports_full_demand() {
+    fn the_count_probe_reports_the_full_demand() {
         let bytes = fixture();
-        let demand = (3, 31, 5, 2);
-        for (rows, icons, regions, hidden, len) in [
-            (2, 31, 5, 2, 2),
-            (3, 30, 5, 2, 2),
-            (3, 4, 5, 2, 0),
-            (3, 31, 4, 2, 2),
-            (3, 31, 5, 1, 2),
-            (0, 0, 0, 0, 0),
-        ] {
-            let mut row_buffer = vec![Row::default(); rows];
-            let walk = run(
-                &bytes,
-                &mut row_buffer,
-                &mut vec![0; icons],
-                &mut vec![0; regions],
-                &mut vec![0; hidden],
-            );
-            assert_eq!(
-                walk.outcome,
-                Outcome::Truncated {
-                    len,
-                    unread_rows: 3 - len as u32
-                },
-                "{rows} {icons} {regions} {hidden}"
-            );
-            assert_eq!(
-                (
-                    walk.required_rows,
-                    walk.required_icons,
-                    walk.required_regions,
-                    walk.required_hidden
-                ),
-                demand
-            );
-            // Every published row stays inside the published arena lengths.
-            for row in &row_buffer[..len] {
-                assert!(row.icon_start + row.icon_len <= walk.icons_len);
-                assert!(row.regions_start + row.regions_len <= walk.regions_len);
-                assert!(row.hidden_start + row.hidden_len <= walk.hidden_len);
+        let walk = count(&SliceMemory { base: 0, bytes: &bytes }, 0, GS);
+        assert_eq!(
+            walk.outcome,
+            Outcome::Truncated {
+                len: 0,
+                unread_rows: 3
             }
-        }
+        );
+        assert_eq!(
+            (
+                walk.required_rows,
+                walk.required_icons,
+                walk.required_regions,
+                walk.required_hidden
+            ),
+            (3, 31, 5, 2)
+        );
     }
 
     #[test]
@@ -598,12 +555,12 @@ mod tests {
                 0,
             );
         }
-        let walk = run(&bytes, &mut [], &mut [], &mut [], &mut []);
+        let walk = run(&bytes, &mut Vec::new(), &mut Vec::new(), &mut Vec::new(), &mut Vec::new());
         assert_eq!(walk.outcome, Outcome::Rows { len: 0 });
         assert_eq!(walk.required_icons, 0);
         array(&mut bytes, SYSTEM + cfaction_system::FACTIONS, 0, 0, 0);
         assert_eq!(
-            run(&bytes, &mut [], &mut [], &mut [], &mut []).outcome,
+            run(&bytes, &mut Vec::new(), &mut Vec::new(), &mut Vec::new(), &mut Vec::new()).outcome,
             Outcome::Rows { len: 0 }
         );
     }
@@ -645,7 +602,7 @@ mod tests {
         let mut bytes = fixture();
         put64(&mut bytes, entry + HIDDEN_FOR, 0x10_0000);
         assert_eq!(
-            run(&bytes, &mut [], &mut [], &mut [], &mut []).outcome,
+            count(&SliceMemory { base: 0, bytes: &bytes }, 0, GS).outcome,
             Outcome::Truncated {
                 len: 0,
                 unread_rows: 3
@@ -654,10 +611,10 @@ mod tests {
         assert!(matches!(
             run(
                 &bytes,
-                &mut [Row::default(); 3],
-                &mut [0; 31],
-                &mut [0; 5],
-                &mut [0; 2]
+                &mut vec![Row::default(); 3],
+                &mut vec![0; 31],
+                &mut vec![0; 5],
+                &mut vec![0; 2]
             )
             .outcome,
             Outcome::Unavailable { .. }

@@ -6,13 +6,13 @@ import { dayLabel } from '../../charts/draw';
 import { jumpItem } from '../../charts/jump';
 import { hideTooltip, showTooltip, tooltipStore } from '../../charts/tooltip';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { useIdeaHistory } from '../../dashboard/ideaHistory';
-import { pendingAt, preparedPrefix } from '../../dashboard/preparedPrefix';
+import { useIdeaHistory, useIdeaHour } from '../../dashboard/ideaHistory';
 import { ideaTooltip, tooltipText } from '../../dashboard/ideaTooltip';
 import { useIdeaTooltips } from '../../dashboard/useIdeaTooltips';
+import { trackHourOf } from '../../dashboard/settledHour';
+import { useShownEachFrame } from '../../dashboard/widgetPerf';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
-import { usePlaybackHour } from '../../dashboard/playback';
 import { OPTIONS } from './definition';
 import { inSpans } from '../../charts/timeline/layout';
 import { activeAt, spiritState, spirits, startUnseen } from './spiritsData';
@@ -24,27 +24,22 @@ const NO_WARNINGS: string[] = [];
 const EXIT_MS = 450;
 
 /** The country's national spirits at the playback moment, as the game's grid of
- * spirit icons. Spirits taken on pop in; spirits that end fade out. */
+ * spirit icons. Spirits taken on pop in; spirits that end fade out. Following playback it renders only
+ * where the spirits held change. */
 export default function NationalSpiritsWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
-  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const widgetOwner = useId();
   const options = resolveOptions(OPTIONS, widget.options);
-  const { track, tag, data, answered, error, retry } = useIdeaHistory(widget, runtime, active);
-  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
-  // A retained reply is shown at the hour it answers, never at a later moment it has not read.
-  const hour = data && answered !== undefined && window && answered !== Math.floor(window.lastHour) ? answered : window?.lastHour;
-  const held = data?.held?.hour === Math.floor(hour ?? NaN) ? data.held : undefined;
+  const { track, tag, data, error, retry } = useIdeaHistory(widget, runtime, active);
+  const hour = useIdeaHour(widget, runtime, track, data, active);
+  useShownEachFrame(runtime.clock, () => data ? trackHourOf(widget, track, runtime.tracks, runtime.clock.getHour()) : null);
+  const window = track && widget.time.mode === 'pin' ? resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour()) : null;
   // Each recorded holder starts a new segment, even when it reuses the same tag.
   const identityStart = data?.identityStarts.reduce<number | null>((latest, start) => hour != null && start <= hour ? start : latest, null) ?? null;
-  const context = JSON.stringify([track?.source.id, track?.source.revision, track?.source.metadata.campaignKey, track?.branch.id, tag, held ? [held.slot, held.countryId] : identityStart]);
+  const context = JSON.stringify([track?.source.id, track?.source.revision, track?.source.metadata.campaignKey, track?.branch.id, tag, identityStart]);
   const owner = `${widgetOwner}:${context}`;
   const menu = useContextMenu('National spirit actions');
-  const list = useMemo(() => data ? spirits(held ? { ...data, spans: held.spans } : data) : [], [data, held]);
-  const shown = useMemo(() => {
-    if (hour == null) return [];
-    const items = activeAt(list, hour);
-    return held ? items.sort((a, b) => held.spans.findIndex(span => span.token === a.token) - held.spans.findIndex(span => span.token === b.token)) : items;
-  }, [list, hour, held]);
+  const list = useMemo(() => data ? spirits(data) : [], [data]);
+  const shown = useMemo(() => hour == null ? [] : activeAt(list, hour), [list, hour]);
   // The game's tooltip for each spirit: its effects formatted as the game does, then its description.
   const tooltips = useIdeaTooltips(data, track, runtime.client, active);
   // The spirit whose tooltip is open, so it is shown again when names arrive.
@@ -96,8 +91,7 @@ export default function NationalSpiritsWidget({ widget, runtime, active, onDiagn
   if (failure && !data) return failure;
   if (!data) return <>{failure}<WidgetState kind="loading" label="Loading national spirits…" /></>;
   if (widget.time.mode === 'pin' && !window) return <>{failure}<WidgetState kind="unavailable" message="Choose another time in widget settings." /></>;
-  if (hour == null || hour < track.branch.firstHour || hour > track.branch.lastHour) return <>{failure}<WidgetState kind="unavailable" message="This time is outside the recording." /></>;
-  if (!held && pendingAt(preparedPrefix(data), hour)) return failure ?? <WidgetState kind="loading" label="This range is still being prepared." />;
+  if (hour == null) return <>{failure}<WidgetState kind="unavailable" message="This time is outside the recording." /></>;
   // Unrecorded is not the same as holding no spirits.
   if (inSpans(data.unobserved, hour)) return <>{failure}<WidgetState kind="unavailable" message="National spirits were not recorded at this moment." /></>;
   // Held ideas content cannot classify might be spirits: then the set is unknown, not empty.
@@ -109,18 +103,17 @@ export default function NationalSpiritsWidget({ widget, runtime, active, onDiagn
 
   const since = (spirit: Spirit) => { const state = spiritState(spirit, hour); return state.kind === 'held' ? state.since : null; };
   const describe = (spirit: Spirit) => {
-    if (held) return 'Acquisition date still being prepared';
     const start = since(spirit);
     if (start == null) return undefined;
     // Held when recording began (or after an unrecorded stretch): gained at an unknown time.
     return startUnseen(start, track.branch.firstHour, data.unobserved) ? `held before ${dayLabel(start)}` : `since ${dayLabel(start)}`;
   };
   // The hour the spirit held now was taken on: its targets are named as they were then.
-  const takenOn = (spirit: Spirit) => held ? undefined : spirit.spans.find(span => span.firstHour <= hour && hour <= span.lastHour)?.firstHour;
+  const takenOn = (spirit: Spirit) => spirit.spans.find(span => span.firstHour <= hour && hour <= span.lastHour)?.firstHour;
   const content = (spirit: Spirit, maxRows?: number) => {
-    const held = describe(spirit);
-    return tooltips ? ideaTooltip({ title: spirit.name, icon: spirit.icon, subtitle: held ?? undefined },
-      tooltips.infos.get(spirit.token), tooltips.sources, tooltips.art.get(spirit.token)?.description, [], undefined, takenOn(spirit), maxRows) : null;
+    const subtitle = describe(spirit);
+    return tooltips ? ideaTooltip({ title: spirit.name, icon: spirit.icon, subtitle },
+      tooltips.infos.get(spirit.token), tooltips.sources, tooltips.art.get(spirit.token)?.description, [], spirit.nameMissing ?? undefined, takenOn(spirit), maxRows) : null;
   };
   // The tooltip's effects and description as text, every row, for screen readers.
   const spoken = (spirit: Spirit) => { const tip = content(spirit, Infinity); return tip ? tooltipText(tip) : ''; };
@@ -155,5 +148,5 @@ export default function NationalSpiritsWidget({ widget, runtime, active, onDiagn
       <span className="spirit-name">{spirit.name}</span>
       {!out && <span id={`${widgetOwner}-${spirit.token}`} className="sr-only">{spoken(spirit)}</span>}
     </li>)}
-  </ul>{held && <p className="chart-line-key" role="status">Acquisition order and context are still being prepared; showing content order.</p>}{menu.menu}</>;
+  </ul>{menu.menu}</>;
 }

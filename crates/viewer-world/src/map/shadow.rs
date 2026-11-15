@@ -17,8 +17,8 @@
 //!
 //! One ShadowMap binding carries either depth or screen-space data as required
 //! by the current pass. The depth texture retains authored linear sampling;
-//! unsupported FLOAT32_FILTERABLE capability is a named refusal. Caster draws
-//! are also culled against [`caster_rect`].
+//! unsupported FLOAT32_FILTERABLE capability is a named refusal. The casters are
+//! the figures the main camera's cull passed, as the game's are: none off screen.
 use std::cell::Cell;
 use std::io;
 use std::sync::Arc;
@@ -47,13 +47,6 @@ pub const BUFFER_CLEAR: wgpu::Color = wgpu::Color {
     b: 0.0,
     a: 1.0,
 };
-
-/// World units of caster above the water plane the caster rectangle allows for.
-///
-/// The heightfield reaches 25.5 (`map::terrain`), the tallest tree card about
-/// 12 above its own ground and the tallest building mesh about 20, so 60 above
-/// the water plane holds every caster with room to spare.
-const CASTER_CEILING: f32 = 60.0;
 
 /// The engine's padding of the light box, in world units, on all six sides.
 const LIGHT_BOX_PAD: f32 = 10.0;
@@ -119,23 +112,6 @@ pub fn light_direction(camera: Camera, frame: &FrameConstants) -> [f32; 3] {
     normalize([ground[0] - x, -light[1], ground[2] - light[2]])
 }
 
-/// The visible ground rectangle grown by the horizontal reach of the tallest
-/// caster, so a building standing just outside the frame still casts
-/// into it. Every caster pass culls against this rather than against the
-/// camera's own rectangle.
-///
-/// Caster culling expands the camera rectangle to retain off-screen casters whose shadows reach the
-/// frame. Upstream queue culling remains unverified.
-pub fn caster_rect(visible: [f32; 4], light: [f32; 3]) -> [f32; 4] {
-    let lean = CASTER_CEILING * (light[0].hypot(light[2]) / (-light[1]).max(1e-3));
-    [
-        visible[0] - lean,
-        visible[1] - lean,
-        visible[2] + lean,
-        visible[3] + lean,
-    ]
-}
-
 /// Fit an orthographic light view to the camera footprint's centre and four water-plane corners.
 /// Preserve capped f32 corner rays and axis order. The fit axis zeroes its vertical component
 /// before normalization; the eye uses the independently normalized full light direction. Form
@@ -183,20 +159,6 @@ fn water_plane_point(camera: Camera, viewport: [u32; 2], ndc: [f32; 2]) -> [f32;
         WATER_HEIGHT,
         ray[2] * distance + eye[2],
     ]
-}
-
-/// The ground rectangle whose receivers the shadow map covers: the visible ground for the game's
-/// camera, and a free eye's capped water-plane footprint ([`light_box`]), which its light is
-/// fitted to.
-pub fn receiver_rect(
-    camera: Camera,
-    viewport: [u32; 2],
-    visible: Option<[f32; 4]>,
-) -> Option<[f32; 4]> {
-    if camera.free().is_none() {
-        return visible;
-    }
-    viewer_foundation::map::camera::frustum::bounds(&footprint(camera, viewport)?)
 }
 
 fn light_box_from_footprint(corners: [[f32; 3]; 4], middle: [f32; 3], light: [f32; 3]) -> LightBox {
@@ -856,14 +818,6 @@ mod tests {
                 "{game:?} {own:?}"
             );
         }
-        let rect = receiver_rect(free, VIEWPORT, None).unwrap();
-        let expected = frustum_bounds(&footprint(map, VIEWPORT).unwrap()).unwrap();
-        for side in 0..4 {
-            assert!(
-                (rect[side] - expected[side]).abs() < 1e-2,
-                "{rect:?} {expected:?}"
-            );
-        }
     }
 
     /// The game's camera anchors its light exactly `|eye.y / look.y|` along its look, uncapped, at
@@ -1001,15 +955,6 @@ mod tests {
                 assert!((0.0..=1.0).contains(&value), "{p:?}");
             }
         }
-        let rect = receiver_rect(camera, VIEWPORT, None).expect("receivers");
-        assert!(
-            rect[2] - rect[0] <= 300.0 + 1e-2 && rect[3] - rect[1] <= 300.0 + 1e-2,
-            "{rect:?}"
-        );
-    }
-
-    fn frustum_bounds(points: &[[f32; 3]]) -> Option<[f32; 4]> {
-        viewer_foundation::map::camera::frustum::bounds(points)
     }
 
     /// At the reference hour the virtual sun is south of the camera and east of
@@ -1225,22 +1170,5 @@ mod tests {
         let constants = super::super::shadow_blur::constants(100, 0.0);
         let sum = constants[3] + 2.0 * (constants[4] + constants[5]);
         assert!((sum - 1.0).abs() < 1e-6, "{sum}");
-    }
-
-    /// The caster rectangle reaches past the frame by the lean of the tallest
-    /// caster, and by nothing at all when the light is straight overhead.
-    #[test]
-    fn the_caster_rectangle_grows_by_the_lean() {
-        let visible = [2900.0, 1500.0, 3120.0, 1640.0];
-        assert_eq!(caster_rect(visible, [0.0, -1.0, 0.0]), visible);
-        let leaning = caster_rect(visible, normalize([0.0, -1.0, 1.0]));
-        assert!(
-            (leaning[1] - (visible[1] - CASTER_CEILING)).abs() < 1e-3,
-            "{leaning:?}"
-        );
-        assert!(
-            (leaning[3] - (visible[3] + CASTER_CEILING)).abs() < 1e-3,
-            "{leaning:?}"
-        );
     }
 }

@@ -1,10 +1,10 @@
 import { contentTitle } from '../../dashboard/contentTitles.ts';
-import type { Coverage, LossCause, LossDesign, LossLeaf, LossName, LossPoint, LossSource, LossesReply, UnknownSpan } from '../../generated/dashboard';
+import type { Coverage, LossCause, LossDesign, LossLeaf, LossName, LossPoint, LossSource, LossesReply, NavigationKey, ShipListing, UnknownSpan } from '../../generated/dashboard';
 import type { SunburstItem, SunburstTotal } from '../../charts/sunburst/layout';
 import type { LegendItem } from '../../charts/Legend';
 import type { ChartTokens } from '../../charts/tokens';
 import { mix } from '../../shell/appearance/color.ts';
-import { formatAmount } from '../../charts/valueAxis.ts';
+import { formatRate } from '../../charts/valueAxis.ts';
 import { entryAt } from '../../dashboard/reads.ts';
 import { int, object } from '../../dashboard/validation.ts';
 
@@ -34,11 +34,11 @@ const isHours = (span: { firstHour: number; lastHour: number }) => object(span) 
 const isDesign = (design: LossDesign) => object(design) && int(design.variant) && design.variant >= 0
   && [design.equipment, design.archetype, design.archetypeName].every(text)
   && Array.isArray(design.names) && design.names.every((read, index) => object(read) && int(read.firstHour) && text(read.name)
-    && typeof read.known === 'boolean' && (read.design === null || typeof read.design === 'string' && read.design.length > 0)
+    && typeof read.known === 'boolean'
     && (index === 0 || design.names[index - 1].firstHour < read.firstHour));
 const isLeaf = (leaf: LossLeaf, designs: number) => object(leaf)
   && (leaf.design === null || (int(leaf.design) && leaf.design >= 0 && leaf.design < designs))
-  && (leaf.lowerBoundFrom === null || int(leaf.lowerBoundFrom)) && Array.isArray(leaf.points)
+  && typeof leaf.key === 'string' && (leaf.lowerBoundFrom === null || int(leaf.lowerBoundFrom)) && Array.isArray(leaf.points)
   && leaf.points.every((point, index) => object(point) && int(point.hour) && typeof point.totalRaw === 'string' && RAW.test(point.totalRaw)
     && (index === 0 || leaf.points[index - 1].hour < point.hour));
 
@@ -64,9 +64,69 @@ export function validateLossesReply(data: unknown): LossesReply {
       && new Set(cause.leaves.map(leaf => leaf.design)).size === cause.leaves.length
       && (cause.unknown === null || cause.leaves.length === 0))
     && new Set(reply.causes.map(cause => sourceKey(cause.source))).size === reply.causes.length
-    && Array.isArray(reply.warnings) && reply.warnings.every(warning => typeof warning === 'string');
+    && Array.isArray(reply.warnings) && reply.warnings.every(warning => typeof warning === 'string')
+    && Array.isArray(reply.ships) && reply.ships.every(ship => object(ship) && typeof ship.signature === 'string' && int(ship.listedHour) && int(ship.sinkHour)
+      && int(ship.count) && ship.count > 0 && (ship.design === null || int(ship.design) && ship.design >= 0 && ship.design < reply.designs.length))
+    && int(reply.from) && int(reply.to) && reply.from <= reply.to && int(reply.width) && reply.width > 0
+    && Array.isArray(reply.exactHours) && reply.exactHours.every(int) && Array.isArray(reply.restarts) && reply.restarts.every(int);
   if (!ok) throw new Error('The equipment losses reply is malformed.');
   return reply;
+}
+
+/** The sunk ships the timeline's reads listed, as leaves of the ships' cause: per signature the most one read listed,
+ * each dated at its sinking (the game's date of the loss, whichever read first showed it) and summed by design. */
+export function shipLeaves(ships: readonly ShipListing[], scale: number): LossLeaf[] {
+  const most = new Map<string, ShipListing>();
+  for (const ship of ships) {
+    const held = most.get(ship.signature);
+    if (!held || ship.count > held.count) most.set(ship.signature, ship);
+  }
+  const byDesign = new Map<number | null, Map<number, number>>();
+  for (const ship of most.values()) {
+    let hours = byDesign.get(ship.design);
+    if (!hours) { hours = new Map(); byDesign.set(ship.design, hours); }
+    hours.set(ship.sinkHour, (hours.get(ship.sinkHour) ?? 0) + ship.count);
+  }
+  return [...byDesign].sort(([a], [b]) => (a ?? -1) - (b ?? -1)).map(([design, hours]) => {
+    let total = 0n;
+    const points = [...hours].sort(([a], [b]) => a - b).map(([hour, count]) => {
+      total += BigInt(count) * BigInt(scale);
+      return { hour, totalRaw: total.toString() };
+    });
+    return { design, key: `ships:${design ?? 'none'}`, points, lowerBoundFrom: null };
+  });
+}
+
+const filled = new WeakMap<LossesReply, LossesReply>();
+/** `reply` with its sunk ships' leaves filled from the listings it holds. */
+export function withShips(reply: LossesReply, _hour?: number): LossesReply {
+  let made = filled.get(reply);
+  if (!made) {
+    made = { ...reply, causes: reply.causes.map(cause => cause.source.kind === 'sunkShips' && cause.unknown === null
+      ? { ...cause, leaves: shipLeaves(reply.ships, reply.amountScale) } : cause) };
+    filled.set(reply, made);
+  }
+  return made;
+}
+
+/** `reply` at the head `hour`: each leaf's total there the followed cell's (`total(leaf)`), its earlier points kept; a
+ * leaf the head holds no row of yet (null) has none there; a cell without a value leaves the leaf's history and names
+ * why its cause is not known at the hour. */
+export function withHead(reply: LossesReply, hour: number, total: (leaf: LossLeaf) => number | string | null): LossesReply {
+  return { ...reply, causes: reply.causes.map(cause => {
+    if (cause.source.kind === 'sunkShips' || cause.unknown !== null) return cause;
+    const missing: UnknownSpan[] = [];
+    const leaves = cause.leaves.map(leaf => {
+      const value = total(leaf);
+      if (value === null) return { ...leaf, points: [] };
+      if (typeof value === 'string') {
+        missing.push({ firstHour: hour, lastHour: hour, reason: 'unread', detail: value });
+        return leaf;
+      }
+      return { ...leaf, points: [...leaf.points.filter(point => point.hour < hour), { hour, totalRaw: BigInt(Math.round(value)).toString() }] };
+    });
+    return { ...cause, leaves, unknownSpans: missing.length ? [...cause.unknownSpans, missing[0]] : cause.unknownSpans };
+  }) };
 }
 
 /** Loss totals change only on their recorded points, never between them. */
@@ -266,7 +326,7 @@ export function lossItems(reply: LossesReply, window: LossWindow): LossItem[] {
 /** Preserve every recorded fixed-point digit, including amounts beyond 2^53. */
 export function formatLosses(value: number, exact: bigint | null, scale: number): string {
   const raw = exact ?? BigInt(Math.round(value));
-  const amount = formatAmount(raw, Math.round(Math.log10(scale)), Math.round(Math.log10(scale)));
+  const amount = formatRate(raw, Math.round(Math.log10(scale)));
   return raw < 0n ? `Returned: ${amount}` : amount;
 }
 
@@ -299,4 +359,31 @@ export function lossesTotal(items: readonly LossItem[]): LossTotal {
 /** Counting-start wording lives here so product wording changes need one edit. */
 export function destructionCountingNote(reply: LossesReply, hour: number): string {
   return reply.destructionCountedFrom === null || hour < reply.destructionCountedFrom ? 'Unavailable' : '';
+}
+
+/** The hour `key` steps to among `hours` (sunk ships' sinking hours, which no series holds) within `first..last`: the
+ * first or last of them, or the nearest after or before `origin`. */
+export function stepHours(hours: readonly number[], key: NavigationKey, origin: number | null, first: number, last: number): number | null {
+  const within = hours.filter(hour => hour >= first && hour <= last);
+  const after = key === 'Home' || key === 'ArrowRight' && origin === null ? within
+    : key === 'ArrowRight' ? within.filter(hour => hour > origin!) : [];
+  const before = key === 'End' || key === 'ArrowLeft' && origin === null ? within
+    : key === 'ArrowLeft' ? within.filter(hour => hour < origin!) : [];
+  if (key === 'Home' || key === 'ArrowRight') return after.length ? Math.min(...after) : null;
+  return before.length ? Math.max(...before) : null;
+}
+
+/** A step as main's keyboard made it: the window's first hour is a stop (Home lands there, End and a step back fall
+ * to it), and a step forward with nothing ahead stays where it was. */
+export function withEdges(key: NavigationKey, answer: number | null, origin: number | null, first: number): number | null {
+  if (key === 'Home') return first;
+  if (key === 'End') return answer ?? first;
+  if (key === 'ArrowLeft') return answer ?? (origin !== null && origin > first ? first : null);
+  return answer ?? origin;
+}
+
+/** The nearer of two answers to one key: the earlier stepping forward, the later stepping back. */
+export function nearest(key: NavigationKey, a: number | null, b: number | null): number | null {
+  if (a === null || b === null) return a ?? b;
+  return key === 'Home' || key === 'ArrowRight' ? Math.min(a, b) : Math.max(a, b);
 }

@@ -1,8 +1,5 @@
 use super::Inner;
 use dashboard::protocol::{DashboardMapView, NativeCommand, ViewBounds, ViewerState};
-use dashboard::transport::DataCommand;
-#[cfg(test)]
-use dashboard::transport::NATIVE_QUEUE_FULL;
 use std::collections::VecDeque;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -43,48 +40,16 @@ pub(super) struct Pending {
     pub(super) open: Option<(String, String)>,
     pub(super) seek: Option<SeekTarget>,
     pub(super) maps: Option<Vec<DashboardMapView>>,
-    pub(super) data: VecDeque<(DataCommand, usize)>,
     /// The controller message waiting for the viewer, merged with any sent after it
     /// ([`GamepadMessage::merge`](dashboard::protocol::GamepadMessage::merge)).
     pub(super) gamepad: Option<dashboard::protocol::GamepadMessage>,
     pub(super) close: bool,
 }
 
-/// Data requests queued for the native pipe at most, by count and by bytes.
-#[cfg(test)]
-pub(super) const MAX_QUEUED_DATA: usize = 128;
-#[cfg(test)]
-pub(super) const MAX_QUEUED_DATA_BYTES: usize = dashboard::protocol::MAX_MESSAGE_BYTES;
 /// Map actions queued at most.
 pub(super) const MAX_QUEUED_ACTIONS: usize = 16;
 
 impl Pending {
-    /// Queues a data request of `length` serialized bytes. A cancel first removes its
-    /// request if that has not left the queue (a copy the writer already took precedes
-    /// the cancel on its pipe). A full queue refuses with [`NATIVE_QUEUE_FULL`], which
-    /// says only that there was no room, so the frontend tries the request again.
-    ///
-    /// [`NATIVE_QUEUE_FULL`]: dashboard::transport::NATIVE_QUEUE_FULL
-    #[cfg(test)]
-    pub(super) fn enqueue_data(
-        &mut self,
-        request: DataCommand,
-        length: usize,
-    ) -> Result<(), String> {
-        if let DataCommand::Cancel { id } = &request {
-            self.data
-                .retain(|(queued, _)| queued.request_id() != Some(id.as_str()));
-        }
-        let bytes: usize = self.data.iter().map(|(_, bytes)| *bytes).sum();
-        if self.data.len() >= MAX_QUEUED_DATA
-            || bytes.saturating_add(length) > MAX_QUEUED_DATA_BYTES
-        {
-            return Err(NATIVE_QUEUE_FULL.into());
-        }
-        self.data.push_back((request, length));
-        Ok(())
-    }
-
     /// Whether another map action fits. A full queue refuses with
     /// [`MAP_CONTROLS_BUSY`], which the frontend may try again.
     ///
@@ -104,7 +69,6 @@ impl Pending {
             || !self.actions.is_empty()
             || self.campaign_map
             || self.maps.is_some()
-            || !self.data.is_empty()
             || self.bounds.is_some()
             || self.visibility.is_some()
             || self.gamepad.is_some()
@@ -145,14 +109,6 @@ impl Pending {
         if let Some(message) = self.gamepad.take() {
             commands.push(NativeCommand::Gamepad { message });
         }
-        // Drain a small amount per pass so another seek/layout can interrupt a
-        // batch of history demands. The queue itself has a byte/count ceiling.
-        for _ in 0..4 {
-            let Some((request, _)) = self.data.pop_front() else {
-                break;
-            };
-            commands.push(NativeCommand::Data { request });
-        }
         commands
     }
 }
@@ -191,7 +147,7 @@ impl Inner {
         }
     }
 
-    /// Pending pipe slots may already have been sent when a process exits.
+    /// Commands may already have been sent when a map ends.
     /// Retain unacknowledged requests, otherwise reopen its last displayed hour.
     pub(super) fn restore_commands(&mut self) {
         if self.active_dashboard {

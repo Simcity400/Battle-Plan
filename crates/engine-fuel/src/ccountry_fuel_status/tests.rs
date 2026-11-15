@@ -210,29 +210,22 @@ fn full_read_preserves_native_values_ring_sums_alias_identity_and_dormant_sentin
 }
 
 #[test]
-fn truncation_counts_whole_countries_without_reading_their_entries_and_recovers() {
+fn the_count_probe_counts_whole_countries_without_reading_their_entries() {
     let mut bytes = fixture();
-    // The second country's arrays are never read while its rows cannot fit.
+    // The second country's arrays are never read by the count probe.
     put(&mut bytes, 0x7200 + CONSUMERS, &UNMAPPED.to_le_bytes());
     put(&mut bytes, 0x7200 + HISTORY_RING, &UNMAPPED.to_le_bytes());
-    let captured = capture(&bytes, [1, 5]);
     assert_eq!(
-        captured.outcomes,
-        Outcomes {
-            fuel: Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
+        walk_buffer(
+            &SliceMemory {
+                base: MEMORY_BASE,
+                bytes: &bytes,
             },
-            consumers: Outcome::Truncated {
-                len: 3,
-                unread_rows: 3
-            },
-        }
-    );
-    assert_eq!(captured.rows[0].ring_gain_raw, ring_sum(0, 1));
-    assert_eq!(captured.consumers[3], ConsumerRow::default());
-    assert_eq!(
-        capture(&fixture(), [0; 2]).outcomes,
+            0,
+            MEMORY_BASE,
+            crate::walk::Buffer::Count,
+            crate::walk::Buffer::Count,
+        ),
         Outcomes {
             fuel: Outcome::Truncated {
                 len: 0,
@@ -244,7 +237,7 @@ fn truncation_counts_whole_countries_without_reading_their_entries_and_recovers(
             },
         }
     );
-    assert_eq!(capture(&fixture(), [2, 6]).outcomes, complete(2, 6));
+    assert_eq!(capture(&fixture(), [0; 2]).outcomes, complete(2, 6));
 }
 
 #[test]

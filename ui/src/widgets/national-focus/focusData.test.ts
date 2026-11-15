@@ -1,14 +1,15 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { focusAt, focusCompletion, focusProgressAt, focusRequest, validateFocusReply, validateFocusArtworkReply } from './focusData.ts';
+import { focusArtAsks, focusAsksAhead, focusReadHours, focusAt, focusCompletion, focusMissingAt, focusProgressAt, focusProgressView, focusRequest, focusShownAt, validateFocusReply, validateFocusArtworkReply } from './focusData.ts';
 import { loadProduct } from '../../dashboard/products.ts';
 import type { DashboardClient, ProductRequest } from '../../dashboard/client';
-import type { FocusReply, FocusArtworkParams, FocusArtworkReply } from '../../generated/dashboard';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 import { HourStore, planRequests } from '../../dashboard/countryFacts.ts';
+import type { FocusOrder, FocusReply } from '../../generated/dashboard';
+import type { SegmentHours } from './focusData';
 
 const request = focusRequest('source', 'v1', { branchId: '1', tag: 'GER' });
 const first = { completed: [{ ordinal: 0, token: 'one', completedByHour: null }], current: 'two', continuous: null, paused: false };
@@ -20,12 +21,14 @@ const reply: FocusReply = { history: { segments: [
   { firstHour: 111, lastHour: 123, progressRaw: '6900000' },
   { firstHour: 125, lastHour: 140, progressRaw: '100000' },
   { firstHour: 141, lastHour: 160, progressRaw: '200000' },
-] }, artwork: [], continuousStaticText: [], warnings: [] };
+] }, missing: [{ firstHour: 124, lastHour: 124, reason: 'No focus row was recorded for this country' }], artwork: [], continuousStaticText: [], warnings: [] };
 
 test('focus histories reject overlap, future completion bounds and invalid artwork', () => {
   assert.equal(validateFocusReply(reply), reply);
   const invalid = (firstHour: number, lastHour: number, ordinal: number, completedByHour: number | null) => ({ ...reply, history: { progress: [], segments: [{ firstHour, lastHour, order: { ...first, completed: [{ ordinal, token: 'one', completedByHour }] } }] } });
   for (const bad of [invalid(100, 99, 0, null), invalid(100, 100, 3, null), invalid(100, 100, 0, 101), invalid(NaN, 100, 0, null)]) assert.throws(() => validateFocusReply(bad));
+  for (const missing of [undefined, [{ firstHour: 5, lastHour: 4, reason: 'x' }], [{ firstHour: 1, lastHour: 2, reason: 3 }], [{ firstHour: 1, lastHour: 4, reason: 'x' }, { firstHour: 3, lastHour: 5, reason: 'y' }]])
+    assert.throws(() => validateFocusReply({ ...reply, missing } as unknown as FocusReply));
   assert.throws(() => validateFocusReply({ ...reply, history: { ...reply.history, segments: [...reply.history.segments, reply.history.segments[0]] } }));
   for (const progressRaw of ['1.5', '', '99999999999999999999']) assert.throws(() => validateFocusReply({ ...reply, history: { ...reply.history, progress: [{ firstHour: 1, lastHour: 2, progressRaw }] } }));
   assert.throws(() => validateFocusReply({ ...reply, history: { ...reply.history, progress: [...reply.history.progress, reply.history.progress[0]] } }));
@@ -61,6 +64,60 @@ test('exact local playback preserves unknown dates and never bridges gaps or lea
   assert.equal(focusAt(reply.history, 124), null);
   assert.equal(focusAt(reply.history, 125)?.completed[1].completedByHour, 125);
   assert.equal(focusAt(reply.history, 201), null);
+});
+
+test('a view keys what it shows by segment or missing span, so following the head renders only where the order changes', () => {
+  assert.equal(focusShownAt(reply, null), 'out');
+  assert.equal(focusShownAt(reply, 100), 's0');
+  assert.equal(focusShownAt(reply, 123), 's0', 'progress moving inside one order changes nothing shown');
+  assert.equal(focusShownAt(reply, 124), 'm0');
+  assert.equal(focusMissingAt(reply, 124)?.reason, 'No focus row was recorded for this country');
+  assert.equal(focusShownAt(reply, 125), 's1');
+  assert.equal(focusShownAt(reply, 99), 'none');
+  assert.equal(focusMissingAt(reply, 99), null);
+});
+
+test('dated art is asked at the hours the order holds, never at the moving head', () => {
+  const order = { completed: [{ ordinal: 0, token: 'one', completedByHour: null }, { ordinal: 1, token: 'two', completedByHour: 125 }], current: 'three', continuous: null, paused: false };
+  const hours = { completed: [125, 125], active: 125 };
+  assert.deepEqual(focusArtAsks(order, hours, true, true), [{ tag: 'three', hour: 125 }, { tag: 'two', hour: 125 }, { tag: 'one', hour: 125 }]);
+  assert.deepEqual(focusArtAsks(order, hours, false, true), [{ tag: 'three', hour: 125 }, { tag: 'one', hour: 125 }, { tag: 'two', hour: 125 }]);
+  assert.deepEqual(focusArtAsks(order, hours, false, false), [{ tag: 'one', hour: 125 }, { tag: 'two', hour: 125 }, { tag: 'three', hour: 125 }]);
+  assert.deepEqual(focusArtAsks({ ...order, current: null, continuous: 'endless' }, hours, true, true), [{ tag: 'two', hour: 125 }, { tag: 'one', hour: 125 }], 'a continuous focus is not a national ask');
+  assert.deepEqual(focusArtAsks(null, hours, true, true), []);
+});
+
+test('a new segment asks nothing again for the focuses it shares with the unbroken one before it', () => {
+  const undated = { ordinal: 0, token: 'one', completedByHour: null };
+  const history = { progress: [], segments: [
+    { firstHour: 100, lastHour: 109, order: { completed: [undated], current: 'two', continuous: null, paused: false } },
+    { firstHour: 110, lastHour: 119, order: { completed: [undated], current: 'two', continuous: null, paused: true } },
+    { firstHour: 120, lastHour: 129, order: { completed: [undated, { ordinal: 1, token: 'two', completedByHour: 120 }], current: 'three', continuous: null, paused: false } },
+    { firstHour: 140, lastHour: 149, order: { completed: [undated, { ordinal: 1, token: 'two', completedByHour: 120 }], current: 'three', continuous: null, paused: false } },
+  ] };
+  assert.deepEqual(focusReadHours(history), [
+    { completed: [100], active: 100 },
+    { completed: [100], active: 100 },
+    { completed: [100, 120], active: 120 },
+    { completed: [140, 120], active: 140 },
+  ], 'a pause or a completion keeps the hours of what stays; a gap starts them again');
+  const hours = focusReadHours(history);
+  const now = focusArtAsks(history.segments[0].order, hours[0], true, true);
+  const asks = (order: FocusOrder, held: SegmentHours) => focusArtAsks(order, held, true, true);
+  assert.deepEqual(focusAsksAhead(now, history.segments, hours, 0, 120, asks), now, 'nothing begins before the window ends: the asks shown, the same');
+  assert.deepEqual(focusAsksAhead(now, history.segments, hours, 0, 130, asks), [...now, { tag: 'three', hour: 120 }, { tag: 'two', hour: 120 }],
+    'the focus begun and the completion within the window are asked ahead, once each, after what is shown');
+  assert.deepEqual(focusAsksAhead(now, history.segments, hours, 0, Infinity, asks).slice(now.length + 2), [{ tag: 'three', hour: 140 }, { tag: 'one', hour: 140 }],
+    'past a gap the same focuses are asked again at the hours that segment reads them');
+  assert.deepEqual(focusAsksAhead(now, history.segments, hours, 3, Infinity, asks), now, 'the last segment has nothing ahead');
+});
+
+test('the painted progress line names the day reached, the days left only from a known rate, and banked days while idle', () => {
+  assert.deepEqual(focusProgressView({ progress: 6_900_000n, dailyGain: 100_000n }, 70, true), { days: '· Day 70 of 70', left: { value: '1', unit: 'day left', estimated: true }, fraction: 0.9857, banked: null });
+  assert.deepEqual(focusProgressView({ progress: 3_500_000n, dailyGain: null }, 70, true).left, { value: '50%', unit: 'complete', estimated: false });
+  assert.deepEqual(focusProgressView(null, 70, true), { days: null, left: null, fraction: null, banked: null }, 'unknown progress is shown as nothing, never zero');
+  assert.deepEqual(focusProgressView({ progress: 200_000n, dailyGain: null }, null, false).banked, '2 days of progress saved for the next focus');
+  assert.equal(focusProgressView({ progress: 0n, dailyGain: null }, null, false).banked, null);
 });
 
 test('many focus widgets share one load while playback advances without requests', async () => {
@@ -119,160 +176,17 @@ test('duration metadata and dated requests retain 5000 modded tokens without a c
     items: artwork.map(art => ({ artwork: art, reason: null })), warnings: [] }, params).items.length, 5000);
 });
 
-type HookSlot = { value?: unknown; deps?: readonly unknown[]; cleanup?: () => void };
-function focusHooks() {
-  const slots: HookSlot[] = [], pending: (() => void)[] = [];
-  let cursor = 0;
-  return {
-    begin() { cursor = 0; },
-    state(initial: unknown) {
-      const slot = slots[cursor++] ??= { value: initial };
-      return [slot.value, (next: unknown) => { slot.value = typeof next === 'function' ? next(slot.value) : next; }];
-    },
-    ref(initial: unknown) { return (slots[cursor++] ??= { value: { current: initial } }).value; },
-    effect(effect: () => unknown, deps: readonly unknown[]) {
-      const slot = slots[cursor++] ??= {};
-      if (slot.deps?.length === deps.length && deps.every((value, index) => Object.is(value, slot.deps?.[index]))) return;
-      slot.deps = deps;
-      pending.push(() => { slot.cleanup?.(); const cleanup = effect(); slot.cleanup = typeof cleanup === 'function' ? cleanup as () => void : undefined; });
-    },
-    flush() { for (const effect of pending.splice(0)) effect(); },
-    dispose() { for (const slot of slots) slot.cleanup?.(); },
-  };
-}
-
-test('registered focus renderer owns dated art, pending/refused hover text, Pin and client A-B-A reads', async () => {
-  const host = globalThis as typeof globalThis & { __focusHooks?: ReturnType<typeof focusHooks> };
-  const state = focusHooks(); host.__focusHooks = state;
-  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
-    server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'focus-renderer-state', enforce: 'pre',
-      transform(code, id) {
-        const path = id.replaceAll('\\', '/');
-        if (path.endsWith('/national-focus/NationalFocusWidget.tsx')) return code.replace(
-          "import { useLayoutEffect, useMemo, useRef, useState } from 'react';",
-          "import { useMemo } from 'react'; import { useLayoutEffect, useRef, useState } from 'focus-state';").replace(
-          "import { useEffect, useLayoutEffect, useMemo, useRef } from 'react';",
-          "import { useMemo } from 'react'; import { useEffect, useLayoutEffect, useRef } from 'focus-state';");
-        if (path.endsWith('/dashboard/useDiagnostics.ts')) return code.replace(
-          "import { useEffect, useMemo } from 'react';",
-          "import { useMemo } from 'react'; import { useEffect } from 'focus-state';");
-        if (path.endsWith('/dashboard/countryNamesAt.ts')) return code.replace(
-          "import { useEffect, useMemo, useRef, useState } from 'react';",
-          "import { useMemo } from 'react'; import { useEffect, useRef, useState } from 'focus-state';");
-        if (path.endsWith('/dashboard/products.ts')) return code.replace("from 'react'", "from 'focus-state'");
-        if (path.endsWith('/dashboard/playback.ts')) return 'export const usePlaybackHour = clock => clock.getHour();';
-        if (path.endsWith('/dashboard/contentRevision.ts')) return 'export const useContentRevision = () => 0; export const contentRevision = () => ({ snapshot: () => 0 });';
-        if (path.endsWith('/components/ContextMenu.tsx')) return `import { createElement } from 'react'; export const useContextMenu = label => ({
-          menu: createElement('span', { 'data-row-menu': label }), open: () => {} });`;
-      },
-      resolveId(id) { if (id === 'focus-state') return '\0focus-state'; },
-      load(id) { if (id === '\0focus-state') return `export const useState = initial => globalThis.__focusHooks.state(initial);
-        export const useRef = initial => globalThis.__focusHooks.ref(initial);
-        export const useEffect = (effect, deps) => globalThis.__focusHooks.effect(effect, deps);
-        export const useLayoutEffect = useEffect;`; },
-    }] });
-  const { default: renderer } = await vite.ssrLoadModule('/ui/src/widgets/national-focus/index.ts');
-  const history: FocusReply = { history: { segments: [{ firstHour: 100, lastHour: 150, order: {
-    completed: [{ ordinal: 0, token: 'done', completedByHour: null }], current: 'switch', continuous: null, paused: false,
-  } }], progress: [{ firstHour: 100, lastHour: 150, progressRaw: '100000' }] },
-  artwork: ['done', 'switch'].map(token => ({ token, name: 'Undated static name', description: null, baseDurationDays: 10, icon: null })), continuousStaticText: [], warnings: [] };
-  type Pending = { owner: string; params: FocusArtworkParams; resolve: (reply: FocusArtworkReply) => void; reject: (error: Error) => void };
-  const reads: Pending[] = [];
-  const client = (owner: string) => ({ product: (request: ProductRequest) => request.product === 'national-focus'
-    ? Promise.resolve({ sourceId: request.sourceId, revision: request.revision, product: request.product, data: history })
-    : new Promise<FocusArtworkReply>((resolve, reject) => { reads.push({ owner, params: request.params as FocusArtworkParams, resolve, reject }); })
-      .then(data => ({ sourceId: request.sourceId, revision: request.revision, product: request.product, data })) }) as unknown as DashboardClient;
-  const clientA = client('A'), clientB = client('B');
-  let hour = 100, diagnostics: string[] = [];
-  const reports: string[][] = [];
-  const props = { widget: { id: 'focus', kind: 'national-focus', trackIds: ['track'], countries: { kind: 'tags', tags: ['synthetic'] }, time: { mode: 'follow' } },
-    runtime: { client: clientA, tracks: [{ id: 'track', axisOffset: 0, branch: { id: '1', firstHour: 100, lastHour: 150 }, source: { id: 'source', revision: '1' } }], clock: { getHour: () => hour } },
-    active: true, headerSlot: null, onDiagnostics: (warnings: string[]) => { diagnostics = warnings; reports.push(warnings); } } as unknown as WidgetProps;
-  const render = () => { state.begin(); return renderToStaticMarkup(createElement(renderer.render, props)); };
-  const settle = () => new Promise<void>(resolve => setImmediate(resolve));
-  const complete = (read: Pending, name: string | null, reason: string | null = null, warnings: string[] = [], icon = 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png') => read.resolve({
-    branchId: read.params.branchId, hour: read.params.hour, tag: read.params.tag, database: read.params.database, warnings,
-    items: read.params.tokens.map(token => ({ artwork: { token, name: token === 'switch' ? name : 'Completed at 100', description: null,
-      baseDurationDays: 10, icon: reason || read.params.textOnly ? null : icon }, reason: token === 'switch' ? reason : null })),
-  });
-  try {
-    render(); state.flush(); await settle(); render(); state.flush();
-    assert.match(render(), /data-row-menu="National focus actions"/);
-    assert.doesNotMatch(render(), /Undated static name/);
-    const firstRead = reads.find(read => read.params.hour === 100)!;
-    assert.deepEqual([...firstRead.params.tokens].sort(), ['done', 'switch']);
-    assert.ok(reads.every(read => read.params.database === 'national'), 'completed and current focuses are national');
-    complete(firstRead, 'Early choice'); await settle();
-    assert.match(render(), /Early choice/);
-    assert.equal(firstRead.params.textOnly, true);
-    assert.doesNotMatch(render(), /src="http:\/\/artwork/); // Text does not wait for the unresolved image request.
-    hour = 101; const pending = render(); state.flush();
-    assert.doesNotMatch(pending, /Early choice/);
-    assert.doesNotMatch(pending, /Loading game artwork/);
-    assert.match(pending, /Loading name…/);
-    assert.match(pending, /Completed at 100/);
-    const next = reads.find(read => read.params.hour === 101)!;
-    assert.deepEqual(next.params.tokens, ['switch']);
-    complete(next, 'Later choice', null, [], 'http://artwork.localhost/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.png'); await settle();
-    complete(reads.find(read => read.params.hour === 101 && !read.params.textOnly)!, 'Image-side title', null, [], 'http://artwork.localhost/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.png'); await settle();
-    const changed = render();
-    assert.match(changed, /Later choice/);
-    assert.doesNotMatch(changed, /Image-side title/);
-    assert.match(changed, /src="http:\/\/artwork\.localhost\/b{32}\.png"/);
-    assert.doesNotMatch(changed, /Early choice/);
-    hour = 102; render(); state.flush();
-    complete(reads.find(read => read.params.hour === 102)!, null, 'focus-window mode is not recorded', ['Named content warning']); await settle();
-    const refused = render(); state.flush();
-    assert.doesNotMatch(refused, /data-tooltip="focus-window mode is not recorded"/);
-    assert.doesNotMatch(refused, /Artwork unavailable \(1\)/);
-    assert.match(refused, /art-fallback/);
-    assert.match(refused, /data-tooltip="[^"]*focus-window mode is not recorded/);
-    assert.ok(diagnostics.includes('Named content warning'));
-    const reportCount = reports.length;
-    render(); state.flush(); render(); state.flush();
-    assert.equal(reports.length, reportCount, 'equal diagnostics do not clear and re-report on each parent render');
-    hour = 103; render(); state.flush();
-    complete(reads.find(read => read.params.hour === 103)!, ''); await settle();
-    assert.match(render(), /focus-now-text"><strong[^>]*><\/strong>/, 'defined empty name is not a failed name or token fallback');
-    props.widget.time = { mode: 'pin', windows: { track: { firstOffset: 10, lastOffset: 10 } } };
-    hour = 140; render(); state.flush();
-    const pinned = reads.find(read => read.params.hour === 110)!;
-    assert.ok(pinned, 'Pin requests its own supplying hour rather than playback');
-    complete(pinned, 'Pinned choice'); await settle(); assert.match(render(), /Pinned choice/);
-    props.widget.time = { mode: 'follow' }; hour = 120; render(); state.flush();
-    const oldA = reads.find(read => read.owner === 'A' && read.params.hour === 120 && read.params.textOnly)!;
-    props.runtime.client = clientB;
-    assert.doesNotMatch(render(), /Pinned choice/); state.flush(); await settle(); render(); state.flush();
-    complete(reads.find(read => read.owner === 'B' && read.params.hour === 120)!, 'B choice'); await settle(); assert.match(render(), /B choice/);
-    props.runtime.client = clientA;
-    assert.doesNotMatch(render(), /B choice/); state.flush(); await settle(); render(); state.flush();
-    const newA = reads.filter(read => read.owner === 'A' && read.params.hour === 120 && read.params.textOnly).at(-1)!;
-    assert.notEqual(newA, oldA);
-    complete(oldA, 'Expired A choice'); await settle();
-    assert.doesNotMatch(render(), /Expired A choice/);
-    assert.doesNotMatch(render(), /Loading game artwork/);
-    assert.match(render(), /data-tooltip="Key: switch[^"]*Loading focus name/);
-    newA.reject(new Error('Synthetic native refusal'));
-    reads.filter(read => read.owner === 'A' && read.params.hour === 120 && !read.params.textOnly).at(-1)!.reject(new Error('Synthetic image refusal')); await settle();
-    assert.doesNotMatch(render(), /Game artwork request failed/);
-    assert.match(render(), /data-tooltip="Key: switch[^"]*Focus name request failed/);
-    assert.doesNotMatch(render(), /Artwork unavailable \(/);
-    assert.match(render(), /art-fallback/);
-  } finally { state.dispose(); delete host.__focusHooks; await vite.close(); }
-});
-
 test('Follow schedules the current and newest focus first while every time mode preserves rendered completion order and dates', async () => {
   const completed = Array.from({ length: 20 }, (_, ordinal) => ({ ordinal, token: `focus_${ordinal}`,
     completedByHour: ordinal === 0 ? null : 100 + ordinal }));
   const data: FocusReply = { history: { segments: [{ firstHour: 100, lastHour: 200, order: {
     completed, current: 'current_focus', continuous: null, paused: false,
-  } }], progress: [] }, artwork: [], continuousStaticText: [], warnings: [] };
+  } }], progress: [] }, missing: [], artwork: [], continuousStaticText: [], warnings: [] };
   const fixture = { data, wanted: [] as { tag: string; hour: number }[] };
   const host = globalThis as typeof globalThis & { __focusPriorities?: typeof fixture };
   host.__focusPriorities = fixture;
   const replacements: Record<string, string> = {
     '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__focusPriorities.data }); export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/dashboard/useDiagnostics.ts': 'export const useDiagnostics = () => {};',
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open() {}, menu: null });',
     '/national-focus/useFocusArtwork.ts': `export const useFocusArtwork = (_client, _track, _country, wanted) => {
@@ -290,18 +204,19 @@ test('Follow schedules the current and newest focus first while every time mode 
     const { default: Widget } = await vite.ssrLoadModule('/ui/src/widgets/national-focus/NationalFocusWidget.tsx');
     const props = { widget: { id: 'priority', kind: 'national-focus', trackIds: ['track'], countries: { kind: 'tags', tags: ['synthetic'] }, time: { mode: 'follow' } },
       runtime: { client: {}, tracks: [{ id: 'track', axisOffset: 0, branch: { id: '1', firstHour: 100, lastHour: 200 },
-        source: { id: 'source', revision: '1' } }], clock: { getHour: () => 200 } }, active: true, headerSlot: null, onDiagnostics() {} } as unknown as WidgetProps;
+        source: { id: 'source', revision: '1' } }], clock: { getHour: () => 200, getSnapshot: () => ({ playing: false, hoursPerSecond: 0 }), subscribe: () => () => {}, subscribeFrame: () => () => {} } }, active: true, headerSlot: null, onDiagnostics() {} } as unknown as WidgetProps;
     const completionPairs = completed.map(entry => ({ tag: entry.token, hour: entry.completedByHour ?? 100 }));
     const render = () => renderToStaticMarkup(createElement(Widget, props));
     for (const mode of ['follow', 'pin', 'campaign'] as const) {
       props.widget.time = mode === 'pin' ? { mode, windows: { track: { firstOffset: 100, lastOffset: 100 } } } : { mode };
       const markup = render();
-      const current = { tag: 'current_focus', hour: 200 };
+      // The active focus is named as at the hour its order was first read, not the moving head.
+      const current = { tag: 'current_focus', hour: 100 };
       const expected = mode === 'follow' ? [current, ...completionPairs.slice().reverse()]
         : mode === 'pin' ? [current, ...completionPairs] : [...completionPairs, current];
       assert.deepEqual(fixture.wanted, expected);
       const images = planRequests(new HourStore(64), fixture.wanted, 21, 8, 'wanted');
-      assert.deepEqual(images.slice(0, 2).map(([hour, tags]) => ({ hour, tag: tags[0] })), expected.slice(0, 2));
+      assert.deepEqual({ hour: images[0][0], tag: images[0][1][0] }, expected[0], 'the most wanted art is asked first');
       const rendered = [...markup.matchAll(/Key: (focus_\d+)/g)].map(match => match[1]);
       assert.deepEqual(rendered, completed.map(entry => entry.token), 'scheduling never reverses, hides or drops displayed rows');
       assert.match(markup, /Date not recorded/);

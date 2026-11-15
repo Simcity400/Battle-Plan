@@ -5,7 +5,7 @@
 
 use crate::{
     Memory,
-    cname_group_member::{NameArena, Names, Span},
+    cname_group_member::{Names, Span},
     cpdx_array::Array,
     creference_registry::ScopedResolver,
     cunit,
@@ -93,7 +93,7 @@ pub struct Reader<'a, M: Memory> {
 pub struct Collector<'a, M: Memory> {
     reader: Reader<'a, M>,
     arenas: Arenas<'a>,
-    names: NameArena<'a>,
+    names: Names<'a>,
     hour: i32,
 }
 
@@ -109,28 +109,8 @@ pub struct Captured {
 }
 
 impl<'a, M: Memory> Collector<'a, M> {
-    pub fn new(
-        memory: &'a M,
-        base: usize,
-        hour: i32,
-        searchers: &'a mut [Searcher],
-        avoided: &'a mut [Option<Span>],
-        bytes: &'a mut [u8],
-        answers: &'a mut [ReferenceAnswer],
-    ) -> Self {
-        Self::new_buffer(
-            memory,
-            base,
-            hour,
-            Buffer::Fixed(searchers),
-            Buffer::Fixed(avoided),
-            Buffer::Fixed(bytes),
-            Buffer::Fixed(answers),
-        )
-    }
-
     /// Worker storage grows from original search/string headers before publication.
-    pub fn new_growing(
+    pub fn new(
         memory: &'a M,
         base: usize,
         hour: i32,
@@ -169,7 +149,7 @@ impl<'a, M: Memory> Collector<'a, M> {
                 avoided_len: 0,
                 avoided_required: 0,
             },
-            names: NameArena {
+            names: Names {
                 bytes,
                 len: 0,
                 required: 0,
@@ -184,7 +164,7 @@ impl<'a, M: Memory> Collector<'a, M> {
         mission_kind: u32,
         prefix: &super::CounterRow,
     ) -> Inputs {
-        self.reader.capture_buffer(
+        self.reader.capture(
             task,
             mission_kind,
             prefix,
@@ -210,8 +190,8 @@ impl<'a, M: Memory> Collector<'a, M> {
 }
 
 impl<'a, M: Memory> Reader<'a, M> {
-    pub fn new(memory: &'a M, base: usize, answers: &'a mut [ReferenceAnswer]) -> Self {
-        Self::new_buffer(memory, base, Buffer::Fixed(answers))
+    pub fn new(memory: &'a M, base: usize, answers: &'a mut Vec<ReferenceAnswer>) -> Self {
+        Self::new_buffer(memory, base, Buffer::Growing(answers))
     }
 
     fn new_buffer(memory: &'a M, base: usize, mut answers: Buffer<'a, ReferenceAnswer>) -> Self {
@@ -324,26 +304,6 @@ impl<'a, M: Memory> Reader<'a, M> {
         hour: i32,
         arenas: &mut Arenas<'_>,
         names: &mut Names<'_>,
-    ) -> Inputs {
-        let mut arena = NameArena {
-            bytes: Buffer::Fixed(names.bytes),
-            len: names.len,
-            required: names.required,
-        };
-        let inputs = self.capture_buffer(task, mission_kind, prefix, hour, arenas, &mut arena);
-        names.len = arena.len;
-        names.required = arena.required;
-        inputs
-    }
-
-    fn capture_buffer(
-        &mut self,
-        task: usize,
-        mission_kind: u32,
-        prefix: &super::CounterRow,
-        hour: i32,
-        arenas: &mut Arenas<'_>,
-        names: &mut NameArena<'_>,
     ) -> Inputs {
         let mut inputs = Inputs {
             sample_hour: hour,
@@ -489,7 +449,7 @@ fn avoided(
     memory: &impl Memory,
     task: usize,
     arenas: &mut Arenas<'_>,
-    names: &mut NameArena<'_>,
+    names: &mut Names<'_>,
 ) -> Option<Span> {
     let source = task
         .checked_add(AVOIDED_SHIP_TYPES)
@@ -535,7 +495,7 @@ fn avoided(
         for index in 0..copied {
             let at = index * 32;
             if let Some(output) = output.as_deref_mut() {
-                let span = crate::cname_group_member::copy_string_buffer(
+                let span = crate::cname_group_member::copy_string(
                     memory,
                     &bytes[at..at + 32],
                     names,
@@ -551,7 +511,7 @@ fn avoided(
                 // A missing span arena still counts every independently valid
                 // byte demand, without copying/committing orphan payloads.
                 let mut demand = Names {
-                    bytes: &mut [],
+                    bytes: crate::walk::Buffer::Count,
                     len: 0,
                     required: 0,
                 };
@@ -635,7 +595,7 @@ pub fn demand(memory: &impl Memory, base: usize, task: usize, mission_kind: u32)
                     .and_then(|at| read::<[u8; 32]>(memory, at))
                     .ok_or("port sizing avoided string header unreadable")?;
                 let mut names = Names {
-                    bytes: &mut [],
+                    bytes: crate::walk::Buffer::Count,
                     len: 0,
                     required: 0,
                 };

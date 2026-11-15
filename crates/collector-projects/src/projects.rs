@@ -158,7 +158,7 @@ impl Capacities {
         state: usize,
     ) -> Result<(), &'static str> {
         let (projects, histories) =
-            nproject_cproject::walk_with_history(memory, base, state, &mut [], &mut []);
+            nproject_cproject::count_with_history(memory, base, state);
         let demand = |outcome| match outcome {
             Outcome::Rows { len } => Ok(len),
             Outcome::Truncated { len, unread_rows } => len
@@ -167,7 +167,7 @@ impl Capacities {
             Outcome::Unavailable { reason } => Err(reason),
         };
         // The rooted program pointer vectors bound their own demand.
-        let programs = nproject_cprogram::walk(memory, base, state, &mut [], &mut [], &mut []);
+        let programs = nproject_cprogram::count(memory, base, state);
         if let Outcome::Unavailable { reason } = programs.outcome
             && reason != "program pointer scratch capacity insufficient"
         {
@@ -279,6 +279,8 @@ pub struct Captured {
     project_read: Vec<(u32, u32)>,
     project_runtime: runtime::Runtime,
     scientist_injury_read: bool,
+    /// The walks after the project family are out on a worker ([`Rest`]).
+    rest_lent: bool,
 }
 
 impl Captured {
@@ -374,6 +376,7 @@ impl Captured {
             profile_acquisition: false,
             acquisition_phases: [0; 5],
             scientist_injury_read: false,
+            rest_lent: false,
         }
     }
 
@@ -661,13 +664,13 @@ impl Captured {
             let begin = qpc();
             self.capture_programs(|candidates, rows, names| {
                 let _reads = read_accounting::table(TABLES[0]);
-                nproject_cprogram::walk_growing(memory, base, game_state, candidates, rows, names)
+                nproject_cprogram::walk(memory, base, game_state, candidates, rows, names)
             });
             ticks[0] = elapsed(begin);
             let begin = qpc();
             capture_rows(&mut self.breakthroughs, |rows| {
                 let _reads = read_accounting::table(TABLES[3]);
-                nproject_cbreakthrough_progress::walk_growing(memory, base, game_state, rows)
+                nproject_cbreakthrough_progress::walk(memory, base, game_state, rows)
             });
             ticks[3] = elapsed(begin);
         }
@@ -684,265 +687,12 @@ impl Captured {
             dispatch,
         );
         ticks[1] = elapsed(begin);
-        macro_rules! plain {
-            ($field:ident, $index:literal, $module:ident) => {{
-                if active[$index] {
-                    let _reads = read_accounting::table(TABLES[$index]);
-                    let begin = qpc();
-                    capture_rows(&mut self.$field, |rows| {
-                        $module::walk_growing(memory, base, game_state, rows)
-                    });
-                    ticks[$index] = elapsed(begin);
-                } else {
-                    self.$field.outcome = Outcome::Unavailable {
-                        reason: replay_data::cadence::SKIPPED_REASON,
-                    };
-                }
-            }};
-        }
-        plain!(nukes, 4, cnuke);
-        // Slot 10 (RaidTargets) is the same walk as slot 6: one read, two tables.
-        if active[5] || active[10] || active[11] {
-            let begin = qpc();
-            let _reads = read_accounting::table(TABLES[5]);
-            let walk = craid_system::walk_growing(
-                memory,
-                base,
-                game_state,
-                craid_system::GrowingBuffers {
-                    parents: &mut self.raid_countries.rows,
-                    type_tokens: &mut self.raid_type_tokens.first,
-                    instances: &mut self.raids.rows,
-                    show_for: &mut self.raid_show_for.first,
-                    cooldowns: &mut self.raid_cooldowns.rows,
-                    type_memo: &mut self.raid_type_memo,
-                },
-            );
-            self.raid_cooldowns.outcome = bounded(walk.cooldowns, self.raid_cooldowns.rows.len());
-            self.raid_countries.outcome = bounded(walk.parents, self.raid_countries.rows.len());
-            self.raids.outcome = bounded(walk.instances, self.raids.rows.len());
-            self.raid_type_tokens.len = walk.type_tokens_len;
-            self.raid_type_tokens.required = walk.required_type_tokens;
-            self.raid_show_for.len = walk.show_for_len;
-            self.raid_show_for.required = walk.required_show_for;
-            self.raid_reads.refused_leaders += walk.refused_leaders;
-            ticks[5] = elapsed(begin);
-        } else {
-            self.raid_countries.outcome = Outcome::Unavailable {
-                reason: replay_data::cadence::SKIPPED_REASON,
-            };
-            self.raids.outcome = self.raid_countries.outcome;
-            self.raid_cooldowns.outcome = self.raid_countries.outcome;
-        }
-        if active[13] {
-            let _reads = read_accounting::table(TABLES[13]);
-            let begin = qpc();
-            // The cache's tokens follow the parents' in the shared arena.
-            let start = self
-                .raid_type_tokens
-                .len
-                .min(self.raid_type_tokens.first.len());
-            let walk = cplayer_status_cache::walk_buffer(
-                memory,
-                base,
-                game_state,
-                engine_native::walk::Buffer::Growing(&mut self.raid_player.rows),
-                engine_native::walk::Buffer::GrowingFrom(&mut self.raid_type_tokens.first, start),
-                &mut self.raid_type_memo,
-            );
-            if let Some(row) = self.raid_player.rows.first_mut() {
-                row.allowed_start += start;
+        if !self.rest_lent {
+            let mut rest = self.take_rest(game_state, hour, force_full);
+            rest.capture(memory, base);
+            for (ticks, rest) in ticks.iter_mut().zip(self.restore_rest(rest)) {
+                *ticks += rest;
             }
-            self.raid_type_tokens.len = start + walk.tokens_len;
-            self.raid_type_tokens.required = self
-                .raid_type_tokens
-                .required
-                .max(start)
-                .saturating_add(walk.required_tokens);
-            self.raid_player.outcome = bounded(walk.outcome, self.raid_player.rows.len());
-            ticks[13] = elapsed(begin);
-        } else {
-            self.raid_player.outcome = Outcome::Unavailable {
-                reason: replay_data::cadence::SKIPPED_REASON,
-            };
-        }
-        if active[14] {
-            let _reads = read_accounting::table(TABLES[14]);
-            let begin = qpc();
-            let walk = raid_speed_inputs::walk_growing(
-                memory,
-                base,
-                game_state,
-                &self.speed_memo,
-                &mut self.raid_speeds.rows,
-                &mut self.raid_transports.first,
-            );
-            self.raid_transports.len = walk.transport_len;
-            self.raid_transports.required = walk.required_transport;
-            self.raid_speeds.outcome = bounded(walk.outcome, self.raid_speeds.rows.len());
-            ticks[14] = elapsed(begin);
-        } else {
-            self.raid_speeds.outcome = Outcome::Unavailable {
-                reason: replay_data::cadence::SKIPPED_REASON,
-            };
-        }
-        if active[15] {
-            let _reads = read_accounting::table(TABLES[15]);
-            let begin = qpc();
-            let walk = raid_equipment::walk_growing(
-                memory,
-                base,
-                game_state,
-                &mut self.raid_equipment.rows,
-                raid_equipment::GrowingArenas {
-                    variants: &mut self.raid_equipment_variants.first,
-                    amounts: &mut self.raid_equipment_amounts.first,
-                    archetype_tokens: &mut self.raid_equipment_archetype_tokens.first,
-                    archetype_amounts: &mut self.raid_equipment_archetype_amounts.first,
-                },
-            );
-            for arena in [
-                &mut self.raid_equipment_variants.len,
-                &mut self.raid_equipment_amounts.len,
-            ] {
-                *arena = walk.items_len;
-            }
-            for arena in [
-                &mut self.raid_equipment_archetype_tokens.len,
-                &mut self.raid_equipment_archetype_amounts.len,
-            ] {
-                *arena = walk.archetypes_len;
-            }
-            self.raid_equipment_variants.required = walk.required_items;
-            self.raid_equipment_amounts.required = walk.required_items;
-            self.raid_equipment_archetype_tokens.required = walk.required_archetypes;
-            self.raid_equipment_archetype_amounts.required = walk.required_archetypes;
-            self.raid_equipment.outcome = bounded(walk.outcome, self.raid_equipment.rows.len());
-            ticks[15] = elapsed(begin);
-        } else {
-            self.raid_equipment.outcome = Outcome::Unavailable {
-                reason: replay_data::cadence::SKIPPED_REASON,
-            };
-        }
-        plain!(peace, 7, peace_conference);
-        plain!(facilities, 16, raid_facilities);
-        plain!(tooltip_operands, 18, raid_tooltip_operands);
-        if !active[17] {
-            self.raid_intel.outcome = Outcome::Unavailable {
-                reason: replay_data::cadence::SKIPPED_REASON,
-            };
-        } else {
-            let begin = qpc();
-            let _reads = read_accounting::table(TABLES[17]);
-            let mut carry = super::raid_intel_carry::begin();
-            let (rows, operatives) = (&mut self.raid_intel.rows, &mut self.counteroperatives.first);
-            let read = match carry.as_mut() {
-                Some(carry) => engine_raid_inputs::raid_intel_inputs::walk_growing(
-                    memory, base, game_state, rows, operatives, carry,
-                ),
-                None => engine_raid_inputs::raid_intel_inputs::walk_growing(
-                    memory,
-                    base,
-                    game_state,
-                    rows,
-                    operatives,
-                    &mut engine_raid_inputs::raid_intel_inputs::NoCarry,
-                ),
-            };
-            if let Some(carry) = carry {
-                carry.finish(!matches!(read.outcome, Outcome::Unavailable { .. }));
-            }
-            self.raid_intel.outcome = read.outcome;
-            if let Outcome::Rows { len } | Outcome::Truncated { len, .. } = read.outcome {
-                super::agency_defense::snapshot(memory, base, game_state, &self.raid_intel.rows[..len], &mut self.agency_defense);
-            }
-            self.counteroperatives.required = read.operatives;
-            self.counteroperatives.len = read.operatives.min(self.counteroperatives.first.len());
-            ticks[17] = elapsed(begin);
-        }
-        if active[12] {
-            let _reads = read_accounting::table(TABLES[12]);
-            let begin = qpc();
-            for (memo, dispatcher) in self.raid_paths.iter_mut().zip([
-                raid_path_memo::Dispatcher::Land,
-                raid_path_memo::Dispatcher::Naval,
-            ]) {
-                capture_rows(memo, |rows| {
-                    raid_path_memo::walk_growing(
-                        memory,
-                        base,
-                        game_state,
-                        dispatcher,
-                        rows,
-                        &mut self.raid_reads.torn_memo_reads,
-                    )
-                });
-            }
-            ticks[12] = elapsed(begin);
-        } else {
-            for memo in &mut self.raid_paths {
-                memo.outcome = Outcome::Unavailable {
-                    reason: replay_data::cadence::SKIPPED_REASON,
-                };
-            }
-        }
-        self.scientist_injury_read = false;
-        if active[8] {
-            let begin = qpc();
-            let names = &mut self.scientist_names;
-            capture_pair(
-                &mut self.scientists,
-                &mut self.scientist_skills,
-                |scientists, skills| {
-                    let _reads = read_accounting::table(TABLES[8]);
-                    let walk = scientist_roster::walk_growing_with_injury(
-                        memory,
-                        base,
-                        game_state,
-                        &mut scientist_roster::GrowingBuffers {
-                            scientists,
-                            skills,
-                            names,
-                        },
-                        active[19],
-                    );
-                    (walk.scientists, walk.skills)
-                },
-            );
-            SCIENTIST_ACTIVE_REFUSALS.fetch_add(
-                self.scientists.rows[..self.scientists.outcome.len()]
-                    .iter()
-                    .filter(|row| row.active.is_none())
-                    .count() as u64,
-                Relaxed,
-            );
-            self.scientist_injury_read = active[19];
-            if active[19] {
-                SCIENTIST_VISIBILITY_REFUSALS.fetch_add(
-                    self.scientists.rows[..self.scientists.outcome.len()]
-                        .iter()
-                        .filter(|row| {
-                            row.template_visibility.is_none()
-                                || row.template_visibility == Some(1)
-                                    && row.template_origin.is_none()
-                        })
-                        .count() as u64,
-                    Relaxed,
-                );
-                SCIENTIST_INJURY_REFUSALS.fetch_add(
-                    self.scientists.rows[..self.scientists.outcome.len()]
-                        .iter()
-                        .filter(|row| row.injury_days.is_none())
-                        .count() as u64,
-                    Relaxed,
-                );
-            }
-            ticks[8] = elapsed(begin);
-        } else {
-            self.scientists.outcome = Outcome::Unavailable {
-                reason: replay_data::cadence::SKIPPED_REASON,
-            };
-            self.scientist_skills.outcome = self.scientists.outcome;
         }
         ticks
     }
@@ -1798,4 +1548,368 @@ pub fn scientist_spool_fixture(daily: bool, ordinal: u32) -> [TableView; N] {
     captured.scientist_skills.outcome = Outcome::Rows { len: 0 };
     captured.scientist_injury_read = daily;
     captured.tables()
+}
+
+/// Declares [`Rest`] and moves its fields between it and [`Captured`].
+macro_rules! rest {
+    ($($field:ident: $ty:ty = $vacant:expr),* $(,)?) => {
+        /// The family's walks after its projects: independent tables, so a worker can walk them
+        /// while the project family runs ([`Captured::take_rest`]).
+        pub struct Rest {
+            game_state: usize,
+            hour: i32,
+            force_full: bool,
+            ticks: [u64; N],
+            $($field: $ty,)*
+        }
+
+        impl Captured {
+            /// The rest's tables, already reset, for a worker; [`Self::restore_rest`] returns
+            /// them before conversion.
+            pub fn take_rest(&mut self, game_state: usize, hour: i32, force_full: bool) -> Rest {
+                self.rest_lent = true;
+                Rest {
+                    game_state,
+                    hour,
+                    force_full,
+                    ticks: [0; N],
+                    $($field: std::mem::replace(&mut self.$field, $vacant),)*
+                }
+            }
+
+            /// The rest's tables back; returns their ticks by table.
+            pub fn restore_rest(&mut self, rest: Rest) -> [u64; N] {
+                self.rest_lent = false;
+                $(self.$field = rest.$field;)*
+                rest.ticks
+            }
+        }
+    };
+}
+
+rest!(
+    facilities: CaptureRows<raid_facilities::Row> = CaptureRows::new(0),
+    raid_intel: CaptureRows<engine_raid_inputs::raid_intel_inputs::Row> = CaptureRows::new(0),
+    agency_defense: Vec<Option<super::agency_defense::Tree>> = Vec::new(),
+    tooltip_operands: CaptureRows<raid_tooltip_operands::Row> = CaptureRows::new(0),
+    counteroperatives: Arena<engine_raid_inputs::raid_intel_inputs::Operative> = Arena::new(0),
+    nukes: CaptureRows<cnuke::Row> = CaptureRows::new(0),
+    raid_countries: CaptureRows<ccountry_raid_status::Row> = CaptureRows::new(0),
+    raids: CaptureRows<craid_instance::Row> = CaptureRows::new(0),
+    peace: CaptureRows<peace_conference::Row> = CaptureRows::new(0),
+    scientists: CaptureRows<scientist_roster::Row> = CaptureRows::new(0),
+    scientist_skills: CaptureRows<scientist_roster::SkillRow> = CaptureRows::new(0),
+    scientist_names: Vec<u8> = Vec::new(),
+    raid_cooldowns: CaptureRows<craid_system::CooldownRow> = CaptureRows::new(0),
+    raid_paths: [CaptureRows<raid_path_memo::Row>; 2] = [CaptureRows::new(0), CaptureRows::new(0)],
+    raid_player: CaptureRows<cplayer_status_cache::Row> = CaptureRows::new(0),
+    raid_speeds: CaptureRows<raid_speed_inputs::Row> = CaptureRows::new(0),
+    raid_transports: Arena<i64> = Arena::new(0),
+    raid_equipment: CaptureRows<raid_equipment::Row> = CaptureRows::new(0),
+    raid_equipment_variants: Arena<u64> = Arena::new(0),
+    raid_equipment_amounts: Arena<i64> = Arena::new(0),
+    raid_equipment_archetype_tokens: Arena<u32> = Arena::new(0),
+    raid_equipment_archetype_amounts: Arena<i64> = Arena::new(0),
+    speed_memo: engine_native::modifier_definition::DefinitionMemo =
+        engine_native::modifier_definition::DefinitionMemo::default(),
+    raid_reads: super::RaidReadCounts = super::RaidReadCounts::default(),
+    raid_type_tokens: Arena<u32> = Arena::new(0),
+    raid_show_for: Arena<u32> = Arena::new(0),
+    raid_type_memo: ccountry_raid_status::TypeTokens = ccountry_raid_status::TypeTokens::empty(),
+    scientist_injury_read: bool = false,
+);
+
+impl Rest {
+    /// Walks the rest's tables; reads only `memory`.
+    pub fn capture(&mut self, memory: &impl Memory, base: usize) {
+        let (game_state, hour, force_full) = (self.game_state, self.hour, self.force_full);
+        let active = TABLES.map(|table| replay_data::cadence::should_walk(table, hour, force_full));
+        let mut ticks = [0; N];
+        macro_rules! plain {
+            ($field:ident, $index:literal, $module:ident) => {{
+                if active[$index] {
+                    let _reads = read_accounting::table(TABLES[$index]);
+                    let begin = qpc();
+                    capture_rows(&mut self.$field, |rows| {
+                        $module::walk(memory, base, game_state, rows)
+                    });
+                    ticks[$index] = elapsed(begin);
+                } else {
+                    self.$field.outcome = Outcome::Unavailable {
+                        reason: replay_data::cadence::SKIPPED_REASON,
+                    };
+                }
+            }};
+        }
+        plain!(nukes, 4, cnuke);
+        // Slot 10 (RaidTargets) is the same walk as slot 6: one read, two tables.
+        if active[5] || active[10] || active[11] {
+            let begin = qpc();
+            let _reads = read_accounting::table(TABLES[5]);
+            let walk = craid_system::walk(
+                memory,
+                base,
+                game_state,
+                craid_system::Buffers {
+                    parents: &mut self.raid_countries.rows,
+                    type_tokens: &mut self.raid_type_tokens.first,
+                    instances: &mut self.raids.rows,
+                    show_for: &mut self.raid_show_for.first,
+                    cooldowns: &mut self.raid_cooldowns.rows,
+                    type_memo: &mut self.raid_type_memo,
+                },
+            );
+            self.raid_cooldowns.outcome = bounded(walk.cooldowns, self.raid_cooldowns.rows.len());
+            self.raid_countries.outcome = bounded(walk.parents, self.raid_countries.rows.len());
+            self.raids.outcome = bounded(walk.instances, self.raids.rows.len());
+            self.raid_type_tokens.len = walk.type_tokens_len;
+            self.raid_type_tokens.required = walk.required_type_tokens;
+            self.raid_show_for.len = walk.show_for_len;
+            self.raid_show_for.required = walk.required_show_for;
+            self.raid_reads.refused_leaders += walk.refused_leaders;
+            ticks[5] = elapsed(begin);
+        } else {
+            self.raid_countries.outcome = Outcome::Unavailable {
+                reason: replay_data::cadence::SKIPPED_REASON,
+            };
+            self.raids.outcome = self.raid_countries.outcome;
+            self.raid_cooldowns.outcome = self.raid_countries.outcome;
+        }
+        if active[13] {
+            let _reads = read_accounting::table(TABLES[13]);
+            let begin = qpc();
+            // The cache's tokens follow the parents' in the shared arena.
+            let start = self
+                .raid_type_tokens
+                .len
+                .min(self.raid_type_tokens.first.len());
+            let walk = cplayer_status_cache::walk_buffer(
+                memory,
+                base,
+                game_state,
+                engine_native::walk::Buffer::Growing(&mut self.raid_player.rows),
+                engine_native::walk::Buffer::GrowingFrom(&mut self.raid_type_tokens.first, start),
+                &mut self.raid_type_memo,
+            );
+            if let Some(row) = self.raid_player.rows.first_mut() {
+                row.allowed_start += start;
+            }
+            self.raid_type_tokens.len = start + walk.tokens_len;
+            self.raid_type_tokens.required = self
+                .raid_type_tokens
+                .required
+                .max(start)
+                .saturating_add(walk.required_tokens);
+            self.raid_player.outcome = bounded(walk.outcome, self.raid_player.rows.len());
+            ticks[13] = elapsed(begin);
+        } else {
+            self.raid_player.outcome = Outcome::Unavailable {
+                reason: replay_data::cadence::SKIPPED_REASON,
+            };
+        }
+        if active[14] {
+            let _reads = read_accounting::table(TABLES[14]);
+            let begin = qpc();
+            let walk = raid_speed_inputs::walk(
+                memory,
+                base,
+                game_state,
+                &self.speed_memo,
+                &mut self.raid_speeds.rows,
+                &mut self.raid_transports.first,
+            );
+            self.raid_transports.len = walk.transport_len;
+            self.raid_transports.required = walk.required_transport;
+            self.raid_speeds.outcome = bounded(walk.outcome, self.raid_speeds.rows.len());
+            ticks[14] = elapsed(begin);
+        } else {
+            self.raid_speeds.outcome = Outcome::Unavailable {
+                reason: replay_data::cadence::SKIPPED_REASON,
+            };
+        }
+        if active[15] {
+            let _reads = read_accounting::table(TABLES[15]);
+            let begin = qpc();
+            let walk = raid_equipment::walk(
+                memory,
+                base,
+                game_state,
+                &mut self.raid_equipment.rows,
+                raid_equipment::Arenas {
+                    variants: &mut self.raid_equipment_variants.first,
+                    amounts: &mut self.raid_equipment_amounts.first,
+                    archetype_tokens: &mut self.raid_equipment_archetype_tokens.first,
+                    archetype_amounts: &mut self.raid_equipment_archetype_amounts.first,
+                },
+            );
+            for arena in [
+                &mut self.raid_equipment_variants.len,
+                &mut self.raid_equipment_amounts.len,
+            ] {
+                *arena = walk.items_len;
+            }
+            for arena in [
+                &mut self.raid_equipment_archetype_tokens.len,
+                &mut self.raid_equipment_archetype_amounts.len,
+            ] {
+                *arena = walk.archetypes_len;
+            }
+            self.raid_equipment_variants.required = walk.required_items;
+            self.raid_equipment_amounts.required = walk.required_items;
+            self.raid_equipment_archetype_tokens.required = walk.required_archetypes;
+            self.raid_equipment_archetype_amounts.required = walk.required_archetypes;
+            self.raid_equipment.outcome = bounded(walk.outcome, self.raid_equipment.rows.len());
+            ticks[15] = elapsed(begin);
+        } else {
+            self.raid_equipment.outcome = Outcome::Unavailable {
+                reason: replay_data::cadence::SKIPPED_REASON,
+            };
+        }
+        plain!(peace, 7, peace_conference);
+        plain!(facilities, 16, raid_facilities);
+        plain!(tooltip_operands, 18, raid_tooltip_operands);
+        if !active[17] {
+            self.raid_intel.outcome = Outcome::Unavailable {
+                reason: replay_data::cadence::SKIPPED_REASON,
+            };
+        } else {
+            let begin = qpc();
+            let _reads = read_accounting::table(TABLES[17]);
+            let mut carry = super::raid_intel_carry::begin();
+            let (rows, operatives) = (&mut self.raid_intel.rows, &mut self.counteroperatives.first);
+            let read = match carry.as_mut() {
+                Some(carry) => engine_raid_inputs::raid_intel_inputs::walk(
+                    memory, base, game_state, rows, operatives, carry,
+                ),
+                None => engine_raid_inputs::raid_intel_inputs::walk(
+                    memory,
+                    base,
+                    game_state,
+                    rows,
+                    operatives,
+                    &mut engine_raid_inputs::raid_intel_inputs::NoCarry,
+                ),
+            };
+            if let Some(carry) = carry {
+                carry.finish(!matches!(read.outcome, Outcome::Unavailable { .. }));
+            }
+            self.raid_intel.outcome = read.outcome;
+            if let Outcome::Rows { len } | Outcome::Truncated { len, .. } = read.outcome {
+                super::agency_defense::snapshot(memory, base, game_state, &self.raid_intel.rows[..len], &mut self.agency_defense);
+            }
+            self.counteroperatives.required = read.operatives;
+            self.counteroperatives.len = read.operatives.min(self.counteroperatives.first.len());
+            ticks[17] = elapsed(begin);
+        }
+        if active[12] {
+            let _reads = read_accounting::table(TABLES[12]);
+            let begin = qpc();
+            for (memo, dispatcher) in self.raid_paths.iter_mut().zip([
+                raid_path_memo::Dispatcher::Land,
+                raid_path_memo::Dispatcher::Naval,
+            ]) {
+                capture_rows(memo, |rows| {
+                    raid_path_memo::walk(
+                        memory,
+                        base,
+                        game_state,
+                        dispatcher,
+                        rows,
+                        &mut self.raid_reads.torn_memo_reads,
+                    )
+                });
+            }
+            ticks[12] = elapsed(begin);
+        } else {
+            for memo in &mut self.raid_paths {
+                memo.outcome = Outcome::Unavailable {
+                    reason: replay_data::cadence::SKIPPED_REASON,
+                };
+            }
+        }
+        self.scientist_injury_read = false;
+        if active[8] {
+            let begin = qpc();
+            let names = &mut self.scientist_names;
+            capture_pair(
+                &mut self.scientists,
+                &mut self.scientist_skills,
+                |scientists, skills| {
+                    let _reads = read_accounting::table(TABLES[8]);
+                    let walk = scientist_roster::walk_with_injury(
+                        memory,
+                        base,
+                        game_state,
+                        &mut scientist_roster::Buffers {
+                            scientists,
+                            skills,
+                            names,
+                        },
+                        active[19],
+                    );
+                    (walk.scientists, walk.skills)
+                },
+            );
+            SCIENTIST_ACTIVE_REFUSALS.fetch_add(
+                self.scientists.rows[..self.scientists.outcome.len()]
+                    .iter()
+                    .filter(|row| row.active.is_none())
+                    .count() as u64,
+                Relaxed,
+            );
+            self.scientist_injury_read = active[19];
+            if active[19] {
+                SCIENTIST_VISIBILITY_REFUSALS.fetch_add(
+                    self.scientists.rows[..self.scientists.outcome.len()]
+                        .iter()
+                        .filter(|row| {
+                            row.template_visibility.is_none()
+                                || row.template_visibility == Some(1)
+                                    && row.template_origin.is_none()
+                        })
+                        .count() as u64,
+                    Relaxed,
+                );
+                SCIENTIST_INJURY_REFUSALS.fetch_add(
+                    self.scientists.rows[..self.scientists.outcome.len()]
+                        .iter()
+                        .filter(|row| row.injury_days.is_none())
+                        .count() as u64,
+                    Relaxed,
+                );
+            }
+            ticks[8] = elapsed(begin);
+        } else {
+            self.scientists.outcome = Outcome::Unavailable {
+                reason: replay_data::cadence::SKIPPED_REASON,
+            };
+            self.scientist_skills.outcome = self.scientists.outcome;
+        }
+        self.ticks = ticks;
+    }
+}
+
+impl Captured {
+    /// The rest's tables, lost with a worker that did not return them: none is recorded.
+    pub fn fail_rest(&mut self, reason: &'static str) {
+        self.rest_lent = false;
+        self.scientist_injury_read = false;
+        let failed = Outcome::Unavailable { reason };
+        self.facilities.outcome = failed;
+        self.raid_intel.outcome = failed;
+        self.tooltip_operands.outcome = failed;
+        self.nukes.outcome = failed;
+        self.raid_countries.outcome = failed;
+        self.raids.outcome = failed;
+        self.peace.outcome = failed;
+        self.scientists.outcome = failed;
+        self.scientist_skills.outcome = failed;
+        self.raid_cooldowns.outcome = failed;
+        for memo in &mut self.raid_paths {
+            memo.outcome = failed;
+        }
+        self.raid_player.outcome = failed;
+        self.raid_speeds.outcome = failed;
+        self.raid_equipment.outcome = failed;
+    }
 }

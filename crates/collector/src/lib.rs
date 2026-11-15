@@ -34,7 +34,7 @@ mod acquisition_states;
 mod acquisition_wars;
 mod advisor_changes;
 mod columnar;
-mod crew_store;
+mod crew;
 mod faction_accounts;
 mod faction_advisors;
 mod faction_companion_changes;
@@ -76,7 +76,9 @@ pub(crate) use collector_observers::event_feed_observer;
 #[cfg(test)]
 use collector_observers::event_ledger;
 mod extended;
+mod frame_capacities;
 mod frame_fence;
+mod frame_pool;
 pub(crate) use collector_intel::flag_changes;
 pub(crate) use collector_metadata::fixed_layout;
 #[cfg(all(test, feature = "tap-foreign-probe"))]
@@ -85,7 +87,9 @@ mod foreign_unwind_probe;
 pub(crate) use collector_fuel_awards::fuel_awards;
 pub(crate) use collector_map_events as map_events;
 mod history;
+mod hour_stages;
 mod hook_failures;
+mod module_threads;
 mod hook_inventory;
 pub(crate) use collector_air_histories::history_changes;
 pub(crate) use collector_hooks::hook;
@@ -117,6 +121,7 @@ pub(crate) use collector_observers::opinion_changes;
 pub(crate) use collector_observers::orders_group_changes;
 pub(crate) use collector_observers::order_membership_changes;
 mod orders_parts;
+mod pack_conversion;
 pub(crate) use collector_governance::party_changes;
 pub(crate) use collector_governance::party_leader_changes;
 #[cfg(test)]
@@ -194,11 +199,106 @@ pub(crate) use collector_observers::world_input_changes;
 #[cfg(test)]
 const TEST_HANG_GUARD: std::time::Duration = std::time::Duration::from_secs(120);
 
+/// The machine's performance-counter frequency, so a test's walls read in real ns.
+#[cfg(test)]
+fn test_qpc_frequency() -> u64 {
+    let mut frequency = 0;
+    // SAFETY: a valid local output.
+    unsafe { windows_sys::Win32::System::Performance::QueryPerformanceFrequency(&mut frequency) };
+    frequency.max(1) as u64
+}
+
+/// Runs a threaded test's `scenario` on a thread of its own while the test thread watches it.
+/// Every step it reports restarts [`TEST_HANG_GUARD`]; a scenario silent that long fails the
+/// test with its last step and `state()`, wherever it is blocked, and is left behind. Its own
+/// panic fails the test as itself.
+#[cfg(test)]
+fn watched(state: impl Fn() -> String, scenario: impl FnOnce(&Steps) + Send + 'static) {
+    use std::sync::mpsc::RecvTimeoutError;
+    let (steps, seen) = std::sync::mpsc::channel();
+    let scenario = std::thread::spawn(move || scenario(&Steps(steps)));
+    let mut last = String::from("starting");
+    loop {
+        match seen.recv_timeout(TEST_HANG_GUARD) {
+            Ok(step) => last = step,
+            Err(RecvTimeoutError::Disconnected) => break,
+            Err(RecvTimeoutError::Timeout) => {
+                panic!("blocked for {TEST_HANG_GUARD:?} at: {last}; {}", state())
+            }
+        }
+    }
+    // Its steps are dropped only once the scenario returned or unwound: this join waits for
+    // nothing but the thread's exit.
+    if let Err(panic) = scenario.join() {
+        std::panic::resume_unwind(panic);
+    }
+}
+
+/// A test's thread that says when it is done, so the test joins it only once it has finished.
+#[cfg(test)]
+struct Ending<T> {
+    thread: std::thread::JoinHandle<()>,
+    done: std::sync::mpsc::Receiver<T>,
+}
+
+#[cfg(test)]
+fn spawn_ending<T: Send + 'static>(run: impl FnOnce() -> T + Send + 'static) -> Ending<T> {
+    let (send, done) = std::sync::mpsc::channel();
+    let thread = std::thread::spawn(move || {
+        let _ = send.send(run());
+    });
+    Ending { thread, done }
+}
+
+#[cfg(test)]
+impl<T> Ending<T> {
+    fn thread(&self) -> &std::thread::Thread {
+        self.thread.thread()
+    }
+
+    fn is_finished(&self) -> bool {
+        self.thread.is_finished()
+    }
+
+    /// What it returned once it finishes. A thread still running at [`TEST_HANG_GUARD`] fails
+    /// the test, named by `what`, and is left behind; its own panic fails the test as itself.
+    fn end(self, what: impl FnOnce() -> String) -> T {
+        use std::sync::mpsc::RecvTimeoutError;
+        match self.done.recv_timeout(TEST_HANG_GUARD) {
+            // Its result is its last act: this join waits only for the thread's exit.
+            Ok(result) => {
+                let _ = self.thread.join();
+                result
+            }
+            Err(RecvTimeoutError::Disconnected) => match self.thread.join() {
+                Err(panic) => std::panic::resume_unwind(panic),
+                Ok(()) => unreachable!("a thread that returned sent its result"),
+            },
+            Err(RecvTimeoutError::Timeout) => {
+                panic!("{} did not end within {TEST_HANG_GUARD:?}", what())
+            }
+        }
+    }
+}
+
+/// Where a [`watched`] scenario is.
+#[cfg(test)]
+struct Steps(std::sync::mpsc::Sender<String>);
+
+#[cfg(test)]
+impl Steps {
+    fn at(&self, step: impl std::fmt::Display) {
+        let _ = self.0.send(step.to_string());
+    }
+}
+
 use std::ffi::c_void;
 use windows_sys::Win32::{
     Foundation::{CloseHandle, HINSTANCE},
     System::Threading::CreateThread,
 };
+
+const DLL_THREAD_DETACH: u32 = 3;
 
 #[unsafe(no_mangle)]
 unsafe extern "system" fn DllMain(module: HINSTANCE, reason: u32, reserved: *mut c_void) -> i32 {
@@ -225,6 +325,9 @@ unsafe extern "system" fn DllMain(module: HINSTANCE, reason: u32, reserved: *mut
         unsafe {
             CloseHandle(thread);
         }
+    }
+    if reason == DLL_THREAD_DETACH {
+        ALLOCATOR.thread_exit();
     }
     // FreeLibrary is reached only after runtime's joined/quiescent teardown.
     // Windows has already run this thread's Rust TLS callbacks. Rust statics

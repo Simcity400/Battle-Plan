@@ -50,10 +50,12 @@ fn fresh_job_presizing_initializes_fuel_scratch_before_its_first_callback() {
 
 fn outputs() -> (Bases, Registrations) {
     let mut bases = Bases::new(1);
-    bases.prepare(CarrierDemand {
-        countries: 3,
-        ..Default::default()
-    });
+    bases
+        .prepare(CarrierDemand {
+            countries: 3,
+            ..Default::default()
+        })
+        .unwrap();
     bases.rows[0] = CarrierBase {
         base: 17,
         countries: Ok((0, 3)),
@@ -74,10 +76,12 @@ fn outputs() -> (Bases, Registrations) {
         },
     ]);
     let mut registrations = Registrations::new(1);
-    registrations.prepare(CarrierDemand {
-        pools: 3,
-        ..Default::default()
-    });
+    registrations
+        .prepare(CarrierDemand {
+            pools: 3,
+            ..Default::default()
+        })
+        .unwrap();
     registrations.rows[0] = CarrierRegistration {
         base: 17,
         slot: 2,
@@ -219,17 +223,21 @@ fn malformed_pool_partition_withholds_only_pool_detail() {
 #[test]
 fn duplicate_outer_keys_refuse_without_reordering_inner_payloads() {
     let (mut bases, mut registrations) = outputs();
-    bases.prepare(CarrierDemand {
-        bases: 2,
-        ..Default::default()
-    });
+    bases
+        .prepare(CarrierDemand {
+            bases: 2,
+            ..Default::default()
+        })
+        .unwrap();
     bases.rows[1] = bases.rows[0];
     bases.len = 2;
     bases.index_rows();
-    registrations.prepare(CarrierDemand {
-        registrations: 2,
-        ..Default::default()
-    });
+    registrations
+        .prepare(CarrierDemand {
+            registrations: 2,
+            ..Default::default()
+        })
+        .unwrap();
     registrations.rows[1] = registrations.rows[0];
     registrations.len = 2;
     registrations.index_rows();
@@ -272,7 +280,7 @@ fn current_optional_input_and_refusal_changes_prevent_stale_numeric_memo_restore
 }
 
 #[test]
-fn optional_fault_and_later_overflow_grow_without_doubling_mandatory_storage() {
+fn optional_fault_and_later_demand_grow_the_carrier_log_without_mandatory_storage() {
     let mut parent = super::super::AirBasesJob::new();
     let predecessor = (
         parent.log.spans.capacity(),
@@ -285,17 +293,8 @@ fn optional_fault_and_later_overflow_grow_without_doubling_mandatory_storage() {
         let log = parent.carrier.log.get_mut();
         let _ = log.record(0x6000, 8, None, 1);
         log.reserve(32);
-        assert!(log.overflowed);
-        assert!(
-            !log.grow_for_next(),
-            "the original raw policy excludes faulted growth"
-        );
+        assert!(!log.overflowed && log.fault[0]);
     }
-    assert!(
-        parent.grow_for_next(),
-        "the optional job must retain its independent pressure"
-    );
-    parent.grow();
     assert!(parent.carrier.log.borrow().bytes.capacity() >= 32);
     assert_eq!(
         predecessor,
@@ -761,7 +760,7 @@ impl engine_native::Memory for ChangingCensus<'_> {
     }
 }
 
-fn assert_counted_seed_refusal(kind: usize, reason: &'static str) {
+fn assert_counted_seed_refusal(reason: &'static str) {
     use super::super::air_bases_test_kit as kit;
     let mut bytes = coherent_carrier_scale_fixture(3);
     let country_table = 0x80000;
@@ -779,16 +778,10 @@ fn assert_counted_seed_refusal(kind: usize, reason: &'static str) {
     );
     let memory = ChangingCensus {
         memory: CoherentCarrierMemory::new(&bytes),
-        address: if kind == 2 { links + 3 * 4 } else { usize::MAX },
+        address: links + 3 * 4,
         reads: std::cell::Cell::new(0),
     };
     let mut job = super::super::AirBasesJob::fixture();
-    match kind {
-        0 => job.carrier.index.clear(),
-        1 => job.carrier.log = std::cell::RefCell::new(RawLog::new(1, 16)),
-        2 => {}
-        _ => unreachable!(),
-    }
     let report = super::super::copy_air_bases_refresh(
         &memory,
         super::super::AirBasesCopyContext {
@@ -803,12 +796,6 @@ fn assert_counted_seed_refusal(kind: usize, reason: &'static str) {
     assert_eq!(job.log.fault, [false; 3]);
     assert_eq!(job.carrier.seed, Err(reason));
     assert_eq!(job.carrier.demand.failure, Some(reason));
-    if kind < 2 {
-        assert!(
-            job.carrier.grow_for_next(),
-            "seed refusal retains growth pressure"
-        );
-    }
     let source_spans = job.log.spans.clone();
     let source_bytes = job.log.bytes.as_ref().to_vec();
     let (mut air, mut fog) = coherent_carrier_parts();
@@ -847,18 +834,8 @@ fn assert_counted_seed_refusal(kind: usize, reason: &'static str) {
 }
 
 #[test]
-fn short_carrier_seed_index_is_named_counted_once_and_keeps_mandatory_rows() {
-    assert_counted_seed_refusal(0, "carrier exact index capacity");
-}
-
-#[test]
-fn short_carrier_seed_raw_arena_is_named_counted_once_and_keeps_mandatory_rows() {
-    assert_counted_seed_refusal(1, "carrier census seed capacity");
-}
-
-#[test]
 fn changed_carrier_census_observation_is_named_counted_once_and_keeps_mandatory_rows() {
-    assert_counted_seed_refusal(2, "carrier census repeated observation changed");
+    assert_counted_seed_refusal("carrier census repeated observation changed");
 }
 
 fn coherent_carrier_stage(job: &mut super::super::AirBasesJob, bytes: &[u8]) {
@@ -917,8 +894,8 @@ fn native_carrier_packets_and_memo_follow_current_fuel_word_changes() {
     use super::super::air_bases_test_kit as kit;
     let mut bytes = coherent_carrier_fixture();
     let mut job = super::super::AirBasesJob::fixture();
-    // The first native pass has empty optional arenas. It discovers exact
-    // live pressure; satisfy it off-thread BEFORE the accepted capture below.
+    // The first native pass grows its optional arenas to the exact live
+    // pressure; nothing is left to grow before the accepted capture below.
     coherent_carrier_stage(&mut job, &bytes);
     assert_eq!(job.carrier.demand.countries, 3);
     assert_eq!(job.carrier.demand.indexed, 3);
@@ -932,8 +909,7 @@ fn native_carrier_packets_and_memo_follow_current_fuel_word_changes() {
         (1, 2, 1)
     );
     assert_eq!(job.carrier.demand.failure, None);
-    assert!(job.grow_for_next());
-    job.grow();
+    assert!(!job.grow_for_next());
 
     let mut memo = super::super::AirBasesMemo::default();
     coherent_carrier_stage(&mut job, &bytes);
@@ -1102,6 +1078,43 @@ fn native_carrier_packets_and_memo_follow_current_fuel_word_changes() {
     assert_eq!(fog.registrations_snapshot().rows, snapshot.rows);
 }
 
+#[test]
+fn refused_carrier_storage_refuses_both_tables_by_name_and_the_next_hour_records_every_row() {
+    use super::super::air_bases_test_kit as kit;
+    let bytes = coherent_carrier_fixture();
+    let mut job = super::super::AirBasesJob::fixture();
+    coherent_carrier_stage(&mut job, &bytes);
+    job.grow();
+    coherent_carrier_stage(&mut job, &bytes);
+    let ctx = |seq, hour| super::super::AirBasesMemoContext {
+        owner: 17,
+        base: kit::BASE,
+        seq,
+        hour,
+        force_full: false,
+    };
+    let mut memo = super::super::AirBasesMemo::default();
+    let (mut air, mut fog) = coherent_carrier_parts();
+    assert!(air.carrier.capacity()[1] < job.carrier.demand.countries);
+    let prepared =
+        crate::test_support::with_allocations_denied(|| fog.prepare_decode(&job, &mut air.carrier));
+    assert_eq!(prepared, Err("capture buffer allocation failed"));
+    let refused =
+        memo.decode_prepared(&mut air, &mut fog, &job, ctx(1, 201), &mut [0; 3], prepared);
+    assert!(!refused.eligible && !refused.installed && !refused.hit);
+    let named = Outcome::Unavailable {
+        reason: "capture buffer allocation failed",
+    };
+    assert_eq!(air.bases.outcome, named);
+    assert_eq!(fog.registrations_snapshot().outcome, named);
+
+    air.bases_raw_mode = true;
+    fog.registrations_raw_mode = true;
+    let recorded = memo.decode(&mut air, &mut fog, &job, ctx(2, 202), &mut [0; 3]);
+    assert!(recorded.eligible && recorded.installed && !recorded.hit);
+    coherent_assert_complete_carrier_packets(&air, &fog);
+}
+
 fn coherent_carrier_refresh(
     job: &mut super::super::AirBasesJob,
     bytes: &[u8],
@@ -1224,15 +1237,16 @@ fn two_queued_carrier_slots_recover_after_real_retirement_at_the_same_paused_hou
             ),
             (3, COHERENT_NAME_BYTES.len(), 1)
         );
+        // The native pass grows its arenas and copies the dense payload at once.
         assert!(
-            !job.carrier
+            job.carrier
                 .log
                 .borrow()
                 .spans
                 .iter()
                 .any(|span| (COHERENT_DENSE..COHERENT_DENSE + 3 * 8).contains(&span.addr))
         );
-        assert!(job.grow_for_next());
+        assert!(!job.grow_for_next());
     }
     for (index, ((air, fog), job)) in frames.iter_mut().zip(&jobs).enumerate() {
         assert_eq!(air.carrier.capacity()[1..], [0, 0]);
@@ -1252,13 +1266,9 @@ fn two_queued_carrier_slots_recover_after_real_retirement_at_the_same_paused_hou
             &mut [0; 3],
         );
         assert!(!report.hit);
-        let rows::Recorded::Value(Some(base)) = air.carrier.packet(COHERENT_HOST_HANDLE) else {
+        let rows::Recorded::Value(Some(_)) = air.carrier.packet(COHERENT_HOST_HANDLE) else {
             panic!("pressure base row missing")
         };
-        // Capacity growth on decode cannot invent the dense pointer payload
-        // omitted by the cold native certificate arena. The inline name can
-        // independently decode from its already-copied cache header.
-        assert!(base.registered_countries.is_none());
         assert!(air.carrier.capacity()[1] >= 3);
         assert!(air.carrier.capacity()[2] >= COHERENT_NAME_BYTES.len());
         assert!(fog.carrier.capacity()[1] >= 1);
@@ -1280,17 +1290,18 @@ fn two_queued_carrier_slots_recover_after_real_retirement_at_the_same_paused_hou
     for (index, ((air, fog), job)) in frames.iter_mut().zip(&jobs).enumerate() {
         air.bases_raw_mode = true;
         fog.registrations_raw_mode = true;
-        assert_eq!(
-            air.carrier.capacity()[1..],
-            job.carrier.bases.capacity()[1..]
-        );
-        assert_eq!(
-            fog.carrier.capacity()[1],
-            job.carrier.registrations.capacity()[1]
-        );
-        assert_eq!(
-            fog.carrier_scratch.capacity(),
-            job.carrier.scratch.capacity()
+        // The job grew to its demand in its own pass, the frame on the first decode.
+        let demand = job.carrier.demand;
+        let [_, countries, names] = air.carrier.capacity();
+        assert!(countries >= demand.countries && names >= demand.name_bytes);
+        assert!(fog.carrier.capacity()[1] >= demand.pools);
+        let [indexed, resolved, country_terms, aces, forecasts] = fog.carrier_scratch.capacity();
+        assert!(
+            indexed >= demand.indexed
+                && resolved >= demand.resolved
+                && country_terms >= demand.country_terms
+                && aces >= demand.aces
+                && forecasts >= demand.forecasts
         );
         let report = memo.decode(
             air,
@@ -1356,8 +1367,7 @@ fn native_later_host_names_survive_an_earlier_registration_header_failure() {
         (2, 2 * COHERENT_NAME_BYTES.len())
     );
     assert_eq!(job.log.fault, [false, true, false]);
-    assert!(job.grow_for_next());
-    job.grow();
+    assert!(!job.grow_for_next());
     super::super::copy_air_bases_pass(
         &mut job,
         &memory,
@@ -1444,8 +1454,7 @@ fn native_complete_wing_prefix_is_observed_before_a_later_backlink_read_failure(
         &mut [0; 3],
     );
     assert_eq!(job.log.fault, [false; 3]);
-    assert!(job.grow_for_next());
-    job.grow();
+    assert!(!job.grow_for_next());
     let faulting = CoherentCarrierMemory::with_fault(&bytes, kit::W1 + cair_wing::POOL);
     super::super::copy_air_bases_pass(
         &mut job,
@@ -1589,7 +1598,7 @@ fn state_packets_override_only_their_keys_and_refresh_even_after_a_carrier_memo_
         subunit_index: 8,
         ..Default::default()
     });
-    registrations.install_states(&state);
+    registrations.install_states(&state).unwrap();
     let packet = registrations.packet(&source);
     let rows::Recorded::Value(Some(ref packet)) = packet else {
         panic!("state packet");
@@ -1600,18 +1609,22 @@ fn state_packets_override_only_their_keys_and_refresh_even_after_a_carrier_memo_
     assert_eq!(packet.pools.as_ref().unwrap()[0].current_fuel_raw, None);
     state.rows[0].fuel.allocated = Ok(11);
     let mut restored_bases = Bases::new(0);
-    restored_bases.prepare(CarrierDemand {
-        bases: memo.bases.len(),
-        countries: memo.countries.len(),
-        ..Default::default()
-    });
+    restored_bases
+        .prepare(CarrierDemand {
+            bases: memo.bases.len(),
+            countries: memo.countries.len(),
+            ..Default::default()
+        })
+        .unwrap();
     memo.restore(&mut restored_bases, &mut registrations);
-    registrations.install_states(&state);
+    registrations.install_states(&state).unwrap();
     let rows::Recorded::Value(Some(packet)) = registrations.packet(&source) else {
         panic!("refreshed state packet");
     };
     assert_eq!(packet.fuel_allocated_raw, None);
     assert_eq!(registrations.state_fuel(&source), [Some(-19), Some(11)]);
-    registrations.install_states(&super::super::state_fuel_inputs::Packet::default());
+    registrations
+        .install_states(&super::super::state_fuel_inputs::Packet::default())
+        .unwrap();
     assert_eq!(registrations.packet(&source), rows::Recorded::Value(None));
 }

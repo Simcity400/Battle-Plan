@@ -58,14 +58,18 @@ impl RecoveryNote {
     }
 }
 
-/// Where one of the file's runs came from: run `capture_run` of capture `capture` written in the
-/// session spool `spool`, so a later save adds only the pages the file lacks.
+/// How much of one capture's record stream the recording holds: the first `segments` segments
+/// of capture `capture` made in the session folder `source`, and all it keeps of the capture
+/// once `finished`. A revision that adds a segment's hours and records adds its cursor too, so
+/// a writer taking the recording up reads on from there: no hour is left out or written twice.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RunSource {
-    pub run: u32,
-    pub spool: String,
+pub struct Cursor {
+    pub source: String,
     pub capture: u32,
-    pub capture_run: u32,
+    /// The session whose capture it is.
+    pub session: u64,
+    pub segments: u32,
+    pub finished: bool,
 }
 
 /// A capture whose columnar writer stopped while its session went on: the hours after
@@ -87,7 +91,7 @@ pub struct Records {
     pub gaps: Vec<Gap>,
     pub controls: Vec<ControlRecord>,
     pub notes: Vec<RecoveryNote>,
-    pub sources: Vec<RunSource>,
+    pub cursors: Vec<Cursor>,
     pub stops: Vec<CaptureStop>,
 }
 
@@ -146,7 +150,7 @@ impl Records {
             && self.gaps.is_empty()
             && self.controls.is_empty()
             && self.notes.is_empty()
-            && self.sources.is_empty()
+            && self.cursors.is_empty()
             && self.stops.is_empty()
     }
 
@@ -160,11 +164,12 @@ impl Records {
         put_list(&mut out, &self.gaps, |gap, out| gap.encode(out))?;
         put_list(&mut out, &self.controls, |control, out| control.encode(out))?;
         put_list(&mut out, &self.notes, |note, out| note.encode(out))?;
-        put_list(&mut out, &self.sources, |source, out| {
-            out.extend_from_slice(&source.run.to_le_bytes());
-            put_string(out, &source.spool)?;
-            out.extend_from_slice(&source.capture.to_le_bytes());
-            out.extend_from_slice(&source.capture_run.to_le_bytes());
+        put_list(&mut out, &self.cursors, |cursor, out| {
+            put_string(out, &cursor.source)?;
+            out.extend_from_slice(&cursor.capture.to_le_bytes());
+            out.extend_from_slice(&cursor.session.to_le_bytes());
+            out.extend_from_slice(&cursor.segments.to_le_bytes());
+            out.push(u8::from(cursor.finished));
             Ok(())
         })?;
         put_list(&mut out, &self.stops, |stop, out| {
@@ -205,12 +210,13 @@ impl Records {
             ControlRecord::decode_version(input, version)
         })?;
         read_list(&mut input, format, &mut self.notes, RecoveryNote::decode)?;
-        read_list(&mut input, format, &mut self.sources, |input| {
-            Ok(RunSource {
-                run: input.u32()?,
-                spool: input.string()?,
+        read_list(&mut input, format, &mut self.cursors, |input| {
+            Ok(Cursor {
+                source: input.string()?,
                 capture: input.u32()?,
-                capture_run: input.u32()?,
+                session: input.u64()?,
+                segments: input.u32()?,
+                finished: input.bool()?,
             })
         })?;
         read_list(&mut input, format, &mut self.stops, |input| {
@@ -237,7 +243,7 @@ impl Records {
         move_all(&mut self.gaps, &mut other.gaps)?;
         move_all(&mut self.controls, &mut other.controls)?;
         move_all(&mut self.notes, &mut other.notes)?;
-        move_all(&mut self.sources, &mut other.sources)?;
+        move_all(&mut self.cursors, &mut other.cursors)?;
         move_all(&mut self.stops, &mut other.stops)
     }
 }

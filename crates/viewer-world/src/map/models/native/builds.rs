@@ -41,6 +41,32 @@ struct State {
     /// `None` while a build holds the request.
     flags: HashMap<NodeKey, Option<Result<[bool; 2], Failure>>>,
     parts: HashMap<PartKey, Option<Result<Built, Failure>>>,
+    /// Geometry a warm-up packed, until its first draw places it.
+    packed: HashMap<GeometryKey, Arc<Vec<f32>>>,
+}
+
+/// The variants of a node's parts a warm-up makes: each part's lit (alpha when `forced`) and
+/// caster builds.
+fn part_keys(
+    (mesh, node): NodeKey,
+    lods: &[Vec<Part>],
+    forced: bool,
+) -> impl Iterator<Item = (PartKey, usize, usize, bool)> + '_ {
+    lods.iter().enumerate().flat_map(move |(lod, sources)| {
+        (0..sources.len()).flat_map(move |part| {
+            [false, true].map(|caster| {
+                let variant = usize::from(caster) * 2 + usize::from(forced);
+                ((mesh, node, lod, part, variant), lod, part, caster)
+            })
+        })
+    })
+}
+
+/// Fills a slot a warm-up marked under way, unless a capture made it in place meanwhile.
+fn fill<K: std::hash::Hash + Eq, T>(slots: &mut HashMap<K, Option<T>>, key: K, value: T) {
+    if let Some(slot @ None) = slots.get_mut(&key) {
+        *slot = Some(value);
+    }
 }
 
 /// The renderer's effect libraries and pipeline cache, shared with its background builds.
@@ -214,31 +240,99 @@ impl Builds {
         }
     }
 
-    /// Refuses, by `reason`, a node's flags and every part variant [`Self::warm`] left unmade.
-    pub fn refuse(&self, (mesh, node): NodeKey, lods: &[Vec<Part>], forced: bool, reason: &str) {
-        let refusal = || (io::ErrorKind::Other, reason.to_string());
-        let mut state = lock(&self.state);
-        state
-            .flags
-            .entry((mesh, node))
-            .or_insert_with(|| Some(Err(refusal())));
-        for (lod, sources) in lods.iter().enumerate() {
-            for part in 0..sources.len() {
-                for caster in [false, true] {
-                    let key = (
-                        mesh,
-                        node,
-                        lod,
-                        part,
-                        usize::from(caster) * 2 + usize::from(forced),
-                    );
-                    state
-                        .parts
-                        .entry(key)
-                        .or_insert_with(|| Some(Err(refusal())));
+    /// [`Self::warm`] of each node on a thread of its own, never waited for, with its geometry
+    /// packed there too. Every key it makes is marked under way first, so a frame drawing the
+    /// node before it is made draws without it, as it does while any build is under way, and a
+    /// capture builds it in place. With no thread to warm on, each is refused by name.
+    pub fn warm_behind(
+        &self,
+        device: &wgpu::Device,
+        nodes: Vec<(NodeKey, usize, Vec<Vec<Part>>)>,
+        (forced, samples): (bool, u32),
+    ) {
+        if nodes.is_empty() {
+            return;
+        }
+        let mut marked = Vec::new();
+        {
+            let mut state = lock(&self.state);
+            for (key, _, lods) in &nodes {
+                if !state.flags.contains_key(key) {
+                    state.flags.insert(*key, None);
+                    marked.push((*key, None));
+                }
+                for (part, ..) in part_keys(*key, lods, forced) {
+                    if !state.parts.contains_key(&part) {
+                        state.parts.insert(part, None);
+                        marked.push((*key, Some(part)));
+                    }
                 }
             }
         }
+        let shared = (
+            Arc::clone(&self.libraries),
+            Arc::clone(&self.cache),
+            Arc::clone(&self.state),
+            device.clone(),
+        );
+        let work = move || {
+            viewer_foundation::worker_priority::enter(viewer_foundation::worker_priority::Class::Normal);
+            let (libraries, cache, state, device) = shared;
+            for (key, library, lods) in nodes {
+                if lock(&state).flags.get(&key).is_some_and(Option::is_none) {
+                    let parts: Vec<_> = lods.iter().flatten().cloned().collect();
+                    let admitted = caught(|| flags(&libraries, library, &parts).map_err(failure));
+                    fill(&mut lock(&state).flags, key, admitted);
+                }
+                for (part_key, lod, part, caster) in part_keys(key, &lods, forced) {
+                    if !lock(&state).parts.get(&part_key).is_some_and(Option::is_none) {
+                        continue;
+                    }
+                    let source = &lods[lod][part];
+                    let built = caught(|| {
+                        build((&libraries, &cache, &device), library, source, (caster, forced), samples)
+                            .map_err(failure)
+                    });
+                    fill(&mut lock(&state).parts, part_key, built);
+                }
+                for source in lods.iter().flatten() {
+                    if lock(&state).packed.contains_key(&source.geometry_key) {
+                        continue;
+                    }
+                    // A geometry that does not pack is left to its first draw to refuse.
+                    let packed = caught(|| {
+                        source.geometry.packed(source.geometry.uv1).map_err(failure)
+                    });
+                    if let Ok(packed) = packed {
+                        lock(&state)
+                            .packed
+                            .entry(source.geometry_key.clone())
+                            .or_insert_with(|| Arc::new(packed));
+                    }
+                }
+            }
+        };
+        if let Err(error) = std::thread::Builder::new()
+            .name("model warm-up".into())
+            .spawn_carried(work)
+        {
+            let refusal = (
+                io::ErrorKind::Other,
+                format!("model builds could not start a thread: {error}"),
+            );
+            let mut state = lock(&self.state);
+            for (node, part) in marked {
+                match part {
+                    None => fill(&mut state.flags, node, Err(refusal.clone())),
+                    Some(part) => fill(&mut state.parts, part, Err(refusal.clone())),
+                }
+            }
+        }
+    }
+
+    /// A part's geometry a warm-up packed ([`Self::warm_behind`]), taken by its first draw.
+    pub fn packed(&self, key: &GeometryKey) -> Option<Arc<Vec<f32>>> {
+        lock(&self.state).packed.remove(key)
     }
 
     /// The finished build of a part [`Self::ready`] reported built. A refusal stays, so every
@@ -277,6 +371,7 @@ impl Drop for Queued {
                 self.device.clone(),
             );
             let work = move || {
+                viewer_foundation::worker_priority::enter(viewer_foundation::worker_priority::Class::Normal);
                 let (libraries, cache, state, device) = shared;
                 while let Some(request) = lock(&requests).pop_front() {
                     run(request, (&libraries, &cache, &device), &state);

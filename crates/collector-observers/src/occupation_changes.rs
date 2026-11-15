@@ -207,6 +207,7 @@ fn core_holder(memory: &impl Memory, first: usize) -> Option<usize> {
 macro_rules! callback {
     ($name:ident,$site:expr) => {
         unsafe extern "system" fn $name(a: usize, b: usize, c: usize, d: usize) -> usize {
+            let _hook = crate::hook_timing::label();
             let _mark = changed(receiver($site, a));
             let original: unsafe extern "system" fn(usize, usize, usize, usize) -> usize =
                 unsafe { std::mem::transmute(ORIGINAL[$site].load(Ordering::Acquire)) };
@@ -239,6 +240,7 @@ unsafe extern "system" fn add_target(
     f: usize,
     g: usize,
 ) -> usize {
+    let _hook = crate::hook_timing::label();
     let _mark = changed(receiver(16, a));
     let original: unsafe extern "system" fn(
         usize,
@@ -252,6 +254,7 @@ unsafe extern "system" fn add_target(
     unsafe { original(a, b, c, d, e, f, g) }
 }
 unsafe extern "system" fn daily_diplomacy_update(a: usize, b: usize, c: usize, d: usize) -> usize {
+    let _hook = crate::hook_timing::label();
     let _mark = changed(receiver(17, a));
     let _forwarded = unsafe { LEGITIMACY_FORWARDER.load(Ordering::SeqCst).as_ref() }
         .and_then(|receiver| (receiver.notify)(a));
@@ -265,6 +268,7 @@ callback!(initialize_occupation, 20);
 macro_rules! marker_callback {
     ($name:ident, $site:expr) => {
         unsafe extern "system-unwind" fn $name(a: usize, b: usize, c: usize, d: usize) -> usize {
+            let _hook = crate::hook_timing::label();
             let mark = std::mem::ManuallyDrop::new(changed(receiver($site, a)));
             let original: unsafe extern "system-unwind" fn(usize, usize, usize, usize) -> usize =
                 unsafe { std::mem::transmute(ORIGINAL[$site].load(Ordering::Acquire)) };
@@ -282,6 +286,7 @@ unsafe extern "system-unwind" fn rebuild_core_active_definitions(
     c: usize,
     d: usize,
 ) -> usize {
+    let _hook = crate::hook_timing::label();
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let mark = std::mem::ManuallyDrop::new(holder_changed(core_holder(&memory, a)));
     let original: unsafe extern "system-unwind" fn(usize, usize, usize, usize) -> usize =

@@ -151,7 +151,6 @@ fn resource_database(
     output: &mut Vec<Resource>,
     keys: &mut Vec<[u32; 3]>,
     bytes: &mut Vec<u8>,
-    growing: bool,
 ) -> Result<Result<usize, usize>, &'static str> {
     let database = read::<u64>(
         memory,
@@ -179,9 +178,9 @@ fn resource_database(
     }
     let count = items.count as usize;
     // Resource accumulation reaches every database item.
-    grow(output, count - 1, growing)?;
-    grow(keys, count - 1, growing)?;
-    grow(bytes, BATCH * DESCRIPTOR_LAYOUT.stride(), growing)?;
+    grow(output, count - 1)?;
+    grow(keys, count - 1)?;
+    grow(bytes, BATCH * DESCRIPTOR_LAYOUT.stride())?;
     if count - 1 > output.len() {
         return Ok(Err(count - 1));
     }
@@ -654,11 +653,9 @@ impl Selection<'static> {
 }
 
 mod census;
-pub use census::{CoreRow, demand, state_census, state_cores, state_cores_growing};
+pub use census::{CoreRow, demand, state_census, state_cores};
 
-/// One walk for all four tables: they share the state census and fail as
-/// one. Every state record is read for its controller only while a country
-/// is selected; only the selected states and countries read their rows.
+/// Worker-only acquisition: grow from each original header before filling it.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -666,18 +663,7 @@ pub fn walk(
     buffers: &mut Buffers,
     select: Selection<'_>,
 ) -> Walk {
-    walk_with(memory, base, game_state, buffers, select, false)
-}
-
-/// Worker-only acquisition: grow from each original header before filling it.
-pub fn walk_growing(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    buffers: &mut Buffers,
-    select: Selection<'_>,
-) -> Walk {
-    walk_with(memory, base, game_state, buffers, select, true)
+    walk_with(memory, base, game_state, buffers, select)
 }
 
 fn walk_with(
@@ -686,7 +672,6 @@ fn walk_with(
     game_state: usize,
     buffers: &mut Buffers,
     select: Selection<'_>,
-    growing: bool,
 ) -> Walk {
     let mut required = Capacity::zero();
     let mut totals = Totals::default();
@@ -699,7 +684,6 @@ fn walk_with(
         select,
         &mut required,
         &mut totals,
-        growing,
     );
     let outcome = |len: usize, unread: u32| {
         if unread == 0 {
@@ -740,11 +724,9 @@ fn need(required: &mut usize, count: usize) {
 fn grow<T: Default>(
     values: &mut Vec<T>,
     required: usize,
-    growing: bool,
 ) -> Result<(), &'static str> {
-    if growing {
-        Buffer::Growing(values).ensure(required)?;
-    }
+    Buffer::Growing(values).ensure(required)?;
+    
     Ok(())
 }
 
@@ -1039,7 +1021,6 @@ struct Names<'a> {
     used: usize,
     entries: usize,
     limit: usize,
-    growing: bool,
 }
 
 impl Names<'_> {
@@ -1070,14 +1051,14 @@ impl Names<'_> {
         self.entries += 1;
         need(&mut required.definitions, self.entries);
         need(&mut required.name_bytes, self.used + len);
-        if self.growing && self.entries > self.limit {
+        if self.entries > self.limit {
             let count = self
                 .entries
                 .checked_mul(2)
                 .and_then(usize::checked_next_power_of_two)
                 .ok_or("state modifier name dictionary length overflow")?;
             let mut table: Vec<(u64, usize, usize)> = Vec::new();
-            grow(&mut table, count, true)?;
+            grow(&mut table, count)?;
             let mask = table.len() - 1;
             for &(key, start, len) in self.table.iter().filter(|entry| entry.0 != 0) {
                 let mut slot = (key.wrapping_mul(0x9e37_79b9_7f4a_7c15) as usize >> 7) & mask;
@@ -1094,7 +1075,7 @@ impl Names<'_> {
                 slot = (slot + 1) & mask;
             }
         }
-        grow(self.bytes, self.used + len, self.growing)?;
+        grow(self.bytes, self.used + len)?;
         if self.table.is_empty() || self.entries > self.limit || self.used + len > self.bytes.len()
         {
             return Ok(Name::Source(source, len));
@@ -1140,7 +1121,6 @@ fn walk_inner(
     select: Selection<'_>,
     required: &mut Capacity,
     totals: &mut Totals,
-    growing: bool,
 ) -> Result<(), &'static str> {
     let Buffers {
         recruitment_enabled,
@@ -1172,7 +1152,7 @@ fn walk_inner(
 
     // The live resource database and each resource's accumulator keys.
     let resources =
-        match resource_database(memory, base, descriptors, resource_keys, bytes, growing)? {
+        match resource_database(memory, base, descriptors, resource_keys, bytes)? {
             Ok(len) => len,
             Err(demand) => {
                 need(&mut required.resources, demand);
@@ -1186,8 +1166,8 @@ fn walk_inner(
         .checked_mul(3)
         .and_then(|count| count.checked_add(6))
         .ok_or("state resource key count overflow")?;
-    grow(keys, key_capacity, growing)?;
-    grow(values, key_capacity, growing)?;
+    grow(keys, key_capacity)?;
+    grow(values, key_capacity)?;
     let descriptors = &descriptors[..resources];
     let mut key_count = 0;
     for (descriptor, triple) in descriptors.iter().zip(&resource_keys[..resources]) {
@@ -1227,12 +1207,12 @@ fn walk_inner(
         .ok_or("state array unreadable or invalid")?;
     let slots = root.count as usize;
     need(&mut required.states, slots);
-    grow(states, slots, growing)?;
-    grow(order, slots, growing)?;
-    grow(by_pointer, slots, growing)?;
-    grow(words, slots.max(BATCH), growing)?;
-    grow(addresses, slots.max(BATCH), growing)?;
-    grow(bytes, (slots * 8).max(BATCH * STATE_RECORD), growing)?;
+    grow(states, slots)?;
+    grow(order, slots)?;
+    grow(by_pointer, slots)?;
+    grow(words, slots.max(BATCH))?;
+    grow(addresses, slots.max(BATCH))?;
+    grow(bytes, (slots * 8).max(BATCH * STATE_RECORD))?;
     if slots > states.len() || slots * 8 > bytes.len() {
         totals.unread_states = root.count;
         totals.unread_countries = 1;
@@ -1307,14 +1287,13 @@ fn walk_inner(
     let country_array = countries.arrays()[0];
     let country_slots = country_array.count as usize;
     need(&mut required.countries, country_slots);
-    grow(system_pointers, country_slots, growing)?;
-    grow(nations, country_slots, growing)?;
-    grow(controllers, country_slots, growing)?;
-    grow(bytes, country_slots * 8, growing)?;
-    if growing {
-        crate::allocation::reserve(read_countries, country_slots)
-            .map_err(|_| "state controller allocation failed")?;
-    }
+    grow(system_pointers, country_slots)?;
+    grow(nations, country_slots)?;
+    grow(controllers, country_slots)?;
+    grow(bytes, country_slots * 8)?;
+    crate::allocation::reserve(read_countries, country_slots)
+        .map_err(|_| "state controller allocation failed")?;
+    
     if country_slots > nations.len()
         || country_slots > controllers.len()
         || country_slots > system_pointers.len()
@@ -1492,14 +1471,9 @@ fn walk_inner(
                 nation.id,
                 descriptors,
                 bytes,
-                if growing {
-                    Buffer::GrowingFrom(overrides, totals.lens[3])
-                } else {
-                    Buffer::Fixed(&mut overrides[totals.lens[3]..])
-                },
+                Buffer::GrowingFrom(overrides, totals.lens[3]),
                 required,
                 &mut totals.demand[3],
-                growing,
             )?;
             match written {
                 Some(rows) => {
@@ -1518,9 +1492,9 @@ fn walk_inner(
             while end < chunk.len() {
                 let origins = nations[chunk[end] as usize].origins.count as usize;
                 need(&mut required.origins, origins);
-                grow(words, total + origins, growing)?;
-                grow(addresses, total + origins, growing)?;
-                grow(bytes, (total + origins) * 16, growing)?;
+                grow(words, total + origins)?;
+                grow(addresses, total + origins)?;
+                grow(bytes, (total + origins) * 16)?;
                 if total + origins > words.len() || (total + origins) * 16 > bytes.len() {
                     break;
                 }
@@ -1664,7 +1638,7 @@ fn walk_inner(
             while end < chunk.len() {
                 let pairs = nations[chunk[end] as usize].routes.count as usize;
                 need(&mut required.routes, pairs);
-                grow(routes, (total + pairs) * 8, growing)?;
+                grow(routes, (total + pairs) * 8)?;
                 if (total + pairs) * 8 > routes.len() {
                     break;
                 }
@@ -1714,7 +1688,6 @@ fn walk_inner(
                             addresses,
                             required,
                             totals,
-                            growing,
                         )?;
                         len = 0;
                     }
@@ -1733,7 +1706,6 @@ fn walk_inner(
                 addresses,
                 required,
                 totals,
-                growing,
             )?;
             start = end;
         }
@@ -1750,7 +1722,6 @@ fn walk_inner(
         bytes: name_bytes,
         used: 0,
         entries: 0,
-        growing,
     };
     names.table.fill((0, 0, 0));
     let mut next = 0;
@@ -1775,7 +1746,7 @@ fn walk_inner(
                 + accumulator.count as usize * modifier_entry::STRIDE
                 + container.count as usize * dynamic_modifier_entry::STRIDE;
             need(&mut required.batch_bytes, size);
-            grow(batch, used + size, growing)?;
+            grow(batch, used + size)?;
             if used + size > batch.len() {
                 if len == 0 {
                     states[next].skipped = true;
@@ -1879,7 +1850,7 @@ fn walk_inner(
                 }
             };
             let first_row = totals.lens[1];
-            grow(resource_rows, first_row + resources, growing)?;
+            grow(resource_rows, first_row + resources)?;
             let mut rows = 0;
             for (slot, (descriptor, triple)) in descriptors.iter().zip(resource_keys).enumerate() {
                 let at = (slot + 1) * cstrategic_resource_pool::VALUE_STRIDE;
@@ -1906,8 +1877,8 @@ fn walk_inner(
             let entries = container.len() / dynamic_modifier_entry::STRIDE;
             totals.demand[1] += entries;
             need(&mut required.modifier_rows, totals.demand[1]);
-            grow(inputs, totals.lens[0] + 1, growing)?;
-            grow(modifiers, totals.lens[2] + entries, growing)?;
+            grow(inputs, totals.lens[0] + 1)?;
+            grow(modifiers, totals.lens[2] + entries)?;
             let accumulator = address(state.pointer, cstate::BASE_MODIFIERS)?;
             let selected = if state.controller as i32 <= 0
                 || !(*recruitment_enabled || state.origin && state.level.is_some())
@@ -1983,7 +1954,7 @@ fn walk_inner(
                 totals.demand[2] += len;
                 let start = token_end;
                 token_end += len;
-                grow(tokens, token_end, growing)?;
+                grow(tokens, token_end)?;
                 if !fits || token_end > tokens.len() {
                     continue;
                 }
@@ -2079,7 +2050,6 @@ fn origin_states(
     addresses: &mut Vec<usize>,
     required: &mut Capacity,
     totals: &mut Totals,
-    growing: bool,
 ) -> Result<(), &'static str> {
     if members.is_empty() {
         return Ok(());
@@ -2097,7 +2067,6 @@ fn origin_states(
         addresses,
         &mut required.provinces,
         &mut totals.unread_states,
-        growing,
     )?;
     for (row, &index) in members.iter().enumerate() {
         let state = &mut states[index as usize];
@@ -2213,7 +2182,6 @@ fn route_supply(
     addresses: &mut Vec<usize>,
     provinces_required: &mut usize,
     unread: &mut u32,
-    growing: bool,
 ) -> Result<(), &'static str> {
     let mut spans = [(0, 0); BATCH];
     let mut kept = [0_usize; BATCH];
@@ -2226,9 +2194,9 @@ fn route_supply(
         let count = provinces.count as usize;
         need(provinces_required, count);
         // The maximum node value requires the full province vector.
-        grow(words, total + count, growing)?;
-        grow(addresses, total + count, growing)?;
-        grow(bytes, (total + count) * 16, growing)?;
+        grow(words, total + count)?;
+        grow(addresses, total + count)?;
+        grow(bytes, (total + count) * 16)?;
         if total + count > words.len() || (total + count) * 16 > bytes.len() {
             if count > words.len() || count * 16 > bytes.len() {
                 states[index as usize].skipped = true;
@@ -2443,7 +2411,6 @@ fn overrides_of(
     mut output: Buffer<'_, OverrideRow>,
     required: &mut Capacity,
     demand: &mut usize,
-    growing: bool,
 ) -> Result<Option<usize>, &'static str> {
     let count = entries.count as usize;
     need(&mut required.entries, count);
@@ -2451,7 +2418,7 @@ fn overrides_of(
         return Ok(Some(0));
     }
     let entry_len = count * ccountry_resources::OVERRIDE_STRIDE;
-    grow(bytes, entry_len, growing)?;
+    grow(bytes, entry_len)?;
     if entry_len > bytes.len() {
         return Ok(None);
     }

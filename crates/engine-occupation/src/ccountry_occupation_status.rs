@@ -152,17 +152,6 @@ pub fn visit_template_selections(
 }
 
 pub struct Buffers<'a> {
-    pub settings: &'a mut [Row],
-    pub laws: &'a mut [LawRow],
-    pub group_laws: &'a mut [ccountry_occupation_data::GroupLawRow],
-    pub garrisons: &'a mut [cstate_garrison_data::Row],
-    pub manpower: &'a mut [ManpowerRow],
-    pub reserve_manpower: &'a mut [ReserveManpowerRow],
-    pub names: &'a mut [u8],
-    pub equipment: &'a mut [cstate_garrison_data::equipment::Row],
-}
-
-pub struct GrowingBuffers<'a> {
     pub settings: &'a mut Vec<Row>,
     pub laws: &'a mut Vec<LawRow>,
     pub group_laws: &'a mut Vec<ccountry_occupation_data::GroupLawRow>,
@@ -186,21 +175,6 @@ pub struct BuffersBuffer<'a> {
 
 impl<'a> From<Buffers<'a>> for BuffersBuffer<'a> {
     fn from(value: Buffers<'a>) -> Self {
-        Self {
-            settings: crate::walk::Buffer::Fixed(value.settings),
-            laws: crate::walk::Buffer::Fixed(value.laws),
-            group_laws: crate::walk::Buffer::Fixed(value.group_laws),
-            garrisons: crate::walk::Buffer::Fixed(value.garrisons),
-            manpower: crate::walk::Buffer::Fixed(value.manpower),
-            reserve_manpower: crate::walk::Buffer::Fixed(value.reserve_manpower),
-            names: crate::walk::Buffer::Fixed(value.names),
-            equipment: crate::walk::Buffer::Fixed(value.equipment),
-        }
-    }
-}
-
-impl<'a> From<GrowingBuffers<'a>> for BuffersBuffer<'a> {
-    fn from(value: GrowingBuffers<'a>) -> Self {
         Self {
             settings: crate::walk::Buffer::Growing(value.settings),
             laws: crate::walk::Buffer::Growing(value.laws),
@@ -486,7 +460,7 @@ pub fn walk_with_occupied(
     base: usize,
     game_state: usize,
     buffers: Buffers<'_>,
-    occupied: &mut [u32],
+    occupied: &mut Vec<u32>,
 ) -> Walk {
     walk_inner(
         memory,
@@ -494,7 +468,7 @@ pub fn walk_with_occupied(
         game_state,
         buffers.into(),
         Some(Occupied {
-            rows: crate::walk::Buffer::Fixed(occupied),
+            rows: crate::walk::Buffer::Growing(occupied),
             len: 0,
             required: 0,
         }),
@@ -738,14 +712,14 @@ mod tests {
             bytes: &bytes,
         };
         assert_eq!(occupied_demand(&memory, 0, BASE), Ok(2));
-        for capacity in [2, 1] {
-            let mut settings = [Row::default(); 2];
-            let mut laws = [LawRow::default(); 8];
-            let mut garrisons = [cstate_garrison_data::Row::default(); 8];
-            let mut manpower = [ManpowerRow::default(); 8];
-            let mut reserve = [ReserveManpowerRow::default(); 8];
-            let mut names = [0; 512];
-            let mut occupied = [0; 2];
+        {
+            let mut settings = vec![Row::default(); 2];
+            let mut laws = vec![LawRow::default(); 8];
+            let mut garrisons = vec![cstate_garrison_data::Row::default(); 8];
+            let mut manpower = vec![ManpowerRow::default(); 8];
+            let mut reserve = vec![ReserveManpowerRow::default(); 8];
+            let mut names = vec![0; 512];
+            let mut occupied = Vec::new();
             let walk = walk_with_occupied(
                 &memory,
                 0,
@@ -753,33 +727,25 @@ mod tests {
                 Buffers {
                     settings: &mut settings,
                     laws: &mut laws,
-                    group_laws: &mut [ccountry_occupation_data::GroupLawRow::default(); 2],
+                    group_laws: &mut vec![ccountry_occupation_data::GroupLawRow::default(); 2],
                     garrisons: &mut garrisons,
                     manpower: &mut manpower,
                     reserve_manpower: &mut reserve,
                     names: &mut names,
-                    equipment: &mut [],
+                    equipment: &mut Vec::new(),
                 },
-                &mut occupied[..capacity],
+                &mut occupied,
             );
             assert_eq!(walk.settings, Outcome::Rows { len: 2 });
             assert_eq!(walk.required_occupied, 2);
             assert_eq!(settings[0].default_law_present, 1);
             assert_eq!(settings[0].garrison_template, Some((7_u64 << 32) | 52));
-            if capacity == 2 {
-                assert_eq!(occupied, [99, 99]);
-                assert_eq!(
-                    settings[0].occupied,
-                    Some(ccountry::RosterSpan { start: 0, count: 2 })
-                );
-                assert_eq!(settings[0].occupied_reason, None);
-            } else {
-                assert_eq!(settings[0].occupied, None);
-                assert_eq!(
-                    settings[0].occupied_reason,
-                    Some("occupied-country roster arena capacity exceeded")
-                );
-            }
+            assert_eq!(occupied, [99, 99]);
+            assert_eq!(
+                settings[0].occupied,
+                Some(ccountry::RosterSpan { start: 0, count: 2 })
+            );
+            assert_eq!(settings[0].occupied_reason, None);
             assert!(settings[1].occupied.is_some_and(|span| span.count == 0));
         }
     }
@@ -1026,12 +992,12 @@ mod tests {
     #[test]
     fn shared_graph_retains_aliases_literal_laws_all_manpower_and_native_widths() {
         let bytes = fixture();
-        let mut settings = [Row::default(); 2];
-        let mut laws = [LawRow::default(); 1];
-        let mut garrisons = [cstate_garrison_data::Row::default(); 1];
-        let mut manpower = [ManpowerRow::default(); 2];
-        let mut reserve = [ReserveManpowerRow::default(); 1];
-        let mut names = [0; 16];
+        let mut settings = vec![Row::default(); 2];
+        let mut laws = vec![LawRow::default(); 1];
+        let mut garrisons = vec![cstate_garrison_data::Row::default(); 1];
+        let mut manpower = vec![ManpowerRow::default(); 2];
+        let mut reserve = vec![ReserveManpowerRow::default(); 1];
+        let mut names = vec![0; 16];
         let result = walk(
             &SliceMemory {
                 base: BASE,
@@ -1042,12 +1008,12 @@ mod tests {
             Buffers {
                 settings: &mut settings,
                 laws: &mut laws,
-                group_laws: &mut [ccountry_occupation_data::GroupLawRow::default(); 2],
+                group_laws: &mut vec![ccountry_occupation_data::GroupLawRow::default(); 2],
                 garrisons: &mut garrisons,
                 manpower: &mut manpower,
                 reserve_manpower: &mut reserve,
                 names: &mut names,
-                equipment: &mut [],
+                equipment: &mut Vec::new(),
             },
         );
         assert_eq!(
@@ -1105,78 +1071,15 @@ mod tests {
     }
 
     #[test]
-    fn capacity_is_independent_per_table_and_law_bytes_never_shorten() {
-        let bytes = fixture();
-        let mut settings = [Row::default(); 2];
-        let mut laws = [LawRow::default(); 1];
-        let mut manpower = [ManpowerRow::default(); 1];
-        let mut names = [0; 3];
-        let result = walk(
-            &SliceMemory {
-                base: BASE,
-                bytes: &bytes,
-            },
-            0,
-            BASE,
-            Buffers {
-                settings: &mut settings,
-                laws: &mut laws,
-                group_laws: &mut [ccountry_occupation_data::GroupLawRow::default(); 2],
-                garrisons: &mut [],
-                manpower: &mut manpower,
-                reserve_manpower: &mut [],
-                names: &mut names,
-                equipment: &mut [],
-            },
-        );
-        assert_eq!(
-            result.settings,
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            }
-        );
-        assert_eq!(
-            result.laws,
-            Outcome::Truncated {
-                len: 0,
-                unread_rows: 1
-            }
-        );
-        assert_eq!(
-            result.garrisons,
-            Outcome::Truncated {
-                len: 0,
-                unread_rows: 1
-            }
-        );
-        assert_eq!(
-            result.manpower,
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            }
-        );
-        assert_eq!(
-            result.reserve_manpower,
-            Outcome::Truncated {
-                len: 0,
-                unread_rows: 1
-            }
-        );
-        assert_eq!((result.bytes_len, result.required_bytes), (0, 16));
-    }
-
-    #[test]
     fn law_faults_are_scoped_and_raw_zero_state_law_keys_remain_visible() {
         let mut bytes = fixture();
         u32_at(&mut bytes, 0x8208, 0);
-        let mut settings = [Row::default(); 2];
-        let mut laws = [LawRow::default(); 1];
-        let mut garrisons = [cstate_garrison_data::Row::default(); 1];
-        let mut manpower = [ManpowerRow::default(); 2];
-        let mut reserve = [ReserveManpowerRow::default(); 1];
-        let mut names = [0; 16];
+        let mut settings = vec![Row::default(); 2];
+        let mut laws = vec![LawRow::default(); 1];
+        let mut garrisons = vec![cstate_garrison_data::Row::default(); 1];
+        let mut manpower = vec![ManpowerRow::default(); 2];
+        let mut reserve = vec![ReserveManpowerRow::default(); 1];
+        let mut names = vec![0; 16];
         let result = walk(
             &SliceMemory {
                 base: BASE,
@@ -1187,12 +1090,12 @@ mod tests {
             Buffers {
                 settings: &mut settings,
                 laws: &mut laws,
-                group_laws: &mut [ccountry_occupation_data::GroupLawRow::default(); 2],
+                group_laws: &mut vec![ccountry_occupation_data::GroupLawRow::default(); 2],
                 garrisons: &mut garrisons,
                 manpower: &mut manpower,
                 reserve_manpower: &mut reserve,
                 names: &mut names,
-                equipment: &mut [],
+                equipment: &mut Vec::new(),
             },
         );
         assert_eq!(result.laws, Outcome::Rows { len: 1 });
@@ -1208,12 +1111,12 @@ mod tests {
             Buffers {
                 settings: &mut settings,
                 laws: &mut laws,
-                group_laws: &mut [ccountry_occupation_data::GroupLawRow::default(); 2],
+                group_laws: &mut vec![ccountry_occupation_data::GroupLawRow::default(); 2],
                 garrisons: &mut garrisons,
                 manpower: &mut manpower,
                 reserve_manpower: &mut reserve,
                 names: &mut names,
-                equipment: &mut [],
+                equipment: &mut Vec::new(),
             },
         );
         assert!(matches!(result.settings, Outcome::Unavailable { .. }));
@@ -1254,12 +1157,12 @@ mod tests {
             0,
             0xa000,
         );
-        let mut settings = [Row::default(); 2];
-        let mut laws = [LawRow::default(); 2];
-        let mut garrisons = [cstate_garrison_data::Row::default(); 1];
-        let mut manpower = [ManpowerRow::default(); 2];
-        let mut reserve = [ReserveManpowerRow::default(); 1];
-        let mut names = [0; 24];
+        let mut settings = vec![Row::default(); 2];
+        let mut laws = vec![LawRow::default(); 2];
+        let mut garrisons = vec![cstate_garrison_data::Row::default(); 1];
+        let mut manpower = vec![ManpowerRow::default(); 2];
+        let mut reserve = vec![ReserveManpowerRow::default(); 1];
+        let mut names = vec![0; 24];
         let result = walk(
             &SliceMemory {
                 base: BASE,
@@ -1270,17 +1173,17 @@ mod tests {
             Buffers {
                 settings: &mut settings,
                 laws: &mut laws,
-                group_laws: &mut [ccountry_occupation_data::GroupLawRow::default(); 2],
+                group_laws: &mut vec![ccountry_occupation_data::GroupLawRow::default(); 2],
                 garrisons: &mut garrisons,
                 manpower: &mut manpower,
                 reserve_manpower: &mut reserve,
                 names: &mut names,
-                equipment: &mut [],
+                equipment: &mut Vec::new(),
             },
         );
         assert_eq!(result.laws, Outcome::Rows { len: 2 });
         assert_eq!(
-            laws.map(|row| (row.controller, row.occupied, row.state)),
+            laws.iter().map(|row| (row.controller, row.occupied, row.state)).collect::<Vec<_>>(),
             [(1, 1, 0), (1, 99, 0)]
         );
     }

@@ -519,7 +519,7 @@ fn unit_carrier_shared_name_and_recording_gap_table() {
         );
         assert!(out.text.is_empty(), "{body}: {}", out.text);
         let expected = format!(
-            "synthetic effect {class}: key {}: DivisionStatus.naming not recorded",
+            "synthetic effect {class}: key {}: naming of division status not recorded",
             if class == "destroy_unit" {
                 "destroy_unit"
             } else {
@@ -546,7 +546,7 @@ fn unit_carrier_shared_name_and_recording_gap_table() {
     assert!(
         out.refusals
             .keys()
-            .all(|why| why.contains("DivisionTemplates.name_key not recorded")),
+            .all(|why| why.contains("name key of division templates not recorded")),
         "{:?}",
         out.refusals
     );
@@ -554,7 +554,7 @@ fn unit_carrier_shared_name_and_recording_gap_table() {
         (0, "reserved country-zero division-template roster"),
         (
             999,
-            "CountryLinks lacks change-division-template logical owner 999",
+            "country links lacks change-division-template logical owner 999",
         ),
     ] {
         if let TableView::Complete(TableRows::Divisions(rows)) =
@@ -756,7 +756,7 @@ fn unit_carrier_format98_naming_table() {
         }
     }
     for (naming, reason) in [
-        (Recorded::NotRecorded, "DivisionStatus.naming not recorded"),
+        (Recorded::NotRecorded, "naming of division status not recorded"),
         (Recorded::Value(None), "guarded read or arena shortage"),
         (
             Recorded::Value(Some(NameOperands {
@@ -1425,7 +1425,7 @@ fn units_admission_and_named_refusals() {
         (
             "transfer_navy={target=ZZZ}",
             "transfer_navy",
-            "ReservedCountryNaming",
+            "reserved country naming has no singleton row",
         ),
         ("create_unit={}", "create_unit", "reserved country zero"),
         (
@@ -1480,7 +1480,7 @@ fn units_admission_and_named_refusals() {
     assert!(
         out.refusals
             .keys()
-            .any(|why| why.contains("CountryAppearance")),
+            .any(|why| why.contains("country appearance")),
         "{:?}",
         out.refusals,
     );
@@ -2074,7 +2074,7 @@ fn units_equipment_named_refusals() {
         ),
         (
             "add_equipment_to_stockpile={type=var:syn_missing amount=1}",
-            "LexicalTokens lacks equipment variable token 999",
+            "lexical tokens lacks equipment variable token 999",
         ),
         (
             "add_equipment_subsidy={equipment_type=syn_arch seller_tags={ZZZ} seller_trigger=syn_trigger}",
@@ -2146,7 +2146,7 @@ fn units_equipment_named_refusals() {
     assert!(
         out.refusals
             .keys()
-            .all(|why| why.contains("VariantDefinitions.version")),
+            .all(|why| why.contains("version of variant definitions")),
         "{:?}",
         out.refusals,
     );
@@ -2271,7 +2271,7 @@ fn units_recorded_variant_no_tech_probe() {
     assert!(
         out.refusals
             .keys()
-            .all(|why| why.contains("VariantDefinitions.version") && why.contains("not recorded"))
+            .all(|why| why.contains("version of variant definitions") && why.contains("not recorded"))
     );
     if let TableView::Complete(TableRows::VariantDefinitions(rows)) =
         &mut *fixture.frame.tables[TableId::VariantDefinitions.index()]
@@ -2405,7 +2405,7 @@ fn units_recorded_variant_pool_order_and_equality() {
         assert!(
             out.refusals
                 .keys()
-                .all(|why| why.contains("VariantDefinitions.version")
+                .all(|why| why.contains("version of variant definitions")
                     && why.contains("not recorded")),
             "{:?}",
             out.refusals,

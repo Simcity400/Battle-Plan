@@ -7,7 +7,6 @@ import { CLOSED, drillHour, reduceDrill } from '../../charts/drill/drillState';
 import Table from '../../charts/table/Table';
 import type { TableColumn, TableTree } from '../../charts/table/Table';
 import { narrowTableOf, tableSortOf } from '../../charts/table/options';
-import { useTableHour } from '../../charts/table/useTableHour';
 import { fitTooltip } from '../../charts/tooltip';
 import { useViewportHeight } from '../../charts/useChartTokens';
 import { formatDateTime } from '../../dashboard/calendar';
@@ -15,13 +14,17 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackMotion } from '../../dashboard/playback';
-import { useCountryNameAt, useReachedCountry, useReachedProduct } from '../../dashboard/reachedProduct';
+import { useCountryNameAt, useReachedCountry } from '../../dashboard/reachedProduct';
+import { useHeadProduct } from '../../dashboard/headProduct';
+import { useShownEachFrame } from '../../dashboard/widgetPerf';
+import { useIdentityHour } from '../../dashboard/atHead';
+import { useFallbackHour } from '../../dashboard/follow/useFollow';
 import ReachedCountryChoice from '../../dashboard/ReachedCountryChoice';
 import { withWindowDiagnostics } from '../../dashboard/gameWindows';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { DEFAULT_SORT, OPTIONS } from './definition';
 import { designerSnapshot, subscribeDesignerSnapshot } from './designerSnapshot';
-import { baseWidth, battalionCount, battalionSummary, priorityLabel, templateName, templateRows, templateTooltip, validateDivisionTemplates } from './divisionTemplateData';
+import { baseWidth, battalionCount, battalionSummary, priorityLabel, templateName, templateRows, templateStructure, templateTooltip, validateDivisionTemplates } from './divisionTemplateData';
 import type { TemplateRow } from './divisionTemplateData';
 import './divisionTemplate.css';
 
@@ -36,9 +39,14 @@ const entryOf = (row: TemplateRow) => row.kind === 'template' ? row.entry : null
 export default function DivisionTemplateWidget({ widget, runtime, active, setOption, onDiagnostics, headerSlot }: WidgetProps) {
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
   const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
-  const playback = useTableHour(runtime.clock, active && (widget.time.mode === 'follow' || drill.breakdown !== null && drill.follow));
+  const chosen = typeof widget.options?.country === 'string' ? [widget.options.country] : [];
+  // The country is resolved at an hour that moves only when its identity does; the roster is the followed panel's.
+  const identityHour = useIdentityHour(runtime.client, track, chosen, runtime.clock, active && widget.time.mode === 'follow',
+    clockHour => track ? resolveWindow(widget, track, runtime.tracks, clockHour)?.lastHour ?? null : null);
+  // Only an open designer that follows the head reads it, by the fallback's clock.
+  const designerHead = useFallbackHour(runtime.clock, active && drill.breakdown !== null && drill.follow);
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
-  const window = track && resolveWindow(widget, track, runtime.tracks, playback);
+  const window = track && resolveWindow(widget, track, runtime.tracks, identityHour ?? runtime.clock.getHour());
   const hour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
   const country = useReachedCountry(widget, runtime, hour, active, widget.options?.country, setOption);
   const tag = country.tag;
@@ -47,10 +55,12 @@ export default function DivisionTemplateWidget({ widget, runtime, active, setOpt
   const nameDetail = countryLabel.nameFailure ? <span data-detail={countryLabel.nameFailure.message}>{countryName}</span> : undefined;
   const options = resolveOptions(OPTIONS, widget.options);
   const countFor = options.countFor === 'host' ? 'host' : 'owner';
-  const request = track && window && tag ? { sourceId: track.source.id, revision: track.source.revision, product: 'division-templates',
-    params: { branchId: track.branch.id, hour, tag, countFor } } : null;
-  const state = useReachedProduct(runtime.client, track?.source, request, JSON.stringify([track?.branch.id, country.chosen, countFor]), active, validateDivisionTemplates);
+  const state = useHeadProduct(runtime, widget, 'division-templates', track && window && tag ? { tag, countFor } : null,
+    { active, validate: validateDivisionTemplates, structure: templateStructure });
+  useShownEachFrame(runtime.clock, state.shownAt, state.live);
   const data = state.data;
+  // The hour the shown roster answers: the asked hour, or the head's while it is followed.
+  const shownHour = () => state.hour ?? (track ? Math.floor(runtime.clock.getHour()) : hour);
   const rows = useMemo(() => data ? templateRows(data) : [], [data]);
   const snapshot = useSyncExternalStore(subscribeDesignerSnapshot, designerSnapshot, designerSnapshot);
   const viewportHeight = useViewportHeight();
@@ -66,9 +76,11 @@ export default function DivisionTemplateWidget({ widget, runtime, active, setOpt
     const entry = entryOf(row);
     if (!entry || !snapshot || !data) return;
     setOpened({ template: entry.template, designer: entry.designer ?? 'ordinary', tag: data.tag });
-    dispatch({ type: 'open', breakdown: entry.template, hour: data.hour,
+    dispatch({ type: 'open', breakdown: entry.template, hour: shownHour(),
       playing: widget.time.mode === 'follow' && runtime.clock.getSnapshot().playing, playhead: widget.time.mode === 'follow' ? hour : null });
-  }, [snapshot, data, widget.time.mode, runtime.clock, hour]);
+    // `shownHour` reads the clock when a row is opened.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [snapshot, data, widget.time.mode, runtime.clock, hour, state.hour]);
   const columns = useMemo<readonly TableColumn<TemplateRow>[]>(() => [
     { key: 'template', header: 'Template', label: 'Template', hint: 'Sorted by the game’s roster order', width: 'minmax(var(--table-name-min), 2fr)',
       value: row => row.kind === 'obsolete' ? Number.MAX_SAFE_INTEGER : row.entry.rosterOrdinal, renderMissing: true,
@@ -95,9 +107,12 @@ export default function DivisionTemplateWidget({ widget, runtime, active, setOpt
         const label = priorityLabel(entry); return label ?? <span className="division-template-missing" data-tooltip={entry.priorityMissing ?? 'Not recorded'}>—</span>; } },
   ], []);
   const tooltip = useCallback((row: TemplateRow) => row.kind === 'obsolete' || !data ? { title: `Obsolete templates (${row.kind === 'obsolete' ? row.count : 0})`, rows: [] }
-    : fitTooltip([templateTooltip(row.entry, data.hour, !!snapshot)], viewportHeight), [data, snapshot, viewportHeight]);
+    : fitTooltip([templateTooltip(row.entry, shownHour(), !!snapshot)], viewportHeight),
+  // `shownHour` reads the clock when the tooltip opens.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  [data, snapshot, viewportHeight, state.hour]);
   const current = data ? data.templates.filter(entry => !entry.obsolete).length : 0;
-  const pill = headerSlot && data && !data.absent && createPortal(<span className="pill">{current} {current === 1 ? 'template' : 'templates'}</span>, headerSlot);
+  const pill = headerSlot && data && createPortal(<span className="pill">{current} {current === 1 ? 'template' : 'templates'}</span>, headerSlot);
   let main;
   if (!track) main = <WidgetState kind="empty" message="Load a campaign to see templates." />;
   else if (!window) main = <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
@@ -109,15 +124,15 @@ export default function DivisionTemplateWidget({ widget, runtime, active, setOpt
   else if (!tag) main = <WidgetState kind="loading" label="Loading templates…" />;
   else if (state.error) main = <WidgetState kind="error" failure={state.error} onRetry={state.retry} />;
   else if (!data) main = <WidgetState kind="loading" label="Loading templates…" />;
-  else if (data.absent) main = <WidgetState kind="unavailable" message={nameDetail ? 'This country does not exist at this date.' : `${countryName} does not exist at this date.`} detail={nameDetail} />;
   else if (!rows.length) main = <WidgetState kind="empty" message={nameDetail ? 'No division templates at this date.' : `${countryName} has no division templates at this date.`} detail={nameDetail} />;
   else main = <Table rowRevision={row => [row, columns]} label="Division templates" rows={rows} columns={columns} rowKey={rowKey} tree={TREE}
     sort={tableSortOf(options.tableSort, DEFAULT_SORT)} setOption={setOption} cellBars={options.cellBars === true}
     rankMarkers={false} density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)}
     onRowClick={snapshot ? open : undefined} tooltip={tooltip} hoursPerSecond={hoursPerSecond} />;
   const draw = snapshot;
-  const pickedHour = drillHour(drill, Math.floor(playback) + (track?.axisOffset ?? 0)) ?? hour;
-  return <div ref={anchor} className="division-template" data-detail={countryLabel.nameFailure?.message}>{pill}
+  const pickedHour = drillHour(drill, Math.floor(designerHead) + (track?.axisOffset ?? 0)) ?? hour;
+  const root = useCallback((element: HTMLDivElement | null) => { anchor.current = element; state.root(element); }, [state.root]);
+  return <div ref={root} className="division-template" data-detail={countryLabel.nameFailure?.message}>{pill}
     {/* Outside the drill, so an open breakdown never hides a later failure. */}
     {country.chosen && country.error && country.historyHeld ? <WidgetState kind="error" failure={country.error} onRetry={country.retry} /> : null}
     <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown !== null && !!draw && !!opened}

@@ -1,279 +1,200 @@
-import { clipToSpans, runAt } from '../../charts/series.ts';
-import type { Breakable, Span } from '../../charts/series';
-import { buildStack } from '../../charts/stack.ts';
-import type { StackModel, StackRun } from '../../charts/stack';
-import { fixedNumber, formatAxisValue, formatFixed } from '../../charts/valueAxis.ts';
-import { Lineage } from '../../dashboard/identity.ts';
-import { countryIdentityKey } from '../../dashboard/countryIdentity.ts';
-import type { CountryIdentityRun, CountryMetadata, FixedRun, TensionCountry, TensionEvent, TensionRead, TensionReply } from '../../generated/dashboard';
+/** The World tension widget's data: the tension at an hour taken apart (`world-tension`: its rows, names and texts,
+ * the tension, the contributions' sum and each contribution live cells), every threat source's life
+ * (`threat-events`), and the stacked chart's geometry from the declared series' tiles. Tension has 1,000 units a
+ * percentage point, contributions 100,000 (both scales are in the reply). */
+import type { ChartBucket, ChartSummary } from '../../charts/chartSummary';
+import { liveKey } from '../../charts/live.ts';
+import type { LiveValues } from '../../charts/live';
+import { formatRaw } from '../../charts/race/measureRaceData.ts';
+import type { EventBadge } from '../../charts/badges';
+import type { TensionContribution, ThreatEvent, ThreatEventsReply, WorldTensionReply } from '../../generated/dashboard';
 
-/** World tension and each country's contribution to it (the `world-tension`
- * product): lookups by hour, the layers ranked at a moment, and the events. Values
- * stay the recorded integers; `percent` turns one into a plotting number. */
+/** The singleton series' line name: the world, owned by no country. */
+export const WORLD = 'World';
+/** The reply's row of the world's cells. */
+export const WORLD_ROW = 'world';
+export const TENSION_DECIMALS = 3;
+export const CONTRIBUTION_DECIMALS = 5;
+/** The layer of every country outside the top ones: a key no tag can be, as tags hold no NUL. */
+export const OTHER = '\u0000other';
 
-const RAW = /^-?\d{1,20}$/;
+const raw = (value: unknown) => typeof value === 'string' && /^-?\d+$/.test(value);
+const integer = Number.isSafeInteger;
+const tagOk = (value: unknown) => value === null || typeof value === 'string';
 
-/** Decimal places of a power-of-ten scale, or null for any other scale. */
-export function decimalsOf(scale: number): number | null {
-  const digits = Math.log10(scale);
-  return Number.isInteger(digits) && digits >= 0 && 10 ** digits === scale ? digits : null;
-}
-
-/** A country's layer key: its identity (canonical slot) with the tag it held, so two
- * countries sharing a tag are two layers. No tag holds a NUL, so no key is another's. */
-export const countryKey = (country: Pick<TensionCountry, 'tag' | 'slot'>) => `${country.tag}\u0000${country.slot}`;
-
-/** Checks the reply's shape: scales are powers of ten, raw values are integers,
- * reads and runs are in hour order and never overlap, and no country is listed twice. */
-export function validateTensionReply(data: unknown): TensionReply {
-  const reply = data as TensionReply;
-  const spans = <T extends { firstHour: number; lastHour: number }>(items: readonly T[]) => items.every((item, index) =>
-    Number.isInteger(item.firstHour) && Number.isInteger(item.lastHour) && item.firstHour <= item.lastHour && (index === 0 || items[index - 1].lastHour < item.firstHour));
-  const runs = (items: readonly FixedRun[]) => Array.isArray(items) && spans(items) && items.every(run => RAW.test(run.valueRaw));
-  const read = (item: TensionRead) => RAW.test(item.tensionRaw) && RAW.test(item.sumRaw) && (item.unnamedRaw === null ? tensionReadPreparing(item, 'unnamedRaw') : RAW.test(item.unnamedRaw))
-    && (!('preparing' in item) || Array.isArray(item.preparing) && item.preparing.every(field => typeof field === 'string'));
-  const event = (item: TensionEvent) => Number.isInteger(item.hour) && typeof item.reason === 'string' && (item.tag == null || typeof item.tag === 'string')
-    && Array.isArray(item.added) && item.added.length > 0 && item.added.every(added => Number.isInteger(added.hour) && RAW.test(added.addedRaw));
-  const ok = typeof reply === 'object' && reply != null && decimalsOf(reply.tensionScale) != null && decimalsOf(reply.contributionScale) != null
-    && RAW.test(reply.ceilingRaw) && Array.isArray(reply.reads) && spans(reply.reads) && reply.reads.every(read)
-    && Array.isArray(reply.countries) && reply.countries.every(country => typeof country.tag === 'string' && Number.isInteger(country.slot) && runs(country.runs)
-      && (country.identities === undefined || (Array.isArray(country.identities) && spans(country.identities)
-        && country.identities.every(identity => Number.isInteger(identity.slot) && identity.slot === country.slot && Number.isInteger(identity.countryId)))))
-    && new Set(reply.countries.map(countryKey)).size === reply.countries.length
-    && Array.isArray(reply.events) && reply.events.every(event) && Array.isArray(reply.warnings);
+export function validateWorldTension(value: unknown): WorldTensionReply {
+  const reply = value as Partial<WorldTensionReply> | null;
+  const ok = !!reply && typeof reply === 'object' && integer(reply.tensionScale) && integer(reply.contributionScale) && raw(reply.ceilingRaw)
+    && typeof reply.unnamed === 'boolean' && Array.isArray(reply.warnings) && (reply.missing === null || typeof reply.missing === 'string')
+    && Array.isArray(reply.contributions) && reply.contributions.every(item => item && integer(item.slot) && tagOk(item.tag) && typeof item.remembered === 'boolean')
+    && Array.isArray(reply.sources) && reply.sources.every(item => item && integer(item.ordinal) && tagOk(item.tag) && typeof item.reason === 'string'
+      && raw(item.finalRaw) && raw(item.dailyRaw) && integer(item.date));
   if (!ok) throw new Error('The world tension reply is malformed.');
-  return reply;
+  return reply as WorldTensionReply;
 }
 
-/** A reply with its lookups built once. Countries are keyed by `countryKey`. */
-export interface TensionModel {
-  reply: TensionReply;
-  tensionDecimals: number;
-  contributionDecimals: number;
-  /** The raw runs, for exact labels, by key. */
-  raw: ReadonlyMap<string, readonly FixedRun[]>;
-  /** The tag each key's country held, to name and colour it. */
-  tagOf: ReadonlyMap<string, string>;
-  /** Countries behind each layer, keeping canonical slots distinct even when tags coincide. */
-  countryOf: ReadonlyMap<string, string>;
-  identities: ReadonlyMap<string, readonly CountryIdentityRun[]>;
-  nativeKeys: ReadonlySet<string>;
-  firstContributions: ReadonlyMap<string,number>;
-  lineage: Lineage;
+export function validateThreatEvents(value: unknown): ThreatEventsReply {
+  const reply = value as Partial<ThreatEventsReply> | null;
+  const ok = !!reply && typeof reply === 'object' && Array.isArray(reply.warnings) && Array.isArray(reply.missing)
+    && Array.isArray(reply.events) && reply.events.every(event => event && integer(event.hour) && tagOk(event.tag) && typeof event.reason === 'string'
+      && integer(event.firstRead) && integer(event.lastRead) && event.firstRead <= event.lastRead && typeof event.open === 'boolean'
+      && Array.isArray(event.added) && event.added.length > 0 && event.added.every(added => added && integer(added.hour) && raw(added.addedRaw)));
+  if (!ok) throw new Error('The threat events reply is malformed.');
+  return reply as ThreatEventsReply;
 }
 
-export function tensionModel(reply: TensionReply, lineage = new Lineage([]), metadata: readonly CountryMetadata[] = [],
-  firstContributions = new Map(reply.countries.flatMap(country => country.runs.length ? [[countryKey(country),country.runs[0].firstHour] as const] : []))): TensionModel {
-  const contributionDecimals = decimalsOf(reply.contributionScale)!;
-  const raw = new Map(reply.countries.map(country => [countryKey(country), country.runs] as const));
-  const tagOf = new Map(reply.countries.map(country => [countryKey(country), country.tag] as const));
-  const slots = new Map<number, string>();
-  for (const country of metadata) {
-    if (country.observedBranchId === reply.branchId && !slots.has(Number(country.id))) {
-      slots.set(Number(country.id), lineage.countryAt(country.tag, country.observedHour));
-    }
+/** A raw value of `scale` units a percentage point, as a percentage. */
+export function percent(rawValue: string, scale: number, digits = 1): string {
+  const decimals = Math.round(Math.log10(scale));
+  return `${formatRaw(rawValue, decimals, digits)}%`;
+}
+
+/** A raw amount the cells give (a whole number of units) as a percentage. */
+export const percentOf = (units: number, scale: number, digits = 1) => percent(String(Math.trunc(units)), scale, digits);
+
+/** A contributor's name: its tag, the tag that last held its slot, or none known. */
+export const contributorName = (tag: string | null, remembered: boolean, name: (tag: string) => string) =>
+  tag === null ? 'Unknown country' : remembered ? `${name(tag)} (no longer exists)` : name(tag);
+
+/** The cells of the world's row and of a contribution's and a source's. */
+export const TENSION_CELL = liveKey(WORLD_ROW, 'tension');
+export const SUM_CELL = liveKey(WORLD_ROW, 'sum');
+export const UNNAMED_CELL = liveKey(WORLD_ROW, 'unnamed');
+export const contributionCell = (slot: number) => liveKey(String(slot), 'value');
+export const sourceCell = (ordinal: number) => liveKey(`source${ordinal}`, 'current');
+
+/** `value`'s part of `tension`, as its share of `sum`, in contribution units, as the game divides the capped tension
+ * among the contributions: nothing adds where the sum is not positive. Integer arithmetic on the raw units. */
+export function shareUnits(value: bigint, tension: bigint, sum: bigint, scalarDivisor = 100n): bigint {
+  if (sum <= 0n) return 0n;
+  const product = value * tension;
+  const quotient = product / sum, remainder = product % sum;
+  return quotient * scalarDivisor + remainder * scalarDivisor / sum;
+}
+
+/** The world's numbers at the hour the cells hold: the tension, the sum, the unnamed part; null where a cell is not known,
+ * with its reason. */
+export interface WorldCells { tension: number | null; sum: number | null; unnamed: number; why: string }
+
+export function worldCells(values: LiveValues<number>, unnamed: boolean): WorldCells {
+  const tension = values.get(TENSION_CELL) ?? null, sum = values.get(SUM_CELL) ?? null;
+  return { tension, sum, unnamed: unnamed ? values.get(UNNAMED_CELL) ?? 0 : 0,
+    why: tension === null ? values.missing(TENSION_CELL) : sum === null ? values.missing(SUM_CELL) : '' };
+}
+
+/** A contribution as a layer shows it: its own value, or its share of the tension shown (`share`). Null where a cell
+ * it needs is not known. Contribution units. */
+export function layerUnits(value: number | null, world: WorldCells, share: boolean): number | null {
+  if (value === null) return null;
+  if (!share) return value;
+  if (world.tension === null || world.sum === null) return null;
+  return Number(shareUnits(BigInt(Math.trunc(value)), BigInt(Math.trunc(world.tension)), BigInt(Math.trunc(world.sum))));
+}
+
+/** What the Other layer shows: every contribution the listed layers do not, or the part of the tension they do not. */
+export function otherUnits(listed: readonly (number | null)[], world: WorldCells, share: boolean): number | null {
+  if (listed.some(value => value === null)) return null;
+  const whole = share ? (world.tension === null ? null : world.tension * 100) : world.sum;
+  return whole === null ? null : whole - listed.reduce<number>((sum, value) => sum + value!, 0);
+}
+
+/** The layers: the first `count` contributions (greatest first at the hour shown) whose country `keep` allows, by tag. A
+ * contributor no tag ever held stays in Other. */
+export function layerContributions(contributions: readonly TensionContribution[], count: number, keep: (tag: string) => boolean): TensionContribution[] {
+  const out: TensionContribution[] = [];
+  for (const item of contributions) {
+    if (out.length >= count) break;
+    if (item.tag !== null && keep(item.tag)) out.push(item);
   }
-  // The earliest observation ties every tag entry of one canonical slot to the
-  // same country. Metadata can date a dead country's tag before it was reused.
-  const observed = [...reply.countries].sort((a, b) => (a.runs[0]?.firstHour ?? Infinity) - (b.runs[0]?.firstHour ?? Infinity));
-  for (const country of observed) if (!slots.has(country.slot)) slots.set(country.slot, lineage.countryAt(country.tag, country.runs[0]?.firstHour ?? 0));
-  const countryOf = new Map(reply.countries.map(country => [countryKey(country), slots.get(country.slot)!]));
-  const identities = new Map(reply.countries.map(country => [countryKey(country), country.identities ?? []]));
-  const nativeKeys = new Set(reply.countries.filter(country => country.identities !== undefined).map(countryKey));
-  return { reply, tensionDecimals: decimalsOf(reply.tensionScale)!, contributionDecimals, raw, tagOf, countryOf, identities, nativeKeys, lineage,firstContributions };
+  return out;
 }
 
-/** A native layer's own proved alias at this hour; only omitted suffixes use the
- * historical rename path. Missing native spans never acquire a label. */
-export const layerTagAt = (model: TensionModel, key: string, hour: number): string | null => model.nativeKeys.has(key)
-  ? runAt(model.identities.get(key) ?? [], Math.floor(hour)) ? model.tagOf.get(key)! : null
-  : model.lineage.tagOf(model.countryOf.get(key)!, hour);
-
-/** The read holding an hour, or null where none was recorded. */
-export function readAt(model: TensionModel, hour: number): TensionRead | null {
-  return runAt(model.reply.reads, Math.floor(hour));
+function scaled(bucket: ChartBucket, first: number, last: number): ChartBucket {
+  return { ...bucket, firstValue: bucket.firstValue * first, lastValue: bucket.lastValue * last,
+    minValue: bucket.minValue * Math.min(first, last), maxValue: bucket.maxValue * Math.max(first, last) };
 }
 
-/** A country's contribution at an hour (by key), raw: "0" in a read it has no run
- * in, null where no read holds the hour. */
-export function contributionAt(model: TensionModel, key: string, hour: number): string | null {
-  if (!readAt(model, hour)) return null;
-  return runAt(model.raw.get(key) ?? [], Math.floor(hour))?.valueRaw
-    ?? (tensionReadPreparing(readAt(model, hour)!, 'historicalContributors') ? null : '0');
-}
-
-/** World tension and contributions as percentages of world tension. */
-export const tensionPercent = (model: TensionModel, raw: string) => fixedNumber(raw, model.tensionDecimals);
-export const contributionPercent = (model: TensionModel, raw: string) => fixedNumber(raw, model.contributionDecimals);
-
-/** Exact percentages, as labels show them. */
-export function formatTension(model: TensionModel, raw: string, digits = 1): string {
-  return `${formatFixed(raw, model.tensionDecimals, digits)}%`;
-}
-export function formatContribution(model: TensionModel, raw: string, signed = false, digits = 2): string {
-  return `${signed && BigInt(raw) > 0n ? '+' : ''}${formatFixed(raw, model.contributionDecimals, digits)}%`;
-}
-
-/** A value-axis label: a percentage with the decimals the ticks drawn with it need
- * (the kit's exact `formatAxisValue`), so ticks zoomed in close never read the same. */
-export const formatTensionAxis = (value: number, ticks: readonly number[]) => `${formatAxisValue(value, ticks)}%`;
-
-/** Every country contributing at an hour (not zero), largest first, ties by key (tag
- * first): the order the layers and the lists take. `among` narrows it to chosen
- * countries, by tag (null: every country). */
-export function rankedAt(model: TensionModel, hour: number, among: ReadonlySet<string> | null = null,
-  countryIds?: ReadonlySet<string> | null): { key: string; tag: string | null; raw: string }[] {
-  if (!readAt(model, hour)) return [];
-  const ranked: { key: string; tag: string | null; raw: string; value: bigint }[] = [];
-  for (const [key, runs] of model.raw) {
-    const tag = layerTagAt(model, key, hour);
-    const identity = runAt(model.identities.get(key) ?? [], Math.floor(hour));
-    if (countryIds ? identity === null || !countryIds.has(countryIdentityKey(identity)) : among && (tag === null || !among.has(tag))) continue;
-    const run = runAt(runs, Math.floor(hour));
-    if (run && run.valueRaw !== '0') ranked.push({ key, tag, raw: run.valueRaw, value: BigInt(run.valueRaw) });
-  }
-  ranked.sort((a, b) => (a.value < b.value ? 1 : a.value > b.value ? -1 : a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
-  return ranked.map(({ key, tag, raw }) => ({ key, tag, raw }));
-}
-
-/** The layers at a moment, by key: the `count` largest contributors there (fewer
- * when fewer contribute), among the chosen countries when `among` is set, in rank
- * order. Every other country is "Other". */
-export function layerKeys(model: TensionModel, hour: number, count: number, among: ReadonlySet<string> | null = null,
-  countryIds?: ReadonlySet<string> | null): string[] {
-  return rankedAt(model, hour, among, countryIds).slice(0, Math.max(0, count)).map(item => item.key);
-}
-
-/** What the layers other than `keys` add up to in a read, raw: the read's sum less
- * the named layers (so it includes contributions no recorded country names). */
-export function otherRaw(model: TensionModel, read: TensionRead, keys: readonly string[]): string {
-  let rest = BigInt(read.sumRaw);
-  for (const key of keys) rest -= BigInt(runAt(model.raw.get(key) ?? [], read.firstHour)?.valueRaw ?? '0');
-  return rest.toString();
-}
-
-/** A contribution's share of world tension in a read, in contribution units: the
- * contribution scaled by world tension over the sum of every contribution, so the
- * shares add up to world tension (the game caps it at 100% and at zero, while the
- * sum can pass either). Zero when the sum is not positive, as world tension is then
- * zero. Exact to the unit, rounded toward zero. */
-export function shareRaw(model: TensionModel, read: TensionRead, raw: string): string {
-  const sum = BigInt(read.sumRaw);
-  if (sum <= 0n) return '0';
-  // World tension in contribution units.
-  const tension = BigInt(read.tensionRaw) * BigInt(model.reply.contributionScale / model.reply.tensionScale);
-  return (BigInt(raw) * tension / sum).toString();
-}
-
-/** A layer's value in a read as drawn: its share of world tension, or its recorded contribution. */
-export function layerRaw(model: TensionModel, read: TensionRead, raw: string, share: boolean): string {
-  return share ? shareRaw(model, read, raw) : raw;
-}
-
-/** The same native-holder and membership clipping for exact stacks and summary requests. */
-export function selectedContributionSpans<T extends Breakable>(model: TensionModel, key: string, runs: readonly T[],
-  membership: ReadonlyMap<string, readonly Span[]> | null, membersAreCountries: boolean, countryIds: ReadonlySet<string> | null): readonly T[] {
-
-    if (!countryIds && !(membership && membersAreCountries)) return membership ? clipToSpans(runs, membership.get(model.tagOf.get(key)!) ?? []) : runs;
-    const byCountry = new Map<string, CountryIdentityRun[]>();
-    for (const identity of model.identities.get(key) ?? []) {
-      const key = countryIdentityKey(identity);
-      if (countryIds && !countryIds.has(key)) continue;
-      const spans = byCountry.get(key);
-      if (spans) spans.push(identity); else byCountry.set(key, [identity]);
-    }
-    const known = [...byCountry].flatMap(([key, spans]) => membership && membersAreCountries
-      ? clipToSpans(spans, membership.get(key) ?? []) : spans);
-    const selected = clipToSpans(runs, known);
-    return membership && !membersAreCountries ? clipToSpans(selected, membership.get(model.tagOf.get(key)!) ?? []) : selected;
-}
-
-/** The stack of the `keys` countries' contributions and Other (shares of world
- * tension, or as recorded), as plotting percentages: a run per read and layer, each
- * held until the next read, for the kit's signed stack (`buildStack`). It breaks
- * where a read follows a gap and where a layer's own run starts a segment, so the
- * stack never joins what the reply keeps apart. */
-export function tensionStack(model: TensionModel, keys: readonly string[], share: boolean,
-  membership: ReadonlyMap<string, readonly Span[]> | null = null, membersAreCountries = false,
-  countryIds: ReadonlySet<string> | null = null): StackModel {
-  const bands: StackRun[][] = Array.from({ length: keys.length + 1 }, () => []);
-  const sources = keys.map(key => model.raw.get(key) ?? []);
-  const held = sources.map((runs,index) => selectedContributionSpans(model,keys[index],runs,membership,membersAreCountries,countryIds));
-  // Membership can change between daily reads. Split there too, moving the
-  // contribution to Other while keeping the value supplied by the same read.
-  const cuts = membership || countryIds ? [...new Set(held.flatMap(runs => runs.flatMap(run => [run.firstHour, run.lastHour + 1])))].sort((a, b) => a - b) : [];
-  let cut = 0;
-  for (const read of model.reply.reads) {
-    if (tensionReadPreparing(read, 'historicalContributors')) continue;
-    while (cut < cuts.length && cuts[cut] <= read.firstHour) cut++;
-    let firstHour = read.firstHour;
-    while (firstHour <= read.lastHour) {
-      const lastHour = Math.min(read.lastHour, (cuts[cut] ?? Infinity) - 1);
-      const raws = held.map(runs => runAt(runs, firstHour)?.valueRaw ?? '0');
-      const rest = BigInt(read.sumRaw) - raws.reduce((sum, raw) => sum + BigInt(raw), 0n);
-      [...raws, rest.toString()].forEach((raw, layer) => {
-        const run = layer < sources.length ? runAt(sources[layer], firstHour) : null;
-        // A membership boundary is known data, not a recording gap.
-        const startsSegment = (firstHour === read.firstHour && read.startsSegment)
-          || (run != null && run.firstHour === firstHour && run.startsSegment);
-        bands[layer].push({ firstHour, lastHour, startsSegment, value: contributionPercent(model, layerRaw(model, read, raw, share)) });
-      });
-      firstHour = lastHour + 1;
-      if (cuts[cut] === firstHour) cut++;
-    }
-  }
-  return buildStack(bands);
-}
-
-/** The same sampled hours for the layers and the world tension line. A final
- * zero-width band carries the recorded total through the stack's clipping and
- * sampling even when contributions differ. It is stroked, not filled. */
-export function tensionPlot(model: TensionModel, keys: readonly string[], share: boolean,
-  membership: ReadonlyMap<string, readonly Span[]> | null = null, membersAreCountries = false,
-  countryIds: ReadonlySet<string> | null = null): StackModel {
-  const stack = tensionStack(model, keys, share, membership, membersAreCountries, countryIds);
-  stack.edges.forEach((edges, index) => {
-    if (!edges) return;
-    const value = tensionPercent(model, readAt(model, stack.hours[index])!.tensionRaw);
-    edges.push({ low: value, high: value });
+/** A contribution's line as its share of the tension shown, bin by bin: each bin's first and last values scaled by the
+ * tension over the sum at that end, its extremes by the bin's least and greatest factor, and the head a tiled line draws
+ * at by the tension over the sum there. Display geometry only: the exact shares are the cells'. A bin or head where the
+ * tension or the sum is not known is not drawn. */
+export function shareSummary(part: ChartSummary, tension: ChartSummary, sum: ChartSummary): ChartSummary {
+  const factor = (t: number, s: number) => s > 0 ? t / s : 0;
+  const buckets = part.buckets.map((bucket, at) => {
+    const t = tension.buckets[at], s = sum.buckets[at];
+    return bucket && t && s ? scaled(bucket, factor(t.firstValue, s.firstValue), factor(t.lastValue, s.lastValue)) : null;
   });
-  return stack;
+  const { runs: _runs, tiles, ...rest } = part;
+  const [t, s] = [tension.tiles, sum.tiles];
+  const head = tiles && { ...tiles, valueAt: (hour: number) => {
+    const [value, over, under] = [tiles.valueAt(hour), t?.valueAt(hour) ?? null, s?.valueAt(hour) ?? null];
+    return value === null || over === null || under === null ? null : value * factor(over, under);
+  } };
+  return { ...rest, buckets, ...(head ? { tiles: head } : {}) };
 }
 
-/** What an event adds as known at an hour: the value of the latest read at or
- * before it, else (an hour before its first read) its first read's. */
-export function addedAt(event: TensionEvent, hour: number): string {
-  let found = event.added[0];
-  for (const added of event.added) if (added.hour <= hour) found = added;
-  return found.addedRaw;
+/** `shareSummary` made once per contribution line and the tension and sum lines it is scaled by: the chart reads its
+ * lines several times a frame, and a new share line each time built the stack again and repainted a chart that had not
+ * moved. */
+export function shareSummaries(): (part: ChartSummary, tension: ChartSummary, sum: ChartSummary) => ChartSummary {
+  const made = new WeakMap<ChartSummary, { tension: ChartSummary; sum: ChartSummary; share: ChartSummary }>();
+  return (part, tension, sum) => {
+    const held = made.get(part);
+    if (held && held.tension === tension && held.sum === sum) return held.share;
+    const share = shareSummary(part, tension, sum);
+    made.set(part, { tension, sum, share });
+    return share;
+  };
 }
 
-/** Several events of one hour, for a compact tooltip: the tension they generated
- * together (each as first read), and the events largest first (by size, either
- * sign), ties in their order. */
-export function eventGroup(events: readonly TensionEvent[]): { totalRaw: string; largest: TensionEvent[] } {
-  const size = (event: TensionEvent) => { const raw = BigInt(event.added[0].addedRaw); return raw < 0n ? -raw : raw; };
-  const totalRaw = events.reduce((sum, event) => sum + BigInt(event.added[0].addedRaw), 0n).toString();
-  const largest = events.map((event, index) => ({ event, index }))
-    .sort((a, b) => (size(a.event) < size(b.event) ? 1 : size(a.event) > size(b.event) ? -1 : a.index - b.index)).map(item => item.event);
-  return { totalRaw, largest };
+/** The badges of the events listed within `from..to`: a triangle at each event's date, in its country's colour. */
+export function eventBadges(events: readonly ThreatEvent[], from: number, to: number, colour: (tag: string | null) => string | undefined): Map<EventBadge, ThreatEvent> {
+  return new Map(events.filter(event => event.hour >= from && event.hour <= to)
+    .map(event => [{ hour: event.hour, glyph: '▼', label: event.reason, color: colour(event.tag), shape: 'triangle' as const }, event]));
 }
 
-/** The events the chart marks: those dated inside the hours shown. */
-export function eventsWithin(events: readonly TensionEvent[], from: number, to: number): TensionEvent[] {
-  return events.filter(event => event.hour >= from && event.hour <= to);
+/** The events created at or before `hour`, newest first. */
+export function eventsThrough(reply: ThreatEventsReply, hour: number): ThreatEvent[] {
+  return reply.events.filter(event => event.firstRead <= hour).sort((a, b) => b.firstRead - a.firstRead || b.hour - a.hour);
 }
 
-/** The events marked at an hour no read holds (dated inside a gap, or before the
- * first read), for a tooltip with no badge under it: a keyboard stop at such an
- * event shows it as hovering its marker does, not only "Not recorded". None where a
- * read holds the hour, whose tooltip lists its events itself. */
-export function eventsOutsideReads(model: TensionModel, events: readonly TensionEvent[], hour: number): TensionEvent[] {
-  const at = Math.floor(hour);
-  return readAt(model, at) ? [] : events.filter(event => event.hour === at);
+/** What an event added at `hour`: the value it held then, from its first read on. */
+export function addedAt(event: ThreatEvent, hour: number): string {
+  let shown = event.added[0].addedRaw;
+  for (const added of event.added) if (added.hour <= hour) shown = added.addedRaw;
+  return shown;
 }
 
-/** Frame-only reads cannot establish historical contributor zeroes or unnamed attribution. */
-export function tensionReadPreparing(read: TensionRead, field: string): boolean {
-  return 'preparing' in read && Array.isArray(read.preparing) && read.preparing.includes(field);
+/** Several events at one hour: their total as first read, and the largest first. */
+export function eventGroup(events: readonly ThreatEvent[]): { totalRaw: string; largest: ThreatEvent[] } {
+  const total = events.reduce((sum, event) => sum + BigInt(event.added[0].addedRaw), 0n);
+  const largest = [...events].sort((a, b) => {
+    const left = BigInt(a.added[0].addedRaw), right = BigInt(b.added[0].addedRaw);
+    return right > left ? 1 : right < left ? -1 : a.reason.localeCompare(b.reason);
+  });
+  return { totalRaw: total.toString(), largest };
+}
+
+/** Each event's identity across replies, which list events by date: events alike in date, first read and reason keep
+ * their order. */
+export function eventKeys(events: readonly ThreatEvent[]): string[] {
+  const seen = new Map<string, number>();
+  return events.map(event => {
+    const alike = JSON.stringify([event.hour, event.firstRead, event.reason]);
+    const place = seen.get(alike) ?? 0;
+    seen.set(alike, place + 1);
+    return `${alike}#${place}`;
+  });
+}
+
+/** An event's contribution as the read at or before `hour` (and not after its last read) gave it; none before its first. */
+export function causeAt(event: ThreatEvent, hour: number): string | null {
+  const limit = Math.min(Math.floor(hour), event.lastRead);
+  return event.firstRead <= limit ? addedAt(event, limit) : null;
+}
+
+/** A contribution's share of the contributions' sum, its sign kept against the sum's size; not known without a sum. */
+export function shareText(value: number, sum: number | null): string {
+  if (sum === null || sum === 0) return 'Not known';
+  return `${(Math.round(value / Math.abs(sum) * 10_000) / 100).toFixed(2)}%`;
 }

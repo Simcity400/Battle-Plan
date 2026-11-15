@@ -156,7 +156,7 @@ impl OwnedDetails {
         self.grow(sources.len());
         let equipment_reads = read_accounting::table(TableId::DivisionEquipment);
         let started = qpc();
-        self.outcomes[0] = cequipment_variant_pool::walk_divisions_growing(
+        self.outcomes[0] = cequipment_variant_pool::walk_divisions(
             memory,
             base,
             sources,
@@ -166,7 +166,7 @@ impl OwnedDetails {
         drop(equipment_reads);
         let _upgrade_reads = read_accounting::table(TableId::ArmyUpgradeGroups);
         let started = qpc();
-        let result = carmy_upgrades_status::walk_growing(
+        let result = carmy_upgrades_status::walk(
             memory,
             base,
             sources,
@@ -369,15 +369,15 @@ mod tests {
                 },
             ),
         ] {
-            let equipment = cequipment_variant_pool::walk_divisions(&memory, 0, &sources, &mut []);
+            let equipment = cequipment_variant_pool::walk_divisions(&memory, 0, &sources, &mut Vec::new());
             let bounded = carmy_upgrades_status::walk(
                 &memory,
                 0,
                 &sources,
-                &mut [],
-                &mut [],
-                &mut [],
-                &mut [],
+                &mut Vec::new(),
+                &mut Vec::new(),
+                &mut Vec::new(),
+                &mut Vec::new(),
             );
             let reads = memory.reads.take();
             let scalars = memory.scalars.replace(0);
@@ -401,17 +401,10 @@ mod tests {
                 ]
             );
             assert_eq!(owned.groups[0].army, source.division);
+            assert_eq!(expected, bounded.groups);
             if expected == (Outcome::Rows { len: 2 }) {
                 assert_eq!(owned.groups[0], owned.groups[1]);
-                assert_eq!(
-                    bounded.groups,
-                    Outcome::Truncated {
-                        len: 0,
-                        unread_rows: 2
-                    }
-                );
             } else {
-                assert_eq!(expected, bounded.groups);
                 assert_eq!(owned.groups[1], carmy_upgrades_requests::Row::default());
             }
         }

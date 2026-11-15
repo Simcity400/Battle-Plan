@@ -35,7 +35,7 @@ export type Holds<V, T> = (data: T, asked: V, view: V) => boolean;
  * place a landed summary by hour (`summaryFits`), never past the hours shown. */
 export function useViewRead<V, T>(reads: string | null, view: V | null | undefined, viewKey: string, active: boolean,
   read: (view: V, signal: AbortSignal, publish: (value: T) => void, restart: boolean) => Promise<T>, owner?: object,
-  holds?: Holds<V, T>): ViewRead<T> {
+  holds?: Holds<V, T>, peek?: (view: V) => T | undefined): ViewRead<T> {
   // The reading client is part of the lane: another client's reply is never shown.
   const lane = reads == null ? null : owner ? `${ownerId(owner)}:${reads}` : reads;
   const widget = measuredWidget();
@@ -60,7 +60,7 @@ export function useViewRead<V, T>(reads: string | null, view: V | null | undefin
       // A read for a view this reply now answers is no longer wanted.
       flight.current?.controller.abort();
       flight.current = null;
-      // Renders with the next tick, unless a reply queued for it is newer.
+      // Renders in the next frame, unless a reply queued for it is newer.
       if (held.viewKey !== viewKey) inFrame(() => {
         if (shown.current !== held) return;
         const next = { ...held, viewKey };
@@ -85,7 +85,7 @@ export function useViewRead<V, T>(reads: string | null, view: V | null | undefin
           if (final) held.final = true;
           countWork(widget, 'same');
         } else {
-          // Updates of one tick render together: a later one compares with this, not with what was shown.
+          // Updates of one frame render together: a later one compares with this, not with what was shown.
           const next = { lane, viewKey: asked.viewKey, data, asked: asked.view as V, final };
           shown.current = next;
           setState(next);
@@ -115,7 +115,14 @@ export function useViewRead<V, T>(reads: string | null, view: V | null | undefin
   }, [lane, viewKey, active, attempt, landed]);
   // Leaving a lane, or the screen, cancels that lane's read only.
   useEffect(() => () => { if (flight.current?.lane === lane) { flight.current.controller.abort(); flight.current = null; } }, [lane, active]);
-  const current = state?.lane === lane ? state : undefined;
+  const kept = state?.lane === lane ? state : undefined;
+  // Nothing shown yet in the lane: a reply already held for the view shows from the first render, never a loading state.
+  // Peeked once a view: a render React bails out of keeps none of its effects, so it must show what the last one did.
+  const peekAt = lane == null || view == null ? null : `${lane}\u0000${viewKey}`;
+  const peeked = useRef<{ at: string; data: T | undefined } | null>(null);
+  if (!kept && peekAt !== null && peeked.current?.at !== peekAt) peeked.current = { at: peekAt, data: peek?.(view as V) };
+  const heldData = !kept && peekAt !== null && peeked.current?.at === peekAt ? peeked.current.data : undefined;
+  const current = kept ?? (heldData === undefined ? undefined : { lane: lane!, viewKey, data: heldData, errorKey: undefined, error: undefined });
   // A failure belongs to the view it was asked for: a moved view is still loading.
   return { data: current?.data, error: current?.errorKey === viewKey ? current.error : undefined, viewKey: current?.viewKey, errorKey: current?.errorKey,
     asking: flight.current?.lane === lane ? flight.current.viewKey : undefined,

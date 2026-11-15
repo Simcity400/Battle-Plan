@@ -79,14 +79,8 @@ fn dynamic_modifier_state_container_scans_targets_in_container_order() {
         canonical_slot: 11,
     });
     *f.tables[TableId::StateDynamicModifiers.index()] =
+        // Keyed by (state, ordinal), the container's order, as a recording holds the rows.
         TableView::Complete(TableRows::StateDynamicModifiers(vec![
-            // Deliberately out of wire order: ordinal is stored container order.
-            StateDynamicModifierRow {
-                state: 58,
-                ordinal: 2,
-                token: b"custom".to_vec(),
-                ..Default::default()
-            },
             StateDynamicModifierRow {
                 state: 58,
                 ordinal: 0,
@@ -100,6 +94,12 @@ fn dynamic_modifier_state_container_scans_targets_in_container_order() {
                 token: b"custom".to_vec(),
                 scope_country: 103,
                 scope_state: 58,
+            },
+            StateDynamicModifierRow {
+                state: 58,
+                ordinal: 2,
+                token: b"custom".to_vec(),
+                ..Default::default()
             },
         ]));
     for (operand, expected) in [
@@ -234,9 +234,15 @@ fn dynamic_modifier_country_container_uses_aliases_and_variable_targets() {
         11,
         "has_dynamic_modifier = { modifier = unlinked scope = ROOT }",
     )
-    .decided()
+    .decided_input()
     .unwrap_err();
-    assert!(why.contains("999") && why.contains("CountryLinks"), "{why}");
+    assert!(
+        why.names("CountryLinks.canonical_slot")
+            && why
+                .to_string()
+                .contains("dynamic modifiers names a country that no recorded country link holds"),
+        "{why}"
+    );
 }
 
 #[test]
@@ -324,8 +330,8 @@ fn dynamic_modifier_missing_tables_and_owner_links_remain_named() {
             },
         ] {
             *f.tables[id.index()] = table;
-            let why = check(&f, "", 11, trigger).decided().unwrap_err();
-            assert!(why.contains(table_name), "{why}");
+            let why = check(&f, "", 11, trigger).decided_input().unwrap_err();
+            assert!(why.names(table_name), "{why}");
         }
         *f.tables[id.index()] = TableView::Complete(TableRows::empty(id));
     }
@@ -341,10 +347,13 @@ fn dynamic_modifier_missing_tables_and_owner_links_remain_named() {
         11,
         "has_dynamic_modifier = { modifier = custom scope = ROOT }",
     )
-    .decided()
+    .decided_input()
     .unwrap_err();
     assert!(
-        why.contains("DynamicModifiers") && why.contains("999"),
+        why.names("CountryLinks.canonical_slot")
+            && why
+                .to_string()
+                .contains("dynamic modifiers names a country that no recorded country link holds"),
         "{why}"
     );
 }

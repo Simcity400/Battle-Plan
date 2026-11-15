@@ -1047,7 +1047,7 @@ fn temporary_state(slot: usize) -> usize {
 }
 
 /// 130 states across three pointer batches, some null and some gated by list or flag.
-fn temporary_states() -> (Fixture, [cstrategic_resource::Row; 1]) {
+fn temporary_states() -> (Fixture, Vec<cstrategic_resource::Row>) {
     let mut f = world();
     let descriptors = f.descriptors();
     f.u32(0xd000 + cstrategic_resource::TEMPORARY_KEY, 0x55);

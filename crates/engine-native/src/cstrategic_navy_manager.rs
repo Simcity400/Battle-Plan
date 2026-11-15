@@ -41,18 +41,18 @@ fn with_navy<T>(
     consume(navy as usize)
 }
 
-pub(crate) fn authenticate_owner(
+pub(crate) fn authenticate(
     memory: &impl Memory,
     base: usize,
     state: usize,
     country: ccountry::Country,
 ) -> Result<(), &'static str> {
     with_navy(memory, base, state, country, |navy| {
-        cstrategic_navy::authenticate_owner(memory, base, state, navy, country)
+        cstrategic_navy::authenticate(memory, base, navy)
     })
 }
 
-/// Country strategic navy with authenticated identity and owner.
+/// The navy in the country's slot, with authenticated identity.
 pub fn navy(
     memory: &impl Memory,
     base: usize,
@@ -60,7 +60,7 @@ pub fn navy(
     country: ccountry::Country,
 ) -> Result<usize, &'static str> {
     with_navy(memory, base, state, country, |navy| {
-        cstrategic_navy::authenticate_owner(memory, base, state, navy, country)?;
+        cstrategic_navy::authenticate(memory, base, navy)?;
         Ok(navy)
     })
 }
@@ -74,6 +74,6 @@ pub fn regional_operand(
     region: u32,
 ) -> Result<i64, &'static str> {
     with_navy(memory, base, state, country, |navy| {
-        cstrategic_navy::regional_operand(memory, base, state, navy, country, region)
+        cstrategic_navy::regional_operand(memory, base, navy, region)
     })
 }

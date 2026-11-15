@@ -4,12 +4,15 @@
 //! blocks. It holds every table the rows leave to it, so an hour it cannot prepare or commit
 //! fails, rows and all, and the next hour starts a run; a failure of its journal stops it with
 //! the reason, and every later hour fails. Its allocations are advisory, so a failed one fails
-//! only its hour, and an hour reaches the journal only once its rows' write completed.
+//! only its hour, and an hour reaches the journal only once its rows' write completed. The
+//! journal is written on its own thread ([`journal_thread`]): the spool thread queues, and an
+//! hour the journal could not take is a gap of the next capture. Each hour's journal record
+//! carries the clock witness the rows were given with it: the recorder reads the journal alone.
 
 use replay::{
-    columnar_file::{Capture, Stop, capture_of},
+    columnar_file::Capture,
     columnar_frames::schema,
-    columnar_journal::{JournalWriter, segment_of},
+    columnar_journal::Witness,
     native_frame::{self, FrameHour, FrameWriter, RowFrame},
 };
 use replay_columnar::envelope;
@@ -21,14 +24,15 @@ use replay_frame::frame::FrameInput;
 use serde_json::{Value, json};
 use std::{
     collections::{HashSet, VecDeque},
-    fs, io,
+    io,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Instant,
 };
 
-mod durability;
-pub(crate) use durability::Durability;
+mod journal_thread;
+use journal_thread::{Ending, Failure, Lane, Op};
+pub(crate) use journal_thread::JournalThread;
 #[cfg(test)]
 mod tests;
 
@@ -42,7 +46,7 @@ pub(crate) fn finished_status() -> Vec<Value> {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .iter()
-        .map(|counters| counters.status(&[], &[], 0, true, None))
+        .map(|counters| counters.status(&[], &[], 0, true, None, None))
         .collect()
 }
 
@@ -76,8 +80,7 @@ impl<'a> Lanes<'a> {
 
 impl native_frame::Lanes for Lanes<'_> {
     fn count(&self) -> usize {
-        self.helpers
-            .map_or(1, |helpers| 2 + usize::from(helpers.second.is_some()))
+        self.helpers.map_or(1, crate::spool_helper::Helpers::encoding_lanes)
     }
 
     fn run(&self, job: &(dyn Fn() + Sync)) {
@@ -124,19 +127,20 @@ pub(crate) struct Live {
     notes: VecDeque<Note>,
     /// The frame being given to the rows: its records, until it is written or queued.
     staged: Vec<Noted>,
+    /// That frame's hour and clock witness, until its hour commits.
+    witness: Option<(i32, Witness)>,
     /// Control records released and not yet in the journal, which opens at the first hour or
     /// command.
     controls: Vec<Vec<u8>>,
-    journal: Option<JournalWriter>,
-    /// Makes the journal's ended segments durable; the session's, shared by its recordings.
-    durability: Arc<Durability>,
-    /// This recording's failed segment syncs.
-    sync_failure: Box<durability::Slot>,
+    /// The capture's journal was queued to open on the journal thread.
+    opened: bool,
+    /// The session's journal thread, shared by its recordings.
+    thread: Arc<JournalThread>,
+    /// This recording's journal on that thread.
+    lane: Arc<Lane>,
     run: Option<Run>,
     /// Committed hours whose rows' write has not completed, in order.
     pending: VecDeque<Pending>,
-    /// The branch and hour of the last hour the journal holds.
-    last: Option<(u64, i32)>,
     /// Why the next run starts, when the rows said.
     next_epoch: Option<u8>,
     finished: bool,
@@ -180,18 +184,19 @@ struct Counters {
     failed: u64,
     /// Runs the journal holds.
     runs: u64,
-    /// Bytes of manifests and sections the journal holds.
+    /// Bytes of manifests and sections given to the journal.
     journaled: u64,
-    /// Spool-thread wall in preparing and committing hours, and in appending them.
+    /// Spool-thread wall in preparing and committing hours.
     hour_ns: u64,
-    append_ns: u64,
-    append_max_ns: u64,
+    /// The journal thread's operations queued and not yet done, the most ever queued, and its
+    /// appends' total and longest wall, kept once the recording finished.
+    journal: [u64; 4],
     /// Each table's frame-writer wall in runs that ended.
     ended_ns: [u64; TABLE_COUNT],
     /// Each table's hours prepared again in table order after a lane, in runs that ended.
     ended_retried: [u64; TABLE_COUNT],
     /// The journal's segment syncs, kept once the recording finished.
-    durability: Option<durability::Timing>,
+    durability: Option<journal_thread::Timing>,
 }
 
 /// A run's start as the journal records it.
@@ -220,6 +225,8 @@ struct Pending {
     branch: u64,
     hour: i32,
     ordinal: u32,
+    /// The clock witness the rows were given with the hour.
+    witness: Option<Witness>,
     manifest: Vec<u8>,
     sections: Vec<Vec<u8>>,
 }
@@ -231,7 +238,7 @@ impl Columnar {
         directory: &Path,
         campaign: &str,
         session: &SessionStart,
-        durability: &Arc<Durability>,
+        thread: &Arc<JournalThread>,
     ) -> Self {
         let live = engine_allocation::advisory(|| -> io::Result<Box<Live>> {
             let (identity, capture) = identity(campaign, session)?;
@@ -245,13 +252,13 @@ impl Columnar {
                 noted: HashSet::new(),
                 notes: VecDeque::new(),
                 staged: Vec::new(),
+                witness: None,
                 controls: Vec::new(),
-                journal: None,
-                durability: Arc::clone(durability),
-                sync_failure: engine_allocation::boxed(durability::Slot::default())?,
+                opened: false,
+                thread: Arc::clone(thread),
+                lane: Lane::new(),
                 run: None,
                 pending: VecDeque::new(),
-                last: None,
                 next_epoch: None,
                 finished: false,
                 command_branch: None,
@@ -365,11 +372,19 @@ impl Columnar {
     }
 
     /// Ends the recording on its healthy path: the journal's last record, naming where writing
-    /// stopped when it did, durable. A capture that holds neither hours nor commands has no
-    /// journal.
+    /// stopped when it did, durable. Records no journal took open one for them; a capture that
+    /// holds no hour, command or other record has no journal.
     pub(crate) fn finish(&mut self) {
         if let Self::Live(live) = self {
             engine_allocation::advisory(|| live.finish());
+        }
+    }
+
+    /// Waits until the journal thread wrote or refused everything queued for this recording.
+    #[cfg(test)]
+    pub(crate) fn settle(&self) {
+        if let Self::Live(live) = self {
+            live.thread.settle(&live.lane);
         }
     }
 
@@ -381,13 +396,6 @@ impl Columnar {
             #[cfg(test)]
             Self::Off => None,
         }
-    }
-}
-
-impl Drop for Live {
-    fn drop(&mut self) {
-        // A sync in flight may still report into this recording's slot.
-        self.durability.settle();
     }
 }
 
@@ -407,7 +415,7 @@ impl Live {
                 records,
             });
             if let Some(branch) = command_branch.filter(|_| self.writing()) {
-                self.journal()?;
+                self.open_journal()?;
                 self.command_branch = Some(branch);
             }
             self.release()
@@ -418,6 +426,21 @@ impl Live {
     }
 
     fn stage(&mut self, records: &[replay::spool::Record]) {
+        self.witness = records.iter().find_map(|record| match record {
+            replay::spool::Record::Control(replay::spool::ControlRecord::ClockWitness {
+                qpc,
+                hour,
+                load_signal,
+                ..
+            }) => Some((
+                *hour,
+                Witness {
+                    qpc: *qpc,
+                    load_signal: *load_signal,
+                },
+            )),
+            _ => None,
+        });
         match Self::encoded(records) {
             Ok(records) => self.staged = records,
             Err(error) => {
@@ -448,7 +471,8 @@ impl Live {
     }
 
     /// The records of `records` the capture keeps, as the rows encode them: all but frames,
-    /// session starts, which it holds already, and clock witnesses, one an hour.
+    /// session starts, which it holds already, and clock witnesses, which each hour's own
+    /// record carries.
     fn encoded(records: &[replay::spool::Record]) -> io::Result<Vec<Noted>> {
         use replay::spool::{ControlRecord, Record};
         let mut kept = Vec::new();
@@ -497,13 +521,47 @@ impl Live {
                 self.controls.push(noted.bytes);
             }
         }
-        if let Some(journal) = self.journal.as_mut()
-            && !self.controls.is_empty()
-        {
-            journal.controls(&self.controls)?;
-            self.controls.clear();
+        if self.opened && !self.controls.is_empty() {
+            let controls = std::mem::take(&mut self.controls);
+            self.thread.queue(&self.lane, Op::Controls(controls));
         }
         Ok(())
+    }
+
+    /// Takes in what the journal thread could not write: a failure stops the capture, its lost
+    /// hours become the next capture's gap, and its control records go to the next capture
+    /// ahead of those held now.
+    fn poll(&mut self) {
+        if let Some(failure) = self.lane.take_failure() {
+            self.absorb(failure);
+        }
+    }
+
+    fn absorb(&mut self, failure: Failure) {
+        let Failure {
+            failed,
+            lost,
+            mut controls,
+        } = failure;
+        if !controls.is_empty() {
+            controls.append(&mut self.controls);
+            self.controls = controls;
+        }
+        if let Some((site, error)) = failed {
+            self.stop(site, &error);
+        }
+        let mut lost = lost.into_iter().peekable();
+        while let Some((branch, first)) = lost.next() {
+            let mut last = first;
+            while let Some(&(next_branch, next)) = lost.peek() {
+                if next_branch != branch || Some(next) != last.checked_add(1) {
+                    break;
+                }
+                last = next;
+                lost.next();
+            }
+            self.lose(branch, first, last);
+        }
     }
 
     fn writing(&self) -> bool {
@@ -569,6 +627,7 @@ impl Live {
         row: RowFrame<'_>,
         lanes: &dyn native_frame::Lanes,
     ) -> io::Result<FrameHour> {
+        self.poll();
         self.writable()?;
         let started = Instant::now();
         let prepared = self.try_prepare(input, row, lanes);
@@ -638,6 +697,7 @@ impl Live {
         queued: bool,
         lanes: &dyn native_frame::Lanes,
     ) -> io::Result<()> {
+        self.poll();
         self.writable()?;
         let started = Instant::now();
         let committed = self.try_commit(hour, queued, lanes);
@@ -671,6 +731,11 @@ impl Live {
             branch: run.branch,
             hour: hour.hour(),
             ordinal: run.ordinal,
+            witness: self
+                .witness
+                .take()
+                .filter(|(witnessed, _)| *witnessed == hour.hour())
+                .map(|(_, witness)| witness),
             manifest: engine_allocation::copy_vec(&hour.manifest)?,
             sections,
         };
@@ -694,6 +759,7 @@ impl Live {
     }
 
     fn complete(&mut self, branch: u64, hour: i32) {
+        self.poll();
         for note in &mut self.notes {
             if note
                 .awaits
@@ -728,63 +794,35 @@ impl Live {
         }
     }
 
-    /// The journal takes a committed hour, after the run it starts; a block's last hour ends its
-    /// segment. A failure names the step that failed.
+    /// Queues a committed hour for the journal, after the run it starts; a block's last hour
+    /// ends its segment. What the journal thread cannot write comes back through [`Self::poll`].
     fn write(&mut self, pending: Pending) -> Result<(), (&'static str, io::Error)> {
-        const APPEND: &str = "appending an hour to the journal";
-        const DURABLE: &str = "making an ended journal segment durable";
-        let started = Instant::now();
-        if let Some(error) = self.sync_failure.take() {
-            return Err((DURABLE, error));
-        }
-        if let Some(start) = pending.starts {
-            let journal = self
-                .journal()
-                .map_err(|error| ("opening the journal", error))?;
-            if let Some(ended) = journal
-                .next_segment()
-                .map_err(|error| ("starting the journal's next segment", error))?
-            {
-                self.durability.give(ended, &self.sync_failure);
-            }
-            self.journal
-                .as_mut()
-                .ok_or_else(|| ("starting a run in the journal", invalid("A run starts in its journal")))?
-                .run(start.branch, start.epoch, start.first_hour)
-                .map_err(|error| ("starting a run in the journal", error))?;
+        if pending.starts.is_some() {
+            self.open_journal()
+                .map_err(|error| (journal_thread::OPENING, error))?;
             self.counters.runs += 1;
+        } else if !self.opened {
+            return Err((
+                journal_thread::APPEND,
+                invalid("A columnar hour is written to its journal"),
+            ));
         }
-        #[cfg(feature = "columnar-fault-injection")]
-        if fs::remove_file(self.directory.join("columnar.fail")).is_ok() {
-            return Err((APPEND, io::Error::other("a fault injected by columnar.fail")));
-        }
-        let journal = self
-            .journal
-            .as_mut()
-            .ok_or_else(|| (APPEND, invalid("A columnar hour is written to its journal")))?;
-        let mut sections: [&[u8]; TABLE_COUNT] = [&[][..]; TABLE_COUNT];
-        for (at, section) in pending.sections.iter().enumerate() {
-            sections[at] = section;
-        }
-        let sections = &sections[..pending.sections.len()];
-        journal
-            .hour(&pending.manifest, sections)
-            .map_err(|error| (APPEND, error))?;
-        self.counters.journaled += (pending.manifest.len()
-            + sections.iter().map(|section| section.len()).sum::<usize>())
-            as u64;
-        if (pending.ordinal + 1) % envelope::UNIT_ORDINALS == 0 {
-            if let Some(ended) = journal
-                .next_segment()
-                .map_err(|error| ("starting the journal's next segment", error))?
-            {
-                self.durability.give(ended, &self.sync_failure);
-            }
-        }
-        self.last = Some((pending.branch, pending.hour));
-        let elapsed = started.elapsed().as_nanos() as u64;
-        self.counters.append_ns += elapsed;
-        self.counters.append_max_ns = self.counters.append_max_ns.max(elapsed);
+        let bytes = pending.manifest.len()
+            + pending.sections.iter().map(Vec::len).sum::<usize>();
+        let hour = engine_allocation::boxed(journal_thread::Hour {
+            starts: pending
+                .starts
+                .map(|start| (start.branch, start.epoch, start.first_hour)),
+            branch: pending.branch,
+            hour: pending.hour,
+            ends_segment: (pending.ordinal + 1) % envelope::UNIT_ORDINALS == 0,
+            witness: pending.witness,
+            manifest: pending.manifest,
+            sections: pending.sections,
+        })
+        .map_err(|error| (journal_thread::APPEND, error))?;
+        self.thread.queue(&self.lane, Op::Hour(hour));
+        self.counters.journaled += bytes as u64;
         Ok(())
     }
 
@@ -792,6 +830,7 @@ impl Live {
     /// again with a later frame.
     fn drop_unwritten(&mut self) {
         self.staged.clear();
+        self.witness = None;
         self.notes.retain(|note| note.awaits.is_none());
         if let Err(error) = self.release() {
             self.stop("releasing control records", &error);
@@ -813,39 +852,50 @@ impl Live {
         self.pending.clear();
         self.drop_unwritten();
         self.end_run();
-        self.durability.settle();
-        if let Some(error) = self.sync_failure.take() {
-            self.stop("making an ended journal segment durable", &error);
-        }
+        self.thread.settle(&self.lane);
+        self.poll();
         self.finished = true;
-        let Some(journal) = self.journal.take() else {
-            return;
-        };
-        let finished = (|| -> io::Result<()> {
-            let stop = match self.counters.stopped.as_ref().filter(|_| self.reopen.is_some()) {
-                Some(reason) => Some(Stop {
-                    branch: self
-                        .last
-                        .map(|(branch, _)| branch)
-                        .or(self.command_branch)
-                        .unwrap_or(0),
-                    last_hour: self.last.map(|(_, hour)| hour),
-                    reason: engine_allocation::string(reason.text())?,
-                }),
-                None => None,
+        // Records no journal took, as a failed capture's lost hours or a capture of gaps alone,
+        // end in a journal of their own: the recorder reads nothing else.
+        if !self.opened && !self.controls.is_empty() {
+            let reopened = if self.reopen.is_some() {
+                self.reopened()
+            } else {
+                Ok(())
             };
-            journal.finish(stop.as_ref())
-        })();
-        // A journal that could not finish is finished by the recorder as its collector left it.
-        if let Err(error) = finished {
-            self.stop("finishing the journal", &error);
+            if let Err(error) = reopened.and_then(|()| self.open_journal()) {
+                self.stop("opening a journal for the records no hour followed", &error);
+            }
+        }
+        if self.opened {
+            self.opened = false;
+            let ending = match self.counters.stopped.as_ref().filter(|_| self.reopen.is_some()) {
+                Some(reason) => engine_allocation::string(reason.text())
+                    .map_or(Ending::Abandoned, |reason| Ending::Stopped {
+                        reason,
+                        command_branch: self.command_branch,
+                    }),
+                None => Ending::Finished,
+            };
+            self.thread.queue(&self.lane, Op::End(ending));
+            self.thread.settle(&self.lane);
+            // A journal that could not finish is finished by the recorder as its collector
+            // left it.
+            if let Some(Failure {
+                failed: Some((site, error)),
+                ..
+            }) = self.lane.take_failure()
+            {
+                self.stop(site, &error);
+            }
         }
         // Diagnostics only: kept when a slot can be reserved, without formatting here.
         let mut kept = FINISHED_COUNTERS
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if kept.try_reserve(1).is_ok() {
-            self.counters.durability = Some(self.durability.timing());
+            self.counters.durability = Some(self.thread.timing());
+            self.counters.journal = self.lane.counters();
             kept.push(std::mem::replace(&mut self.counters, Counters::new()));
         }
     }
@@ -855,45 +905,40 @@ impl Live {
             .run
             .as_ref()
             .map_or((&[][..], &[][..]), |run| (run.frames.table_ns(), run.frames.retried()));
-        let durability = self.durability.timing();
-        self.counters
-            .status(current, retried, self.pending.len(), self.finished, Some(&durability))
+        let durability = self.thread.timing();
+        self.counters.status(
+            current,
+            retried,
+            self.pending.len(),
+            self.finished,
+            Some(&durability),
+            Some(self.lane.counters()),
+        )
     }
 
-    /// The journal, begun at its capture's number after every one the directory holds, so the
-    /// recorder writes those still waiting first and none is overwritten.
-    fn journal(&mut self) -> io::Result<&mut JournalWriter> {
-        if self.journal.is_none() {
-            let identity = self
-                .identity
-                .take()
-                .ok_or_else(|| invalid("A columnar journal opens once"))?;
-            let capture = self
-                .capture
-                .take()
-                .ok_or_else(|| invalid("A columnar journal opens once"))?;
-            // The row spool creates the campaign's directory at its first segment, after this.
-            fs::create_dir_all(&self.directory)?;
-            let mut n = 0_u32;
-            for entry in fs::read_dir(&self.directory)? {
-                let name = entry?.file_name();
-                let taken = capture_of(&name)
-                    .map(|(taken, _)| taken)
-                    .or_else(|| segment_of(&name).map(|(taken, _)| taken));
-                if let Some(taken) = taken {
-                    let next = taken.checked_add(1);
-                    n = n.max(next.ok_or_else(|| invalid("Every capture number is taken"))?);
-                }
-            }
-            let journal = JournalWriter::create(&self.directory, n, &identity.chain_bytes()?, &capture)?;
-            self.journal = Some(journal);
-            if !self.controls.is_empty() {
-                let journal = self.journal.as_mut().expect("opened");
-                journal.controls(&self.controls)?;
-                self.controls.clear();
-            }
+    /// Queues the capture's journal to open, holding the control records released so far; the
+    /// journal thread numbers it after every capture the directory holds.
+    fn open_journal(&mut self) -> io::Result<()> {
+        if self.opened {
+            return Ok(());
         }
-        Ok(self.journal.as_mut().expect("opened"))
+        let identity = self
+            .identity
+            .take()
+            .ok_or_else(|| invalid("A columnar journal opens once"))?;
+        let capture = self
+            .capture
+            .take()
+            .ok_or_else(|| invalid("A columnar journal opens once"))?;
+        let opening = engine_allocation::boxed(journal_thread::Opening {
+            directory: owned_path(&self.directory, None)?,
+            identity: identity.chain_bytes()?,
+            capture,
+            controls: std::mem::take(&mut self.controls),
+        })?;
+        self.thread.queue(&self.lane, Op::Open(opening));
+        self.opened = true;
+        Ok(())
     }
 
     /// A failure at `site`: the capture ends where its journal stands, its reason kept for the
@@ -910,20 +955,29 @@ impl Live {
             wait: (1_u32 << (failures.min(10) - 1)).min(envelope::UNIT_ORDINALS),
             failures,
         });
-        if let Some(journal) = self.journal.take() {
+        if self.opened {
+            self.opened = false;
             let reason = self.counters.stopped.as_ref().map_or("", Reason::text);
-            let stop = engine_allocation::string(reason).map(|reason| Stop {
-                branch: self.last.map(|(branch, _)| branch).or(self.command_branch).unwrap_or(0),
-                last_hour: self.last.map(|(_, hour)| hour),
-                reason,
-            });
             // A journal that cannot take its stop is finished by the recorder, which then names
             // no reason of its own over the one the next capture's gap holds.
-            let _ = stop.and_then(|stop| journal.finish(Some(&stop)));
+            let ending = engine_allocation::string(reason).map_or(Ending::Abandoned, |reason| {
+                Ending::Stopped {
+                    reason,
+                    command_branch: self.command_branch,
+                }
+            });
+            self.thread.queue(&self.lane, Op::End(ending));
         }
-        // The stopped capture's syncs end here; the next capture's slot starts empty.
-        self.durability.settle();
-        let _ = self.sync_failure.take();
+        // The stopped capture ends here: what its journal refused since is lost with it, so the
+        // next capture starts with nothing of it outstanding.
+        self.thread.settle(&self.lane);
+        if let Some(Failure { lost, controls, .. }) = self.lane.take_failure() {
+            self.absorb(Failure {
+                failed: None,
+                lost,
+                controls,
+            });
+        }
     }
 
     /// Hours `first..=last` of `branch` the rows wrote and a failed capture lost: a gap the next
@@ -996,8 +1050,7 @@ impl Counters {
             runs: 0,
             journaled: 0,
             hour_ns: 0,
-            append_ns: 0,
-            append_max_ns: 0,
+            journal: [0; 4],
             ended_ns: [0; TABLE_COUNT],
             ended_retried: [0; TABLE_COUNT],
             durability: None,
@@ -1012,8 +1065,10 @@ impl Counters {
         current_retried: &[u64],
         pending: usize,
         finished: bool,
-        durability: Option<&durability::Timing>,
+        durability: Option<&journal_thread::Timing>,
+        journal: Option<[u64; 4]>,
     ) -> Value {
+        let [queued, queued_max, append_ns, append_max_ns] = journal.unwrap_or(self.journal);
         let mut tables = self.ended_ns;
         for (total, ns) in tables.iter_mut().zip(current) {
             *total += ns;
@@ -1048,14 +1103,16 @@ impl Counters {
             "runs": self.runs,
             "journaled_bytes": self.journaled,
             "hour_ns": self.hour_ns,
-            "append_ns": self.append_ns,
-            "append_max_ns": self.append_max_ns,
+            "journal_queued": queued,
+            "journal_queued_max": queued_max,
+            "append_ns": append_ns,
+            "append_max_ns": append_max_ns,
             "finished": finished,
             "stopped": self.stopped.as_ref().map(Reason::text),
             "failures": self.failures,
             "lost_hours": self.lost,
-            "segment_syncs": durability.or(self.durability.as_ref()).map(durability::Timing::status),
-            "scope": "cumulative over the campaign: hours committed and failed, runs written, hours waiting for their rows' write; the sixteen tables with the most frame-writer wall, summed over the lanes; the sixteen tables whose lane hours were most often prepared again on the spool thread, for a string the run had not used or a failure; bytes of manifests and sections the journal holds; spool-thread wall preparing and committing hours, and appending them to the journal",
+            "segment_syncs": durability.or(self.durability.as_ref()).map(journal_thread::Timing::status),
+            "scope": "cumulative over the campaign: hours committed and failed, runs written, hours waiting for their rows' write; the sixteen tables with the most frame-writer wall, summed over the lanes; the sixteen tables whose lane hours were most often prepared again on the spool thread, for a string the run had not used or a failure; bytes of manifests and sections given to the journal; spool-thread wall preparing and committing hours; the journal thread's operations queued now and at most, and its wall appending hours (segment opens and syncs included)",
         })
     }
 }

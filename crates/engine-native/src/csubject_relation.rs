@@ -58,26 +58,14 @@ pub struct NameWalk {
     pub required_bytes: usize,
 }
 
+pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> NameWalk {
+    walk_buffer(memory, base, game_state, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
+}
+
 /// Enumerates native owned relations, authenticating both endpoint matrices and
 /// ownership vectors. Emits each active relation once, from its overlord.
 /// No allocation, retries, name hashing or precision conversion occurs.
 pub fn walk(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut [Row],
-    names: &mut [u8],
-) -> NameWalk {
-    walk_buffer(
-        memory,
-        base,
-        game_state,
-        crate::walk::Buffer::Fixed(output),
-        crate::walk::Buffer::Fixed(names),
-    )
-}
-
-pub fn walk_growing(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -117,24 +105,6 @@ pub fn walk_owned(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    output: &mut [Row],
-    names: &mut [u8],
-    scratch: &mut OwnedSnapshotScratch,
-) -> NameWalk {
-    walk_owned_buffer(
-        memory,
-        base,
-        game_state,
-        crate::walk::Buffer::Fixed(output),
-        crate::walk::Buffer::Fixed(names),
-        scratch,
-    )
-}
-
-pub fn walk_owned_growing(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
     output: &mut Vec<Row>,
     names: &mut Vec<u8>,
     scratch: &mut OwnedSnapshotScratch,
@@ -158,7 +128,6 @@ pub fn walk_owned_buffer(
     scratch: &mut OwnedSnapshotScratch,
 ) -> NameWalk {
     scratch.begin();
-    scratch.worker_growth(output.is_growing());
     let mut resolver = std::mem::take(&mut scratch.resolver);
     let mut pass = Pass {
         resolver: &mut resolver,
@@ -177,8 +146,8 @@ fn walk_matrix(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    output: &mut [Row],
-    names: &mut [u8],
+    output: &mut Vec<Row>,
+    names: &mut Vec<u8>,
 ) -> NameWalk {
     let mut pass = Pass {
         resolver: &mut crelation_status::Resolver::default(),
@@ -188,8 +157,8 @@ fn walk_matrix(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Fixed(output),
-        crate::walk::Buffer::Fixed(names),
+        crate::walk::Buffer::Growing(output),
+        crate::walk::Buffer::Growing(names),
         true,
         &mut pass,
     )

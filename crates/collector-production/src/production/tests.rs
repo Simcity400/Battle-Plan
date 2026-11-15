@@ -1247,30 +1247,6 @@ fn production_rest_split_copy_matches_direct_walk_under_truncation() {
 }
 
 #[test]
-fn production_rest_staging_overflow_falls_back_to_typed_walk() {
-    use super::production_rest_test_kit as kit;
-    let bytes = kit::fixture();
-    let memory = engine_native::memory::SliceMemory {
-        base: kit::BASE,
-        bytes: &bytes,
-    };
-    let ctx = ProductionRestCopyContext {
-        base: 0,
-        game_state: kit::BASE,
-    };
-    let mut tiny = ProductionRestJob {
-        log: crate::raw::RawLog::new(8, 8),
-        game_state: 0,
-        census: Vec::new(),
-        capacity_charge: crate::raw_memory::Charge::default(),
-    };
-    let report = crate::production::copy_production_rest_refresh(&memory, ctx, &mut tiny);
-    assert!(!report.raw_ok);
-    assert!(tiny.log.overflowed);
-    assert!(tiny.grow_for_next());
-}
-
-#[test]
 fn production_daily_groups_keep_design_certificates_between_scheduled_reads() {
     let mut variants = Variants::vacant();
     variants.organisations_complete = true;

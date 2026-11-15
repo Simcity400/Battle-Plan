@@ -163,6 +163,11 @@ pub struct Phase {
     pub os_at_peak: Option<Os>,
     pub os_started: Option<Os>,
     pub os_ended: Option<Os>,
+    /// The most working set and commit any [`sample_os`] read during the phase.
+    pub os_peak_working: usize,
+    pub os_peak_commit: usize,
+    /// The hour [`at_hour`] last named when the labels were read at the phase's peak.
+    pub hour_at_peak: Option<i64>,
     /// Families named past the labels' room, counted as "other".
     pub overflowed: usize,
     /// Every label that held anything.
@@ -209,6 +214,12 @@ mod off {
 
     #[inline(always)]
     pub fn phase(_: &'static str) {}
+
+    #[inline(always)]
+    pub fn sample_os() {}
+
+    #[inline(always)]
+    pub fn at_hour(_: i64) {}
 
     #[inline(always)]
     pub fn measure_allocator(_: fn() -> Option<usize>) {}
@@ -272,6 +283,12 @@ mod on {
     /// which also locks every slot: no call is counted while a reading is under way.
     static GATE: RwLock<()> = RwLock::new(());
     static OS_AT_PEAK: [AtomicUsize; READINGS] = [const { AtomicUsize::new(MISSING) }; READINGS];
+    /// The most working set and commit [`sample_os`] read since the phase began.
+    static OS_PEAK_WORKING: AtomicUsize = AtomicUsize::new(0);
+    static OS_PEAK_COMMIT: AtomicUsize = AtomicUsize::new(0);
+    /// The hour under way ([`at_hour`]), and the one under way at the last reading of a peak.
+    static HOUR: AtomicI64 = AtomicI64::new(i64::MIN);
+    static HOUR_AT_PEAK: AtomicI64 = AtomicI64::new(i64::MIN);
     static COMMITTED: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
     static SIZES: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
     static OPEN: Mutex<Option<(&'static str, Option<Os>)>> = Mutex::new(Some(("startup", None)));
@@ -620,6 +637,7 @@ mod on {
             IN_FLIGHT[label].store(0, Ordering::Relaxed);
         }
         AT_PEAK_TOTAL.store(total, Ordering::Relaxed);
+        HOUR_AT_PEAK.store(HOUR.load(Ordering::Relaxed), Ordering::Relaxed);
         let os = os();
         for (at, value) in OS_AT_PEAK.iter().zip(match os {
             Some(os) => [
@@ -723,8 +741,24 @@ mod on {
         unsafe { std::mem::transmute::<*mut (), fn() -> Option<usize>>(committed)() }
     }
 
-    /// The owner named `name`, the same each time it is named.
+    /// The owner named `name`, the same each time it is named. Each thread keeps the owners it
+    /// named, so a label entered for every event takes no lock.
     pub fn owner(name: &str) -> Owner {
+        thread_local! {
+            static NAMED: std::cell::RefCell<Vec<(&'static str, Owner)>> = const { std::cell::RefCell::new(Vec::new()) };
+        }
+        if let Some(owner) = NAMED.with(|named| named.borrow().iter().find(|(held, _)| *held == name).map(|&(_, owner)| owner)) {
+            return owner;
+        }
+        let owner = named_owner(name);
+        let names = lock(&NAMES);
+        if let Some(&held) = names.get(usize::from(owner.0)) {
+            NAMED.with(|named| named.borrow_mut().push((held, owner)));
+        }
+        owner
+    }
+
+    fn named_owner(name: &str) -> Owner {
         let mut names = lock(&NAMES);
         if names.is_empty() {
             names.push("run");
@@ -778,7 +812,22 @@ mod on {
         std::mem::take(&mut *lock(&PHASES))
     }
 
+    /// Reads the process's working set and commit into the phase's peaks: called by a sampler
+    /// the binary runs, since the system's own peak counters cannot be reset per phase.
+    pub fn sample_os() {
+        if let Some(os) = os() {
+            OS_PEAK_WORKING.fetch_max(os.working, Ordering::Relaxed);
+            OS_PEAK_COMMIT.fetch_max(os.commit, Ordering::Relaxed);
+        }
+    }
+
+    /// Names the hour under way, for the phase's reading at its peak.
+    pub fn at_hour(hour: i64) {
+        HOUR.store(hour, Ordering::Relaxed);
+    }
+
     fn close(next: Option<&'static str>) {
+        sample_os();
         let os = os();
         let mut open = lock(&OPEN);
         let ended = match next {
@@ -815,6 +864,9 @@ mod on {
         let tracked_at_peak = AT_PEAK_TOTAL.load(Ordering::Relaxed);
         let at_peak: [usize; READINGS] =
             std::array::from_fn(|at| OS_AT_PEAK[at].load(Ordering::Relaxed));
+        let os_peak_working = OS_PEAK_WORKING.swap(0, Ordering::Relaxed);
+        let os_peak_commit = OS_PEAK_COMMIT.swap(0, Ordering::Relaxed);
+        let hour_at_peak = HOUR_AT_PEAK.load(Ordering::Relaxed);
         let total = TOTAL.load(Ordering::Relaxed);
         TOTAL_PEAK.store(total, Ordering::Relaxed);
         mark(total);
@@ -857,6 +909,9 @@ mod on {
             }),
             os_started: started,
             os_ended: ended,
+            os_peak_working,
+            os_peak_commit,
+            hour_at_peak: (hour_at_peak != i64::MIN).then_some(hour_at_peak),
             overflowed: OVERFLOWED.load(Ordering::Relaxed),
             labels,
         }

@@ -455,26 +455,6 @@ fn memo_context_capacity_branch_and_missing_refresh_never_reuse_old_entry() {
 }
 
 #[test]
-fn memo_incomplete_capacity_result_cannot_seed_and_growth_requires_decode() {
-    let bytes = kit::fixture();
-    let mut job = AirBasesJob::fixture();
-    stage(&mut job, &bytes);
-    // Only bases/aces/names retain fixed typed capacities. Complete raw
-    // registrations supply their own storage demand before decode.
-    for slot in 0..3 {
-        let mut memo = AirBasesMemo::default();
-        let mut cap = CAPS;
-        cap[slot] = 0;
-        let report = run(&mut memo, &job, context(1), cap).2;
-        assert!(!report.hit && !report.installed, "capacity slot {slot}");
-        assert!(memo.key.is_none());
-        let report = run(&mut memo, &job, context(2), CAPS).2;
-        assert!(!report.hit && report.installed);
-        assert!(run(&mut memo, &job, context(3), CAPS).2.hit);
-    }
-}
-
-#[test]
 fn memo_grows_registrations_before_keying_and_restoring_another_small_frame() {
     let bytes = kit::fixture();
     let expected = kit::direct(&kit::memory(&bytes));

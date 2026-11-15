@@ -277,7 +277,7 @@ impl Evaluator<'_, '_> {
         let world = self.world();
         let token = world.industrial_organisation(reference)?.token;
         let literal = world.token(token)?.ok_or_else(|| -> Failure {
-            format!("LexicalTokens lacks industrial organisation definition token {token}").into()
+            format!("lexical tokens lacks industrial organisation definition token {token}").into()
         })?;
         let template = String::from_utf8(literal.to_vec())
             .map_err(|_| "the industrial organisation's definition token is not UTF-8")?;

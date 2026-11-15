@@ -205,25 +205,24 @@ fn full_read_preserves_every_stored_count_once_per_canonical_country() {
 }
 
 #[test]
-fn truncation_counts_whole_countries_without_reading_their_statuses() {
+fn the_count_probe_counts_whole_countries_without_reading_their_statuses() {
     let mut bytes = fixture();
-    // The second country's status is never read while its row cannot fit.
+    // No country's status is read by the count probe.
     put(
         &mut bytes,
         0x5000 + ccountry::PRODUCTION_STATUS,
         &UNMAPPED.to_le_bytes(),
     );
-    let (outcome, rows) = capture(&bytes, 1);
     assert_eq!(
-        outcome,
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 1
-        }
-    );
-    assert_eq!(rows[0], expected_row(0, 3));
-    assert_eq!(
-        capture(&fixture(), 0).0,
+        walk_factories_buffer(
+            &SliceMemory {
+                base: MEMORY_BASE,
+                bytes: &bytes,
+            },
+            0,
+            MEMORY_BASE,
+            Buffer::Count,
+        ),
         Outcome::Truncated {
             len: 0,
             unread_rows: 2
@@ -377,7 +376,7 @@ fn growing_factory_storage_does_not_hide_an_original_status_fault() {
         &UNMAPPED.to_le_bytes(),
     );
     assert_eq!(
-        walk_factories_growing(
+        walk_factories(
             &SliceMemory {
                 base: MEMORY_BASE,
                 bytes: &bytes
@@ -489,11 +488,11 @@ fn batched_factories_equal_the_serial_walk() {
     let mut rows = Vec::new();
     let mut plain = Vec::new();
     assert_eq!(
-        walk_factories_growing(&view, 0, MEMORY_BASE, &mut rows),
+        walk_factories(&view, 0, MEMORY_BASE, &mut rows),
         Outcome::Rows { len: count }
     );
     assert_eq!(
-        walk_factories_growing(&counted, 0, MEMORY_BASE, &mut plain),
+        walk_factories(&counted, 0, MEMORY_BASE, &mut plain),
         Outcome::Rows { len: count }
     );
     for (index, row) in rows[..count].iter().enumerate() {
@@ -535,7 +534,7 @@ fn a_persistent_fault_gives_the_serial_result() {
         let memory = faulty(&bytes, &persistent, false);
         let before = crate::batch_fallback::count(crate::batch_fallback::Batch::CountryFactories);
         let mut rows = Vec::new();
-        let outcome = walk_factories_growing(&memory, 0, MEMORY_BASE, &mut rows);
+        let outcome = walk_factories(&memory, 0, MEMORY_BASE, &mut rows);
         // The batch met the fault and was read again country by country.
         assert!(
             crate::batch_fallback::count(crate::batch_fallback::Batch::CountryFactories) > before,
@@ -551,7 +550,7 @@ fn a_persistent_fault_gives_the_serial_result() {
     let memory = faulty(&bytes, &[], false);
     let before = crate::batch_fallback::count(crate::batch_fallback::Batch::CountryFactories);
     assert_eq!(
-        walk_factories_growing(&memory, 0, MEMORY_BASE, &mut Vec::new()),
+        walk_factories(&memory, 0, MEMORY_BASE, &mut Vec::new()),
         serial(&memory, count)
     );
     assert!(crate::batch_fallback::count(crate::batch_fallback::Batch::CountryFactories) > before);
@@ -569,7 +568,7 @@ fn a_one_shot_fault_refuses_no_more_than_the_serial_walk() {
         let memory = faulty(&bytes, &[once], true);
         let mut rows = Vec::new();
         assert_eq!(
-            walk_factories_growing(&memory, 0, MEMORY_BASE, &mut rows),
+            walk_factories(&memory, 0, MEMORY_BASE, &mut rows),
             Outcome::Rows { len: count },
             "{once:#x}"
         );

@@ -9,3 +9,4 @@
 .operative-cell-detail .table-country { font-size: var(--type-xs); }
 .operative-experience { display: flex; align-items: stretch; gap: var(--space-1); flex-direction: column; min-width: 0; line-height: var(--type-md); }
 .operative-assignment > img { width: var(--space-4); height: var(--space-4); flex: none; object-fit: contain; }
+.operative-meter { width: 100%; }

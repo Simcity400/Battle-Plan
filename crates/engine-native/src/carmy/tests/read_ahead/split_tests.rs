@@ -22,8 +22,7 @@ fn serial(
     held: &[Option<crate::csub_unit_definition::DivisionMaxima>],
 ) -> (StatusPacket, Vec<carmy::StatusRow>, u64) {
     let mut packet = StatusPacket::new(seeds.len()).unwrap();
-    packet.enable_growth();
-    packet.capture_holding(memory, 0, GS, seeds, outcome, seeds.len(), held, &[]);
+    packet.capture_holding(memory, 0, GS, seeds, outcome, held, &[]);
     let refused = packet.capture_movement_organisation(memory, 0, GS, seeds);
     let mut rows = vec![carmy::StatusRow::default(); seeds.len()];
     let outcome = packet.project(&mut rows);
@@ -40,7 +39,6 @@ fn split_hour(
     parts: &mut [StatusPart],
 ) -> (Vec<carmy::StatusRow>, u64, u64) {
     let growths_before = crate::allocation::growths();
-    packet.enable_growth();
     packet.prepare_holding(memory, 0, GS, seeds, source, held, &[]);
     let admitted = packet.prepared_units();
     let count = parts.len();
@@ -516,4 +514,76 @@ fn native_border_join_before_owned_stitch_keeps_exact_rows() {
     let mut baseline = actual.clone();
     assert_eq!(packet.project(&mut actual), expected.project(&mut baseline));
     assert_eq!(actual, baseline);
+}
+
+/// The ordered settle takes each staged block's maxima from the parallel preparation and reads
+/// none of those blocks itself; carried, aliased and unstaged seeds keep their own path, and
+/// the final rows equal the unstaged serial capture's.
+#[test]
+fn staged_maxima_settle_reads_no_staged_block_and_keeps_exact_rows() {
+    struct Blocks<'a> {
+        source: &'a PresentationMemory,
+        blocks: Vec<usize>,
+        reads: Cell<usize>,
+    }
+    impl Memory for Blocks<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            if self.blocks.contains(&address) {
+                self.reads.set(self.reads.get() + 1);
+            }
+            self.source.copy(address, output)
+        }
+    }
+    let (memory, mut seeds, held) = distinct_status_world(65);
+    // An alias shares its block; the first seed's value stands for both.
+    seeds[6].stat_block = seeds[5].stat_block;
+    let outcome = Outcome::Rows { len: seeds.len() };
+    for carried in [false, true] {
+        let held: Vec<_> = if carried {
+            held.clone()
+        } else {
+            vec![None; seeds.len()]
+        };
+        let (serial_packet, expected, _) = serial(&memory, &seeds, outcome, &held);
+        // A preparation range stages every block the held capture cannot carry; seed 9 is
+        // left to the ordered read.
+        let staged_seeds: Vec<usize> = (0..seeds.len())
+            .filter(|&index| index != 9 && held[index].is_none())
+            .collect();
+        let pointers: Vec<usize> = staged_seeds
+            .iter()
+            .map(|&index| seeds[index].stat_block.unwrap())
+            .collect();
+        let mut reads = vec![Err("unstaged"); pointers.len()];
+        crate::csub_unit_definition::stage_division_maxima(&memory, 0, &pointers, &mut reads);
+        let mut staged = vec![None; seeds.len()];
+        for (&index, read) in staged_seeds.iter().zip(reads) {
+            staged[index] = Some(read);
+        }
+        let blocks = Blocks {
+            source: &memory,
+            blocks: pointers,
+            reads: Cell::new(0),
+        };
+        let mut packet = StatusPacket::new(seeds.len()).unwrap();
+        packet.prepare_holding_staged(&blocks, 0, GS, &seeds, outcome, &held, &[], &|index| {
+            staged[index]
+        });
+        assert_eq!(blocks.reads.get(), 0, "carried={carried}");
+        let admitted = packet.prepared_units();
+        let mut parts: Vec<_> = (0..3).map(|_| StatusPart::vacant()).collect();
+        let count = parts.len();
+        for (index, part) in parts.iter_mut().enumerate() {
+            part.range = admitted * index / count..admitted * (index + 1) / count;
+            part.capture(&memory, 0, GS, &seeds, &packet);
+        }
+        packet.stitch_status_parts(&parts);
+        let mut rows = vec![carmy::StatusRow::default(); seeds.len()];
+        let projected = packet.project(&mut rows);
+        rows.truncate(projected.len());
+        assert_eq!(rows, expected, "carried={carried}");
+        for index in 0..seeds.len() {
+            assert_eq!(packet.unit_maxima(index), serial_packet.unit_maxima(index));
+        }
+    }
 }

@@ -242,8 +242,9 @@ def write_unify(target, host):
         "test = false",
         "doctest = false",
     ]
+    # Cargo refuses one package version under two names, so both tables share one set of keys.
+    keys = keyed(target | host)
     for table, nodes in (("dependencies", target), ("build-dependencies", host)):
-        keys = keyed(nodes)
         manifest += ["", f"[{table}]"]
         manifest += [f"{keys[n]} = {third_party_spec(n[0] if keys[n] != n[0] else '', n[1], f)}"
                      for n, f in sorted(nodes.items())]

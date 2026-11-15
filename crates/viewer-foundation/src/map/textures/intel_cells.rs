@@ -184,6 +184,25 @@ impl IntelCells {
         )))
     }
 
+    /// The grid's cell count.
+    pub fn cells(&self) -> usize {
+        self.offsets.len() - 1
+    }
+
+    /// The cells `province`'s land pixels fall in.
+    pub fn province_cells(&self, province: u32) -> &[usize] {
+        self.province_cells.get(&province).map_or(&[], Vec::as_slice)
+    }
+
+    /// One cell's intel byte from its land pixels' province bytes.
+    pub fn cell_byte(&self, cell: usize, byte: impl Fn(u32) -> u8) -> u8 {
+        let mut sum = CELL_PIXELS as u32 * u32::from(u8::MAX);
+        for entry in &self.entries[self.offsets[cell]..self.offsets[cell + 1]] {
+            sum -= u32::from(entry.pixels) * u32::from(u8::MAX - byte(self.land_provinces[entry.land_index as usize]));
+        }
+        !((sum / CELL_PIXELS as u32) as u8)
+    }
+
     pub fn patch_values(
         &self,
         previous: &IntelMap,

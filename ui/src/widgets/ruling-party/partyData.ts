@@ -1,25 +1,32 @@
 import { contentTitle } from '../../dashboard/contentTitles.ts';
 import type { EventBadge } from '../../charts/badges';
 import { runAt } from '../../charts/series.ts';
-import { buildStack as buildStackOf, stackedSegments } from '../../charts/stack.ts';
-import type { StackModel } from '../../charts/stack';
-import { fixedNumber, formatFixed } from '../../charts/valueAxis.ts';
+import { formatFixed } from '../../charts/valueAxis.ts';
 import { GREY_CHROMA } from '../../charts/palette.ts';
 import { oklchToRgb, parseColor, rgbToOklch, toHex } from '../../shell/appearance/color.ts';
-import type { FixedRun, HourSpan, LeaderRun, LedgerGovernment, PartyHistoryReply, PartySeries } from '../../generated/dashboard';
+import type { HourSpan, LeaderRun, PartyHistoryReply } from '../../generated/dashboard';
+import { keyId } from '../../dashboard/keyedSeriesData.ts';
+import type { ReachedKeyLine, SeriesKey } from '../../dashboard/keyedSeriesData';
+import { mergeSummaries } from '../../charts/chartSummary.ts';
+import type { ChartSummary } from '../../charts/chartSummary';
+import type { LedgerGovernment } from './partyTypes';
 
 /** Party popularity as stacked bands in each ideology's colour, with the ruling
- * party's changes and elections as badges. */
+ * party's changes and elections as badges. Popularity is the declared `party-popularity` series: each band's lines
+ * are the parts its party was read under. */
 
-export interface Band { token: string; name: string; color: string; series: PartySeries }
+/** The declared series of party popularity, and the bits of its row key below a country. */
+export const POPULARITY_FAMILY = { kind: 'party-popularity', measure: 'popularity' } as const;
+export const POPULARITY_PART_BITS = 32;
+
+export interface Band { token: string; name: string; color: string; keys: SeriesKey[] }
 
 /** Checks the reply's shape; runs must be in hour order. */
 export function validatePartyHistoryReply(data: unknown): PartyHistoryReply {
   const reply = data as PartyHistoryReply;
-  const ordered = (runs: readonly FixedRun[]) => runs.every((run, index) => run.firstHour <= run.lastHour
-    && /^-?\d{1,20}$/.test(run.valueRaw) && (index === 0 || runs[index - 1].lastHour < run.firstHour));
   const ok = typeof reply === 'object' && reply != null && Number.isInteger(reply.decimals) && Array.isArray(reply.parties)
-    && reply.parties.every(party => typeof party.token === 'string' && Array.isArray(party.runs) && ordered(party.runs))
+    && reply.parties.every(party => typeof party.token === 'string' && Array.isArray(party.parts)
+      && party.parts.every(part => Number.isInteger(part) && part >= 0))
     && Array.isArray(reply.ruling) && Array.isArray(reply.elections) && Array.isArray(reply.ideologies) && Array.isArray(reply.warnings)
     && Array.isArray(reply.people) && Array.isArray(reply.ideologyTypes) && Array.isArray(reply.leaders)
     && reply.leaders.every((run, index) => typeof run.ideology === 'string' && run.firstHour <= run.lastHour
@@ -36,7 +43,7 @@ export function validatePartyHistoryReply(data: unknown): PartyHistoryReply {
 /** Bands in content order (unknown ideologies after, by token), coloured by their
  * content colour in the palette's tone or, without one, by the categorical palette
  * in its fixed order. */
-export function bands(reply: PartyHistoryReply, palette: readonly string[]): Band[] {
+export function bands(reply: PartyHistoryReply, tag: string, palette: readonly string[]): Band[] {
   const order = new Map(reply.ideologies.map((ideology, index) => [ideology.token, index]));
   const sorted = [...reply.parties].sort((a, b) => (order.get(a.token) ?? Infinity) - (order.get(b.token) ?? Infinity) || a.token.localeCompare(b.token));
   const tone = paletteTone(palette);
@@ -44,7 +51,8 @@ export function bands(reply: PartyHistoryReply, palette: readonly string[]): Ban
   return sorted.map(series => {
     const ideology = reply.ideologies.find(item => item.token === series.token);
     const color = ideology?.color ? ideologyColour(ideology.color, tone) : palette[fallback++ % Math.max(1, palette.length)];
-    return { token: series.token, name: contentTitle(ideology?.name, series.token, 'Ideology name unavailable'), color, series };
+    return { token: series.token, name: contentTitle(ideology?.name, series.token, 'Ideology name unavailable'), color,
+      keys: series.parts.map(part => ({ tag, part: String(part) })) };
   });
 }
 
@@ -73,25 +81,53 @@ export function rulingFirst(list: readonly Band[], ruling: string | null): Band[
   return index <= 0 ? [...list] : [list[index], ...list.slice(0, index), ...list.slice(index + 1)];
 }
 
-/** The exact recorded popularity at an hour, or null when it was not recorded. */
-export function rawAt(series: PartySeries, hour: number): string | null {
-  return runAt(series.runs, hour)?.valueRaw ?? null;
+/** Every band's lines, in band order. */
+export const bandKeys = (list: readonly Band[]): SeriesKey[] => list.flatMap(band => band.keys);
+
+/** A band's exact popularity at an hour as read (`reached`: the states the widget read, by key): undefined while
+ * the hour is not read, null when it was not recorded. */
+export function rawAt(band: Band, reached: readonly ReachedKeyLine[], hour: number): string | null | undefined {
+  let read = false;
+  for (const line of reached) {
+    if (!band.keys.some(key => key.tag === line.key.tag && key.part === line.key.part)) continue;
+    const run = runAt(line.runs, hour);
+    if (run) return run.valueRaw;
+    read ||= line.missing.has(hour);
+  }
+  return read ? null : undefined;
 }
 
 export const formatPopularity = (raw: string, decimals: number) => `${formatFixed(raw, decimals, 1)}%`;
+
+/** A popularity as a number (a followed value at the head), as `formatPopularity` shows an exact one. */
+export const formatShare = (value: number) => `${value.toFixed(1)}%`;
+
+/** A band's line as its tiles draw it (`summaryOf`, by key id): its one part's, or its parts' joined where its party
+ * was read under several; undefined while none has landed. */
+export function bandSummary(band: Band, summaryOf: (id: string) => ChartSummary | undefined): ChartSummary | undefined {
+  const held = band.keys.flatMap(key => { const summary = summaryOf(keyId(key)); return summary ? [summary] : []; });
+  if (held.length < 2) return held[0];
+  try { return mergeSummaries(held); } catch { return held[0]; }
+}
+
+/** `bandSummary` as a chart draws it each frame: the same summary while its keys' summaries are the same objects, so
+ * a frame merges nothing and the stack built from it is kept. */
+export function bandSummaries(): (band: Band, summaryOf: (id: string) => ChartSummary | undefined) => ChartSummary | undefined {
+  const made = new Map<string, { parts: (ChartSummary | undefined)[]; summary: ChartSummary | undefined }>();
+  return (band, summaryOf) => {
+    const parts = band.keys.map(key => summaryOf(keyId(key)));
+    const held = made.get(band.token);
+    if (held && held.parts.length === parts.length && held.parts.every((part, at) => part === parts[at])) return held.summary;
+    const summary = bandSummary(band, summaryOf);
+    made.set(band.token, { parts, summary });
+    return summary;
+  };
+}
 
 /** The ruling party's token at an hour, or null when not recorded. */
 export function rulingAt(reply: PartyHistoryReply, hour: number): string | null {
   return reply.ruling.find(run => run.firstHour <= hour && hour <= run.lastHour)?.token ?? null;
 }
-
-/** The bands stacked in order, each party's popularity as a plotting number
- * (the kit's `buildStack`). */
-export function buildStack(list: readonly Band[], decimals: number): StackModel {
-  return buildStackOf(list.map(band => band.series.runs.map(run => ({ ...run, value: fixedNumber(run.valueRaw, decimals) }))));
-}
-
-export { stackedSegments };
 
 /** Ruling-party changes and elections as badges, and changes of leader when
  * `leaders` is set. A change next to a gap is a gap in the recording, not a change
@@ -122,6 +158,27 @@ export function partyBadges(reply: PartyHistoryReply, name: (token: string) => s
     });
   }
   return badges.sort((a, b) => a.hour - b.hour);
+}
+
+/** The hours at which the government, its leader or the party's name can change, or the parties go unread: between
+ * two of them the header shows the same, so a widget following the head renders only at them. */
+export function partyChangeHours(reply: Pick<PartyHistoryReply, 'ruling' | 'leaders' | 'partyNameRuns' | 'unobserved'>): number[] {
+  const hours = new Set<number>();
+  for (const run of [...reply.ruling, ...reply.leaders, ...reply.partyNameRuns, ...reply.unobserved]) { hours.add(run.firstHour); hours.add(run.lastHour + 1); }
+  return [...hours].sort((a, b) => a - b);
+}
+
+/** The hour the keyboard steps to among `hours` (sorted) from `from` within `bounds`: the next after it, the one
+ * before it, the first or the last; null when there is none. */
+export function stepHour(hours: readonly number[], key: 'ArrowLeft' | 'ArrowRight' | 'Home' | 'End', from: number | null,
+  bounds: readonly [number, number]): number | null {
+  const inside = hours.filter(hour => hour >= bounds[0] && hour <= bounds[1]);
+  switch (key) {
+    case 'Home': return inside[0] ?? null;
+    case 'End': return inside.at(-1) ?? null;
+    case 'ArrowRight': return inside.find(hour => from === null || hour > from) ?? null;
+    case 'ArrowLeft': return [...inside].reverse().find(hour => from === null || hour < from) ?? null;
+  }
 }
 
 /** The ruling party's leader run at an hour, or null when not recorded. */

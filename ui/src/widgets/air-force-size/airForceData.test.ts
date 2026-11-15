@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { resolveOptions } from '../../dashboard/options.ts';
 import { definition, OPTIONS } from './definition.ts';
-import { airForceRequest, validateAirForceReply } from './airForceData.ts';
+import { airForceRequest, airForceTotals, validateAirForceReply } from './airForceData.ts';
 
 test('air force defaults to planes, roster ownership and the shared top-ten race', () => {
   const options = resolveOptions(OPTIONS, {});
@@ -19,6 +19,8 @@ test('air force requests preserve opaque picks and select wings/effective owners
     { branchId: 'branch', tags: ['space , tag', 'another'], top: null, measure: 'wings', ownership: 'effective' });
   assert.equal(resolveOptions(OPTIONS, { measure: 'unknown' }).measure, 'planes');
   assert.throws(() => validateAirForceReply({}), /malformed/);
+  assert.deepEqual(airForceTotals(resolveOptions(OPTIONS, { measure: 'wings', ownership: 'effective' })), { kind: 'air-force-totals', measure: 'effectiveWings', decimals: 0 });
+  assert.deepEqual(airForceTotals(resolveOptions(OPTIONS, {})), { kind: 'air-force-totals', measure: 'rosterPlanes', decimals: 0 });
 });
 
 

@@ -101,35 +101,9 @@ impl Outcomes {
     }
 }
 
-/// Walks every canonical country's organisations in array order, and each
-/// one's history in slot order. An unreadable or unauthenticated organisation
-/// withholds both tables; an unreadable or inconsistent history table withholds
-/// only the history, from that organisation on. Rows that do not fit are
-/// counted, as is every later organisation once one's strings do not fit the
-/// arena; a history that does not fit is counted from its element count.
-pub fn walk(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    organisations: &mut [Row],
-    history: &mut [HistoryRow],
-    bytes: &mut [u8],
-) -> Outcomes {
-    walk_inner(
-        memory,
-        base,
-        game_state,
-        Buffer::Fixed(organisations),
-        Buffer::Fixed(history),
-        Buffer::Fixed(bytes),
-        &mut (),
-    )
-    .unwrap_or_else(Outcomes::unavailable)
-}
-
 /// Acquisition workers continue from the original organisation fields and
 /// history headers when native storage grows after the last sizing poll.
-pub fn walk_growing(
+pub fn walk(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -137,7 +111,7 @@ pub fn walk_growing(
     history: &mut Vec<HistoryRow>,
     bytes: &mut Vec<u8>,
 ) -> Outcomes {
-    walk_growing_with(
+    walk_with(
         memory,
         base,
         game_state,
@@ -157,7 +131,7 @@ pub trait Visitor {
 impl Visitor for () {}
 
 #[allow(clippy::too_many_arguments)]
-pub fn walk_growing_with(
+pub fn walk_with(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -293,7 +267,7 @@ fn walk_inner(
                     .checked_add(fields.name.len)
                     .and_then(|len| len.checked_add(fields.icon.len))
                     .ok_or("organisation byte arena overflow")?;
-                if matches!(bytes, Buffer::Fixed(_)) && end > bytes.len() {
+                if !bytes.is_growing() && end > bytes.len() {
                     full = true;
                     required_bytes = end;
                     unread = unread
@@ -839,7 +813,7 @@ mod tests {
         let mut organisations = Vec::new();
         let mut history = Vec::new();
         let mut arena = Vec::new();
-        let walked = walk_growing(
+        let walked = walk(
             &memory,
             0,
             BASE,
@@ -908,67 +882,6 @@ mod tests {
                 reason: "organisation history count mismatch",
             }
         );
-    }
-
-    #[test]
-    fn truncation_counts_unread_rows_and_never_calls_history_complete() {
-        let bytes = fixture();
-        let (outcomes, ..) = run(&bytes, 1, 4);
-        assert_eq!(
-            outcomes.organisations,
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            }
-        );
-        assert_eq!(
-            outcomes.history,
-            Outcome::Truncated {
-                len: 2,
-                unread_rows: 1
-            }
-        );
-        let (outcomes, _, entries, _) = run(&bytes, 4, 1);
-        assert_eq!(outcomes.organisations, Outcome::Rows { len: 2 });
-        assert_eq!(
-            outcomes.history,
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            }
-        );
-        assert_eq!(entries[0].variant, VARIANT_A);
-        let (outcomes, ..) = run(&bytes, 0, 0);
-        assert_eq!(
-            outcomes.organisations,
-            Outcome::Truncated {
-                len: 0,
-                unread_rows: 2
-            }
-        );
-        // Strings that do not fit the arena stop the walk at their organisation
-        // and report the bytes it needs.
-        let mut rows = vec![Row::default(); 4];
-        let mut arena = vec![0; 12];
-        let outcomes = walk(
-            &SliceMemory {
-                base: BASE,
-                bytes: &bytes,
-            },
-            0,
-            BASE,
-            &mut rows,
-            &mut [HistoryRow::default(); 4],
-            &mut arena,
-        );
-        assert_eq!(
-            outcomes.organisations,
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            }
-        );
-        assert_eq!((outcomes.bytes_len, outcomes.required_bytes), (10, 21));
     }
 
     #[test]

@@ -17,11 +17,11 @@ pub fn task_force_name(
 ) -> Result<String, String> {
     let bytes = row
         .name
-        .require("TaskForceCounterInputs.name")?
+        .require("name of task force counter inputs")?
         .as_deref()
         .ok_or_else(|| {
             format!(
-                "TaskForceCounterInputs.name unavailable for task force {:#x}: guarded read or name arena refusal",
+                "name of task force counter inputs unavailable for task force {:#x}: guarded read or name arena refusal",
                 row.task_force
             )
         })?;
@@ -69,16 +69,16 @@ pub fn army_name<'a, 'b>(
             }
         }
         Recorded::Value(None) => Err(format!(
-            "DivisionStatus.name unavailable for UNIT {:#x}: guarded read or name arena refusal",
+            "name of division status unavailable for UNIT {:#x}: guarded read or name arena refusal",
             status.division
         )),
         Recorded::NotRecorded => {
             let naming = status
                 .naming
-                .require("DivisionStatus.naming")?
+                .require("naming of division status")?
                 .as_ref()
                 .ok_or_else(|| format!(
-                    "DivisionStatus.naming unavailable for UNIT {:#x}: guarded read or arena shortage",
+                    "naming of division status unavailable for UNIT {:#x}: guarded read or arena shortage",
                     status.division
                 ))?;
             legacy_army_name(naming, localisation, recorded_language, legacy_names)

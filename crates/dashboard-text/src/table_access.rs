@@ -1,6 +1,5 @@
 use crate::invalid;
 use replay_data::{
-    Hour,
     rows::{LexicalTokenRow, TableId, TableRows, TableSchema, column, mask, tables},
     scope::CaptureMode,
 };
@@ -57,15 +56,15 @@ pub fn country_slot(
         return Ok(Some(link.canonical_slot));
     }
     Err(match links {
-        Available::Complete(_) => format!("country {country} has no CountryLinks row"),
+        Available::Complete(_) => format!("country {country} has no country links row"),
         Available::Truncated { missing, .. } => format!(
-            "the CountryLinks table is truncated this hour ({missing} rows not reached) and holds no row for country {country}"
+            "the country links table is truncated this hour ({missing} rows not reached) and holds no row for country {country}"
         ),
         Available::Unavailable { reason } => format!(
-            "the CountryLinks table is unavailable this hour ({reason}), so country {country} is unresolved"
+            "the country links table is unavailable this hour ({reason}), so country {country} is unresolved"
         ),
         Available::NotRecorded { mode } => format!(
-            "the CountryLinks table is not recorded in a {mode} recording, so country {country} is unresolved"
+            "the country links table is not recorded in a {mode} recording, so country {country} is unresolved"
         ),
     })
 }
@@ -78,9 +77,9 @@ pub fn rows<T: TableSchema>(
     frame: &dyn replay_frame::frame::DecodedSource,
 ) -> io::Result<Available<'_, T>> {
     match frame.view(T::ID.index()) {
-        TableView::Complete(rows) => Ok(Available::Complete(typed::<T>(rows, frame.hour())?)),
+        TableView::Complete(rows) => Ok(Available::Complete(typed::<T>(rows)?)),
         TableView::Truncated { rows, missing } => Ok(Available::Truncated {
-            rows: typed::<T>(rows, frame.hour())?,
+            rows: typed::<T>(rows)?,
             missing: *missing,
         }),
         TableView::Unavailable { reason } => Ok(Available::Unavailable { reason }),
@@ -128,9 +127,9 @@ impl std::fmt::Display for TokenError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Rejected => write!(f, "token 0 stands for every key the lexer rejects"),
-            Self::Absent(token) => write!(f, "token {token} is not in LexicalTokens"),
+            Self::Absent(token) => write!(f, "token {token} is not in lexical tokens"),
             Self::Missing(token) => {
-                write!(f, "token {token} is among LexicalTokens' missing rows")
+                write!(f, "token {token} is among lexical tokens' missing rows")
             }
             Self::NotText(token) => write!(f, "token {token} is not spelled as text"),
         }
@@ -144,17 +143,11 @@ impl<'a> TokenNames<'a> {
             replay_frame::frame::OperandStatus::WrongLayout
                 | replay_frame::frame::OperandStatus::TruncatedWrongLayout(_)
         ) {
-            return Err(invalid(format!(
-                "hour {} LexicalTokens contains another table's rows",
-                frame.hour()
-            )));
+            return Err(invalid(format!("{} holds rows of another kind", TableId::LexicalTokens.words())));
         }
         let rows = frame.lexical_rows();
         if !rows.is_sorted_by(|a, b| a.token < b.token) {
-            return Err(invalid(format!(
-                "hour {} LexicalTokens rows are not in token order",
-                frame.hour()
-            )));
+            return Err(invalid(format!("{} are not in order", TableId::LexicalTokens.words())));
         }
         Ok(Self {
             rows: Rowset::Decoded(rows.as_slice()),
@@ -303,12 +296,9 @@ impl TokenKeys {
     }
 }
 
-fn typed<T: TableSchema>(rows: &TableRows, hour: Hour) -> io::Result<&[T::Row]> {
+fn typed<T: TableSchema>(rows: &TableRows) -> io::Result<&[T::Row]> {
     rows.rows::<T>().ok_or_else(|| {
-        invalid(format!(
-            "hour {hour} {:?} contains another table's rows",
-            T::ID
-        ))
+        invalid(format!("{} holds rows of another kind", T::ID.words()))
     })
 }
 
@@ -325,7 +315,7 @@ mod tests {
         });
         assert_eq!(
             TokenNames::new(&frame).unwrap_err().to_string(),
-            "hour 0 LexicalTokens contains another table's rows"
+            "lexical tokens holds rows of another kind"
         );
         assert_eq!(
             (&frame as &dyn replay_frame::frame::RecordedSource)
@@ -391,7 +381,7 @@ mod tests {
         );
         assert_eq!(
             TokenError::Missing(7).to_string(),
-            "token 7 is among LexicalTokens' missing rows"
+            "token 7 is among lexical tokens' missing rows"
         );
     }
 
@@ -466,7 +456,7 @@ mod tests {
         assert_eq!(country_slot(&available, 0), Ok(None));
         assert_eq!(
             country_slot(&available, 8),
-            Err("country 8 has no CountryLinks row".to_owned())
+            Err("country 8 has no country links row".to_owned())
         );
         let truncated = with(TableView::Truncated {
             rows: links,
@@ -477,7 +467,7 @@ mod tests {
         assert!(
             country_slot(&available, 8)
                 .unwrap_err()
-                .starts_with("the CountryLinks table is truncated this hour (3 rows not reached)")
+                .starts_with("the country links table is truncated this hour (3 rows not reached)")
         );
     }
 }

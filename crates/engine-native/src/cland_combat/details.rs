@@ -153,24 +153,32 @@ pub struct DetailArenas<'a> {
 
 impl<'a> DetailArenas<'a> {
     pub fn new(
-        participants: &'a mut [u64],
-        air: &'a mut [i32],
-        text: &'a mut [u8],
-        traits: &'a mut [CommanderTrait],
-        timed: &'a mut [CommanderTimedTrait],
-        learning: &'a mut [CommanderLearningTrait],
+        participants: &'a mut Vec<u64>,
+        air: &'a mut Vec<i32>,
+        text: &'a mut Vec<u8>,
+        traits: &'a mut Vec<CommanderTrait>,
+        timed: &'a mut Vec<CommanderTimedTrait>,
+        learning: &'a mut Vec<CommanderLearningTrait>,
     ) -> Self {
-        Self {
-            participants: Buffer::Fixed(participants),
-            air: Buffer::Fixed(air),
-            text: Buffer::Fixed(text),
-            traits: Buffer::Fixed(traits),
-            timed: Buffer::Fixed(timed),
-            learning: Buffer::Fixed(learning),
-            used: DetailCounts::default(),
-            required: DetailCounts::default(),
-            verify_headers: false,
-        }
+        Self::with_buffers(
+            Buffer::Growing(participants),
+            Buffer::Growing(air),
+            Buffer::Growing(text),
+            Buffer::Growing(traits),
+            Buffer::Growing(timed),
+            Buffer::Growing(learning),
+        )
+    }
+
+    pub fn count() -> Self {
+        Self::with_buffers(
+            Buffer::Count,
+            Buffer::Count,
+            Buffer::Count,
+            Buffer::Count,
+            Buffer::Count,
+            Buffer::Count,
+        )
     }
 
     /// Continue these same native detail observations in worker-owned arenas.
@@ -1003,13 +1011,13 @@ impl<M: Memory> Reader<'_, M> {
         errors: &crate::cname_group_member::StringErrors,
         arenas: &mut DetailArenas<'_>,
     ) -> Result<Span, &'static str> {
-        let mut names = crate::cname_group_member::NameArena {
+        let mut names = crate::cname_group_member::Names {
             bytes: arenas.text.suffix(0),
             len: arenas.used.text,
             required: arenas.required.text,
         };
         let copied =
-            crate::cname_group_member::copy_string_buffer(self.memory, header, &mut names, errors)?;
+            crate::cname_group_member::copy_string(self.memory, header, &mut names, errors)?;
         let len = names.required - arenas.required.text;
         arenas.required.text = names.required;
         let start = arenas.used.text;

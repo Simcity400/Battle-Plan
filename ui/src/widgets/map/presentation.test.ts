@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mapPresentationMatches } from './presentation.ts';
+import { mapFrameOnScreen, mapPresentationMatches } from './presentation.ts';
 import type { DashboardMapState } from '../../dashboard/client';
 import type { MapTarget } from '../../dashboard/geometry';
 
@@ -24,4 +24,10 @@ test('paused and pinned targets stay exact', () => {
   assert.equal(mapPresentationMatches({ ...state, hour: 20 }, paused), false, 'an older sequence');
   assert.equal(mapPresentationMatches({ ...state, hour: 20, sequence: 10 }, paused), true);
   assert.equal(mapPresentationMatches({ ...state, hour: 20, sequence: 10 }, { ...paused, playing: undefined }), true);
+});
+
+test('a frame of any hour is on screen until the viewer reports none or fails', () => {
+  assert.equal(mapFrameOnScreen({ ...state, loading: true }), true);
+  for (const change of [{ hour: null }, { branchId: null }, { error: 'gap' }]) assert.equal(mapFrameOnScreen({ ...state, ...change }), false, JSON.stringify(change));
+  assert.equal(mapFrameOnScreen(null), false);
 });

@@ -49,25 +49,8 @@ pub struct Row {
     pub len: usize,
 }
 
-/// Copies every key of the set into `bytes`, one row per key, in bucket
-/// order. A key that does not fit (either buffer) is counted, and its
-/// validated length added to `required_bytes`, so empty buffers yield the
-/// live demand. A bucket count that disagrees with the header, an end
-/// bucket inside the span, or an unreadable key fails the table.
-pub fn walk(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut [Row],
-    bytes: &mut [u8],
-) -> NameWalk {
-    walk_buffer(
-        memory,
-        base,
-        game_state,
-        crate::walk::Buffer::Fixed(output),
-        crate::walk::Buffer::Fixed(bytes),
-    )
+pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> NameWalk {
+    walk_buffer(memory, base, game_state, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
 }
 
 /// The table header [`walk_carried`] gathers before reading any bucket.
@@ -94,7 +77,7 @@ impl TokenCarry for Fresh {
     fn read(&mut self, _: &[Row], _: &[u8]) {}
 }
 
-/// [`walk_growing`] with `carry` supplying the held table it proves
+/// [`walk`] with `carry` supplying the held table it proves
 /// current: the manager and table header are still read and authenticated,
 /// and a carried table's buckets and keys are not.
 pub fn walk_carried(
@@ -121,7 +104,7 @@ pub fn walk_carried(
 }
 
 /// Worker storage grows from the original native headers before publication.
-pub fn walk_growing(
+pub fn walk(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -380,7 +363,7 @@ mod tests {
                 );
             }
             bytes[source + (mask as usize + 1) * STRIDE + DISTANCE] = END;
-            let result = walk_growing(
+            let result = walk(
                 &SliceMemory {
                     base: 0,
                     bytes: &bytes,
@@ -434,18 +417,9 @@ mod tests {
     }
 
     #[test]
-    fn keys_that_do_not_fit_are_counted_with_their_bytes() {
-        let (walk, ..) = run(&fixture(), 1, 64);
-        assert_eq!(
-            walk.outcome,
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 2
-            }
-        );
-        assert_eq!(walk.required_bytes, 6 + LONG.len() + 6);
-        // No storage at all: the live demand.
-        let (walk, ..) = run(&fixture(), 0, 0);
+    fn the_count_probe_counts_every_key_with_its_bytes() {
+        let bytes = fixture();
+        let walk = count(&SliceMemory { base: 0, bytes: &bytes }, 0, GS);
         assert_eq!(
             walk.outcome,
             Outcome::Truncated {

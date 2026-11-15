@@ -35,6 +35,11 @@ pub unsafe fn bind(context: usize, handler: unsafe fn(usize, Domain, usize)) {
     CONTEXT.store(context, Ordering::Release);
     HANDLER.store(handler as *const () as usize, Ordering::Release);
 }
+/// The bound store's address; zero when none is.
+#[cfg(any(test, feature = "test-support"))]
+pub fn bound_context() -> usize {
+    CONTEXT.load(Ordering::Acquire)
+}
 /// # Safety
 /// Uses the same retained context and quiescence contract as `bind`.
 pub unsafe fn bind_gain(handler: unsafe fn(usize, usize, i64)) {

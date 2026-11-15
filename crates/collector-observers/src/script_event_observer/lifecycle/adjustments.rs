@@ -110,6 +110,7 @@ mod tests {
     use super::*;
     #[test]
     fn extension_then_removal_preserves_intermediate_result_and_wrapping() {
+        let _globals = crate::event_feed_observer::test_globals();
         let mut bytes = [0; 0x40];
         bytes[..8].copy_from_slice(
             &(engine_decisions::ctimed_decision::VTABLE_RVA.0 as u64).to_le_bytes(),
@@ -132,6 +133,7 @@ mod tests {
     }
     #[test]
     fn removal_extension_uses_cooldown_layout_and_final_display_reads_only_actual_duration() {
+        let _globals = crate::event_feed_observer::test_globals();
         let mut bytes = [0; 0x40];
         bytes[..8].copy_from_slice(
             &(engine_decisions::cdecision_cooldown::VTABLE_RVA.0 as u64).to_le_bytes(),

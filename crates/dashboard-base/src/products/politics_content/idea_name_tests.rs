@@ -158,21 +158,21 @@ fn an_idea_is_named_for_its_country() {
         name_tag: "GER",
         original_or_own_tag: Ok("GER"),
         cosmetic_tag: "",
-        civil_war: Err("hour 1 CountryCivilWars is unavailable"),
+        civil_war: Err("hour 1 country civil wars is unavailable"),
     };
     let refused = content
         .idea_name("MOD_spirit", country("D01", Some(dynamic)))
         .unwrap_err();
     assert!(
         refused.contains("whether it is in civil war")
-            && refused.ends_with("CountryCivilWars is unavailable"),
+            && refused.ends_with("country civil wars is unavailable"),
         "{refused}"
     );
     assert!(
         content
             .idea_name("MOD_spirit", country("GER", None))
             .unwrap_err()
-            .contains("CountryAppearance.name_tag")
+            .contains("name tag of country appearance")
     );
     // No key and a category of type 0: generate a name
     // from GER's names: one name and one surname, so the draw is fixed.
@@ -294,22 +294,22 @@ fn generated_advisor_names_read_the_ungated_original_only_after_cosmetic_miss() 
         (
             Recorded::NotRecorded,
             Recorded::Value(Some(b"MOD_original".to_vec())),
-            "CountryAppearance.original_tag_reference not recorded",
+            "original tag reference of country appearance not recorded",
         ),
         (
             Recorded::Value(None),
             Recorded::Value(Some(b"MOD_original".to_vec())),
-            "CountryAppearance.original_tag_reference capture refused",
+            "original tag reference of country appearance capture refused",
         ),
         (
             Recorded::Value(Some(300)),
             Recorded::NotRecorded,
-            "CountryAppearance.original_tag not recorded",
+            "original tag of country appearance not recorded",
         ),
         (
             Recorded::Value(Some(300)),
             Recorded::Value(None),
-            "CountryAppearance.original_tag capture refused",
+            "original tag of country appearance capture refused",
         ),
         (
             Recorded::Value(Some(300)),
@@ -489,7 +489,7 @@ fn a_dynamic_country_in_civil_war_skips_its_keys() {
     let refused = name(&unread, "MOD_spirit").unwrap_err();
     assert!(
         refused.contains("whether it is in civil war")
-            && refused.contains("CountryCivilWars is unavailable"),
+            && refused.contains("is unavailable: not sampled"),
         "{refused}"
     );
     // A country outside the dynamic gate never asks about civil war.
@@ -500,4 +500,60 @@ fn a_dynamic_country_in_civil_war_skips_its_keys() {
         rows[1].name_tag.clear();
     }
     assert_eq!(name(&fixed, "MOD_spirit"), key("SOV_MOD_spirit"));
+}
+
+/// A spirit's name is its localised key, whatever its art; when the localisation lacks the
+/// key, the artwork has no name and says which key is missing.
+#[test]
+fn a_spirit_without_localisation_says_which_key_is_missing() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
+        (
+            "localisation/test_l_english.yml",
+            "\u{feff}l_english:\n MOD_named:0 \"Named Spirit\"\n",
+        ),
+        (
+            "common/defines/00_defines.lua",
+            "NDefines = { NCharacter = { OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU = { \"theorist\" } } }",
+        ),
+        (
+            "common/idea_tags/00.txt",
+            "idea_categories = { country = { type = national_spirit } }",
+        ),
+        (
+            "common/ideas/mod.txt",
+            "ideas = { country = { MOD_named = { } MOD_bare = { } MOD_relabelled = { name = MOD_label } } }",
+        ),
+    ]);
+    let content = PoliticsContent::load(Arc::new(catalogue)).unwrap();
+    let country = IdeaCountry {
+        tag: "GER",
+        slot: 0,
+        look: Some(CountryLook {
+            name_tag: "",
+            original_or_own_tag: Ok("GER"),
+            cosmetic_tag: "",
+            civil_war: Ok(false),
+        }),
+    };
+    let (named, _) = content.idea_artwork("MOD_named", None, country);
+    assert_eq!(named.name.as_deref(), Some("Named Spirit"));
+    assert_eq!(content.idea_name_missing("MOD_named", None, country, None), None);
+    for (token, key) in [("MOD_bare", "MOD_bare"), ("MOD_relabelled", "MOD_label")] {
+        let (art, _) = content.idea_artwork(token, None, country);
+        assert_eq!(art.name, None, "{token}");
+        assert_eq!(
+            content.idea_name_missing(token, None, country, None),
+            Some(format!("localisation {key} is missing")),
+            "{token}"
+        );
+    }
+    // The hour that cannot place the naming country is the reason, not a missing key.
+    let unplaced = IdeaCountry { look: None, ..country };
+    assert!(
+        content
+            .idea_name_missing("MOD_bare", None, unplaced, None)
+            .is_some_and(|why| why.contains("name tag of country appearance"))
+    );
 }

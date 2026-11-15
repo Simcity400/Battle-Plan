@@ -326,9 +326,9 @@ fn the_walk_records_invasions_counts_overflow_and_needs_the_census() {
     memory.u32(OTHER + corder_instance::TYPE, 1);
     let visits = [visit(ORDER), visit(0), visit(OTHER)];
     let memo = DefinitionMemo::default();
-    let mut rows = [Row::default(); 1];
+    let mut rows = vec![Row::default(); 1];
     let source = Outcome::Rows { len: 2 };
-    let walked = |memory: &Image, gs, rows: &mut [Row], source| {
+    let walked = |memory: &Image, gs, rows: &mut Vec<Row>, source| {
         let mut country_memo = ccountry::NativeReferenceMemo::try_with_capacity(16, 16).unwrap();
         country_memo.reset(0, gs);
         let countries = country_memo.view(memory, 0, gs);
@@ -341,13 +341,6 @@ fn the_walk_records_invasions_counts_overflow_and_needs_the_census() {
         }
     );
     assert_eq!((rows[0].instance, rows[0].unit_owner), (9, 2));
-    assert_eq!(
-        walked(&memory, GS, &mut [], source).outcome,
-        Outcome::Truncated {
-            len: 0,
-            unread_rows: 1
-        }
-    );
     // The owner's relation bytes are CountryCounterInputs': an unreadable
     // slot-0 status does not reach this walk.
     let mut unreadable = route_fixture();
@@ -400,7 +393,7 @@ fn invasion_rows_are_acquired_in_census_order() {
     country_memo.reset(0, GS);
     let countries = country_memo.view(&memory, 0, GS);
     let mut rows = Vec::new();
-    let report = walk_growing(
+    let report = walk(
         &memory,
         0,
         GS,
@@ -438,7 +431,7 @@ fn invasion_rows_grow_before_first_and_later_publication() {
         let mut country_memo = ccountry::NativeReferenceMemo::try_with_capacity(16, 16).unwrap();
         country_memo.reset(0, GS);
         let countries = country_memo.view(&memory, 0, GS);
-        let report = walk_growing(
+        let report = walk(
             &memory,
             0,
             GS,
@@ -523,7 +516,7 @@ fn raw_zero_preparation_and_logical_route_owner_need_no_positive_context() {
     let mut country_memo = ccountry::NativeReferenceMemo::try_with_capacity(0, 0).unwrap();
     country_memo.reset(0, GS);
     let countries = country_memo.view(&memory, 0, GS);
-    let mut rows = [Row::default(); 1];
+    let mut rows = vec![Row::default(); 1];
     let walked = walk(
         &memory,
         0,

@@ -54,11 +54,7 @@ pub struct Row {
 
 /// Reads every state's embedded resistance object, including inactive entries.
 /// Native country links, signed qwords and the active byte are not normalized.
-pub fn walk(memory: &impl Memory, base: usize, game_state: usize, output: &mut [Row]) -> Outcome {
-    walk_buffer(memory, base, game_state, crate::walk::Buffer::Fixed(output))
-}
-
-pub fn walk_growing(
+pub fn walk(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -91,7 +87,7 @@ pub fn walk_buffer(
             reason: "resistance state table has no state slots",
         };
     }
-    let outcome = walk::pointers_buffer(memory, array, output, |id, state| {
+    let outcome = walk::pointers(memory, array, output, |id, state| {
         read_state(memory, base, state, id)
     });
     if outcome == (Outcome::Rows { len: 0 }) {
@@ -277,7 +273,7 @@ mod tests {
             base: 0x1000,
             bytes: &bytes,
         };
-        let mut output = [Row::default(); 3];
+        let mut output = vec![Row::default(); 3];
         assert_eq!(
             walk(&memory, 0, 0x1000, &mut output),
             Outcome::Rows { len: 2 }
@@ -297,14 +293,7 @@ mod tests {
         assert_eq!(output[1].state, 3);
         assert_eq!(output[1].active, 3);
         assert_eq!(
-            walk(&memory, 0, 0x1000, &mut output[..1]),
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            }
-        );
-        assert_eq!(
-            walk(&memory, 0, 0x1000, &mut []),
+            walk_buffer(&memory, 0, 0x1000, crate::walk::Buffer::Count),
             Outcome::Truncated {
                 len: 0,
                 unread_rows: 2
@@ -325,7 +314,7 @@ mod tests {
         ] {
             let mut bytes = fixture();
             put(&mut bytes, address, &u64::to_le_bytes(value));
-            let mut output = [Row::default(); 3];
+            let mut output = vec![Row::default(); 3];
             assert_eq!(
                 walk(
                     &SliceMemory {
@@ -349,7 +338,7 @@ mod tests {
                 },
                 0,
                 0x1000,
-                &mut [Row::default(); 3]
+                &mut vec![Row::default(); 3]
             ),
             Outcome::Unavailable {
                 reason: "resistance active byte unreadable"

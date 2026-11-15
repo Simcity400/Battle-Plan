@@ -301,7 +301,9 @@ fn meshes_equal(left: &ModelMesh, right: &ModelMesh) {
         bound,
         convoy_radius,
         attachments,
+        cull_distance_squared,
     } = left;
+    assert_eq!(cull_distance_squared.to_bits(), right.cull_distance_squared.to_bits());
     assert_eq!(asset, &right.asset);
     assert_eq!(
         (name, path, visual, attachments),

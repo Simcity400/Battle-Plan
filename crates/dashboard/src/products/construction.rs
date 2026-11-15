@@ -1,0 +1,656 @@
+//! Construction (family 42): every construction line of a branch for the Construction log
+//! ([`log`]), and the civilian-factory output each country spent by work, building type and state
+//! for Construction spending ([`spending`]). A line is its `ConstructionProjects` row, from the
+//! first read that lists it (or the output read that names it alone) until the read that settles
+//! its ending; each run's lines are read once and kept ([`RunLines`]): those that ended from the
+//! `ConstructionLineEnds` row logged at their last hour, those still open at the run's end from
+//! their row there, so the index never replays the projects' history. Building and state
+//! names and the queue's art come from the recorded content at the reply.
+
+pub mod log;
+pub mod spending;
+#[cfg(test)]
+mod tests;
+
+use crate::Source;
+use dashboard_base::{
+    catalogue::{self, Catalogue, View},
+    products::battles::BattleWindow,
+};
+use dashboard_core::config::LoadContext;
+use dashboard_query::{Query, read, series::MissingSpan};
+use installed_content_core::{content::diagnostics::Diagnostics, gui::native};
+use replay::lanes::Cell;
+use replay_data::rows::{ConstructionLineEndRow, ConstructionProjectRow as P, TableId, column};
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::{BTreeMap, BTreeSet, HashMap},
+    io,
+    sync::{Arc, Mutex, PoisonError},
+};
+use ts_rs::TS;
+
+/// `ConstructionProjects`' columns, as the schema numbers them.
+pub(crate) mod col {
+    pub const KIND: usize = 0;
+    pub const OUTPUT_ALONE: usize = 1;
+    pub const COUNTRY: usize = 2;
+    pub const BUILDING_TYPE: usize = 3;
+    pub const TARGET_STATE: usize = 4;
+    pub const TO_STATE: usize = 5;
+    pub const PROVINCE: usize = 6;
+    pub const ROUTE_PROVINCES: usize = 7;
+    pub const BASE_LEVEL: usize = 8;
+    pub const TARGET_LEVEL: usize = 9;
+    pub const COST: usize = 10;
+    pub const CREATED_HOUR: usize = 11;
+    pub const FIRST_READ: usize = 12;
+    pub const CENSUS_READ: usize = 13;
+    pub const QUEUE_ORDINAL: usize = 14;
+    pub const EARLIER_UNKNOWN: usize = 15;
+    pub const FACTORIES: usize = 16;
+    pub const REMAINING: usize = 17;
+    pub const REPAIR_LEVELS: usize = 18;
+    pub const BUILT: usize = 19;
+    pub const BUILT_RISES: usize = 20;
+    pub const REPAIRED: usize = 21;
+    pub const REPAIRED_RISES: usize = 22;
+    pub const ADDED_NEW: usize = 23;
+    pub const ADDED_REPAIR: usize = 24;
+    pub const POSSIBLE: usize = 25;
+    pub const UNACCOUNTED_NEW: usize = 26;
+    pub const UNACCOUNTED_REPAIR: usize = 27;
+    pub const END: usize = 28;
+    pub const END_REASON: usize = 29;
+    pub const END_HOUR: usize = 30;
+    pub const END_KNOWN_AT: usize = 31;
+    pub const CONSTRUCTION_RAW: usize = 32;
+    pub const REPAIR_RAW: usize = 33;
+    pub const OUTPUT_SINCE: usize = 34;
+    pub const OBSERVED_SINCE_CREATION: usize = 35;
+    pub const OUTPUT_REASON: usize = 36;
+    pub const FIRST_REPAIR_TICK: usize = 37;
+    /// Every column, in order: a step's cells index by column.
+    pub const ALL: [usize; 38] = {
+        let mut all = [0; 38];
+        let mut at = 0;
+        while at < 38 {
+            all[at] = at;
+            at += 1;
+        }
+        all
+    };
+}
+
+/// Units per factory output point of a fixed5 amount.
+pub const COST_SCALE: u32 = 100_000;
+/// Longest side of a returned building icon.
+const ICON_EDGE: u32 = 48;
+/// The construction queue's line entry gives each building's picture strip and the repair marker.
+const LINE_ENTRY: &str = "production_building_line_entry";
+const LINE_PICTURE: &str = "picture";
+const LINE_REPAIR: &str = "repair";
+
+/// A building line or a railway line.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum ProjectKind {
+    Building,
+    Railway,
+}
+
+/// Why a stretch of a line's output is not counted.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum SpendingGap {
+    /// The output table was not read, or does not list the line.
+    NotRecorded,
+    LinkedOutput,
+    InexactOutput,
+    ObservationRestart,
+    FinalOutputMissing,
+    OwnerUnknown,
+}
+
+/// The gap an output reason code names; none when the output is known.
+pub fn gap_of(reason: u8) -> Option<SpendingGap> {
+    Some(match reason {
+        P::OUTPUT_KNOWN => return None,
+        P::OUTPUT_LINKED => SpendingGap::LinkedOutput,
+        P::OUTPUT_INEXACT => SpendingGap::InexactOutput,
+        P::OUTPUT_RESTARTED => SpendingGap::ObservationRestart,
+        P::OUTPUT_FINAL_MISSING => SpendingGap::FinalOutputMissing,
+        P::OUTPUT_OWNER_UNKNOWN => SpendingGap::OwnerUnknown,
+        _ => SpendingGap::NotRecorded,
+    })
+}
+
+/// A building type the replies name, by its recorded lexer id, with its name and icon from content.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ConstructionType {
+    pub id: u32,
+    /// Its script name; null when the recorded dictionary lacks it.
+    pub token: Option<String>,
+    pub name: Option<String>,
+    /// The construction queue's picture of it.
+    pub icon: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ConstructionStateName {
+    pub id: u32,
+    pub name: Option<String>,
+}
+
+pub(crate) fn number(cells: &[Cell], column: usize) -> Option<i64> {
+    match cells.get(column) {
+        Some(Cell::Number(value)) => Some(*value),
+        _ => None,
+    }
+}
+
+pub(crate) fn hour(cells: &[Cell], column: usize) -> Option<i32> {
+    number(cells, column).and_then(|value| i32::try_from(value).ok())
+}
+
+pub(crate) fn id32(cells: &[Cell], column: usize) -> Option<u32> {
+    number(cells, column).and_then(|value| u32::try_from(value).ok())
+}
+
+/// One construction line as its row last stood in a run: what the replies read of every line
+/// without reading its history.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Line {
+    pub id: u64,
+    /// The first and last hour its row was shown in the run.
+    pub first: i32,
+    pub last: i32,
+    pub railway: bool,
+    pub output_alone: bool,
+    /// The queue owner's raw country id as first read (0: no output owner was recorded).
+    pub country: u32,
+    pub first_read: i32,
+    pub building: Option<u32>,
+    pub state: Option<u32>,
+    pub to_state: Option<u32>,
+    /// It built or was to build new levels; it repaired or was to repair.
+    pub new_work: bool,
+    pub repair_work: bool,
+    /// Its output was published before observation of it began.
+    pub before_observation: bool,
+    /// Its output table row was published at some read.
+    pub had_output: bool,
+    pub output_reason: u8,
+}
+
+/// The columns a line's final row is read with.
+const LINE_COLUMNS: [usize; 22] = [
+    col::KIND,
+    col::OUTPUT_ALONE,
+    col::COUNTRY,
+    col::BUILDING_TYPE,
+    col::TARGET_STATE,
+    col::TO_STATE,
+    col::FIRST_READ,
+    col::REMAINING,
+    col::REPAIR_LEVELS,
+    col::BUILT,
+    col::REPAIRED,
+    col::ADDED_NEW,
+    col::ADDED_REPAIR,
+    col::POSSIBLE,
+    col::UNACCOUNTED_NEW,
+    col::UNACCOUNTED_REPAIR,
+    col::CONSTRUCTION_RAW,
+    col::REPAIR_RAW,
+    col::OUTPUT_SINCE,
+    col::OBSERVED_SINCE_CREATION,
+    col::OUTPUT_REASON,
+    col::FIRST_REPAIR_TICK,
+];
+
+/// A run's lines, in order of first hour.
+#[derive(Default)]
+pub struct RunLines {
+    pub lines: Vec<Line>,
+}
+
+impl RunLines {
+    /// The lines shown at some hour of `from..=to`.
+    pub fn within(&self, from: i32, to: i32) -> impl Iterator<Item = &Line> + '_ {
+        let end = self.lines.partition_point(|line| line.first <= to);
+        self.lines[..end].iter().filter(move |line| line.last >= from)
+    }
+}
+
+/// A line's final row from the cells of `LINE_COLUMNS` (`value` reads one).
+pub(crate) fn line_of(id: u64, first: i32, last: i32, value: &dyn Fn(usize) -> Option<i64>) -> Line {
+    let positive = |column: usize| value(column).is_some_and(|count| count > 0);
+    let output_since = value(col::OUTPUT_SINCE);
+    Line {
+        id,
+        first,
+        last,
+        railway: value(col::KIND) == Some(i64::from(P::RAILWAY)),
+        output_alone: value(col::OUTPUT_ALONE) == Some(1),
+        country: value(col::COUNTRY).and_then(|country| u32::try_from(country).ok()).unwrap_or(0),
+        first_read: value(col::FIRST_READ).and_then(|hour| i32::try_from(hour).ok()).unwrap_or(first),
+        building: value(col::BUILDING_TYPE).and_then(|id| u32::try_from(id).ok()),
+        state: value(col::TARGET_STATE).and_then(|id| u32::try_from(id).ok()),
+        to_state: value(col::TO_STATE).and_then(|id| u32::try_from(id).ok()),
+        new_work: [col::BUILT, col::ADDED_NEW, col::POSSIBLE, col::UNACCOUNTED_NEW, col::REMAINING, col::CONSTRUCTION_RAW].into_iter().any(positive),
+        repair_work: [col::REPAIRED, col::ADDED_REPAIR, col::UNACCOUNTED_REPAIR, col::REPAIR_LEVELS, col::REPAIR_RAW].into_iter().any(positive)
+            || value(col::FIRST_REPAIR_TICK).is_some(),
+        before_observation: output_since.is_some() && value(col::OBSERVED_SINCE_CREATION) == Some(0),
+        had_output: output_since.is_some(),
+        output_reason: value(col::OUTPUT_REASON).and_then(|reason| u8::try_from(reason).ok()).unwrap_or(P::OUTPUT_NOT_RECORDED),
+    }
+}
+
+/// `ConstructionLineEnds`' columns the index reads.
+mod end {
+    use super::{ConstructionLineEndRow as E, column};
+    pub const KIND: usize = column::<E>("kind");
+    pub const OUTPUT_ALONE: usize = column::<E>("output_alone");
+    pub const COUNTRY: usize = column::<E>("country");
+    pub const BUILDING_TYPE: usize = column::<E>("building_type");
+    pub const TARGET_STATE: usize = column::<E>("target_state");
+    pub const TO_STATE: usize = column::<E>("to_state");
+    pub const FIRST_READ: usize = column::<E>("first_read");
+    pub const NEW_WORK: usize = column::<E>("new_work");
+    pub const REPAIR_WORK: usize = column::<E>("repair_work");
+    pub const BEFORE_OBSERVATION: usize = column::<E>("before_observation");
+    pub const HAD_OUTPUT: usize = column::<E>("had_output");
+    pub const OUTPUT_REASON: usize = column::<E>("output_reason");
+}
+
+/// A line from the end its writer logged (`value` reads one of `ConstructionLineEnds`' columns).
+pub(crate) fn line_of_end(id: u64, first: i32, last: i32, value: &dyn Fn(usize) -> Option<i64>) -> Line {
+    let yes = |column: usize| value(column) == Some(1);
+    Line {
+        id,
+        first,
+        last,
+        railway: value(end::KIND) == Some(i64::from(P::RAILWAY)),
+        output_alone: yes(end::OUTPUT_ALONE),
+        country: value(end::COUNTRY).and_then(|country| u32::try_from(country).ok()).unwrap_or(0),
+        first_read: value(end::FIRST_READ).and_then(|hour| i32::try_from(hour).ok()).unwrap_or(first),
+        building: value(end::BUILDING_TYPE).and_then(|id| u32::try_from(id).ok()),
+        state: value(end::TARGET_STATE).and_then(|id| u32::try_from(id).ok()),
+        to_state: value(end::TO_STATE).and_then(|id| u32::try_from(id).ok()),
+        new_work: yes(end::NEW_WORK),
+        repair_work: yes(end::REPAIR_WORK),
+        before_observation: yes(end::BEFORE_OBSERVATION),
+        had_output: yes(end::HAD_OUTPUT),
+        output_reason: value(end::OUTPUT_REASON).and_then(|reason| u8::try_from(reason).ok()).unwrap_or(P::OUTPUT_NOT_RECORDED),
+    }
+}
+
+/// Run `run`'s lines: each key's lifetime, and what it was and did: from the end logged at its last
+/// hour, or, for a line with none there (open at the run's end), from its row at that hour. Two
+/// readers moved forward through the run, one over the logged ends only, one to the open lines'
+/// last hours (the run's last, but for an end not logged).
+pub fn run_lines(source: &Source, run: u32) -> io::Result<RunLines> {
+    let recording = source.replay_ref().recording();
+    let lives = crate::answer::lifetimes(source, run, TableId::ConstructionProjects)?;
+    let spans: HashMap<u64, (i32, i32)> = lives
+        .iter()
+        .filter_map(|&(key, first, last)| Some((u64::try_from(key).ok()?, (i32::try_from(first).ok()?, i32::try_from(last).ok()?))))
+        .collect();
+    let ends: Vec<(i32, u128)> = spans.iter().map(|(&id, &(_, last))| (last, ConstructionLineEndRow::key_of(last, id))).collect();
+    let mut lines = Vec::with_capacity(ends.len());
+    let mut open: Vec<(i32, u128)> = Vec::new();
+    dashboard_query::cost::storage(|| {
+        replay::lanes::at_each(recording, run, TableId::ConstructionLineEnds, None, &ends, &mut |hour, key, row| {
+            let id = key as u64;
+            let Some(&(first, last)) = spans.get(&id) else { return Ok(()) };
+            match row {
+                Some((view, slot)) => lines.push(line_of_end(id, first, last, &|column| view.number(column, slot))),
+                None => open.push((hour, u128::from(id))),
+            }
+            Ok(())
+        })
+    })?;
+    dashboard_query::cost::storage(|| {
+        replay::lanes::at_each(recording, run, TableId::ConstructionProjects, Some(&LINE_COLUMNS[..]), &open, &mut |_, key, row| {
+            if let (Some((view, slot)), Some(&(first, last))) = (row, spans.get(&(key as u64))) {
+                lines.push(line_of(key as u64, first, last, &|column| view.number(column, slot)));
+            }
+            Ok(())
+        })
+    })?;
+    lines.sort_unstable_by_key(|line| (line.first, line.id));
+    Ok(RunLines { lines })
+}
+
+/// The branch's windows: each block of each stretch of its timeline, cut to the stretch, with its run.
+pub fn windows(query: &Query<'_>) -> io::Result<Vec<(u32, BattleWindow)>> {
+    let recording = query.replay.recording();
+    let mut out = Vec::new();
+    for stretch in &query.timeline.stretches {
+        let run = recording.run(stretch.run)?;
+        let (Some(first), Some(last)) = (run.ordinal(stretch.first), run.ordinal(stretch.last)) else { continue };
+        for block in run.place(first).0..=run.place(last).0 {
+            let start = run.block_first_hour(block);
+            let end = start + run.block(block as usize).1 as i32 - 1;
+            out.push((stretch.run, BattleWindow { first_hour: start.max(stretch.first), last_hour: end.min(stretch.last) }));
+        }
+    }
+    Ok(out)
+}
+
+/// Whether either construction queue was recorded in the branch: held available at any hour, from
+/// the blocks' page entries. Not its reads: the journal door stamps the queues no sample hour.
+pub fn recorded(query: &Query<'_>) -> io::Result<bool> {
+    let recording = query.replay.recording();
+    for stretch in &query.timeline.stretches {
+        for table in [TableId::BuildingConstruction, TableId::RailwayConstruction] {
+            let statuses = dashboard_query::cost::storage(|| replay::lanes::statuses(recording, stretch.run, table, stretch.first, stretch.last))?;
+            if statuses.iter().any(|held| replay::columnar_frames::available(held.status)) {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// The timeline's hours from `from` through `to` it does not hold, with why.
+pub fn missing(query: &Query<'_>, from: i32, to: i32) -> Vec<MissingSpan> {
+    query
+        .timeline
+        .unheld_within(from, to)
+        .into_iter()
+        .map(|gap| MissingSpan { first_hour: gap.first.max(from), last_hour: gap.last.min(to), reason: gap.reason })
+        .collect()
+}
+
+/// The spelling of each of `ids` in run `run`'s lexical dictionary at `hour`.
+pub fn spellings(query: &Query<'_>, run: u32, hour: i32, ids: &BTreeSet<u32>, into: &mut BTreeMap<u32, Option<String>>) -> io::Result<()> {
+    let wanted: Vec<u128> = ids.iter().filter(|id| into.get(id).is_none_or(Option::is_none)).map(|&id| u128::from(id)).collect();
+    for &id in ids {
+        into.entry(id).or_insert(None);
+    }
+    if wanted.is_empty() {
+        return Ok(());
+    }
+    let held = read::at(query.replay.recording(), run, &[read::Read { table: TableId::LexicalTokens, columns: None, keys: read::Keys::These(&wanted) }], hour)?;
+    let view = held[0].view();
+    for &(key, slot) in &held[0].rows {
+        let bytes = view.list(0, slot).or_else(|| read::text(&view, 0, slot));
+        if let Some(text) = bytes.and_then(|bytes| std::str::from_utf8(bytes).ok()) {
+            into.insert(key as u32, Some(text.to_owned()));
+        }
+    }
+    Ok(())
+}
+
+/// What a reply names building types and states with: the content's catalogue, or why it is
+/// unavailable.
+pub struct Content {
+    catalogue: Result<Arc<Catalogue>, String>,
+}
+
+/// Names and art from content for one reply.
+pub struct Named {
+    pub types: Vec<ConstructionType>,
+    pub repair_icon: Option<String>,
+    pub states: Vec<ConstructionStateName>,
+}
+
+impl Content {
+    pub fn load(source: &Source, context: &LoadContext) -> Self {
+        Self { catalogue: context.content().and_then(|options| catalogue::catalogue(source, options)).map_err(|why| why.to_string()) }
+    }
+
+    /// `types` (lexer id and spelling) and `states` named and pictured as the recorded content
+    /// shows them. Whatever content cannot give is left null and each kind of refusal is one counted
+    /// warning.
+    pub fn name(&self, source: &Source, types: &BTreeMap<u32, Option<String>>, states: &BTreeSet<u32>, warnings: &mut Vec<String>) -> Named {
+        let catalogue = match &self.catalogue {
+            Ok(catalogue) => catalogue,
+            Err(why) => {
+                warnings.push(format!("Building and state names are unavailable: {why}"));
+                return Named {
+                    types: types.iter().map(|(&id, token)| ConstructionType { id, token: token.clone(), name: None, icon: None }).collect(),
+                    repair_icon: None,
+                    states: states.iter().map(|&id| ConstructionStateName { id, name: None }).collect(),
+                };
+            }
+        };
+        let naming = naming(source, catalogue);
+        let mut naming = naming.lock().unwrap_or_else(PoisonError::into_inner);
+        naming.named(catalogue, types, states, warnings)
+    }
+}
+
+#[derive(Default)]
+struct NamingCache(Option<(Arc<Catalogue>, Arc<Mutex<Naming>>)>);
+
+/// What naming read of `catalogue`, read once per source and catalogue.
+fn naming(source: &Source, catalogue: &Arc<Catalogue>) -> Arc<Mutex<Naming>> {
+    let state = source.state::<NamingCache>();
+    let mut held = state.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some((from, naming)) = &held.0
+        && Arc::ptr_eq(from, catalogue)
+    {
+        return Arc::clone(naming);
+    }
+    let naming = Arc::new(Mutex::new(Naming::read(catalogue)));
+    held.0 = Some((Arc::clone(catalogue), Arc::clone(&naming)));
+    naming
+}
+
+struct LineSprite {
+    sprite: installed_content_gfx::gfx::SpriteType,
+    /// One-based GUI frame.
+    frame: i32,
+}
+
+/// The queue entry's sprite for `element` and its authored icon frame.
+fn line_sprite(catalogue: &Catalogue, element: &str) -> io::Result<LineSprite> {
+    let entry = catalogue
+        .guis()?
+        .template(LINE_ENTRY)
+        .filter(|entry| entry.kind == native::Kind::Container)
+        .ok_or_else(|| dashboard_core::invalid(format!("no .gui file declares {LINE_ENTRY}")))?;
+    let icon = entry.find(native::Kind::Icon, element).ok_or_else(|| dashboard_core::invalid(format!("{LINE_ENTRY} declares no {element} icon")))?;
+    if let Some(refusal) = entry.refusals().iter().chain(icon.refusals()).next() {
+        return Err(dashboard_core::invalid(format!("{LINE_ENTRY}: {refusal}")));
+    }
+    let icon = icon.icon().ok_or_else(|| dashboard_core::invalid(format!("{LINE_ENTRY}.{element} is not an icon")))?;
+    let name = std::str::from_utf8(&icon.sprite).map_err(|_| dashboard_core::invalid(format!("{LINE_ENTRY}.{element} sprite is not UTF-8")))?;
+    if name.is_empty() {
+        return Err(dashboard_core::invalid(format!("{LINE_ENTRY}.{element} has no sprite")));
+    }
+    let sprite = catalogue::created_gui_sprite(&catalogue.sprites, name)?;
+    Ok(LineSprite { sprite: sprite.clone(), frame: icon.frame })
+}
+
+/// The counted warnings that list building types, in the order given.
+#[derive(Clone, Copy)]
+enum Listing {
+    Undictionaried,
+    Undeclared,
+    Unnamed,
+    Frameless,
+    Unusable,
+    Ambiguous,
+    Unreadable,
+}
+
+const LISTINGS: [&str; 7] = [
+    "building types are not in the recorded lexical dictionary; their titles are unavailable",
+    "building types are not declared in the recorded content's buildings; their icons are unavailable",
+    "building types have no name in the recorded localisation; their titles are unavailable",
+    "building types have icon_frame 0 (none declared), whose picture is not verified, so they show a placeholder",
+    "building types give a negative icon_frame; it is refused and they show a placeholder",
+    "building types are declared more than once with differing fields; which declaration the game shows is not verified, so they show a placeholder",
+    "building icons could not be read from the queue's building strip and show a placeholder",
+];
+
+/// Names shown in a warning before the rest are counted.
+const LISTED: usize = 12;
+
+/// "N <what>: a, b, c and N more", or nothing for none.
+fn counted(warnings: &mut Vec<String>, what: &str, names: &[String]) {
+    if names.is_empty() {
+        return;
+    }
+    let shown = names.iter().take(LISTED).cloned().collect::<Vec<_>>().join(", ");
+    let more = names.len().saturating_sub(LISTED);
+    let rest = if more > 0 { format!(" and {more} more") } else { String::new() };
+    warnings.push(format!("{} {what}: {shown}{rest}.", names.len()));
+}
+
+/// One building type as content names and pictures it.
+struct NamedType {
+    name: Option<String>,
+    icon: Option<String>,
+    listed: Vec<(Listing, String)>,
+    fallbacks: Diagnostics,
+}
+
+/// What naming reads of a catalogue, read once, and every type it has named.
+struct Naming {
+    buildings: Result<installed_content_core::buildings::Buildings, String>,
+    /// Each defined state's name key, or why states are unavailable.
+    state_keys: Result<dashboard_text::scripted_text::StateNames, String>,
+    state_warnings: Vec<String>,
+    strip: Result<LineSprite, String>,
+    repair_icon: Result<String, String>,
+    fallbacks: Diagnostics,
+    types: HashMap<String, NamedType>,
+}
+
+impl Naming {
+    fn read(catalogue: &Catalogue) -> Self {
+        let layers = &catalogue.content.layers;
+        let ((buildings, state_keys, state_warnings, strip, repair_icon), fallbacks) = installed_content_core::content::diagnostics::observe(|| {
+            let buildings = installed_content_core::buildings::read(layers).map_err(|error| format!("Building types are unavailable in the recorded content: {error}"));
+            let (state_keys, state_warnings) = match dashboard_text::scripted_text::read_state_content(layers) {
+                Ok(states) => {
+                    let warnings = dashboard_text::scripted_text::live_state_warnings(&states.warnings).map(|why| format!("State names: {why}")).collect();
+                    (Ok(states.names), warnings)
+                }
+                Err(error) => (Err(format!("State names are unavailable: {error}")), Vec::new()),
+            };
+            let strip = line_sprite(catalogue, LINE_PICTURE).map_err(|error| format!("Building icons are unavailable: {error}"));
+            let repair_icon = line_sprite(catalogue, LINE_REPAIR)
+                .and_then(|line| {
+                    let decode = *catalogue.gui_decode.as_ref().map_err(dashboard_core::invalid)?;
+                    catalogue::sprite_frame_png(layers, &line.sprite, decode, catalogue::authored_frame(line.frame), ICON_EDGE)
+                })
+                .map_err(|error| format!("The repair marker is unavailable, so repairs are marked in words only: {LINE_ENTRY}.{LINE_REPAIR}: {error}"));
+            (buildings, state_keys, state_warnings, strip, repair_icon)
+        });
+        Self { buildings, state_keys, state_warnings, strip, repair_icon, fallbacks, types: HashMap::new() }
+    }
+
+    fn named(&mut self, catalogue: &Catalogue, types: &BTreeMap<u32, Option<String>>, states: &BTreeSet<u32>, warnings: &mut Vec<String>) -> Named {
+        self.fallbacks.credit();
+        warnings.extend(self.buildings.as_ref().err().cloned());
+        warnings.extend(self.strip.as_ref().err().cloned());
+        let mut listed: [Vec<String>; 7] = Default::default();
+        let mut out = Vec::with_capacity(types.len());
+        for (&id, token) in types {
+            let Some(token) = token else {
+                listed[Listing::Undictionaried as usize].push(id.to_string());
+                out.push(ConstructionType { id, token: None, name: None, icon: None });
+                continue;
+            };
+            if !self.types.contains_key(token) {
+                let named = self.name_type(catalogue, token);
+                self.types.insert(token.clone(), named);
+            }
+            let named = &self.types[token];
+            named.fallbacks.credit();
+            for (listing, entry) in &named.listed {
+                listed[*listing as usize].push(entry.clone());
+            }
+            out.push(ConstructionType { id, token: Some(token.clone()), name: named.name.clone(), icon: named.icon.clone() });
+        }
+        for (what, names) in LISTINGS.iter().zip(&listed) {
+            counted(warnings, what, names);
+        }
+        let repair_icon = match &self.repair_icon {
+            Ok(icon) => Some(icon.clone()),
+            Err(why) => {
+                warnings.push(why.clone());
+                None
+            }
+        };
+        let mut unnamed = Vec::new();
+        let states = states
+            .iter()
+            .map(|&id| {
+                let name = self.state_keys.as_ref().ok().and_then(|keys| keys.get(&id)).and_then(|key| key.as_deref().ok()).and_then(|key| catalogue.localised(key, View::Plain));
+                if self.state_keys.is_ok() && name.is_none() {
+                    unnamed.push(id.to_string());
+                }
+                ConstructionStateName { id, name }
+            })
+            .collect();
+        warnings.extend(self.state_keys.as_ref().err().cloned());
+        warnings.extend(self.state_warnings.iter().cloned());
+        counted(warnings, "states have no name in the recorded content; their titles are unavailable", &unnamed);
+        if out.iter().any(|named| named.icon.is_some()) {
+            warnings.push("Widget artwork comes from the recorded content stack; visual assets are outside content hash coverage.".to_owned());
+        }
+        Named { types: out, repair_icon, states }
+    }
+
+    fn name_type(&self, catalogue: &Catalogue, token: &str) -> NamedType {
+        let mut listed = Vec::new();
+        let ((name, icon), fallbacks) = installed_content_core::content::diagnostics::observe(|| {
+            let declaration = self.buildings.as_ref().ok().and_then(|buildings| match buildings.by_token(token) {
+                Ok(Some(building)) => Some(building),
+                Ok(None) => {
+                    listed.push((Listing::Undeclared, token.to_owned()));
+                    None
+                }
+                Err(_) => {
+                    listed.push((Listing::Ambiguous, token.to_owned()));
+                    None
+                }
+            });
+            // A building's name is its own key in the localisation.
+            let key = declaration.map_or(token, |building| building.name.as_str());
+            let name = catalogue.localised(key, View::Plain);
+            if name.is_none() {
+                listed.push((Listing::Unnamed, token.to_owned()));
+            }
+            let frame = declaration.and_then(|building| match building.icon_frame {
+                frame if frame < 0 => {
+                    listed.push((Listing::Unusable, token.to_owned()));
+                    None
+                }
+                0 => {
+                    listed.push((Listing::Frameless, token.to_owned()));
+                    None
+                }
+                frame => u32::try_from(frame).ok(),
+            });
+            let icon = match (&self.strip, frame) {
+                (Ok(strip), Some(frame)) => {
+                    let drawn = catalogue
+                        .gui_decode
+                        .as_ref()
+                        .map_err(dashboard_core::invalid)
+                        .and_then(|decode| catalogue::sprite_frame_png(&catalogue.content.layers, &strip.sprite, *decode, frame - 1, ICON_EDGE));
+                    match drawn {
+                        Ok(icon) => Some(icon),
+                        Err(error) => {
+                            listed.push((Listing::Unreadable, format!("{token} (frame {frame}: {error})")));
+                            None
+                        }
+                    }
+                }
+                _ => None,
+            };
+            (name, icon)
+        });
+        NamedType { name, icon, listed, fallbacks }
+    }
+}

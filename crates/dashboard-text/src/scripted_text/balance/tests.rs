@@ -426,7 +426,7 @@ fn active_range_missing_feature_mask_and_null_balance() {
     let error = description(&catalogue, &frame, "GetActiveRangeModDesc").unwrap_err();
     assert!(
         error.contains("2 feature-gated modifiers (first, second)")
-            && error.contains("SimulationFeatures.dlc_mask")
+            && error.contains("dlc mask of simulation features")
     );
     *frame.tables[TableId::PowerBalanceMembers.index()] =
         TableView::Complete(TableRows::PowerBalanceMembers(Vec::new()));

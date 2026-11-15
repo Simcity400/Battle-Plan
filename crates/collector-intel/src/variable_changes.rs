@@ -665,7 +665,7 @@ impl Hooks {
         // other families in a runtime round (`hook::shared`): a thread at any
         // of its sites, or in a tap, holds every site back until the next
         // attempt.
-        if !Hook::set_enabled_iter_attach(
+        if !Hook::set_enabled_iter(
             self.hooks
                 .iter_mut()
                 .chain(self.taps.iter_mut().map(Tap::publication_hook)),

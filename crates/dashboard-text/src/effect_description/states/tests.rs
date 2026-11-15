@@ -600,11 +600,11 @@ fn state_content_province_display_uses_fallbacks() {
     for (reference, reason) in [
         (
             Recorded::NotRecorded,
-            "CountryAppearance.original_tag_reference not recorded",
+            "original tag reference of country appearance not recorded",
         ),
         (
             Recorded::Value(None),
-            "CountryAppearance.original_tag_reference capture refused",
+            "original tag reference of country appearance capture refused",
         ),
     ] {
         if let TableView::Complete(TableRows::CountryAppearance(rows)) =
@@ -1230,25 +1230,25 @@ fn states_branches() {
             "add_resistance_target={}",
             S(1),
             "",
-            Some("ReservedCountryNaming"),
+            Some("reserved country naming has no singleton row"),
         ),
         (
             "add_resistance_target=5",
             S(1),
             "",
-            Some("ReservedCountryNaming"),
+            Some("reserved country naming has no singleton row"),
         ),
         (
             "add_resistance_target={amount=1 occupied=AAA}",
             S(1),
             "",
-            Some("ReservedCountryNaming"),
+            Some("reserved country naming has no singleton row"),
         ),
         (
             "add_resistance_target={amount=1 occupier=BBB}",
             S(1),
             "",
-            Some("ReservedCountryNaming"),
+            Some("reserved country naming has no singleton row"),
         ),
         (
             "add_resistance_target={amount=1 occupied=AAA occupier=BBB}",
@@ -1298,7 +1298,7 @@ fn states_branches() {
             "add_resistance_target={amount=1 days=random occupied=AAA occupier=BBB}",
             S(1),
             "",
-            Some("ScriptVariables.seed"),
+            Some("seed of script variables"),
         ),
         (
             "add_resistance_target={amount=0 add_political_power=1}",
@@ -1461,7 +1461,7 @@ fn states_branches() {
             "give_resource_rights={state=1}",
             C(1),
             "",
-            Some("ReservedCountryNaming"),
+            Some("reserved country naming has no singleton row"),
         ),
         ("remove_resource_rights=0", S(1), "", None),
         ("remove_resource_rights=THIS", S(1), "End One\n", None),
@@ -1587,35 +1587,45 @@ fn state_tables_refuse_gaps_and_name_a_late_country() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
-    for (table, rows, body, name) in [
+    for (table, rows, body) in [
         (
             TableId::States,
             TableRows::States(vec![]),
             "add_state_core=999",
-            "States",
         ),
         (
             TableId::Provinces,
             TableRows::Provinces(vec![]),
             "set_province_controller=999",
-            "Provinces",
         ),
         (
             TableId::StateResistance,
             TableRows::StateResistance(vec![]),
             "transfer_state_to=occupied",
-            "StateResistance",
         ),
     ] {
         let previous = fixture.frame.tables[table.index()].clone();
-        for view in [
-            TableView::Unavailable {
-                reason: "synthetic gap".into(),
-            },
-            TableView::Truncated {
-                rows: rows.clone(),
-                missing: 1,
-            },
+        let words = table.words();
+        for (view, gap) in [
+            (
+                TableView::Unavailable {
+                    reason: "synthetic gap".into(),
+                },
+                [
+                    format!("{words}: not available: synthetic gap"),
+                    format!("hour 1 {table:?} is unavailable: synthetic gap"),
+                ],
+            ),
+            (
+                TableView::Truncated {
+                    rows: rows.clone(),
+                    missing: 1,
+                },
+                [
+                    format!("{words}: read only in part (1 rows missing)"),
+                    format!("hour 1 {table:?} is truncated (1 missing rows)"),
+                ],
+            ),
         ] {
             *fixture.frame.tables[table.index()] = view;
             let mut scopes = EventScopes::new(vec![EventScope::of(S(1))]);
@@ -1627,8 +1637,11 @@ fn state_tables_refuse_gaps_and_name_a_late_country() {
                 "{body}: {:?}",
                 out.refusals
             );
+            // A core table's gap is the world's, in words; any other's is the frame's.
             assert!(
-                out.refusals.keys().any(|why| why.contains(name)),
+                out.refusals
+                    .keys()
+                    .any(|why| gap.iter().any(|gap| why.contains(gap.as_str()))),
                 "{body}: {:?}",
                 out.refusals
             );

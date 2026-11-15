@@ -1,50 +1,59 @@
 use crate::{Memory, cpdx_array::Array};
 
-/// Fixed callback storage or a worker-owned vector. Growing readers reserve
-/// from their acquired headers before filling, without restarting native reads.
+/// A worker-owned vector, whole or from an offset, or a count-only probe.
+/// Growing readers reserve from their acquired headers before filling, without
+/// restarting native reads. A count-only probe stores nothing and never grows:
+/// a sizing walk reads only what it needs to count the rows the table holds.
 pub enum Buffer<'a, T> {
-    Fixed(&'a mut [T]),
+    Count,
+    /// Storage sized to a count the caller took from the same unchanging data,
+    /// such as the combat-log prune detour, which must not allocate, or a
+    /// decode of a recorded copy into storage reserved from that copy's demand.
+    /// It never grows.
+    Exact(&'a mut [T]),
     Growing(&'a mut Vec<T>),
     GrowingFrom(&'a mut Vec<T>, usize),
 }
 
 impl<T: Default> Buffer<'_, T> {
+    /// Whether `required` rows fit; only a count-only probe answers `false`.
     pub fn ensure(&mut self, required: usize) -> Result<bool, &'static str> {
         if required <= self.len() {
             return Ok(true);
         }
         let (values, start) = match self {
-            Self::Fixed(_) => return Ok(false),
+            Self::Count | Self::Exact(_) => return Ok(false),
             Self::Growing(values) => (values, 0),
             Self::GrowingFrom(values, start) => (values, *start),
         };
-        let required = start
+        let end = start
             .checked_add(required)
             .ok_or("capture buffer length overflow")?;
-        let len = values.len().saturating_mul(2).max(required);
-        crate::allocation::resize_default(values, len)
-            .map_err(|_| "capture buffer allocation failed")?;
+        grow(values, end)?;
         Ok(true)
     }
 }
 
+/// Grows worker storage to hold `end` values, as [`Buffer::ensure`] grows it.
+pub fn grow<T: Default>(values: &mut Vec<T>, end: usize) -> Result<(), &'static str> {
+    if end <= values.len() {
+        return Ok(());
+    }
+    let len = values.len().saturating_mul(2).max(end);
+    crate::allocation::resize_default(values, len).map_err(|_| "capture buffer allocation failed")
+}
+
 impl<T> Buffer<'_, T> {
-    pub fn for_worker(values: &mut Vec<T>, growing: bool) -> Buffer<'_, T> {
-        if growing {
-            Buffer::Growing(values)
-        } else {
-            Buffer::Fixed(values)
-        }
+    pub fn is_growing(&self) -> bool {
+        !matches!(self, Self::Count | Self::Exact(_))
     }
 
     /// Continue an original walk in the same owned allocation. A slice would
     /// discard the worker's ability to grow after a nested header is acquired.
-    pub fn is_growing(&self) -> bool {
-        !matches!(self, Self::Fixed(_))
-    }
     pub fn suffix(&mut self, start: usize) -> Buffer<'_, T> {
         match self {
-            Self::Fixed(values) => Buffer::Fixed(&mut values[start..]),
+            Self::Count => Buffer::Count,
+            Self::Exact(values) => Buffer::Exact(&mut values[start..]),
             Self::Growing(values) => Buffer::GrowingFrom(values, start),
             Self::GrowingFrom(values, offset) => Buffer::GrowingFrom(values, *offset + start),
         }
@@ -55,7 +64,8 @@ impl<T> std::ops::Deref for Buffer<'_, T> {
     type Target = [T];
     fn deref(&self) -> &[T] {
         match self {
-            Self::Fixed(values) => values,
+            Self::Count => &[],
+            Self::Exact(values) => values,
             Self::Growing(values) => values,
             Self::GrowingFrom(values, start) => &values[*start..],
         }
@@ -65,7 +75,8 @@ impl<T> std::ops::Deref for Buffer<'_, T> {
 impl<T> std::ops::DerefMut for Buffer<'_, T> {
     fn deref_mut(&mut self) -> &mut [T] {
         match self {
-            Self::Fixed(values) => values,
+            Self::Count => &mut [],
+            Self::Exact(values) => values,
             Self::Growing(values) => values,
             Self::GrowingFrom(values, start) => &mut values[*start..],
         }
@@ -77,7 +88,8 @@ pub enum Outcome {
     Rows {
         len: usize,
     },
-    /// Non-null rows whose fields were not read after capacity was reached.
+    /// Rows the table holds whose fields were not stored: every row of a
+    /// count-only probe, or rows the game leaves unresolved.
     Truncated {
         len: usize,
         unread_rows: u32,
@@ -101,20 +113,10 @@ impl Outcome {
 }
 
 /// These game arrays reserve slot zero. Null holes contain no row. A fault never
-/// turns a prefix into a successful table, and capacity never causes allocation.
-/// Exact pointer spans are copied in bounded batches. Earlier complete rows keep
-/// their validation precedence over a later unreadable pointer in the batch.
-#[cfg(test)]
-pub(crate) fn pointers<R: Default>(
-    memory: &impl Memory,
-    array: Array,
-    output: &mut [R],
-    read_row: impl FnMut(u32, usize) -> Result<R, &'static str>,
-) -> Outcome {
-    pointers_buffer(memory, array, Buffer::Fixed(output), read_row)
-}
-
-pub fn pointers_buffer<R: Default>(
+/// turns a prefix into a successful table. Exact pointer spans are copied in
+/// bounded batches. Earlier complete rows keep their validation precedence over
+/// a later unreadable pointer in the batch.
+pub fn pointers<R: Default>(
     memory: &impl Memory,
     array: Array,
     mut output: Buffer<'_, R>,
@@ -179,12 +181,10 @@ mod tests {
             let mut nested = tail.suffix(0);
             nested.ensure(countries * 19).unwrap();
             nested[..countries * 19].fill(13);
-            assert!(nested.is_growing());
             assert_eq!(&buffer[..countries], vec![7; countries]);
             assert_eq!(buffer[countries..countries * 20], vec![13; countries * 19]);
         }
-        let mut fixed = Buffer::Fixed(&mut [0u32; 1]);
-        assert!(!fixed.suffix(1).ensure(5000).unwrap());
+        assert!(!Buffer::<u32>::Count.suffix(1).ensure(5000).unwrap());
     }
 
     #[test]
@@ -196,7 +196,7 @@ mod tests {
             reads: RefCell::new(Vec::new()),
         };
         let mut rows = Vec::new();
-        let result = pointers_buffer(
+        let result = pointers(
             &memory,
             Array {
                 data: 0x1000,
@@ -214,18 +214,6 @@ mod tests {
         );
         assert_eq!(&rows[..result.len()], expected);
         assert_eq!(memory.reads.borrow().len(), 5000);
-        assert!(matches!(
-            pointers(
-                &memory,
-                Array {
-                    data: 0x1000,
-                    count: 5001
-                },
-                &mut [0; 1],
-                |slot, _| Ok(slot)
-            ),
-            Outcome::Truncated { .. }
-        ));
     }
 
     use crate::memory::SliceMemory;
@@ -302,7 +290,7 @@ mod tests {
             },
             batches: Cell::new(0),
         };
-        let mut rows = [0; 132];
+        let mut rows = Vec::new();
         let expected: Vec<u32> = (1..132).filter(|slot| slot % 3 != 0).collect();
         assert_eq!(
             pointers(
@@ -311,7 +299,7 @@ mod tests {
                     data: 0x1000,
                     count: 132,
                 },
-                &mut rows,
+                Buffer::Growing(&mut rows),
                 |slot, pointer| {
                     assert_eq!(pointer, 0x2000 + slot as usize);
                     Ok(slot)
@@ -348,7 +336,7 @@ mod tests {
                         data: 0x1000,
                         count: 132,
                     },
-                    &mut [0; 132],
+                    Buffer::Growing(&mut Vec::<u32>::new()),
                     |slot, _| {
                         visited.push(slot);
                         Ok(slot)
@@ -378,7 +366,7 @@ mod tests {
                         data: 0x1000,
                         count: 132,
                     },
-                    &mut [0; 132],
+                    Buffer::Growing(&mut Vec::<u32>::new()),
                     |_, _| Err("earlier row invalid"),
                 ),
                 Outcome::Unavailable {
@@ -389,14 +377,13 @@ mod tests {
     }
 
     #[test]
-    fn capacity_counts_holes_across_batches_without_reading_more_rows() {
+    fn a_count_probe_counts_holes_across_batches_without_reading_rows() {
         let bytes = pointer_bytes(132);
         let memory = TracedMemory {
             bytes: &bytes,
             blocked: None,
             reads: RefCell::new(Vec::new()),
         };
-        let mut visited = Vec::new();
         assert_eq!(
             pointers(
                 &memory,
@@ -404,18 +391,14 @@ mod tests {
                     data: 0x1000,
                     count: 132,
                 },
-                &mut [0; 2],
-                |slot, _| {
-                    visited.push(slot);
-                    Ok(slot)
-                },
+                Buffer::<u32>::Count,
+                |_, _| panic!("a count probe must not read row fields"),
             ),
             Outcome::Truncated {
-                len: 2,
-                unread_rows: 86,
+                len: 0,
+                unread_rows: 88,
             }
         );
-        assert_eq!(visited, [1, 2]);
         assert_eq!(memory.reads.borrow().len(), 131);
         let memory = TracedMemory {
             bytes: &bytes,
@@ -429,8 +412,8 @@ mod tests {
                     data: 0x1000,
                     count: 132,
                 },
-                &mut [0; 0],
-                |_, _| panic!("a full output must not read row fields"),
+                Buffer::<u32>::Count,
+                |_, _| panic!("a count probe must not read row fields"),
             ),
             Outcome::Unavailable {
                 reason: "table pointer unreadable"
@@ -452,15 +435,23 @@ mod tests {
             count: 4,
         };
         assert_eq!(
-            pointers(&EdgeMemory, array, &mut [0; 4], |id, _| Ok(id)),
+            pointers(
+                &EdgeMemory,
+                array,
+                Buffer::Growing(&mut Vec::<u32>::new()),
+                |id, _| Ok(id)
+            ),
             Outcome::Unavailable {
                 reason: "table pointer unreadable"
             }
         );
         assert_eq!(
-            pointers(&EdgeMemory, array, &mut [0; 4], |_, _| {
-                Err("earlier row invalid")
-            }),
+            pointers(
+                &EdgeMemory,
+                array,
+                Buffer::Growing(&mut Vec::<u32>::new()),
+                |_, _| Err("earlier row invalid")
+            ),
             Outcome::Unavailable {
                 reason: "earlier row invalid"
             }
@@ -472,7 +463,7 @@ mod tests {
                     data: usize::MAX - 3,
                     count: 2,
                 },
-                &mut [0; 2],
+                Buffer::Growing(&mut Vec::<u32>::new()),
                 |id, _| Ok(id),
             ),
             Outcome::Unavailable {
@@ -482,7 +473,7 @@ mod tests {
     }
 
     #[test]
-    fn capacity_and_pointer_faults_have_distinct_outcomes() {
+    fn counts_holes_and_pointer_faults_have_distinct_outcomes() {
         let bytes: Vec<u8> = [0_u64, 0x2000, 0, 0x3000]
             .into_iter()
             .flat_map(u64::to_le_bytes)
@@ -495,17 +486,16 @@ mod tests {
             data: 0x1000,
             count: 4,
         };
-        let mut output = [0; 1];
         assert_eq!(
-            pointers(&memory, array, &mut output, |id, _| Ok(id)),
+            pointers(&memory, array, Buffer::Count, |id: u32, _| Ok(id)),
             Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
+                len: 0,
+                unread_rows: 2
             }
         );
-        let mut output = [0; 4];
+        let mut output = Vec::new();
         assert_eq!(
-            pointers(&memory, array, &mut output, |id, _| Ok(id)),
+            pointers(&memory, array, Buffer::Growing(&mut output), |id, _| Ok(id)),
             Outcome::Rows { len: 2 }
         );
         assert_eq!(&output[..2], &[1, 3]);
@@ -514,7 +504,7 @@ mod tests {
             bytes: &bytes[..24],
         };
         assert_eq!(
-            pointers(&broken, array, &mut output, |id, _| Ok(id)),
+            pointers(&broken, array, Buffer::Growing(&mut output), |id, _| Ok(id)),
             Outcome::Unavailable {
                 reason: "table pointer unreadable"
             }

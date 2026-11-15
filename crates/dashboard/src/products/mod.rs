@@ -1,99 +1,108 @@
 //! Data products: one module per widget data set, registered once below.
 //!
-//! A product turns a source plus typed parameters into one compact reply that
-//! covers a whole branch, so playback in the frontend is a local lookup. The
-//! service, transport, host and frontend never name a product; they route by
-//! its key.
+//! A product turns a source plus typed parameters into one compact reply. The service,
+//! transport, host and frontend never name a product; they route by its key. A declared series
+//! answers its requests with no product of its own ([`crate::answer`]).
 
+pub mod air_aces;
+pub mod air_ledger;
+pub mod air_statistics;
 pub mod aircraft_catalogue;
+pub mod army;
+pub mod at_hour;
 pub mod campaign_clock;
+pub mod casualties;
+pub mod construction;
 pub mod country_flags;
+pub mod country_people;
+pub mod country_ids;
+pub mod diplomacy;
+pub mod doctrine_mastery;
 pub mod doctrines;
-pub mod event_feed;
+pub mod economy;
+pub mod focus;
 pub mod focus_artwork;
-pub use identity::civil_war;
+pub mod groups;
+pub mod ideas;
+pub mod identities;
+pub mod intel_coverage;
+pub mod intelligence;
 pub mod land_owners;
+pub mod leaders;
+pub mod lexicon;
+pub mod logs;
+pub mod minefields;
+pub mod party_history;
 pub mod national_focus;
+pub mod occupation;
+pub mod occupation_reserve;
+pub mod naval_management;
+pub mod naval_supremacy;
+pub mod naval_yards;
+pub mod place_names;
+pub mod peace;
 pub mod player_apm;
-pub mod scoreboard;
-pub mod style_runs;
+pub mod politics;
+pub mod scalars;
+pub mod raids;
+pub mod production;
+pub mod sea_regions;
+pub mod regional_weather;
+pub mod research;
+pub mod stockpile;
+pub mod styles;
+pub mod subjects;
 pub mod technology_artwork;
+pub mod territory;
+pub mod factions;
+// Forces and people (P1).
+pub mod experience;
+pub mod forces;
+pub mod training_queue;
+pub mod volunteers;
+// Divisions and stockpile (P3a).
+pub mod divisions;
+// Production totals and spending (P8b).
+pub mod production_spending;
+#[cfg(test)]
+mod war_fixtures;
+pub mod wargoals;
+// Stability's breakdown and parts (P1b).
+pub mod stability;
+// Fuel, trade flows and convoy health (P7b).
+pub mod convoys;
+pub mod trade_flows;
+// Land battles and the division log (P9a).
+pub mod division_log;
+pub mod land_battles;
+pub mod combat_log;
+pub mod land_terrain;
+// Naval battles, ships sunk and naval losses (P9b).
+pub mod naval;
+// The event feed (P6).
+pub mod feed;
+pub mod air_missions;
+// Factions' state (P5b).
+pub mod faction_state;
+// Wars (P5d).
+pub mod wars;
+// Special projects (P12c).
+pub mod special_projects;
+// Air superiority (P11d).
+pub mod air_superiority;
+// Equipment losses (P14).
+pub mod army_losses;
+pub mod equipment_losses;
+// The scoreboard (P13).
+pub mod scoreboard;
+// Equipment produced (P8d).
+pub mod equipment_produced;
+// The power ledger (P4c).
+pub mod power_ledger;
+pub mod windows;
 
 // The product contract and the shared products, at their old paths.
-pub use dashboard_air_aces::products::air_aces;
-pub use dashboard_air_operations::products::{air_missions, air_statistics};
-pub use dashboard_air_superiority::products::air_superiority;
-pub use dashboard_army::products::{
-    division_careers, division_equipment, division_templates, training_queue,
-};
 pub use dashboard_base::products::*;
-pub use dashboard_construction::products::construction_log;
-pub use dashboard_construction::products::construction_spending;
-pub use dashboard_country_fuel::products::country_fuel;
-pub use dashboard_country_nukes::products::country_nukes;
-pub use dashboard_diplomacy::products::diplomacy_state;
-pub use dashboard_doctrine_mastery::products::doctrine_mastery;
-pub use dashboard_economy::products::{
-    convoy_health, fuel_branches, lend_lease_balance, market, production_catalogue,
-};
-pub use dashboard_equipment_losses::products::equipment_losses;
-pub use dashboard_equipment_stockpile::products::equipment_stockpile;
-pub use dashboard_factions::products::faction_state;
-pub use dashboard_forces::products::air_force;
-pub use dashboard_forces::products::army_size;
-#[cfg(test)]
-pub use dashboard_forces::products::force_fixtures;
-pub use dashboard_forces::products::naval_management;
-pub use dashboard_forces::products::navy;
-pub use dashboard_forces::products::supply_health;
-pub use dashboard_forces::products::volunteers_expeditionaries;
-pub use dashboard_game_score::products::game_score;
-pub use dashboard_game_window::products::game_window;
-pub use dashboard_ideas::products::ideas;
-pub use dashboard_intelligence::products::agency_comparison;
-pub use dashboard_intelligence::products::decryption;
-pub use dashboard_intelligence::products::espionage_log;
-pub use dashboard_intelligence::products::intel_coverage;
-pub use dashboard_intelligence::products::intel_details;
-pub use dashboard_intelligence::products::intelligence_content;
-pub use dashboard_intelligence::products::intelligence_prepared;
-pub use dashboard_intelligence::products::operation_description;
-pub use dashboard_intelligence::products::operative_content;
-pub use dashboard_intelligence::products::operative_placements;
-pub use dashboard_intelligence::products::operatives_roster;
-pub use dashboard_land_battles::products::army_losses;
-pub use dashboard_land_battles::products::combat_log;
-pub use dashboard_land_battles::products::division_log;
-pub use dashboard_land_battles::products::land_battles;
-pub use dashboard_military_air_ledger::products::military_air_ledger;
-pub use dashboard_naval::products::naval_battles;
-pub use dashboard_naval::products::naval_losses;
-pub use dashboard_naval::products::ships_sunk;
-pub use dashboard_naval::products::sinkings;
-pub use dashboard_naval_regions::products::{minefields, naval_supremacy};
-pub use dashboard_naval_yards::products::{naval_refits, naval_repairs};
-pub use dashboard_occupation::products::occupation_reserve;
-pub use dashboard_occupation::products::{occupation_trend, occupied_states};
-pub use dashboard_party_history::products::party_history;
-pub use dashboard_peace_deals::products::peace_deals;
-pub use dashboard_politics::products::politics_state;
-pub use dashboard_politics_ledger::products::politics_ledger;
-pub use dashboard_raids::products::raids;
-pub use dashboard_resource_balance::products::market_lendlease;
-pub use dashboard_resource_balance::products::resource_balance;
-pub use dashboard_resource_balance::products::trade_flows;
-pub use dashboard_special_projects::products::special_projects;
-pub use dashboard_stability::products::{country_stability, experience, stability_parts};
-// The product, and the name ladder dashboard-base keeps for it, under one path.
-pub use dashboard_place_names::products::place_names;
-// The product, and the game rules dashboard-base keeps for it, under one path.
-pub use dashboard_manpower::products::country_people;
-pub use dashboard_measure::products::country_balances;
-pub use dashboard_subjects::products::{autonomy, subjects};
-pub use dashboard_unit_leaders::products::unit_leaders;
-pub use dashboard_wars::products::{war_casualties, wargoals, wars};
-pub use dashboard_weather::products::regional_weather;
-pub use dashboard_world_tension::products::world_tension;
 
 use std::sync::atomic::AtomicBool;
 
@@ -107,35 +116,23 @@ use crate::{
 dashboard_base::reply_warnings!(
     country_flags::CountryFlagReply,
     doctrines::DoctrineReply,
-    event_feed::EventFeedReply,
     focus_artwork::FocusArtworkReply,
-    crate::LandOwners,
     national_focus::FocusReply,
     technology_artwork::TechnologyArtworkReply,
-    scoreboard::ScoreboardReply,
     player_apm::ApmReply,
     campaign_clock::CampaignClockReply,
 );
 
 /// A product erased to its key and JSON entry points.
+#[derive(Clone, Copy)]
 pub struct Registered {
     pub key: &'static str,
     pub content_dependent: bool,
     pub interactive: bool,
-    pub load: fn(
-        &Source,
-        &str,
-        serde_json::Value,
-        &LoadContext,
-        &AtomicBool,
-    ) -> Result<String, dashboard_core::QueryError>,
+    pub replays: bool,
+    pub load: fn(&Source, &str, serde_json::Value, &LoadContext, &AtomicBool) -> Result<String, dashboard_core::QueryError>,
     #[cfg(any(test, feature = "export-types"))]
     pub types: fn() -> Vec<String>,
-    /// Answered only by prepared queries: its product route refuses, while its
-    /// types, content dependence and lane stay registered.
-    pub prepared_only: bool,
-    /// How its served replies are checked ([`Product::SERVED`]).
-    pub served: Option<&'static dashboard_base::prepared::served::Plan>,
 }
 
 const fn register<P: Product>() -> Registered {
@@ -143,31 +140,11 @@ const fn register<P: Product>() -> Registered {
         key: P::KEY,
         content_dependent: P::CONTENT_DEPENDENT,
         interactive: P::INTERACTIVE,
+        replays: P::REPLAYS,
         load: load_json::<P>,
         #[cfg(any(test, feature = "export-types"))]
         types: types::<P>,
-        prepared_only: false,
-        served: P::SERVED,
     }
-}
-
-/// A product whose replies come only from prepared queries, with no loader.
-const fn register_prepared<P: Product>() -> Registered {
-    Registered {
-        load: refuse::<P>,
-        prepared_only: true,
-        ..register::<P>()
-    }
-}
-
-fn refuse<P: Product>(
-    _source: &Source,
-    _lease_id: &str,
-    _params: serde_json::Value,
-    _context: &LoadContext,
-    _cancelled: &AtomicBool,
-) -> Result<String, dashboard_core::QueryError> {
-    Err(prepared_only(P::KEY).into())
 }
 
 fn load_json<P: Product>(
@@ -178,32 +155,35 @@ fn load_json<P: Product>(
     cancelled: &AtomicBool,
 ) -> Result<String, dashboard_core::QueryError> {
     let request = params;
-    let params = P::Params::deserialize(&request)
-        .map_err(|error| format!("Invalid {} request: {error}", P::KEY))?;
+    let params = P::Params::deserialize(&request).map_err(|error| format!("Invalid {} request: {error}", P::KEY))?;
     P::validate(&params).map_err(str::to_owned)?;
+    reply_json(source, lease_id, P::KEY, P::CONTENT_DEPENDENT, context, cancelled, || P::load(source, &params, context, cancelled))
+}
+
+/// The reply `load` makes for product `key`, in the transport's envelope, with the warnings every
+/// reply carries.
+pub(crate) fn reply_json<R: serde::Serialize + ReplyWarnings>(
+    source: &Source,
+    lease_id: &str,
+    key: &'static str,
+    content_dependent: bool,
+    context: &LoadContext,
+    cancelled: &AtomicBool,
+    load: impl FnOnce() -> std::io::Result<R>,
+) -> Result<String, dashboard_core::QueryError> {
     crate::metadata::check_cancel(cancelled).map_err(dashboard_core::QueryError::from)?;
-    let prepared = production_lines::PREPARED_PRODUCTS
-        .contains(&P::KEY)
-        .then(|| crate::prepared::files(source, context.content.as_ref()))
-        .transpose()
-        .map_err(dashboard_core::QueryError::from)?;
-    let _scope = prepared
-        .as_ref()
-        .map(|(store, key)| store.scope(key))
-        .transpose()
-        .map_err(dashboard_core::QueryError::from)?;
     // A content reply holds its folders' content while it runs, so its reads and its diagnostics
     // follow one read set, whatever the source binds meanwhile.
     let _held = context
         .content
         .as_ref()
-        .filter(|_| P::CONTENT_DEPENDENT)
+        .filter(|_| content_dependent)
         .and_then(|content| source.content(&content.options).ok());
     let mut reply = bounded_json(
         &Envelope {
             source_id: lease_id,
             revision: &source.key().revision,
-            product: P::KEY,
+            product: key,
             data: (),
         },
         cancelled,
@@ -214,12 +194,10 @@ fn load_json<P: Product>(
     // shared loads it reused noted, never what other consumers did: the same whichever replies
     // ran before it.
     let mut own = crate::catalogue::OwnRefusals::default();
-    let data = crate::catalogue::own_refusals(&mut own, || {
-        P::load(source, &params, context, cancelled)
-    });
+    let data = crate::catalogue::own_refusals(&mut own, load);
     let mut data = data.map_err(dashboard_core::QueryError::from)?;
     own.diagnostics().append_to(data.warnings_mut());
-    if P::CONTENT_DEPENDENT {
+    if content_dependent {
         source.append_changed_warnings(data.warnings_mut(), context.content.as_ref());
     }
     // What the presentation the request was admitted under shows, never the source's now.
@@ -240,209 +218,337 @@ fn types<P: Product>() -> Vec<String> {
     P::types()
 }
 
-/// Every product the service answers. Add a product here and in the frontend
-/// widget registry; nothing else needs to change.
-pub static PRODUCTS: &[Registered] = &[
+/// The products that show rows at an hour ([`at_hour`]), one line each: each answers requests and
+/// shows a panel at the head under its key, and is registered from this line alone.
+pub const AT_HOUR: &[at_hour::Entry] = &[
+    at_hour::entry::<army::TemplateRoster>(),
+    at_hour::entry::<air_statistics::AirStatisticsAt>(),
+    at_hour::entry::<politics::state::PoliticsState>(),
+    at_hour::entry::<country_people::CountryPeople>(),
+    at_hour::entry::<territory::TerritoryShare>(),
+    at_hour::entry::<territory::TerritoryBreakdown>(),
+    at_hour::entry::<factions::FactionRosters>(),
+    at_hour::entry::<scalars::GameScore>(),
+    at_hour::entry::<scalars::NuclearArsenal>(),
+    at_hour::entry::<scalars::WorldTension>(),
+    at_hour::entry::<scalars::FactoryParts>(),
+    at_hour::entry::<experience::CountryExperience>(),
+    at_hour::entry::<training_queue::TrainingQueue>(),
+    at_hour::entry::<diplomacy::DiplomaticRelations>(),
+    at_hour::entry::<wargoals::Wargoals>(),
+    at_hour::entry::<intelligence::decryption::Decryption>(),
+    at_hour::entry::<intelligence::placements::OperativePlacements>(),
+    at_hour::entry::<intelligence::agencies::AgencyComparison>(),
+    at_hour::entry::<intelligence::roster::OperativesRoster>(),
+    at_hour::entry::<intelligence::espionage::EspionageOperations>(),
+    at_hour::entry::<occupation_reserve::OccupationReserve>(),
+    at_hour::entry::<intel_coverage::IntelNetworkCoverage>(),
+    at_hour::entry::<economy::fuel_branches::FuelBranches>(),
+    at_hour::entry::<economy::resources::ResourceBalance>(),
+    at_hour::entry::<economy::lend_lease_balance::LendLeaseBalance>(),
+    at_hour::entry::<production::ProductionLinesAt>(),
+    at_hour::entry::<production::ProductionLicences>(),
+    at_hour::entry::<production::IndustrialOrganisations>(),
+    at_hour::entry::<doctrine_mastery::DoctrineMastery>(),
+    at_hour::entry::<doctrine_mastery::rewards::DoctrineRewards>(),
+    at_hour::entry::<minefields::Minefields>(),
+    at_hour::entry::<minefields::MinefieldReports>(),
+    at_hour::entry::<naval_yards::NavalRepairs>(),
+    at_hour::entry::<naval_yards::NavalRefits>(),
+    at_hour::entry::<leaders::UnitLeaders>(),
+    at_hour::entry::<leaders::career::LeaderHour>(),
+    at_hour::entry::<naval_management::NavalManagement>(),
+    at_hour::entry::<air_aces::AirAcesAt>(),
+    at_hour::entry::<air_aces::AirAcePortraits>(),
+    at_hour::entry::<regional_weather::WeatherProvinces>(),
+    at_hour::entry::<focus::FocusUnavailableAt>(),
+    at_hour::entry::<stability::CountryStabilityBreakdown>(),
+    at_hour::entry::<stability::StabilityPartNames>(),
+    at_hour::entry::<divisions::templates::DivisionTemplates>(),
+    at_hour::entry::<divisions::careers::DivisionCareers>(),
+    at_hour::entry::<divisions::careers::DivisionRecord>(),
+    at_hour::entry::<divisions::equipment::DivisionEquipment>(),
+    at_hour::entry::<research::slots::ResearchSlots>(),
+    at_hour::entry::<air_missions::AirMissionsAt>(),
+    at_hour::entry::<air_missions::AirMissionWingsAt>(),
+    at_hour::entry::<occupation::states::OccupiedStates>(),
+    at_hour::entry::<occupation::detail::OccupationDetail>(),
+    // The market (P7c).
+    at_hour::entry::<economy::market::MarketLendLease>(),
+    at_hour::entry::<economy::fuel::CountryFuel>(),
+    at_hour::entry::<stockpile::EquipmentStockpileAt>(),
+    at_hour::entry::<stockpile::StockpileArtwork>(),
+    at_hour::entry::<faction_state::details::FactionDetails>(),
+    at_hour::entry::<wars::contributions::WarContributions>(),
+    at_hour::entry::<special_projects::details::SpecialProjectDetailsAt>(),
+    at_hour::entry::<special_projects::details::SpecialProjectEffectsAt>(),
+    at_hour::entry::<air_superiority::AirSuperiorityAt>(),
+    at_hour::entry::<equipment_losses::EquipmentLossHead>(),
+    at_hour::entry::<army_losses::ArmyLosses>(),
+    // The power ledger (P4c).
+    at_hour::entry::<power_ledger::day::PowerDay>(),
+    // A faction goal's completion rewards, asked by its tooltip (P5e).
+    at_hour::entry::<faction_state::rewards::FactionGoalRewards>(),
+];
+
+/// Every product the service answers: these, then [`AT_HOUR`]. Add a product here and in the
+/// frontend widget registry; nothing else needs to change. A family not yet moved to the
+/// recording's own tables has no product here.
+const OWN: &[Registered] = &[
     register::<campaign_clock::CampaignClock>(),
     register::<player_apm::PlayerApm>(),
-    register_prepared::<diplomacy_state::DiplomacyState>(),
     register::<national_focus::NationalFocus>(),
     register::<focus_artwork::FocusArtwork>(),
-    register::<crate::prepared_focus::FocusArt>(),
-    register_prepared::<research::Research>(),
     register::<technology_artwork::TechnologyArtwork>(),
     register::<country_flags::CountryFlags>(),
     register::<doctrines::Doctrines>(),
-    register::<game_window::GameWindow>(),
-    register_prepared::<army_size::ArmySize>(),
-    register_prepared::<volunteers_expeditionaries::VolunteersExpeditionaries>(),
-    register_prepared::<supply_health::SupplyHealth>(),
-    register_prepared::<division_log::DivisionLog>(),
-    register_prepared::<division_log::DivisionLogManifest>(),
-    register_prepared::<division_log::DivisionLogTotals>(),
-    register_prepared::<unit_leaders::UnitLeaders>(),
-    register::<unit_leaders::portraits::UnitLeaderPortraits>(),
-    register_prepared::<land_owners::LandOwnersProduct>(),
-    register_prepared::<land_battles::LandBattles>(),
-    register_prepared::<land_battles::LandBattlesManifest>(),
-    register_prepared::<land_battles::LandBattlesRanking>(),
-    register_prepared::<land_battles::LandBattleCourses>(),
-    register::<land_battles::LandBattleTerrains>(),
-    register::<combat_log::CombatLog>(),
-    register::<army_losses::ArmyLosses>(),
-    register::<division_careers::DivisionCareers>(),
-    register::<division_careers::DivisionRecord>(),
-    register::<division_templates::DivisionTemplates>(),
-    register::<division_equipment::DivisionEquipment>(),
-    register_prepared::<division_equipment::history::DivisionEquipmentHistory>(),
-    register::<training_queue::TrainingQueue>(),
-    register_prepared::<place_names::PlaceNames>(),
-    register::<country_styles::CountryStyles>(),
-    register::<country_colours::CountryColours>(),
-    register::<faction_details::FactionDetails>(),
-    register_prepared::<country_groups::CountryGroups>(),
-    // All faction history views share one prepared publication and gate.
-    register_prepared::<faction_state::FactionState>(),
-    register_prepared::<wars::Wars>(),
-    register::<wargoals::Wargoals>(),
-    register::<country_stability::CountryStability>(),
-    register::<stability_parts::StabilityParts>(),
-    register::<country_measure::CountryMeasure>(),
-    register_prepared::<country_people::CountryPeople>(),
-    register_prepared::<country_fuel::CountryFuel>(),
-    register::<country_fuel::CountryFuelAwards>(),
-    register::<country_fuel::CountryFuelAwardHistory>(),
-    register_prepared::<country_fuel::CountryFuelConsumption>(),
-    register::<country_fuel::CountryFuelDemand>(),
-    register::<country_fuel::CountryFuelDemandHistory>(),
-    register::<country_fuel::CountryFuelDemandStack>(),
-    register_prepared::<war_casualties::WarCasualties>(),
-    register_prepared::<war_casualties::pairs::CasualtyPairs>(),
-    register_prepared::<war_casualties::breakdown::CasualtyBreakdown>(),
-    register::<country_factories::CountryFactories>(),
-    register_prepared::<territory::Territory>(),
-    register_prepared::<territory_breakdown::TerritoryBreakdown>(),
-    register_prepared::<faction_totals::FactionTotals>(),
-    register_prepared::<air_aces::AirAces>(),
-    register_prepared::<air_aces::AirAcePortraits>(),
-    register::<air_force::AirForceSize>(),
-    register::<navy::NavySize>(),
-    register::<naval_management::NavalManagement>(),
-    register::<game_score::GameScore>(),
-    register_prepared::<scoreboard::Scoreboard>(),
-    register::<country_nukes::CountryNukes>(),
-    register_prepared::<air_superiority::AirSuperiority>(),
-    register_prepared::<raids::Raids>(),
-    register_prepared::<occupied_states::OccupiedStates>(),
-    register_prepared::<occupied_states::OccupiedStatesManifest>(),
-    register_prepared::<occupation_trend::OccupationTrend>(),
-    register::<country_experience::CountryExperience>(),
-    register_prepared::<idea_history::IdeaHistory>(),
-    register_prepared::<party_history::PartyHistory>(),
-    register::<politics_state::PoliticsState>(),
-    register_prepared::<politics_state::history::PoliticsStateHistory>(),
-    register_prepared::<politics_state::civil_wars::CivilWars>(),
-    register_prepared::<politics_ledger::PoliticsLedger>(),
-    register_prepared::<fuel_branches::FuelBranches>(),
-    register_prepared::<market::MarketHistory>(),
-    register_prepared::<market::MarketLedger>(),
-    register_prepared::<lend_lease_balance::LendLeaseBalance>(),
-    register_prepared::<production_catalogue::ProductionCatalogue>(),
-    register_prepared::<convoy_health::ConvoyHealth>(),
-    register_prepared::<peace_deals::PeaceDeals>(),
-    register_prepared::<resource_balance::ResourceBalance>(),
-    register_prepared::<decryption::Decryption>(),
-    register::<production_lines::ProductionLines>(),
-    register::<equipment::designs::detail::EquipmentDesignDetail>(),
-    register_prepared::<production_lines::ProductionLineDetail>(),
-    register_prepared::<production_lines::ProductionLineBreakdown>(),
-    register_prepared::<equipment_stockpile::EquipmentStockpileAt>(),
-    register_prepared::<equipment_stockpile::EquipmentStockpileCatalogue>(),
-    register_prepared::<equipment_stockpile::EquipmentStockpileChart>(),
-    register::<equipment_stockpile::artwork::StockpileArtwork>(),
-    register::<equipment_produced::EquipmentProduced>(),
-    register_prepared::<production_spending::ProductionSpending>(),
-    register_prepared::<dockyard_spending::DockyardSpending>(),
-    register_prepared::<military_factory_spending::MilitaryFactorySpending>(),
-    register_prepared::<trade_flows::TradeFlows>(),
-    register::<market_lendlease::MarketLendLease>(),
-    register_prepared::<special_projects::SpecialProjects>(),
-    register_prepared::<subjects::Subjects>(),
-    register_prepared::<event_feed::EventFeed>(),
-    register_prepared::<event_feed::prepared::script::EventChoices>(),
-    register_prepared::<event_feed::prepared::script::Decisions>(),
-    register_prepared::<world_tension::WorldTension>(),
-    register_prepared::<autonomy::Autonomy>(),
-    register_prepared::<construction_log::ConstructionLog>(),
-    register_prepared::<construction_log::ConstructionLogManifest>(),
-    register_prepared::<equipment_losses::EquipmentLosses>(),
-    register_prepared::<military_air_ledger::MilitaryAirLedger>(),
-    register::<ships_sunk::ShipsSunk>(),
-    register::<ships_sunk::ShipsSunkBattleTitles>(),
-    register_prepared::<naval_battles::NavalBattles>(),
-    register_prepared::<naval_battles::NavalBattlesManifest>(),
-    register_prepared::<naval_battles::NavalBattlesRanking>(),
-    register_prepared::<naval_battles::NavalBattleDetails>(),
-    register::<naval_losses::NavalLosses>(),
-    register_prepared::<construction_spending::ConstructionSpending>(),
-    register_prepared::<espionage_log::EspionageLog>(),
-    register::<operation_description::OperationDescription>(),
-    register::<intel_details::IntelDetails>(),
-    register_prepared::<operative_placements::OperativePlacements>(),
-    register_prepared::<operatives_roster::OperativesRoster>(),
-    register_prepared::<agency_comparison::AgencyComparison>(),
     register::<aircraft_catalogue::AircraftCatalogue>(),
-    register_prepared::<air_missions::AirMissions>(),
-    register_prepared::<air_statistics::AirStatistics>(),
-    register_prepared::<regional_weather::RegionalWeather>(),
-    register_prepared::<minefields::Minefields>(),
-    register_prepared::<naval_supremacy::NavalSupremacy>(),
-    register_prepared::<doctrine_mastery::DoctrineMastery>(),
     register::<artwork::sprites::SpriteArtwork>(),
-    register_prepared::<occupation_reserve::OccupationReserve>(),
-    register_prepared::<intel_coverage::IntelCoverage>(),
-    register_prepared::<naval_repairs::NavalRepairs>(),
-    register_prepared::<naval_refits::NavalRefits>(),
+    register::<army::ArmySize>(),
+    register::<identities::CountryIdentities>(),
+    register::<styles::CountryFacts>(),
+    register::<styles::CountryStyles>(),
+    register::<groups::CountryGroups>(),
+    register::<land_owners::LandOwnersProduct>(),
+    register::<logs::LogPage>(),
+    register::<logs::LogCounts>(),
+    register::<air_ledger::MilitaryAirLedger>(),
+    register::<politics::history::PoliticsStateHistory>(),
+    register::<politics::civil_wars::CivilWars>(),
+    register::<factions::FactionLines>(),
+    register::<scalars::ThreatEvents>(),
+    register::<scalars::FactoryGroups>(),
+    register::<forces::AirForceSize>(),
+    register::<forces::NavySize>(),
+    register::<volunteers::VolunteersExpeditionaries>(),
+    register::<subjects::Subjects>(),
+    register::<diplomacy::DiplomaticPacts>(),
+    register::<intelligence::roster::OperativesDeparted>(),
+    register::<intelligence::roster::OperativeTenures>(),
+    register::<intelligence::espionage::EspionageLog>(),
+    register::<intelligence::espionage::EspionageOperation>(),
+    register::<intelligence::espionage::EspionageEnded>(),
+    register::<intelligence::espionage::EspionageTypes>(),
+    register::<intelligence::intel_details::IntelDetails>(),
+    register::<raids::RaidLog>(),
+    register::<economy::resources::ResourceSizes>(),
+    register::<economy::lend_lease_partners::LendLeasePartners>(),
+    register::<production::ProductionLines>(),
+    register::<production::ProductionLineDetail>(),
+    register::<production::ProductionLineBreakdown>(),
+    register::<production::EquipmentDesigns>(),
+    register::<place_names::PlaceNames>(),
+    register::<minefields::MinefieldHistory>(),
+    register::<naval_supremacy::NavalSupremacy>(),
+    register::<leaders::LeaderPortraits>(),
+    register::<leaders::career::LeaderCareer>(),
+    register::<leaders::career::LeaderChoices>(),
+    register::<regional_weather::RegionalWeather>(),
+    register::<focus::FocusHourProduct>(),
+    register::<focus::FocusOrderPageProduct>(),
+    register::<focus::FocusCompletionsProduct>(),
+    register::<ideas::IdeaHistory>(),
+    register::<party_history::PartyHistory>(),
+    // Casualties and peace (P5c).
+    register::<casualties::CasualtyPairs>(),
+    register::<casualties::CasualtyBreakdown>(),
+    register::<casualties::CasualtyLabels>(),
+    register::<peace::PeaceDeals>(),
+    register::<convoys::ConvoyHealth>(),
+    register::<trade_flows::TradeFlows>(),
+    register::<production_spending::ProductionSpending>(),
+    register::<occupation_reserve::ReserveHistory>(),
+    register::<construction::log::ConstructionLogManifest>(),
+    register::<construction::log::ConstructionLog>(),
+    register::<construction::spending::ConstructionSpending>(),
+    register::<division_log::DivisionLog>(),
+    register::<division_log::DivisionLogManifest>(),
+    register::<land_battles::LandBattlesManifest>(),
+    register::<land_battles::LandBattles>(),
+    register::<land_battles::LandBattlesRanking>(),
+    register::<land_battles::LandBattleCourses>(),
+    register::<land_terrain::LandBattleTerrains>(),
+    register::<naval::battles::NavalBattlesManifest>(),
+    register::<naval::battles::NavalBattles>(),
+    register::<naval::battles::NavalBattlesRanking>(),
+    register::<naval::battles::NavalBattleDetails>(),
+    register::<naval::sunk::ShipsSunkManifest>(),
+    register::<naval::sunk::ShipsSunk>(),
+    register::<naval::losses::NavalLosses>(),
+    register::<research::Research>(),
+    register::<research::breakdown::ResearchBreakdown>(),
+    register::<feed::EventFeed>(),
+    register::<feed::EventChoices>(),
+    register::<feed::Decisions>(),
+    register::<feed::EventFeedSpan>(),
+    // The market (P7c).
+    register::<economy::market::history::LendLeaseHistory>(),
+    register::<economy::market::ledger::MarketLedger>(),
+    register::<economy::fuel::awards::CountryFuelAwards>(),
+    register::<economy::fuel::awards::CountryFuelAwardHistory>(),
+    register::<economy::fuel::demand::CountryFuelDemand>(),
+    register::<economy::fuel::demand::CountryFuelDemandHistory>(),
+    register::<stockpile::EquipmentStockpileCatalogue>(),
+    register::<stockpile::EquipmentStockpileChart>(),
+    register::<faction_state::history::FactionState>(),
+    register::<wars::Wars>(),
+    register::<wars::WarLosses>(),
+    register::<special_projects::SpecialProjects>(),
+    register::<air_superiority::AirSuperiorityChoices>(),
+    register::<combat_log::CombatLog>(),
+    register::<equipment_losses::EquipmentLosses>(),
+    // The feed, research, air and weather's second pass (Q7).
+    register::<air_statistics::AirStatisticsRegions>(),
+    // The scoreboard (P13).
+    register::<scoreboard::ScoreboardColumns>(),
+    register::<scoreboard::Scoreboard>(),
+    // Equipment produced (P8d).
+    register::<equipment_produced::EquipmentProduced>(),
+    register::<equipment_produced::EquipmentProducedTypes>(),
+    register::<equipment_produced::EquipmentProducedCountry>(),
+    register::<equipment_produced::EquipmentProducedAt>(),
+    // The power ledger (P4c).
+    register::<power_ledger::PowerSpending>(),
+    // Stability's input reads, for the chart's "as of" marks (Q5).
+    register::<stability::reads::StabilityReads>(),
+    register::<air_superiority::timeline::AirSuperiorityTimeline>(),
+    register::<air_superiority::timeline::AirSuperiorityRanking>(),
+    // The espionage types' tokens, apart from their names (L1).
+    register::<intelligence::espionage::EspionageTypeTokens>(),
 ];
+
+const ALL: [Registered; OWN.len() + AT_HOUR.len()] = at_hour::joined(OWN, AT_HOUR);
+pub static PRODUCTS: &[Registered] = &ALL;
+
+/// The products answered from the recording's tables through the query layer: these, then
+/// [`AT_HOUR`].
+const MOVED_OWN: &[&str] = &[
+    army::ArmySize::KEY,
+    identities::CountryIdentities::KEY,
+    styles::CountryFacts::KEY,
+    styles::CountryStyles::KEY,
+    groups::CountryGroups::KEY,
+    land_owners::LandOwnersProduct::KEY,
+    logs::LogPage::KEY,
+    logs::LogCounts::KEY,
+    air_ledger::MilitaryAirLedger::KEY,
+    politics::history::PoliticsStateHistory::KEY,
+    politics::civil_wars::CivilWars::KEY,
+    factions::FactionLines::KEY,
+    scalars::ThreatEvents::KEY,
+    scalars::FactoryGroups::KEY,
+    forces::AirForceSize::KEY,
+    forces::NavySize::KEY,
+    volunteers::VolunteersExpeditionaries::KEY,
+    subjects::Subjects::KEY,
+    diplomacy::DiplomaticPacts::KEY,
+    intelligence::roster::OperativesDeparted::KEY,
+    intelligence::roster::OperativeTenures::KEY,
+    intelligence::espionage::EspionageLog::KEY,
+    intelligence::espionage::EspionageOperation::KEY,
+    intelligence::espionage::EspionageEnded::KEY,
+    intelligence::espionage::EspionageTypes::KEY,
+    intelligence::intel_details::IntelDetails::KEY,
+    raids::RaidLog::KEY,
+    economy::resources::ResourceSizes::KEY,
+    economy::lend_lease_partners::LendLeasePartners::KEY,
+    production::ProductionLines::KEY,
+    production::ProductionLineDetail::KEY,
+    production::ProductionLineBreakdown::KEY,
+    production::EquipmentDesigns::KEY,
+    place_names::PlaceNames::KEY,
+    minefields::MinefieldHistory::KEY,
+    naval_supremacy::NavalSupremacy::KEY,
+    leaders::LeaderPortraits::KEY,
+    leaders::career::LeaderCareer::KEY,
+    leaders::career::LeaderChoices::KEY,
+    regional_weather::RegionalWeather::KEY,
+    national_focus::NationalFocus::KEY,
+    focus::FocusHourProduct::KEY,
+    focus::FocusOrderPageProduct::KEY,
+    focus::FocusCompletionsProduct::KEY,
+    ideas::IdeaHistory::KEY,
+    party_history::PartyHistory::KEY,
+    casualties::CasualtyPairs::KEY,
+    casualties::CasualtyBreakdown::KEY,
+    casualties::CasualtyLabels::KEY,
+    peace::PeaceDeals::KEY,
+    convoys::ConvoyHealth::KEY,
+    trade_flows::TradeFlows::KEY,
+    production_spending::ProductionSpending::KEY,
+    occupation_reserve::ReserveHistory::KEY,
+    construction::log::ConstructionLogManifest::KEY,
+    construction::log::ConstructionLog::KEY,
+    construction::spending::ConstructionSpending::KEY,
+    division_log::DivisionLog::KEY,
+    division_log::DivisionLogManifest::KEY,
+    land_battles::LandBattlesManifest::KEY,
+    land_battles::LandBattles::KEY,
+    land_battles::LandBattlesRanking::KEY,
+    land_battles::LandBattleCourses::KEY,
+    land_terrain::LandBattleTerrains::KEY,
+    naval::battles::NavalBattlesManifest::KEY,
+    naval::battles::NavalBattles::KEY,
+    naval::battles::NavalBattlesRanking::KEY,
+    naval::battles::NavalBattleDetails::KEY,
+    naval::sunk::ShipsSunkManifest::KEY,
+    naval::sunk::ShipsSunk::KEY,
+    naval::losses::NavalLosses::KEY,
+    research::Research::KEY,
+    research::breakdown::ResearchBreakdown::KEY,
+    feed::EventFeed::KEY,
+    feed::EventChoices::KEY,
+    feed::Decisions::KEY,
+    feed::EventFeedSpan::KEY,
+    economy::market::history::LendLeaseHistory::KEY,
+    economy::market::ledger::MarketLedger::KEY,
+    economy::fuel::awards::CountryFuelAwards::KEY,
+    economy::fuel::awards::CountryFuelAwardHistory::KEY,
+    economy::fuel::demand::CountryFuelDemand::KEY,
+    economy::fuel::demand::CountryFuelDemandHistory::KEY,
+    stockpile::EquipmentStockpileCatalogue::KEY,
+    stockpile::EquipmentStockpileChart::KEY,
+    faction_state::history::FactionState::KEY,
+    wars::Wars::KEY,
+    wars::WarLosses::KEY,
+    special_projects::SpecialProjects::KEY,
+    air_superiority::AirSuperiorityChoices::KEY,
+    combat_log::CombatLog::KEY,
+    equipment_losses::EquipmentLosses::KEY,
+    air_statistics::AirStatisticsRegions::KEY,
+    scoreboard::ScoreboardColumns::KEY,
+    scoreboard::Scoreboard::KEY,
+    equipment_produced::EquipmentProduced::KEY,
+    equipment_produced::EquipmentProducedTypes::KEY,
+    equipment_produced::EquipmentProducedCountry::KEY,
+    equipment_produced::EquipmentProducedAt::KEY,
+    // The power ledger (P4c).
+    power_ledger::PowerSpending::KEY,
+    stability::reads::StabilityReads::KEY,
+    air_superiority::timeline::AirSuperiorityTimeline::KEY,
+    air_superiority::timeline::AirSuperiorityRanking::KEY,
+    intelligence::espionage::EspionageTypeTokens::KEY,
+];
+
+const MOVED_ALL: [&str; MOVED_OWN.len() + AT_HOUR.len()] = at_hour::keys(MOVED_OWN, AT_HOUR);
+pub const MOVED: &[&str] = &MOVED_ALL;
 
 pub fn find(key: &str) -> Option<&'static Registered> {
     PRODUCTS.iter().find(|product| product.key == key)
 }
 
-/// Prepared-only families keep their whole-recording loaders as test oracles.
-/// Tests of the product route's own machinery (envelopes, reply cache, content
-/// warnings) reach those loaders here; the service never does.
-#[cfg(test)]
-static ORACLE_ROUTES: &[Registered] = &[
-    register::<world_tension::WorldTension>(),
-    register::<war_casualties::WarCasualties>(),
-    register::<war_casualties::pairs::CasualtyPairs>(),
-    register::<war_casualties::breakdown::CasualtyBreakdown>(),
-    register::<country_fuel::CountryFuel>(),
-];
-
-#[cfg(test)]
-pub(crate) fn oracle_route(key: &str) -> Option<&'static Registered> {
-    ORACLE_ROUTES.iter().find(|product| product.key == key)
-}
-
-#[cfg(test)]
-mod recording_tests;
-
-#[cfg(test)]
-mod casualty_route_tests;
-#[cfg(test)]
-mod own_refusal_tests;
-#[cfg(test)]
-mod presentation_tests;
-#[cfg(test)]
-pub(crate) mod source_warning_tests;
-
-#[cfg(test)]
-mod supply_health_registry_tests;
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io;
 
     #[test]
     fn exported_product_type_names_do_not_hide_different_shapes() {
         let mut declarations = std::collections::BTreeMap::new();
         for product in PRODUCTS {
             for declaration in (product.types)() {
-                let name = declaration
-                    .strip_prefix("type ")
-                    .unwrap()
-                    .split_whitespace()
-                    .next()
-                    .unwrap()
-                    .to_owned();
+                let name = declaration.strip_prefix("type ").unwrap().split_whitespace().next().unwrap().to_owned();
                 if let Some(previous) = declarations.insert(name.clone(), declaration.clone()) {
-                    assert_eq!(
-                        previous, declaration,
-                        "different exported types named {name}"
-                    );
+                    assert_eq!(previous, declaration, "different exported types named {name}");
                 }
             }
         }
@@ -467,115 +573,16 @@ mod tests {
     }
 
     #[test]
-    fn prepared_only_products_refuse_their_route_and_keep_their_contract() {
-        struct Prepared;
-        impl Product for Prepared {
-            const KEY: &'static str = "prepared-only-fixture";
-            const CONTENT_DEPENDENT: bool = true;
-            type Params = BranchParams;
-            type Reply = wars::WarsReply;
-        }
-        let registered = register_prepared::<Prepared>();
-        assert!(registered.prepared_only && registered.content_dependent);
-        assert!(!register::<Prepared>().prepared_only);
-        assert_eq!((registered.types)(), Prepared::types());
-        let source = Source::from_replay(
-            crate::SourceKey {
-                source_id: "prepared-only".into(),
-                revision: "1".into(),
-            },
-            "prepared-only.battleplan".into(),
-            std::sync::Arc::new(
-                replay::campaign::Replay::from_records(
-                    crate::test_fixtures::CAMPAIGN.into(),
-                    &[crate::test_fixtures::records(
-                        1,
-                        vec![crate::test_fixtures::source(1, 0, None)],
-                    )],
-                )
-                .unwrap(),
-            ),
-            &AtomicBool::new(false),
-        )
-        .unwrap();
-        let context = LoadContext { content: None };
-        let cancelled = AtomicBool::new(false);
-        let refusal = "prepared-only-fixture is served by prepared queries";
-        assert_eq!(
-            (registered.load)(
-                &source,
-                "lease",
-                serde_json::json!({"branchId": "1"}),
-                &context,
-                &cancelled
-            ),
-            Err(refusal.into())
-        );
-        let params = BranchParams {
-            branch_id: "1".into(),
-        };
-        let error = Prepared::load(&source, &params, &context, &cancelled)
-            .err()
-            .unwrap();
-        assert_eq!(
-            (error.kind(), error.to_string()),
-            (io::ErrorKind::Unsupported, refusal.to_owned())
-        );
-    }
-
-    #[test]
-    fn faction_totals_are_registered_under_their_key() {
-        assert_eq!(
-            find("faction-totals").unwrap().key,
-            faction_totals::FactionTotals::KEY
-        );
-    }
-
-    #[test]
-    fn peace_action_labels_participate_in_the_content_cache_contract() {
-        assert!(
-            find(peace_deals::PeaceDeals::KEY)
-                .unwrap()
-                .content_dependent
-        );
-    }
-
-    #[test]
-    fn recording_only_products_do_not_depend_on_content() {
-        assert!(
-            !find(country_measure::CountryMeasure::KEY)
-                .unwrap()
-                .content_dependent
-        );
-        assert!(
-            find(country_fuel::CountryFuel::KEY)
-                .unwrap()
-                .content_dependent
-        );
-        // This product's values are recorded, but its building names/definitions
-        // also belong to the reply and must recover when content becomes available.
-        assert!(
-            find(country_factories::CountryFactories::KEY)
-                .unwrap()
-                .content_dependent
-        );
-        let contract = crate::typescript_contract();
-        for product in PRODUCTS.iter().filter(|product| product.content_dependent) {
-            let declaration = contract
-                .lines()
-                .find(|line| line.starts_with("export const CONTENT_PRODUCTS"))
-                .unwrap();
-            assert!(declaration.contains(&format!("{:?}", product.key)));
-        }
-    }
-
-    #[test]
     fn browser_interactive_products_match_service_admission() {
         let contract = crate::typescript_contract();
         let declaration = contract
             .lines()
             .find(|line| line.starts_with("export const INTERACTIVE_PRODUCTS"))
             .expect("browser admission needs the service's product lanes");
+        let replays = contract
+            .lines()
+            .find(|line| line.starts_with("export const REPLAY_PRODUCTS"))
+            .expect("browser admission needs the service's replaying pages");
         for product in PRODUCTS {
             assert_eq!(
                 declaration.contains(&format!("{:?}", product.key)),
@@ -583,85 +590,25 @@ mod tests {
                 "{} admission differs between browser and service",
                 product.key
             );
+            assert_eq!(replays.contains(&format!("{:?}", product.key)), product.replays, "{} replays differently in browser and service", product.key);
         }
     }
 
     #[test]
-    fn product_keys_are_unique_and_exported_types_are_named_once() {
+    fn product_keys_are_unique() {
         let mut keys: Vec<_> = PRODUCTS.iter().map(|product| product.key).collect();
         keys.sort_unstable();
         keys.dedup();
         assert_eq!(keys.len(), PRODUCTS.len());
-        let contract = crate::typescript_contract();
-        // A targeted registry test can also export the exact checked contract
-        // for frontend consumers without building a separate generator binary.
         if let Some(path) = std::env::var_os("BATTLE_PLAN_TYPESCRIPT_OUTPUT").or_else(|| std::env::var_os("HOI4_TYPESCRIPT_OUTPUT")) {
-            std::fs::write(path, &contract).unwrap();
+            std::fs::write(path, crate::typescript_contract()).unwrap();
         }
-        let names: Vec<_> = contract
-            .lines()
-            .filter_map(|line| line.strip_prefix("export type "))
-            .map(|rest| rest.split_whitespace().next().unwrap_or_default())
-            .collect();
-        for name in [
-            "CountryParams",
-            "CountryFlagSize",
-            "CountryFlagImage",
-            "LandOwners",
-            "FocusReply",
-            "ResearchReply",
-            "CountryStyleReply",
-            "CountryGroupReply",
-            "CountryStabilityReply",
-            "StabilityPartsReply",
-            "FixedRun",
-            "MeasureReply",
-            "FuelReply",
-            "CountryFactoriesReply",
-            "CasualtyPairsParams",
-            "CasualtyPairRun",
-            "CasualtyPairSeries",
-            "CasualtyPairsReply",
-            "CasualtyBreakdownParams",
-            "CasualtyBreakdownRun",
-            "CasualtyBreakdownSeries",
-            "CasualtyBreakdownCountryRun",
-            "CasualtyWarNameRun",
-            "CasualtyBreakdownWar",
-            "CasualtyBreakdownReply",
-            "AirForceReply",
-            "NavyReply",
-            "ExperienceReply",
-            "IdeaHistoryReply",
-            "PartyHistoryReply",
-            "PeaceDealsReply",
-            "ResourceBalanceReply",
-            "ProductionLinesReply",
-            "ProductionLineDetailReply",
-            "DesignDetailReply",
-            "DesignDetailParams",
-            "DesignSection",
-            "DesignField",
-            "DesignChoice",
-            "LineRun",
-            "EquipmentStockpileReply",
-            "EquipmentProducedReply",
-            "AmountRun",
-            "ResourceInfo",
-            "TradeFlowsReply",
-            "SubjectReply",
-            "BranchParams",
-            "TensionReply",
-            "AutonomyReply",
-            "ConstructionLogReply",
-            "LossesReply",
-            "ConstructionSpendingReply",
-        ] {
-            assert_eq!(
-                names.iter().filter(|n| **n == name).count(),
-                1,
-                "{name} must be declared exactly once"
-            );
+    }
+
+    #[test]
+    fn every_moved_product_is_registered() {
+        for key in MOVED {
+            assert!(find(key).is_some(), "{key} is not registered");
         }
     }
 }

@@ -1,0 +1,184 @@
+"""The release smoke, on the release runner (Python 3.11+): the installer's layout holds exactly the
+shipped files, and the installed Battle Plan opens a recording and draws its map.
+
+    release_smoke.py --installer <setup.exe> --out <new folder> [--recording <file>] [--hour H]
+        [--game-dir <folder>] [--user-dir <folder>]
+
+The installer is opened with 7-Zip into <out>/installed, as tools/leak-gate.py opens it, so nothing is
+installed on the machine. Its executables and libraries must be exactly tools/shipped.json's: the app,
+the recorder, the collector and the shader compiler's two DLLs, beside each other. Then the installed
+replay-desktop.exe draws one frame of the recording's map through its own window (`--window-dump`), with
+LOCALAPPDATA and APPDATA in <out>, so no user data or saved preference is read or written. The recording
+and folders default to BATTLE_PLAN_RELEASE_SMOKE_RECORDING, BATTLE_PLAN_GAME_DIR and BATTLE_PLAN_USER_DIR, which the runner's
+.env names (tools/release-runner.ps1).
+"""
+import argparse
+import json
+import os
+import shutil
+import struct
+import subprocess
+import sys
+import zlib
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+# Installer internals 7-Zip shows beside the installed files, in folders named for NSIS variables
+# ($PLUGINSDIR and the like); none is ours. The uninstaller is written at install time.
+NSIS_INTERNAL = ("uninstall.exe",)
+FRAME = (1280, 720)
+DRAW_SECONDS = 600
+
+
+def fail(message):
+    print(message, file=sys.stderr)
+    sys.exit(1)
+
+
+def shipped_binaries():
+    """The executables and libraries the installer must place, all in the install folder."""
+    shipped = json.loads((ROOT / "tools" / "shipped.json").read_text(encoding="utf-8"))
+    return sorted([shipped["main"], *shipped["built"], *shipped["compiler"]], key=str.lower)
+
+
+def layout_problems(installed, expected):
+    """What is wrong with the installed folder: an expected binary missing or not beside the app, or
+    any other executable or library of ours."""
+    found = []
+    for path in sorted(installed.rglob("*")):
+        relative = path.relative_to(installed)
+        if not path.is_file() or relative.parts[0] in NSIS_INTERNAL or relative.parts[0].startswith("$"):
+            continue
+        if path.suffix.lower() in (".exe", ".dll"):
+            found.append(relative.as_posix())
+    problems = [f"{name} is not in the install folder" for name in expected if name not in found]
+    problems += [f"{name} is installed but not shipped" for name in found if name not in expected]
+    return problems
+
+
+def open_installer(installer, into):
+    tool = shutil.which("7z") or r"C:\Program Files\7-Zip\7z.exe"
+    if not Path(tool).exists():
+        fail("7-Zip was not found, so the installer could not be opened.")
+    opened = subprocess.run([tool, "x", "-y", f"-o{into}", str(installer)], capture_output=True)
+    if opened.returncode != 0:
+        fail(f"The installer could not be opened (7-Zip exit {opened.returncode}).")
+
+
+def png_colours(path, most=64):
+    """How many colours an 8-bit RGB or RGBA PNG holds, counting no further than `most`."""
+    data = path.read_bytes()
+    if data[:8] != b"\x89PNG\r\n\x1a\n":
+        raise ValueError("not a PNG")
+    at, chunks, header = 8, [], None
+    while at < len(data):
+        length, kind = struct.unpack(">I4s", data[at:at + 8])
+        body = data[at + 8:at + 8 + length]
+        if kind == b"IHDR":
+            header = struct.unpack(">IIBBBBB", body)
+        elif kind == b"IDAT":
+            chunks.append(body)
+        at += 12 + length
+    width, height, depth, colour, _, _, interlace = header
+    if depth != 8 or colour not in (2, 6) or interlace:
+        raise ValueError("not an 8-bit RGB or RGBA PNG")
+    stride = 3 if colour == 2 else 4
+    raw = zlib.decompress(b"".join(chunks))
+    row_bytes = width * stride
+    previous = bytearray(row_bytes)
+    colours = set()
+    for row in range(height):
+        start = row * (row_bytes + 1)
+        kind, line = raw[start], bytearray(raw[start + 1:start + 1 + row_bytes])
+        for index in range(row_bytes):
+            left = line[index - stride] if index >= stride else 0
+            up = previous[index]
+            corner = previous[index - stride] if index >= stride else 0
+            if kind == 1:
+                line[index] = (line[index] + left) & 0xFF
+            elif kind == 2:
+                line[index] = (line[index] + up) & 0xFF
+            elif kind == 3:
+                line[index] = (line[index] + (left + up) // 2) & 0xFF
+            elif kind == 4:
+                guess = left + up - corner
+                near = min((abs(guess - left), left), (abs(guess - up), up), (abs(guess - corner), corner), key=lambda pair: pair[0])
+                line[index] = (line[index] + near[1]) & 0xFF
+        for pixel in range(0, row_bytes, stride * 7):
+            colours.add(bytes(line[pixel:pixel + 3]))
+            if len(colours) >= most:
+                return len(colours)
+        previous = line
+    return len(colours)
+
+
+def draw(app, recording, out, hour, game_dir, user_dir):
+    """The installed app draws one frame of the recording's map; the frame, or why not."""
+    local, roaming = out / "local", out / "roaming"
+    local.mkdir()
+    roaming.mkdir()
+    frame = out / "frame.png"
+    command = [str(app), "--window-dump", str(recording), "--out", str(frame), "--width", str(FRAME[0]), "--height", str(FRAME[1])]
+    if hour is not None:
+        command += ["--hour", str(hour)]
+    if game_dir:
+        command += ["--game-dir", str(game_dir)]
+    if user_dir:
+        command += ["--user-dir", str(user_dir)]
+    environment = {**os.environ, "LOCALAPPDATA": str(local), "APPDATA": str(roaming)}
+    try:
+        drawn = subprocess.run(command, cwd=out, env=environment, capture_output=True, timeout=DRAW_SECONDS)
+    except subprocess.TimeoutExpired:
+        fail(f"The installed app drew no frame in {DRAW_SECONDS} s.")
+    (out / "draw.log").write_bytes(drawn.stdout + drawn.stderr)
+    if drawn.returncode != 0:
+        fail(f"The installed app could not draw the map (exit {drawn.returncode}): "
+             f"{drawn.stderr.decode('utf-8', 'replace').strip()[-2000:]}")
+    if not frame.is_file():
+        fail("The installed app exited without writing its frame.")
+    return frame
+
+
+def arguments(argv=None):
+    """The command line, every path in it as the caller's folder names it: the app runs elsewhere."""
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument("--installer", required=True, type=Path)
+    parser.add_argument("--out", required=True, type=Path)
+    parser.add_argument("--recording", type=Path, default=os.environ.get("BATTLE_PLAN_RELEASE_SMOKE_RECORDING", os.environ.get("HOI4_RELEASE_SMOKE_RECORDING")) or None)
+    parser.add_argument("--hour", type=int)
+    parser.add_argument("--game-dir", type=Path, default=os.environ.get("BATTLE_PLAN_GAME_DIR", os.environ.get("HOI4_GAME_DIR")) or None)
+    parser.add_argument("--user-dir", type=Path, default=os.environ.get("BATTLE_PLAN_USER_DIR", os.environ.get("HOI4_USER_DIR")) or None)
+    args = parser.parse_args(argv)
+    for name in ("installer", "out", "recording", "game_dir", "user_dir"):
+        if getattr(args, name) is not None:
+            setattr(args, name, Path(os.path.abspath(getattr(args, name))))
+    return args
+
+
+def main():
+    args = arguments()
+    if not args.recording or not args.recording.is_file():
+        fail("Name the recording to draw: --recording or BATTLE_PLAN_RELEASE_SMOKE_RECORDING (the runner's .env).")
+    if args.out.exists():
+        fail(f"{args.out} exists; the smoke writes to a new folder.")
+    args.out.mkdir(parents=True)
+    opened = args.out / "installed"
+    open_installer(args.installer, opened)
+    # Some 7-Zip versions keep the install folder's variable as a folder of its own.
+    installed = opened / "$INSTDIR" if (opened / "$INSTDIR").is_dir() else opened
+    problems = layout_problems(installed, shipped_binaries())
+    if problems:
+        fail("The installer's layout is not the shipped one:\n" + "\n".join(problems))
+    print(f"Layout: exactly {', '.join(shipped_binaries())}.")
+    frame = draw(installed / "replay-desktop.exe", args.recording, args.out, args.hour, args.game_dir, args.user_dir)
+    try:
+        colours = png_colours(frame)
+    except (ValueError, struct.error, zlib.error, TypeError) as error:
+        fail(f"The frame is not a picture the smoke reads: {error}")
+    if colours < 16:
+        fail(f"The frame holds {colours} colours: the map was not drawn.")
+    print(f"Drew the recording's map from the installed layout: {frame} ({colours}+ colours).")
+
+
+if __name__ == "__main__":
+    main()

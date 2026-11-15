@@ -179,24 +179,6 @@ pub fn walk(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    output: &mut [Token],
-    stack: &mut [Frame],
-    events: &mut [u32],
-) -> Walk {
-    walk_buffer(
-        memory,
-        base,
-        game_state,
-        crate::walk::Buffer::Fixed(output),
-        crate::walk::Buffer::Fixed(stack),
-        crate::walk::Buffer::Fixed(events),
-    )
-}
-
-pub fn walk_growing(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
     output: &mut Vec<Token>,
     stack: &mut Vec<Frame>,
     events: &mut Vec<u32>,

@@ -18,7 +18,7 @@ use std::{
 
 use installed_content_core::{
     ResolvedLayers, equipment::Database, equipment::Equipment, parser, parser::Item, parser::Value,
-    unit_leader::SubUnits,
+    unit_leader::{SubUnits, needs},
 };
 use replay_data::{rows::DivisionTemplateIconRow, rows::VariantDefinitionRow, rows::tables};
 use replay_data::rows::TableId;
@@ -211,40 +211,13 @@ impl Content {
     }
 
     fn canonicalize_requirements(&mut self) -> io::Result<()> {
-        // The game stores archetypes, preserving first insertion
-        // order while later references to the same archetype replace its value.
-        let mut canonical = BTreeMap::new();
         let mut dropped = Vec::new();
-        for (identity, unit) in &self.subunits {
-            let key = &unit.key;
-            let mut requirements = Vec::<(String, i64)>::new();
-            for (name, amount) in &unit.requirements {
-                // A name with no registered equipment type is reported, and its entry is
-                // dropped.
-                if self.equipment.named(name).is_none() {
-                    dropped.push(format!(
-                        "sub-unit {key} needs {name}, which is no equipment"
-                    ));
-                    continue;
-                }
-                let archetype = self.archetype(name)?;
-                if let Some((_, value)) =
-                    requirements.iter_mut().find(|(name, _)| name == archetype)
-                {
-                    *value = *amount;
-                } else {
-                    requirements.push((archetype.to_owned(), *amount));
-                }
-            }
-            canonical.insert(identity.clone(), requirements);
+        let equipment = Arc::clone(&self.equipment);
+        let archetype = |name: &str| needs::archetype(&equipment, name);
+        for unit in self.subunits.values_mut() {
+            unit.requirements = needs::canonical(&unit.key, &unit.requirements, &archetype, &mut dropped)?;
         }
         self.dropped = dropped;
-        for (key, requirements) in canonical {
-            self.subunits
-                .get_mut(&key)
-                .expect("existing authored subunit")
-                .requirements = requirements;
-        }
         Ok(())
     }
 
@@ -534,17 +507,8 @@ fn read_subunit(key: &str, previous: Option<&SubUnit>, fields: &[Item]) -> io::R
                 let grant = read_grant(key, &field.value, &mut subunit.sheet.refused);
                 subunit.sheet.grants.extend(grant);
             }
-            b"need" => {
-                for need in block(&field.value)? {
-                    let name = need
-                        .key
-                        .as_deref()
-                        .ok_or_else(|| invalid("unkeyed subunit equipment requirement"))?;
-                    let amount = authored_fixed5(scalar(&need.value)?.as_bytes())?;
-                    // Lexical order until references resolve to archetypes.
-                    subunit.requirements.push((text(name)?.to_owned(), amount));
-                }
-            }
+            // Lexical order until references resolve to archetypes.
+            b"need" => subunit.requirements.extend(needs::entries(&field.value)?),
             word => {
                 if let Some(value) = field.value.scalar_str() {
                     let word = String::from_utf8_lossy(word).into_owned();
@@ -786,10 +750,7 @@ impl SourceIndex {
         for row in local_rows {
             let row = row?;
             let country = *links.get(&row.country).ok_or_else(|| {
-                invalid(format!(
-                    "local sub-unit country {} has no CountryLinks row",
-                    row.country
-                ))
+                invalid("a country's own sub-unit requirements name a country with no recorded country link")
             })?;
             let requirements = row
                 .requirements
@@ -975,11 +936,6 @@ fn yes(value: &Value) -> Result<bool, String> {
         Some("no") => Ok(false),
         other => Err(format!("a flag is {other:?}, not yes or no")),
     }
-}
-fn block(value: &Value) -> io::Result<&[Item]> {
-    value
-        .items()
-        .ok_or_else(|| invalid("model content field is not a block"))
 }
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())

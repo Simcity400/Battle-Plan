@@ -184,10 +184,10 @@ fn completed_roster_proof_binds_actual_theatre_pointer_handle_subtype_and_ordina
         base: 0,
         bytes: &bytes,
     };
-    let mut groups = [GroupRow::default(); 2];
-    let mut members = [MemberRow::default(); 4];
-    let mut children = [ChildRow::default(); 4];
-    let mut scratch = [RosterEntry::default(); 2];
+    let mut groups = vec![GroupRow::default(); 2];
+    let mut members = vec![MemberRow::default(); 4];
+    let mut children = vec![ChildRow::default(); 4];
+    let mut scratch = vec![RosterEntry::default(); 2];
     let walk = walk_order_of_battle(
         &memory,
         0,
@@ -215,13 +215,13 @@ fn completed_roster_proof_binds_actual_theatre_pointer_handle_subtype_and_ordina
         Ok(false)
     );
     assert!(captured_theatre_rosters(&groups, &scratch, 0x8000, theatre).is_err());
-    let mut altered = groups;
+    let mut altered = groups.clone();
     altered[0].theatre_ordinal = None;
     assert!(captured_theatre_rosters(&altered, &scratch, THEATRE_PTR, theatre).is_err());
-    altered = groups;
+    altered = groups.clone();
     altered[0].is_army_group ^= 1;
     assert!(captured_theatre_rosters(&altered, &scratch, THEATRE_PTR, theatre).is_err());
-    altered = groups;
+    altered = groups.clone();
     altered[1].handle = altered[0].handle;
     assert!(captured_theatre_rosters(&altered, &scratch, THEATRE_PTR, theatre).is_err());
     assert!(captured_theatre_rosters(&groups, &scratch[..1], THEATRE_PTR, theatre).is_err());
@@ -662,19 +662,6 @@ fn theatre_roster_reads_are_once_per_parent_and_failures_never_become_absence() 
             1
         );
     }
-    let memory = Observed {
-        bytes: &bytes,
-        calls: Default::default(),
-        failure: None,
-    };
-    let (walk, ..) = run_memory(&memory, [4, 4, 4], 1);
-    assert_eq!(
-        walk.groups,
-        Outcome::Unavailable {
-            reason: "orders group roster scratch capacity exhausted"
-        }
-    );
-    assert!(memory.calls.borrow().is_empty());
 }
 
 #[test]
@@ -711,42 +698,12 @@ fn referenced_objects_are_authenticated_and_primary_country_is_retained() {
 }
 
 #[test]
-fn each_buffer_truncates_independently_and_counts_every_omitted_row() {
-    let bytes = fixture();
-    let (walk, groups, members, children) = run(&bytes, [1, 1, 0]);
-    assert_eq!(
-        walk.groups,
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 1
-        }
-    );
-    assert_eq!(
-        walk.members,
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 1
-        }
-    );
-    assert_eq!(
-        walk.children,
-        Outcome::Truncated {
-            len: 0,
-            unread_rows: 1
-        }
-    );
-    assert_eq!(groups[0].handle, handle(57, REFERENCE_TYPE));
-    assert_eq!(members[0].unit, handle(12456, 4713));
-    assert!(children.is_empty());
-}
-
-#[test]
 fn an_empty_census_is_an_empty_order_of_battle() {
     let bytes = fixture();
-    let mut groups = [GroupRow::default(); 2];
-    let mut members = [MemberRow::default(); 2];
-    let mut children = [ChildRow::default(); 2];
-    let mut roster_scratch = [RosterEntry::default(); 2];
+    let mut groups = vec![GroupRow::default(); 2];
+    let mut members = vec![MemberRow::default(); 2];
+    let mut children = vec![ChildRow::default(); 2];
+    let mut roster_scratch = vec![RosterEntry::default(); 2];
     let walk = walk_order_of_battle(
         &SliceMemory {
             base: 0,
@@ -774,10 +731,10 @@ fn an_unreadable_world_never_produces_a_prefix() {
             false
         }
     }
-    let mut groups = [GroupRow::default(); 2];
-    let mut members = [MemberRow::default(); 2];
-    let mut children = [ChildRow::default(); 2];
-    let mut roster_scratch = [RosterEntry::default(); 2];
+    let mut groups = vec![GroupRow::default(); 2];
+    let mut members = vec![MemberRow::default(); 2];
+    let mut children = vec![ChildRow::default(); 2];
+    let mut roster_scratch = vec![RosterEntry::default(); 2];
     let walk = walk_order_of_battle(
         &Unreadable,
         0,
@@ -843,12 +800,5 @@ fn worker_order_of_battle_grows_original_nested_members_and_children_before_publ
         assert_eq!(walked.children, Outcome::Rows { len: count });
         assert_eq!(members[count - 1].ordinal, count as u32 - 1);
         assert_eq!(children[count - 1].ordinal, count as u32 - 1);
-        let fixed = run(&bytes, [2, 4, 4]).0;
-        assert!(
-            matches!(fixed.members, Outcome::Truncated { unread_rows, .. } if unread_rows as usize == count - 4)
-        );
-        assert!(
-            matches!(fixed.children, Outcome::Truncated { unread_rows, .. } if unread_rows as usize == count - 4)
-        );
     }
 }

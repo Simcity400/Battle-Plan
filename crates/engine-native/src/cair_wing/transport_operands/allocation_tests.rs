@@ -71,7 +71,7 @@ fn terminal_constructor_and_partial_growth_keep_scratch_ownership() {
     };
     scratch.handles[0] = Slot {
         key: 45,
-        value: Some(Some(false)),
+        value: Some(Some(47)),
     };
     scratch.required_map_capacity = 3;
     scratch.failures = 9;
@@ -109,7 +109,7 @@ fn terminal_constructor_and_partial_growth_keep_scratch_ownership() {
     assert_eq!(scratch.pools[0].key, 41);
     assert_eq!(scratch.pools[0].value.unwrap().index, Some(7));
     assert_eq!(scratch.wings[0].value, Some(Some(45)));
-    assert_eq!(scratch.handles[0].value, Some(Some(false)));
+    assert_eq!(scratch.handles[0].value, Some(Some(47)));
     assert_eq!((scratch.required_map_capacity, scratch.failures), (3, 9));
     let retained = scratch.allocated_bytes();
     assert!(retained > bytes);

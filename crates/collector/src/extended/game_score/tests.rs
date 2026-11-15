@@ -135,12 +135,12 @@ fn game_score_air_census_is_unknown_until_finished_and_short_storage_is_named() 
         matches!(captured.tables()[1], TableView::Unavailable { ref reason }
         if reason == "game score air census not run")
     );
-    captured.finish_air(Outcome::Rows { len: 0 });
+    captured.air.finish(Outcome::Rows { len: 0 });
     assert!(
         matches!(captured.tables()[1], TableView::Complete(TableRows::AirWingGameScoreStats(ref rows))
         if rows.is_empty())
     );
-    captured.begin_air();
+    captured.air.begin(captured.enabled);
     assert!(
         matches!(captured.tables()[1], TableView::Unavailable { ref reason }
         if reason == "game score air census not run")
@@ -281,9 +281,9 @@ fn game_score_live_demand_presizes_all_frame_and_wing_job_buffers() {
         let mut capture = Captured::with_capacities(&capacity);
         crate::test_support::with_allocations_denied(|| {
             capture.capture(&memory, 0, kit::GAME_STATE);
-            capture.begin_air();
-            capture.owner(&memory, 0, 1, Some(ENTRY));
-            capture.finish_air(Outcome::Rows { len: 0 });
+            capture.air.begin(capture.enabled);
+            capture.air.owner(&memory, 0, 1, Some(ENTRY));
+            capture.air.finish(Outcome::Rows { len: 0 });
         });
         assert_eq!(capture.countries.rows[0].navy_count, Ok(21));
         assert_eq!(
@@ -300,7 +300,6 @@ fn game_score_live_demand_presizes_all_frame_and_wing_job_buffers() {
         hour: 0,
         force_full: true,
         limits: [2, 3, 2],
-        naval_limit: 2,
         game_score: true,
     };
     // Fresh score buffers and replacements returned by frame loans use the
@@ -339,9 +338,9 @@ fn game_score_disable_performs_no_operand_reads_and_survives_country_loan() {
     capture.grow(&mut capacity);
     assert_eq!(capture.allocated_bytes(), 0);
     assert_eq!(capture.capture(&NoRead, 0, 0), [0; N]);
-    capture.begin_air();
-    capture.owner(&NoRead, 0, 1, Some(0x1000));
-    capture.wing(
+    capture.air.begin(capture.enabled);
+    capture.air.owner(&NoRead, 0, 1, Some(0x1000));
+    capture.air.wing(
         &NoRead,
         0x2000,
         &cair_wing::ScoreLeaf {
@@ -349,7 +348,7 @@ fn game_score_disable_performs_no_operand_reads_and_survives_country_loan() {
             planes: Ok(0),
         },
     );
-    capture.finish_air(Outcome::Rows { len: 1 });
+    capture.air.finish(Outcome::Rows { len: 1 });
     assert!(capture.tables().iter().all(|view| matches!(view, TableView::Unavailable { reason } if reason == GAME_SCORE_DISABLED_REASON)));
     let mut enabled = Captured::with_capacities(&Capacities {
         countries: 2,
@@ -357,8 +356,8 @@ fn game_score_disable_performs_no_operand_reads_and_survives_country_loan() {
     });
     let mut spare = Captured::vacant();
     enabled.swap_country(&mut spare);
-    enabled.begin_air();
-    enabled.owner(&NoRead, 0, 1, None);
+    enabled.air.begin(enabled.enabled);
+    enabled.air.owner(&NoRead, 0, 1, None);
     assert!(spare.enabled);
     enabled.swap_country(&mut spare);
     assert_eq!(
@@ -432,7 +431,6 @@ fn game_score_owned_air_shares_census_and_preserves_independent_failures() {
         hour: 0,
         force_full: true,
         limits: [1024, 8192, 4096],
-        naval_limit: 4096,
         game_score: true,
     };
     let mut job = AirWingJob::fixture();
@@ -550,7 +548,7 @@ fn game_score_owned_air_shares_census_and_preserves_independent_failures() {
 }
 
 #[test]
-fn game_score_fleet_header_grows_first_witness_and_keeps_independent_air_pressure() {
+fn game_score_fleet_header_grows_first_witness_and_the_air_sites_grow_with_it() {
     use crate::extended::air::wing_test_kit as kit;
     let mut bytes = kit::fixture();
     const COUNTRY: usize = 0x20000;
@@ -611,19 +609,18 @@ fn game_score_fleet_header_grows_first_witness_and_keeps_independent_air_pressur
         }
     }
     let memory = Globals(&bytes);
-    let mut capacity = Capacities {
+    let capacity = Capacities {
         countries: 3,
         ..Default::default()
     };
     let mut capture = Captured::with_capacities(&capacity);
-    for hour in 0..2 {
+    // The worker's air pass grows its empty site arena from the first hour.
+    for _ in 0..2 {
         capture.reset();
         capture.capture(&memory, 0, kit::GAME_STATE);
-        crate::test_support::with_allocations_denied(|| {
-            capture.begin_air();
-            capture.owner(&memory, 0, 1, Some(ENTRY));
-            capture.finish_air(Outcome::Rows { len: 0 });
-        });
+        capture.air.begin(capture.enabled);
+        capture.air.owner(&memory, 0, 1, Some(ENTRY));
+        capture.air.finish(Outcome::Rows { len: 0 });
         let [
             TableView::Complete(TableRows::CountryGameScoreInputs(countries)),
             _,
@@ -642,29 +639,14 @@ fn game_score_fleet_header_grows_first_witness_and_keeps_independent_air_pressur
         );
         assert_eq!(countries[0].navy_count, Some(7));
         assert_eq!(countries[0].fleets[0].fleet, 61);
-        if hour == 0 {
-            assert_eq!(
-                countries[0].air_state,
-                rows::CountryGameScoreInputRow::AIR_UNKNOWN
-            );
-            assert_eq!(
-                countries[0].air_error,
-                b"game score first air-site arena exhausted"
-            );
-            assert!(countries[0].first_sites.is_empty());
-            capture.grow(&mut capacity);
-        } else {
-            assert_eq!(countries[0].navy_count, Some(7));
-            assert_eq!(countries[0].fleets[0].fleet, 61);
-            assert_eq!(
-                countries[0].air_state,
-                rows::CountryGameScoreInputRow::AIR_PRESENT
-            );
-            assert_eq!(
-                countries[0].first_sites[0].access,
-                rows::GameScoreAirSite::ACCESS_FALSE
-            );
-        }
+        assert_eq!(
+            countries[0].air_state,
+            rows::CountryGameScoreInputRow::AIR_PRESENT
+        );
+        assert_eq!(
+            countries[0].first_sites[0].access,
+            rows::GameScoreAirSite::ACCESS_FALSE
+        );
     }
 }
 
@@ -729,80 +711,6 @@ fn game_score_air_short_storage_grows_from_full_demand_and_absence_is_not_failur
 }
 
 #[test]
-fn game_score_typed_air_fallback_uses_frame_buffers_while_ordinary_is_loaned() {
-    use crate::extended::air::wing_test_kit as kit;
-    use crate::{
-        extended,
-        map_capture::{MapCapacities, MapCaptured},
-    };
-    let mut bytes = kit::fixture();
-    for wing in [kit::WING, 0x34000] {
-        bytes[wing + cair_wing::MISSION_STATS + cair_wing::MISSION_STAT_INDEXES] = 255;
-        put64(&mut bytes, wing + cair_wing::DEFAULT_STATS + 0x33 * 8, 73);
-    }
-    put64(
-        &mut bytes,
-        kit::WING + cair_wing::MISSION + engine_native::air_mission::REGION,
-        0xdead0000,
-    );
-    let memory = kit::memory(&bytes);
-    let mut capacity = extended::Capacities::default();
-    capacity.game_score.countries = 3;
-    capacity.game_score.wings = 2;
-    let mut captured = extended::Captured::with_capacities(&capacity);
-    let countries =
-        std::sync::Arc::new(engine_native::country_memory::Cache::try_with_capacity(0).unwrap());
-    let mut parts = captured.take_ordinary_parts(
-        &countries,
-        0,
-        kit::GAME_STATE,
-        0,
-        Ok(()),
-        Default::default(),
-    );
-    let mut ordinary = captured.take_ordinary_request(&countries, 0, kit::GAME_STATE, 0);
-    let mut map_capacity = MapCapacities::default();
-    map_capacity.raise_air_wings(2);
-    let mut map = MapCaptured::with_capacities(&map_capacity);
-    {
-        let mut sources = captured.sources(&memory, 0, false, true);
-        crate::test_support::with_allocations_denied(|| {
-            map.sample(&memory, 0, kit::GAME_STATE, &mut sources);
-        });
-    }
-    assert!(matches!(map.air_wings.outcome, Outcome::Unavailable { .. }));
-    for part in &mut parts {
-        part.part.capture(
-            &memory,
-            0,
-            kit::GAME_STATE,
-            part.hour,
-            part.fresh_modifier_guard,
-        );
-    }
-    ordinary
-        .packs
-        .capture_at(&memory, 0, kit::GAME_STATE, ordinary.hour);
-    captured.restore_ordinary_request(ordinary, None, parts.map(|part| (part, None)));
-    let [
-        TableView::Complete(TableRows::CountryGameScoreInputs(rows)),
-        TableView::Complete(TableRows::AirWingGameScoreStats(wings)),
-        _,
-    ] = captured.game_score_pilot().tables()
-    else {
-        panic!("country loan must retain the independently captured air buffers");
-    };
-    assert_eq!(rows.len(), 1);
-    assert_eq!(
-        rows[0].air_state,
-        rows::CountryGameScoreInputRow::AIR_PRESENT
-    );
-    assert!(rows[0].first_sites.is_empty());
-    assert_eq!(wings.len(), 2);
-    assert_eq!((wings[0].planes, wings[0].stat_raw), (Some(10), Some(73)));
-}
-
-#[test]
 fn worker_score_pass_grows_storage_a_frame_lent_back_instead_of_truncating() {
     use crate::extended::air::{self, AirWingCopyContext, AirWingJob, wing_test_kit as kit};
     let mut bytes = kit::fixture();
@@ -816,13 +724,12 @@ fn worker_score_pass_grows_storage_a_frame_lent_back_instead_of_truncating() {
         hour: 0,
         force_full: true,
         limits: [1024, 8192, 4096],
-        naval_limit: 4096,
         game_score: true,
     };
     // A pool miss starts from storage with no rows at all.
     let mut job = AirWingJob::default();
     for hour in 0..3 {
-        assert!(air::copy_air_refresh_growing(&memory, context, &mut job).raw_ok);
+        assert!(air::copy_air_refresh(&memory, context, &mut job).raw_ok);
         assert_eq!(
             job.game_score.wings.outcome,
             Outcome::Rows { len: 2 },
@@ -837,7 +744,6 @@ fn worker_score_pass_grows_storage_a_frame_lent_back_instead_of_truncating() {
         // before either wing or the owner's air slot was witnessed.
         let mut frame = Captured::with_capacities(&Capacities::default());
         frame.install_air(&mut job.game_score);
-        assert!(!frame.air.growing, "a typed fallback must not grow");
         assert_eq!(frame.air.wings.outcome, Outcome::Rows { len: 2 });
         assert!(job.game_score.wings.rows.is_empty());
     }

@@ -67,32 +67,33 @@ fn coverage(items: &[Item], key: &[u8]) -> io::Result<Option<[i32; 3]>> {
         })
         .transpose()
 }
-fn records(items: &[Item]) -> io::Result<Vec<Record>> {
-    list(items, b"records")?
+/// An occupied-country list: each element an anonymous block of the
+/// country's quoted tag and its operand block, `{ "TAG" { key=value ... } }`.
+fn records(items: &[Item], key: &[u8]) -> io::Result<Vec<Record>> {
+    list(items, key)?
         .iter()
         .map(|item| {
-            let fields = if item.key.is_some() {
-                std::slice::from_ref(item)
-            } else {
-                block(&item.value)?
+            let pair = match item.key {
+                None => block(&item.value)?,
+                Some(_) => return Err(invalid("network occupied-country record must be anonymous")),
             };
-            if fields.len() != 1 {
+            let [country, operands] = pair else {
                 return Err(invalid(
-                    "network country record must contain one country entry",
+                    "network occupied-country record must hold a country and its operands",
+                ));
+            };
+            if country.key.is_some() || operands.key.is_some() {
+                return Err(invalid(
+                    "network occupied-country record country and operands must be anonymous",
                 ));
             }
-            let record = &fields[0];
-            let country = record
-                .key
-                .clone()
-                .ok_or_else(|| invalid("network country record lacks country key"))?;
-            let mut values = BTreeMap::new();
-            for item in block(&record.value)? {
+            let mut fields = BTreeMap::new();
+            for item in block(&operands.value)? {
                 let key = item
                     .key
                     .clone()
                     .ok_or_else(|| invalid("network record operand lacks key"))?;
-                if values
+                if fields
                     .insert(key, Decimal::parse(scalar(&item.value)?)?)
                     .is_some()
                 {
@@ -100,8 +101,8 @@ fn records(items: &[Item]) -> io::Result<Vec<Record>> {
                 }
             }
             Ok(Record {
-                country,
-                fields: values,
+                country: scalar(&country.value)?.to_vec(),
+                fields,
             })
         })
         .collect()
@@ -120,7 +121,7 @@ pub(super) fn parse(items: &[Item], local: &[Item]) -> io::Result<Network> {
         subnetwork_count: count(local, b"sub_network_count")?,
         previous_max_depth: count(local, b"prev_max_depth")?,
         previous_sources: integers(local, b"prev_gain_sources")?,
-        records: records(items)?,
+        records: records(items, b"max_coverage_by_occupied_tag")?,
         ..Network::default()
     };
     for item in list(items, b"operatives")? {
@@ -156,7 +157,7 @@ pub(super) fn parse(items: &[Item], local: &[Item]) -> io::Result<Network> {
                 decimal(modifiers, b"own_operative_detection_chance")?,
                 decimal(modifiers, b"own_operative_detection_chance_factor")?,
             ],
-            records: records(fields)?,
+            records: records(fields, b"coverage_per_occupied")?,
             core_states: integers(fields, b"core_states")?,
             ..Subnetwork::default()
         };
@@ -190,7 +191,8 @@ mod tests {
     #[test]
     fn network_auxiliary_parser_preserves_duplicate_occurrences_and_exact_signed_payloads() {
         let parsed=installed_content_core::parser::parse(b"vertices=2 edges={0 1 0 1} depth={-1 7} sub_network_count=3 prev_max_depth=-4 prev_gain_sources={0 0}").unwrap();
-        let items=installed_content_core::parser::parse(b"operatives={{ {id=4294967295 type=4713} -7} {{id=4294967295 type=4713} -7}} records={{XYZ={owned_worth=-3}}} sub_intel_networks={{modifiers={own_operative_detection_chance=-0.00001 own_operative_detection_chance_factor=2} coverage_stats={core_states=-1 controlled_states=2 owned_worth=3} total_coverable={core_states=4 controlled_states=5 owned_worth=6} strength_sum=7 strength_sum_over_cores=8 national_coverage=9 operatives={{id=0 type=0}} states={{0 -1.00001}{0 0}} core_states={0 0}}}").unwrap();
+        let items=installed_content_core::parser::parse(br#"operatives={{ {id=4294967295 type=4713} -7} {{id=4294967295 type=4713} -7}} max_coverage_by_occupied_tag={ { "XYZ"
+ { owned_worth=-3 states=2 intel_network_gain_factor=0 enemy_operative_detection_chance=0 enemy_operative_detection_chance_factor=-0.00001 } } } sub_intel_networks={{modifiers={own_operative_detection_chance=-0.00001 own_operative_detection_chance_factor=2} coverage_stats={core_states=-1 controlled_states=2 owned_worth=3} total_coverable={core_states=4 controlled_states=5 owned_worth=6} strength_sum=7 strength_sum_over_cores=8 national_coverage=9 coverage_per_occupied={ { "ROM" { owned_worth=0 states=1 } } { "ROM" { owned_worth=0 states=1 } } } operatives={{id=0 type=0}} states={{0 -1.00001}{0 0}} core_states={0 0}}}"#).unwrap();
         let result = parse(&items.items, &parsed.items).unwrap();
         assert_eq!(result.edges, vec![(0, 1), (0, 1)]);
         assert_eq!(result.previous_sources, vec![0, 0]);
@@ -198,6 +200,31 @@ mod tests {
         assert_eq!(result.operatives[0].1, -7);
         assert_eq!(result.subnetworks[0].states.len(), 2);
         assert_eq!(result.subnetworks[0].coverage, Some([-1, 2, 3]));
+        let decimal = |text: &[u8]| Decimal::parse(text).unwrap();
+        assert_eq!(result.records.len(), 1);
         assert_eq!(result.records[0].country, b"XYZ");
+        assert_eq!(result.records[0].fields.len(), 5);
+        assert_eq!(result.records[0].fields[b"owned_worth".as_slice()], decimal(b"-3"));
+        assert_eq!(
+            result.records[0].fields[b"enemy_operative_detection_chance_factor".as_slice()],
+            decimal(b"-0.00001")
+        );
+        let occupied = Record {
+            country: b"ROM".to_vec(),
+            fields: BTreeMap::from([
+                (b"owned_worth".to_vec(), decimal(b"0")),
+                (b"states".to_vec(), decimal(b"1")),
+            ]),
+        };
+        assert_eq!(result.subnetworks[0].records, [occupied.clone(), occupied]);
+        for refused in [
+            br#"max_coverage_by_occupied_tag={ { XYZ={ owned_worth=-3 } } }"#.as_slice(),
+            br#"max_coverage_by_occupied_tag={ "XYZ" { owned_worth=-3 } }"#,
+            br#"max_coverage_by_occupied_tag={ { "XYZ" } }"#,
+            br#"max_coverage_by_occupied_tag={ { "XYZ" { owned_worth=-3 owned_worth=-3 } } }"#,
+        ] {
+            let items = installed_content_core::parser::parse(refused).unwrap();
+            assert!(parse(&items.items, &parsed.items).is_err(), "{}", String::from_utf8_lossy(refused));
+        }
     }
 }

@@ -1,0 +1,370 @@
+import type { ChartBucket, ChartSummary } from '../../charts/chartSummary';
+import type { MarkCluster, MarkSummary } from '../../charts/markSummary';
+import type { Run } from '../../charts/series';
+import type { HourSpan, MissingSpan, TilePart } from '../../generated/dashboard';
+import { TileCache } from './cache.ts';
+import { tileHead, valueAtHead } from './head.ts';
+import { FIRST_BREAK, HAS_BREAK, LEVEL, PRESENT, RUN, SEAM, TILE_BINS, TILE_GROUP, binHoursOf, tileLast, tilesOf } from './tile.ts';
+import type { Tile, TileReply } from './tile.ts';
+
+/** A chart's view as it reports it: its first hour, the last hour drawn (the head while playing), the last hour of
+ * the frame and its width in pixels. Its bins follow the frame, so a head moving inside it never changes them. */
+export interface TileViewport { from: number; to: number; end: number; width: number }
+
+/** Bins past the hour drawn whose tile is asked ahead, so the head never waits on the next tile. */
+export const AHEAD_BINS = 32;
+
+/** A view that grows (a chart drawing in from its start as the head moves) keeps its bins until it holds this many
+ * a pixel: new bins would ask every tile of the view again, where the head's travel asks one per 256 bins. */
+export const HELD_BINS_PER_PIXEL = 4;
+
+/** The bins a view of `hours` hours `width` pixels wide reads, holding `held` (the bins it reads now, at `heldWidth`)
+ * while the view only grew past them and they stay within `HELD_BINS_PER_PIXEL` a pixel. */
+export function viewBinHours(hours: number, width: number, held?: { binHours: number; width: number }): number {
+  const ideal = binHoursOf(hours, width);
+  return held && held.width === width && ideal > held.binHours && hours <= HELD_BINS_PER_PIXEL * width * held.binHours ? held.binHours : ideal;
+}
+
+/** One series of one history, as its tiles are asked. */
+export interface TileLane {
+  /** Names the series: recording, revision, history and family. */
+  key: string;
+  tags: readonly string[];
+  /** Each tag's spans drawn, when not its whole line. */
+  within?: ReadonlyMap<string, readonly HourSpan[]>;
+  /** The history's last hour: a tile filled short of it is asked again. */
+  lastHour: number;
+  /** Each tile also carries its drops per bin, drawn as marks. */
+  marks?: boolean;
+  ask(binHours: number, index: number, tags: readonly string[], within: Record<string, HourSpan[]> | undefined): Promise<TileReply>;
+  /** The lane asks through the prepare lane: what it asks may wait there, and it never sends another's tile early. */
+  prepared?: boolean;
+  /** Sends at once the ask of these arguments the prepare lane holds waiting (a prepared lane's own asks only). */
+  promote?(binHours: number, index: number, tags: readonly string[], within: Record<string, HourSpan[]> | undefined): void;
+}
+
+/** A tag's line made of tiles: whole tiles' bins (an hourly line's runs too), its hours not recorded, the holders
+ * it meets, and asked with marks, a mark cluster per bin with drops; `head` names it for `followAtHead`. */
+/** What `unrecordedReason` reads of a line: its view and the hours it names not recorded. */
+export interface SpannedLine { summary: Pick<ChartSummary, 'from' | 'to'>; missing: readonly MissingSpan[] }
+
+export interface TiledLine { tag: string; head: string; decimals: number; summary: ChartSummary; missing: MissingSpan[]; parts: TilePart[]; marks: MarkSummary | null }
+
+interface Wanted { binHours: number; first: number; last: number; width: number; cell: number; keys: string[] }
+interface Assembled { binHours: number; first: number; last: number; width: number; cell: number }
+
+/** Pixels a mark cluster spans, as the cluster reply drew them. */
+export const CLUSTER_PIXELS = 18;
+
+/** Bins of `binHours` in a mark cell of a view of `hours` hours `width` pixels wide: the whole number of bins nearest
+ * eighteen pixels, at least one. `held`, the count in use, is kept until the view's own figure is three quarters of a
+ * bin from it, so an hour's jitter in a following view's span never regroups its marks; a zoom does. */
+export function cellBins(hours: number, width: number, binHours: number, held?: number): number {
+  const exact = CLUSTER_PIXELS * hours / (Math.max(1, width) * binHours);
+  if (held !== undefined && Math.abs(exact - held) < 0.75) return held;
+  return Math.max(1, Math.round(exact));
+}
+
+/** A tag's spans of `within` clipped to the hours tile `index` reads, as its address names them. */
+function spansFor(within: TileLane['within'], tag: string, binHours: number, index: number): HourSpan[] | undefined {
+  if (!within) return undefined;
+  const from = index * TILE_BINS * binHours - binHours, to = (index + 1) * TILE_BINS * binHours - 1;
+  return (within.get(tag) ?? []).flatMap(span => span.lastHour < from || span.firstHour > to ? []
+    : [{ firstHour: Math.max(from, span.firstHour), lastHour: Math.min(to, span.lastHour) }]);
+}
+
+const tileKey = (lane: TileLane, tag: string, binHours: number, index: number) => {
+  const spans = spansFor(lane.within, tag, binHours, index);
+  return `${lane.key}${lane.marks ? '|marks' : ''}|${binHours}|${index}|${tag}${spans ? `|${JSON.stringify(spans)}` : ''}`;
+};
+
+/** Whether `tile` answers its address for a history whose last hour is `lastHour`. */
+const fresh = (tile: Tile & { askedFor?: number }, lastHour: number) => tile.immutable
+  || (tile.askedFor ?? -Infinity) >= lastHour
+  || (tile.filled === null ? tile.firstHour > lastHour : tile.filled >= Math.min(tileLast(tile), lastHour));
+
+/** The tiles a chart's view needs, kept outside React: a view asks only the tiles the cache lacks, one request per
+ * tile for each group of up to `TILE_GROUP` tags lacking it, all at once; a view that moves inside the tiles it
+ * holds asks nothing and changes nothing. Its lines are assembled when every tile it needs is held, once per change
+ * of that set, never per frame. */
+export class TileView {
+  private wanted: Wanted | null = null;
+  private lines: ReadonlyMap<string, TiledLine> | null = null;
+  private assembled: Assembled | null = null;
+  private failure: unknown = null;
+  private closed = false;
+  private readonly cache: TileCache;
+  private readonly lane: TileLane;
+  private readonly changed: () => void;
+  /** Tile requests sent. */
+  asked = 0;
+
+  constructor(cache: TileCache, lane: TileLane, changed: () => void) {
+    this.cache = cache; this.lane = lane; this.changed = changed;
+  }
+
+  /** The lines last assembled, or null before the first. */
+  get current(): ReadonlyMap<string, TiledLine> | null { return this.lines; }
+  get error(): unknown { return this.failure; }
+
+  setView(view: TileViewport): void {
+    if (this.closed || view.to < view.from) return;
+    const before = this.wanted;
+    const binHours = viewBinHours(view.end - view.from + 1, view.width, before ?? undefined), span = TILE_BINS * binHours;
+    const cell = cellBins(view.end - view.from + 1, view.width, binHours, before?.binHours === binHours && before.width === view.width ? before.cell : undefined);
+    const first = Math.floor(view.from / span);
+    const ahead = Math.min(this.lane.lastHour, view.to + AHEAD_BINS * binHours);
+    const last = Math.max(first, Math.floor(Math.max(view.to, ahead) / span));
+    const held = this.wanted;
+    if (held && held.binHours === binHours && held.first === first && held.last === last && held.width === view.width && held.cell === cell) return;
+    const keys: string[] = [];
+    for (let index = first; index <= last; index++) for (const tag of this.lane.tags) keys.push(tileKey(this.lane, tag, binHours, index));
+    this.cache.pin(keys);
+    if (held) this.cache.unpin(held.keys);
+    this.wanted = { binHours, first, last, width: view.width, cell, keys };
+    this.fetch();
+    // The lines held still draw a view inside them: they are made again only with a tile they lack.
+    const made = this.assembled;
+    if (made && made.binHours === binHours && made.width === view.width && made.cell === cell && made.first <= first && last <= made.last) return;
+    this.assemble();
+  }
+
+  retry(): void {
+    this.failure = null;
+    this.fetch();
+    this.assemble();
+  }
+
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    if (this.wanted) this.cache.unpin(this.wanted.keys);
+  }
+
+  private fetch(): void {
+    const wanted = this.wanted;
+    if (!wanted) return;
+    for (let index = wanted.first; index <= wanted.last; index++) {
+      const lacking: string[] = [], waiting = new Set<Promise<void>>();
+      for (const tag of this.lane.tags) {
+        const key = tileKey(this.lane, tag, wanted.binHours, index);
+        const tile = this.cache.get(key);
+        if (tile && fresh(tile, this.lane.lastHour)) continue;
+        const flight = this.cache.inflight.get(key);
+        if (!flight) { lacking.push(tag); continue; }
+        waiting.add(flight);
+        // The page waits on a tile the prepare lane asked: it goes now, not in the lane's turn.
+        if (!this.lane.prepared) this.cache.joins.get(key)?.();
+      }
+      for (const flight of waiting) void flight.then(() => this.assemble(), () => {});
+      for (let at = 0; at < lacking.length; at += TILE_GROUP) this.request(wanted.binHours, index, lacking.slice(at, at + TILE_GROUP));
+    }
+  }
+
+  private request(binHours: number, index: number, tags: string[]): void {
+    const lane = this.lane, lastHour = lane.lastHour;
+    const keys = tags.map(tag => tileKey(lane, tag, binHours, index));
+    const within = lane.within && Object.fromEntries(tags.map(tag => [tag, spansFor(lane.within, tag, binHours, index)!]));
+    this.asked++;
+    const flight = lane.ask(binHours, index, tags, within).then(reply => {
+      const tiles = tilesOf(reply, tags, binHours, index, tag => keys[tags.indexOf(tag)]);
+      for (const tile of tiles) this.cache.put(Object.assign(tile, { askedFor: lastHour }));
+    });
+    const join = lane.promote && (() => lane.promote!(binHours, index, tags, within));
+    for (const key of keys) {
+      this.cache.inflight.set(key, flight);
+      if (join) this.cache.joins.set(key, join); else this.cache.joins.delete(key);
+    }
+    void flight.then(() => this.assemble(), error => {
+      if (this.closed) return;
+      this.failure = error;
+      this.changed();
+    }).finally(() => {
+      for (const key of keys) if (this.cache.inflight.get(key) === flight) { this.cache.inflight.delete(key); this.cache.joins.delete(key); }
+    });
+  }
+
+  /** Every tag's line over the tiles wanted, once all are held. */
+  private assemble(): void {
+    const wanted = this.wanted;
+    if (this.closed || !wanted) return;
+    const tiles: Tile[][] = [];
+    for (const tag of this.lane.tags) {
+      const own: Tile[] = [];
+      for (let index = wanted.first; index <= wanted.last; index++) {
+        const tile = this.cache.get(tileKey(this.lane, tag, wanted.binHours, index));
+        if (!tile) return;
+        own.push(tile);
+      }
+      tiles.push(own);
+    }
+    const span = TILE_BINS * wanted.binHours;
+    const lines = new Map<string, TiledLine>();
+    this.lane.tags.forEach((tag, at) => lines.set(tag, line(tag, tileHead(this.lane.key, tag), tiles[at], wanted.first * span, (wanted.last + 1) * span - 1,
+      wanted.width, this.lane.marks === true ? wanted.cell : null)));
+    this.lines = lines;
+    this.assembled = { binHours: wanted.binHours, first: wanted.first, last: wanted.last, width: wanted.width, cell: wanted.cell };
+    this.failure = null;
+    this.changed();
+  }
+}
+
+/** A tile's bins as buckets. */
+export function tileBuckets(tile: Tile, out: (ChartBucket | null)[] = []): (ChartBucket | null)[] {
+  const { flags, values, hours, scale, binHours } = tile;
+  let present = 0, v = 0;
+  for (let bin = 0; bin < TILE_BINS; bin++) {
+    const flag = flags[bin];
+    if (!(flag & PRESENT)) { out.push(null); continue; }
+    const start = tile.firstHour + bin * binHours, h = present * 5, level = (flag & LEVEL) !== 0;
+    const first = values[v] / scale;
+    out.push({ firstHour: start + hours[h], lastHour: start + hours[h + 1], lastValueHour: start + hours[h + 2],
+      minHour: start + hours[h + 3], maxHour: start + hours[h + 4], firstValue: first, lastValue: level ? first : values[v + 1] / scale,
+      minValue: level ? first : values[v + 2] / scale, maxValue: level ? first : values[v + 3] / scale,
+      firstBreak: (flag & FIRST_BREAK) !== 0, hasBreak: (flag & HAS_BREAK) !== 0 });
+    present++; v += level ? 1 : 4;
+  }
+  return out;
+}
+
+/** An hourly tile's runs, each joined to the run of the tile before it goes on from. */
+export function tileRuns(tile: Tile, out: Run[] = []): Run[] {
+  const { flags, values, scale } = tile;
+  let at = 0;
+  for (let bin = 0; bin < TILE_BINS; bin++) {
+    const flag = flags[bin];
+    if (!(flag & PRESENT)) continue;
+    const hour = tile.firstHour + bin;
+    if (!(flag & RUN)) { out[out.length - 1].lastHour = hour; continue; }
+    const value = values[at++] / scale, held = out.at(-1);
+    if (flag & SEAM && held && held.lastHour + 1 === hour) held.lastHour = hour;
+    else out.push({ firstHour: hour, lastHour: hour, value, breakBefore: (flag & FIRST_BREAK) !== 0 });
+  }
+  return out;
+}
+
+/** Hourly bins from `runs`, as an hourly view's reply holds them, from `from` through `to`. */
+export function hourlyBuckets(runs: readonly Run[], from: number, to: number): (ChartBucket | null)[] {
+  const out: (ChartBucket | null)[] = new Array<ChartBucket | null>(to - from + 1).fill(null);
+  for (const run of runs) {
+    const first = Math.max(from, run.firstHour);
+    for (let hour = first; hour <= Math.min(to, run.lastHour); hour++) out[hour - from] = { firstHour: hour, lastHour: hour, lastValueHour: hour,
+      minHour: hour, maxHour: hour, firstValue: run.value, lastValue: run.value, minValue: run.value, maxValue: run.value,
+      firstBreak: hour === first && run.breakBefore === true, hasBreak: false };
+  }
+  return out;
+}
+
+/** A tile's bins with drops, as (first hour, drops, the line's drops before the bin). */
+function tileDrops(tile: Tile, out: [number, number, bigint][]): void {
+  if (!tile.marks) return;
+  let ordinal = BigInt(tile.marks.before);
+  for (const [bin, count] of tile.marks.bins) {
+    out.push([tile.firstHour + bin * tile.binHours, count, ordinal]);
+    ordinal += BigInt(count);
+  }
+}
+
+/** Bins with drops (first hour, drops, drops before, in hour order) as mark clusters: one per cell of `cell` bins of
+ * `binHours` on the absolute grid holding any, its hours from its first such bin's first to its last such bin's last,
+ * its drops their sum, its first ordinal its first drop's, and its bins (last hour, drops) for the head inside it. A
+ * cell's members follow from its hours alone, so a scroll never changes a cluster. */
+export function cellClusters(drops: readonly (readonly [number, number, bigint])[], binHours: number, cell: number): MarkCluster[] {
+  const out: MarkCluster[] = [], hours = binHours * cell;
+  let at = 0;
+  while (at < drops.length) {
+    const index = Math.floor(drops[at][0] / hours), bins: [number, number][] = [];
+    let count = 0, end = at;
+    while (end < drops.length && Math.floor(drops[end][0] / hours) === index) {
+      bins.push([drops[end][0] + binHours - 1, drops[end][1]]);
+      count += drops[end][1]; end++;
+    }
+    out.push({ firstHour: drops[at][0], lastHour: bins[bins.length - 1][0], firstOrdinal: drops[at][2].toString(), count: String(count), bins });
+    at = end;
+  }
+  return out;
+}
+
+function line(tag: string, head: string, tiles: readonly Tile[], from: number, to: number, width: number, cell: number | null): TiledLine {
+  let buckets: (ChartBucket | null)[] = [];
+  const missing: MissingSpan[] = [], parts: TilePart[] = [], seen = new Set<string>(), runs: Run[] = [], drops: [number, number, bigint][] = [];
+  const hourly = tiles[0].hourly;
+  for (const tile of tiles) {
+    if (hourly) tileRuns(tile, runs); else tileBuckets(tile, buckets);
+    if (cell !== null) tileDrops(tile, drops);
+    for (const span of tile.missing) {
+      const held = missing.at(-1);
+      if (held && held.reason === span.reason && held.lastHour + 1 === span.firstHour) held.lastHour = span.lastHour;
+      else missing.push({ ...span });
+    }
+    for (const part of tile.parts) {
+      const key = `${part.firstHour}:${part.lastHour}:${part.slot}:${part.countryId}`;
+      if (!seen.has(key)) { seen.add(key); parts.push(part); }
+    }
+  }
+  const binHours = tiles[0].binHours;
+  if (hourly) buckets = hourlyBuckets(runs, from, to);
+  const summary: ChartSummary = { from, to, width, buckets, ...(hourly ? { runs } : {}),
+    tiles: { binHours, valueAt: hour => valueAtHead(head, summary, binHours, hour) } };
+  return { tag, head, decimals: tiles[0].decimals, summary, missing, parts, marks: cell !== null ? { from, to, width, clusters: cellClusters(drops, binHours, cell), tiles: true } : null };
+}
+
+/** Why no line of `lines` (tiled lines by tag, or a ranked reply's lines) holds a value anywhere in its view, when every
+ * one's hours not recorded cover the whole of it: the reason naming the most hours. Null while any line may hold a value,
+ * or no lines have landed. */
+export function unrecordedReason(lines: ReadonlyMap<string, SpannedLine> | readonly SpannedLine[] | null | undefined): string | null {
+  const all = lines ? [...lines.values()] : [];
+  if (!all.length) return null;
+  const hours = new Map<string, number>();
+  for (const line of all) {
+    const { from, to } = line.summary;
+    let at = from;
+    for (const span of line.missing) {
+      if (span.lastHour < at || span.firstHour > to) continue;
+      if (span.firstHour > at) return null;
+      const end = Math.min(span.lastHour, to);
+      hours.set(span.reason, (hours.get(span.reason) ?? 0) + end - at + 1);
+      at = end + 1;
+      if (at > to) break;
+    }
+    if (at <= to) return null;
+  }
+  let best: string | null = null, most = -1;
+  for (const [reason, count] of hours) if (count > most) { best = reason; most = count; }
+  return best;
+}
+
+/** The reason most of `reasons` give: a chart of several series, each not recorded, says the commonest. */
+export const mostNamed = (reasons: readonly string[]): string => {
+  const counts = new Map<string, number>();
+  for (const reason of reasons) counts.set(reason, (counts.get(reason) ?? 0) + 1);
+  return [...counts].reduce((best, entry) => entry[1] > best[1] ? entry : best)[0];
+};
+
+/** The runs of an hourly `line` a view from `from` through `to` reads, as its reply cuts them: the run holding `from`
+ * starts a line only where `from` starts its holder's segment. */
+export function viewRuns(line: TiledLine, from: number, to: number): Run[] {
+  const segment = line.parts.find(part => part.firstHour <= from && from <= part.lastHour)?.segmentFirstHour;
+  return (line.summary.runs ?? []).filter(run => run.lastHour >= from && run.firstHour <= to).map(run => run.firstHour <= from
+    ? { ...run, firstHour: from, lastHour: Math.min(to, run.lastHour), breakBefore: segment === from }
+    : { ...run, lastHour: Math.min(to, run.lastHour) });
+}
+
+/** The bins of `summary` a view from `from` through `to` reads, as a reply for that view widened to whole bins
+ * would hold them: the first starts its line. */
+export function viewBins(summary: ChartSummary, from: number, to: number): (ChartBucket | null)[] {
+  const binHours = summary.tiles!.binHours;
+  const first = Math.floor(from / binHours) - Math.floor(summary.from / binHours), last = Math.floor(to / binHours) - Math.floor(summary.from / binHours);
+  const bins = summary.buckets.slice(first, last + 1);
+  if (bins[0]) bins[0] = { ...bins[0], firstBreak: true };
+  return bins;
+}
+
+const caches = new WeakMap<object, TileCache>();
+/** The tile cache of a dashboard's client. */
+export function tileCache(client: object): TileCache {
+  client = (client as { base?: object }).base ?? client;
+  let cache = caches.get(client);
+  if (!cache) caches.set(client, cache = new TileCache());
+  return cache;
+}

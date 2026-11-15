@@ -1,6 +1,6 @@
 use super::*;
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::PathBuf;
 
 pub(crate) fn initialize_runtime_tables() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -9,87 +9,25 @@ pub(crate) fn initialize_runtime_tables() {
 
 pub(crate) static GPU_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// One compiler: the DLL at the place named, never another. A missing one and a file that is
+/// not DXC are refused by name.
 #[test]
-fn compiler_precedence_and_missing_files() {
-    for (environment, beside, user, present, expected) in [
-        (
-            true,
-            true,
-            true,
-            vec!["environment", "beside", "user"],
-            Some(("env", "environment")),
-        ),
-        (
-            true,
-            true,
-            true,
-            vec!["beside", "user"],
-            Some(("env", "environment")),
-        ),
-        (
-            false,
-            true,
-            true,
-            vec!["beside", "user"],
-            Some(("beside", "beside")),
-        ),
-        (
-            false,
-            true,
-            true,
-            vec!["user"],
-            Some(("user install", "user")),
-        ),
-        (
-            false,
-            false,
-            true,
-            vec!["user"],
-            Some(("user install", "user")),
-        ),
-        (
-            false,
-            true,
-            false,
-            vec!["beside"],
-            Some(("beside", "beside")),
-        ),
-        (false, true, true, vec![], None),
-        (false, false, false, vec![], None),
-    ] {
-        let chosen = compiler_location(
-            environment.then(|| PathBuf::from("environment")),
-            beside.then(|| PathBuf::from("beside")),
-            user.then(|| PathBuf::from("user")),
-            |path| {
-                assert!(!environment, "an explicit override must not fall back");
-                present.iter().any(|candidate| path == Path::new(candidate))
-            },
-        );
-        assert_eq!(
-            chosen,
-            expected.map(|(source, path)| (source, PathBuf::from(path)))
-        );
-    }
+fn the_compiler_is_the_named_dll_and_nothing_else() {
+    let scratch = Scratch::new().unwrap();
+    let library = scratch.0.join("dxcompiler.dll");
+    assert_eq!(Compiler::at(&library).err().as_deref(), Some(MISSING_COMPILER));
+    std::fs::write(&library, b"not a library").unwrap();
+    assert_eq!(Compiler::at(&library).err().as_deref(), Some("dxcompiler.dll carries no product version"));
 }
 
-/// Compiler output names its scratch folder, which differs every run, as `.`: the same
-/// refusal reads the same on every load.
+/// The pinned DLL beside the test program reports the pinned version.
+// quarantine: #1453 needs the pinned dxcompiler.dll beside the test program
 #[test]
-fn compiler_output_reads_the_same_on_every_run() {
-    let message = |scratch: &str| {
-        let text = format!(
-            r"{scratch}\effect.hlsl:3:1: error: unknown type; {}/effect.hlsl",
-            scratch.replace('\\', "/")
-        );
-        scrubbed(text.as_bytes(), Path::new(scratch))
-    };
-    let first = message(r"C:\Temp\hoi4-shader-1b2f");
-    assert_eq!(first, message(r"C:\Temp\hoi4-shader-9c4e"));
-    assert_eq!(
-        first,
-        r".\effect.hlsl:3:1: error: unknown type; ./effect.hlsl"
-    );
+#[ignore = "requires the pinned shader compiler"]
+fn the_pinned_dll_beside_the_program_reports_the_pinned_version() {
+    let exe = std::env::current_exe().unwrap();
+    assert_eq!(dxc::product_version(&exe.with_file_name("dxcompiler.dll")).unwrap(), DXC_VERSION);
+    Compiler::discover().unwrap();
 }
 
 mod arena;
@@ -462,7 +400,7 @@ fn variants(program: &Program) -> Vec<Vec<String>> {
 
 pub(crate) fn device() -> (wgpu::Device, wgpu::Queue) {
     let instance =
-        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+        crate::gpu::instance();
     let adapter =
         pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
             .unwrap();

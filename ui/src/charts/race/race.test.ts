@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { barExtent, barLength, barParts, barRectangle, keyedEntry, MIN_SLOT, paintOrder, partTotal, RACE_AXIS, raceHeight, raceLayout, raceMax, raceMoving, raceText, rankItems, rowAt, rowCentre, rowInView, rowSeen, stepRace, MAX_THICKNESS, RACE_LEAVE_MS } from './race.ts';
 import type { RaceItem, RaceRow, RaceState } from './race';
-import { drawRaceBar } from './draw.ts';
+import { drawRaceBar, wrapText } from './draw.ts';
 import { tokensFromValues } from '../tokens.ts';
 
 const item = (key: string, value: number, stretch: number | null = 0, hatched = 0): RaceItem =>
@@ -34,6 +34,21 @@ test('the first state shows every row in place; a new moment re-ranks and rows g
   for (let now = 32; now < 5000; now += 16) state = stepRace(state, second, now, 16, 100);
   assert.equal(raceMoving(state), false);
   assert.deepEqual(state.rows.map(row => [row.key, row.y, width(state, row.key)]), [['b', 0, 20], ['a', 1, 12]]);
+});
+
+test('rows out of view land at once and keep their row at rest; a row coming into view glides', () => {
+  const view = { from: 0, to: 2 };
+  let state = stepRace(null, [item('a', 50), item('b', 40), item('c', 30), item('d', 20), item('e', 10)], 0, 16, 100);
+  const row = (key: string) => state.rows.find(row => row.key === key)!;
+  const next = [item('a', 60), item('b', 40), item('c', 30), item('e', 25), item('d', 20)];
+  state = stepRace(state, next, 16, 16, 100, undefined, view);
+  assert.deepEqual([row('d').y, row('e').y, width(state, 'e')], [4, 3, 25], 'swapped below the view: landed');
+  assert.ok(width(state, 'a') > 50 && width(state, 'a') < 60, 'in view: glides');
+  const held = row('d');
+  state = stepRace(state, next, 32, 16, 100, undefined, view);
+  assert.equal(row('d'), held, 'a row at rest out of view is the same row');
+  state = stepRace(state, [item('e', 99), item('a', 60), item('b', 40), item('c', 30), item('d', 20)], 48, 16, 100, undefined, view);
+  assert.ok(row('e').y > 0 && row('e').y < 3, `climbing into view, it glides: ${row('e').y}`);
 });
 
 test('a bar jumps across a gap or a change of country, and without motion everything snaps', () => {
@@ -324,4 +339,15 @@ test('rows are thin (at most 20 px), hovered by the band of their slot, and reac
   assert.equal(raceText(items, key => key.toUpperCase()), '1. A 10; 2. B 5');
   const native = [{ ...items[0], key: '[7,101]', tag: 'renamed', hour: 20 }];
   assert.equal(raceText(native, (_key, entry) => `${entry?.tag} at ${entry?.hour}`), '1. renamed at 20 10');
+});
+
+test('a race with no bar wraps why to the view at its spaces instead of squeezing it onto one line', () => {
+  const measure = (text: string) => text.length * 7;
+  const why = 'Navies not recorded on 10 Jan 1942: navy totals not available at this hour: task forces: not available';
+  const lines = wrapText(why, 280, measure);
+  assert.ok(lines.length > 1);
+  assert.ok(lines.every(line => measure(line) <= 280), 'every line fits the view');
+  assert.equal(lines.join(' '), why, 'no word lost or broken');
+  assert.deepEqual(wrapText('Unbreakable', 20, measure), ['Unbreakable'], 'a word wider than the view stands alone');
+  assert.deepEqual(wrapText('  ', 100, measure), []);
 });

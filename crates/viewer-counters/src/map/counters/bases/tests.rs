@@ -45,6 +45,33 @@ fn token_frame(literals: &[(u32, &str)]) -> DecodedFrame {
     frame
 }
 
+/// The tokens carried across copies of LexicalTokens equal the full pass over each copy: an equal
+/// new copy, a grown table (a name resolved anew, a second token for a resolved name), a rewritten
+/// text, a fallen count and a branch change.
+#[test]
+fn building_tokens_carried_across_copies_equal_the_full_pass() {
+    let registry = ["naval_hq", "facility", "dock", "absent"].map(String::from);
+    let keys = TokenKeys::new(&registry);
+    let needed = BTreeSet::from(["naval_hq", "facility", "dock", "absent"]);
+    let carry = TokenCarry::default();
+    let copies: [(replay_data::BranchId, &[(u32, &str)]); 7] = [
+        (1, &[(3, "Naval_HQ"), (5, "facility"), (9, "other")]),
+        (1, &[(3, "Naval_HQ"), (5, "facility"), (9, "other")]),
+        (1, &[(3, "Naval_HQ"), (4, "dock"), (5, "facility"), (9, "other"), (12, "FACILITY")]),
+        (1, &[(3, "Naval_HQ"), (4, "dock"), (5, "facility"), (9, "renamed"), (12, "FACILITY")]),
+        (1, &[(3, "Naval_HQ"), (5, "facility"), (9, "renamed")]),
+        (2, &[(3, "dock"), (5, "facility")]),
+        (2, &[(3, "dock"), (5, "facility"), (7, "absent")]),
+    ];
+    for (at, (branch, literals)) in copies.into_iter().enumerate() {
+        let mut frame = token_frame(literals);
+        frame.branch = branch;
+        let whole = building_tokens(&frame, &keys, &needed).unwrap();
+        let carried = carry.tokens(&frame, &keys, &needed).unwrap();
+        assert_eq!(*carried, whole, "copy {at}");
+    }
+}
+
 #[test]
 fn building_tokens_fold_like_the_lexer_and_refuse_ambiguity() {
     let frame = token_frame(&[(3, "Naval_HQ"), (5, "facility"), (8, "FACILITY")]);
@@ -544,12 +571,16 @@ fn cached_base_joins_equal_fresh_hour_derivations() {
             );
             let vision = Vision::default();
             let cached = BaseTables::read(&frame, &vision, inputs.content).unwrap();
-            assert_eq!(cached.wings, wings_per_site(&frame, &vision).unwrap());
-            assert_eq!(
-                (&cached.states, cached.complete),
-                (&site_icon_states(&frame).unwrap().0, true)
-            );
-            assert_eq!(cached.radar, radar_states(&frame, vision.ours()).unwrap());
+            let cached = &cached.values;
+            assert_eq!(cached.wings, wings_per_site(&frame, &vision).unwrap().into_iter().collect());
+            let states = site_icon_states(&frame).unwrap().0;
+            assert!(cached.complete);
+            for kind in 0..3 {
+                assert!(cached.wings.iter().filter(|((_, of), _)| *of == kind).map(|((state, _), _)| *state).eq(states[kind].iter().copied()), "a site has a count exactly while its state holds a base of its kind");
+            }
+            let radar = radar_states(&frame, vision.ours()).unwrap();
+            assert!(cached.radar.iter().map(|(state, _)| *state).eq(radar.shown.iter().copied()));
+            assert_eq!(*cached.radar_notes, radar.notes);
             assert_eq!(cached.controlled.get(&9), Some(&true));
             assert_eq!(cached.controlled.get(&10), None);
             assert_eq!(
@@ -644,4 +675,95 @@ fn memoized_building_tokens_equal_a_fresh_build_hour_by_hour() {
         let refusal = answer(&icons.tokens(&hours[hour - 1])).unwrap_err();
         assert!(refusal.contains(&format!("hour {hour} ")), "{refusal}");
     }
+}
+
+#[test]
+fn a_new_bases_product_lays_out_the_changed_base_alone_and_is_held_back_while_none_is_drawn() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    use crate::map::counters::preparation::plan_probe;
+    use building_facts::{AIR_BASE, ICON_KINDS, IconAnchor, RADAR, SiteIcon};
+    use replay_data::rows::{TableId, TableRows};
+    use replay_frame::frame::TableView;
+    const STATES: u32 = 200;
+    super::super::tests::with_counter_inputs_fixture(
+        super::super::tests::action_gui(false),
+        |_| {},
+        |content| {
+            let mut icons: [BTreeMap<u32, SiteIcon>; ICON_KINDS] = Default::default();
+            for state in 1..=STATES {
+                icons[AIR_BASE].insert(state * 10, SiteIcon { state, anchor: Ok(IconAnchor::Record([state as f32 / 100., 9.5, 2.])) });
+                icons[RADAR].insert(state * 10 + 1, SiteIcon { state, anchor: Ok(IconAnchor::Record([state as f32 / 100., 9.5, 3.])) });
+            }
+            content.site_icons = Arc::new(icons);
+        },
+        |mut inputs| {
+            let frame = DecodedFrame { branch: 1, hour: 1, metrics: Default::default(), tables: TableId::ALL.map(|table| TableView::Complete(TableRows::empty(table)).into()) };
+            let moves = viewer_foundation::map::movement_reads::test_support::unnamed_assets();
+            let tables = hour_tables(
+                &frame,
+                inputs.map,
+                Arc::new(Vision::sharing(1, [])),
+                inputs.content,
+                inputs.assets,
+                inputs.equipment,
+                inputs.localisation,
+                &Default::default(),
+                None,
+                None,
+                None,
+                &type_tint::Memo::new(type_tint::TABLES),
+                &MissionMemo::new(),
+                moves.movement_reads(),
+                Err("unreached synthetic naval topology".into()),
+            )
+            .unwrap();
+            let count = |planes| AirBaseCount { capacity: 10, planes, shown: true, stationed: Some(true), ..Default::default() };
+            let old = Arc::new(BaseValues {
+                wings: (1..=STATES).map(|state| ((state, AIR_BASE), count(5))).collect(),
+                complete: true,
+                aircraft_complete: true,
+                controlled: (1..=STATES).map(|state| (state * 10, true)).collect(),
+                ..Default::default()
+            });
+            let mut one_base = (*old).clone();
+            one_base.wings.insert((77, AIR_BASE), AirBaseCount { shown: false, ..count(9) });
+            let one_base = Arc::new(one_base);
+            let mut one_province = (*one_base).clone();
+            one_province.controlled.insert(1230, false);
+            let one_province = Arc::new(one_province);
+            let mut one_radar = (*one_province).clone();
+            one_radar.radar.insert(5, ());
+            let one_radar = Arc::new(one_radar);
+            let rules = [true; 3];
+            let (layout, counts) = plan_probe::collect(|| BaseLayout::new(rules, &inputs, &frame, &tables, Some(Arc::clone(&old))).unwrap());
+            assert_eq!(counts.site_icons, 2 * u64::from(STATES), "a first layout lays out every air base and radar icon");
+            let mut layout = layout;
+            for (values, what) in [(&one_base, "one base's wings"), (&one_province, "one province's controller"), (&one_radar, "one state's radar")] {
+                let ((), counts) = plan_probe::collect(|| layout.update(&inputs, &frame, &tables, Some(values)).unwrap());
+                assert_eq!(counts.site_icons, 1, "{what} lays out that base's icon alone");
+                let whole = BaseLayout::new(rules, &inputs, &frame, &tables, Some(Arc::clone(values))).unwrap();
+                assert!(layout.offers.offers().eq(whole.offers.offers()), "{what}: the offers are a whole layout's");
+                assert_eq!(layout.report, whole.report, "{what}: and so is the report");
+                assert!(layout.laid_from(Some(values)));
+            }
+            assert_eq!(layout.offers.offers().count(), STATES as usize, "the uncontrolled province's icon is gone, one radar icon came");
+
+            // The hand-over: above every base cutoff, a new product changes nothing drawn and is held back.
+            let mut view = Preparation::default();
+            let published = |values: &Arc<BaseValues>| Layered { bases: Some(Arc::clone(values)), ..Layered::default() };
+            inputs.camera.height = 5000.;
+            view.set_layered(published(&old), Kinds::BASES, Kinds::default());
+            view.bind(&inputs, &tables, 0);
+            view.bases(&inputs, &frame, &tables, &mut CounterFrame::default()).unwrap();
+            let identity = view.layered().identity();
+            view.set_layered(published(&one_base), Kinds::BASES, Kinds::default());
+            assert_eq!(view.layered().identity(), identity, "no base icon reads it: the window lays nothing out again");
+            assert_eq!(view.drawing(), Kinds::BASES);
+            inputs.camera.height = 100.;
+            let ((), counts) = plan_probe::collect(|| view.bases(&inputs, &frame, &tables, &mut CounterFrame::default()).unwrap());
+            assert!(Arc::ptr_eq(view.layered().bases.as_ref().unwrap(), &one_base), "a view that draws the icons takes the newest");
+            assert_eq!(counts.site_icons, 2 * u64::from(STATES), "laid out at the new rules");
+        },
+    );
 }

@@ -57,7 +57,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 .context
                 .world()?
                 .slot(country)
-                .ok_or_else(|| format!("CountryLinks lacks scientist country {country}"))?;
+                .ok_or_else(|| format!("country links lacks scientist country {country}"))?;
             let candidate = format!("{}_{}", self.tag(slot)?, name);
             if self.context.localisation.get(&candidate).is_some() {
                 candidate

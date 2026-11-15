@@ -328,14 +328,14 @@ pub fn walk_plans(
                 (row.name_start, row.name_len) = match record
                     .get::<[u8; crate::msvc_string::STRIDE]>(NAME)
                 {
-                    Some(header) => crate::msvc_string::append_growing_with_header(
+                    Some(header) => crate::msvc_string::append_with_header(
                         memory,
                         &header,
                         names,
                         &mut names_used,
                     )?,
                     None => {
-                        crate::msvc_string::append_growing(memory, name, names, &mut names_used)?
+                        crate::msvc_string::append(memory, name, names, &mut names_used)?
                     }
                 };
                 for (offset, start, list_len) in [
@@ -645,16 +645,13 @@ fn counter_inputs(
     outcome
 }
 
-/// Reads the complete native registry, including army-group roots exactly once.
-/// Registry growth is permitted only outside the accepted hourly callback.
-/// The caller owns storage; a capacity miss counts every omitted registry entry.
-pub fn walk_roots(memory: &impl Memory, base: usize, output: &mut [Root]) -> Outcome {
-    walk_roots_buffer(memory, base, crate::walk::Buffer::Fixed(output))
+pub fn count_roots(memory: &impl Memory, base: usize) -> Outcome {
+    walk_roots_buffer(memory, base, crate::walk::Buffer::Count)
 }
 
 /// Worker storage follows the original registry count before any occupied
 /// bucket is decoded. Fixed callback storage keeps its verdict.
-pub fn walk_roots_growing(memory: &impl Memory, base: usize, output: &mut Vec<Root>) -> Outcome {
+pub fn walk_roots(memory: &impl Memory, base: usize, output: &mut Vec<Root>) -> Outcome {
     walk_roots_buffer(memory, base, crate::walk::Buffer::Growing(output))
 }
 
@@ -889,25 +886,6 @@ pub struct GroupRow {
     pub name_known: bool,
 }
 
-/// Stored command name populated by generation or player rename and serialized
-/// as text. Demand includes every readable descriptor even when the arena is short.
-#[cfg(test)]
-pub fn copy_name(
-    memory: &impl Memory,
-    pointer: usize,
-    arena: &mut [u8],
-    used: &mut usize,
-    required: &mut usize,
-) -> Result<(usize, usize), &'static str> {
-    copy_name_buffer(
-        memory,
-        pointer,
-        crate::walk::Buffer::Fixed(arena),
-        used,
-        required,
-    )
-}
-
 pub fn copy_name_buffer(
     memory: &impl Memory,
     pointer: usize,
@@ -941,7 +919,7 @@ pub fn copy_name_buffer(
 mod command_name_tests {
     use super::*;
     #[test]
-    fn owned_command_name_counts_live_heap_demand_without_truncating() {
+    fn owned_command_name_grows_to_the_live_heap_demand_without_truncating() {
         let mut bytes = vec![0; NAME + 64];
         let payload = vec![b'x'; 5000];
         let heap = bytes.len();
@@ -955,18 +933,12 @@ mod command_name_tests {
             bytes: &bytes,
         };
         let (mut used, mut required) = (0, 0);
+        let mut arena = vec![0; 1];
         assert_eq!(
-            copy_name(&memory, 0, &mut [0; 1], &mut used, &mut required),
-            Err("orders group name arena too short")
-        );
-        assert_eq!((used, required), (0, 5000));
-        let mut arena = vec![0; required];
-        required = 0;
-        assert_eq!(
-            copy_name(&memory, 0, &mut arena, &mut used, &mut required),
+            copy_name_buffer(&memory, 0, crate::walk::Buffer::Growing(&mut arena), &mut used, &mut required),
             Ok((0, 5000))
         );
-        assert_eq!(arena, payload);
+        assert_eq!(&arena[..5000], payload);
         assert_eq!((used, required), (5000, 5000));
     }
 }
@@ -990,13 +962,11 @@ pub struct ChildRow {
     pub child: u64,
 }
 
-/// Caller-owned row storage; the walker never allocates.
 pub struct OrderOfBattle<'a> {
-    pub groups: &'a mut [GroupRow],
-    pub members: &'a mut [MemberRow],
-    pub children: &'a mut [ChildRow],
-    /// One entry per root; sized by the caller from the live root census.
-    pub roster_scratch: &'a mut [RosterEntry],
+    pub groups: &'a mut Vec<GroupRow>,
+    pub members: &'a mut Vec<MemberRow>,
+    pub children: &'a mut Vec<ChildRow>,
+    pub roster_scratch: &'a mut Vec<RosterEntry>,
 }
 
 /// Worker-owned OOB buffers grow from the complete census and original member headers.
@@ -1135,10 +1105,10 @@ pub fn walk_order_of_battle(
         base,
         roots,
         &mut OrderOfBattleStorage {
-            groups: crate::walk::Buffer::Fixed(output.groups),
-            members: crate::walk::Buffer::Fixed(output.members),
-            children: crate::walk::Buffer::Fixed(output.children),
-            roster_scratch: crate::walk::Buffer::Fixed(output.roster_scratch),
+            groups: crate::walk::Buffer::Growing(&mut *output.groups),
+            members: crate::walk::Buffer::Growing(&mut *output.members),
+            children: crate::walk::Buffer::Growing(&mut *output.children),
+            roster_scratch: crate::walk::Buffer::Growing(&mut *output.roster_scratch),
         },
     )
 }

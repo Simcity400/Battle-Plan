@@ -113,16 +113,6 @@ impl ProductRequest {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(rename = "PreparationAction")]
-pub enum Action {
-    Status,
-    Start,
-    Cancel,
-    Clear,
-}
-
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
 pub enum DataCommand {
@@ -146,25 +136,6 @@ pub enum DataCommand {
     Product {
         id: String,
         request: ProductRequest,
-    },
-    PreparedQuery {
-        id: String,
-        request: ProductRequest,
-        /// Refreshing a reply already shown yields to first views and user actions.
-        #[serde(default)]
-        refresh: bool,
-    },
-    Preparation {
-        id: String,
-        #[serde(rename = "sourceId")]
-        source_id: String,
-        revision: String,
-        action: Action,
-    },
-    PreparationPreferences {
-        id: String,
-        #[serde(default)]
-        enabled: Option<bool>,
     },
     /// Joins a recorded stretch of play of the recording at `path` to the history the viewer
     /// chose: `choice` names the segment it goes on from; null lets the recording decide again.
@@ -190,9 +161,6 @@ impl DataCommand {
             Self::Open { id, .. }
             | Self::MapSettings { id, .. }
             | Self::Product { id, .. }
-            | Self::PreparedQuery { id, .. }
-            | Self::Preparation { id, .. }
-            | Self::PreparationPreferences { id, .. }
             | Self::HistoryChoice { id, .. }
             | Self::Cancel { id } => Some(id),
             Self::Release { .. } => None,
@@ -446,23 +414,15 @@ mod tests {
     }
 
     #[test]
-    fn prepared_commands_preserve_refresh_priority_and_default_to_a_first_ask() {
-        let mut command = serde_json::json!({"type":"preparedQuery", "id":"q", "request":{
-            "sourceId":"source", "revision":"revision", "product":"series-state", "params":{}}});
-        for refresh in [None, Some(false), Some(true)] {
-            if let Some(refresh) = refresh {
-                command["refresh"] = serde_json::json!(refresh);
-            }
-            let parsed: DataCommand = serde_json::from_value(command.clone()).unwrap();
-            assert_eq!(parsed.request_id(), Some("q"));
-            let DataCommand::PreparedQuery {
-                refresh: actual, ..
-            } = parsed
-            else {
-                panic!("wrong command");
-            };
-            assert_eq!(actual, refresh.unwrap_or(false));
-        }
+    fn a_series_request_is_a_product_request() {
+        let command: DataCommand = serde_json::from_value(serde_json::json!({"type":"product", "id":"q", "request":{
+            "sourceId":"source", "revision":"revision", "product":"series-state", "params":{}}}))
+        .unwrap();
+        assert_eq!(command.request_id(), Some("q"));
+        assert!(matches!(command, DataCommand::Product { .. }));
+        assert!(serde_json::from_value::<DataCommand>(serde_json::json!({"type":"preparedQuery", "id":"q", "request":{
+            "sourceId":"source", "revision":"revision", "product":"series-state", "params":{}}}))
+        .is_err());
     }
 
     #[test]

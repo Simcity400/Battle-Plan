@@ -576,7 +576,8 @@ pub fn device_descriptor(adapter: &wgpu::Adapter) -> wgpu::DeviceDescriptor<'sta
         | wgpu::Features::DUAL_SOURCE_BLENDING
         | wgpu::Features::FLOAT32_FILTERABLE;
     // Profiling only: per-pass GPU timestamps (`map::gpu_passes`).
-    if crate::map::gpu_passes::requested() {
+    // Printed, or recorded by a measurement that turned the view record on before its device.
+    if crate::map::gpu_passes::requested() || crate::map::gpu_passes::recorded() {
         wanted |= crate::map::gpu_passes::features();
     }
     // The perf map log's per-frame GPU time (`map::gpu_frame_time`).
@@ -587,20 +588,29 @@ pub fn device_descriptor(adapter: &wgpu::Adapter) -> wgpu::DeviceDescriptor<'sta
     wgpu::DeviceDescriptor {
         label: Some("Battle Plan viewer"),
         required_features: features,
-        required_limits: wgpu::Limits {
-            max_buffer_size: limits.max_buffer_size,
-            max_storage_buffer_binding_size: limits.max_storage_buffer_binding_size,
-            max_texture_dimension_1d: limits.max_texture_dimension_1d,
-            max_texture_dimension_2d: limits.max_texture_dimension_2d,
-            max_sampled_textures_per_shader_stage: limits.max_sampled_textures_per_shader_stage,
-            max_samplers_per_shader_stage: limits.max_samplers_per_shader_stage,
-            // Compiled programs bind every constant buffer at a dynamic offset into the
-            // frame's upload arena; D3D11 allows fourteen per stage.
-            max_dynamic_uniform_buffers_per_pipeline_layout: limits
-                .max_dynamic_uniform_buffers_per_pipeline_layout,
-            ..base_limits
-        },
+        required_limits: required_limits(&limits, base_limits),
         ..Default::default()
+    }
+}
+
+/// The limits a device asks of an adapter with `limits`: `base`, with the adapter's own where the
+/// renderer binds as many as the adapter allows.
+fn required_limits(limits: &wgpu::Limits, base: wgpu::Limits) -> wgpu::Limits {
+    wgpu::Limits {
+        max_buffer_size: limits.max_buffer_size,
+        max_storage_buffer_binding_size: limits.max_storage_buffer_binding_size,
+        max_texture_dimension_1d: limits.max_texture_dimension_1d,
+        max_texture_dimension_2d: limits.max_texture_dimension_2d,
+        max_sampled_textures_per_shader_stage: limits.max_sampled_textures_per_shader_stage,
+        max_samplers_per_shader_stage: limits.max_samplers_per_shader_stage,
+        // Compiled programs bind every constant buffer at a dynamic offset into the
+        // frame's upload arena; D3D11 allows fourteen per stage.
+        max_dynamic_uniform_buffers_per_pipeline_layout: limits.max_dynamic_uniform_buffers_per_pipeline_layout,
+        // An instanced program reads each constant buffer's rows, and its instances' records, as
+        // storage at a dynamic offset: a lit program binds more than the default four.
+        max_dynamic_storage_buffers_per_pipeline_layout: limits.max_dynamic_storage_buffers_per_pipeline_layout,
+        max_storage_buffers_per_shader_stage: limits.max_storage_buffers_per_shader_stage,
+        ..base
     }
 }
 
@@ -741,6 +751,29 @@ fn read_texture_unscoped(
 pub fn compiled<T>(slot: &Result<T, String>) -> io::Result<&T> {
     slot.as_ref()
         .map_err(|reason| io::Error::other(reason.clone()))
+}
+
+#[cfg(test)]
+mod limit_tests {
+    use super::*;
+
+    /// A device asks the adapter's own storage limits, so a lit program's instanced variant (its
+    /// constant buffers' rows and its records, each at a dynamic offset) is not refused for the
+    /// default four.
+    #[test]
+    fn a_device_asks_the_adapter_s_own_storage_buffer_limits() {
+        let adapter = wgpu::Limits {
+            max_dynamic_storage_buffers_per_pipeline_layout: 16,
+            max_storage_buffers_per_shader_stage: 64,
+            max_dynamic_uniform_buffers_per_pipeline_layout: 15,
+            ..wgpu::Limits::default()
+        };
+        let asked = required_limits(&adapter, wgpu::Limits::default());
+        assert_eq!(asked.max_dynamic_storage_buffers_per_pipeline_layout, 16);
+        assert_eq!(asked.max_storage_buffers_per_shader_stage, 64);
+        assert_eq!(asked.max_dynamic_uniform_buffers_per_pipeline_layout, 15);
+        assert!(wgpu::Limits::default().max_dynamic_storage_buffers_per_pipeline_layout < 8, "the default refused them");
+    }
 }
 
 #[cfg(test)]

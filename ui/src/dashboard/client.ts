@@ -1,9 +1,7 @@
-import type { PreparationRequest, PreparationReply, PreparationPreferences } from '../shell/preparation/contract';
 import type { RecorderSettings as PanelRecorderSettings } from '../recorder/status';
 import type { Compression } from '../recorder/compression';
 import type { ContentFolders, MapBounds, MapOptions, ReplayMetadata } from '../shell/api';
-import type { CampaignMapSettings, MapSettingsReply, PreparedHole } from '../generated/dashboard';
-import { noteReplyGaps } from './replyGaps.ts';
+import type { CampaignMapSettings, CounterFilter, MapAudio, MapGraphics, MapSettingsReply } from '../generated/dashboard';
 
 export type { CampaignMapSettings, MapGraphics, MapSettingsReply } from '../generated/dashboard';
 
@@ -21,6 +19,9 @@ export interface ProductRequest<P = unknown> {
   revision: string;
   product: string;
   params: P;
+  /** The first track hour of the rows asked, where the params do not name it (a window or a page by its index). Never
+   * sent: the perf log tells by it a request for a block ahead of the head from one at it. */
+  asksFrom?: number;
 }
 
 /** The native reply echoes the lease identity so it can never be attributed to another recording. */
@@ -29,34 +30,6 @@ export interface ProductReply<T> {
   revision: string;
   product: string;
   data: T;
-  /** A pending or partial prepared reply's gate: the preparation status entries it waits for,
-   * `walk` for the status's `coverage` or a family prepared on its own, listed in its `families`. */
-  gate?: string[];
-  /** The requested hours a family it reads will not answer; those marked `gap` it went on past. */
-  holes?: PreparedHole[];
-}
-
-/** The status entry of the hourly walk's coverage in a prepared reply's gate. */
-export const WALK_GATE = 'walk';
-
-/** Per-call options of a prepared query. `gate` receives the reply's gate (undefined when it waits for nothing). */
-export interface PreparedQueryOptions {
-  signal: AbortSignal;
-  /** A refresh of data already shown; first views and user actions leave this false. */
-  refresh?: boolean;
-  gate?: (entries: readonly string[] | undefined) => void;
-}
-
-/** A validated prepared reply's data, after handing its gate to the caller and keeping the lost
- * spans its holes name for its product on the branch `params` asks, which no chart of it draws
- * across. */
-export function preparedReplyData<T>(reply: ProductReply<T>, options: PreparedQueryOptions, params?: unknown): T {
-  const gate: unknown = reply.gate;
-  if (gate !== undefined && !(Array.isArray(gate) && gate.every(entry => typeof entry === 'string' && entry.length > 0)))
-    throw new Error('The prepared reply gate is malformed.');
-  options.gate?.(gate);
-  if (reply.holes !== undefined) noteReplyGaps(reply.sourceId, reply.product, params, reply.holes);
-  return reply.data;
 }
 
 export function validateProductReply<T>(reply: ProductReply<T>, request: ProductRequest): ProductReply<T> {
@@ -123,6 +96,8 @@ export interface DashboardMapState {
   center?: [number, number] | null;
   /** The view's options that frame drew with. */
   options?: MapOptions | null;
+  /** The graphics, sound, counters and visual mods (ids, sorted) that frame drew and played with. */
+  applied?: { graphics: MapGraphics; audio: MapAudio; counters: CounterFilter; visualMods: string[] } | null;
 }
 
 export type MapSettingsTarget = { scope: 'global' } | { scope: 'campaign' } | { scope: 'widget'; id: string };
@@ -132,16 +107,10 @@ export interface DashboardClient {
   nativeMaps?: boolean;
   openSource(path: string, signal: AbortSignal): Promise<DashboardSource>;
   releaseSource(id: string): Promise<void>;
-  preparationPreferences?(enabled: boolean | null, signal: AbortSignal): Promise<PreparationPreferences>;
   /** Joins a recorded stretch of play to the history chosen for it: the segment id it goes on from, or null to let
    * the recording decide again. The recording then opens again under the choice. */
   chooseHistory?(path: string, segmentId: string, choice: string | null, signal: AbortSignal): Promise<void>;
-  preparationStatus?(request: PreparationRequest, signal: AbortSignal): Promise<PreparationReply>;
-  prepareSource?(request: PreparationRequest, signal: AbortSignal): Promise<PreparationReply>;
-  cancelPreparation?(request: PreparationRequest, signal: AbortSignal): Promise<PreparationReply>;
-  clearPreparation?(request: PreparationRequest, signal: AbortSignal): Promise<PreparationReply>;
   product<T>(request: ProductRequest, signal: AbortSignal): Promise<ProductReply<T>>;
-  preparedQuery?<T>(source: DashboardSource, product: string, params: unknown, options: PreparedQueryOptions): Promise<T>;
   mapSettings?(sourceId: string, revision: string, settings: CampaignMapSettings | null, signal: AbortSignal, target?: MapSettingsTarget): Promise<MapSettingsReply>;
   /** Flips a setting of the target's stored choices on the service, under the lock its saves take: the opposite of
    * its value when the flip runs, every other choice untouched. */
@@ -161,12 +130,16 @@ export interface DashboardClient {
   locateRecordings?(recordings: { path: string; campaignKey: string }[]): Promise<(string | null)[]>;
   recorderSettings?(): Promise<RecorderSettings>;
   setRecordingCompression?(compression: Compression): Promise<RecorderSettings>;
+  setAutoCompress?(enabled: boolean): Promise<RecorderSettings>;
   setMapViews(views: DashboardMapView[]): Promise<void>;
   onMapStates(callback: (states: DashboardMapState[]) => void): Promise<() => void>;
   /** The native map picker changed a view's options; later layouts must carry them. */
   onMapOptions?(callback: (event: MapOptionsEvent) => void): Promise<() => void>;
   /** The native map picker clicked a toggle whose setting the host owns. */
   onMapToggle?(callback: (event: MapToggleEvent) => void): Promise<() => void>;
+  /** Followed answers pushed by the service, one message a playhead step, as raw bytes; absent where the
+   * connection has no such channel (the browser bridge), so nothing is followed there. */
+  onFollowMessages?(receive: (bytes: ArrayBuffer) => void): Promise<() => void>;
 }
 
 export interface MapOptionsEvent { viewId: string; options: MapOptions }

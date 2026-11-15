@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { AmountRun, EquipmentStockpileReply } from '../../generated/dashboard';
+import type { AmountRun, EquipmentStockpileReply } from './types';
 import { UNRESOLVED_MARK } from '../../dashboard/equipment.ts';
 import { createWidget } from '../../dashboard/model.ts';
 import { readDatedCountry } from '../../dashboard/datedCountry.ts';

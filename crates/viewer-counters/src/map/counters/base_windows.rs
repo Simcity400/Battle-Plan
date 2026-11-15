@@ -5,19 +5,23 @@ use super::*;
 use std::collections::HashMap;
 use viewer_foundation::map::gui_resources::hit_rectangle;
 use viewer_foundation::map::gui_resources::viewport as gui_resources_viewport;
-use viewer_foundation::map::icon_windows::PoolView;
+use viewer_foundation::map::icon_windows::{Painted, PoolView};
 use viewer_foundation::map::{
     icon_windows::{Owner, Plan},
     native_gui::{
         self, SpriteSetter,
-        lifecycle::{Instance, MapIconPool},
+        lifecycle::{Instance, MapIconPool, SlotId},
     },
     native_resources::Context,
 };
 
 #[derive(Clone, Default)]
 pub(super) struct PreparedBases {
-    offers: Arc<Vec<Offer>>,
+    /// The air-base, rocket-site, gun-emplacement and radar offers by id, shared by shard: a
+    /// change to one province's icon copies its shard alone.
+    sites: [Shards<u32, Offer>; 4],
+    /// The strategic-location, headquarters and facility offers.
+    others: Arc<Vec<Offer>>,
     placed: [Vec<Placed>; FAMILIES],
     pub(super) air_grids: BTreeMap<(usize, u32), Result<Vec<air_grid::PreparedItem>, String>>,
 }
@@ -33,6 +37,18 @@ pub(super) enum Family {
     StrategicLocation,
 }
 impl Family {
+    /// Its index among the families laid out one a province: air base, rocket site, gun
+    /// emplacement and radar.
+    fn site(self) -> Option<usize> {
+        match self {
+            Self::AirBase => Some(0),
+            Self::RocketSite => Some(1),
+            Self::GunEmplacement => Some(2),
+            Self::Radar => Some(3),
+            _ => None,
+        }
+    }
+
     pub(super) fn wing_grid(self) -> Option<(usize, &'static str)> {
         match self {
             Self::AirBase => Some((0, "wings_box")),
@@ -49,8 +65,88 @@ pub(super) const FAMILIES: usize = 7;
 pub struct View {
     pools: [PoolView; FAMILIES],
     wings: [air_grid::View; 2],
+    /// What each family's update last wrote to each live owner's window: the same again is no
+    /// change ([`PoolView::present_kept`]).
+    written: [HashMap<u32, Written>; FAMILIES],
+    /// What every family's update reads beside its owner's offer.
+    reads: Option<Reads>,
+    /// What each family's windows drew, handed again while a window keeps its layout and anchor.
+    painted: [Painted<u32, Option<IconAnchor>>; FAMILIES],
+}
+
+/// One window's update as last written: its slot and its owner's offer, with no wing grid.
+#[derive(Debug)]
+struct Written {
+    slot: SlotId,
+    state: State,
+}
+
+/// The inputs a base window's update and layout read beside its owner's offer: a change
+/// writes every window again. Of the countries a window reads only the flags; a wing grid reads
+/// more, and its window is written every frame.
+struct Reads {
+    countries: Option<Arc<Countries>>,
+    art: u64,
+    scale: u32,
+    selected_air: Vec<u64>,
+    selected_air_bases: Vec<u64>,
+}
+
+impl Reads {
+    fn of(inputs: &CounterInputs<'_>, countries: Option<&Arc<Countries>>) -> Self {
+        Self {
+            countries: countries.cloned(),
+            art: inputs.art,
+            scale: inputs.ui_scale.to_bits(),
+            selected_air: inputs.selected_air.to_vec(),
+            selected_air_bases: inputs.selected_air_bases.to_vec(),
+        }
+    }
+
+    /// Whether nothing read changed; the countries of another hour with the same flags are held
+    /// in place of these.
+    fn same(&mut self, inputs: &CounterInputs<'_>, countries: Option<&Arc<Countries>>) -> bool {
+        let countries = match (&mut self.countries, countries) {
+            (Some(held), Some(now)) if Arc::ptr_eq(held, now) => true,
+            (Some(held), Some(now)) if held.same_flags(now) => {
+                *held = Arc::clone(now);
+                true
+            }
+            (None, None) => true,
+            _ => false,
+        };
+        countries
+            && self.art == inputs.art
+            && self.scale == inputs.ui_scale.to_bits()
+            && self.selected_air == inputs.selected_air
+            && self.selected_air_bases == inputs.selected_air_bases
+    }
+}
+
+impl std::fmt::Debug for Reads {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Reads").field("art", &self.art).finish_non_exhaustive()
+    }
 }
 impl View {
+    /// Presents the next frames for the pools' passes alone ([`PoolView::set_quiet`]).
+    pub fn set_quiet(&mut self, quiet: bool) {
+        for pool in &mut self.pools {
+            pool.set_quiet(quiet);
+        }
+    }
+
+    /// Whether a window or a wing grid's item changes on its own.
+    pub fn running_visibly(&self) -> bool {
+        self.wings.iter().any(air_grid::View::running) || self.pools.iter().any(PoolView::running_visibly)
+    }
+
+    /// Why each family's pool laid its windows out at its last frame rather than keeping them.
+    #[cfg(test)]
+    pub(super) fn unkept(&self) -> [Option<&'static str>; FAMILIES] {
+        std::array::from_fn(|at| self.pools[at].unkept())
+    }
+
     pub fn retries(&self) -> Vec<viewer_foundation::map::icon_windows::Retry> {
         self.pools.iter().filter_map(PoolView::retry).collect()
     }
@@ -80,7 +176,7 @@ struct Placed {
     anchor: Option<IconAnchor>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub(super) struct State {
     pub frame: i32,
     pub enabled: bool,
@@ -88,8 +184,8 @@ pub(super) struct State {
     pub air: Option<bases::AirBaseCount>,
 }
 
-#[derive(Clone)]
-struct Offer {
+#[derive(Clone, PartialEq)]
+pub(super) struct Offer {
     family: Family,
     id: u32,
     province: u32,
@@ -115,7 +211,31 @@ impl PreparedBases {
             state,
         };
         Self::project(&mut self.placed, inputs, &offer);
-        Arc::make_mut(&mut self.offers).push(offer);
+        match family.site() {
+            Some(at) => {
+                self.sites[at].insert(id, offer);
+            }
+            None => Arc::make_mut(&mut self.others).push(offer),
+        }
+    }
+
+    /// The site icon `id` of a site family removed.
+    pub(super) fn remove_site(&mut self, family: Family, id: u32) {
+        if let Some(at) = family.site() {
+            self.sites[at].remove(&id);
+        }
+    }
+
+    /// `laid`'s strategic-location, headquarters and facility offers, which it alone holds.
+    pub(super) fn take_others(&mut self, laid: Self) {
+        self.others = laid.others;
+        for (placed, laid) in self.placed.iter_mut().zip(laid.placed) {
+            placed.extend(laid);
+        }
+    }
+
+    pub(super) fn offers(&self) -> impl Iterator<Item = &Offer> + '_ {
+        self.sites.iter().flat_map(|sites| sites.values()).chain(self.others.iter())
     }
 
     fn project(placed: &mut [Vec<Placed>; FAMILIES], inputs: &CounterInputs<'_>, offer: &Offer) {
@@ -147,26 +267,48 @@ impl PreparedBases {
     /// Semantic offers survive a camera change; all projection and paint inputs are current.
     pub(super) fn for_camera(&self, inputs: &CounterInputs<'_>) -> Self {
         let mut result = Self {
-            offers: Arc::clone(&self.offers),
+            sites: self.sites.clone(),
+            others: Arc::clone(&self.others),
             air_grids: self.air_grids.clone(),
             placed: Default::default(),
         };
-        for offer in self.offers.iter() {
+        for offer in self.offers() {
             Self::project(&mut result.placed, inputs, offer);
         }
         result
     }
 
+    /// Presents every family's windows. A window that stood still and whose owner's offer is what
+    /// it last took shows what it laid out before ([`PoolView::present_kept`]); an air base or
+    /// rocket site offering a wing grid is laid out every frame. Their draws, hits and counts are
+    /// made from the windows shown, every frame.
     pub(super) fn draw(
         &self,
         inputs: &CounterInputs<'_>,
         views: &mut View,
         time: f32,
-        countries: Option<&Countries>,
+        held_countries: Option<&Arc<Countries>>,
         batch: &mut Batch,
         report: &mut CounterReport,
     ) {
-        let ticks: [_; 2] = std::array::from_fn(|at| views.wings[at].tick(time));
+        let View {
+            pools,
+            wings,
+            written,
+            reads,
+            painted,
+        } = views;
+        if !reads
+            .as_mut()
+            .is_some_and(|reads| reads.same(inputs, held_countries))
+        {
+            for written in written.iter_mut() {
+                written.clear();
+            }
+            *reads = Some(Reads::of(inputs, held_countries));
+        }
+        let countries = held_countries.map(|countries| &**countries);
+        let ticks: [_; 2] = std::array::from_fn(|at| wings[at].tick(time));
         let flags = gui_windows::window_flags(inputs, countries);
         let resources = gui_windows::gui_assets(inputs, flags.as_ref());
         let context = Context {
@@ -220,8 +362,11 @@ impl PreparedBases {
                 inputs.priority(PriorityIcon::StrategicLocation),
             ),
         ];
+        let quiet = pools.iter().any(PoolView::quiet);
         let mut layouts = Vec::new();
-        for &(family, name, kind, priority) in &families {
+        for (index, ((view, written), &(family, name, kind, priority))) in
+            pools.iter_mut().zip(written.iter_mut()).zip(&families).enumerate()
+        {
             // A strategic location's sprite is set only where the content
             // defines it; otherwise the button keeps its authored sprite.
             let named = family != Family::StrategicLocation;
@@ -249,17 +394,24 @@ impl PreparedBases {
                     dirty: schedule.dirty(icon.province),
                 })
                 .collect();
+            view.set_cleaning(self.placed[family as usize].iter().any(|icon| schedule.cleans(icon.province)));
             // A strategic location's icon fixes its location when its window is
             // acquired and keeps it while that window lives, as the game's icon
             // keeps the list it gathered when it was made.
-            let view = &mut views.pools[family as usize];
+            debug_assert_eq!(index, family as usize);
             if let Some((at, _)) = family.wing_grid()
                 && !view.same(&context)
             {
-                views.wings[at].clear();
+                wings[at].clear();
             }
+            let gridded = |owner: u32| {
+                family
+                    .wing_grid()
+                    .is_some_and(|(at, _)| self.air_grids.contains_key(&(at, owner)))
+            };
             let mut acquired = std::mem::take(&mut view.acquired_sprites);
-            let drawn = view.present(
+            let held = std::cell::RefCell::new(std::mem::take(written));
+            let kept = view.present_kept(
                 &context,
                 &Plan {
                     name,
@@ -270,71 +422,116 @@ impl PreparedBases {
                 Box::new(move |_, root| bind(root, family).map(|_| ())),
                 |owner, slot, instance, root| {
                     let state = &placed[&owner].state;
-                    if family != Family::StrategicLocation {
-                        update(instance, root, family, state)?;
-                        if family == Family::AirBase {
-                            air_text(instance, root, state, &resources)?;
+                    let wrote = (|| {
+                        if family != Family::StrategicLocation {
+                            update(instance, root, family, state)?;
+                            if family == Family::AirBase {
+                                air_text(instance, root, state, &resources)?;
+                            }
+                            if let Some((at, grid)) = family.wing_grid() {
+                                wings[at].update(
+                                    owner,
+                                    slot,
+                                    instance,
+                                    root,
+                                    grid,
+                                    self.air_grids.get(&(at, owner)),
+                                    inputs,
+                                    countries,
+                                    &resources,
+                                )?;
+                            }
+                            return Ok(());
                         }
-                        if let Some((at, grid)) = family.wing_grid() {
-                            views.wings[at].update(
-                                owner,
+                        let sprite = acquired_sprite(&mut acquired, owner, slot, &state.sprite);
+                        let state = State {
+                            air: None,
+                            frame: state.frame,
+                            enabled: state.enabled,
+                            sprite,
+                        };
+                        update(instance, root, family, &state)
+                    })();
+                    let mut held = held.borrow_mut();
+                    if wrote.is_ok() && !gridded(owner) {
+                        held.insert(
+                            owner,
+                            Written {
                                 slot,
-                                instance,
-                                root,
-                                grid,
-                                self.air_grids.get(&(at, owner)),
-                                inputs,
-                                countries,
-                                &resources,
-                            )?;
-                        }
-                        return Ok(());
+                                state: state.clone(),
+                            },
+                        );
+                    } else {
+                        held.remove(&owner);
                     }
-                    let sprite = acquired_sprite(&mut acquired, owner, slot, &state.sprite);
-                    let state = State {
-                        air: None,
-                        frame: state.frame,
-                        enabled: state.enabled,
-                        sprite,
-                    };
-                    update(instance, root, family, &state)
+                    wrote
+                },
+                |owner, slot| {
+                    held.borrow().get(owner).is_some_and(|written| {
+                        written.slot == slot && written.state == placed[owner].state
+                    })
                 },
                 &mut report.icon_gui_notes,
             );
-            forget_released(&mut acquired, &view.live());
+            #[cfg(test)]
+            super::preparation::plan_probe::record(|counts| {
+                counts.pools_presented += 1;
+                counts.pools_kept += u64::from(kept);
+            });
+            #[cfg(not(test))]
+            let _ = kept;
+            *written = held.into_inner();
+            let live = view.live();
+            forget_released(&mut acquired, &live);
             view.acquired_sprites = acquired;
             if let Some((at, _)) = family.wing_grid() {
-                views.wings[at].retain(&view.live());
+                wings[at].retain(&live);
             }
-            layouts.extend(
-                drawn
-                    .into_iter()
-                    .map(|drawn| (family, name, priority, placed[&drawn.owner], drawn)),
-            );
+            if written.len() > live.len() {
+                let live: std::collections::HashSet<u32> =
+                    live.iter().map(|(owner, _)| *owner).collect();
+                written.retain(|owner, _| live.contains(owner));
+            }
+            let view: &PoolView = view;
+            layouts.extend(view.drawn_generations().map(|(drawn, generation)| {
+                (family, name, priority, placed[&drawn.owner], (drawn, generation))
+            }));
+        }
+        // A quiet frame ran the passes; what the windows drew before stands.
+        if quiet {
+            return;
         }
         // Sort map icons by projected depth.
         layouts.sort_by(|a, b| b.3.depth.total_cmp(&a.3.depth));
-        for (family, name, priority, placed, drawn) in layouts {
+        for (family, name, priority, placed, (drawn, generation)) in layouts {
             let key = layer(priority, report.base_ordinal(), 0);
             batch.at_layer(key);
             batch.at_anchor(placed.anchor);
             let composed = if let Some((at, grid)) = family.wing_grid() {
-                views.wings[at].compose(
-                    placed.id, &drawn, name, grid, inputs, &resources, ticks[at], key, report,
+                wings[at].compose(
+                    placed.id, drawn, name, grid, inputs, &resources, ticks[at], key, report,
                 )
             } else {
                 Ok(air_grid::Composed::empty(drawn.layout.holders.len()))
             };
             let result = composed.and_then(|composed| {
-                native_gui::draw_composed(
-                    &drawn.layout,
-                    &composed.parts,
-                    drawn.origin,
-                    &resources,
-                    batch,
-                )
-                .map(|()| composed)
-                .map_err(|why| why.to_string())
+                let draw = |batch: &mut Batch| {
+                    native_gui::draw_composed(
+                        &drawn.layout,
+                        &composed.parts,
+                        drawn.origin,
+                        &resources,
+                        batch,
+                    )
+                    .map_err(|why| why.to_string())
+                };
+                // A wing grid's items draw on their own clocks: its window is drawn every frame.
+                let drawn = if composed.parts.iter().all(Vec::is_empty) {
+                    painted[family as usize].paint(placed.id, generation, key, placed.anchor, batch, draw)
+                } else {
+                    draw(batch)
+                };
+                drawn.map(|()| composed)
             });
             match result {
                 Ok(composed) => {
@@ -398,6 +595,9 @@ impl PreparedBases {
             }
         }
         batch.at_anchor(None);
+        for painted in painted {
+            painted.finish();
+        }
     }
 }
 
@@ -1455,7 +1655,7 @@ mod tests {
                 inputs.camera.height = 9.5;
                 let mut retained = PreparedBases::default();
                 offer(&mut retained, &inputs);
-                assert_eq!(retained.offers.len(), families.len() * 2);
+                assert_eq!(retained.offers().count(), families.len() * 2);
                 assert!(retained.placed.iter().all(|placed| placed.len() == 1));
                 for (step, yaw) in [std::f32::consts::PI, 0., std::f32::consts::PI, 0.]
                     .into_iter()
@@ -1480,7 +1680,8 @@ mod tests {
                             );
                         }
                     }
-                    assert!(Arc::ptr_eq(&cached.offers, &retained.offers));
+                    assert!(cached.sites.iter().zip(&retained.sites).all(|(a, b)| a.shared_with(b) == (b.shard_count(), b.shard_count())));
+                    assert!(Arc::ptr_eq(&cached.others, &retained.others));
                 }
             },
         );

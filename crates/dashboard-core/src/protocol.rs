@@ -1,14 +1,12 @@
-//! Small control messages between the desktop host and its native viewer.
+//! Small control messages between the desktop host and the map it hosts in its own process.
 //!
-//! Map pixels and replay tables never travel through this pipe; data replies
-//! use the fragmented channel in [`crate::transport`]. Handles and branch
-//! identifiers use decimal strings so every bit survives JavaScript.
+//! Map pixels and replay tables never travel as these; data replies use the fragmented channel
+//! in [`crate::transport`]. Handles and branch identifiers use decimal strings so every bit
+//! survives JavaScript.
 
-use crate::transport::{DataCommand, DataEvent};
 use serde::{Deserialize, Serialize};
 use std::{io, path::Path, time::UNIX_EPOCH};
 
-pub const EVENT_PREFIX: &str = "BATTLE_PLAN_DESKTOP ";
 /// Requests share the reply transport's byte budget, including their envelope.
 pub const MAX_MESSAGE_BYTES: usize = crate::transport::MAX_REPLY_BYTES;
 
@@ -45,13 +43,9 @@ pub enum NativeCommand {
     MapViews {
         views: Vec<DashboardMapView>,
     },
-    Data {
-        request: DataCommand,
-    },
     /// The controller the user last touched, for the map whose window is in front. The host reads
-    /// controllers because only the process that owns the foreground window receives their input;
-    /// mouse and keyboard reach the map's own window directly. The host alone decides which
-    /// viewer holds the controller ([`GamepadMessage`]).
+    /// controllers for every map; mouse and keyboard reach the map's own window directly. The host
+    /// alone decides which map holds the controller ([`GamepadMessage`]).
     Gamepad {
         message: GamepadMessage,
     },
@@ -82,9 +76,6 @@ pub enum NativeEvent {
     },
     MapStates {
         states: Vec<DashboardMapState>,
-    },
-    Data {
-        response: DataEvent,
     },
     /// The user pressed the diagnostics shortcut in the native map. The host
     /// owns the saved choice, so it toggles it and sends the result back as
@@ -730,6 +721,20 @@ pub struct DashboardMapState {
     pub center: Option<[f32; 2]>,
     /// The view's options that frame drew with.
     pub options: Option<MapOptions>,
+    /// The graphics, sound, counters and visual mods that frame drew and played with.
+    pub applied: Option<AppliedMapSettings>,
+}
+
+/// The settings a map frame drew with, as its viewer holds them, so the page can see a saved
+/// setting reach the map: anti-aliasing and texture quality are the scene's own.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AppliedMapSettings {
+    pub graphics: MapGraphics,
+    pub audio: MapAudio,
+    pub counters: CounterFilter,
+    /// The ids of the visual mods its artwork mounts, sorted; empty for none.
+    pub visual_mods: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
@@ -741,7 +746,7 @@ pub struct ViewerState {
     pub revision: Option<String>,
 }
 
-/// A cheap file-change marker shared by both processes. This is length and
+/// A cheap file-change marker shared by the host and its maps. This is length and
 /// modification time, not a cryptographic content identity or asset witness.
 pub fn replay_revision(path: impl AsRef<Path>) -> io::Result<String> {
     let metadata = path.as_ref().metadata()?;
@@ -954,6 +959,42 @@ b"
         let json = serde_json::to_value(&state).unwrap();
         assert_eq!(json["mapMode"], "terrain");
         assert_eq!(json["drawnAt"], 1.5);
+    }
+
+    #[test]
+    fn a_map_state_carries_the_settings_its_frame_drew_with_across_the_pipe() {
+        let applied = super::AppliedMapSettings {
+            graphics: super::MapGraphics {
+                shadows: false,
+                samples: 2,
+                ..Default::default()
+            },
+            audio: super::MapAudio {
+                music: 15.0,
+                ..Default::default()
+            },
+            counters: super::CounterFilter::Countries {
+                tags: vec!["Opaque mod | country".into()],
+            },
+            visual_mods: vec!["workshop/1".into()],
+        };
+        let state = super::DashboardMapState {
+            id: "m".into(),
+            applied: Some(applied.clone()),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&state).unwrap();
+        assert_eq!(json["applied"]["graphics"]["shadows"], false);
+        assert_eq!(json["applied"]["graphics"]["samples"], 2);
+        assert_eq!(json["applied"]["audio"]["music"], 15.0);
+        assert_eq!(json["applied"]["counters"]["kind"], "countries");
+        assert_eq!(json["applied"]["visualMods"][0], "workshop/1");
+        let back: super::DashboardMapState = serde_json::from_value(json).unwrap();
+        assert_eq!(back.applied, Some(applied));
+        let unsent: super::DashboardMapState =
+            serde_json::from_str(r#"{"id":"m","sourceId":null,"revision":null,"branchId":null,"hour":null,"fraction":null,"sequence":0,"requestedSequence":0,"loading":true,"error":null}"#)
+                .unwrap();
+        assert_eq!(unsent.applied, None);
     }
 
     #[test]

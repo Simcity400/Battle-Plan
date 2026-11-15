@@ -373,9 +373,14 @@ pub fn reserve_fleet(
     fleet: &FleetCounterInputRow,
     mission_of: impl Fn(u64) -> Option<u32>,
 ) -> Option<bool> {
-    match fleet.task_forces.first() {
+    reserve_of(fleet.task_forces.first().copied(), mission_of)
+}
+
+/// [`reserve_fleet`] from values: the fleet's first task force, if its roster holds one.
+pub fn reserve_of(first: Option<u64>, mission_of: impl Fn(u64) -> Option<u32>) -> Option<bool> {
+    match first {
         None => Some(false),
-        Some(first) => mission_of(*first).map(|mission| mission == RESERVE_FLEET),
+        Some(first) => mission_of(first).map(|mission| mission == RESERVE_FLEET),
     }
 }
 
@@ -389,20 +394,24 @@ pub fn color(red: u32, green: u32, blue: u32, alpha: u32) -> [f32; 4] {
 /// owned by an army group, with no child sections, and that group has a parent.
 /// Order ownership is not compared with the parent. Membership uses ordered
 /// roots and assigned members; missing referenced groups or orders stay unknown.
-pub fn parent_branch(division: u64, orders_group: u64, orders: &OrdersIndex) -> Option<bool> {
+pub fn parent_branch(
+    division: u64,
+    orders_group: u64,
+    orders: &(impl OrderFacts + ?Sized),
+) -> Option<bool> {
     if orders_group == 0 {
         return Some(false);
     }
-    if orders.groups.get(&orders_group)?.parent == 0 {
+    if orders.group(orders_group)?.parent == 0 {
         return Some(false);
     }
-    let Some((group, instance)) = orders.resolved_order(division, orders_group)? else {
+    let Some((group, instance)) = resolved_order(orders, division, orders_group)? else {
         return Some(false);
     };
-    if !orders.groups.get(&group)?.army_group {
+    if !orders.group(group)?.army_group {
         return Some(false);
     }
-    Some(!*orders.has_child.get(&(group, instance))?)
+    Some(!orders.has_child((group, instance))?)
 }
 
 /// The `defending_area` term for one member: the unit's orders group exists and
@@ -413,30 +422,73 @@ pub fn parent_branch(division: u64, orders_group: u64, orders: &OrdersIndex) -> 
 /// Missing order memberships remain unknown. A reached area-defence order can
 /// prove the positive branch in a truncated census; excluding all such orders
 /// requires a complete `ArmyOrders` census.
-pub fn area_defence(division: u64, orders_group: u64, orders: &OrdersIndex) -> Option<bool> {
+pub fn area_defence(
+    division: u64,
+    orders_group: u64,
+    orders: &(impl OrderFacts + ?Sized),
+) -> Option<bool> {
     if orders_group == 0 {
         return Some(false);
     }
     // This branch is true regardless of which order resolves, so incomplete
     // membership cannot hide a reached own-group area-defence target.
-    if orders.area_groups.contains(&orders_group) {
+    if orders.area_group(orders_group) {
         return Some(true);
     }
-    let resolved = orders.resolved_order(division, orders_group)?;
+    let resolved = resolved_order(orders, division, orders_group)?;
     if let Some(key) = resolved
-        && orders.order_types.get(&key).copied() == Some(AREA_DEFENCE_ORDER)
+        && orders.order_type(key) == Some(AREA_DEFENCE_ORDER)
     {
         return Some(true);
     }
     if let Some(key) = resolved {
-        orders.order_types.get(&key)?;
-        return orders.orders_complete.then_some(false);
+        orders.order_type(key)?;
+        return orders.orders_complete().then_some(false);
     }
-    let parent = orders.groups.get(&orders_group)?.parent;
-    if parent != 0 && orders.area_groups.contains(&parent) {
+    let parent = orders.group(orders_group)?.parent;
+    if parent != 0 && orders.area_group(parent) {
         return Some(true);
     }
-    orders.orders_complete.then_some(false)
+    orders.orders_complete().then_some(false)
+}
+
+/// What [`parent_branch`] and [`area_defence`] read of the hour's orders: [`OrdersIndex`] for a
+/// frame of rows, or a reader's own index kept from changes.
+pub trait OrderFacts {
+    fn group(&self, group: u64) -> Option<GroupFacts>;
+    fn has_child(&self, order: (u64, u32)) -> Option<bool>;
+    fn order_type(&self, order: (u64, u32)) -> Option<i32>;
+    /// Whether some order of `group` carries area-defence target states.
+    fn area_group(&self, group: u64) -> bool;
+    /// Whether `ArmyOrders` is complete.
+    fn orders_complete(&self) -> bool;
+    /// `group`'s primary (`set` 0) or fallback (1) memberships; `None` without its plan row.
+    fn memberships(&self, group: u64, set: usize) -> Option<&AssignedOrders>;
+}
+
+/// Rebuild membership from the group then its immediate parent. Primary matches
+/// outrank fallback matches, so a parent primary outranks an own fallback.
+/// Never recurse through ancestors.
+fn resolved_order(
+    orders: &(impl OrderFacts + ?Sized),
+    division: u64,
+    group: u64,
+) -> Option<Option<(u64, u32)>> {
+    if group == 0 {
+        return Some(None);
+    }
+    for set in 0..2 {
+        if let Some(instance) = orders.memberships(group, set)?.for_division(division)? {
+            return Some(Some((group, instance)));
+        }
+        let parent = orders.group(group)?.parent;
+        if parent != 0
+            && let Some(instance) = orders.memberships(parent, set)?.for_division(division)?
+        {
+            return Some(Some((parent, instance)));
+        }
+    }
+    Some(None)
 }
 
 /// The recorded order type for an area-defence order.
@@ -452,32 +504,45 @@ pub struct GroupFacts {
 /// First assigned root per division, stopping at the first unavailable root.
 /// A reached plan row carries its entire assigned-member vector, even when
 /// other rows in the table were truncated. Later roots cannot change a match.
-#[derive(Clone, Debug, Default)]
-struct AssignedOrders {
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AssignedOrders {
     first: BTreeMap<u64, u32>,
     complete: bool,
 }
 
 impl AssignedOrders {
     fn read(group: u64, roots: &[u32], plans: &BTreeMap<(u64, u32), &ArmyOrderPlanRow>) -> Self {
+        Self::of(roots.iter().map(|&instance| {
+            let plan = plans.get(&(group, instance));
+            (instance, plan.map(|plan| plan.assigned_divisions.iter().copied()))
+        }))
+    }
+
+    /// From each root in order, with its plan's assigned divisions or `None` without its plan row.
+    pub fn of<D: IntoIterator<Item = u64>>(roots: impl IntoIterator<Item = (u32, Option<D>)>) -> Self {
         let mut out = Self {
             complete: true,
             ..Self::default()
         };
-        for &instance in roots {
-            let Some(plan) = plans.get(&(group, instance)) else {
+        for (instance, plan) in roots {
+            let Some(divisions) = plan else {
                 out.complete = false;
                 break;
             };
-            for &division in &plan.assigned_divisions {
+            for division in divisions {
                 out.first.entry(division).or_insert(instance);
             }
         }
         out
     }
 
+    /// The bytes its index holds.
+    pub fn bytes(&self) -> usize {
+        self.first.len() * 24
+    }
+
     /// Outer `None` is unknown; inner `None` is a proved absence.
-    fn for_division(&self, division: u64) -> Option<Option<u32>> {
+    pub fn for_division(&self, division: u64) -> Option<Option<u32>> {
         self.first
             .get(&division)
             .copied()
@@ -586,28 +651,6 @@ impl OrdersIndex {
         }
     }
 
-    /// Rebuild membership from the group then its immediate parent. Primary matches
-    /// outrank fallback matches, so a parent primary outranks an own fallback.
-    /// Never recurse through ancestors.
-    fn resolved_order(&self, division: u64, group: u64) -> Option<Option<(u64, u32)>> {
-        if group == 0 {
-            return Some(None);
-        }
-        for set in 0..2 {
-            if let Some(instance) = self.memberships.get(&group)?[set].for_division(division)? {
-                return Some(Some((group, instance)));
-            }
-            let parent = self.groups.get(&group)?.parent;
-            if parent != 0
-                && let Some(instance) =
-                    self.memberships.get(&parent)?[set].for_division(division)?
-            {
-                return Some(Some((parent, instance)));
-            }
-        }
-        Some(None)
-    }
-
     /// Own counter group-marker colour: the representative group's recorded colour,
     /// or its parent's when [`parent_branch`] holds. No palette lookup is involved.
     pub fn marker(&self, orders_group: u64, branch: Option<bool>) -> Option<[f32; 4]> {
@@ -620,6 +663,32 @@ impl OrdersIndex {
             orders_group
         };
         self.colors.get(&group).copied()
+    }
+}
+
+impl OrderFacts for OrdersIndex {
+    fn group(&self, group: u64) -> Option<GroupFacts> {
+        self.groups.get(&group).copied()
+    }
+
+    fn has_child(&self, order: (u64, u32)) -> Option<bool> {
+        self.has_child.get(&order).copied()
+    }
+
+    fn order_type(&self, order: (u64, u32)) -> Option<i32> {
+        self.order_types.get(&order).copied()
+    }
+
+    fn area_group(&self, group: u64) -> bool {
+        self.area_groups.contains(&group)
+    }
+
+    fn orders_complete(&self) -> bool {
+        self.orders_complete
+    }
+
+    fn memberships(&self, group: u64, set: usize) -> Option<&AssignedOrders> {
+        self.memberships.get(&group).map(|sets| &sets[set])
     }
 }
 

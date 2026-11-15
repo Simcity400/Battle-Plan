@@ -13,6 +13,7 @@ import '../widgets/definitions.ts';
 registerWidgets([
   { kind: 'current', version: 1, title: 'Test moment data', icon: 'grid', timeModes: ['follow', 'pin'], defaultTime: 'follow', scope: 'moment', data: true, history: false, minSize: { w: 2, h: 3 }, defaultSize: { w: 4, h: 6 } },
   { kind: 'history', version: 1, title: 'Test history data', icon: 'grid', timeModes: ['follow', 'pin', 'range', 'campaign'], defaultTime: 'campaign', scope: 'history', data: true, history: true, minSize: { w: 2, h: 3 }, defaultSize: { w: 4, h: 6 } },
+  { kind: 'world', version: 1, title: 'Test whole-world data', icon: 'grid', timeModes: ['follow', 'pin'], defaultTime: 'follow', scope: 'moment', data: true, history: false, countries: { max: 8, all: true }, minSize: { w: 2, h: 3 }, defaultSize: { w: 4, h: 6 } },
 ]);
 
 test('two settings changed from the same drawn widget both stay', () => {
@@ -138,10 +139,10 @@ test('unlinked maps hold the branch end and linked maps follow the shared axis',
   const track = { ...tracks[0], axisOffset: 1000 };
   const linked = createWidget('map', 'main');
   assert.equal(linked.time.mode, 'follow');
-  assert.equal(createWidget('territory', 'main').time.mode, 'follow');
+  assert.equal(createWidget('current', 'main').time.mode, 'follow');
   // A widget about the whole world (`countries.all`) starts on all countries; others on the dashboard's country.
-  assert.deepEqual(createWidget('trade-flows', 'main').countries, { kind: 'all' });
-  assert.deepEqual(createWidget('resource-balance', 'main').countries, { kind: 'selected' });
+  assert.deepEqual(createWidget('world', 'main').countries, { kind: 'all' });
+  assert.deepEqual(createWidget('current', 'main').countries, { kind: 'selected' });
   const map = { ...linked, time: { mode: 'campaign' as const } };
   assert.equal(widgetUnavailable(map), null);
   assert.deepEqual(resolveWindow(map, track, [track], 0), { firstHour: 2000, lastHour: 2000 });

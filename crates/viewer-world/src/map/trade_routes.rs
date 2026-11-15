@@ -53,7 +53,7 @@ pub use convoys::{
     CONVOY_ENTITY_SUFFIX, ConvoyDefines, ConvoyFleet, ConvoyLine, ConvoyPose,
     FALLBACK_CONVOY_ENTITY, convoy_count, convoy_entity, convoy_instances, convoys_shown,
 };
-pub use geometry::{RouteContent, Shaped, Stops, border_province, overlap_offset, stops};
+pub use geometry::{RouteContent, Shaped, Stops, border_province, directed_stops, emit, overlap_offset, stops};
 
 use std::{collections::BTreeMap, io};
 
@@ -96,6 +96,99 @@ pub const FULL_EFFICIENCY: i64 = 100_000;
 
 /// A `TradeRoutes` key: (country, class, other).
 pub type RouteKey = (u32, u8, u32);
+
+macro_rules! fields {
+    ($(#[$doc:meta])* $trait:ident for $row:ty { $($name:ident: $type:ty),+ $(,)? }) => {
+        $(#[$doc])*
+        pub trait $trait {
+            $(fn $name(&self) -> $type;)+
+        }
+
+        impl $trait for $row {
+            $(fn $name(&self) -> $type {
+                self.$name
+            })+
+        }
+    };
+}
+
+fields! {
+    /// What the lines read of a `ResourceOrigins` row.
+    OriginFields for ResourceOriginRow { country: u32, state: u32, list: u8, ordinal: u32, bad: bool, convoys_assigned: i32 }
+}
+
+fields! {
+    /// What the lines read of a `ConvoyClients` row.
+    ClientFields for ConvoyClientRow {
+        handle: u32, category: u8, owner: u32, other: u32, route_class: u8, route_country: u32, route_other: u32,
+        bad: bool, convoys_assigned: i32, owner_ordinal: Option<u32>, other_ordinal: Option<u32>,
+    }
+}
+
+fields! {
+    /// What the efficiencies read of a `RegionalConvoyEfficiency` row.
+    RegionalFields for RegionalConvoyEfficiencyRow { country: u32, region: u32, efficiency: i64 }
+}
+
+/// What the lines and their geometry read of a `TradeRoutes` row.
+pub trait RouteFields {
+    fn country(&self) -> u32;
+    fn class(&self) -> u8;
+    fn other(&self) -> u32;
+    fn kind(&self) -> u8;
+    fn from(&self) -> u32;
+    fn to(&self) -> u32;
+    fn path(&self) -> &[u32];
+    fn source_state(&self) -> Option<u32>;
+    fn destination_state(&self) -> Option<u32>;
+}
+
+impl RouteFields for TradeRouteRow {
+    fn country(&self) -> u32 {
+        self.country
+    }
+    fn class(&self) -> u8 {
+        self.class
+    }
+    fn other(&self) -> u32 {
+        self.other
+    }
+    fn kind(&self) -> u8 {
+        self.kind
+    }
+    fn from(&self) -> u32 {
+        self.from
+    }
+    fn to(&self) -> u32 {
+        self.to
+    }
+    fn path(&self) -> &[u32] {
+        &self.path
+    }
+    fn source_state(&self) -> Option<u32> {
+        self.source_state
+    }
+    fn destination_state(&self) -> Option<u32> {
+        self.destination_state
+    }
+}
+
+/// A `ResourceExchanges` row's place in its importer's and exporter's lists.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExchangeOrder {
+    pub resource: u32,
+    pub import_ordinal: u32,
+    pub export_ordinal: u32,
+}
+
+/// Why a reference `CountryLinks` holds no row for is unresolved.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LinksGap {
+    Complete,
+    Truncated { missing: u32 },
+    Unavailable { reason: String },
+    NotRecorded { mode: String },
+}
 
 /// A line's layer, in draw order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -280,9 +373,10 @@ impl TradeRouteDefines {
 /// Recorded country references as the viewed country's equality decides them: two references
 /// are the same country when they link to the same canonical slot.
 pub struct Countries<'a> {
-    links: Available<'a, tables::CountryLinks>,
-    slots: BTreeMap<u32, u32>,
+    slots: std::borrow::Cow<'a, BTreeMap<u32, u32>>,
+    gap: LinksGap,
     ours: u32,
+    rows: std::marker::PhantomData<&'a ()>,
 }
 
 impl<'a> Countries<'a> {
@@ -293,18 +387,46 @@ impl<'a> Countries<'a> {
             .iter()
             .map(|link: &CountryLinkRow| (link.id, link.canonical_slot))
             .collect();
-        Self { links, slots, ours }
+        let gap = match links {
+            Available::Complete(_) => LinksGap::Complete,
+            Available::Truncated { missing, .. } => LinksGap::Truncated { missing },
+            Available::Unavailable { reason } => LinksGap::Unavailable { reason: reason.to_owned() },
+            Available::NotRecorded { mode } => LinksGap::NotRecorded { mode: mode.to_string() },
+        };
+        Self::of(slots, gap, ours)
     }
 
-    /// The canonical slot of a reference; `None` for 0, no country.
+    /// Each reference's canonical slot, and why one it lacks is unresolved.
+    pub fn of(slots: BTreeMap<u32, u32>, gap: LinksGap, ours: u32) -> Self {
+        Self { slots: std::borrow::Cow::Owned(slots), gap, ours, rows: std::marker::PhantomData }
+    }
+
+    /// [`Self::of`] over slots held elsewhere.
+    pub fn over(slots: &'a BTreeMap<u32, u32>, gap: LinksGap, ours: u32) -> Self {
+        Self { slots: std::borrow::Cow::Borrowed(slots), gap, ours, rows: std::marker::PhantomData }
+    }
+
+    /// The canonical slot of a reference; `None` for 0, no country. The words are
+    /// [`table_access::country_slot`]'s.
     pub fn slot(&self, country: u32) -> Result<Option<u32>, String> {
         if country == 0 {
             return Ok(None);
         }
-        match self.slots.get(&country) {
-            Some(&slot) => Ok(Some(slot)),
-            None => table_access::country_slot(&self.links, country),
+        if let Some(&slot) = self.slots.get(&country) {
+            return Ok(Some(slot));
         }
+        Err(match &self.gap {
+            LinksGap::Complete => format!("country {country} has no CountryLinks row"),
+            LinksGap::Truncated { missing } => format!(
+                "the CountryLinks table is truncated this hour ({missing} rows not reached) and holds no row for country {country}"
+            ),
+            LinksGap::Unavailable { reason } => format!(
+                "the CountryLinks table is unavailable this hour ({reason}), so country {country} is unresolved"
+            ),
+            LinksGap::NotRecorded { mode } => format!(
+                "the CountryLinks table is not recorded in a {mode} recording, so country {country} is unresolved"
+            ),
+        })
     }
 
     pub fn viewed(&self, country: u32) -> Result<bool, String> {
@@ -317,20 +439,27 @@ impl<'a> Countries<'a> {
     }
 }
 
-/// The recorded tables the lines read.
-#[derive(Clone, Copy)]
-pub struct Tables<'a> {
-    pub origins: &'a [ResourceOriginRow],
-    pub clients: &'a [ConvoyClientRow],
-    pub routes: &'a [TradeRouteRow],
-    pub regional: &'a [RegionalConvoyEfficiencyRow],
+/// The recorded tables the lines read: today's rows, or a layer's values.
+pub struct Tables<'a, O = ResourceOriginRow, C = ConvoyClientRow, R = TradeRouteRow, G = RegionalConvoyEfficiencyRow> {
+    pub origins: &'a [O],
+    pub clients: &'a [C],
+    pub routes: &'a [R],
+    pub regional: &'a [G],
 }
+
+impl<O, C, R, G> Clone for Tables<'_, O, C, R, G> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<O, C, R, G> Copy for Tables<'_, O, C, R, G> {}
 
 /// One line of the viewed country.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Line<'a> {
+pub struct Line<'a, R = TradeRouteRow> {
     pub layer: Layer,
-    pub route: &'a TradeRouteRow,
+    pub route: &'a R,
     pub bad: bool,
     /// Whether the line runs from the route's destination to its source.
     pub reverse: bool,
@@ -379,16 +508,16 @@ impl TradeRouteReport {
     }
 }
 
-fn route_of(client: &ConvoyClientRow) -> RouteKey {
-    (client.route_country, client.route_class, client.route_other)
+fn route_of(client: &impl ClientFields) -> RouteKey {
+    (client.route_country(), client.route_class(), client.route_other())
 }
 
 /// The layers a client draws in for the viewed country.
 fn client_layers(
-    client: &ConvoyClientRow,
+    client: &impl ClientFields,
     countries: &Countries<'_>,
 ) -> Result<Vec<Layer>, String> {
-    let (owner_side, other_side) = match client.category {
+    let (owner_side, other_side) = match client.category() {
         SUPPLY_TRANSFER => (Layer::SupplyTransfer, None),
         IMPORT => (Layer::Import, Some(Layer::Export)),
         LEND_LEASE => (Layer::LendLeaseGiven, Some(Layer::LendLeaseReceived)),
@@ -396,11 +525,11 @@ fn client_layers(
         other => return Err(format!("convoy client category {other} has no layer")),
     };
     let mut layers = Vec::new();
-    if countries.viewed(client.owner)? {
+    if countries.viewed(client.owner())? {
         layers.push(owner_side);
     }
     if let Some(layer) = other_side
-        && countries.viewed(client.other)?
+        && countries.viewed(client.other())?
     {
         layers.push(layer);
     }
@@ -408,9 +537,9 @@ fn client_layers(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn push_line<'a>(
-    routes: &BTreeMap<RouteKey, &'a TradeRouteRow>,
-    out: &mut Vec<Line<'a>>,
+fn push_line<'a, R: RouteFields>(
+    routes: &BTreeMap<RouteKey, &'a R>,
+    out: &mut Vec<Line<'a, R>>,
     report: &mut TradeRouteReport,
     layer: Layer,
     key: RouteKey,
@@ -427,7 +556,7 @@ fn push_line<'a>(
         ));
         return;
     };
-    if !layer.admits(route.kind) {
+    if !layer.admits(route.kind()) {
         report.filtered += 1;
         return;
     }
@@ -443,25 +572,25 @@ fn push_line<'a>(
 
 /// The viewed country's lines by layer and native directional list order. Exchanges
 /// receive their existing resource/import/export order in the final displacement pass.
-pub fn lines<'a>(
-    tables: &Tables<'a>,
+pub fn lines<'a, O: OriginFields, C: ClientFields, R: RouteFields, G>(
+    tables: &Tables<'a, O, C, R, G>,
     countries: &Countries<'_>,
     report: &mut TradeRouteReport,
-) -> Vec<Line<'a>> {
-    let routes: BTreeMap<RouteKey, &'a TradeRouteRow> = tables
+) -> Vec<Line<'a, R>> {
+    let routes: BTreeMap<RouteKey, &'a R> = tables
         .routes
         .iter()
-        .map(|route| ((route.country, route.class, route.other), route))
+        .map(|route| ((route.country(), route.class(), route.other()), route))
         .collect();
     let mut out = Vec::new();
     let mut origins: Vec<_> = tables
         .origins
         .iter()
-        .filter(|row| row.list == OWN_ORIGINS)
+        .filter(|row| row.list() == OWN_ORIGINS)
         .collect();
-    origins.sort_by_key(|row| row.ordinal);
+    origins.sort_by_key(|row| row.ordinal());
     // Only the viewed list participates; other countries may have the same ordinals.
-    origins.retain(|row| match countries.viewed(row.country) {
+    origins.retain(|row| match countries.viewed(row.country()) {
         Ok(viewed) => viewed,
         Err(reason) => {
             report.refuse(format!("a resource origin's country: {reason}"));
@@ -470,32 +599,32 @@ pub fn lines<'a>(
     });
     if origins
         .windows(2)
-        .any(|pair| pair[0].ordinal == pair[1].ordinal)
+        .any(|pair| pair[0].ordinal() == pair[1].ordinal())
     {
         report.refuse("production native origin list positions are duplicated");
         origins.clear();
     }
     for origin in origins {
-        if origin.list != OWN_ORIGINS {
+        if origin.list() != OWN_ORIGINS {
             continue;
         }
-        match countries.viewed(origin.country) {
+        match countries.viewed(origin.country()) {
             Ok(true) => push_line(
                 &routes,
                 &mut out,
                 report,
                 Layer::Production,
-                (origin.country, ORIGIN_ROUTE_CLASS, origin.state),
-                origin.bad,
+                (origin.country(), ORIGIN_ROUTE_CLASS, origin.state()),
+                origin.bad(),
                 false,
-                origin.convoys_assigned,
+                origin.convoys_assigned(),
                 0,
             ),
             Ok(false) => {}
             Err(reason) => report.refuse(format!("a resource origin's country: {reason}")),
         }
     }
-    let mut by_layer: [Vec<&ConvoyClientRow>; 8] = Default::default();
+    let mut by_layer: [Vec<&C>; 8] = std::array::from_fn(|_| Vec::new());
     for client in tables.clients {
         match client_layers(client, countries) {
             Ok(layers) => {
@@ -510,9 +639,9 @@ pub fn lines<'a>(
         let layer = *layer;
         let clients = &mut by_layer[layer.index()];
         if !matches!(layer, Layer::Import | Layer::Export) {
-            let position = |row: &ConvoyClientRow| match layer {
-                Layer::LendLeaseReceived | Layer::MarketBought => row.other_ordinal,
-                _ => row.owner_ordinal,
+            let position = |row: &C| match layer {
+                Layer::LendLeaseReceived | Layer::MarketBought => row.other_ordinal(),
+                _ => row.owner_ordinal(),
             };
             clients.retain(|row| {
                 if position(row).is_some() {
@@ -543,7 +672,7 @@ pub fn lines<'a>(
             let mut index: BTreeMap<(u8, u32, u32), usize> = BTreeMap::new();
             let mut groups: Vec<(RouteKey, bool)> = Vec::new();
             for client in clients.iter() {
-                let key = route_of(client);
+                let key = route_of(*client);
                 let Some(&route) = routes.get(&key) else {
                     report.lines[layer.index()] += 1;
                     report.refuse(format!(
@@ -552,13 +681,13 @@ pub fn lines<'a>(
                     ));
                     continue;
                 };
-                if !layer.admits(route.kind) {
+                if !layer.admits(route.kind()) {
                     report.lines[layer.index()] += 1;
                     report.filtered += 1;
                     continue;
                 }
                 let (Some(source), Some(destination)) =
-                    (route.source_state, route.destination_state)
+                    (route.source_state(), route.destination_state())
                 else {
                     report.lines[layer.index()] += 1;
                     report.refuse(format!(
@@ -567,12 +696,12 @@ pub fn lines<'a>(
                     ));
                     continue;
                 };
-                let identity = (route.kind, source, destination);
+                let identity = (route.kind(), source, destination);
                 match index.get(&identity) {
-                    Some(&at) => groups[at].1 |= client.bad,
+                    Some(&at) => groups[at].1 |= client.bad(),
                     None => {
                         index.insert(identity, groups.len());
-                        groups.push((key, client.bad));
+                        groups.push((key, client.bad()));
                     }
                 }
             }
@@ -584,13 +713,13 @@ pub fn lines<'a>(
         for client in clients.iter() {
             // Membership names the lend-lease giver, but its native convoy client names
             // the receiver for direction. Imports already name their importer in owner.
-            let direction_country = match client.category {
-                LEND_LEASE => client.other,
-                _ => client.owner,
+            let direction_country = match client.category() {
+                LEND_LEASE => client.other(),
+                _ => client.owner(),
             };
-            let reverse = match client.category {
+            let reverse = match client.category() {
                 IMPORT | LEND_LEASE => {
-                    match countries.same(direction_country, client.route_country) {
+                    match countries.same(direction_country, client.route_country()) {
                         Ok(reverse) => reverse,
                         Err(reason) => {
                             report.refuse(format!("a {} line's direction: {reason}", layer.name()));
@@ -605,11 +734,11 @@ pub fn lines<'a>(
                 &mut out,
                 report,
                 layer,
-                route_of(client),
-                client.bad,
+                route_of(*client),
+                client.bad(),
                 reverse,
-                client.convoys_assigned,
-                client.handle,
+                client.convoys_assigned(),
+                client.handle(),
             );
         }
     }
@@ -618,15 +747,15 @@ pub fn lines<'a>(
 
 /// The viewed country's recorded delivery efficiency in each sea region.
 pub fn regional_efficiency(
-    regional: &[RegionalConvoyEfficiencyRow],
+    regional: &[impl RegionalFields],
     countries: &Countries<'_>,
     report: &mut TradeRouteReport,
 ) -> BTreeMap<u32, i64> {
     let mut out = BTreeMap::new();
     for row in regional {
-        match countries.viewed(row.country) {
+        match countries.viewed(row.country()) {
             Ok(true) => {
-                out.entry(row.region).or_insert(row.efficiency);
+                out.entry(row.region()).or_insert(row.efficiency());
             }
             Ok(false) => {}
             Err(reason) => {
@@ -640,8 +769,8 @@ pub fn regional_efficiency(
 /// Each province's texture variant is 1 (hotspot) for a sea region of a bad naval line where
 /// the viewed country's efficiency is below the threshold, else 0. The crossing control
 /// between two provinces takes their minimum variant, including at the destination.
-pub fn control_variants(
-    line: &Line<'_>,
+pub fn control_variants<R: RouteFields>(
+    line: &Line<'_, R>,
     stops: &Stops,
     efficiency: &BTreeMap<u32, i64>,
     threshold: i64,
@@ -657,7 +786,7 @@ pub fn control_variants(
                 .and_then(|region| efficiency.get(region))
                 .copied()
                 .unwrap_or(FULL_EFFICIENCY);
-            u8::from(line.bad && line.route.kind == NAVAL_ROUTE && value < threshold)
+            u8::from(line.bad && line.route.kind() == NAVAL_ROUTE && value < threshold)
         })
         .collect();
     let mut controls = Vec::with_capacity(provinces.len().saturating_mul(2).saturating_sub(1));
@@ -710,16 +839,16 @@ fn build_into(
     frame: &DecodedFrame,
     out: &mut TradeRoutes,
 ) -> Result<(), String> {
-    let defines = inputs
+    inputs
         .defines
         .map_err(|reason| format!("the trade-route defines cannot be read: {reason}"))?;
-    let arrow = inputs
+    inputs
         .orders
         .types
         .get(TRADE_ROUTE_TYPE_NAME)
         .ok_or_else(|| format!("{MAPARROWS} declares no arrowType {TRADE_ROUTE_TYPE_NAME}"))?;
     let complete = |error: io::Error| error.to_string();
-    let tables = Tables {
+    let tables: Tables<'_> = Tables {
         origins: frame
             .complete::<tables::ResourceOrigins>()
             .map_err(complete)?,
@@ -735,17 +864,57 @@ fn build_into(
         table_access::rows::<tables::CountryLinks>(frame).map_err(complete)?,
         inputs.ours,
     );
-    let report = &mut out.report;
-    let mut lines = lines(&tables, &countries, report);
     let exchanges = frame.complete::<tables::ResourceExchanges>();
-    let exchange_order: BTreeMap<u32, _> = exchanges
+    let exchange_order: BTreeMap<u32, ExchangeOrder> = exchanges
         .as_ref()
         .map(|rows| {
             rows.iter()
-                .map(|row| ((row.id >> 32) as u32, row))
+                .map(|row| {
+                    let order = ExchangeOrder { resource: row.resource, import_ordinal: row.import_ordinal, export_ordinal: row.export_ordinal };
+                    ((row.id >> 32) as u32, order)
+                })
                 .collect()
         })
         .unwrap_or_default();
+    build_lines(
+        inputs,
+        &tables,
+        &countries,
+        &exchange_order,
+        &|countries| convoys::viewed_culture(frame, countries),
+        &mut |route, reverse| geometry::directed_stops(route, inputs.content, reverse),
+        &mut geometry::emit,
+        out,
+    )
+}
+
+/// What draws one line's ribbon into the field: [`emit`], or a caller's that keeps unchanged ribbons.
+pub type Emit<'a> = dyn FnMut(&mut OrderField, &viewer_foundation::map::ribbon_content::ArrowType, &Shaped, [f32; 4], [f32; 4], &HeightField<'_>) -> Option<Vec<[f32; 2]>> + 'a;
+
+/// The viewed country's lines and convoys from the tables' values: `culture` gives the viewed
+/// country's graphical culture, and `stops` a route's stops (the content's search; a caller may
+/// keep them while the route is unchanged).
+#[allow(clippy::too_many_arguments, reason = "the tables, the countries, the exchanges and the two content callbacks are each the caller's")]
+pub fn build_lines<O: OriginFields, C: ClientFields, R: RouteFields, G: RegionalFields>(
+    inputs: &Inputs<'_>,
+    tables: &Tables<'_, O, C, R, G>,
+    countries: &Countries<'_>,
+    exchange_order: &BTreeMap<u32, ExchangeOrder>,
+    culture: &dyn Fn(&Countries<'_>) -> Result<String, String>,
+    stops: &mut dyn FnMut(&R, bool) -> Result<Option<Stops>, String>,
+    emit: &mut Emit<'_>,
+    out: &mut TradeRoutes,
+) -> Result<(), String> {
+    let defines = inputs
+        .defines
+        .map_err(|reason| format!("the trade-route defines cannot be read: {reason}"))?;
+    let arrow = inputs
+        .orders
+        .types
+        .get(TRADE_ROUTE_TYPE_NAME)
+        .ok_or_else(|| format!("{MAPARROWS} declares no arrowType {TRADE_ROUTE_TYPE_NAME}"))?;
+    let report = &mut out.report;
+    let mut lines = lines(tables, countries, report);
     lines.retain(|line| {
         if matches!(line.layer, Layer::Import | Layer::Export)
             && !exchange_order.contains_key(&line.client)
@@ -783,12 +952,12 @@ fn build_into(
     if lines.is_empty() {
         return Ok(());
     }
-    let efficiency = regional_efficiency(tables.regional, &countries, report);
+    let efficiency = regional_efficiency(tables.regional, countries, report);
     let mut entity: Option<Result<String, String>> = None;
     let mut overlaps: BTreeMap<u32, u8> = BTreeMap::new();
     let width = inputs.heights.width as f32;
     for line in &lines {
-        let stops = match geometry::directed_stops(line.route, inputs.content, line.reverse) {
+        let stops = match stops(line.route, line.reverse) {
             Ok(Some(stops)) => stops,
             Ok(None) => {
                 report.empty += 1;
@@ -817,7 +986,7 @@ fn build_into(
         let variants = control_variants(line, &stops, &efficiency, defines.regional_threshold);
         let shaped = geometry::shape(&points, &variants, false, defines.smoothing);
         let color = defines.line_color(line.layer, line.bad);
-        let Some(_) = geometry::emit(
+        let Some(_) = emit(
             &mut out.field,
             arrow,
             &shaped,
@@ -853,8 +1022,7 @@ fn build_into(
             continue;
         }
         let entity = entity.get_or_insert_with(|| {
-            convoys::viewed_culture(frame, &countries)
-                .and_then(|culture| convoy_entity(&culture, inputs.declared))
+            culture(countries).and_then(|culture| convoy_entity(&culture, inputs.declared))
         });
         match entity {
             Ok(entity) => {

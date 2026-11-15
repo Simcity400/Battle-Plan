@@ -99,6 +99,43 @@ fn unrecorded_wire_fields_read_as_unrecorded() {
     assert!(from_wire_field::<i64>(Field::NotRecorded, None).is_err());
 }
 
+/// A derived row holds a cell its writer left unrecorded as not recorded and every other as its
+/// value, and a row recorded throughout writes the bytes of plain numbers.
+#[test]
+fn derived_rows_hold_their_unrecorded_cells_as_not_recorded() {
+    fn holds<T: RowCodec + Fields>(table: &str) {
+        let fields = T::SCHEMA.len();
+        let value = |index: usize| match T::SCHEMA[index] {
+            Kind::I32 => Field::I32(-1_000 - index as i32),
+            _ => Field::I64(-1_000 - index as i64),
+        };
+        let plain = |skip: Option<usize>| {
+            let mut bytes = Vec::new();
+            for index in (0..fields).filter(|&index| Some(index) != skip) {
+                value(index).encode(&mut bytes).unwrap();
+            }
+            bytes
+        };
+        for absent in 0..fields {
+            let row = T::from_wire(5, &mut |index| Ok(if index == absent { Field::NotRecorded } else { value(index) }))
+                .unwrap_or_else(|error| panic!("{table} without field {absent}: {error}"));
+            assert_eq!(row.not_recorded_fields(), 1 << absent, "{table} without field {absent}");
+            let (bytes, skipped, _) = visited(&row);
+            assert_eq!((bytes, skipped), (plain(Some(absent)), 1 << absent), "{table} without field {absent}");
+        }
+        let whole = T::from_wire(5, &mut |index| Ok(value(index))).unwrap();
+        assert_eq!(whole.not_recorded_fields(), 0, "{table}");
+        let mut written = Vec::new();
+        assert_eq!(whole.encode_recorded_fields(&mut written).unwrap(), 0, "{table}");
+        assert_eq!(written, plain(None), "{table}'s recorded row");
+    }
+    holds::<ArmyTotalRow>("ArmyTotals");
+    holds::<TerritoryTotalRow>("TerritoryTotals");
+    holds::<CountryStabilityRow>("CountryStability");
+    holds::<CountryExperienceDailyRow>("CountryExperienceDaily");
+    holds::<StabilityPartRow>("StabilityParts");
+}
+
 /// A patch sets the fields its mask names, from their wire form, and no other.
 #[test]
 fn patches_set_only_the_fields_their_mask_names() {

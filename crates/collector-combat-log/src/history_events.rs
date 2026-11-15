@@ -1,5 +1,6 @@
-//! Native retained-history event producer. Hooks never allocate, wait, or
-//! follow unrelated histories. The single worker drains into reusable storage.
+//! Native retained-history event producer. Hooks never wait or follow
+//! unrelated histories; past the prepared lane they grow it fallibly. The
+//! single worker drains into reusable storage.
 use collector_hooks::hook::{Hook, Registers, Tap};
 use collector_primitives::shared_lane::SharedLane;
 use engine_land_inputs::{combat_log_events as native, combat_log_sites as sites};
@@ -41,7 +42,7 @@ enum Loss {
     Handoff = 4,
     Storage = 5,
     Session = 6,
-    Capacity = 7,
+    Allocation = 7,
     Operand = 8,
     EquipmentFeature = 9,
     Growth = 10,
@@ -56,8 +57,8 @@ const LOSS_REASONS: [&str; 13] = [
     "combat log event storage handoff overlapped writer",
     "combat log event storage not prepared",
     "combat log event session unreadable",
-    "combat log event capacity exceeded",
-    "combat log native writer observation failed",
+    "combat log event allocation failed",
+    "combat log entries could not be followed in the game",
     "combat log equipment feature unreadable",
     "combat log event growth allocation failed",
     "combat log writer overlapped drain",
@@ -214,9 +215,12 @@ thread_local! { static SIGNAL: Cell<Option<i64>> = const { Cell::new(None) }; }
 struct Call {
     writer: WriterCall<'static>,
     previous_signal: Option<i64>,
+    // Last field: the writer's drop still runs inside the hook's phase.
+    _hook: Option<collector_memory::terminal::Scope>,
 }
 impl Call {
     fn enter() -> Self {
+        let hook = crate::hook_timing::label();
         let writer = WRITERS.enter();
         let previous_signal = SIGNAL.get();
         SIGNAL.set(if observing() {
@@ -227,6 +231,7 @@ impl Call {
         Self {
             writer,
             previous_signal,
+            _hook: Some(hook),
         }
     }
     fn finish(mut self) {
@@ -269,16 +274,21 @@ fn emit(fact: native::Fact) {
     if WRITERS.exhausted.load(SeqCst) {
         return;
     }
-    if !publish(
+    let published = publish(
         lane,
         Logged {
             order,
             signal,
             fact,
         },
-    ) {
-        REQUIRED.fetch_max(lane.required_entries(), SeqCst);
-        fail(Loss::Capacity);
+    );
+    // A lane that spilled or refused asks the next prepare for its demand.
+    let required = lane.required_entries();
+    if required > lane.len() {
+        REQUIRED.fetch_max(required, SeqCst);
+    }
+    if !published {
+        fail(Loss::Allocation);
     }
 }
 pub(crate) fn publish(lane: &Lane, entry: Logged) -> bool {
@@ -403,6 +413,10 @@ pub(crate) fn copy_published(
         lane.advance(rejected);
         Ok(())
     })
+}
+/// Occurrences lost since attach and why the first was, for the collector's live status.
+pub fn refusals() -> impl serde::Serialize {
+    crate::status::status!({"lost": WRITERS.lost.load(SeqCst), "first_loss": WRITERS.first_loss()})
 }
 pub fn status() -> impl serde::Serialize {
     crate::status::status!({
@@ -774,6 +788,7 @@ pub(crate) mod test_support {
             let call = Call {
                 writer: WRITERS.enter(),
                 previous_signal: SIGNAL.replace(Some(signal)),
+                _hook: None,
             };
             read(&mut (emit as fn(native::Fact)));
             call.finish();
@@ -830,7 +845,30 @@ mod tests {
     }
 
     #[test]
-    fn overflow_counts_all_attempted_occurrences_for_quiescent_growth() {
+    fn a_burst_past_the_lane_keeps_every_occurrence_in_order_and_sizes_growth() {
+        let lane = Lane::new(1, 0).unwrap();
+        for order in 1..=11_136 {
+            assert!(publish(
+                &lane,
+                Logged {
+                    order,
+                    ..Default::default()
+                }
+            ));
+        }
+        assert_eq!(lane.rejected(), 0);
+        assert!(lane.required_entries() >= 11_136);
+        let mut output = Vec::new();
+        copy_published(&lane, &mut output, &mut Vec::new()).unwrap();
+        assert_eq!(
+            output.iter().map(|logged| logged.order).collect::<Vec<_>>(),
+            (1..=11_136).collect::<Vec<_>>()
+        );
+        assert!(lane.is_drained());
+    }
+
+    #[test]
+    fn refused_overflow_allocations_count_all_attempted_occurrences_for_growth() {
         let lane = Lane::new(1, 0).unwrap();
         collector_test_support::with_allocations_denied(|| {
             for order in 1..=11_136 {
@@ -911,10 +949,10 @@ mod tests {
     fn simultaneous_first_losses_publish_one_fixed_diagnostic_without_allocation() {
         let first = Writers::new();
         assert_eq!(first.first_loss(), None);
-        collector_test_support::with_allocations_denied(|| first.fail(Loss::Capacity));
+        collector_test_support::with_allocations_denied(|| first.fail(Loss::Allocation));
         assert_eq!(
             first.first_loss(),
-            Some("combat log event capacity exceeded")
+            Some("combat log event allocation failed")
         );
         let writers = Writers::new();
         let start = std::sync::Barrier::new(8);
@@ -926,7 +964,7 @@ mod tests {
                     start.wait();
                     for _ in 0..1_500 {
                         writers.fail(if index % 2 == 0 {
-                            Loss::Capacity
+                            Loss::Allocation
                         } else {
                             Loss::Unwind
                         });
@@ -938,7 +976,7 @@ mod tests {
         let first = writers.first_loss().unwrap();
         assert!(matches!(
             first,
-            "combat log event capacity exceeded" | "combat log native writer escaped unwind"
+            "combat log event allocation failed" | "combat log native writer escaped unwind"
         ));
         collector_test_support::with_allocations_denied(|| writers.fail(Loss::Load));
         assert_eq!(writers.first_loss(), Some(first));

@@ -2,37 +2,35 @@ import { useMemo, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { useProduct } from '../../dashboard/products';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { usePlaybackHour } from '../../dashboard/playback';
 import { resolveWindow } from '../../dashboard/model';
 import { selectedTags } from '../../dashboard/countrySelection';
-import { countryMatch, countryMatchFilter, MEMBERSHIP_PREPARING } from '../../dashboard/groups';
+import { countryMatch, countryMatchFilter } from '../../dashboard/groups';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { formatDateTime } from '../../dashboard/calendar';
+import { useShownHour } from '../../dashboard/widgetPerf';
+import { useHeadHour } from '../army-size/headHour.ts';
 import type { CombatLogReply as Reply, LogDetailTable } from '../../generated/dashboard';
+import { validateCombatLog } from './combatLogData.ts';
 import './combatLog.css';
 
-function validate(data: unknown): Reply {
-  const r = data as Reply;
-  if (!r || !Number.isInteger(r.hour) || !r.availability || !['groups', 'manpower', 'equipment', 'templates', 'battles', 'active', 'warnings'].every(k => Array.isArray(r[k as keyof Reply]))) throw new Error('Invalid Combat Log reply');
-  return r;
-}
-export function fixed5(raw: string): string {
-  const value = BigInt(raw), magnitude = value < 0n ? -value : value;
-  const fraction = (magnitude % 100000n).toString().padStart(5, '0').replace(/0+$/, '');
-  return `${value < 0n ? '-' : ''}${magnitude / 100000n}${fraction ? `.${fraction}` : ''}`;
-}
 const EQUIPMENT_KINDS = ['Combat losses', 'Other attrition', 'Combat attrition', 'Training attrition', 'Recovered', 'Enemy losses'];
 type View = 'manpower' | 'equipment' | 'battles';
+
+/** The game's retained Combat Log at the widget's hour, under a disclosure: asked only once opened. */
 export default function CombatLogDetails(props: WidgetProps & { view: View }) {
   const [open, setOpen] = useState(false);
   return <details className="combat-log-details" onToggle={event => setOpen(event.currentTarget.open)}>
     <summary>Game's retained Combat Log</summary>{open && <CombatLogSnapshot {...props} />}
   </details>;
 }
+
+/** Following, the snapshot is of the hour playback last stopped at: while playing it keeps the one it shows and asks
+ * nothing, so the head's values are never asked for. */
 export function CombatLogSnapshot({ widget, runtime, active, view }: WidgetProps & { view: View }) {
-  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
-  const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
-  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
+  const following = widget.time.mode === 'follow';
+  const settled = useHeadHour(runtime.clock, active && following, at => runtime.clock.getSnapshot().playing ? 'playing' : String(Math.floor(at)));
+  const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
+  const window = track && resolveWindow(widget, track, runtime.tracks, settled);
   const hour = window ? Math.floor(window.lastHour) : null;
   const inBranch = !!track && hour !== null && hour >= track.branch.firstHour && hour <= track.branch.lastHour;
   const groups = useCountryGroups(runtime, track, active && widget.countries.kind !== 'all');
@@ -44,25 +42,30 @@ export function CombatLogSnapshot({ widget, runtime, active, view }: WidgetProps
     [widget.countries, fallback, groups.data, track?.branch.lastHour]);
   const request = track && inBranch && match.ready && !match.reason ? { sourceId: track.source.id, revision: track.source.revision,
     product: 'combat-log-history', params: { branchId: track.branch.id, hour: hour!, countries } } : null;
-  const state = useProduct<Reply>(runtime.client, request, active, validate);
+  const state = useProduct<Reply>(runtime.client, request, active, validateCombatLog, track?.source);
+  const shown = useShownHour();
+  shown(state.data?.hour ?? null);
   if (!inBranch) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
   const groupFailure = widget.countries.kind !== 'all' && groups.error ? <WidgetState kind="error" what="country selection" failure={groups.error} onRetry={groups.retry} /> : null;
   if (groupFailure && !groups.data) return groupFailure;
   if (match.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={match.reason} /></>;
   if (!match.ready) return <>{groupFailure}<WidgetState kind="loading" label="Loading selected countries" /></>;
-  if (!state.data) return <>{groupFailure}{state.error ? <WidgetState kind="error" what="retained Combat Log" failure={state.error} /> : <WidgetState kind="loading" label="Loading retained Combat Log" />}</>;
-  // Membership at an hour still being prepared is not known: entries left out there may yet belong.
-  return <>{groupFailure}{!match.known(hour!) && <p className="chart-line-key" role="status">{MEMBERSHIP_PREPARING}</p>}<CombatLogTables data={state.data} view={view} /></>;
+  if (!state.data) return <>{groupFailure}{state.error ? <WidgetState kind="error" what="retained Combat Log" failure={state.error} onRetry={state.retry} />
+    : <WidgetState kind="loading" label="Loading retained Combat Log" />}</>;
+  return <>{groupFailure}<CombatLogTables data={state.data} view={view} /></>;
 }
+
 function Missing({ source }: { source: string | null }) {
   return source ? <p role="status">Unavailable - {source}</p> : null;
 }
+
 export function DetailTables({ tables }: { tables: readonly LogDetailTable[] }) {
   return <>{tables.map((table, i) => <table key={i}><caption>{table.title}</caption>
     <thead><tr>{table.columns.map((column, j) => <th key={j}>{column}</th>)}</tr></thead>
     <tbody>{table.rows.map((row, j) => <tr key={j}>{row.map((cell, k) => <td key={k}>{cell}</td>)}</tr>)}</tbody>
   </table>)}</>;
 }
+
 export function CombatLogTables({ data, view }: { data: Reply; view: View }) {
   const availability = data.availability;
   return <section className="combat-log-snapshot" aria-label="Retained Combat Log">
@@ -101,4 +104,10 @@ export function CombatLogTables({ data, view }: { data: Reply; view: View }) {
     </>}
     {data.warnings.map((warning, i) => <p className="chart-line-key" key={i}>{warning}</p>)}
   </section>;
+}
+
+function fixed5(raw: string): string {
+  const value = BigInt(raw), magnitude = value < 0n ? -value : value;
+  const fraction = (magnitude % 100000n).toString().padStart(5, '0').replace(/0+$/, '');
+  return `${value < 0n ? '-' : ''}${magnitude / 100000n}${fraction ? `.${fraction}` : ''}`;
 }

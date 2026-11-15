@@ -1,131 +1,83 @@
-import type { EconomyRun, FuelBranch, FuelBranchCountry, FuelBranchesReply } from '../../generated/dashboard';
-import type { Run, Span } from '../../charts/series';
-import { clipToSpans } from '../../charts/series.ts';
-import { pendingAt, preparedPrefix } from '../../dashboard/preparedPrefix.ts';
-import { object } from '../../dashboard/validation.ts';
-import { bigAt, isEconomyRuns, isHolderTags, numberAt, runAt, tagAt, validateEconomyReply } from '../../dashboard/economyHistory.ts';
+import { formatAmount } from '../../charts/valueAxis.ts';
+import type { OptionField, OptionValue } from '../../dashboard/options';
+import type { FuelBranchesReply } from '../../generated/dashboard';
 
 export const FUEL_BRANCHES = 'fuel-branches';
+/** The declared series of every consumer's amounts, one part per consumer index. */
+export const FUEL_CONSUMERS = 'fuel-consumers';
+/** The fixed-point places of the recorded amounts. */
+export const FUEL_PLACES = 5;
+const MOST_FUEL_DECIMALS = 5;
 
-export function validateFuelBranches(value: unknown): FuelBranchesReply {
-  return validateEconomyReply<FuelBranchesReply>(value, reply => Number.isSafeInteger(reply.scale) && (reply.scale as number) > 0 && isEconomyRuns(reply.known)
-    && Array.isArray(reply.consumerNames) && reply.consumerNames.every(name => name === null || typeof name === 'string')
-    && Array.isArray(reply.countries) && reply.countries.every(country => object(country) && typeof country.holder === 'string'
-      && isHolderTags(country.tags) && isEconomyRuns(country.read) && Array.isArray(country.branches)
-      && country.branches.every(branch => object(branch) && Number.isSafeInteger(branch.index)
-        && isEconomyRuns(branch.requested) && isEconomyRuns(branch.received) && isEconomyRuns(branch.priority))), 'fuel by branch');
+export const FUEL_DECIMALS_OPTION: OptionField = { key: 'fuelDecimals', section: 'options', label: 'Fuel decimals',
+  hint: 'Decimal places in fuel amounts.', kind: 'number', min: 0, max: MOST_FUEL_DECIMALS, step: 1, default: 0 };
+
+/** The decimals chosen, within the option's range. */
+export function fuelDecimals(options: Readonly<Record<string, OptionValue>>): number {
+  const chosen = options[FUEL_DECIMALS_OPTION.key];
+  return typeof chosen === 'number' && Number.isInteger(chosen) ? Math.max(0, Math.min(MOST_FUEL_DECIMALS, chosen)) : 0;
 }
 
-/** One branch at an hour: the read's amounts, or null where not recorded. */
+const object = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
+const raw = (value: unknown): value is string => typeof value === 'string' && /^-?\d+$/.test(value);
+
+export function validateFuelBranches(value: unknown): FuelBranchesReply {
+  if (!object(value) || typeof value.tag !== 'string' || value.scale !== 100000 || !Array.isArray(value.consumerNames)
+    || !value.consumerNames.every(name => name === null || typeof name === 'string')
+    || !(value.readHour === null || Number.isSafeInteger(value.readHour)) || !(value.missing === null || typeof value.missing === 'string')
+    || !Array.isArray(value.warnings) || !value.warnings.every(warning => typeof warning === 'string')
+    || !Array.isArray(value.consumers) || !value.consumers.every((row, at, rows) => object(row) && Number.isSafeInteger(row.index)
+      && (at === 0 || (rows[at - 1] as { index: number }).index < (row.index as number)) && raw(row.requested) && raw(row.received)
+      && Number.isSafeInteger(row.priority)))
+    throw new Error('The fuel by branch reply is malformed.');
+  return value as unknown as FuelBranchesReply;
+}
+
+/** One consumer at the reply's hour. */
 export interface BranchAt {
   index: number;
   name: string;
-  requested: bigint | null;
-  received: bigint | null;
-  /** The part requested and not received; null unless both are known. */
-  unmet: bigint | null;
-  priority: number | null;
+  requested: bigint;
+  received: bigint;
+  /** What was requested and not received: none above the request. */
+  unmet: bigint;
+  priority: number;
 }
 
-export const branchName = (reply: FuelBranchesReply, index: number) => reply.consumerNames[index] ?? 'Branch name unavailable';
+export const branchName = (names: readonly (string | null)[], index: number) => names[index] ?? 'Branch name unavailable';
 
-/** The country holder that had `tag` at `hour`: one whose consumers were read
- * then, so a reused tag never selects a former holder whose last tag entry merely
- * precedes the hour. Null where no holder with the tag was read at the hour. */
-export function countryAt(reply: FuelBranchesReply, tag: string, hour: number): FuelBranchCountry | null {
-  return reply.countries.find(country => tagAt(country.tags, hour) === tag && runAt(country.read, hour) !== null) ?? null;
-}
-
-/** The holder an over-time chart of `tag` draws: the one valid at `hour`, else the
- * latest holder read with the tag at or before it. */
-export function chartCountryAt(reply: FuelBranchesReply, tag: string, hour: number): FuelBranchCountry | null {
-  const valid = countryAt(reply, tag, hour);
-  if (valid) return valid;
-  let best: FuelBranchCountry | null = null, bestHour = -Infinity;
-  for (const country of reply.countries) for (const run of country.read) {
-    if (run[0] <= hour && run[1] > bestHour && tagAt(country.tags, run[1]) === tag) { best = country; bestHour = run[1]; }
-  }
-  return best;
-}
-
-/** Whether the consumer table was read complete at `hour`, every consumer's country identified. */
-export const consumersKnown = (reply: FuelBranchesReply, hour: number) => runAt(reply.known, hour) !== null;
-
-/** Each branch the recording names for the country, in native order, at `hour`. */
-export function branchesAt(reply: FuelBranchesReply, country: FuelBranchCountry, hour: number): BranchAt[] {
-  return [...country.branches].sort((a, b) => a.index - b.index).map(branch => {
-    const requested = bigAt(branch.requested, hour), received = bigAt(branch.received, hour);
-    // The game shows what was not received of a request; a receipt above it leaves none unmet.
-    const unmet = requested !== null && received !== null ? (requested > received ? requested - received : 0n) : null;
-    return { index: branch.index, name: branchName(reply, branch.index), requested, received, unmet, priority: numberAt(branch.priority, hour) };
+/** Each consumer the reply holds, in native order. */
+export function branchesAt(reply: FuelBranchesReply): BranchAt[] {
+  return reply.consumers.map(row => {
+    const requested = BigInt(row.requested), received = BigInt(row.received);
+    return { index: row.index, name: branchName(reply.consumerNames, row.index), requested, received,
+      unmet: requested > received ? requested - received : 0n, priority: row.priority };
   });
 }
 
-/** The read supplying the country's consumers at `hour`. */
-export const readAt = (country: FuelBranchCountry, hour: number): number | null => numberAt(country.read, hour);
-
-/** Received over requested in percent, where something was requested; hours with no
- * request or no read are gaps, never 0%. */
-export function ratioRuns(branch: FuelBranch): Run[] {
-  const runs: Run[] = [];
-  let other = 0;
-  for (const asked of branch.requested) {
-    const requested = BigInt(asked[2]);
-    while (other < branch.received.length && branch.received[other][1] < asked[0]) other++;
-    for (let index = other; index < branch.received.length && branch.received[index][0] <= asked[1]; index++) {
-      const got: EconomyRun = branch.received[index];
-      const first = Math.max(asked[0], got[0]), last = Math.min(asked[1], got[1]);
-      if (first > last || requested <= 0n) continue;
-      const value = Number(BigInt(got[2]) * 1_000_000n / requested) / 10_000;
-      const previous = runs.at(-1);
-      if (previous && previous.lastHour + 1 === first && previous.value === value) previous.lastHour = last;
-      else runs.push({ firstHour: first, lastHour: last, value, breakBefore: !previous || previous.lastHour + 1 !== first });
-    }
-  }
-  return runs;
+/** What a bars render depends on: which consumers, their names, and how each row is drawn; the amounts are painted. */
+export function fuelStructure(reply: FuelBranchesReply): string {
+  return JSON.stringify([reply.missing, reply.consumerNames, reply.consumers.map(row => [row.index, row.requested === '0', BigInt(row.requested) > BigInt(row.received)])]);
 }
 
-/** The ratio axis: at least 0-100%, high enough for every recorded ratio, with at most
- * eight round steps (25, 50, 100, 250, 500, 1,000% ...). */
-export function ratioAxis(lines: readonly { runs: readonly Run[] }[]): { top: number; ticks: number[] } {
-  let most = 100;
-  for (const line of lines) for (const run of line.runs) if (run.value > most) most = run.value;
+/** The widths of a row's received and unmet parts, against the largest amount any row shows. */
+export function barWidths(rows: readonly BranchAt[]): Map<number, { delivered: string; unmet: string }> {
+  let largest = 0n;
+  for (const row of rows) for (const value of [row.requested, row.received]) if (value > largest) largest = value;
+  const width = (value: bigint) => largest > 0n ? `${Number(value * 100000n / largest) / 1000}%` : '0%';
+  return new Map(rows.map(row => [row.index, { delivered: width(row.received < row.requested ? row.received : row.requested), unmet: width(row.unmet) }]));
+}
+
+export const fuelAmount = (value: bigint, digits: number) => formatAmount(value, FUEL_PLACES, digits);
+
+/** The received share's percent text from its four-decimal value. */
+export const percentText = (value: number) => `${value.toFixed(value % 1 === 0 ? 0 : 2)}%`;
+
+/** The share axis: at least 0-100%, high enough for every share shown, with at most eight round steps. */
+export function ratioAxis(most: number): { top: number; ticks: number[] } {
+  const highest = Math.max(100, most);
   let step = 25;
-  for (let scale = 1; Math.ceil(most / step) > 8; scale *= 10) step = [25, 50, 100].map(base => base * scale).find(size => Math.ceil(most / size) <= 8) ?? 100 * scale;
-  const top = Math.ceil(most / step) * step;
+  for (let scale = 1; Math.ceil(highest / step) > 8; scale *= 10) step = [25, 50, 100].map(base => base * scale).find(size => Math.ceil(highest / size) <= 8) ?? 100 * scale;
+  const top = Math.ceil(highest / step) * step;
   return { top, ticks: Array.from({ length: top / step + 1 }, (_, index) => index * step) };
 }
-
-/** Why a time view from `from` through `hour` has no line: its hour is still being
- * prepared ('pending'), the consumers were known at every hour and the country had
- * none ('none', proven), known at only some ('partial'), or at none ('unrecorded').
- * A known hour never stands in for a pending or unknown one. */
-export function emptyTimeView(reply: FuelBranchesReply, from: number, hour: number): 'none' | 'partial' | 'pending' | 'unrecorded' {
-  if (reply.lastHour === null || reply.lastHour < hour || pendingAt(preparedPrefix(reply), hour)) return 'pending';
-  let covered = 0, next = from;
-  for (const [first, last] of reply.known) {
-    const start = Math.max(first, next), end = Math.min(last, hour);
-    if (start > end) continue;
-    covered += end - start + 1;
-    next = end + 1;
-  }
-  return covered === 0 ? 'unrecorded' : covered === hour - from + 1 ? 'none' : 'partial';
-}
-
-/** A branch's received share inside the group's membership `within` (every hour
- * when absent): a country outside the group draws nothing. */
-export function memberRatioRuns(branch: FuelBranch, within: readonly Span[] | null | undefined): Run[] {
-  const runs = ratioRuns(branch);
-  return within ? clipToSpans(runs, within) : runs;
-}
-
-/** Whether `hour` is a member hour (every hour when no membership applies). */
-export const memberAt = (within: readonly Span[] | null | undefined, hour: number) =>
-  !within || within.some(span => span.firstHour <= hour && hour <= span.lastHour);
-
-/** Each change hour of a branch, for keyboard stops. */
-export function changeHours(country: FuelBranchCountry): number[] {
-  return [...new Set(country.branches.flatMap(branch => [...branch.requested, ...branch.received].map(run => run[0])))].sort((a, b) => a - b);
-}
-
-export const percentText = (value: number) => `${value.toFixed(value % 1 === 0 ? 0 : 2)}%`;

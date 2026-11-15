@@ -41,14 +41,19 @@ export function useEstimatedPages<D>(stored: readonly D[] | null, holds: (info: 
   return kept.current.pages;
 }
 
-export function logPageItems<T>(pages: readonly LogPage<T>[], months: boolean): ReadonlyArray<LogItem<T>> {
+/** Pages newest first, each an unloaded window or its rows newest first. */
+export function logPageEntries<T>(pages: readonly LogPage<T>[]): LogEntry<T>[] {
   const entries: LogEntry<T>[] = [];
   const ordered = pages.map((page, index) => ({ page, index })).sort((a, b) => b.page.end - a.page.end || b.page.start - a.page.start || a.index - b.index);
   for (const { page } of ordered) {
     if (page.rows == null) entries.push({ kind: 'page', page });
     else newestFirst(page.rows).forEach((row, pageOffset) => entries.push({ kind: 'row', row, pageKey: page.key, pageOffset }));
   }
-  return logEntryItems(entries, months);
+  return entries;
+}
+
+export function logPageItems<T>(pages: readonly LogPage<T>[], months: boolean): ReadonlyArray<LogItem<T>> {
+  return logEntryItems(logPageEntries(pages), months);
 }
 
 /** Logical row ordinals, independent of month headings and unloaded windows'
@@ -84,8 +89,10 @@ export function logRowTarget<T>(items: readonly LogItem<T>[], ordinals: readonly
 }
 
 /** Resolves a pending keyboard row once its own page has loaded. Filtering may
- * remove rows, so it reaches the last remaining row if that offset went away. */
-export function logPageTarget<T>(items: readonly LogItem<T>[], ordinals: readonly number[], pageKey: string, offset: number): LogRowTarget<T> | null {
+ * remove rows, so it reaches the last remaining row if that offset went away.
+ * Rows `shown` refuses (held ahead of the clock) are neither counted nor reached. */
+export function logPageTarget<T>(items: readonly LogItem<T>[], ordinals: readonly number[], pageKey: string, offset: number,
+  shown: (index: number) => boolean = () => true): LogRowTarget<T> | null {
   let last: LogRowTarget<T> | null = null;
   let seen = 0;
   for (let index = 0; index < items.length; index++) {
@@ -95,7 +102,7 @@ export function logPageTarget<T>(items: readonly LogItem<T>[], ordinals: readonl
       const within = Math.max(0, Math.min(item.page.count - 1, offset));
       return { index, offset: within, ordinal: ordinals[index] + within, pageKey };
     }
-    if (item.kind !== 'row' || item.pageKey !== pageKey) continue;
+    if (item.kind !== 'row' || item.pageKey !== pageKey || !shown(index)) continue;
     last = { index, offset: seen, ordinal: ordinals[index], pageKey, row: item.row };
     if (seen++ >= offset) return last;
   }
@@ -144,4 +151,13 @@ export function logPixelTarget<T>(items: readonly LogItem<T>[], offsets: readonl
   else if (direction === 1 && destination?.kind === 'month') target--;
   target = direction === 1 ? Math.max(ordinal + 1, target) : Math.min(ordinal - 1, target);
   return logRowTarget(items, ordinals, Math.max(0, Math.min(ordinals[items.length] - 1, target)));
+}
+
+/** The rows of the newest pages held, whole pages from the newest back until at least `count` rows: following the head,
+ * the rows a block draws and those beneath it a view holds, which a list names with the block rather than as each
+ * comes into view. */
+export function newestPageRows<T>(pages: readonly LogPage<T>[], count: number): LogRow<T>[] {
+  const rows: LogRow<T>[] = [];
+  for (let index = pages.length - 1; index >= 0 && rows.length < count; index--) rows.push(...pages[index].rows ?? []);
+  return rows;
 }

@@ -14,16 +14,19 @@ impl Captured {
         job: &ConstructionRestJob,
         decode_ticks: &mut [u64; 10],
     ) {
-        let recorded = crate::raw::Recorded::build(&job.log);
+        let recorded = match crate::raw::Recorded::build(&job.log) {
+            Ok(recorded) => recorded,
+            Err(reason) => {
+                self.fail_construction_rest_capture(reason);
+                return;
+            }
+        };
         let started = qpc();
         self.base_resources.outcome = state_resource_entry::walk_buffer(
             &recorded,
             base,
             game_state,
-            engine_native::walk::Buffer::for_worker(
-                &mut self.base_resources.rows,
-                job.log.worker_growth_enabled(),
-            ),
+            engine_native::walk::Buffer::Growing(&mut self.base_resources.rows),
         );
         decode_ticks[0] += elapsed(started);
         let started = qpc();
@@ -32,18 +35,9 @@ impl Captured {
             base,
             game_state,
             cbuilding_production_line::BuffersBuffer {
-                buildings: engine_native::walk::Buffer::for_worker(
-                    &mut self.building_construction.rows,
-                    job.log.worker_growth_enabled(),
-                ),
-                railways: engine_native::walk::Buffer::for_worker(
-                    &mut self.railway_construction.rows,
-                    job.log.worker_growth_enabled(),
-                ),
-                route_provinces: engine_native::walk::Buffer::for_worker(
-                    &mut self.routes.first,
-                    job.log.worker_growth_enabled(),
-                ),
+                buildings: engine_native::walk::Buffer::Growing(&mut self.building_construction.rows),
+                railways: engine_native::walk::Buffer::Growing(&mut self.railway_construction.rows),
+                route_provinces: engine_native::walk::Buffer::Growing(&mut self.routes.first),
             },
         );
         self.building_construction.outcome = queue.buildings;
@@ -107,43 +101,16 @@ impl Captured {
             base,
             game_state,
             ccountry_occupation_status::BuffersBuffer {
-                settings: engine_native::walk::Buffer::for_worker(
-                    &mut self.settings.rows,
-                    job.log.worker_growth_enabled(),
-                ),
-                laws: engine_native::walk::Buffer::for_worker(
-                    &mut self.laws.rows,
-                    job.log.worker_growth_enabled(),
-                ),
-                group_laws: engine_native::walk::Buffer::for_worker(
-                    &mut self.group_laws.rows,
-                    job.log.worker_growth_enabled(),
-                ),
-                garrisons: engine_native::walk::Buffer::for_worker(
-                    &mut self.garrisons.rows,
-                    job.log.worker_growth_enabled(),
-                ),
-                manpower: engine_native::walk::Buffer::for_worker(
-                    &mut self.assigned_manpower.rows,
-                    job.log.worker_growth_enabled(),
-                ),
-                reserve_manpower: engine_native::walk::Buffer::for_worker(
-                    &mut self.reserve_manpower.rows,
-                    job.log.worker_growth_enabled(),
-                ),
-                names: engine_native::walk::Buffer::for_worker(
-                    &mut self.law_bytes.first,
-                    job.log.worker_growth_enabled(),
-                ),
-                equipment: engine_native::walk::Buffer::for_worker(
-                    &mut self.equipment.first,
-                    job.log.worker_growth_enabled(),
-                ),
+                settings: engine_native::walk::Buffer::Growing(&mut self.settings.rows),
+                laws: engine_native::walk::Buffer::Growing(&mut self.laws.rows),
+                group_laws: engine_native::walk::Buffer::Growing(&mut self.group_laws.rows),
+                garrisons: engine_native::walk::Buffer::Growing(&mut self.garrisons.rows),
+                manpower: engine_native::walk::Buffer::Growing(&mut self.assigned_manpower.rows),
+                reserve_manpower: engine_native::walk::Buffer::Growing(&mut self.reserve_manpower.rows),
+                names: engine_native::walk::Buffer::Growing(&mut self.law_bytes.first),
+                equipment: engine_native::walk::Buffer::Growing(&mut self.equipment.first),
             },
-            engine_native::walk::Buffer::for_worker(
-                &mut self.occupied.first,
-                job.log.worker_growth_enabled(),
-            ),
+            engine_native::walk::Buffer::Growing(&mut self.occupied.first),
         );
         self.settings.outcome = occupation.settings;
         self.laws.outcome = occupation.laws;
@@ -189,10 +156,7 @@ impl Captured {
             &recorded,
             base,
             game_state,
-            engine_native::walk::Buffer::for_worker(
-                &mut self.collaboration.rows,
-                job.log.worker_growth_enabled(),
-            ),
+            engine_native::walk::Buffer::Growing(&mut self.collaboration.rows),
         );
         decode_ticks[9] += elapsed(started);
         self.rest_raw_mode = false;
@@ -456,9 +420,7 @@ fn copy_country_roots(
     let countries = copy_header(log, memory, game_state, cgame_state::COUNTRIES, 8)?;
     let links = copy_header(log, memory, game_state, cgame_state::COUNTRY_LINKS, 4)?;
     let mut slots = CountrySlots::new(countries, links, base)?;
-    if log.worker_growth_enabled()
-        && engine_allocation::reserve_exact(census, slots.count() as usize - 1).is_err()
-    {
+    if engine_allocation::reserve_exact(census, slots.count() as usize - 1).is_err() {
         log.overflowed = true;
         return None;
     }
@@ -1496,34 +1458,21 @@ fn copy_collaboration_walk(
 }
 
 /// Acquire one owned payload and report its per-table costs.
-#[cfg(any(test, feature = "test-support"))]
 pub fn copy_construction_rest_refresh(
     memory: &impl Memory,
     ctx: ConstructionRestCopyContext,
     job: &mut ConstructionRestJob,
 ) -> ConstructionRestCopyReport {
-    copy_construction_rest(memory, ctx, job, false)
-}
-
-pub fn copy_construction_rest_refresh_growing(
-    memory: &impl Memory,
-    ctx: ConstructionRestCopyContext,
-    job: &mut ConstructionRestJob,
-) -> ConstructionRestCopyReport {
-    copy_construction_rest(memory, ctx, job, true)
+    copy_construction_rest(memory, ctx, job)
 }
 
 fn copy_construction_rest(
     memory: &impl Memory,
     ctx: ConstructionRestCopyContext,
     job: &mut ConstructionRestJob,
-    growing: bool,
 ) -> ConstructionRestCopyReport {
     let started = qpc();
     job.clear();
-    if growing {
-        job.log.enable_worker_growth();
-    }
     job.game_state = ctx.game_state;
     copy_construction_rest_pass(memory, ctx.base, ctx.game_state, job);
     let mut ticks = [0; 10];

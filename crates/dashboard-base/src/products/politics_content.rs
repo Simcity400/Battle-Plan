@@ -224,10 +224,6 @@ impl PoliticsContent {
                 .map_err(|gap| io::Error::other(gap.to_string()))
         })
     }
-    #[cfg(test)]
-    pub(crate) fn idea_class_loads(&self, token: &str) -> usize {
-        self.idea_classes.loads(&token.to_owned())
-    }
     pub fn load(catalogue: Arc<Catalogue>) -> io::Result<Self> {
         Self::read(catalogue, installed_content_core::ideologies::read)
     }
@@ -826,12 +822,43 @@ impl PoliticsContent {
         character: Option<&str>,
         country: IdeaCountry<'_>,
     ) -> (Option<String>, Option<String>) {
-        match (self.idea(token), self.advisor(token)) {
-            (Ok(idea), Ok(role)) => (
-                self.idea_display_name(token, character, Some(country), None, idea, role),
+        match self.idea_and_role(token) {
+            Ok((idea, role)) => (
+                self.idea_display_name(token, character, Some(country), None, idea, role)
+                    .ok(),
                 None,
             ),
-            (Err(reason), _) | (_, Err(reason)) => (None, Some(format!("{token}: {reason}"))),
+            Err(reason) => (None, Some(format!("{token}: {reason}"))),
+        }
+    }
+
+    /// Why [`Self::idea_artwork`] (or [`Self::held_idea_artwork`] with `saved`) names no idea,
+    /// None when it names it.
+    pub fn idea_name_missing(
+        &self,
+        token: &str,
+        character: Option<&str>,
+        country: IdeaCountry<'_>,
+        saved: Option<&str>,
+    ) -> Option<String> {
+        match self.idea_and_role(token) {
+            Ok((idea, role)) => self
+                .idea_display_name(token, character, Some(country), saved, idea, role)
+                .err(),
+            Err(reason) => saved
+                .and_then(|saved| self.character_name(None, saved))
+                .is_none()
+                .then(|| format!("{token}: {reason}")),
+        }
+    }
+
+    /// What content says the token is: its idea definition, else its advisor role. A defined
+    /// idea is named and drawn from its definition, so a gap in the advisor roles does not hide it.
+    fn idea_and_role(&self, token: &str) -> Result<(Option<&Idea>, Option<&AdvisorRole>), String> {
+        match (self.idea(token), self.advisor(token)) {
+            (Ok(idea), Ok(role)) => Ok((idea, role)),
+            (Ok(Some(idea)), Err(_)) => Ok((Some(idea), None)),
+            (Err(reason), _) | (_, Err(reason)) => Err(reason),
         }
     }
 
@@ -862,9 +889,9 @@ impl PoliticsContent {
         }
         // Content that cannot say what the token is (a file that could
         // define it stops short) leaves the idea's artwork unknown.
-        let (idea, role) = match (self.idea(token), self.advisor(token)) {
-            (Ok(idea), Ok(role)) => (idea, role),
-            (Err(reason), _) | (_, Err(reason)) => {
+        let (idea, role) = match self.idea_and_role(token) {
+            Ok(found) => found,
+            Err(reason) => {
                 let art = Artwork {
                     token: token.to_owned(),
                     // A content refusal cannot erase the holder's recorded
@@ -930,7 +957,9 @@ impl PoliticsContent {
         role: Option<&AdvisorRole>,
     ) -> (Artwork, Option<String>) {
         let advisor = character.or_else(|| role.map(|role| role.character.as_str()));
-        let name = self.idea_display_name(token, character, country, saved, idea, role);
+        let name = self
+            .idea_display_name(token, character, country, saved, idea, role)
+            .ok();
         // No defined description key means the
         // game shows nothing. Authored absence is not a product finding.
         let description = self
@@ -991,7 +1020,7 @@ impl PoliticsContent {
     }
 
     /// An idea's name: one source is selected, then localised; a key content lacks or a
-    /// refused text leaves the name unknown, and no other text stands in.
+    /// refused text leaves the name unknown, and no other text stands in. The error says why.
     fn idea_display_name(
         &self,
         token: &str,
@@ -1000,24 +1029,23 @@ impl PoliticsContent {
         saved: Option<&str>,
         idea: Option<&Idea>,
         role: Option<&AdvisorRole>,
-    ) -> Option<String> {
+    ) -> Result<String, String> {
         let advisor = character.or_else(|| role.map(|role| role.character.as_str()));
         match saved.map(|saved| self.recorded_name(saved)) {
-            Some(RecordedName::Named(name)) => Some(name),
-            Some(RecordedName::Unresolved(_)) => None,
+            Some(RecordedName::Named(name)) => Ok(name),
+            Some(RecordedName::Unresolved(reason)) => Err(reason),
             Some(RecordedName::None) | None => match (idea, advisor) {
                 (Some(_), _) | (None, None) => match country.map_or_else(
                     || self.idea_name_offline(token),
                     |country| self.idea_name(token, country),
-                ) {
-                    Ok(IdeaName::Key(key)) => self.localised(&key, View::Scripted),
-                    Ok(IdeaName::Generated(text)) => Some(text),
-                    Err(_) => None,
+                )? {
+                    IdeaName::Key(key) => self.catalogue.localised_or_why(&key, View::Scripted),
+                    IdeaName::Generated(text) => Ok(text),
                 },
                 // An advisor's idea is its character.
-                (None, Some(character)) => {
-                    self.authored_character_name_for(character, country.is_none(), None)
-                }
+                (None, Some(character)) => self
+                    .authored_character_name_for(character, country.is_none(), None)
+                    .ok_or_else(|| format!("the name of advisor {character} is unknown")),
             },
         }
     }

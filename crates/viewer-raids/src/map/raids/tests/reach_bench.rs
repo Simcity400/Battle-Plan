@@ -2,7 +2,7 @@
 //! 5,000-country hours: a faction's naval bases asked by its marine
 //! divisions, `path_source`'s order (sources outer, divisions inner), over a
 //! vanilla-sized province grid. Run in release:
-//! `cargo test -p viewer --release --bin viewer -- --ignored army_reach_bench --nocapture`.
+//! `cargo test -p viewer-raids --release --lib -- --ignored army_reach_bench --nocapture`.
 //! `BATTLE_PLAN_REACH_BENCH_HOURS` shortens the 96 hours for a slow build.
 
 use std::time::Instant;

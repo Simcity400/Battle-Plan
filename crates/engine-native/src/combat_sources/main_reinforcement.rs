@@ -542,7 +542,7 @@ fn transport_context(
         let definition = pointer(memory, definitions, 0xf8)?;
         if definition != 0 {
             auth(memory, base, definition, cstatic_modifier::VTABLE_RVA)?;
-            cstrategic_navy_manager::authenticate_owner(memory, base, game, owner)?;
+            cstrategic_navy_manager::authenticate(memory, base, game, owner)?;
             let owner_intel = pointer(memory, owner.pointer, ccountry::INTEL_TABLE)?;
             auth(memory, base, owner_intel, ccountry_intel::VTABLE_RVA)?;
             let diplomacy = pointer(memory, owner.pointer, ccountry::DIPLOMACY_STATUS)?;

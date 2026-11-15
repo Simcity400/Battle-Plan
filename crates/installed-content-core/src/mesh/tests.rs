@@ -2118,3 +2118,20 @@ fn animation_sample_storage_observes_borrowed_banks_without_changes() {
     }
     assert_eq!(animation, before);
 }
+
+#[test]
+fn a_mesh_s_cull_distance_is_squared_after_each_assignment_and_is_the_engine_s_when_unset() {
+    let parsed = parse_descriptors(
+        b"objectTypes = { pdxmesh = { name = plain file = p.mesh }
+            pdxmesh = { name = far file = f.mesh cull_distance = 600 }
+            pdxmesh = { name = twice file = t.mesh cull_distance = 600 cull_distance = 50 }
+            pdxmesh = { name = bad file = b.mesh cull_distance = 20 cull_distance = x } }",
+        "gfx/models/meshes.gfx",
+    )
+    .unwrap();
+    let squared = |name: &str| parsed.meshes.get(name).unwrap().cull_distance_squared;
+    assert_eq!(squared("plain"), DEFAULT_CULL_DISTANCE_SQUARED);
+    assert_eq!(squared("far"), 600.0 * 600.0);
+    assert_eq!(squared("twice"), 50.0 * 50.0, "the last assignment");
+    assert_eq!(squared("bad"), 400.0 * 400.0, "a failed conversion squares the value it keeps");
+}

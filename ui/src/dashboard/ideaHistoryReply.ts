@@ -1,13 +1,22 @@
 import { isOrderedSpans } from '../charts/series.ts';
-import type { HourSpan, IdeaSpan, IdeaHistoryReply } from '../generated/dashboard';
 import { artworkEntry, keepDrawableIcons } from './artwork.ts';
-
-export type IdeaHistoryFirstView = IdeaHistoryReply & {
-  approximate?: HourSpan[];
-  held?: { hour: number; slot: number; countryId: number; spans: IdeaSpan[]; preparing: string[] };
-};
+import { contentTitle } from './contentTitles.ts';
+import type { Artwork, IdeaHistoryReply, IdeaInfo } from '../generated/dashboard';
 
 export type IdeaTooltipData = Pick<IdeaHistoryReply, 'ideas' | 'artwork' | 'modifiers' | 'texts'>;
+
+export const NAME_NOT_RECORDED = 'Name not recorded';
+
+/** An idea's name: its artwork's, else "Name not recorded" where the recording says why (`ideaNameMissing`), else
+ * `unavailable`. The reason names lookup keys, so it belongs in a tooltip, never in the name. */
+export function ideaName(art: Artwork | undefined, info: IdeaInfo | undefined, unavailable: string): string {
+  return contentTitle(art?.name, art?.token ?? info?.token, info?.nameMissing ? NAME_NOT_RECORDED : unavailable);
+}
+
+/** Why an idea shown without a name has none, for its tooltip; null when it is named or no reason is given. */
+export function ideaNameMissing(art: Artwork | undefined, info: IdeaInfo | undefined): string | null {
+  return art?.name == null && info?.nameMissing ? `${NAME_NOT_RECORDED}: ${info.nameMissing}` : null;
+}
 
 /** Shared tooltip inputs can accompany another history product. Validate their
  * effect arrays before the tooltip walks them; unrenderable art keeps its text. */
@@ -25,7 +34,8 @@ function isIdeaTooltipData(data: unknown): data is IdeaTooltipData {
     && Array.isArray(value.targeted) && value.targeted.every(group) && Array.isArray(value.equipment) && value.equipment.every(group) && strings(value.tooltips);
   const ok = object(reply) && Array.isArray(reply.ideas) && reply.ideas.every(info => object(info) && typeof info.token === 'string'
     && nullableText(info.category) && nullableText(info.slot) && typeof info.law === 'boolean' && typeof info.designer === 'boolean'
-    && typeof info.effectsKnown === 'boolean' && nullableText(info.unknown) && Array.isArray(info.effects) && info.effects.every(line)
+    && typeof info.effectsKnown === 'boolean' && nullableText(info.unknown)
+    && nullableText(info.nameMissing) && Array.isArray(info.effects) && info.effects.every(line)
     && Array.isArray(info.research) && info.research.every(line) && Array.isArray(info.targeted) && info.targeted.every(group)
     && Array.isArray(info.equipment) && info.equipment.every(group) && Array.isArray(info.traits) && info.traits.every(trait) && strings(info.tooltips))
     && Array.isArray(reply.artwork) && reply.artwork.every(artworkEntry)
@@ -43,18 +53,15 @@ export function validateIdeaTooltipData(data: unknown): IdeaTooltipData {
 }
 
 /** Checks the reply's shape before the widget reads it. */
-export function validateIdeaHistoryReply(data: unknown): IdeaHistoryFirstView {
-  const reply = data as IdeaHistoryFirstView;
+export function validateIdeaHistoryReply(data: unknown): IdeaHistoryReply {
+  const reply = data as IdeaHistoryReply;
   const ok = typeof reply === 'object' && reply != null && Array.isArray(reply.spans) && Array.isArray(reply.holders)
     && reply.holders.every(holder => typeof holder?.token === 'string' && typeof holder.name === 'string' && typeof holder.characterToken === 'string' && Number.isInteger(holder.character) && typeof holder.artwork === 'object' && holder.artwork != null)
-    && Array.isArray(reply.categories) && Array.isArray(reply.unobserved) && Array.isArray(reply.warnings)
+    && Array.isArray(reply.categories) && Array.isArray(reply.unobserved) && isOrderedSpans(reply.unobserved) && Array.isArray(reply.warnings)
     && Array.isArray(reply.identityStarts) && reply.identityStarts.every(hour => Number.isInteger(hour))
     && isIdeaTooltipData(reply)
     && reply.spans.every(span => typeof span.token === 'string' && Number.isInteger(span.firstHour) && Number.isInteger(span.lastHour) && span.firstHour <= span.lastHour);
-  if (!ok || reply.approximate !== undefined && !isOrderedSpans(reply.approximate)
-    || reply.held !== undefined && (!Number.isInteger(reply.held.hour) || !Number.isInteger(reply.held.slot) || !Number.isInteger(reply.held.countryId) || !Array.isArray(reply.held.spans)
-      || !reply.held.spans.every(span => typeof span.token === 'string' && span.firstHour === reply.held!.hour && span.lastHour === reply.held!.hour)
-      || !Array.isArray(reply.held.preparing) || !reply.held.preparing.every(field => typeof field === 'string'))) throw new Error('The idea history reply is malformed.');
+  if (!ok) throw new Error('The idea history reply is malformed.');
   keepDrawableIcons(reply.artwork);
   return reply;
 }

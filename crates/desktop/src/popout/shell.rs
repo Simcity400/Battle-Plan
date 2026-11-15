@@ -27,13 +27,18 @@ use windows_sys::Win32::{
 pub enum Event {
     /// The client area's new physical size.
     Resized { width: u32, height: u32 },
-    /// The window is gone: closed from the desktop app, by Alt+F4 or with the session.
+    /// Alt+F4 or the system asked the window to close. It stays until its owner drops it, once
+    /// the viewer drawing in its child window has let go of its surface.
+    CloseRequested,
+    /// The window is gone.
     Closed,
 }
 
 type Callback = Arc<dyn Fn(Event) + Send + Sync>;
 
 const NEXT_MONITOR: u32 = WM_APP + 1;
+/// Destroys the window, on its own thread: its owner is done with it.
+const RETIRE: u32 = WM_APP + 2;
 const CLASS: &str = "HOI4ReplayPopOutMap";
 /// The resource id the desktop build gives the app icon.
 const APP_ICON: u16 = 32512;
@@ -98,6 +103,15 @@ impl Shell {
         }
     }
 
+    /// Hides the window without waiting for its thread.
+    pub fn hide(&self) {
+        let hwnd = self.hwnd();
+        if hwnd != 0 {
+            // SAFETY: as above.
+            unsafe { ShowWindowAsync(hwnd as HWND, SW_HIDE) };
+        }
+    }
+
     /// Brings the window to the front of the desktop.
     pub fn raise(&self) {
         let hwnd = self.hwnd();
@@ -112,12 +126,12 @@ impl Shell {
 }
 
 impl Drop for Shell {
-    /// Closes the window and waits for its thread.
+    /// Destroys the window and waits for its thread.
     fn drop(&mut self) {
         let hwnd = self.hwnd();
         if hwnd != 0 {
             // SAFETY: as above.
-            unsafe { PostMessageW(hwnd as HWND, WM_CLOSE, 0, 0) };
+            unsafe { PostMessageW(hwnd as HWND, RETIRE, 0, 0) };
         }
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
@@ -395,7 +409,12 @@ unsafe extern "system" fn window_proc(
                 }
                 0
             }
-            WM_CLOSE => {
+            // Destroying the window destroys the viewer's child window, on which its surface is made.
+            WM_CLOSE if !state.is_null() => {
+                ((*state).callback)(Event::CloseRequested);
+                0
+            }
+            WM_CLOSE | RETIRE => {
                 DestroyWindow(hwnd);
                 0
             }

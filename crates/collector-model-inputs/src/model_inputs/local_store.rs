@@ -141,7 +141,7 @@ pub fn capture(
     // The walked country's held entry.
     let current = Cell::new(None::<usize>);
     let mut stored = Ok(());
-    let walk = native::walk_local_subunits_selected_growing(
+    let walk = native::walk_local_subunits_selected(
         memory,
         base,
         game_state,

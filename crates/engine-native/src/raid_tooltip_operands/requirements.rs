@@ -152,9 +152,9 @@ mod tests {
             put(p + definition::TOKEN, &(token as u32).to_le_bytes());
             put(p + definition::IS_REAL, &[active]);
         }
-        let mut rows = [Row::default(); 2];
+        let mut rows = vec![Row::default(); 2];
         let mut sink = Sink {
-            rows: crate::walk::Buffer::Fixed(&mut rows),
+            rows: crate::walk::Buffer::Growing(&mut rows),
             required: 0,
             raid: 0,
             ordinal: 0,
@@ -190,9 +190,9 @@ mod tests {
             word(&mut bytes, equipment, eq::VTABLE_RVA.0 as u64);
             word(&mut bytes, equipment + eq::TOKEN, token);
         }
-        let run = |bytes: &[u8], rows: &mut [Row]| {
+        let run = |bytes: &[u8], rows: &mut Vec<Row>| {
             let mut sink = Sink {
-                rows: crate::walk::Buffer::Fixed(rows),
+                rows: crate::walk::Buffer::Growing(rows),
                 required: 0,
                 raid: definition_key(101),
                 ordinal: 0,
@@ -206,10 +206,13 @@ mod tests {
             )
             .map(|()| sink.required)
         };
-        let mut rows = [Row::default(); 3];
+        let mut rows = vec![Row::default(); 3];
         assert_eq!(run(&bytes, &mut rows), Ok(3));
-        assert_eq!(rows.map(|r| (r.key, r.raw)), [(0, 2), (900, 0), (7, 0)]);
-        assert_eq!(run(&bytes, &mut []), Ok(3));
+        assert_eq!(
+            rows.iter().map(|r| (r.key, r.raw)).collect::<Vec<_>>(),
+            [(0, 2), (900, 0), (7, 0)]
+        );
+        assert_eq!(run(&bytes, &mut Vec::new()), Ok(3));
         word(&mut bytes, second + 0x20, a as u64);
         assert_eq!(
             run(&bytes, &mut rows),
@@ -238,9 +241,9 @@ mod tests {
         word(&mut bytes, 0x10, 0x100);
         word(&mut bytes, 0x100, 0x100);
         bytes[0x119] = 1;
-        let mut rows = [Row::default(); 1];
+        let mut rows = vec![Row::default(); 1];
         let mut sink = Sink {
-            rows: crate::walk::Buffer::Fixed(&mut rows),
+            rows: crate::walk::Buffer::Growing(&mut rows),
             required: 0,
             raid: definition_key(11),
             ordinal: 0,

@@ -513,7 +513,6 @@ fn copy(
     capacities: &Capacities,
 ) -> (Captured, ProjectsJob) {
     let mut job = ProjectsJob::new();
-    job.worker_growth = false;
     job.log = RawLog::new(1 << 20, 48 << 20);
     job.census.reserve_exact(capacities.program_candidates);
     job.statuses.reserve_exact(capacities.program_candidates);
@@ -524,10 +523,7 @@ fn copy(
         game_state,
         active: true,
     };
-    while !copy_projects_refresh(memory, context, &mut job).raw_ok {
-        assert!(job.log.overflowed);
-        job.grow();
-    }
+    assert!(copy_projects_refresh(memory, context, &mut job).raw_ok);
     let mut captured = Captured::with_capacities(capacities);
     captured.decode_projects_payload(kit::BASE, &job, &mut [0; RAW.len()]);
     (captured, job)
@@ -548,13 +544,7 @@ fn direct(memory: &impl Memory, game_state: usize, capacities: &Capacities) -> C
     captured.names.len = programs.bytes_len;
     captured.names.required = programs.required_bytes;
     captured.required_candidates = programs.required_candidates;
-    let (projects, histories) = nproject_cproject::walk_with_history(
-        memory,
-        kit::BASE,
-        game_state,
-        &mut captured.projects.rows,
-        &mut captured.history.rows,
-    );
+    let (projects, histories) = nproject_cproject::walk_with_history_buffer(memory, kit::BASE, game_state, engine_native::walk::Buffer::Growing(&mut captured.projects.rows), engine_native::walk::Buffer::Growing(&mut captured.history.rows));
     captured.projects.outcome = bounded(projects, captured.projects.rows.len());
     captured.history.outcome = bounded(histories, captured.history.rows.len());
     captured.breakthroughs.outcome = bounded(
@@ -618,21 +608,20 @@ fn scaled_copy_matches_direct_walks_and_the_recorded_digests() {
         let label = format!("{countries} countries");
         assert_equivalent(&space, &capacities(countries as usize), &label, golden);
     }
-    // Every table truncated by capacity: omitted rows read no state or history.
-    let mut truncating = capacities(440);
-    truncating.rows[..4].copy_from_slice(&[100, 5_000, 40, 500]);
-    truncating.program_names = 400;
+    // Every table starting short of its rows grows to the full digest.
+    let mut short = capacities(440);
+    short.rows[..4].copy_from_slice(&[100, 5_000, 40, 500]);
+    short.program_names = 400;
     let space = space(440, 50);
-    let golden = TRUNCATED_GOLDEN;
-    assert_equivalent(&space, &truncating, "truncating capacities", golden);
-    let reference = direct(&space.memory(), space.game_state, &truncating);
+    assert_equivalent(&space, &short, "short starting storage", 0xe6d0_2bef_e557_b1b6);
+    let reference = direct(&space.memory(), space.game_state, &short);
     for outcome in [
         reference.programs.outcome,
         reference.projects.outcome,
         reference.history.outcome,
         reference.breakthroughs.outcome,
     ] {
-        assert!(matches!(outcome, Outcome::Truncated { .. }), "{outcome:?}");
+        assert!(matches!(outcome, Outcome::Rows { .. }), "{outcome:?}");
     }
 }
 
@@ -644,13 +633,7 @@ fn live_project_demand_and_owned_decode_growth_keep_mod_sized_pools() {
     capacity
         .presize(&memory, kit::BASE, space.game_state)
         .unwrap();
-    let (expected, history) = nproject_cproject::walk_with_history(
-        &memory,
-        kit::BASE,
-        space.game_state,
-        &mut [],
-        &mut [],
-    );
+    let (expected, history) = nproject_cproject::walk_with_history_buffer(&memory, kit::BASE, space.game_state, engine_native::walk::Buffer::Count, engine_native::walk::Buffer::Count);
     let demand = |outcome| match outcome {
         Outcome::Rows { len } => len,
         Outcome::Truncated { len, unread_rows } => len + unread_rows as usize,
@@ -910,7 +893,7 @@ fn projects_copy_bench() {
 
 /// Digests of the direct typed walks before the batched copy, except where
 /// noted.
-const TRUNCATED_GOLDEN: u64 = 0xeabc_6c9a_682a_f581;
+
 const HISTORY_GOLDEN: u64 = 0x3d00_8951_bdf6_eb40;
 const PROGRAMS_GOLDEN: u64 = 0x345b_47ce_caa9_ee9c;
 const LINKS_GOLDEN: u64 = 0xa7fe_1f61_4eee_5ce6;

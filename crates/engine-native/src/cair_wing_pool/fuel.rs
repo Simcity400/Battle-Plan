@@ -199,18 +199,18 @@ impl<'a, M: Memory> Reader<'a, M> {
         base: usize,
         game_state: usize,
         countries: &'a ccountry::Reader<'a, M>,
-        country_terms: &'a mut [CountryTerms],
-        aces: &'a mut [AceSlot],
-        forecasts: &'a mut [ForecastSlot],
+        country_terms: &'a mut Vec<CountryTerms>,
+        aces: &'a mut Vec<AceSlot>,
+        forecasts: &'a mut Vec<ForecastSlot>,
     ) -> Self {
         Self::new_buffers(
             memory,
             base,
             game_state,
             countries,
-            Buffer::Fixed(country_terms),
-            Buffer::Fixed(aces),
-            Buffer::Fixed(forecasts),
+            Buffer::Growing(country_terms),
+            Buffer::Growing(aces),
+            Buffer::Growing(forecasts),
         )
     }
 

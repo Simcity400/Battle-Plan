@@ -65,8 +65,8 @@ fn a_load_without_its_origin_folds_its_first_hour_as_a_gap() {
             &frame,
             LAND,
             viewer.slot,
-            &viewer.links,
-            viewer.relations.as_ref().map_err(|reason| *reason),
+            &viewer.inputs.links,
+            viewer.inputs.relations.as_ref().map_err(|reason| *reason),
             Some(index.shared.as_ref()),
         )
         .unwrap()
@@ -1022,8 +1022,8 @@ fn fold_for_aaa(hours: &[DecodedFrame]) -> (BTreeMap<u64, Engaged>, Provenance) 
         last,
         LAND,
         viewer.slot,
-        &viewer.links,
-        viewer.relations.as_ref().map_err(|reason| *reason),
+        &viewer.inputs.links,
+        viewer.inputs.relations.as_ref().map_err(|reason| *reason),
         Some(index.shared.as_ref()),
     )
     .unwrap()
@@ -1063,8 +1063,8 @@ fn a_load_rebuilt_flag_reports_its_provenance() {
             &frames[1],
             LAND,
             viewer.slot,
-            &viewer.links,
-            viewer.relations.as_ref().map_err(|reason| *reason),
+            &viewer.inputs.links,
+            viewer.inputs.relations.as_ref().map_err(|reason| *reason),
             index,
         )
         .unwrap()
@@ -1095,8 +1095,8 @@ fn a_load_rebuilt_flag_reports_its_provenance() {
             &unread,
             LAND,
             viewer.slot,
-            &viewer.links,
-            viewer.relations.as_ref().map_err(|reason| *reason),
+            &viewer.inputs.links,
+            viewer.inputs.relations.as_ref().map_err(|reason| *reason),
             Some(index.shared.as_ref()),
         )
         .unwrap(),

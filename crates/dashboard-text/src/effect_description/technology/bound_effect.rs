@@ -29,7 +29,7 @@ impl Renderer<'_, '_, '_> {
             self.complete::<tables::TechnologyDefinitions>(TECHNOLOGY_ID)?,
             |row| c_string(&row.id).eq_ignore_ascii_case(c_string(&template.id)),
         )?
-        .ok_or("TechnologyDefinitions lacks bound technology identity")?;
+        .ok_or("technology definitions lacks bound technology identity")?;
         // The key is the country, then the database index.
         let status = self
             .complete::<tables::ResearchTechnologies>(0)?
@@ -39,7 +39,7 @@ impl Renderer<'_, '_, '_> {
                     && world.slot((key >> 32) as u32) == Some(country)
             });
         if !status {
-            return Err("ResearchTechnologies lacks bound country's technology status".into());
+            return Err("research technologies lacks bound country's technology status".into());
         }
         if let Some(why) = &catalog.effect_refusal {
             return Err(why.clone());
@@ -148,7 +148,7 @@ impl Renderer<'_, '_, '_> {
                 let features = each(self.complete::<tables::SimulationFeatures>(DLC_MASK)?)
                     .next()
                     .transpose()?
-                    .ok_or("SimulationFeatures absent")?;
+                    .ok_or("simulation features absent")?;
                 if features.dlc_mask & 0x80 == 0 {
                     continue;
                 }

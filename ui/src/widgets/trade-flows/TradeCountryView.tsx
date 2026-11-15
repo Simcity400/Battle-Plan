@@ -1,12 +1,13 @@
-import type { useTradeFlows } from './useTradeFlows';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo } from 'react';
 import DrillParts from '../../charts/drill/DrillParts';
-import type { DrillPart } from '../../charts/drill/DrillParts';
+import type { DrillPart, LiveDrillParts } from '../../charts/drill/DrillParts';
+import { mapLive } from '../../charts/live';
+import LiveText from '../../charts/LiveText';
+import type { LiveHour } from './TradeDrillView';
 import { dayLabel, drawBands, drawPlayhead, drawValueRule } from '../../charts/draw';
-import { drawApproximateSpans, summaryFits } from '../../charts/chartSummary';
 import Legend from '../../charts/Legend';
 import type { LegendItem } from '../../charts/Legend';
-import { compactStack, compactStackExtent, forEachCompactStackSegment } from '../../charts/stack';
+import { compactStack, compactStackExtent, forEachCompactStackSegment, forEachJoinedSegment } from '../../charts/stack';
 import { heldStackSegment } from '../../charts/race/countryRace';
 import TimeChart from '../../charts/TimeChart';
 import type { ChartLayer } from '../../charts/TimeChart';
@@ -20,17 +21,19 @@ import type { NameAt } from '../../dashboard/countryNamesAt';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import type { BoundTrack } from '../../dashboard/model';
 import type { HourSpan, ResourceInfo } from '../../generated/dashboard';
-import { preparedContributionStack, contributionHistory, contributionMeasureExtent, contributionMeasureModel, forEachContributionMeasureSegment } from './tradeDrill';
+import { contributionHistory, contributionMeasureExtent, contributionMeasureModel, forEachContributionMeasureSegment } from './tradeDrill';
 import { bandGroups, countryParts, countryTotal, countryTrade, divergingExtent, mergedBands, mirrored, partnerFact } from './tradeCountry';
 import type { CountryPart, TradeDirection } from './tradeCountry';
 import { coverageNote, knownSpanAt, measureNote, resourceName } from './tradeData';
 import type { Measure, TradeCountryFact, TradeData } from './tradeData';
 import { motionOf } from '../../charts/easing.ts';
+import { useChangedState } from '../../dashboard/changedState.ts';
 
 /** Partner lists longer than this scroll in a fixed window of rows. */
 const PLAIN_ROWS = 40;
 const DIRECTIONS: readonly TradeDirection[] = ['imports', 'exports'];
 const TITLES: Record<TradeDirection, string> = { imports: 'Imports', exports: 'Exports' };
+const sameIds = (a: readonly string[], b: readonly string[]) => a === b || a.length === b.length && a.every((id, index) => id === b[index]);
 
 /** The resource key the diagram and this view share: each resource's icon and colour. */
 export function resourceLegendItems(resources: readonly ResourceInfo[], colours: ReadonlyMap<number, string>, other: string): LegendItem[] {
@@ -41,31 +44,30 @@ export function resourceLegendItems(resources: readonly ResourceInfo[], colours:
 /** One country's whole trade: what it imported and exported, by resource and by
  * partner, at the drill's day for the widget's measure, and the same over time with
  * exports above the axis and imports below it. */
-export default function TradeCountryView({ prepared, holder, trade, resources, track, runtime, measure, from, hour, extent, playhead, colours, tokens, active, onPick, onContextMenu }: {
+export default function TradeCountryView({ holder, trade, resources, track, runtime, measure, from, hour, live, extent, colours, tokens, active, onPick, onContextMenu }: {
   holder: string; trade: TradeData; resources: ReadonlySet<number> | null; track: BoundTrack; runtime: WidgetRuntime; measure: Measure; from: number;
-  hour: number | null; extent: [number, number]; playhead: number | null;
+  hour: number | null; live: LiveHour | null; extent: [number, number];
   colours: ReadonlyMap<number, string>; tokens: ChartTokens; active: boolean; onPick: (hour: number) => void;
   onContextMenu: (hour: number, x: number, y: number) => void;
-  prepared?: Pick<ReturnType<typeof useTradeFlows>, 'onSummaryView' | 'onHover' | 'navigateFlows' | 'keyboardHour' | 'keyboardRevision' | 'hasExactHour'>;
 }) {
   const known: readonly HourSpan[] = trade.reply.known;
   const decimals = trade.reply.decimals;
   const scale = 10 ** decimals;
   const country = useMemo(() => countryTrade(trade, holder, resources), [trade, holder, resources]);
-  const navigate = prepared?.navigateFlows;
-  const onNavigateHour = useMemo(() => navigate?.([...country.imports, ...country.exports].map(flow => flow.key)), [navigate, country]);
-  const [visible, setVisible] = useState<Record<TradeDirection, readonly string[]>>({ imports: [], exports: [] });
+  const [visible, setVisible] = useChangedState<Record<TradeDirection, readonly string[]>>({ imports: [], exports: [] });
   const onVisible = useMemo(() => ({
-    imports: (ids: readonly string[]) => setVisible(before => ({ ...before, imports: ids })),
-    exports: (ids: readonly string[]) => setVisible(before => ({ ...before, exports: ids })),
+    imports: (ids: readonly string[]) => setVisible(before => sameIds(before.imports, ids) ? before : { ...before, imports: ids }),
+    exports: (ids: readonly string[]) => setVisible(before => sameIds(before.exports, ids) ? before : { ...before, exports: ids }),
   }), []);
-  const parts = useMemo(() => hour == null ? null : Object.fromEntries(DIRECTIONS.map(direction => [direction, {
-    total: countryTotal(country[direction], measure, from, hour, known),
-    delivered: measure === 'total' ? null : countryTotal(country[direction], 'total', from, hour, known),
-    partners: countryParts(country[direction], direction, 'partner', measure, from, hour, known),
-    resources: countryParts(country[direction], direction, 'resource', measure, from, hour, known),
+  const partsAt = useCallback((at: number) => Object.fromEntries(DIRECTIONS.map(direction => [direction, {
+    total: countryTotal(country[direction], measure, from, at, known),
+    delivered: measure === 'total' ? null : countryTotal(country[direction], 'total', from, at, known),
+    partners: countryParts(country[direction], direction, 'partner', measure, from, at, known),
+    resources: countryParts(country[direction], direction, 'resource', measure, from, at, known),
   }])) as Record<TradeDirection, { total: bigint | null; delivered: bigint | null; partners: CountryPart[]; resources: CountryPart[] }>,
-  [country, measure, from, hour, known]);
+  [country, measure, from, known]);
+  // Names are read at `hour` (the look grid's while following); the amounts at the head.
+  const parts = useMemo(() => hour == null ? null : partsAt(hour), [hour, partsAt]);
 
   // Names and flags for the partner rows on screen, dated to the day shown.
   const factHour = useCallback((fact: TradeCountryFact) => lookHour(track.branch, fact.hour, fact.firstHour)?.hour ?? fact.hour, [track.branch]);
@@ -83,7 +85,7 @@ export default function TradeCountryView({ prepared, holder, trade, resources, t
   const resourceInfo = useMemo(() => new Map(trade.reply.resources.map(item => [String(item.id), item])), [trade]);
   // Whole amounts as whole numbers, else to two decimals, as the diagram's tooltips.
   const amount = useCallback((raw: bigint) => formatAmount(raw, decimals), [decimals]);
-  const rows = useMemo(() => parts && Object.fromEntries(DIRECTIONS.map(direction => {
+  const rowsOf = useCallback((parts: ReturnType<typeof partsAt>) => Object.fromEntries(DIRECTIONS.map(direction => {
     const side = parts[direction];
     const total = side.total == null ? null : Number(side.total) / scale;
     const shown = new Set(visible[direction]);
@@ -100,10 +102,17 @@ export default function TradeCountryView({ prepared, holder, trade, resources, t
     });
     return [direction, { total, partners, byResource }];
   })) as Record<TradeDirection, { total: number | null; partners: DrillPart[]; byResource: DrillPart[] }>,
-  [parts, visible, facts, labels.labelAt, factHour, amount, scale, resourceInfo, colours, tokens.muted]);
+  [visible, facts, labels.labelAt, factHour, amount, scale, resourceInfo, colours, tokens.muted]);
+  const rows = useMemo(() => parts && rowsOf(parts), [parts, rowsOf]);
+  // Following, each list's amounts and order are painted at the head.
+  const liveRows = useMemo(() => live ? mapLive(live, at => rowsOf(partsAt(at))) : null, [live, rowsOf, partsAt]);
+  const liveList = useMemo(() => {
+    if (!liveRows) return null;
+    const list = (direction: TradeDirection, which: 'partners' | 'byResource'): LiveDrillParts => mapLive(liveRows, rows => ({ parts: rows[direction][which], total: rows[direction].total }));
+    return { imports: { partners: list('imports', 'partners'), byResource: list('imports', 'byResource') }, exports: { partners: list('exports', 'partners'), byResource: list('exports', 'byResource') } };
+  }, [liveRows]);
 
   // Over time: the same measure, each deal a band in its resource's colour.
-  const dense = useMemo(() => ({ imports: preparedContributionStack(country.imports), exports: preparedContributionStack(country.exports) }), [country]);
   const stacks = useMemo(() => measure === 'current' ? {
     imports: compactStack(country.imports.map(flow => contributionHistory(flow, known))),
     exports: compactStack(country.exports.map(flow => contributionHistory(flow, known))),
@@ -127,25 +136,16 @@ export default function TradeCountryView({ prepared, holder, trade, resources, t
           const merged = mergedBands(piece, groups);
           return direction === 'imports' ? mirrored(merged) : merged;
         };
-        const summary = dense[direction];
-        if (summary && !summaryFits(frame, summary, end)) continue;
-        if (summary) drawApproximateSpans(ctx, frame, summary.approximate, end, () => forEachCompactStackSegment(summary.model, frame.x[0], end, minHours, piece => {
-          const geometry = measure === 'current' ? heldStackSegment(piece) : piece;
-          drawBands(ctx, frame, chartTokens, geometry.hours, place(geometry).bands, colors, geometry);
-        }, summary.sample));
-        else if (stacks) forEachCompactStackSegment(stacks[direction], frame.x[0], end, minHours, piece => {
-          const held = heldStackSegment(piece);
-          drawBands(ctx, frame, chartTokens, held.hours, place(held).bands, colors, held);
-        });
-        else if (measured) forEachContributionMeasureSegment(measured[direction], frame.x[0], end, minHours,
+        if (stacks) forEachJoinedSegment(piece => forEachCompactStackSegment(stacks[direction], frame.x[0], end, minHours, segment => piece(heldStackSegment(segment))),
+          held => drawBands(ctx, frame, chartTokens, held.hours, place(held).bands, colors, held));
+        else if (measured) forEachJoinedSegment(piece => forEachContributionMeasureSegment(measured[direction], frame.x[0], end, minHours, piece),
           piece => drawBands(ctx, frame, chartTokens, piece.hours, place(piece).bands, colors, piece));
       }
       drawValueRule(ctx, frame, chartTokens, 0);
     },
-    extent: x => dense.exports || dense.imports ? divergingExtent(dense.exports ? compactStackExtent(dense.exports.model, x[0], x[1]) : null, dense.imports ? compactStackExtent(dense.imports.model, x[0], x[1]) : null)
-      : stacks ? divergingExtent(compactStackExtent(stacks.exports, x[0], x[1]), compactStackExtent(stacks.imports, x[0], x[1]))
+    extent: x => stacks ? divergingExtent(compactStackExtent(stacks.exports, x[0], x[1]), compactStackExtent(stacks.imports, x[0], x[1]))
       : measured ? divergingExtent(contributionMeasureExtent(measured.exports, x[0], x[1]), contributionMeasureExtent(measured.imports, x[0], x[1])) : null,
-  }], [dense, stacks, measured, bands, measure]);
+  }], [stacks, measured, bands]);
   const keyHours = useMemo(() => {
     const hours = stacks ? [...stacks.imports.hours, ...stacks.exports.hours] : measured ? [...measured.imports.hours, ...measured.exports.hours] : [];
     return [...new Set(hours)].sort((a, b) => a - b);
@@ -157,8 +157,7 @@ export default function TradeCountryView({ prepared, holder, trade, resources, t
   }, [country, trade]);
   const legend = useMemo(() => resourceLegendItems(shownResources, colours, tokens.muted), [shownResources, colours, tokens.muted]);
   const totalLabel = measure === 'total' ? 'Delivered' : measure === 'average' ? 'Average per trading day' : 'Per day';
-  const note = hour == null ? undefined : coverageNote(trade.reply, measure, from, hour);
-  const cumulativePending = trade.flows.some(flow => flow.prepared?.cumulativePending);
+  const note = hour == null || live ? undefined : coverageNote(trade.reply, measure, from, hour);
   const tooltipRows = useCallback((at: number): TooltipRow[] => DIRECTIONS.flatMap((direction, index) => {
     const total = countryTotal(country[direction], measure, from, at, known);
     const byResource = countryParts(country[direction], direction, 'resource', measure, from, at, known)
@@ -172,11 +171,18 @@ export default function TradeCountryView({ prepared, holder, trade, resources, t
   }), [country, measure, from, known, trade.resourceOrder, resourceInfo, colours, amount]);
 
   const empty = (direction: TradeDirection) => `No ${direction} ${measure === 'current' ? 'on this day' : 'in this time'}.`;
-  const pending = hour != null && !!prepared?.hasExactHour && !prepared.hasExactHour(hour);
   return <div className="trade-country">
-    <p className="drill-empty">{measureNote(measure)}{hour != null ? (measure === 'current' ? ` · ${dayLabel(hour)}` : ` · ${dayLabel(from)} – ${dayLabel(hour)}`) : ''}
+    <p className="drill-empty">{measureNote(measure)}{live ? <> · <LiveText live={live.texts} at="day" /></> : hour != null ? (measure === 'current' ? ` · ${dayLabel(hour)}` : ` · ${dayLabel(from)} – ${dayLabel(hour)}`) : ''}
       {resources ? ' · Chosen resources only' : ''}.</p>
-    {pending ? <p className="drill-empty">Loading trade amounts…</p> : hour == null || !parts || !rows ? <p className="drill-empty">Choose a day.</p> : <div className="trade-country-sides">
+    {hour == null || !parts || !rows ? <p className="drill-empty">Choose a day.</p> : liveList && live ? <div className="trade-country-sides">
+      {DIRECTIONS.map(direction => <section key={direction} className="trade-country-side" aria-label={TITLES[direction]}>
+        <header><strong>{TITLES[direction]}</strong><span className="drill-day">{totalLabel}</span><b><LiveText live={live.texts} at={`${direction}:total`} /></b></header>
+        <p className="drill-empty"><LiveText live={live.texts} at={`${direction}:state`} /></p>
+        <DrillParts parts={rows[direction].byResource} live={liveList[direction].byResource} positiveBars signedShares active={active} total={rows[direction].total} format={String} />
+        <DrillParts parts={rows[direction].partners} live={liveList[direction].partners} positiveBars signedShares active={active} total={rows[direction].total} format={String}
+          virtual={rows[direction].partners.length > PLAIN_ROWS} onVisible={onVisible[direction]} />
+      </section>)}
+    </div> : <div className="trade-country-sides">
       {DIRECTIONS.map(direction => {
         const side = parts[direction];
         const shown = rows[direction];
@@ -193,22 +199,38 @@ export default function TradeCountryView({ prepared, holder, trade, resources, t
         </section>;
       })}
     </div>}
-    {note && <p className="drill-empty">{note}</p>}
-    {cumulativePending && <p className="drill-empty">Trade totals and averages are still being prepared.</p>}
+    {live ? <p className="drill-empty"><LiveText live={live.texts} at="note" /></p> : note && <p className="drill-empty">{note}</p>}
     <Legend always label="Resources" items={legend} windowed={legend.length > tokens.categories.length} />
     <p className="drill-empty">{measureNote(measure)} over time: exports above the line, imports below it.</p>
-    {!!(dense.imports?.approximate.length || dense.exports?.approximate.length) && <p className="chart-line-key"><i className="is-dashed" aria-hidden="true" />Approximate</p>}
     <div className="trade-drill-chart">
       <TimeChart label={`${measureNote(measure)} over time, exports above and imports below, by resource`} extent={extent} branchStart={track.branch.firstHour}
-        playhead={playhead} playback="cursor" afterPlayhead hoursPerSecond={motionOf(runtime.clock.getSnapshot())}
-        axes={{ xFrom: null, xTo: null, yMin: null, yMax: null, log: false }} layers={layers} onSummaryView={prepared?.onSummaryView} onHover={prepared?.onHover}
-        onNavigateHour={onNavigateHour} keyboardHour={prepared?.keyboardHour} keyboardRevision={prepared?.keyboardRevision} keyHours={keyHours}
+        playhead={live ? live.hour() : hour} liveHead={live ?? undefined} playback="cursor" afterPlayhead hoursPerSecond={motionOf(runtime.clock.getSnapshot())}
+        axes={{ xFrom: null, xTo: null, yMin: null, yMax: null, log: false }} layers={layers} keyHours={keyHours}
         formatValue={(value, ticks) => formatAxisValue(Math.abs(value), ticks.map(Math.abs))}
-        active={active} revision={dense.exports ?? dense.imports ?? stacks ?? measured} onPick={onPick} onContextMenu={onContextMenu}
-        overlay={(ctx, frame, chartTokens) => { if (hour != null) drawPlayhead(ctx, frame, chartTokens, hour); }}
-        tooltip={at => prepared?.hasExactHour && !prepared.hasExactHour(at) ? { title: dayLabel(at), rows: [{ label: 'Trade amounts', value: 'Loading...', tone: 'muted' }] } : knownSpanAt(known, at) < 0 && measure === 'current'
+        active={active} revision={stacks ?? measured} onPick={onPick} onContextMenu={onContextMenu}
+        overlay={live ? undefined : (ctx, frame, chartTokens) => { if (hour != null) drawPlayhead(ctx, frame, chartTokens, hour); }}
+        tooltip={at => knownSpanAt(known, at) < 0 && measure === 'current'
           ? { title: dayLabel(at), rows: [{ label: 'Trade', value: 'Not recorded', tone: 'muted' }] }
           : { title: dayLabel(at), rows: tooltipRows(at) }} />
     </div>
   </div>;
+}
+
+/** The texts a following country view paints at the head: each side's total and its state line. */
+export function countryTexts(trade: TradeData, holder: string, resources: ReadonlySet<number> | null, measure: Measure, from: number) {
+  const country = countryTrade(trade, holder, resources);
+  const known = trade.reply.known;
+  return (at: number) => {
+    const texts = new Map<string, string>();
+    for (const direction of DIRECTIONS) {
+      const total = countryTotal(country[direction], measure, from, at, known);
+      const delivered = measure === 'total' ? null : countryTotal(country[direction], 'total', from, at, known);
+      const traded = countryParts(country[direction], direction, 'resource', measure, from, at, known).length > 0;
+      texts.set(`${direction}:total`, total == null ? 'Not recorded' : formatAmount(total, trade.reply.decimals));
+      texts.set(`${direction}:state`, total == null ? `Trade deals were not recorded ${measure === 'current' ? 'on this day' : 'in this time'}.`
+        : !traded ? `No ${direction} ${measure === 'current' ? 'on this day' : 'in this time'}.`
+        : delivered != null ? `${formatAmount(delivered, trade.reply.decimals)} delivered ${dayLabel(from)} – ${dayLabel(at)}` : '');
+    }
+    return texts;
+  };
 }

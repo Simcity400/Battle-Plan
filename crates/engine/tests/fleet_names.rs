@@ -65,12 +65,12 @@ fn named_fleet_walk_keeps_all_countries_empty_bytes_and_independent_refusals() {
     let invalid = world.base + engine_native::creference_registry::INVALID_REFERENCE_RVA.0;
     let mut rows = vec![cfleet::Row::default(); COUNT];
     let mut tasks = vec![ctask_force::Row::default(); COUNT];
-    let mut ships: [cship::Row; 0] = [];
+    let mut ships: Vec<cship::Row> = vec![];
     let mut names = Vec::new();
     let capture = |memory: &NamedMemory<'_>,
-                   rows: &mut [cfleet::Row],
-                   tasks: &mut [ctask_force::Row],
-                   ships: &mut [cship::Row],
+                   rows: &mut Vec<cfleet::Row>,
+                   tasks: &mut Vec<ctask_force::Row>,
+                   ships: &mut Vec<cship::Row>,
                    names: &mut Vec<u8>| {
         cfleet::walk_timed_with_names(
             memory,

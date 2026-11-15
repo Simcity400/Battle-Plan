@@ -60,29 +60,8 @@ pub struct ControllerRow {
     pub count: i8,
 }
 
-/// Reads the live roster into caller-owned rows and exact-byte storage. The
-/// first capacity miss ends the published prefix; remaining identities and
-/// string headers are checked to report the required capacity without guessing.
-/// Duplicate keys, invalid headers or faults make the entire table unavailable.
-/// Neither duplicate names nor duplicate countries imply duplicate players.
-pub fn walk(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut [Row],
-    names: &mut [u8],
-) -> NameWalk {
-    walk_buffer(
-        memory,
-        base,
-        game_state,
-        crate::walk::Buffer::Fixed(output),
-        crate::walk::Buffer::Fixed(names),
-    )
-}
-
 /// Worker storage grows from the original live roster and string descriptors.
-pub fn walk_growing(
+pub fn walk(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -193,20 +172,12 @@ pub fn walk_buffer(
     })
 }
 
-/// Reads the controller count independently for each authenticated canonical
-/// country. Alias slots publish no duplicate row. Native zero and signed values
-/// remain exact; server-dependent capping prevents a roster-count invariant.
-pub fn walk_controllers(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut [ControllerRow],
-) -> Outcome {
-    walk_controllers_buffer(memory, base, game_state, crate::walk::Buffer::Fixed(output))
+pub fn count_controllers(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
+    walk_controllers_buffer(memory, base, game_state, crate::walk::Buffer::Count)
 }
 
 /// Worker rows grow from the original country census before publication.
-pub fn walk_controllers_growing(
+pub fn walk_controllers(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -394,7 +365,7 @@ impl Literal {
                         "player string bytes unreadable",
                         "player string allocation failed",
                     ),
-                    crate::walk::Buffer::Fixed(_) => unreachable!(),
+                    crate::walk::Buffer::Count | crate::walk::Buffer::Exact(_) => unreachable!(),
                 };
             }
             output.ensure(
@@ -548,13 +519,13 @@ mod tests {
             GS + cgame_state::SAVED_PLAYER_RECORDS,
             &u64::MAX.to_le_bytes(),
         );
-        let mut rows = [Row::default(); 3];
-        let mut bytes = [0; 128];
+        let mut rows = vec![Row::default(); 3];
+        let mut bytes = vec![0; 128];
         let result = walk(&world.memory(), BASE, GS, &mut rows, &mut bytes);
         assert_eq!(result.outcome, Outcome::Rows { len: 3 });
-        assert_eq!(rows.map(|r| r.id), [i32::MIN, -2, i32::MAX]);
-        assert_eq!(rows.map(|r| r.country), [0, u32::MAX, u32::MAX]);
-        assert_eq!(rows.map(|r| r.flags), [255, 0, 9]);
+        assert_eq!(rows.iter().map(|r| r.id).collect::<Vec<_>>(), [i32::MIN, -2, i32::MAX]);
+        assert_eq!(rows.iter().map(|r| r.country).collect::<Vec<_>>(), [0, u32::MAX, u32::MAX]);
+        assert_eq!(rows.iter().map(|r| r.flags).collect::<Vec<_>>(), [255, 0, 9]);
         for row in &rows[..2] {
             assert_eq!(
                 &bytes[row.user_start..row.user_start + row.user_len],
@@ -574,34 +545,32 @@ mod tests {
     }
 
     #[test]
-    fn capacity_omits_whole_rows_and_reports_all_required_string_bytes() {
+    fn a_short_arena_grows_and_the_count_probe_reports_all_required_string_bytes() {
         let mut world = World::new(3);
         world.player(0, 1, 1, 1, b"A", b"BC");
         world.player(1, 2, 1, 1, &[0xf0; 256], b"D");
         world.player(2, 3, 2, 1, b"E", b"");
-        let mut rows = [Row::default(); 3];
-        let mut short = [0; 259];
+        let mut rows = vec![Row::default(); 3];
+        let mut short = vec![0; 259];
         assert_eq!(
             walk(&world.memory(), BASE, GS, &mut rows, &mut short),
             NameWalk {
-                outcome: Outcome::Truncated {
-                    len: 1,
-                    unread_rows: 2
-                },
-                bytes_len: 3,
+                outcome: Outcome::Rows { len: 3 },
+                bytes_len: 261,
                 required_bytes: 261,
             }
         );
         assert_eq!(&short[..3], b"ABC");
-        let mut exact = [0; 261];
+        assert_eq!(&short[3..259], &[0xf0; 256]);
+        assert_eq!(&short[259..261], b"DE");
         assert_eq!(
-            walk(&world.memory(), BASE, GS, &mut rows, &mut exact).outcome,
-            Outcome::Rows { len: 3 }
-        );
-        assert_eq!(&exact[3..259], &[0xf0; 256]);
-        assert_eq!(&exact[259..], b"DE");
-        assert_eq!(
-            walk(&world.memory(), BASE, GS, &mut [], &mut exact),
+            walk_buffer(
+                &world.memory(),
+                BASE,
+                GS,
+                crate::walk::Buffer::Count,
+                crate::walk::Buffer::Count,
+            ),
             NameWalk {
                 outcome: Outcome::Truncated {
                     len: 0,
@@ -609,14 +578,6 @@ mod tests {
                 },
                 bytes_len: 0,
                 required_bytes: 261,
-            }
-        );
-        let mut one_short = [0; 260];
-        assert_eq!(
-            walk(&world.memory(), BASE, GS, &mut rows, &mut one_short).outcome,
-            Outcome::Truncated {
-                len: 2,
-                unread_rows: 1
             }
         );
     }
@@ -627,10 +588,10 @@ mod tests {
         world.player(0, 1, 1, 0, b"", b"");
         world.player(1, 2, 1, 0, b"", b"");
         world.player(2, 2, 1, 0, b"", b"");
-        for capacity in 0..=3 {
-            let mut rows = [Row::default(); 3];
+        {
+            let mut rows = Vec::new();
             assert_eq!(
-                walk(&world.memory(), BASE, GS, &mut rows[..capacity], &mut []).outcome,
+                walk(&world.memory(), BASE, GS, &mut rows, &mut Vec::new()).outcome,
                 Outcome::Unavailable {
                     reason: "duplicate native player key"
                 }
@@ -638,7 +599,7 @@ mod tests {
         }
         world.player(2, -1, 0, 0, b"", b"");
         assert_eq!(
-            walk(&world.memory(), BASE, GS, &mut [], &mut []).outcome,
+            walk(&world.memory(), BASE, GS, &mut Vec::new(), &mut Vec::new()).outcome,
             Outcome::Unavailable {
                 reason: "live player has invalid native key -1"
             }
@@ -656,7 +617,7 @@ mod tests {
             let mut world = original.clone();
             world.put(GS + cgame_state::PLAYER_RECORDS + offset, &bytes);
             assert_eq!(
-                walk(&world.memory(), BASE, GS, &mut [], &mut []).outcome,
+                walk(&world.memory(), BASE, GS, &mut Vec::new(), &mut Vec::new()).outcome,
                 Outcome::Unavailable {
                     reason: "live player roster unreadable or invalid"
                 }
@@ -665,13 +626,13 @@ mod tests {
         let mut world = original.clone();
         world.put(GS + cgame_state::PLAYER_RECORDS, &0_u64.to_le_bytes());
         assert!(matches!(
-            walk(&world.memory(), BASE, GS, &mut [], &mut []).outcome,
+            walk(&world.memory(), BASE, GS, &mut Vec::new(), &mut Vec::new()).outcome,
             Outcome::Unavailable { .. }
         ));
         let mut world = original;
         world.put(HUMANS + STRIDE, &0_u64.to_le_bytes());
         assert_eq!(
-            walk(&world.memory(), BASE, GS, &mut [], &mut []).outcome,
+            walk(&world.memory(), BASE, GS, &mut Vec::new(), &mut Vec::new()).outcome,
             Outcome::Unavailable {
                 reason: "player vtable unreadable or mismatch"
             }
@@ -686,7 +647,7 @@ mod tests {
         let mut world = original.clone();
         world.put(string + 24, &14_u64.to_le_bytes());
         assert_eq!(
-            walk(&world.memory(), BASE, GS, &mut [], &mut []).outcome,
+            walk(&world.memory(), BASE, GS, &mut Vec::new(), &mut Vec::new()).outcome,
             Outcome::Unavailable {
                 reason: "player string header invalid"
             }
@@ -694,7 +655,7 @@ mod tests {
         let mut world = original.clone();
         world.put(HEAP + 0x400 + 16, &[1]);
         assert_eq!(
-            walk(&world.memory(), BASE, GS, &mut [], &mut []).outcome,
+            walk(&world.memory(), BASE, GS, &mut Vec::new(), &mut Vec::new()).outcome,
             Outcome::Unavailable {
                 reason: "player string terminator unreadable or invalid"
             }
@@ -702,7 +663,7 @@ mod tests {
         let mut world = original.clone();
         world.put(string, &u64::MAX.to_le_bytes());
         assert_eq!(
-            walk(&world.memory(), BASE, GS, &mut [], &mut []).outcome,
+            walk(&world.memory(), BASE, GS, &mut Vec::new(), &mut Vec::new()).outcome,
             Outcome::Unavailable {
                 reason: "player string address overflow"
             }
@@ -710,7 +671,7 @@ mod tests {
         let mut world = original;
         world.put(string, &0_u64.to_le_bytes());
         assert_eq!(
-            walk(&world.memory(), BASE, GS, &mut [], &mut []).outcome,
+            walk(&world.memory(), BASE, GS, &mut Vec::new(), &mut Vec::new()).outcome,
             Outcome::Unavailable {
                 reason: "player string pointer invalid"
             }
@@ -751,8 +712,8 @@ mod tests {
                 memory: world.memory(),
                 failed_byte,
             };
-            let mut rows = [Row::default(); 2];
-            let mut names = [0; 128];
+            let mut rows = vec![Row::default(); 2];
+            let mut names = vec![0; 128];
             assert_eq!(
                 walk(&memory, BASE, GS, &mut rows, &mut names),
                 NameWalk {
@@ -768,7 +729,7 @@ mod tests {
     fn controller_counts_use_canonical_slots_and_keep_signed_values() {
         let mut world = World::new(0);
         world.countries();
-        let mut rows = [ControllerRow::default(); 8];
+        let mut rows = vec![ControllerRow::default(); 8];
         assert_eq!(
             walk_controllers(&world.memory(), BASE, GS, &mut rows),
             Outcome::Rows { len: 4 }
@@ -794,16 +755,9 @@ mod tests {
                 },
             ]
         );
-        assert_eq!(
-            walk_controllers(&world.memory(), BASE, GS, &mut rows[..2]),
-            Outcome::Truncated {
-                len: 2,
-                unread_rows: 2
-            }
-        );
         // No live humans are needed to record the independent controller state.
         assert_eq!(
-            walk(&world.memory(), BASE, GS, &mut [], &mut []).outcome,
+            walk(&world.memory(), BASE, GS, &mut Vec::new(), &mut Vec::new()).outcome,
             Outcome::Rows { len: 0 }
         );
     }
@@ -814,14 +768,14 @@ mod tests {
         world.countries();
         world.put(GS + cgame_state::HUMAN_STATUS + 12, &5_u32.to_le_bytes());
         assert_eq!(
-            walk_controllers(&world.memory(), BASE, GS, &mut []),
+            walk_controllers(&world.memory(), BASE, GS, &mut Vec::new()),
             Outcome::Unavailable {
                 reason: "human controller count unreadable or outside array"
             }
         );
         world.put(GS + cgame_state::HUMAN_STATUS + 12, &(-1_i32).to_le_bytes());
         assert_eq!(
-            walk_controllers(&world.memory(), BASE, GS, &mut []),
+            walk_controllers(&world.memory(), BASE, GS, &mut Vec::new()),
             Outcome::Unavailable {
                 reason: "human controller array unreadable or invalid"
             }

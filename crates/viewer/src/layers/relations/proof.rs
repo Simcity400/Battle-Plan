@@ -1,0 +1,35 @@
+//! The relations layer's line of the proof tool: its index against today's type-icon index of the
+//! same hour (the recorded country), and against itself composed anew from the same mirrors.
+
+use super::Relations;
+use crate::{document::Document, layers::Layer, playback_cost::proof::Compared, playhead_host::mirror::Mirrors};
+use serde_json::{Value, json};
+use std::io;
+use viewer_foundation::map::perspective;
+
+pub(crate) fn make(_document: &Document) -> Box<dyn Layer> {
+    Box::new(Relations::new())
+}
+
+fn relations(layer: &dyn Layer) -> &Relations {
+    layer.any().downcast_ref::<Relations>().expect("the relations line's layer")
+}
+
+pub(crate) fn marked(layer: &dyn Layer) -> Vec<(&'static str, u64)> {
+    vec![("recomputes", relations(layer).recomputes())]
+}
+
+pub(crate) fn today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> {
+    let layer = relations(layer);
+    let tables = document.hour()?.hour_tables(&perspective::Choice::default(), None)?;
+    let today = tables.counters().type_tints();
+    let (differing, first) = layer.index().differ(today);
+    Ok(Compared { entries: today.len().max(layer.index().len()).max(1) as u64, differing, first, notes: json!({"countries": today.len()}) })
+}
+
+pub(crate) fn fresh(layer: &dyn Layer, mirrors: &Mirrors, _upstream: &crate::layers::Upstream<'_>) -> io::Result<Compared> {
+    let layer = relations(layer);
+    let fresh = layer.composed(mirrors);
+    let (differing, first) = layer.differ(&fresh);
+    Ok(Compared { entries: layer.index().len().max(1) as u64, differing, first, notes: Value::Null })
+}

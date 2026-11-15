@@ -32,7 +32,6 @@ use {
     super::equipment_graphics::legacy, super::model_labels, super::model_labels::Label,
     super::model_selection, super::model_selection::Group, super::model_selection::Template,
     installed_content_equipment_graphics::equipment_graphics::countries::ModelCountry,
-    viewer_foundation::map::perspective::Vision,
 };
 
 /// The prefix of the reason a stack whose drained rows name more than one
@@ -56,7 +55,7 @@ pub struct Inputs<'a, 'b> {
     pub conventional: &'a bridge::Prepared<'b>,
     pub countries: &'a BTreeMap<u32, ModelCountry>,
     pub links: &'a BTreeMap<u32, u32>,
-    pub definitions: &'a BTreeMap<u64, &'b VariantDefinitionRow>,
+    pub definitions: model_selection::Variants<'b>,
     /// Spells the definitions' equipment type tokens.
     pub tokens: &'a TokenNames<'b>,
     pub viewing_country_ref: u32,
@@ -213,7 +212,7 @@ fn evaluate<'a>(
                 u128::from(variant.handle),
                 u64::MAX,
             );
-            let definition = inputs.definitions.get(&variant.handle).ok_or_else(|| {
+            let definition = inputs.definitions.get(variant.handle).ok_or_else(|| {
                 format!(
                     "model roster variant {} lacks its definition",
                     variant.handle
@@ -411,9 +410,9 @@ pub fn creator_operands<'a>(
     ))
 }
 
-/// The viewing country's raw reference, for the roster the fallback reads.
-pub fn view_country_ref(frame: &DecodedFrame, vision: &Vision) -> Result<u32, String> {
-    let slot = vision.ours();
+/// The raw reference of the viewing country, whose canonical slot is `slot`, for the roster the
+/// fallback reads.
+pub fn view_country_ref(frame: &DecodedFrame, slot: u32) -> Result<u32, String> {
     let countries = frame
         .complete::<tables::Countries>()
         .map_err(|error| error.to_string())?;
@@ -579,7 +578,7 @@ fn source_label(inputs: &Inputs<'_, '_>, group: &Group<'_>, source: legacy::Sour
     );
     let definition = inputs
         .definitions
-        .get(&handle)
+        .get(handle)
         .ok_or_else(|| format!("variant {handle} lacks its definition"))?;
     let key = inputs.content.equipment_key(inputs.tokens, definition)?;
     let equipment = inputs

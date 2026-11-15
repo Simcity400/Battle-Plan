@@ -9,57 +9,70 @@ import type { TimelineLane, TimelineSpan } from '../../charts/timeline/layout';
 import { dayLabel } from '../../charts/draw';
 import { jumpItem } from '../../charts/jump';
 import type { TooltipContent } from '../../charts/tooltip';
-import { PreparedKey } from '../../charts/PreparedKey';
 import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt.ts';
 import { nameReadMetadata, nameReadFailure } from '../../dashboard/nameReads.ts';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { factionNameAt, noFactionMessage, useChosenFaction } from '../../dashboard/factionChoice';
+import { factionNameAt, noFactionMessage, useChosenFaction, useFactionDisplayNames } from '../../dashboard/factionChoice';
+import type { NoFaction } from '../../dashboard/factionChoice';
+import { headRead } from '../../dashboard/headProduct.ts';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
-import { usePlaybackHour, usePlaybackMotion } from '../../dashboard/playback';
+import { usePlaybackMotion } from '../../dashboard/playback';
 import { useProduct } from '../../dashboard/products';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
+import { useShownHour } from '../../dashboard/widgetPerf.ts';
+import { useHeadHour } from '../army-size/headHour.ts';
 import { OPTIONS } from './definition';
-import { memberNameHour, selectionName, upgradeLanes } from './upgradesData';
+import { eventHours, eventsThrough, memberNameHour, selectionName, upgradeLanes } from './upgradesData';
 import type { LaneInfo } from './upgradesData';
 import type { FactionRulesReply } from '../../generated/dashboard';
 
 const NO_WARNINGS: string[] = [];
+const NO_EVENTS: number[] = [];
 
+/** A faction's rules, programmes, upgrades and shared doctrines over the campaign: one request per faction; while
+ * following, the playhead moves with the clock and the lanes render only when it passes a selection's start or end. */
 export default function FactionUpgradesWidget({ widget, runtime, active, headerSlot, onDiagnostics }: WidgetProps) {
-  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const options = resolveOptions(OPTIONS, widget.options);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
-  const playhead = window && (widget.time.mode === 'follow' || widget.time.mode === 'pin') ? Math.floor(window.lastHour) : null;
-  const at = Math.floor(playhead ?? window?.lastHour ?? track?.branch.lastHour ?? 0);
-  const { groups, pick } = useChosenFaction(widget, runtime, track, at, active);
+  const { groups, pick, hour: chosenAt } = useChosenFaction(widget, runtime, track, active);
+  const displayNames = useFactionDisplayNames(track?.source);
   const faction = pick?.faction ?? null;
   const reply = useProduct<FactionRulesReply>(runtime.client, track && faction ? { sourceId: track.source.id, revision: track.source.revision, product: 'faction-state',
     params: { view: 'rules', branchId: track.branch.id, faction: faction.id } } : null, active, undefined, track?.source);
   const data = reply.data;
-  // Each member lane is named as its own holder was at its last recorded selection.
+  const following = widget.time.mode === 'follow';
+  const { hourAt } = headRead(widget, track, runtime.tracks, null);
+  const events = useMemo(() => data ? eventHours(data) : NO_EVENTS, [data]);
+  const clockHour = useHeadHour(runtime.clock, active && following && !!data, hour => { const at = hourAt(hour); return at === null ? 'outside' : String(eventsThrough(events, at)); });
+  const at = hourAt(following ? clockHour : runtime.clock.getHour()) ?? chosenAt ?? track?.branch.lastHour ?? 0;
+  const shown = useShownHour();
+  const axisOffset = track?.axisOffset ?? 0;
+  const liveHead = useMemo(() => following && active ? { read: () => { const head = runtime.clock.getSnapshot().position + axisOffset; shown(Math.floor(head)); return head; },
+    subscribe: runtime.clock.subscribeFrame } : undefined, [following, active, runtime.clock, axisOffset, shown]);
+  // Each member lane is named as its own holder was at its last selection.
   const names = useCountryNamesAt(runtime.client, track, useMemo(() => (data?.members ?? []).flatMap(member => {
-    const hour = memberNameHour(member); return hour === null ? [] : [{ hour, tag: member.tag }]; }), [data]), active);
+    const hour = memberNameHour(member); return hour === null || member.tag === null ? [] : [{ hour, tag: member.tag }]; }), [data]), active);
   const groupNames = useMemo(() => new Map(data?.groups.map(group => [group.group, group.name]) ?? []), [data]);
-  const { lanes, info } = useMemo(() => data ? upgradeLanes(data, at, widget.time.mode === 'follow' ? at : null, {
+  const { lanes, info } = useMemo(() => data ? upgradeLanes(data, at, following, {
     endedProgrammes: options.endedProgrammes !== 'hidden', groupName: group => groupNames.get(group) ?? 'Upgrade group name unavailable',
-    country: (tag, hour) => nameReadMetadata(names.get(nameKey(hour, tag))) }) : { lanes: [], info: new Map<string, LaneInfo>() }, [data, at, widget.time.mode, options.endedProgrammes, groupNames, names]);
+    country: (tag, hour) => tag === null ? { name: 'Country unavailable' } : nameReadMetadata(names.get(nameKey(hour, tag))) }) : { lanes: [], info: new Map<string, LaneInfo>() },
+  [data, at, following, options.endedProgrammes, groupNames, names]);
   const unnamed = useMemo(() => {
     let count = 0;
     for (const lane of info.values()) for (const run of lane.runs) if (run.token !== null && !run.name) count++;
     return count;
   }, [info]);
   const diagnostics = useMemo(() => [...(data?.warnings ?? []), ...(unnamed ? [`${unnamed} faction selections have no name in the recorded content.`] : []),
-    ...(reply.error ? [reply.error] : [])], [data, unnamed, reply.error]);
+    ...(reply.error ? [reply.error.message] : [])], [data, unnamed, reply.error]);
   useDiagnostics(onDiagnostics, diagnostics.length ? diagnostics : NO_WARNINGS);
   const menu = useContextMenu('Faction rules actions');
   const tooltip = useCallback((lane: TimelineLane, span: TimelineSpan | null, hour: number): TooltipContent | null => {
     const about = info.get(lane.id);
     if (!about) return null;
     const run = about.runs.find(item => item.firstHour <= hour && hour <= item.lastHour) ?? null;
-    if (!span || !run || run.token === null) return { ...countryNameDetails(about), title: about.slot, subtitle: `${about.section} · ${dayLabel(hour)}`, rows: [{ label: 'Selection', value: 'Not recorded' }] };
+    if (!span || !run) return { ...countryNameDetails(about), title: about.slot, subtitle: `${about.section} · ${dayLabel(hour)}`, rows: [{ label: 'Selection', value: 'Not recorded' }] };
     const index = about.runs.indexOf(run);
     return { ...countryNameDetails(about), title: selectionName(run), subtitle: `${about.section} · ${about.slot}`, rows: [
       { label: index === 0 || run.startsSegment ? 'Held from' : 'Selected by', value: dayLabel(run.firstHour) },
@@ -67,24 +80,27 @@ export default function FactionUpgradesWidget({ widget, runtime, active, headerS
       ...(run.reason ? [{ label: 'Name', value: 'Unavailable', tone: 'muted' as const }] : []),
     ] };
   }, [info, track]);
-  const header = headerSlot && faction && createPortal(<span className="pill">{factionNameAt(faction, at)}</span>, headerSlot);
+  const header = headerSlot && faction && createPortal(<span className="pill">{factionNameAt(faction, at, displayNames[faction.id])}</span>, headerSlot);
   if (!track) return <WidgetState kind="empty" icon="history" message="Load a campaign to see faction rules." />;
-  if (!window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   const groupFailure = groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (groupFailure && !groups.data) return groupFailure;
   if (!groups.data) return <>{groupFailure}<WidgetState kind="loading" label="Loading faction rules…" /></>;
-  if (!faction) return <>{groupFailure}<WidgetState kind="empty" icon="history" message={noFactionMessage(pick!.reason as 'none' | 'unobserved' | 'unknown', widget.time.mode === 'follow')} /></>;
+  if (!faction) return <>{groupFailure}<WidgetState kind="empty" icon="history" message={noFactionMessage(pick!.reason as NoFaction, following)} /></>;
   if (reply.error) return <>{groupFailure}{header}<WidgetState kind="error" failure={reply.error} onRetry={reply.retry} /></>;
   if (!data) return <>{groupFailure}{header}<WidgetState kind="loading" label="Loading faction rules…" /></>;
-  if (!lanes.length) return <>{groupFailure}{header}<WidgetState kind="unavailable" message={data.pending.length ? 'This range is still being prepared.' : 'This faction’s rules were not recorded.'} /></>;
+  if (!lanes.length) return <>{groupFailure}{header}<WidgetState kind="unavailable" message="This faction’s rules were not recorded." /></>;
+  const window = resolveWindow(widget, track, runtime.tracks, following ? clockHour : runtime.clock.getHour());
+  if (!window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   const first = widget.time.mode === 'range' ? window.firstHour : track.branch.firstHour;
   const last = widget.time.mode === 'range' ? window.lastHour : track.branch.lastHour;
+  const pinned = widget.time.mode === 'follow' || widget.time.mode === 'pin';
+  const playhead = pinned ? at : null;
   const extent: [number, number] = [first, Math.max(first + 1, options.grow === true && playhead != null ? playhead : last + 1)];
   return <div className="timeline-scroll" data-detail={failureDetails([...names.values()].map(nameReadFailure))}>{header}{groupFailure}
-    <Timeline key={JSON.stringify([track.source.id, track.source.revision, track.branch.id, faction.id])} label={`${factionNameAt(faction, at)} rules and upgrades`}
-      extent={extent} playhead={playhead} labelHour={at} lanes={lanes} showIcons={false} showNames emptyLabel="Not recorded"
-      preserveZoomOnExtentChange={options.grow === true} unobserved={data.unobserved} pending={data.pending} hoursPerSecond={hoursPerSecond}
-      active={active} revision={`${data.rules.length}:${lanes.length}:${at}`} tooltip={tooltip}
+    <Timeline key={JSON.stringify([track.source.id, track.source.revision, track.branch.id, faction.id])} label={`${factionNameAt(faction, at, displayNames[faction.id])} rules and upgrades`}
+      extent={extent} playhead={playhead} liveHead={liveHead} labelHour={following ? undefined : at} lanes={lanes} showIcons={false} showNames emptyLabel="Not recorded"
+      preserveZoomOnExtentChange={options.grow === true} unobserved={data.unobserved} hoursPerSecond={hoursPerSecond}
+      active={active} revision={`${lanes.length}:${at}`} tooltip={tooltip}
       description="Arrow keys step through lanes and bars."
       onContextMenu={(hour, x, y, _lane, span) => {
         const items = span ? [{ ...jumpItem(runtime, track.id, span.firstHour), label: `Jump to ${dayLabel(span.firstHour)}` },
@@ -92,7 +108,6 @@ export default function FactionUpgradesWidget({ widget, runtime, active, headerS
           : [jumpItem(runtime, track.id, Math.max(track.branch.firstHour, Math.min(track.branch.lastHour, hour)))];
         menu.open(x, y, items);
       }} />
-    <PreparedKey pending={data.pending} />
     {menu.menu}
   </div>;
 }

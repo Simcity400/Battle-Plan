@@ -888,11 +888,17 @@ fn endpoint_parallel_apply_fails_with_the_lowest_failing_tables_error() {
     }
 }
 
-// Checked growths counted on every thread; the one `DENY_AT` names is denied.
+// The stop hook is process-wide, so only the apply's threads count; `DENY_AT` is denied.
 static GROWTH_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
 static DENY_AT: AtomicU64 = AtomicU64::new(u64::MAX);
 static DENIED: AtomicBool = AtomicBool::new(false);
+thread_local! {
+    static APPLYING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
 fn deny_one_growth() -> bool {
+    if !APPLYING.get() {
+        return false;
+    }
     let attempt = GROWTH_ATTEMPTS.fetch_add(1, Ordering::SeqCst);
     let deny = attempt == DENY_AT.load(Ordering::SeqCst);
     if deny {
@@ -921,7 +927,10 @@ fn endpoint_parallel_apply_returns_an_allocation_error_whichever_thread_is_denie
                 GROWTH_ATTEMPTS.store(0, Ordering::SeqCst);
                 DENIED.store(false, Ordering::SeqCst);
                 DENY_AT.store(at, Ordering::SeqCst);
-                let result = step.apply_owned_parallel(Some(base), workers, &|| {});
+                APPLYING.set(true);
+                let result =
+                    step.apply_owned_parallel(Some(base), workers, &|| APPLYING.set(true));
+                APPLYING.set(false);
                 DENY_AT.store(u64::MAX, Ordering::SeqCst);
                 let case = format!("{from} to {to} on {workers} workers, growth {at}");
                 if !DENIED.load(Ordering::SeqCst) {

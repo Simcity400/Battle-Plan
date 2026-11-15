@@ -15,8 +15,8 @@ use std::{
     },
 };
 
-#[derive(Clone, Default)]
-struct SharedBytes(Arc<AtomicUsize>);
+#[derive(Clone)]
+struct SharedBytes(allocation::SharedBox<AtomicUsize>);
 struct Charge {
     total: SharedBytes,
     bytes: usize,
@@ -106,10 +106,15 @@ struct Entry {
     certificates: Certificates,
     row: Option<Arc<CapturedRow>>,
 }
-#[derive(Default)]
 struct SourceCache {
     entries: HashMap<(usize, u32), Arc<Cached>>,
     bytes: SharedBytes,
+}
+#[cfg(test)]
+impl Default for SourceCache {
+    fn default() -> Self {
+        Self::new().unwrap()
+    }
 }
 struct Cached {
     receiver: usize,
@@ -144,6 +149,12 @@ impl Cached {
     }
 }
 impl SourceCache {
+    fn new() -> std::io::Result<Self> {
+        Ok(Self {
+            entries: HashMap::new(),
+            bytes: SharedBytes(allocation::shared(AtomicUsize::new(0))?),
+        })
+    }
     fn ensure(
         &mut self,
         memory: &impl Memory,
@@ -281,23 +292,28 @@ pub(crate) struct Store {
     /// Renewed whenever an acquisition may publish other rows or another outcome.
     generation: u64,
 }
+#[cfg(test)]
 impl Default for Store {
     fn default() -> Self {
-        Self {
+        Self::new().unwrap()
+    }
+}
+impl Store {
+    /// A refused allocation is the collector's allocation failure.
+    pub(crate) fn new() -> std::io::Result<Self> {
+        Ok(Self {
             entries: Vec::new(),
             used: 0,
             outcome: Outcome::Unavailable {
                 reason: "clock unavailable",
             },
-            sources: SourceCache::default(),
+            sources: SourceCache::new()?,
             quiet: None,
             allocated: 0,
             invalidated: false,
             generation: crate::projection::generation(),
-        }
+        })
     }
-}
-impl Store {
     pub(super) fn reset(&mut self) {
         self.used = 0;
         self.outcome = Outcome::Unavailable {
@@ -363,7 +379,7 @@ impl Store {
         let result = (|| {
             let before = observers
                 .quiet()
-                .ok_or("occupation writer observation unavailable")?;
+                .ok_or("occupations could not be followed in the game")?;
             if self.quiet.is_some_and(|old| old.0 != before.0) {
                 changed = true;
                 self.sources.entries.clear();
@@ -406,7 +422,7 @@ impl Store {
                         .ok_or("occupation writer certificate unavailable")?;
                     let start = observers
                         .quiet()
-                        .ok_or("occupation writer observation unavailable")?;
+                        .ok_or("occupations could not be followed in the game")?;
                     let (row, receivers, certificates, country_refs) =
                         capture(memory, base, state, source, &mut self.sources, observers)?;
                     if !observers.countries_match(country_refs, receivers)? {
@@ -1098,14 +1114,14 @@ mod tests {
         assert_eq!(
             frame.outcome(),
             Outcome::Unavailable {
-                reason: "occupation writer observation unavailable"
+                reason: "occupations could not be followed in the game"
             }
         );
         assert!(frame.rows.is_empty());
         assert_eq!(
             frame.table(),
             replay_frame::frame::TableView::Unavailable {
-                reason: "occupation writer observation unavailable".into()
+                reason: "occupations could not be followed in the game".into()
             }
         );
         drop(running);
@@ -1127,14 +1143,14 @@ mod tests {
         assert_eq!(
             frame.outcome(),
             Outcome::Unavailable {
-                reason: "occupation writer observation unavailable"
+                reason: "occupations could not be followed in the game"
             }
         );
         assert!(frame.rows.is_empty());
         assert_eq!(
             frame.table(),
             replay_frame::frame::TableView::Unavailable {
-                reason: "occupation writer observation unavailable".into()
+                reason: "occupations could not be followed in the game".into()
             }
         );
         observer.0.set_enabled(true);
@@ -1325,14 +1341,14 @@ mod tests {
         assert_eq!(
             frame.outcome(),
             Outcome::Unavailable {
-                reason: "occupation writer observation unavailable"
+                reason: "occupations could not be followed in the game"
             }
         );
         assert!(frame.rows.is_empty());
         assert_eq!(
             frame.table(),
             replay_frame::frame::TableView::Unavailable {
-                reason: "occupation writer observation unavailable".into()
+                reason: "occupations could not be followed in the game".into()
             }
         );
         drop(running);
@@ -1352,14 +1368,14 @@ mod tests {
         assert_eq!(
             frame.outcome(),
             Outcome::Unavailable {
-                reason: "occupation writer observation unavailable"
+                reason: "occupations could not be followed in the game"
             }
         );
         assert!(frame.rows.is_empty());
         assert_eq!(
             frame.table(),
             replay_frame::frame::TableView::Unavailable {
-                reason: "occupation writer observation unavailable".into()
+                reason: "occupations could not be followed in the game".into()
             }
         );
         observer.0.set_enabled(true);

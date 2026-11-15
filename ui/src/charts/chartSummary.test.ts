@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { chartSummaryFrom, mergeSummaries, drawApproximateSpans, drawGapSummary, drawLineSummary, pickSummaryLines, summaryGeometry } from './chartSummary.ts';
+import { binAt, binsLabel, chartSummaryFrom, mergeSummaries, drawApproximateSpans, drawGapSummary, drawLineSummary, pickSummaryLines, scaleSummary, summaryExtent, summaryGeometry } from './chartSummary.ts';
 import { wireSummary } from './chartSummary.fixture.ts';
-import { drawBands, drawGapFill, drawLine } from './draw.ts';
+import { dayLabel, drawBands, drawGapFill, drawLine, spanLabel } from './draw.ts';
 import { pickLines } from './linePick.ts';
 import { extentOf } from './series.ts';
 import type { Run } from './series.ts';
@@ -379,4 +379,38 @@ test('a frame that cannot place a value draws that column as its placed dots, ne
   drawLineSummary(drawn.context, frame, tokens, summary, '#123');
   assert.equal(drawn.paths.length, 2);
   assert.ok(drawn.paths.flat(2).every(value => Number.isFinite(value)));
+});
+
+test('a tooltip of bins\' values names the days the bins span, never one hour of them; one-hour bins name the hour\'s day', () => {
+  // A summary's extremes are known to its 6- or 96-hour bucket only: a bin's value is dated by the bin, not by an hour in it.
+  const DAY = 24, from = 43_800_000 + 400 * DAY;
+  const bin = (first: number, last: number): ChartBucket => ({ firstHour: first, lastHour: last, firstValue: 1, lastValue: 2, lastValueHour: first,
+    minHour: first, minValue: 1, maxHour: first, maxValue: 2, firstBreak: false, hasBreak: false });
+  const wide = { from, to: from + 8 * 96 - 1, width: 8, buckets: Array.from({ length: 8 }, (_, at) => bin(from + at * 96, from + at * 96 + 95)) };
+  const hovered = from + 96 + 40;
+  assert.deepEqual(binAt(wide, hovered), wide.buckets[1]);
+  assert.equal(binAt(wide, from - 1), null);
+  assert.equal(binsLabel(hovered, [binAt(wide, hovered)]), spanLabel(from + 96, from + 96 + 95));
+  assert.notEqual(binsLabel(hovered, [binAt(wide, hovered)]), dayLabel(hovered));
+  // Lines cut to their own hours: the days of every line's bin, together.
+  assert.equal(binsLabel(hovered, [bin(from + 100, from + 150), null, bin(from + 96, from + 120)]), spanLabel(from + 96, from + 150));
+  assert.equal(binsLabel(hovered, [bin(hovered, hovered), null]), dayLabel(hovered));
+  assert.equal(binsLabel(hovered, []), dayLabel(hovered));
+});
+
+test('a summary drawn in another unit scales every value, the head a tiled summary draws at included', () => {
+  const at = (first: number, firstValue: number, lastValue: number): ChartBucket => ({ firstHour: first, lastHour: first + 23, firstValue, lastValue,
+    lastValueHour: first + 23, minHour: first, minValue: Math.min(firstValue, lastValue), maxHour: first + 23, maxValue: Math.max(firstValue, lastValue),
+    firstBreak: first === 0, hasBreak: false });
+  const units = 32_768;
+  const tiled: ChartSummary = { from: 0, to: 47, width: 2, buckets: [at(0, units, 2 * units), at(24, 2 * units, 500 * units)],
+    tiles: { binHours: 24, valueAt: hour => hour >= 24 ? 500 * units : null } };
+  const points = scaleSummary(tiled, 1 / units);
+  assert.deepEqual(points.buckets[0], { ...tiled.buckets[0]!, firstValue: 1, lastValue: 2, minValue: 1, maxValue: 2 });
+  assert.equal(points.tiles!.valueAt(30), 500, 'the head is in points too, never the raw units beside a scaled line');
+  assert.equal(points.tiles!.valueAt(10), null, 'a head with no value stays without one');
+  assert.deepEqual(summaryExtent(points, [0, 47], 30), [1, 500], 'the axis spans the scaled values, the head among them');
+  const raw = scaleSummary({ ...tiled, tiles: undefined, runs: [{ firstHour: 0, lastHour: 9, value: 1.5 }] }, 100_000);
+  assert.deepEqual(raw.runs, [{ firstHour: 0, lastHour: 9, value: 150_000 }]);
+  assert.equal(scaleSummary(tiled, 1), tiled);
 });

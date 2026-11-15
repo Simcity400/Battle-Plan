@@ -133,24 +133,50 @@ impl Locator {
         {
             return Some(guess);
         }
-        if self.order.is_empty() {
-            engine_allocation::advisory(|| {
-                engine_allocation::reserve(&mut self.order, divisions.len())
-            })
-            .ok()?;
-            self.order.extend(
-                divisions
-                    .iter()
-                    .enumerate()
-                    .map(|(at, &division)| (division, at as u32)),
-            );
-            self.order.sort_unstable();
+        if !self.index(divisions) {
+            return None;
         }
-        let at = self.order[self.order.partition_point(|entry| entry.0 < division)..]
+        Self::find(&self.order, &mut self.shift, divisions, index, division)
+    }
+
+    /// Builds the division index; false when it could not be allocated.
+    fn index(&mut self, divisions: &[u64]) -> bool {
+        if !self.order.is_empty() || divisions.is_empty() {
+            return true;
+        }
+        if engine_allocation::advisory(|| engine_allocation::reserve(&mut self.order, divisions.len()))
+            .is_err()
+        {
+            return false;
+        }
+        self.order.extend(
+            divisions
+                .iter()
+                .enumerate()
+                .map(|(at, &division)| (division, at as u32)),
+        );
+        self.order.sort_unstable();
+        true
+    }
+
+    /// The entry at `index` shifted by `shift`, else through `order`, which moves `shift`.
+    fn find(
+        order: &[(u64, u32)],
+        shift: &mut isize,
+        divisions: &[u64],
+        index: usize,
+        division: u64,
+    ) -> Option<usize> {
+        if let Some(guess) = index.checked_add_signed(*shift)
+            && divisions.get(guess) == Some(&division)
+        {
+            return Some(guess);
+        }
+        let at = order[order.partition_point(|entry| entry.0 < division)..]
             .first()
             .filter(|entry| entry.0 == division)?
             .1 as usize;
-        self.shift = at as isize - index as isize;
+        *shift = at as isize - index as isize;
         Some(at)
     }
 }
@@ -350,6 +376,19 @@ impl ArmyStatStore {
             .locate(&self.name_divisions, index, division)
     }
 
+    /// [`Self::held_name`] on a shared store, for naming split across workers: each caller keeps
+    /// its own `shift`. The division index is built when the store is held; without it a seed
+    /// off its shifted index finds nothing and is read afresh.
+    pub fn find_held_name(&self, shift: &mut isize, index: usize, division: u64) -> Option<usize> {
+        Locator::find(
+            &self.name_locator.order,
+            shift,
+            &self.name_divisions,
+            index,
+            division,
+        )
+    }
+
     /// Borrow the selected record without copying its owned member span.
     pub fn held_name_record(&self, index: usize) -> &HeldName {
         &self.names[index]
@@ -428,7 +467,23 @@ impl ArmyStatStore {
             .extend(self.held.iter().map(|held| held.division));
         self.name_divisions
             .extend(self.names.iter().map(|held| held.division));
+        self.locator.index(&self.divisions);
+        self.name_locator.index(&self.name_divisions);
         self.epoch = epoch;
+    }
+
+    /// Whether the held capture may carry seed `index`'s maxima: its division is held with the
+    /// same army and block, and their maxima. Read-only, for the parallel preparation: each
+    /// caller keeps its own `shift`. Without the division index an unshifted seed is not found.
+    pub fn may_carry_maxima(&self, shift: &mut isize, index: usize, seed: &DivisionSeed) -> bool {
+        self.epoch.is_some()
+            && Locator::find(&self.locator.order, shift, &self.divisions, index, seed.division)
+                .is_some_and(|at| {
+                    let held = &self.held[at];
+                    held.army == seed.pointer
+                        && Some(held.stat_block) == seed.stat_block
+                        && held.maxima.is_some()
+                })
     }
 }
 
@@ -531,6 +586,16 @@ impl Captured {
     /// Whether a writer touched `receiver` since the held capture.
     pub fn touched(&self, receiver: usize) -> bool {
         self.touched.binary_search(&receiver).is_ok()
+    }
+
+    /// Every receiver [`Self::touched`] names, sorted.
+    /// Per seed: its held operands' index when the hour's certification carries them.
+    pub fn held_index(&self) -> &[Option<u32>] {
+        &self.held_index
+    }
+
+    pub fn touched_receivers(&self) -> &[usize] {
+        &self.touched
     }
 
     /// Before the status pass: the hour's take, then for each division the

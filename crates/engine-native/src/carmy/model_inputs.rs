@@ -44,13 +44,8 @@ impl StatusPacket {
             let seeds = seeds
                 .get(..source_outcome.len())
                 .ok_or("division model input source count invalid")?;
-            if self.growing {
-                self.grow(seeds.len(), MembershipCapacity::default())
-                    .map_err(|_| "division model input allocation failed")?;
-            }
-            if seeds.len() > self.capacities.units {
-                return Err("division model input packet capacity exceeded");
-            }
+            self.grow(seeds.len(), MembershipCapacity::default())
+                .map_err(|_| "division model input allocation failed")?;
             let countries = ccountry::Reader::new(memory, base, state);
             let identity = engine_sites::at(base, VTABLE_RVA).map(|at| at as u64);
             let len = seeds.len().min(output.len());

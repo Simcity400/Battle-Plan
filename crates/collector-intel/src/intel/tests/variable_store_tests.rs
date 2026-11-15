@@ -195,6 +195,7 @@ struct Hour {
     entries: Vec<cvariables::Row>,
     names: Vec<u8>,
     counts: Counts,
+    delta: VariableDelta,
     /// Guarded reads of any store's nodes or heap key bytes.
     node_reads: usize,
     /// The fixture stores whose vtable, header or seed the hour read.
@@ -246,7 +247,7 @@ fn fresh(bytes: &[u8]) -> Published {
     let memory = SliceMemory { base: 0, bytes };
     let (mut scopes, mut entries, mut names) = (Vec::new(), Vec::new(), Vec::new());
     let walk =
-        cvariables::walk_scopes_growing(&memory, BASE, GAME, &mut scopes, &mut entries, &mut names);
+        cvariables::walk_scopes(&memory, BASE, GAME, &mut scopes, &mut entries, &mut names);
     scopes.truncate(walk.outcome.len());
     entries.truncate(walk.entries_len);
     names.truncate(walk.bytes_len);
@@ -277,10 +278,11 @@ fn walk(bytes: &[u8], store: &mut VariableStore, watches: &Watches) -> Hour {
     scopes.truncate(walk.outcome.len());
     entries.truncate(walk.entries_len);
     names.truncate(walk.bytes_len);
+    let mut delta = VariableDelta::default();
     if matches!(walk.outcome, Outcome::Rows { .. }) {
-        reuse.finish(true, &scopes, &entries, &names);
+        reuse.finish(true, &scopes, &entries, &names, &mut delta);
     } else {
-        reuse.finish(false, &[], &[], &[]);
+        reuse.finish(false, &[], &[], &[], &mut delta);
     }
     let calls = memory.calls.into_inner();
     let node_reads = calls
@@ -307,6 +309,7 @@ fn walk(bytes: &[u8], store: &mut VariableStore, watches: &Watches) -> Hour {
         entries,
         names,
         counts: store.counts(),
+        delta,
         node_reads,
         stores_read,
         character_reads,
@@ -722,4 +725,119 @@ fn a_renewed_quiet_hour_patches_only_its_visited_stores_in_place() {
     let carried = walk(&bytes, &mut store, &watches);
     assert_eq!(carried.counts.visited, 0);
     assert_eq!(carried.published(), fresh(&bytes));
+}
+
+/// Each capture lists the scopes whose seed, entries or key bytes may differ
+/// from the held capture it continued, which the conversion alone compares:
+/// none for a quiet hour, the written store for a hooked write, a walk's
+/// carried store whose seed moved, and a scope the held capture lacks.
+#[test]
+fn a_capture_lists_the_scopes_that_may_differ_from_the_held_one() {
+    let mut bytes = variable_scopes();
+    let watches = Watches::enabled(16);
+    let mut store = VariableStore::new();
+    let first = first_hour(&bytes, &mut store, &watches);
+    assert_eq!(first.delta.since, None);
+    let mut held = first.delta.generation.expect("a complete capture is held");
+    let mut next = |bytes: &[u8], store: &mut VariableStore| {
+        let hour = walk(bytes, store, &watches);
+        watches.boundary(false);
+        assert_eq!(hour.delta.since, Some(held));
+        held = hour.delta.generation.expect("a complete capture is held");
+        hour
+    };
+    // Settling reads each freshly registered store once, and finds it unchanged.
+    let settle = next(&bytes, &mut store);
+    assert!(settle.counts.quiet);
+    assert!(settle.delta.changed.is_empty());
+    let quiet = next(&bytes, &mut store);
+    assert!(quiet.counts.quiet && quiet.delta.same_scopes);
+    assert!(quiet.delta.changed.is_empty());
+
+    let notification = watches.notify(STORES[1], site("get_mutable_value"));
+    set_value(&mut bytes, 1, -5);
+    drop(notification);
+    let written = next(&bytes, &mut store);
+    assert!(written.counts.quiet && written.delta.same_scopes);
+    assert_eq!(written.delta.changed, [1]);
+
+    watches.exception();
+    set_seed(&mut bytes, 2, 31);
+    let reseeded = next(&bytes, &mut store);
+    assert!(!reseeded.counts.quiet && reseeded.delta.same_scopes);
+    assert_eq!((reseeded.counts.read, reseeded.counts.reused), (0, 5));
+    assert_eq!(reseeded.delta.changed, [2]);
+
+    let historical = 0x5000 + ccharacter_manager::HISTORICAL_CHARACTERS;
+    put(&mut bytes, historical + 8, &3_u32.to_le_bytes());
+    put(&mut bytes, historical + 12, &3_u32.to_le_bytes());
+    put(&mut bytes, 0x5110, &0x6400_u64.to_le_bytes());
+    put(
+        &mut bytes,
+        0x6400,
+        &((BASE + ccharacter::VTABLE_RVA.0) as u64).to_le_bytes(),
+    );
+    put(
+        &mut bytes,
+        0x6400 + ccharacter::TYPE,
+        &ccharacter::REFERENCE_TYPE.to_le_bytes(),
+    );
+    put(&mut bytes, 0x6400 + ccharacter::ID, &46_u32.to_le_bytes());
+    empty_store(&mut bytes, 0x6400 + ccharacter::VARIABLES, 46);
+    watches.roster_write();
+    let joined = next(&bytes, &mut store);
+    assert!(!joined.counts.quiet && !joined.delta.same_scopes);
+    assert_eq!(joined.scopes[5].scope, cvariables::Scope::Character(46));
+    assert_eq!(joined.delta.changed, [5]);
+    assert_eq!(joined.published(), fresh(&bytes));
+}
+
+/// ScriptVariables lent to its own job publishes the residual walk's rows, position for
+/// position, and the residual capture leaves the lent table alone, so the final borrowers need
+/// not wait for it.
+#[test]
+fn the_lent_variables_job_publishes_the_residual_walks_rows() {
+    let bytes = variable_scopes();
+    let memory = SliceMemory {
+        base: 0,
+        bytes: &bytes,
+    };
+    let context = CaptureContext {
+        base: BASE,
+        game_state: GAME,
+        hour: 1,
+        force_full: true,
+    };
+    let (_, mut together) = small();
+    let (_, mut apart) = small();
+    for _ in 0..2 {
+        together.capture_residual(&memory, context, None, None);
+        let mut part = apart.take_variables();
+        let left = apart.capture_residual(&memory, context, None, None);
+        assert_eq!(left.ticks[8], 0, "the residual capture walked a lent table");
+        part.capture(&memory, context, None);
+        apart.restore_variables(part);
+        assert_eq!(together.outcomes()[8], Outcome::Rows { len: 5 });
+        assert_eq!(apart.outcomes()[8], together.outcomes()[8]);
+        assert_eq!(apart.tables()[8], together.tables()[8]);
+        let len = together.variables.outcome.len();
+        assert_eq!(apart.variables.rows[..len], together.variables.rows[..len]);
+        assert_eq!(
+            apart.variable_entries.first[..apart.variable_entries.len],
+            together.variable_entries.first[..together.variable_entries.len]
+        );
+        assert_eq!(
+            apart.variable_names.first[..apart.variable_names.len],
+            together.variable_names.first[..together.variable_names.len]
+        );
+    }
+    let mut part = apart.take_variables();
+    part.fail(context, "script variable acquisition panicked");
+    apart.restore_variables(part);
+    assert_eq!(
+        apart.outcomes()[8],
+        Outcome::Unavailable {
+            reason: "script variable acquisition panicked"
+        }
+    );
 }

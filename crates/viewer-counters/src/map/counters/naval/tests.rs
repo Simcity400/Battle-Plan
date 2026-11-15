@@ -17,13 +17,12 @@ fn combat_task_forces_never_offer_sea_counter_sources() {
             ..Default::default()
         };
         for kind in [0, ATTACKING, DEFENDING] {
-            let mut report = CounterReport::default();
+            let joins = naval_members::Fake { kind, region: Some(3), skips: skips.clone(), ..naval_members::Fake::new(&force) };
             assert_eq!(
-                stays_a_source(&skips, &force, kind, Some(3), &mut report),
+                matches!(joins.sea(), naval_members::Sea::Source { .. }),
                 combat_references <= 0,
                 "combat references {combat_references}, kind {kind}"
             );
-            assert!(report.unplaced_task_forces.is_empty());
         }
     }
 }
@@ -124,10 +123,12 @@ fn combat_task_forces_leave_sea_group_anchors_unchanged_at_both_heights() {
         (114.5896835_f64 as f32, Level::Province),
         (198.1034088_f64 as f32, Level::State),
     ] {
-        let mut report = CounterReport::default();
         let sources: Vec<_> = [(&eng, 0, eng_anchor), (&pol, ATTACKING, pol_anchor)]
             .into_iter()
-            .filter(|(force, kind, _)| stays_a_source(&skips, force, *kind, Some(206), &mut report))
+            .filter(|(force, kind, _)| {
+                let joins = naval_members::Fake { kind: *kind, region: Some(206), skips: skips.clone(), ..naval_members::Fake::new(force) };
+                matches!(joins.sea(), naval_members::Sea::Source { .. })
+            })
             .map(|(force, _, anchor)| Icon {
                 kind: 1,
                 owner: force.roster_owner,
@@ -147,7 +148,6 @@ fn combat_task_forces_leave_sea_group_anchors_unchanged_at_both_heights() {
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].members, [0]);
         assert_eq!(groups[0].anchor, eng_anchor, "height {height}");
-        assert!(report.unplaced_task_forces.is_empty());
     }
 }
 
@@ -384,32 +384,27 @@ fn a_port_force_dropped_for_a_missing_operand_leaves_its_roster_undecided() {
             mixed: Vec::new(),
             naval: vec![7],
         }]);
-    let owner = |raw: u32| (raw < 100).then_some(raw);
-    let unlinked = |_: u32| None;
-    with_port_context(&forces, |context| {
-        context.ships = Arc::new(BTreeMap::from([(7, (2, 0))]));
-        // What the admission decides: in at its ordinal, out, or undecided by why.
-        let admit = |context: &NavalContext<'_>,
-                     docked: Result<bool, &'static str>,
-                     owner: &dyn Fn(u32) -> Option<u32>| {
-            match port_admission(&forces[0], context, &order, || docked, &owner) {
-                PortAdmission::In(ordinal, _) => format!("in {ordinal}"),
-                PortAdmission::Out => "out".to_owned(),
-                PortAdmission::Undecided(why) => why.to_owned(),
-            }
-        };
-        assert_eq!(admit(context, Ok(true), &owner), "in 0");
-        assert_eq!(admit(context, Ok(false), &owner), "out");
-        assert_eq!(
-            admit(context, Err("task-force motion row absent"), &owner),
-            "task-force motion row absent"
-        );
-        assert_eq!(admit(context, Ok(true), &unlinked), PORT_OWNER_UNLINKED);
-        Arc::make_mut(&mut context.ships).clear();
-        assert_eq!(admit(context, Ok(true), &owner), "out");
-        context.ships_complete = false;
-        assert_eq!(admit(context, Ok(true), &owner), PORT_SHIPS_UNRECORDED);
-    });
+    let joins = |docked: Result<bool, &'static str>, linked: bool, ships: &[(u64, (usize, i64))], complete: bool| naval_members::Fake {
+        order: Some(order.clone()),
+        ships: ships.iter().copied().collect(),
+        ships_complete: complete,
+        docked,
+        linked,
+        ..naval_members::Fake::new(&forces[0])
+    };
+    // What the admission decides: in at its ordinal, out, or undecided by why.
+    let admit = |joins: naval_members::Fake<'_>| match joins.port() {
+        naval_members::Port::In(ordinal) => format!("in {ordinal}"),
+        naval_members::Port::Out => "out".to_owned(),
+        naval_members::Port::Undecided(why) => why.to_owned(),
+    };
+    let ships = [(7, (2, 0))];
+    assert_eq!(admit(joins(Ok(true), true, &ships, true)), "in 0");
+    assert_eq!(admit(joins(Ok(false), true, &ships, true)), "out");
+    assert_eq!(admit(joins(Err("task-force motion row absent"), true, &ships, true)), "task-force motion row absent");
+    assert_eq!(admit(joins(Ok(true), false, &ships, true)), PORT_OWNER_UNLINKED);
+    assert_eq!(admit(joins(Ok(true), true, &[], true)), "out");
+    assert_eq!(admit(joins(Ok(true), true, &[], false)), PORT_SHIPS_UNRECORDED);
 }
 
 /// A Ships census that may lack a task force's ships leaves its count, and every sum over it,

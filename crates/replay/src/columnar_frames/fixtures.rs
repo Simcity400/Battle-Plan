@@ -1,11 +1,20 @@
-//! Synthetic version 4 recordings, written as the recorder writes them, for tests.
+//! Synthetic recordings, written as the recorder writes them ([`HourWriter`]), for tests.
 
 use super::*;
 use crate::{
-    columnar_blocks::BlockBuilder,
-    columnar_file::{FileWriter, Settings},
+    columnar_file::{FileWriter, HourWriter, Settings},
+    frame::DecodedFrame,
 };
-use replay_columnar::envelope::Identity;
+use replay_columnar::{
+    container::{SectionKey, Tags},
+    envelope::{self, Identity},
+    pages::Block,
+};
+#[cfg(test)]
+use replay_columnar::{
+    envelope::{Extent, Kind},
+    manifest::Manifest,
+};
 
 /// One extent of `raw` appended to `file`, compressed as the converter stores it.
 #[cfg(test)]
@@ -31,7 +40,7 @@ pub(crate) fn append(
     extent
 }
 
-fn identity(campaign: &[u8], capture_mode: u8) -> Identity {
+pub(crate) fn identity(campaign: &[u8], capture_mode: u8) -> Identity {
     Identity {
         schema: envelope::schema_digest(&schema().unwrap()),
         campaign: campaign.to_vec(),
@@ -40,43 +49,57 @@ fn identity(campaign: &[u8], capture_mode: u8) -> Identity {
     }
 }
 
-/// A file writer into memory, each page changed by `tamper` before it is written.
-fn writer(identity: Identity, tamper: impl Fn(&mut IndexPage) + Send + 'static) -> FileWriter<std::io::Cursor<Vec<u8>>> {
-    let settings = Settings {
-        level: 1,
-        parallel: false,
-    };
-    FileWriter::create(std::io::Cursor::new(Vec::new()), identity, TABLE_COUNT, settings)
-        .unwrap()
-        .with_tamper(tamper)
+const LEVEL: i32 = 1;
+
+/// An hour writer into memory, each block's page changed by `tamper` before it is written.
+pub(crate) fn writer(identity: Identity, tamper: impl Fn(&mut Block) + Send + 'static) -> HourWriter<std::io::Cursor<Vec<u8>>> {
+    writer_with(identity, replay_columnar::unit::Settings::at(LEVEL), tamper)
 }
 
-/// Every page of `file`'s runs, as their directories list them.
+/// [`writer`], its blocks restored, packed and compressed as `unit` says.
+fn writer_with(identity: Identity, unit: replay_columnar::unit::Settings, tamper: impl Fn(&mut Block) + Send + 'static) -> HourWriter<std::io::Cursor<Vec<u8>>> {
+    let file = FileWriter::create(std::io::Cursor::new(Vec::new()), identity, TABLE_COUNT, Settings { level: unit.level }, None)
+        .unwrap()
+        .with_tamper(tamper);
+    HourWriter::with_unit(file, unit.level, unit).unwrap()
+}
+
+/// The file `writer` wrote, finished.
+fn finished(writer: HourWriter<std::io::Cursor<Vec<u8>>>) -> Vec<u8> {
+    writer.finish().unwrap().finish_runs(&[], true, |_| Ok(())).unwrap().0.into_inner()
+}
+
+/// Every run's open block pages of `file`, as their directories list them.
 #[cfg(test)]
 fn pages_of(file: &[u8]) -> Vec<Vec<Extent>> {
-    let recording = Recording::open(file.to_vec()).unwrap();
-    (0..recording.run_count())
-        .map(|run| recording.run(run).map(|run| run.page_extents().to_vec()).unwrap_or_default())
+    use replay_columnar::{container, pages::RunDirectory};
+    let (root, _) = container::locate(file, container::Open::Newest).unwrap().unwrap();
+    let root = container::read_root(file, &root).unwrap();
+    let Some(section) = root.open(SectionKey::WORLD_LOG, container::schema::WORLD_LOG).unwrap() else { return Vec::new() };
+    (0..)
+        .zip(&section.open)
+        .map(|(run, extent)| {
+            let stored = &file[extent.offset as usize..(extent.offset + extent.stored) as usize];
+            let raw = container::decompress(stored, Some(extent.raw)).unwrap();
+            RunDirectory::read(&raw, extent, run).unwrap().open
+        })
         .collect()
 }
 
 /// A recording of `runs` (branch, first hour, ordinals) as the recorder writes one, of hour
 /// records alone: ordinal `n` of run `r` is the hour `hour(r, n)` gives, appending one
-/// dictionary string, and every `restart_units`th full block ends in a restart. `tamper`
-/// changes each page before it is written. The file, and each run's page extents.
+/// string. `tamper` changes each block's page before it is written. The file, and each run's
+/// open page extents.
 #[cfg(test)]
 pub(crate) fn recording(
     runs: &[(u64, i32, u32)],
     hour: impl Fn(u32, u32) -> i32,
-    restart_units: u32,
-    tamper: impl Fn(&mut IndexPage) + Send + 'static,
+    tamper: impl Fn(&mut Block) + Send + 'static,
 ) -> (Vec<u8>, Vec<Vec<Extent>>) {
     let columns: Vec<usize> = schema().unwrap().iter().map(Vec::len).collect();
     let mut file = writer(identity(b"campaign", 0), tamper);
-    for (run, &(branch, first_hour, ordinals)) in (0..).zip(runs) {
-        file.start_run(branch, envelope::epoch::START, first_hour).unwrap();
-        let mut builder = BlockBuilder::new().unwrap().with_restart_blocks(restart_units);
-        builder.start_run(branch, hour(run, 0)).unwrap();
+    for (run, &(branch, _, ordinals)) in (0..).zip(runs) {
+        file.start_run(branch, envelope::epoch::START, hour(run, 0)).unwrap();
         for ordinal in 0..ordinals {
             let string = format!("run {run} ordinal {ordinal}").into_bytes();
             let manifest = Manifest {
@@ -94,16 +117,10 @@ pub(crate) fn recording(
             }
             .write(&columns)
             .unwrap();
-            if let Some(block) = builder.hour(&manifest, &[]).unwrap() {
-                file.block(block.block()).unwrap();
-            }
+            file.hour(&manifest, &[]).unwrap();
         }
-        if let Some(block) = builder.end_run().unwrap() {
-            file.block(block.block()).unwrap();
-        }
-        file.finish_run().unwrap();
     }
-    let bytes = file.finish(|_| Ok(())).unwrap().file.into_inner();
+    let bytes = finished(file);
     let pages = pages_of(&bytes);
     (bytes, pages)
 }
@@ -114,30 +131,30 @@ pub(crate) fn every(runs: &[(u64, i32, u32)]) -> impl Fn(u32, u32) -> i32 + '_ {
     |run, ordinal| runs[run as usize].1 + ordinal as i32
 }
 
-/// Two live countries, one retaining its first string through unique-string churn, a restart
-/// ending every block. `tamper` changes each page before it is written.
+/// Two live countries, one retaining its first string through unique-string churn. `tamper`
+/// changes each block's page before it is written.
 #[cfg(test)]
-pub(crate) fn native_recording(units: u32, tamper: impl Fn(&mut IndexPage) + Send + 'static) -> Vec<u8> {
+pub(crate) fn native_recording(units: u32, tamper: impl Fn(&mut Block) + Send + 'static) -> Vec<u8> {
     use super::synthetic::{Input, Sample, Synthetic};
     use crate::rows::CountryRow;
     let mut file = writer(identity(b"native synthetic", 0), tamper);
     file.start_run(7, envelope::epoch::START, 100).unwrap();
-    let mut builder = BlockBuilder::new().unwrap().with_restart_blocks(1);
-    builder.start_run(7, 100).unwrap();
-    let mut synthetic = Synthetic::new(&[TableId::Countries], 7, 100).unwrap();
-    let columns: Vec<_> = schema().unwrap().iter().map(Vec::len).collect();
+    let mut synthetic = Synthetic::new(7, 100).unwrap();
     for ordinal in 0..units * envelope::UNIT_ORDINALS {
         let rows = [
             CountryRow {
                 id: 1,
                 tag: b"old string".to_vec(),
                 stability_raw: 123,
+                political_power_raw: Some(500),
                 ..Default::default()
             },
             CountryRow {
                 id: 2,
                 tag: format!("new string {ordinal}").into_bytes(),
                 stability_raw: i64::from(ordinal),
+                // Rises and falls, a day at a time.
+                political_power_raw: Some(i64::from(ordinal / 24 % 17)),
                 ..Default::default()
             },
         ];
@@ -156,208 +173,236 @@ pub(crate) fn native_recording(units: u32, tamper: impl Fn(&mut IndexPage) + Sen
                 },
             )
             .unwrap();
-        let (manifest, sections) = synthetic
-            .end_encoded(|_, manifest, _, _, sections| {
-                let bytes = manifest.write(&columns).unwrap();
-                let joined: Vec<u8> = sections.iter().flat_map(|(_, bytes)| bytes.iter().copied()).collect();
-                (bytes, joined)
-            })
-            .unwrap();
-        if let Some(block) = builder.hour(&manifest, &sections).unwrap() {
-            file.block(block.block()).unwrap();
-        }
+        synthetic.end_encoded(|manifest, sections| file.hour(manifest, sections)).unwrap().unwrap();
     }
-    if let Some(block) = builder.end_run().unwrap() {
-        file.block(block.block()).unwrap();
-    }
-    file.finish(|_| Ok(())).unwrap().file.into_inner()
+    finished(file)
 }
 
-/// What a synthetic writer saw of an hour: its frame, and each table's sample hour.
+/// What the writer held of an hour: its frame, and each table's sample hour.
 pub type Seen = (DecodedFrame, Vec<Option<i32>>);
 
-/// Countries and world tension over `runs` (branch, first hour, units), written as the native
-/// recorder writes them and stored as the converter stores them ([`written`]). Strings come
-/// back pages after their last use, as text cells and as an unavailable table's reasons, and
-/// a row leaves and comes back with the string it held.
-pub fn churned(runs: &[(u64, i32, u32)], restart_units: u32) -> (Vec<u8>, Vec<Seen>) {
+/// Countries and world tension over `runs` (branch, first hour, units), written as the recorder
+/// writes them ([`written`]). Strings come back pages after their last use, as text cells and
+/// as an unavailable table's reasons, and a row leaves and comes back with the string it held.
+pub fn churned(runs: &[(u64, i32, u32)]) -> (Vec<u8>, Vec<Seen>) {
     use super::synthetic::{Input, Sample};
     use crate::rows::{CountryRow, WorldTensionRow};
     let streams = [TableId::Countries, TableId::WorldTension];
-    written(
-        b"churned synthetic",
-        runs,
-        restart_units,
-        &streams,
-        |synthetic, _, ordinal| {
-            let mut rows = vec![
-                CountryRow {
-                    id: 1,
-                    tag: b"old string".to_vec(),
-                    stability_raw: 1,
-                    ..Default::default()
+    written(b"churned synthetic", runs, &streams, |synthetic, _, ordinal| {
+        let mut rows = vec![
+            CountryRow {
+                id: 1,
+                tag: b"old string".to_vec(),
+                stability_raw: 1,
+                ..Default::default()
+            },
+            CountryRow {
+                id: 2,
+                tag: format!("new string {ordinal}").into_bytes(),
+                stability_raw: i64::from(ordinal),
+                ..Default::default()
+            },
+            // The same 40 strings, each back 2,000 hours after it was last held.
+            CountryRow {
+                id: 3,
+                tag: format!("cycle {}", ordinal / 50 % 40).into_bytes(),
+                ..Default::default()
+            },
+        ];
+        if ordinal / 100 % 2 == 0 {
+            rows.push(CountryRow {
+                id: 4,
+                tag: b"returning".to_vec(),
+                ..Default::default()
+            });
+        }
+        synthetic
+            .table(
+                TableId::Countries,
+                Input::Snapshot {
+                    rows: &rows,
+                    partial: None,
+                    read: true,
+                    sample: Sample::FromReadBit,
                 },
-                CountryRow {
-                    id: 2,
-                    tag: format!("new string {ordinal}").into_bytes(),
-                    stability_raw: i64::from(ordinal),
-                    ..Default::default()
+            )
+            .unwrap();
+        let block = ordinal / 300;
+        let tension = if block % 2 == 0 {
+            synthetic.table(
+                TableId::WorldTension,
+                Input::Snapshot {
+                    rows: &[WorldTensionRow {
+                        total_raw: i64::from(block),
+                        source_count: 1,
+                        country_aggregate_count: 2,
+                    }],
+                    partial: None,
+                    read: true,
+                    sample: Sample::FromReadBit,
                 },
-                // The same 40 strings, each back 2,000 hours after it was last held.
-                CountryRow {
-                    id: 3,
-                    tag: format!("cycle {}", ordinal / 50 % 40).into_bytes(),
-                    ..Default::default()
+            )
+        } else {
+            synthetic.table::<WorldTensionRow>(
+                TableId::WorldTension,
+                Input::Unavailable {
+                    reason: &format!("refused {}", block / 2 % 3),
+                    read: false,
+                    sample: Sample::FromReadBit,
                 },
-            ];
-            if ordinal / 100 % 2 == 0 {
-                rows.push(CountryRow {
-                    id: 4,
-                    tag: b"returning".to_vec(),
-                    ..Default::default()
-                });
-            }
-            synthetic
-                .table(
-                    TableId::Countries,
-                    Input::Snapshot {
-                        rows: &rows,
-                        partial: None,
-                        read: true,
-                        sample: Sample::FromReadBit,
-                    },
-                )
-                .unwrap();
-            let block = ordinal / 300;
-            let tension = if block % 2 == 0 {
-                synthetic.table(
-                    TableId::WorldTension,
-                    Input::Snapshot {
-                        rows: &[WorldTensionRow {
-                            total_raw: i64::from(block),
-                            source_count: 1,
-                            country_aggregate_count: 2,
-                        }],
-                        partial: None,
-                        read: true,
-                        sample: Sample::FromReadBit,
-                    },
-                )
-            } else {
-                synthetic.table::<WorldTensionRow>(
-                    TableId::WorldTension,
-                    Input::Unavailable {
-                        reason: &format!("refused {}", block / 2 % 3),
-                        read: false,
-                        sample: Sample::FromReadBit,
-                    },
-                )
-            };
-            tension.unwrap();
-        },
-    )
+            )
+        };
+        tension.unwrap();
+    })
+}
+
+/// Countries over one run of `units` blocks, every block's end restoring the table whole and
+/// packing it: each hour writes some rows' numbers and text and leaves others alone; rows leave
+/// for an hour and come back, one leaving as another comes so the newcomer takes its slot; a
+/// hundred rows come for ten hours of each block and go, so the block's end packs the table; and
+/// some hours read the table in part or not at all, so its status changes.
+pub fn edited(units: u32) -> (Vec<u8>, Vec<Seen>) {
+    let unit = replay_columnar::unit::Settings { restore_blocks: 1, whole_every: 1, pack_margin: 8, ..replay_columnar::unit::Settings::at(LEVEL) };
+    edited_with(unit, &[(1, 100, units)])
+}
+
+/// The countries [`edited`] writes, over `runs` (branch, first hour, units), compressed at zstd
+/// `level` in small parts: each block's parts chained to the part before, a restore at every
+/// block's end and every third one whole, so the restores between name some of a whole one's
+/// chunks again and write others against them.
+pub fn restored(level: i32, runs: &[(u64, i32, u32)]) -> Vec<u8> {
+    let unit = replay_columnar::unit::Settings { cap: 512, small: 64, restore_blocks: 1, whole_every: 3, pack_margin: 8, ..replay_columnar::unit::Settings::at(level) };
+    edited_with(unit, runs).0
+}
+
+/// Countries at `level` over eight blocks of one run: ten every hour, and through the second block
+/// a thousand more whose stability changes every hour, so that block's unit far outweighs every
+/// other.
+pub fn one_large_unit(level: i32) -> Vec<u8> {
+    use super::synthetic::{Input, Sample, Synthetic};
+    use crate::rows::CountryRow;
+    let (branch, first_hour) = (1, 100);
+    let mut file = writer_with(identity(b"one large unit", 0), replay_columnar::unit::Settings::at(level), |_| {});
+    let mut synthetic = Synthetic::new(branch, first_hour).unwrap();
+    file.start_run(branch, envelope::epoch::START, first_hour).unwrap();
+    for ordinal in 0..8 * envelope::UNIT_ORDINALS {
+        let large = ordinal / envelope::UNIT_ORDINALS == 1;
+        let rows: Vec<CountryRow> = (1..=10)
+            .chain((1000..2000).filter(|_| large))
+            .map(|id| CountryRow {
+                id,
+                tag: format!("tag {id}").into_bytes(),
+                stability_raw: ((u64::from(id) << 32 | u64::from(ordinal)).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 1) as i64,
+                ..Default::default()
+            })
+            .collect();
+        synthetic.table(TableId::Countries, Input::Snapshot { rows: &rows, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
+        synthetic.end_encoded(|manifest, sections| file.hour(manifest, sections)).unwrap().unwrap();
+    }
+    finished(file)
+}
+
+fn edited_with(unit: replay_columnar::unit::Settings, runs: &[(u64, i32, u32)]) -> (Vec<u8>, Vec<Seen>) {
+    use super::synthetic::{Input, Sample};
+    use crate::rows::CountryRow;
+    let present = |id: u32, ordinal: u32| match id {
+        1..=10 => true,
+        11..=20 => (ordinal + id) % 4 != 0,
+        _ => (10..20).contains(&(ordinal % envelope::UNIT_ORDINALS)),
+    };
+    let row = |id: u32, ordinal: u32| CountryRow {
+        id,
+        tag: format!("tag {id} {}", ordinal / (id % 5 + 1) % 3).into_bytes(),
+        stability_raw: if id % 2 == 0 { i64::from(ordinal) } else { i64::from(id) },
+        political_power_raw: (id % 3 == 0).then(|| i64::from(ordinal / 7)),
+        ..Default::default()
+    };
+    written_captured_with(b"edited synthetic", None, unit, runs, &[TableId::Countries], |synthetic, _, ordinal| {
+        let rows: Vec<CountryRow> = (1..=20).chain(100..200).filter(|&id| present(id, ordinal)).map(|id| row(id, ordinal)).collect();
+        let input = match ordinal % 61 {
+            30 => Input::Snapshot { rows: &rows[..3], partial: Some(2), read: true, sample: Sample::FromReadBit },
+            45 => Input::Unavailable { reason: "refused for an hour", read: false, sample: Sample::FromReadBit },
+            _ => Input::Snapshot { rows: &rows, partial: None, read: true, sample: Sample::FromReadBit },
+        };
+        synthetic.table(TableId::Countries, input).unwrap();
+    })
 }
 
 /// `streams` over `runs` (branch, first hour, units), `write(synthetic, run, ordinal)` writing
-/// each hour's tables as the native recorder writes them, stored as the converter stores them:
-/// each unit's manifests and sections, and a restart ending every `restart_units`th unit. The
-/// file, and what the writer saw of each hour, run after run.
+/// each hour's tables as the collector writes them, the hours written as the recorder writes
+/// them. The file, and what the writer saw of each hour, run after run.
 pub fn written(
     campaign: &[u8],
     runs: &[(u64, i32, u32)],
-    restart_units: u32,
     streams: &[TableId],
     write: impl FnMut(&mut super::synthetic::Synthetic, u32, u32),
 ) -> (Vec<u8>, Vec<Seen>) {
-    written_captured(campaign, None, runs, restart_units, streams, write)
+    written_captured(campaign, None, runs, streams, write)
 }
 
 /// One run of `ordinals` hours, `frame(ordinal)` each, written as the recorder writes them:
-/// through the frame writer, the block builder and the columnar file writer, a restart ending
-/// every `restart_units`th block. The run is the first frame's branch from its hour.
-pub fn recorded(
-    campaign: &[u8],
-    ordinals: u32,
-    restart_units: u32,
-    mut frame: impl FnMut(u32) -> crate::frame::FrameInput,
-) -> Vec<u8> {
+/// through the frame writer and the recorder's store into the file. The run is the first
+/// frame's branch from its hour.
+pub fn recorded(campaign: &[u8], ordinals: u32, mut frame: impl FnMut(u32) -> crate::frame::FrameInput) -> Vec<u8> {
     use crate::native_frame::FrameWriter;
     let mut writer = FrameWriter::new().unwrap();
-    let mut file = writer_plain(identity(campaign, CaptureMode::Full.byte()));
-    let mut builder = BlockBuilder::new().unwrap().with_restart_blocks(restart_units);
+    let mut file = self::writer(identity(campaign, CaptureMode::Full.byte()), |_| {});
     for ordinal in 0..ordinals {
         let input = frame(ordinal);
         if ordinal == 0 {
             file.start_run(input.branch, envelope::epoch::START, input.hour).unwrap();
-            builder.start_run(input.branch, input.hour).unwrap();
         }
         let prepared = writer.hour(&input).unwrap();
         let sections: Vec<u8> = prepared.sections().flat_map(|(_, bytes)| bytes.iter().copied()).collect();
-        let block = builder.hour(&prepared.manifest, &sections).unwrap();
+        file.hour(&prepared.manifest, &sections).unwrap();
         writer.commit(prepared).unwrap();
-        if let Some(block) = block {
-            file.block(block.block()).unwrap();
-        }
     }
-    if let Some(block) = builder.end_run().unwrap() {
-        file.block(block.block()).unwrap();
-    }
-    file.finish(|_| Ok(())).unwrap().file.into_inner()
+    finished(file)
 }
 
-/// A file writer into memory.
-fn writer_plain(identity: Identity) -> FileWriter<std::io::Cursor<Vec<u8>>> {
-    writer(identity, |_| {})
-}
-
-/// [`written`], its root's control records holding `capture` when given.
+/// [`written`], its records holding `capture` when given.
 pub fn written_captured(
     campaign: &[u8],
     capture: Option<&crate::columnar_file::Capture>,
     runs: &[(u64, i32, u32)],
-    restart_units: u32,
+    streams: &[TableId],
+    write: impl FnMut(&mut super::synthetic::Synthetic, u32, u32),
+) -> (Vec<u8>, Vec<Seen>) {
+    written_captured_with(campaign, capture, replay_columnar::unit::Settings::at(LEVEL), runs, streams, write)
+}
+
+/// [`written_captured`], its blocks restored and packed as `unit` says.
+fn written_captured_with(
+    campaign: &[u8],
+    capture: Option<&crate::columnar_file::Capture>,
+    unit: replay_columnar::unit::Settings,
+    runs: &[(u64, i32, u32)],
     streams: &[TableId],
     mut write: impl FnMut(&mut super::synthetic::Synthetic, u32, u32),
 ) -> (Vec<u8>, Vec<Seen>) {
     use super::synthetic::Synthetic;
-    let columns: Vec<_> = schema().unwrap().iter().map(Vec::len).collect();
-    let mut file = writer_plain(identity(campaign, 0));
+    let mut file = writer_with(identity(campaign, 0), unit, |_| {});
     let mut seen = Vec::new();
     for (run, &(branch, first_hour, units)) in (0..).zip(runs) {
-        let mut synthetic = Synthetic::new(streams, branch, first_hour).unwrap();
+        let mut synthetic = Synthetic::new(branch, first_hour).unwrap();
         file.start_run(branch, envelope::epoch::START, first_hour).unwrap();
-        let mut builder = BlockBuilder::new().unwrap().with_restart_blocks(restart_units);
-        builder.start_run(branch, first_hour).unwrap();
         for ordinal in 0..units * envelope::UNIT_ORDINALS {
             write(&mut synthetic, run, ordinal);
-            let (manifest, sections) = synthetic
-                .end_encoded(|_, manifest, frame, _, encoded| {
-                    seen.push((
-                        frame.clone(),
-                        frame.tables.iter().map(SharedView::sampled_at).collect(),
-                    ));
-                    let joined: Vec<u8> = encoded.iter().flat_map(|(_, bytes)| bytes.iter().copied()).collect();
-                    (manifest.write(&columns).unwrap(), joined)
-                })
-                .unwrap();
-            if let Some(block) = builder.hour(&manifest, &sections).unwrap() {
-                file.block(block.block()).unwrap();
-            }
+            synthetic.end_encoded(|manifest, sections| file.hour(manifest, sections)).unwrap().unwrap();
+            let frame = file.frame(streams, (branch, first_hour + ordinal as i32), CaptureMode::Full).unwrap();
+            let sampled = frame.tables.iter().map(SharedView::sampled_at).collect();
+            seen.push((frame, sampled));
         }
-        if let Some(block) = builder.end_run().unwrap() {
-            file.block(block.block()).unwrap();
-        }
-        file.finish_run().unwrap();
     }
-    let finished = match capture {
-        Some(capture) => {
-            let capture = crate::columnar_file::Capture {
-                run_sessions: vec![0; runs.len()],
-                ..capture.clone()
-            };
-            file.finish_with_capture(&capture, |_| Ok(())).unwrap()
-        }
-        None => file.finish(|_| Ok(())).unwrap(),
-    };
-    (finished.file.into_inner(), seen)
+    let mut file = file.finish().unwrap();
+    if let Some(capture) = capture {
+        let capture = crate::columnar_file::Capture {
+            run_sessions: vec![0; runs.len()],
+            ..capture.clone()
+        };
+        let container = file.container();
+        let extent = container.put_zstd(envelope::Kind::Controls, Tags::default(), &capture.write().unwrap(), LEVEL).unwrap();
+        container.set_open(SectionKey::RECORDS, &[extent]).unwrap();
+    }
+    (file.finish_runs(&[], true, |_| Ok(())).unwrap().0.into_inner(), seen)
 }

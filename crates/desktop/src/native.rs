@@ -1,22 +1,16 @@
-//! Hosts the existing native viewer, with a bounded pipe for control messages.
+//! Hosts the map in this process ([`viewer::host`]) and hands it the frontend's commands.
 
 mod gamepad;
-mod job;
 mod lifecycle;
-mod line_reader;
 mod pending;
 
 use dashboard::protocol::{
-    DashboardMapView, MAX_MESSAGE_BYTES, NativeCommand, ViewBounds, ViewerState, replay_revision,
-    validate_map_views,
+    DashboardMapView, ViewBounds, ViewerState, replay_revision, validate_map_views,
 };
-#[cfg(test)]
-use dashboard::transport::DataCommand;
 pub use gamepad::start_gamepad;
-use lifecycle::Process;
 use pending::{Pending, SeekTarget};
 use serde::Serialize;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Mutex};
 use tauri::WebviewWindow;
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -39,9 +33,14 @@ pub struct HostStatus {
 
 #[derive(Default)]
 struct Inner {
-    process: Option<Process>,
-    /// A viewer's process is being created ([`NativeHost::ensure_started`]).
+    map: Option<viewer::host::Map>,
+    /// A map is being started ([`NativeHost::ensure_started`]).
     starting: bool,
+    /// A map was asked for while a launch was finishing: that launch launches again unless its
+    /// map runs.
+    relaunch: bool,
+    /// What waits for the map to end ([`NativeHost::shutdown`]).
+    ended_waiters: Vec<Box<dyn FnOnce() + Send>>,
     generation: u64,
     status: HostStatus,
     bounds: Option<ViewBounds>,
@@ -82,6 +81,23 @@ struct PopOutWindow {
 }
 
 impl Inner {
+    /// Hands the map what waits for it; nothing while none runs.
+    fn flush(&mut self) {
+        let Some(map) = self.map.as_ref() else {
+            return;
+        };
+        let visible = self.status.visible;
+        if !self.pending.can_send(visible) {
+            return;
+        }
+        for command in self.pending.take_commands(visible) {
+            // A map that has gone says how it ended; what it was not sent is restored for the next.
+            if !map.send(command) {
+                break;
+            }
+        }
+    }
+
     /// Tells the frontend the main viewer's status. A pop-out viewer's status is published only
     /// by the pop-out's owner, which is told it changed and reads it then.
     fn publish(&self, app: &tauri::AppHandle) {
@@ -125,16 +141,21 @@ fn launch_display(
 
 #[derive(Clone, Default)]
 pub struct NativeHost {
-    shared: Arc<(Mutex<Inner>, Condvar)>,
+    shared: Arc<Mutex<Inner>>,
 }
 
 impl NativeHost {
+    /// Hands the map what waits for it.
+    fn flush(&self) {
+        self.shared.lock().unwrap_or_else(|e| e.into_inner()).flush();
+    }
+
     /// A host for the viewer inside a pop-out window, which shows the campaign map only. Its
     /// status changes go to `changed` instead of the frontend.
     pub fn popout(parent: usize, changed: StatusChanged) -> Self {
         let host = Self::default();
         {
-            let mut inner = host.shared.0.lock().unwrap_or_else(|e| e.into_inner());
+            let mut inner = host.shared.lock().unwrap_or_else(|e| e.into_inner());
             inner.popout = Some(PopOutWindow { parent, changed });
             inner.pending.campaign_map = true;
         }
@@ -144,7 +165,7 @@ impl NativeHost {
     /// Select the geometry owner before the frontend mounts/unmounts that view.
     /// Late cleanup from the other owner cannot hide the newly selected surface.
     pub fn select_view(&self, dashboard: bool) -> Result<(), String> {
-        let mut inner = self.shared.0.lock().map_err(|error| error.to_string())?;
+        let mut inner = self.shared.lock().map_err(|error| error.to_string())?;
         if inner.shutting_down {
             return Err("The application is closing".into());
         }
@@ -164,57 +185,20 @@ impl NativeHost {
             inner.pending.visibility = Some(true);
         }
         drop(inner);
-        self.shared.1.notify_all();
-        Ok(())
-    }
-
-    /// Enqueue without creating a window/process. Request admission can hold its
-    /// own small lock across this operation without an OS-window callback.
-    #[cfg(test)]
-    pub(crate) fn enqueue_data(&self, request: DataCommand) -> Result<(), String> {
-        let cleanup = matches!(
-            request,
-            DataCommand::Cancel { .. } | DataCommand::Release { .. }
-        );
-        let length = serde_json::to_vec(&NativeCommand::Data {
-            request: request.clone(),
-        })
-        .map_err(|error| error.to_string())?
-        .len()
-            + 1;
-        if length > MAX_MESSAGE_BYTES {
-            return Err("Dashboard request exceeds the native control message budget".into());
-        }
-        let mut inner = self.shared.0.lock().map_err(|error| error.to_string())?;
-        if inner.shutting_down || inner.process.is_none() {
-            if cleanup {
-                return Ok(());
-            }
-            return Err("The native data connection closed".into());
-        }
-        inner.pending.enqueue_data(request, length)?;
-        drop(inner);
-        self.shared.1.notify_all();
+        self.flush();
         Ok(())
     }
 
     /// One replacement snapshot for every native map, including hidden bodies.
-    /// The window and process remain shared regardless of the number of maps.
+    /// One map and its window serve them all, however many there are.
     pub fn set_dashboard_views(
         &self,
         window: &WebviewWindow,
         views: &[DashboardMapView],
     ) -> Result<(), String> {
         validate_map_views(views).map_err(str::to_owned)?;
-        let command = NativeCommand::MapViews {
-            views: views.to_vec(),
-        };
-        let bytes = serde_json::to_vec(&command).map_err(|error| error.to_string())?;
-        if bytes.len() + 1 > MAX_MESSAGE_BYTES {
-            return Err("The map layout exceeds the native control message budget".into());
-        }
         {
-            let mut inner = self.shared.0.lock().map_err(|error| error.to_string())?;
+            let mut inner = self.shared.lock().map_err(|error| error.to_string())?;
             if inner.shutting_down {
                 return Err("The application is closing".into());
             }
@@ -237,13 +221,12 @@ impl NativeHost {
         if !views.is_empty() {
             self.ensure_started(window)?;
         }
-        self.shared.1.notify_all();
+        self.flush();
         Ok(())
     }
 
     pub fn status(&self) -> HostStatus {
         self.shared
-            .0
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .status
@@ -252,9 +235,9 @@ impl NativeHost {
 
     pub fn map_action(&self, action: dashboard::protocol::MapAction) -> Result<(), String> {
         action.validate().map_err(str::to_owned)?;
-        let mut inner = self.shared.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut inner = self.shared.lock().unwrap_or_else(|e| e.into_inner());
         if let dashboard::protocol::MapAction::Unload { path } = &action
-            && inner.process.is_none()
+            && inner.map.is_none()
         {
             inner.forget_recording(path);
             return Ok(());
@@ -281,7 +264,7 @@ impl NativeHost {
         }
         inner.pending.actions.push_back(action);
         drop(inner);
-        self.shared.1.notify_all();
+        self.flush();
         Ok(())
     }
 
@@ -291,9 +274,9 @@ impl NativeHost {
     /// order they were saved.
     pub fn set_diagnostics(&self, enabled: bool) {
         use dashboard::protocol::MapAction;
-        let mut inner = self.shared.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut inner = self.shared.lock().unwrap_or_else(|e| e.into_inner());
         inner.diagnostics = Some(enabled);
-        if inner.process.is_none() || inner.shutting_down {
+        if inner.map.is_none() || inner.shutting_down {
             return;
         }
         inner
@@ -305,7 +288,7 @@ impl NativeHost {
             .actions
             .push_back(MapAction::Diagnostics { enabled });
         drop(inner);
-        self.shared.1.notify_all();
+        self.flush();
     }
 
     /// Queues a display choice (VSync or map scale) for a running viewer, replacing any of the
@@ -313,14 +296,14 @@ impl NativeHost {
     /// launch-time read. A viewer whose launch begins later reads the current settings instead:
     /// callers send under the video settings' lock and release it only once those hold the choice.
     pub fn set_display(&self, action: dashboard::protocol::MapAction) {
-        let mut inner = self.shared.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut inner = self.shared.lock().unwrap_or_else(|e| e.into_inner());
         inner.display_sent += 1;
         let number = inner.display_sent;
         inner
             .display
             .retain(|(_, kept)| !same_display(kept, &action));
         inner.display.push((number, action.clone()));
-        if inner.process.is_none() || inner.shutting_down {
+        if inner.map.is_none() || inner.shutting_down {
             return;
         }
         inner
@@ -329,13 +312,13 @@ impl NativeHost {
             .retain(|queued| !same_display(queued, &action));
         inner.pending.actions.push_back(action);
         drop(inner);
-        self.shared.1.notify_all();
+        self.flush();
     }
 
     /// The recordings this host shows or is opening: the one the viewer reports, the one
     /// requested and not yet reported, and the target of a pending seek.
     pub fn recordings(&self) -> Vec<String> {
-        let inner = self.shared.0.lock().unwrap_or_else(|e| e.into_inner());
+        let inner = self.shared.lock().unwrap_or_else(|e| e.into_inner());
         [
             inner.status.viewer.path.clone(),
             inner.requested_path.clone(),
@@ -360,10 +343,10 @@ impl NativeHost {
 
     /// Queues `action` for the running or starting viewer unless one of its kind already waits;
     /// nothing when no viewer runs or it is shutting down. A starting viewer may read its settings
-    /// before its process is installed, so the notice is kept for it.
+    /// before it is installed, so the notice is kept for it.
     fn queue_once(&self, action: dashboard::protocol::MapAction) {
-        let mut inner = self.shared.0.lock().unwrap_or_else(|e| e.into_inner());
-        if (inner.process.is_none() && !inner.starting) || inner.shutting_down {
+        let mut inner = self.shared.lock().unwrap_or_else(|e| e.into_inner());
+        if (inner.map.is_none() && !inner.starting) || inner.shutting_down {
             return;
         }
         let kind = std::mem::discriminant(&action);
@@ -376,16 +359,16 @@ impl NativeHost {
             inner.pending.actions.push_back(action);
         }
         drop(inner);
-        self.shared.1.notify_all();
+        self.flush();
     }
 
     /// Sends the mute choice to a running viewer and keeps it for a viewer
     /// started later, as [`NativeHost::set_diagnostics`] does.
     pub fn set_muted(&self, muted: bool) {
         use dashboard::protocol::MapAction;
-        let mut inner = self.shared.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut inner = self.shared.lock().unwrap_or_else(|e| e.into_inner());
         inner.muted = Some(muted);
-        if inner.process.is_none() || inner.shutting_down {
+        if inner.map.is_none() || inner.shutting_down {
             return;
         }
         inner
@@ -394,16 +377,16 @@ impl NativeHost {
             .retain(|action| !matches!(action, MapAction::Mute { .. }));
         inner.pending.actions.push_back(MapAction::Mute { muted });
         drop(inner);
-        self.shared.1.notify_all();
+        self.flush();
     }
 
     /// Sends newly saved content folders to a running viewer, replacing any
     /// still queued, and keeps them for a viewer `ensure_started` starts later.
     pub fn set_folders(&self, config: &dashboard::Config) {
         use dashboard::protocol::MapAction;
-        let mut inner = self.shared.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut inner = self.shared.lock().unwrap_or_else(|e| e.into_inner());
         inner.folders = Some(config.clone());
-        if inner.process.is_none() || inner.shutting_down {
+        if inner.map.is_none() || inner.shutting_down {
             return;
         }
         inner
@@ -415,7 +398,7 @@ impl NativeHost {
             user: config.user_dir.to_string_lossy().into_owned(),
         });
         drop(inner);
-        self.shared.1.notify_all();
+        self.flush();
     }
 
     pub fn set_view(
@@ -426,7 +409,7 @@ impl NativeHost {
     ) -> Result<HostStatus, String> {
         let bounds = bounds.validate().map_err(str::to_owned)?;
         {
-            let mut inner = self.shared.0.lock().map_err(|e| e.to_string())?;
+            let mut inner = self.shared.lock().map_err(|e| e.to_string())?;
             inner.bounds = Some(bounds);
             if inner.active_dashboard {
                 return Ok(inner.status.clone());
@@ -438,7 +421,7 @@ impl NativeHost {
         if visible {
             self.ensure_started(window)?;
         }
-        self.shared.1.notify_all();
+        self.flush();
         Ok(self.status())
     }
 
@@ -447,13 +430,13 @@ impl NativeHost {
     /// start or restart launches a viewer.
     pub fn set_bounds(&self, bounds: ViewBounds) -> Result<(), String> {
         let bounds = bounds.validate().map_err(str::to_owned)?;
-        let mut inner = self.shared.0.lock().map_err(|e| e.to_string())?;
+        let mut inner = self.shared.lock().map_err(|e| e.to_string())?;
         inner.bounds = Some(bounds);
-        if inner.process.is_some() && !inner.active_dashboard {
+        if inner.map.is_some() && !inner.active_dashboard {
             inner.pending.bounds = Some(bounds);
         }
         drop(inner);
-        self.shared.1.notify_all();
+        self.flush();
         Ok(())
     }
 
@@ -462,7 +445,7 @@ impl NativeHost {
             return Err("Replay path is too long".into());
         }
         let revision = replay_revision(&path).map_err(|e| e.to_string())?;
-        let mut inner = self.shared.0.lock().map_err(|e| e.to_string())?;
+        let mut inner = self.shared.lock().map_err(|e| e.to_string())?;
         inner.dashboard_views = None;
         inner.pending.maps = None;
         inner.requested_path = Some(path.clone());
@@ -471,7 +454,7 @@ impl NativeHost {
         inner.pending.open = Some((path, revision));
         inner.pending.seek = None;
         drop(inner);
-        self.shared.1.notify_all();
+        self.flush();
         Ok(())
     }
 
@@ -490,7 +473,7 @@ impl NativeHost {
         if replay_revision(&path).map_err(|e| e.to_string())? != revision {
             return Err("The recording changed since this analysis. Refresh the analysis before viewing this sample on the map.".into());
         }
-        let mut inner = self.shared.0.lock().map_err(|e| e.to_string())?;
+        let mut inner = self.shared.lock().map_err(|e| e.to_string())?;
         inner.dashboard_views = None;
         inner.pending.maps = None;
         let current_matches = inner.status.viewer.path.as_ref() == Some(&path)
@@ -511,7 +494,7 @@ impl NativeHost {
         inner.requested_seek = Some(target.clone());
         inner.pending.seek = Some(target);
         drop(inner);
-        self.shared.1.notify_all();
+        self.flush();
         Ok(())
     }
 }

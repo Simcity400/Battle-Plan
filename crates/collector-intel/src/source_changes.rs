@@ -6,7 +6,7 @@ use crate::{
     hook_errors,
     source_state::{self as state, Event, Owner, Reference, Seed},
 };
-use collector_primitives::shared_lane::SharedLane;
+use collector_primitives::{first_reason::FirstReason, shared_lane::SharedLane};
 use engine_allocation as allocation;
 use engine_intelligence::{intel_source_sites as sites, intel_sources as native};
 use engine_native::{Memory, read};
@@ -35,7 +35,7 @@ static ORIGINAL: [AtomicUsize; sites::SITES.len()] =
 static CALLS: [AtomicU64; sites::SITES.len()] = [const { AtomicU64::new(0) }; sites::SITES.len()];
 static FAILURES: [AtomicU64; sites::SITES.len()] =
     [const { AtomicU64::new(0) }; sites::SITES.len()];
-static FIRST_FAILURE: Mutex<Option<&'static str>> = Mutex::new(None);
+static FIRST_FAILURE: FirstReason = FirstReason::new();
 static CURRENT: AtomicPtr<SharedLane<Event>> = AtomicPtr::new(ptr::null_mut());
 static REFERENCES: AtomicPtr<ReferenceIndex> = AtomicPtr::new(ptr::null_mut());
 static STORE: Mutex<Store> = Mutex::new(Store::new());
@@ -68,11 +68,21 @@ impl Flight {
 impl Drop for Flight {
     fn drop(&mut self) {
         if !self.complete {
-            FAILED.fetch_add(1, Ordering::SeqCst);
+            fail("intel source writer did not complete");
             return;
         }
         ACTIVE.fetch_sub(1, Ordering::SeqCst);
     }
+}
+
+fn fail(reason: &'static str) {
+    FIRST_FAILURE.record(reason);
+    FAILED.fetch_add(1, Ordering::SeqCst);
+}
+
+fn refused(site: usize, reason: &'static str) {
+    FAILURES[site].fetch_add(1, Ordering::Relaxed);
+    fail(reason);
 }
 
 #[derive(Default)]
@@ -539,15 +549,28 @@ pub fn boundary(invalidate: bool) {
 pub fn active() -> usize {
     ACTIVE.load(Ordering::SeqCst)
 }
+pub fn status() -> impl serde::Serialize {
+    crate::status::status!({
+        "lost": FAILED.load(Ordering::Relaxed),
+        "first_loss": FIRST_FAILURE.get(),
+        "failed_sites": crate::status::map(
+            sites::SITES
+                .iter()
+                .map(|site| site.name)
+                .zip(FAILURES.iter().map(|count| count.load(Ordering::Relaxed)))
+                .filter(|(_, count)| *count != 0),
+        ),
+    })
+}
 
-fn publish(mut event: Event) {
+fn publish(mut event: Event) -> Result<(), &'static str> {
     event.order = ORDER.fetch_add(1, Ordering::SeqCst);
-    let lane = CURRENT.load(Ordering::SeqCst);
-    if let Some(reservation) = unsafe { lane.as_ref() }.and_then(SharedLane::reserve) {
-        reservation.publish(event);
-    } else {
-        FAILED.fetch_add(1, Ordering::SeqCst);
-    }
+    unsafe { CURRENT.load(Ordering::SeqCst).as_ref() }
+        .ok_or("intel source event lane not prepared")?
+        .reserve()
+        .ok_or("intel source event allocation failed")?
+        .publish(event);
+    Ok(())
 }
 
 unsafe extern "system-unwind" fn callback<const I: usize>(
@@ -715,7 +738,7 @@ unsafe extern "system-unwind" fn callback<const I: usize>(
                                     i64::from(value.lifetime),
                                 ],
                                 ..Default::default()
-                            });
+                            })?;
                         }
                     }
                 }
@@ -723,15 +746,10 @@ unsafe extern "system-unwind" fn callback<const I: usize>(
             }
             _ => return Ok(()),
         }
-        publish(event);
-        Ok::<(), &'static str>(())
+        publish(event)
     })();
     if let Err(reason) = post {
-        FAILED.fetch_add(1, Ordering::SeqCst);
-        FAILURES[I].fetch_add(1, Ordering::Relaxed);
-        if let Ok(mut first) = FIRST_FAILURE.try_lock() {
-            first.get_or_insert(reason);
-        }
+        refused(I, reason);
     }
     flight.complete = true;
     result
@@ -879,22 +897,56 @@ mod tests {
         assert_eq!(result.unwrap(), None);
         assert!(contributions.is_empty());
         assert!(sources.is_empty());
-        // A replacement alone reads only its independent family, not every owner.
+        // A replacement alone reads only its independent family, not every owner,
+        // and a burst past the prepared lane keeps every event.
         let lane = store.lanes.last().unwrap();
-        lane.reserve().unwrap().publish(Event {
-            object: 5,
-            kind: state::STATIC_PRUNE,
-            ..Default::default()
-        });
+        let burst = 4 * lane.len() as u64 + 3;
+        for order in 1..=burst {
+            lane.reserve().unwrap().publish(Event {
+                order,
+                object: 5,
+                kind: state::STATIC_PRUNE,
+                ..Default::default()
+            });
+        }
         assert_eq!(
             store
                 .capture(&NoRead, 0, None, false, &mut contributions, &mut sources)
                 .unwrap(),
             None
         );
+        assert_eq!(
+            store.events.iter().map(|event| event.0).collect::<Vec<_>>(),
+            (1..=burst).collect::<Vec<_>>()
+        );
+        assert!(store.lanes.last().unwrap().len() >= burst as usize);
+        assert_eq!(store.rejected, 0);
+        // Only a refused allocation loses an event now; the status names it.
+        let lane = store.lanes.last().unwrap();
+        assert!(ptr::eq(CURRENT.load(Ordering::SeqCst), &**lane));
+        for _ in 0..lane.len() {
+            lane.try_reserve().unwrap().publish(Event {
+                object: 5,
+                kind: state::STATIC_PRUNE,
+                ..Default::default()
+            });
+        }
+        let site = 12;
+        let reason = crate::test_support::with_allocations_denied(|| {
+            publish(Event {
+                object: 5,
+                kind: state::STATIC_PRUNE,
+                ..Default::default()
+            })
+        })
+        .unwrap_err();
+        assert_eq!(reason, "intel source event allocation failed");
+        refused(site, reason);
+        let status = serde_json::to_value(status()).unwrap();
+        assert_eq!(status["first_loss"], "intel source event allocation failed");
+        assert_eq!(status["failed_sites"][sites::SITES[site].name], 1);
         // Missing even one event revokes the proof; an ordinary hour must not
         // bootstrap by walking all countries to recover it.
-        FAILED.fetch_add(1, Ordering::SeqCst);
         assert!(
             store
                 .capture(&NoRead, 0, None, false, &mut contributions, &mut sources)

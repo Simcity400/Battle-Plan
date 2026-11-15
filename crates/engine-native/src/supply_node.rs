@@ -314,8 +314,8 @@ pub fn walk(
     memory: &impl Memory,
     base: usize,
     state: usize,
-    output: &mut [Row],
-    paths: &mut [u32],
+    output: &mut Vec<Row>,
+    paths: &mut Vec<u32>,
 ) -> Report {
     let mut provinces = ProvinceMemo::default();
     provinces.begin(memory, base, state);
@@ -439,30 +439,6 @@ pub fn walk_part(
     state: usize,
     part: usize,
     parts: usize,
-    output: &mut [Row],
-    paths: &mut [u32],
-    provinces: &mut ProvinceMemo,
-) -> Report {
-    walk_part_buffer(
-        memory,
-        base,
-        state,
-        part,
-        parts,
-        crate::walk::Buffer::Fixed(output),
-        crate::walk::Buffer::Fixed(paths),
-        provinces,
-        None,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn walk_part_growing(
-    memory: &impl Memory,
-    base: usize,
-    state: usize,
-    part: usize,
-    parts: usize,
     output: &mut Vec<Row>,
     paths: &mut Vec<u32>,
     provinces: &mut ProvinceMemo,
@@ -480,12 +456,12 @@ pub fn walk_part_growing(
     )
 }
 
-/// [`walk_part_growing`] for the countries `select` admits by native country
+/// [`walk_part`] for the countries `select` admits by native country
 /// id: an unselected slot's supply objects, nodes and routes are not read,
 /// and its rows are neither returned nor counted as unread. A selected
 /// country's rows equal the whole walk's.
 #[allow(clippy::too_many_arguments)]
-pub fn walk_part_selected_growing(
+pub fn walk_part_selected(
     memory: &impl Memory,
     base: usize,
     state: usize,
@@ -510,7 +486,7 @@ pub fn walk_part_selected_growing(
 }
 
 /// `select`, when present, admits countries by native id before their supply
-/// objects are read ([`walk_part_selected_growing`]); without it every slot
+/// objects are read ([`walk_part_selected`]); without it every slot
 /// is read and checked.
 #[allow(clippy::too_many_arguments)]
 pub fn walk_part_buffer(

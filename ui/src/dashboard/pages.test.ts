@@ -6,10 +6,11 @@ import { defaultPages, keptPageStates, loadPages, movePage, PAGES, parsePageList
 import { parseTemplate } from './storage.ts';
 import '../widgets/definitions.ts';
 
-test('every widget has a page, and every page arrangement fits the grid without overlaps', () => {
+test('every default panel names a registered widget, every widget has a page, and every page arrangement fits the grid without overlaps', () => {
   const placed = new Set<string>(PAGES.flatMap(page => page.panels.map(([kind]) => kind)));
   assert.deepEqual(widgetDefinitions().map(definition => definition.kind).filter(kind => !placed.has(kind)), []);
   for (const page of PAGES) {
+    assert.ok(page.panels.length, `${page.id}: a built-in page shows at least one widget`);
     const cells = new Set<string>();
     for (const [kind, x, y, w, h] of page.panels) {
       const definition = widgetDefinition(kind);
@@ -28,10 +29,10 @@ test('saved page lists keep names and order, refuse damaged entries and fall bac
   const values = new Map<string, string>();
   const storage = { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); } };
   assert.deepEqual(loadPages(storage), defaultPages());
-  const pages = [{ id: 'page-1a', label: 'Mine' }, { id: 'navy', label: 'Fleet' }];
+  const pages = [{ id: 'page-1a', label: 'Mine' }, { id: 'politics', label: 'Cabinet' }];
   assert.equal(savePages(pages, storage), null);
   assert.deepEqual(loadPages(storage), pages);
-  for (const bad of [[], [{ id: 'unknown', label: 'X' }], [{ id: 'navy', label: '  ' }], [{ id: 'navy', label: 'A' }, { id: 'navy', label: 'B' }]]) {
+  for (const bad of [[], [{ id: 'unknown', label: 'X' }], [{ id: 'politics', label: '  ' }], [{ id: 'politics', label: 'A' }, { id: 'politics', label: 'B' }]]) {
     assert.equal(parsePageList(bad), null);
   }
   values.set('hoi4-replay.analytics-pages.v1', '{');
@@ -40,10 +41,10 @@ test('saved page lists keep names and order, refuse damaged entries and fall bac
 
 test('a dragged page lands before the page it was dropped on, or at the end', () => {
   const ids = (list: { id: string }[]) => list.map(page => page.id);
-  const pages = defaultPages().slice(0, 4);
-  assert.deepEqual(ids(movePage(pages, 0, 2)), ['politics', 'overview', 'diplomacy', 'economy']);
-  assert.deepEqual(ids(movePage(pages, 3, 0)), ['economy', 'overview', 'politics', 'diplomacy']);
-  assert.deepEqual(ids(movePage(pages, 1, 4)), ['overview', 'diplomacy', 'economy', 'politics']);
+  const pages = ['overview', 'politics', 'page-a', 'page-b'].map(id => ({ id, label: id }));
+  assert.deepEqual(ids(movePage(pages, 0, 2)), ['politics', 'overview', 'page-a', 'page-b']);
+  assert.deepEqual(ids(movePage(pages, 3, 0)), ['page-b', 'overview', 'politics', 'page-a']);
+  assert.deepEqual(ids(movePage(pages, 1, 4)), ['overview', 'page-a', 'page-b', 'politics']);
 });
 
 test('only pages that still exist keep what they held while not shown', () => {

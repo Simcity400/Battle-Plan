@@ -96,6 +96,12 @@ fn available_order_precedes_retired_and_multi_names_do_not_need_the_cache() {
         TableView::Complete(TableRows::AvailableAdvisors(vec![
             AvailableAdvisorRow {
                 country: 100,
+                ordinal: 2,
+                character: 10,
+                idea: b"SYN_ADVISOR".to_vec(),
+            },
+            AvailableAdvisorRow {
+                country: 100,
                 ordinal: 8,
                 character: 20,
                 idea: b"SYN_ADVISOR".to_vec(),
@@ -104,12 +110,6 @@ fn available_order_precedes_retired_and_multi_names_do_not_need_the_cache() {
                 country: 200,
                 ordinal: 0,
                 character: 20,
-                idea: b"SYN_ADVISOR".to_vec(),
-            },
-            AvailableAdvisorRow {
-                country: 100,
-                ordinal: 2,
-                character: 10,
                 idea: b"SYN_ADVISOR".to_vec(),
             },
         ]));
@@ -195,6 +195,11 @@ fn retired_fallback_folds_the_token_and_keeps_record_order() {
         TableView::Complete(TableRows::CountryRetiredCharacters(vec![
             CountryCharacterRow {
                 country: 100,
+                ordinal: 3,
+                character: Some(20),
+            },
+            CountryCharacterRow {
+                country: 100,
                 ordinal: 9,
                 character: Some(10),
             },
@@ -202,11 +207,6 @@ fn retired_fallback_folds_the_token_and_keeps_record_order() {
                 country: 200,
                 ordinal: 0,
                 character: Some(10),
-            },
-            CountryCharacterRow {
-                country: 100,
-                ordinal: 3,
-                character: Some(20),
             },
         ]));
     roles(&mut fixture)[1].idea = b"syn_advisor".to_vec();
@@ -234,7 +234,7 @@ fn cached_numbers_use_definition_ids_and_order_not_authored_modifiers() {
         modifier_cache: Recorded::Value(None),
         ..roles(&mut fixture)[0].clone()
     };
-    roles(&mut fixture).insert(0, later);
+    roles(&mut fixture).insert(1, later);
     // No lexical spelling is needed for numeric cache definition IDs.
     *fixture.frame.tables[TableId::LexicalTokens.index()] = TableView::Unavailable {
         reason: "synthetic unavailable".into(),
@@ -267,7 +267,7 @@ fn cached_numbers_use_definition_ids_and_order_not_authored_modifiers() {
                 .keys()
                 .next()
                 .unwrap()
-                .contains("AdvisorRoles.tooltip_keys not recorded")
+                .contains("tooltip keys of advisor roles not recorded")
         );
     }
 }
@@ -294,7 +294,7 @@ fn known_empty_numeric_cache_still_refuses_the_unrecorded_tooltip_keys() {
             .keys()
             .next()
             .unwrap()
-            .contains("AdvisorRoles.tooltip_keys not recorded")
+            .contains("tooltip keys of advisor roles not recorded")
     );
 }
 
@@ -366,7 +366,7 @@ fn advisor_research_and_recorded_trait_targets_surround_the_stored_numbers() {
             .keys()
             .next()
             .unwrap()
-            .contains("AdvisorRoles.tooltip_keys not recorded")
+            .contains("tooltip keys of advisor roles not recorded")
     );
 }
 
@@ -378,11 +378,11 @@ fn unavailable_or_absent_cache_and_rosters_are_named_not_empty_blocks() {
     for (cache, reason) in [
         (
             Recorded::NotRecorded,
-            "AdvisorRoles.modifier_cache not recorded",
+            "modifier cache of advisor roles not recorded",
         ),
         (
             Recorded::Value(None),
-            "AdvisorRoles.modifier_cache unavailable",
+            "modifier cache of advisor roles unavailable",
         ),
     ] {
         roles(&mut fixture)[0].modifier_cache = cache;
@@ -463,7 +463,7 @@ fn format99_advisor_ideas_render_recorded_tooltips_in_slot_order() {
                         .keys()
                         .next()
                         .unwrap()
-                        .contains("AdvisorRoles.tooltip_keys capture unavailable")
+                        .contains("tooltip keys of advisor roles capture unavailable")
                 );
             } else {
                 assert!(result.refusals.is_empty(), "{:?}", result.refusals);

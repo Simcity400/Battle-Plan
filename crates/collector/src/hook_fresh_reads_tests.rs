@@ -513,7 +513,7 @@ fn missing_fuel_awards_keep_fresh_stock_and_the_real_window_refusal() {
     let mut awards = collector_fuel_awards::tables::Captured::vacant();
     let mut windows = collector_fuel_awards::tables::Windows::default();
     for (hour, current) in [(10, 130_000), (11, 290_000)] {
-        awards.drain_growing();
+        awards.drain();
         let mut frame = source(hour);
         frame.tables[TableId::CountryFuel.index()] =
             TableView::Complete(TableRows::CountryFuel(vec![CountryFuelRow {
@@ -589,7 +589,7 @@ fn missing_land_observer_keeps_actual_incomplete_coverage_and_refuses_events() {
     .unwrap();
     let mut capture = crate::extended::land_events::Captured::vacant();
     for hour in [10, 11] {
-        capture.drain_growing(hour, false);
+        capture.drain(hour, false);
         let mut frame = source(hour);
         for (table, value) in crate::extended::land_events::TABLES
             .into_iter()

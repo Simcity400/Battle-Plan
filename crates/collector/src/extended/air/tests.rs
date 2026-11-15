@@ -25,7 +25,7 @@ fn walk(
 
 #[test]
 fn patrol_combats_keep_order_filter_regions_and_list_the_regions() {
-    let mut scratch = [0; 6];
+    let mut scratch = vec![0; 6];
     let count = patrols(&mut scratch);
     let mut rows = vec![rows::AirNavalPatrolCombatRow::default(); 4];
     let (outcome, (first, len)) = patrol_combats(&mut scratch, count, &mut rows, walk).unwrap();
@@ -41,28 +41,6 @@ fn patrol_combats_keep_order_filter_regions_and_list_the_regions() {
         [row(1, 0, 11, 9), row(1, 1, 12, 5), row(2, 0, 20, 5)]
     );
     assert_eq!(scratch[first..first + len], [5, 9]);
-}
-
-#[test]
-fn patrol_combats_truncate_and_refuse_short_scratch() {
-    let mut scratch = [0; 6];
-    let count = patrols(&mut scratch);
-    let mut rows = vec![rows::AirNavalPatrolCombatRow::default(); 1];
-    let (outcome, _) = patrol_combats(&mut scratch, count, &mut rows, walk).unwrap();
-    // The unread rows are what the growth pass sizes the next hour by.
-    assert_eq!(
-        outcome,
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 2
-        }
-    );
-    let mut short = [0; 5];
-    let count = patrols(&mut short);
-    assert_eq!(
-        patrol_combats(&mut short, count, &mut rows, walk).map(|_| ()),
-        Err("naval-patrol scratch smaller than the registrations")
-    );
 }
 
 use super::*;
@@ -156,7 +134,7 @@ fn growing_air_raw_jobs_and_decode_publish_complete_mod_populations_from_cold_st
     };
     for count in [5_000_usize, 12_000] {
         let bytes = stats_test_kit::mod_fixture(count);
-        let report = copy_air_stats_refresh_growing(
+        let report = copy_air_stats_refresh(
             &stats_test_kit::memory(&bytes),
             AirStatsCopyContext {
                 base: stats_test_kit::BASE,
@@ -172,7 +150,7 @@ fn growing_air_raw_jobs_and_decode_publish_complete_mod_populations_from_cold_st
         assert_eq!(captured.statistics.outcome, Outcome::Rows { len: count });
 
         let bytes = air_bases_test_kit::mod_fixture(count);
-        let report = copy_air_bases_refresh_growing(
+        let report = copy_air_bases_refresh(
             &air_bases_test_kit::memory(&bytes),
             AirBasesCopyContext {
                 base: air_bases_test_kit::BASE,
@@ -217,7 +195,7 @@ fn worker_air_growth_hands_off_complete_mod_rosters() {
                 && !replay_data::cadence::should_walk(TableId::AirTheatreMembers, hour, false)
         })
         .unwrap();
-    let report = copy_air_refresh_growing(
+    let report = copy_air_refresh(
         &memory,
         AirWingCopyContext {
             base: world.base,
@@ -225,7 +203,6 @@ fn worker_air_growth_hands_off_complete_mod_rosters() {
             hour,
             force_full: false,
             limits: [1, 0, 0],
-            naval_limit: 0,
             game_score: false,
         },
         &mut job,
@@ -267,6 +244,14 @@ fn worker_air_growth_hands_off_complete_mod_rosters() {
             .enumerate()
             .all(|(ordinal, row)| row.name == Some((ordinal * 4, 4)))
     );
+
+    // A job without an identity census installs its refusal: the frame never
+    // rebuilds one from the job's sources into its wing-sized arena.
+    assert_eq!(job.source_outcome, Outcome::Rows { len: WINGS });
+    job.identity_outcome = NO_WING_SOURCE;
+    let mut captured = Captured::with_capacities(&capacity);
+    captured.install_owned_mission_identities(&mut job);
+    assert_eq!(captured.identity_outcome, NO_WING_SOURCE);
 }
 
 #[test]
@@ -283,7 +268,7 @@ fn worker_wing_extensions_and_decode_follow_first_hour_live_demand() {
     let mut job = AirWingJob::new();
     job.equipment.truncate(1);
     job.cumulative.truncate(1);
-    let report = copy_air_refresh_growing(
+    let report = copy_air_refresh(
         &world.live(),
         AirWingCopyContext {
             base: world.base,
@@ -291,7 +276,6 @@ fn worker_wing_extensions_and_decode_follow_first_hour_live_demand() {
             hour: 0,
             force_full: true,
             limits: [1; 3],
-            naval_limit: 0,
             game_score: false,
         },
         &mut job,
@@ -338,7 +322,6 @@ fn zero_hint_wing_growth_preserves_fixed_original_read_order_and_first_faults() 
         hour: 0,
         force_full: true,
         limits: [8192, 8192, 4096],
-        naval_limit: 8192,
         game_score: false,
     };
     let baseline = Observed {
@@ -365,11 +348,10 @@ fn zero_hint_wing_growth_preserves_fixed_original_read_order_and_first_faults() 
         let mut fixed = AirWingJob::fixture();
         let mut growing = AirWingJob::default();
         let fixed_report = copy_air_refresh(&fixed_memory, context, &mut fixed);
-        let growing_report = copy_air_refresh_growing(
+        let growing_report = copy_air_refresh(
             &growing_memory,
             AirWingCopyContext {
                 limits: [0; 3],
-                naval_limit: 0,
                 ..context
             },
             &mut growing,
@@ -423,7 +405,7 @@ fn yearly_statistics_original_capacities_survive_cold_and_later_owned_decode() {
         kit::set_yearly_capacity(&mut bytes, capacity);
         let memory = kit::memory(&bytes);
         assert!(
-            copy_air_stats_refresh_growing(
+            copy_air_stats_refresh(
                 &memory,
                 AirStatsCopyContext {
                     base: kit::BASE,
@@ -453,7 +435,7 @@ fn yearly_statistics_original_capacities_survive_cold_and_later_owned_decode() {
         );
         let mut direct = Vec::new();
         assert_eq!(
-            cloop_history::walk_growing(&memory, kit::BASE, kit::GAME_STATE, &mut direct),
+            cloop_history::walk(&memory, kit::BASE, kit::GAME_STATE, &mut direct),
             captured.statistics.outcome
         );
         assert_eq!(captured.statistics.rows[..count], direct[..count]);
@@ -607,12 +589,18 @@ fn equipment_capture_preserves_full_handles_order_and_exact_capacity() {
     };
     let source = WingSource {
         pointer: WING,
-        pool: 0,
         row: &row,
     };
-    let mut output = std::array::from_fn::<_, 2, _>(|_| rows::WingEquipmentRow::default());
+    let mut output = Vec::new();
     assert_eq!(
-        read_equipment(&memory, 0, &source, &mut output),
+        read_equipment_buffer(
+            &memory,
+            0,
+            &source,
+            engine_native::walk::Buffer::Growing(&mut output),
+            0
+        )
+        .0,
         Outcome::Rows { len: 2 }
     );
     assert!(
@@ -622,13 +610,6 @@ fn equipment_capture_preserves_full_handles_order_and_exact_capacity() {
     );
     assert_eq!((output[0].ordinal, output[1].ordinal), (0, 1));
     assert_eq!((output[0].amount_raw, output[1].amount_raw), (0, i64::MIN));
-    assert_eq!(
-        read_equipment(&memory, 0, &source, &mut output[..1]),
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 1
-        }
-    );
 }
 
 #[test]
@@ -819,7 +800,6 @@ fn wing_daily_private_fields_and_capacities_do_not_gate_hourly_equipment() {
                 hour,
                 force_full: false,
                 limits: [2, 3, if cumulative { 2 } else { usize::MAX }],
-                naval_limit: if theatres { 2 } else { usize::MAX },
                 game_score: false,
             },
             &mut job,
@@ -1034,7 +1014,7 @@ fn wing_split_copy_matches_direct_walk_on_fault_matrix() {
 }
 
 #[test]
-fn shared_wing_map_caps_do_not_bound_extension_or_membership_censuses() {
+fn shared_wing_map_grants_bound_no_census() {
     use super::wing_test_kit as kit;
     let bytes = kit::fixture();
     let memory = kit::memory(&bytes);
@@ -1047,7 +1027,6 @@ fn shared_wing_map_caps_do_not_bound_extension_or_membership_censuses() {
             game_state: kit::GAME_STATE,
 
             limits: [map_limit, 3, 2],
-            naval_limit: 4096,
             game_score: false,
         };
         let report = super::copy_air_refresh(&memory, context, &mut first);
@@ -1056,51 +1035,8 @@ fn shared_wing_map_caps_do_not_bound_extension_or_membership_censuses() {
         assert_eq!(first.equipment_outcome, Outcome::Rows { len: 3 });
         assert_eq!(first.cumulative_outcome, Outcome::Rows { len: 2 });
         assert_eq!(first.memberships().1.len(), 2);
-        assert_eq!(
-            first.map_outcome,
-            if map_limit == 2 {
-                Outcome::Rows { len: 2 }
-            } else {
-                Outcome::Truncated {
-                    len: map_limit,
-                    unread_rows: (2 - map_limit) as u32,
-                }
-            }
-        );
+        assert_eq!(first.map_outcome, Outcome::Rows { len: 2 }, "map grant {map_limit}");
     }
-}
-
-#[test]
-fn shared_wing_naval_cap_keeps_tail_leaf_failure_local() {
-    use super::wing_test_kit as kit;
-    let mut bytes = kit::fixture();
-    // The later wing is beyond the naval prefix and remains inside the
-    // independently bounded map and extension census.
-    bytes[0x34000..0x34008].fill(0);
-    let memory = kit::memory(&bytes);
-    let mut first = super::AirWingJob::fixture();
-    let context = super::AirWingCopyContext {
-        hour: 0,
-        force_full: true,
-        base: kit::BASE,
-        game_state: kit::GAME_STATE,
-
-        limits: [2, 3, 2],
-        naval_limit: 1,
-        game_score: false,
-    };
-    let report = super::copy_air_refresh(&memory, context, &mut first);
-    assert!(report.raw_ok);
-    assert!(matches!(first.source_outcome, Outcome::Unavailable { .. }));
-    assert!(matches!(first.map_outcome, Outcome::Unavailable { .. }));
-    assert_eq!(
-        first.naval_outcome,
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 1
-        }
-    );
-    assert_eq!(first.memberships().1.len(), 1);
 }
 
 #[test]
@@ -1205,48 +1141,6 @@ fn stats_truncation_matrix_matches_direct_with_same_caps() {
     };
     let (split, _, _) = kit::split(&memory, &capacities);
     assert_eq!(split.outcome, Outcome::Rows { len: 2 });
-}
-
-#[test]
-fn stats_staging_overflow_falls_back_to_typed_walk() {
-    use super::stats_test_kit as kit;
-    use super::{AirStatsCopyContext, AirStatsJob};
-    let bytes = kit::fixture();
-    let memory = kit::memory(&bytes);
-    let ctx = AirStatsCopyContext {
-        hour: 0,
-        force_full: true,
-        base: kit::BASE,
-        game_state: kit::GAME_STATE,
-    };
-    let mut tiny = AirStatsJob {
-        log: crate::raw::RawLog::new(1, 1),
-        game_state: 0,
-        ..Default::default()
-    };
-    let report = super::copy_air_stats_refresh(&memory, ctx, &mut tiny);
-    assert!(!report.raw_ok);
-}
-
-#[test]
-fn wing_staging_overflow_falls_back_to_typed_walk() {
-    use super::wing_test_kit as kit;
-    use super::{AirWingCopyContext, AirWingJob};
-    let bytes = kit::fixture();
-    let memory = kit::memory(&bytes);
-    let ctx = AirWingCopyContext {
-        hour: 0,
-        force_full: true,
-        base: kit::BASE,
-        game_state: kit::GAME_STATE,
-
-        limits: [1024, 8192, 4096],
-        naval_limit: 4096,
-        game_score: false,
-    };
-    let mut tiny = AirWingJob::default();
-    let report = super::copy_air_refresh(&memory, ctx, &mut tiny);
-    assert!(!report.raw_ok);
 }
 
 /// A positive slot holding the reserved slot-zero object is skipped as `Reader::at` skips it:
@@ -1655,10 +1549,6 @@ fn linear_air_link(
     if slot >= countries {
         return None;
     }
-    if seen.len() == seen.capacity() {
-        log.overflowed = true;
-        return None;
-    }
     seen.push((raw, slot));
     Some(slot)
 }
@@ -1683,7 +1573,7 @@ impl Memory for AirLinkMemory {
 }
 
 #[test]
-fn air_bases_link_index_matches_linear_collisions_faults_and_full_capacity() {
+fn air_bases_link_index_matches_linear_collisions_faults_and_growth() {
     // One-cell indexes deliberately collide every raw. Successful
     // observations stay authoritative even if the source changes or
     // faults; failed and invalid resolutions must be observed again.
@@ -1734,51 +1624,38 @@ fn air_bases_link_index_matches_linear_collisions_faults_and_full_capacity() {
                 assert_eq!(actual.overflowed, expected.overflowed);
                 assert_eq!(seen, linear_seen);
                 assert_eq!(*memory.calls.borrow(), *reference.calls.borrow());
-                assert_eq!(seen.capacity(), capacity);
                 assert_eq!(index.capacity(), index_capacity);
             }
-            if capacity == 8 {
-                assert_eq!(
-                    results,
-                    [
-                        None,
-                        Some(2),
-                        Some(1),
-                        Some(2),
-                        Some(1),
-                        None,
-                        None,
-                        Some(0),
-                        Some(0),
-                        Some(3),
-                        Some(3),
-                        None,
-                        None,
-                    ]
-                );
-                assert_eq!(
-                    *memory.calls.borrow(),
-                    [
-                        (0x1004, 4),
-                        (0x100c, 4),
-                        (0x1008, 4),
-                        (0x1008, 4),
-                        (0x1008, 4),
-                        (0x1010, 4),
-                    ]
-                );
-            } else {
-                assert!(actual.overflowed);
-                // The uncached successful read occurs before detecting
-                // a full seen list; the index cannot preflight it away.
-                let expected_calls = match capacity {
-                    0 => 1,
-                    1 => 2,
-                    2 => 5,
-                    _ => unreachable!(),
-                };
-                assert_eq!(memory.calls.borrow().len(), expected_calls);
-            }
+            assert!(!actual.overflowed);
+            assert_eq!(
+                results,
+                [
+                    None,
+                    Some(2),
+                    Some(1),
+                    Some(2),
+                    Some(1),
+                    None,
+                    None,
+                    Some(0),
+                    Some(0),
+                    Some(3),
+                    Some(3),
+                    None,
+                    None,
+                ]
+            );
+            assert_eq!(
+                *memory.calls.borrow(),
+                [
+                    (0x1004, 4),
+                    (0x100c, 4),
+                    (0x1008, 4),
+                    (0x1008, 4),
+                    (0x1008, 4),
+                    (0x1010, 4),
+                ]
+            );
         }
     }
 }
@@ -1974,45 +1851,6 @@ fn air_bases_registrations_decode_matches_direct_from_shared_log() {
     assert_eq!(alone.outcome, direct.regs.outcome, "registrations outcome");
     assert_eq!(alone.rows, direct.regs.rows, "registrations rows");
     assert_eq!(alone.wings, direct.regs.wings, "registrations wings");
-}
-
-#[test]
-fn air_bases_staging_overflow_falls_back_to_typed_walk() {
-    use super::air_bases_test_kit as kit;
-    use super::{AirBasesCopyContext, AirBasesJob};
-    let bytes = kit::fixture();
-    let memory = kit::memory(&bytes);
-    let ctx = AirBasesCopyContext {
-        hour: 0,
-        force_full: true,
-        base: kit::BASE,
-        game_state: kit::GAME_STATE,
-    };
-    let mut tiny = AirBasesJob {
-        log: crate::raw::RawLog::new(1, 1),
-        carrier: super::carrier::Job::default(),
-        state_fuel: Default::default(),
-        game_state: 0,
-        registration_demand: None,
-        aces_active: false,
-        census: Vec::new(),
-        roster: Default::default(),
-        seen_links: Vec::new(),
-        seen_link_index: Vec::new(),
-        required_census: 0,
-        required_links: 0,
-        capacity_charge: crate::raw_memory::Charge::default(),
-        slot_run: Default::default(),
-        slot_report: Default::default(),
-        carry: Default::default(),
-        registration_store: None,
-        registration_work: Default::default(),
-        reached: Default::default(),
-        segments: Vec::new(),
-    };
-    let report = super::copy_air_bases_refresh(&memory, ctx, &mut tiny);
-    assert!(!report.raw_ok);
-    assert_eq!(tiny.registration_demand, None);
 }
 
 fn kit_memory(bytes: &[u8]) -> engine_native::memory::SliceMemory<'_> {

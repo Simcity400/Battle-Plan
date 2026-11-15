@@ -1,5 +1,5 @@
 //! Size attribution of a campaign's recording: every stored byte of the file by what it holds,
-//! each table's blocks and restarts, the hour records, the dictionaries, the index and the game
+//! each table's units, restores and summary pieces, the blocks' clocks, the index and the game
 //! facts, per recorded hour, beside the file's length.
 
 use replay::campaign::Replay;
@@ -16,8 +16,9 @@ pub(crate) struct Sizes {
     pub hours: u64,
     pub pages: u64,
     pub file: u64,
-    pub records: u64,
-    pub dictionaries: u64,
+    pub clocks: u64,
+    /// Summary pieces of every level.
+    pub summaries: u64,
     /// Pages, run directories, campaign records and roots.
     pub index: u64,
     pub facts: u64,
@@ -54,8 +55,8 @@ pub(crate) fn measure(replay: &Replay) -> std::io::Result<Sizes> {
         hours: recording.hours(),
         pages: 0,
         file: recording.len(),
-        records: 0,
-        dictionaries: 0,
+        clocks: 0,
+        summaries: 0,
         index: 0,
         facts: recording.facts_extents().iter().map(|extent| extent.stored).sum(),
         blocks: vec![0; TABLE_COUNT],
@@ -65,23 +66,26 @@ pub(crate) fn measure(replay: &Replay) -> std::io::Result<Sizes> {
     sizes.index += stored(recording.run_directories()) + stored(recording.records_extents());
     for run in 0..recording.run_count() {
         let held = recording.run(run)?;
-        for (at, page) in held.page_extents().iter().enumerate() {
-            sizes.pages += 1;
-            sizes.index += page.stored;
-            let page = recording.page(run, at)?;
-            sizes.records += page.records.stored;
-            for block in &page.tables {
-                if let Some(total) = sizes.blocks.get_mut(block.stream as usize) {
-                    *total += block.stored;
+        let directory = held.directory();
+        sizes.index += directory.spans.iter().map(|span| span.directory.stored + span.index.stored).sum::<u64>();
+        sizes.index += stored(&directory.open);
+        for span in 0..directory.spans.len() as u32 {
+            for table in 0..TABLE_COUNT {
+                for (_, extent) in recording.span_summaries(run, span, table)? {
+                    sizes.summaries += extent.stored;
                 }
             }
-            if let Some(restart) = &page.restart {
-                sizes.dictionaries += restart.chunk.stored;
-                for table in &restart.tables {
-                    if let Some(total) = sizes.restarts.get_mut(table.table as usize) {
-                        *total += table.extent.stored;
-                    }
-                }
+        }
+        for at in 0..held.pages() as u32 {
+            sizes.pages += 1;
+            let page = recording.block(run, at)?;
+            sizes.clocks += u64::from(page.head.clock.stored);
+            for (table, entry) in page.tables.iter().enumerate() {
+                let parts: u64 = entry.unit.parts.iter().flat_map(|part| &part.frames).map(|frame| u64::from(frame.stored)).sum();
+                let restores: u64 = entry.unit.first.iter().chain(&entry.unit.restore).flat_map(|restore| &restore.streams).flat_map(|(_, chunks)| chunks).map(|chunk| u64::from(chunk.frame.stored)).sum();
+                sizes.blocks[table] += parts;
+                sizes.restarts[table] += restores;
+                sizes.summaries += entry.summary.map_or(0, |extent| extent.stored);
             }
         }
     }
@@ -97,8 +101,8 @@ fn per_hour(bytes: u64, hours: u64) -> f64 {
 }
 
 pub(crate) fn report(sizes: &Sizes) -> Value {
-    let named: u64 = sizes.records
-        + sizes.dictionaries
+    let named: u64 = sizes.clocks
+        + sizes.summaries
         + sizes.index
         + sizes.facts
         + sizes.blocks.iter().sum::<u64>()
@@ -122,8 +126,8 @@ pub(crate) fn report(sizes: &Sizes) -> Value {
         "pages": sizes.pages,
         "file_bytes": sizes.file,
         "file_bytes_per_hour": per_hour(sizes.file, sizes.hours),
-        "records": sizes.records,
-        "dictionaries": sizes.dictionaries,
+        "clocks": sizes.clocks,
+        "summaries": sizes.summaries,
         "index": sizes.index,
         "facts": sizes.facts,
         // The header, footers and revisions' superseded roots and directories.
@@ -139,8 +143,8 @@ fn print_text(report: &Value) {
         report["file_bytes_per_hour"].as_f64().unwrap_or(0.0)
     );
     println!(
-        "records={} dictionaries={} index={} facts={} unnamed={}",
-        report["records"], report["dictionaries"], report["index"], report["facts"], report["unnamed"]
+        "clocks={} summaries={} index={} facts={} unnamed={}",
+        report["clocks"], report["summaries"], report["index"], report["facts"], report["unnamed"]
     );
     println!("table blocks restarts bytes_per_hour");
     for table in report["tables"].as_array().into_iter().flatten() {

@@ -1,322 +1,105 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { isUnjoinedResearch, researchArt, researchArtwork, researchAt, researchEntryAt, researchArtworkTokens, researchFolderAt, researchFolderLooks, researchProgressAt, researchRateAt, researchRecordedTemplates, researchRequest, researchStateAt, validateResearchReply } from './researchData.ts';
-import { coverageAt, researchLanes, researchLanesAt } from './researchLayout.ts';
-import { loadProduct } from '../../dashboard/products.ts';
-import type { ResearchEntry, ResearchHistory, ResearchReply } from '../../generated/dashboard';
-import type { DashboardClient, ProductRequest } from '../../dashboard/client';
+import type { ResearchEntry, ResearchReply, ResearchSlotState } from '../../generated/dashboard';
+import type { ResearchSlotsAt } from './types';
+import { researchArt, researchArtwork, researchArtworkTokens, researchAt, researchEntryAt, researchFolderAt, researchFolderLooks, researchLatestProgress,
+  researchProgressAt, researchRateAt, researchRecordedTemplates, researchStateAt, validateResearchBreakdown, validateResearchReply, validateResearchSlots,
+  withBreakdown, withSlotReads } from './researchData.ts';
 
-const request = researchRequest('source', 'v1', { branchId: '1', tag: 'GER' });
-const entry = (token: string, start: number, end: number | null, outcome: ResearchEntry['outcome'] = 'completed'): ResearchEntry => ({
-  token, technologyHandle: token.charCodeAt(0), databaseIndex: token.charCodeAt(0), continuityStartHour: 100,
-  level: 0, firstObservedHour: start, startedAfterHour: start - 1, lastObservedHour: (end ?? 400) - 1, endedByHour: end, outcome,
+const entry = (token: string, first: number, end: number | null, outcome: ResearchEntry['outcome'] = end === null ? 'active' : 'completed', databaseIndex = 3): ResearchEntry => ({
+  token, technologyHandle: 1, databaseIndex, continuityStartHour: 0, level: 0, firstObservedHour: first, startedAfterHour: first > 0 ? first - 1 : null,
+  lastObservedHour: end === null ? first : end - 1, endedByHour: end, outcomeObservedHour: null, outcome,
 });
-const history: ResearchHistory = { coverage: [{ firstHour: 100, lastHour: 299 }, { firstHour: 301, lastHour: 400 }], slots: [
-  { index: 0, availability: [{ firstHour: 100, lastHour: 400 }], states: [], progress: [], entries: [entry('A', 100, 150), entry('B', 150, 250, 'switched'), entry('C', 250, null, 'active')] },
-  { index: 1, availability: [{ firstHour: 100, lastHour: 400 }], states: [], progress: [], entries: [entry('D', 100, 220), entry('E', 220, null, 'active')] },
-  { index: 2, availability: [{ firstHour: 230, lastHour: 400 }], states: [], progress: [], entries: [entry('F', 235, 245), entry('G', 245, null, 'active')] },
-] };
-const reply: ResearchReply = { history, artwork: [], folders: [], technologyFolders: [], warnings: [] };
-
-test('research image selection follows displayed assignments and all completed rows without future or switched cards', () => {
-  const samples: ResearchHistory = { coverage: [{ firstHour: 100, lastHour: 400 }], slots: [
-    { index: 0, availability: [{ firstHour: 100, lastHour: 400 }], progress: [], entries: [
-      entry('older', 100, 120), entry('switched', 120, 140, 'switched'),
-      entry('zz_current', 140, 240, 'switched'), entry('a_future', 240, 300),
-    ], states: [{ firstHour: 140, lastHour: 239, token: 'zz_current', entryFirstObservedHour: 140,
-      speedMultiplierRaw: '100000', bankedDaysRaw: '0', appliedDaysRaw: '0', aheadReductionYearsRaw: '0' }] },
-    { index: 1, availability: [{ firstHour: 200, lastHour: 400 }], progress: [], states: [], entries: [entry('hidden_slot', 200, 250)] },
-  ] };
-  const at = researchAt(samples, 150)!;
-  assert.deepEqual(researchArtworkTokens(at, 150, true), ['zz_current', 'older']);
-  assert.deepEqual(researchArtworkTokens(at, 150, false), ['older'], 'whole-campaign cards omit unfinished assignments');
-  assert.deepEqual(researchArtworkTokens(researchAt(samples, 400), 400, true), ['older', 'a_future', 'hidden_slot']);
-  assert.deepEqual(researchArtworkTokens(null, 150, true), []);
-  const many = Array.from({ length: 5000 }, (_, i) => entry(`tech${i}`, 100 + i * 2, 102 + i * 2));
-  const slot = { ...samples.slots[0], availability: [{ firstHour: 100, lastHour: 11000 }], states: [], entries: many };
-  assert.deepEqual(researchArtworkTokens([slot], 11000, false), many.map(item => item.token));
+const state = (token: string | null, first: number, entryFirst: number | null, extra: Partial<ResearchSlotState> = {}): ResearchSlotState => ({
+  firstHour: first, lastHour: first + 23, token, entryFirstObservedHour: entryFirst, speedMultiplierRaw: '100000', bankedDaysRaw: '0', appliedDaysRaw: '0',
+  aheadReductionYearsRaw: token ? '0' : null, details: null, ...extra,
+});
+const reply = (entries: ResearchEntry[], extra: Partial<ResearchReply> = {}): ResearchReply => ({
+  history: { coverage: [{ firstHour: 0, lastHour: 100 }], slots: [{ index: 0, availability: [{ firstHour: 0, lastHour: 100 }], entries }] },
+  artwork: [], folders: [], technologyFolders: [], warnings: [], ...extra,
 });
 
-test('a repeated technology is named by the definition each assignment recorded, and a run without one by the token', () => {
-  const recorded = (token: string, start: number, end: number, databaseIndex: number): ResearchEntry => ({ ...entry(token, start, end), databaseIndex });
-  const repeated: ResearchHistory = { coverage: [{ firstHour: 100, lastHour: 400 }], slots: [
-    { index: 0, availability: [{ firstHour: 100, lastHour: 400 }], progress: [],
-      entries: [recorded('repeat', 100, 150, 2), recorded('repeat', 150, 200, 5), recorded('single', 200, 250, 7)],
-      states: [{ firstHour: 300, lastHour: 320, token: 'single', entryFirstObservedHour: null,
-        speedMultiplierRaw: '100000', bankedDaysRaw: '0', appliedDaysRaw: '0', aheadReductionYearsRaw: '0' }] },
-  ] };
-  assert.deepEqual([...researchRecordedTemplates(repeated)], [['repeat', [2, 5]], ['single', [null, 7]]]);
-  const art = researchArtwork({ artwork: [{ token: 'repeat', name: null, description: null, baseDurationDays: 10, icon: null }],
-    definitions: [{ token: 'repeat', databaseIndex: 2, name: 'Second', description: null },
-      { token: 'repeat', databaseIndex: 5, name: 'Fifth', description: null }] }, new Map());
-  assert.equal(researchArt(art, 'repeat', 2)?.name, 'Second');
-  assert.equal(researchArt(art, 'repeat', 5)?.name, 'Fifth');
-  assert.equal(researchArt(art, 'repeat', 2)?.baseDurationDays, 10);
-  assert.equal(researchArt(art, 'repeat', null)?.name, null, 'without a recorded index the token stays unnamed');
+test('a history reply is checked and its slots made ready to join reads to', () => {
+  const data = validateResearchReply(reply([entry('radio', 0, 10), entry('radar', 10, null)]));
+  assert.deepEqual(data.history.slots[0].states, []);
+  assert.deepEqual(data.history.slots[0].progress, []);
+  // Any number of rows: a long modded campaign is bounded only by the reply's own budget.
+  assert.equal(validateResearchReply(reply(Array.from({ length: 5000 }, (_, at) => entry(`t${at}`, at * 2, at * 2 + 1)))).history.slots[0].entries.length, 5000);
+  for (const bad of [
+    reply([entry('radio', 0, null), entry('radar', 10, 20)]),
+    reply([{ ...entry('radio', 5, 10), databaseIndex: 0 }]),
+    reply([{ ...entry('radio', 5, 10), outcomeObservedHour: 7 }]),
+    reply([entry('radio', 0, 10)], { folders: [{ key: '', name: null }] }),
+    { ...reply([]), history: { coverage: [{ firstHour: 10, lastHour: 5 }], slots: [] } },
+  ]) assert.throws(() => validateResearchReply(bad), /does not match/);
 });
 
-test('each recorded definition of a technology shows its own folder, and one held as a single definition its token\'s', () => {
-  const looks = researchFolderLooks({ folders: [{ key: 'land', name: 'Land' }, { key: 'sea', name: 'Sea' }],
-    technologyFolders: [{ token: 'repeat', databaseIndex: 2, folder: 'land' }, { token: 'repeat', databaseIndex: 5, folder: 'sea' },
-      { token: 'single', folder: 'land' }] }, [['repeat', 2] as const, ['repeat', 5] as const, 'repeat', ['single', 7] as const, 'single'], ['red', 'blue']);
-  assert.equal(researchFolderAt(looks, 'repeat', 2)?.key, 'land');
-  assert.equal(researchFolderAt(looks, 'repeat', 5)?.key, 'sea');
-  assert.equal(researchFolderAt(looks, 'single', 7)?.key, 'land');
-  assert.equal(researchFolderAt(looks, 'single', null)?.key, 'land');
-  assert.equal(researchFolderAt(looks, 'repeat', null), undefined, 'without a recorded index the token places neither');
+test('rewind hides new slots, future assignments and outcomes not yet observed', () => {
+  const data = validateResearchReply(reply([{ ...entry('radio', 0, 10), outcomeObservedHour: 30 }, entry('radar', 40, null)]));
+  const [early] = researchAt(data.history, 20);
+  assert.deepEqual(early.entries.map(item => [item.token, item.outcome, item.endedByHour]), [['radio', 'unknown', 10]]);
+  const [late] = researchAt(data.history, 50);
+  assert.deepEqual(late.entries.map(item => item.outcome), ['completed', 'active']);
+  assert.deepEqual(researchAt(data.history, 5)[0].entries.map(item => [item.outcome, item.endedByHour]), [['active', null]]);
+  assert.deepEqual(researchAt(data.history, Number.NaN), []);
 });
 
-test('a quoted token holding `#` is its own technology, never one of another token\'s definitions', () => {
-  const art = researchArtwork({ artwork: [{ token: 'foo', name: 'Foo', description: null, baseDurationDays: null, icon: null },
-    { token: 'foo#2', name: 'Hash', description: null, baseDurationDays: null, icon: null }],
-    definitions: [{ token: 'foo', databaseIndex: 2, name: 'Second foo', description: null }] }, new Map());
-  assert.equal(researchArt(art, 'foo#2')?.name, 'Hash');
-  assert.equal(researchArt(art, 'foo', 2)?.name, 'Second foo');
-  assert.equal(researchArt(art, 'foo')?.name, 'Foo');
-  const looks = researchFolderLooks({ folders: [{ key: 'land', name: 'Land' }, { key: 'sea', name: 'Sea' }],
-    technologyFolders: [{ token: 'foo#2', folder: 'land' }, { token: 'foo', databaseIndex: 2, folder: 'sea' }] },
-    ['foo#2', ['foo', 2] as const], ['red', 'blue']);
-  assert.equal(researchFolderAt(looks, 'foo#2')?.key, 'land');
-  assert.equal(researchFolderAt(looks, 'foo', 2)?.key, 'sea');
-  assert.equal(researchFolderAt(looks, 'foo'), undefined);
+test('the slots at an hour join their slot and assignment; an hour without a read joins nothing and guesses nothing', () => {
+  const data = validateResearchReply(reply([entry('radio', 0, 10), entry('radar', 10, null)]));
+  const now: ResearchSlotsAt = { hour: 30, ...validateResearchSlots({ tag: 'MOD', readHour: 24, missing: null, warnings: [],
+    grants: { nextId: 1, grants: [], unavailable: null },
+    slots: [{ index: 0, state: state('radar', 24, 10, { lastHour: 30, details: { remainingDays: 9, bonuses: [], modifiers: null } }),
+      progress: { firstHour: 24, lastHour: 24, entryFirstObservedHour: 10, baseDaysRaw: '1000000', progressRaw: '250000' } }] }) };
+  const [slot] = withSlotReads(researchAt(data.history, 30), now);
+  const shown = researchStateAt(slot, 30)!;
+  assert.equal(shown.details?.remainingDays, 9);
+  assert.equal(researchStateAt(slot, 31), null, 'past its last hour a state is not carried');
+  assert.equal(researchEntryAt(slot, shown, 30)?.token, 'radar');
+  assert.deepEqual(researchLatestProgress(slot, shown, 30), { fraction: 0.25, hour: 24 });
+  assert.equal(researchProgressAt(slot, 10, 24), 0.25);
+  assert.equal(researchProgressAt(slot, 0, 24), null, 'never another assignment\'s progress');
+  assert.deepEqual(withSlotReads(researchAt(data.history, 30), { ...now, slots: [], missing: 'No research read covers this hour' })[0].states, []);
+  assert.throws(() => validateResearchSlots({ ...now, slots: [now.slots[0], now.slots[0]] }), /do not match/);
+  assert.throws(() => validateResearchSlots({ ...now, grants: { nextId: 2 ** 40, grants: [], unavailable: null } }), /Invalid/);
 });
 
-test('a long modded campaign is accepted however many rows its research history has', () => {
-  const days = 3226, first = 100, last = first + days * 24;
-  const slots = Array.from({ length: 31 }, (_, index) => ({ index, availability: [{ firstHour: first, lastHour: last }], states: [],
-    entries: [{ ...entry(`tech${index}`, first, null, 'active'), lastObservedHour: last }],
-    progress: Array.from({ length: days }, (_, day) => ({ firstHour: first + day * 24, lastHour: first + day * 24 + 23,
-      entryFirstObservedHour: first, baseDaysRaw: '10000000', progressRaw: String(day) })) }));
-  const long: ResearchReply = { ...reply, history: { coverage: [{ firstHour: first, lastHour: last }], slots } };
-  assert.equal(validateResearchReply(long), long);
+test('a breakdown\'s reads join the slots of its parts in hour order', () => {
+  const data = validateResearchReply({ ...reply([]), history: { coverage: [{ firstHour: 0, lastHour: 100 }], slots: [
+    { index: 0, availability: [{ firstHour: 0, lastHour: 100 }], entries: [entry('radio', 0, 10, 'switched')] },
+    { index: 1, availability: [{ firstHour: 0, lastHour: 100 }], entries: [entry('radio', 10, 40)] },
+  ] } });
+  const breakdown = validateResearchBreakdown({ warnings: [], parts: [
+    { slot: 1, firstObservedHour: 10, states: [state('radio', 10, 10, { lastHour: 33 }), state('radio', 34, 10)], progress: [], missing: null },
+    { slot: 0, firstObservedHour: 0, states: [state('radio', 0, 0, { lastHour: 9 })], progress: [], missing: null },
+  ] });
+  const joined = withBreakdown(data.history.slots, breakdown);
+  assert.deepEqual(joined.map(slot => slot.states.map(item => item.firstHour)), [[0], [10, 34]]);
+  assert.throws(() => validateResearchBreakdown({ warnings: [], parts: [{ slot: 0, firstObservedHour: 0, states: [state('radio', 10, 0), state('radio', 0, 0)], progress: [], missing: null }] }), /does not match/);
 });
 
-test('research progress is the recorded sample over its base cost, and absent outside samples', () => {
-  const slot = { ...history.slots[0], progress: [
-    { firstHour: 250, lastHour: 273, entryFirstObservedHour: 250, baseDaysRaw: '11000000', progressRaw: '2750000' },
-    { firstHour: 274, lastHour: 280, entryFirstObservedHour: 250, baseDaysRaw: '11000000', progressRaw: '12000000' },
-    { firstHour: 300, lastHour: 310, entryFirstObservedHour: 250, baseDaysRaw: null, progressRaw: '100' },
-  ] };
-  assert.equal(researchProgressAt(slot, 250, 260), 0.25);
-  assert.equal(researchProgressAt(slot, 250, 275), 1);
-  assert.equal(researchProgressAt(slot, 250, 290), null, 'no sample in a recording gap');
-  assert.equal(researchProgressAt(slot, 250, 305), null, 'unknown cost');
-  assert.equal(researchProgressAt(slot, 150, 260), null, 'another assignment');
+test('modifier playback uses the hour\'s day, exact fixed point, and the minimum speed', () => {
+  const hour = 43_800_000 + 1937 * 8760;
+  const modified = (total: string) => state('radio', hour, 0, { details: { remainingDays: null, bonuses: [], modifiers: { components: [], totalBonusRaw: total, year: 1938, aheadFactorRaw: '200000', minimumSpeedRaw: '10000' } } });
+  assert.deepEqual(researchRateAt(modified('20000'), hour), { rateRaw: '40000', penaltyRaw: '200000', floored: false });
+  assert.ok(BigInt(researchRateAt(modified('20000'), hour + 24)!.rateRaw) > 40000n, 'the ahead penalty falls each day');
+  assert.deepEqual(researchRateAt(modified('-250000'), hour), { rateRaw: '10000', penaltyRaw: '200000', floored: true });
+  assert.equal(researchRateAt(state('radio', hour, 0), hour), null, 'no modifiers, no rate');
 });
 
-test('rewind hides new slots, future assignments and future completion or switch outcomes', () => {
-  const initial = researchAt(history, 120)!;
-  assert.equal(initial.length, 2);
-  assert.equal(initial[0].entries.length, 1);
-  assert.equal(initial[0].entries[0].outcome, 'active');
-  assert.equal(initial[0].entries[0].endedByHour, null);
-  assert.equal(initial[0].entries[0].lastObservedHour, 120);
-  assert.equal(researchAt(history, 150)![0].entries[0].outcome, 'completed');
-  assert.equal(researchAt(history, 250)![0].entries[1].outcome, 'switched');
-  assert.equal(researchAt(history, 230)![2].entries.length, 0);
-  assert.deepEqual(researchAt(history, 99), [], 'no slot before its first read');
-});
-
-test('an hour without a read keeps the history known by then and only its slot state is missing', () => {
-  const state = { firstHour: 250, lastHour: 299, token: 'C', entryFirstObservedHour: 250,
-    speedMultiplierRaw: '100000', bankedDaysRaw: '0', appliedDaysRaw: '0', aheadReductionYearsRaw: '0' };
-  const read: ResearchHistory = { ...history, slots: history.slots.map(slot => slot.index === 0
-    ? { ...slot, availability: [{ firstHour: 100, lastHour: 299 }, { firstHour: 301, lastHour: 400 }], states: [state] } : slot) };
-  for (const hour of [300, 401]) {
-    const slots = researchAt(read, hour);
-    assert.deepEqual(slots[0].entries.filter(e => e.outcome === 'completed').map(e => e.token), ['A']);
-    assert.deepEqual(researchLanes(slots, coverageAt(read.coverage, hour), hour).map(lane => lane.slot.index), [0, 1, 2]);
-    assert.deepEqual(researchLanesAt(read, hour).map(lane => lane.items.flatMap(item => item.kind === 'completed' ? [item.entry] : [])),
-      slots.map(slot => slot.entries.filter(entry => entry.outcome === 'completed')));
-  }
-  const gap = researchAt(read, 300)[0];
-  assert.equal(researchStateAt(gap, 300), null, 'the unread hour has no slot state');
-  assert.equal(researchStateAt(gap, 299)?.token, 'C');
-});
-
-test('a technology no assignment joins is shown from its slot state, with its image', () => {
-  const unjoined = { firstHour: 100, lastHour: 140, token: 'radio', entryFirstObservedHour: null,
-    speedMultiplierRaw: '100000', bankedDaysRaw: '0', appliedDaysRaw: '0', aheadReductionYearsRaw: '0',
-    details: { remainingDays: 12, bonuses: null } };
-  const slots = researchAt({ coverage: [{ firstHour: 100, lastHour: 140 }], slots: [
-    { index: 0, availability: [{ firstHour: 100, lastHour: 140 }], progress: [], entries: [], states: [unjoined] },
-    { index: 1, availability: [{ firstHour: 100, lastHour: 140 }], progress: [], entries: [], states: [{ ...unjoined, token: null }] },
-  ] }, 124);
-  assert.equal(isUnjoinedResearch(researchStateAt(slots[0], 124)), true);
-  assert.equal(researchStateAt(slots[0], 124)?.details?.remainingDays, 11);
-  assert.equal(isUnjoinedResearch(researchStateAt(slots[1], 124)), false, 'an idle slot');
-  assert.equal(isUnjoinedResearch({ ...unjoined, token: 'C', entryFirstObservedHour: 250 }), false, 'a joined assignment');
-  assert.equal(isUnjoinedResearch(null), false);
-  assert.deepEqual(researchArtworkTokens(slots, 124, true), ['radio']);
-  assert.deepEqual(researchArtworkTokens(slots, 124, false), [], 'whole-campaign cards show completions only');
-});
-
-test('compressed countdowns are evaluated at playback hour and delayed completion stays hidden', () => {
-  const slot = { ...history.slots[0], entries: [{ ...entry('A', 100, 148), outcomeObservedHour: 150 }], states: [{
-    firstHour: 100, lastHour: 147, token: 'A', entryFirstObservedHour: 100,
-    speedMultiplierRaw: '100000', bankedDaysRaw: '0', appliedDaysRaw: '0', aheadReductionYearsRaw: '0',
-    details: { remainingDays: 10, bonuses: [{ id: 7, token: 'radio_bonus', name: 'Radio bonus', speedBonusRaw: '50000', aheadReductionYearsRaw: '200000' }] },
-  }] };
-  assert.equal(researchStateAt(slot, 123)?.details?.remainingDays, 10);
-  assert.equal(researchStateAt(slot, 124)?.details?.remainingDays, 9);
-  assert.equal(researchAt({ ...history, slots: [slot] }, 149)![0].entries[0].outcome, 'unknown');
-  assert.equal(researchAt({ ...history, slots: [slot] }, 150)![0].entries[0].outcome, 'completed');
-  assert.equal(validateResearchReply({ ...reply, history: { ...history, slots: [slot] } }).history.slots[0], slot);
-  const malformed = structuredClone(slot);
-  malformed.states[0].details.remainingDays = -1;
-  assert.throws(() => validateResearchReply({ ...reply, history: { ...history, slots: [malformed] } }));
-});
-
-test('live slot states distinguish idle and missing data without leaking future bonuses', () => {
-  const base = { speedMultiplierRaw: '150000', bankedDaysRaw: '0', appliedDaysRaw: '3000000', aheadReductionYearsRaw: '200000' };
-  const slot = { ...history.slots[2], states: [
-    { ...base, firstHour: 230, lastHour: 234, token: null, entryFirstObservedHour: null, aheadReductionYearsRaw: null },
-    { ...base, firstHour: 235, lastHour: 239, token: 'F', entryFirstObservedHour: 235 },
-    { ...base, firstHour: 240, lastHour: 244, token: 'F', entryFirstObservedHour: 235, speedMultiplierRaw: '200000' },
-  ] };
-  const at = researchAt({ ...history, slots: [slot] }, 237)![0];
-  assert.equal(researchStateAt(at, 237)?.token, 'F');
-  assert.equal(researchStateAt(at, 230)?.token, null);
-  assert.equal(researchStateAt(at, 229), null);
-  assert.equal(researchStateAt(at, 238), null);
-  assert.equal(at.states.at(-1)?.lastHour, 237);
-  const data = { ...reply, history: { ...history, slots: [slot] } };
-  assert.equal(validateResearchReply(data), data);
-  const malformed = structuredClone(data);
-  malformed.history.slots[0].states[1].speedMultiplierRaw = '9223372036854775808';
-  assert.throws(() => validateResearchReply(malformed));
-});
-
-test('research responses reject stale identities, overlapping assignments and unsafe artwork', () => {
-  assert.equal(validateResearchReply(reply), reply);
-  assert.throws(() => validateResearchReply({ ...reply, history: { ...history, coverage: [...history.coverage, history.coverage[0]] } }));
-  const badEntry = { ...history.slots[0].entries[0], endedByHour: 99 };
-  assert.throws(() => validateResearchReply({ ...reply, history: { ...history, slots: [{ ...history.slots[0], entries: [badEntry] }] } }));
-  // An unsafe icon is never drawn: it shows as missing art rather than refusing the history.
-  const unsafe = validateResearchReply({ ...reply, artwork: [{ token: 'A', name: null, description: null, baseDurationDays: null, icon: 'https://example.com/image.png' }] });
-  assert.equal(unsafe.artwork[0].icon, null);
-  assert.equal(unsafe.artwork[0].token, 'A');
-  // A malformed entry is still refused: the widget reads every entry's token.
-  for (const bad of [null, 'A', {}, { token: '', name: null, description: null, baseDurationDays: null, icon: null },
-    { token: 'A', name: 1, description: null, baseDurationDays: null, icon: null }, { token: 'A', name: null, description: null, baseDurationDays: -1, icon: null }]) {
-    assert.throws(() => validateResearchReply({ ...reply, artwork: [bad] } as unknown as ResearchReply), String(bad));
-  }
-});
-
-test('progress without an assignment needs the slot to hold an unjoined technology then, and folders are checked', () => {
-  const held = { firstHour: 100, lastHour: 200, token: 'radio', entryFirstObservedHour: null,
-    speedMultiplierRaw: '100000', bankedDaysRaw: '0', appliedDaysRaw: '0', aheadReductionYearsRaw: '0' };
-  const slot = { index: 0, availability: [{ firstHour: 100, lastHour: 200 }], entries: [], states: [held],
-    progress: [{ firstHour: 124, lastHour: 124, entryFirstObservedHour: null, baseDaysRaw: '10000000', progressRaw: '2500000' }] };
-  const unjoined = { coverage: [{ firstHour: 100, lastHour: 200 }], slots: [slot] };
-  assert.equal(validateResearchReply({ ...reply, history: unjoined }).history.slots[0].progress.length, 1);
-  assert.throws(() => validateResearchReply({ ...reply, history: { ...unjoined, slots: [{ ...slot, states: [{ ...held, token: null }] }] } }),
-    'an idle slot has no technology to own progress');
-  const folders = { folders: [{ key: 'infantry_folder', name: 'Infantry' }, { key: 'mod_folder', name: null }],
-    technologyFolders: [{ token: 'A', folder: 'infantry_folder' }, { token: 'B', folder: null }] };
-  assert.deepEqual(validateResearchReply({ ...reply, ...folders }).technologyFolders.map(item => item.folder), ['infantry_folder', null]);
-  for (const bad of [{ folders: [{ key: '', name: null }] }, { folders: [{ key: 'a', name: 1 }] }, { technologyFolders: [{ token: 'A', folder: '' }] },
-    { technologyFolders: undefined }]) {
-    assert.throws(() => validateResearchReply({ ...reply, ...bad } as unknown as ResearchReply), JSON.stringify(bad));
-  }
-});
-
-test('a country may have any number of research slots, as content and effects give it', () => {
-  const slots = Array.from({ length: 80 }, (_, index) => ({ index, availability: [{ firstHour: 100, lastHour: 400 }], states: [], progress: [], entries: [] }));
-  assert.equal(validateResearchReply({ ...reply, history: { ...history, slots } }).history.slots.length, 80);
-});
-
-test('research widgets share preparation and playback does not fetch per hour', async () => {
-  let calls = 0;
-  const client = { product: async (input: ProductRequest) => { calls++; return { sourceId: input.sourceId, revision: input.revision, product: input.product, data: reply }; } } as unknown as DashboardClient;
-  const results = await Promise.all(Array.from({ length: 12 }, () => loadProduct<ResearchReply>(client, request, new AbortController().signal, validateResearchReply)));
-  assert.equal(calls, 1);
-  for (let hour = 100; hour <= 400; hour++) researchAt(results[0].history, hour);
-  assert.equal(calls, 1);
-  await loadProduct(client, researchRequest('source', 'v1', { branchId: '1', tag: 'ENG' }), new AbortController().signal, validateResearchReply);
-  assert.equal(calls, 2);
-});
-
-
-test('modifier playback uses the selected day, exact fixed point, and minimum speed', () => {
-  const hour = 43800000 + 1937 * 8760;
-  const state = { firstHour: hour, lastHour: hour + 8760, token: 'radio', entryFirstObservedHour: hour,
-    speedMultiplierRaw: '999999', bankedDaysRaw: '0', appliedDaysRaw: '0', aheadReductionYearsRaw: '0',
-    details: { remainingDays: 10, bonuses: [], modifiers: {
-      components: [], totalBonusRaw: '20000', year: 1938, aheadFactorRaw: '200000', minimumSpeedRaw: '10000',
-    } },
-  };
-  assert.deepEqual(researchRateAt(state, hour), { rateRaw: '40000', penaltyRaw: '200000', floored: false });
-  assert.deepEqual(researchRateAt(state, hour + 23), researchRateAt(state, hour));
-  assert.ok(BigInt(researchRateAt(state, hour + 24)!.rateRaw) > 40000n);
-  assert.deepEqual(researchRateAt(state, hour + 8760), { rateRaw: '120000', penaltyRaw: '0', floored: false });
-  assert.equal(researchRateAt({ ...state, aheadReductionYearsRaw: '100000' }, hour)?.rateRaw, '120000');
-  state.details.modifiers.totalBonusRaw = '-200000';
-  assert.equal(researchRateAt(state, hour)?.rateRaw, '10000');
-  assert.equal(researchRateAt(state, hour)?.floored, true);
-});
-
-test('modifier changes survive history compression and rewind hides later values', () => {
-  const components = ['country', 'category', 'designTeam', 'experience', 'license', 'scientist', 'applied', 'sharing'].map(kind => ({ kind, raw: '0', sources: [] }));
-  const state = { firstHour: 100, lastHour: 199, token: 'A', entryFirstObservedHour: 100,
-    speedMultiplierRaw: '100000', bankedDaysRaw: '0', appliedDaysRaw: '0', aheadReductionYearsRaw: '0',
-    details: { remainingDays: null, bonuses: [], modifiers: { components, totalBonusRaw: '0', year: 1938, aheadFactorRaw: '200000', minimumSpeedRaw: '10000' } },
-  };
-  const next = structuredClone(state); next.firstHour = 200; next.lastHour = 299;
-  next.details.modifiers.components[0].raw = '25000'; next.details.modifiers.totalBonusRaw = '25000';
-  const slot = { ...history.slots[0], availability: [{ firstHour: 100, lastHour: 299 }], entries: [entry('A', 100, 300)], states: [state, next] };
-  const data = { ...reply, history: { coverage: [{ firstHour: 100, lastHour: 299 }], slots: [slot] } };
-  assert.equal(validateResearchReply(data), data);
-  const before = researchAt(data.history, 150)![0];
-  assert.equal(researchStateAt(before, 150)?.details?.modifiers?.totalBonusRaw, '0');
-  assert.equal(researchStateAt(slot, 200)?.details?.modifiers?.totalBonusRaw, '25000');
-  const bad = structuredClone(data); bad.history.slots[0].states[0].details.modifiers.components[0].raw = 'NaN';
-  assert.throws(() => validateResearchReply(bad));
-});
-
-
-test('text-only research validation retains every one of 5000 technology titles', () => {
-  const data: ResearchReply = { ...reply, artwork: Array.from({ length: 5000 }, (_, i) => ({
-    token: `mod_technology_${i}`, name: i === 0 ? '' : `Technology ${i}`, description: null, baseDurationDays: null, icon: null,
-  })), warnings: ['Synthetic content refusal reason'] };
-  assert.equal(validateResearchReply(data), data);
-  assert.equal(data.artwork.length, 5000);
-  assert.equal(data.artwork[0].name, '');
-  assert.equal(data.artwork[4999].name, 'Technology 4999');
-  assert.deepEqual(data.history.coverage, history.coverage);
-  assert.deepEqual(data.warnings, ['Synthetic content refusal reason']);
-});
-
-test('same-hour research assignments retain each token and the active assignment', () => {
-  const state = { firstHour: 100, lastHour: 199, token: 'B', entryFirstObservedHour: 100,
-    speedMultiplierRaw: '100000', bankedDaysRaw: '0', appliedDaysRaw: '0', aheadReductionYearsRaw: '0' };
-  const slot = { index: 0, availability: [{ firstHour: 100, lastHour: 400 }], states: [state],
-    progress: [{ firstHour: 100, lastHour: 100, entryFirstObservedHour: 100, progressRaw: '0', baseDaysRaw: '100000' }],
-    entries: [{ ...entry('A', 100, 100, 'switched'), lastObservedHour: 100 }, entry('B', 100, 200)] };
-  const data: ResearchReply = { ...reply, history: { coverage: [{ firstHour: 100, lastHour: 400 }], slots: [slot] } };
-  assert.equal(validateResearchReply(data), data);
-  assert.equal(researchEntryAt(slot, state, 150)?.token, 'B');
-  const firstToken = { ...data, history: { ...data.history, slots: [{ ...slot, states: [{ ...state, token: 'A' }] }] } };
-  assert.equal(validateResearchReply(firstToken), firstToken, 'state validation retains every same-hour token');
-});
-
-test('same-hour completions retain source order when confirmations arrive out of order', () => {
-  const slot = { index: 0, availability: [{ firstHour: 100, lastHour: 400 }], states: [], progress: [], entries: [
-    { ...entry('A', 100, 100), lastObservedHour: 100, outcomeObservedHour: 300 },
-    { ...entry('B', 100, 100), lastObservedHour: 100, outcomeObservedHour: 200 },
-  ] };
-  const data: ResearchReply = { ...reply, history: { coverage: [{ firstHour: 100, lastHour: 400 }], slots: [slot] } };
-  validateResearchReply(data);
-  const tokensAt = (hour: number) => researchLanesAt(data.history, hour)[0].items.flatMap(item => item.kind === 'completed' ? [item.entry.token] : []);
-  assert.deepEqual(tokensAt(199), []);
-  assert.deepEqual(tokensAt(200), ['B']);
-  assert.deepEqual(tokensAt(300), ['A', 'B']);
-  assert.deepEqual(tokensAt(200), ['B'], 'rewind hides the later-confirmed same-hour completion');
-});
-
-test('research lookups admit no NaN hour', () => {
-  assert.deepEqual(researchAt(history, NaN), []);
-  assert.deepEqual(researchLanesAt(history, NaN), []);
-  assert.equal(researchStateAt(history.slots[0], NaN), null);
-  assert.equal(researchProgressAt(history.slots[0], 100, NaN), null);
+test('a repeated technology is named and placed by the definition each assignment recorded', () => {
+  const data = validateResearchReply(reply([entry('radio', 0, 10, 'completed', 3), entry('radio', 10, 20, 'completed', 4), entry('radar', 20, null, 'active', 5)], {
+    artwork: [{ token: 'radio', name: 'Radio', description: null, baseDurationDays: null, icon: null }],
+    definitions: [{ token: 'radio', databaseIndex: 4, name: 'Radio II', description: 'Better' }],
+    folders: [{ key: 'electronics', name: 'Electronics' }, { key: 'support', name: 'Support' }],
+    technologyFolders: [{ token: 'radio', databaseIndex: 3, folder: 'electronics' }, { token: 'radio', databaseIndex: 4, folder: 'support' }, { token: 'radar', folder: 'support' }],
+  }));
+  assert.deepEqual([...researchRecordedTemplates(data.history)], [['radio', [3, 4]], ['radar', [5]]]);
+  const artwork = researchArtwork(data, new Map());
+  assert.equal(researchArt(artwork, 'radio', 4)?.name, 'Radio II');
+  assert.equal(researchArt(artwork, 'radio', 3)?.name, 'Radio');
+  const looks = researchFolderLooks(data, ['radar', ['radio', 3], ['radio', 4]], ['red', 'blue']);
+  assert.equal(researchFolderAt(looks, 'radio', 3)?.name, 'Electronics');
+  assert.equal(researchFolderAt(looks, 'radio', 4)?.name, 'Support');
+  assert.equal(researchFolderAt(looks, 'radar')?.name, 'Support');
+  assert.deepEqual(researchArtworkTokens(researchAt(data.history, 25), 25, false), ['radio']);
 });

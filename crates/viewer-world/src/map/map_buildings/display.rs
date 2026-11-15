@@ -23,6 +23,45 @@ impl From<data::Instance> for ModelInstance {
     }
 }
 
+impl PreparedSlot {
+    /// The slot as the product carries it: types by name, meshes by asset key.
+    fn wire(
+        &self,
+        key: &impl Fn(usize) -> io::Result<Arc<data::AssetKey>>,
+        types: &[installed_content_core::buildings::BuildingType],
+    ) -> io::Result<data::Slot> {
+        let select = |value: Selection| {
+            Ok::<_, io::Error>(data::Selection {
+                admitted: value.admitted,
+                mesh: key(value.mesh)?,
+                definition: key(value.definition)?,
+                variant: value.variant,
+            })
+        };
+        Ok(data::Slot {
+            id: self.id,
+            selected_type: self.source.map(|(index, _)| types[index].name.clone()),
+            recorded_country: self.source.map(|(_, country)| country),
+            drawn_at_distance: self.drawn_at_distance,
+            entity: self
+                .entity
+                .as_ref()
+                .map(|entity| {
+                    Ok::<_, io::Error>(data::Entity {
+                        healthy: select(entity.healthy)?,
+                        ruined: select(entity.ruined)?,
+                        destroyed: entity.destroyed,
+                        uncertain: entity.uncertain,
+                        damaged: entity.damaged,
+                        disable_grow_animation: entity.disable_grow_animation,
+                        instance: entity.instance.into(),
+                    })
+                })
+                .transpose()?,
+        })
+    }
+}
+
 impl PreparedBuildings {
     pub(super) fn display_with(
         &self,
@@ -36,14 +75,6 @@ impl PreparedBuildings {
         previous: Option<(&Chunked<PreparedSlot>, &data::Buildings)>,
     ) -> io::Result<data::Buildings> {
         let _cost = replay_frame::cpu::scope("buildings.wire", Some("buildings"));
-        let select = |value: Selection| {
-            Ok::<_, io::Error>(data::Selection {
-                admitted: value.admitted,
-                mesh: key(value.mesh)?,
-                definition: key(value.definition)?,
-                variant: value.variant,
-            })
-        };
         let previous = previous.filter(|(_, value)| {
             value.bank == bank && value.perspective == perspective && value.fog == fog
         });
@@ -65,27 +96,7 @@ impl PreparedBuildings {
             let chunk = self.slots.chunks.get(index).expect("authored slot chunk");
             let mut values = Vec::with_capacity(chunk.len());
             for slot in chunk.iter() {
-                values.push(data::Slot {
-                    id: slot.id,
-                    selected_type: slot.source.map(|(index, _)| types[index].name.clone()),
-                    recorded_country: slot.source.map(|(_, country)| country),
-                    drawn_at_distance: slot.drawn_at_distance,
-                    entity: slot
-                        .entity
-                        .as_ref()
-                        .map(|entity| {
-                            Ok::<_, io::Error>(data::Entity {
-                                healthy: select(entity.healthy)?,
-                                ruined: select(entity.ruined)?,
-                                destroyed: entity.destroyed,
-                                uncertain: entity.uncertain,
-                                damaged: entity.damaged,
-                                disable_grow_animation: entity.disable_grow_animation,
-                                instance: entity.instance.into(),
-                            })
-                        })
-                        .transpose()?,
-                });
+                values.push(slot.wire(&key, types)?);
             }
             edits.push((
                 index,
@@ -121,6 +132,7 @@ impl PreparedBuildings {
         })
     }
 
+    #[cfg(test)]
     pub(super) fn install(
         value: &data::Buildings,
         groups: &[ProvinceSlots],
@@ -301,35 +313,28 @@ fn invalid(message: &str) -> io::Error {
 }
 
 impl MapBuildingAssets {
-    pub fn display_binding(&self) -> io::Result<[u8; 32]> {
-        self.display_binding
-            .get()
-            .copied()
-            .ok_or_else(|| invalid("building bank is not bound to display content"))
-    }
-
-    pub fn display(
-        &self,
-        prepared: &PreparedBuildings,
-        bank: [u8; 32],
-        perspective: u32,
-        fog: bool,
-        warnings: Vec<String>,
-        previous: Option<&BuildingsBase>,
-    ) -> io::Result<data::Buildings> {
-        if *self.display_binding.get_or_init(|| bank) != bank {
-            return Err(invalid(
-                "building bank was replaced without rebinding its content",
-            ));
-        }
-        let keys = self.display_keys.get_or_init(|| {
+    fn keys(&self) -> &[Arc<data::AssetKey>] {
+        self.display_keys.get_or_init(|| {
             self.library
                 .meshes
                 .iter()
                 .map(|mesh| mesh.asset.display())
                 .collect()
-        });
-        let authored = self.display_sites.get_or_init(|| {
+        })
+    }
+
+    /// One slot as the product carries it.
+    pub fn display_slot(&self, slot: &PreparedSlot) -> io::Result<data::Slot> {
+        let keys = self.keys();
+        slot.wire(
+            &|mesh| keys.get(mesh).cloned().ok_or_else(|| invalid("building mesh is outside its bank")),
+            &self.facts.ordered,
+        )
+    }
+
+    /// Every authored slot as the product names it, ordinary then floating, by id.
+    fn authored(&self) -> &Arc<Vec<data::AuthoredSlot>> {
+        self.display_sites.get_or_init(|| {
             let ordinary = self
                 .slots
                 .iter()
@@ -375,7 +380,80 @@ impl MapBuildingAssets {
                     )
                     .collect(),
             )
-        });
+        })
+    }
+
+    /// A layer's slots (every slot by id, ordinary then floating) as today's chunk pages: the
+    /// chunks named in `changed` made again from `slots`, every other page shared with
+    /// `previous`. Without a `previous` of the same length, every page is made.
+    pub fn slot_pages(&self, slots: &[PreparedSlot], changed: &[usize], previous: Option<&SlotPages>) -> io::Result<SlotPages> {
+        let size = incremental::CHUNK_SIZE;
+        let chunk = |index: usize| map_display_data::retained::Retained::new(Arc::<[PreparedSlot]>::from(&slots[index * size..((index + 1) * size).min(slots.len())]));
+        let previous = previous.filter(|old| old.0.len() == slots.len());
+        let Some(previous) = previous else {
+            let directory = (0..slots.len().div_ceil(size)).try_fold(map_display_data::value_index::ValueIndex::default(), |directory, index| directory.inserted(index, chunk(index)))?;
+            return Ok(SlotPages(Chunked::from_directory(directory)?));
+        };
+        let mut named: Vec<usize> = changed.iter().copied().filter(|&index| index * size < slots.len()).collect();
+        named.sort_unstable();
+        named.dedup();
+        if named.is_empty() {
+            return Ok(previous.clone());
+        }
+        let edits: Vec<_> = named.into_iter().map(|index| (index, Some(chunk(index)))).collect();
+        Ok(SlotPages(Chunked::from_directory(previous.0.directory().patched(&edits)?)?))
+    }
+
+    /// The product the scene installs from a layer: its slots handed over as `pages`, which the
+    /// scene's install shares as today's display does (`with_producer`), so no slot goes to the
+    /// wire form and back. The authored slots and the groups are shared with `previous`.
+    pub fn shared_product(&self, pages: &SlotPages, previous: Option<&data::Buildings>, bank: [u8; 32], hour: WireHour) -> io::Result<data::Buildings> {
+        if *self.display_binding.get_or_init(|| bank) != bank {
+            return Err(invalid("building bank was replaced without rebinding its content"));
+        }
+        let groups = match previous.filter(|old| old.bank == bank) {
+            Some(old) => Arc::clone(&old.groups),
+            None => Arc::new(self.groups.iter().map(|group| data::Group { province: group.province, bounds: group.bounds, slots: group.slots.clone() }).collect()),
+        };
+        Ok(data::Buildings {
+            bank,
+            branch: hour.branch,
+            hour: hour.hour,
+            perspective: hour.perspective,
+            fog: hour.fog,
+            shrink_distance: self.defines.shrink_distance,
+            popup_speed: self.defines.popup_speed,
+            authored: Arc::clone(self.authored()),
+            slots: data::SlotChunks::default().with_producer(self.projection_id(), Arc::clone(&pages.0.chunks)),
+            groups,
+            city_damage: hour.city_damage,
+            warnings: hour.warnings,
+        })
+    }
+
+    pub fn display_binding(&self) -> io::Result<[u8; 32]> {
+        self.display_binding
+            .get()
+            .copied()
+            .ok_or_else(|| invalid("building bank is not bound to display content"))
+    }
+
+    pub fn display(
+        &self,
+        prepared: &PreparedBuildings,
+        bank: [u8; 32],
+        perspective: u32,
+        fog: bool,
+        warnings: Vec<String>,
+        previous: Option<&BuildingsBase>,
+    ) -> io::Result<data::Buildings> {
+        if *self.display_binding.get_or_init(|| bank) != bank {
+            return Err(invalid(
+                "building bank was replaced without rebinding its content",
+            ));
+        }
+        let keys = self.keys();
+        let authored = self.authored();
         let mut value = prepared.display_with(
             bank,
             perspective,
@@ -395,6 +473,27 @@ impl MapBuildingAssets {
             .with_producer(self.projection_id(), Arc::clone(&prepared.slots.chunks));
         Ok(value)
     }
+}
+
+/// A layer's slots as today's chunk pages, which the scene's install shares.
+#[derive(Clone, Debug)]
+pub struct SlotPages(pub(super) Chunked<PreparedSlot>);
+
+impl SlotPages {
+    /// Bytes the pages hold (an entity's own bytes counted once a page).
+    pub fn held(&self) -> usize {
+        self.0.chunks.len() * 48
+    }
+}
+
+/// What a layer's product carries besides its slots.
+pub struct WireHour {
+    pub branch: u64,
+    pub hour: i32,
+    pub perspective: u32,
+    pub fog: bool,
+    pub warnings: Vec<String>,
+    pub city_damage: Arc<data::CityDamage>,
 }
 
 impl BuildingHistory {

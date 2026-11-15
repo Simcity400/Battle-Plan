@@ -112,7 +112,7 @@ pub(crate) fn observe_ace_names(
     let Some(state) = demand_game_state(memory, base)? else {
         return Ok(None);
     };
-    let walked = engine_native::cace::walk(memory, base, state, &mut [], &mut []);
+    let walked = engine_native::cace::count(memory, base, state);
     let aces = match walked.outcome {
         engine_native::walk::Outcome::Rows { len } => len,
         engine_native::walk::Outcome::Truncated { len, unread_rows } => len
@@ -357,7 +357,7 @@ pub fn observe_raid_arenas(
         engine_native::raid_launch_inputs::required_reservations(memory, base, state)?;
     // Keep independently readable floors when optional hints fail.
     let facility_rows =
-        match engine_raid_inputs::raid_facilities::walk(memory, base, state, &mut []) {
+        match engine_raid_inputs::raid_facilities::count(memory, base, state) {
             engine_native::walk::Outcome::Rows { len } => Ok(len),
             engine_native::walk::Outcome::Truncated { len, unread_rows } => len
                 .checked_add(unread_rows as usize)
@@ -439,12 +439,14 @@ pub(crate) fn observe_reserved_visibility(
     engine_native::crelation_status::reserved_visibility_demand(memory, base, state).map(Some)
 }
 
-/// Daily native observations plus the bounded frame backlog, independent of
-/// population growth. A failed hint preserves staging and names its refusal.
+/// Daily native observations for each of `frames` frames, which hold hours the spool has not
+/// drained the staging for yet: at least the steady count, more while a backlog holds more.
+/// Independent of population growth. A failed hint preserves staging and names its refusal.
 pub(crate) fn observe_politics_demand(
     memory: &impl Memory,
     base: usize,
     slots: usize,
+    frames: usize,
 ) -> Option<usize> {
     (|| {
         let mut records = slots
@@ -456,7 +458,7 @@ pub(crate) fn observe_politics_demand(
             )?);
         }
         records
-            .checked_mul(sampling::BUFFERS)
+            .checked_mul(frames.max(sampling::BUFFERS))
             .ok_or("politics staging backlog demand overflow")
     })()
     .ok()
@@ -740,24 +742,24 @@ pub fn observe_politics(
             .ok_or("politics demand row count overflow"),
         engine_native::walk::Outcome::Unavailable { reason } => Err(reason),
     };
-    let tokens = engine_characters::advisor_tokens::walk(memory, base, state, &mut [], &mut []);
+    let tokens = engine_characters::advisor_tokens::count(memory, base, state);
     let advisor_tokens = demand(tokens.outcome)?;
-    let factions = engine_native::cfaction::walk_advisors(memory, base, state, &mut [], &mut []);
+    let factions = engine_native::cfaction::count_advisors(memory, base, state);
     let faction_advisors = demand(factions.outcome)?;
     let [active, retired] =
-        engine_native::ccountry_characters::walk_records(memory, base, state, &mut [], &mut []);
+        engine_native::ccountry_characters::count_records(memory, base, state);
     let active_characters = demand(active)?;
     let retired_characters = demand(retired)?;
-    let agencies = engine_native::cintelligence_agency::walk(memory, base, state, &mut [], &mut []);
+    let agencies = engine_native::cintelligence_agency::count(memory, base, state);
     demand(agencies.outcome)?;
-    let operatives = engine_native::coperative_leader::walk(memory, base, state, &mut [], &mut []);
+    let operatives = engine_native::coperative_leader::count(memory, base, state);
     let operative_memberships = demand(operatives.outcome)?
         .checked_sub(operatives.refused_rows as usize)
         .ok_or("operative refusal count exceeds demand")?;
     let missions = collector_intel::intel::operative_mission_demand(memory, base, state);
     let operative_missions = demand(missions.outcome)?;
     let strategic =
-        engine_intelligence::strategic_operatives::walk(memory, base, state, &mut [], &mut []);
+        engine_intelligence::strategic_operatives::count(memory, base, state);
     let strategic_operatives = demand(strategic.outcome)?;
     let (available_advisors, available_advisor_bytes) =
         engine_native::ccountry_characters::demand_available(memory, base, state)?;
@@ -840,12 +842,7 @@ pub fn observe_politics(
         active_characters,
         retired_characters,
         party_leaders: engine_native::cpolitical_status::party_leader_demand(memory, base, state)?,
-        civil_wars: demand(engine_native::ccountry::walk_civil_wars(
-            memory,
-            base,
-            state,
-            &mut [],
-        ))?,
+        civil_wars: demand(engine_native::ccountry::count_civil_wars(memory, base, state))?,
         advisor_tokens,
         advisor_token_bytes: tokens.required_bytes,
         faction_advisors,
@@ -1029,22 +1026,32 @@ mod tests {
     }
 
     #[test]
-    fn politics_staging_demand_presizes_the_daily_backlog_without_a_loaded_world() {
+    fn politics_staging_demand_follows_the_frames_holding_undrained_hours() {
         let memory = engine_native::memory::SliceMemory {
             base: cgame_state::SINGLETON_RVA.0,
             bytes: &[0; 8],
         };
         for slots in [1_501, 5_001] {
             assert_eq!(
-                observe_politics_demand(&memory, 0, slots),
+                observe_politics_demand(&memory, 0, slots, sampling::BUFFERS),
                 Some(slots * 5 * sampling::BUFFERS)
+            );
+            // Fewer frames than the steady count still stage for the steady count.
+            assert_eq!(
+                observe_politics_demand(&memory, 0, slots, 1),
+                Some(slots * 5 * sampling::BUFFERS)
+            );
+            // A backlog of 13 frames stages 13 frames' daily records.
+            assert_eq!(
+                observe_politics_demand(&memory, 0, slots, 13),
+                Some(slots * 5 * 13)
             );
         }
         let unreadable = engine_native::memory::SliceMemory {
             base: 0,
             bytes: &[],
         };
-        assert_eq!(observe_politics_demand(&unreadable, 0, 5_001), None);
+        assert_eq!(observe_politics_demand(&unreadable, 0, 5_001, 13), None);
     }
 
     /// The #63 attach hour: 440 countries whose raid type lists need more
@@ -2336,10 +2343,10 @@ mod tests {
         threads: bool,
     ) -> HistoriesHour {
         // The parts read through the callback's roster, as in production.
-        let mut cache = std::sync::Arc::new(
+        let mut cache = engine_allocation::shared(
             Cache::try_with_capacity(Cache::cells_for_countries(world.slots, MIN_COUNTRY_CELLS))
                 .unwrap(),
-        );
+        ).unwrap();
         let snapshot = Cache::prepare_shared(&mut cache, world, BASE, STATE).unwrap();
         let counting = Counting(world, Default::default());
         let memory = snapshot.roster_view(&counting);
@@ -2357,6 +2364,10 @@ mod tests {
     fn history(slot: usize, region: u32) -> usize {
         HISTORIES + (slot * REGION_SLOTS + region as usize) * HISTORY
     }
+
+    /// Nonzero entries one history holds: ten daily records and the monthly
+    /// and yearly current records.
+    const HELD: usize = 12;
 
     /// Every country slot divisible by `every` has a 30-record window in each
     /// of `patrolled` regions, a third of the records nonzero: the first
@@ -2453,7 +2464,7 @@ mod tests {
             );
             assert_eq!(
                 result.held,
-                held.len() * world.air.as_ref().unwrap().regions.len() * 10
+                held.len() * world.air.as_ref().unwrap().regions.len() * HELD
             );
             assert_eq!(one.held, result.held);
             if (2..=3).contains(&at) {
@@ -2510,7 +2521,9 @@ mod tests {
     fn naval_patrol_histories_are_read_where_written() {
         use crate::extended::air_histories::PARTS;
         let calls = naval_patrol_histories(100, 5, 2);
-        assert!(calls[0] <= 24 * PARTS, "{calls:?}");
+        // Per part: 3 for the air objects, the authentication and table headers, one read per
+        // country's region table, and the menu copy's 4 gathers and one per 256 records.
+        assert_eq!(calls[0], 200, "{calls:?}");
         assert_eq!(calls[1], 3 * PARTS);
         assert!(calls[2] < calls[0], "{calls:?}");
         assert_eq!(calls[3], 3 * PARTS);
@@ -2542,7 +2555,7 @@ mod tests {
         touch(&watches, 1, [history(1, 3), history(2, 3)], 1);
         let rows = histories_hour(&world(4), &[3], &changes, &mut hour, &mut frame, 1, true).held;
         let counts = Hour::counts(&frame);
-        assert_eq!((counts.advanced, counts.refreshed, rows), (1, 1, 20));
+        assert_eq!((counts.advanced, counts.refreshed, rows), (1, 1, 2 * HELD));
         let mut fresh = Hour::new();
         let unobserved = crate::history_changes::Unobserved;
         histories_hour(
@@ -2624,7 +2637,7 @@ mod tests {
             for at in 1..3 {
                 let quiet = histories_hour(&world, &[3], &changes, &mut hour, &mut frame, at, true);
                 assert_eq!(Hour::counts(&frame), counts, "{blind:x?} at {at}");
-                assert_eq!(quiet.held, 20);
+                assert_eq!(quiet.held, 2 * HELD);
                 assert!(fresh.same(&hour));
             }
         }

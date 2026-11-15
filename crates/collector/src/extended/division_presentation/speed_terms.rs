@@ -1363,7 +1363,6 @@ impl SpeedTerms {
             return self.finish(Ok(0), 3);
         }
         let mut crossings = std::mem::take(&mut self.crossings);
-        crossings.enable_growth();
         let ready = crossings.begin(memory, base, game);
         let result = held_crossings(|held| {
             let world = crate::world_lifetime::generation();

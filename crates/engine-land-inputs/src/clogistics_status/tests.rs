@@ -208,7 +208,7 @@ fn worker_sizes_the_roster_without_reading_native_excluded_countries() {
     assert_eq!(row_demand(&fixture, BASE, GAME), Ok(24));
     let mut output = Vec::new();
     assert_eq!(
-        walk_growing(&fixture, BASE, GAME, &mut output),
+        walk(&fixture, BASE, GAME, &mut output),
         Outcome::Rows { len: 6 }
     );
     assert_eq!((output[2].country, output[2].archetype), (1, 2));
@@ -243,7 +243,7 @@ fn worker_grows_from_mod_archetype_headers_on_first_and_later_samples() {
             }
         }
         assert_eq!(
-            walk_growing(&fixture, BASE, GAME, &mut output),
+            walk(&fixture, BASE, GAME, &mut output),
             Outcome::Rows {
                 len: 2 * count as usize
             }
@@ -318,22 +318,12 @@ fn names_and_reads_indices_across_batches() {
 }
 
 #[test]
-fn a_country_that_does_not_fit_is_counted_unread_without_reading_its_values() {
+fn the_count_probe_counts_every_country_unread_without_reading_its_values() {
     let mut f = Fixture::new(3);
     let manual_values = Fixture::history(MANUAL.2, BALANCE_SERIES) + 0x800;
     f.forget(manual_values, 3 * 8);
-    let (outcome, rows) = capture(&f, 4);
     assert_eq!(
-        outcome,
-        Outcome::Truncated {
-            len: 3,
-            unread_rows: 3
-        }
-    );
-    assert_eq!(rows[2], expected(HUMAN, 2));
-    assert_eq!(rows[3], Row::default());
-    assert_eq!(
-        capture(&f, 0).0,
+        walk_buffer(&f, BASE, GAME, crate::walk::Buffer::Count),
         Outcome::Truncated {
             len: 0,
             unread_rows: 6
@@ -742,13 +732,6 @@ fn native_acquisition_sizes_owners_and_rows_from_the_live_roster() {
     assert_eq!(rows[11].country, 4);
     assert_eq!(rows[11].token, token(2));
     assert_eq!(rows[11].balance_history, owners[3].history);
-    assert_eq!(
-        walk(&fixture, BASE, GAME, &mut rows[..11]),
-        Outcome::Truncated {
-            len: 9,
-            unread_rows: 3
-        }
-    );
     let empty = Fixture::new(0);
-    assert_eq!(walk(&empty, BASE, GAME, &mut []), Outcome::Rows { len: 0 });
+    assert_eq!(walk(&empty, BASE, GAME, &mut Vec::new()), Outcome::Rows { len: 0 });
 }

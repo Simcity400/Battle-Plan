@@ -13,12 +13,19 @@ export const typeKey = (row: { archetype: string | null }) => JSON.stringify([ro
 const isArray = Array.isArray;
 export function validateDivisionEquipment(value: unknown): DivisionEquipmentReply {
   const reply = value as DivisionEquipmentReply;
-  if (!reply || typeof reply.branchId !== 'string' || !Number.isInteger(reply.hour) || typeof reply.tag !== 'string' || typeof reply.absent !== 'boolean'
+  if (!reply || typeof reply.tag !== 'string' || (reply.missing !== null && typeof reply.missing !== 'string')
     || !isArray(reply.types) || !isArray(reply.templates) || !isArray(reply.warnings)
-    || reply.types.some(row => (row.archetype !== null && typeof row.archetype !== 'string') || typeof row.heldRaw !== 'string' || !isArray(row.variants)))
+    || reply.types.some(row => (row.archetype !== null && typeof row.archetype !== 'string') || (row.heldRaw !== null && typeof row.heldRaw !== 'string') || !isArray(row.variants)))
     throw new Error('Invalid division equipment reply');
   return reply;
 }
+
+/** What a followed reply renders on: everything it shows (its numbers move at most daily, but for a template's
+ * manpower and strength). */
+export const equipmentStructure = (reply: DivisionEquipmentReply) => JSON.stringify(reply);
+
+/** A count, or that it is not recorded. */
+export const counted = (value: number | null) => value === null ? 'Not recorded' : usNumber.format(value);
 
 /** Whole items from a fixed-point amount, grouped. */
 export const items = (raw: string | null) => raw === null ? null : formatFixed(raw, 5, 0);
@@ -58,9 +65,9 @@ export function typeTooltip(row: EquipmentType, reply: DivisionEquipmentReply): 
     { label: 'Needed', value: items(row.neededRaw) ?? 'Not recorded' },
     { label: 'Filled', value: items(row.filledRaw) ?? 'Not recorded' },
     { label: 'Missing', value: items(row.missingRaw) ?? 'Not recorded', tone: row.missingRaw !== null && BigInt(row.missingRaw) > 0n ? 'negative' : undefined },
-    { label: 'Divisions short', value: usNumber.format(row.divisionsShort) },
+    { label: 'Divisions short', value: counted(row.divisionsShort) },
   ];
-  if (row.unknownDivisions > 0) rows.push({ label: 'Divisions not recorded', value: usNumber.format(row.unknownDivisions), tone: 'muted' });
+  if (row.unknownDivisions === null || row.unknownDivisions > 0) rows.push({ label: 'Divisions not recorded', value: counted(row.unknownDivisions), tone: 'muted' });
   if (row.variants.length) rows.push({ label: 'Models', strong: true, divider: true }, ...variantRows(row.variants));
   if (row.stockpileRaw !== null) rows.push({ label: 'In stockpile', value: `${items(row.stockpileRaw)}${row.stockpileHour === null ? '' : ` (as of ${formatDateTime(row.stockpileHour)})`}`, divider: true });
   return { title: typeName(row), subtitle: reply.poolHour === null ? undefined : `Equipment as of ${formatDateTime(reply.poolHour)}`, rows };
@@ -68,12 +75,12 @@ export function typeTooltip(row: EquipmentType, reply: DivisionEquipmentReply): 
 
 export function templateTooltip(row: EquipmentTemplate, reply: DivisionEquipmentReply): TooltipContent {
   const rows: TooltipRow[] = [
-    { label: 'Divisions', value: usNumber.format(row.divisions) },
+    { label: 'Divisions', value: counted(row.divisions) },
     { label: 'Manpower', value: row.manpower === null ? 'Not recorded' : `${usNumber.format(Number(row.manpower))}${row.manpowerRequired === null ? '' : ` of ${usNumber.format(Number(row.manpowerRequired))}`}` },
     { label: 'Strength', value: row.hpRaw === null ? 'Not recorded' : `${formatFixed(row.hpRaw, 5, 1)}${row.hpMaxRaw === null ? '' : ` of ${formatFixed(row.hpMaxRaw, 5, 1)}`}` },
     { label: 'Equipment', value: row.neededRaw === null ? 'Not recorded' : `${items(row.heldRaw) ?? '—'} of ${items(row.neededRaw)}` },
-    { label: 'Types short', value: usNumber.format(row.typesShort) },
+    { label: 'Types short', value: counted(row.typesShort) },
   ];
-  if (row.unknownDivisions > 0) rows.push({ label: 'Divisions not recorded', value: usNumber.format(row.unknownDivisions), tone: 'muted' });
+  if (row.unknownDivisions === null || row.unknownDivisions > 0) rows.push({ label: 'Divisions not recorded', value: counted(row.unknownDivisions), tone: 'muted' });
   return { title: templateName(row), subtitle: reply.poolHour === null ? undefined : `Equipment as of ${formatDateTime(reply.poolHour)}`, rows };
 }

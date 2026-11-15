@@ -98,10 +98,10 @@ mod tests {
                 bytes: &bytes,
             };
             let outcomes = [
-                nproject_cprogram::walk(&memory, 0, GAME, &mut [], &mut [], &mut []).outcome,
-                nproject_cproject::walk(&memory, 0, GAME, &mut []),
-                nproject_sproject_history::walk(&memory, 0, GAME, &mut []),
-                nproject_cbreakthrough_progress::walk(&memory, 0, GAME, &mut []),
+                nproject_cprogram::walk(&memory, 0, GAME, &mut Vec::new(), &mut Vec::new(), &mut Vec::new()).outcome,
+                nproject_cproject::walk(&memory, 0, GAME, &mut Vec::new()),
+                nproject_sproject_history::walk(&memory, 0, GAME, &mut Vec::new()),
+                nproject_cbreakthrough_progress::walk(&memory, 0, GAME, &mut Vec::new()),
             ];
             assert!(
                 outcomes

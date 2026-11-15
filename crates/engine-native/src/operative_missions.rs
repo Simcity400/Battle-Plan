@@ -130,27 +130,8 @@ pub struct Walk {
     pub failed_operative: Option<(u64, u32)>,
 }
 
-/// Reads every operative of each agency's active roster in roster order. The
-/// portrait is copied in the same walk.
-pub fn walk(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut [Row],
-    bytes: &mut [u8],
-) -> Walk {
-    walk_buffer(
-        memory,
-        base,
-        game_state,
-        crate::walk::Buffer::Fixed(output),
-        crate::walk::Buffer::Fixed(bytes),
-        &mut root_out_key(),
-    )
-}
-
 /// `root_out` is the caller's held key ([`root_out_key`]), kept across walks.
-pub fn walk_growing(
+pub fn walk(
     memory: &impl Memory,
     base: usize,
     game_state: usize,

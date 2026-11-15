@@ -37,7 +37,7 @@ fn persistent_arithmetic_keeps_unchanged_prefix_without_rng_seed() {
         let TableView::Complete(TableRows::ScriptVariables(rows)) =
             &mut *fixture.frame.tables[TableId::ScriptVariables.index()]
         else {
-            panic!("fixture has a complete ScriptVariables table");
+            panic!("fixture has a complete script variables table");
         };
         rows[0].seed = seed;
         let out = fixture.render(
@@ -86,7 +86,7 @@ fn tooltip_evaluates_right_before_left_and_repeats_temp_rhs() {
     let TableView::Complete(TableRows::CountryAppearance(rows)) =
         &mut *fixture.frame.tables[TableId::CountryAppearance.index()]
     else {
-        panic!("fixture has a complete CountryAppearance table");
+        panic!("fixture has a complete country appearance table");
     };
     let country = rows.iter_mut().find(|row| row.country == 100).unwrap();
     // takes own for a recorded nonpositive
@@ -254,19 +254,19 @@ fn known_noops_do_not_need_rng_or_supply_totals() {
     for (script, expected) in [
         (
             "set_temp_variable_to_random={var=n}",
-            "ScriptVariables.seed",
+            "seed of script variables",
         ),
         (
             "get_supply_vehicles_temp={var=n type=truck need=yes}",
-            "TrainInventory.required_trucks_raw",
+            "train inventory, required trucks raw",
         ),
         (
             "get_supply_vehicles_temp={var=n type=truck}",
-            "TrainInventory.allocated_trucks",
+            "train inventory, allocated trucks",
         ),
         (
             "get_supply_vehicles_temp={var=n type=train need=yes}",
-            "TrainInventory.required_trains",
+            "train inventory, required trains",
         ),
         ("get_supply_vehicles={var=n}", "description is unsupported"),
     ] {
@@ -513,7 +513,7 @@ fn format98_random_seed_unavailable_or_old_records_refuse_without_losing_prefix(
         assert!(
             out.refusals
                 .keys()
-                .any(|why| why.contains("ScriptVariables.seed")),
+                .any(|why| why.contains("seed of script variables")),
             "{:?}",
             out.refusals
         );
@@ -625,8 +625,9 @@ fn format98_supply_unavailable_and_old_scalars_keep_named_refusals() {
                 Content::default(),
             );
             assert!(out.text.is_empty());
+            let input = format!("train inventory, {}", field.replace('_', " "));
             assert!(
-                out.refusals.keys().any(|why| why.contains(field)),
+                out.refusals.keys().any(|why| why.contains(&input)),
                 "{:?}",
                 out.refusals
             );

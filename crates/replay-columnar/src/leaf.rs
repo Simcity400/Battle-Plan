@@ -283,19 +283,6 @@ pub struct Reader<'a> {
     at: usize,
 }
 
-/// `bytes`, which lie within `from`, at the same place in `to`, a copy of `from`.
-pub(crate) fn rebased<'b>(bytes: &[u8], from: &[u8], to: &'b [u8]) -> io::Result<&'b [u8]> {
-    // Empty bytes keep their place too: offsets into the payload are taken from them.
-    let start = (bytes.as_ptr() as usize)
-        .checked_sub(from.as_ptr() as usize)
-        .filter(|&start| start + bytes.len() <= from.len() && from.len() == to.len());
-    match start {
-        Some(start) => Ok(&to[start..start + bytes.len()]),
-        None if bytes.is_empty() => Ok(&to[..0]),
-        None => Err(invalid("Bytes lie outside the copy they are moved to")),
-    }
-}
-
 fn short() -> io::Error {
     invalid("Section ends inside a value")
 }
@@ -303,14 +290,6 @@ fn short() -> io::Error {
 impl<'a> Reader<'a> {
     pub fn new(bytes: &'a [u8]) -> Self {
         Self { bytes, at: 0 }
-    }
-
-    /// The reader where it stands, over `to`, a copy of `from`, which its bytes lie in.
-    pub(crate) fn rebased<'b>(&self, from: &[u8], to: &'b [u8]) -> io::Result<Reader<'b>> {
-        Ok(Reader {
-            bytes: rebased(self.bytes, from, to)?,
-            at: self.at,
-        })
     }
 
     pub fn at(&self) -> usize {

@@ -1,10 +1,12 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { ZoomReset } from './ZoomReset';
+import { setStyle } from './domText.ts';
+import WidgetState from '../components/WidgetState';
 import { inFrame } from '../dashboard/frameUpdates';
 import { BADGE_STRIP, badgesAt, drawBadges, visibleBadges } from './badges';
 import type { EventBadge } from './badges';
-import { clusterHour, drawMarkSummary, eventCount, markClusterAt, markSummaryMatches } from './markSummary';
+import { clusterHour, drawMarkSummary, eventCount, markClusterAt, markSummaryMatches, shownClusters } from './markSummary';
 import type { MarkCluster, MarkSummary } from './markSummary';
 import { clipToPlot, dayLabel, drawAxes, drawCrosshair, drawPlayhead, drawSelection, VALUE_LABEL_GAP, valueLabelWidth } from './draw';
 import { approach, easeTau } from './easing';
@@ -22,7 +24,7 @@ import { ChartPicks } from './pick';
 import type { ChartPick } from './pick';
 import { scheduler } from './scheduler';
 import type { FrameInfo, FrameTask } from './scheduler';
-import { toLocal, watchCanvasSize } from './surface';
+import { drawingSurface, sizeCanvas, toLocal, watchCanvasSize } from './surface';
 import { CHART_LAYOUT, readTokens, subscribeTokens } from './tokens';
 import type { ChartTokens } from './tokens';
 import { hideTooltip, showTooltip, tooltipStore, tooltipText } from './tooltip';
@@ -31,6 +33,7 @@ import { formatAxisValue } from './valueAxis';
 import { EMPTY_VIEW, playbackDomain, reduceView, resolveX, resolveY } from './view';
 import type { AxisSettings, PlaybackMode, Range, ViewAction, ViewState } from './view';
 import { shownUntil } from './view';
+import type { Live } from './live';
 import './charts.css';
 
 /** One thing a chart draws inside its plot, such as a line per country. */
@@ -59,6 +62,9 @@ export interface TimeChartProps {
   extent: Range;
   /** The playback hour while following; null shows the whole extent. */
   playhead: number | null;
+  /** While following, the head now and the clock's frame signal: the chart moves with it every frame, between
+   * renders. */
+  liveHead?: LiveHead;
   playback: PlaybackMode;
   /** In whole-campaign (cursor) playback, draws, marks and hovers past the playhead too. */
   afterPlayhead?: boolean;
@@ -89,13 +95,15 @@ export interface TimeChartProps {
   /** Prepared screen-width marks. Individual events are fetched by stable range,
    * so drawing and spoken text never materialise campaign-long event rows. */
   markSummary?: MarkSummary;
-  markSummaries?: readonly MarkSummary[];
+  /** Marks, or a reader of them when they come from data the layers read outside props (`data`): it returns the same
+   * objects until they change. */
+  markSummaries?: readonly MarkSummary[] | (() => readonly MarkSummary[]);
   markTooltip?: (cluster: MarkCluster) => TooltipContent | null;
   onMarkHover?: (cluster: MarkCluster | null) => void;
   /** Reached exact event rows only, for pointer/keyboard hour tooltips. */
   badgesAtHour?: (hour: number) => readonly EventBadge[];
-  /** Requests display summaries at actual layout width and playback cutoff. */
-  onSummaryView?: (view: { from: number; to: number; width: number }) => void;
+  /** Requests display summaries at actual layout width and playback cutoff; `end` is the frame's last hour. */
+  onSummaryView?: (view: { from: number; to: number; end: number; width: number }) => void;
   /** Prepared navigation queries the next exact stop without retaining all dates. */
   onNavigateHour?: (key: 'ArrowLeft' | 'ArrowRight' | 'Home' | 'End', from: number | null, x: Range, until: number | null) => void;
   /** The result of the latest owner-scoped navigation request. */
@@ -126,9 +134,23 @@ export interface TimeChartProps {
   pickOwner?: unknown;
   /** Off-screen charts stop drawing. */
   active: boolean;
+  /** Why none of its lines holds a value in view (their tables held no row there, or were not recorded): shown over
+   * the plot as not recorded, never a blank chart. */
+  notRecorded?: string | null;
   /** Changes whenever the data changes, so the chart redraws. */
   revision: unknown;
+  /** Data its layers read when they draw rather than from props (tiles landing while it follows the head): what a
+   * repaint compares beside `revision`, and the signal that wakes it, so new data draws without a render. */
+  data?: ChartData;
 }
+
+/** Data a chart's layers read as they draw: `revision()` its parts by identity (the same while unchanged), and
+ * `subscribe` told when any moves. */
+export interface ChartData { revision(): readonly unknown[]; subscribe(listener: () => void): () => void }
+
+/** The marks a chart draws, read from a reader where it has one. */
+const marksOf = (p: TimeChartProps): readonly MarkSummary[] => [...(p.markSummary ? [p.markSummary] : []),
+  ...(typeof p.markSummaries === 'function' ? p.markSummaries() : p.markSummaries ?? [])];
 
 const DEFAULT_PADDING: Padding = { left: 44, right: CHART_LAYOUT.right, top: 12, bottom: 24 };
 /** Room kept between the canvas edge and the widest value label. */
@@ -146,6 +168,17 @@ type Pointed = { hour: number; describes: number; badges: readonly EventBadge[];
 
 /** A box started in a strip zooms time only: the strip has no value axis. */
 type Drag = { mode: 'axis-x'; grab: number } | { mode: 'axis-y'; grab: number } | { mode: 'pan'; lastX: number } | { mode: 'box'; x0: number; y0: number; x1: number; y1: number; timeOnly: boolean };
+
+/** A playback head read as a chart draws: its hour now, and the frame signal that moves it. */
+export type LiveHead = Live<number>;
+
+/** `props` with the playhead its live head is at now, when it follows one. */
+function withLiveHead(props: TimeChartProps): TimeChartProps {
+  const live = props.liveHead;
+  if (!live || props.playhead == null) return props;
+  const head = Math.max(props.extent[0], Math.min(props.extent[1], live.read()));
+  return head === props.playhead ? props : { ...props, playhead: head };
+}
 
 /** A canvas time chart: axes from the recording's own dates, zoom that holds during
  * playback, live hover, and redraws only while something moves. Its series paint on one
@@ -192,13 +225,16 @@ export default function TimeChart(props: TimeChartProps) {
 
   useEffect(() => {
     const element = canvas.current!;
-    const context = element.getContext('2d')!;
-    const sheet = overlay.current, overlayContext = sheet?.getContext('2d') ?? null;
+    const drawing = drawingSurface(element), context = drawing.context!;
+    const sheet = overlay.current ? drawingSurface(overlay.current) : null, overlayContext = sheet?.context ?? null;
     let tokens = readTokens();
     let view: ViewState = EMPTY_VIEW;
     // The badges last described, compared one by one (a count and range could repeat after a pan).
     let spokenFor: readonly EventBadge[] = [];
     let spokenBadges = '', spokenText = '';
+    // The marks last described, each summary's shown clusters by identity: a frame inside them writes no text.
+    let spokenMarks: readonly (readonly MarkCluster[])[] = [];
+    let clusterText = '';
     // The view last reported: a handler hears only a new range (or, when it changes, the current one).
     let reported: { handler: (x: Range) => void; x: Range } | null = null;
     let eased: { x: [number, number]; y: [number, number] } | null = null;
@@ -219,7 +255,7 @@ export default function TimeChart(props: TimeChartProps) {
     // The cluster `onMarkHover` last heard about, and a pointer hour waiting to rest.
     let markHovered: MarkCluster | null | undefined;
     let pendingHover: { hour: number; since: number; timer: ReturnType<typeof setTimeout> } | null = null;
-    type SummaryView = { callback: TimeChartProps['onSummaryView']; from: number; to: number; width: number };
+    type SummaryView = { callback: TimeChartProps['onSummaryView']; from: number; to: number; end: number; width: number };
     // The view last asked for, when, and a newer one waiting for the interval.
     let summaryView: SummaryView | null = null, summaryLatest: SummaryView | null = null;
     let summaryAt = -Infinity, summaryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -227,8 +263,8 @@ export default function TimeChart(props: TimeChartProps) {
       summaryTimer = null;
       if (!summaryLatest) return;
       const sent = summaryView = summaryLatest; summaryAt = performance.now();
-      // Callbacks heard from the frame loop render with the next tick while playing, never a commit of their own.
-      inFrame(() => sent.callback?.({ from: sent.from, to: sent.to, width: sent.width }));
+      // Callbacks heard from the frame loop render with the next frame's updates, never a commit of their own.
+      inFrame(() => sent.callback?.({ from: sent.from, to: sent.to, end: sent.end, width: sent.width }));
     };
 
     const dispatch = (action: ViewAction) => {
@@ -240,19 +276,17 @@ export default function TimeChart(props: TimeChartProps) {
     controls.current = { dispatch };
 
     const draw = (info: FrameInfo): boolean => {
-      const p = latest.current;
+      const p = withLiveHead(latest.current);
       const { layoutWidth, layoutHeight, backing: size } = surface.read();
       if (!layoutWidth || !layoutHeight) return false;
-      if (element.width !== size.width) element.width = size.width;
-      if (element.height !== size.height) element.height = size.height;
-      if (sheet && (sheet.width !== size.width || sheet.height !== size.height)) {
-        sheet.width = size.width; sheet.height = size.height; overlaid = false;
-      }
+      sizeCanvas(drawing.canvas, size.width, size.height);
+      if (sheet && sizeCanvas(sheet.canvas, size.width, size.height)) overlaid = false;
 
       // Badges sit above the plot, so a chart with them keeps room there; a strip
       // sits between the plot and the dates.
       const strip = p.strip ? Math.max(0, Math.round(p.strip.height(layoutHeight))) : 0;
-      const hasBadgeSummary = p.markSummary?.placement !== 'ticks' && p.markSummary || p.markSummaries?.some(summary => summary.placement !== 'ticks');
+      const marks = marksOf(p);
+      const hasBadgeSummary = marks.some(summary => summary.placement !== 'ticks');
       const padding = { ...DEFAULT_PADDING, ...(p.badges || hasBadgeSummary ? { top: BADGE_STRIP } : {}), ...p.padding };
       if (p.rows) {
         padding.left = Math.min(layoutWidth * 0.45, p.rows.labelWidth);
@@ -266,9 +300,11 @@ export default function TimeChart(props: TimeChartProps) {
         if (zoomedFor) eased = null;
         zoomedFor = extentKey;
       }
-      const playback = p.playhead == null ? p.extent : playbackDomain(p.playback, p.extent, p.playhead, p.windowHours ?? 365 * 24, MIN_SPAN);
+      const motion = motionNow(p.hoursPerSecond);
+      const playback = p.playhead == null ? p.extent
+        : playbackDomain(p.playback, p.extent, p.playhead, p.windowHours ?? 365 * 24, MIN_SPAN, motion === undefined);
       const targetX = resolveX(view, p.axes, p.branchStart, playback);
-      const tau = drag && drag.mode !== 'box' ? 0 : easeTau(tokens.motion, motionNow(p.hoursPerSecond), tokens.reducedMotion);
+      const tau = drag && drag.mode !== 'box' ? 0 : easeTau(tokens.motion, motion, tokens.reducedMotion);
       // Ease the distance to the target, not the absolute value: engine hours are large
       // enough that a relative snap threshold would jump the last tens of hours.
       const glide = (current: number, target: number) => target + approach(current - target, 0, info.dt, tau);
@@ -309,9 +345,10 @@ export default function TimeChart(props: TimeChartProps) {
 
       const until = shownUntil(p.playhead, p.playback, p.afterPlayhead === true);
       // Callers pass each event category once, as summary or badge, so both are drawn, hit and spoken.
-      const summaries = [...(p.markSummary ? [p.markSummary] : []), ...(p.markSummaries ?? [])].filter(summary => markSummaryMatches(summary, frame!, until));
+      const summaries = marks.filter(summary => markSummaryMatches(summary, frame!, until));
       const baseKey = [size.width, size.height, frame.plotLeft, frame.plotTop, frame.plotWidth, frame.plotHeight, frame.x[0], frame.x[1], frame.y[0], frame.y[1],
-        frame.log, tokens, p.layers, p.revision, until, p.strip, p.playhead, p.playback, p.badges, p.overlay, p.rows, p.formatValue, p.valueTicks, p.gaps, ...summaries];
+        frame.log, tokens, p.layers, p.revision, until, p.strip, p.playhead, p.playback, p.badges, p.overlay, p.rows, p.formatValue, p.valueTicks, p.gaps,
+        ...(p.data?.revision() ?? []), ...summaries];
       pickFrame.current = { ...picks.drawn({ frame, until }, p.onPick), props: p };
       if (!painted || painted.length !== baseKey.length || !painted.every((value, index) => Object.is(value, baseKey[index]))) {
         context.setTransform(size.scaleX, 0, 0, size.scaleY, 0, 0);
@@ -333,7 +370,7 @@ export default function TimeChart(props: TimeChartProps) {
           context.restore();
         }
         if (p.playhead != null && p.playback === 'cursor') drawPlayhead(context, frame, tokens, p.playhead);
-        for (const summary of summaries) drawMarkSummary(context, frame, tokens, summary);
+        for (const summary of summaries) drawMarkSummary(context, frame, tokens, summary, until);
         if (p.badges) drawBadges(context, frame, tokens, p.badges, until);
         p.overlay?.(context, frame, tokens);
         painted = baseKey;
@@ -355,9 +392,9 @@ export default function TimeChart(props: TimeChartProps) {
       // (`summaryFits`); a settled view always gets its own. A view wholly past the
       // playhead has no hour to ask about.
       const summaryRequest = { callback: p.onSummaryView, from: Math.floor(frame.x[0]),
-        to: Math.floor(Math.min(frame.x[1], until ?? frame.x[1])), width: Math.ceil(frame.plotWidth) };
+        to: Math.floor(Math.min(frame.x[1], until ?? frame.x[1])), end: Math.floor(frame.x[1]), width: Math.ceil(frame.plotWidth) };
       const sameView = (view: SummaryView | null) => !!view && view.callback === summaryRequest.callback && view.from === summaryRequest.from
-        && view.to === summaryRequest.to && view.width === summaryRequest.width;
+        && view.to === summaryRequest.to && view.end === summaryRequest.end && view.width === summaryRequest.width;
       if (summaryRequest.to >= summaryRequest.from && !sameView(summaryLatest)) {
         summaryLatest = summaryRequest;
         if (sameView(summaryView)) { if (summaryTimer) clearTimeout(summaryTimer); summaryTimer = null; }
@@ -370,8 +407,12 @@ export default function TimeChart(props: TimeChartProps) {
         spokenFor = drawn;
         spokenBadges = drawn.map(badge => `${dayLabel(badge.hour)}, ${badge.label}`).join('; ');
       }
-      const clusterText = summaries.flatMap(summary => summary.clusters.map(cluster => cluster.badge ? `${dayLabel(cluster.badge.hour)}, ${cluster.badge.label}`
-        : `${dayLabel(cluster.firstHour) === dayLabel(cluster.lastHour) ? dayLabel(cluster.firstHour) : `${dayLabel(cluster.firstHour)} to ${dayLabel(cluster.lastHour)}`}, ${eventCount(cluster.count)}`)).join('; ');
+      const marked = summaries.map(summary => shownClusters(summary, until));
+      if (marked.length !== spokenMarks.length || marked.some((clusters, index) => clusters !== spokenMarks[index])) {
+        spokenMarks = marked;
+        clusterText = marked.flatMap(clusters => clusters.map(cluster => cluster.badge ? `${dayLabel(cluster.badge.hour)}, ${cluster.badge.label}`
+          : `${dayLabel(cluster.firstHour) === dayLabel(cluster.lastHour) ? dayLabel(cluster.firstHour) : `${dayLabel(cluster.firstHour)} to ${dayLabel(cluster.lastHour)}`}, ${eventCount(cluster.count)}`)).join('; ');
+      }
       const eventText = spokenBadges && clusterText ? `${spokenBadges}; ${clusterText}` : spokenBadges || clusterText;
       if (eventText !== spokenText && eventsText.current) { spokenText = eventText; eventsText.current.textContent = eventText ? `Events: ${eventText}.` : ''; }
       if (drag?.mode === 'box' && overlayContext) { drawSelection(overlayContext, tokens, drag); overlaid = true; }
@@ -452,8 +493,8 @@ export default function TimeChart(props: TimeChartProps) {
         }
       } else { hovered = null; hideTooltip(owner); }
       keyIntent.current = false;
-      element.style.cursor = drag?.mode === 'pan' ? 'grabbing' : pointed?.badges.length ? 'pointer' : zone === 'x-axis' ? 'ew-resize'
-        : zone === 'y-axis' ? 'ns-resize' : zone === 'plot' || zone === 'strip' ? 'crosshair' : 'default';
+      setStyle(element, 'cursor', drag?.mode === 'pan' ? 'grabbing' : pointed?.badges.length ? 'pointer' : zone === 'x-axis' ? 'ew-resize'
+        : zone === 'y-axis' ? 'ns-resize' : zone === 'plot' || zone === 'strip' ? 'crosshair' : 'default');
 
       const settled = Math.abs(x[0] - targetX[0]) + Math.abs(x[1] - targetX[1]) < 1e-3
         && Math.abs(y[0] - targetY.range[0]) + Math.abs(y[1] - targetY.range[1]) < 1e-5 * ySpan;
@@ -465,11 +506,11 @@ export default function TimeChart(props: TimeChartProps) {
      * (`describes`: a plot mark it snaps to, or the strip item's own hour). */
     const pointedAt = (point: { x: number; y: number }, plot: PlotFrame, p: TimeChartProps): Pointed | null => {
       const until = shownUntil(p.playhead, p.playback, p.afterPlayhead === true);
-      const summaries = [...(p.markSummary ? [p.markSummary] : []), ...(p.markSummaries ?? [])];
+      const summaries = marksOf(p);
       let cluster: MarkCluster | null = null;
       for (const summary of summaries) {
         if (!markSummaryMatches(summary, plot, until)) continue;
-        const next = markClusterAt(point, plot, summary);
+        const next = markClusterAt(point, plot, summary, until);
         if (next && (!cluster || Math.abs(plot.toX(clusterHour(next)) - point.x) < Math.abs(plot.toX(clusterHour(cluster)) - point.x))) cluster = next;
       }
       const badges = p.badges ? badgesAt(point, plot, p.badges, until) : [];
@@ -634,6 +675,8 @@ export default function TimeChart(props: TimeChartProps) {
     if (!props.active) hideTooltip(owner);
   }, [props.active, owner]);
   useEffect(() => { if (task.current) scheduler.wake(task.current); });
+  useEffect(() => props.liveHead?.subscribe(() => { if (task.current) scheduler.wake(task.current); }), [props.liveHead]);
+  useEffect(() => props.data?.subscribe(() => { if (task.current) scheduler.wake(task.current); }), [props.data]);
   useEffect(() => {
     if (!props.active) props.onMarkHover?.(null);
     return () => props.onMarkHover?.(null);
@@ -724,5 +767,6 @@ export default function TimeChart(props: TimeChartProps) {
     <p className="sr-only" aria-live="polite">{keySpoken}</p>
     <canvas ref={overlay} className="time-chart-overlay" aria-hidden="true" />
     {zoomed && <ZoomReset onReset={() => controls.current?.dispatch({ type: 'reset' })} />}
+    {props.notRecorded && <div className="time-chart-state"><WidgetState kind="unavailable" message="Not recorded" detail={props.notRecorded} /></div>}
   </div>;
 }

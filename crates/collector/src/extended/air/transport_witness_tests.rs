@@ -28,9 +28,9 @@ fn an_unregistered_wing_with_a_selected_mission_still_demands_its_range_origin()
         ..Default::default()
     };
     let memory = NullBases::default();
-    let mut output = [BaseWitness::default(); 1];
+    let mut output = vec![BaseWitness::default(); 1];
     assert_eq!(
-        capture_references(&memory, 0, 0, &[wing], Some(&[]), &mut [0; 2], &mut output),
+        capture_references_buffer(&memory, 0, 0, &[wing], Some(&[]), engine_native::walk::Buffer::Growing(&mut vec![0; 2]), engine_native::walk::Buffer::Growing(&mut output), None),
         Ok(Outcome::Rows { len: 1 })
     );
     assert_eq!(output[0].handle, wing.air_base);
@@ -53,18 +53,10 @@ fn idle_pool_with_retained_region_is_probed_once_with_or_without_registration() 
     }];
     for registered in [&[][..], &registered[..]] {
         let memory = NullBases::default();
-        let mut handles = [0; 2];
-        let mut output = [BaseWitness::default(); 2];
+        let mut handles = vec![0; 2];
+        let mut output = vec![BaseWitness::default(); 2];
         assert_eq!(
-            capture_references(
-                &memory,
-                0,
-                0,
-                &wings,
-                Some(registered),
-                &mut handles,
-                &mut output
-            ),
+            capture_references_buffer(&memory, 0, 0, &wings, Some(registered), engine_native::walk::Buffer::Growing(&mut handles), engine_native::walk::Buffer::Growing(&mut output), None),
             Ok(Outcome::Rows { len: 2 })
         );
         // Two handles, the pool base and the override: a duplicate idle
@@ -73,22 +65,14 @@ fn idle_pool_with_retained_region_is_probed_once_with_or_without_registration() 
         // (`map_air_base_reference::Pass`); it is null, so neither resolves.
         assert_eq!(memory.0.get(), 1, "one registry root read for both probes");
         assert_eq!(
-            output.map(|row| row.handle),
+            output.iter().map(|row| row.handle).collect::<Vec<_>>(),
             [wings[0].air_base, wings[0].base_override]
         );
     }
     let mut invalid = wings;
     invalid[0].air_base = 0;
     assert_eq!(
-        capture_references(
-            &NullBases::default(),
-            0,
-            0,
-            &invalid,
-            Some(&registered),
-            &mut [0; 2],
-            &mut [BaseWitness::default(); 2]
-        ),
+        capture_references_buffer(&NullBases::default(), 0, 0, &invalid, Some(&registered), engine_native::walk::Buffer::Growing(&mut vec![0; 2]), engine_native::walk::Buffer::Growing(&mut vec![BaseWitness::default(); 2]), None),
         Err("registered wing has a null pool base")
     );
 }

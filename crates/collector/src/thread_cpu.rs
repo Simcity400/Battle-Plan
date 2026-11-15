@@ -22,9 +22,8 @@ pub(crate) enum Role {
     Runtime,
     Spool,
     Status,
-    SpoolHelper,
-    SecondSpoolHelper,
     SpoolSizing,
+    FrameBuilder,
     FramePriority,
     #[cfg(feature = "worker_sampler")]
     Sampler,
@@ -47,6 +46,39 @@ impl Drop for StopOnThreadExit {
     fn drop(&mut self) {
         crate::worker_sampler::stop_before_thread_exit();
     }
+}
+
+/// The spool's conversion helpers' ids by index; 0 where none started.
+static HELPERS: [AtomicU32; MAX_HELPERS] = [const { AtomicU32::new(0) }; MAX_HELPERS];
+#[cfg(feature = "worker_sampler")]
+static HELPER_CREATION: [AtomicU64; MAX_HELPERS] = [const { AtomicU64::new(0) }; MAX_HELPERS];
+const MAX_HELPERS: usize = crate::pack_conversion::MAX_HELPERS;
+
+/// Register the spool's conversion helper `index`, which published its id.
+pub(crate) fn register_helper(index: usize, id: u32) {
+    let Some(slot) = HELPERS.get(index) else {
+        return;
+    };
+    #[cfg(feature = "worker_sampler")]
+    HELPER_CREATION[index].store(registered_creation_time(id).unwrap_or(0), Ordering::Release);
+    slot.store(id, Ordering::Release);
+}
+
+/// The registered conversion helpers' ids by index; 0 where none started.
+#[cfg(feature = "worker_sampler")]
+pub(crate) fn helpers() -> impl Iterator<Item = u32> {
+    HELPERS.iter().map(|id| id.load(Ordering::Acquire))
+}
+
+/// Conversion helper `index`'s creation time, if `id` is still it.
+#[cfg(feature = "worker_sampler")]
+pub(crate) fn helper_creation(index: usize, id: u32) -> Option<u64> {
+    let registered = HELPERS.get(index)?;
+    if id == 0 || registered.load(Ordering::Acquire) != id {
+        return None;
+    }
+    let created = HELPER_CREATION[index].load(Ordering::Acquire);
+    (created != 0 && registered.load(Ordering::Acquire) == id).then_some(created)
 }
 
 /// Call first on the registering thread.
@@ -108,9 +140,8 @@ pub(crate) fn registered_creation(role: &str, id: u32) -> Option<u64> {
         "runtime" => Role::Runtime,
         "spool" => Role::Spool,
         "status" => Role::Status,
-        "spool_helper" => Role::SpoolHelper,
-        "second_spool_helper" => Role::SecondSpoolHelper,
         "spool_sizing" => Role::SpoolSizing,
+        "frame_builder" => Role::FrameBuilder,
         "frame_priority" => Role::FramePriority,
         "sampler" => Role::Sampler,
         _ => return None,
@@ -123,12 +154,12 @@ pub(crate) fn registered_creation(role: &str, id: u32) -> Option<u64> {
     (created != 0 && registered.load(Ordering::Acquire) == id).then_some(created)
 }
 
-const BASE_NAMED: usize = 8;
+const BASE_NAMED: usize = 7;
 #[cfg(not(feature = "worker_sampler"))]
 const NAMED: usize = BASE_NAMED;
 #[cfg(feature = "worker_sampler")]
 const NAMED: usize = BASE_NAMED + 1;
-const THREADS: usize = NAMED + crate::acquisition::MAX_WORKERS;
+const THREADS: usize = NAMED + MAX_HELPERS + crate::acquisition::MAX_WORKERS;
 
 /// The creation time first seen for an id; a later thread reusing that id
 /// after ours exited is not reported as ours.
@@ -265,9 +296,9 @@ fn sample_status(sample: Sample, hz: Option<u64>) -> impl serde::Serialize {
 }
 
 #[cfg(not(feature = "worker_sampler"))]
-const SCOPE: &str = "cumulative CPU of each collector thread (runtime, decode, spool, status, the spool's two conversion helpers and its sizing thread, the frame-priority reconciler, and acquisition workers) since it started, read when this status was built: cycles from QueryThreadCycleTime (cycle_ns converts them with hook_timing's tsc_hz), user/kernel from GetThreadTimes at scheduler-tick resolution. collector_total sums the available threads; process is the whole game process. Hooked game-thread time inside collector callbacks is in hook_timing, not here. A thread that exited or whose id now names another thread is unavailable";
+const SCOPE: &str = "cumulative CPU of each collector thread (runtime, decode, spool, status, the spool's conversion helpers and its sizing thread, the frame-priority reconciler, and acquisition workers) since it started, read when this status was built: cycles from QueryThreadCycleTime (cycle_ns converts them with hook_timing's tsc_hz), user/kernel from GetThreadTimes at scheduler-tick resolution. collector_total sums the available threads; process is the whole game process. Hooked game-thread time inside collector callbacks is in hook_timing, not here. A thread that exited or whose id now names another thread is unavailable";
 #[cfg(feature = "worker_sampler")]
-const SCOPE: &str = "cumulative CPU of each collector thread (runtime, decode, spool, status, the spool's two conversion helpers and its sizing thread, the frame-priority reconciler, acquisition workers, and sampler) since it started, read when this status was built: cycles from QueryThreadCycleTime (cycle_ns converts them with hook_timing's tsc_hz), user/kernel from GetThreadTimes at scheduler-tick resolution. collector_total sums the available threads; process is the whole game process. Hooked game-thread time inside collector callbacks is in hook_timing, not here. A thread that exited or whose id now names another thread is unavailable";
+const SCOPE: &str = "cumulative CPU of each collector thread (runtime, decode, spool, status, the spool's conversion helpers and its sizing thread, the frame-priority reconciler, acquisition workers, and sampler) since it started, read when this status was built: cycles from QueryThreadCycleTime (cycle_ns converts them with hook_timing's tsc_hz), user/kernel from GetThreadTimes at scheduler-tick resolution. collector_total sums the available threads; process is the whole game process. Hooked game-thread time inside collector callbacks is in hook_timing, not here. A thread that exited or whose id now names another thread is unavailable";
 
 fn status_from(
     samples: [Option<Sample>; THREADS],
@@ -305,16 +336,12 @@ macro_rules! named_threads {
                 REGISTERED[Role::Status as usize].load(Ordering::Acquire),
             ),
             (
-                "spool_helper",
-                REGISTERED[Role::SpoolHelper as usize].load(Ordering::Acquire),
-            ),
-            (
-                "second_spool_helper",
-                REGISTERED[Role::SecondSpoolHelper as usize].load(Ordering::Acquire),
-            ),
-            (
                 "spool_sizing",
                 REGISTERED[Role::SpoolSizing as usize].load(Ordering::Acquire),
+            ),
+            (
+                "frame_builder",
+                REGISTERED[Role::FrameBuilder as usize].load(Ordering::Acquire),
             ),
             (
                 "frame_priority",
@@ -329,10 +356,14 @@ macro_rules! named_threads {
     };
 }
 
-/// Snapshot sampling targets without allocation, excluding sampler and priority control.
+/// Snapshot sampling targets without allocation, excluding sampler, priority control and the
+/// frame builder, which the sampler has no role for.
 #[cfg(feature = "worker_sampler")]
 pub(crate) fn registered() -> impl Iterator<Item = (&'static str, u32)> {
-    named_threads!().into_iter().take(BASE_NAMED).filter(|(role, _)| *role != "frame_priority")
+    named_threads!()
+        .into_iter()
+        .take(BASE_NAMED)
+        .filter(|(role, _)| !matches!(*role, "frame_priority" | "frame_builder"))
 }
 
 /// status.json `collector_thread_cpu`. `acquisition` lists the worker ids.
@@ -343,9 +374,14 @@ pub(crate) fn status(acquisition: &[u32]) -> impl serde::Serialize + use<> {
         .take(crate::acquisition::MAX_WORKERS)
         .enumerate()
         .map(|(index, id)| ("acquisition", Some(index), *id));
+    let helpers = HELPERS
+        .iter()
+        .enumerate()
+        .map(|(index, id)| ("spool_helper", Some(index), id.load(Ordering::Acquire)));
     let threads = named
         .into_iter()
         .map(|(role, id)| (role, None, id))
+        .chain(helpers)
         .chain(workers);
     let mut samples = [None; THREADS];
     for (slot, ((role, index, id), identity)) in samples.iter_mut().zip(threads.zip(&IDENTITIES)) {

@@ -11,7 +11,8 @@ const closed = (state: { open: boolean }) => state.open ? { open: false } : stat
 
 /** Keep a native popover hidden until its complete contents have been positioned.
  * It sits under its trigger button, or at a point or beside a box given to `openAt`
- * (a right-click menu, a panel beside its widget). */
+ * (a right-click menu, a panel beside its widget). Opened again, its contents are kept, so it is placed at once with
+ * the size it had and shown in the task that opens it: a click the moment it opens reaches it, never the page under it. */
 export function usePopover(align: 'start' | 'end' = 'end') {
   const trigger = useRef<HTMLButtonElement>(null);
   const popup = useRef<HTMLDivElement>(null);
@@ -19,19 +20,29 @@ export function usePopover(align: 'start' | 'end' = 'end') {
   const anchorRect = useRef<(() => AnchorRect | null) | null>(null);
   const [state, setState] = useState({ open: false });
   const { open } = state;
+  /** The panel's size when it was last placed. */
+  const size = useRef<{ width: number; height: number } | null>(null);
+  /** Places `panel` of `width` by `height` at its anchor and shows it; false without an anchor. */
+  const place = useCallback((panel: HTMLElement, width: number, height: number) => {
+    const anchor = anchorRect.current ? anchorRect.current() : trigger.current?.getBoundingClientRect();
+    if (!anchor) return false;
+    const viewport = document.documentElement;
+    const below = anchor.bottom + 6;
+    const top = below + height <= viewport.clientHeight - 12 ? below : anchor.top - height - 6;
+    panel.style.left = `${Math.max(12, Math.min(align === 'start' ? anchor.left : anchor.right - width, viewport.clientWidth - width - 12))}px`;
+    panel.style.top = `${Math.max(12, Math.min(top, viewport.clientHeight - height - 12))}px`;
+    panel.style.visibility = 'visible';
+    return true;
+  }, [align]);
+  /** As the panel opens: placed and shown at once with the size it last had, if it has been placed before. */
+  const opening = useCallback((panel: HTMLElement) => !!size.current && place(panel, size.current.width, size.current.height), [place]);
   useLayoutEffect(() => {
     if (!open) { anchorRect.current = null; return; }
     const position = () => {
       const panel = popup.current;
-      const anchor = anchorRect.current ? anchorRect.current() : trigger.current?.getBoundingClientRect();
-      if (!anchor || !panel?.matches(':popover-open')) return;
+      if (!panel?.matches(':popover-open')) return;
       const { width, height } = panel.getBoundingClientRect();
-      const viewport = document.documentElement;
-      const below = anchor.bottom + 6;
-      const top = below + height <= viewport.clientHeight - 12 ? below : anchor.top - height - 6;
-      panel.style.left = `${Math.max(12, Math.min(align === 'start' ? anchor.left : anchor.right - width, viewport.clientWidth - width - 12))}px`;
-      panel.style.top = `${Math.max(12, Math.min(top, viewport.clientHeight - height - 12))}px`;
-      panel.style.visibility = 'visible';
+      if (place(panel, width, height)) size.current = { width, height };
     };
     position();
     popup.current?.querySelector<HTMLElement>('[data-popover-autofocus]')?.focus({ preventScroll: true });
@@ -41,7 +52,7 @@ export function usePopover(align: 'start' | 'end' = 'end') {
     window.addEventListener('resize', position);
     window.addEventListener('scroll', position, true);
     return () => { observer.disconnect(); window.removeEventListener('resize', position); window.removeEventListener('scroll', position, true); };
-  }, [state, align]);
+  }, [state, place]);
   const close = useCallback(() => { popup.current?.hidePopover(); trigger.current?.focus({ preventScroll: true }); }, []);
   /** Opens at a point, or beside a box measured each time it is repositioned. */
   const openAt = useCallback((anchor: AnchorRect | (() => AnchorRect | null)) => {
@@ -52,7 +63,7 @@ export function usePopover(align: 'start' | 'end' = 'end') {
     else panel.showPopover();
   }, []);
   // One object while the open state holds, so owners can depend on it.
-  return useMemo(() => ({ trigger, popup, open, setState, close, openAt }), [open, close, openAt]);
+  return useMemo(() => ({ trigger, popup, open, setState, close, openAt, opening }), [open, close, openAt, opening]);
 }
 
 /** Pop-down contents built only once it has opened. Closed again, they keep their last look
@@ -75,8 +86,9 @@ export function Popover({ menu, portal = true, manual = false, className = '', o
   }, [popup, setState]);
   const panel = <div {...props} ref={menu.popup} popover={manual ? 'manual' : 'auto'} role="dialog" className={`ui-popover ${className}`}
     onBeforeToggle={event => {
-      // Hide only while opening, until positioned; closing keeps it visible for the exit fade.
-      if (event.target === event.currentTarget && event.newState === 'open') event.currentTarget.style.visibility = 'hidden';
+      // Opening: shown at once where it was placed before; the first time hidden until positioned. Closing keeps it
+      // visible for the exit fade.
+      if (event.target === event.currentTarget && event.newState === 'open' && !menu.opening(event.currentTarget)) event.currentTarget.style.visibility = 'hidden';
     }}
     onToggle={event => {
       // React delivers toggles from nested details and popovers to ancestors too.

@@ -191,15 +191,15 @@ impl Memory for Fixture {
 fn dense(
     memory: &Fixture,
     indexed: &[Option<IndexedContainer>],
-    rows: &mut [CountryOccurrence],
+    rows: &mut Vec<CountryOccurrence>,
 ) -> (Result<(), &'static str>, usize, usize) {
     let countries = ccountry::Reader::new(memory, 0, GAME).unwrap();
     let mut cells = [None; 10];
     let mut resolved = super::super::Resolver {
-        cells: crate::walk::Buffer::Fixed(&mut cells),
+        cells: &mut cells,
     };
     let mut output = DenseCountries {
-        rows: Buffer::Fixed(rows),
+        rows: Buffer::Growing(rows),
         len: usize::MAX,
         required: usize::MAX,
     };
@@ -218,7 +218,7 @@ fn dense(
 #[test]
 fn dense_occurrences_preserve_unsorted_repeats_and_authenticated_reserved_zero() {
     let mut memory = Fixture::new();
-    let mut rows = [CountryOccurrence::default(); 3];
+    let mut rows = vec![CountryOccurrence::default(); 3];
     assert_eq!(dense(&memory, &memory.indexed(), &mut rows), (Ok(()), 3, 3));
     assert_eq!(
         rows,
@@ -252,38 +252,9 @@ fn dense_occurrences_preserve_unsorted_repeats_and_authenticated_reserved_zero()
 }
 
 #[test]
-fn dense_short_arena_keeps_prefix_and_later_identity_fault_beats_capacity() {
-    let mut memory = Fixture::new();
-    let mut rows = [CountryOccurrence::default(); 1];
-    assert_eq!(
-        dense(&memory, &memory.indexed(), &mut rows),
-        (Err("carrier dense country arena too short"), 1, 3)
-    );
-    let mut indexed = memory.indexed();
-    indexed[1].as_mut().unwrap().pointer ^= 8;
-    assert_eq!(
-        dense(&memory, &indexed, &mut rows),
-        (
-            Err("carrier dense country differs from indexed registration"),
-            1,
-            3
-        )
-    );
-    memory.fault = Some(DENSE + 8);
-    assert_eq!(
-        dense(&memory, &memory.indexed(), &mut rows),
-        (
-            Err("carrier dense country pointer unreadable or overflow"),
-            1,
-            3
-        )
-    );
-}
-
-#[test]
 fn dense_missing_slot_wrong_base_and_null_never_become_empty() {
     let mut memory = Fixture::new();
-    let mut rows = [CountryOccurrence::default(); 3];
+    let mut rows = vec![CountryOccurrence::default(); 3];
     let mut indexed = memory.indexed();
     indexed[2] = None;
     assert_eq!(
@@ -347,7 +318,7 @@ fn metadata(memory: &Fixture, count: u32, start: usize) -> Result<PoolMetadata, 
     let countries = ccountry::Reader::new(memory, 0, GAME).unwrap();
     let mut cells = [None; 10];
     let mut resolved = super::super::Resolver {
-        cells: crate::walk::Buffer::Fixed(&mut cells),
+        cells: &mut cells,
     };
     pool_metadata(
         memory,
@@ -471,7 +442,7 @@ fn source(host: u64) -> crate::cair_base::Row {
 fn host_null_and_known_stale_are_empty_but_failed_resolution_is_unknown() {
     let mut memory = Fixture::new();
     let mut names = cname_group_member::Names {
-        bytes: &mut [],
+        bytes: crate::walk::Buffer::Count,
         len: 0,
         required: 0,
     };
@@ -498,7 +469,7 @@ fn retained_host_cache_is_bound_to_full_handle_and_uncommitted_raw_bytes() {
     memory.host(text);
     let mut bytes = vec![0x7f; text.len() + 3];
     let mut names = cname_group_member::Names {
-        bytes: &mut bytes,
+        bytes: crate::walk::Buffer::Growing(&mut bytes),
         len: 3,
         required: 0,
     };
@@ -524,7 +495,7 @@ fn short_host_arena_counts_demand_without_hiding_dense_or_fuel_fields() {
     let text = b"A retained carrier name longer than the admitted arena";
     memory.host(text);
     let mut names = cname_group_member::Names {
-        bytes: &mut [],
+        bytes: crate::walk::Buffer::Count,
         len: 0,
         required: 0,
     };
@@ -534,13 +505,13 @@ fn short_host_arena_counts_demand_without_hiding_dense_or_fuel_fields() {
         Ok(None)
     );
     assert_eq!((names.len, names.required), (0, text.len()));
-    let mut rows = [CountryOccurrence::default(); 3];
+    let mut rows = vec![CountryOccurrence::default(); 3];
     assert_eq!(dense(&memory, &memory.indexed(), &mut rows), (Ok(()), 3, 3));
 }
 
 #[test]
 fn growing_carrier_arenas_publish_first_and_later_mod_sized_suffixes() {
-    use crate::cair_base::{CarrierCapture, GrowingCarrierBuffers};
+    use crate::cair_base::{CarrierCapture, CarrierBuffers};
     let mut memory = Fixture::new();
     let text = vec![b'X'; 65_537];
     memory.host(&text);
@@ -566,12 +537,12 @@ fn growing_carrier_arenas_publish_first_and_later_mod_sized_suffixes() {
         }
         let countries = ccountry::Reader::new(&memory, 0, GAME).unwrap();
         let lengths = {
-            let mut capture = CarrierCapture::new_growing(
+            let mut capture = CarrierCapture::new(
                 &memory,
                 0,
                 GAME,
                 &countries,
-                GrowingCarrierBuffers {
+                CarrierBuffers {
                     bases: &mut bases,
                     registrations: &mut registrations,
                     pools: &mut pools,
@@ -583,8 +554,7 @@ fn growing_carrier_arenas_publish_first_and_later_mod_sized_suffixes() {
                     aces: &mut aces,
                     forecasts: &mut forecasts,
                 },
-            )
-            .unwrap();
+            );
             capture.begin_base(AIR_BASE, BASE_HANDLE, true);
             capture.authenticated_base(source(HOST_HANDLE));
             capture.indexed_header(3);

@@ -177,7 +177,7 @@ pub fn read_inputs(
             ..Default::default()
         };
         let mut len = 0;
-        msvc_string::append_growing(
+        msvc_string::append(
             memory,
             at(target, ADDED_LOCALISATION)?,
             &mut value.localisation,

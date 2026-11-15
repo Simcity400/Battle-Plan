@@ -165,7 +165,38 @@ struct Meta {
 struct Plan {
     /// The held scope this read continues, whose rows it carries.
     held: Option<u32>,
+    /// Its rows were written from the held scope's.
+    carried: bool,
     meta: Meta,
+}
+
+/// What a capture kept of the held capture it continued: every scope not in
+/// `changed` is, in seed, entries and key bytes, the scope of the same
+/// identity in the capture held as `since`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct VariableDelta {
+    /// This capture's generation, once it is held.
+    pub generation: Option<u64>,
+    /// The held capture's generation it continued; `None` when it continued
+    /// none or `changed` could not be listed.
+    pub since: Option<u64>,
+    /// Its scopes are the held capture's, position for position.
+    pub same_scopes: bool,
+    /// This capture's ordinals of the scopes that may differ, ascending.
+    pub changed: Vec<u32>,
+}
+
+impl VariableDelta {
+    pub fn clear(&mut self) {
+        self.generation = None;
+        self.since = None;
+        self.same_scopes = false;
+        self.changed.clear();
+    }
+
+    pub fn allocated_bytes(&self) -> usize {
+        self.changed.capacity() * size_of::<u32>()
+    }
 }
 
 /// The latest complete capture.
@@ -188,6 +219,8 @@ struct Held {
     fresh: Vec<u32>,
     /// The take before the walk.
     taken: Option<Taken>,
+    /// Names these rows ([`collector_projection::projection::generation`]).
+    generation: Option<u64>,
     /// What lets a quiet hour publish these rows, and its witnesses.
     quiet: Option<QuietKey>,
     witness: Witness,
@@ -206,6 +239,7 @@ impl Held {
         self.always.clear();
         self.fresh.clear();
         self.taken = None;
+        self.generation = None;
         self.quiet = None;
     }
 
@@ -417,6 +451,12 @@ pub struct VariableStore {
     visits: Vec<(u32, bool)>,
     /// The visit being read.
     visiting: Option<(u32, bool)>,
+    /// The held capture's generation as the hour began.
+    since: Option<u64>,
+    /// The ordinals of the scopes that may differ from the held capture's.
+    changed: Vec<u32>,
+    /// One could not be listed.
+    unlisted: bool,
     /// The capture published a quiet hour.
     quiet: bool,
     /// A quiet hour's visit published entries, key bytes or a seed other
@@ -464,9 +504,11 @@ impl VariableStore {
         if std::mem::take(&mut self.forgotten) {
             self.held.clear();
         }
+        self.since = self.held.generation;
         self.plans.clear();
         self.visits.clear();
         self.visiting = None;
+        self.clear_changed();
         self.quiet = false;
         self.renewed = false;
         self.broken = false;
@@ -536,11 +578,65 @@ impl VariableStore {
         true
     }
 
+    fn clear_changed(&mut self) {
+        self.changed.clear();
+        self.unlisted = false;
+    }
+
+    /// Lists `index` as changed; once the list cannot grow it lists nothing.
+    fn change(&mut self, index: u32) {
+        if self.unlisted
+            || allocation::advisory(|| allocation::reserve(&mut self.changed, 1)).is_err()
+        {
+            self.unlisted = true;
+        } else {
+            self.changed.push(index);
+        }
+    }
+
+    /// The capture's [`VariableDelta`], before the held capture moves on. A
+    /// walk's changed scopes are those not carried whole from the held scope
+    /// of their identity, seed included, which every walk reads afresh.
+    fn delta(&mut self, rows: &[ScopeRow], delta: &mut VariableDelta) {
+        if !self.quiet {
+            self.clear_changed();
+            self.unlisted = self.plans.len() != rows.len();
+            for index in 0..self.plans.len().min(rows.len()) {
+                let plan = &self.plans[index];
+                let kept = plan.carried
+                    && plan
+                        .held
+                        .and_then(|held| self.held.rows.get(held as usize))
+                        .is_some_and(|held| {
+                            held.scope == rows[index].scope && held.seed == rows[index].seed
+                        });
+                if !kept {
+                    self.change(index as u32);
+                }
+            }
+        }
+        delta.same_scopes = self.quiet
+            || (rows.len() == self.held.rows.len()
+                && rows
+                    .iter()
+                    .zip(&self.held.rows)
+                    .all(|(row, held)| row.scope == held.scope));
+        if let Some(since) = self.since
+            && !self.unlisted
+            && allocation::advisory(|| allocation::reserve(&mut delta.changed, self.changed.len()))
+                .is_ok()
+        {
+            delta.changed.extend_from_slice(&self.changed);
+            delta.since = Some(since);
+        }
+    }
+
     /// A quiet hour that cannot publish: the hour walks afresh.
     fn restart(&mut self) {
         self.plans.clear();
         self.visits.clear();
         self.visiting = None;
+        self.clear_changed();
         self.quiet = false;
         self.renewed = false;
         self.broken = false;
@@ -552,7 +648,8 @@ impl VariableStore {
             + self.witness.measure()
             + self.marked.capacity() * size_of::<usize>()
             + self.plans.capacity() * size_of::<Plan>()
-            + self.visits.capacity() * size_of::<(u32, bool)>();
+            + self.visits.capacity() * size_of::<(u32, bool)>()
+            + self.changed.capacity() * size_of::<u32>();
     }
 }
 
@@ -769,6 +866,9 @@ impl<'a> VariableReuse<'a> {
                         same_entries(entries, names, kept, &held.names)
                     });
             self.store.renewed |= !same;
+            if !same {
+                self.store.change(index);
+            }
             out.push(scope, count, walk.bytes_len, seed)?;
             cursor = at + 1;
         }
@@ -791,9 +891,21 @@ impl<'a> VariableReuse<'a> {
     /// Ends the capture: `complete` when every scope was read or carried
     /// whole, with the rows it published. A complete capture is held for the
     /// next hour, a quiet one as the held capture with its visits' stores
-    /// renewed; anything else holds nothing.
-    pub fn finish(self, complete: bool, rows: &[ScopeRow], entries: &[Row], names: &[u8]) {
+    /// renewed; anything else holds nothing. `delta` gets what a complete
+    /// capture kept of the held one.
+    pub fn finish(
+        self,
+        complete: bool,
+        rows: &[ScopeRow],
+        entries: &[Row],
+        names: &[u8],
+        delta: &mut VariableDelta,
+    ) {
         let store = self.store;
+        delta.clear();
+        if complete {
+            store.delta(rows, delta);
+        }
         let holds = complete && !store.broken;
         if store.quiet {
             // Unless a visit renewed it, the published rows are the held
@@ -810,6 +922,8 @@ impl<'a> VariableReuse<'a> {
                 }
                 // Each was read after its registration.
                 store.held.fresh.clear();
+                store.held.generation = Some(collector_projection::projection::generation());
+                delta.generation = store.held.generation;
             } else {
                 store.held.clear();
             }
@@ -819,6 +933,8 @@ impl<'a> VariableReuse<'a> {
                 && store.held.publish(rows, entries, names)
                 && store.held.certify(&store.plans);
             if held {
+                store.held.generation = Some(collector_projection::projection::generation());
+                delta.generation = store.held.generation;
                 store.held.taken = store.hour.taken;
                 let global = store.plans.first().map(|plan| plan.meta.container);
                 let key = store
@@ -884,6 +1000,7 @@ impl VariableCarry for VariableReuse<'_> {
         }
         plans.push(Plan {
             held: current.map(|index| index as u32),
+            carried: false,
             meta: Meta {
                 container: store.container,
                 certificate,
@@ -897,9 +1014,13 @@ impl VariableCarry for VariableReuse<'_> {
     /// The held rows of a carryable plan, at this hour's positions.
     fn carry(&mut self, token: usize, entries: &mut [Row], names: &mut [u8]) {
         let state = &mut *self.store;
-        let Some(index) = state.plans.get(token).and_then(|plan| plan.held) else {
+        let Some(plan) = state.plans.get_mut(token) else {
             return;
         };
+        let Some(index) = plan.held else {
+            return;
+        };
+        plan.carried = true;
         let (held_entries, held_names) = state.held.rows_of(index as usize);
         let base = held_names.start;
         for (target, entry) in entries.iter_mut().zip(held_entries) {

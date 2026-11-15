@@ -187,20 +187,7 @@ mod cold_setup_tests {
     }
     #[test]
     fn optional_cold_storage_denial_never_calls_the_terminal_hook() {
-        const NAME: &str = "optional_cold_storage_denial_never_calls_the_terminal_hook";
-        const ENV: &str = "BATTLE_PLAN_COLD_STORAGE_TEST";
-        if std::env::var(ENV).ok().as_deref() != Some(NAME) {
-            assert!(
-                std::process::Command::new(std::env::current_exe().unwrap())
-                    .args([
-                        "--exact",
-                        &format!("production::design_changes::storage::cold_setup_tests::{NAME}")
-                    ])
-                    .env(ENV, NAME)
-                    .status()
-                    .unwrap()
-                    .success()
-            );
+        if !isolated() {
             return;
         }
         fn failed() {

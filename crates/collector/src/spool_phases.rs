@@ -77,24 +77,7 @@ pub(crate) fn add_table_ns(table_ns: &[u64; replay_data::rows::TABLE_COUNT]) {
 }
 
 #[cfg(feature = "phase_cpu")]
-static PACK_TICKS: [std::sync::atomic::AtomicU64; crate::extended::PACK_NAMES.len()] =
-    [const { std::sync::atomic::AtomicU64::new(0) }; crate::extended::PACK_NAMES.len()];
-
-#[cfg(feature = "phase_cpu")]
-pub(crate) fn add_pack_ticks(ticks: &[Option<i64>; crate::extended::PACK_NAMES.len()]) {
-    for (sum, ticks) in PACK_TICKS.iter().zip(ticks) {
-        sum.fetch_add(ticks.unwrap_or(0).max(0) as u64, std::sync::atomic::Ordering::Relaxed);
-    }
-}
-
-#[cfg(feature = "phase_cpu")]
 pub(crate) fn status() -> impl serde::Serialize {
-    let packs: std::collections::BTreeMap<String, u64> = crate::extended::PACK_NAMES
-        .iter()
-        .zip(&PACK_TICKS)
-        .map(|(name, ticks)| (format!("{name}"), ticks.load(std::sync::atomic::Ordering::Relaxed)))
-        .filter(|(_, ticks)| *ticks != 0)
-        .collect();
     let tables: std::collections::BTreeMap<String, u64> = replay_data::rows::TableId::ALL
         .iter()
         .map(|table| (format!("{table:?}"), TABLE_NS[table.index()].load(std::sync::atomic::Ordering::Relaxed)))
@@ -115,7 +98,6 @@ pub(crate) fn status() -> impl serde::Serialize {
             .map(|steps| steps.cycle_failures.load(std::sync::atomic::Ordering::Relaxed))
             .to_vec(),
         "table_ns": tables,
-        "pack_ticks": packs,
     })
 }
 

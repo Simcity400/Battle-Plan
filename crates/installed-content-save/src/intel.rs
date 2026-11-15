@@ -212,8 +212,8 @@ pub struct Operations {
 /// Repeated definition names are distinct instances, not duplicate keys: the
 /// instance serializer emits each instance's own id and target.
 /// `id` is the full native handle via the running entry's `id` block. `target`
-/// is always emitted. `target_province` uses the inferred literal `province`
-/// and is None when omitted (null target); a present case remains unresolved.
+/// is always emitted. `target_province` is the target province's id, saved
+/// as `target_provinces` only when the operation holds a target province.
 /// `date`/`duration` are None when omitted (unset start date / zero duration).
 /// `phases`/`operative_slots`
 /// are None when omitted (signed count 0); a present-but-empty list is refused.
@@ -1281,13 +1281,13 @@ fn parse_operation_equipment(value: &Value) -> io::Result<super::air::EquipmentP
 fn parse_operation_instance(definition: &[u8], items: &[Item]) -> io::Result<OperationInstance> {
     // The instance writer emits target always, date with duration only when
     // duration is nonzero, slots and phases only for nonzero signed counts,
-    // and province only for a non-null target. Zero duration and the unset
+    // and target_provinces only for a non-null target province. Zero duration and the unset
     // start-date sentinel are omitted.
     Ok(OperationInstance {
         definition: definition.to_vec(),
         id: super::object_id(items)?,
         target: required_bytes(items, b"target")?,
-        target_province: field(items, b"province")?
+        target_province: field(items, b"target_provinces")?
             .map(|value| integer(scalar(value)?))
             .transpose()?,
         date: bytes(items, b"date")?
@@ -2209,6 +2209,25 @@ mod tests {
         assert!(slots[0].mission_present);
         // Absent operations block stays distinct from a present block.
         assert!(pack.countries[b"SOV".as_slice()].operations.is_none());
+    }
+
+    #[test]
+    fn operations_target_province_reads_the_saved_target_provinces_id() {
+        let pack = parsed(
+            br#"countries={ENG={operations={ running={ operation_boost_resistance={
+                id={ id=87520 type=4713 } date="1942.12.27.15" duration=97
+                target="GER" target_provinces=9434
+            } } }}}"#,
+        )
+        .unwrap();
+        let running = pack.countries[b"ENG".as_slice()]
+            .operations
+            .as_ref()
+            .unwrap()
+            .running
+            .as_ref()
+            .unwrap();
+        assert_eq!(running[0].target_province, Some(9434));
     }
 
     #[test]

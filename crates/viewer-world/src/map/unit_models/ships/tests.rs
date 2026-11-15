@@ -16,10 +16,10 @@ fn shared_animator_clock_preserves_empty_routes_and_names_missing_speed() {
             ..Default::default()
         };
         assert_eq!(
-            animator_min_arc(&[2], Some(&clock), &mut report),
+            animator_min_arc(&[2], Some(clock.speed), &mut report),
             Some(expected)
         );
-        assert_eq!(animator_min_arc(&[], Some(&clock), &mut report), Some(0.0));
+        assert_eq!(animator_min_arc(&[], Some(clock.speed), &mut report), Some(0.0));
     }
     assert_eq!(animator_min_arc(&[2], None, &mut report), None);
     assert_eq!(

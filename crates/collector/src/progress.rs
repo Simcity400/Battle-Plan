@@ -54,13 +54,15 @@ impl Progress {
             &mut buffer,
             self.opened.elapsed().as_millis(),
             format_args!(
-                "publication {family} attempts={} total_hold_ns={} longest_hold_ns={} longest_synchronization_ns={} slowest_context_ns={} slowest_context_thread_id={}",
+                "publication {family} attempts={} total_hold_ns={} longest_hold_ns={} longest_synchronization_ns={} slowest_context_ns={} slowest_context_thread_id={} slowest_context_priority={} priority_restore_failures={}",
                 summary.attempts,
                 summary.total_hold_ns,
                 summary.longest_hold_ns,
                 summary.longest_synchronization_ns,
                 summary.slowest_context_ns,
                 summary.slowest_context_thread_id,
+                summary.slowest_context_priority,
+                summary.priority_restore_failures,
             ),
             None,
         );

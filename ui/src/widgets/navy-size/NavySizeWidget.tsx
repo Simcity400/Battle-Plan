@@ -3,16 +3,15 @@ import PartsRaceView from '../../charts/race/PartsRaceView';
 import type { PartsRaceViewConfig } from '../../charts/race/PartsRaceView';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { OPTIONS } from './definition';
-import { formatHullTick, formatNavyValue, navyChartOptions, navyRequest, validateNavyReply } from './navyData';
+import { formatHullTick, formatNavyValue, navyChartOptions, navyRequest, navyTotals } from './navyData';
 
 const config: PartsRaceViewConfig = {
   details: NavyManagement,
   product: 'navy-size', title: 'Navy size', subject: 'navies', icon: 'flows',
-  options: OPTIONS, request: navyRequest, validate: validateNavyReply,
+  options: OPTIONS, request: navyRequest, totals: navyTotals, referenced: true,
   measure: options => options.measure === 'strength' ? 'Current hull strength (HP)' : 'Number of ships',
   ownership: options => options.ownership === 'logical' ? 'Assigned country' : 'Country holding the fleet',
-  partsLabel: options => options.grouping === 'class' ? 'Ship classes' : 'Roles',
-  resetKey: options => [options.measure, options.ownership, options.grouping],
+  partsLabel: options => options.grouping === 'type' ? 'Roles' : 'Ship classes',
   chartOptions: navyChartOptions,
   zeroMix: options => options.measure === 'strength' ? 'No hull strength at this time.' : 'No ships at this time.',
   formatValue: formatNavyValue,

@@ -1,5 +1,6 @@
-//! Allocation-free finalizer observation. One try-only exclusive lease owns
-//! preallocated arenas; competing/reentrant calls are counted as lost events.
+//! Finalizer observation. One try-only exclusive lease owns arenas prepared
+//! off-thread, which grow in the callback past what was prepared; competing or
+//! reentrant calls are counted as lost events.
 //! Like line_output, the hourly boundary installs offered storage and the
 //! spool retires it. No live pointer leaves the observer.
 
@@ -134,6 +135,8 @@ impl Storage {
             + self.subjects.capacity() * size_of::<Subject>()
             + self.name_bytes.capacity()
     }
+    /// Grows every arena it needs; only a failed allocation loses the
+    /// conference (counted) or names its snapshot's failure.
     pub fn observe(
         &mut self,
         memory: &impl Memory,
@@ -143,6 +146,7 @@ impl Storage {
         sequence: u64,
         settled: bool,
     ) -> bool {
+        use engine_native::walk::Buffer::GrowingFrom;
         let [
             events,
             winners,
@@ -152,25 +156,35 @@ impl Storage {
             subjects,
             name_bytes,
         ] = self.used;
-        if events == self.events.len() {
+        if events == self.events.len()
+            && engine_allocation::advisory(|| {
+                engine_allocation::resize_default(
+                    &mut self.events,
+                    events.saturating_mul(2).max(events + 1),
+                )
+            })
+            .is_err()
+        {
             if settled {
                 LOST.fetch_add(1, Ordering::Relaxed);
             }
             return false;
         }
         let output = native::Output {
-            winners: &mut self.winners[winners..],
-            losers: &mut self.losers[losers..],
-            actions: &mut self.actions[actions..],
-            transfers: &mut self.transfers[transfers..],
-            subjects: &mut self.subjects[subjects..],
-            name_bytes: &mut self.name_bytes[name_bytes..],
+            winners: GrowingFrom(&mut self.winners, winners),
+            losers: GrowingFrom(&mut self.losers, losers),
+            actions: GrowingFrom(&mut self.actions, actions),
+            transfers: GrowingFrom(&mut self.transfers, transfers),
+            subjects: GrowingFrom(&mut self.subjects, subjects),
+            name_bytes: GrowingFrom(&mut self.name_bytes, name_bytes),
         };
-        let mut snapshot = if settled {
-            native::copy(memory, base, conference, output)
-        } else {
-            native::copy_bids(memory, base, conference, output)
-        };
+        let mut snapshot = engine_allocation::advisory(|| {
+            if settled {
+                native::copy(memory, base, conference, output)
+            } else {
+                native::copy_bids(memory, base, conference, output)
+            }
+        });
         if hour.is_none() && snapshot.failure.is_none() {
             snapshot.failure = Some("peace finalizer hour unreadable");
         }
@@ -183,10 +197,9 @@ impl Storage {
         }
         true
     }
-    /// Resident bids run on the acquisition worker; finalizer callbacks keep
-    /// their fixed output above. Continue each original history walk
-    /// after its acquired headers size the cumulative owned arenas.
-    pub fn observe_bids_growing(
+    /// Resident bids run on the acquisition worker. Continue each original
+    /// history walk after its acquired headers size the cumulative owned arenas.
+    pub fn observe_bids(
         &mut self,
         memory: &impl Memory,
         base: usize,
@@ -196,11 +209,11 @@ impl Storage {
     ) {
         use engine_native::walk::Buffer::GrowingFrom;
         let [_, winners, losers, actions, transfers, subjects, name_bytes] = self.used;
-        let snapshot = native::copy_bids_growing(
+        let snapshot = native::copy_bids(
             memory,
             base,
             conference,
-            native::GrowingOutput {
+            native::Output {
                 winners: GrowingFrom(&mut self.winners, winners),
                 losers: GrowingFrom(&mut self.losers, losers),
                 actions: GrowingFrom(&mut self.actions, actions),
@@ -298,7 +311,7 @@ fn presize_storage(capacity: Capacities) {
         return;
     };
     let current = swap.current.as_ref().map(|log| {
-        // Loader/spool reads immutable Vec lengths only; the callback never resizes them.
+        // The prepared shape, never the vectors the callback grows under its lease.
         log.capacity
     });
     let offered = swap.next.as_ref().map(|log| log.capacity).or(current);
@@ -417,18 +430,14 @@ fn resident_capacity(memory: &impl Memory, base: usize, state: usize) -> Option<
 
 /// Simulation-thread handoff, copying only owned arenas. A short destination
 /// loses counted conferences, never publishes their partial payload as exact.
-#[cfg(any(test, feature = "test-support"))]
 pub fn drain(output: &mut Storage, continuous: bool) -> Result<u64, &'static str> {
-    drain_mode(output, continuous, false)
-}
-pub fn drain_growing(output: &mut Storage, continuous: bool) -> Result<u64, &'static str> {
-    drain_mode(output, continuous, true)
+    drain_mode(output, continuous)
 }
 pub fn lost_drain() {
     LOST_DRAINS.fetch_add(1, Ordering::Relaxed);
     DRAIN_INVALIDATED.store(true, Ordering::Release);
 }
-fn drain_mode(output: &mut Storage, continuous: bool, growing: bool) -> Result<u64, &'static str> {
+fn drain_mode(output: &mut Storage, continuous: bool) -> Result<u64, &'static str> {
     output.used = [0; 7];
     let Some(_lease) = Lease::try_enter() else {
         return Err(replay_data::rows::PEACE_DRAIN_BUSY);
@@ -442,7 +451,7 @@ fn drain_mode(output: &mut Storage, continuous: bool, growing: bool) -> Result<u
     let storage = unsafe { &mut *log.storage.get() };
     let invalidated = DRAIN_INVALIDATED.swap(false, Ordering::AcqRel);
     let continuous = continuous && !invalidated;
-    if growing && continuous {
+    if continuous {
         for (target, count) in [
             (
                 engine_native::walk::Buffer::Growing(&mut output.winners),
@@ -656,7 +665,7 @@ impl Hooks {
             ENABLED.store(false, Ordering::Release);
         }
         if let Some(hook) = &mut self.hook {
-            let changed = hook.set_enabled_attach(enabled).inspect_err(|reason| {
+            let changed = hook.set_enabled(enabled).inspect_err(|reason| {
                 let _ = UNHOOKED.set(reason.clone());
             })?;
             if !changed {
@@ -688,17 +697,23 @@ pub fn status() -> impl serde::Serialize {
 }
 
 #[cfg(any(test, feature = "test-support"))]
-pub static TEST_GLOBALS: Mutex<()> = Mutex::new(());
+static TEST_GLOBALS: Mutex<()> = Mutex::new(());
+/// Serialises tests on this crate's globals; a failed test never poisons the rest.
+#[cfg(any(test, feature = "test-support"))]
+pub fn test_globals() -> std::sync::MutexGuard<'static, ()> {
+    TEST_GLOBALS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 #[cfg(test)]
 mod tests {
-    use super::TEST_GLOBALS as GLOBALS;
     use super::*;
     use crate::peace_settlement_tests::fixture::Fixture;
 
     #[test]
     fn peace_storage_allocation_failure_is_returned() {
-        let _globals = GLOBALS.lock().unwrap();
+        let _globals = test_globals();
         static ALLOCATION_REFUSED: AtomicBool = AtomicBool::new(false);
         fn allocation_failed() {
             ALLOCATION_REFUSED.store(true, Ordering::Relaxed);
@@ -715,7 +730,7 @@ mod tests {
     }
     #[test]
     fn peace_status_serializes_without_allocating() {
-        let _globals = GLOBALS.lock().unwrap();
+        let _globals = test_globals();
         let mut bytes = Vec::with_capacity(512);
         crate::test_support::with_allocations_denied(|| {
             serde_json::to_writer(&mut bytes, &status())
@@ -846,7 +861,7 @@ mod tests {
 
     #[test]
     fn presize_reuses_an_offer_before_current_is_installed() {
-        let _guard = GLOBALS.lock().unwrap();
+        let _guard = test_globals();
         let capacity = Capacities::for_counts(50, 100);
         presize(capacity);
         assert_eq!(
@@ -862,7 +877,7 @@ mod tests {
 
     #[test]
     fn status_distinguishes_a_prepared_hook_from_enabled_capture() {
-        let _guard = GLOBALS.lock().unwrap();
+        let _guard = test_globals();
         ORIGINAL.store(1, Ordering::Release);
         ENABLED.store(false, Ordering::Release);
         let value = serde_json::to_value(status()).unwrap();
@@ -874,7 +889,7 @@ mod tests {
 
     #[test]
     fn refused_optional_hook_leaves_capture_disabled() {
-        let _guard = GLOBALS.lock().unwrap();
+        let _guard = test_globals();
         let mut hooks = Hooks { hook: None };
         assert_eq!(hooks.set_enabled(true), Ok(true));
         assert_eq!(serde_json::to_value(status()).unwrap()["enabled"], false);
@@ -882,7 +897,7 @@ mod tests {
 
     #[test]
     fn busy_drain_preserves_the_event_for_the_next_boundary() {
-        let _guard = GLOBALS.lock().unwrap();
+        let _guard = test_globals();
         presize(Capacities::for_counts(1, 1));
         install_offered();
         collect();
@@ -913,7 +928,7 @@ mod tests {
     #[test]
     #[ignore = "complete bridge and guarded observer cost on synthetic memory; no game"]
     fn peace_observer_cost() {
-        let _guard = GLOBALS.lock().unwrap();
+        let _guard = test_globals();
         for count in [50, 500, 5000] {
             let mut fixture = Fixture::new(count, count);
             fixture.populate_transfers(count);
@@ -1018,7 +1033,7 @@ mod tests {
 
     #[test]
     fn peace_settlement_torn_demand_never_attempts_arena_growth() {
-        let _globals = GLOBALS.lock().unwrap();
+        let _globals = test_globals();
         static ALLOCATION_REFUSED: AtomicBool = AtomicBool::new(false);
         fn allocation_failed() {
             ALLOCATION_REFUSED.store(true, Ordering::Relaxed);

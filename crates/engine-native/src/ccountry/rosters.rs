@@ -377,7 +377,7 @@ impl CounterRosters<'_> {
 
 /// One country's roster entries from an earlier complete read, in its row's
 /// span order: what a caller carrying the country
-/// ([`super::walk_counter_inputs_carried_growing`]) places in this read's
+/// ([`super::walk_counter_inputs_carried`]) places in this read's
 /// arenas instead of reading them.
 #[derive(Clone, Copy, Debug)]
 pub struct CarriedRosters<'a> {

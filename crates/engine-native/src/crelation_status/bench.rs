@@ -321,17 +321,10 @@ fn bench_relation_links_and_country_wars() {
         let mut links_out = vec![0_u32; n * n];
         let mut resolver = Resolver::with_capacity(2 * n + 2);
         report("RelationLinks+CountryWars", n, &memory, || {
-            let walk = links(
-                &memory,
-                arena.base(),
-                game_state,
-                &mut rows,
-                WarOutput {
+            let walk = links_observed_inner(&memory, arena.base(), game_state, crate::walk::Buffer::Growing(&mut rows), WarOutput {
                     rows: &mut wars,
                     countries: &mut links_out,
-                },
-                &mut resolver,
-            );
+                }.into(), &mut resolver, None, None);
             assert_eq!(walk.links, Outcome::Rows { len: n - 1 });
             assert_eq!(walk.wars, Outcome::Rows { len: n });
             format!(

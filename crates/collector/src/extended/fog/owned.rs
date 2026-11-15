@@ -11,7 +11,6 @@ pub(crate) struct OwnedFogJob<R> {
     pub(super) row_limit: usize,
     pub(super) province_limit: usize,
     pub(super) acquired: bool,
-    pub(super) growing: bool,
     pub(super) active: bool,
     pub(super) capacity_charge: crate::raw_memory::Charge,
 }
@@ -33,7 +32,6 @@ impl<R: Default + Copy> OwnedFogJob<R> {
             row_limit: 0,
             province_limit: 0,
             acquired: false,
-            growing: false,
             active: false,
             capacity_charge: Default::default(),
         };
@@ -54,7 +52,6 @@ impl<R: Default + Copy> OwnedFogJob<R> {
         self.row_limit = 0;
         self.province_limit = 0;
         self.acquired = false;
-        self.growing = false;
         self.active = false;
     }
     pub fn allocated_bytes(&self) -> usize {
@@ -95,10 +92,6 @@ impl<R: Default + Copy> OwnedFogJob<R> {
         self.active = true;
         self.row_limit = rows;
         self.province_limit = provinces;
-    }
-    #[cfg(test)]
-    fn fits(&self, rows: usize, provinces: usize) -> bool {
-        rows <= self.rows.len() && provinces <= self.provinces.len()
     }
 }
 impl RadarJob {
@@ -141,25 +134,15 @@ fn acquire_radar(job: &mut RadarJob, memory: &impl Memory, ctx: RadarCopyContext
     let _reads = read_accounting::table(TableId::RadarCoverage);
     let (result, symbols_trusted) =
         crate::radar_changes::with_symbols(memory, ctx.row_limit, ctx.force_full, |symbols| {
-            if job.growing {
-                radar_group::walk_growing_with_symbols(
-                    memory,
-                    ctx.base,
-                    ctx.game_state,
-                    &mut job.rows,
-                    &mut job.provinces,
-                    symbols,
-                )
-            } else {
-                radar_group::walk_with_symbols(
-                    memory,
-                    ctx.base,
-                    ctx.game_state,
-                    &mut job.rows[..job.row_limit],
-                    &mut job.provinces[..job.province_limit],
-                    symbols,
-                )
-            }
+            radar_group::walk_with_symbols(
+                memory,
+                ctx.base,
+                ctx.game_state,
+                &mut job.rows,
+                &mut job.provinces,
+                symbols,
+            )
+            
         });
     if !symbols_trusted {
         // A writer overlapping the complete census revokes its carried
@@ -184,17 +167,13 @@ fn acquire_intel(
         memory,
         ctx.base,
         ctx.game_state,
-        if job.growing {
-            engine_native::walk::Buffer::Growing(&mut job.rows)
-        } else {
-            engine_native::walk::Buffer::Fixed(&mut job.rows[..job.row_limit])
-        },
+        engine_native::walk::Buffer::Growing(&mut job.rows),
         divisions,
     );
     job.acquired = true;
 }
-/// Check destination capacities before acquiring one owned radar snapshot.
-#[cfg(test)]
+
+/// Worker-only acquisition; each original native header can enlarge owned storage.
 pub(crate) fn copy_radar_refresh(
     memory: &impl Memory,
     ctx: RadarCopyContext,
@@ -206,46 +185,6 @@ pub(crate) fn copy_radar_refresh(
     }
     let started = qpc();
     job.prepare(ctx.row_limit, ctx.province_limit);
-    if job.fits(ctx.row_limit, ctx.province_limit) {
-        acquire_radar(job, memory, ctx);
-    }
-    RadarCopyReport {
-        raw_ok: job.acquired,
-        copy_ticks: [elapsed(started)],
-    }
-}
-/// The caller retains the primary division census until acquisition returns.
-#[cfg(test)]
-pub(crate) fn copy_intel_refresh_with_divisions(
-    memory: &impl Memory,
-    ctx: IntelCopyContext,
-    job: &mut IntelJob,
-    divisions: Option<unit_viewer_entry::DivisionSources<'_>>,
-) -> IntelCopyReport {
-    let started = qpc();
-    job.prepare(ctx.row_limit, 0);
-    if job.fits(ctx.row_limit, 0) {
-        acquire_intel(job, memory, ctx, divisions);
-    }
-    IntelCopyReport {
-        raw_ok: job.acquired,
-        copy_ticks: [elapsed(started)],
-    }
-}
-
-/// Worker-only acquisition; each original native header can enlarge owned storage.
-pub(crate) fn copy_radar_refresh_growing(
-    memory: &impl Memory,
-    ctx: RadarCopyContext,
-    job: &mut RadarJob,
-) -> RadarCopyReport {
-    if !replay_data::cadence::should_walk(TableId::RadarCoverage, ctx.hour, ctx.force_full) {
-        job.clear();
-        return RadarCopyReport::default();
-    }
-    let started = qpc();
-    job.prepare(ctx.row_limit, ctx.province_limit);
-    job.growing = true;
     acquire_radar(job, memory, ctx);
     job.update_capacity_charge();
     RadarCopyReport {
@@ -254,7 +193,8 @@ pub(crate) fn copy_radar_refresh_growing(
     }
 }
 
-pub(crate) fn copy_intel_refresh_with_divisions_growing(
+/// The caller retains the primary division census until acquisition returns.
+pub(crate) fn copy_intel_refresh_with_divisions(
     memory: &impl Memory,
     ctx: IntelCopyContext,
     job: &mut IntelJob,
@@ -262,7 +202,6 @@ pub(crate) fn copy_intel_refresh_with_divisions_growing(
 ) -> IntelCopyReport {
     let started = qpc();
     job.prepare(ctx.row_limit, 0);
-    job.growing = true;
     acquire_intel(job, memory, ctx, divisions);
     job.update_capacity_charge();
     IntelCopyReport {
@@ -327,24 +266,18 @@ impl Captured {
         }
         let started = qpc();
         self.radar_provinces.required = job.required_provinces;
-        let growth = if job.growing {
+        let growth = {
             engine_native::walk::Buffer::Growing(&mut self.radar.rows)
                 .ensure(job.outcome.len())
                 .and_then(|_| {
                     engine_native::walk::Buffer::Growing(&mut self.radar_provinces.first)
                         .ensure(job.provinces_len)
                 })
-        } else {
-            Ok(true)
         };
         if let Err(reason) = growth {
             self.radar.outcome = job.outcome;
             self.radar.fail(Outcome::Unavailable { reason });
-        } else if !job.acquired
-            || (!job.growing
-                && (job.row_limit != self.radar.rows.len()
-                    || job.province_limit != self.radar_provinces.first.len()))
-        {
+        } else if !job.acquired {
             self.radar.outcome = Outcome::Unavailable {
                 reason: "radar owned payload capacity mismatch",
             };
@@ -371,15 +304,11 @@ impl Captured {
         decode_ticks: &mut [u64; INTEL_N],
     ) {
         let started = qpc();
-        let growth = if job.growing {
-            engine_native::walk::Buffer::Growing(&mut self.intel.rows).ensure(job.outcome.len())
-        } else {
-            Ok(true)
-        };
+        let growth = engine_native::walk::Buffer::Growing(&mut self.intel.rows).ensure(job.outcome.len());
         if let Err(reason) = growth {
             self.intel.outcome = job.outcome;
             self.intel.fail(Outcome::Unavailable { reason });
-        } else if !job.acquired || (!job.growing && job.row_limit != self.intel.rows.len()) {
+        } else if !job.acquired {
             self.intel.outcome = Outcome::Unavailable {
                 reason: "intel owned payload capacity mismatch",
             };

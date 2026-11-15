@@ -240,13 +240,7 @@ impl<M: Memory> Shared<'_, M> {
     }
 
     fn penalty(&mut self) -> Result<Option<Penalty>, &'static str> {
-        let (memory, base, state, owner, countries) = (
-            self.memory,
-            self.base,
-            self.state,
-            self.owner,
-            self.countries,
-        );
+        let (memory, base, state, owner) = (self.memory, self.base, self.state, self.owner);
         memo(&mut self.penalty, || {
             let flags = global::<u32>(memory, base, modifier_definition::TRADE_FEATURE_FLAGS_RVA)?;
             if flags & (1 << 4) == 0 {
@@ -264,7 +258,7 @@ impl<M: Memory> Shared<'_, M> {
             {
                 return Err("transport modifier identity mismatch");
             }
-            selected_navy(memory, base, state, owner, countries)?;
+            cstrategic_navy_manager::navy(memory, base, state, owner)?;
             Ok(Some(Penalty { definition }))
         })
     }
@@ -314,7 +308,7 @@ impl<M: Memory> Shared<'_, M> {
                             owner_intel,
                             owner,
                         )?);
-                    let navy = selected_navy(memory, base, state, country, countries)?;
+                    let navy = cstrategic_navy_manager::navy(memory, base, state, country)?;
                     let regions = cstrategic_navy::regional_array(memory, navy)?;
                     Ok(Enemy::Counted { weight, regions })
                 })();

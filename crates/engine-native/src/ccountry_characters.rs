@@ -224,30 +224,12 @@ impl<'a> Records<'a> {
     }
 }
 
-/// Walks every canonical country's active (`active`, CountryCharacters) and retired (`retired`,
-/// CountryRetiredCharacters) character records over one country pass. A null `ccountry::CHARACTERS`
-/// pointer has no rows; an unreadable or unauthenticated country or object fails both tables, an
-/// unreadable array or character only its own. Once a table's row does not fit, its later records
-/// are counted from the array headers only and not read, so empty outputs yield the live totals as
-/// `unread_rows`.
-pub fn walk_records(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    active: &mut [ActiveRow],
-    retired: &mut [ActiveRow],
-) -> [Outcome; 2] {
-    walk_records_buffer(
-        memory,
-        base,
-        game_state,
-        crate::walk::Buffer::Fixed(active),
-        crate::walk::Buffer::Fixed(retired),
-    )
+pub fn count_records(memory: &impl Memory, base: usize, game_state: usize) -> [Outcome; 2] {
+    walk_records_buffer(memory, base, game_state, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
 }
 
 /// Worker storage grows from the original native headers before publication.
-pub fn walk_records_growing(
+pub fn walk_records(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -298,28 +280,8 @@ pub fn walk_records_buffer(
     tables.each_ref().map(|table| table.outcome(shared))
 }
 
-/// Walks every canonical country's appointed advisors. A null `ccountry::CHARACTERS` pointer is the
-/// engine's "no character object" (the save omits `characters`) and has no rows; any unreadable or
-/// unauthenticated object fails the whole table. Once a row or its strings do not fit, later
-/// advisors are counted from the array headers only and their fields are not read.
-pub fn walk(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut [Row],
-    bytes: &mut [u8],
-) -> NameWalk {
-    walk_buffer(
-        memory,
-        base,
-        game_state,
-        crate::walk::Buffer::Fixed(output),
-        crate::walk::Buffer::Fixed(bytes),
-    )
-}
-
 /// Worker storage grows from the original native headers before publication.
-pub fn walk_growing(
+pub fn walk(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -402,7 +364,7 @@ impl AvailableCarry for Fresh {
     fn read(&mut self, _: usize, _: &[Row], _: &[u8], _: usize) {}
 }
 
-/// [`walk_available_growing`] for the countries `select` admits by native
+/// [`walk_available`] for the countries `select` admits by native
 /// country id, with `carry` supplying the rows of pools whose held read it
 /// proves current: every selected country, `CCountryCharacters` and array
 /// header is still read and authenticated, and a carried pool's advisors,
@@ -435,27 +397,8 @@ pub fn walk_available_carried(
     })
 }
 
-/// Available advisors in native order. Slot bytes are not read: the reached
-/// exact-name search needs only the character and idea operands.
-#[cfg(test)]
-pub fn walk_available(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut [Row],
-    bytes: &mut [u8],
-) -> NameWalk {
-    walk_available_buffer(
-        memory,
-        base,
-        game_state,
-        crate::walk::Buffer::Fixed(output),
-        crate::walk::Buffer::Fixed(bytes),
-    )
-}
-
 /// Worker storage grows from the original native headers before publication.
-pub fn walk_available_growing(
+pub fn walk_available(
     memory: &impl Memory,
     base: usize,
     game_state: usize,

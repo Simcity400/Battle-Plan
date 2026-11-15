@@ -146,33 +146,9 @@ pub fn visit_sources(
     Ok(list.count as usize)
 }
 
-/// Reads retained results independently of active naval combat visits. Outputs
-/// own no game addresses; `slots` (one per record row) is scratch. Generic off-thread row
-/// validation must reject duplicate composite keys. There is no allocation, registry walk or
-/// retry here; the province buckets are read once each after the records ([`province_ordinals`]).
-pub fn walk(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    records: &mut [Row],
-    slots: &mut [ResultSlot],
-    members: &mut [MemberRow],
-    countries: &mut [CountryRow],
-) -> Walk {
-    walk_buffer(
-        memory,
-        base,
-        game_state,
-        Buffer::Fixed(records),
-        Buffer::Fixed(slots),
-        Buffer::Fixed(members),
-        Buffer::Fixed(countries),
-    )
-}
-
 /// Worker census and child arenas grow from original result, side and
 /// admitted headers independently of live country population.
-pub fn walk_growing(
+pub fn walk(
     memory: &impl Memory,
     base: usize,
     game_state: usize,

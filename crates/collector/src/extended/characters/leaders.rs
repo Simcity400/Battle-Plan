@@ -203,7 +203,7 @@ impl LeaderCache {
                 &memory,
                 base,
                 entry,
-                &mut rows[start..],
+                engine_native::walk::Buffer::Exact(&mut rows[start..]),
             ))
         })
         .unwrap_or_else(|reason| Outcome::Unavailable { reason }))

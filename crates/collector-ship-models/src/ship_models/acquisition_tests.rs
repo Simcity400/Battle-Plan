@@ -1,4 +1,5 @@
 use super::*;
+use std::cell::Cell;
 use engine_native::{memory::SliceMemory, modifier_accumulator};
 
 const BASE: usize = 0x1000;
@@ -49,7 +50,7 @@ impl Source {
 }
 
 // Force Memory's original scalar batch defaults without forwarding any
-// capability. This supplies an independent budget/failure-prefix reference.
+// capability. This supplies an independent failure-prefix reference.
 struct Scalar<'a, M>(&'a M);
 impl<M: Memory> Memory for Scalar<'_, M> {
     fn copy(&self, address: usize, out: &mut [u8]) -> bool {
@@ -161,12 +162,8 @@ fn model_source() -> (Source, cship::Row) {
 fn acquire(capture: &mut Captured, source: &Source) -> Result<(), &'static str> {
     capture.begin_details();
     let result = {
-        let bounded = BoundedMemory {
-            inner: source,
-            used: &capture.copied,
-        };
         let memory = ModifierMemory {
-            inner: &bounded,
+            inner: source,
             arena: &capture.modifiers,
             held_task: None,
         };
@@ -177,7 +174,7 @@ fn acquire(capture: &mut Captured, source: &Source) -> Result<(), &'static str> 
             capture.rows.rows[0].maximum_organisation = value.raw;
             capture.len = 1;
         }
-        Err(reason) => capture.failure = Some(acquisition_failure(capture.copied.get(), reason)),
+        Err(reason) => capture.failure = Some(reason),
     }
     capture.finish_details(Outcome::Rows { len: 1 });
     result.map(|_| ())
@@ -253,20 +250,8 @@ fn modifier_memo_reuses_current_bytes_and_release_performs_no_reads() {
         capture.modifiers.borrow().value(observation).unwrap().raw,
         -13
     );
-    let copied = capture.copied.get();
-    assert_eq!(copied.0, before);
-    assert_eq!(
-        copied.1,
-        source
-            .reads
-            .borrow()
-            .iter()
-            .map(|&(_, len)| len)
-            .sum::<usize>()
-    );
     capture.release_sources();
     assert_eq!(source.reads.borrow().len(), before);
-    assert_eq!(capture.copied.get(), copied);
     assert_eq!(
         capture.required_modifiers,
         SnapshotCapacity {
@@ -317,42 +302,28 @@ fn failed_snapshot_prefix_keeps_first_fault_and_releases_without_retry() {
             reason: "modifier accumulator entry unreadable"
         }]
     );
-    assert_eq!(capture.required_modifiers.entries, 70);
+    // The entries read before the fault: a whole first batch of 64, then 2.
+    assert_eq!(capture.required_modifiers.entries, 66);
 }
 
 #[test]
-fn modifier_capacity_fallback_and_primary_growth_preserve_current_values() {
+fn an_empty_modifier_arena_grows_in_the_pass_and_keeps_current_values() {
     let source = Source::new(3);
-    let mut capacity = capacities(0, 0);
-    let mut capture = Captured::with_capacities(&capacity);
-    for expected in [
-        SnapshotCapacity {
-            nodes: 1,
-            entries: 0,
-        },
+    let mut capture = Captured::with_capacities(&capacities(0, 0));
+    acquire(&mut capture, &source).unwrap();
+    assert_eq!(capture.rows.rows[0].maximum_organisation, 0);
+    let grown = capture.modifiers.borrow().capacity();
+    assert!(grown.nodes >= 1 && grown.entries >= 3);
+    let reads = source.reads.borrow().len();
+    capture.release_sources();
+    assert_eq!(source.reads.borrow().len(), reads);
+    assert_eq!(
+        capture.required_modifiers,
         SnapshotCapacity {
             nodes: 1,
             entries: 3,
-        },
-    ] {
-        let allocated = capture.allocated_bytes();
-        acquire(&mut capture, &source).unwrap();
-        assert_eq!(capture.rows.rows[0].maximum_organisation, 0);
-        let reads = source.reads.borrow().len();
-        capture.release_sources();
-        assert_eq!(source.reads.borrow().len(), reads);
-        assert_eq!(capture.required_modifiers, expected);
-        assert_eq!(capture.allocated_bytes(), allocated);
-        capture.grow(&mut capacity);
-        assert!(
-            capacity.modifiers.nodes >= expected.nodes
-                && capacity.modifiers.entries >= expected.entries
-        );
-        assert_eq!(capture.modifiers.borrow().capacity(), capacity.modifiers);
-        capture.reset();
-    }
-    acquire(&mut capture, &source).unwrap();
-    capture.release_sources();
+        }
+    );
     assert_eq!(
         capture.allocated_bytes(),
         capture.rows.allocated_bytes()
@@ -367,21 +338,21 @@ fn modifier_capacity_fallback_and_primary_growth_preserve_current_values() {
 }
 
 #[test]
-fn huge_cache_demand_is_bounded_without_allocating_or_clamping_reported_demand() {
+fn cache_demand_past_any_fixed_size_presizes_to_the_demand() {
     let required = SnapshotCapacity {
-        nodes: usize::MAX,
-        entries: usize::MAX,
+        nodes: 1_000_001,
+        entries: 4_194_305,
     };
     let mut capacity = SnapshotCapacity {
         nodes: 1,
         entries: 1,
     };
     grow_snapshot_capacity(&mut capacity, required);
-    assert_eq!(capacity, SNAPSHOT_LIMITS);
-    assert_eq!(required.nodes, usize::MAX);
-    assert_eq!(required.entries, usize::MAX);
+    assert!(capacity.nodes >= required.nodes);
+    assert!(capacity.entries >= required.entries);
+    let grown = capacity;
     grow_snapshot_capacity(&mut capacity, SnapshotCapacity::default());
-    assert_eq!(capacity, SNAPSHOT_LIMITS);
+    assert_eq!(capacity, grown);
 }
 
 #[test]
@@ -396,302 +367,21 @@ fn only_current_country_authentication_is_forwarded_for_matching_context() {
         cached.seed_status(),
         engine_native::country_memory::SeedStatus::Ready
     );
-    let used = Cell::new((0, 0));
-    let bounded = BoundedMemory {
-        inner: &cached,
-        used: &used,
-    };
     let arena = RefCell::new(SnapshotArena::try_new(SnapshotCapacity::default()).unwrap());
     let memory = ModifierMemory {
-        inner: &bounded,
+        inner: &cached,
         arena: &arena,
         held_task: None,
     };
+    let reads = source.reads.borrow().len();
     assert!(memory.authenticated_countries(0, STATE).is_some());
     assert!(memory.authenticated_countries(1, STATE).is_none());
     assert!(memory.authenticated_countries(0, STATE + 1).is_none());
     assert_eq!(
-        used.get(),
-        (0, 0),
+        source.reads.borrow().len(),
+        reads,
         "forwarding supplies no new observations"
     );
-    assert!(
-        BoundedMemory {
-            inner: &source,
-            used: &used
-        }
-        .authenticated_countries(0, STATE)
-        .is_none()
-    );
-}
-
-fn scattered(memory: &impl Memory, addresses: [usize; 4]) -> (usize, [[u8; 8]; 4]) {
-    let mut output = [[0xa5; 8]; 4];
-    let [a, b, c, d] = &mut output;
-    let completed = memory.copy_scattered(
-        addresses,
-        &mut [&mut a[..4], &mut b[..0], &mut c[..8], &mut d[..3]],
-    );
-    (completed, output)
-}
-
-#[test]
-fn scatter_forwarding_matches_scalar_prefixes_bytes_and_budgets_at_every_edge() {
-    for initial in [
-        (0, 0),
-        (READ_LIMIT - 1, 0),
-        (0, COPY_LIMIT - 5),
-        (READ_LIMIT, 0),
-        (0, COPY_LIMIT),
-    ] {
-        for failed in [None, Some(ENTRIES), Some(ENTRIES + 16), Some(ENTRIES + 32)] {
-            for invalid in [None, Some(0), Some(usize::MAX)] {
-                let source = Source::new(4);
-                source.fault.set(failed);
-                let used = Cell::new(initial);
-                let bounded = BoundedMemory {
-                    inner: &source,
-                    used: &used,
-                };
-                let addresses = [
-                    ENTRIES,
-                    usize::MAX,
-                    invalid.unwrap_or(ENTRIES + 16),
-                    ENTRIES + 32,
-                ];
-                let expected = scattered(&Scalar(&bounded), addresses);
-                let expected_used = used.replace(initial);
-                let expected_reads = std::mem::take(&mut *source.reads.borrow_mut());
-                assert_eq!(scattered(&bounded, addresses), expected);
-                assert_eq!(used.get(), expected_used);
-                assert_eq!(*source.reads.borrow(), expected_reads);
-                if initial == (0, 0) {
-                    assert_eq!(source.scatters.get(), 1);
-                }
-            }
-        }
-    }
-}
-
-#[test]
-fn record_forwarding_matches_scalar_prefixes_partial_rows_and_budget_precedence() {
-    let fields = [
-        RecordField {
-            source_offset: 0,
-            destination_offset: 0,
-            len: 4,
-        },
-        RecordField {
-            source_offset: usize::MAX,
-            destination_offset: 4,
-            len: 0,
-        },
-        RecordField {
-            source_offset: 8,
-            destination_offset: 8,
-            len: 8,
-        },
-    ];
-    let layout = RecordLayout::new(&fields, 16).unwrap();
-    for initial in [
-        (0, 0),
-        (READ_LIMIT - 2, 0),
-        (0, COPY_LIMIT - 5),
-        (READ_LIMIT, 0),
-        (0, COPY_LIMIT),
-    ] {
-        for failed in [None, Some(ENTRIES), Some(ENTRIES + 8), Some(ENTRIES + 32)] {
-            for kind in 0..5 {
-                let source = Source::new(4);
-                source.fault.set(failed);
-                let used = Cell::new(initial);
-                let bounded = BoundedMemory {
-                    inner: &source,
-                    used: &used,
-                };
-                let pointers = [
-                    ENTRIES,
-                    match kind {
-                        2 => 0,
-                        3 => usize::MAX,
-                        _ => ENTRIES + 32,
-                    },
-                ];
-                let sources = match kind {
-                    1 => RecordSources::Strided {
-                        base: ENTRIES,
-                        stride: 32,
-                        count: 2,
-                    },
-                    4 => RecordSources::Strided {
-                        base: usize::MAX - 16,
-                        stride: 32,
-                        count: 2,
-                    },
-                    _ => RecordSources::Pointers(&pointers),
-                };
-                let mut expected = [0xa5; 32];
-                let expected_count = Scalar(&bounded).copy_records(sources, &layout, &mut expected);
-                let expected_used = used.replace(initial);
-                let expected_reads = std::mem::take(&mut *source.reads.borrow_mut());
-                let mut actual = [0xa5; 32];
-                assert_eq!(
-                    bounded.copy_records(sources, &layout, &mut actual),
-                    expected_count
-                );
-                assert_eq!(actual, expected);
-                assert_eq!(used.get(), expected_used);
-                assert_eq!(*source.reads.borrow(), expected_reads);
-                if initial == (0, 0) {
-                    assert_eq!(source.records.get(), 1);
-                }
-            }
-        }
-    }
-}
-
-#[test]
-fn malformed_snapshot_prefix_precedes_a_later_batch_budget_refusal() {
-    let source = Source::new(3);
-    source.put(ENTRIES, &0u32.to_le_bytes());
-    let used = Cell::new((READ_LIMIT - 2, 0));
-    let bounded = BoundedMemory {
-        inner: &source,
-        used: &used,
-    };
-    let arena = RefCell::new(
-        SnapshotArena::try_new(SnapshotCapacity {
-            nodes: 1,
-            entries: 3,
-        })
-        .unwrap(),
-    );
-    let memory = ModifierMemory {
-        inner: &bounded,
-        arena: &arena,
-        held_task: None,
-    };
-    let reason = modifier_accumulator::lookup_at(&memory, BASE, 1).unwrap_err();
-    assert_eq!(used.get(), (READ_LIMIT, COPY_LIMIT));
-    assert_eq!(
-        acquisition_failure(used.get(), reason),
-        "modifier accumulator keys not positive and increasing"
-    );
-    assert_eq!(
-        source.reads.borrow().len(),
-        2,
-        "no source access after the admitted prefix"
-    );
-}
-
-#[test]
-fn empty_fields_and_invalid_destination_geometry_never_spend_budget() {
-    let source = Source::new(0);
-    let used = Cell::new((READ_LIMIT, COPY_LIMIT));
-    let bounded = BoundedMemory {
-        inner: &source,
-        used: &used,
-    };
-    assert_eq!(
-        bounded.copy_scattered([0, usize::MAX], &mut [&mut [], &mut []]),
-        2
-    );
-    let empty = [RecordField {
-        source_offset: usize::MAX,
-        destination_offset: 0,
-        len: 0,
-    }];
-    let layout = RecordLayout::new(&empty, 0).unwrap();
-    assert_eq!(
-        bounded.copy_records(RecordSources::Pointers(&[0, usize::MAX]), &layout, &mut []),
-        2
-    );
-    let nonempty = [RecordField {
-        source_offset: 0,
-        destination_offset: 0,
-        len: 4,
-    }];
-    let layout = RecordLayout::new(&nonempty, 4).unwrap();
-    assert_eq!(
-        bounded.copy_records(RecordSources::Pointers(&[ENTRIES]), &layout, &mut [0; 3]),
-        0
-    );
-    assert_eq!(used.get(), (READ_LIMIT, COPY_LIMIT));
-    assert!(source.reads.borrow().is_empty());
-}
-
-struct NoReads;
-impl Memory for NoReads {
-    fn copy(&self, _: usize, _: &mut [u8]) -> bool {
-        panic!("copy budget must stop before inner memory access")
-    }
-}
-#[test]
-fn whole_census_budget_refuses_bytes_and_calls_before_memory_access() {
-    for value in [(READ_LIMIT, 0), (0, COPY_LIMIT)] {
-        let used = Cell::new(value);
-        let memory = BoundedMemory {
-            inner: &NoReads,
-            used: &used,
-        };
-        assert!(!memory.copy(1, &mut [0]));
-        assert_eq!(used.get(), (READ_LIMIT, COPY_LIMIT));
-        used.set(value);
-        assert_eq!(memory.read_scalar::<u32>(1), None);
-        assert_eq!(used.get(), (READ_LIMIT, COPY_LIMIT));
-    }
-    for initial in [(0, 0), (READ_LIMIT - 1, 0), (0, COPY_LIMIT - 4)] {
-        for failed in [None, Some(ENTRIES)] {
-            let source = Source::new(1);
-            source.fault.set(failed);
-            let used = Cell::new(initial);
-            let bounded = BoundedMemory {
-                inner: &source,
-                used: &used,
-            };
-            let arena = RefCell::new(SnapshotArena::try_new(SnapshotCapacity::default()).unwrap());
-            let memory = ModifierMemory {
-                inner: &bounded,
-                arena: &arena,
-                held_task: None,
-            };
-            let expected = engine_native::read::<u32>(&Scalar(&memory), ENTRIES);
-            let expected_used = used.replace(initial);
-            let expected_reads = std::mem::take(&mut *source.reads.borrow_mut());
-            assert_eq!(source.scalars.get(), 0);
-            assert_eq!(engine_native::read::<u32>(&memory, ENTRIES), expected);
-            assert_eq!(used.get(), expected_used);
-            assert_eq!(*source.reads.borrow(), expected_reads);
-            assert_eq!(source.scalars.get(), 1);
-            assert_eq!(used.get(), (initial.0 + 1, initial.1 + 4));
-            if initial != (0, 0) {
-                assert_eq!(engine_native::read::<u32>(&memory, ENTRIES), None);
-                assert_eq!(used.get(), (READ_LIMIT, COPY_LIMIT));
-                assert_eq!(source.scalars.get(), 1);
-                assert_eq!(*source.reads.borrow(), expected_reads);
-            } else {
-                assert_eq!(
-                    engine_native::read::<u64>(&memory, BASE),
-                    Some(ENTRIES as u64)
-                );
-                assert_eq!(used.get(), (2, 12));
-                assert_eq!(source.scalars.get(), 1);
-            }
-        }
-    }
-    let source = Source::new(1);
-    let used = Cell::new((0, COPY_LIMIT));
-    let memory = BoundedMemory {
-        inner: &source,
-        used: &used,
-    };
-    assert_eq!(engine_native::read::<[u8; 0]>(&memory, 0), Some([]));
-    assert_eq!(used.get(), (0, COPY_LIMIT));
-    assert_eq!(source.scalars.get(), 0);
-    assert_eq!(memory.read_scalar::<[u8; 0]>(BASE), Some([]));
-    assert_eq!(used.get(), (1, COPY_LIMIT));
-    assert_eq!(source.scalars.get(), 1);
-    assert_eq!(*source.reads.borrow(), [(BASE, 0)]);
 }
 
 struct OptionalModelSource(Source);
@@ -856,10 +546,11 @@ fn current_hull_packet_and_field_refusals_are_named_and_preserve_independent_ope
     capture.capture_model_suffixes(&healthy, 0, BASE, &census, selected.as_ref(), &mut row);
     assert_eq!(row.subunit_index, Some(i32::MIN));
     assert_eq!(row.hull_variant, Some(optional_hull_expected()));
-    assert_eq!(
-        capture.optional_refusals,
-        [0; OPTIONAL_REFUSAL_REASONS.len()]
-    );
+    // A unit fixture has no naval-power certificate: the selected hull's power is refused.
+    assert_eq!(row.naval_power, None);
+    let mut wanted = [0; OPTIONAL_REFUSAL_REASONS.len()];
+    wanted[14] = 1;
+    assert_eq!(capture.optional_refusals, wanted);
     for (index, address) in [
         (6, 0x3000),
         (
@@ -891,6 +582,7 @@ fn current_hull_packet_and_field_refusals_are_named_and_preserve_independent_ope
         capture.capture_model_suffixes(&source, 0, BASE, &census, selected.as_ref(), &mut row);
         let mut wanted = [0; OPTIONAL_REFUSAL_REASONS.len()];
         wanted[index] = 1;
+        wanted[14] = 1;
         assert_eq!(
             capture.optional_refusals, wanted,
             "{} at {address:#x}",
@@ -984,6 +676,7 @@ fn absent_selected_hull_is_not_counted_and_changed_selection_is_named() {
         assert_eq!(row.hull_variant, None);
         let mut wanted = [0; OPTIONAL_REFUSAL_REASONS.len()];
         wanted[6] = 1;
+        wanted[14] = 1;
         assert_eq!(capture.optional_refusals, wanted);
     }
 }
@@ -994,7 +687,6 @@ fn cold_ship_model_modifier_arenas_grow_from_original_mod_sized_headers() {
     assert_eq!(capture.modifiers.borrow().allocated_bytes(), 0);
     for count in [5_000_u32, 15_000] {
         let source = Source::new(count);
-        capture.worker_growth = true;
         capture.begin_details();
         let core = ModifierMemory {
             inner: &source,
@@ -1883,7 +1575,7 @@ fn unavailable_power_certificate_preserves_core_carry_without_suffix_polling() {
     let hour = |capture: &mut Captured| {
         capture.begin_sources();
         for index in 0..fleet::SHIPS {
-            capture.visit_source_growing(fleet::ship(index), &fleet::census(index));
+            capture.visit_source(fleet::ship(index), &fleet::census(index));
         }
         capture.finish_sources(Outcome::Rows { len: fleet::SHIPS });
         capture.capture_carrying(&world, CaptureContext::new(fleet::IMAGE), &watches);
@@ -1927,7 +1619,7 @@ fn held_naval_power_from_another_certificate_is_read_again() {
     let hour = |capture: &mut Captured| {
         capture.begin_sources();
         for index in 0..fleet::SHIPS {
-            capture.visit_source_growing(fleet::ship(index), &fleet::census(index));
+            capture.visit_source(fleet::ship(index), &fleet::census(index));
         }
         capture.finish_sources(Outcome::Rows { len: fleet::SHIPS });
         capture.capture_carrying(&world, CaptureContext::new(fleet::IMAGE), &watches);
@@ -2328,7 +2020,7 @@ mod carry_cost_bench {
         fn seed(&self, capture: &mut Captured) {
             capture.begin_sources();
             for (index, source) in self.census.iter().enumerate() {
-                capture.visit_source_growing(fleet::ship(index), source);
+                capture.visit_source(fleet::ship(index), source);
             }
             capture.finish_sources(Outcome::Rows {
                 len: self.census.len(),
@@ -2526,7 +2218,6 @@ mod carry_cost_bench {
 
     fn terms_hour(memory: &impl Memory, held: &[cship::HeldShip], capture: &mut Captured) -> u128 {
         capture.begin_details();
-        capture.modifiers.get_mut().enable_worker_growth();
         let mut fields = cship::ShipFields::new(fleet::IMAGE);
         let mut elapsed = 0_u128;
         for held in held {
@@ -2851,7 +2542,7 @@ mod carry_cost_bench {
             } else {
                 fleet::ship(index)
             };
-            capture.visit_source_growing(pointer, source);
+            capture.visit_source(pointer, source);
         }
         capture.finish_sources(Outcome::Rows {
             len: world.census.len(),

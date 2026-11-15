@@ -1,126 +1,102 @@
-import { asFailure } from '../../dashboard/queryError.ts';
-import { pendingAt, preparedPrefix } from '../../dashboard/preparedPrefix';
-import { useMemo, useRef, useState } from 'react';
-import WidgetState from '../../components/WidgetState';
+import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useContextMenu } from '../../components/ContextMenu';
+import WidgetState from '../../components/WidgetState';
 import ChordChart from '../../charts/chord/ChordChart';
 import type { ChordFrame } from '../../charts/chord/ChordChart';
+import type { ChordData } from '../../charts/chord/layout';
+import { motionOf } from '../../charts/easing.ts';
 import { jumpItem } from '../../charts/jump';
-import { useChartTokens } from '../../charts/useChartTokens';
+import { LiveCell } from '../../charts/live.ts';
 import { useCountryColours } from '../../charts/race/countryColours';
-import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
-import { useCountryFactsAt, nameKey } from '../../dashboard/countryNamesAt';
-import type { FactSpec } from '../../dashboard/countryFacts';
-import type { WidgetProps } from '../../dashboard/definitions';
+import { useChartTokens } from '../../charts/useChartTokens';
+import { useCountryLooks } from '../../dashboard/countryLooks';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
-import { resolveWindow } from '../../dashboard/model';
+import type { WidgetProps } from '../../dashboard/definitions';
+import { worldFilter } from '../../dashboard/groups';
+import { useHeadProduct } from '../../dashboard/headProduct';
+import { shownHour, useIntelLabels } from '../../dashboard/IntelCountry';
+import { usePushedLooksHour } from '../../dashboard/pushedLooks.ts';
+import { tagsOf, validatePlacements } from '../../dashboard/intelligence';
 import { resolveOptions } from '../../dashboard/options';
-import { usePlaybackHour } from '../../dashboard/playback';
-import { useProduct } from '../../dashboard/products';
-import { useParityRows } from '../../dashboard/parityRows';
+import { asFailure } from '../../dashboard/queryError.ts';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
-import { compareTags } from '../../dashboard/tagOrder';
-import type { CountryStyleReply, OperativePlacementReply } from '../../generated/dashboard';
+import { useShownEachFrame } from '../../dashboard/widgetPerf';
 import { OPTIONS } from './definition';
-import { MEMBERSHIP_PREPARING } from '../../dashboard/groups';
-import { placementChordMemo, placementTooltip, placementsAt, selectPlacements, validatePlacementsReply } from './placementsData';
-import type { PlacementChord } from './placementsData';
+import { placementChord, placementRows, placementStructure, placementTooltip } from './placementsData';
+import type { PlacementChord, PlacementLook } from './placementsData';
 import './placements.css';
-import { motionOf } from '../../charts/easing.ts';
-import { heldFacts } from '../../dashboard/countryTimeline.ts';
+import type { Country, OperativePlacementReply } from '../../generated/dashboard';
 
-const COLORS: FactSpec<[number, number, number]> = { product: 'country-styles', perRequest: 64, shared: true,
-  params: (branchId, hour, tags) => ({ branchId, hour, tags }),
-  extract: value => new Map((value as CountryStyleReply).styles.flatMap(style => style.color ? [[style.tag, style.color] as const] : [])),
-  held: heldFacts(style => style.color),
-};
-const NO_WARNINGS: string[] = [];
+const NO_TAGS: readonly string[] = [];
 
+/** Operatives abroad at the hour as a chord: a ribbon from each country spying to each it spies on, sized by its
+ * operatives. The census is a pushed panel at the head; the chord is painted from it with no render, which only
+ * the set of countries (names, flags, colours) causes. */
 export default function WhoSpiesOnWhomWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
-  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
-  const tokens = useChartTokens(), options = resolveOptions(OPTIONS, widget.options);
-  const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
-  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
-  const hour = window?.lastHour ?? 0;
-  const first = track ? track.branch.firstHour + Math.floor((hour - track.branch.firstHour) / 24) * 24 : hour;
-  const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'operative-placements', params: runtime.client.preparedQuery
-    ? { branchId: track.branch.id, firstHour: first, lastHour: Math.min(first + 23, track.branch.lastHour) }
-    : { branchId: track.branch.id } } : null;
-  const { data, error, retry } = useProduct<OperativePlacementReply>(runtime.client, request, active, validatePlacementsReply, track?.source);
+  const options = resolveOptions(OPTIONS, widget.options);
+  const tokens = useChartTokens();
+  const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
+  const params = useMemo(() => track ? {} : null, [track]);
+  const live = useMemo(() => new LiveCell<ChordFrame>({ data: null }), []);
+  const paint = useRef<(reply: OperativePlacementReply) => void>(() => {});
+  const head = useHeadProduct<OperativePlacementReply>(runtime, widget, 'operative-placements', params,
+    { active, validate: validatePlacements, structure: placementStructure, paint: reply => paint.current(reply) });
+  const hour = shownHour(runtime, widget, head);
   const groups = useCountryGroups(runtime, track, active);
-  const current = useMemo(() => data ? placementsAt(data, hour) : null, [data, hour]);
-  const selectedTag = defaultCountryTag(track);
-  const picked = useMemo(() => current ? selectPlacements(current.placements, widget.countries, groups.data, hour, track?.branch.lastHour ?? hour, selectedTag) : null,
-    [current, widget.countries, groups.data, hour, track?.branch.lastHour, selectedTag]);
-  const root = useRef<HTMLDivElement>(null);
-  useParityRows(root, () => ({ kind: 'chart', label: 'Operative placement values', complete: Boolean(data && picked),
-    total: picked?.placements.length ?? 0, rows: picked?.placements ?? [], readHour: current?.read ?? null,
-  }));
-  const wanted = useMemo(() => [...new Set(picked?.placements.flatMap(n => [n.owner, n.target]) ?? [])].map(tag => ({ hour, tag })), [picked, hour]);
-  const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active);
-  const colourTags = useMemo(() => [...new Set(groups.data?.countryIdentities?.map(country => country.tag) ?? [])].sort(compareTags), [groups.data]);
-  const colourWanted = useMemo(() => colourTags.map(tag => ({ hour, tag })), [colourTags, hour]);
-  const colors = useCountryFactsAt(runtime.client, track, colourWanted, active, COLORS);
-  const colourRevision = useMemo(() => ({}), [colors]);
-  const plottedColor = useCountryColours(colourTags, tag => { const color = colors.get(nameKey(hour, tag)); return color instanceof Error ? null : color; }, tokens, colourRevision);
-  const menu = useContextMenu('Operative placement actions');
+  const fallback = defaultCountryTag(track);
+  const selection = widget.countries;
+  const top = selection.kind === 'group' && selection.group.type === 'top' ? selection.group.count : null;
+  const filter = useMemo(() => top !== null || selection.kind === 'all' ? null
+    : worldFilter(selection, fallback ? [fallback] : [], groups.data, hour ?? 0, track?.branch.lastHour ?? 0),
+  [top, selection, fallback, groups.data, hour, track?.branch.lastHour]);
+  const most = top ?? Number(options.mostCountries);
+  const tags = useMemo(() => head.data ? tagsOf(head.data.placements.flatMap(row => [row.owner, row.target])) : NO_TAGS, [head.data]);
+  // Pushed, the countries are named where one of them last changed, never at the clock's hour of each render.
+  const pushed = head.read === 'followed';
+  const label = useIntelLabels(runtime, widget, tags, hour, active, pushed);
+  const named = usePushedLooksHour(runtime, widget, track, tags, active && pushed, hour ?? 0);
+  const looks = useCountryLooks(runtime.client, track, tags, named.hour, active, undefined, undefined, named.exact);
+  const colour = useCountryColours(tags, looks.color, tokens, looks);
+  const exact = useMemo(() => new WeakMap<ChordData, PlacementChord>(), []);
+  const segment = `${track?.source.id}:${track?.source.revision}:${track?.branch.id}`;
+  paint.current = reply => {
+    if (reply.missing || (filter && (filter.reason || !filter.tags))) { live.set({ data: null, segment }); return; }
+    const look = (country: Country): PlacementLook => country.tag ? label(country.tag)
+      : { name: `Country ${country.id}`, flagReason: 'The recording names no tag for this country at this hour' };
+    const chord = placementChord(placementRows(reply.placements, filter?.tags ?? null), most, look,
+      country => country.tag ? colour(country.tag) : tokens.muted, tokens.muted);
+    exact.set(chord.data, chord);
+    live.set({ data: chord.data, segment, playing: runtime.clock.getSnapshot().playing });
+  };
+  // A render (new names, flags, colours or settings) draws the reply held again.
+  useLayoutEffect(() => { if (head.data) paint.current(head.data); }, [head.data, label, colour, most, filter, segment]); // eslint-disable-line react-hooks/exhaustive-deps
+  useShownEachFrame(runtime.clock, () => head.data ? head.hour ?? runtime.clock.getHour() : null);
   const [chartError, setChartError] = useState<string | null>(null);
-  const chordAt = useMemo(() => placementChordMemo(), []);
-  const diagnostics = useMemo(() => {
-    const missing = wanted.filter(w => !colors.has(nameKey(w.hour, w.tag))).length;
-    return [...(data?.warnings ?? NO_WARNINGS), ...[...colors.values()].filter((value): value is Error => value instanceof Error).map(error => error.message), ...(missing ? [`${missing} country map colours are unavailable at the shown hour; their arcs use the muted theme colour.`] : [])];
-  }, [data, wanted, colors]);
-  useDiagnostics(onDiagnostics, diagnostics);
-
-  // Resolve each hour, but fold only when exact data or presentation changes.
-  // Weak keys connect an exact frame to its tooltip, without retaining old hours.
-  const frames = useMemo(() => {
-    const exact = new WeakMap<object, PlacementChord>();
-    let lastHour = NaN, lastSeek = -1, frame: ChordFrame = { data: null };
-    const at = (now: number): ChordFrame => {
-      const snapshot = runtime.clock.getSnapshot();
-      const seek = widget.time.mode === 'follow' ? snapshot.seekSequence : 0;
-      const shown = track ? resolveWindow(widget, track, runtime.tracks, widget.time.mode === 'follow' ? runtime.clock.positionAt(now) : snapshot.position)?.lastHour ?? NaN : NaN;
-      if (shown === lastHour && lastSeek === seek) return { ...frame, playing: widget.time.mode === 'follow' && snapshot.playing };
-      const resolved = data && placementsAt(data, shown);
-      const picked = resolved && selectPlacements(resolved.placements, widget.countries, groups.data, shown, track?.branch.lastHour ?? shown, selectedTag);
-      const segment = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, resolved?.period?.firstHour, seek]);
-      if (!resolved || resolved.period?.availability !== 'recorded' || resolved.read == null || !picked || picked.reason) {
-        frame = { data: null, segment, playing: widget.time.mode === 'follow' && snapshot.playing };
-      } else {
-        const chord = chordAt(picked.placements, Number(options.mostCountries), resolved.read, labelAt(shown),
-          tag => colors.has(nameKey(hour, tag)) ? plottedColor(tag) : tokens.muted, tokens.muted);
-        exact.set(chord.data, chord);
-        frame = { data: chord.data, segment, playing: widget.time.mode === 'follow' && snapshot.playing };
-      }
-      lastHour = shown; lastSeek = seek;
-      return frame;
-    };
-    return { at, exact };
-  }, [data, track, widget, runtime.clock, runtime.tracks, groups.data, options.mostCountries, labelAt, plottedColor, colors, hour, tokens.muted, selectedTag, chordAt]);
-
-  const groupNotice = groups.error && groups.data ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
-  if (!track) return <WidgetState kind="empty" icon="target" message="Load a campaign to see its operative placements." />;
-  if (error || (groups.error && !groups.data)) return <WidgetState kind="error" failure={error ?? groups.error!} onRetry={error ? retry : groups.retry} />;
-  if (!data || !current) return <>{groupNotice}<WidgetState kind="loading" label="Loading operative placements…" /></>;
-  if (pendingAt(preparedPrefix(data), hour)) return <>{groupNotice}<WidgetState kind="loading" label="This range is still being prepared." /></>;
-  if (current.period?.availability !== 'recorded') return <>{groupNotice}<WidgetState kind="unavailable" message={current.period?.availability === 'featureAbsent'
-    ? 'Intelligence agencies were disabled.' : 'Operatives were not recorded at this time.'} /></>;
-  if (picked?.reason) return <>{groupNotice}<WidgetState kind="unavailable" message={picked.reason} /></>;
-  return <div ref={root} className={`who-spies-on-whom${chartError ? ' has-chart-error' : ''}`}>
-    <ChordChart label="Who spies on whom" caption="Ribbon colour = the country spying" frame={{ data: null }} frameAt={frames.at} onError={setChartError}
-      hoursPerSecond={motionOf(runtime.clock.getSnapshot())} active={active}
-      tooltip={(hit, data) => { const chord = frames.exact.get(data); return chord ? placementTooltip(hit, chord) : null; }}
-      onContextMenu={(hit, data, x, y) => {
-        const chord = frames.exact.get(data);
-        if (chord && (hit.kind === 'flow' ? chord.flows.has(hit.id) : chord.nodes.has(hit.id))) menu.open(x, y, [jumpItem(runtime, track.id, chord.read)]);
-      }} />
-    {menu.menu}
-    {groupNotice}
-    {chartError && <WidgetState kind="error" failure={asFailure(chartError)} />}
-    {!picked?.placements.some(n => n.count > 0) && (picked?.known === false ? <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />
-      : <WidgetState kind="empty" message="No operatives placed yet." />)}
-    {wanted.some(w => !colors.has(nameKey(w.hour, w.tag))) && <p className="sr-only">Some country colours were not recorded; their arcs use the muted theme colour.</p>}
-  </div>;
+  const menu = useContextMenu('Operative placement actions');
+  useDiagnostics(onDiagnostics, head.data?.warnings ?? null);
+  const body = () => {
+    if (!track) return <WidgetState kind="empty" icon="target" message="Load a campaign to see its operative placements." />;
+    if (head.read === 'off') return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+    if (head.error) return <WidgetState kind="error" failure={head.error} onRetry={head.retry} />;
+    if (groups.error && !groups.data && selection.kind === 'group') return <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;
+    if (!head.data) return <WidgetState kind="loading" label="Loading operative placements…" />;
+    if (head.data.missing) return <WidgetState kind="unavailable" message="Operatives were not recorded at this time." detail={head.data.missing} />;
+    if (filter?.reason) return <WidgetState kind="empty" message={filter.reason} />;
+    const shown = placementRows(head.data.placements, filter?.tags ?? null);
+    return <>
+      <ChordChart label="Who spies on whom" caption="Ribbon colour = the country spying" frame={{ data: null }} live={live} onError={setChartError}
+        hoursPerSecond={motionOf(runtime.clock.getSnapshot())} active={active}
+        tooltip={(hit, data) => { const chord = exact.get(data); return chord ? placementTooltip(hit, chord) : null; }}
+        onContextMenu={(hit, data, x, y) => {
+          const chord = exact.get(data);
+          const read = head.data?.readHour;
+          if (chord && read != null && (hit.kind === 'flow' ? chord.flows.has(hit.id) : chord.nodes.has(hit.id))) menu.open(x, y, [jumpItem(runtime, track.id, read)]);
+        }} />
+      {menu.menu}
+      {chartError && <WidgetState kind="error" failure={asFailure(chartError)} />}
+      {!shown.length && <WidgetState kind="empty" message="No operatives placed yet." />}
+    </>;
+  };
+  return <div ref={head.root} className={`who-spies-on-whom${chartError ? ' has-chart-error' : ''}`}>{body()}</div>;
 }

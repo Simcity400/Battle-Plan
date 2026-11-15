@@ -18,13 +18,11 @@ use windows_sys::Win32::{
     },
 };
 
-/// Close for an update: answered `CLOSING` (and the app closes), `PREPARER` (a headless preparer
-/// closes, which the installer starts again) or `REFUSED`.
+/// Close for an update: answered `CLOSING` (and the app closes) or `REFUSED`.
 pub const CLOSE: u8 = b'C';
 /// May this app be replaced now: answered `FREE`, or `BUSY` followed by the reason in UTF-8.
 pub const QUERY: u8 = b'Q';
 const CLOSING: u8 = b'Y';
-const PREPARER: u8 = b'P';
 const REFUSED: u8 = b'N';
 const FREE: u8 = b'I';
 const BUSY: u8 = b'B';
@@ -37,10 +35,6 @@ pub trait Answer: Send + Sync + 'static {
     /// the installer unsure what to start again.
     fn closed_for_update(&self) {}
     fn install_blocked(&self) -> Option<String>;
-    /// A headless preparer, which the installer starts again after it.
-    fn preparer(&self) -> bool {
-        false
-    }
 }
 
 /// `\\.\pipe\HOI4Replay.<session>.<role>`: one name per Windows session, as the installer builds it.
@@ -109,7 +103,7 @@ pub fn serve(role: Role, answer: Arc<dyn Answer>) -> io::Result<()> {
                         CLOSE => vec![match answer.close_for_update() {
                             Ok(()) => {
                                 closing = true;
-                                if answer.preparer() { PREPARER } else { CLOSING }
+                                CLOSING
                             }
                             Err(_) => REFUSED,
                         }],

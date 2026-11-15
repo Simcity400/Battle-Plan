@@ -2,7 +2,6 @@ import { failureDetails } from '../../dashboard/queryError.ts';
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import WidgetState from '../../components/WidgetState';
-import { PreparedLogCoverage } from '../../charts/log/LogList';
 import DrillHost from '../../charts/drill/DrillHost';
 import { CLOSED, drillHour, pinnedBreakdown, reduceDrill } from '../../charts/drill/drillState';
 import { jumpItem } from '../../charts/jump';
@@ -13,15 +12,13 @@ import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { MAX_NAME_HOURS } from '../../dashboard/countryFacts';
 import { selectedTags } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { countryMatch, MEMBERSHIP_PREPARING } from '../../dashboard/groups';
+import { countryMatch } from '../../dashboard/groups';
 import { resolveOptions } from '../../dashboard/options';
 import type { OptionValue } from '../../dashboard/options';
 import { peaceDealAt } from '../../dashboard/peaceDealsData';
-import { usePlaybackHour } from '../../dashboard/playback';
+import { useHeadHour } from '../army-size/headHour.ts';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
-import { useParityRows } from '../../dashboard/parityRows';
 import { usePeaceDeals } from '../../dashboard/usePeaceDeals';
-import { preparedPrefix } from '../../dashboard/preparedPrefix';
 import { useStateNamesAt } from '../../dashboard/useStateNamesAt';
 import { COUNTRY_SORT, OPTIONS, TRANSFER_BREAKDOWN, TRANSFER_SORT, TRANSFER_SORT_KEY } from './definition';
 import TransferDrill from './TransferDrill';
@@ -34,6 +31,8 @@ import { countryTooltip, transferRequest, transferTooltip } from './territoryToo
 import type { TransferLabels, TransferTipRequest } from './territoryTooltip';
 import './territoryTransfers.css';
 import { motionOf } from '../../charts/easing.ts';
+import { useShownEachFrame } from '../../dashboard/widgetPerf';
+import { trackHourOf } from '../../dashboard/settledHour';
 
 const NO_WARNINGS: string[] = [];
 const NO_TRANSFERS: readonly TransferOccurrence[] = [];
@@ -47,8 +46,9 @@ export default function TerritoryTransfersWidget({ widget, runtime, active, onDi
   const [drillCountry, setDrillCountry] = useState<string | null>(null);
   const drillAnchor = useRef<HTMLDivElement>(null);
   const following = widget.time.mode === 'follow';
-  const playbackHour = usePlaybackHour(runtime.clock, active && (following || drill.breakdown != null && drill.follow));
-  const { track, data, error, retry, preparing } = usePeaceDeals(widget, runtime, active);
+  const { track, data, error, retry } = usePeaceDeals(widget, runtime, active);
+useShownEachFrame(runtime.clock, () => data && track ? trackHourOf(widget, track, runtime.tracks, runtime.clock.getHour()) : null);
+  const transfers = useMemo(() => data && decodeTransfers(data), [data]);
   const options = resolveOptions(OPTIONS, widget.options);
   const view = options.show === 'transfers' || options.show === TRANSFER_BREAKDOWN.id ? options.show : 'main';
   const pinned = view === TRANSFER_BREAKDOWN.id;
@@ -58,10 +58,15 @@ export default function TerritoryTransfersWidget({ widget, runtime, active, onDi
   const selectedId = track ? conferenceChoiceId(selectedToken, campaignKey, track.branch.id) : null;
   const storedSelection = useMemo(() => track ? transferSelection(String(options.selection ?? ''), campaignKey, track.branch.id) : null,
     [options.selection, track, campaignKey]);
+  // Following, the tables render only when the head passes a transfer or a conference: the reached rows are their structure.
+  const playbackHour = useHeadHour(runtime.clock, active && (following || drill.breakdown != null && drill.follow), at => {
+    if (!track || !transfers) return '';
+    const reach = transferTime(widget, track, runtime.tracks, at, pinned ? storedSelection?.fromOffset : null).moment;
+    return `${transferCutoff(transfers.hours, reach)}:${transferCutoff(transfers.conferenceHours, reach)}`;
+  });
   const time = track ? transferTime(widget, track, runtime.tracks, playbackHour, pinned ? storedSelection?.fromOffset : null) : { moment: -Infinity, from: -Infinity };
   const { moment, from: rangeFrom } = time;
   const wholeCampaign = widget.time.mode === 'campaign';
-  const transfers = useMemo(() => data && decodeTransfers(data), [data]);
   const conferenceThrough = transfers ? transferCutoff(transfers.conferenceHours, moment) : -Infinity;
   const available = useMemo(() => data ? visibleConferences(data.deals, conferenceThrough, rangeFrom) : [], [data, conferenceThrough, rangeFrom]);
   const conference = useMemo(() => {
@@ -87,11 +92,6 @@ export default function TerritoryTransfersWidget({ widget, runtime, active, onDi
     const rows = countryBalances(shown);
     return filtered ? rows.filter(row => match.matches(row.side.tag, row.side.hour)) : rows;
   }, [shown, filtered, match]);
-  if (import.meta.env.MODE === 'parity') useParityRows(drillAnchor, () => ({ kind: 'table', label: 'Territory transfer values', complete: true, total: shown.length,
-    rows: shown.map((row, index) => ({ index, key: row.key, item: { ...row, victoryPoints: row.victoryPoints?.toString() ?? null } })),
-    countries: balances.map(row => ({ key: row.key, side: row.side, gained: row.gained, lost: row.lost,
-      gainedVictoryPoints: row.gainedVictoryPoints?.toString() ?? null, lostVictoryPoints: row.lostVictoryPoints?.toString() ?? null,
-      from: [...row.from], to: [...row.to], unattributed: row.unattributed, first: row.first, last: row.last })) }));
   const selectionMissing = useMemo(() => pinned && storedSelection ? selectedTransfers(scoped, storedSelection).missing : 0, [pinned, storedSelection, scoped]);
 
   useEffect(() => {
@@ -161,10 +161,9 @@ export default function TerritoryTransfersWidget({ widget, runtime, active, onDi
 
   if (!track) return <WidgetState kind="empty" icon="flows" message="Load a campaign to see territory transfers." />;
   if (moment < track.branch.firstHour || moment > track.branch.lastHour) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  // A prepared prefix may still omit transfers; pending hours are not missing data.
   const failure = error ? <WidgetState kind="error" failure={error} onRetry={retry} /> : null;
   if (failure && !data) return failure;
-  if (!data || !transfers) return preparing ? <PreparedLogCoverage coverage={null} /> : <WidgetState kind="loading" label="Loading territory transfers…" />;
+  if (!data || !transfers) return <WidgetState kind="loading" label="Loading territory transfers…" />;
   if (pinned && selectionMissing) return failure ?? <WidgetState kind="unavailable" message={`${usNumber.format(selectionMissing)} selected transfer links are not recorded in this scope.`} />;
   if (scope === 'conference' && !conference) return failure ?? <WidgetState kind="empty" message={selectedToken ? 'This conference is outside the selected recorded interval.' : 'No peace conferences yet.'} />;
   // Chosen countries need the country groups' identity history: a failed read says so and can be retried.
@@ -176,16 +175,12 @@ export default function TerritoryTransfersWidget({ widget, runtime, active, onDi
   const gapHint = transferGapHint(transferGaps(data, Math.max(rangeFrom, gapFrom), until));
   const count = pinned ? drillRows.length : shown.length;
   const header = headerSlot && count > 0 && createPortal(<span className="pill">{usNumber.format(count)} {count === 1 ? 'transfer' : 'transfers'}</span>, headerSlot);
-  // Before preparation covers the branch, the transfers its prepared prefix settled.
   const notes = <>
-    <PreparedLogCoverage coverage={preparedPrefix(data)?.coverage} />
     {conference && <p className="transfer-note">{transferConferenceLabel(conference)}</p>}
     {gapHint && <p className="transfer-note has-hint" data-tooltip={gapHint}>Some transfers may be missing.</p>}
   </>;
   const first = Math.max(track.branch.firstHour, rangeFrom);
-  // A side at an hour whose group membership is still being prepared is unknown, not outside the choice.
-  const empty = filtered && !match.known(first, moment) ? <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />
-    : <WidgetState kind="empty" message={transferEmptyMessage(filtered)} />;
+  const empty = <WidgetState kind="empty" message={transferEmptyMessage(filtered)} />;
   const last = widget.time.mode === 'range' ? moment : track.branch.lastHour;
   const drillBody = <TransferDrill rows={drillRows} focus={focus} named={pinned} outside={drillAt < first || drillAt > last}
     {...tables} sort={pinned ? transferSort : TRANSFER_SORT} setOption={pinned ? transferSetOption : undefined}

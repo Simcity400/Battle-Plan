@@ -240,7 +240,6 @@ impl Store {
                 identity,
                 refusal.reason,
                 true,
-                false,
             )?;
         } else {
             self.refuse_delayed_owner(
@@ -252,7 +251,6 @@ impl Store {
                 Some(country.canonical_slot as usize),
                 refusal.reason,
                 true,
-                false,
             )?;
         }
         if refusal.retry {
@@ -326,6 +324,33 @@ impl Store {
         // measured by this preflight, never a later unprepared larger count.
         let controls = self.owner_control_demand(plan.country);
         let demand = self.prepare_owner_budget(plan, controls);
+        // The plan's measured demand grows the store here; only a failed
+        // allocation leaves it short, which refuses the owner by name.
+        if demand[0] > self.capacity() {
+            let _ = self.prepare_capacity(demand[0] - self.entries.len());
+        }
+        if demand[1] > self.script_tokens.len() || demand[2] > self.script_scopes.len() {
+            let _ = self.prepare_scripts(
+                demand[1].max(self.script_tokens.len()),
+                demand[2].max(self.script_scopes.len()),
+                self.scope_nodes.len(),
+            );
+        }
+        let delayed = self.prepared_delayed_demand(
+            &plan.source,
+            plan.country,
+            plan.completed(OwnerRegistry::Delayed as usize),
+        );
+        if delayed > self.delayed.capacity() {
+            let _ = self.prepare_delayed(delayed);
+        }
+        let decisions = self.prepared_decision_demand(
+            &plan.source,
+            plan.completed(OwnerRegistry::Decisions as usize),
+        );
+        if decisions > self.decisions.capacity() {
+            let _ = self.prepare_decisions(decisions);
+        }
         let space = demand[0] <= self.capacity()
             && demand[1] <= self.script_tokens.len()
             && demand[2] <= self.script_scopes.len();
@@ -335,17 +360,8 @@ impl Store {
             self.owner_controls = controls;
         }
         let fits = [
-            space
-                && self.prepared_delayed_demand(
-                    &plan.source,
-                    plan.country,
-                    plan.completed(OwnerRegistry::Delayed as usize),
-                ) <= self.delayed.capacity(),
-            space
-                && self.prepared_decision_demand(
-                    &plan.source,
-                    plan.completed(OwnerRegistry::Decisions as usize),
-                ) <= self.decisions.capacity(),
+            space && delayed <= self.delayed.capacity(),
+            space && decisions <= self.decisions.capacity(),
         ];
         let mut publish = [false; 2];
         for registry in 0..2 {

@@ -102,7 +102,6 @@ pub fn walk_country_buffer(
                         (template.id_len <= 15
                             && u64::from_le_bytes(header[24..32].try_into().unwrap()) == 15)
                             .then_some(&header[..]),
-                        output.is_growing(),
                     )?;
                     row.classifier = instance.row.classifier;
                     row.technology_pointer = technology;
@@ -194,7 +193,6 @@ pub fn walk_country_buffer(
                 base,
                 status,
                 &mut bonuses[..bonus_len],
-                output.is_growing(),
             )
         {
             bonus_error = Some(reason);

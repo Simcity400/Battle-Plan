@@ -6,7 +6,7 @@ use installed_content_core::{
 };
 use installed_content_regions::regions::StrategicRegion;
 use installed_content_unit_path::unit_path::Fact;
-use replay_data::{rows::DivisionRow, rows::tables};
+use replay_data::{rows::DivisionMovementRow, rows::DivisionRow, rows::tables};
 use replay_derive::{
     eta_derive, eta_derive::Defines, eta_derive::OrganisationDefines, eta_derive::ProvinceOperands,
     eta_derive::RailDefines, eta_derive::frame_terms::Geography,
@@ -536,9 +536,7 @@ fn derive(frame: &DecodedFrame, content: Option<&MovementContent>) -> io::Result
                 );
             }
         }
-        match terms.with_terms(division, row, content, defines, |terms| {
-            eta_derive::estimate(row, at, province, distance, terms, defines)
-        }) {
+        match estimate_with(row, division, &terms, content) {
             Ok(pair) => {
                 etas.by_division.insert(row.division, pair);
             }
@@ -548,6 +546,26 @@ fn derive(frame: &DecodedFrame, content: Option<&MovementContent>) -> io::Result
     etas.report.estimated = etas.by_division.len();
     etas.report.progress_refused = etas.progress_gaps.len();
     Ok(etas)
+}
+
+/// One moving division's estimate, as [`Etas::read`] makes each.
+fn estimate_with(row: &DivisionMovementRow, division: &DivisionRow, terms: &HourTerms<'_>, content: &MovementContent) -> Result<(i64, i64), String> {
+    let (map, defines) = (&content.map, &content.defines);
+    let province = |id| operands(map, id);
+    let distance = |from, to| map.distance(from, to);
+    terms.with_terms(division, row, content, defines, |terms| {
+        eta_derive::estimate(row, division.province, province, distance, terms, defines)
+    })
+}
+
+/// One division's estimate as [`Etas::get`] gives it from the hour's whole [`Etas`]: `None` for a
+/// division without a route, without content, without its Divisions row (`division`), or whose
+/// estimate the hour refuses. For a caller that reads a few divisions, not the world.
+pub fn estimate_one(row: &DivisionMovementRow, division: Option<&DivisionRow>, terms: &HourTerms<'_>, content: Option<&MovementContent>) -> Option<(i64, i64)> {
+    if row.path_total == 0 {
+        return None;
+    }
+    estimate_with(row, division?, terms, content?).ok()
 }
 
 /// The counter arrival line's duration for a division: the

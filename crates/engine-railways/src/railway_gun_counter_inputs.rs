@@ -480,118 +480,8 @@ fn flag(memory: &impl Memory, address: usize, reason: &'static str) -> Result<bo
         .ok_or(reason)
 }
 
-/// Walks each canonical country's native railway-gun roster.
-///
-/// A null counted roster slot refuses the census. Every unit is checked
-/// against its exact class and vtables, the reference registry, its roster
-/// country and the province roster. Routes are copied whole and in native
-/// order into `paths`. Running out of rows or path cells truncates the table
-/// with the exact demand, so the next capture can grow; a gun is never
-/// published stationary or with a partial route. The kept rows are not always a
-/// prefix of the census: once a long route misses the path arena, a later gun
-/// whose route still fits is kept, so a truncated hour holds whole guns in
-/// native order with gaps, never a partial one. Row and path capacity are the
-/// caller's, sized from observed demand; nothing here caps the census.
-///
-/// `combats` is the capture's first-combat memo, cleared by the caller for each
-/// capture and reserved off the game thread.
-pub fn walk(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut [Row],
-    paths: &mut [u32],
-    combats: &mut cunit::FirstCombatMemo,
-) -> Walk {
-    walk_impl(
-        memory,
-        base,
-        game_state,
-        Buffer::Fixed(output),
-        Buffer::Fixed(paths),
-        combats,
-        None,
-        None,
-        None,
-    )
-}
-
-#[cfg(test)]
-pub fn walk_with_names(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut [Row],
-    paths: &mut [u32],
-    combats: &mut cunit::FirstCombatMemo,
-    names: &mut NameArena<'_>,
-) -> Walk {
-    walk_impl(
-        memory,
-        base,
-        game_state,
-        Buffer::Fixed(output),
-        Buffer::Fixed(paths),
-        combats,
-        Some(names),
-        None,
-        None,
-    )
-}
-
 #[allow(clippy::too_many_arguments)]
-#[cfg(test)]
-pub fn walk_with_tooltip_inputs(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut [Row],
-    paths: &mut [u32],
-    combats: &mut cunit::FirstCombatMemo,
-    names: &mut NameArena<'_>,
-    tooltip: &mut TooltipScratch<'_>,
-) -> Walk {
-    walk_impl(
-        memory,
-        base,
-        game_state,
-        Buffer::Fixed(output),
-        Buffer::Fixed(paths),
-        combats,
-        Some(names),
-        Some(tooltip),
-        None,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-#[cfg(test)]
 pub fn walk_with_tooltip_and_combat_references(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut [Row],
-    paths: &mut [u32],
-    combats: &mut cunit::FirstCombatMemo,
-    names: &mut NameArena<'_>,
-    tooltip: &mut TooltipScratch<'_>,
-    references: &mut CombatReferencesArena<'_>,
-) -> Walk {
-    walk_impl(
-        memory,
-        base,
-        game_state,
-        Buffer::Fixed(output),
-        Buffer::Fixed(paths),
-        combats,
-        Some(names),
-        Some(tooltip),
-        Some(references),
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn walk_with_tooltip_and_combat_references_growing(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -687,9 +577,8 @@ fn walk_impl(
                     if let Some(arena) = references.as_mut() {
                         let start = arena.used;
                         let invalid_start = start > arena.entries.len();
-                        let mut empty = [];
                         let entries = if invalid_start {
-                            Buffer::Fixed(&mut empty)
+                            Buffer::Count
                         } else {
                             arena.entries.suffix(start)
                         };

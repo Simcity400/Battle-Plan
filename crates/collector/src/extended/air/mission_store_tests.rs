@@ -260,7 +260,7 @@ fn walk(world: &World, store: &mut MissionStore, watches: &Watches) -> Hour {
 /// What a fresh walk publishes.
 fn fresh(world: &World, census: &[WingIdentity]) -> (Outcome, Vec<Row>) {
     let mut rows = Vec::new();
-    let outcome = engine_native::cair_regional_mission::walk_with_diagnostic_growing(
+    let outcome = engine_native::cair_regional_mission::walk_with_diagnostic(
         &SliceMemory {
             base: 0,
             bytes: &world.bytes,
@@ -572,7 +572,7 @@ fn a_census_disagreement_reads_the_country_afresh_with_the_fresh_outcome() {
             0,
             GS,
             &census,
-            &mut [Row::default(); 32],
+            &mut vec![Row::default(); 32],
             &mut failure,
         );
         assert!(

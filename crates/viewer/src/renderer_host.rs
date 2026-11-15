@@ -123,95 +123,125 @@ impl RendererSession {
             }
         }
     }
+}
 
-    #[expect(clippy::too_many_arguments)]
+/// The map window's surface, configured for its size and present mode.
+pub(crate) struct WindowSurface {
+    surface: wgpu::Surface<'static>,
+    configured: Option<([u32; 2], egui_wgpu::SurfaceConfig)>,
+}
+
+impl WindowSurface {
+    pub(crate) fn new(surface: wgpu::Surface<'static>) -> Self {
+        Self { surface, configured: None }
+    }
+
+    fn configure(&mut self, state: &egui_wgpu::RenderState, size: [u32; 2], config: egui_wgpu::SurfaceConfig) -> Result<(), String> {
+        let default = self
+            .surface
+            .get_default_config(&state.adapter, size[0], size[1])
+            .ok_or("The map's surface is not supported by its adapter")?;
+        let mut configuration = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format: state.target_format,
+            present_mode: config.present_mode,
+            alpha_mode: wgpu::CompositeAlphaMode::Auto,
+            view_formats: vec![state.target_format],
+            ..default
+        };
+        if let Some(latency) = config.desired_maximum_frame_latency {
+            configuration.desired_maximum_frame_latency = latency;
+        }
+        self.surface.configure(&state.device, &configuration);
+        self.configured = Some((size, config));
+        Ok(())
+    }
+
+    /// Draws a frame's egui output into the window and presents it, or only takes its texture
+    /// changes when `size` is `None` (the window hidden): the seconds spent waiting for a swap
+    /// chain image.
+    #[expect(clippy::too_many_arguments, reason = "one frame's paint inputs, as eframe's painter takes them")]
     pub(crate) fn paint(
-        &self,
-        painter: &mut egui_wgpu::winit::Painter,
-        viewport_id: egui::ViewportId,
+        &mut self,
+        state: &egui_wgpu::RenderState,
+        config: egui_wgpu::SurfaceConfig,
+        size: Option<[u32; 2]>,
         pixels_per_point: f32,
         clear_color: [f32; 4],
         clipped_primitives: &[egui::ClippedPrimitive],
         textures_delta: &mut egui::TexturesDelta,
-        capture_data: Vec<egui::UserData>,
-        window: &Arc<eframe::PaintWindow>,
-    ) -> f32 {
-        if skip_present() && capture_data.is_empty()
-            && let Some(state) = painter.render_state()
-        {
-            return paint_unpresented(&state, pixels_per_point, clear_color, clipped_primitives, textures_delta, window);
+    ) -> Result<f32, String> {
+        let Some(size) = size else {
+            update_textures(state, textures_delta);
+            free_textures(state, textures_delta);
+            return Ok(0.0);
+        };
+        if skip_present() {
+            return Ok(paint_unpresented(state, size, pixels_per_point, clear_color, clipped_primitives, textures_delta));
         }
-        painter.paint_and_update_textures(
-            viewport_id,
-            pixels_per_point,
-            clear_color,
-            clipped_primitives,
-            textures_delta,
-            capture_data,
-            window,
-        )
+        if self.configured != Some((size, config)) {
+            self.configure(state, size, config)?;
+        }
+        let waiting = std::time::Instant::now();
+        let texture = match self.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(texture) | wgpu::CurrentSurfaceTexture::Suboptimal(texture) => texture,
+            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
+                // Configured again for the next frame; this one keeps its texture changes.
+                self.configured = None;
+                update_textures(state, textures_delta);
+                free_textures(state, textures_delta);
+                return Ok(0.0);
+            }
+            _ => {
+                update_textures(state, textures_delta);
+                free_textures(state, textures_delta);
+                return Ok(0.0);
+            }
+        };
+        let acquire = waiting.elapsed().as_secs_f32();
+        let view = texture.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        draw(state, &view, size, pixels_per_point, clear_color, clipped_primitives, textures_delta);
+        state.queue.present(texture);
+        Ok(acquire)
     }
 }
 
-/// Measurement only (`BATTLE_PLAN_PERF_SKIP_MAP_PRESENT`): every frame is drawn as usual but into a
-/// texture of the window's size, never presented, so a run can compare the page's frame rate with
-/// the map drawing but not composited against the map presenting.
-fn skip_present() -> bool {
-    static SKIP: std::sync::LazyLock<bool> =
-        std::sync::LazyLock::new(|| std::env::var_os("BATTLE_PLAN_PERF_SKIP_MAP_PRESENT").or_else(|| std::env::var_os("HOI4_PERF_SKIP_MAP_PRESENT")).is_some());
-    *SKIP
+fn update_textures(state: &egui_wgpu::RenderState, textures_delta: &mut egui::TexturesDelta) {
+    let mut renderer = state.renderer.write();
+    for (id, deltas) in textures_delta.set.drain() {
+        for delta in deltas {
+            renderer.update_texture(&state.device, &state.queue, id, &delta);
+        }
+    }
 }
 
-thread_local! {
-    /// The texture unpresented frames are drawn into, kept while the window keeps its size.
-    static UNPRESENTED: std::cell::RefCell<Option<(wgpu::TextureView, [u32; 2], wgpu::TextureFormat)>> =
-        const { std::cell::RefCell::new(None) };
+fn free_textures(state: &egui_wgpu::RenderState, textures_delta: &mut egui::TexturesDelta) {
+    let mut renderer = state.renderer.write();
+    for id in textures_delta.free.drain() {
+        renderer.free_texture(&id);
+    }
 }
 
-fn paint_unpresented(
+/// One frame's egui output drawn into `view` and submitted.
+fn draw(
     state: &egui_wgpu::RenderState,
+    view: &wgpu::TextureView,
+    size: [u32; 2],
     pixels_per_point: f32,
     clear_color: [f32; 4],
     clipped_primitives: &[egui::ClippedPrimitive],
     textures_delta: &mut egui::TexturesDelta,
-    window: &eframe::PaintWindow,
-) -> f32 {
-    let size = window.inner_size();
-    let size = [size.width.max(1), size.height.max(1)];
-    let view = UNPRESENTED.with_borrow_mut(|held| {
-        if !held.as_ref().is_some_and(|(_, at, format)| *at == size && *format == state.target_format) {
-            let texture = state.device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("unpresented map frame"),
-                size: wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: 1 },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: state.target_format,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-                view_formats: &[],
-            });
-            *held = Some((texture.create_view(&wgpu::TextureViewDescriptor::default()), size, state.target_format));
-        }
-        held.as_ref().map(|(view, _, _)| view.clone())
-    });
-    let Some(view) = view else { return 0.0 };
+) {
     let screen = egui_wgpu::ScreenDescriptor { size_in_pixels: size, pixels_per_point };
-    let mut encoder = state.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("unpresented map frame") });
-    let user = {
-        let mut renderer = state.renderer.write();
-        for (id, deltas) in textures_delta.set.drain() {
-            for delta in deltas {
-                renderer.update_texture(&state.device, &state.queue, id, &delta);
-            }
-        }
-        renderer.update_buffers(&state.device, &state.queue, &mut encoder, clipped_primitives, &screen)
-    };
+    let mut encoder = state.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("map frame") });
+    update_textures(state, textures_delta);
+    let user = state.renderer.write().update_buffers(&state.device, &state.queue, &mut encoder, clipped_primitives, &screen);
     {
         let renderer = state.renderer.read();
         let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("unpresented map frame"),
+            label: Some("map frame"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &view,
+                view,
                 resolve_target: None,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(wgpu::Color {
@@ -232,12 +262,51 @@ fn paint_unpresented(
         renderer.render(&mut pass.forget_lifetime(), clipped_primitives, &screen);
     }
     state.queue.submit(user.into_iter().chain([encoder.finish()]));
-    {
-        let mut renderer = state.renderer.write();
-        for id in textures_delta.free.drain() {
-            renderer.free_texture(&id);
+    free_textures(state, textures_delta);
+}
+
+/// Measurement only (`BATTLE_PLAN_PERF_SKIP_MAP_PRESENT`): every frame is drawn as usual but into a
+/// texture of the window's size, never presented, so a run can compare the page's frame rate with
+/// the map drawing but not composited against the map presenting.
+fn skip_present() -> bool {
+    static SKIP: std::sync::LazyLock<bool> =
+        std::sync::LazyLock::new(|| std::env::var_os("BATTLE_PLAN_PERF_SKIP_MAP_PRESENT").or_else(|| std::env::var_os("HOI4_PERF_SKIP_MAP_PRESENT")).is_some());
+    *SKIP
+}
+
+thread_local! {
+    /// The texture unpresented frames are drawn into, kept while the window keeps its size.
+    static UNPRESENTED: std::cell::RefCell<Option<(wgpu::TextureView, [u32; 2], wgpu::TextureFormat)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn paint_unpresented(
+    state: &egui_wgpu::RenderState,
+    size: [u32; 2],
+    pixels_per_point: f32,
+    clear_color: [f32; 4],
+    clipped_primitives: &[egui::ClippedPrimitive],
+    textures_delta: &mut egui::TexturesDelta,
+) -> f32 {
+    let size = [size[0].max(1), size[1].max(1)];
+    let view = UNPRESENTED.with_borrow_mut(|held| {
+        if !held.as_ref().is_some_and(|(_, at, format)| *at == size && *format == state.target_format) {
+            let texture = state.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("unpresented map frame"),
+                size: wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: state.target_format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            });
+            *held = Some((texture.create_view(&wgpu::TextureViewDescriptor::default()), size, state.target_format));
         }
-    }
+        held.as_ref().map(|(view, _, _)| view.clone())
+    });
+    let Some(view) = view else { return 0.0 };
+    draw(state, &view, size, pixels_per_point, clear_color, clipped_primitives, textures_delta);
     // Paced by the display's compositions, as a presented frame is by its swap chain.
     let started = std::time::Instant::now();
     #[cfg(windows)]

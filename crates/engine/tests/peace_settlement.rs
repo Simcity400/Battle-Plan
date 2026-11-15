@@ -8,14 +8,16 @@ use engine_peace::{
 mod fixture;
 use fixture::Fixture;
 
+use engine_native::walk::Buffer;
+
 #[test]
-fn peace_owned_native_order_mod_tokens_statuses_and_capacity() {
+fn peace_owned_native_order_mod_tokens_and_statuses() {
     let mut f = Fixture::new(2, 5);
     f.u32(0x20000 + 0x70 + peace_action::STATUS, 3);
     f.u32(0x20000 + 3 * 0x70 + peace_action::STATUS, 4);
-    let mut actions = [Action::default(); 5];
-    let mut winners = [0; 2];
-    let snapshot = f.copy(&mut winners, &mut actions);
+    let mut actions = vec![Action::default(); 5];
+    let mut winners = vec![0; 2];
+    let snapshot = f.copy(Buffer::Growing(&mut winners), Buffer::Growing(&mut actions));
     assert_eq!(snapshot.failure, None);
     assert_eq!(snapshot.actions, 3);
     assert_eq!(snapshot.omitted, 0);
@@ -27,10 +29,6 @@ fn peace_owned_native_order_mod_tokens_statuses_and_capacity() {
     assert_eq!(actions[2].operands.token, 0x90000004);
     assert_eq!(actions[0].operands.flags, Some([1, 2, 3, 4]));
     assert_eq!(actions[0].operands.negotiator, 0xc0000000);
-    let truncated = f.copy(&mut winners[..1], &mut actions[..1]);
-    assert_eq!(truncated.failure, None);
-    assert_eq!(truncated.omitted, 1);
-    assert_eq!(truncated.actions, 0);
 }
 
 #[test]
@@ -38,7 +36,7 @@ fn peace_authentication_short_reads_and_cycles_never_become_empty_success() {
     let mut f = Fixture::new(0, 1);
     f.u64(0x20000, 99);
     assert_eq!(
-        f.copy(&mut [], &mut [Action::default()]).failure,
+        f.copy(Buffer::Count, Buffer::Growing(&mut vec![Action::default()])).failure,
         Some("peace action vtable unsupported")
     );
     f.u64(0x20000, engine_peace::ctake_state_action::VTABLE_RVA.0 as u64);
@@ -47,12 +45,12 @@ fn peace_authentication_short_reads_and_cycles_never_become_empty_success() {
     f.u64(0xa00, 0x20000);
     f.bytes.truncate(0x20000 + 0x4f);
     assert_eq!(
-        f.copy(&mut [], &mut [Action::default()]).failure,
+        f.copy(Buffer::Count, Buffer::Growing(&mut vec![Action::default()])).failure,
         Some("peace action operands unreadable")
     );
     let mut f = Fixture::new(0, 1);
     f.u64(0x610, 0x600);
-    assert!(f.copy(&mut [], &mut [Action::default()]).failure.is_some());
+    assert!(f.copy(Buffer::Count, Buffer::Growing(&mut vec![Action::default()])).failure.is_some());
 }
 
 #[test]
@@ -108,30 +106,12 @@ fn peace_countries_and_actions_scale_linearly_at_design_and_stress_sizes() {
         let f = Fixture::new(size, size);
         let mut winners = vec![0; size];
         let mut actions = vec![Action::default(); f.actions];
-        let result = f.copy(&mut winners, &mut actions);
+        let result = f.copy(Buffer::Growing(&mut winners), Buffer::Growing(&mut actions));
         assert_eq!(result.failure, None);
         assert_eq!(result.winners, size);
         assert_eq!(result.actions, size);
         assert_eq!(actions[size - 1].ordinal, (size - 1) as u32);
     }
-}
-
-#[test]
-fn peace_full_action_arena_stops_before_reading_unstored_operands() {
-    let mut f = Fixture::new(0, 5000);
-    // An accepted navy bid whose selected ship cannot be read: only its status is needed.
-    f.u64(
-        0x20000 + 0x70,
-        engine_peace::ctake_navy_peace_action::VTABLE_RVA.0 as u64,
-    );
-    f.u64(
-        0x20000 + 0x70 + engine_peace::ctake_navy_peace_action::SHIP,
-        0xdead_0000,
-    );
-    let result = f.copy(&mut [], &mut [Action::default()]);
-    assert_eq!(result.failure, None);
-    assert_eq!(result.actions, 1);
-    assert_eq!(result.omitted, 4999);
 }
 
 #[test]
@@ -149,20 +129,20 @@ fn peace_excluded_bids_never_fill_or_truncate_a_settlement() {
         0x20000 + 2 * 0x70 + engine_peace::ctake_navy_peace_action::SHIP,
         0xdead_0000,
     );
-    let mut actions = [Action::default()];
-    let result = f.copy(&mut [], &mut actions);
+    let mut actions = vec![Action::default()];
+    let result = f.copy(Buffer::Count, Buffer::Growing(&mut actions));
     assert_eq!(result.failure, None);
     assert_eq!((result.actions, result.omitted), (1, 0));
     assert_eq!(actions[0].ordinal, 0);
     // With no accepted bid at all, an empty action arena is enough.
     f.u32(0x20000 + peace_action::STATUS, 3);
-    let result = f.copy(&mut [], &mut []);
+    let result = f.copy(Buffer::Count, Buffer::Count);
     assert_eq!(result.failure, None);
     assert_eq!((result.actions, result.omitted), (0, 0));
     // An excluded bid is still authenticated before its status is trusted.
     f.u64(0x20000 + 0x70, 99);
     assert_eq!(
-        f.copy(&mut [], &mut []).failure,
+        f.copy(Buffer::Count, Buffer::Count).failure,
         Some("peace action vtable unsupported")
     );
     // Resident bids still keep every status, so the same arena truncates.
@@ -179,12 +159,12 @@ fn peace_excluded_bids_never_fill_or_truncate_a_settlement() {
         0,
         0x100,
         p::Output {
-            winners: &mut [],
-            losers: &mut [],
-            actions: &mut [],
-            transfers: &mut [],
-            subjects: &mut [],
-            name_bytes: &mut [],
+            winners: engine_native::walk::Buffer::Count,
+            losers: engine_native::walk::Buffer::Count,
+            actions: engine_native::walk::Buffer::Count,
+            transfers: engine_native::walk::Buffer::Count,
+            subjects: engine_native::walk::Buffer::Count,
+            name_bytes: engine_native::walk::Buffer::Count,
         },
     );
     assert_eq!(bids.failure, None);
@@ -219,12 +199,12 @@ fn peace_tree_cycle_budget_follows_the_live_header_size() {
         0,
         0x100,
         p::Output {
-            winners: &mut [],
-            losers: &mut [],
-            actions: &mut [],
-            transfers: &mut [],
-            subjects: &mut [],
-            name_bytes: &mut [],
+            winners: engine_native::walk::Buffer::Count,
+            losers: engine_native::walk::Buffer::Count,
+            actions: engine_native::walk::Buffer::Count,
+            transfers: engine_native::walk::Buffer::Count,
+            subjects: engine_native::walk::Buffer::Count,
+            name_bytes: engine_native::walk::Buffer::Count,
         },
     );
     assert_eq!(result.failure, Some("peace history cycle"));
@@ -284,24 +264,24 @@ fn peace_guarded_fixture_copies_populated_transfer_arrays() {
     f.populate_transfers(3);
     let (base, pointer) = f.rebase_image(91);
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
-    let mut transfers = [Transfer::default(); 3];
+    let mut transfers = vec![Transfer::default(); 3];
     let result = p::copy(
         &memory,
         base,
         pointer,
         p::Output {
-            winners: &mut [0; 2],
-            losers: &mut [],
-            actions: &mut [Action::default(); 3],
-            transfers: &mut transfers,
-            subjects: &mut [],
-            name_bytes: &mut [],
+            winners: engine_native::walk::Buffer::Growing(&mut vec![0; 2]),
+            losers: engine_native::walk::Buffer::Count,
+            actions: engine_native::walk::Buffer::Growing(&mut vec![Action::default(); 3]),
+            transfers: engine_native::walk::Buffer::Growing(&mut transfers),
+            subjects: engine_native::walk::Buffer::Count,
+            name_bytes: engine_native::walk::Buffer::Count,
         },
     );
     assert_eq!(result.failure, None);
     assert_eq!(result.omitted, 0);
     assert_eq!(result.transfers, 3);
-    assert_eq!(transfers.map(|t| t.state), [0, 1, 2]);
+    assert_eq!(transfers.iter().map(|t| t.state).collect::<Vec<_>>(), [0, 1, 2]);
 }
 
 #[test]
@@ -309,7 +289,7 @@ fn peace_resident_bids_keep_rejected_actions_and_navy_references_are_owned() {
     let mut f = Fixture::new(0, 2);
     f.bytes[0x100 + c::FINALIZED] = 0;
     f.u32(0x20000 + peace_action::STATUS, 3);
-    let mut actions = [Action::default(); 2];
+    let mut actions = vec![Action::default(); 2];
     let row = p::copy_bids(
         &SliceMemory {
             base: 0,
@@ -318,19 +298,19 @@ fn peace_resident_bids_keep_rejected_actions_and_navy_references_are_owned() {
         0,
         0x100,
         p::Output {
-            winners: &mut [],
-            losers: &mut [],
-            actions: &mut actions,
-            transfers: &mut [],
-            subjects: &mut [],
-            name_bytes: &mut [],
+            winners: engine_native::walk::Buffer::Count,
+            losers: engine_native::walk::Buffer::Count,
+            actions: engine_native::walk::Buffer::Growing(&mut actions),
+            transfers: engine_native::walk::Buffer::Count,
+            subjects: engine_native::walk::Buffer::Count,
+            name_bytes: engine_native::walk::Buffer::Count,
         },
     );
     assert_eq!(row.failure, None);
     assert_eq!(row.actions, 2);
     assert_eq!(actions[0].operands.status, 3);
     assert_eq!(
-        f.copy(&mut [], &mut actions).failure,
+        f.copy(Buffer::Count, Buffer::Growing(&mut actions)).failure,
         Some("peace settlement finalized byte differs")
     );
 
@@ -389,7 +369,7 @@ fn peace_automatic_transfers_are_separate_and_owned() {
     );
     f.u32(0xd00, 7777);
     f.u32(0xd04, 42);
-    let mut transfers = [Transfer::default(); 2];
+    let mut transfers = vec![Transfer::default(); 2];
     let result = p::copy(
         &SliceMemory {
             base: 0,
@@ -398,18 +378,18 @@ fn peace_automatic_transfers_are_separate_and_owned() {
         0,
         0x100,
         p::Output {
-            winners: &mut [],
-            losers: &mut [],
-            actions: &mut [],
-            transfers: &mut transfers,
-            subjects: &mut [Subject::default()],
-            name_bytes: &mut [],
+            winners: engine_native::walk::Buffer::Count,
+            losers: engine_native::walk::Buffer::Count,
+            actions: engine_native::walk::Buffer::Count,
+            transfers: engine_native::walk::Buffer::Growing(&mut transfers),
+            subjects: engine_native::walk::Buffer::Growing(&mut vec![Subject::default()]),
+            name_bytes: engine_native::walk::Buffer::Count,
         },
     );
     assert_eq!(result.failure, None);
     assert_eq!(result.actions, 0);
     assert_eq!(
-        transfers.map(|t| (t.state, t.taker, t.automatic)),
+        transfers.iter().map(|t| (t.state, t.taker, t.automatic)).collect::<Vec<_>>(),
         [(7777, 0xe0000001, true), (42, 0xe0000001, true)]
     );
 }
@@ -435,12 +415,12 @@ fn peace_native_headers_and_full_capture_exceed_former_limits() {
         0,
         0x100,
         p::Output {
-            winners: &mut winners,
-            losers: &mut [],
-            actions: &mut actions,
-            transfers: &mut transfers,
-            subjects: &mut [],
-            name_bytes: &mut [],
+            winners: engine_native::walk::Buffer::Growing(&mut winners),
+            losers: engine_native::walk::Buffer::Count,
+            actions: engine_native::walk::Buffer::Growing(&mut actions),
+            transfers: engine_native::walk::Buffer::Growing(&mut transfers),
+            subjects: engine_native::walk::Buffer::Count,
+            name_bytes: engine_native::walk::Buffer::Count,
         },
     );
     assert_eq!(copied, demand);
@@ -455,8 +435,8 @@ fn peace_rejected_actions_do_not_limit_native_scan_work() {
     for i in 0..f.actions - 1 {
         f.u32(0x20000 + i * 0x70 + peace_action::STATUS, 3);
     }
-    let mut actions = [Action::default()];
-    let copied = f.copy(&mut [], &mut actions);
+    let mut actions = vec![Action::default()];
+    let copied = f.copy(Buffer::Count, Buffer::Growing(&mut actions));
     assert_eq!(copied.failure, None);
     assert_eq!(copied.omitted, 0);
     assert_eq!(copied.actions, 1);
@@ -485,7 +465,7 @@ fn peace_empty_history_and_turns_follow_native_sizes() {
         );
         f.u32(node + engine_peace::peace_history_node::COUNTRY, i as u32);
     }
-    let copied = f.copy(&mut [], &mut []);
+    let copied = f.copy(Buffer::Count, Buffer::Count);
     assert_eq!(copied.failure, None);
     assert_eq!(copied.omitted, 0);
     let mut f = Fixture::new(0, 0);
@@ -496,7 +476,7 @@ fn peace_empty_history_and_turns_follow_native_sizes() {
     for i in 0..count {
         f.u64(turns + i * 8, 0x900);
     }
-    let copied = f.copy(&mut [], &mut []);
+    let copied = f.copy(Buffer::Count, Buffer::Count);
     assert_eq!(copied.failure, None);
     assert_eq!(copied.omitted, 0);
 }
@@ -515,7 +495,7 @@ fn peace_beneficiaries_and_automatic_transfers_have_no_chosen_limit() {
     for i in 0..count {
         f.u64(participants + i * 8, 0xb00);
     }
-    let copied = f.copy(&mut [], &mut []);
+    let copied = f.copy(Buffer::Count, Buffer::Count);
     assert_eq!(copied.failure, None);
     assert_eq!(copied.omitted, 0);
     f.array(0x100 + c::LIBERATED_PARTICIPANTS, 0, 0, 8);
@@ -543,12 +523,12 @@ fn peace_beneficiaries_and_automatic_transfers_have_no_chosen_limit() {
         0,
         0x100,
         p::Output {
-            winners: &mut [],
-            losers: &mut [],
-            actions: &mut [],
-            transfers: &mut transfers,
-            subjects: &mut [],
-            name_bytes: &mut [],
+            winners: engine_native::walk::Buffer::Count,
+            losers: engine_native::walk::Buffer::Count,
+            actions: engine_native::walk::Buffer::Count,
+            transfers: engine_native::walk::Buffer::Growing(&mut transfers),
+            subjects: engine_native::walk::Buffer::Count,
+            name_bytes: engine_native::walk::Buffer::Count,
         },
     );
     assert_eq!(copied.failure, None);

@@ -265,7 +265,7 @@ impl PreparedAdjacencyIcons {
             .enumerate()
             .map(|(ordinal, placed)| (placed.province, ordinal))
             .collect();
-        let mut drawn = view.present_with_regions(
+        view.present_recorded(
             context,
             &Plan {
                 name: ADJACENCY_RULE_WINDOW,
@@ -275,18 +275,24 @@ impl PreparedAdjacencyIcons {
             },
             Box::new(|_, _| Ok(())),
             |_, _, _, _| Ok(()),
+            |_| (),
+            true,
             report,
         );
-        drawn.sort_by_key(|drawn| order[&drawn.owner]);
+        if view.quiet() {
+            return 0;
+        }
+        let (mut drawn, painted) = view.painted();
+        drawn.sort_by_key(|(drawn, _)| order[&drawn.owner]);
         let mut count = 0;
-        for drawn in drawn {
+        for (drawn, generation) in drawn {
             let ordinal = order[&drawn.owner];
             let layer = sprites::layer(priority, ordinal as u32, 0);
+            let anchor = Some(self.placed[ordinal].anchor);
             batch.at_layer(layer);
-            batch.at_anchor(Some(self.placed[ordinal].anchor));
-            if let Err(why) =
-                native_gui::draw(&drawn.layout, drawn.origin, context.resources, batch)
-            {
+            batch.at_anchor(anchor);
+            let draw = |batch: &mut Batch| native_gui::draw(&drawn.layout, drawn.origin, context.resources, batch);
+            if let Err(why) = painted.paint(drawn.owner, generation, layer, anchor, batch, draw) {
                 count_refused(report, ADJACENCY_RULE_WINDOW, &[why]);
                 continue;
             }
@@ -300,6 +306,7 @@ impl PreparedAdjacencyIcons {
             count += 1;
         }
         batch.at_anchor(None);
+        painted.finish();
         count
     }
 }

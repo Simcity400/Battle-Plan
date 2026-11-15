@@ -59,15 +59,15 @@ impl Row {
     }
 }
 
+pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
+    walk_buffer(memory, base, game_state, crate::walk::Buffer::Count)
+}
+
 /// Reads every allocated region's current annual-ring bucket for each country.
 /// An unallocated country air manager, history table or region slot is absent.
 /// A malformed allocated object makes the table unavailable. Capacity bounds
 /// row storage; remaining allocated histories are counted without field reads.
-pub fn walk(memory: &impl Memory, base: usize, game_state: usize, output: &mut [Row]) -> Outcome {
-    walk_buffer(memory, base, game_state, crate::walk::Buffer::Fixed(output))
-}
-
-pub fn walk_growing(
+pub fn walk(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -508,7 +508,7 @@ mod tests {
         f.bytes(VALUES + 81 * 8, &i64::MAX.to_le_bytes());
         // An unrecorded channel need not be readable.
         f.0.remove(&(VALUES + 4 * 8));
-        let mut output = [Row::default(); 2];
+        let mut output = vec![Row::default(); 2];
         assert_eq!(walk(&f, BASE, GAME, &mut output), Outcome::Rows { len: 1 });
         let row = output[0];
         assert_eq!(
@@ -537,7 +537,7 @@ mod tests {
     fn a_mid_batch_history_slot_fault_keeps_its_reason_and_stops_the_walk() {
         let mut f = Fixture::new();
         f.0.remove(&(0x41000 + 10 * 8 + 3));
-        let mut output = [Row::default(); 2];
+        let mut output = vec![Row::default(); 2];
         assert_eq!(
             walk(&f, BASE, GAME, &mut output),
             Outcome::Unavailable {
@@ -551,17 +551,17 @@ mod tests {
     fn allocated_history_capacity_and_absence_are_distinct_from_read_failure() {
         let mut f = Fixture::new();
         assert_eq!(
-            walk(&f, BASE, GAME, &mut []),
+            count(&f, BASE, GAME),
             Outcome::Truncated {
                 len: 0,
                 unread_rows: 1
             }
         );
         f.pointer(0x41000 + 23 * 8, 0);
-        assert_eq!(walk(&f, BASE, GAME, &mut []), Outcome::Rows { len: 0 });
+        assert_eq!(walk(&f, BASE, GAME, &mut Vec::new()), Outcome::Rows { len: 0 });
         f.0.remove(&(0x41000 + 23 * 8));
         assert!(matches!(
-            walk(&f, BASE, GAME, &mut []),
+            walk(&f, BASE, GAME, &mut Vec::new()),
             Outcome::Unavailable { .. }
         ));
     }
@@ -572,7 +572,7 @@ mod tests {
             let mut f = Fixture::new();
             f.pointer(0x41000 + 23 * 8, 0);
             f.pointer(0x41000 + region as usize * 8, HISTORY);
-            let mut output = [Row::default(); 1];
+            let mut output = vec![Row::default(); 1];
             assert_eq!(walk(&f, BASE, GAME, &mut output), Outcome::Rows { len: 1 });
             assert_eq!(output[0].region, region);
             assert_eq!(output[0].key(), (2_u64 << 32) | u64::from(region));
@@ -581,7 +581,7 @@ mod tests {
 
     #[test]
     fn circular_identity_and_record_schema_corruption_are_unavailable() {
-        let mut output = [Row::default(); 1];
+        let mut output = vec![Row::default(); 1];
         let corruptions = [
             (
                 WINDOW_OBJECT + loop_history_window::CURRENT_SLOT,
@@ -620,7 +620,7 @@ mod tests {
 
     #[test]
     fn unexpected_or_unreadable_manager_slots_cannot_hide_histories() {
-        let mut output = [Row::default(); 2];
+        let mut output = vec![Row::default(); 2];
         let mut f = Fixture::new();
         f.pointer(0x31010, AIR);
         assert_eq!(
@@ -648,16 +648,8 @@ mod tests {
             for index in 0..count as usize {
                 memory.pointer(0x100000 + index * 8, HISTORY);
             }
-            let mut fixed = [Row::default(); 1];
             assert_eq!(
-                walk(&memory, BASE, GAME, &mut fixed),
-                Outcome::Truncated {
-                    len: 1,
-                    unread_rows: count - 1
-                }
-            );
-            assert_eq!(
-                walk_growing(&memory, BASE, GAME, &mut output),
+                walk(&memory, BASE, GAME, &mut output),
                 Outcome::Rows {
                     len: count as usize
                 }
@@ -680,7 +672,7 @@ mod tests {
             memory.u32(WINDOW_OBJECT + loop_history_window::CURRENT_SLOT, count - 1);
             memory.pointer(0x100000 + (count as usize - 1) * 8, RECORD);
             assert_eq!(
-                walk_growing(&memory, BASE, GAME, &mut output),
+                walk(&memory, BASE, GAME, &mut output),
                 Outcome::Rows { len: 1 }
             );
             assert_eq!(
@@ -691,7 +683,7 @@ mod tests {
                 output[0].channels,
                 air_stats::CHANNELS.map(|channel| -(channel as i64) - 1)
             );
-            let mut fixed = [Row::default(); 1];
+            let mut fixed = vec![Row::default(); 1];
             assert_eq!(
                 walk(&memory, BASE, GAME, &mut fixed),
                 Outcome::Rows { len: 1 }
@@ -702,7 +694,7 @@ mod tests {
             let mut memory = Fixture::new();
             memory.u32(WINDOW_OBJECT + loop_history_window::CAPACITY, count);
             assert!(matches!(
-                walk_growing(&memory, BASE, GAME, &mut output),
+                walk(&memory, BASE, GAME, &mut output),
                 Outcome::Unavailable { .. }
             ));
         }

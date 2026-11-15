@@ -121,7 +121,7 @@ impl Renderer<'_, '_, '_> {
         }
         let features = self.character_table::<tables::SimulationFeatures>(FEATURES)?;
         let (1, Some(features)) = (features.len(), each(features).next().transpose()?) else {
-            return Err("SimulationFeatures has no unique feature mask".into());
+            return Err("simulation features has no unique feature mask".into());
         };
         Ok(features.dlc_mask & definition.feature_selector != 0)
     }

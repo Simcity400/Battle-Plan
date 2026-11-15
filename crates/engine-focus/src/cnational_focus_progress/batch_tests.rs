@@ -6,18 +6,18 @@ fn capture(
     country: u32,
     serial: bool,
 ) -> (FocusWalk, Vec<Row>, Vec<CompletedRow>, Vec<u8>) {
-    let mut rows = [Row::default()];
-    let mut completed = [CompletedRow::default(); 3];
-    let mut tokens = [0; 256];
+    let mut rows = vec![Row::default()];
+    let mut completed = vec![CompletedRow::default(); 3];
+    let mut tokens = vec![0; 256];
     let result = if serial {
         super::serial::walk_buffer(
             memory,
             0,
             World::country(country),
             country,
-            crate::walk::Buffer::Fixed(&mut rows),
-            crate::walk::Buffer::Fixed(&mut completed),
-            crate::walk::Buffer::Fixed(&mut tokens),
+            crate::walk::Buffer::Growing(&mut rows),
+            crate::walk::Buffer::Growing(&mut completed),
+            crate::walk::Buffer::Growing(&mut tokens),
         )
     } else {
         walk(
@@ -133,9 +133,9 @@ fn governance_batch_focus_truncation_keeps_serial_arenas_and_demand() {
                     0,
                     World::country(1),
                     1,
-                    crate::walk::Buffer::Fixed(&mut before_rows),
-                    crate::walk::Buffer::Fixed(&mut before_completed),
-                    crate::walk::Buffer::Fixed(&mut before_tokens),
+                    crate::walk::Buffer::Growing(&mut before_rows),
+                    crate::walk::Buffer::Growing(&mut before_completed),
+                    crate::walk::Buffer::Growing(&mut before_tokens),
                 );
                 let new = walk(
                     &world,

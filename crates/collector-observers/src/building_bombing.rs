@@ -149,14 +149,9 @@ pub fn boundary(clock: Option<Clock>) {
     MAX_HOUR_TICKS.fetch_max(ticks, Ordering::Relaxed);
     LEDGER.boundary(clock);
 }
-#[cfg(any(test, feature = "test-support"))]
 pub fn drain(output: &mut Vec<Entry>) -> Result<usize, &'static str> {
     drain_admitted()?;
     LEDGER.drain(output)
-}
-pub fn drain_growing(output: &mut Vec<Entry>) -> Result<usize, &'static str> {
-    drain_admitted()?;
-    LEDGER.drain_growing(output)
 }
 fn drain_admitted() -> Result<(), &'static str> {
     #[cfg(test)]
@@ -403,7 +398,7 @@ impl Hooks {
         }
         if let Some(hook) = &mut self.hook {
             if !hook
-                .set_enabled_attach(enabled)
+                .set_enabled(enabled)
                 .map_err(|_| "building bombing hook state change failed")?
             {
                 return Ok(false);

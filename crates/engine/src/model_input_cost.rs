@@ -234,20 +234,11 @@ fn measure_templates(countries: u32, templates: usize) -> Cost {
     let mut globals = vec![template::GlobalSlot::default(); 16];
     let mut locals = vec![template::LocalSlot::default(); 16];
     for _ in 0..3 {
-        let walk = template::walk_icons(
-            &bench,
-            MODULE,
-            state,
-            &mut icons,
-            &mut bytes,
-            &mut counts,
-            &mut [],
-            template::DefinitionSlots {
+        let walk = template::walk_icons_inner(&bench, MODULE, state, engine_native::walk::Buffer::Growing(&mut icons), engine_native::walk::Buffer::Growing(&mut bytes), engine_native::walk::Buffer::Growing(&mut counts), engine_native::walk::Buffer::Count, template::DefinitionSlots {
                 database: &mut database,
                 globals: &mut globals,
                 locals: &mut locals,
-            },
-        );
+            }, None, None, None, None);
         database.resize(walk.required_database.max(database.len()), 0);
         globals.resize(
             walk.required_database.max(globals.len()),
@@ -256,20 +247,11 @@ fn measure_templates(countries: u32, templates: usize) -> Cost {
         locals.resize(walk.required_locals.max(locals.len()), Default::default());
     }
     let (hourly, hourly_seconds, hourly_copies) = fastest(&bench, || {
-        template::walk_icons(
-            &bench,
-            MODULE,
-            state,
-            &mut icons,
-            &mut bytes,
-            &mut counts,
-            &mut [],
-            template::DefinitionSlots {
+        template::walk_icons_inner(&bench, MODULE, state, engine_native::walk::Buffer::Growing(&mut icons), engine_native::walk::Buffer::Growing(&mut bytes), engine_native::walk::Buffer::Growing(&mut counts), engine_native::walk::Buffer::Count, template::DefinitionSlots {
                 database: &mut database,
                 globals: &mut globals,
                 locals: &mut locals,
-            },
-        )
+            }, None, None, None, None)
         .outcome
     });
     assert_eq!(hourly, Outcome::Rows { len: templates });

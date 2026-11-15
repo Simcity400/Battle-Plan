@@ -1216,8 +1216,7 @@ pub fn walk_regional(
             let end = start + scratch[start..].partition_point(|&(id, _)| id == country);
             let resolved = countries.resolve(country)?;
             let navy = crate::cstrategic_navy_manager::navy(memory, base, game_state, resolved)?;
-            let records =
-                crate::cstrategic_navy::regional_convoys(memory, base, game_state, navy, resolved)?;
+            let records = crate::cstrategic_navy::regional_convoys(memory, base, navy)?;
             for &(_, region) in &scratch[start..end] {
                 let efficiency =
                     crate::cstrategic_navy::regional_convoy_efficiency(memory, records, region)?;

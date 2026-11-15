@@ -39,7 +39,7 @@
 use job_priority::SpawnCarried as _;
 use replay::campaign::Replay;
 use replay_data::{BranchId, Hour, rows::TableId, rows::tables};
-use replay_frame::{branches::BranchReason, branches::BranchStart, frame::DecodedFrame};
+use replay_frame::{branches::BranchReason, branches::BranchStart, frame::DecodedFrame, frame::Tables};
 use std::{
     collections::BTreeMap,
     io, mem,
@@ -55,6 +55,7 @@ use viewer_foundation::engaged::HourSides;
 use viewer_foundation::engagement_history::{
     Changes, Covered, History, ICON_KINDS, NAVAL, NAVAL_ICON, SOURCES, icon_hour, icon_source,
 };
+use viewer_foundation::fold_tables::available;
 #[cfg(test)]
 use viewer_foundation::engagement_history::{
     CombatFlags, LAND, Provenance, at, combats, kept_frames,
@@ -65,8 +66,8 @@ use viewer_foundation::{
     engaged::{self, Continuity, Engaged},
     icon_frames::{IconFold, Kept},
     map::{
-        perspective::{self, Country},
-        tables::{Available, core, rows},
+        perspective::Country,
+        tables::{Available, core},
         visibility::Relations,
     },
     naval_check::{self, ByteCheck, Summary},
@@ -95,23 +96,37 @@ const VIEWER_TABLES: [TableId; 9] = [
     TableId::Subjects,
 ];
 
-/// One hour's viewer inputs.
-struct Viewer {
-    slot: u32,
+/// One hour's inputs both viewers' samples read: the links, the relations and the rosters.
+struct Inputs {
     links: BTreeMap<u32, u32>,
     relations: Result<Relations, &'static str>,
     controllers: Option<engaged::Controllers>,
 }
 
+impl Inputs {
+    fn read<F: Tables + ?Sized>(frame: &F) -> io::Result<Self> {
+        let links: BTreeMap<u32, u32> = whole_core::<tables::CountryLinks, F>(frame)?.iter().map(|link| (link.id, link.canonical_slot)).collect();
+        let relations = Relations::read_tables(frame, &links);
+        let controllers = controllers(frame, &links)?;
+        Ok(Self { links, relations, controllers })
+    }
+}
+
+/// One hour's viewer and its inputs.
+struct Viewer {
+    slot: u32,
+    inputs: Arc<Inputs>,
+}
+
 /// The hour's controller rosters; `None` unless `Players` and
 /// `HumanControllers` are both whole.
-fn controllers(
-    frame: &DecodedFrame,
+fn controllers<F: Tables + ?Sized>(
+    frame: &F,
     links: &BTreeMap<u32, u32>,
 ) -> io::Result<Option<engaged::Controllers>> {
     let (Available::Complete(players), Available::Complete(counts)) = (
-        rows::<tables::Players>(frame)?,
-        rows::<tables::HumanControllers>(frame)?,
+        available::<tables::Players, F>(frame)?,
+        available::<tables::HumanControllers, F>(frame)?,
     ) else {
         return Ok(None);
     };
@@ -137,15 +152,23 @@ fn controllers(
     Ok(Some(out))
 }
 
+/// Every row of a core table, or the error today's [`core`] names for it.
+fn whole_core<T: replay_data::rows::TableSchema, F: Tables + ?Sized>(frame: &F) -> io::Result<&[T::Row]> {
+    viewer_foundation::fold_tables::whole::<T, F>(frame).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidData, format!("hour {} {:?} is not whole; the core tables carry the political map itself, so this hour cannot be drawn", frame.at_hour(), T::ID))
+    })
+}
+
 impl Viewer {
-    fn read(frame: &DecodedFrame, country: &Country) -> io::Result<Self> {
-        let links: BTreeMap<u32, u32> = core::<tables::CountryLinks>(frame)?
-            .iter()
-            .map(|link| (link.id, link.canonical_slot))
-            .collect();
+    #[cfg(test)]
+    fn read<F: Tables + ?Sized>(frame: &F, country: &Country) -> io::Result<Self> {
+        Self::with(frame, country, &Arc::new(Inputs::read(frame)?))
+    }
+
+    fn with<F: Tables + ?Sized>(frame: &F, country: &Country, inputs: &Arc<Inputs>) -> io::Result<Self> {
         // `perspective::viewer` reads only the lowest slot (its fallback) and
         // the requested tag's, so only those two tags are made text.
-        let countries = core::<tables::Countries>(frame)?;
+        let countries = whole_core::<tables::Countries, F>(frame)?;
         let mut tags = BTreeMap::new();
         if let Some(lowest) = countries.iter().min_by_key(|c| c.canonical_slot) {
             tags.insert(lowest.canonical_slot, String::new());
@@ -162,51 +185,27 @@ impl Viewer {
                 String::from_utf8_lossy(&found.tag).into_owned(),
             );
         }
-        let (slot, _) = perspective::viewer(frame, &links, &tags, country)?;
-        let relations = Relations::read(frame, &links);
-        let controllers = controllers(frame, &links)?;
-        Ok(Self {
-            slot,
-            links,
-            relations,
-            controllers,
-        })
+        let (slot, _) = viewer_foundation::fold_tables::viewer(frame, &inputs.links, &tags, country)?;
+        Ok(Self { slot, inputs: Arc::clone(inputs) })
     }
 
     /// The recording's own player's inputs, when the recording names it
     /// ([`naval_check::recording_player`]), and whether its client observes.
-    fn recording(frame: &DecodedFrame) -> io::Result<Option<(Self, bool)>> {
-        let links: BTreeMap<u32, u32> = core::<tables::CountryLinks>(frame)?
-            .iter()
-            .map(|link| (link.id, link.canonical_slot))
-            .collect();
-        let Some(slot) = naval_check::recording_player(frame, &links)? else {
-            return Ok(None);
-        };
+    fn recording<F: Tables + ?Sized>(frame: &F, inputs: &Arc<Inputs>) -> Option<(Self, bool)> {
+        let slot = viewer_foundation::fold_tables::perspective(frame, &inputs.links)?;
         // Use the client's playing-country reference when positive, otherwise
         // its observer-country reference.
-        let observing = frame
-            .complete::<tables::LocalPlayer>()
-            .is_ok_and(|rows| rows.iter().all(|row| row.country as i32 <= 0));
-        let relations = Relations::read(frame, &links);
-        let controllers = controllers(frame, &links)?;
-        Ok(Some((
-            Self {
-                slot,
-                links,
-                relations,
-                controllers,
-            },
-            observing,
-        )))
+        let observing = viewer_foundation::fold_tables::whole::<tables::LocalPlayer, F>(frame)
+            .is_some_and(|rows| rows.iter().all(|row| row.country as i32 <= 0));
+        Some((Self { slot, inputs: Arc::clone(inputs) }, observing))
     }
 
     fn sample(&self, sides: HourSides) -> engaged::Sample<'_> {
         engaged::Sample {
             viewer: self.slot,
-            links: &self.links,
-            relations: self.relations.as_ref().map_err(|reason| *reason),
-            controllers: self.controllers.clone(),
+            links: &self.inputs.links,
+            relations: self.inputs.relations.as_ref().map_err(|reason| *reason),
+            controllers: self.inputs.controllers.clone(),
             sides: sides.sides,
             complete: sides.complete,
             removal: sides.removal,
@@ -400,10 +399,10 @@ struct Fold {
 /// hour loses every icon. For the recording player, naval recorded bytes settle
 /// an undecided flag and supply the icon frame, which is then retained.
 /// The byte check continues to compare against the derivation.
-fn advance_icons(
+fn advance_icons<F: Tables + ?Sized>(
     icons: &mut [IconFold],
     changed: &mut [Vec<(u64, Option<Kept>)>],
-    folded: Option<(&DecodedFrame, &[engaged::History])>,
+    folded: Option<(&F, &[engaged::History])>,
     bytes: Option<&BTreeMap<u64, [u8; 2]>>,
     continuity: Continuity,
 ) {
@@ -461,6 +460,9 @@ struct Pass {
     folds: BTreeMap<BranchId, Fold>,
     /// The byte check, folded here and published as a summary.
     check: ByteCheck,
+    /// The last hour's viewer inputs and viewing country, kept while their tables do not change.
+    inputs: Option<Arc<Inputs>>,
+    viewer: Option<Viewer>,
 }
 
 /// Every table the pass decodes.
@@ -492,6 +494,8 @@ impl Pass {
             country,
             folds: BTreeMap::new(),
             check: ByteCheck::default(),
+            inputs: None,
+            viewer: None,
         }
     }
 
@@ -637,6 +641,20 @@ impl Pass {
         load: Option<Hour>,
         restart: bool,
     ) {
+        self.fold_source(branch, hour, frame, load, restart, false);
+    }
+
+    /// [`Pass::fold_hour`] from any source of the hour's tables: a decoded frame, or the rows
+    /// the lane fold keeps ([`crate::engaged_lanes`]).
+    pub(crate) fn fold_source<F: Tables + ?Sized>(
+        &mut self,
+        branch: BranchId,
+        hour: Hour,
+        frame: Option<&F>,
+        load: Option<Hour>,
+        restart: bool,
+        kept: bool,
+    ) {
         let fold = self.folds.entry(branch).or_default();
         fold.icons.resize_with(ICON_KINDS, Default::default);
         fold.icon_changed.resize_with(ICON_KINDS, Vec::new);
@@ -650,21 +668,25 @@ impl Pass {
         summary.hours += 1;
         // The sides do not depend on who views them.
         let sides = frame.zip(frame.and_then(|frame| {
-            SOURCES
-                .iter()
-                .map(|source| source.sides(frame))
+            (0..SOURCES.len())
+                .map(|kind| sides_of(kind, frame))
                 .collect::<io::Result<Vec<_>>>()
                 .ok()
         }));
-        let viewer = sides
-            .as_ref()
-            .and_then(|(frame, _)| Viewer::read(frame, &self.country).ok());
+        // The viewers' inputs are read again only when their tables may have changed.
+        let held = self.inputs.take().filter(|_| kept);
+        let inputs = sides.as_ref().and_then(|(frame, _)| held.or_else(|| Inputs::read(*frame).ok().map(Arc::new)));
+        self.inputs.clone_from(&inputs);
+        let held_viewer = self.viewer.take().filter(|viewer| kept && inputs.as_ref().is_some_and(|inputs| Arc::ptr_eq(&viewer.inputs, inputs)));
+        let viewer = held_viewer.or_else(|| sides.as_ref().zip(inputs.as_ref()).and_then(|((frame, _), inputs)| Viewer::with(*frame, &self.country, inputs).ok()));
+        self.viewer = viewer.as_ref().map(|viewer| Viewer { slot: viewer.slot, inputs: Arc::clone(&viewer.inputs) });
         // The client's stored viewpoint comes from LocalPlayer. A change rebuilds
         // all sides for the new player only; its history records that refresh.
         // The perspective history does not rebuild for it.
         let player = sides
             .as_ref()
-            .and_then(|(frame, _)| Viewer::recording(frame).ok().flatten());
+            .zip(inputs.as_ref())
+            .and_then(|((frame, _), inputs)| Viewer::recording(*frame, inputs));
         // Evaluate the view for which the client's flags were last rebuilt.
         // A tag switch or controller assigned the viewed country rebuilds at once.
         // An observer-view change or a controller assignment instead waits for the
@@ -740,7 +762,7 @@ impl Pass {
                 advance_icons(
                     &mut fold.recording_icons,
                     &mut fold.recording_icon_changed,
-                    None,
+                    None::<(&F, &[engaged::History])>,
                     None,
                     recording_continuity,
                 );
@@ -766,7 +788,7 @@ impl Pass {
                 advance_icons(
                     &mut fold.icons,
                     &mut fold.icon_changed,
-                    None,
+                    None::<(&F, &[engaged::History])>,
                     None,
                     perspective_continuity,
                 );
@@ -837,6 +859,15 @@ impl Pass {
     }
 }
 
+/// One combat kind's sides of the hour ([`SOURCES`]) from any source of its tables.
+fn sides_of<F: Tables + ?Sized>(kind: usize, frame: &F) -> io::Result<HourSides> {
+    if kind == NAVAL {
+        viewer_foundation::naval_sides::naval_sides(frame)
+    } else {
+        viewer_foundation::engagement_progress::land_sides(frame)
+    }
+}
+
 /// Appends each side's value where it differs from its last point.
 fn record(points: &mut Changes, hour: Hour, held: impl Iterator<Item = ((u64, u8), Engaged)>) {
     for (key, value) in held {
@@ -846,6 +877,39 @@ fn record(points: &mut Changes, hour: Hour, held: impl Iterator<Item = ((u64, u8
         }
     }
 }
+
+/// Today's fold of `replay`'s hours `first..=last` for `country`, from whole decoded blocks: the
+/// index it makes, and the nanoseconds spent reading the blocks and folding the hours.
+pub(crate) fn fold_range(replay: &Replay, country: Country, first: Hour, last: Hour) -> (Arc<History>, u64, u64) {
+    let shared = Arc::new(History::default());
+    let mut pass = Pass::new(Arc::clone(&shared), country);
+    let tables = pass_tables();
+    let (mut total_ns, mut fold_ns) = (0u64, 0u64);
+    let mut blocks: Vec<_> = replay.index.iter().filter(|block| block.last_hour >= first && block.first_hour <= last).collect();
+    blocks.sort_by_key(|block| (block.branch, block.first_hour));
+    for block in blocks {
+        let began = Instant::now();
+        let _ = replay.read_block_alone(
+            block,
+            &tables,
+            |_, decoded| {
+                if !(first..=last).contains(&decoded.hour) {
+                    return Ok(());
+                }
+                let folding = Instant::now();
+                let campaign = core::<tables::Campaign>(decoded).is_ok_and(|rows| rows.len() == 1 && rows[0].id == replay.campaign_id);
+                pass.fold_hour(block.branch, decoded.hour, campaign.then_some(decoded), None, false);
+                fold_ns += folding.elapsed().as_nanos() as u64;
+                Ok(())
+            },
+            || Ok(()),
+        );
+        total_ns += began.elapsed().as_nanos() as u64;
+    }
+    (shared, total_ns.saturating_sub(fold_ns), fold_ns)
+}
+
+pub(crate) mod lanes;
 
 #[cfg(test)]
 mod tests;

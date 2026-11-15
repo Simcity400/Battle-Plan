@@ -9,11 +9,12 @@ use crate::{
     presentation::{Presentation, Presented},
     products::ContentOptions,
 };
+use kept::Keeping;
 use std::{io, sync::Arc};
 
 /// The recording's catalogue for these folders over `presented`, a mount already resolved
 /// outside every cache lock: its verified content with the visual mods mounted over it, the
-/// localisation in the user's game language and the client's texture settings.
+/// localisation in the recording's language and the client's texture settings.
 fn load(
     source: &Source,
     options: &ContentOptions,
@@ -26,6 +27,7 @@ fn load(
         settings,
         || source.content(&options.options),
         || Ok(presented),
+        Keeping::On,
     )
 }
 
@@ -118,56 +120,81 @@ fn recorded_slot(source: &Source, options: &ContentOptions) -> io::Result<Arc<Ca
 }
 
 /// [`load`] over the recorded content `resolved` gives and the presentation `presented`
-/// mounts.
+/// mounts. With `keeping`, what the recording's facts alone decide (the localisation and, under
+/// no visual mod, the interface sprites) is read from its kept files, or built into them.
 fn load_with(
     source: &Source,
     options: &ContentOptions,
     settings: &Settings,
     resolved: impl Fn() -> io::Result<Arc<installed_content_core::content::ResolvedContent>>,
     presented: impl FnOnce() -> io::Result<Arc<Presented>>,
+    keeping: Keeping,
 ) -> io::Result<Catalogue> {
     let mut verification = Vec::new();
     let replay = source.replay();
     content::check_replay(&replay, options.allow_unverified, &mut verification)?;
-    let language = &replay.identity.language;
-    let recorded_language = language.strip_prefix("l_").unwrap_or(language).to_owned();
+    let recorded_language = content::recorded_language(&replay);
     let presented = presented()?;
     let warnings = Vec::new();
-    let language = match settings {
-        Ok((language, _)) => language.clone().map_err(io::Error::other)?,
-        Err(why) => {
-            return Err(io::Error::other(format!(
-                "No game language: {} could not be read: {why}",
-                options.options.user_dir.join("settings.txt").display()
-            )));
-        }
-    };
     let localisation = content::localisation_in(
         source,
         options,
-        (
-            content::content_key(Some(options)).expect("content options given"),
-            options.options.cache_dir.clone(),
-            language,
-        ),
+        content::localisation_key(options),
         &resolved,
+        keeping,
     )?;
     let gui_decode = settings
         .as_ref()
-        .map(
-            |&(_, force_pow2_textures)| installed_content_image::native::Decode {
-                force_pow2_textures,
-            },
-        )
+        .map(|&force_pow2_textures| installed_content_image::native::Decode {
+            force_pow2_textures,
+        })
         .map_err(|why| format!("settings.txt is unavailable: {why}"));
-    Catalogue::from_content(
+    let read_sprites = || {
+        presented
+            .content
+            .layers
+            .artwork("interface sprites", installed_content_gfx::gfx::read)
+    };
+    // What the read drew from the recording is credited to every later user of the
+    // catalogue's memo ([`CachedResult`]).
+    let sprites = match keeping {
+        Keeping::On if presented.presentation.is_empty() => {
+            let (sprites, noted) = kept::kept(
+                kept::place::<installed_content_gfx::gfx::SpriteSet>(
+                    source,
+                    &options.options.cache_dir,
+                    &[],
+                ),
+                || installed_content_core::content::diagnostics::capture(read_sprites),
+            );
+            noted.credit();
+            sprites
+        }
+        _ => read_sprites(),
+    };
+    Ok(Catalogue::from_parts(
         Arc::clone(&presented.content),
         presented.presentation.clone(),
         localisation,
+        sprites?,
         verification,
         warnings,
         recorded_language,
         gui_decode,
+    ))
+}
+
+/// The recording's own catalogue for these folders, built from the recording and the
+/// installation now, never read from or written to its kept files and held by no cache: what
+/// the kept files must equal.
+pub fn built_catalogue(source: &Source, options: &ContentOptions) -> io::Result<Catalogue> {
+    load_with(
+        source,
+        options,
+        &settings(options),
+        || source.content(&options.options),
+        || source.recorded_presented(&options.options),
+        Keeping::Off,
     )
 }
 
@@ -182,20 +209,14 @@ pub type Binding = (
 );
 type Cached = Option<(Binding, Arc<CachedResult<Catalogue>>)>;
 
-/// What a catalogue reads from the user folder's `settings.txt`: the game language (`None` when
-/// it names none or is absent, or why it is unusable) and `force_pow2_textures`; or why the file
-/// cannot be read.
-pub type Settings = Result<(Result<Option<String>, String>, bool), String>;
+/// What a catalogue reads from the user folder's `settings.txt`, which decides how art is drawn
+/// and nothing else: `force_pow2_textures`, or why the file cannot be read.
+pub type Settings = Result<bool, String>;
 
 /// The [`Settings`] the user folder of `options` holds now.
 fn settings(options: &ContentOptions) -> Settings {
     installed_content_settings::settings::read_keys(&options.options.user_dir)
-        .map(|keys| {
-            (
-                Ok(keys.language()),
-                keys.force_pow2_textures(),
-            )
-        })
+        .map(|keys| keys.force_pow2_textures())
         .map_err(|why| why.to_string())
 }
 
@@ -661,6 +682,7 @@ pub(crate) fn bound_catalogue_with(
             &settings,
             || Ok(Arc::clone(&content)),
             || Ok(Arc::clone(&presented)),
+            Keeping::On,
         )
     });
     Some(if reads_recorded(options) {
@@ -687,6 +709,8 @@ pub fn catalogue_loads(source: &Source, options: &ContentOptions) -> usize {
     })
 }
 
+pub(crate) mod kept;
+
 #[cfg(test)]
 mod parity_tests;
 
@@ -694,15 +718,16 @@ mod parity_tests;
 mod loader_tests {
     use super::*;
 
-    /// Without `settings.txt` the catalogue reads as the game does: its constructed settings and
-    /// the first language the mod stack declares. One that cannot be read leaves the language
-    /// unknown, refused by name.
+    /// The catalogue's text is the recording's, in its language, whatever `settings.txt` says or
+    /// whether it can be read at all: the file decides only how art is drawn. Without it art is
+    /// drawn with the game's constructed settings; one that cannot be read refuses that art by
+    /// name and nothing else.
     #[test]
-    fn missing_settings_read_as_the_game_and_unreadable_ones_refuse_by_name() {
+    fn text_never_reads_settings_and_unreadable_settings_refuse_only_art() {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        use crate::test_fixtures::{CAMPAIGN, records, source};
-        use replay::{campaign::Replay, spool::Record};
+        use crate::test_fixtures::{records, source};
+        use replay::spool::Record;
         use std::sync::atomic::AtomicBool;
         let (_, folder) = crate::catalogue::tests::folder_catalogue(&[
             ("hoi4.exe", "test"),
@@ -724,56 +749,57 @@ mod loader_tests {
             ),
         ]);
         let (options, identity) = crate::test_fixtures::content_identity(&folder.0);
+        let mut input = records(1, vec![source(1, 100, Some(1))]);
+        let Record::SessionStart(session) = &mut input[0] else {
+            unreachable!()
+        };
+        session.identity = identity.clone();
+        let replay = Arc::new(crate::test_fixtures::with_facts(&options, &identity, input));
         let settings = options.options.user_dir.join("settings.txt");
         std::fs::remove_file(&settings).unwrap();
         for unreadable in [false, true] {
             if unreadable {
                 std::fs::create_dir(&settings).unwrap();
             }
-            let mut input = records(1, vec![source(1, 100, Some(1))]);
-            let Record::SessionStart(session) = &mut input[0] else {
-                unreachable!()
-            };
-            session.identity = identity.clone();
             let source = crate::Source::from_replay(
                 crate::SourceKey {
                     source_id: "settings-isolation".into(),
                     revision: unreadable.to_string(),
                 },
                 "memory.battleplan".into(),
-                Arc::new(Replay::from_records(CAMPAIGN.into(), &[input]).unwrap()),
+                Arc::clone(&replay),
                 &AtomicBool::new(false),
             )
             .unwrap();
+            let catalogue = crate::catalogue::catalogue(&source, &options).unwrap();
+            assert_eq!(
+                catalogue
+                    .localised("NAME", crate::catalogue::View::Plain)
+                    .unwrap(),
+                "Recorded name"
+            );
+            assert_eq!(catalogue.localisation.language, "english");
+            let localisation = crate::content::localisation(&source, &options).unwrap();
+            assert_eq!(localisation.get("NAME"), Some("Recorded name"));
             if unreadable {
-                let Err(why) = crate::catalogue::catalogue(&source, &options) else {
-                    panic!("an unreadable settings.txt leaves the language unknown");
-                };
-                let why = why.to_string();
-                assert!(
-                    why.contains("No game language") && why.contains("settings.txt"),
-                    "{why}"
-                );
-                std::fs::remove_dir(&settings).unwrap();
+                let why = catalogue.gui_decode.as_ref().unwrap_err();
+                assert!(why.contains("settings.txt"), "{why}");
             } else {
-                let catalogue = crate::catalogue::catalogue(&source, &options).unwrap();
-                assert_eq!(
-                    catalogue
-                        .localised("NAME", crate::catalogue::View::Plain)
-                        .unwrap(),
-                    "Recorded name"
-                );
                 assert!(
                     catalogue
                         .gui_decode
                         .as_ref()
                         .is_ok_and(|decode| !decode.force_pow2_textures)
                 );
-                let cached = crate::catalogue::catalogue(&source, &options).unwrap();
-                assert!(Arc::ptr_eq(&catalogue, &cached));
             }
-            // Settings that change since are read again, with the catalogue bound to them.
-            std::fs::write(&settings, "language=l_english force_pow2_textures=yes").unwrap();
+            let cached = crate::catalogue::catalogue(&source, &options).unwrap();
+            assert!(Arc::ptr_eq(&catalogue, &cached));
+            if unreadable {
+                std::fs::remove_dir(&settings).unwrap();
+            }
+            // Settings that change since are read again, with the catalogue bound to them; the
+            // language they name is not the text's.
+            std::fs::write(&settings, "language=l_french force_pow2_textures=yes").unwrap();
             let changed = crate::catalogue::catalogue(&source, &options).unwrap();
             assert!(
                 changed
@@ -781,6 +807,7 @@ mod loader_tests {
                     .as_ref()
                     .is_ok_and(|decode| decode.force_pow2_textures)
             );
+            assert_eq!(changed.localisation.language, "english");
             std::fs::remove_file(&settings).unwrap();
         }
     }
@@ -792,9 +819,9 @@ mod loader_tests {
     fn a_read_ahead_never_rebinds_content_a_request_replaced() {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        use crate::test_fixtures::{CAMPAIGN, records, source};
-        use replay::{campaign::Replay, spool::Record};
-        use std::sync::{Barrier, atomic::AtomicBool};
+        use crate::test_fixtures::{records, source};
+        use replay::spool::Record;
+        use std::sync::{atomic::AtomicBool, mpsc};
         let files: &[(&str, &str)] = &[
             ("hoi4.exe", "test"),
             (
@@ -818,14 +845,14 @@ mod loader_tests {
         let Record::SessionStart(session) = &mut input[0] else {
             unreachable!()
         };
-        session.identity = identity;
+        session.identity = identity.clone();
         let source = crate::Source::from_replay(
             crate::SourceKey {
                 source_id: "read-ahead".into(),
                 revision: "1".into(),
             },
             "memory.battleplan".into(),
-            Arc::new(Replay::from_records(CAMPAIGN.into(), &[input]).unwrap()),
+            Arc::new(crate::test_fixtures::with_facts(&old, &identity, input)),
             &AtomicBool::new(false),
         )
         .unwrap();
@@ -834,20 +861,25 @@ mod loader_tests {
         assert!(source.bound_content(&old.options).is_none());
         // The source opened with the old content bound.
         source.content(&old.options).unwrap();
-        let (entered, release) = (Barrier::new(2), Barrier::new(2));
         let (requested, warnings_before) = std::thread::scope(|scope| {
-            let ahead = job_priority::spawn_in(scope, || {
-                bound_catalogue_with(&source, &old, || {
-                    entered.wait();
-                    release.wait();
+            // Either side failing drops its sender, which ends the other's wait.
+            let (entered, has_entered) = mpsc::channel();
+            let (release, released) = mpsc::channel::<()>();
+            let (source, old) = (&source, &old);
+            let ahead = job_priority::spawn_in(scope, move || {
+                bound_catalogue_with(source, old, || {
+                    entered.send(()).unwrap();
+                    let _ = released.recv();
                 })
             });
-            entered.wait();
+            has_entered
+                .recv()
+                .expect("the read-ahead reached its catalogue load");
             // A request of the newer content, while the read-ahead is inside its load.
-            let requested = catalogue(&source, &new).unwrap();
+            let requested = catalogue(source, &new).unwrap();
             let mut warnings = Vec::new();
             source.append_content_warnings(&mut warnings);
-            release.wait();
+            drop(release);
             // The read-ahead read the old catalogue for itself, publishing nothing.
             ahead.join().unwrap().unwrap().unwrap();
             (requested, warnings)
@@ -870,4 +902,14 @@ mod loader_tests {
         // And once the newer content is bound, a read-ahead of the old one reads nothing.
         assert!(bound_catalogue(&source, &old).is_none());
     }
+}
+
+/// The recorded content stack's equipment types, read once per stack.
+pub fn equipment_units(catalogue: &Catalogue) -> Result<Arc<installed_content_core::equipment::Database>, String> {
+    catalogue
+        .content
+        .layers
+        .derived::<CachedResult<installed_content_core::equipment::Database>>()
+        .get_or_init(|| installed_content_core::equipment::Database::load_complete(&catalogue.content.layers))
+        .map_err(|error| error.to_string())
 }

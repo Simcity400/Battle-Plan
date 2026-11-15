@@ -7,6 +7,7 @@ import type { LogListProps } from './LogList';
 import type { MovingRow } from '../rowMotion';
 import { commitRows, EMPTY_HISTORY, shownRows } from '../rowMotion.ts';
 import { LOG_OPTIONS, logSettings } from './logOptions.ts';
+import { shownSlot } from '../rowNavigation.ts';
 import { resolveOptions } from '../../dashboard/options.ts';
 
 const hour = (year: number, month: number, day: number, at = 1) => engineHour({ year, month, day, hour: at }) as number;
@@ -86,6 +87,16 @@ test('keys move the keyboard row within the list', () => {
   assert.equal(keyTarget('End', 0, 5, 3), 4);
   assert.equal(keyTarget('a', 0, 5, 3), null);
   assert.equal(keyTarget('ArrowDown', 0, 0, 3), null);
+});
+
+test('a step reaches the nearest row shown that way, or none', () => {
+  const shown = (slot: number) => slot !== 1 && slot !== 4;
+  assert.equal(shownSlot(1, 1, 5, shown), 2, 'down over a row held ahead');
+  assert.equal(shownSlot(1, -1, 5, shown), 0, 'up over it');
+  assert.equal(shownSlot(4, -1, 5, shown), 3, 'the last row shown, from the end');
+  assert.equal(shownSlot(5, 1, 5, shown), null, 'nothing shown below the last row shown');
+  assert.equal(shownSlot(-1, -1, 5, () => true), 0, 'clamped into the rows');
+  assert.equal(shownSlot(0, 1, 0, () => true), null);
 });
 
 test('a row’s date shows its day and month over its year', () => {
@@ -305,7 +316,10 @@ test('card focus and delayed page navigation preserve reached tooltip ownership'
   const { createServer } = await import('vite');
   const slots = new Map<number, unknown>(), frames: (() => void)[] = [];
   let cursor = 0;
-  type Effect = { deps: readonly unknown[]; run: () => void | (() => void); cleanup?: () => void };
+  type Effect = { deps?: readonly unknown[]; run: () => void | (() => void); cleanup?: () => void };
+  // As React: an effect without dependencies runs after every render.
+  const changedDeps = (previous: Effect | undefined, deps?: readonly unknown[]) => !previous || !deps || !previous.deps
+    || deps.length !== previous.deps.length || deps.some((dep, at) => !Object.is(dep, previous.deps![at]));
   const effects = new Map<number, Effect>(), pendingEffects = new Map<number, Effect>();
   const layouts = new Map<number, Effect>(), pendingLayouts = new Map<number, Effect>();
   let measureLayout = false;
@@ -339,22 +353,18 @@ test('card focus and delayed page navigation preserve reached tooltip ownership'
       return (slots.get(index) as { value: unknown }).value;
     },
     useCallback(callback: unknown, deps: readonly unknown[]) { return fixture.useMemo(() => callback, deps); },
-    useEffect(run: Effect['run'], deps: readonly unknown[]) {
-      const index = cursor++, previous = effects.get(index);
-      if (!previous || deps.length !== previous.deps.length || deps.some((dep, at) => !Object.is(dep, previous.deps[at]))) {
-        pendingEffects.set(index, { deps: [...deps], run });
-      }
+    useEffect(run: Effect['run'], deps?: readonly unknown[]) {
+      const index = cursor++;
+      if (changedDeps(effects.get(index), deps)) pendingEffects.set(index, { deps, run });
     },
-    useLayoutEffect(run: Effect['run'], deps: readonly unknown[]) {
-      const index = cursor++, previous = layouts.get(index);
-      if (measureLayout && (!previous || deps.length !== previous.deps.length || deps.some((dep, at) => !Object.is(dep, previous.deps[at])))) {
-        pendingLayouts.set(index, { deps: [...deps], run });
-      }
+    useLayoutEffect(run: Effect['run'], deps?: readonly unknown[]) {
+      const index = cursor++;
+      if (measureLayout && changedDeps(layouts.get(index), deps)) pendingLayouts.set(index, { deps, run });
     },
   };
   const host = globalThis as typeof globalThis & { __logCardHooks?: typeof fixture };
   host.__logCardHooks = fixture;
-  const globals = ['document', 'CSS', 'requestAnimationFrame', 'Element', 'ResizeObserver', 'window'].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)] as const);
+  const globals = ['document', 'CSS', 'requestAnimationFrame', 'cancelAnimationFrame', 'Element', 'ResizeObserver', 'window'].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)] as const);
   class Part {
     readonly text: string | null;
     readonly parentElement: Part | null;
@@ -383,6 +393,7 @@ test('card focus and delayed page navigation preserve reached tooltip ownership'
   Object.defineProperty(globalThis, 'document', { configurable: true, value: page });
   Object.defineProperty(globalThis, 'CSS', { configurable: true, value: { escape: (value: string) => value } });
   Object.defineProperty(globalThis, 'requestAnimationFrame', { configurable: true, value: (frame: () => void) => { frames.push(frame); return frames.length; } });
+  Object.defineProperty(globalThis, 'cancelAnimationFrame', { configurable: true, value: () => {} });
   // Only React's dispatcher and environmental hooks are synthetic. The LogList
   // component, navigation/effects, loading demand and tooltip store run. Layout
   // measurement is controlled by the scroller rather than a browser observer.
@@ -390,8 +401,9 @@ test('card focus and delayed page navigation preserve reached tooltip ownership'
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'log-card-focus-fixture', enforce: 'pre',
       transform(source, id) {
         const path = id.replaceAll('\\', '/');
-        if (path.endsWith('/log/LogList.tsx') || path.endsWith('/charts/useRowMotion.ts')) {
-          return source.replace(/import \{ ([^}]+) \} from 'react';/, 'const { $1 } = globalThis.__logCardHooks;');
+        // Every hook the list calls, its own and those of the modules it calls them from, is the fixture's.
+        if (path.endsWith('/log/LogList.tsx') || path.endsWith('/charts/useRowMotion.ts') || path.endsWith('/dashboard/widgetPerf.ts')) {
+          return source.replace(/import \{ ([^}]+) \} from 'react';/, "import * as React from 'react'; const { $1 } = { ...React, ...globalThis.__logCardHooks };");
         }
         if (path.endsWith('/components/ContextMenu.tsx')) return 'export function useContextMenu() { return { menu: null, open() {} }; }';
         if (path.endsWith('/charts/useChartTokens.ts')) return "export function useViewportHeight() { return 600; } export function useChartTokens() { return { font: 'Synthetic', fontSize: { small: 11, body: 12, title: 13 }, reducedMotion: false }; }";
@@ -498,7 +510,9 @@ test('card focus and delayed page navigation preserve reached tooltip ownership'
     const detach = attach('held card');
     const releasedObserver = observers.at(-1)!;
     draw();
-    const retained = () => [...slots.values()].find(value => value && typeof value === 'object' && 'heights' in value) as CardMeasurements;
+    // The list holds its card measurements in a ref, as the painter reads them between renders.
+    const retained = () => [...slots.values()].map(value => (value as { current?: unknown } | null)?.current)
+      .find(value => value && typeof value === 'object' && 'heights' in value) as CardMeasurements;
     const known = () => [...slots.values()].map(value => (value as { current?: unknown } | null)?.current).find(value => value instanceof Set) as Set<string>;
     assert.equal(retained().heights.get('held card'), 150);
     assert.equal(known().has('held card'), true);

@@ -146,9 +146,9 @@ impl Captured {
         Self {
             rows: CaptureRows::new(capacity.rows),
             selection: SliceSelection::new(true),
-            parts: (0..PARTS)
-                .map(|_| Staging::with_capacity(capacity))
-                .collect(),
+            parts: allocation::owned_vec(allocation::collect_vec(
+                (0..PARTS).map(|_| Staging::with_capacity(capacity)),
+            )),
             staged: false,
         }
     }

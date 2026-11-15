@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { AmountRun, EquipmentStockpileReply, StockVariant } from '../../generated/dashboard';
+import type { AmountRun, EquipmentStockpileReply, StockVariant } from './types';
 import { resolveY } from '../../charts/view.ts';
 import { chosenShown, storedChoices, toggleChosen } from '../../dashboard/chosen.ts';
 import { contentKey, contentSet, setToken, storableToken } from '../../dashboard/options.ts';

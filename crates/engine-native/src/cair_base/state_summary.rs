@@ -53,9 +53,7 @@ pub fn state_country_order<M: Memory>(
     if bytes != 0 && !crate::read_slice(memory, dense.data, scratch) {
         return Err("state air-base dense snapshot unreadable");
     }
-    let mut resolver = Resolver {
-        cells: crate::walk::Buffer::Fixed(resolved),
-    };
+    let mut resolver = Resolver { cells: resolved };
     for ordinal in 0..dense.count {
         let at = ordinal as usize * 8;
         let container =

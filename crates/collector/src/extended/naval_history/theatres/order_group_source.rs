@@ -10,11 +10,11 @@ pub(crate) struct OrderGroupSource<'a> {
 }
 
 impl<'a> OrderGroupSource<'a> {
-    pub(crate) fn new(job: &'a NavalJob) -> Self {
-        Self {
+    pub(crate) fn new(job: &'a NavalJob) -> Result<Self, &'static str> {
+        Ok(Self {
             log: &job.log,
-            recorded: Recorded::build(&job.log),
-        }
+            recorded: Recorded::build(&job.log)?,
+        })
     }
 }
 

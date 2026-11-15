@@ -7,7 +7,7 @@ use crate::{
 };
 use replay_data::{
     rows::CountryAppearanceRow, rows::CountryLinkRow, rows::CountryRow, rows::LexicalTokenRow,
-    rows::SimulationFeatureRow, rows::VariantDefinitionRow, rows::VariantUpgradeRow,
+    rows::SimulationFeatureRow, rows::VariantDefinitionRow, rows::VariantModuleRow, rows::VariantUpgradeRow,
     rows::column, rows::mask, rows::tables,
 };
 use replay_frame::frame::{HourFrame, Rowset};
@@ -89,7 +89,7 @@ pub fn enabled_module_slots<'f>(
         .next()
         .transpose()
         .map_err(|why| why.to_string())?
-        .ok_or("SimulationFeatures lacks the DLC mask")?
+        .ok_or("simulation features lacks the DLC mask")?
         .dlc_mask;
     let mask = if dlc & (1 << 4) != 0 { 0x80004001C0 } else { 0 }
         | if dlc & (1 << 7) != 0 { 4 } else { 0 }
@@ -133,7 +133,7 @@ pub fn variant_order<'f>(
                 .map_err(|why| why.to_string())?,
             variant.creator_link,
         )
-        .ok_or("CountryLinks lacks variant creator")? as i32
+        .ok_or("country links lacks variant creator")? as i32
     } else {
         creator
     };
@@ -343,12 +343,12 @@ impl<'a> Tags<'a> {
             return if raw == 0 {
                 Ok(None)
             } else {
-                Err(format!("CountryLinks lacks the equipment's naming country {raw}"))
+                Err(format!("country links lacks the equipment's naming country {raw}"))
             };
         };
         if original {
             let rows = self.original.as_ref().ok_or_else(|| {
-                "CountryAppearance is unavailable, so the equipment creator's original tag is unknown"
+                "country appearance is unavailable, so the equipment creator's original tag is unknown"
                     .to_owned()
             })?;
             match rows.get(&slot) {
@@ -357,7 +357,7 @@ impl<'a> Tags<'a> {
                 Some(Err(why)) => return Err(why.clone()),
                 None => {
                     return Err(format!(
-                        "CountryAppearance lacks the equipment creator's row (country slot {slot})"
+                        "country appearance lacks the equipment creator's row (country slot {slot})"
                     ));
                 }
             }
@@ -451,7 +451,7 @@ pub fn raw_variant_spelled(
         refusals.push((
             "token".into(),
             format!(
-                "LexicalTokens lacks equipment type token {}",
+                "lexical tokens lacks equipment type token {}",
                 definition.equipment_token
             ),
         ));
@@ -492,6 +492,63 @@ pub fn raw_variant_spelled(
         design: None,
         refusals,
     }
+}
+
+/// A design's fingerprint: 64-bit FNV-1a, as hex, over its equipment token, own name, suffix and
+/// modules (each slot, module and whether it is active, in the recorded order), and upgrades (each
+/// definition and level, in recorded order), every text as its lexer spelling. The same design
+/// reads the same in every branch; a design renamed reads as another.
+pub fn design_fingerprint(raw: &RawVariant, modules: &[(String, String, bool)], upgrades: &[(String, u8)]) -> Option<String> {
+    if ["token", "display name", "suffix", "design"].iter().any(|field| raw.check(field).is_err()) {
+        return None;
+    }
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut add = |bytes: &[u8]| {
+        for &byte in bytes.iter().chain(&[0xff]) {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0100_0000_01b3);
+        }
+    };
+    add(raw.token.as_bytes());
+    add(raw.display_name.as_bytes());
+    add(raw.suffix.as_bytes());
+    add(&[u8::from(raw.append)]);
+    for (slot, module, active) in modules {
+        add(slot.as_bytes());
+        add(module.as_bytes());
+        add(&[u8::from(*active)]);
+    }
+    for (definition, level) in upgrades {
+        // A non-UTF-8 tag keeps upgrades apart from module text fields.
+        add(&[0xfe]);
+        add(definition.as_bytes());
+        add(&[*level]);
+    }
+    Some(format!("{hash:016x}"))
+}
+
+/// Sets `raw.design` from the design's modules and upgrades (each in recorded order, read complete
+/// at the same hour), `spell` giving a token's spelling (empty for token 0); a module, slot or
+/// upgrade it cannot spell refuses the design.
+pub fn with_design(raw: &mut RawVariant, modules: &[&VariantModuleRow], upgrades: &[&VariantUpgradeRow], spell: &dyn Fn(u32) -> Result<String, String>) {
+    let own: Result<Vec<(String, String, bool)>, String> = modules.iter().map(|row| Ok((spell(row.slot)?, spell(row.definition_token)?, row.definition_active != 0))).collect();
+    let own_upgrades: Result<Vec<(String, u8)>, String> = upgrades
+        .iter()
+        .map(|row| {
+            let definition = spell(row.definition_token as u32)?;
+            if definition.is_empty() {
+                return Err("equipment upgrade definition has no token spelling".into());
+            }
+            Ok((definition, row.level))
+        })
+        .collect();
+    raw.design = match own.and_then(|own| own_upgrades.map(|upgrades| (own, upgrades))) {
+        Ok((own, upgrades)) => design_fingerprint(raw, &own, &upgrades),
+        Err(why) => {
+            raw.refusals.push(("design".into(), why));
+            None
+        }
+    };
 }
 
 /// Localised texts a name is looked up in: the recorded content's localisation.
@@ -699,8 +756,8 @@ mod tests {
         assert_eq!(tag.as_deref(), Some("SYN"));
         // Unread appearance, or a complete table without the creator's row.
         for (appearance, reason) in [
-            (None, "CountryAppearance is unavailable"),
-            (Some(&rows[..1]), "CountryAppearance lacks the equipment creator's row"),
+            (None, "country appearance is unavailable"),
+            (Some(&rows[..1]), "country appearance lacks the equipment creator's row"),
         ] {
             let (tag, named, raw) = name(appearance, 5);
             assert_eq!(tag, None);
@@ -745,8 +802,8 @@ mod tests {
         linked.push(CountryLinkRow { id: 6, canonical_slot: 3 });
         let unrowed = Tags::new(&countries, &linked, Some(&rows[..]));
         for (tags, creator, origin, reason) in [
-            (&tags, 9, 0, "CountryLinks lacks"),
-            (&tags, 4, 9, "CountryLinks lacks"),
+            (&tags, 9, 0, "country links lacks"),
+            (&tags, 4, 9, "country links lacks"),
             (&unrowed, 4, 6, "Countries lacks"),
         ] {
             let raw = raw_variant(&design(creator, origin, ""), 1, tags, &lexical[..]);
@@ -754,5 +811,36 @@ mod tests {
             assert!(raw.check("name tag").unwrap_err().contains(reason), "{reason}");
             assert!(variant_name(&raw, Some(&TEXTS)).is_err(), "never the generic name");
         }
+    }
+
+    /// The fingerprint follows the modules and upgrades in recorded order; an unspelled one refuses it.
+    #[test]
+    fn a_designs_fingerprint_is_its_modules_and_upgrades_and_refused_when_one_is_unspelled() {
+        let (countries, links) = countries();
+        let tags = Tags::new(&countries, &links, None);
+        let spell = |token: u32| match token {
+            0 => Ok(String::new()),
+            1 => Ok("slot_a".to_owned()),
+            2 => Ok("module_a".to_owned()),
+            3 => Ok("upgrade_a".to_owned()),
+            other => Err(format!("lexical tokens lacks equipment token {other}")),
+        };
+        let module = |definition_token, definition_active| VariantModuleRow { variant: 70, source_ordinal: 0, slot: 1, definition_token, definition_active };
+        let upgrade = |level| VariantUpgradeRow { variant: 70, source_ordinal: 0, definition_token: 3, level };
+        let print = |modules: &[&VariantModuleRow], upgrades: &[&VariantUpgradeRow]| {
+            let mut raw = raw_variant(&design(4, 0, "Own"), 1, &tags, &lexical()[..]);
+            with_design(&mut raw, modules, upgrades, &spell);
+            raw
+        };
+        let (on, off, one, two) = (module(2, 1), module(2, 0), upgrade(1), upgrade(2));
+        let base = print(&[&on], &[&one]).design.expect("spelled design");
+        assert_eq!(base.len(), 16);
+        assert_eq!(print(&[&on], &[&one]).design.as_deref(), Some(base.as_str()));
+        assert_ne!(print(&[&off], &[&one]).design.as_deref(), Some(base.as_str()));
+        assert_ne!(print(&[&on], &[&two]).design.as_deref(), Some(base.as_str()));
+        assert_ne!(print(&[&on, &on], &[&one]).design.as_deref(), Some(base.as_str()));
+        let unspelled = print(&[&module(9, 1)], &[&one]);
+        assert_eq!(unspelled.design, None);
+        assert!(unspelled.check("design").unwrap_err().contains("token 9"));
     }
 }

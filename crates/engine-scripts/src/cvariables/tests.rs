@@ -47,7 +47,7 @@ fn node(bytes: &mut [u8], index: usize, hash: u32, key: &[u8], value: i64) {
     put64(bytes, offset + variable_hash_node::VALUE, value as u64);
 }
 
-fn run(bytes: &[u8], output: &mut [Row], names: &mut [u8]) -> NameWalk {
+fn run(bytes: &[u8], output: &mut Vec<Row>, names: &mut Vec<u8>) -> NameWalk {
     walk(
         &SliceMemory { base: BASE, bytes },
         BASE,
@@ -64,12 +64,12 @@ fn growing_variable_rows_and_key_bytes_capture_first_and_later_mod_sized_maps() 
     node(&mut small, 1, 1, b"b", i64::MAX);
     let mut rows = Vec::new();
     let mut names = Vec::new();
-    let mut expected_rows = [Row::default(); 2];
-    let mut expected_names = [0; 2];
+    let mut expected_rows = vec![Row::default(); 2];
+    let mut expected_names = vec![0; 2];
     let expected = run(&small, &mut expected_rows, &mut expected_names);
     assert_eq!(expected.outcome, Outcome::Rows { len: 2 });
     assert_eq!(
-        walk_growing(
+        walk(
             &SliceMemory {
                 base: BASE,
                 bytes: &small
@@ -113,7 +113,7 @@ fn growing_variable_rows_and_key_bytes_capture_first_and_later_mod_sized_maps() 
         (COUNT * 8, COUNT * 8)
     );
     assert_eq!(
-        walk_growing(
+        walk(
             &SliceMemory {
                 base: BASE,
                 bytes: &bytes
@@ -136,9 +136,9 @@ fn growing_variable_scopes_extend_all_three_buffers_on_the_first_pass() {
         base: BASE,
         bytes: &bytes,
     };
-    let mut expected_scopes = [ScopeRow::default(); 5];
-    let mut expected_entries = [Row::default(); 4];
-    let mut expected_names = [0; 6];
+    let mut expected_scopes = vec![ScopeRow::default(); 5];
+    let mut expected_entries = vec![Row::default(); 4];
+    let mut expected_names = vec![0; 6];
     let expected = walk_scopes(
         &memory,
         BASE,
@@ -152,7 +152,7 @@ fn growing_variable_scopes_extend_all_three_buffers_on_the_first_pass() {
     let mut entries = Vec::new();
     let mut names = Vec::new();
     assert_eq!(
-        walk_scopes_growing(
+        walk_scopes(
             &memory,
             BASE,
             BASE + 0x1000,
@@ -179,40 +179,38 @@ fn holes_probe_overflow_and_literal_bytes_preserve_exact_values() {
         .copy_from_slice(b"old");
     put64(&mut bytes, stale + 0x18, 3);
     put64(&mut bytes, stale + 0x20, 15);
-    let mut output = [Row::default(); 3];
-    let mut names = [0; 64];
+    let mut output = vec![Row::default(); 3];
+    let mut names = vec![0; 64];
     let result = run(&bytes, &mut output, &mut names);
     assert_eq!(result.outcome, Outcome::Rows { len: 3 });
     assert_eq!(result.bytes_len, 26);
     assert_eq!(&names[..3], b"\xff\0x");
     assert_eq!(&names[3..26], b"long_variable_key_bytes");
     assert_eq!(
-        output.map(|row| row.value_raw),
+        output.iter().map(|row| row.value_raw).collect::<Vec<_>>(),
         [i64::MIN, -100_001, i64::MAX]
     );
     assert_eq!(output[0].name_len, 0);
 }
 
 #[test]
-fn capacity_omits_whole_rows_and_reports_required_key_bytes() {
+fn rows_grow_and_the_count_probe_reports_required_key_bytes() {
     let mut bytes = fixture(3);
     node(&mut bytes, 0, 0, b"alpha", 1);
     node(&mut bytes, 1, 1, b"long_variable_key_bytes", 2);
     node(&mut bytes, 2, 2, b"z", 3);
-    let mut output = [Row::default(); 3];
-    let mut names = [0; 6];
+    let mut output = vec![Row::default(); 2];
+    let mut names = vec![0; 6];
     let result = run(&bytes, &mut output, &mut names);
-    assert_eq!(
-        result.outcome,
-        Outcome::Truncated {
-            len: 2,
-            unread_rows: 1
-        }
+    assert_eq!(result.outcome, Outcome::Rows { len: 3 });
+    assert_eq!((result.bytes_len, result.required_bytes), (29, 29));
+    let result = walk_buffer(
+        &SliceMemory { base: BASE, bytes: &bytes },
+        BASE,
+        CONTAINER,
+        crate::walk::Buffer::Count,
+        crate::walk::Buffer::Count,
     );
-    assert_eq!(result.required_bytes, 29);
-    assert_eq!(result.bytes_len, 6);
-    assert_eq!(&names, b"alphaz");
-    let result = run(&bytes, &mut [], &mut []);
     assert_eq!(
         result.outcome,
         Outcome::Truncated {
@@ -228,8 +226,8 @@ fn declared_count_probe_law_and_end_sentinel_are_all_checked() {
     let mut bytes = fixture(1);
     node(&mut bytes, 3, 3, b"x", 7);
     let original = bytes.clone();
-    let mut output = [Row::default(); 2];
-    let mut names = [0; 16];
+    let mut output = vec![Row::default(); 2];
+    let mut names = vec![0; 16];
     for (offset, replacement) in [
         (0x120, 0),
         (0x120, 2),
@@ -264,12 +262,12 @@ fn empty_shared_storage_needs_no_node_memory() {
     put32(&mut bytes, 0x124, 0);
     bytes[0x128] = 0;
     assert_eq!(
-        run(&bytes[..0x129], &mut [], &mut []).outcome,
+        run(&bytes[..0x129], &mut Vec::new(), &mut Vec::new()).outcome,
         Outcome::Rows { len: 0 }
     );
     put32(&mut bytes, 0x120, 1);
     assert!(matches!(
-        run(&bytes, &mut [], &mut []).outcome,
+        run(&bytes, &mut Vec::new(), &mut Vec::new()).outcome,
         Outcome::Unavailable { .. }
     ));
 }
@@ -290,9 +288,9 @@ fn scoped_walk_keeps_alias_identity_literal_keys_and_authenticated_empty_scopes(
     {
         put32(&mut bytes, container + SEED, seed);
     }
-    let mut scopes = [ScopeRow::default(); 5];
-    let mut entries = [Row::default(); 4];
-    let mut names = [0; 6];
+    let mut scopes = vec![ScopeRow::default(); 5];
+    let mut entries = vec![Row::default(); 4];
+    let mut names = vec![0; 6];
     let captured = walk_scopes(
         &SliceMemory {
             base: BASE,
@@ -316,7 +314,7 @@ fn scoped_walk_keeps_alias_identity_literal_keys_and_authenticated_empty_scopes(
     );
     // The characters' stores are embedded; 45's is the empty sentinel.
     assert_eq!(
-        scopes.map(|row| row.scope),
+        scopes.iter().map(|row| row.scope).collect::<Vec<_>>(),
         [
             Scope::Global,
             Scope::Country(2),
@@ -327,69 +325,28 @@ fn scoped_walk_keeps_alias_identity_literal_keys_and_authenticated_empty_scopes(
     );
     assert_eq!(scopes[2].entries_len, 0);
     assert_eq!(scopes[4].entries_len, 0);
-    assert_eq!(scopes.map(|row| row.seed), seeds.map(Some));
+    assert_eq!(scopes.iter().map(|row| row.seed).collect::<Vec<_>>(), seeds.map(Some));
     assert_eq!(
-        entries.map(|row| row.value_raw),
+        entries.iter().map(|row| row.value_raw).collect::<Vec<_>>(),
         [i64::MIN, i64::MAX, -100001, 300_000]
     );
     assert_eq!(names, [b'g', b'g', 0xff, 0, b'x', b'c']);
-    assert_eq!(entries.map(|row| row.name_start), [0, 1, 2, 5]);
+    assert_eq!(entries.iter().map(|row| row.name_start).collect::<Vec<_>>(), [0, 1, 2, 5]);
 }
 
 #[test]
-fn scope_capacity_omits_whole_scopes_and_bad_later_scope_invalidates_everything() {
+fn the_scope_count_counts_every_scope_and_a_bad_later_scope_invalidates_everything() {
     let mut bytes = scope_fixture();
-    let mut scopes = [ScopeRow::default(); 5];
-    let mut entries = [Row::default(); 4];
-    let mut names = [0; 6];
-    for small_names in [false, true] {
-        let entry_capacity = if small_names { 3 } else { 2 };
-        let name_capacity = if small_names { 3 } else { 5 };
-        let captured = walk_scopes(
-            &SliceMemory {
-                base: BASE,
-                bytes: &bytes,
-            },
-            BASE,
-            BASE + 0x1000,
-            &mut scopes,
-            &mut entries[..entry_capacity],
-            &mut names[..name_capacity],
-        );
-        // The country's two keys do not fit; later scopes still do.
-        assert_eq!(
-            captured,
-            ScopeWalk {
-                outcome: Outcome::Truncated {
-                    len: 4,
-                    unread_rows: 1
-                },
-                entries_len: 2,
-                required_entries: 4,
-                bytes_len: 2,
-                required_bytes: 6
-            }
-        );
-        assert_eq!(
-            scopes[..4].iter().map(|row| row.scope).collect::<Vec<_>>(),
-            [
-                Scope::Global,
-                Scope::State(1),
-                Scope::Character(44),
-                Scope::Character(45)
-            ]
-        );
-    }
-    let captured = walk_scopes(
+    let mut scopes = vec![ScopeRow::default(); 5];
+    let mut entries = vec![Row::default(); 4];
+    let mut names = vec![0; 6];
+    let captured = count_scopes(
         &SliceMemory {
             base: BASE,
             bytes: &bytes,
         },
         BASE,
         BASE + 0x1000,
-        &mut [],
-        &mut [],
-        &mut [],
     );
     assert_eq!(
         captured.outcome,
@@ -523,8 +480,8 @@ fn bad_names_and_faults_do_not_publish_a_partial_scope() {
     let mut bytes = fixture(2);
     node(&mut bytes, 0, 0, b"good", 7);
     node(&mut bytes, 1, 1, b"long_variable_key_bytes", 8);
-    let mut output = [Row::default(); 2];
-    let mut names = [0; 64];
+    let mut output = vec![Row::default(); 2];
+    let mut names = vec![0; 64];
     let failed = run(&bytes[..0x900], &mut output, &mut names);
     assert!(matches!(failed.outcome, Outcome::Unavailable { .. }));
     assert_eq!((failed.bytes_len, failed.required_bytes), (0, 0));
@@ -548,9 +505,9 @@ fn scoped_seed_failure_preserves_entries_and_distinguishes_unknown_from_zero() {
         }
     }
     let bytes = scope_fixture();
-    let mut scopes = [ScopeRow::default(); 5];
-    let mut entries = [Row::default(); 4];
-    let mut names = [0; 6];
+    let mut scopes = vec![ScopeRow::default(); 5];
+    let mut entries = vec![Row::default(); 4];
+    let mut names = vec![0; 6];
     let captured = walk_scopes(
         &SeedFault(SliceMemory {
             base: BASE,
@@ -742,9 +699,9 @@ fn scope_words_and_character_identity_share_one_read_with_sequential_verdicts() 
     let bytes = scope_fixture();
     let walk = |denied| {
         let memory = Calls::new(&bytes, denied);
-        let mut scopes = [ScopeRow::default(); 5];
-        let mut entries = [Row::default(); 4];
-        let mut names = [0; 6];
+        let mut scopes = vec![ScopeRow::default(); 5];
+        let mut entries = vec![Row::default(); 4];
+        let mut names = vec![0; 6];
         let captured = walk_scopes(
             &memory,
             BASE,
@@ -791,15 +748,15 @@ fn heap_key_terminator_and_payload_share_one_read_with_sequential_verdicts() {
     fn walk_traced<'a>(
         bytes: &'a [u8],
         denied: Option<usize>,
-        names: &mut [u8],
+        names: &mut Vec<u8>,
     ) -> (NameWalk, Calls<'a>) {
         let memory = Calls::new(bytes, denied);
-        let mut output = [Row::default(); 2];
+        let mut output = vec![Row::default(); 2];
         let captured = walk(&memory, BASE, CONTAINER, &mut output, names);
         (captured, memory)
     }
     let walk = walk_traced;
-    let mut names = [0; 64];
+    let mut names = vec![0; 64];
     let (captured, memory) = walk(&bytes, None, &mut names);
     assert_eq!(captured.outcome, Outcome::Rows { len: 2 });
     assert_eq!(&names[4..4 + len], b"long_variable_key_bytes");
@@ -811,16 +768,6 @@ fn heap_key_terminator_and_payload_share_one_read_with_sequential_verdicts() {
         let (captured, _) = walk(&bytes, Some(BASE + denied), &mut names);
         assert_eq!(captured.outcome, Outcome::Unavailable { reason });
     }
-    // A row that does not fit reads only the terminator's verdict.
-    let (captured, memory) = walk(&bytes, Some(BASE + heap), &mut names[..10]);
-    assert_eq!(
-        captured.outcome,
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 1
-        }
-    );
-    assert_eq!(memory.within(heap, 0x100), 1);
     bytes[heap + len] = 1;
     let (captured, _) = walk(&bytes, None, &mut names);
     assert_eq!(

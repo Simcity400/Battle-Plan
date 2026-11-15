@@ -86,6 +86,25 @@ impl<K: PartialEq, V> Recent<K, V> {
         key: K,
         build: impl FnOnce() -> Result<Arc<V>, E>,
     ) -> Result<Arc<V>, E> {
+        self.get_or_insert(key, true, build)
+    }
+
+    /// [`Self::get_or_insert_with`] for a caller that never waits on another's build: while
+    /// another caller builds `key`, it builds its own copy, for itself alone.
+    pub fn get_or_insert_without_waiting<E>(
+        &self,
+        key: K,
+        build: impl FnOnce() -> Result<Arc<V>, E>,
+    ) -> Result<Arc<V>, E> {
+        self.get_or_insert(key, false, build)
+    }
+
+    fn get_or_insert<E>(
+        &self,
+        key: K,
+        wait: bool,
+        build: impl FnOnce() -> Result<Arc<V>, E>,
+    ) -> Result<Arc<V>, E> {
         let cell = {
             let mut entries = self.lock();
             // An entry whose value nothing holds goes, with the tables its key holds.
@@ -104,6 +123,10 @@ impl<K: PartialEq, V> Recent<K, V> {
                     if let Some(value) = built {
                         entries.latest = Some(Arc::clone(&value));
                         return Ok(value);
+                    }
+                    if !wait {
+                        drop(entries);
+                        return build();
                     }
                     cell
                 }
@@ -290,6 +313,20 @@ impl<V, E: PartialEq> Keyed<V, E> {
     ) -> Result<Arc<V>, Error> {
         self.recent
             .get_or_insert_with((TableKey::of(frame, self.tables), extra), || {
+                build(&project(frame, self.tables))
+            })
+    }
+
+    /// [`Self::get_or_build`] for a caller that never waits on another's build
+    /// ([`Recent::get_or_insert_without_waiting`]).
+    pub fn get_or_build_without_waiting<Error>(
+        &self,
+        frame: &DecodedFrame,
+        extra: E,
+        build: impl FnOnce(&DecodedFrame) -> Result<Arc<V>, Error>,
+    ) -> Result<Arc<V>, Error> {
+        self.recent
+            .get_or_insert_without_waiting((TableKey::of(frame, self.tables), extra), || {
                 build(&project(frame, self.tables))
             })
     }

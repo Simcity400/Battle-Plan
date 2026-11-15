@@ -128,6 +128,15 @@ fn table<'a, T: TableSchema>(world: &World<'a>) -> Result<&'a [T::Row], String> 
         .map_err(|error| error.to_string())
 }
 
+/// [`table`], reading only the fields of `fields` of each row.
+fn table_fields<'a, T: TableSchema>(world: &World<'a>, fields: u64) -> Result<&'a [T::Row], String> {
+    world
+        .frame()
+        .decoded_frame()
+        .complete_fields::<T>(fields)
+        .map_err(|error| error.to_string())
+}
+
 /// An index built on first use; a failed build answers every later use.
 type Lazy<T> = OnceLock<Result<T, String>>;
 
@@ -1955,7 +1964,13 @@ impl<'w, 'a> Context<'w, 'a> {
             )?,
             Unit::Division(_) => self.pools(
                 &self.division_equipment,
-                table::<tables::DivisionEquipment>(self.world)?
+                table_fields::<tables::DivisionEquipment>(
+                    self.world,
+                    replay_data::rows::mask::<replay_data::rows::DivisionEquipmentRow>(&[
+                        "variant_handle",
+                        "amount_raw",
+                    ]),
+                )?
                     .iter()
                     .map(|row| (row.division, row.variant_handle, row.amount_raw)),
             )?,

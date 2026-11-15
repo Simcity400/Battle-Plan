@@ -10,6 +10,13 @@ static LIVE_ROLES: [std::sync::atomic::AtomicUsize; 4] =
 static LIVE_TRAITS: [std::sync::atomic::AtomicUsize; 2] =
     [const { std::sync::atomic::AtomicUsize::new(0) }; 2];
 
+#[cfg(test)]
+pub(super) fn forget_live() {
+    for hint in LIVE_ROLES.iter().chain(&LIVE_TRAITS) {
+        hint.store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 pub(super) fn initial_roles(part: usize) -> usize {
     LIVE_ROLES[part].load(std::sync::atomic::Ordering::Relaxed)
 }
@@ -41,7 +48,12 @@ pub(super) fn presize(
         LIVE_ROLES[2].fetch_max(total_rows, std::sync::atomic::Ordering::Relaxed);
         super::advisors::remember_definition_demand(demand);
     }
-    let leaders = engine_native::ccountry_leader::walk(memory, base, state, &mut []);
+    let leaders = engine_native::ccountry_leader::walk(
+        memory,
+        base,
+        state,
+        engine_native::walk::Buffer::Count,
+    );
     let leaders = match leaders {
         engine_native::walk::Outcome::Rows { len } => Ok(len),
         engine_native::walk::Outcome::Truncated { len, unread_rows } => len
@@ -83,7 +95,11 @@ pub(super) fn presize(
             .checked_add(1)
             .ok_or("unit leader sizing count overflow")?;
         let text = (|| {
-            let demand = cunit_leader::read_text(memory, pointer, &mut []);
+            let demand = cunit_leader::read_text(
+                memory,
+                pointer,
+                engine_native::walk::Buffer::Count,
+            );
             if let engine_native::walk::Outcome::Unavailable { reason } = demand.outcome {
                 return Err(reason);
             }

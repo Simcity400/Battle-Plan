@@ -458,7 +458,7 @@ impl PreparedPins {
             .enumerate()
             .map(|(ordinal, pin)| (pin.region, (ordinal, pin)))
             .collect();
-        let mut drawn = view.present(
+        view.present_recorded(
             &context,
             &Plan {
                 name: FACTION_PING_WINDOW,
@@ -471,13 +471,22 @@ impl PreparedPins {
                 let pin = pins[&owner].1;
                 refresh(instance, root, &pin.count, &pin.emblem, context.resources)
             },
+            |owner| {
+                let pin = pins[owner].1;
+                (pin.count.clone(), pin.emblem.clone())
+            },
+            false,
             &mut report.pin_gui_refusals,
         );
         if keep_running {
             view.keep_running();
         }
-        drawn.sort_by_key(|drawn| pins[&drawn.owner].0);
-        for drawn in drawn {
+        if view.quiet() {
+            return;
+        }
+        let (mut drawn, painted) = view.painted();
+        drawn.sort_by_key(|(drawn, _)| pins[&drawn.owner].0);
+        for (drawn, generation) in drawn {
             let ordinal = pins[&drawn.owner].0;
             let root = inputs
                 .windows
@@ -496,9 +505,12 @@ impl PreparedPins {
                     continue;
                 }
             };
-            batch.at_layer(layer(PING_PRIORITY, ordinal as u32, 0));
-            batch.at_anchor(pins[&drawn.owner].1.anchor);
-            match native_gui::draw(&drawn.layout, drawn.origin, context.resources, batch) {
+            let key = layer(PING_PRIORITY, ordinal as u32, 0);
+            let anchor = pins[&drawn.owner].1.anchor;
+            batch.at_layer(key);
+            batch.at_anchor(anchor);
+            let draw = |batch: &mut Batch| native_gui::draw(&drawn.layout, drawn.origin, context.resources, batch);
+            match painted.paint(drawn.owner, generation, key, anchor, batch, draw) {
                 Ok(()) => {
                     report.faction_pings += 1;
                     if let Some(rect) = hover {
@@ -515,6 +527,7 @@ impl PreparedPins {
             }
         }
         batch.at_anchor(None);
+        painted.finish();
     }
 }
 

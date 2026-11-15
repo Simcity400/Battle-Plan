@@ -2,6 +2,8 @@
 
 #[cfg(test)]
 pub(crate) mod music_inputs;
+mod trade_route_read;
+pub(crate) use trade_route_read::TradeRouteRead;
 
 use crate::map_icons::MapIcons;
 use crate::map_views::CounterView;
@@ -341,7 +343,7 @@ pub struct Content {
     /// The counter, base and combat anchors from `map/unitstacks.txt` and
     /// `map/buildings.txt`.
     pub counters: Arc<CounterContent>,
-    radar_centers: viewer_world::map::radar_symbols::Centers,
+    pub(crate) radar_centers: viewer_world::map::radar_symbols::Centers,
     /// Raid hover identity and its immutable content, fresh for every content rebuild.
     pub raid_hover: Arc<raids::tooltips::Content>,
     // the map's table frame
@@ -367,7 +369,7 @@ pub struct Content {
     /// `gfx/models/supply/railroad.dds`.
     pub rail_assets: RailAssets,
     /// Static boundary crossings and anchors for the recorded railway graph.
-    rail_geometry: rail_layer::RailGeometry,
+    pub(crate) rail_geometry: rail_layer::RailGeometry,
     pub aircraft: Arc<viewer_world::map::aircraft::AircraftAssets>,
     pub trains: Arc<viewer_world::map::trains::TrainAssets>,
     /// How long constructing the static railway geography took.
@@ -397,6 +399,8 @@ pub struct Content {
     /// ([`counters::type_tint::Memo`]).
     type_tint_memo: counters::type_tint::Memo,
     mission_memo: counters::MissionMemo,
+    /// The overlay tables' whole-world parts kept from hour to hour ([`counters::Need::by_key`]).
+    overlay_carry: counters::Carry,
     /// The content-derived movement map and defines behind route points,
     /// stack kinds and ETAs; `None` when the content could not be derived, in
     /// which case moving units stand at their province and have no ETA.
@@ -429,6 +433,136 @@ impl std::ops::Deref for Hour<'_> {
     fn deref(&self) -> &Content {
         self.content
     }
+}
+
+impl Content {
+    /// The heightmap as the map passes sample it.
+    pub fn heights(&self) -> HeightField<'_> {
+        HeightField {
+            width: self.assets.heightmap.width,
+            height: self.assets.heightmap.height,
+            values: self.assets.heightmap_texels(),
+        }
+    }
+
+    /// One hour's battle plan for `ours` from a frame holding its tables (all of them for
+    /// invasions, active orders and labelled paradrops, [`orders::requires_full_frame`]).
+    pub(crate) fn battle_plan(
+        &self,
+        frame: &DecodedFrame,
+        links: &BTreeMap<u32, u32>,
+        ours: u32,
+        show_allied: bool,
+    ) -> io::Result<OrderField> {
+        let heights = self.heights();
+        orders::build(
+            &orders::OrderInputs {
+                assets: &self.orders,
+                transport: Some(
+                    viewer_foundation::map::air_transport_content::AirTransportContent {
+                        geometry: &self.icons.raids.geometry,
+                        state_provinces: &self.icons.raids.trigger_content.state_provinces,
+                        region_by_province: &self.icons.raids.regions,
+                        region_provinces: &self.icons.raids.region_provinces,
+                        sub_units: self
+                            .icons
+                            .raids
+                            .transport_sub_units
+                            .as_ref()
+                            .map_err(String::as_str),
+                        map_scale: self.icons.raids.defines.map_scale,
+                        ace_wing_size: self.icons.raids.defines.ace_wing_size,
+                        ace_wing_size_max_bonus: self
+                            .icons
+                            .raids
+                            .defines
+                            .ace_wing_size_max_bonus,
+                    },
+                ),
+                reads: Some(self.icons.raids.movement_reads()),
+                geometry: &self.province_geometry,
+                movement: self.movement.as_deref().map(|content| &content.map),
+                map: &self.map,
+                heights: &heights,
+                ours,
+                show_allied,
+                links,
+                labels: self.icons.fonts.arrow().map(|font| orders::LabelInputs {
+                    font,
+                    localisation: &self.names.localisation,
+                }),
+            },
+            frame,
+        )
+    }
+}
+
+/// The frame's provinces for the paced report: all, those the camera admits, and those out of
+/// view whose dirty bit still admits their owners' icons off screen.
+fn note_scope(schedule: &viewer_foundation::map::province_schedule::Schedule, bounds: &BTreeMap<u32, [f32; 4]>) {
+    use viewer_foundation::map::{province_schedule::Update, redraws::note};
+    let (mut in_view, mut dirty) = (0_u64, 0_u64);
+    for &province in bounds.keys() {
+        match schedule.update(province) {
+            Some(Update::InView) => in_view += 1,
+            _ if schedule.dirty(province) => dirty += 1,
+            _ => {}
+        }
+    }
+    note("scope.provinces", bounds.len() as u64);
+    note("scope.provinces_in_view", in_view);
+    note("scope.provinces_dirty_off_screen", dirty);
+    viewer_foundation::view_record::set("overlay", "provinces_in_view", in_view);
+    viewer_foundation::view_record::set("overlay", "provinces_dirty_off_screen", dirty);
+}
+
+/// The hour's intel icons in the overlay's tables: made with them, or deferred until a layout first
+/// reads them ([`counters::Need::by_key`]), so tables whose icons the map's intel layer lays in
+/// ([`OverlayTables::set_intel`]) never make their own. A deferred part is made from the tables' own
+/// rows and viewing country, with the document's content, as a made one is.
+#[derive(Clone)]
+enum IntelPart {
+    Made(Arc<intel_icons::IntelIcons>),
+    Deferred(Arc<DeferredIntel>),
+}
+
+struct DeferredIntel {
+    frame: Arc<DecodedFrame>,
+    ours: u32,
+    made: std::sync::OnceLock<Arc<intel_icons::IntelIcons>>,
+}
+
+impl IntelPart {
+    fn get(&self, hour: &Hour<'_>) -> Arc<intel_icons::IntelIcons> {
+        match self {
+            Self::Made(made) => Arc::clone(made),
+            Self::Deferred(deferred) => {
+                // A reader never waits on another's making: it makes its own, and the first made
+                // is kept.
+                if let Some(made) = deferred.made.get() {
+                    return Arc::clone(made);
+                }
+                let made = Arc::new(intel_icons::icons(
+                    &hour.icons.intel,
+                    &hour.icons.raids,
+                    &deferred.frame,
+                    deferred.ours,
+                    &hour.names.localisation,
+                    &hour.raid_hover.recorded_language,
+                ));
+                let _ = deferred.made.set(Arc::clone(&made));
+                made
+            }
+        }
+    }
+}
+
+/// Raw country reference to canonical slot, the `CountryLinks` join.
+pub(crate) fn links_of(frame: &DecodedFrame) -> io::Result<BTreeMap<u32, u32>> {
+    Ok(tables::core::<row_tables::CountryLinks>(frame)?
+        .iter()
+        .map(|link| (link.id, link.canonical_slot))
+        .collect())
 }
 
 /// Camera-dependent preparation retained while only the hour fraction moves.
@@ -481,6 +615,9 @@ pub struct PreparedOverlay {
     resource_icons: viewer_world::map::resource_icons::PreparedResourceIcons,
     occupation_icons: viewer_world::map::occupation_icons::PreparedOccupationIcons,
     occupation_hits: Vec<viewer_world::map::occupation_icons::Hit>,
+    /// Who laid out the resource icons and the occupation icons.
+    resource_icons_by: MadeBy,
+    occupation_icons_by: MadeBy,
     adjacency_icons: viewer_world::map::adjacency_icons::PreparedAdjacencyIcons,
     adjacency_hits: Vec<viewer_world::map::adjacency_icons::Hit>,
     /// The strait and canal icons' priority in the view's map mode.
@@ -490,6 +627,56 @@ pub struct PreparedOverlay {
     /// What the last draw refused, by reason.
     mode_icon_refused: BTreeMap<String, usize>,
 }
+
+/// Who laid out an overlay part that a map layer can draw instead of today's maker.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MadeBy {
+    /// Today's maker, over the hour's frame or the rows at the head.
+    Today,
+    /// Nobody: left empty for the layer, whose product the window lays in.
+    Left,
+    /// The layer, from its product at this version.
+    Layer(u64),
+}
+
+/// The tables the trade routes' convoy lines read ([`Hour::trade_route_lines`]).
+const TRADE_ROUTE_TABLES: &[replay_data::rows::TableId] = &trade_route_read::TABLES;
+
+/// The overlay parts the map's layers draw: today's maker leaves them empty.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct LeftToLayers {
+    pub(crate) resource_icons: bool,
+    pub(crate) occupation_marks: bool,
+}
+
+impl LeftToLayers {
+    /// What `side`'s layers draw; nothing while the map's playhead is off.
+    pub(crate) fn of(side: Option<&crate::playhead_host::MapSide>) -> Self {
+        Self { resource_icons: side.and_then(crate::layers::resource_icons::drawn).is_some(), occupation_marks: side.and_then(crate::layers::occupation_marks::drawn).is_some() }
+    }
+
+    /// Whether an overlay whose parts were made `by` these lacks today's product for a part no
+    /// layer draws now.
+    pub(crate) fn unmet_by(self, resource_icons: MadeBy, occupation_icons: MadeBy) -> bool {
+        (!self.resource_icons && resource_icons != MadeBy::Today) || (!self.occupation_marks && occupation_icons != MadeBy::Today)
+    }
+}
+/// The counters laid out on `view`'s retained memory.
+fn prepare_counters_with(
+    inputs: &CounterInputs<'_>,
+    frame: &DecodedFrame,
+    tables: &OverlayTables,
+    view: &CounterView,
+    lazy_version: u64,
+) -> io::Result<counters::PreparedCounters> {
+    let mut retained = view
+        .presentation
+        .counters
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    counters::prepare_retained(inputs, frame, &tables.counters, lazy_version, &mut retained)
+}
+
 /// A dump retains the same presented windows across its scene frames.
 pub struct DumpOverlay<'a> {
     hour: Hour<'a>,
@@ -638,9 +825,31 @@ impl PreparedOverlay {
         &self.counter_view
     }
 
+    /// The view the overlay presents through, for one laid out on another memory of it
+    /// ([`crate::map_views::Presentation::sharing`]).
+    pub(crate) fn set_counter_view(&mut self, view: CounterView) {
+        self.counter_view = view;
+    }
+
+    /// The counters laid out again alone ([`Hour::prepare_counters`]).
+    /// The counters laid out again because only the counter layers' products changed: the plates
+    /// of unchanged columns keep what they drew.
+    pub(crate) fn set_counters(&mut self, mut icons: counters::PreparedCounters) {
+        icons.keep_drawn(&mut self.icons);
+        self.icons = icons;
+    }
+
     /// See the field: whether the engaged index had covered the hour.
     pub fn engaged_covered(&self) -> bool {
         self.engaged_covered
+    }
+
+    /// Takes `old`'s drawn land plates whose stack and style this overlay's are the same by value:
+    /// for an overlay of another hour laid out for `old`'s view, with the same art.
+    pub(crate) fn carry_plates(&mut self, old: &mut PreparedOverlay) {
+        if self.lazy_version == old.lazy_version {
+            self.icons.keep_drawn_by_value(&mut old.icons);
+        }
     }
 
     /// Whether flags or portraits have decoded since this overlay was laid out.
@@ -650,7 +859,7 @@ impl PreparedOverlay {
 
     /// The overlay presented at `time` seconds on the view's own presentation clock (see
     /// [`counters::PreparedCounters::draw`]).
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, reason = "each argument is separate state the host lends for one draw or load")]
     pub fn draw(
         &mut self,
         hour: &Hour<'_>,
@@ -681,11 +890,103 @@ impl PreparedOverlay {
         ))
     }
 
+    /// The presented frame's passes alone, for a frame in which nothing the overlay shows changed:
+    /// the province schedule advanced and every pool's manager pass and the naval windows'
+    /// lifecycle run as a drawn frame runs them ([`counters::PreparedCounters::draw_quiet`],
+    /// [`crate::map_views::Views::set_quiet`]); the batch, reports and hits the last drawn frame
+    /// made stand.
+    #[allow(clippy::too_many_arguments, reason = "each argument is separate state the host lends for one draw or load")]
+    pub(crate) fn draw_quiet(
+        &mut self,
+        hour: &Hour<'_>,
+        camera: Camera,
+        viewport: [u32; 2],
+        ui_scale: f32,
+        layers: &OverlayLayers,
+        time: f32,
+    ) -> io::Result<()> {
+        let logical = gui_resources_viewport(viewport, ui_scale);
+        let windows = hour.icons.counters.window_cache.at(logical.map(|v| v as u32))?;
+        let inputs = CounterInputs {
+            content: &hour.counters,
+            equipment: Ok(hour.unit_models.sub_units.equipment_content()),
+            assets: &hour.icons.counters,
+            windows: &windows,
+            fonts: &hour.icons.fonts,
+            localisation: &hour.names.localisation,
+            recorded_language: &hour.counter_content.recorded_language,
+            map: &hour.map,
+            camera,
+            viewport,
+            ui_scale,
+            movement: hour.movement.as_deref(),
+            heights: hour.heights(),
+            settings: self.counter_view.settings,
+            display: &layers.counters,
+            selected: &self.counter_view.selected,
+            selected_air: &self.counter_view.air_selected,
+            selected_air_bases: &self.counter_view.air_bases,
+            selected_fleets: &self.counter_view.fleets_selected,
+            hovered: self.counter_view.hovered,
+            pressed: self.counter_view.pressed,
+            plate_hovered: self.counter_view.plate_hovered,
+            schedule: self.counter_view.presentation.schedule(),
+            movement_history: self.counter_view.presentation.movement(),
+            visibility: self.counter_view.visibility,
+            art: hour.icons.lazy.version(),
+        };
+        inputs.schedule.lock().unwrap_or_else(|p| p.into_inner()).present(&inputs.content.bounds, camera, viewport, time);
+        let (dirty, cleaning) = {
+            let schedule = inputs.schedule.lock().unwrap_or_else(|p| p.into_inner());
+            (self.labels.dirty(&schedule), self.labels.cleaning(&schedule))
+        };
+        let flags = self.icons.detached_flag_source(inputs.assets);
+        let assets = inputs.assets;
+        let mut views = self.counter_view.presentation.windows.lock().unwrap_or_else(|p| p.into_inner());
+        views.set_quiet(true);
+        let Views {
+            naval,
+            pings,
+            bases,
+            land_combats,
+            labels: label_view,
+            raids: raid_view,
+            intel: intel_view,
+            resources,
+            occupation,
+            adjacency_rules,
+        } = &mut *views;
+        label_view.set_cleaning(cleaning);
+        let counters = self.icons.draw_quiet(&inputs, time, naval, pings, bases, land_combats);
+        let portrait_textures = |name: &[u8]| assets.operative_portrait_texture(name);
+        let gui = GuiAssets {
+            gui: &assets.gui,
+            windows: &windows,
+            localisation: inputs.localisation,
+            flags: flags.as_ref().map(|source| GuiFlags { source, small: &assets.flags, large: &assets.large_flags }),
+            physical_viewport: Some(logical),
+            portrait_textures: Some(&portrait_textures),
+            before_dynamic: None,
+        };
+        let context = &Context { resources: &gui, windows: &windows, viewport: logical, time: Some(time) };
+        let mut scratch = Batch::default();
+        let _ = self.labels.draw_scheduled(context, &dirty, label_view, &mut scratch);
+        let mut raid_report = self.native_raids.report.clone();
+        self.native_raids.draw(context, hour.icons.raids.priority, raid_view, &mut scratch, &mut Vec::new(), &mut raid_report);
+        let mut intel_report = self.native_intel.report.clone();
+        self.native_intel.draw(&hour.icons.intel, context, hour.icons.raids.priority, intel_view, &mut scratch, &mut Vec::new(), &mut intel_report);
+        let _ = self.resource_icons.draw(context, resources, &mut scratch);
+        let _ = self.occupation_icons.draw(context, occupation, &mut scratch, &mut Vec::new());
+        self.adjacency_icons.draw_with_hits(context, self.adjacency_priority, adjacency_rules, &mut scratch, &mut BTreeMap::new(), &mut Vec::new());
+        views.set_quiet(false);
+        counters
+    }
+
     /// [`PreparedOverlay::draw`] into the caller's batch and counter report, reusing their
     /// storage, so the window's per-fraction redraw allocates nothing, with the counters
     /// drawn beside the other owners on `workers`' turns. On an error both are left as they
     /// were.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, reason = "each argument is separate state the host lends for one draw or load")]
     pub fn draw_into(
         &mut self,
         hour: &Hour<'_>,
@@ -731,6 +1032,7 @@ impl PreparedOverlay {
             schedule: self.counter_view.presentation.schedule(),
             movement_history: self.counter_view.presentation.movement(),
             visibility: self.counter_view.visibility,
+            art: hour.icons.lazy.version(),
         };
         // One advance before forking. Workers snapshot/read it, never advance it.
         inputs
@@ -738,9 +1040,13 @@ impl PreparedOverlay {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .present(&inputs.content.bounds, camera, viewport, time);
-        let dirty = self
-            .labels
-            .dirty(&inputs.schedule.lock().unwrap_or_else(|p| p.into_inner()));
+        if replay_frame::cpu::enabled() || viewer_foundation::view_record::on() {
+            note_scope(&inputs.schedule.lock().unwrap_or_else(|p| p.into_inner()), &inputs.content.bounds);
+        }
+        let (dirty, cleaning) = {
+            let schedule = inputs.schedule.lock().unwrap_or_else(|p| p.into_inner());
+            (self.labels.dirty(&schedule), self.labels.cleaning(&schedule))
+        };
         let flags = self.icons.detached_flag_source(inputs.assets);
         let assets = inputs.assets;
         let localisation = inputs.localisation;
@@ -775,6 +1081,7 @@ impl PreparedOverlay {
             occupation,
             adjacency_rules,
         } = &mut *views;
+        label_view.set_cleaning(cleaning);
         let owner_profile = viewer_foundation::profiling::FrameOwners::new();
         let (counters, other) = crate::map_views::join(
             workers,
@@ -1054,6 +1361,52 @@ impl PreparedOverlay {
                 )
             },
         )
+    }
+
+    /// Lays out the intel icons the map's layer evaluated at the head in place of the hour's; the
+    /// next draw shows them.
+    /// Lays out `labels` (the labels layer's) in place of the hour's, as the overlay would.
+    pub fn replace_labels(&mut self, hour: &Hour<'_>, camera: Camera, viewport: [u32; 2], ui_scale: f32, labels: &map_display_data::landscape::Labels) -> io::Result<()> {
+        let inputs = labels::LabelInputs {
+            content: &hour.labels,
+            localisation: &hour.names.localisation,
+            map: &hour.map,
+            camera,
+            viewport,
+            ui_scale,
+            visibility: self.counter_view.visibility,
+        };
+        self.labels = labels::prepare(&inputs, labels)?;
+        self.label_report = self.labels.report.clone();
+        Ok(())
+    }
+
+    pub fn replace_intel(&mut self, hour: &Hour<'_>, camera: Camera, viewport: [u32; 2], ui_scale: f32, intel: &Arc<intel_icons::IntelIcons>) {
+        let anchor = |province| hour.labels.anchors.get(&province).copied();
+        let inputs = intel_icons::IntelInputs { anchor: &anchor, camera, viewport, ui_scale, operatives: self.counter_view.operatives };
+        self.native_intel = intel_icons::prepare(&hour.icons.intel, &inputs, intel);
+    }
+
+    pub(crate) fn resource_icons_by(&self) -> MadeBy {
+        self.resource_icons_by
+    }
+
+    pub(crate) fn occupation_icons_by(&self) -> MadeBy {
+        self.occupation_icons_by
+    }
+
+    /// Lays out the resource icons layer's `icons`, at `version`, in place of the hour's.
+    pub(crate) fn replace_resource_icons(&mut self, hour: &Hour<'_>, camera: Camera, viewport: [u32; 2], ui_scale: f32, icons: &viewer_world::map::resource_icons::HourIcons, version: u64) {
+        self.resource_icons = hour.resource_icons_with(camera, viewport, ui_scale, self.counter_view.visibility, |inputs| viewer_world::map::resource_icons::lay_out(inputs, icons));
+        self.resource_icons_by = MadeBy::Layer(version);
+    }
+
+    /// Lays out the occupation marks layer's `marks`, at `version`, in place of the hour's, for
+    /// viewing country `country`.
+    #[allow(clippy::too_many_arguments, reason = "the camera, the viewing country and the layer's product")]
+    pub(crate) fn replace_occupation_icons(&mut self, hour: &Hour<'_>, camera: Camera, viewport: [u32; 2], ui_scale: f32, country: u32, marks: &viewer_world::map::occupation_icons::Marks, version: u64) {
+        self.occupation_icons = hour.occupation_icons_with(camera, viewport, ui_scale, self.counter_view.occupation, country, |inputs| viewer_world::map::occupation_icons::lay_out(inputs, marks));
+        self.occupation_icons_by = MadeBy::Layer(version);
     }
 
     /// Refreshes raid values in the last drawn overlay without advancing its native windows.
@@ -1430,7 +1783,7 @@ impl Document {
 
     /// Load verified presentation assets using the same immutable recording
     /// handle as the native analytics service. Call only on a loading thread.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, reason = "each argument is separate state the host lends for one draw or load")]
     pub fn load_shared(
         path: &Path,
         options: &ResolveOptions,
@@ -1465,6 +1818,7 @@ impl Document {
                         *resolved.borrow_mut() = Arc::clone(&current);
                     }
                     let _generation = current.layers.enter_generation();
+                    let _stage = viewer_foundation::load_record::stage("document");
                     let document = Self::load_shared_once(
                         path,
                         options,
@@ -1497,6 +1851,7 @@ impl Document {
             },
             || {
                 let _revision = crate::perf_log::StartupSpan::new("visual_mod_revision");
+                let _stage = viewer_foundation::load_record::stage("document.revision_after_load");
                 let current = resolved.borrow();
                 let _generation = current.layers.enter_generation();
                 visual_revision_now(options, &replay, visual_mods)
@@ -1513,7 +1868,7 @@ impl Document {
     }
 
     /// [`Self::load_shared`], once, with the recording's own executable tables in scope.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, reason = "each argument is separate state the host lends for one draw or load")]
     fn load_shared_once(
         path: &Path,
         options: &ResolveOptions,
@@ -1543,7 +1898,7 @@ impl Document {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, reason = "each argument is separate state the host lends for one draw or load")]
     fn load_shared_scoped(
         path: &Path,
         options: &ResolveOptions,
@@ -1580,7 +1935,11 @@ impl Document {
         let recorded_language = language.strip_prefix("l_").unwrap_or(language).to_owned();
         // Replay::open requires every session to have the same content identity.
         // The recorded layer ids and hashes, rather than launcher state, select it.
-        let mut content = resolved.as_ref().clone();
+        viewer_foundation::load_record::count("content loaded", 1, 0);
+        let mut content = {
+            let _stage = viewer_foundation::load_record::stage("document.recorded_stack");
+            resolved.as_ref().clone()
+        };
         content.layers = content.layers.with_own_overlay_diagnostics();
         content.append_changed_to(&mut warnings);
         let uncovered_reads = content.layers.report_uncovered_reads();
@@ -1602,7 +1961,10 @@ impl Document {
             let cancel = std::sync::atomic::AtomicBool::new(false);
             // A map that failed with these visual mods, as they are now, shows what its fallback
             // decided ([`crate::visual_fallback`]).
-            match decided(visual_fallback, options, selected, &recorded, &cancel) {
+            let decided_stage = viewer_foundation::load_record::stage("document.visual_decided");
+            let decision = decided(visual_fallback, options, selected, &recorded, &cancel);
+            drop(decided_stage);
+            match decision {
                 Some((key, decision)) => {
                     visual_revision = key.revision.clone();
                     if let Some(reason) = decision.reason() {
@@ -1613,13 +1975,16 @@ impl Document {
                         under: decision.under(),
                     });
                 }
-                None => match installed_content_core::content::visual::apply(
-                    &mut content.layers,
-                    options,
-                    selected,
-                    &recorded,
-                    &cancel,
-                ) {
+                None => match {
+                    let _stage = viewer_foundation::load_record::stage("document.visual_apply");
+                    installed_content_core::content::visual::apply(
+                        &mut content.layers,
+                        options,
+                        selected,
+                        &recorded,
+                        &cancel,
+                    )
+                } {
                     Ok(plan) => {
                         if let Some((recording, decisions)) = visual_fallback {
                             let key = crate::visual_fallback::FallbackKey {
@@ -1673,7 +2038,7 @@ impl Document {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, reason = "each argument is separate state the host lends for one draw or load")]
     fn load_product_content(
         path: &Path,
         options: &ResolveOptions,
@@ -1689,33 +2054,50 @@ impl Document {
         fallback: Option<crate::visual_fallback::Built>,
         uncovered_reads: installed_content_core::content::UncoveredReads,
     ) -> io::Result<Self> {
+        let serial = viewer_foundation::load_record::stage("content.serial");
         let content = Arc::new(content);
         std::thread::scope(|prefix| {
             let scripted_content = Arc::clone(&content);
             let scripted_language = recorded_language.clone();
             let h_scripted = installed_content_core::parallel::spawn(prefix, move || {
                 let _startup = crate::perf_log::StartupSpan::new("document_scripted_text");
+                let _stage = viewer_foundation::load_record::stage("content.scripted");
                 Arc::new(dashboard::scripted_text::ScriptedContent::read(
                     scripted_content,
                     scripted_language,
                 ))
             });
-            let map = product_loader.map()?;
-            let (terrain, default_map) = product_loader.terrain()?;
+            let map = {
+                let _stage = viewer_foundation::load_record::stage("content.map");
+                product_loader.map()?
+            };
+            let (terrain, default_map) = {
+                let _stage = viewer_foundation::load_record::stage("content.terrain");
+                product_loader.terrain()?
+            };
             // The game logs a malformed terrain entry or field and loads the rest.
             for reason in &terrain.skipped {
                 warnings.push(format!(
                     "Terrain content the game logs and reads past: {reason}."
                 ));
             }
-            let defines = product_loader.defines()?;
-            let audio = product_loader.audio(&defines, &options.user_dir, &mut warnings);
+            let defines = {
+                let _stage = viewer_foundation::load_record::stage("content.defines");
+                product_loader.defines()?
+            };
+            let audio = {
+                let _stage = viewer_foundation::load_record::stage("content.audio");
+                product_loader.audio(&defines, &options.user_dir, &mut warnings)
+            };
             // Graphics consumers read the recorded defines with the graphics sections of the defines
             // merged natively with the visual mods' scripts (`Defines::with_graphics_of`); every
             // simulation section stays recorded, for every consumer. A graphics value of another
             // type than the recording's keeps the recorded one, and a mod's scripts that cannot run
             // keep the recorded defines, each named.
-            let art_defines = defines.graphics_for(&content.layers);
+            let art_defines = {
+                let _stage = viewer_foundation::load_record::stage("content.graphics_defines");
+                defines.graphics_for(&content.layers)
+            };
             let game_speeds = viewer_foundation::map::frame::GameSpeeds::load(&defines);
             // The defines an artwork loader reads with the stack it was handed: graphics defines
             // with the visual mods, recorded defines when it falls back to the recording.
@@ -1771,16 +2153,9 @@ impl Document {
             // The map is drawn as this client's game would draw it: its own `force_pow2_textures`
             // pads every texture file the passes load and sets their global defines.
             let decode = settings.texture_decode();
-            // Text is read in the user's game language, not the recording's: settings.txt's when the
-            // mod stack's language list declares it, else the list's first, as the game chooses.
-            let language = installed_content_localisation::localisation::selected_language(
-                &content.layers,
-                settings.language().as_deref(),
-            )
-            .map_err(|error| invalid(format!("No game language: {error}")))?;
             if settings.is_absent() {
                 warnings.push(format!(
-                "settings.txt is not in {}: the map uses the game's own starting settings, as the game does until it first saves them, with text in {language}, the first language localisation/languages.yml declares.",
+                "settings.txt is not in {}: the map uses the game's own starting settings, as the game does until it first saves them.",
                 options.user_dir.display()
             ));
             }
@@ -1832,11 +2207,16 @@ impl Document {
             let installed_content_regions::regions::StrategicRegions {
                 regions,
                 notes: region_notes,
-            } = installed_content_regions::regions::read(&content.layers)?;
+            } = {
+                let _stage = viewer_foundation::load_record::stage("content.regions");
+                installed_content_regions::regions::read(&content.layers)?
+            };
             warnings.extend(region_notes);
+            drop(serial);
             let mut dag = installed_content_core::parallel::dag::Dag::default();
             let layers = &content.layers;
             let h_assets = dag.add(&[], || {
+                let _stage = viewer_foundation::load_record::stage("wave1.assets");
                 let _startup = crate::perf_log::StartupSpan::new("document_assets");
                 let mut warnings = Vec::new();
                 let assets = crate::map_assets::load_with_products(
@@ -1856,6 +2236,7 @@ impl Document {
             // Artwork, interface, fonts, models and text load from the presentation stack, whose
             // visual mods show only under artwork roots, and fall back to the recording by name.
             let h_icons = dag.add(&[], || {
+                let _stage = viewer_foundation::load_record::stage("wave1.icons");
                 let _startup = crate::perf_log::StartupSpan::new("document_icons");
                 layers.artwork("map icons and interface", |stack| {
                     MapIcons::load_with_products(
@@ -1864,7 +2245,7 @@ impl Document {
                         (&defines, defines_for(stack)),
                         &map,
                         &regions,
-                        &language,
+                        &recorded_language,
                         [map.width, map.height],
                         asset_viewport,
                         decode,
@@ -1872,23 +2253,24 @@ impl Document {
                 })
             });
             let h_names = dag.add(&[], || {
+                let _stage = viewer_foundation::load_record::stage("wave1.names");
                 let _startup = crate::perf_log::StartupSpan::new("document_names");
                 layers.artwork("map names", |stack| {
                     NameContent::load_with_localisation(stack, &map, || {
-                        product_loader.localisation(stack, &language)
+                        product_loader.localisation(stack, &recorded_language)
                     })
                 })
             });
-            // Naval source labels in another language recover through the recording
-            // language's localisation, indexed here so drawing reads no content.
             let h_labels = dag.add(&[], || {
+                let _stage = viewer_foundation::load_record::stage("wave1.labels");
                 Ok(Arc::new(combat::naval_labels::RecordedLabels::prepare(
                     recorded_language.clone(),
-                    &language,
+                    &recorded_language,
                     layers,
                 )))
             });
             let h_counters = dag.add(&[], || {
+                let _stage = viewer_foundation::load_record::stage("wave1.counters");
                 crate::map_assets::graphics_define(
                     layers,
                     "counters",
@@ -1907,6 +2289,7 @@ impl Document {
                 )
             });
             let h_borders_in = dag.add(&[], || -> io::Result<_> {
+                let _stage = viewer_foundation::load_record::stage("wave1.borders_in");
                 let border_assets = layers.artwork("borders", |stack| {
                     BorderAssets::load(
                         stack,
@@ -1921,6 +2304,7 @@ impl Document {
                 Ok((border_assets, states, adjacencies))
             });
             let h_rail_reads = dag.add(&[], || -> io::Result<_> {
+                let _stage = viewer_foundation::load_record::stage("wave1.rail_reads");
                 let (cities, city_styles) = installed_content_core::cities::read(layers)?;
                 let buildings_read = installed_content_core::positions::read_buildings(layers)?;
                 let building_types = product_loader.buildings()?;
@@ -1940,6 +2324,7 @@ impl Document {
                 ))
             });
             let h_trains = dag.add(&[], || -> io::Result<_> {
+                let _stage = viewer_foundation::load_record::stage("wave1.trains");
                 let (trains, warnings) = layers.artwork("supply trains", |stack| {
                     let mut warnings = Vec::new();
                     viewer_world::map::trains::TrainAssets::load(
@@ -1953,6 +2338,7 @@ impl Document {
                 Ok((Arc::new(trains), warnings))
             });
             let h_aircraft = dag.add(&[], || -> io::Result<_> {
+                let _stage = viewer_foundation::load_record::stage("wave1.aircraft");
                 let (aircraft, warnings) = layers.artwork("aircraft", |stack| {
                     let mut warnings = Vec::new();
                     viewer_world::map::aircraft::AircraftAssets::load(
@@ -1968,6 +2354,7 @@ impl Document {
                 Ok((Arc::new(aircraft), warnings))
             });
             let h_bridges = dag.add(&[], || -> io::Result<_> {
+                let _stage = viewer_foundation::load_record::stage("wave1.bridges");
                 layers.artwork("railway bridges", |stack| {
                     let mut warnings = Vec::new();
                     Bridges::load(stack, decode, defines_for(stack), &mut warnings)
@@ -1975,6 +2362,7 @@ impl Document {
                 })
             });
             let h_units = dag.add(&[], || -> io::Result<_> {
+                let _stage = viewer_foundation::load_record::stage("wave1.units");
                 let _startup = crate::perf_log::StartupSpan::new("document_units");
                 // Its refusals are its own warnings; it never fails as a whole.
                 let stack = layers.presentation();
@@ -1996,6 +2384,7 @@ impl Document {
                 Ok((unit_models, warnings))
             });
             let h_orders = dag.add(&[], || -> io::Result<_> {
+                let _stage = viewer_foundation::load_record::stage("wave1.orders");
                 layers.artwork("orders and arrows", |stack| {
                     let mut warnings = Vec::new();
                     OrderAssets::load(stack, decode, (&defines, defines_for(stack)), &mut warnings)
@@ -2003,6 +2392,7 @@ impl Document {
                 })
             });
             let h_weather = dag.add(&[], || -> io::Result<_> {
+                let _stage = viewer_foundation::load_record::stage("wave1.weather");
                 layers.artwork("weather effects", |stack| {
                     viewer_world::map::weather_effects::Assets::load(
                         stack,
@@ -2013,6 +2403,7 @@ impl Document {
                 })
             });
             let h_mapbuildings = dag.add(&[], || -> io::Result<_> {
+                let _stage = viewer_foundation::load_record::stage("wave1.mapbuildings");
                 layers.artwork("map buildings", |stack| {
                     let mut warnings = Vec::new();
                     let building_layers = product_loader.reader(stack, "display/buildings");
@@ -2027,36 +2418,47 @@ impl Document {
                 })
             });
             let h_geometry = dag.add(&[], || {
+                let _stage = viewer_foundation::load_record::stage("wave1.geometry");
                 let started = Instant::now();
                 let geometry = ProvinceGeometry::build(&map);
                 Ok((geometry, started.elapsed()))
             });
             let h_river_assets = dag.add(&[], || {
+                let _stage = viewer_foundation::load_record::stage("wave1.river_assets");
                 layers.artwork("rivers", |stack| {
                     RiverAssets::load(stack, [map.width, map.height], texture_quality, decode)
                 })
             });
             let h_rail_assets = dag.add(&[], || {
+                let _stage = viewer_foundation::load_record::stage("wave1.rail_assets");
                 layers.artwork("railways", |stack| {
                     RailAssets::load(stack, [map.width, map.height], decode)
                 })
             });
             // The ideology groups supply the tactic triggers' ideology names.
             // Loading trigger keys registers those content names.
-            let h_ideologies = dag.add(&[], || product_loader.ideologies());
+            let h_ideologies = dag.add(&[], || {
+                let _stage = viewer_foundation::load_record::stage("wave1.ideologies");
+                product_loader.ideologies()
+            });
             // The resource declarations, for the tactic triggers' resource
             // names as the content is read.
-            let h_resources = dag.add(&[], || product_loader.resources());
+            let h_resources = dag.add(&[], || {
+                let _stage = viewer_foundation::load_record::stage("wave1.resources");
+                product_loader.resources()
+            });
             // The initial seek decodes from its block start to the hour, all
             // in memory; it overlaps the file reads above on its own thread.
             // Only playback moves here, so the joins below keep their order.
             let h_initial = dag.add(&[], || {
+                let _stage = viewer_foundation::load_record::stage("wave1.initial");
                 Self::initial_playback(replay, initial).map(std::sync::Mutex::new)
             });
             let h_initial_flags = {
                 let playback = h_initial.clone();
                 let icons = h_icons.clone();
                 dag.add(&[playback.id(), icons.id()], move || {
+                    let _stage = viewer_foundation::load_record::stage("wave2.initial_flags");
                     if let crate::playback::Current::Frame(frame) = playback
                         .read()?
                         .lock()
@@ -2073,6 +2475,7 @@ impl Document {
                 let h_icons = h_icons.clone();
                 let h_counters = h_counters.clone();
                 dag.add(&[h_icons.id(), h_counters.id()], move || {
+                    let _stage = viewer_foundation::load_record::stage("wave2.movement");
                     let icons = h_icons.read()?;
                     let counters = h_counters.read()?;
 
@@ -2089,6 +2492,7 @@ impl Document {
             let h_label_content = {
                 let (defines, art_defines) = (&defines, &art_defines);
                 dag.add(&[], move || {
+                    let _stage = viewer_foundation::load_record::stage("wave2.labels");
                     crate::map_assets::graphics_define(
                         layers,
                         "map labels",
@@ -2103,6 +2507,7 @@ impl Document {
                 let h_assets = h_assets.clone();
                 let h_borders_in = h_borders_in.clone();
                 dag.add(&[h_assets.id(), h_borders_in.id()], move || {
+                    let _stage = viewer_foundation::load_record::stage("wave2.borders");
                     let (assets, _) = h_assets.read()?;
                     let heights = HeightField {
                         width: assets.heightmap.width,
@@ -2133,6 +2538,7 @@ impl Document {
             let h_rivers = {
                 let h_assets = h_assets.clone();
                 dag.add(&[h_assets.id()], move || {
+                    let _stage = viewer_foundation::load_record::stage("wave2.rivers");
                     let (assets, _) = h_assets.read()?;
                     let heights = HeightField {
                         width: assets.heightmap.width,
@@ -2155,6 +2561,7 @@ impl Document {
             let h_trees = {
                 let h_assets = h_assets.clone();
                 dag.add(&[h_assets.id()], move || {
+                    let _stage = viewer_foundation::load_record::stage("wave2.trees");
                     let (assets, _) = h_assets.read()?;
                     let heights = HeightField {
                         width: assets.heightmap.width,
@@ -2197,6 +2604,7 @@ impl Document {
                 let h_assets = h_assets.clone();
                 let h_rail_reads = h_rail_reads.clone();
                 dag.add(&[h_assets.id(), h_rail_reads.id()], move || {
+                    let _stage = viewer_foundation::load_record::stage("wave2.sprawl");
                     let (assets, _) = h_assets.read()?;
                     let heights = HeightField {
                         width: assets.heightmap.width,
@@ -2224,6 +2632,7 @@ impl Document {
                 let h_assets = h_assets.clone();
                 let h_rail_reads = h_rail_reads.clone();
                 dag.add(&[h_assets.id(), h_rail_reads.id()], move || {
+                    let _stage = viewer_foundation::load_record::stage("wave2.railgeom");
                     let (assets, _) = h_assets.read()?;
                     let (_, _, buildings_read, building_types, rail_defines) =
                         h_rail_reads.read()?;
@@ -2243,6 +2652,7 @@ impl Document {
             let h_frame = {
                 let icons = h_icons.clone();
                 dag.add(&[icons.id()], move || {
+                    let _stage = viewer_foundation::load_record::stage("wave1.frame");
                     layers.artwork("map frame", |stack| {
                         let mut warnings = Vec::new();
                         FrameAssets::load(
@@ -2274,7 +2684,9 @@ impl Document {
                     )
                 })
             };
+            let products_stage = viewer_foundation::load_record::stage("products");
             dag.run();
+            drop(products_stage);
             let (mut assets, notes) = h_assets.take()?;
             let mut joined_warnings = notes;
             let crate::map_icons::LoadedIcons {
@@ -2303,6 +2715,7 @@ impl Document {
             let recorded_labels = h_labels.take()?;
             // The map-icon windows' resources need the localisation their texts are shown
             // through, which the names pass reads.
+            let icon_windows = viewer_foundation::load_record::stage("wave1.icon_windows");
             joined_warnings.extend(layers.artwork("map icon windows", |stack| {
                 MapIcons::load_gui(
                     &mut combat_assets,
@@ -2312,6 +2725,7 @@ impl Document {
                     &names.localisation,
                 )
             })?);
+            drop(icon_windows);
             let mut counters = h_counters.take()?;
             counters.recorded_labels = Some(Arc::clone(&recorded_labels));
             if let Err(error) = counters.fog.as_ref() {
@@ -2441,6 +2855,7 @@ impl Document {
             };
             h_initial_flags.take()?;
             warnings.extend(wave2_warnings);
+            let _rest = viewer_foundation::load_record::stage("content.rest");
             // Raid `is_coastal` reads the movement map's static province terrain.
             raid_assets.trigger_content.terrain = movement.clone();
             let map_modes = {
@@ -2919,6 +3334,7 @@ impl Document {
                 trade_route_memo: Recent::new(),
                 type_tint_memo: Keyed::new(counters::type_tint::TABLES),
                 mission_memo: Recent::new(),
+                overlay_carry: counters::Carry::default(),
                 movement,
                 province_geometry,
                 province_geometry_build,
@@ -3113,7 +3529,7 @@ impl Document {
         self.hour()?.place_names(mode)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, reason = "each argument is separate state the host lends for one draw or load")]
     pub fn dump_overlay(
         &self,
         camera: Camera,
@@ -3187,9 +3603,11 @@ pub(crate) struct OverlayTables {
     /// runs path searches and must never land on the frame path.
     raids: Arc<raids::RaidIcons>,
     /// The Operatives map mode's intel icons for the viewing country.
-    intel: Arc<intel_icons::IntelIcons>,
+    intel: IntelPart,
     /// The branch, hour and canonical viewing country the tables are for.
     built_for: (replay_data::BranchId, replay_data::Hour, u32),
+    /// Made at the head only: the viewing country's raid arrows, which today's order field carries.
+    raid_arrows: Arc<OrderField>,
 }
 
 /// A prepared visibility value keeps every input alive, including immutable content. A
@@ -3232,10 +3650,72 @@ impl PreparedVision {
     }
 }
 
+/// The rows the overlay's layout reads: the counters, resource and occupation icons, air orders,
+/// ranges and assignment, occupation stripes and naval selection. Rows at the head while the map's
+/// playhead is open, and nothing else: an input that read a table they do not hold yet reads it as
+/// unavailable, and [`Self::missed`] names it for their reader to declare, so the window keeps the
+/// overlay it laid out last. The hour's frame with no open map. Inputs may run on a worker, so
+/// each read learns its tables on its own thread.
+#[derive(Debug, Default)]
+pub(crate) struct OverlayRows {
+    rows: Option<Arc<DecodedFrame>>,
+    missed: std::sync::Mutex<Vec<replay_data::rows::TableId>>,
+    /// Each input read from the rows: its name, wall nanoseconds and thread cycles.
+    spent: std::sync::Mutex<Vec<(&'static str, u64, u64)>>,
+    /// The inputs the map's layers draw, which are not made here.
+    left: LeftToLayers,
+}
+
+impl OverlayRows {
+    pub(crate) fn at_head(rows: Option<Arc<DecodedFrame>>) -> Self {
+        Self { rows, missed: Default::default(), spent: Default::default(), left: LeftToLayers::default() }
+    }
+
+    /// These rows, with the inputs `left` drawn by the map's layers.
+    pub(crate) fn leaving(self, left: LeftToLayers) -> Self {
+        Self { left, ..self }
+    }
+
+    pub(crate) fn read<T>(&self, name: &'static str, hour: &DecodedFrame, read: impl Fn(&DecodedFrame) -> T) -> T {
+        let Some(rows) = &self.rows else { return read(hour) };
+        let (started, cycles) = (std::time::Instant::now(), replay_frame::cpu::thread_cycles());
+        let (value, missed) = replay_frame::frame::discovering(|| read(rows));
+        if missed.is_empty() {
+            let spent = (started.elapsed().as_nanos() as u64, replay_frame::cpu::thread_cycles().saturating_sub(cycles));
+            self.spent.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((name, spent.0, spent.1));
+            return value;
+        }
+        let mut held = self.missed.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        for table in missed {
+            if !held.contains(&table) {
+                held.push(table);
+            }
+        }
+        value
+    }
+
+    /// Which rows these are, for a product kept while they hold; 0 for the hour's frame.
+    fn identity(&self) -> usize {
+        self.rows.as_ref().map_or(0, |rows| Arc::as_ptr(rows) as usize)
+    }
+
+    /// Each input read from the rows: its name, wall nanoseconds and thread cycles.
+    pub(crate) fn spent(&self) -> Vec<(&'static str, u64, u64)> {
+        self.spent.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+    }
+
+    /// The tables an input read that the rows did not hold.
+    pub(crate) fn missed(&self) -> Vec<replay_data::rows::TableId> {
+        self.missed.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+    }
+}
+
 /// Selection is viewer-local, while camera changes reuse the same Air products.
 #[derive(Clone)]
 struct OverlayAir {
     selected: Arc<Vec<u64>>,
+    /// The rows a selection's products were read from ([`OverlayRows::identity`]).
+    rows: usize,
     orders: Arc<viewer_world::map::air_orders::Prepared>,
     ranges: Arc<viewer_world::map::air_ranges::Fields>,
 }
@@ -3244,6 +3724,7 @@ impl OverlayAir {
     fn for_selection(
         &mut self,
         selected: &Arc<Vec<u64>>,
+        rows: usize,
         build: impl FnOnce() -> (
             viewer_world::map::air_orders::Prepared,
             viewer_world::map::air_ranges::Fields,
@@ -3252,10 +3733,11 @@ impl OverlayAir {
         Arc<viewer_world::map::air_orders::Prepared>,
         Arc<viewer_world::map::air_ranges::Fields>,
     ) {
-        if self.selected != *selected {
+        if self.selected != *selected || (!selected.is_empty() && self.rows != rows) {
             let (orders, ranges) = build();
             *self = Self {
                 selected: Arc::clone(selected),
+                rows,
                 orders: Arc::new(orders),
                 ranges: Arc::new(ranges),
             };
@@ -3287,6 +3769,11 @@ impl OverlayTables {
         self.counters.land_combat_gaps()
     }
 
+    /// The hour's counter tables, which the counters layer is proved against.
+    pub(crate) fn counters(&self) -> &counters::HourTables {
+        &self.counters
+    }
+
     /// The raid icons, to keep drawing while the builders prepare new ones.
     pub(crate) fn raids(&self) -> Arc<raids::RaidIcons> {
         Arc::clone(&self.raids)
@@ -3295,6 +3782,16 @@ impl OverlayTables {
     /// The canonical viewing country the tables are for.
     pub(crate) fn ours(&self) -> u32 {
         self.built_for.2
+    }
+
+    /// The viewing country's raid arrows, made with tables made at the head; empty otherwise.
+    pub(crate) fn raid_arrows(&self) -> &Arc<OrderField> {
+        &self.raid_arrows
+    }
+
+    /// Which build these are: their clones share it, another build never does.
+    pub(crate) fn identity(&self) -> usize {
+        Arc::as_ptr(&self.air) as *const () as usize
     }
 
     pub(crate) fn vision(&self) -> &Arc<perspective::Vision> {
@@ -3313,17 +3810,106 @@ impl OverlayTables {
         self.raids = raids;
         true
     }
+
+    /// Replaces the intel icons with those the map's layer evaluated at the head; `false` when
+    /// they are the ones held, or built for another viewing country.
+    /// Replaces the labels with the labels layer's for the same viewing country; whether they changed.
+    pub(crate) fn set_labels(&mut self, labels: &Arc<map_display_data::landscape::Labels>, ours: u32) -> bool {
+        if Arc::ptr_eq(&self.labels, labels) || ours != self.built_for.2 {
+            return false;
+        }
+        self.labels = Arc::clone(labels);
+        true
+    }
+
+    pub(crate) fn set_intel(&mut self, intel: &Arc<intel_icons::IntelIcons>) -> bool {
+        if matches!(&self.intel, IntelPart::Made(held) if Arc::ptr_eq(held, intel)) || intel.built_for.is_some_and(|(_, _, ours)| ours != self.built_for.2) {
+            return false;
+        }
+        self.intel = IntelPart::Made(Arc::clone(intel));
+        true
+    }
+
+    /// Replaces the raid icons with icons built at the playback head for the tables' branch and
+    /// viewing country, at whatever hour the head was; `false` for another branch or country.
+    pub(crate) fn set_raids_at_head(&mut self, raids: Arc<raids::RaidIcons>) -> bool {
+        let (branch, _, ours) = self.built_for;
+        let ours_too = match raids.built_for {
+            Some((built, _, country)) => (built, country) == (branch, ours),
+            None => raids.report.worker_failed && raids.icons.is_empty(),
+        };
+        if ours_too {
+            self.raids = raids;
+        }
+        ours_too
+    }
 }
 
 impl<'a> Hour<'a> {
+    /// A province's integer bitmap centroid with its sampled terrain height.
+    fn icon_centroid(&self, province: u32) -> Option<[f32; 3]> {
+        let (_, geography) = self.icons.raids.mission_topology().ok()?;
+        let [x, z] = *geography.centroids.get(&province)?;
+        let (x, z) = (x as f32, z as f32);
+        Some([x, self.heights().surface_height(x, z), z])
+    }
+
+    /// The resource icons `lay` makes for the camera; none when their content failed to load,
+    /// which is a document warning.
+    fn resource_icons_with(
+        &self,
+        camera: Camera,
+        viewport: [u32; 2],
+        ui_scale: f32,
+        visibility: viewer_foundation::map::mode_visibility::Visibility,
+        lay: impl FnOnce(&viewer_world::map::resource_icons::ResourceIconInputs<'_>) -> viewer_world::map::resource_icons::PreparedResourceIcons,
+    ) -> viewer_world::map::resource_icons::PreparedResourceIcons {
+        let Ok(content) = &self.resource_icons else { return Default::default() };
+        lay(&viewer_world::map::resource_icons::ResourceIconInputs {
+            content,
+            localisation: &self.names.localisation,
+            state_provinces: &self.icons.raids.trigger_content.state_provinces,
+            centroid: &|province| self.icon_centroid(province),
+            camera,
+            viewport,
+            ui_scale,
+            visibility,
+        })
+    }
+
+    /// The occupation icons `lay` makes for the camera and viewing country `country`; none when
+    /// their content failed to load.
+    fn occupation_icons_with(
+        &self,
+        camera: Camera,
+        viewport: [u32; 2],
+        ui_scale: f32,
+        mode: Option<viewer_world::map::occupation_icons::Mode>,
+        country: u32,
+        lay: impl FnOnce(&viewer_world::map::occupation_icons::Inputs<'_>) -> viewer_world::map::occupation_icons::PreparedOccupationIcons,
+    ) -> viewer_world::map::occupation_icons::PreparedOccupationIcons {
+        let Ok(content) = &self.icons.occupation else { return Default::default() };
+        lay(&viewer_world::map::occupation_icons::Inputs {
+            content,
+            mode,
+            country,
+            state_provinces: &self.icons.raids.trigger_content.state_provinces,
+            centroid: &|province| self.icon_centroid(province),
+            camera,
+            viewport,
+            ui_scale,
+        })
+    }
+
     pub(crate) fn fog_products(
         &self,
         choice: &perspective::Choice,
         memos: &map_products::FogMemos,
         spans: &mut viewer_foundation::profiling::BuilderSpans,
+        intel: bool,
     ) -> io::Result<Arc<map_products::FogProduct>> {
         let _cost = replay_frame::cpu::scope("viewer", Some("fog"));
-        self.product_hour.fog(choice, memos, spans)
+        self.product_hour.fog_with(choice, memos, spans, intel)
     }
 
     pub(crate) fn weather_field(&self) -> io::Result<viewer_world::map::weather_effects::Field> {
@@ -3336,9 +3922,18 @@ impl<'a> Hour<'a> {
         viewer: u32,
         selected: &[u64],
     ) -> viewer_world::map::air_ranges::Fields {
+        self.air_ranges_from(self.frame, viewer, selected)
+    }
+
+    pub(crate) fn air_ranges_from(
+        &self,
+        frame: &DecodedFrame,
+        viewer: u32,
+        selected: &[u64],
+    ) -> viewer_world::map::air_ranges::Fields {
         let defines = &self.icons.raids.defines;
         viewer_world::map::air_ranges::read_fields(
-            self.frame,
+            frame,
             viewer,
             selected,
             viewer_foundation::map::air_range::Defines {
@@ -3415,18 +4010,14 @@ impl<'a> Hour<'a> {
         }
     }
 
-    /// The heightmap as the map passes sample it.
-    pub fn heights(&self) -> HeightField<'_> {
-        HeightField {
-            width: self.assets.heightmap.width,
-            height: self.assets.heightmap.height,
-            values: self.assets.heightmap_texels(),
-        }
-    }
-
     /// Build only the current hour's railway graph; static geography is cached.
     pub fn rail_mesh(&self) -> io::Result<RailMesh> {
         Ok(self.rail_product()?.0.clone())
+    }
+
+    /// The labels' per-hour product for the viewing slot `ours`, as the overlay tables take it.
+    pub(crate) fn labels(&self, ours: u32) -> io::Result<Arc<map_display_data::landscape::Labels>> {
+        self.product_hour.labels(ours)
     }
 
     pub fn rail_product(&self) -> io::Result<Arc<map_products::landscape::RailProduct>> {
@@ -3461,20 +4052,9 @@ impl<'a> Hour<'a> {
 
     /// The viewed country's trade-route lines and convoys of the hour
     /// ([`viewer_world::map::trade_routes`]).
-    fn trade_route_lines(&self, ours: u32) -> Arc<viewer_world::map::trade_routes::TradeRoutes> {
-        use replay_data::rows::TableId;
-        const TABLES: &[TableId] = &[
-            TableId::ResourceOrigins,
-            TableId::ConvoyClients,
-            TableId::TradeRoutes,
-            TableId::RegionalConvoyEfficiency,
-            TableId::CountryLinks,
-            TableId::CountryAppearance,
-            TableId::Provinces,
-            TableId::ResourceExchanges,
-        ];
+    pub(crate) fn trade_route_lines(&self, ours: u32) -> Arc<viewer_world::map::trade_routes::TradeRoutes> {
         self.trade_route_memo
-            .get_or_insert_with((TableKey::of(self.frame, TABLES), ours), || {
+            .get_or_insert_with((TableKey::of(self.frame, TRADE_ROUTE_TABLES), ours), || {
                 Ok::<_, io::Error>(Arc::new(self.build_trade_route_lines(ours)))
             })
             .unwrap_or_else(|why| {
@@ -3482,6 +4062,22 @@ impl<'a> Hour<'a> {
                 routes.report.unavailable = Some(why.to_string());
                 Arc::new(routes)
             })
+    }
+
+    /// [`Self::trade_route_lines`] kept in `kept` from one hour to the next while the columns they
+    /// read read the same and the viewer is the same ([`TradeRouteRead`]).
+    pub(crate) fn trade_route_lines_kept(&self, ours: u32, kept: &mut Option<(TradeRouteRead, u32, Arc<viewer_world::map::trade_routes::TradeRoutes>)>) -> Arc<viewer_world::map::trade_routes::TradeRoutes> {
+        let read = TradeRouteRead::of(self.frame, kept.as_ref().map(|(read, ..)| read));
+        if let Some((held, viewer, routes)) = kept.as_mut()
+            && *viewer == ours
+            && held.same(&read)
+        {
+            *held = read;
+            return Arc::clone(routes);
+        }
+        let routes = self.trade_route_lines(ours);
+        *kept = Some((read, ours, Arc::clone(&routes)));
+        routes
     }
 
     fn build_trade_route_lines(&self, ours: u32) -> viewer_world::map::trade_routes::TradeRoutes {
@@ -3562,40 +4158,26 @@ impl<'a> Hour<'a> {
         Arc<OrderField>,
         Vec<viewer_world::map::trade_routes::ConvoyLine>,
     )> {
+        self.orders_and_convoys_with(perspective, show_allied, false, false)
+    }
+
+    /// [`Self::orders_and_convoys`] without the battle plan (`plan_layered`) or the trade routes
+    /// (`routes_layered`): the map's orders and convoys layers draw them.
+    pub fn orders_and_convoys_with(
+        &self,
+        perspective: &perspective::Choice,
+        show_allied: bool,
+        plan_layered: bool,
+        routes_layered: bool,
+    ) -> io::Result<(
+        Arc<OrderField>,
+        Vec<viewer_world::map::trade_routes::ConvoyLine>,
+    )> {
         let _cost = replay_frame::cpu::scope("viewer", Some("actors/units"));
-        let plan = self.plan_field(perspective, show_allied)?;
+        let plan = if plan_layered { Arc::new(OrderField::default()) } else { self.plan_field(perspective, show_allied)? };
         let ours = self.vision(perspective)?.ours();
-        let heights = self.heights();
-        let counters = &self.counters;
-        let anchor = |province: u32, kind: u32| counters.anchor(province, kind);
-        let declared = |name: &str| self.unit_models.declares(name);
-        let evaluate = |items: &[installed_content_core::parser::Item], scopes| {
-            self.trigger_world().evaluate(items, scopes)
-        };
-        let variant_model = |variant: u64, country: u32| {
-            self.unit_models.aircraft_entity(
-                self.frame,
-                viewer_world::map::equipment_graphics::Limits::new(&self.pool_limits, &evaluate),
-                variant,
-                country,
-            )
-        };
-        let (raid_field, report) = raid_arrows::build(
-            &raid_arrows::ArrowInputs {
-                assets: &self.icons.raids,
-                orders: &self.orders,
-                heights: &heights,
-                movement: self.movement.as_deref().map(|content| &content.map),
-                anchor: &anchor,
-                ours,
-                declared: &declared,
-                variant_model: &variant_model,
-                hour_fraction: self.hour_fraction,
-            },
-            self.frame,
-            self.trigger_world(),
-        );
-        let routes = self.trade_route_lines(ours);
+        let (raid_field, report) = self.raid_arrows(ours);
+        let routes = if routes_layered { Arc::default() } else { self.trade_route_lines(ours) };
         let route_warnings = routes.report.warnings();
         let air = self.air_orders(ours, &[], &[]);
         let air_warnings = air.warnings();
@@ -3617,6 +4199,40 @@ impl<'a> Hour<'a> {
         Ok((Arc::new(field), routes.convoys.clone()))
     }
 
+    /// The viewing country's raid arrows of the hour, in a field of their own, and their report.
+    pub(crate) fn raid_arrows(&self, ours: u32) -> (OrderField, viewer_foundation::map::ribbon_content::RaidArrowReport) {
+        let heights = self.heights();
+        let counters = &self.counters;
+        let anchor = |province: u32, kind: u32| counters.anchor(province, kind);
+        let declared = |name: &str| self.unit_models.declares(name);
+        let evaluate = |items: &[installed_content_core::parser::Item], scopes| {
+            self.trigger_world().evaluate(items, scopes)
+        };
+        let variant_model = |variant: u64, country: u32| {
+            self.unit_models.aircraft_entity(
+                self.frame,
+                viewer_world::map::equipment_graphics::Limits::new(&self.pool_limits, &evaluate),
+                variant,
+                country,
+            )
+        };
+        raid_arrows::build(
+            &raid_arrows::ArrowInputs {
+                assets: &self.icons.raids,
+                orders: &self.orders,
+                heights: &heights,
+                movement: self.movement.as_deref().map(|content| &content.map),
+                anchor: &anchor,
+                ours,
+                declared: &declared,
+                variant_model: &variant_model,
+                hour_fraction: self.hour_fraction,
+            },
+            self.frame,
+            self.trigger_world(),
+        )
+    }
+
     /// Air arrows read game state; the local range presentation supplies highlights.
     pub fn air_orders(
         &self,
@@ -3624,8 +4240,18 @@ impl<'a> Hour<'a> {
         selected: &[u64],
         selected_wings: &[u64],
     ) -> viewer_world::map::air_orders::Prepared {
+        self.air_orders_from(self.frame, viewer, selected, selected_wings)
+    }
+
+    pub(crate) fn air_orders_from(
+        &self,
+        frame: &DecodedFrame,
+        viewer: u32,
+        selected: &[u64],
+        selected_wings: &[u64],
+    ) -> viewer_world::map::air_orders::Prepared {
         let mut prepared = viewer_world::map::air_orders::read(
-            self.frame,
+            frame,
             &viewer_world::map::air_orders::Inputs {
                 arrow: self
                     .orders
@@ -3644,7 +4270,7 @@ impl<'a> Hour<'a> {
             },
         );
         prepared.transfers = viewer_world::map::air_transfers::read(
-            self.frame,
+            frame,
             &viewer_world::map::air_transfers::Inputs {
                 viewer,
                 selected: selected_wings,
@@ -3743,58 +4369,17 @@ impl<'a> Hour<'a> {
     }
 
     /// The battle plan alone; ordinary plans are memoised on [`orders::TABLES`].
-    fn plan_field(
+    pub(crate) fn plan_field(
         &self,
         perspective: &perspective::Choice,
         show_allied: bool,
     ) -> io::Result<Arc<OrderField>> {
         let ours = self.vision(perspective)?.ours();
-        let links: BTreeMap<u32, u32> = tables::core::<row_tables::CountryLinks>(self.frame)?
-            .iter()
-            .map(|link| (link.id, link.canonical_slot))
-            .collect();
+        let links = links_of(self.frame)?;
         let build = |frame: &DecodedFrame| {
-            let heights = self.heights();
-            orders::build(
-                &orders::OrderInputs {
-                    assets: &self.orders,
-                    transport: Some(
-                        viewer_foundation::map::air_transport_content::AirTransportContent {
-                            geometry: &self.icons.raids.geometry,
-                            state_provinces: &self.icons.raids.trigger_content.state_provinces,
-                            region_by_province: &self.icons.raids.regions,
-                            region_provinces: &self.icons.raids.region_provinces,
-                            sub_units: self
-                                .icons
-                                .raids
-                                .transport_sub_units
-                                .as_ref()
-                                .map_err(String::as_str),
-                            map_scale: self.icons.raids.defines.map_scale,
-                            ace_wing_size: self.icons.raids.defines.ace_wing_size,
-                            ace_wing_size_max_bonus: self
-                                .icons
-                                .raids
-                                .defines
-                                .ace_wing_size_max_bonus,
-                        },
-                    ),
-                    reads: Some(self.icons.raids.movement_reads()),
-                    geometry: &self.province_geometry,
-                    movement: self.movement.as_deref().map(|content| &content.map),
-                    map: &self.map,
-                    heights: &heights,
-                    ours,
-                    show_allied,
-                    links: &links,
-                    labels: self.icons.fonts.arrow().map(|font| orders::LabelInputs {
-                        font,
-                        localisation: &self.names.localisation,
-                    }),
-                },
-                frame,
-            )
-            .map(Arc::new)
+            self.content
+                .battle_plan(frame, &links, ours, show_allied)
+                .map(Arc::new)
         };
         // Native adjacency-rule triggers may depend on any recorded table.
         // Invasions and labelled paradrops use the full hour for their lazy
@@ -3884,11 +4469,66 @@ impl<'a> Hour<'a> {
         lap: &mut dyn FnMut(&'static str),
         spans: &mut viewer_foundation::profiling::BuilderSpans,
     ) -> io::Result<viewer_world::map::unit_models::PreparedModels> {
+        self.prepare_unit_models_naval_or_not(perspective, true, lap, spans)
+    }
+
+    /// The same models; without `naval` the hour's ships are not made: the map's ships layer draws
+    /// them.
+    pub fn prepare_unit_models_naval_or_not(
+        &self,
+        perspective: &perspective::Choice,
+        naval: bool,
+        lap: &mut dyn FnMut(&'static str),
+        spans: &mut viewer_foundation::profiling::BuilderSpans,
+    ) -> io::Result<viewer_world::map::unit_models::PreparedModels> {
+        self.unit_models_with(perspective, true, lap, |assets, inputs, lap| {
+            assets.prepare_naval_or_not(inputs, naval, lap, spans)
+        })
+    }
+
+    /// The hour's unit models without its land stacks, which the map's units layer chooses itself:
+    /// the ships with `naval` (otherwise the map's ships layer draws them). Without the ships it
+    /// reads of the viewer only whose country it is, `ours` (its canonical slot): no vision is made
+    /// and no ship input read.
+    pub fn prepare_unit_models_without_land(
+        &self,
+        perspective: &perspective::Choice,
+        naval: bool,
+        ours: u32,
+        lap: &mut dyn FnMut(&'static str),
+    ) -> io::Result<viewer_world::map::unit_models::PreparedModels> {
+        if !naval {
+            let _cost = replay_frame::cpu::scope("viewer", Some("actors/units"));
+            let evaluate = |items: &[installed_content_core::parser::Item], scopes| self.trigger_world().evaluate(items, scopes);
+            let limits = viewer_world::map::equipment_graphics::Limits::new(&self.pool_limits, &evaluate);
+            let prepared = self.unit_models.prepare_shipless(self.frame, ours, &self.counters.terrain.combat_terrain, limits, &self.names.localisation);
+            lap("um_owned");
+            return prepared;
+        }
+        self.unit_models_with(perspective, false, lap, |assets, inputs, lap| {
+            let prepared = assets.prepare_without_land(inputs, naval);
+            lap("um_ships_and_owned");
+            prepared
+        })
+    }
+
+    /// `make` over the hour's unit model inputs; the divisions' arrival estimates only with `land`.
+    fn unit_models_with(
+        &self,
+        perspective: &perspective::Choice,
+        land: bool,
+        lap: &mut dyn FnMut(&'static str),
+        make: impl FnOnce(
+            &viewer_world::map::unit_models::UnitModelAssets,
+            viewer_world::map::unit_models::PrepareInputs<'_>,
+            &mut dyn FnMut(&'static str),
+        ) -> io::Result<viewer_world::map::unit_models::PreparedModels>,
+    ) -> io::Result<viewer_world::map::unit_models::PreparedModels> {
         let _cost = replay_frame::cpu::scope("viewer", Some("actors/units"));
         let prepared = (|| {
             let content = &self.counters;
             let definitions = &self.map.definitions;
-            let etas = self.etas()?;
+            let etas = if land { self.etas()? } else { Arc::default() };
             lap("um_etas");
             let movement = self.movement.as_deref();
             let world = movement.map(
@@ -3922,7 +4562,8 @@ impl<'a> Hour<'a> {
                 viewer_world::map::equipment_graphics::Limits::new(&self.pool_limits, &evaluate);
             let vision = self.vision(perspective)?;
             lap("um_vision");
-            self.unit_models.prepare_with_spans(
+            make(
+                &self.unit_models,
                 viewer_world::map::unit_models::PrepareInputs {
                     frame: self.frame,
                     limits,
@@ -3943,7 +4584,6 @@ impl<'a> Hour<'a> {
                     localisation: &self.names.localisation,
                 },
                 lap,
-                spans,
             )
         })();
         // The preparation's local joins have been released before this last part.
@@ -4069,7 +4709,7 @@ impl<'a> Hour<'a> {
             &self.counters.region_of,
             &self.province_geometry,
             &heights,
-            &*self.vision(perspective)?,
+            self.vision(perspective)?.ours(),
             &model,
             &origin,
             &|province| self.impact_place(province),
@@ -4241,7 +4881,7 @@ impl<'a> Hour<'a> {
         engaged: Option<&crate::engaged_index::EngagedIndex>,
     ) -> io::Result<OverlayTables> {
         let ours = self.vision(perspective)?.ours();
-        self.hour_tables_with_raids(perspective, Arc::new(self.raid_icons(ours)), engaged)
+        self.hour_tables_with_raids(perspective, Arc::new(self.raid_icons(ours)), engaged, counters::Kinds::default())
     }
 
     /// The hour's raid icons for canonical country `ours`, every offer evaluated.
@@ -4254,18 +4894,22 @@ impl<'a> Hour<'a> {
     /// the icons its raid lane built ([`crate::raid_lane`]), which draw only
     /// when they are this hour's own, so no raid offer is evaluated on the
     /// frame. Until the lane delivers this hour's none draw, and the
-    /// diagnostics say so ([`raids::RaidIcons::carried`]).
+    /// diagnostics say so ([`raids::RaidIcons::carried`]). Today's source of each counter kind in
+    /// `left_out` is left to the map's layers ([`CounterView::layered`]).
     pub(crate) fn hour_tables_with_raids(
         &self,
         perspective: &perspective::Choice,
         raids: Arc<raids::RaidIcons>,
         engaged: Option<&crate::engaged_index::EngagedIndex>,
+        left_out: counters::Kinds,
     ) -> io::Result<OverlayTables> {
         self.hour_tables_with_raids_profiled(
             perspective,
             raids,
             engaged,
+            left_out,
             &mut viewer_foundation::profiling::BuilderSpans::new(false),
+            true,
         )
     }
 
@@ -4275,10 +4919,68 @@ impl<'a> Hour<'a> {
         perspective: &perspective::Choice,
         raids: Arc<raids::RaidIcons>,
         engaged: Option<&crate::engaged_index::EngagedIndex>,
+        left_out: counters::Kinds,
+        spans: &mut viewer_foundation::profiling::BuilderSpans,
+        radar: bool,
+    ) -> io::Result<OverlayTables> {
+        self.hour_tables_layered(perspective, raids, engaged, left_out, false, spans, radar)
+    }
+
+    /// [`Self::hour_tables_with_raids_profiled`], reading no labels when the map's labels layer
+    /// draws them (`labels_by_layers`): the window lays the layer's out in their place.
+    pub(crate) fn hour_tables_layered(
+        &self,
+        perspective: &perspective::Choice,
+        raids: Arc<raids::RaidIcons>,
+        engaged: Option<&crate::engaged_index::EngagedIndex>,
+        left_out: counters::Kinds,
+        labels_by_layers: bool,
+        spans: &mut viewer_foundation::profiling::BuilderSpans,
+        radar: bool,
+    ) -> io::Result<OverlayTables> {
+        self.hour_tables_of(perspective, raids, engaged.map(|index| index.shared.as_ref()), left_out, labels_by_layers, spans, radar, counters::Need::WHOLE)
+    }
+
+    /// The open map's overlay tables over rows at the head (`self.frame`): the vision its vision
+    /// layer shows, the raid icons its scripts reader built, the engagements layer's index. The
+    /// parts its view needs, made as `need` says.
+    #[allow(clippy::too_many_arguments, reason = "the tables' inputs, what the view draws and the timings")]
+    pub(crate) fn hour_tables_at_head(
+        &self,
+        perspective: &perspective::Choice,
+        vision: Arc<perspective::Vision>,
+        raids: Arc<raids::RaidIcons>,
+        engaged: Option<&viewer_foundation::engagement_history::History>,
+        left_out: counters::Kinds,
+        labels_by_layers: bool,
+        need: counters::Need,
         spans: &mut viewer_foundation::profiling::BuilderSpans,
     ) -> io::Result<OverlayTables> {
+        self.seed_vision(perspective, vision);
+        let mut tables = self.hour_tables_of(perspective, raids, engaged, left_out, labels_by_layers, spans, true, need)?;
+        let (mut arrows, report) = spans.measure("overlay.tables.raid_arrows", |_| self.raid_arrows(tables.ours()));
+        arrows.report.raid_arrows = report;
+        tables.raid_arrows = Arc::new(arrows);
+        Ok(tables)
+    }
+
+    #[allow(clippy::too_many_arguments, reason = "the tables' inputs, the parts left to layers and the timings")]
+    fn hour_tables_of(
+        &self,
+        perspective: &perspective::Choice,
+        raids: Arc<raids::RaidIcons>,
+        engaged: Option<&viewer_foundation::engagement_history::History>,
+        left_out: counters::Kinds,
+        labels_by_layers: bool,
+        spans: &mut viewer_foundation::profiling::BuilderSpans,
+        radar: bool,
+        need: counters::Need,
+    ) -> io::Result<OverlayTables> {
         let (etas, vision) = spans.measure("overlay.tables.prerequisites", |spans| {
-            let etas = spans.measure("overlay.tables.prerequisites.etas", |_| self.etas())?;
+            // Routes made by key make each admitted division's estimate as they make its route.
+            let etas = spans.measure("overlay.tables.prerequisites.etas", |_| {
+                if need.routes_by_key(left_out) { Ok(Arc::default()) } else { self.etas() }
+            })?;
             // One `Vision` per hour and perspective: the counters and the limitation
             // lines read the same cached one.
             let vision = spans.measure("overlay.tables.prerequisites.vision", |_| {
@@ -4287,23 +4989,27 @@ impl<'a> Hour<'a> {
             Ok::<_, io::Error>((etas, vision))
         })?;
         let ours = vision.ours();
-        let labels = spans.measure("overlay.tables.labels", |_| {
-            let _cost = replay_frame::cpu::scope("viewer", Some("labels"));
-            self.product_hour.labels(ours)
-        })?;
+        let labels = if labels_by_layers {
+            Arc::default()
+        } else {
+            spans.measure("overlay.tables.labels", |_| {
+                let _cost = replay_frame::cpu::scope("viewer", Some("labels"));
+                self.product_hour.labels(ours)
+            })?
+        };
         // Checked first: coverage that arrives during the build costs one
         // rebuild, never a stale flag.
         let engaged_covered =
-            engaged.is_some_and(|index| index.shared.covers(self.frame.branch, self.frame.hour));
+            engaged.is_some_and(|index| index.covers(self.frame.branch, self.frame.hour));
         let (radar, empty_air) = spans.measure("overlay.tables.radar_empty_air", |_| {
-            let radar = Arc::new(viewer_world::map::radar_symbols::Field::read(
-                self.frame,
-                ours,
-                self.heights(),
-                &self.radar_centers,
-            ));
+            let radar = Arc::new(if radar {
+                viewer_world::map::radar_symbols::Field::read(self.frame, ours, self.heights(), &self.radar_centers)
+            } else {
+                viewer_world::map::radar_symbols::Field::default()
+            });
             let empty_air = OverlayAir {
                 selected: Arc::new(Vec::new()),
+                rows: 0,
                 orders: Arc::new(self.air_orders(ours, &[], &[])),
                 ranges: Arc::new(self.air_ranges(ours, &[])),
             };
@@ -4332,7 +5038,7 @@ impl<'a> Hour<'a> {
                     &self.names.localisation,
                     &etas,
                     self.movement.as_deref(),
-                    engaged.map(|index| index.shared.as_ref()),
+                    engaged,
                     self.air_rosters
                         .as_deref()
                         .map(|rosters| rosters as &dyn counters::AirPasses),
@@ -4340,22 +5046,30 @@ impl<'a> Hour<'a> {
                     &self.mission_memo,
                     self.icons.raids.movement_reads(),
                     self.icons.raids.mission_topology(),
+                    left_out,
+                    need,
+                    &self.overlay_carry,
+                    self.air_rosters.clone().map(|rosters| rosters as Arc<dyn counters::AirPasses + Send + Sync>),
                     spans,
                 )
             })?,
             labels,
             raids: raids::RaidIcons::carried(raids, self.frame.branch, self.frame.hour, ours),
             intel: spans.measure("overlay.tables.intel", |_| {
-                Arc::new(intel_icons::icons(
+                if need.by_key {
+                    return IntelPart::Deferred(Arc::new(DeferredIntel { frame: Arc::new(self.frame.clone()), ours, made: std::sync::OnceLock::new() }));
+                }
+                IntelPart::Made(Arc::new(intel_icons::icons(
                     &self.icons.intel,
                     &self.icons.raids,
                     self.frame,
                     ours,
                     &self.names.localisation,
                     &self.raid_hover.recorded_language,
-                ))
+                )))
             }),
             built_for: (self.frame.branch, self.frame.hour, ours),
+            raid_arrows: Arc::default(),
         })
     }
 
@@ -4369,6 +5083,7 @@ impl<'a> Hour<'a> {
         perspective: &perspective::Choice,
         raids: Arc<raids::RaidIcons>,
         engaged: Option<&crate::engaged_index::EngagedIndex>,
+        left_out: counters::Kinds,
     ) -> io::Result<OverlayTables> {
         if !Arc::ptr_eq(&previous.content_identity, &self.combat)
             || !previous.counters.is_for_frame(self.frame)
@@ -4377,7 +5092,7 @@ impl<'a> Hour<'a> {
                 .get(self.frame, perspective, &self.counters.fog)
                 .is_none()
         {
-            return self.hour_tables_with_raids(perspective, raids, engaged);
+            return self.hour_tables_with_raids(perspective, raids, engaged, left_out);
         }
         // Sample before rebuilding, exactly as the full constructor does. An
         // arrival during this chain deliberately asks for refinement next frame.
@@ -4403,8 +5118,9 @@ impl<'a> Hour<'a> {
                 self.frame.hour,
                 previous.ours(),
             ),
-            intel: Arc::clone(&previous.intel),
+            intel: previous.intel.clone(),
             built_for: previous.built_for,
+            raid_arrows: Arc::clone(&previous.raid_arrows),
         })
     }
 
@@ -4432,40 +5148,12 @@ impl<'a> Hour<'a> {
         view: &CounterView,
         workers: &viewer_foundation::parallel::Workers,
     ) -> io::Result<PreparedOverlay> {
-        self.prepare_overlay_with(
-            camera,
-            viewport,
-            ui_scale,
-            tables,
-            view,
-            workers,
-            &mut viewer_foundation::profiling::BuilderSpans::new(false),
-        )
+        self.prepare_overlay_at(camera, viewport, ui_scale, tables, view, workers, &OverlayRows::default())
     }
 
-    /// Builder projection stays serial; only the explicit recorder differs.
-    pub(crate) fn prepare_overlay_profiled(
-        &self,
-        camera: Camera,
-        viewport: [u32; 2],
-        ui_scale: f32,
-        tables: &OverlayTables,
-        view: &CounterView,
-        spans: &mut viewer_foundation::profiling::BuilderSpans,
-    ) -> io::Result<PreparedOverlay> {
-        self.prepare_overlay_with(
-            camera,
-            viewport,
-            ui_scale,
-            tables,
-            view,
-            &Default::default(),
-            spans,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn prepare_overlay_with(
+    /// [`Self::prepare_overlay_cached`] with its camera-bound inputs read from `rows`.
+    #[allow(clippy::too_many_arguments, reason = "the overlay's inputs and the rows they read")]
+    pub(crate) fn prepare_overlay_at(
         &self,
         camera: Camera,
         viewport: [u32; 2],
@@ -4473,21 +5161,56 @@ impl<'a> Hour<'a> {
         tables: &OverlayTables,
         view: &CounterView,
         workers: &viewer_foundation::parallel::Workers,
-        spans: &mut viewer_foundation::profiling::BuilderSpans,
+        rows: &OverlayRows,
     ) -> io::Result<PreparedOverlay> {
-        let lazy_version = self.icons.lazy.version();
-        let frame = self.frame;
-        let windows = spans.measure("overlay.projection.windows", |_| {
-            self.icons
-                .counters
-                .window_cache
-                .at(native_shader_draw::gui_viewport(viewport, ui_scale))
-        })?;
-        let counter_inputs = CounterInputs {
+        self.prepare_overlay_with(
+            camera,
+            viewport,
+            ui_scale,
+            tables,
+            view,
+            workers,
+            rows,
+            &mut viewer_foundation::profiling::BuilderSpans::new(false),
+        )
+    }
+
+    /// The counters alone laid out again on `view`'s memory, reading `rows`: what the window does
+    /// when only the counter layers' products changed ([`PreparedOverlay::set_counters`]).
+    #[allow(clippy::too_many_arguments, reason = "the counters' inputs and the rows they read")]
+    pub(crate) fn prepare_counters(
+        &self,
+        camera: Camera,
+        viewport: [u32; 2],
+        ui_scale: f32,
+        tables: &OverlayTables,
+        view: &CounterView,
+        rows: &OverlayRows,
+    ) -> io::Result<counters::PreparedCounters> {
+        let windows = self
+            .icons
+            .counters
+            .window_cache
+            .at(native_shader_draw::gui_viewport(viewport, ui_scale))?;
+        let display = counters::CounterDisplay::default();
+        let inputs = self.counter_inputs(&windows, &display, camera, viewport, ui_scale, view);
+        rows.read("counters", self.frame, |frame| prepare_counters_with(&inputs, frame, tables, view, self.icons.lazy.version()))
+    }
+
+    fn counter_inputs<'b>(
+        &'b self,
+        windows: &'b viewer_foundation::map::native_windows::NativeWindows,
+        display: &'b counters::CounterDisplay,
+        camera: Camera,
+        viewport: [u32; 2],
+        ui_scale: f32,
+        view: &'b CounterView,
+    ) -> CounterInputs<'b> {
+        CounterInputs {
             content: &self.counters,
             equipment: Ok(self.unit_models.sub_units.equipment_content()),
             assets: &self.icons.counters,
-            windows: &windows,
+            windows,
             fonts: &self.icons.fonts,
             localisation: &self.names.localisation,
             recorded_language: &self.counter_content.recorded_language,
@@ -4498,7 +5221,7 @@ impl<'a> Hour<'a> {
             movement: self.movement.as_deref(),
             heights: self.heights(),
             settings: view.settings,
-            display: &counters::CounterDisplay::default(),
+            display,
             selected: &view.selected,
             selected_air: &view.air_selected,
             selected_air_bases: &view.air_bases,
@@ -4509,7 +5232,57 @@ impl<'a> Hour<'a> {
             schedule: view.presentation.schedule(),
             movement_history: view.presentation.movement(),
             visibility: view.visibility,
-        };
+            art: self.icons.lazy.version(),
+        }
+    }
+
+    /// Builder projection stays serial; only the explicit recorder differs. The inputs `left` are
+    /// drawn by the map's layers and not made.
+    #[allow(clippy::too_many_arguments, reason = "the overlay's inputs and the parts left to layers")]
+    pub(crate) fn prepare_overlay_profiled(
+        &self,
+        camera: Camera,
+        viewport: [u32; 2],
+        ui_scale: f32,
+        tables: &OverlayTables,
+        view: &CounterView,
+        left: LeftToLayers,
+        spans: &mut viewer_foundation::profiling::BuilderSpans,
+    ) -> io::Result<PreparedOverlay> {
+        self.prepare_overlay_with(
+            camera,
+            viewport,
+            ui_scale,
+            tables,
+            view,
+            &Default::default(),
+            &OverlayRows::default().leaving(left),
+            spans,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments, reason = "each argument is separate state the host lends for one draw or load")]
+    fn prepare_overlay_with(
+        &self,
+        camera: Camera,
+        viewport: [u32; 2],
+        ui_scale: f32,
+        tables: &OverlayTables,
+        view: &CounterView,
+        workers: &viewer_foundation::parallel::Workers,
+        rows: &OverlayRows,
+        spans: &mut viewer_foundation::profiling::BuilderSpans,
+    ) -> io::Result<PreparedOverlay> {
+        let lazy_version = self.icons.lazy.version();
+        let frame = self.frame;
+        let windows = spans.measure("overlay.projection.windows", |_| {
+            self.icons
+                .counters
+                .window_cache
+                .at(native_shader_draw::gui_viewport(viewport, ui_scale))
+        })?;
+        let display = counters::CounterDisplay::default();
+        let counter_inputs = self.counter_inputs(&windows, &display, camera, viewport, ui_scale, view);
         let label_inputs = labels::LabelInputs {
             content: &self.labels,
             localisation: &self.names.localisation,
@@ -4526,18 +5299,7 @@ impl<'a> Hour<'a> {
         let prepare_counters = || {
             let _cost = replay_frame::cpu::scope("viewer", Some("actors/units"));
             let _span = viewer_foundation::profiling::span("p_counters");
-            let mut retained = view
-                .presentation
-                .counters
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
-            counters::prepare_retained(
-                &counter_inputs,
-                frame,
-                &tables.counters,
-                lazy_version,
-                &mut retained,
-            )
+            rows.read("counters", frame, |frame| prepare_counters_with(&counter_inputs, frame, tables, view, lazy_version))
         };
         let prepare_other = || {
             let _cost = replay_frame::cpu::scope("viewer", Some("modes/styles"));
@@ -4567,51 +5329,27 @@ impl<'a> Hour<'a> {
                     ui_scale,
                     operatives: view.operatives,
                 },
-                &tables.intel,
+                &tables.intel.get(&hour),
             );
             let intel_report = native_intel.report.clone();
-            // The resource icons' content failure is a document warning; they draw nothing then.
-            let resource_icons = match &hour.resource_icons {
-                Ok(content) => viewer_world::map::resource_icons::prepare(
-                    &viewer_world::map::resource_icons::ResourceIconInputs {
-                        content,
-                        localisation: &hour.names.localisation,
-                        state_provinces: &hour.icons.raids.trigger_content.state_provinces,
-                        centroid: &|province| {
-                            let (_, geography) = hour.icons.raids.mission_topology().ok()?;
-                            let [x, z] = *geography.centroids.get(&province)?;
-                            let (x, z) = (x as f32, z as f32);
-                            Some([x, hour.heights().surface_height(x, z), z])
-                        },
-                        camera,
-                        viewport,
-                        ui_scale,
-                        visibility: view.visibility,
-                    },
-                    frame,
-                ),
-                Err(_) => Default::default(),
+            // A part the map's layer draws is left empty: the window lays the layer's product in.
+            let resource_icons = if rows.left.resource_icons {
+                (Default::default(), MadeBy::Left)
+            } else {
+                let made = hour.resource_icons_with(camera, viewport, ui_scale, view.visibility, |inputs| {
+                    let _cost = replay_frame::cpu::scope("viewer", Some("resource icons"));
+                    rows.read("resource icons", frame, |frame| viewer_world::map::resource_icons::prepare(inputs, frame))
+                });
+                (made, MadeBy::Today)
             };
-            let occupation_icons = match &hour.icons.occupation {
-                Ok(content) => viewer_world::map::occupation_icons::prepare(
-                    &viewer_world::map::occupation_icons::Inputs {
-                        content,
-                        mode: view.occupation,
-                        country: tables.ours(),
-                        state_provinces: &hour.icons.raids.trigger_content.state_provinces,
-                        centroid: &|province| {
-                            let (_, geography) = hour.icons.raids.mission_topology().ok()?;
-                            let [x, z] = *geography.centroids.get(&province)?;
-                            let (x, z) = (x as f32, z as f32);
-                            Some([x, hour.heights().surface_height(x, z), z])
-                        },
-                        camera,
-                        viewport,
-                        ui_scale,
-                    },
-                    frame,
-                ),
-                Err(_) => Default::default(),
+            let occupation_icons = if rows.left.occupation_marks {
+                (Default::default(), MadeBy::Left)
+            } else {
+                let made = hour.occupation_icons_with(camera, viewport, ui_scale, view.occupation, tables.ours(), |inputs| {
+                    let _cost = replay_frame::cpu::scope("viewer", Some("occupation icons"));
+                    rows.read("occupation icons", frame, |frame| viewer_world::map::occupation_icons::prepare(inputs, frame))
+                });
+                (made, MadeBy::Today)
             };
             let counters = &hour.counters;
             let anchor = |province| {
@@ -4634,7 +5372,7 @@ impl<'a> Hour<'a> {
                 == viewer_foundation::map::mode_visibility::PriorityTable::StrategicAir
             {
                 let defines = &hour.icons.raids.defines;
-                viewer_world::map::air_assignment::read(
+                rows.read("air assignment", frame, |frame| viewer_world::map::air_assignment::read(
                     frame,
                     &view.air_selected,
                     tables.ours(),
@@ -4653,7 +5391,7 @@ impl<'a> Hour<'a> {
                             .copied()
                             .map_err(String::as_str),
                     },
-                )
+                ))
             } else {
                 Default::default()
             };
@@ -4662,11 +5400,13 @@ impl<'a> Hour<'a> {
                     .air
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
-                air.for_selection(&view.air_selected, || {
-                    (
-                        hour.air_orders(tables.ours(), &[], &view.air_selected),
-                        hour.air_ranges(tables.ours(), &view.air_selected),
-                    )
+                air.for_selection(&view.air_selected, rows.identity(), || {
+                    rows.read("air orders and ranges", frame, |frame| {
+                        (
+                            hour.air_orders_from(frame, tables.ours(), &[], &view.air_selected),
+                            hour.air_ranges_from(frame, tables.ours(), &view.air_selected),
+                        )
+                    })
                 })
             };
             Ok::<_, io::Error>((
@@ -4716,41 +5456,47 @@ impl<'a> Hour<'a> {
                 occupation_stripes: if view.visibility.priorities
                     == viewer_foundation::map::mode_visibility::PriorityTable::Resistance
                 {
-                    viewer_world::map::occupation_stripes::read(
-                        frame,
-                        tables.ours(),
-                        &self.map,
-                        &self.icons.raids.trigger_content.state_provinces,
-                        self.occupation_stripe_alpha
-                            .as_ref()
-                            .copied()
-                            .map_err(String::as_str),
-                    )
+                    rows.read("occupation stripes", frame, |frame| {
+                        viewer_world::map::occupation_stripes::read(
+                            frame,
+                            tables.ours(),
+                            &self.map,
+                            &self.icons.raids.trigger_content.state_provinces,
+                            self.occupation_stripe_alpha
+                                .as_ref()
+                                .copied()
+                                .map_err(String::as_str),
+                        )
+                    })
                 } else {
                     Default::default()
                 },
                 naval_selection: if view.visibility.priorities
                     == viewer_foundation::map::mode_visibility::PriorityTable::StrategicNavy
                 {
-                    viewer_world::map::naval_selection::read(
-                        frame,
-                        tables.ours(),
-                        &view.selected,
-                        &view.fleets_selected,
-                        &self.icons.raids.region_provinces,
-                        &self.naval_region_eligibility,
-                        self.naval_selection_colors
-                            .as_ref()
-                            .copied()
-                            .map_err(String::as_str),
-                    )
+                    rows.read("naval selection", frame, |frame| {
+                        viewer_world::map::naval_selection::read(
+                            frame,
+                            tables.ours(),
+                            &view.selected,
+                            &view.fleets_selected,
+                            &self.icons.raids.region_provinces,
+                            &self.naval_region_eligibility,
+                            self.naval_selection_colors
+                                .as_ref()
+                                .copied()
+                                .map_err(String::as_str),
+                        )
+                    })
                 } else {
                     Default::default()
                 },
                 air_ranges,
                 radar: Arc::clone(&tables.radar),
-                resource_icons,
-                occupation_icons,
+                resource_icons: resource_icons.0,
+                resource_icons_by: resource_icons.1,
+                occupation_icons: occupation_icons.0,
+                occupation_icons_by: occupation_icons.1,
                 occupation_hits: Vec::new(),
                 adjacency_hits: Vec::new(),
                 adjacency_icons,
@@ -4859,7 +5605,7 @@ impl<'a> Hour<'a> {
         (batch, hits, report)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, reason = "each argument is separate state the host lends for one draw or load")]
     fn dump_overlay(
         self,
         camera: Camera,
@@ -5193,12 +5939,15 @@ mod tests {
     fn overlay_air_reuses_camera_independent_products_for_the_exact_selection() {
         let mut cached = OverlayAir {
             selected: Arc::new(Vec::new()),
+            rows: 0,
             orders: Arc::default(),
             ranges: Arc::default(),
         };
         let initial = Arc::clone(&cached.orders);
+        let (_, _) =
+            cached.for_selection(&Arc::new(Vec::new()), 0, || panic!("unchanged selection"));
         let (empty, _) =
-            cached.for_selection(&Arc::new(Vec::new()), || panic!("unchanged selection"));
+            cached.for_selection(&Arc::new(Vec::new()), 7, || panic!("no selection keeps the hour's products"));
         assert!(Arc::ptr_eq(&initial, &empty));
         let selected = Arc::new((0..5000).collect());
         let mut builds = 0;
@@ -5206,17 +5955,19 @@ mod tests {
             builds += 1;
             (Default::default(), Default::default())
         };
-        let (first, first_ranges) = cached.for_selection(&selected, &mut build);
-        let (same, same_ranges) = cached.for_selection(&Arc::new((*selected).clone()), &mut build);
+        let (first, first_ranges) = cached.for_selection(&selected, 0, &mut build);
+        let (same, same_ranges) = cached.for_selection(&Arc::new((*selected).clone()), 0, &mut build);
         assert!(Arc::ptr_eq(&first, &same));
         assert!(Arc::ptr_eq(&first_ranges, &same_ranges));
+        let (newer, _) = cached.for_selection(&selected, 7, &mut build);
+        assert!(!Arc::ptr_eq(&first, &newer), "newer rows at the head read the selection again");
         let mut reordered = (*selected).clone();
         reordered.swap(0, 1);
-        let (changed, _) = cached.for_selection(&Arc::new(reordered), &mut build);
-        assert!(!Arc::ptr_eq(&first, &changed));
-        let (cleared, _) = cached.for_selection(&Arc::new(Vec::new()), &mut build);
+        let (changed, _) = cached.for_selection(&Arc::new(reordered), 7, &mut build);
+        assert!(!Arc::ptr_eq(&newer, &changed));
+        let (cleared, _) = cached.for_selection(&Arc::new(Vec::new()), 7, &mut build);
         assert!(!Arc::ptr_eq(&changed, &cleared));
-        assert_eq!(builds, 3);
+        assert_eq!(builds, 4);
     }
 
     /// City sprawl keeps the recording's placement but draws its buildings' artwork from the

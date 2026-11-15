@@ -6,6 +6,7 @@ use crate::{
     hook::{Hook, Registers, Tap},
     shared_lane::SharedLane,
 };
+use collector_primitives::spill_stack::SpillStack;
 use engine_allocation as allocation;
 use engine_events::politics_sites as native;
 use engine_native::Memory;
@@ -330,15 +331,16 @@ impl Record {
 }
 
 // Single-producer lanes. Publication releases a complete record; the worker
-// releases the consumed index only after copying it. Overflow never overwrites.
+// releases the consumed index only after copying it. A record a lane has no room
+// for goes to its generation's spill; nothing is overwritten or refused for room.
 struct Lane {
     slots: Box<[UnsafeCell<Record>]>,
     bytes: Box<[UnsafeCell<u8>]>,
     write: UnsafeCell<u64>,
     published: AtomicU64,
     consumed: AtomicU64,
-    rejected: AtomicU64,
-    consumed_rejected: AtomicU64,
+    spilled: AtomicU64,
+    consumed_spilled: AtomicU64,
     required_entries: AtomicUsize,
 }
 unsafe impl Sync for Lane {}
@@ -355,8 +357,8 @@ impl Lane {
             write: UnsafeCell::new(0),
             published: AtomicU64::new(0),
             consumed: AtomicU64::new(0),
-            rejected: AtomicU64::new(0),
-            consumed_rejected: AtomicU64::new(0),
+            spilled: AtomicU64::new(0),
+            consumed_spilled: AtomicU64::new(0),
             required_entries: AtomicUsize::new(0),
         })
     }
@@ -376,6 +378,11 @@ struct Log {
     // Threads registering after every lane is taken publish here, so a
     // generation never loses an interval to its writer count.
     shared: SharedLane<Record>,
+    /// Records no lane had room for, or whose literals pass the key stride, each with its own
+    /// key bytes, pushed lock-free where they are written.
+    pushed: SpillStack<(Record, Vec<u8>)>,
+    /// Taken from `pushed`, sorted by sequence and merged at the drain; hooks never lock it.
+    spill: Mutex<Vec<(Record, Vec<u8>)>>,
     registered: AtomicUsize,
     entries: usize,
     key_stride: usize,
@@ -435,6 +442,8 @@ impl Log {
             serial: LOG_SERIAL.fetch_add(1, Ordering::Relaxed),
             lanes: allocation::boxed_slice(storage)?,
             shared,
+            pushed: SpillStack::new(),
+            spill: Mutex::new(Vec::new()),
             registered: AtomicUsize::new(0),
             entries,
             key_stride: keys,
@@ -451,6 +460,24 @@ impl Log {
     }
     fn consumed_frontier(&self) -> u64 {
         self.base_cursor.load(Ordering::Acquire) + self.consumed.load(Ordering::Acquire)
+    }
+    /// Drain side: every spilled record, sorted by sequence, the pushed ones taken in. A
+    /// refused allocation loses the taken records by name.
+    fn held(&self) -> std::sync::MutexGuard<'_, Vec<(Record, Vec<u8>)>> {
+        let mut spill = self
+            .spill
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !self.pushed.is_empty() {
+            match self.pushed.take_into(&mut spill) {
+                Ok(()) => spill.sort_unstable_by_key(|(record, _)| record.sequence),
+                Err(_) => {
+                    COUNTERS[10].fetch_add(1, Ordering::Relaxed);
+                    invalidate();
+                }
+            }
+        }
+        spill
     }
 }
 struct Publishing<'a>(&'a Log);
@@ -933,11 +960,15 @@ fn append_raw_shared(
     mut keys: [native::Literal; 3],
     memory: &impl Memory,
 ) {
-    let Some(mut slot) = log.shared.reserve() else {
-        // Refused demand is retained for the next generation's shared lane.
-        COUNTERS[1].fetch_add(1, Ordering::Relaxed);
+    if key_bytes(&keys) > log.key_stride {
+        REQUIRED_KEYS.fetch_max(key_bytes(&keys), Ordering::Relaxed);
+        spill(log, record, keys, memory);
+        return;
+    }
+    let Some(mut slot) = log.shared.try_reserve() else {
+        // The refusal sizes the next generation's shared lane; the record spills.
         COUNTERS[12].fetch_add(1, Ordering::Relaxed);
-        invalidate();
+        spill(log, record, keys, memory);
         return;
     };
     if copy_keys(&mut keys, slot.stride(), slot.bytes(), memory).is_err() {
@@ -948,8 +979,44 @@ fn append_raw_shared(
     record.keys = keys.map(|key| [key.address as u32, key.len as u32]);
     slot.publish(record);
 }
+/// The key bytes a record's literals take.
+fn key_bytes(keys: &[native::Literal; 3]) -> usize {
+    keys.iter()
+        .map(|key| key.len)
+        .fold(0, usize::saturating_add)
+}
+
+/// A record no lane has room for, or whose literals pass the key stride: it gets storage of
+/// its own on the generation's lock-free spill, keeping its exact key bytes, and takes its
+/// sequence only after that storage is held and the keys are copied. Only a refused
+/// allocation gives it up, as the named staging allocation failure.
+#[cold]
+fn spill(log: &Log, record: Record, mut keys: [native::Literal; 3], memory: &impl Memory) {
+    COUNTERS[1].fetch_add(1, Ordering::Relaxed);
+    let needed = key_bytes(&keys);
+    let mut bytes = Vec::new();
+    let reserved = allocation::advisory(|| allocation::reserve_exact(&mut bytes, needed))
+        .and_then(|()| {
+            bytes.resize(needed, 0);
+            log.pushed.reserve((record, bytes))
+        });
+    let Ok(mut spilled) = reserved else {
+        COUNTERS[10].fetch_add(1, Ordering::Relaxed);
+        invalidate();
+        return;
+    };
+    let (record, bytes) = &mut *spilled;
+    if copy_keys(&mut keys, needed, bytes.as_mut_ptr(), memory).is_err() {
+        return;
+    }
+    record.sequence =
+        log.base_cursor.load(Ordering::Acquire) + log.cursor.fetch_add(1, Ordering::Relaxed) + 1;
+    record.keys = keys.map(|key| [key.address as u32, key.len as u32]);
+    spilled.push();
+}
+
 /// Copies each literal into this record's key span, rebasing it there.
-/// A literal beyond the stride is dropped and its demand retained.
+/// A literal past `u32::MAX` bytes is dropped and its demand retained.
 #[inline(always)]
 fn copy_keys(
     keys: &mut [native::Literal; 3],
@@ -1010,20 +1077,24 @@ fn append_raw_to_lane(
     let demand = cursor
         .wrapping_sub(lane.consumed.load(Ordering::Acquire))
         .saturating_add(
-            lane.rejected
+            lane.spilled
                 .load(Ordering::Relaxed)
-                .wrapping_sub(lane.consumed_rejected.load(Ordering::Acquire)),
+                .wrapping_sub(lane.consumed_spilled.load(Ordering::Acquire)),
         )
         .saturating_add(1);
     if demand > lane.slots.len() as u64 {
-        // Rejected records still contribute to this sealed interval's demand.
-        lane.rejected.fetch_add(1, Ordering::Release);
+        // Spilled records still count toward this interval's demand, which sizes the next lane.
+        lane.spilled.fetch_add(1, Ordering::Release);
         lane.required_entries.fetch_max(
             (demand as usize).max(lane.slots.len().saturating_mul(2)),
             Ordering::Relaxed,
         );
-        COUNTERS[1].fetch_add(1, Ordering::Relaxed);
-        invalidate();
+        spill(log, record, keys, memory);
+        return;
+    }
+    if key_bytes(&keys) > log.key_stride {
+        REQUIRED_KEYS.fetch_max(key_bytes(&keys), Ordering::Relaxed);
+        spill(log, record, keys, memory);
         return;
     }
     let index = cursor as usize & (lane.slots.len() - 1);
@@ -1049,7 +1120,7 @@ fn append_raw_to_lane(
 #[derive(Clone, Copy, Default)]
 pub struct LaneCursor {
     cursor: u64,
-    rejected: u64,
+    spilled: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -1062,10 +1133,6 @@ pub struct Handoff {
 }
 /// Exchange the interval's upper ring index, without copying
 /// events, scanning countries, resolving identities or touching replay rows.
-#[cfg(any(test, feature = "test-support"))]
-pub fn handoff(cursors: &mut [LaneCursor]) -> Result<Handoff, &'static str> {
-    handoff_buffer(engine_native::walk::Buffer::Fixed(cursors))
-}
 pub fn handoff_growing(cursors: &mut Vec<LaneCursor>) -> Result<Handoff, &'static str> {
     handoff_buffer(engine_native::walk::Buffer::Growing(cursors))
 }
@@ -1117,10 +1184,6 @@ fn close_for_handoff(log: &Log, offered: &Log) -> bool {
         .compare_exchange(0, usize::MAX, Ordering::AcqRel, Ordering::Relaxed)
         .is_ok()
 }
-#[cfg(any(test, feature = "test-support"))]
-fn handoff_from(log: &Log, cursors: &mut [LaneCursor]) -> Result<Handoff, &'static str> {
-    handoff_from_buffer(log, engine_native::walk::Buffer::Fixed(cursors))
-}
 fn handoff_from_buffer(
     log: &Log,
     mut cursors: engine_native::walk::Buffer<'_, LaneCursor>,
@@ -1132,7 +1195,7 @@ fn handoff_from_buffer(
     }
     for (out, lane) in cursors.iter_mut().zip(&log.lanes[..count]) {
         out.cursor = lane.published.load(Ordering::Acquire);
-        out.rejected = lane.rejected.load(Ordering::Acquire);
+        out.spilled = lane.spilled.load(Ordering::Acquire);
     }
     let shared_rejected = log.shared.rejected();
     Ok(Handoff {
@@ -1148,9 +1211,17 @@ impl Handoff {
         let log = unsafe { &*(self.log as *const Log) };
         self.cursor.wrapping_sub(log.consumed_frontier()) as usize
     }
+    /// Key bytes for every pending record: a stride each, and the spilled records' own.
     pub fn key_capacity(self) -> usize {
         let log = unsafe { &*(self.log as *const Log) };
-        self.pending().saturating_mul(log.key_stride)
+        let spilled = log
+            .held()
+            .iter()
+            .map(|(_, bytes)| bytes.len())
+            .fold(0, usize::saturating_add);
+        self.pending()
+            .saturating_mul(log.key_stride)
+            .saturating_add(spilled)
     }
     pub fn drain(
         self,
@@ -1190,7 +1261,7 @@ fn drain_from(log: &Log, output: &mut [Event], bytes: &mut [u8]) -> Result<Drain
         .iter()
         .map(|l| LaneCursor {
             cursor: l.published.load(Ordering::Acquire),
-            rejected: l.rejected.load(Ordering::Acquire),
+            spilled: l.spilled.load(Ordering::Acquire),
         })
         .collect();
     drain_until(
@@ -1205,6 +1276,14 @@ fn drain_from(log: &Log, output: &mut [Event], bytes: &mut [u8]) -> Result<Drain
         bytes,
     )
 }
+/// Where the drain's next record comes from.
+#[derive(Clone, Copy)]
+enum Source {
+    Lane(usize),
+    Shared,
+    Spill,
+}
+
 /// The sealed interval: its epoch, log-wide frontier and shared refusals.
 #[derive(Clone, Copy)]
 struct Bound {
@@ -1235,13 +1314,15 @@ fn drain_until(
             }
         }
     };
+    // Hooks never lock the held spill, so the drain merges from it in place.
+    let mut spilled = log.held();
     if log.consumed_epoch.swap(epoch, Ordering::AcqRel) != epoch
         || epoch != EPOCH.load(Ordering::Acquire)
     {
         for (lane, end) in log.lanes.iter().zip(cursors) {
             lane.consumed.store(end.cursor, Ordering::Release);
-            lane.consumed_rejected
-                .store(end.rejected, Ordering::Release);
+            lane.consumed_spilled
+                .store(end.spilled, Ordering::Release);
         }
         log.consumed.store(
             cursor - log.base_cursor.load(Ordering::Acquire),
@@ -1249,9 +1330,12 @@ fn drain_until(
         );
         release_through(cursor);
         log.shared.advance(bound.shared_rejected);
+        spilled.retain(|(record, _)| record.sequence > cursor);
         return Err("politics observation restarted");
     }
     release_through(first);
+    spilled.retain(|(record, _)| record.sequence > first);
+    let mut spill_at = 0;
     let mut shared = shared
         .iter()
         .copied()
@@ -1276,9 +1360,16 @@ fn drain_until(
             .filter(|(n, (_, end))| tails[*n] < end.cursor)
             .map(|(n, (lane, _))| {
                 let slot = tails[n] as usize & (lane.slots.len() - 1);
-                (Some(n), unsafe { (*lane.slots[slot].get()).sequence })
+                (n, unsafe { (*lane.slots[slot].get()).sequence })
             })
-            .chain(shared.peek().map(|&(sequence, _)| (None, sequence)))
+            .map(|(n, sequence)| (Source::Lane(n), sequence))
+            .chain(shared.peek().map(|&(sequence, _)| (Source::Shared, sequence)))
+            .chain(
+                spilled
+                    .get(spill_at)
+                    .filter(|(record, _)| record.sequence <= cursor)
+                    .map(|(record, _)| (Source::Spill, record.sequence)),
+            )
             .min_by_key(|(_, seq)| *seq);
         let Some((n, sequence)) = next else {
             break;
@@ -1289,7 +1380,7 @@ fn drain_until(
             break;
         }
         let (record, source) = match n {
-            Some(n) => {
+            Source::Lane(n) => {
                 let lane = &log.lanes[n];
                 let index = tails[n] as usize & (lane.slots.len() - 1);
                 (unsafe { *lane.slots[index].get() }, unsafe {
@@ -1299,7 +1390,11 @@ fn drain_until(
                     )
                 })
             }
-            None => log.shared.record(shared.peek().unwrap().1),
+            Source::Shared => log.shared.record(shared.peek().unwrap().1),
+            Source::Spill => {
+                let (record, bytes) = &spilled[spill_at];
+                (*record, bytes.as_slice())
+            }
         };
         let mut event = record.unpack();
         let count = event
@@ -1321,16 +1416,19 @@ fn drain_until(
         used += count;
         copied += 1;
         match n {
-            Some(n) => tails[n] += 1,
-            None => log.shared.release(shared.next().unwrap().1),
+            Source::Lane(n) => tails[n] += 1,
+            Source::Shared => log.shared.release(shared.next().unwrap().1),
+            Source::Spill => spill_at += 1,
         }
     }
+    spilled.drain(..spill_at);
+    drop(spilled);
     log.shared.advance(bound.shared_rejected);
     for ((lane, tail), end) in log.lanes.iter().zip(tails).zip(cursors) {
         lane.consumed.store(tail, Ordering::Release);
         if tail == end.cursor {
-            lane.consumed_rejected
-                .store(end.rejected, Ordering::Release);
+            lane.consumed_spilled
+                .store(end.spilled, Ordering::Release);
         }
     }
     log.consumed.store(
@@ -2232,6 +2330,7 @@ unsafe extern "system-unwind" fn entry_body(
     caller: usize,
     native_rbp: usize,
 ) -> usize {
+    let _hook = crate::hook_timing::label();
     // A country reset publishes its empty delayed-event queue before the
     // original resets it, and no event-feed callback follows its stores:
     // an event-feed writer flight spans that publication through the
@@ -2897,6 +2996,16 @@ unsafe extern "system-unwind" fn tap(registers: &Registers, index: usize) {
     }
 }
 
+/// Refusals by name since attach, for the collector's live status.
+pub fn refusals() -> impl serde::Serialize {
+    let staging_failures = COUNTERS[10].load(Ordering::Relaxed);
+    crate::status::status!({
+        "staging_allocation_failures": staging_failures,
+        "staging_error": (staging_failures != 0).then_some("politics staging allocation failed"),
+        "native_read_reasons": crate::status::map(FAILURE_NAMES.into_iter().zip(FAILURES.iter().map(|count| count.load(Ordering::Relaxed))).filter(|(_, count)| *count != 0)),
+        "first_unlisted_native_read_reason": UNLISTED_FAILURE.get(),
+    })
+}
 pub fn status() -> impl serde::Serialize {
     let counters = COUNTERS
         .each_ref()
@@ -2905,7 +3014,8 @@ pub fn status() -> impl serde::Serialize {
         "unhooked": UNHOOKED.get(), "enabled": ENABLED.load(Ordering::Acquire),
         "feature_enabled": cfg!(feature = "politics_capture"), "runtime_enabled": RUNTIME_ENABLED.load(Ordering::Relaxed), "release_refusals": counters[8], "unwound_observers": counters[9],
         "epoch": EPOCH.load(Ordering::SeqCst), "events": log().map(Log::frontier),
-        "overflows": counters[1], "sentinel_failures": counters[2],
+        "spilled_records": counters[1], "sentinel_failures": counters[2],
+        "spill_pending": log().map(|log| log.held().len()),
         "native_read_reasons": crate::status::map(FAILURE_NAMES.into_iter().zip(FAILURES.iter().map(|count| count.load(Ordering::Relaxed))).filter(|(_, count)| *count != 0)),
         "first_unlisted_native_read_reason": UNLISTED_FAILURE.get(),
         "unlisted_native_read_reasons": UNLISTED_FAILURES.load(Ordering::Relaxed),
@@ -2915,7 +3025,7 @@ pub fn status() -> impl serde::Serialize {
         "required_key_bytes": REQUIRED_KEYS.load(Ordering::Relaxed),
         "staging_entries": log().map(|log| log.entries),
         "staging_threads": log().map(|log| log.lanes.len()),
-        "shared_lane_threads": counters[11], "shared_lane_refusals": counters[12],
+        "shared_lane_threads": counters[11], "shared_lane_full": counters[12],
         "shared_lane_entries": log().map(|log| log.shared.len()),
         "required_shared_lane_entries": log().map(|log| log.shared.required_entries()),
         "staging_key_stride": log().map(|log| log.key_stride),
@@ -3095,7 +3205,7 @@ impl Hooks {
         }
         let outcome = match crate::hook::shared::attach_outcome() {
             Some(outcome) => outcome,
-            None => Hook::set_enabled_iter_attach(
+            None => Hook::set_enabled_iter(
                 self.entries
                     .iter_mut()
                     .chain(self.taps.iter_mut().map(Tap::publication_hook)),
@@ -3184,8 +3294,8 @@ impl StagingFixture {
         event.epoch = EPOCH.load(Ordering::Acquire);
         append_to(&self.0, event, memory);
     }
-    pub fn handoff(&self, cursors: &mut [LaneCursor]) -> Result<Handoff, &'static str> {
-        handoff_from(&self.0, cursors)
+    pub fn handoff(&self, cursors: &mut Vec<LaneCursor>) -> Result<Handoff, &'static str> {
+        handoff_from_buffer(&self.0, engine_native::walk::Buffer::Growing(cursors))
     }
     pub fn registered_lanes(&self) -> usize {
         self.0.registered.load(Ordering::Acquire)
@@ -3210,7 +3320,7 @@ pub fn bench_begin(base: usize, entries: usize, keys: usize) {
     resize(entries, keys);
     ENABLED.store(true, Ordering::SeqCst);
     let mut cursors = vec![LaneCursor::default(); thread_slots()];
-    let _ = handoff(&mut cursors);
+    let _ = handoff_buffer(engine_native::walk::Buffer::Growing(&mut cursors));
     let log = log().unwrap();
     for lane in &log.lanes {
         lane.consumed
@@ -3621,10 +3731,11 @@ mod tests {
         let mut cursors =
             vec![LaneCursor::default(); log().unwrap().lanes.len().max(thread_slots())];
         let enabled = ENABLED.swap(true, Ordering::SeqCst);
-        let sealed =
-            crate::test_support::with_allocations_denied(|| handoff(&mut cursors).unwrap());
+        let sealed = crate::test_support::with_allocations_denied(|| {
+            handoff_buffer(engine_native::walk::Buffer::Growing(&mut cursors))
+        });
         ENABLED.store(enabled, Ordering::SeqCst);
-        (sealed, cursors)
+        (sealed.unwrap(), cursors)
     }
 
     fn clear_staging() {
@@ -3735,7 +3846,7 @@ mod tests {
     }
 
     #[test]
-    fn overflowing_one_lane_does_not_multiply_other_lane_capacity() {
+    fn a_burst_past_one_lane_spills_whole_and_sizes_only_that_lane_for_the_next_generation() {
         let _guard = staging_test();
         let log = Log::with_lanes(16, 1, 4);
         let memory = engine_native::memory::SliceMemory {
@@ -3761,10 +3872,9 @@ mod tests {
         assert!(grown.lanes[2].slots.len() >= 33);
         assert_eq!(grown.lanes[3].slots.len(), 4);
         let mut output = [Event::default(); 33];
-        assert_eq!(
-            drain_from(&log, &mut output, &mut []),
-            Err("politics observation restarted")
-        );
+        // Every record of the burst is kept: the lane's room, then its spill.
+        assert_eq!(drain_from(&log, &mut output, &mut []).unwrap().copied, 33);
+        assert!(log.held().is_empty());
         append_lane(&log, 2, Event::default(), &memory);
         assert_eq!(drain_from(&log, &mut output, &mut []).unwrap().copied, 1);
         for _ in 0..33 {
@@ -4006,7 +4116,7 @@ mod tests {
     }
 
     #[test]
-    fn larger_thread_domain_waits_for_prepared_frame_cursors() {
+    fn refused_cursor_growth_for_a_larger_thread_domain_keeps_the_log_and_its_offer() {
         let _guard = staging_test();
         clear_staging();
         resize_checked(8, 1).unwrap();
@@ -4017,8 +4127,11 @@ mod tests {
         let offered = OFFERED.load(Ordering::Acquire);
         let mut small = vec![LaneCursor::default(); old.lanes.len()];
         ENABLED.store(true, Ordering::SeqCst);
-        crate::test_support::with_allocations_denied(|| handoff(&mut small).unwrap());
+        let refused = crate::test_support::with_allocations_denied(|| {
+            handoff_buffer(engine_native::walk::Buffer::Growing(&mut small)).err()
+        });
         ENABLED.store(false, Ordering::SeqCst);
+        assert_eq!(refused, Some("capture buffer allocation failed"));
         assert_eq!(LOG.load(Ordering::Acquire), old as *const Log as usize);
         assert_eq!(OFFERED.load(Ordering::Acquire), offered);
         seal_staging();
@@ -4216,13 +4329,22 @@ mod tests {
         );
         assert_eq!(drain_from(&log, &mut output, &mut bytes).unwrap().copied, 1);
         assert_eq!(output[0].country, 5002);
-        for _ in 0..3 {
-            append_to(&log, Event::default(), &memory);
+        // Past the lane's room: the third spills, and all three drain in order across short drains.
+        for country in 6001..=6003 {
+            append_to(
+                &log,
+                Event {
+                    country,
+                    ..Default::default()
+                },
+                &memory,
+            );
         }
-        assert_eq!(
-            drain_from(&log, &mut output, &mut bytes),
-            Err("politics observation restarted")
-        );
+        for (country, pending) in [(6001, 3), (6002, 2), (6003, 1)] {
+            let drain = drain_from(&log, &mut output, &mut bytes).unwrap();
+            assert_eq!((drain.copied, drain.pending), (1, pending));
+            assert_eq!(output[0].country, country);
+        }
         append_to(
             &log,
             Event {
@@ -4312,11 +4434,11 @@ mod tests {
         let partial = [
             LaneCursor {
                 cursor: 0,
-                rejected: 0,
+                spilled: 0,
             },
             LaneCursor {
                 cursor: 1,
-                rejected: 0,
+                spilled: 0,
             },
         ];
         assert_eq!(
@@ -4603,8 +4725,8 @@ mod tests {
         assert_eq!(log.registered.load(Ordering::Acquire), 5);
         assert!(COUNTERS[11].load(Ordering::Relaxed) >= shared_threads + 3);
         assert!(REQUIRED_LANES.load(Ordering::Relaxed) >= 5);
-        let mut cursors = [LaneCursor::default(); 2];
-        let handoff = handoff_from(&log, &mut cursors).unwrap();
+        let mut cursors = vec![LaneCursor::default(); 2];
+        let handoff = handoff_from_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)).unwrap();
         assert_eq!(handoff.pending(), 20);
         let mut output = [Event::default(); 20];
         let mut bytes = [0; 20 * 16];
@@ -4626,7 +4748,7 @@ mod tests {
         }
         // Every shared slot is free again for the next interval.
         assert!(log.shared.published(|r| r.sequence).unwrap().is_empty());
-        assert!(log.shared.reserve().is_some());
+        assert!(log.shared.try_reserve().is_some());
         REQUIRED_LANES.store(required, Ordering::Relaxed);
     }
 
@@ -4647,8 +4769,8 @@ mod tests {
             slot.publish(record);
         };
         // Reserved first, published last: reservation order is not log order.
-        let early = log.shared.reserve().unwrap();
-        let late = log.shared.reserve().unwrap();
+        let early = log.shared.try_reserve().unwrap();
+        let late = log.shared.try_reserve().unwrap();
         shared(late, 1);
         append_lane(
             &log,
@@ -4690,7 +4812,7 @@ mod tests {
         let _guard = staging_test();
         let log = Log::with_lanes(8, 1, 1);
         let publish = |country| {
-            let slot = log.shared.reserve().unwrap();
+            let slot = log.shared.try_reserve().unwrap();
             let mut record = fixture_record(&Event {
                 country,
                 ..Default::default()
@@ -4726,39 +4848,168 @@ mod tests {
     }
 
     #[test]
-    fn exhausted_shared_lane_is_a_named_refusal_that_sizes_the_next_generation() {
+    fn a_full_shared_lane_spills_and_only_a_refused_allocation_is_named() {
         let _guard = staging_test();
         clear_staging();
         resize_checked(4, 1).unwrap();
         let log = log().unwrap();
         let capacity = log.shared.len();
-        let overflows = COUNTERS[1].load(Ordering::Relaxed);
-        let refusals = COUNTERS[12].load(Ordering::Relaxed);
+        let full = COUNTERS[12].load(Ordering::Relaxed);
+        let failures = COUNTERS[10].load(Ordering::Relaxed);
         let held: Vec<_> = (0..capacity)
-            .map(|_| log.shared.reserve().unwrap())
+            .map(|_| log.shared.try_reserve().unwrap())
             .collect();
+        let mut source = [0u8; 32];
+        source[..4].copy_from_slice(b"name");
+        source[16..24].copy_from_slice(&4u64.to_le_bytes());
+        source[24..32].copy_from_slice(&15u64.to_le_bytes());
         let memory = engine_native::memory::SliceMemory {
-            base: 0,
-            bytes: &[],
+            base: 0x1000,
+            bytes: &source,
         };
+        let named = [
+            native::Literal {
+                address: 0x1000,
+                len: 4,
+            },
+            native::Literal::default(),
+            native::Literal::default(),
+        ];
+        // The shared lane is full: the record spills.
+        append_raw_shared(
+            log,
+            Record::default(),
+            [native::Literal::default(); 3],
+            &memory,
+        );
+        assert_eq!(COUNTERS[12].load(Ordering::Relaxed), full + 1);
+        assert_eq!(log.held().len(), 1);
+        assert_eq!(COUNTERS[10].load(Ordering::Relaxed), failures);
+        // A spill the allocator refuses is the named staging allocation failure: its key bytes
+        // need storage.
         crate::test_support::with_allocations_denied(|| {
-            append_raw_shared(
-                log,
-                Record::default(),
-                [native::Literal::default(); 3],
-                &memory,
-            );
+            append_raw_shared(log, Record::default(), named, &memory);
         });
-        assert_eq!(COUNTERS[12].load(Ordering::Relaxed), refusals + 1);
-        assert!(COUNTERS[1].load(Ordering::Relaxed) > overflows);
+        assert_eq!(log.held().len(), 1);
+        assert_eq!(COUNTERS[10].load(Ordering::Relaxed), failures + 1);
         assert!(log.shared.required_entries() > capacity);
         let status = serde_json::to_value(status()).unwrap();
-        assert!(status["shared_lane_refusals"].as_u64().unwrap() > refusals);
+        assert!(status["shared_lane_full"].as_u64().unwrap() > full);
+        assert_eq!(
+            status["staging_error"],
+            serde_json::json!("politics staging allocation failed")
+        );
         drop(held);
         prepare();
         assert_ne!(OFFERED.load(Ordering::Acquire), 0);
         seal_staging();
         assert!(super::log().unwrap().shared.len() > capacity);
         clear_staging();
+    }
+
+    /// A burst past a lane's room within one sizing pass, and a literal past the key stride:
+    /// every record is kept in order with its key bytes. On the base the burst past the room
+    /// was a counted refusal that withdrew the interval, and the long literal was dropped.
+    #[test]
+    fn a_burst_past_the_ring_keeps_every_event_in_order_with_its_keys() {
+        let _guard = staging_test();
+        let log = Log::with_lanes(2, 1, 1);
+        let name = *b"Germany";
+        let mut source = [0u8; 32];
+        source[..7].copy_from_slice(&name);
+        source[16..24].copy_from_slice(&7u64.to_le_bytes());
+        source[24..32].copy_from_slice(&15u64.to_le_bytes());
+        let memory = engine_native::memory::SliceMemory {
+            base: 0x1000,
+            bytes: &source,
+        };
+        for country in 1..=6_u32 {
+            let mut event = Event {
+                country,
+                ..Default::default()
+            };
+            if country == 4 {
+                event.identity.keys[0] = native::Literal {
+                    address: 0x1000,
+                    len: name.len(),
+                };
+            }
+            append_lane(&log, 0, event, &memory);
+        }
+        let mut output = [Event::default(); 6];
+        let mut bytes = [0; 6 + 7];
+        let drain = drain_from(&log, &mut output, &mut bytes).unwrap();
+        assert_eq!(drain.copied, 6);
+        assert_eq!(
+            output.iter().map(|event| event.country).collect::<Vec<_>>(),
+            [1, 2, 3, 4, 5, 6]
+        );
+        assert_eq!(
+            output.iter().map(|event| event.sequence).collect::<Vec<_>>(),
+            (1..=6).collect::<Vec<_>>()
+        );
+        let key = output[3].identity.keys[0];
+        assert_eq!(&bytes[key.address..key.address + key.len], &name);
+        assert!(log.held().is_empty());
+    }
+
+    /// A burst past a lane's room completes while the drain holds its spilled records, and
+    /// every record comes back in order with its key bytes.
+    #[test]
+    fn a_spill_never_waits_for_the_drain_and_a_burst_keeps_every_event_in_order() {
+        let _guard = staging_test();
+        let log = Log::with_lanes(2, 1, 1);
+        let name = *b"Germany";
+        let mut source = [0u8; 32];
+        source[..7].copy_from_slice(&name);
+        source[16..24].copy_from_slice(&7u64.to_le_bytes());
+        source[24..32].copy_from_slice(&15u64.to_le_bytes());
+        let memory = engine_native::memory::SliceMemory {
+            base: 0x1000,
+            bytes: &source,
+        };
+        // The drain's spilled records stay held through the whole burst.
+        let consumer = log.spill.lock().unwrap();
+        let (done, finished) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            let (log, memory) = (&log, &memory);
+            scope.spawn(move || {
+                for country in 1..=40_u32 {
+                    let mut event = Event {
+                        country,
+                        ..Default::default()
+                    };
+                    if country % 2 == 0 {
+                        event.identity.keys[0] = native::Literal {
+                            address: 0x1000,
+                            len: name.len(),
+                        };
+                    }
+                    append_lane(log, 0, event, memory);
+                }
+                done.send(()).unwrap();
+            });
+            finished
+                .recv_timeout(std::time::Duration::from_secs(30))
+                .expect("a politics spill waited for the drain's lock");
+            drop(consumer);
+        });
+        let mut output = [Event::default(); 40];
+        let mut bytes = [0; 20 * 7];
+        let drain = drain_from(&log, &mut output, &mut bytes).unwrap();
+        assert_eq!(drain.copied, 40);
+        assert_eq!(
+            output.iter().map(|event| event.country).collect::<Vec<_>>(),
+            (1..=40).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            output.iter().map(|event| event.sequence).collect::<Vec<_>>(),
+            (1..=40).collect::<Vec<_>>()
+        );
+        for event in output.iter().filter(|event| event.country % 2 == 0) {
+            let key = event.identity.keys[0];
+            assert_eq!(&bytes[key.address..key.address + key.len], &name);
+        }
+        assert!(log.held().is_empty());
     }
 }

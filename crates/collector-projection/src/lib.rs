@@ -4,6 +4,7 @@ use collector_memory::terminal as allocation;
 
 pub mod certified;
 pub mod projection;
+pub mod table_clock;
 pub mod table_conversion;
 
 #[cfg(test)]

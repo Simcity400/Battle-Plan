@@ -37,9 +37,9 @@ pub fn icon_source(kind: usize) -> usize {
 /// One icon kind's hour. Both use their own kind's engaged flag as the seen
 /// test. Naval frames update only when either side is engaged
 /// ([`naval_icon_hour`]).
-pub fn icon_hour(
+pub fn icon_hour<F: replay_frame::frame::Tables + ?Sized>(
     kind: usize,
-    frame: &DecodedFrame,
+    frame: &F,
     flag: &dyn Fn(u64) -> Engaged,
 ) -> io::Result<IconHour> {
     if kind == LAND_ICON {

@@ -678,7 +678,7 @@ pub fn apply(
         .iter()
         .filter(|&&slot| slot as usize >= table.slots());
     for (at, &slot) in fresh.enumerate() {
-        if slot as usize != table.slots() + at {
+        if !cfg!(feature = "sparse-inserts") && slot as usize != table.slots() + at {
             return Err(invalid(format!(
                 "Insert names slot {slot} past the {} slots and those it adds",
                 table.slots()

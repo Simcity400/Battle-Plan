@@ -4,16 +4,20 @@
 //! prefix writes, and verification and protection restoration precede the
 //! next write.
 //!
-//! A family takes part through [`Hook::set_family_enabled_shared`]. The
-//! runtime runs one [`Round`]:
+//! A family takes part through [`Hook::set_family_enabled_shared`], and in
+//! attach through every publication entry point. The runtime runs one [`Round`]:
 //! - a collect pass calls each taking-part family's own `set_enabled`, whose
-//!   publication is recorded instead of performed: it reports "not ready",
-//!   so the family stops before anything that depends on the outcome;
+//!   publications are recorded instead of performed. Detach reports "not
+//!   ready", so the family stops before anything that depends on the outcome.
+//!   Attach reports "ready" and the family records all its publications,
+//!   running its atomic steps between them early; nothing samples an hour
+//!   before the report pass, which repeats those steps with the real outcomes,
+//!   and a family that does not publish is refused, which turns them off;
 //! - [`publish`] checks and writes the eligible recorded families under one
 //!   suspension, with exactly the checks a family's own publication makes;
 //! - a report pass calls the families again, in their usual order and with
-//!   their usual bookkeeping, and each publication returns its family's
-//!   recorded outcome without suspending anything.
+//!   their usual bookkeeping, and each publication returns its own recorded
+//!   outcome without suspending anything.
 //!
 //! During detach, a family whose sites a thread holds, or whose bytes, verification or
 //! protection refuse, gets the outcome its own publication would have given,
@@ -31,7 +35,7 @@
 //! family reopens its sites if an earlier restore covered their shared page.
 //! Atomic preparation runs when the publisher reaches its family. Report
 //! runs observer admission and forwarding in chain order after resume,
-//! before the hourly entry can publish; those flags select no later patch.
+//! before the runtime admits the first hour; those flags select no later patch.
 //! Preparation involving allocation or native registration stays off hold.
 //!
 //! Two failures are shared rather than per family: a failed instruction-cache flush
@@ -44,8 +48,8 @@
 //! failed reopen leaves that family's bytes alone and retains its executable
 //! storage for detach. A recording allocation failure abandons the collected
 //! batch, so report can fall back to serial publication without writing a
-//! suffix past the missing family. Families with dependent publications or
-//! a post-publication refusal use their serial path outside these rounds.
+//! suffix past the missing family. A publication the report pass reaches
+//! unrecorded, such as a rollback after a refusal, publishes on its own.
 //!
 //! The recorded hook slices are raw pointers into the families' own hook
 //! storage. Between the collect pass and the report pass nothing touches
@@ -262,19 +266,20 @@ pub fn attach_outcome() -> Option<Result<bool, String>> {
     if !attach_reporting() {
         return None;
     }
-    answer(ptr::null(), 0, true)
+    answer(None, true)
 }
 
-fn answer(key: *const Hook, len: usize, enabled: bool) -> Option<Result<bool, String>> {
+/// The recorded outcome of the publication of `key`'s hooks; `None` for a family's single
+/// recorded outcome, which an attach family takes before it rebuilds its references.
+fn answer(key: Option<(*const Hook, usize)>, enabled: bool) -> Option<Result<bool, String>> {
     let found = RECORDED.with_borrow_mut(|recorded| {
         recorded
             .iter_mut()
             .find(|entry| {
-                (if PREFIX.get() {
-                    entry.family == publication::current_family()
-                } else {
-                    entry.hooks.key() == (key, len)
-                }) && entry.enabled == enabled
+                // A family records several publications; each answers only its own hooks.
+                (!PREFIX.get() || entry.family == publication::current_family())
+                    && key.is_none_or(|key| entry.hooks.key() == key)
+                    && entry.enabled == enabled
                     && entry.outcome.is_some()
             })
             .and_then(|entry| {
@@ -310,7 +315,7 @@ fn collect(
     if COLLECT_STOPPED.get() {
         return Ok(false);
     }
-    RECORDED.with_borrow_mut(|recorded| {
+    let recorded = RECORDED.with_borrow_mut(|recorded| {
         // Attach abandons the whole batch, so no later family can publish
         // ahead of this one; detach leaves this family to publish on its own
         // in the report pass and keeps the others recorded.
@@ -322,11 +327,11 @@ fn collect(
         };
         if recorded.try_reserve(1).is_err() {
             abandon(recorded);
-            return;
+            return false;
         }
         let Ok(hooks) = hooks() else {
             abandon(recorded);
-            return;
+            return false;
         };
         let pending = PREPARATION
             .take()
@@ -343,8 +348,11 @@ fn collect(
             allocation_failed: false,
             track_busy,
         });
+        true
     });
-    Ok(false)
+    // Attach goes on to record the family's later publications, so all of them share the one
+    // suspension; the report pass repeats every step after it with the real outcomes.
+    Ok(recorded && PREFIX.get())
 }
 
 /// [`Round`] as one call: `collect` (each taking-part family's
@@ -397,7 +405,7 @@ impl Hook {
     }
 
     /// [`Hook::set_family_enabled`] that takes part in a shared [`Round`]:
-    /// recorded in its collect pass (not ready), answered from the recording
+    /// recorded in its collect pass, answered from the recording
     /// in its report pass, and published on its own otherwise.
     pub fn set_family_enabled_shared(hooks: &mut [Self], enabled: bool) -> Result<bool, String> {
         Self::set_family_enabled_shared_with_prepare(hooks, enabled, None)
@@ -437,7 +445,7 @@ impl Hook {
                 })
             }
             Some(Mode::Report) => {
-                if let Some(outcome) = answer(hooks.as_ptr(), hooks.len(), enabled) {
+                if let Some(outcome) = answer(Some((hooks.as_ptr(), hooks.len())), enabled) {
                     return outcome;
                 }
                 REPORTED_TICKS.set(None);
@@ -455,59 +463,33 @@ impl Hook {
         }
     }
 
-    /// A single publication of scattered hooks (including taps) can join
-    /// attach. Detach still calls its original publication boundary.
-    pub fn set_enabled_batch_attach(
-        hooks: &mut [&mut Self],
-        enabled: bool,
-    ) -> Result<bool, String> {
-        Self::set_enabled_batch_attach_tracking::<false>(hooks, enabled)
-    }
+}
 
-    /// Attach publication with busy-site diagnostics explicitly requested.
-    pub fn set_enabled_batch_attach_tracking_busy(
-        hooks: &mut [&mut Self],
-        enabled: bool,
-    ) -> Result<bool, String> {
-        Self::set_enabled_batch_attach_tracking::<true>(hooks, enabled)
+/// [`Hook::set_enabled_batch`]: every publication an attach round reaches joins its one
+/// suspension, whichever entry point a family publishes through. Detach publishes on its own.
+pub(super) fn batch<const TRACK_BUSY: bool>(
+    hooks: &mut [&mut Hook],
+    enabled: bool,
+) -> Result<bool, String> {
+    if !PREFIX.get() {
+        return Hook::publish_batch::<TRACK_BUSY>(hooks, enabled);
     }
-
-    fn set_enabled_batch_attach_tracking<const TRACK_BUSY: bool>(
-        hooks: &mut [&mut Self],
-        enabled: bool,
-    ) -> Result<bool, String> {
-        let publish = |hooks: &mut [&mut Self]| {
-            if TRACK_BUSY {
-                Self::set_enabled_batch_tracking_busy(hooks, enabled)
-            } else {
-                Self::set_enabled_batch(hooks, enabled)
-            }
-        };
-        if !PREFIX.get() {
-            return publish(hooks);
-        }
-        match MODE.get() {
-            Some(Mode::Collect) => collect(enabled, None, TRACK_BUSY, || {
-                let mut pointers = Vec::new();
-                pointers.try_reserve_exact(hooks.len()).map_err(|_| ())?;
-                pointers.extend(hooks.iter_mut().map(|hook| &mut **hook as *mut Self));
-                Ok(RecordedHooks::Pointers(pointers))
-            }),
-            Some(Mode::Report) => answer(ptr::null(), 0, enabled).unwrap_or_else(|| publish(hooks)),
-            None => publish(hooks),
-        }
-    }
-
-    pub fn set_family_enabled_attach(hooks: &mut [Self], enabled: bool) -> Result<bool, String> {
-        if PREFIX.get() {
-            Self::set_family_enabled_shared(hooks, enabled)
-        } else {
-            Self::set_family_enabled(hooks, enabled)
-        }
-    }
-
-    pub fn set_enabled_attach(&mut self, enabled: bool) -> Result<bool, String> {
-        Self::set_family_enabled_attach(std::slice::from_mut(self), enabled)
+    let key = (
+        hooks
+            .first()
+            .map_or(ptr::null(), |hook| &**hook as *const Hook),
+        hooks.len(),
+    );
+    match MODE.get() {
+        Some(Mode::Collect) => collect(enabled, None, TRACK_BUSY, || {
+            let mut pointers = Vec::new();
+            pointers.try_reserve_exact(hooks.len()).map_err(|_| ())?;
+            pointers.extend(hooks.iter_mut().map(|hook| &mut **hook as *mut Hook));
+            Ok(RecordedHooks::Pointers(pointers))
+        }),
+        Some(Mode::Report) => answer(Some(key), enabled)
+            .unwrap_or_else(|| Hook::publish_batch::<TRACK_BUSY>(hooks, enabled)),
+        None => Hook::publish_batch::<TRACK_BUSY>(hooks, enabled),
     }
 }
 

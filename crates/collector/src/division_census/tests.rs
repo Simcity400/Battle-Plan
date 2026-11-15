@@ -68,61 +68,59 @@ fn core_hints_cover_template_skip_and_preserve_ordered_partial_faults() {
         bytes[0x23000 + index * 8..0x23008 + index * 8]
             .copy_from_slice(&(pointer as u64).to_le_bytes());
     }
-    for capacity in [0, 1, 3, 4, 5, 8, 10] {
-        for once in [false, true] {
-            for fault in [
-                None,
-                Some(kit::GAME_STATE + cgame_state::PROVINCES + 7),
-                Some(kit::LTAB + 4),
-                Some(kit::P1 + 7),
-                Some(kit::P1 + cprovince::ID + 2),
-                Some(kit::PTAB + 8 + 7),
-                Some(0x40000 + 7),
-                Some(0x40000 + creferenced_division_template::TYPE + 7),
-                Some(0x40000 + creferenced_division_template::REVEAL_SKIP),
-                Some(0x41000 + 7),
-            ] {
-                let make_census = || {
-                    let mut census = Census::new();
-                    census.capture_inputs(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE);
-                    census
-                };
-                let mut actual = make_census();
-                let mut direct = make_census();
-                let make_memory = |hints| CoreHintMemory {
-                    bytes: &bytes,
-                    events: RefCell::new(Vec::new()),
-                    fault: Cell::new(fault),
-                    once,
-                    hints,
-                };
-                let hinted = make_memory(true);
-                let unhinted = make_memory(false);
-                let allocated = actual.allocated_bytes();
-                actual.capture_core(&hinted, capacity);
-                direct.capture_core(&unhinted, capacity);
-                assert_eq!(actual.outcome(capacity), direct.outcome(capacity));
-                assert_eq!(actual.rows, direct.rows);
-                assert_eq!(actual.sources, direct.sources);
-                assert_eq!(actual.allocated_bytes(), allocated);
-                assert_eq!(hinted.copies(), unhinted.copies());
-                assert_eq!(hinted.fault.get(), unhinted.fault.get());
-                if fault.is_none() && capacity != 0 {
-                    let events = hinted.events.borrow();
-                    let skip =
-                        CoreEvent::Hint(0x40000 + creferenced_division_template::REVEAL_SKIP, 1);
-                    assert_eq!(
-                        events.iter().filter(|&&event| event == skip).count(),
-                        capacity.min(9),
-                        "only admitted nonnull templates are hinted"
-                    );
-                    let hint = events.iter().position(|&event| event == skip).unwrap();
-                    let owner = events
-                        .iter()
-                        .position(|&event| event == CoreEvent::Copy(kit::LTAB + 4, 4))
-                        .unwrap();
-                    assert!(hint < owner, "child hints precede serial projection");
-                }
+    for once in [false, true] {
+        for fault in [
+            None,
+            Some(kit::GAME_STATE + cgame_state::PROVINCES + 7),
+            Some(kit::LTAB + 4),
+            Some(kit::P1 + 7),
+            Some(kit::P1 + cprovince::ID + 2),
+            Some(kit::PTAB + 8 + 7),
+            Some(0x40000 + 7),
+            Some(0x40000 + creferenced_division_template::TYPE + 7),
+            Some(0x40000 + creferenced_division_template::REVEAL_SKIP),
+            Some(0x41000 + 7),
+        ] {
+            let make_census = || {
+                let mut census = Census::new();
+                census.capture_inputs(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE);
+                census
+            };
+            let mut actual = make_census();
+            let mut direct = make_census();
+            let make_memory = |hints| CoreHintMemory {
+                bytes: &bytes,
+                events: RefCell::new(Vec::new()),
+                fault: Cell::new(fault),
+                once,
+                hints,
+            };
+            let hinted = make_memory(true);
+            let unhinted = make_memory(false);
+            let allocated = actual.allocated_bytes();
+            actual.capture_core(&hinted);
+            direct.capture_core(&unhinted);
+            assert_eq!(actual.outcome(), direct.outcome());
+            assert_eq!(actual.rows, direct.rows);
+            assert_eq!(actual.sources, direct.sources);
+            assert_eq!(actual.allocated_bytes(), allocated);
+            assert_eq!(hinted.copies(), unhinted.copies());
+            assert_eq!(hinted.fault.get(), unhinted.fault.get());
+            if fault.is_none() {
+                let events = hinted.events.borrow();
+                let skip =
+                    CoreEvent::Hint(0x40000 + creferenced_division_template::REVEAL_SKIP, 1);
+                assert_eq!(
+                    events.iter().filter(|&&event| event == skip).count(),
+                    9,
+                    "only nonnull templates are hinted"
+                );
+                let hint = events.iter().position(|&event| event == skip).unwrap();
+                let owner = events
+                    .iter()
+                    .position(|&event| event == CoreEvent::Copy(kit::LTAB + 4, 4))
+                    .unwrap();
+                assert!(hint < owner, "child hints precede serial projection");
             }
         }
     }
@@ -234,52 +232,18 @@ mod many {
 }
 
 #[test]
-fn roster_overflow_counts_every_country_and_grows_in_one_step() {
+fn a_roster_past_the_initial_storage_grows_in_one_capture() {
     const COUNTRIES: u32 = 5000;
     const PER: u32 = 4;
     let total = (COUNTRIES * PER) as usize;
     let bytes = many::world(COUNTRIES, PER);
-    let memory = Observed {
-        bytes: &bytes,
-        reads: RefCell::new(Vec::new()),
-        fault: None,
-        fault_at: None,
-    };
+    let memory = kit::memory(&bytes);
     let mut census = Census::new();
     let roster_capacity = census.unit_inputs().unwrap().roster_slots.capacity();
     assert!(total > roster_capacity && total > census.entries.capacity());
     census.capture_inputs(&memory, 0, many::GAME_STATE);
-    assert!(census.overflowed);
-    assert_eq!(
-        census.unit_inputs().unwrap().intel_sources().outcome,
-        Outcome::Unavailable {
-            reason: "division owned roster capacity exhausted"
-        }
-    );
-    // Every roster count was read, including those after the miss...
-    assert_eq!(census.required_slots, total);
-    assert_eq!(census.required, total);
-    // ...but no pointer page after the one that exhausted the storage.
-    let last = many::roster(COUNTRIES, PER);
-    assert!(
-        memory
-            .reads
-            .borrow()
-            .iter()
-            .any(|&(address, _)| { address == many::country(COUNTRIES) + ccountry::DIVISIONS })
-    );
-    assert!(
-        !memory
-            .reads
-            .borrow()
-            .iter()
-            .any(|&(address, _)| (last..last + PER as usize * 8).contains(&address))
-    );
-
-    census.grow();
-    census.clear();
-    census.capture_inputs(&memory, 0, many::GAME_STATE);
     assert!(!census.overflowed);
+    assert_eq!((census.required, census.required_slots), (total, total));
     let inputs = census.unit_inputs().unwrap();
     assert_eq!(inputs.outcome(), Outcome::Rows { len: total });
     assert_eq!(inputs.seeds().len(), total);
@@ -295,7 +259,7 @@ fn roster_overflow_counts_every_country_and_grows_in_one_step() {
 }
 
 #[test]
-fn entry_overflow_alone_also_grows_to_the_exact_count_in_one_step() {
+fn entries_past_the_initial_storage_grow_to_the_exact_count_in_one_capture() {
     // 9,000 non-null entries exceed the 8,192 entry storage while the
     // 16,384 roster slots still fit.
     const COUNTRIES: u32 = 4500;
@@ -305,11 +269,8 @@ fn entry_overflow_alone_also_grows_to_the_exact_count_in_one_step() {
     let memory = kit::memory(&bytes);
     let mut census = Census::new();
     census.capture_inputs(&memory, 0, many::GAME_STATE);
-    assert!(census.overflowed);
+    assert!(!census.overflowed);
     assert_eq!((census.required, census.required_slots), (total, total));
-    census.grow();
-    census.clear();
-    census.capture_inputs(&memory, 0, many::GAME_STATE);
     assert_eq!(
         census.unit_inputs().unwrap().outcome(),
         Outcome::Rows { len: total }
@@ -332,7 +293,7 @@ fn census_reuses_the_callback_country_roster_and_matches_the_native_checks() {
         .to_vec();
     assert_eq!(direct_entries.len(), COUNTRIES as usize);
 
-    let mut owner = Arc::new(Cache::try_with_capacity(1 << 17).unwrap());
+    let mut owner = engine_allocation::shared(Cache::try_with_capacity(1 << 17).unwrap()).unwrap();
     let snapshot = Cache::prepare_shared(&mut owner, &plain, 0, many::GAME_STATE).unwrap();
     assert_eq!(snapshot.view(&plain).seed_status(), SeedStatus::Ready);
     let observed = Observed {
@@ -404,21 +365,17 @@ fn input_stage_can_be_leased_before_core_without_repeating_the_census() {
         fault_at: None,
     };
     let mut staged = Census::new();
-    let allocated = staged.allocated_bytes();
     staged.capture_inputs(&memory, kit::BASE, kit::GAME_STATE);
+    // The input stage keeps each country's slot end for the next hour's split; the core
+    // allocates nothing.
+    let allocated = staged.allocated_bytes();
     assert_eq!(
-        staged.outcome(0),
+        staged.outcome(),
         Outcome::Unavailable {
             reason: "division core not captured"
         }
     );
-    assert_eq!(
-        staged.outcome(64),
-        Outcome::Unavailable {
-            reason: "division core not captured"
-        }
-    );
-    let lease = Arc::clone(staged.unit_inputs().unwrap());
+    let lease = engine_allocation::SharedBox::clone(staged.unit_inputs().unwrap());
     assert_eq!(lease.outcome(), Outcome::Rows { len: 3 });
     let boundary = memory.reads.borrow().len();
     // The input stage selects commanders from the group; the core authenticates the rest.
@@ -426,9 +383,9 @@ fn input_stage_can_be_leased_before_core_without_repeating_the_census() {
         address == kit::GAME_STATE + cgame_state::PROVINCES || address == 0x40000
     }));
 
-    staged.capture_core(&memory, 64);
-    assert_eq!(staged.outcome(64), Outcome::Rows { len: 3 });
-    assert!(Arc::ptr_eq(&lease, staged.unit_inputs().unwrap()));
+    staged.capture_core(&memory);
+    assert_eq!(staged.outcome(), Outcome::Rows { len: 3 });
+    assert!(engine_allocation::SharedBox::ptr_eq(&lease, staged.unit_inputs().unwrap()));
     assert_eq!(staged.allocated_bytes(), allocated);
     assert!(
         !memory.reads.borrow()[boundary..]
@@ -442,11 +399,11 @@ fn input_stage_can_be_leased_before_core_without_repeating_the_census() {
     );
 
     let mut combined = Census::new();
-    combined.capture(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE, 64);
-    assert_eq!(staged.rows(64), combined.rows(64));
-    assert_eq!(staged.sources(64), combined.sources(64));
+    combined.capture(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE);
+    assert_eq!(staged.rows(), combined.rows());
+    assert_eq!(staged.sources(), combined.sources());
     let completed_reads = memory.reads.borrow().len();
-    staged.capture_core(&memory, 64);
+    staged.capture_core(&memory);
     assert_eq!(memory.reads.borrow().len(), completed_reads);
     drop(lease);
     staged.clear();
@@ -460,7 +417,7 @@ fn core_failure_is_not_retried_and_does_not_change_leased_intel_inputs() {
     bytes[0x23008..0x23010].fill(0);
     let mut census = Census::new();
     census.capture_inputs(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE);
-    let lease = Arc::clone(census.unit_inputs().unwrap());
+    let lease = engine_allocation::SharedBox::clone(census.unit_inputs().unwrap());
     assert_eq!(lease.outcome(), Outcome::Rows { len: 2 });
     assert_eq!(lease.intel_sources().outcome, Outcome::Rows { len: 3 });
     assert_eq!(lease.intel_sources().entries[1].pointer, 0);
@@ -470,15 +427,15 @@ fn core_failure_is_not_retried_and_does_not_change_leased_intel_inputs() {
         fault: Some(kit::GAME_STATE + cgame_state::PROVINCES),
         fault_at: None,
     };
-    census.capture_core(&memory, 0);
+    census.capture_core(&memory);
     assert_eq!(
-        census.outcome(0),
+        census.outcome(),
         Outcome::Unavailable {
             reason: "province array unreadable or invalid"
         }
     );
     assert_eq!(memory.reads.borrow().len(), 1);
-    census.capture_core(&memory, 64);
+    census.capture_core(&memory);
     assert_eq!(memory.reads.borrow().len(), 1);
     assert_eq!(lease.intel_sources().outcome, Outcome::Rows { len: 3 });
     assert_eq!(
@@ -490,38 +447,27 @@ fn core_failure_is_not_retried_and_does_not_change_leased_intel_inputs() {
 }
 
 #[test]
-fn intel_pointer_outcome_survives_private_seed_capacity_failure() {
+fn intel_pointer_outcome_survives_empty_private_seed_storage() {
     let bytes = kit::fixture();
     let mut census = Census::new();
-    Arc::get_mut(census.unit_inputs.as_mut().unwrap())
+    engine_allocation::SharedBox::get_mut(census.unit_inputs.as_mut().unwrap())
         .unwrap()
         .seeds = Vec::new();
     census.capture_inputs(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE);
-    let lease = Arc::clone(census.unit_inputs().unwrap());
-    assert_eq!(
-        lease.outcome(),
-        Outcome::Unavailable {
-            reason: "division owned scalar capacity exhausted"
-        }
-    );
+    let lease = engine_allocation::SharedBox::clone(census.unit_inputs().unwrap());
+    assert_eq!(lease.outcome(), Outcome::Rows { len: 3 });
     assert_eq!(lease.intel_sources().outcome, Outcome::Rows { len: 3 });
     assert_eq!(lease.intel_sources().entries.len(), 3);
-    census.capture_core(&kit::memory(&bytes), 64);
+    census.capture_core(&kit::memory(&bytes));
 }
 
 #[test]
-fn shared_seeds_keep_complete_census_beyond_core_capacity_and_private_faults() {
+fn shared_seeds_keep_the_complete_census_and_private_faults() {
     let bytes = kit::fixture();
     let mut census = Census::new();
-    census.capture(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE, 1);
-    assert_eq!(
-        census.rows(1).1,
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 2
-        }
-    );
-    let inputs = Arc::clone(census.unit_inputs().unwrap());
+    census.capture(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE);
+    assert_eq!(census.rows().1, Outcome::Rows { len: 3 });
+    let inputs = engine_allocation::SharedBox::clone(census.unit_inputs().unwrap());
     assert_eq!(inputs.outcome(), Outcome::Rows { len: 3 });
     assert_eq!(inputs.seeds().len(), 3);
     drop(inputs);
@@ -536,9 +482,9 @@ fn shared_seeds_keep_complete_census_beyond_core_capacity_and_private_faults() {
             kit::memory(self.0).copy(address, output)
         }
     }
-    census.capture(&Fault(&bytes), kit::BASE, kit::GAME_STATE, 64);
+    census.capture(&Fault(&bytes), kit::BASE, kit::GAME_STATE);
     assert_eq!(
-        census.rows(64).1,
+        census.rows().1,
         Outcome::Unavailable {
             reason: "division hit points unreadable"
         }
@@ -564,79 +510,83 @@ fn core_identity_reuse_keeps_serial_rows_and_first_source_failures() {
         bytes[0x23000 + index * 8..0x23008 + index * 8]
             .copy_from_slice(&(pointer as u64).to_le_bytes());
     }
-    for capacity in [0, 1, 3, 4, 5, 8, 10] {
-        // A failure at any original source must remain the first failure.
-        // Successful repeated child reads are deliberately absent, so an
-        // injected fault on only a removed occurrence is not a source fault.
-        for fault in std::iter::once(None).chain(
-            [
-                kit::GAME_STATE + cgame_state::PROVINCES,
-                kit::LTAB + 4,
-                kit::LTAB + 8,
-                kit::P1,
-                kit::P1 + cprovince::ID,
-                kit::PTAB + 8,
-                0x40000,
-                0x40000 + creferenced_division_template::TYPE,
-                0x40000 + creferenced_division_template::REVEAL_SKIP,
-                0x41000,
-            ]
-            .map(Some),
-        ) {
-            let mut census = Census::new();
-            census.capture_inputs(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE);
-            let allocated = census.allocated_bytes();
-            let seeds = census.unit_inputs().unwrap().seeds().to_vec();
-            assert_eq!(seeds.len(), 10);
-            let roots = census.core_roots.unwrap();
-            let make_memory = || Observed {
-                bytes: &bytes,
-                reads: RefCell::new(Vec::new()),
-                fault,
-                fault_at: None,
-            };
-            let serial = make_memory();
-            let mut rows = Vec::new();
-            // A fresh identity set per row forces the original scalar
-            // child reads, including repeated addresses and their gates.
-            let expected = (|| {
-                let provinces = Array::read(&serial, kit::GAME_STATE + cgame_state::PROVINCES, 8)
-                    .ok_or("province array unreadable or invalid")?;
-                for (index, seed) in seeds.iter().take(capacity).enumerate() {
-                    let row = project(
-                        &serial,
-                        &roots.countries,
-                        census.entries[index],
-                        seed,
-                        &mut CoreIdentities::new(roots.base, provinces),
-                    )?;
-                    rows.push(row);
-                }
-                Ok::<_, &'static str>(())
-            })();
-
-            let observed = make_memory();
-            census.capture_core(&observed, capacity);
-            let actual_reads = observed.reads.borrow();
-            // OWNER DECISION 2026-10-12 permits bounded read reordering:
-            // province batches can precede the owner link, so their trace
-            // need not be a subsequence of the original row-at-a-time walk.
-            // Persistent faults must still preserve its rows and refusal;
-            // successful reads remain exact below.
-            if expected.is_ok() && capacity > 0 {
-                assert_eq!(actual_reads.len(), 1 + capacity + 7);
+    // A failure at any original source must remain the first failure.
+    // Successful repeated child reads are deliberately absent, so an
+    // injected fault on only a removed occurrence is not a source fault.
+    for fault in std::iter::once(None).chain(
+        [
+            kit::GAME_STATE + cgame_state::PROVINCES,
+            kit::LTAB + 4,
+            kit::LTAB + 8,
+            kit::P1,
+            kit::P1 + cprovince::ID,
+            kit::PTAB + 8,
+            0x40000,
+            0x40000 + creferenced_division_template::TYPE,
+            0x40000 + creferenced_division_template::REVEAL_SKIP,
+            0x41000,
+        ]
+        .map(Some),
+    ) {
+        let mut census = Census::new();
+        census.capture_inputs(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE);
+        let allocated = census.allocated_bytes();
+        let seeds = census.unit_inputs().unwrap().seeds().to_vec();
+        assert_eq!(seeds.len(), 10);
+        let roots = census.core_roots.unwrap();
+        let make_memory = || Observed {
+            bytes: &bytes,
+            reads: RefCell::new(Vec::new()),
+            fault,
+            fault_at: None,
+        };
+        let serial = make_memory();
+        let mut rows = Vec::new();
+        // A fresh identity set per row forces the original scalar
+        // child reads, including repeated addresses and their gates.
+        let expected = (|| {
+            let provinces = Array::read(&serial, kit::GAME_STATE + cgame_state::PROVINCES, 8)
+                .ok_or("province array unreadable or invalid")?;
+            for (index, seed) in seeds.iter().enumerate() {
+                let row = project(
+                    &serial,
+                    &roots.countries,
+                    census.entries[index],
+                    seed,
+                    &mut CoreIdentities::new(roots.base, provinces),
+                )?;
+                rows.push(row);
             }
-            assert_eq!(census.rows, rows);
-            assert_eq!(census.sources.len(), rows.len());
-            assert_eq!(census.unit_inputs().unwrap().seeds(), seeds);
-            assert_eq!(census.allocated_bytes(), allocated);
-            assert_eq!(
-                census.outcome(capacity),
-                match expected {
-                    Ok(()) => complete(capacity, seeds.len() - capacity),
-                    Err(reason) => Outcome::Unavailable { reason },
-                }
-            );
+            Ok::<_, &'static str>(())
+        })();
+
+        let observed = make_memory();
+        census.capture_core(&observed);
+        let actual_reads = observed.reads.borrow();
+        // OWNER DECISION 2026-10-12 permits bounded read reordering:
+        // province batches can precede the owner link, so their trace
+        // need not be a subsequence of the original row-at-a-time walk.
+        // Persistent faults must still preserve its rows and refusal;
+        // successful reads remain exact below.
+        if expected.is_ok() {
+            assert_eq!(actual_reads.len(), 1 + seeds.len() + 7);
+        }
+        assert_eq!(census.rows, rows);
+        assert_eq!(census.sources.len(), rows.len());
+        assert_eq!(census.unit_inputs().unwrap().seeds(), seeds);
+        assert_eq!(census.allocated_bytes(), allocated);
+        // The frame's rows start empty: installing grows them, and a failed
+        // row names its source, never a shortfall of the frame.
+        let mut installed = Vec::<carmy::Row>::new();
+        assert_eq!(
+            census.install_rows(&mut installed),
+            match expected {
+                Ok(()) => Outcome::Rows { len: seeds.len() },
+                Err(reason) => Outcome::Unavailable { reason },
+            }
+        );
+        if expected.is_ok() {
+            assert_eq!(installed[..seeds.len()], rows[..]);
         }
     }
 }
@@ -791,7 +741,7 @@ fn core_identity_collisions_failures_and_next_walk_use_original_sources() {
     // Reusing Census storage begins a new core walk, even when all child
     // addresses survive. It must observe the new identities and backlink.
     let mut census = Census::new();
-    census.capture(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE, 3);
+    census.capture(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE);
     assert_eq!(census.rows[0].province, 1);
     assert_eq!(census.rows[0].template, expected_original[1]);
     assert_eq!(census.rows[0].orders_group, expected_original[2]);
@@ -804,8 +754,8 @@ fn core_identity_collisions_failures_and_next_walk_use_original_sources() {
     }
     bytes[kit::P1 + cprovince::ID..kit::P1 + cprovince::ID + 4]
         .copy_from_slice(&2_u32.to_le_bytes());
-    census.capture(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE, 3);
-    assert_eq!(census.outcome(3), Outcome::Rows { len: 3 });
+    census.capture(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE);
+    assert_eq!(census.outcome(), Outcome::Rows { len: 3 });
     assert_eq!(census.rows[0].province, expected_collision[0] as u32);
     assert_eq!(census.rows[0].template, expected_collision[1]);
     assert_eq!(census.rows[0].orders_group, expected_collision[2]);
@@ -840,9 +790,9 @@ fn growing_inputs_keep_original_fault_precedence_and_read_trace() {
         let mut growing = Census::new();
         growing.counts.clear();
         growing.entries = Vec::new();
-        growing.unit_inputs = Some(Arc::new(UnitInputs::new(0)));
+        growing.unit_inputs = Some(engine_allocation::shared(UnitInputs::new(0)).unwrap());
         fixed.capture_inputs(&fixed_memory, 0, many::GAME_STATE);
-        growing.capture_inputs_growing(&growing_memory, 0, many::GAME_STATE);
+        growing.capture_inputs(&growing_memory, 0, many::GAME_STATE);
         assert_eq!(
             growing.census_result, fixed.census_result,
             "fault {ordinal}"
@@ -894,8 +844,8 @@ fn core_children_authenticate_in_one_gather_each() {
     let mut census = Census::new();
     census.capture_inputs(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE);
     let calls = Calls(&bytes, Default::default());
-    census.capture_core(&calls, 10);
-    assert_eq!(census.outcome(10), complete(10, 0));
+    census.capture_core(&calls);
+    assert_eq!(census.outcome(), Outcome::Rows { len: 10 });
     // The province array, one owner link per row, and the shared children:
     // the province's gather and registered slot, the template's gather and
     // the group's identity.
@@ -942,7 +892,7 @@ fn parts_joined_in_slot_order_equal_one_walk() {
     }
     let walk = |memory: &Faults| {
         let mut serial = Census::new_worker();
-        serial.capture_inputs_growing(memory, 0, GAME_STATE);
+        serial.capture_inputs(memory, 0, GAME_STATE);
         let mut parted = Census::new_worker();
         parted.capture_inputs_part(memory, 0, GAME_STATE, (1, 3));
         parted.reserve_join(serial.join_capacity());
@@ -955,7 +905,7 @@ fn parts_joined_in_slot_order_equal_one_walk() {
         }
         // The core reads the joined census as it reads the serial one.
         for census in [&mut serial, &mut parted] {
-            census.capture_core(memory, 64);
+            census.capture_core(memory);
         }
         (serial, parted)
     };

@@ -9,7 +9,7 @@ use engine_characters::cscientist;
 use engine_native::{
     Memory, cadvisor, ccharacter, ccharacter_manager, ccountry, ccountry_characters,
     ccountry_leader, cgame_state as gs, character_advisor_node, character_leader_node,
-    creference_registry, cunit_leader, msvc_tree_node as node, walk::Outcome,
+    creference_registry, cunit_leader, msvc_tree_node as node,
 };
 use replay_frame::frame::TableView;
 use std::collections::BTreeMap;
@@ -288,7 +288,7 @@ pub(super) fn resolved_operatives(countries: usize) -> (Populated, Vec<usize>) {
 
 // regression: 722e92182e Capture resolved operative names and codename operands
 #[test]
-fn operative_name_byte_shortfalls_keep_resolved_rows_and_count_both_reasons() {
+fn resolved_operatives_carry_their_names_and_codename_operands() {
     use replay_data::rows::TableRows;
     const COUNTRIES: usize = 3;
     let (world, _) = resolved_operatives(COUNTRIES);
@@ -322,26 +322,6 @@ fn operative_name_byte_shortfalls_keep_resolved_rows_and_count_both_reasons() {
         );
         assert_eq!(name.order, index as i32);
     }
-    capacity.bytes = 1;
-    let mut captured = Captured::with_capacities(&capacity);
-    captured.capture_mode(&world, BASE, STATE, 0, false, false);
-    assert_eq!(captured.outcomes()[1], Outcome::Rows { len: COUNTRIES });
-    let [_, TableView::Complete(TableRows::CharacterOperatives(rows))] = captured.tables() else {
-        panic!("operative rows survive optional byte shortfalls");
-    };
-    assert!(rows.iter().all(|row| {
-        row.resolved
-            && row
-                .name
-                .require("CharacterOperatives.name")
-                .unwrap()
-                .is_none()
-            && row
-                .codename
-                .require("CharacterOperatives.codename")
-                .unwrap()
-                .is_none()
-    }));
 }
 
 #[test]

@@ -9,7 +9,6 @@ import type { CountryIdentityIndex } from '../../dashboard/countryIdentity';
 import type { NameAt } from '../../dashboard/countryFacts';
 import { isOrderedSpans } from '../../charts/series.ts';
 import { isHolderTags, tagAt } from '../../dashboard/politicsHistory.ts';
-import { preparedPrefix } from '../../dashboard/preparedPrefix.ts';
 import { object, opaqueTag } from '../../dashboard/validation.ts';
 import type { CivilWar, CivilWarOutcome, CivilWarSide, CivilWarsReply, HourSpan, MembershipRun, SideExit } from '../../generated/dashboard';
 
@@ -63,14 +62,12 @@ function validWar(war: unknown, ids: Set<string>): boolean {
 }
 
 /** Checks a `civil-wars` reply's shape, so a reply from another version is refused
- * rather than read wrongly; a reply answered from a prepared prefix also carries
- * its coverage and the hours still being prepared. */
+ * rather than read wrongly. */
 export function validateCivilWarsReply(value: unknown): CivilWarsReply {
   const ids = new Set<string>();
   if (!object(value) || typeof value.branchId !== 'string' || !(value.lastHour === null || hour(value.lastHour)) || !isOrderedSpans(value.known)
     || !Array.isArray(value.warnings) || value.warnings.some(warning => typeof warning !== 'string')
     || !Array.isArray(value.wars) || !value.wars.every(war => validWar(war, ids))) throw new Error('The civil wars reply is malformed.');
-  preparedPrefix(value);
   return value as unknown as CivilWarsReply;
 }
 
@@ -342,15 +339,13 @@ export interface TooltipText {
   day: (hour: number) => string;
   branchFirst: number;
   unread: readonly HourSpan[];
-  /** Whether an hour is still being prepared. */
-  pending: (hour: number) => boolean;
 }
 
 function endText(state: RunState, held: string, text: TooltipText): string {
   switch (state.kind) {
     case 'held': case 'none': return held;
     case 'ended': return state.lastSeen == null ? text.day(state.at) : `by ${text.day(state.at)}`;
-    case 'unknown': return text.pending(state.lastSeen + 1) ? 'Still being prepared' : `Not recorded after ${text.day(state.lastSeen)}`;
+    case 'unknown': return `Not recorded after ${text.day(state.lastSeen)}`;
   }
 }
 
@@ -424,3 +419,24 @@ export function jumpHours(about: CivilWarLaneInfo): { label: string; hour: numbe
 
 export const summaryText = (view: Pick<CivilWarsView, 'total' | 'ongoing'>) =>
   `${plural(view.total, 'civil war', 'civil wars')} · ${usNumber.format(view.ongoing)} ongoing`;
+
+/** Every hour from which what the civil-wars timeline shows may differ: a war, a fight, a side or a tag starting, the
+ * hour after one ends, an exit or an outcome dated or read, a stretch not read starting or ending, a country changing
+ * identity. Ascending, distinct. */
+export function changeHours(reply: Pick<CivilWarsReply, 'wars'>, unread: readonly HourSpan[], identityChanges: readonly { hour: number }[] = []): number[] {
+  const hours = new Set<number>();
+  const span = (first: number, last: number) => { hours.add(first); hours.add(last + 1); };
+  for (const war of reply.wars) {
+    span(war.firstHour, war.lastHour);
+    for (const fight of war.atWar) span(fight.firstHour, fight.lastHour);
+    for (const side of war.sides) {
+      span(side.firstHour, side.lastHour);
+      for (const tag of side.tags) hours.add(tag.hour);
+      if (side.exit) { hours.add(side.exit.hour); hours.add(side.exit.readHour); }
+    }
+    if (war.outcome) { hours.add(war.outcome.hour); hours.add(war.outcome.readHour); }
+  }
+  for (const gap of unread) span(gap.firstHour, gap.lastHour);
+  for (const change of identityChanges) hours.add(change.hour);
+  return [...hours].sort((a, b) => a - b);
+}

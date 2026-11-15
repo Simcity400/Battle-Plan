@@ -100,7 +100,7 @@ pub(crate) fn capture(
         reads: Mutex::new(Vec::new()),
         roles: Mutex::new(Vec::new()),
     });
-    let _payloads = decode::prepare_payload_pools(true);
+    let _payloads = decode::prepare_payload_pools(true).unwrap();
     let mut sizing = crate::country_scale::Sizing::for_slots(5);
     sizing.core[1] = 8;
     sizing.core[3] = 8;
@@ -112,9 +112,7 @@ pub(crate) fn capture(
         world: &world,
         role: None,
     });
-    shared
-        .grow_clock_capture(&mut shared.clock_capture.lock().unwrap(), ID.len())
-        .unwrap();
+    shared.prepare_clock_len(ID.len());
     let worker_world = Arc::clone(&world);
     shared
         .acquisition
@@ -171,7 +169,7 @@ pub(crate) fn capture(
         }
         let _ = reads.finish();
         decode::drain_for_test(&shared, &mut memo);
-        assert_eq!(shared.ready.pop(), Some(index));
+        assert_eq!(shared.frames.pop_ready(), Some(index));
         let frame = unsafe { &*shared.frames[index].load(Ordering::Acquire) };
         assert_eq!(frame.clock.as_ref().unwrap().hour, hour);
         assert_eq!(frame.force_full, matches!(hour, 0 | 13));

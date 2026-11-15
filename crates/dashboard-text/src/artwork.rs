@@ -38,6 +38,16 @@ pub fn configure(base: &str, folder: io::Result<PathBuf>) -> io::Result<()> {
     kept.map(drop)
 }
 
+/// The base the desktop app's webview loads images from (its `artwork` scheme).
+pub const DESKTOP_BASE: &str = "http://artwork.localhost/";
+
+/// [`configure`] for the desktop app and each viewer process it embeds: the viewer draws its
+/// followed panels' images, so it names them as the desktop does and keeps them in the folder
+/// the desktop serves from.
+pub fn configure_desktop() -> io::Result<()> {
+    configure(DESKTOP_BASE, local_folder())
+}
+
 /// The folder a host keeps its images in, beside the app's other local data.
 pub fn local_folder() -> io::Result<PathBuf> {
     Ok(PathBuf::from(

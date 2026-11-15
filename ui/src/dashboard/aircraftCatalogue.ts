@@ -4,6 +4,7 @@ import type { AircraftCatalogueParams, AircraftCatalogueReply, AircraftEntry, Ai
 import type { DashboardClient, DashboardSource } from './client';
 import { useContentRevision } from './contentRevision.ts';
 import { loadTransientProduct } from './products.ts';
+import { busyWait } from '../shell/busy.ts';
 
 /** Entries one catalogue request answers. Every entry stays reachable a page at a time. */
 export const AIRCRAFT_PAGE = 100;
@@ -118,8 +119,7 @@ export function useAircraftCatalogue(client: DashboardClient, source: DashboardS
   const [asked, setAsked] = useState(query);
   useEffect(() => {
     if (asked === query) return;
-    const timer = setTimeout(() => setAsked(query), AIRCRAFT_QUERY_DELAY);
-    return () => clearTimeout(timer);
+    return busyWait(() => setAsked(query), AIRCRAFT_QUERY_DELAY);
   }, [query, asked]);
   const identity = source && active ? JSON.stringify([source.id, source.revision, content, scope, asked.trim()]) : null;
   const [version, setVersion] = useState(0);

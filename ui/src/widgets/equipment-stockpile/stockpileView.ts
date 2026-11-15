@@ -4,7 +4,7 @@
  * where it says something the surplus does not. */
 import { runAt } from '../../charts/series.ts';
 import { formatAmount } from '../../charts/valueAxis.ts';
-import type { EquipmentStockpileReply } from '../../generated/dashboard';
+import type { EquipmentStockpileReply } from './types';
 import { balanceOperandsAt, dailyAt, dailyIcAt, shareOf, stockAt, typesComplete, variantName } from './stockpileData.ts';
 import type { BalanceMode, StockGroup } from './stockpileData';
 

@@ -61,7 +61,7 @@ impl Capacities {
         // Empty row storage still walks all unit-order headers without
         // acquiring the unit bodies.
         let demand =
-            cprovince::walk_unit_order_with_land(memory, base, state, &mut [], &mut [], |_, _| {
+            cprovince::count_unit_order_with_land(memory, base, state, |_, _| {
                 Ok(())
             });
         let count = crate::country_scale::table_demand::rows(demand.outcome)?;
@@ -392,7 +392,7 @@ impl Captured {
         self.admit_census(base, census);
         let known = &self.known;
         let land = &mut self.land;
-        let acquired = cprovince::walk_unit_order_growing_with_known(
+        let acquired = cprovince::walk_unit_order_with_known(
             memory,
             base,
             state,

@@ -1,28 +1,101 @@
-//! A capture's columnar journal: what the collector hands the recorder of its columnar
-//! recording, as it records it, uncompressed, for the recorder to write each block of once in
-//! final form ([`crate::columnar_blocks`], [`crate::columnar_file`]). The collector does no
-//! more for it than append what its frame writer made: no compression, no restart, no index.
+//! A capture's record stream: its runs' hours as manifests and sections, and the records that
+//! go with them ([`Record`]), in the order they were made, for the recorder to write each block
+//! of once in final form ([`crate::campaign::live`]). The recorder reads it through [`Source`],
+//! which does not say where the records are made.
 //!
-//! A journal is a sequence of segment files, `columnar.<capture>.<segment>.h4j` in the
-//! campaign's session directory. Each holds the hours of at most one block of one run (a new
-//! run, or the block after a full one, starts the next segment), and ends with
-//! [`Record::Next`] once the collector moved on, or [`Record::Finish`] once the capture ended.
-//! The recorder removes a segment once its file holds what the segment does. A segment's last
-//! record may be torn by a crash: what precedes it stands.
+//! The journal ([`JournalWriter`], [`Journal`]) is the stream on disk: what a producer in
+//! another process appends, uncompressed, with no restart and no index. It is a sequence of
+//! segment files, `columnar.<capture>.<segment>.h4j` in the campaign's session directory. Each
+//! holds the hours of at most one block of one run (a new run, or the block after a full one,
+//! starts the next segment), and ends with [`Record::Next`] once its writer moved on, or
+//! [`Record::Finish`] once the capture ended. A segment goes once a committed revision of the
+//! recording holds what it holds, so the journal is the hours recorded and not yet committed:
+//! what a crash of the recorder leaves to read again. A segment's last record may be torn by a
+//! crash: what precedes it stands.
 //!
 //! A segment: [`MAGIC`], then records, each its kind (u8), its payload's length (u32 LE), the
-//! payload and the CRC-32 of kind, length and payload.
+//! payload and the CRC-32 of kind, length and payload. The magic's last two digits are the
+//! journal's version: a segment of another version is refused by name.
 
 use crate::columnar_file::{Capture, Stop};
 use replay_columnar::leaf::Reader;
 use std::{
     ffi::OsStr,
-    fs::File,
-    io::{self, BufWriter, Read, Write},
+    fs::{self, File},
+    io::{self, BufWriter, Read, Seek, SeekFrom, Write},
+    ops::Range,
     path::{Path, PathBuf},
 };
 
-pub const MAGIC: &[u8; 8] = b"H4JRNL01";
+pub const MAGIC: &[u8; 8] = b"H4JRNL02";
+
+/// Refuses a segment's first bytes unless they are this version's magic, naming the version of
+/// a journal another build wrote.
+fn check_magic(bytes: &[u8]) -> io::Result<()> {
+    if bytes.starts_with(MAGIC) {
+        return Ok(());
+    }
+    if bytes.len() >= MAGIC.len() && bytes.starts_with(&MAGIC[..6]) && bytes[6..8].iter().all(u8::is_ascii_digit) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "A columnar journal of version {}{}; this build reads version {}{} only and has no upgrader for it",
+                char::from(bytes[6]),
+                char::from(bytes[7]),
+                char::from(MAGIC[6]),
+                char::from(MAGIC[7]),
+            ),
+        ));
+    }
+    Err(invalid("Not a columnar journal segment"))
+}
+
+/// When the game's hourly callback read an hour, and the load it read it under: what the rows'
+/// clock witness of the hour holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Witness {
+    /// The callback's performance counter.
+    pub qpc: u64,
+    /// The game's load signal; none when the hour read no clock.
+    pub load_signal: Option<i64>,
+}
+
+/// An hour's witness as its record starts with it: a flags byte (1: a witness, 2: its load
+/// signal), then the counter and the signal, each when flagged.
+const WITNESS_BYTES: usize = 1 + 8 + 8;
+
+fn write_witness(witness: Option<Witness>, out: &mut [u8; WITNESS_BYTES]) -> &[u8] {
+    let Some(witness) = witness else {
+        out[0] = 0;
+        return &out[..1];
+    };
+    out[0] = 1 | (u8::from(witness.load_signal.is_some()) << 1);
+    out[1..9].copy_from_slice(&witness.qpc.to_le_bytes());
+    match witness.load_signal {
+        Some(signal) => {
+            out[9..17].copy_from_slice(&signal.to_le_bytes());
+            &out[..17]
+        }
+        None => &out[..9],
+    }
+}
+
+fn read_witness(reader: &mut Reader<'_>) -> io::Result<Option<Witness>> {
+    let flags = reader.u8()?;
+    if flags > 3 || flags == 2 {
+        return Err(invalid("A journal hour's witness flags are malformed"));
+    }
+    if flags & 1 == 0 {
+        return Ok(None);
+    }
+    let qpc = u64::from_le_bytes(reader.raw(8)?.try_into().expect("eight bytes"));
+    let load_signal = if flags & 2 != 0 {
+        Some(i64::from_le_bytes(reader.raw(8)?.try_into().expect("eight bytes")))
+    } else {
+        None
+    };
+    Ok(Some(Witness { qpc, load_signal }))
+}
 
 const BEGIN: u8 = 1;
 const RUN: u8 = 2;
@@ -93,14 +166,108 @@ pub enum Record<'a> {
     Begin { identity: &'a [u8], capture: &'a [u8] },
     /// A run starts with the next hour.
     Run { branch: u64, epoch: u8, first_hour: i32 },
-    /// The run's next hour: its manifest, then its sections in the manifest's order.
-    Hour { manifest: &'a [u8], sections: &'a [u8] },
+    /// The run's next hour: its witness, its manifest, then its sections in the manifest's
+    /// order.
+    Hour {
+        witness: Option<Witness>,
+        manifest: &'a [u8],
+        sections: Sections<'a>,
+    },
     /// Control records the capture holds from now on, each as the rows encode it.
     Controls(Vec<&'a [u8]>),
     /// The segment ends; the next holds what follows.
     Next,
     /// The capture ends: where writing stopped short of the rows, when it did.
     Finish { stop: Option<Stop> },
+}
+
+/// An hour's sections, read in the manifest's order a section at a time: from the record's bytes
+/// when it is held whole, or from its segment's file when it is long, so the first hour of a run,
+/// which holds the whole world, is never one buffer.
+pub struct Sections<'a>(Held<'a>);
+
+enum Held<'a> {
+    Bytes { bytes: &'a [u8], at: usize },
+    File { file: &'a mut File, at: u64, end: u64, buffer: &'a mut Vec<u8> },
+}
+
+impl<'a> Sections<'a> {
+    pub fn held(bytes: &'a [u8]) -> Self {
+        Self(Held::Bytes { bytes, at: 0 })
+    }
+
+    /// The bytes not read yet.
+    pub fn left(&self) -> u64 {
+        match &self.0 {
+            Held::Bytes { bytes, at } => (bytes.len() - at) as u64,
+            Held::File { at, end, .. } => end - at,
+        }
+    }
+
+    /// The next `length` bytes: one section.
+    pub fn next(&mut self, length: u64) -> io::Result<&[u8]> {
+        if length > self.left() {
+            return Err(invalid("An hour's sections end before its manifest's"));
+        }
+        let length = length as usize;
+        match &mut self.0 {
+            Held::Bytes { bytes, at } => {
+                let start = *at;
+                *at += length;
+                Ok(&bytes[start..start + length])
+            }
+            Held::File { file, at, buffer, .. } => {
+                let _label = journal_label();
+                buffer.clear();
+                engine_allocation::reserve(buffer, length)?;
+                file.seek(SeekFrom::Start(*at))?;
+                Read::by_ref(&mut **file).take(length as u64).read_to_end(buffer)?;
+                if buffer.len() != length {
+                    return Err(invalid("A journal segment ends inside a section"));
+                }
+                *at += length as u64;
+                Ok(buffer)
+            }
+        }
+    }
+
+    /// Every byte not read yet, into `out`, emptied first.
+    pub fn read_all(&mut self, out: &mut Vec<u8>) -> io::Result<()> {
+        out.clear();
+        let left = self.left();
+        engine_allocation::reserve(out, left as usize)?;
+        let bytes = self.next(left)?;
+        out.extend_from_slice(bytes);
+        Ok(())
+    }
+
+    /// The bytes when they are held whole.
+    pub fn bytes(&self) -> Option<&'a [u8]> {
+        match &self.0 {
+            Held::Bytes { bytes, at } => Some(&bytes[*at..]),
+            Held::File { .. } => None,
+        }
+    }
+}
+
+impl std::fmt::Debug for Sections<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "Sections({} bytes)", self.left())
+    }
+}
+
+impl PartialEq for Sections<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.bytes().is_some() && self.bytes() == other.bytes()
+    }
+}
+
+impl Eq for Sections<'_> {}
+
+/// What the journal reader holds, by name.
+fn journal_label() -> engine_allocation::labels::Scope {
+    use engine_allocation::labels;
+    labels::enter(labels::owner("journal"), labels::Kind::Operator)
 }
 
 fn varint(out: &mut [u8; 10], mut value: u64) -> &[u8] {
@@ -214,15 +381,17 @@ impl JournalWriter {
         self.append(RUN, &[branch, &[epoch], hour])
     }
 
-    /// The run's next hour: its manifest and its sections in the manifest's order.
-    pub fn hour(&mut self, manifest: &[u8], sections: &[&[u8]]) -> io::Result<()> {
+    /// The run's next hour: its witness, its manifest and its sections in the manifest's order.
+    pub fn hour(&mut self, witness: Option<Witness>, manifest: &[u8], sections: &[&[u8]]) -> io::Result<()> {
+        let mut witnessed = [0; WITNESS_BYTES];
+        let witnessed = write_witness(witness, &mut witnessed);
         let mut length = [0; 10];
         let length = varint(&mut length, manifest.len() as u64);
-        let mut parts: [&[u8]; 2] = [length, manifest];
-        self.append_with_sections(HOUR, &mut parts, sections)
+        let parts: [&[u8]; 3] = [witnessed, length, manifest];
+        self.append_with_sections(HOUR, &parts, sections)
     }
 
-    fn append_with_sections(&mut self, kind: u8, head: &mut [&[u8]; 2], sections: &[&[u8]]) -> io::Result<()> {
+    fn append_with_sections(&mut self, kind: u8, head: &[&[u8]; 3], sections: &[&[u8]]) -> io::Result<()> {
         let length: usize = head.iter().chain(sections).map(|part| part.len()).sum();
         if length > MOST_RECORD_BYTES {
             return Err(invalid("A journal record passes the largest record"));
@@ -289,7 +458,392 @@ impl JournalWriter {
     }
 }
 
-/// A segment as it grows: what its writer appended since it was last read, a record at a time.
+/// A capture's records in order, from wherever they are made: the journal another process
+/// appends to, or a producer in this one. Its reader looks at the record it is at, takes it and
+/// moves past it; a record it cannot take yet stays the one it is at.
+pub trait Source {
+    /// Reads on from segment `segment`: the recording holds every earlier one, and they go.
+    fn start(&mut self, segment: u32) -> io::Result<()>;
+
+    /// The record it is at; none while its producer has made no more.
+    fn record(&mut self) -> io::Result<Option<Record<'_>>>;
+
+    /// Moves past the record it is at.
+    fn advance(&mut self);
+
+    /// Lets go of every segment that ended before the record it is at: a committed revision
+    /// holds what the recording keeps of them.
+    fn retire(&mut self) -> io::Result<()>;
+
+    /// Lets go of the capture: it ended, and the recording holds all it keeps of it.
+    fn finish(&mut self) -> io::Result<()>;
+
+    /// Whether its producer may still make records.
+    fn producing(&mut self) -> io::Result<bool>;
+
+    /// Where its records end short of what it holds, when they do and its producer makes no
+    /// more: the segment, and how many of its bytes read as records.
+    fn damage(&mut self) -> io::Result<Option<(u32, u64)>> {
+        Ok(None)
+    }
+}
+
+/// A journal segment a committed revision holds: removed, or, in a smoke build, kept apart for
+/// checking the recording against.
+fn retire(segment: &Path) -> io::Result<()> {
+    if cfg!(feature = "keep-journal")
+        && let (Some(directory), Some(name)) = (segment.parent(), segment.file_name())
+    {
+        let kept = directory.join("kept-journal");
+        fs::create_dir_all(&kept)?;
+        return fs::rename(segment, kept.join(name));
+    }
+    match fs::remove_file(segment) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        removed => removed,
+    }
+}
+
+//// The bytes a journal reads ahead of the record it is at; a longer hour is read from the file a
+/// section at a time.
+const READ_AHEAD: usize = 1 << 20;
+
+/// The record a journal is at, read and checked.
+enum Current {
+    /// Its kind and its payload's place in `buffer`.
+    Held(u8, Range<usize>),
+    /// A long hour: its witness, its manifest in `buffer`, and its sections' place in the file.
+    Streamed {
+        witness: Option<Witness>,
+        manifest: Range<usize>,
+        sections: Range<u64>,
+        /// The file offset past its checksum.
+        end: u64,
+    },
+}
+
+/// A capture's journal in its directory, read as it grows ([`Source`]).
+pub struct Journal {
+    directory: PathBuf,
+    capture: u32,
+    /// The segment it reads, and the first it has not let go of.
+    segment: u32,
+    retired: u32,
+    /// None until the segment exists, and while let go of ([`Source::producing`]).
+    file: Option<File>,
+    /// The segment's bytes from `base` on; the record it is at starts at `at` of them.
+    buffer: Vec<u8>,
+    base: u64,
+    at: usize,
+    /// The section a long hour's [`Sections`] read last.
+    section: Vec<u8>,
+    /// The segment's magic was read.
+    checked: bool,
+    current: Option<Current>,
+    finished: bool,
+    /// Segments it lets go of stay where they are: a reader of a fixture's journal.
+    keeps: bool,
+}
+
+impl Journal {
+    /// Capture `capture`'s journal in `directory`, from its first segment.
+    pub fn open(directory: &Path, capture: u32) -> Self {
+        Self {
+            directory: directory.to_path_buf(),
+            capture,
+            segment: 0,
+            retired: 0,
+            file: None,
+            buffer: Vec::new(),
+            base: 0,
+            at: 0,
+            section: Vec::new(),
+            checked: false,
+            current: None,
+            finished: false,
+            keeps: false,
+        }
+    }
+
+    /// [`Self::open`], letting go of no segment: it removes and moves nothing, and never waits
+    /// for a producer.
+    pub fn open_read_only(directory: &Path, capture: u32) -> Self {
+        Self {
+            keeps: true,
+            ..Self::open(directory, capture)
+        }
+    }
+
+    /// The captures whose journals `directory` holds a segment of, ascending.
+    pub fn captures(directory: &Path) -> io::Result<Vec<u32>> {
+        let mut captures: Vec<u32> = segments(directory)?.into_iter().map(|(capture, _, _)| capture).collect();
+        captures.dedup();
+        Ok(captures)
+    }
+
+    /// The file of segment `segment`.
+    pub fn path(&self, segment: u32) -> PathBuf {
+        let mut name = [0; SEGMENT_NAME_BYTES];
+        self.directory.join(segment_name(self.capture, segment, &mut name))
+    }
+
+    /// Its segments still in the directory, ascending.
+    fn held(&self) -> io::Result<Vec<(u32, PathBuf)>> {
+        Ok(segments(&self.directory)?
+            .into_iter()
+            .filter(|(capture, _, _)| *capture == self.capture)
+            .map(|(_, segment, path)| (segment, path))
+            .collect())
+    }
+
+    fn let_go(&self, segment: &Path) -> io::Result<()> {
+        if self.keeps { Ok(()) } else { retire(segment) }
+    }
+
+    fn rewind(&mut self) {
+        self.file = None;
+        self.buffer.clear();
+        self.buffer.shrink_to(2 * READ_AHEAD);
+        self.section = Vec::new();
+        self.base = 0;
+        self.at = 0;
+        self.checked = false;
+        self.current = None;
+    }
+
+    /// Reads on until `buffer` holds `need` bytes from `at`, or the segment holds no more.
+    fn fill(&mut self, need: usize) -> io::Result<bool> {
+        if self.buffer.len() - self.at >= need {
+            return Ok(true);
+        }
+        if self.at > 0 {
+            self.buffer.drain(..self.at);
+            self.base += self.at as u64;
+            self.at = 0;
+        }
+        let Some(file) = self.file.as_mut() else {
+            return Ok(false);
+        };
+        let _label = journal_label();
+        file.seek(SeekFrom::Start(self.base + self.buffer.len() as u64))?;
+        let more = (need - self.buffer.len()).max(READ_AHEAD);
+        Read::by_ref(file).take(more as u64).read_to_end(&mut self.buffer)?;
+        Ok(self.buffer.len() >= need)
+    }
+
+    /// Reads the record it is at, when the segment holds it whole.
+    fn read(&mut self) -> io::Result<()> {
+        if self.file.is_none() {
+            match File::open(self.path(self.segment)) {
+                Ok(file) => self.file = Some(file),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+                Err(error) => return Err(error),
+            }
+        }
+        if !self.checked {
+            if !self.fill(MAGIC.len())? {
+                return Ok(());
+            }
+            check_magic(&self.buffer[self.at..])?;
+            self.at += MAGIC.len();
+            self.checked = true;
+        }
+        if !self.fill(5)? {
+            return Ok(());
+        }
+        let kind = self.buffer[self.at];
+        let length = u32::from_le_bytes(self.buffer[self.at + 1..self.at + 5].try_into().expect("four bytes")) as usize;
+        if length > MOST_RECORD_BYTES {
+            return Ok(());
+        }
+        if kind == HOUR && length > READ_AHEAD {
+            return self.read_long(length);
+        }
+        if !self.fill(9 + length)? {
+            return Ok(());
+        }
+        let record = &self.buffer[self.at..self.at + 9 + length];
+        let sum = u32::from_le_bytes(record[5 + length..].try_into().expect("four bytes"));
+        // A torn or damaged tail ends the segment's readable records.
+        if sum == crc32fast::hash(&record[..5 + length]) {
+            self.current = Some(Current::Held(kind, self.at + 5..self.at + 5 + length));
+        }
+        Ok(())
+    }
+
+    /// A long hour at `at`: checked in one pass over the file a read-ahead at a time, then its
+    /// manifest read; its sections stay in the file.
+    fn read_long(&mut self, length: usize) -> io::Result<()> {
+        let start = self.base + self.at as u64;
+        let file = self.file.as_mut().expect("an open segment");
+        if file.metadata()?.len() < start + 9 + length as u64 {
+            return Ok(());
+        }
+        let _label = journal_label();
+        let mut crc = crc32fast::Hasher::new();
+        let mut chunk = Vec::new();
+        engine_allocation::reserve(&mut chunk, READ_AHEAD)?;
+        file.seek(SeekFrom::Start(start))?;
+        let mut left = 5 + length as u64;
+        while left > 0 {
+            chunk.clear();
+            let took = Read::by_ref(&mut *file).take(left.min(READ_AHEAD as u64)).read_to_end(&mut chunk)?;
+            if took == 0 {
+                return Ok(());
+            }
+            crc.update(&chunk);
+            left -= took as u64;
+        }
+        chunk.clear();
+        Read::by_ref(&mut *file).take(4).read_to_end(&mut chunk)?;
+        // A torn or damaged tail ends the segment's readable records.
+        if chunk.len() != 4 || u32::from_le_bytes(chunk[..4].try_into().expect("four bytes")) != crc.finalize() {
+            return Ok(());
+        }
+        drop(chunk);
+        let payload = start + 5;
+        self.buffer.clear();
+        self.base = payload;
+        self.at = 0;
+        // The witness and the manifest's length, then the manifest.
+        if !self.fill(WITNESS_BYTES + 10)? {
+            return Err(invalid("A journal hour ends inside its witness"));
+        }
+        let mut reader = Reader::new(&self.buffer);
+        let witness = read_witness(&mut reader)?;
+        let manifest_length = reader.count()?;
+        let head = reader.at();
+        if head + manifest_length > length {
+            return Err(invalid("A journal hour's manifest passes its record"));
+        }
+        if !self.fill(head + manifest_length)? {
+            return Err(invalid("A journal segment ends inside a manifest"));
+        }
+        self.current = Some(Current::Streamed {
+            witness,
+            manifest: head..head + manifest_length,
+            sections: payload + (head + manifest_length) as u64..payload + length as u64,
+            end: payload + length as u64 + 4,
+        });
+        Ok(())
+    }
+}
+
+impl Source for Journal {
+    fn start(&mut self, segment: u32) -> io::Result<()> {
+        self.rewind();
+        self.segment = segment;
+        self.retired = segment;
+        for (held, path) in self.held()? {
+            if held < segment {
+                self.let_go(&path)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn record(&mut self) -> io::Result<Option<Record<'_>>> {
+        if self.current.is_none() && !self.finished {
+            self.read()?;
+        }
+        match &self.current {
+            Some(Current::Held(kind, payload)) => decode(*kind, &self.buffer[payload.clone()]).map(Some),
+            Some(Current::Streamed { witness, manifest, sections, .. }) => Ok(Some(Record::Hour {
+                witness: *witness,
+                manifest: &self.buffer[manifest.clone()],
+                sections: Sections(Held::File {
+                    file: self.file.as_mut().expect("an open segment"),
+                    at: sections.start,
+                    end: sections.end,
+                    buffer: &mut self.section,
+                }),
+            })),
+            None => Ok(None),
+        }
+    }
+
+    fn advance(&mut self) {
+        match self.current.take() {
+            None => {}
+            Some(Current::Held(kind, payload)) => {
+                self.at = payload.end + 4;
+                if kind == NEXT || kind == FINISH {
+                    self.rewind();
+                    self.segment = self.segment.saturating_add(1);
+                    self.finished = kind == FINISH;
+                }
+            }
+            Some(Current::Streamed { end, .. }) => {
+                self.buffer.clear();
+                self.buffer.shrink_to(2 * READ_AHEAD);
+                self.section = Vec::new();
+                self.base = end;
+                self.at = 0;
+            }
+        }
+    }
+
+    fn retire(&mut self) -> io::Result<()> {
+        for segment in self.retired..self.segment {
+            self.let_go(&self.path(segment))?;
+        }
+        self.retired = self.segment;
+        Ok(())
+    }
+
+    fn finish(&mut self) -> io::Result<()> {
+        self.rewind();
+        self.finished = true;
+        for (_, path) in self.held()? {
+            self.let_go(&path)?;
+        }
+        Ok(())
+    }
+
+    /// Whether another process still holds its newest segment open: its own reader lets go
+    /// first, so the probe sees only the writer. A segment found free is held while the journal
+    /// is listed again: its writer opens the next segment before letting go of one, so a
+    /// rotation meanwhile shows as a newer segment.
+    fn producing(&mut self) -> io::Result<bool> {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Foundation::ERROR_SHARING_VIOLATION;
+        if self.finished || self.keeps {
+            return Ok(false);
+        }
+        self.file = None;
+        let newest = |journal: &Self| journal.held().map(|held| held.into_iter().next_back());
+        let mut found = newest(self)?;
+        while let Some((segment, path)) = found {
+            match fs::OpenOptions::new().read(true).write(true).share_mode(0).open(&path) {
+                Err(error) if error.raw_os_error() == Some(ERROR_SHARING_VIOLATION as i32) => return Ok(true),
+                // Retired meanwhile by another reader of the journal: listed again.
+                Err(error) if error.kind() == io::ErrorKind::NotFound => found = newest(self)?,
+                Err(error) => return Err(error),
+                Ok(free) => {
+                    found = newest(self)?.filter(|(now, _)| *now != segment);
+                    drop(free);
+                }
+            }
+        }
+        Ok(false)
+    }
+
+    fn damage(&mut self) -> io::Result<Option<(u32, u64)>> {
+        if self.finished || self.record()?.is_some() {
+            return Ok(None);
+        }
+        let read = self.base + self.at as u64;
+        let length = match fs::metadata(self.path(self.segment)) {
+            Ok(metadata) => metadata.len(),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => 0,
+            Err(error) => return Err(error),
+        };
+        let later = self.held()?.into_iter().any(|(segment, _)| segment > self.segment);
+        Ok((length > read || later).then_some((self.segment, read)))
+    }
+}
+
+// A segment as it grows: what its writer appended since it was last read, a record at a time.
 pub struct Tail {
     path: PathBuf,
     /// None while released ([`Self::release`]): the next read opens it again.
@@ -334,9 +888,7 @@ impl Tail {
             if self.pending.len() < MAGIC.len() {
                 return Ok(false);
             }
-            if !self.pending.starts_with(MAGIC) {
-                return Err(invalid("Not a columnar journal segment"));
-            }
+            check_magic(&self.pending)?;
             self.checked = true;
             at = MAGIC.len();
         }
@@ -370,9 +922,7 @@ impl Segment {
     pub fn read(path: &Path) -> io::Result<Self> {
         let mut bytes = Vec::new();
         File::open(path)?.read_to_end(&mut bytes)?;
-        if !bytes.starts_with(MAGIC) {
-            return Err(invalid("Not a columnar journal segment"));
-        }
+        check_magic(&bytes)?;
         Ok(Self { bytes })
     }
 
@@ -436,10 +986,15 @@ fn decode(kind: u8, payload: &[u8]) -> io::Result<Record<'_>> {
             }
         }
         HOUR => {
+            let witness = read_witness(&mut reader)?;
             let length = reader.count()?;
             let manifest = reader.raw(length)?;
-            let sections = reader.rest();
-            return Ok(Record::Hour { manifest, sections });
+            let sections = Sections::held(reader.rest());
+            return Ok(Record::Hour {
+                witness,
+                manifest,
+                sections,
+            });
         }
         CONTROLS => {
             let count = reader.count()?;
@@ -482,4 +1037,103 @@ fn decode(kind: u8, payload: &[u8]) -> io::Result<Record<'_>> {
     };
     reader.finish()?;
     Ok(record)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A directory of its own, removed even when an assertion fails.
+    struct Folder(PathBuf);
+
+    impl Folder {
+        fn new(name: &str) -> Self {
+            let path = std::env::temp_dir().join(format!("hoi4-journal-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&path);
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for Folder {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn capture() -> Capture {
+        Capture {
+            campaign_id: b"campaign".to_vec(),
+            content: Vec::new(),
+            capture_mode: 0,
+            sessions: Vec::new(),
+            run_sessions: Vec::new(),
+            stop: None,
+            format: 0,
+            journaled: 0,
+            controls: Vec::new(),
+        }
+    }
+
+    /// Each hour reads back with the witness it was written with: a load signal, none, or no
+    /// witness at all; its manifest and sections follow it unchanged.
+    #[test]
+    fn an_hour_reads_back_with_its_witness() {
+        let folder = Folder::new("witness");
+        let mut writer = JournalWriter::create(&folder.0, 0, b"identity", &capture()).unwrap();
+        let _ = writer.next_segment().unwrap();
+        writer.run(7, 0, -3).unwrap();
+        let witnesses = [
+            Some(Witness {
+                qpc: u64::MAX,
+                load_signal: Some(i64::MIN),
+            }),
+            Some(Witness {
+                qpc: 0,
+                load_signal: None,
+            }),
+            None,
+        ];
+        for witness in witnesses {
+            writer.hour(witness, b"manifest", &[b"one", b"", b"two"]).unwrap();
+        }
+        writer.finish(None).unwrap();
+        let mut read = Vec::new();
+        for (_, _, path) in segments(&folder.0).unwrap() {
+            for record in Segment::read(&path).unwrap().records(0) {
+                if let Record::Hour {
+                    witness,
+                    manifest,
+                    sections,
+                } = record.unwrap().0
+                {
+                    assert_eq!((manifest, sections.bytes()), (&b"manifest"[..], Some(&b"onetwo"[..])));
+                    read.push(witness);
+                }
+            }
+        }
+        assert_eq!(read, witnesses);
+    }
+
+    /// A segment another version of the journal wrote is refused by its version, whole or as
+    /// it grows; bytes that are no journal are refused as none.
+    #[test]
+    fn a_segment_of_another_version_is_refused_by_name() {
+        let folder = Folder::new("version");
+        let older = folder.0.join("columnar.0.0.h4j");
+        std::fs::write(&older, b"H4JRNL01\x05\0\0\0\0").unwrap();
+        let refused = |error: io::Error| {
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+            error.to_string()
+        };
+        let whole = refused(Segment::read(&older).err().unwrap());
+        assert!(whole.contains("version 01") && whole.contains("version 02 only"), "{whole}");
+        let growing = refused(Tail::open(&older).unwrap().records(|_| Ok(true)).unwrap_err());
+        assert_eq!(growing, whole);
+        let other = folder.0.join("columnar.0.1.h4j");
+        std::fs::write(&other, b"H4JRNLxx").unwrap();
+        assert!(!refused(Segment::read(&other).err().unwrap()).contains("version"));
+        std::fs::write(&other, b"H4J").unwrap();
+        assert!(Segment::read(&other).is_err());
+    }
 }

@@ -2,7 +2,7 @@
 //! ([`crate::template_changes`]).
 //!
 //! A dictionary row records a template's handle, roster owner, literal name, fallback name key and
-//! unit_type. The hourly icon walk ([`native::walk_icons_with_selected_details_growing`]) visits
+//! unit_type. The hourly icon walk ([`native::walk_icons_with_selected_details`]) visits
 //! the same rosters in the same order and supplies every template's handle, owner, literal, key and
 //! unit-type operands (the unit-type override and the definition category [`native::walk`]
 //! derives), read this hour or held under the template's unchanged writer certificate (every
@@ -59,7 +59,7 @@ pub(crate) fn derive(
                 None => {
                     rereads += 1;
                     let start = bytes.len();
-                    native::copy_names_growing(memory, icon.pointer, bytes, start)?
+                    native::copy_names(memory, icon.pointer, bytes, start)?
                 }
             };
             rows.push(native::Row {

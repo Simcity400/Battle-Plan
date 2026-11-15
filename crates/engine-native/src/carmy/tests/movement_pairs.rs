@@ -224,8 +224,6 @@ fn packet_route_staging_grows_off_capture_and_survives_reuse() {
             GS,
             &seeds,
             Outcome::Rows { len: 1 },
-            1,
-            paths,
             &mut geometry,
             &mut packet,
         );
@@ -247,7 +245,6 @@ fn worker_routes_grow_from_first_and_later_mod_sized_original_seed_headers() {
     let mut source = shared_geometry_fixture();
     source.bytes.resize(0x70000, 0);
     let mut packet = carmy::MovementPacket::new(0, 0);
-    packet.enable_growth();
     for length in [50_u32, 120] {
         array(
             &mut source.bytes,
@@ -279,8 +276,6 @@ fn worker_routes_grow_from_first_and_later_mod_sized_original_seed_headers() {
             GS,
             &seeds,
             Outcome::Rows { len: 1 },
-            0,
-            0,
             &mut geometry,
             &mut packet,
         );
@@ -312,19 +307,26 @@ fn packet_pair_failures_keep_primary_arena_prefixes_and_admission() {
         ..Default::default()
     }];
     carmy::capture_division_seeds(&source, &mut seeds);
-    let capture = |memory: &Observed<'_>, rows, paths| {
+    // `admitted` is the source census's prefix; an unadmitted division is never read.
+    let capture = |memory: &Observed<'_>, admitted: usize| {
         let mut geometry = cprovince::GeometryPacket::default();
         geometry.begin(memory, 0, GS).unwrap();
         let mut packet = carmy::MovementPacket::new(1, 4);
         let allocated = packet.allocated_bytes();
+        let source = if admitted == 0 {
+            Outcome::Truncated {
+                len: 0,
+                unread_rows: 1,
+            }
+        } else {
+            Outcome::Rows { len: 1 }
+        };
         carmy::capture_movement_inputs(
             memory,
             0,
             GS,
-            &seeds,
-            Outcome::Rows { len: 1 },
-            rows,
-            paths,
+            &seeds[..admitted],
+            source,
             &mut geometry,
             &mut packet,
         );
@@ -332,7 +334,7 @@ fn packet_pair_failures_keep_primary_arena_prefixes_and_admission() {
         packet
     };
     let success = Observed::new(&source, None);
-    let packet = capture(&success, 1, 4);
+    let packet = capture(&success, 1);
     assert_eq!(packet.outcome().outcome, Outcome::Rows { len: 1 });
     assert_eq!(packet.paths, [1, 1, 77, 88]);
     // One route scatter, plus the moving division's stat-block identity
@@ -348,7 +350,7 @@ fn packet_pair_failures_keep_primary_arena_prefixes_and_admission() {
             .position(|&span| span == (address, width))
             .unwrap();
         let memory = Observed::new(&source, Some(ordinal));
-        let failed = capture(&memory, 1, 4);
+        let failed = capture(&memory, 1);
         assert_eq!(failed.outcome().outcome, Outcome::Unavailable { reason });
         assert_eq!(
             (failed.result.paths_len, failed.result.required_paths),
@@ -367,20 +369,18 @@ fn packet_pair_failures_keep_primary_arena_prefixes_and_admission() {
         );
         assert_eq!(*reads, trace[..=ordinal]);
     }
-    for (rows, paths) in [(0, 4), (1, 3)] {
-        let memory = Observed::new(&source, None);
-        let omitted = capture(&memory, rows, paths);
-        assert_eq!(
-            omitted.outcome().outcome,
-            Outcome::Truncated {
-                len: 0,
-                unread_rows: 1
-            }
-        );
-        assert_eq!(
-            (omitted.result.paths_len, omitted.result.required_paths),
-            (0, 4)
-        );
-        assert_eq!(memory.batches.get(), 0);
-    }
+    let memory = Observed::new(&source, None);
+    let omitted = capture(&memory, 0);
+    assert_eq!(
+        omitted.outcome().outcome,
+        Outcome::Truncated {
+            len: 0,
+            unread_rows: 1
+        }
+    );
+    assert_eq!(
+        (omitted.result.paths_len, omitted.result.required_paths),
+        (0, 0)
+    );
+    assert_eq!(memory.batches.get(), 0);
 }

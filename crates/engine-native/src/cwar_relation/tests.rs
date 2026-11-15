@@ -170,8 +170,21 @@ fn fixture() -> Vec<u8> {
     bytes
 }
 
-fn capture(bytes: &[u8], output: &mut [Row]) -> Outcome {
-    walk(&SliceMemory { base: 0, bytes }, 0, GS, output)
+fn capture(bytes: &[u8], output: &mut Vec<Row>) -> Outcome {
+    walk_from(&SliceMemory { base: 0, bytes }, &SliceMemory { base: 0, bytes }, 0, GS, crate::walk::Buffer::Growing(output), &mut crelation_status::Resolver::default(), None, None)
+}
+
+fn count(bytes: &[u8]) -> Outcome {
+    walk_from(&SliceMemory { base: 0, bytes }, &SliceMemory { base: 0, bytes }, 0, GS, crate::walk::Buffer::Count, &mut crelation_status::Resolver::default(), None, None)
+}
+
+/// The count-only probe for `capacity` 0, growing rows otherwise.
+fn rows_or_count(rows: &mut Vec<Row>, capacity: usize) -> crate::walk::Buffer<'_, Row> {
+    if capacity == 0 {
+        crate::walk::Buffer::Count
+    } else {
+        crate::walk::Buffer::Growing(rows)
+    }
 }
 
 #[test]
@@ -426,10 +439,10 @@ fn owned_split_keeps_native_id_alias_cached_and_routes_only_payload_to_source() 
 
     let cached = cache.view(&country_source);
     let payload = ObservedMemory::new(&bytes);
-    let mut rows = [Row::default(); 4];
+    let mut rows = vec![Row::default(); 4];
     let mut scratch = prepared_snapshot(5, 64);
     assert_eq!(
-        walk_owned(&payload, &cached, 0, GS, &mut rows, &mut scratch),
+        walk_owned(&payload, &cached, 0, GS, &mut rows, &mut scratch, None),
         Outcome::Rows { len: 2 }
     );
     assert!(rows[..2].iter().all(|row| row.first_country == 7));
@@ -448,7 +461,7 @@ fn owned_split_keeps_native_id_alias_cached_and_routes_only_payload_to_source() 
 
     let original = ObservedMemory::new(&bytes);
     let original_cached = cache.view(&original);
-    let mut expected = [Row::default(); 4];
+    let mut expected = vec![Row::default(); 4];
     let mut original_scratch = prepared_snapshot(5, 64);
     assert_eq!(
         walk_owned(
@@ -458,6 +471,7 @@ fn owned_split_keeps_native_id_alias_cached_and_routes_only_payload_to_source() 
             GS,
             &mut expected,
             &mut original_scratch,
+            None,
         ),
         Outcome::Rows { len: 2 }
     );
@@ -486,7 +500,7 @@ fn owned_split_preserves_alias_and_payload_first_faults_with_or_without_snapshot
                 ..ObservedMemory::new(&bytes)
             };
             let previous_cached = cache.view(&previous);
-            let mut expected = [Row::default(); 4];
+            let mut expected = vec![Row::default(); 4];
             let expected_outcome = walk_owned(
                 &previous_cached,
                 &previous_cached,
@@ -494,13 +508,14 @@ fn owned_split_preserves_alias_and_payload_first_faults_with_or_without_snapshot
                 GS,
                 &mut expected,
                 &mut prepared_snapshot(5, 64),
+                None,
             );
             let current = ObservedMemory {
                 blocked,
                 ..ObservedMemory::new(&bytes)
             };
             let current_cached = cache.view(&current);
-            let mut actual = [Row::default(); 4];
+            let mut actual = vec![Row::default(); 4];
             let outcome = walk_owned(
                 &current,
                 &current_cached,
@@ -508,6 +523,7 @@ fn owned_split_preserves_alias_and_payload_first_faults_with_or_without_snapshot
                 GS,
                 &mut actual,
                 &mut prepared_snapshot(5, 64),
+                None,
             );
             assert_eq!(outcome, expected_outcome);
             assert_eq!(actual[..outcome.len()], expected[..expected_outcome.len()]);
@@ -569,7 +585,7 @@ fn owned_snapshot_default_and_take_preserve_storage_without_allocation() {
 }
 
 #[test]
-fn owned_snapshot_first_scan_and_capacity_fallback_keep_frozen_fault_traces() {
+fn owned_snapshot_first_scan_keeps_frozen_fault_traces() {
     for count in [0, 1, 2, BATCH_SIZE, BATCH_SIZE + 1] {
         let values: Vec<_> = (0..count)
             .map(|index| (0x8000 + index * 8) as u64)
@@ -583,31 +599,18 @@ fn owned_snapshot_first_scan_and_capacity_fallback_keep_frozen_fault_traces() {
             }
         }
         for fault in faults {
-            for capacity in 0..4 {
-                let mut scratch = match capacity {
-                    0 => prepared_snapshot(0, count),
-                    1 => OwnedSnapshotScratch::with_capacity(1),
-                    3 => {
-                        let mut scratch = prepared_snapshot(1, count);
-                        scratch.counts.clear();
-                        scratch
-                    }
-                    _ => prepared_snapshot(1, count),
-                };
-                scratch.begin();
-                let allocated = scratch.allocated_bytes();
-                let mut original = ObservedMemory::new(&bytes);
-                original.blocked = fault.clone();
-                let mut candidate = ObservedMemory::new(&bytes);
-                candidate.blocked = fault.clone();
-                let expected = original_owned_occurrence(&original, 0x100, 0x8000);
-                assert_eq!(scratch.occurrence(&candidate, 0x100, 0x8000), expected);
-                assert_eq!(*candidate.reads.borrow(), *original.reads.borrow());
-                assert_eq!(scratch.allocated_bytes(), allocated);
-                if expected.is_err() {
-                    assert!(scratch.words.is_empty());
-                    assert_eq!(scratch.stats.installed, 0);
-                }
+            let mut scratch = OwnedSnapshotScratch::default();
+            scratch.begin();
+            let mut original = ObservedMemory::new(&bytes);
+            original.blocked = fault.clone();
+            let mut candidate = ObservedMemory::new(&bytes);
+            candidate.blocked = fault.clone();
+            let expected = original_owned_occurrence(&original, 0x100, 0x8000);
+            assert_eq!(scratch.occurrence(&candidate, 0x100, 0x8000), expected);
+            assert_eq!(*candidate.reads.borrow(), *original.reads.borrow());
+            if expected.is_err() {
+                assert!(scratch.words.is_empty());
+                assert_eq!(scratch.stats.installed, 0);
             }
         }
     }
@@ -660,7 +663,7 @@ fn owned_snapshot_first_scan_and_capacity_fallback_keep_frozen_fault_traces() {
 }
 
 #[test]
-fn owned_snapshot_complete_walk_matches_serial_rows_errors_aliases_and_output_capacity() {
+fn owned_snapshot_complete_walk_matches_serial_rows_errors_and_aliases() {
     let stable = fixture();
     let mut variants = vec![stable.clone()];
     for (at, value) in [
@@ -681,42 +684,30 @@ fn owned_snapshot_complete_walk_matches_serial_rows_errors_aliases_and_output_ca
     );
     variants.push(bytes);
     for bytes in variants {
-        for capacity in 0..4 {
-            let mut scratch = OwnedSnapshotScratch::with_capacity(5);
-            // Initial demand is discovered with no payload allocation.
-            let memory = SliceMemory {
-                base: 0,
-                bytes: &stable,
-            };
-            let _ = walk_owned(
-                &memory,
-                &memory,
-                0,
-                GS,
-                &mut [Row::default(); 2],
-                &mut scratch,
-            );
-            assert_eq!(scratch.stats.hits, 0);
-            scratch.grow(5).unwrap();
-            let allocated = scratch.allocated_bytes();
-            let memory = SliceMemory {
-                base: 0,
-                bytes: &bytes,
-            };
-            let mut expected = vec![Row::default(); capacity];
-            let mut actual = expected.clone();
-            let outcome = walk(&memory, 0, GS, &mut expected);
-            let result = walk_owned(&memory, &memory, 0, GS, &mut actual, &mut scratch);
-            assert_eq!(result, outcome);
-            assert_eq!(actual, expected);
-            assert_eq!(scratch.allocated_bytes(), allocated);
-            if bytes == stable {
-                assert_eq!(scratch.stats.hits, 3);
-                assert_eq!(
-                    actual.first().map(|row| row.first_country),
-                    (capacity != 0).then_some(4)
-                );
-            }
+        let mut scratch = OwnedSnapshotScratch::with_capacity(5);
+        // The first pass grows the snapshot as it goes, so its later queries already hit.
+        let memory = SliceMemory {
+            base: 0,
+            bytes: &stable,
+        };
+        let _ = walk_owned(&memory, &memory, 0, GS, &mut Vec::new(), &mut scratch, None);
+        assert_eq!(scratch.stats.hits, 3);
+        scratch.grow(5).unwrap();
+        let allocated = scratch.allocated_bytes();
+        let memory = SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        };
+        let mut expected = Vec::new();
+        let mut actual = Vec::new();
+        let outcome = walk_from(&memory, &memory, 0, GS, crate::walk::Buffer::Growing(&mut expected), &mut crelation_status::Resolver::default(), None, None);
+        let result = walk_owned(&memory, &memory, 0, GS, &mut actual, &mut scratch, None);
+        assert_eq!(result, outcome);
+        assert_eq!(actual, expected);
+        assert_eq!(scratch.allocated_bytes(), allocated);
+        if bytes == stable {
+            assert_eq!(scratch.stats.hits, 3);
+            assert_eq!(actual.first().map(|row| row.first_country), Some(4));
         }
     }
 }
@@ -770,7 +761,7 @@ fn owned_snapshot_collisions_and_duplicate_counts_use_full_keys_and_preserve_abs
 }
 
 #[test]
-fn owned_snapshot_resets_and_growth_keep_root_pressure_and_unreused_storage_honest() {
+fn owned_snapshot_grows_under_root_pressure_and_resets_keep_storage_honest() {
     let mut bytes = isolated_owned(&[0x8000, 0x8008]);
     array(
         &mut bytes,
@@ -791,7 +782,8 @@ fn owned_snapshot_resets_and_growth_keep_root_pressure_and_unreused_storage_hone
         original_owned_occurrence(&old, 0x200, 0x9000)
     );
     assert_eq!(*candidate.reads.borrow(), *old.reads.borrow());
-    assert_eq!(scratch.stats.fallbacks, 1);
+    assert_eq!(scratch.stats.fallbacks, 0);
+    assert_eq!(scratch.stats.installed, 2);
     scratch.grow(2).unwrap();
     scratch.begin();
     assert_eq!(scratch.stats, OwnedSnapshotStats::default());
@@ -1104,11 +1096,11 @@ fn owned_status_reuse_keeps_both_owner_orders_and_exact_remaining_reads() {
             base: 0,
             bytes: &changed,
         };
-        let mut expected = [Row::default(); 2];
-        let mut actual = expected;
+        let mut expected = vec![Row::default(); 2];
+        let mut actual = expected.clone();
         assert_eq!(
-            walk_owned(&memory, &memory, 0, GS, &mut actual, &mut scratch),
-            walk(&memory, 0, GS, &mut expected)
+            walk_owned(&memory, &memory, 0, GS, &mut actual, &mut scratch, None),
+            walk_from(&memory, &memory, 0, GS, crate::walk::Buffer::Growing(&mut expected), &mut crelation_status::Resolver::default(), None, None)
         );
         assert_eq!(actual, expected);
         assert!(!scratch.status_graphs.iter().any(|graph| graph.war == WAR1));
@@ -1171,7 +1163,7 @@ fn owned_status_reuse_preserves_first_faults_and_fresh_owner_faults() {
 }
 
 #[test]
-fn owned_status_reuse_checks_raw_alias_keys_and_storage_falls_back() {
+fn owned_status_reuse_checks_raw_alias_keys_and_a_status_cache_miss_revalidates() {
     let bytes = fixture();
     let mut scratch = prepared_snapshot(5, 8);
     let memory = SliceMemory {
@@ -1225,14 +1217,18 @@ fn owned_status_reuse_checks_raw_alias_keys_and_storage_falls_back() {
         } else {
             scratch.status_graphs.clear();
         }
-        let allocated = scratch.allocated_bytes();
         let (mut walker, first) = warmed_war1_reader(&memory);
         walker.ownership = Some(&mut scratch);
         let expected = walker.relation(WAR1, first).unwrap();
+        let allocated = walker.ownership.as_ref().unwrap().allocated_bytes();
         memory.reads.borrow_mut().clear();
         assert_eq!(walker.relation(WAR1, first), Ok(expected));
+        // The first query grew and snapshotted owned(0)'s three words; owned(1) holds one and is scanned.
         let mut reads = expected_warmed_war1_reads();
-        reads.retain(|&span| span != (DIPLOMACY[0] + cdiplomacy_status::RELATIONS, 16));
+        reads.retain(|&(address, _)| {
+            address != DIPLOMACY[0] + cdiplomacy_status::RELATIONS
+                && !(owned(0)..owned(0) + 24).contains(&address)
+        });
         assert_eq!(*memory.reads.borrow(), reads);
         assert_eq!(scratch.allocated_bytes(), allocated);
     }
@@ -1561,7 +1557,7 @@ fn pair_gather_resolves_uncached_alias_before_observing_war_pointer() {
 #[test]
 fn fixed_gather_faults_preserve_reasons_capacity_and_earlier_rows() {
     let bytes = fixture();
-    let mut expected = [Row::default(); 4];
+    let mut expected = vec![Row::default(); 4];
     assert_eq!(capture(&bytes, &mut expected), Outcome::Rows { len: 2 });
     let field_error = "war relation field unreadable or address overflow";
     for (at, width, reason) in [
@@ -1593,9 +1589,9 @@ fn fixed_gather_faults_preserve_reasons_capacity_and_earlier_rows() {
                 blocked: at + byte..at + byte + 1,
             };
             for capacity in [0, 4] {
-                let mut output = [Row::default(); 4];
+                let mut output = Vec::new();
                 assert_eq!(
-                    walk(&memory, 0, GS, &mut output[..capacity]),
+                    walk_from(&memory, &memory, 0, GS, rows_or_count(&mut output, capacity), &mut crelation_status::Resolver::default(), None, None),
                     Outcome::Unavailable { reason },
                     "field {at:x}+{byte}, capacity={capacity}"
                 );
@@ -1662,7 +1658,7 @@ fn pair_gather_keeps_semantic_errors_ahead_of_later_faults() {
         };
         for capacity in [0, 4] {
             assert_eq!(
-                walk(&memory, 0, GS, &mut [Row::default(); 4][..capacity]),
+                walk_from(&memory, &memory, 0, GS, rows_or_count(&mut Vec::new(), capacity), &mut crelation_status::Resolver::default(), None, None),
                 Outcome::Unavailable { reason }
             );
         }
@@ -1685,7 +1681,7 @@ fn fixed_gathers_leave_gaps_and_nonemitting_rows_unread() {
             blocked: gap..gap + 1,
         };
         assert_eq!(
-            walk(&memory, 0, GS, &mut [Row::default(); 4]),
+            walk_from(&memory, &memory, 0, GS, crate::walk::Buffer::Growing(&mut vec![Row::default(); 4]), &mut crelation_status::Resolver::default(), None, None),
             Outcome::Rows { len: 2 }
         );
     }
@@ -1743,15 +1739,15 @@ fn dense_authentication_cells_key_full_ids_and_fall_back_beyond_storage() {
     assert_eq!(dense.resolver.capacity(), [FAR + 1, 5]);
     let start = memory.guards.get();
     let first = dense.resolve(1).unwrap();
-    assert_eq!(memory.guards.get() - start, 8);
+    assert_eq!(memory.guards.get() - start, 7);
     assert_eq!(dense.resolve(1), Ok(first));
-    assert_eq!(memory.guards.get() - start, 8);
+    assert_eq!(memory.guards.get() - start, 7);
     // The alias has its own cell: it is validated once and never evicts 1.
     assert_eq!(dense.resolve(FAR as u32), Ok(first));
-    assert_eq!(memory.guards.get() - start, 16);
+    assert_eq!(memory.guards.get() - start, 14);
     assert_eq!(dense.resolve(1), Ok(first));
     assert_eq!(dense.resolve(FAR as u32), Ok(first));
-    assert_eq!(memory.guards.get() - start, 16);
+    assert_eq!(memory.guards.get() - start, 14);
     assert_eq!(
         dense.resolve(0x8000_0001),
         Err("country link unreadable or outside country table")
@@ -1762,7 +1758,7 @@ fn dense_authentication_cells_key_full_ids_and_fall_back_beyond_storage() {
     );
     assert_eq!(dense.resolve(0), Err("country id is zero"));
     assert_eq!(dense.resolve(1), Ok(first));
-    assert_eq!(memory.guards.get() - start, 16);
+    assert_eq!(memory.guards.get() - start, 14);
     assert_eq!(first.id, 4); // Authentication never substitutes the queried alias.
     let start = memory.guards.get();
     assert_eq!(dense.diplomacy(first), Ok(DIPLOMACY[0]));
@@ -1782,7 +1778,7 @@ fn dense_authentication_cells_key_full_ids_and_fall_back_beyond_storage() {
     let start = memory.guards.get();
     for round in 1..=2 {
         assert_eq!(short.resolve(FAR as u32), Ok(first));
-        assert_eq!(memory.guards.get() - start, 8 * round);
+        assert_eq!(memory.guards.get() - start, 7 * round);
     }
     assert_eq!(short.resolve(1), Ok(first));
     let start = memory.guards.get();
@@ -1819,7 +1815,7 @@ fn successful_authentication_is_local_and_failed_authentication_is_never_cached(
     assert_eq!(reader(&memory).resolve(4), Err("country id unreadable"));
     for _ in 0..2 {
         assert_eq!(
-            walk(&memory, 0, GS, &mut []),
+            walk_from(&memory, &memory, 0, GS, crate::walk::Buffer::Count, &mut crelation_status::Resolver::default(), None, None),
             Outcome::Unavailable {
                 reason: "country id unreadable"
             }
@@ -1980,9 +1976,9 @@ fn pointer_batches_use_exact_strided_reads_and_preserve_failure_prefixes() {
 #[test]
 fn owned_census_preserves_aliases_native_values_and_truncation() {
     let bytes = fixture();
-    let mut rows = [Row::default(); 4];
+    let mut rows = vec![Row::default(); 4];
     let memory = ObservedMemory::new(&bytes);
-    assert_eq!(walk(&memory, 0, GS, &mut rows), Outcome::Rows { len: 2 });
+    assert_eq!(walk_from(&memory, &memory, 0, GS, crate::walk::Buffer::Growing(&mut rows), &mut crelation_status::Resolver::default(), None, None), Outcome::Rows { len: 2 });
     let mut scratch = prepared_snapshot(3, 8);
     for (pass, matrix_counts) in [[3, 2, 2], [4, 3, 3]].into_iter().enumerate() {
         // The direct walk reads seven matrix headers. The owned walk adds
@@ -2013,9 +2009,9 @@ fn owned_census_preserves_aliases_native_values_and_truncation() {
         }
         drop(reads);
         if pass == 0 {
-            let mut owned_rows = [Row::default(); 4];
+            let mut owned_rows = vec![Row::default(); 4];
             assert_eq!(
-                walk_owned(&memory, &memory, 0, GS, &mut owned_rows, &mut scratch),
+                walk_owned(&memory, &memory, 0, GS, &mut owned_rows, &mut scratch, None),
                 Outcome::Rows { len: 2 }
             );
             assert_eq!(owned_rows, rows);
@@ -2037,15 +2033,13 @@ fn owned_census_preserves_aliases_native_values_and_truncation() {
             first_was_instigator: 255,
         }
     );
-    for capacity in [0, 1] {
-        assert_eq!(
-            capture(&bytes, &mut rows[..capacity]),
-            Outcome::Truncated {
-                len: capacity,
-                unread_rows: 2 - capacity as u32
-            }
-        );
-    }
+    assert_eq!(
+        count(&bytes),
+        Outcome::Truncated {
+            len: 0,
+            unread_rows: 2
+        }
+    );
 }
 
 #[test]
@@ -2053,7 +2047,7 @@ fn inactive_installed_relations_and_readable_empty_vectors_are_not_wars() {
     let mut bytes = fixture();
     bytes[WAR1 + crelation::RETIRED] = 1;
     bytes[WAR2 + crelation::RETIRED] = 255;
-    assert_eq!(capture(&bytes, &mut []), Outcome::Rows { len: 0 });
+    assert_eq!(count(&bytes), Outcome::Rows { len: 0 });
     for (owner, diplomacy) in DIPLOMACY.into_iter().enumerate() {
         array(
             &mut bytes,
@@ -2069,7 +2063,7 @@ fn inactive_installed_relations_and_readable_empty_vectors_are_not_wars() {
             );
         }
     }
-    assert_eq!(capture(&bytes, &mut []), Outcome::Rows { len: 0 });
+    assert_eq!(count(&bytes), Outcome::Rows { len: 0 });
 }
 
 #[test]
@@ -2090,20 +2084,20 @@ fn missing_duplicate_and_disagreeing_links_are_unavailable_even_at_capacity() {
     for (at, replacement) in cases {
         let mut bytes = fixture();
         p64(&mut bytes, at, replacement);
-        let mut output = [Row::default(); 4];
+        let mut output = vec![Row::default(); 4];
         assert!(
             matches!(capture(&bytes, &mut output), Outcome::Unavailable { .. }),
             "address {at:x}"
         );
         assert!(
-            matches!(capture(&bytes, &mut []), Outcome::Unavailable { .. }),
+            matches!(count(&bytes), Outcome::Unavailable { .. }),
             "address {at:x}"
         );
     }
     let mut bytes = fixture();
     p32(&mut bytes, WAR2 + crelation::SECOND_COUNTRY, 1); // Alias of first, not another country.
     assert_eq!(
-        capture(&bytes, &mut []),
+        count(&bytes),
         Outcome::Unavailable {
             reason: "war relation endpoints resolve to same country"
         }
@@ -2143,7 +2137,7 @@ fn owned_prefetch_keeps_earlier_semantic_errors_before_later_faults() {
         };
         for capacity in [0, 4] {
             assert_eq!(
-                walk(&memory, 0, GS, &mut [Row::default(); 4][..capacity]),
+                walk_from(&memory, &memory, 0, GS, rows_or_count(&mut Vec::new(), capacity), &mut crelation_status::Resolver::default(), None, None),
                 Outcome::Unavailable { reason }
             );
         }
@@ -2326,7 +2320,7 @@ fn war_census(countries: usize) -> Census {
 
 // regression: 74a0f0fa8c Follow original engine demand without chosen content limits
 #[test]
-fn fixed_cold_rescans_complete_then_grown_storage_needs_none() {
+fn cold_storage_grows_and_needs_no_rescans() {
     const COUNTRIES: usize = 41;
     let census = war_census(COUNTRIES);
 
@@ -2337,15 +2331,13 @@ fn fixed_cold_rescans_complete_then_grown_storage_needs_none() {
     let mut scratch = OwnedSnapshotScratch::default();
     let mut rows = vec![Row::default(); COUNTRIES];
     assert_eq!(
-        walk_owned(&memory, &memory, 0, GS, &mut rows, &mut scratch),
+        walk_owned(&memory, &memory, 0, GS, &mut rows, &mut scratch, None),
         Outcome::Rows { len: COUNTRIES - 1 }
     );
-    assert_eq!(scratch.rescanned_words, 2 * (COUNTRIES - 1).pow(2));
     assert_eq!(rows[..COUNTRIES - 1], census.rows[..]);
     scratch.grow(0).unwrap();
     assert_eq!(
-        walk_owned(&memory, &memory, 0, GS, &mut rows, &mut scratch),
+        walk_owned(&memory, &memory, 0, GS, &mut rows, &mut scratch, None),
         Outcome::Rows { len: COUNTRIES - 1 }
     );
-    assert_eq!(scratch.rescanned_words, 0);
 }

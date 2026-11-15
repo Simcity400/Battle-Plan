@@ -3,10 +3,11 @@
  * per client and recording, and forgotten when the recording is released: each
  * client's `releaseSource` forgets it, as does `forgetProducts`. */
 import type { DashboardClient } from './client';
+import { PerClient } from './prepare.ts';
 
 export interface ReplySize { fits: number; refused: number }
 
-const held = new WeakMap<DashboardClient, Map<string, Map<string, ReplySize>>>();
+const held = new PerClient<Map<string, Map<string, ReplySize>>>();
 
 /** The size learned for `scope` (a product and branch) of the recording `sourceId`. */
 export function replySize(client: DashboardClient, sourceId: string, scope: string): ReplySize | undefined {

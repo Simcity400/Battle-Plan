@@ -7,12 +7,11 @@ pub(super) fn walk_owned(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    output: &mut [Row],
-    names: &mut [u8],
+    output: &mut Vec<Row>,
+    names: &mut Vec<u8>,
     scratch: &mut OwnedSnapshotScratch,
 ) -> NameWalk {
     scratch.begin();
-    scratch.worker_growth(false);
     let mut resolver = std::mem::take(&mut scratch.resolver);
     let mut pass = Pass {
         resolver: &mut resolver,
@@ -22,8 +21,8 @@ pub(super) fn walk_owned(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Fixed(output),
-        crate::walk::Buffer::Fixed(names),
+        crate::walk::Buffer::Growing(output),
+        crate::walk::Buffer::Growing(names),
         false,
         &mut pass,
     );

@@ -38,15 +38,7 @@ impl Row {
     }
 }
 
-/// The caller's arenas, filled in raid order.
 pub struct Arenas<'a> {
-    pub variants: &'a mut [u64],
-    pub amounts: &'a mut [i64],
-    pub archetype_tokens: &'a mut [u32],
-    pub archetype_amounts: &'a mut [i64],
-}
-
-pub struct GrowingArenas<'a> {
     pub variants: &'a mut Vec<u64>,
     pub amounts: &'a mut Vec<i64>,
     pub archetype_tokens: &'a mut Vec<u32>,
@@ -62,17 +54,6 @@ pub struct ArenasBuffer<'a> {
 
 impl<'a> From<Arenas<'a>> for ArenasBuffer<'a> {
     fn from(value: Arenas<'a>) -> Self {
-        Self {
-            variants: crate::walk::Buffer::Fixed(value.variants),
-            amounts: crate::walk::Buffer::Fixed(value.amounts),
-            archetype_tokens: crate::walk::Buffer::Fixed(value.archetype_tokens),
-            archetype_amounts: crate::walk::Buffer::Fixed(value.archetype_amounts),
-        }
-    }
-}
-
-impl<'a> From<GrowingArenas<'a>> for ArenasBuffer<'a> {
-    fn from(value: GrowingArenas<'a>) -> Self {
         Self {
             variants: crate::walk::Buffer::Growing(value.variants),
             amounts: crate::walk::Buffer::Growing(value.amounts),
@@ -107,24 +88,8 @@ pub fn walk(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    rows: &mut [Row],
-    arenas: Arenas<'_>,
-) -> Walk {
-    walk_buffer(
-        memory,
-        base,
-        game_state,
-        crate::walk::Buffer::Fixed(rows),
-        arenas.into(),
-    )
-}
-
-pub fn walk_growing(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
     rows: &mut Vec<Row>,
-    arenas: GrowingArenas<'_>,
+    arenas: Arenas<'_>,
 ) -> Walk {
     walk_buffer(
         memory,

@@ -608,3 +608,39 @@ fn push_frame_refuses_unknown_instructions_before_allocating_or_reading_the_site
         );
     }
 }
+
+/// A held idle-priority thread, like the graphics driver's workers, is raised so it reaches its
+/// suspension without waiting for an idle processor, and gets its own priority back before it
+/// runs again.
+#[test]
+fn a_held_idle_thread_is_raised_while_held_and_restored_before_it_resumes() {
+    use std::os::windows::io::AsRawHandle;
+    let _guard = FAMILY_TEST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (ready, lowered) = std::sync::mpsc::channel();
+    let (stop, stopped) = std::sync::mpsc::channel::<()>();
+    let worker = std::thread::spawn(move || {
+        assert_ne!(
+            unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_IDLE) },
+            0
+        );
+        ready.send(()).unwrap();
+        let _ = stopped.recv();
+    });
+    lowered.recv().unwrap();
+    let handle = worker.as_raw_handle() as HANDLE;
+    let priority = || unsafe { GetThreadPriority(handle) };
+    assert_eq!(priority(), THREAD_PRIORITY_IDLE);
+    let mut threads = Threads::open().unwrap();
+    threads.suspend().unwrap();
+    let held = priority();
+    threads.resume().unwrap();
+    let failures = threads.diagnostics.sample.priority_restore_failures;
+    drop(threads);
+    assert_eq!(held, THREAD_PRIORITY_TIME_CRITICAL);
+    assert_eq!(priority(), THREAD_PRIORITY_IDLE);
+    assert_eq!(failures, 0);
+    stop.send(()).unwrap();
+    worker.join().unwrap();
+}

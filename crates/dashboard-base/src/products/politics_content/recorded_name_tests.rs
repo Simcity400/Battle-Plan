@@ -1,67 +1,6 @@
 use super::{RecordedName, recorded_name};
 
 #[test]
-fn fixed_ledger_text_resolves_once_per_key_without_caching_recorded_names() {
-    use crate::{
-        catalogue::View,
-        prepared::observer_tests::{self, Work},
-    };
-    use std::sync::Arc;
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for politics content");
-    let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
-        (
-            "common/defines/mod.lua",
-            "NDefines={NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}}}",
-        ),
-        (
-            "localisation/test_l_english.yml",
-            "\u{feff}l_english:\n fixed:0 \"Fixed payment\"\n empty:0 \"\"\n refused:0 \"Authored ¤ control\"\n saved:0 \"Recorded [ROOT.GetLeader]\"\n",
-        ),
-    ]);
-    let content = super::PoliticsContent::load(Arc::new(catalogue)).unwrap();
-    let keys = ["fixed", "empty", "missing", "refused"];
-    let expected: Vec<_> = keys
-        .iter()
-        .map(|key| content.localised(key, View::Plain))
-        .collect();
-    assert_eq!(
-        expected,
-        [
-            Some("Fixed payment".into()),
-            Some(String::new()),
-            None,
-            None
-        ]
-    );
-    let refusals = content.catalogue.refusal_lines();
-    assert!(!refusals.is_empty());
-    observer_tests::scaled_work(10, |hours| {
-        for _ in 0..hours {
-            for (key, expected) in keys.iter().zip(&expected) {
-                assert_eq!(&content.localised(key, View::Plain), expected);
-                assert_eq!(content.fixed_text.loads(&key.to_string()), 1);
-            }
-            assert_eq!(
-                content.recorded_name("saved"),
-                RecordedName::Named("Recorded [ROOT.GetLeader]".into())
-            );
-        }
-        assert_eq!(content.catalogue.refusal_lines(), refusals);
-        assert_eq!(content.fixed_text.loads(&"saved".to_string()), 0);
-        Ok(Work {
-            content_loads: keys
-                .iter()
-                .map(|key| content.fixed_text.loads(&key.to_string()) - 1)
-                .sum(),
-            ..Default::default()
-        })
-    })
-    .map(observer_tests::assert_flat)
-    .unwrap();
-}
-
-#[test]
 fn a_saved_name_is_localised_scoped_or_literal_as_recorded() {
     let localisation = crate::catalogue::tests::loaded(concat!(
         "l_english:\n",

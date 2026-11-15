@@ -223,14 +223,14 @@ impl Memory for Observed<'_> {
     }
 }
 
-fn speed(memory: &impl Memory, pointers: &mut [usize]) -> Result<i64, &'static str> {
+fn speed(memory: &impl Memory, pointers: crate::walk::Buffer<'_, usize>) -> Result<i64, &'static str> {
     variant_speed(
         memory,
         BASE,
         GAME,
         VARIANT,
         &mut NamedBonuses {
-            pointers: crate::walk::Buffer::Fixed(pointers),
+            pointers,
             required: 0,
         },
     )
@@ -257,7 +257,7 @@ fn railway_speed_rebuilds_current_graph_first_matches_and_zero_average_presence(
     fixture.upgrade(2, 3_000, Some(8_000), 7_000);
     fixture.module(4_000, Some(0), -9_000);
     let memory = fixture.memory();
-    assert_eq!(speed(&memory, &mut [0; 5]), Ok(200_600));
+    assert_eq!(speed(&memory, crate::walk::Buffer::Growing(&mut vec![0; 5])), Ok(200_600));
     for unused in [VARIANT + 0x2f0, VARIANT + 0x488] {
         assert!(
             !memory
@@ -275,11 +275,11 @@ fn railway_speed_empty_sources_skip_country_resolution_and_keep_negative_zero() 
         let fixture = Fixture::new(value);
         let mut memory = fixture.memory();
         memory.failures.push(GAME..GAME + 0x400);
-        assert_eq!(speed(&memory, &mut []), Ok(value));
+        assert_eq!(speed(&memory, crate::walk::Buffer::Count), Ok(value));
     }
     let mut fixture = Fixture::new(100_000);
     fixture.named(0, 0, &[7], &[(7, 25_000)]);
-    assert_eq!(speed(&fixture.memory(), &mut [0]), Ok(125_000));
+    assert_eq!(speed(&fixture.memory(), crate::walk::Buffer::Growing(&mut vec![0; 1])), Ok(125_000));
 }
 
 #[test]
@@ -291,7 +291,7 @@ fn railway_speed_resolves_creator_before_origin_and_rejects_torn_country_links()
             .unwrap();
     // A valid origin does not permit skipping a failed creator reference.
     fixture.put(links + 3 * 4, 0_u32.to_le_bytes());
-    assert!(speed(&fixture.memory(), &mut [0]).is_err());
+    assert!(speed(&fixture.memory(), crate::walk::Buffer::Growing(&mut vec![0; 1])).is_err());
     fixture.put(links + 3 * 4, 1_u32.to_le_bytes());
     let roster =
         usize::try_from(read::<u64>(&fixture.memory(), GAME + cgame_state::COUNTRIES).unwrap())
@@ -299,41 +299,34 @@ fn railway_speed_resolves_creator_before_origin_and_rejects_torn_country_links()
     let origin = usize::try_from(read::<u64>(&fixture.memory(), roster + 2 * 8).unwrap()).unwrap();
     fixture.put(origin + ccountry::ID, 1_u32.to_le_bytes());
     assert_eq!(
-        speed(&fixture.memory(), &mut [0]),
+        speed(&fixture.memory(), crate::walk::Buffer::Growing(&mut vec![0; 1])),
         Err("country slot and object resolve to different countries")
     );
 }
 
 #[test]
-fn railway_speed_named_capacity_is_raw_count_and_gathers_before_stats() {
+fn railway_speed_named_scratch_grows_to_the_raw_count_and_gathers_before_stats() {
     let mut fixture = Fixture::new(100_000);
     let (handles, bonus) = fixture.named(1, 0, &[8, -1, 999], &[(8, 20_000)]);
     let memory = fixture.memory();
     assert_eq!(named_bonus_demand(&memory, VARIANT), Ok(3));
-    let mut pointers = [0; 2];
+    let mut pointers = vec![0; 2];
     let mut scratch = NamedBonuses {
-        pointers: crate::walk::Buffer::Fixed(&mut pointers),
+        pointers: crate::walk::Buffer::Growing(&mut pointers),
         required: 1,
     };
     assert_eq!(
         variant_speed(&memory, BASE, GAME, VARIANT, &mut scratch),
-        Err("railway speed named bonus capacity insufficient")
+        Ok(120_000)
     );
     assert_eq!(scratch.required, 3);
-    assert!(
-        !memory
-            .reads
-            .borrow()
-            .iter()
-            .any(|read| read.contains(&handles))
-    );
 
     // A later handle failure wins before any selected bonus stat is read.
     fixture.put(bonus, 0_u64.to_le_bytes());
     let mut memory = fixture.memory();
     memory.failures.push(handles + 4..handles + 8);
     assert_eq!(
-        speed(&memory, &mut [0; 3]),
+        speed(&memory, crate::walk::Buffer::Growing(&mut vec![0; 3])),
         Err("railway speed dependency unreadable")
     );
     assert!(
@@ -371,17 +364,17 @@ fn railway_speed_unreadable_and_unsupported_inputs_refuse_without_cache_fallback
     ] {
         let mut memory = fixture.memory();
         memory.failures.push(address..address + 1);
-        assert!(speed(&memory, &mut []).is_err(), "dependency {address:x}");
+        assert!(speed(&memory, crate::walk::Buffer::Count).is_err(), "dependency {address:x}");
     }
     fixture.put(pointers, 0_u64.to_le_bytes());
     assert_eq!(
-        speed(&fixture.memory(), &mut []),
+        speed(&fixture.memory(), crate::walk::Buffer::Count),
         Err("railway speed dependency is null")
     );
     fixture.put(pointers, (bonus as u64).to_le_bytes());
     fixture.put(bonus, 0_u64.to_le_bytes());
     assert_eq!(
-        speed(&fixture.memory(), &mut []),
+        speed(&fixture.memory(), crate::walk::Buffer::Count),
         Err("railway speed dependency vtable mismatch")
     );
     fixture.vtable(bonus, SPECIFIC_VTABLE_RVA);
@@ -390,13 +383,13 @@ fn railway_speed_unreadable_and_unsupported_inputs_refuse_without_cache_fallback
         (TOKEN + 1).to_le_bytes(),
     );
     assert_eq!(
-        speed(&fixture.memory(), &mut []),
+        speed(&fixture.memory(), crate::walk::Buffer::Count),
         Err("railway speed equipment definition token mismatch")
     );
     fixture.put(DEFINITION + cequipment_type::TOKEN, TOKEN.to_le_bytes());
     fixture.put(VARIANT + DIRECT_BONUSES + 8, 0_u32.to_le_bytes());
     assert_eq!(
-        speed(&fixture.memory(), &mut []),
+        speed(&fixture.memory(), crate::walk::Buffer::Count),
         Err("railway speed array unreadable or invalid")
     );
 }
@@ -405,7 +398,7 @@ fn railway_speed_unreadable_and_unsupported_inputs_refuse_without_cache_fallback
 fn railway_speed_group_scaling_wraps_and_reduction_keeps_native_sentinel() {
     let mut fixture = Fixture::new(0);
     fixture.upgrade(2, i64::MAX, None, 0);
-    assert_eq!(speed(&fixture.memory(), &mut []), Ok(-2));
+    assert_eq!(speed(&fixture.memory(), crate::walk::Buffer::Count), Ok(-2));
     for value in [i64::MIN, i64::MAX] {
         assert_eq!(
             Accumulator {

@@ -343,15 +343,15 @@ pub struct TextRead {
 /// Copies both exact byte strings after `read` authenticates the role. Native `TOKEN` is the saved
 /// name; `NAME` remains a separate unsaved inherited string. Insufficient storage omits the whole
 /// row; callers can grow the arena off-thread.
-pub fn read_text(memory: &impl Memory, pointer: usize, arena: &mut [u8]) -> TextRead {
+pub fn read_text(
+    memory: &impl Memory,
+    pointer: usize,
+    mut arena: crate::walk::Buffer<'_, u8>,
+) -> TextRead {
     let result = (|| {
-        let name = literal(memory, at(pointer, NAME)?)?;
-        let token = literal(memory, at(pointer, TOKEN)?)?;
+        let (name, token, required_bytes) = text_literals(memory, pointer)?;
         let (name_len, token_len) = (name.len, token.len);
-        let required_bytes = name_len
-            .checked_add(token_len)
-            .ok_or("unit leader text length overflow")?;
-        if required_bytes > arena.len() {
+        if !arena.ensure(required_bytes)? {
             return Ok(TextRead {
                 outcome: Outcome::Truncated {
                     len: 0,
@@ -391,6 +391,49 @@ pub fn read_text(memory: &impl Memory, pointer: usize, arena: &mut [u8]) -> Text
     })
 }
 
+fn text_literals(
+    memory: &impl Memory,
+    pointer: usize,
+) -> Result<(Literal, Literal, usize), &'static str> {
+    let name = literal(memory, at(pointer, NAME)?)?;
+    let token = literal(memory, at(pointer, TOKEN)?)?;
+    let required = name
+        .len
+        .checked_add(token.len)
+        .ok_or("unit leader text length overflow")?;
+    Ok((name, token, required))
+}
+
+/// Lengths of the native `NAME` and `TOKEN` [`read_text_into`] stored, in that order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Text {
+    pub name_len: usize,
+    pub token_len: usize,
+}
+
+/// [`read_text`] into worker storage from `from`, which grows to hold both strings.
+pub fn read_text_into(
+    memory: &impl Memory,
+    pointer: usize,
+    bytes: &mut Vec<u8>,
+    from: usize,
+) -> Result<Text, &'static str> {
+    let (name, token, required) = text_literals(memory, pointer)?;
+    let end = from
+        .checked_add(required)
+        .ok_or("unit leader text length overflow")?;
+    crate::walk::grow(bytes, end)?;
+    let middle = from + name.len;
+    if !name.copy(memory, &mut bytes[from..middle]) || !token.copy(memory, &mut bytes[middle..end])
+    {
+        return Err("unit leader text bytes unreadable");
+    }
+    Ok(Text {
+        name_len: name.len,
+        token_len: token.len,
+    })
+}
+
 /// Exact inherited string bytes, including unsaved client-language text.
 /// The caller has authenticated the leader. Commits a successful span.
 pub fn read_name(
@@ -401,7 +444,7 @@ pub fn read_name(
     read_name_buffer(
         memory,
         pointer,
-        crate::walk::Buffer::Fixed(names.bytes),
+        names.bytes.suffix(0),
         &mut names.len,
         &mut names.required,
     )
@@ -444,7 +487,7 @@ pub fn read_codename(
         memory,
         base,
         pointer,
-        crate::walk::Buffer::Fixed(names.bytes),
+        names.bytes.suffix(0),
         &mut names.len,
         &mut names.required,
         &mut [false; 2],
@@ -476,6 +519,28 @@ pub fn read_codename_buffer(
     Ok(result)
 }
 
+/// [`read_codename_buffer`] into worker storage from `from`, which grows to hold
+/// the codename's bytes; `len` is relative to `from` and commits both spans.
+pub fn read_codename_into(
+    memory: &impl Memory,
+    base: usize,
+    pointer: usize,
+    bytes: &mut Vec<u8>,
+    from: usize,
+    len: &mut usize,
+    required: &mut usize,
+) -> Result<crate::cname_group_member::Inputs, &'static str> {
+    crate::cname_group_member::codename_inputs_into(
+        memory,
+        base,
+        at(pointer, coperative_leader::CODENAME)?,
+        bytes,
+        from,
+        len,
+        required,
+    )
+}
+
 /// Operative leaders construct an embedded naming member of type two.
 /// Category is independent of this layout.
 pub const fn has_codename(kind: u8) -> bool {
@@ -501,14 +566,14 @@ pub fn text_demand(
             continue;
         }
         let (kind, _, _) = identity(memory, base, pointer)?;
-        let text = read_text(memory, pointer, &mut []);
+        let text = read_text(memory, pointer, crate::walk::Buffer::Count);
         if let Outcome::Unavailable { reason } = text.outcome {
             return Err(reason);
         }
         required = required.saturating_add(text.required_bytes);
         if has_codename(kind) {
             let mut names = crate::cname_group_member::Names {
-                bytes: &mut [],
+                bytes: crate::walk::Buffer::Count,
                 len: 0,
                 required: 0,
             };
@@ -637,8 +702,8 @@ pub fn walk_traits(
     base: usize,
     pointer: usize,
     leader_id: u32,
-    output: &mut [TraitRow],
-    arena: &mut [u8],
+    output: crate::walk::Buffer<'_, TraitRow>,
+    arena: crate::walk::Buffer<'_, u8>,
 ) -> TraitWalk {
     walk_definitions(
         memory,
@@ -726,8 +791,8 @@ pub fn walk_trait_experience(
         pointer,
         leader_id,
         TRAIT_EXPERIENCE_DATA,
-        output,
-        arena,
+        crate::walk::Buffer::Exact(output),
+        crate::walk::Buffer::Exact(arena),
         |trait_row, experience| TraitExperienceRow {
             trait_row,
             experience,
@@ -738,14 +803,14 @@ pub fn walk_trait_experience(
 // All storage belongs to the caller. The only difference between these native
 // containers is whether their element also carries the signed XP qword.
 #[allow(clippy::too_many_arguments)]
-fn walk_definitions<R>(
+fn walk_definitions<R: Default>(
     memory: &impl Memory,
     base: usize,
     pointer: usize,
     leader_id: u32,
     offset: usize,
-    output: &mut [R],
-    arena: &mut [u8],
+    mut output: crate::walk::Buffer<'_, R>,
+    mut arena: crate::walk::Buffer<'_, u8>,
     make: impl Fn(TraitRow, i64) -> R,
 ) -> TraitWalk {
     let result = (|| {
@@ -760,8 +825,9 @@ fn walk_definitions<R>(
         };
         let array = Array::read(memory, at(pointer, offset)?, stride)
             .ok_or("unit leader trait vector invalid or unreadable")?;
+        output.ensure(array.count as usize)?;
         let mut len = 0;
-        let mut bytes_len = 0;
+        let mut bytes_len = 0_usize;
         let mut required_bytes = 0_usize;
         let mut unread_rows = 0;
         for ordinal in 0..array.count {
@@ -795,7 +861,11 @@ fn walk_definitions<R>(
             required_bytes = required_bytes
                 .checked_add(token_len)
                 .ok_or("unit leader trait byte count overflow")?;
-            if token_len > arena.len() - bytes_len {
+            if !arena.ensure(
+                bytes_len
+                    .checked_add(token_len)
+                    .ok_or("unit leader trait byte count overflow")?,
+            )? {
                 token.validate_terminator(memory)?;
                 unread_rows = array.count - ordinal;
                 break;
@@ -1057,22 +1127,6 @@ pub fn walk_hq_portraits(
     memory: &impl Memory,
     base: usize,
     roots: &[crate::corders_group::Root],
-    sources: &mut [(u64, usize)],
-    output: &mut [PortraitRow],
-) -> PortraitWalk {
-    walk_hq_portraits_buffer(
-        memory,
-        base,
-        roots,
-        crate::walk::Buffer::Fixed(sources),
-        crate::walk::Buffer::Fixed(output),
-    )
-}
-
-pub fn walk_hq_portraits_growing(
-    memory: &impl Memory,
-    base: usize,
-    roots: &[crate::corders_group::Root],
     sources: &mut Vec<(u64, usize)>,
     output: &mut Vec<PortraitRow<crate::capture_text::Owned>>,
 ) -> PortraitWalk {
@@ -1268,7 +1322,7 @@ pub fn walk_portrait_paths(
     base: usize,
     game_state: usize,
     sources: &[(u64, usize)],
-    output: &mut [PortraitPathRow],
+    output: &mut Vec<PortraitPathRow<crate::capture_text::Owned>>,
 ) -> Outcome {
     let mut memo = PortraitTagMemo {
         required: 256,
@@ -1281,24 +1335,6 @@ pub fn walk_portrait_paths(
 /// Picture-directory inputs of `sources`, the distinct leaders a complete
 /// [`walk_hq_portraits`] selected in this same quiescent capture.
 pub fn walk_portrait_paths_memo(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    sources: &[(u64, usize)],
-    output: &mut [PortraitPathRow],
-    memo: &mut PortraitTagMemo,
-) -> Outcome {
-    walk_portrait_paths_memo_buffer(
-        memory,
-        base,
-        game_state,
-        sources,
-        crate::walk::Buffer::Fixed(output),
-        memo,
-    )
-}
-
-pub fn walk_portrait_paths_memo_growing(
     memory: &impl Memory,
     base: usize,
     game_state: usize,

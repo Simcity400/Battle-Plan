@@ -50,7 +50,7 @@ fn detail_demand_advisory(
             continue;
         };
         let (id, attackers, defenders, sides) = reader.header_with_sides(pointer, border)?;
-        let mut arenas = DetailArenas::new(&mut [], &mut [], &mut [], &mut [], &mut [], &mut []);
+        let mut arenas = DetailArenas::count();
         arenas.verify_headers = true;
         read_details(
             memory,

@@ -30,9 +30,9 @@
 
 use crate::engagement_progress::sides as engagement_progress_sides;
 use replay_data::rows::tables;
-use replay_frame::frame::DecodedFrame;
+use replay_frame::frame::Tables;
 use std::{collections::BTreeMap, io};
-use {crate::engaged::Continuity, crate::engaged::Engaged, crate::map::tables::rows};
+use {crate::engaged::Continuity, crate::engaged::Engaged};
 
 /// The limitation every frame carried from an earlier hour reports.
 pub const CARRIED: &str = "frame carried from the last seen hour, assuming the camera kept the icon alive (the camera and the icon pool are not recorded; a province's combat icons are erased when it leaves the view)";
@@ -109,9 +109,9 @@ pub fn engaged_seen(flag: Engaged) -> Option<bool> {
 /// The land icons' hour: `alive` from both `LandCombatSides` primary lists
 /// for `alive`, the engaged `flag` for `seen`, and the frame for a seen combat (frame 1
 /// or 2 by the combat's indicator byte, zero-based here).
-pub fn land_hour(frame: &DecodedFrame, flag: &dyn Fn(u64) -> Engaged) -> io::Result<IconHour> {
+pub fn land_hour<F: Tables + ?Sized>(frame: &F, flag: &dyn Fn(u64) -> Engaged) -> io::Result<IconHour> {
     let sides = engagement_progress_sides(frame)?;
-    let combats = rows::<tables::LandCombats>(frame)?;
+    let combats = crate::fold_tables::available::<tables::LandCombats, F>(frame)?;
     Ok(IconHour {
         combats: combats
             .rows()

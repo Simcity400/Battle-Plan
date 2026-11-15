@@ -132,20 +132,9 @@ fn direct(memory: &impl Memory, capacities: &Capacities) -> Captured {
     captured
 }
 
-fn fixed_job() -> WeatherJob {
-    WeatherJob {
-        log: RawLog::new(20, 48 * 1024),
-        worker_growth: false,
-        regions: DensePayload::new(512 * sweather_per_region::RECORD_BYTES),
-        provinces: DensePayload::new(20_000 * sweather_per_province::RECORD_BYTES),
-        clocks: DensePayload::new(20_000 * sweather_per_province::CLOCK_RECORD_BYTES),
-        ..Default::default()
-    }
-}
-
 fn split(memory: &impl Memory, capacities: &Capacities) -> (Captured, WeatherJob) {
     let mut captured = Captured::with_capacities(capacities);
-    let mut job = fixed_job();
+    let mut job = WeatherJob::new();
     let ctx = WeatherCopyContext {
         base: 0,
         game_state: 0x1000,
@@ -368,7 +357,7 @@ fn clear_gates_record_updated_clocks_from_slot_one_and_hold_the_rest() {
 }
 
 #[test]
-fn raw_copy_matches_the_typed_walk_under_truncation_and_faults() {
+fn raw_copy_matches_the_whole_typed_walk_from_any_frame_capacity_and_under_faults() {
     let clean = fixture();
     let mut cases = vec![clean.clone()];
     for (address, value) in [
@@ -405,13 +394,18 @@ fn raw_copy_matches_the_typed_walk_under_truncation_and_faults() {
     );
     cases.push(absent);
     for bytes in &cases {
+        let ample = Capacities {
+            rows: [8, 8],
+            ..Default::default()
+        };
+        // The decode grows a short frame to the whole census.
         for rows in [[0, 0], [1, 1], [8, 8]] {
             let capacities = Capacities {
                 rows,
                 ..Default::default()
             };
             let (split, _) = split(&memory(bytes), &capacities);
-            assert_matches(&split, &direct(&memory(bytes), &capacities));
+            assert_matches(&split, &direct(&memory(bytes), &ample));
         }
     }
 }
@@ -591,12 +585,9 @@ fn a_failed_snow_ceiling_keeps_the_province_modifier_entries() {
             .modifiers
             .clone()
     };
-    // The split path with storage for the province's modifier entries.
     fn split(memory: &impl Memory, capacities: &Capacities) -> Captured {
         let mut captured = Captured::with_capacities(capacities);
-        let mut job = fixed_job();
-        job.province_modifiers = ProvinceModifiers::with_capacity(4, 4);
-        job.province_scratch = Vec::with_capacity(4);
+        let mut job = WeatherJob::new();
         let ctx = WeatherCopyContext {
             base: 0,
             game_state: 0x1000,
@@ -626,7 +617,7 @@ fn a_failed_snow_ceiling_keeps_the_province_modifier_entries() {
 }
 
 #[test]
-fn an_ordinary_province_suffix_fault_preserves_the_admitted_display_and_clock_prefix() {
+fn an_ordinary_province_suffix_fault_fails_the_provinces_read_once() {
     let mut bytes = fixture();
     for offset in [
         cweather_manager::PROVINCES,
@@ -652,34 +643,21 @@ fn an_ordinary_province_suffix_fault_preserves_the_admitted_display_and_clock_pr
         fault: second + sweather_per_province::SNOW,
         failures: Cell::new(0),
     };
-    let capacities = Capacities {
-        rows: [2, 1],
-        ..Default::default()
-    };
-    let (captured, job) = split(&memory, &capacities);
+    // A frame shorter than the census grows to it, so the failed row is decoded.
+    let (captured, job) = split(
+        &memory,
+        &Capacities {
+            rows: [2, 1],
+            ..Default::default()
+        },
+    );
     assert_eq!(memory.failures.get(), 1);
     assert!(job.log.fault[1]);
     assert_eq!(
         captured.provinces.outcome,
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 1
+        Outcome::Unavailable {
+            reason: "weather province fields unreadable"
         }
-    );
-    assert_eq!(
-        (
-            captured.provinces.rows[0].display_snow,
-            captured.provinces.rows[0].display_mud,
-            captured.provinces.rows[0].local_hour,
-            captured.provinces.rows[0].night_factor
-        ),
-        (200, 255, -7, -9_007_199_254_740_993)
-    );
-    assert_matches(&captured, &direct(&memory, &capacities));
-    assert_eq!(
-        memory.failures.get(),
-        1,
-        "the independent direct prefix never reads the suffix"
     );
     let full = direct(
         &memory,
@@ -688,18 +666,7 @@ fn an_ordinary_province_suffix_fault_preserves_the_admitted_display_and_clock_pr
             ..Default::default()
         },
     );
-    assert_eq!(
-        full.provinces.outcome,
-        Outcome::Unavailable {
-            reason: "weather province fields unreadable"
-        }
-    );
-    let mut raw_full = Captured::with_capacities(&Capacities {
-        rows: [2, 2],
-        ..Default::default()
-    });
-    raw_full.decode_weather_payload(0, &job, 0, &mut Default::default(), &mut [0; N]);
-    assert_matches(&raw_full, &full);
+    assert_matches(&captured, &full);
     assert_eq!(
         memory.failures.get(),
         2,
@@ -708,23 +675,20 @@ fn an_ordinary_province_suffix_fault_preserves_the_admitted_display_and_clock_pr
 }
 
 #[test]
-fn clock_payload_shortage_keeps_exact_demand_and_recovers_after_worker_growth() {
+fn a_short_clock_payload_grows_to_its_exact_demand_in_the_pass() {
     let bytes = fixture();
-    let mut job = fixed_job();
+    let mut job = WeatherJob::new();
     job.clocks = DensePayload::new(sweather_per_province::CLOCK_RECORD_BYTES - 1);
     let context = WeatherCopyContext {
         base: 0,
         game_state: 0x1000,
     };
-    assert!(!copy_weather_refresh(&memory(&bytes), context, &mut job).raw_ok);
+    assert!(copy_weather_refresh(&memory(&bytes), context, &mut job).raw_ok);
     assert_eq!(
         job.clocks.required,
         sweather_per_province::CLOCK_RECORD_BYTES
     );
-    assert_eq!(job.clocks.copied_bytes, 0);
-    assert!(job.grow_for_next());
-    job.grow();
-    assert!(copy_weather_refresh(&memory(&bytes), context, &mut job).raw_ok);
+    assert!(!job.grow_for_next());
     assert_eq!(
         job.clocks.copied_bytes,
         sweather_per_province::CLOCK_RECORD_BYTES
@@ -757,31 +721,6 @@ fn clock_payload_shortage_keeps_exact_demand_and_recovers_after_worker_growth() 
         ),
         (0, 0, 0)
     );
-}
-
-#[test]
-fn staging_overflow_falls_back_to_the_typed_walk_and_grows() {
-    let bytes = fixture();
-    let ctx = WeatherCopyContext {
-        base: 0,
-        game_state: 0x1000,
-    };
-    let mut tiny = WeatherJob {
-        log: RawLog::new(8, 8),
-        ..fixed_job()
-    };
-    let report = copy_weather_refresh(&memory(&bytes), ctx, &mut tiny);
-    assert!(!report.raw_ok);
-    // Growth converges within a few hours; each overflowed hour takes the
-    // typed walk.
-    let mut hours = 0;
-    while tiny.grow_for_next() {
-        tiny.grow();
-        hours += 1;
-        assert!(hours < 16);
-        copy_weather_refresh(&memory(&bytes), ctx, &mut tiny);
-    }
-    assert!(copy_weather_refresh(&memory(&bytes), ctx, &mut tiny).raw_ok);
 }
 
 // PRIVATE UNRUN R6 append for crates/collector/src/extended/weather/tests.rs.
@@ -920,7 +859,7 @@ fn split_attack_at(source: &AttackWeatherMemory) -> (Captured, WeatherJob) {
         ..Default::default()
     };
     let mut captured = Captured::with_capacities(&capacity);
-    let mut job = fixed_job();
+    let mut job = WeatherJob::new();
     let context = WeatherCopyContext {
         base: 0,
         game_state: 0x1000,
@@ -1014,7 +953,7 @@ fn regional_map_terms_distinguish_known_empty_from_refused_accumulator() {
         base: 0,
         game_state: 0x1000,
     };
-    assert!(copy_weather_refresh_growing(&source, context, &mut job).raw_ok);
+    assert!(copy_weather_refresh(&source, context, &mut job).raw_ok);
     let mut captured = Captured::with_capacities(&Capacities {
         rows: [2; N],
         ..Default::default()
@@ -1031,7 +970,7 @@ fn regional_map_terms_distinguish_known_empty_from_refused_accumulator() {
     );
 
     source.fault_once.set(Some(address));
-    assert!(copy_weather_refresh_growing(&source, context, &mut job).raw_ok);
+    assert!(copy_weather_refresh(&source, context, &mut job).raw_ok);
     captured.decode_weather_payload(0, &job, 0, &mut Default::default(), &mut [0; N]);
     let refused = projected_weather_regions(&captured).remove(0);
     assert_eq!(
@@ -1048,67 +987,84 @@ fn regional_map_terms_distinguish_known_empty_from_refused_accumulator() {
     );
 }
 
+/// The typed walk reads no modifier accumulator; these are the fixture's entries
+/// as the copy records them, raw (playback applies the definitions).
+fn give_fixture_accumulators(typed: &mut Captured) {
+    use engine_executable::modifier_keys as key;
+    typed.combat = vec![Some([
+        Some(-12_345),
+        Some(-99_999),
+        Some(-25_000),
+        Some(i64::MIN),
+        Some(i64::MAX),
+        Some(-9_007_199_254_740_993),
+        Some(150_001),
+        None,
+    ])];
+    // Key 0x11 is absent, so the air efficiency breakdown is its empty root.
+    typed.air_efficiency = vec![Some(std::sync::Arc::new(vec![
+        rows::ModifierBreakdownNode {
+            children: 0,
+            value: 0,
+            name: Vec::new(),
+        },
+    ]))];
+    typed.province_modifiers.clear();
+    assert!(typed.province_modifiers.push(Some(&[
+        (key::ARMY_SPEED_FACTOR, -40_000),
+        (key::HEAT_ATTRITION, 25_000),
+    ])));
+}
+
 #[test]
 fn weather_regions_record_raw_combat_entries_and_no_witness() {
-    // A fixed fixture has no combat storage: the regions are refused, and
-    // neither path reads the modifier accumulator or its definitions.
+    // A worker reads each region's raw entries once, during the copy, and the
+    // air efficiency breakdown's own lookup reads the same 16-byte header once;
+    // the definitions stay unread, as playback applies them and key 0x11 is absent.
     let source = AttackWeatherMemory::new(None);
     let (copied, job) = split_attack_at(&source);
     assert_eq!(job.log.fault, [false; N]);
+    let root = 0x3000 + sweather_per_region::MODIFIERS;
+    assert_eq!(source.attempts(root), 2);
+    assert_eq!(
+        source
+            .reads
+            .borrow()
+            .iter()
+            .filter(|&&read| read == (root, 16))
+            .count(),
+        2
+    );
+    assert_eq!(
+        source.attempts(engine_native::modifier_definition::TABLE_RVA.0),
+        0
+    );
+    let typed_source = AttackWeatherMemory::new(None);
     let mut typed = Captured::with_capacities(&Capacities {
         rows: [2; N],
         ..Default::default()
     });
-    typed.capture(&source, 0, 0x1000);
+    typed.capture(&typed_source, 0, 0x1000);
+    assert_eq!(typed_source.attempts(root), 0);
     assert_matches(&copied, &typed);
+    give_fixture_accumulators(&mut typed);
     let copied_rows = projected_weather_regions(&copied);
     assert_eq!(copied_rows, projected_weather_regions(&typed));
-    assert_eq!(
-        copied_rows[0].attack,
-        rows::Recorded::Value(rows::Witnessed(None))
-    );
-    assert_eq!(copied_rows[0].combat, rows::Recorded::Value(None));
+    let region = &copied_rows[0];
+    assert_eq!(region.attack, rows::Recorded::Value(rows::Witnessed(None)));
     assert_eq!(
         (
-            copied_rows[0].light_rain,
-            copied_rows[0].heavy_rain,
-            copied_rows[0].snow,
-            copied_rows[0].blizzard,
-            copied_rows[0].sandstorm,
-            copied_rows[0].arctic_water
+            region.light_rain,
+            region.heavy_rain,
+            region.snow,
+            region.blizzard,
+            region.sandstorm,
+            region.arctic_water
         ),
         (1, 0, 255, 1, 2, 3)
     );
-    assert_eq!(source.attempts(0x3000 + sweather_per_region::MODIFIERS), 0);
     assert_eq!(
-        source.attempts(engine_native::modifier_definition::TABLE_RVA.0),
-        0
-    );
-    // A worker reads each region's raw entries once, during the copy; the
-    // definitions stay unread, as playback applies them.
-    let source = AttackWeatherMemory::new(None);
-    let mut job = WeatherJob::new();
-    let context = WeatherCopyContext {
-        base: 0,
-        game_state: 0x1000,
-    };
-    assert!(copy_weather_refresh_growing(&source, context, &mut job).raw_ok);
-    let reads = source.reads.borrow().len();
-    let mut captured = Captured::with_capacities(&Capacities {
-        rows: [2; N],
-        ..Default::default()
-    });
-    captured.raw_mode = true;
-    captured.finish_owned_capture();
-    captured.decode_weather_payload(0, &job, 0, &mut Default::default(), &mut [0; N]);
-    assert_eq!(source.reads.borrow().len(), reads);
-    assert_eq!(source.attempts(0x3000 + sweather_per_region::MODIFIERS), 1);
-    assert_eq!(
-        source.attempts(engine_native::modifier_definition::TABLE_RVA.0),
-        0
-    );
-    assert_eq!(
-        projected_weather_regions(&captured)[0].combat,
+        region.combat,
         rows::Recorded::Value(Some(rows::RegionCombatWeather {
             army_attack_factor: Some(-9_007_199_254_740_993),
             breakthrough_factor: Some(150_001),
@@ -1117,15 +1073,9 @@ fn weather_regions_record_raw_combat_entries_and_no_witness() {
         }))
     );
     assert_eq!(
-        projected_weather_regions(&captured)[0].air_detection,
+        region.air_detection,
         rows::Recorded::Value(Some(Some(-12_345)))
     );
-    assert_eq!(copied_rows[0].air_detection, rows::Recorded::Value(None));
-    assert_eq!(
-        copied_rows[0].map_modifiers_known,
-        replay_data::rows::Recorded::Value(false)
-    );
-    let region = projected_weather_regions(&captured).remove(0);
     assert_eq!(
         region.map_modifiers_known,
         replay_data::rows::Recorded::Value(true)
@@ -1135,7 +1085,7 @@ fn weather_regions_record_raw_combat_entries_and_no_witness() {
     assert_eq!(region.air_defence, Some(i64::MAX).into());
     // The province's raw accumulator, every entry, comes from the same copy; an absent
     // key is absent, distinct from a refused read.
-    let views = captured.tables();
+    let views = copied.tables();
     let TableView::Complete(provinces) = &views[1] else {
         panic!("weather provinces must stay complete")
     };
@@ -1233,7 +1183,7 @@ fn weather_display_split(source: &impl Memory, capacity: usize) -> (Captured, We
         rows: [2; N],
         display_bytes: capacity,
     };
-    let mut job = fixed_job();
+    let mut job = WeatherJob::new();
     job.display = DisplayCapture::new(capacity);
     let context = WeatherCopyContext {
         base: 0,
@@ -1280,6 +1230,7 @@ fn weather_display_raw_and_typed_attach_dirty_and_full_rebuild_snapshots_match()
         );
         let mut typed = Captured::with_capacities(&capacity);
         typed.capture(&source, 0, 0x1000);
+        give_fixture_accumulators(&mut typed);
         assert_eq!(copied.tables(), typed.tables());
         let row = weather_display_row(&copied);
         let rows::Recorded::Value(Some(display)) = row.display else {
@@ -1341,35 +1292,13 @@ fn weather_display_refusals_and_growth_preserve_independent_province_fields() {
             display_bytes: 10,
         });
         typed.capture(&typed_source, 0, 0x1000);
+        give_fixture_accumulators(&mut typed);
         assert_eq!(copied.tables(), typed.tables());
     }
+    // Empty display storage, the job's and the frame's, grows to the edges in the pass.
     let source = weather_display_memory(None);
-    let (mut captured, mut job) = weather_display_split(&source, 0);
+    let (captured, job) = weather_display_split(&source, 0);
     assert_eq!(job.display.required, 10);
-    assert_eq!(
-        weather_display_row(&captured).display,
-        rows::Recorded::Value(None)
-    );
-    assert!(job.grow_for_next());
-    job.grow();
-    let mut capacities = Capacities {
-        rows: [2; N],
-        display_bytes: 0,
-    };
-    captured.grow(&mut capacities);
-    assert!(capacities.display_bytes >= 10);
-    assert!(
-        copy_weather_refresh(
-            &source,
-            WeatherCopyContext {
-                base: 0,
-                game_state: 0x1000,
-            },
-            &mut job
-        )
-        .raw_ok
-    );
-    captured.decode_weather_payload(0, &job, 0, &mut Default::default(), &mut [0; N]);
     assert!(matches!(
         weather_display_row(&captured).display,
         rows::Recorded::Value(Some(_))
@@ -1736,7 +1665,7 @@ fn live_weather_hints_and_original_worker_headers_cover_large_mod_maps() {
             counts: std::array::from_fn(|_| Cell::new(0)),
             calls: Cell::new(0),
         };
-        let report = copy_weather_refresh_growing(
+        let report = copy_weather_refresh(
             &source,
             WeatherCopyContext {
                 base: 0,
@@ -1797,7 +1726,7 @@ fn tracked(
         rows: [2; N],
         ..Default::default()
     });
-    let mut job = fixed_job();
+    let mut job = WeatherJob::new();
     let ctx = WeatherCopyContext {
         base: 0,
         game_state: 0x1000,
@@ -1890,11 +1819,7 @@ fn province_projection_compares_all_owned_fields_without_allocating() {
     let source = weather_display_memory(None);
     let (mut captured, _) = weather_display_split(&source, 10);
     captured.province_modifiers.clear();
-    assert!(
-        captured
-            .province_modifiers
-            .push(Some(&[(1, 17), (2, -19)]), true)
-    );
+    assert!(captured.province_modifiers.push(Some(&[(1, 17), (2, -19)])));
     captured.temperature_pass = Some(rows::TemperaturePass {
         anchor: 10,
         cursor: 2,

@@ -92,7 +92,7 @@ jobs:
             preview) [[ -z "${{ inputs.releases }}" ]] || { echo "::error::Preview builds must carry no update feed."; exit 1; } ;;
             *) echo "::error::Unknown channel ${{ inputs.channel }}."; exit 1 ;;
           esac
-          for name in CARGO_TARGET_DIR BATTLE_PLAN_PREP_LOCK BATTLE_PLAN_GAME_LOCK BATTLE_PLAN_TARGET_CAP_GB; do
+          for name in CARGO_TARGET_DIR BATTLE_PLAN_PREP_LOCK BATTLE_PLAN_GAME_LOCK BATTLE_PLAN_TARGET_CAP_GB BATTLE_PLAN_RELEASE_SMOKE_RECORDING BATTLE_PLAN_GAME_DIR; do
             [[ -n "${!name:-}" ]] || { echo "::error::The runner's .env must set $name (tools/release-runner.ps1 writes it)."; exit 1; }
           done
 
@@ -206,6 +206,11 @@ jobs:
           python -m venv "$RUNNER_TEMP/verify"
           "$RUNNER_TEMP/verify/Scripts/python" -m pip install --disable-pip-version-check --quiet cryptography==50.0.2
           "$RUNNER_TEMP/verify/Scripts/python" tools/release.py verify --installer "dist/battle-plan-${VERSION}-x64-setup.exe" --signature "dist/battle-plan-${VERSION}-x64-setup.exe.sig" --version "$VERSION"
+
+      # The installer's layout holds exactly the shipped files, and the app in it opens a recording
+      # and draws its map; nothing is installed on the machine and no user data is read or written.
+      - name: Smoke the installed layout
+        run: bash tools/with-machine-locks.sh "release-smoke-${{ inputs.channel }}" python tools/release_smoke.py --installer "dist/battle-plan-${VERSION}-x64-setup.exe" --out "$RUNNER_TEMP/release-smoke"
 
       - name: Verify the Authenticode signature
         if: steps.authenticode.outputs.flag != ''

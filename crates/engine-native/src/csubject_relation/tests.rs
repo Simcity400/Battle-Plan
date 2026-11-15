@@ -134,7 +134,7 @@ fn fixture() -> Vec<u8> {
     bytes
 }
 
-fn capture(bytes: &[u8], matrix: bool, output: &mut [Row], names: &mut [u8]) -> NameWalk {
+fn capture(bytes: &[u8], matrix: bool, output: &mut Vec<Row>, names: &mut Vec<u8>) -> NameWalk {
     let memory = SliceMemory { base: 0, bytes };
     if matrix {
         walk_matrix(&memory, 0, GS, output, names)
@@ -147,8 +147,8 @@ fn capture(bytes: &[u8], matrix: bool, output: &mut [Row], names: &mut [u8]) -> 
 fn censuses_preserve_native_direction_full_width_and_literal_bytes() {
     let bytes = fixture();
     for matrix in [false, true] {
-        let mut rows = [Row::default(); 2];
-        let mut names = [0; 20];
+        let mut rows = vec![Row::default(); 2];
+        let mut names = vec![0; 20];
         assert_eq!(
             capture(&bytes, matrix, &mut rows, &mut names),
             NameWalk {
@@ -185,8 +185,8 @@ fn a_retired_subject_counts_while_it_is_installed() {
     p32(&mut bytes, RETIRED_RELATION + SUBJECT, 2);
     bytes[RELATION + crelation::RETIRED] = 1;
     for matrix in [false, true] {
-        let mut rows = [Row::default(); 2];
-        let mut names = [0; 20];
+        let mut rows = vec![Row::default(); 2];
+        let mut names = vec![0; 20];
         assert_eq!(
             capture(&bytes, matrix, &mut rows, &mut names).outcome,
             Outcome::Rows { len: 1 }
@@ -214,8 +214,8 @@ fn an_unreadable_installation_slot_is_not_an_uninstalled_subject() {
     }
     let mut bytes = fixture();
     bytes[RELATION + crelation::RETIRED] = 1;
-    let mut rows = [Row::default(); 2];
-    let mut names = [0; 20];
+    let mut rows = vec![Row::default(); 2];
+    let mut names = vec![0; 20];
     assert_eq!(
         capture(&bytes, false, &mut rows, &mut names).outcome,
         Outcome::Rows { len: 1 }
@@ -235,31 +235,19 @@ fn an_unreadable_installation_slot_is_not_an_uninstalled_subject() {
 }
 
 #[test]
-fn capacity_omits_whole_rows_and_reports_exact_required_bytes() {
+fn the_count_probe_reports_exact_required_bytes() {
     let bytes = fixture();
-    for matrix in [false, true] {
-        for (row_capacity, name_capacity) in [(0, 4), (1, 3)] {
-            let mut rows = [Row::default(); 1];
-            let mut names = [77; 4];
-            assert_eq!(
-                capture(
-                    &bytes,
-                    matrix,
-                    &mut rows[..row_capacity],
-                    &mut names[..name_capacity]
-                ),
-                NameWalk {
-                    outcome: Outcome::Truncated {
-                        len: 0,
-                        unread_rows: 1
-                    },
-                    bytes_len: 0,
-                    required_bytes: 4
-                }
-            );
-            assert_eq!(names, [77; 4]);
+    assert_eq!(
+        count(&SliceMemory { base: 0, bytes: &bytes }, 0, GS),
+        NameWalk {
+            outcome: Outcome::Truncated {
+                len: 0,
+                unread_rows: 1
+            },
+            bytes_len: 0,
+            required_bytes: 4
         }
-    }
+    );
 }
 
 #[test]
@@ -273,8 +261,8 @@ fn matrix_census_can_detect_a_relation_missing_from_both_owned_roots() {
             &[],
         );
     }
-    let mut rows = [Row::default(); 1];
-    let mut names = [0; 4];
+    let mut rows = vec![Row::default(); 1];
+    let mut names = vec![0; 4];
     assert_eq!(
         capture(&bytes, false, &mut rows, &mut names).outcome,
         Outcome::Rows { len: 0 }
@@ -301,8 +289,8 @@ fn matrix_batches_authenticate_empty_tail_cells_and_do_not_read_past_count() {
             &entries,
         );
     }
-    let mut rows = [Row::default(); 1];
-    let mut names = [0; 4];
+    let mut rows = vec![Row::default(); 1];
+    let mut names = vec![0; 4];
     assert_eq!(
         capture(&bytes, true, &mut rows, &mut names).outcome,
         Outcome::Rows { len: 1 }
@@ -364,7 +352,7 @@ fn mismatched_ownership_target_and_invalid_names_are_unavailable() {
         }
         assert!(
             matches!(
-                capture(&bytes, false, &mut [Row::default(); 1], &mut [0; 40]).outcome,
+                capture(&bytes, false, &mut vec![Row::default(); 1], &mut vec![0; 40]).outcome,
                 Outcome::Unavailable { .. }
             ),
             "corruption {corruption}"
@@ -380,9 +368,9 @@ fn heap_names_have_no_fixed_length_limit_or_lossy_conversion() {
     p64(&mut bytes, name + msvc_string::LENGTH, 128);
     p64(&mut bytes, name + msvc_string::CAPACITY, 128);
     bytes[0x1c000..0x1c080].fill(255);
-    let mut names = [0; 128];
+    let mut names = vec![0; 128];
     assert_eq!(
-        capture(&bytes, false, &mut [Row::default(); 1], &mut names),
+        capture(&bytes, false, &mut vec![Row::default(); 1], &mut names),
         NameWalk {
             outcome: Outcome::Rows { len: 1 },
             bytes_len: 128,
@@ -392,7 +380,7 @@ fn heap_names_have_no_fixed_length_limit_or_lossy_conversion() {
     assert_eq!(names, [255; 128]);
     bytes[0x1c080] = 1;
     assert!(matches!(
-        capture(&bytes, false, &mut [Row::default(); 1], &mut names).outcome,
+        capture(&bytes, false, &mut vec![Row::default(); 1], &mut names).outcome,
         Outcome::Unavailable { .. }
     ));
 }
@@ -599,9 +587,9 @@ fn owned_subject_walk_matches_the_plain_walk_and_scans_each_owner_once() {
         assert_eq!(owned, plain_walk);
         assert_eq!(rows, plain);
         assert_eq!(names, plain_names);
-        // Empty storage is the plain walk; grown storage installs the
-        // overlord's vector once and answers every later visit from it.
-        assert_eq!(scratch.stats().installed > 0, grown);
+        // Empty and grown storage alike install the overlord's vector once
+        // and answer every later visit from it.
+        assert!(scratch.stats().installed > 0, "grown {grown}");
     }
 }
 
@@ -708,13 +696,6 @@ fn batched_subjects_match_the_serial_walk() {
     assert_eq!(batched.0.outcome, Outcome::Rows { len: COUNTRIES - 1 });
     assert_eq!(batched.1[..COUNTRIES - 1], expected[..]);
     assert_eq!(batched, serial);
-    let [batched, serial] =
-        batched_and_serial(&memory, &memory, COUNTRIES - 10, (COUNTRIES - 10) * 6);
-    assert_eq!(batched, serial);
-    assert!(matches!(
-        batched.0.outcome,
-        Outcome::Truncated { unread_rows: 9, .. }
-    ));
     let counted = CountedMemory::new(memory);
     let mut counts = [ReadCounts::ZERO; 2];
     for (index, count) in counts.iter_mut().enumerate() {

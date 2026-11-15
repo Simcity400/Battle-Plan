@@ -30,7 +30,7 @@ struct State {
     movement: Option<PresentationMovementRequest>,
     speed_terms: Option<PresentationSpeedTermsRequest>,
     split: bool,
-    store: Option<Arc<division_presentation::held_store::Slot>>,
+    store: Option<division_presentation::held_store::Slot>,
 }
 impl std::fmt::Debug for PresentationInputs {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -61,7 +61,7 @@ impl PresentationInputs {
         &self,
         request: PresentationRequest,
         count: usize,
-        store: Option<Arc<division_presentation::held_store::Slot>>,
+        store: Option<division_presentation::held_store::Slot>,
         omit_status: bool,
     ) {
         let mut state = lock_unpoisoned(&self.state);
@@ -216,8 +216,8 @@ impl PresentationInputs {
         if crate::allocation::failed() {
             return false;
         }
-        // Do not delay the held first burst on the preceding decode's loan.
-        // The last input publisher waits here, beside the independent jobs.
+        // The last input publisher takes the hour's store here, beside the independent jobs;
+        // the take never waits on the preceding decode's loan.
         if let Some(store) = &state.store {
             #[cfg(test)]
             if let Some(hook) = self.before_store.get() {

@@ -143,11 +143,11 @@ fn reserved_launch_null_control_is_observed_once_and_cannot_be_reused() {
     let reader = Reader::new(&memory, 0, STATE);
     let mut inputs = reader.observe_navy(0).unwrap();
     memory.calls.borrow_mut().clear();
-    let captured = inputs.capture_launch(&memory, 0, &mut [], &mut []);
+    let captured = inputs.capture_launch(&memory, 0, &mut Vec::new(), &mut Vec::new());
     assert_eq!(captured.provider, Ok(NavalProvider::NativeNull));
     assert_eq!(captured.required, 0);
     assert_eq!(
-        inputs.capture_launch(&memory, 0, &mut [], &mut []).provider,
+        inputs.capture_launch(&memory, 0, &mut Vec::new(), &mut Vec::new()).provider,
         Err("reserved launch navy control consumed")
     );
     assert!(memory.calls.borrow().is_empty());

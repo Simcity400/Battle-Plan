@@ -114,7 +114,7 @@ impl UnitLeader<'_> {
     pub fn skill(&self) -> Evaluation<i32> {
         match self {
             Self::Direct(row) if row.skill_status == 0 => Err(format!(
-                "unit leader {} has no skill object (UnitLeaders skill_status 0), which the skill read requires",
+                "unit leader {} has no skill object (unit leaders skill_status 0), which the skill read requires",
                 row.id
             ).into()),
             Self::Direct(row) => Ok(row.skill_level),
@@ -181,41 +181,24 @@ impl<'a> Tables<'a> {
         fn table<'f, T: TableSchema>(
             frame: HourFrame<'f>,
             mask: u64,
-            name: &str,
         ) -> Result<Rowset<'f, T::Row>, Failure> {
             frame.complete::<T>(mask).map_err(|error| {
                 Failure::input(
                     T::ID,
                     "",
                     None,
-                    format!("{name} is not complete this hour: {error}"),
+                    format!("{} is not complete this hour: {error}", T::ID.words()),
                 )
             })
         }
         Self {
-            characters: table::<tables::Characters>(frame, CHARACTER, "Characters"),
-            unit_leaders: table::<tables::UnitLeaders>(frame, LEADER, "UnitLeaders"),
+            characters: table::<tables::Characters>(frame, CHARACTER),
+            unit_leaders: table::<tables::UnitLeaders>(frame, LEADER),
             leaders_of: OnceLock::new(),
-            unit_leader_traits: table::<tables::UnitLeaderTraits>(
-                frame,
-                ASSIGNED,
-                "UnitLeaderTraits",
-            ),
-            role_traits: table::<tables::CharacterRoleTraits>(
-                frame,
-                ROLE_TRAITS,
-                "CharacterRoleTraits",
-            ),
-            operatives: table::<tables::CharacterOperatives>(
-                frame,
-                OPERATIVE,
-                "CharacterOperatives",
-            ),
-            retired: table::<tables::CountryRetiredCharacters>(
-                frame,
-                RETIRED,
-                "CountryRetiredCharacters",
-            ),
+            unit_leader_traits: table::<tables::UnitLeaderTraits>(frame, ASSIGNED),
+            role_traits: table::<tables::CharacterRoleTraits>(frame, ROLE_TRAITS),
+            operatives: table::<tables::CharacterOperatives>(frame, OPERATIVE),
+            retired: table::<tables::CountryRetiredCharacters>(frame, RETIRED),
         }
     }
 
@@ -260,7 +243,7 @@ impl<'a> Tables<'a> {
         if let Some(&(key, more)) = index.get(&character) {
             if more {
                 return Err(format!(
-                    "character {character} has more than one UnitLeaders row, and a character holds one direct unit leader"
+                    "character {character} has more than one unit leaders row, and a character holds one direct unit leader"
                 ).into());
             }
             let leader = leaders

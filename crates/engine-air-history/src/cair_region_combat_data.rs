@@ -92,22 +92,6 @@ pub fn walk(
     memory: &impl Memory,
     base: usize,
     roots: &[Root],
-    records: &mut [sair_wing_combat_data::Row],
-    damage: &mut [sdamage_entry::Row],
-) -> Capture {
-    walk_buffer(
-        memory,
-        base,
-        roots,
-        crate::walk::Buffer::Fixed(records),
-        crate::walk::Buffer::Fixed(damage),
-    )
-}
-
-pub fn walk_growing(
-    memory: &impl Memory,
-    base: usize,
-    roots: &[Root],
     records: &mut Vec<sair_wing_combat_data::Row>,
     damage: &mut Vec<sdamage_entry::Row>,
 ) -> Capture {
@@ -861,8 +845,8 @@ mod tests {
                 },
                 IMAGE_BASE,
                 &roots,
-                &mut [],
-                &mut []
+                &mut Vec::new(),
+                &mut Vec::new()
             ),
             Capture {
                 records: Outcome::Rows { len: 0 },
@@ -888,7 +872,7 @@ mod tests {
                 address,
             };
             assert_eq!(
-                walk(&memory, IMAGE_BASE, &roots, &mut [], &mut []),
+                walk(&memory, IMAGE_BASE, &roots, &mut Vec::new(), &mut Vec::new()),
                 Capture {
                     records: Outcome::Unavailable { reason },
                     damage: Outcome::Unavailable { reason },
@@ -1026,8 +1010,8 @@ mod tests {
 
     fn capture(
         bytes: &[u8],
-        records: &mut [sair_wing_combat_data::Row],
-        damage: &mut [sdamage_entry::Row],
+        records: &mut Vec<sair_wing_combat_data::Row>,
+        damage: &mut Vec<sdamage_entry::Row>,
     ) -> Capture {
         walk(
             &SliceMemory {
@@ -1048,8 +1032,8 @@ mod tests {
     #[test]
     fn retains_native_composite_identity_flags_owner_and_full_damage_width() {
         let mut bytes = fixture();
-        let mut records = [sair_wing_combat_data::Row::default(); 3];
-        let mut damage = [sdamage_entry::Row::default(); 2];
+        let mut records = vec![sair_wing_combat_data::Row::default(); 3];
+        let mut damage = vec![sdamage_entry::Row::default(); 2];
         assert_eq!(
             capture(&bytes, &mut records, &mut damage),
             Capture {
@@ -1102,49 +1086,10 @@ mod tests {
     }
 
     #[test]
-    fn capacity_is_independent_and_counts_unread_rows_without_reading_their_fields() {
-        let mut bytes = fixture();
-        let mut records = [sair_wing_combat_data::Row::default(); 1];
-        let mut damage = [sdamage_entry::Row::default(); 1];
-        // Once both buffers are full, omitted inline records need only their
-        // nested vector extents. Their unrelated fields are not sampled.
-        put(
-            &mut bytes,
-            FIRST + sair_wing_combat_data::STRIDE,
-            &0_u64.to_le_bytes(),
-        );
-        assert_eq!(
-            capture(&bytes, &mut records, &mut damage),
-            Capture {
-                records: Outcome::Truncated {
-                    len: 1,
-                    unread_rows: 2
-                },
-                damage: Outcome::Truncated {
-                    len: 1,
-                    unread_rows: 1
-                },
-            }
-        );
-        let bytes = fixture();
-        let mut damage = [sdamage_entry::Row::default(); 2];
-        assert_eq!(
-            capture(&bytes, &mut [], &mut damage),
-            Capture {
-                records: Outcome::Truncated {
-                    len: 0,
-                    unread_rows: 3
-                },
-                damage: Outcome::Rows { len: 2 },
-            }
-        );
-    }
-
-    #[test]
     fn damage_fault_does_not_erase_good_record_rows_and_bad_keys_fail_both_tables() {
         let mut bytes = fixture();
-        let mut records = [sair_wing_combat_data::Row::default(); 3];
-        let mut damage = [sdamage_entry::Row::default(); 2];
+        let mut records = vec![sair_wing_combat_data::Row::default(); 3];
+        let mut damage = vec![sdamage_entry::Row::default(); 2];
         put(&mut bytes, DAMAGE, &0_u64.to_le_bytes());
         assert_eq!(
             capture(&bytes, &mut records, &mut damage),
@@ -1181,7 +1126,7 @@ mod tests {
             bytes: &bytes,
         };
         assert_eq!(
-            walk(&memory, IMAGE_BASE, &[], &mut [], &mut []),
+            walk(&memory, IMAGE_BASE, &[], &mut Vec::new(), &mut Vec::new()),
             Capture {
                 records: Outcome::Rows { len: 0 },
                 damage: Outcome::Rows { len: 0 },
@@ -1194,7 +1139,7 @@ mod tests {
             &3_u32.to_le_bytes(),
         );
         assert_eq!(
-            capture(&bytes, &mut [], &mut []),
+            capture(&bytes, &mut Vec::new(), &mut Vec::new()),
             Capture {
                 records: Outcome::Unavailable {
                     reason: "air combat record vector unreadable or invalid"
@@ -1249,14 +1194,21 @@ mod tests {
                 address: REGION,
             }];
             assert_eq!(
-                walk(&memory, IMAGE_BASE, &roots, &mut [], &mut []).records,
+                walk_buffer(
+                    &memory,
+                    IMAGE_BASE,
+                    &roots,
+                    crate::walk::Buffer::Count,
+                    crate::walk::Buffer::Count,
+                )
+                .records,
                 Outcome::Truncated {
                     len: 0,
                     unread_rows: count
                 }
             );
             assert_eq!(
-                walk_growing(&memory, IMAGE_BASE, &roots, &mut records, &mut damages),
+                walk(&memory, IMAGE_BASE, &roots, &mut records, &mut damages),
                 Capture {
                     records: Outcome::Rows {
                         len: count as usize

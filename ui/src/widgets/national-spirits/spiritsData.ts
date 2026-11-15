@@ -1,9 +1,9 @@
-import { contentTitle } from '../../dashboard/contentTitles.ts';
+import { ideaName, ideaNameMissing } from '../../dashboard/ideaHistoryReply.ts';
 import { spanAt } from '../../charts/timeline/layout.ts';
 import type { TimelineLane } from '../../charts/timeline/layout';
 import { describeRun, runState, startUnseen } from '../../charts/timeline/runState.ts';
 import type { RunState, RunWords } from '../../charts/timeline/runState';
-import type { Artwork, HourSpan, IdeaHistoryReply, IdeaSpan } from '../../generated/dashboard';
+import type { Artwork, HourSpan, IdeaHistoryReply, IdeaInfo, IdeaSpan } from '../../generated/dashboard';
 
 /** National spirits from the idea history: the ideas whose content category is a
  * national-spirit category (`type = national_spirit` in content, whatever a mod
@@ -15,20 +15,24 @@ export type SpiritSort = 'gained' | 'ended' | 'name';
 export interface Spirit {
   token: string;
   name: string;
+  /** Why it has no name, for its tooltip. */
+  nameMissing: string | null;
   icon?: string;
   spans: IdeaSpan[];
 }
 
 export function spirits(reply: IdeaHistoryReply): Spirit[] {
   const spiritCategories = new Set(reply.categories.filter(category => category.kind === NATIONAL_SPIRIT_TYPE).map(category => category.token));
-  const tokens = new Set(reply.ideas.filter(info => info.category && spiritCategories.has(info.category)).map(info => info.token));
+  const infos = new Map<string, IdeaInfo>(reply.ideas.filter(info => info.category && spiritCategories.has(info.category)).map(info => [info.token, info]));
   const art = new Map<string, Artwork>(reply.artwork.map(item => [item.token, item]));
   const byToken = new Map<string, Spirit>();
   for (const span of reply.spans) {
-    if (!tokens.has(span.token)) continue;
+    const info = infos.get(span.token);
+    if (!info) continue;
     let spirit = byToken.get(span.token);
     if (!spirit) {
-      spirit = { token: span.token, name: contentTitle(art.get(span.token)?.name, span.token, 'National spirit name unavailable'), icon: art.get(span.token)?.icon ?? undefined, spans: [] };
+      spirit = { token: span.token, name: ideaName(art.get(span.token), info, 'National spirit name unavailable'),
+        nameMissing: ideaNameMissing(art.get(span.token), info), icon: art.get(span.token)?.icon ?? undefined, spans: [] };
       byToken.set(span.token, spirit);
     }
     spirit.spans.push(span);

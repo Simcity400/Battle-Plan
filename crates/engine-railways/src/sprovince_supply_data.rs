@@ -51,15 +51,13 @@ fn decode(province: u32, bytes: &[u8]) -> Row {
     }
 }
 
-/// Reads the non-sentinel slots consumed by the supply checksum.
-/// Contiguous batches amortize SEH entry without allocating or retaining pointers.
-pub fn walk(memory: &impl Memory, base: usize, game_state: usize, output: &mut [Row]) -> Outcome {
-    walk_buffer(memory, base, game_state, Buffer::Fixed(output))
+pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
+    walk_buffer(memory, base, game_state, Buffer::Count)
 }
 
 /// Worker-owned rows grow from the acquired vector's count before reading non-sentinel slots. No
 /// live read is repeated.
-pub fn walk_growing(
+pub fn walk(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -178,7 +176,7 @@ mod tests {
         };
         let mut rows = vec![Row::default(); 1];
         assert_eq!(
-            walk_growing(&memory, 0, 0x1000, &mut rows),
+            walk(&memory, 0, 0x1000, &mut rows),
             Outcome::Rows { len: 20_151 }
         );
         assert_eq!(rows[20_150].province, 20_151);
@@ -192,7 +190,7 @@ mod tests {
             base: 0x1000,
             bytes: &bytes,
         };
-        let mut rows = [Row::default(); 66];
+        let mut rows = vec![Row::default(); 66];
         assert_eq!(
             walk(&memory, 0, 0x1000, &mut rows),
             Outcome::Rows { len: 66 }
@@ -211,22 +209,21 @@ mod tests {
     }
 
     #[test]
-    fn capacity_counts_omitted_rows_without_reading_their_bytes() {
+    fn the_count_probe_counts_rows_without_reading_their_bytes() {
         let mut bytes = fixture(4);
         bytes.truncate(0x2000 + STRIDE + FLAGS + 1);
         let memory = SliceMemory {
             base: 0x1000,
             bytes: &bytes,
         };
-        let mut rows = [Row::default(); 1];
         assert_eq!(
-            walk(&memory, 0, 0x1000, &mut rows),
+            count(&memory, 0, 0x1000),
             Outcome::Truncated {
-                len: 1,
-                unread_rows: 2
+                len: 0,
+                unread_rows: 3
             }
         );
-        let mut rows = [Row::default(); 3];
+        let mut rows = vec![Row::default(); 3];
         assert_eq!(
             walk(&memory, 0, 0x1000, &mut rows),
             Outcome::Unavailable {
@@ -243,7 +240,7 @@ mod tests {
             0x800 + csupply_system::PROVINCE_DATA + 12,
             &4_u32.to_le_bytes(),
         );
-        let mut rows = [Row::default(); 3];
+        let mut rows = vec![Row::default(); 3];
         assert!(matches!(
             walk(
                 &SliceMemory {

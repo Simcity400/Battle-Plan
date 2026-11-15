@@ -42,7 +42,7 @@ use {
 
 mod entry_tooltips;
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub(super) struct Menu {
     pub values: Values,
     pub entries: Vec<Values>,

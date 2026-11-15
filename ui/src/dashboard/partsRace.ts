@@ -86,11 +86,24 @@ export function partsRaceSegmentAt(model: PartsRaceModel | null, tag: string, ho
   return runAt(model?.series.get(tag)?.series.segments ?? [], Math.floor(hour))?.firstHour ?? null;
 }
 
-export function rankPartsRace(model: PartsRaceModel, candidates: readonly string[], hour: number, limit: number): { tag: string; at: PartsRaceAt & { total: number } }[] {
+/** `positive`: a tally's top N ranks only countries above zero, never a list of zeros in tag order. */
+export function rankPartsRace(model: PartsRaceModel, candidates: readonly string[], hour: number, limit: number, positive = false): { tag: string; at: PartsRaceAt & { total: number } }[] {
   return candidates.flatMap(tag => {
     const at = partsRaceAt(model, tag, hour);
-    return at?.total != null ? [{ tag, at: { ...at, total: at.total } }] : [];
+    return at?.total != null && (!positive || at.total > 0) ? [{ tag, at: { ...at, total: at.total } }] : [];
   }).sort((a, b) => b.at.total - a.at.total || compareTags(a.tag, b.tag)).slice(0, Math.max(0, limit));
+}
+
+/** Every candidate with a known total at `hour` holds zero, and one does; an unknown total is not a zero. */
+export function partsRaceAllZero(model: PartsRaceModel, candidates: readonly string[], hour: number): boolean {
+  let known = false;
+  for (const tag of candidates) {
+    const total = partsRaceAt(model, tag, hour)?.total;
+    if (total == null) continue;
+    if (total !== 0) return false;
+    known = true;
+  }
+  return known;
 }
 
 export const formatPartsRaceValue = (value: number) => usNumber.format(value);

@@ -25,20 +25,7 @@ pub struct CooldownRow {
     pub days: i32,
 }
 
-/// Caller-owned storage for [`walk`]. Rows keep ranges into the arenas.
 pub struct Buffers<'a> {
-    pub parents: &'a mut [ccountry_raid_status::Row],
-    /// Eligible and used raid type tokens of every parent.
-    pub type_tokens: &'a mut [u32],
-    pub instances: &'a mut [craid_instance::Row],
-    /// Raw `show_for` country handles of every instance.
-    pub show_for: &'a mut [u32],
-    pub cooldowns: &'a mut [CooldownRow],
-    /// The caller-owned raid type token memo, sized from the raid database.
-    pub type_memo: &'a mut ccountry_raid_status::TypeTokens,
-}
-
-pub struct GrowingBuffers<'a> {
     pub parents: &'a mut Vec<ccountry_raid_status::Row>,
     /// Eligible and used raid type tokens of every parent.
     pub type_tokens: &'a mut Vec<u32>,
@@ -64,19 +51,6 @@ pub struct BuffersBuffer<'a> {
 
 impl<'a> From<Buffers<'a>> for BuffersBuffer<'a> {
     fn from(value: Buffers<'a>) -> Self {
-        Self {
-            parents: crate::walk::Buffer::Fixed(value.parents),
-            type_tokens: crate::walk::Buffer::Fixed(value.type_tokens),
-            instances: crate::walk::Buffer::Fixed(value.instances),
-            show_for: crate::walk::Buffer::Fixed(value.show_for),
-            cooldowns: crate::walk::Buffer::Fixed(value.cooldowns),
-            type_memo: value.type_memo,
-        }
-    }
-}
-
-impl<'a> From<GrowingBuffers<'a>> for BuffersBuffer<'a> {
-    fn from(value: GrowingBuffers<'a>) -> Self {
         Self {
             parents: crate::walk::Buffer::Growing(value.parents),
             type_tokens: crate::walk::Buffer::Growing(value.type_tokens),
@@ -157,16 +131,16 @@ pub fn required_type_tokens(
     base: usize,
     game_state: usize,
 ) -> Result<usize, &'static str> {
-    let walk = walk(
+    let walk = walk_buffer(
         memory,
         base,
         game_state,
-        Buffers {
-            parents: &mut [],
-            type_tokens: &mut [],
-            instances: &mut [],
-            show_for: &mut [],
-            cooldowns: &mut [],
+        BuffersBuffer {
+            parents: crate::walk::Buffer::Count,
+            type_tokens: crate::walk::Buffer::Count,
+            instances: crate::walk::Buffer::Count,
+            show_for: crate::walk::Buffer::Count,
+            cooldowns: crate::walk::Buffer::Count,
             type_memo: &mut ccountry_raid_status::TypeTokens::empty(),
         },
     );
@@ -180,15 +154,11 @@ pub fn required_type_tokens(
 /// capacities are independent; a row whose arena range does not fit is left
 /// out and counted, so a prefix never implies a complete census. Omitted
 /// instances are counted from authenticated vector headers. No allocation.
-pub fn walk(memory: &impl Memory, base: usize, game_state: usize, buffers: Buffers<'_>) -> Walk {
-    walk_buffer(memory, base, game_state, buffers.into())
-}
-
-pub fn walk_growing(
+pub fn walk(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    buffers: GrowingBuffers<'_>,
+    buffers: Buffers<'_>,
 ) -> Walk {
     walk_buffer(memory, base, game_state, buffers.into())
 }

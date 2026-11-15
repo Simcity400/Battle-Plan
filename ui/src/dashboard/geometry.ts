@@ -10,6 +10,7 @@ import { perfLog } from '../shell/perf';
 import type { MapExpectation } from '../shell/perf';
 export { CAMPAIGN_MAP_VIEW, campaignToggled, toggleMapSetting } from './mapPicker';
 import { useTransitionValue } from './playback';
+import { engine } from '../engine/frame.ts';
 import type { PlaybackController, PlaybackSnapshot } from './playback';
 
 /** A picker toggle as its failure names it. */
@@ -50,13 +51,13 @@ export class MapViewsStore {
   /** The acknowledgement each view's widget renders, replaced only when what it shows changes. */
   private shown = new Map<string, { key: string; state: DashboardMapState }>();
   private painters = new Map<string, (state: DashboardMapState) => void>();
-  private paintFrame = 0;
+  private paintFrame: (() => void) | null = null;
   private listeners = new Map<string, Set<() => void>>();
   private hidden = false;
   private hiddenListeners = new Set<() => void>();
   private viewport: HTMLElement | null = null;
   private observer: ResizeObserver | null = null;
-  private frame = 0;
+  private frame: (() => void) | null = null;
   private layoutDirty = true;
   private pending: DashboardMapView[] | null = null;
   private busy = false;
@@ -178,8 +179,8 @@ export class MapViewsStore {
       this.active = false;
       this.states.clear();
       this.shown.clear();
-      if (this.paintFrame) cancelAnimationFrame(this.paintFrame);
-      this.paintFrame = 0;
+      this.paintFrame?.();
+      this.paintFrame = null;
       stopClock();
       stopShown();
       stopFrame();
@@ -188,8 +189,8 @@ export class MapViewsStore {
       stopToggles?.();
       this.observer?.disconnect();
       this.observer = null;
-      if (this.frame) cancelAnimationFrame(this.frame);
-      this.frame = 0;
+      this.frame?.();
+      this.frame = null;
       window.removeEventListener('resize', this.schedule);
       window.removeEventListener('scroll', this.scrolled, true);
       window.visualViewport?.removeEventListener('resize', this.schedule);
@@ -264,7 +265,8 @@ export class MapViewsStore {
   /** Views may have changed but layout has not. */
   retarget = (): void => {
     if (!this.active || this.frame) return;
-    this.frame = requestAnimationFrame(() => { this.frame = 0; this.compose(); });
+    // Layout is read in the frame's measure phase, before anything in it writes.
+    this.frame = engine.next('measure', () => { this.frame = null; this.compose(); });
   };
   /** A followed target appears or goes as the clock crosses its recording's ends. */
   private checkPresence = (): void => {
@@ -296,8 +298,8 @@ export class MapViewsStore {
   private presentAll = (): void => { for (const id of this.states.keys()) this.present(id); };
   private schedulePaint(): void {
     if (this.paintFrame || !this.painters.size || typeof requestAnimationFrame !== 'function') return;
-    this.paintFrame = requestAnimationFrame(() => {
-      this.paintFrame = 0;
+    this.paintFrame = engine.next('paint', () => {
+      this.paintFrame = null;
       for (const [id, painter] of this.painters) {
         const state = this.states.get(id);
         if (state) painter(state);

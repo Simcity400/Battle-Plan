@@ -87,7 +87,7 @@ impl Captured {
             self.fail(reason);
             return qpc().saturating_sub(start).max(0) as u64;
         }
-        let result = native::capture_growing(
+        let result = native::capture(
             memory,
             base,
             sources,

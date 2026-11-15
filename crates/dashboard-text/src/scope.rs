@@ -233,6 +233,24 @@ pub fn gap(view: &TableView) -> String {
         }
     }
 }
+
+/// Why `table`, read as `view`, holds no row a reply needs, in the words a user reads: what it
+/// holds in plain words and why it is missing, never its identifier.
+pub fn missing(table: replay_data::rows::TableId, view: &TableView) -> String {
+    let what = table.words();
+    match view {
+        TableView::Complete(_) => format!("{what}: no row for it"),
+        TableView::Truncated { missing, .. } => format!("{what}: read only in part ({missing} rows not read)"),
+        TableView::Unavailable { reason } if reason.is_empty() => format!("{what}: not available"),
+        TableView::Unavailable { reason } => format!("{what}: not available ({reason})"),
+        TableView::NotRecorded { mode } => format!("{what}: not recorded in a {mode} recording"),
+    }
+}
+
+/// [`missing`] of a table not read whole; none when it was.
+pub fn unread(table: replay_data::rows::TableId, view: &TableView) -> Option<String> {
+    (!matches!(view, TableView::Complete(_))).then(|| missing(table, view))
+}
 /// Saved-target validity using captured object liveness.
 pub(crate) fn valid_saved_target(r: &replay_data::rows::GlobalSavedEventTargetRow) -> bool {
     !r.name.is_empty()
@@ -449,7 +467,7 @@ impl<'a> RecordedScopes<'a> {
         gaps.insert(
             "Characters",
             format!(
-                "{} (LexicalTokens: {})",
+                "{} (lexical tokens: {})",
                 gap(tables::Characters::ID),
                 gap(tables::LexicalTokens::ID)
             ),
@@ -595,7 +613,7 @@ impl<'a> RecordedScopes<'a> {
                                 self.input::<tables::CountryLinks>(
                                     "canonical_slot",
                                     None,
-                                    format!("{:?} country {raw} has no CountryLinks row", T::ID),
+                                    format!("{} names a country that no recorded country link holds", T::ID.words()),
                                 )
                             });
                         }
@@ -701,7 +719,7 @@ impl<'a> RecordedScopes<'a> {
                 "",
                 None,
                 format!(
-                    "saved event target {}: GlobalSavedEventTargets {}",
+                    "saved event target {}: global saved event targets: {}",
                     String::from_utf8_lossy(name),
                     self.gaps
                         .get("GlobalSavedEventTargets")
@@ -754,7 +772,7 @@ impl<'a> RecordedScopes<'a> {
         }
         self.slot(raw as u32).map(Some).ok_or_else(|| -> Failure {
             format!(
-                "saved event target {}: country reference {raw} is not in CountryLinks",
+                "saved event target {}: country reference {raw} is not in country links",
                 String::from_utf8_lossy(name)
             )
             .into()
@@ -829,7 +847,7 @@ impl<'a> RecordedScopes<'a> {
             self.input::<tables::CountryLinks>(
                 "canonical_slot",
                 None,
-                format!("country raw reference {raw} is not in CountryLinks"),
+                format!("country raw reference {raw} is not in country links"),
             )
         })
     }
@@ -965,7 +983,7 @@ impl<'a> RecordedScopes<'a> {
             self.raw_slot(*raw)?;
         }
         Err(self.input::<tables::CountryCounterInputs>("owned_state_count", Some(crate::triggers::Store::Country(slot)), format!(
-            "the owned state count (CountryCounterInputs.owned_state_count) of {} is not recorded: {}",
+            "the owned state count of {} is not recorded: {}",
             self.describe(Target::Country(slot)), self.gaps.get("CountryCounterInputs").cloned().unwrap_or_default()
         )))
     }
@@ -1034,7 +1052,7 @@ impl<'a> RecordedScopes<'a> {
             self.input::<tables::CountryLinks>(
                 "canonical_slot",
                 None,
-                format!("country raw reference {link} has no CountryLinks row"),
+                format!("country raw reference {link} has no country links row"),
             )
             .resolution_failed();
         }
@@ -1064,7 +1082,7 @@ impl<'a> RecordedScopes<'a> {
                 "",
                 None,
                 format!(
-                    "the faction of country slot {slot} is unknown: FactionMembers {}",
+                    "the faction of country slot {slot} is unknown: faction members: {}",
                     self.gaps["FactionMembers"]
                 ),
             ));
@@ -1073,7 +1091,7 @@ impl<'a> RecordedScopes<'a> {
             let row = row?;
             if row.country != 0 && self.slot(row.country).is_none() {
                 return Err(self.input::<tables::CountryLinks>("canonical_slot", None, format!(
-                    "the faction of country slot {slot} is unknown: a FactionMembers row's country link {} resolves to no country: CountryLinks {}",
+                    "the faction of country slot {slot} is unknown: a faction member's country link {} resolves to no country: country links: {}",
                     row.country, self.gaps["CountryLinks"]
                 )));
             }
@@ -1104,7 +1122,7 @@ impl<'a> RecordedScopes<'a> {
                     "",
                     None,
                     format!(
-                        "faction {faction} has no first member: FactionMembers {}",
+                        "faction {faction} has no first member: faction members: {}",
                         self.gaps["FactionMembers"]
                     ),
                 )
@@ -1139,7 +1157,7 @@ impl<'a> RecordedScopes<'a> {
         };
         self.slot(raw).map(Some).ok_or_else(|| -> Failure {
             format!(
-                "the faction leader link {raw} resolves to no country: CountryLinks {}",
+                "the faction leader link {raw} resolves to no country: country links: {}",
                 self.gaps["CountryLinks"]
             )
             .into()
@@ -1229,7 +1247,7 @@ impl<'a> RecordedScopes<'a> {
                     return Err(Missing(self.input::<tables::LexicalTokens>(
                         "",
                         None,
-                        "character lookup lacks its LexicalTokens input",
+                        "character lookup lacks its lexical tokens input",
                     )));
                 }
                 let found = self
@@ -1309,7 +1327,7 @@ impl<'a> RecordedScopes<'a> {
                     "canonical_slot",
                     None,
                     format!(
-                        "{name}: {of}'s {what} link {link} has no CountryLinks row: {}",
+                        "{name}: {of}'s {what} has no recorded country link: {}",
                         self.gaps.get("CountryLinks").cloned().unwrap_or_default()
                     ),
                 ))
@@ -1361,7 +1379,7 @@ impl<'a> RecordedScopes<'a> {
                         })
                 }
                 other => Err(Missing(format!(
-                    "{name} of {}: only a country's capital is recorded (Politics.capital)",
+                    "{name} of {}: only a country's capital is recorded (capital of politics)",
                     self.describe(other)
                 ).into())),
             },
@@ -1369,7 +1387,7 @@ impl<'a> RecordedScopes<'a> {
                 Target::Country(slot) => {
                     let overlord = self.overlords().get(slot).map_err(Missing)?.ok_or_else(|| {
                         Missing(self.input::<tables::CountryAppearance>("overlord", Some(crate::triggers::Store::Country(slot)), format!(
-                            "{name}: {} has no recorded CountryAppearance row: {}",
+                            "{name}: {} has no recorded country appearance row: {}",
                             self.describe(Target::Country(slot)),
                             self.gaps["CountryAppearance"]
                         )))
@@ -1381,7 +1399,7 @@ impl<'a> RecordedScopes<'a> {
                     )
                 }
                 other => Err(Missing(format!(
-                    "{name} of {}: only a country's overlord is recorded (CountryAppearance.overlord)",
+                    "{name} of {}: only a country's overlord is recorded (overlord of country appearance)",
                     self.describe(other)
                 ).into())),
             },
@@ -1405,7 +1423,7 @@ impl<'a> RecordedScopes<'a> {
                     // Positive raw aliases remain country carriers, even at slot0.
                     self.slot(raw).map(Target::Country).ok_or_else(|| {
                         Missing(self.input::<tables::CountryLinks>("canonical_slot", None, format!(
-                            "{name}: faction leader link {raw} has no CountryLinks row: {}",
+                            "{name}: the faction leader has no recorded country link: {}",
                             self.gaps["CountryLinks"]
                         )))
                     })
@@ -1680,11 +1698,13 @@ pub mod tests {
         *frame.tables[TableId::CountryCounterInputs.index()] = TableView::Unavailable {
             reason: "not sampled".into(),
         };
+        let why = RecordedScopes::read(&frame, Arc::default())
+            .resolve_tag("GER")
+            .unwrap_err();
         assert!(
-            RecordedScopes::read(&frame, Arc::default())
-                .resolve_tag("GER")
-                .unwrap_err()
-                .contains("CountryCounterInputs.owned_state_count")
+            why.names("CountryCounterInputs")
+                && why.starts_with("the owned state count of country GER is not recorded: "),
+            "{why}"
         );
     }
 
@@ -1807,11 +1827,13 @@ pub mod tests {
         {
             rows[0].original_tag_buckets = Recorded::NotRecorded;
         }
+        let why = RecordedScopes::read(&frame, Arc::default())
+            .resolve_tag("GER")
+            .unwrap_err();
         assert!(
-            RecordedScopes::read(&frame, Arc::default())
-                .resolve_tag("GER")
-                .unwrap_err()
-                .contains("original_tag_buckets not recorded")
+            why.names("ReservedCountryNaming.original_tag_buckets")
+                && why == "original tag buckets of reserved country naming not recorded",
+            "{why}"
         );
         if let TableView::Complete(TableRows::CountryCounterInputs(rows)) =
             &mut *frame.tables[TableId::CountryCounterInputs.index()]
@@ -1855,7 +1877,7 @@ pub mod tests {
                 _ => assert!(
                     result
                         .unwrap_err()
-                        .contains("ReservedCountryNaming.owned_state_count")
+                        .contains("owned state count of reserved country naming")
                 ),
             }
         }
@@ -2067,7 +2089,7 @@ pub mod tests {
         assert!(matches!(
             scopes.resolve_text("controller", false, &state),
             Err(Unresolved::Missing(reason))
-                if reason.starts_with("controller: state 64's country in States link 300 has no CountryLinks row")
+                if reason.starts_with("controller: state 64's country in States has no recorded country link")
         ));
     }
 }

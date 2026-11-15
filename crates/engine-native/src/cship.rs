@@ -9,7 +9,7 @@ use engine_sites::Rva;
 
 mod air_capacity;
 mod naming;
-pub use naming::{NamingOperands, naming_growing};
+pub use naming::{NamingOperands, naming};
 mod gathered;
 mod hull_variant;
 mod naval_power;
@@ -128,17 +128,6 @@ pub fn cached_name(
 ) -> Result<Option<cname_group_member::Span>, &'static str> {
     let member = name_member(memory, base, pointer, handle)?;
     cname_group_member::cached_name(memory, base, member, names)
-}
-
-pub(crate) fn cached_name_buffer(
-    memory: &impl Memory,
-    base: usize,
-    pointer: usize,
-    handle: u64,
-    names: &mut cname_group_member::NameArena<'_>,
-) -> Result<Option<cname_group_member::Span>, &'static str> {
-    let member = name_member(memory, base, pointer, handle)?;
-    cname_group_member::cached_name_buffer(memory, base, member, names)
 }
 
 /// Worker-only copy of the retained name-group member cache (`cname_group_member::CACHED_NAME`).
@@ -264,29 +253,21 @@ impl ModelText {
     }
 }
 
-/// Completed equipment-definition observations within one stopped capture.
-/// A fixed reader keeps the last definition; a worker keeps every completed
-/// definition it reached, keyed by its exact (module, definition, token)
-/// gather, because ships of one task force alternate hull definitions.
-/// Reset before each capture; variant and ship observations remain independent.
+/// Completed equipment-definition observations within one stopped capture:
+/// every completed definition it reached, keyed by its exact (module,
+/// definition, token) gather, because ships of one task force alternate hull
+/// definitions. Reset before each capture; variant and ship observations
+/// remain independent.
 #[derive(Default)]
 pub struct ModelMemo {
-    growing: bool,
-    hull: Option<ModelHull>,
     hulls: crate::combat_sources::Map<HullKey, ModelHull>,
     hull_variant: hull_variant::Memo,
 }
 
 impl ModelMemo {
-    pub fn enable_worker_growth(&mut self) {
-        self.growing = true;
-    }
-
     /// Forget every observation (and every native pointer key) for the next
-    /// capture, keeping worker storage. Growth must be enabled again.
+    /// capture, keeping its storage.
     pub fn reset(&mut self) {
-        self.growing = false;
-        self.hull = None;
         self.hulls.clear();
         self.hull_variant.reset();
     }
@@ -303,19 +284,14 @@ impl ModelMemo {
     }
 
     fn hull(&self, key: HullKey) -> Option<&ModelHull> {
-        self.hull
-            .as_ref()
-            .filter(|hull| hull.key == key)
-            .or_else(|| self.hulls.get(&key))
+        self.hulls.get(&key)
     }
 
-    /// Only a complete successful observation is kept. Worker storage grows
-    /// per reached definition; an allocation failure (already terminal for
-    /// the capture) only forgoes the reuse.
+    /// Only a complete successful observation is kept. Storage grows per
+    /// reached definition; an allocation failure (already terminal for the
+    /// capture) only forgoes the reuse.
     fn remember_hull(&mut self, hull: ModelHull) {
-        if !self.growing {
-            self.hull = Some(hull);
-        } else if crate::allocation::reserve_map(&mut self.hulls, 1).is_ok() {
+        if crate::allocation::reserve_map(&mut self.hulls, 1).is_ok() {
             self.hulls.insert(hull.key, hull);
         }
     }
@@ -432,7 +408,7 @@ fn read_model_observed_inner(
     }
     let (selected, positive_equipment_flags) =
         cequipment_variant_pool::model_selection(memory, base, at(EQUIPMENT_POOL)?)?;
-    let fallback_sprite = model_text(memory, at(FALLBACK_SPRITE)?, memo.growing)?;
+    let fallback_sprite = model_text(memory, at(FALLBACK_SPRITE)?)?;
     let (definition_valid, maximum_strength, air, anti_air_base) =
         read_model_counters(memory, pointer)?;
     let mut row = ModelRow {
@@ -510,7 +486,6 @@ fn read_model_observed_inner(
                 definition
                     .checked_add(cequipment_type::HULL_SPRITE)
                     .ok_or("ship model equipment sprite address overflow")?,
-                memo.growing,
             )?;
             memo.remember_hull(ModelHull {
                 key: (base, definition, token),
@@ -622,16 +597,9 @@ fn read_model_counters(
     ))
 }
 
-fn model_text(
-    memory: &impl Memory,
-    address: usize,
-    growing: bool,
-) -> Result<ModelText, &'static str> {
+fn model_text(memory: &impl Memory, address: usize) -> Result<ModelText, &'static str> {
     let descriptor = Descriptor::read(memory, address)?;
     if descriptor.len > MODEL_TEXT_CAPACITY {
-        if !growing {
-            return Err("ship model sprite exceeds owned capacity");
-        }
         // The retained sprite descriptor sizes its payload from the original
         // observation rather than a collector text ceiling.
         let mut bytes = Vec::new();
@@ -2281,7 +2249,7 @@ mod cached_name_tests {
             let memory = tracked(&bytes, None);
             let mut arena = vec![0x7f; 3 + text.len()];
             let mut names = cname_group_member::Names {
-                bytes: &mut arena,
+                bytes: crate::walk::Buffer::Growing(&mut arena),
                 len: 3,
                 required: 0,
             };
@@ -2342,7 +2310,7 @@ mod cached_name_tests {
             .collect();
         assert_eq!(heap_reads, [(HEAP, 1), (HEAP + text.len() - 1, 2)]);
         let mut names = cname_group_member::Names {
-            bytes: &mut [],
+            bytes: crate::walk::Buffer::Count,
             len: 0,
             required: 0,
         };
@@ -2353,7 +2321,7 @@ mod cached_name_tests {
         assert_eq!(names.required, text.len());
         bytes[HEAP + text.len()] = 1;
         let mut names = cname_group_member::Names {
-            bytes: &mut [],
+            bytes: crate::walk::Buffer::Count,
             len: 0,
             required: 0,
         };
@@ -2362,7 +2330,7 @@ mod cached_name_tests {
         bytes[HEAP + text.len()] = 0;
         let mut arena = vec![0; text.len()];
         let mut names = cname_group_member::Names {
-            bytes: &mut arena,
+            bytes: crate::walk::Buffer::Growing(&mut arena),
             len: 0,
             required: 0,
         };

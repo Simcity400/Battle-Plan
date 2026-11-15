@@ -24,7 +24,7 @@ fn full(world: &World, id: u32) -> Full {
         slots: Vec::new(),
     };
     let country = World::country(id);
-    let inputs = research_inputs::walk_country_growing(
+    let inputs = research_inputs::walk_country(
         world,
         0,
         country,
@@ -35,7 +35,7 @@ fn full(world: &World, id: u32) -> Full {
     );
     assert_eq!(inputs, (Outcome::Rows { len: 3 }, Outcome::Rows { len: 2 }));
     let countries = ccountry::Reader::new(world, 0, GAME).unwrap();
-    let modifiers = research_modifiers::walk_country_growing(
+    let modifiers = research_modifiers::walk_country(
         world,
         0,
         &countries,
@@ -64,7 +64,7 @@ fn full(world: &World, id: u32) -> Full {
     );
     assert_eq!(technology, Outcome::Rows { len: 2 });
     assert_eq!(
-        ctechnology_status::walk_slots_growing(world, 0, country, id, &mut rows.slots),
+        ctechnology_status::walk_slots(world, 0, country, id, &mut rows.slots),
         Outcome::Rows { len: 3 }
     );
     rows

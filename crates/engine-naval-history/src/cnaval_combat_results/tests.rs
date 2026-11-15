@@ -218,15 +218,15 @@ fn source_visitor_reads_initial_census_once_and_keeps_fault_prefixes() {
 #[test]
 fn native_handles_dates_flags_and_member_values_survive_the_walk() {
     let heap = Heap::populated();
-    let mut records = [Row::default(); 1];
-    let mut members = [MemberRow::default(); 2];
-    let mut countries = [CountryRow::default(); 5];
+    let mut records = vec![Row::default(); 1];
+    let mut members = vec![MemberRow::default(); 2];
+    let mut countries = vec![CountryRow::default(); 5];
     let result = walk(
         &heap.memory(),
         BASE,
         STATE,
         &mut records,
-        &mut [ResultSlot::default(); 1],
+        &mut vec![ResultSlot::default(); 1],
         &mut members,
         &mut countries,
     );
@@ -264,46 +264,10 @@ fn native_handles_dates_flags_and_member_values_survive_the_walk() {
     assert_eq!(members[1].presence_value, 0);
     assert_eq!(members[1].ordinal, 1);
     assert_eq!(
-        countries.map(|row| (row.list, row.ordinal, row.country)),
+        countries.iter().map(|row| (row.list, row.ordinal, row.country)).collect::<Vec<_>>(),
         [(0, 0, 10), (0, 1, 20), (1, 0, 30), (2, 0, 10), (2, 1, 30)]
     );
     assert_ne!(countries[0].key(), countries[3].key());
-}
-
-#[test]
-fn capacity_counts_each_omitted_table_row_without_reading_its_payload() {
-    let mut heap = Heap::populated();
-    heap.u64(MEMBER_LIST + 8, 1);
-    let result = walk(
-        &heap.memory(),
-        BASE,
-        STATE,
-        &mut [],
-        &mut [],
-        &mut [MemberRow::default(); 1],
-        &mut [CountryRow::default(); 2],
-    );
-    assert_eq!(
-        result.records,
-        Outcome::Truncated {
-            len: 0,
-            unread_rows: 1
-        }
-    );
-    assert_eq!(
-        result.members,
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 1
-        }
-    );
-    assert_eq!(
-        result.countries,
-        Outcome::Truncated {
-            len: 2,
-            unread_rows: 3
-        }
-    );
 }
 
 #[test]
@@ -314,10 +278,10 @@ fn broken_member_and_result_fields_only_invalidate_their_own_tables() {
         &heap.memory(),
         BASE,
         STATE,
-        &mut [Row::default(); 1],
-        &mut [ResultSlot::default(); 1],
-        &mut [MemberRow::default(); 2],
-        &mut [CountryRow::default(); 5],
+        &mut vec![Row::default(); 1],
+        &mut vec![ResultSlot::default(); 1],
+        &mut vec![MemberRow::default(); 2],
+        &mut vec![CountryRow::default(); 5],
     );
     assert!(matches!(result.members, Outcome::Unavailable { .. }));
     assert_eq!(result.records, Outcome::Rows { len: 1 });
@@ -328,10 +292,10 @@ fn broken_member_and_result_fields_only_invalidate_their_own_tables() {
         &heap.memory(),
         BASE,
         STATE,
-        &mut [Row::default(); 1],
-        &mut [ResultSlot::default(); 1],
-        &mut [MemberRow::default(); 2],
-        &mut [CountryRow::default(); 5],
+        &mut vec![Row::default(); 1],
+        &mut vec![ResultSlot::default(); 1],
+        &mut vec![MemberRow::default(); 2],
+        &mut vec![CountryRow::default(); 5],
     );
     assert!(matches!(result.records, Outcome::Unavailable { .. }));
     assert_eq!(result.members, Outcome::Rows { len: 2 });
@@ -347,10 +311,10 @@ fn empty_retention_is_valid_and_corrupt_root_is_never_a_successful_empty() {
             &heap.memory(),
             BASE,
             STATE,
-            &mut [],
-            &mut [],
-            &mut [],
-            &mut []
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new()
         ),
         Walk {
             records: empty,
@@ -363,10 +327,10 @@ fn empty_retention_is_valid_and_corrupt_root_is_never_a_successful_empty() {
         &heap.memory(),
         BASE,
         STATE,
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
     );
     assert!(matches!(result.records, Outcome::Unavailable { .. }));
     assert!(matches!(result.members, Outcome::Unavailable { .. }));
@@ -529,17 +493,17 @@ fn growing_result_storage_keeps_the_original_read_trace_and_fault_boundaries() {
             &fixed,
             BASE,
             STATE,
-            &mut [Row::default(); 1],
-            &mut [ResultSlot::default(); 1],
-            &mut [MemberRow::default(); 2],
-            &mut [CountryRow::default(); 5],
+            &mut vec![Row::default(); 1],
+            &mut vec![ResultSlot::default(); 1],
+            &mut vec![MemberRow::default(); 2],
+            &mut vec![CountryRow::default(); 5],
         );
         let growing = Traced {
             memory: heap.memory(),
             reads: RefCell::default(),
             fault,
         };
-        let actual = walk_growing(
+        let actual = walk(
             &growing,
             BASE,
             STATE,

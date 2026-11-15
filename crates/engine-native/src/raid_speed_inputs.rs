@@ -399,24 +399,6 @@ pub fn walk(
     base: usize,
     game_state: usize,
     memo: &DefinitionMemo,
-    rows: &mut [Row],
-    arena: &mut [i64],
-) -> Walk {
-    walk_buffer(
-        memory,
-        base,
-        game_state,
-        memo,
-        crate::walk::Buffer::Fixed(rows),
-        crate::walk::Buffer::Fixed(arena),
-    )
-}
-
-pub fn walk_growing(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    memo: &DefinitionMemo,
     rows: &mut Vec<Row>,
     arena: &mut Vec<i64>,
 ) -> Walk {
@@ -821,7 +803,7 @@ mod tests {
             required: (usize, usize),
         }
         let run = |memory: &Image, capacity: usize, archetype_capacity: usize| {
-            let mut rows = [raid_equipment::Row::default(); 1];
+            let mut rows = vec![raid_equipment::Row::default(); 1];
             let (mut variants, mut amounts) = (vec![0; capacity], vec![0; capacity]);
             let (mut tokens, mut totals) =
                 (vec![0; archetype_capacity], vec![0; archetype_capacity]);
@@ -865,19 +847,12 @@ mod tests {
         // rifle entry's 7.
         assert_eq!(full.tokens, [0x3309, 0x330a]);
         assert_eq!(full.totals, [5, SATURATED]);
-        // A pool whose entries or totals do not fit is counted with its
-        // demand.
+        // A pool whose entries or totals start short grows to its demand.
         for (capacity, archetype_capacity) in [(1, 2), (2, 1)] {
             let short = run(&memory, capacity, archetype_capacity);
             assert_eq!(
                 (short.outcome, short.required),
-                (
-                    Outcome::Truncated {
-                        len: 0,
-                        unread_rows: 1
-                    },
-                    (2, 2)
-                )
+                (Outcome::Rows { len: 1 }, (2, 2))
             );
         }
         // A total whose archetype is not a CEquipmentType fails the table.

@@ -39,7 +39,7 @@ impl Captured {
     pub fn fail(&mut self, reason: &'static str) {
         self.rows.fail(Outcome::Unavailable { reason });
     }
-    pub fn capture_growing(
+    pub fn capture(
         &mut self,
         _memory: &impl Memory,
         _base: usize,
@@ -47,7 +47,7 @@ impl Captured {
     ) -> [u64; N] {
         self.reset();
         let start = qpc();
-        self.rows.outcome = match producer::drain_growing(&mut self.rows.rows) {
+        self.rows.outcome = match producer::drain(&mut self.rows.rows) {
             Ok(len) => Outcome::Rows { len },
             Err(reason) => Outcome::Unavailable { reason },
         };
@@ -85,7 +85,7 @@ mod tests {
 
     #[test]
     fn projection_preserves_each_combat_and_transient_native_reference() {
-        let _observer = producer::tests::SERIAL.lock().unwrap();
+        let _observer = producer::tests::Observation::new();
         let new_result = producer::Entry {
             id: 1,
             game_hour: 40,
@@ -131,7 +131,7 @@ mod tests {
 
     #[test]
     fn unavailable_interval_is_never_projected_as_zero_events() {
-        let _observer = producer::tests::SERIAL.lock().unwrap();
+        let _observer = producer::tests::Observation::new();
         let mut captured = Captured::with_capacities(&0);
         captured.rows.outcome = Outcome::Unavailable {
             reason: "naval result sources lost publication",

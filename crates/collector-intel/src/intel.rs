@@ -9,6 +9,7 @@ use crate::{
     table_capture::{Arena, CaptureRows, bounded, grow_capacity, grow_vec},
     table_conversion::{table, table_iter, unavailable},
 };
+use collector_projection::table_clock::timed;
 use engine_allocation::{copy_vec, default_vec, map_slice, owned_vec, reserve, reserve_exact};
 use engine_events::incoming_diplomatic_action_queue;
 use engine_intelligence::{
@@ -23,7 +24,9 @@ use engine_native::{
     operative_missions, read, read_slice, walk::Outcome,
 };
 use engine_scripts::{cflag_manager, cscript_flag, cvariables};
-use replay_data::{BranchId, rows, rows::TableId, rows::TableRows, rows::tables};
+use replay_data::{
+    BranchId, Hour, rows, rows::TableId, rows::TableRows, rows::tables, sliced::SliceUpdate,
+};
 use replay_frame::{frame::BaselineToken, frame::TableInput, frame::TableView};
 use std::mem::size_of;
 use std::sync::Arc;
@@ -175,8 +178,8 @@ pub fn operative_mission_demand(
             memory,
             base,
             state,
-            engine_native::walk::Buffer::Fixed(&mut []),
-            engine_native::walk::Buffer::Fixed(&mut []),
+            engine_native::walk::Buffer::Count,
+            engine_native::walk::Buffer::Count,
             key,
         )
     })
@@ -212,11 +215,16 @@ fn operative_storage_outcome(outcome: Outcome, refused: u32) -> Outcome {
     }
 }
 
+#[cfg(any(test, feature = "conversion_check"))]
+pub mod conversion_check;
 mod demand;
 mod flag_store;
 pub use flag_store::{FlagReuse, FlagStore};
 mod variable_store;
-pub use variable_store::{VariableReuse, VariableStore};
+pub use variable_store::{VariableDelta, VariableReuse, VariableStore};
+mod variable_work;
+use variable_work::{AllScopes, Complete, Path};
+pub use variable_work::{VariableTotals, VariableWork};
 
 pub const N: usize = 26;
 pub const TABLES: [TableId; N] = [
@@ -304,12 +312,86 @@ impl SeedWork {
     }
 }
 
-/// Spool-owned membership scratch, not another captured-frame lease. Bits are
-/// cleared for each comparison, and contain no pointers, names or prior values.
+/// Spool-owned comparison state, not another captured-frame lease. Bits are
+/// cleared for each comparison.
 #[derive(Default)]
 pub struct ScriptVariableComparison {
     scopes: Vec<u64>,
     entries: Vec<u64>,
+    kept: Option<Kept>,
+    /// The latest conversion's work, until the spool takes it.
+    work: Option<VariableWork>,
+}
+
+impl ScriptVariableComparison {
+    /// The latest conversion's work, once.
+    pub fn take_work(&mut self) -> Option<VariableWork> {
+        self.work.take()
+    }
+}
+
+/// A converted hour whose input, once committed, leaves the encoder's
+/// baseline holding exactly its capture's rows: that comparison's
+/// destination, which the next hour's token names as its baseline, and the
+/// capture's generation ([`VariableDelta::generation`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Kept {
+    at: (u64, BranchId, Hour),
+    generation: u64,
+}
+
+/// ScriptVariables' changed rows by key; `None` removes the key's row.
+type Edits = Vec<(u128, Option<rows::ScriptVariablesRow>)>;
+
+#[cfg(feature = "conversion_check")]
+fn sorted_scopes(previous: &[rows::ScriptVariablesRow]) -> bool {
+    previous
+        .windows(2)
+        .all(|pair| (pair[0].scope_kind, pair[0].scope_id) < (pair[1].scope_kind, pair[1].scope_id))
+}
+
+/// State scopes arrive in ID order, while canonical country slots need not
+/// follow raw country IDs. The ordinal is only a checked lookup hint;
+/// reordered scopes still use the exact search.
+fn baseline_index(
+    previous: &[rows::ScriptVariablesRow],
+    ordinal: usize,
+    identity: (u8, u32),
+) -> Option<usize> {
+    let key = |row: &rows::ScriptVariablesRow| (row.scope_kind, row.scope_id);
+    if previous.get(ordinal).map(key) == Some(identity) {
+        return Some(ordinal);
+    }
+    previous.binary_search_by_key(&identity, key).ok()
+}
+
+fn elapsed_ns(started: std::time::Instant) -> u64 {
+    u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
+}
+
+/// The edits as the keyed update of the baseline `token` names: the merged
+/// table's change is the complete table's ([`SliceUpdate::keyed`]). `None`
+/// when two edits name one key or storage cannot grow.
+fn keyed_update(token: BaselineToken, mut edits: Edits) -> Option<TableInput> {
+    if edits.is_empty() {
+        return Some(TableInput::ComparedEqual(token));
+    }
+    edits.sort_unstable_by_key(|&(key, _)| key);
+    if edits.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+        return None;
+    }
+    let mut keys = Vec::new();
+    let mut rows = Vec::new();
+    reserve_exact(&mut keys, edits.len()).ok()?;
+    reserve_exact(&mut rows, edits.len()).ok()?;
+    for (key, row) in edits {
+        keys.push(key);
+        rows.extend(row);
+    }
+    Some(TableInput::SliceUpdate {
+        token,
+        update: Arc::new(SliceUpdate::keyed(keys, TableRows::ScriptVariables(rows))),
+    })
 }
 
 fn clear_seen(bits: &mut Vec<u64>, count: usize) -> bool {
@@ -381,7 +463,7 @@ impl Capacities {
         base: usize,
         state: usize,
     ) -> Result<(), &'static str> {
-        let walk = crelation_status::walk(memory, base, state, &mut [], &mut [], [true, true]);
+        let walk = crelation_status::count(memory, base, state, [true, true]);
         let mut failure = None;
         for (index, outcome) in [(13, walk.opinions), (14, walk.tuples)] {
             match outcome {
@@ -473,7 +555,7 @@ pub fn script_variable_demand(
     base: usize,
     state: usize,
 ) -> Option<VariableDemand> {
-    let walk = cvariables::walk_scopes(memory, base, state, &mut [], &mut [], &mut []);
+    let walk = cvariables::count_scopes(memory, base, state);
     let scopes = match walk.outcome {
         Outcome::Rows { len } => len,
         Outcome::Truncated { len, unread_rows } => len + unread_rows as usize,
@@ -506,8 +588,8 @@ fn flag_demand(memory: &impl Memory, base: usize, state: usize) -> Outcome {
         memory,
         base,
         state,
-        engine_native::walk::Buffer::Fixed(&mut []),
-        engine_native::walk::Buffer::Fixed(&mut []),
+        engine_native::walk::Buffer::Count,
+        engine_native::walk::Buffer::Count,
         None,
         Some(&mut scopes),
     );
@@ -673,6 +755,8 @@ pub struct Captured {
     relation_active: [bool; 2],
     /// The residual tables the capture mode leaves out: their walks do not run.
     left_out: [bool; N],
+    /// ScriptVariables is lent to its own job ([`Self::take_variables`]).
+    variables_apart: bool,
     capitulation: CaptureRows<cdiplomacy_status::CapitulationRow>,
     /// Capitulation rows' owned war-goal recipients, grown by the worker walk.
     war_goal_recipients: Vec<u32>,
@@ -704,6 +788,8 @@ pub struct Captured {
     source_census_complete: bool,
     flags: CaptureRows<ScopedFlag>,
     variables: CaptureRows<cvariables::ScopeRow>,
+    /// What the variables capture kept of the held one.
+    variable_delta: VariableDelta,
     operations: CaptureRows<coperation_instance::Row>,
     assignments: CaptureRows<operation_assigned_operative::Row>,
     operation_tokens: CaptureRows<ccountry_operation_token_manager::Row>,
@@ -803,6 +889,11 @@ impl Captured {
         )
     }
 
+    /// [`Self::with_capacities`] with no CountryIntel buffer until `share_country_intel`.
+    pub fn without_home(capacity: &Capacities) -> Self {
+        Self::build(capacity, Loan::default())
+    }
+
     /// The CountryIntel buffer this frame uses.
     pub fn country_intel_home(&self) -> Option<&Home> {
         self.country_intel.home()
@@ -862,6 +953,7 @@ impl Captured {
             source_census_complete: false,
             flags: CaptureRows::new(capacity.rows[7]),
             variables: CaptureRows::new(capacity.rows[8]),
+            variable_delta: VariableDelta::default(),
             operations: CaptureRows::new(capacity.rows[9]),
             assignments: CaptureRows::new(capacity.rows[10]),
             operation_tokens: CaptureRows::new(capacity.rows[11]),
@@ -891,6 +983,7 @@ impl Captured {
             relations_selection: SliceSelection::new(capacity.rows[13] != 0),
             relation_active: [false; 2],
             left_out: [false; N],
+            variables_apart: false,
             capitulation_raw_mode: false,
         }
     }
@@ -1018,6 +1111,7 @@ impl Captured {
         self.source_census_complete = false;
         self.flags.reset();
         self.variables.reset();
+        self.variable_delta.clear();
         self.operations.reset();
         self.assignments.reset();
         self.operation_tokens.reset();
@@ -1077,6 +1171,7 @@ impl Captured {
             + self.source_seeds.capacity() * size_of::<crate::source_state::Seed>()
             + self.flags.allocated_bytes()
             + self.variables.allocated_bytes()
+            + self.variable_delta.allocated_bytes()
             + self.operations.allocated_bytes()
             + self.assignments.allocated_bytes()
             + self.operation_tokens.allocated_bytes()
@@ -1445,7 +1540,7 @@ impl Captured {
             let begin = qpc();
             let recipients = &mut self.war_goal_recipients;
             capture_rows(&mut self.capitulation, |rows| {
-                cdiplomacy_status::walk_capitulation_growing(memory, base, state, rows, recipients)
+                cdiplomacy_status::walk_capitulation(memory, base, state, rows, recipients)
             });
             ticks[0] = elapsed(begin);
         }
@@ -1456,7 +1551,7 @@ impl Captured {
                 &mut self.subject_names,
                 |rows, names| {
                     let _reads = read_accounting::table(TABLES[1]);
-                    ArenaRead::from(csubject_relation::walk_owned_growing(
+                    ArenaRead::from(csubject_relation::walk_owned(
                         memory,
                         base,
                         state,
@@ -1473,7 +1568,7 @@ impl Captured {
                 &mut self.autonomy_names,
                 |rows, names| {
                     let _reads = read_accounting::table(TABLES[2]);
-                    ArenaRead::from(ccurrent_autonomy_status::walk_growing(
+                    ArenaRead::from(ccurrent_autonomy_status::walk(
                         memory, base, state, rows, names,
                     ))
                 },
@@ -1482,7 +1577,7 @@ impl Captured {
             if !(self.left_out[3] && self.left_out[17]) {
                 let begin = qpc();
                 let result = read_accounting::with_table(TABLES[3], || {
-                    cintelligence_agency::walk_with_upgrades_growing(
+                    cintelligence_agency::walk_with_upgrades(
                         memory,
                         base,
                         state,
@@ -1524,7 +1619,7 @@ impl Captured {
                     |rows, names| {
                         let _reads = read_accounting::table(TABLES[4]);
                         let read =
-                            coperative_leader::walk_growing(memory, base, state, rows, names);
+                            coperative_leader::walk(memory, base, state, rows, names);
                         self.operative_failure = read.failed_membership;
                         self.operative_refused_rows = read.refused_rows;
                         self.operative_first_refused = read.first_refused;
@@ -1541,7 +1636,7 @@ impl Captured {
             plain!(
                 16,
                 captured_operatives,
-                cintelligence_agency::walk_captured_operatives_growing
+                cintelligence_agency::walk_captured_operatives
             );
             if active[18] {
                 let begin = qpc();
@@ -1554,7 +1649,7 @@ impl Captured {
                             &ROOT_OUT_KEY,
                             operative_missions::root_out_key(),
                             |key| {
-                                operative_missions::walk_growing(
+                                operative_missions::walk(
                                     memory, base, state, rows, bytes, key,
                                 )
                             },
@@ -1579,7 +1674,7 @@ impl Captured {
                 }
                 ticks[18] = elapsed(begin);
             }
-            plain!(5, cryptology, ccryptology::walk_growing);
+            plain!(5, cryptology, ccryptology::walk);
             if active[6] {
                 let _reads = read_accounting::table(TABLES[6]);
                 let begin = qpc();
@@ -1597,7 +1692,7 @@ impl Captured {
                     // the independent console growth occurrence does not.
                     let lifetime_changed = cache.epoch != epoch || lifetimes != Some(cache.resets);
                     let refresh = scheduled || lifetime_changed;
-                    let read = ccountry_intel_network::walk_with_cached_summaries_growing(
+                    let read = ccountry_intel_network::walk_with_cached_summaries(
                         memory,
                         base,
                         state,
@@ -1648,7 +1743,7 @@ impl Captured {
                 } else {
                     // No certificate permits a quiet carry. Preserve the existing
                     // state's fallback without adding an hourly aggregate scan.
-                    self.networks.outcome = ccountry_intel_network::walk_growing(
+                    self.networks.outcome = ccountry_intel_network::walk(
                         memory,
                         base,
                         state,
@@ -1681,7 +1776,7 @@ impl Captured {
                             &OFFER_SPEED_KEY,
                             agency_operation_buffers::speed_key(),
                             |key| {
-                                agency_operation_buffers::walk_growing(
+                                agency_operation_buffers::walk(
                                     memory, base, state, rows, entries, key,
                                 )
                             },
@@ -1704,7 +1799,7 @@ impl Captured {
                     |rows, entries| {
                         let _reads = read_accounting::table(TABLES[19]);
                         let read =
-                            strategic_operatives::walk_growing(memory, base, state, rows, entries);
+                            strategic_operatives::walk(memory, base, state, rows, entries);
                         objects = read.objects;
                         ArenaRead {
                             outcome: read.outcome,
@@ -1741,7 +1836,7 @@ impl Captured {
                     let reuse = flags
                         .as_deref_mut()
                         .map(|store| FlagReuse::begin(store, &crate::flag_changes::Observer));
-                    walk_flags_growing(memory, base, state, rows, &mut self.flag_scratch, reuse)
+                    walk_flags(memory, base, state, rows, &mut self.flag_scratch, reuse)
                 });
                 self.flags_witness = flags
                     .as_deref()
@@ -1749,60 +1844,24 @@ impl Captured {
                     .filter(|_| !force_full && matches!(self.flags.outcome, Outcome::Rows { .. }));
                 ticks[7] = elapsed(begin);
             }
-            if active[8] {
+            if active[8] && !self.variables_apart {
                 let begin = qpc();
-                let mut reuse = variables
-                    .map(|store| VariableReuse::begin(store, &crate::variable_changes::Observer));
-                capture_variables(
+                walk_variables(
+                    memory,
+                    base,
+                    state,
                     &mut self.variables,
                     &mut self.variable_entries,
                     &mut self.variable_names,
-                    |scopes, entries, names| {
-                        let _reads = read_accounting::table(TABLES[8]);
-                        // A quiet hour publishes the held walk, reading only
-                        // the stores it must.
-                        if let Some(reuse) = reuse.as_mut()
-                            && let Some(walk) =
-                                reuse.quiet_hour(memory, base, state, scopes, entries, names)
-                        {
-                            return walk;
-                        }
-                        let (scopes, entries, names) = (
-                            engine_native::walk::Buffer::Growing(scopes),
-                            engine_native::walk::Buffer::Growing(entries),
-                            engine_native::walk::Buffer::Growing(names),
-                        );
-                        match reuse.as_mut() {
-                            Some(reuse) => cvariables::walk_scopes_carried(
-                                memory, base, state, scopes, entries, names, reuse,
-                            ),
-                            None => cvariables::walk_scopes_buffer(
-                                memory, base, state, scopes, entries, names,
-                            ),
-                        }
-                    },
+                    &mut self.variable_delta,
+                    variables,
                 );
-                // Rows outside the captured arenas certify nothing either.
-                if let Some(reuse) = reuse {
-                    let complete = matches!(self.variables.outcome, Outcome::Rows { .. });
-                    let len = self.variables.outcome.len();
-                    if complete {
-                        reuse.finish(
-                            true,
-                            &self.variables.rows[..len],
-                            &self.variable_entries.first[..self.variable_entries.len],
-                            &self.variable_names.first[..self.variable_names.len],
-                        );
-                    } else {
-                        reuse.finish(false, &[], &[], &[]);
-                    }
-                }
                 ticks[8] = elapsed(begin);
             }
             if active[9] {
                 let begin = qpc();
                 let result = read_accounting::with_table(TABLES[9], || {
-                    ccountry_operation_manager::walk_growing(
+                    ccountry_operation_manager::walk(
                         memory,
                         base,
                         state,
@@ -1845,7 +1904,7 @@ impl Captured {
                     &mut self.tokens,
                     |rows, tokens| {
                         let _reads = read_accounting::table(TABLES[11]);
-                        let result = ccountry_operation_token_manager::walk_growing(
+                        let result = ccountry_operation_token_manager::walk(
                             memory, base, state, rows, tokens,
                         );
                         ArenaRead {
@@ -1860,7 +1919,7 @@ impl Captured {
             plain!(
                 12,
                 incoming_actions,
-                incoming_diplomatic_action_queue::walk_growing
+                incoming_diplomatic_action_queue::walk
             );
         }
         let relation_walk =
@@ -1869,7 +1928,7 @@ impl Captured {
             let anchor = if active[14] { 14 } else { 13 };
             let _reads = read_accounting::table(TABLES[anchor]);
             let begin = qpc();
-            let result = crelation_status::walk_growing_with(
+            let result = crelation_status::walk_with(
                 memory,
                 base,
                 state,
@@ -2039,17 +2098,19 @@ impl Captured {
         reuse: Option<&mut IntelConversion<'_>>,
     ) -> [TableInput; N] {
         let outcomes = self.outcomes();
-        let flags = if let Some(reuse) = reuse {
-            reuse.shadow.flags.input(
-                TableId::ScriptFlags,
-                &self.flags,
-                outcomes[7],
-                (reuse.hour, self.flags_witness),
-                || self.flags_table(outcomes[7]),
-            )
-        } else {
-            TableInput::Sampled(self.flags_table(outcomes[7]))
-        };
+        let flags = timed(TableId::ScriptFlags, || {
+            if let Some(reuse) = reuse {
+                reuse.shadow.flags.input(
+                    TableId::ScriptFlags,
+                    &self.flags,
+                    outcomes[7],
+                    (reuse.hour, self.flags_witness),
+                    || self.flags_table(outcomes[7]),
+                )
+            } else {
+                TableInput::Sampled(self.flags_table(outcomes[7]))
+            }
+        });
         // Converted once a day; the spool's staggered cache carries it between.
         let country_intel = TableInput::Sampled(self.country_intel_table(outcomes[15]));
         self.convert_tables(
@@ -2057,7 +2118,11 @@ impl Captured {
             TableInput::SharedComplete,
             flags,
             country_intel,
-            |outcome| self.variables_input(outcome, baseline, scratch),
+            |outcome| {
+                timed(TableId::ScriptVariables, || {
+                    self.variables_input(outcome, baseline, scratch)
+                })
+            },
         )
     }
 
@@ -2466,36 +2531,40 @@ impl Captured {
             held
         });
         let held = std::cell::RefCell::new(guard.get_or_insert_with(Default::default));
-        let view = table::<tables::StrategicOperatives, _>(outcome, &self.strategic_operatives.rows, |r| {
-            let trade_end = r.entries_start + r.trade_len;
-            rows::StrategicOperativeRow {
-                mission_rosters: rows::Recorded::Value(Some(held_rosters(
-                    &mut held.borrow_mut(),
-                    r.country,
-                    &entries[trade_end + r.pressure_len..],
-                    r.mission_counts,
-                ))),
-                country: r.country,
-                slot: r.slot,
-                mission_activity: r.mission_activity,
-                operation_activity: r.operation_activity,
-                trade_influence: owned_vec(map_slice(
-                    &entries[r.entries_start..trade_end],
-                    |entry| rows::TradeInfluence {
-                        owner: entry.owner,
-                        value: entry.value,
-                    },
-                )),
-                diplomatic_pressure: owned_vec(map_slice(
-                    &entries[trade_end..trade_end + r.pressure_len],
-                    |entry| rows::DiplomaticPressure {
-                        owner: entry.owner,
-                        acceptance: entry.value,
-                        tension: entry.tension,
-                    },
-                )),
-            }
-        });
+        let view = table::<tables::StrategicOperatives, _>(
+            outcome,
+            &self.strategic_operatives.rows,
+            |r| {
+                let trade_end = r.entries_start + r.trade_len;
+                rows::StrategicOperativeRow {
+                    mission_rosters: rows::Recorded::Value(Some(held_rosters(
+                        &mut held.borrow_mut(),
+                        r.country,
+                        &entries[trade_end + r.pressure_len..],
+                        r.mission_counts,
+                    ))),
+                    country: r.country,
+                    slot: r.slot,
+                    mission_activity: r.mission_activity,
+                    operation_activity: r.operation_activity,
+                    trade_influence: owned_vec(map_slice(
+                        &entries[r.entries_start..trade_end],
+                        |entry| rows::TradeInfluence {
+                            owner: entry.owner,
+                            value: entry.value,
+                        },
+                    )),
+                    diplomatic_pressure: owned_vec(map_slice(
+                        &entries[trade_end..trade_end + r.pressure_len],
+                        |entry| rows::DiplomaticPressure {
+                            owner: entry.owner,
+                            acceptance: entry.value,
+                            tension: entry.tension,
+                        },
+                    )),
+                }
+            },
+        );
         // Countries no longer converted release their rosters.
         let held = held.into_inner();
         if let Outcome::Rows { len } = outcome
@@ -2583,6 +2652,7 @@ impl Captured {
         })
     }
 
+    /// Whether every scope equals its baseline row and none is missing.
     #[cfg(test)]
     fn variables_equal(
         &self,
@@ -2590,7 +2660,22 @@ impl Captured {
         previous: &[rows::ScriptVariablesRow],
         scratch: &mut ScriptVariableComparison,
     ) -> bool {
-        self.compare_variables(outcome, previous, scratch, |_, _| false)
+        let Some(scopes) = self.variables.rows.get(..outcome.len()) else {
+            return false;
+        };
+        let mut edits = Edits::new();
+        matches!(outcome, Outcome::Rows { .. })
+            && self
+                .mapped_edits(
+                    scopes,
+                    None,
+                    previous,
+                    scratch,
+                    &mut VariableWork::default(),
+                    &mut edits,
+                )
+                .is_some()
+            && edits.is_empty()
     }
 
     fn variables_input(
@@ -2599,44 +2684,302 @@ impl Captured {
         baseline: Option<(BaselineToken, &[rows::ScriptVariablesRow])>,
         scratch: &mut ScriptVariableComparison,
     ) -> TableInput {
-        if let Some((token, previous)) = baseline {
-            let mut changed = Vec::new();
-            let matches = self.compare_variables(outcome, previous, scratch, |index, ordinal| {
-                if !token.allows_row_updates() || reserve(&mut changed, 1).is_err() {
-                    return false;
+        #[cfg(feature = "conversion_check")]
+        let reference = self.reference_variables(outcome, baseline, scratch);
+        let input = self.changed_variables(outcome, baseline, scratch);
+        #[cfg(feature = "conversion_check")]
+        conversion_check::record(baseline, &reference, &input);
+        input
+    }
+
+    /// The input, compared only where the capture saw change when the
+    /// baseline holds the capture it continued, and its work.
+    fn changed_variables(
+        &self,
+        outcome: Outcome,
+        baseline: Option<(BaselineToken, &[rows::ScriptVariablesRow])>,
+        scratch: &mut ScriptVariableComparison,
+    ) -> TableInput {
+        let started = std::time::Instant::now();
+        let mut work = VariableWork::default();
+        let input = self.variable_edits(outcome, baseline, scratch, &mut work);
+        let holds_capture = matches!(
+            input,
+            TableInput::ComparedEqual(_)
+                | TableInput::SliceUpdate { .. }
+                | TableInput::SharedComplete(_)
+        );
+        scratch.kept = match (baseline, self.variable_delta.generation) {
+            (Some((token, _)), Some(generation)) if holds_capture => Some(Kept {
+                at: token.destination(),
+                generation,
+            }),
+            _ => None,
+        };
+        work.ns = elapsed_ns(started);
+        scratch.work = Some(work);
+        input
+    }
+
+    /// Scopes the capture kept from the capture the baseline holds equal
+    /// their baseline rows; every other scope is compared with its baseline
+    /// row, and a scope added, removed or with other keys changes its row
+    /// alone. Whatever today's conversion refuses is converted complete, by
+    /// it.
+    fn variable_edits(
+        &self,
+        outcome: Outcome,
+        baseline: Option<(BaselineToken, &[rows::ScriptVariablesRow])>,
+        scratch: &mut ScriptVariableComparison,
+        work: &mut VariableWork,
+    ) -> TableInput {
+        let Some((token, previous)) = baseline else {
+            return self.complete_variables(outcome, Complete::NoBaseline, work);
+        };
+        let Outcome::Rows { len } = outcome else {
+            return self.complete_variables(outcome, Complete::NotComplete, work);
+        };
+        let (entries, names) = (&self.variable_entries, &self.variable_names);
+        let Some(scopes) = self.variables.rows.get(..len).filter(|_| {
+            entries.len <= entries.first.len()
+                && names.len <= names.first.len()
+                && entries.required >= entries.len
+                && names.required >= names.len
+        }) else {
+            return self.complete_variables(outcome, Complete::Refused, work);
+        };
+        work.scopes = len as u64;
+        let delta = &self.variable_delta;
+        let changed = match scratch.kept {
+            Some(kept) if kept.at == token.baseline() => {
+                if delta.since == Some(kept.generation) {
+                    Ok(&delta.changed[..])
+                } else {
+                    Err(AllScopes::NoCaptureDelta)
                 }
-                changed.push((index, ordinal));
-                true
-            });
-            if matches {
-                if changed.is_empty() {
-                    return TableInput::ComparedEqual(token);
-                }
-                changed.sort_unstable_by_key(|&(index, _)| index);
-                let mut indices = Vec::new();
-                let mut rows = Vec::new();
-                if reserve_exact(&mut indices, changed.len()).is_err()
-                    || reserve_exact(&mut rows, changed.len()).is_err()
-                {
-                    return unavailable("collector allocation failed").into();
-                }
-                for (index, ordinal) in changed {
-                    indices.push(index);
-                    rows.push(self.variable_row(&self.variables.rows[ordinal]));
-                }
-                return TableInput::ComparedChanges {
-                    token,
-                    indices,
-                    rows: TableRows::ScriptVariables(rows),
-                };
+            }
+            _ => Err(AllScopes::NoKeptHour),
+        };
+        let mut edits = Edits::new();
+        let decided = match changed {
+            Ok(changed) if delta.same_scopes && len == previous.len() => {
+                self.listed_edits(scopes, changed, previous, scratch, work, &mut edits)
+            }
+            Ok(changed) => {
+                work.reordered = true;
+                self.mapped_edits(scopes, Some(changed), previous, scratch, work, &mut edits)
+            }
+            Err(reason) => {
+                work.path = Path::AllScopes(reason);
+                self.mapped_edits(scopes, None, previous, scratch, work, &mut edits)
+            }
+        };
+        let built = std::time::Instant::now();
+        let input = decided.and_then(|()| keyed_update(token, edits));
+        work.build_ns = work.build_ns.saturating_add(elapsed_ns(built));
+        input.unwrap_or_else(|| self.complete_variables(outcome, Complete::Refused, work))
+    }
+
+    /// The scopes are the kept capture's, position for position: only the
+    /// listed ones are compared.
+    fn listed_edits(
+        &self,
+        scopes: &[cvariables::ScopeRow],
+        changed: &[u32],
+        previous: &[rows::ScriptVariablesRow],
+        scratch: &mut ScriptVariableComparison,
+        work: &mut VariableWork,
+        edits: &mut Edits,
+    ) -> Option<()> {
+        let mut next = 0;
+        for &ordinal in changed {
+            let ordinal = ordinal as usize;
+            if ordinal < next {
+                return None;
+            }
+            next = ordinal + 1;
+            let scope = scopes.get(ordinal)?;
+            let index = baseline_index(previous, ordinal, scope_identity(scope.scope))?;
+            self.scope_edit(
+                scope,
+                Some(&previous[index]),
+                &mut scratch.entries,
+                work,
+                edits,
+            )?;
+        }
+        Some(())
+    }
+
+    /// Every scope is found among the baseline rows, once; the `changed`
+    /// ones, or every one, are compared, a scope the baseline lacks is
+    /// added and a baseline row no scope found is removed.
+    fn mapped_edits(
+        &self,
+        scopes: &[cvariables::ScopeRow],
+        changed: Option<&[u32]>,
+        previous: &[rows::ScriptVariablesRow],
+        scratch: &mut ScriptVariableComparison,
+        work: &mut VariableWork,
+        edits: &mut Edits,
+    ) -> Option<()> {
+        if !clear_seen(&mut scratch.scopes, previous.len()) {
+            return None;
+        }
+        let mut listed = changed.map(|changed| changed.iter().peekable());
+        for (ordinal, scope) in scopes.iter().enumerate() {
+            let compared = match &mut listed {
+                Some(listed) => listed.next_if(|&&next| next as usize == ordinal).is_some(),
+                None => true,
+            };
+            let index = baseline_index(previous, ordinal, scope_identity(scope.scope));
+            if let Some(index) = index
+                && !first_seen(&mut scratch.scopes, index)
+            {
+                return None;
+            }
+            let row = index.map(|index| &previous[index]);
+            match (row, compared) {
+                (_, true) => self.scope_edit(scope, row, &mut scratch.entries, work, edits)?,
+                (Some(_), false) => {}
+                // A kept scope the baseline lacks: the capture is not the kept one's.
+                (None, false) => return None,
             }
         }
-        TableInput::Sampled(self.variables_table(outcome))
+        if listed.is_some_and(|mut listed| listed.next().is_some()) {
+            return None;
+        }
+        for (index, row) in previous.iter().enumerate() {
+            if scratch.scopes[index / 64] & (1_u64 << (index % 64)) == 0 {
+                reserve(edits, 1).ok()?;
+                edits.push((row.key(), None));
+                work.scopes_removed += 1;
+            }
+        }
+        Some(())
+    }
+
+    /// One scope against its baseline row (`None`: the baseline has none),
+    /// listing its row when it differs. `None` when today's conversion
+    /// refuses it.
+    fn scope_edit(
+        &self,
+        scope: &cvariables::ScopeRow,
+        previous: Option<&rows::ScriptVariablesRow>,
+        seen: &mut Vec<u64>,
+        work: &mut VariableWork,
+        edits: &mut Edits,
+    ) -> Option<()> {
+        let started = std::time::Instant::now();
+        let (entries, names) = (&self.variable_entries, &self.variable_names);
+        if !fits(scope.entries_start, scope.entries_len, entries.len) {
+            return None;
+        }
+        let current = &entries.first[scope.entries_start..scope.entries_start + scope.entries_len];
+        let mut bytes = 0;
+        for entry in current {
+            if !fits(entry.name_start, entry.name_len, names.len) {
+                return None;
+            }
+            bytes += entry.name_len;
+        }
+        work.scopes_compared += 1;
+        work.entries_compared += current.len() as u64;
+        work.bytes_compared += (size_of_val(current) + bytes) as u64;
+        let matched = previous
+            .filter(|previous| previous.entries.len() == scope.entries_len)
+            .and_then(|previous| self.scope_matches(scope, previous, seen));
+        let mut build_ns = 0;
+        if matched != Some(true) {
+            let built = std::time::Instant::now();
+            let row = self.variable_row(scope);
+            work.rows_built += 1;
+            if row
+                .entries
+                .windows(2)
+                .any(|pair| pair[0].name == pair[1].name)
+            {
+                return None;
+            }
+            if previous != Some(&row) {
+                match (previous, matched) {
+                    (None, _) => work.scopes_added += 1,
+                    (Some(_), None) => work.entry_sets_changed += 1,
+                    (Some(_), Some(_)) => {}
+                }
+                work.rows_changed += u64::from(previous.is_some());
+                reserve(edits, 1).ok()?;
+                edits.push((row.key(), Some(row)));
+            }
+            build_ns = elapsed_ns(built);
+        }
+        work.build_ns = work.build_ns.saturating_add(build_ns);
+        work.compare_ns = work
+            .compare_ns
+            .saturating_add(elapsed_ns(started).saturating_sub(build_ns));
+        Some(())
+    }
+
+    /// Today's complete conversion, shared with the encoder when complete.
+    fn complete_variables(
+        &self,
+        outcome: Outcome,
+        reason: Complete,
+        work: &mut VariableWork,
+    ) -> TableInput {
+        work.path = Path::Complete(reason);
+        let started = std::time::Instant::now();
+        let input = match self.variables_table(outcome) {
+            TableView::Complete(rows) => TableInput::SharedComplete(Arc::new(rows)),
+            view => TableInput::Sampled(view),
+        };
+        work.build_ns = work.build_ns.saturating_add(elapsed_ns(started));
+        input
+    }
+
+    /// Today's conversion, for the verification build: every scope against
+    /// the baseline, any membership change complete.
+    #[cfg(feature = "conversion_check")]
+    fn reference_variables(
+        &self,
+        outcome: Outcome,
+        baseline: Option<(BaselineToken, &[rows::ScriptVariablesRow])>,
+        scratch: &mut ScriptVariableComparison,
+    ) -> TableInput {
+        let Some((token, previous)) = baseline else {
+            return TableInput::Sampled(self.variables_table(outcome));
+        };
+        let mut changed = Vec::new();
+        let matches = self.compare_variables(outcome, previous, scratch, |index, ordinal| {
+            if reserve(&mut changed, 1).is_err() {
+                return false;
+            }
+            changed.push((index, ordinal));
+            true
+        });
+        if !matches {
+            return TableInput::Sampled(self.variables_table(outcome));
+        }
+        if changed.is_empty() {
+            return TableInput::ComparedEqual(token);
+        }
+        changed.sort_unstable_by_key(|&(index, _)| index);
+        TableInput::ComparedChanges {
+            token,
+            indices: changed.iter().map(|&(index, _)| index).collect(),
+            rows: TableRows::ScriptVariables(
+                changed
+                    .iter()
+                    .map(|&(_, ordinal)| self.variable_row(&self.variables.rows[ordinal]))
+                    .collect(),
+            ),
+        }
     }
 
     /// Changed values may replace a scope only after all scope and literal-name
     /// membership checks succeed; malformed or changed membership stays on the
     /// complete conversion path with its original duplicate/refusal checks.
+    #[cfg(feature = "conversion_check")]
     fn compare_variables(
         &self,
         outcome: Outcome,
@@ -2654,68 +2997,61 @@ impl Captured {
                 &self.variable_entries,
                 &self.variable_names,
             )
+            || !sorted_scopes(previous)
+            || !clear_seen(&mut scratch.scopes, len)
         {
-            return false;
-        }
-        let key = |row: &rows::ScriptVariablesRow| (row.scope_kind, row.scope_id);
-        if previous
-            .windows(2)
-            .any(|pair| key(&pair[0]) >= key(&pair[1]))
-        {
-            return false;
-        }
-        if !clear_seen(&mut scratch.scopes, len) {
             return false;
         }
         for (ordinal, scope) in self.variables.rows[..len].iter().enumerate() {
-            let identity = scope_identity(scope.scope);
-            // State scopes arrive in ID order, while canonical country slots
-            // need not follow raw country IDs. Treat the ordinal only as a
-            // checked lookup hint; reordered scopes still use the exact search.
-            let index = if key(&previous[ordinal]) == identity {
-                ordinal
-            } else {
-                let Ok(index) = previous.binary_search_by_key(&identity, key) else {
-                    return false;
-                };
-                index
+            let Some(index) = baseline_index(previous, ordinal, scope_identity(scope.scope)) else {
+                return false;
             };
             // Equal counts and successful lookups alone do not exclude duplicate
             // current scopes or names replacing an omitted baseline key.
             if !first_seen(&mut scratch.scopes, index) {
                 return false;
             }
-            let Ok(seed) = previous[index].seed.require("ScriptVariables.seed") else {
-                return false;
-            };
-            let mut equal = *seed == scope.seed;
-            let old = &previous[index].entries;
-            if scope.entries_len != old.len()
-                || old.windows(2).any(|pair| pair[0].name >= pair[1].name)
-            {
-                return false;
-            }
-            if !clear_seen(&mut scratch.entries, old.len()) {
-                return false;
-            }
-            for entry in &self.variable_entries.first
-                [scope.entries_start..scope.entries_start + scope.entries_len]
-            {
-                let name =
-                    &self.variable_names.first[entry.name_start..entry.name_start + entry.name_len];
-                let Ok(index) = old.binary_search_by(|row| row.name.as_slice().cmp(name)) else {
-                    return false;
-                };
-                if !first_seen(&mut scratch.entries, index) {
-                    return false;
-                }
-                equal &= entry.value_raw == old[index].value_raw;
-            }
-            if !equal && !changed(index, ordinal) {
-                return false;
+            match self.scope_matches(scope, &previous[index], &mut scratch.entries) {
+                Some(true) => {}
+                Some(false) if changed(index, ordinal) => {}
+                _ => return false,
             }
         }
         true
+    }
+
+    /// One scope against its baseline row, its entries and names lying in the
+    /// captured arenas: whether it is equal, or `None` when its names are not
+    /// the baseline's or the baseline row is malformed.
+    fn scope_matches(
+        &self,
+        scope: &cvariables::ScopeRow,
+        previous: &rows::ScriptVariablesRow,
+        seen: &mut Vec<u64>,
+    ) -> Option<bool> {
+        let seed = previous.seed.require("ScriptVariables.seed").ok()?;
+        let mut equal = *seed == scope.seed;
+        let old = &previous.entries;
+        if scope.entries_len != old.len()
+            || old.windows(2).any(|pair| pair[0].name >= pair[1].name)
+            || !clear_seen(seen, old.len())
+        {
+            return None;
+        }
+        for entry in &self.variable_entries.first
+            [scope.entries_start..scope.entries_start + scope.entries_len]
+        {
+            let name =
+                &self.variable_names.first[entry.name_start..entry.name_start + entry.name_len];
+            let index = old
+                .binary_search_by(|row| row.name.as_slice().cmp(name))
+                .ok()?;
+            if !first_seen(seen, index) {
+                return None;
+            }
+            equal &= entry.value_raw == old[index].value_raw;
+        }
+        Some(equal)
     }
 
     pub fn observe_seeds(&self, work: &mut SeedWork) {
@@ -3129,6 +3465,156 @@ fn scope_identity(scope: cvariables::Scope) -> (u8, u32) {
     }
 }
 
+/// The ScriptVariables walk: the held store's quiet hour, else every scope read with what the
+/// store carries.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the walk's operands, its row arenas, the delta and the held store"
+)]
+fn walk_variables(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+    rows: &mut CaptureRows<cvariables::ScopeRow>,
+    entries: &mut Arena<cvariables::Row>,
+    names: &mut Arena<u8>,
+    delta: &mut VariableDelta,
+    store: Option<&mut VariableStore>,
+) {
+    let mut reuse =
+        store.map(|store| VariableReuse::begin(store, &crate::variable_changes::Observer));
+    delta.clear();
+    capture_variables(rows, entries, names, |scopes, entries, names| {
+        let _reads = read_accounting::table(TABLES[8]);
+        // A quiet hour publishes the held walk, reading only the stores it must.
+        if let Some(reuse) = reuse.as_mut()
+            && let Some(walk) = reuse.quiet_hour(memory, base, state, scopes, entries, names)
+        {
+            return walk;
+        }
+        let (scopes, entries, names) = (
+            engine_native::walk::Buffer::Growing(scopes),
+            engine_native::walk::Buffer::Growing(entries),
+            engine_native::walk::Buffer::Growing(names),
+        );
+        match reuse.as_mut() {
+            Some(reuse) => {
+                cvariables::walk_scopes_carried(memory, base, state, scopes, entries, names, reuse)
+            }
+            None => cvariables::walk_scopes_buffer(memory, base, state, scopes, entries, names),
+        }
+    });
+    // Rows outside the captured arenas certify nothing either.
+    if let Some(reuse) = reuse {
+        if matches!(rows.outcome, Outcome::Rows { .. }) {
+            let len = rows.outcome.len();
+            reuse.finish(
+                true,
+                &rows.rows[..len],
+                &entries.first[..entries.len],
+                &names.first[..names.len],
+                delta,
+            );
+        } else {
+            reuse.finish(false, &[], &[], &[], delta);
+        }
+    }
+}
+
+/// ScriptVariables lent apart from the residual Intel job ([`Captured::take_variables`]), so
+/// its walk is joined when the pack is published, not before the final borrowers.
+pub struct VariablePart {
+    rows: CaptureRows<cvariables::ScopeRow>,
+    entries: Arena<cvariables::Row>,
+    names: Arena<u8>,
+    delta: VariableDelta,
+    left_out: bool,
+}
+
+impl VariablePart {
+    pub fn allocated_bytes(&self) -> usize {
+        self.rows.allocated_bytes()
+            + self.entries.allocated_bytes()
+            + self.names.allocated_bytes()
+            + self.delta.allocated_bytes()
+    }
+
+    fn due(&self, context: CaptureContext) -> bool {
+        !self.left_out
+            && replay_data::cadence::should_walk(TABLES[8], context.hour, context.force_full)
+    }
+
+    fn reset(&mut self) {
+        self.rows.reset();
+        self.entries.reset();
+        self.names.reset();
+        self.delta.clear();
+    }
+
+    /// The residual capture's ScriptVariables walk; returns its ticks.
+    pub fn capture(
+        &mut self,
+        memory: &impl Memory,
+        context: CaptureContext,
+        store: Option<&mut VariableStore>,
+    ) -> u64 {
+        self.reset();
+        if !self.due(context) {
+            self.rows.outcome = Outcome::Unavailable {
+                reason: replay_data::cadence::SKIPPED_REASON,
+            };
+            return 0;
+        }
+        let begin = qpc();
+        walk_variables(
+            memory,
+            context.base,
+            context.game_state,
+            &mut self.rows,
+            &mut self.entries,
+            &mut self.names,
+            &mut self.delta,
+            store,
+        );
+        elapsed(begin)
+    }
+
+    /// An accepted job that did not complete is refused by name when due, never retried live.
+    pub fn fail(&mut self, context: CaptureContext, reason: &'static str) {
+        self.reset();
+        self.rows.outcome = Outcome::Unavailable {
+            reason: if self.due(context) {
+                reason
+            } else {
+                replay_data::cadence::SKIPPED_REASON
+            },
+        };
+    }
+}
+
+impl Captured {
+    /// Lend ScriptVariables to its own job, with the capture mode's leave-out as it stands; the
+    /// residual capture leaves it alone until [`Self::restore_variables`].
+    pub fn take_variables(&mut self) -> VariablePart {
+        self.variables_apart = true;
+        VariablePart {
+            rows: std::mem::replace(&mut self.variables, CaptureRows::new(0)),
+            entries: std::mem::replace(&mut self.variable_entries, Arena::new(0)),
+            names: std::mem::replace(&mut self.variable_names, Arena::new(0)),
+            delta: std::mem::take(&mut self.variable_delta),
+            left_out: self.left_out[8],
+        }
+    }
+
+    pub fn restore_variables(&mut self, part: VariablePart) {
+        self.variables = part.rows;
+        self.variable_entries = part.entries;
+        self.variable_names = part.names;
+        self.variable_delta = part.delta;
+        self.variables_apart = false;
+    }
+}
+
 fn capture_variables(
     captured: &mut CaptureRows<cvariables::ScopeRow>,
     entries: &mut Arena<cvariables::Row>,
@@ -3202,33 +3688,9 @@ fn valid_variable_parts(
         })
 }
 
-/// Proven expiry callers dereference all three manager roots. Slot zero and
-/// null state holes are not scopes; canonical country aliases are visited once.
-/// Every character in both serialized rosters is a scope too, with its flag
-/// manager embedded in the character (`ccharacter::FLAGS`); each manager's
-/// live count sizes its rows, and an omitted count is kept for growth.
-#[cfg(test)]
-fn walk_flags(
-    memory: &impl Memory,
-    base: usize,
-    state: usize,
-    output: &mut [ScopedFlag],
-    scratch: &mut [cscript_flag::Row],
-) -> Outcome {
-    walk_flags_buffer(
-        memory,
-        base,
-        state,
-        engine_native::walk::Buffer::Fixed(output),
-        engine_native::walk::Buffer::Fixed(scratch),
-        None,
-        None,
-    )
-}
-
 /// `reuse` carries the rows of managers no hooked writer touched since the
 /// held read ([`flag_store`]); without it every manager is read.
-fn walk_flags_growing(
+fn walk_flags(
     memory: &impl Memory,
     base: usize,
     state: usize,
@@ -3330,7 +3792,7 @@ fn walk_flags_buffer(
                         memory,
                         base,
                         head,
-                        engine_native::walk::Buffer::Fixed(&mut scratch[..available]),
+                        engine_native::walk::Buffer::Count,
                     ),
                     available,
                 )
@@ -3994,7 +4456,7 @@ pub fn copy_relations_refresh(
     // a full hour: the pack's placeholder selection is a full one.
     let selection = job.selection.as_ref();
     let select = |owner| selection.is_none_or(|selection| selection.contains(owner));
-    let walk = crelation_status::walk_growing_with(
+    let walk = crelation_status::walk_with(
         memory,
         ctx.base,
         ctx.game_state,
@@ -4367,7 +4829,6 @@ pub fn copy_capitulation_refresh(
     let started = qpc();
     job.clear();
     job.game_state = ctx.game_state;
-    job.log.enable_worker_growth();
     copy_capitulation_pass(memory, ctx.base, ctx.game_state, &mut job.log);
     CapitulationCopyReport {
         raw_ok: !job.log.overflowed,
@@ -4426,10 +4887,16 @@ impl Captured {
         job: &CapitulationJob,
         decode_ticks: &mut [u64; 1],
     ) {
-        let recorded = crate::raw::Recorded::build(&job.log);
+        let recorded = match crate::raw::Recorded::build(&job.log) {
+            Ok(recorded) => recorded,
+            Err(reason) => {
+                self.fail_capitulation_capture(reason);
+                return;
+            }
+        };
         let started = qpc();
         self.capitulation.outcome = bounded(
-            cdiplomacy_status::walk_capitulation_growing(
+            cdiplomacy_status::walk_capitulation(
                 &recorded,
                 base,
                 job.game_state,
@@ -5869,7 +6336,7 @@ mod tests {
                 );
                 captured.agency_upgrades.outcome = result.upgrades.outcome;
                 captured.agency_upgrade_required = result.upgrades.required_rows;
-                assert_eq!(result.upgrades.omitted_rows, (2 - capacity) as u32);
+                assert_eq!(result.upgrades.omitted_rows, 0, "capacity {capacity}");
                 assert_eq!(result.upgrades.refused_rows, 2);
                 assert_eq!(
                     result.upgrades.refusal_counts[agency_upgrade_levels::NULL_DEFINITION as usize],
@@ -5888,7 +6355,8 @@ mod tests {
                 other => panic!("raw refused entries must survive acquisition: {other:?}"),
             };
             let upgrades = rows.rows::<tables::AgencyUpgradeLevels>().unwrap();
-            let retained = if growing { 2 } else { capacity };
+            // Both the typed walk and the residual capture grow to every row.
+            let retained = 2;
             assert_eq!(upgrades.len(), retained);
             assert_eq!(upgrades.len() + missing as usize, 2);
             assert_eq!(captured.agency_upgrade_required, 2);
@@ -6709,19 +7177,21 @@ mod tests {
         (capture, previous)
     }
 
+    /// The shared baseline the conversion's complete hours leave.
     fn variable_baseline(
         previous: Vec<rows::ScriptVariablesRow>,
     ) -> replay_frame::frame::FrameEncoder {
         let mut encoder = replay_frame::frame::FrameEncoder::new();
-        let mut views = std::array::from_fn(|_| unavailable("fixture table not acquired"));
-        views[TableId::ScriptVariables.index()] =
-            TableView::Complete(rows::TableRows::ScriptVariables(previous));
+        let mut tables: [TableInput; replay_data::rows::TABLE_COUNT] =
+            std::array::from_fn(|_| unavailable("fixture table not acquired").into());
+        tables[TableId::ScriptVariables.index()] =
+            TableInput::SharedComplete(Arc::new(rows::TableRows::ScriptVariables(previous)));
         encoder
-            .encode(
-                replay_frame::frame::DecodedFrame {
+            .encode_input(
+                replay_frame::frame::FrameInput {
                     branch: 1,
                     hour: 0,
-                    tables: views.map(Into::into),
+                    tables,
                     metrics: replay_frame::frame::Metrics::default(),
                 },
                 false,
@@ -6780,16 +7250,16 @@ mod tests {
                 &mut ScriptVariableComparison::default(),
                 None,
             );
-            // Value/seed-only edits now replace just their exactly matched
-            // scope; membership changes still require complete conversion.
-            if matches!(change, 0 | 4) {
-                assert!(matches!(views[8], TableInput::ComparedChanges { .. }));
-            } else {
-                assert!(
-                    matches!(views[8], TableInput::Sampled(TableView::Complete(_))),
-                    "change {change}"
-                );
-            }
+            // A changed value, seed or key replaces its scope's row alone; a
+            // changed identity removes one scope and adds another.
+            let TableInput::SliceUpdate { update, .. } = &views[8] else {
+                panic!("change {change}: {:?}", views[8]);
+            };
+            assert_eq!(
+                update.keys.len(),
+                if change == 2 { 2 } else { 1 },
+                "change {change}"
+            );
         }
     }
 
@@ -7187,20 +7657,23 @@ mod tests {
 
     #[test]
     fn flag_census_preserves_all_scope_identities_aliases_and_exact_truncation() {
+        let _globals = crate::flag_changes::test_globals();
         let mut bytes = flag_scopes();
-        let mut rows = [ScopedFlag::default(); 4];
-        let mut scratch = [cscript_flag::Row::default(); 4];
+        let mut rows = vec![ScopedFlag::default(); 4];
+        let mut scratch = vec![cscript_flag::Row::default(); 4];
         let memory = SliceMemory {
             base: 0,
             bytes: &bytes,
         };
         assert_eq!(
-            walk_flags(&memory, BASE, GAME, &mut rows, &mut scratch),
+            walk_flags(&memory, BASE, GAME, &mut rows, &mut scratch, None),
             Outcome::Rows { len: 4 }
         );
         // Character 45's empty manager is a scope without rows.
         assert_eq!(
-            rows.map(|row| (row.scope_kind, row.scope_id)),
+            rows.iter()
+                .map(|row| (row.scope_kind, row.scope_id))
+                .collect::<Vec<_>>(),
             [
                 (GLOBAL_SCOPE, 0),
                 (COUNTRY_SCOPE, 2),
@@ -7212,22 +7685,6 @@ mod tests {
             rows.iter()
                 .all(|row| row.flag.value == i16::MIN && row.flag.remaining_days == -3)
         );
-        // Every later manager's own count is the omitted demand, characters'
-        // included; an empty buffer still counts the whole table.
-        assert_eq!(
-            walk_flags(&memory, BASE, GAME, &mut rows[..1], &mut scratch),
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 3
-            }
-        );
-        assert_eq!(
-            walk_flags(&memory, BASE, GAME, &mut [], &mut []),
-            Outcome::Truncated {
-                len: 0,
-                unread_rows: 4
-            }
-        );
         // That count sizes the first full hour.
         assert_eq!(script_flag_demand(&memory, BASE, GAME), Some(4));
         let mut capacities = Capacities::default();
@@ -7236,7 +7693,7 @@ mod tests {
         let mut sized = vec![ScopedFlag::default(); capacities.rows[7]];
         let mut scratch = vec![cscript_flag::Row::default(); capacities.rows[7]];
         assert_eq!(
-            walk_flags(&memory, BASE, GAME, &mut sized, &mut scratch),
+            walk_flags(&memory, BASE, GAME, &mut sized, &mut scratch, None),
             Outcome::Rows { len: 4 }
         );
         // A character whose manager is not a CFlagManager fails the table.
@@ -7256,7 +7713,8 @@ mod tests {
                 GAME,
                 &mut rows,
                 &mut scratch
-            ),
+            ,
+                None),
             Outcome::Unavailable {
                 reason: "flag manager vtable mismatch"
             }
@@ -7272,7 +7730,8 @@ mod tests {
                 GAME,
                 &mut rows,
                 &mut scratch
-            ),
+            ,
+                None),
             Outcome::Unavailable { .. }
         ));
     }
@@ -7332,9 +7791,9 @@ mod tests {
                 denied,
                 calls: RefCell::default(),
             };
-            let mut rows = [ScopedFlag::default(); 4];
-            let mut scratch = [cscript_flag::Row::default(); 4];
-            let outcome = walk_flags(&memory, BASE, GAME, &mut rows, &mut scratch);
+            let mut rows = vec![ScopedFlag::default(); 4];
+            let mut scratch = vec![cscript_flag::Row::default(); 4];
+            let outcome = walk_flags(&memory, BASE, GAME, &mut rows, &mut scratch, None);
             (outcome, memory.calls.into_inner())
         };
         let (outcome, calls) = walk(None);
@@ -8346,7 +8805,7 @@ mod tests {
                 CAP_BASE,
                 CAP_GAME,
                 &mut captured.capitulation.rows,
-                &mut [],
+                &mut Vec::new(),
             ),
             captured.capitulation.rows.len(),
         );
@@ -8502,7 +8961,7 @@ mod tests {
             };
             let mut rows = Vec::new();
             let mut recipients = Vec::new();
-            let direct = cdiplomacy_status::walk_capitulation_growing(
+            let direct = cdiplomacy_status::walk_capitulation(
                 &memory,
                 CAP_BASE,
                 CAP_GAME,
@@ -8569,7 +9028,7 @@ mod tests {
         };
         let mut rows = Vec::new();
         let mut recipients = Vec::new();
-        let direct = cdiplomacy_status::walk_capitulation_growing(
+        let direct = cdiplomacy_status::walk_capitulation(
             &memory,
             CAP_BASE,
             CAP_GAME,
@@ -8646,7 +9105,7 @@ mod tests {
         let walked = trace();
         let mut rows = Vec::new();
         let mut recipients = Vec::new();
-        let direct = cdiplomacy_status::walk_capitulation_growing(
+        let direct = cdiplomacy_status::walk_capitulation(
             &walked,
             CAP_BASE,
             CAP_GAME,
@@ -8686,17 +9145,11 @@ mod tests {
                 CAP_BASE,
                 CAP_GAME,
                 &mut direct.capitulation.rows,
-                &mut [],
+                &mut Vec::new(),
             ),
             direct.capitulation.rows.len(),
         );
-        assert_eq!(
-            direct.capitulation.outcome,
-            Outcome::Truncated {
-                len: 0,
-                unread_rows: 1
-            }
-        );
+        assert_eq!(direct.capitulation.outcome, Outcome::Rows { len: 1 });
         let mut split = Captured::with_capacities(&capacities);
         let ctx = CapitulationCopyContext {
             base: CAP_BASE,

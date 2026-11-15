@@ -62,6 +62,8 @@ export interface RaceRow {
   alpha: number;
   widths: ReadonlyMap<string, { solid: number; hatched: number }>;
   inset?: number;
+  /** The widths `item` goes to, as `stepRace` made them: a row whose `widths` are these has arrived. */
+  goal?: ReadonlyMap<string, PartWidth>;
 }
 
 export interface RaceState {
@@ -124,7 +126,11 @@ export function barParts(widths: readonly PartWidth[]): BarPart[] {
 const itemWidths = (item: RaceItem): PartWidth[] => item.segments.map(segment => ({ solid: segment.value, hatched: Math.max(0, segment.hatched ?? 0) }));
 const withInset = (extent: Edge, inset: number | undefined): Edge =>
   ({ low: Math.min(extent.low, inset ?? 0), high: Math.max(extent.high, inset ?? 0) });
-const itemExtent = (item: RaceItem) => withInset(barExtent(itemWidths(item)), item.inset?.value);
+function itemExtent(item: RaceItem): Edge {
+  if (item.segments.length !== 1) return withInset(barExtent(itemWidths(item)), item.inset?.value);
+  const width = item.segments[0]!, total = partTotal({ solid: width.value, hatched: Math.max(0, width.hatched ?? 0) });
+  return withInset({ low: Math.min(0, total), high: Math.max(0, total) }, item.inset?.value);
+}
 /** Every amount actually drawn, including an inner measure exceeding the total. */
 export const rowExtent = (row: Pick<RaceRow, 'item' | 'widths' | 'inset'>) => withInset(barExtent(drawnWidths(row)), row.inset);
 
@@ -153,12 +159,10 @@ function axisOf(items: readonly RaceItem[]) {
   }
   return axis;
 }
-const goals = new WeakMap<RaceItem, ReadonlyMap<string, PartWidth>>();
-function targetWidths(item: RaceItem): ReadonlyMap<string, PartWidth> {
-  let goal = goals.get(item);
-  if (!goal) goals.set(item, goal = new Map(item.segments.map(segment => [segment.id, { solid: segment.value, hatched: Math.max(0, segment.hatched ?? 0) }])));
-  return goal;
-}
+const targetWidths = (item: RaceItem): ReadonlyMap<string, PartWidth> =>
+  new Map(item.segments.map(segment => [segment.id, { solid: segment.value, hatched: Math.max(0, segment.hatched ?? 0) }]));
+/** Whether a row's bar is drawn at its item's values. */
+const arrived = (row: RaceRow) => row.goal !== undefined && row.widths === row.goal && row.inset === row.item.inset?.value;
 const rowsByKey = new WeakMap<RaceState, ReadonlyMap<string, RaceRow>>();
 function rowsOf(state: RaceState): ReadonlyMap<string, RaceRow> {
   let rows = rowsByKey.get(state);
@@ -170,11 +174,15 @@ function rowsOf(state: RaceState): ReadonlyMap<string, RaceRow> {
 export const drawnWidths = (row: Pick<RaceRow, 'item' | 'widths'>): PartWidth[] =>
   row.item.segments.map(segment => row.widths.get(segment.id) ?? { solid: 0, hatched: 0 });
 
+/** The slots a chart shows: rows outside them, now and where they go, land at once. */
+export interface RaceView { from: number; to: number }
+
 /** The state after `dt` milliseconds at `now`, showing `items` (ranked, as drawn
  * from the top). `tau` is the easing time (0 snaps, as under reduced motion). A new
  * `items` array is a new moment: rows are re-ranked then (`nextRows`); the same
  * array only moves the animation on. The first state shows the entries in place. */
-export function stepRace(state: RaceState | null, items: readonly RaceItem[], now: number, dt: number, tau: number, leaveMs = RACE_LEAVE_MS): RaceState {
+export function stepRace(state: RaceState | null, items: readonly RaceItem[], now: number, dt: number, tau: number, leaveMs = RACE_LEAVE_MS,
+  view?: RaceView): RaceState {
   const entries = items.map(item => ({ key: item.key, item }));
   const first = state == null;
   const moving = !state ? nextRows([], entries, now, leaveMs, true)
@@ -183,7 +191,10 @@ export function stepRace(state: RaceState | null, items: readonly RaceItem[], no
   const before = state ? rowsOf(state) : new Map<string, RaceRow>();
   // The slot just below the last row: a new row comes in from there.
   const below = items.length;
-  const ease = (current: number, target: number) => approach(current, target, dt, tau);
+  // A value lands within what `raceMoving` calls settled, so a row at rest stays exactly at rest.
+  const span = state ? Math.max(1e-9, state.max - state.min) : 1;
+  const ease = (current: number, target: number) => approach(current, target, dt, tau, SETTLED);
+  const easeAmount = (current: number, target: number) => approach(current, target, dt, tau, SETTLED * span);
   const rows: RaceRow[] = moving.map(row => {
     const previous = before.get(row.key);
     const leaving = row.phase === 'leaving';
@@ -194,11 +205,15 @@ export function stepRace(state: RaceState | null, items: readonly RaceItem[], no
     const target = !leaving ? row.slot
       : previous?.phase === 'leaving' ? previous.target
         : Math.max(below, (previous?.target ?? below - 1) + 1);
-    const goal = targetWidths(row.item);
-    if (first || !previous) {
+    const goal = previous?.goal && previous.item === row.item ? previous.goal : targetWidths(row.item);
+    const unseen = view !== undefined && !leaving && previous !== undefined && (previous.y + 1 < view.from || previous.y > view.to)
+      && (target + 1 < view.from || target > view.to);
+    if (first || !previous || unseen) {
+      if (unseen && previous.item === row.item && previous.phase === row.phase && previous.widths === goal && previous.y === target
+        && previous.alpha === 1 && previous.inset === row.item.inset?.value) return previous;
       // New rows appear at their values: nothing grows out of zero.
       return { key: row.key, item: row.item, phase: row.phase, since: row.since, target,
-        y: first ? target : below, alpha: first ? 1 : ease(0, 1), widths: goal,
+        y: first || unseen ? target : below, alpha: first || unseen ? 1 : ease(0, 1), widths: goal, goal,
         ...(row.item.inset ? { inset: row.item.inset.value } : {}) };
     }
     // A row at rest stays the same object: nothing is worked out or allocated for it.
@@ -209,20 +224,20 @@ export function stepRace(state: RaceState | null, items: readonly RaceItem[], no
     const glide = previous.item.stretch != null && previous.item.stretch === row.item.stretch;
     let widths = previous.widths;
     if (!leaving && previous.widths !== goal) {
-      let arrived = true;
+      let landed = true;
       const eased = new Map<string, PartWidth>();
       for (const [id, width] of goal) {
         const drawn = previous.widths.get(id);
-        const next = glide && drawn ? { solid: ease(drawn.solid, width.solid), hatched: ease(drawn.hatched, width.hatched) } : width;
-        arrived &&= next.solid === width.solid && next.hatched === width.hatched;
+        const next = glide && drawn ? { solid: easeAmount(drawn.solid, width.solid), hatched: easeAmount(drawn.hatched, width.hatched) } : width;
+        landed &&= next.solid === width.solid && next.hatched === width.hatched;
         eased.set(id, next);
       }
-      widths = arrived ? goal : eased;
+      widths = landed ? goal : eased;
     }
     const inset = leaving ? previous.inset : row.item.inset
-      ? glide && previous.inset !== undefined ? ease(previous.inset, row.item.inset.value) : row.item.inset.value : undefined;
+      ? glide && previous.inset !== undefined ? easeAmount(previous.inset, row.item.inset.value) : row.item.inset.value : undefined;
     return { key: row.key, item: leaving ? previous.item : row.item, phase: row.phase, since: row.since, target,
-      y: ease(previous.y, target), alpha: ease(previous.alpha, leaving ? 0 : 1), widths,
+      y: ease(previous.y, target), alpha: ease(previous.alpha, leaving ? 0 : 1), widths, goal: leaving ? previous.goal : goal,
       ...(inset !== undefined ? { inset } : {}) };
   });
   const goalMax = raceMax(items);
@@ -231,11 +246,11 @@ export function stepRace(state: RaceState | null, items: readonly RaceItem[], no
   // The axis eases, but never leaves a bar as drawn outside it: whatever grew at
   // once (a new row, a jump across a gap or a change of country, a new segment) is
   // taken in at once, so no bar or value is cut off while the axis catches up.
-  let max = ease(state!.max, goalMax);
-  let min = ease(state!.min, goalMin);
+  let max = easeAmount(state!.max, goalMax);
+  let min = easeAmount(state!.min, goalMin);
   for (const row of rows) {
     if (row.phase === 'leaving') continue;
-    const extent = rowExtent(row);
+    const extent = arrived(row) ? itemExtent(row.item) : rowExtent(row);
     max = Math.max(max, extent.high * AXIS_ROOM);
     min = Math.min(min, extent.low * AXIS_ROOM);
   }
@@ -249,6 +264,7 @@ export function raceMoving(state: RaceState): boolean {
   if (Math.abs(state.max - raceMax(state.items)) > SETTLED * span || Math.abs(state.min - raceMin(state.items)) > SETTLED * span) return true;
   return state.rows.some(row => {
     if (row.phase === 'leaving' || Math.abs(row.y - row.target) > SETTLED || Math.abs(row.alpha - 1) > SETTLED) return true;
+    if (arrived(row)) return false;
     if (row.item.inset && (row.inset === undefined || Math.abs(row.inset - row.item.inset.value) > SETTLED * span)) return true;
     return row.item.segments.some(segment => {
       const drawn = row.widths.get(segment.id);

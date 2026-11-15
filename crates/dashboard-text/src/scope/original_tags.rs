@@ -4,27 +4,17 @@
 use crate::triggers::Failure;
 
 use replay_data::{Hour, rows::TableSchema, rows::tables};
-use replay_frame::{frame::ColumnView, frame::SharedView, frame::TableView};
-use std::{collections::BTreeMap, sync::OnceLock};
+use replay_frame::{frame::SharedView, frame::TableView};
+use std::collections::BTreeMap;
 
 #[derive(Clone, Default)]
 pub struct OriginalTagLists<'a> {
     table: Lists<'a>,
 }
 
-/// Where the lists are read: a decoded frame's shared view, or a walk's view, its one row
-/// decoded only once a trigger reads the lists.
-#[derive(Clone)]
-enum Lists<'a> {
-    Shared(Option<SharedView>),
-    Walked(ColumnView<'a>, OnceLock<Option<SharedView>>),
-}
-
-impl Default for Lists<'_> {
-    fn default() -> Self {
-        Self::Shared(None)
-    }
-}
+/// Where the lists are read: a decoded frame's shared view.
+#[derive(Clone, Default)]
+struct Lists<'a>(Option<SharedView>, std::marker::PhantomData<&'a ()>);
 
 impl std::fmt::Debug for OriginalTagLists<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -37,34 +27,19 @@ impl std::fmt::Debug for OriginalTagLists<'_> {
 impl<'a> OriginalTagLists<'a> {
     pub fn read(frame: &dyn replay_frame::frame::DecodedSource) -> Self {
         Self {
-            table: Lists::Shared(Some(
-                frame.shared(tables::ReservedCountryNaming::ID.index()),
-            )),
+            table: Lists(Some(frame.shared(tables::ReservedCountryNaming::ID.index())), std::marker::PhantomData),
         }
     }
 
-    /// [`Self::read`] of any frame's tables: a walk's view is borrowed for the hour.
+    /// [`Self::read`] of any frame's tables.
     pub fn read_in(frame: replay_frame::frame::HourFrame<'a>) -> Self {
         match frame {
             replay_frame::frame::HourFrame::Decoded(frame) => Self::read(frame),
-            replay_frame::frame::HourFrame::Walked(columns) => Self {
-                table: Lists::Walked(
-                    columns.view(tables::ReservedCountryNaming::ID),
-                    OnceLock::new(),
-                ),
-            },
         }
     }
 
     fn table(&self) -> &Option<SharedView> {
-        match &self.table {
-            Lists::Shared(table) => table,
-            Lists::Walked(view, table) => table.get_or_init(|| {
-                view.to_table_view(tables::ReservedCountryNaming::ID.full_mask())
-                    .ok()
-                    .map(SharedView::from)
-            }),
-        }
+        &self.table.0
     }
 
     fn row(&self) -> Result<&replay_data::rows::ReservedCountryNamingRow, Failure> {
@@ -73,7 +48,7 @@ impl<'a> OriginalTagLists<'a> {
                 replay_data::rows::TableId::ReservedCountryNaming,
                 "",
                 None,
-                "ReservedCountryNaming native lists are not recorded",
+                "reserved country naming native lists are not recorded",
             )
         })?;
         let TableView::Complete(rows) = table else {
@@ -81,7 +56,7 @@ impl<'a> OriginalTagLists<'a> {
                 replay_data::rows::TableId::ReservedCountryNaming,
                 "",
                 None,
-                "ReservedCountryNaming native lists are unavailable this hour",
+                "reserved country naming native lists are unavailable this hour",
             ));
         };
         let [row] = rows
@@ -92,7 +67,7 @@ impl<'a> OriginalTagLists<'a> {
                 replay_data::rows::TableId::ReservedCountryNaming,
                 "",
                 None,
-                "ReservedCountryNaming has no singleton row for native country lists",
+                "reserved country naming has no singleton row for native country lists",
             ));
         };
         Ok(row)
@@ -103,7 +78,7 @@ impl<'a> OriginalTagLists<'a> {
         let buckets = self
             .row()?
             .original_tag_buckets
-            .require("ReservedCountryNaming.original_tag_buckets")
+            .require("original tag buckets of reserved country naming")
             .map_err(|why| {
                 Failure::input(
                     replay_data::rows::TableId::ReservedCountryNaming,
@@ -118,7 +93,7 @@ impl<'a> OriginalTagLists<'a> {
                     replay_data::rows::TableId::ReservedCountryNaming,
                     "original_tag_buckets",
                     None,
-                    "ReservedCountryNaming.original_tag_buckets capture refused",
+                    "original tag buckets of reserved country naming capture refused",
                 )
             })?;
         buckets
@@ -136,7 +111,7 @@ impl<'a> OriginalTagLists<'a> {
     pub(crate) fn original_reference(&self) -> Result<i32, Failure> {
         self.row()?
             .original_tag_reference
-            .require("ReservedCountryNaming.original_tag_reference")
+            .require("original tag reference of reserved country naming")
             .map_err(|why| {
                 Failure::input(
                     replay_data::rows::TableId::ReservedCountryNaming,
@@ -150,7 +125,7 @@ impl<'a> OriginalTagLists<'a> {
                     replay_data::rows::TableId::ReservedCountryNaming,
                     "original_tag_reference",
                     None,
-                    "ReservedCountryNaming.original_tag_reference capture refused",
+                    "original tag reference of reserved country naming capture refused",
                 )
             })
             .map(|raw| raw.max(0))
@@ -160,7 +135,7 @@ impl<'a> OriginalTagLists<'a> {
     pub(crate) fn reserved_owned_states(&self) -> Result<i32, Failure> {
         self.row()?
             .owned_state_count
-            .require("ReservedCountryNaming.owned_state_count")
+            .require("owned state count of reserved country naming")
             .map_err(|why| {
                 Failure::input(
                     replay_data::rows::TableId::ReservedCountryNaming,
@@ -174,7 +149,7 @@ impl<'a> OriginalTagLists<'a> {
                     replay_data::rows::TableId::ReservedCountryNaming,
                     "owned_state_count",
                     None,
-                    "ReservedCountryNaming.owned_state_count capture refused",
+                    "owned state count of reserved country naming capture refused",
                 )
             })
     }
@@ -183,7 +158,7 @@ impl<'a> OriginalTagLists<'a> {
     pub(crate) fn reserved_faction(&self) -> Result<Option<u64>, Failure> {
         self.row()?
             .faction
-            .require("ReservedCountryNaming.faction")
+            .require("faction of reserved country naming")
             .map_err(|why| {
                 Failure::input(
                     replay_data::rows::TableId::ReservedCountryNaming,
@@ -197,7 +172,7 @@ impl<'a> OriginalTagLists<'a> {
                     replay_data::rows::TableId::ReservedCountryNaming,
                     "faction",
                     None,
-                    "ReservedCountryNaming.faction capture refused",
+                    "faction of reserved country naming capture refused",
                 )
             })
             .map(|faction| (faction != 0).then_some(faction))
@@ -207,7 +182,7 @@ impl<'a> OriginalTagLists<'a> {
     pub fn country_array(&self) -> Result<&[u32], Failure> {
         self.row()?
             .country_array
-            .require("ReservedCountryNaming.country_array")
+            .require("country array of reserved country naming")
             .map_err(|why| {
                 Failure::input(
                     replay_data::rows::TableId::ReservedCountryNaming,
@@ -222,7 +197,7 @@ impl<'a> OriginalTagLists<'a> {
                     replay_data::rows::TableId::ReservedCountryNaming,
                     "country_array",
                     None,
-                    "ReservedCountryNaming.country_array capture refused",
+                    "country array of reserved country naming capture refused",
                 )
             })
     }
@@ -253,7 +228,6 @@ impl<'a> OriginalTagLists<'a> {
             replay.visit_blocks(
                 &[block],
                 &selected,
-                None,
                 |_, _, hour_frame| {
                 let decoded = Ok::<&replay_frame::frame::DecodedFrame, std::io::Error>(hour_frame)?;
                 if hours.contains(&decoded.hour) {

@@ -204,6 +204,7 @@ fn merging_a_shard_rebases_every_palette_slot() {
         bound: 0.0,
         convoy_radius: None,
         attachments: 0,
+        cull_distance_squared: installed_content_core::mesh::DEFAULT_CULL_DISTANCE_SQUARED,
     };
     let mut shard = ModelLibrary {
         palette: vec![joint; 3],
@@ -452,6 +453,7 @@ fn library_with_one_mesh(radius: f32) -> ModelLibrary {
             bound: radius.hypot(1.0),
             convoy_radius: None,
             attachments: 0,
+            cull_distance_squared: installed_content_core::mesh::DEFAULT_CULL_DISTANCE_SQUARED,
         }],
         ..ModelLibrary::default()
     }
@@ -1400,7 +1402,7 @@ fn a_refused_visual_mod_entity_is_drawn_from_the_recording() {
     // bounds of their own).
     library.meshes[shown].radius = 1.0;
     library.meshes[counterpart].radius = 5.0;
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let instance = shader_pipeline::gpu::instance();
     let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
     let (device, _queue) = pollster::block_on(adapter.request_device(&Default::default())).unwrap();
     let arena = shader_pipeline::gpu::Arena::new(&device);
@@ -1661,4 +1663,40 @@ fn visual_fallback_and_refusal_identities_survive_opposite_demand_orders() {
         }
     }
     std::fs::remove_dir_all(root).unwrap();
+}
+
+/// The game's cull: a sphere's centre at the mesh's cull distance or farther from the eye is
+/// culled, a mesh's own distance replaces the engine's, and a sphere wholly outside a side plane
+/// is culled while one crossing it is not.
+#[test]
+fn the_game_cull_tests_the_eye_s_distance_to_the_sphere_s_centre_then_the_four_side_planes() {
+    let wide = 1.0e4;
+    let cull = GameCull {
+        eye: [0., 100., 0.],
+        sides: [[1., 0., 0., wide], [-1., 0., 0., wide], [0., 0., 1., wide], [0., 0., -1., wide]],
+        x: 0.,
+    };
+    let default = installed_content_core::mesh::DEFAULT_CULL_DISTANCE_SQUARED;
+    assert_eq!(cull.test([400., 0., 0.], 1., default), None);
+    assert_eq!(cull.test([420., 0., 0.], 1., default), Some(Culled::Distance));
+    assert_eq!(cull.test([420., 0., 0.], 1., 600. * 600.), None, "a mesh's own cull distance");
+    assert_eq!(cull.test([-wide - 2., 0., 0.], 1., 1.0e12), Some(Culled::Planes), "wholly outside a side plane");
+    assert_eq!(cull.test([-wide - 0.5, 0., 0.], 1., 1.0e12), None, "a sphere crossing a side plane is inside");
+}
+
+/// A free eye west of the seam (x -10): the lit figures are walked on the eye moved onto the first
+/// map copy (x W - 10), while the frame's cull was made for the eye where it stands. A figure at
+/// W - 20, beside the moved eye, is tested where it stands for that eye, 10 east of it: drawn. On
+/// the base it was tested at W - 20 against the eye at -10, a map width off, and culled.
+#[test]
+fn a_figure_walked_on_a_camera_moved_onto_another_map_copy_is_culled_where_it_stands_for_the_cull() {
+    let wide = 1.0e9;
+    let width = MapSize::TEST.x();
+    let eye = viewer_foundation::map::camera::Camera { center: [-10., 0.], height: 100., map: MapSize::TEST, defines: MapDefines::test(), pose: viewer_foundation::map::camera::Pose::Map };
+    let moved = viewer_foundation::map::camera::Camera { center: [width - 10., 0.], ..eye };
+    let pass = ModelPass::new(&library_with_one_mesh(1.), "unit models");
+    pass.set_cull(Some(GameCull { eye: [-10., 100., 0.], sides: [[1., 0., 0., wide], [-1., 0., 0., wide], [0., 0., 1., wide], [0., 0., -1., wide]], x: -10. }));
+    let instance = ModelInstance { position: [width - 20., 0., 0.], scale: 1.0, ..ModelInstance::default() };
+    assert_eq!(pass.game_culled(0, &instance, 0., &moved), None, "beside the moved eye: drawn");
+    assert_eq!(pass.game_culled(0, &instance, 0., &eye), Some(Culled::Distance), "walked on the eye where it stands, the figure is a map width away");
 }

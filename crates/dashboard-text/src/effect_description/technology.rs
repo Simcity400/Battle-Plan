@@ -54,7 +54,7 @@ impl Renderer<'_, '_, '_> {
                         world
                             .token_of(name.as_bytes())
                             .map_err(|why| why.to_string())?
-                            .ok_or("LexicalTokens lacks breakthrough specialization")?,
+                            .ok_or("lexical tokens lacks breakthrough specialization")?,
                     );
                 }
                 continue;
@@ -69,7 +69,7 @@ impl Renderer<'_, '_, '_> {
             let token = world
                 .token_of(operand)
                 .map_err(|why| why.to_string())?
-                .ok_or("LexicalTokens lacks breakthrough specialization")?;
+                .ok_or("lexical tokens lacks breakthrough specialization")?;
             tokens.push(token);
         }
         if tokens.is_empty() {
@@ -87,7 +87,7 @@ impl Renderer<'_, '_, '_> {
             let operand = world
                 .token(token)
                 .map_err(|why| why.to_string())?
-                .ok_or("LexicalTokens lacks specialization text")?;
+                .ok_or("lexical tokens lacks specialization text")?;
             let Some(name) = self.char_specialization_name(operand, raw_country, scopes)? else {
                 continue;
             };
@@ -278,7 +278,7 @@ impl Renderer<'_, '_, '_> {
         let token = world
             .token(project.definition_id)
             .map_err(|why| why.to_string())?
-            .ok_or("LexicalTokens lacks raid target project definition")?;
+            .ok_or("lexical tokens lacks raid target project definition")?;
         let token = std::str::from_utf8(token)
             .map_err(|_| "raid target project definition is not UTF-8")?;
         let catalog = self
@@ -373,7 +373,7 @@ impl Renderer<'_, '_, '_> {
             } else {
                 world
                     .slot(province.owner)
-                    .ok_or("CountryLinks lacks raid victim province owner")?
+                    .ok_or("country links lacks raid victim province owner")?
             };
             let enemy = world
                 .at_war(raid.parent_slot, owner)
@@ -394,7 +394,7 @@ impl Renderer<'_, '_, '_> {
                 let token = world
                     .token(row.building_type)
                     .map_err(|why| why.to_string())?
-                    .ok_or("LexicalTokens lacks raid facility building type")?;
+                    .ok_or("lexical tokens lacks raid facility building type")?;
                 let token = std::str::from_utf8(token)
                     .map_err(|_| "raid facility building type is not UTF-8")?;
                 let definition = buildings
@@ -479,7 +479,7 @@ impl Renderer<'_, '_, '_> {
                 .next()
                 .transpose()
                 .map_err(built)?
-                .ok_or("CountryAppearance lacks technology owner")?;
+                .ok_or("country appearance lacks technology owner")?;
             if !appearance.name_tag.is_empty() {
                 tag = appearance.name_tag.clone();
             }

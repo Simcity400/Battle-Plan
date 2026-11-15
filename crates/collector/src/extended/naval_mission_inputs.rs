@@ -146,7 +146,7 @@ impl Capacities {
                     .ok_or("naval mission occurrence sizing overflow")?;
                 Ok(())
             })?;
-            let count = inputs::navy_hubs(memory, navy, &mut [])?;
+            let count = inputs::count_navy_hubs(memory, navy)?;
             hubs = hubs
                 .checked_add(count)
                 .ok_or("naval mission hub sizing overflow")?;
@@ -254,7 +254,6 @@ struct PatrolMember {
 }
 
 pub struct Captured {
-    growing: bool,
     weather_pending: bool,
     headquarters_pending: bool,
     task_forces: CaptureRows<TaskForce>,
@@ -270,8 +269,6 @@ pub struct Captured {
     escort_trees: super::naval_escort_trees::Trees,
     /// Countries whose demanded escort tree this hour refused: read again next hour.
     escort_retries: Vec<u32>,
-    /// A refusal did not fit `escort_retries`: every country is read next hour.
-    escort_retries_full: bool,
     convoy_designs: inputs::ConvoyDesigns,
     dominance_fleets: Vec<u64>,
     weather_len: usize,
@@ -483,7 +480,6 @@ impl Captured {
     fn build(capacity: &Capacities, storage: bool) -> Self {
         let size = |count| if storage { count } else { 0 };
         Self {
-            growing: false,
             weather_pending: false,
             headquarters_pending: false,
             task_forces: CaptureRows::new(size(capacity.task_forces)),
@@ -492,13 +488,12 @@ impl Captured {
             patrol_outcome: Outcome::Rows { len: 0 },
             patrol_headquarters: Vec::new(),
             mission_headquarters: Vec::new(),
-            empty_headquarters: storage.then(|| Arc::new(Vec::new())),
+            empty_headquarters: None,
             member_index: Vec::new(),
             task_index: Vec::new(),
             escort_owners: Vec::new(),
             escort_trees: Default::default(),
             escort_retries: Vec::new(),
-            escort_retries_full: false,
             convoy_designs: Default::default(),
             dominance_fleets: Vec::new(),
             weather_len: 0,
@@ -564,7 +559,6 @@ impl Captured {
         self.escort_owners.clear();
         self.escort_trees.reset();
         self.escort_retries.clear();
-        self.escort_retries_full = false;
         self.convoy_designs.clear();
         self.dominance_fleets.clear();
         self.weather_len = 0;
@@ -709,7 +703,7 @@ impl Captured {
     /// registered missions; the sliced tables read the countries the hour
     /// and, with a store, the changed fingerprints select.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn acquire_with_navies_growing(
+    pub(crate) fn acquire_with_navies(
         &mut self,
         memory: &impl Memory,
         base: usize,
@@ -728,37 +722,12 @@ impl Captured {
             force_full,
             fingerprints,
             holder,
-            true,
             skip,
         )
     }
 
     /// One hour's read with its own physical navy pass, as the Ordinary job
     /// runs it, into growing storage.
-    #[cfg(test)]
-    pub fn capture_growing(
-        &mut self,
-        memory: &impl Memory,
-        base: usize,
-        game_state: usize,
-        hour: i32,
-        force_full: bool,
-        fingerprints: Option<&mut SliceFingerprints>,
-    ) -> [u64; N] {
-        self.capture_with_own_navies(
-            memory,
-            base,
-            game_state,
-            hour,
-            force_full,
-            fingerprints,
-            true,
-            LedgerSkip::NEVER,
-        )
-    }
-
-    /// One hour's read with its own physical navy pass, as the Ordinary job
-    /// runs it, into fixed storage.
     #[cfg(test)]
     pub fn capture(
         &mut self,
@@ -776,12 +745,11 @@ impl Captured {
             hour,
             force_full,
             fingerprints,
-            false,
             LedgerSkip::NEVER,
         )
     }
 
-    /// A full-hour read into fixed storage with its own physical navy pass,
+    /// A full-hour read with its own physical navy pass,
     /// whose ledgers skip navies without registered missions as `skip` allows.
     #[cfg(test)]
     pub(crate) fn capture_skipping(
@@ -792,7 +760,7 @@ impl Captured {
         hour: i32,
         skip: LedgerSkip,
     ) -> [u64; N] {
-        self.capture_with_own_navies(memory, base, game_state, hour, true, None, false, skip)
+        self.capture_with_own_navies(memory, base, game_state, hour, true, None, skip)
     }
 
     #[cfg(test)]
@@ -805,7 +773,6 @@ impl Captured {
         hour: i32,
         force_full: bool,
         fingerprints: Option<&mut SliceFingerprints>,
-        growing: bool,
         skip: LedgerSkip,
     ) -> [u64; N] {
         use super::country_naval_movement_inputs as naval;
@@ -820,7 +787,6 @@ impl Captured {
             force_full,
             fingerprints,
             &mut holder,
-            growing,
             skip,
         );
         reader.clear();
@@ -839,11 +805,9 @@ impl Captured {
         force_full: bool,
         mut fingerprints: Option<&mut SliceFingerprints>,
         holder: &mut super::country_naval_movement_inputs::Captured,
-        growing: bool,
         skip: LedgerSkip,
     ) -> [u64; N] {
         self.reset();
-        self.growing = growing;
         self.empty_headquarters
             .get_or_insert_with(|| Arc::new(Vec::new()));
         self.ledger_counts = LedgerCounts::default();
@@ -917,11 +881,7 @@ impl Captured {
         let range_started = qpc();
         {
             let _reads = crate::read_accounting::table(TABLES[6]);
-            self.ranges_outcome = if !self.growing {
-                Outcome::Unavailable {
-                    reason: "naval dominance sibling ranges require asynchronous census",
-                }
-            } else if !matches!(self.ledgers.outcome, Outcome::Rows { .. }) {
+            self.ranges_outcome = if !matches!(self.ledgers.outcome, Outcome::Rows { .. }) {
                 Outcome::Unavailable {
                     reason: "naval dominance sibling ranges require complete mission ledgers",
                 }
@@ -936,11 +896,7 @@ impl Captured {
         let patrol_started = qpc();
         {
             let _reads = crate::read_accounting::table(TABLES[7]);
-            self.patrol_outcome = if !self.growing {
-                Outcome::Unavailable {
-                    reason: "naval patrol source inputs require asynchronous census",
-                }
-            } else if !matches!(self.ledgers.outcome, Outcome::Rows { .. }) {
+            self.patrol_outcome = if !matches!(self.ledgers.outcome, Outcome::Rows { .. }) {
                 Outcome::Unavailable {
                     reason: "naval patrol source inputs require complete mission ledgers",
                 }
@@ -950,7 +906,7 @@ impl Captured {
                     Err(reason) => Outcome::Unavailable { reason },
                 }
             };
-            if self.growing && matches!(self.ledgers.outcome, Outcome::Rows { .. }) {
+            if matches!(self.ledgers.outcome, Outcome::Rows { .. }) {
                 // Tree acquisition remains within the existing certified owner slice.
                 // A missing first-owner observation leaves that tree unavailable.
                 if self.read_escort_demand(memory, base, &countries).is_err() {
@@ -1004,27 +960,17 @@ impl Captured {
         ticks
     }
 
-    /// `country`'s demanded escort tree refused this hour. Fixed storage never allocates: a
-    /// refusal that does not fit reads every country next hour.
+    /// `country`'s demanded escort tree refused this hour.
     fn retry_escort_tree(&mut self, country: u32) -> Result<(), &'static str> {
-        if self.growing {
-            reserve(&mut self.escort_retries, 1)
-                .map_err(|_| "escort tree retry allocation failed")?;
-        }
-        if self.escort_retries.len() < self.escort_retries.capacity() {
-            self.escort_retries.push(country);
-        } else {
-            self.escort_retries_full = true;
-        }
+        reserve(&mut self.escort_retries, 1)
+            .map_err(|_| "escort tree retry allocation failed")?;
+        self.escort_retries.push(country);
         Ok(())
     }
 
     /// An unchanged print would keep a refused escort tree missing: each country whose demanded
-    /// tree this hour refused is a change at the next scan, every country when they did not fit.
+    /// tree this hour refused is a change at the next scan.
     fn retry_refused_escort_trees(&self, fingerprints: &mut SliceFingerprints) {
-        if self.escort_retries_full {
-            fingerprints.forget();
-        }
         for &country in &self.escort_retries {
             fingerprints.invalidate(country);
         }
@@ -1064,19 +1010,18 @@ impl Captured {
                 return Ok(());
             };
             census.required += 1;
-            if self.growing {
-                engine_native::walk::Buffer::Growing(&mut census.first).ensure(census.required)?;
-                engine_native::walk::Buffer::Growing(rows).ensure(
-                    len.checked_add(1)
-                        .ok_or("naval mission row demand overflow")?,
-                )?;
-            }
+            engine_native::walk::Buffer::Growing(&mut census.first).ensure(census.required)?;
+            engine_native::walk::Buffer::Growing(rows).ensure(
+                len.checked_add(1)
+                    .ok_or("naval mission row demand overflow")?,
+            )?;
+            
             let member_index = census.len;
             if let Some(member) = census.first.get_mut(member_index) {
                 *member = Member {
                     task: visit.task,
                     id: visit.id,
-                    visit: self.growing.then_some(visit),
+                    visit: Some(visit),
                     native_order: census.required - 1,
                     mission_header: None,
                     mission_owner: None,
@@ -1104,15 +1049,11 @@ impl Captured {
                 memory,
                 base,
                 visit,
-                if self.growing {
+                {
                     engine_native::walk::Buffer::GrowingFrom(
                         &mut headquarters.first,
                         headquarters.len,
                     )
-                } else if fits {
-                    engine_native::walk::Buffer::Fixed(&mut headquarters.first[headquarters.len..])
-                } else {
-                    engine_native::walk::Buffer::Fixed(&mut [])
                 },
                 &mut mission_header,
                 &mut mission_owner,
@@ -1137,7 +1078,7 @@ impl Captured {
                 .flatten()
             {
                 named.required += 1;
-                if self.growing && named.required > named.first.len() {
+                if named.required > named.first.len() {
                     {
                         let additional = named.required - named.first.len();
                         reserve(&mut named.first, additional)
@@ -1156,8 +1097,7 @@ impl Captured {
             }
             let mut raiding_grid =
                 inputs::read_raiding_grid(memory, base, visit, &mut raid_resolver);
-            if self.growing
-                && let Some(grid) = raiding_grid.as_mut()
+            if let Some(grid) = raiding_grid.as_mut()
                 && let Some(owner) = grid.target.country
             {
                 grid.design = self.convoy_designs.read(memory, base, countries, owner);
@@ -1754,10 +1694,9 @@ impl Captured {
         game_state: usize,
     ) -> Result<(), &'static str> {
         let rows = self.task_forces.outcome.len();
-        if self.growing {
-            engine_native::walk::Buffer::Growing(&mut self.keys).ensure(rows)?;
-            engine_native::walk::Buffer::Growing(&mut self.weather).ensure(rows)?;
-        }
+        engine_native::walk::Buffer::Growing(&mut self.keys).ensure(rows)?;
+        engine_native::walk::Buffer::Growing(&mut self.weather).ensure(rows)?;
+        
         let mut located = 0;
         for task_force in &self.task_forces.rows[..rows] {
             if task_force.row.region != 0 {
@@ -1787,9 +1726,9 @@ impl Captured {
     /// Every nonempty live (navy, region) ledger of each positive country's
     /// navy, borrowed from the hour's physical navy pass in manager order: its
     /// registrations in stored order and the navy's presence counts for the
-    /// region (also read by unlisted escort records). The navy's owner is
-    /// authenticated against the country at its slot, and the original icon
-    /// pass requires a navy for every positive canonical country. A navy
+    /// region (also read by unlisted escort records). The navy in a
+    /// country's slot is that country's, whatever owner it stores, and the
+    /// original icon pass requires a navy for every positive canonical country. A navy
     /// whose registered-mission set is empty
     /// ([`cstrategic_navy::REGISTERED_MISSIONS`]) has every ledger empty: as
     /// `skip` allows, its region headers are not read. Outside a full hour, a
@@ -1828,13 +1767,12 @@ impl Captured {
                 continue;
             };
             let navy = holder.borrow_navy(slot)?;
-            let raw = navy.observe_owner(memory)?;
-            if countries.resolve(raw)?.pointer != owner.pointer {
-                return Err("navy identity or owner mismatch");
-            }
             let pointer = navy.ledger_navy()?;
+            if pointer == 0 {
+                return Err("country navy absent or unreadable");
+            }
             // Map facts are independent of mission registration. The physical
-            // pass already authenticated this navy and its current country.
+            // pass already authenticated this navy's identity.
             let begin = qpc();
             if mine_ready.is_ok() {
                 let _reads = crate::read_accounting::table(TABLES[4]);
@@ -1900,18 +1838,17 @@ impl Captured {
                 for &(region, count) in &held.regions {
                     let entries = &held.entries[first..first + count];
                     first += count;
-                    if self.growing {
-                        engine_native::walk::Buffer::Growing(&mut self.ledgers.rows).ensure(
-                            len.checked_add(1)
-                                .ok_or("naval mission ledger row demand overflow")?,
-                        )?;
-                        engine_native::walk::Buffer::Growing(&mut self.entries.first).ensure(
-                            self.entries
-                                .len
-                                .checked_add(count)
-                                .ok_or("naval mission ledger demand overflow")?,
-                        )?;
-                    }
+                    engine_native::walk::Buffer::Growing(&mut self.ledgers.rows).ensure(
+                        len.checked_add(1)
+                            .ok_or("naval mission ledger row demand overflow")?,
+                    )?;
+                    engine_native::walk::Buffer::Growing(&mut self.entries.first).ensure(
+                        self.entries
+                            .len
+                            .checked_add(count)
+                            .ok_or("naval mission ledger demand overflow")?,
+                    )?;
+                    
                     self.entries.required = self.entries.required.saturating_add(count);
                     if len == self.ledgers.rows.len()
                         || count > self.entries.first.len().saturating_sub(self.entries.len)
@@ -1961,20 +1898,19 @@ impl Captured {
             }
             self.ledger_counts.read += 1;
             inputs::ledger_regions_in(memory, outer, |region, ledger| {
-                if self.growing {
-                    engine_native::walk::Buffer::Growing(&mut self.scratch)
-                        .ensure(ledger.count as usize)?;
-                    engine_native::walk::Buffer::Growing(&mut self.ledgers.rows).ensure(
-                        len.checked_add(1)
-                            .ok_or("naval mission ledger row demand overflow")?,
-                    )?;
-                    engine_native::walk::Buffer::Growing(&mut self.entries.first).ensure(
-                        self.entries
-                            .len
-                            .checked_add(ledger.count as usize)
-                            .ok_or("naval mission ledger demand overflow")?,
-                    )?;
-                }
+                engine_native::walk::Buffer::Growing(&mut self.scratch)
+                    .ensure(ledger.count as usize)?;
+                engine_native::walk::Buffer::Growing(&mut self.ledgers.rows).ensure(
+                    len.checked_add(1)
+                        .ok_or("naval mission ledger row demand overflow")?,
+                )?;
+                engine_native::walk::Buffer::Growing(&mut self.entries.first).ensure(
+                    self.entries
+                        .len
+                        .checked_add(ledger.count as usize)
+                        .ok_or("naval mission ledger demand overflow")?,
+                )?;
+                
                 let count = inputs::ledger(memory, ledger, &mut self.scratch)?;
                 self.entries.required = self.entries.required.saturating_add(count);
                 if len == self.ledgers.rows.len()
@@ -2241,12 +2177,11 @@ impl Captured {
         country: ccountry::Country,
         (len, unread): &mut (usize, u32),
     ) -> Result<(), &'static str> {
-        if self.growing {
-            engine_native::walk::Buffer::Growing(&mut self.countries.rows).ensure(
-                len.checked_add(1)
-                    .ok_or("naval mission country row demand overflow")?,
-            )?;
-        }
+        engine_native::walk::Buffer::Growing(&mut self.countries.rows).ensure(
+            len.checked_add(1)
+                .ok_or("naval mission country row demand overflow")?,
+        )?;
+        
         let Some(row) = self.countries.rows.get_mut(*len) else {
             *unread = unread.saturating_add(1);
             return Ok(());
@@ -2255,11 +2190,7 @@ impl Captured {
         let count = inputs::navy_hubs_buffer(
             memory,
             navy,
-            if self.growing {
-                engine_native::walk::Buffer::GrowingFrom(&mut self.hubs.first, self.hubs.len)
-            } else {
-                engine_native::walk::Buffer::Fixed(&mut self.hubs.first[self.hubs.len..])
-            },
+            engine_native::walk::Buffer::GrowingFrom(&mut self.hubs.first, self.hubs.len),
         )?;
         self.hubs.required = self.hubs.required.saturating_add(count);
         if self.hubs.len + count > self.hubs.first.len() {
@@ -2298,25 +2229,24 @@ impl Captured {
         resolve: inputs::Resolve<'_>,
         (len, unread): &mut (usize, u32),
     ) -> Result<(), &'static str> {
-        if self.growing {
-            let bound = self.task_forces.outcome.len().max(self.headquarters.len);
-            engine_native::walk::Buffer::Growing(&mut self.keys).ensure(bound)?;
-            let additional = self
-                .task_forces
-                .outcome
-                .len()
-                .checked_add(
-                    self.headquarters
-                        .len
-                        .checked_mul(4)
-                        .ok_or("naval mission commander demand overflow")?,
-                )
-                .ok_or("naval mission commander demand overflow")?;
-            engine_native::walk::Buffer::Growing(&mut self.commanders.rows).ensure(
-                len.checked_add(additional)
-                    .ok_or("naval mission commander row demand overflow")?,
-            )?;
-        }
+        let bound = self.task_forces.outcome.len().max(self.headquarters.len);
+        engine_native::walk::Buffer::Growing(&mut self.keys).ensure(bound)?;
+        let additional = self
+            .task_forces
+            .outcome
+            .len()
+            .checked_add(
+                self.headquarters
+                    .len
+                    .checked_mul(4)
+                    .ok_or("naval mission commander demand overflow")?,
+            )
+            .ok_or("naval mission commander demand overflow")?;
+        engine_native::walk::Buffer::Growing(&mut self.commanders.rows).ensure(
+            len.checked_add(additional)
+                .ok_or("naval mission commander row demand overflow")?,
+        )?;
+        
         let owned = Self::owned(Self::task_forces(&self.task_forces), slot);
         let headquarters = &self.headquarters.first;
         let characters = |task_force: &TaskForce| {

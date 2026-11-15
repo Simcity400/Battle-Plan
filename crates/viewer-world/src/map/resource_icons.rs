@@ -46,7 +46,7 @@ use viewer_foundation::{
         native_windows::NativeWindows,
         sprites::{self, Batch},
     },
-    resource_origins::{self, Definition, Hour, RowColour, StateIcon, whole},
+    resource_origins::{self, Definition, Hour, RowColour, Values, whole},
 };
 
 /// The state icon's window and its row window.
@@ -217,28 +217,6 @@ pub fn row_text(
     Ok(format!("{ICON}{STRIP}|{frame} {line}\n"))
 }
 
-/// The state's rows' text and flags.
-fn rows(
-    hour: &Hour<'_>,
-    localisation: &Localisation,
-    icon: &StateIcon,
-) -> Result<Vec<Row>, String> {
-    icon.rows
-        .iter()
-        .map(|row| {
-            Ok(Row {
-                text: row_text(
-                    localisation,
-                    &hour.definitions()[row.definition],
-                    row.delivered,
-                    row.nominal,
-                )?,
-                flag: row.flag.map(|raw| hour.slot(raw)).transpose()?,
-            })
-        })
-        .collect()
-}
-
 /// Nearest member centroid to the rounded, equally weighted centroid mean. Ties retain
 /// authored member order; victory points and unit-stack placements do not participate.
 pub fn anchor_provinces(
@@ -304,17 +282,68 @@ fn normalize_anchor_x(x: f32, width: f32) -> f32 {
 
 /// One hour's resource icons, placed for the camera.
 pub fn prepare(inputs: &ResourceIconInputs<'_>, frame: &DecodedFrame) -> PreparedResourceIcons {
-    let mut prepared = PreparedResourceIcons::default();
     let defines = &inputs.content.defines;
     // The game's camera shows every icon by its height; a free eye, each by its own distance.
     if !inputs.visibility.resource_icons
         || (inputs.camera.free().is_none()
             && shown(&inputs.visibility, inputs.camera.height, defines).is_none())
     {
+        return PreparedResourceIcons::default();
+    }
+    lay_out(inputs, &hour_icons(frame, &inputs.content.origins, inputs.localisation))
+}
+
+/// One state's icon as the window lays it out: its rows' text and flags and the window's flag,
+/// each refused by name where it cannot be made.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Laid {
+    pub rows: Result<Vec<Row>, String>,
+    pub flag: Result<Option<u32>, String>,
+}
+
+/// Every recorded state's icon at an hour (none for a state without one, the reason for a state
+/// refused), or why no icon is drawn.
+pub type HourIcons = Result<BTreeMap<u32, Result<Option<Laid>, String>>, String>;
+
+/// The icons of the hour `frame` holds.
+pub fn hour_icons(frame: &DecodedFrame, origins: &resource_origins::Content, localisation: &Localisation) -> HourIcons {
+    let hour = Hour::new(frame, origins)?;
+    Ok(hour.states().map(|state| (state, laid(&hour, localisation, state))).collect())
+}
+
+/// One state's icon from `values`; none for a state without one.
+pub fn laid(values: &dyn Values, localisation: &Localisation, state: u32) -> Result<Option<Laid>, String> {
+    Ok(resource_origins::icon(values, state)?.map(|icon| laid_icon(values, localisation, &icon)))
+}
+
+/// A state's icon's rows and flag as the window lays them out.
+pub fn laid_icon(values: &dyn Values, localisation: &Localisation, icon: &resource_origins::StateIcon) -> Laid {
+    let slot = |raw: u32| values.slot(raw).ok_or_else(|| format!("CountryLinks lacks {raw}"));
+    let rows = icon
+        .rows
+        .iter()
+        .map(|row| {
+            Ok(Row {
+                text: row_text(localisation, &values.definitions()[row.definition], row.delivered, row.nominal)?,
+                flag: row.flag.map(slot).transpose()?,
+            })
+        })
+        .collect();
+    Laid { rows, flag: icon.flag.map(slot).transpose() }
+}
+
+/// The icons of `icons` laid out for the camera of `inputs`.
+pub fn lay_out(inputs: &ResourceIconInputs<'_>, icons: &HourIcons) -> PreparedResourceIcons {
+    let mut prepared = PreparedResourceIcons::default();
+    let defines = &inputs.content.defines;
+    if !inputs.visibility.resource_icons
+        || (inputs.camera.free().is_none()
+            && shown(&inputs.visibility, inputs.camera.height, defines).is_none())
+    {
         return prepared;
     }
-    let hour = match Hour::new(frame, &inputs.content.origins) {
-        Ok(hour) => hour,
+    let icons = match icons {
+        Ok(icons) => icons,
         Err(why) => {
             prepared
                 .report
@@ -339,9 +368,8 @@ pub fn prepare(inputs: &ResourceIconInputs<'_>, frame: &DecodedFrame) -> Prepare
     let priority = defines
         .priorities
         .get(inputs.visibility.priorities, PriorityIcon::Resource);
-    let states: Vec<u32> = hour.states().collect();
-    for state in states {
-        let icon = match hour.icon(state) {
+    for (&state, icon) in icons {
+        let icon = match icon {
             Ok(Some(icon)) => icon,
             Ok(None) => continue,
             Err(why) => {
@@ -373,14 +401,8 @@ pub fn prepare(inputs: &ResourceIconInputs<'_>, frame: &DecodedFrame) -> Prepare
         else {
             continue;
         };
-        let laid = if text {
-            rows(&hour, inputs.localisation, &icon)
-        } else {
-            Ok(Vec::new())
-        };
-        let (rows, flag) = match laid
-            .and_then(|rows| Ok((rows, icon.flag.map(|raw| hour.slot(raw)).transpose()?)))
-        {
+        let laid = if text { icon.rows.clone() } else { Ok(Vec::new()) };
+        let (rows, flag) = match laid.and_then(|rows| Ok((rows, icon.flag.clone()?))) {
             Ok(laid) => laid,
             Err(why) => {
                 prepared
@@ -418,6 +440,10 @@ pub struct ResourceIconView {
 }
 
 impl ResourceIconView {
+    pub fn running_visibly(&self) -> bool {
+        self.pool.running_visibly()
+    }
+
     pub fn retry(&self) -> Option<Retry> {
         self.pool.retry()
     }

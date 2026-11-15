@@ -160,6 +160,10 @@ test('mounted Select preserves authored choices, focus and label layout', async 
           assert.equal(long.labelWidth, long.labelScrollWidth);
           assert.ok(long.top >= narrow.scrollTop! && long.top + long.height <= narrow.scrollTop! + narrow.listHeight!, 'the full focused row is revealed after measuring its wrapped text');
           assert.equal(narrow.rows.find(row => row.index === 101)!.top, long.top + long.height, 'the next row starts after the wrapped label');
+          // Its owner rendering again with an equal list (a new array) leaves every measured row where it was drawn.
+          const same = await act('sameChoicesNow()') as { before: [string, number][]; after: [string, number][] };
+          assert.deepEqual(same.after, same.before, 'an equal list passed anew keeps the wrapped rows where they were');
+          await act('settle()');
           await press('ArrowDown'); assert.equal((await snapshot()).activeValue, 'v101');
           await press('End'); assert.equal((await snapshot()).activeValue, 'v149');
           await press('Enter'); assert.equal((await snapshot()).chosen, 'v149');

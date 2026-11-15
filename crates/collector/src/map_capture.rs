@@ -39,38 +39,18 @@ pub trait MapSources {
     fn finish_land(&mut self, _outcome: Outcome) -> u64 {
         0
     }
-    fn begin_air(&mut self) -> u64;
-    fn air(&mut self, pointer: usize, pool: usize, row: &cair_wing::Row) -> u64;
-    fn air_owner(&mut self, _slot: u32, _entry: Option<usize>) -> u64 {
-        0
-    }
-    fn air_score_limit(&self) -> Option<usize> {
-        None
-    }
-    fn air_score(&mut self, _pointer: usize, _row: &cair_wing::ScoreLeaf) -> u64 {
-        0
-    }
-    fn finish_air_score(&mut self, _outcome: Outcome) -> u64 {
-        0
-    }
-    fn finish_air(&mut self, outcome: Outcome) -> u64;
 }
 
 #[cfg(test)]
 struct NoSources;
 
 #[cfg(test)]
-impl MapSources for NoSources {
-    fn begin_air(&mut self) -> u64 {
-        0
-    }
-    fn air(&mut self, _: usize, _: usize, _: &cair_wing::Row) -> u64 {
-        0
-    }
-    fn finish_air(&mut self, _: Outcome) -> u64 {
-        0
-    }
-}
+impl MapSources for NoSources {}
+
+/// The hour installed neither the owned wing payload nor its failure.
+const AIR_NOT_ACQUIRED: Outcome = Outcome::Unavailable {
+    reason: "air wing payload not acquired this hour",
+};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct MapCapacities {
@@ -173,8 +153,6 @@ impl MapCapacities {
 /// Fleets, task forces and ships. Walked inside the ShipModels job, whose
 /// details the ships seed, so the game thread never runs the census.
 pub struct ShipCensus {
-    crew: crate::crew_store::CrewStore,
-    owned_pending: bool,
     pub management: collector_naval_management::forces::Captured,
     management_owned: Option<collector_naval_management::forces::Owned>,
     pub fleets: CaptureRows<cfleet::Row>,
@@ -190,8 +168,6 @@ pub struct ShipCensus {
 impl ShipCensus {
     fn new(rows: &[usize]) -> Self {
         Self {
-            crew: Default::default(),
-            owned_pending: false,
             management: Default::default(),
             management_owned: None,
             fleets: CaptureRows::new(rows[0]),
@@ -209,7 +185,6 @@ impl ShipCensus {
     }
     fn reset(&mut self) {
         self.discard_owned();
-        self.owned_pending = false;
         self.management = Default::default();
         self.fleets.reset();
         self.fleet_names.clear();
@@ -220,14 +195,12 @@ impl ShipCensus {
         self.ticks = [0; 3];
     }
     fn allocated_bytes(&self) -> usize {
-        self.crew.allocated_bytes()
-            + self
-                .management
-                .tables
-                .iter()
-                .filter_map(|table| table.as_ref().ok())
-                .map(|rows| rows.allocated_bytes())
-                .sum::<usize>()
+        self.management
+            .tables
+            .iter()
+            .filter_map(|table| table.as_ref().ok())
+            .map(|rows| rows.allocated_bytes())
+            .sum::<usize>()
             + self.ship_names.capacity()
             + self.ship_overrides.capacity()
             + self.fleet_names.capacity()
@@ -246,10 +219,6 @@ impl ShipCensus {
         let mut reads = crate::read_accounting::table(tables[0]);
         let begin = qpc();
         self.discard_owned();
-        // Mark the loan before the first read so a failed/unwound walk cannot
-        // leave a partially ordered crew baseline available to the next hour.
-        self.owned_pending = true;
-        self.crew.begin(self.ships.rows.len());
         models.begin_sources();
         let management = std::cell::RefCell::new(
             collector_naval_management::forces::Session::begin_owned(
@@ -261,7 +230,7 @@ impl ShipCensus {
         );
         let (mut name_len, mut name_required) = (0, 0);
         let (mut override_len, mut override_required) = (0, 0);
-        let naval = cfleet::walk_timed_growing_with_management(
+        let naval = cfleet::walk_timed_with_management(
             memory,
             base,
             state,
@@ -286,7 +255,7 @@ impl ShipCensus {
                 if let Some((_, len)) = row.name {
                     name_len += len;
                 }
-                row.naming = ship_name_result(cship::naming_growing(
+                row.naming = ship_name_result(cship::naming(
                         memory,
                         base,
                         pointer,
@@ -299,12 +268,14 @@ impl ShipCensus {
                 if let Some(naming) = row.naming {
                     override_len += naming.override_name.1;
                 }
-                let crew = self
-                    .crew
-                    .read(memory, pointer, row.id, cship::ACQUIRED_MANPOWER);
+                let crew = crate::crew::ship(
+                    memory,
+                    pointer,
+                    collector_observers::crew_changes::quiet,
+                );
                 row.acquired_manpower = crew.map(|value| value[0]);
                 row.required_manpower = crew.map(|value| value[1]);
-                models.visit_source_growing(pointer, row);
+                models.visit_source(pointer, row);
                 management.borrow_mut().ship(pointer, row);
             },
             &mut self.fleet_names,
@@ -324,7 +295,6 @@ impl ShipCensus {
     }
     pub fn fail(&mut self, reason: &'static str) {
         self.discard_owned();
-        self.owned_pending = false;
         self.ship_names.clear();
         self.ship_overrides.clear();
         self.management.tables = std::array::from_fn(|_| Err(reason));
@@ -335,22 +305,14 @@ impl ShipCensus {
         self.ticks = [0; 3];
     }
 
-    /// The crew observations already include their writer certificates.
-    /// Their next lookup index is built before this frame returns to the pool.
     pub(crate) fn decode_owned(&mut self) {
         if let Some(owned) = self.management_owned.take() {
             self.management = owned.decode();
-        }
-        if std::mem::take(&mut self.owned_pending) {
-            self.crew.finish();
         }
     }
 
     pub(crate) fn discard_owned(&mut self) {
         self.management_owned = None;
-        if std::mem::take(&mut self.owned_pending) {
-            self.crew.forget();
-        }
     }
 }
 
@@ -484,25 +446,17 @@ impl Orders {
         grow_vec(&mut self.groups, capacities.order_groups);
         grow_vec(&mut self.visits, capacities.order_visits);
     }
-    /// The orders-group registry census of this pass, taken once by the
-    /// callback before the jobs that read it are queued: the Orders job's
-    /// [`Self::walk`] and the Naval job's order-of-battle copy.
-    #[cfg(test)]
-    pub fn walk_roots(&mut self, memory: &impl Memory, base: usize) {
-        let _reads = crate::read_accounting::table(TableId::ArmyOrders);
-        let begin = qpc();
-        self.root_outcome = corders_group::walk_roots(memory, base, &mut self.groups);
-        self.roots_walked = true;
-        self.ticks = elapsed(begin);
-    }
     pub(crate) fn fail_roots(&mut self, reason: &'static str) {
         self.root_outcome = Outcome::Unavailable { reason };
         self.roots_walked = true;
     }
-    pub(crate) fn walk_roots_growing(&mut self, memory: &impl Memory, base: usize) {
+    /// The orders-group registry census of this pass, taken once by the
+    /// callback before the jobs that read it are queued: the Orders job's
+    /// [`Self::walk`] and the Naval job's order-of-battle copy.
+    pub(crate) fn walk_roots(&mut self, memory: &impl Memory, base: usize) {
         let _reads = crate::read_accounting::table(TableId::ArmyOrders);
         let begin = qpc();
-        self.root_outcome = corders_group::walk_roots_growing(memory, base, &mut self.groups);
+        self.root_outcome = corders_group::walk_roots(memory, base, &mut self.groups);
         self.roots_walked = true;
         self.ticks = elapsed(begin);
     }
@@ -750,8 +704,6 @@ pub struct MapCaptured {
     pub air_wing_names_len: usize,
     air_wing_names_required: usize,
     pub(crate) air_wing_name_failures: usize,
-    air_transport: cair_wing::transport_operands::Scratch,
-    air_transport_capacity_charge: crate::raw_memory::Charge,
     pub orders: Orders,
     /// Raw-copy split gate for the hourly players pair (Players,
     /// HumanControllers). Set by the game thread every hour with a valid raw
@@ -830,12 +782,6 @@ impl MapCaptured {
     }
 
     pub fn with_capacities(capacity: &MapCapacities) -> Self {
-        let air_transport = cair_wing::transport_operands::Scratch::owned(capacity.rows[8]);
-        let mut air_transport_capacity_charge = crate::raw_memory::Charge::default();
-        air_transport_capacity_charge.set(crate::raw_memory::Capacity {
-            auxiliary_vectors: air_transport.allocated_bytes() as u64,
-            ..Default::default()
-        });
         Self {
             players: CaptureRows::new(capacity.rows[0]),
             human_controllers: CaptureRows::new(capacity.rows[1]),
@@ -850,8 +796,6 @@ impl MapCaptured {
             air_wing_names_len: 0,
             air_wing_names_required: 0,
             air_wing_name_failures: 0,
-            air_transport,
-            air_transport_capacity_charge,
             owned_air_captured: false,
             air_capture_failure: None,
             orders: Orders::new(capacity),
@@ -887,7 +831,6 @@ impl MapCaptured {
             + self.naval_combat_participants.allocated_bytes()
             + self.air_wings.allocated_bytes()
             + self.air_wing_names.capacity()
-            + self.air_transport.allocated_bytes()
             + self.orders.allocated_bytes()
             + self.player_names.capacity()
             + self.land_participants.capacity() * size_of::<u64>()
@@ -906,7 +849,6 @@ impl MapCaptured {
         self.air_wing_names_len = 0;
         self.air_wing_names_required = 0;
         self.air_wing_name_failures = 0;
-        self.air_transport.reset_metadata();
         self.owned_air_captured = false;
         self.air_capture_failure = None;
         self.orders.reset();
@@ -949,17 +891,6 @@ impl MapCaptured {
         self.naval_combat_participants.grow(&mut capacities.rows[7]);
         capacities.rows[8] = capacities.rows[8].max(self.air_wings.rows.len());
         self.air_wings.grow(&mut capacities.rows[8]);
-        let _ = self.air_transport.grow(
-            self.air_wings
-                .rows
-                .len()
-                .max(self.air_transport.required_map_capacity),
-        );
-        self.air_transport_capacity_charge
-            .set(crate::raw_memory::Capacity {
-                auxiliary_vectors: self.air_transport.allocated_bytes() as u64,
-                ..Default::default()
-            });
         grow_capacity(
             &mut capacities.air_wing_names,
             self.air_wing_names_required
@@ -1000,7 +931,7 @@ impl MapCaptured {
         if !self.players_raw_mode {
             let mut reads = crate::read_accounting::table(TableId::Players);
             let begin = qpc();
-            let names = chuman::walk_growing(
+            let names = chuman::walk(
                 memory,
                 base,
                 state,
@@ -1014,7 +945,7 @@ impl MapCaptured {
 
             reads.select(TableId::HumanControllers);
             let begin = qpc();
-            self.human_controllers.outcome = chuman::walk_controllers_growing(
+            self.human_controllers.outcome = chuman::walk_controllers(
                 memory,
                 base,
                 state,
@@ -1061,65 +992,10 @@ impl MapCaptured {
             self.naval_groups_required = naval.capture.required_group_capacity;
             ticks[6..8].copy_from_slice(&naval.read_ticks);
         }
-        reads.select(TableId::AirWings);
-        let begin = qpc();
         if let Some(reason) = self.air_capture_failure {
             self.air_wings.outcome = Outcome::Unavailable { reason };
         } else if !self.owned_air_captured {
-            let nested = std::cell::Cell::new(sources.begin_air());
-            let score_limit = sources.air_score_limit();
-            let source = std::cell::RefCell::new(&mut *sources);
-            let mut names = cair_wing::NameArena {
-                bytes: &mut self.air_wing_names,
-                used: 0,
-                required: 0,
-                failures: 0,
-            };
-            let mut transport = cair_wing::transport_operands::Pass::new(
-                base,
-                self.air_wings.rows.len(),
-                &mut self.air_transport,
-            );
-            let walked = cair_wing::walk_game_score_with_owners(
-                memory,
-                base,
-                state,
-                &mut self.air_wings.rows,
-                Some(&mut names),
-                score_limit,
-                |pointer, pool, row| {
-                    transport.capture(memory, pointer, pool, row);
-                    nested.set(
-                        nested
-                            .get()
-                            .saturating_add(source.borrow_mut().air(pointer, pool, row)),
-                    )
-                },
-                |pointer, row| {
-                    nested.set(
-                        nested
-                            .get()
-                            .saturating_add(source.borrow_mut().air_score(pointer, row)),
-                    )
-                },
-                |slot, entry| {
-                    nested.set(
-                        nested
-                            .get()
-                            .saturating_add(source.borrow_mut().air_owner(slot, entry)),
-                    )
-                },
-            );
-            self.air_wing_names_len = names.used;
-            self.air_wing_names_required = names.required;
-            self.air_wing_name_failures = names.failures;
-            self.air_wings.outcome = walked.shared.map;
-            let source = source.into_inner();
-            let nested = nested
-                .get()
-                .saturating_add(source.finish_air_score(walked.score))
-                .saturating_add(source.finish_air(self.air_wings.outcome));
-            ticks[8] = ((qpc() - begin).max(0) as u64).saturating_sub(nested);
+            self.air_wings.outcome = AIR_NOT_ACQUIRED;
         }
 
         ticks
@@ -1376,15 +1252,10 @@ fn copy_controller_pass(
     }
     // The fixed walk still visits every country and count with no row storage.
     // Reuse its first-failure and reserved-alias gates without another mirror.
-    let _ = chuman::walk_controllers(
-        &ControllerCopy {
+    let _ = chuman::count_controllers(&ControllerCopy {
             memory,
             log: RefCell::new(log),
-        },
-        base,
-        game_state,
-        &mut [],
-    );
+        }, base, game_state);
 }
 
 /// Copy one hourly players payload and record copy-only costs. Worker storage
@@ -1399,7 +1270,6 @@ pub(crate) fn copy_players_refresh(
     let started = qpc();
     job.clear();
     job.game_state = ctx.game_state;
-    job.log.enable_worker_growth();
     copy_players_pass(&mut job.log, memory, ctx.base, ctx.game_state);
     PlayersCopyReport {
         raw_ok: !job.log.overflowed,
@@ -1427,9 +1297,15 @@ impl MapCaptured {
         job: &PlayersJob,
         decode_ticks: &mut [u64; 2],
     ) {
-        let recorded = crate::raw::Recorded::build(&job.log);
+        let recorded = match crate::raw::Recorded::build(&job.log) {
+            Ok(recorded) => recorded,
+            Err(reason) => {
+                self.fail_players_capture(reason);
+                return;
+            }
+        };
         let started = qpc();
-        let walked = chuman::walk_growing(
+        let walked = chuman::walk(
             &recorded,
             base,
             job.game_state,
@@ -1441,7 +1317,7 @@ impl MapCaptured {
         self.player_names_required = walked.required_bytes;
         decode_ticks[0] += elapsed(started);
         let started = qpc();
-        self.human_controllers.outcome = chuman::walk_controllers_growing(
+        self.human_controllers.outcome = chuman::walk_controllers(
             &recorded,
             base,
             job.game_state,
@@ -1652,7 +1528,7 @@ mod players_split_tests {
         );
         assert!(report.raw_ok);
         assert!(job.log.has_bulk);
-        let recorded = crate::raw::Recorded::build(&job.log);
+        let recorded = crate::raw::Recorded::build(&job.log).unwrap();
         let pair = job
             .log
             .spans
@@ -1754,7 +1630,7 @@ mod tests {
     }
 
     #[test]
-    fn downstream_consumers_receive_one_census_and_failed_air_is_not_retried() {
+    fn land_visitors_receive_one_census_and_air_comes_only_from_its_worker() {
         #[derive(Default)]
         struct Unreadable(std::cell::Cell<usize>);
         impl Memory for Unreadable {
@@ -1765,30 +1641,19 @@ mod tests {
         }
         #[derive(Default)]
         struct Sources {
-            begins: [usize; 2],
-            finished: Vec<(usize, Outcome)>,
+            begins: usize,
+            finished: Vec<Outcome>,
         }
         impl MapSources for Sources {
-            fn begin_air(&mut self) -> u64 {
-                self.begins[0] += 1;
-                0
-            }
-            fn air(&mut self, _: usize, _: usize, _: &cair_wing::Row) -> u64 {
-                panic!("unreadable census visited wing")
-            }
-            fn finish_air(&mut self, outcome: Outcome) -> u64 {
-                self.finished.push((0, outcome));
-                0
-            }
             fn begin_land(&mut self) -> u64 {
-                self.begins[1] += 1;
+                self.begins += 1;
                 0
             }
             fn land(&mut self, _: cland_combat::Source) -> u64 {
                 panic!("unreadable census visited combat")
             }
             fn finish_land(&mut self, outcome: Outcome) -> u64 {
-                self.finished.push((1, outcome));
+                self.finished.push(outcome);
                 0
             }
         }
@@ -1796,29 +1661,12 @@ mod tests {
         let mut captured = MapCaptured::with_capacities(&MapCapacities::default());
         let memory = Unreadable::default();
         captured.sample(&memory, 0, 0x1000, &mut sources);
-        assert_eq!(sources.begins, [1, 1]);
-        assert_eq!(sources.finished.len(), 2);
-        for source in 0..2 {
-            assert!(
-                sources
-                    .finished
-                    .iter()
-                    .any(|&(kind, outcome)| kind == source
-                        && matches!(outcome, Outcome::Unavailable { .. }))
-            );
-        }
+        assert_eq!(sources.begins, 1);
+        assert!(matches!(sources.finished[..], [Outcome::Unavailable { .. }]));
+        // Without the worker's payload or its failure the table names its absence.
+        assert_eq!(captured.air_wings.outcome, AIR_NOT_ACQUIRED);
         let ordinary_reads = memory.0.get();
         let ordinary_outcomes = captured.outcomes();
-        memory.0.set(0);
-        cair_wing::walk_with(
-            &memory,
-            0,
-            0x1000,
-            &mut captured.air_wings.rows,
-            |_, _, _| {},
-        );
-        let wing_reads = memory.0.get();
-        assert!(wing_reads > 0);
         captured.reset();
         let reason = "accepted wing worker failed";
         captured.fail_air_capture(reason);
@@ -1826,9 +1674,7 @@ mod tests {
         let mut sources = Sources::default();
         captured.sample(&memory, 0, 0x1000, &mut sources);
         assert_eq!(captured.air_wings.outcome, Outcome::Unavailable { reason });
-        assert_eq!(memory.0.get(), ordinary_reads - wing_reads);
-        assert_eq!(sources.begins, [0, 1]);
-        assert_eq!(sources.finished.len(), 1);
+        assert_eq!(memory.0.get(), ordinary_reads);
         for (index, outcome) in captured.outcomes().into_iter().enumerate() {
             if index != 8 {
                 assert_eq!(outcome, ordinary_outcomes[index]);
@@ -1836,11 +1682,8 @@ mod tests {
         }
         // The failure belongs to this callback and clears at the next reset.
         captured.reset();
-        memory.0.set(0);
-        let mut sources = Sources::default();
-        captured.sample(&memory, 0, 0x1000, &mut sources);
-        assert_eq!(memory.0.get(), ordinary_reads);
-        assert_eq!(sources.begins, [1, 1]);
+        captured.sample(&memory, 0, 0x1000, &mut Sources::default());
+        assert_eq!(captured.air_wings.outcome, AIR_NOT_ACQUIRED);
     }
 
     #[test]
@@ -1952,7 +1795,7 @@ mod tests {
     }
 
     #[test]
-    fn gradually_growing_tables_fit_without_first_losing_an_hour() {
+    fn gradually_tables_fit_without_first_losing_an_hour() {
         let mut capacity = 8;
         let mut table = CaptureRows::<u32>::new(capacity);
         for count in 1..=129 {
@@ -2035,7 +1878,7 @@ mod tests {
         );
         let mut orders = Orders::new(&MapCapacities::default());
         let ((), counts) = world.counted(|memory| {
-            orders.walk_roots_growing(memory, world.base);
+            orders.walk_roots(memory, world.base);
             orders.walk(memory, world.base);
         });
         assert_eq!(
@@ -2085,7 +1928,7 @@ mod tests {
         let hour = |orders: &mut Orders, split: Split, millis: u64| {
             orders.reset();
             orders.begin_parts(split, frequency);
-            orders.walk_roots_growing(&memory, world.base);
+            orders.walk_roots(&memory, world.base);
             orders.prepare_parts();
             for index in 0..orders.part_count() {
                 let mut part = orders.take_part(index).unwrap();

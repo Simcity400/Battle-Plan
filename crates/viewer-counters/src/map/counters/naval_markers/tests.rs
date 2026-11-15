@@ -1,4 +1,5 @@
 use super::*;
+use replay_data::rows::NavalCombatShipRow;
 use replay_frame::{frame::Metrics, frame::TableView};
 use viewer_foundation::engaged::Ambiguity;
 use viewer_foundation::engagement_history::Provenance;

@@ -1,39 +1,40 @@
 import type { OptionChoices, WidgetRuntime } from '../../dashboard/definitions';
 import type { WidgetSpec } from '../../dashboard/model';
 import { contentKey, contentSet, resolveOptions, setToken } from '../../dashboard/options';
-import { useProduct } from '../../dashboard/products';
-import * as requests from '../../dashboard/batch5Requests';
 import { selectedTags } from '../../dashboard/countrySelection';
+import { useHeadProduct } from '../../dashboard/headProduct';
 import { tableSortChoices } from '../../charts/table/options';
-import { validateAirMissions } from './airMissionsData';
-import type { AirMissionsReply } from './airMissionsData';
-import { OPTIONS } from './definition';
-import { choiceHour, theatreChoices, useAirTheatres } from './useAirTheatres';
 import { useSpriteArtwork } from '../../dashboard/useSpriteArtwork';
-import { airMissionsRequest } from '../../dashboard/widgetRequests';
-import { usePlaybackHour } from '../../dashboard/playback.ts';
+import { choicesAt, regionLabel, validateAirMissions } from './airMissionsData';
+import type { AirMissionsReply } from '../../generated/dashboard';
+import { OPTIONS } from './definition';
 
-/** The country's prepared assignments over the branch, looked up locally at every hour. */
+/** What a render shows: the regions, the missions each records, their names, the theatres. The counts are live cells
+ * and the read hour moves with them: neither is structure. */
+const structure = (reply: AirMissionsReply) => JSON.stringify([reply.missions, reply.regions, reply.theatres, reply.theatresMissing, reply.missing, reply.warnings]);
+
+/** The country's missions at the widget's hour: followed at the head as a panel, asked for a pinned hour; the counts
+ * come from `live` either way. */
 export function useAirMissions(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const options = resolveOptions(OPTIONS, widget.options);
   const tag = selectedTags(widget.countries, track)[0] ?? null;
-  const request = airMissionsRequest(widget, track);
-  const product = useProduct<AirMissionsReply>(runtime.client, request, active, validateAirMissions, track?.source);
+  const params = track && tag ? { tag } : null;
+  const product = useHeadProduct<AirMissionsReply>(runtime, widget, 'air-missions', params, { active, validate: validateAirMissions, structure });
   return { track, tag, options, ...product };
 }
 
-/** Missions, regions and theatres as the recording names them, and the sortable columns. */
+/** Missions, regions and theatres at the hour shown, as the recording names them, and the sortable columns. */
 export function useAirMissionChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {
-  const playbackHour = usePlaybackHour(runtime.clock, widget.time.mode === 'follow');
-  const { data, track, tag, options } = useAirMissions(widget, runtime, true);
-  const theatres = useAirTheatres(runtime, track, 'air-missions', track && tag ? requests.airMissionsHistory(track.branch.id, tag) : null, choiceHour(widget, runtime, track, playbackHour), true);
+  const { data, track, options } = useAirMissions(widget, runtime, true);
   const missions = data?.missions ?? [];
   const icon = useSpriteArtwork(runtime, track, missions.map(mission => mission.icon), true);
+  const chosen = (key: string) => contentSet(options[key]).map(contentKey);
   return {
-    missions: missions.map(mission => ({ value: setToken(mission.id), label: mission.name, icon: icon(mission.icon) })),
-    regions: (data?.regions ?? []).map(region => ({ value: setToken(region.id), label: region.name })),
-    theatres: theatreChoices(theatres.theatres ?? undefined, contentSet(options.theatres).map(contentKey)),
+    missions: [...missions.map(mission => ({ value: setToken(mission.id), label: mission.name, icon: icon(mission.icon) })),
+      ...chosen('missions').filter(id => !missions.some(mission => mission.id === id)).map(id => ({ value: setToken(id), label: `Mission ${id} · not at this date` }))],
+    regions: choicesAt((data?.regions ?? []).map(region => ({ id: region.region, name: regionLabel(region.region, region.name) })), chosen('regions')),
+    theatres: choicesAt(data?.theatres ?? [], chosen('theatres')),
     tableSort: tableSortChoices([{ key: 'region', label: 'Region' }, ...missions.map(mission => ({ key: `m${mission.id}`, label: mission.name })),
       { key: 'wings', label: 'Wings' }]),
   };

@@ -1,12 +1,14 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod dashboard_service;
+mod follow_push;
 mod native;
 mod perf;
 mod popout;
-mod preparation;
 mod recorder;
 mod replay_library;
+#[cfg(feature = "served-ui")]
+mod served_ui;
 mod updates;
 mod video;
 
@@ -16,12 +18,9 @@ use native::{HostStatus, NativeHost};
 use std::{path::PathBuf, sync::Arc};
 use tauri::{Manager, State, WebviewWindow};
 
-// Preparation and widget requests contend on the Windows process heap; the viewer ships this too.
+// Widget requests and the map's documents contend on the Windows process heap.
 #[global_allocator]
 static ALLOCATOR: engine_heap::Heap = engine_heap::Heap;
-
-/// Where WebView2 serves the `artwork` scheme the dashboard's images are named under.
-const ARTWORK_BASE: &str = "http://artwork.localhost/";
 
 /// An image a reply names, read off the main thread, or 404.
 fn serve_artwork(request: tauri::http::Request<Vec<u8>>, responder: tauri::UriSchemeResponder) {
@@ -188,42 +187,54 @@ fn seek_map(
     )
 }
 
+#[cfg(not(feature = "served-ui"))]
+fn context() -> tauri::Context {
+    tauri::generate_context!()
+}
+
+#[cfg(feature = "served-ui")]
+fn context() -> tauri::Context {
+    let mut context = tauri::generate_context!();
+    match served_ui::serve(&mut context) {
+        Ok(folder) => eprintln!("Serving the UI from {}", folder.display()),
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(2);
+        }
+    }
+    context
+}
+
 fn main() {
     engine_heap::return_freed_memory_promptly();
-    let mut args = std::env::args_os().skip(1);
-    // The recorder's headless preparation: no window, tray or library monitor.
-    if args
-        .next()
-        .is_some_and(|role| role == dashboard::prepared::headless::ROLE)
-    {
-        // Setup is replacing the files: the queue waits for the preparer setup starts after.
-        if app_update::setup_running() {
-            return;
-        }
-        // An update closes it as Battle Plan; the installer starts it again on the queue.
-        if let Err(error) = app_update::serve_preparer(dashboard::prepared::headless::close) {
-            eprintln!("The preparer cannot be asked to close for updates: {error}");
-        }
-        if let Err(error) = dashboard::prepared::headless::run(args) {
-            eprintln!("{} {error}", dashboard::prepared::headless::ROLE);
-            std::process::exit(1);
-        }
-        return;
-    }
     if std::env::args().any(|arg| arg == "--help" || arg == "-h") {
         println!(
-            "battle-plan\n\nreplay-desktop [recording.battleplan] [viewer options]\n\nMap keeps the existing native viewer. Analytics opens in its own side tab.\n--game-dir and --user-dir override the saved content folders for this run.\nViewer options such as --branch, --hour and --camera are forwarded to the\nnative viewer. --diagnostics shows the maps' technical\nstats and data limitations for this run; F3 or Settings > Diagnostics toggles\nand saves them. Run viewer --help for the full list.\n\nDevelopment: npm run dev\nProduction: npm run build:desktop"
+            "battle-plan\n\nreplay-desktop [recording.battleplan] [map options]\n\nThe map runs inside this app. Analytics opens in its own side tab.\n--game-dir and --user-dir override the saved content folders for this run.\nMap options such as --branch, --hour and --camera open the campaign map\nthere. --diagnostics shows the maps' technical stats and data limitations\nfor this run; F3 or Settings > Diagnostics toggles and saves them.\n--window-dump <recording> --out <frame.png> draws one frame of the map to a\nfile and exits (the release smoke).\n\nDevelopment: npm run dev\nProduction: npm run build:desktop"
         );
         return;
+    }
+    // The release smoke draws a recording's map from the installed layout, through the map's own
+    // window and the shader compiler beside this executable.
+    if std::env::args().any(|arg| arg == "--window-dump") {
+        let code = match viewer::host::window_dump(std::env::args_os().skip(1)) {
+            Ok(()) => 0,
+            Err(error) => {
+                eprintln!("{error}");
+                1
+            }
+        };
+        std::process::exit(code);
     }
     if app_update::refused_during_setup("Battle Plan") {
         return;
     }
+    let context = context();
     perf::init();
+    if let Some(prefix) = perf::map_prefix() {
+        viewer::host::log_map_frames(prefix);
+    }
     shader_pipeline::artwork::warm();
-    if let Err(error) =
-        dashboard::artwork::configure(ARTWORK_BASE, dashboard::artwork::local_folder())
-    {
+    if let Err(error) = dashboard::artwork::configure_desktop() {
         eprintln!("{error}");
     }
     let app = tauri::Builder::default()
@@ -231,7 +242,6 @@ fn main() {
             serve_artwork(request, responder)
         })
         .manage(video::VideoState::default())
-        .manage(preparation::PreparationMonitor::default())
         .setup(|app| {
             if let Some(window) = app.get_webview_window("main")
                 && let Err(error) = video::restore(&window)
@@ -247,9 +257,15 @@ fn main() {
                 Arc::new(updates::Host(app.handle().clone())),
             )?;
             recorder::start_recorder();
-            app.state::<preparation::PreparationMonitor>()
-                .start(app.handle())?;
             native::start_gamepad(app.handle().clone());
+            // Followed answers come from the maps' playheads in this process.
+            let push = app.handle().clone();
+            viewer::host::install_follow(move |kind, payload| {
+                // Each payload names its own kind to the webview (`FOL1`, `PNL1`, `FEN1`).
+                if kind == dashboard_follow::push::FOLLOW || kind == dashboard_follow::push::PANEL {
+                    push.state::<follow_push::FollowPush>().send(payload);
+                }
+            })?;
             if let Some(window) = app.get_webview_window("main") {
                 app.state::<NativeHost>().ensure_started(&window)?;
             }
@@ -258,6 +274,7 @@ fn main() {
         .manage(NativeHost::default())
         .manage(popout::PopOuts::default())
         .manage(DashboardService::default())
+        .manage(follow_push::FollowPush::default())
         .invoke_handler(tauri::generate_handler![
             video::video_settings,
             video::set_video_settings,
@@ -281,6 +298,7 @@ fn main() {
             replay_library::choose_recording,
             recorder::recorder_settings,
             recorder::set_recording_compression,
+            recorder::set_auto_compress,
             recorder::recording_preferences,
             recorder::rename_recording,
             recorder::locate_recordings,
@@ -299,13 +317,8 @@ fn main() {
             popout::popout_fly_aircraft,
             dashboard_service::dashboard_open_source,
             dashboard_service::dashboard_product,
-            dashboard_service::dashboard_prepared_query,
-            dashboard_service::dashboard_preparation_preferences,
+            follow_push::dashboard_follow_channel,
             dashboard_service::dashboard_history_choice,
-            dashboard_service::dashboard_preparation_status,
-            dashboard_service::dashboard_prepare_source,
-            dashboard_service::dashboard_cancel_preparation,
-            dashboard_service::dashboard_clear_preparation,
             dashboard_service::dashboard_map_settings,
             dashboard_service::dashboard_cancel,
             dashboard_service::dashboard_release_source,
@@ -320,17 +333,15 @@ fn main() {
             app_update::commands::app_update_set_channel,
             app_update::commands::app_update_open_release,
         ])
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("Could not initialize the replay desktop");
     app.run(|app, event| match event {
         tauri::RunEvent::WindowEvent {
             label,
             event: tauri::WindowEvent::CloseRequested { api, .. },
             ..
-        } if label == "main" && perf::finish_before_exit(app, shutdown) => api.prevent_close(),
-        tauri::RunEvent::ExitRequested { api, .. } if perf::finish_before_exit(app, shutdown) => {
-            api.prevent_exit();
-        }
+        } if label == "main" && exit_after_maps(app) => api.prevent_close(),
+        tauri::RunEvent::ExitRequested { api, .. } if exit_after_maps(app) => api.prevent_exit(),
         tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
             shutdown(app);
             perf::close();
@@ -339,10 +350,96 @@ fn main() {
     });
 }
 
-/// Stops the data service and every viewer.
-fn shutdown(app: &tauri::AppHandle) {
-    app.state::<preparation::PreparationMonitor>().shutdown();
+/// Closing the app ends the service and maps first, off the event loop, which keeps pumping
+/// their windows: a window goes only once no map draws on it. True while that runs.
+fn exit_after_maps(app: &tauri::AppHandle) -> bool {
+    static EXIT: ExitOrder = ExitOrder::new();
+    EXIT.begin(
+        || {
+            let handle = app.clone();
+            std::thread::Builder::new()
+                .name("ordered exit".into())
+                .spawn(move || {
+                    let ended = shutdown(&handle);
+                    perf::finish(&handle);
+                    EXIT.done();
+                    if ended {
+                        handle.exit(0);
+                    } else {
+                        // A map still draws in the main window: the process ends without destroying it.
+                        std::process::exit(0);
+                    }
+                })
+                .map(drop)
+        },
+        || {
+            // No thread to stop the maps on: the process ends without destroying a window they draw on.
+            perf::close();
+            std::process::exit(0);
+        },
+    )
+}
+
+/// Where closing the app stands: not begun, running, or done once no map draws.
+struct ExitOrder(std::sync::atomic::AtomicU8);
+
+impl ExitOrder {
+    const RUNNING: u8 = 1;
+    const DONE: u8 = 2;
+
+    const fn new() -> Self {
+        Self(std::sync::atomic::AtomicU8::new(0))
+    }
+
+    /// True while the exit runs, which holds every close. `start` runs it off the event loop;
+    /// when it cannot, `fallback` must end the process without destroying a map's window.
+    fn begin(&self, start: impl FnOnce() -> std::io::Result<()>, fallback: impl FnOnce()) -> bool {
+        use std::sync::atomic::Ordering;
+        match self.0.compare_exchange(0, Self::RUNNING, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => {}
+            Err(Self::RUNNING) => return true,
+            Err(_) => return false,
+        }
+        if start().is_err() {
+            fallback();
+        }
+        true
+    }
+
+    fn done(&self) {
+        self.0.store(Self::DONE, std::sync::atomic::Ordering::Release);
+    }
+}
+
+/// Stops the data service and every map; true once the main map has ended, which it is given a
+/// moment to do.
+fn shutdown(app: &tauri::AppHandle) -> bool {
     app.state::<DashboardService>().shutdown();
     app.state::<popout::PopOuts>().close(app);
-    app.state::<NativeHost>().shutdown();
+    let (ended, waited) = std::sync::mpsc::channel();
+    app.state::<NativeHost>().shutdown(move || {
+        let _ = ended.send(());
+    });
+    waited.recv_timeout(std::time::Duration::from_secs(2)).is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ExitOrder;
+
+    #[test]
+    fn a_close_stays_held_when_the_exit_cannot_start_and_the_fallback_ends_the_process() {
+        let exit = ExitOrder::new();
+        let mut fell_back = 0;
+        let held = exit.begin(|| Err(std::io::Error::other("no thread")), || fell_back += 1);
+        assert!(held, "the window must outlive the map's surface");
+        assert_eq!(fell_back, 1);
+        assert!(exit.begin(|| unreachable!(), || unreachable!()), "a later close is held too");
+
+        let exit = ExitOrder::new();
+        assert!(exit.begin(|| Ok(()), || unreachable!()));
+        assert!(exit.begin(|| unreachable!(), || unreachable!()));
+        exit.done();
+        assert!(!exit.begin(|| unreachable!(), || unreachable!()), "once the maps end, closes go through");
+    }
 }

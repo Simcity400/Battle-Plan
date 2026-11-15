@@ -231,10 +231,10 @@ mod tests {
         );
         memory.0[0x400 + TEMPLATE_VISIBLE + VISIBLE_HAS_SOURCE] = 0;
         assert_eq!(
-            visibility(&memory, 0, 0x200, &mut Buffer::Fixed(&mut []), &mut 0).unwrap(),
+            visibility(&memory, 0, 0x200, &mut Buffer::Count, &mut 0).unwrap(),
             (2, None)
         );
         put64(&mut memory.0, 0x400, 0);
-        assert!(visibility(&memory, 0, 0x200, &mut Buffer::Fixed(&mut []), &mut 0).is_err());
+        assert!(visibility(&memory, 0, 0x200, &mut Buffer::Count, &mut 0).is_err());
     }
 }

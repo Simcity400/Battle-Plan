@@ -1,4 +1,4 @@
-import type { RaidMetric, RaidTallyRun, RaidTallySeries, RaidsReply } from '../../generated/dashboard';
+import type { RaidMetric, RaidTallyRun, RaidTallySeries } from '../../dashboard/raids';
 import type { CountryRaceEntry, CountryRaceLine } from '../../charts/race/countryRace';
 import type { Span } from '../../charts/series';
 import { clipToSpans, runAt, runIndexAt, stretchStarts } from '../../charts/series.ts';
@@ -16,9 +16,6 @@ export const tallyLabel = (metric: TallyMetric) => metric === 'both' ? 'Raid lau
   : metric === 'launched' ? 'Raid launches' : 'Raid successes';
 export const tallyValue = (value: number) => usNumber.format(value);
 export const tallyCount = (value: number) => `${tallyValue(value)}+`;
-/** Scan::observe extends a tally run only after that country's successful read,
- * at the immediately following hour. Every included hour is its own exact read. */
-export const tallyReadHour = (run: RaidTallyRun, hour: number) => Math.max(run.firstHour, Math.min(Math.floor(hour), run.lastHour));
 export const tallyModel = (series: readonly RaidTallySeries[]) => new Map(series.map(item => [item.tag, { ...item, starts: stretchStarts(item.runs) }]));
 export const tallyIdentities = (series: readonly RaidTallySeries[]) => series.every(item => item.identities !== undefined)
   ? countryIdentityIndex(series.map(item => ({ tag: item.tag, identities: item.identities! }))) : null;
@@ -60,14 +57,14 @@ export function tallyLines(series: readonly RaidTallySeries[], metric: TallyMetr
   });
 }
 const tallyBoth = (run: RaidTallyRun) => `${tallyCount(run.launched)} launched · ${tallyCount(run.succeeded)} succeeded`;
+const NOTE = '+ means at least this many. Success includes critical success and excludes limited success.';
 
-export function tallyTooltip(data: RaidsReply, tag: string, hour: number, name: string): TooltipContent {
-  const run = runAt(data.series.find(item => item.tag === tag)?.runs ?? [], Math.floor(hour));
+export function tallyTooltip(series: ReadonlyMap<string, RaidTallySeries>, tag: string, hour: number, name: string): TooltipContent {
+  const run = runAt(series.get(tag)?.runs ?? [], Math.floor(hour));
   return { title: name, subtitle: formatDateTime(hour), rows: run ? [
     { label: 'Launches', value: tallyCount(run.launched) },
     { label: 'Successes', value: tallyCount(run.succeeded) },
-  ] : [{ label: 'Not recorded at this time', tone: 'muted' }],
-  note: '+ means at least this many. Success includes critical success and excludes limited success.' };
+  ] : [{ label: 'Not recorded at this time', tone: 'muted' }], note: NOTE };
 }
 
 export function tallyLineTooltip(series: ReadonlyMap<string, RaidTallySeries>, hour: number, tags: readonly string[],
@@ -77,5 +74,5 @@ export function tallyLineTooltip(series: ReadonlyMap<string, RaidTallySeries>, h
     const label = labelAt(hour)(tag);
     return { label: label.name, countryFlag: label, swatch: country(tag), value: metric === 'both' ? tallyBoth(run) : tallyCount(run[metric]) };
   }) : [{ label: 'Not recorded at this time', tone: 'muted' }],
-  note: entries.length ? '+ means at least this many. Success includes critical success and excludes limited success.' : undefined };
+  note: entries.length ? NOTE : undefined };
 }

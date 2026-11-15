@@ -121,7 +121,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 .map(|token| BoundResult::Token(token as i32))
                 .ok_or_else(|| {
                     format!(
-                        "bound localisation token {} is absent from LexicalTokens",
+                        "bound localisation token {} is absent from lexical tokens",
                         String::from_utf8_lossy(token)
                     )
                 }),
@@ -148,7 +148,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
 
     fn char_token_text(&self, token: u32) -> Result<&'f [u8], String> {
         crate::scripted_text::spelled(&self.character_lexical()?, token)?
-            .ok_or_else(|| format!("LexicalTokens lacks token {token}"))
+            .ok_or_else(|| format!("lexical tokens lacks token {token}"))
     }
     // Search the signed ideology-token map; an empty selector chooses its
     // sole entry rather than the first of several. The ideology token
@@ -213,7 +213,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         };
         self.character_row(character)?
             .map(Some)
-            .ok_or_else(|| format!("PartyLeaders references missing character {character}"))
+            .ok_or_else(|| format!("party leaders references missing character {character}"))
     }
 
     fn char_party_leader_row(
@@ -252,7 +252,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             return Ok(None);
         };
         if key as u32 != 0 {
-            return Err("PartyLeaders lacks first native vector entry".into());
+            return Err("party leaders lacks first native vector entry".into());
         }
         keyed(&leaders.with_mask(PARTY_LEADER), key)
     }
@@ -559,7 +559,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 self.context
                     .world()?
                     .slot(character.country)
-                    .ok_or("Character country is absent from CountryLinks")?,
+                    .ok_or("Character country is absent from country links")?,
                 false,
             )?
         } else {
@@ -595,7 +595,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             Some(id) => {
                 let character = self
                     .character_row(id)?
-                    .ok_or_else(|| format!("PartyLeaders references missing character {id}"))?;
+                    .ok_or_else(|| format!("party leaders references missing character {id}"))?;
                 self.char_country_leader_display_name(&character, scopes)?
             }
             None => String::new(),
@@ -783,7 +783,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let advisor = matching
             .iter()
             .min_by_key(|role| role.ordinal)
-            .ok_or_else(|| format!("AdvisorRoles lacks character {character_id} idea {idea}"))?;
+            .ok_or_else(|| format!("advisor roles lacks character {character_id} idea {idea}"))?;
         let mut exact = matching
             .iter()
             .filter(|role| role.idea == idea.as_bytes());
@@ -801,7 +801,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             .ok_or("advisor modifier cache capture unavailable")?;
         let character = self
             .effect_character(Scope::Character(advisor.character))?
-            .ok_or("AdvisorRoles references missing character")?;
+            .ok_or("advisor roles references missing character")?;
         let description = if matches!(
             advisor.tooltip_keys,
             replay_data::rows::Recorded::NotRecorded
@@ -1045,7 +1045,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             return Ok(String::new());
         };
         if first.ordinal != 0 {
-            return Err("FactionMembers lacks first native member".into());
+            return Err("faction members lacks first native member".into());
         }
         if world.slot(first.country) == Some(country) {
             return Ok(String::new());

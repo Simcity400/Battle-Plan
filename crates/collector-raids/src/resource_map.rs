@@ -134,21 +134,8 @@ impl Captured {
         self.outcomes
     }
 
-    /// Fixture read without the family's owner store: every route is read.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn capture(
-        &mut self,
-        memory: &impl Memory,
-        base: usize,
-        game_state: usize,
-        hour: i32,
-        force_full: bool,
-    ) -> [u64; N] {
-        self.capture_growing(memory, base, game_state, hour, force_full, None)
-    }
-
     /// Worker-only: every buffer grows from what the walks find.
-    pub fn capture_growing(
+    pub fn capture(
         &mut self,
         memory: &impl Memory,
         base: usize,

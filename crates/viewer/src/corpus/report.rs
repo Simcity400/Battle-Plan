@@ -535,7 +535,7 @@ pub fn summary(run: &BTreeMap<String, StackReport>, causes: usize) -> String {
     let _ = writeln!(out, "\n## New in mods\n");
     let _ = writeln!(
         out,
-        "Actionable dashboard product causes and shared preparation notes beyond vanilla; occurrences include aggregate count growth, matched by reader, kind, file and message.\n"
+        "Actionable dashboard product causes beyond vanilla; occurrences include aggregate count growth, matched by reader, kind, file and message.\n"
     );
     for report in run.values().filter(|report| report.stack != super::VANILLA) {
         let _ = writeln!(out, "### {}\n", cell(&report.stack));
@@ -546,15 +546,10 @@ pub fn summary(run: &BTreeMap<String, StackReport>, causes: usize) -> String {
         let beyond = growth(&base.diagnostics, &report.diagnostics);
         let mut causes: BTreeMap<(&str, Kind, String), (usize, &Diagnostic)> = BTreeMap::new();
         for (diagnostic, count) in &beyond {
-            if diagnostic.reader.starts_with("dashboard.")
-                && diagnostic.kind.actionable()
-                && (diagnostic
-                    .reader
-                    .strip_prefix("dashboard.")
-                    .is_some_and(|key| dashboard::content_check::SHARED_CHECK_KEYS.contains(&key))
-                    || products
-                        .iter()
-                        .any(|product| diagnostic.reader == format!("dashboard.{}", product.key)))
+            if diagnostic.kind.actionable()
+                && products
+                    .iter()
+                    .any(|product| diagnostic.reader == format!("dashboard.{}", product.key))
             {
                 let entry = causes
                     .entry((
@@ -1298,7 +1293,7 @@ mod tests {
 
     #[test]
     fn summary_lists_stack_descriptors_dependencies_and_every_product() {
-        use dashboard::products::{Product, national_focus::NationalFocus, research::Research};
+        use dashboard::products::{Product, doctrines::Doctrines, national_focus::NationalFocus};
         let reader = format!("dashboard.{}", NationalFocus::KEY);
         let mut report = StackReport {
             stack: "local-fixture".into(),
@@ -1346,7 +1341,7 @@ mod tests {
             );
         }
         let diagnostic = Diagnostic::new(
-            &format!("dashboard.{}", Research::KEY),
+            &format!("dashboard.{}", Doctrines::KEY),
             Kind::Fallback,
             "sprite missing".into(),
         );
@@ -1446,7 +1441,7 @@ mod tests {
         assert_eq!(summary.matches("## New in mods\n").count(), 1);
         assert_eq!(
             summary
-                .matches("Actionable dashboard product causes and shared preparation notes beyond vanilla;")
+                .matches("Actionable dashboard product causes beyond vanilla;")
                 .count(),
             1
         );
@@ -1519,22 +1514,32 @@ mod tests {
     }
 
     #[test]
-    fn shared_preparation_notes_group_inventory_and_stay_out_of_product_cells() {
-        let keys = dashboard::content_check::SHARED_CHECK_KEYS;
-        assert!(!keys.is_empty());
-        let notes: Vec<_> = keys
+    fn product_notes_group_by_cause_and_other_dashboard_readers_stay_out_of_product_tables() {
+        let other = "dashboard.scripted_content";
+        assert!(
+            !dashboard::products::PRODUCTS
+                .iter()
+                .any(|product| other == format!("dashboard.{}", product.key))
+        );
+        let readers: Vec<String> = dashboard::products::PRODUCTS
+            .iter()
+            .map(|product| format!("dashboard.{}", product.key))
+            .chain([other.to_owned()])
+            .collect();
+        let notes: Vec<_> = readers
             .iter()
             .enumerate()
-            .map(|(index, key)| {
+            .map(|(index, reader)| {
+                let key = reader.trim_start_matches("dashboard.");
                 let kind = if index % 2 == 0 {
                     Kind::Refused
                 } else {
                     Kind::Misread
                 };
                 let mut note = Diagnostic::about(
-                    &format!("dashboard.{key}"),
+                    reader,
                     kind,
-                    "shared preparation",
+                    "product coverage",
                     &format!("{key} producer reason"),
                 );
                 note.count = Some(3);
@@ -1553,19 +1558,18 @@ mod tests {
                 base
             })
             .collect();
-        let product_runs = dashboard::products::PRODUCTS
-            .iter()
-            .map(|product| ReaderRun {
-                reader: format!("dashboard.{}", product.key),
-                milliseconds: 0,
-                completed: true,
-                not_run: None,
-                note: None,
-            })
-            .collect();
         let report = StackReport {
             stack: "mod".into(),
-            readers: product_runs,
+            readers: readers
+                .iter()
+                .map(|reader| ReaderRun {
+                    reader: reader.clone(),
+                    milliseconds: 0,
+                    completed: true,
+                    not_run: None,
+                    note: None,
+                })
+                .collect(),
             diagnostics: notes.clone(),
             ..Default::default()
         };
@@ -1583,26 +1587,38 @@ mod tests {
             ]),
             10,
         );
-        let products = out
-            .split("## Dashboard products\n")
-            .nth(1)
-            .unwrap()
-            .split("## New in mods\n")
-            .next()
-            .unwrap();
-        for (shared_key, note) in keys.iter().zip(&notes) {
-            assert!(!products.contains(shared_key), "{products}");
-            assert!(
-                out.contains(&format!(
-                    "| {shared_key} | {} | 2 | {shared_key} producer reason |",
-                    note.kind.label()
-                )),
-                "{out}"
+        let section = |from: &str, to: &str| {
+            out.split(from)
+                .nth(1)
+                .unwrap()
+                .split(to)
+                .next()
+                .unwrap()
+                .to_owned()
+        };
+        let products = section("## Dashboard products
+", "## New in mods
+");
+        let new = section("## New in mods
+", "## Stacks by reader
+");
+        for (product, note) in dashboard::products::PRODUCTS.iter().zip(&notes) {
+            let kind = note.kind.label();
+            assert_eq!(
+                product_cell(&out, "mod", product.key),
+                format!("3 {kind} (+2 vs vanilla)"),
+                "{products}"
             );
             assert!(
-                out.contains(&format!("| mod | dashboard.{shared_key} |")),
-                "{out}"
+                new.contains(&format!(
+                    "| {key} | {kind} | 2 | {key} producer reason |",
+                    key = product.key
+                )),
+                "{new}"
             );
         }
+        assert!(!products.contains("scripted_content"), "{products}");
+        assert!(!new.contains("scripted_content"), "{new}");
+        assert!(out.contains(&format!("| mod | {other} |")), "{out}");
     }
 }

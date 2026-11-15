@@ -51,7 +51,7 @@ def check(lockfile):
                 continue
             seen.add(name)
             if name not in LEAVES and (
-                name in {"engine", "replay", "replay-data"}
+                name in {"engine", "replay", "replay-data", "replay-rows", "replay-rows-derived"}
                 or name.startswith("engine-")
             ):
                 failures.append(" -> ".join(path))

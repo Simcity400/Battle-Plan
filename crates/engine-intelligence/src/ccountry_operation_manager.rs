@@ -50,7 +50,7 @@ pub fn demand(
     base: usize,
     game_state: usize,
 ) -> Result<Demand, &'static str> {
-    let result = walk(memory, base, game_state, &mut [], &mut [], &mut [], &mut []);
+    let result = count(memory, base, game_state);
     let count = |outcome| match outcome {
         Outcome::Rows { len } => Ok(len),
         Outcome::Truncated { len, unread_rows } => len
@@ -66,6 +66,10 @@ pub fn demand(
     })
 }
 
+pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Walk {
+    walk_buffer(memory, base, game_state, crate::walk::Buffer::Count, crate::walk::Buffer::Count, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
+}
+
 /// Reads operation scalars, retained description bytes, parts (selected
 /// phases, requirements and the equipment pool) and assigned slots in one
 /// country pass. Description and part shortages omit whole primary rows;
@@ -73,26 +77,6 @@ pub fn demand(
 /// storage and payload failures remain independently reported. Storage is
 /// supplied by the caller; no game calls, retries or allocation occur.
 pub fn walk(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut [coperation_instance::Row],
-    assigned: &mut [operation_assigned_operative::Row],
-    descriptions: &mut [u8],
-    parts: &mut [coperation_instance::Part],
-) -> Walk {
-    walk_buffer(
-        memory,
-        base,
-        game_state,
-        crate::walk::Buffer::Fixed(output),
-        crate::walk::Buffer::Fixed(assigned),
-        crate::walk::Buffer::Fixed(descriptions),
-        crate::walk::Buffer::Fixed(parts),
-    )
-}
-
-pub fn walk_growing(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -492,7 +476,7 @@ mod tests {
                 base: 0,
                 bytes: &bytes,
             };
-            let mut expected_rows = [coperation_instance::Row::default(); 1];
+            let mut expected_rows = vec![coperation_instance::Row::default(); 1];
             let mut expected_assigned = vec![operation_assigned_operative::Row::default(); count];
             let mut expected_description = vec![0; count];
             let expected = walk(
@@ -506,7 +490,7 @@ mod tests {
             );
             assert_eq!(expected.outcome, Outcome::Rows { len: 1 });
             assert_eq!(expected.assignments, Outcome::Rows { len: count });
-            let actual = walk_growing(
+            let actual = walk(
                 &memory,
                 BASE,
                 GAME,
@@ -525,8 +509,8 @@ mod tests {
     #[test]
     fn native_values_definition_token_and_empty_assigned_slots_are_preserved() {
         let bytes = fixture();
-        let mut rows = [coperation_instance::Row::default(); 2];
-        let mut assignments = [operation_assigned_operative::Row::default(); 3];
+        let mut rows = vec![coperation_instance::Row::default(); 2];
+        let mut assignments = vec![operation_assigned_operative::Row::default(); 3];
         let result = walk(
             &SliceMemory {
                 base: 0,
@@ -536,7 +520,7 @@ mod tests {
             GAME,
             &mut rows,
             &mut assignments,
-            &mut [],
+            &mut Vec::new(),
             &mut parts(),
         );
         assert_eq!(result.outcome, Outcome::Rows { len: 1 });
@@ -558,16 +542,16 @@ mod tests {
     fn readable_empty_roster_differs_from_missing_or_invalid_manager() {
         let mut bytes = fixture();
         array(&mut bytes, MANAGER + OPERATION_DATA, 0, 0);
-        let mut rows = [];
-        let mut assignments = [];
-        let run = |bytes: &[u8], rows: &mut [_], assignments: &mut [_]| {
+        let mut rows = vec![];
+        let mut assignments = vec![];
+        let run = |bytes: &[u8], rows: &mut Vec<_>, assignments: &mut Vec<_>| {
             walk(
                 &SliceMemory { base: 0, bytes },
                 BASE,
                 GAME,
                 rows,
                 assignments,
-                &mut [],
+                &mut Vec::new(),
                 &mut parts(),
             )
         };
@@ -587,39 +571,6 @@ mod tests {
                 reason: "country operation manager unreadable or null"
             }
         ));
-    }
-
-    #[test]
-    fn capacities_omit_whole_rows_and_report_independent_requirements() {
-        let bytes = fixture();
-        let mut rows = [];
-        let mut assignments = [operation_assigned_operative::Row::default(); 1];
-        let result = walk(
-            &SliceMemory {
-                base: 0,
-                bytes: &bytes,
-            },
-            BASE,
-            GAME,
-            &mut rows,
-            &mut assignments,
-            &mut [],
-            &mut parts(),
-        );
-        assert_eq!(
-            result.outcome,
-            Outcome::Truncated {
-                len: 0,
-                unread_rows: 1
-            }
-        );
-        assert_eq!(
-            result.assignments,
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            }
-        );
     }
 
     #[test]
@@ -645,9 +596,9 @@ mod tests {
                 parts: 2,
             })
         );
-        let mut rows = [coperation_instance::Row::default(); 1];
-        let mut assigned = [operation_assigned_operative::Row::default(); 2];
-        let mut descriptions = [0; 6];
+        let mut rows = vec![coperation_instance::Row::default(); 1];
+        let mut assigned = vec![operation_assigned_operative::Row::default(); 2];
+        let mut descriptions = vec![0; 6];
         let result = walk(
             &memory,
             BASE,
@@ -665,24 +616,6 @@ mod tests {
         );
         assert_eq!(rows[0].effect_description, Name { start: 0, len: 6 });
         assert_eq!(descriptions, description);
-        let short = walk(
-            &memory,
-            BASE,
-            GAME,
-            &mut rows,
-            &mut assigned,
-            &mut descriptions[..5],
-            &mut parts(),
-        );
-        assert_eq!(
-            short.outcome,
-            Outcome::Truncated {
-                len: 0,
-                unread_rows: 1
-            }
-        );
-        assert_eq!((short.bytes_len, short.required_bytes), (0, 6));
-        assert_eq!(short.assignments, Outcome::Rows { len: 2 });
     }
 
     #[test]
@@ -696,8 +629,8 @@ mod tests {
         u64_at(&mut bytes, header, payload as u64);
         u64_at(&mut bytes, header + 16, description.len() as u64);
         u64_at(&mut bytes, header + 24, description.len() as u64);
-        let mut rows = [coperation_instance::Row::default(); 1];
-        let mut assigned = [operation_assigned_operative::Row::default(); 2];
+        let mut rows = vec![coperation_instance::Row::default(); 1];
+        let mut assigned = vec![operation_assigned_operative::Row::default(); 2];
         let mut descriptions = vec![0; description.len()];
         let memory = SliceMemory {
             base: 0,
@@ -808,15 +741,15 @@ mod tests {
             }
         }
         let bytes = fixture();
-        let mut rows = [coperation_instance::Row::default(); 2];
-        let mut assignments = [operation_assigned_operative::Row::default(); 3];
+        let mut rows = vec![coperation_instance::Row::default(); 2];
+        let mut assignments = vec![operation_assigned_operative::Row::default(); 3];
         let result = walk(
             &FaultMemory(&bytes),
             BASE,
             GAME,
             &mut rows,
             &mut assignments,
-            &mut [],
+            &mut Vec::new(),
             &mut parts(),
         );
         assert_eq!(result.outcome, Outcome::Rows { len: 1 });
@@ -833,8 +766,8 @@ mod tests {
         let mut bytes = fixture();
         array(&mut bytes, MANAGER + OPERATION_DATA, ROSTER, 2);
         u64_at(&mut bytes, ROSTER + 8, INSTANCE as u64);
-        let mut rows = [coperation_instance::Row::default(); 2];
-        let mut assignments = [operation_assigned_operative::Row::default(); 4];
+        let mut rows = vec![coperation_instance::Row::default(); 2];
+        let mut assignments = vec![operation_assigned_operative::Row::default(); 4];
         let result = walk(
             &SliceMemory {
                 base: 0,
@@ -844,7 +777,7 @@ mod tests {
             GAME,
             &mut rows,
             &mut assignments,
-            &mut [],
+            &mut Vec::new(),
             &mut parts(),
         );
         assert_eq!(
@@ -864,7 +797,7 @@ mod tests {
             GAME,
             &mut rows,
             &mut assignments,
-            &mut [],
+            &mut Vec::new(),
             &mut parts(),
         );
         assert_eq!(
@@ -956,15 +889,15 @@ mod tests {
         bytes
     }
 
-    fn walk_parts(bytes: &[u8], parts: &mut [Part]) -> (Walk, coperation_instance::Row) {
-        let mut rows = [coperation_instance::Row::default(); 1];
+    fn walk_parts(bytes: &[u8], parts: &mut Vec<Part>) -> (Walk, coperation_instance::Row) {
+        let mut rows = vec![coperation_instance::Row::default(); 1];
         let result = walk(
             &SliceMemory { base: 0, bytes },
             BASE,
             GAME,
             &mut rows,
-            &mut [operation_assigned_operative::Row::default(); 2],
-            &mut [],
+            &mut vec![operation_assigned_operative::Row::default(); 2],
+            &mut Vec::new(),
             parts,
         );
         (result, rows[0])
@@ -973,7 +906,7 @@ mod tests {
     #[test]
     fn phases_requirements_and_the_equipment_pool_follow_native_order() {
         let bytes = prepared();
-        let mut arena = [Part::default(); 7];
+        let mut arena = vec![Part::default(); 7];
         let (result, row) = walk_parts(&bytes, &mut arena);
         assert_eq!(result.outcome, Outcome::Rows { len: 1 });
         assert_eq!((result.parts_len, result.required_parts), (7, 7));
@@ -1031,21 +964,11 @@ mod tests {
     }
 
     #[test]
-    fn a_part_shortage_omits_the_row_with_exact_demand_and_still_reads_its_parts() {
+    fn a_missing_phase_definition_withholds_the_table() {
         let mut bytes = prepared();
-        let (short, _) = walk_parts(&bytes, &mut [Part::default(); 6]);
-        assert_eq!(
-            short.outcome,
-            Outcome::Truncated {
-                len: 0,
-                unread_rows: 1
-            }
-        );
-        assert_eq!((short.parts_len, short.required_parts), (0, 7));
-        // An omitted row's parts are authenticated all the same.
         u64_at(&mut bytes, PHASES + 8, 0);
         assert_eq!(
-            walk_parts(&bytes, &mut []).0.outcome,
+            walk_parts(&bytes, &mut Vec::new()).0.outcome,
             Outcome::Unavailable {
                 reason: "operation phase definition unreadable or null"
             }

@@ -5,24 +5,41 @@
     python tools/boat.py ui
     python tools/boat.py build --out <dir> --release -p viewer --bin viewer
     python tools/boat.py build --out <dir> --profile release-lto -p collector --lib
+    python tools/boat.py test -p replay-columnar --lib -- <test name>... [--exact] [--nocapture]
     python tools/boat.py reconcile
+    python tools/boat.py snapshot
 
 Run it inside the worktree. Its tracked and unignored files, uncommitted changes included, are
-synchronized to a VM cloned from the `hoi4-check` image (tools/boat_setup.sh) and compiled with
-cargo-xwin for x86_64-pc-windows-msvc. Nothing runs tests or Windows programs. Cargo's exit code
-passes through (101 for compile errors); exit 75 means Boat failed: run it again, never locally.
+synchronized to a VM cloned from the SNAPSHOT image and compiled with cargo-xwin for
+x86_64-pc-windows-msvc. Cargo's exit code passes through (101 for compile errors);
+exit 75 means Boat failed: run it again, never locally.
+
+`snapshot`, from a clean worktree at the head of the branch the image serves, re-saves SNAPSHOT
+from a VM of its own (cloned from SNAPSHOT, or from BASE_SNAPSHOT, which tools/boat_setup.sh
+builds) that compiled that tree as builders do: WARM, then the test builds the shared timings
+show run most. About 20 minutes from SNAPSHOT, an hour from BASE_SNAPSHOT; worth running again
+once the branch has changed crates many others depend on, its dependencies or its features. The
+VM stops at the end of its idle tail.
 
 `build` downloads the named exe/dll/pdb outputs, checks their SHA-256 and records them with the
-source digest in `<dir>/boat-artifacts.json`; `--refresh-image` then re-saves `hoi4-check` from
-a clean worktree.
+source digest in `<dir>/boat-artifacts.json`.
 GUI builds with `custom-protocol` build and embed the current UI on the VM.
+
+`test` takes `cargo test`'s arguments: it builds the test programs on the VM (`cargo test --no-run`,
+in the profile `cargo test` would use), delivers them as `build` does to `--out`, whose contents
+each run replaces, or to a folder of the run's own under `.cargo-target/boat-test`, where each run
+removes the folders of runs that have ended, and runs them here in the package's folder with
+the CARGO_* variables Cargo sets, the arguments after `--` and the caller's environment. It exits
+with the worst program's code, and 1 where names were given and none matched (cargo test exits 0).
+Doc tests are not run; `--pdb` also fetches PDBs, `--no-fail-fast` runs every program.
 
 Worktrees share VMs, locks and `logs/timings.jsonl` under the main checkout's `captures/boat`
 (BOAT_STATE_DIR overrides). A run keeps its VM alive with a short lease it renews, and leaves
 it with a 5-minute idle tail, so the next run reuses it warm and an interrupted run strands it
 for minutes, not hours. Of the running VMs, a run takes the one whose last build of its profile
-leaves the fewest of the run's crates to compile again; release builds also reuse, through a
-compile cache on each VM, any crate that VM compiled before from the same inputs.
+leaves the fewest of the run's crates to compile again; release and test builds also reuse,
+through a compile cache on each VM, any crate that VM compiled before from the same inputs, but
+for the workspace crates of a test build, which compile incrementally as a check's do.
 `reconcile`, which every run also does, ends long lifetimes on VMs no run holds.
 """
 
@@ -34,6 +51,7 @@ import json
 import msvcrt
 import os
 from pathlib import Path
+import re
 import shutil
 import signal
 import stat
@@ -46,7 +64,46 @@ import time
 import uuid
 
 TOOLS = Path(__file__).resolve().parent
-SNAPSHOT = "hoi4-check"
+# The image pool VMs are cloned from: the record-once lane's own until it lands, then hoi4-check again.
+SNAPSHOT = "hoi4-record-once"
+# What `snapshot` starts from until SNAPSHOT exists.
+BASE_SNAPSHOT = "hoi4-check"
+# What `snapshot` compiles, as builders send it: the UI, the checks, the most built release binaries, then
+# (`frequent_tests`) the test builds run most. A branch mid-change may not compile whole, so Cargo compiles all
+# it can (--keep-going, which test spells --no-fail-fast).
+WARM = [
+    ("ui", []),
+    ("check", ["check", "--keep-going", "--workspace", "--all-targets"]),
+    ("build", ["build", "--keep-going", "--release", "-p", "viewer", "--bin", "viewer"]),
+    ("build", ["build", "--keep-going", "--release", "-p", "recorder", "-p", "collector", "--features", "replay/keep-journal"]),
+    ("build", ["build", "--keep-going", "--release", "-p", "replay", "--bin", "journal-encode", "--bin", "change-digest", "--bin", "direct-read", "--features", "memory-labels,multiplied"]),
+    ("build", ["build", "--keep-going", "--release", "-p", "playhead", "--features", "bench", "--bin", "playhead-bench"]),
+]
+# Cargo's exit for compile errors.
+COMPILE_ERRORS = 101
+# `test --workspace` resolved other features than `test -p` for 32 of viewer's crates (12 Nov), so each test build is warmed as sent.
+WARM_TESTS = 30
+WARM_TEST_HOURS = 24
+
+
+def frequent_tests(log, now):
+    """The test builds that succeeded most often in the log's last WARM_TEST_HOURS, as their runs sent them, most frequent first."""
+    counts = {}
+    try:
+        lines = log.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return []
+    for line in lines:
+        try:
+            record = json.loads(line)
+            when = time.mktime(time.strptime(record["time"][:19], "%Y-%m-%dT%H:%M:%S"))
+        except (ValueError, KeyError, TypeError):
+            continue
+        if record.get("mode") == "test" and record.get("exit") == 0 and now - when < WARM_TEST_HOURS * 3600:
+            key = tuple(record["args"])
+            counts[key] = counts.get(key, 0) + 1
+    ranked = sorted(counts, key=lambda key: -counts[key])[:WARM_TESTS]
+    return [("test", ["--warm", "--", key[0], *key[1:2], "--no-fail-fast", *key[2:]]) for key in ranked]
 REMOTE = "/home/user/hoi4"
 TARGET = "x86_64-pc-windows-msvc"
 RUN_SH = b'#!/usr/bin/env bash\nset -euo pipefail\nsource /home/user/hoi4/env.sh\nexec python3 /home/user/hoi4/remote.py "$@"'
@@ -413,12 +470,12 @@ def trees(manifest):
 
 
 def workspace(worktree):
-    """Each workspace crate's directory by package name, and the workspace crates its targets and its tests depend on."""
+    """Each workspace crate's directory by package name, the workspace crates its targets and its tests depend on, and its features."""
     try:
         shared = tomllib.loads((worktree / "Cargo.toml").read_text(encoding="utf-8")).get("workspace", {}).get("dependencies", {})
     except (OSError, tomllib.TOMLDecodeError):
-        return {}, {}, {}
-    dirs, needs, tests = {}, {}, {}
+        return {}, {}, {}, {}
+    dirs, needs, tests, features = {}, {}, {}, {}
 
     def package(name, spec):
         if isinstance(spec, dict) and spec.get("workspace"):
@@ -437,24 +494,69 @@ def workspace(worktree):
         tables = [data, *data.get("target", {}).values()]
         needs[name] = {package(dep, spec) for table in tables for kind in ("dependencies", "build-dependencies") for dep, spec in table.get(kind, {}).items()}
         tests[name] = {package(dep, spec) for table in tables for dep, spec in table.get("dev-dependencies", {}).items()}
-    return dirs, {name: deps & dirs.keys() for name, deps in needs.items()}, {name: deps & dirs.keys() for name, deps in tests.items()}
+        optional = {dep for table in tables for kind in ("dependencies", "build-dependencies") for dep, spec in table.get(kind, {}).items() if isinstance(spec, dict) and spec.get("optional")}
+        features[name] = set(data.get("features", {})) | optional
+    return dirs, {name: deps & dirs.keys() for name, deps in needs.items()}, {name: deps & dirs.keys() for name, deps in tests.items()}, features
+
+
+def selected(cargo):
+    """The packages the arguments name with -p or --package."""
+    named = {arg.split("=", 1)[1] if "=" in arg else arg[2:] for arg in cargo if arg.startswith(("--package=", "-p")) and arg not in {"-p", "--package"}}
+    return named | {cargo[at + 1] for at, arg in enumerate(cargo[:-1]) if arg in {"-p", "--package"}}
+
+
+def member_features(worktree, cargo):
+    """The arguments with `member/feature` written as `feature` for each selected member that dev-depends on itself.
+
+    Cargo gives `member/feature` to that dev-dependency, which a build leaves out, so the feature would be dropped.
+    """
+    dirs, _, tests, features = workspace(worktree)
+    chosen = set(dirs) if "--workspace" in cargo else selected(cargo) & dirs.keys()
+
+    def rewrite(value):
+        items = []
+        for item in value.replace(",", " ").split():
+            member, slash, feature = item.partition("/")
+            if slash and member in chosen and member in tests.get(member, ()):
+                others = sorted(other for other in chosen - {member} if feature in features.get(other, ()))
+                if others:
+                    raise Failure(f"--features {item}: Cargo would drop it ({member} dev-depends on itself), and `{feature}` would also turn it on in {', '.join(others)}; build {member} apart")
+                say(f"Features: {item} passed as {feature} ({member} dev-depends on itself, so Cargo would drop {item})")
+                item = feature
+            items.append(item)
+        return ",".join(items)
+
+    out, rest = [], iter(cargo)
+    for arg in rest:
+        if arg == "--":
+            out += [arg, *rest]
+        elif arg in {"--features", "-F"}:
+            out += [arg, rewrite(next(rest, ""))]
+        elif arg.startswith("--features="):
+            out.append("--features=" + rewrite(arg.split("=", 1)[1]))
+        elif arg.startswith("-F"):
+            out.append("-F" + rewrite(arg[2:]))
+        else:
+            out.append(arg)
+    return out
 
 
 class Plan:
     """The workspace crates a run compiles, and how many of them a VM compiles again after its last build of the profile."""
 
     def __init__(self, worktree, manifest, cargo):
-        # A check's metadata and a build's code are kept apart, per profile.
-        self.key = f"tree_{cargo[0]}_{profile(cargo)}"
-        # Only release builds go through the compile cache.
-        self.cache = f"cache_{cargo[0]}_{profile(cargo)}" if cargo[0] == "build" else None
+        # A check's metadata and a build's code are kept apart, per profile; tests build in a target of their
+        # own, which older helpers' tests (`tree_test_*`) never touched.
+        kind = "tests" if cargo[0] == "test" else cargo[0]
+        self.key = f"tree_{kind}_{profile(cargo)}"
+        # Workspace crates come back from the compile cache in builds and tests, except the dev profile's: they compile incrementally.
+        self.cache = f"cache_{kind}_{profile(cargo)}" if cargo[0] == "build" or (cargo[0] == "test" and profile(cargo) != "dev") else None
         self.trees = trees(manifest)
-        self.dirs, needs, tests = workspace(worktree)
-        named = {arg.split("=", 1)[1] if "=" in arg else arg[2:] for arg in cargo if arg.startswith(("--package=", "-p")) and arg not in {"-p", "--package"}}
-        named |= {cargo[at + 1] for at, arg in enumerate(cargo[:-1]) if arg in {"-p", "--package"}}
+        self.dirs, needs, tests, _ = workspace(worktree)
+        named = selected(cargo)
         roots = set(self.dirs) if "--workspace" in cargo or not named else named & self.dirs.keys()
         # Any test, bench or example target compiles the named crates' dev-dependencies.
-        tested = any(arg in {"--all-targets", "--tests", "--benches", "--examples", "--test", "--bench", "--example"} or arg.startswith(("--test=", "--bench=", "--example=")) for arg in cargo)
+        tested = cargo[0] == "test" or any(arg in {"--all-targets", "--tests", "--benches", "--examples", "--test", "--bench", "--example"} or arg.startswith(("--test=", "--bench=", "--example=")) for arg in cargo)
         self.compiled, pending = set(), [dep for root in roots for dep in (needs.get(root, set()) | (tests.get(root, set()) if tested else set()))] + list(roots)
         while pending:
             crate = pending.pop()
@@ -872,44 +974,331 @@ def record_artifacts(outdir, artifacts, cargo, vmid, worktree, revision, source_
     atomic_json(path, {"vm": vmid, "lane": str(worktree), "revision": revision, "cargo_arguments": cargo, "target": TARGET, "source_manifest_sha256": source_digest, "artifacts": list(combined.values())})
 
 
-def refresh_image(vmid, token, worktree, revision):
+def linked(path):
+    return path.is_symlink() or bool(getattr(path.lstat(), "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+# Held by the run whose programs a folder holds, from its start until they have run.
+TEST_LOCK = ".boat-test.lock"
+
+
+def test_folder(worktree, outdir):
+    """Claims the folder a test run's programs go to: --out, or one of its own under .cargo-target/boat-test,
+    where it removes the folders of earlier runs that have ended; returns the folder and its lock."""
+    if outdir is None:
+        base = worktree / ".cargo-target" / "boat-test"
+        base.mkdir(parents=True, exist_ok=True)
+        for old in base.iterdir():
+            if linked(old) or not old.is_dir():
+                old.unlink(missing_ok=True)
+                continue
+            try:
+                Lock(old / TEST_LOCK).close()
+            except OSError:
+                continue
+            shutil.rmtree(old, ignore_errors=True)
+        folder = base / uuid.uuid4().hex[:12]
+    else:
+        folder = outdir
+        if folder.exists() or folder.is_symlink():
+            if linked(folder) or not folder.is_dir():
+                raise Refused(f"--out {folder} is not a plain folder")
+            if any(entry.name != TEST_LOCK for entry in folder.iterdir()):
+                try:
+                    ours = json.loads((folder / "boat-artifacts.json").read_text())["cargo_arguments"][0] == "test"
+                except (OSError, ValueError, KeyError, IndexError):
+                    ours = False
+                # Each run replaces what the folder holds, so it must be one only test runs wrote.
+                if not ours:
+                    raise Refused(f"--out {folder} holds files no earlier `boat.py test` left; name an empty or new folder")
+    folder.mkdir(parents=True, exist_ok=True)
+    try:
+        lock = Lock(folder / TEST_LOCK)
+    except OSError:
+        raise Refused(f"--out {folder} is in use by another `boat.py test`") from None
+    return folder.resolve(), lock
+
+
+def replace_folder(folder):
+    for entry in folder.iterdir():
+        if entry.name == TEST_LOCK:
+            continue
+        if entry.is_dir() and not linked(entry):
+            shutil.rmtree(entry)
+        else:
+            entry.unlink()
+
+
+def crate_sources(worktree, cargo):
+    """The Rust files a selected workspace crate's test programs may compile in, by package; build scripts and binaries' own files left out."""
+    dirs = workspace(worktree)[0]
+    for package in sorted(selected(cargo) & dirs.keys()):
+        root = worktree / dirs[package]
+        for path in sorted(root.rglob("*.rs")):
+            if path.name != "build.rs" and path.relative_to(root).parts[:2] != ("src", "bin"):
+                yield package, path
+
+
+BIN_EXE = re.compile(r"CARGO_BIN_EXE_([A-Za-z0-9_-]+)")
+COMPILED_PATH = re.compile(r'env!\(\s*"(CARGO_MANIFEST_DIR|CARGO_TARGET_TMPDIR|OUT_DIR|CARGO_BIN_EXE_[A-Za-z0-9_-]+)"')
+
+
+def named_binaries(worktree, cargo):
+    """`package/binary` for each binary a selected crate's code names by CARGO_BIN_EXE_<binary>, which must come with its tests."""
+    return sorted({f"{package}/{name}" for package, path in crate_sources(worktree, cargo) for name in BIN_EXE.findall(path.read_text(encoding="utf-8", errors="replace"))})
+
+
+def compiled_paths(worktree, cargo):
+    """Lines that compile in a path, which on Boat is the VM's, in files that never read the variable at run time."""
+    found = []
+    for _, path in crate_sources(worktree, cargo):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        for number, line in enumerate(text.splitlines(), 1):
+            for name in COMPILED_PATH.findall(line):
+                # include_bytes!/include_str! read the file where it compiles, which is right.
+                if "include" not in line and not re.search(r'var(_os)?\(\s*"' + re.escape(name) + '"', text):
+                    found.append(f'{path.relative_to(worktree).as_posix()}:{number}: env!("{name}")')
+    return found
+
+
+def test_environment(base, worktree, folder, program, binaries):
+    """The environment `cargo test` gives a test program, with this machine's paths."""
+    package = program["package"]
+    core, _, pre = package["version"].split("+", 1)[0].partition("-")
+    major, minor, patch = core.split(".")
+    env = {**base, **dict(package["env"])}
+    env.update({
+        "CARGO_MANIFEST_DIR": str(worktree / Path(package["manifest"]).parent),
+        "CARGO_MANIFEST_PATH": str(worktree / package["manifest"]),
+        "CARGO_PKG_NAME": package["name"],
+        "CARGO_PKG_VERSION": package["version"],
+        "CARGO_PKG_VERSION_MAJOR": major,
+        "CARGO_PKG_VERSION_MINOR": minor,
+        "CARGO_PKG_VERSION_PATCH": patch,
+        "CARGO_PKG_VERSION_PRE": pre,
+        "CARGO_PKG_AUTHORS": ":".join(package.get("authors") or []),
+        **{f"CARGO_PKG_{key.upper()}": package.get(key) or "" for key in ("description", "homepage", "repository", "license", "license_file", "rust_version", "readme")},
+    })
+    # Integration tests and benches get these at compile time, which on Boat names the VM's paths; this run sets them too.
+    if {"test", "bench"} & set(program["kind"]):
+        env["CARGO_TARGET_TMPDIR"] = str(folder / "tmp")
+        for binary in binaries:
+            if binary["package"] == package["name"]:
+                env["CARGO_BIN_EXE_" + binary["name"]] = str(folder / binary["executable"])
+    path = next((key for key in base if key.upper() == "PATH"), "PATH")
+    env[path] = os.pathsep.join(filter(None, [str(folder), base.get(path)]))
+    return env
+
+
+KIND_ORDER = {"bin": 1, "test": 2, "bench": 3, "example": 4}
+RUNNING = re.compile(r"^running (\d+) tests?$")
+FILTERED = re.compile(r"^test result: .*; (\d+) filtered out")
+# STATUS_DLL_NOT_FOUND
+DLL_MISSING = 0xC0000135
+
+
+def run_program(executable, args, cwd, env):
+    """Runs one test program, streaming its output; returns its exit code, the tests it ran and those it filtered out (None: it did not say)."""
+    ran = filtered = None
+    sys.stdout.flush()
+    process = subprocess.Popen([str(executable), *args], cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, creationflags=NO_CONSOLE)
+    try:
+        for raw in process.stdout:
+            sys.stdout.buffer.write(raw)
+            sys.stdout.buffer.flush()
+            line = raw.decode("utf-8", errors="replace").strip()
+            if match := RUNNING.match(line):
+                ran = (ran or 0) + int(match[1])
+            elif match := FILTERED.match(line):
+                filtered = (filtered or 0) + int(match[1])
+        return process.wait(), ran, filtered
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+        process.stdout.close()
+
+
+def shown(code):
+    return str(code) if code < 256 else hex(code)
+
+
+# The pinned DXC a program loads from beside itself (shader-pipeline's `Compiler::discover`).
+SHADER_COMPILER = ("dxcompiler.dll", "dxil.dll")
+# The built programs that draw the map, so a build puts the pinned DXC beside them as a test run does.
+MAP_PROGRAMS = {"viewer.exe", "replay-desktop.exe"}
+
+
+def place_shader_compiler(worktree, folder):
+    """Puts the pinned DXC beside the built or test programs, from the copy tools/install-shader-compiler.ps1 fetched into this
+    worktree's target folder once. A failure is said and the programs run without it: those that compile shaders say so."""
+    copy = worktree / ".cargo-target" / "shader-compiler"
+    try:
+        if not all((copy / name).is_file() for name in SHADER_COMPILER):
+            subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(worktree / "tools" / "install-shader-compiler.ps1"),
+                            "-Destination", str(copy)], check=True, capture_output=True, creationflags=NO_CONSOLE)
+        for name in SHADER_COMPILER:
+            shutil.copy2(copy / name, folder / name)
+    except (OSError, subprocess.CalledProcessError) as error:
+        say(f"The test programs run without the pinned shader compiler: {error}")
+
+
+def run_tests(worktree, folder, delivered, run, started):
+    """Runs the delivered test programs in Cargo's order, as `cargo test` would; returns the worst exit code."""
+    programs = sorted(delivered.get("tests", []), key=lambda program: (program["package"]["name"], min(KIND_ORDER.get(kind, 0) for kind in program["kind"]), program["target"]))
+    (folder / "tmp").mkdir(exist_ok=True)
+    place_shader_compiler(worktree, folder)
+    worst, ran, filtered, counted, done = 0, 0, 0, True, 0
+    for program in programs:
+        cwd = worktree / Path(program["package"]["manifest"]).parent
+        env = test_environment(dict(os.environ), worktree, folder, program, delivered.get("binaries", []))
+        code, program_ran, program_filtered = run_program(folder / program["executable"], run.program, cwd, env)
+        done += 1
+        counted = counted and program_ran is not None
+        ran, filtered = ran + (program_ran or 0), filtered + (program_filtered or 0)
+        note = " (a DLL it needs is not on this machine)" if code == DLL_MISSING else ""
+        say(f"Test program: {program['package']['name']} {'/'.join(program['kind'])} {program['target']}: {folder / program['executable']}: exit {shown(code)}{note}")
+        worst = max(worst, code)
+        if code and run.fail_fast and done < len(programs):
+            say(f"Stopped after the first failing program, as cargo test does; {len(programs) - done} not run (--no-fail-fast runs them)")
+            break
+    if not programs:
+        say("No test programs: the selection holds no test targets")
+    elif counted and ran == 0 and not worst and "--list" not in run.program:
+        if filtered:
+            # cargo test exits 0 here; a misspelt name must not read as a pass.
+            say(f"No test matched {' '.join(run.program)}: {filtered} filtered out in {done} programs; exit 1 where cargo test exits 0")
+            worst = 1
+        else:
+            say("No tests ran: the selected programs hold none")
+    say(f"Tests: {done} of {len(programs)} programs run, {ran if counted else 'unknown'} tests ran; exit {shown(worst)}; {time.monotonic() - started:.2f} s from command start")
+    # Windows exit codes are unsigned 32-bit; sys.exit takes them as a signed int.
+    return worst - 2 ** 32 if worst >= 2 ** 31 else worst
+
+
+def make_snapshot(state, worktree, revision):
+    """Saves SNAPSHOT from a VM of its own that compiled this clean worktree as builders do (WARM)."""
     if git(worktree, "status", "--porcelain"):
-        raise Failure("Refusing to save the shared image from a dirty worktree")
-    for step in (["check", "check", "--workspace", "--all-targets"], ["ui"]):
-        status, _ = quick(vmid, "acquire", token)
+        raise Failure("Refusing to save the image from a dirty worktree")
+    vmid = None
+    for base in dict.fromkeys((SNAPSHOT, BASE_SNAPSHOT)):
+        creation, events = boat("new", "--from", base, "--type", "large", "--name", "hoi4-image-" + SNAPSHOT, "--ttl", str(LEASE_SECONDS), "--no-env", check=False)
+        vmid = next((event["id"] for event in events if event.get("event") == "created"), None)
+        if vmid:
+            break
+        say(f"Could not clone {base} ({creation.returncode}): {(creation.stderr or creation.stdout).strip()[:300]}")
+    if not vmid:
+        raise Failure("Could not clone a VM to build the image on")
+    say(f"Building {SNAPSHOT} from {revision} on {vmid}, cloned from {base}")
+    lease = Lease(vmid)
+    token, stage = uuid.uuid4().hex, None
+    try:
+        wait_hydrated(vmid)
+        install_runner(state, vmid)
+        manifest = source_manifest(worktree)
+        for index, (mode, args) in enumerate(WARM + frequent_tests(state.logs / "timings.jsonl", time.time())):
+            status, old = quick(vmid, "acquire", token)
+            if status:
+                raise Failure(f"Could not claim {vmid} ({status})")
+            sync = []
+            if index == 0:
+                stage = state.jobs / token
+                stage.mkdir()
+                sync = ["--sync", send_source(vmid, worktree, manifest, json.loads(old), stage, token)]
+            started = time.monotonic()
+            status, _ = remote(vmid, mode, token, *sync, *args)
+            say(f"Image step {mode} {' '.join(args)}: exit {status}, {time.monotonic() - started:.0f} s")
+            if status == COMPILE_ERRORS and mode != "ui":
+                say("WARNING: the tree does not compile whole; the image keeps what did")
+            elif status:
+                raise Failure(f"{mode} {' '.join(args)} failed ({status}); {SNAPSHOT} was not saved")
+        # The last claim clears the jobs' leftovers out of the image.
+        if quick(vmid, "acquire", token)[0] or quick(vmid, "release", token)[0]:
+            raise Failure(f"Could not clear {vmid} before saving the image")
+        status, _ = remote(vmid, "provenance", token)
         if status:
-            raise Failure("Could not reclaim the VM before saving the image")
-        status, _ = remote(vmid, step[0], token, *step[1:])
-        if status:
-            raise Failure(f"{' '.join(step)} failed; the image was not saved")
-    status, _ = remote(vmid, "provenance", token)
-    if status:
-        raise Failure("Could not record the toolchain provenance")
-    boat("exec", vmid, "--", "sh", "-c", f"echo {revision} > {REMOTE}/source-revision")
-    boat("snapshot", vmid, SNAPSHOT)
-    say(f"Saved {SNAPSHOT} from {revision}")
+            raise Failure("Could not record the toolchain provenance")
+        boat("exec", vmid, "--", "sh", "-c", f"echo {revision} > {REMOTE}/source-revision")
+        boat("snapshot", vmid, SNAPSHOT)
+        say(f"Saved {SNAPSHOT} from {revision}")
+    finally:
+        if stage:
+            remove_stage(state, stage)
+        # It stops at the end of its idle tail, as tools/boat_setup.sh leaves the base image's VM.
+        lease.end()
+    return 0
+
+
+class Refused(Exception):
+    """A test run boat.py will not start, named with why."""
+
+
+class TestRun:
+    """What `boat.py test` does with the programs it builds: the arguments they get, whether it stops at the first failure, and whether PDBs come."""
+
+    def __init__(self, program, fail_fast=True, pdb=False):
+        self.program, self.fail_fast, self.pdb = program, fail_fast, pdb
+
+
+# `cargo test` options that take a value, so the word after one is not a test name.
+VALUE_OPTIONS = {"-p", "--package", "--test", "--bench", "--bin", "--example", "--features", "-F", "--exclude", "--profile", "--manifest-path", "--color", "--config", "-Z", "--lockfile-path", "--artifact-dir"}
+TEST_REFUSED = {
+    "--no-run": "boat.py test builds and then runs; for a compile alone use `boat.py check --all-targets`",
+    "--doc": "doc tests are built and run by rustdoc on one machine, so they cannot be built on Boat and run here",
+    "--workspace": "name the crates with -p: a whole-workspace run is a suite",
+    "--all": "name the crates with -p: a whole-workspace run is a suite",
+}
+
+
+def parse_test(rest):
+    """`boat.py test` arguments: (the `cargo test --no-run` arguments, the output directory, the run)."""
+    cargo, names, program, outdir, run = ["test", "--no-run"], [], [], None, TestRun([])
+    items = iter(rest)
+    for arg in items:
+        if arg == "--":
+            program = list(items)
+        elif arg == "--out" or arg.startswith("--out="):
+            value = arg.split("=", 1)[1] if "=" in arg else next(items, "")
+            if not value:
+                raise Refused("--out needs a directory")
+            outdir = Path(value)
+        elif arg == "--pdb":
+            run.pdb = True
+        elif arg == "--no-fail-fast":
+            run.fail_fast = False
+        elif arg in TEST_REFUSED:
+            raise Refused(f"{arg}: {TEST_REFUSED[arg]}")
+        elif arg in VALUE_OPTIONS:
+            cargo += [arg, next(items, "")]
+        elif arg.startswith("-"):
+            cargo.append(arg)
+        else:
+            # Cargo's TESTNAME; any number of them filter as they would after --.
+            names.append(arg)
+    if not selected(cargo):
+        raise Refused("name the crate with -p <crate>")
+    run.program = names + program
+    return cargo, outdir, run
 
 
 def parse(argv):
-    """Returns (mode, cargo arguments, output directory, refresh image)."""
-    if not argv or argv[0] not in {"check", "build", "ui", "reconcile"}:
-        raise Failure("Usage: boat.py check <cargo args> | build --out <dir> [--refresh-image] --release|--profile <name> <cargo args> | ui | reconcile")
+    """Returns (mode, cargo arguments, output directory, the test run)."""
+    if not argv or argv[0] not in {"check", "build", "test", "ui", "reconcile", "snapshot"}:
+        raise Failure("Usage: boat.py check <cargo args> | build --out <dir> --release|--profile <name> <cargo args> | test [--out <dir>] [--pdb] [--no-fail-fast] -p <crate> <cargo test args> [-- <test args>] | ui | reconcile | snapshot")
     mode, rest = argv[0], list(argv[1:])
-    outdir, refresh = None, False
-    if mode in {"ui", "reconcile"}:
+    outdir, run = None, None
+    if mode in {"ui", "reconcile", "snapshot"}:
         if rest:
             raise Failure(f"{mode} takes no arguments")
-        return mode, [], None, False
+        return mode, [], None, None
+    if mode == "test":
+        rest, outdir, run = parse_test(rest)
     if mode == "build":
-        while rest[:1] in (["--out"], ["--refresh-image"]):
-            if rest[0] == "--refresh-image":
-                refresh = True
-                rest.pop(0)
-            elif len(rest) < 2:
+        if rest[:1] == ["--out"]:
+            if len(rest) < 2:
                 raise Failure("--out needs a directory")
-            else:
-                outdir = Path(rest[1])
-                del rest[:2]
+            outdir = Path(rest[1])
+            del rest[:2]
         # Release builds only: an optimised profile such as release-lto inherits release.
         if outdir is None or profile(rest) in {"dev", "test"}:
             raise Failure("build needs --out <dir> and --release or --profile <optimised profile>")
@@ -918,7 +1307,7 @@ def parse(argv):
             raise Failure("The target, target directory and message format belong to the tool")
         if arg in {"-j", "--jobs"} or arg.startswith(("--jobs=", "-j")):
             raise Failure("The VM sets the job count for its size; drop -j")
-    return mode, [mode, *rest], outdir, refresh
+    return mode, rest if mode == "test" else [mode, *rest], outdir, run
 
 
 def machine_size(mode, cargo):
@@ -932,20 +1321,33 @@ def machine_size(mode, cargo):
 
 def run(argv):
     started = time.monotonic()
-    mode, cargo, outdir, refresh = parse(argv)
+    mode, cargo, outdir, tests = parse(argv)
     worktree = Path(git(Path.cwd(), "rev-parse", "--show-toplevel")).resolve()
     state = State.for_worktree(worktree)
     if mode == "reconcile":
         with state.allocator():
             reconcile(state, listing())
         return 0
-    if outdir:
+    if mode == "snapshot":
+        return make_snapshot(state, worktree, git(worktree, "rev-parse", "HEAD"))
+    cargo = member_features(worktree, cargo)
+    runner, claim = [], None
+    if mode == "test":
+        for line in compiled_paths(worktree, cargo):
+            say(f"WARNING: {line} is the Boat VM's path in a test built there; read std::env::var_os first (boat.py test sets CARGO_MANIFEST_DIR, CARGO_TARGET_TMPDIR and CARGO_BIN_EXE_*; OUT_DIR is the VM's alone)")
+        if not {"--lib", "--bins", "--bin", "--tests", "--test", "--benches", "--bench", "--examples", "--example", "--all-targets"} & {arg.split("=", 1)[0] for arg in cargo}:
+            say("Doc tests: not run; they build and run through rustdoc on one machine")
+        runner = [*(["--pdb"] if tests.pdb else []), *(f"--bin-exe={name}" for name in named_binaries(worktree, cargo)), "--"]
+    elif outdir:
         outdir = outdir.resolve()
         outdir.mkdir(parents=True, exist_ok=True)
     revision = git(worktree, "rev-parse", "HEAD")
     lane = hashlib.sha256(os.path.normcase(str(worktree)).encode()).hexdigest()
     manifest = source_manifest(worktree, state.root / "hashes" / (lane + ".json"))
     source_digest = manifest_digest(manifest)
+    if mode == "test":
+        # After the hashing, which a held lock file in an unignored folder would fail.
+        outdir, claim = test_folder(worktree, outdir)
     token = uuid.uuid4().hex
     record = {"helper": "tools/boat.py", "mode": mode, "worktree": str(worktree), "revision": revision, "source_sha256": source_digest, "args": cargo, "vm": None, "phases": {}}
     phase = "allocate"
@@ -961,6 +1363,7 @@ def run(argv):
     changed, cached = {}, {}
     cargo_exit = None
     failure = None
+    delivered = None
     try:
         stage = state.jobs / token
         stage.mkdir()
@@ -977,7 +1380,7 @@ def run(argv):
         if plan:
             changed[plan.key] = None
         # The job synchronizes the tree first; it releases its claim whether that or Cargo fails.
-        status, job = remote(vmid, "ui" if mode == "ui" else mode, token, "--sync", source, *([] if mode == "ui" else cargo))
+        status, job = remote(vmid, "ui" if mode == "ui" else mode, token, "--sync", source, *([] if mode == "ui" else [*runner, *cargo]))
         claimed = False
         if status == SYNC_FAILED:
             raise Failure("Remote source synchronization failed; see the remote output above")
@@ -992,13 +1395,20 @@ def run(argv):
             artifacts = deliver(vmid, outcome(vmid, job), outdir)
             record["artifacts_verified"] = True
             record_artifacts(outdir, artifacts, cargo, vmid, worktree, revision, source_digest)
-            if refresh:
-                enter("refresh")
-                changed["tree_check_dev"] = None
-                refresh_image(vmid, token, worktree, revision)
-        return cargo_exit
+            if {Path(artifact["path"]).name for artifact in artifacts} & MAP_PROGRAMS:
+                place_shader_compiler(worktree, outdir)
+        if mode == "test" and cargo_exit == 0:
+            enter("deliver")
+            delivered = outcome(vmid, job)
+            replace_folder(outdir)
+            if delivered.get("tests"):
+                artifacts = deliver(vmid, delivered, outdir)
+                record["artifacts_verified"] = True
+                record_artifacts(outdir, artifacts, cargo, vmid, worktree, revision, source_digest)
     except BaseException as error:
         failure = (phase, "interrupted" if isinstance(error, KeyboardInterrupt) else str(error))
+        if claim:
+            claim.close()
         raise
     finally:
         # A job whose result was lost may still run, so it keeps the claim.
@@ -1025,6 +1435,12 @@ def run(argv):
         with (state.logs / "timings.jsonl").open("a", encoding="utf-8") as log:
             log.write(json.dumps(record) + "\n")
         say(f"Boat wall time {elapsed:.2f} s; cargo exit {cargo_exit}; VM {vmid or 'not allocated'}")
+    # The VM is free again before the programs run here.
+    try:
+        return cargo_exit if delivered is None else run_tests(worktree, outdir, delivered, tests, started)
+    finally:
+        if claim:
+            claim.close()
 
 
 def main(argv):
@@ -1037,6 +1453,9 @@ def main(argv):
     except KeyboardInterrupt:
         say("Interrupted; a surviving remote job keeps its claim, and the VM stops when its lease ends.")
         return 130
+    except Refused as error:
+        say(f"boat.py test refused: {error}")
+        return 2
     except Exception as error:
         say(f"BOAT UNAVAILABLE: {error}\nRun it on Boat again; never compile locally.")
         return UNAVAILABLE

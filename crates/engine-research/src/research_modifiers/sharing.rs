@@ -55,7 +55,6 @@ impl Country {
         countries: &ccountry::Reader<'_, M>,
         country: ccountry::Country,
         status: usize,
-        growing: bool,
     ) -> Result<Self, &'static str> {
         let roster = array_at(memory, at(status, 0x118)?, 8)?;
         let mut result = Self {
@@ -113,7 +112,7 @@ impl Country {
                 let faction = read::<u8>(memory, at(template, 0x78)?)
                     .ok_or("research sharing faction mode unreadable")?;
                 group.filters = array_at(memory, at(template, 0x80)?, 40)?;
-                group.name = text(memory, at(template, 0x10)?, growing)?;
+                group.name = text(memory, at(template, 0x10)?)?;
                 if faction != 0 {
                     let diplomacy =
                         pointer(memory, at(country.pointer, ccountry::DIPLOMACY_STATUS)?)?;
@@ -281,7 +280,7 @@ fn capture_categories(
             0,
             owner,
             hash,
-            text(memory, p, out.rows.is_growing())?,
+            text(memory, p)?,
         )?;
     }
     Ok(())

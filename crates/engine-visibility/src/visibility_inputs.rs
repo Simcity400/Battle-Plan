@@ -42,19 +42,12 @@ fn outcome(len: usize, unread: usize) -> Outcome {
     }
 }
 
-/// Every country with a nonzero effective unit modifier; absence is zero.
-/// Also returns the live country-slot count, for sizing off the game thread.
-pub fn countries(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut [CountryRow],
-) -> (Outcome, usize) {
-    countries_buffer(memory, base, game_state, Buffer::Fixed(output))
+pub fn count_countries(memory: &impl Memory, base: usize, game_state: usize) -> (Outcome, usize) {
+    countries_buffer(memory, base, game_state, Buffer::Count)
 }
 
 /// Worker-owned storage grows from the original native headers.
-pub fn countries_growing(
+pub fn countries(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -158,19 +151,12 @@ const STATE_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&STATE_FIELDS, STATE_BYTES).expect("valid state layout");
 const BATCH: usize = 64;
 
-/// Every state whose raw owner and controller differ and whose owner's
-/// network modifier is nonzero; the fog rebuild adds nothing for the rest.
-pub fn states(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut [StateRow],
-) -> Outcome {
-    states_buffer(memory, base, game_state, Buffer::Fixed(output))
+pub fn count_states(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
+    states_buffer(memory, base, game_state, Buffer::Count)
 }
 
 /// Worker-owned storage grows from the original native headers.
-pub fn states_growing(
+pub fn states(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -372,7 +358,7 @@ mod tests {
             base: 0,
             bytes: &bytes,
         };
-        let mut rows = [StateRow::default(); 2];
+        let mut rows = vec![StateRow::default(); 2];
         assert_eq!(
             states(&memory, 0, STATE, &mut rows),
             Outcome::Rows { len: 0 }
@@ -389,7 +375,7 @@ mod tests {
         };
         let mut extent = None;
         assert_eq!(
-            states_buffer_extent(&memory, 0, STATE, Buffer::Fixed(&mut []), &mut extent),
+            states_buffer_extent(&memory, 0, STATE, Buffer::Count, &mut extent),
             Outcome::Rows { len: 0 }
         );
         assert_eq!(extent, Some(4));
@@ -402,7 +388,7 @@ mod tests {
             base: 0,
             bytes: &bytes,
         };
-        let mut rows = [StateRow::default(); 1];
+        let mut rows = vec![StateRow::default(); 1];
         assert!(matches!(
             states(&memory, 0, STATE, &mut rows),
             Outcome::Unavailable { .. }
@@ -418,7 +404,7 @@ mod tests {
             bytes: &bytes,
         };
         assert_eq!(
-            states(&memory, 0, STATE, &mut []),
+            states(&memory, 0, STATE, &mut Vec::new()),
             Outcome::Unavailable {
                 reason: "state vtable mismatch"
             }

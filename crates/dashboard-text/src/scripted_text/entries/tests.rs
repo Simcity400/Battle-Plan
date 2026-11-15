@@ -148,74 +148,81 @@ fn reached_scripted_geography_preserves_values_diagnostics_and_cache_reuse() {
     let content = cat.scripted_content().unwrap();
     let frame = geography_frame();
     let text = ScriptedText::new(&frame, &cat.localisation, content, 1);
-    assert_eq!(
-        text.expand("[ROOT.64.Neighbors]").as_deref(),
-        Ok("Localized neighbors")
-    );
-    let inputs = &content.environment().unwrap().prepared;
-    assert_eq!(
-        crate::triggers::PreparedContent::geography(content)
-            .neighbors()
-            .unwrap()[&64],
-        [65]
-    );
-    assert!(inputs.terrain.get().is_none());
-    let warnings = cat.reader_warning_lines();
-    assert_eq!(
-        warnings
-            .iter()
-            .filter(|line| line.starts_with("Content: "))
-            .count(),
-        1
-    );
-    assert!(warnings.iter().any(
-        |line| line.contains("map/logs/provinces.bmp") && line.contains("map/logs/terrain.bmp")
-    ));
-    assert!(
-        warnings
-            .iter()
-            .all(|line| !line.contains("map/logs/rivers.bmp"))
-    );
+    // A reply's reads are reported from its own diagnostics scope.
+    let ((warnings, cached), _) = installed_content_core::content::diagnostics::capture(|| {
+        assert_eq!(
+            text.expand("[ROOT.64.Neighbors]").as_deref(),
+            Ok("Localized neighbors")
+        );
+        let inputs = &content.environment().unwrap().prepared;
+        assert_eq!(
+            crate::triggers::PreparedContent::geography(content)
+                .neighbors()
+                .unwrap()[&64],
+            [65]
+        );
+        assert!(inputs.terrain.get().is_none());
+        let warnings = cat.reader_warning_lines();
+        assert_eq!(
+            warnings
+                .iter()
+                .filter(|line| line.starts_with("Content: "))
+                .count(),
+            1
+        );
+        assert!(warnings.iter().any(|line| line.contains("map/logs/provinces.bmp")
+            && line.contains("map/logs/terrain.bmp")));
+        assert!(
+            warnings
+                .iter()
+                .all(|line| !line.contains("map/logs/rivers.bmp"))
+        );
 
-    let world = content.recorded_world(&frame).unwrap();
-    assert_eq!(world.coastal(1), Ok(true));
-    assert_eq!(world.coastal(3), Ok(false));
-    assert_eq!(world.coastal(999), Ok(false));
-    assert_eq!(text.province_terrain(1), Ok(1));
-    let warnings = cat.reader_warning_lines();
-    assert_eq!(
-        warnings
-            .iter()
-            .filter(|line| line.starts_with("Content: "))
-            .count(),
-        1
-    );
-    assert!(
-        warnings
-            .iter()
-            .any(|line| line.contains("map/logs/rivers.bmp"))
-    );
-    let cached = crate::triggers::PreparedContent::geography(content)
-        .terrain()
-        .unwrap();
+        let world = content.recorded_world(&frame).unwrap();
+        assert_eq!(world.coastal(1), Ok(true));
+        assert_eq!(world.coastal(3), Ok(false));
+        assert_eq!(world.coastal(999), Ok(false));
+        assert_eq!(text.province_terrain(1), Ok(1));
+        let warnings = cat.reader_warning_lines();
+        assert_eq!(
+            warnings
+                .iter()
+                .filter(|line| line.starts_with("Content: "))
+                .count(),
+            1
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|line| line.contains("map/logs/rivers.bmp"))
+        );
+        let cached = crate::triggers::PreparedContent::geography(content)
+            .terrain()
+            .unwrap();
+        (warnings, cached)
+    });
 
     for name in ["provinces.bmp", "terrain.bmp", "rivers.bmp"] {
         std::fs::remove_file(folder.0.join("map/logs").join(name)).unwrap();
     }
-    let next = ScriptedText::new(&frame, &cat.localisation, content, 1);
-    assert_eq!(
-        next.expand("[ROOT.64.Neighbors]").as_deref(),
-        Ok("Localized neighbors")
-    );
-    assert_eq!(next.province_terrain(1), Ok(1));
-    assert_eq!(content.recorded_world(&frame).unwrap().coastal(1), Ok(true));
-    assert!(std::ptr::eq(
-        cached,
-        crate::triggers::PreparedContent::geography(content)
-            .terrain()
-            .unwrap()
-    ));
-    assert_eq!(cat.reader_warning_lines(), warnings);
+    // A later reply reusing the cached reads reports the same reads.
+    let (reused, _) = installed_content_core::content::diagnostics::capture(|| {
+        let next = ScriptedText::new(&frame, &cat.localisation, content, 1);
+        assert_eq!(
+            next.expand("[ROOT.64.Neighbors]").as_deref(),
+            Ok("Localized neighbors")
+        );
+        assert_eq!(next.province_terrain(1), Ok(1));
+        assert_eq!(content.recorded_world(&frame).unwrap().coastal(1), Ok(true));
+        assert!(std::ptr::eq(
+            cached,
+            crate::triggers::PreparedContent::geography(content)
+                .terrain()
+                .unwrap()
+        ));
+        cat.reader_warning_lines()
+    });
+    assert_eq!(reused, warnings);
 }
 
 #[test]

@@ -32,6 +32,21 @@ pub enum WarmPass {
     Recorded(String),
 }
 
+/// The binds a [`Stream`] holds at one point of its draws ([`Stream::binds`]).
+#[derive(Clone)]
+pub struct Binds {
+    program: Option<(Selection, Layout)>,
+    vertex_strides: Arc<BTreeMap<u32, u64>>,
+    state: gpu::State,
+    sampler_keys: Arc<BTreeMap<u32, [u32; 10]>>,
+    depth_stencil: Option<DepthStencilState>,
+    rasterizer: Option<RasterizerState>,
+    constants: BTreeMap<u32, Vec<u8>>,
+    known_constants: BTreeMap<u32, Vec<std::ops::Range<u32>>>,
+    textures: TextureMap,
+    texture_snapshot: Option<Arc<TextureMap>>,
+}
+
 pub struct Stream {
     program: Option<(Selection, Layout)>,
     vertex_strides: Arc<BTreeMap<u32, u64>>,
@@ -427,6 +442,36 @@ impl Stream {
                             _ => false,
                         }
                 })
+    }
+
+    /// The binds this stream holds now, which a later draw reads unless it binds its own.
+    pub fn binds(&self) -> Binds {
+        Binds {
+            program: self.program.clone(),
+            vertex_strides: self.vertex_strides.clone(),
+            state: self.state.clone(),
+            sampler_keys: self.sampler_keys.clone(),
+            depth_stencil: self.depth_stencil.clone(),
+            rasterizer: self.rasterizer.clone(),
+            constants: self.constants.clone(),
+            known_constants: self.known_constants.clone(),
+            textures: self.textures.clone(),
+            texture_snapshot: self.texture_snapshot.clone(),
+        }
+    }
+
+    /// Holds `binds` again, as the stream held them when they were taken ([`Self::binds`]).
+    pub fn restore(&mut self, binds: &Binds) {
+        self.program.clone_from(&binds.program);
+        self.vertex_strides.clone_from(&binds.vertex_strides);
+        self.state.clone_from(&binds.state);
+        self.sampler_keys.clone_from(&binds.sampler_keys);
+        self.depth_stencil.clone_from(&binds.depth_stencil);
+        self.rasterizer.clone_from(&binds.rasterizer);
+        self.constants.clone_from(&binds.constants);
+        self.known_constants.clone_from(&binds.known_constants);
+        self.textures.clone_from(&binds.textures);
+        self.texture_snapshot.clone_from(&binds.texture_snapshot);
     }
 
     /// Start a scoped render-to-texture pass with the caller's retained bindings.

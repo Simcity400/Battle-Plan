@@ -90,13 +90,13 @@ fn image() -> Image {
 fn naming_failure_preserves_one_count_and_ordered_repeated_state_bodies() {
     let image = image();
     // No naming database: prefix failure must not discard the earlier count.
-    let mut walk = crate::ccountry::read_reserved_naming(&image, 0, STATE, &mut []);
+    let mut walk = crate::ccountry::read_reserved_naming_observed_inner(&image, 0, STATE, crate::walk::Buffer::Count, None);
     assert!(matches!(
         walk.outcome,
         crate::walk::Outcome::Unavailable { .. }
     ));
-    let mut scratch = [Occurrence::default(); 3];
-    let mut output = [0; 3];
+    let mut scratch = vec![Occurrence::default(); 3];
+    let mut output = vec![0; 3];
     let result =
         walk.launch_states
             .take()
@@ -135,14 +135,17 @@ fn naming_failure_preserves_one_count_and_ordered_repeated_state_bodies() {
 #[test]
 fn naval_order_repeats_and_signed_words_survive_without_country_resolution() {
     let image = image();
-    let mut scratch = [Occurrence::default(); 3];
-    let mut output = [LaunchNavalBase::default(); 3];
+    let mut scratch = vec![Occurrence::default(); 3];
+    let mut output = vec![LaunchNavalBase::default(); 3];
     assert_eq!(
         capture_naval(&image, 0, NAVY, &mut scratch, &mut output).provider,
         Ok(NavalProvider::Bases(3))
     );
     assert_eq!(
-        output.map(|value| (value.base_province as i32, value.country)),
+        output
+            .iter()
+            .map(|value| (value.base_province as i32, value.country))
+            .collect::<Vec<_>>(),
         [(-3, 999), (0, 999), (-3, 999)]
     );
     let calls = image.calls.borrow();
@@ -169,7 +172,7 @@ fn zero_count_skips_descriptor_and_selecting_state_inputs() {
     word(&mut image, ROOT + crate::ccountry::OWNED_STATE_COUNT, 0);
     image.fault_once = Some(ROOT + crate::ccountry::OWNED_STATES);
     let control = ReservedOwnedStates::new(&image, 0, STATE);
-    let result = control.capture(&image, 0, STATE, &mut [], &mut []);
+    let result = control.capture(&image, 0, STATE, &mut Vec::new(), &mut Vec::new());
     assert_eq!((result.len, result.required), (Ok(0), 0));
     assert!(!image.failed.get());
     assert_eq!(
@@ -191,8 +194,8 @@ fn failed_count_is_sticky_and_negative_count_remains_exact() {
         &image,
         0,
         STATE,
-        &mut [Occurrence::default(); 3],
-        &mut [0; 3],
+        &mut vec![Occurrence::default(); 3],
+        &mut vec![0; 3],
     );
     assert_eq!(
         (result.len, result.required),
@@ -212,7 +215,7 @@ fn failed_count_is_sticky_and_negative_count_remains_exact() {
         );
         let control = ReservedOwnedStates::new(&image, 0, STATE);
         assert_eq!(control.count(), Ok(count));
-        let result = control.capture(&image, 0, STATE, &mut [], &mut []);
+        let result = control.capture(&image, 0, STATE, &mut Vec::new(), &mut Vec::new());
         assert_eq!(
             (result.len, result.required),
             (Err("reserved launch state count is negative"), 0)
@@ -222,40 +225,12 @@ fn failed_count_is_sticky_and_negative_count_remains_exact() {
 }
 
 #[test]
-fn both_short_arenas_keep_full_count_without_pointer_or_body_reads() {
-    for (scratch_len, output_len) in [(2, 3), (3, 2)] {
-        let image = image();
-        let mut scratch = vec![Occurrence::default(); scratch_len];
-        let mut output = vec![0; output_len];
-        let result = ReservedOwnedStates::new(&image, 0, STATE).capture(
-            &image,
-            0,
-            STATE,
-            &mut scratch,
-            &mut output,
-        );
-        assert_eq!(
-            (result.len, result.required),
-            (Err("reserved launch state arena exhausted"), 3)
-        );
-        assert_eq!(
-            &*image.calls.borrow(),
-            &[
-                (ROOT + crate::ccountry::OWNED_STATE_COUNT, 4),
-                (ROOT + crate::ccountry::OWNED_STATES, 12)
-            ]
-        );
-        assert!(scratch.iter().all(|item| item.pointer == 0));
-    }
-}
-
-#[test]
 fn state_body_and_selector_failures_are_atomic_for_repeated_objects() {
     for fault in [0x4000 + cstate::ID, 0x3100 + 9 * 8] {
         let mut image = image();
         image.fault_once = Some(fault);
-        let mut scratch = [Occurrence::default(); 3];
-        let mut output = [77; 3];
+        let mut scratch = vec![Occurrence::default(); 3];
+        let mut output = vec![77; 3];
         let result = ReservedOwnedStates::new(&image, 0, STATE).capture(
             &image,
             0,
@@ -285,38 +260,25 @@ fn empty_navy_and_native_null_are_distinct_without_owner_reads() {
     header(&mut image, NAVY + NAVAL_BASES, 0, 0);
     image.fault_once = Some(NAVY + cnaval_base::HOLDER_COUNTRY);
     assert_eq!(
-        capture_naval(&image, 0, NAVY, &mut [], &mut []).provider,
+        capture_naval(&image, 0, NAVY, &mut Vec::new(), &mut Vec::new()).provider,
         Ok(NavalProvider::Bases(0))
     );
     assert!(!image.failed.get());
     assert_eq!(&*image.calls.borrow(), &[(NAVY + NAVAL_BASES, 16)]);
     image.calls.borrow_mut().clear();
     assert_eq!(
-        capture_naval(&image, 0, 0, &mut [], &mut []).provider,
+        capture_naval(&image, 0, 0, &mut Vec::new(), &mut Vec::new()).provider,
         Ok(NavalProvider::NativeNull)
     );
     assert!(image.calls.borrow().is_empty());
 }
 
 #[test]
-fn naval_shortage_and_repeated_body_failure_keep_demand_and_clear_scratch() {
+fn naval_repeated_body_failure_keeps_demand_and_clears_scratch() {
     let mut image = image();
-    let mut output = [LaunchNavalBase::default(); 3];
-    let result = capture_naval(
-        &image,
-        0,
-        NAVY,
-        &mut [Occurrence::default(); 2],
-        &mut output,
-    );
-    assert_eq!(
-        (result.provider, result.required),
-        (Err("reserved launch naval base arena exhausted"), 3)
-    );
-    assert_eq!(&*image.calls.borrow(), &[(NAVY + NAVAL_BASES, 16)]);
-    image.calls.borrow_mut().clear();
+    let mut output = vec![LaunchNavalBase::default(); 3];
     image.fault_once = Some(0x7000 + cnaval_base::PROVINCE_ID);
-    let mut scratch = [Occurrence::default(); 3];
+    let mut scratch = vec![Occurrence::default(); 3];
     output.fill(LaunchNavalBase {
         base_province: 77,
         country: 77,
@@ -348,8 +310,8 @@ fn null_list_objects_and_foreign_holders_never_publish_an_empty_or_prefix() {
         } else {
             pointer(&mut image, 0x7000 + cnaval_base::HOLDER, NAVY + 0x200);
         }
-        let mut scratch = [Occurrence::default(); 3];
-        let mut output = [LaunchNavalBase::default(); 3];
+        let mut scratch = vec![Occurrence::default(); 3];
+        let mut output = vec![LaunchNavalBase::default(); 3];
         let result = capture_naval(&image, 0, NAVY, &mut scratch, &mut output);
         assert!(result.provider.is_err());
         assert_eq!(result.required, 3);
@@ -360,7 +322,7 @@ fn null_list_objects_and_foreign_holders_never_publish_an_empty_or_prefix() {
             0,
             STATE,
             &mut scratch,
-            &mut [0; 3],
+            &mut vec![0; 3],
         );
         assert_eq!(
             states.len,
@@ -381,8 +343,8 @@ fn malformed_descriptor_and_null_state_keep_full_count_without_fake_state_zero()
         }
         let control = ReservedOwnedStates::new(&image, 0, STATE);
         assert_eq!(control.count(), Ok(3));
-        let mut scratch = [Occurrence::default(); 3];
-        let mut output = [77; 3];
+        let mut scratch = vec![Occurrence::default(); 3];
+        let mut output = vec![77; 3];
         let result = control.capture(&image, 0, STATE, &mut scratch, &mut output);
         assert_eq!(result.required, 3);
         assert!(result.len.is_err());
@@ -414,10 +376,6 @@ fn launch_naval_scratch_and_output_grow_for_mod_sized_original_rosters() {
                 if index % 2 == 0 { 0x7000 } else { 0x7100 },
             );
         }
-        assert_eq!(
-            capture_naval(&image, 0, NAVY, &mut [], &mut []).provider,
-            Err("reserved launch naval base arena exhausted")
-        );
         image.calls.borrow_mut().clear();
         let captured = capture_naval_buffer(
             &image,
@@ -474,9 +432,9 @@ fn launch_state_scratch_and_output_grow_from_the_original_owned_count() {
                 if index % 2 == 0 { 0x4000 } else { 0x4200 },
             );
         }
-        let mut naming = crate::ccountry::read_reserved_naming(&image, 0, STATE, &mut []);
+        let mut naming = crate::ccountry::read_reserved_naming_observed_inner(&image, 0, STATE, crate::walk::Buffer::Count, None);
         let original = naming.launch_states.take().unwrap();
-        let captured = original.capture_growing(&image, 0, STATE, &mut scratch, &mut output);
+        let captured = original.capture(&image, 0, STATE, &mut scratch, &mut output);
         assert_eq!(captured.len, Ok(count));
         assert_eq!(captured.required, count);
         assert!(

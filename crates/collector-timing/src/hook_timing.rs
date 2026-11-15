@@ -6,7 +6,9 @@
 //! one plain counter store and a mask test. Every `period`-th call per thread
 //! and family (always that thread's first) reads the time-stamp counter at
 //! entry, around each original the collector invokes, and at exit. Threads
-//! beyond `OWNED_SLOTS` share one slot through atomic increments. Nothing here
+//! beyond `OWNED_SLOTS` share one slot through atomic increments. Every span
+//! also holds its thread's allocation phase at `Hook` and restores the outer
+//! phase when it drops, so a refusal inside a hook names the hook. Nothing here
 //! reads native memory, allocates, locks or changes native execution; status
 //! converts ticks to nanoseconds with a frequency calibrated against QPC.
 //!
@@ -492,6 +494,7 @@ impl Table {
     }
     #[inline(always)]
     fn enter(&'static self, slot: usize, family: Family, returning: bool) -> Span {
+        let phase = label();
         let counters = &self.slots[slot].0[family as usize];
         let shared = slot == SHARED_SLOT;
         let count = if returning {
@@ -512,6 +515,7 @@ impl Table {
             start,
             original: Cell::new(0),
             originals: Cell::new(0),
+            _phase: phase,
             _thread: PhantomData,
         }
     }
@@ -666,6 +670,12 @@ pub fn enter(family: Family) -> Span {
 pub fn enter_return(family: Family) -> Span {
     TABLE.enter(current_slot(), family, true)
 }
+/// The `Hook` allocation phase alone, for a hook's collector work outside its
+/// span; restored when dropped.
+#[inline(always)]
+pub fn label() -> collector_memory::terminal::Scope {
+    collector_memory::terminal::enter(collector_memory::terminal::Phase::Hook)
+}
 
 /// A callback's timing scope. Dropping it records a sampled call.
 pub struct Span {
@@ -677,6 +687,7 @@ pub struct Span {
     original: Cell<u64>,
     /// Originals timed in this span, each adding its timer reads.
     originals: Cell<u32>,
+    _phase: collector_memory::terminal::Scope,
     /// Owned slots have one writer: the span stays on its thread.
     _thread: PhantomData<*const ()>,
 }
@@ -760,6 +771,7 @@ fn calibrate_overhead() {
     for (case, samples) in samples.iter_mut().enumerate() {
         for sample in samples.iter_mut() {
             let before = CALIBRATION.detour.load(Ordering::Relaxed);
+            let phase = label();
             let span = Span {
                 counters: &CALIBRATION,
                 shared: false,
@@ -767,6 +779,7 @@ fn calibrate_overhead() {
                 start: now().max(1),
                 original: Cell::new(0),
                 originals: Cell::new(0),
+                _phase: phase,
                 _thread: PhantomData,
             };
             if case == 1 {
@@ -970,6 +983,34 @@ mod tests {
         let mut names = Family::ALL.map(Family::name);
         names.sort_unstable();
         assert!(names.windows(2).all(|pair| pair[0] != pair[1]));
+    }
+
+    #[test]
+    fn a_span_holds_the_hook_phase_and_restores_the_outer_one() {
+        use collector_memory::terminal::{Phase, enter as phase_scope, phase};
+        std::thread::spawn(|| {
+            assert_eq!(phase(), Phase::Unphased);
+            {
+                let _span = enter(Family::PortraitChanges);
+                assert_eq!(phase(), Phase::Hook);
+                let _callback = phase_scope(Phase::Callback);
+                let returning = enter_return(Family::EventFeed);
+                assert_eq!(phase(), Phase::Hook);
+                drop(returning);
+                assert_eq!(phase(), Phase::Callback);
+            }
+            assert_eq!(phase(), Phase::Unphased);
+            let _spool = phase_scope(Phase::Spool);
+            let result = std::panic::catch_unwind(|| {
+                let _label = label();
+                assert_eq!(phase(), Phase::Hook);
+                panic!("unwinds through the label");
+            });
+            assert!(result.is_err());
+            assert_eq!(phase(), Phase::Spool);
+        })
+        .join()
+        .unwrap();
     }
 
     #[test]

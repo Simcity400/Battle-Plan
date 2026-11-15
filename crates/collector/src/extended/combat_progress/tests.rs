@@ -158,6 +158,7 @@ fn rows(c: &Captured) -> Vec<LandCombatProgressRow> {
 }
 #[test]
 fn hourly_losses_changed_new_variant_empty_pool_and_capacity_growth() {
+    let _globals = super::test_globals();
     let mut capacity = Capacities {
         rows: 1,
         variants: 0,
@@ -268,6 +269,7 @@ fn hourly_losses_changed_new_variant_empty_pool_and_capacity_growth() {
 }
 #[test]
 fn hourly_losses_parent_capacity_preserves_full_growth_demand_and_progress() {
+    let _globals = super::test_globals();
     let worlds = [World::new(1), World::new(1)];
     let mut capacity = Capacities {
         rows: 1,
@@ -298,6 +300,7 @@ fn hourly_losses_parent_capacity_preserves_full_growth_demand_and_progress() {
 }
 #[test]
 fn hourly_losses_worker_growth_captures_every_combat_without_coverage_loss() {
+    let _globals = super::test_globals();
     use crate::land_events::test_support;
     let _guard = test_support::own();
     test_support::reset();
@@ -352,6 +355,7 @@ fn hourly_losses_worker_growth_captures_every_combat_without_coverage_loss() {
 }
 #[test]
 fn hourly_losses_off_thread_census_presizes_all_sides() {
+    let _globals = super::test_globals();
     let mut worlds = [World::new(3), World::new(9)];
     worlds[1].set(1, 12, 0);
     let naval = [engine_native::cnaval_combat::VTABLE_RVA.0 as u64];
@@ -385,6 +389,7 @@ fn hourly_losses_off_thread_census_presizes_all_sides() {
 }
 #[test]
 fn hourly_losses_read_failure_never_becomes_zero() {
+    let _globals = super::test_globals();
     struct Unreadable;
     impl Memory for Unreadable {
         fn copy(&self, _: usize, _: &mut [u8]) -> bool {
@@ -405,6 +410,7 @@ fn hourly_losses_read_failure_never_becomes_zero() {
 #[test]
 #[ignore = "print-only hourly casualty bench after live-count presize; lead runs through build slot"]
 fn land_casualty_hourly_timing() {
+    let _globals = super::test_globals();
     // Fixture population, never a production admission limit. Both native sides
     // have complete per-variant pools; no installed content/process is read.
     let provinces: usize = std::env::var("BATTLE_PLAN_LAND_PROVINCES").or_else(|_| std::env::var("HOI4_LAND_PROVINCES"))
@@ -453,6 +459,7 @@ fn land_casualty_hourly_timing() {
 
 #[test]
 fn combat_log_complete_observer_uses_the_loss_census_and_preserves_signed_counters() {
+    let _globals = super::test_globals();
     let mut world = World::new(3);
     World::q(
         &mut world.sides[0],
@@ -488,6 +495,7 @@ fn combat_log_complete_observer_uses_the_loss_census_and_preserves_signed_counte
 
 #[test]
 fn combat_log_projection_uses_committed_labels_across_capture_buffers_and_keyframes() {
+    let _globals = super::test_globals();
     use crate::projection::{Projection, ProjectionScratch};
     use replay_data::rows::{CombatLogObserverKind as K, CombatLogObserverRow, TableRows};
     use replay_frame::frame::{FrameEncoder, FrameInput, Metrics, TableInput, TableUpdate};
@@ -610,6 +618,7 @@ fn native_array(bytes: &mut [u8], offset: usize, pointer: usize, count: u32) {
 
 #[test]
 fn observer_daily_numeric_carry_keeps_hourly_columns_and_reads_new_rows_fresh() {
+    let _globals = super::test_globals();
     use engine_land_inputs::combat_log_events as event;
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let mut world = World::new(0);
@@ -698,12 +707,14 @@ fn observer_daily_numeric_carry_keeps_hourly_columns_and_reads_new_rows_fresh() 
     let reappeared = daily_capture(&memory, &world, 18, false);
     assert_eq!(observer_row(&reappeared, event::OBSERVER_LEADER, 0).a, 31);
     leader[8..].copy_from_slice(&32_i32.to_le_bytes());
-    let daily = daily_capture(&memory, &world, 36, false);
+    let slot = 24 + replay_data::cadence::COMBAT_LOG_NUMERIC_SLOT as i32;
+    let daily = daily_capture(&memory, &world, slot, false);
     assert_eq!(observer_row(&daily, event::OBSERVER_LEADER, 0).a, 32);
 }
 
 #[test]
 fn observer_daily_children_follow_current_parent_and_refusal_forces_fresh_recovery() {
+    let _globals = super::test_globals();
     use engine_land_inputs::combat_log_events as event;
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let mut world = World::new(0);

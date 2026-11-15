@@ -8,14 +8,13 @@ import { inSpans } from '../../charts/timeline/layout';
 import Timeline from '../../charts/timeline/Timeline';
 import type { TooltipRow } from '../../charts/tooltip';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { useIdeaHistory } from '../../dashboard/ideaHistory';
-import { pendingAt, preparedPrefix, unobservedOrPending } from '../../dashboard/preparedPrefix';
-import { PreparedKey } from '../../charts/PreparedKey';
+import { useIdeaHistory, useIdeaHour } from '../../dashboard/ideaHistory';
+import { NAME_NOT_RECORDED, ideaNameMissing } from '../../dashboard/ideaHistoryReply';
 import { ideaTooltip, tooltipText } from '../../dashboard/ideaTooltip';
 import { useIdeaTooltips } from '../../dashboard/useIdeaTooltips';
+import { useShownEachFrame } from '../../dashboard/widgetPerf';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
-import { usePlaybackHour } from '../../dashboard/playback';
 import { OPTIONS } from './definition';
 import { chosenCategory, lanesFor, lawLevel } from './ideaTimelineData';
 import type { HolderStyle, LawStyle } from './ideaTimelineData';
@@ -27,25 +26,25 @@ const NO_WARNINGS: string[] = [];
 /** One idea category over time: a lane per law or designer slot and per advisor
  * seat, with each slot's holder at the playhead in the left column. */
 export default function IdeaTimelineWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
-  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const options = resolveOptions(OPTIONS, widget.options);
-  const { track, tag, data, answered, error, retry } = useIdeaHistory(widget, runtime, active);
-  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
+  const { track, tag, data, error, retry } = useIdeaHistory(widget, runtime, active);
+  // Following, the last hour at or before the head where a holding changed: the widget renders only there.
+  const hour = useIdeaHour(widget, runtime, track, data, active);
+  const window = track && widget.time.mode !== 'follow' ? resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour()) : null;
   const following = widget.time.mode === 'follow' || widget.time.mode === 'pin';
-  const live = window && following ? window.lastHour : null;
+  // The lanes are cut at that hour; following, the cursor is drawn at the clock each frame.
+  const playhead = following ? hour : null;
   const first = widget.time.mode === 'range' && window ? window.firstHour : track?.branch.firstHour ?? 0;
   const last = widget.time.mode === 'range' && window ? window.lastHour : track?.branch.lastHour ?? 1;
-  // A retained reply is drawn at the hour it answers, never at a later moment it has not read.
-  const behind = data && answered !== undefined && answered !== Math.floor(live ?? last) ? answered : undefined;
-  const playhead = behind !== undefined && live != null ? behind : live;
-  const at = Math.floor(behind ?? playhead ?? last);
+  const liveHead = useMemo(() => track && widget.time.mode === 'follow' ? { read: () => runtime.clock.getSnapshot().position + track.axisOffset, subscribe: runtime.clock.subscribeFrame } : undefined,
+    [track, widget.time.mode, runtime.clock]);
+  useShownEachFrame(runtime.clock, () => data ? liveHead ? Math.min(liveHead.read(), track?.branch.lastHour ?? 0) : playhead ?? last : null);
+  const at = Math.floor(playhead ?? last);
   const extent: [number, number] = [first, Math.max(first + 1, options.grow && playhead != null ? playhead : last + 1)];
   const category = data ? chosenCategory(data.categories, String(options.category ?? '')) : null;
   const lanes = useMemo(() => data && category ? lanesFor(data, category, { laws: options.laws as LawStyle, holders: options.holders as HolderStyle }) : [],
     [data, category, options.laws, options.holders]);
-  // Sampled hours have approximate geometry; unsampled hours stay pending.
-  const prefix = useMemo(() => preparedPrefix(data), [data]);
-  const gaps = useMemo(() => data ? unobservedOrPending(data.unobserved, prefix) : undefined, [data, prefix]);
+  const gaps = data?.unobserved;
   const menu = useContextMenu('Timeline actions');
   // Each idea's effects, formatted as the game's tooltip shows them.
   const tooltips = useIdeaTooltips(data, track, runtime.client, active);
@@ -57,7 +56,7 @@ export default function IdeaTimelineWidget({ widget, runtime, active, onDiagnost
 
   if (!track || !tag) return <WidgetState kind="empty" icon="layers" message="Load a campaign and choose a country to see its idea history." />;
   if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
-  if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  if (following && hour == null) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
   if (error && !data) return <WidgetState kind="error" failure={error} onRetry={retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading ideas…" />;
   if (!category) return <>{error && <WidgetState kind="error" failure={error} onRetry={retry} />}<WidgetState kind="unavailable" message={options.category
@@ -69,36 +68,32 @@ export default function IdeaTimelineWidget({ widget, runtime, active, onDiagnost
   // Each slot's holder at the moment shown, with its effects, for keyboard and screen-reader users.
   const description = `${dayLabel(at)}: ${lanes.map(lane => {
     const span = lane.spans.find(item => item.firstHour <= at && at <= item.lastHour);
-    if (!span) return `${lane.label}: ${pendingAt(prefix, at) ? 'still being prepared' : inSpans(data.unobserved, at) ? 'not recorded' : 'empty'}`;
+    if (!span) return `${lane.label}: ${inSpans(data.unobserved, at) ? 'not recorded' : 'empty'}`;
     const token = tokenOf(span);
-    if (inSpans(data.approximate, at)) return `${lane.label}: approximate holding, ${span.label}`;
     return tooltips ? tooltipText(ideaTooltip({ title: `${lane.label}: ${span.label}` }, tooltips.infos.get(token), tooltips.sources,
       tooltips.art.get(token)?.description, [], undefined, span.firstHour, Infinity)) : `${lane.label}: ${span.label}`;
   }).join('. ')}.`;
   return <div className="idea-timeline">
     {error && <WidgetState kind="error" failure={error} onRetry={retry} />}
-    <Timeline key={`${track.source.id}:${track.source.revision}:${track.branch.id}:${tag}`} label={`${contentTitle(category.name, category.token, 'Category name unavailable')} of ${tag}`} extent={extent} playhead={playhead} labelHour={at} preserveZoomOnExtentChange={options.grow === true} lanes={lanes} description={description}
-      showIcons showNames unobserved={gaps} pending={prefix?.pending} approximate={data.approximate} hoursPerSecond={motionOf(runtime.clock.getSnapshot())} active={active} revision={data}
+    <Timeline key={`${track.source.id}:${track.source.revision}:${track.branch.id}:${tag}`} label={`${contentTitle(category.name, category.token, 'Category name unavailable')} of ${tag}`} extent={extent} playhead={playhead} liveHead={liveHead} labelHour={at} preserveZoomOnExtentChange={options.grow === true} lanes={lanes} description={description}
+      showIcons showNames unobserved={gaps} hoursPerSecond={motionOf(runtime.clock.getSnapshot())} active={active} revision={data}
       tooltip={(lane, span, hour, full) => {
-        if (!span) return { title: lane.label, rows: [{ label: pendingAt(prefix, hour) ? 'Still being prepared' : inSpans(data.unobserved, hour) ? 'Not recorded' : 'Empty',
+        if (!span) return { title: lane.label, rows: [{ label: inSpans(data.unobserved, hour) ? 'Not recorded' : 'Empty',
           value: dayLabel(hour), tone: 'muted' }] };
-        if (inSpans(data.approximate, hour) || inSpans(data.approximate, span.firstHour)) return { title: span.label, subtitle: lane.label,
-          rows: [{ label: 'Approximate holding', value: 'Acquisition and removal dates still being prepared', tone: 'muted' }] };
         const token = tokenOf(span);
         const level = lawLevel(category, infos.get(token));
-        const until = playhead != null && span.lastHour + 1 > playhead ? 'now'
-          : pendingAt(prefix, span.lastHour + 1) || inSpans(data.approximate, span.lastHour + 1) ? 'still being prepared' : dayLabel(span.lastHour);
+        const until = playhead != null && span.lastHour + 1 > playhead ? 'now' : dayLabel(span.lastHour);
         const rows: TooltipRow[] = [
           { label: 'Held by', value: dayLabel(span.firstHour) },
           { label: 'Until', value: until },
         ];
         const subtitle = level ? `${lane.label} · level ${level}` : lane.label;
         if (!tooltips) return { title: span.label, subtitle, icon: span.icon, rows };
-        return ideaTooltip({ title: span.label, icon: span.icon, subtitle }, infos.get(token), tooltips.sources, tooltips.art.get(token)?.description, rows, undefined, span.firstHour,
+        const why = span.label === NAME_NOT_RECORDED ? ideaNameMissing(tooltips.art.get(token), infos.get(token)) ?? undefined : undefined;
+        return ideaTooltip({ title: span.label, icon: span.icon, subtitle }, infos.get(token), tooltips.sources, tooltips.art.get(token)?.description, rows, why, span.firstHour,
           full ? Infinity : undefined);
       }}
       onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)])} />
-    <PreparedKey pending={prefix?.pending} approximate={data.approximate} />
     {menu.menu}
   </div>;
 }

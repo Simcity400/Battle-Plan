@@ -72,6 +72,8 @@ const ROLE_NAMES: [&str; 10] = [
     "sampler",
 ];
 const GAME_ROLE: u8 = 8;
+/// Every conversion helper samples as `spool_helper`, its index as the worker.
+const HELPER_ROLE: u8 = 4;
 static SAMPLER_ID: AtomicU32 = AtomicU32::new(0);
 static GAME_ID: AtomicU32 = AtomicU32::new(0);
 static GAME_CREATION: AtomicU64 = AtomicU64::new(0);
@@ -605,6 +607,8 @@ impl Target {
             GAME_CREATION.load(Ordering::Acquire)
         } else if role == 7 {
             registered.as_ref().map_or(0, |(created, _)| *created)
+        } else if role == HELPER_ROLE {
+            crate::thread_cpu::helper_creation(usize::from(worker), id).unwrap_or(0)
         } else {
             crate::thread_cpu::registered_creation(ROLE_NAMES[role as usize], id).unwrap_or(0)
         };
@@ -796,15 +800,19 @@ impl Timer {
     }
 }
 fn discover(targets: &mut Vec<Target>, ids: &[u32]) {
-    let registered = crate::thread_cpu::registered()
+    let registered = crate::thread_cpu::registered().filter_map(|(name, id)| {
+        let role = ROLE_NAMES.iter().position(|role| *role == name)?;
+        Some((id, role as u8, 255))
+    });
+    let helpers = crate::thread_cpu::helpers()
         .enumerate()
-        .map(|(role, (_, id))| (id, role as u8, 255));
+        .map(|(index, id)| (id, HELPER_ROLE, index as u8));
     let workers = ids
         .iter()
         .enumerate()
         .map(|(index, id)| (*id, 7, index as u8));
     let game = std::iter::once((GAME_ID.load(Ordering::Acquire), GAME_ROLE, 255));
-    for (id, role, worker) in registered.chain(workers).chain(game) {
+    for (id, role, worker) in registered.chain(helpers).chain(workers).chain(game) {
         if id == 0 || id == thread_id() || targets.iter().any(|t| t.info.thread_id == id) {
             continue;
         }

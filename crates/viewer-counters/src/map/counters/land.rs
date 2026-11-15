@@ -134,7 +134,7 @@ fn refuse_column(
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub(super) struct StackStyle {
     pub(super) organisation: f32,
     pub(super) strength: f32,
@@ -146,6 +146,9 @@ pub(super) struct PreparedLand {
     pub(super) stacks: Vec<Stack>,
     pub(super) styles: Vec<StackStyle>,
     pub(super) sprites: Vec<Option<hovers::Sprite>>,
+    /// Each plate's column plan and its place in it, for a plan the view keeps
+    /// ([`PreparedLand::keep_drawn`]).
+    pub(super) plans: Vec<Option<(Arc<ColumnProgram>, usize)>>,
     /// The naval items among the column plates, drawn with the naval window.
     pub(super) flotillas: Vec<Flotilla>,
     pub(super) positions: Vec<counter_move::Position>,
@@ -199,6 +202,67 @@ impl PreparedLand {
                     .find(|exit| ours(exit.unit))
                     .map(|exit| (None, exit.since, exit.unit))
             })
+    }
+
+    /// Takes `old`'s drawn plates for the plates laid out from the same kept column plan: a plate
+    /// draws from its stack and style, which the plan holds, and the hour's countries, templates
+    /// and vision. For a preparation of the same view, camera and tables in which only the layers'
+    /// products changed; the draw still draws a kept plate again at another origin or priority.
+    pub(super) fn keep_drawn(&mut self, old: &mut PreparedLand) {
+        if !(Arc::ptr_eq(&self.countries, &old.countries)
+            && Arc::ptr_eq(&self.templates, &old.templates)
+            && Arc::ptr_eq(&self.vision, &old.vision))
+        {
+            return;
+        }
+        let held: std::collections::HashMap<(*const ColumnProgram, usize), usize> = old
+            .plans
+            .iter()
+            .enumerate()
+            .filter_map(|(member, plan)| plan.as_ref().map(|(program, at)| ((Arc::as_ptr(program), *at), member)))
+            .collect();
+        for (member, plan) in self.plans.iter().enumerate() {
+            if let Some((program, at)) = plan
+                && let Some(&from) = held.get(&(Arc::as_ptr(program), *at))
+            {
+                self.sprites[member] = old.sprites[from].take();
+                viewer_foundation::map::redraws::note("plates.carried", u64::from(self.sprites[member].is_some()));
+            }
+        }
+    }
+
+    /// Takes `old`'s drawn plates, from another hour's layout of the same view and art, for the
+    /// plates whose stack and style are `old`'s by value and that draw with the same flags,
+    /// template icons and viewing country: all a plate draws from ([`draw_land_counter`]) beside
+    /// the view. The draw still draws a carried plate again at another origin or priority.
+    pub(super) fn keep_drawn_by_value(&mut self, old: &mut PreparedLand) {
+        if !(self.countries.same_flags(&old.countries)
+            && Arc::ptr_eq(&self.templates, &old.templates)
+            && self.vision.ours() == old.vision.ours())
+        {
+            return;
+        }
+        let held: std::collections::HashMap<&[u64], usize> = old
+            .stacks
+            .iter()
+            .enumerate()
+            .filter(|(member, _)| old.sprites[*member].is_some())
+            .map(|(member, stack)| (&*stack.divisions, member))
+            .collect();
+        let mut carried = Vec::new();
+        for (member, stack) in self.stacks.iter().enumerate() {
+            if self.sprites[member].is_none()
+                && let Some(&from) = held.get(&*stack.divisions)
+                && old.stacks[from] == *stack
+                && old.styles[from] == self.styles[member]
+            {
+                carried.push((member, from));
+            }
+        }
+        for (member, from) in carried {
+            self.sprites[member] = old.sprites[from].take();
+            viewer_foundation::map::redraws::note("plates.carried", 1);
+        }
     }
 
     pub(super) fn draw(
@@ -646,20 +710,21 @@ impl PreparedLand {
             stack.flag_owner,
             stack.coarse,
         );
-        // The pointed plate draws its pointer state on the clock each frame.
         if self.pointed(member).is_some()
             || self.sprites[member]
                 .as_ref()
-                .is_none_or(|sprite| sprite.origin != origin)
+                .is_none_or(|sprite| sprite.origin != origin || sprite.priority != priority)
         {
+            #[cfg(test)]
+            super::preparation::plan_probe::record(|counts| counts.plates_drawn += 1);
+            viewer_foundation::map::redraws::note("plates.drawn", 1);
             // A moved counter redraws into its previous batch's storage.
             let mut sprite = self.sprites[member]
                 .take()
                 .map(|sprite| sprite.batch)
                 .unwrap_or_default();
             sprite.clear();
-            let presented =
-                draw_land_counter(inputs, &mut sprite, 0, origin, self, member, priority)?;
+            let presented = draw_land_counter(inputs, &mut sprite, 0, origin, self, member, priority)?;
             self.sprites[member] = Some(hovers::Sprite {
                 // A pointed draw never stands for the plate without the pointer.
                 origin: if self.pointed(member).is_some() {
@@ -667,9 +732,12 @@ impl PreparedLand {
                 } else {
                     origin
                 },
+                priority,
                 batch: sprite,
                 presented,
             });
+        } else {
+            viewer_foundation::map::redraws::note("plates.kept", 1);
         }
         for why in self.pointer_refused.take() {
             *report.land_counter_gaps.entry(why.into()).or_default() += 1;
@@ -751,7 +819,7 @@ impl PreparedLand {
 }
 
 /// One first-fit counter item after the geographic group's unit rebuild.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub(super) struct Stack {
     pub(super) selected: bool,
     pub(super) owner: u32,
@@ -813,7 +881,7 @@ pub(super) struct Stack {
 }
 
 /// What a railway-gun plate draws besides the land counter's shared children.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub(super) struct GunStack {
     /// The representative gun's stat definition name: the authored key names its type icon
     /// (`GFX_unit_<key>_icon_medium_white`, [`templates::type_icon`]) with no custom icon, as
@@ -851,32 +919,82 @@ pub(super) struct CounterTables<'a> {
     /// [`hq_portraits`].
     pub(super) portraits: &'a BTreeMap<u64, counter_order::Portrait>,
     /// `ArmyIconInputs` by division.
-    pub(super) icon_inputs: &'a BTreeMap<u64, replay_data::rows::ArmyIconInputRow>,
+    pub(super) icon_inputs: &'a IconInputs,
 }
 
 /// One division's `DivisionStatus` row, plus the one `DivisionMovement` byte the glyphs need.
 ///
 /// A division without a status row takes [`DivisionStatuses::MISSING`]: no glyph and no bars.
-#[derive(Clone, Copy, Default)]
-pub(super) struct DivisionStatus {
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DivisionStatus {
     /// Maximum strength and organisation as the game shows them, from DivisionPanelStats; `None`
     /// without its row or for a refused word, which draws no bars.
-    pub(super) maxima: Option<[i64; 2]>,
-    pub(super) entrenchment: i64,
-    pub(super) entrenchment_cap: i64,
-    pub(super) supply_ratio: i64,
+    pub maxima: Option<[i64; 2]>,
+    pub entrenchment: i64,
+    pub entrenchment_cap: i64,
+    pub supply_ratio: i64,
     /// Attrition-presence predicate ([`DivisionStatusRow::has_attrition`]).
     ///
     /// [`DivisionStatusRow::has_attrition`]: replay_data::rows::DivisionStatusRow::has_attrition
-    pub(super) attrition: bool,
+    pub attrition: bool,
     /// `DivisionStatus.exercising`, or Map's `DivisionModelInputs.exercising`; `None`
     /// without a row or for a refused read.
-    pub(super) exercising: Option<bool>,
+    pub exercising: Option<bool>,
     /// `DivisionStatus.has_order`; `None` without a row.
-    pub(super) has_order: Option<bool>,
-    pub(super) invalid_orders: u8,
-    pub(super) naval_transfer: bool,
-    pub(super) strength_factor: i64,
+    pub has_order: Option<bool>,
+    pub invalid_orders: u8,
+    pub naval_transfer: bool,
+    pub strength_factor: i64,
+}
+
+impl DivisionStatus {
+    /// What a division with no recorded row reads as; its counter draws no bars or glyphs from it.
+    pub const MISSING: Self = Self {
+        maxima: None,
+        entrenchment: 0,
+        entrenchment_cap: 0,
+        supply_ratio: counter_status::FIXED,
+        attrition: false,
+        exercising: None,
+        has_order: None,
+        invalid_orders: 0,
+        naval_transfer: false,
+        strength_factor: counter_status::FIXED,
+    };
+
+    /// A recorded `DivisionStatus` row's status. `supply_ratio` is the displayed ratio
+    /// ([`DivisionStatusRow::displayed_supply`]); an unknown one draws no supply glyph, as a missing
+    /// row does.
+    ///
+    /// [`DivisionStatusRow::displayed_supply`]: replay_data::rows::DivisionStatusRow::displayed_supply
+    pub fn recorded(row: StatusFields, maxima: Option<[i64; 2]>, naval_transfer: bool) -> Self {
+        Self {
+            maxima,
+            entrenchment: row.entrenchment,
+            entrenchment_cap: row.entrenchment_cap,
+            supply_ratio: row.supply_ratio.unwrap_or(counter_status::FIXED),
+            attrition: row.attrition,
+            exercising: Some(row.exercising != 0),
+            has_order: Some(row.has_order != 0),
+            invalid_orders: row.invalid_orders,
+            naval_transfer,
+            strength_factor: row.strength_factor,
+        }
+    }
+}
+
+/// The values of one `DivisionStatus` row a counter reads.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StatusFields {
+    pub entrenchment: i64,
+    pub entrenchment_cap: i64,
+    /// The displayed supply ratio.
+    pub supply_ratio: Option<i64>,
+    pub attrition: bool,
+    pub exercising: u8,
+    pub has_order: u8,
+    pub invalid_orders: u8,
+    pub strength_factor: i64,
 }
 
 /// A native source bucket: province and recorded visual stack kind.
@@ -1221,8 +1339,89 @@ pub(super) type Movement = counter_move::DivisionRoute;
 pub(super) struct Movements {
     pub(super) by_division: Arc<BTreeMap<u64, Movement>>,
     pub(super) eta: Report,
+    pub(super) by_key: Option<Arc<KeyedRoutes>>,
 }
+
+/// The hour's routes made by division as the layout admits each ([`Movements::read_by_key`]): one
+/// slot per DivisionMovement row, which never moves, so a route made is lent for the tables' life.
+pub(super) struct KeyedRoutes {
+    frame: Arc<DecodedFrame>,
+    slots: Vec<std::sync::OnceLock<Option<Box<Movement>>>>,
+    lookups: super::Lookups,
+}
+
+/// The routes' estimate counts under [`Movements::read_by_key`]: not counted over the world.
+const ROUTES_BY_KEY: &str = "not recorded: the routes and their estimates are made by key for the divisions the layout admits";
+
 impl Movements {
+    /// No route is made until [`Self::prepare`] makes those of the divisions a layout admits, each
+    /// as the whole read makes it (the same placement through the content's kept placements, the
+    /// same estimate) and kept for the hour. The world's estimate counts are not made: `eta` holds
+    /// one fixed line, so no layout's report depends on what another looked up.
+    pub(super) fn read_by_key(frame: &Arc<DecodedFrame>, lookups: super::Lookups) -> io::Result<Self> {
+        let count = rows::<tables::DivisionMovement>(frame)?.rows().len();
+        rows::<tables::Divisions>(frame)?;
+        let mut eta = Report::default();
+        eta.refused.insert(Arc::from(ROUTES_BY_KEY), 1);
+        Ok(Self {
+            by_division: Arc::default(),
+            eta,
+            by_key: Some(Arc::new(KeyedRoutes {
+                frame: Arc::clone(frame),
+                slots: (0..count).map(|_| std::sync::OnceLock::new()).collect(),
+                lookups,
+            })),
+        })
+    }
+
+    /// Makes the routes of `divisions` not yet made this hour, in one batch on this thread (the
+    /// estimates' hour terms are made once for it), from the content's anchors and kept placements
+    /// and its movement map. Nothing for routes read whole. A route the frame thread makes (the
+    /// worker's fill had not reached it) is counted in the flight record.
+    pub(super) fn prepare(&self, divisions: impl IntoIterator<Item = u64>, content: &CounterContent, movement_content: Option<&MovementContent>) {
+        let Some(keyed) = &self.by_key else { return };
+        let on_frame = !viewer_foundation::map::redraws::apart_now();
+        let frame = &*keyed.frame;
+        let Ok(movement) = rows::<tables::DivisionMovement>(frame) else { return };
+        let movement = movement.rows();
+        let census = rows::<tables::Divisions>(frame).map_or(&[][..], |rows| rows.rows());
+        let map = movement_content.map(|movement| &movement.map);
+        let anchor = |province| content.anchor(province, STANDSTILL);
+        let mut terms = None;
+        for division in divisions {
+            let Ok(at) = movement.binary_search_by_key(&division, |row| row.division) else {
+                continue;
+            };
+            if keyed.slots[at].get().is_some() {
+                keyed.lookups.kept();
+                continue;
+            }
+            keyed.lookups.made();
+            if on_frame {
+                viewer_foundation::view_record::add("overlay", "routes_made_on_frame", 1);
+            }
+            let row = &movement[at];
+            let census_row = census.binary_search_by_key(&division, |row| row.id).ok().map(|at| &census[at]);
+            let terms = terms.get_or_insert_with(|| viewer_foundation::movement_timing::HourTerms::new(frame));
+            let eta = viewer_foundation::movement_timing::estimate_one(row, census_row, terms, movement_content);
+            let route = counter_move::DivisionRoutes::route_of(row, census_row.map_or(0, |row| row.province), eta, map, &anchor, &content.routes);
+            let _ = keyed.slots[at].set(Some(Box::new(route)));
+        }
+        content.routes.sweep(movement.len(), |division| movement.binary_search_by_key(division, |row| row.division).is_ok());
+    }
+
+    /// Makes every route of the hour not yet made: the worker's fill after a keyed build, so a
+    /// layout finds its divisions made ([`Self::prepare`]).
+    pub(super) fn fill(&self, content: &CounterContent, movement_content: Option<&MovementContent>) {
+        let Some(keyed) = &self.by_key else { return };
+        let Ok(movement) = rows::<tables::DivisionMovement>(&keyed.frame) else { return };
+        self.prepare(movement.rows().iter().map(|row| row.division), content, movement_content);
+    }
+
+    /// Whether the routes are made by key ([`Self::read_by_key`]).
+    pub(super) fn by_key(&self) -> bool {
+        self.by_key.is_some()
+    }
     /// A division whose route the content map cannot place stands on its province's
     /// `Standstill` slot and is counted in the report, never dropped.
     pub(super) fn read(
@@ -1245,38 +1444,42 @@ impl Movements {
         Ok(Self {
             by_division: Arc::clone(&routes.by_division),
             eta,
+            by_key: None,
         })
     }
 
     pub(super) fn get(&self, division: u64) -> Option<&Movement> {
-        self.by_division.get(&division)
+        let Some(keyed) = &self.by_key else {
+            return self.by_division.get(&division);
+        };
+        let movement = rows::<tables::DivisionMovement>(&keyed.frame).ok()?.rows();
+        let at = movement.binary_search_by_key(&division, |row| row.division).ok()?;
+        keyed.slots[at].get()?.as_deref()
     }
 }
 
 /// This hour's `DivisionStatus` rows, joined to `Divisions.id` and cached per
-/// hour for the window's per-frame icon rebuilds.
+/// hour for the window's per-frame icon rebuilds: whole, or looked up by key as the layout reads
+/// a division ([`Self::read_by_key`]).
 #[derive(Clone, Default)]
 pub(super) struct DivisionStatuses {
     pub(super) by_division: BTreeMap<u64, DivisionStatus>,
     /// A recording without DivisionStatus: each division's exercise predicate from
     /// DivisionModelInputs, `None` where its read was refused.
     pub(super) witnessed: BTreeMap<u64, Option<bool>>,
+    by_key: Option<Arc<KeyedStatuses>>,
+}
+
+/// The statuses looked up in the hour's rows, each division once ([`DivisionStatuses::read_by_key`]).
+struct KeyedStatuses {
+    frame: Arc<DecodedFrame>,
+    recorded: bool,
+    looked: std::sync::Mutex<std::collections::HashMap<u64, Option<DivisionStatus>>>,
+    lookups: super::Lookups,
 }
 
 impl DivisionStatuses {
-    /// What a division with no recorded row reads as; its counter draws no bars or glyphs from it.
-    const MISSING: DivisionStatus = DivisionStatus {
-        maxima: None,
-        entrenchment: 0,
-        entrenchment_cap: 0,
-        supply_ratio: counter_status::FIXED,
-        attrition: false,
-        exercising: None,
-        has_order: None,
-        invalid_orders: 0,
-        naval_transfer: false,
-        strength_factor: counter_status::FIXED,
-    };
+    const MISSING: DivisionStatus = DivisionStatus::MISSING;
 
     pub(super) fn read(frame: &DecodedFrame) -> io::Result<Self> {
         if !frame.recorded(replay_data::rows::TableId::DivisionStatus) {
@@ -1285,66 +1488,165 @@ impl DivisionStatuses {
                 .iter()
                 .map(|row| (row.division, row.exercising.map(|value| value != 0)))
                 .collect();
-            return Ok(Self {
-                by_division: BTreeMap::new(),
-                witnessed,
-            });
+            return Ok(Self { witnessed, ..Self::default() });
         }
         let panels: BTreeMap<u64, _> = rows::<tables::DivisionPanelStats>(frame)?
             .rows()
             .iter()
             .map(|row| (row.division, row))
             .collect();
-        let mut by_division: BTreeMap<u64, DivisionStatus> = BTreeMap::new();
-        for row in rows::<tables::DivisionStatus>(frame)?.rows() {
-            // An unknown ratio draws no supply glyph, as a missing row does.
-            let supply_ratio = row.displayed_supply_ratio().unwrap_or(counter_status::FIXED);
-            let maxima = panels.get(&row.division).and_then(|panel| {
-                Some([panel.maximum_hit_points()?, panel.maximum_organisation()?])
-            });
-            by_division.insert(
-                row.division,
-                DivisionStatus {
-                    maxima,
-                    entrenchment: row.entrenchment,
-                    entrenchment_cap: row.entrenchment_cap,
-                    supply_ratio,
-                    attrition: row.has_attrition(),
-                    exercising: Some(row.exercising != 0),
-                    has_order: Some(row.has_order != 0),
-                    invalid_orders: row.invalid_orders,
-                    naval_transfer: false,
-                    strength_factor: row.strength_factor,
-                },
-            );
-        }
-        for row in rows::<tables::DivisionMovement>(frame)?.rows() {
-            if let Some(status) = by_division.get_mut(&row.division) {
-                status.naval_transfer = row.naval_transfer != 0;
-            }
+        let statuses = rows::<tables::DivisionStatus>(frame)?.rows();
+        let movements: BTreeMap<u64, _> = rows::<tables::DivisionMovement>(frame)?
+            .rows()
+            .iter()
+            .map(|row| (row.division, row))
+            .collect();
+        let by_division = statuses
+            .iter()
+            .map(|row| (row.division, status_of(row, panels.get(&row.division).copied(), movements.get(&row.division).copied())))
+            .collect();
+        Ok(Self { by_division, ..Self::default() })
+    }
+
+    /// No status is made until the layout reads a division's ([`Self::get`]): one binary search a
+    /// table, each of which is keyed by the division and so ascending by it, then kept for the hour.
+    /// The tables are read here once, so a refusal is the whole read's.
+    pub(super) fn read_by_key(frame: &Arc<DecodedFrame>, lookups: super::Lookups) -> io::Result<Self> {
+        let recorded = frame.recorded(replay_data::rows::TableId::DivisionStatus);
+        if recorded {
+            rows::<tables::DivisionPanelStats>(frame)?;
+            rows::<tables::DivisionStatus>(frame)?;
+            rows::<tables::DivisionMovement>(frame)?;
+        } else {
+            rows::<tables::DivisionModelInputs>(frame)?;
         }
         Ok(Self {
-            by_division,
-            witnessed: BTreeMap::new(),
+            by_key: Some(Arc::new(KeyedStatuses { frame: Arc::clone(frame), recorded, looked: Default::default(), lookups })),
+            ..Self::default()
         })
     }
 
     pub(super) fn get(&self, division: u64) -> DivisionStatus {
-        self.by_division
-            .get(&division)
-            .copied()
-            .unwrap_or(DivisionStatus {
-                exercising: self.witnessed.get(&division).copied().flatten(),
-                ..Self::MISSING
-            })
+        match &self.by_key {
+            Some(keyed) => keyed.get(division),
+            None => self.by_division.get(&division).copied(),
+        }
+        .unwrap_or(DivisionStatus {
+            exercising: self.witnessed(division),
+            ..Self::MISSING
+        })
+    }
+
+    fn witnessed(&self, division: u64) -> Option<bool> {
+        match &self.by_key {
+            Some(keyed) if !keyed.recorded => keyed.witnessed(division),
+            Some(_) => None,
+            None => self.witnessed.get(&division).copied().flatten(),
+        }
     }
 
     /// Whether the division's status and maxima are recorded, which its bars need.
     pub(super) fn recorded(&self, division: u64) -> bool {
-        self.by_division
-            .get(&division)
-            .is_some_and(|status| status.maxima.is_some())
+        match &self.by_key {
+            Some(keyed) => keyed.get(division),
+            None => self.by_division.get(&division).copied(),
+        }
+        .is_some_and(|status| status.maxima.is_some())
     }
+}
+
+impl KeyedStatuses {
+    fn get(&self, division: u64) -> Option<DivisionStatus> {
+        if !self.recorded {
+            return None;
+        }
+        let mut looked = self.looked.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(&status) = looked.get(&division) {
+            self.lookups.kept();
+            return status;
+        }
+        self.lookups.made();
+        let frame = &*self.frame;
+        let status = keyed::<tables::DivisionStatus>(frame, division, |row| row.division).map(|row| {
+            let panel = keyed::<tables::DivisionPanelStats>(frame, division, |row| row.division);
+            let movement = keyed::<tables::DivisionMovement>(frame, division, |row| row.division);
+            status_of(row, panel, movement)
+        });
+        looked.insert(division, status);
+        status
+    }
+
+    fn witnessed(&self, division: u64) -> Option<bool> {
+        self.lookups.made();
+        keyed::<tables::DivisionModelInputs>(&self.frame, division, |row| row.division).and_then(|row| row.exercising.map(|value| value != 0))
+    }
+}
+
+/// Each division's `ArmyIconInputs` operands (separate counter, alternate template): whole, or
+/// looked up by key as the layout reads a division ([`Self::read_by_key`]).
+#[derive(Clone, Default)]
+pub(super) struct IconInputs {
+    whole: BTreeMap<u64, (u8, u64)>,
+    by_key: Option<(Arc<DecodedFrame>, super::Lookups)>,
+}
+
+impl IconInputs {
+    pub(super) fn read(frame: &DecodedFrame) -> io::Result<Self> {
+        let whole = rows::<tables::ArmyIconInputs>(frame)?.rows().iter().map(|row| (row.division, icon_input(row))).collect();
+        Ok(Self { whole, by_key: None })
+    }
+
+    /// Nothing is made until the layout reads a division's: one binary search in the table, which
+    /// is keyed by the division. Nothing is kept, the search being the whole of a lookup. The table
+    /// is read here once, so a refusal is the whole read's.
+    pub(super) fn read_by_key(frame: &Arc<DecodedFrame>, lookups: super::Lookups) -> io::Result<Self> {
+        rows::<tables::ArmyIconInputs>(frame)?;
+        Ok(Self { whole: BTreeMap::new(), by_key: Some((Arc::clone(frame), lookups)) })
+    }
+
+    pub(super) fn get(&self, division: u64) -> Option<(u8, u64)> {
+        match &self.by_key {
+            Some((frame, lookups)) => {
+                lookups.made();
+                keyed::<tables::ArmyIconInputs>(frame, division, |row| row.division).map(icon_input)
+            }
+            None => self.whole.get(&division).copied(),
+        }
+    }
+}
+
+fn icon_input(row: &replay_data::rows::ArmyIconInputRow) -> (u8, u64) {
+    (row.separate_counter, row.alternate_template)
+}
+
+/// The row of `T` whose key is `key`, in rows ascending by it.
+fn keyed<T: replay_data::rows::TableSchema>(frame: &DecodedFrame, key: u64, of: impl Fn(&T::Row) -> u64) -> Option<&T::Row> {
+    let rows = rows::<T>(frame).ok()?.rows();
+    rows.binary_search_by_key(&key, |row| of(row)).ok().map(|at| &rows[at])
+}
+
+/// One division's status from its rows, as the whole read and a lookup both make it.
+fn status_of(
+    row: &replay_data::rows::DivisionStatusRow,
+    panel: Option<&replay_data::rows::DivisionPanelStatsRow>,
+    movement: Option<&replay_data::rows::DivisionMovementRow>,
+) -> DivisionStatus {
+    let maxima = panel.and_then(|panel| Some([panel.maximum_hit_points()?, panel.maximum_organisation()?]));
+    let fields = StatusFields {
+        entrenchment: row.entrenchment,
+        entrenchment_cap: row.entrenchment_cap,
+        supply_ratio: row.displayed_supply_ratio(),
+        attrition: row.has_attrition(),
+        exercising: row.exercising,
+        has_order: row.has_order,
+        invalid_orders: row.invalid_orders,
+        strength_factor: row.strength_factor,
+    };
+    let mut status = DivisionStatus::recorded(fields, maxima, false);
+    if let Some(movement) = movement {
+        status.naval_transfer = movement.naval_transfer != 0;
+    }
+    status
 }
 
 /// One template's type-icon operands (`DivisionTemplateIcons`): its priority sub-unit's name,
@@ -1464,8 +1766,8 @@ pub(super) struct GunInputs {
     /// Guns this hour holds rows for, drawn or not; the report's unavailable count.
     pub(super) recorded: usize,
     /// Lexical token to the authored sub-unit key it names, for the stat
-    /// definitions the guns name.
-    pub(super) names: BTreeMap<u32, String>,
+    /// definitions the guns name, or why this hour cannot name it.
+    pub(super) names: BTreeMap<u32, Result<String, String>>,
     /// Gun sub-unit tokens this hour cannot name, by reason.
     pub(super) refused: BTreeSet<String>,
     /// Current raw rail-path count and cooldown, independently of sorted `RailEdges`.
@@ -1477,10 +1779,11 @@ pub(super) struct GunInputs {
 }
 
 impl GunInputs {
-    /// The authored sub-unit key a gun's stat definition names this hour,
-    /// which its join compares and its icon uses; `None` when it was refused.
-    pub(super) fn name_of(&self, gun: &RailwayGunCounterInputRow) -> Option<&str> {
-        self.names.get(&gun.subunit_token).map(String::as_str)
+    /// The hour of a gun counters layer that draws the guns: only each moving gun's destination
+    /// hostility, which the layer is given until it reads it from its owner.
+    pub(super) fn hostility_only(frame: &DecodedFrame, hostility: &counter_action::DestinationHostility<'_>) -> io::Result<Self> {
+        let table = rows::<tables::RailwayGunCounterInputs>(frame)?;
+        Ok(Self { destination_enemy: destination_enemy(table.rows(), hostility), ..Self::default() })
     }
 
     pub(super) fn read(
@@ -1508,24 +1811,12 @@ impl GunInputs {
             let tokens = TokenNames::new(frame)?;
             wanted
                 .iter()
-                .filter_map(|&token| {
-                    let named = tokens
-                        .name(token)
-                        .map_err(|reason| reason.to_string())
-                        .and_then(|spelling| {
-                            subunits
-                                .map_err(|reason| format!("sub-units unavailable: {reason}"))?
-                                .resolve(spelling)?
-                                .map(str::to_owned)
-                                .ok_or_else(|| format!("sub-unit {spelling} is not authored"))
-                        });
-                    match named {
-                        Ok(name) => Some((token, name)),
-                        Err(reason) => {
-                            refused.insert(format!("railway gun sub-unit: {reason}"));
-                            None
-                        }
+                .map(|&token| {
+                    let named = gun_name(tokens.name(token).map_err(|reason| reason.to_string()), subunits);
+                    if let Err(reason) = &named {
+                        refused.insert(format!("railway gun sub-unit: {reason}"));
                     }
+                    (token, named)
                 })
                 .collect()
         };
@@ -1541,21 +1832,7 @@ impl GunInputs {
                 })
                 .collect()
         });
-        let destination_enemy = table
-            .rows()
-            .iter()
-            .filter(|gun| !gun.ordinary_path.is_empty())
-            .map(|gun| {
-                (
-                    gun.gun,
-                    hostility.destination_enemy(
-                        &gun.ordinary_path,
-                        gun.ordinary_path.len() as u32,
-                        Some(gun.logical_owner),
-                    ),
-                )
-            })
-            .collect();
+        let destination_enemy = destination_enemy(table.rows(), hostility);
         Ok(Self {
             rows: Some(table.rows().to_vec()),
             recorded,
@@ -1565,6 +1842,13 @@ impl GunInputs {
             destination_enemy,
         })
     }
+}
+
+fn destination_enemy(guns: &[RailwayGunCounterInputRow], hostility: &counter_action::DestinationHostility<'_>) -> BTreeMap<u64, Result<bool, &'static str>> {
+    guns.iter()
+        .filter(|gun| !gun.ordinary_path.is_empty())
+        .map(|gun| (gun.gun, hostility.destination_enemy(&gun.ordinary_path, gun.ordinary_path.len() as u32, Some(gun.logical_owner))))
+        .collect()
 }
 
 /// An active-ability record is active when its phase byte is zero.
@@ -1678,149 +1962,70 @@ fn add_railway_guns(
             out.report.refused_tokens.insert(reason.clone());
         }
     }
-    let movement = inputs.movement;
     let world = inputs.route_world();
     let anchor = |id, slot| inputs.content.anchor(id, slot);
+    let (anchor_of, land_of) = (GunGround::anchor_of(inputs.content), GunGround::land_of(inputs.map));
+    let ground = GunGround { anchor: &anchor_of, land: &land_of, movement: inputs.movement };
+    let joins = TodayGunJoins { land, owner };
     for gun in rows {
-        if gun.province == 0 {
-            continue;
-        }
-        let Some(slot) = owner(gun.roster_owner) else {
-            continue;
-        };
-        let ordinal = match land.order {
-            Some(order) => match order.mixed(gun.gun, gun.province) {
-                Some(ordinal) => ordinal,
-                None => continue,
-            },
-            None => 0,
-        };
-        let sight = land.vision.sees_land(gun.gun, slot, gun.province);
-        if sight == Sight::None {
-            continue;
-        }
-        let Some(name) = land.guns.name_of(gun).map(str::to_owned) else {
-            out.report.unavailable_railway_guns += 1;
-            continue;
-        };
-        let route = counter_move::UnitRoute::railway_gun(gun);
-        let class = viewer_foundation::unit_class::CounterClass::RailwayGun;
-        let placed = movement.and_then(|movement| {
-            route.stack_kind(gun.province, &movement.map, &|id| {
-                anchor(id, class.standstill(true))
-            })
-        });
-        // A route content cannot place stands on its province, like a division's; the
-        // stand-off kind needs no geometry.
-        let kind = placed.unwrap_or_else(|| {
-            if !route.display_path().is_empty() {
-                out.report.unplaced_railway_gun_routes += 1;
+        let fields = GunFields::of(gun);
+        let member = match gun_member(&fields, ground, &joins) {
+            Gun::Member(member) => member,
+            Gun::Unnamed(_) => {
+                out.report.unavailable_railway_guns += 1;
+                continue;
             }
-            counter_move::stack_kind(counter_move::StackKindInputs {
-                class,
-                combat_role: gun.combat_role,
-                ..Default::default()
-            })
-        });
-        // The game skips source bucket 19 for every class: a docked gun is not on the map.
-        if kind == SHIP_IN_PORT {
-            continue;
-        }
-        let position = match (placed, &world) {
-            (Some(kind), Some(world)) => route.position(gun.province, kind, world, &anchor),
-            _ => route
-                .standing(gun.province, true, kind, &anchor)
-                .map(counter_move::Position::still),
+            Gun::Out(_) => continue,
         };
-        let on_land = movement
-            .and_then(|movement| movement.map.terrain(gun.province))
-            .map_or_else(
-                || {
-                    matches!(
-                        inputs.map.definitions.get(&gun.province).map(|it| it.kind),
-                        Some(ProvinceKind::Land)
-                    )
-                },
-                |terrain| terrain.flags & 1 != 0,
-            );
-        let rail = land
-            .guns
-            .rail
-            .as_ref()
-            .and_then(|rail| rail.get(&gun.province).copied());
-        let location_warning = guns::location_warning(gun, on_land, rail);
-        if location_warning.is_none() {
+        if member.unplaced {
+            out.report.unplaced_railway_gun_routes += 1;
+        }
+        if member.location_warning.is_none() {
             out.report.unavailable_railway_gun_locations += 1;
         }
-        // The detailed flag owner; a coarse column takes the unit's own ([`land_stack`]).
-        let flag_owner = unit_flag_owner(slot, gun.expeditionary_owner, false, owner);
+        let route = fields.route();
+        let position = match (member.timing.kind, &world) {
+            (Some(kind), Some(world)) => route.position(gun.province, kind, world, &anchor),
+            _ => route
+                .standing(gun.province, true, member.kind, &anchor)
+                .map(counter_move::Position::still),
+        };
         sources
-            .entry((gun.province, kind))
+            .entry((gun.province, member.kind))
             .or_default()
             .units
-            .push(SourceUnit::Land(LandUnit {
-                ordinal,
-                alternate_template: 0,
-                shared_vision: land.vision.shares_vision_proven(slot),
-                separate: false,
-                id: gun.gun,
-                type_tint: land.type_tints.of(gun.roster_owner, gun.logical_owner),
-                owner: slot,
-                logical: owner(gun.logical_owner),
-                flag_owner,
-                template: 0,
-                orders_group: gun.assignee_group,
-                hq: false,
-                sight,
-                hp: guns::strength_ratio(gun.current_strength, gun.maximum_strength),
-                org: 0,
-                bars: true,
-                status: counter_status::Member {
-                    supply_ratio: gun.received_supply_ratio,
-                    naval_transfer: gun.naval_transfer != 0,
-                    own: slot == land.vision.ours(),
-                    ..Default::default()
-                },
-                movement: None,
-                action: Ok(1),
-                group_parent: None,
-                parent_branch: None,
-                withdrawing: None,
-                defending_area: None,
-                commander: Some(None),
-                gun: Some(GunUnit {
-                    name,
-                    timing: viewer_foundation::map::counter_hovers::land::Timing {
-                        next: movement.and_then(|content| {
-                            replay_derive::eta_derive::railway_gun_first_edge(
-                                gun,
-                                |id| {
-                                    content.map.terrain(id).map(|terrain| {
-                                        replay_derive::eta_derive::ProvinceOperands {
-                                            terrain_flags: terrain.flags,
-                                            ..Default::default()
-                                        }
-                                    })
-                                },
-                                |from, to| content.map.distance(from, to),
-                                &content.defines,
-                            )
-                        }),
-                        kind: placed,
-                    },
-                    location_warning,
-                    join_action: guns::join_action(gun),
-                    action: guns::action_code(
-                        gun,
-                        land.guns
-                            .destination_enemy
-                            .get(&gun.gun)
-                            .copied()
-                            .unwrap_or(Err("last ordinary-route province hostility")),
-                    ),
-                    position,
-                }),
-            }));
+            .push(SourceUnit::Land(member.unit(position)));
+    }
+}
+
+/// [`add_railway_guns`] from the guns a gun counters layer decided.
+fn add_layered_guns(inputs: &CounterInputs<'_>, guns: &LayeredGuns, sources: &mut BTreeMap<StackKey, Source<'_>>, out: &mut CounterFrame) {
+    if !guns.complete {
+        out.report.unavailable_railway_guns += guns.recorded;
+        return;
+    }
+    for reason in &guns.refused {
+        if !out.report.refused_tokens.contains(reason) {
+            out.report.refused_tokens.insert(reason.clone());
+        }
+    }
+    out.report.unavailable_railway_guns += guns.unnamed;
+    let world = inputs.route_world();
+    let anchor = |id, slot| inputs.content.anchor(id, slot);
+    for placed in &guns.members {
+        let member = &placed.member;
+        if member.unplaced {
+            out.report.unplaced_railway_gun_routes += 1;
+        }
+        if member.location_warning.is_none() {
+            out.report.unavailable_railway_gun_locations += 1;
+        }
+        let route = placed.route.route();
+        let position = match (member.timing.kind, &world) {
+            (Some(kind), Some(world)) => route.position(member.province, kind, world, &anchor),
+            _ => route.standing(member.province, true, member.kind, &anchor).map(counter_move::Position::still),
+        };
+        sources.entry((member.province, member.kind)).or_default().units.push(SourceUnit::Land(member.clone().unit(position)));
     }
 }
 
@@ -1837,123 +2042,36 @@ pub(super) fn division_counters(
     land: &CounterTables<'_>,
 ) -> io::Result<DivisionCounters> {
     let mut sources = DivisionCounters::new();
-    let hq_providers = land.hq_providers;
-    let commanders: BTreeMap<u64, u64> = rows::<tables::OrdersGroups>(frame)?
+    let leaders: BTreeMap<u64, u64> = rows::<tables::OrdersGroups>(frame)?
         .rows()
         .iter()
         .map(|group| (group.handle, group.leader))
         .collect();
+    let joins = TableJoins { land, owner, leaders: &leaders };
     for division in rows::<tables::Divisions>(frame)?.rows() {
-        let Some(slot) = owner(division.roster_owner) else {
+        let Some((key, member)) = division_member(DivisionFields::of(division), &joins) else {
             continue;
         };
-        // Walk the province's own occupant array; a division it does not hold there
-        // is never bucketed.
-        let ordinal = match land.order {
-            Some(order) => match order.mixed(division.id, division.province) {
-                Some(ordinal) => ordinal,
-                None => continue,
-            },
-            None => 0,
-        };
-        let sight = land.vision.sees_land(division.id, slot, division.province);
-        if sight == Sight::None {
-            continue;
-        }
-        let icon_input = land.icon_inputs.get(&division.id);
-        let alternate_template = icon_input
-            .filter(|r| r.alternate_template != 0)
-            .map_or(division.template, |r| r.alternate_template);
-        let separate = icon_input.map_or_else(
-            || hq_providers.contains(&division.id),
-            |r| r.separate_counter != 0,
-        );
-        let movement = land.movement.get(division.id);
-        let kind = movement.map_or(STANDSTILL, |m| m.stack_kind);
-        // A transported division in a land province joins the port's naval icon.
-        if kind == SHIP_IN_PORT {
-            continue;
-        }
-        let status = land.status.get(division.id);
-        // The detailed flag owner; a coarse column takes the unit's own ([`land_stack`]).
-        let flag_owner = unit_flag_owner(slot, division.expeditionary_owner, false, owner);
-        sources
-            .entry((division.province, kind))
-            .or_default()
-            .push(LandUnit {
-                ordinal,
-                id: division.id,
-                type_tint: land
-                    .type_tints
-                    .of(division.roster_owner, division.logical_owner),
-                alternate_template,
-                shared_vision: land.vision.shares_vision_proven(slot),
-                separate,
-                hq: separate && hq_providers.contains(&division.id),
-                owner: slot,
-                logical: owner(division.logical_owner),
-                flag_owner,
-                template: division.template,
-                orders_group: division.orders_group,
-                sight,
-                hp: status.maxima.map_or(0, |[maximum, _]| {
-                    counter_status::modified_strength(
-                        division.hit_points,
-                        maximum,
-                        status.strength_factor,
-                    )
-                }),
-                org: status.maxima.map_or(0, |[_, maximum]| {
-                    counter_status::ratio(division.organisation, maximum)
-                }),
-                bars: land.status.recorded(division.id),
-                status: counter_status::Member {
-                    supply_ratio: status.supply_ratio,
-                    naval_transfer: status.naval_transfer,
-                    entrenchment: status.entrenchment,
-                    entrenchment_cap: status.entrenchment_cap,
-                    attrition: status.attrition,
-                    exercising: status.exercising,
-                    grouped: division.orders_group != 0,
-                    own: slot == land.vision.ours(),
-                    has_order: status.has_order,
-                    invalid_orders: status.invalid_orders,
-                },
-                movement: None,
-                action: land.actions.get(division.id),
-                group_parent: land
-                    .orders
-                    .groups
-                    .get(&division.orders_group)
-                    .map(|group| group.parent),
-                parent_branch: counter_inputs::parent_branch(
-                    division.id,
-                    division.orders_group,
-                    land.orders,
-                ),
-                withdrawing: land.native.withdrawing(division.orders_group),
-                defending_area: counter_inputs::area_defence(
-                    division.id,
-                    division.orders_group,
-                    land.orders,
-                ),
-                commander: if division.orders_group == 0 {
-                    Some(None)
-                } else {
-                    commanders
-                        .get(&division.orders_group)
-                        .map(|&leader| (leader != 0).then_some(leader))
-                },
-                gun: None,
-            });
+        let unit = member.unit(land.actions.get(division.id));
+        sources.entry(key).or_default().push(unit);
     }
     Ok(sources)
+}
+
+/// The division sources of members a layer keeps, with their actions.
+pub(super) fn division_counters_of(stacks: &LandStacks) -> DivisionCounters {
+    stacks
+        .iter()
+        .map(|(&key, members)| (key, members.iter().map(|(member, action)| member.clone().unit(*action)).collect()))
+        .collect()
 }
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn land_counters<'a>(
     inputs: &CounterInputs<'_>,
     divisions: &DivisionCounters,
+    layered_land: Option<&LandStacks>,
+    layered_guns: Option<&LayeredGuns>,
     owner: &impl Fn(u32) -> Option<u32>,
     land: &CounterTables<'a>,
     naval: &NavalContext<'a>,
@@ -1968,6 +2086,15 @@ pub(super) fn land_counters<'a>(
     let admission = Admission::new(inputs.camera, inputs.viewport);
     let armies = inputs.visibility.unit_kinds == UnitKinds::All;
     if armies {
+        // Routes made by key are made here, for the divisions the layout admits, before any read.
+        land.movement.prepare(
+            divisions
+                .iter()
+                .filter(|(key, _)| admission.admits_province(&inputs.content.bounds, key.0))
+                .flat_map(|(_, units)| units.iter().map(|unit| unit.id)),
+            inputs.content,
+            inputs.movement,
+        );
         for (&key, units) in divisions {
             if !admission.admits_province(&inputs.content.bounds, key.0) {
                 continue;
@@ -1985,16 +2112,19 @@ pub(super) fn land_counters<'a>(
     let unavailable = out.report.unavailable_railway_guns;
     // Unknown gun geometry still occupies its source: the game refuses the column.
     if armies {
-        add_railway_guns(inputs, owner, land, &mut sources, out);
+        match layered_guns {
+            Some(guns) => add_layered_guns(inputs, guns, &mut sources, out),
+            None => add_railway_guns(inputs, owner, land, &mut sources, out),
+        }
     }
     if armies && inputs.assets.layouts.gun.is_err() {
-        out.report.unavailable_railway_guns = unavailable
-            + land
-                .guns
-                .recorded
-                .max(out.report.unavailable_railway_guns - unavailable);
+        let recorded = layered_guns.map_or(land.guns.recorded, |guns| guns.recorded);
+        out.report.unavailable_railway_guns = unavailable + recorded.max(out.report.unavailable_railway_guns - unavailable);
     }
     add_task_forces(inputs, owner, land, naval, &admission, &mut sources, out);
+    if viewer_foundation::view_record::on() {
+        record_admitted(&sources, retained.as_deref_mut());
+    }
     let mut icons = Vec::new();
     let mut source_kinds = Vec::new();
     let mut admitted = Vec::new();
@@ -2055,6 +2185,7 @@ pub(super) fn land_counters<'a>(
     let mut styles = Vec::new();
     let mut flotillas = Vec::new();
     let mut items = Vec::new();
+    let mut plans = Vec::new();
     let mut undecided = BTreeMap::new();
     // Keep only programs used in this preparation; live data, not an arbitrary cache cap,
     // bounds the memo. Camera admission and geographic grouping above always run afresh.
@@ -2085,6 +2216,7 @@ pub(super) fn land_counters<'a>(
                     .map(|&source| OrderedSource {
                         province: icons[source].province,
                         kind: source_kinds[source],
+                        values: SourceValues(layered_land.and_then(|stacks| stacks.get(&(icons[source].province, source_kinds[source]))).cloned()),
                         members: admitted[source]
                             .units
                             .iter()
@@ -2132,21 +2264,26 @@ pub(super) fn land_counters<'a>(
                 counts.semantic_plans += 1;
                 counts.semantic_plan_hits += u64::from(hit);
             });
+            viewer_foundation::map::redraws::note(if hit { "plans.kept" } else { "plans.made" }, 1);
             let program = if hit {
                 before.unwrap().1
             } else {
-                column_program(inputs, &units, height, rules, land, naval, &mut undecided)
+                Arc::new(column_program(inputs, &units, height, rules, land, naval, &mut undecided))
             };
             let result = program.append(&mut drawn, &mut styles, &mut flotillas, &mut undecided);
+            plans.extend((0..program.stacks.len()).map(|at| Some((Arc::clone(&program), at))));
             memo.previous.insert(leader, (key, program));
             result
         } else {
-            column_program(inputs, &units, height, rules, land, naval, &mut undecided).append(
+            viewer_foundation::map::redraws::note("plans.made", 1);
+            let result = column_program(inputs, &units, height, rules, land, naval, &mut undecided).append(
                 &mut drawn,
                 &mut styles,
                 &mut flotillas,
                 &mut undecided,
-            )
+            );
+            plans.resize(drawn.len(), None);
+            result
         };
         items.push(program);
     }
@@ -2180,6 +2317,7 @@ pub(super) fn land_counters<'a>(
     Ok(PreparedLand {
         units,
         sprites: (0..drawn.len()).map(|_| None).collect(),
+        plans,
         stacks: drawn,
         styles,
         flotillas,
@@ -2209,7 +2347,7 @@ pub(super) fn land_counters<'a>(
 /// atlas cells, packets or lifecycle clocks. Native requests and setters are still replayed by
 /// the ordinary draw owners on every frame.
 #[derive(Clone, Default)]
-struct ColumnProgram {
+pub(super) struct ColumnProgram {
     stacks: Vec<Stack>,
     styles: Vec<StackStyle>,
     flotillas: Vec<Flotilla>,
@@ -2222,7 +2360,32 @@ struct ColumnProgram {
 struct OrderedSource {
     province: u32,
     kind: u32,
+    /// The layer's members of the source, whose values the plan is made from.
+    values: SourceValues,
     members: Vec<(Unit, u32)>,
+}
+
+/// A layer's members of one source, the same only as the same allocation: a new product keeps
+/// every source's whose members did not change ([`LandStacks`]). Held, so the address is not reused.
+#[derive(Clone)]
+struct SourceValues(Option<Arc<[(Member, counter_action::Action)]>>);
+
+impl PartialEq for SourceValues {
+    fn eq(&self, other: &Self) -> bool {
+        match (&self.0, &other.0) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for SourceValues {}
+
+impl std::fmt::Debug for SourceValues {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("SourceValues").field(&self.0.as_ref().map(|values| values.len())).finish()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2237,7 +2400,55 @@ struct ColumnKey {
 
 #[derive(Default)]
 pub(super) struct ColumnPlans {
-    previous: BTreeMap<(u32, u32), (ColumnKey, ColumnProgram)>,
+    previous: BTreeMap<(u32, u32), (ColumnKey, Arc<ColumnProgram>)>,
+    /// The divisions the view's last layout admitted, ascending, while the flight record is kept.
+    admitted: Vec<u64>,
+}
+
+/// The flight record's land divisions ([`viewer_foundation::view_record`]): admitted by this
+/// layout, and entering and leaving against the view's layout before; a worker's layout under a
+/// section of its own.
+fn record_admitted(sources: &BTreeMap<StackKey, Source<'_>>, retained: Option<&mut ColumnPlans>) {
+    use viewer_foundation::view_record;
+    let mut admitted: Vec<u64> = sources
+        .values()
+        .flat_map(|source| &source.units)
+        .filter_map(|unit| match unit {
+            SourceUnit::Land(unit) => Some(unit.id),
+            SourceUnit::Naval(_) => None,
+        })
+        .collect();
+    admitted.sort_unstable();
+    admitted.dedup();
+    let section = if viewer_foundation::map::redraws::apart_now() { "overlay worker" } else { "overlay" };
+    view_record::set(section, "divisions_admitted", admitted.len() as u64);
+    let Some(plans) = retained else { return };
+    let before = std::mem::replace(&mut plans.admitted, admitted);
+    let (mut entering, mut leaving) = (0, 0);
+    let (mut now, mut was) = (plans.admitted.iter().peekable(), before.iter().peekable());
+    loop {
+        match (now.peek(), was.peek()) {
+            (Some(a), Some(b)) if a == b => {
+                now.next();
+                was.next();
+            }
+            (Some(a), Some(b)) if a < b => {
+                entering += 1;
+                now.next();
+            }
+            (Some(_), Some(_)) | (None, Some(_)) => {
+                leaving += 1;
+                was.next();
+            }
+            (Some(_), None) => {
+                entering += 1;
+                now.next();
+            }
+            (None, None) => break,
+        }
+    }
+    view_record::add(section, "divisions_entering", entering);
+    view_record::add(section, "divisions_leaving", leaving);
 }
 
 impl ColumnProgram {
@@ -3307,6 +3518,78 @@ mod tests {
         let statuses = DivisionStatuses::read(&frame).unwrap();
         assert!(!statuses.recorded(1));
         assert!(!statuses.get(1).attrition && statuses.get(1).has_order.is_none());
+    }
+
+    #[test]
+    fn icon_inputs_looked_up_by_key_equal_the_whole_read_for_every_division() {
+        let mut frame = test_frame(3);
+        let row = |division, separate_counter, alternate_template| replay_data::rows::ArmyIconInputRow { division, separate_counter, alternate_template };
+        test_put(
+            &mut frame,
+            replay_data::rows::TableRows::ArmyIconInputs(vec![row(3, 1, 0), row(4, 0, 77), row(10, 1, 12), row(11, 0, 0)]),
+        );
+        let frame = Arc::new(frame);
+        let whole = IconInputs::read(&frame).unwrap();
+        let lookups = super::super::Lookups::default();
+        let keyed = IconInputs::read_by_key(&frame, lookups.clone()).unwrap();
+        for division in 0..=12 {
+            assert_eq!(keyed.get(division), whole.get(division), "division {division}");
+        }
+        assert_eq!(lookups.counts(), (13, 0));
+        assert_eq!(whole.get(4), Some((0, 77)));
+    }
+
+    #[test]
+    fn statuses_looked_up_by_key_equal_the_whole_read_for_every_division() {
+        let mut frame = test_frame(3);
+        let status = |division, entrenchment, has_order| replay_data::rows::DivisionStatusRow {
+            division,
+            entrenchment,
+            has_order,
+            attrition_value: if division % 2 == 1 { 7 } else { 0 },
+            ..Default::default()
+        };
+        test_put(
+            &mut frame,
+            replay_data::rows::TableRows::DivisionStatus(vec![status(2, 10, 1), status(5, 0, 0), status(9, 3, 1), status(40, 1, 0)]),
+        );
+        let panel = |division, hit_points| {
+            let mut panel = replay_data::rows::DivisionPanelStatsRow { division, ..Default::default() };
+            panel.panel_stats[0] = hit_points;
+            panel.panel_stats[1] = Some(3_000_000);
+            panel
+        };
+        // A panel without a status row, and a status row without a panel.
+        test_put(
+            &mut frame,
+            replay_data::rows::TableRows::DivisionPanelStats(vec![panel(1, Some(1)), panel(2, Some(2_000_000)), panel(9, None)]),
+        );
+        let movement = |division, naval_transfer| replay_data::rows::DivisionMovementRow { division, naval_transfer, ..Default::default() };
+        test_put(
+            &mut frame,
+            replay_data::rows::TableRows::DivisionMovement(vec![movement(5, 1), movement(9, 0), movement(41, 1)]),
+        );
+        let frame = Arc::new(frame);
+        let whole = DivisionStatuses::read(&frame).unwrap();
+        let lookups = super::super::Lookups::default();
+        let keyed = DivisionStatuses::read_by_key(&frame, lookups.clone()).unwrap();
+        for division in 0..=42 {
+            assert_eq!(keyed.get(division), whole.get(division), "division {division}");
+            assert_eq!(keyed.recorded(division), whole.recorded(division), "division {division}");
+        }
+        // Each division looked up once; every later read of the hour is answered from it.
+        assert_eq!(lookups.counts(), (43, 43));
+
+        let mut unrecorded = test_frame(3);
+        *unrecorded.tables[replay_data::rows::TableId::DivisionStatus.index()] =
+            replay_frame::frame::TableView::NotRecorded { mode: replay_data::scope::CaptureMode::Map };
+        let unrecorded = Arc::new(unrecorded);
+        let whole = DivisionStatuses::read(&unrecorded).unwrap();
+        let keyed = DivisionStatuses::read_by_key(&unrecorded, Default::default()).unwrap();
+        for division in 0..=3 {
+            assert_eq!(keyed.get(division), whole.get(division), "division {division}");
+            assert_eq!(keyed.recorded(division), whole.recorded(division), "division {division}");
+        }
     }
 
     #[test]

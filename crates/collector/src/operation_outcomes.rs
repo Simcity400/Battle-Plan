@@ -25,6 +25,9 @@ static OFFERED: AtomicUsize = AtomicUsize::new(0);
 static SHARED_DESCRIPTION_DEMAND: AtomicUsize = AtomicUsize::new(0);
 static SERIAL: AtomicU64 = AtomicU64::new(1);
 static EVENT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+/// The observation epoch a refused spill allocation started; its interval carries the name.
+static SPILL_REFUSED_EPOCH: AtomicU64 = AtomicU64::new(0);
+const SPILL_REFUSED: &str = "operation completion spill allocation failed";
 #[allow(clippy::vec_box)] // Published pointers stay stable through vector growth.
 static LOGS: Mutex<Vec<Box<Log>>> = Mutex::new(Vec::new());
 static UNHOOKED: OnceLock<std::borrow::Cow<'static, str>> = OnceLock::new();
@@ -193,8 +196,9 @@ impl Lane {
 struct Log {
     serial: u64,
     lanes: Box<[Lane]>,
-    // Threads registering after every lane is taken publish here, so a
-    // generation never loses an interval to its writer count.
+    // Threads registering after every lane is taken publish here, as does a
+    // lane with no room, so a generation never loses an interval to its
+    // writer count or a burst.
     shared: SharedLane<Record>,
     registered: AtomicUsize,
     entries: usize,
@@ -204,6 +208,8 @@ struct Log {
     // Admission skips events without releasing their storage.
     assembled: AtomicU64,
     assembled_epoch: AtomicU64,
+    // A spill refused before this epoch belongs to an earlier generation or attachment.
+    born_epoch: u64,
     // Sealed at the lane boundary that installs `next`; stale callbacks
     // holding this generation follow it instead of losing a completion.
     publishers: AtomicUsize,
@@ -233,8 +239,8 @@ impl Log {
             "operation completion description capacity overflow"
         })?;
         // One more thread's lane: its records, and one lane's description
-        // bytes spread over them. A longer description keeps its record, is
-        // marked short and raises the next generation's slot.
+        // bytes spread over them. A longer description spills whole and
+        // raises the next generation's slot.
         let slots = entries
             .div_ceil(lanes.max(1))
             .max(shared.0)
@@ -268,6 +274,7 @@ impl Log {
             consumed_epoch: AtomicU64::new(0),
             assembled: AtomicU64::new(0),
             assembled_epoch: AtomicU64::new(0),
+            born_epoch: EPOCH.load(Ordering::SeqCst),
             publishers: AtomicUsize::new(0),
             next: AtomicUsize::new(0),
         })
@@ -314,7 +321,7 @@ impl Drop for Call {
             // Rust cleanup precedes completion of the foreign unwind. Retain
             // this thread's claim; later calls cannot release its return path.
             UNWOUND.set(true);
-            invalidate();
+            restart();
         }
         DEPTH.with(|depth| {
             depth.set(depth.get() - 1);
@@ -325,16 +332,21 @@ impl Drop for Call {
     }
 }
 pub fn invalidate() {
-    EPOCH.fetch_add(1, Ordering::SeqCst);
+    #[cfg(test)]
+    let _exclusive = tests::exclusive();
+    restart();
 }
 pub fn lost_drain() {
     invalidate();
 }
+fn restart() {
+    EPOCH.fetch_add(1, Ordering::SeqCst);
+}
 fn failed() {
-    invalidate();
+    restart();
 }
 fn overflow() {
-    invalidate();
+    restart();
 }
 pub fn thread_slots() -> usize {
     std::thread::available_parallelism()
@@ -435,6 +447,8 @@ fn seal_offered(log: &'static Log) -> &'static Log {
 }
 /// Called before installing hooks, using the exact retained recording history.
 pub fn restore_sequence(previous: u64) -> Result<(), &'static str> {
+    #[cfg(test)]
+    let _exclusive = tests::exclusive();
     if ENABLED.load(Ordering::Acquire) || ACTIVE.load(Ordering::SeqCst) != 0 {
         return Err("operation completion sequence restoration requires disabled hooks");
     }
@@ -456,6 +470,8 @@ pub fn resize(entries: usize) {
 /// A larger generation is offered to the lane boundary, which seals the
 /// current one for its handoff, so growth loses no interval.
 pub fn presize(entries: usize, bytes: usize) {
+    #[cfg(test)]
+    let _exclusive = tests::exclusive();
     if !RUNTIME_ENABLED.load(Ordering::Relaxed) {
         return;
     }
@@ -533,6 +549,8 @@ pub fn presize(entries: usize, bytes: usize) {
 }
 /// After draining lost frames, assemble again from the last written interval.
 pub fn reset_admitted() {
+    #[cfg(test)]
+    let _exclusive = tests::exclusive();
     let current = LOG.load(Ordering::Acquire);
     for log in LOGS
         .lock()
@@ -543,7 +561,7 @@ pub fn reset_admitted() {
         if &**log as *const Log as usize != current
             && log.assembled.load(Ordering::Acquire) != log.consumed.load(Ordering::Acquire)
         {
-            lost_drain();
+            restart();
         }
         log.reset_admitted();
     }
@@ -552,6 +570,8 @@ pub fn reset_admitted() {
 /// Hooks are disabled; executable ranges/ACTIVE have quiesced and every worker
 /// holding a Handoff or log reference is joined. A premature release retains it.
 pub unsafe fn release() {
+    #[cfg(test)]
+    let _exclusive = tests::exclusive();
     if ENABLED.load(Ordering::SeqCst) || ACTIVE.load(Ordering::SeqCst) != 0 {
         return;
     }
@@ -570,32 +590,37 @@ fn append_observation(
 ) {
     match target {
         Target::Lane(lane) => append_to_lane(log, lane, observation, memory),
-        Target::Shared => append_shared(log, observation, memory),
+        Target::Shared => {
+            let length = observation.description_len();
+            if length > log.shared.stride() {
+                SHARED_DESCRIPTION_DEMAND.fetch_max(length, Ordering::Relaxed);
+            }
+            append_shared(log, Event::from_native(observation.row), &observation, memory);
+        }
     }
 }
-/// A thread without a dedicated lane in this generation. The record takes
-/// its log-wide order exactly as a lane record does.
-fn append_shared(log: &Log, observation: native::Observation, memory: &impl Memory) {
-    let Some(mut slot) = log.shared.reserve() else {
-        // Refused demand is retained for the next generation's shared lane.
-        overflow();
-        return;
-    };
-    let mut event = Event::from_native(observation.row);
+/// A thread without a dedicated lane in this generation, or a completion its lane has no
+/// room for. The record takes its log-wide order exactly as a lane record does. A full ring
+/// or a description longer than a slot spills whole without a lock; only a refused
+/// allocation gives the record up, by name.
+fn append_shared(
+    log: &Log,
+    mut event: Event,
+    observation: &native::Observation,
+    memory: &impl Memory,
+) {
     let length = observation.description_len();
     event.description_required = length as u64;
-    let (description_error, description_len) = if length > slot.stride() {
-        SHARED_DESCRIPTION_DEMAND.fetch_max(length, Ordering::Relaxed);
-        (2, 0)
-    } else {
-        let output = unsafe { std::slice::from_raw_parts_mut(slot.bytes(), length) };
-        if observation.copy_description(memory, output).is_err() {
-            failed();
-            return; // The dropped reservation publishes void.
-        }
-        (0, length)
+    let Some(mut slot) = log.shared.reserve_bytes(length) else {
+        spill_refused();
+        return;
     };
-    (event.description_error, event.description_len) = (description_error, description_len);
+    let output = unsafe { std::slice::from_raw_parts_mut(slot.bytes(), length) };
+    if observation.copy_description(memory, output).is_err() {
+        failed();
+        return; // The dropped reservation publishes void.
+    }
+    (event.description_error, event.description_len) = (0, length);
     let Ok(sequence) = EVENT_SEQUENCE.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |last| {
         last.checked_add(1)
     }) else {
@@ -648,28 +673,26 @@ fn append_to_lane(log: &Log, lane: &Lane, observation: native::Observation, memo
     if demand > lane.records.len() as u64 {
         lane.required_entries
             .fetch_max(demand as usize, Ordering::Relaxed);
-        overflow();
+        append_shared(log, event, &observation, memory);
         return;
     }
-    let (description_error, description_len) = if byte_pending.saturating_add(length as u64)
-        > ring.bytes.len() as u64
+    if byte_pending.saturating_add(length as u64) > ring.bytes.len() as u64 {
+        // The demand raised above grows the ring; the shared lane keeps this description whole.
+        append_shared(log, event, &observation, memory);
+        return;
+    }
+    let start = byte_start as usize % ring.bytes.len();
+    let first_len = length.min(ring.bytes.len() - start);
+    let first = unsafe { std::slice::from_raw_parts_mut(ring.pointer(start), first_len) };
+    let second = unsafe { std::slice::from_raw_parts_mut(ring.pointer(0), length - first_len) };
+    if observation
+        .copy_description_parts(memory, first, second)
+        .is_err()
     {
-        (2, 0)
-    } else {
-        let start = byte_start as usize % ring.bytes.len();
-        let first_len = length.min(ring.bytes.len() - start);
-        let first = unsafe { std::slice::from_raw_parts_mut(ring.pointer(start), first_len) };
-        let second = unsafe { std::slice::from_raw_parts_mut(ring.pointer(0), length - first_len) };
-        if observation
-            .copy_description_parts(memory, first, second)
-            .is_err()
-        {
-            failed();
-            return;
-        }
-        (0, length)
-    };
-    (event.description_error, event.description_len) = (description_error, description_len);
+        failed();
+        return;
+    }
+    (event.description_error, event.description_len) = (0, length);
     let index = cursor as usize & (lane.records.len() - 1);
     let Ok(sequence) = EVENT_SEQUENCE.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |last| {
         last.checked_add(1)
@@ -682,7 +705,7 @@ fn append_to_lane(log: &Log, lane: &Lane, observation: native::Observation, memo
     unsafe {
         // Only a published record owns demand and bytes for a sealed commit.
         *lane.byte_demand.get() = byte_demand;
-        *ring.write.get() = byte_start + description_len as u64;
+        *ring.write.get() = byte_start + length as u64;
         *lane.records[index].get() = Record {
             event,
             order,
@@ -693,6 +716,10 @@ fn append_to_lane(log: &Log, lane: &Lane, observation: native::Observation, memo
         *lane.write.get() = cursor + 1;
     }
     lane.published.store(cursor + 1, Ordering::Release);
+}
+fn spill_refused() {
+    let epoch = EPOCH.fetch_add(1, Ordering::SeqCst) + 1;
+    SPILL_REFUSED_EPOCH.fetch_max(epoch, Ordering::SeqCst);
 }
 fn observe_success(
     log: &Log,
@@ -730,7 +757,7 @@ unsafe extern "system-unwind" fn completion(instance: usize) -> usize {
         if generation != crate::world_lifetime::generation()
             || crate::world_lifetime::invalidating()
         {
-            invalidate();
+            restart();
             active.returned = true;
             return result;
         }
@@ -747,7 +774,7 @@ unsafe extern "system-unwind" fn completion(instance: usize) -> usize {
                 );
             }
         } else {
-            invalidate();
+            restart();
         }
     }
     active.returned = true;
@@ -779,10 +806,6 @@ pub fn handoff_growing(cursors: &mut Vec<LaneCursor>) -> Result<Handoff, &'stati
         engine_native::walk::Buffer::Growing(cursors),
     )
 }
-#[cfg(test)]
-fn handoff_from(log: &Log, cursors: &mut [LaneCursor]) -> Result<Handoff, &'static str> {
-    handoff_buffer(log, engine_native::walk::Buffer::Fixed(cursors))
-}
 fn handoff_buffer(
     log: &Log,
     mut cursors: engine_native::walk::Buffer<'_, LaneCursor>,
@@ -792,7 +815,7 @@ fn handoff_buffer(
         .ensure(lanes)
         .map_err(|_| "operation completion handoff allocation failed")?;
     if cursors.len() < lanes {
-        invalidate();
+        restart();
         return Err("operation completion thread handoff staging short");
     }
     for (output, lane) in cursors.iter_mut().zip(&log.lanes[..lanes]) {
@@ -968,20 +991,53 @@ impl Handoff {
         if log.assembled_epoch.load(Ordering::Acquire) != self.epoch
             || self.epoch != EPOCH.load(Ordering::Acquire)
         {
-            return Err("operation completion observation restarted or lost");
+            let refused = SPILL_REFUSED_EPOCH.load(Ordering::Acquire);
+            let since = log.assembled_epoch.load(Ordering::Acquire).max(log.born_epoch);
+            return Err(
+                if refused > since && refused <= EPOCH.load(Ordering::Acquire)
+                {
+                    SPILL_REFUSED
+                } else {
+                    "operation completions were not followed in the game without a break"
+                },
+            );
         }
         if output.len() < pending || bytes.len() < self.description_capacity(cursors)? {
-            lost_drain();
+            restart();
             return Err("operation completion drain staging short");
         }
-        let mut tails = engine_allocation::collect_vec(
+        let tails = engine_allocation::collect_vec(
             log.lanes
                 .iter()
                 .take(self.lanes)
                 .map(|lane| lane.assembled.load(Ordering::Acquire)),
         )
         .map_err(|_| "operation completion description allocation failed")?;
-        let mut shared = self.shared(log)?.into_iter().peekable();
+        let shared = self.shared(log)?;
+        let (copied, used) = self.merge(cursors, tails, &shared, output, bytes)?;
+        if copied != pending || self.epoch != EPOCH.load(Ordering::Acquire) {
+            restart();
+            return Err("operation completion publication incomplete or lost");
+        }
+        Ok(Drained {
+            copied,
+            bytes: used,
+        })
+    }
+    /// Lanes and the shared lane merged by log-wide order into `output`, each
+    /// description copied after the last; stops at the first unpublished order.
+    fn merge(
+        self,
+        cursors: &[LaneCursor],
+        mut tails: Vec<u64>,
+        shared: &[(u64, u64)],
+        output: &mut [Event],
+        bytes: &mut [u8],
+    ) -> Result<(usize, usize), &'static str> {
+        let log = unsafe { &*(self.log as *const Log) };
+        let first = log.assembled.load(Ordering::Acquire);
+        let pending = self.sequence.saturating_sub(first) as usize;
+        let mut shared = shared.iter().peekable();
         let mut copied = 0;
         let mut used = 0_usize;
         while copied < pending {
@@ -993,15 +1049,15 @@ impl Handoff {
                 .filter(|(index, (_, end))| tails[*index] < end.cursor)
                 .map(|(index, (lane, _))| {
                     let slot = tails[index] as usize & (lane.records.len() - 1);
-                    (Some(index), unsafe { *lane.records[slot].get() })
+                    (Source::Lane(index), unsafe { *lane.records[slot].get() })
                 })
                 .chain(
                     shared
                         .peek()
-                        .map(|&(_, index)| (None, log.shared.record(index).0)),
+                        .map(|&&(_, index)| (Source::Shared, log.shared.record(index).0)),
                 )
                 .min_by_key(|(_, record)| record.order);
-            let Some((index, record)) = next else {
+            let Some((source, record)) = next else {
                 break;
             };
             // A reservation not published at the sealed boundary cannot be
@@ -1010,58 +1066,52 @@ impl Handoff {
                 break;
             }
             let mut event = record.event;
-            let Some(index) = index else {
-                // A shared record keeps its description in its own slot.
-                let (_, slot) = shared.next().unwrap();
-                let end = used
-                    .checked_add(event.description_len)
-                    .filter(|end| *end <= bytes.len())
-                    .ok_or("operation completion drain staging short")?;
-                bytes[used..end]
-                    .copy_from_slice(&log.shared.record(slot).1[..event.description_len]);
-                event.description_start = used;
-                used = end;
-                output[copied] = event;
-                copied += 1;
-                continue;
-            };
-            let ring = unsafe { &*(record.byte_ring as *const ByteRing) };
-            let start = record.byte_start as usize % ring.bytes.len();
             let end = used
                 .checked_add(event.description_len)
                 .filter(|end| *end <= bytes.len())
                 .ok_or("operation completion drain staging short")?;
-            if event.description_len > ring.bytes.len() {
-                return Err("operation completion description byte ring short");
-            }
-            let first_len = event.description_len.min(ring.bytes.len() - start);
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    ring.pointer(start),
-                    bytes.as_mut_ptr().add(used),
-                    first_len,
-                );
-                std::ptr::copy_nonoverlapping(
-                    ring.pointer(0),
-                    bytes.as_mut_ptr().add(used + first_len),
-                    event.description_len - first_len,
-                );
+            match source {
+                Source::Shared => {
+                    // A shared record keeps its description in its own slot or spill.
+                    let &(_, slot) = shared.next().unwrap();
+                    bytes[used..end]
+                        .copy_from_slice(&log.shared.record(slot).1[..event.description_len]);
+                }
+                Source::Lane(index) => {
+                    let ring = unsafe { &*(record.byte_ring as *const ByteRing) };
+                    if event.description_len > ring.bytes.len() {
+                        return Err("operation completion description byte ring short");
+                    }
+                    let start = record.byte_start as usize % ring.bytes.len();
+                    let first_len = event.description_len.min(ring.bytes.len() - start);
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(
+                            ring.pointer(start),
+                            bytes.as_mut_ptr().add(used),
+                            first_len,
+                        );
+                        std::ptr::copy_nonoverlapping(
+                            ring.pointer(0),
+                            bytes.as_mut_ptr().add(used + first_len),
+                            event.description_len - first_len,
+                        );
+                    }
+                    tails[index] += 1;
+                }
             }
             event.description_start = used;
             used = end;
             output[copied] = event;
             copied += 1;
-            tails[index] += 1;
         }
-        if copied != pending || self.epoch != EPOCH.load(Ordering::Acquire) {
-            lost_drain();
-            return Err("operation completion publication incomplete or lost");
-        }
-        Ok(Drained {
-            copied,
-            bytes: used,
-        })
+        Ok((copied, used))
     }
+}
+/// Where the drain's next record comes from.
+#[derive(Clone, Copy)]
+enum Source {
+    Lane(usize),
+    Shared,
 }
 
 pub struct Hooks {
@@ -1069,6 +1119,8 @@ pub struct Hooks {
 }
 impl Hooks {
     pub unsafe fn new(memory: &impl Memory, base: usize, runtime_enabled: bool) -> Self {
+        #[cfg(test)]
+        let _exclusive = tests::exclusive();
         RUNTIME_ENABLED.store(runtime_enabled, Ordering::Relaxed);
         if !runtime_enabled {
             let _ = UNHOOKED.set(std::borrow::Cow::Borrowed(
@@ -1097,21 +1149,23 @@ impl Hooks {
         Ok(Self { entry: Some(hook) })
     }
     pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, String> {
+        #[cfg(test)]
+        let _exclusive = tests::exclusive();
         if !enabled {
             ENABLED.store(false, Ordering::SeqCst);
         }
         if !crate::hook::shared::defer_preparation(invalidate) {
-            invalidate();
+            restart();
         }
         let Some(hook) = self.entry.as_mut() else {
             return Ok(true);
         };
         let mut family = [hook];
-        match Hook::set_enabled_batch_attach(&mut family, enabled) {
+        match Hook::set_enabled_batch(&mut family, enabled) {
             Ok(false) => return Ok(false),
             Ok(true) => {}
             Err(reason) => {
-                invalidate();
+                restart();
                 return Err(reason);
             }
         }
@@ -1132,6 +1186,53 @@ mod tests {
     use std::cell::RefCell;
 
     static TEST: Mutex<()> = Mutex::new(());
+    thread_local! {
+        static HELD: Cell<bool> = const { Cell::new(false) };
+    }
+    /// This module's state is process-wide: its tests and other modules' tests that reach
+    /// it take turns, and a thread already holding the turn passes.
+    pub(super) struct Exclusive(Option<std::sync::MutexGuard<'static, ()>>);
+    impl Drop for Exclusive {
+        fn drop(&mut self) {
+            if self.0.is_some() {
+                HELD.set(false);
+            }
+        }
+    }
+    pub(super) fn exclusive() -> Exclusive {
+        if HELD.get() {
+            return Exclusive(None);
+        }
+        let turn = TEST
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        HELD.set(true);
+        Exclusive(Some(turn))
+    }
+    /// A test starts from the defaults and puts back what it moved, even when it fails.
+    struct Serial {
+        required: usize,
+        active: usize,
+        _turn: Exclusive,
+    }
+    fn serial() -> Serial {
+        let turn = exclusive();
+        RUNTIME_ENABLED.store(true, Ordering::Relaxed);
+        UNWOUND.set(false);
+        Serial {
+            required: REQUIRED_LANES.load(Ordering::Relaxed),
+            active: ACTIVE.load(Ordering::SeqCst),
+            _turn: turn,
+        }
+    }
+    impl Drop for Serial {
+        fn drop(&mut self) {
+            REQUIRED_LANES.store(self.required, Ordering::Relaxed);
+            ACTIVE.store(self.active, Ordering::SeqCst);
+            UNWOUND.set(false);
+            RUNTIME_ENABLED.store(true, Ordering::Relaxed);
+        }
+    }
     const BASE: usize = 0x1000_0000;
     const INSTANCE: usize = 0x1000;
     const COUNTRY: usize = 0x2000;
@@ -1228,8 +1329,8 @@ mod tests {
         log
     }
     fn drain(log: &Log) -> Result<(Vec<Event>, Vec<u8>), &'static str> {
-        let mut cursors = [LaneCursor::default()];
-        let handoff = handoff_from(log, &mut cursors)?;
+        let mut cursors = vec![LaneCursor::default()];
+        let handoff = handoff_buffer(log, engine_native::walk::Buffer::Growing(&mut cursors))?;
         let mut events = vec![Event::default(); handoff.pending()];
         let mut bytes = vec![0; handoff.description_capacity(&cursors).unwrap()];
         let drained = handoff.drain(&cursors, &mut events, &mut bytes)?;
@@ -1270,7 +1371,7 @@ mod tests {
 
     #[test]
     fn unavailable_completion_hook_does_not_block_installation_or_detach() {
-        let _serial = TEST.lock().unwrap();
+        let _serial = serial();
         let mut hooks = Hooks { entry: None };
         ENABLED.store(false, Ordering::Release);
         assert!(hooks.set_enabled(true).unwrap());
@@ -1284,13 +1385,13 @@ mod tests {
         use crate::extended::operation_outcomes::{Captured, Ledger};
         use replay_data::{rows::TableId, rows::TableRows};
         use replay_frame::{frame::TableInput, frame::TableView};
-        let _serial = TEST.lock().unwrap();
+        let _serial = serial();
         let log = new_log(4, 32);
         prime(&log);
         let fixture = Fixture::new(b"retained");
         complete(&log, &fixture, 1);
         let mut cursors = vec![LaneCursor::default()];
-        let handoff = handoff_from(&log, &mut cursors).unwrap();
+        let handoff = handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)).unwrap();
         let captured = Captured::sealed(handoff, cursors);
         let mut ledger = Ledger::default();
         let mut tables = vec![
@@ -1336,7 +1437,7 @@ mod tests {
 
     #[test]
     fn operation_completion_player_and_ai_are_owned_before_same_update_deletion() {
-        let _serial = TEST.lock().unwrap();
+        let _serial = serial();
         let log = new_log(2, 32);
         prime(&log);
         for (owner, description) in [(1, b"player".as_slice()), (2, b"AI".as_slice())] {
@@ -1360,7 +1461,7 @@ mod tests {
     }
     #[test]
     fn operation_completion_auto_repeat_has_distinct_instances_and_invalidation_emits_none() {
-        let _serial = TEST.lock().unwrap();
+        let _serial = serial();
         let log = new_log(4, 32);
         prime(&log);
         let fixture = Fixture::new(&[0xff, 0, b'x']);
@@ -1380,13 +1481,13 @@ mod tests {
     }
     #[test]
     fn table_retry_preserves_admitted_operation_completion() {
-        let _serial = TEST.lock().unwrap();
+        let _serial = serial();
         let log = new_log(1, 32);
         prime(&log);
         let fixture = Fixture::new(b"modded outcome");
         complete(&log, &fixture, 1);
-        let mut cursors = [LaneCursor::default()];
-        let handoff = handoff_from(&log, &mut cursors).unwrap();
+        let mut cursors = vec![LaneCursor::default()];
+        let handoff = handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)).unwrap();
         let shared = crate::sampling::Shared::new(0, 0, 1);
         shared.request_retry_full();
         let recovery = shared.force_next.swap(false, Ordering::AcqRel);
@@ -1405,29 +1506,35 @@ mod tests {
     }
 
     #[test]
-    fn operation_completion_overflow_withholds_whole_interval_and_retains_exact_growth() {
-        let _serial = TEST.lock().unwrap();
+    fn operation_completion_past_the_lane_spills_whole_and_retains_exact_growth() {
+        let _serial = serial();
         let log = new_log(1, 2);
         prime(&log);
         let first = Fixture::new(b"ok");
         complete(&log, &first, 1);
         let long = Fixture::new(&vec![0xfd; 40_000]);
         complete(&log, &long, 1);
-        assert_eq!(
-            drain(&log),
-            Err("operation completion observation restarted or lost")
-        );
         assert_eq!(log.lanes[0].required_entries.load(Ordering::Relaxed), 2);
         assert_eq!(log.lanes[0].required_bytes.load(Ordering::Relaxed), 40_002);
-        assert!(drain(&log).unwrap().0.is_empty());
+        let (events, bytes) = drain(&log).unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| (event.description_error, event.description_len))
+                .collect::<Vec<_>>(),
+            [(0, 2), (0, 40_000)]
+        );
+        assert_eq!(&bytes[..2], b"ok");
+        assert_eq!(&bytes[2..], vec![0xfd; 40_000]);
+        assert!(log.shared.is_drained());
         let grown = new_log(2, 40_000);
         prime(&grown);
         complete(&grown, &long, 1);
         assert_eq!(drain(&grown).unwrap().1, vec![0xfd; 40_000]);
     }
     #[test]
-    fn operation_completion_overflow_counts_all_dropped_attempts_then_resets_at_seal() {
-        let _serial = TEST.lock().unwrap();
+    fn operation_completion_a_burst_past_the_lane_keeps_every_attempt_and_sizes_the_next() {
+        let _serial = serial();
         let log = new_log(1, 16);
         prime(&log);
         let fixture = Fixture::new(b"burst");
@@ -1435,17 +1542,80 @@ mod tests {
             complete(&log, &fixture, 1);
         }
         assert_eq!(log.lanes[0].required_entries.load(Ordering::Relaxed), 5_000);
-        assert!(drain(&log).is_err());
+        let (events, bytes) = drain(&log).unwrap();
+        assert_eq!(events.len(), 5_000);
+        assert!(events.windows(2).all(|pair| pair[0].sequence < pair[1].sequence));
+        assert_eq!(bytes, b"burst".repeat(5_000));
         assert_eq!(
             log.lanes[0].consumed_attempts.load(Ordering::Acquire),
             5_000
         );
+        assert!(log.shared.is_drained());
         complete(&log, &fixture, 1);
         assert_eq!(drain(&log).unwrap().0.len(), 1);
     }
+    /// The spool writes nothing for three hours while each seals more completions than the
+    /// lane and its byte ring hold: every hour still assembles whole, in order.
+    #[test]
+    fn operation_completion_a_burst_past_the_lane_with_hours_in_flight_keeps_every_completion() {
+        use crate::extended::operation_outcomes::{Captured, Ledger};
+        use replay_data::{rows::TableId, rows::TableRows};
+        use replay_frame::{frame::TableInput, frame::TableView};
+        let _serial = serial();
+        let log = new_log(2, 4);
+        prime(&log);
+        let sealed = || {
+            let mut cursors = vec![LaneCursor::default()];
+            let handoff = handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)).unwrap();
+            Captured::sealed(handoff, cursors)
+        };
+        let rows = |tables: &[TableInput]| match &tables[TableId::OperationCompletions.index()] {
+            TableInput::Sampled(TableView::Complete(TableRows::OperationCompletions(rows))) => rows
+                .iter()
+                .map(|row| (row.owner, row.description_error, row.effect_description.clone()))
+                .collect::<Vec<_>>(),
+            _ => panic!("operation completions not complete"),
+        };
+        let mut ledger = Ledger::default();
+        let mut tables = vec![
+            TableInput::Sampled(TableView::Unavailable {
+                reason: "test".into(),
+            });
+            TableId::ALL.len()
+        ];
+        let mut queued = Vec::new();
+        let mut owner = 0_u32;
+        for hour in 0..3 {
+            let mut expected = Vec::new();
+            for _ in 0..3 {
+                owner += 1;
+                // Lengths 1 to 9 against an 8-byte ring and a 2-record lane.
+                let description = vec![owner as u8; owner as usize];
+                let fixture = Fixture::new(&description);
+                fixture.identify(owner, owner);
+                complete(&log, &fixture, 1);
+                expected.push((owner, 0, description));
+            }
+            let publication = ledger.assemble_owned(&sealed(), &mut tables).unwrap();
+            assert_eq!(rows(&tables), expected, "hour {hour}");
+            publication.admitted();
+            queued.push(publication);
+        }
+        assert_eq!(log.consumed.load(Ordering::Acquire), 0);
+        assert_eq!(log.shared.pending(), 7);
+        for publication in queued {
+            publication.commit();
+        }
+        assert_eq!(log.consumed.load(Ordering::Acquire), 9);
+        assert!(log.shared.is_drained());
+        complete(&log, &Fixture::new(b"after"), 1);
+        assert_eq!(drain(&log).unwrap().1, b"after");
+    }
     #[test]
     fn operation_completion_resize_keeps_keys_monotonic_and_abandons_pending_hour_explicitly() {
-        let _serial = TEST.lock().unwrap();
+        let _serial = serial();
+        // A spill refused before these logs existed names neither one's loss.
+        spill_refused();
         let old = new_log(2, 16);
         prime(&old);
         let fixture = Fixture::new(b"outcome");
@@ -1457,11 +1627,11 @@ mod tests {
         complete(&fresh, &fixture, 1);
         assert_eq!(
             drain(&fresh),
-            Err("operation completion observation restarted or lost")
+            Err("operation completions were not followed in the game without a break")
         );
         assert_eq!(
             drain(&old),
-            Err("operation completion observation restarted or lost")
+            Err("operation completions were not followed in the game without a break")
         );
         complete(&fresh, &fixture, 1);
         let second = drain(&fresh).unwrap().0[0].sequence;
@@ -1469,7 +1639,7 @@ mod tests {
     }
     #[test]
     fn operation_completion_every_country_keeps_native_values_without_status_gate() {
-        let _serial = TEST.lock().unwrap();
+        let _serial = serial();
         let log = new_log(40, 16);
         prime(&log);
         let fixture = Fixture::new(b"modded outcome");
@@ -1492,7 +1662,7 @@ mod tests {
     }
     #[test]
     fn operation_completion_live_description_floor_prepares_the_first_burst() {
-        let _serial = TEST.lock().unwrap();
+        let _serial = serial();
         let log = new_log(5000, 0);
         prime(&log);
         let description = vec![b'x'; 5001];
@@ -1524,7 +1694,7 @@ mod tests {
     }
     #[test]
     fn operation_completion_worker_handoff_grows_original_lane_count_before_sealing() {
-        let _serial = TEST.lock().unwrap();
+        let _serial = serial();
         let mut cursors = Vec::new();
         for count in [5000, 12000] {
             let log = Log::new(1, 0, count, &[]).unwrap();
@@ -1542,12 +1712,12 @@ mod tests {
             assert_eq!(EPOCH.load(Ordering::Acquire), epoch);
             assert_eq!(cursors[count - 1].cursor, count as u64 - 1);
             assert_eq!(cursors[count - 1].attempts, count as u64 + 6);
-            assert!(handoff_from(&log, &mut []).is_err());
+            assert!(handoff_buffer(&log, engine_native::walk::Buffer::Count).is_err());
         }
     }
     #[test]
     fn operation_completion_refused_native_form_withholds_interval() {
-        let _serial = TEST.lock().unwrap();
+        let _serial = serial();
         let log = new_log(1, 16);
         prime(&log);
         let fixture = Fixture::new(b"invalid");
@@ -1557,7 +1727,7 @@ mod tests {
     }
     #[test]
     fn operation_completion_off_switch_installs_no_hook_or_sentinel_read() {
-        let _serial = TEST.lock().unwrap();
+        let _serial = serial();
         struct NoRead;
         impl Memory for NoRead {
             fn copy(&self, _: usize, _: &mut [u8]) -> bool {
@@ -1570,7 +1740,6 @@ mod tests {
         let logs = LOGS.lock().unwrap().len();
         resize(usize::MAX);
         assert_eq!(LOGS.lock().unwrap().len(), logs);
-        RUNTIME_ENABLED.store(true, Ordering::Relaxed);
     }
 
     #[test]
@@ -1578,13 +1747,13 @@ mod tests {
         use crate::extended::operation_outcomes::{Capacities, Captured, Ledger};
         use replay_data::{rows::TableId, rows::TableRows};
         use replay_frame::{frame::TableInput, frame::TableView};
-        let _serial = TEST.lock().unwrap();
+        let _serial = serial();
         let log = new_log(4, 32);
         prime(&log);
         let fixture = Fixture::new(b"outcome");
         complete(&log, &fixture, 1);
         let mut cursors = vec![LaneCursor::default()];
-        let old = handoff_from(&log, &mut cursors).unwrap();
+        let old = handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)).unwrap();
         let idle = Captured::sealed(old, cursors.clone());
         let mut ledger = Ledger::default();
         let mut tables = vec![
@@ -1631,7 +1800,7 @@ mod tests {
 
     #[test]
     fn operation_completion_long_description_wraps_exactly_without_hour_loss() {
-        let _serial = TEST.lock().unwrap();
+        let _serial = serial();
         let log = Log::new(4, 65_536, 1, &[]).unwrap();
         log.registered.store(1, Ordering::Relaxed);
         prime(&log);
@@ -1650,7 +1819,7 @@ mod tests {
 
     #[test]
     fn operation_completion_native_demand_above_old_budget_grows_and_records_exact_bytes() {
-        let _serial = TEST.lock().unwrap();
+        let _serial = serial();
         let log = new_log(4, 32);
         prime(&log);
         let description = vec![0xff; (1 << 20) + 1];
@@ -1659,9 +1828,9 @@ mod tests {
         complete(&log, &fixture, 1);
         let epoch = EPOCH.load(Ordering::Acquire);
         let (events, bytes) = drain(&log).unwrap();
-        assert_eq!(events[0].description_error, 2);
+        assert_eq!(events[0].description_error, 0);
         assert_eq!(events[0].description_required, description.len() as u64);
-        assert!(bytes.is_empty());
+        assert_eq!(bytes, description);
         assert_eq!(
             log.lanes[0].required_bytes.load(Ordering::Relaxed),
             description.len()
@@ -1676,7 +1845,7 @@ mod tests {
 
     #[test]
     fn operation_completion_byte_growth_preserves_pending_records_and_epoch() {
-        let _serial = TEST.lock().unwrap();
+        let _serial = serial();
         let log = new_log(4, 4);
         prime(&log);
         complete(&log, &Fixture::new(b"before"), 1);
@@ -1687,7 +1856,7 @@ mod tests {
         log.lanes[0].grow_bytes().unwrap();
         assert_ne!(log.lanes[0].byte_ring.load(Ordering::Acquire), old_ring);
         assert_eq!(log.lanes[0].ring().bytes.len(), 65_536);
-        // One sealed batch can include records in both old and grown rings.
+        // One sealed batch can include records in both rings and the shared lane.
         complete(&log, &long, 1);
         let (events, bytes) = drain(&log).unwrap();
         assert_eq!(
@@ -1695,11 +1864,11 @@ mod tests {
                 .iter()
                 .map(|event| event.description_error)
                 .collect::<Vec<_>>(),
-            [0, 2, 0]
+            [0, 0, 0]
         );
         assert_eq!(&bytes[..6], b"before");
-        assert_eq!(&bytes[6..], vec![0xfc; 40_000]);
-        assert_eq!(events[1].description_len, 0);
+        assert_eq!(&bytes[6..], vec![0xfc; 80_000]);
+        assert_eq!(events[1].description_len, 40_000);
         assert_eq!(events[1].description_required, 40_000);
         assert_eq!(EPOCH.load(Ordering::Acquire), epoch);
         complete(&log, &long, 1);
@@ -1708,12 +1877,12 @@ mod tests {
 
     #[test]
     fn operation_completion_byte_demand_drain_excludes_later_unsealed_callback() {
-        let _serial = TEST.lock().unwrap();
+        let _serial = serial();
         let log = new_log(4, 4);
         prime(&log);
         complete(&log, &Fixture::new(b"sealed"), 1);
-        let mut cursors = [LaneCursor::default()];
-        let sealed = handoff_from(&log, &mut cursors).unwrap();
+        let mut cursors = vec![LaneCursor::default()];
+        let sealed = handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)).unwrap();
         complete(&log, &Fixture::new(&[0xfb; 10]), 1);
         sealed
             .drain(&cursors, &mut [Event::default()], &mut [0; 6])
@@ -1727,14 +1896,14 @@ mod tests {
                 .iter()
                 .map(|event| event.description_error)
                 .collect::<Vec<_>>(),
-            [0, 2]
+            [0, 0]
         );
-        assert_eq!(bytes, [0xfb; 10]);
+        assert_eq!(bytes, [[0xfb; 10].as_slice(), &[0xfc; 9]].concat());
     }
 
     #[test]
     fn operation_completion_wrapped_inline_bytes_and_second_part_read_failure_are_exact() {
-        let _serial = TEST.lock().unwrap();
+        let _serial = serial();
         let log = Log::new(4, 64, 1, &[]).unwrap();
         log.registered.store(1, Ordering::Relaxed);
         prime(&log);
@@ -1762,7 +1931,7 @@ mod tests {
 
     #[test]
     fn operation_completion_failed_payload_demand_does_not_accumulate_after_empty_publication() {
-        let _serial = TEST.lock().unwrap();
+        let _serial = serial();
         let log = new_log(4, 16);
         prime(&log);
         struct FailPayload(Fixture);
@@ -1778,7 +1947,7 @@ mod tests {
             observe_return(&log, Target::Lane(lane), &fixture, BASE, INSTANCE, 1);
             assert_eq!(
                 drain(&log),
-                Err("operation completion observation restarted or lost")
+                Err("operation completions were not followed in the game without a break")
             );
             assert!(drain(&log).unwrap().0.is_empty());
             assert_eq!(unsafe { *lane.byte_demand.get() }, 0);
@@ -1795,7 +1964,7 @@ mod tests {
 
     #[test]
     fn operation_completion_callback_incomplete_retains_its_unwind_claim() {
-        let _serial = TEST.lock().unwrap();
+        let _serial = serial();
         let active = ACTIVE.load(Ordering::SeqCst);
         let epoch = EPOCH.load(Ordering::Acquire);
         let mut outer = Call::enter();
@@ -1809,13 +1978,11 @@ mod tests {
         drop(later);
         assert_eq!(ACTIVE.load(Ordering::SeqCst), active + 1);
         assert_eq!(EPOCH.load(Ordering::Acquire), epoch + 1);
-        UNWOUND.set(false);
-        ACTIVE.store(active, Ordering::SeqCst);
     }
 
     #[test]
     fn operation_completion_growth_within_installed_capacity_keeps_pending_events() {
-        let _serial = TEST.lock().unwrap();
+        let _serial = serial();
         unsafe {
             release();
         }
@@ -1838,7 +2005,7 @@ mod tests {
 
     #[test]
     fn operation_completion_resumed_attachment_continues_finalized_sequence() {
-        let _serial = TEST.lock().unwrap();
+        let _serial = serial();
         let log = new_log(2, 32);
         prime(&log);
         let saved = EVENT_SEQUENCE.load(Ordering::Relaxed).saturating_add(17);
@@ -1860,8 +2027,7 @@ mod tests {
 
     #[test]
     fn operation_completion_writers_beyond_the_lane_count_lose_nothing_in_one_generation() {
-        let _serial = TEST.lock().unwrap();
-        let required = REQUIRED_LANES.load(Ordering::Relaxed);
+        let _serial = serial();
         // The generation's only lane is already registered.
         let log = new_log(8, 32);
         prime(&log);
@@ -1890,12 +2056,11 @@ mod tests {
             );
         }
         assert!(log.shared.published(|r| r.order).unwrap().is_empty());
-        REQUIRED_LANES.store(required, Ordering::Relaxed);
     }
 
     #[test]
-    fn operation_completion_shared_slot_short_keeps_its_record_and_sizes_the_next_slot() {
-        let _serial = TEST.lock().unwrap();
+    fn operation_completion_shared_slot_short_spills_whole_and_sizes_the_next_slot() {
+        let _serial = serial();
         let log = new_log(2, 4);
         prime(&log);
         let long = vec![0xfe; 9];
@@ -1912,28 +2077,90 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(
             (events[0].description_error, events[0].description_required),
-            (2, 9)
+            (0, 9)
         );
-        assert!(bytes.is_empty());
-        // An exhausted shared lane is a named, counted refusal.
+        assert_eq!(bytes, long);
+        // A full shared lane spills and sizes the next; only a refused spill allocation
+        // withholds the interval, under its own name.
         let held: Vec<_> = (0..log.shared.len())
-            .map(|_| log.shared.reserve().unwrap())
+            .map(|_| log.shared.try_reserve().unwrap())
             .collect();
+        observe_return(
+            &log,
+            Target::Shared,
+            &Fixture::new(b"full"),
+            BASE,
+            INSTANCE,
+            1,
+        );
+        assert!(log.shared.required_entries() > log.shared.len());
+        assert_eq!(log.shared.pending(), log.shared.len() + 1);
         let refused_fixture = Fixture::new(b"x");
         crate::test_support::with_allocations_denied(|| {
             observe_return(&log, Target::Shared, &refused_fixture, BASE, INSTANCE, 1);
         });
-        assert!(log.shared.required_entries() > log.shared.len());
         drop(held);
+        assert_eq!(drain(&log), Err(SPILL_REFUSED));
+        assert!(log.shared.is_drained());
+        complete(&log, &Fixture::new(b"after"), 1);
+        assert_eq!(drain(&log).unwrap().1, b"after");
+    }
+
+    /// The game never waits: completions past the lane and the shared ring spill on the
+    /// hook's thread while the consumer holds the spilled records it is ordering.
+    #[test]
+    fn operation_completion_spilled_on_the_hook_thread_never_waits_for_the_consumer() {
+        use std::sync::mpsc;
+        let _serial = serial();
+        let log = new_log(1, 8);
+        prime(&log);
+        // The lane, the shared ring's one slot, then one spilled record (order 3).
+        let held = Fixture::new(b"held");
+        for _ in 0..3 {
+            complete(&log, &held, 1);
+        }
+        assert_eq!((log.shared.len(), log.shared.pending()), (1, 2));
+        let (holding, consumer_holds) = mpsc::channel();
+        let (release, released) = mpsc::channel::<()>();
+        std::thread::scope(|scope| {
+            let log = &log;
+            scope.spawn(move || {
+                // A spilled record's order is read under the consumer's lock on its spills.
+                let _ = log.shared.published(|record| {
+                    if record.order == 3 {
+                        holding.send(()).unwrap();
+                        released.recv().unwrap();
+                    }
+                    record.order
+                });
+            });
+            consumer_holds.recv().unwrap();
+            // The consumer is released only once the burst has finished: a completion that
+            // waited for the consumer's lock would never finish.
+            let hook = scope.spawn(move || {
+                let burst = Fixture::new(b"burst");
+                for _ in 0..4 {
+                    complete(log, &burst, 1);
+                }
+            });
+            let finished = hook.join();
+            release.send(()).unwrap();
+            finished.unwrap();
+        });
+        let (events, bytes) = drain(&log).unwrap();
+        assert_eq!(events.len(), 7);
+        assert!(events.windows(2).all(|pair| pair[0].sequence < pair[1].sequence));
+        assert_eq!(bytes, [b"held".repeat(3), b"burst".repeat(4)].concat());
+        assert_eq!(log.shared.rejected(), 0);
+        assert!(log.shared.is_drained());
     }
 
     #[test]
     fn operation_completion_lane_growth_seals_the_generation_without_losing_its_interval() {
-        let _serial = TEST.lock().unwrap();
+        let _serial = serial();
         unsafe {
             release();
         }
-        let required = REQUIRED_LANES.load(Ordering::Relaxed);
         presize(8, 64);
         let old = log().unwrap();
         old.registered.store(1, Ordering::Relaxed);
@@ -1961,7 +2188,6 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(bytes, b"after seal");
         assert_eq!(EPOCH.load(Ordering::Acquire), epoch);
-        REQUIRED_LANES.store(required, Ordering::Relaxed);
         unsafe {
             release();
         }
@@ -1972,13 +2198,13 @@ mod tests {
         use crate::extended::operation_outcomes::{Captured, Ledger};
         use replay_data::{rows::TableId, rows::TableRows};
         use replay_frame::{frame::TableInput, frame::TableView};
-        let _serial = TEST.lock().unwrap();
+        let _serial = serial();
         let log = new_log(4, 32);
         prime(&log);
         let lane = &log.lanes[0];
         let sealed = || {
             let mut cursors = vec![LaneCursor::default()];
-            let handoff = handoff_from(&log, &mut cursors).unwrap();
+            let handoff = handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)).unwrap();
             Captured::sealed(handoff, cursors)
         };
         let shared = |description: &[u8]| {
@@ -2065,7 +2291,7 @@ mod tests {
 
     #[test]
     fn operation_completion_lost_queue_assembles_again_from_the_written_interval() {
-        let _serial = TEST.lock().unwrap();
+        let _serial = serial();
         let log = new_log(4, 32);
         prime(&log);
         complete(&log, &Fixture::new(b"written"), 1);
@@ -2079,8 +2305,8 @@ mod tests {
             INSTANCE,
             1,
         );
-        let mut first = [LaneCursor::default()];
-        let queued = handoff_from(&log, &mut first).unwrap();
+        let mut first = vec![LaneCursor::default()];
+        let queued = handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut first)).unwrap();
         let mut events = [Event::default(); 2];
         let mut bytes = [0; 32];
         assert_eq!(
@@ -2094,8 +2320,8 @@ mod tests {
         // Admitting again, or an older handoff, moves nothing.
         queued.admitted(&first);
         complete(&log, &Fixture::new(b"later"), 1);
-        let mut second = [LaneCursor::default()];
-        let later = handoff_from(&log, &mut second).unwrap();
+        let mut second = vec![LaneCursor::default()];
+        let later = handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut second)).unwrap();
         assert_eq!(later.pending(), 1);
         later.admitted(&second);
         queued.admitted(&first);
@@ -2115,15 +2341,15 @@ mod tests {
         assert_eq!(bytes, b"lostlost sharedlater");
         // A span rolled back over an invalidation is lost as a whole.
         complete(&log, &Fixture::new(b"before"), 1);
-        let mut cursors = [LaneCursor::default()];
-        handoff_from(&log, &mut cursors).unwrap().admitted(&cursors);
+        let mut cursors = vec![LaneCursor::default()];
+        handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)).unwrap().admitted(&cursors);
         invalidate();
         complete(&log, &Fixture::new(b"after"), 1);
-        handoff_from(&log, &mut cursors).unwrap().admitted(&cursors);
+        handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)).unwrap().admitted(&cursors);
         log.reset_admitted();
         assert_eq!(
             drain(&log),
-            Err("operation completion observation restarted or lost")
+            Err("operation completions were not followed in the game without a break")
         );
         complete(&log, &Fixture::new(b"recovered"), 1);
         assert_eq!(drain(&log).unwrap().1, b"recovered");
@@ -2131,14 +2357,14 @@ mod tests {
 
     #[test]
     fn operation_completion_queued_backlog_raises_entry_demand_past_one_interval() {
-        let _serial = TEST.lock().unwrap();
+        let _serial = serial();
         let log = new_log(2, 32);
         prime(&log);
         let fixture = Fixture::new(b"held");
         for _ in 0..2 {
             complete(&log, &fixture, 1);
-            let mut cursors = [LaneCursor::default()];
-            handoff_from(&log, &mut cursors).unwrap().admitted(&cursors);
+            let mut cursors = vec![LaneCursor::default()];
+            handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)).unwrap().admitted(&cursors);
         }
         // Each queued interval holds one record; together they fill the lane.
         complete(&log, &fixture, 1);
@@ -2147,11 +2373,10 @@ mod tests {
 
     #[test]
     fn operation_completion_lost_queue_of_a_replaced_generation_reports_the_loss() {
-        let _serial = TEST.lock().unwrap();
+        let _serial = serial();
         unsafe {
             release();
         }
-        let required = REQUIRED_LANES.load(Ordering::Relaxed);
         presize(8, 64);
         let old = log().unwrap();
         old.registered.store(1, Ordering::Relaxed);
@@ -2161,8 +2386,8 @@ mod tests {
         presize(8, 64);
         let sealed = seal_offered(old);
         assert!(!std::ptr::eq(log().unwrap(), old));
-        let mut cursors = [LaneCursor::default()];
-        handoff_from(sealed, &mut cursors)
+        let mut cursors = vec![LaneCursor::default()];
+        handoff_buffer(sealed, engine_native::walk::Buffer::Growing(&mut cursors))
             .unwrap()
             .admitted(&cursors);
         let epoch = EPOCH.load(Ordering::Acquire);
@@ -2173,7 +2398,6 @@ mod tests {
         assert_eq!(old.lanes[0].consumed.load(Ordering::Acquire), 0);
         // Nothing else was queued: a second reset reports nothing.
         reset_admitted();
-        REQUIRED_LANES.store(required, Ordering::Relaxed);
         unsafe {
             release();
         }

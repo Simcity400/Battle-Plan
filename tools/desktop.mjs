@@ -1,10 +1,12 @@
-// One development command builds the native viewer, then starts Tauri and Vite. The build
-// command makes the per-user installer that carries Battle Plan, Battle Plan Recorder and what they need.
+// One development command starts Tauri and Vite, with the pinned shader compiler beside the app it
+// builds. The build command makes the per-user installer that carries Battle Plan, Battle Plan Recorder and
+// what they need.
 // No shell interpolation: paths and user arguments remain separate arguments.
 import { spawn } from "node:child_process";
 import { access, copyFile, mkdir, readFile, readdir, rm, stat } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { cargoTarget } from "./cargo-target.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const mode = process.argv[2];
@@ -15,8 +17,9 @@ if (!["dev", "build"].includes(mode)) {
 }
 
 // Everything the installer carries, and nothing else ships: tools/shipped.json. `main` is what
-// `tauri build` makes; `cargo` builds `built` into Cargo's output folder; `tools` ship whole
-// from there; `repository` comes from the repository root.
+// `tauri build` makes; `cargo` builds `built` into Cargo's output folder; `compiler` is the pinned
+// DXC (tools/install-shader-compiler.ps1), beside `main` in that folder too; `repository` comes from
+// the repository root. Every file but the repository's lands in the install folder itself.
 const SHIPPED = JSON.parse(await readFile(path.join(root, "tools", "shipped.json"), "utf8"));
 
 // Tauri embeds its configuration in the app, so resources are named relative to the desktop crate:
@@ -103,6 +106,9 @@ const release = mode === "build"
 const profile = explicitProfile ?? (mode === "build" && release ? "release-lto" : release ? "release" : "dev");
 const target = flagValue(cliArgs, "--target", "-t") ?? flagValue(cargoArgs, "--target");
 const targetArgs = target === undefined ? [] : ["--target", target];
+// Where Cargo puts the app, which a target from overrides, the environment or Cargo's config moves too.
+const builtFor = target ?? await cargoTarget({ cwd: path.join(root, "crates", "desktop"), env: process.env, cargoArgs,
+  home: process.env.CARGO_HOME ?? path.join(process.env.USERPROFILE ?? process.env.HOME ?? "", ".cargo") });
 // Cargo resolves relative target directories from cwd, which differs between these builds.
 if (process.env.CARGO_TARGET_DIR) process.env.CARGO_TARGET_DIR = path.resolve(root, process.env.CARGO_TARGET_DIR);
 const targetDir = flagValue(cargoArgs, "--target-dir");
@@ -128,33 +134,31 @@ try {
     if (!process.env.npm_execpath) throw new Error("Run the build through npm: npm run build:desktop");
     await run(process.execPath, [process.env.npm_execpath, "run", "build:ui"]);
   }
-  let builds = [["-p", "viewer"]];
+  const metadata = JSON.parse(await run("cargo", ["metadata", "--no-deps", "--format-version", "1"], root, true));
+  // Cargo's actual output folder, where `tauri` puts replay-desktop.exe, including config overrides.
+  let output = path.join(targetDir === undefined ? metadata.target_directory : path.resolve(root, targetDir),
+    ...(builtFor === undefined ? [] : [builtFor]), profile === "dev" ? "debug" : profile);
   if (mode === "build") {
     // A shipped Tauri app embeds the frontend it was just given.
-    const metadata = JSON.parse(await run("cargo", ["metadata", "--no-deps", "--format-version", "1"], root, true));
     const embeds = new Set(metadata.packages.filter((member) => "custom-protocol" in member.features).map((member) => member.name));
     // One package per Cargo run: each fat-LTO link takes many gigabytes, and the machine is shared,
     // so no two link at once. `tauri build` links Battle Plan after them.
-    builds = SHIPPED.cargo.map((name) => ["-p", name, ...(embeds.has(name) ? ["--features", `${name}/custom-protocol`] : [])]);
+    let messages = "";
+    for (const name of SHIPPED.cargo) {
+      messages += await run("cargo", ["build", "-p", name, ...(embeds.has(name) ? ["--features", `${name}/custom-protocol`] : []),
+        "--profile", profile, ...targetArgs, ...targetDirArgs, "--message-format=json-render-diagnostics"], root, true);
+    }
+    const artifact = messages.split("\n").map((line) => { try { return JSON.parse(line); } catch { return null; } })
+      .find((message) => message?.reason === "compiler-artifact"
+        && message.filenames?.some((file) => SHIPPED.built.includes(path.basename(file))));
+    if (!artifact) throw new Error(`Cargo did not report where it built ${SHIPPED.built.join(", ")}.`);
+    output = path.dirname(artifact.filenames.find((file) => SHIPPED.built.includes(path.basename(file))));
   }
-  let messages = "";
-  for (const packages of builds) {
-    messages += await run("cargo", ["build", ...packages, "--profile", profile, ...targetArgs, ...targetDirArgs,
-      "--message-format=json-render-diagnostics"], root, true);
-  }
-  // Sibling files must share Cargo's actual output directory, including config overrides.
-  const wanted = mode === "build" ? SHIPPED.built : ["viewer.exe"];
-  const artifact = messages.split("\n").map((line) => { try { return JSON.parse(line); } catch { return null; } })
-    .find((message) => message?.reason === "compiler-artifact"
-      && message.filenames?.some((file) => wanted.includes(path.basename(file))));
-  if (!artifact) throw new Error(`Cargo did not report where it built ${wanted.join(", ")}.`);
-  const output = path.dirname(artifact.filenames.find((file) => wanted.includes(path.basename(file))));
-  // Every viewer uses the same pinned compiler; a development output installs it once unless BATTLE_PLAN_SHADER_COMPILER names one.
-  const dxc = path.join(output, "shader-tools", "dxc");
-  if (mode === "build" ? SHIPPED.tools.includes("shader-tools/dxc")
-    : !(process.env.BATTLE_PLAN_SHADER_COMPILER ?? process.env.HOI4_SHADER_COMPILER) && !(await access(path.join(dxc, "dxc.exe")).then(() => true, () => false))) {
+  // The app loads the pinned compiler from beside itself; a development output fetches it once.
+  const present = await Promise.all(SHIPPED.compiler.map((name) => access(path.join(output, name)).then(() => true, () => false)));
+  if (mode === "build" || present.includes(false)) {
     await run("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-      path.join(root, "tools", "install-shader-compiler.ps1"), "-Destination", dxc]);
+      path.join(root, "tools", "install-shader-compiler.ps1"), "-Destination", output]);
   }
   const cli = path.join(root, "node_modules", "@tauri-apps", "cli", "tauri.js");
   // Resolve hook directories at launch without storing machine paths in source.
@@ -166,7 +170,7 @@ try {
   if (mode === "build") {
     const resources = {};
     await rm(path.join(root, "crates", "desktop", STAGE), { recursive: true, force: true });
-    for (const name of [...SHIPPED.built, ...SHIPPED.tools]) await shipped(path.join(output, name), name, resources);
+    for (const name of [...SHIPPED.built, ...SHIPPED.compiler]) await shipped(path.join(output, name), name, resources);
     for (const name of SHIPPED.repository) await shipped(path.join(root, name), name, resources);
     // Relative to the desktop crate, where Tauri runs it, for the same reason.
     const signCommand = { cmd: "powershell", args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
@@ -176,7 +180,7 @@ try {
       ...(updaterArtifacts ? { createUpdaterArtifacts: true } : {}),
       ...(authenticode ? { windows: { signCommand } } : {}) } };
   }
-  // Keep both separators and use the same profile for the host and viewer.
+  // Keep both separators and use the same profile as the binaries built above.
   const args = mode === "build"
     ? [...cliArgs, ...(separator < 0 && forwardedRunnerArgs.length === 0 ? [] : ["--", ...forwardedRunnerArgs])]
     : [...cliArgs, "--", ...forwardedRunnerArgs];

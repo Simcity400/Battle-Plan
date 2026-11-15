@@ -240,7 +240,6 @@ fn walk(
         let walked = replay.visit_blocks(
             group,
             tables,
-            None,
             |block, recorded, decoded| {
                 if cancelled.load(Ordering::Acquire) {
                     return Err(io::Error::new(io::ErrorKind::Interrupted, "the scan was cancelled"));

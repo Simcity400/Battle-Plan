@@ -174,7 +174,7 @@ fn acquire(
         requests: vec![Request::default(); count * KEYS.len()],
         required: [0; 4],
     };
-    let mut archetypes = [0; 2];
+    let mut archetypes = vec![0; 2];
     let mut buffers = Buffers {
         countries: &mut sample.countries,
         country_len: 0,
@@ -289,13 +289,10 @@ fn header_demand_presizes_retained_factory_arrays() {
     );
 }
 #[test]
-fn short_factory_arena_retains_demand_and_short_native_read_refuses_the_supplement() {
+fn a_short_factory_arena_grows_and_a_short_native_read_refuses_the_supplement() {
     let mut fixture = Fixture::new(1, true);
     let (result, sample) = acquire(&fixture, 1, 2);
-    assert_eq!(
-        result,
-        Err("production modifier caller arena capacity exceeded")
-    );
+    assert_eq!(result, Ok(()));
     assert_eq!(sample.required, [1, 1, 3, KEYS.len()]);
     fixture.fault = Some(fixture.factories + 8);
     assert_eq!(
@@ -375,7 +372,7 @@ fn growing(
     let (mut countries, mut lines, mut efficiencies, mut requests, mut archetypes) =
         (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
     let mut context = None;
-    let mut out = GrowingBuffers {
+    let mut out = Buffers {
         countries: &mut countries,
         country_len: 0,
         country_required: 0,
@@ -391,7 +388,7 @@ fn growing(
         archetypes: &mut archetypes,
         archetype_required: 0,
     };
-    let result = capture_growing_slots(
+    let result = capture_slots(
         fixture,
         fixture.world.module,
         fixture.world.game_state(),

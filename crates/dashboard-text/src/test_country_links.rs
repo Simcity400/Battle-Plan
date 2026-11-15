@@ -13,7 +13,7 @@ pub(crate) fn extend(frame: &mut DecodedFrame, links: impl IntoIterator<Item = C
     let TableView::Complete(TableRows::CountryLinks(current)) =
         &mut *frame.tables[TableId::CountryLinks.index()]
     else {
-        panic!("the fixture records CountryLinks");
+        panic!("the fixture records country links");
     };
     let rows = rows(std::mem::take(current).into_iter().chain(links));
     *frame.tables[TableId::CountryLinks.index()] = TableView::Complete(rows);

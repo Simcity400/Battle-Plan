@@ -85,7 +85,7 @@ fn decoded_source_keeps_mod_art_candidates_aliases_and_unknown_tail() {
         assert_eq!(flag.key(|key| key == "MOD_COS"), Ok("MOD_COS"));
         assert_eq!(
             flag.key(|_| false).unwrap_err(),
-            "CountryAppearance.original_tag_reference capture refused"
+            "original tag reference of country appearance capture refused"
         );
     }
 }
@@ -156,8 +156,14 @@ fn flag_choices_use_exact_original_and_keep_known_cosmetic_before_suffix_refusal
         assert!(choices[0].refusal.is_none());
     }
     for (captured, reason) in [
-        (Recorded::Value(None), "original_tag capture refused"),
-        (Recorded::NotRecorded, "original_tag not recorded"),
+        (
+            Recorded::Value(None),
+            "original tag of country appearance capture refused",
+        ),
+        (
+            Recorded::NotRecorded,
+            "original tag of country appearance not recorded",
+        ),
         (Recorded::Value(Some(vec![0xff])), "not UTF-8"),
     ] {
         let choices = choices(&flag_frame(captured, b"COS")).unwrap();
@@ -194,9 +200,12 @@ fn flag_choices_use_exact_original_and_keep_known_cosmetic_before_suffix_refusal
     for (reference, reason) in [
         (
             Recorded::Value(None),
-            "original_tag_reference capture refused",
+            "original tag reference of country appearance capture refused",
         ),
-        (Recorded::NotRecorded, "original_tag_reference not recorded"),
+        (
+            Recorded::NotRecorded,
+            "original tag reference of country appearance not recorded",
+        ),
     ] {
         let mut frame = flag_frame(Recorded::Value(Some(b"ORI".to_vec())), b"COS");
         let appearance = match &mut *frame.tables[TableId::CountryAppearance.index()] {
@@ -221,7 +230,7 @@ fn flag_choices_preserve_unknown_ruling_groups_before_plain_candidates() {
             ..Default::default()
         }]));
     for (party, reason) in [
-        (None, "needs PoliticalParties ruling group 4"),
+        (None, "needs political parties ruling group 4"),
         (Some(vec![0xff]), "ruling group is not UTF-8"),
     ] {
         *frame.tables[TableId::PoliticalParties.index()] =

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { CasualtyChordCache, CasualtyChordSegmentCache, casualtyChord, chordPairs, OTHER_ID, pairTooltip } from './casualtyChord.ts';
+import { CasualtyChordCache, CasualtyChordSegmentCache, casualtyChord, chordNameHour, chordNamesAsked, chordPairs, OTHER_ID, pairTooltip } from './casualtyChord.ts';
 import { deepFreeze } from '../../testFrozen.ts';
 import { CasualtyPairsCursor, validateCasualtyPairs } from './casualtyPairsData.ts';
 import type { PairFlow } from './casualtyPairsData';
@@ -123,4 +123,24 @@ test('native chord flags and pair hovers retain the shown read status; Other has
   assert.equal(chord.data.nodes[0].countryFlag, refused, 'a later flag cannot backfill the pinned read');
   const folded = casualtyChord(snapshot, 1, 100, dated, color, '#777777');
   assert.equal(folded.data.nodes.find(node => node.id === OTHER_ID)?.countryFlag, undefined);
+});
+
+test("following, a chord names its windows' countries at the hour one of their identities last changed, and each frame there, exactly", () => {
+  const windowTags = deepFreeze(['ENG', 'GER', 'SOV']), shownTags = deepFreeze(['ENG', 'GER']);
+  // Entering a window at 30,240, 30,960, then 31,680, nothing changed identity since 29,000: names asked once, there.
+  for (const hour of [30_240, 30_960, 31_680]) {
+    const asked = chordNamesAsked(true, 29_000, hour, windowTags, shownTags);
+    assert.equal(asked.hour, 29_000, `entering the window at ${hour} asks nothing new`);
+    assert.equal(asked.tags, windowTags, 'every country of the windows held, a country entering mid-window too');
+  }
+  // Each frame inside the window reads at its own identity hour: where that is the hour asked, its names and colours
+  // are those of the frame's hour (exact), never the last name read for an hour asked before.
+  assert.equal(chordNameHour(30_517, 29_000), 29_000);
+  // A frame past an identity change before the widget renders reads at its own identity hour, which was not asked:
+  // not exact, so its colours are muted rather than another hour's.
+  assert.notEqual(chordNameHour(31_000, 30_990), chordNamesAsked(true, 29_000, 30_240, windowTags, shownTags).hour);
+  // Not following, or with no country timeline held: the countries shown, at the hour shown, and each frame at its hour.
+  assert.deepEqual(chordNamesAsked(false, 29_000, 30_240, windowTags, shownTags), { hour: 30_240, tags: shownTags });
+  assert.deepEqual(chordNamesAsked(true, null, 30_240, windowTags, shownTags), { hour: 30_240, tags: shownTags });
+  assert.equal(chordNameHour(30_240, null), 30_240);
 });

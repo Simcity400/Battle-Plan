@@ -118,8 +118,32 @@ pub fn recording_of(folder: &Path, campaign: &[u8]) -> io::Result<Option<PathBuf
     one_recording(folder, campaign, recordings_of(folder, campaign)?)
 }
 
+/// Whether the file at `path` holds no revision yet, as its writer leaves it before its first
+/// block: empty, or this build's header with no footer whose root verifies.
+pub fn uncommitted(path: &Path) -> io::Result<bool> {
+    use replay_columnar::envelope::{FOOTER_BYTES, HEADER_BYTES, check_header};
+    let file = File::open(path)?;
+    let length = file.metadata()?.len();
+    if length == 0 {
+        return Ok(true);
+    }
+    if length < HEADER_BYTES as u64 {
+        return Ok(false);
+    }
+    let mut header = [0; HEADER_BYTES];
+    io::Read::read_exact(&mut &file, &mut header)?;
+    if check_header(&header).is_err() {
+        return Ok(false);
+    }
+    if length < (HEADER_BYTES + FOOTER_BYTES) as u64 {
+        return Ok(true);
+    }
+    Ok(replay_columnar::container::Footers::new(&file)?.next()?.is_none())
+}
+
 /// Each campaign's unsaved recording in `folder`, by the campaign in lower case: the file named for
 /// it, when no other file there is its by header or by name. Any other is refused, never guessed.
+/// A file with no revision yet has no header to read: it claims only the campaign its name gives.
 pub fn unsaved_recordings(folder: &Path) -> io::Result<BTreeMap<Vec<u8>, Result<PathBuf, String>>> {
     let unsaved = crate::publication::unsaved_folder(folder);
     let entries = match fs::read_dir(&unsaved) {
@@ -139,12 +163,19 @@ pub fn unsaved_recordings(folder: &Path) -> io::Result<BTreeMap<Vec<u8>, Result<
         {
             continue;
         }
-        let header = campaign_of(&path)?.map(|campaign| campaign.to_ascii_lowercase());
         let name = path
             .file_stem()
             .and_then(|stem| stem.to_str())
             .map(|stem| stem.as_bytes().to_ascii_lowercase())
             .filter(|stem| crate::identity::is_campaign_uuid(stem));
+        let header = match campaign_of(&path) {
+            Ok(header) => header.map(|campaign| campaign.to_ascii_lowercase()),
+            // Its writer created it under its campaign's name and has committed no revision yet.
+            Err(error) => match uncommitted(&path) {
+                Ok(true) => name.clone(),
+                _ => return Err(error),
+            },
+        };
         let own = header.is_some() && header == name;
         for campaign in [header, name.filter(|_| !own)].into_iter().flatten() {
             claimed
@@ -612,6 +643,55 @@ mod tests {
         assert!(recording_of(&folder, campaign).is_err());
         drop(held);
         assert_eq!(recording_of(&folder, campaign).unwrap(), Some(held_path));
+        fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn an_unsaved_recording_with_no_revision_yet_is_its_campaign_s_by_its_name_alone() {
+        let folder = scratch("uncommitted");
+        let saved = "00000000-0000-4000-8000-000000000000";
+        let fresh = "00000000-0000-4000-8000-000000000001";
+        let first = crate::publication::unsaved_path(&folder, saved);
+        fs::create_dir_all(first.parent().unwrap()).unwrap();
+        header(&first, saved);
+        // Its writer wrote its header and hours, and committed no revision yet.
+        let second = crate::publication::unsaved_path(&folder, fresh);
+        header(&second, fresh);
+        let bytes = fs::read(&second).unwrap();
+        fs::write(
+            &second,
+            &bytes[..bytes.len() - replay_columnar::envelope::FOOTER_BYTES],
+        )
+        .unwrap();
+        assert!(campaign_of(&second).is_err(), "it has no header to read");
+        let found = unsaved_recordings(&folder).unwrap();
+        assert_eq!(found.len(), 2);
+        assert_eq!(
+            unsaved_recording(&folder, saved.as_bytes()).unwrap(),
+            Some(first.clone())
+        );
+        assert_eq!(
+            unsaved_recording(&folder, fresh.as_bytes()).unwrap(),
+            Some(second.clone())
+        );
+        // Empty, as a writer killed before its header leaves it: the same.
+        fs::write(&second, b"").unwrap();
+        assert_eq!(
+            unsaved_recording(&folder, fresh.as_bytes()).unwrap(),
+            Some(second.clone())
+        );
+        // Named for no campaign, it claims none.
+        let unnamed = second.with_file_name("partial.battleplan");
+        fs::rename(&second, &unnamed).unwrap();
+        assert_eq!(unsaved_recording(&folder, fresh.as_bytes()).unwrap(), None);
+        assert_eq!(
+            unsaved_recording(&folder, saved.as_bytes()).unwrap(),
+            Some(first.clone())
+        );
+        // A damaged file is still an error, not an absence.
+        fs::write(&unnamed, b"junk").unwrap();
+        let error = unsaved_recordings(&folder).unwrap_err().to_string();
+        assert!(error.contains("partial.battleplan"), "{error}");
         fs::remove_dir_all(folder).unwrap();
     }
 

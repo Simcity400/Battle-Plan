@@ -23,7 +23,7 @@ collector_primitives::capacity_max!(Capacities { entries });
 pub trait Observation {
     type Entry: Copy + Default;
     const ASSEMBLED_BY_SPOOL: &'static str;
-    fn drain_growing(entries: &mut Vec<Self::Entry>) -> Result<Drained, &'static str>;
+    fn drain(entries: &mut Vec<Self::Entry>) -> Result<Drained, &'static str>;
 }
 
 pub struct Captured<O: Observation, const N: usize = 1> {
@@ -65,8 +65,8 @@ impl<O: Observation, const N: usize> Captured<O, N> {
     pub fn tables(&self) -> [TableView; N] {
         std::array::from_fn(|_| unavailable(O::ASSEMBLED_BY_SPOOL))
     }
-    pub fn drain_growing(&mut self) {
-        self.drained = Some(O::drain_growing(&mut self.entries));
+    pub fn drain(&mut self) {
+        self.drained = Some(O::drain(&mut self.entries));
     }
     pub fn handed_over(&self) -> &[O::Entry] {
         match self.drained {

@@ -225,3 +225,14 @@ fn digest_errors_preserve_the_table_identity_and_actual_hash() {
         io::ErrorKind::InvalidInput
     );
 }
+
+#[test]
+#[ignore = "requires BATTLE_PLAN_GAME_DIR"]
+fn installed_game_is_the_recognised_build_and_reads_whole() {
+    let tables = super::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must select the supported installation");
+    assert_eq!(tables.build_warning(), None);
+    let version = tables.version.as_ref().unwrap();
+    let pinned = format!(" v{}.", crate::build::PINNED_BUILD.version);
+    assert!(version.contains(&pinned), "{version} is not {pinned}");
+}

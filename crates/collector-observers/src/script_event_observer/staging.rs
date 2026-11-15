@@ -7,8 +7,9 @@
 //!
 //! Witnesses live in the shared store's demand-sized arena, tagged with
 //! their frame's token; a latch appends through the normal callback entry,
-//! so a declined stage is a missed observation like any callback, and
-//! arena exhaustion refuses by name and raises demand. Frame nesting lives
+//! so a declined stage is a missed observation like any callback; a burst
+//! past the prepared arena grows it, and only a failed allocation refuses
+//! by name. Frame nesting lives
 //! on the native call stack: a detour saves its parent's token and restores
 //! it, so only two small thread-local counters are kept, with no cap. A
 //! frame abandoned by an unwind leaves its witnesses for the next boundary
@@ -18,7 +19,7 @@ use windows_sys::Win32::System::Threading::GetCurrentThreadId;
 
 pub const NO_FRAME: &str = "event feed witness has no open detour frame";
 pub const OTHER_FRAME: &str = "event feed witness reached another detour's frame";
-pub const WITNESS_STORAGE: &str = "event feed detour witnesses need prepared storage";
+pub const WITNESS_ALLOCATION: &str = "event feed detour witness allocation failed";
 pub const WITNESS_ABANDONED: &str = "event feed detour witness abandoned before publication";
 pub const WITNESS_RESET: &str = "event feed detour witnesses were reset before publication";
 

@@ -122,30 +122,16 @@ pub struct NameWalk {
     pub required_candidates: usize,
 }
 
+pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> NameWalk {
+    walk_buffer(memory, base, game_state, crate::walk::Buffer::Count, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
+}
+
 /// The caller supplies both pointer scratch and the output arena. Pointer
 /// sorting removes stale aliases in O(n log n) without a heap allocation. A
 /// candidate-capacity failure publishes unavailable and required_candidates:
 /// aliases cannot be counted as distinct missing rows before a complete census.
 /// Native owner comes from the program, independently of the country root.
 pub fn walk(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    candidates: &mut [usize],
-    output: &mut [Row],
-    names: &mut [u8],
-) -> NameWalk {
-    walk_buffer(
-        memory,
-        base,
-        game_state,
-        crate::walk::Buffer::Fixed(candidates),
-        crate::walk::Buffer::Fixed(output),
-        crate::walk::Buffer::Fixed(names),
-    )
-}
-
-pub fn walk_growing(
     memory: &impl Memory,
     base: usize,
     game_state: usize,

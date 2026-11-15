@@ -7,8 +7,6 @@
 
 use crate::{Memory, ccountry, cgame_state, cpdx_array::Array, read};
 
-pub const CAPACITY: &str = "country-array roster arena capacity exceeded";
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Capture {
     /// Only Ok proves every physical occurrence was authenticated and copied.
@@ -42,14 +40,10 @@ pub fn demand(memory: &impl Memory, _base: usize, state: usize) -> Result<usize,
     Ok(array.count as usize)
 }
 
-/// No allocation or native calls. Short storage preserves full known demand
-/// without following any pointer. A native failure withholds the whole field;
-/// the caller must commit the scalar arena only on Ok. Aliases are not filtered.
-pub fn capture(memory: &impl Memory, base: usize, state: usize, output: &mut [u32]) -> Capture {
-    capture_buffer(memory, base, state, crate::walk::Buffer::Fixed(output))
-}
-
-pub fn capture_growing(
+/// No native calls; the storage grows to the roster's count. A native failure
+/// withholds the whole field; the caller must commit the scalar arena only on
+/// Ok. Aliases are not filtered.
+pub fn capture(
     memory: &impl Memory,
     base: usize,
     state: usize,
@@ -69,9 +63,6 @@ fn capture_buffer(
         let (address, bytes, array) = header(memory, state)?;
         required = array.count as usize;
         output.ensure(required)?;
-        if required > output.len() {
-            return Err(CAPACITY);
-        }
         let mut reserved = None;
         if array.count != 0 {
             let pointer = array

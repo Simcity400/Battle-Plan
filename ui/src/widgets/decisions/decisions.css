@@ -1,18 +1,47 @@
-/* Construction log's rows (constructionLog.css): the cost takes the value column,
-   wide enough for both currencies, and the art column goes with Game artwork off. */
-.construction-log.decisions-log .log-row { grid-template-columns: 58px 24px minmax(0, 1.5fr) minmax(0, 1fr) 10.5em 6.5em; }
-.construction-log.decisions-log.is-one-country .log-row { grid-template-columns: 58px 24px minmax(0, 1fr) 10.5em 6.5em; }
-.construction-log.decisions-log.is-no-art .log-row { grid-template-columns: 58px minmax(0, 1.5fr) minmax(0, 1fr) 10.5em 6.5em; }
-.construction-log.decisions-log.is-no-art.is-one-country .log-row { grid-template-columns: 58px minmax(0, 1fr) 10.5em 6.5em; }
-.construction-log.decisions-log .log-value { display: block; overflow: hidden; text-overflow: ellipsis; }
-.construction-log.decisions-log .construction-name.is-muted { color: var(--muted); font-weight: 400; }
+/* Rows after the log's date: art, the decision's name over how it ran, the country, the status and its cost (the
+   construction log's row shape). The cost takes the value column, wide enough for both currencies, and the art column
+   goes with Game artwork off. */
+.decisions-log { container-type: inline-size; }
+.decisions-log .log-row { grid-template-columns: 58px 24px minmax(0, 1.5fr) minmax(0, 1fr) 10.5em 6.5em; }
+.decisions-log.is-one-country .log-row { grid-template-columns: 58px 24px minmax(0, 1fr) 10.5em 6.5em; }
+.decisions-log.is-no-art .log-row { grid-template-columns: 58px minmax(0, 1.5fr) minmax(0, 1fr) 10.5em 6.5em; }
+.decisions-log.is-no-art.is-one-country .log-row { grid-template-columns: 58px minmax(0, 1fr) 10.5em 6.5em; }
 
+.decisions-log .construction-title { display: flex; flex-direction: column; justify-content: center; min-width: 0; }
+.decisions-log .construction-building { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.decisions-log .construction-name, .decisions-log .construction-ellipsis { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.decisions-log .construction-name { font-weight: 500; }
+.decisions-log .construction-name.is-muted { color: var(--muted); font-weight: 400; }
+.decisions-log .construction-place { display: flex; align-items: center; gap: 5px; min-width: 0; color: var(--muted); font-size: var(--type-xs); line-height: 1.25; }
+.decisions-log .construction-place-country { display: none; align-items: center; gap: 5px; min-width: 0; }
+.decisions-log .construction-place .log-flag { flex: none; width: 15px; height: 10px; margin: 0; }
+.decisions-log .construction-country { display: flex; align-items: center; min-width: 0; font-weight: 500; }
+.decisions-log .construction-country .log-flag { flex: none; }
+.decisions-log .construction-name-pending { display: inline-block; flex: none; width: 7em; height: 0.75em; }
+.decisions-log .construction-name-pending.is-short { width: 5em; }
+.decisions-log .construction-status { display: flex; min-width: 0; }
+.decisions-log .construction-status .pill { max-width: 100%; }
+.decisions-log .construction-status .pill > span { overflow: hidden; text-overflow: ellipsis; }
+.decisions-log .log-value { display: block; overflow: hidden; text-overflow: ellipsis; text-align: right; }
+
+/* Compact: one line, the place after the name. */
+.decisions-log .log.is-compact .construction-title { flex-direction: row; align-items: baseline; gap: 6px; }
+.decisions-log .log.is-compact .construction-building { flex: 0 1 auto; }
+.decisions-log .log.is-compact .construction-place { flex: 1 1 0; }
+.decisions-log .log.is-compact .construction-place::before { content: '·'; }
+.decisions-log .log.is-compact .construction-status .pill { height: 18px; padding: 0 7px; }
+
+/* Wide: the name keeps a readable width beside its country; the country takes the rest. */
 @container (min-width: 900px) {
-  .construction-log.decisions-log .log-row { grid-template-columns: 58px 24px minmax(0, 22em) minmax(0, 1fr) 10.5em 6.5em; }
-  .construction-log.decisions-log.is-no-art .log-row { grid-template-columns: 58px minmax(0, 22em) minmax(0, 1fr) 10.5em 6.5em; }
+  .decisions-log .log-row { grid-template-columns: 58px 24px minmax(0, 22em) minmax(0, 1fr) 10.5em 6.5em; }
+  .decisions-log.is-no-art .log-row { grid-template-columns: 58px minmax(0, 22em) minmax(0, 1fr) 10.5em 6.5em; }
 }
 
+/* Narrow: the country joins the line under the name. */
 @container (max-width: 519px) {
-  .construction-log.decisions-log .log-row, .construction-log.decisions-log.is-one-country .log-row { grid-template-columns: 58px 24px minmax(0, 1fr) auto 5em; }
-  .construction-log.decisions-log.is-no-art .log-row, .construction-log.decisions-log.is-no-art.is-one-country .log-row { grid-template-columns: 58px minmax(0, 1fr) auto 5em; }
+  .decisions-log .log-row, .decisions-log.is-one-country .log-row { grid-template-columns: 58px 24px minmax(0, 1fr) auto 5em; }
+  .decisions-log.is-no-art .log-row, .decisions-log.is-no-art.is-one-country .log-row { grid-template-columns: 58px minmax(0, 1fr) auto 5em; }
+  .decisions-log .construction-country { display: none; }
+  .decisions-log .construction-place-country { display: flex; }
+  .decisions-log .construction-status .pill { max-width: 8.5em; }
 }

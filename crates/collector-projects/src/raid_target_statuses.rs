@@ -110,7 +110,7 @@ impl Captured {
             return [0];
         }
         let started = qpc();
-        let walk = native::walk_growing(
+        let walk = native::walk(
             memory,
             base,
             game_state,

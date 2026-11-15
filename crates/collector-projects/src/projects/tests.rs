@@ -821,16 +821,12 @@ fn program_body_batch_preserves_every_capacity_prefix_and_growth() {
             assert_eq!(actual.bytes.capacity(), expected.bytes.capacity());
         }
     }
-    // Identity leaves nine body bytes: publish eight, then demand twelve
-    // more (20 body bytes total), rather than preflighting all 61.
+    // Identity leaves nine body bytes: the body is taken field by field,
+    // growing as each needs, rather than preflighting all 61.
     let source = ProgramSource::new(&bytes);
     let mut log = dirty_program_log(16, 25);
-    assert!(!copy_fixture_program(&mut log, &source));
-    assert_eq!(log.bytes.len(), 24);
-    assert_eq!(source.calls.borrow().len(), 2);
+    assert!(copy_fixture_program(&mut log, &source));
     assert!(source.scatters.borrow().is_empty());
-    log.grow();
-    assert_eq!(log.bytes.capacity(), 50);
 }
 
 #[test]
@@ -1278,34 +1274,6 @@ fn split_copy_matches_direct_walk_on_fault_matrix() {
     }
 }
 
-#[test]
-fn staging_overflow_falls_back_to_typed_walk() {
-    use super::projects_test_kit as kit;
-    let bytes = kit::fixture();
-    let memory = kit::memory(&bytes);
-    let ctx = ProjectsCopyContext {
-        base: kit::BASE,
-        game_state: kit::GAME_STATE,
-        active: true,
-    };
-    let mut tiny = ProjectsJob {
-        log: crate::raw::RawLog::new(8, 8),
-        game_state: 0,
-        active: false,
-        census: Vec::with_capacity(1),
-        statuses: Vec::with_capacity(1),
-        pointers: Vec::with_capacity(1),
-        assignment_references: Vec::with_capacity(1),
-        worker_growth: false,
-        capacity_charge: crate::raw_memory::Charge::default(),
-    };
-    tiny.update_capacity_charge();
-    let report = copy_projects_refresh(&memory, ctx, &mut tiny);
-    assert!(!report.raw_ok);
-    assert!(tiny.log.overflowed);
-    assert!(tiny.grow_for_next());
-}
-
 fn project_hour(
     captured: &mut Captured,
     bytes: &[u8],
@@ -1625,5 +1593,48 @@ mod raid_memos {
             reason: "naval memo unreadable",
         };
         assert_eq!(captured.outcomes()[12], captured.raid_paths[1].outcome);
+    }
+}
+
+/// The walks after the project family, taken out and walked on their own as a worker walks them
+/// beside the family, leave every table and tick as the inline walk does, on a daily and an
+/// ordinary hour.
+#[test]
+fn the_rest_walked_beside_the_projects_equals_the_inline_walk() {
+    use super::projects_test_kit as kit;
+    use crate::country_input_changes::Domain;
+    let bytes = kit::fixture();
+    let memory = kit::memory(&bytes);
+    let changes = Domain::enabled(64);
+    let mut inline = Captured::with_capacities(&split_capacities());
+    let mut beside = Captured::with_capacities(&split_capacities());
+    let (mut inline_store, mut beside_store) = (SliceFingerprints::new(), SliceFingerprints::new());
+    for (hour, force_full) in [(0, true), (5, false), (24, false)] {
+        inline.capture_selected(
+            &memory,
+            &memory,
+            kit::BASE,
+            kit::GAME_STATE,
+            hour,
+            force_full,
+            &mut inline_store,
+            &changes,
+        );
+        beside.reset();
+        let mut rest = beside.take_rest(kit::GAME_STATE, hour, force_full);
+        beside.capture_selected(
+            &memory,
+            &memory,
+            kit::BASE,
+            kit::GAME_STATE,
+            hour,
+            force_full,
+            &mut beside_store,
+            &changes,
+        );
+        rest.capture(&memory, kit::BASE);
+        beside.restore_rest(rest);
+        assert_eq!(beside.outcomes(), inline.outcomes(), "hour {hour}");
+        assert_eq!(beside.tables(), inline.tables(), "hour {hour}");
     }
 }

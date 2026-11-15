@@ -12,7 +12,7 @@ use replay_data::{
     rows::TableSchema,
     rows::{column, mask, tables},
 };
-use replay_frame::frame::{HourFrame, OperandStatus, Rowset, SharedView, TableView, Tables};
+use replay_frame::frame::{HourFrame, OperandStatus, SharedView, TableView, Tables};
 use std::{
     collections::{BTreeMap, HashMap},
     io,
@@ -30,10 +30,10 @@ pub fn template_spelling(
     };
     let lexical = frame
         .lexical()
-        .map_err(|reason| format!("LexicalTokens is not recorded completely: {reason}"))?;
+        .map_err(|reason| format!("lexical tokens is not recorded completely: {reason}"))?;
     let index = lexical
         .binary_search_by_key(&token, |row| row.token)
-        .map_err(|_| format!("Faction template token {token} has no LexicalTokens spelling"))?;
+        .map_err(|_| format!("Faction template token {token} has no lexical tokens spelling"))?;
     String::from_utf8(lexical[index].literal.clone())
         .map(Some)
         .map_err(|_| format!("Faction template token {token} is not UTF-8"))
@@ -54,11 +54,11 @@ pub fn template_spelling_in<F: Tables + ?Sized>(
     };
     let lexical = frame
         .complete_rows::<tables::LexicalTokens>(LITERAL)
-        .map_err(|reason| format!("LexicalTokens is not recorded completely: {reason}"))?;
+        .map_err(|reason| format!("lexical tokens is not recorded completely: {reason}"))?;
     let literal = lexical
         .text(u128::from(token), |row| &row.literal, LITERAL_COLUMN)
         .map_err(|error| error.to_string())?
-        .ok_or_else(|| format!("Faction template token {token} has no LexicalTokens spelling"))?;
+        .ok_or_else(|| format!("Faction template token {token} has no lexical tokens spelling"))?;
     String::from_utf8(literal.to_vec())
         .map(Some)
         .map_err(|_| format!("Faction template token {token} is not UTF-8"))
@@ -91,12 +91,12 @@ fn unrecorded(status: OperandStatus<'_>) -> Option<String> {
     match status {
         OperandStatus::Complete => None,
         OperandStatus::Unavailable(reason) => Some(format!(
-            "LexicalTokens is not recorded completely: {reason}"
+            "lexical tokens is not recorded completely: {reason}"
         )),
         OperandStatus::Truncated(missing) | OperandStatus::TruncatedWrongLayout(missing) => Some(
-            format!("LexicalTokens is not recorded completely: {missing} rows missing"),
+            format!("lexical tokens is not recorded completely: {missing} rows missing"),
         ),
-        _ => Some("LexicalTokens has the wrong table layout".into()),
+        _ => Some("lexical tokens has the wrong table layout".into()),
     }
 }
 
@@ -184,18 +184,14 @@ pub struct LexicalNames<'a> {
     names: OnceLock<ReverseIndex>,
 }
 
-/// Where [`LexicalNames`] reads its spellings: a shared decoded view, or a walk's.
+/// Where [`LexicalNames`] reads its spellings: a shared decoded view.
 enum Lexicon<'a> {
-    Shared(replay_frame::frame::SharedLexical),
-    Walked(OperandStatus<'a>, Rowset<'a, LexicalTokenRow>),
+    Shared(replay_frame::frame::SharedLexical, std::marker::PhantomData<&'a ()>),
 }
 
 impl std::fmt::Debug for LexicalNames<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let table: &dyn std::fmt::Debug = match &self.table {
-            Lexicon::Shared(table) => table,
-            Lexicon::Walked(status, _) => status,
-        };
+        let Lexicon::Shared(table, _) = &self.table;
         f.debug_struct("LexicalNames")
             .field("table", table)
             .field("identity", &self.identity)
@@ -214,39 +210,29 @@ impl<'a> LexicalNames<'a> {
     pub fn new(table: SharedView) -> Self {
         Self {
             identity: Some(table.identity()),
-            table: Lexicon::Shared(table.into()),
+            table: Lexicon::Shared(table.into(), std::marker::PhantomData),
             names: OnceLock::new(),
         }
     }
 
     pub fn from_source(frame: &dyn replay_frame::frame::RecordedSource) -> Self {
         Self {
-            table: Lexicon::Shared(frame.shared_lexical()),
+            table: Lexicon::Shared(frame.shared_lexical(), std::marker::PhantomData),
             identity: frame.identity(tables::LexicalTokens::ID.index()),
             names: OnceLock::new(),
         }
     }
 
-    /// [`Self::from_source`] of any frame's tables: a walk's view is read in place.
+    /// [`Self::from_source`] of any frame's tables.
     pub fn from_tables(frame: HourFrame<'a>) -> Self {
-        match frame.decoded() {
-            Some(decoded) => Self::from_source(decoded),
-            None => Self {
-                table: Lexicon::Walked(
-                    frame.status(tables::LexicalTokens::ID),
-                    frame.held::<tables::LexicalTokens>(0),
-                ),
-                identity: None,
-                names: OnceLock::new(),
-            },
+        match frame {
+            HourFrame::Decoded(decoded) => Self::from_source(decoded),
         }
     }
 
     fn status(&self) -> OperandStatus<'_> {
-        match &self.table {
-            Lexicon::Shared(table) => table.status(),
-            Lexicon::Walked(status, _) => *status,
-        }
+        let Lexicon::Shared(table, _) = &self.table;
+        table.status()
     }
 
     pub fn matches(&self, table: &SharedView) -> bool {
@@ -262,19 +248,8 @@ impl<'a> LexicalNames<'a> {
                 if let Some(reason) = unrecorded(self.status()) {
                     return Err(reason);
                 }
-                match &self.table {
-                    Lexicon::Shared(table) => reverse(
-                        table
-                            .rows()
-                            .into_iter()
-                            .map(|row| Ok((row.token, row.literal.as_slice()))),
-                    ),
-                    Lexicon::Walked(_, rows) => reverse(
-                        rows.keys()
-                            .zip(rows.texts(|row| &row.literal, LITERAL_COLUMN))
-                            .map(|(key, literal)| literal.map(|literal| (key as u32, literal))),
-                    ),
-                }
+                let Lexicon::Shared(table, _) = &self.table;
+                reverse(table.rows().into_iter().map(|row| Ok((row.token, row.literal.as_slice()))))
             })
             .as_ref()
             .map_err(Clone::clone)?;
@@ -804,7 +779,7 @@ fn formatted(
             .map(|token| BoundArgument::Token(token as i32))
             .ok_or_else(|| {
                 format!(
-                    "faction bound localisation token {} is absent from LexicalTokens",
+                    "faction bound localisation token {} is absent from lexical tokens",
                     String::from_utf8_lossy(token)
                 )
             }),
@@ -971,7 +946,7 @@ mod tests {
                 None
             ))
             .unwrap_err()
-            .contains("token absent is absent from LexicalTokens")
+            .contains("token absent is absent from lexical tokens")
         );
     }
 

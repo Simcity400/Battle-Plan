@@ -24,7 +24,7 @@ unsafe impl std::alloc::GlobalAlloc for DeniedAllocator {
         unsafe { std::alloc::System.dealloc(pointer, layout) };
     }
 }
-#[cfg(feature = "alloc-fault-injection")]
+#[cfg(any(test, feature = "alloc-fault-injection"))]
 pub fn with_allocations_denied<T>(run: impl FnOnce() -> T) -> T {
     struct Reset(bool);
     impl Drop for Reset {

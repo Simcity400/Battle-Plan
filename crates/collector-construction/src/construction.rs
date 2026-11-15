@@ -83,21 +83,12 @@ impl Capacities {
             Outcome::Unavailable { reason } => Err(reason),
         };
         for (index, outcome) in [
-            (2, state_resource_entry::walk(memory, base, state, &mut [])),
+            (2, state_resource_entry::count(memory, base, state)),
             (10, Outcome::Rows { len: 0 }),
         ] {
             crate::table_capture::grow_capacity(&mut self.rows[index], rows(outcome)?);
         }
-        let queue = cbuilding_production_line::walk(
-            memory,
-            base,
-            state,
-            cbuilding_production_line::Buffers {
-                buildings: &mut [],
-                railways: &mut [],
-                route_provinces: &mut [],
-            },
-        );
+        let queue = cbuilding_production_line::count(memory, base, state);
         crate::table_capture::grow_capacity(&mut self.rows[3], rows(queue.buildings)?);
         crate::table_capture::grow_capacity(&mut self.rows[4], rows(queue.railways)?);
         crate::table_capture::grow_capacity(&mut self.routes, queue.required_route_len);
@@ -410,7 +401,6 @@ impl Captured {
 
     /// All elapsed values are raw QPC ticks; the containing callback owns their
     /// conversion to nanoseconds and its own complete callback measurement.
-    #[cfg(any(test, feature = "test-support"))]
     pub fn capture(
         &mut self,
         memory: &impl Memory,
@@ -419,18 +409,7 @@ impl Captured {
         hour: i32,
         force_full: bool,
     ) -> [u64; N] {
-        self.capture_buffers(memory, base, game_state, hour, force_full, false)
-    }
-
-    pub fn capture_growing(
-        &mut self,
-        memory: &impl Memory,
-        base: usize,
-        game_state: usize,
-        hour: i32,
-        force_full: bool,
-    ) -> [u64; N] {
-        self.capture_buffers(memory, base, game_state, hour, force_full, true)
+        self.capture_buffers(memory, base, game_state, hour, force_full)
     }
 
     fn capture_buffers(
@@ -440,7 +419,6 @@ impl Captured {
         game_state: usize,
         hour: i32,
         force_full: bool,
-        growing: bool,
     ) -> [u64; N] {
         if !self.rest_raw_mode {
             self.base_resources.reset();
@@ -476,7 +454,7 @@ impl Captured {
                     memory,
                     base,
                     game_state,
-                    engine_native::walk::Buffer::for_worker(output, growing),
+                    engine_native::walk::Buffer::Growing(output),
                 )
             })
         });
@@ -487,18 +465,9 @@ impl Captured {
             base,
             game_state,
             cbuilding_production_line::BuffersBuffer {
-                buildings: engine_native::walk::Buffer::for_worker(
-                    &mut self.building_construction.rows,
-                    growing,
-                ),
-                railways: engine_native::walk::Buffer::for_worker(
-                    &mut self.railway_construction.rows,
-                    growing,
-                ),
-                route_provinces: engine_native::walk::Buffer::for_worker(
-                    &mut self.routes.first,
-                    growing,
-                ),
+                buildings: engine_native::walk::Buffer::Growing(&mut self.building_construction.rows),
+                railways: engine_native::walk::Buffer::Growing(&mut self.railway_construction.rows),
+                route_provinces: engine_native::walk::Buffer::Growing(&mut self.routes.first),
             },
         );
         self.building_construction.outcome = queue.buildings;
@@ -513,31 +482,16 @@ impl Captured {
             base,
             game_state,
             ccountry_occupation_status::BuffersBuffer {
-                settings: engine_native::walk::Buffer::for_worker(&mut self.settings.rows, growing),
-                laws: engine_native::walk::Buffer::for_worker(&mut self.laws.rows, growing),
-                group_laws: engine_native::walk::Buffer::for_worker(
-                    &mut self.group_laws.rows,
-                    growing,
-                ),
-                garrisons: engine_native::walk::Buffer::for_worker(
-                    &mut self.garrisons.rows,
-                    growing,
-                ),
-                manpower: engine_native::walk::Buffer::for_worker(
-                    &mut self.assigned_manpower.rows,
-                    growing,
-                ),
-                reserve_manpower: engine_native::walk::Buffer::for_worker(
-                    &mut self.reserve_manpower.rows,
-                    growing,
-                ),
-                names: engine_native::walk::Buffer::for_worker(&mut self.law_bytes.first, growing),
-                equipment: engine_native::walk::Buffer::for_worker(
-                    &mut self.equipment.first,
-                    growing,
-                ),
+                settings: engine_native::walk::Buffer::Growing(&mut self.settings.rows),
+                laws: engine_native::walk::Buffer::Growing(&mut self.laws.rows),
+                group_laws: engine_native::walk::Buffer::Growing(&mut self.group_laws.rows),
+                garrisons: engine_native::walk::Buffer::Growing(&mut self.garrisons.rows),
+                manpower: engine_native::walk::Buffer::Growing(&mut self.assigned_manpower.rows),
+                reserve_manpower: engine_native::walk::Buffer::Growing(&mut self.reserve_manpower.rows),
+                names: engine_native::walk::Buffer::Growing(&mut self.law_bytes.first),
+                equipment: engine_native::walk::Buffer::Growing(&mut self.equipment.first),
             },
-            engine_native::walk::Buffer::for_worker(&mut self.occupied.first, growing),
+            engine_native::walk::Buffer::Growing(&mut self.occupied.first),
         );
         self.settings.outcome = occupation.settings;
         self.laws.outcome = occupation.laws;
@@ -563,7 +517,7 @@ impl Captured {
                 memory,
                 base,
                 game_state,
-                engine_native::walk::Buffer::for_worker(output, growing),
+                engine_native::walk::Buffer::Growing(output),
             )
         });
         ticks
@@ -723,12 +677,10 @@ fn elapsed(begin: i64) -> u64 {
 mod building_store;
 pub use building_store::BuildingStore;
 mod owned;
-#[cfg(any(test, feature = "test-support"))]
-pub use owned::copy_construction_rest_refresh;
 
 pub use owned::{
     ConstructionRestCopyContext, ConstructionRestCopyReport, ConstructionRestJob,
-    copy_construction_rest_refresh_growing,
+    copy_construction_rest_refresh,
 };
 #[cfg(test)]
 use owned::{M_C_OCC, copy_construction_string};

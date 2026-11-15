@@ -306,28 +306,9 @@ const CONSUMERS: [(usize, Rva); 5] = [
     ),
 ];
 
-/// Reads every canonical country's stored factory totals, one row per
-/// country in country-table order. Each country costs the production status
-/// pointer read and one guarded scatter of its vtable, owner and the factory
-/// span (the three groups and the five consumers). The status and each
-/// consumer are authenticated by vtable and the status by its owner, so a
-/// moved layout fails rather than yielding plausible counts.
-///
-/// Any country whose status cannot be read or authenticated makes the table
-/// unavailable: a missing country is not a country without factories. Rows
-/// past capacity are counted unread without reading their statuses.
-pub fn walk_factories(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut [FactoryRow],
-) -> Outcome {
-    walk_factories_buffer(memory, base, game_state, Buffer::Fixed(output))
-}
-
 /// Worker acquisition grows from the original country census; canonical
 /// countries own the cached totals rebuilt on update.
-pub fn walk_factories_growing(
+pub fn walk_factories(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -618,21 +599,14 @@ pub const FOREIGN_EQUIPMENT: usize = 0xe8;
 /// CProductionStatus best-variant candidate list, with its count.
 pub const BEST_VARIANT_CANDIDATES: usize = 0xb8;
 
-/// Every country's three equipment rosters. Rows past capacity are counted.
-/// Each roster's pointers are copied in spans, not one read per entry.
-pub fn walk_available_equipment(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut [AvailableEquipmentRow],
-) -> Outcome {
-    walk_available_equipment_buffer(memory, base, game_state, Buffer::Fixed(output))
+pub fn count_available_equipment(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
+    walk_available_equipment_buffer(memory, base, game_state, Buffer::Count)
 }
 
 /// Worker-only capture. Primary and foreign rosters are serialized; the
 /// best-variant roster is maintained by equipment updates. Grow from each
 /// original header before ordered entries, retaining repeated variant rows.
-pub fn walk_available_equipment_growing(
+pub fn walk_available_equipment(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -709,18 +683,10 @@ fn walk_available_equipment_buffer(
     result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
 }
 
-/// Reads each canonical country's ordered equipment-production roster once.
-/// Construction uses its independent roster and is not silently filtered here.
-/// Once capacity is reached, complete remaining roster lengths are counted;
-/// line payloads are deferred to the next enlarged buffer.
-pub fn walk_lines(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut [LineRow],
-) -> Outcome {
-    walk_lines_buffer(memory, base, game_state, crate::walk::Buffer::Fixed(output))
+pub fn count_lines(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
+    walk_lines_buffer(memory, base, game_state, crate::walk::Buffer::Count)
 }
+
 
 pub fn walk_lines_buffer(
     memory: &impl Memory,
@@ -783,17 +749,10 @@ pub fn walk_lines_buffer(
     result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
 }
 
-/// Reads every canonical country's licensed-variant container in stored order.
-/// An unreadable header or a null entry inside the counted span fails the whole
-/// table: a shortened licence list is indistinguishable from a genuine one.
-pub fn walk_licenses(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut [LicenseRow],
-) -> Outcome {
-    walk_licenses_buffer(memory, base, game_state, crate::walk::Buffer::Fixed(output))
+pub fn count_licenses(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
+    walk_licenses_buffer(memory, base, game_state, crate::walk::Buffer::Count)
 }
+
 
 pub fn walk_licenses_buffer(
     memory: &impl Memory,
@@ -861,23 +820,8 @@ pub struct LicenseRecordOutcome {
     pub required_handles: usize,
 }
 
-/// Reads every canonical country's owned-licence relations in stored order.
-/// The container's granted-licence array is the same objects seen from the
-/// licensor and is a reverse index, so it is not walked a second time.
-pub fn walk_license_records(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut [LicenseRecordRow],
-    handles: &mut [u64],
-) -> LicenseRecordOutcome {
-    walk_license_records_buffer(
-        memory,
-        base,
-        game_state,
-        crate::walk::Buffer::Fixed(output),
-        crate::walk::Buffer::Fixed(handles),
-    )
+pub fn count_license_records(memory: &impl Memory, base: usize, game_state: usize) -> LicenseRecordOutcome {
+    walk_license_records_buffer(memory, base, game_state, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
 }
 
 pub fn walk_license_records_buffer(
@@ -1193,8 +1137,8 @@ mod tests {
             memory: SliceMemory { base: BASE, bytes },
             defines,
         };
-        let mut rows = [LineRow::default(); 2];
-        match walk_lines(&memory, 0, BASE, &mut rows) {
+        let mut rows = vec![LineRow::default(); 2];
+        match walk_lines_buffer(&memory, 0, BASE, crate::walk::Buffer::Growing(&mut rows)) {
             Outcome::Rows { len: 2 } => Ok(rows[0]),
             outcome => Err(outcome),
         }
@@ -1401,15 +1345,10 @@ mod tests {
         }
         let bytes = fixture();
         assert_eq!(
-            walk_lines(
-                &Blocked(SliceMemory {
+            walk_lines_buffer(&Blocked(SliceMemory {
                     base: BASE,
                     bytes: &bytes
-                }),
-                0,
-                BASE,
-                &mut [LineRow::default(); 2]
-            ),
+                }), 0, BASE, crate::walk::Buffer::Growing(&mut vec![LineRow::default(); 2])),
             Outcome::Unavailable {
                 reason: "production line efficiency header unreadable"
             }
@@ -1423,9 +1362,9 @@ mod tests {
             base: BASE,
             bytes: &bytes,
         };
-        let mut rows = [LineRow::default(); 4];
+        let mut rows = vec![LineRow::default(); 4];
         assert_eq!(
-            walk_lines(&memory, 0, BASE, &mut rows),
+            walk_lines_buffer(&memory, 0, BASE, crate::walk::Buffer::Growing(&mut rows)),
             Outcome::Rows { len: 2 }
         );
         assert_eq!(
@@ -1449,14 +1388,7 @@ mod tests {
         );
         assert_eq!(rows[1].kind, equipment::KIND_NAVAL);
         assert_eq!(
-            walk_lines(&memory, 0, BASE, &mut rows[..1]),
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            }
-        );
-        assert_eq!(
-            walk_lines(&memory, 0, BASE, &mut []),
+            walk_lines_buffer(&memory, 0, BASE, crate::walk::Buffer::Count),
             Outcome::Truncated {
                 len: 0,
                 unread_rows: 2
@@ -1469,15 +1401,10 @@ mod tests {
         let mut bytes = fixture();
         array(&mut bytes, STATUS + LINES, 0, 0);
         assert_eq!(
-            walk_lines(
-                &SliceMemory {
+            walk_lines_buffer(&SliceMemory {
                     base: BASE,
                     bytes: &bytes
-                },
-                0,
-                BASE,
-                &mut []
-            ),
+                }, 0, BASE, crate::walk::Buffer::Count),
             Outcome::Rows { len: 0 }
         );
         for address in [
@@ -1493,16 +1420,11 @@ mod tests {
         ] {
             let mut bytes = fixture();
             put(&mut bytes, address, &0_u64.to_le_bytes());
-            let mut output = [LineRow::default(); 4];
-            let outcome = walk_lines(
-                &SliceMemory {
+            let mut output = vec![LineRow::default(); 4];
+            let outcome = walk_lines_buffer(&SliceMemory {
                     base: BASE,
                     bytes: &bytes,
-                },
-                0,
-                BASE,
-                &mut output,
-            );
+                }, 0, BASE, crate::walk::Buffer::Growing(&mut output));
             assert!(
                 matches!(outcome, Outcome::Unavailable { .. }),
                 "{address:#x}: {outcome:?}"
@@ -1514,17 +1436,12 @@ mod tests {
     fn unknown_line_subtype_is_unavailable_not_silently_omitted() {
         let mut bytes = fixture();
         put(&mut bytes, SECOND_LINE, &0x1234_u64.to_le_bytes());
-        let mut rows = [LineRow::default(); 2];
+        let mut rows = vec![LineRow::default(); 2];
         assert_eq!(
-            walk_lines(
-                &SliceMemory {
+            walk_lines_buffer(&SliceMemory {
                     base: BASE,
                     bytes: &bytes
-                },
-                0,
-                BASE,
-                &mut rows
-            ),
+                }, 0, BASE, crate::walk::Buffer::Growing(&mut rows)),
             Outcome::Unavailable {
                 reason: "production line vtable mismatch"
             }
@@ -1543,7 +1460,7 @@ mod tests {
             base: BASE,
             bytes: &bytes,
         };
-        let mut rows = [AvailableEquipmentRow::default(); 4];
+        let mut rows = vec![AvailableEquipmentRow::default(); 4];
         assert_eq!(
             walk_available_equipment(&memory, 0, BASE, &mut rows),
             Outcome::Rows { len: 4 }
@@ -1555,13 +1472,6 @@ mod tests {
             variant: 0xfedc_ba98_0000_0046,
         };
         assert_eq!(rows, [entry(0, 0), entry(0, 1), entry(1, 0), entry(2, 0)]);
-        assert_eq!(
-            walk_available_equipment(&memory, 0, BASE, &mut rows[..1]),
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 3
-            }
-        );
     }
 
     #[test]
@@ -1571,9 +1481,9 @@ mod tests {
             base: BASE,
             bytes: &bytes,
         };
-        let mut rows = [LicenseRow::default(); 4];
+        let mut rows = vec![LicenseRow::default(); 4];
         assert_eq!(
-            walk_licenses(&memory, 0, BASE, &mut rows),
+            walk_licenses_buffer(&memory, 0, BASE, crate::walk::Buffer::Growing(&mut rows)),
             Outcome::Rows { len: 2 }
         );
         assert_eq!(
@@ -1592,14 +1502,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            walk_licenses(&memory, 0, BASE, &mut rows[..1]),
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            }
-        );
-        assert_eq!(
-            walk_licenses(&memory, 0, BASE, &mut []),
+            walk_licenses_buffer(&memory, 0, BASE, crate::walk::Buffer::Count),
             Outcome::Truncated {
                 len: 0,
                 unread_rows: 2
@@ -1614,9 +1517,9 @@ mod tests {
             base: BASE,
             bytes: &bytes,
         };
-        let mut rows = [LicenseRecordRow::default(); 4];
-        let mut handles = [0_u64; 8];
-        let result = walk_license_records(&memory, 0, BASE, &mut rows, &mut handles);
+        let mut rows = vec![LicenseRecordRow::default(); 4];
+        let mut handles = vec![0_u64; 8];
+        let result = walk_license_records_buffer(&memory, 0, BASE, crate::walk::Buffer::Growing(&mut rows), crate::walk::Buffer::Growing(&mut handles));
         assert_eq!(
             result,
             LicenseRecordOutcome {
@@ -1641,24 +1544,12 @@ mod tests {
             }
         );
         assert_eq!(&handles[..2], &[0xfedc_ba98_0000_0046; 2]);
-        // A full row buffer and a full handle arena both truncate exactly.
+        // The count probe counts the record without storing it.
         assert_eq!(
-            walk_license_records(&memory, 0, BASE, &mut [], &mut handles).outcome,
+            walk_license_records_buffer(&memory, 0, BASE, crate::walk::Buffer::Count, crate::walk::Buffer::Growing(&mut handles)).outcome,
             Outcome::Truncated {
                 len: 0,
                 unread_rows: 1
-            }
-        );
-        let short = walk_license_records(&memory, 0, BASE, &mut rows, &mut [0; 1]);
-        assert_eq!(
-            short,
-            LicenseRecordOutcome {
-                outcome: Outcome::Truncated {
-                    len: 0,
-                    unread_rows: 1
-                },
-                handles_len: 0,
-                required_handles: 2,
             }
         );
     }
@@ -1668,16 +1559,10 @@ mod tests {
         let mut bytes = fixture();
         array(&mut bytes, STATUS + LICENSE_RECORDS, 0, 0);
         assert_eq!(
-            walk_license_records(
-                &SliceMemory {
+            walk_license_records_buffer(&SliceMemory {
                     base: BASE,
                     bytes: &bytes
-                },
-                0,
-                BASE,
-                &mut [],
-                &mut []
-            )
+                }, 0, BASE, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
             .outcome,
             Outcome::Rows { len: 0 }
         );
@@ -1699,16 +1584,10 @@ mod tests {
             let mut bytes = fixture();
             put(&mut bytes, address, &0_u64.to_le_bytes());
             assert_eq!(
-                walk_license_records(
-                    &SliceMemory {
+                walk_license_records_buffer(&SliceMemory {
                         base: BASE,
                         bytes: &bytes
-                    },
-                    0,
-                    BASE,
-                    &mut [LicenseRecordRow::default(); 4],
-                    &mut [0; 8]
-                )
+                    }, 0, BASE, crate::walk::Buffer::Growing(&mut vec![LicenseRecordRow::default(); 4]), crate::walk::Buffer::Growing(&mut vec![0; 8]))
                 .outcome,
                 Outcome::Unavailable { reason },
                 "{address:#x}"
@@ -1721,16 +1600,10 @@ mod tests {
             &9_u32.to_le_bytes(),
         );
         assert_eq!(
-            walk_license_records(
-                &SliceMemory {
+            walk_license_records_buffer(&SliceMemory {
                     base: BASE,
                     bytes: &bytes
-                },
-                0,
-                BASE,
-                &mut [LicenseRecordRow::default(); 16],
-                &mut [0; 64]
-            )
+                }, 0, BASE, crate::walk::Buffer::Growing(&mut vec![LicenseRecordRow::default(); 16]), crate::walk::Buffer::Growing(&mut vec![0; 64]))
             .outcome,
             Outcome::Unavailable {
                 reason: "production licence record array unreadable or invalid"
@@ -1743,15 +1616,10 @@ mod tests {
         let mut bytes = fixture();
         array(&mut bytes, STATUS + LICENSES, 0, 0);
         assert_eq!(
-            walk_licenses(
-                &SliceMemory {
+            walk_licenses_buffer(&SliceMemory {
                     base: BASE,
                     bytes: &bytes
-                },
-                0,
-                BASE,
-                &mut []
-            ),
+                }, 0, BASE, crate::walk::Buffer::Count),
             Outcome::Rows { len: 0 }
         );
         for (address, reason) in [
@@ -1761,15 +1629,10 @@ mod tests {
             let mut bytes = fixture();
             put(&mut bytes, address, &0_u64.to_le_bytes());
             assert_eq!(
-                walk_licenses(
-                    &SliceMemory {
+                walk_licenses_buffer(&SliceMemory {
                         base: BASE,
                         bytes: &bytes
-                    },
-                    0,
-                    BASE,
-                    &mut [LicenseRow::default(); 4]
-                ),
+                    }, 0, BASE, crate::walk::Buffer::Growing(&mut vec![LicenseRow::default(); 4])),
                 Outcome::Unavailable { reason },
                 "{address:#x}"
             );
@@ -1777,15 +1640,10 @@ mod tests {
         let mut bytes = fixture();
         put(&mut bytes, STATUS + LICENSES + 12, &9_u32.to_le_bytes());
         assert_eq!(
-            walk_licenses(
-                &SliceMemory {
+            walk_licenses_buffer(&SliceMemory {
                     base: BASE,
                     bytes: &bytes
-                },
-                0,
-                BASE,
-                &mut [LicenseRow::default(); 16]
-            ),
+                }, 0, BASE, crate::walk::Buffer::Growing(&mut vec![LicenseRow::default(); 16])),
             Outcome::Unavailable {
                 reason: "production licence array unreadable or invalid"
             }

@@ -1271,6 +1271,7 @@ mod tests {
         for _ in 0..3 {
             let rx = Arc::clone(&rx);
             std::thread::spawn(move || {
+                viewer_foundation::worker_priority::enter(viewer_foundation::worker_priority::Class::Normal);
                 loop {
                     let job = rx.lock().unwrap().recv();
                     match job {

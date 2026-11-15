@@ -27,7 +27,7 @@ Anything the recording didn't capture is shown as missing, never as zero.
 
 No installed content are included; the app reads them from your own installation.
 
-The app is a folder of programs, not an installer. Keep `replay-desktop.exe` (the app), `viewer.exe` (the map), `battle-plan-recorder.exe` (the tray recorder), `recorder.exe` (the command-line recorder) and `collector.dll` together, with the `shader-tools` folder and the licence files.
+The installer puts five files in one folder, with the licence files: `replay-desktop.exe` (the app, which draws the map itself), `battle-plan-recorder.exe` (the tray recorder), `collector.dll` (which the recorder loads into the game), and Microsoft's DirectX shader compiler, `dxcompiler.dll` and `dxil.dll`. The command-line recorder, `recorder.exe`, is built from source.
 
 ## Record a campaign
 
@@ -68,10 +68,10 @@ Partly damaged recordings still open: you get the readable part, with a notice a
 - Map modes include political, terrain, states, factions, players, ideology, resistance, compliance, manpower, infrastructure, diplomacy, operatives, resources, air, navy and raids, plus scripted modes from the recorded mods. Supply mode isn't available: recordings don't hold the data it needs.
 - Use the normal camera or free **Fly** and **Walk** cameras (F12 switches), with controller support. **Pop out map** opens a second map window.
 - Game sounds, ambience and music play, with volume controls.
-- Export map images from the app, or headlessly:
+- Export map images from the app, or from the command line:
 
 ```powershell
-viewer.exe --dump <campaign.battleplan> --hour <n> --branch <id> --out <frame.png> --camera <x,z,height>
+replay-desktop.exe --window-dump <campaign.battleplan> --hour <n> --branch <id> --out <frame.png> --camera <x,z,height>
 ```
 
 The map steps hour by hour; it doesn't interpolate between hours.

@@ -197,7 +197,7 @@ fn raw_modifier_preserves_negative_values_absence_and_order() {
             .copy(address, output)
         }
     }
-    let mut output = [ModifierTerm::default(); 3];
+    let mut output = vec![ModifierTerm::default(); 3];
     let mut len = 0;
     let counted = Counted {
         inner: WithMetadata(&bytes),
@@ -211,7 +211,7 @@ fn raw_modifier_preserves_negative_values_absence_and_order() {
         0x10,
         4,
         &[6, 5, 7],
-        &mut Buffer::Fixed(&mut output),
+        &mut Buffer::Growing(&mut output),
         &mut len,
     )
     .unwrap();
@@ -222,19 +222,6 @@ fn raw_modifier_preserves_negative_values_absence_and_order() {
     assert_eq!(output[1].scope, 4);
     assert_eq!(output[2].key, 7);
     assert_eq!((counted.copies.get(), counted.bytes.get()), (4, 52));
-    assert_eq!(
-        append_modifiers(
-            &WithMetadata(&bytes),
-            0,
-            &mut Sources::new(),
-            0x10,
-            0,
-            &[1],
-            &mut Buffer::Fixed(&mut output),
-            &mut len
-        ),
-        Err("reinforcement modifier arena full")
-    );
 }
 
 /// A census that fails partway leaves the shared arena as it found it.
@@ -299,7 +286,7 @@ fn raw_shared_modifier_snapshot_avoids_native_recensus() {
     let memory = Shared {
         copies: Cell::new(0),
     };
-    let mut output = [ModifierTerm::default(); 2];
+    let mut output = vec![ModifierTerm::default(); 2];
     let mut len = 0;
     append_modifiers(
         &memory,
@@ -308,7 +295,7 @@ fn raw_shared_modifier_snapshot_avoids_native_recensus() {
         0x99999,
         1,
         &[4, 5],
-        &mut Buffer::Fixed(&mut output),
+        &mut Buffer::Growing(&mut output),
         &mut len,
     )
     .unwrap();
@@ -372,19 +359,7 @@ fn transport_without_static_feature_preserves_branch_without_normal_dependencies
             .copy(address, output)
         }
     }
-    let row = capture_context(
-        &Source(&bytes),
-        0,
-        0x7000,
-        &mut Sources::new(),
-        0x1000,
-        0x1234_0000_0033,
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut Vec::new(),
-        0,
-    )
+    let row = capture_context_buffer(&Source(&bytes), 0, 0x7000, &mut Sources::new(), 0x1000, 0x1234_0000_0033, crate::walk::Buffer::Count, crate::walk::Buffer::Count, crate::walk::Buffer::Count, &mut Vec::new(), 0)
     .unwrap();
     assert_eq!(row.flags[11], 2);
     assert_eq!(row.ids[0], 14);
@@ -411,8 +386,8 @@ fn acclimatization_retains_native_ties_and_active_reference_join() {
         bytes: &bytes,
     };
     let mut row = ContextRow::default();
-    let mut terms = [AcclimatizationTerm::default(); 2];
-    acclimatization(&memory, 0x100, &mut row, &mut Buffer::Fixed(&mut terms)).unwrap();
+    let mut terms = vec![AcclimatizationTerm::default(); 2];
+    acclimatization(&memory, 0x100, &mut row, &mut Buffer::Growing(&mut terms)).unwrap();
     assert_eq!(
         terms,
         [
@@ -428,15 +403,6 @@ fn acclimatization_retains_native_ties_and_active_reference_join() {
     );
     assert_eq!(row.scalar_values[0], 123);
     assert_eq!(row.scalar_values[1], -500);
-    assert_eq!(
-        acclimatization(
-            &memory,
-            0x100,
-            &mut row,
-            &mut Buffer::Fixed(&mut terms[..1])
-        ),
-        Err("reinforcement acclimatization arena full")
-    );
 }
 
 #[test]
@@ -778,19 +744,7 @@ fn transport_terms_follow_every_native_enemy_into_caller_storage() {
         // Earlier divisions' admitted terms stay untouched; this call writes
         // from its start and grows the vector past its current length.
         let mut terms = vec![sentinel; 4];
-        let row = capture_context(
-            &memory,
-            0,
-            GAME,
-            &mut Sources::new(),
-            ARMY,
-            HANDLE,
-            &mut [ModifierTerm::default(); 2],
-            &mut [],
-            &mut [],
-            &mut terms,
-            2,
-        )
+        let row = capture_context_buffer(&memory, 0, GAME, &mut Sources::new(), ARMY, HANDLE, crate::walk::Buffer::Growing(&mut vec![ModifierTerm::default(); 2]), crate::walk::Buffer::Count, crate::walk::Buffer::Count, &mut terms, 2)
         .unwrap();
         assert_eq!(row.flags[11], 2);
         assert_eq!(row.scalar_values[25..30], [-1, -2, -3, -4, 0xabc]);
@@ -810,18 +764,6 @@ fn transport_enemy_failure_is_not_a_shorter_enemy_list() {
     memory
         .0
         .remove(&(diplomacy_at(4_901) + crate::cdiplomacy_status::CAPITULATED));
-    let result = capture_context(
-        &memory,
-        0,
-        GAME,
-        &mut Sources::new(),
-        ARMY,
-        HANDLE,
-        &mut [ModifierTerm::default(); 2],
-        &mut [],
-        &mut [],
-        &mut Vec::new(),
-        0,
-    );
+    let result = capture_context_buffer(&memory, 0, GAME, &mut Sources::new(), ARMY, HANDLE, crate::walk::Buffer::Growing(&mut vec![ModifierTerm::default(); 2]), crate::walk::Buffer::Count, crate::walk::Buffer::Count, &mut Vec::new(), 0);
     assert_eq!(result, Err("reinforcement input unreadable"));
 }

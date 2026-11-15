@@ -412,7 +412,7 @@ fn temp_variables_keep_pending_writers_expressions_and_residuals_named() {
         assert!(
             reasons
                 .iter()
-                .any(|why| why.contains("ScriptVariables.seed")),
+                .any(|why| why.contains("seed of script variables")),
             "{reasons:?}"
         );
         assert!(

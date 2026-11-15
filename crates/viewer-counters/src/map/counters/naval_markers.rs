@@ -13,14 +13,15 @@
 
 use super::*;
 use replay_data::{
-    rows::NavalCombatDetailsRow, rows::NavalCombatShipRow, rows::NavalProvinceCombatRow,
+    rows::NavalCombatDetailsRow, rows::NavalProvinceCombatRow,
     rows::NavalResultRow,
 };
 use std::cell::OnceCell;
 use viewer_foundation::map::gui_resources::HitRectangle;
 use viewer_foundation::map::gui_resources::hit_rectangle;
 use viewer_foundation::map::gui_resources::viewport;
-use viewer_foundation::naval_icon_frames::{Census, admitted, censuses, convoy_variant};
+use super::combat_markers::{Held, missing_of, whole_of};
+use viewer_foundation::naval_icon_frames::{Census, CensusMember, admitted_of, censuses_of, convoy_variant};
 use {
     super::super::naval_combat_grid as grid, crate::map::naval_combat_occurrences as occurrences,
     crate::map::naval_combat_occurrences::Combat, crate::map::naval_combat_occurrences::Direct,
@@ -186,40 +187,22 @@ fn whole<T: replay_data::rows::TableSchema>(
     table: &Available<'_, T>,
     name: &str,
 ) -> Option<String> {
-    match table {
-        Available::Complete(_) => None,
-        Available::Truncated { missing, .. } => Some(format!(
-            "the {name} table is truncated ({missing} rows unread)"
-        )),
-        Available::Unavailable { reason } => {
-            Some(format!("the {name} table is unavailable ({reason})"))
-        }
-        Available::NotRecorded { mode } => Some(format!(
-            "the {name} table is not recorded in a {mode} recording"
-        )),
-    }
+    whole_of(held(table), name)
 }
 
-/// How `table` lacks the row for `key` this hour.
-fn missing<T: replay_data::rows::TableSchema>(
-    table: &Available<'_, T>,
-    name: &str,
-    key: impl std::fmt::Display,
-) -> String {
+/// How `table` holds its rows, for its gaps' wording.
+fn held<'a, T: replay_data::rows::TableSchema>(table: &Available<'a, T>) -> Held<'a> {
     match table {
-        Available::Complete(_) => format!("the {name} table has no row for {key}"),
-        Available::Truncated { .. } => format!("the truncated {name} table did not reach {key}"),
-        Available::Unavailable { reason } => {
-            format!("the {name} table is unavailable ({reason}), so {key} is unknown")
-        }
-        Available::NotRecorded { mode } => {
-            format!("the {name} table is not recorded in a {mode} recording, so {key} is unknown")
-        }
+        Available::Complete(_) => Held::Complete,
+        Available::Truncated { missing, .. } => Held::Truncated(*missing),
+        Available::Unavailable { reason } => Held::Unavailable(reason),
+        Available::NotRecorded { mode } => Held::NotRecorded(*mode),
     }
 }
 
 /// A task force the HQ frame reads: the row and its attached naval-HQ count, or which census
 /// lacks it.
+#[cfg(test)]
 type ForceInput<'a> = Result<(&'a replay_data::rows::TaskForceRow, i32), String>;
 
 /// The side whose primary list holds the viewer (attacker first) shows the HQ
@@ -229,21 +212,39 @@ type ForceInput<'a> = Result<(&'a replay_data::rows::TaskForceRow, i32), String>
 /// before testing them, so their order cannot change the positive result.
 /// A known qualifying force decides it; otherwise unresolved members leave it
 /// undecided, named by the first such member's cause.
+#[cfg(test)]
 fn hq_frame<'a>(
     viewer: Viewer<'_>,
     detail: &NavalCombatDetailsRow,
-    members: impl IntoIterator<Item = &'a NavalCombatShipRow>,
+    members: impl IntoIterator<Item = &'a replay_data::rows::NavalCombatShipRow>,
     ship_forces: &BTreeMap<u64, u64>,
     forces: &BTreeMap<u64, ForceInput<'_>>,
 ) -> Result<bool, String> {
+    let members: Vec<CensusMember> = members.into_iter().map(CensusMember::of).collect();
+    let ship_force = |ship: u64| ship_forces.get(&ship).copied();
+    let force = |force: u64| {
+        forces
+            .get(&force)
+            .cloned()
+            .unwrap_or_else(|| Err(format!("the TaskForces table has no row for task force {force}")))
+            .map(|(row, headquarters)| (row.roster_owner, headquarters))
+    };
+    hq_frame_of(viewer, &DetailFacts::of(detail).countries, members.iter(), &HqForces { ship_force: &ship_force, force: &force })
+}
+
+/// [`hq_frame`] from values: the combat's side countries, its forward members, and the forces.
+fn hq_frame_of<'a>(
+    viewer: Viewer<'_>,
+    countries: &[Vec<u32>; 2],
+    members: impl IntoIterator<Item = &'a CensusMember>,
+    hq: &HqForces<'_>,
+) -> Result<bool, String> {
     let mut side = None;
-    for (index, candidate) in detail.sides.iter().enumerate() {
+    for (index, candidate) in countries.iter().enumerate() {
         let contains = viewer
-            .contains_viewer(&candidate.summary.countries)
+            .contains_viewer(candidate)
             .ok_or_else(|| {
                 let raw = candidate
-                    .summary
-                    .countries
                     .iter()
                     .find(|raw| (viewer.owner)(**raw).is_none());
                 format!(
@@ -265,18 +266,12 @@ fn hq_frame<'a>(
         .filter(|member| member.side == side && member.live_ship != 0)
     {
         let qualifies = (|| {
-            let force = ship_forces
-                .get(&member.ship)
+            let force = (hq.ship_force)(member.ship)
                 .ok_or_else(|| format!("the Ships table has no row for ship {}", member.ship))?;
-            let (row, headquarters) = forces.get(force).cloned().unwrap_or_else(|| {
-                Err(format!(
-                    "the TaskForces table has no row for task force {force}"
-                ))
-            })?;
-            let owner = (viewer.owner)(row.roster_owner).ok_or_else(|| {
+            let (roster_owner, headquarters) = (hq.force)(force)?;
+            let owner = (viewer.owner)(roster_owner).ok_or_else(|| {
                 format!(
-                    "task force {force}'s roster owner {} has no CountryLinks row",
-                    row.roster_owner
+                    "task force {force}'s roster owner {roster_owner} has no CountryLinks row"
                 )
             })?;
             Ok::<_, String>(owner == viewer.vision.ours() && headquarters > 0)
@@ -293,72 +288,7 @@ fn hq_frame<'a>(
 }
 
 /// Each detailed combat's [`hq_frame`], or why a census it reads is incomplete.
-type HqFrames = Result<BTreeMap<u64, Result<bool, String>>, String>;
-
-/// [`hq_frame`] for every detailed combat, or why a census it reads is incomplete. Only the ships
-/// the combats' forward members name, their task forces and those forces' inputs are read, each
-/// found in its key-sorted census. `members` is the member census with its forward members, or
-/// why that census is not whole.
-fn hq_frames(
-    frame: &DecodedFrame,
-    viewer: Viewer<'_>,
-    members: Result<(&[NavalCombatShipRow], &grid::ForwardMembers), &String>,
-    details: &BTreeMap<u64, usize>,
-    detail_rows: &[NavalCombatDetailsRow],
-) -> io::Result<HqFrames> {
-    let ships = rows::<tables::Ships>(frame)?;
-    let forces = rows::<tables::TaskForces>(frame)?;
-    let inputs = rows::<tables::TaskForceCounterInputs>(frame)?;
-    let (members, forward) = match members {
-        Ok(members) => members,
-        Err(cause) => return Ok(Err(cause.clone())),
-    };
-    if let Some(cause) = whole(&ships, "Ships")
-        .or_else(|| whole(&forces, "TaskForces"))
-        .or_else(|| whole(&inputs, "TaskForceCounterInputs"))
-    {
-        return Ok(Err(cause));
-    }
-    let (ships, forces, inputs) = (ships.rows(), forces.rows(), inputs.rows());
-    let ship_forces: BTreeMap<u64, u64> = forward
-        .indices()
-        .filter_map(|index| {
-            let ship = members[index].ship;
-            let found = ships.binary_search_by_key(&ship, |row| row.id).ok()?;
-            Some((ship, ships[found].task_force))
-        })
-        .collect();
-    let force_inputs: BTreeMap<u64, ForceInput<'_>> = ship_forces
-        .values()
-        .map(|&id| {
-            let input = (|| {
-                let force = forces
-                    .binary_search_by_key(&id, |row| row.id)
-                    .map_err(|_| format!("the TaskForces table has no row for task force {id}"))?;
-                let input = inputs
-                    .binary_search_by_key(&id, |row| row.task_force)
-                    .map_err(|_| {
-                        format!("the TaskForceCounterInputs table has no row for task force {id}")
-                    })?;
-                Ok((&forces[force], inputs[input].attached_headquarters))
-            })();
-            (id, input)
-        })
-        .collect();
-    Ok(Ok(details
-        .iter()
-        .map(|(&combat, &index)| {
-            let shown = hq_frame(
-                viewer,
-                &detail_rows[index],
-                forward.of(combat, members),
-                &ship_forces,
-                &force_inputs,
-            );
-            (combat, shown)
-        })
-        .collect()))
-}
+pub type HqFrames = Result<BTreeMap<u64, Result<bool, String>>, String>;
 
 /// Run only for an icon whose bound province equals its combat's province. The
 /// bound province comes from the call's anchor, independently of the bucket that
@@ -391,7 +321,7 @@ fn two_engaged(
 
 /// Where a placed icon's `bg_btn` frame comes from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum FrameSource {
+pub enum FrameSource {
     /// Frame written this hour for a rotating icon of an engaged combat.
     Engaged,
     /// A rotating icon of an unengaged combat keeps its last engaged update's frame: its pool
@@ -406,7 +336,7 @@ pub(super) enum FrameSource {
 /// What one placed combat icon shows, before any camera: the game for its
 /// background frame and progress, then the game for its HQ frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Decision {
+pub struct Decision {
     /// `bg_btn`'s frame.
     variant: u32,
     /// Whether the progress children are filled: a rotating icon of an engaged combat.
@@ -500,14 +430,14 @@ struct Icon {
 
 /// An admitted icon the passes placed whose decision the hour cannot make: its owner, whether it
 /// rotates, where it stands when that is known, and why.
-#[derive(Debug, PartialEq)]
-struct Omitted {
-    combat: u64,
-    province: u32,
-    rotates: bool,
+#[derive(Clone, Debug, PartialEq)]
+pub struct Omitted {
+    pub combat: u64,
+    pub province: u32,
+    pub rotates: bool,
     /// Its anchor and stack place, when the hour decides them.
-    place: Option<([f32; 3], u32)>,
-    cause: String,
+    pub place: Option<([f32; 3], u32)>,
+    pub cause: String,
 }
 
 /// The placed combat icons and what each shows before any camera, with every cause one is
@@ -548,49 +478,17 @@ impl NavalMarkerTables {
         anchor: &dyn Fn(u32) -> Option<[f32; 3]>,
     ) -> io::Result<Self> {
         let direct = rows::<tables::NavalProvinceCombats>(frame)?;
-        let details = rows::<tables::NavalCombatDetails>(frame)?;
+        let details_table = rows::<tables::NavalCombatDetails>(frame)?;
         let combats = rows::<tables::NavalCombats>(frame)?;
-        Ok(Self {
-            live: combats.rows().iter().map(|row| row.id).collect(),
-            live_undecided: whole(&combats, "NavalCombats"),
-            gated: details
-                .rows()
-                .iter()
-                .filter(|detail| admitted(Some(detail)) == Some(false))
-                .map(|detail| detail.combat)
-                .collect(),
-            combats: CombatTables::read(
-                frame,
-                viewer,
-                flags,
-                kept,
-                province_kind,
-                anchor,
-                &direct,
-            )?,
-            results: Arc::new(result_tables(frame, viewer)?),
-            vectors: direct
-                .rows()
-                .iter()
-                .enumerate()
-                .map(|(index, row)| (row.province, index))
-                .collect(),
-            direct_complete: direct.is_complete(),
-        })
-    }
-}
-
-impl CombatTables {
-    fn read(
-        frame: &DecodedFrame,
-        viewer: Viewer<'_>,
-        flags: &CombatFlags,
-        kept: &BTreeMap<u64, Kept>,
-        province_kind: &dyn Fn(u32) -> Option<ProvinceKind>,
-        anchor: &dyn Fn(u32) -> Option<[f32; 3]>,
-        direct: &Available<'_, tables::NavalProvinceCombats>,
-    ) -> io::Result<Option<Self>> {
-        let combats = rows::<tables::NavalCombats>(frame)?;
+        let combat_refs: Vec<Combat> = combats
+            .rows()
+            .iter()
+            .map(|row| Combat {
+                id: row.id,
+                home: row.province,
+                registry_ordinal: row.registry_ordinal,
+            })
+            .collect();
         // The direct pass admits only a vector's naval entries (combat type 2).
         let direct_refs: Vec<Direct> = direct
             .rows()
@@ -606,30 +504,10 @@ impl CombatTables {
                     .collect(),
             })
             .collect();
-        // A complete, empty census ends the spillover pass before it reads a transfer.
-        let empty_census = combats.is_complete() && combats.rows().is_empty();
-        if empty_census && direct_refs.iter().all(|row| row.combats.is_empty()) {
-            return Ok(None);
-        }
-        let details_table = rows::<tables::NavalCombatDetails>(frame)?;
-        let detail_rows = details_table.rows();
-        let details: BTreeMap<u64, usize> = detail_rows
-            .iter()
-            .enumerate()
-            .map(|(index, row)| (row.combat, index))
-            .collect();
-        let detail = |id| details.get(&id).map(|&index| &detail_rows[index]);
+        let details: BTreeMap<u64, DetailFacts> = details_table.rows().iter().map(|row| (row.combat, DetailFacts::of(row))).collect();
+        let detail_index: BTreeMap<u64, usize> = details_table.rows().iter().enumerate().map(|(index, row)| (row.combat, index)).collect();
         let transfers = rows::<tables::NavalCombatTransfers>(frame)?;
         let units = rows::<tables::NavalTransferUnits>(frame)?;
-        let combat_refs: Vec<Combat> = combats
-            .rows()
-            .iter()
-            .map(|row| Combat {
-                id: row.id,
-                home: row.province,
-                registry_ordinal: row.registry_ordinal,
-            })
-            .collect();
         let transfer_refs: Vec<Transfers> = transfers
             .rows()
             .iter()
@@ -646,160 +524,517 @@ impl CombatTables {
                 units: row.units.clone(),
             })
             .collect();
-        let locations = if empty_census {
-            None
-        } else {
-            unit_locations(frame, &unit_refs)?
-        };
-        let placed = occurrences::derive(
-            Sources {
-                combats: &combat_refs,
-                combats_complete: combats.is_complete(),
-                direct: &direct_refs,
-                direct_complete: direct.is_complete(),
-                transfers: transfers.is_complete().then_some(transfer_refs.as_slice()),
-                units: units.is_complete().then_some(unit_refs.as_slice()),
-                unit_locations: locations.as_ref(),
-                province_kind,
-            },
-            &|id| admitted(detail(id)),
-            &|id| icon_frames::engaged_seen(flags.entry(id, NavalProvinceCombatRow::NAVAL)),
-        );
-        let mut placement = Vec::new();
-        for &(province, combat) in &placed.direct_gaps {
-            let key = format!("combat {combat}, which province {province} names");
-            placement.push((
-                format!("icon omitted: {}", missing(&combats, "NavalCombats", key)),
-                vec![combat],
-            ));
-        }
-        let mut undecided = Vec::new();
-        for &(province, combat) in &placed.admission_gaps {
-            let key = format!("combat {combat}, which province {province} names");
-            let cause = format!(
-                "icon omitted: its side countries are unknown: {}",
-                missing(&details_table, "NavalCombatDetails", key)
-            );
-            undecided.push(Omitted {
-                combat,
-                province,
-                rotates: combat_refs
-                    .iter()
-                    .any(|row| row.id == combat && row.home == province),
-                place: None,
-                cause: cause.clone(),
-            });
-            placement.push((cause, vec![combat]));
-        }
-        if let Some(reason) = placed.spillover_gap {
-            // The pass commits no spillover until every chain is proven, so a stop omits every
-            // combat's spillover icons.
-            placement.push((
-                format!("spillover icons omitted: {reason}"),
-                combat_refs.iter().map(|combat| combat.id).collect(),
-            ));
-        }
+        let empty_census = combats.is_complete() && combats.rows().is_empty();
+        let locations = if empty_census { None } else { unit_locations(frame, &unit_refs)? };
         let members = rows::<tables::NavalCombatShips>(frame)?;
-        // The forward members the HQ frames and the grids walk, grouped once per hour.
-        let forward = match whole(&members, "NavalCombatShips") {
+        let census: Vec<CensusMember> = members.rows().iter().map(CensusMember::of).collect();
+        let ships = rows::<tables::Ships>(frame)?;
+        let forces = rows::<tables::TaskForces>(frame)?;
+        let inputs = rows::<tables::TaskForceCounterInputs>(frame)?;
+        let ship_force = |ship: u64| {
+            let rows = ships.rows();
+            rows.binary_search_by_key(&ship, |row| row.id).ok().map(|found| rows[found].task_force)
+        };
+        let force = |id: u64| -> Result<(u32, i32), String> {
+            let (forces, inputs) = (forces.rows(), inputs.rows());
+            let force = forces
+                .binary_search_by_key(&id, |row| row.id)
+                .map_err(|_| format!("the TaskForces table has no row for task force {id}"))?;
+            let input = inputs
+                .binary_search_by_key(&id, |row| row.task_force)
+                .map_err(|_| format!("the TaskForceCounterInputs table has no row for task force {id}"))?;
+            Ok((forces[force].roster_owner, inputs[input].attached_headquarters))
+        };
+        let hq = match whole(&ships, "Ships").or_else(|| whole(&forces, "TaskForces")).or_else(|| whole(&inputs, "TaskForceCounterInputs")) {
             Some(cause) => Err(cause),
-            None => Ok(grid::ForwardMembers::read(members.rows())),
+            None => Ok(HqForces { ship_force: &ship_force, force: &force }),
         };
-        let censuses = match &forward {
-            Err(cause) => Err(cause.clone()),
-            Ok(_) => Ok(censuses(members.rows())),
-        };
-        let hq = hq_frames(
-            frame,
-            viewer,
-            forward.as_ref().map(|forward| (members.rows(), forward)),
-            &details,
-            detail_rows,
-        )?;
-        let homes: BTreeMap<u64, u32> = combats
-            .rows()
+        let results = rows::<tables::NavalResults>(frame)?;
+        let result_members = rows::<tables::NavalResultMembers>(frame)?;
+        let result_countries = rows::<tables::NavalResultCountries>(frame)?;
+        let result_fields: Vec<ResultFields> = results.rows().iter().map(ResultFields::of).collect();
+        let countries = result_country_lists(result_countries.rows().iter().map(|row| (row.result, row.list, row.ordinal, row.country)));
+        let present: BTreeSet<u64> = result_members.rows().iter().filter(|member| member.presence_value != 0).map(|member| member.result).collect();
+        let flag = |id: u64| flags.entry(id, NavalProvinceCombatRow::NAVAL);
+        let kept_of = |id: u64| kept.get(&id).copied();
+        let values = naval_marker_values(&NavalMarkerInputs {
+            vision: viewer.vision,
+            owner: viewer.owner,
+            combats: &combat_refs,
+            combats_held: held(&combats),
+            direct: &direct_refs,
+            direct_complete: direct.is_complete(),
+            details: &details,
+            details_held: held(&details_table),
+            transfers: transfers.is_complete().then_some(transfer_refs.as_slice()),
+            units: units.is_complete().then_some(unit_refs.as_slice()),
+            locations: locations.as_ref(),
+            members: match whole(&members, "NavalCombatShips") {
+                Some(cause) => Err(cause),
+                None => Ok(&census),
+            },
+            hq,
+            flag: &flag,
+            provenance: flags.naval_provenance.limitation(),
+            kept: &kept_of,
+            province_kind,
+            anchor,
+            results: &result_fields,
+            result_countries: &countries,
+            present: &present,
+            results_complete: results.is_complete() && result_members.is_complete() && result_countries.is_complete(),
+        });
+        let forward = whole(&members, "NavalCombatShips").is_none().then(|| grid::ForwardMembers::read(members.rows()));
+        Ok(Self {
+            combats: values.combats.map(|combats| CombatTables {
+                icons: combats
+                    .icons
+                    .into_iter()
+                    .map(|icon| {
+                        icon.map(|icon| Icon {
+                            combat: icon.combat,
+                            province: icon.province,
+                            rotates: icon.rotates,
+                            home: icon.home,
+                            detail: detail_index[&icon.combat],
+                            anchor: icon.anchor,
+                            ordinal: icon.ordinal,
+                            decision: icon.decision,
+                            hq: icon.hq,
+                        })
+                    })
+                    .collect(),
+                placement: combats.placement,
+                unplaced: combats.unplaced,
+                undecided: combats.undecided,
+                forward,
+                hq: combats.hq,
+                provenance: combats.provenance,
+            }),
+            results: Arc::new(values.results),
+            vectors: direct
+                .rows()
+                .iter()
+                .enumerate()
+                .map(|(index, row)| (row.province, index))
+                .collect(),
+            direct_complete: direct.is_complete(),
+            live: values.live,
+            live_undecided: values.live_undecided,
+            gated: values.gated,
+        })
+    }
+
+    /// The tables of an hour whose naval icons a layer decides: none of today's.
+    pub(super) fn empty() -> Self {
+        Self {
+            combats: None,
+            results: Arc::new(ResultTables { provinces: BTreeMap::new(), facts: BTreeMap::new(), undecided: None }),
+            vectors: BTreeMap::new(),
+            direct_complete: false,
+            live: BTreeSet::new(),
+            live_undecided: None,
+            gated: BTreeSet::new(),
+        }
+    }
+
+    /// The naval markers layer's decisions laid out over `frame`, the hour on screen, whose rows
+    /// the draw reads (each icon's `NavalCombatDetails` row, the province vectors, the forward
+    /// members). An icon whose combat that hour holds no details row is omitted and named.
+    pub(super) fn of_values(values: &NavalMarkerValues, frame: &DecodedFrame) -> io::Result<Self> {
+        let direct = rows::<tables::NavalProvinceCombats>(frame)?;
+        let details = rows::<tables::NavalCombatDetails>(frame)?;
+        let members = rows::<tables::NavalCombatShips>(frame)?;
+        let detail_index: BTreeMap<u64, usize> = details.rows().iter().enumerate().map(|(index, row)| (row.combat, index)).collect();
+        let forward = whole(&members, "NavalCombatShips").is_none().then(|| grid::ForwardMembers::read(members.rows()));
+        Ok(Self {
+            combats: values.combats.as_ref().map(|combats| CombatTables {
+                icons: combats
+                    .icons
+                    .iter()
+                    .map(|icon| match icon {
+                        Ok(icon) => match detail_index.get(&icon.combat) {
+                            Some(&detail) => Ok(Icon {
+                                combat: icon.combat,
+                                province: icon.province,
+                                rotates: icon.rotates,
+                                home: icon.home,
+                                detail,
+                                anchor: icon.anchor,
+                                ordinal: icon.ordinal,
+                                decision: icon.decision,
+                                hq: icon.hq.clone(),
+                            }),
+                            None => Err(Omitted {
+                                combat: icon.combat,
+                                province: icon.province,
+                                rotates: icon.rotates,
+                                place: Some((icon.anchor, icon.ordinal)),
+                                cause: "icon omitted: the hour on screen holds no NavalCombatDetails row for the combat the naval markers layer placed".into(),
+                            }),
+                        },
+                        Err(omitted) => Err(omitted.clone()),
+                    })
+                    .collect(),
+                placement: combats.placement.clone(),
+                unplaced: combats.unplaced,
+                undecided: combats.undecided.clone(),
+                forward,
+                hq: combats.hq.clone(),
+                provenance: combats.provenance,
+            }),
+            results: Arc::new(values.results.clone()),
+            vectors: direct.rows().iter().enumerate().map(|(index, row)| (row.province, index)).collect(),
+            direct_complete: direct.is_complete(),
+            live: values.live.clone(),
+            live_undecided: values.live_undecided.clone(),
+            gated: values.gated.clone(),
+        })
+    }
+
+    /// Its decisions as values: what the naval markers layer is compared with.
+    pub(super) fn values(&self) -> NavalMarkerValues {
+        NavalMarkerValues {
+            combats: self.combats.as_ref().map(|combats| CombatValues {
+                icons: combats
+                    .icons
+                    .iter()
+                    .map(|icon| match icon {
+                        Ok(icon) => Ok(IconValues {
+                            combat: icon.combat,
+                            province: icon.province,
+                            rotates: icon.rotates,
+                            home: icon.home,
+                            anchor: icon.anchor,
+                            ordinal: icon.ordinal,
+                            decision: icon.decision,
+                            hq: icon.hq.clone(),
+                        }),
+                        Err(omitted) => Err(omitted.clone()),
+                    })
+                    .collect(),
+                placement: combats.placement.clone(),
+                unplaced: combats.unplaced,
+                undecided: combats.undecided.clone(),
+                hq: combats.hq.clone(),
+                provenance: combats.provenance,
+            }),
+            results: (*self.results).clone(),
+            live: self.live.clone(),
+            live_undecided: self.live_undecided.clone(),
+            gated: self.gated.clone(),
+        }
+    }
+}
+
+impl HourTables {
+    /// The hour's naval icon decisions as values.
+    pub fn naval_marker_values(&self) -> NavalMarkerValues {
+        self.naval_markers.values()
+    }
+}
+
+/// A combat's side countries, as its `NavalCombatDetails` row holds them: what admission, the
+/// gate and the HQ frame read.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DetailFacts {
+    pub countries: [Vec<u32>; 2],
+}
+
+impl DetailFacts {
+    pub fn of(row: &NavalCombatDetailsRow) -> Self {
+        Self { countries: [row.sides[0].summary.countries.clone(), row.sides[1].summary.countries.clone()] }
+    }
+
+    fn admitted(facts: Option<&Self>) -> Option<bool> {
+        admitted_of(facts.map(|facts| [facts.countries[0].as_slice(), facts.countries[1].as_slice()]))
+    }
+}
+
+/// What the HQ frames read of the whole Ships, TaskForces and TaskForceCounterInputs censuses.
+pub struct HqForces<'a> {
+    /// A member ship's task force, when the Ships census holds the ship.
+    pub ship_force: &'a dyn Fn(u64) -> Option<u64>,
+    /// A task force's roster owner and attached naval-HQ count, or which census lacks it.
+    pub force: &'a dyn Fn(u64) -> Result<(u32, i32), String>,
+}
+
+/// One `NavalResults` row's values.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ResultFields {
+    pub id: u64,
+    pub province: u32,
+    pub province_ordinal: u32,
+    pub flag_a: u8,
+    pub flag_b: u8,
+    pub subtype: u8,
+    pub readiness: u8,
+    pub winning_side: u8,
+    pub losing_side: u8,
+}
+
+impl ResultFields {
+    fn of(row: &NavalResultRow) -> Self {
+        Self {
+            id: row.id,
+            province: row.province,
+            province_ordinal: row.province_ordinal,
+            flag_a: row.flag_a,
+            flag_b: row.flag_b,
+            subtype: row.subtype,
+            readiness: row.readiness,
+            winning_side: row.winning_side,
+            losing_side: row.losing_side,
+        }
+    }
+}
+
+/// Each result's country lists by list, in ordinal order, from (result, list, ordinal, country).
+pub fn result_country_lists(rows: impl IntoIterator<Item = (u64, u8, u32, u32)>) -> BTreeMap<(u64, u8), Vec<u32>> {
+    let mut countries: BTreeMap<(u64, u8), Vec<(u32, u32)>> = BTreeMap::new();
+    for (result, list, ordinal, country) in rows {
+        countries.entry((result, list)).or_default().push((ordinal, country));
+    }
+    countries
+        .into_iter()
+        .map(|(key, mut list)| {
+            list.sort_unstable();
+            (key, list.into_iter().map(|(_, country)| country).collect())
+        })
+        .collect()
+}
+
+/// Everything the naval icons' hour part reads, as values.
+pub struct NavalMarkerInputs<'a> {
+    pub vision: &'a Vision,
+    pub owner: &'a dyn Fn(u32) -> Option<u32>,
+    pub combats: &'a [Combat],
+    pub combats_held: Held<'a>,
+    /// Each province's naval combat entries, in its vector's order.
+    pub direct: &'a [Direct],
+    pub direct_complete: bool,
+    pub details: &'a BTreeMap<u64, DetailFacts>,
+    pub details_held: Held<'a>,
+    /// `None` while the census is not whole.
+    pub transfers: Option<&'a [Transfers]>,
+    pub units: Option<&'a [Units]>,
+    pub locations: Option<&'a BTreeMap<u64, u32>>,
+    /// The member census in stored order, or why it is not whole.
+    pub members: Result<&'a [CensusMember], String>,
+    /// What the HQ frames read, or why a census of it is not whole.
+    pub hq: Result<HqForces<'a>, String>,
+    pub flag: &'a dyn Fn(u64) -> Engaged,
+    /// Why the naval flags are load-rebuilt, if they are.
+    pub provenance: Option<&'static str>,
+    pub kept: &'a dyn Fn(u64) -> Option<Kept>,
+    pub province_kind: &'a dyn Fn(u32) -> Option<ProvinceKind>,
+    pub anchor: &'a dyn Fn(u32) -> Option<[f32; 3]>,
+    pub results: &'a [ResultFields],
+    pub result_countries: &'a BTreeMap<(u64, u8), Vec<u32>>,
+    /// Results with a member holding a copied sinking string.
+    pub present: &'a BTreeSet<u64>,
+    pub results_complete: bool,
+}
+
+/// One placed combat icon, decided before any camera.
+#[derive(Clone, Debug, PartialEq)]
+pub struct IconValues {
+    pub combat: u64,
+    pub province: u32,
+    pub rotates: bool,
+    pub home: u32,
+    pub anchor: [f32; 3],
+    pub ordinal: u32,
+    pub decision: Decision,
+    pub hq: Result<bool, String>,
+}
+
+/// The placed combat icons and what each shows, with every cause one is omitted for.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CombatValues {
+    pub icons: Vec<Result<IconValues, Omitted>>,
+    pub placement: Vec<(String, Vec<u64>)>,
+    pub unplaced: usize,
+    pub undecided: Vec<Omitted>,
+    pub hq: HqFrames,
+    pub provenance: Option<&'static str>,
+}
+
+/// The naval icons' hour part, decided before any camera.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NavalMarkerValues {
+    pub combats: Option<CombatValues>,
+    pub results: ResultTables,
+    pub live: BTreeSet<u64>,
+    pub live_undecided: Option<String>,
+    pub gated: BTreeSet<u64>,
+}
+
+/// The naval icons' hour part from values.
+pub fn naval_marker_values(inputs: &NavalMarkerInputs<'_>) -> NavalMarkerValues {
+    let viewer = Viewer { vision: inputs.vision, owner: inputs.owner };
+    NavalMarkerValues {
+        combats: combat_values(inputs, viewer),
+        results: result_values(viewer, inputs.results, inputs.result_countries, inputs.present, inputs.results_complete),
+        live: inputs.combats.iter().map(|combat| combat.id).collect(),
+        live_undecided: whole_of(inputs.combats_held, "NavalCombats"),
+        gated: inputs.details.iter().filter(|(_, detail)| DetailFacts::admitted(Some(detail)) == Some(false)).map(|(&combat, _)| combat).collect(),
+    }
+}
+
+fn combat_values(inputs: &NavalMarkerInputs<'_>, viewer: Viewer<'_>) -> Option<CombatValues> {
+    let combats_complete = matches!(inputs.combats_held, Held::Complete);
+    // A complete, empty census ends the spillover pass before it reads a transfer.
+    let empty_census = combats_complete && inputs.combats.is_empty();
+    if empty_census && inputs.direct.iter().all(|row| row.combats.is_empty()) {
+        return None;
+    }
+    let detail = |id: u64| inputs.details.get(&id);
+    let placed = occurrences::derive(
+        Sources {
+            combats: inputs.combats,
+            combats_complete,
+            direct: inputs.direct,
+            direct_complete: inputs.direct_complete,
+            transfers: inputs.transfers,
+            units: inputs.units,
+            unit_locations: if empty_census { None } else { inputs.locations },
+            province_kind: inputs.province_kind,
+        },
+        &|id| DetailFacts::admitted(detail(id)),
+        &|id| icon_frames::engaged_seen((inputs.flag)(id)),
+    );
+    let mut placement = Vec::new();
+    for &(province, combat) in &placed.direct_gaps {
+        let key = format!("combat {combat}, which province {province} names");
+        placement.push((
+            format!("icon omitted: {}", missing_of(inputs.combats_held, "NavalCombats", key)),
+            vec![combat],
+        ));
+    }
+    let mut undecided = Vec::new();
+    for &(province, combat) in &placed.admission_gaps {
+        let key = format!("combat {combat}, which province {province} names");
+        let cause = format!(
+            "icon omitted: its side countries are unknown: {}",
+            missing_of(inputs.details_held, "NavalCombatDetails", key)
+        );
+        undecided.push(Omitted {
+            combat,
+            province,
+            rotates: inputs.combats
+                .iter()
+                .any(|row| row.id == combat && row.home == province),
+            place: None,
+            cause: cause.clone(),
+        });
+        placement.push((cause, vec![combat]));
+    }
+    if let Some(reason) = placed.spillover_gap {
+        // The pass commits no spillover until every chain is proven, so a stop omits every
+        // combat's spillover icons.
+        placement.push((
+            format!("spillover icons omitted: {reason}"),
+            inputs.combats.iter().map(|combat| combat.id).collect(),
+        ));
+    }
+    // The forward members the HQ frames walk, grouped once per hour.
+    let forward: Result<BTreeMap<u64, Vec<&CensusMember>>, String> = inputs.members.as_ref().map_err(Clone::clone).map(|members| {
+        let mut forward: BTreeMap<u64, Vec<&CensusMember>> = BTreeMap::new();
+        for member in members.iter().filter(|member| member.member_source == 0 && member.group_index != viewer_foundation::map::unit_rules::PAIRED_ONLY_GROUP) {
+            forward.entry(member.combat).or_default().push(member);
+        }
+        forward
+    });
+    let censuses = inputs.members.as_ref().map_err(Clone::clone).map(|members| censuses_of(members.iter().copied()));
+    let hq: HqFrames = match (&forward, &inputs.hq) {
+        (Err(cause), _) => Err(cause.clone()),
+        (_, Err(cause)) => Err(cause.clone()),
+        (Ok(forward), Ok(forces)) => Ok(inputs
+            .details
             .iter()
-            .map(|row| (row.id, row.province))
-            .collect();
-        let mut icons = Vec::new();
-        for occurrence in placed.by_province.values().flatten() {
-            let Some(&home) = homes.get(&occurrence.combat) else {
-                continue;
+            .map(|(&combat, detail)| (combat, hq_frame_of(viewer, &detail.countries, forward.get(&combat).into_iter().flatten().copied(), forces)))
+            .collect()),
+    };
+    let homes: BTreeMap<u64, u32> = inputs.combats.iter().map(|row| (row.id, row.home)).collect();
+    let mut icons = Vec::new();
+    for occurrence in placed.by_province.values().flatten() {
+        let Some(&home) = homes.get(&occurrence.combat) else {
+            continue;
+        };
+        let Some(facts) = detail(occurrence.combat) else {
+            continue;
+        };
+        if DetailFacts::admitted(Some(facts)) != Some(true) {
+            continue;
+        }
+        let combat = occurrence.combat;
+        let rotating = rotates(home, occurrence);
+        let ordinal = occurrence.ordinal.ok_or_else(|| {
+            format!(
+                "its place in province {}'s icon stack is unknown",
+                occurrence.province
+            )
+        });
+        let anchored = (inputs.anchor)(occurrence.anchor_province).ok_or_else(|| {
+            format!(
+                "the content places no Standstill unit-stack anchor for province {}",
+                occurrence.anchor_province
+            )
+        });
+        let place = anchored.clone().ok().zip(ordinal.clone().ok());
+        let icon = (|| {
+            let ordinal = ordinal?;
+            let anchor = anchored?;
+            // Engagement uses either side's derived viewer flag. A combat absent from
+            // this hour is unknown.
+            let engaged = if rotating {
+                (inputs.flag)(combat)
+            } else {
+                Engaged::No
             };
-            let Some(&index) = details.get(&occurrence.combat) else {
-                continue;
+            let census = match &censuses {
+                Err(cause) => Err(cause.as_str()),
+                Ok(censuses) => match censuses.get(&combat) {
+                    Some(Err(cause)) => Err(cause.as_str()),
+                    Some(Ok(census)) => Ok(*census),
+                    // A combat with no forward member has empty sides.
+                    None => Ok(Default::default()),
+                },
             };
-            if admitted(Some(&detail_rows[index])) != Some(true) {
-                continue;
-            }
-            let combat = occurrence.combat;
-            let rotating = rotates(home, occurrence);
-            let ordinal = occurrence.ordinal.ok_or_else(|| {
-                format!(
-                    "its place in province {}'s icon stack is unknown",
-                    occurrence.province
-                )
-            });
-            let anchored = anchor(occurrence.anchor_province).ok_or_else(|| {
-                format!(
-                    "the content places no Standstill unit-stack anchor for province {}",
-                    occurrence.anchor_province
-                )
-            });
-            let place = anchored.clone().ok().zip(ordinal.clone().ok());
-            let icon = (|| {
-                let ordinal = ordinal?;
-                let anchor = anchored?;
-                // Engagement uses either side's derived viewer flag. A combat absent from
-                // this hour is unknown.
-                let engaged = if rotating {
-                    flags.entry(combat, NavalProvinceCombatRow::NAVAL)
-                } else {
-                    Engaged::No
-                };
-                let census = match &censuses {
-                    Err(cause) => Err(cause.as_str()),
-                    Ok(censuses) => match censuses.get(&combat) {
-                        Some(Err(cause)) => Err(cause.as_str()),
-                        Some(Ok(census)) => Ok(*census),
-                        // A combat with no forward member has empty sides.
-                        None => Ok(Default::default()),
-                    },
-                };
-                Ok(Icon {
-                    combat,
-                    province: occurrence.province,
-                    rotates: rotating,
-                    home,
-                    detail: index,
-                    anchor,
-                    ordinal,
-                    decision: decide(rotating, engaged, census, kept.get(&combat).copied())?,
-                    hq: match &hq {
-                        Err(cause) => Err(cause.clone()),
-                        Ok(hq) => hq[&combat].clone(),
-                    },
-                })
-            })();
-            icons.push(icon.map_err(|cause: String| Omitted {
+            Ok(IconValues {
                 combat,
                 province: occurrence.province,
                 rotates: rotating,
-                place,
-                cause: format!("icon omitted: {cause}"),
-            }));
-        }
-        Ok(Some(Self {
-            icons,
-            placement,
-            unplaced: placed.direct_gaps.len() + placed.admission_gaps.len(),
-            undecided,
-            forward: forward.ok(),
-            hq,
-            provenance: flags.naval_provenance.limitation(),
-        }))
+                home,
+                anchor,
+                ordinal,
+                decision: decide(rotating, engaged, census, (inputs.kept)(combat))?,
+                hq: match &hq {
+                    Err(cause) => Err(cause.clone()),
+                    Ok(hq) => hq[&combat].clone(),
+                },
+            })
+        })();
+        icons.push(icon.map_err(|cause: String| Omitted {
+            combat,
+            province: occurrence.province,
+            rotates: rotating,
+            place,
+            cause: format!("icon omitted: {cause}"),
+        }));
     }
+    Some(CombatValues {
+        icons,
+        placement,
+        unplaced: placed.direct_gaps.len() + placed.admission_gaps.len(),
+        undecided,
+        hq,
+        provenance: inputs.provenance,
+    })
+}
 
+impl CombatTables {
     /// Counts the icons the hour omits, by cause with their combats, into `report`: the
     /// placement passes' causes, then each omitted icon's. `refused` names a layout refusal that
     /// omits every placed icon instead.
@@ -1355,7 +1590,7 @@ fn result_list_contains(
 
 /// One retained naval result as read by the result icon for the viewing country.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(super) struct ResultFacts {
+pub struct ResultFacts {
     /// Whether country lists 0, 1 and 2 hold the viewer; `None` for an unresolved reference.
     lists: [Option<bool>; 3],
     /// Whether this is a port strike.
@@ -1459,15 +1694,16 @@ pub(super) fn convoy_result_for_test() -> ResultFacts {
 
 /// The hour's retained naval results, decided once
 /// per hour and perspective.
-pub(super) struct ResultTables {
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResultTables {
     /// Each province holding a result, its results in bucket order (`province_ordinal`).
-    pub(super) provinces: BTreeMap<u32, Vec<u64>>,
+    pub provinces: BTreeMap<u32, Vec<u64>>,
     /// Every result's facts for the viewer.
-    pub(super) facts: BTreeMap<u64, ResultFacts>,
+    pub facts: BTreeMap<u64, ResultFacts>,
     /// Why the tables are not whole (`NavalResults`, `NavalResultMembers`,
     /// `NavalResultCountries`): a missing row could change which results a province shows, and
     /// every result icon's decision is then undecided.
-    pub(super) undecided: Option<&'static str>,
+    pub undecided: Option<&'static str>,
 }
 
 impl ResultTables {
@@ -1493,35 +1729,33 @@ pub(super) fn result_tables(frame: &DecodedFrame, viewer: Viewer<'_>) -> io::Res
     let results = rows::<tables::NavalResults>(frame)?;
     let members = rows::<tables::NavalResultMembers>(frame)?;
     let country_rows = rows::<tables::NavalResultCountries>(frame)?;
-    let mut countries: BTreeMap<(u64, u8), Vec<(u32, u32)>> = BTreeMap::new();
-    for row in country_rows.rows() {
-        countries
-            .entry((row.result, row.list))
-            .or_default()
-            .push((row.ordinal, row.country));
-    }
-    let countries: BTreeMap<(u64, u8), Vec<u32>> = countries
-        .into_iter()
-        .map(|(key, mut list)| {
-            list.sort_unstable();
-            (key, list.into_iter().map(|(_, country)| country).collect())
-        })
-        .collect();
+    let countries = result_country_lists(country_rows.rows().iter().map(|row| (row.result, row.list, row.ordinal, row.country)));
     let present: BTreeSet<u64> = members
         .rows()
         .iter()
         .filter(|member| member.presence_value != 0)
         .map(|member| member.result)
         .collect();
-    let mut by_province: BTreeMap<u32, Vec<&NavalResultRow>> = BTreeMap::new();
-    for result in results.rows() {
+    let fields: Vec<ResultFields> = results.rows().iter().map(ResultFields::of).collect();
+    Ok(result_values(viewer, &fields, &countries, &present, results.is_complete() && members.is_complete() && country_rows.is_complete()))
+}
+
+/// [`result_tables`] from values.
+fn result_values(
+    viewer: Viewer<'_>,
+    results: &[ResultFields],
+    countries: &BTreeMap<(u64, u8), Vec<u32>>,
+    present: &BTreeSet<u64>,
+    complete: bool,
+) -> ResultTables {
+    let mut by_province: BTreeMap<u32, Vec<&ResultFields>> = BTreeMap::new();
+    for result in results {
         by_province.entry(result.province).or_default().push(result);
     }
     let facts = results
-        .rows()
         .iter()
         .map(|result| {
-            let list = |list| result_list_contains(viewer, &countries, result.id, list);
+            let list = |list| result_list_contains(viewer, countries, result.id, list);
             (
                 result.id,
                 ResultFacts {
@@ -1537,7 +1771,7 @@ pub(super) fn result_tables(frame: &DecodedFrame, viewer: Viewer<'_>) -> io::Res
             )
         })
         .collect();
-    Ok(ResultTables {
+    ResultTables {
         provinces: by_province
             .into_iter()
             .map(|(province, mut results)| {
@@ -1546,11 +1780,8 @@ pub(super) fn result_tables(frame: &DecodedFrame, viewer: Viewer<'_>) -> io::Res
             })
             .collect(),
         facts,
-        undecided: (!(results.is_complete()
-            && members.is_complete()
-            && country_rows.is_complete()))
-        .then_some("the retained naval results or their members or countries are incomplete"),
-    })
+        undecided: (!complete).then_some("the retained naval results or their members or countries are incomplete"),
+    }
 }
 
 /// The result window's refusal every shown result icon is omitted for: the game finds

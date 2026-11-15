@@ -42,11 +42,7 @@ pub struct Row {
 /// The native token is distinct from its text; no global lexer memory is read.
 /// Reuse this complete census for the dependent pool and exchange walks within
 /// this callback. Capacity is caller-owned and never causes allocation.
-pub fn walk(memory: &impl Memory, base: usize, output: &mut [Row]) -> Outcome {
-    walk_buffer(memory, base, crate::walk::Buffer::Fixed(output))
-}
-
-pub fn walk_growing(memory: &impl Memory, base: usize, output: &mut Vec<Row>) -> Outcome {
+pub fn walk(memory: &impl Memory, base: usize, output: &mut Vec<Row>) -> Outcome {
     walk_buffer(memory, base, crate::walk::Buffer::Growing(output))
 }
 
@@ -113,14 +109,7 @@ mod tests {
         fixture.put(0xd000 + ACTIVE, &[0]);
         fixture.u32(0xd000 + TOKEN_ID, 0xfedc_ba98);
         fixture.u32(0xe200, 0xfedc_ba98);
-        let mut rows = [Row::default(); 1];
-        assert_eq!(
-            walk(&fixture, 0, &mut []),
-            Outcome::Truncated {
-                len: 0,
-                unread_rows: 1
-            }
-        );
+        let mut rows = vec![Row::default(); 1];
         assert_eq!(walk(&fixture, 0, &mut rows), Outcome::Rows { len: 1 });
         assert_eq!(
             (rows[0].id, rows[0].token, rows[0].active),
@@ -134,7 +123,7 @@ mod tests {
     fn database_key_mismatch_is_unavailable_even_without_lexical_resolution() {
         let mut fixture = Fixture::new();
         fixture.u32(0xe200, 20);
-        let result = walk(&fixture, 0, &mut [Row::default(); 1]);
+        let result = walk(&fixture, 0, &mut vec![Row::default(); 1]);
         assert!(matches!(result, Outcome::Unavailable { .. }));
     }
 }

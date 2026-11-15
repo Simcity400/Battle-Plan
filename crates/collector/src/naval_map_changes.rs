@@ -121,6 +121,7 @@ pub(crate) fn accident_token(navy: usize) -> Option<(u64, u64)> {
 }
 /// `(epoch, sequence)` of a navy's ledgers and registered-mission set, registering it; `None`
 /// while unobserved.
+#[cfg(not(test))]
 pub(crate) fn ledger_token(navy: usize) -> Option<(u64, u64)> {
     LEDGERS.sequence(navy)
 }

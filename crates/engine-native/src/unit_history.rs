@@ -148,8 +148,9 @@ impl Roots {
             visit(ordinal, entry)
         })
     }
-    /// Acquire only appended occurrences; unchanged prefixes are immutable
-    /// unless an observed entry edit or a bulk inheritance writer names them.
+    /// Acquire the occurrences from `first`. Only the latest career entry
+    /// changes unobserved (its provinces, see [`province_count`]); earlier ones
+    /// change only under an observed entry edit or bulk inheritance writer.
     pub fn visit_range(
         &self,
         memory: &impl Memory,
@@ -171,6 +172,14 @@ impl Roots {
         }
         Ok(())
     }
+}
+
+/// The game adds a province to the latest career entry in place, running no
+/// observed writer, when the next event of the same kind follows it.
+pub fn province_count(memory: &impl Memory, address: usize) -> Result<u32, &'static str> {
+    Array::read(memory, at(address, PROVINCES)?, 8)
+        .map(|array| array.count)
+        .ok_or("unit history province vector invalid")
 }
 
 pub fn entry(memory: &impl Memory, base: usize, address: usize) -> Result<Entry, &'static str> {

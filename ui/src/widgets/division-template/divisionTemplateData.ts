@@ -11,13 +11,16 @@ export type TemplateRow =
 const isArray = Array.isArray;
 export function validateDivisionTemplates(value: unknown): DivisionTemplatesReply {
   const reply = value as DivisionTemplatesReply;
-  if (!reply || typeof reply.branchId !== 'string' || !Number.isInteger(reply.hour) || typeof reply.tag !== 'string'
-    || typeof reply.absent !== 'boolean' || !isArray(reply.templates) || !isArray(reply.warnings)
+  if (!reply || typeof reply.tag !== 'string' || (reply.countFor !== 'owner' && reply.countFor !== 'host')
+    || !isArray(reply.templates) || !isArray(reply.warnings)
     || reply.templates.some(entry => typeof entry.template !== 'string' || !isArray(entry.units)
       || (entry.fielded !== null && !Number.isInteger(entry.fielded))))
     throw new Error('Invalid division templates reply');
   return reply;
 }
+
+/** What a followed roster renders on: its templates, their order and what each shows. */
+export const templateStructure = (reply: DivisionTemplatesReply) => JSON.stringify([reply.templates, reply.fieldedMissing, reply.warnings]);
 
 /** Current templates in roster order, then one closed group of the obsolete ones. */
 export function templateRows(reply: DivisionTemplatesReply): TemplateRow[] {

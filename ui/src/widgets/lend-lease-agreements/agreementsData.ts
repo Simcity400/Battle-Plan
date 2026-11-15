@@ -1,15 +1,20 @@
-import type { AgreementHistory, MarketHistoryReply } from '../../generated/dashboard';
 import type { DrillAction } from '../../charts/drill/drillState';
-import { fixedText, numberAt, valueAt } from '../../dashboard/economyHistory.ts';
-import { FIXED5, FUEL_QUANTITY, holderTagAt, poolAt, readHourOf, variantAt } from '../../dashboard/marketHistory.ts';
+import { liveKey } from '../../charts/live.ts';
+import type { Live, LiveValues } from '../../charts/live';
+import { equipmentOf, FIXED5, FUEL_QUANTITY, fixedText, SHARE } from '../../dashboard/market.ts';
+import type { MarketAt } from '../../dashboard/market';
+import type { EndedLease, LeaseTerms, LendLeaseHistoryReply, MarketItem } from '../../generated/dashboard';
 
 export type Direction = 'sent' | 'received';
 
-/** One agreement (or its fuel) as the table shows it at an hour. */
+export interface AgreementItem { variant: string | null; name: string | null; icon: string | null; missing: string | null; schedule: string;
+  delivered: bigint | null; lost: bigint | null }
+
+/** One agreement (or its fuel) as the table shows it. Its values are read at `at`: the hour shown, or its last read when
+ * ended. An active agreement's fuel sent and lost are its live cells; an ended one's are as last read. */
 export interface AgreementRow {
   key: string;
-  agreement: AgreementHistory;
-  /** The hour its values are read at: the shown hour, or its last read when ended. */
+  terms: LeaseTerms;
   at: number;
   ended: boolean;
   /** The chosen country's side (`from`) and the other side, by the direction asked for. */
@@ -18,76 +23,110 @@ export interface AgreementRow {
   giver: string | null;
   receiver: string | null;
   fuel: boolean;
-  /** The schedule's items: variant (or null for fuel), name and written amounts. */
-  items: { variant: string | null; name: string | null; schedule: string; delivered: bigint | null; lost: bigint | null }[];
+  items: AgreementItem[];
   since: number | null;
   last: number | null;
 }
 
 const units = (raw: bigint) => fixedText(raw, FIXED5);
-const share = (raw: bigint) => `${fixedText(raw, 1000n, 2)}%`;
-const fuel = (raw: bigint) => fixedText(raw, FUEL_QUANTITY);
+const share = (raw: bigint) => `${fixedText(raw, SHARE)}%`;
+const fuelText = (raw: bigint) => fixedText(raw, FUEL_QUANTITY);
+const byVariant = (list: readonly MarketItem[]) => new Map(list.map(item => [item.variant, BigInt(item.amountRaw)]));
+/** A day the game writes as none (0 or less) is none. */
+const day = (hour: number) => hour > 0 ? hour : null;
 
-/** The game's three schedule forms of an item, as recorded at `at`. */
-function schedules(agreement: AgreementHistory, at: number) {
-  const byVariant = new Map<string, string[]>();
-  const add = (variant: string, text: string) => byVariant.set(variant, [...byVariant.get(variant) ?? [], text]);
-  for (const item of poolAt(agreement.items, 0, at)) add(item.variant, `Monthly ${units(item.amount)}`);
-  for (const item of poolAt(agreement.items, 1, at)) add(item.variant, `Production share ${share(item.amount)}`);
-  for (const item of poolAt(agreement.items, 2, at)) add(item.variant, `Once ${units(item.amount)}`);
-  return byVariant;
+type Named = ReturnType<typeof equipmentOf>;
+
+function rowsOf(terms: LeaseTerms, at: number, ended: boolean, own: string | null, direction: Direction, equipment: Named,
+  fuel: { sent: bigint | null; lost: bigint | null }): AgreementRow[] {
+  const base = { terms, at, ended, from: own, partner: direction === 'sent' ? terms.receiver : terms.giver, giver: terms.giver, receiver: terms.receiver,
+    since: day(terms.activeSince), last: day(terms.lastDelivery) };
+  const schedule = new Map<string, string[]>();
+  const add = (list: readonly MarketItem[], text: (raw: bigint) => string) => {
+    for (const item of list) schedule.set(item.variant, [...schedule.get(item.variant) ?? [], text(BigInt(item.amountRaw))]);
+  };
+  add(terms.monthly, raw => `Monthly ${units(raw)}`);
+  add(terms.percentage, raw => `Production share ${share(raw)}`);
+  add(terms.once, raw => `Once ${units(raw)}`);
+  const delivered = byVariant(terms.delivered), lost = byVariant(terms.sunk);
+  const variants = [...new Set([...schedule.keys(), ...delivered.keys(), ...lost.keys()])];
+  const out: AgreementRow[] = [];
+  if (variants.length) out.push({ ...base, key: terms.key, fuel: false, items: variants.map(variant => {
+    const drawn = equipment(variant);
+    return { variant, name: drawn.name, icon: drawn.icon, missing: drawn.missing, schedule: (schedule.get(variant) ?? []).join(' · '),
+      delivered: delivered.get(variant) ?? null, lost: lost.get(variant) ?? null };
+  }) });
+  const daily = BigInt(terms.fuelDailyRaw), percentage = BigInt(terms.fuelPercentageRaw);
+  if (daily || percentage || fuel.sent || fuel.lost) out.push({ ...base, key: `${terms.key}:fuel`, fuel: true, items: [{ variant: null, name: 'Fuel', icon: null, missing: null,
+    schedule: [daily ? `Daily ${fuelText(daily)}` : '', percentage ? `Production share ${share(percentage)}` : ''].filter(Boolean).join(' · '),
+    delivered: fuel.sent, lost: fuel.lost }] });
+  return out;
 }
 
-/** Every agreement the chosen countries send (or receive) at `hour`, with ended ones when
- * `ended` holds; fuel terms get their own row. Matching follows each side's tag at the read.
- * An agreement whose side in that direction has no tag then may be a chosen country's: it is
- * counted as unattributed, never listed. */
-export function agreementRows(reply: MarketHistoryReply, direction: Direction, matches: (tag: string, hour: number) => boolean, hour: number,
-  showEnded: boolean): { rows: AgreementRow[]; unattributed: number } {
+/** Every agreement the chosen countries send (or receive) at the reply's hour, with those the branch saw end before it
+ * when `showEnded` holds (from `history`); fuel terms get their own row. Matching follows each side's tag at the read.
+ * An agreement whose side in that direction has no tag then may be a chosen country's: counted, never listed; one left
+ * out at an hour `unrecorded` gives the choice's membership as not recorded says why (`membership`). */
+export function agreementRows(reply: MarketAt, history: LendLeaseHistoryReply | undefined, direction: Direction,
+  matches: (tag: string, hour: number) => boolean, showEnded: boolean, unrecorded: (hour: number) => string | null = () => null):
+  { rows: AgreementRow[]; unattributed: number; membership: string | null } {
   const rows: AgreementRow[] = [];
-  let unattributed = 0;
-  for (const agreement of reply.agreements) {
-    // Its revision is read every hour it stands; its receiver only while the receiver has an identity.
-    const read = readHourOf(agreement.revision, hour);
-    if (!read || read.ended && !showEnded) continue;
-    const { at, ended } = read;
-    const giver = holderTagAt(reply, agreement.giver, at);
-    const receiver = holderTagAt(reply, valueAt(agreement.receiver, at), at);
-    const own = direction === 'sent' ? giver : receiver;
-    if (own === null) {
-      unattributed++;
-      continue;
-    }
-    if (!matches(own, at)) continue;
-    const base = { agreement, at, ended, from: own, partner: direction === 'sent' ? receiver : giver, giver, receiver,
-      since: numberAt(agreement.since, at), last: numberAt(agreement.last, at) };
-    const scheduled = schedules(agreement, at);
-    const delivered = new Map(poolAt(agreement.items, 3, at).map(item => [item.variant, item.amount]));
-    const lost = new Map(poolAt(agreement.items, 4, at).map(item => [item.variant, item.amount]));
-    const variants = [...new Set([...scheduled.keys(), ...delivered.keys(), ...lost.keys()])];
-    if (variants.length) rows.push({ ...base, key: `${agreement.giver}:${agreement.id}`, fuel: false,
-      items: variants.map(variant => ({ variant, name: variantAt(reply, variant, at), schedule: (scheduled.get(variant) ?? []).join(' · '),
-        delivered: delivered.get(variant) ?? null, lost: lost.get(variant) ?? null })) });
-    const [daily, percentage, sent, sunk] = [0, 1, 2, 3].map(index => { const value = valueAt(agreement.fuel[index] ?? [], at); return value === null ? null : BigInt(value); });
-    if (daily || percentage || sent || sunk) rows.push({ ...base, key: `${agreement.giver}:${agreement.id}:fuel`, fuel: true,
-      items: [{ variant: null, name: 'Fuel', schedule: [daily ? `Daily ${fuel(daily)}` : '', percentage ? `Production share ${share(percentage)}` : ''].filter(Boolean).join(' · '),
-        delivered: sent, lost: sunk }] });
+  let unattributed = 0, membership: string | null = null;
+  const take = (terms: LeaseTerms, at: number, ended: boolean, equipment: Named, fuel: { sent: bigint | null; lost: bigint | null }) => {
+    const own = direction === 'sent' ? terms.giver : terms.receiver;
+    if (own === null) { unattributed++; return; }
+    if (matches(own, at)) rows.push(...rowsOf(terms, at, ended, own, direction, equipment, fuel));
+    else membership ??= unrecorded(at);
+  };
+  const live = equipmentOf(reply);
+  const standing = new Set<string>();
+  for (const terms of reply.agreements ?? []) {
+    standing.add(terms.key);
+    take(terms, reply.hour, false, live, { sent: null, lost: null });
   }
-  return { rows, unattributed };
+  if (showEnded && history) {
+    const named = equipmentOf(history);
+    for (const lease of history.agreements) {
+      if (lease.lastHour >= reply.hour || standing.has(lease.terms.key)) continue;
+      take(lease.terms, lease.lastHour, true, named, { sent: BigInt(lease.fuelSentRaw), lost: BigInt(lease.fuelSunkRaw) });
+    }
+  }
+  return { rows, unattributed, membership };
 }
 
 /** Fuel quantities are /32768, equipment fixed5. */
-export const amountOf = (row: AgreementRow, raw: bigint | null) => raw === null ? '—' : row.fuel ? fuel(raw) : units(raw);
+export const amountOf = (row: Pick<AgreementRow, 'fuel'>, raw: bigint | null) => raw === null ? '—' : row.fuel ? fuelText(raw) : units(raw);
 
-/** Delivered (or lost) of the row's first item, for sorting and bars. */
-export const firstAmount = (row: AgreementRow, which: 'delivered' | 'lost') => row.items[0]?.[which] ?? null;
+/** The table's painted Delivered and Lost cells: an active agreement's fuel from its live cells (`fuelSent`, `fuelLost`),
+ * every other row's first item as read. The same values object while neither the rows nor the live values change. */
+export function agreementValues(rows: readonly AgreementRow[], live: Live<LiveValues<number>>): Live<LiveValues<number>> {
+  const byKey = new Map(rows.map(row => [row.key, row]));
+  let made: { from: LiveValues<number>; value: LiveValues<number> } | null = null;
+  const read = (): LiveValues<number> => {
+    const from = live.read();
+    if (made && made.from === from) return made.value;
+    const split = (key: string) => { const at = key.lastIndexOf('\u0000'); return { row: byKey.get(key.slice(0, at)), column: key.slice(at + 1) }; };
+    const value: LiveValues<number> = {
+      get: key => {
+        const { row, column } = split(key);
+        if (!row) return undefined;
+        if (row.fuel && !row.ended) return from.get(liveKey(row.terms.key, column === 'delivered' ? 'fuelSent' : 'fuelLost'));
+        const raw = row.items[0]?.[column === 'delivered' ? 'delivered' : 'lost'] ?? null;
+        return raw === null ? undefined : Number(raw);
+      },
+      missing: key => {
+        const { row, column } = split(key);
+        return row?.fuel && !row.ended ? from.missing(liveKey(row.terms.key, column === 'delivered' ? 'fuelSent' : 'fuelLost')) : 'Not in this agreement';
+      },
+    };
+    made = { from, value };
+    return value;
+  };
+  return { read, subscribe: live.subscribe };
+}
 
-/** Opens a row's drill at its read: an ended agreement stays at its last read, as no
- * later hour's reply holds it, whatever the playhead or playback. */
+/** Opens a row's drill at its read: an ended agreement stays at its last read, as no later hour's reply holds it. */
 export const openAgreement = (row: Pick<AgreementRow, 'at' | 'ended'>, breakdown: string, playing: boolean, playhead: number | null): DrillAction =>
   ({ type: 'open', breakdown, hour: row.at, playing, playhead: row.ended ? null : playhead });
 
-export const agreementRevision = (row: AgreementRow) => [
-  row.ended, row.fuel, row.from, row.partner, row.giver, row.receiver, row.items[0]?.name, row.items[0]?.variant, row.items[0]?.schedule,
-  row.items[0]?.delivered, row.items[0]?.lost, row.items.length, row.since, row.last
-];
+export type { EndedLease };

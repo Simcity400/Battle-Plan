@@ -7,7 +7,7 @@ import { selectedTags } from '../../dashboard/countrySelection';
 import { resolveCountries } from '../../dashboard/groups';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useProduct, useFollowedProduct } from '../../dashboard/products';
-import { useTableHour } from '../../charts/table/useTableHour';
+import { useFallbackHour } from '../../dashboard/follow/useFollow.ts';
 import type { ApmParams, ApmReply } from '../../generated/dashboard';
 import { GRAPH_OPTIONS, TABLE_APM_OPTIONS } from './definition';
 import { playerNames, validateApm } from './apmData';
@@ -28,8 +28,11 @@ export function useApmChoices(widget: WidgetSpec, runtime: WidgetRuntime): Optio
   }, [data]);
 }
 
-export function useApm({ widget, runtime, active }: WidgetProps, graph: boolean, view?: { identity: string; from: number; to: number; width: number } | null) {
-  const playbackHour = useTableHour(runtime.clock, active && widget.time.mode === 'follow');
+/** The widget's eAPM by request: by the fallback's clock while following unless `followed` (its values at the head are
+ * then pushed, and nothing is asked here), else for its pinned hour or range. `head` names what a followed head asks. */
+export function useApm({ widget, runtime, active }: WidgetProps, graph: boolean, view?: { identity: string; from: number; to: number; width: number } | null,
+  followed = false) {
+  const playbackHour = useFallbackHour(runtime.clock, active && widget.time.mode === 'follow' && !followed);
   const track = runtime.tracks.find(track => track.id === widget.trackIds[0]);
   const identity = JSON.stringify([track?.source.id, track?.branch.id, widget.time]);
   const options = resolveOptions(graph ? GRAPH_OPTIONS : TABLE_APM_OPTIONS, widget.options);
@@ -50,7 +53,7 @@ export function useApm({ widget, runtime, active }: WidgetProps, graph: boolean,
   const known = firstHour !== null && lastHour !== null && (resolved?.known(firstHour, lastHour) ?? true);
   const membershipGap = resolved?.unobserved.some(span => firstHour !== null && lastHour !== null && span.firstHour <= lastHour && firstHour <= span.lastHour);
   const reason = resolved?.reason ?? (membershipGap ? 'Country group membership was not recorded throughout this period.' : null);
-  const params: ApmParams | null = track && firstHour !== null && lastHour !== null && firstHour <= lastHour && known && !reason ? {
+  const params: ApmParams | null = !followed && track && firstHour !== null && lastHour !== null && firstHour <= lastHour && known && !reason ? {
     branchId: track.branch.id, group: options.group === 'player' ? 'player' : 'country', registry: false, firstHour, lastHour,
     tags: resolved?.tags ?? null, players: contentSet(options.players).map(contentKey),
     membership: resolved?.membership ? [...resolved.membership.values()].flat() : null,
@@ -64,5 +67,11 @@ export function useApm({ widget, runtime, active }: WidgetProps, graph: boolean,
     const [firstHour, lastHour] = JSON.parse(product.moment) as [number, number, number];
     return { firstHour, lastHour };
   }, [product.moment]);
-  return { track, identity, options, window, first, last, playbackHour, known, reason, groups, answered, ...product };
+  // A followed head names the countries and players asked, not the hours: the service takes the trailing window.
+  // Group membership the recording leaves unobserved anywhere keeps the request path, which refuses such windows.
+  const head = track && (!resolved || (!resolved.reason && !resolved.unobserved.length)) ? {
+    branchId: track.branch.id, group: options.group === 'player' ? 'player' as const : 'country' as const, tags: resolved?.tags ?? null,
+    membership: resolved?.membership ? [...resolved.membership.values()].flat() : null, players: contentSet(options.players).map(contentKey),
+  } : null;
+  return { track, identity, options, window, first, last, playbackHour, known, reason, groups, answered, head, ...product };
 }

@@ -2,10 +2,15 @@
 //!
 //! The file is append-only: extents in any order, then a [`Root`] extent, then a fixed
 //! [`FOOTER_BYTES`] footer naming it. A revision appends its extents and syncs, writes its
-//! resume state to a slot beside the file ([`state_file`]) and syncs that, appends the root and
-//! syncs, then the footer, and syncs. A reader takes the last footer whose root verifies
-//! ([`Footers`]); a writer taking the file up after a crash takes the newest root whose resume
-//! state verifies ([`recover`]) and cuts what follows it.
+//! resume state to a slot of its state file ([`state_file`]) and syncs that, appends the root
+//! and syncs, then the footer, and syncs. A writer taking the file up after a crash takes the
+//! newest root whose resume state verifies ([`recover`]) and cuts what follows it.
+//!
+//! Each root says whether its revision is saved ([`Saved`]), and when it is not, which
+//! revision before it is the newest saved one. A reader opens the newest saved revision
+//! ([`locate`]): the last footer whose root verifies ([`Footers`]), or the one that root names.
+//! So hours are appended to a recording while they are recorded without reading as saved, a
+//! save is one more root, and a discard cuts the file back to the saved revision's length.
 //!
 //! The root names every [`Section`]: its kind, its id, its schema version and its extents.
 //! Readers dispatch on kind and version and keep only this build's decoders: a section of
@@ -34,9 +39,10 @@ pub use state_file::StateFile;
 
 /// The schema versions of the sections this build reads and writes itself.
 pub mod schema {
-    /// H4COLUMN version 8's runs, pages, blocks and restarts, unchanged.
-    pub const WORLD_LOG: u32 = 8;
-    pub const RECORDS: u32 = 1;
+    /// H4COLUMN version 11's runs: lanes, span pages and summaries.
+    pub const WORLD_LOG: u32 = 11;
+    /// 2: each capture's cursor in place of each run's source.
+    pub const RECORDS: u32 = 2;
     pub const FACTS: u32 = 1;
 }
 
@@ -389,6 +395,15 @@ pub struct SlotRef {
     pub digest: [u8; 16],
 }
 
+/// Whether a revision is saved.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Saved {
+    /// It is: readers open it.
+    Yes,
+    /// It is not: readers open the newest saved revision before it, when the file holds one.
+    No(Option<Revision>),
+}
+
 /// What the footer names.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Root {
@@ -397,13 +412,17 @@ pub struct Root {
     pub revision: u64,
     /// The resume state slot written with it; none once the file is finished.
     pub state: Option<SlotRef>,
+    pub saved: Saved,
     /// Every section, ascending by key.
     pub sections: Vec<Section>,
+    /// The zstd level every compressed extent and frame it names was written at; none when the
+    /// file does not record one, or its revisions were written at more than one.
+    pub level: Option<i32>,
 }
 
 impl Root {
     pub fn write(&self) -> io::Result<Vec<u8>> {
-        write_root(&self.identity, self.revision, self.state, &self.sections)
+        write_root(&self.identity, self.revision, self.state, self.saved, self.level, &self.sections)
     }
 
     pub fn read(bytes: &[u8]) -> io::Result<Self> {
@@ -419,6 +438,19 @@ impl Root {
             }),
             _ => return Err(invalid("The root's state marker is malformed")),
         };
+        let saved = match reader.u8()? {
+            0 => Saved::Yes,
+            1 => Saved::No(None),
+            2 => Saved::No(Some(Revision {
+                number: reader.varint()?,
+                length: reader.varint()?,
+                root: reader.raw(16)?.try_into().expect("sixteen bytes"),
+            })),
+            _ => return Err(invalid("The root's saved marker is malformed")),
+        };
+        if matches!(saved, Saved::No(Some(before)) if before.number >= revision) {
+            return Err(invalid("The root names a saved revision that is not before it"));
+        }
         let count = bounded(reader.count()?, bytes, 3)?;
         let mut sections = engine_allocation::vec(count)?;
         for _ in 0..count {
@@ -446,12 +478,23 @@ impl Root {
                 open,
             });
         }
+        // Written after the sections, so a root written before it was recorded reads as none.
+        let level = match reader.left() {
+            0 => None,
+            _ => {
+                let zigged = reader.varint()?;
+                let level = (zigged >> 1) as i64 ^ -((zigged & 1) as i64);
+                Some(i32::try_from(level).map_err(|_| invalid("The root's level passes 32 bits"))?)
+            }
+        };
         reader.finish()?;
         let root = Self {
             identity,
             revision,
             state,
+            saved,
             sections,
+            level,
         };
         validate_sections(&root.sections)?;
         Ok(root)
@@ -498,7 +541,14 @@ fn write_extents(writer: &mut Writer, extents: &[Extent]) -> io::Result<()> {
     Ok(())
 }
 
-fn write_root(identity: &Identity, revision: u64, state: Option<SlotRef>, sections: &[Section]) -> io::Result<Vec<u8>> {
+fn write_root(
+    identity: &Identity,
+    revision: u64,
+    state: Option<SlotRef>,
+    saved: Saved,
+    level: Option<i32>,
+    sections: &[Section],
+) -> io::Result<Vec<u8>> {
     validate_sections(sections)?;
     let mut writer = Writer::new();
     let identity = identity.chain_bytes()?;
@@ -513,6 +563,16 @@ fn write_root(identity: &Identity, revision: u64, state: Option<SlotRef>, sectio
             writer.raw(&slot.digest)?;
         }
     }
+    match saved {
+        Saved::Yes => writer.u8(0)?,
+        Saved::No(None) => writer.u8(1)?,
+        Saved::No(Some(before)) => {
+            writer.u8(2)?;
+            writer.varint(before.number)?;
+            writer.varint(before.length)?;
+            writer.raw(&before.root)?;
+        }
+    }
     writer.varint(sections.len() as u64)?;
     for section in sections {
         writer.varint(u64::from(section.key.kind.code()))?;
@@ -523,6 +583,10 @@ fn write_root(identity: &Identity, revision: u64, state: Option<SlotRef>, sectio
             write_extents(&mut writer, level)?;
         }
         write_extents(&mut writer, &section.open)?;
+    }
+    if let Some(level) = level {
+        let level = i64::from(level);
+        writer.varint(((level << 1) ^ (level >> 63)) as u64)?;
     }
     Ok(writer.into_bytes())
 }
@@ -854,6 +918,63 @@ pub fn read_root<F: ReadAt + ?Sized>(file: &F, extent: &Extent) -> io::Result<Ro
     Root::read(&decompress(&stored, None)?)
 }
 
+/// Which of a file's revisions is opened.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Open {
+    /// The newest saved one: what a reader of the recording opens.
+    Saved,
+    /// The newest one, saved or not: what its writer, and whoever goes on from its last hour,
+    /// opens.
+    Newest,
+}
+
+/// The revision of `file` that `open` names: its root's envelope and the file's length through
+/// its footer. None when no revision of it is saved yet and a saved one is asked for.
+pub fn locate<F: ReadAt + ?Sized>(file: &F, open: Open) -> io::Result<Option<(Extent, u64)>> {
+    let (newest, length) = Footers::new(file)?
+        .next()?
+        .ok_or_else(|| invalid("The recording has no footer whose root verifies"))?;
+    if open == Open::Newest {
+        return Ok(Some((newest, length)));
+    }
+    match read_root(file, &newest)?.saved {
+        Saved::Yes => Ok(Some((newest, length))),
+        Saved::No(None) => Ok(None),
+        Saved::No(Some(saved)) => root_at(file, saved).map(|root| Some((root, saved.length))),
+    }
+}
+
+/// The envelope of `revision`'s root, which the footer ending at its length must name.
+pub fn root_at<F: ReadAt + ?Sized>(file: &F, revision: Revision) -> io::Result<Extent> {
+    let header = HEADER_BYTES as u64;
+    let footer = FOOTER_BYTES as u64;
+    let missing = || invalid("The recording does not hold the revision its root names as saved");
+    if revision.length < header + footer || revision.length > file.len()? {
+        return Err(missing());
+    }
+    let mut bytes = [0; FOOTER_BYTES];
+    file.read_at(revision.length - footer, &mut bytes)?;
+    let root = Extent {
+        kind: Kind::Root,
+        run: 0,
+        stream: 0,
+        first: 0,
+        hours: 0,
+        offset: u64::from_le_bytes(bytes[..8].try_into().expect("eight bytes")),
+        stored: u64::from_le_bytes(bytes[8..16].try_into().expect("eight bytes")),
+        raw: 0,
+        digest: bytes[16..32].try_into().expect("sixteen bytes"),
+    };
+    if bytes[32..] != *FOOTER_MAGIC
+        || root.digest != revision.root
+        || root.offset < header
+        || root.offset.checked_add(root.stored) != Some(revision.length - footer)
+    {
+        return Err(missing());
+    }
+    Ok(root)
+}
+
 /// Where a writer takes a file up after a crash ([`recover`]).
 pub struct Recovered {
     pub root: Root,
@@ -910,6 +1031,20 @@ pub struct Framing {
 /// The level resume state slots are compressed at: written every revision, read only after a crash.
 const STATE_LEVEL: i32 = 1;
 
+/// The resume state a revision's root names.
+enum Slot<'a> {
+    None,
+    /// The slot the root before it names.
+    Carried,
+    Written(&'a [StateEntry]),
+}
+
+impl<'a> From<Option<&'a [StateEntry]>> for Slot<'a> {
+    fn from(state: Option<&'a [StateEntry]>) -> Self {
+        state.map_or(Self::None, Self::Written)
+    }
+}
+
 /// Writes a recording file of sections, a revision at a time.
 pub struct ContainerWriter<W: Write + Seek> {
     file: W,
@@ -920,10 +1055,15 @@ pub struct ContainerWriter<W: Write + Seek> {
     state: Option<StateFile>,
     /// The slot the last root names.
     slot: Option<SlotRef>,
+    /// The newest saved revision.
+    saved: Option<Revision>,
     /// The last slot sequence written.
     sequence: u64,
     /// The level roots and index pages are compressed at.
     level: i32,
+    /// The level its roots record every extent named was written at: its own, or none once the
+    /// file holds revisions of another level or of none recorded.
+    recorded: Option<i32>,
     compressor: Compressor,
     /// A write failed partway: what the file holds past its last revision is not to be named.
     poisoned: bool,
@@ -933,33 +1073,48 @@ pub struct ContainerWriter<W: Write + Seek> {
 impl<W: Write + Seek> ContainerWriter<W> {
     /// A new file at `file`'s start, of `identity`, its roots and index pages compressed at
     /// `level`, its resume state kept in `state`.
-    pub fn create(mut file: W, identity: Identity, level: i32, state: Option<StateFile>) -> io::Result<Self> {
+    pub fn create(file: W, identity: Identity, level: i32, state: Option<StateFile>) -> io::Result<Self> {
+        Self::create_after(file, identity, level, 0, state)
+    }
+
+    /// [`Self::create`] of a file replacing one whose last revision was `revision`: its first
+    /// revision is numbered after it.
+    pub fn create_after(mut file: W, identity: Identity, level: i32, revision: u64, state: Option<StateFile>) -> io::Result<Self> {
         file.write_all(envelope::MAGIC)?;
         file.write_all(&envelope::VERSION.to_le_bytes())?;
-        Self::with(file, identity, 0, Vec::new(), level, state, None)
+        Self::with(file, identity, revision, Vec::new(), (level, Some(level)), state, None, None)
     }
 
-    /// Takes up a file after `root`, its last revision, which ends at `length`: what follows it
-    /// must be cut already.
-    pub fn resume(mut file: W, root: Root, length: u64, level: i32, state: Option<StateFile>) -> io::Result<Self> {
-        file.seek(SeekFrom::Start(length))?;
-        Self::with(file, root.identity, root.revision, root.sections, level, state, root.state)
+    /// Takes up a file after `root`, its last revision, which is `at`: what follows it must be
+    /// cut already.
+    pub fn resume(mut file: W, root: Root, at: Revision, level: i32, state: Option<StateFile>) -> io::Result<Self> {
+        if root.revision != at.number {
+            return Err(invalid("A file is taken up at its root's own revision"));
+        }
+        file.seek(SeekFrom::Start(at.length))?;
+        let saved = match root.saved {
+            Saved::Yes => Some(at),
+            Saved::No(before) => before,
+        };
+        let recorded = root.level.filter(|&held| held == level);
+        Self::with(file, root.identity, root.revision, root.sections, (level, recorded), state, root.state, saved)
     }
 
+    #[allow(clippy::too_many_arguments, reason = "one private constructor of two public ones")]
     fn with(
         file: W,
         identity: Identity,
         revision: u64,
         sections: Vec<Section>,
-        level: i32,
+        (level, recorded): (i32, Option<i32>),
         state: Option<StateFile>,
         slot: Option<SlotRef>,
+        saved: Option<Revision>,
     ) -> io::Result<Self> {
-        let sequence = state
-            .as_ref()
-            .and_then(StateFile::newest)
-            .max(slot.map(|slot| slot.sequence))
-            .unwrap_or(0);
+        // Numbered on from the slot its root names: a slot written after it, by a revision whose
+        // root was lost, is the one the next write takes, and the file goes on as an unbroken
+        // writer's would.
+        let sequence = slot.map_or(0, |slot| slot.sequence);
         Ok(Self {
             file,
             identity,
@@ -967,8 +1122,10 @@ impl<W: Write + Seek> ContainerWriter<W> {
             sections,
             state,
             slot,
+            saved,
             sequence,
             level,
+            recorded,
             compressor: Compressor::new(&CONTAINER, level)?,
             poisoned: false,
             framing: Framing::default(),
@@ -982,6 +1139,11 @@ impl<W: Write + Seek> ContainerWriter<W> {
     /// The last revision published; zero before the first.
     pub fn revision(&self) -> u64 {
         self.revision
+    }
+
+    /// The newest saved revision; none while the file holds none.
+    pub fn saved(&self) -> Option<Revision> {
+        self.saved
     }
 
     pub fn sections(&self) -> &[Section] {
@@ -1058,6 +1220,39 @@ impl<W: Write + Seek> ContainerWriter<W> {
         self.poison(result)
     }
 
+    /// [`Self::put`] of the `length` stored bytes `source` reads, copied a buffer at a time and
+    /// never held whole.
+    pub fn put_from(&mut self, kind: Kind, tags: Tags, raw: u64, source: &mut dyn io::Read, length: u64) -> io::Result<Extent> {
+        self.usable()?;
+        let result = self.copy(kind, tags, raw, source, length);
+        self.poison(result)
+    }
+
+    fn copy(&mut self, kind: Kind, tags: Tags, raw: u64, source: &mut dyn io::Read, length: u64) -> io::Result<Extent> {
+        let offset = self.file.stream_position()?;
+        let mut hasher = blake3::Hasher::new();
+        let mut buffer = vec![0; (1 << 20).min(length as usize).max(1)];
+        let mut left = length;
+        while left > 0 {
+            let piece = &mut buffer[..left.min(1 << 20) as usize];
+            source.read_exact(piece)?;
+            hasher.update(piece);
+            self.file.write_all(piece)?;
+            left -= piece.len() as u64;
+        }
+        Ok(Extent {
+            kind,
+            run: tags.run,
+            stream: tags.stream,
+            first: tags.first,
+            hours: tags.hours,
+            offset,
+            stored: length,
+            raw,
+            digest: hasher.finalize().as_bytes()[..16].try_into().expect("sixteen bytes"),
+        })
+    }
+
     fn write(&mut self, kind: Kind, tags: Tags, raw: u64, stored: &[u8]) -> io::Result<Extent> {
         let offset = self.file.stream_position()?;
         self.file.write_all(stored)?;
@@ -1123,11 +1318,16 @@ impl<W: Write + Seek> ContainerWriter<W> {
         Ok(())
     }
 
-    /// Publishes everything named so far as the next revision, written with resume state
-    /// `state` when given. `sync` makes what is written durable before what names it. A failure
-    /// leaves the file at its last revision.
-    pub fn commit(&mut self, state: Option<&[StateEntry]>, sync: impl FnMut(&mut W) -> io::Result<()>) -> io::Result<Revision> {
-        self.commit_with(state, sync, |_| Ok(()))
+    /// Publishes everything named so far as the next revision, saved or not, written with
+    /// resume state `state` when given. `sync` makes what is written durable before what names
+    /// it. A failure leaves the file at its last revision.
+    pub fn commit(
+        &mut self,
+        state: Option<&[StateEntry]>,
+        saved: bool,
+        sync: impl FnMut(&mut W) -> io::Result<()>,
+    ) -> io::Result<Revision> {
+        self.commit_with(state, saved, sync, |_| Ok(()))
     }
 
     /// [`Self::commit`], `prepare` told the revision once everything but its footer is
@@ -1135,24 +1335,36 @@ impl<W: Write + Seek> ContainerWriter<W> {
     pub fn commit_with(
         &mut self,
         state: Option<&[StateEntry]>,
+        saved: bool,
         mut sync: impl FnMut(&mut W) -> io::Result<()>,
         prepare: impl FnOnce(Revision) -> io::Result<()>,
     ) -> io::Result<Revision> {
         self.usable()?;
-        let result = self.publish(state, &mut sync, prepare);
+        let result = self.publish(state, saved, &mut sync, prepare);
         self.poison(result)
     }
 
-    fn publish(
+    /// [`Self::commit`] of a revision that leaves the resume state as the root before it names
+    /// it: one that adds nothing its owners' state covers, so a writer taking the file up goes
+    /// on from that state as before.
+    pub fn commit_carrying(&mut self, saved: bool, mut sync: impl FnMut(&mut W) -> io::Result<()>) -> io::Result<Revision> {
+        self.usable()?;
+        let result = self.publish(Slot::Carried, saved, &mut sync, |_| Ok(()));
+        self.poison(result)
+    }
+
+    fn publish<'a>(
         &mut self,
-        state: Option<&[StateEntry]>,
+        state: impl Into<Slot<'a>>,
+        saved: bool,
         sync: &mut dyn FnMut(&mut W) -> io::Result<()>,
         prepare: impl FnOnce(Revision) -> io::Result<()>,
     ) -> io::Result<Revision> {
         sync(&mut self.file)?;
-        let slot = match state {
-            None => None,
-            Some(entries) => {
+        let slot = match state.into() {
+            Slot::None => None,
+            Slot::Carried => self.slot,
+            Slot::Written(entries) => {
                 let raw = write_entries(entries)?;
                 let stored = compress(&mut self.compressor, STATE_LEVEL, &raw)?;
                 let file = self
@@ -1166,7 +1378,11 @@ impl<W: Write + Seek> ContainerWriter<W> {
                 Some(slot)
             }
         };
-        let root = write_root(&self.identity, self.revision + 1, slot, &self.sections)?;
+        let mark = match saved {
+            true => Saved::Yes,
+            false => Saved::No(self.saved),
+        };
+        let root = write_root(&self.identity, self.revision + 1, slot, mark, self.recorded, &self.sections)?;
         let stored = compress(&mut self.compressor, self.level, &root)?;
         let extent = self.write(Kind::Root, Tags::default(), root.len() as u64, &stored)?;
         self.framing.roots += extent.stored;
@@ -1185,13 +1401,21 @@ impl<W: Write + Seek> ContainerWriter<W> {
         self.framing.footers += FOOTER_BYTES as u64;
         self.revision = revision.number;
         self.slot = slot;
+        if saved {
+            self.saved = Some(revision);
+        }
         Ok(revision)
     }
 
-    /// Publishes the last revision: each family's state of `final_state` written into the file
-    /// once, as its final state section, and a root naming no resume state, after which the
-    /// state file goes: the file, its last revision and what it wrote of its own.
-    pub fn finish(mut self, final_state: &[StateEntry], sync: impl FnMut(&mut W) -> io::Result<()>) -> io::Result<(W, Revision, Framing)> {
+    /// Publishes the last revision, saved or not: each family's state of `final_state` written
+    /// into the file once, as its final state section, and a root naming no resume state, after
+    /// which the state file goes: the file, its last revision and what it wrote of its own.
+    pub fn finish(
+        mut self,
+        final_state: &[StateEntry],
+        saved: bool,
+        sync: impl FnMut(&mut W) -> io::Result<()>,
+    ) -> io::Result<(W, Revision, Framing)> {
         self.usable()?;
         for entry in final_state {
             if entry.owner.kind != SectionKind::FamilyAnswers {
@@ -1205,7 +1429,7 @@ impl<W: Write + Seek> ContainerWriter<W> {
             let extent = self.put_zstd(Kind::Data, Tags::default(), &entry.bytes, self.level)?;
             self.set_open(key, &[extent])?;
         }
-        let revision = self.commit(None, sync)?;
+        let revision = self.commit(None, saved, sync)?;
         if let Some(state) = self.state.take() {
             state.remove()?;
         }

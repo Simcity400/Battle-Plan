@@ -1,6 +1,6 @@
 //! Railway submission with resolved effects and retained render state.
 use std::cell::RefCell;
-use std::{collections::BTreeMap, io, ops::Range, sync::Arc};
+use std::{collections::BTreeMap, io, sync::Arc};
 
 use eframe::wgpu;
 use installed_content_core::{ResolvedLayers, pdxshader::program::Stage};
@@ -34,7 +34,9 @@ pub struct Inputs<'a> {
 
 pub struct Geometry<'a> {
     pub vertices: &'a wgpu::Buffer,
-    pub runs: &'a [Range<u32>],
+    /// Every run's strip in one index list, each closed by the restart index, and its length
+    /// ([`super::railways::strip_indices`]): drawn with one call.
+    pub strips: Option<(&'a wgpu::Buffer, u32)>,
 }
 
 pub struct Rail {
@@ -111,6 +113,8 @@ impl Rail {
         let technique = &program.techniques[selection.index];
         let raster = program.rasterizer(technique);
         pass.primitive = gpu::primitive(&raster, wgpu::PrimitiveTopology::TriangleStrip).0;
+        // The restart index closes each strip of the joined list.
+        pass.primitive.strip_index_format = Some(wgpu::IndexFormat::Uint32);
         let (depth, stencil_reference) =
             gpu::depth_stencil(&program.depth_stencil(technique), &raster, depth);
         pass.depth_stencil = Some(depth);
@@ -206,13 +210,17 @@ impl Rail {
         pass.set_blend_constant(wgpu::Color::WHITE);
         shader_pipeline::gpu::stats::state();
         pass.set_vertex_buffer(0, geometry.vertices.slice(..));
+        if let Some((indices, _)) = geometry.strips {
+            shader_pipeline::gpu::stats::state();
+            pass.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);
+        }
         let mut previous = None;
         for bindings in &bound {
             bindings.bind_after(&mut pass, previous);
             previous = Some(bindings);
-            for run in geometry.runs {
+            if let Some((_, count)) = geometry.strips {
                 shader_pipeline::gpu::stats::draw();
-                pass.draw(run.clone(), 0..1);
+                pass.draw_indexed(0..count, 0, 0..1);
             }
         }
         Ok(())

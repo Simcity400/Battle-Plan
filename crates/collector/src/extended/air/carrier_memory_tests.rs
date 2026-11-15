@@ -63,7 +63,7 @@ fn census_seed_copies_owned_prefix_without_acquiring_or_charging_native_bytes() 
     assert_eq!(original.take(&original_live, 0x1000, 8, 7), Some(0));
     assert_eq!(original.take(&original_live, 0x1008, 4, 7), Some(8));
     let before = source_snapshot(&original);
-    let mut slots = [usize::MAX; 32];
+    let mut slots = vec![usize::MAX; 32];
     let mut index = ExactIndex::new(&mut slots);
     let mut carrier = RawLog::<2>::new(8, 32);
     assert_eq!(seed_census(&mut carrier, &original, &mut index), Ok(()));
@@ -81,7 +81,7 @@ fn census_seed_copies_owned_prefix_without_acquiring_or_charging_native_bytes() 
     assert_eq!(bytes, [0x29; 8]);
     assert_eq!(new_live.calls.get(), 0);
     let log = carrier.borrow();
-    let recorded = Recorded::build(&log);
+    let recorded = Recorded::build(&log).unwrap();
     assert!(recorded.copy(0x1000, &mut bytes));
     assert_eq!(bytes, [0x29; 8]);
 }
@@ -91,7 +91,7 @@ fn seeded_original_fault_never_retries_live_and_another_scalar_remains_readable(
     let mut original = RawLog::<3>::new(4, 16);
     assert_eq!(original.record(0x1000, 4, None, 7), None);
     let before = source_snapshot(&original);
-    let mut slots = [usize::MAX; 32];
+    let mut slots = vec![usize::MAX; 32];
     let mut index = ExactIndex::new(&mut slots);
     let mut carrier = RawLog::<2>::new(8, 32);
     assert_eq!(seed_census(&mut carrier, &original, &mut index), Ok(()));
@@ -108,7 +108,7 @@ fn seeded_original_fault_never_retries_live_and_another_scalar_remains_readable(
     let log = carrier.borrow();
     assert_eq!(log.fault, [true; 2]);
     assert_eq!(log.raw_bytes, [0, 4]);
-    let recorded = Recorded::build(&log);
+    let recorded = Recorded::build(&log).unwrap();
     assert!(!recorded.copy(0x1000, &mut [0; 4]));
     assert!(recorded.copy(0x1008, &mut [0; 4]));
 }
@@ -118,7 +118,7 @@ fn optional_fault_is_sticky_but_does_not_stop_an_independent_field() {
     let mut original = RawLog::<3>::new(4, 8);
     assert_eq!(original.record(0x1000, 4, Some(&[7; 4]), 7), Some(0));
     let before = source_snapshot(&original);
-    let mut slots = [usize::MAX; 32];
+    let mut slots = vec![usize::MAX; 32];
     let mut index = ExactIndex::new(&mut slots);
     let mut carrier = RawLog::<2>::new(8, 32);
     assert_eq!(seed_census(&mut carrier, &original, &mut index), Ok(()));
@@ -143,60 +143,9 @@ fn optional_fault_is_sticky_but_does_not_stop_an_independent_field() {
     assert_eq!(log.fault, [true, false]);
     assert_eq!(log.raw_bytes, [0, 4]);
     assert_eq!(log.bytes.len(), 8); // Failed partial byte was never published.
-    let recorded = Recorded::build(&log);
+    let recorded = Recorded::build(&log).unwrap();
     assert!(!recorded.copy(0x1008, &mut [0; 4]));
     assert!(recorded.copy(0x100c, &mut [0; 4]));
-}
-
-#[test]
-fn optional_overflow_preserves_source_and_existing_spans_and_blocks_new_reads() {
-    let mut original = RawLog::<3>::new(4, 8);
-    assert_eq!(original.record(0x1000, 4, Some(&[7; 4]), 7), Some(0));
-    let before = source_snapshot(&original);
-    let mut slots = [usize::MAX; 32];
-    let mut index = ExactIndex::new(&mut slots);
-    let mut carrier = RawLog::<2>::new(2, 4);
-    assert_eq!(seed_census(&mut carrier, &original, &mut index), Ok(()));
-    let carrier = RefCell::new(carrier);
-    let index = RefCell::new(index);
-    let live = Live::new(&[0x42; 32]);
-    let capture = CaptureMemory::new(&carrier, &live, &index);
-    assert!(!capture.copy(0x1008, &mut [0; 8]));
-    assert!(carrier.borrow().overflowed);
-    assert_eq!(live.calls.get(), 0);
-    assert!(!capture.copy(0x1010, &mut [0; 1]));
-    assert_eq!(live.calls.get(), 0);
-    let mut mandatory = [0; 4];
-    assert!(capture.copy(0x1000, &mut mandatory));
-    assert_eq!(mandatory, [7; 4]);
-    assert!(capture.copy(usize::MAX, &mut []));
-    assert_eq!(source_snapshot(&original), before);
-    assert_eq!(carrier.borrow().raw_bytes, [0; 2]);
-    let log = carrier.borrow();
-    let recorded = Recorded::build(&log);
-    assert!(recorded.copy(0x1000, &mut mandatory));
-    assert!(!recorded.copy(0x1010, &mut [0; 1]));
-}
-
-#[test]
-fn short_seed_arena_refuses_without_changing_original_or_reading_native_memory() {
-    let live = Live::new(&[0x31; 32]);
-    let mut original = RawLog::<3>::new(4, 32);
-    assert_eq!(original.take(&live, 0x1000, 16, 7), Some(0));
-    let before = source_snapshot(&original);
-    for (spans, bytes) in [(0, 32), (4, 0)] {
-        let mut slots = [usize::MAX; 32];
-        let mut index = ExactIndex::new(&mut slots);
-        let mut carrier = RawLog::<2>::new(spans, bytes);
-        assert_eq!(
-            seed_census(&mut carrier, &original, &mut index),
-            Err("carrier census seed capacity")
-        );
-        assert!(carrier.overflowed);
-        assert_eq!(carrier.raw_bytes, [0; 2]);
-        assert_eq!(source_snapshot(&original), before);
-        assert_eq!(live.calls.get(), 1);
-    }
 }
 
 #[test]
@@ -213,7 +162,7 @@ fn exact_failure_overrides_a_successful_containing_bulk_on_capture_and_decode() 
     assert!(!original.overflowed);
     assert_eq!(original.spans.len(), 2);
     assert!(!original.spans[1].ok);
-    let mut slots = [usize::MAX; 32];
+    let mut slots = vec![usize::MAX; 32];
     let mut index = ExactIndex::new(&mut slots);
     let mut carrier = RawLog::<2>::new(8, 32 + 4);
     assert_eq!(seed_census(&mut carrier, &original, &mut index), Ok(()));
@@ -227,7 +176,7 @@ fn exact_failure_overrides_a_successful_containing_bulk_on_capture_and_decode() 
     assert_eq!(contained, [0x29; 4]);
     assert_eq!(live.calls.get(), 0);
     let log = carrier.borrow();
-    let recorded = Recorded::build(&log);
+    let recorded = Recorded::build(&log).unwrap();
     assert!(!recorded.copy(0x1008, &mut [0; 4]));
     assert!(recorded.copy(0x1010, &mut contained));
     assert_eq!(contained, [0x29; 4]);
@@ -239,7 +188,7 @@ fn equal_successful_census_duplicates_coalesce_and_changed_or_failed_ones_refuse
     for _ in 0..2 {
         assert!(original.record(0x1000, 4, Some(&[0x29; 4]), 7).is_some());
     }
-    let mut slots = [usize::MAX; 32];
+    let mut slots = vec![usize::MAX; 32];
     let mut index = ExactIndex::new(&mut slots);
     let mut carrier = RawLog::<2>::new(8, 32);
     assert_eq!(seed_census(&mut carrier, &original, &mut index), Ok(()));
@@ -268,7 +217,7 @@ fn malformed_owned_span_refuses_without_panicking_or_live_fallback() {
     assert!(original.record(0x1000, 4, Some(&[7; 4]), 7).is_some());
     original.spans[0].start = u32::MAX;
     let before = source_snapshot(&original);
-    let mut slots = [usize::MAX; 32];
+    let mut slots = vec![usize::MAX; 32];
     let mut index = ExactIndex::new(&mut slots);
     let mut carrier = RawLog::<2>::new(4, 8);
     assert_eq!(
@@ -281,7 +230,7 @@ fn malformed_owned_span_refuses_without_panicking_or_live_fallback() {
 #[test]
 fn short_optional_reads_and_invalid_addresses_refuse_and_decoder_stays_offline() {
     let original = RawLog::<3>::new(0, 0);
-    let mut slots = [usize::MAX; 32];
+    let mut slots = vec![usize::MAX; 32];
     let mut index = ExactIndex::new(&mut slots);
     let mut carrier = RawLog::<2>::new(16, 32);
     assert_eq!(seed_census(&mut carrier, &original, &mut index), Ok(()));
@@ -298,7 +247,7 @@ fn short_optional_reads_and_invalid_addresses_refuse_and_decoder_stays_offline()
     assert_eq!(live.calls.get(), 2);
     assert!(capture.copy(usize::MAX, &mut []));
     let log = carrier.borrow();
-    let recorded = Recorded::build(&log);
+    let recorded = Recorded::build(&log).unwrap();
     assert!(recorded.copy(0x1000, &mut [0; 3]));
     assert!(!recorded.copy(0x1000, &mut [0; 4]));
     // Live memory can supply this byte, but the owned walk never acquired it.
@@ -307,31 +256,11 @@ fn short_optional_reads_and_invalid_addresses_refuse_and_decoder_stays_offline()
 }
 
 #[test]
-fn short_exact_index_reports_census_demand_without_touching_original() {
-    let mut original = RawLog::<3>::new(4, 8);
-    assert!(original.record(0x1000, 4, Some(&[7; 4]), 7).is_some());
-    assert!(original.record(0x1008, 4, Some(&[8; 4]), 7).is_some());
-    let before = source_snapshot(&original);
-    let mut slots = [usize::MAX; 3];
-    let mut index = ExactIndex::new(&mut slots);
-    let mut carrier = RawLog::<2>::new(4, 8);
-    assert_eq!(
-        seed_census(&mut carrier, &original, &mut index),
-        Err("carrier exact index capacity")
-    );
-    assert_eq!(index.required_slots(), 4);
-    assert!(carrier.spans.is_empty());
-    assert!(carrier.bytes.is_empty());
-    assert!(!carrier.overflowed);
-    assert_eq!(source_snapshot(&original), before);
-}
-
-#[test]
-fn full_exact_index_retains_seeded_success_and_failure_and_blocks_new_native_read() {
+fn seeded_exact_index_answers_success_and_failure_without_a_native_read() {
     let mut original = RawLog::<3>::new(4, 8);
     assert!(original.record(0x1000, 4, Some(&[7; 4]), 7).is_some());
     assert_eq!(original.record(0x1008, 4, None, 7), None);
-    let mut slots = [usize::MAX; 4];
+    let mut slots = vec![usize::MAX; 4];
     let mut index = ExactIndex::new(&mut slots);
     let mut carrier = RawLog::<2>::new(8, 32);
     assert_eq!(seed_census(&mut carrier, &original, &mut index), Ok(()));
@@ -339,44 +268,22 @@ fn full_exact_index_retains_seeded_success_and_failure_and_blocks_new_native_rea
     let index = RefCell::new(index);
     let live = Live::new(&[0x42; 32]);
     let capture = CaptureMemory::new(&carrier, &live, &index);
-    assert!(!capture.copy(0x1010, &mut [0; 4]));
-    assert_eq!(index.borrow().required_slots(), 6);
-    assert_eq!(live.calls.get(), 0);
-    assert!(!carrier.borrow().overflowed);
     let mut bytes = [0; 4];
     assert!(capture.copy(0x1000, &mut bytes));
     assert_eq!(bytes, [7; 4]);
     assert!(!capture.copy(0x1008, &mut bytes));
     assert_eq!(live.calls.get(), 0);
+    assert!(!carrier.borrow().overflowed);
     let log = carrier.borrow();
-    let recorded = Recorded::build(&log);
+    let recorded = Recorded::build(&log).unwrap();
     assert!(recorded.copy(0x1000, &mut bytes));
     assert!(!recorded.copy(0x1008, &mut bytes));
-    assert!(!recorded.copy(0x1010, &mut bytes));
-}
-
-#[test]
-fn empty_exact_index_refuses_fresh_requests_without_native_read_or_raw_overflow() {
-    let original = RawLog::<3>::new(0, 0);
-    let mut slots = [];
-    let mut index = ExactIndex::new(&mut slots);
-    let mut carrier = RawLog::<2>::new(4, 8);
-    assert_eq!(seed_census(&mut carrier, &original, &mut index), Ok(()));
-    let carrier = RefCell::new(carrier);
-    let index = RefCell::new(index);
-    let live = Live::new(&[0x42; 8]);
-    let capture = CaptureMemory::new(&carrier, &live, &index);
-    assert!(!capture.copy(0x1000, &mut [0; 4]));
-    assert_eq!(index.borrow().required_slots(), 2);
-    assert_eq!(live.calls.get(), 0);
-    assert!(!carrier.borrow().overflowed);
-    assert!(capture.copy(usize::MAX, &mut []));
 }
 
 #[test]
 fn cached_failed_exact_read_marks_each_consumer_without_rereading_or_recharging() {
     let original = RawLog::<3>::new(0, 0);
-    let mut slots = [usize::MAX; 8];
+    let mut slots = vec![usize::MAX; 8];
     let mut index = ExactIndex::new(&mut slots);
     let mut carrier = RawLog::<2>::new(4, 16);
     assert_eq!(seed_census(&mut carrier, &original, &mut index), Ok(()));
@@ -403,7 +310,7 @@ fn cached_failed_exact_read_marks_each_consumer_without_rereading_or_recharging(
     assert_eq!(log.bytes.as_ref(), bytes);
     assert_eq!(log.raw_bytes, raw_bytes);
     assert!(!log.overflowed);
-    let recorded = Recorded::build(&log);
+    let recorded = Recorded::build(&log).unwrap();
     assert!(!recorded.copy(0x1000, &mut [0; 4]));
 }
 
@@ -415,7 +322,7 @@ fn cached_bulk_bounds_failure_marks_each_consumer_without_changing_owned_observa
     };
     let mut original = RawLog::<3>::new(4, 32);
     assert!(original.take_bulk(&image, 0x1000, 32, 7).is_some());
-    let mut slots = [usize::MAX; 8];
+    let mut slots = vec![usize::MAX; 8];
     let mut index = ExactIndex::new(&mut slots);
     let mut carrier = RawLog::<2>::new(4, 32);
     assert_eq!(seed_census(&mut carrier, &original, &mut index), Ok(()));
@@ -439,6 +346,6 @@ fn cached_bulk_bounds_failure_marks_each_consumer_without_changing_owned_observa
     assert_eq!(log.bytes.as_ref(), bytes);
     assert_eq!(log.raw_bytes, raw_bytes);
     assert!(!log.overflowed);
-    let recorded = Recorded::build(&log);
+    let recorded = Recorded::build(&log).unwrap();
     assert!(!recorded.copy(0x1008, &mut [0; 4]));
 }

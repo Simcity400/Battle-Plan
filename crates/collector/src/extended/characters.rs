@@ -116,6 +116,10 @@ impl<R: Default + Clone> Buffer<R> {
         Batch::new(&mut self.rows.rows, &mut self.bytes.first)
     }
 
+    fn growing_batch(&mut self) -> GrowingBatch<'_, R> {
+        GrowingBatch::new(&mut self.rows.rows, &mut self.bytes.first)
+    }
+
     fn primary(&mut self, result: ReadResult) {
         self.rows.outcome = result.outcome;
         self.bytes.len = result.bytes_len;
@@ -240,16 +244,12 @@ impl Captured {
             replay_data::cadence::SKIPPED_REASON,
         );
     }
-    pub(crate) fn trait_capture_capacities(&self) -> (usize, usize) {
-        (self.traits.rows.rows.len(), self.traits.bytes.first.len())
-    }
-
     fn family(&mut self) -> Family<'_> {
         Family {
             characters: self.characters.batch(),
             leaders: self.leaders.batch(),
             advisors: self.advisors.batch(),
-            units: self.units.batch(),
+            units: self.units.growing_batch(),
             traits: self.traits.batch(),
             training: true,
         }
@@ -390,18 +390,15 @@ impl Captured {
             let mut job = self.fallback_jobs[part]
                 .take()
                 .unwrap_or_else(|| Box::new(CharactersJob::new_part(part)));
-            let (trait_rows, trait_bytes) = self.trait_capture_capacities();
             let context = CharactersCopyContext {
                 base,
                 game_state,
                 force_full,
                 active,
-                trait_rows,
-                trait_bytes,
             };
             let _reads = read_accounting::table(TABLES[anchor(active)]);
             let begin = qpc();
-            let report = copy_characters_growing(memory, context, &mut job, Roles::Independent);
+            let report = copy_characters(memory, context, &mut job, Roles::Independent);
             if report.raw_ok {
                 self.decode_characters_payload(base, &job, &mut [0; N]);
                 self.remember_templates(&mut job);
@@ -911,8 +908,9 @@ impl From<active_ability_record::TokenWalk> for ReadResult {
     }
 }
 
-/// Aggregates exact native counts across owners. After the first capacity miss
-/// later owners contribute counts only; no later row fills a hole in the prefix.
+/// Aggregates exact native counts across owners, each walk filling a growing
+/// suffix. After a walk leaves rows unread, later owners contribute counts only
+/// and no later row fills a hole in the prefix.
 struct Batch<'a, R> {
     rows: engine_native::walk::Buffer<'a, R>,
     bytes: engine_native::walk::Buffer<'a, u8>,
@@ -924,10 +922,10 @@ struct Batch<'a, R> {
 }
 
 impl<'a, R> Batch<'a, R> {
-    fn new(rows: &'a mut [R], bytes: &'a mut [u8]) -> Self {
+    fn new(rows: &'a mut Vec<R>, bytes: &'a mut Vec<u8>) -> Self {
         Self::storage(
-            engine_native::walk::Buffer::Fixed(rows),
-            engine_native::walk::Buffer::Fixed(bytes),
+            engine_native::walk::Buffer::Growing(rows),
+            engine_native::walk::Buffer::Growing(bytes),
         )
     }
     fn storage(
@@ -957,14 +955,6 @@ impl<'a, R> Batch<'a, R> {
 
     fn append(
         &mut self,
-        walk: impl FnOnce(&mut [R], &mut [u8]) -> ReadResult,
-        relocate: impl Fn(&mut R, usize) -> bool,
-    ) {
-        self.append_buffer(|mut rows, mut bytes| walk(&mut rows, &mut bytes), relocate);
-    }
-
-    fn append_buffer(
-        &mut self,
         walk: impl FnOnce(
             engine_native::walk::Buffer<'_, R>,
             engine_native::walk::Buffer<'_, u8>,
@@ -974,36 +964,18 @@ impl<'a, R> Batch<'a, R> {
         if !self.active() {
             return;
         }
-        let rows_end = if self.unread == 0 {
-            self.rows.len()
-        } else {
-            self.len
-        };
-        let bytes_end = if self.unread == 0 {
-            self.bytes.len()
-        } else {
-            self.bytes_len
-        };
-        let result = if self.unread == 0 {
-            walk(
+        let (result, rows_end, bytes_end) = if self.unread == 0 {
+            let result = walk(
                 self.rows.suffix(self.len),
                 self.bytes.suffix(self.bytes_len),
-            )
+            );
+            (result, self.rows.len(), self.bytes.len())
         } else {
-            walk(
-                engine_native::walk::Buffer::Fixed(&mut self.rows[self.len..rows_end]),
-                engine_native::walk::Buffer::Fixed(&mut self.bytes[self.bytes_len..bytes_end]),
-            )
-        };
-        let rows_end = if self.unread == 0 {
-            self.rows.len()
-        } else {
-            rows_end
-        };
-        let bytes_end = if self.unread == 0 {
-            self.bytes.len()
-        } else {
-            bytes_end
+            let result = walk(
+                engine_native::walk::Buffer::Count,
+                engine_native::walk::Buffer::Count,
+            );
+            (result, self.len, self.bytes_len)
         };
         let (len, unread) = match result.outcome {
             Outcome::Rows { len } => (len, 0),
@@ -1065,6 +1037,100 @@ impl<'a, R> Batch<'a, R> {
     }
 }
 
+/// What a growing walk stored from its starts: its rows, its bytes, and the
+/// bytes it needed.
+pub(super) struct Stored {
+    pub(super) rows: usize,
+    pub(super) bytes_len: usize,
+    pub(super) required_bytes: usize,
+}
+
+/// A batch whose walks store every row they read in growing storage, so it
+/// never leaves a row unread.
+struct GrowingBatch<'a, R> {
+    rows: &'a mut Vec<R>,
+    bytes: &'a mut Vec<u8>,
+    len: usize,
+    bytes_len: usize,
+    required_bytes: usize,
+    failure: Option<&'static str>,
+}
+
+impl<'a, R> GrowingBatch<'a, R> {
+    fn new(rows: &'a mut Vec<R>, bytes: &'a mut Vec<u8>) -> Self {
+        Self {
+            rows,
+            bytes,
+            len: 0,
+            bytes_len: 0,
+            required_bytes: 0,
+            failure: None,
+        }
+    }
+
+    fn active(&self) -> bool {
+        self.failure.is_none()
+    }
+
+    fn fail(&mut self, reason: &'static str) {
+        if self.failure.is_none() {
+            self.failure = Some(reason);
+        }
+    }
+
+    /// One walk from the batch's row and byte lengths; its byte offsets are
+    /// relative to its start until `relocate` moves them.
+    fn append(
+        &mut self,
+        walk: impl FnOnce(&mut Vec<R>, usize, &mut Vec<u8>, usize) -> Result<Stored, &'static str>,
+        relocate: impl Fn(&mut R, usize) -> bool,
+    ) {
+        if !self.active() {
+            return;
+        }
+        let stored = match walk(&mut *self.rows, self.len, &mut *self.bytes, self.bytes_len) {
+            Ok(stored) => stored,
+            Err(reason) => {
+                self.fail(reason);
+                return;
+            }
+        };
+        if stored.rows > self.rows.len().saturating_sub(self.len)
+            || stored.bytes_len > self.bytes.len().saturating_sub(self.bytes_len)
+            || stored.required_bytes < stored.bytes_len
+        {
+            self.fail("character walk exceeded its pooled buffer");
+            return;
+        }
+        let bytes_start = self.bytes_len;
+        if !self.rows[self.len..self.len + stored.rows]
+            .iter_mut()
+            .all(|row| relocate(row, bytes_start))
+        {
+            self.fail("character byte offset overflow");
+            return;
+        }
+        let Some(required) = self.required_bytes.checked_add(stored.required_bytes) else {
+            self.fail("character byte count overflow");
+            return;
+        };
+        self.len += stored.rows;
+        self.bytes_len += stored.bytes_len;
+        self.required_bytes = required;
+    }
+
+    fn result(&self) -> ReadResult {
+        match self.failure {
+            Some(reason) => ReadResult::rows(Outcome::Unavailable { reason }),
+            None => ReadResult {
+                outcome: Outcome::Rows { len: self.len },
+                bytes_len: self.bytes_len,
+                required_bytes: self.required_bytes,
+            },
+        }
+    }
+}
+
 impl Batch<'_, cadvisor::Row> {
     fn append_tooltips(&mut self, memory: &impl Memory, start: usize, end: usize) {
         if !self.active() {
@@ -1073,7 +1139,7 @@ impl Batch<'_, cadvisor::Row> {
         let captured = cadvisor::append_tooltips(
             memory,
             &mut self.rows[start..end],
-            &mut self.bytes,
+            self.bytes.suffix(0),
             ccharacter::NameWalk {
                 outcome: Outcome::Rows { len: end - start },
                 bytes_len: self.bytes_len,
@@ -1097,7 +1163,7 @@ struct Family<'a> {
     characters: Batch<'a, ccharacter::Row>,
     leaders: Batch<'a, ccountry_leader::Row>,
     advisors: Batch<'a, cadvisor::Row>,
-    units: Batch<'a, LeaderRow>,
+    units: GrowingBatch<'a, LeaderRow>,
     traits: Batch<'a, cunit_leader::TraitRow>,
     training: bool,
 }
@@ -1262,10 +1328,16 @@ impl Family<'_> {
         }
         let previous_len = units.len;
         units.append(
-            |rows, bytes| match carried.units.and_then(|carry| carry.carried_rows(pointer)) {
-                Some((held, text)) => leader_carry::held_rows(held, text, rows, bytes),
+            |rows, at, bytes, from| match carried
+                .units
+                .and_then(|carry| carry.carried_rows(pointer))
+            {
+                Some((held, text)) => {
+                    leader_carry::held_rows_into(held, text, rows, at, bytes, from)
+                }
                 None => {
-                    read_unit_selected(memory, base, pointer, character_id, rows, bytes, training)
+                    read_unit_selected(memory, base, pointer, character_id, bytes, from, training)
+                        .and_then(|read| read.store(rows, at))
                 }
             },
             |row, offset| {
@@ -1455,9 +1527,13 @@ fn fresh_traits_unchanged(job: &CharactersJob) -> bool {
         };
         rows.resize(len, cunit_leader::TraitRow::default());
         bytes.resize(vector.bytes_len, 0);
-        let projected =
-            job.traits
-                .project(&mut cursor, pointer, vector.leader, &mut rows, &mut bytes);
+        let projected = job.traits.project(
+            &mut cursor,
+            pointer,
+            vector.leader,
+            engine_native::walk::Buffer::Exact(&mut rows),
+            engine_native::walk::Buffer::Exact(&mut bytes),
+        );
         if projected.outcome != (Outcome::Rows { len })
             || !carry.held_equals(at, &rows, &bytes[..projected.bytes_len])
         {
@@ -1504,130 +1580,123 @@ fn unit_identity(
     Ok(u32::from_le_bytes(reference[4..].try_into().unwrap()))
 }
 
+/// One unit leader's row, its bytes stored from the walk's start.
+struct UnitRead {
+    row: LeaderRow,
+    bytes_len: usize,
+    required_bytes: usize,
+}
+
+impl UnitRead {
+    /// Stores the row at `at`, growing `rows` to hold it.
+    fn store(self, rows: &mut Vec<LeaderRow>, at: usize) -> Result<Stored, &'static str> {
+        engine_native::walk::grow(rows, at + 1)?;
+        rows[at] = self.row;
+        Ok(Stored {
+            rows: 1,
+            bytes_len: self.bytes_len,
+            required_bytes: self.required_bytes,
+        })
+    }
+}
+
+/// One unit leader, its bytes stored from `from` in storage that grows to
+/// hold them.
 fn read_unit_selected(
     memory: &impl Memory,
     base: usize,
     pointer: usize,
     character: u32,
-    output: &mut [LeaderRow],
-    bytes: &mut [u8],
+    bytes: &mut Vec<u8>,
+    from: usize,
     training_active: bool,
-) -> ReadResult {
-    let Some(output) = output.first_mut() else {
-        return ReadResult::rows(Outcome::Truncated {
-            len: 0,
-            unread_rows: 1,
-        });
-    };
-    let native = match cunit_leader::read(memory, base, pointer, character) {
-        Ok(row) => row,
-        Err(reason) => return ReadResult::rows(Outcome::Unavailable { reason }),
-    };
-    let text = cunit_leader::read_text(memory, pointer, bytes);
-    if let Outcome::Unavailable { .. } = text.outcome {
-        return ReadResult {
-            outcome: text.outcome,
-            bytes_len: 0,
-            required_bytes: text.required_bytes,
-        };
-    }
-    let mut names = engine_native::cname_group_member::Names {
-        bytes,
-        len: text.bytes_len,
-        required: text.required_bytes,
-    };
+) -> Result<UnitRead, &'static str> {
+    let native = cunit_leader::read(memory, base, pointer, character)?;
+    let text = cunit_leader::read_text_into(memory, pointer, bytes, from)?;
+    let text_len = text.name_len + text.token_len;
+    let mut len = text_len;
+    let mut required = text_len;
     let (codename, codename_reason) = if cunit_leader::has_codename(native.kind) {
-        match cunit_leader::read_codename(memory, base, pointer, &mut names) {
-            Ok(engine_native::cname_group_member::Naming::Row(row)) => (Some(row), None),
-            Ok(engine_native::cname_group_member::Naming::DoesNotFit) => {
-                names.len = text.bytes_len;
-                (None, Some("unit leader codename byte capacity exceeded"))
-            }
+        match cunit_leader::read_codename_into(
+            memory,
+            base,
+            pointer,
+            bytes,
+            from,
+            &mut len,
+            &mut required,
+        ) {
+            Ok(row) => (Some(row), None),
             Err(reason) => {
-                names.len = text.bytes_len;
+                len = text_len;
                 (None, Some(reason))
             }
         }
     } else {
         (None, None)
     };
-    let training_start = names.len;
+    let training_start = len;
     let mut training_reason = None;
-    if training_active
+    let trained = training_active
         && matches!(
             native.kind,
             cunit_leader::KIND_ARMY | cunit_leader::KIND_NAVY
-        )
-    {
+        );
+    let mut progress_end = len;
+    if trained {
         let result = cunit_leader::visit_trait_progress(
             memory,
             base,
             pointer,
             |token, definition, experience| {
-                names.required = names.required.saturating_add(16);
-                if let Some(end) = names
-                    .len
-                    .checked_add(16)
-                    .filter(|&end| end <= names.bytes.len())
-                {
-                    names.bytes[names.len..names.len + 4].copy_from_slice(&token.to_le_bytes());
-                    names.bytes[names.len + 4..names.len + 8]
-                        .copy_from_slice(&definition.to_le_bytes());
-                    names.bytes[names.len + 8..end].copy_from_slice(&experience.to_le_bytes());
-                    names.len = end;
-                } else {
-                    training_reason.get_or_insert("unit leader training byte capacity exhausted");
+                if let Some(reason) = training_entry(
+                    bytes,
+                    from,
+                    &mut len,
+                    &mut required,
+                    (token, definition, experience),
+                ) {
+                    training_reason.get_or_insert(reason);
                 }
             },
         );
+        progress_end = len;
         if let Err(reason) = result {
             training_reason = Some(reason);
         }
     }
-    let mut training = (training_start, names.len - training_start);
-    let factors_start = names.len;
-    if training_active
-        && matches!(
-            native.kind,
-            cunit_leader::KIND_ARMY | cunit_leader::KIND_NAVY
-        )
+    if trained
         && let Err(reason) =
             cunit_leader::visit_trait_factors(memory, base, pointer, |token, definition, factor| {
-                names.required = names.required.saturating_add(16);
-                if let Some(end) = names
-                    .len
-                    .checked_add(16)
-                    .filter(|&end| end <= names.bytes.len())
-                {
-                    names.bytes[names.len..names.len + 4].copy_from_slice(&token.to_le_bytes());
-                    names.bytes[names.len + 4..names.len + 8]
-                        .copy_from_slice(&definition.to_le_bytes());
-                    names.bytes[names.len + 8..end].copy_from_slice(&factor.to_le_bytes());
-                    names.len = end;
-                } else {
-                    training_reason
-                        .get_or_insert("unit leader training factor byte capacity exhausted");
+                if let Some(reason) = training_entry(
+                    bytes,
+                    from,
+                    &mut len,
+                    &mut required,
+                    (token, definition, factor),
+                ) {
+                    training_reason.get_or_insert(reason);
                 }
             })
     {
         training_reason.get_or_insert(reason);
     }
-    let mut training_factors = (factors_start, names.len - factors_start);
+    let mut training = (training_start, progress_end - training_start);
+    let mut training_factors = (progress_end, len - progress_end);
     if training_reason.is_some() {
-        names.len = training_start;
+        len = training_start;
         training = (training_start, 0);
         training_factors = (training_start, 0);
     }
-    let fits = matches!(text.outcome, Outcome::Rows { len: 1 });
     let formation =
         cunit_leader::read_formation_reference(memory, pointer, native.kind, native.category);
-    if fits {
-        *output = LeaderRow {
+    Ok(UnitRead {
+        row: LeaderRow {
             native,
             // The token is saved as name; the display name is a separate unsaved string.
-            text_a_start: text.token_start,
+            text_a_start: text.name_len,
             text_a_len: text.token_len,
-            text_b_start: text.name_start,
+            text_b_start: 0,
             text_b_len: text.name_len,
             codename,
             codename_reason,
@@ -1636,20 +1705,36 @@ fn read_unit_selected(
             training,
             training_factors,
             training_reason,
-        };
-    }
-    ReadResult {
-        outcome: if fits {
-            Outcome::Rows { len: 1 }
-        } else {
-            Outcome::Truncated {
-                len: 0,
-                unread_rows: 1,
-            }
         },
-        bytes_len: if fits { names.len } else { 0 },
-        required_bytes: names.required,
+        bytes_len: len,
+        required_bytes: required,
+    })
+}
+
+/// Appends one 16-byte training entry, or names why it was not stored.
+fn training_entry(
+    bytes: &mut Vec<u8>,
+    from: usize,
+    len: &mut usize,
+    required: &mut usize,
+    (token, definition, value): (i32, i32, i64),
+) -> Option<&'static str> {
+    *required = required.saturating_add(16);
+    let Some((end, stop)) = len
+        .checked_add(16)
+        .and_then(|end| Some((end, from.checked_add(end)?)))
+    else {
+        return Some("unit leader training byte count overflow");
+    };
+    if let Err(reason) = engine_native::walk::grow(bytes, stop) {
+        return Some(reason);
     }
+    let start = from + *len;
+    bytes[start..start + 4].copy_from_slice(&token.to_le_bytes());
+    bytes[start + 4..start + 8].copy_from_slice(&definition.to_le_bytes());
+    bytes[start + 8..stop].copy_from_slice(&value.to_le_bytes());
+    *len = end;
+    None
 }
 
 pub(crate) fn ability_demand(
@@ -1679,45 +1764,7 @@ pub(crate) fn ability_demand(
     Ok((rows, bytes))
 }
 
-#[cfg(test)]
 pub(super) fn walk_abilities(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    rows: &mut [active_ability_record::Row],
-    bytes: &mut [u8],
-) -> ReadResult {
-    let mut output = Batch::new(rows, bytes);
-    let result = (|| {
-        let countries = ccountry::Reader::new(memory, base, game_state)?;
-        for slot in 1..countries.count() {
-            let Some(country) = countries.at(slot)? else {
-                continue;
-            };
-            let address = country
-                .pointer
-                .checked_add(ccountry::ACTIVE_ABILITIES)
-                .ok_or("country active ability array address overflow")?;
-            output.append(
-                |rows, bytes| {
-                    active_ability_record::walk(memory, base, country.id, address, rows, bytes)
-                        .into()
-                },
-                |row, offset| relocate(&mut row.token_start, offset),
-            );
-            if !output.active() {
-                break;
-            }
-        }
-        Ok::<_, &'static str>(())
-    })();
-    if let Err(reason) = result {
-        output.fail(reason);
-    }
-    output.result()
-}
-
-pub(super) fn walk_abilities_growing(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -1978,7 +2025,7 @@ pub(crate) enum Roles<C> {
     Borrow(C),
 }
 
-impl Roles<Arc<census::RoleCensus>> {
+impl Roles<engine_allocation::SharedBox<census::RoleCensus>> {
     pub(crate) fn as_deref(&self) -> Roles<&census::RoleCensus> {
         match self {
             Self::Independent => Roles::Independent,
@@ -1988,39 +2035,10 @@ impl Roles<Arc<census::RoleCensus>> {
     }
 }
 
-/// Independent acquisition, as tests and non-role hours use it.
-#[cfg(test)]
-pub(crate) fn copy_characters_refresh(
-    memory: &impl Memory,
-    ctx: CharactersCopyContext,
-    job: &mut CharactersJob,
-) -> CharactersCopyReport {
-    copy_characters(memory, ctx, job, Roles::Independent)
-}
-
-/// Production acquisition is worker-only. Grow staging before each next
-/// native observation; the fixed path remains available to fault fixtures.
-pub(crate) fn copy_characters_growing(
-    memory: &impl Memory,
-    ctx: CharactersCopyContext,
-    job: &mut CharactersJob,
-    roles: Roles<&census::RoleCensus>,
-) -> CharactersCopyReport {
-    job.worker_growing = true;
-    let report = copy_characters(memory, ctx, job, roles);
-    job.update_census_charge();
-    job.appended_charge.set(crate::raw_memory::Capacity {
-        auxiliary_vectors: crate::raw_memory::vector_bytes(&job.appended_roles),
-        ..Default::default()
-    });
-    job.worker_growing = false;
-    report
-}
-
 /// Raw acquisition of the current scheduled family with exclusively owned jobs.
-/// Copies one current payload and returns its acquisition costs.
-/// On staging overflow the caller takes the existing
-/// typed fallback and enqueues no payload.
+/// Copies one current payload and returns its acquisition costs. Staging grows
+/// before each next native observation; when it cannot, the caller takes the
+/// existing typed fallback and enqueues no payload.
 pub(crate) fn copy_characters(
     memory: &impl Memory,
     ctx: CharactersCopyContext,
@@ -2055,6 +2073,11 @@ pub(crate) fn copy_characters(
         // Keep the generation even after returning the shared storage.
         job.experience.generation = held.generation;
     }
+    job.update_census_charge();
+    job.appended_charge.set(crate::raw_memory::Capacity {
+        auxiliary_vectors: crate::raw_memory::vector_bytes(&job.appended_roles),
+        ..Default::default()
+    });
     report
 }
 
@@ -2064,7 +2087,6 @@ fn copy_characters_inner(
     job: &mut CharactersJob,
     roles: Roles<&census::RoleCensus>,
 ) -> CharactersCopyReport {
-    job.capture_growing = job.worker_growing;
     if !ctx.active.iter().any(|&active| active) {
         job.clear();
         return CharactersCopyReport {
@@ -2089,11 +2111,7 @@ fn copy_characters_inner(
         job.active = ctx.active;
         job.game_state = ctx.game_state;
         let cache = job.advisor_cache.as_mut().unwrap();
-        if job.worker_growing {
-            cache.capture_growing(memory, ctx, &crate::advisor_changes::Observer, loaned);
-        } else {
-            cache.capture(memory, ctx, &crate::advisor_changes::Observer, loaned);
-        }
+        cache.capture(memory, ctx, &crate::advisor_changes::Observer, loaned);
         crate::advisor_changes::record(cache.counts);
     } else if job.advisor_dynamic.is_some() {
         // The feature-gated section reader keeps its independent roster walk.
@@ -2475,12 +2493,16 @@ impl Captured {
                 advisors.fail(reason);
             }
             let roots = crate::raw::Recorded::build(&job.advisor_roots);
-            match ccharacter_manager::Roster::read(&roots, base, job.game_state) {
-                Ok(roster) => {
-                    let recorded = [
-                        crate::raw::Recorded::build(&job.log),
-                        crate::raw::Recorded::build(&dynamic.log),
-                    ];
+            let roster = roots.as_ref().map_err(|reason| *reason).and_then(|roots| {
+                ccharacter_manager::Roster::read(roots, base, job.game_state)
+            });
+            let sources = roster.and_then(|roster| {
+                let first = crate::raw::Recorded::build(&job.log)?;
+                let second = crate::raw::Recorded::build(&dynamic.log)?;
+                Ok((roster, [first, second]))
+            });
+            match sources {
+                Ok((roster, recorded)) => {
                     let mut ends = [0; 2];
                     for (index, ((_, section), source)) in
                         roster.sections().into_iter().zip(&recorded).enumerate()
@@ -2515,22 +2537,16 @@ impl Captured {
         } else {
             None
         };
-        let trait_failure = if job.traits.growing {
-            (|| {
-                let (row_count, byte_count) = job.traits.demand()?;
-                let (carried_rows, carried_bytes) = job.trait_carry.carried_demand();
-                let (row_count, byte_count) =
-                    (row_count + carried_rows, byte_count + carried_bytes);
-                engine_native::walk::Buffer::Growing(&mut self.traits.rows.rows)
-                    .ensure(row_count)?;
-                engine_native::walk::Buffer::Growing(&mut self.traits.bytes.first)
-                    .ensure(byte_count)?;
-                Ok::<_, &'static str>(())
-            })()
-            .err()
-        } else {
-            None
-        };
+        let trait_failure = (|| {
+            let (row_count, byte_count) = job.traits.demand()?;
+            let (carried_rows, carried_bytes) = job.trait_carry.carried_demand();
+            let (row_count, byte_count) = (row_count + carried_rows, byte_count + carried_bytes);
+            engine_native::walk::Buffer::Growing(&mut self.traits.rows.rows).ensure(row_count)?;
+            engine_native::walk::Buffer::Growing(&mut self.traits.bytes.first)
+                .ensure(byte_count)?;
+            Ok::<_, &'static str>(())
+        })()
+        .err();
         // The worker counted each acquired roster/name/template occurrence;
         // decode reserves those original observations before the fixed Batch.
         fn reserve_payload<R: Default>(
@@ -2550,15 +2566,11 @@ impl Captured {
         let republish = job.published.matches(quiet_rows);
         let decoded: [bool; N] =
             std::array::from_fn(|index| job.active[index] && !(republish && index == 0));
-        let payload_failures = if job.capture_growing {
-            [
-                reserve_payload(&mut self.characters, job.character_demand).err(),
-                reserve_payload(&mut self.units, job.unit_demand).err(),
-            ]
-        } else {
-            [None; 2]
-        };
-        let leader_failure = if job.active[1] && job.capture_growing {
+        let payload_failures = [
+            reserve_payload(&mut self.characters, job.character_demand).err(),
+            reserve_payload(&mut self.units, job.unit_demand).err(),
+        ];
+        let leader_failure = if job.active[1] {
             engine_native::walk::Buffer::Growing(&mut self.leaders.rows.rows)
                 .ensure(job.leader_rows)
                 .err()
@@ -2580,7 +2592,11 @@ impl Captured {
             .filter(|&(key, _)| {
                 job.unit_carry.table_key(quiet::census_generation(job)) == Some(key)
             })
-            .filter(|_| quiet::fresh_leaders_unchanged(&recorded, base, job))
+            .filter(|_| {
+                recorded
+                    .as_ref()
+                    .is_ok_and(|recorded| quiet::fresh_leaders_unchanged(recorded, base, job))
+            })
             .map(|(_, result)| result);
         // Likewise a traits job whose buffers hold its held leaders' table and
         // whose fresh vectors all equal their held rows.
@@ -2619,31 +2635,35 @@ impl Captured {
             let mut results = family.results();
             results[4] = traits;
             results
-        } else if job.roster.quiet {
-            quiet::walk(&recorded, base, family, job)
-        } else if job.census_capture {
-            walk_census(
-                &recorded,
-                base,
-                family,
-                Some(&job.traits),
-                job.census_visited.iter().copied(),
-                job.census_historical,
-                Carried {
-                    traits: Some(&job.trait_carry),
-                    ..Carried::default()
-                },
-            )
         } else {
-            walk_family_carrying(
-                &recorded,
-                base,
-                job.game_state,
-                family,
-                Some(&job.traits),
-                Some(&job.templates),
-                job.carry.active.then_some(&job.carry),
-            )
+            match &recorded {
+                Err(reason) => {
+                    family.fail(*reason);
+                    family.results()
+                }
+                Ok(recorded) if job.roster.quiet => quiet::walk(recorded, base, family, job),
+                Ok(recorded) if job.census_capture => walk_census(
+                    recorded,
+                    base,
+                    family,
+                    Some(&job.traits),
+                    job.census_visited.iter().copied(),
+                    job.census_historical,
+                    Carried {
+                        traits: Some(&job.trait_carry),
+                        ..Carried::default()
+                    },
+                ),
+                Ok(recorded) => walk_family_carrying(
+                    recorded,
+                    base,
+                    job.game_state,
+                    family,
+                    Some(&job.traits),
+                    Some(&job.templates),
+                    job.carry.active.then_some(&job.carry),
+                ),
+            }
         };
         self.install_carried_family(decoded, results, held_units.is_some());
         if republish {
@@ -2670,6 +2690,23 @@ impl Captured {
             }
         }
     }
+}
+
+/// Tests that run a character acquisition hold this, so a parallel test
+/// cannot move the shared state mid-test, and each starts from a fresh
+/// attachment's roster and demand hints, daily XP samples and latest census.
+#[cfg(test)]
+pub(crate) fn test_globals() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let guard = LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    census::forget_live();
+    demand::forget_live();
+    advisors::forget_live();
+    daily_experience::STORE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .forget();
+    guard
 }
 
 #[cfg(test)]

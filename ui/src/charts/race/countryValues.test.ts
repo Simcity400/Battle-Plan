@@ -123,7 +123,7 @@ test('a missing separate group read keeps the exact total and hatches its unknow
   assert.equal(countryValueLines(model, 'country', null, { firstHour: 1, lastHour: 3 })[0].lastHour, 3);
 });
 
-test('the PartsRaceView shape joins boundaries without filling gaps or expanding hours', () => {
+test('the parts race shape joins boundaries without filling gaps or expanding hours', () => {
   const reply = { branchId: '1', warnings: ['kept'], types: [{ key: 'unknown:unit', name: 'Unit' }],
     series: [{ tag: 'opaque', membership: [{ firstHour: 1, lastHour: 4 }, { firstHour: 6, lastHour: 1_000_000 }],
       segments: [{ firstHour: 1, lastHour: 4 }, { firstHour: 6, lastHour: 1_000_000 }],

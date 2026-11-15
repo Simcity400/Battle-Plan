@@ -312,18 +312,20 @@ fn columnar_capture_metadata_has_the_same_player_report_as_rows() {
         content: Vec::new(),
         capture_mode: capture.capture_mode,
     };
-    let writer = crate::columnar_file::FileWriter::create(
+    let mut writer = crate::columnar_file::FileWriter::create(
         std::io::Cursor::new(Vec::new()),
         identity,
         schema.len(),
         crate::columnar_file::Settings::HIGH,
+        None,
     )
     .unwrap();
-    let columnar = writer
-        .finish_with_capture(&capture, |_| Ok(()))
-        .unwrap()
-        .file
-        .into_inner();
+    let container = writer.container();
+    let record = container
+        .put_zstd(replay_columnar::envelope::Kind::Controls, replay_columnar::container::Tags::default(), &capture.write().unwrap(), 3)
+        .unwrap();
+    container.set_open(replay_columnar::container::SectionKey::RECORDS, &[record]).unwrap();
+    let columnar = writer.finish_runs(&[], true, |_| Ok(())).unwrap().0.into_inner();
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let directory = std::env::temp_dir().join(format!(
         "hoi4-command-columnar-{}-{}",
@@ -417,16 +419,11 @@ fn phase_declares_a_campaign_branch_without_recording_an_hour() {
         unreachable!()
     };
     packet.phase.as_mut().unwrap().campaign[0] = b'f';
-    assert!(
-        Replay::from_records(
-            campaign.to_vec(),
-            &[vec![
-                Record::SessionStart(session()),
-                Record::Control(entry)
-            ]]
-        )
-        .is_err()
-    );
+    // A phase naming another campaign is damage: its controls are dropped and named, not read.
+    let conflicting = Replay::from_records(campaign.to_vec(), &[vec![Record::SessionStart(session()), Record::Control(entry)]]).unwrap();
+    assert!(conflicting.controls.is_empty());
+    assert_eq!(conflicting.damaged_parts, 1);
+    assert!(conflicting.warnings.iter().any(|warning| warning.contains("player command phase conflicts")), "{:?}", conflicting.warnings);
 }
 
 #[test]

@@ -5,14 +5,14 @@ use replay_frame::frame::ViewIdentity;
 
 type Key = (bool, u32, usize);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct BuildingInput {
-    pub(super) location: u32,
-    pub(super) building_type: u32,
-    pub(super) country: u32,
-    pub(super) status_flags: u32,
-    pub(super) level: i16,
-    pub(super) healthy_level: i16,
-    pub(super) partial_health: i64,
+pub struct BuildingInput {
+    pub location: u32,
+    pub building_type: u32,
+    pub country: u32,
+    pub status_flags: u32,
+    pub level: i16,
+    pub healthy_level: i16,
+    pub partial_health: i64,
 }
 impl From<&BuildingRow> for BuildingInput {
     fn from(row: &BuildingRow) -> Self {
@@ -240,6 +240,7 @@ impl AvailableRows {
     pub(super) fn get(&self, key: &Key) -> Option<&BuildingInput> {
         self.values.get(key)
     }
+    #[cfg(test)]
     pub(super) fn read(
         assets: &MapBuildingAssets,
         frame: &DecodedFrame,
@@ -495,45 +496,7 @@ impl AvailableRows {
         census.apply(assets, summary);
         let selected = match old {
             Some(old) => old.selected.clone(),
-            None => Retained::new((|| {
-                let types = &assets.facts.ordered;
-                let infrastructure = types
-                    .iter()
-                    .filter(|kind| kind.name.eq_ignore_ascii_case("infrastructure"))
-                    .count();
-                if infrastructure > 1 {
-                    return Err(format!(
-                        "infrastructure: {infrastructure} ambiguous city-damage templates"
-                    ));
-                }
-                if types.iter().any(|kind| kind.name == "industrial_complex") {
-                    let count = types
-                        .iter()
-                        .filter(|kind| kind.name.eq_ignore_ascii_case("industrial_complex"))
-                        .count();
-                    if count > 1 {
-                        return Err(format!(
-                            "industrial_complex: {count} ambiguous city-damage templates"
-                        ));
-                    }
-                }
-                let mut selected = Vec::with_capacity(types.len());
-                selected.extend(
-                    types
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, kind)| kind.name.eq_ignore_ascii_case("infrastructure"))
-                        .map(|(index, _)| index),
-                );
-                selected.extend(
-                    types
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, kind)| kind.name == "industrial_complex")
-                        .map(|(index, _)| index),
-                );
-                Ok(selected)
-            })()),
+            None => Retained::new(assets.city_templates()),
         };
         let city = old.and_then(|old| old.city.as_ref()).map(|old| City {
             provinces: old.provinces.clone(),

@@ -336,7 +336,7 @@ fn capture(image: &MemoryImage, rows: &mut Vec<Row>, geometry: &mut Vec<u32>) ->
         BASE,
         rows,
         geometry,
-        &mut [corders_group::Root::default(); 8],
+        &mut vec![corders_group::Root::default(); 8],
         &mut vec![Visit::default(); 16],
     )
 }
@@ -418,7 +418,7 @@ fn native_geometry_counts_grow_only_after_readable_batches() {
 fn assigned_member_count_does_not_allocate_before_authentication() {
     let mut image = fixture();
     image.u64(BASE + registry::INVALID_REFERENCE_RVA.0, u64::MAX);
-    let mut groups = [corders_group::Root::default(); 8];
+    let mut groups = vec![corders_group::Root::default(); 8];
     let mut visits = Vec::new();
     let source = walk(
         &image,
@@ -469,7 +469,7 @@ fn named_arrows_record_their_name_strings_and_lines_record_none() {
     image.u64(SECOND + NAME_STRINGS[4], 0x70000);
     image.u64(SECOND + NAME_STRINGS[4] + 0x10, 17);
     image.u64(SECOND + NAME_STRINGS[4] + 0x18, 31);
-    let mut groups = [corders_group::Root::default(); 8];
+    let mut groups = vec![corders_group::Root::default(); 8];
     let mut visits = vec![Visit::default(); 16];
     let source = walk(
         &image,
@@ -543,7 +543,7 @@ fn plans_preserve_raw_bytes_scoped_ids_members_and_grow_without_rereading() {
     image.array(FIRST + ASSIGNED_MEMBER_DATA, 0x50000, 2);
     image.u64(0x50000, (UNIT + crate::cunit::SCHEDULED_MEMBER) as u64);
     image.u64(0x50008, (UNIT + crate::cunit::SCHEDULED_MEMBER) as u64);
-    let mut groups = [corders_group::Root::default(); 8];
+    let mut groups = vec![corders_group::Root::default(); 8];
     let mut visits = vec![Visit::default(); 16];
     let source = walk(
         &image,
@@ -714,7 +714,7 @@ fn plan_walks_hint_every_direct_read_ahead_and_change_no_read_or_row() {
         image.u64(LIST + (index + 1) * 8, order as u64);
         orders.push(order);
     }
-    let mut groups = [corders_group::Root::default(); 8];
+    let mut groups = vec![corders_group::Root::default(); 8];
     let mut visits = vec![Visit::default(); 16];
     let census = walk(
         &image,
@@ -857,7 +857,7 @@ fn plan_dependents_are_hinted_one_batch_before_their_reads() {
         image.u64(LIST + (index + 1) * 8, order as u64);
         dependents.push((order, [text, predecessors]));
     }
-    let mut groups = [corders_group::Root::default(); 8];
+    let mut groups = vec![corders_group::Root::default(); 8];
     let mut visits = vec![Visit::default(); 64];
     let mut lists = SuccessorLists::default();
     let census = walk_listing_successors(
@@ -943,7 +943,7 @@ fn plan_dependents_are_hinted_one_batch_before_their_reads() {
 #[test]
 fn group_plans_keep_the_native_root_order_as_census_ids() {
     let mut image = fixture();
-    let mut roots = [corders_group::Root::default(); 8];
+    let mut roots = vec![corders_group::Root::default(); 8];
     let mut visits = vec![Visit::default(); 16];
     let census = walk(
         &image,
@@ -996,7 +996,7 @@ fn plan_graphs_preserve_native_order_and_reject_references_outside_the_census() 
     image.bytes(CHILDREN_A, &[0; 16]);
     image.u64(CHILDREN_A, CHILD as u64);
     image.u64(CHILDREN_A + 8, CHILD as u64);
-    let mut groups = [corders_group::Root::default(); 8];
+    let mut groups = vec![corders_group::Root::default(); 8];
     let mut visits = Vec::new();
     let source = walk(
         &image,
@@ -1101,7 +1101,7 @@ fn planned_with(
     listing: bool,
     records: bool,
 ) -> Planned {
-    let mut groups = [corders_group::Root::default(); 8];
+    let mut groups = vec![corders_group::Root::default(); 8];
     let mut visits = vec![Visit::default(); 16];
     let mut lists = SuccessorLists::default();
     let census = if listing {
@@ -1356,7 +1356,7 @@ fn census_successor_lists_give_the_rows_of_rereading_them() {
         BASE,
         &mut Vec::new(),
         &mut Vec::new(),
-        &mut [corders_group::Root::default(); 8],
+        &mut vec![corders_group::Root::default(); 8],
         &mut vec![Visit::default(); 16],
         &mut lists,
     );
@@ -1374,7 +1374,7 @@ fn census_successor_lists_give_the_rows_of_rereading_them() {
         BASE,
         &mut plain_rows,
         &mut plain_geometry,
-        &mut [corders_group::Root::default(); 8],
+        &mut vec![corders_group::Root::default(); 8],
         &mut plain_visits,
     );
     let mut rows = vec![Row::default(); 8];
@@ -1385,7 +1385,7 @@ fn census_successor_lists_give_the_rows_of_rereading_them() {
         BASE,
         &mut rows,
         &mut geometry,
-        &mut [corders_group::Root::default(); 8],
+        &mut vec![corders_group::Root::default(); 8],
         &mut visits,
         &mut SuccessorLists::default(),
     );
@@ -1452,7 +1452,7 @@ fn group_root_ids_are_the_census_ids_of_their_orders() {
         .collect();
     assert_eq!(planned.roots, ids);
     let mut visits = vec![Visit::default(); 16];
-    let mut groups = [corders_group::Root::default(); 8];
+    let mut groups = vec![corders_group::Root::default(); 8];
     walk(
         &image,
         BASE,
@@ -1598,7 +1598,7 @@ fn fallback_rosters_are_direct_rows_without_recursive_successor_gathering() {
 }
 
 #[test]
-fn group_scratch_exhaustion_is_explicit_and_traversal_scratch_grows_in_place() {
+fn group_and_traversal_scratch_grow_in_place() {
     let image = fixture();
     let mut rows = vec![Row::default(); 8];
     let mut visits = vec![Visit::default(); 2];
@@ -1607,42 +1607,21 @@ fn group_scratch_exhaustion_is_explicit_and_traversal_scratch_grows_in_place() {
         BASE,
         &mut rows,
         &mut vec![0; 16],
-        &mut [],
-        &mut vec![Visit::default(); 16],
-    );
-    assert_eq!(
-        report.outcome,
-        Outcome::Unavailable {
-            reason: "orders group scratch capacity exhausted"
-        }
-    );
-    assert_eq!(report.required_groups, 1);
-    assert_eq!(
-        report.root_outcome,
-        Outcome::Truncated {
-            len: 0,
-            unread_rows: 1
-        }
-    );
-    let report = walk(
-        &image,
-        BASE,
-        &mut rows,
-        &mut vec![0; 16],
-        &mut [corders_group::Root::default(); 8],
+        &mut Vec::new(),
         &mut visits,
     );
     assert_eq!(report.outcome, Outcome::Rows { len: 3 });
+    assert_eq!(report.required_groups, 1);
+    assert_eq!(report.root_outcome, Outcome::Rows { len: 1 });
     assert_eq!(visits.len(), 4);
     assert_eq!(report.minimum_visits, 0);
-    assert_eq!(report.root_outcome, Outcome::Rows { len: 1 });
     assert_eq!(report.visited, 3);
     let recovered = walk(
         &image,
         BASE,
         &mut rows,
         &mut vec![0; 16],
-        &mut [corders_group::Root::default(); 1],
+        &mut vec![corders_group::Root::default(); 1],
         &mut vec![Visit::default(); 4],
     );
     assert_eq!(recovered.outcome, Outcome::Rows { len: 3 });
@@ -1708,7 +1687,7 @@ fn traversal_growth_preserves_nested_stacks_cycles_and_native_failure_prefixes()
             BASE,
             &mut expected_rows,
             &mut expected_geometry,
-            &mut [corders_group::Root::default(); 8],
+            &mut vec![corders_group::Root::default(); 8],
             &mut vec![Visit::default(); 32],
         );
         let reads = image.1.borrow().clone();
@@ -1743,7 +1722,7 @@ fn traversal_growth_preserves_nested_stacks_cycles_and_native_failure_prefixes()
                     BASE,
                     &mut rows,
                     &mut geometry,
-                    &mut [corders_group::Root::default(); 8],
+                    &mut vec![corders_group::Root::default(); 8],
                     &mut visits,
                 );
                 assert_eq!(actual, expected, "initial={initial}, failure={failure:?}");
@@ -1757,7 +1736,7 @@ fn traversal_growth_preserves_nested_stacks_cycles_and_native_failure_prefixes()
 }
 
 #[test]
-fn group_scratch_demand_counts_the_full_registry_and_does_not_invent_omitted_orders() {
+fn group_scratch_grows_to_the_full_registry_and_does_not_invent_omitted_orders() {
     let mut image = fixture();
     image.u32(TABLE + registry::COUNT, 3);
     // Both omitted groups are valid but have no orders. Their registry
@@ -1775,40 +1754,22 @@ fn group_scratch_demand_counts_the_full_registry_and_does_not_invent_omitted_ord
         image.u32(pointer + corders_group::COUNTRY, 19);
     }
     let mut rows = vec![Row::default(); 8];
-    let mut groups = [corders_group::Root::default(); 1];
+    let mut groups = vec![corders_group::Root::default(); 1];
     assert_eq!(
         corders_group::walk_roots(&image, BASE, &mut groups),
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 2
-        }
+        Outcome::Rows { len: 3 }
     );
-    let short = walk(
+    let grown = walk(
         &image,
         BASE,
         &mut rows,
         &mut vec![0; 16],
-        &mut groups,
+        &mut vec![corders_group::Root::default(); 1],
         &mut vec![Visit::default(); 16],
     );
-    assert_eq!(short.required_groups, 3);
-    assert_eq!(
-        short.outcome,
-        Outcome::Unavailable {
-            reason: "orders group scratch capacity exhausted"
-        }
-    );
-    let recovered = walk(
-        &image,
-        BASE,
-        &mut rows,
-        &mut vec![0; 16],
-        &mut [corders_group::Root::default(); 3],
-        &mut vec![Visit::default(); 16],
-    );
-    assert_eq!(recovered.required_groups, 3);
-    assert_eq!(recovered.outcome, Outcome::Rows { len: 3 });
-    assert_eq!(recovered.required_geometry, 5);
+    assert_eq!(grown.required_groups, 3);
+    assert_eq!(grown.outcome, Outcome::Rows { len: 3 });
+    assert_eq!(grown.required_geometry, 5);
 }
 
 #[test]
@@ -1916,7 +1877,7 @@ fn empty_native_order_lists_produce_a_complete_empty_table() {
 fn group_withdrawing_byte_uses_authenticated_identities() {
     let mut image = fixture();
     image.bytes(GROUP + corders_group::WITHDRAWING, &[255]);
-    let mut roots = [corders_group::Root::default(); 2];
+    let mut roots = vec![corders_group::Root::default(); 2];
     let source = corders_group::walk_roots(&image, BASE, &mut roots);
     assert_eq!(source, Outcome::Rows { len: 1 });
     let mut rows = [corders_group::CounterInputsRow::default(); 1];
@@ -1949,7 +1910,7 @@ fn group_withdrawing_byte_uses_authenticated_identities() {
 fn group_hq_distance_keeps_raw_signed_words_and_isolated_failures() {
     let mut image = fixture();
     image.bytes(GROUP + corders_group::WITHDRAWING, &[0xfe]);
-    let mut roots = [corders_group::Root::default(); 2];
+    let mut roots = vec![corders_group::Root::default(); 2];
     let source = corders_group::walk_roots(&image, BASE, &mut roots);
     let mut rows = [corders_group::CounterInputsRow::default(); 1];
     for raw in [i32::MIN, -7, -1, 0, 1, i32::MAX] {
@@ -2163,9 +2124,9 @@ fn plan_fixture() -> (MemoryImage, [usize; 2]) {
 }
 
 #[test]
-fn original_assigned_host_lane_has_no_reads_and_shortage_preserves_core_plans() {
+fn original_assigned_host_lane_has_no_reads_and_a_short_lane_grows() {
     let (image, _) = plan_fixture();
-    let mut groups = [corders_group::Root::default(); 8];
+    let mut groups = vec![corders_group::Root::default(); 8];
     let mut visits = vec![Visit::default(); 16];
     let census = walk(
         &image,
@@ -2209,11 +2170,11 @@ fn original_assigned_host_lane_has_no_reads_and_shortage_preserves_core_plans() 
     assert_eq!(complete.outcome(), Outcome::Rows { len: 3 });
     let mut short = AssignedSources::try_with_capacity(1).unwrap();
     assert_eq!(run(Some(&mut short)), baseline);
-    assert_eq!(short.pointers(), &[PLAN_UNIT]);
+    assert_eq!(short.pointers(), &[PLAN_UNIT; 3]);
     assert_eq!(short.required(), 3);
-    assert!(matches!(short.outcome(), Outcome::Unavailable { .. }));
+    assert_eq!(short.outcome(), Outcome::Rows { len: 3 });
     short.fail("worker unwind");
-    assert_eq!(short.used(), 1);
+    assert_eq!(short.used(), 3);
     assert_eq!(short.required(), 3);
     assert_eq!(
         short.outcome(),
@@ -2235,7 +2196,7 @@ fn gathered_reads_match_per_field_reads_rows_and_failure_precedence() {
     let (image, payloads) = plan_fixture();
     let unique = b"Synthetic Heights";
     let group_name = b"Synthetic Army Group Epsilon";
-    let mut groups = [corders_group::Root::default(); 8];
+    let mut groups = vec![corders_group::Root::default(); 8];
     let mut visits = vec![Visit::default(); 16];
     let census = walk(
         &image,
@@ -2447,7 +2408,7 @@ fn census_plan_records_give_the_plan_walks_own_rows_and_failures() {
             per_field: false,
             payloads: &payloads,
         };
-        let mut groups = [corders_group::Root::default(); 8];
+        let mut groups = vec![corders_group::Root::default(); 8];
         let mut visits = vec![Visit::default(); 16];
         let mut lists = SuccessorLists::default();
         let (mut census_rows, mut geometry) = (Vec::new(), Vec::new());
@@ -2751,7 +2712,7 @@ fn type_driven_name_records_match_per_field_reads_for_every_order_type() {
         image.u64(SECOND + NAME_STRINGS[4], UNIQUE as u64);
         image.u64(SECOND + NAME_STRINGS[4] + LENGTH, 20);
         image.u64(SECOND + NAME_STRINGS[4] + CAPACITY, 31);
-        let mut groups = [corders_group::Root::default(); 8];
+        let mut groups = vec![corders_group::Root::default(); 8];
         let mut visits = vec![Visit::default(); 16];
         let census = walk(
             &image,
@@ -2995,7 +2956,7 @@ fn keyed_rows_take_a_matching_guess_and_search_otherwise() {
 #[test]
 fn the_plan_walk_leaves_each_census_orders_row_only_when_complete() {
     let (image, _) = plan_fixture();
-    let mut groups = [corders_group::Root::default(); 8];
+    let mut groups = vec![corders_group::Root::default(); 8];
     let mut visits = vec![Visit::default(); 16];
     let mut lists = SuccessorLists::default();
     let (mut census_rows, mut geometry) = (Vec::new(), Vec::new());
@@ -3164,7 +3125,7 @@ fn traced_census_mode(
         BASE,
         &mut rows,
         &mut geometry,
-        &mut [corders_group::Root::default(); 8],
+        &mut vec![corders_group::Root::default(); 8],
         &mut vec![Visit::default(); 16],
         &mut SuccessorLists::default(),
     );
@@ -3316,7 +3277,7 @@ fn passes_meet_orders_in_census_order_whatever_the_table_layout() {
     image.u32(SECOND + ASSIGNED_MEMBER_DATA + 12, 5);
     let mut inverted = 0;
     for capacity in [8, 16, 32, 64, 128, 256, 512, 1024] {
-        let mut groups = [corders_group::Root::default(); 8];
+        let mut groups = vec![corders_group::Root::default(); 8];
         let mut visits = vec![Visit::default(); capacity];
         let mut lists = SuccessorLists::default();
         let census = walk_listing_successors(
@@ -3642,12 +3603,12 @@ fn stitched_census_parts_are_the_single_census_for_every_split() {
         8,
         Outcome::Rows { len: 18 },
     ));
-    // Four groups in three root slots: refused before any group.
+    // Four groups from three root slots: the roots grow.
     cases.push((
-        "refused",
+        "grown roots",
         groups_fixture(4, 3).0,
         3,
-        unavailable("orders group scratch capacity exhausted"),
+        Outcome::Rows { len: 12 },
     ));
     // An order whose vtable is wrong, in the third group.
     let (mut image, _) = groups_fixture(4, 3);
@@ -3801,14 +3762,6 @@ fn stitched_census_parts_are_the_single_census_for_every_split() {
     assert!(vtable.order.is_empty());
     let shared = state("shared first");
     assert_eq!((shared.walk.visited, shared.rows.len()), (9, 9));
-    // A refusal before any group keeps the previous pass's entered orders but
-    // no census order.
-    let mut storage = CensusStorage::default();
-    serial_census(&before, &before_groups, before_outcome, &mut storage);
-    let (groups, root_outcome) = order_roots(&cases[2].1, 3);
-    let refused = serial_census(&cases[2].1, &groups, root_outcome, &mut storage);
-    assert_eq!((refused.walk.visited, refused.entered.len()), (0, 12));
-    assert!(refused.order.is_empty());
 }
 
 /// A plan walk's storage.
@@ -3855,25 +3808,11 @@ impl Plans {
     }
 }
 
-/// An assigned host lane: growing on the worker, or of a fixed `capacity`.
-fn host_lane(capacity: Option<usize>) -> AssignedSources {
-    match capacity {
-        Some(capacity) => AssignedSources::try_with_capacity(capacity).unwrap(),
-        None => {
-            let mut hosts = AssignedSources::default();
-            hosts.enable_worker_growth();
-            hosts
-        }
-    }
-}
-
-/// The census and plan walk over `image` with a host lane of `capacity`, and
-/// for every split into consecutive parts, each part's census and plan walk
-/// (with growing lanes), stitched into storage and a lane of `capacity`.
+/// The census and plan walk over `image`, and for every split into
+/// consecutive parts, each part's census and plan walk, stitched.
 #[allow(clippy::type_complexity)]
 fn serial_and_stitched_plans(
     image: &MemoryImage,
-    capacity: Option<usize>,
 ) -> (Plans, Vec<(Vec<std::ops::Range<usize>>, Plans)>) {
     let (groups, root_outcome) = order_roots(image, 8);
     let count = root_outcome.len();
@@ -3881,7 +3820,7 @@ fn serial_and_stitched_plans(
         let mut census = CensusStorage::default();
         let walk = serial_census(image, &groups, root_outcome, &mut census).walk;
         let mut plans = PlanStorage::default();
-        let mut hosts = host_lane(capacity);
+        let mut hosts = AssignedSources::default();
         let walk = walk_plans_ordered_with_sources(
             image,
             BASE,
@@ -3905,7 +3844,7 @@ fn serial_and_stitched_plans(
             .iter()
             .map(|(census, part)| {
                 let mut plans = PlanStorage::default();
-                let mut hosts = host_lane(None);
+                let mut hosts = AssignedSources::default();
                 let walk = walk_plans_ordered_with_sources(
                     image,
                     BASE,
@@ -3939,7 +3878,7 @@ fn serial_and_stitched_plans(
             })
             .collect();
         let mut plans = PlanStorage::default();
-        let mut hosts = host_lane(capacity);
+        let mut hosts = AssignedSources::default();
         let walk = stitch_plans(
             &parts,
             census.outcome,
@@ -3961,8 +3900,7 @@ fn serial_and_stitched_plans(
 /// assigned demand, the placement, and the assigned hosts retained with their
 /// demand and verdict. That holds for a complete walk over more orders than a
 /// batch, for the first failure in census order with the arenas and hosts
-/// acquired before it, for a host lane that fills, alone or before a core
-/// failure, and for the census's refusal.
+/// acquired before it, and for the census's refusal.
 #[test]
 fn stitched_plan_parts_are_the_single_plan_walk_for_every_split() {
     // Six groups of three orders, more than a plan batch; each group's first
@@ -3977,15 +3915,14 @@ fn stitched_plan_parts_are_the_single_plan_walk_for_every_split() {
     };
     let (_, pointers) = with_members();
     let unavailable = |reason| Outcome::Unavailable { reason };
-    let mut cases: Vec<(&str, MemoryImage, Option<usize>, Outcome)> = Vec::new();
-    cases.push(("clean", with_members().0, None, Outcome::Rows { len: 18 }));
+    let mut cases: Vec<(&str, MemoryImage, Outcome)> = Vec::new();
+    cases.push(("clean", with_members().0, Outcome::Rows { len: 18 }));
     // An invalid predecessor header in the third group.
     let (mut image, _) = with_members();
     image.u32(pointers[2][1] + PREDECESSOR_DATA + 12, 5);
     cases.push((
         "predecessors",
         image,
-        None,
         unavailable("plan graph header invalid"),
     ));
     // Plan failures in the second and the fifth group: the first wins.
@@ -3995,7 +3932,6 @@ fn stitched_plan_parts_are_the_single_plan_walk_for_every_split() {
     cases.push((
         "first of two",
         image,
-        None,
         unavailable("plan assigned member header invalid"),
     ));
     // The fourth group's last order's second division is not one: the
@@ -4008,22 +3944,6 @@ fn stitched_plan_parts_are_the_single_plan_walk_for_every_split() {
     cases.push((
         "member",
         member(),
-        None,
-        unavailable("plan assigned division identity mismatch"),
-    ));
-    // A host lane of seven: it fills in the second group, the core plans
-    // complete, and its demand counts every division.
-    cases.push((
-        "host capacity",
-        with_members().0,
-        Some(7),
-        Outcome::Rows { len: 18 },
-    ));
-    // The lane fills, then the core walk fails.
-    cases.push((
-        "host capacity then member",
-        member(),
-        Some(7),
         unavailable("plan assigned division identity mismatch"),
     ));
     // A census failure refuses the plans.
@@ -4032,12 +3952,11 @@ fn stitched_plan_parts_are_the_single_plan_walk_for_every_split() {
     cases.push((
         "census",
         image,
-        None,
         unavailable("plans require a complete army order census"),
     ));
     let mut states = Vec::new();
-    for (name, image, capacity, expected) in &cases {
-        let (serial, splits) = serial_and_stitched_plans(image, *capacity);
+    for (name, image, expected) in &cases {
+        let (serial, splits) = serial_and_stitched_plans(image);
         assert_eq!(serial.outcome, *expected, "{name}");
         assert_eq!(splits.len(), 3 * 32, "{name}");
         for (ranges, stitched) in splits {
@@ -4073,18 +3992,6 @@ fn stitched_plan_parts_are_the_single_plan_walk_for_every_split() {
     );
     assert_eq!(member.names.len(), 4 * 19);
     assert!(member.rows.is_empty() && member.placement.is_empty());
-    let filled = &states[4];
-    assert_eq!((filled.hosts.len(), filled.required_hosts), (7, 30));
-    assert_eq!(
-        filled.hosts_outcome,
-        unavailable("plan assigned host capacity exceeded")
-    );
-    let both = &states[5];
-    assert_eq!((both.hosts.len(), both.required_hosts), (7, 20));
-    assert_eq!(
-        both.hosts_outcome,
-        unavailable("plan assigned hosts require complete core plans")
-    );
 }
 
 /// A fault that clears after its first touch, at the invalid reference
@@ -4127,7 +4034,7 @@ fn a_one_shot_fault_two_parts_share_is_met_in_time_order_and_recorded_once() {
         let mut storage = CensusStorage::default();
         let walk = serial_census(&image, groups, root_outcome, &mut storage).walk;
         let mut plans = PlanStorage::default();
-        let mut hosts = host_lane(None);
+        let mut hosts = AssignedSources::default();
         let walk = walk_plans_ordered_with_sources(
             &memory,
             BASE,
@@ -4156,7 +4063,7 @@ fn a_one_shot_fault_two_parts_share_is_met_in_time_order_and_recorded_once() {
         for index in [first, 1 - first] {
             let (part_walk, part) = &censuses[index];
             let mut plans = PlanStorage::default();
-            let mut hosts = host_lane(None);
+            let mut hosts = AssignedSources::default();
             let walk = walk_plans_ordered_with_sources(
                 &memory,
                 BASE,
@@ -4193,7 +4100,7 @@ fn a_one_shot_fault_two_parts_share_is_met_in_time_order_and_recorded_once() {
             })
             .collect();
         let mut plans = PlanStorage::default();
-        let mut hosts = host_lane(None);
+        let mut hosts = AssignedSources::default();
         let walk = stitch_plans(
             &parts,
             census.outcome,
@@ -4268,7 +4175,7 @@ fn assigned_hosts_of_a_member_chunk_are_gathered_in_one_record_copy() {
         }
     }
     let (image, _) = plan_fixture();
-    let mut groups = [corders_group::Root::default(); 8];
+    let mut groups = vec![corders_group::Root::default(); 8];
     let mut visits = vec![Visit::default(); 16];
     let census = walk(
         &image,

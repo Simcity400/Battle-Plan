@@ -6,6 +6,8 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 
+pub const STORAGE_FAILED: &str = "event ledger event storage allocation failed";
+
 pub trait Event: Copy {
     fn set_id(&mut self, id: u64);
 }
@@ -58,6 +60,7 @@ pub struct EventLedger<T> {
     pub calls: AtomicU64,
     pub events: AtomicU64,
     pub zero_writes: AtomicU64,
+    /// Times a full store grew in the writer's callback.
     pub overflow: AtomicU64,
     pub refusals: AtomicU64,
     pub lost_drains: AtomicU64,
@@ -258,7 +261,7 @@ impl<T: Event> EventLedger<T> {
         // unresolved native execution to a spool-only loss.
         if !matches!(
             reason,
-            "event ledger event storage exhausted" | "event ledger observation invalidated"
+            STORAGE_FAILED | "event ledger observation invalidated"
         ) {
             self.native_recovery.store(true, Ordering::SeqCst);
         }
@@ -344,7 +347,8 @@ impl<T: Event> EventLedger<T> {
                     .max(store.entries.len().saturating_add(1)),
                 Ordering::Release,
             );
-            return Err("event ledger event storage exhausted");
+            engine_allocation::advisory(|| engine_allocation::reserve(&mut store.entries, 1))
+                .map_err(|_| STORAGE_FAILED)?;
         }
         event.set_id(store.next_id);
         store.next_id = store
@@ -440,22 +444,17 @@ impl<T: Event> EventLedger<T> {
                 .try_lock()
                 .map_or(true, |store| store.partial || store.refusal.is_some())
     }
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn drain(&self, output: &mut Vec<T>) -> Result<usize, &'static str> {
-        self.drain_buffer(output, false)
-    }
     /// Worker-only: owned events still covered by this interval size the
     /// returned frame before handoff; no native operation is attempted again.
-    pub fn drain_growing(&self, output: &mut Vec<T>) -> Result<usize, &'static str> {
-        self.drain_buffer(output, true)
+    pub fn drain(&self, output: &mut Vec<T>) -> Result<usize, &'static str> {
+        self.drain_buffer(output)
     }
-    fn drain_buffer(&self, output: &mut Vec<T>, growing: bool) -> Result<usize, &'static str> {
-        self.drain_buffer_with(output, growing, || {})
+    fn drain_buffer(&self, output: &mut Vec<T>) -> Result<usize, &'static str> {
+        self.drain_buffer_with(output, || {})
     }
     fn drain_buffer_with(
         &self,
         output: &mut Vec<T>,
-        growing: bool,
         after_transfer: impl FnOnce(),
     ) -> Result<usize, &'static str> {
         self.drains.fetch_add(1, Ordering::Relaxed);
@@ -497,10 +496,9 @@ impl<T: Event> EventLedger<T> {
             return Err("event ledger first/branch/recovery interval is partial");
         }
         output.clear();
-        if growing {
-            engine_allocation::reserve_exact(output, store.entries.len())
-                .map_err(|_| "event ledger drain allocation failed")?;
-        }
+        engine_allocation::reserve_exact(output, store.entries.len())
+            .map_err(|_| "event ledger drain allocation failed")?;
+        
         if output.capacity() < store.entries.len() {
             self.refusals.fetch_add(1, Ordering::Relaxed);
             self.discard(&mut store);
@@ -561,27 +559,45 @@ mod tests {
         let mut rows = Vec::new();
         ledger.boundary(clock(1));
         assert!(ledger.interval_incomplete());
-        assert!(ledger.drain_growing(&mut rows).is_err());
+        assert!(ledger.drain(&mut rows).is_err());
         ledger.boundary(clock(2));
         assert!(!ledger.interval_incomplete());
-        assert_eq!(ledger.drain_growing(&mut rows), Ok(0));
+        assert_eq!(ledger.drain(&mut rows), Ok(0));
         ledger.refuse("synthetic lost interval");
         ledger.boundary(clock(3));
         assert!(ledger.interval_incomplete());
         assert_eq!(
-            ledger.drain_growing(&mut rows),
+            ledger.drain(&mut rows),
             Err("synthetic lost interval")
         );
         ledger.boundary(clock(4));
         assert!(ledger.interval_incomplete());
-        assert!(ledger.drain_growing(&mut rows).is_err());
+        assert!(ledger.drain(&mut rows).is_err());
         ledger.boundary(clock(5));
         assert!(!ledger.interval_incomplete());
-        assert_eq!(ledger.drain_growing(&mut rows), Ok(0));
+        assert_eq!(ledger.drain(&mut rows), Ok(0));
     }
 
     #[test]
-    fn callbacks_never_allocate_and_overflow_grows_only_off_thread() {
+    fn a_burst_past_the_prepared_store_is_kept_whole() {
+        let ledger = EventLedger::<Row>::new();
+        ledger.prepare(1);
+        ledger.boundary(clock(1));
+        assert!(ledger.drain(&mut Vec::new()).is_err());
+        ledger.boundary(clock(2));
+        for owner in 0..5000 {
+            let token = ledger.claim((owner, 0)).unwrap();
+            ledger.complete(token, Ok(Some(Row(0)))).unwrap();
+        }
+        let mut rows = Vec::new();
+        assert_eq!(ledger.drain(&mut rows), Ok(5000));
+        assert_eq!(rows[4999].0, 4999);
+        assert_eq!(ledger.lost_events.load(Ordering::Relaxed), 0);
+        assert!(ledger.demand() >= 5000);
+    }
+
+    #[test]
+    fn a_full_store_grows_in_the_callback_and_only_a_failed_allocation_refuses() {
         let ledger = EventLedger::<Row>::new();
         ledger.prepare(1);
         ledger.boundary(clock(1));
@@ -594,12 +610,12 @@ mod tests {
             let token = ledger.claim((2, 2)).unwrap();
             ledger.complete(token, Ok(Some(Row(0))))
         });
-        assert_eq!(result.unwrap_err(), "event ledger event storage exhausted");
+        assert_eq!(result.unwrap_err(), STORAGE_FAILED);
         assert_eq!(ledger.store.lock().unwrap().entries.as_ptr(), pointer);
         assert_eq!(ledger.capacity.load(Ordering::Acquire), 1);
         assert_eq!(ledger.demand(), 2);
         assert_eq!(ledger.overflow.load(Ordering::Relaxed), 1);
-        ledger.refuse("event ledger event storage exhausted");
+        ledger.refuse(STORAGE_FAILED);
         ledger.prepare(ledger.demand());
         ledger.boundary(clock(3));
         let mut rows = Vec::with_capacity(2);
@@ -687,11 +703,11 @@ mod tests {
                 ledger
                     .complete(token, Ok(Some(Default::default())))
                     .unwrap_err(),
-                "event ledger event storage exhausted"
+                STORAGE_FAILED
             );
         });
         assert_eq!(ledger.demand(), 9);
-        ledger.refuse("event ledger event storage exhausted");
+        ledger.refuse(STORAGE_FAILED);
         ledger.prepare(0);
         assert!(crate::table_capture::grow_vec(
             &mut frame.rows,
@@ -763,13 +779,13 @@ mod tests {
             let mut frame = Vec::new();
             ledger.prepare(5000);
             ledger.boundary(clock(1));
-            assert!(ledger.drain_growing(&mut frame).is_err());
+            assert!(ledger.drain(&mut frame).is_err());
             ledger.boundary(clock(2));
             for (hour, count) in [(2, 5000), (3, 10003)] {
                 if hour > 2 {
                     ledger.prepare(count);
                     ledger.boundary(clock(hour));
-                    assert_eq!(ledger.drain_growing(&mut frame), Ok(0));
+                    assert_eq!(ledger.drain(&mut frame), Ok(0));
                 }
                 crate::test_support::with_allocations_denied(|| {
                     for country in 0..count {
@@ -777,7 +793,7 @@ mod tests {
                         ledger.complete(token, Ok(Some(T::default()))).unwrap();
                     }
                 });
-                assert_eq!(ledger.drain_growing(&mut frame), Ok(count));
+                assert_eq!(ledger.drain(&mut frame), Ok(count));
                 assert_eq!(frame.len(), count);
                 assert_eq!(ledger.overflow.load(Ordering::Relaxed), 0);
                 assert_eq!(ledger.lost_events.load(Ordering::Relaxed), 0);
@@ -788,18 +804,20 @@ mod tests {
         exercise::<crate::building_bombing::Entry>();
     }
     #[test]
-    fn refused_native_calls_retain_the_full_burst_after_the_first_overflow() {
+    fn refused_native_calls_retain_the_full_burst_after_a_failed_growth() {
         let ledger = EventLedger::<Row>::new();
         ledger.prepare(1);
         ledger.boundary(clock(1));
-        assert!(ledger.drain_growing(&mut Vec::new()).is_err());
+        assert!(ledger.drain(&mut Vec::new()).is_err());
         ledger.boundary(clock(2));
         let token = ledger.claim((1, 0)).unwrap();
         ledger.complete(token, Ok(Some(Row::default()))).unwrap();
         let token = ledger.claim((1, 0)).unwrap();
-        let reason = ledger
-            .complete(token, Ok(Some(Row::default())))
-            .unwrap_err();
+        let reason = crate::test_support::with_allocations_denied(|| {
+            ledger.complete(token, Ok(Some(Row::default())))
+        })
+        .unwrap_err();
+        assert_eq!(reason, STORAGE_FAILED);
         ledger.refuse(reason);
         crate::test_support::with_allocations_denied(|| {
             for _ in 0..10003 {
@@ -809,17 +827,17 @@ mod tests {
         assert_eq!(ledger.demand(), 10003);
         ledger.prepare(0);
         ledger.boundary(clock(3));
-        assert!(ledger.drain_growing(&mut Vec::new()).is_err());
+        assert!(ledger.drain(&mut Vec::new()).is_err());
         ledger.boundary(clock(4));
         let mut frame = Vec::new();
-        assert_eq!(ledger.drain_growing(&mut frame), Ok(0));
+        assert_eq!(ledger.drain(&mut frame), Ok(0));
         crate::test_support::with_allocations_denied(|| {
             for country in 0..10003 {
                 let token = ledger.claim((country, 0)).unwrap();
                 ledger.complete(token, Ok(Some(Row::default()))).unwrap();
             }
         });
-        assert_eq!(ledger.drain_growing(&mut frame), Ok(10003));
+        assert_eq!(ledger.drain(&mut frame), Ok(10003));
     }
     #[test]
     fn published_ordinals_survive_active_and_contended_valid_clock_boundaries() {
@@ -993,7 +1011,7 @@ mod tests {
             ledger.complete(token, Ok(Some(Row(0)))).unwrap();
             let mut rows = Vec::with_capacity(8);
             assert_eq!(
-                ledger.drain_buffer_with(&mut rows, true, || {
+                ledger.drain_buffer_with(&mut rows, || {
                     // The initial poison check and event transfer have passed;
                     // the drain still owns the store when the spool invalidates.
                     assert!(!ledger.poisoned.load(Ordering::SeqCst));
@@ -1033,7 +1051,7 @@ mod tests {
             ledger.boundary(clock(2));
             let mut rows = Vec::with_capacity(8);
             assert_eq!(
-                ledger.drain_buffer_with(&mut rows, true, || {
+                ledger.drain_buffer_with(&mut rows, || {
                     ledger.lost_drain();
                     ledger.enter();
                     if !active {
@@ -1061,7 +1079,7 @@ mod tests {
         ledger.boundary(clock(2));
         let mut rows = Vec::with_capacity(8);
         assert_eq!(
-            ledger.drain_buffer_with(&mut rows, true, || {
+            ledger.drain_buffer_with(&mut rows, || {
                 // A native refusal can publish its flag without the store lock.
                 ledger.refuse("synthetic native observation failure");
                 ledger.lost_drain();

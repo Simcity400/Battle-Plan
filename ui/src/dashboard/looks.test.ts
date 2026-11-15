@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { FAILED_FACT, FactRequests, factsKey, HourStore, nameKey, transientError } from './countryFacts.ts';
-import { lookHour, lookPlan, LOOK_STEP } from './countryLooks.ts';
+import { branchHour, lookHour, lookPlan, looksRead, LOOK_STEP } from './countryLooks.ts';
 import { matchesLookSegment, nextLooks, retainLooks, sampledLooks } from './looks.ts';
 import type { Look, LookRead } from './looks';
 import { BROWSER_BRIDGE_BUSY, CAPACITY_REACHED, MAP_CONTROLS_BUSY, NATIVE_QUEUE_FULL, TRANSIENT_ERRORS } from '../generated/dashboard.ts';
@@ -110,6 +110,37 @@ test('without an identity lookup looks still follow the recorded sample grid', (
   const branch = { firstHour: 100, lastHour: 3000, gaps: [{ firstHour: 800, lastHour: 830 }] };
   assert.deepEqual(lookPlan(branch, ['ABC'], 102).samples, [{ tag: 'ABC', hour: 100, stretch: 100 }]);
   assert.deepEqual(lookPlan(branch, ['ABC'], 831).samples, [{ tag: 'ABC', hour: 831, stretch: 831 }]);
+});
+
+test("a view following the head reads its rows' looks exactly where one of them last changed, never at a bound its windows do not hold", () => {
+  const branch = { firstHour: 1000, lastHour: 100_000, gaps: [{ firstHour: 50_000, lastHour: 50_010 }] };
+  // The caller's identity bound comes from the windows it holds, here only near the campaign's end (a race whose
+  // head is followed asks for none): at the head after a seek it names nobody, which drew "Country name unavailable".
+  const heldBound = (_tag: string, hour: number) => hour >= 90_000 ? 90_000 : null;
+  assert.deepEqual(lookPlan(branch, ['GER', 'ITA'], 5_000, heldBound).wanted, []);
+  // Following, at the hour one of them last changed (each reads there as at the head), exactly, bound by the stretch alone.
+  const read = looksRead(true, 4_321, 5_000, heldBound);
+  assert.deepEqual(read, { hour: 4_321, segmentAt: undefined, hours: undefined, exact: true });
+  assert.deepEqual(lookPlan(branch, ['GER', 'ITA'], read.hour, read.segmentAt, read.hours, read.exact).wanted,
+    [{ tag: 'GER', hour: 4_321 }, { tag: 'ITA', hour: 4_321 }]);
+  // Not following, or before that hour is known: the caller's own plan at the moment shown.
+  const hours = new Map([['GER', 7_000]]);
+  assert.deepEqual(looksRead(false, 4_321, 5_000, heldBound, hours, true), { hour: 5_000, segmentAt: heldBound, hours, exact: true });
+  assert.deepEqual(looksRead(true, null, 5_000, heldBound), { hour: 5_000, segmentAt: heldBound, hours: undefined, exact: false });
+  // The head as a hour of the branch: null outside it, never clamped to its end.
+  assert.equal(branchHour(branch, 999), null);
+  assert.equal(branchHour(branch, 100_001), null);
+  assert.equal(branchHour(branch, 4_321.7), 4_321);
+});
+
+test("a coarse step of the head is a step from the branch's first hour, never one before it", () => {
+  // Production licences stepped the head as `floor(hour / LOOK_STEP) * LOOK_STEP`: before the branch for its first
+  // month, so nothing was read there and every party was "Country name unavailable".
+  const branch = { firstHour: 1000, lastHour: 100_000, gaps: [] };
+  assert.ok(Math.floor(1000 / LOOK_STEP) * LOOK_STEP < branch.firstHour);
+  assert.equal(lookHour(branch, 1000)?.hour, 1000);
+  assert.equal(lookHour(branch, 1000 + LOOK_STEP - 1)?.hour, 1000);
+  assert.equal(lookHour(branch, 1000 + LOOK_STEP)?.hour, 1000 + LOOK_STEP);
 });
 
 test('per-country label hours share the sample grid and their own identity bound', () => {

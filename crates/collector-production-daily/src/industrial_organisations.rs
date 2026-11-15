@@ -159,7 +159,7 @@ impl Captured {
             details_failure: None,
             policies_failure: None,
         };
-        let walk = native::walk_growing_with(
+        let walk = native::walk_with(
             memory,
             base,
             game_state,

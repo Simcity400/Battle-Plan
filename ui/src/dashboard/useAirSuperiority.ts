@@ -1,254 +1,159 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { CSSProperties } from 'react';
-import type { DashboardClient } from './client';
-import { useChartTokens, useViewportHeight } from '../charts/useChartTokens';
-import { fitTooltip } from '../charts/tooltip';
-import type { AirSide } from '../generated/dashboard';
+import { useCallback, useEffect, useMemo } from 'react';
+import { useChartTokens } from '../charts/useChartTokens';
 import type { OptionChoices, WidgetProps, WidgetRuntime } from './definitions';
 import type { WidgetSpec } from './model';
-import { resolveWindow } from './model';
-import { contentKey, contentSet, setToken } from './options';
-import type { OptionValue } from './options';
-import { usePlaybackHour, usePlaybackMotion } from './playback';
-import { useFollowedProduct, useProduct } from './products';
+import { contentKey, contentSet, resolveOptions, setToken } from './options';
+import type { OptionField, OptionValue } from './options';
+import { useProduct } from './products';
 import { defaultCountryTag, selectedTags } from './countrySelection';
-import { useProductWindows } from './productWindows';
 import { useFactionColours } from './FactionColours';
-import { useCountryLooks } from './countryLooks';
-import { useAirCountryColours } from './useAirSuperiorityColours';
-import type { AirColourLookup } from './useAirSuperiorityColours';
-import { FOLLOW_MS, useCountriesAt } from './useCountriesAt';
-import { useThrottled } from './useThrottled';
-import { useHoverLabels } from './useHoverLabels';
-import { pendingAt } from './preparedPrefix.ts';
-import { useContentRevision } from './contentRevision.ts';
-import { airCountryTags, airSegmentAt, airSideName, airSummaryTooltip, airTooltip, airTooltipTags, inSpans, lastRecordedAt, momentReadAt, momentReadHours, momentViews, momentWindows, sideAt, sideOrder, timelineViews, validateAirReply } from './airSuperiority';
-import { airChoiceKey, airChoiceToken, heldAirReply, timelineRequestLast } from './airOptions';
-import { easeTau } from '../charts/easing';
-import type { AirChoices, AirLooks, AirMoment, AirTimeline, AirView } from './airSuperiority';
+import { looksRead, useCountryLooks } from './countryLooks';
+import { useIdentityHour } from './atHead';
+import { trackHourOf } from './settledHour';
+import { countryLineColours } from './countryLineColours.ts';
+import { useHeadProduct } from './headProduct';
+import { airSideName, momentRows, validateAirChoices, validateAirSuperiority } from './airSuperiority';
+import type { AirLooks } from './airSuperiority';
+import { airChoiceKey, airChoiceToken } from './airOptions';
+import type { AirChoicesReply, AirSide, AirSuperiorityReply, FactionGroup } from '../generated/dashboard';
 
 const NO_WARNINGS: string[] = [];
 const NO_SIDES: AirSide[] = [];
-const NO_COUNTRIES: string[] = [];
-const NO_SPANS: { firstHour: number; lastHour: number }[] = [];
-const timelineReply = (value: unknown) => { const reply = validateAirReply(value); if (reply.view !== 'timeline') throw new Error('Expected air timeline'); return reply; };
-const momentReply = (value: unknown) => { const reply = validateAirReply(value); if (reply.view !== 'moment') throw new Error('Expected air moment'); return reply; };
-const choicesReply = (value: unknown) => { const reply = validateAirReply(value); if (reply.view !== 'choices') throw new Error('Expected air choices'); return reply; };
 
-export function useAirChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {
-  const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
-  const playbackHour = usePlaybackHour(runtime.clock, true);
-  const hour = Math.floor(track ? resolveWindow(widget, track, runtime.tracks, playbackHour)?.lastHour ?? track.branch.lastHour : 0);
-  const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'air-superiority', params: { branchId: track.branch.id, view: 'choices' } } : null;
-  const product = useProduct<AirChoices>(runtime.client, request, true, choicesReply, track?.source);
-  const countries = product.data?.countries ?? NO_COUNTRIES;
-  const tags = useMemo(() => [...new Set([...countries, ...(product.data?.sides.flatMap(side => side.tag ? [side.tag] : []) ?? [])])], [countries, product.data]);
-  const names = useCountriesAt(runtime.client, track, [], hour, true, tags);
-  return useMemo(() => {
-    const sides = [...new Map(product.data?.sides.map(side => [side.key, { value: airChoiceToken(track?.source.metadata.campaignKey ?? '', side.key), label: airSideName(sideAt(side, hour), tag => names.country(tag).name) }]) ?? []).values()];
-    return { viewpoint: [...sides, ...countries.map(tag => ({ value: setToken(`country:${tag}`), label: names.country(tag).name }))], sides,
-      regions: product.data?.regions.map(region => ({ value: setToken(`r:${region.id}`), label: region.name })) ?? [],
-      theatres: product.data?.theatres.map(theatre => ({ value: airChoiceToken(track?.source.metadata.campaignKey ?? '', theatre.id), label: theatre.name })) ?? [] };
-  }, [product.data, countries, names, hour, track?.source.metadata.campaignKey]);
+/** The settings as the products ask them: the comparison, its viewpoint, and the sides, regions and theatres chosen. */
+export function airMode(options: Readonly<Record<string, OptionValue>>, campaign: string, currentCountry: string | null) {
+  const mode = options.mode === 'viewpoint' ? 'viewpoint' as const : 'sides' as const;
+  const chosen = options.viewpoint ? String(options.viewpoint) : '';
+  const viewpoint = mode !== 'viewpoint' ? '' : chosen ? contentKey(chosen).startsWith('country:') ? contentKey(chosen) : airChoiceKey(campaign, chosen) ?? ''
+    : currentCountry ? `country:${currentCountry}` : '';
+  return { mode, viewpoint, sides: contentSet(options.sides).flatMap(value => airChoiceKey(campaign, value) ?? []),
+    regions: contentSet(options.regions).map(value => Number(contentKey(value).slice(2))).filter(Number.isInteger),
+    theatres: contentSet(options.theatres).flatMap(value => airChoiceKey(campaign, value) ?? []) };
 }
+export type AirModeSettings = ReturnType<typeof airMode>;
 
-/** Moment playback reads a held window locally; prefetch at 75%, seek directly. */
-export function useAir(props: WidgetProps, options: Readonly<Record<string, OptionValue>>, moment: boolean) {
-  const { widget, runtime, active, onDiagnostics } = props;
-  const contentRevision = useContentRevision(runtime.client);
-  const playbackHour = usePlaybackHour(runtime.clock, active);
-  const hoursPerSecond = usePlaybackMotion(runtime.clock);
-  const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
-  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
-  const playhead = window ? moment || widget.time.mode === 'follow' || widget.time.mode === 'pin' ? window.lastHour : Math.floor(playbackHour) + (track?.axisOffset ?? 0) : null;
-  const hour = Math.floor(playhead ?? track?.branch.lastHour ?? 0);
-  const firstHour = widget.time.mode === 'range' && window ? window.firstHour : track?.branch.firstHour ?? 0;
-  const lastHour = !moment && widget.time.mode === 'campaign' ? track?.branch.lastHour ?? 1 : widget.time.mode === 'range' && window ? window.lastHour : playhead ?? track?.branch.lastHour ?? 1;
-  const beforeBranch = lastHour < firstHour;
-  const campaign = track?.source.metadata.campaignKey ?? '';
-  const currentCountry = selectedTags(widget.countries, track)[0] ?? defaultCountryTag(track);
-  const mode = useMemo(() => ({ mode: options.mode === 'viewpoint' ? 'viewpoint' as const : 'sides' as const,
-    viewpoint: options.mode === 'viewpoint' ? options.viewpoint ? contentKey(String(options.viewpoint)).startsWith('country:') ? contentKey(String(options.viewpoint)) : airChoiceKey(campaign, String(options.viewpoint)) ?? '' : currentCountry ? `country:${currentCountry}` : '' : '',
-    sides: contentSet(options.sides).flatMap(value => airChoiceKey(campaign, value) ?? []), regions: contentSet(options.regions).map(value => Number(contentKey(value).slice(2))),
-    theatres: contentSet(options.theatres).flatMap(value => airChoiceKey(campaign, value) ?? []) }), [options.mode, options.viewpoint, options.sides, options.regions, options.theatres, currentCountry, campaign]);
-  const params = useMemo(() => ({ mode: mode.mode, ...(mode.viewpoint ? { viewpoint: mode.viewpoint.startsWith('country:') ? mode.viewpoint.slice(8) : mode.viewpoint,
+/** The params of `air-superiority` for `mode`; regions are chosen by the widget, not the product, unless asked. */
+export function airParams(mode: AirModeSettings) {
+  return { mode: mode.mode, ...(mode.viewpoint ? { viewpoint: mode.viewpoint.startsWith('country:') ? mode.viewpoint.slice(8) : mode.viewpoint,
     ...(mode.viewpoint.startsWith('country:') ? { viewpointCountry: true } : {}) } : {}),
     ...(mode.sides.length ? { sides: mode.sides } : {}), ...(mode.regions.length ? { regions: mode.regions } : {}),
-    ...(mode.theatres.length ? { theatres: mode.theatres } : {}) }), [mode]);
-  const needsViewpoint = mode.mode === 'viewpoint' && !mode.viewpoint;
-  const follow = !moment && widget.time.mode === 'follow';
-  const heldIdentity = useMemo(() => JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, contentRevision, firstHour, params, options.regionCount, follow]),
-    [track?.source.id, track?.source.revision, track?.branch.id, contentRevision, firstHour, params, options.regionCount, follow]);
-  const [held, setHeld] = useState<{ client: DashboardClient; identity: string; timeline?: AirTimeline; day?: AirMoment }>();
-  const previousTimeline = heldAirReply(held, runtime.client, heldIdentity, 'timeline');
-  // The first reply supplies cadence; subsequent requests change only by day.
-  const timelineLast = follow ? previousTimeline ? Math.max(firstHour, timelineRequestLast(lastHour, previousTimeline.dayHours)) : firstHour : lastHour;
-  const timelineRequest = track && window && !moment && !beforeBranch && !needsViewpoint ? { sourceId: track.source.id, revision: track.source.revision, product: 'air-superiority',
-    params: { branchId: track.branch.id, view: 'timeline', firstHour, lastHour: timelineLast, ...params, ...(mode.regions.length ? {} : { top: Number(options.regionCount) }) } } : null;
-  const timeline = useProduct<AirTimeline>(runtime.client, timelineRequest, active, timelineReply, track?.source);
-  const timelineData = timeline.data ?? (follow ? previousTimeline : undefined);
-  // The first follow reply only learns the day cadence; drawn, it would read as no activity at all.
-  const timelineBehind = follow && !!timelineData && timelineData.lastHour < timelineRequestLast(lastHour, timelineData.dayHours) - timelineData.dayHours;
-  // A read timeline behind the playhead stays drawn: the days after it show as loading, never as no activity.
-  const loading = useMemo(() => timelineBehind && timelineData && timelineData.lastHour >= firstHour + timelineData.dayHours
-    ? [{ firstHour: timelineData.lastHour + 1, lastHour }] : NO_SPANS, [timelineBehind, timelineData, firstHour, lastHour]);
-  const windowChoicesRequest = track && moment ? { sourceId: track.source.id, revision: track.source.revision, product: 'air-superiority', params: { branchId: track.branch.id, view: 'choices', windowsOnly: true } } : null;
-  const windowChoices = useProduct<AirChoices>(runtime.client, windowChoicesRequest, active, choicesReply, track?.source);
-  const recordedWindows = windowChoices.data?.windows;
-  const wanted = moment && recordedWindows ? momentWindows(recordedWindows, hour) : [];
-  const shownWindow = recordedWindows?.[wanted[0]];
-  const momentFirst = shownWindow?.firstHour ?? firstHour;
-  const momentLast = shownWindow?.lastHour ?? lastHour;
-  const choicesRequest = track && moment && shownWindow && options.order === 'name' ? { sourceId: track.source.id, revision: track.source.revision, product: 'air-superiority', params: {
-    branchId: track.branch.id, view: 'choices', firstHour: momentFirst, lastHour: momentLast,
-    ...(mode.regions.length ? { regions: mode.regions } : {}), ...(mode.theatres.length ? { theatres: mode.theatres } : {}),
-  } } : null;
-  const choices = useProduct<AirChoices>(runtime.client, choicesRequest, active, choicesReply, track?.source);
-  const identity = track && window && moment && !needsViewpoint ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, contentRevision, params]) : null;
-  const windows = useProductWindows<AirMoment>(runtime.client, identity, index => {
-    const window = recordedWindows![index];
-    return { sourceId: track!.source.id, revision: track!.source.revision, product: 'air-superiority', params: {
-      branchId: track!.branch.id, view: 'moment', firstHour: window.firstHour, lastHour: window.lastHour, ...params,
-    } };
-  }, wanted, active, momentReply, track?.source, true);
-  const dayFirst = timelineData ? Math.max(firstHour, timelineRequestLast(lastHour, timelineData.dayHours)) : firstHour;
-  const dayRequest = follow && track && timelineData && !beforeBranch && !needsViewpoint ? {
-    sourceId: track.source.id, revision: track.source.revision, product: 'air-superiority', params: {
-      branchId: track.branch.id, view: 'moment', firstHour: dayFirst,
-      lastHour: Math.min(timelineRequestLast(lastHour, timelineData.dayHours) + timelineData.dayHours - 1, track.branch.lastHour), ...params, regions: timelineData.rows.map(row => row.region),
-    } } : null;
-  // The last day stays shown while playback's newest is read.
-  const day = useFollowedProduct<AirMoment>(runtime.client, dayRequest, ['firstHour', 'lastHour'], active, momentReply, track?.source);
-  const catalogueRequest = track && !moment && !needsViewpoint ? { sourceId: track.source.id, revision: track.source.revision, product: 'air-superiority',
-    params: { branchId: track.branch.id, view: 'choices' } } : null;
-  const catalogue = useProduct<AirChoices>(runtime.client, catalogueRequest, active, choicesReply, track?.source);
-  const labelCatalogue = useMemo(() => catalogue.data?.regions.map(region => region.name), [catalogue.data]);
-  const dayData = day.data ?? (follow ? heldAirReply(held, runtime.client, heldIdentity, 'day') : undefined);
-  useEffect(() => {
-    if (!follow) { setHeld(undefined); return; }
-    setHeld(previous => ({ client: runtime.client, identity: heldIdentity,
-      timeline: timeline.data ?? heldAirReply(previous, runtime.client, heldIdentity, 'timeline'), day: day.data ?? heldAirReply(previous, runtime.client, heldIdentity, 'day') }));
-  }, [follow, runtime.client, heldIdentity, timeline.data, day.data]);
-  const dayReads = useMemo(() => dayData ? momentReadHours(dayData) : [], [dayData]);
-  const dayRecorded = dayData ? lastRecordedAt(dayData.recorded, hour) : null;
-  const dayRead = dayRecorded == null ? null : momentReadAt(dayReads, dayRecorded);
-  const data = moment ? windows.data.get(wanted[0]) : timelineData;
-  const timelineRead = useMemo(() => {
-    if (data?.view !== 'timeline') return null;
-    for (let index = data.days.length - 1; index >= 0; index--) if (data.days[index] != null) return data.sampleHours?.[index] ?? data.days[index];
-    return data.firstHour;
-  }, [data]);
-  const dataHour = data?.view === 'moment' ? hour : timelineRead ?? hour;
-  const readHour = data?.view === 'moment' ? inSpans(data.recorded, hour) ? hour : null : dataHour;
-  const tokens = useChartTokens();
-  const viewport = useViewportHeight();
+    ...(mode.theatres.length ? { theatres: mode.theatres } : {}) };
+}
+
+/** The timeline's choices: one request a recording, never at the playhead. */
+export function useAirChoicesReply(runtime: WidgetRuntime, widget: WidgetSpec, active: boolean) {
+  const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
+  const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'air-superiority-choices', params: { branchId: track.branch.id } } : null;
+  return useProduct<AirChoicesReply>(runtime.client, request, active, validateAirChoices, track?.source);
+}
+
+/** A faction's name as the groups name it at `hour` (its latest otherwise), the reader's own name first. */
+export function factionNamer(factions: readonly FactionGroup[], own: ReadonlyMap<string, string>, hour: number | null) {
+  const byId = new Map(factions.map(faction => [faction.id, faction]));
+  return (id: string) => {
+    const mine = own.get(id);
+    if (mine) return mine;
+    const faction = byId.get(id);
+    if (!faction) return `Faction ${id}`;
+    const at = hour === null ? undefined : faction.names.find(run => run.firstHour <= hour && hour <= run.lastHour)?.name;
+    return at ?? faction.name ?? `Faction ${id}`;
+  };
+}
+
+export function useAirChoices(widget: WidgetSpec, runtime: WidgetRuntime, fields: readonly OptionField[]): OptionChoices {
+  const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
+  const choices = useAirChoicesReply(runtime, widget, true);
   const factions = useFactionColours(runtime.client, track?.source);
-  const setFactionColour = useRef(factions.setColour);
-  useEffect(() => { setFactionColour.current = factions.setColour; }, [factions.setColour]);
-  const changeFactionColour = useCallback((id: string, hex: string) => { setFactionColour.current(id, hex, 'campaign'); }, []);
-  const sides = data?.sides ?? NO_SIDES;
-  const viewpointSide = useMemo(() => {
-    for (let index = sides.length - 1; index >= 0; index--) if (sides[index].key === mode.viewpoint) return sideAt(sides[index], dataHour);
-    return undefined;
-  }, [sides, mode.viewpoint, dataHour]);
-  const viewpointTag = mode.viewpoint.startsWith('country:') ? mode.viewpoint.slice(8) : viewpointSide?.leader ?? undefined;
-  const tags = useMemo(() => [...new Set([...(data ? airCountryTags(data) : []), ...(dayData ? airCountryTags(dayData) : []), ...(viewpointTag ? [viewpointTag] : [])])], [data, dayData, viewpointTag]);
-  const lookHour = data?.view === 'moment' ? hour : follow ? dayRecorded ?? dataHour : dataHour;
-  const segments = data?.segments;
-  const daySegments = dayData?.segments;
-  const segmentAt = useCallback((tag: string, hour: number) => {
-    if (dayData && dayData.firstHour <= hour && hour <= dayData.lastHour) return daySegments ? airSegmentAt(daySegments, tag, hour) : null;
-    return segments ? airSegmentAt(segments, tag, hour) : null;
-  }, [segments, daySegments, dayData]);
-  const countryColours = useAirCountryColours(runtime.client, track, data, dayData, dataHour, dayRecorded, viewpointTag, active, tokens);
-  const nameHour = useThrottled(Math.floor(lookHour), FOLLOW_MS);
-  const labelLooks = useCountryLooks(runtime.client, track, tags, nameHour, active, segmentAt, undefined, true);
-  const names = useMemo(() => ({ country: (tag: string) => ({ name: labelLooks.name(tag, lookHour), flag: labelLooks.flag(tag, lookHour) }) }), [labelLooks, lookHour]);
-  const { ask: askHover, labelAt: hoverLabels, revision: hoverRevision } = useHoverLabels(runtime.client, track, active, names.country, undefined, segmentAt);
-  // Rebuilt only when a country or its name changes, not each played hour.
-  const shownNames = tags.map(tag => names.country(tag).name);
-  const namesHeld = useRef<{ tags: readonly string[]; names: readonly string[]; byTag: ReadonlyMap<string, string> } | null>(null);
-  const named = namesHeld.current;
-  const countryNames = named && named.tags.length === tags.length && tags.every((tag, index) => tag === named.tags[index] && shownNames[index] === named.names[index])
-    ? named.byTag : (namesHeld.current = { tags, names: shownNames, byTag: new Map(tags.map((tag, index) => [tag, shownNames[index]])) }).byTag;
-  const factionNames = factions.displayNames;
-  const sideName = useCallback((side: AirSide) => airSideName(side, tag => countryNames.get(tag) ?? 'Country name not recorded', factionNames), [factionNames, countryNames]);
-  const looksWith = useCallback((colours: AirColourLookup): AirLooks => {
-    const color = (side: AirSide, at = dataHour) => side.colourFaction ? factions.colours.get(side.colourFaction) ?? tokens.muted : colours.color(side, at);
-    return { name: sideName, color, lookAt: colours.at,
-      viewpoint: { name: viewpointSide ? sideName(viewpointSide) : viewpointTag ? countryNames.get(viewpointTag) ?? 'Country name unavailable' : 'No country selected', tag: viewpointSide ? undefined : viewpointTag,
-        color: viewpointSide ? color(viewpointSide) : colours.viewpoint(dataHour) },
-      viewpointAt: at => ({ name: viewpointTag ? countryNames.get(viewpointTag) ?? 'Country name unavailable' : 'No country selected', tag: viewpointTag, color: colours.viewpoint(at) }), enemy: tokens.error,
-      scale: data?.scale ?? 1, badBelow: data?.badBelow ?? 0, goodAbove: data?.goodAbove ?? 1, mode: mode.mode };
-  }, [sideName, factions.colours, tokens.muted, viewpointSide, viewpointTag, countryNames, dataHour, tokens.error, data?.scale, data?.badBelow, data?.goodAbove, mode.mode]);
-  // The reply's own hours keep their looks while the current day's read moves.
-  const appearance = useMemo(() => looksWith(countryColours.reply), [looksWith, countryColours.reply]);
-  const dayLooks = useMemo(() => looksWith(countryColours.latest), [looksWith, countryColours.latest]);
-  const timelineRegions = useMemo(() => new Map(data?.view === 'timeline' ? data.rows.map(row => [row.region, row]) : []), [data]);
-  const baseTimeline = useMemo(() => data?.view === 'timeline' ? timelineViews(data, appearance) : null, [data, appearance]);
-  const historyPeriods = useMemo(() => baseTimeline?.periods.slice(0, -1), [baseTimeline]);
-  const projectedTimeline = useMemo(() => {
-    // While later days load, the held reply's own last column stays its own: nothing is drawn over the band.
-    if (!baseTimeline || !follow || !dayData || dayRead == null || loading.length || data?.view !== 'timeline'
-      || Math.floor(dayData.firstHour / data.dayHours) !== Math.floor(data.lastHour / data.dayHours)) return baseTimeline;
-    const regions = data.rows.map(row => ({ id: row.region, name: row.name }));
-    const liveRows = new Map(momentViews(dayData, dayRecorded ?? dayRead, dayLooks, { regions }).map(row => [row.region.id, row]));
-    const column = baseTimeline.periods.length - 1;
-    const period = { firstHour: baseTimeline.periods[column].firstHour, lastHour: dayData.lastHour, readHour: dayRecorded };
-    const gap: AirView = { ...appearance, state: 'gap', parts: [], total: 0n, unknown: [], noAirObject: [], excluded: 0, wings: null, hour: null };
-    const cells = baseTimeline.rows.map(row => {
-      const view = liveRows.get(Number(row.id))?.view;
-      return { parts: view?.parts ?? [], unknown: view?.state === 'unknown', filtered: view?.reason === 'outside-theatres' };
-    });
-    return { ...baseTimeline, periods: historyPeriods!, tail: { period, cells },
-      viewAt: (region: number, day: number) => day === column && timelineRegions.has(region) ? liveRows.get(region)?.view ?? gap : baseTimeline.viewAt(region, day) };
-  }, [baseTimeline, historyPeriods, timelineRegions, follow, dayData, dayRead, dayRecorded, loading, appearance, dayLooks, data]);
-  const timelinePeriods = useMemo(() => projectedTimeline?.tail ? [...projectedTimeline.periods, projectedTimeline.tail.period] : projectedTimeline?.periods, [projectedTimeline]);
-  const allChoices = options.order === 'name' ? choices.data : undefined;
-  const projectedMoment = useMemo(() => data?.view === 'moment' ? momentViews(data, dataHour, appearance, allChoices) : [], [data, dataHour, appearance, allChoices]);
-  const regionMap = useMemo(() => new Map(projectedMoment.map(row => [row.region.id, row])), [projectedMoment]);
-  const tooltip = useCallback((regionId: number, at: number | null) => {
-    let region: { name: string } | undefined, view: AirView | undefined;
-    if (data?.view === 'timeline' && projectedTimeline) {
-      const index = at == null ? -1 : Math.floor((at - data.firstHour) / data.dayHours);
-      region = timelineRegions.get(regionId);
-      if (region && at != null && pendingAt({ pending: data.pending ?? [] }, at))
-        return { title: region.name, rows: [{ label: 'State', value: 'Still being prepared' }] };
-      if (region && at != null && pendingAt({ pending: loading }, at))
-        return { title: region.name, rows: [{ label: 'State', value: 'Loading' }] };
-      const cell = projectedTimeline.viewAt(regionId, index);
-      const period = timelinePeriods?.[index];
-      if (cell) view = { ...cell, hour: period?.readHour ?? null,
-        ...(period?.readHour == null ? { state: 'gap' as const } : {}) };
-    } else { const row = regionMap.get(regionId); region = row?.region; view = row && { ...row.view, hour: at }; }
-    if (!region || !view) return null;
-    if (view.hour != null) askHover(view.hour, airTooltipTags(view));
-    const full = airTooltip(region, view, mode.mode === 'viewpoint', view.hour == null ? names.country : hoverLabels(view.hour), !!mode.sides.length, factionNames);
-    return fitTooltip([airSummaryTooltip(full, view)], viewport, { keep: view.wings == null ? 1 : 2, full });
-  }, [data, projectedTimeline, timelinePeriods, regionMap, timelineRegions, loading, askHover, hoverLabels, mode.mode, mode.sides.length, names.country, viewport, factionNames]);
-  const legend = useMemo(() => mode.mode === 'viewpoint' ? [
-    { id: 'friendly', label: `${appearance.viewpoint.name} (friendly)`, color: appearance.viewpoint.color },
-    { id: 'enemy', label: `Enemies of ${appearance.viewpoint.name}`, color: tokens.error },
-  ] : [...new Map(sides.map(side => sideAt(side, dataHour)).map(side => [side.key, { id: side.key, label: sideName(side), color: appearance.color(side),
-    onColor: side.colourFaction ? (hex: string) => changeFactionColour(side.colourFaction!, hex) : undefined }])).values()],
-    [mode.mode, appearance, tokens.error, sides, sideName, changeFactionColour, dataHour]);
-  const orderedLegend = useMemo(() => {
-    const order = sideOrder(sides);
-    return [...legend].sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
-  }, [legend, sides]);
+  const hour = track?.branch.lastHour ?? 0;
+  const tags = useMemo(() => [...new Set([...(choices.data?.countries ?? []), ...(choices.data?.sides.flatMap(side => [side.tag, side.leader].flatMap(tag => tag ? [tag] : [])) ?? [])])],
+    [choices.data]);
+  const looks = useCountryLooks(runtime.client, track, tags, hour, true);
+  const options = resolveOptions(fields, widget.options);
+  return useMemo(() => {
+    const campaign = track?.source.metadata.campaignKey ?? '';
+    const faction = factionNamer(factions.factions, factions.displayNames, null);
+    const country = (tag: string) => looks.name(tag, hour);
+    const sides = (choices.data?.sides ?? []).map(side => ({ value: airChoiceToken(campaign, side.key), label: airSideName(side, country, faction) }));
+    const chosenRegions = contentSet(options.regions).map(contentKey);
+    const regions = (choices.data?.regions ?? []).map(region => ({ value: setToken(`r:${region.id}`), label: region.name }));
+    for (const key of chosenRegions) if (!regions.some(region => contentKey(region.value) === key)) regions.push({ value: setToken(key), label: `Region ${key.slice(2)} · not recorded` });
+    return {
+      viewpoint: [...sides, ...(choices.data?.countries ?? []).map(tag => ({ value: setToken(`country:${tag}`), label: country(tag) }))], sides, regions,
+      theatres: (choices.data?.theatres ?? []).map(theatre => ({ value: airChoiceToken(campaign, theatre.id), label: theatre.name })),
+    };
+  }, [choices.data, looks, hour, factions.factions, factions.displayNames, options.regions, track?.source.metadata.campaignKey]);
+}
+
+/** The moment at the widget's hour (followed at the head as a panel, asked for a pinned or hovered hour), with the
+ * sides' names and colours. Every score is a live cell: nothing here moves with the playhead. A push renders only when
+ * its rows change (`momentRows`); `current` is the newest reply, read where it is painted (`live` tells when one lands). */
+export function useAirMoment(props: WidgetProps, options: Readonly<Record<string, OptionValue>>, hoverHour: number | null = null) {
+  const { widget, runtime, active, onDiagnostics } = props;
+  const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
+  const campaign = track?.source.metadata.campaignKey ?? '';
+  const currentCountry = selectedTags(widget.countries, track)[0] ?? defaultCountryTag(track);
+  const mode = useMemo(() => airMode(options, campaign, currentCountry),
+    [options.mode, options.viewpoint, options.sides, options.regions, options.theatres, campaign, currentCountry]); // eslint-disable-line react-hooks/exhaustive-deps
+  const needsViewpoint = mode.mode === 'viewpoint' && !mode.viewpoint;
+  const params = useMemo(() => track && !needsViewpoint ? airParams(mode) : null, [track, needsViewpoint, mode]);
+  const product = useHeadProduct<AirSuperiorityReply>(runtime, widget, 'air-superiority', params, { active, validate: validateAirSuperiority, structure: momentRows, hoverHour });
+  const looks = useAirLooks(props, product.data, product.at, mode, product.read === 'followed');
   useEffect(() => {
-    const warnings = [...(data?.warnings ?? []), ...(windowChoices.data?.warnings ?? []), ...(choices.data?.warnings ?? []), ...(catalogue.data?.warnings ?? []), ...factions.warnings, ...(factions.error ? [factions.error] : [])];
-    onDiagnostics(warnings.length ? warnings.map(warning => warning instanceof Error ? warning.message : warning) : NO_WARNINGS);
+    const warnings = [...(product.data?.warnings ?? []), ...looks.warnings];
+    onDiagnostics(warnings.length ? warnings : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);
-  }, [data, windowChoices.data, choices.data, catalogue.data, factions.warnings, factions.error, onDiagnostics]);
-  const error = moment ? windowChoices.error ?? windows.errors.get(wanted[0]) ?? (options.order === 'name' ? choices.error : null) : timeline.error ?? (follow ? day.error : null) ?? catalogue.error;
-  const snapshot = runtime.clock.getSnapshot();
-  const previous = useRef({ identity, hour, seek: snapshot.seekSequence });
-  const glides = moment && data?.view === 'moment' && snapshot.playing && previous.current.identity === identity && previous.current.seek === snapshot.seekSequence
-    && data.recorded.some(span => span.firstHour <= Math.min(previous.current.hour, hour) && span.lastHour >= Math.max(previous.current.hour, hour));
-  useEffect(() => { previous.current = { identity, hour, seek: snapshot.seekSequence }; }, [identity, hour, snapshot.seekSequence]);
-  const glideStyle = { '--air-glide': `${glides ? Math.round(3 * easeTau(tokens.motion, hoursPerSecond, tokens.reducedMotion)) : 0}ms` } as CSSProperties;
-  return { data, error, needsViewpoint, retry: moment ? () => { windows.retry(); choices.retry(); windowChoices.retry(); } : () => { timeline.retry(); catalogue.retry(); if (follow) day.retry(); }, track, window, beforeBranch, playhead, hour,
-    readHour, extent: [firstHour, widget.time.mode === 'range' ? lastHour : track?.branch.lastHour ?? lastHour] as [number, number], mode, tokens, projectedTimeline, projectedMoment, tooltip,
-    legend: orderedLegend, labelCatalogue, hoverRevision, choices: choices.data, country: names.country, factionNames, glides, glideStyle, hoursPerSecond, timelineBehind, loading };
+  }, [product.data, looks.warnings, onDiagnostics]);
+  return { ...product, track, mode, needsViewpoint, ...looks };
+}
+
+/** Names and colours of a reply's sides at the hour its structure is of, and its viewpoint's. `pushed` (a panel at the
+ * head): at the last hour at or before the head at which one of them changed, so a push alone asks and renders nothing. */
+export function useAirLooks(props: Pick<WidgetProps, 'runtime' | 'widget' | 'active'>, data: { sides: readonly AirSide[]; viewpoint: number | null } | undefined, at: number | null,
+  mode: AirModeSettings, pushed = false) {
+  const { runtime, widget, active } = props;
+  const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
+  const tokens = useChartTokens();
+  const sides = data?.sides ?? NO_SIDES;
+  const viewpointTag = mode.viewpoint.startsWith('country:') ? mode.viewpoint.slice(8) : null;
+  const tags = useMemo(() => [...new Set([...sides.flatMap(side => [side.tag, side.leader].flatMap(tag => tag ? [tag] : [])), ...(viewpointTag ? [viewpointTag] : [])])], [sides, viewpointTag]);
+  const identityHour = useIdentityHour(runtime.client, track, tags, runtime.clock, active && pushed,
+    clockHour => track ? trackHourOf(widget, track, runtime.tracks, clockHour) : null);
+  const read = looksRead(active && pushed, identityHour, Math.floor(at ?? track?.branch.lastHour ?? 0));
+  const hour = read.hour;
+  const names = useCountryLooks(runtime.client, track, tags, hour, active, undefined, undefined, read.exact);
+  const anchors = useMemo(() => new Map(sides.flatMap(side => side.anchor ? [[side.anchor.tag, side.anchor.hour] as const] : [])), [sides]);
+  const anchorTags = useMemo(() => [...anchors.keys()], [anchors]);
+  const anchorLooks = useCountryLooks(runtime.client, track, anchorTags, hour, active, undefined, anchors, true);
+  const factions = useFactionColours(runtime.client, track?.source);
+  const faction = useMemo(() => factionNamer(factions.factions, factions.displayNames, hour), [factions.factions, factions.displayNames, hour]);
+  const country = useCallback((tag: string) => ({ name: names.name(tag, hour), flag: names.flag(tag, hour) }), [names, hour]);
+  const sideName = useCallback((side: AirSide) => airSideName(side, tag => names.name(tag, hour), faction), [names, hour, faction]);
+  const colours = useMemo(() => {
+    const entries = new Map<string, { color: [number, number, number] }>();
+    for (const side of sides) {
+      const anchor = side.anchor ? anchorLooks.color(side.anchor.tag, side.anchor.hour) : null;
+      const tag = side.tag ?? side.leader;
+      const color = anchor ?? (tag ? names.color(tag, hour) : null);
+      if (color) entries.set(side.key, { color });
+    }
+    if (viewpointTag) { const color = names.color(viewpointTag, hour); if (color) entries.set(`country:${viewpointTag}`, { color }); }
+    return countryLineColours([...entries.keys()].sort(), entries, tokens.surface, tokens.countryColours === 'fixed');
+  }, [sides, anchorLooks, names, hour, viewpointTag, tokens.surface, tokens.countryColours]);
+  const color = useCallback((side: AirSide) => side.colourFaction ? factions.colours.get(side.colourFaction) ?? tokens.muted : colours.get(side.key) ?? tokens.muted,
+    [factions.colours, colours, tokens.muted]);
+  const looks: AirLooks = useMemo(() => {
+    const side = data?.viewpoint == null ? undefined : sides[data.viewpoint];
+    const viewpoint = side ? { name: sideName(side), color: color(side) }
+      : viewpointTag ? { name: names.name(viewpointTag, hour), tag: viewpointTag, color: colours.get(`country:${viewpointTag}`) ?? tokens.muted }
+        : { name: 'No country selected', color: tokens.muted };
+    return { name: sideName, color, viewpoint, enemy: tokens.error, scale: 100_000, badBelow: 40_000, goodAbove: 60_000, mode: mode.mode };
+  }, [data?.viewpoint, sides, sideName, color, viewpointTag, names, hour, colours, tokens.muted, tokens.error, mode.mode]);
+  const legend = useMemo(() => mode.mode === 'viewpoint' ? [
+    { id: 'friendly', label: `${looks.viewpoint.name} (friendly)`, color: looks.viewpoint.color },
+    { id: 'enemy', label: `Enemies of ${looks.viewpoint.name}`, color: tokens.error },
+  ] : [...sides].sort((a, b) => (a.faction == null) === (b.faction == null) ? 0 : a.faction == null ? 1 : -1).map(side => ({ id: side.key, label: sideName(side), color: color(side),
+    onColor: side.colourFaction ? (hex: string) => factions.setColour(side.colourFaction!, hex, 'campaign') : undefined })),
+  [mode.mode, looks.viewpoint, tokens.error, sides, sideName, color, factions.setColour]); // eslint-disable-line react-hooks/exhaustive-deps
+  const warnings = useMemo(() => [...factions.warnings, ...(factions.error ? [String(factions.error)] : []), ...(names.warnings ?? [])], [factions.warnings, factions.error, names.warnings]);
+  return { tokens, looks, legend, country, faction, warnings };
 }

@@ -561,9 +561,9 @@ mod tests {
         bytes
     }
 
-    fn run(bytes: &[u8], rows: &mut [Row]) -> (Result<(), &'static str>, usize) {
+    fn run(bytes: &[u8], rows: &mut Vec<Row>) -> (Result<(), &'static str>, usize) {
         let mut sink = Sink {
-            rows: crate::walk::Buffer::Fixed(rows),
+            rows: crate::walk::Buffer::Growing(rows),
             required: 0,
             raid: 7,
             ordinal: 0,

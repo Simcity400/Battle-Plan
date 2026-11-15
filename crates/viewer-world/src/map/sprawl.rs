@@ -359,6 +359,17 @@ impl Damage {
         Self { health, refused }
     }
 
+    /// Whether `other` holds other damage: the indexes compared only where they do not share a
+    /// subtree, so a damage patched from this one costs its changes.
+    fn differs(&self, other: &Self) -> bool {
+        if self.refused != other.refused || self.health.len() != other.health.len() {
+            return true;
+        }
+        let mut differs = false;
+        self.health.visit_changes(&other.health, |_, _, _| differs = true);
+        differs
+    }
+
     pub(super) fn display(&self) -> map_display_data::buildings::CityDamage {
         map_display_data::buildings::CityDamage {
             health: self.health.clone(),
@@ -598,7 +609,7 @@ impl Presentation {
     /// preserve the same change flags even when a different allocation supplies them.
     pub fn set_shared_damage(&mut self, damage: &Arc<Damage>) {
         if !Arc::ptr_eq(&self.damage, damage) {
-            if *self.damage != **damage {
+            if self.damage.differs(damage) {
                 self.damage_changed = true;
                 self.clocks_changed = true;
             }
@@ -641,6 +652,11 @@ impl Presentation {
         }
     }
 
+    /// The health below which a city is damaged, and below which it burns.
+    pub fn thresholds(&self) -> (i64, i64) {
+        (self.damaged, self.destroyed)
+    }
+
     pub fn update(
         &mut self,
         camera: Camera,
@@ -667,6 +683,11 @@ impl Presentation {
                 }
                 *admitted = shown;
                 membership_changed = true;
+                viewer_foundation::view_record::add(
+                    "city sprawl",
+                    if shown { "history_groups_admitted" } else { "history_groups_let_go" },
+                    1,
+                );
                 if !shown {
                     // Retain the precreated actor's idle request across re-entry, even
                     // when its authored default differs or damage is unavailable.
@@ -964,6 +985,31 @@ mod tests {
         let mut presentation = Presentation::new(Vec::new(), 80_000, 30_000);
         presentation.set_shared_damage(&Arc::new(damage));
         presentation
+    }
+
+    /// A damage patched from the one held differs exactly where its contents do, whether it
+    /// shares the held index's nodes or was built anew.
+    #[test]
+    fn city_damage_differs_where_a_patched_or_rebuilt_index_holds_other_values() {
+        let health: map_display_data::value_index::ValueIndex<u32, Option<i64>> =
+            (0..5_000u32).map(|province| (province, Some(i64::from(province)))).collect::<BTreeMap<_, _>>().try_into().unwrap();
+        let held = Damage { health: health.clone(), refused: None };
+        let rebuilt = Damage { health: (0..5_000u32).map(|province| (province, Some(i64::from(province)))).collect::<BTreeMap<_, _>>().try_into().unwrap(), refused: None };
+        assert!(!held.differs(&rebuilt) && held == rebuilt, "equal contents, other nodes");
+        let same = Damage { health: health.patched(&[(17, Some(Some(17)))]).unwrap(), refused: None };
+        assert!(!held.differs(&same), "a patch to the value held");
+        let one = Damage { health: health.patched(&[(17, Some(None))]).unwrap(), refused: None };
+        assert!(held.differs(&one) && one.differs(&held), "one province's health");
+        let gone = Damage { health: health.patched(&[(4_999, None)]).unwrap(), refused: None };
+        assert!(held.differs(&gone), "a province no longer held");
+        let refused = Damage { health: health.clone(), refused: Some("not recorded".into()) };
+        assert!(held.differs(&refused), "the refusal");
+        let mut scene = presentation(held);
+        scene.damage_changed = false;
+        scene.set_shared_damage(&Arc::new(same));
+        assert!(!scene.damage_changed, "equal damage keeps the actors' clocks");
+        scene.set_shared_damage(&Arc::new(one));
+        assert!(scene.damage_changed);
     }
 
     #[test]

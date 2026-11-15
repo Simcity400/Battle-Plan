@@ -76,7 +76,7 @@ fn division_presentation_rows_share_one_experience_certificate() {
         }
         loop {
             census.clear();
-            census.capture(&world.live(), world.base, world.state, DIVISIONS);
+            census.capture(&world.live(), world.base, world.state);
             if !census.overflowed {
                 break;
             }

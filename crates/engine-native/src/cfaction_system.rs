@@ -96,6 +96,10 @@ pub fn faction(
     Ok((address, id))
 }
 
+pub fn count_members(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
+    walk_members_buffer(memory, base, game_state, crate::walk::Buffer::Count)
+}
+
 /// Reads native member order, preserving each country's current raw reference.
 /// A complete result checks both membership directions against every positive
 /// canonical country. A reached raw-zero member is authenticated separately;
@@ -104,15 +108,6 @@ pub fn faction(
 /// counts omitted members and checks their pointers without allocating; its
 /// truncated prefix cannot assert the reverse census is complete.
 pub fn walk_members(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut [MemberRow],
-) -> Outcome {
-    walk_members_buffer(memory, base, game_state, crate::walk::Buffer::Fixed(output))
-}
-
-pub fn walk_members_growing(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -385,7 +380,7 @@ mod tests {
         bytes
     }
 
-    fn members(bytes: &[u8], output: &mut [MemberRow]) -> Outcome {
+    fn members(bytes: &[u8], output: &mut Vec<MemberRow>) -> Outcome {
         walk_members(&SliceMemory { base: 0, bytes }, 0, GS, output)
     }
 
@@ -403,7 +398,7 @@ mod tests {
         put64(&mut bytes, D0 + cdiplomacy_status::FACTION, FIRST as u64);
         put32(&mut bytes, FIRST + cfaction::MEMBER_COUNT, 3);
         put64(&mut bytes, MEMBER_POINTERS + 16, C0 as u64);
-        let mut rows = [MemberRow::default(); 3];
+        let mut rows = vec![MemberRow::default(); 3];
         assert_eq!(members(&bytes, &mut rows), Outcome::Rows { len: 3 });
         assert_eq!(
             rows[2],
@@ -444,22 +439,22 @@ mod tests {
         put32(&mut bytes, FIRST + cfaction::MEMBER_CAPACITY, 4);
         put64(&mut bytes, MEMBER_POINTERS + 24, C0 as u64);
         assert_eq!(
-            members(&bytes, &mut [MemberRow::default(); 4]),
+            members(&bytes, &mut vec![MemberRow::default(); 4]),
             Outcome::Unavailable {
                 reason: "country has duplicate faction membership",
             }
         );
     }
 
-    fn names(bytes: &[u8], output: &mut [cfaction::Row], arena: &mut [u8]) -> cfaction::NameWalk {
+    fn names(bytes: &[u8], output: &mut Vec<cfaction::Row>, arena: &mut Vec<u8>) -> cfaction::NameWalk {
         cfaction::walk(&SliceMemory { base: 0, bytes }, 0, GS, output, arena)
     }
 
     #[test]
     fn exact_names_and_ordered_members_preserve_aliases_empty_factions_and_full_handles() {
         let bytes = fixture();
-        let mut rows = [cfaction::Row::default(); 2];
-        let mut arena = [0; 4];
+        let mut rows = vec![cfaction::Row::default(); 2];
+        let mut arena = vec![0; 4];
         assert_eq!(
             names(&bytes, &mut rows, &mut arena),
             cfaction::NameWalk {
@@ -490,7 +485,7 @@ mod tests {
                 },
             ]
         );
-        let mut output = [MemberRow::default(); 2];
+        let mut output = vec![MemberRow::default(); 2];
         assert_eq!(members(&bytes, &mut output), Outcome::Rows { len: 2 });
         assert_eq!(
             output,
@@ -515,29 +510,16 @@ mod tests {
         let value: Vec<u8> = (0..=255).collect();
         name(&mut bytes, FIRST, &value);
         put64(&mut bytes, FIRST + cfaction::REFERENCE, 9000); // Other word may be zero too.
-        let mut rows = [cfaction::Row::default(); 2];
-        let mut small = [0; 128];
-        assert_eq!(
-            names(&bytes, &mut rows, &mut small),
-            cfaction::NameWalk {
-                outcome: Outcome::Truncated {
-                    len: 1,
-                    unread_rows: 1
-                },
-                bytes_len: 0,
-                required_bytes: 256,
-            }
-        );
-        assert_eq!(rows[0].id, SECOND_ID); // Empty row remains representable.
-        let mut enough = [0; 256];
+        let mut rows = vec![cfaction::Row::default(); 2];
+        let mut enough = vec![0; 128];
         assert_eq!(
             names(&bytes, &mut rows, &mut enough).outcome,
             Outcome::Rows { len: 2 }
         );
-        assert_eq!(enough.as_slice(), value);
+        assert_eq!(&enough[..256], value);
         assert_eq!(rows[0].id, 9000);
         assert_eq!(
-            names(&bytes, &mut [], &mut enough),
+            cfaction::count(&SliceMemory { base: 0, bytes: &bytes }, 0, GS),
             cfaction::NameWalk {
                 outcome: Outcome::Truncated {
                     len: 0,
@@ -559,20 +541,20 @@ mod tests {
             let mut bytes = fixture();
             put64(&mut bytes, at, value);
             assert!(matches!(
-                names(&bytes, &mut [], &mut []).outcome,
+                names(&bytes, &mut Vec::new(), &mut Vec::new()).outcome,
                 Outcome::Unavailable { .. }
             ));
         }
         let mut bytes = fixture();
         bytes[FIRST + cfaction::NAME + 4] = b'!';
         assert!(matches!(
-            names(&bytes, &mut [], &mut []).outcome,
+            names(&bytes, &mut Vec::new(), &mut Vec::new()).outcome,
             Outcome::Unavailable { .. }
         ));
         name(&mut bytes, FIRST, &[b'x'; 256]);
         put64(&mut bytes, FIRST + cfaction::NAME, 0);
         assert!(matches!(
-            names(&bytes, &mut [], &mut []).outcome,
+            names(&bytes, &mut Vec::new(), &mut Vec::new()).outcome,
             Outcome::Unavailable { .. }
         ));
     }
@@ -588,8 +570,8 @@ mod tests {
                 &memory,
                 0,
                 GS,
-                &mut [cfaction::Row::default(); 2],
-                &mut [0; 4],
+                &mut vec![cfaction::Row::default(); 2],
+                &mut vec![0; 4],
             );
             assert_eq!(walk.outcome, Outcome::Rows { len: 2 });
             crate::memory::ReadCounts::take_current()
@@ -607,8 +589,8 @@ mod tests {
         assert_eq!(
             names(
                 &bytes[..SECOND + cfaction::COLOR + 8],
-                &mut [cfaction::Row::default(); 2],
-                &mut [0; 4]
+                &mut vec![cfaction::Row::default(); 2],
+                &mut vec![0; 4]
             )
             .outcome,
             Outcome::Unavailable {
@@ -625,32 +607,16 @@ mod tests {
             let mut bytes = fixture();
             put64(&mut bytes, at, 0x1234);
             assert!(matches!(
-                names(&bytes, &mut [cfaction::Row::default(); 2], &mut [0; 4]).outcome,
+                names(&bytes, &mut vec![cfaction::Row::default(); 2], &mut vec![0; 4]).outcome,
                 Outcome::Unavailable { .. }
             ));
         }
     }
 
     #[test]
-    fn member_capacity_counts_exactly_and_still_checks_later_pointer_slots() {
+    fn members_still_check_later_pointer_slots() {
         let mut bytes = fixture();
-        let mut output = [MemberRow::default(); 1];
-        put64(&mut bytes, C1, 0); // Fields beyond capacity are not read or certified.
-        assert_eq!(
-            members(&bytes, &mut output),
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            }
-        );
-        assert_eq!(output[0].ordinal, 0);
-        assert_eq!(
-            members(&bytes, &mut []),
-            Outcome::Truncated {
-                len: 0,
-                unread_rows: 2
-            }
-        );
+        let mut output = vec![MemberRow::default(); 1];
         put64(&mut bytes, MEMBER_POINTERS + 8, 0);
         assert!(matches!(
             members(&bytes, &mut output),
@@ -673,14 +639,14 @@ mod tests {
             put64(&mut bytes, at, value);
             assert!(
                 matches!(
-                    names(&bytes, &mut [cfaction::Row::default(); 2], &mut [0; 4]).outcome,
+                    names(&bytes, &mut vec![cfaction::Row::default(); 2], &mut vec![0; 4]).outcome,
                     Outcome::Unavailable { .. }
                 ),
                 "name case {at:x}"
             );
             assert!(
                 matches!(
-                    members(&bytes, &mut [MemberRow::default(); 2]),
+                    members(&bytes, &mut vec![MemberRow::default(); 2]),
                     Outcome::Unavailable { .. }
                 ),
                 "member case {at:x}"
@@ -689,7 +655,7 @@ mod tests {
         let mut bytes = fixture();
         put32(&mut bytes, SYSTEM + FACTION_COUNT, 5);
         assert!(matches!(
-            names(&bytes, &mut [], &mut []).outcome,
+            names(&bytes, &mut Vec::new(), &mut Vec::new()).outcome,
             Outcome::Unavailable { .. }
         ));
     }
@@ -710,7 +676,7 @@ mod tests {
             put64(&mut bytes, at, value);
             assert!(
                 matches!(
-                    members(&bytes, &mut [MemberRow::default(); 2]),
+                    members(&bytes, &mut vec![MemberRow::default(); 2]),
                     Outcome::Unavailable { .. }
                 ),
                 "case {at:x}"
@@ -719,7 +685,7 @@ mod tests {
         let mut bytes = fixture();
         put32(&mut bytes, FIRST + cfaction::MEMBER_COUNT, 1);
         assert_eq!(
-            members(&bytes, &mut [MemberRow::default(); 2]),
+            members(&bytes, &mut vec![MemberRow::default(); 2]),
             Outcome::Unavailable {
                 reason: "country faction is missing from member roster",
             }
@@ -727,11 +693,11 @@ mod tests {
         // An invalid member table affects membership, not independently readable names.
         put32(&mut bytes, FIRST + cfaction::MEMBER_COUNT, 4);
         assert!(matches!(
-            members(&bytes, &mut [MemberRow::default(); 4]),
+            members(&bytes, &mut vec![MemberRow::default(); 4]),
             Outcome::Unavailable { .. }
         ));
         assert_eq!(
-            names(&bytes, &mut [cfaction::Row::default(); 2], &mut [0; 4]).outcome,
+            names(&bytes, &mut vec![cfaction::Row::default(); 2], &mut vec![0; 4]).outcome,
             Outcome::Rows { len: 2 }
         );
     }
@@ -741,17 +707,17 @@ mod tests {
         let mut bytes = fixture();
         array(&mut bytes, SYSTEM + FACTIONS, 0, 0, 0);
         assert_eq!(
-            names(&bytes, &mut [], &mut []).outcome,
+            names(&bytes, &mut Vec::new(), &mut Vec::new()).outcome,
             Outcome::Rows { len: 0 }
         );
         assert!(matches!(
-            members(&bytes, &mut []),
+            members(&bytes, &mut Vec::new()),
             Outcome::Unavailable { .. }
         ));
         for diplomacy in [D1, D2] {
             put64(&mut bytes, diplomacy + cdiplomacy_status::FACTION, 0);
         }
-        assert_eq!(members(&bytes, &mut []), Outcome::Rows { len: 0 });
+        assert_eq!(members(&bytes, &mut Vec::new()), Outcome::Rows { len: 0 });
     }
     #[test]
     fn faction_companion_roster_remains_complete_across_an_independent_name_failure() {
@@ -762,7 +728,7 @@ mod tests {
             bytes: &bytes,
         };
         let mut seen = Vec::new();
-        let (names, complete) = cfaction::walk_growing_with(
+        let (names, complete) = cfaction::walk_with(
             &memory,
             0,
             GS,
@@ -778,7 +744,7 @@ mod tests {
             base: 0,
             bytes: &bytes,
         };
-        let (failed, complete) = cfaction::walk_growing_with(
+        let (failed, complete) = cfaction::walk_with(
             &memory,
             0,
             GS,

@@ -11,13 +11,12 @@ for (const completedCount of [0, 3]) test(`Whole campaign includes its unfinishe
   const data: FocusReply = { history: { segments: [{ firstHour: 0, lastHour: 30, order: {
     completed: Array.from({ length: completedCount }, (_, ordinal) => ({ ordinal, token: `synthetic_completed_${ordinal}`, completedByHour: ordinal + 1 })),
     current: 'synthetic_unfinished', continuous: null, paused: false,
-  } }], progress: [] }, artwork: [], continuousStaticText: [], warnings: [] };
+  } }], progress: [] }, missing: [], artwork: [], continuousStaticText: [], warnings: [] };
   const host = globalThis as typeof globalThis & { __focusListReply?: FocusReply; __focusListInteractive?: boolean[];
     __focusListPredicate?: (item: unknown, index: number) => boolean };
   host.__focusListReply = data;
   const replacements: Record<string, string> = {
     '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__focusListReply }); export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/dashboard/useDiagnostics.ts': 'export const useDiagnostics = () => {};',
     '/dashboard/contentRevision.ts': 'export const useContentRevision = () => 0;',
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open() {}, menu: null });',

@@ -174,10 +174,7 @@ impl Captured {
         grow_vec(&mut self.group_countries, groups);
     }
     pub fn capture(&mut self, memory: &impl Memory, base: usize, state: usize, hour: i32) {
-        self.capture_buffers(memory, base, state, hour, false);
-    }
-    pub fn capture_growing(&mut self, memory: &impl Memory, base: usize, state: usize, hour: i32) {
-        self.capture_buffers(memory, base, state, hour, true);
+        self.capture_buffers(memory, base, state, hour);
     }
     fn capture_buffers(
         &mut self,
@@ -185,37 +182,30 @@ impl Captured {
         base: usize,
         state: usize,
         hour: i32,
-        growing: bool,
     ) {
         self.reset();
         self.hour = Some(hour);
         self.context_slots.fill(0);
         let mut out = native::Buffers {
-            countries: rows(&mut self.countries, growing),
-            divisions: rows(&mut self.divisions, growing),
-            fleets: rows(&mut self.fleets, growing),
-            tasks: rows(&mut self.tasks, growing),
-            sites: rows(&mut self.sites, growing),
-            wings: rows(&mut self.wings, growing),
-            weather: rows(&mut self.weather, growing),
-            contexts: rows(&mut self.contexts, growing),
-            context_slots: engine_native::walk::Buffer::for_worker(
-                &mut self.context_slots,
-                growing,
-            ),
-            names: engine_native::walk::Buffer::for_worker(&mut self.names, growing),
+            countries: rows(&mut self.countries),
+            divisions: rows(&mut self.divisions),
+            fleets: rows(&mut self.fleets),
+            tasks: rows(&mut self.tasks),
+            sites: rows(&mut self.sites),
+            wings: rows(&mut self.wings),
+            weather: rows(&mut self.weather),
+            contexts: rows(&mut self.contexts),
+            context_slots: engine_native::walk::Buffer::Growing(&mut self.context_slots),
+            names: engine_native::walk::Buffer::Growing(&mut self.names),
             name_len: 0,
             name_required: 0,
-            roots: engine_native::walk::Buffer::for_worker(&mut self.roots, growing),
-            groups: engine_native::walk::Buffer::for_worker(&mut self.groups, growing),
-            members: engine_native::walk::Buffer::for_worker(&mut self.members, growing),
-            children: engine_native::walk::Buffer::for_worker(&mut self.children, growing),
-            roster_scratch: engine_native::walk::Buffer::for_worker(&mut self.scratch, growing),
-            group_names: engine_native::walk::Buffer::for_worker(&mut self.group_names, growing),
-            group_countries: engine_native::walk::Buffer::for_worker(
-                &mut self.group_countries,
-                growing,
-            ),
+            roots: engine_native::walk::Buffer::Growing(&mut self.roots),
+            groups: engine_native::walk::Buffer::Growing(&mut self.groups),
+            members: engine_native::walk::Buffer::Growing(&mut self.members),
+            children: engine_native::walk::Buffer::Growing(&mut self.children),
+            roster_scratch: engine_native::walk::Buffer::Growing(&mut self.scratch),
+            group_names: engine_native::walk::Buffer::Growing(&mut self.group_names),
+            group_countries: engine_native::walk::Buffer::Growing(&mut self.group_countries),
             group_owner_reason: None,
             group_outcomes: None,
             roots_outcome: None,
@@ -489,9 +479,9 @@ fn context_slots(count: usize) -> io::Result<usize> {
             .ok_or_else(engine_allocation::oom)
     }
 }
-fn rows<T>(rows: &mut Vec<T>, growing: bool) -> native::BufferRows<'_, T> {
+fn rows<T>(rows: &mut Vec<T>) -> native::BufferRows<'_, T> {
     native::BufferRows {
-        rows: engine_native::walk::Buffer::for_worker(rows, growing),
+        rows: engine_native::walk::Buffer::Growing(rows),
         len: 0,
         required: 0,
     }

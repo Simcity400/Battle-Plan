@@ -3,11 +3,10 @@ import type { MovingRow } from './rowMotion';
 import type { ReactNode } from 'react';
 import WindowedRows from './WindowedRows';
 import { useChartTokens } from './useChartTokens';
-import { useParityRows } from '../dashboard/parityRows';
 import './charts.css';
 
 export interface LegendItem {
-  id: string; label: string; detail?: string; color?: string; tooltip?: string; value?: string; flag?: ReactNode;
+  id: string; label: string; detail?: string; color?: string; tooltip?: string; value?: ReactNode; flag?: ReactNode;
   /** A value read out to assistive technology only, where the look shows names alone. */
   spokenValue?: string;
   /** Makes the swatch a colour picker, as faction swatches are; the choice applies campaign-wide. */
@@ -21,12 +20,6 @@ export default function Legend({ items, label, always = false, windowed = false,
   /** Mounted windowed entries (including leaving rows); empty when hidden or unmounted. */
   onVisibleItems?: (items: readonly LegendItem[]) => void }) {
   const root = useRef<HTMLUListElement>(null);
-  if (import.meta.env.MODE === 'parity') {
-    useParityRows(root, () => ({
-      kind: 'windowed', label, complete: true, total: items.length,
-      rows: items.map((item, index) => ({ key: item.id, index, item })),
-    }));
-  }
   windowed ||= items.length > 30;
   useLayoutEffect(() => () => onVisibleItems?.([]), [onVisibleItems]);
   useEffect(() => {

@@ -1,137 +1,59 @@
+import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import test from 'node:test';
-import { deepFreeze } from '../../testFrozen.ts';
-import { raidPlayback } from './raidLogData.ts';
-import { syntheticRaidRun, syntheticRaids } from '../../dashboard/raids.fixtures.ts';
-import { raidDescription, raidLogRows, raidLogTypes, raidPreparation, raidStatus, raidTooltip } from './raidLogData.ts';
-import { resolveCountries } from '../../dashboard/groups.ts';
-import { definition } from './definition.ts';
+import { raidDescription, raidLogRows, raidLogTypes, raidTooltip, targetNameRequest, targetNames, targetText } from './raidLogData.ts';
+import { raidAt } from '../../dashboard/raids.ts';
+import { phaseRun, syntheticEpisode, syntheticRaidLog } from '../../dashboard/raids.fixtures.ts';
 
-test('raid playback retains settled rows while preparation, observations and gaps update the same output', () => {
-  const data = deepFreeze(syntheticRaids()), matches = () => true, playback = raidPlayback(data, [], matches, null);
-  for (const hour of [99, 100, 101, 102, 103, 104, 105, 106, 110, 100]) {
-    const actual = playback.at(hour), expected = raidLogRows(data, hour, [], matches, null);
-    assert.deepEqual(actual.map(row => ({ ...row, item: { ...row.item, hour } })), expected);
-    assert.deepEqual(actual.map(row => raidDescription(data, row.item, 'A', 'B')), expected.map(row => raidDescription(data, row.item, 'A', 'B')));
-    assert.deepEqual(actual.map(row => raidTooltip(data, row.item, 'A', 'B')), expected.map(row => raidTooltip(data, row.item, 'A', 'B')));
-  }
-  assert.notEqual(playback.at(100), playback.at(101));
-  assert.equal(playback.at(103), playback.at(105));
-  assert.equal(playback.at(106), playback.at(110));
-  const episode = data.episodes[0], constant = deepFreeze({ ...data, episodes: [{ ...episode,
-    runs: [syntheticRaidRun(100, 105)], preparation: [[100, 105, 7, 0] as [number, number, number, number]] }] });
-  const preparing = raidPlayback(constant, [], matches, null);
-  assert.equal(preparing.at(100), preparing.at(105));
-  assert.notEqual(preparing.at(105), preparing.at(106));
+const all = () => true;
+
+test('the log shows the raids at the hour, each dated by the phase it shows, newest first', () => {
+  const data = syntheticRaidLog([syntheticEpisode('1', 10, 'ENG', 20, 30, true), syntheticEpisode('2', 15, 'PRC', 25, null, false), syntheticEpisode('3', 30, 'GER', null, null, false)]);
+  assert.deepEqual(raidLogRows(data, 22, [], all, null).map(row => [row.id, row.hour]), [['1', 20], ['2', 15]]);
+  assert.deepEqual(raidLogRows(data, 31, [], all, null).map(row => [row.id, row.hour]), [['1', 30], ['3', 30], ['2', 25]]);
+  // A raider the selection does not match at the row's date is left out; a range keeps rows dated within it.
+  assert.deepEqual(raidLogRows(data, 31, [], tag => tag === 'PRC', null).map(row => row.id), ['2']);
+  assert.deepEqual(raidLogRows(data, 31, [], all, 26).map(row => row.id), ['1', '3']);
+  // A raid without a raider shows only to a log of every country.
+  const unnamed = syntheticRaidLog([syntheticEpisode('4', 10, null, null, null, false)]);
+  assert.equal(raidLogRows(unnamed, 12, [], (tag) => tag !== null, null).length, 0);
 });
 
-test('raid log country choices retain every one of 5000 recorded tags', () => {
-  const tags = Array.from({ length: 5000 }, (_, index) => `MOD ${index}`);
-  const resolved = resolveCountries({ kind: 'tags', tags }, [], undefined, 100, definition.countries.max);
-  assert.deepEqual(resolved.tags, tags);
-  assert.equal(resolved.dropped, 0);
+test('the type filter keeps the chosen types, and its chips are the types the raids show, with their icons', () => {
+  const sea = syntheticEpisode('2', 15, 'PRC', 25, null, false, { raidType: 'mod/sea_raid', raidTypeName: null, icon: null });
+  const odd = syntheticEpisode('3', 16, 'PRC', 25, null, false, { raidType: 'mod/undeclared', raidTypeName: 'Undeclared raid', icon: null });
+  const data = syntheticRaidLog([syntheticEpisode('1', 10, 'ENG', 20, 30, true), sea, odd]);
+  assert.deepEqual(raidLogRows(data, 22, ['mod/sea_raid'], all, null).map(row => row.id), ['2']);
+  assert.deepEqual(raidLogTypes(data).map(type => [type.token, type.label, type.icon]),
+    [['mod/sky_raid', 'Sky raid from a mod', null], ['mod/sea_raid', 'Raid name unavailable', null], ['mod/undeclared', 'Undeclared raid', null]]);
 });
 
-test('raid log dates each observation and never backfills a later outcome or preparation across a gap', () => {
-  const data = syntheticRaids();
-  assert.equal(raidLogRows(data, 99, [], () => true, null).length, 0);
-  const earlier = raidLogRows(data, 101, [], () => true, null)[0];
-  assert.equal(earlier.hour, 100);
-  assert.equal(earlier.by, true);
-  assert.match(raidStatus(data, earlier.item), /preparation/);
-  assert.doesNotMatch(raidStatus(data, earlier.item), /success/);
-  const gap = raidLogRows(data, 102, [], () => true, null)[0];
-  assert.match(raidStatus(data, gap.item), /Last known:/);
-  assert.equal(raidPreparation(data, gap.item), 'Preparation not known');
-  const later = raidLogRows(data, 105, ['mod/sky_raid'], () => true, null)[0];
-  assert.match(raidDescription(data, later.item, 'New country name', 'Mod victim'), /Mod victim.*Sky raid from a mod.*Modded success/);
-  assert.equal(later.hour, 103);
-  assert.equal(raidLogRows(data, 105, [], () => false, null).length, 0);
+test('the description and tooltip say the phase, its outcome once ended, and the hours prepared while preparing', () => {
+  const raid = syntheticEpisode('1', 10, 'ENG', 20, 30, true, { runs: [phaseRun(10, 19, 2), phaseRun(20, 29, 4), phaseRun(30, 40, 5, 3)], preparation: [[10, 19, 0, 1]] });
+  const data = syntheticRaidLog([raid]);
+  assert.equal(raidDescription(data, raidAt(raid, 12)!, 'England', 'Germany', 'Kent', 12), 'England targets Germany at Kent with Sky raid from a mod. Phase 2. 2 h prepared.');
+  assert.equal(raidDescription(data, raidAt(raid, 35)!, 'England', 'Germany', 'Kent', 35), 'England targets Germany at Kent with Sky raid from a mod. Phase 5 · Outcome 3.');
+  const tip = raidTooltip(data, raidAt(raid, 12)!, 'England', 'Germany', 'Kent', 12);
+  assert.deepEqual(tip.rows.map(row => [row.label, row.value]).slice(3, 5), [['Phase / outcome', 'Phase 2'], ['Hours prepared', '2']]);
 });
 
-test('hourly preparation and launch witnesses update values without rekeying or redating the log', () => {
-  const data = syntheticRaids();
-  data.episodes[0].runs = [syntheticRaidRun(100), syntheticRaidRun(101, 105, { launched: true, iconMissing: 'Changed icon refusal' })];
-  data.episodes[0].preparation = [[100, 101, 1139, 1], [103, 105, 1142, 1]];
-  const first = raidLogRows(data, 100, [], () => true, null)[0];
-  const prepared = raidLogRows(data, 101, [], () => true, null)[0];
-  assert.equal(prepared.key, first.key);
-  assert.equal(prepared.hour, 100);
-  assert.equal(raidPreparation(data, prepared.item), '1,140 h prepared');
-  assert.doesNotMatch(raidStatus(data, prepared.item), /No result|None/);
-  assert.equal(raidPreparation(data, raidLogRows(data, 102, [], () => true, null)[0].item), 'Preparation not known');
-  const tooltip = raidTooltip(data, prepared.item, 'Raider', 'Victim');
-  assert.equal(tooltip.rows.find(row => row.label === 'Preparation read')?.value, undefined);
-  data.readHours = [100];
-  assert.equal(raidTooltip(data, prepared.item, 'Raider', 'Victim').rows.find(row => row.label === 'Last read')?.value, undefined);
-  assert.match(raidDescription(data, prepared.item, 'Raider', 'Victim'), /1,140 h prepared/);
-  assert.doesNotMatch(raidDescription(data, prepared.item, 'Raider', 'Victim'), /has a/);
-  data.episodes[0].runs.push(syntheticRaidRun(106, 106, { province: 9 }));
-  assert.equal(raidLogRows(data, 106, [], () => true, null)[0].hour, 106);
+test('a target is named by its state, else its province, all at one hour, and says why when it is not', () => {
+  const base = syntheticEpisode('1', 10, 'ENG', null, null, false);
+  const inState = { ...base, state: 7, province: 70 };
+  const atSea = { ...base, id: '2', firstHour: 20, state: null, province: 900 };
+  const again = { ...base, id: '3', firstHour: 0, state: 7 };
+  assert.deepEqual(targetNameRequest([inState, atSea, again], 500), { places: [{ provinceId: 900, hour: 500 }], states: [{ stateId: 7, hour: 500 }] });
+  const names = targetNames({ warnings: [], places: [{ provinceId: 900, hour: 500, name: null, missing: 'Province not recorded' }],
+    states: [{ stateId: 7, hour: 500, name: 'Kent', missing: null }] });
+  assert.equal(targetText(inState, names), 'Kent');
+  assert.equal(targetText(atSea, names), 'Province 900 (Province not recorded)');
+  assert.equal(targetText({ ...inState, state: 8 }, names), 'State 8 (Name not read yet)');
+  assert.equal(targetText(inState), 'State 7', 'only its id while names are loading');
+  assert.equal(targetText({ ...base, state: null, province: null }), 'Target not known');
 });
 
-test('raid chips contain only branch-observed types, disambiguated, regardless of current filters', () => {
-  const data = syntheticRaids();
-  const type = data.types[0];
-  data.types = [{ ...type, name: 'Air raid' }, { ...type, token: 'mod/other', name: 'Air raid' },
-    { ...type, token: 'mod/unused', name: 'Unused type' }];
-  data.episodes[0].runs[1].type = 'mod/other';
-  assert.deepEqual(raidLogTypes(data).map(choice => [choice.token, choice.label]),
-    [['mod/sky_raid', 'Air raid (1)'], ['mod/other', 'Air raid (2)']]);
-  assert.equal(raidLogRows(data, 105, ['mod/unused'], () => true, null).length, 0);
-  assert.equal(raidLogRows(data, 105, [], () => true, null).length, 1);
-});
-
-test('an unchanged post-gap observation keeps the episode row date and key without filling the gap', () => {
-  const data = syntheticRaids();
-  data.episodes[0].runs = [syntheticRaidRun(100, 101), syntheticRaidRun(103, 105)];
-  const first = raidLogRows(data, 101, [], () => true, null)[0];
-  const gap = raidLogRows(data, 102, [], () => true, null)[0];
-  const resumed = raidLogRows(data, 103, [], () => true, null)[0];
-  assert.equal(resumed.hour, first.hour);
-  assert.equal(resumed.key, first.key);
-  assert.equal(gap.item.current, null);
-  assert.equal(raidPreparation(data, gap.item), 'Preparation not known');
-  assert.equal(raidPreparation(data, resumed.item), '8 h prepared');
-  assert.equal(raidTooltip(data, resumed.item, 'Raider', 'Victim').rows.find(row => row.label === 'Last read')?.value, undefined);
-});
-
-test('ended raid text uses the outcome and omits preparation', () => {
-  const data = syntheticRaids();
-  const row = raidLogRows(data, 104, [], () => true, null)[0];
-  assert.match(raidStatus(data, row.item), /Modded success/);
-  assert.equal(raidPreparation(data, row.item), null);
-  assert.equal(raidTooltip(data, row.item, 'Raider', 'Victim').rows.some(row => row.label === 'Hours prepared'), false);
-});
-
-test('raid text takes preparation, ended and no-outcome meanings from the product', () => {
-  const data = syntheticRaids({ phasePreparing: 17, phaseEnded: 29, outcomeNone: 41 });
-  data.episodes[0].runs[0].phase = data.phasePreparing;
-  data.episodes[0].runs[0].outcome = data.outcomeNone;
-  data.episodes[0].runs[1].phase = data.phaseEnded;
-  const preparing = raidLogRows(data, 101, [], () => true, null)[0].item;
-  assert.equal(raidPreparation(data, preparing), '8 h prepared');
-  assert.doesNotMatch(raidStatus(data, preparing), /No result/);
-  assert.match(raidDescription(data, preparing, 'Raider', 'Victim'), /8 h prepared/);
-  assert.equal(raidTooltip(data, preparing, 'Raider', 'Victim').rows.find(row => row.label === 'Hours prepared')?.value, '8');
-  const ended = raidLogRows(data, 104, [], () => true, null)[0].item;
-  assert.match(raidStatus(data, ended), /Modded success/);
-  assert.equal(raidPreparation(data, ended), null);
-  data.episodes[0].runs[1].outcome = data.outcomeNone;
-  assert.equal(raidStatus(data, ended), 'Modded ended');
-});
-
-test('raid country membership uses the read that supplied the row facts', () => {
-  const data = syntheticRaids();
-  const hours: number[] = [];
-  const rows = raidLogRows(data, 105, [], (_tag, hour) => { hours.push(hour); return true; }, null);
-  assert.equal(rows[0].hour, 103);
-  assert.deepEqual(hours, [103]);
-});
-
-test('raid category and range filters retain the campaign semantics', () => {
-  const data = syntheticRaids();
-  assert.equal(raidLogRows(data, 105, ['other-type'], () => true, null).length, 0);
-  assert.equal(raidLogRows(data, 105, [], () => true, 104).length, 0);
-  assert.equal(raidLogRows(data, 105, [], () => true, 103).length, 1);
+test('every raid’s target is asked, past the 4,096 the log once stopped at', () => {
+  const many = Array.from({ length: 5_000 }, (_, at) => ({ ...syntheticEpisode(String(at), at, 'ENG', null, null, false), state: at + 1 }));
+  const asked = targetNameRequest(many, 9_000);
+  assert.equal(asked.states.length, 5_000);
+  assert.ok(asked.states.some(state => state.stateId === 1), 'the oldest raid’s target too');
 });

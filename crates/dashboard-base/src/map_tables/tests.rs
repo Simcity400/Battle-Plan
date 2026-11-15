@@ -1,7 +1,7 @@
 use super::*;
 use proc_macro2::{TokenStream, TokenTree};
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use syn::visit::{self, Visit};
 
 #[test]
@@ -347,7 +347,10 @@ fn names() -> BTreeSet<String> {
 
 #[test]
 fn production_selection_covers_map_and_shared_recorded_input_readers() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    // A test built on Boat runs here: the run-time variable names this checkout.
+    let manifest = std::env::var_os("CARGO_MANIFEST_DIR")
+        .map_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")), PathBuf::from);
+    let root = manifest.parent().unwrap();
     let names = names();
     let mut census = Census::default();
     let mut crates: Vec<_> = std::fs::read_dir(root)

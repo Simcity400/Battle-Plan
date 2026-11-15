@@ -198,7 +198,11 @@ impl Fixture {
         self.u32(at + 8, count as u32);
         self.u32(at + 12, count as u32);
     }
-    pub(crate) fn copy(&self, winners: &mut [u32], actions: &mut [Action]) -> p::Snapshot {
+    pub(crate) fn copy(
+        &self,
+        winners: engine_native::walk::Buffer<'_, u32>,
+        actions: engine_native::walk::Buffer<'_, Action>,
+    ) -> p::Snapshot {
         p::copy(
             &SliceMemory {
                 base: 0,
@@ -208,11 +212,11 @@ impl Fixture {
             0x100,
             p::Output {
                 winners,
-                losers: &mut [],
+                losers: engine_native::walk::Buffer::Count,
                 actions,
-                transfers: &mut [],
-                subjects: &mut [],
-                name_bytes: &mut [],
+                transfers: engine_native::walk::Buffer::Count,
+                subjects: engine_native::walk::Buffer::Count,
+                name_bytes: engine_native::walk::Buffer::Count,
             },
         )
     }

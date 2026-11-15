@@ -13,6 +13,9 @@ fn callback_help_keeps_nested_acquisition_and_coordinator_jobs_on_workers() {
         Role::PresentationSettle,
         Role::Presentation,
         Role::FinalInputs,
+        Role::ScriptVariables,
+        Role::Research,
+        Role::Lexical,
     ] {
         assert!(!role.callback_help());
         assert!(role.worker_only());
@@ -63,14 +66,14 @@ fn gated(hour: i32, full: bool, raw: bool, mode: replay_data::scope::CaptureMode
     )
 }
 fn old_gated(request: &mut GatedRequest, marks: &Marks) {
-    request.packs.fog.capture_growing(
+    request.packs.fog.capture(
         &Unreadable,
         request.base,
         request.game_state,
         request.hour,
         request.force_full,
     );
-    request.packs.construction.capture_growing(
+    request.packs.construction.capture(
         &Unreadable,
         request.base,
         request.game_state,
@@ -237,9 +240,9 @@ fn projects_run_while_division_inputs_fog_and_construction_are_held() {
     batch.hold();
     let input = unsafe {
         batch.submit(&mut Some(Job::DivisionInputs(RawRequest {
-            countries: Arc::new(
+            countries: engine_allocation::shared(
                 engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
-            ),
+            ).unwrap(),
             context: crate::sampling::DivisionsCopyContext::default(),
             payload: crate::sampling::DivisionsJob::new_worker(),
         })))

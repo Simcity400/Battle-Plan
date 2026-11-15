@@ -1,120 +1,126 @@
 import type { ReactNode } from 'react';
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
-import { useParityRows } from '../../dashboard/parityRows';
 import { useContextMenu } from '../../components/ContextMenu';
-import { PreparedKey } from '../../charts/PreparedKey';
-import { pendingAt, preparedPrefix } from '../../dashboard/preparedPrefix';
 import Timeline from '../../charts/timeline/Timeline';
 import { playbackDomain } from '../../charts/view';
-import { useTableHour } from '../../charts/table/useTableHour';
 import { jumpItem } from '../../charts/jump';
+import { liveKey } from '../../charts/live.ts';
 import { countryNameDetails, fitTooltip } from '../../charts/tooltip.ts';
 import { useViewportHeight } from '../../charts/useChartTokens';
 import { formatDateTime } from '../../dashboard/calendar';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { resolveWindow } from '../../dashboard/model';
+import { useHeadProduct } from '../../dashboard/headProduct';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackMotion } from '../../dashboard/playback';
+import { useProduct } from '../../dashboard/products';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
-import { careerCountryFacts, careerLanes, leaderAt, leaderName, careerEmptyEntry, recordedSince } from '../generals/generalsData';
+import { useShownHour } from '../../dashboard/widgetPerf.ts';
+import { careerEmptyEntry, careerLanes, leaderName, recordedSince, runAt, traitDateText, validateCareer, validateLeaderHour } from '../generals/generalsData';
 import { LeaderIdentity, leaderIdentityProps, leaderPortraitProps } from '../generals/LeaderIdentity.tsx';
 import { useLeaderPortraits } from '../generals/portraits';
-import { useLeaders } from '../generals/useLeaders';
+import type { PortraitAt } from '../generals/portraits';
+import { experienceFactorText, experienceText } from '../generals/experience';
 import { OPTIONS } from './definition';
+import { LiveText } from './LiveText';
 import '../generals/generals.css';
-import { experienceText, experienceFactorText } from '../generals/experience';
+import type { LeaderCareerReply, LeaderHourReply } from '../../generated/dashboard';
 
-/** One view for the leaderboard drill and the standalone career widget. */
-export default function CareerView({ reference, hour, onPick, caption, widget, runtime, active, onDiagnostics }: WidgetProps & {
-  reference: string; hour: number; onPick?: (hour: number) => void; caption?: ReactNode;
+const NO_PORTRAIT: readonly PortraitAt[] = [];
+
+/** One view for the leaderboard drill and the standalone career widget: the whole career, read once per leader, and the
+ * leader at the hour (a pushed panel at the head, its experience painted from followed cells). */
+export default function CareerView({ reference, onPick, caption, widget, runtime, active, onDiagnostics }: WidgetProps & {
+  reference: string; onPick?: (hour: number) => void; caption?: ReactNode;
 }) {
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
-  const playback = useTableHour(runtime.clock, active && widget.time.mode === 'follow');
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
-  const selection = useMemo(() => ({ kind: 'leader' as const, reference }), [reference]);
-  const { data, error, retry } = useLeaders(runtime, widget.trackIds[0], selection, 'career', active);
-  const prefix = useMemo(() => preparedPrefix(data), [data]);
-  const preparing = pendingAt(prefix, hour);
-  const leader = data?.leaders.find(l => l.reference === reference);
-  const [hoveredHour, setHoveredHour] = useState<number | null>(null);
-  const row = useMemo(() => data && leader && !preparing ? leaderAt(data, leader, hour) : null, [data, leader, hour, preparing]);
-  const portraitRows = useMemo(() => row ? [row] : [], [row]);
-  const portraits = useLeaderPortraits(runtime, track, portraitRows, 118, active);
-  const window = track && resolveWindow(widget, track, runtime.tracks, playback);
+  const career = useProduct<LeaderCareerReply>(runtime.client, track ? { sourceId: track.source.id, revision: track.source.revision,
+    product: 'unit-leader-career', params: { branchId: track.branch.id, reference } } : null, active, validateCareer, track?.source);
+  const params = useMemo(() => ({ reference }), [reference]);
+  const head = useHeadProduct<LeaderHourReply>(runtime, widget, 'unit-leader-hour', params, { active, validate: validateLeaderHour });
+  const data = career.data;
+  const now = head.data;
+  const first = track?.branch.firstHour ?? 0;
+  const hour = head.at ?? track?.branch.lastHour ?? first;
+  const shown = useShownHour();
   const options = resolveOptions(OPTIONS, widget.options);
   const grow = options.growWithPlayback === true;
-  const first = track?.branch.firstHour ?? 0;
-  const last = Math.min(hour, window?.lastHour ?? hour);
-  const lanes = useMemo(() => data && leader ? careerLanes(data, leader, first, last, hour) : [], [data, leader, first, last, hour]);
-  const wanted = useMemo(() => data && leader ? careerCountryFacts(data, leader, hour, hoveredHour) : [], [data, leader, hour, hoveredHour]);
+  const [hoveredHour, setHoveredHour] = useState<number | null>(null);
+  const portraitAt = useMemo<readonly PortraitAt[]>(() => data?.portraitHour != null ? [{ reference, hour: data.portraitHour }] : NO_PORTRAIT, [data?.portraitHour, reference]);
+  const portraits = useLeaderPortraits(runtime, track, portraitAt, 118, active);
+  const lanes = useMemo(() => data ? careerLanes(data, first, hour, hour) : [], [data, first, hour]);
+  const wanted = useMemo(() => {
+    const at = [hour, ...hoveredHour === null ? [] : [hoveredHour]];
+    return data ? at.flatMap(h => { const owner = runAt(data, h)?.role.owner; return owner ? [{ hour: h, tag: owner }] : []; }) : [];
+  }, [data, hour, hoveredHour]);
   const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active);
   const viewportHeight = useViewportHeight();
   const menu = useContextMenu('Leader career actions');
-  const diagnostics = useMemo(() => [...new Set([...(data?.warnings ?? []), ...portraits.warnings])], [data, portraits.warnings]);
+  const diagnostics = useMemo(() => [...new Set([...(data?.warnings ?? []), ...(now?.warnings ?? []), ...portraits.warnings])], [data, now, portraits.warnings]);
   useDiagnostics(onDiagnostics, diagnostics);
   const tooltip = useCallback<NonNullable<Parameters<typeof Timeline>[0]['tooltip']>>((lane, span, h) => {
-    if (!data || !leader) return null;
-    if (pendingAt(prefix, h)) return { title: 'Leader career', subtitle: formatDateTime(h),
-      rows: [{ label: lane.label, value: 'Still being prepared' }] };
-    const hovered = leaderAt(data, leader, h);
-    const owner = hovered?.value.owner;
+    if (!data) return null;
+    const run = runAt(data, h);
+    const owner = run?.role.owner;
     const country = owner ? labelAt(h)(owner) : { name: 'Owner not recorded' };
-    const command = lane.id === 'commands' && span ? leader.commands.find(c => `command:${c.formation}:${c.firstHour}` === span.id) : undefined;
-    const unknownName = command && (command.nameReadHour == null || h < command.nameReadHour || command.nameUnknown.some(r => r.firstHour <= h && h <= r.lastHour));
-    const entry = unknownName ? `Unnamed ${command.kind === 'fleet' ? 'fleet' : 'formation'}` : span?.label;
-    const content = { ...countryNameDetails(country), title: hovered ? leaderName(hovered) : 'Leader not recorded', subtitle: `${country.name} · ${formatDateTime(h)}`,
-      rows: [{ label: lane.label, value: entry ?? careerEmptyEntry(data, leader, lane.id, h) }],
-      note: lane.id === 'battles' && !leader.battleWon && !span ? 'Battle results are not in this recording'
-        : lane.id === 'commands' && hovered?.value.kind === 2 ? data.navyCommandsMissing ? 'Fleet command history is incomplete.' : undefined : undefined };
+    const content = { ...countryNameDetails(country), title: run ? leaderName(data) : 'Leader not recorded', subtitle: `${country.name} · ${formatDateTime(h)}`,
+      rows: [{ label: lane.label, value: span?.label ?? careerEmptyEntry(data, lane.id, h) }],
+      note: lane.id === 'battles' && !span && data.battlesPartialFrom !== null && data.battlesPartialFrom <= h ? 'Battle data is incomplete here.' : undefined };
     return fitTooltip([content], viewportHeight);
-  }, [data, leader, labelAt, viewportHeight, prefix]);
-  const parityRoot = useRef<HTMLDivElement>(null);
-  useParityRows(parityRoot, () => ({ kind: 'chart', label: 'General career values', complete: !!data,
-    total: lanes.length, rows: [...lanes], hour, leader: leader ?? null, current: row ?? null }),
-    { ready: () => !!data, error: () => error ?? null });
+  }, [data, labelAt, viewportHeight]);
   if (!track) return <WidgetState kind="empty" message="Load a campaign to see a leader career." />;
-  if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
+  if (career.error) return <WidgetState kind="error" failure={career.error} onRetry={career.retry} />;
+  if (head.error) return <WidgetState kind="error" failure={head.error} onRetry={head.retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading leader career…" />;
-  if (!leader && preparing) return <WidgetState kind="loading" label="This range is still being prepared." />;
-  if (!leader) return <WidgetState kind="unavailable" message="Career unavailable for this leader." />;
-  const country = row?.value.owner ? labelAt(hour)(row.value.owner) : { name: 'Owner not recorded' };
-  return <div className="general-career" ref={parityRoot}>
+  if (data.missing) return <WidgetState kind="unavailable" message="Career unavailable for this leader." detail={data.missing} />;
+  const role = now?.role ?? null;
+  const country = role?.owner ? labelAt(hour)(role.owner) : { name: 'Owner not recorded' };
+  const decided = now ? now.won + now.lost : 0;
+  const partial = now?.battlesPartialFrom != null && now.battlesPartialFrom <= hour;
+  const progress = now?.progress ?? null;
+  const report = () => shown(head.shownAt());
+  return <div className="general-career">
     {caption && <p className="career-subject">{caption}</p>}
-    {row ? <div className="career-top"><LeaderIdentity {...leaderIdentityProps(row, country)} {...leaderPortraitProps(portraits.at(row))} showCountry />
+    {now && role && !now.missing ? <div className="career-top"><LeaderIdentity {...leaderIdentityProps({ name: leaderName(now), role, skill: now.skill }, country)}
+      {...leaderPortraitProps(portraitAt[0] ? portraits.at(portraitAt[0]) : undefined)} showCountry />
       <div className="career-stats">
-        <span><strong>{row.preparing ? 'Still being prepared' : row.fought}</strong>fought</span>
-        {row.won == null ? null
-          : <><span><strong>{row.won}</strong>won</span><span><strong>{row.lost}</strong>lost</span><span><strong>{row.winRate == null ? '—' : `${Math.round(row.winRate)}%`}</strong>win rate</span></>}
-        <span><strong>{row.preparing ? 'Still being prepared' : row.unresolved}</strong>unresolved</span>
-        <span>{recordedSince(row.career, data.firstHour)}</span>
-        <span><strong>{row.value.progress ? experienceText(row.value.progress.experienceRaw, row.value.progress.nextRequiredRaw) : 'Unavailable'}</strong>commander XP</span>
-      </div></div> : <p className="career-note">{preparing ? 'Leader details are still being prepared at this time.' : 'Leader details unavailable at this time.'}</p>}
-    {row?.value.progress && <div className="career-training">
+        <span><strong>{partial ? `≥${now.fought}` : now.fought}</strong>fought</span>
+        <span><strong>{now.won}</strong>won</span><span><strong>{now.lost}</strong>lost</span>
+        <span><strong>{decided ? `${Math.round(now.won * 100 / decided)}%` : '—'}</strong>win rate</span>
+        <span><strong>{now.fought - decided}</strong>unresolved</span>
+        <span>{recordedSince(data.runs[0]?.firstHour ?? null, first)}</span>
+        <span><strong><LiveText live={head.live} cell={liveKey(reference, 'experience')} onPaint={report}
+          format={(value, missing) => value === undefined ? missing : experienceText(String(value), progress?.nextRequiredRaw ?? null)} /></strong>commander XP</span>
+      </div></div> : <p className="career-note">{now?.missing ?? 'Leader details unavailable at this time.'}</p>}
+    {progress && <div className="career-training">
       <strong>Trait training</strong>
-      {row.value.progress.training === null ? <p>Unavailable</p> : row.value.progress.training.length === 0 ? <p>No traits in training</p>
-        : <ul>{row.value.progress.training.map((trait, index) => <li key={index}>{trait.name ?? trait.token ?? 'Unknown trait'}: {experienceText(trait.experienceRaw, trait.requiredRaw)}</li>)}</ul>}
+      {progress.training === null ? <p>Unavailable</p> : progress.training.length === 0 ? <p>No traits in training</p>
+        : <ul>{progress.training.map(trait => <li key={trait.key}>{trait.name ?? trait.token ?? 'Unknown trait'}: <LiveText live={head.live} cell={liveKey(trait.key, 'experience')}
+          format={(value, missing) => value === undefined ? missing : experienceText(String(value), trait.requiredRaw)} /></li>)}</ul>}
     </div>}
-    {row?.value.progress && <div className="career-training">
+    {progress && <div className="career-training">
       <strong>Trait training modifiers</strong>
-      {row.value.progress.factors === null ? <p>Unavailable</p> : row.value.progress.factors.length === 0 ? <p>No individual training modifiers</p>
-        : <ul>{row.value.progress.factors.map((trait, index) => <li key={index}>{trait.name ?? trait.token ?? 'Unknown trait'}: {experienceFactorText(trait.factorRaw)}</li>)}</ul>}
+      {progress.factors === null ? <p>Unavailable</p> : progress.factors.length === 0 ? <p>No individual training modifiers</p>
+        : <ul>{progress.factors.map((trait, index) => <li key={index}>{trait.name ?? trait.token ?? 'Unknown trait'}: {experienceFactorText(trait.factorRaw)}</li>)}</ul>}
+    </div>}
+    {now && now.traits && now.traits.length > 0 && <div className="career-training">
+      <strong>Traits</strong>
+      <ul>{now.traits.map((at, i) => { const trait = now.traitCatalogue[at];
+        return <li key={trait.token}>{trait.name ?? trait.token}: {traitDateText(now.traitDates[i] ?? null)}</li>; })}</ul>
     </div>}
     <Timeline label="General career" extent={playbackDomain(grow ? 'draw-in' : 'cursor',
-      [first, Math.max(first + 1, track.branch.lastHour + 1)], last + 1, 0, 1)} playhead={last + 1} labelHour={last}
+      [first, Math.max(first + 1, track.branch.lastHour + 1)], hour + 1, 0, 1)} playhead={hour + 1} labelHour={hour}
       preserveZoomOnExtentChange={grow}
-      pending={prefix?.pending} unobserved={prefix?.pending}
       lanes={lanes} showIcons showNames emptyLabel="Not recorded" active={active} revision={[data, labelAt]} tooltip={tooltip}
-      description={`${row ? leaderName(row) : 'Leader'}: skill, traits, commands and battles.`}
+      description={`${leaderName(data)}: skill, traits, commands and battles.`}
       hoursPerSecond={hoursPerSecond}
       dismissPointerTooltipOnEscape
       onHover={setHoveredHour}
       onContextMenu={(h, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, h), ...(onPick ? [{ label: 'Show this hour', run: () => onPick(h) }] : [])])} />
-    <PreparedKey pending={prefix?.pending} />
-    {row && !row.preparing && row.won == null && <p className="career-note">Result not recorded</p>}
-    {row?.foughtPartial && <p className="career-note">Battle counts are incomplete.</p>}
-    {row?.value.kind === 2 && data.navyCommandsMissing && <p className="career-note">Fleet command history is incomplete.</p>}
+    {partial && <p className="career-note">Battle counts are incomplete.</p>}
+    {role?.kind === 2 && <p className="career-note">Fleet commands cover fleets the recording names this leader for.</p>}
     {menu.menu}
   </div>;
 }

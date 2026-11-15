@@ -159,7 +159,8 @@ impl Changes for Observer {
 pub fn map_sequence(address: usize) -> Option<(u64, u64)> {
     WATCHES.registry.sequence(address)
 }
-/// Guards initial reference resolution before its lifetime receiver is registered.
+/// Guards a read no receiver certifies: a raid's first resolution, and every
+/// flag read before the first table installs.
 pub fn map_quiet() -> Option<(u64, u64)> {
     WATCHES.registry.quiet()
 }

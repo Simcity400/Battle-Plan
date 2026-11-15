@@ -92,7 +92,7 @@ test('windowed controls retain focus, sequential row access and nested expansion
       label: 'Research', scrollRef: { current: scroller }, identity: owner, children: () => null }));
     let virtual = render();
     const handlers = new Map<string, (event: any) => void>();
-    virtual.props.ref.current = { getBoundingClientRect: () => ({ top: 0 }), addEventListener: (name: string, handler: any) => handlers.set(name, handler),
+    virtual.props.ref.current = { className: '', style: {}, getBoundingClientRect: () => ({ top: 0 }), addEventListener: (name: string, handler: any) => handlers.set(name, handler),
       ownerDocument: { addEventListener() {} } };
     const row = (count = 2, open = false) => {
       const details = Array.from({ length: count }, () => new Details());

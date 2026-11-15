@@ -1,42 +1,26 @@
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { ComponentProps, PointerEvent } from 'react';
 import DateTimePicker from '../components/DateTimePicker';
 import PlaybackSpeed from '../components/PlaybackSpeed';
 import { formatDateTime } from './calendar';
 import { Icon } from '../components/Icons';
 import type { BoundTrack, DashboardTemplate } from './model';
-import { usePlaybackHour } from './playback';
-import { inFrame } from './frameUpdates';
 import type { PlaybackController } from './playback';
-import type { DashboardClient } from './client';
-import { newId } from '../shell/ids';
-import { validatePreparationReply, preparationActive } from '../shell/preparation/contract';
-import type { PreparedCoverage } from '../shell/preparation/contract';
-import { PAUSED_POLL_MS } from '../shell/preparation/controller';
-import { timelineGaps, timelinePrepared } from './timelineGaps';
+import { useIdentityHour } from './atHead.ts';
+import { timelineGaps, timelineHourAt } from './timelineGaps';
 import CountryPicker from '../components/CountryPicker';
 import { useMapMuted } from '../shell/muteSetting';
 import { commitZone } from '../shell/commitCount';
 
-/** The header's country picker, showing the flag the game drew at the playback hour.
- * Only this component follows the clock; while playing it asks at most every 250 ms, rendered with
- * the clock's next tick, and the hours between those samples render nothing. */
+/** The header's country picker, showing the flag the game drew at the playback hour. The flag is read
+ * at the hour it last changed (`useIdentityHour`), so the picker renders only when it does. */
 export function PlaybackCountryPicker({ clock, track, ...picker }: { clock: PlaybackController; track: BoundTrack | undefined } & Omit<ComponentProps<typeof CountryPicker>, 'flagAt'>) {
-  const [sampled, setSampled] = useState(() => clock.getHour());
-  useEffect(() => {
-    let hour = clock.getHour(), sent = 0, timer: ReturnType<typeof setTimeout> | undefined;
-    const sample = () => {
-      clearTimeout(timer);
-      const wait = clock.getSnapshot().playing ? Math.max(0, 250 - (performance.now() - sent)) : 0;
-      timer = setTimeout(() => { sent = performance.now(); inFrame(() => setSampled(clock.getHour())); }, wait);
-    };
-    sample();
-    const stop = clock.subscribeHour(() => { if (clock.getHour() !== hour) { hour = clock.getHour(); sample(); } });
-    return () => { stop(); clearTimeout(timer); };
-  }, [clock]);
-  const raw = track ? sampled + track.axisOffset : null;
-  const flagAt = useMemo(() => track && raw != null && raw >= track.branch.firstHour && raw <= track.branch.lastHour
-    ? { branchId: track.branch.id, hour: raw } : null, [track?.branch.id, track?.branch.firstHour, track?.branch.lastHour, raw]);
+  const tags = useMemo(() => picker.selectedTag ? [picker.selectedTag] : [], [picker.selectedTag]);
+  const first = track?.branch.firstHour, last = track?.branch.lastHour, offset = track?.axisOffset;
+  const trackHour = useCallback((hour: number) => first === undefined || last === undefined || offset === undefined
+    || hour + offset < first || hour + offset > last ? null : hour + offset, [first, last, offset]);
+  const raw = useIdentityHour(picker.client, track, tags, clock, !!track, trackHour);
+  const flagAt = useMemo(() => track && raw != null ? { branchId: track.branch.id, hour: raw } : null, [track?.branch.id, raw]);
   return <CountryPicker {...picker} flagAt={flagAt} />;
 }
 
@@ -49,17 +33,16 @@ function MapMuteButton() {
     aria-label={label} data-tooltip={error ?? label}><Icon name={muted ? 'volume-off' : 'volume'} /></button>;
 }
 
-export function PlaybackStrip({ clock, tracks, alignment, defaultRoleId, client }: {
-  client: DashboardClient; clock: PlaybackController; tracks: BoundTrack[]; alignment: DashboardTemplate['alignment']; defaultRoleId: string | null;
+export function PlaybackStrip({ clock, tracks, alignment, defaultRoleId }: {
+  clock: PlaybackController; tracks: BoundTrack[]; alignment: DashboardTemplate['alignment']; defaultRoleId: string | null;
 }) {
   // React renders the strip on anchors only; the playhead, the date and the hour-bound controls are
-  // painted from the clock's frames (`paint` below), and the calendar takes the paced hour.
+  // painted from the clock's frames (`place` and `settle` below), and the calendar takes the anchor's hour.
   const controlsKey = useCallback(() => {
     const snapshot = clock.getSnapshot();
-    return `${snapshot.playing}:${snapshot.hoursPerSecond}:${snapshot.bounds?.firstHour}:${snapshot.bounds?.lastHour}`;
+    return `${snapshot.playing}:${snapshot.hoursPerSecond}:${snapshot.bounds?.firstHour}:${snapshot.bounds?.lastHour}:${snapshot.playing ? '' : snapshot.hour}`;
   }, [clock]);
   useSyncExternalStore(clock.subscribe, controlsKey, controlsKey);
-  const pacedHour = usePlaybackHour(clock);
   const snapshot = clock.getSnapshot();
   const [dateDraft, setDateDraft] = useState<{ reference: string; hour: number | null } | null>(null);
   const [hover, setHover] = useState<{ left: number; hour: number } | null>(null);
@@ -67,37 +50,12 @@ export function PlaybackStrip({ clock, tracks, alignment, defaultRoleId, client 
   const reference = tracks.find((track) => track.roleId === defaultRoleId);
   const referenceKey = JSON.stringify(reference && [reference.id, reference.source.id, reference.source.revision,
     reference.branch.id, reference.branch.firstHour, reference.branch.lastHour, reference.axisOffset]);
-  const [prepared, setPrepared] = useState<{ owner: string; coverage: PreparedCoverage | null }>();
-  useEffect(() => {
-    if (!reference || !client.preparationStatus) return;
-    const controller = new AbortController(); let timer: ReturnType<typeof setTimeout> | undefined;
-    // Preparation can change without notifications, so even terminal states need slow polling.
-    const poll = async () => {
-      const request = { sourceId: reference.source.id, revision: reference.source.revision, requestId: newId() };
-      let wait = PAUSED_POLL_MS;
-      try {
-        const status = validatePreparationReply(await client.preparationStatus!(request, controller.signal), request);
-        if (controller.signal.aborted) return;
-        setPrepared({ owner: referenceKey, coverage: status.coverage?.[reference.branch.id] ?? null });
-        if (preparationActive(status)) wait = 500;
-      } catch {
-        // Coverage keeps the last valid status until another arrives.
-        if (controller.signal.aborted) return;
-      }
-      timer = setTimeout(() => { void poll(); }, wait);
-    };
-    void poll(); return () => { controller.abort(); clearTimeout(timer); };
-  }, [client, referenceKey]);
-  // Without a reference track the key is undefined too, so an unset state must not match it.
-  const coverage = prepared && prepared.owner === referenceKey ? prepared.coverage : null;
   const draft = dateDraft && dateDraft.reference === referenceKey ? dateDraft.hour : null;
   const setDraft = (hour: number | null) => setDateDraft({ reference: referenceKey, hour });
-  const rawHour = reference ? pacedHour + reference.axisOffset : null;
+  const rawHour = reference ? snapshot.hour + reference.axisOffset : null;
   const bounds = snapshot.bounds;
   const span = bounds ? bounds.lastHour - bounds.firstHour : 0;
   const gaps = useMemo(() => reference && bounds ? timelineGaps(reference.branch.gaps ?? [], reference.axisOffset, bounds.firstHour, bounds.lastHour) : [], [reference, bounds]);
-  const exact = useMemo(() => reference && bounds ? timelinePrepared(coverage, reference.branch.gaps ?? [], reference.axisOffset,
-    bounds.firstHour, bounds.lastHour) : [], [reference, bounds, coverage]);
   // The date follows the clock's frames until a draft replaces it.
   const axisOffset = reference?.axisOffset;
   const liveDate = useMemo(() => axisOffset == null ? undefined
@@ -133,7 +91,7 @@ export function PlaybackStrip({ clock, tracks, alignment, defaultRoleId, client 
     const [fillTo, knobTo] = frames(1);
     moving.current = [fill.current.animate([fillFrom, fillTo], timing), knob.current.animate([knobFrom, knobTo], timing)];
   };
-  // The slider's value, its spoken date and the hour-bound buttons follow the clock's ticks and anchors.
+  // The slider's value, its spoken date and the hour-bound buttons follow the clock's frames.
   const settle = useRef(() => {});
   settle.current = () => {
     const { hour, bounds } = clock.getSnapshot();
@@ -150,19 +108,26 @@ export function PlaybackStrip({ clock, tracks, alignment, defaultRoleId, client 
     const gap = raw == null ? undefined : reference?.branch.gaps?.find(item => item.firstHour <= raw && item.lastHour >= raw);
     input.setAttribute('aria-valuetext', raw == null ? 'No recording selected' : `${formatDateTime(raw)}${gap ? `; reported recording gap: ${gap.reason}` : ''}`);
   };
-  // After every render, since React leaves these to the painters, and on the clock's ticks and anchors.
+  // After every render, since React leaves these to the painters, and on the clock's frames and anchors.
   useLayoutEffect(() => { painted.current = ''; settle.current(); place.current(); });
   useLayoutEffect(() => {
-    const stops = [clock.subscribeHour(() => settle.current()), clock.subscribe(() => { settle.current(); place.current(); })];
+    const stops = [clock.subscribeFrame(() => settle.current()), clock.subscribe(() => place.current())];
     return () => { for (const stop of stops) stop(); for (const animation of moving.current) animation.cancel(); };
   }, [clock]);
-  const trackHover = (event: PointerEvent<HTMLInputElement>) => {
-    if (!bounds || span <= 0 || !reference) return;
-    // The range maps values across the track minus the thumb.
-    const rect = event.currentTarget.getBoundingClientRect();
-    const fraction = Math.min(1, Math.max(0, (event.clientX - rect.left - 7) / Math.max(1, rect.width - 14)));
-    setHover({ left: 7 + fraction * (rect.width - 14), hour: Math.round(bounds.firstHour + fraction * span) + reference.axisOffset });
+  // A pressed pointer seeks to the hour under it, the hour its tooltip names; the keyboard to the range's value.
+  const pointer = useRef<{ pressed: boolean; hour: number | null }>({ pressed: false, hour: null });
+  const pointerAt = (event: PointerEvent<HTMLInputElement>) => {
+    if (!bounds || span <= 0) return null;
+    const at = timelineHourAt(event.clientX, event.currentTarget.getBoundingClientRect(), bounds.firstHour, bounds.lastHour);
+    pointer.current.hour = at.hour;
+    return at;
   };
+  const trackHover = (event: PointerEvent<HTMLInputElement>) => {
+    const at = pointerAt(event);
+    if (at && reference) setHover({ left: at.left, hour: at.hour + reference.axisOffset });
+  };
+  const press = (event: PointerEvent<HTMLInputElement>) => { pointer.current.pressed = true; pointerAt(event); };
+  const release = () => { pointer.current.pressed = false; };
   return <>
     <section className="header-playback" aria-label="Playback">
       <div className={`header-date${draft != null ? ' has-date-draft' : ''}`}>
@@ -184,12 +149,9 @@ export function PlaybackStrip({ clock, tracks, alignment, defaultRoleId, client 
       <div className="timeline-track">
         <input ref={timeline} className="header-timeline" type="range" aria-label="Campaign timeline" disabled={!bounds || span <= 0}
           min={bounds?.firstHour ?? 0} max={bounds?.lastHour ?? 1} step={1}
-          onPointerMove={trackHover} onPointerLeave={() => setHover(null)}
-          onChange={(event) => { setDraft(null); clock.seek(Number(event.currentTarget.value)); }} />
+          onPointerMove={trackHover} onPointerLeave={() => setHover(null)} onPointerDown={press} onPointerUp={release} onPointerCancel={release}
+          onChange={(event) => { setDraft(null); clock.seek(pointer.current.pressed && pointer.current.hour !== null ? pointer.current.hour : Number(event.currentTarget.value)); }} />
         <div className="timeline-progress" aria-hidden="true"><span ref={fill} className="timeline-fill" /><span ref={knob} className="timeline-knob" /></div>
-        <div className="timeline-prepared-markers" aria-label="Exact prepared hours">{exact.map((span, index) =>
-          <span key={index} className="timeline-prepared" style={{ left: `${span.left}%`, width: `${span.width}%` }}
-            data-tooltip={`Exact prepared hours · ${formatDateTime(span.firstHour)} to ${formatDateTime(span.lastHour)}`} />)}</div>
         <div className="timeline-gap-markers">{gaps.map((gap, index) => <span key={index} className="timeline-gap" style={{ left: `${gap.left}%`, width: `${gap.width}%` }}
           data-tooltip={`Reported recording gap · ${formatDateTime(gap.firstHour)} to ${formatDateTime(gap.lastHour)} · ${gap.reason}`} />)}</div>
         {hover && <span className="timeline-hover" style={{ left: hover.left }} aria-hidden="true">{formatDateTime(hover.hour)}</span>}

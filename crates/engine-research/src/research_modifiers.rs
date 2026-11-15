@@ -239,26 +239,6 @@ pub fn walk_country<M: Memory>(
     country: ccountry::Country,
     context: Result<Context, &'static str>,
     inputs: &[research_inputs::Row],
-    output: &mut [Row],
-) -> Outcome {
-    walk_country_buffer(
-        memory,
-        base,
-        countries,
-        country,
-        context,
-        inputs,
-        crate::walk::Buffer::Fixed(output),
-    )
-}
-
-pub fn walk_country_growing<M: Memory>(
-    memory: &M,
-    base: usize,
-    countries: &ccountry::Reader<'_, M>,
-    country: ccountry::Country,
-    context: Result<Context, &'static str>,
-    inputs: &[research_inputs::Row],
     output: &mut Vec<Row>,
 ) -> Outcome {
     walk_country_buffer(
@@ -332,7 +312,6 @@ fn walk_country_buffer_with_roster<M: Memory>(
     if !active && !record_roster {
         return Outcome::Rows { len: 0 };
     }
-    let growing = output.is_growing();
     let mut out = Output {
         rows: output,
         len: 0,
@@ -373,7 +352,7 @@ fn walk_country_buffer_with_roster<M: Memory>(
             .find(|r| r.slot.technology_present != 0)
             .unwrap()
             .status_pointer;
-        let sharing = sharing::Country::read(memory, base, countries, country, status, growing)?;
+        let sharing = sharing::Country::read(memory, base, countries, country, status)?;
         if record_roster {
             sharing.record_roster(&mut out)?;
         }
@@ -519,7 +498,7 @@ fn walk_country_buffer_with_roster<M: Memory>(
                         0,
                         0,
                         0,
-                        text(&idea_memory, at(idea, crate::cidea::TOKEN)?, growing)?,
+                        text(&idea_memory, at(idea, crate::cidea::TOKEN)?)?,
                     )?;
                 }
                 Ok(())
@@ -559,7 +538,7 @@ fn walk_country_buffer_with_roster<M: Memory>(
                         0,
                         0,
                         0,
-                        text(&script_memory, at(entry, 8)?, growing)?,
+                        text(&script_memory, at(entry, 8)?)?,
                     )?;
                 }
             }
@@ -648,7 +627,7 @@ fn country_sources(
                         metadata,
                         0,
                         0,
-                        text(memory, at(accumulator, 0x48)?, out.rows.is_growing())?,
+                        text(memory, at(accumulator, 0x48)?)?,
                     )?;
                 }
             }
@@ -873,11 +852,7 @@ fn scientist_bonus<M: Memory>(
                             metadata,
                             category,
                             id,
-                            text(
-                                memory,
-                                at(character, crate::ccharacter::TOKEN)?,
-                                out.rows.is_growing(),
-                            )?,
+                            text(memory, at(character, crate::ccharacter::TOKEN)?)?,
                         )
                     })?;
                     break;
@@ -918,8 +893,8 @@ fn array_at(memory: &impl Memory, address: usize, stride: usize) -> Result<Array
 fn i64_at(bytes: &[u8], offset: usize) -> i64 {
     i64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap())
 }
-fn text(memory: &impl Memory, address: usize, growing: bool) -> Result<Text, &'static str> {
-    Text::from_descriptor(memory, Descriptor::read(memory, address)?, growing)
+fn text(memory: &impl Memory, address: usize) -> Result<Text, &'static str> {
+    Text::from_descriptor(memory, Descriptor::read(memory, address)?)
 }
 fn pointer_pages(
     memory: &impl Memory,

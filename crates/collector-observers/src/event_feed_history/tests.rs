@@ -98,6 +98,7 @@ fn script_image() -> WarImage {
 
 #[test]
 fn script_reentrant_instances_and_options_share_receipts_without_losing_repeats() {
+    let _globals = crate::event_feed_observer::test_globals();
     let mut store = ready(8);
     store.prepare_scripts(128, 8, 1).unwrap();
     let image = script_image();
@@ -114,7 +115,7 @@ fn script_reentrant_instances_and_options_share_receipts_without_losing_repeats(
         .unwrap();
     let mut snapshot = Snapshot::new(0);
     store
-        .snapshot_growing(&mut snapshot, boundary(7, 2))
+        .snapshot(&mut snapshot, boundary(7, 2))
         .unwrap();
     let first = snapshot.prepare_pack().unwrap();
     let row = first.row();
@@ -139,7 +140,7 @@ fn script_reentrant_instances_and_options_share_receipts_without_losing_repeats(
     }));
     store.acknowledged(first.publication());
     store
-        .snapshot_growing(&mut snapshot, boundary(7, 3))
+        .snapshot(&mut snapshot, boundary(7, 3))
         .unwrap();
     assert!(snapshot.prepare_pack().unwrap().row().events.is_empty());
     assert_eq!(store.tokens_used, 0);
@@ -155,6 +156,7 @@ fn script_reentrant_instances_and_options_share_receipts_without_losing_repeats(
 
 #[test]
 fn script_scopes_record_the_native_country_and_names_each_reference_resolved_to() {
+    let _globals = crate::event_feed_observer::test_globals();
     use engine_events::cevent_scope::{COUNTRY_TAG, FROM, PREV, ROOT, SIZE, VTABLE_RVA};
     crate::country_input_changes::observe_names();
     let mut store = ready(4);
@@ -197,14 +199,14 @@ fn script_scopes_record_the_native_country_and_names_each_reference_resolved_to(
     drop(rebuild);
     let mut snapshot = Snapshot::new(0);
     store
-        .snapshot_growing(&mut snapshot, boundary(7, 2))
+        .snapshot(&mut snapshot, boundary(7, 2))
         .unwrap();
     let packed = snapshot.prepare_pack().unwrap();
     // Reference 3 is an alias of the country with ID 2, whose names are unreadable here.
     let names = |scope: &EventFeedScope| {
-        scope.country_names.map(|texts| {
-            texts.map(|text| String::from_utf8(text.as_bytes().to_vec()).unwrap())
-        })
+        scope
+            .country_names
+            .map(|texts| texts.map(|text| String::from_utf8(text.as_bytes().to_vec()).unwrap()))
     };
     let reich = Some(["Reich", "the Reich", "German"].map(String::from));
     assert_eq!(
@@ -233,27 +235,68 @@ fn script_scopes_record_the_native_country_and_names_each_reference_resolved_to(
 }
 
 #[test]
-fn script_pressure_refuses_once_and_reports_exact_reached_demand() {
+fn script_staging_grows_from_empty_and_only_a_denied_allocation_refuses_without_rereading() {
+    let _globals = crate::event_feed_observer::test_globals();
+    let identity =
+        Some(replay_data::event_feed_rows::EventFeedEventIdentity { kind: 99, id: 123 });
+
     let mut store = ready(1);
     store.prepare_scripts(0, 0, 0).unwrap();
     store
-        .script_known(&NoReads, BASE, 7, 1, script_fact(100, 0x80000, None))
+        .script_known(&script_image(), BASE, 7, 1, script_fact(100, 0x80000, None))
         .unwrap();
-    assert_eq!(store.token_demand, 11);
-    assert_eq!(store.scope_demand, 0);
-    assert_eq!(store.counts.rejected, 2);
+    assert_eq!(
+        (store.token_demand, store.scope_demand, store.graph_demand),
+        (11, 1, 1)
+    );
+    assert_eq!(store.counts.rejected, 0);
     assert_eq!(store.entries.len(), 1);
     let script = store.entries[0].event.script.unwrap();
+    assert_eq!(script.native_event, identity);
+    assert!(!script.token_unrecorded && !script.scope_unrecorded);
+    assert_eq!((script.token_start, script.token_len), (0, 11));
+    assert_eq!((script.scope_start, script.scope_len), (0, 1));
+    let mut snapshot = Snapshot::new(0);
+    store.snapshot(&mut snapshot, boundary(7, 1)).unwrap();
+    let grown = snapshot.prepare_pack().unwrap();
+    assert_eq!(grown.row().coverage, EventFeedCoverage::Complete);
+    assert_eq!(grown.row().script_tokens, b"synthetic.1");
+    assert_eq!(grown.row().script_scopes.len(), 1);
+    assert_eq!(grown.row().counts.unwrap().rejected, 0);
+
+    let mut store = ready(1);
+    store.prepare_scripts(0, 0, 0).unwrap();
     assert_eq!(
-        script.native_event,
-        Some(replay_data::event_feed_rows::EventFeedEventIdentity { kind: 99, id: 123 })
+        (store.script_tokens.capacity(), store.scope_nodes.capacity()),
+        (0, 0)
     );
-    assert!(script.token_unrecorded);
-    assert!(script.scope_unrecorded);
+    assert!(store.entries.len() < store.capacity());
+    let known = crate::test_support::with_allocations_denied(|| {
+        store.script_known(&NoReads, BASE, 7, 1, script_fact(100, 0x80000, None))
+    });
+    known.unwrap();
+    // Each unrecorded part is counted once: the token, then the scope graph.
+    assert_eq!(store.counts.rejected, 2);
+    assert_eq!(store.failure, Some("event feed script token allocation failed"));
+    assert_eq!(
+        (store.token_demand, store.scope_demand, store.graph_demand),
+        (11, 0, 1)
+    );
+    assert_eq!(store.entries.len(), 1);
+    let script = store.entries[0].event.script.unwrap();
+    assert_eq!(script.native_event, identity);
+    assert!(script.token_unrecorded && script.scope_unrecorded);
+    assert_eq!((script.token_len, script.scope_len), (0, 0));
+    let mut snapshot = Snapshot::new(0);
+    store.snapshot(&mut snapshot, boundary(7, 1)).unwrap();
+    let refused = snapshot.prepare_pack().unwrap();
+    assert_eq!(refused.row().coverage, EventFeedCoverage::Unavailable);
+    assert_eq!(refused.row().counts.unwrap().rejected, 2);
 }
 
 #[test]
 fn script_continuous_occurrences_reclaim_acknowledged_arena_spans() {
+    let _globals = crate::event_feed_observer::test_globals();
     let mut store = ready(8);
     store.prepare_scripts(64, 4, 1).unwrap();
     let image = script_image();
@@ -269,7 +312,7 @@ fn script_continuous_occurrences_reclaim_acknowledged_arena_spans() {
             )
             .unwrap();
         store
-            .snapshot_growing(&mut snapshot, boundary(7, hour))
+            .snapshot(&mut snapshot, boundary(7, hour))
             .unwrap();
         let pack = snapshot.prepare_pack().unwrap();
         assert_eq!(pack.row().script_tokens, b"synthetic.1");
@@ -282,6 +325,7 @@ fn script_continuous_occurrences_reclaim_acknowledged_arena_spans() {
 
 #[test]
 fn script_delayed_baseline_reads_only_first_seen_census_owners_and_carries_empty() {
+    let _globals = crate::event_feed_observer::test_globals();
     let mut store = ready(8);
     store.prepare_delayed(5001).unwrap();
     store.registry_state = Some(GAME);
@@ -304,7 +348,7 @@ fn script_delayed_baseline_reads_only_first_seen_census_owners_and_carries_empty
     store.recover_delayed(&NoReads, BASE, 7, GAME, 1, country);
     let mut snapshot = Snapshot::new(8);
     store
-        .snapshot_growing(&mut snapshot, boundary(7, 2))
+        .snapshot(&mut snapshot, boundary(7, 2))
         .unwrap();
     let pack = snapshot.prepare_pack().unwrap();
     assert_eq!(pack.row().events.len(), 1);
@@ -317,6 +361,7 @@ fn script_delayed_baseline_reads_only_first_seen_census_owners_and_carries_empty
 
 #[test]
 fn script_registry_bootstrap_waits_for_the_failed_interval_receipt_without_polling() {
+    let _globals = crate::event_feed_observer::test_globals();
     let mut store = ready(8);
     store.reject("synthetic pre-observation refusal");
     let mut snapshot = Snapshot::new(8);
@@ -394,6 +439,7 @@ fn retained_registry_image(hour: i32) -> WarImage {
 
 #[test]
 fn retained_registry_writer_loss_requires_receipt_then_a_fresh_native_baseline() {
+    let _globals = crate::event_feed_observer::test_globals();
     let mut store = ready(8);
     let mut image = retained_registry_image(1);
     let mut snapshot = Snapshot::new(0);
@@ -407,8 +453,9 @@ fn retained_registry_writer_loss_requires_receipt_then_a_fresh_native_baseline()
     assert_eq!(state.fired().unwrap().len(), 1);
     store.acknowledged(first.publication());
 
-    // Exercise the actual writer's prepared-token refusal after a complete
-    // baseline, rather than pretending that a sample proves the missed call.
+    // Exercise the actual writer's token refusal after a complete baseline,
+    // rather than pretending that a sample proves the missed call: the arena
+    // is full and its growth fails.
     store
         .prepare_scripts(
             store.script_tokens.len(),
@@ -416,10 +463,12 @@ fn retained_registry_writer_loss_requires_receipt_then_a_fresh_native_baseline()
             store.scope_nodes.len(),
         )
         .unwrap();
-    store.script_tokens.truncate(store.tokens_used);
-    store
-        .script_known(&image, BASE, 7, 2, script_fact(0, 0x80000, None))
-        .unwrap();
+    let used = store.tokens_used;
+    tight_tokens(&mut store, used);
+    let missed = crate::test_support::with_allocations_denied(|| {
+        store.script_known(&image, BASE, 7, 2, script_fact(0, 0x80000, None))
+    });
+    missed.unwrap();
     store
         .snapshot_with_registry(&mut snapshot, boundary(7, 2), &NoReads, BASE)
         .unwrap();
@@ -467,6 +516,7 @@ fn retained_registry_writer_loss_requires_receipt_then_a_fresh_native_baseline()
 
 #[test]
 fn unsupported_registry_baseline_remains_refused_without_periodic_retries() {
+    let _globals = crate::event_feed_observer::test_globals();
     let mut store = ready(8);
     let mut image = retained_registry_image(1);
     image
@@ -498,6 +548,7 @@ fn unsupported_registry_baseline_remains_refused_without_periodic_retries() {
 
 #[test]
 fn unavailable_boundary_rebases_only_after_its_refusal_receipt() {
+    let _globals = crate::event_feed_observer::test_globals();
     let mut store = ready(8);
     let mut image = retained_registry_image(1);
     let mut snapshot = Snapshot::new(0);
@@ -507,7 +558,7 @@ fn unavailable_boundary_rebases_only_after_its_refusal_receipt() {
     store.acknowledged(snapshot.publication());
     let mut unavailable = boundary(7, 2);
     unavailable.failure = Some("synthetic boundary observation unavailable");
-    store.snapshot_growing(&mut snapshot, unavailable).unwrap();
+    store.snapshot(&mut snapshot, unavailable).unwrap();
     let refused = snapshot.prepare_pack().unwrap();
     store
         .snapshot_with_registry(&mut snapshot, boundary(7, 3), &NoReads, BASE)
@@ -530,6 +581,7 @@ fn unavailable_boundary_rebases_only_after_its_refusal_receipt() {
 
 #[test]
 fn partial_boundary_reseeds_after_receipt_and_preserves_its_fresh_first_baseline() {
+    let _globals = crate::event_feed_observer::test_globals();
     let mut store = Store::new(None).unwrap();
     let mut image = retained_registry_image(1);
     let mut snapshot = Snapshot::new(0);
@@ -616,6 +668,7 @@ fn partial_boundary_reseeds_after_receipt_and_preserves_its_fresh_first_baseline
 
 #[test]
 fn older_publication_receipt_cannot_unlock_a_later_boundary_refusal() {
+    let _globals = crate::event_feed_observer::test_globals();
     let mut store = ready(8);
     let mut image = retained_registry_image(1);
     let mut snapshot = Snapshot::new(0);
@@ -629,7 +682,7 @@ fn older_publication_receipt_cannot_unlock_a_later_boundary_refusal() {
     let older = snapshot.prepare_pack().unwrap();
     let mut unavailable = boundary(7, 3);
     unavailable.failure = Some("synthetic later boundary observation unavailable");
-    store.snapshot_growing(&mut snapshot, unavailable).unwrap();
+    store.snapshot(&mut snapshot, unavailable).unwrap();
     let refused = snapshot.prepare_pack().unwrap();
     // This old receipt used to clear failure_revision before the refused
     // boundary had any receipt, allowing the next boundary to read native state.
@@ -659,6 +712,7 @@ fn older_publication_receipt_cannot_unlock_a_later_boundary_refusal() {
 
 #[test]
 fn a_failed_delayed_baseline_recovers_an_empty_queue_after_native_removal() {
+    let _globals = crate::event_feed_observer::test_globals();
     let mut image = owners_image(1);
     image.array(TARGET + ccountry::DELAYED_EVENTS, 0xc0000, 1);
     image.q(0xc0000, 0);
@@ -718,7 +772,7 @@ fn schedule_delayed(store: &mut Store, image: &WarImage, hour: i32) {
     let array = registry::delayed_array(image, TARGET).unwrap();
     let row = registry::delayed_at(image, BASE, array, array.count - 1).unwrap();
     store
-        .delayed_stored(&world, image, BASE, 7, hour, owner, row, false)
+        .delayed_stored(&world, image, BASE, 7, hour, owner, row)
         .unwrap();
 }
 
@@ -740,6 +794,7 @@ fn delayed_labels(row: &EventFeedHistoryRow) -> Vec<(EventFeedScriptChange, Opti
 
 #[test]
 fn delayed_labels_never_alias_across_an_overlap_and_the_owner_waits_for_its_census() {
+    let _globals = crate::event_feed_observer::test_globals();
     use EventFeedScriptChange::{DelayedBaseline, DelayedReady, DelayedStored};
     let owner = EventFeedCountry {
         reference: 2,
@@ -886,6 +941,7 @@ fn settle(store: &mut Store, ticket: Ticket) {
 
 #[test]
 fn callback_demand_follows_retained_entries_without_allocator_headroom() {
+    let _globals = crate::event_feed_observer::test_globals();
     for capacity in [8, 40] {
         let mut store = ready(capacity);
         let ticket = acquire(&mut store, 1, 3);
@@ -897,6 +953,7 @@ fn callback_demand_follows_retained_entries_without_allocator_headroom() {
 
 #[test]
 fn repeated_same_hour_pair_has_distinct_acquisitions_and_later_visibility() {
+    let _globals = crate::event_feed_observer::test_globals();
     let mut store = ready(2);
     let first = acquire(&mut store, -17, 2);
     let second = acquire(&mut store, -17, 2);
@@ -926,6 +983,7 @@ fn repeated_same_hour_pair_has_distinct_acquisitions_and_later_visibility() {
 
 #[test]
 fn dropped_callback_ticket_never_releases_immutable_pending_storage() {
+    let _globals = crate::event_feed_observer::test_globals();
     let mut store = ready(1);
     {
         let _ticket = acquire(&mut store, 1, 5);
@@ -946,6 +1004,7 @@ fn dropped_callback_ticket_never_releases_immutable_pending_storage() {
 
 #[test]
 fn uncertain_normal_return_cannot_recertify_or_clear_a_claim() {
+    let _globals = crate::event_feed_observer::test_globals();
     let mut store = ready(1);
     let ticket = acquire(&mut store, 2, 4);
     store.uncertain(&ticket, "native dispatcher escaped");
@@ -966,6 +1025,7 @@ fn uncertain_normal_return_cannot_recertify_or_clear_a_claim() {
 
 #[test]
 fn same_hour_replacement_invalidates_generation_without_resetting_ownership() {
+    let _globals = crate::event_feed_observer::test_globals();
     let mut store = ready(1);
     let ticket = acquire(&mut store, 5, 6);
     store.invalidate("world replacement began");
@@ -987,7 +1047,31 @@ fn same_hour_replacement_invalidates_generation_without_resetting_ownership() {
 }
 
 #[test]
-fn pressure_refuses_coverage_but_keeps_known_fact_and_requires_partial_recovery() {
+fn a_callback_burst_past_the_prepared_store_keeps_every_event() {
+    let _globals = crate::event_feed_observer::test_globals();
+    // Prepared from the last interval's demand; this interval's burst is
+    // several times larger and arrives on callbacks.
+    let mut store = ready(1);
+    let prepared = store.entries.capacity();
+    let burst = prepared * 4 + 3;
+    let ticket = acquire(&mut store, 1, 3);
+    for _ in 1..burst {
+        let other = acquire(&mut store, 1, 3);
+        settle(&mut store, other);
+    }
+    settle(&mut store, ticket);
+    assert!(store.entries.capacity() >= burst);
+    let packed = pack(&mut store, boundary(7, 2));
+    assert_eq!(packed.row().coverage, EventFeedCoverage::Complete);
+    assert_eq!(packed.row().events.len(), burst);
+    assert_eq!(packed.row().counts.unwrap().acquired, burst as u64);
+    assert_eq!(packed.row().counts.unwrap().rejected, 0);
+}
+
+#[test]
+fn a_failed_callback_allocation_refuses_coverage_but_keeps_known_fact_and_requires_partial_recovery()
+ {
+    let _globals = crate::event_feed_observer::test_globals();
     let mut store = ready(1);
     let ticket = acquire(&mut store, 1, 3);
     let capacity = store.entries.capacity();
@@ -995,16 +1079,16 @@ fn pressure_refuses_coverage_but_keeps_known_fact_and_requires_partial_recovery(
         let other = acquire(&mut store, 1, 3);
         settle(&mut store, other);
     }
-    assert_eq!(
+    let refused = crate::test_support::with_allocations_denied(|| {
         store
             .acquire(
                 7,
                 |sequence| event(sequence, 7, operands(1, 3), Default::default()),
-                Some(Proof::Annex)
+                Some(Proof::Annex),
             )
-            .err(),
-        Some("Event feed callback storage needs growth")
-    );
+            .err()
+    });
+    assert_eq!(refused, Some(OCCURRENCE_ALLOCATION));
     assert_eq!(store.entries.capacity(), capacity);
     settle(&mut store, ticket);
     let packed = pack(&mut store, boundary(7, 2));
@@ -1022,6 +1106,7 @@ fn pressure_refuses_coverage_but_keeps_known_fact_and_requires_partial_recovery(
 
 #[test]
 fn stale_prepared_pack_never_removes_a_later_acquisition() {
+    let _globals = crate::event_feed_observer::test_globals();
     let mut store = ready(2);
     let first = acquire(&mut store, 1, 3);
     settle(&mut store, first);
@@ -1036,6 +1121,7 @@ fn stale_prepared_pack_never_removes_a_later_acquisition() {
 
 #[test]
 fn missing_owner_observation_never_reads_native_identity_or_certifies_empty() {
+    let _globals = crate::event_feed_observer::test_globals();
     let mut store = ready(1);
     store.invalidate("country provider association unavailable");
     assert_eq!(
@@ -1062,6 +1148,7 @@ fn missing_owner_observation_never_reads_native_identity_or_certifies_empty() {
 
 #[test]
 fn sequence_seed_and_cumulative_accounting_survive_a_genuine_generation_change() {
+    let _globals = crate::event_feed_observer::test_globals();
     let mut store = Store::new(Some(40)).unwrap();
     store.prepare_capacity(1).unwrap();
     let initial = pack(&mut store, boundary(7, 0));
@@ -1094,6 +1181,7 @@ fn sequence_seed_and_cumulative_accounting_survive_a_genuine_generation_change()
 
 #[test]
 fn count_and_sequence_exhaustion_are_unavailable_without_wrap() {
+    let _globals = crate::event_feed_observer::test_globals();
     let mut store = ready(1);
     store.counts.acquired = u64::MAX;
     assert_eq!(
@@ -1131,6 +1219,7 @@ fn count_and_sequence_exhaustion_are_unavailable_without_wrap() {
 
 #[test]
 fn accepted_unsettled_interval_requires_partial_after_healthy_later_return() {
+    let _globals = crate::event_feed_observer::test_globals();
     let mut store = ready(1);
     let ticket = acquire(&mut store, 1, 2);
     let unavailable = pack(&mut store, boundary(7, 2));
@@ -1149,6 +1238,7 @@ fn accepted_unsettled_interval_requires_partial_after_healthy_later_return() {
 
 #[test]
 fn escaping_annex_fact_is_owned_once_without_settling_or_losing_its_ticket() {
+    let _globals = crate::event_feed_observer::test_globals();
     let mut store = ready(1);
     let ticket = acquire(&mut store, -17, 4);
     store.uncertain(&ticket, "native dispatcher escaped");
@@ -1171,6 +1261,7 @@ fn escaping_annex_fact_is_owned_once_without_settling_or_losing_its_ticket() {
 
 #[test]
 fn pending_war_is_never_a_fact_before_same_invocation_normal_postproof() {
+    let _globals = crate::event_feed_observer::test_globals();
     let image = WarImage::new();
     let mut store = ready(1);
     let ticket = store
@@ -1187,6 +1278,7 @@ fn pending_war_is_never_a_fact_before_same_invocation_normal_postproof() {
 
 #[test]
 fn rejected_empty_interval_cannot_lose_old_refusal_on_generation_observation() {
+    let _globals = crate::event_feed_observer::test_globals();
     let mut store = ready(1);
     store.reject("observed identity read failed");
     store.invalidate("world writer entered");
@@ -1207,6 +1299,7 @@ fn rejected_empty_interval_cannot_lose_old_refusal_on_generation_observation() {
 
 #[test]
 fn hourly_snapshot_requires_exact_receipts_and_keeps_later_callbacks() {
+    let _globals = crate::event_feed_observer::test_globals();
     let mut store = ready(4);
     let first = acquire(&mut store, 1, 3);
     settle(&mut store, first);
@@ -1236,6 +1329,7 @@ fn hourly_snapshot_requires_exact_receipts_and_keeps_later_callbacks() {
 
 #[test]
 fn invalidated_normal_return_settles_without_reading_the_old_war_proof() {
+    let _globals = crate::event_feed_observer::test_globals();
     let image = WarImage::new();
     let mut store = ready(1);
     let ticket = store
@@ -1258,6 +1352,7 @@ fn invalidated_normal_return_settles_without_reading_the_old_war_proof() {
 
 #[test]
 fn reattachment_restores_counts_without_guessing_unsettled_history() {
+    let _globals = crate::event_feed_observer::test_globals();
     let counts = EventFeedCounts {
         acquired: 20,
         settled: 20,
@@ -1304,6 +1399,7 @@ fn reattachment_restores_counts_without_guessing_unsettled_history() {
 
 #[test]
 fn old_snapshot_receipt_cannot_acknowledge_a_new_refusal() {
+    let _globals = crate::event_feed_observer::test_globals();
     let mut store = ready(1);
     let mut snapshot = Snapshot::new(1);
     store.snapshot(&mut snapshot, boundary(7, 1)).unwrap();
@@ -1330,6 +1426,7 @@ fn old_snapshot_receipt_cannot_acknowledge_a_new_refusal() {
 
 #[test]
 fn a_refused_receipt_covers_its_loss_even_with_an_older_healthy_handoff() {
+    let _globals = crate::event_feed_observer::test_globals();
     let mut store = ready(4);
     let healthy = pack(&mut store, boundary(7, 1));
     store.reject("synthetic storage refusal");
@@ -1346,6 +1443,7 @@ fn a_refused_receipt_covers_its_loss_even_with_an_older_healthy_handoff() {
 
 #[test]
 fn a_later_loss_advances_the_required_refused_receipt_past_an_older_handoff() {
+    let _globals = crate::event_feed_observer::test_globals();
     let mut store = ready(4);
     let healthy = pack(&mut store, boundary(7, 1));
     store.reject("synthetic first refusal");
@@ -1368,6 +1466,7 @@ mod recovery_tests;
 
 #[test]
 fn the_first_refused_publication_covers_repeated_seals_without_a_new_loss() {
+    let _globals = crate::event_feed_observer::test_globals();
     let mut store = ready(4);
     let healthy = pack(&mut store, boundary(7, 1));
     store.reject("synthetic refusal");
@@ -1386,6 +1485,7 @@ fn the_first_refused_publication_covers_repeated_seals_without_a_new_loss() {
 
 #[test]
 fn a_post_release_seal_decline_supersedes_an_older_healthy_handoff() {
+    let _globals = crate::event_feed_observer::test_globals();
     let mut store = ready(4);
     let healthy = pack(&mut store, boundary(7, 1));
     let sealed = pack(&mut store, boundary(7, 2));
@@ -1401,6 +1501,7 @@ fn a_post_release_seal_decline_supersedes_an_older_healthy_handoff() {
 
 #[test]
 fn final_facts_remain_unaccepted_until_a_successful_output_receipt() {
+    let _globals = crate::event_feed_observer::test_globals();
     let mut store = ready(1);
     let ticket = acquire(&mut store, 1, 3);
     settle(&mut store, ticket);
@@ -1413,6 +1514,7 @@ fn final_facts_remain_unaccepted_until_a_successful_output_receipt() {
 
 #[test]
 fn settlement_of_an_accepted_annex_fact_requires_its_own_output_receipt() {
+    let _globals = crate::event_feed_observer::test_globals();
     let mut store = ready(1);
     let ticket = acquire(&mut store, 1, 3);
     let first = pack(&mut store, boundary(7, 2));
@@ -1429,6 +1531,7 @@ fn settlement_of_an_accepted_annex_fact_requires_its_own_output_receipt() {
 
 #[test]
 fn between_tick_event_detach_releases_with_a_named_tail_count() {
+    let _globals = crate::event_feed_observer::test_globals();
     let mut store = ready(1);
     let accepted = store.accepted_revision;
     let ticket = acquire(&mut store, 1, 3);
@@ -1443,6 +1546,7 @@ fn between_tick_event_detach_releases_with_a_named_tail_count() {
 
 #[test]
 fn known_failed_final_batch_detach_releases_without_acknowledging_it() {
+    let _globals = crate::event_feed_observer::test_globals();
     let mut store = ready(1);
     let ticket = acquire(&mut store, 1, 3);
     settle(&mut store, ticket);
@@ -1464,6 +1568,7 @@ fn known_failed_final_batch_detach_releases_without_acknowledging_it() {
 
 #[test]
 fn late_settlement_and_rejection_detach_count_unaccepted_revisions() {
+    let _globals = crate::event_feed_observer::test_globals();
     for settlement in [false, true] {
         let mut store = ready(1);
         if settlement {
@@ -1484,6 +1589,7 @@ fn late_settlement_and_rejection_detach_count_unaccepted_revisions() {
 
 #[test]
 fn accounting_only_batch_without_a_receipt_retains_detach() {
+    let _globals = crate::event_feed_observer::test_globals();
     let mut store = ready(1);
     let uncertain = pack(&mut store, boundary(7, 1));
     let later = pack(&mut store, boundary(7, 2));
@@ -1499,6 +1605,7 @@ fn accounting_only_batch_without_a_receipt_retains_detach() {
 
 #[test]
 fn receipt_storage_covers_the_frame_pool_and_early_recycled_spool_write() {
+    let _globals = crate::event_feed_observer::test_globals();
     let mut store = ready(0);
     let mut receipts = Vec::new();
     for hour in 1..=collector_extended_support::hourly::BUFFERS + 1 {
@@ -1513,6 +1620,7 @@ fn receipt_storage_covers_the_frame_pool_and_early_recycled_spool_write() {
 
 #[test]
 fn discarded_snapshot_can_be_retried_or_retired_at_a_world_change() {
+    let _globals = crate::event_feed_observer::test_globals();
     for world_changed in [false, true] {
         let mut store = ready(1);
         let ticket = acquire(&mut store, 1, 3);
@@ -1534,24 +1642,20 @@ fn discarded_snapshot_can_be_retried_or_retired_at_a_world_change() {
 }
 
 #[test]
-fn short_hourly_snapshot_preserves_facts_for_off_thread_growth() {
+fn a_short_hourly_snapshot_grows_in_the_seal() {
+    let _globals = crate::event_feed_observer::test_globals();
     let mut store = ready(1);
     let ticket = acquire(&mut store, 1, 3);
     settle(&mut store, ticket);
     let mut snapshot = Snapshot::new(0);
-    assert_eq!(
-        store.snapshot(&mut snapshot, boundary(7, 2)),
-        Err("Event feed hourly storage needs growth")
-    );
+    store.snapshot(&mut snapshot, boundary(7, 2)).unwrap();
     assert_eq!(snapshot.required, 1);
-    assert_eq!(store.entries[0].publication, None);
-    snapshot.grow(snapshot.required).unwrap();
-    store.snapshot(&mut snapshot, boundary(7, 3)).unwrap();
     assert_eq!(snapshot.prepare_pack().unwrap().row().events.len(), 1);
 }
 
 #[test]
 fn hourly_snapshot_needs_no_callback_growth() {
+    let _globals = crate::event_feed_observer::test_globals();
     let countries = 6;
     let mut store = ready(countries);
     let mut snapshot = Snapshot::new(countries);
@@ -1680,6 +1784,7 @@ impl Memory for WarImage {
 
 #[test]
 fn guarded_war_acquisition_owns_opaque_proof_and_needs_fresh_reciprocal_return() {
+    let _globals = crate::event_feed_observer::test_globals();
     let mut image = WarImage::new();
     let mut store = ready(1);
     let ticket = store
@@ -1708,6 +1813,7 @@ fn guarded_war_acquisition_owns_opaque_proof_and_needs_fresh_reciprocal_return()
 
 #[test]
 fn guarded_war_failed_postproof_consumes_once_without_recording_a_fact() {
+    let _globals = crate::event_feed_observer::test_globals();
     for invalidate_identity in [false, true] {
         let mut image = WarImage::new();
         let mut store = ready(1);
@@ -1757,6 +1863,7 @@ fn fact(source: EventFeedSource, actor: u32) -> Fact {
 
 #[test]
 fn proved_provenance_events_are_settled_facts_with_their_cause() {
+    let _globals = crate::event_feed_observer::test_globals();
     let mut store = ready(4);
     let ticket = acquire(&mut store, 5, 3);
     store
@@ -1790,14 +1897,27 @@ fn proved_provenance_events_are_settled_facts_with_their_cause() {
     assert_eq!(row.events[1].actor.id, 4);
     store.acknowledged(packed.publication());
     settle(&mut store, ticket);
-    // Storage is the callback's: a full store refuses by name.
+    // A full store grows on the callback; only a failed allocation refuses.
     store
         .known(7, 5, fact(EventFeedSource::Release, 6))
         .unwrap();
-    assert_eq!(
-        store.known(7, 5, fact(EventFeedSource::Release, 7)).err(),
-        Some("Event feed callback storage needs growth")
-    );
+    store
+        .known(7, 5, fact(EventFeedSource::Release, 7))
+        .unwrap();
+    while store.entries.len()
+        < store
+            .entries
+            .capacity()
+            .saturating_sub(store.owner_controls)
+    {
+        store
+            .known(7, 5, fact(EventFeedSource::Release, 7))
+            .unwrap();
+    }
+    let refused = crate::test_support::with_allocations_denied(|| {
+        store.known(7, 5, fact(EventFeedSource::Release, 7)).err()
+    });
+    assert_eq!(refused, Some(OCCURRENCE_ALLOCATION));
     // An unobserved world refuses too.
     store.invalidate("world replaced");
     assert_eq!(
@@ -1808,6 +1928,7 @@ fn proved_provenance_events_are_settled_facts_with_their_cause() {
 
 #[test]
 fn certified_intervals_have_no_unconditional_decision_family_refusals() {
+    let _globals = crate::event_feed_observer::test_globals();
     let mut store = ready(8);
     for hour in [1, 2] {
         let output = pack(&mut store, boundary(7, hour));
@@ -1904,6 +2025,15 @@ impl Memory for QueueReads {
     }
 }
 
+/// A token arena of at most `len` bytes and no spare capacity, so growing it
+/// must allocate; a truncated arena would grow into its old capacity.
+fn tight_tokens(store: &mut Store, len: usize) {
+    let len = len.min(store.script_tokens.len());
+    let mut tokens = Vec::with_capacity(len);
+    tokens.extend_from_slice(&store.script_tokens[..len]);
+    store.script_tokens = tokens;
+}
+
 /// Prepared for owner recovery, which never grows storage under the lease.
 fn census_store(capacity: usize) -> Store {
     let mut store = ready(capacity);
@@ -1931,7 +2061,7 @@ fn census_hour(
         }
         store.finish_recovery(7, epoch, true);
     }
-    store.seal(&mut snapshot, boundary(7, hour), true).unwrap();
+    store.seal(&mut snapshot, boundary(7, hour)).unwrap();
     snapshot.prepare_pack().unwrap()
 }
 
@@ -1969,6 +2099,7 @@ fn assert_certified(state: &replay_data::event_feed_rows::ScriptEventState) {
 
 #[test]
 fn census_owner_markers_are_published_in_the_hour_they_are_read() {
+    let _globals = crate::event_feed_observer::test_globals();
     let image = owners_image(5);
     let mut store = census_store(64);
     let row = census_hour(&mut store, &image, 5, &CENSUS);
@@ -1986,6 +2117,7 @@ fn census_owner_markers_are_published_in_the_hour_they_are_read() {
 
 #[test]
 fn an_overlap_loss_recovers_registry_and_owners_in_the_first_partial_row_after_its_receipt() {
+    let _globals = crate::event_feed_observer::test_globals();
     let mut memory = QueueReads::new(owners_image(1));
     let actor = ACTOR + ccountry::DELAYED_EVENTS;
     let target = TARGET + ccountry::DELAYED_EVENTS;
@@ -2053,7 +2185,7 @@ fn an_overlap_loss_recovers_registry_and_owners_in_the_first_partial_row_after_i
     store.finish_recovery(7, epoch, true);
     assert!(crate::event_feed_observer::recovery_pending());
     let mut snapshot = Snapshot::new(0);
-    store.seal(&mut snapshot, boundary(7, 7), true).unwrap();
+    store.seal(&mut snapshot, boundary(7, 7)).unwrap();
     let interrupted = snapshot.prepare_pack().unwrap();
     assert_eq!(interrupted.row().coverage, EventFeedCoverage::Unavailable);
     state.observe(interrupted.row()).unwrap();
@@ -2071,6 +2203,7 @@ fn an_overlap_loss_recovers_registry_and_owners_in_the_first_partial_row_after_i
 
 #[test]
 fn an_unindexed_pass_retirement_refuses_only_its_uncertified_owner() {
+    let _globals = crate::event_feed_observer::test_globals();
     use delayed::{CERTIFIED_RETIREMENT_MISSING, UNCERTIFIED_RETIREMENT};
     let empty = EventFeedCountry {
         reference: 0,
@@ -2102,7 +2235,7 @@ fn an_unindexed_pass_retirement_refuses_only_its_uncertified_owner() {
         },
     );
     let mut snapshot = Snapshot::new(0);
-    store.seal(&mut snapshot, boundary(7, 1), true).unwrap();
+    store.seal(&mut snapshot, boundary(7, 1)).unwrap();
     let certified = snapshot.prepare_pack().unwrap();
     let mut state = replay_data::event_feed_rows::ScriptEventState::default();
     state.observe(certified.row()).unwrap();
@@ -2124,7 +2257,7 @@ fn an_unindexed_pass_retirement_refuses_only_its_uncertified_owner() {
         );
     });
     store
-        .snapshot_growing(&mut snapshot, boundary(7, 2))
+        .snapshot(&mut snapshot, boundary(7, 2))
         .unwrap();
     let refused = snapshot.prepare_pack().unwrap();
     assert_eq!(refused.row().coverage, EventFeedCoverage::Complete);
@@ -2161,7 +2294,7 @@ fn an_unindexed_pass_retirement_refuses_only_its_uncertified_owner() {
     // The observer refuses each of them for the whole interval.
     store.reject(CERTIFIED_RETIREMENT_MISSING);
     store
-        .snapshot_growing(&mut snapshot, boundary(7, 3))
+        .snapshot(&mut snapshot, boundary(7, 3))
         .unwrap();
     let global = snapshot.prepare_pack().unwrap();
     assert_eq!(global.row().coverage, EventFeedCoverage::Unavailable);
@@ -2176,6 +2309,7 @@ fn an_unindexed_pass_retirement_refuses_only_its_uncertified_owner() {
 
 #[test]
 fn an_unsupported_decision_owner_retries_until_an_exact_baseline_recovers() {
+    let _globals = crate::event_feed_observer::test_globals();
     let mut image = owners_image(1);
     image.q(TARGET_STATUS, BASE + 1);
     let mut memory = QueueReads::new(image);
@@ -2208,6 +2342,7 @@ fn an_unsupported_decision_owner_retries_until_an_exact_baseline_recovers() {
 
 #[test]
 fn certified_owners_recover_without_native_reads() {
+    let _globals = crate::event_feed_observer::test_globals();
     let countries = 6;
     let mut store = ready(8);
     store.prepare_delayed(countries).unwrap();
@@ -2259,6 +2394,7 @@ fn certified_owners_recover_without_native_reads() {
 
 #[test]
 fn dispatch_instances_scan_only_unpublished_entries_and_a_discard_republishes() {
+    let _globals = crate::event_feed_observer::test_globals();
     let mut store = ready(4096);
     store.prepare_scripts(11 * 4096, 4096, 1).unwrap();
     let image = script_image();
@@ -2269,7 +2405,7 @@ fn dispatch_instances_scan_only_unpublished_entries_and_a_discard_republishes() 
     }
     let mut snapshot = Snapshot::new(0);
     store
-        .snapshot_growing(&mut snapshot, boundary(7, 1))
+        .snapshot(&mut snapshot, boundary(7, 1))
         .unwrap();
     let published = snapshot.prepare_pack().unwrap();
     // Awaiting their receipt, the published entries stay retained.
@@ -2290,7 +2426,7 @@ fn dispatch_instances_scan_only_unpublished_entries_and_a_discard_republishes() 
     store.discarded(published.publication());
     assert_eq!(store.unpublished_from, 0);
     store
-        .snapshot_growing(&mut snapshot, boundary(7, 2))
+        .snapshot(&mut snapshot, boundary(7, 2))
         .unwrap();
     let retried = snapshot.prepare_pack().unwrap();
     assert_eq!(retried.row().events.len(), 3001);
@@ -2341,6 +2477,7 @@ fn refusal_markers(row: &EventFeedHistoryRow) -> (usize, usize) {
 
 #[test]
 fn repeated_owner_refusals_keep_recovery_pending_without_duplicate_markers() {
+    let _globals = crate::event_feed_observer::test_globals();
     use replay_data::event_feed_rows::decisions::{DecisionChange, Operation, REENABLE};
     const MEMBER: usize = 0xf0000;
     let repeated = |registry: OwnerRegistry| {
@@ -2514,6 +2651,7 @@ impl Memory for CrossingReads {
 
 #[test]
 fn a_native_original_in_flight_crosses_owner_samples_which_are_retried_when_quiet() {
+    let _globals = crate::event_feed_observer::test_globals();
     let mut image = owners_image(1);
     let mut store = census_store(64);
     let mut state = replay_data::event_feed_rows::ScriptEventState::default();
@@ -2531,7 +2669,7 @@ fn a_native_original_in_flight_crosses_owner_samples_which_are_retried_when_quie
     store.finish_recovery(7, epoch, true);
     flight.returned();
     drop(flight);
-    store.seal(&mut snapshot, boundary(7, 1), true).unwrap();
+    store.seal(&mut snapshot, boundary(7, 1)).unwrap();
     let row = snapshot.prepare_pack().unwrap();
     // No certifying marker: ACTOR alone is refused, once per registry.
     assert_eq!(certifying_markers(row.row()), (0, 0));
@@ -2564,6 +2702,7 @@ fn a_native_original_in_flight_crosses_owner_samples_which_are_retried_when_quie
 
 #[test]
 fn a_writer_entry_attempt_during_an_owner_sample_refuses_only_that_registry() {
+    let _globals = crate::event_feed_observer::test_globals();
     let mut image = owners_image(1);
     delayed_timer(&mut image, 0xd0000, 30);
     delayed_queue(&mut image, &[0xd0000]);
@@ -2594,6 +2733,7 @@ fn a_writer_entry_attempt_during_an_owner_sample_refuses_only_that_registry() {
 
 #[test]
 fn a_crossed_registry_sample_certifies_nothing_and_retries_at_the_next_boundary() {
+    let _globals = crate::event_feed_observer::test_globals();
     let registry = crossed(REGISTRY_SAMPLE);
     let memory = CrossingReads::new(
         retained_registry_image(1),
@@ -2638,6 +2778,7 @@ fn a_crossed_registry_sample_certifies_nothing_and_retries_at_the_next_boundary(
 
 #[test]
 fn a_storage_short_owner_baseline_is_refused_raises_demand_and_is_retried_without_growth() {
+    let _globals = crate::event_feed_observer::test_globals();
     let mut image = owners_image(1);
     let timers = [0xd0000, 0xd1000, 0xd2000, 0xd3000, 0xd4000];
     for timer in timers {
@@ -2666,7 +2807,7 @@ fn a_storage_short_owner_baseline_is_refused_raises_demand_and_is_retried_withou
         });
     }
     store.finish_recovery(7, epoch, true);
-    store.seal(&mut snapshot, boundary(7, 1), true).unwrap();
+    store.seal(&mut snapshot, boundary(7, 1)).unwrap();
     let short = snapshot.prepare_pack().unwrap();
     assert!(short.row().failure.is_none());
     assert_eq!(
@@ -2756,6 +2897,7 @@ const MEMBER_DEFINITION: usize = 0xf0000 + engine_decisions::cdecision_cooldown:
 
 #[test]
 fn a_queue_header_changed_by_a_writer_during_acquisition_is_crossed_not_failed() {
+    let _globals = crate::event_feed_observer::test_globals();
     /// The game appends a second timer to TARGET's queue between the
     /// baseline's header reads, moving the writer epoch as its writer does.
     struct Appending {
@@ -2809,6 +2951,7 @@ fn a_queue_header_changed_by_a_writer_during_acquisition_is_crossed_not_failed()
 
 #[test]
 fn a_decision_record_read_failing_during_a_writer_flight_is_crossed_then_certified() {
+    let _globals = crate::event_feed_observer::test_globals();
     let memory = FlightReads::new(member_image(1), MEMBER_DEFINITION);
     let mut store = census_store(64);
     let mut state = replay_data::event_feed_rows::ScriptEventState::default();
@@ -2838,6 +2981,7 @@ fn a_decision_record_read_failing_during_a_writer_flight_is_crossed_then_certifi
 
 #[test]
 fn a_registry_read_failing_during_a_writer_flight_retries_at_the_next_boundary() {
+    let _globals = crate::event_feed_observer::test_globals();
     let registry = crossed(REGISTRY_SAMPLE);
     let memory = FlightReads::new(
         retained_registry_image(1),
@@ -2872,6 +3016,7 @@ fn a_registry_read_failing_during_a_writer_flight_retries_at_the_next_boundary()
 
 #[test]
 fn a_read_error_under_an_unbroken_cut_is_retried_with_its_original_reason() {
+    let _globals = crate::event_feed_observer::test_globals();
     let memory = FlightReads::stable(member_image(1), MEMBER_DEFINITION);
     let mut store = census_store(64);
     let mut state = replay_data::event_feed_rows::ScriptEventState::default();
@@ -2906,12 +3051,13 @@ fn visit(store: &mut Store, memory: &impl Memory, owners: &[ccountry::Country]) 
 }
 fn sealed_row(store: &mut Store, hour: i32) -> Prepared {
     let mut snapshot = Snapshot::new(0);
-    store.seal(&mut snapshot, boundary(7, hour), true).unwrap();
+    store.seal(&mut snapshot, boundary(7, hour)).unwrap();
     snapshot.prepare_pack().unwrap()
 }
 
 #[test]
 fn an_early_world_read_failing_during_a_writer_flight_is_crossed_then_certified() {
+    let _globals = crate::event_feed_observer::test_globals();
     let quiet = owners_image(1);
     let mut store = census_store(64);
     store
@@ -2939,6 +3085,7 @@ fn an_early_world_read_failing_during_a_writer_flight_is_crossed_then_certified(
 
 #[test]
 fn an_early_world_read_failing_under_an_unbroken_cut_is_retryable() {
+    let _globals = crate::event_feed_observer::test_globals();
     let quiet = owners_image(1);
     let mut store = census_store(64);
     store
@@ -2959,6 +3106,7 @@ fn an_early_world_read_failing_under_an_unbroken_cut_is_retryable() {
 
 #[test]
 fn a_political_balance_read_failing_during_a_writer_flight_is_crossed_then_certified() {
+    let _globals = crate::event_feed_observer::test_globals();
     let quiet = owners_image(1);
     let mut store = census_store(64);
     store
@@ -2985,6 +3133,7 @@ fn a_political_balance_read_failing_during_a_writer_flight_is_crossed_then_certi
 
 #[test]
 fn a_political_balance_read_failing_under_an_unbroken_cut_remains_retryable() {
+    let _globals = crate::event_feed_observer::test_globals();
     let quiet = owners_image(1);
     let mut store = census_store(64);
     store
@@ -3010,6 +3159,7 @@ fn a_political_balance_read_failing_under_an_unbroken_cut_remains_retryable() {
 
 #[test]
 fn a_decline_recorded_during_an_owner_sample_prevents_its_certification() {
+    let _globals = crate::event_feed_observer::test_globals();
     /// A callback is declined while this sample reads TARGET's queue.
     struct DeclinedReads(WarImage);
     impl Memory for DeclinedReads {
@@ -3046,6 +3196,7 @@ fn token(thread: u32, seq: u32) -> u64 {
 
 #[test]
 fn detour_witness_arena_keeps_each_frames_order_and_separates_frames() {
+    let _globals = crate::event_feed_observer::test_globals();
     use crate::script_event_observer::staging::Witness;
     let mut store = ready(8);
     store.prepare_decisions(4).unwrap();
@@ -3082,23 +3233,42 @@ fn detour_witness_arena_keeps_each_frames_order_and_separates_frames() {
 }
 
 #[test]
-fn detour_witness_arena_exhaustion_refuses_by_name_and_raises_demand() {
+fn a_detour_witness_burst_grows_the_arena_and_only_a_failed_allocation_refuses() {
+    let _globals = crate::event_feed_observer::test_globals();
     use crate::script_event_observer::staging::Witness;
     let mut store = ready(8);
     store.prepare_decisions(1).unwrap();
-    store
-        .stage_witness(token(1, 1), Witness::Selected { instance: 1 })
-        .unwrap();
-    assert_eq!(
-        store.stage_witness(token(1, 1), Witness::Selected { instance: 2 }),
-        Err(WITNESS_STORAGE)
-    );
+    let a = token(1, 1);
+    for instance in 1..=3 {
+        store
+            .stage_witness(a, Witness::Selected { instance })
+            .unwrap();
+    }
+    assert_eq!(store.staged_live(), 3);
     // The demand presize prepares a larger arena from.
-    assert!(store.capacity_demand() >= 2);
+    assert!(store.capacity_demand() >= 3);
+    for instance in 1..=3 {
+        assert_eq!(
+            store.take_staged(a, None),
+            Ok(Some(Witness::Selected { instance }))
+        );
+    }
+    let mut instance = 4;
+    while store.staged_used < store.witness_capacity() {
+        store
+            .stage_witness(a, Witness::Selected { instance })
+            .unwrap();
+        instance += 1;
+    }
+    let refused = crate::test_support::with_allocations_denied(|| {
+        store.stage_witness(a, Witness::Selected { instance })
+    });
+    assert_eq!(refused, Err(WITNESS_ALLOCATION));
 }
 
 #[test]
 fn abandoned_detour_witnesses_are_dropped_and_refused_at_the_next_boundary() {
+    let _globals = crate::event_feed_observer::test_globals();
     use crate::script_event_observer::staging::Witness;
     let mut store = ready(8);
     store.prepare_decisions(4).unwrap();
@@ -3131,6 +3301,7 @@ fn abandoned_detour_witnesses_are_dropped_and_refused_at_the_next_boundary() {
 
 #[test]
 fn a_detour_open_across_a_boundary_reset_refuses_its_interval_by_name() {
+    let _globals = crate::event_feed_observer::test_globals();
     use crate::script_event_observer::staging::Witness;
     let mut store = ready(8);
     store.prepare_decisions(4).unwrap();
@@ -3172,6 +3343,7 @@ fn a_detour_open_across_a_boundary_reset_refuses_its_interval_by_name() {
 
 #[test]
 fn published_removals_and_refusals_read_the_current_recipient_not_the_baseline_metadata() {
+    let _globals = crate::event_feed_observer::test_globals();
     let mut image = owners_image(1);
     delayed_timer(&mut image, 0xd0000, 1);
     delayed_queue(&mut image, &[0xd0000]);

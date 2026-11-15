@@ -6,9 +6,36 @@ use super::{
 };
 use std::sync::Mutex;
 
-/// Live raw payloads beyond this count are not retained; further refreshes
-/// take the existing gap path until the worker catches up (see module docs).
-pub(super) const JOB_POOL_KEEP: usize = 2;
+/// The payloads a family's pool keeps once no backlog holds frames: the number it returns to,
+/// never a limit. A miss hands out an empty job, which grows as it reads.
+pub(super) const JOB_POOL_STEADY: usize = 3;
+
+/// The payloads a pool keeps now: the steady count, and one more for each frame a backlog
+/// holds beyond the frames' own steady count.
+fn keep() -> usize {
+    let shared = crate::sampling::SHARED.load(std::sync::atomic::Ordering::Acquire);
+    let backlog = if shared.is_null() {
+        0
+    } else {
+        // SAFETY: the loader publishes SHARED before the decode worker runs and clears it only
+        // after joining it.
+        unsafe { &*shared }
+            .frames
+            .live()
+            .saturating_sub(crate::frame_pool::STEADY)
+    };
+    JOB_POOL_STEADY + backlog
+}
+
+/// Keeps a released payload while the pool holds fewer than [`keep`], and frees what it holds
+/// beyond that once a backlog clears. The decode worker's, never the game thread's.
+fn retain<J>(pool: &mut Vec<J>, job: J) {
+    let keep = keep();
+    if pool.len() < keep && engine_allocation::reserve(pool, 1).is_ok() {
+        pool.push(job);
+    }
+    pool.truncate(keep);
+}
 
 pub(super) static RELATIONS_JOB_POOL: Mutex<Vec<RelationsJob>> = Mutex::new(Vec::new());
 pub(super) static CHARACTERS_JOB_POOL: Mutex<[Vec<CharactersJob>; CHARACTER_PARTS]> =
@@ -33,7 +60,7 @@ pub(super) static INTEL_JOB_POOL: Mutex<Vec<IntelJob>> = Mutex::new(Vec::new());
 pub(super) static WEATHER_JOB_POOL: Mutex<Vec<WeatherJob>> = Mutex::new(Vec::new());
 pub(super) static CAPITULATION_JOB_POOL: Mutex<Vec<CapitulationJob>> = Mutex::new(Vec::new());
 
-/// Take reusable storage, or return an empty job without allocating on pool miss.
+/// Take reusable storage, or return an empty job, which grows as it reads, on a pool miss.
 pub fn acquire_relations_job() -> RelationsJob {
     if let Ok(mut pool) = RELATIONS_JOB_POOL.try_lock()
         && let Some(job) = pool.pop()
@@ -66,15 +93,12 @@ pub(super) fn release_relations_job(mut job: RelationsJob) {
         return;
     }
     job.clear();
-    if let Ok(mut pool) = RELATIONS_JOB_POOL.lock()
-        && pool.len() < JOB_POOL_KEEP + 1
-        && engine_allocation::reserve(&mut pool, 1).is_ok()
-    {
-        pool.push(job);
+    if let Ok(mut pool) = RELATIONS_JOB_POOL.lock() {
+        retain(&mut pool, job);
     }
 }
 
-/// Take reusable storage, or return an empty job without allocating on pool miss.
+/// Take reusable storage, or return an empty job, which grows as it reads, on a pool miss.
 pub fn acquire_characters_job(part: usize) -> CharactersJob {
     if let Ok(mut pool) = CHARACTERS_JOB_POOL.try_lock()
         && let Some(job) = pool[part].pop()
@@ -111,16 +135,13 @@ pub(super) fn release_characters_job(mut job: CharactersJob) {
         return;
     }
     job.clear();
-    if let Ok(mut pool) = CHARACTERS_JOB_POOL.lock()
-        && pool[job.part].len() < JOB_POOL_KEEP + 1
-        && engine_allocation::reserve(&mut pool[job.part], 1).is_ok()
-    {
+    if let Ok(mut pool) = CHARACTERS_JOB_POOL.lock() {
         let part = job.part;
-        pool[part].push(job);
+        retain(&mut pool[part], job);
     }
 }
 
-/// Take reusable storage, or return an empty job without allocating on pool miss.
+/// Take reusable storage, or return an empty job, which grows as it reads, on a pool miss.
 pub fn acquire_projects_job() -> ProjectsJob {
     if let Ok(mut pool) = PROJECTS_JOB_POOL.try_lock()
         && let Some(job) = pool.pop()
@@ -154,11 +175,8 @@ pub(super) fn release_projects_job(mut job: ProjectsJob) {
         return;
     }
     job.clear();
-    if let Ok(mut pool) = PROJECTS_JOB_POOL.lock()
-        && pool.len() < JOB_POOL_KEEP + 1
-        && engine_allocation::reserve(&mut pool, 1).is_ok()
-    {
-        pool.push(job);
+    if let Ok(mut pool) = PROJECTS_JOB_POOL.lock() {
+        retain(&mut pool, job);
     }
 }
 
@@ -171,7 +189,7 @@ fn pop_job<J: Default>(pool: &Mutex<Vec<J>>) -> J {
     J::default()
 }
 
-/// Take reusable storage, or return an empty job without allocating on pool miss.
+/// Take reusable storage, or return an empty job, which grows as it reads, on a pool miss.
 pub fn acquire_lexical_job() -> LexicalJob {
     pop_job(&LEXICAL_JOB_POOL)
 }
@@ -185,29 +203,17 @@ pub(super) fn release_lexical_job(mut job: LexicalJob) {
     if crate::allocation::failed() {
         return;
     }
-    if !job.initialized() {
+    if !job.has_storage() {
         return;
     }
     job.note_growth();
-    if job.grow_for_next() {
-        job.grow();
-        if crate::allocation::failed() {
-            return;
-        }
-    }
-    if crate::allocation::failed() {
-        return;
-    }
     job.clear();
-    if let Ok(mut pool) = LEXICAL_JOB_POOL.lock()
-        && pool.len() < JOB_POOL_KEEP + 1
-        && engine_allocation::reserve(&mut pool, 1).is_ok()
-    {
-        pool.push(job);
+    if let Ok(mut pool) = LEXICAL_JOB_POOL.lock() {
+        retain(&mut pool, job);
     }
 }
 
-/// Take reusable storage, or return an empty job without allocating on pool miss.
+/// Take reusable storage, or return an empty job, which grows as it reads, on a pool miss.
 pub fn acquire_divisions_job() -> DivisionsJob {
     pop_job(&DIVISIONS_JOB_POOL)
 }
@@ -234,11 +240,8 @@ pub(super) fn release_divisions_job(mut job: DivisionsJob) {
         return;
     }
     job.clear();
-    if let Ok(mut pool) = DIVISIONS_JOB_POOL.lock()
-        && pool.len() < JOB_POOL_KEEP + 1
-        && engine_allocation::reserve(&mut pool, 1).is_ok()
-    {
-        pool.push(job);
+    if let Ok(mut pool) = DIVISIONS_JOB_POOL.lock() {
+        retain(&mut pool, job);
     }
 }
 
@@ -253,7 +256,7 @@ pub(crate) fn presize_air_wing_names() {
     }
 }
 
-/// Take reusable storage, or return an empty job without allocating on pool miss.
+/// Take reusable storage, or return an empty job, which grows as it reads, on a pool miss.
 pub fn acquire_air_wing_job() -> AirWingJob {
     pop_job(&AIR_WING_JOB_POOL)
 }
@@ -284,15 +287,12 @@ pub(super) fn release_air_wing_job(mut job: AirWingJob) {
         return;
     }
     job.clear();
-    if let Ok(mut pool) = AIR_WING_JOB_POOL.lock()
-        && pool.len() < JOB_POOL_KEEP + 1
-        && engine_allocation::reserve(&mut pool, 1).is_ok()
-    {
-        pool.push(job);
+    if let Ok(mut pool) = AIR_WING_JOB_POOL.lock() {
+        retain(&mut pool, job);
     }
 }
 
-/// Take reusable storage, or return an empty job without allocating on pool miss.
+/// Take reusable storage, or return an empty job, which grows as it reads, on a pool miss.
 pub fn acquire_air_stats_job() -> AirStatsJob {
     pop_job(&AIR_STATS_JOB_POOL)
 }
@@ -320,15 +320,12 @@ pub(super) fn release_air_stats_job(mut job: AirStatsJob) {
         return;
     }
     job.clear();
-    if let Ok(mut pool) = AIR_STATS_JOB_POOL.lock()
-        && pool.len() < JOB_POOL_KEEP + 1
-        && engine_allocation::reserve(&mut pool, 1).is_ok()
-    {
-        pool.push(job);
+    if let Ok(mut pool) = AIR_STATS_JOB_POOL.lock() {
+        retain(&mut pool, job);
     }
 }
 
-/// Take reusable storage, or return an empty job without allocating on pool miss.
+/// Take reusable storage, or return an empty job, which grows as it reads, on a pool miss.
 pub fn acquire_naval_job() -> NavalJob {
     if let Ok(mut pool) = NAVAL_JOB_POOL.try_lock()
         && let Some(job) = pool.pop()
@@ -362,15 +359,12 @@ pub(super) fn release_naval_job(mut job: NavalJob) {
         return;
     }
     job.clear();
-    if let Ok(mut pool) = NAVAL_JOB_POOL.lock()
-        && pool.len() < JOB_POOL_KEEP + 1
-        && engine_allocation::reserve(&mut pool, 1).is_ok()
-    {
-        pool.push(job);
+    if let Ok(mut pool) = NAVAL_JOB_POOL.lock() {
+        retain(&mut pool, job);
     }
 }
 
-/// Take reusable storage, or return an empty job without allocating on pool miss.
+/// Take reusable storage, or return an empty job, which grows as it reads, on a pool miss.
 pub fn acquire_players_job() -> PlayersJob {
     if let Ok(mut pool) = PLAYERS_JOB_POOL.try_lock()
         && let Some(job) = pool.pop()
@@ -403,15 +397,12 @@ pub(super) fn release_players_job(mut job: PlayersJob) {
         return;
     }
     job.clear();
-    if let Ok(mut pool) = PLAYERS_JOB_POOL.lock()
-        && pool.len() < JOB_POOL_KEEP + 1
-        && engine_allocation::reserve(&mut pool, 1).is_ok()
-    {
-        pool.push(job);
+    if let Ok(mut pool) = PLAYERS_JOB_POOL.lock() {
+        retain(&mut pool, job);
     }
 }
 
-/// Take reusable storage, or return an empty job without allocating on pool miss.
+/// Take reusable storage, or return an empty job, which grows as it reads, on a pool miss.
 pub fn acquire_session_job() -> SessionJob {
     if let Ok(mut pool) = SESSION_JOB_POOL.try_lock()
         && let Some(job) = pool.pop()
@@ -430,7 +421,7 @@ pub(super) fn release_session_job(mut job: SessionJob) {
     if crate::allocation::failed() {
         return;
     }
-    if !job.is_provisioned() {
+    if job.log.spans.capacity() == 0 {
         return;
     }
     crate::raw::note_growth("Session", &job.log);
@@ -444,15 +435,12 @@ pub(super) fn release_session_job(mut job: SessionJob) {
         return;
     }
     job.clear();
-    if let Ok(mut pool) = SESSION_JOB_POOL.lock()
-        && pool.len() < JOB_POOL_KEEP + 1
-        && engine_allocation::reserve(&mut pool, 1).is_ok()
-    {
-        pool.push(job);
+    if let Ok(mut pool) = SESSION_JOB_POOL.lock() {
+        retain(&mut pool, job);
     }
 }
 
-/// Take reusable storage, or return an empty job without allocating on pool miss.
+/// Take reusable storage, or return an empty job, which grows as it reads, on a pool miss.
 pub fn acquire_production_rest_job() -> ProductionRestJob {
     if let Ok(mut pool) = PRODUCTION_REST_JOB_POOL.try_lock()
         && let Some(job) = pool.pop()
@@ -493,15 +481,12 @@ pub(super) fn release_production_rest_job(mut job: ProductionRestJob) {
         return;
     }
     job.clear();
-    if let Ok(mut pool) = PRODUCTION_REST_JOB_POOL.lock()
-        && pool.len() < JOB_POOL_KEEP + 1
-        && engine_allocation::reserve(&mut pool, 1).is_ok()
-    {
-        pool.push(job);
+    if let Ok(mut pool) = PRODUCTION_REST_JOB_POOL.lock() {
+        retain(&mut pool, job);
     }
 }
 
-/// Take reusable storage, or return an empty job without allocating on pool miss.
+/// Take reusable storage, or return an empty job, which grows as it reads, on a pool miss.
 pub fn acquire_construction_rest_job() -> ConstructionRestJob {
     if let Ok(mut pool) = CONSTRUCTION_REST_JOB_POOL.try_lock()
         && let Some(job) = pool.pop()
@@ -535,15 +520,12 @@ pub(super) fn release_construction_rest_job(mut job: ConstructionRestJob) {
         return;
     }
     job.clear();
-    if let Ok(mut pool) = CONSTRUCTION_REST_JOB_POOL.lock()
-        && pool.len() < JOB_POOL_KEEP + 1
-        && engine_allocation::reserve(&mut pool, 1).is_ok()
-    {
-        pool.push(job);
+    if let Ok(mut pool) = CONSTRUCTION_REST_JOB_POOL.lock() {
+        retain(&mut pool, job);
     }
 }
 
-/// Take reusable storage, or return an empty job without allocating on pool miss.
+/// Take reusable storage, or return an empty job, which grows as it reads, on a pool miss.
 pub fn acquire_economy_rest_job() -> EconomyRestJob {
     if let Ok(mut pool) = ECONOMY_REST_JOB_POOL.try_lock()
         && let Some(job) = pool.pop()
@@ -576,15 +558,12 @@ pub(super) fn release_economy_rest_job(mut job: EconomyRestJob) {
         return;
     }
     job.clear();
-    if let Ok(mut pool) = ECONOMY_REST_JOB_POOL.lock()
-        && pool.len() < JOB_POOL_KEEP + 1
-        && engine_allocation::reserve(&mut pool, 1).is_ok()
-    {
-        pool.push(job);
+    if let Ok(mut pool) = ECONOMY_REST_JOB_POOL.lock() {
+        retain(&mut pool, job);
     }
 }
 
-/// Take reusable storage, or return an empty job without allocating on pool miss.
+/// Take reusable storage, or return an empty job, which grows as it reads, on a pool miss.
 pub fn acquire_air_bases_job() -> AirBasesJob {
     if let Ok(mut pool) = AIR_BASES_JOB_POOL.try_lock()
         && let Some(job) = pool.pop()
@@ -618,15 +597,12 @@ pub(super) fn release_air_bases_job(mut job: AirBasesJob) {
         return;
     }
     job.clear();
-    if let Ok(mut pool) = AIR_BASES_JOB_POOL.lock()
-        && pool.len() < JOB_POOL_KEEP + 1
-        && engine_allocation::reserve(&mut pool, 1).is_ok()
-    {
-        pool.push(job);
+    if let Ok(mut pool) = AIR_BASES_JOB_POOL.lock() {
+        retain(&mut pool, job);
     }
 }
 
-/// Take reusable storage, or return an empty job without allocating on pool miss.
+/// Take reusable storage, or return an empty job, which grows as it reads, on a pool miss.
 pub fn acquire_supremacy_job() -> SupremacyJob {
     if let Ok(mut pool) = SUPREMACY_JOB_POOL.try_lock()
         && let Some(job) = pool.pop()
@@ -659,15 +635,12 @@ pub(super) fn release_supremacy_job(mut job: SupremacyJob) {
         return;
     }
     job.clear();
-    if let Ok(mut pool) = SUPREMACY_JOB_POOL.lock()
-        && pool.len() < JOB_POOL_KEEP + 1
-        && engine_allocation::reserve(&mut pool, 1).is_ok()
-    {
-        pool.push(job);
+    if let Ok(mut pool) = SUPREMACY_JOB_POOL.lock() {
+        retain(&mut pool, job);
     }
 }
 
-/// Take reusable storage, or return an empty job without allocating on pool miss.
+/// Take reusable storage, or return an empty job, which grows as it reads, on a pool miss.
 pub fn acquire_sunk_job() -> SunkJob {
     if let Ok(mut pool) = SUNK_JOB_POOL.try_lock()
         && let Some(job) = pool.pop()
@@ -700,15 +673,12 @@ pub(super) fn release_sunk_job(mut job: SunkJob) {
         return;
     }
     job.clear();
-    if let Ok(mut pool) = SUNK_JOB_POOL.lock()
-        && pool.len() < JOB_POOL_KEEP + 1
-        && engine_allocation::reserve(&mut pool, 1).is_ok()
-    {
-        pool.push(job);
+    if let Ok(mut pool) = SUNK_JOB_POOL.lock() {
+        retain(&mut pool, job);
     }
 }
 
-/// Take reusable storage, or return an empty job without allocating on pool miss.
+/// Take reusable storage, or return an empty job, which grows as it reads, on a pool miss.
 pub fn acquire_radar_job() -> RadarJob {
     if let Ok(mut pool) = RADAR_JOB_POOL.try_lock()
         && let Some(job) = pool.pop()
@@ -741,15 +711,12 @@ pub(super) fn release_radar_job(mut job: RadarJob) {
         return;
     }
     job.clear();
-    if let Ok(mut pool) = RADAR_JOB_POOL.lock()
-        && pool.len() < JOB_POOL_KEEP + 1
-        && engine_allocation::reserve(&mut pool, 1).is_ok()
-    {
-        pool.push(job);
+    if let Ok(mut pool) = RADAR_JOB_POOL.lock() {
+        retain(&mut pool, job);
     }
 }
 
-/// Take reusable storage, or return an empty job without allocating on pool miss.
+/// Take reusable storage, or return an empty job, which grows as it reads, on a pool miss.
 pub fn acquire_intel_job() -> IntelJob {
     if let Ok(mut pool) = INTEL_JOB_POOL.try_lock()
         && let Some(job) = pool.pop()
@@ -782,15 +749,12 @@ pub(super) fn release_intel_job(mut job: IntelJob) {
         return;
     }
     job.clear();
-    if let Ok(mut pool) = INTEL_JOB_POOL.lock()
-        && pool.len() < JOB_POOL_KEEP + 1
-        && engine_allocation::reserve(&mut pool, 1).is_ok()
-    {
-        pool.push(job);
+    if let Ok(mut pool) = INTEL_JOB_POOL.lock() {
+        retain(&mut pool, job);
     }
 }
 
-/// Take reusable storage, or return an empty job without allocating on pool miss.
+/// Take reusable storage, or return an empty job, which grows as it reads, on a pool miss.
 pub fn acquire_weather_job() -> WeatherJob {
     if let Ok(mut pool) = WEATHER_JOB_POOL.try_lock()
         && let Some(job) = pool.pop()
@@ -819,7 +783,7 @@ pub(super) fn release_weather_job(mut job: WeatherJob) {
     if crate::allocation::failed() {
         return;
     }
-    if !job.is_provisioned() {
+    if job.log.spans.capacity() == 0 {
         return;
     }
     crate::raw::note_growth("Weather", &job.log);
@@ -833,15 +797,12 @@ pub(super) fn release_weather_job(mut job: WeatherJob) {
         return;
     }
     job.clear();
-    if let Ok(mut pool) = WEATHER_JOB_POOL.lock()
-        && pool.len() < JOB_POOL_KEEP + 1
-        && engine_allocation::reserve(&mut pool, 1).is_ok()
-    {
-        pool.push(job);
+    if let Ok(mut pool) = WEATHER_JOB_POOL.lock() {
+        retain(&mut pool, job);
     }
 }
 
-/// Take reusable storage, or return an empty job without allocating on pool miss.
+/// Take reusable storage, or return an empty job, which grows as it reads, on a pool miss.
 pub fn acquire_capitulation_job() -> CapitulationJob {
     if let Ok(mut pool) = CAPITULATION_JOB_POOL.try_lock()
         && let Some(job) = pool.pop()
@@ -874,11 +835,8 @@ pub(super) fn release_capitulation_job(mut job: CapitulationJob) {
         return;
     }
     job.clear();
-    if let Ok(mut pool) = CAPITULATION_JOB_POOL.lock()
-        && pool.len() < JOB_POOL_KEEP + 1
-        && engine_allocation::reserve(&mut pool, 1).is_ok()
-    {
-        pool.push(job);
+    if let Ok(mut pool) = CAPITULATION_JOB_POOL.lock() {
+        retain(&mut pool, job);
     }
 }
 

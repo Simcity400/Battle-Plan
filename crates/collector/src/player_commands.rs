@@ -3,6 +3,7 @@ use crate::{
     hook::{Hook, Registers, Tap},
     shared_lane::SharedLane,
 };
+use collector_primitives::first_reason::FirstReason;
 use engine_executable::executable_tables::commands::{self, Target, Token};
 use engine_native::{
     Memory, cgame_state, chuman, command_inputs as native, cpdx_array::Array, memory::LiveMemory,
@@ -22,6 +23,11 @@ use std::{
 };
 
 mod classes;
+
+const EVENT_ALLOCATION: &str = "command event allocation failed";
+const WORLD_CONTEXT_ALLOCATION: &str = "command world context allocation failed";
+const PLAYER_STORAGE_ALLOCATION: &str = "command player storage allocation failed";
+const OVERLAP: &str = "command observation overlapped another";
 
 #[derive(Clone, Copy, Default)]
 struct Entry {
@@ -145,9 +151,9 @@ struct Live {
     closed_world: AtomicU64,
     failed: AtomicU64,
     failed_qpc: AtomicU64,
+    first_failure: FirstReason,
     capacity_demand: AtomicUsize,
     name_demand: AtomicUsize,
-    player_capacity: AtomicUsize,
 }
 
 // The callback's exclusive, nonwaiting admission owns producer; lanes publish immutable records.
@@ -306,9 +312,9 @@ impl Live {
             closed_world: AtomicU64::new(0),
             failed: AtomicU64::new(0),
             failed_qpc: AtomicU64::new(0),
+            first_failure: FirstReason::new(),
             capacity_demand: AtomicUsize::new(slots),
             name_demand: AtomicUsize::new(names),
-            player_capacity: AtomicUsize::new(slots),
         })
     }
 
@@ -326,7 +332,6 @@ impl Live {
             .max(1)
             .checked_next_power_of_two()
             .ok_or_else(engine_allocation::oom)?;
-        let player_capacity = self.player_capacity.load(Ordering::Relaxed);
         let events = self.events();
         let event_capacity = events.required_entries().max(events.len());
         let next_events = (event_capacity > events.len())
@@ -344,13 +349,7 @@ impl Live {
         let next_actors = (actor_capacity > actors.len() || stride > actors.stride())
             .then(|| SharedLane::new(actor_capacity, stride))
             .transpose()?;
-        let mut players = (slots > player_capacity)
-            .then(|| engine_allocation::default_vec::<CachedPlayer>(slots))
-            .transpose()?;
-        let mut previous = (slots > player_capacity)
-            .then(|| engine_allocation::default_vec::<CachedPlayer>(slots))
-            .transpose()?;
-        if next_events.is_none() && next_actors.is_none() && players.is_none() {
+        if next_events.is_none() && next_actors.is_none() {
             return Ok((false, false));
         }
         if self
@@ -365,25 +364,6 @@ impl Live {
         let mut retired_actors = None;
         let mut changed = (false, false);
         if self.events().is_drained() && self.metadata().is_drained() {
-            let producer = unsafe { &mut *self.producer.get() };
-            if let Some(mut next) = players.take() {
-                for &player in &producer.players {
-                    if player.actor == 0 || !player.seen {
-                        continue;
-                    }
-                    let mut index = hash(player.key as u32 as u64, next.len());
-                    while next[index].actor != 0 {
-                        index = (index + 1) & (next.len() - 1);
-                    }
-                    next[index] = player;
-                }
-                players = Some(std::mem::replace(&mut producer.players, next));
-                previous = Some(std::mem::replace(
-                    &mut producer.previous_players,
-                    previous.take().unwrap(),
-                ));
-                self.player_capacity.store(slots, Ordering::Relaxed);
-            }
             if let Some(next) = next_events {
                 retired_events = Some(unsafe { std::mem::replace(&mut *self.events.get(), next) });
                 changed.0 = true;
@@ -393,23 +373,60 @@ impl Live {
                     Some(unsafe { std::mem::replace(&mut *self.metadata.get(), next) });
                 changed.1 = true;
             }
-            producer.dirty = true;
+            unsafe { (*self.producer.get()).dirty = true };
         }
         self.version.fetch_add(1, Ordering::Release);
         self.occupied.store(false, Ordering::Release);
-        drop((retired_events, retired_actors, players, previous));
+        drop((retired_events, retired_actors));
         Ok(changed)
     }
 
-    fn fail(&self) {
+    fn fail(&self, reason: &'static str) {
+        self.first_failure.record(reason);
         self.failed_qpc
             .fetch_max(qpc().max(0) as u64, Ordering::Relaxed);
         self.failed.fetch_add(1, Ordering::Release);
     }
 
+    /// Observations lost since attach and why the first was.
+    fn status(&self) -> impl serde::Serialize + use<> {
+        crate::status::status!({
+            "lost": self.failed.load(Ordering::Acquire),
+            "first_loss": self.first_failure.get(),
+        })
+    }
+
     fn publish(&self, entry: Entry) -> Result<(), &'static str> {
-        let slot = self.events().reserve().ok_or("command event buffer full")?;
+        let slot = self.events().reserve().ok_or(EVENT_ALLOCATION)?;
         slot.publish(entry);
+        Ok(())
+    }
+
+    /// Slots for twice `players`; seen players carry over.
+    fn grow_players(&self, producer: &mut Producer, players: usize) -> Result<(), &'static str> {
+        let slots = players
+            .checked_mul(2)
+            .and_then(usize::checked_next_power_of_two)
+            .ok_or(PLAYER_STORAGE_ALLOCATION)?;
+        let (mut next, previous) = engine_allocation::advisory(|| {
+            Ok::<_, io::Error>((
+                engine_allocation::default_vec::<CachedPlayer>(slots)?,
+                engine_allocation::default_vec::<CachedPlayer>(slots)?,
+            ))
+        })
+        .map_err(|_| PLAYER_STORAGE_ALLOCATION)?;
+        for &player in &producer.players {
+            if player.actor == 0 || !player.seen {
+                continue;
+            }
+            let mut index = hash(player.key as u32 as u64, slots);
+            while next[index].actor != 0 {
+                index = (index + 1) & (slots - 1);
+            }
+            next[index] = player;
+        }
+        producer.players = next;
+        producer.previous_players = previous;
         Ok(())
     }
 
@@ -432,17 +449,7 @@ impl Live {
         self.capacity_demand
             .fetch_max(rows.count as usize * 2, Ordering::Relaxed);
         if rows.count as usize > producer.players.len() / 2 {
-            return Err("command player storage needs growth");
-        }
-        let departures = producer
-            .players
-            .iter()
-            .filter(|player| player.actor != 0 && player.seen)
-            .count();
-        if self.events().len().saturating_sub(self.events().pending()) < departures + 1 {
-            self.events()
-                .require_entries(self.events().pending().saturating_add(departures + 1));
-            return Err("command roster commit buffer full");
+            self.grow_players(producer, rows.count as usize)?;
         }
         producer.previous_players.fill(CachedPlayer::default());
         for index in 0..rows.count {
@@ -501,11 +508,8 @@ impl Live {
                     self.name_demand.fetch_max(needed, Ordering::Relaxed);
                     let mut reservation = self
                         .metadata()
-                        .reserve()
-                        .ok_or("command player buffer full")?;
-                    if needed > reservation.stride() {
-                        return Err("command player text needs growth");
-                    }
+                        .reserve_bytes(needed)
+                        .ok_or("command player allocation failed")?;
                     let bytes =
                         unsafe { std::slice::from_raw_parts_mut(reservation.bytes(), needed) };
                     player.user.copy(memory, &mut bytes[..player.user.len])?;
@@ -605,16 +609,6 @@ impl Live {
         };
         let active = paused.is_some();
         if producer.active && (!active || producer.world != world || producer.session != session) {
-            let departures = producer
-                .players
-                .iter()
-                .filter(|player| player.actor != 0 && player.seen)
-                .count();
-            if self.events().len().saturating_sub(self.events().pending()) < departures + 1 {
-                self.events()
-                    .require_entries(self.events().pending().saturating_add(departures + 1));
-                return Err("command phase boundary buffer full");
-            }
             for player in &producer.players {
                 if player.actor != 0 && player.seen {
                     self.publish(Entry {
@@ -675,24 +669,8 @@ impl Live {
                     .ok_or("command phase load signal unreadable")?,
                 qpc: time,
             };
-            let metadata_pending = self.metadata().pending();
-            let event_pending = self.events().pending();
-            if self.metadata().len().saturating_sub(metadata_pending) < 1 {
-                self.metadata()
-                    .require_entries(metadata_pending.saturating_add(1));
-                return Err("command world context buffer full");
-            }
-            if self.events().len().saturating_sub(event_pending) < 1 {
-                self.events()
-                    .require_entries(event_pending.saturating_add(1));
-                return Err("command event buffer full");
-            }
-            // Admission excludes other producers, so preflighted reservations cannot lose capacity.
-            let metadata = self
-                .metadata()
-                .reserve()
-                .ok_or("command world context buffer full")?;
-            let event = self.events().reserve().ok_or("command event buffer full")?;
+            let metadata = self.metadata().reserve().ok_or(WORLD_CONTEXT_ALLOCATION)?;
+            let event = self.events().reserve().ok_or(EVENT_ALLOCATION)?;
             metadata.publish(Metadata::World {
                 order,
                 world,
@@ -811,8 +789,8 @@ impl Live {
                 if kind.is_none_or(Descriptor::captured) {
                     let roster_ready = match self.roster(memory, producer, order, time) {
                         Ok(()) => true,
-                        Err(_) => {
-                            self.fail();
+                        Err(reason) => {
+                            self.fail(reason);
                             false
                         }
                     };
@@ -927,7 +905,7 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, site: usize) {
         .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
         .is_err()
     {
-        live.fail();
+        live.fail(OVERLAP);
         return;
     }
     struct Writer<'a>(&'a Live);
@@ -939,8 +917,8 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, site: usize) {
     }
     live.version.fetch_add(1, Ordering::AcqRel);
     let _writer = Writer(live);
-    if live.observe(registers, site).is_err() {
-        live.fail();
+    if let Err(reason) = live.observe(registers, site) {
+        live.fail(reason);
         let producer = unsafe { &mut *live.producer.get() };
         live.closed_qpc
             .store(qpc().max(0) as u64, Ordering::Relaxed);
@@ -955,6 +933,13 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, site: usize) {
 
 pub(crate) fn active() -> usize {
     ACTIVE.load(Ordering::SeqCst)
+}
+
+pub(crate) fn status() -> impl serde::Serialize {
+    let store = STORE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    store.as_ref().map(|live| live.status())
 }
 
 pub(crate) fn urgent() -> bool {
@@ -1315,7 +1300,7 @@ impl Hooks {
             Some(outcome) => outcome.map_err(|_| "command observer publication failed")?,
             None => {
                 self.publication_attempted |= enabled;
-                Hook::set_enabled_iter_attach(
+                Hook::set_enabled_iter(
                     self.taps.iter_mut().map(Tap::publication_hook),
                     enabled,
                 )
@@ -1383,9 +1368,9 @@ pub(crate) mod tests {
             closed_world: AtomicU64::new(1),
             failed: AtomicU64::new(0),
             failed_qpc: AtomicU64::new(0),
+            first_failure: FirstReason::new(),
             capacity_demand: AtomicUsize::new(2),
             name_demand: AtomicUsize::new(0),
-            player_capacity: AtomicUsize::new(2),
         }
     }
 
@@ -1450,8 +1435,8 @@ pub(crate) mod tests {
     ) -> Result<(), &'static str> {
         let producer = unsafe { &mut *live.producer.get() };
         let result = live.mode(memory, producer, world, 0x1000, time, order);
-        if result.is_err() {
-            live.fail();
+        if let Err(reason) = result {
+            live.fail(reason);
         }
         live.closed_qpc.store(time, Ordering::Relaxed);
         live.closed_order.store(order, Ordering::Relaxed);
@@ -1512,8 +1497,8 @@ pub(crate) mod tests {
         registers.rsi = if site == 1 { 0x6000 } else { 0x1000 };
         registers.rdi = 0x7000;
         let result = live.observe_at(memory, &registers, site, world, time);
-        if result.is_err() {
-            live.fail();
+        if let Err(reason) = result {
+            live.fail(reason);
             live.failed_qpc.store(time, Ordering::Relaxed);
             let producer = unsafe { &*live.producer.get() };
             live.closed_qpc.store(time, Ordering::Relaxed);
@@ -2036,57 +2021,234 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn activation_preflights_both_lanes_before_reserving_either() {
+    fn activation_past_full_lanes_publishes_both_and_a_refused_allocation_neither() {
         for metadata_full in [false, true] {
-            let live = live();
-            unsafe {
-                (*live.producer.get()).active = false;
-            }
-            if metadata_full {
-                for _ in 0..live.metadata().len() {
-                    live.metadata()
-                        .reserve()
-                        .unwrap()
-                        .publish(Metadata::default());
+            for denied in [false, true] {
+                let live = live();
+                unsafe {
+                    (*live.producer.get()).active = false;
                 }
-            } else {
-                for _ in 0..live.events().len() {
-                    live.publish(Entry::default()).unwrap();
+                if metadata_full {
+                    for _ in 0..live.metadata().len() {
+                        live.metadata()
+                            .reserve()
+                            .unwrap()
+                            .publish(Metadata::default());
+                    }
+                } else {
+                    for _ in 0..live.events().len() {
+                        live.publish(Entry::default()).unwrap();
+                    }
                 }
-            }
-            let pending = (live.metadata().pending(), live.events().pending());
-            let metadata = live.metadata().published(Metadata::order).unwrap();
-            let events = live.events().published(|entry| entry.order).unwrap();
-            let reason = if metadata_full {
-                "command world context buffer full"
-            } else {
-                "command event buffer full"
-            };
-            assert_eq!(attempt_mode(&live, &Fixture::new(), 1, 100, 1), Err(reason));
-            assert_eq!(
-                (live.metadata().pending(), live.events().pending()),
-                pending
-            );
-            assert_eq!(
-                live.metadata().published(Metadata::order).unwrap(),
-                metadata
-            );
-            assert_eq!(
-                live.events().published(|entry| entry.order).unwrap(),
-                events
-            );
-            assert_eq!(
-                (live.metadata().rejected(), live.events().rejected()),
-                (0, 0)
-            );
-            assert!(!unsafe { (*live.producer.get()).active });
-            assert_eq!(live.failed.load(Ordering::Acquire), 1);
-            if metadata_full {
-                assert!(live.metadata().required_entries() > live.metadata().len());
-            } else {
-                assert!(live.events().required_entries() > live.events().len());
+                let metadata = live.metadata().published(Metadata::order).unwrap().len();
+                let events = live.events().published(|entry| entry.order).unwrap().len();
+                let fixture = Fixture::new();
+                let attempt = || attempt_mode(&live, &fixture, 1, 100, 1);
+                if denied {
+                    let reason = if metadata_full {
+                        WORLD_CONTEXT_ALLOCATION
+                    } else {
+                        EVENT_ALLOCATION
+                    };
+                    assert_eq!(
+                        crate::test_support::with_allocations_denied(attempt),
+                        Err(reason)
+                    );
+                    assert_eq!(
+                        live.metadata().published(Metadata::order).unwrap().len(),
+                        metadata
+                    );
+                    assert_eq!(
+                        live.events().published(|entry| entry.order).unwrap().len(),
+                        events
+                    );
+                    assert_eq!(
+                        (live.metadata().rejected(), live.events().rejected()),
+                        if metadata_full { (1, 0) } else { (0, 1) }
+                    );
+                    assert!(!unsafe { (*live.producer.get()).active });
+                    assert_eq!(live.failed.load(Ordering::Acquire), 1);
+                    assert_eq!(
+                        serde_json::to_value(live.status()).unwrap(),
+                        serde_json::json!({"lost": 1, "first_loss": reason})
+                    );
+                } else {
+                    attempt().unwrap();
+                    let metadata_after = live.metadata().published(Metadata::order).unwrap();
+                    let events_after = live.events().published(|entry| entry.order).unwrap();
+                    assert_eq!(
+                        (metadata_after.len(), events_after.len()),
+                        (metadata + 1, events + 1)
+                    );
+                    assert!(matches!(
+                        live.metadata().record(metadata_after.last().unwrap().1).0,
+                        Metadata::World {
+                            order: 1,
+                            world: 1,
+                            ..
+                        }
+                    ));
+                    assert_eq!(
+                        live.events().record(events_after.last().unwrap().1).0.code,
+                        1
+                    );
+                    assert_eq!(
+                        (live.metadata().rejected(), live.events().rejected()),
+                        (0, 0)
+                    );
+                    assert!(unsafe { (*live.producer.get()).active });
+                    assert_eq!(live.failed.load(Ordering::Acquire), 0);
+                }
+                if metadata_full {
+                    assert!(live.metadata().required_entries() > live.metadata().len());
+                } else {
+                    assert!(live.events().required_entries() > live.events().len());
+                }
             }
         }
+    }
+
+    #[test]
+    fn a_command_burst_past_the_prepared_lane_keeps_every_command_in_order() {
+        let live = live();
+        unsafe {
+            (*live.producer.get()).active = false;
+        }
+        attempt_mode(&live, &Fixture::new(), 1, 100, 1).unwrap();
+        let burst = 4 * live.events().len() as u32 + 3;
+        for sequence in 0..burst {
+            live.publish(Entry {
+                order: 2 + u64::from(sequence),
+                world: 1,
+                qpc: 101 + u64::from(sequence),
+                hour: 10,
+                player: 4,
+                sequence,
+                kind: 1,
+                origin: 1,
+                ..Entry::default()
+            })
+            .unwrap();
+        }
+        live.closed_order
+            .store(1 + u64::from(burst), Ordering::Relaxed);
+        live.closed_qpc.store(200, Ordering::Relaxed);
+        let groups = Drain::default().take_live(&live, true).unwrap();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].lost, 0);
+        assert_eq!(
+            groups[0]
+                .batch
+                .events
+                .iter()
+                .map(|event| (event.sequence, event.qpc))
+                .collect::<Vec<_>>(),
+            (0..burst)
+                .map(|sequence| (sequence, 101 + u64::from(sequence)))
+                .collect::<Vec<_>>()
+        );
+        assert!(groups[0].batch.spans.iter().all(|span| span.complete));
+        assert_eq!(live.events().rejected(), 0);
+        assert_eq!(live.failed.load(Ordering::Acquire), 0);
+        // The drained lane is replaced by one sized for the burst.
+        assert!(live.events().len() > burst as usize);
+    }
+
+    #[test]
+    fn a_roster_past_the_prepared_lanes_and_tables_commits_every_player_whole() {
+        use engine_native::msvc_string;
+        let live = live();
+        unsafe {
+            (*live.producer.get()).active = false;
+        }
+        let mut memory = Fixture::new();
+        let humans = 0x10_0000_usize;
+        let count = 12;
+        let texts: Vec<(String, String)> = (0..count)
+            .map(|index| {
+                if index % 2 == 0 {
+                    (format!("u{index}"), format!("p{index}"))
+                } else {
+                    (
+                        format!("user-name-{index:02}"),
+                        format!("player-{index:02}"),
+                    )
+                }
+            })
+            .collect();
+        let mut block = vec![0_u8; count * chuman::STRIDE];
+        for (index, (user, name)) in texts.iter().enumerate() {
+            let human = &mut block[index * chuman::STRIDE..][..chuman::STRIDE];
+            human[..8].copy_from_slice(&(chuman::VTABLE_RVA.0 as u64).to_le_bytes());
+            human[chuman::PLAYER_KEY..][..4].copy_from_slice(&(index as i32 + 1).to_le_bytes());
+            for (at, text) in [(chuman::FIRST_STRING, user), (chuman::NAME, name)] {
+                let string = &mut human[at..][..msvc_string::STRIDE];
+                string[..text.len()].copy_from_slice(text.as_bytes());
+                string[msvc_string::LENGTH..][..8]
+                    .copy_from_slice(&(text.len() as u64).to_le_bytes());
+                string[msvc_string::CAPACITY..][..8]
+                    .copy_from_slice(&msvc_string::INLINE_CAPACITY.to_le_bytes());
+            }
+        }
+        memory.0.insert(humans, block);
+        let set_roster = |memory: &mut Fixture, rows: u32| {
+            let header = &mut memory.0.get_mut(&0x2000).unwrap()[cgame_state::PLAYER_RECORDS..];
+            header[..8].copy_from_slice(&(humans as u64).to_le_bytes());
+            header[8..12].copy_from_slice(&(count as u32).to_le_bytes());
+            header[12..16].copy_from_slice(&rows.to_le_bytes());
+        };
+        set_roster(&mut memory, count as u32);
+        attempt_mode(&live, &memory, 1, 100, 1).unwrap();
+        // Fewer slots, narrower spans and a smaller player table than the roster needs.
+        assert!(live.metadata().len() < count && live.metadata().stride() < 16);
+        let producer = unsafe { &mut *live.producer.get() };
+        assert!(producer.players.len() < 2 * count);
+        live.roster(&memory, producer, 2, 101).unwrap();
+        live.closed_order.store(2, Ordering::Relaxed);
+        live.closed_qpc.store(110, Ordering::Relaxed);
+        let mut drain = Drain::default();
+        let groups = drain.take_live(&live, false).unwrap();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].lost, 0);
+        assert_eq!(
+            groups[0]
+                .batch
+                .actors
+                .iter()
+                .map(|actor| (actor.player, actor.user.clone(), actor.name.clone()))
+                .collect::<Vec<_>>(),
+            texts
+                .iter()
+                .enumerate()
+                .map(|(index, (user, name))| {
+                    (
+                        index as i32 + 1,
+                        user.clone().into_bytes(),
+                        name.clone().into_bytes(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        );
+        let producer = unsafe { &mut *live.producer.get() };
+        let departures: Vec<_> = producer
+            .players
+            .iter()
+            .filter(|player| player.actor != 0 && player.seen)
+            .map(|player| (player.actor, 115))
+            .collect();
+        assert_eq!(departures.len(), count);
+        set_roster(&mut memory, 0);
+        live.roster(&memory, producer, 3, 115).unwrap();
+        live.closed_order.store(3, Ordering::Relaxed);
+        live.closed_qpc.store(120, Ordering::Relaxed);
+        let groups = drain.take_live(&live, true).unwrap();
+        assert_eq!(groups[0].batch.departures, departures);
+        assert_eq!(groups[0].lost, 0);
+        assert_eq!(live.failed.load(Ordering::Acquire), 0);
+        assert_eq!(
+            (live.metadata().rejected(), live.events().rejected()),
+            (0, 0)
+        );
     }
 
     #[test]
@@ -2098,13 +2260,17 @@ pub(crate) mod tests {
             }
             let mut memory = Fixture::new();
             attempt_mode(&live, &memory, 1, 100, 1).unwrap();
+            // More players leave than the event lane was prepared for.
+            let players = 4 * live.events().len() as u64;
             {
                 let producer = unsafe { &mut *live.producer.get() };
-                producer.players[0] = CachedPlayer {
-                    actor: 7,
-                    seen: true,
-                    ..Default::default()
-                };
+                producer.players = (1..=players)
+                    .map(|actor| CachedPlayer {
+                        actor,
+                        seen: true,
+                        ..Default::default()
+                    })
+                    .collect();
             }
             if absent {
                 memory.0.remove(&native::IDLER_RVA.0);
@@ -2118,7 +2284,10 @@ pub(crate) mod tests {
             let groups = Drain::default().take_live(&live, true).unwrap();
             assert_eq!(groups.len(), 1);
             assert_eq!(groups[0].lost, 0);
-            assert_eq!(groups[0].batch.departures, vec![(7, 105)]);
+            assert_eq!(
+                groups[0].batch.departures,
+                (1..=players).map(|actor| (actor, 105)).collect::<Vec<_>>()
+            );
             assert_eq!(groups[0].batch.spans.len(), 1);
             assert_eq!(groups[0].batch.spans[0].to_qpc, 105);
             assert!(groups[0].batch.spans[0].complete);
@@ -2138,7 +2307,7 @@ pub(crate) mod tests {
             attempt_mode(&live, &memory, 1, 100, 1).unwrap();
             attempt_mode(&live, &memory, 2, 105, 2).unwrap();
             for _ in 0..3 {
-                live.fail();
+                live.fail(OVERLAP);
             }
             live.failed_qpc.store(107, Ordering::Relaxed);
             if leave {

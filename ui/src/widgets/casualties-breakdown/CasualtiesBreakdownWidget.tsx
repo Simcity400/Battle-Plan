@@ -25,19 +25,23 @@ import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
-import { usePlaybackHour, usePlaybackMotion } from '../../dashboard/playback';
+import { usePlaybackMotion } from '../../dashboard/playback';
+import { liveAt, mapLive, valuesOf } from '../../charts/live';
+import LiveText from '../../charts/LiveText';
+import type { LiveTexts } from '../../charts/LiveText';
+import type { SortValue } from '../../charts/table/logic';
+import { useHeadHour } from '../army-size/headHour.ts';
 import { useProduct } from '../../dashboard/products';
 import { useProductWindows } from '../../dashboard/productWindows';
-import { preparedPrefix, preparedThrough } from '../../dashboard/preparedPrefix';
-import { useParityRows } from '../../dashboard/parityRows';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
-import type { CasualtyBreakdownReply } from '../../generated/dashboard';
-import { breakdownWindows, exactLosses, lossItems, lossesAt, lossStack, lossText, validateBreakdown, viewChange, viewWindows } from './casualtiesBreakdownData';
+import { breakdownWindows, exactLosses, lossDrillAt, lossItems, lossesAt, lossStack, lossText, validateBreakdown, viewChange, viewWindows } from './casualtiesBreakdownData';
 import type { LossRow } from './casualtiesBreakdownData';
 import { casualtyCountryCell, casualtyEnemyName } from './casualtyFlags';
 import { definition, DETAIL } from './definition';
 import './casualtiesBreakdown.css';
-import { useReplyGaps } from '../../dashboard/replyGaps';
+import { useShownEachFrame } from '../../dashboard/widgetPerf';
+import { trackHourOf } from '../../dashboard/settledHour';
+import type { CasualtyBreakdownReply } from '../../generated/dashboard';
 
 const ROOT = { id: 'positive-losses', label: 'Positive known losses' };
 const TEXT: SunburstText = { format: (value, exact) => exactLosses(exact ?? BigInt(Math.round(value))), unit: 'casualties', valueLabel: 'Positive amounts' };
@@ -54,13 +58,21 @@ export default function CasualtiesBreakdownWidget({ widget, runtime, active, onD
   const anchor = useRef<HTMLDivElement>(null);
   const menu = useContextMenu('Casualty breakdown actions');
   const [drill, setDrill] = useState(CLOSED);
-  const playback = usePlaybackHour(runtime.clock, active && (widget.time.mode === 'follow' || drill.breakdown !== null && drill.follow));
   const [visible, setVisible] = useState<readonly LossRow[]>([]);
   const [chartRange, setChartRange] = useState<readonly [number, number] | null>(null);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  // Its charts draw casualty-breakdown replies: cut only where the families they read lost hours.
-  const gaps = useReplyGaps(track?.source.id, track?.branch.id, 'casualty-breakdown');
+useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtime.tracks, runtime.clock.getHour()) : null);
   const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryTag(track) ?? undefined;
+  const request = track && tag ? { sourceId: track.source.id, revision: track.source.revision,
+    product: 'casualty-breakdown', params: { branchId: track.branch.id, tag, window: null } } : null;
+  const manifest = useProduct<CasualtyBreakdownReply>(runtime.client, request, active, validateBreakdown, track?.source);
+  // Following, the widget renders when the head enters another window (the sunburst paints the hours inside one from
+  // the clock), and a breakdown that follows renders where its rows (or their subtotal marks) change: its numbers are painted.
+  const drillFollows = drill.breakdown !== null && drill.follow;
+  const drillRows = useRef<() => string>(() => '');
+  const headWindow = (at: number) => String(breakdownWindows(manifest.data, at, false)[0] ?? -1);
+  const playback = useHeadHour(runtime.clock, active && (widget.time.mode === 'follow' || drillFollows),
+    at => drillFollows ? `${headWindow(at)}:${drillRows.current()}` : headWindow(at));
   const window = track && resolveWindow(widget, track, runtime.tracks, playback);
   const hour = window?.lastHour ?? track?.branch.lastHour ?? 0;
   const pinned = options.show === DETAIL.id;
@@ -73,9 +85,6 @@ export default function CasualtiesBreakdownWidget({ widget, runtime, active, onD
   const detailOutside = !!track && (detailHour < track.branch.firstHour || detailHour > track.branch.lastHour);
   const pickDay = (at: number) => setDrill(state => reduceDrill(state.breakdown ? state : effectiveDrill, { type: 'pick', hour: at }));
   const follow = () => setDrill(state => reduceDrill(state.breakdown ? state : effectiveDrill, { type: 'follow' }));
-  const request = track && tag ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'casualty-breakdown', params: { branchId: track.branch.id, tag, window: null } } : null;
-  const manifest = useProduct<CasualtyBreakdownReply>(runtime.client, request, active, validateBreakdown, track?.source);
   const currentWindows = breakdownWindows(manifest.data, hour, widget.time.mode === 'follow');
   const detailWindows = breakdownWindows(manifest.data, detailHour, effectiveDrill.follow);
   const finalIndex = manifest.data ? manifest.data.windows.length - 1 : -1;
@@ -88,22 +97,11 @@ export default function CasualtiesBreakdownWidget({ widget, runtime, active, onD
   const current = currentWindows[0] === undefined ? undefined : histories.data.get(currentWindows[0]);
   const detail = detailWindows[0] === undefined ? undefined : histories.data.get(detailWindows[0]);
   const final = histories.data.get(finalIndex);
-  // A window preparation has not reached answers from the prepared prefix's
-  // newest window: the losses at the prefix's last hour.
-  const through = current ? preparedThrough([current], hour) : hour;
-  const detailThrough = detail ? preparedThrough([detail], detailHour) : detailHour;
+  const through = hour;
+  const detailThrough = detailHour;
   const snapshot = useMemo(() => current ? lossesAt(current, through) : null, [current, through]);
   const details = useMemo(() => detail ? lossesAt(detail, detailThrough) : null, [detail, detailThrough]);
-  // Fill needs the final values, which a prefix reply does not hold yet.
-  const end = useMemo(() => final && track && !preparedPrefix(final)?.pending.length ? lossesAt(final, track.branch.lastHour) : null, [final, track]);
-  useParityRows(anchor, () => ({ kind: 'windowed', label: 'Casualty breakdown exact values',
-    complete: !!manifest.data && !!current && !!final,
-    total: snapshot?.rows.length ?? 0, hour,
-    identity: snapshot?.identity ?? null, incomplete: snapshot?.incomplete ?? null,
-    signedTotal: snapshot?.total.toString() ?? null,
-    rows: snapshot?.rows.map(row => ({ ...row, value: row.value.toString() })) ?? [],
-    manifest: manifest.data, windows: [...histories.data].sort(([left], [right]) => left - right).map(([window, reply]) => ({ window, reply })),
-  }));
+  const end = useMemo(() => final && track ? lossesAt(final, track.branch.lastHour) : null, [final, track]);
   const nameFacts = useMemo(() => [...(snapshot?.rows ?? []), ...(details?.rows ?? []), ...(end?.rows ?? [])]
     .map(row => ({ tag: row.enemyTag, hour: row.enemyHour })), [snapshot, details, end]);
   const names = useCountryNamesAt(runtime.client, track, nameFacts, active);
@@ -113,6 +111,25 @@ export default function CasualtiesBreakdownWidget({ widget, runtime, active, onD
   const flagFacts = useMemo(() => visible.map(row => ({ tag: row.enemyTag, hour: row.enemyHour })), [visible]);
   const flags = useCountryFlagsRead(runtime.client, track, flagFacts, active && open);
   const items = useMemo(() => lossItems(snapshot, end, (tag, hour) => nameReadText(names.get(nameKey(hour, tag)))), [snapshot, end, names]);
+  // Following, the slices at the clock's hour, from the window holding it: painted, never rendered.
+  const axisOffset = track?.axisOffset ?? 0;
+  const liveSlices = useMemo(() => widget.time.mode !== 'follow' || !manifest.data ? undefined
+    : liveAt(runtime.clock, position => Math.floor(position) + axisOffset, at => {
+      const index = breakdownWindows(manifest.data, at, false)[0];
+      const reply = index === undefined ? undefined : histories.data.get(index);
+      if (!reply) return { items: [], unavailableReason: 'Loading this moment…' };
+      const now = lossesAt(reply, at);
+      return now ? { items: lossItems(now, end, (tag, hour) => nameReadText(names.get(nameKey(hour, tag)))) }
+        : { items: [], unavailableReason: 'Casualty counters were not recorded at this moment.' };
+    }), [widget.time.mode, manifest.data, runtime.clock, axisOffset, histories.data, end, names]);
+  const drillLive = useMemo(() => open && effectiveDrill.follow ? liveAt(runtime.clock, position => Math.floor(position) + axisOffset, at => {
+    const index = breakdownWindows(manifest.data, at, false)[0];
+    return lossDrillAt(index === undefined ? undefined : histories.data.get(index), at);
+  }) : undefined, [open, effectiveDrill.follow, runtime.clock, axisOffset, manifest.data, histories.data]);
+  drillRows.current = () => drillLive?.read().rows ?? '';
+  const drillValues = useMemo(() => drillLive && mapLive(drillLive, made => valuesOf<SortValue>(made.values, 'Not recorded')), [drillLive]);
+  const drillTexts = useMemo<LiveTexts | undefined>(() => drillLive && {
+    text: key => key === 'day' ? dayLabel(drillLive.hour()) : drillLive.read().total, subscribe: drillLive.subscribe }, [drillLive]);
   const levels = [options.warLevel !== false, options.enemyLevel !== false];
   const chartReplies = useMemo(() => chartWindows.flatMap(index => histories.data.has(index) ? [histories.data.get(index)!] : []),
     [chartWindows.join(','), histories.data]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -130,8 +147,8 @@ export default function CasualtiesBreakdownWidget({ widget, runtime, active, onD
   const columns = useMemo<TableColumn<LossRow>[]>(() => [WAR,
     { key: 'enemy', header: 'Enemy', label: 'Enemy', value: row => casualtyEnemyName(row, names),
       render: row => <CountryCell {...casualtyCountryCell(row, names, flags)} /> },
-    LOSSES,
-  ], [names, flags]);
+    { ...LOSSES, paint: (value, key) => lossText({ value: BigInt(value), incomplete: drillLive?.read().incomplete.has(key.split('\u0000')[0]) ?? false }) },
+  ], [names, flags, drillLive]);
   useEffect(() => { setDrill(CLOSED); setVisible([]); setChartRange(null); }, [runtime.client, identity, widget.time, options.show]);
   const diagnostics = useMemo(() => [...new Set([...(manifest.data?.warnings ?? []), ...[...histories.data.values()].flatMap(reply => reply.warnings)])],
     [manifest.data, histories.data]);
@@ -141,32 +158,30 @@ export default function CasualtiesBreakdownWidget({ widget, runtime, active, onD
   if (!window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   if (manifest.error) return <WidgetState kind="error" failure={manifest.error} onRetry={manifest.retry} />;
   if (!manifest.data) return <WidgetState kind="loading" label="Loading casualty breakdown…" />;
-  // Nothing observed yet while preparation runs: later blocks may hold losses.
-  if (!manifest.data.available) return preparedPrefix(manifest.data)?.pending.length
-    ? <WidgetState kind="loading" label="This range is still being prepared." />
-    : <WidgetState kind="unavailable" message="Losses by war were not recorded." />;
+  if (!manifest.data.available) return <WidgetState kind="unavailable" message="Losses by war were not recorded." />;
   const currentError = currentWindows[0] === undefined ? undefined : histories.errors.get(currentWindows[0]);
   const error = detailWindows[0] === undefined ? undefined : histories.errors.get(detailWindows[0]);
   const summary = (value: typeof snapshot) => value
     ? <p className="casualty-breakdown-total">{value.incomplete ? 'Recorded subtotal' : 'Losses taken'}: <b>{exactLosses(value.total)}</b></p> : null;
+  const drillSummary = (value: typeof snapshot) => drillTexts ? <p className="casualty-breakdown-total"><b><LiveText live={drillTexts} at="total" /></b></p> : summary(value);
+  const dayShown = drillTexts ? <LiveText live={drillTexts} at="day" /> : dayLabel(detailHour);
   const detailBody = <div className="casualty-breakdown-details">
-    {detailThrough < detailHour && <p className="chart-line-key" role="status">Losses through {dayLabel(detailThrough)}; the rest is still being prepared.</p>}
-    {pinned && <p className="casualty-breakdown-total">{dayLabel(detailHour)} {!effectiveDrill.follow
+    {pinned && <p className="casualty-breakdown-total">{dayShown} {!effectiveDrill.follow
       && <button type="button" className="button small" onClick={follow}>Follow playback</button>}</p>}
     {detailOutside ? <WidgetState kind="unavailable" message="This time is outside the recording." />
       : error ? <WidgetState kind="error" failure={error} onRetry={histories.retry} />
       : !detail ? <WidgetState kind="loading" label="Loading this moment…" />
         : !details ? <p className="drill-empty">{detail.observed.some(span => span.firstHour <= detailThrough && detailThrough <= span.lastHour)
           ? 'No casualty relations were recorded for this country' : 'Casualty counters were not recorded'} at {dayLabel(detailHour)}.</p>
-          : <>{summary(details)}<div className="casualty-breakdown-table"><Table rowRevision={row => [row, columns]} label="Recorded casualty lifetimes" rows={details.rows}
-            columns={columns} rowKey={rowKey} sort={SORT}
+          : <>{drillSummary(details)}<div className="casualty-breakdown-table"><Table rowRevision={row => [row, columns]} label="Recorded casualty lifetimes" rows={details.rows}
+            columns={columns} rowKey={rowKey} sort={SORT} live={drillValues}
             cellBars={false} rankMarkers={false} hoursPerSecond={speed} onVisibleRows={setVisible} narrow={narrowTableOf(options)}
             menu={row => [jumpItem(runtime, track.id, row.readHour)]}
             tooltip={row => fitTooltip([{ title: `${row.war} › ${enemyName(row)}`, rows: [
               { label: 'Losses taken', value: lossText(row), strong: true },
               { label: 'Enemy key', value: row.enemyTag },
             ] }], height)} /></div></>}
-    <div className="casualty-breakdown-history"><TimeChart gaps={gaps} label="Positive recorded casualties by war over time"
+    <div className="casualty-breakdown-history"><TimeChart label="Positive recorded casualties by war over time"
       extent={[track.branch.firstHour, track.branch.lastHour]} branchStart={track.branch.firstHour}
       playhead={effectiveDrill.follow ? clockHour : null} playback="cursor" hoursPerSecond={speed}
       axes={{ xFrom: null, xTo: null, yMin: 0, yMax: null, log: false }} layers={layers}
@@ -191,21 +206,20 @@ export default function CasualtiesBreakdownWidget({ widget, runtime, active, onD
       event.preventDefault(); const box = anchor.current?.getBoundingClientRect(); if (box) menu.open(box.left, box.top, [jumpItem(runtime, track.id, hour)]);
     } }}>
     {summary(snapshot)}
-    {through < hour && <p className="chart-line-key" role="status">Losses through {dayLabel(through)}; the rest is still being prepared.</p>}
     {!snapshot ? <WidgetState kind={current.observed.some(span => span.firstHour <= through && through <= span.lastHour) ? 'empty' : 'unavailable'} icon="sunburst"
       message={current.observed.some(span => span.firstHour <= through && through <= span.lastHour)
         ? 'No casualty relations were recorded for this country at this moment.' : 'Casualty counters were not recorded at this moment.'} />
       : <Sunburst key={JSON.stringify([identity, snapshot.identity, manifest.data.observed.find(span => span.firstHour <= through && through <= span.lastHour)?.firstHour,
         widget.time.mode === 'follow' ? runtime.clock.getSnapshot().seekSequence : 0])}
         label="Positive casualties by war and enemy" root={ROOT} items={items} levels={levels} text={TEXT}
-        settings={sunburstSettings(options)} hoursPerSecond={speed} active={active && (!open || options.drill === 'popout')} />}
+        settings={sunburstSettings(options)} hoursPerSecond={speed} active={active && (!open || options.drill === 'popout')} live={liveSlices} />}
     <button type="button" className="button small" onClick={() => setDrill(state => reduceDrill(state,
       { type: 'open', breakdown: DETAIL.id, hour, playing: widget.time.mode === 'follow' && runtime.clock.getSnapshot().playing,
         playhead: widget.time.mode === 'follow' ? hour : null }))}>All losses</button>
   </div>;
   return <div ref={anchor} className="casualty-breakdown" data-detail={failureDetails([...names.values()].map(nameReadFailure))}>
     {pinned ? detailBody : <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={open} title="Recorded losses"
-      day={dayLabel(detailHour)} following={effectiveDrill.follow} canFollow
+      day={dayShown} following={effectiveDrill.follow} canFollow
       onClose={() => setDrill(CLOSED)} onFollow={follow}
       onPin={runtime.addWidgetBelow ? () => {
         const pin = pinnedBreakdown(widget, DETAIL, track.id);

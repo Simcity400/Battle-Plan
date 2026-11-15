@@ -1,93 +1,62 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import type { FactionDetailReply, FactionGoalDefinition, FactionGoalsReply } from '../../generated/dashboard';
-import { asksDetails, filterGoals, goalRows, goalsAt, missingProgress } from './factionGoalsData.ts';
-import { currentParts, partAt, splitPart, WHOLE } from './goalParts.ts';
+import { FIXED5_MAX, goalProgressKey, validateFactionDetails } from '../../dashboard/factionDetails.ts';
+import { valuesOf } from '../../charts/live.ts';
+import { filterGoals, goalDiagnostics, goalRows, goalTableValues, progressText, rowProgress, termOrder } from './factionGoalsData.ts';
+import type { FactionDetailReply, FactionGoalDefinition } from '../../generated/dashboard';
 
-const definition = (token: string, extra: Partial<FactionGoalDefinition> = {}): FactionGoalDefinition => ({ progress: [], sections: [], bands: [], conditions: [], rewards: [],
-  flags: [], token, name: `Mod ${token}`, description: null, icon: null, category: 'mod_term', categoryName: 'A mod term', reason: null, ...extra });
+const definition = (token: string, extra: Partial<FactionGoalDefinition> = {}): FactionGoalDefinition => ({ token, name: `Mod ${token}`, description: null, icon: null,
+  category: 'mod_term', categoryName: 'A mod term', bands: [], reason: null, ...extra });
 const ARTWORK = 'Faction goal artwork GFX_mod; group: sprite is absent';
 
-/** A modded faction: two goals held, one completing at hour 120; the lists unreadable at 130; absent from 140. */
-const history: FactionGoalsReply = {
-  runs: [{ firstHour: 100, lastHour: 119, list: 0, startsSegment: false }, { firstHour: 120, lastHour: 129, list: 1, startsSegment: false },
-    { firstHour: 130, lastHour: 134, list: 2, startsSegment: false }, { firstHour: 140, lastHour: 150, list: 3, startsSegment: false }],
-  lists: [
-    { absent: false, reason: null, goals: [{ ordinal: 0, definition: 0, status: 0 }, { ordinal: 1, definition: 1, status: 4 }], completed: [], cancelled: [] },
-    { absent: false, reason: null, goals: [{ ordinal: 0, definition: 1, status: 4 }], completed: [0], cancelled: [2] },
-    { absent: false, reason: 'Faction goal ordinals are not contiguous', goals: [], completed: [], cancelled: [] },
-    { absent: true, reason: null, goals: [], completed: [], cancelled: [] },
-  ],
-  definitions: [definition('mod_a'), definition('mod_b', { reason: ARTWORK }), definition('mod_c', { name: null, reason: 'Faction goal "mod_c" is absent from recorded content' })],
-  progress: [
-    { ordinal: 0, runs: [{ firstHour: 100, lastHour: 109, progressRaw: '25000', progressPercent: 25, startsSegment: false },
-      { firstHour: 110, lastHour: 119, progressRaw: '50000', progressPercent: 50, startsSegment: false }, { firstHour: 120, lastHour: 129, progressRaw: '0', progressPercent: 0, startsSegment: false }] },
-    // A non-finite cache is not progress: its run has no percentage.
-    { ordinal: 1, runs: [{ firstHour: 100, lastHour: 119, progressRaw: '-9223372036854775808', progressPercent: null, startsSegment: false }] },
-  ],
-  unobserved: [], pending: [{ firstHour: 151, lastHour: 160 }],
-  coverage: { schema: 34, firstHour: 100, lastHour: 150, complete: false }, channels: [], warnings: ['mod content warning'],
-};
-
-test('each playback hour reads the goal history locally, as that hour\'s faction details would list it', () => {
-  const at = (hour: number) => { const found = goalsAt(history, hour); assert.equal(found.kind, 'held'); return found.kind === 'held' ? found.view : null!; };
-  const early = goalRows(at(105));
-  assert.deepEqual(early.map(row => [row.key, row.name, row.statusText, row.progress, row.progressRaw]),
-    [['goal:0', 'Mod mod_a', 'In progress', 0.25, '25000'], ['goal:1', 'Mod mod_b', 'Cancelling', null, '-9223372036854775808']]);
-  assert.equal(goalRows(at(115))[0].progress, 0.5);
-  // Only the game's saturated value marks a goal without a progress measure; an invalid cache is unrecorded.
-  assert.equal(missingProgress(early[1]), 'Not recorded');
-  assert.equal(missingProgress({ ...early[1], progressRaw: '92233720124192' }), 'No progress measure');
-  const later = goalRows(at(125));
-  assert.deepEqual(later.map(row => [row.key, row.name, row.state, row.history]),
-    [['goal:0', 'Mod mod_b', 'inProgress', false], ['completed:0', 'Mod mod_a', 'completed', true], ['cancelled:0', 'Goal name unavailable', 'cancelled', true]]);
-  assert.deepEqual(filterGoals(later, 'completed').map(row => row.key), ['completed:0']);
-  assert.equal(missingProgress(later[1]), 'Not recorded');
-  // Goal-text refusals are counted per hour, artwork refusals named as faction details name them.
-  assert.deepEqual(at(125).warnings, ['1 faction goal texts: Faction goal "mod_c" is absent from recorded content', `1 faction goal texts: ${ARTWORK}`, 'mod content warning']);
-  assert.deepEqual(at(125).refusals, [{ fact: 'goal artwork', count: 1, reason: ARTWORK }]);
-  const unreadable = at(132);
-  assert.equal(unreadable.goalReason, 'Faction goal ordinals are not contiguous');
-  // As faction details order them, the unreadable lists come first.
-  assert.equal(unreadable.warnings[0], 'Faction goals: Faction goal ordinals are not contiguous');
+/** A modded faction at one hour: two goals held (one cancelling), one completed, one cancelled whose name is unknown. */
+const reply = (): FactionDetailReply => validateFactionDetails({
+  branchId: '1', faction: '9', logo: null,
+  definitions: [definition('mod_a'), definition('mod_b', { reason: ARTWORK, category: 'other_term', categoryName: null }),
+    definition('mod_c', { name: null, reason: 'Faction goal "mod_c" is absent from recorded content' })],
+  manifest: null, goals: [{ ordinal: 0, definition: 0, status: 0, activeSections: [] }, { ordinal: 1, definition: 1, status: 4, activeSections: [] }],
+  completed: [0], cancelled: [2], goalReason: null, resources: null, manpower: null, manpowerUnlocked: null, researchUnlocked: null,
+  researchCountries: null, doctrineFolders: null, refusals: [{ fact: 'goal artwork', count: 1, reason: ARTWORK }], warnings: ['mod content warning'],
 });
 
-test('an hour the history has not read is not an empty list: it, an unprepared hour and a retried absence ask their own details', () => {
-  assert.deepEqual(goalsAt(history, 137), { kind: 'unrecorded' });
-  assert.deepEqual(goalsAt(history, 99), { kind: 'unrecorded' }, 'before the first run');
-  assert.deepEqual(goalsAt(history, 145), { kind: 'absent' });
-  assert.deepEqual(goalsAt(history, 155), { kind: 'pending' });
-  for (const hour of [99, 137, 155]) assert.equal(asksDetails(goalsAt(history, hour), false, false), true, `hour ${hour}`);
-  assert.equal(asksDetails(goalsAt(history, 145), false, false), false, 'a proven absence is answered locally');
-  assert.equal(asksDetails(goalsAt(history, 145), false, true), true, 'retrying it asks only that hour');
-  assert.equal(asksDetails(goalsAt(history, 105), false, false), false);
-  assert.equal(asksDetails(null, true, false), true, 'a failed history range asks each hour');
-  // A list naming a definition the reply lacks is not read.
-  const broken = { ...history, definitions: history.definitions.slice(0, 1) };
-  assert.deepEqual(goalsAt(broken, 105), { kind: 'unrecorded' });
+test('the hour\'s goals are rows by their lists, progress read from each held goal\'s live cell', () => {
+  const rows = goalRows(reply());
+  assert.deepEqual(rows.map(row => [row.key, row.name, row.statusText, row.state, row.history]), [
+    ['goal:0', 'Mod mod_a', 'In progress', 'inProgress', false], ['goal:1', 'Mod mod_b', 'Cancelling', 'inProgress', false],
+    ['completed:0', 'Mod mod_a', 'Completed', 'completed', true], ['cancelled:0', 'Goal name unavailable', 'Cancelled', 'cancelled', true]]);
+  const values = valuesOf(new Map([[goalProgressKey(0), 25_000], [goalProgressKey(1), FIXED5_MAX]]), 'Not read yet');
+  assert.equal(progressText(rowProgress(values, rows[0]), 1), '25.0%');
+  // Only the game's saturated cache marks a goal without a progress measure; a history entry holds no progress.
+  assert.equal(progressText(rowProgress(values, rows[1]), 1), 'No progress measure');
+  assert.equal(progressText(rowProgress(values, rows[2]), 1), 'Not recorded');
+  // The table's painted column: a share of the goal, the unmeasured one missing for its reason, never a full bar.
+  const table = goalTableValues(values);
+  assert.equal(table.get(goalProgressKey(0)), 0.25);
+  assert.equal(table.get(goalProgressKey(1)), undefined);
+  assert.equal(table.missing(goalProgressKey(1)), 'No progress measure');
+  assert.equal(table.missing(goalProgressKey(5)), 'Not read yet');
+  assert.deepEqual(filterGoals(rows, 'completed').map(row => row.key), ['completed:0']);
+  assert.deepEqual(filterGoals(rows, 'inProgress').map(row => row.key), ['goal:0', 'goal:1']);
+  assert.deepEqual([...termOrder(rows)], [['mod_term', 0], ['other_term', 1]]);
 });
 
-test('an over-budget history range is asked again in halves, and a faction switch never shows the last faction', () => {
-  const branch = { firstHour: 100, lastHour: 160 };
-  const OVER = new Error('This product reply exceeds the transport reply budget of 25165824 bytes');
-  const halves = splitPart(WHOLE[0], OVER, branch)!;
-  assert.deepEqual(halves, [{ firstHour: null, lastHour: 130 }, { firstHour: 131, lastHour: null }]);
-  assert.deepEqual(splitPart(halves[1], OVER, branch), [{ firstHour: 131, lastHour: 145 }, { firstHour: 146, lastHour: null }]);
-  assert.equal(splitPart({ firstHour: 120, lastHour: 120 }, OVER, branch), null, 'one hour cannot split');
-  assert.equal(splitPart(WHOLE[0], new Error('Background preparation is off.'), branch), null, 'other failures are not split');
-  assert.equal(partAt(halves, 130), halves[0]);
-  assert.equal(partAt(halves, 131), halves[1]);
-  assert.equal(partAt(halves, 10_000), halves[1], 'the open end holds a growing branch');
-  const client = {} as never;
-  const held = { client, identity: 'faction 9', attempt: 0, parts: [{ ...halves[0], data: history }] };
-  assert.equal(currentParts(held, client, 'faction 9', 0), held.parts);
-  assert.equal(currentParts(held, client, 'faction 10', 0), WHOLE, 'another faction starts empty');
-  assert.equal(currentParts(held, {} as never, 'faction 9', 0), WHOLE, 'another client starts empty');
-  assert.equal(currentParts(held, client, 'faction 9', 1), WHOLE, 'a retry starts again');
+test('what cannot be shown is said: reply warnings, artwork refusals, unnamed goals and terms', () => {
+  const data = reply();
+  assert.deepEqual(goalDiagnostics(data, goalRows(data)), ['mod content warning', `goal artwork (1): ${ARTWORK}`,
+    '2 goal names are unavailable.', '1 goal term has no name in the recorded content.']);
+  assert.throws(() => validateFactionDetails({ ...data, goals: [{ ordinal: 0, definition: 7, status: 0, activeSections: [] }] }), /malformed/);
 });
 
-test('a faction-details reply still reads as the same rows', () => {
-  const reply = { goals: [{ ordinal: 0, definition: definition('mod_a'), status: 1, progressRaw: '100000', activeSections: [], progressPercent: 100, date: 0 }],
-    completed: [definition('mod_b')], cancelled: [], goalReason: null, warnings: [], refusals: [] } as unknown as FactionDetailReply;
-  assert.deepEqual(goalRows(reply).map(row => [row.key, row.statusText, row.progress]), [['goal:0', 'Completed', 1], ['completed:0', 'Completed', null]]);
+test('a saved faction outside its own life is absent at that hour, never a failed read', async () => {
+  // Run 14 at 31 May 1938: the African Union, founded in the 1940s, showed "Couldn't load" with the product's refusal.
+  const { createServer } = await import('vite');
+  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true }, server: { middlewareMode: true, watch: null, hmr: false, ws: false } });
+  try {
+    const { chosenFaction, noFactionMessage } = await vite.ssrLoadModule('/ui/src/dashboard/factionChoice.ts') as typeof import('../../dashboard/factionChoice');
+    const union = { id: '30', name: 'African Union', nameReason: null, recordedName: '', firstHour: 500, lastHour: 900, names: [], members: [], leaders: [], incomplete: [] };
+    const groups = { factions: [union], unobserved: { factions: [], humans: [], wars: [] } } as unknown as import('../../generated/dashboard').CountryGroupReply;
+    for (const hour of [100, 901]) assert.deepEqual(chosenFaction(groups, '30', 'GER', hour), { faction: null, reason: 'absent' });
+    assert.equal(chosenFaction(groups, '30', 'GER', 500).faction, union);
+    assert.equal(noFactionMessage('absent', true), 'This faction did not exist at this time.');
+  } finally { await vite.close(); }
 });

@@ -7,9 +7,11 @@ import { font, LABEL_WEIGHT } from '../draw';
 import { drawUnknownHatch } from '../hatch';
 import { ellipsise } from '../labels';
 import { FLAG, NAME_PAD } from '../race/draw';
+import { liveKey } from '../live';
+import type { Live, LiveValues } from '../live';
 import { scheduler } from '../scheduler';
 import type { FrameTask } from '../scheduler';
-import { toLocal, watchCanvasSize } from '../surface';
+import { drawingSurface, sizeCanvas, toLocal, watchCanvasSize } from '../surface';
 import { fitTooltip, hideTooltip, showTooltip, tooltipStore, tooltipText } from '../tooltip';
 import type { TooltipContent } from '../tooltip';
 import { useChartTokens, useViewportHeight } from '../useChartTokens';
@@ -28,6 +30,9 @@ export interface HeatMatrixProps {
   cell: (row: number, column: number) => MatrixCell;
   /** Changes whenever `cell` would answer differently, so the matrix redraws. */
   revision: unknown;
+  /** The playhead's cells, keyed `liveKey(row.id, column.id)`, read as each frame draws in place of `cell`: they move
+   * with no render. A key it does not hold draws the unknown hatch; `null` is an empty cell, as from `cell`. */
+  live?: Live<LiveValues<MatrixCell>>;
   tooltip: (row: number, column: number) => TooltipContent | null;
   /** A row or column's own tooltip, for the gutter and header; its label by default. */
   axisTooltip?: (item: MatrixAxisItem, axis: 'row' | 'column') => TooltipContent | null;
@@ -41,6 +46,7 @@ export interface HeatMatrixProps {
 }
 
 interface Geometry { gutter: number; header: number; cell: number; scrollLeft: number; scrollTop: number; width: number; height: number }
+const UNKNOWN: MatrixCell = { unknown: true };
 
 /** Content-neutral matrix: rows against columns, one cell each, with the heat kit's
  * unknown hatch, row labels with flags in a fixed gutter and column flags in a fixed
@@ -76,7 +82,7 @@ export default function HeatMatrix(props: HeatMatrixProps) {
 
   useEffect(() => {
     const element = canvas.current!, scroller = surface.current!;
-    const ctx = element.getContext('2d');
+    const paper = drawingSurface(element), ctx = paper.context;
     if (!ctx) return;
     const loaded = () => { if (task.current) scheduler.wake(task.current); };
     const watched = watchCanvasSize(element, loaded);
@@ -86,8 +92,7 @@ export default function HeatMatrix(props: HeatMatrixProps) {
       const { props: p, tokens: t, viewport: room } = latest.current;
       const size = watched.read();
       const width = size.layoutWidth, height = size.layoutHeight;
-      if (element.width !== size.backing.width) element.width = size.backing.width;
-      if (element.height !== size.backing.height) element.height = size.backing.height;
+      sizeCanvas(paper.canvas, size.backing.width, size.backing.height);
       ctx.setTransform(size.backing.scaleX, 0, 0, size.backing.scaleY, 0, 0);
       ctx.clearRect(0, 0, width, height);
       const labelFont = font(t, t.fontSize.small, LABEL_WEIGHT);
@@ -118,8 +123,10 @@ export default function HeatMatrix(props: HeatMatrixProps) {
       }
       // Cells, clipped to the plot under the fixed header and beside the fixed gutter.
       ctx.save(); ctx.beginPath(); ctx.rect(gutter, MATRIX_HEADER, width - gutter, height - MATRIX_HEADER); ctx.clip();
+      const values = p.live?.read();
       for (let row = rows.first; row < rows.end; row++) for (let column = columns.first; column < columns.end; column++) {
-        const look = p.cell(row, column);
+        const held = values?.get(liveKey(p.rows[row].id, p.columns[column].id));
+        const look = !values ? p.cell(row, column) : held === undefined ? UNKNOWN : held;
         if (!look) continue;
         const rect = { left: gutter + column * cell - scrollLeft + 1, top: MATRIX_HEADER + row * cell - scrollTop + 1, width: cell - 2, height: cell - 2 };
         if ('unknown' in look) drawUnknownHatch(ctx, t, rect);
@@ -192,8 +199,9 @@ export default function HeatMatrix(props: HeatMatrixProps) {
   useEffect(() => {
     if (task.current) { scheduler.setVisible(task.current, props.active); scheduler.wake(task.current); }
     if (!props.active) hideTooltip(owner);
-  }, [props.rows, props.columns, props.revision, props.active, tokens, viewport, owner]);
+  }, [props.rows, props.columns, props.revision, props.live, props.active, tokens, viewport, owner]);
   const wake = () => { if (task.current) scheduler.wake(task.current); };
+  useEffect(() => props.live?.subscribe(() => { if (task.current) scheduler.wake(task.current); }), [props.live]);
   const at = (clientX: number, clientY: number) => {
     const element = canvas.current!, rect = element.getBoundingClientRect();
     return toLocal(clientX, clientY, rect, element.clientWidth, element.clientHeight);

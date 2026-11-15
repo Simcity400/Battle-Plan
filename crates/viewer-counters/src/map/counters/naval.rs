@@ -537,22 +537,24 @@ impl<'a> NavalContext<'a> {
         ordinal: u32,
         position: Option<counter_move::Position>,
     ) -> Option<NavalUnit<'a>> {
-        let slot = owner(force.roster_owner)?;
-        let byte = self.vision.navy_byte(force.id, slot);
-        let sight = self.vision.sees_navy(force.id, slot);
-        let (count, strength) = self.ships.get(&force.id).copied().unwrap_or_default();
-        let ships = self.ships_complete.then_some(count);
-        (sight != Sight::None).then(|| NavalUnit {
+        let operands = naval_members::NavalOperands::of(
+            &naval_members::ForceFields::of(force),
+            self.ships.get(&force.id).copied(),
+            self.ships_complete,
+            self.vision,
+            owner,
+        )?;
+        Some(NavalUnit {
             force,
             ordinal,
-            slot,
-            logical: owner(force.logical_owner),
-            flag_owner: unit_flag_owner(slot, force.expeditionary_owner, false, owner),
-            sight,
-            byte,
-            ships,
+            slot: operands.slot,
+            logical: operands.logical,
+            flag_owner: operands.flag_owner,
+            sight: operands.sight,
+            byte: operands.byte,
+            ships: operands.ships,
             position,
-            strength,
+            strength: operands.strength,
         })
     }
 
@@ -742,35 +744,6 @@ impl<'a> NavalContext<'a> {
     }
 }
 
-/// Whether a task force placed at visual kind `kind` in a province of `region` stays an
-/// ordinary counter source. the game buckets combat task forces for their models, but
-/// Exclude combat task forces from the counter member list.
-/// Outside combat, one on its mission here is left to the mission icon
-/// ([`MissionSkips::skip`], which the ship models share, so its formation is suppressed too).
-/// One whose skip operands are unrecorded is refused by reason.
-fn stays_a_source(
-    skips: &viewer_foundation::map::task_force_visual::MissionSkips,
-    force: &replay_data::rows::TaskForceRow,
-    kind: u32,
-    region: Option<u32>,
-    report: &mut CounterReport,
-) -> bool {
-    // Read the signed member count, independently of the stack kind.
-    if force.combat_references > 0 {
-        return false;
-    }
-    match skips.skip(force, kind, region) {
-        Some(skipped) => !skipped,
-        None => {
-            report.refuse_task_forces(
-                "its mission skip's counter inputs or current region are not recorded",
-                [force.id],
-            );
-            false
-        }
-    }
-}
-
 /// Seed both flag choices with the first force's detailed flag owner. With multiple
 /// roster owners, sum each owner's ship strengths and select the lowest signed total,
 /// breaking ties by ascending raw country reference. Draw this mixed-owner choice
@@ -845,7 +818,7 @@ pub(super) fn naval_can_join(
 
 /// Why the air map mode cannot test a task force for carriers: its ships' model operands are not
 /// all recorded this hour.
-const CARRIER_TEST_UNRECORDED: &str = "the air map mode keeps only fleets carrying air wings, and this hour's ship models cannot tell";
+pub(super) const CARRIER_TEST_UNRECORDED: &str = "the air map mode keeps only fleets carrying air wings, and this hour's ship models cannot tell";
 
 /// Whether a map mode keeps an at-sea task force's counter: every one, none in the operatives
 /// mode, and in the air mode those whose first carrier has an air base (`carries`), `None` when
@@ -875,77 +848,52 @@ pub(super) fn add_task_forces<'a>(
     sources: &mut BTreeMap<StackKey, Source<'a>>,
     out: &mut CounterFrame,
 ) {
-    let world = inputs.route_world();
-    let land = |id| is_land(inputs, id);
-    let anchor = |id, slot| inputs.content.anchor(id, slot);
+    let ground = naval_members::SeaGround {
+        content: inputs.content,
+        map: inputs.map,
+        movement: inputs.movement,
+        world: inputs.route_world(),
+    };
+    let bases = BTreeSet::new();
     for force in context.forces {
         // At sea a task force is a unit source like a land stack, so the same camera admission
         // decides whether its province activates one.
         if !admission.admits_province(&inputs.content.bounds, force.province) {
             continue;
         }
-        let ordinal = match tables.order {
-            Some(order) => match order.mixed(force.id, force.province) {
-                Some(ordinal) => ordinal,
-                None => continue,
-            },
-            None => 0,
+        let joins = naval_members::HourJoins {
+            land: tables,
+            context,
+            owner,
+            ground,
+            row: force,
+            bases: &bases,
         };
-        let placement =
-            match tables
-                .task_forces
-                .visual(force, inputs.movement, world.as_ref(), &anchor, &land, &|province, kind| {
-                    inputs.content.stack_scale(province, kind)
-                })
-            {
-                Ok(placement) => placement,
-                Err(reason) => {
-                    out.report.refuse_task_forces(reason, [force.id]);
-                    continue;
-                }
-            };
-        if let Some(reason) = placement.unplaced_route {
+        let (sea, placement) = naval_members::sea_place(
+            &naval_members::ForceFields::of(force),
+            inputs.visibility.unit_kinds,
+            &joins,
+        );
+        if let Some(reason) = placement.as_ref().and_then(|placement| placement.unplaced_route) {
             out.report
                 .unplaced_task_force_routes
                 .entry(reason)
                 .or_default()
                 .insert(force.id);
         }
-        // The ordinary pass skips bucket 19; the naval base shows a docked task force.
-        if placement.kind == SHIP_IN_PORT {
-            continue;
-        }
-        // Docked fleets stay with their naval base whatever the map mode's unit kinds.
-        let carries = || {
-            context
-                .ship_inputs
-                .as_ref()
-                .and_then(|ships| ships.carries_air_wings(force.id))
-        };
-        match mode_keeps_task_force(inputs.visibility.unit_kinds, carries) {
-            Some(true) => {}
-            Some(false) => continue,
-            None => {
-                out.report
-                    .refuse_task_forces(CARRIER_TEST_UNRECORDED, [force.id]);
-                continue;
+        match sea {
+            naval_members::Sea::Refused(reason) => out.report.refuse_task_forces(reason, [force.id]),
+            naval_members::Sea::Out(_) => {}
+            naval_members::Sea::Source { kind, ordinal, .. } => {
+                let position = placement.map(|placement| placement.position);
+                if let Some(unit) = context.unit(force, owner, ordinal, position) {
+                    sources
+                        .entry((force.province, kind))
+                        .or_default()
+                        .units
+                        .push(SourceUnit::Naval(unit));
+                }
             }
-        }
-        if !stays_a_source(
-            &context.mission_skips,
-            force,
-            placement.kind,
-            inputs.content.region(force.province),
-            &mut out.report,
-        ) {
-            continue;
-        }
-        if let Some(unit) = context.unit(force, owner, ordinal, Some(placement.position)) {
-            sources
-                .entry((force.province, placement.kind))
-                .or_default()
-                .units
-                .push(SourceUnit::Naval(unit));
         }
     }
 }
@@ -955,7 +903,7 @@ pub(super) fn is_land(inputs: &CounterInputs<'_>, province: u32) -> bool {
     province_is_land(inputs.map, inputs.movement, province)
 }
 
-fn province_is_land(map: &MapData, movement: Option<&MovementContent>, province: u32) -> bool {
+pub(super) fn province_is_land(map: &MapData, movement: Option<&MovementContent>, province: u32) -> bool {
     movement
         .and_then(|movement| movement.map.terrain(province))
         .map_or_else(
@@ -1053,6 +1001,15 @@ pub(super) struct PortTables {
 }
 
 impl PortTables {
+    /// The bases' anchors' bits in base order, the unanchored count and each undecided base.
+    pub(super) fn summary(&self) -> naval_members::PortSummary {
+        naval_members::PortSummary {
+            anchors: self.anchors.iter().map(|&(province, anchor)| (province, anchor.map(f32::to_bits))).collect(),
+            unanchored: self.unanchored,
+            undecided: self.undecided.iter().map(|(&province, why)| (province, why.clone().into_owned())).collect(),
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn read(
         frame: &DecodedFrame,
@@ -1075,29 +1032,30 @@ impl PortTables {
             return Ok(out);
         };
         let base_provinces: BTreeSet<_> = bases.rows().iter().map(|base| base.province).collect();
+        let ground = naval_members::SeaGround {
+            content,
+            map,
+            movement,
+            world: None,
+        };
         for (index, force) in context.forces.iter().enumerate() {
-            if force.province == 0
-                || force.fleet == 0
-                || !province_is_land(map, movement, force.province)
-                || !base_provinces.contains(&force.province)
-            {
-                continue;
-            }
-            match port_admission(
-                force,
+            let joins = naval_members::HourJoins {
+                land: tables,
                 context,
-                order,
-                || tables.task_forces.docked(force.id),
                 owner,
-            ) {
-                PortAdmission::Out => {}
-                PortAdmission::Undecided(reason) => {
+                ground,
+                row: force,
+                bases: &base_provinces,
+            };
+            match naval_members::port_place(&naval_members::ForceFields::of(force), &joins) {
+                naval_members::Port::Out => {}
+                naval_members::Port::Undecided(reason) => {
                     out.refused.entry(reason).or_default().insert(force.id);
                     out.undecided.insert(force.province, port_undecided(reason));
                 }
-                PortAdmission::In(ordinal, unit) => {
+                naval_members::Port::In(ordinal) => {
                     out.rosters
-                        .entry(unit.force.province)
+                        .entry(force.province)
                         .or_default()
                         .push((index, ordinal));
                 }
@@ -1274,46 +1232,8 @@ pub(super) const PORT_OWNER_UNLINKED: &str = "task-force roster owner not a link
 pub(super) const PORT_FORCE_UNRECORDED: &str = "task-force row absent from an incomplete census";
 
 /// Why a base's port roster is undecided, for a task force's `reason`.
-fn port_undecided(reason: &str) -> Cow<'static, str> {
+pub(super) fn port_undecided(reason: &str) -> Cow<'static, str> {
     format!("port items are not reproduced: {reason}").into()
-}
-
-/// Port membership needs ships, province-occupant membership, an empty ordinary
-/// route and the docked display state. Missing reached operands remain unknown.
-enum PortAdmission<'a> {
-    Out,
-    Undecided(&'static str),
-    In(u32, NavalUnit<'a>),
-}
-
-fn port_admission<'a>(
-    force: &'a replay_data::rows::TaskForceRow,
-    context: &NavalContext<'a>,
-    order: &counter_order::RecordedOrder,
-    docked: impl FnOnce() -> Result<bool, &'static str>,
-    owner: &impl Fn(u32) -> Option<u32>,
-) -> PortAdmission<'a> {
-    match context.ships.get(&force.id) {
-        Some((count, _)) if *count > 0 => {}
-        Some(_) => return PortAdmission::Out,
-        None if context.ships_complete => return PortAdmission::Out,
-        None => return PortAdmission::Undecided(PORT_SHIPS_UNRECORDED),
-    }
-    let Some(ordinal) = order.naval(force.id, force.province) else {
-        return PortAdmission::Out;
-    };
-    match docked() {
-        Ok(true) => {}
-        Ok(false) => return PortAdmission::Out,
-        Err(reason) => return PortAdmission::Undecided(reason),
-    }
-    if owner(force.roster_owner).is_none() {
-        return PortAdmission::Undecided(PORT_OWNER_UNLINKED);
-    }
-    match context.unit(force, owner, ordinal, None) {
-        Some(unit) => PortAdmission::In(ordinal, unit),
-        None => PortAdmission::Out,
-    }
 }
 
 /// Each naval base province whose recorded occupant array names task forces absent

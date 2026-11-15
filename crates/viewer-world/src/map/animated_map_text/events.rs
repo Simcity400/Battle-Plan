@@ -568,6 +568,29 @@ impl Prepared {
         Self { view, interval }
     }
 
+    /// The hour's interval for `vision`'s viewer, read from `frame`'s MapEvents and the tables
+    /// [`Context`] reads: a frame of the whole hour, or one holding only those tables.
+    pub fn read(
+        frame: &DecodedFrame,
+        vision: &Vision,
+        content: &Content,
+        localisation: &Localisation,
+        locate: impl Fn(u32) -> Option<([f32; 3], [f32; 4])>,
+    ) -> Self {
+        match viewer_foundation::table_access::rows::<tables::MapEvents>(frame) {
+            Ok(intervals) => Self::new(
+                &Context::new(frame, vision, content, localisation),
+                intervals.rows(),
+                intervals.is_complete(),
+                locate,
+            ),
+            Err(error) => Self::unavailable(
+                vision.ours(),
+                format!("map text table malformed: {error}"),
+            ),
+        }
+    }
+
     /// The hour's table could not be read at all.
     pub fn unavailable(view: u32, reason: String) -> Self {
         Self {

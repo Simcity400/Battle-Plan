@@ -1,388 +1,325 @@
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
-import { useContextMenu } from '../../components/ContextMenu';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
-import { useHeldFailure } from '../../dashboard/heldFailures';
+import { useContextMenu } from '../../components/ContextMenu';
+import MeasureRace from '../../charts/race/MeasureRace';
+import { formatRaw } from '../../charts/race/measureRaceData.ts';
 import DrillHost from '../../charts/drill/DrillHost';
-import { CLOSED, drillHour, reduceDrill } from '../../charts/drill/drillState';
+import { CLOSED, drillHour, pinnedBreakdown, reduceDrill } from '../../charts/drill/drillState';
 import type { EventBadge } from '../../charts/badges';
-import { dayLabel, drawBandLine, drawBands } from '../../charts/draw';
+import { dayLabel } from '../../charts/draw';
 import { jumpItem } from '../../charts/jump';
-import { runAt } from '../../charts/series';
-import { drawApproximateSpans, drawLineSummary, extentOfSummary, summaryStack, summaryFits } from '../../charts/chartSummary';
-import { heldStackSegment } from '../../charts/race/countryRace';
+import LiveText from '../../charts/LiveText';
+import type { LiveTexts } from '../../charts/LiveText';
 import { nudgeApart } from '../../charts/palette';
-import { compactStackExtent, forEachCompactStackSegment, stackedSegments, stackExtent } from '../../charts/stack';
-import TimeChart from '../../charts/TimeChart';
-import { pendingLayer } from '../../charts/prepared';
-import { PreparedKey } from '../../charts/PreparedKey';
-import type { ChartLayer } from '../../charts/TimeChart';
+import Table from '../../charts/table/Table';
+import type { TableColumn } from '../../charts/table/Table';
 import { fitTooltip } from '../../charts/tooltip';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
-import { movingRowClass, useRowMotion } from '../../charts/useRowMotion';
-import { shownUntil } from '../../charts/view';
-import type { PlaybackMode } from '../../charts/view';
+import { useAtHead } from '../../dashboard/atHead.ts';
 import { formatDateTime } from '../../dashboard/calendar';
+import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { useCountryLooks } from '../../dashboard/countryLooks';
-import { defaultCountryTag } from '../../dashboard/countrySelection';
-import { countryIdentityIndex } from '../../dashboard/countryIdentity';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { groupRuns, MEMBERSHIP_PREPARING, worldFilter } from '../../dashboard/groups';
-import { Lineage } from '../../dashboard/identity';
+import { isMember, resolveCountries } from '../../dashboard/groups';
+import { useHeadProduct } from '../../dashboard/headProduct';
+import { usePushedLooksHour } from '../../dashboard/pushedLooks.ts';
 import { resolveWindow } from '../../dashboard/model';
+import type { WidgetSpec } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
-import { usePlaybackHour } from '../../dashboard/playback';
-import { usePreparedWindow, type Repeated } from '../../dashboard/preparedSeries';
-import { useParityRows } from '../../dashboard/parityRows';
+import { useProduct } from '../../dashboard/products';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
-import { useHoverLabels } from '../../dashboard/useHoverLabels';
-import type { TensionEvent } from '../../generated/dashboard';
+import { useFallbackHour } from '../../dashboard/follow/useFollow.ts';
+import { useShownHour, useWhyCommit } from '../../dashboard/widgetPerf';
+import type { ThreatEvent, ThreatEventsReply, WorldTensionReply } from '../../generated/dashboard';
 import { mix, parseColor, toHex } from '../../shell/appearance/color';
-import { OPTIONS } from './definition';
-import TensionDrill from './TensionDrillView';
-import { pinTensionDrill, TENSION_BREAKDOWN, tensionEventKeys } from './tensionDrill';
-import { addedAt, contributionAt, contributionPercent, eventGroup, eventsOutsideReads, eventsWithin, formatContribution, formatTension, formatTensionAxis,
-  countryKey, layerKeys, layerRaw, layerTagAt, otherRaw, rankedAt, readAt, selectedContributionSpans, tensionModel, tensionPercent, tensionPlot, tensionReadPreparing, type TensionModel } from './tensionData.ts';
-import { mergePreparedTension, validatePreparedTension, type PreparedTension } from './preparedTension';
+import { OPTIONS, TENSION_BREAKDOWN } from './definition';
+import TensionBreakdown from './TensionBreakdown';
+import TensionChart from './TensionChart';
+import { addedAt, contributionCell, contributorName, eventBadges, eventGroup, eventsThrough, layerContributions, layerUnits, otherUnits, percent, percentOf,
+  validateThreatEvents, validateWorldTension, worldCells } from './tensionData.ts';
 import './worldTension.css';
-import { motionOf } from '../../charts/easing.ts';
 
 const NO_WARNINGS: string[] = [];
-/** The layer of every country outside the top ones: a key no tag can be, as tags hold no NUL. */
-const OTHER = '\u0000other';
+const PARAMS = {};
+const CONTRIBUTIONS = { kind: 'threat-contributions', measure: 'contribution' };
 /** Events a compact grouped-marker tooltip names before counting the rest. */
 const COMPACT_EVENTS = 5;
+const formatContribution = (raw: string, decimals: number) => `${formatRaw(raw, decimals, 2)}%`;
+const formatPercent = (value: number) => `${Math.round(value * 10) / 10}%`;
 
-/** Every reply of a complete publication lists all its threat events: a reader holding one asks without them. */
-const REPEATED_EVENTS: Repeated<PreparedTension> = {
-  omit: { events: false },
-  carry: (value, held) => ({ ...value, events: held.events }),
-  whole: reply => reply.coverage?.complete === true,
-};
-
-/** `hour` once a read holds it, else the newest of the `answered` hours before it a read holds. */
-function newestRead(model: TensionModel | null, hour: number, answered: readonly number[]): number {
-  if (!model || readAt(model, hour)) return hour;
-  let newest = hour;
-  for (const at of answered) if (at <= hour && readAt(model, at)) newest = at;
-  return newest;
+/** World tension: the tension over time stacked by the countries whose actions generated it (its declared series'
+ * tiles, the head's values the followed `world-tension` panel's cells), the events that did as markers, the values at
+ * the moment shown beside the chart, and the tension at an hour taken apart; each country's contribution as a race or
+ * lines (the ranked `threat-contributions` series); and every threat source's life (`threat-events`). */
+export default function WorldTensionWidget(props: WidgetProps) {
+  const options = resolveOptions(OPTIONS, props.widget.options);
+  const onWarnings = useCallback((warnings: readonly string[]) => props.onDiagnostics(warnings.length ? [...warnings] : NO_WARNINGS), [props.onDiagnostics]); // eslint-disable-line react-hooks/exhaustive-deps
+  if (options.view === 'race' || options.view === 'lines') return <MeasureRace widget={props.widget} runtime={props.runtime} active={props.active}
+    measure={CONTRIBUTIONS} decimals={5} view={options.view} options={options} label="Contribution to world tension" icon="alert"
+    format={formatContribution} formatValue={formatPercent} onWarnings={onWarnings} />;
+  if (options.view === 'events') return <ThreatEventsView {...props} />;
+  return <TensionView {...props} />;
 }
 
-/** World tension over time: stacked areas of the countries whose
- * actions generated it, each in its recorded map colour, with world tension as a
- * line on top, the events that changed it as triangles along the top, and the
- * values at the moment shown listed beside the chart. A world widget
- * (`countries.all`): chosen countries or a group narrow the layers to them. */
-export default function WorldTensionWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
+/** The pinned breakdown of `source` at `hour`, following the head when `follow`. */
+export function pinTensionDrill(source: WidgetSpec, trackId: string, firstHour: number, hour: number, follow: boolean): WidgetSpec {
+  const pinned = pinnedBreakdown(source, TENSION_BREAKDOWN, trackId);
+  const offset = Math.floor(hour) - firstHour;
+  return { ...pinned, time: follow ? { mode: 'follow' } : { mode: 'pin', windows: { [trackId]: { firstOffset: offset, lastOffset: offset } } } };
+}
+
+function TensionView({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const tokens = useChartTokens();
   const viewport = useViewportHeight();
+  const shown = useShownHour();
   const options = resolveOptions(OPTIONS, widget.options);
-  const [drill, dispatchDrill] = useReducer(reduceDrill, CLOSED);
-  const playbackHour = usePlaybackHour(runtime.clock, active && (widget.time.mode === 'follow' || (drill.breakdown != null && drill.follow)));
-  const [selectedCause, setSelectedCause] = useState<string | null>(null);
-  const anchor = useRef<HTMLDivElement>(null);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
-  // Chosen countries or a group narrow the layers; all countries by default.
-  const groups = useCountryGroups(runtime, track, active);
-  const lineage = useMemo(() => new Lineage(groups.data?.identityChanges ?? []), [groups.data?.identityChanges]);
-  const identities = useMemo(() => groups.data ? countryIdentityIndex(groups.data.countryIdentities) : null, [groups.data]);
-  const dashboardTag = track ? defaultCountryTag(track) : null;
-
+  const lastHour = track?.branch.lastHour ?? 0;
   const following = widget.time.mode === 'follow';
   const pinned = widget.time.mode === 'pin';
-  const playhead = window && (following || pinned) ? window.lastHour : null;
-  const extent: [number, number] = track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : [track.branch.firstHour, track.branch.lastHour]) : [0, 1];
-  const head = Math.floor(playhead ?? extent[1]);
   const pinnedDrill = options.show === 'breakdown';
-  // Playback in this campaign's hours, as the overview's moment is.
-  const followHour = track ? Math.floor(playbackHour) + track.axisOffset : null;
-  const drillAt = Math.floor((pinnedDrill && drill.breakdown == null ? head : drillHour(drill, followHour ?? extent[1])) ?? head);
+  // Off, the fallback's hour is the clock's as rendered: the chart's live head moves it between renders.
+  const playbackHour = useFallbackHour(runtime.clock, false);
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
+  const extent: [number, number] = track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : [track.branch.firstHour, track.branch.lastHour]) : [0, 1];
+  const playhead = window && (following || pinned) ? window.lastHour : null;
   const share = options.values !== 'recorded';
-  const [hoverHour, setHoverHour] = useState<number | null>(null);
-  const prepared = usePreparedWindow(runtime.client, track?.source, 'world-tension', { branchId: track?.branch.id, share }, extent,
-    [head, drillAt, ...(hoverHour === null ? [] : [hoverHour])], active, validatePreparedTension,mergePreparedTension, mergePreparedTension, REPEATED_EVENTS);
-  const { data, retry } = prepared;
-  const error = useHeldFailure(prepared.error, data !== undefined, retry);
-  const model = useMemo(() => data ? tensionModel(data, lineage, track?.source.metadata.countries,
-    new Map(data.catalogue.map(country => [countryKey(country),country.firstHour]))) : null, [data, lineage, track?.source]);
-  // The moments shown: each asked hour once read, until then the newest hour read before it.
-  const listHour = useMemo(() => newestRead(model, head, prepared.answered), [model, head, prepared.answered]);
-  const drillShown = useMemo(() => newestRead(model, drillAt, prepared.answered), [model, drillAt, prepared.answered]);
-  const resetKey = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, options.show]);
-  useEffect(() => { dispatchDrill({ type: 'close' }); setSelectedCause(null); }, [resetKey]);
-  // A group's members as its membership setting counts them at the moment shown.
-  const lastHour = track?.branch.lastHour ?? 0;
-  const filter = useMemo(() => worldFilter(widget.countries, dashboardTag ? [dashboardTag] : [], groups.data, listHour, lastHour),
-    [widget.countries, dashboardTag, groups.data, listHour, lastHour]);
-  const membership = useMemo(() => {
-    if (widget.countries.kind !== 'group' || widget.countries.membership !== 'hour' || !groups.data || !identities) return null;
-    const byCountry = new Map<string, { firstHour: number; lastHour: number }[]>();
-    for (const span of identities.membershipRuns(groupRuns(groups.data, widget.countries.group) ?? [])) {
-      const key = identities.keyAt(span.tag, span.firstHour)!;
-      const spans = byCountry.get(key);
-      if (spans) spans.push(span); else byCountry.set(key, [span]);
-    }
-    return byCountry;
-  }, [widget.countries, groups.data, identities]);
-  const playback = (options.playback as PlaybackMode) ?? 'draw-in';
-  const until = shownUntil(playhead, playback, options.afterPlayhead === true);
   const count = Number(options.layers) || 5;
+  const [drill, dispatch] = useState(CLOSED);
+  const act = useCallback((action: Parameters<typeof reduceDrill>[1]) => dispatch(before => reduceDrill(before, action)), []);
+  const resetKey = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, options.show]);
+  useEffect(() => { act({ type: 'close' }); }, [resetKey, act]);
+  // What renders: the layers drawn, in order, and how many countries Other holds; every contribution in the service's
+  // order (greatest first, so countries below the layers trade places at nearly every push) only while the breakdown shows.
+  const drawn = useRef<{ count: number; keep: (tag: string) => boolean; all: boolean }>({ count, keep: () => true, all: true });
+  const head = useHeadProduct<WorldTensionReply>(runtime, widget, 'world-tension', track ? PARAMS : null, {
+    active, validate: validateWorldTension,
+    structure: reply => JSON.stringify([drawn.current.all ? reply.contributions : layerContributions(reply.contributions, drawn.current.count, drawn.current.keep),
+      reply.contributions.length, reply.unnamed, reply.missing, reply.warnings]),
+  });
+  // The drill paused at an hour reads the panel asked for that hour; following, the head's.
+  const drillFollows = following && (drill.breakdown == null ? pinnedDrill : drill.follow);
+  const pickedHour = drill.breakdown != null && !drill.follow ? drillHour(drill, null) : null;
+  const picked = useHeadProduct<WorldTensionReply>(runtime, widget, 'world-tension', track && pickedHour !== null ? PARAMS : null, {
+    active: active && pickedHour !== null, validate: validateWorldTension, hoverHour: pickedHour,
+  });
+  const [hoverHour, setHoverHour] = useState<number | null>(null);
+  const hovered = useHeadProduct<WorldTensionReply>(runtime, widget, 'world-tension', track && hoverHour !== null ? PARAMS : null, {
+    active: active && hoverHour !== null, validate: validateWorldTension, hoverHour,
+  });
+  const listHour = head.at ?? Math.floor(playhead ?? extent[1]);
 
-  // The layers are the largest contributors at the moment shown, each a country
-  // identity (`countryKey`: two countries sharing a tag are two layers), named and
-  // coloured by its tag; the stack is rebuilt only when they change.
-  const keys = useMemo(() => model ? layerKeys(model, listHour, count, filter.tags, filter.countryIds) : [], [model, listHour, count, filter.tags, filter.countryIds]);
-  const keysKey = JSON.stringify(keys);
-  const tags = useMemo(() => model ? keys.map(key => layerTagAt(model, key, listHour)) : [], [model, keys, listHour]);
-  const stack = useMemo(() => model ? tensionPlot(model, JSON.parse(keysKey) as string[], share, membership, true, filter.countryIds) : null,
-    [model, keysKey, share, membership, filter.countryIds]);
-  const denseParts = useMemo(() => data && prepared.geometryReady && keys.every(key => data.summaries[JSON.stringify(key)])
-    ? keys.map(key => data.summaries[JSON.stringify(key)]) : null, [data,prepared.geometryReady,keys]);
-  const denseStack = useMemo(() => denseParts && data?.summaries.sum ? summaryStack(denseParts,data.summaries.sum) : null,[denseParts,data?.summaries.sum]);
-  const events = useMemo(() => model && options.markers !== false ? eventsWithin(model.reply.events, extent[0], extent[1]) : [], [model, options.markers, extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Chosen countries or a group narrow the layers; every country by default.
+  const narrowed = widget.countries.kind !== 'all';
+  const groups = useCountryGroups(runtime, track, active && widget.countries.kind === 'group');
+  const resolved = useMemo(() => narrowed ? resolveCountries(widget.countries, [], groups.data, lastHour, Number.MAX_SAFE_INTEGER) : null,
+    [narrowed, widget.countries, groups.data, lastHour]);
+  const keep = useMemo(() => {
+    if (!resolved) return () => true;
+    if (resolved.top != null) return () => true;
+    const tags = new Set(resolved.tags);
+    return (tag: string) => tags.has(tag) && (!resolved.membership || isMember(resolved.membership.get(tag), listHour));
+  }, [resolved, listHour]);
+  const top = resolved?.top ?? count;
+  const breakdownShown = drill.breakdown != null || pinnedDrill;
+  drawn.current = { count: Math.min(top, count), keep, all: breakdownShown };
+  // The newest push where every contribution is read (the breakdown, its names): it renders on each of their changes.
+  const everyContribution = breakdownShown && head.read === 'followed' ? head.current() : head.data;
+  const layers = useMemo(() => head.data ? layerContributions(head.data.contributions, Math.min(top, count), keep) : [], [head.data, top, count, keep]);
+  const layersKey = JSON.stringify(layers);
+  const stableLayers = useMemo(() => layers, [layersKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Colours, and the list's names and flags, as recorded near the moment shown (about
-  // once a month of playback, at a recorded hour of the moment's own stretch,
-  // `useCountryLooks`): each part is held only while its next read loads, never across
-  // a gap, and one the recording does not give is not known.
-  const lookTags = useMemo(() => [...new Set([...tags.filter((tag): tag is string => tag !== null), ...events.flatMap(event => event.tag == null ? [] : [event.tag])])], [tags, events]);
-  const identityHistories = useMemo(() => new Map(groups.data?.countryIdentities.map(history => [history.tag, history.identities]) ?? []), [groups.data]);
-  const segmentAt = useCallback((tag: string, hour: number) => runAt(identityHistories.get(tag) ?? [], hour)?.firstHour ?? null, [identityHistories]);
-  const looks = useCountryLooks(runtime.client, track, lookTags, listHour, active, segmentAt);
+  const events = useProduct<ThreatEventsReply>(runtime.client, track && options.markers !== false ? { sourceId: track.source.id, revision: track.source.revision,
+    product: 'threat-events', params: { branchId: track.branch.id } } : null, active, validateThreatEvents, track?.source);
+  const lookTagsNow = useMemo(() => [...new Set([...stableLayers.flatMap(layer => layer.tag ? [layer.tag] : []),
+    ...(breakdownShown ? (everyContribution?.contributions ?? []).flatMap(item => item.tag ? [item.tag] : []) : [])])].sort(), [stableLayers, breakdownShown, everyContribution]);
+  // A drill reads every push's contributions: the countries it names are the same list while the set holds.
+  const lookTags = useMemo(() => lookTagsNow, [lookTagsNow.join(',')]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Pushed, the layers' countries are named where one of them last changed, never at each push's hour.
+  const named = usePushedLooksHour(runtime, widget, track, lookTags, active && head.read === 'followed', listHour);
+  const looks = useCountryLooks(runtime.client, track, lookTags, named.hour, active, undefined, undefined, named.exact);
+  useWhyCommit('TensionView', { reply: head.data, at: head.at, read: head.read, picked: picked.data, hovered: hovered.data, hoverHour, drill, layers: stableLayers,
+    events: events.data, named: named.hour, looks });
   const colourOf = useMemo(() => {
-    // Nudged apart in a fixed order (by tag) when the app asks for fixed colours, so a
-    // country keeps its colour as ranks change; one with no recorded colour is grey.
-    const ordered = [...lookTags].sort();
-    const known = ordered.filter(tag => looks.color(tag) != null);
+    // Nudged apart in a fixed order (by tag) when the app asks for fixed colours, so a country keeps its colour as ranks change.
+    const known = lookTags.filter(tag => looks.color(tag) != null);
     const raw = known.map(tag => { const [r, g, b] = looks.color(tag)!; return { r, g, b }; });
     const adjusted = tokens.countryColours === 'fixed' ? nudgeApart(raw, parseColor(tokens.surface) ?? { r: 0, g: 0, b: 0 }) : raw;
     const colours = new Map(known.map((tag, index) => [tag, toHex(adjusted[index])]));
-    return (tag: string | null | undefined) => (tag != null ? colours.get(tag) : undefined) ?? tokens.muted;
+    return (tag: string | null) => (tag != null ? colours.get(tag) : undefined) ?? tokens.muted;
   }, [lookTags, looks, tokens]);
   const otherColour = mix(tokens.surface, tokens.text, 0.3);
-  const layerColours = useMemo(() => [...tags.map(tag => colourOf(tag)), otherColour], [tags, colourOf, otherColour]);
+  const badges = useMemo(() => eventBadges(events.data?.events ?? [], extent[0], extent[1], colourOf), [events.data, extent[0], extent[1], colourOf]); // eslint-disable-line react-hooks/exhaustive-deps
+  const badgeList = useMemo(() => [...badges.keys()], [badges]);
+  const labels = useCountryLabelsAt(runtime.client, track, useMemo(() => (hovered.data?.contributions ?? []).slice(0, 12)
+    .flatMap(item => item.tag && hoverHour !== null ? [{ tag: item.tag, hour: hoverHour }] : []), [hovered.data, hoverHour]), active);
 
-  // A tooltip names its countries as recorded at the hour hovered, asking only for those.
-  const metadataNames = useMemo(() => new Map(track?.source.metadata.countries.map(country => [country.tag, country.name])), [track?.source]);
-  const metadataName = (tag: string) => metadataNames.get(tag) ?? 'Country name unavailable';
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const hover = useHoverLabels(runtime.client, track, active, useMemo(() => (tag: string) => ({ name: metadataName(tag) }), [metadataNames]), undefined, segmentAt);
-
-  const menu = useContextMenu('Chart actions');
   useEffect(() => {
-    const warnings = [...(data?.warnings ?? []), ...(groups.data?.warnings ?? []), ...(groups.error ? [`Country identity changes could not be loaded: ${groups.error.message}`] : [])];
+    const warnings = [...(head.data?.warnings ?? []), ...(events.error ? [`Threat events could not be read: ${events.error.message}`] : []),
+      ...(groups.error ? [`Country groups could not be loaded: ${groups.error.message}`] : [])];
     onDiagnostics(warnings.length ? warnings : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);
-  }, [data, groups.data, groups.error, onDiagnostics]);
+  }, [head.data, events.error, groups.error, onDiagnostics]);
 
-  const layers = useMemo<ChartLayer[]>(() => !model || !stack ? [] : [{
-    draw: (ctx, frame, chartTokens, state) => {
-      const to = Math.min(frame.x[1], state.playhead ?? frame.x[1]);
-      const summary = data?.summaries.world;
-      if (!prepared.geometryReady || !summary || !summaryFits(frame, summary, to)) return;
-      if (!summary.runs || summary.approximate?.length) {
-        if (denseStack) { ctx.save(); ctx.globalAlpha = 0.85;
-          drawApproximateSpans(ctx,frame,denseStack.approximate,state.playhead,() => {
-          forEachCompactStackSegment(denseStack.model,frame.x[0],to,0,piece => {
-            const segment=heldStackSegment(piece);
-            drawBands(ctx,frame,chartTokens,segment.hours,segment.bands,layerColours,segment);
-          },denseStack.sample);
-          });
-          ctx.restore(); }
-        drawLineSummary(ctx,frame,chartTokens,summary,chartTokens.text,true,state.playhead,{ endDot: false });
-        return;
-      }
-      const hoursPerPixel = (frame.x[1] - frame.x[0]) / Math.max(1, frame.plotWidth);
-      for (const segment of stackedSegments(stack, frame.x[0], to, hoursPerPixel / 2)) {
-        ctx.save();
-        ctx.globalAlpha = 0.85;
-        drawBands(ctx, frame, chartTokens, segment.hours, segment.bands.slice(0, -1), layerColours);
-        ctx.restore();
-        drawBandLine(ctx, frame, chartTokens, segment.hours, segment.bands.at(-1)!.high, chartTokens.text);
-      }
+  // The values beside the chart, painted from the cells at each frame they move; the hour they are of is reported.
+  const report = useCallback(() => shown(head.shownAt()), [shown, head.shownAt]); // eslint-disable-line react-hooks/exhaustive-deps
+  const texts = useMemo<LiveTexts>(() => ({
+    text: key => {
+      const reply = head.data;
+      if (!reply) return '';
+      report();
+      const values = head.live.read();
+      const world = worldCells(values, reply.unnamed);
+      if (key === 'total') return world.tension === null ? 'Not recorded' : percent(String(Math.trunc(world.tension)), reply.tensionScale);
+      const listed = stableLayers.map(layer => layerUnits(values.get(contributionCell(layer.slot)) ?? null, world, share));
+      if (key === 'other') { const other = otherUnits(listed, world, share); return other === null ? 'Not known' : percentOf(other, reply.contributionScale); }
+      const at = stableLayers.findIndex(layer => String(layer.slot) === key);
+      const value = at < 0 ? null : listed[at];
+      return value === null || value === undefined ? 'Not known' : percentOf(value, reply.contributionScale);
     },
-    extent: x => {
-      if (!prepared.geometryReady) return null;
-      const to=Math.min(x[1],until ?? x[1]);
-      if (data?.summaries.world?.runs && !data.summaries.world.approximate?.length) return stackExtent(stack,x[0],to);
-      const bands=denseStack ? compactStackExtent(denseStack.model,x[0],to) : null;
-      const world=data?.summaries.world ? extentOfSummary(data.summaries.world) : null;
-      return bands && world ? [Math.min(bands[0],world[0]),Math.max(bands[1],world[1])] : bands ?? world;
-    },
-  }], [model, data, prepared.geometryReady, stack, denseStack, layerColours, until]);
+    subscribe: head.live.subscribe,
+  }), [head.data, head.live, stableLayers, share, report]);
+  useEffect(() => { if (!head.data) shown(null); }, [head.data, shown]);
 
-  const badges = useMemo(() => new Map<EventBadge, TensionEvent>(events.map(event => [{ hour: event.hour, glyph: '▼', label: event.reason, color: colourOf(event.tag),
-    shape: 'triangle' as const }, event])), [events, colourOf]);
-  const badgeList = useMemo(() => [...badges.keys()], [badges]);
-  const pickOwner = useMemo(() => ({ owner: prepared.pickOwner, keys: keysKey, membership: JSON.stringify([...(membership ?? []), [...(filter.countryIds ?? [])]]) }),
-    [prepared.pickOwner, keysKey, membership, filter.countryIds]);
-
-  // The values listed beside the chart, at the moment shown.
-  const shownRead = model ? readAt(model, listHour) : null;
-  const listItems = useMemo(() => {
-    if (!model || !shownRead) return [];
-    const rows = keys.map((key, index) => ({ key, item: { tag: tags[index], raw: layerRaw(model, shownRead, contributionAt(model, key, listHour) ?? '0', share) } }));
-    rows.push({ key: OTHER, item: { tag: OTHER, raw: layerRaw(model, shownRead, otherRaw(model, shownRead, keys), share) } });
-    return rows;
-  }, [model, shownRead, keys, tags, listHour, share]);
-  const listKey = JSON.stringify(listItems.map(row => [row.key, row.item.tag, row.item.raw]));
-  const stableItems = useMemo(() => listItems, [listKey]); // eslint-disable-line react-hooks/exhaustive-deps
-  const moving = useRowMotion(stableItems);
-  const root = useRef<HTMLDivElement>(null);
-  useParityRows(root, () => ({ kind: 'chart', label: 'World tension and contributions', scope: 'displayed-hour', hour: listHour,
-    complete: !!data?.exactHours.includes(listHour), total: listItems.length, rows: listItems.map(row => ({ key: row.key, ...row.item })), read: shownRead }));
-
-  const content = (() => {
-  if (!track) return <WidgetState kind="empty" icon="alert" message="Load a campaign to see world tension." />;
-  if ((pinned || widget.time.mode === 'range') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
-  if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
-  if (groups.error && widget.countries.kind !== 'all' && !groups.data) return <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;
-  if (!model || (widget.countries.kind !== 'all' && !identities)) return <WidgetState kind="loading" label="Loading world tension…" />;
-  if (filter.reason) return <WidgetState kind="unavailable" message={filter.reason} />;
-  if (!data?.available && data?.pending?.length) return <WidgetState kind="loading" label="This range is still being prepared." />;
-  if (!data?.available) return <WidgetState kind="unavailable" message="World tension was not recorded." />;
-
-  const otherCount = (hour: number) => Math.max(0, rankedAt(model, hour).length - keys.length);
-  // The moment the chart shows: the playhead, else the end of the hours shown.
-  const momentShown = Math.floor(until ?? extent[1]);
-  // An event: its country (named as at the hour hovered, the event's own), its date, the
-  // tension it generated as first read, and, when the game changed it since, what it
-  // adds by the moment shown.
-  const eventRows = (list: readonly TensionEvent[], hour: number, divider: boolean): TooltipRow[] => list.flatMap((event, index) => {
-    const label = event.tag == null ? { name: 'Unknown country', flag: undefined } : hover.labelAt(hour)(event.tag);
-    const first = event.added[0].addedRaw;
-    const now = addedAt(event, momentShown);
+  const menu = useContextMenu('Chart actions');
+  const momentShown = Math.floor(playhead ?? extent[1]);
+  const eventRows = (list: readonly ThreatEvent[], divider: boolean, scale: number): TooltipRow[] => list.flatMap((event, index) => {
+    const first = event.added[0].addedRaw, now = addedAt(event, momentShown);
     return [
       { label: event.reason, strong: true, divider: divider || index > 0 },
-      { label: label.name, countryFlag: event.tag == null ? undefined : label, swatch: colourOf(event.tag), value: dayLabel(event.hour) },
-      { label: 'Tension generated', value: formatContribution(model, first, true) },
-      ...(now !== first ? [{ label: `Adds by ${dayLabel(momentShown)}`, value: formatContribution(model, now, true), tone: 'muted' as const }] : []),
+      { label: event.tag ? contributorName(event.tag, event.remembered, tag => looks.name(tag)) : 'Unknown country', swatch: colourOf(event.tag), value: dayLabel(event.hour) },
+      { label: 'Tension generated', value: percent(first, scale, 2) },
+      ...(now !== first ? [{ label: `Adds by ${dayLabel(momentShown)}`, value: percent(now, scale, 2), tone: 'muted' as const }] : []),
     ];
   });
-  const tooltip = (hour: number, hovered: readonly EventBadge[]): TooltipContent | null => {
-    // The badges hovered, else (a keyboard stop, which hovers no badge) the events
-    // marked at an hour no read holds, so those read as their markers do.
-    const fromBadges = hovered.map(badge => badges.get(badge)).filter((event): event is TensionEvent => event != null);
-    const marked = fromBadges.length ? fromBadges : eventsOutsideReads(model, events, hour);
-    if (marked.length) {
-      hover.ask(hour, marked.flatMap(event => event.tag == null ? [] : [event.tag]));
-      if (marked.length === 1) return fitTooltip([{ title: marked[0].reason, rows: eventRows(marked, hour, false).slice(1) }], viewport);
-      // Several events at one hour: every one in full, else a compact form (their
-      // total, then the largest, one row each) cut to the window; the full list is read out.
-      const full: TooltipContent = { title: `${marked.length} events on ${dayLabel(hour)}`, rows: eventRows(marked, hour, false) };
+  const tooltip = (hour: number, hoveredBadges: readonly EventBadge[]): TooltipContent | null => {
+    const scale = head.data?.contributionScale ?? 100_000;
+    const marked = hoveredBadges.map(badge => badges.get(badge)).filter((event): event is ThreatEvent => event != null);
+    if (marked.length === 1) return fitTooltip([{ title: marked[0].reason, rows: eventRows(marked, false, scale).slice(1) }], viewport);
+    if (marked.length > 1) {
+      const full: TooltipContent = { title: `${marked.length} events on ${dayLabel(hour)}`, rows: eventRows(marked, false, scale) };
       const group = eventGroup(marked);
-      const compact: TooltipContent = {
-        title: `${marked.length} events · ${formatContribution(model, group.totalRaw, true)} tension`,
-        subtitle: dayLabel(hour),
-        rows: [
-          ...group.largest.slice(0, COMPACT_EVENTS).map((event): TooltipRow => {
-            const label = event.tag == null ? { name: 'Not named', flag: undefined } : hover.labelAt(hour)(event.tag);
-            return { label: `${label.name}: ${event.reason}`, countryFlag: event.tag == null ? undefined : label, swatch: colourOf(event.tag), value: formatContribution(model, event.added[0].addedRaw, true), short: true };
-          }),
-          ...(marked.length > COMPACT_EVENTS ? [{ label: `${marked.length - COMPACT_EVENTS} more events`, tone: 'muted' as const }] : []),
-        ],
-      };
+      const compact: TooltipContent = { title: `${marked.length} events · ${percent(group.totalRaw, scale, 2)} tension`, subtitle: dayLabel(hour), rows: [
+        ...group.largest.slice(0, COMPACT_EVENTS).map((event): TooltipRow => ({ label: `${event.tag ? looks.name(event.tag) : 'Not named'}: ${event.reason}`,
+          swatch: colourOf(event.tag), value: percent(event.added[0].addedRaw, scale, 2), short: true })),
+        ...(marked.length > COMPACT_EVENTS ? [{ label: `${marked.length - COMPACT_EVENTS} more events`, tone: 'muted' as const }] : []),
+      ] };
       return fitTooltip([full, compact], viewport, { full, more: hidden => `${hidden} more` });
     }
-    const read = readAt(model, hour);
-    if (!read && !data.exactHours.includes(Math.floor(hour))) return { title: dayLabel(hour), rows: [{ label: 'World tension', value: 'Loading…', tone: 'muted' }] };
-    if (!read) return { title: dayLabel(hour), rows: [{ label: 'World tension', value: 'Not recorded', tone: 'muted' }] };
-    const hoveredFilter = membership ? worldFilter(widget.countries, dashboardTag ? [dashboardTag] : [], groups.data, hour, lastHour) : null;
-    const ranked = rankedAt(model, hour, hoveredFilter?.tags ?? null, hoveredFilter?.countryIds);
-    const here = events.filter(event => event.hour === hour);
-    hover.ask(hour, [...ranked.flatMap(item => item.tag === null ? [] : [item.tag]), ...here.flatMap(event => event.tag == null ? [] : [event.tag])]);
-    const named = hover.labelAt(hour);
-    const rows: TooltipRow[] = [{ label: 'World tension', value: formatTension(model, read.tensionRaw), strong: true }];
-    if (contributionPercent(model, read.sumRaw) !== tensionPercent(model, read.tensionRaw)) {
-      rows.push({ label: 'Its sources add up to', value: formatContribution(model, read.sumRaw), tone: 'muted' });
-    }
-    ranked.forEach((item, index) => {
-      const label = item.tag === null ? { name: 'Unknown country', flagReason: 'Unknown country at this hour.' } : named(item.tag);
-      rows.push({ label: label.name, countryFlag: label, swatch: keys.includes(item.key) ? colourOf(item.tag) : undefined,
-        value: formatContribution(model, item.raw, true), short: true, divider: index === 0 });
+    const reply = hovered.data;
+    if (!reply || hovered.hour !== Math.floor(hour)) return { title: dayLabel(hour), rows: [{ label: 'World tension', value: hovered.error ? 'Not read' : 'Loading…', tone: 'muted' }] };
+    const values = hovered.live.read();
+    const world = worldCells(values, reply.unnamed);
+    if (world.tension === null) return { title: dayLabel(hour), rows: [{ label: 'World tension', value: 'Not recorded', detail: reply.missing ?? world.why, tone: 'muted' }] };
+    const named = labels.labelAt(Math.floor(hour));
+    const rows: TooltipRow[] = [{ label: 'World tension', value: percentOf(world.tension, reply.tensionScale, 2), strong: true }];
+    if (world.sum !== null && Math.trunc(world.sum / 100) !== Math.trunc(world.tension)) rows.push({ label: 'Its sources add up to', value: percentOf(world.sum, reply.contributionScale, 2), tone: 'muted' });
+    reply.contributions.slice(0, 12).forEach((item, index) => {
+      const value = values.get(contributionCell(item.slot));
+      const label = item.tag ? named(item.tag) : { name: 'Unknown country', flagReason: 'Unknown country at this hour.' };
+      rows.push({ label: contributorName(item.tag, item.remembered, () => label.name), countryFlag: item.tag ? label : undefined, swatch: stableLayers.some(layer => layer.slot === item.slot) ? colourOf(item.tag) : undefined,
+        value: value === undefined ? 'Not known' : percentOf(value, reply.contributionScale, 2), short: true, divider: index === 0 });
     });
-    if (read.unnamedRaw !== null && !tensionReadPreparing(read, 'unnamedRaw') && read.unnamedRaw !== '0') rows.push({ label: 'Unknown countries', value: formatContribution(model, read.unnamedRaw, true), short: true });
-    if (tensionReadPreparing(read, 'unnamedRaw')) rows.push({ label: 'Contributor attribution', value: 'Still being prepared', tone: 'muted' });
-    rows.push(...eventRows(here, hour, true));
-    const notes = [
-      ...(hoveredFilter?.reason ? [hoveredFilter.reason] : []),
-    ];
-    return fitTooltip([{ title: dayLabel(hour), rows, note: notes.join(' ') || undefined }], viewport, { more: hidden => `${hidden} more` });
+    if (reply.contributions.length > 12) rows.push({ label: `${reply.contributions.length - 12} more countries`, tone: 'muted' });
+    if (reply.unnamed) rows.push({ label: 'Countries never named', value: percentOf(world.unnamed, reply.contributionScale, 2), short: true });
+    rows.push(...eventRows((events.data?.events ?? []).filter(event => event.hour === Math.floor(hour)), true, reply.contributionScale));
+    return fitTooltip([{ title: dayLabel(hour), rows }], viewport, { more: hidden => `${hidden} more` });
   };
+  const followHour = () => track ? Math.floor(runtime.clock.getHour()) + track.axisOffset : 0;
+  const open = (hour: number) => act({ type: 'open', breakdown: TENSION_BREAKDOWN.id, hour, playing: runtime.clock.getSnapshot().playing, playhead: following ? followHour() : playhead });
+  const anchor = useRef<HTMLDivElement>(null);
+  const followRoot = head.root;
+  // One ref for every render: a new one each render lets go of the element and takes it again, a second commit.
+  const rootRef = useCallback((element: HTMLDivElement | null) => { anchor.current = element; followRoot(element); }, [followRoot]);
 
-  const open = (hour: number) => {
-    dispatchDrill({ type: 'open', breakdown: TENSION_BREAKDOWN.id, hour, playing: runtime.clock.getSnapshot().playing, playhead: followHour });
-    const keys = tensionEventKeys(model.reply.events);
-    const causes = model.reply.events.flatMap((event, index) => event.hour === hour ? [keys[index]] : []);
-    setSelectedCause(causes.length === 1 ? causes[0] : null);
-  };
-  const breakdown = !data.exactHours.includes(drillShown) && !readAt(model,drillShown) ? <WidgetState kind="loading" label="Loading world tension…" /> : <TensionDrill model={model} runtime={runtime} track={track} active={active} options={options}
-    extent={extent} playhead={drill.breakdown != null && drill.follow ? followHour : playhead} hour={drillShown} selectedCause={selectedCause} onCause={setSelectedCause}
-    onPick={hour => dispatchDrill(pinnedDrill ? { type: 'open', breakdown: TENSION_BREAKDOWN.id, hour, playing: false, playhead: null }
-      : { type: 'pick', hour })} />;
-  if (pinnedDrill) return <div className="world-tension-pinned">
-    <p className="drill-empty">{formatDateTime(drillShown)} {followHour != null && (drill.breakdown == null ? widget.time.mode !== 'follow' : !drill.follow)
-      && <button type="button" className="button small" onClick={() => {
-        const hour = Math.floor(runtime.clock.getHour()) + track.axisOffset;
-        dispatchDrill({ type: 'open', breakdown: TENSION_BREAKDOWN.id, hour, playing: true, playhead: hour });
-      }}>Follow playback</button>}</p>{breakdown}</div>;
-  const total = shownRead ? formatTension(model, shownRead.tensionRaw) : data.exactHours.includes(listHour) ? 'Not recorded' : 'Loading…';
-  const layerName = (tag: string | null) => tag === OTHER ? 'Other' : tag === null ? 'Unknown country' : looks.name(tag);
-  const overviewState = widget.countries.kind === 'group' && groups.error && !groups.data
-    ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />
-    : filter.reason ? <WidgetState kind="empty" message={filter.reason} />
-      : widget.countries.kind === 'group' && !groups.data ? <WidgetState kind="loading" label="Loading country group…" /> : null;
-  const main = overviewState ?? <div className={`world-tension${options.list !== false ? ' has-list' : ''}`}>
-    <p className="sr-only" aria-live="off">{`${dayLabel(listHour)}: world tension ${total}`}{shownRead ? `; ${listItems.map(row => `${layerName(row.item.tag)} ${formatContribution(model, row.item.raw)}`).join(', ')}` : ''}</p>
-    <div className="world-tension-chart">
-      <TimeChart label="World tension and the countries that generated it" extent={extent} playhead={playhead}
-        playback={playback} afterPlayhead={options.afterPlayhead === true} windowHours={Number(options.windowDays ?? 365) * 24}
-        hoursPerSecond={motionOf(runtime.clock.getSnapshot())} branchStart={track.branch.firstHour}
-        axes={{ xFrom: null, xTo: null, yMin: null, yMax: null, log: false }}
-        // 0–100%, grown to whatever is drawn beyond it (negative parts, or sources past the cap), never cut.
-        fitValues={shown => [Math.min(0, shown?.[0] ?? 0), Math.max(100, shown?.[1] ?? 100)]}
-        layers={[pendingLayer(data.pending), ...layers]} active={active && (drill.breakdown == null || options.drill === 'popout')}
-        revision={`${head}:${model.reply.branchId}:${keysKey}:${share}:${looks.revision}:${hover.revision}:${tokens.countryColours}:${viewport}`}
-        formatValue={formatTensionAxis}
-        badges={badgeList.length ? badgeList : undefined}
-        pickOwner={pickOwner} keyboardHour={prepared.keyboardHour} keyboardRevision={prepared.keyboardRevision}
-        onHover={setHoverHour}
-        onSummaryView={view => prepared.onSummaryView(view,keys.map(key => {
-          const country = data.catalogue.find(country => countryKey(country) === key)!;
-          return { id: JSON.stringify(key), spans: selectedContributionSpans(model,key,[{ firstHour: track.branch.firstHour,lastHour: track.branch.lastHour }],membership,true,filter.countryIds ?? null)
-            .map(span => ({ ...span,tag: country.key,startsSegment: false })) };
-        }))}
-        onNavigateHour={prepared.onNavigateHour}
-        tooltip={(hour, _frame, hovered) => tooltip(hour, hovered)}
-        onPick={open}
-        onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)])} />
-      <PreparedKey approximate={data.summaries.world?.approximate} pending={data.pending} />
-      {data.preparing?.length ? <p className="chart-line-key">Contributor history and events are still being prepared.</p> : null}
-      {!filter.known && !keys.length ? <p className="chart-line-key" role="status">{MEMBERSHIP_PREPARING}</p> : null}
-    </div>
+  if (!track) return <WidgetState kind="empty" icon="alert" message="Load a campaign to see world tension." />;
+  if ((pinned || widget.time.mode === 'range') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
+  if (resolved?.reason) return <WidgetState kind="empty" icon="alert" message={resolved.reason} />;
+  if (head.error && !head.data) return <WidgetState kind="error" failure={head.error} onRetry={head.retry} />;
+  const breakdownReply = drillFollows || (pinnedDrill && drill.breakdown == null) ? head : picked;
+  const breakdownHour = breakdownReply === head ? listHour : pickedHour ?? listHour;
+  const breakdown = <TensionBreakdown runtime={runtime} track={track} active={active} options={options} extent={extent} playhead={playhead}
+    following={breakdownReply === head && following} hour={breakdownHour} reply={breakdownReply === head ? everyContribution : breakdownReply.data} live={breakdownReply.live}
+    error={breakdownReply.error}
+    onRetry={breakdownReply.retry} looks={looks} colour={colourOf} otherColour={otherColour} layers={stableLayers} events={events.data?.events ?? []}
+    tooltip={hour => tooltip(hour, [])} report={report}
+    onPick={hour => act(pinnedDrill && drill.breakdown == null ? { type: 'open', breakdown: TENSION_BREAKDOWN.id, hour, playing: false, playhead: null } : { type: 'pick', hour })} />;
+  if (pinnedDrill) return <div className="world-tension-pinned" ref={head.root}>
+    <p className="drill-empty">{formatDateTime(breakdownHour)} {following && drill.breakdown != null && !drill.follow
+      && <button type="button" className="button small" onClick={() => act({ type: 'follow' })}>Follow playback</button>}</p>{breakdown}</div>;
+  const main = !head.data ? <WidgetState kind="loading" label="Loading world tension…" /> : <div className={`world-tension${options.list !== false ? ' has-list' : ''}`}>
+    <TensionChart runtime={runtime} track={track} active={active && (drill.breakdown == null || options.drill === 'popout')} options={options}
+      label="World tension and the countries that generated it" extent={extent} playhead={playhead} following={following} layers={stableLayers}
+      colours={stableLayers.map(layer => colourOf(layer.tag))} otherColour={otherColour} share={share} live={head.read === 'followed' ? head.live : null}
+      badges={options.markers !== false ? badgeList : undefined} tooltip={tooltip} onHover={hour => setHoverHour(hour === null ? null : Math.floor(hour))}
+      onPick={open} onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)])}
+      revision={`${layersKey}:${share}:${tokens.countryColours}:${viewport}:${hovered.data ? hovered.hour : ''}:${labels.labelAt}`} />
     {options.list !== false && <aside className="world-tension-list" aria-label={`World tension on ${dayLabel(listHour)}`}>
-      <button type="button" className="world-tension-total" onClick={() => open(listHour)}><span>World tension</span><b>{total}</b></button>
-      <ol style={{ height: `calc(${moving.filter(row => row.phase !== 'leaving').length} * var(--world-tension-row))` }}>
-        {moving.map(row => {
-          const other = row.item.tag === OTHER;
-          const others = other ? otherCount(listHour) : 0;
-          const flag = other || row.item.tag === null ? undefined : looks.flag(row.item.tag);
-          return <li key={row.key} className={movingRowClass(row)} style={{ transform: `translateY(calc(${row.slot} * var(--world-tension-row)))` }}>
-            <i style={{ background: other ? otherColour : colourOf(row.item.tag) }} aria-hidden="true" />
+      <button type="button" className="world-tension-total" onClick={() => open(listHour)}><span>World tension</span><b><LiveText live={texts} at="total" /></b></button>
+      <ol>
+        {stableLayers.map(layer => {
+          const flag = layer.tag ? looks.flag(layer.tag) : undefined;
+          return <li key={layer.slot}>
+            <i style={{ background: colourOf(layer.tag) }} aria-hidden="true" />
             {flag ? <img src={flag} alt="" /> : null}
-            <span>{other ? `Other${others ? ` (${others})` : ''}` : layerName(row.item.tag)}</span>
-            <b>{formatContribution(model, row.item.raw)}</b>
+            <span>{contributorName(layer.tag, layer.remembered, tag => looks.name(tag))}</span>
+            <b><LiveText live={texts} at={String(layer.slot)} /></b>
           </li>;
         })}
+        <li key="other"><i style={{ background: otherColour }} aria-hidden="true" />
+          <span>{`Other${head.data.contributions.length > stableLayers.length ? ` (${head.data.contributions.length - stableLayers.length})` : ''}`}</span>
+          <b><LiveText live={texts} at="other" /></b></li>
       </ol>
     </aside>}
     {menu.menu}
   </div>;
-  return <div ref={anchor} style={{ height: '100%' }}><DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'}
-    open={drill.breakdown != null} anchor={anchor} title={TENSION_BREAKDOWN.label} day={formatDateTime(drillShown)} following={drill.follow}
-    canFollow={followHour != null} onClose={() => dispatchDrill({ type: 'close' })} onFollow={() => dispatchDrill({ type: 'follow' })}
-    onPin={() => runtime.addWidgetBelow(widget.id, pinTensionDrill(widget, track, drillAt, drill.follow))} main={main}>{breakdown}</DrillHost></div>;
-  })();
-  return <div ref={root} style={{ display: 'contents' }}>{widget.countries.kind !== 'all' && groups.error && groups.data ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null}{content}</div>;
+  return <div ref={rootRef} style={{ height: '100%' }}>
+    <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown != null} anchor={anchor} title={TENSION_BREAKDOWN.label}
+      day={formatDateTime(breakdownHour)} following={drill.follow} canFollow={following} onClose={() => act({ type: 'close' })} onFollow={() => act({ type: 'follow' })}
+      onPause={() => act({ type: 'pick', hour: followHour() })}
+      onPin={() => runtime.addWidgetBelow(widget.id, pinTensionDrill(widget, track.id, track.branch.firstHour, breakdownHour, drill.follow && following))}
+      main={main}>{breakdown}</DrillHost>
+  </div>;
+}
+
+function ThreatEventsView({ widget, runtime, active, onDiagnostics, setOption }: WidgetProps) {
+  const shown = useShownHour();
+  const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
+  const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'threat-events', params: { branchId: track.branch.id } } : null;
+  const reply = useProduct<ThreatEventsReply>(runtime.client, request, active, validateThreatEvents, track?.source);
+  const trackHour = (clockHour: number) => Math.floor((track && resolveWindow(widget, track, runtime.tracks, clockHour)?.lastHour) ?? track?.branch.lastHour ?? 0);
+  // Following, the list renders only when an event is listed, changes or ends at the head.
+  useAtHead(runtime.clock, active && widget.time.mode === 'follow', clockHour => {
+    const at = trackHour(clockHour);
+    let count = 0;
+    for (const event of reply.data?.events ?? []) if (event.firstRead <= at) count += 1 + event.added.filter(added => added.hour <= at).length + (event.lastRead < at ? 1 : 0);
+    return count;
+  });
+  const hour = trackHour(runtime.clock.getHour());
+  useEffect(() => { shown(reply.data ? hour : null); }, [reply.data, hour, shown]);
+  const rows = useMemo(() => reply.data ? eventsThrough(reply.data, hour) : [], [reply.data, hour]);
+  const [visible, setVisible] = useState<readonly ThreatEvent[]>([]);
+  const labels = useCountryLabelsAt(runtime.client, track, useMemo(() => visible.flatMap(event => event.tag ? [{ tag: event.tag, hour: event.firstRead }] : []), [visible]), active);
+  const columns = useMemo<readonly TableColumn<ThreatEvent>[]>(() => [
+    { key: 'date', header: 'Created', label: 'Created', value: event => event.hour, render: event => dayLabel(event.hour), width: 'max-content' },
+    { key: 'country', header: 'Country', label: 'Country', width: 'minmax(var(--table-country-min), 1fr)',
+      value: event => event.tag, render: event => event.tag ? contributorName(event.tag, event.remembered, tag => labels.labelAt(event.firstRead)(tag).name) : 'Unknown country' },
+    { key: 'reason', header: 'Event', label: 'Event', value: event => event.reason, width: 'minmax(12rem, 3fr)' },
+    { key: 'added', header: 'Adds', label: 'Adds', numeric: true, width: 'max-content', value: event => BigInt(addedAt(event, hour)),
+      render: event => `${formatRaw(addedAt(event, hour), 5, 2)}%` },
+    { key: 'until', header: 'Listed until', label: 'Listed until', width: 'max-content', value: event => event.lastRead,
+      render: event => event.lastRead >= hour ? 'Still listed' : dayLabel(event.lastRead) },
+  ], [labels, hour]);
+  useEffect(() => {
+    const warnings = reply.data?.warnings ?? [];
+    onDiagnostics(warnings.length ? warnings : NO_WARNINGS);
+    return () => onDiagnostics(NO_WARNINGS);
+  }, [reply.data, onDiagnostics]);
+  if (!track) return <WidgetState kind="empty" icon="alert" message="Load a campaign to see its threat events." />;
+  if (reply.error) return <WidgetState kind="error" failure={reply.error} onRetry={reply.retry} />;
+  if (!reply.data) return <WidgetState kind="loading" label="Loading threat events…" />;
+  if (!rows.length) return <WidgetState kind="empty" icon="alert" message={`No threat event recorded by ${dayLabel(hour)}.`} />;
+  return <Table label="Threat events" rows={rows} columns={columns} rowKey={event => `${event.hour}:${event.firstRead}:${event.reason}:${event.tag ?? ''}`}
+    sort={{ column: 'date', direction: 'descending' }} setOption={setOption} onVisibleRows={setVisible} density="compact" />;
 }

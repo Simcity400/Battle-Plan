@@ -1,34 +1,45 @@
 import { queryFailure, RefusedError } from './queryError.ts';
 import type { QueryError } from '../generated/dashboard';
-import { validatePreparationReply, validatePreparationPreferences } from '../shell/preparation/contract.ts';
-import { preparedReplyData, validateProductReply } from './client.ts';
-import type { PreparationRequest, PreparationReply, PreparationPreferences } from '../shell/preparation/contract';
-import { invoke } from '@tauri-apps/api/core';
+import { Channel, invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { newId } from '../shell/ids.ts';
 import { desktopAvailable } from '../shell/api';
 import type { ContentFolders } from '../shell/api';
 import type { SourceReply } from '../generated/dashboard';
 import { MAX_PENDING_REQUESTS } from '../generated/dashboard.ts';
-import type { DashboardClient, DashboardMapState, MapOptionsEvent, MapToggleEvent, DashboardSource, MapSettingsReply, PreparedQueryOptions, ProductReply, RecorderSettings, ReplayLibrary } from './client';
+import type { DashboardClient, DashboardMapState, MapOptionsEvent, MapToggleEvent, DashboardSource, MapSettingsReply, ProductReply, RecorderSettings, ReplayLibrary } from './client';
 import { replyLengths } from './products.ts';
 import { keepDigest } from './replyDigest.ts';
 import { parseReplyBytes } from './replyParse.ts';
 import { contentRevision } from './contentRevision.ts';
 import { forgetReplySizes } from './replySizes.ts';
-import { forgetReplyGaps } from './replyGaps.ts';
 import type { Compression } from '../recorder/compression';
 import { perfLog } from '../shell/perf.ts';
+import { busy } from '../shell/busy.ts';
 import type { QueryTiming } from '../shell/perf';
+
+/** Every follow store's listener: the desktop keeps one channel for the page, so each recording's store hears every
+ * message on it and keeps its own. */
+const followListeners = new Set<(bytes: ArrayBuffer) => void>();
+let followChannel: Promise<void> | null = null;
+
+function openFollowChannel(): Promise<void> {
+  // Raw bodies arrive as an ArrayBuffer: the store reads typed arrays over it, with no copy and no base64.
+  const channel = new Channel<ArrayBuffer>();
+  channel.onmessage = bytes => { for (const listener of [...followListeners]) listener(bytes); };
+  return invoke<void>('dashboard_follow_channel', { channel }).catch(error => { followChannel = null; throw error; });
+}
 
 function cancelled(): DOMException {
   return new DOMException('Request cancelled', 'AbortError');
 }
 
-/** Data replies arrive as raw JSON bytes; the host never parses them. */
-async function rawInvoke<T>(command: string, args: Record<string, unknown>, timing?: QueryTiming): Promise<T> {
+/** Data replies arrive as raw JSON bytes; the host never parses them. A reply landing after `dropped` was cancelled is
+ * not parsed: nobody waits on it, and parsing it costs the page's main thread. */
+async function rawInvoke<T>(command: string, args: Record<string, unknown>, timing?: QueryTiming, dropped?: AbortSignal): Promise<T> {
   const result = await invoke<unknown>(command, args).catch((error: QueryError) => { throw queryFailure(error); });
   if (timing) timing.received = performance.now();
+  if (dropped?.aborted) throw cancelled();
   if (!(result instanceof ArrayBuffer || result instanceof Uint8Array)) return result as T;
   const bytes = result.byteLength;
   const reply: unknown = await parseReplyBytes(result);
@@ -75,15 +86,20 @@ async function request<T>(
   args: (requestId: string) => Record<string, unknown>,
   signal: AbortSignal,
   releaseLate?: (result: T) => Promise<void>,
+  asksFrom?: number,
 ): Promise<T> {
   if (!desktopAvailable) throw new Error('Open the desktop app to read recordings and display native maps.');
   if (signal.aborted) throw cancelled();
-  const release = await admitted(signal);
+  // In flight from the moment it is asked, through its wait for room, until its reply is parsed or it ends.
+  const done = busy('requests');
   try {
-    // Cancelled while waiting for room, after the wait's own abort listener was removed.
-    if (signal.aborted) throw cancelled();
-    return await sent(command, args, signal, releaseLate);
-  } finally { release(); }
+    const release = await admitted(signal);
+    try {
+      // Cancelled while waiting for room, after the wait's own abort listener was removed.
+      if (signal.aborted) throw cancelled();
+      return await sent(command, args, signal, releaseLate, asksFrom);
+    } finally { release(); }
+  } finally { done(); }
 }
 
 async function sent<T>(
@@ -91,15 +107,17 @@ async function sent<T>(
   args: (requestId: string) => Record<string, unknown>,
   signal: AbortSignal,
   releaseLate?: (result: T) => Promise<void>,
+  asksFrom?: number,
 ): Promise<T> {
   const requestId = newId();
   const body = args(requestId);
   const abort = () => { void invoke('dashboard_cancel', { requestId }).catch(() => {}); };
   signal.addEventListener('abort', abort, { once: true });
-  const perf = perfLog, started = perf ? performance.now() : 0, timing: QueryTiming | undefined = perf ? {} : undefined;
+  const perf = perfLog, started = perf ? performance.now() : 0, timing: QueryTiming | undefined = perf ? {} : undefined, head = perf?.head() ?? null;
   let outcome: 'ok' | 'cancelled' | 'error' = 'error', failure: string | undefined;
   try {
-    const result = await rawInvoke<T>(command, { ...body, requestId }, timing);
+    // A late release needs the reply itself; anything else cancelled is dropped unparsed.
+    const result = await rawInvoke<T>(command, { ...body, requestId }, timing, releaseLate ? undefined : signal);
     if (signal.aborted) {
       await releaseLate?.(result).catch(() => {});
       throw cancelled();
@@ -112,27 +130,12 @@ async function sent<T>(
     throw error;
   } finally {
     signal.removeEventListener('abort', abort);
-    if (perf && timing) perf.query(command, body, requestId, started, timing, outcome, failure);
+    if (perf && timing) perf.query(command, body, requestId, started, timing, outcome, failure, { from: asksFrom ?? null, head });
   }
-}
-
-async function preparation(command: string, query: PreparationRequest, signal: AbortSignal): Promise<PreparationReply> {
-  if (!desktopAvailable) throw new Error('Open the desktop app to prepare recordings.');
-  if (signal.aborted) throw cancelled();
-  const release = await admitted(signal);
-  const abort = () => { void invoke('dashboard_cancel', { requestId: query.requestId }).catch(() => {}); };
-  signal.addEventListener('abort', abort, { once: true });
-  try {
-    if (signal.aborted) throw cancelled();
-    const reply = await rawInvoke<PreparationReply>(command, query as unknown as Record<string, unknown>);
-    if (signal.aborted) throw cancelled();
-    return validatePreparationReply(reply, query);
-  } finally { signal.removeEventListener('abort', abort); release(); }
 }
 
 async function releaseSource(sourceId: string): Promise<void> {
   forgetReplySizes(nativeDashboardClient, sourceId);
-  forgetReplyGaps(sourceId);
   if (!desktopAvailable) return;
   await invoke('dashboard_release_source', { sourceId });
 }
@@ -150,6 +153,7 @@ export const nativeDashboardClient: DashboardClient = {
     locateRecordings: (recordings: { path: string; campaignKey: string }[]) => invoke<(string | null)[]>('locate_recordings', { recordings }),
     recorderSettings: () => invoke<RecorderSettings>('recorder_settings'),
     setRecordingCompression: (compression: Compression) => invoke<RecorderSettings>('set_recording_compression', { compression }),
+    setAutoCompress: (enabled: boolean) => invoke<RecorderSettings>('set_auto_compress', { enabled }),
     // The host owns the content folders and sends them to its native viewer.
     contentFolders: () => invoke<ContentFolders>('content_folders'),
     chooseContentFolder: (kind: 'game' | 'user', initial: string) => invoke<string | null>('choose_content_folder', { kind, initial }),
@@ -169,18 +173,7 @@ export const nativeDashboardClient: DashboardClient = {
     return reply;
   },
 
-  preparationPreferences: async (enabled, signal) => validatePreparationPreferences(await request<PreparationPreferences>('dashboard_preparation_preferences', () => ({ enabled }), signal)),
   chooseHistory: async (path, segmentId, choice, signal) => { await request<unknown>('dashboard_history_choice', () => ({ path, segmentId, choice }), signal); },
-  preparationStatus: (query, signal) => preparation('dashboard_preparation_status', query, signal),
-  async preparedQuery<T>(source: DashboardSource, product: string, params: unknown, options: PreparedQueryOptions): Promise<T> {
-    const query = { sourceId: source.id, revision: source.revision, product, params };
-    const reply = await request<ProductReply<T>>('dashboard_prepared_query', () => ({ query, refresh: options.refresh ?? false }), options.signal);
-    return preparedReplyData(validateProductReply(reply, query), options, params);
-  },
-  prepareSource: (query, signal) => preparation('dashboard_prepare_source', query, signal),
-  cancelPreparation: (query, signal) => preparation('dashboard_cancel_preparation', query, signal),
-  clearPreparation: (query, signal) => preparation('dashboard_clear_preparation', query, signal),
-
   async openSource(path, signal): Promise<DashboardSource> {
     if (signal.aborted) throw cancelled();
     const source = await request<SourceReply>('dashboard_open_source', () => ({ path }), signal,
@@ -189,11 +182,19 @@ export const nativeDashboardClient: DashboardClient = {
     return { id: source.id, path: source.path, revision: source.revision, metadata: { ...source.metadata, revision: source.revision } };
   },
 
-  product<T>(query: import('./client').ProductRequest, signal: AbortSignal) {
-    return request<ProductReply<T>>('dashboard_product', () => ({ query }), signal);
+  product<T>({ asksFrom, ...query }: import('./client').ProductRequest, signal: AbortSignal) {
+    return request<ProductReply<T>>('dashboard_product', () => ({ query }), signal, undefined, asksFrom);
   },
 
   releaseSource,
+
+  async onFollowMessages(receive) {
+    if (!desktopAvailable) return () => {};
+    const listener = (bytes: ArrayBuffer) => receive(bytes);
+    followListeners.add(listener);
+    await (followChannel ??= openFollowChannel());
+    return () => { followListeners.delete(listener); };
+  },
 
   async setMapViews(views) {
     if (desktopAvailable) await invoke('set_dashboard_maps', { views });

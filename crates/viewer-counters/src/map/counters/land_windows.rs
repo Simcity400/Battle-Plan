@@ -39,11 +39,21 @@ pub(super) struct Placed {
 pub struct View {
     pool: PoolView<u64>,
     terrain: BTreeMap<SlotId, Option<String>>,
+    /// What each window drew, handed again while it keeps its layout and anchor.
+    painted: viewer_foundation::map::icon_windows::Painted<u64, Option<IconAnchor>>,
 }
 
 impl View {
     pub fn retry(&self) -> Option<Retry> {
         self.pool.retry()
+    }
+
+    pub fn set_quiet(&mut self, quiet: bool) {
+        self.pool.set_quiet(quiet);
+    }
+
+    pub fn running_visibly(&self) -> bool {
+        self.pool.running_visibly()
     }
 
     pub fn take_running(&mut self) -> bool {
@@ -181,7 +191,8 @@ impl PreparedCombats {
                 dirty: schedule.dirty(p.marker.province),
             })
             .collect();
-        let mut drawn = view.pool.present(
+        view.pool.set_cleaning(self.placed.iter().any(|p| schedule.cleans(p.marker.province)));
+        view.pool.present_recorded(
             &context,
             &Plan {
                 name: LAND_COMBAT_WINDOW,
@@ -199,11 +210,30 @@ impl PreparedCombats {
                     &resources,
                 )
             },
+            |owner| {
+                let placed = placed[owner];
+                let marker = &placed.marker;
+                (
+                    placed.terrain.clone(),
+                    placed.text.clone(),
+                    placed.angle.to_bits(),
+                    marker.frame,
+                    marker.tint.map(|tint| tint.map(f32::to_bits)),
+                    marker.seen,
+                    marker.bombardment,
+                )
+            },
+            false,
             &mut report.icon_gui_notes,
         );
-        drawn.sort_by(|a, b| placed[&b.owner].depth.total_cmp(&placed[&a.owner].depth));
+        if view.pool.quiet() {
+            return;
+        }
+        let mut drawn: Vec<_> = view.pool.drawn_generations().collect();
+        drawn.sort_by(|(a, _), (b, _)| placed[&b.owner].depth.total_cmp(&placed[&a.owner].depth));
         let root = inputs.windows.gui_type(LAND_COMBAT_WINDOW.as_bytes());
-        for drawn in drawn {
+        let painted = &mut view.painted;
+        for (drawn, generation) in drawn {
             let marker = &placed[&drawn.owner].marker;
             let key = layer(
                 inputs.priority(PriorityIcon::LandCombat),
@@ -211,8 +241,10 @@ impl PreparedCombats {
                 0,
             );
             batch.at_layer(key);
-            batch.at_anchor(placed[&drawn.owner].anchor);
-            match native_gui::draw(&drawn.layout, drawn.origin, &resources, batch) {
+            let anchor = placed[&drawn.owner].anchor;
+            batch.at_anchor(anchor);
+            let draw = |batch: &mut Batch| native_gui::draw(&drawn.layout, drawn.origin, &resources, batch);
+            match painted.paint(drawn.owner, generation, key, anchor, batch, draw) {
                 Ok(()) => {
                     if let Some(root) = root
                         && let Some(button) = root.find(native::Kind::Button, "bg_btn")
@@ -239,6 +271,7 @@ impl PreparedCombats {
             }
         }
         batch.at_anchor(None);
+        painted.finish();
     }
 }
 

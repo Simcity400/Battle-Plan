@@ -62,10 +62,10 @@ impl Captured {
         self.rows.fail(outcome);
         self.roster_outcome = outcome;
     }
-    pub fn capture_growing(&mut self, memory: &impl Memory, base: usize, state: usize) -> [u64; N] {
+    pub fn capture(&mut self, memory: &impl Memory, base: usize, state: usize) -> [u64; N] {
         self.reset();
         let start = qpc();
-        self.rows.outcome = match producer::drain_growing(&mut self.rows.rows) {
+        self.rows.outcome = match producer::drain(&mut self.rows.rows) {
             Ok(len) => Outcome::Rows { len },
             Err(reason) => Outcome::Unavailable { reason },
         };

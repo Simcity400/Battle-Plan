@@ -28,7 +28,9 @@ export interface ChartStrip {
   keyTargets?(view: Range, until: number | null): readonly KeyTarget[];
 }
 
-export interface StripBar { firstHour: number; lastHour: number; up: number; down: number }
+/** A bar of one read ends at its read's hour. A `span` bar is the greatest reads within its hours, their own hours not
+ * known (a summary's bucket): it is drawn over those hours and names no hour of its own. */
+export interface StripBar { firstHour: number; lastHour: number; up: number; down: number; span?: true }
 /** One drawn column: its pixels [`x`, `x` + `width`) and, per half, the amount drawn
  * and the index of the bar it comes from. */
 export interface StripColumn { x: number; width: number; up: number; down: number; upBar: number; downBar: number }
@@ -118,9 +120,10 @@ export function stripBarAt(bars: readonly StripBar[], frame: PlotFrame, until: n
 /** A keyboard stop for each bar drawn in `view` by `until`: at its end, where its
  * amounts are known, or where the view cuts it off when that end lies past the
  * view, describing its end either way, as a pointer hover over it does. A bar
- * that only touches the view is not drawn and has none. */
+ * that only touches the view is not drawn and has none, nor has a span bar. */
 export function stripKeyTargets(bars: readonly StripBar[], view: Range, until: number | null): KeyTarget[] {
   return drawnBars(bars, until).flatMap(bar => {
+    if (bar.span) return [];
     const first = Math.max(bar.firstHour, view[0]);
     const last = Math.min(bar.lastHour, view[1]);
     return last > first ? [{ at: Math.max(first, Math.floor(last)), describes: bar.lastHour }] : [];
@@ -160,14 +163,17 @@ export function drawStrip(ctx: CanvasRenderingContext2D, frame: PlotFrame, token
 
 /** A time chart's strip of up and down bars: drawn with `drawStrip` in the palette's
  * first two colours, hovered through the same columns (`stripBarAt`), so a hover is
- * about the bar drawn under the pointer and ends at its last hour, and reached by
- * the keyboard at each bar drawn in view (`stripKeyTargets`). */
+ * about the bar drawn under the pointer and ends at its last hour (a span bar's: the
+ * hour pointed at), and reached by the keyboard at each bar drawn in view (`stripKeyTargets`). */
 export function barStrip(bars: readonly StripBar[], look: { height: (chartHeight: number) => number; upLabel: string; downLabel: string }): ChartStrip {
   return {
     height: look.height,
     draw: (ctx, frame, tokens, state) => drawStrip(ctx, frame, tokens, bars,
       { up: tokens.categories[0], down: tokens.categories[1], upLabel: look.upLabel, downLabel: look.downLabel, until: state.playhead }),
-    describe: (point, frame, until) => stripBarAt(bars, frame, until, point)?.lastHour ?? null,
+    describe: (point, frame, until) => {
+      const bar = stripBarAt(bars, frame, until, point);
+      return bar && !bar.span ? bar.lastHour : null;
+    },
     keyTargets: (view, until) => stripKeyTargets(bars, view, until),
   };
 }

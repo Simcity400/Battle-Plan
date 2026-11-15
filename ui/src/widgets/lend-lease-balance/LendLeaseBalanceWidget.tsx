@@ -1,4 +1,4 @@
-import { useMemo, useReducer, useRef, useState } from 'react';
+import { useCallback, useMemo, useReducer, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { Segmented } from '../../components/Segmented';
 import { ButterflyChart } from '../../charts/butterfly';
@@ -6,196 +6,183 @@ import type { ButterflyItem } from '../../charts/butterfly';
 import DrillHost from '../../charts/drill/DrillHost';
 import { CLOSED, drillHour, reduceDrill } from '../../charts/drill/drillState';
 import { dayLabel, drawEndLabels, drawLine } from '../../charts/draw';
-import { jumpItem } from '../../charts/jump';
-import { pendingLayer } from '../../charts/prepared';
-import { PreparedKey } from '../../charts/PreparedKey';
+import Legend from '../../charts/Legend';
+import { liveAt, mapLive } from '../../charts/live';
+import { extentOfAll } from '../../charts/series';
 import TimeChart from '../../charts/TimeChart';
 import type { ChartLayer } from '../../charts/TimeChart';
-import { extentOfAll } from '../../charts/series';
-import type { Run } from '../../charts/series';
+import { useProduct } from '../../dashboard/products';
 import { countryNameDetails, fitTooltip } from '../../charts/tooltip.ts';
 import type { TooltipContent } from '../../charts/tooltip';
 import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
 import { useCountryColours } from '../../charts/race/countryColours';
-import Legend from '../../charts/Legend';
 import { useCountryLooks } from '../../dashboard/countryLooks';
-import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt.ts';
 import { selectedTags } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { groupReasonAt, preparedAt, tagAt } from '../../dashboard/economyHistory.ts';
-import { MEMBERSHIP_PREPARING, membersKnown } from '../../dashboard/groups';
-import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
-import { usePlaybackHour, usePlaybackMotion } from '../../dashboard/playback';
-import { preparedPending } from '../../dashboard/preparedPrefix';
-import { useProduct } from '../../dashboard/products';
+import { usePlaybackMotion } from '../../dashboard/playback';
+import { useHeadProduct } from '../../dashboard/headProduct';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
-import type { LendLeaseBalanceReply } from '../../generated/dashboard';
 import { MEASURES, OPTIONS, PARTNERS } from './definition';
-import { amountLabel, amountText, balanceAt, barValue, emptyBalance, firstRecorded, LEND_LEASE_BALANCE, rankedAt, validateLendLeaseBalance } from './lendLeaseBalanceData';
+import { LEND_LEASE_BALANCE, LEND_LEASE_PARTNERS, amountLabel, amountText, balanceRows, balanceSelection, barValue, emptyBalance, firstRecorded, partnersAt,
+  rankedRows, totalsOverTime, validateLendLeaseBalance, validateLendLeasePartners, valueAt } from './lendLeaseBalanceData';
 import type { BalanceMeasure, BalanceRow } from './lendLeaseBalanceData';
-import '../equipment-stockpile/equipmentStockpile.css';
 import './lendLeaseBalance.css';
+import type { LendLeaseBalanceReply, LendLeasePartnersReply } from '../../generated/dashboard';
 
 const NO_WARNINGS: readonly string[] = [];
 type BalanceItem = ButterflyItem & { row: BalanceRow };
 
-/** Who props up whom: each country's cumulative lend-lease sent (right) and received
- * (left) in the game's own measures, ranked by both; a country opens its partners. */
-export default function LendLeaseBalanceWidget({ widget, runtime, active, onDiagnostics, setOption }: WidgetProps) {
-  const playbackHour2 = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
-  const hoursPerSecond = usePlaybackMotion(runtime.clock);
+/** Butterfly items for `rows`, named and coloured as the countries look at `hour`. */
+function useItems(runtime: WidgetProps['runtime'], track: WidgetProps['runtime']['tracks'][number] | undefined, rows: readonly BalanceRow[], hour: number, active: boolean) {
   const tokens = useChartTokens();
+  const tags = useMemo(() => rows.map(row => row.tag), [rows]);
+  const looks = useCountryLooks(runtime.client, track, tags, hour, active);
+  const colour = useCountryColours(tags, looks.color, tokens, looks);
+  return useMemo<BalanceItem[]>(() => rows.map(row => ({
+    id: String(row.slot), label: looks.name(row.tag, hour), flag: looks.flag(row.tag, hour),
+    countryFlag: { nameFailure: looks.nameFailure?.(row.tag, hour), flagDetail: looks.flagDetail?.(row.tag, hour), flag: looks.flag(row.tag, hour),
+      flagReason: looks.flagReason?.(row.tag, hour), flagPending: looks.flagPending?.(row.tag, hour) },
+    color: colour(row.tag, hour), left: barValue(row.received), right: barValue(row.sent),
+    leftText: amountLabel(row.received), rightText: amountLabel(row.sent), ratioText: '', segment: String(row.slot), row,
+  })), [rows, looks, colour, hour]);
+}
+
+const tooltipOf = (item: BalanceItem, hour: number | null): TooltipContent => ({ ...countryNameDetails(item.countryFlag), title: item.label,
+  subtitle: hour === null ? undefined : dayLabel(hour), rows: [{ label: 'Sent', value: amountText(item.row.sent) }, { label: 'Received', value: amountText(item.row.received) }] });
+
+/** Who props up whom: each country's cumulative lend-lease sent (right) and received (left) in the game's own
+ * measures at the head (a pushed panel) or the pinned, ranged or hovered hour, ranked by both; a country opens its
+ * partners. */
+export default function LendLeaseBalanceWidget({ widget, runtime, active, onDiagnostics, setOption }: WidgetProps) {
+  const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const viewport = useViewportHeight();
   const options = resolveOptions(OPTIONS, widget.options);
   const measure: BalanceMeasure = options.measure === 'fuel' ? 'fuel' : 'industry';
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour2);
-  const hour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
   const anchor = useRef<HTMLDivElement>(null);
-  const scope = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id]);
-  const owner = useMemo(() => ({ client: runtime.client, scope }), [runtime.client, scope]);
-  const [storedDrill, dispatch] = useReducer(reduceDrill, CLOSED);
-  const [storedPick, setPicked] = useState<{ owner: object; holder: string; tag: string } | null>(null);
-  // A holder belongs to the recording it was picked in.
-  const picked = storedPick?.owner === owner ? storedPick : null;
-  const drill = picked ? storedDrill : CLOSED;
+  const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
+  const [picked, setPicked] = useState<{ branch: string; tag: string; name: string } | null>(null);
   const needsGroups = widget.countries.kind === 'group' && widget.countries.group.type !== 'top';
   const groups = useCountryGroups(runtime, track, active && needsGroups);
-  const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: LEND_LEASE_BALANCE,
-    params: { branchId: track.branch.id } } : null;
-  const { data, error, retry } = useProduct<LendLeaseBalanceReply>(runtime.client, request, active, validateLendLeaseBalance, track?.source);
+  const head = useHeadProduct<LendLeaseBalanceReply>(runtime, widget, LEND_LEASE_BALANCE, track ? {} : null, { active, validate: validateLendLeaseBalance });
+  const data = head.data;
   useDiagnostics(onDiagnostics, data?.warnings ?? NO_WARNINGS);
+  // A followed head renders only when the reply differs; names, groups and colours are read at the clock's hour then.
+  const hour = head.hour ?? Math.floor(runtime.clock.getHour());
   const fallback = useMemo(() => selectedTags({ kind: 'selected' }, track), [track]);
-  const rows = useMemo(() => data ? rankedAt(data, measure, hour, widget.countries, fallback, groups.data, track?.branch.lastHour ?? hour) : null,
-    [data, measure, hour, widget.countries, fallback, groups.data, track?.branch.lastHour]);
-  const tags = useMemo(() => rows?.map(row => row.tag) ?? [], [rows]);
-  const looks = useCountryLooks(runtime.client, track, tags, hour, active);
-  const colour = useCountryColours(tags, looks.color, tokens, looks);
-  const scale = data?.scale ?? 100000;
-  const items = useMemo<BalanceItem[]>(() => (rows ?? []).map(row => ({
-    id: row.holder, label: looks.name(row.tag, hour), flag: looks.flag(row.tag, hour),
-    countryFlag: { nameFailure: looks.nameFailure?.(row.tag, hour), flagDetail: looks.flagDetail?.(row.tag, hour), flag: looks.flag(row.tag, hour), flagReason: looks.flagReason?.(row.tag, hour), flagPending: looks.flagPending?.(row.tag, hour) },
-    color: colour(row.tag, hour), left: barValue(row.received), right: barValue(row.sent),
-    leftText: amountLabel(row.received, scale), rightText: amountLabel(row.sent, scale), ratioText: '', segment: row.holder, row,
-  })), [rows, looks, colour, hour, scale]);
-  const histories = useMemo(() => new Map(data?.histories.map(history => [history.holder, history]) ?? []), [data]);
+  const all = useMemo(() => data ? balanceRows(data, measure) : [], [data, measure]);
+  const chosen = useMemo(() => balanceSelection(widget.countries, fallback, groups.data, hour, track?.branch.lastHour ?? hour),
+    [widget.countries, fallback, groups.data, hour, track?.branch.lastHour]);
+  const rows = useMemo(() => chosen ? rankedRows(all, chosen) : [], [all, chosen]);
+  const items = useItems(runtime, track, rows, hour, active);
   const slots = widget.countries.kind === 'group' && widget.countries.group.type === 'top' ? widget.countries.group.count : items.length;
-  const tooltip = (item: BalanceItem): TooltipContent => {
-    const history = histories.get(item.row.holder);
-    const first = history ? firstRecorded(history) : null;
-    return { ...countryNameDetails(item.countryFlag), title: item.label, subtitle: dayLabel(hour), rows: [
-      { label: 'Sent', value: amountText(item.row.sent, scale) }, { label: 'Received', value: amountText(item.row.received, scale) },
-      ...first !== null ? [{ label: `Not recorded before ${dayLabel(first)}`, tone: 'muted' as const }] : [],
-    ] };
-  };
   const open = (item: BalanceItem) => {
-    setPicked({ owner, holder: item.row.holder, tag: item.row.tag });
+    setPicked({ branch: track?.branch.id ?? '', tag: item.row.tag, name: item.label });
     dispatch({ type: 'open', breakdown: PARTNERS.id, hour, playing: runtime.clock.getSnapshot().playing, playhead: widget.time.mode === 'follow' ? hour : null });
   };
-  const playbackHour = Math.floor(playbackHour2) + (track?.axisOffset ?? 0);
-  const at = drillHour(drill, playbackHour) ?? hour;
-  const pickedHistory = picked ? histories.get(picked.holder) : undefined;
-  const pickedTag = pickedHistory ? tagAt(pickedHistory.tags, at) : null;
-  const pickedNames = useCountryLabelsAt(runtime.client, track, pickedTag ? [{ tag: pickedTag, hour: at }] : [], active);
-  const pickedName = pickedTag ? pickedNames.labelAt(at)(pickedTag).name : 'Country name unavailable';
+  const shownPick = picked && picked.branch === track?.branch.id ? picked : null;
+  const at = drillHour(shownPick ? drill : CLOSED, hour) ?? hour;
 
-  if (!track) return <WidgetState kind="empty" icon="chart-bars" message="Load a campaign to see lend-lease." />;
-  if (!window) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
-  const groupFailure = needsGroups && groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
-  if (groupFailure && !groups.data) return groupFailure;
-  if (!data || !rows) return <>{groupFailure}<WidgetState kind="loading" label="Loading lend-lease…" /></>;
-  if (!preparedAt(data, hour)) return <>{groupFailure}<WidgetState kind="loading" label="This range is still being prepared." /></>;
-  // A group whose membership at this hour is unrecorded or empty says so, never "none".
-  const groupReason = groupReasonAt(widget.countries, groups.data, hour, track.branch.lastHour);
-  if (groupReason) return <>{groupFailure}<WidgetState kind={groupReason.kind} message={groupReason.message} /></>;
-  const main = <div className="lend-lease-balance">
-    <div className="stockpile-caption-line">
-      <span>{dayLabel(hour)}</span>
+  let main;
+  if (!track) main = <WidgetState kind="empty" icon="chart-bars" message="Load a campaign to see lend-lease." />;
+  else if (head.error) main = <WidgetState kind="error" failure={head.error} onRetry={head.retry} />;
+  else if (needsGroups && groups.error && !groups.data) main = <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;
+  else if (head.read === 'off' && !data) main = <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  else if (!data || !chosen) main = <WidgetState kind="loading" label="Loading lend-lease…" />;
+  else if (data.missing) main = <WidgetState kind="unavailable" message={data.missing} />;
+  else main = <div className="lend-lease-balance">
+    <div className="lend-lease-caption">
+      <span>{head.hour === null ? 'At the playhead' : dayLabel(head.hour)}</span>
       <Segmented value={measure} options={MEASURES} label="Measure" onChange={value => setOption?.('measure', value)} />
     </div>
     {!items.length ? (() => {
-      // A group's members at an hour still being prepared are not known yet: no row is not proof of none.
-      if (!membersKnown(widget.countries, groups.data, track.branch.lastHour)(hour)) return <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
-      const empty = emptyBalance(data, measure, hour, widget.countries, fallback, groups.data, track.branch.lastHour);
+      const empty = emptyBalance(all, chosen);
       return empty === 'zero' ? <WidgetState kind="empty" icon="chart-bars" message="No lend-lease yet." />
-        : empty === 'unrecorded' ? <WidgetState kind="unavailable" message="Lend-lease histories were not recorded at this date." />
-          : empty === 'members-unrecorded' ? <WidgetState kind="unavailable" message="This group's members were not recorded at this date." />
+        : empty === 'members-unrecorded' ? <WidgetState kind="unavailable" message="This group's members were not recorded at this date." />
           : empty === 'partial' ? <WidgetState kind="unavailable" message="No lend-lease in the recorded histories; some of these countries have none at this date." />
             : <WidgetState kind="unavailable" message="No lend-lease history is recorded for these countries at this date." />;
     })()
       : <ButterflyChart key={`${track.source.id}:${track.branch.id}`} label="Lend-lease received and sent" items={items} slots={slots}
         leftLabel="◀ Received" rightLabel="Sent ▶" ratioLabel="" active={active} hoursPerSecond={hoursPerSecond}
         showValues={options.values !== false} showRatio={false}
-        tooltip={item => fitTooltip([tooltip(item)], viewport)} onSelect={item => open(item)}
-        contextItems={item => { const history = histories.get(item.row.holder); const first = history && firstRecorded(history);
-          return [{ label: 'Show partners', run: () => open(item) }, ...first != null ? [jumpItem(runtime, track.id, first)] : []]; }} />}
+        tooltip={item => fitTooltip([tooltipOf(item, head.hour)], viewport)} onSelect={item => open(item)}
+        contextItems={item => [{ label: 'Show partners', run: () => open(item) }]} />}
   </div>;
-  return <div ref={anchor} className="lend-lease-balance-host">{groupFailure}
-    <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown !== null && !!picked} anchor={anchor}
-      title={picked ? `${pickedName}: ${PARTNERS.label.toLowerCase()}` : PARTNERS.label} day={dayLabel(at)}
+  if (!track) return main;
+  return <div ref={anchor} className="lend-lease-balance-host">
+    <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown !== null && !!shownPick} anchor={anchor}
+      title={shownPick ? `${shownPick.name}: ${PARTNERS.label.toLowerCase()}` : PARTNERS.label} day={dayLabel(at)}
       following={drill.follow} canFollow={widget.time.mode === 'follow'} onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })}
-      main={main}>
-      {picked && <Partners widget={widget} runtime={runtime} active={active} holder={picked.holder} name={pickedName} measure={measure} hour={at}
-        onPick={pick => dispatch({ type: 'pick', hour: pick })} />}
+      main={<div ref={head.root} className="lend-lease-balance-host">{main}</div>}>
+      {shownPick && <Partners widget={widget} runtime={runtime} active={active} tag={shownPick.tag} name={shownPick.name} hour={at} measure={measure}
+        following={drill.follow && widget.time.mode === 'follow'} onPick={pick => dispatch({ type: 'pick', hour: pick })} />}
     </DrillHost>
   </div>;
 }
 
-/** One country's records of each partner at the drill's hour, and its totals over time. */
-function Partners({ widget, runtime, active, holder, name, measure, hour, onPick }: {
-  widget: WidgetProps['widget']; runtime: WidgetProps['runtime']; active: boolean; holder: string; name: string;
-  measure: BalanceMeasure; hour: number; onPick: (hour: number) => void;
+/** One country's record of each partner at the drill's hour, and its totals over time: one reply over the branch,
+ * read at any hour here. While the drill follows playback, the bars are painted at the head each frame. */
+function Partners({ widget, runtime, active, tag, name, hour, measure, following, onPick }: Pick<WidgetProps, 'widget' | 'runtime' | 'active'> & {
+  tag: string; name: string; hour: number; measure: BalanceMeasure; following: boolean; onPick: (hour: number) => void;
 }) {
   const tokens = useChartTokens();
   const viewport = useViewportHeight();
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0])!;
-  const request = { sourceId: track.source.id, revision: track.source.revision, product: LEND_LEASE_BALANCE, params: { branchId: track.branch.id, holder } };
-  const { data, error, retry } = useProduct<LendLeaseBalanceReply>(runtime.client, request, active, validateLendLeaseBalance, track.source);
-  const totals = useProduct<LendLeaseBalanceReply>(runtime.client, { ...request, params: { branchId: track.branch.id } }, active, validateLendLeaseBalance, track.source);
-  const rows = useMemo(() => data?.histories.map(history => balanceAt(history, measure, hour)).filter((row): row is BalanceRow => row !== null) ?? [], [data, measure, hour]);
-  const tags = useMemo(() => rows.map(row => row.tag), [rows]);
-  const looks = useCountryLooks(runtime.client, track, tags, hour, active);
-  const colour = useCountryColours(tags, looks.color, tokens, looks);
-  const scale = data?.scale ?? 100000;
-  const items = useMemo(() => rows.sort((a, b) => { const x = (a.sent ?? 0n) + (a.received ?? 0n), y = (b.sent ?? 0n) + (b.received ?? 0n); return x === y ? 0 : x > y ? -1 : 1; })
-    .map(row => ({ id: row.holder, nameFailure: looks.nameFailure?.(row.tag, hour), label: looks.name(row.tag, hour), flag: looks.flag(row.tag, hour), color: colour(row.tag, hour),
-      left: barValue(row.received), right: barValue(row.sent), leftText: amountLabel(row.received, scale), rightText: amountLabel(row.sent, scale),
-      ratioText: '', segment: row.holder })), [rows, looks, colour, hour, scale]);
-  const own = totals.data?.histories.find(history => history.holder === holder);
-  const offset = measure === 'industry' ? 0 : 1;
-  const lines = useMemo(() => own ? [{ label: 'Sent', runs: own.values[offset], color: tokens.categories[0] }, { label: 'Received', runs: own.values[2 + offset], color: tokens.categories[1] }]
-    .map(line => ({ ...line, plotted: line.runs.map((run): Run => ({ firstHour: run[0], lastHour: run[1], value: Number(BigInt(run[2])) / scale })) })) : [],
-  [own, offset, tokens.categories, scale]);
-  const pending = totals.data ? preparedPending(totals.data) : [];
-  const layers = useMemo<ChartLayer[]>(() => [pendingLayer(pending), { draw: (ctx, frame, chartTokens, state) => {
-    const ends = lines.flatMap(line => { const end = drawLine(ctx, frame, chartTokens, line.plotted, line.color, { until: state.playhead ?? undefined, held: true });
+  const asked = useProduct<LendLeasePartnersReply>(runtime.client, { sourceId: track.source.id, revision: track.source.revision, product: LEND_LEASE_PARTNERS,
+    params: { branchId: track.branch.id, holder: tag, measure } }, active, validateLendLeasePartners, track.source);
+  const data = asked.data;
+  const rows = useMemo(() => data ? partnersAt(data, hour) : [], [data, measure, hour]);
+  const items = useItems(runtime, track, rows, hour, active);
+  const axisOffset = track.axisOffset ?? 0;
+  const headAt = useCallback((position: number) => Math.min(track.branch.lastHour, Math.max(track.branch.firstHour, Math.floor(position + axisOffset))),
+    [track.branch.firstHour, track.branch.lastHour, axisOffset]);
+  // Following, each bar's values at the head; which partners show and their names stay the render's.
+  const liveItems = useMemo(() => following && data ? mapLive(liveAt(runtime.clock, headAt, at => partnersAt(data, at)),
+    shown => items.map(item => {
+      const now = shown.find(row => row.slot === item.row.slot);
+      return now ? { ...item, row: now, left: barValue(now.received), right: barValue(now.sent), leftText: amountLabel(now.received), rightText: amountLabel(now.sent) }
+        : { ...item, left: null, right: null, leftText: '—', rightText: '—' };
+    })) : undefined, [following, data, runtime.clock, headAt, measure, items]);
+  const lines = useMemo(() => {
+    if (!data) return [];
+    const totals = totalsOverTime(data);
+    return [{ label: 'Sent', runs: totals.sent, color: tokens.categories[0] }, { label: 'Received', runs: totals.received, color: tokens.categories[1] }];
+  }, [data, measure, tokens.categories]);
+  const liveHead = useMemo(() => following ? { read: () => runtime.clock.getSnapshot().position + axisOffset, subscribe: runtime.clock.subscribeFrame } : undefined,
+    [following, runtime.clock, axisOffset]);
+  const layers = useMemo<ChartLayer[]>(() => [{ draw: (ctx, frame, chartTokens, state) => {
+    const ends = lines.flatMap(line => { const end = drawLine(ctx, frame, chartTokens, line.runs, line.color, { until: state.playhead ?? undefined, held: true });
       return end ? [{ text: line.label, y: end.y, from: end.y, color: line.color }] : []; });
     drawEndLabels(ctx, frame, chartTokens, ends);
-  }, extent: x => extentOfAll(lines.map(line => line.plotted), x[0], x[1]) }], [lines, pending]);
-  if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
+  }, extent: x => extentOfAll(lines.map(line => line.runs), x[0], x[1]) }], [lines]);
+  if (asked.error) return <WidgetState kind="error" failure={asked.error} onRetry={asked.retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading lend-lease…" />;
+  const first = firstRecorded(data);
+  const amounts = (at: number) => {
+    const known = data.known.some(span => span.firstHour <= at && at <= span.lastHour);
+    if (!known) return [{ label: 'Lend-lease histories were not recorded at this date', tone: 'muted' as const }];
+    if (first === null || at < first) return [{ label: first === null ? 'No partner recorded' : `Not recorded before ${dayLabel(first)}`, tone: 'muted' as const }];
+    const sent = valueAt(data.totals[0], at), received = valueAt(data.totals[1], at);
+    return [{ label: 'Sent', value: sent === null ? '—' : amountText(sent) }, { label: 'Received', value: received === null ? '—' : amountText(received) }];
+  };
   return <div className="lend-lease-partners">
     {!items.length ? <p className="drill-empty">No partner was recorded for {name} at this date.</p>
-      : <div className="lend-lease-partner-bars"><ButterflyChart label={`Lend-lease partners of ${name}`} items={items} leftLabel="◀ Received" rightLabel="Sent ▶" ratioLabel=""
-        active={active} hoursPerSecond={hoursPerSecond} showRatio={false}
-        tooltip={item => { const row = rows.find(each => each.holder === item.id);
-          return fitTooltip([{ ...countryNameDetails(item), title: item.label, subtitle: dayLabel(hour), rows: [{ label: 'Sent', value: amountText(row?.sent ?? null, scale) }, { label: 'Received', value: amountText(row?.received ?? null, scale) }] }], viewport); }} /></div>}
-    {own && <>
+      : <div className="lend-lease-partner-bars"><ButterflyChart label={`Lend-lease partners of ${name}`} items={items} liveItems={liveItems}
+        leftLabel="◀ Received" rightLabel="Sent ▶" ratioLabel="" empty={`No partner was recorded for ${name} at this date.`} active={active} hoursPerSecond={hoursPerSecond} showRatio={false}
+        tooltip={item => fitTooltip([tooltipOf(item, hour)], viewport)} /></div>}
+    {lines.some(line => line.runs.length) && <>
       <Legend label="Totals" items={lines.map(line => ({ id: line.label, label: line.label, color: line.color }))} />
       <div className="lend-lease-partner-time">
-        <TimeChart label={`Lend-lease of ${name} over time`} extent={[track.branch.firstHour, track.branch.lastHour]} playhead={hour} playback="cursor"
-          afterPlayhead hoursPerSecond={hoursPerSecond} branchStart={track.branch.firstHour} padding={{ right: 72 }}
-          axes={{ xFrom: null, xTo: null, yMin: null, yMax: null, log: false }} layers={layers} active={active} pickOwner={holder}
-          revision={`${holder}:${measure}:${lines.length}:${pending.length}`}
-          tooltip={at => { const point = Math.floor(at); const row = own && balanceAt(own, measure, point);
-            return fitTooltip([{ title: dayLabel(point), rows: [{ label: 'Sent', value: amountText(row?.sent ?? null, scale) }, { label: 'Received', value: amountText(row?.received ?? null, scale) }] }], viewport); }}
+        <TimeChart label={`Lend-lease of ${name} over time`} extent={[track.branch.firstHour, track.branch.lastHour]} playhead={following ? null : hour}
+          liveHead={liveHead} playback="cursor" afterPlayhead hoursPerSecond={hoursPerSecond} branchStart={track.branch.firstHour} padding={{ right: 72 }}
+          axes={{ xFrom: null, xTo: null, yMin: null, yMax: null, log: false }} layers={layers} active={active} pickOwner={tag}
+          revision={`${tag}:${measure}:${lines.map(line => line.runs.length).join(',')}`}
+          tooltip={at => fitTooltip([{ title: dayLabel(Math.floor(at)), rows: amounts(Math.floor(at)) }], viewport)}
           onPick={at => onPick(Math.floor(at))} />
       </div>
-      <PreparedKey pending={pending} />
     </>}
   </div>;
 }

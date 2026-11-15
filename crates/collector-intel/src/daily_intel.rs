@@ -7,10 +7,10 @@
 //! for, the hour carries the last sample, and the next hour walks instead.
 
 use crate::table_capture::{CaptureRows, grow_capacity};
-use engine_allocation::{filled, oom};
+use engine_allocation::{SharedBox, filled, oom};
 use engine_native::country_intel_row::Row;
 use std::sync::{
-    Arc, Mutex, MutexGuard, PoisonError,
+    Mutex, MutexGuard, PoisonError,
     atomic::{AtomicUsize, Ordering},
 };
 
@@ -41,7 +41,7 @@ struct Inner {
 
 /// The pool's one buffer. Clones share it.
 #[derive(Clone)]
-pub struct Home(Arc<Inner>);
+pub struct Home(SharedBox<Inner>);
 
 impl Home {
     pub fn try_new(rows: usize, scratch: usize) -> std::io::Result<Self> {
@@ -49,18 +49,18 @@ impl Home {
         if crate::allocation::failed() {
             return Err(oom());
         }
-        let buffer = Box::new(Buffer {
+        let buffer = engine_allocation::boxed(Buffer {
             rows,
             scratch: filled(scratch, 0)?,
             reserved_required: 0,
-        });
-        Ok(Self(Arc::new(Inner {
+        })?;
+        Ok(Self(engine_allocation::shared(Inner {
             bytes: AtomicUsize::new(buffer.allocated_bytes()),
             slot: Mutex::new(Slot {
                 buffer: Some(buffer),
                 missed: false,
             }),
-        })))
+        })?))
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -75,7 +75,7 @@ impl Home {
 
     #[cfg(any(test, feature = "test-support"))]
     pub fn shares(&self, other: &Home) -> bool {
-        Arc::ptr_eq(&self.0, &other.0)
+        SharedBox::ptr_eq(&self.0, &other.0)
     }
 
     /// Held only for a pointer swap, never across a walk or an allocation.

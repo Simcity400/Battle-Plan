@@ -343,10 +343,11 @@ test('native focus details request only opened dated rows and preserve static de
       staticText: [{ token: 'plain', name: '', description: 'Static recorded description' }], continuousStaticText: [], warnings: [],
     } });
 export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
-    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
+    '/army-size/headHour.ts': 'export const useHeadHour = (clock) => clock.getHour();',
     '/dashboard/useDiagnostics.ts': 'export const useDiagnostics = (_report, warnings) => { globalThis.__focusDetails.diagnostics = warnings; };',
     '/dashboard/contentRevision.ts': 'export const useContentRevision = () => globalThis.__focusDetails.content;',
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open() {}, menu: null });',
+    '/dashboard/widgetPerf.ts': 'export const useShownEachFrame = () => {};',
     '/national-focus/useFocusArtwork.ts': `export const useFocusArtwork = (_client, _track, _country, wanted, _active, detailsWanted, staticText) => {
       const fixture = globalThis.__focusDetails; fixture.wanted = wanted; fixture.detailsWanted = detailsWanted; fixture.staticText = staticText;
       return { warnings: [], details: fixture.details, read: new Map(wanted.map(({ tag, hour }) => [JSON.stringify([hour, tag]), {
@@ -372,11 +373,11 @@ export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...us
     return [element, ...elements(element.props.children)];
   };
   try {
-    const { LegacyNationalFocusWidget: Widget } = await vite.ssrLoadModule('/ui/src/widgets/national-focus/NationalFocusWidget.tsx');
+    const { default: Widget } = await vite.ssrLoadModule('/ui/src/widgets/national-focus/NationalFocusWidget.tsx');
     const { FAILED_FACT, nameKey } = await vite.ssrLoadModule('/ui/src/dashboard/countryFacts.ts') as typeof import('../../dashboard/countryFacts');
     const props = { widget: { id: 'details', kind: 'national-focus', trackIds: ['track'], countries: { kind: 'tags', tags: ['M0'] }, time: { mode: 'campaign' } },
       runtime: { client: {}, tracks: [{ id: 'track', axisOffset: 0, branch: { id: '1', firstHour: 100, lastHour: 200 },
-        source: { id: 'source', revision: '1' } }], clock: { getHour: () => 200 } }, active: true, headerSlot: null, onDiagnostics() {} } as unknown as WidgetProps;
+        source: { id: 'source', revision: '1' } }], clock: { getHour: () => 200, getSnapshot: () => ({ playing: false, hoursPerSecond: 0 }), subscribe: () => () => {}, subscribeFrame: () => () => {} } }, active: true, headerSlot: null, onDiagnostics() {} } as unknown as WidgetProps;
     const render = () => { hooks.begin(); return elements(Widget(props)); };
     const details = (tree: Element[]) => tree.filter(element => element.props.className === 'focus-details');
     const paragraphs = (tree: Element[]) => tree.filter(element => element.type === 'p').map(element => element.props.children);
@@ -439,10 +440,11 @@ test('a closing row keeps the description it showed while its demand is released
       artwork: [{ token: 'scoped', baseDurationDays: 10 }], staticText: [], continuousStaticText: [], warnings: [],
     } });
 export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
-    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
+    '/army-size/headHour.ts': 'export const useHeadHour = (clock) => clock.getHour();',
     '/dashboard/useDiagnostics.ts': 'export const useDiagnostics = () => {};',
     '/dashboard/contentRevision.ts': 'export const useContentRevision = () => globalThis.__focusShown.content;',
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open() {}, menu: null });',
+    '/dashboard/widgetPerf.ts': 'export const useShownEachFrame = () => {};',
     // As the real hook: an answered description joins the row's read; a released or pending one is absent.
     '/national-focus/useFocusArtwork.ts': `export const useFocusArtwork = (_client, _track, _country, wanted, _active, detailsWanted) => {
       const fixture = globalThis.__focusShown; fixture.detailsWanted = detailsWanted;
@@ -471,11 +473,11 @@ export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...us
     return [element, ...elements(element.props.children)];
   };
   try {
-    const { LegacyNationalFocusWidget: Widget } = await vite.ssrLoadModule('/ui/src/widgets/national-focus/NationalFocusWidget.tsx');
+    const { default: Widget } = await vite.ssrLoadModule('/ui/src/widgets/national-focus/NationalFocusWidget.tsx');
     const { FAILED_FACT, nameKey } = await vite.ssrLoadModule('/ui/src/dashboard/countryFacts.ts') as typeof import('../../dashboard/countryFacts');
     const props = { widget: { id: 'shown', kind: 'national-focus', trackIds: ['track'], countries: { kind: 'tags', tags: ['M0'] }, time: { mode: 'campaign' } },
       runtime: { client: {}, tracks: [{ id: 'track', axisOffset: 0, branch: { id: '1', firstHour: 100, lastHour: 200 },
-        source: { id: 'source', revision: '1' } }], clock: { getHour: () => 200 } }, active: true, headerSlot: null, onDiagnostics() {} } as unknown as WidgetProps;
+        source: { id: 'source', revision: '1' } }], clock: { getHour: () => 200, getSnapshot: () => ({ playing: false, hoursPerSecond: 0 }), subscribe: () => () => {}, subscribeFrame: () => () => {} } }, active: true, headerSlot: null, onDiagnostics() {} } as unknown as WidgetProps;
     const key = nameKey(101, 'scoped');
     const answer = () => fixture.details.set(key, { artwork: { token: 'scoped', name: null, description: 'Dated full description', baseDurationDays: 10, icon: null }, reason: null });
     const render = () => { hooks.begin(); const tree = elements(Widget(props)); hooks.commit(); return tree; };
@@ -524,10 +526,11 @@ test('repeated completions of one focus read at one hour open and close independ
       artwork: [{ token: 'repeatable', baseDurationDays: 10 }], staticText: [], continuousStaticText: [], warnings: [],
     } });
 export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
-    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
+    '/army-size/headHour.ts': 'export const useHeadHour = (clock) => clock.getHour();',
     '/dashboard/useDiagnostics.ts': 'export const useDiagnostics = () => {};',
     '/dashboard/contentRevision.ts': 'export const useContentRevision = () => 0;',
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open() {}, menu: null });',
+    '/dashboard/widgetPerf.ts': 'export const useShownEachFrame = () => {};',
     '/national-focus/useFocusArtwork.ts': `export const useFocusArtwork = (_client, _track, _country, wanted, _active, detailsWanted) => {
       globalThis.__focusRepeated.detailsWanted = detailsWanted;
       return { warnings: [], details: new Map(), read: new Map(wanted.map(({ tag, hour }) => [JSON.stringify([hour, tag]),
@@ -552,10 +555,10 @@ export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...us
     return [element, ...elements(element.props.children)];
   };
   try {
-    const { LegacyNationalFocusWidget: Widget } = await vite.ssrLoadModule('/ui/src/widgets/national-focus/NationalFocusWidget.tsx');
+    const { default: Widget } = await vite.ssrLoadModule('/ui/src/widgets/national-focus/NationalFocusWidget.tsx');
     const props = { widget: { id: 'repeated', kind: 'national-focus', trackIds: ['track'], countries: { kind: 'tags', tags: ['M0'] }, time: { mode: 'campaign' } },
       runtime: { client: {}, tracks: [{ id: 'track', axisOffset: 0, branch: { id: '1', firstHour: 100, lastHour: 200 },
-        source: { id: 'source', revision: '1' } }], clock: { getHour: () => 200 } }, active: true, headerSlot: null, onDiagnostics() {} } as unknown as WidgetProps;
+        source: { id: 'source', revision: '1' } }], clock: { getHour: () => 200, getSnapshot: () => ({ playing: false, hoursPerSecond: 0 }), subscribe: () => () => {}, subscribeFrame: () => () => {} } }, active: true, headerSlot: null, onDiagnostics() {} } as unknown as WidgetProps;
     const render = () => { hooks.begin(); const tree = elements(Widget(props)); hooks.commit(); return tree; };
     const details = (tree: Element[]) => tree.filter(element => element.props.className === 'focus-details');
     let tree = render();

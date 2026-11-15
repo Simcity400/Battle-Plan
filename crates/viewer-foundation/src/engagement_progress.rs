@@ -10,7 +10,7 @@ use crate::map::{
     tables::rows,
 };
 use replay_data::{rows::LandCombatSideRow, rows::TableId, rows::tables};
-use replay_frame::frame::DecodedFrame;
+use replay_frame::frame::{DecodedFrame, Tables};
 use std::{collections::BTreeMap, io};
 
 /// Fixed point over 100 000.
@@ -60,7 +60,7 @@ impl Progresses {
 }
 
 /// Wrapping 64-bit arithmetic, including its guard for extreme sums.
-fn attacker_progress(attacker: i64, defender: i64) -> i64 {
+pub fn attacker_progress(attacker: i64, defender: i64) -> i64 {
     let total = attacker.wrapping_add(defender);
     if total < 1 {
         return FIXED / 2;
@@ -99,11 +99,18 @@ pub fn defending(
     vision: &Vision,
     resolve: &impl Fn(u32) -> Option<u32>,
 ) -> Result<bool, SharingUnknown> {
+    defending_of(&sets.defender_primary, &sets.defender_secondary, vision, resolve)
+}
+
+/// [`defending`] from values: the defenders' primary and secondary country lists.
+pub fn defending_of(
+    primary: &[u32],
+    secondary: &[u32],
+    vision: &Vision,
+    resolve: &impl Fn(u32) -> Option<u32>,
+) -> Result<bool, SharingUnknown> {
     vision.sees_combat(
-        sets.defender_primary
-            .iter()
-            .chain(&sets.defender_secondary)
-            .map(|raw| resolve(*raw)),
+        primary.iter().chain(secondary).map(|raw| resolve(*raw)),
         // Both sets are read whole with their LandCombatSides row.
         None,
     )
@@ -134,9 +141,10 @@ impl engaged::Sides for LandSides {
     }
 }
 
-fn land_sides(frame: &DecodedFrame) -> io::Result<engaged::HourSides> {
+/// [`LandSides::sides`] from any source of the hour's tables.
+pub fn land_sides<F: Tables + ?Sized>(frame: &F) -> io::Result<engaged::HourSides> {
     let sides = sides(frame)?;
-    let combats = rows::<tables::LandCombats>(frame)?;
+    let combats = crate::fold_tables::available::<tables::LandCombats, F>(frame)?;
     let mut out = engaged::HourSides {
         sides: BTreeMap::new(),
         complete: combats.is_complete(),
@@ -178,8 +186,8 @@ fn land_sides(frame: &DecodedFrame) -> io::Result<engaged::HourSides> {
 
 /// This hour's side operands by combat. A truncated census still holds whole
 /// rows; only an absent combat is unknown.
-pub fn sides(frame: &DecodedFrame) -> io::Result<BTreeMap<u64, &LandCombatSideRow>> {
-    Ok(rows::<tables::LandCombatSides>(frame)?
+pub fn sides<F: Tables + ?Sized>(frame: &F) -> io::Result<BTreeMap<u64, &LandCombatSideRow>> {
+    Ok(crate::fold_tables::available::<tables::LandCombatSides, F>(frame)?
         .rows()
         .iter()
         .map(|row| (row.combat, row))

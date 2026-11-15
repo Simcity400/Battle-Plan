@@ -607,10 +607,27 @@ fn real_silent_constructors_refuse_and_propagate_their_family() {
         std::env::temp_dir().join(format!("hoi4-real-hook-refusal-{}", std::process::id()));
     std::fs::create_dir_all(&directory).unwrap();
     configure(&directory, 1, 1000);
+    let status_path = directory.join("status.json");
+    std::fs::write(&status_path, b"{}").unwrap();
+    // A reader without delete sharing outlasts every replace retry of the refusal's status.
+    let reader = {
+        use std::os::windows::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ)
+            .open(&status_path)
+            .unwrap()
+    };
     let equipment = FamilyHooks::<crate::equipment_destruction::Hooks>::construct(0, || {
         Ok(unsafe { crate::equipment_destruction::Hooks::new(&Unreadable, 0) })
     })
     .unwrap();
+    drop(reader);
+    assert!(
+        std::fs::read_to_string(directory.join("recorder.log"))
+            .unwrap()
+            .contains("hook failure status not published")
+    );
     assert!(
         equipment.inner.is_some(),
         "exercise the API that internally returned an empty object"
@@ -640,6 +657,15 @@ fn real_silent_constructors_refuse_and_propagate_their_family() {
     .unwrap();
     assert!(building.inner.is_some());
     assert!(failed(Family::Buildings));
+    let persisted: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&status_path).unwrap()).unwrap();
+    assert!(
+        persisted["failed_hook_families"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f["family"] == Family::Buildings.name())
+    );
     reset_session();
     let opinion = FamilyHooks::<crate::opinion_changes::Hooks>::construct(0, || unsafe {
         crate::opinion_changes::Hooks::new(&Unreadable, 0)
@@ -795,7 +821,7 @@ fn later_shared_rollback_is_latched_before_an_earlier_reporting_error() {
                     air_reports += 1;
                 }
                 air.toggle(true, |hooks, enabled| {
-                    Hook::set_family_enabled_attach(hooks, enabled)
+                    Hook::set_family_enabled(hooks, enabled)
                         .map_err(crate::runtime::installation_message)
                 })
             }),

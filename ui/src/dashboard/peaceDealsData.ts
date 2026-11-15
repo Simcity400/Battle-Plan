@@ -1,6 +1,12 @@
-import type { PeaceDeal, PeaceDealsReply, PeaceTransferGraph, PeaceTransferredState } from '../generated/dashboard';
 import { countryIdentityKey } from './countryIdentity.ts';
 import { formatDateTime } from './calendar.ts';
+import type { PeaceDeal, PeaceDealsReply, PeaceTransferGraph, PeaceTransferredState } from '../generated/dashboard';
+
+/** Where a captured action's name holds the name of its country (`nameCountry`). */
+export const NAME_COUNTRY = '{COUNTRY}';
+/** An action's name with its country's name in place; with no country name, the game's label without it. */
+export const peaceActionLabel = (name: string, country: string | null): string => !name.includes(NAME_COUNTRY) ? name
+  : country != null ? name.replaceAll(NAME_COUNTRY, country) : name.replaceAll(NAME_COUNTRY, '').replace(/\s+/g, ' ').trim();
 
 const object = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v != null && !Array.isArray(v);
 const text = (v: unknown) => typeof v === 'string';
@@ -80,7 +86,7 @@ function graph(v: unknown): v is PeaceTransferGraph {
 function captured(v: unknown): boolean {
   return object(v) && integer(v.hour) && integer(v.publicationHour) && list(v.winners, unsigned) && list(v.losers, unsigned)
     && list(v.actions, a => object(a) && bool(a.derived) && ['country', 'turn', 'ordinal', 'token', 'taker', 'giver', 'negotiator', 'form'].every(k => unsigned(a[k]))
-      && ['status', 'cost'].every(k => integer(a[k])) && ['tokenName', 'nameKey', 'name', 'countryTag', 'takerTag', 'giverTag', 'negotiatorTag', 'countryOperandTag', 'puppetAuxiliary', 'ship', 'ratio'].every(k => nullable(a[k], text))
+      && ['status', 'cost'].every(k => integer(a[k])) && ['tokenName', 'nameKey', 'name', 'nameCountry', 'countryTag', 'takerTag', 'giverTag', 'negotiatorTag', 'countryOperandTag', 'puppetAuxiliary', 'ship', 'ratio'].every(k => nullable(a[k], text))
       && nullable(a.state, integer) && nullable(a.countryOperand, unsigned) && nullable(a.flags, f => Array.isArray(f) && f.length === 4 && f.every(unsigned)))
     && list(v.transfers, t => object(t) && bool(t.derived) && integer(t.hour) && integer(t.state) && unsigned(t.taker) && nullable(t.to, text) && nullable(t.giver, unsigned) && nullable(t.from, text) && nullable(t.fromCountry, country) && nullable(t.toCountry, country) && bool(t.automatic))
     && list(v.subjects, s => object(s) && bool(s.derived) && unsigned(s.overlord) && unsigned(s.subject) && nullable(s.overlordTag, text) && nullable(s.subjectTag, text));
@@ -95,15 +101,13 @@ export function validatePeaceDealsReply(data: unknown): PeaceDealsReply {
       && ['firstObservedHour', 'lastObservedHour'].every(k => integer(d[k])) && ['currentTurn', 'firstFinalizedHour', 'endHour', 'firstAbsentHour'].every(k => nullable(d[k], integer))
       && nullable(d.finalized, bool) && bool(d.endIsBy) && bool(d.participantsDerived) && list(d.winners, text) && list(d.losers, text) && list(d.items, item)
       && nullable(d.captured, captured) && nullable(d.captureUnavailable, text)
-      && ['captureObservedHour', 'captureUnavailableHour'].every(key => !(key in d) || nullable(d[key], integer)) && graph(d.transfers) && list(d.limitations, text) && (!('preparing' in d) || list(d.preparing, text)))
+      && ['captureObservedHour', 'captureUnavailableHour'].every(key => !(key in d) || nullable(d[key], integer)) && graph(d.transfers) && list(d.limitations, text))
     && object(unobserved) && ['settlements', 'conferences', 'ownership', 'wars', 'subjects', 'governments', 'existence', 'victoryPoints'].every(k => list(unobserved[k], span));
   if (!ok) throw new Error('The peace deals reply is malformed.');
-  const reply = data as PeaceDealsReply;
+  const reply = data as unknown as PeaceDealsReply;
   const ids = new Set<string>();
   for (const deal of reply.deals) {
     if (ids.has(deal.id)) throw new Error('The peace deals reply has duplicate conferences.'); ids.add(deal.id);
-    // A reply from before prefix answers names nothing still being prepared.
-    deal.preparing ??= [];
   }
   return reply;
 }

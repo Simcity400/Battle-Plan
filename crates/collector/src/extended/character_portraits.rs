@@ -5,7 +5,7 @@ use crate::{
     spooling::unavailable,
     table_capture::{Arena, CaptureRows},
 };
-use engine_allocation::{copy_vec, map_slice, owned_vec, reserve_exact};
+use engine_allocation::{collect_vec, copy_vec, map_slice, owned_vec, reserve_exact};
 use engine_native::{Memory, ccharacter, walk::Outcome};
 use replay_data::{rows::CharacterPortraitRow, rows::TableId, rows::tables};
 use replay_frame::frame::TableInput;
@@ -45,7 +45,7 @@ impl Capacities {
         // Both character rosters retain every portrait entry.
         // Empty outputs count their original headers.
         let acquired =
-            ccharacter::walk_portraits(memory, base, state, &mut [], &mut [], Default::default());
+            ccharacter::count_portraits(memory, base, state, Default::default());
         let count = crate::country_scale::table_demand::rows(acquired.outcome)?;
         crate::table_capture::grow_capacity(&mut self.rows, count.div_ceil(PARTS));
         crate::table_capture::grow_capacity(&mut self.arena, acquired.required);
@@ -80,10 +80,6 @@ pub struct Part {
 }
 impl Part {
     fn new(c: &Capacities) -> Self {
-        let Some((spans, bytes)) = c.rows.checked_mul(5).zip(c.rows.checked_mul(48)) else {
-            let _ = crate::allocation::oom();
-            return Self::vacant();
-        };
         Self {
             rows: CaptureRows::new(c.rows),
             arena: Arena::new(c.arena),
@@ -96,7 +92,7 @@ impl Part {
             )
             .map_err(crate::allocation::io)
             .unwrap_or_else(|_| engine_native::portrait_cache::Cache::empty()),
-            plan: crate::snapshot_plan::SnapshotPlan::new(spans, bytes),
+            plan: crate::snapshot_plan::SnapshotPlan::default(),
             certified: None,
             matched: None,
             witness: None,
@@ -107,7 +103,7 @@ impl Part {
             rows: CaptureRows::new(0),
             arena: Arena::new(0),
             cache: engine_native::portrait_cache::Cache::empty(),
-            plan: crate::snapshot_plan::SnapshotPlan::new(0, 0),
+            plan: crate::snapshot_plan::SnapshotPlan::default(),
             certified: None,
             matched: None,
             witness: None,
@@ -170,7 +166,6 @@ impl Part {
         census: Option<&engine_native::ccharacter_manager::PortraitCensus>,
         observer: &dyn engine_native::portrait_cache::Changes,
     ) -> u64 {
-        self.plan.enable_worker_growth();
         let _reads = crate::read_accounting::table(TableId::CharacterPortraits);
         let begin = qpc();
         self.reset();
@@ -250,7 +245,7 @@ impl Part {
             return ticks;
         }
         let observation = cfg!(feature = "portrait_changes").then_some((&mut self.cache, observer));
-        let acquired = ccharacter::walk_portraits_growing(
+        let acquired = ccharacter::walk_portraits(
             &self.plan.view(memory),
             context.base,
             context.game_state,
@@ -320,7 +315,7 @@ impl Captured {
     #[cfg(test)]
     fn vacant() -> Self {
         Self {
-            parts: (0..PARTS).map(|_| Part::vacant()).collect(),
+            parts: owned_vec(collect_vec((0..PARTS).map(|_| Part::vacant()))),
             ordering: RefCell::default(),
             terminal_failure: None,
         }
@@ -328,7 +323,7 @@ impl Captured {
 
     pub fn with_capacities(c: &Capacities) -> Self {
         Self {
-            parts: (0..PARTS).map(|_| Part::new(c)).collect(),
+            parts: owned_vec(collect_vec((0..PARTS).map(|_| Part::new(c)))),
             ordering: RefCell::default(),
             terminal_failure: None,
         }

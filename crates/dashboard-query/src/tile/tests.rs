@@ -1,0 +1,437 @@
+use super::*;
+use crate::{Query, chart::ChartRun, fixture::*, identity::{Holder, HolderRun}, series::grid};
+
+/// The lines of a series without parts.
+fn whole(tags: &[&str]) -> Vec<Ask> {
+    tags.iter().map(|tag| Ask::whole(tag)).collect()
+}
+
+fn line<'q>(query: &'q Query<'static>) -> Line<'q, 'static> {
+    let series = dashboard_declare::series("country-measure").unwrap();
+    Line::new(query, series, series.measure("politicalPower").unwrap()).unwrap()
+}
+
+/// The tile's bins as the wire carries them, by tag.
+fn wire(line: &Line<'_, '_>, bin_hours: i64, index: i64) -> (SeriesTileReply, Vec<Vec<Option<ChartBucket>>>) {
+    let tags = whole(&TAGS);
+    let reply = tile(line, "1", &tags, None, bin_hours, index, false).unwrap();
+    let buckets = decode(&unbase64(&reply.bins), tags.len(), reply.first_hour, bin_hours, line.scale(), reply.raw_values, reply.hour_bytes).unwrap();
+    let by_tag = buckets.chunks(BINS).map(<[_]>::to_vec).collect();
+    (reply, by_tag)
+}
+
+fn joined(spans: impl IntoIterator<Item = MissingSpan>) -> Vec<MissingSpan> {
+    let mut out: Vec<MissingSpan> = Vec::new();
+    for span in spans {
+        match out.last_mut() {
+            Some(held) if held.reason == span.reason && held.last_hour + 1 == span.first_hour => held.last_hour = span.last_hour,
+            _ => out.push(span),
+        }
+    }
+    out
+}
+
+/// Tiles of every level, walked bins included, side by side equal one view of their hours drawn
+/// with the same bins: their seams join the line as the view does, and their hours not recorded
+/// join into the view's.
+#[test]
+fn a_tile_holds_the_bins_a_view_of_its_hours_reads_at_every_level() {
+    let query = query();
+    let line = line(&query);
+    let mut compared = 0;
+    for bin_hours in [3, 6, 18, 96, 288, 1_536, 73_728] {
+        let span = BINS as i64 * bin_hours;
+        let (first_tile, last_tile) = (i64::from(FIRST).div_euclid(span), i64::from(LAST).div_euclid(span));
+        let (first, last) = (first_tile * span, (last_tile + 1) * span - 1);
+        // One view from the bin before the first tile, so its first tile's first bin is not the view's.
+        let from = first - bin_hours;
+        let width = ((last - from + 1) / bin_hours) as u32;
+        assert_eq!(grid(last - from + 1, width).1, bin_hours);
+        let drawn: Vec<(Ask, Vec<(i32, i32)>)> = TAGS.iter().map(|tag| (Ask::whole(tag), vec![(from as i32, last as i32)])).collect();
+        let view = line.summaries_within(&drawn, from as i32, last as i32, width).unwrap();
+        for index in first_tile..=last_tile {
+            let (reply, tiles) = wire(&line, bin_hours, index);
+            for (at, tag) in TAGS.iter().enumerate() {
+                let offset = ((index - first_tile) as usize) * BINS + 1;
+                let expected: Vec<Option<ChartBucket>> = view[at].0.buckets[offset..offset + BINS]
+                    .iter()
+                    .map(|bucket| bucket.map(|bucket| ChartBucket { absolute_total: 0, ..bucket }))
+                    .collect();
+                assert_eq!(tiles[at], expected, "{tag}, bins of {bin_hours} hours, tile {index}");
+                compared += tiles[at].iter().flatten().count();
+                assert_eq!(reply.lines[at].tag, *tag);
+            }
+        }
+        for (at, tag) in TAGS.iter().enumerate() {
+            let pieces = (first_tile..=last_tile).flat_map(|index| wire(&line, bin_hours, index).0.lines.swap_remove(at).missing);
+            let parts = line.parts(tag, first as i32, last as i32);
+            assert_eq!(joined(pieces), line.missing(tag, first as i32, last as i32, &parts).unwrap(), "{tag}'s hours not recorded, bins of {bin_hours}");
+        }
+    }
+    assert!(compared > 1_000, "{compared} bins compared");
+}
+
+/// A tile across the hours between the two runs holds no bin wholly inside them, and names those
+/// hours not recorded with the timeline's reason.
+#[test]
+fn a_tile_across_a_gap_marks_its_bins_not_recorded() {
+    let query = query();
+    let line = line(&query);
+    let bin_hours = 6;
+    let index = i64::from(FIRST + FIRST_HOURS).div_euclid(BINS as i64 * bin_hours);
+    let (reply, tiles) = wire(&line, bin_hours, index);
+    let gap = (FIRST + FIRST_HOURS, SECOND - 1);
+    for (at, tag) in TAGS.iter().enumerate() {
+        let mut inside = 0;
+        for (bin, bucket) in tiles[at].iter().enumerate() {
+            let start = i64::from(reply.first_hour) + bin as i64 * bin_hours;
+            if start >= i64::from(gap.0) && start + bin_hours - 1 <= i64::from(gap.1) {
+                assert_eq!(*bucket, None, "{tag}'s bin from {start} is in the gap");
+                inside += 1;
+            }
+        }
+        assert!(inside >= 60, "{inside} bins inside the gap");
+        let missing = &reply.lines[at].missing;
+        assert!(
+            missing.iter().any(|span| span.first_hour <= gap.0 && gap.1 <= span.last_hour && span.reason == GAP_REASON),
+            "{tag}: {missing:?}"
+        );
+    }
+    assert!(tiles[0].iter().any(Option::is_some) && tiles[0].iter().any(Option::is_none));
+}
+
+/// The tile holding the timeline's last hour may still change and says how far it is filled;
+/// one wholly before it never changes; one after it holds nothing.
+#[test]
+fn the_last_tile_says_how_far_it_is_filled_and_is_not_immutable() {
+    let query = query();
+    let line = line(&query);
+    let bin_hours = 18;
+    let last = i64::from(LAST).div_euclid(BINS as i64 * bin_hours);
+    let (reply, _) = wire(&line, bin_hours, last);
+    assert!(!reply.immutable);
+    assert_eq!(reply.filled, Some(LAST));
+    let (before, _) = wire(&line, bin_hours, last - 1);
+    assert!(before.immutable);
+    assert_eq!(before.filled, Some(before.first_hour + (BINS as i64 * bin_hours) as i32 - 1));
+    let (after, tiles) = wire(&line, bin_hours, last + 1);
+    assert!(!after.immutable);
+    assert_eq!(after.filled, None);
+    assert!(tiles.iter().flatten().all(Option::is_none));
+}
+
+#[test]
+fn a_tile_of_a_tag_the_recording_lacks_is_refused_by_name() {
+    let query = query();
+    let line = line(&query);
+    let error = tile(&line, "1", &whole(&["GER", "XYZ"]), None, 6, 10, false).unwrap_err();
+    assert!(error.to_string().contains("XYZ"), "{error}");
+}
+
+/// Values a 32-bit raw word cannot carry exactly go as floats, hours in the bytes a bin needs, and
+/// a level bin as one value.
+#[test]
+fn bins_round_trip_through_every_width() {
+    let bucket = |value: f64| ChartBucket {
+        absolute_total: 0,
+        first_hour: 70_000,
+        last_hour: 140_000,
+        first_value: value,
+        last_value: 1.5,
+        last_value_hour: 100_000,
+        min_hour: 70_000,
+        min_value: -2.25,
+        max_hour: 139_999,
+        max_value: value.max(1.5),
+        first_break: true,
+        has_break: false,
+    };
+    for (value, raw) in [(3.0, true), (0.1, true), (0.123, false), (5e12, false)] {
+        let mut buckets = vec![None; BINS];
+        buckets[0] = Some(bucket(value));
+        let (bytes, raw_values, hour_bytes) = encode(&buckets, 70_000, 73_728, 100.0);
+        assert_eq!((raw_values, hour_bytes), (raw, 4));
+        assert_eq!(decode(&bytes, 1, 70_000, 73_728, 100.0, raw_values, hour_bytes).unwrap(), buckets);
+    }
+    let made = |start: i32, hours: i32, values: [f64; 4]| ChartBucket {
+        absolute_total: 0,
+        first_hour: start,
+        last_hour: start + hours - 1,
+        first_value: values[0],
+        last_value: values[1],
+        last_value_hour: start + hours / 2,
+        min_hour: start,
+        min_value: values[2],
+        max_hour: start + hours - 1,
+        max_value: values[3],
+        first_break: false,
+        has_break: true,
+    };
+    for (bin_hours, hours) in [(6, 1), (96 * 3, 2), (24_576 * 3, 4)] {
+        let mut buckets = vec![None; 2 * BINS];
+        buckets[3] = Some(made(3 * bin_hours as i32, bin_hours as i32, [-7.5; 4]));
+        buckets[BINS + 1] = Some(made(bin_hours as i32, bin_hours as i32, [4.25, 3.0, 1.5, 6.0]));
+        let (bytes, raw_values, hour_bytes) = encode(&buckets, 0, bin_hours, 100.0);
+        assert_eq!(hour_bytes, hours);
+        assert_eq!(bytes.len(), 2 * BINS + (1 + 4) * 4 + 2 * 5 * usize::from(hours), "a level bin carries one value");
+        assert_eq!(decode(&bytes, 2, 0, bin_hours, 100.0, raw_values, hour_bytes).unwrap(), buckets);
+    }
+    assert_eq!(unbase64(&base64(b"tiles!?")), b"tiles!?");
+}
+
+#[test]
+fn bins_of_no_view_are_refused() {
+    for bin_hours in [0, -6, 100, 6 * 16 * 15 + 6] {
+        assert!(level_of(bin_hours).is_err(), "{bin_hours}");
+    }
+    assert_eq!(level_of(5).unwrap(), replay::lanes::WALKED);
+    assert_eq!(level_of(90).unwrap(), 0);
+    assert_eq!(level_of(96 * 15).unwrap(), 1);
+}
+
+/// A tile asked with marks carries each line's drops per bin, walked bins and summary bins alike,
+/// and how many it dropped on the timeline before the tile, against the drops the fixture's own
+/// values make.
+#[test]
+fn a_tile_carries_its_drops_per_bin_and_the_drops_before_it() {
+    let query = query();
+    let line = line(&query);
+    let mut compared = 0;
+    for bin_hours in [1, 3, 6, 18, 96, 288] {
+        let span = BINS as i64 * bin_hours;
+        for index in i64::from(FIRST).div_euclid(span)..=i64::from(LAST).div_euclid(span) {
+            let reply = tile(&line, "1", &whole(&TAGS), None, bin_hours, index, true).unwrap();
+            let first = reply.first_hour;
+            for (at, tag) in TAGS.iter().enumerate() {
+                let id = 9001 + at as u32;
+                let marks = reply.lines[at].marks.clone().expect("asked with marks");
+                let before = (FIRST..first).filter(|&hour| held(&query, tag, hour) && dropped(id, hour)).count();
+                assert_eq!(marks.before, before.to_string(), "{tag}, bins of {bin_hours}, tile {index}");
+                let mut bins: Vec<(u32, u64)> = Vec::new();
+                for hour in first..first + span as i32 {
+                    if held(&query, tag, hour) && dropped(id, hour) {
+                        let bin = ((i64::from(hour) - i64::from(first)) / bin_hours) as u32;
+                        match bins.last_mut() {
+                            Some(last) if last.0 == bin => last.1 += 1,
+                            _ => bins.push((bin, 1)),
+                        }
+                    }
+                }
+                compared += bins.len();
+                assert_eq!(marks.bins, bins, "{tag}, bins of {bin_hours}, tile {index}");
+            }
+        }
+    }
+    assert!(compared > 100, "{compared} bins with drops compared");
+    let plain = tile(&line, "1", &whole(&["GER"]), None, 6, 30, false).unwrap();
+    assert!(plain.lines[0].marks.is_none(), "marks only when asked");
+}
+
+/// Hourly tiles' runs, joined across their seams and cut to a view, equal today's hourly reply for
+/// that view, its runs and its bins: at a segment's start, inside one, across a tile's seam, across
+/// the hours the timeline does not hold, where a tag starts to exist, and at the timeline's end.
+#[test]
+fn an_hourly_tile_holds_the_runs_a_view_of_its_hours_reads() {
+    let query = query();
+    let line = line(&query);
+    let tags: Vec<String> = TAGS.map(str::to_owned).to_vec();
+    let seam = (FIRST / 256 + 20) * 256;
+    let views = [(FIRST, FIRST + 167), (FIRST + 1_003, FIRST + 1_170), (seam - 30, seam + 90), (SECOND - 100, SECOND + 50), (ITA_FROM - 20, ITA_FROM + 100), (LAST - 150, LAST), (FIRST + 41, FIRST + 300)];
+    let mut runs_compared = 0;
+    for (from, to) in views {
+        let today = line.summaries(&tags, from, to, 600).unwrap();
+        let mut joined: Vec<Vec<ChartRun>> = vec![Vec::new(); tags.len()];
+        let mut parts: Vec<Vec<TilePart>> = vec![Vec::new(); tags.len()];
+        for index in from.div_euclid(256)..=to.div_euclid(256) {
+            let reply = tile(&line, "1", &whole(&TAGS), None, 1, i64::from(index), false).unwrap();
+            assert_eq!(reply.hour_bytes, 0, "an hourly tile carries runs");
+            let runs = decode_runs(&unbase64(&reply.bins), tags.len(), reply.first_hour, line.scale(), reply.raw_values).unwrap();
+            for (at, held) in runs.into_iter().enumerate() {
+                for (first, last, value, flags) in held {
+                    match joined[at].last_mut() {
+                        Some(run) if flags & SEAM != 0 && run.last_hour + 1 == first => run.last_hour = last,
+                        _ => joined[at].push(ChartRun { first_hour: first, last_hour: last, value, break_before: flags & FIRST_BREAK != 0 }),
+                    }
+                }
+                parts[at].extend(reply.lines[at].parts.iter().cloned());
+            }
+        }
+        for (at, tag) in TAGS.iter().enumerate() {
+            let segment = parts[at].iter().find(|part| part.first_hour <= from && from <= part.last_hour).map(|part| part.segment_first_hour);
+            let ours: Vec<ChartRun> = joined[at]
+                .iter()
+                .filter(|run| run.last_hour >= from && run.first_hour <= to)
+                .map(|run| match run.first_hour <= from {
+                    true => ChartRun { first_hour: from, last_hour: run.last_hour.min(to), break_before: segment == Some(from), ..run.clone() },
+                    false => ChartRun { last_hour: run.last_hour.min(to), ..run.clone() },
+                })
+                .collect();
+            assert_eq!(Some(&ours), today[at].0.runs.as_ref(), "{tag}'s runs over {from}..{to}");
+            runs_compared += ours.len();
+            let mut bins = vec![None; (to - from + 1) as usize];
+            for run in &ours {
+                for hour in run.first_hour..=run.last_hour {
+                    bins[(hour - from) as usize] = Some(ChartBucket {
+                        absolute_total: 0,
+                        first_hour: hour,
+                        last_hour: hour,
+                        first_value: run.value,
+                        last_value: run.value,
+                        last_value_hour: hour,
+                        min_hour: hour,
+                        min_value: run.value,
+                        max_hour: hour,
+                        max_value: run.value,
+                        first_break: hour == run.first_hour && run.break_before,
+                        has_break: false,
+                    });
+                }
+            }
+            let expected: Vec<Option<ChartBucket>> = today[at].0.buckets.iter().map(|bucket| bucket.map(|bucket| ChartBucket { absolute_total: 0, ..bucket })).collect();
+            assert_eq!(bins, expected, "{tag}'s hourly bins over {from}..{to}");
+        }
+    }
+    assert!(runs_compared > 20, "{runs_compared} runs compared");
+}
+
+/// A view assembled from its tiles as the UI does, asked through the tile product's own requests in
+/// groups of keys and read back from the wire, holds the chart read for the view widened to whole
+/// bins (an hourly view: its runs and bins), its hours not recorded and its drops per bin with the
+/// drops before each: walked bins and every level, off every grid, across the gap, where a tag
+/// starts, at the timeline's end, and with more keys than one request names.
+#[test]
+fn a_view_assembled_from_tiles_holds_the_chart_of_its_whole_bins() {
+    let query = query();
+    let line = line(&query);
+    let held = |tag: &str, hour: i32| query.holders.at(tag, hour).is_some() && query.timeline.at(hour).is_some();
+    let seam = (FIRST / 256 + 20) * 256;
+    let views = [
+        (FIRST + 7, LAST - 11, 64),
+        (FIRST + 5, LAST, 600),
+        (FIRST + 101, FIRST + 1_900, 600),
+        (SECOND - 2_000, SECOND + 700, 333),
+        (ITA_FROM - 500, ITA_FROM + 2_500, 100),
+        (FIRST, LAST, 3),
+        (LAST - 700, LAST, 128),
+        (FIRST, FIRST + 100, 64),
+        (seam - 30, seam + 90, 64),
+        (SECOND - 40, SECOND + 20, 64),
+        (ITA_FROM - 20, ITA_FROM + 30, 64),
+        (LAST - 50, LAST, 64),
+    ];
+    let (mut bins_compared, mut runs_compared, mut marks_compared) = (0, 0, 0);
+    let mut levels = std::collections::BTreeSet::new();
+    for (at, (from, to, width)) in views.into_iter().enumerate() {
+        let keys: Vec<&str> = match at < 2 {
+            true => TAGS.iter().copied().cycle().take(view::GROUP + 2).collect(),
+            false => TAGS.to_vec(),
+        };
+        let chart = serde_json::json!({ "branchId": "1", "family": { "kind": "country-measure", "measure": "politicalPower" },
+            "tags": keys, "from": from, "to": to, "width": width, "withMarks": true });
+        let (asked, requests) = view::requests(&chart).unwrap();
+        assert_eq!(asked, view::View { from, to, width });
+        let bin_hours = asked.bin_hours();
+        levels.insert(bin_hours);
+        assert_eq!(requests.len(), asked.tiles().count() * keys.len().div_ceil(view::GROUP), "{from}..{to} at {width}");
+        let replies: Vec<SeriesTileReply> = requests
+            .iter()
+            .map(|request| {
+                assert!(request.get("from").is_none() && request.get("width").is_none() && request["withMarks"] == true);
+                serde_json::from_value(serde_json::to_value(reply(&line, "1", request).unwrap()).unwrap()).unwrap()
+            })
+            .collect();
+        let assembled = view::assemble(asked, &replies).unwrap();
+        assert_eq!(assembled.bin_hours, bin_hours);
+        assert_eq!(assembled.series.iter().map(|line| line.tag.as_str()).collect::<Vec<_>>(), keys);
+        let tags: Vec<String> = TAGS.map(str::to_owned).to_vec();
+        let (first_bin, last_bin) = (i64::from(from).div_euclid(bin_hours) * bin_hours, i64::from(to).div_euclid(bin_hours) * bin_hours + bin_hours - 1);
+        let walked = match bin_hours {
+            1 => line.summaries(&tags, from, to, (to - from + 1) as u32).unwrap(),
+            _ => {
+                let whole = ((last_bin - first_bin + 1) / bin_hours) as u32;
+                assert_eq!(grid(last_bin - first_bin + 1, whole).1, bin_hours);
+                line.summaries(&tags, first_bin as i32, last_bin as i32, whole).unwrap()
+            }
+        };
+        let drops: Vec<Vec<(i32, i32, String, String)>> = TAGS
+            .iter()
+            .enumerate()
+            .map(|(own, tag)| {
+                let id = 9001 + own as u32;
+                let fell = |hour: i32| held(tag, hour) && dropped(id, hour);
+                let mut before = (FIRST..first_bin as i32).filter(|&hour| fell(hour)).count();
+                let (mut out, mut start) = (Vec::new(), first_bin);
+                while start <= i64::from(to) {
+                    let (first, last) = (start as i32, (start + bin_hours - 1) as i32);
+                    let count = (first..=last).filter(|&hour| fell(hour)).count();
+                    if count > 0 {
+                        out.push((first, last, before.to_string(), count.to_string()));
+                    }
+                    before += count;
+                    start += bin_hours;
+                }
+                out
+            })
+            .collect();
+        for assembled in &assembled.series {
+            let tag = assembled.tag.as_str();
+            let own = TAGS.iter().position(|held| *held == tag).unwrap();
+            let expected: Vec<Option<ChartBucket>> = walked[own].0.buckets.iter().map(|bucket| bucket.map(|bucket| ChartBucket { absolute_total: 0, ..bucket })).collect();
+            assert_eq!(assembled.summary.buckets, expected, "{tag}'s bins over {from}..{to} at {width}");
+            bins_compared += expected.iter().flatten().count();
+            if bin_hours == 1 {
+                assert_eq!(assembled.summary.runs, walked[own].0.runs, "{tag}'s runs over {from}..{to}");
+                runs_compared += assembled.summary.runs.as_ref().map_or(0, Vec::len);
+            }
+            let parts = line.parts(tag, from, to);
+            assert_eq!(assembled.missing, line.missing(tag, from, to, &parts).unwrap(), "{tag}'s hours not recorded over {from}..{to}");
+            let marks = assembled.marks.as_ref().expect("asked with marks");
+            let clusters: Vec<_> = marks.clusters.iter().map(|cluster| (cluster.first_hour, cluster.last_hour, cluster.first_ordinal.clone(), cluster.count.clone())).collect();
+            assert_eq!(clusters, drops[own], "{tag}'s drops over {from}..{to} at {width}");
+            marks_compared += clusters.len();
+        }
+    }
+    assert!(levels.len() >= 8, "{levels:?}");
+    assert!(bins_compared > 5_000 && runs_compared > 20 && marks_compared > 100, "{bins_compared} bins, {runs_compared} runs, {marks_compared} marks");
+}
+
+/// Each line's bins of `tags` asked together in one tile, from `query`.
+fn together(query: &Query<'static>, tags: &[&str], bin_hours: i64, index: i64) -> Vec<Vec<Option<ChartBucket>>> {
+    let line = line(query);
+    let reply = tile(&line, "1", &whole(tags), None, bin_hours, index, false).unwrap();
+    let buckets = decode(&unbase64(&reply.bins), tags.len(), reply.first_hour, bin_hours, line.scale(), reply.raw_values, reply.hour_bytes).unwrap();
+    buckets.chunks(BINS).map(<[_]>::to_vec).collect()
+}
+
+/// Tags whose holders start at other hours share one chart read a run, and each line's bins are
+/// those it has asked alone: also where one country holds two tags asked together, so its row
+/// before the change is the first tag's and after it the second's, in the bin the change falls in.
+#[test]
+fn a_line_has_the_same_bins_asked_alone_or_beside_tags_held_over_other_hours() {
+    let mut renamed = query();
+    let change = ITA_FROM + 7;
+    let run = |first: i32, last: i32| HolderRun { first, last, holder: Holder::Found { slot: 7, id: 9001 }, starts_segment: true };
+    let mut holders = (*renamed.holders).clone();
+    holders.tags.insert("GER".to_owned(), vec![run(FIRST, change - 1)]);
+    holders.tags.insert("PRU".to_owned(), vec![HolderRun { starts_segment: false, ..run(change, FIRST + FIRST_HOURS - 1) }, run(SECOND, LAST)]);
+    renamed.holders = std::sync::Arc::new(holders);
+    let mut compared = 0;
+    for (query, tags) in [(query(), vec!["GER", "ITA"]), (renamed, vec!["GER", "PRU", "ITA"])] {
+        for bin_hours in [3, 6, 18, 96] {
+            let index = i64::from(ITA_FROM).div_euclid(BINS as i64 * bin_hours);
+            let both = together(&query, &tags, bin_hours, index);
+            for (at, tag) in tags.iter().enumerate() {
+                let alone = together(&query, &[tag], bin_hours, index).remove(0);
+                assert_eq!(both[at], alone, "{tag} beside {tags:?}, bins of {bin_hours} hours");
+                // Hours are to the bucket of the bin's level: a bin of one bucket has its extremes at its first hour.
+                if level_of(bin_hours).unwrap() != replay::lanes::WALKED && bucket_hours(level_of(bin_hours).unwrap()) == bin_hours {
+                    for bucket in alone.iter().flatten() {
+                        assert_eq!((bucket.min_hour, bucket.max_hour), (bucket.first_hour, bucket.first_hour), "{tag}'s extremes in a bin of {bin_hours} hours");
+                    }
+                }
+                compared += alone.iter().flatten().count();
+            }
+        }
+    }
+    assert!(compared > 1_000, "{compared} bins compared");
+}

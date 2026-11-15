@@ -35,7 +35,7 @@ fn decoded_source_keeps_trigger_short_circuits_and_native_scope_order() {
     let operands: &dyn RecordedSource = source;
     assert_eq!(
         world::core_gap(operands).as_deref(),
-        Some("Provinces is truncated (3 rows missing)")
+        Some("provinces: read only in part (3 rows missing)")
     );
     with_world_traits(source, "", Err("none"), Err("none"), |world| {
         for (body, expected) in [
@@ -77,6 +77,6 @@ fn core_admission_keeps_the_original_first_gap_without_acquiring_rows() {
     let source: &dyn RecordedSource = &frame;
     assert_eq!(
         world::core_gap(source).as_deref(),
-        Some("CountryLinks is unavailable: synthetic links gap")
+        Some("country links: not available: synthetic links gap")
     );
 }

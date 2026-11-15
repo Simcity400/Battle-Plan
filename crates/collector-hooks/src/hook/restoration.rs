@@ -1,4 +1,12 @@
 //! Prepared loader-thread storage for restoration and final IP quiescence.
+//!
+//! A [`Batch`] restores many families under one suspension: its collect pass
+//! records each family's first unrestored publication and reports it not ready,
+//! so the family stops before any step that depends on the outcome; one
+//! suspension checks and restores every recorded publication, each with exactly
+//! the checks its own restore makes; the report pass answers each from the
+//! recording, and a later publication of a family that restored waits for the
+//! next batch.
 use super::*;
 use std::cell::RefCell;
 
@@ -17,10 +25,41 @@ impl std::fmt::Display for Refusal {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Mode {
+    Serial,
+    Collect,
+    Report,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Outcome {
+    Restored,
+    Busy,
+    Refused(Refusal),
+}
+
+/// One recorded publication: its hooks in `references` and the ranges of
+/// those it owns in `ranges`.
+struct Group {
+    start: usize,
+    len: usize,
+    ranges: Range<usize>,
+    protected: usize,
+    outcome: Option<Outcome>,
+}
+
+const BUSY: Refusal = Refusal {
+    reason: "restore site or native flight remains busy",
+    code: ERROR_RETRY,
+};
+
 pub struct Scratch {
     references: Vec<*mut Hook>,
     previous: Vec<(bool, bool)>,
     ranges: Vec<Range<usize>>,
+    groups: Vec<Group>,
+    mode: Mode,
     threads: Threads,
     refusal: Option<Refusal>,
     resume_failed: bool,
@@ -70,6 +109,9 @@ impl Scratch {
                 .map_err(|_| "restore state preparation failed")?,
             ranges: engine_allocation::vec(hooks)
                 .map_err(|_| "restore range preparation failed")?,
+            groups: engine_allocation::vec(hooks)
+                .map_err(|_| "restore batch preparation failed")?,
+            mode: Mode::Serial,
             threads,
             refusal: None,
             resume_failed: false,
@@ -97,6 +139,11 @@ impl Scratch {
         if !self.family_attempt {
             self.refusal = None;
         }
+        match self.mode {
+            Mode::Serial => {}
+            Mode::Collect => return self.record(hooks),
+            Mode::Report => return self.answer(hooks),
+        }
         self.references.clear();
         for hook in hooks {
             if self.references.len() == self.references.capacity()
@@ -120,6 +167,77 @@ impl Scratch {
         let ready = self.restore_prepared(hooks);
         self.references.clear();
         ready
+    }
+
+    /// Collect pass: keep the publication for the batch and report it not ready.
+    fn record<'a>(&mut self, hooks: impl Iterator<Item = &'a mut Hook>) -> bool {
+        let start = self.references.len();
+        for hook in hooks {
+            if self.references.len() == self.references.capacity()
+                || self.references.len() == self.previous.capacity()
+                || self.references.len() == self.ranges.capacity()
+            {
+                self.references.truncate(start);
+                return self.refuse(
+                    "prepared restore hook storage insufficient",
+                    ERROR_INSUFFICIENT_BUFFER,
+                );
+            }
+            self.references.push(hook as *mut Hook);
+        }
+        // SAFETY: the pointers were exclusive references lent by this call.
+        if self.references[start..]
+            .iter()
+            .all(|hook| !unsafe { &**hook }.is_enabled())
+        {
+            self.references.truncate(start);
+            return true;
+        }
+        if self.groups.len() == self.groups.capacity() {
+            self.references.truncate(start);
+            return self.refuse(
+                "prepared restore hook storage insufficient",
+                ERROR_INSUFFICIENT_BUFFER,
+            );
+        }
+        self.groups.push(Group {
+            start,
+            len: self.references.len() - start,
+            ranges: 0..0,
+            protected: 0,
+            outcome: None,
+        });
+        false
+    }
+
+    /// Report pass: the recorded outcome of these hooks' publication. One the
+    /// batch did not record waits for the next.
+    fn answer<'a>(&mut self, hooks: impl Iterator<Item = &'a mut Hook>) -> bool {
+        let (mut first, mut len, mut enabled) = (ptr::null_mut(), 0, false);
+        for hook in hooks {
+            if len == 0 {
+                first = hook as *mut Hook;
+            }
+            len += 1;
+            enabled |= hook.is_enabled();
+        }
+        let references = &self.references;
+        let outcome = self
+            .groups
+            .iter_mut()
+            .find(|group| {
+                group.len == len && references[group.start] == first && group.outcome.is_some()
+            })
+            .and_then(|group| group.outcome.take());
+        match outcome {
+            Some(Outcome::Restored) => true,
+            Some(Outcome::Refused(refusal)) => {
+                self.refusal.get_or_insert(refusal);
+                false
+            }
+            None if !enabled => true,
+            Some(Outcome::Busy) | None => self.refuse(BUSY.reason, BUSY.code),
+        }
     }
 
     fn restore_prepared(&mut self, hooks: &mut [&mut Hook]) -> bool {
@@ -285,6 +403,239 @@ impl Scratch {
         }
     }
 
+    /// Every recorded publication under one suspension; the number restored.
+    fn publish_batch(&mut self) -> usize {
+        self.mode = Mode::Report;
+        if self.groups.is_empty() {
+            return 0;
+        }
+        if self.resume_failed {
+            for group in &mut self.groups {
+                group.outcome = Some(Outcome::Refused(Refusal {
+                    reason: "restore thread resume failed",
+                    code: 0,
+                }));
+            }
+            return 0;
+        }
+        let _publication = PUBLICATION
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Self {
+            references,
+            previous,
+            ranges,
+            groups,
+            threads,
+            ..
+        } = self;
+        // SAFETY: each pointer was an exclusive reference to a distinct hook
+        // lent to the collect pass; nothing else reaches those hooks until the
+        // report pass.
+        let hooks = unsafe {
+            std::slice::from_raw_parts_mut(references.as_mut_ptr().cast::<&mut Hook>(), references.len())
+        };
+        previous.clear();
+        previous.extend(hooks.iter().map(|hook| (hook.enabled, hook.is_enabled())));
+        ranges.clear();
+        for group in groups.iter_mut() {
+            let begin = ranges.len();
+            let owned = group.start..group.start + group.len;
+            ranges.extend(
+                hooks[owned.clone()]
+                    .iter()
+                    .zip(&previous[owned])
+                    .filter(|(_, (_, owned))| *owned)
+                    .map(|(hook, _)| hook.site..hook.site + hook.sentinel_len),
+            );
+            group.ranges = begin..ranges.len();
+        }
+        for group in groups.iter_mut() {
+            for index in group.start..group.start + group.len {
+                if !previous[index].1 {
+                    continue;
+                }
+                let hook = &hooks[index];
+                let mut prior = 0;
+                if unsafe {
+                    VirtualProtect(
+                        hook.site as *const c_void,
+                        hook.sentinel_len,
+                        PAGE_EXECUTE_READWRITE,
+                        &mut prior,
+                    )
+                } == 0
+                {
+                    group.outcome = Some(Outcome::Refused(Refusal {
+                        reason: "restore page preparation failed",
+                        code: unsafe { GetLastError() },
+                    }));
+                    break;
+                }
+                group.protected += 1;
+            }
+        }
+        let mut written = false;
+        match threads.suspend_prepared() {
+            Err(code) => {
+                let reason = threads
+                    .census_refusal()
+                    .unwrap_or("restore suspension or publication failed");
+                for group in groups.iter_mut().filter(|group| group.outcome.is_none()) {
+                    group.outcome = Some(Outcome::Refused(Refusal { reason, code }));
+                }
+            }
+            Ok(()) => {
+                for group in groups.iter_mut().filter(|group| group.outcome.is_none()) {
+                    let owned = group.start..group.start + group.len;
+                    let members = &mut hooks[owned.clone()];
+                    let states = &previous[owned];
+                    let mut snapshot_refusal = false;
+                    match Hook::family_ready::<false>(
+                        members,
+                        false,
+                        |index| states[index].1,
+                        &ranges[group.ranges.clone()],
+                        threads,
+                        &mut snapshot_refusal,
+                    ) {
+                        Ok(false) => group.outcome = Some(Outcome::Busy),
+                        Err(code) => {
+                            group.outcome = Some(Outcome::Refused(Refusal {
+                                reason: if snapshot_refusal {
+                                    "restore hook bytes differ"
+                                } else {
+                                    threads
+                                        .census_refusal()
+                                        .unwrap_or("restore suspension or publication failed")
+                                },
+                                code,
+                            }));
+                        }
+                        Ok(true) => {
+                            for (hook, (_, owned)) in members.iter_mut().zip(states) {
+                                if *owned && hook.enabled {
+                                    unsafe {
+                                        ptr::copy_nonoverlapping(
+                                            hook.original.as_ptr(),
+                                            hook.site as *mut u8,
+                                            hook.patch_len,
+                                        )
+                                    };
+                                    hook.enabled = false;
+                                    hook.needs_flush = true;
+                                }
+                            }
+                            group.outcome = Some(Outcome::Restored);
+                            written = true;
+                        }
+                    }
+                }
+            }
+        }
+        if written {
+            let restored = |group: &Group| group.outcome == Some(Outcome::Restored);
+            if let Err(code) = shared::real_flush() {
+                // Put every written publication back before any thread runs.
+                for group in groups.iter_mut().filter(|group| restored(group)) {
+                    for index in group.start..group.start + group.len {
+                        let (enabled, owned) = previous[index];
+                        if !owned {
+                            continue;
+                        }
+                        let hook = &mut hooks[index];
+                        let bytes = if enabled { &hook.patch } else { &hook.original };
+                        unsafe {
+                            ptr::copy_nonoverlapping(
+                                bytes.as_ptr(),
+                                hook.site as *mut u8,
+                                hook.patch_len,
+                            )
+                        };
+                        hook.enabled = enabled;
+                        hook.needs_flush = true;
+                    }
+                    group.outcome = Some(Outcome::Refused(Refusal {
+                        reason: "restore suspension or publication failed",
+                        code,
+                    }));
+                }
+                if shared::real_flush().is_ok()
+                    && hooks
+                        .iter()
+                        .filter(|hook| hook.needs_flush)
+                        .all(|hook| hook.bytes_match(hook.enabled))
+                {
+                    for hook in hooks.iter_mut() {
+                        hook.needs_flush = false;
+                    }
+                }
+            } else {
+                for group in groups.iter_mut().filter(|group| restored(group)) {
+                    let owned = group.start..group.start + group.len;
+                    let members = &mut hooks[owned.clone()];
+                    if members
+                        .iter()
+                        .zip(&previous[owned])
+                        .any(|(hook, (_, owned))| *owned && !hook.bytes_match(false))
+                    {
+                        group.outcome = Some(Outcome::Refused(Refusal {
+                            reason: "restore hook bytes differ",
+                            code: 0,
+                        }));
+                    } else {
+                        for hook in members.iter_mut() {
+                            hook.needs_flush = false;
+                        }
+                    }
+                }
+            }
+        }
+        for group in groups.iter_mut() {
+            let mut protected = group.protected;
+            for index in group.start..group.start + group.len {
+                if protected == 0 {
+                    break;
+                }
+                if !previous[index].1 {
+                    continue;
+                }
+                protected -= 1;
+                let hook = &mut hooks[index];
+                let mut prior = 0;
+                if unsafe {
+                    VirtualProtect(
+                        hook.site as *const c_void,
+                        hook.sentinel_len,
+                        hook.page_protection,
+                        &mut prior,
+                    )
+                } == 0
+                {
+                    group.outcome = Some(Outcome::Refused(Refusal {
+                        reason: "restore page protection failed",
+                        code: unsafe { GetLastError() },
+                    }));
+                    hook.needs_flush = true;
+                }
+            }
+        }
+        if let Err(code) = threads.resume() {
+            self.resume_failed = true;
+            for group in &mut self.groups {
+                group.outcome = Some(Outcome::Refused(Refusal {
+                    reason: "restore thread resume failed",
+                    code,
+                }));
+            }
+            return 0;
+        }
+        self.groups
+            .iter()
+            .filter(|group| group.outcome == Some(Outcome::Restored))
+            .count()
+    }
+
     fn quiet(
         &mut self,
         ranges: &[Range<usize>],
@@ -333,6 +684,51 @@ impl Drop for Guard {
 
 pub fn active() -> bool {
     SCRATCH.with_borrow(|scratch| scratch.is_some())
+}
+
+/// A batch over the prepared restoration: [`Batch::collect`] starts the
+/// collect pass, [`Batch::publish`] restores what it recorded and starts the
+/// report pass, and dropping it ends the batch. Not `Send`: the batch is the
+/// calling thread's.
+pub struct Batch(std::marker::PhantomData<*const ()>);
+
+impl Batch {
+    /// `None` without prepared restoration or inside another batch.
+    pub fn collect() -> Option<Self> {
+        SCRATCH.with_borrow_mut(|scratch| {
+            let scratch = scratch.as_mut()?;
+            if scratch.mode != Mode::Serial {
+                return None;
+            }
+            scratch.references.clear();
+            scratch.groups.clear();
+            scratch.mode = Mode::Collect;
+            Some(Self(std::marker::PhantomData))
+        })
+    }
+
+    /// Restore every recorded publication under one suspension; the number
+    /// restored.
+    pub fn publish(&mut self) -> usize {
+        SCRATCH.with_borrow_mut(|scratch| {
+            scratch
+                .as_mut()
+                .expect("prepared restoration")
+                .publish_batch()
+        })
+    }
+}
+
+impl Drop for Batch {
+    fn drop(&mut self) {
+        SCRATCH.with_borrow_mut(|scratch| {
+            if let Some(scratch) = scratch {
+                scratch.mode = Mode::Serial;
+                scratch.groups.clear();
+                scratch.references.clear();
+            }
+        });
+    }
 }
 
 pub fn refusal() -> Option<Refusal> {
@@ -385,4 +781,5 @@ pub fn quiet(
 }
 
 #[cfg(test)]
+#[path = "restoration/tests.rs"]
 mod tests;

@@ -3,10 +3,11 @@
 // it. A test loads its fixture module into the page and acts through it.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { createReadStream, existsSync } from 'node:fs';
+import type { ServerResponse } from 'node:http';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { resolve, sep } from 'node:path';
+import { basename, resolve, sep } from 'node:path';
 import { setTimeout as pause } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'vite';
@@ -28,6 +29,29 @@ function cdp(endpoint: string, method: string, params: Record<string, unknown> =
     });
     socket.addEventListener('error', () => { cleanup(); reject(new Error(`${method} connection failed`)); });
   });
+}
+
+type ReplyFormat = { FORMAT_FILE: string; formatOf(text: string): { lines: string[]; digest: string } };
+
+/** The real replies a fixture is served (`ui/src/test-support/recorded.ts`): the file `BATTLE_PLAN_RECORDED_REPLIES` names at
+ * `/recorded-replies`, and this tree's recording format at `/recorded-replies/format`, which the file must match. */
+async function recordedReplies(path: string, response: ServerResponse): Promise<void> {
+  const file = (process.env.BATTLE_PLAN_RECORDED_REPLIES ?? process.env.HOI4_RECORDED_REPLIES) || null;
+  if (path === '/format') {
+    const { FORMAT_FILE, formatOf } = await import(new URL('./e2e/replies.mjs', import.meta.url).href) as ReplyFormat;
+    const tree = formatOf(await readFile(fileURLToPath(new URL(`../${FORMAT_FILE}`, import.meta.url)), 'utf8'));
+    response.setHeader('Content-Type', 'application/json');
+    response.end(JSON.stringify({ file: file && basename(file), formatFile: FORMAT_FILE, ...tree }));
+    return;
+  }
+  if (!file || !existsSync(file)) {
+    response.statusCode = 404;
+    response.end(file ? `BATTLE_PLAN_RECORDED_REPLIES names ${file}, which does not exist`
+      : 'No recorded replies: set BATTLE_PLAN_RECORDED_REPLIES to a file the acceptance sweep recorded (`--record-replies`) from the 13-year recording of the current format');
+    return;
+  }
+  response.setHeader('Content-Type', 'application/gzip');
+  createReadStream(file).pipe(response);
 }
 
 const KEY_CODES = { Tab: 9, Enter: 13, Escape: 27, PageUp: 33, PageDown: 34, End: 35, Home: 36, ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40 };
@@ -55,9 +79,12 @@ export async function withNativePage(name: string, fixture: string, run: (page: 
   const profile = await mkdtemp(resolve(tmpdir(), `${name}-`));
   const route = `/${name}-page`;
   const vite = await createServer({ configFile: false, root: fileURLToPath(new URL('../', import.meta.url)),
-    cacheDir: resolve(profile, 'vite'), optimizeDeps: { include: ['react', 'react-dom', 'react-dom/client', 'react/jsx-dev-runtime'], noDiscovery: true },
+    cacheDir: resolve(profile, 'vite'), optimizeDeps: { include: ['react', 'react-dom', 'react-dom/client', 'react/jsx-dev-runtime', 'react-grid-layout'], noDiscovery: true },
     server: { host: '127.0.0.1', port: 0, watch: null, hmr: false, ws: false },
     plugins: [{ name: `${name}-page`, configureServer(server) {
+      server.middlewares.use('/recorded-replies', (request, response) => {
+        recordedReplies((request.url ?? '/').split('?')[0]!, response).catch(error => { response.statusCode = 500; response.end(String(error)); });
+      });
       server.middlewares.use(route, (_request, response) => {
         response.setHeader('Content-Type', 'text/html'); response.end(`<!doctype html><title>${name}</title>`);
       });

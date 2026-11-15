@@ -12,7 +12,7 @@ fn all_countries_and_raw_aliases_follow_the_native_writer_without_extra_reads() 
         ..kit::A1 + engine_native::cunit::EXPEDITIONARY_OWNER + 4]
         .copy_from_slice(&u32::MAX.to_le_bytes());
     let mut census = Census::new();
-    census.capture(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE, 64);
+    census.capture(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE);
     let mut output = vec![DivisionCensusRow::default(); 8];
     assert_eq!(census.install_counts(&mut output), Outcome::Rows { len: 3 });
     assert_eq!(
@@ -44,7 +44,7 @@ fn all_countries_and_raw_aliases_follow_the_native_writer_without_extra_reads() 
     );
     census.clear();
     bytes[kit::A2..kit::A2 + 8].fill(0);
-    census.capture(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE, 64);
+    census.capture(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE);
     assert!(matches!(
         census.install_counts(&mut output),
         Outcome::Unavailable { .. }
@@ -52,20 +52,12 @@ fn all_countries_and_raw_aliases_follow_the_native_writer_without_extra_reads() 
 }
 
 #[test]
-fn country_capacity_failure_does_not_accept_a_partial_count_and_grows_off_thread() {
+fn short_country_counts_grow_in_the_capture() {
     let bytes = kit::fixture();
     let mut census = Census::new();
     census.counts.truncate(2);
-    census.capture(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE, 64);
+    census.capture(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE);
     let mut output = vec![DivisionCensusRow::default(); 8];
-    assert!(matches!(
-        census.install_counts(&mut output),
-        Outcome::Unavailable { .. }
-    ));
-    assert!(census.counts_need_growth());
-    census.grow();
-    census.clear();
-    census.capture(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE, 64);
     assert_eq!(census.install_counts(&mut output), Outcome::Rows { len: 2 });
 }
 

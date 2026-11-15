@@ -60,6 +60,36 @@ struct NativeDraw<'a> {
     bound: shader_pipeline::gpu::Bindings,
 }
 
+/// The order field's parts by their producer, in the order their ribbons join the draw list: the
+/// orders layer's plan, the raid arrows, the trade routes, then the overlay's air orders, which
+/// take the place of the others' air-mode ribbons.
+pub const ORDER_PARTS: usize = 4;
+const AIR: usize = 3;
+
+/// The parts' places in the vertex buffer: the plan, given anew at every step, last, so a plan of
+/// another length moves no other part's vertices.
+const LAYOUT: [usize; ORDER_PARTS] = [1, 2, 3, 0];
+
+/// Vertices compared and written as one unit: a run of changed units is one write.
+const CHUNK: usize = 64;
+
+/// One part as the buffer holds it: its first vertex, its vertices, and its ribbons as given.
+#[derive(Clone, Default)]
+struct Part {
+    start: u32,
+    len: u32,
+    draws: Vec<OrderDraw>,
+}
+
+/// What an upload of the parts did: vertex bytes written, writes made, and whether the draw list
+/// was made again.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OrderUpload {
+    pub bytes: usize,
+    pub writes: usize,
+    pub draws: bool,
+}
+
 /// The GPU battle-plan pass.
 pub struct OrderPass {
     types: BTreeMap<(String, usize), TypeResources>,
@@ -67,6 +97,74 @@ pub struct OrderPass {
     native_bytes: Arc<[u8]>,
     draws: Vec<OrderDraw>,
     native_plans: BTreeMap<Mode, Vec<native::View>>,
+    parts: [Part; ORDER_PARTS],
+}
+
+/// Each part's place in the buffer laid out as [`LAYOUT`] (its draws left out), and the vertices
+/// in all.
+fn places(parts: &[Option<&OrderField>; ORDER_PARTS]) -> ([Part; ORDER_PARTS], u32) {
+    let mut placed: [Part; ORDER_PARTS] = Default::default();
+    let mut at = 0;
+    for &part in &LAYOUT {
+        let len = parts[part].map_or(0, |field| field.native_vertices.len() as u32);
+        placed[part] = Part { start: at, len, draws: Vec::new() };
+        at += len;
+    }
+    (placed, at)
+}
+
+/// The byte runs of `parts` placed at `placed` that differ from `held` (the bytes laid out before),
+/// compared in place a [`CHUNK`] of vertices at a time, neighbouring runs joined.
+fn changed_runs(parts: &[Option<&OrderField>; ORDER_PARTS], placed: &[Part; ORDER_PARTS], held: &[u8]) -> Vec<std::ops::Range<usize>> {
+    let stride = std::mem::size_of::<viewer_foundation::map::ribbon_content::Vertex>();
+    let mut runs: Vec<std::ops::Range<usize>> = Vec::new();
+    for &part in &LAYOUT {
+        let Some(field) = parts[part] else { continue };
+        let bytes: &[u8] = bytemuck::cast_slice(&field.native_vertices);
+        let base = placed[part].start as usize * stride;
+        for start in (0..bytes.len()).step_by(CHUNK * stride) {
+            let end = (start + CHUNK * stride).min(bytes.len());
+            if held.get(base + start..base + end) == Some(&bytes[start..end]) {
+                continue;
+            }
+            match runs.last_mut() {
+                Some(run) if run.end == base + start => run.end = base + end,
+                _ => runs.push(base + start..base + end),
+            }
+        }
+    }
+    runs
+}
+
+/// The bytes of `parts` laid out as [`LAYOUT`].
+fn laid_out(parts: &[Option<&OrderField>; ORDER_PARTS]) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    for &part in &LAYOUT {
+        if let Some(field) = parts[part] {
+            bytes.extend_from_slice(bytemuck::cast_slice(&field.native_vertices));
+        }
+    }
+    bytes
+}
+
+/// The draw list of `parts` placed at `placed`, as appending each to the one before it makes it:
+/// the plan's ribbons as given, then each other part's after them with its strips moved to its
+/// place and no label, sorted; the air orders replace the air-mode ribbons before them.
+fn draw_list(parts: &[Option<&OrderField>; ORDER_PARTS], placed: &[Part; ORDER_PARTS]) -> Vec<OrderDraw> {
+    let moved = |part: usize, draw: &OrderDraw, label: bool| {
+        let base = placed[part].start;
+        OrderDraw { native_strips: draw.native_strips.iter().map(|strip| strip.start + base..strip.end + base).collect(), label: if label { draw.label } else { None }, ..draw.clone() }
+    };
+    let mut draws: Vec<OrderDraw> = parts[0].map_or_else(Vec::new, |plan| plan.draws.iter().map(|draw| moved(0, draw, true)).collect());
+    for part in 1..ORDER_PARTS {
+        let Some(field) = parts[part] else { continue };
+        if part == AIR {
+            draws.retain(|draw| !draw.air_mode);
+        }
+        draws.extend(field.draws.iter().map(|draw| moved(part, draw, false)));
+        viewer_foundation::map::ribbon_mesh::sort_draws(&mut draws);
+    }
+    draws
 }
 
 impl OrderPass {
@@ -111,6 +209,7 @@ impl OrderPass {
             native_bytes: Default::default(),
             draws: Vec::new(),
             native_plans: BTreeMap::new(),
+            parts: Default::default(),
         };
         pass.upload_types(device, samples, queue, assets, effect)?;
         Ok(pass)
@@ -195,21 +294,54 @@ impl OrderPass {
     }
 
     /// Uploads one hour's ribbons. Called whenever the hour changes.
-    pub fn upload(&mut self, device: &wgpu::Device, field: OrderField) -> io::Result<()> {
-        self.draws.clear();
-        self.native_bytes = bytemuck::cast_slice(&field.native_vertices).into();
-        if field.native_vertices.is_empty() {
-            self.native_vertices = None;
-            return Ok(());
+    /// The order field's parts by producer ([`ORDER_PARTS`]): the vertex buffer written only
+    /// where its bytes changed (a part of another length moves the parts placed after it), grown
+    /// when they no longer fit, and the draw list made again only when a part's ribbons or place
+    /// changed. Parts equal to those held write nothing.
+    pub fn upload_parts(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, parts: [Option<&OrderField>; ORDER_PARTS]) -> io::Result<OrderUpload> {
+        let stride = std::mem::size_of::<viewer_foundation::map::ribbon_content::Vertex>();
+        let (mut placed, total) = places(&parts);
+        let size = total as usize * stride;
+        let mut done = OrderUpload::default();
+        if size == 0 {
+            done.draws = !self.draws.is_empty();
+            (self.native_vertices, self.native_bytes, self.draws, self.parts) = (None, Default::default(), Vec::new(), placed);
+            return Ok(done);
         }
-        self.native_vertices = Some(buffer(
-            device,
-            "native battle-plan ribbon vertices",
-            wgpu::BufferUsages::VERTEX,
-            bytemuck::cast_slice(&field.native_vertices),
-        )?);
-        self.draws = field.draws;
-        Ok(())
+        let runs = changed_runs(&parts, &placed, &self.native_bytes);
+        let fits = self.native_vertices.as_ref().is_some_and(|held| held.size() >= size as u64);
+        if !runs.is_empty() || size != self.native_bytes.len() || !fits {
+            let bytes = laid_out(&parts);
+            if fits {
+                let held = self.native_vertices.as_ref().expect("fits");
+                for run in &runs {
+                    shader_pipeline::gpu::stats::write_buffer(queue, held, run.start as u64, &bytes[run.clone()]);
+                    (done.bytes, done.writes) = (done.bytes + run.len(), done.writes + 1);
+                }
+            } else {
+                let grown = (size as u64).max(self.native_vertices.as_ref().map_or(0, |held| held.size() * 2));
+                let mut padded = bytes.clone();
+                padded.resize(grown as usize, 0);
+                self.native_vertices = Some(buffer(device, "native battle-plan ribbon vertices", wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, &padded)?);
+                (done.bytes, done.writes) = (size, 1);
+            }
+            self.native_bytes = bytes.into();
+        }
+        let moved = placed.iter().zip(&self.parts).zip(&parts).any(|((now, was), field)| now.start != was.start || now.len != was.len || field.map_or(&[][..], |field| &field.draws[..]) != &was.draws[..]);
+        if moved || self.draws.is_empty() {
+            self.draws = draw_list(&parts, &placed);
+            for (part, field) in placed.iter_mut().zip(&parts) {
+                part.draws = field.map_or_else(Vec::new, |field| field.draws.clone());
+            }
+            self.parts = placed;
+            done.draws = true;
+        }
+        Ok(done)
+    }
+
+    /// A whole field, as one part.
+    pub fn upload(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, field: OrderField) -> io::Result<()> {
+        self.upload_parts(device, queue, [Some(&field), None, None, None]).map(drop)
     }
 
     fn prepare_bucket(
@@ -492,6 +624,90 @@ impl Drawing<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use viewer_foundation::map::{ribbon_content::Vertex, ribbon_mesh};
+
+    fn draw(arrow: &str, declaration_index: usize, air_mode: bool, label: Option<usize>, strips: std::ops::Range<u32>) -> OrderDraw {
+        OrderDraw {
+            air_mode,
+            arrow_type: arrow.to_owned(),
+            texture_choice: 0,
+            color: [1.0; 4],
+            total_length: 1.0,
+            uv_to_length: 1.0,
+            culling_offset: 0.0,
+            declaration_index,
+            width: declaration_index as f32,
+            label,
+            native_strips: vec![strips],
+            bounds: [[0.0; 3]; 2],
+            secondary_color: [1.0; 4],
+            outer_color: [1.0; 4],
+            execution: Default::default(),
+            kind: Default::default(),
+        }
+    }
+
+    /// A part of `vertices` vertices, each its own position from `seed`, drawn as one ribbon.
+    fn field(arrow: &str, declaration_index: usize, air_mode: bool, seed: f32, vertices: u32) -> OrderField {
+        OrderField {
+            native_vertices: (0..vertices).map(|at| Vertex { position: [seed, at as f32, 0.0], padding: 0, uv: [0.0; 4] }).collect(),
+            draws: vec![draw(arrow, declaration_index, air_mode, (arrow == "plan").then_some(0), 0..vertices)],
+            ..OrderField::default()
+        }
+    }
+
+    /// The ribbons the pass draws, by type, label and the vertices each strip reads.
+    fn drawn(draws: &[OrderDraw], bytes: &[u8]) -> Vec<(String, Option<usize>, Vec<Vertex>)> {
+        let vertices: &[Vertex] = bytemuck::cast_slice(bytes);
+        draws.iter().map(|draw| (draw.arrow_type.clone(), draw.label, draw.native_strips.iter().flat_map(|strip| vertices[strip.start as usize..strip.end as usize].to_vec()).collect())).collect()
+    }
+
+    /// The parts laid out with the plan last draw what appending each part to the one before it
+    /// drew (today's merge: the plan's labels, the others' strips moved, the air orders in place of
+    /// the air-mode ribbons): the same ribbons in the same order reading the same vertices.
+    #[test]
+    fn the_parts_draw_as_the_field_appended_part_by_part_draws() {
+        let (plan, raids, routes, air) = (field("plan", 2, false, 1.0, 300), field("raid", 1, false, 2.0, 70), field("route", 2, true, 3.0, 5), field("air", 0, true, 4.0, 9));
+        let parts = [Some(&plan), Some(&raids), Some(&routes), Some(&air)];
+        let base = ribbon_mesh::append(&ribbon_mesh::append(&plan, &raids), &routes);
+        let today = ribbon_mesh::append_kept(&base, |draw| !draw.air_mode, &air);
+        let (placed, total) = places(&parts);
+        let bytes = laid_out(&parts);
+        assert_eq!((total as usize, placed[0].start), (384, 84), "the plan is laid out last");
+        assert_eq!(drawn(&draw_list(&parts, &placed), &bytes), drawn(&today.draws, bytemuck::cast_slice(&today.native_vertices)));
+        let without_air = [Some(&plan), Some(&raids), Some(&routes), None];
+        let (placed, _) = places(&without_air);
+        assert_eq!(drawn(&draw_list(&without_air, &placed), &laid_out(&without_air)), drawn(&base.draws, bytemuck::cast_slice(&base.native_vertices)));
+    }
+
+    /// Parts of the same content, in new allocations, differ nowhere from the bytes laid out: no
+    /// write. A plan changed in one vertex differs in that vertex's chunk alone; a plan of another
+    /// length, laid out last, moves no other part's bytes.
+    #[test]
+    fn equal_parts_write_nothing_and_a_changed_plan_writes_its_changed_chunks_alone() {
+        let (plan, raids) = (field("plan", 2, false, 1.0, 300), field("raid", 1, false, 2.0, 70));
+        let held = laid_out(&[Some(&plan), Some(&raids), None, None]);
+        let (again, raids_again) = (plan.clone(), raids.clone());
+        let parts = [Some(&again), Some(&raids_again), None, None];
+        let (placed, _) = places(&parts);
+        assert!(changed_runs(&parts, &placed, &held).is_empty(), "the same content anew writes nothing");
+
+        let mut moved = plan.clone();
+        moved.native_vertices[200].position[2] = 9.0;
+        let parts = [Some(&moved), Some(&raids_again), None, None];
+        let (placed, _) = places(&parts);
+        let stride = std::mem::size_of::<Vertex>();
+        let chunk = (placed[0].start as usize + 192) * stride..(placed[0].start as usize + 256) * stride;
+        assert_eq!(changed_runs(&parts, &placed, &held), [chunk], "the changed vertex's chunk of the plan, nothing of the raids");
+
+        let mut longer = plan.clone();
+        longer.native_vertices.extend((0..10).map(|_| Vertex { position: [5.0; 3], padding: 0, uv: [0.0; 4] }));
+        let parts = [Some(&longer), Some(&raids_again), None, None];
+        let (placed, _) = places(&parts);
+        let runs = changed_runs(&parts, &placed, &held);
+        assert!(runs.iter().all(|run| run.start >= placed[0].start as usize * stride), "a longer plan writes past the raids: {runs:?}");
+        assert_eq!(runs.len(), 1, "its new tail alone: {runs:?}");
+    }
 
     #[test]
     fn plans_submit_their_shadows_and_draws_only_while_shown() {

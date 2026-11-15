@@ -604,13 +604,13 @@ unsafe extern "system-unwind" fn state_owner(
     caller: usize,
 ) -> usize {
     const SITE: usize = 7;
+    let timing = crate::hook_timing::enter(crate::hook_timing::Family::TerritoryChanges);
     let _occupation = (
         crate::occupation_changes::changed(first),
         crate::occupation_changes::changed(
             first.wrapping_add(engine_native::cstate::COUNTRY_MODIFIERS),
         ),
     );
-    let timing = crate::hook_timing::enter(crate::hook_timing::Family::TerritoryChanges);
     let _marks = DOMAIN.notify(SITE, target(MUTATIONS[SITE].1, first));
     let _inputs = crate::country_input_changes::forwarded_territory(SITE, first, second);
     let transfer = crate::war_provenance::state_owner_before(first, third, fourth, caller);

@@ -61,7 +61,7 @@ fn daily_status_owned_ranges_carry_footer_and_xp_but_keep_ratio_hourly() {
     let changes = Watches::enabled(2 * rows.len());
     let slot = held_store::Slot::new(Box::new(
         super::super::super::attack_stats::ArmyStatStore::new(),
-    ));
+    )).unwrap();
     let mut capture = populated.capture();
     capture.status_packet = carmy::StatusPacket::vacant();
     capture.enable_owned_settlement();
@@ -128,9 +128,9 @@ fn daily_status_owned_ranges_carry_footer_and_xp_but_keep_ratio_hourly() {
             capture.attack.exercise_experience[0],
             (hour != 2).then_some(i64::from(hour))
         );
-        let owned = Arc::new(crate::division_census::UnitInputs::fixture(
+        let owned = engine_allocation::shared(crate::division_census::UnitInputs::fixture(
             acquired_rows.to_vec(), outcome,
-        ));
+        )).unwrap();
         assert!(capture.retain_owned_settlement(store, Some(owned), context).is_none());
         // Decode has no memory capability. Changing the live footer now cannot
         // change either the carried sample or the owned fresh observations.
@@ -392,7 +392,6 @@ fn staged_supply_matches_ordered_selection_across_aliases_misses_and_allocation_
                 populated.world.state,
                 &rows,
                 Outcome::Rows { len: rows.len() },
-                rows.len()
             ),
             Outcome::Rows { len: rows.len() }
         );
@@ -481,8 +480,102 @@ fn staged_supply_matches_ordered_selection_across_aliases_misses_and_allocation_
             .daily_supply(populated.world.base, 0, &rows[0], &mut Default::default())
             .is_none()
     );
-    packet.enable_growth();
     let fresh = observe(&daily, &mut packet);
     assert!(fresh.0.iter().all(|&requested| requested));
     assert_eq!(fresh, select(&|_| None, &mut store));
+}
+
+/// One hour on `capture` with `store`, as the hour's acquisition and its owned settlement
+/// leave it: the store stays in the capture, as with a decode worker still settling.
+fn settled_hour(
+    populated: &Populated,
+    capture: &mut Captured,
+    mut store: held_store::Loan,
+    hour: i32,
+    rows: &[DivisionSeed],
+    outcome: Outcome,
+    changes: &Watches,
+) -> [TableView; N] {
+    let context = CaptureContext {
+        hour,
+        ..populated.context()
+    };
+    acquire(&populated.world.live(), capture, &mut store, context, rows, outcome, changes);
+    let owned = engine_allocation::shared(
+        crate::division_census::UnitInputs::fixture(rows.to_vec(), outcome),
+    )
+    .unwrap();
+    assert!(capture.retain_owned_settlement(store, Some(owned), context).is_none());
+    capture.decode_inputs();
+    capture.tables()
+}
+
+/// A decode worker still settling the hour before keeps that hour's store: the next hour's
+/// take gets a store of its own at once and records exactly the rows the held store gives,
+/// panel sources included, and the hour after carries on from the newer store. On the base
+/// the take waited until the older store came back.
+#[test]
+fn an_hour_never_waits_for_the_store_the_hour_before_still_settles() {
+    let populated = Populated::new();
+    let original = populated.census.unit_inputs().unwrap();
+    let rows = original.seeds().to_vec();
+    let outcome = original.outcome();
+    let changes = Watches::enabled(2 * rows.len());
+    let fresh_capture = || {
+        let mut capture = populated.capture();
+        capture.status_packet = carmy::StatusPacket::vacant();
+        capture.enable_owned_settlement();
+        capture.status_workers = 2;
+        capture
+    };
+    let new_slot = || {
+        held_store::Slot::new(Box::new(
+            super::super::super::attack_stats::ArmyStatStore::new(),
+        )).unwrap()
+    };
+    // The store comes back between hours.
+    let reference_slot = new_slot();
+    let mut reference = fresh_capture();
+    let expected: Vec<_> = (1..=2)
+        .map(|hour| {
+            reference_slot.prepare_hour(hour, false);
+            let store = reference_slot.take().unwrap();
+            let tables =
+                settled_hour(&populated, &mut reference, store, hour, &rows, outcome, &changes);
+            drop(reference.take_settled_store().unwrap());
+            tables
+        })
+        .collect();
+    // Hour 1's store is still with its decode worker when hour 2 takes.
+    let slot = new_slot();
+    let mut first = fresh_capture();
+    slot.prepare_hour(1, false);
+    let tables = settled_hour(&populated, &mut first, slot.take().unwrap(), 1, &rows, outcome, &changes);
+    assert_eq!(tables, expected[0]);
+    slot.prepare_hour(2, false);
+    let taker = {
+        let slot = slot.clone();
+        std::thread::spawn(move || slot.take())
+    };
+    let deadline = std::time::Instant::now() + crate::TEST_HANG_GUARD;
+    while !taker.is_finished() {
+        if std::time::Instant::now() >= deadline {
+            drop(first.take_settled_store());
+            let _ = taker.join();
+            panic!("the hour waited for the store the hour before still settles");
+        }
+        std::thread::yield_now();
+    }
+    let store = taker.join().unwrap().expect("the hour's own store");
+    let mut second = fresh_capture();
+    let tables = settled_hour(&populated, &mut second, store, 2, &rows, outcome, &changes);
+    assert!(matches!(tables[5], TableView::Complete(_)), "panel sources withheld");
+    assert_eq!(tables, expected[1]);
+    // The older store returns late and carries nothing on; the next hour takes hour 2's.
+    drop(first.take_settled_store().unwrap());
+    let newer = second.take_settled_store().unwrap();
+    let newer_address = &*newer as *const _;
+    drop(newer);
+    slot.prepare_hour(3, false);
+    assert_eq!(&*slot.take().unwrap() as *const _, newer_address);
 }

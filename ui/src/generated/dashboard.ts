@@ -108,7 +108,6 @@ export type Artwork = { token: string, name: string | null, description: string 
  */
 icon: string | null, };
 export type FocusDatabase = "national" | "continuous";
-export type LandOwners = { countries: Array<CountryMetadata>, warnings: Array<string>, };
 export type FocusEntry = { ordinal: number, token: string,
 /**
  * First observed completion after an earlier readable focus list. This is
@@ -127,77 +126,6 @@ export type FocusHistory = { segments: Array<FocusSegment>,
  * Recorded focus progress, compressed across equal consecutive hours.
  */
 progress: Array<FocusProgress>, };
-export type ResearchCoverage = { firstHour: number, lastHour: number, };
-export type ResearchOutcome = "active" | "completed" | "switched" | "unknown";
-export type ResearchEntry = { token: string, technologyHandle: number,
-/**
- * Repeated technology IDs have separate template indices; older histories omit this.
- */
-databaseIndex?: number | null,
-/**
- * Breaks attribution across missing hours or a changed country identity.
- */
-continuityStartHour: number,
-/**
- * Completed level when this assignment was first observed.
- */
-level: number, firstObservedHour: number,
-/**
- * Earlier differing observation; null for initial assignments and gaps.
- */
-startedAfterHour: number | null, lastObservedHour: number,
-/**
- * First observation of the outcome. Never expose it before this hour.
- */
-endedByHour: number | null,
-/**
- * Completion classification may arrive on a later inventory refresh.
- */
-outcomeObservedHour?: number | null, outcome: ResearchOutcome, };
-export type ResearchSlotState = { firstHour: number, lastHour: number, token: string | null, entryFirstObservedHour: number | null,
-/**
- * Native fixed5 operands. Strings preserve the complete signed i64 range.
- */
-speedMultiplierRaw: string, bankedDaysRaw: string, appliedDaysRaw: string, aheadReductionYearsRaw: string | null, details?: ResearchDetails | null, };
-export type ResearchDetails = {
-/**
- * Ceiling at the segment's first hour. Subtract complete days elapsed within
- * this segment. Never inferred from future completion.
- */
-remainingDays: number | null,
-/**
- * None means attribution unavailable; empty means no applied IDs.
- */
-bonuses: Array<ResearchBonus> | null, modifiers?: ResearchModifiers | null, };
-export type ResearchModifiers = { components: Array<ResearchModifier>, totalBonusRaw: string, year: number, aheadFactorRaw: string, minimumSpeedRaw: string, };
-export type ResearchModifier = { kind: string, raw: string, sources: Array<ResearchModifierSource>, };
-export type ResearchModifierSource = { token: string | null, name: string | null, raw: string, };
-export type ResearchBonus = { id: number, token: string | null, name: string | null, speedBonusRaw: string | null, costReductionRaw?: string | null, aheadReductionYearsRaw: string | null, };
-export type ResearchSlotHistory = { index: number, availability: Array<ResearchCoverage>, entries: Array<ResearchEntry>,
-/**
- * Recorded slot effects and assignment, compressed only across equal consecutive hours.
- */
-states: Array<ResearchSlotState>,
-/**
- * Progress/cost observations are compressed separately so daily progress
- * does not duplicate the complete modifier/source tree.
- */
-progress: Array<ResearchProgress>, };
-export type ResearchProgress = { firstHour: number, lastHour: number, entryFirstObservedHour: number | null,
-/**
- * Base duration in fixed5 days, calculated from recorded cost operands.
- */
-baseDaysRaw: string | null, progressRaw: string, };
-export type ResearchHistory = { coverage: Array<ResearchCoverage>, slots: Array<ResearchSlotHistory>, };
-export type ResearchFolder = { key: string, name: string | null, };
-export type ResearchTechnologyFolder = { token: string, databaseIndex?: number | null, folder: string | null, };
-export type ResearchDefinitionText = { token: string, databaseIndex: number, name: string | null, description: string | null, };
-export type ResearchStateSlot = { index: number, available: boolean, state: ResearchSlotState | null, progress: ResearchProgress | null, readHour: number | null, };
-export type ResearchState = { tag: string, hour: number, slots: Array<ResearchStateSlot>, data: ResearchReply, preparing: Array<string>, grants: GrantInventory, };
-export type ResearchStateReply = { branchId: string, states: Array<ResearchState>, };
-export type GrantRestriction = { token: string, name: string | null, databaseIndex: number | null, };
-export type ResearchGrant = { id: number, ordinal: number, kind: string, token: string, name: string | null, uses: number, activeClaims: number | null, speedBonusRaw: string | null, aheadReductionRaw: string | null, costReductionRaw: string | null, technologies: Array<GrantRestriction>, categories: Array<GrantRestriction>, };
-export type GrantInventory = { nextId: number | null, grants: Array<ResearchGrant>, unavailable: string | null, };
 export type MapAudio = {
 /**
  * `master_volume`.
@@ -434,45 +362,6 @@ id: string, path: string, revision: string, metadata: ReplayMetadata,
  * source's widget artwork changed and content-dependent replies are fetched again.
  */
 presentationGeneration: number, };
-export type PreparationState = "idle" | "queued" | "preparing" | "paused" | "ready" | "cancelled" | "failed";
-export type PreparationPauseReason = "requested" | "newerRecording" | "diskSpace";
-export type PreparationAction = "status" | "start" | "cancel" | "clear";
-export type PreparationSection = { id: string, label: string, state: PreparationState, done: string, total: string | null, error: string | null, };
-export type PreparationReply = { sourceId: string, revision: string, requestId: string, backgroundEnabled: boolean, state: PreparationState, sections: Array<PreparationSection>,
-/**
- * The hours of each branch every family published alike, by branch.
- */
-coverage: { [key in string]?: PreparedCoverage },
-/**
- * Each family's and job's coverage, by name and branch. A prepared reply's
- * `gate` names the entries it waits for: these, or `walk` for `coverage`.
- */
-families: { [key in string]?: { [key in string]?: PreparedCoverage } }, bytes: string, error: string | null, pauseReason: PreparationPauseReason | null, };
-export type PreparedCoverage = { schema: number, firstHour: number, lastHour: number, complete: boolean, };
-export type PreparedPrefix = {
-/**
- * The gate's accepted coverage the reply reads through. A product's
- * approximate spans identify accepted hours that later commits can revise.
- * Before its first publication, the empty extent ends immediately before
- * `firstHour`.
- */
-coverage: PreparedCoverage,
-/**
- * The requested recorded hours after `coverage.lastHour`, in order and
- * without recorded gaps: still being prepared. Empty when the reply
- * answers every requested hour.
- */
-pending: Array<HourSpan>, };
-export type PreparedUnavailable = "lost" | "refused";
-export type PreparedHole = { firstHour: number, lastHour: number, family: string, unavailable: PreparedUnavailable, reason: string, gap: boolean, };
-export type PreparationPreferences = { backgroundEnabled: boolean, };
-export type PreparedFocusArt = { artwork: Artwork, reason: string | null, };
-export type PreparedFocusPages = { first: string, count: string, rows: string, };
-export type PreparedFocusHour = { schema: number, slot: number, countryId: number, hour: number, lastHour: number, orderFirstHour: number | null, current: string | null, continuous: string | null, paused: boolean, completed: PreparedFocusPages, at: number, progressRaw: string, dailyGainRaw: string | null, };
-export type PreparedFocusHourReply = { focus: PreparedFocusHour | null, };
-export type PreparedFocusTableRefusal = { table: string, reason: string | null, missingRows: string | null, };
-export type PreparedFocusUnavailableHour = { schema: number, firstHour: number, lastHour: number, reasons: Array<PreparedFocusTableRefusal>, };
-export type PreparedFocusUnavailableReply = { refused: PreparedFocusUnavailableHour | null, };
 export type ChartBucket = {
 /**
  * Sum of absolute raw value times covered hours, at the series decimal scale.
@@ -508,45 +397,105 @@ export type ChartSummary = { from: number, to: number, width: number, buckets: C
 /**
  * Original supplying runs for hourly bins, including their unclipped bounds.
  */
-runs?: Array<ChartRun>,
-/**
- * Display-only keyframe estimates; these hours are not exact values.
- */
-approximate: Array<HourSpan>, };
+runs?: Array<ChartRun>, };
 export type MarkCluster = { firstHour: number, lastHour: number, firstOrdinal: string, count: string, };
 export type MarkSummary = { from: number, to: number, width: number, clusters: Array<MarkCluster>, };
-export type MeasureRun = { firstHour: number, lastHour: number, valueRaw: string, slot: number, countryId: number, startsSegment: boolean, segmentFirstHour: number, readHour?: number, };
-export type MeasureActor = { actor: string, tag: string, measure: string, firstHour: number, lastHour: number, runCount: string, dropCount: string, };
-export type MeasureKey = "ArrowLeft" | "ArrowRight" | "Home" | "End";
-export type MeasureRead = { tag: string, hour: number, };
-export type MeasureState = { tag: string, hour: number, approximate: boolean, sampleHour: number | null, run: MeasureRun | null, drop: BalanceDrop | null, recorded: boolean | null, readHour: number | null, experience: ExperienceRead | null, available: boolean | null, segmentFirstHour: number | null, };
-export type MeasureStateReply = { coverage: PreparedCoverage | null, branchId: string, measure: string, decimals: number, states: Array<MeasureState>, scale: number | null, dayHours: number | null, warnings: Array<string>, };
-export type MeasureSummaryLine = { tag: string, summary: ChartSummary, marks: MarkSummary | null, };
-export type MeasureSummaryReply = { coverage: PreparedCoverage | null, branchId: string, measure: string, decimals: number, series: Array<MeasureSummaryLine>, warnings: Array<string>, };
-export type MeasureKeyReply = { coverage: PreparedCoverage | null, hour: number | null, approximate: boolean, };
-export type MeasureDropReply = { coverage: PreparedCoverage | null, firstOrdinal: string, total: string, rows: Array<MeasureEvent>, warnings: Array<string>, cursor: string | null, };
-export type MeasureEvent = { tag: string, hour: number, ordinal: string, row: unknown, };
-export type MeasureMarkReply = { coverage: PreparedCoverage | null, branchId: string, measure: string, tag: string, summary: MarkSummary, warnings: Array<string>, };
-export type PreparedProductionValue = { key: string, amount: string | null, equipmentAmount: string | null, };
-export type PreparedProductionCountry = { tag: string, slot: number, countryId: number, segment: string, total: string | null, equipmentTotal: string | null, readHour: number, observation: number | null, values: Array<PreparedProductionValue>, };
-export type PreparedProductionSelection = { schema: number, branchId: string, firstHour: number, lastHour: number, known: boolean, keys: Array<ProducedKey>, types: Array<ProducedType>, totalCountries: number,
+export type MissingSpan = { firstHour: number, lastHour: number, reason: string, };
+export type SeriesRun = { firstHour: number, lastHour: number, valueRaw: string, slot: number, countryId: number, startsSegment: boolean, segmentFirstHour: number,
 /**
- * Logical first rank in this page; quantities remain exact until geometry.
+ * Whether the value held before `firstHour` (after `lastHour`) is known to differ: a state
+ * read reads the block of its hour, so a run reaching that block's edge may go on past it.
  */
-offset: string, valueMin: string, valueMax: string, countries: Array<PreparedProductionCountry>,
+firstExact: boolean, lastExact: boolean, };
+export type SeriesDrop = { hour: number, beforeRaw: string, afterRaw: string, };
+export type SeriesState = { tag: string,
 /**
- * Totals by type before paging, for the automatic units choice. Only a
- * total-by-type units selection supplies them; unknown amounts add nothing.
+ * The part's key, for a sub-keyed series.
  */
-typeTotals: Array<[string, string]> | null,
+part?: string, hour: number, run: SeriesRun | null, drop: SeriesDrop | null,
 /**
- * The hour every running total at this page began counting, whichever countries are selected.
+ * Why there is no value: never zero, never a guess.
  */
-observation: number | null,
+missing: string | null, };
+export type SeriesStateReply = { branchId: string, measure: string, decimals: number, states: Array<SeriesState>, };
+export type SeriesKeyReply = { hour: number | null, };
+export type SeriesEvent = { tag: string, hour: number, ordinal: string, row: SeriesDrop, };
+export type SeriesEventPage = { firstOrdinal: string, total: string, rows: Array<SeriesEvent>, cursor: string | null, };
+export type TilePart = { firstHour: number, lastHour: number, slot: number, countryId: number,
 /**
- * Whether the branch prepared so far has read production output at all.
+ * The first hour of its holder's unbroken segment.
  */
-recorded: boolean, warnings: Array<string>, };
+segmentFirstHour: number, };
+export type TileMarks = { before: string, bins: Array<[number, number]>, };
+export type TileLine = { tag: string,
+/**
+ * The part's key, for a sub-keyed series.
+ */
+part?: string,
+/**
+ * The tile's hours the tag holds no value in, with why.
+ */
+missing: Array<MissingSpan>, parts: Array<TilePart>,
+/**
+ * Asked with marks, for a series with drops.
+ */
+marks?: TileMarks, };
+export type SeriesTileReply = { branchId: string, measure: string, decimals: number, binHours: number, index: number,
+/**
+ * The first hour of its first bin.
+ */
+firstHour: number,
+/**
+ * Wholly before the timeline's last hour: it never changes.
+ */
+immutable: boolean,
+/**
+ * The last hour of the tile the timeline reaches; none when it reaches none.
+ */
+filled: number | null,
+/**
+ * Values are raw fixed-point integers as 32-bit words, `decimals` places; else 64-bit floats.
+ */
+rawValues: boolean,
+/**
+ * Bytes of each hour: 1, 2 or 4; 0 for a tile of hourly runs.
+ */
+hourBytes: number, lines: Array<TileLine>,
+/**
+ * The bins, base64.
+ */
+bins: string, };
+export type NavigationKey = "ArrowLeft" | "ArrowRight" | "Home" | "End";
+export type SeriesRead = { tag: string, hour: number,
+/**
+ * For a sub-keyed series, one part's key; none reads every part the owner holds at the hour.
+ */
+part?: string, };
+export type SeriesLineAsk = { tag: string, part?: string, };
+export type SeriesPartLife = { part: string,
+/**
+ * The content id the part holds (a token, a text id), when the series declares one.
+ */
+id?: string, firstHour: number, lastHour: number, };
+export type SeriesOwnerParts = { tag: string, parts: Array<SeriesPartLife>,
+/**
+ * The span's hours whose parts are not known, with why.
+ */
+missing: Array<MissingSpan>, };
+export type SeriesPartsReply = { branchId: string,
+/**
+ * Bits of a row key below its owner: a followed row's part is its key's low `partBits` bits.
+ */
+partBits: number, owners: Array<SeriesOwnerParts>, };
+export type RankedSpan = { firstHour: number, lastHour: number, };
+export type SeriesRankedLine = { tag: string,
+/**
+ * Its holders over the view.
+ */
+parts: Array<TilePart>, summary: ChartSummary, membership: Array<RankedSpan>, missing: Array<MissingSpan>, };
+export type SeriesRankedReply = { branchId: string, measure: string, decimals: number, lines: Array<SeriesRankedLine>, };
+export type ArmyChartLine = { tag: string, identities: Array<ArmyIdentityRun>, summary: ChartSummary, membership: Array<ArmySpan> | null, missing: Array<MissingSpan>, };
+export type ArmyChartReply = { series: Array<ArmyChartLine>, };
 export type CampaignClockParams = { branchId: string, firstHour: number, lastHour: number, };
 export type CampaignClockReply = { available: boolean, recordedSeconds: number | null, playingSeconds: number | null, pausedSeconds: number | null, complete: boolean, warnings: Array<string>, };
 export type ApmParams = { branchId: string, group: ApmGroup, registry: boolean, firstHour: number | null, lastHour: number | null, tags: Array<string> | null, membership: Array<ApmMembership> | null, players: Array<string>, buckets: number, };
@@ -561,38 +510,12 @@ gaps: boolean, };
 export type ApmBucket = { firstHour: number, lastHour: number, value: ApmValue, };
 export type ApmSeries = { id: string, name: string, tag: string | null, hour: number, summary: ApmValue, points: Array<ApmBucket>, };
 export type ApmMembership = { tag: string, firstHour: number, lastHour: number, };
-export type DiplomacyParams = { "view": "opinions", branchId: string, hour: number, tags: Array<string>, } | { "view": "pair", branchId: string, first: string, second: string, hour: number, } | { "view": "pacts", branchId: string, tags: Array<string> | null, } | { "view": "proposals", branchId: string, tags: Array<string> | null, };
-export type DiplomacyReply = DiplomacyOpinionsReply | DiplomacyPairReply | DiplomacyPactsReply | DiplomacyProposalsReply;
-export type DiplomacyCountry = { tag: string, slot: number, countryId: number, };
-export type DiplomacyOpinion = { target: string, value: number, };
-export type DiplomacyOwner = { tag: string, identity: DiplomacyCountry | null, readHour: number | null,
-/**
- * A complete opinion read made while the owner held this identity is recorded.
- */
-known: boolean,
-/**
- * Selected tags a known owner's read cannot prove; any other one it lists no opinion of is zero.
- */
-unknownTargets: Array<string>, opinions: Array<DiplomacyOpinion>, };
-export type DiplomacyOpinionsReply = { hour: number, owners: Array<DiplomacyOwner>, unresolved: number,
-/**
- * True only for an exact, cadence-bounded recorded snapshot beyond the prepared prefix.
- */
-snapshot: boolean, coverage: PreparedCoverage, pending: Array<HourSpan>, warnings: Array<string>, };
-export type DiplomacyRun = { firstHour: number, lastHour: number, value: number | null, startsSegment: boolean, };
-export type DiplomacyPairReply = { forward: Array<DiplomacyRun>, reverse: Array<DiplomacyRun>, unobserved: Array<HourSpan>, first: DiplomacyCountry | null, second: DiplomacyCountry | null, coverage: PreparedCoverage, pending: Array<HourSpan>, warnings: Array<string>, };
-export type DiplomacyKind = { kind: string, name: string | null, reason: string | null, count: number, };
-export type DiplomacyPact = { id: string, kind: string, owner: string | null, target: string | null, first: string | null, second: string | null, identities: Array<DiplomacyCountry | null>, rawCountries: Array<number>, ordinal: number, startHour: number | null, endHour: number | null, cancelled: boolean | null, retired: boolean | null, cancelRaw: number, retiredRaw: number, firstSeen: number, lastSeen: number, presentAtEnd: boolean, endedBy: boolean, readHour: number,
-/**
- * Its owner's first read after `last_seen`, which no longer lists it; none while unproven.
- */
-goneBy: number | null, };
-export type DiplomacyReadRun = { owner: DiplomacyCountry | null, firstHour: number, lastHour: number, readHour: number, };
-export type DiplomacyPactsReply = { kinds: Array<DiplomacyKind>, pacts: Array<DiplomacyPact>, unobserved: Array<HourSpan>, coverage: PreparedCoverage, pending: Array<HourSpan>, warnings: Array<string>, };
-export type DiplomacyProposal = { id: string, handle: string, owner: string | null, sender: string | null, recipient: string | null, originalSender: string | null, originalRecipient: string | null, identities: Array<DiplomacyCountry | null>, rawCountries: Array<number>, storedHour: number, lastCommandHour: number, firstSeen: number, lastSeen: number, goneBy: number | null, goneByBound: boolean, presentAtEnd: boolean, readHour: number, };
-export type DiplomacyProposalsReply = { proposals: Array<DiplomacyProposal>, reads: Array<DiplomacyReadRun>, unobserved: Array<HourSpan>, coverage: PreparedCoverage, pending: Array<HourSpan>, warnings: Array<string>, };
 export type CountryParams = { branchId: string, tag: string, };
 export type FocusReply = { history: FocusHistory,
+/**
+ * Hours of the branch the country's focus was not known, with why.
+ */
+missing: Array<FocusMissing>,
 /**
  * The national focuses' (completed and current) authored durations.
  */
@@ -607,6 +530,7 @@ staticText?: Array<Artwork>,
  * durations, looked up in the continuous database.
  */
 continuousStaticText: Array<Artwork>, warnings: Array<string>, };
+export type FocusMissing = { firstHour: number, lastHour: number, reason: string, };
 export type FocusArtworkParams = { branchId: string, hour: number, tag: string,
 /**
  * The database every token is looked up in.
@@ -614,26 +538,6 @@ export type FocusArtworkParams = { branchId: string, hour: number, tag: string,
 database: FocusDatabase, tokens: Array<string>, textOnly?: boolean, includeDescriptions?: boolean, iconsOnly?: boolean, };
 export type DatedFocusArtwork = { artwork: Artwork, reason: string | null, };
 export type FocusArtworkReply = { branchId: string, hour: number, tag: string, database: FocusDatabase, items: Array<DatedFocusArtwork>, warnings: Array<string>, };
-export type FocusArtGroup = { hour: number,
-/**
- * The database every token is looked up in.
- */
-database: FocusDatabase,
-/**
- * Distinct tokens in ascending order.
- */
-tokens: Array<string>, };
-export type FocusArtParams = { branchId: string, tag: string,
-/**
- * Ascending by hour, then database, each pair once; at most a page of
- * tokens and the active focus over all of them.
- */
-groups: Array<FocusArtGroup>, mode: FocusArtMode, };
-export type FocusArtMode = "display" | "text";
-export type FocusArtFailure = { reason: string, tokens: number, };
-export type FocusArtGroupReply = { art: Array<PreparedFocusArt>, failures: Array<FocusArtFailure>, error: QueryError | null, };
-export type FocusArtReply = { groups: Array<FocusArtGroupReply>, warnings: Array<string>, };
-export type ResearchReply = { history: ResearchHistory, artwork: Array<Artwork>, folders: Array<ResearchFolder>, technologyFolders: Array<ResearchTechnologyFolder>, warnings: Array<string>, definitions?: Array<ResearchDefinitionText>, };
 export type TechnologyArtworkParams = { tokens: Array<string>,
 /**
  * Repeated definitions have separate recorded indices; null means an unindexed use.
@@ -678,5088 +582,6 @@ export type DoctrineTrack = { ordinal: number, name: string, subDoctrine: string
 export type DoctrineFolder = { ordinal: number, name: string, grandDoctrine: string | null, benefits: string, authoredCost: string, milestones: Array<DoctrineReward>, completed: Array<string>, tracks: Array<DoctrineTrack>, };
 export type DoctrineInventory = { kind: string, ordinal: number, fields: Array<DoctrineFact>, };
 export type DoctrineReply = { branchId: string, hour: number, tag: string, folders: Array<DoctrineFolder>, inventory: Array<DoctrineInventory>, warnings: Array<string>, };
-export type GameWindowParams = { branchId: string, hour: number, window: GameWindowTarget, scroll?: Array<ListScroll>, };
-export type GameWindowTarget = { "kind": "mioPolicies", organisation: string, } | { "kind": "divisionDesigner", template: string, };
-export type ListScroll = { path: string,
-/**
- * Whether it scrolls the list across; otherwise down.
- */
-horizontal: boolean, offset: number, };
-export type GameWindowReply = { warnings: Array<string>,
-/**
- * The window's title as plain text, for the app's own heading and accessibility.
- */
-title?: string,
-/**
- * The hour the bound state was read at, when it was sampled before the requested hour.
- */
-readHour?: number,
-/**
- * The drawn window; absent when it is refused.
- */
-scene?: Scene,
-/**
- * Why the window is not drawn, each reason counted.
- */
-refused: Array<string>, slots: Array<WindowSlot>, };
-export type SlotState = "bound" | "unbound" | "refused";
-export type WindowSlot = { name: string, state: SlotState, detail?: string, };
-export type Scene = {
-/**
- * The root template's name.
- */
-name: string,
-/**
- * The window's own size in interface pixels: what the browser fits, never re-flows.
- */
-size: [number, number],
-/**
- * The interface viewport the window was read and laid out in.
- */
-viewport: [number, number],
-/**
- * The window as the game draws it, a straight-alpha PNG data URL of `size`.
- */
-image: string,
-/**
- * Areas the pointer can rest on, in draw order, with what the app shows for them.
- */
-hovers: Array<SceneHover>,
-/**
- * Lists the pointer can scroll, by their element path and axis.
- */
-lists: Array<SceneList>,
-/**
- * What the game draws nothing for in this window, or that is drawn incompletely, counted.
- */
-notes: Array<string>, };
-export type SceneHover = {
-/**
- * `x, y, width, height` in window pixels.
- */
-rect: [number, number, number, number],
-/**
- * The whole-pixel clip `x0, y0, x1, y1` the area is drawn within, in window pixels.
- */
-clip?: [number, number, number, number],
-/**
- * The list the area is a row of, by its path ([`SceneList::path`]): focusing it scrolls
- * that list to it.
- */
-list?: string, title: string, details: Array<string>, };
-export type SceneList = { path: string, rect: [number, number, number, number], offset: number, max: number,
-/**
- * Whether it scrolls across, its rows side by side; otherwise down.
- */
-horizontal: boolean,
-/**
- * Window pixels per offset unit: the scale of the container holding the list's rows.
- */
-scale: number, };
-export type ArmyMeasure = "manpower" | "divisions" | "strength" | "battalions";
-export type ArmyAttribution = "owner" | "host";
-export type ArmySizeParams = { templateAt?: [string, number], branchId: string, tags: Array<string>, top: number | null, measure: ArmyMeasure, countFor: ArmyAttribution, byType: boolean,
-/**
- * None is the capability/window manifest; histories use a replay-block index.
- */
-window: number | null, };
-export type ArmyType = { key: string, name: string, };
-export type ArmyRun = [number, number | null, number | null, string?];
-export type ArmyMixRun = { firstHour: number, lastHour: number, values: Array<number | null>,
-/**
- * Decimal counts retain exact labels; values are chart geometry only.
- */
-rawValues?: Array<string | null>, };
-export type ArmySeries = { tag: string, identities?: Array<CountryIdentityRun>, runs: Array<ArmyRun>, segments: Array<HourSpan>, membership: Array<HourSpan> | null, mix?: Array<ArmyMixRun>, };
-export type ArmySizeReply = { templateSections?: Array<string>, branchId: string, windows: Array<HourSpan>, window: number | null, interval: HourSpan | null, available: boolean, measures: Array<ArmyMeasure>,
-/**
- * While preparation continues, measures no hour read so far records: unknown, not absent.
- */
-unknownMeasures: Array<ArmyMeasure>, types: Array<ArmyType>, series: Array<ArmySeries>, warnings: Array<string>, };
-export type MilitaryAidKind = "land" | "expeditionary";
-export type VolunteersExpeditionariesParams = { branchId: string, kind: MilitaryAidKind, tags: Array<string> | null, };
-export type MilitaryAidRun = { firstHour: number, lastHour: number, divisions: number | null, startsSegment: boolean, };
-export type MilitaryAidLink = { key: string, sender: string, senderSlot: number | null, senderCountryId: number | null, host: string, hostSlot: number | null, hostCountryId: number | null, runs: Array<MilitaryAidRun>, };
-export type VolunteersExpeditionariesReply = { links: Array<MilitaryAidLink>, tallies: Array<MilitaryAidLink>, unobserved: Array<HourSpan>, warnings: Array<string>,
-/**
- * The gate's accepted coverage the reply reads through. A product's
- * approximate spans identify accepted hours that later commits can revise.
- * Before its first publication, the empty extent ends immediately before
- * `firstHour`.
- */
-coverage: PreparedCoverage,
-/**
- * The requested recorded hours after `coverage.lastHour`, in order and
- * without recorded gaps: still being prepared. Empty when the reply
- * answers every requested hour.
- */
-pending: Array<HourSpan>, };
-export type SupplyHealthParams = { branchId: string, tags: Array<string>, };
-export type SupplyHealthRun = { firstHour: number, lastHour: number, startsSegment: boolean,
-/**
- * Exact counts; divide by their sum only for geometry/formatting.
- */
-noSupply: number, strained: number, inSupply: number, };
-export type SupplyHealthSeries = { tag: string, identities?: Array<CountryIdentityRun>, runs: Array<SupplyHealthRun>, };
-export type SupplyHealthReply = { branchId: string, available: boolean, reason: string | null, missingInputs: Array<string>, series: Array<SupplyHealthSeries>, warnings: Array<string>, summaries?: Array<SupplyHealthDisplay>, };
-export type SupplyHealthDisplay = { tag: string, values: Array<ChartSummary>, };
-export type DivisionLogParams = { branchId: string, window: number, };
-export type DivisionLogKind = "created" | "lost" | "transfer";
-export type DivisionLogEntry = { id: string, division: string,
-/**
- * Available to playback only from this drain or census, even for an earlier death.
- */
-readHour: number, hour: number, by: boolean,
-/**
- * Last complete census excluding a newly observed handle, absent across gaps.
- */
-afterHour: number | null, kind: DivisionLogKind, status: string, tag: string | null, countryHour: number, name: string | null, nameMissing: string | null, icon: string | null, iconMissing: string | null, presentationHour: number | null, template: string | null, templateName: string | null, templateMissing: string | null, templateHour: number | null, province: number | null, placeHour: number | null,
-/**
- * Otherwise the place is the division's last observed location.
- */
-placeAtEvent: boolean, killerTag: string | null, killerHour: number | null, killerDivision: string | null, };
-export type DivisionLogReply = { window: number, interval: BattleWindow, rows: Array<DivisionLogEntry>, warnings: Array<BattleWarning>, contentWarnings: Array<string>, };
-export type DivisionLogTemplate = { id: string, name: string | null, };
-export type DivisionLogManifestReply = { windows: Array<BattleWindow>, available: boolean, lossesAvailable: boolean, templates: Array<DivisionLogTemplate>, contentWarnings: Array<string>, };
-export type DivisionLogTotalsParams = { branchId: string, firstHour: number, lastHour: number, countries: LandBattleCountryFilter, templates: Array<string> | null, };
-export type DivisionLogTotalsReply = { created: number | null, lost: number | null, transferred: number | null,
-/**
- * The first hour these totals count from when hours the recording lost lie in the range:
- * totals restart after them, so they count from there to its last hour.
- */
-since: number | null, warnings: Array<string>, };
-export type LeaderSelection = { "kind": "all" } | { "kind": "countries", tags: Array<string>, } | { "kind": "leader", reference: string, };
-export type LeaderView = "leaderboard" | "career" | "choices";
-export type LeaderKinds = "all" | "land" | "navy";
-export type UnitLeadersParams = { branchId: string, selection: LeaderSelection, view: LeaderView, leaders: LeaderKinds, };
-export type UnitLeadersAtHourParams = { branchId: string, selection: LeaderSelection, view: LeaderView, leaders: LeaderKinds, hour: number, };
-export type LeaderPerson = { name: string | null,
-/**
- * Stable recorded read used by the lazy artwork request.
- */
-portraitHour: number,
-/**
- * The leader present at this identity read (a character can back more than one).
- */
-portraitReference: string, };
-export type LeaderRole = { owner: string | null, category: number, rank: string | null, kind: number, maximumSkill: number | null,
-/**
- * Native skill labels localised through the recorded content stack.
- */
-attributeNames: [string | null, string | null, string | null, string | null], };
-export type LeaderTraining = { token: string | null, name: string | null, experienceRaw: string, requiredRaw: string | null, };
-export type LeaderTrainingFactor = { token: string | null, name: string | null, factorRaw: string, };
-export type LeaderProgress = { experienceRaw: string, nextRequiredRaw: string | null,
-/**
- * None is missing acquisition; an empty list is complete native absence.
- */
-training: Array<LeaderTraining> | null, factors: Array<LeaderTrainingFactor> | null, };
-export type LeaderValues = { person: number, role: number, skill: number | null, components: [number, number, number, number], progress: LeaderProgress | null, traits: Array<number> | null, };
-export type UnitLeaderRun = [number, number, number, number, number | null, [number, number, number, number], number[] | null, LeaderProgress | null];
-export type LeaderChangeDate = "heldBefore" | "gained" | "firstObserved";
-export type LeaderTraitGain = [number, number, number];
-export type LeaderFormationKind = "army" | "armyGroup" | "fleet";
-export type LeaderCommand = { firstHour: number, lastHour: number, formation: string, kind: LeaderFormationKind, name: string | null, nameReadHour: number | null, nameUnknown: Array<HourSpan>, };
-export type LeaderCareer = { reference: string, runs: Array<UnitLeaderRun>, traitGains: Array<LeaderTraitGain>, commands: Array<LeaderCommand>,
-/**
- * Careers: first participation hours: first absolute, then deltas. Deduplicated by combat.
- */
-battleStarts?: number[],
-/**
- * Careers: first supplying read for each participation, independent of its native date.
- */
-battleStartReadHours?: Array<number>,
-/**
- * Careers: indices whose combat was not known absent in the preceding hour. This is
- * the combat's start uncertainty, not the leader's participation date.
- */
-unknownBattleStarts?: Array<number>, battleWon?: Array<boolean | null>, battleResultHours?: Array<number | null>, battleResultReadHours?: Array<number | null>,
-/**
- * Leaderboards: when each participation became visible, the later of its date
- * and first supplying read. Sorted hours: first absolute, then deltas.
- */
-foughtHours?: number[],
-/**
- * Leaderboards: when each known win became visible, the latest of its
- * participation's visible hour, result date and result read; coded as `fought_hours`.
- */
-wonHours?: number[],
-/**
- * Leaderboards: the same for each known loss.
- */
-lostHours?: number[],
-/**
- * First hour with incomplete battle observations; recorded totals remain visible.
- */
-partialFrom: number | null,
-/**
- * Leaderboards at an hour: the facts its other runs and battle hours gave there.
- */
-atHour?: LeaderAtHour, };
-export type LeaderAtHour = { hour: number, firstSeenHour: number, fought: number, won: number | null, lost: number | null, };
-export type LeaderTraitInfo = { token: string, name: string | null, icon: string | null, };
-export type LeaderObservation = { firstHour: number, lastHour: number, leaders: boolean, landBattles: boolean, navalBattles: boolean, landCommands: boolean, navalCommands: boolean, };
-export type LeaderWithheld = { reference: string, owner: string | null, kind: number, name: string | null, reason: string, detail: string | null, spans: Array<HourSpan>, };
-export type UnitLeadersReply = { branchId: string, firstHour: number, leaders: Array<LeaderCareer>, people: Array<LeaderPerson>,
-/**
- * Owner/rank facts shared across runs and leaders; a transfer selects another role.
- */
-roles: Array<LeaderRole>, traits: Array<LeaderTraitInfo>, observed: Array<LeaderObservation>, withheld: Array<LeaderWithheld>, resultsMissing: string, navyCommandsMissing: string, selectionTags?: Array<string>, preparing?: Array<string>, warnings: Array<string>, };
-export type LeaderChoice = [string, string | null, string | null, number];
-export type LeaderChoicesReply = { branchId: string, choices: Array<LeaderChoice>, cursor: string | null, };
-export type UnitLeadersHourReply = { branchId: string, firstHour: number, hour: number,
-/**
- * The index the rows' people, roles and traits are numbered by, which a later request names
- * as `held`; none for a reply numbered on its own.
- */
-index: string | null,
-/**
- * The hour asked before that the rows are read against; none for every row.
- */
-since: number | null,
-/**
- * The rows at `hour`, each as a leaderboard at that hour shows it, of every leader whose row
- * differs from `since`'s, in the order of the leaders.
- */
-leaders: Array<LeaderCareer>,
-/**
- * The leaders with a row at `since` and none at `hour`.
- */
-ended: Array<string>,
-/**
- * The people, roles and traits the rows name by number that the rows at `since` did not.
- */
-people: Array<[number, LeaderPerson]>, roles: Array<[number, LeaderRole]>, traits: Array<[number, LeaderTraitInfo]>, observed: Array<LeaderObservation>, withheld: Array<LeaderWithheld>, resultsMissing: string, navyCommandsMissing: string,
-/**
- * A countries selection's aliases, sent with every row; `since`'s stand otherwise.
- */
-selectionTags?: Array<string>, preparing?: Array<string>, warnings: Array<string>, };
-export type UnitLeaderPortraitsParams = { branchId: string, hour: number, references: Array<string>, edge: number, };
-export type UnitLeaderPortrait = { reference: string, image: string | null, missing: string | null, };
-export type UnitLeaderPortraitsReply = { portraits: Array<UnitLeaderPortrait>, warnings: Array<string>, };
-export type LandOwnersParams = Record<string, never>;
-export type BattleWindow = { firstHour: number, lastHour: number, };
-export type BattleWarning = { hour: number, reason: string, count: number, };
-export type BattleBound = "exact" | "by";
-export type BattleMoment = { hour: number, bound: BattleBound, };
-export type BattleEnd = BattleMoment | { unknown: string, };
-export type BattlePlace = { name: string | null, hour: number, namedAt?: number, };
-export type BattleCountry = { tag: string, hour: number, };
-export type BattleValue = { label: string, value: number, atLeast?: boolean, } | { label: string, value: null, unknown: string, };
-export type BattleSide = { label: string, countries: Array<BattleCountry>, countriesUnknown?: string, counts: Array<BattleValue>, losses: Array<BattleValue>, };
-export type BattleWinner = { side: number, } | { unknown: string, };
-export type BattleRow = { id: string, place: BattlePlace, start: BattleMoment | null, end: BattleEnd | null, sides: Array<BattleSide>, winner: BattleWinner, };
-export type LandBattlesParams = { branchId: string, window: number, };
-export type LandBattlePeak = { value: number, hour: number, };
-export type LandBattleRun = { firstHour: number, lastHour: number, counts: [number, number], rosterUnknown: boolean, countries: [Array<string>, Array<string>], countriesUnknown: [boolean, boolean],
-/**
- * Exact native counter at first_hour; every subsequent recorded read steps by one.
- */
-duration: number, };
-export type LandManpower = number | string;
-export type LandLossTotal = { manpower: LandManpower, equipment: string, } | { manpower: LandManpower, unknown: string, };
-export type LandLossTotals = [LandLossTotal, LandLossTotal] | string;
-export type LandBattleLossRead = { hour: number,
-/**
- * True only for the post-flush FinalizeCombat read, never inferred from absence.
- */
-terminal: boolean,
-/**
- * Attacker then defender, or why neither side's counters were read.
- */
-sides: LandLossTotals, };
-export type LandBattleResultRead = { hour: number, duration: number, winner: BattleWinner, countries: [Array<string>, Array<string>], countriesUnknown: [boolean, boolean], };
-export type LandBattleHistory = { id: string, provinceId: number, start: BattleMoment, end: BattleEnd | null, endUnknownHour: number | null, counterBase: number, priorPeak: LandBattlePeak | null,
-/**
- * Each side's most divisions at once before the reply's runs, attacker then defender.
- */
-priorSidePeaks: [LandBattlePeak | null, LandBattlePeak | null], runs: Array<LandBattleRun>, losses: Array<LandBattleLossRead>, result: LandBattleResultRead | null, };
-export type LandBattlesReply = { window: number, interval: BattleWindow, rows: Array<LandBattleHistory>, observed: Array<[number, number]>,
-/**
- * Each warning reason once, for `warnings` to refer to by index.
- */
-reasons: Array<string>,
-/**
- * [hour, reason, count] in hour then reason order.
- */
-warnings: Array<[number, number, number]>, contentWarnings: Array<string>, };
-export type LandBattlesManifestParams = { branchId: string, };
-export type LandBattlesManifestReply = {
-/**
- * Windows come from this recording's replay blocks, never a chosen duration.
- */
-windows: Array<BattleWindow>, available: boolean, unavailable: string | null, contentWarnings: Array<string>, };
-export type LandBattleCountryFilter = { tags: Array<string> | null, membership: Array<MembershipRun> | null, unobserved: Array<HourSpan>, };
-export type LandBattlesRankingParams = { branchId: string, firstHour: number, lastHour: number, topN: number, measure: string, countries: LandBattleCountryFilter, };
-export type LandBattlesRankingReply = { rows: Array<LandBattleHistory>, censusHour: number | null, effectiveMeasure: string, warnings: Array<BattleWarning>, contentWarnings: Array<string>, };
-export type LandBattleCourseParams = { branchId: string,
-/**
- * A battle id from this branch's census.
- */
-id: string, };
-export type LandLossSide = { manpower: LandManpower, variants: Array<[number, string]>, } | { manpower: LandManpower, changed: Array<[number, string]>, } | { manpower: LandManpower, unknown: string, };
-export type LandLossSides = [LandLossSide, LandLossSide] | string;
-export type LandBattleCourseRead = { hour: number,
-/**
- * True only for the post-flush FinalizeCombat read, never inferred from absence.
- */
-terminal: boolean,
-/**
- * Attacker then defender, or why neither side's counters were read.
- */
-sides: LandLossSides, };
-export type LandBattleCourse = { id: string, provinceId: number, start: BattleMoment, end: BattleEnd | null, endUnknownHour: number | null, counterBase: number, runs: Array<LandBattleRun>, losses: Array<LandBattleCourseRead>, result: LandBattleResultRead | null, };
-export type LandEquipmentDesign = {
-/**
- * The design's name from the content stack; null when it cannot be named.
- */
-name: string | null, variant: string, };
-export type LandBattleCourseReply = { battle: LandBattleCourse,
-/**
- * Equipment designs, which the course's reads refer to by index.
- */
-designs: Array<LandEquipmentDesign>, contentWarnings: Array<string>, };
-export type LandBattleTerrainParams = { provinces: Array<number>, };
-export type LandTerrainName = { provinceId: number,
-/**
- * The terrain title the combat window shows; null when it cannot be resolved.
- */
-name: string | null, missing: string | null, };
-export type LandBattleTerrainReply = { provinces: Array<LandTerrainName>, warnings: Array<string>, };
-export type CombatLogParams = { branchId: string, hour: number, countries: LandBattleCountryFilter, };
-export type CombatLogReply = { hour: number, groups: Array<LogGroup>, manpower: Array<LogManpower>, equipment: Array<LogEquipment>, templates: Array<LogTemplate>, battles: Array<LogBattle>, active: Array<LogActiveSide>, availability: CombatLogAvailability, warnings: Array<string>, };
-export type LogGroup = { tag: string, group: string, ordinal: number, };
-export type LogManpower = { tag: string, group: string, ordinal: number, reason: number, date: number, losses: [number, number, number], };
-export type LogEquipment = { tag: string, group: string, month: number, ordinal: number | null, reason: number, date: number, kind: number, allowZero: boolean, name: string | null, variant: string | null, amountRaw: string | null, missingSource: string | null, };
-export type LogTemplate = { tag: string, group: string, ordinal: number, date: number, template: string, name: string | null, wins: number, total: number, };
-export type LogBattle = { tag: string, group: string, ordinal: number, id: number, attacker: boolean, date: number, province: number, flags: [number, number, number, number], manpower: [number, number], references: number, details: Array<LogDetailTable>, };
-export type LogDetailTable = { title: string, columns: Array<string>, rows: Array<Array<string>>, };
-export type LogActiveSide = { combat: string, attacker: boolean, terminal: boolean, progressRaw: string, damageRaw: string, activityGroups: number, leaders: number, lossSource: string | null, details: Array<LogDetailTable>, };
-export type CombatLogAvailability = { groups: string | null, manpower: string | null, months: string | null, ownEquipment: string | null, enemyEquipment: string | null, templates: string | null, battles: string | null, active: string | null, terminal: string | null, };
-export type ArmyLossesParams = { branchId: string, hour: number, tag: string, };
-export type ArmyLossesReply = { branchId: string, hour: number, tag: string,
-/**
- * No country holds the tag at this hour.
- */
-absent: boolean, armies: Array<LossArmy>, manpower: Array<LossManpower>, equipment: Array<LossEquipment>,
-/**
- * Ledger months with no design amounts, kept apart from known amounts.
- */
-emptyMonths: Array<LossMonth>,
-/**
- * Retained ledger months whose amounts are unknown, never zero.
- */
-unknownMonths: Array<LossMonth>, availability: ArmyLossesAvailability, warnings: Array<string>, };
-export type LossArmy = {
-/**
- * The army's full reference, which identifies it in the reply.
- */
-reference: string,
-/**
- * Position in the country's list of logs.
- */
-ordinal: number, name: string | null, nameMissing: string | null,
-/**
- * The army group holding it now, by full reference; none for an army
- * with no army group.
- */
-parent: string | null, parentName: string | null,
-/**
- * Why the army group is unknown, when the army names one that was not read.
- */
-parentMissing: string | null, };
-export type LossManpower = { army: string, ordinal: number,
-/**
- * The game's month: twelve per year plus the zero-based month.
- */
-month: number,
-/**
- * The hour of the month's first write.
- */
-date: number,
-/**
- * Ground, air and navy source channels, signed as stored.
- */
-losses: [number, number, number], };
-export type LossEquipment = { army: string, ledger: number, month: number, date: number, variant: string, name: string | null,
-/**
- * The design's equipment archetype and its in-game name.
- */
-archetype: string | null, archetypeName: string | null,
-/**
- * Signed fixed-point amount with five decimals, as stored.
- */
-amountRaw: string, };
-export type LossMonth = { army: string, ledger: number, month: number, date: number, };
-export type ArmyLossesAvailability = { armies: string | null, manpower: string | null, months: string | null, ownEquipment: string | null, enemyEquipment: string | null, };
-export type DivisionCareersParams = { branchId: string, hour: number,
-/**
- * The countries whose divisions rank; none ranks every country's.
- */
-tags: Array<string> | null, };
-export type DivisionCareersReply = { branchId: string, hour: number, divisions: Array<CareerRow>, medals: Array<CareerMedal>, templates: Array<CareerTemplate>,
-/**
- * Why divisions are unknown at this hour, when they are.
- */
-missing: string | null, warnings: Array<string>, };
-export type CareerRow = { division: string, tag: string | null, template: string, name: string | null, nameMissing: string | null, facts: CareerFacts, };
-export type CareerFacts = {
-/**
- * The recorded medal total; none when the history was not read.
- */
-medals: number | null, awards: Array<CareerAward>, historyMissing: string | null,
-/**
- * Manpower-normalised experience, fixed-point with five decimals.
- */
-experienceRaw: string | null,
-/**
- * Zero-based experience level, and the level's in-game name.
- */
-level: number | null, levelName: string | null,
-/**
- * The game's career kill counter.
- */
-kills: number | null, };
-export type CareerAward = {
-/**
- * Index into the reply's medals.
- */
-medal: number, count: number, };
-export type CareerMedal = { key: string, name: string | null, };
-export type CareerTemplate = { template: string, name: string | null, icon: string | null, };
-export type DivisionRecordParams = { branchId: string, hour: number,
-/**
- * The division's full native handle.
- */
-division: string, };
-export type DivisionRecordReply = { branchId: string, hour: number, division: string,
-/**
- * The division is not in service at this hour.
- */
-absent: boolean, tag: string | null, template: CareerTemplate | null, name: string | null, nameMissing: string | null, facts: CareerFacts | null, medals: Array<CareerMedal>, entries: Array<RecordEntry>, warnings: Array<string>, };
-export type RecordEntry = { award: boolean, ordinal: number,
-/**
- * The entry's game date.
- */
-hour: number, description: string | null, descriptionMissing: string | null, provinces: Array<number>,
-/**
- * The awarded medal, by index into the reply's medals.
- */
-medal: number | null, };
-export type DivisionTemplatesParams = { branchId: string, hour: number, tag: string, countFor: ArmyAttribution, };
-export type DivisionTemplatesReply = { branchId: string, hour: number, tag: string, countFor: ArmyAttribution,
-/**
- * No country holds the tag at this hour.
- */
-absent: boolean, templates: Array<TemplateEntry>,
-/**
- * Why fielded counts are unknown, when they are.
- */
-fieldedMissing: string | null, warnings: Array<string>, };
-export type TemplateEntry = {
-/**
- * The template's full native handle.
- */
-template: string, name: string | null, nameMissing: string | null, icon: string | null, iconMissing: string | null,
-/**
- * Position in the country's roster.
- */
-rosterOrdinal: number | null,
-/**
- * Divisions of the template counted for the country; none when the
- * division census was not read.
- */
-fielded: number | null, units: Array<TemplateUnit>, unitsMissing: string | null,
-/**
- * Signed fixed-point base combat width with five decimals.
- */
-baseWidthRaw: string | null,
-/**
- * The template's stored priority and the game's name for it.
- */
-priority: number | null, priorityName: string | null, priorityMissing: string | null, locked: boolean | null, obsolete: boolean | null,
-/**
- * The hour the template was made obsolete, when recorded.
- */
-obsoleteHour: number | null, designer: DesignerKind | null, forceRecruiting: boolean | null, newEquipment: boolean | null, foreignEquipment: boolean | null, manpower: number | null, trainingDays: number | null, settingsMissing: string | null, };
-export type TemplateUnit = {
-/**
- * The sub-unit's content key, shown on hover only.
- */
-key: string | null, name: string | null, nameMissing: string | null, count: number,
-/**
- * A support company rather than a battalion.
- */
-support: boolean,
-/**
- * A country-local copy of the definition.
- */
-local: boolean, };
-export type DesignerKind = "ordinary" | "headquarters";
-export type DivisionEquipmentParams = { branchId: string, hour: number, tag: string, countFor: ArmyAttribution, template: string | null, division: string | null, };
-export type DivisionEquipmentReply = { branchId: string, hour: number, tag: string, countFor: ArmyAttribution, absent: boolean, poolHour: number | null, divisions: number,
-/**
- * Divisions with a known shortfall of any type; unknown ones are not among them.
- */
-divisionsShort: number, unknownDivisions: number, types: Array<EquipmentType>, templates: Array<EquipmentTemplate>, divisionRows?: Array<EquipmentDivision>, pool?: DivisionPool, warnings: Array<string>, };
-export type EquipmentVariant = { variant: string, name: string | null, heldRaw: string, };
-export type EquipmentType = {
-/**
- * None is the explicit unclassified bucket, not a content key.
- */
-archetype: string | null, name: string | null, nameMissing: string | null,
-/**
- * What every division whose pool was read holds, its comparison known or not.
- */
-heldRaw: string, neededRaw: string | null,
-/**
- * Each known division's holding capped at its own need, summed: the
- * fulfilment its need is measured by, so one division's surplus never
- * fills another's shortfall.
- */
-filledRaw: string | null, missingRaw: string | null, divisionsShort: number, unknownDivisions: number,
-/**
- * National stock is never used in the deployed shortfall calculation.
- */
-stockpileRaw: string | null, stockpileHour: number | null, variants: Array<EquipmentVariant>, };
-export type EquipmentTemplate = { template: string, name: string | null, nameMissing: string | null, icon: string | null, iconMissing: string | null, divisions: number, manpower: string | null, manpowerRequired: string | null, hpRaw: string | null, hpMaxRaw: string | null,
-/**
- * Known divisions only, with unknown_divisions naming the remainder.
- */
-neededRaw: string | null,
-/**
- * Only needed archetypes, capped separately at each division's need.
- */
-heldRaw: string | null, typesShort: number, unknownDivisions: number, };
-export type EquipmentDivision = { division: string, name: string | null, nameMissing: string | null, manpower: string | null, manpowerRequired: string | null, hpRaw: string | null, hpMaxRaw: string | null, neededRaw: string | null, heldRaw: string | null,
-/**
- * Null when the comparison with the need is not known.
- */
-typesShort: number | null, poolKnown: boolean,
-/**
- * The previous template's name during conversion.
- */
-convertingFrom: string | null, };
-export type DivisionPoolType = { archetype: string | null, name: string | null,
-/**
- * Null when the division's pool was not read.
- */
-heldRaw: string | null, neededRaw: string | null, missingRaw: string | null, variants: Array<EquipmentVariant>, };
-export type DivisionPool = { division: string, name: string | null, template: string, templateName: string | null, manpower: string | null, manpowerRequired: string | null, hpRaw: string | null, hpMaxRaw: string | null, types: Array<DivisionPoolType>,
-/**
- * An unread pool lists template needs with unknown holdings, not an empty pool.
- */
-poolKnown: boolean, };
-export type DivisionEquipmentHistoryParams = { branchId: string, tag: string, countFor: ArmyAttribution, firstHour?: number, lastHour?: number, };
-export type DivisionEquipmentHistoryReply = { branchId: string, tag: string, countFor: ArmyAttribution, window: KeyedWindow, kinds: Array<HistoryKind>, namings: { [key in string]?: HistoryName }, artworks: { [key in string]?: HistoryIcon }, designs: { [key in string]?: string | null }, hours: Array<HistoryWarnings>,
-/**
- * The counted refusals of an hour the country does not exist.
- */
-absent: Array<string>,
-/**
- * The lines every served reply adds, as of serving ([`served_lines`]).
- */
-served: Array<string>, warnings: Array<string>, };
-export type HistoryKind = { id: string, archetype: string | null, name: string | null, nameMissing: string | null, };
-export type HistoryName = { name: string | null, nameMissing: KeptReason | null, };
-export type HistoryIcon = { icon: string | null, iconMissing: KeptReason | null, };
-export type KeptReason = { text: Array<string>, tables: Array<string>, };
-export type HistoryRefusal = { reason: KeptReason, times: number, };
-export type HistoryWarnings = { firstHour: number, lastHour: number, refusals: Array<HistoryRefusal>, fallback: string | null, };
-export type TrainingQueueParams = { branchId: string, hour: number, tag: string, };
-export type TrainingQueueReply = { branchId: string, hour: number, tag: string,
-/**
- * No country holds the tag at this hour.
- */
-absent: boolean,
-/**
- * The read the queue is from; none when none falls within a day.
- */
-readHour: number | null,
-/**
- * Why the queue is unknown at this hour, when it is.
- */
-missing: string | null, orders: Array<TrainingOrder>, warnings: Array<string>, };
-export type TrainingOrder = { order: string, ordinal: number, template: string, templateName: string | null, templateMissing: string | null, icon: string | null, iconMissing: string | null, amount: number,
-/**
- * The stored priority, and the game's text for it.
- */
-priority: number, priorityName: string | null, priorityMissing: string | null,
-/**
- * The stored province (zero for none), and the name the game shows for it.
- */
-location: number, locationName: string | null, locationMissing: string | null, closed: boolean,
-/**
- * A government in exile's order names that country.
- */
-exile: string | null, divisions: Array<TrainingDivision>, };
-export type TrainingDivision = { line: string, ordinal: number, name: string | null, nameMissing: string | null,
-/**
- * Fixed-point training and its maximum, five decimals.
- */
-trainingRaw: string, maxTrainingRaw: string,
-/**
- * Signed sums of the available and needed entries, as the game adds them.
- */
-manpower: number, manpowerNeeded: number, maxManpower: number, contributors: Array<TrainingManpower>, equipment: Array<TrainingEquipment>,
-/**
- * What the template needs; empty with `need_missing` when unknown.
- */
-need: Array<TrainingNeed>, needMissing: string | null,
-/**
- * Why held equipment cannot be measured against the need: the need is
- * unknown, or a held design's type is unresolved, so what it fills is
- * unknown though the known needs and holdings stay.
- */
-comparisonMissing: string | null,
-/**
- * A halting reason is stored; its meaning is not named.
- */
-halted: boolean, };
-export type TrainingManpower = { tag: string | null,
-/**
- * Available (false) or needed (true).
- */
-needed: boolean, amount: number, };
-export type TrainingEquipment = { variant: string, name: string | null, archetype: string | null, archetypeName: string | null,
-/**
- * Signed fixed-point amount with five decimals.
- */
-amountRaw: string, };
-export type TrainingNeed = { archetype: string, name: string | null,
-/**
- * Fixed-point need with five decimals.
- */
-needRaw: string,
-/**
- * What the division holds of it, fixed-point with five decimals.
- */
-heldRaw: string, };
-export type PlaceNamesParams = { branchId: string,
-/**
- * Land's presentation ladder; other callers retain the native resolver.
- */
-land: boolean, places: Array<PlaceNameRequest>, states: Array<StateNameRequest>, };
-export type PlaceNameRequest = { provinceId: number, hour: number, };
-export type StateNameRequest = { stateId: number, hour: number, };
-export type PlaceName = { provinceId: number, hour: number,
-/**
- * Native province display name; null when no name resolves.
- */
-name: string | null, missing: string | null, };
-export type PlaceStateName = { stateId: number, hour: number,
-/**
- * Native state display name; null when no name resolves.
- */
-name: string | null, missing: string | null, };
-export type PlaceNamesReply = { places: Array<PlaceName>, states: Array<PlaceStateName>, warnings: Array<string>, };
-export type CountryStyleParams = { branchId: string, hour: number, tags: Array<string>, };
-export type CountryStyle = { tag: string,
-/**
- * The name the game showed; null when it could not be resolved.
- */
-name: string | null,
-/**
- * The recorded map colour as sRGB bytes; null when not recorded this hour.
- */
-color: [number, number, number] | null, };
-export type CountryStyleReply = { branchId: string, hour: number, styles: Array<CountryStyle>, warnings: Array<string>, };
-export type CountryFactsParams = { branchId: string, };
-export type CountryFactRuns = { tag: string,
-/**
- * `[hour, name, colour, reason, flag]` from `hour` until the next run: the name's index in
- * `names`, the colour as `0xRRGGBB`, the reason's index in `reasons` and the flag choice's
- * index in `flags`, each -1 when there is none. A tag that is not a country has a run with
- * no name, colour or flag and its reason.
- */
-runs: Array<[number, number, number, number, number]>, };
-export type CountryFlagChoice = {
-/**
- * Each atlas's key; null where no candidate gives it a file it draws.
- */
-keys: [string | null, string | null, string | null],
-/**
- * Why each atlas has no key, or what was refused on the way to its key; null when nothing.
- */
-reasons: [string | null, string | null, string | null], };
-export type CountryFactsReply = { branchId: string,
-/**
- * The hours the runs answer, as `[first, last]` spans in order.
- */
-known: Array<[number, number]>,
-/**
- * Names, each once; a run holds its index.
- */
-names: Array<string>,
-/**
- * Why part of a style is missing, each once; a run holds its index.
- */
-reasons: Array<string>,
-/**
- * Flag choices, each once; a run holds its index.
- */
-flags: Array<CountryFlagChoice>, countries: Array<CountryFactRuns>, warnings: Array<string>, };
-export type CountryColourParams = { branchId: string,
-/**
- * The hours to read, in any order.
- */
-hours: Array<number>,
-/**
- * The countries to read at every one of those hours.
- */
-tags: Array<string>, };
-export type CountryColourRun = { tag: string,
-/**
- * The first read hour with this colour; it holds at each later read hour up to the tag's next run.
- */
-hour: number,
-/**
- * The recorded map colour as sRGB bytes; null when none was recorded.
- */
-color: [number, number, number] | null,
-/**
- * Why there is no colour, as `country-styles` warns of it; null with a colour.
- */
-missing: string | null, };
-export type UnreadColourHour = { hour: number, reason: string, };
-export type CountryColourReply = { branchId: string,
-/**
- * Every tag's runs over the read hours, in hour order.
- */
-runs: Array<CountryColourRun>,
-/**
- * Requested hours that could not be read, and why.
- */
-unread: Array<UnreadColourHour>, warnings: Array<string>, };
-export type FactionDetailParams = { branchId: string, hour: number, faction: string, };
-export type FactionGoalDefinition = { progress: Array<FactionRewardDetail>, sections: Array<FactionRewardDetail>, bands: Array<FactionProgressBand>, conditions: Array<FactionConditionDetail>, rewards: Array<FactionRewardDetail>, flags: Array<FactionConditionDetail>, token: string | null, name: string | null, description: string | null, icon: string | null, category: string | null,
-/**
- * The term's name as the game's interface names it, from the localisation key
- * the native term carries; null when the content does not define it.
- */
-categoryName: string | null, reason: string | null, };
-export type FactionConditionDetail = { kind: string, result: boolean | null, reasons: Array<string>, };
-export type FactionRewardDetail = { kind: string, text: string, reasons: Array<string>, };
-export type FactionProgressBand = { name: string | null, min: number | null, max: number | null, };
-export type FactionGoalDetail = { ordinal: number, definition: FactionGoalDefinition, status: number,
-/**
- * Exact retained fixed-point cache as decimal text.
- */
-progressRaw: string, activeSections: Array<number>, progressPercent: number | null, date: number, };
-export type FactionRuleDetail = { ordinal: number, token: string | null, name: string | null, reason: string | null, };
-export type FactionProgramDetail = { ordinal: number, reference: string, owner: string | null, activeProject: boolean | null, project: string | null, reason: string | null, };
-export type FactionManpowerDetail = { ordinal: number, tag: string | null, value: number, };
-export type FactionAccountDetail = { ordinal: number, country: number, tag: string | null, currentMember: boolean, influence: Array<string>, projection: Array<string>, influenceShareRaw: string, projectionShareRaw: string, projectionRank: number, initiativeRaw: string, contributionRaw: string, contributionGain: Array<string>, previousWarScoreRaw: string, upgrades: Array<FactionUpgradeDetail>, completed: Array<FactionGoalDefinition>, };
-export type FactionUpgradeDetail = { group: number, token: string | null, name: string | null, reason: string | null, };
-export type FactionVariableDetail = { ordinal: number,
-/**
- * Literal bytes remain available when the key is not UTF-8.
- */
-nameBytes: Array<number>, name: string, valueRaw: string, };
-export type FactionResourceDetail = { ordinal: number, token: string | null, name: string | null, icon: string | null, raw: string, reason: string | null, };
-export type FactionRefusalDetail = { fact: string, count: number, reason: string, };
-export type FactionDetailReply = { presentations: Array<FactionRewardDetail>, projectionRaw: string | null, influenceTotalRaw: string | null, projectionEffectsRaw: string | null, resources: Array<FactionResourceDetail> | null, systemResources: Array<FactionResourceDetail> | null, refusals: Array<FactionRefusalDetail>, minimumUpgrades: Array<FactionUpgradeDetail> | null, doctrineFolders: Array<FactionRuleDetail> | null, researchBaseRaw: string | null, researchCountries: Array<string> | null, researchBonuses: Array<string> | null,
-/**
- * The faction's member accounts, and those of countries outside every faction whose
- * account names this faction as its supplying one.
- */
-accounts: Array<FactionAccountDetail> | null,
-/**
- * Retained accounts of countries outside every faction that name no supplying
- * faction: nothing recorded at the hour ties them to this faction or another.
- */
-unassociatedAccounts: Array<FactionAccountDetail> | null, variableSeed: number | null, variables: Array<FactionVariableDetail> | null, branchId: string, hour: number, faction: string, goalReason: string | null, researchUnlocked: boolean | null, manpowerUnlocked: boolean | null, rules: Array<FactionRuleDetail> | null, programmes: Array<FactionProgramDetail> | null, programmesReadHour: number | null, manpower: Array<FactionManpowerDetail> | null, manpowerTotal: number | null, manifest: FactionGoalDefinition | null, goals: Array<FactionGoalDetail>, completed: Array<FactionGoalDefinition>, cancelled: Array<FactionGoalDefinition>, extraSlots: Array<number>, termDates: Array<number>,
-/**
- * The faction's logo as the game draws it: its template's sprite, else the
- * content's default faction icon.
- */
-logo: string | null, warnings: Array<string>, };
-export type CountryGroupParams = { branchId: string, };
-export type MembershipRun = { tag: string, firstHour: number, lastHour: number, };
-export type FactionNameRun = { firstHour: number, lastHour: number, name: string | null, reason: string | null, };
-export type FactionGroup = {
-/**
- * The recorded faction id, as a decimal string.
- */
-id: string,
-/**
- * The faction's name as the game showed it; null when it cannot be resolved.
- */
-name: string | null,
-/**
- * Why the latest recorded name cannot be resolved.
- */
-nameReason: string | null,
-/**
- * Display names dated by the Factions row that supplied their operands.
- */
-names: Array<FactionNameRun>,
-/**
- * The latest engine literal, copied unchanged; empty when there is none.
- * Stable across languages and content, so settings can key a faction by it.
- */
-recordedName: string, firstHour: number, lastHour: number, members: Array<MembershipRun>,
-/**
- * Who led the faction (its member at order zero), as runs of consecutive
- * recorded hours; a change of leader ends one run and starts another.
- */
-leaders: Array<MembershipRun>,
-/**
- * Hours this faction's roster named a country the links cannot resolve: its
- * roster is not known then (other factions' rosters are).
- */
-incomplete: Array<HourSpan>, };
-export type WarPairRun = { first: string, second: string, firstHour: number, lastHour: number, };
-export type WarStart = { hour: number, attacking: string, defending: string, };
-export type Capitulation = { hour: number, tag: string, };
-export type IdentityChange = { hour: number, from: string, to: string, };
-export type CountryIdentityHistory = { tag: string, identities: Array<CountryIdentityRun>, };
-export type CountryIdentityRun = { firstHour: number, lastHour: number, slot: number, countryId: number, };
-export type HourSpan = { firstHour: number, lastHour: number, };
-export type UnobservedHours = { humans: Array<HourSpan>, factions: Array<HourSpan>, wars: Array<HourSpan>, };
-export type CountryGroupReply = { branchId: string, humans: Array<MembershipRun>, factions: Array<FactionGroup>, wars: Array<WarPairRun>,
-/**
- * Every war start the recorded war relations name, in hour order.
- */
-warStarts: Array<WarStart>,
-/**
- * Every capitulation the recording saw, in hour order.
- */
-capitulations: Array<Capitulation>,
-/**
- * Native-dated war starts and capitulations can be learned later. These
- * hours' event inventories are provisional while preparation continues.
- */
-eventsApproximate?: Array<HourSpan>,
-/**
- * Every change of an id's tag between two consecutive recorded hours, in hour order.
- */
-identityChanges: Array<IdentityChange>,
-/**
- * Every recorded tag's native identities, including all reused holders.
- */
-countryIdentities: Array<CountryIdentityHistory>,
-/**
- * Hours inside the branch where each history was not observed: a run that
- * ends or starts next to one of these is a gap, not a join or a leave.
- */
-unobserved: UnobservedHours, warnings: Array<string>, };
-export type FactionChannelCoverage = { channel: string, known: Array<HourSpan>, read: Array<HourSpan>, };
-export type FactionStateParams = { "view": "influence", branchId: string, faction: string, } | { "view": "rules", branchId: string, faction: string, } | { "view": "manpower", branchId: string, faction: string, } | { "view": "goals", branchId: string, faction: string,
-/**
- * The first and last hours asked for; null leaves that end open.
- */
-firstHour: number | null, lastHour: number | null, };
-export type FactionShareRun = { firstHour: number, lastHour: number, shareRaw: string | null, startsSegment: boolean, };
-export type FactionInfluenceAccount = { key: string, tag: string, slot: number | null, countryId: number | null, runs: Array<FactionShareRun>, member: Array<HourSpan>,
-/**
- * Proven association without current membership, never assigned to every faction.
- */
-retained: Array<HourSpan>, };
-export type FactionSelectionRun = { firstHour: number, lastHour: number, token: string | null, name: string | null, reason: string | null, startsSegment: boolean, };
-export type FactionSelectionLane = { slot: number, runs: Array<FactionSelectionRun>, };
-export type FactionMinimumLane = { group: number, runs: Array<FactionSelectionRun>, };
-export type FactionMemberUpgradeLane = { key: string, tag: string, slot: number | null, countryId: number | null, group: number, runs: Array<FactionSelectionRun>, };
-export type FactionUpgradeGroup = { group: number, name: string | null, };
-export type FactionManpowerRun = { firstHour: number, lastHour: number, value: number | null, startsSegment: boolean, };
-export type FactionManpowerMember = { key: string, tag: string, slot: number | null, countryId: number | null, runs: Array<FactionManpowerRun>, };
-export type FactionInfluenceReply = { accounts: Array<FactionInfluenceAccount>, unobserved: Array<HourSpan>, pending: Array<HourSpan>, coverage: PreparedCoverage, channels: Array<FactionChannelCoverage>, warnings: Array<string>, };
-export type FactionRulesReply = { rules: Array<FactionSelectionLane>, programmes: Array<FactionSelectionLane>, minimums: Array<FactionMinimumLane>, members: Array<FactionMemberUpgradeLane>, doctrines: Array<FactionSelectionLane>, groups: Array<FactionUpgradeGroup>, unobserved: Array<HourSpan>, pending: Array<HourSpan>, coverage: PreparedCoverage, channels: Array<FactionChannelCoverage>, warnings: Array<string>, };
-export type FactionManpowerReply = { members: Array<FactionManpowerMember>, total: Array<FactionManpowerRun>, unobserved: Array<HourSpan>, pending: Array<HourSpan>, coverage: PreparedCoverage, channels: Array<FactionChannelCoverage>, warnings: Array<string>, };
-export type FactionGoalListRun = { firstHour: number, lastHour: number,
-/**
- * The held lists, an index into the reply's `lists`.
- */
-list: number, startsSegment: boolean, };
-export type FactionHeldGoal = { ordinal: number,
-/**
- * An index into the reply's `definitions`.
- */
-definition: number, status: number, };
-export type FactionGoalList = {
-/**
- * The hour's complete faction roster does not list the faction.
- */
-absent: boolean,
-/**
- * Why the hour's goal lists are unavailable; they are then empty.
- */
-reason: string | null, goals: Array<FactionHeldGoal>, completed: Array<number>, cancelled: Array<number>, };
-export type FactionGoalProgressRun = { firstHour: number, lastHour: number,
-/**
- * Exact retained fixed-point cache as decimal text.
- */
-progressRaw: string, progressPercent: number | null, startsSegment: boolean, };
-export type FactionGoalProgressLane = {
-/**
- * The held goal's ordinal in the runtime list.
- */
-ordinal: number, runs: Array<FactionGoalProgressRun>, };
-export type FactionGoalsReply = { runs: Array<FactionGoalListRun>, lists: Array<FactionGoalList>,
-/**
- * Goals as faction details name them, without their authored checks.
- */
-definitions: Array<FactionGoalDefinition>, progress: Array<FactionGoalProgressLane>, unobserved: Array<HourSpan>, pending: Array<HourSpan>, coverage: PreparedCoverage, channels: Array<FactionChannelCoverage>, warnings: Array<string>, };
-export type FactionStateReply = FactionInfluenceReply | FactionRulesReply | FactionManpowerReply | FactionGoalsReply;
-export type WarsParams = { branchId: string,
-/**
- * None follows the recording client's playing/observer country.
- */
-viewpointTag: string | null, };
-export type WarName = {
-/**
- * Exact plain text, or "Not recorded" with a reason.
- */
-text: string, known: boolean, reason: string | null, key: string | null, };
-export type WarSide = "attacker" | "defender" | "viewpoint" | "opponent";
-export type WarParticipantRun = { tag: string, side: WarSide, firstHour: number, lastHour: number, joinedBy: boolean, leftBy: boolean, };
-export type WarCapitulation = { tag: string, hour: number, };
-export type WarObservation = { firstHour: number, lastHour: number, viewpointTag: string,
-/**
- * Native order, including any repeated occurrence.
- */
-viewpointSide: Array<string>, opposingSide: Array<string>,
-/**
- * Orientation follows the representative's instigator, an app convention.
- * None if the representative's operands are unavailable.
- */
-attackersAreViewpoint: boolean | null, representative: [string, string] | null, name: WarName, };
-export type WarCasualtyRun = [number, number, string, string, string, string];
-export type WarTimeline = {
-/**
- * Branch-local app identity; never a native war id.
- */
-id: string, firstHour: number, lastHour: number, startedBy: boolean, endedBy: boolean, observations: Array<WarObservation>, casualties: Array<WarCasualtyRun>, participants: Array<WarParticipantRun>, capitulations: Array<WarCapitulation>, };
-export type WarsReply = { branchId: string,
-/**
- * At least one overview operand table was recorded, even if incomplete.
- */
-available: boolean,
-/**
- * The overview viewpoint over consecutive readable hours, including peace.
- */
-viewpoints: Array<MembershipRun>,
-/**
- * All resolved historical names of participants and viewpoints, for label measurement only.
- */
-countryNames: Array<string>, wars: Array<WarTimeline>, unobserved: Array<HourSpan>, capitulationsUnobserved: Array<HourSpan>, warnings: Array<string>, };
-export type WarsAtHour = { hour: number, contributions: Array<WarContributionGroup>,
-/**
- * At least one overview operand table was recorded at the hour; false
- * at an unrecorded hour.
- */
-available: boolean, wars: Array<WarTimeline>, warnings: Array<string>, };
-export type WarCasualties = {
-/**
- * The war's id in the reply without hours of the same publication.
- */
-id: string, runs: Array<WarCasualtyRun>, };
-export type WarsHourly = { branchId: string,
-/**
- * Each war observed at a `reads` hour, in the order of the wars, with its runs there.
- */
-casualties: Array<WarCasualties>,
-/**
- * The groups and contributions at each `current` hour the publication accepted.
- */
-current: Array<WarsAtHour>, };
-export type WarContributionGroup = { viewpointSide: Array<string>, opposingSide: Array<string>, participants: Array<WarContributionCountry>, reason: string | null, };
-export type WarContributionCountry = { tag: string, side: WarSide,
-/**
- * All quantities are exact signed fixed5 words.
- */
-equipmentDamage: string, occupation: string, airDamage: string, strategicBombing: string, shipDamage: string, convoyDamage: string, casualties: string, unknownCasualties: string, lendLeaseSent: string, lendLeaseReceived: string, score: string, participation: string, };
-export type WargoalsParams = { branchId: string, hour: number, tag: string, };
-export type WargoalEntry = { handle: string, name: string, actor: string, recipient: string, available: boolean, expires: number | null, states: Array<number>, liberate: Array<string>, puppets: Array<string>, };
-export type WargoalJustification = { ordinal: number, name: string, actor: string, recipient: string, states: Array<number>, total: string, points: string, daily: string, payUpfront: boolean, start: number | null, completion: number, paused: boolean | null, };
-export type WargoalsReply = { branchId: string, hour: number, tag: string, standings: Array<WargoalPair>, goals: Array<WargoalEntry>, justifications: Array<WargoalJustification>, warnings: Array<string>, stateNames: Array<WargoalStateName>, };
-export type WargoalPair = { actor: string, recipient: string,
-/**
- * What the recorded wars and factions prove about the pair; none when neither applies.
- */
-standing: WargoalStanding | null, };
-export type WargoalStanding = "atWar" | "sameFaction";
-export type WargoalStateName = { id: number, name: string, known: boolean, };
-export type CountryStabilityParams = { branchId: string, tags: Array<string>,
-/**
- * The hour whose breakdown to include; none for runs only.
- */
-hour: number | null,
-/**
- * Only the breakdown at `hour`: the histories are left out, so hovering a
- * chart does not move them again.
- */
-breakdownOnly: boolean, };
-export type FixedRun = { firstHour: number, lastHour: number, valueRaw: string, startsSegment: boolean, };
-export type ReadRun = { firstHour: number, lastHour: number, readHour: number, };
-export type FormulaTerm = { term: string, valueRaw: string | null, };
-export type FormulaBreakdown = {
-/**
- * The displayed value, fixed5.
- */
-valueRaw: string | null, terms: Array<FormulaTerm>,
-/**
- * Displayed minus the unclamped sum: the clamp's contribution.
- */
-clampRaw: string | null, };
-export type BreakdownLine = {
-/**
- * The child's position in the modifier tree (the tooltip's order).
- */
-line: number,
-/**
- * `unpaired`, `idea`, `countryLeader`, `ideology`, `advisor`, `static`,
- * `staticScaled`, `dynamicModifier` or `dynamicModifierValues`.
- */
-kind: string,
-/**
- * Script identity (idea, advisor idea, ideology, static or dynamic
- * modifier token); empty for a leader or an unpaired line.
- */
-identity: string,
-/**
- * Character id or dynamic modifier scope country; zero otherwise.
- */
-identityId: number,
-/**
- * Dynamic modifier scope state; zero otherwise.
- */
-secondaryRaw: string, valueRaw: string,
-/**
- * The recorded display text of an unpaired line, in `language`, as plain
- * text (see [`display_text`]).
- */
-text: string | null,
-/**
- * A paired line's name in the viewer's language, from the content stack
- * (idea, advisor or leader name, ideology, static or dynamic modifier);
- * None when content does not name it or is not configured.
- */
-label: string | null,
-/**
- * What the source is, from content: for an idea in a slot or an advisor,
- * the slot's name in the viewer's language (`Economy Law`, `Political
- * Advisor`); None otherwise.
- */
-group: string | null,
-/**
- * For an idea in a category rather than a slot, the category's content
- * type (`national_spirit` for spirits, whatever a mod names the category).
- */
-groupKind: string | null, };
-export type ModifierBreakdown = {
-/**
- * The modifier's script name.
- */
-key: string,
-/**
- * The recorded key index; none when the game registers no such key.
- */
-index: number | null,
-/**
- * ModifierDefinitions' `good` flag (bit 1): only for good keys does
- * every line equal its contribution to the total.
- */
-good: boolean | null, totalRaw: string | null, lines: Array<BreakdownLine>,
-/**
- * Total minus the lines, when it is not zero.
- */
-remainderRaw: string | null, };
-export type StabilityBreakdown = { hour: number,
-/**
- * The hour the inputs were read at.
- */
-readHour: number,
-/**
- * The game language of unpaired lines' text.
- */
-language: string, stability: FormulaBreakdown, warSupport: FormulaBreakdown, maxCommandPower: FormulaBreakdown,
-/**
- * False when the lines were not recorded by the same read.
- */
-linesAvailable: boolean, modifiers: Array<ModifierBreakdown>, };
-export type CountryStabilitySeries = { tag: string, stability: Array<FixedRun>, warSupport: Array<FixedRun>, maxCommandPower: Array<FixedRun>,
-/**
- * Shown hours whose values come from an earlier read, as consecutive
- * hours with the same read, in hour order. Every other shown hour was read
- * at that hour, so hourly reads cost nothing here.
- */
-carried: Array<ReadRun>,
-/**
- * Whether any hour was read at all; false when no inputs were recorded.
- */
-recorded: boolean, breakdown: StabilityBreakdown | null, };
-export type CountryStabilityReply = { branchId: string,
-/**
- * Decimal places of every raw value in this reply.
- */
-decimals: number, series: Array<CountryStabilitySeries>, warnings: Array<string>, };
-export type StabilityPart = {
-/**
- * Stable within a reply: `term:<term>`, `line:<kind>:<identity>:<id>:<secondary>`,
- * `unpaired:<text>`, `unpaired-refused:<escaped label>`, `remainder` or `clamp`.
- */
-id: string,
-/**
- * The formula term (`base`, `war`, …) of a term part.
- */
-term: string | null,
-/**
- * A line part's latest line, named as the breakdown names it.
- */
-line: BreakdownLine | null,
-/**
- * Its value, fixed5, where it is not zero.
- */
-runs: Array<FixedRun>, };
-export type MeasureParts = { parts: Array<StabilityPart>,
-/**
- * Hours whose parts are known; outside them nothing is.
- */
-observed: Array<HourSpan>, };
-export type StabilityPartsReply = { branchId: string, tag: string,
-/**
- * Decimal places of every raw value in this reply.
- */
-decimals: number, stability: MeasureParts, warSupport: MeasureParts, warnings: Array<string>, };
-export type Measure = "politicalPower" | "commandPower";
-export type MeasureParams = { branchId: string, measure: Measure, tags: Array<string>, };
-export type BalanceDrop = { hour: number, beforeRaw: string, afterRaw: string, };
-export type MeasureSeries = { tag: string, runs: Array<FixedRun>, drops: Array<BalanceDrop>, };
-export type MeasureReply = { branchId: string, measure: Measure, decimals: number, series: Array<MeasureSeries>, warnings: Array<string>, };
-export type PeopleParams = { branchId: string, tag: string, hour: number, };
-export type PeopleFact = { label: string, value: string | null, unit: string, };
-export type PeopleState = { state: number, available: number, locked: number | null, total: number | null, effective: string | null, recruitable: number | null, };
-export type PeopleExile = { tag: string, host: string | null, legitimacy: string | null, manpower: number | null, cap: number | null, leaders: number | null, deployedAir: number | null, readHour: number | null, };
-export type PeopleReply = { branchId: string, tag: string, hour: number, readHour: number | null, manpower: Array<PeopleFact>, politics: Array<PeopleFact>, states: Array<PeopleState>, exiles: Array<PeopleExile>, warnings: Array<string>, };
-export type FuelAwardPart = {
-/**
- * Exact receipt-time grouping operands, independent of viewer language.
- */
-key: string, firstHour: number, lastHour: number, kind: number, reference: string, owner: string, host: string,
-/**
- * Fixed5 country fuel allocated to this recipient; not unit-local burn.
- */
-amountRaw: string,
-/**
- * Retained game-language bytes at the write. No later/name-key backfill.
- */
-recordedName: string | null, nameReason: string | null, };
-export type FuelAwardTotals = {
-/**
- * Base, state-source modifiers, oil and negative flat cost; fixed5.
- */
-gainsRaw: [string, string, string, string], ownGainRaw: string,
-/**
- * Sum of the native per-hour own-gain conversions, in quantity units.
- */
-ownGainQuantityRaw: string,
-/**
- * Incoming LL, outgoing LL, positive flat cost, total other; Q15.
- */
-transfersRaw: [string, string, string, string], consumedRaw: string, receivedRaw: [string, string, string], };
-export type FuelAwards = { totals: FuelAwardTotals, recipients: Array<FuelAwardPart>, };
-export type FuelLabel = { key: string,
-/**
- * Native localiser output with {NUM}/{OIL} operand markers; plain text.
- */
-template: string | null, arguments: Array<string>, reason: string | null, };
-export type FuelDay = {
-/**
- * Own fuel gain, fixed5; applied updates when known, otherwise ring sum.
- */
-gainedRaw: string,
-/**
- * Fuel they took out, in [`FuelReply::quantity_scale`] units
- * (`ring_consumed_raw`), `ring_other_raw` included.
- */
-burnedRaw: string,
-/**
- * Consumer receipts, fixed5; per-hour quantity conversions cannot be
- * reconstructed from these sums.
- */
-receivedRaw: [string, string, string],
-/**
- * Flat cost and fuel sent by lend-lease, in quantity units; already in burned.
- */
-otherRaw: string,
-/**
- * Actual applied updates, independent of subsequently refreshed rates.
- */
-awards: FuelAwardTotals | null, };
-export type DayLeftOut = "overlaps" | "notUpdated" | "ownershipNotRecorded";
-export type FuelRead = { country: string, countryInstance: number | null,
-/**
- * Capture continuity boundary, independent of the raw surrender target.
- */
-continuityStartHour: number | null,
-/**
- * The hour it was read, where its values start.
- */
-firstHour: number,
-/**
- * The last hour the read's values hold.
- */
-lastHour: number,
-/**
- * The read follows a gap, a missing read or another country identity.
- */
-startsSegment: boolean,
-/**
- * Fuel in the tank, in [`FuelReply::quantity_scale`] units (`current_raw`).
- */
-fuelRaw: string,
-/**
- * The tank's capacity, in the same units (`maximum_raw`).
- */
-capacityRaw: string,
-/**
- * Lend-lease fuel received in the hour before the read, in the same units
- * (`lend_lease_gain_raw`): the tank gains it, but `day` does not include it.
- */
-lendLeaseRaw: string,
-/**
- * The day of updates before the read; null when `left_out` says why not.
- */
-day: FuelDay | null, leftOut: DayLeftOut | null, awardsReason: string | null, };
-export type FuelReply = { branchId: string, tag: string,
-/**
- * Units per fuel of the level, capacity and burned values.
- */
-quantityScale: number,
-/**
- * Units per fuel of the gained values.
- */
-gainScale: number,
-/**
- * Hours of fuel updates a read's day sums.
- */
-dayHours: number,
-/**
- * Fuel-panel consumer localisation keys. Null names retain their
- * missing/refused content diagnostic.
- */
-consumerNames: [string | null, string | null, string | null], gainLabels: [FuelLabel, FuelLabel, FuelLabel, FuelLabel],
-/**
- * Incoming LL, outgoing LL, positive flat cost, in that order.
- */
-transferLabels: [FuelLabel, FuelLabel, FuelLabel], detailHours: number,
-/**
- * In hour order.
- */
-reads: Array<FuelRead>, warnings: Array<string>, };
-export type FuelSeriesPoint = { tag: string, hour: number, approximate: boolean, recorded: boolean, fuel: FuelRead | null, consumption: FuelConsumptionRead | null, consumptionSegment: HourSpan | null, fuelRaw?: string, capacityRaw?: string, };
-export type FuelSeriesStateReply = { branchId: string, states: Array<FuelSeriesPoint>, replies: Array<FuelReply>, };
-export type FuelSeriesLine = { tag: string, measure: string, summary: ChartSummary, };
-export type FuelSeriesSummaryReply = { branchId: string, series: Array<FuelSeriesLine>, replies: Array<FuelReply>, };
-export type FuelAwardsParams = { branchId: string, tag: string, hour: number, country: string, countryInstance: number, };
-export type FuelAwardsReply = { branchId: string, tag: string, hour: number, awards: FuelAwards, warnings: Array<string>, };
-export type FuelAwardHistoryParams = { branchId: string, tag: string, hour: number, country: string, countryInstance: number, window: number, recipientKey: string, };
-export type FuelAwardRun = {
-/**
- * Actual supplying read, including a whole read carried into the window.
- * Unknown gap rows instead begin at the first missing hour.
- */
-firstHour: number, lastHour: number, startsSegment: boolean, amountRaw: string | null, reason: string | null, };
-export type FuelAwardHistoryReply = { branchId: string, tag: string, hour: number, country: string, countryInstance: number, continuityStartHour: number, window: number, recipientKey: string, firstHour: number, lastHour: number, runs: Array<FuelAwardRun>, warnings: Array<string>, };
-export type FuelConsumptionRead = { firstHour: number, lastHour: number, startsSegment: boolean, segmentStartHour: number, country: string, countryInstance: number | null,
-/**
- * Native family sum then native daily conversion, including signed wrap.
- */
-nativeDailyRaw: [string | null, string | null, string | null],
-/**
- * Widened sum of individually converted known rows; never the native sum.
- */
-knownDailyRaw: [string, string, string], positiveDailyRaw: [string, string, string], reasons: [string | null, string | null, string | null], };
-export type FuelConsumptionReply = { branchId: string, tag: string, reads: Array<FuelConsumptionRead>, warnings: Array<string>, };
-export type FuelDemandLocation = { list: number, siteOrdinal: number, base: string, containerOwner: string | null, poolOrdinal: number, wingOrdinal: number, reason: string | null, };
-export type FuelDemandPart = { key: string, kind: number, reference: string, parent: string, ordinal: number, owners: [string, string, string] | null, wingOwner: string | null, group: string | null, topologyReason: string | null, site: FuelDemandLocation | null, amountRaw: string | null, reason: string | null, recordedName: string | null, nameReason: string | null, };
-export type FuelDemandCommand = { reference: string, parent: string, country: string, armyGroup: boolean, members: Array<string>, children: Array<string>, recordedName: string | null, nameReason: string | null, };
-export type FuelDemandFleet = { reference: string, recordedName: string | null, nameReason: string | null, };
-export type FuelDemandAirSite = { list: number, ordinal: number, base: string, containerOwner: string | null, capacityRaw: string | null, demilitarized: number | null, reason: string | null, wings: Array<string>, };
-export type FuelDemandReply = { branchId: string, tag: string, hour: number, read: FuelConsumptionRead, parts: Array<FuelDemandPart>, commands: Array<FuelDemandCommand>, fleets: Array<FuelDemandFleet>, sites: Array<FuelDemandAirSite>, topologyReason: string | null, warnings: Array<string>, };
-export type FuelDemandHistoryParams = { branchId: string, tag: string, hour: number, country: string, countryInstance: number, window: number, key: string, };
-export type FuelDemandRun = { firstHour: number, lastHour: number, startsSegment: boolean, amountRaw: string | null, reason: string | null, recordedName: string | null, nameReason: string | null, };
-export type FuelDemandHistoryReply = { branchId: string, tag: string, hour: number, country: string, countryInstance: number, segmentStartHour: number, window: number, key: string, firstHour: number, lastHour: number, runs: Array<FuelDemandRun>, warnings: Array<string>, };
-export type FuelDemandStackParams = { branchId: string, tag: string, hour: number, country: string, countryInstance: number, window: number, keys: Array<string>, };
-export type FuelDemandStackPart = { key: string, runs: Array<FuelDemandRun>, };
-export type FuelDemandStackReply = { branchId: string, tag: string, hour: number, country: string, countryInstance: number, segmentStartHour: number, window: number, firstHour: number, lastHour: number, parts: Array<FuelDemandStackPart>, warnings: Array<string>, };
-export type CasualtyTop = { count: number, };
-export type CasualtyParams = { branchId: string, tags: Array<string>, top: CasualtyTop | null, };
-export type CasualtyDelta = number | string | [number, string];
-export type CasualtyValues = [string, Array<CasualtyDelta>];
-export type CasualtyIdentity = { firstHour: number, id: string, };
-export type CasualtySeries = { tag: string,
-/**
- * First read followed by positive hour deltas. Equal confirmations are implicit.
- */
-reads: Array<number>,
-/**
- * [point index, endpoint, last read if held]. Otherwise every hour is confirmed.
- */
-ends: Array<[number, number, number | null]>, dealt: CasualtyValues, taken: CasualtyValues, unknown: CasualtyValues | null,
-/**
- * Unknown values cease to be exact at this hour (null means still exact).
- */
-unknownUntil: number | null,
-/**
- * Legacy wire name: partial recorded history begins here, not a lower bound.
- */
-atLeastFrom: number | null, identities: Array<CasualtyIdentity>,
-/**
- * Every resolved name over the branch, for one stable campaign label column.
- */
-labels: Array<string>,
-/**
- * Top-N or selected-holder membership; null when the whole tag track applies.
- */
-membership: Array<HourSpan> | null, };
-export type CasualtyReply = { branchId: string, series: Array<CasualtySeries>,
-/**
- * Hours where the relation census and endpoint identities were complete.
- */
-observed: Array<HourSpan>, warnings: Array<string>, unknownLabel: string, hasGap: boolean, };
-export type CasualtyPairsParams = { branchId: string, tags: Array<string>,
-/**
- * Otherwise show each chosen country's casualties with every enemy.
- */
-between: boolean,
-/**
- * None asks for the replay-block manifest, not campaign-length histories.
- */
-window: number | null, };
-export type CasualtyPairRun = { firstHour: number, lastHour: number,
-/**
- * Equal values compress consecutive hourly reads. A carried run keeps its
- * earlier read_hour instead of claiming an hourly confirmation.
- */
-readHour: number, hourly: boolean, firstTaken: string, secondTaken: string, incomplete: boolean, };
-export type CasualtyPairSeries = { identity: string, firstCountry: string, secondCountry: string, runs: Array<CasualtyPairRun>, };
-export type CasualtyPairsReply = { branchId: string, available: boolean, windows: Array<HourSpan>, window: number | null, observed: Array<HourSpan>, pairs: Array<CasualtyPairSeries>, hasGap: boolean, warnings: Array<string>, };
-export type CasualtyBreakdownParams = { branchId: string, tag: string, window: number | null, };
-export type CasualtyBreakdownRun = { firstHour: number, lastHour: number, readHour: number, hourly: boolean,
-/**
- * The actual relation observation which supplied the native grouping.
- */
-groupingHour: number, groupingHourly: boolean,
-/**
- * Current enemy facts when present, else its last observed holder's facts.
- */
-enemyHour: number, enemyHourly: boolean, value: string, warId: string | null, reason: string | null, incomplete: boolean, };
-export type CasualtyBreakdownSeries = { id: string, countryIdentity: string, enemyTag: string, enemyIdentity: string, runs: Array<CasualtyBreakdownRun>, };
-export type CasualtyBreakdownCountryRun = { firstHour: number, lastHour: number, identity: string, incomplete: boolean, };
-export type CasualtyWarNameRun = { firstHour: number, lastHour: number, name: WarName, };
-export type CasualtyBreakdownWar = { id: string, firstHour: number, lastHour: number, startedBy: boolean, endedBy: boolean, names: Array<CasualtyWarNameRun>, };
-export type CasualtyBreakdownReply = { branchId: string, tag: string, available: boolean, windows: Array<HourSpan>, window: number | null, observed: Array<HourSpan>, countries: Array<CasualtyBreakdownCountryRun>, series: Array<CasualtyBreakdownSeries>, wars: Array<CasualtyBreakdownWar>, hasGap: boolean, warnings: Array<string>, };
-export type FactoriesParams = { branchId: string, tags: Array<string>, top: FactoryTop | null, };
-export type FactoryCount = "free" | "built" | "topBar";
-export type FactoryTop = { count: number, mode: FactoryCount,
-/**
- * The groups summed; none sums all three.
- */
-groups: Array<FactoryGroupKey>, };
-export type FactoryGroupKey = "military" | "naval" | "civilian";
-export type FactoryPart = "total" | "controlled" | "owned" | "damaged" | "fromSubjects" | "toOverlord" | "fromOthers" | "toOthers" | "tradeExports" | "licenseExports" | "consumerGoods" | "contractPayments" | "specialProjects" | "licenseImports" | "tradeImports";
-export type FactoryField = { group: FactoryGroupKey, part: FactoryPart, };
-export type FactoryBuilding = {
-/**
- * The content's building name.
- */
-token: string,
-/**
- * Its localised name; null when the content has none.
- */
-name: string | null, };
-export type FactoryGroupInfo = { key: FactoryGroupKey,
-/**
- * The content flag that counts a building in it.
- */
-flag: string, buildings: Array<FactoryBuilding>, };
-export type FactoryRun = { firstHour: number, lastHour: number,
-/**
- * The run follows a gap, an hour the tables could not tell or another
- * country identity rather than continuing the previous run.
- */
-startsSegment: boolean,
-/**
- * Whole factories, one per [`CountryFactoriesReply::fields`] entry.
- */
-values: Array<number>, };
-export type FactoryReadRun = { firstHour: number, lastHour: number, readHour: number, hourly: boolean, };
-export type FactorySeries = { tag: string, identities?: Array<CountryIdentityRun>, reads?: Array<FactoryReadRun>, runs: Array<FactoryRun>,
-/**
- * Unbroken country identities from Countries and CountryLinks, never cut to top-N
- * membership. Appearance samples must stay within the segment at their hour.
- */
-segments: Array<HourSpan>,
-/**
- * For a top-N reply, the hours the country was among the top N, in order;
- * its runs are cut to them. Null for chosen countries.
- */
-membership: Array<HourSpan> | null, };
-export type CountryFactoriesReply = { branchId: string,
-/**
- * The three groups, with the content building types counted in each.
- */
-groups: Array<FactoryGroupInfo>,
-/**
- * What each position of a run's values holds.
- */
-fields: Array<FactoryField>,
-/**
- * The countries asked for that were recorded, or every country ever in the
- * top N, by tag.
- */
-series: Array<FactorySeries>, warnings: Array<string>, };
-export type TerritoryMeasure = "states" | "provinces" | "victoryPoints" | "area";
-export type TerritoryRule = "controlled" | "owned" | "occupied";
-export type TerritoryTop = { count: number, measure: TerritoryMeasure, rule: TerritoryRule, };
-export type TerritoryParams = { branchId: string, tags: Array<string>, top: TerritoryTop | null, };
-export type TerritoryRun = { firstHour: number, lastHour: number, startsSegment: boolean,
-/**
- * Controlled states, provinces, signed victory points, area; then owned in
- * the same order; then occupied in the same order.
- * Null means that measure/rule was not recorded, never zero.
- */
-values: Array<number | null>, };
-export type TerritorySeries = { tag: string, runs: Array<TerritoryRun>, segments: Array<HourSpan>, membership: Array<HourSpan> | null,
-/**
- * Fixed picks follow native holder instances through their recorded aliases.
- */
-identities?: Array<CountryIdentityRun>, };
-export type TerritoryReply = { branchId: string,
-/**
- * Independent world totals, including unheld controlled/owned territory.
- * Occupied columns total only foreign-controlled units.
- */
-worldTotals: Array<TerritoryRun>, series: Array<TerritorySeries>,
-/**
- * No physical calibration is present in the province map assets.
- */
-areaUnit: string | null,
-/**
- * A named refusal hides the measure in the settings; other measures work.
- */
-areaReason: string | null, warnings: Array<string>, };
-export type TerritoryBreakdownParams = { branchId: string, };
-export type TerritoryRegion = { id: number, name: string | null, missing: string | null, };
-export type TerritoryStateShare = { numerator: string, denominator: number, };
-export type TerritoryRegionRun = { firstHour: number, lastHour: number, startsSegment: boolean,
-/**
- * Provinces, victory points, area: controlled first, then owned.
- */
-values: [string | null, string | null, string | null, string | null, string | null, string | null],
-/**
- * Controlled then owned. Terms with the same denominator are combined.
- */
-stateShares: [Array<TerritoryStateShare> | null, Array<TerritoryStateShare> | null], };
-export type TerritoryRegionSeries = { tag: string | null, region: number | null, missing: string | null, runs: Array<TerritoryRegionRun>, };
-export type TerritoryBreakdownReply = { branchId: string, regions: Array<TerritoryRegion>, series: Array<TerritoryRegionSeries>, countries: Array<TerritorySeries>, worldTotals: Array<TerritoryRun>,
-/**
- * Complete regional inputs for controlled then owned states, provinces,
- * victory points and area. Occupied territory has no regional projection.
- */
-observed: Array<Array<HourSpan>>, areaUnit: string | null, areaReason: string | null, warnings: Array<string>, };
-export type FactionTotalsParams = { branchId: string, source: FactionMeasure, membership: FactionMembership, top: number,
-/**
- * A chosen faction is returned unranked, using the same sum rule as the race.
- */
-factionId?: string,
-/**
- * Selected member measures and the branch's native country identity census.
- */
-parts?: boolean,
-/**
- * Native faction inventory, including zero and unknown totals outside rank.
- */
-inventory?: boolean, };
-export type FactionMembership = "hour" | "end" | "ever";
-export type FactionMeasure = { "kind": "territory", measure: TerritoryMeasure, rule: TerritoryRule, } | { "kind": "factories", mode: FactoryCount, groups: Array<FactoryGroupKey>, };
-export type FactionTotalRun = { firstHour: number, lastHour: number, startsSegment: boolean, value: number, };
-export type FactionTotalSeries = { id: string, runs: Array<FactionTotalRun>,
-/**
- * Names and members are the recorded history, independent of the sum rule.
- */
-names: Array<FactionNameRun>, members: Array<MembershipRun>,
-/**
- * The members used in each sum, under the requested membership mode.
- */
-countedMembers: Array<MembershipRun>, membership: Array<HourSpan>,
-/**
- * End membership uses a dissolved faction's last recorded roster.
- */
-dissolutionHour: number | null, unavailableReason: string | null, };
-export type FactionMemberValueRun = { firstHour: number, lastHour: number, startsSegment: boolean,
-/**
- * Exact signed measure integer, independent of JavaScript's numeric range.
- */
-value: string | null, };
-export type FactionMemberTrack = { tag: string, runs: Array<FactionMemberValueRun>, identities: Array<CountryIdentityRun>, };
-export type FactionTotalsReply = { branchId: string, membershipMode: FactionMembership,
-/**
- * Hours when the catalogue and every existing faction total are known.
- */
-recorded: Array<HourSpan>,
-/**
- * Hours when all counted country rosters are known and do not overlap.
- */
-disjoint: Array<HourSpan>, series: Array<FactionTotalSeries>, unit: string | null, unavailableReason: string | null, warnings: Array<string>, memberTracks?: Array<FactionMemberTrack>, };
-export type AirAcesParams = { branchId: string, view: AirAcesView, window: number | null, };
-export type AirAcesView = "manifest" | "window" | "catalogue";
-export type AirAcesReply = AirAcesManifestReply | AirAcesWindowReply;
-export type AirAcesRosterReply = { manifest: AirAcesManifestReply, roster: AirAcesWindowReply, readHour: number | null, preparing: Array<string>, };
-export type AirAcesRosterParams = { branchId: string, view: "roster", hour: number, };
-export type AirAcesManifestReply = { branchId: string, firstHour: number, lastHour: number, available: boolean, unavailable: string | null, observed: Array<HourSpan>,
-/**
- * Successful roster reads across the branch.
- * Equal facts compress; consumers date each row to its last read <= hour.
- */
-readHours: Array<number>, aces: Array<AirAceIdentity>,
-/**
- * Recording-block bounds, including blocks that could not be read.
- */
-windows: Array<HourSpan>, variants: { [key in string]?: Array<StockVariantName> }, warnings: Array<string>, };
-export type AirAcesWindowReply = { branchId: string, window: number, firstHour: number, lastHour: number, aces: Array<AirAceEntry>,
-/**
- * Run name, callsign and wingName fields index this window's exact text.
- */
-texts: Array<string>, warnings: Array<string>, };
-export type AirAceIdentity = { id: string, firstSeen: number, };
-export type AirAceEntry = { id: string, firstSeen: number | null, runs: Array<AirAceRun>, };
-export type AirAceRun = { firstHour: number, lastHour: number, tag: string | null, name: number | null, callsign: number | null, wing: string | null, wingName: number | null, aircraft: Array<string> | null, alive: boolean, death: AirAceDeath | null, };
-export type AirAceDeath = { lastAlive: number | null, byHour: number | null, killerAce: string | null, killerTag: string | null, };
-export type StockVariantName = {
-/**
- * The read these names are from; they hold until the next entry.
- */
-firstHour: number,
-/**
- * The variant's display name; null when content does not name it, or when
- * not known.
- */
-name: string | null,
-/**
- * False from an hour the variant's names stopped being known (a gap, or a due
- * read of the variant table that did not land) until the next entry.
- */
-known: boolean,
-/**
- * The design's fingerprint as read then (`equipment::design_fingerprint`: its
- * name, modules and upgrade levels); null where not known. A saved variant
- * choice carries it, so a later branch's other design under the same handle
- * is never taken for it.
- */
-design: string | null, };
-export type AirAcePortraitParams = { branchId: string, hour: number, ids: Array<string>, };
-export type AirAcePortraitReply = { portraits: Array<AirAcePortrait>, warnings: Array<string>, };
-export type AirAcePortrait = { id: string, image: string | null, missing: string | null, };
-export type AirForceParams = { branchId: string, tags: Array<string>, top: number | null, measure: AirForceMeasure, ownership: AirForceOwnership, };
-export type AirForceMeasure = "planes" | "wings";
-export type AirForceOwnership = "roster" | "effective";
-export type AirForcePart = { key: string, name: string | null, unresolved: boolean, };
-export type AirForceRun = { firstHour: number, lastHour: number, startsSegment: boolean,
-/**
- * Null when the census or ownership attribution is incomplete.
- */
-total: number | null,
-/**
- * Whole counts parallel to reply.parts; unresolved content retains its own
- * numeric part. A quantity that cannot split exactly is null, never zero.
- */
-values: Array<number | null>, };
-export type AirForceSeries = { tag: string, identities: Array<CountryIdentityRun>, runs: Array<AirForceRun>, segments: Array<HourSpan>, membership: Array<HourSpan> | null, };
-export type AirForceReply = { branchId: string, parts: Array<AirForcePart>, series: Array<AirForceSeries>, warnings: Array<string>, };
-export type NavyParams = { branchId: string, tags: Array<string>, top: number | null, ownership: NavyOwnership, grouping: NavyGrouping, measure: NavyMeasure, };
-export type NavyOwnership = "roster" | "logical";
-export type NavyGrouping = "class" | "type";
-export type NavyMeasure = "ships" | "strength";
-export type NavyPart = { key: string, name: string | null, unresolved: boolean, };
-export type NavyRun = { firstHour: number, lastHour: number, startsSegment: boolean, total: number | null, values: Array<number | null>,
-/**
- * Maximum HP in fixed5 for the strength measure; unknown independently.
- */
-referenceTotal: number | null, };
-export type NavySeries = { tag: string, identities: Array<CountryIdentityRun>, runs: Array<NavyRun>, segments: Array<HourSpan>, membership: Array<HourSpan> | null, };
-export type NavyReply = { branchId: string, parts: Array<NavyPart>, series: Array<NavySeries>, warnings: Array<string>, };
-export type NavalManagementParams = { branchId: string, hour: number, tag: string, };
-export type NavalManagementSection = { key: string, title: string, lines: Array<string>, };
-export type NavalManagementReply = { branchId: string, hour: number, sections: Array<NavalManagementSection>, warnings: Array<string>, };
-export type BranchParams = { branchId: string, };
-export type GameScoreMissingKind = "recording" | "content";
-export type GameScoreMissing = { kind: GameScoreMissingKind, reason: string, };
-export type NativeFixed5Run = { firstHour: number, lastHour: number, raw?: string,
-/**
- * Space-separated `hours_since_change:delta` pairs, first from first_hour.
- * Decimal deltas multiply by delta_scale (fixed5 scale when omitted);
- * `r` prefixes an unscaled raw delta. Gaps are positive, deltas nonzero.
- */
-deltas?: string, deltaScale?: string,
-/**
- * Product-owned shared reason index, never an implicit zero.
- */
-missing?: number, readEachHour: boolean, };
-export type GameScoreSeries = { army: Array<NativeFixed5Run>, navy: Array<NativeFixed5Run>, air: Array<NativeFixed5Run>, industry: Array<NativeFixed5Run>, land: Array<NativeFixed5Run>, total: Array<NativeFixed5Run>, };
-export type GameScoreRun<T> = { firstHour: number, lastHour: number, value: T, };
-export type GameScoreFaction = { id: string, name: string | null, nameMissing: GameScoreMissing | null, ordinal: number, };
-export type GameScoreIdentity = { canonicalSlot: number | null, nativeCountry: number | null, name: string | null, nameMissing: GameScoreMissing | null, color: [number, number, number] | null, colorMissing: GameScoreMissing | null,
-/**
- * None with no missing reason is known no faction; unknown is explicit.
- */
-faction: GameScoreFaction | null, factionMissing: GameScoreMissing | null, };
-export type GameScoreCountry = { tag: string, identity: Array<GameScoreRun<GameScoreIdentity>>, scores: GameScoreSeries, };
-export type GameScoreWarning = { kind: GameScoreMissingKind, reason: string, observations: number, };
-export type GameScoreReply = { branchId: string, scale: number,
-/**
- * Every observed acquisition hour, even when all values equal the prior read.
- * Use dashboard/reads.ts with run bounds; no read crosses a recording gap.
- */
-reads: Array<number>, countries: Array<GameScoreCountry>,
-/**
- * The same six native multipliers, globally, not per-country difficulty.
- */
-multipliers: GameScoreSeries, reasons: Array<GameScoreMissing>,
-/**
- * Localised native sort-button tooltips, absent when content cannot supply them.
- */
-hints: { [key in string]?: string }, warnings: Array<string>, scoreWarnings: Array<GameScoreWarning>, };
-export type GameScoreStateReply = { reply: GameScoreReply,
-/**
- * Native-holder continuity, including aliases, for the table/race row builder.
- */
-stretches: { [key in string]?: string },
-/**
- * Always false: every value is read from accepted preparation.
- */
-approximate: boolean, };
-export type ScoreboardColumnKey = "factories" | "armySize" | "territory" | "casualties" | "casualtiesDealt" | "casualtiesTaken" | "planes" | "ships" | "factoriesBuilt" | "factoriesTopbar" | "equipmentProduced" | "politicalPower" | "commandPower" | "stability" | "warSupport" | "nukes";
-export type ScoreboardTop = { count: number, sort: ScoreboardColumnKey, descending: boolean, };
-export type ScoreboardParams = { branchId: string, columns: Array<ScoreboardColumnKey>, tags: Array<string>, top: ScoreboardTop | null, };
-export type ScoreboardColumn = { key: ScoreboardColumnKey, label: string, unit: string, decimals: number, available: boolean, reason: string | null, note?: string, };
-export type ScoreboardRun = { firstHour: number, lastHour: number,
-/**
- * Exact signed integer in units of 10^-decimals. None is unknown.
- */
-amount: string | null, startsSegment: boolean,
-/**
- * Legacy wire name: true marks a partial recorded subtotal, not a lower bound.
- */
-atLeast?: boolean, };
-export type ScoreboardReadRun = { firstHour: number, lastHour: number, readHour: number,
-/**
- * Every hour is a supplying read; otherwise read_hour supplies this span.
- */
-hourly: boolean, };
-export type ScoreboardColumnSeries = { key: ScoreboardColumnKey, runs: Array<ScoreboardRun>, readRuns: Array<ScoreboardReadRun>, };
-export type ScoreboardSeries = { tag: string, segments: Array<HourSpan>, identities: Array<CountryIdentityRun>, membership: Array<HourSpan> | null, columns: Array<ScoreboardColumnSeries>, };
-export type ScoreboardReply = { branchId: string, defaultColumns: Array<ScoreboardColumnKey>, defaultSort: ScoreboardColumnKey,
-/**
- * The one complete column registry, also returned for settings-only reads.
- */
-columns: Array<ScoreboardColumn>, series: Array<ScoreboardSeries>, warnings: Array<string>, };
-export type ScoreboardPreparedParams = { selection: ScoreboardParams, hour: number, sort: ScoreboardColumnKey, descending: boolean,
-/**
- * The index contains identities and the sorting column. Other cells are paged by tag.
- */
-index: boolean, bars: boolean,
-/**
- * The hour of the complete index the asker holds: the reply's rows are then the countries'
- * that differ from it there.
- */
-since?: number, };
-export type ScoreboardPreparedReply = { hour: number, data: ScoreboardReply,
-/**
- * Exact positive maxima over the selected table, independent of its mounted rows.
- */
-maxima: { [key in ScoreboardColumnKey]?: string },
-/**
- * The hour the rows are read against: a country's row there, at `hour`, stands unless a
- * row of it is sent or it ended. None for every row.
- */
-since?: number,
-/**
- * The countries with a row at `since` and none at `hour`.
- */
-ended?: Array<string>, };
-export type NukesParams = { branchId: string, tags: Array<string>, top: number | null,
-/**
- * A drill selects the native country holding its tag at this recorded hour.
- */
-originHour: number | null, };
-export type NukeTypeInfo = { ordinal: number, token: string | null, name: string | null, supported: boolean, };
-export type NukeCount = { ordinal: number, value: number, };
-export type NukeRun = { firstHour: number, lastHour: number, startsSegment: boolean, counts: Array<NukeCount>,
-/**
- * Unknown for a hole in this country's native array; unnamed types still count.
- */
-total: number | null, };
-export type NukeSeries = { tag: string, runs: Array<NukeRun>, segments: Array<HourSpan>, membership: Array<HourSpan> | null, };
-export type CountryNukesReply = { branchId: string,
-/**
- * Every fresh complete Nukes read, including reads supplying unchanged runs.
- */
-readHours: Array<number>,
-/**
- * Complete reads with no nonzero or unknown array among countries present.
- * Absent rows are outside the race, never supplied as synthetic zero values.
- */
-emptyReadHours: Array<number>, types: Array<NukeTypeInfo>, series: Array<NukeSeries>, warnings: Array<string>, };
-export type AirParams = { branchId: string, view: AirView, firstHour: number | null, lastHour: number | null, mode: AirMode | null, viewpoint: string | null, viewpointCountry: boolean | null, sides: Array<string> | null, regions: Array<number> | null, top: number | null, theatres: Array<string> | null, windowsOnly: boolean | null, };
-export type AirView = "timeline" | "moment" | "choices";
-export type AirMode = "sides" | "viewpoint";
-export type AirSpan = { firstHour: number, lastHour: number, };
-export type AirSide = { key: string, faction: string | null, colourFaction: string | null, tag: string | null, name: string, leader: string | null, coBelligerents: number, factions?: Array<[string, string]>, reads?: Array<[number, string, string | null, string | null, number, Array<[string, string]>, string | null]>, };
-export type AirSideCell = { scores: Array<[number, string]>, viewpoints?: Array<[number, string]>, unknown?: Array<number>, unknownSet?: number, noAirObject?: Array<number>, filtered?: boolean, excluded?: number, };
-export type AirValue = string | [string, string] | Array<[number, string]> | { view: [string, string], side: number, leader: string | null, } | AirSideCell;
-export type AirCell = AirValue | null;
-export type AirTimelineRow = { region: number, name: string, cells: Array<[number, AirCell]>, };
-export type AirMomentRegion = { id: number, name: string, active: Array<AirSpan>, runs: Array<[number, number, AirCell]>, wings: Array<[number, number, number]>, };
-export type AirRegionChoice = { id: number, name: string, };
-export type AirTheatreChoice = { id: string, name: string, };
-export type AirTimelineReply = { view: "timeline", branchId: string, available: boolean, firstHour: number, lastHour: number, days: Array<number | null>,
-/**
- * Supplying keyframe hours for approximate daily cells, None for exact cells.
- */
-sampleHours?: Array<number | null>, approximate?: Array<AirSpan>, rowsApproximate?: boolean, sides: Array<AirSide>, segments: { [key in string]?: Array<AirSpan> }, anchorReads: { [key in string]?: [string, number] }, rows: Array<AirTimelineRow>, excluded: Array<[number, number, number]>, theatreReads: Array<[number, number, number]>, scale: number, dayHours: number, badBelow: number, goodAbove: number, warnings: Array<string>, };
-export type AirMomentReply = { view: "moment", branchId: string, available: boolean, firstHour: number, lastHour: number, sides: Array<AirMomentSide>, segments: { [key in string]?: Array<AirSpan> }, anchorReads: { [key in string]?: [string, number] }, unknownSets?: Array<Array<number>>, regions: Array<AirMomentRegion>, fallback: Array<[number, number, AirCell]>, recorded: Array<AirSpan>, complete: Array<AirSpan>, wingsKnown: Array<AirSpan>, excluded: Array<[number, number, number]>, theatreReads: Array<[number, number, number]>, scale: number, dayHours: number, badBelow: number, goodAbove: number, warnings: Array<string>, };
-export type AirMomentSide = [string, number] | AirSide;
-export type AirChoicesReply = { view: "choices", branchId: string, regions: Array<AirRegionChoice>, sides: Array<AirSide>, theatres: Array<AirTheatreChoice>, countries: Array<string>, windows: Array<AirSpan>, warnings: Array<string>, };
-export type AirReply = AirTimelineReply | AirMomentReply | AirChoicesReply;
-export type RaidsView = "catalogue" | "log" | "tally";
-export type RaidMetric = "launched" | "succeeded" | "both";
-export type RaidTop = { count: number, metric: RaidMetric, };
-export type RaidsParams = { branchId: string, view: RaidsView, tags: Array<string>, top: RaidTop | null, };
-export type RaidTypeInfo = { token: string, name: string | null, missing: string | null, };
-export type RaidArtwork = { key: string, image: string | null, missing: string | null, };
-export type RaidDate = { hour: number, };
-export type RaidRun = { firstHour: number, lastHour: number, raider: string | null, victim: string | null, type: string | null, province: number | null, state: number | null, targetName: string | null,
-/**
- * Sprite key into RaidsReply.artwork, so each PNG is returned only once; chosen when the
- * reply is served, from the request's presentation ([`RaidRun::icon_choice`]).
- */
-icon: string | null, iconMissing: string | null, phase: number, phaseName: string | null, outcome: number, outcomeName: string | null,
-/**
- * Null for an ended raid whose launch was never observed.
- */
-launched: boolean | null, succeeded: boolean | null, };
-export type RaidPreparationRun = [number, number, number, number];
-export type RaidEpisode = { id: string,
-/**
- * Creation/start dates are not in Raids. This is a bound, never an exact start.
- */
-start: RaidDate, runs: Array<RaidRun>,
-/**
- * Independent exact runs: preparation changes must not split fact runs.
- */
-preparation: Array<RaidPreparationRun>, };
-export type RaidTallyRun = { firstHour: number, lastHour: number, readHour: number, launched: number, succeeded: number, };
-export type RaidTallySeries = { tag: string, runs: Array<RaidTallyRun>, segments: Array<HourSpan>, membership: Array<HourSpan> | null, identities?: Array<CountryIdentityRun>, };
-export type RaidsReply = { branchId: string,
-/**
- * Native phase IDs, shared with consumers instead of duplicated UI numbers.
- */
-phasePreparing: number, phaseEnded: number, outcomeNone: number,
-/**
- * False only when content or the recording proves raids unavailable.
- */
-available: boolean | null, unavailable: string | null, types: Array<RaidTypeInfo>, artwork: Array<RaidArtwork>, episodes: Array<RaidEpisode>, series: Array<RaidTallySeries>,
-/**
- * Successful complete census reads with every current country's parent row
- * resolved. Partial per-country values remain in series, never a world zero.
- */
-readHours: Array<number>, warnings: Array<string>, };
-export type OccupiedStatesParams = { branchId: string, window: number, };
-export type OccupiedSeries = { state: number,
-/**
- * Stored fixed5 percentage units, one run per span the state is occupied.
- */
-resistance: Array<NativeFixed5Run>, compliance: Array<NativeFixed5Run>,
-/**
- * Percentage points/day, over the same spans.
- */
-resistanceSpeed: Array<NativeFixed5Run>, complianceSpeed: Array<NativeFixed5Run>, name: Array<[number, number | null]>, nameMissing: Array<[number, number | null]>, owner: Array<[number, number | null]>, occupier: Array<[number, number | null]>,
-/**
- * Original occupied country, which can differ from today's legal owner.
- */
-occupied: Array<[number, number | null]>,
-/**
- * Native displayed strength fraction, signed fixed5 (100000 is full).
- */
-garrisonStrengthRaw: Array<[number, string | null]>, requiredManpower: Array<[number, number | null]>,
-/**
- * Recorded required template amount, not garrison strength.
- */
-garrisonRequiredRaw: Array<[number, string | null]>,
-/**
- * Native requirement failure; its strength getter returns zero.
- */
-garrisonAlert: Array<[number, boolean]>,
-/**
- * Below the content threshold, only when displayed strength is established.
- */
-garrisonRed: Array<[number, boolean | null]>, assignedManpower: Array<[number, number | null]>, garrisonMissing: Array<[number, number | null]>,
-/**
- * Effective native law token, using override/group/default/fallback precedence.
- */
-law: Array<[number, number | null]>, lawMissing: Array<[number, number | null]>, };
-export type OccupiedObservation = { firstHour: number, lastHour: number,
-/**
- * Read supplying resistance/compliance and the daily occupation tables.
- */
-readHour: number,
-/**
- * False means known rows are shown but the inventory is incomplete.
- */
-complete: boolean, };
-export type OccupiedStatesReply = { branchId: string, window: number,
-/**
- * The window's hours, both included.
- */
-interval: HourSpan,
-/**
- * Each text the window's states show, once.
- */
-texts: Array<string>,
-/**
- * Every state occupied at an hour of the window, by id.
- */
-states: Array<OccupiedSeries>,
-/**
- * Includes known empty inventories, distinguishing them from gaps. Only one
- * starting at the window's first hour can hold an earlier read.
- */
-observed: Array<OccupiedObservation>, warnings: Array<string>,
-/**
- * The laws the window's states hold where the manifest may not list them
- * yet. None from preparation, whose manifest lists every law it published.
- */
-laws?: Array<OccupationLawInfo>, };
-export type OccupationLawInfo = { token: string, name: string | null, icon: string | null, missing: string | null, };
-export type OccupiedStatesManifestReply = { branchId: string, decimals: number,
-/**
- * The branch's replay blocks, each one `occupied-states` window.
- */
-windows: Array<HourSpan>,
-/**
- * Every law a state holds in the branch.
- */
-laws: Array<OccupationLawInfo>, strengthMissing: string, warnings: Array<string>, };
-export type OccupationMeasure = "resistance" | "compliance";
-export type OccupationTop = { count: number, measure: OccupationMeasure, };
-export type OccupationTrendParams = { branchId: string,
-/**
- * Empty with no top request means every occupier, independently of status.
- */
-tags: Array<string>, top: OccupationTop | null,
-/**
- * Tooltip context only; omitted requests keep the smaller numeric history.
- */
-collaboration: boolean, };
-export type OccupationCollaborationActor = { slot: number, countryId: number,
-/**
- * The current native identity supplied this tag. Null refuses hovered
- * names/flags while retaining the held collaboration amount.
- */
-nameHour: number | null, };
-export type OccupationCollaboration = { tag: string | null,
-/**
- * Collaboration is a fixed5 fraction, unlike the state percentage-point
- * scalars, matching the politics meter.
- */
-raw: string | null, readHour: number | null, actor?: OccupationCollaborationActor, };
-export type OccupationTrendRun = { firstHour: number, lastHour: number, readHour: number, startsSegment: boolean, resistanceRaw: string, complianceRaw: string, states: number,
-/**
- * Known held inventory at this read. Incomplete inventories are a lower bound.
- */
-heldStates: number, heldComplete: boolean, collaboration: Array<OccupationCollaboration>, };
-export type OccupationTrendSeries = { tag: string, runs: Array<OccupationTrendRun>, segments: Array<HourSpan>, membership: Array<HourSpan> | null, identities?: Array<CountryIdentityRun>, };
-export type OccupationTrendReply = { branchId: string, decimals: number, series: Array<OccupationTrendSeries>, warnings: Array<string>, };
-export type ExperienceParams = { branchId: string, tags: Array<string>, };
-export type ExperienceChange = { armyRaw: string, navyRaw: string, airRaw: string, };
-export type ChangeUnknown = "noMatchingRead";
-export type GainUnknown = "noCompleteDay";
-export type ExperienceRead = { firstHour: number, lastHour: number,
-/**
- * The supplying daily read, retained when a rename splits its held value.
- */
-readHour: number, startsSegment: boolean, armyRaw: string, navyRaw: string, airRaw: string, change: ExperienceChange | null, changeUnknown: ChangeUnknown | null, gain: ExperienceChange | null, gainUnknown: GainUnknown | null, };
-export type ExperienceSeries = { tag: string, identities?: Array<CountryIdentityRun>, reads: Array<ExperienceRead>, };
-export type ExperienceReply = { branchId: string,
-/**
- * Units per experience point for every measure.
- */
-scale: number, dayHours: number, series: Array<ExperienceSeries>, warnings: Array<string>, };
-export type IdeaSpan = { token: string, firstHour: number, lastHour: number, slot: string | null, character: IdeaCharacter | null, };
-export type HeldIdeas = { hour: number, slot: number, countryId: number, spans: Array<IdeaSpan>, preparing: Array<string>, };
-export type IdeaHistoryQuery = { branchId: string, tag: string, through: number | null, hour: number | null, preview: boolean | null, };
-export type IdeaCharacter = {
-/**
- * The recorded character id.
- */
-id: number,
-/**
- * The script token (resolved through LexicalTokens); empty when unresolved.
- */
-token: string,
-/**
- * The saved name as recorded (a localisation key or a literal); a rename
- * changes it, so it comes before the authored name.
- */
-name: string, };
-export type EffectLine = {
-/**
- * The modifier's case-folded key; formats are keyed the same way.
- */
-key: string,
-/**
- * The stored fixed5 value as a decimal string. Authored text converts
- * into a zeroed destination.
- */
-fixed5: string,
-/**
- * Named in hidden_modifier: applied, never listed.
- */
-hidden: boolean, };
-export type EffectGroup = { target: string | null,
-/**
- * An equipment bonus that applies at once to existing equipment.
- */
-instant: boolean, lines: Array<EffectLine>,
-/**
- * A targeted modifier's custom tooltip keys in stored order;
- * none for an equipment bonus.
- */
-tooltips: Array<string>, };
-export type TraitEffects = { token: string,
-/**
- * Content defines the trait. When it does not, its effects are unknown and
- * the lists below are empty for that reason, not because it has none.
- */
-known: boolean,
-/**
- * Why content cannot say whether it defines the trait (a file that
- * could stops short); None when it can.
- */
-unknown: string | null, name: string | null, lines: Array<EffectLine>, targeted: Array<EffectGroup>, equipment: Array<EffectGroup>, tooltips: Array<string>, };
-export type HolderArtwork = { token: string,
-/**
- * The recorded character id, as on the span.
- */
-character: number,
-/**
- * The script token and saved name, as on the span: a rename, or a token
- * that resolves later, has its own artwork.
- */
-characterToken: string, name: string, artwork: Artwork, };
-export type ModifierFormat = { key: string,
-/**
- * The engine's key index: the game lists an idea's lines in this order.
- * None for a definition only content gives (registered after every built-in one).
- */
-index: number | null,
-/**
- * The modifier's name in the viewer's language; None when it cannot be localised.
- */
-label: string | null,
-/**
- * The localised postfix shown after the value (days, hours, daily), if any.
- */
-postfix: string | null,
-/**
- * The postfix's localisation key, when the definition has one: with `postfix`
- * empty, the unit exists but its text could not be read.
- */
-postfixKey: string | null,
-/**
- * Definition flags: 0x1 percent (value ×100), 0x2 good, 0x4 neutral colour,
- * 0x8 no plus sign, 0x20 yes/no, 0x80 percent as written, 0x100 shown when zero.
- */
-flags: number,
-/**
- * Decimal places at most (the caller's precision may lower it).
- */
-precision: number,
-/**
- * The game feature the modifier needs (`feature_selector`); zero for none. The
- * game shows and applies such a modifier only while that feature is on, which
- * the recording does not say.
- */
-feature: number,
-/**
- * `recorded` (the game's own table) or `content` (a scripted definition).
- */
-source: string, };
-export type LocalisedText = { key: string,
-/**
- * None when the key has no text, or its text needs runtime scope.
- */
-text: string | null, };
-export type IdeaInfo = { token: string,
-/**
- * The idea category (`government`, `country`, a mod's own …); None when
- * neither content nor the recording places it.
- */
-category: string | null,
-/**
- * The slot or character seat it fills; None for category-wide ideas such
- * as national spirits.
- */
-slot: string | null, law: boolean, designer: boolean, effects: Array<EffectLine>, targeted: Array<EffectGroup>, equipment: Array<EffectGroup>, research: Array<EffectLine>, traits: Array<TraitEffects>,
-/**
- * Custom tooltip localisation keys the idea shows instead of values.
- */
-tooltips: Array<string>,
-/**
- * Content defines the idea or its advisor role, so the lists above are its
- * effects. When not (an advisor placed only by its recorded seat), they are
- * empty because they are unknown, not because it has none.
- */
-effectsKnown: boolean,
-/**
- * Why content cannot say what the idea is (a file that could define it
- * stops short); None when it can.
- */
-unknown: string | null, };
-export type SlotInfo = { token: string, name: string | null,
-/**
- * A character seat (advisors) rather than an idea slot (laws, designers).
- */
-character: boolean,
-/**
- * How many seats of this slot the category has.
- */
-seats: number,
-/**
- * For a law slot: its laws in content order, so a law's escalation is its place here.
- */
-laws: Array<string>, };
-export type CategoryInfo = { token: string, name: string | null,
-/**
- * `type`, such as `national_spirit`.
- */
-kind: string | null, hidden: boolean, politicsTab: boolean, slots: Array<SlotInfo>, };
-export type IdeaHistoryReply = { branchId: string, tag: string, spans: Array<IdeaSpan>, approximate?: Array<HourSpan>,
-/**
- * Exact held set at a requested hour beyond the prepared prefix.
- */
-held?: HeldIdeas, ideas: Array<IdeaInfo>, artwork: Array<Artwork>,
-/**
- * Each recorded holder of an advisor idea with that character's own name
- * and portrait, so a span shows its own holder; `artwork` has the latest.
- */
-holders: Array<HolderArtwork>,
-/**
- * Every category in content order, so widgets list mod categories too.
- */
-categories: Array<CategoryInfo>,
-/**
- * Hours the idea table was not observed for this country: a span ending or
- * starting next to one is a gap, not a change.
- */
-unobserved: Array<HourSpan>,
-/**
- * Hours the country's recorded identity starts, in order: its first hour
- * seen, after an hour it was not seen, or as another country identity. The
- * ideas held then are that identity's initial state, not changes.
- */
-identityStarts: Array<number>,
-/**
- * How the game shows each modifier the effects above use (see `idea_format`);
- * a key missing here is shown as authored, unformatted.
- */
-modifiers: Array<ModifierFormat>,
-/**
- * The texts the tooltips need: custom tooltips, research categories
- * (`<category>_research`), equipment names, and `YES` / `NO`.
- */
-texts: Array<LocalisedText>, warnings: Array<string>, };
-export type PartySeries = {
-/**
- * The party's ideology group token.
- */
-token: string, runs: Array<FixedRun>, };
-export type RulingRun = { token: string, firstHour: number, lastHour: number,
-/**
- * Follows a gap or a change of country identity rather than the previous run,
- * so the change between them is not a change of government.
- */
-startsSegment: boolean, };
-export type LeaderRun = {
-/**
- * The leader's ideology token (a sub-ideology); empty when the ruling party
- * had no leader.
- */
-ideology: string,
-/**
- * The leader's index in `people`; null when the party had no leader or the
- * character could not be read.
- */
-person: number | null, firstHour: number, lastHour: number, startsSegment: boolean, };
-export type PartyNameRun = {
-/**
- * Index in `party_names`.
- */
-name: number, firstHour: number, lastHour: number, };
-export type IdeologyTypeInfo = { token: string, name: string | null, };
-export type LeaderArtwork = { character: IdeaCharacter,
-/**
- * Null when the saved name needs runtime scope or nothing names the character.
- */
-name: string | null,
-/**
- * An artwork URL; null when the portrait is not known.
- */
-portrait: string | null,
-/**
- * Why `portrait` is null.
- */
-portraitMissing: string | null, };
-export type IdeologyInfo = { token: string, name: string | null,
-/**
- * sRGB bytes ([`chart_color`]); null when the content's colour is
- * refused (the warnings name why).
- */
-color: [number, number, number] | null, };
-export type PartyHistoryReply = { branchId: string, tag: string, decimals: number, parties: Array<PartySeries>, ruling: Array<RulingRun>,
-/**
- * The ruling party's leader; an hour without a run was not recorded.
- */
-leaders: Array<LeaderRun>,
-/**
- * The ruling party's name; an hour without a run was not recorded.
- */
-partyNameRuns: Array<PartyNameRun>,
-/**
- * Each name on `party_name_runs`; null when it cannot be known.
- */
-partyNames: Array<string | null>,
-/**
- * Each character on `leaders`, named and pictured.
- */
-people: Array<LeaderArtwork>,
-/**
- * The leaders' sub-ideologies, named.
- */
-ideologyTypes: Array<IdeologyTypeInfo>,
-/**
- * Hours an election was first seen held.
- */
-elections: Array<number>,
-/**
- * Every ideology group in content order, for colours, names and legend order.
- */
-ideologies: Array<IdeologyInfo>,
-/**
- * Hours the country's parties were not observed: a change of government next
- * to one is a gap, not a change.
- */
-unobserved: Array<HourSpan>, warnings: Array<string>, };
-export type PoliticsStateParams = { branchId: string, hour: number, view: PoliticsView, };
-export type PoliticsView = "exiles" | "balances";
-export type BalanceSide = { token: string, name: string | null, };
-export type BalanceRange = { token: string, name: string | null,
-/**
- * Fixed5 bounds; null where the recorded content does not establish them.
- */
-min: string | null, max: string | null, };
-export type BalanceMember = { tag: string | null, daily: string | null, weekly: string | null, };
-export type BalanceSource = { token: string, name: string | null, daily: string, weekly: string, };
-export type BalanceRecord = { ordinal: number, token: string, name: string | null,
-/**
- * The stored fixed5 value as a decimal string, from -100000 to 100000.
- */
-value: string, left: BalanceSide, right: BalanceSide,
-/**
- * The side it is moving toward, when the record names one.
- */
-trending: BalanceSide | null, range: BalanceRange | null,
-/**
- * Every authored range in authored order; empty when content refuses.
- */
-ranges: Array<BalanceRange>, members: Array<BalanceMember>,
-/**
- * The drift's sources; null when they cannot be derived.
- */
-sources: Array<BalanceSource> | null, };
-export type CurrentBalance = { tag: string, record: number, };
-export type PoliticsUnavailable = { label: string, reason: string, count: number, };
-export type PoliticsStateReply = { branchId: string, hour: number, view: PoliticsView, exiles: Array<PeopleExile>, balances: Array<BalanceRecord>,
-/**
- * Null when the membership cannot say which record each country shows.
- */
-current: Array<CurrentBalance> | null, unavailable: Array<PoliticsUnavailable>, warnings: Array<string>, };
-export type PoliticsHistoryParams = { branchId: string, mode: PoliticsHistoryMode,
-/**
- * The country, for [`PoliticsHistoryMode::Country`].
- */
-tag?: string,
-/**
- * The window [`PoliticsHistoryMode::Exiles`] answers, both ends included.
- */
-firstHour?: number, lastHour?: number, };
-export type PoliticsHistoryMode = "country" | "elections" | "exiles" | "balances";
-export type PoliticsRun = { firstHour: number, lastHour: number, value: string, };
-export type HolderTag = { hour: number, tag: string, };
-export type ElectionHistory = { tags: Array<HolderTag>,
-/**
- * "1" when the game holds elections, "0" when it does not.
- */
-held: Array<PoliticsRun>,
-/**
- * "1" while its schedule was read but its eligibility was not: unknown, not denied.
- */
-refused: Array<PoliticsRun>,
-/**
- * Signed months.
- */
-interval: Array<PoliticsRun>,
-/**
- * The next election's hour.
- */
-next: Array<PoliticsRun>,
-/**
- * The term's start: the stored last election's hour, where it is a date.
- */
-last: Array<PoliticsRun>, };
-export type ExileHistory = { tags: Array<HolderTag>,
-/**
- * The host's holder id.
- */
-host: Array<PoliticsRun>,
-/**
- * Fixed5 legitimacy.
- */
-legitimacy: Array<PoliticsRun>, manpower: Array<PoliticsRun>, cap: Array<PoliticsRun>, leaders: Array<PoliticsRun>,
-/**
- * The hour the exile's resources were last read.
- */
-read: Array<PoliticsRun>, };
-export type BalanceHistory = { token: string, name: string | null, left: BalanceSide | null, right: BalanceSide | null,
-/**
- * The authored ranges in authored order; empty when content refuses.
- */
-ranges: Array<BalanceRange>, values: Array<PoliticsRun>,
-/**
- * The record's stored position: holders sharing it at an hour share that
- * record. Not an identity across hours.
- */
-record: Array<PoliticsRun>, range: Array<PoliticsRun>, trending: Array<PoliticsRun>, };
-export type HolderBalances = { holder: string, tags: Array<HolderTag>, balances: Array<BalanceHistory>,
-/**
- * The balance the game shows the holder, by identity token.
- */
-shown: Array<PoliticsRun>, };
-export type PoliticsHistoryReply = { branchId: string, mode: PoliticsHistoryMode,
-/**
- * Through the last prepared hour; later hours are still being prepared.
- */
-lastHour: number | null, tag: string | null,
-/**
- * The hours the mode's part was read; others are unknown.
- */
-known: Array<HourSpan>, elections: Array<ElectionHistory>,
-/**
- * Content tokens to their in-game names, where they resolve.
- */
-names: { [key in string]?: string },
-/**
- * Every government in exile over the branch.
- */
-exileHistory: Array<ExileHistory>,
-/**
- * Each holder id's tags, for the holders runs name.
- */
-holders: { [key in string]?: Array<HolderTag> },
-/**
- * Every holder's balances over the branch; for a country, every holder
- * that held its tag, whole.
- */
-holderBalances: Array<HolderBalances>, warnings: Array<string>, };
-export type CivilWarsParams = { branchId: string, };
-export type SideExitKind = "annexedBySide" | "annexedBySideOtherwise" | "annexedByOther";
-export type SideExit = { kind: SideExitKind, hour: number, readHour: number,
-/**
- * The annexer's tag at the annexation.
- */
-by: string | null, };
-export type CivilWarSide = {
-/**
- * The holder's tags from each hour it was read with them.
- */
-tags: Array<HolderTag>, firstHour: number, lastHour: number,
-/**
- * The side it broke from, by index.
- */
-parent: number | null,
-/**
- * Whether the holder was read before the outbreak.
- */
-existedBefore: boolean, exit: SideExit | null, };
-export type CivilWarOutcome = { winner: number, hour: number, readHour: number, };
-export type CivilWar = { id: string, firstHour: number, lastHour: number,
-/**
- * The hours the game's civil-war predicate held for a side, within the
- * listings: the war is ongoing while it holds.
- */
-atWar: Array<HourSpan>, sides: Array<CivilWarSide>, outcome: CivilWarOutcome | null, };
-export type CivilWarsReply = { branchId: string, lastHour: number | null,
-/**
- * The hours the civil-war lists were read; others are unknown.
- */
-known: Array<HourSpan>, wars: Array<CivilWar>, warnings: Array<string>, };
-export type PoliticsLedgerParams = { branchId: string, tag: string, view: LedgerView, };
-export type LedgerView = "spending" | "balance" | "governments";
-export type LedgerGovernment = { country: number, instance: number, sequence: string, epoch: string, hour: number, readHour: number, cause: string,
-/**
- * Event-dated lexical group names; never borrowed from a later party census.
- */
-beforeToken?: string | null, afterToken?: string | null, covered: boolean, };
-export type LedgerDaily = { country: number, instance: number, epoch: string, dayHour: number, readHour: number,
-/**
- * The native daily PP and CP tuples may reach different supplying reads.
- */
-ppReadHour?: number | null, cpReadHour?: number | null, ppGrossRaw: string | null, ppCostRaw: string | null, ppIncomeRaw: string | null, ppRealizedRaw: string | null, ppSequence: string | null, cpIncomeRaw: string | null, cpRealizedRaw: string | null, cpSequence: string | null, };
-export type LedgerBalanceChange = { countryId?: number, hour: number, readHour: number, currency: string, };
-export type LedgerSpend = {
-/**
- * Recorded country link identity, also CountryRow.id.
- */
-countryId?: number, id: string, sequence: string, ordinal: number, hour: number, readHour: number, countryTag: string, countryName: string | null, currency: string, category: string, itemId: string, chargeRaw: string | null, realizedDeltaRaw: string | null, covered: boolean, occurrences: number,
-/**
- * Upkeep has one row per country and day; each contribution stays dated by its own read.
- */
-changes: Array<LedgerSpendChange>, };
-export type LedgerSpendChange = {
-/**
- * Native date of this contribution, separate from its supplying read.
- */
-hour?: number | null, readHour: number, chargeRaw: string | null, realizedDeltaRaw: string | null, occurrences: number, covered: boolean, };
-export type LedgerSpendItem = { id: string,
-/**
- * Specific-item identity includes the recorded target and template.
- */
-groupId: string, name: string | null,
-/**
- * Plain display text, using only the recorded cause, item and target.
- */
-action: string,
-/**
- * Drawn when a reply is served, from the request's selection ([`Self::icon_art`]).
- */
-icon: string | null, tooltipToken: string | null, character: number | null, targetTag: string | null, targetName: string | null, unknown: string | null, };
-export type LedgerSpendCategory = { id: string, name: string, identified: boolean, };
-export type LedgerSpendCoverage = { readHour: number, sinceHour: number | null, throughHour: number | null, political: boolean, command: boolean, reason: string | null, };
-export type LedgerIdeaTooltips = { ideas: Array<IdeaInfo>, artwork: Array<Artwork>, modifiers: Array<ModifierFormat>, texts: Array<LocalisedText>, };
-export type LedgerCommandHold = { readHour: number, throughHour: number, totalRaw: string | null, holders: Array<LedgerCommandHolder>, reason: string | null, };
-export type LedgerCommandHolder = { id: string,
-/**
- * Recorded object domain, cause or writer site; never a guessed holder.
- */
-kind: string, name: string | null, amountRaw: string | null, };
-export type PoliticsLedgerReply = { branchId: string, tag: string, decimals: number, governments?: Array<LedgerGovernment>, daily?: Array<LedgerDaily>, warnings: Array<string>, spending: Array<LedgerSpend>, spendItems: Array<LedgerSpendItem>, spendCategories: Array<LedgerSpendCategory>, spendingCoverage: Array<LedgerSpendCoverage>, ideaTooltips: LedgerIdeaTooltips | null, commandHolds: Array<LedgerCommandHold>, balanceChanges?: Array<LedgerBalanceChange>, recurring?: Array<LedgerRecurringSpend>,
-/**
- * A totals reply's per-item subtotals, summed by the item each displays as.
- */
-spendGroups?: Array<LedgerSpendGroup>, gains?: Array<LedgerGain>, recurringDays?: Array<LedgerMonthDays>, partSummaries?: Array<LedgerPartSummary>, governmentMarks?: MarkSummary, };
-export type LedgerRecurringSpend = { spend: LedgerSpend, firstHour: number, lastHour: number, days: number, count: number, knownRaw: string, knownCount: number, };
-export type LedgerSpendGroup = { spend: LedgerSpend, firstHour: number, lastHour: number,
-/**
- * Payment rows the subtotals fold.
- */
-count: number, occurrences: number, knownRaw: string, knownCount: number,
-/**
- * Payments whose cost was not recorded, in subtotals whose charge is unknown.
- */
-unknownCount: number,
-/**
- * Whether a subtotal with a recorded charge was read while spending was not fully recorded.
- */
-uncovered: boolean, };
-export type LedgerGain = { currency: string, gainedRaw: string, lostRaw: string, complete: boolean, };
-export type LedgerMonthDays = { currency: string, category: string, month: number | null, days: number, };
-export type LedgerPartSummary = { id: string, label: string, summary: ChartSummary, };
-export type EconomyRun = [number, number, string];
-export type FuelBranchesParams = { branchId: string,
-/**
- * The countries; every country when empty.
- */
-tags: Array<string>, };
-export type FuelBranchesReply = { branchId: string,
-/**
- * Through the last prepared hour; later hours are still being prepared.
- */
-lastHour: number | null,
-/**
- * Each native consumer index's label from the recorded content; null
- * where content does not name it.
- */
-consumerNames: Array<string | null>,
-/**
- * Fixed-point denominator of the amounts.
- */
-scale: number,
-/**
- * Hours the consumer table was read complete with every consumer's
- * country identified ("1").
- */
-known: Array<EconomyRun>, countries: Array<FuelBranchCountry>, warnings: Array<string>, };
-export type FuelBranchCountry = { holder: string, tags: Array<HolderTag>,
-/**
- * The supplying read's hour.
- */
-read: Array<EconomyRun>, branches: Array<FuelBranch>, };
-export type FuelBranch = {
-/**
- * Its native consumer index.
- */
-index: number,
-/**
- * Fixed5 fuel requested at each read.
- */
-requested: Array<EconomyRun>,
-/**
- * Fixed5 fuel received at each read.
- */
-received: Array<EconomyRun>, priority: Array<EconomyRun>, };
-export type MarketView = "contracts" | "requests" | "inventory" | "agreements";
-export type MarketHistoryParams = { branchId: string, view: MarketView,
-/**
- * Rows these countries take part in; every row when empty.
- */
-tags: Array<string>, };
-export type MarketHistoryReply = { branchId: string, view: MarketView, lastHour: number | null,
-/**
- * Hours the view's tables were recorded complete (value "1").
- */
-known: Array<EconomyRun>, contracts: Array<ContractHistory>, offers: Array<OfferHistory>, agreements: Array<AgreementHistory>,
-/**
- * Each holder named by a row, with its tag runs.
- */
-holders: { [key in string]?: Array<HolderTag> },
-/**
- * Each variant named by a row, with its names at each read.
- */
-variants: { [key in string]?: Array<StockVariantName> }, warnings: Array<string>, };
-export type MarketPoolItem = {
-/**
- * The pool's native position within its owner.
- */
-pool: number, ordinal: number,
-/**
- * Hexadecimal variant handle.
- */
-variant: string, amounts: Array<EconomyRun>, };
-export type ContractHistory = { seller: string, id: string,
-/**
- * The buyer's holder; no run while it had no identity.
- */
-buyer: Array<EconomyRun>,
-/**
- * Read every hour the row stands: its runs are the row's lifetime.
- */
-speed: Array<EconomyRun>,
-/**
- * Pool 0 equipment, pool 1 agreed prices (CIC).
- */
-items: Array<MarketPoolItem>,
-/**
- * Asking price levels by variant (pool 2).
- */
-levels: Array<MarketPoolItem>,
-/**
- * The daily purchase contract with the same handle and parties:
- * convoys assigned, convoys total, collected CIC, completed deliveries.
- */
-purchase: Array<Array<EconomyRun>>, };
-export type OfferHistory = { seller: string, inventory: Array<MarketPoolItem>, levels: Array<MarketPoolItem>, };
-export type AgreementHistory = { giver: string, id: string,
-/**
- * The receiver's holder; no run while it had no identity.
- */
-receiver: Array<EconomyRun>,
-/**
- * Read every hour the agreement stands: its runs are its lifetime.
- */
-revision: Array<EconomyRun>, since: Array<EconomyRun>, last: Array<EconomyRun>,
-/**
- * Pools 0 monthly, 1 production share, 2 once, 3 delivered, 4 lost.
- */
-items: Array<MarketPoolItem>,
-/**
- * Daily, share, sent, lost, last delivery.
- */
-fuel: Array<Array<EconomyRun>>, };
-export type MarketLedgerParams = { branchId: string,
-/**
- * Occurrences these countries sell or buy in, at any hour; every one when
- * both this and `members` are empty.
- */
-tags: Array<string>,
-/**
- * Occurrences a group's members sell or buy in while members: each tag
- * over its own hours.
- */
-members?: Array<LedgerMember>,
-/**
- * The kinds shown; [`LEDGER_KINDS`] by default.
- */
-kinds: Array<number>,
-/**
- * The first hour shown; from the branch's start when absent.
- */
-firstHour?: number,
-/**
- * The last hour shown.
- */
-lastHour: number,
-/**
- * The cursor of the next older page, from the reply's `next`; the
- * newest page when absent.
- */
-before?: string, pageSize: number, };
-export type LedgerMember = { tag: string, firstHour: number, lastHour: number, };
-export type MarketLedgerReply = { branchId: string,
-/**
- * Through the last prepared hour.
- */
-lastHour: number | null,
-/**
- * Newest first.
- */
-rows: Array<MarketLedgerRow>,
-/**
- * Occurrences selected through the last hour, where counted exactly
- * (every country, from the streams' lengths); null for chosen countries,
- * whose pages continue by `next` alone.
- */
-total: string | null,
-/**
- * The `before` of the next older page; null on the oldest page.
- */
-next: string | null,
-/**
- * Hours the market's occurrences were read, as "1" runs: an empty
- * ledger is only "no trades" inside them. For chosen countries, only
- * hours whose occurrences' parties all had identities.
- */
-known: Array<EconomyRun>, holders: { [key in string]?: Array<HolderTag> },
-/**
- * The hours across this page's rows whose country identities were read: a
- * party's tag at a row's hour is known only inside them.
- */
-identified: Array<HourSpan>, variants: { [key in string]?: Array<StockVariantName> }, warnings: Array<string>, };
-export type MarketLedgerRow = { id: string, occurrence: string, hour: number, kind: number, mode: number,
-/**
- * The contract's native handle, hexadecimal.
- */
-contract: string,
-/**
- * The seller's and buyer's holders; null where the identity is unknown.
- */
-seller: string | null, buyer: string | null,
-/**
- * The variant, hexadecimal; "0" where none.
- */
-variant: string,
-/**
- * The exact amount; null where the recording names it unavailable.
- */
-amountRaw: string | null, totalRaw: string,
-/**
- * The refusal of an unavailable amount.
- */
-reason: string | null, };
-export type LendLeaseBalanceParams = { branchId: string,
-/**
- * One holder's partners; every country's totals when absent.
- */
-holder?: string, };
-export type LendLeaseBalanceReply = { branchId: string, lastHour: number | null,
-/**
- * Fixed-point denominator of every amount.
- */
-scale: number,
-/**
- * Hours the histories were read complete ("1"): outside them nothing is
- * known, and a country absent while they were read is outside the war
- * rosters the game records histories for, so unknown too.
- */
-known: Array<EconomyRun>,
-/**
- * Each country's totals over its own records, or, for one holder, its
- * record of each partner.
- */
-histories: Array<LendLeaseHistory>, holder: string | null, warnings: Array<string>, };
-export type LendLeaseHistory = { holder: string, tags: Array<HolderTag>, values: Array<Array<EconomyRun>>, };
-export type CatalogueView = "licences" | "organisations" | "designs";
-export type ProductionCatalogueParams = { branchId: string, view: CatalogueView,
-/**
- * Licences these countries grant or hold, or the organisations and
- * designs of these countries; every country when empty.
- */
-tags: Array<string>, };
-export type ProductionCatalogueReply = { branchId: string, view: CatalogueView, lastHour: number | null,
-/**
- * Hours the view's roster was read complete ("1"): outside them the
- * view is unknown, never an empty roster.
- */
-known: Array<EconomyRun>, licences: Array<LicenceHistory>, organisations: Array<OrganisationHistory>, designs: Array<DesignHistory>,
-/**
- * The first hour the designs were read whole: designs read then
- * predate it.
- */
-designsFrom: number | null, holders: { [key in string]?: Array<HolderTag> },
-/**
- * Licensed variants' names at each read.
- */
-variants: { [key in string]?: Array<StockVariantName> },
-/**
- * Policy runs' texts: token spellings and stored names.
- */
-texts: Array<string>,
-/**
- * Each organisation icon's picture; null where it cannot be read.
- */
-icons: { [key in string]?: string | null }, warnings: Array<string>, };
-export type LicenceHistory = {
-/**
- * The licensee's holder.
- */
-licensee: string,
-/**
- * The record's roster position: not a persistent identity.
- */
-ordinal: number,
-/**
- * The licensor's holder; no run while it had no identity.
- */
-licensor: Array<EconomyRun>,
-/**
- * Civilian factories lent and required.
- */
-lent: Array<EconomyRun>, required: Array<EconomyRun>,
-/**
- * The native start date's hour, read every hour the licence stands: its
- * runs are the licence's lifetime.
- */
-start: Array<EconomyRun>,
-/**
- * Each licensed variant, in recorded order, as a hexadecimal handle.
- */
-variants: Array<Array<EconomyRun>>, };
-export type OrganisationHistory = {
-/**
- * The full organisation reference, as a decimal u64.
- */
-id: string, holder: Array<EconomyRun>, size: Array<EconomyRun>,
-/**
- * Fixed5.
- */
-funds: Array<EconomyRun>, points: Array<EconomyRun>, unlocked: Array<EconomyRun>,
-/**
- * The selected policy's token and the country's stored name of it.
- */
-policy: Array<EconomyRun>, policyName: Array<EconomyRun>,
-/**
- * "1" while a policy is selected whose token is not spelled.
- */
-policyUnresolved: Array<EconomyRun>, cooldown: Array<EconomyRun>,
-/**
- * Its name at each naming read; null where content cannot name it.
- */
-names: Array<OrganisationLabel>, };
-export type OrganisationLabel = { firstHour: number, token: string, name: string | null,
-/**
- * The icon's key in `icons`: its asset and a digest of its picture
- * (`production_lines::picture_key`), where the content declares one.
- */
-icon: string | null, };
-export type DesignHistory = {
-/**
- * Hexadecimal variant handle.
- */
-id: string, creator: Array<EconomyRun>, obsolete: Array<EconomyRun>,
-/**
- * The equipment type's script key, its archetype's and the archetype's
- * in-game name, from the latest naming read.
- */
-token: string, archetype: string | null, archetypeName: string | null, names: Array<StockVariantName>, };
-export type ConvoyView = "regions" | "trade";
-export type ConvoyHealthParams = { branchId: string, view: ConvoyView,
-/**
- * The one country shown.
- */
-tag: string, };
-export type ConvoyHealthReply = { branchId: string, view: ConvoyView, tag: string, lastHour: number | null,
-/**
- * Fixed-point denominator of every efficiency.
- */
-scale: number,
-/**
- * Hours each table was read complete ("1"): regional efficiency,
- * resource deals and convoy clients.
- */
-known: Array<Array<EconomyRun>>, regions: Array<RegionEfficiency>, deals: Array<DealEfficiency>, leases: Array<LeaseConvoy>, resources: Array<ConvoyResource>, holders: { [key in string]?: Array<HolderTag> }, warnings: Array<string>, };
-export type RegionEfficiency = { region: number,
-/**
- * The region's in-game name; null where content does not name it.
- */
-name: string | null,
-/**
- * Fixed5 efficiency at each read.
- */
-efficiency: Array<EconomyRun>, };
-export type DealEfficiency = {
-/**
- * The exchange's native handle, hexadecimal.
- */
-id: string, exporter: Array<EconomyRun>,
-/**
- * The resource's native index.
- */
-resource: Array<EconomyRun>,
-/**
- * The fixed5 efficiency product.
- */
-efficiency: Array<EconomyRun>,
-/**
- * Its two fixed5 factors.
- */
-factors: Array<Array<EconomyRun>>,
-/**
- * Convoys assigned and required.
- */
-convoys: Array<Array<EconomyRun>>, };
-export type LeaseConvoy = {
-/**
- * The client's native handle.
- */
-handle: string, giver: Array<EconomyRun>,
-/**
- * "1" while its route draws as bad.
- */
-bad: Array<EconomyRun>,
-/**
- * Convoys assigned and required.
- */
-convoys: Array<Array<EconomyRun>>, };
-export type ConvoyResource = { id: number, token: string, name: string | null, };
-export type PeaceDealsParams = { branchId: string, };
-export type PeaceDealsReply = { branchId: string, derived: boolean,
-/**
- * Newest card first; no widget needs to scan the replay on playback.
- */
-deals: Array<PeaceDeal>,
-/**
- * Counts transfer occurrences, including a state transferred more than once.
- */
-transfers: PeaceTransferGraph, unobserved: PeaceUnobserved, warnings: Array<string>, };
-export type PeaceDeal = { id: string, derived: boolean, observation: PeaceObservation, conferenceId: string | null,
-/**
- * No native conference name or unambiguous grouped-war identity is recorded.
- */
-warName: string | null, firstObservedHour: number, lastObservedHour: number, currentTurn: number | null, finalized: boolean | null, firstFinalizedHour: number | null,
-/**
- * Last seen when followed by a consecutive absence, else first absent hour.
- */
-endHour: number | null, endIsBy: boolean, firstAbsentHour: number | null, participantsDerived: boolean, winners: Array<string>, losers: Array<string>, items: Array<PeaceItem>,
-/**
- * Ordered finalizer operands and outcomes, absent for the derived fallback.
- */
-captured: PeaceCaptured | null,
-/**
- * Reason the finalizer capture cannot certify this deal's actions.
- */
-captureUnavailable: string | null,
-/**
- * Supplying manifest hour when no sampled conference supplied this card.
- */
-captureObservedHour?: number,
-/**
- * A failed manifest's reason is not evidence at its earlier event hour.
- */
-captureUnavailableHour?: number, transfers: PeaceTransferGraph,
-/**
- * Missing inputs or an attribution limitation, not evidence of no actions.
- */
-limitations: Array<string>,
-/**
- * What still needs later observations, in a reply answered from a
- * prepared prefix: `outcome` while the deal's conference is open or its
- * settlement unread at the prefix's last hour. Never set once
- * preparation has reached the branch's end.
- */
-preparing: Array<string>, };
-export type PeaceObservation = "recordedConference" | "conferenceNotRecorded" | "conferenceUnknown";
-export type PeaceDates = { beforeHour: number, afterHour: number, };
-export type PeaceItem = { derived: boolean, dates: PeaceDates,
-/**
- * The taker/overlord, null where no enforcer or liberator is recorded.
- */
-winner: string | null, action: PeaceActionLabel, change: PeaceChange, };
-export type PeaceChange = { "kind": "stateTransfer", state: number, from: string, to: string, fromCountry: PeaceTransferCountry, toCountry: PeaceTransferCountry,
-/**
- * Exact signed sum, null if Provinces cannot supply the state.
- */
-victoryPoints: string | null, victoryPointsReadHour: number | null, } | { "kind": "newSubject", overlord: string, subject: string, autonomyState: string, startHour: number, } | { "kind": "governmentChange", country: string, before: PeaceGovernment, after: PeaceGovernment, } | { "kind": "countryReleased", country: string,
-/**
- * Owners of the transferred states at the before read.
- */
-from: Array<string>, states: Array<number>,
-/**
- * The released country's native holder at the after read.
- */
-toCountry: PeaceTransferCountry,
-/**
- * Each state with its own former owner, in state order.
- */
-transfers: Array<PeaceReleasedState>, };
-export type PeaceGovernment = { rulingParty: number | null, partyToken: string | null, leaderIdeology: string | null, };
-export type PeaceActionKind = "stateTransfer" | "newSubject" | "governmentChange" | "countryReleased";
-export type PeaceActionLabel = { kind: PeaceActionKind, key: string | null, name: string | null, };
-export type PeaceTransferGraph = { nodes: Array<PeaceTransferNode>, links: Array<PeaceTransferLink>, };
-export type PeaceTransferNode = { id: string, country: PeaceTransferCountry,
-/**
- * Separate source/target nodes even when a country occurs on both sides.
- */
-side: PeaceTransferSide, };
-export type PeaceTransferCountry = { slot: number, countryId: number, tag: string, hour: number, };
-export type PeaceTransferSide = "source" | "target";
-export type PeaceTransferLink = { id: string, source: string, target: string, stateCount: number,
-/**
- * Null if any contributing state's VPs are not recorded; never a partial sum.
- */
-victoryPoints: string | null,
-/**
- * Dated occurrences, kept on both the card and the campaign graph.
- */
-states: Array<PeaceTransferredState>, };
-export type PeaceTransferredState = { state: number, fromCountry: PeaceTransferCountry, toCountry: PeaceTransferCountry, dates: PeaceDates, victoryPoints: string | null, victoryPointsReadHour: number | null,
-/**
- * The same settlement released the taker; the state came from its former owner.
- */
-released: boolean, };
-export type PeaceReleasedState = { state: number, fromCountry: PeaceTransferCountry,
-/**
- * Exact signed sum, null if Provinces cannot supply the state.
- */
-victoryPoints: string | null, victoryPointsReadHour: number | null, };
-export type PeaceUnobserved = { settlements: Array<HourSpan>, conferences: Array<HourSpan>, ownership: Array<HourSpan>, wars: Array<HourSpan>, subjects: Array<HourSpan>, governments: Array<HourSpan>, existence: Array<HourSpan>, victoryPoints: Array<HourSpan>, };
-export type PeaceCaptured = { hour: number, publicationHour: number,
-/**
- * Raw references and native order, independent of country-tag resolution.
- */
-winners: Array<number>, losers: Array<number>, actions: Array<PeaceCapturedAction>, transfers: Array<PeaceCapturedTransfer>, subjects: Array<PeaceCapturedSubject>, };
-export type PeaceCapturedAction = { derived: boolean, country: number,
-/**
- * Event-hour tags; null when that raw reference cannot be resolved then.
- */
-countryTag: string | null, turn: number, ordinal: number, token: number, tokenName: string | null, nameKey: string | null, name: string | null, taker: number, giver: number, negotiator: number, takerTag: string | null, giverTag: string | null, negotiatorTag: string | null, status: number, cost: number, form: number, state: number | null, flags: [number, number, number, number] | null, countryOperand: number | null, countryOperandTag: string | null, puppetAuxiliary: string | null, ship: string | null, ratio: string | null, };
-export type PeaceCapturedTransfer = { derived: boolean, hour: number, state: number, taker: number, to: string | null,
-/**
- * A matching action's giver, absent for automatic/no-demand outcomes.
- */
-giver: number | null, from: string | null, fromCountry: PeaceTransferCountry | null, toCountry: PeaceTransferCountry | null, automatic: boolean, };
-export type PeaceCapturedSubject = { derived: boolean, overlord: number, subject: number, overlordTag: string | null, subjectTag: string | null, };
-export type PoolRun = { firstHour: number, lastHour: number,
-/**
- * The run follows a gap, a missing table or another country identity.
- */
-startsSegment: boolean,
-/**
- * Extracted in the country's states (`produced`).
- */
-producedRaw: string,
-/**
- * Moved from subjects (positive) or to the overlord (negative) (`adjustment`).
- */
-subjectsRaw: string, importedRaw: string,
-/**
- * Set aside for export by the trade law (`to_export`).
- */
-toExportRaw: string,
-/**
- * What buyers took (`exported`).
- */
-exportedRaw: string,
-/**
- * What the country has for use (`used`).
- */
-availableRaw: string,
-/**
- * What is left for use after special projects (`special_total`).
- */
-afterProjectsRaw: string,
-/**
- * Minus what production lines need, met or not (`production_demand`).
- */
-productionRaw: string, };
-export type ResourceSeries = {
-/**
- * The resource's native index (`ResourceDefinitions.id`).
- */
-id: number, runs: Array<PoolRun>, };
-export type TradeDirection = "import" | "export";
-export type TradeRun = {
-/**
- * The deal's native handle, as a decimal string.
- */
-deal: string,
-/**
- * The resource's native index.
- */
-resource: number, direction: TradeDirection,
-/**
- * The other country's tag.
- */
-partner: string,
-/**
- * The daily amount delivered.
- */
-deliveredRaw: string,
-/**
- * Civilian factories the importer pays.
- */
-factories: number, convoysAssigned: number, convoysRequired: number, firstHour: number, lastHour: number, startsSegment: boolean, };
-export type ResourceInfo = {
-/**
- * The native index (`ResourceDefinitions.id`).
- */
-id: number, token: string,
-/**
- * Which declaration of its token this is, from 1, in the game's order.
- */
-ordinal: number, name: string | null,
-/**
- * An artwork URL; null when content has no icon for it.
- */
-icon: string | null, };
-export type ResourceBalanceReply = { branchId: string, tag: string, decimals: number,
-/**
- * Every recorded resource, in the game's order.
- */
-resources: Array<ResourceInfo>,
-/**
- * One per resource, in `resources` order.
- */
-series: Array<ResourceSeries>,
-/**
- * Hours whose deals are known, as ascending spans: the hours the deal table
- * was recorded. It is captured apart from the pools, so pools shown at an
- * hour outside these spans have unknown deals, which is not the same as no
- * deals.
- */
-dealHours: Array<HourSpan>, trades: Array<TradeRun>, warnings: Array<string>, };
-export type DecryptionParams = { branchId: string, };
-export type CipherObservation = { hour: number,
-/**
- * Already underway at the first read, after a gap, or after an unknown predicate.
- */
-upperBound: boolean, };
-export type DecryptionRun = { firstHour: number, lastHour: number, startAmountRaw: string, stepRawPerDay: string, thresholdRaw: string | null, thresholdUnknown: string | null,
-/**
- * Countdown at first_hour; reconstructed only at observed integer hours.
- */
-bonusDays: number, bonusDaysStepPerDay: number,
-/**
- * Low byte: native decrypting; high byte: native bonus_active.
- */
-stateFlags: number, broken: boolean | null,
-/**
- * Start observation of the attempt current during this run, never a prior episode.
- */
-started: CipherObservation | null, preparing?: Array<string>, };
-export type DecryptionTagRun = { firstHour: number, lastHour: number,
-/**
- * None when native tag bytes cannot be represented by the JSON/name contract.
- */
-ownerTag: string | null, targetTag: string | null, };
-export type DecryptionPair = {
-/**
- * Canonical slots, resolved from each hour's CountryLinks, never tag concatenations.
- */
-ownerId: string, targetId: string, runs: Array<DecryptionRun>, tagRuns: Array<DecryptionTagRun>, breaks: Array<CipherObservation>, };
-export type DecryptionCoverage = { firstHour: number, lastHour: number, complete: boolean, reason: string | null, };
-export type DecryptionReply = { branchId: string, pairs: Array<DecryptionPair>, coverage: Array<DecryptionCoverage>, warnings: Array<string>, };
-export type LineKind = "military" | "naval" | "shipRefit" | "railwayGun";
-export type LineStep = { firstHour: number, lastHour: number,
-/**
- * The step follows a gap, a missing read or another country identity.
- */
-startsSegment: boolean,
-/**
- * The produced variant (`VariantDefinitions.id`).
- */
-variant: string, activeFactories: number, requestedFactories: number, };
-export type OutputPart = { variant: string, mio: string,
-/**
- * Units delivered, as a decimal string.
- */
-units: string,
-/**
- * False when a tick could not be counted: `units` then leave it out.
- */
-exact: boolean, };
-export type OutputRun = { firstHour: number, lastHour: number,
-/**
- * Its parts, in first-seen order; the total is their sum, exact only when every part is.
- */
-parts: Array<OutputPart>,
-/**
- * The sample that began the branch's observation.
- */
-sinceHour: number,
-/**
- * The line was first seen after the branch's first complete census, so the
- * totals cover its whole life; otherwise they count from `since_hour`.
- */
-wholeLife: boolean, };
-export type LineHistory = {
-/**
- * Unique in the reply: the handle, and which appearance of it this is.
- */
-key: string,
-/**
- * The line's native handle.
- */
-handle: string,
-/**
- * Its native class; null for a line no census listed.
- */
-kind: LineKind | null,
-/**
- * Its variant and factories over its reads; empty for a line made and deleted
- * between two censuses. Every other value is in `production-line-detail`.
- */
-steps: Array<LineStep>,
-/**
- * The output published when the line ended, counting every unit it made.
- */
-finalOutput: OutputRun | null,
-/**
- * The first read of its country that no longer listed it: it ended before.
- */
-endedBy: number | null,
-/**
- * Listed at the first read of its country in the branch: it began before recording.
- */
-beforeRecording: boolean,
-/**
- * For a line no census listed: the hours within which it ran and was deleted,
- * up to the census that published its final output. From the census before when
- * it was observed since its creation; else (`before_recording`) from when the
- * observation began, since it ran before and its start is not known.
- */
-betweenReads: HourSpan | null,
-/**
- * For such a line, the variants its output names (it has no runs to name them).
- */
-variants: Array<string>, };
-export type VariantName = { id: string,
-/**
- * The read these values are from; they hold until the next entry of this id.
- */
-firstHour: number,
-/**
- * False from an hour the variant's names and icon stopped being known (a gap, or
- * a variant table not read or carried: `VariantCatalogue`) until the next entry;
- * its other fields are then empty.
- */
-known: boolean,
-/**
- * The equipment type's script key.
- */
-token: string,
-/**
- * The row's variant display name; null when content does not name it.
- */
-name: string | null,
-/**
- * The row's equipment type line; null when content does not name it.
- */
-typeName: string | null,
-/**
- * The icon's key in `icons`; null when the row shows none or it is unknown.
- */
-icon: string | null,
-/**
- * Why the icon is unknown, when it is.
- */
-iconUnknown: string | null, };
-export type OrganisationName = { id: string, firstHour: number,
-/**
- * The script key.
- */
-token: string,
-/**
- * The localised name; null when content does not name it without runtime scope.
- */
-name: string | null,
-/**
- * Why the localised name cannot be determined from this read.
- */
-nameUnknown: string | null,
-/**
- * The icon's key in `icons`.
- */
-icon: string | null,
-/**
- * Why the icon cannot be determined from this read.
- */
-iconUnknown: string | null, };
-export type OrganisationState = { readHour: number | null, size: number, fundsRaw: string, unspentPoints: number, baseTaskCapacity: number, activeTasks: number, taskSlots: number, unlocked: Array<string>, planned: Array<string>, queueIndex: number, policyToken: string | null, policyName: string | null, cooldownHour: number | null, autoUpdateDesigns: boolean, };
-export type EquipmentIcon = { key: string,
-/**
- * An artwork URL; null when the texture could not be read.
- */
-image: string | null, };
-export type ProductionLinesParams = { branchId: string, tag: string,
-/**
- * Wait for the branch's complete prepared history.
- */
-exact?: boolean, };
-export type ProductionLinesReply = { branchId: string, tag: string, decimals: number,
-/**
- * Every line of the country in the branch, in the order first seen.
- */
-lines: Array<LineHistory>,
-/**
- * The names and icons of every variant a line produced.
- */
-variants: Array<VariantName>,
-/**
- * The organisations the lines were assigned to.
- */
-organisations: Array<OrganisationName>, icons: Array<EquipmentIcon>,
-/**
- * Hours the country's lines were read, ascending.
- */
-reads: Array<number>,
-/**
- * Hours whose output is recorded, ascending spans.
- */
-outputHours: Array<HourSpan>,
-/**
- * Hours whose lines are recorded (a complete census, read or carried),
- * ascending spans: outside them the lines are not known, which is not none.
- */
-lineHours: Array<HourSpan>,
-/**
- * Hours whose organisations are recorded, ascending spans: outside them an
- * organisation's name and icon are not known (never an earlier read's).
- */
-organisationHours: Array<HourSpan>,
-/**
- * Hours whose lines made and ended there may be missing: a due read of the
- * output, the only place such a line's rows are published, could not be read.
- */
-unreadOutput: Array<HourSpan>,
-/**
- * Hours beyond the published prefix that are still being prepared.
- */
-approximate: Array<HourSpan>,
-/**
- * The hours one `production-line-detail` window covers.
- */
-detailHours: number, warnings: Array<string>, };
-export type DesignDetailParams = { branchId: string, hour: number, variant: string | null, fromVariant: string | null, ship: string | null, wing: string | null, observer: number | null, targetCountry: number | null, fog: boolean | null, };
-export type DesignDetailReply = { warnings: Array<string>, branchId: string, hour: number, designs: Array<DesignChoice>, sections: Array<DesignSection>, };
-export type DesignChoice = { id: string, name: string, creator: number, obsolete: boolean, };
-export type DesignSection = { title: string, fields: Array<DesignField>, };
-export type DesignField = { label: string, value: string | null, refusal: string | null, };
-export type LineRun = {
-/**
- * Frozen design authorship, independently observed from the line assignment.
- */
-designAuthor: string | null,
-/**
- * Supplying VariantStats read, independent of the production-line census.
- */
-designReadHour: number | null, designTraitCount: number | null, designBonusCount: number | null, firstHour: number, lastHour: number,
-/**
- * The run follows a gap, a missing read or another country identity.
- */
-startsSegment: boolean,
-/**
- * The produced variant (`VariantDefinitions.id`).
- */
-variant: string,
-/**
- * The organisation's reference (`IndustrialOrganisations.organisation`); "0" for none.
- */
-mio: string, activeFactories: number, requestedFactories: number,
-/**
- * The most factories the line takes (the efficiency average's clamp).
- */
-maxFactories: number,
-/**
- * IC per unit, after the organisation's cost bonus.
- */
-costRaw: string,
-/**
- * IC added at each production tick.
- */
-speedRaw: string,
-/**
- * Units per week by the game's weekly formula (`equipment::weekly_units_raw`),
- * fixed5; null without a positive cost.
- */
-weeklyRaw: string | null,
-/**
- * The line's efficiency, Q15: 100% is 3276800.
- */
-efficiencyRaw: string,
-/**
- * Place in the country's production queue, from 0.
- */
-priority: number,
-/**
- * Units still ordered; −1 for no limit.
- */
-amount: number, };
-export type LineDetail = { organisations: Array<OrganisationStateRead>,
-/**
- * The line's key in `production-lines`.
- */
-key: string, runs: Array<LineRun>,
-/**
- * Its output at each read (the same reads as `runs`), where recorded.
- */
-output: Array<OutputRun>, };
-export type OrganisationStateRead = { id: string, firstHour: number, state: OrganisationState | null, };
-export type ProductionDetailParams = { branchId: string, tag: string, window: number, };
-export type ProductionLineDetailReply = { warnings: Array<string>, branchId: string, tag: string, decimals: number, window: number,
-/**
- * The window's hours, both included.
- */
-firstHour: number, lastHour: number,
-/**
- * Every line with a read in the window, in the order first seen.
- */
-lines: Array<LineDetail>, };
-export type ProductionHourParams = { branchId: string, tag: string, hour: number, since?: number,
-/**
- * The `basis` of the reply `since` was read from: lines are read against it only when
- * the view still answers from that basis.
- */
-basis?: string, };
-export type ProductionLineHourReply = { warnings: Array<string>, branchId: string, tag: string, decimals: number, hour: number,
-/**
- * The hour asked before that the lines are read against; none for every line.
- */
-since: number | null,
-/**
- * The kept view it was read from, which a later hour names to be read against it; none
- * when no view was kept.
- */
-basis: string | null,
-/**
- * The reads holding `hour`, whole, of each line they differ for, in the order first seen.
- */
-lines: Array<LineDetail>,
-/**
- * The lines with reads holding `since` and none holding `hour`.
- */
-ended: Array<string>, };
-export type ProductionModifierPart = { id: string, label: string | null, raw: string, unknown: string | null, };
-export type ProductionModifierGroup = { id: string, label: string,
-/**
- * Exact sum of the displayed signed parts; null when an operand failed.
- */
-totalRaw: string | null, decimals: number, unit: string, parts: Array<ProductionModifierPart>, note: string, };
-export type ProductionModifierRun = { firstHour: number, lastHour: number, groups: Array<ProductionModifierGroup>, warnings: Array<string>, };
-export type ProductionModifierChoice = { id: string, label: string, };
-export type ProductionBreakdownParams = { branchId: string, tag: string, key: string, group: string,
-/**
- * Bind the original producer at this recorded hour, then follow its native row.
- */
-originHour?: number, };
-export type ProductionLineBreakdownReply = { branchId: string, tag: string, key: string, groups: Array<ProductionModifierChoice>, reads: Array<number>, runs: Array<ProductionModifierRun>, warnings: Array<string>, };
-export type StockpileAtParams = { branchId: string, tag: string, hour: number, };
-export type AmountRun = { firstHour: number, lastHour: number, amountRaw: string | null, };
-export type Domain = "land" | "air" | "naval";
-export type StockVariant = {
-/**
- * The variant's native handle (`VariantDefinitions.id`), as a decimal string.
- */
-id: string,
-/**
- * The equipment type's script key; empty when no read of the variant table
- * named it.
- */
-token: string,
-/**
- * Its type's archetype key; null when content does not resolve its type.
- */
-archetype: string | null, names: Array<StockVariantName>,
-/**
- * In stock, fixed5; no run inside a known span means none.
- */
-stock: Array<AmountRun>,
-/**
- * Units a day from its military production lines by the game's per-day
- * formula, each line truncated on its own and summed, fixed5; no run inside
- * a known span means none.
- */
-daily: Array<AmountRun>,
-/**
- * The factory IC a day those lines apply (each line's speed), fixed5.
- */
-dailyIc: Array<AmountRun>,
-/**
- * The lowest and highest cost per unit among those lines, fixed5, after each
- * line's organisation bonus: equal when they share one cost, unknown where a
- * line has no positive cost, none without a line.
- */
-unitCostLow: Array<AmountRun>, unitCostHigh: Array<AmountRun>, };
-export type StockType = { key: string,
-/**
- * The localised key; null when content does not name it.
- */
-name: string | null, domain: Domain,
-/**
- * Why older or missing observations cannot derive this type's need.
- * A recorded native available operand takes precedence over this note.
- */
-needNote: string | null, };
-export type TypeLogistics = {
-/**
- * The archetype key (a `types` key), or [`UNRESOLVED_MARK`] and the recorded
- * token's spelling when content does not resolve it.
- */
-key: string, balance: Array<AmountRun>, stock: Array<AmountRun>,
-/**
- * Actual native availability at the balance write; null runs are refused
- * or unrecorded observations. It is independent of the stock series.
- */
-available: Array<AmountRun>, };
-export type EquipmentStockpileReply = { branchId: string, tag: string,
-/**
- * The recorded campaign identity (`ReplayMetadata::campaign_key`). A variant's
- * handle is an id only within its campaign, so saved variant choices carry it.
- */
-campaignKey: string, decimals: number,
-/**
- * Every archetype a listed variant belongs to, in the equipment database's
- * order (the game's order); empty without content.
- */
-types: Array<StockType>, variants: Array<StockVariant>,
-/**
- * Hours the stockpile was read, ascending: a value shown later is as of the
- * latest read before it.
- */
-reads: Array<number>,
-/**
- * Hours whose stock is known: each read and the hours carried from it.
- */
-stockHours: Array<HourSpan>,
-/**
- * Hours whose production lines are known, likewise. Lines are captured apart
- * from the stockpile, so stock can be known where production is not.
- */
-lineHours: Array<HourSpan>,
-/**
- * Hours the production lines were read, ascending, for dating a daily rate
- * apart from the stockpile read.
- */
-lineReads: Array<number>,
-/**
- * Each archetype's logistics record over the branch.
- */
-logistics: Array<TypeLogistics>,
-/**
- * Hours the logistics record was read for the country, ascending.
- */
-logisticsReads: Array<number>,
-/**
- * Hours whose balance is known: reads that held the country's rows and the
- * hours carried from them.
- */
-balanceHours: Array<HourSpan>,
-/**
- * Hours the country was AI-controlled, so the game computed no balance: reads
- * of a complete table without its rows and the hours carried from them.
- */
-aiHours: Array<HourSpan>,
-/**
- * The saturation bound of `Demand + PoolDifference`, fixed5: a derived need
- * at it is not a real sum.
- */
-needBoundRaw: string, warnings: Array<string>, };
-export type StockpileHolder = { tag: string, within?: Array<HourSpan>, };
-export type StockpileCatalogueParams = { branchId: string, holders: Array<StockpileHolder>,
-/**
- * The types a group counts; empty counts every type.
- */
-included: Array<string>, };
-export type StockpileChoicePeak = { raw: string, stockDrawable: boolean, shareDrawable: boolean, };
-export type StockpileCatalogueVariant = {
-/**
- * Its native handle, as a decimal string.
- */
-id: string,
-/**
- * Its final nonempty equipment token; empty where no read named it.
- */
-token: string,
-/**
- * Its type's archetype key; null where content does not resolve its type.
- */
-archetype: string | null, names: Array<StockVariantName>,
-/**
- * Every design recorded under its handle in the branch.
- */
-designs: Array<string>, };
-export type StockpileCatalogueLogistics = {
-/**
- * The archetype key, or the unresolved mark and the recorded token's spelling.
- */
-key: string, nonzero: boolean, };
-export type StockpileCatalogueReply = { branchId: string, tags: Array<string>, campaignKey: string, decimals: number,
-/**
- * Every archetype a variant or logistics type belongs to, in the equipment database's order.
- */
-types: Array<StockType>, variants: Array<StockpileCatalogueVariant>, logistics: Array<StockpileCatalogueLogistics>,
-/**
- * The hours the stockpile, the production lines and the logistics record (while the
- * game computed a balance) were read for the holders within their hours, ascending.
- */
-reads: Array<number>, lineReads: Array<number>, logisticsReads: Array<number>, stockHours: Array<HourSpan>, lineHours: Array<HourSpan>, balanceHours: Array<HourSpan>,
-/**
- * Hours the holder was AI-controlled, so the game computed no balance.
- */
-aiHours: Array<HourSpan>, needBoundRaw: string,
-/**
- * Each group's peak and drawability, by its key (`[kind, key]` as JSON).
- */
-choices: { [key in string]?: StockpileChoicePeak }, warnings: Array<string>, };
-export type StockpileMeasure = "stock" | "share" | "need";
-export type StockpileLine = {
-/**
- * The group's key: `[kind, key]` as JSON, a variant's key its handle.
- */
-group: string, measure: StockpileMeasure, };
-export type StockpileChartParams = { branchId: string, holders: Array<StockpileHolder>, included: Array<string>, lines: Array<StockpileLine>, from: number, to: number, width: number, };
-export type StockpileChartLine = { group: string, measure: StockpileMeasure, summary: ChartSummary, };
-export type StockpileChartReply = { branchId: string, lines: Array<StockpileChartLine>, warnings: Array<string>, };
-export type StockpileArtworkParams = { branchId: string, tag: string, hour: number,
-/**
- * Exact variant rows need their own pictures, instead of a type's best.
- */
-variants: Array<string>, };
-export type StockpileArt = {
-/**
- * `type:<archetype>` or `variant:<handle>`.
- */
-key: string, variant: string, name: string | null, icon: string | null, reason: string | null, };
-export type StockpileArtworkReply = { branchId: string, tag: string, hour: number, entries: Array<StockpileArt>, warnings: Array<string>, };
-export type ProducedParams = { branchId: string, tags: Array<string>, top: number | null, measure: ProducedMeasure,
-/**
- * What the values count and the top N rank by; units when left out.
- */
-count: ProducedCount, grouping: ProducedGrouping,
-/**
- * The type keys counted (`types` keys); none counts every type.
- */
-included: Array<string>,
-/**
- * Count ships refit lines deliver.
- */
-refits: boolean,
-/**
- * The chart's view: only the samples it shows, and where they are denser than its width,
- * each line as a summary on the shared chart grid; none, every sample.
- */
-view?: SeriesView, };
-export type ProducedMeasure = "total" | "day" | "week" | "month";
-export type ProducedCount = "units" | "ic";
-export type ProducedGrouping = "type" | "variant" | "domain";
-export type ProducedType = {
-/**
- * The archetype key, or `equipment::UNRESOLVED_MARK` and the recorded token when content does not
- * resolve it.
- */
-key: string,
-/**
- * The localised key; null when content does not name it.
- */
-name: string | null,
-/**
- * Null when content does not resolve the type.
- */
-domain: Domain | null, };
-export type ProducedKey = {
-/**
- * A type key, a variant's native handle as a decimal string, or a domain
- * (`land`, `air`, `naval`, or `equipment::UNRESOLVED_ARM` for types content does not resolve).
- */
-key: string,
-/**
- * A type's localised name; null for variants and domains, or when content
- * does not name it.
- */
-name: string | null,
-/**
- * The type key a variant belongs to; null for types and domains.
- */
-typeKey: string | null, domain: Domain | null,
-/**
- * A variant's names as each read of the variant table recorded them.
- */
-names: Array<StockVariantName>, };
-export type ProducedCoded = { from: number, deltas: Array<number>, unknown: Array<number>, };
-export type ProducedValues = {
-/**
- * Its position in the reply's `keys`.
- */
-key: number, values: ProducedCoded,
-/**
- * Independently exact equipment-line subtotal when Rocket coverage makes
- * the combined group unknown. It is not a bound on signed delivered units.
- */
-equipmentValues?: ProducedCoded, };
-export type ProducedSeries = { tag: string, identities?: Array<CountryIdentityRun>, firstHours: Array<number>, lastHours: Array<number>,
-/**
- * Samples that start a new line: after a gap, an hour the tables could not
- * tell or another country identity.
- */
-breaks: Array<number>,
-/**
- * Each group's values. A type's or an arm's is unknown wherever a variant whose
- * type content does not resolve holds a nonzero or unknown value (it could belong
- * to any of them); the group of unresolved types itself stays exact.
- */
-values: Array<ProducedValues>,
-/**
- * The country's total of every included type: the sum of what its counted
- * variants delivered, exact however they split into groups. Unknown where a
- * count is, or where a variant left out of the included types could belong to an
- * included one. Null when it is 0 at every sample.
- */
-total: ProducedCoded | null,
-/**
- * For a top-N reply, the hours the country was among the top N, in order;
- * its samples are cut to them. Null for chosen countries.
- */
-membership: Array<HourSpan> | null,
-/**
- * Where the view's samples are denser than its width: the total over the view on the
- * shared chart grid, every sample's exact value held in its bucket; the samples are
- * then the last one shown and the last with a known total alone.
- */
-summary?: ChartSummary, };
-export type SeriesView = { from: number, to: number,
-/**
- * The chart's plot width in pixels.
- */
-width: number, };
-export type EquipmentProducedReply = { branchId: string, measure: ProducedMeasure, count: ProducedCount,
-/**
- * Fixed-point decimals of every value: 0 for units, 5 for IC.
- */
-decimals: number, grouping: ProducedGrouping,
-/**
- * Every type produced in the branch, in the equipment database's order,
- * unresolved ones last.
- */
-types: Array<ProducedType>,
-/**
- * The groups the series hold, in the game's order.
- */
-keys: Array<ProducedKey>, series: Array<ProducedSeries>,
-/**
- * Hours where at least one requested country's included total is exact
- * (including zero) and no requested country with a piece covering the hour
- * has an unknown total. Top N considers all scanned countries before
- * filtering; explicit tags consider only those tags. Week/month totals need
- * a complete window.
- */
-known: Array<HourSpan>,
-/**
- * Hours the output was read, ascending: a value shown later is as of the
- * latest read before it.
- */
-reads: Array<number>,
-/**
- * The hour each observation began: running totals count from it.
- */
-observations: Array<number>, warnings: Array<string>, };
-export type ProductionSpendingParams = { branchId: string, tag: string, refits: boolean, };
-export type ProductionSpendingUnknown = "notRecorded" | "spendingUnavailable" | "lostOutput" | "missedPublication" | "recordingGap" | "observationRestarted" | "observationMismatch" | "countryChanged" | "rocketTableUnavailable" | "rocketInputInexact" | "rocketOwnerUnreadable" | "rocketDesignUnreadable" | "preparing";
-export type ProductionPurpose = "new" | "refit" | "converted" | "unknown";
-export type ProductionSpendingRun = { firstHour: number, lastHour: number,
-/**
- * Decimal string of the fixed5 total; null is unknown, never a partial sum.
- */
-totalRaw: string | null, reason: ProductionSpendingUnknown | null, };
-export type ProductionSpendingLeaf = { variant: string, typeKey: string, name: string | null, domain: Domain | null, rocket: boolean,
-/**
- * In a reply split by purpose, what this input was for (one design can
- * have a leaf per purpose); null otherwise.
- */
-purpose: ProductionPurpose | null,
-/**
- * The summed magnitudes of the input of production ticks whose purpose
- * was not recorded, which counts in `runs` (as new production where the
- * reply is not split by purpose): dated evidence that
- * grows and never cancels; empty when there never was any.
- */
-unproven: Array<ProductionSpendingRun>, names: Array<StockVariantName>, runs: Array<ProductionSpendingRun>, };
-export type ProductionPresenceRun = { firstHour: number, lastHour: number,
-/**
- * Any owned line or observed Rocket event; null cannot certify emptiness.
- */
-present: boolean | null,
-/**
- * Supplying equipment census/output read, with independent Rocket absence.
- */
-emptyCensusHour: number | null, };
-export type ProductionSpendingReply = { branchId: string, tag: string, decimals: number, reads: Array<number>, observations: Array<number>, equipmentObservations: Array<number>, rocketObservations: Array<number>, equipmentReads: Array<number>, rocketReads: Array<number>, rocketKey: string | null, rocketName: string | null,
-/**
- * Production source → content archetype → variant uses these exact leaves.
- */
-leaves: Array<ProductionSpendingLeaf>,
-/**
- * The country's total is independent of unresolved type/domain membership.
- */
-total: Array<ProductionSpendingRun>,
-/**
- * The equipment source's own total, whatever Rocket coverage holds;
- * only in a reply split by purpose, empty otherwise.
- */
-equipmentTotal: Array<ProductionSpendingRun>, rocketTotal: Array<ProductionSpendingRun>, production: Array<ProductionPresenceRun>, warnings: Array<string>, };
-export type DockyardSpendingParams = { branchId: string, tag: string, view: DockyardView, };
-export type DockyardView = "circle" | "months";
-export type DockyardAmount = {
-/**
- * Decimal string of the fixed5 amount; null is unknown, never a partial sum.
- */
-totalRaw: string | null, reason: ProductionSpendingUnknown | null, };
-export type DockyardRepairs = {
-/**
- * Repair amounts, here and in the months, are exact numerators over
- * `denominator`: fixed5 daily dockyard output times hours, over the
- * hours of a day, so parts and their total add exactly.
- */
-denominator: number, hour: DockyardAmount, end: DockyardAmount,
-/**
- * The first hour the country's repair output is known, when a whole
- * campaign's amounts start there rather than at the recording's start.
- */
-since: number | null,
-/**
- * The repaired designs' shares and the unattributed rest, which sum to
- * the total wherever every part is known.
- */
-parts: Array<DockyardRepairPart>, };
-export type DockyardRepairPart = { variant: string | null,
-/**
- * The design's content archetype, or its recorded token when content
- * cannot resolve it; empty for the unattributed part.
- */
-typeKey: string, name: string | null, domain: Domain | null, names: Array<StockVariantName>, hour: DockyardAmount, end: DockyardAmount, };
-export type DockyardMonth = { firstHour: number, lastHour: number, newShips: DockyardAmount, refits: DockyardAmount, repairs: DockyardAmount,
-/**
- * Naval input of production ticks whose purpose was not recorded: it
- * could be new ships or refits.
- */
-unrecorded: DockyardAmount,
-/**
- * Naval input recorded with a purpose naval production never has,
- * counted in the whole and warned about.
- */
-other: DockyardAmount,
-/**
- * Input whose purpose was not recorded joined the month, however it
- * nets: new ships and refits are not wholly attributed.
- */
-purposeUnproven: boolean,
-/**
- * A design whose type content cannot resolve spent IC this month, so
- * the naval amounts may lack it.
- */
-unresolved: boolean, };
-export type DockyardSpendingReply = { repairs: DockyardRepairs,
-/**
- * The months view's columns, in order; empty in the circle view.
- */
-months: Array<DockyardMonth>, branchId: string, tag: string, decimals: number, reads: Array<number>, observations: Array<number>, equipmentObservations: Array<number>, rocketObservations: Array<number>, equipmentReads: Array<number>, rocketReads: Array<number>, rocketKey: string | null, rocketName: string | null,
-/**
- * Production source → content archetype → variant uses these exact leaves.
- */
-leaves: Array<ProductionSpendingLeaf>,
-/**
- * The country's total is independent of unresolved type/domain membership.
- */
-total: Array<ProductionSpendingRun>,
-/**
- * The equipment source's own total, whatever Rocket coverage holds;
- * only in a reply split by purpose, empty otherwise.
- */
-equipmentTotal: Array<ProductionSpendingRun>, rocketTotal: Array<ProductionSpendingRun>, production: Array<ProductionPresenceRun>, warnings: Array<string>, };
-export type MilitaryFactorySpendingParams = { branchId: string, tag: string, view: DockyardView, equipment: FactoryEquipment, };
-export type FactoryEquipment = "air" | "land";
-export type FactoryMonth = { firstHour: number, lastHour: number, new: DockyardAmount, converted: DockyardAmount,
-/**
- * The domain's input of production ticks whose purpose was not
- * recorded: it could be new or converted.
- */
-unrecorded: DockyardAmount,
-/**
- * The domain's input recorded with a purpose military production never
- * has, counted in the whole and warned about.
- */
-other: DockyardAmount,
-/**
- * Input whose purpose was not recorded joined the month, however it
- * nets: new and converted input are not wholly attributed.
- */
-purposeUnproven: boolean,
-/**
- * A design whose type content cannot resolve spent IC this month, so
- * the domain's amounts may lack it.
- */
-unresolved: boolean, };
-export type MilitaryFactorySpendingReply = {
-/**
- * The months view's columns, in order; empty in the circle view.
- */
-months: Array<FactoryMonth>, branchId: string, tag: string, decimals: number, reads: Array<number>, observations: Array<number>, equipmentObservations: Array<number>, rocketObservations: Array<number>, equipmentReads: Array<number>, rocketReads: Array<number>, rocketKey: string | null, rocketName: string | null,
-/**
- * Production source → content archetype → variant uses these exact leaves.
- */
-leaves: Array<ProductionSpendingLeaf>,
-/**
- * The country's total is independent of unresolved type/domain membership.
- */
-total: Array<ProductionSpendingRun>,
-/**
- * The equipment source's own total, whatever Rocket coverage holds;
- * only in a reply split by purpose, empty otherwise.
- */
-equipmentTotal: Array<ProductionSpendingRun>, rocketTotal: Array<ProductionSpendingRun>, production: Array<ProductionPresenceRun>, warnings: Array<string>, };
-export type TradeFlowParams = { branchId: string,
-/**
- * Only flows with one of these countries as seller or buyer; every flow when null.
- */
-tags: Array<string> | null, };
-export type TradeFlow = {
-/**
- * The seller's index in `countries`.
- */
-seller: number,
-/**
- * The buyer's index in `countries`.
- */
-buyer: number,
-/**
- * Exact native holder keys, independent of their dated tag aliases.
- */
-sellerIdentity: string, buyerIdentity: string,
-/**
- * Per-run indexes into `countries`, never a future alias for an older read.
- */
-sellerTags: Array<number>, buyerTags: Array<number>,
-/**
- * The resource's native index.
- */
-resource: number, firstHours: Array<number>, lastHours: Array<number>,
-/**
- * The daily amount delivered, summed over the flow's deals, as an exact
- * decimal string with `decimals` places.
- */
-deliveredRaw: Array<string>,
-/**
- * Civilian factories the buyer pays.
- */
-factories: Array<number>, convoysAssigned: Array<number>, convoysRequired: Array<number>,
-/**
- * Deals summed into the run.
- */
-deals: Array<number>, };
-export type TradeCountryIdentity = { tag: string, runs: Array<CountryIdentityRun>, };
-export type PartialSpan = { firstHour: number, lastHour: number,
-/**
- * Deals the read listed but could not attribute.
- */
-deals: number, };
-export type TradeFlowsReply = { branchId: string, decimals: number,
-/**
- * Every recorded resource, in the game's order.
- */
-resources: Array<ResourceInfo>,
-/**
- * The tags flows name, sorted.
- */
-countries: Array<string>,
-/**
- * The full dated native holder census, independent of the chosen deals,
- * including peace and times after their trades stopped.
- */
-countryIdentities: Array<TradeCountryIdentity>,
-/**
- * Hours the deal table and country catalogue were recorded, ascending.
- */
-reads: Array<number>,
-/**
- * Hours whose deals are known, as ascending spans. Outside them the deals
- * are unknown, not none.
- */
-known: Array<HourSpan>,
-/**
- * Known hours whose read also listed deals that could not be attributed (a
- * seller or buyer the links do not resolve, a resource the definitions do not
- * name), as ascending spans: the flows there are only part of the trade.
- */
-partial: Array<PartialSpan>,
-/**
- * By seller, buyer and resource.
- */
-flows: Array<TradeFlow>, warnings: Array<string>, };
-export type MarketLendLeaseParams = { branchId: string, hour: number, tags: Array<string>, };
-export type MarketLendLeaseReply = { branchId: string, hour: number, offers: Array<MarketOffer> | null, contracts: Array<MarketTerms> | null, agreements: Array<LeaseTerms> | null, deliveries: Array<MarketDelivery> | null, warnings: Array<string>, };
-export type MarketItem = { variant: string, name: string | null, amountRaw: string, };
-export type MarketLevel = { variant: string, name: string | null, level: number, };
-export type MarketGrant = { cicRaw: string, archetype: string | null, targets: Array<string>, trigger: string | null, };
-export type MarketOffer = { country: number, tag: string | null, inventory: Array<MarketItem>, prices: Array<MarketLevel>, subsidies: Array<MarketGrant>, subsidyTotalRaw: string, autoSendMarketAccess: boolean, };
-export type MarketTerms = { id: string, seller: string | null, buyer: string | null, request: boolean, speed: number, equipment: Array<MarketItem>, prices: Array<MarketItem>, levels: Array<MarketLevel>, subsidies: Array<MarketGrant>, };
-export type LeaseTerms = { id: string, giver: string | null, receiver: string | null, revision: string, activeSince: number, lastDelivery: number, monthly: Array<MarketItem>, percentage: Array<MarketItem>, once: Array<MarketItem>, delivered: Array<MarketItem>, sunk: Array<MarketItem>, fuelDailyRaw: string, fuelPercentageRaw: string, fuelSentRaw: string, fuelSunkRaw: string, lastFuelDeliveredRaw: string, };
-export type MarketDelivery = { id: string, occurrence: string, agreement: string, hour: number, giver: string | null, receiver: string | null, kind: number, item: MarketItem, lostRaw: string, totalRaw: string, lostTotalRaw: string, };
-export type SpecialProjectsParams = { branchId: string, tag: string,
-/**
- * Original manual picks; a projected alias is never another selection root.
- */
-selectionTags: Array<string>,
-/**
- * Current cards at this hour, including before history preparation reaches it.
- */
-hour: number | null, };
-export type ProjectDate = { hour: number,
-/**
- * False means the event occurred by this observation, not at this hour.
- */
-exact: boolean, };
-export type ProjectPerson = {
-/**
- * None when the recorded reference cannot establish an assignment.
- */
-assigned: boolean | null, id: number | null, name: string | null,
-/**
- * Drawn when a reply is served, from the request's selection ([`Self::portrait_choice`]).
- */
-portrait: string | null, missing: string | null, };
-export type ProjectPresentation = { name: string, specialization: string | null, specializationName: string | null,
-/**
- * Drawn when a reply is served, from the request's selection ([`Self::icon_choice`]).
- */
-icon: string | null, iconMissing: string | null, scientist: number,
-/**
- * Completed projects lose their program; this dates the last assignment.
- */
-scientistAsOf: number | null, };
-export type ProjectState = "running" | "paused" | "cancelled" | "completed" | "unknown";
-export type SpecialProjectRun = { firstHour: number, lastHour: number, presentation: number,
-/**
- * Clamped prototype percent, separate from the phase ratio.
- */
-progress: number, state: ProjectState, completion: ProjectDate | null, cancellation: ProjectDate | null,
-/**
- * Recorded history length minus the completion entry. Missing history is null.
- */
-iterations: number | null, };
-export type ProjectEpisode = { id: string, start: ProjectDate, runs: Array<SpecialProjectRun>, };
-export type SpecialProjectsReply = { details?: SpecialProjectDetails, branchId: string, tag: string, identities: Array<CountryIdentityRun>, available: Array<HourSpan>, readHours: Array<number>, projects: Array<ProjectEpisode>, presentations: Array<ProjectPresentation>, people: Array<ProjectPerson>,
-/**
- * Native NUMBER text, localized once per distinct recorded count.
- */
-iterationTexts: { [key in number]?: string | null },
-/**
- * Why the data/content is unavailable, distinct from an empty country set.
- */
-unavailable: string | null, warnings: Array<string>,
-/**
- * Running cards read at the requested hour. Episode starts and history
- * remain pending; their starts are only bounded by this observation.
- */
-current?: SpecialProjectsReply, };
-export type ProjectLabel = { token: string, name: string | null, };
-export type ScientistSkill = { specialization: ProjectLabel, level: number, experienceRaw: string, };
-export type ScientistDetails = { character: number, person: ProjectPerson, active: number | null, injuryDays: number | null, injuryHour: number | null, visible: boolean | null, visibilityHour: number | null, stateRefusals: { [key in string]?: number }, skills: Array<ScientistSkill> | null, traits: Array<ProjectLabel> | null, };
-export type ScientistAssignment = { ordinal: number, reference: string, person: ProjectPerson, target: number, current: number, timed: number, };
-export type ProgramDetails = { id: number, province: number, readHour: number, assignments: Array<ScientistAssignment> | null, facility: FacilityDetails | null, };
-export type FacilityDetails = { speedRaw: string | null, sources: Array<FacilitySource>, unavailable: string | null, };
-export type FacilitySource = { kind: string, unit: string, label: ProjectLabel | null, modifier: ProjectLabel | null, assignment: number, scientistReference: string, valueRaw: string, };
-export type ProjectChoice = { ordinal: number, date: number, reward: ProjectLabel, option: ProjectLabel, province: number, progress: number, characterReference: string, country: number | null, scientist: number | null, state: number | null, };
-export type SpecializationProgress = { specialization: ProjectLabel, points: number, readHour: number, };
-export type ProjectEffects = { text: string, refusals: { [key in string]?: number }, };
-export type ProjectRewardOption = { label: ProjectLabel, effects: ProjectEffects, };
-export type PendingProjectReward = { label: ProjectLabel, description: string | null, options: Array<ProjectRewardOption>, unavailable: string | null, };
-export type ProjectVariableValue = { name: string, valueRaw: string, };
-export type ProjectRuntimeDetails = { owner: number, id: number, label: ProjectLabel, readHour: number, pendingKnown: boolean, pending: PendingProjectReward | null, seed: number | null, variables: Array<ProjectVariableValue> | null, output: ProjectEffects | null, choices: Array<ProjectChoice> | null, };
-export type SpecialProjectDetails = { hour: number,
-/**
- * `None` when the hour's scientist roster is unavailable.
- */
-scientists: Array<ScientistDetails> | null,
-/**
- * `None` without a continuous supplying read of the country's programs.
- */
-programs: Array<ProgramDetails> | null,
-/**
- * `None` without a continuous supplying read for the country.
- */
-breakthroughs: Array<SpecializationProgress> | null,
-/**
- * `None` without a continuous supplying read of the country's projects.
- */
-projects: Array<ProjectRuntimeDetails> | null, unavailable: Array<string>, };
-export type SubjectParams = { branchId: string, };
-export type SubjectLevel = {
-/**
- * The autonomy state's id, as recorded.
- */
-token: string,
-/**
- * The game's name for it; null when the localisation has none or is not read.
- */
-name: string | null,
-/**
- * Whether the content defines the state and orders it (by its
- * `min_freedom_level`); a level it does not is listed after those it does.
- */
-ordered: boolean, };
-export type LevelStep = { firstHour: number, lastHour: number, level: string | null, };
-export type SubjectRun = { overlord: string, subject: string,
-/**
- * The hour the relation began, as the engine dates it (may be before the branch).
- */
-startHour: number, firstHour: number, lastHour: number,
-/**
- * The subject's level through the run, in hour order, covering every hour of it.
- */
-steps: Array<LevelStep>, };
-export type SubjectReply = { branchId: string,
-/**
- * Every level the runs name, least free first in the content's order.
- */
-levels: Array<SubjectLevel>,
-/**
- * Every run, by first hour, then overlord and subject.
- */
-runs: Array<SubjectRun>,
-/**
- * Hours inside the branch whose relations were not observed: a run that ends
- * or starts next to one of these is a gap, not an end or a start.
- */
-unobserved: Array<HourSpan>, warnings: Array<string>,
-/**
- * While preparation has not reached the branch's end, the hours after its
- * prefix whose relations and levels come from each block's keyframe
- * ([`Scan::sample_tail`]): exact at the keyframe, approximate over the
- * block, so a relation's end inside them is approximate (its start stays
- * the game's recorded start). None once the branch is prepared, and from
- * the recording product.
- */
-approximate?: Array<HourSpan>, };
-export type EventFeedParams = { branchId: string,
-/**
- * Both null discovers the bounded, event-bearing windows of the branch.
- */
-firstHour: number | null, lastHour: number | null, };
-export type EventFeedCategory = "warsPeace" | "diplomacy" | "politics" | "milestones";
-export type EventFeedKind = "warStarted" | "warDeclared" | "warJoined" | "civilWarWarTransferred" | "annexed" | "warEnded" | "released" | "stateTransferred" | "peaceConferenceStarted" | "peace" | "capitulated" | "ceasedToExist" | "factionJoined" | "factionLeft" | "becameSubject" | "guaranteeGranted" | "rulingPartyChanged" | "lawChanged" | "advisorHired" | "focusCompleted" | "projectFinished" | "nukesIncreased" | "nuclearStrike" | "scriptEventFired" | "newsEventFired" | "eventOptionSelected" | "decisionSelected" | "decisionRemoved" | "decisionCancelled" | "decisionTimedOut" | "decisionActivated" | "decisionCompleted" | "decisionReenabled" | "decisionRemovalEffect" | "decisionCancellationEffect" | "decisionCompletionEffect" | "decisionTimeoutEffect" | "decisionDurationChanged";
-export type EventFeedRow = { id: string, hour: number,
-/**
- * The read supplying this fact; Live must not expose it before this hour.
- */
-readHour: number,
-/**
- * Country naming/flags use the event hour; a vanished country's last seen hour.
- */
-nameHour: number, exact: boolean, category: EventFeedCategory, kind: EventFeedKind, tags: Array<string>,
-/**
- * Native action roles, actor then target. Null retains an unidentified role;
- * tags contains only the exact occurrence-hour identities proved here.
- */
-participants?: [string | null, string | null], item: number | null, amount: number | null,
-/**
- * A native event's recorded cause; absent when the recording holds none.
- */
-cause?: EventFeedCause,
-/**
- * A nuclear strike's target and outcome; participants are its launcher
- * and the owner of the struck state.
- */
-strike?: EventFeedStrike, };
-export type EventFeedCause = {
-/**
- * The native operation the event happened in.
- */
-how: string | null,
-/**
- * The operation that one ran inside.
- */
-within: string | null,
-/**
- * The peace conference starting or applying, as its PeaceConferences
- * reference in decimal.
- */
-conference: string | null,
-/**
- * A state whose owner changed.
- */
-state: number | null,
-/**
- * A join's ally, the exact occurrence-hour identity.
- */
-ally: string | null,
-/**
- * A join's hostility reason.
- */
-reason: string | null,
-/**
- * The native operands that change what the event means.
- */
-notes: Array<string>, };
-export type EventFeedStrike = { province: number,
-/**
- * Null for a province without a state.
- */
-state: number | null,
-/**
- * Healthy building levels destroyed, in whole levels.
- */
-buildingLevels: number | null,
-/**
- * The state owner's war support change, in percentage points.
- */
-warSupport: number | null,
-/**
- * Units the strike's damage calls reached.
- */
-units: number | null, manpowerLost: number | null,
-/**
- * Net equipment destroyed in division and air wing pools.
- */
-equipmentLost: number | null, notRecorded: Array<string>, };
-export type EventFeedItem = { token: string | null, name: string | null, icon: string | null, description: string | null,
-/**
- * The same content effects the Ideas widget supplies to its shared tooltip.
- */
-idea: IdeaInfo | null,
-/**
- * A scripted event's authored options in the game's order; absent for
- * other kinds and when the event's content does not resolve.
- */
-options?: Array<EventFeedOption>, };
-export type EventFeedOption = { ordinal: number, name: string | null, };
-export type EventFeedWindow = { firstHour: number, lastHour: number, count: number, categoryCounts: EventFeedCounts, };
-export type EventFeedCounts = { warsPeace: number, diplomacy: number, politics: number, milestones: number, };
-export type EventFeedUnavailable = { kind: string, label: string, reason: string, count: number | null, };
-export type EventFeedReply = { branchId: string, firstHour: number, lastHour: number, windows: Array<EventFeedWindow>, rows: Array<EventFeedRow>, items: Array<EventFeedItem>, modifiers: Array<ModifierFormat>, texts: Array<LocalisedText>, unavailable: Array<EventFeedUnavailable>, warnings: Array<string>, };
-export type ScriptPageParams = { branchId: string, firstHour: number | null, lastHour: number, cursor: string | null, pageSize: number,
-/**
- * The opening kinds shown; every kind when empty.
- */
-kinds: Array<EventFeedKind>, };
-export type ScriptCurrency = "politicalPower" | "commandPower";
-export type ScriptCost = { currency: ScriptCurrency,
-/**
- * The exact fixed5 balance change as a decimal string; negative when spent.
- */
-amount: string, };
-export type ScriptEdge = { row: EventFeedRow,
-/**
- * The executed option's signed native ordinal.
- */
-option: number | null,
-/**
- * The writer's lifecycle result, where its boundary supplies one.
- */
-lifecycle: number | null,
-/**
- * The writer's duration result in days.
- */
-days: number | null,
-/**
- * The power the execution was proven to charge; null when not proven.
- */
-costs: Array<ScriptCost> | null, };
-export type ScriptOccurrence = { id: string,
-/**
- * Whether the first edge opened the card; false for a continuing fact
- * whose opening was not recorded or joined.
- */
-opened: boolean, edges: Array<ScriptEdge>, };
-export type ScriptOccurrenceReply = { branchId: string, firstHour: number, lastHour: number, occurrences: Array<ScriptOccurrence>, items: Array<EventFeedItem>, unavailable: Array<EventFeedUnavailable>, warnings: Array<string>, };
-export type ScriptOccurrencePage = { reply: ScriptOccurrenceReply, nextCursor: string | null, };
-export type TensionRead = {
-/**
- * The hour it was read, where its values start.
- */
-firstHour: number,
-/**
- * The last hour the read's values hold.
- */
-lastHour: number,
-/**
- * The read follows a gap or an hour without the tables.
- */
-startsSegment: boolean,
-/**
- * World tension as the game showed it, in [`TensionReply::tension_scale`]
- * units (`WorldTension.total_raw`).
- */
-tensionRaw: string,
-/**
- * Every country's contribution summed before the game's cap, in
- * [`TensionReply::contribution_scale`] units.
- */
-sumRaw: string,
-/**
- * The part of `sum_raw` from country slots no recorded country row names,
- * in the same units; "0" when every contributing country is named.
- */
-unnamedRaw: string | null,
-/**
- * Fields needing earlier holder observations in a frame-only first view.
- */
-preparing?: Array<string>, };
-export type TensionCountry = {
-/**
- * The tag the country held at these reads.
- */
-tag: string,
-/**
- * Its identity: the canonical country slot its contributions were recorded
- * under. Two entries may share a tag, never a slot and a tag.
- */
-slot: number,
-/**
- * In [`TensionReply::contribution_scale`] units. A run starts a segment where
- * the hours before it were not recorded (a gap, or an hour without the
- * tables); after a recorded zero it continues the line.
- */
-runs: Array<FixedRun>,
-/**
- * Native holders of this cached tag/slot. Colours and names may only be
- * sampled within these recorded bounds, including after the holder vanished.
- */
-identities?: Array<CountryIdentityRun>, };
-export type PreparingContributor = { hour: number, slot: number, valueRaw: string, };
-export type TensionAdded = {
-/**
- * The read where the source first held this value.
- */
-hour: number,
-/**
- * The source's `final_raw`, in [`TensionReply::contribution_scale`] units.
- */
-addedRaw: string, };
-export type TensionEvent = {
-/**
- * The hour the game created it (`date`).
- */
-hour: number,
-/**
- * The country that caused it; null when no recorded country row names it.
- */
-tag: string | null,
-/**
- * The game's own text for it, without formatting codes.
- */
-reason: string,
-/**
- * What it adds, from its first read on; a later entry when the game changed it.
- */
-added: Array<TensionAdded>,
-/**
- * The first and last read listing it.
- */
-firstRead: number, lastRead: number, };
-export type TensionReply = { branchId: string,
-/**
- * World tension units per percentage point.
- */
-tensionScale: number,
-/**
- * Contribution units per percentage point.
- */
-contributionScale: number,
-/**
- * The sum of contributions world tension is capped at, in contribution units.
- */
-ceilingRaw: string,
-/**
- * In hour order.
- */
-reads: Array<TensionRead>,
-/**
- * Every country that contributed in the branch, in tag then slot order.
- */
-countries: Array<TensionCountry>,
-/**
- * In hour order, then first read.
- */
-events: Array<TensionEvent>, warnings: Array<string>,
-/**
- * Exact current amounts whose remembered contributor name is not prepared.
- */
-preparingContributors?: Array<PreparingContributor>, };
-export type AutonomyParams = { branchId: string,
-/**
- * Every subject these countries had in the branch.
- */
-overlords: Array<string>,
-/**
- * These countries, whenever they were subjects. Both selections empty asks
- * for the whole branch, so frontend country lineage can resolve tag changes.
- */
-subjects: Array<string>, };
-export type AutonomyLevel = {
-/**
- * The autonomy state's id, as recorded.
- */
-id: string,
-/**
- * Its localised name; null without the game folders or a localisation.
- */
-name: string | null,
-/**
- * Whether the content's autonomy states place it in level order (define it with
- * a plain `min_freedom_level`).
- */
-defined: boolean, };
-export type AutonomyRun = { firstHour: number, lastHour: number,
-/**
- * Follows a gap, an hour without the tables or another country under the tag.
- */
-startsSegment: boolean,
-/**
- * The overlord's tag; null when no relation names the subject this hour.
- */
-overlord: string | null,
-/**
- * Index into [`AutonomyReply::levels`].
- */
-level: number,
-/**
- * In [`AutonomyReply::score_scale`] units.
- */
-scoreRaw: string,
-/**
- * The score below which it moves down a level.
- */
-lowerRaw: string,
-/**
- * The score at which it moves up a level.
- */
-upperRaw: string,
-/**
- * No level below (`previous` is null) or above (`next` is null).
- */
-lowest: boolean, highest: boolean,
-/**
- * The relation's recorded `autonomy_ratio`, fixed5; null without a relation.
- */
-ratioRaw: string | null, };
-export type AutonomySubject = { tag: string, runs: Array<AutonomyRun>, };
-export type AutonomyReply = { branchId: string,
-/**
- * Units per point of a score.
- */
-scoreScale: number,
-/**
- * Every level recorded in the branch, in level order.
- */
-levels: Array<AutonomyLevel>,
-/**
- * The requested subjects in the order they first became subjects.
- */
-subjects: Array<AutonomySubject>,
-/**
- * The hours recorded with both tables complete, in order: outside them nothing
- * is known, so a country without a lane there is not recorded, not a non-subject.
- */
-recorded: Array<HourSpan>,
-/**
- * The recorded hours, in order, with a subject or overlord the recording does
- * not name: a country without a lane there may be one of them.
- */
-unidentified: Array<HourSpan>, warnings: Array<string>, };
-export type ConstructionLogParams = { branchId: string,
-/**
- * Index into [`ConstructionLogManifestReply::windows`].
- */
-window: number, };
-export type ProjectKind = "building" | "railway";
-export type ProjectSource = "census" | "outputAlone";
-export type OutputOrigin = { tag: string, building: number, state: number | null, toState: number | null, province: number | null, };
-export type EndKind = "finished" | "removed" | "unknown";
-export type UnknownEnd = "notRecorded" | "sharedTarget" | "nothingLeft" | "completionNotRecorded";
-export type ProjectEnd = { kind: EndKind,
-/**
- * The native outcome hour, when observed; otherwise only `known_at` bounds it.
- */
-hour: number | null,
-/**
- * The read that showed the line gone: nothing about the ending shows before it.
- */
-knownAt: number, unknown: UnknownEnd | null, };
-export type LevelsBuilt = {
-/**
- * The hour the building rose; null when only the read shows it (railways, and
- * a building line whose levels could be any of several rises).
- */
-hour: number | null,
-/**
- * The read that established it.
- */
-knownAt: number, count: number,
-/**
- * Levels repaired (the healthy level rising back to the level), not built.
- */
-repair: boolean, };
-export type ProjectRun = { firstHour: number, lastHour: number,
-/**
- * Factories assigned (`active_factories`).
- */
-factories: number,
-/**
- * Levels (railway: segments) still to build (`amount`).
- */
-remaining: number,
-/**
- * Levels still to repair (`repair_levels`): while above zero the line repairs
- * (the engine's repair branch), else it builds its remaining new levels.
- */
-repairLevels: number, };
-export type SpendingGap = "notRecorded" | "readFailed" | "linkedOutput" | "inexactOutput" | "observationRestart" | "finalOutputMissing" | "ownerUnknown" | "preparing";
-export type ConstructionProject = {
-/**
- * The line's native handle, as a decimal string.
- */
-id: string, kind: ProjectKind, source: ProjectSource,
-/**
- * Census-only fields are known from this read, never before it.
- */
-censusRead: number | null, outputOrigin: OutputOrigin | null, queueOrdinal: number | null,
-/**
- * The queue owner's tag at the project's first read.
- */
-tag: string,
-/**
- * Index into [`ConstructionLogManifestReply::types`].
- */
-building: number,
-/**
- * It had levels to repair at its first read. What it does over time is per
- * stretch: a run with `repair_levels` above zero repairs, one without builds
- * its remaining new levels (a line can repair, then build).
- */
-repair: boolean | null,
-/**
- * The target state (a railway: the state of its route's first province).
- */
-state: number | null,
-/**
- * A railway: the state of its route's last province.
- */
-toState: number | null,
-/**
- * A building built in one province (a naval base, a bunker).
- */
-province: number | null,
-/**
- * A railway: provinces on its route, and its levels before and after.
- */
-routeProvinces: number | null, baseLevel: number | null, targetLevel: number | null,
-/**
- * Fixed5 cost per level (railway: the whole route), as at the first read.
- */
-costRaw: string | null,
-/**
- * When the game created the line.
- */
-createdHour: number | null,
-/**
- * The first read that lists it: nothing about it shows before.
- */
-firstRead: number,
-/**
- * Work before its first read was not recorded; its counts are lower bounds.
- */
-earlierUnknown: boolean, runs: Array<ProjectRun>,
-/**
- * Levels (railway: segments) the line completed. A building line's are as many
- * as the line itself shows it completed (its count fell, or a daily healthy
- * rise under its repair), dated by the corresponding daily rise; by the
- * read (`hour` null) when more such rises at different hours could be them.
- * A railway's are dated by the read. A rise at
- * another hour (a player's decision or event choice) is never among them.
- */
-built: Array<LevelsBuilt>,
-/**
- * Levels that cannot be told built or dropped, dated by the read (`hour`
- * null): what the line's remaining count lost between two reads when some
- * hour between them was not recorded or another project was building at the
- * same place, and what it still had to build when it left the queue
- * unknowably (`EndKind::Unknown`).
- */
-unaccounted: Array<LevelsBuilt>,
-/**
- * Extra possible completions of a listed, non-doubtful stretch: levels the
- * line may have both built and had added, dated by the read (`hour` null).
- * They widen both counts without changing the certain levels.
- */
-possible: Array<LevelsBuilt>,
-/**
- * Levels added to the line between two reads (the player queued more, or new
- * damage gave it repair work), dated by the read (`hour` null). While it stays
- * listed: the new levels it completed beyond how far its count fell, and the
- * damage its building took (or the rise of its repair count net of its
- * repairs, if more). Once it left: the damage before its last claimed rise, or
- * its repairs beyond what it had left if more; a new level is never added
- * then. Only the line's own completions are `built`, so a building raised by
- * something else adds nothing.
- */
-added: Array<LevelsBuilt>,
-/**
- * Null while it is in the queue at the branch's last read.
- */
-end: ProjectEnd | null,
-/**
- * The first output read counting a repair advance (natural or by factories).
- */
-firstRepairTick: number | null, };
-export type ConstructionOutputRun = { from: number, to: number,
-/**
- * Fixed5 factory output since observation began; null when attribution is unknown.
- */
-constructionRaw: string | null, repairRaw: string | null, reason: SpendingGap | null,
-/**
- * Output before observation began is not recorded.
- */
-beforeObservation: boolean,
-/**
- * No row was published: the reason is the table's at each read (it was
- * unavailable), else the line's final output is missing.
- */
-absent: boolean, };
-export type ProjectOutput = { id: string,
-/**
- * In hour order.
- */
-runs: Array<ConstructionOutputRun>, };
-export type BuildingInfo = {
-/**
- * The recorded lexer id of the type.
- */
-id: number,
-/**
- * Its script name; null when the recorded dictionary lacks it.
- */
-token: string | null, name: string | null,
-/**
- * An artwork URL: the construction queue's picture of it.
- */
-icon: string | null, };
-export type StateName = { id: number, name: string | null, };
-export type ConstructionLogReply = { window: number, interval: BattleWindow,
-/**
- * A look-back numbers types locally; its projects index this dictionary.
- */
-types?: Array<BuildingInfo>, exactFrom?: number,
-/**
- * Hours the output table was read from the last read before the window to
- * the next window, ascending.
- */
-outputReads: Array<number>,
-/**
- * Those reads at which the table was unavailable, and why.
- */
-outputUnavailable: Array<[number, SpendingGap]>,
-/**
- * Every project with a row date in the window, in the scan's order: by first
- * read, building lines before railway lines, then by handle.
- */
-projects: Array<ConstructionProject>,
-/**
- * For every project changing output in the window, its runs read there; for
- * every project listed, its last run too, held from then on.
- */
-outputs: Array<ProjectOutput>, warnings: Array<string>, };
-export type ConstructionLogManifestReply = {
-/**
- * Units per factory output point of `cost_raw`.
- */
-costScale: number,
-/**
- * The branch's blocks: the log's windows, in hour order.
- */
-windows: Array<BattleWindow>,
-/**
- * A proven newest window, independent of the forward prefix.
- */
-newest?: BattleWindow,
-/**
- * Either construction queue was read in the branch.
- */
-recorded: boolean, types: Array<BuildingInfo>,
-/**
- * The construction queue's repair marker.
- */
-repairIcon: string | null, warnings: Array<string>, };
-export type LandSource = "destruction" | "combatLog";
-export type LossCountry = { slot: number, countryId: number, originHour: number, };
-export type LossesParams = { branchId: string, tag: string, landSource: LandSource, country?: LossCountry | null, };
-export type EquipmentDestructionCause = "unknown" | "land_combat" | "naval_transport" | "immediate" | "attrition" | "garrison" | "air_nuclear" | "air_accident" | "air_strategic" | "air_mission_aa" | "air_land_combat_cas" | "air_raid" | "air_naval_aa" | "division_destroyed" | "division_overrun" | "division_deleted" | "division_disbanded" | "division_capitulation" | "division_scripted" | "division_template_removed" | "paradrop_disruption" | "division_merged" | "exile_equipment" | "volunteer_return_equipment" | "capitulation_escape_equipment" | "scripted_equipment_fraction" | "scripted_stockpile_fraction";
-export type LossSource = { "kind": "combatLog", "reason": number } | { "kind": "recovered" } | { "kind": "sunkShips" } | { "kind": "sunkConvoys" } | { "kind": "lendLeaseSunk" } | { "kind": "lendLeaseSent" } | { "kind": "destruction", "reason": EquipmentDestructionCause };
-export type LossDomain = "land" | "air" | "naval" | "other";
-export type LossName = { key: string | null, template: string | null, text: string | null, };
-export type UnknownReason = "unread" | "endedAfterLastRead" | "destructionWithheld" | "destructionGap" | "destructionUnresolved" | "destructionDomain";
-export type UnknownSpan = { firstHour: number, lastHour: number, reason: UnknownReason, detail: string | null, };
-export type LossPoint = { hour: number,
-/**
- * Exact decimal string, in [`LossesReply::amount_scale`] units.
- */
-totalRaw: string, };
-export type LossLeaf = {
-/**
- * Index into [`LossesReply::designs`]; null when the record names none.
- */
-design: number | null,
-/**
- * The running total at each hour it changed, in hour order.
- */
-points: Array<LossPoint>,
-/**
- * From this hour missing destruction events or
- * an ended lend-lease exchange make this signed total incomplete.
- */
-lowerBoundFrom: number | null, };
-export type LossCause = { source: LossSource, domain: LossDomain, name: LossName,
-/**
- * The group this cause belongs to in the game's own view (the Combat
- * Log's attrition column for reasons 1 to 3).
- */
-group: LossName | null,
-/**
- * False for what is not a loss: recovered equipment and lend-lease sent.
- */
-loss: boolean,
-/**
- * Why the amounts are unknown throughout, when they are (for example a
- * retention setting that deletes entries still changing): no leaves.
- */
-unknown: string | null,
-/**
- * Spans of hours whose amounts are unknown, in hour order.
- */
-unknownSpans: Array<UnknownSpan>, leaves: Array<LossLeaf>, };
-export type LossDesign = {
-/**
- * The variant's reference id.
- */
-variant: number,
-/**
- * The design's names at their recorded reads, including where they
- * stopped being known. Never use a later name at an earlier hour.
- */
-names: Array<StockVariantName>,
-/**
- * Its equipment type's script token (VariantDefinitions, LexicalTokens).
- */
-equipment: string | null,
-/**
- * The equipment's archetype from the content stack: the type level.
- */
-archetype: string | null, archetypeName: string | null, };
-export type Coverage = "logged" | "notLogged" | { "partial": { ungrouped: number, } } | "unknown" | "pruneUnobserved";
-export type CoverageSpan = { firstHour: number, lastHour: number, coverage: Coverage, };
-export type DestructionCoverageSpan = { firstHour: number, lastHour: number,
-/**
- * Null is a complete drain, including an empty one.
- */
-reason: string | null, };
-export type LossesReply = { branchId: string, tag: string, landSource: LandSource,
-/**
- * Optional persistent content/capture exclusion; no exclusion with the full writer group.
- */
-landLowerBound: string | null, amountScale: number, causes: Array<LossCause>, designs: Array<LossDesign>,
-/**
- * Combat Log land coverage; empty when destruction land is selected.
- */
-coverage: Array<CoverageSpan>, destructionCoverage: Array<DestructionCoverageSpan>,
-/**
- * The first complete drain on this branch. Startup hours before it
- * make no claim about hooked removals and are not unknown spans.
- */
-destructionCountedFrom: number | null,
-/**
- * Months the game keeps a Combat Log entry (the content's define), which
- * bounds the history a branch's first read can hold.
- */
-retainedMonths: number | null, warnings: Array<string>, };
-export type PreparedLossesReply = { branchId: string, tag: string, landSource: LandSource, landLowerBound: string | null, amountScale: number, causes: Array<LossCause>, designs: Array<LossDesign>, landCoverage: Array<CoverageSpan>, destructionCoverage: Array<DestructionCoverageSpan>, destructionCountedFrom: number | null, retainedMonths: number | null, warnings: Array<string>,
-/**
- * The first hour of each stretch after hours the recording lost: every total restarts
- * there, and a total at a later hour counts from the last of them before it.
- */
-restarts: Array<number>, approximate: Array<HourSpan>, preparedReads: Array<number>, preparedHeadHour: number, preparedDetailHour: number, preparedFrom: number, preparedTo: number, preparedWidth: number,
-/**
- * The gate's accepted coverage the reply reads through. A product's
- * approximate spans identify accepted hours that later commits can revise.
- * Before its first publication, the empty extent ends immediately before
- * `firstHour`.
- */
-coverage: PreparedCoverage,
-/**
- * The requested recorded hours after `coverage.lastHour`, in order and
- * without recorded gaps: still being prepared. Empty when the reply
- * answers every requested hour.
- */
-pending: Array<HourSpan>, };
-export type MilitaryAirParams = { branchId: string, family: MilitaryAirFamily, regions: Array<number>, causes: Array<number>,
-/**
- * A range starts at native application time; publication still gates visibility.
- */
-fromHour: number | null, top: MilitaryAirTop | null, };
-export type MilitaryAirFamily = "airLosses" | "bombing";
-export type MilitaryAirMetric = "dealt" | "taken" | "total";
-export type MilitaryAirTop = { count: number, metric: MilitaryAirMetric, };
-export type MilitaryAirCountry = { tag: string,
-/**
- * Native canonical slot and country ID; tag changes do not join holders.
- */
-identity: string, present: Array<HourSpan>,
-/**
- * Null means no ranking filter. Empty means never in the requested top N.
- */
-membership: Array<HourSpan> | null, };
-export type MilitaryAirPart = { tag: string | null, identity: string | null, dealt: boolean, cause: number | null,
-/**
- * Air losses: whether the opposite endpoint was resolved for every loss in it.
- */
-opponentKnown: boolean | null, buildingToken: string | null, buildingId: number | null, state: number | null,
-/**
- * Each point is `[hour, readHour, totalRaw]`, as [`MilitaryAirPoint`]: in read order.
- */
-points: Array<[number, number, string]>, };
-export type MilitaryAirName = { id: string, name: string | null, missing: string | null, };
-export type MilitaryAirReply = { family: MilitaryAirFamily, firstHour: number, lastHour: number, available: boolean, observed: Array<HourSpan>,
-/**
- * Reads containing a caller whose membership in aircraft bombing is unknown.
- */
-incomplete: Array<HourSpan>, countries: Array<MilitaryAirCountry>, parts: Array<MilitaryAirPart>, regions: Array<MilitaryAirName>, buildings: Array<MilitaryAirName>, warnings: Array<string>, };
-export type ShipClassInfo = { token: number,
-/**
- * The recorded lexical token, resolved to the native sub-unit spelling.
- */
-key: string | null, name: string | null,
-/**
- * PNG sent once per class, never once per sinking.
- */
-icon: string | null, };
-export type ShipSinkingCause = "hostile" | "assisted" | "cause";
-export type ShipsSunkRow = { sinkHour: number, knownAt: number, name: string | null, classIndex: number, recordedNameIndex: number | null, victim: string | null, attacker: string | null,
-/**
- * Null uses the sinking hour; otherwise names and flags use this read.
- */
-victimAsOf: number | null, attackerAsOf: number | null, placeIndex: number | null, cause: ShipSinkingCause, attributionName: string | null, assistedKill: boolean, };
-export type ShipsSunkReply = { branchId: string,
-/**
- * A complete empty read is available and differs from no recorded table.
- */
-available: boolean, firstHour: number, lastHour: number, firstRead: number | null, unread: Array<HourSpan>, classes: Array<ShipClassInfo>, places: Array<string>, recordedNames: Array<string>,
-/**
- * Native read order; the log kit orders by event hour and numeric row index.
- */
-rows: Array<ShipsSunkRow>, warnings: Array<string>, };
-export type ShipsSunkWindowReply = { window: number, indices: Array<number>, reply: ShipsSunkReply, };
-export type ShipsSunkManifestReply = { windows: Array<HourSpan>,
-/**
- * One first occurrence per class supplies choices without reading log pages.
- */
-classes: ShipsSunkReply, contentWarnings: Array<string>, };
-export type ShipsSunkBattleTitlesParams = { branchId: string,
-/**
- * Numeric indices of the immutable ShipsSunk reply, only the drawn rows.
- */
-rows: Array<number>, };
-export type ShipBattleTitle = { index: number,
-/**
- * Title geography and names use the entry's supplying read.
- */
-hour: number, name: string | null, missing: string | null, };
-export type ShipsSunkBattleTitlesReply = { rows: Array<ShipBattleTitle>, warnings: Array<string>, };
-export type NavalBattlesParams = { branchId: string, window: number, };
-export type NavalBattleRun = { firstHour: number, lastHour: number, row: BattleRow, peakHour: number | null,
-/**
- * Ships sunk, Peak ships and Length; ended lengths use linked recorded reads.
- */
-measures: Array<BattleValue>, };
-export type NavalBattleHistory = { id: string, provinceId: number, runs: Array<NavalBattleRun>, };
-export type NavalBattlesReply = { window: number, interval: BattleWindow, rows: Array<NavalBattleHistory>, observed: Array<[number, number]>, warnings: Array<BattleWarning>, contentWarnings: Array<string>, };
-export type NavalBattlesManifestParams = { branchId: string, };
-export type NavalBattlesManifestReply = { windows: Array<BattleWindow>, available: boolean, unavailable: string | null, contentWarnings: Array<string>, };
-export type NavalBattlesRankingParams = { branchId: string, firstHour: number, lastHour: number, topN: number, measure: string, countries: LandBattleCountryFilter, };
-export type NavalBattlesRankingReply = { rows: Array<NavalBattleHistory>, censusHour: number | null, effectiveMeasure: string, warnings: Array<BattleWarning>, contentWarnings: Array<string>, };
-export type NavalBattleDetailRequest = { id: string, hour: number, };
-export type NavalBattleDetailsParams = { branchId: string, battles: Array<NavalBattleDetailRequest>, };
-export type NavalBattleFleetNames = { names: Array<string>, unknown: string | null, };
-export type NavalBattleNamedShip = { sinkHour: number, knownAt: number, name: string | null, className: string | null, };
-export type NavalBattleDetail = { id: string, hour: number,
-/**
- * Fleets use the exact last observed combat roster, including ended rows.
- */
-rosterHour: number | null, fleets: [NavalBattleFleetNames, NavalBattleFleetNames], namedShips: Array<NavalBattleNamedShip>, shipRead: number | null, unavailable: string | null, };
-export type NavalBattleDetailsReply = { rows: Array<NavalBattleDetail>, warnings: Array<string>, };
-export type NavalKind = "ships" | "convoys" | "both";
-export type NavalAttribution = "lost" | "sunkBy";
-export type NavalPeriod = "running" | "month";
-export type NavalLossesParams = { branchId: string, tags: Array<string>, top: number | null, kind: NavalKind, attribution: NavalAttribution, period: NavalPeriod, };
-export type NavalLossRun = { firstHour: number, lastHour: number, startsSegment: boolean, ships: number | null, convoys: number | null, };
-export type NavalLossSeries = { tag: string, runs: Array<NavalLossRun>, segments: Array<HourSpan>, membership: Array<HourSpan> | null, identities?: Array<CountryIdentityRun>, };
-export type NavalLossesReply = { branchId: string, available: boolean, firstRead: number | null, shipFirstRead: number | null, convoyFirstRead: number | null, shipLastRead: number | null, convoyLastRead: number | null, shipReads: Array<number>, convoyReads: Array<number>, series: Array<NavalLossSeries>, warnings: Array<string>,
-/**
- * The first hour of each stretch after hours the recording lost: every tally restarts
- * there, counting only what is read after them. Absent without any.
- */
-restarts?: Array<number>, };
-export type SpentStep = { knownAt: number,
-/**
- * Fixed5 (`cost_scale` per point of output), as a decimal string.
- */
-totalRaw: string, };
-export type LeafProject = {
-/**
- * The project's native handle, as in the construction log.
- */
-project: string, firstRead: number,
-/**
- * The read that establishes an inferred interval; none when its first read does.
- */
-knownAt: number | null, until: number | null,
-/**
- * The interval ended at a break in its reads (hours not recorded, or a read
- * that failed), at `until`: what it did from then is not known, not nothing.
- */
-unread: boolean,
-/**
- * When `unread`, the hour its reads resume (the read that showed it gone, for
- * one that left); none when they never do before the branch ends (the rest of
- * the branch is not recorded for it).
- */
-resumes: number | null, };
-export type SpendingUnknown = {
-/**
- * The read that ends it: nothing about it shows before.
- */
-knownAt: number, reason: SpendingGap,
-/**
- * The project's native handle, as in the construction log.
- */
-project: string,
-/**
- * A later exact cumulative read resolves this missing observation.
- */
-until: number | null, };
-export type SpendingLeaf = { repair: boolean, kind: ProjectKind,
-/**
- * Index into [`ConstructionSpendingReply::types`].
- */
-building: number,
-/**
- * The target state (a railway: its route's first province's).
- */
-state: number | null,
-/**
- * A railway: the state of its route's last province.
- */
-toState: number | null,
-/**
- * Running total at each read that adds to it, in hour order.
- */
-spent: Array<SpentStep>,
-/**
- * In hour order.
- */
-unknown: Array<SpendingUnknown>,
-/**
- * Its projects, by first read.
- */
-projects: Array<LeafProject>, };
-export type ConstructionSpendingReply = { branchId: string, tag: string,
-/**
- * Units per point of civilian-factory output in `total_raw`.
- */
-costScale: number,
-/**
- * Hours the building and railway queues were read, ascending.
- */
-reads: Array<number>, railwayReads: Array<number>,
-/**
- * Every building type the branch's projects name (a leaf's `building` indexes it).
- */
-types: Array<BuildingInfo>, repairIcon: string | null,
-/**
- * Names of the states the leaves name.
- */
-states: Array<StateName>,
-/**
- * By repair, kind, building type and state.
- */
-leaves: Array<SpendingLeaf>,
-/**
- * Projects whose work before observation began was not captured.
- */
-beforeFirstRead: number,
-/**
- * Missing output and output without a census owner affect every country.
- */
-unattributed: Array<SpendingUnknown>, warnings: Array<string>, };
-export type EspionageLogParams = { branchId: string,
-/**
- * None requests the manifest; a detail supplies one daily transport window.
- */
-window: number | null, };
-export type EspionageOperationType = { key: string, name: string | null, icon: string | null, iconMissing: string | null, };
-export type EspionageOperationRun = { firstHour: number, lastHour: number,
-/**
- * First read of this equal-value run. read_hours also dates equal re-reads.
- */
-readHour: number,
-/**
- * Native resource-meter ratio, fixed5; not equipment readiness.
- */
-preparationRatio: number | null, ownerTag: string | null, targetTag: string | null,
-/**
- * Null when this read did not record the definition token's name.
- */
-typeKey: string | null,
-/**
- * Selected definitions, not completed phases.
- */
-phaseCount: number,
-/**
- * Manager removal flag tested after completion.
- */
-autoRepeat: boolean,
-/**
- * Launch writes duration and start on the same instance.
- */
-durationDays: number,
-/**
- * All assignment slots, including unassigned ones.
- */
-assignedSlots: number,
-/**
- * Signed day result at this read; -1 stays unknown.
- */
-elapsedDays: number | null,
-/**
- * Zero-based native phase at the supplying read; names/IDs are not captured.
- */
-currentPhase: number | null, terminal: boolean,
-/**
- * Auto-commence flag tested before the operation starts.
- */
-autoCommence: boolean, startHour: number | null,
-/**
- * Non-null handles in native slot order; null means assignments unread.
- */
-operatives: Array<string> | null,
-/**
- * Names from this operation read; another daily read is never backfilled.
- */
-operativeNames: Array<EspionageOperativeName> | null, };
-export type EspionageOperativeName = { id: string, name: string | null, unavailable: string | null, };
-export type EspionageEndReason = "completed" | "disappeared";
-export type EspionageOutcome = {
-/**
- * Stored independent trials, never success/failure.
- */
-bonus: boolean, detected: boolean,
-/**
- * Language of the stored description, not the viewer's display language.
- */
-recordedLanguage: string, descriptionRef: OperationDescriptionRef | null, descriptionUnrecorded: string | null,
-/**
- * Exact native byte length, including when capture refused the text.
- */
-descriptionRequiredBytes: string, };
-export type EspionageOperationEnd = { byHour: number, lastSeen: number,
-/**
- * Exact hook date/sequence when supplied by OperationCompletions; snapshot
- * terminal reads establish only by_hour.
- */
-completionHour: number | null, completionSequence: string | null, typeKey: string | null, reason: EspionageEndReason, outcome: EspionageOutcome | null, outcomeUnrecorded: string | null, ownerTag: string | null, targetTag: string | null, };
-export type EspionageOperation = {
-/**
- * Full native handle and episode's first read. Auto-repeat creates a fresh
- * identity.
- */
-id: string, firstRead: number, startHour: number | null, startKnownAt: number | null,
-/**
- * Raw lexical identity; the name, countries and mutable values belong to reads.
- */
-definitionToken: number, runs: Array<EspionageOperationRun>, end: EspionageOperationEnd | null, };
-export type EspionageLogReply = { branchId: string, window: number | null,
-/**
- * Only the manifest lists windows; details preserve actual supplying reads.
- */
-windows: Array<HourSpan>, firstHour: number, lastHour: number, available: Array<HourSpan>, readHours: Array<number>,
-/**
- * Completion batches are independent of the daily instance census.
- */
-completionsAvailable: Array<HourSpan>, completionsUnrecorded: string | null, types: Array<EspionageOperationType>, operations: Array<EspionageOperation>, warnings: Array<string>, unavailable: string | null, };
-export type OperationDescriptionRef = {
-/**
- * Supplying daily read or completion drain hour, never an inferred event date.
- */
-hour: number, id: string, owner: number,
-/**
- * Some identifies an immutable completion event; None a visible-instance read.
- */
-sequence: string | null, };
-export type OperationDescriptionParams = { branchId: string, description: OperationDescriptionRef, offset: string, };
-export type OperationDescriptionReply = { description: OperationDescriptionRef, recordedLanguage: string, offset: string, totalBytes: string, nextOffset: string | null, bytes: Array<number>, unavailable: string | null, warnings: Array<string>, };
-export type IntelDetailsParams = { viewer: number | null, branchId: string, hour: number, country: number | null, };
-export type IntelDetailsReply = { viewer: number | null, hour: number, country: number | null, countries: Array<IntelCountry>, entries: Array<IntelDetail>, warnings: Array<string>, };
-export type IntelCountry = { id: number, tag: string, };
-export type IntelDetail = { key: string, group: string, label: string, viewer: number, target: number | null,
-/**
- * All operands of this entry are evaluated at this supplying hour.
- */
-supplyingHour: number | null, values: Array<IntelValue>, explanations: Array<IntelValue>, unavailable: string | null, };
-export type IntelValue = { name: string, value: string, };
-export type OperativePlacementParams = { branchId: string, };
-export type PlacementAvailability = "recorded" | "featureAbsent" | "tablesNotRecorded";
-export type PlacementPeriod = { firstHour: number, lastHour: number, availability: PlacementAvailability, };
-export type PlacedOperative = { id: string, name: string | null,
-/**
- * A saved/localised empty name, distinct from an unreadable name.
- */
-unnamed: boolean, };
-export type OperativePlacementRun = { firstHour: number, lastHour: number, count: number,
-/**
- * Roster/name changes split a run even when its count stays equal.
- */
-operatives: Array<PlacedOperative>, };
-export type OperativePlacementPair = {
-/**
- * Numeric country identities; independent of opaque tag spelling.
- */
-id: string, owner: string, target: string, runs: Array<OperativePlacementRun>, };
-export type OperativePlacementReply = { branchId: string, pairs: Array<OperativePlacementPair>,
-/**
- * Coverage of complete reads held within an unbroken recorded stretch.
- */
-periods: Array<PlacementPeriod>,
-/**
- * Actual membership read hours, kept separately from compressed equal values.
- */
-readHours: Array<number>, warnings: Array<string>, };
-export type OperativeRosterParams = { branchId: string, tags: Array<string>, };
-export type OperativeRosterValues = { name: string | null, unnamed: boolean, nameMissing: number | null, portrait: number | null, portraitMissing: number | null, skill: number | null, experienceRaw: string, experienceText: string | null, experienceRatio: number | null, experienceMissing: number | null, assignmentName: string | null, assignmentDuration: string | null, assignmentProgress: number | null, assignmentMissing: number | null, assignmentIcon: number | null, assignmentIconMissing: number | null,
-/**
- * Assignment4 uses the separately dated Operations observations.
- */
-assignmentOperation: boolean, targetTag: string | null, captured: boolean | null, capturerTag: string | null, capturedHour: number | null, ownerTag: string | null, };
-export type OperativeRosterRun = { firstHour: number, lastHour: number, value: OperativeRosterValues, };
-export type OperativeRosterEntry = { key: string, id: string,
-/**
- * First membership read showing this episode, not a recruitment date.
- */
-joinedHour: number,
-/**
- * First complete read establishing absence or killed status; an upper bound.
- */
-departedHour: number | null, departedReason: string | null, preparing?: Array<string>, runs: Array<OperativeRosterRun>, };
-export type OperativeRosterObservation = { firstHour: number, lastHour: number, readHour: number, };
-export type OperativeRosterCountry = { tag: string, identities: Array<CountryIdentityRun>, observed: Array<OperativeRosterObservation>, operatives: Array<OperativeRosterEntry>, };
-export type OperativeRosterReply = { branchId: string, countries: Array<OperativeRosterCountry>, operations: Array<OperativeRosterObservation>, agencyAbsent: Array<HourSpan>, artwork: Array<string>, reasons: Array<string>, warnings: Array<string>, };
-export type AgencyComparisonParams = { branchId: string,
-/**
- * Empty means all countries; tags are never restricted by human status.
- */
-tags: Array<string>, includeUncreated: boolean, top: AgencyTop | null, };
-export type AgencyRankField = "defense" | "active" | "maximum";
-export type AgencyTop = { count: number, field: AgencyRankField, };
-export type AgencyUpgradeItem = {
-/**
- * This read's array position, preserving repeated definitions and all levels
- * in the recorded upgrade list.
- */
-ordinal: number, definitionPointer: string, branchPointer: string,
-/**
- * The upgrade's branch and definition have separate lexical tokens.
- * A token alone is ambiguous.
- */
-branchToken: string | null, token: string | null,
-/**
- * Raw lexical IDs survive a missing recorded token-name dictionary.
- */
-branchTokenId: number | null, tokenId: number | null, level: number,
-/**
- * Capture authentication status; refused entries retain their raw values.
- */
-identityStatus: number, identityRefusal: string | null, name: string | null, contentReason: string | null, icon: string | null, };
-export type AgencyUpgrades = { readHour: number | null,
-/**
- * A failed or incomplete acquired-list read is distinct from absent capture.
- */
-unavailable: string | null,
-/**
- * Mathematical sum of max(0, signed level), unknown for an incomplete or
- * unauthenticated list. This inventory sum omits the maximum-count formula's
- * created gate, i32 wrapping, base and slot calculation.
- */
-nonnegativeLevelSum: string | null, items: Array<AgencyUpgradeItem>, };
-export type AgencyValue = { created: boolean,
-/**
- * Created names are literal recorded bytes, including an empty name.
- * Uncreated names use the content-localised default.
- */
-name: string | null, defenseRaw: string,
-/**
- * The full native content-localised text, retained for the tooltip.
- */
-defenseText: string | null,
-/**
- * Only LEVEL's complete formatted output.
- */
-defenseValue: string | null, activeCount: number, maximum: number, upgrades: AgencyUpgrades, };
-export type AgencyEntry = { firstHour: number, lastHour: number,
-/**
- * First supplying read; every hour in this run independently reconfirms
- * the agency scalars. The operative list retains its separate daily date.
- */
-readHour: number, value: AgencyValue, };
-export type AgencySeries = { tag: string, segments: Array<HourSpan>, membership: Array<HourSpan> | null, entries: Array<AgencyEntry>, rosters: Array<AgencyRosterRun>, };
-export type AgencyRosterRun = { firstHour: number, lastHour: number,
-/**
- * Supplying census at this run's start; an alias may start between reads.
- */
-readHour: number, count: number, };
-export type AgencyComparisonReply = { branchId: string,
-/**
- * False only when the branch contains no readable agency table at all.
- */
-available: boolean,
-/**
- * Complete country and agency tables at these hours. A missing country
- * row inside them is still missing, never a zero-valued agency.
- */
-observed: Array<HourSpan>, operativeReadHours: Array<number>, series: Array<AgencySeries>,
-/**
- * Label from the screen's AGENCY_DEFENSE_LEVEL template.
- */
-defenseLabel: string | null,
-/**
- * One recording-level reason, rather than repeating it at every agency read.
- */
-upgradesUnrecorded: string | null, warnings: Array<string>, };
 export type AircraftCatalogueParams = { scope: AircraftScope,
 /**
  * Matched without case against names, titles and what references them;
@@ -5816,21 +638,8 @@ references: Array<AircraftReference>,
  */
 refusal: AircraftRefusal | null, };
 export type AircraftRefusalCount = { kind: AircraftRefusalKind, label: string, count: number, };
-export type AirMissionsParams = { branchId: string, tag: string, firstHour?: number, lastHour?: number, view: AirMissionsView, hour?: number,
-/**
- * One strategic region for the reached-hour drill.
- */
-region?: number, };
-export type AirMissionsReply = AirMissionsHistoryReply | AirMissionsWingsReply;
-export type AirMissionsHistoryReply = { window: KeyedWindow, missions: Array<AirMissionChoice>, regions: Array<KeyedChoice>, theatres?: Array<AirOperationTheatreChoice>, warnings: Array<string>, };
-export type AirMissionsWingsReply = { hour: number, readHour: number | null, region: number, wings: Array<AirMissionsWing>, warnings: Array<string>, };
-export type AirMissionsWing = { id: string, name: string | null, type: string | null, planes: number, missions: Array<string>,
-/**
- * Raw fixed5 decimal text: 100,000 = one, not coverage or retained aircraft/count.
- */
-efficiency: string | null, refusals: Array<string>, };
-export type AirMissionsView = "history" | "wings";
-export type AirMissionChoice = { id: string, name: string, icon: SpriteFrame | null, };
+export type SpriteArtworkParams = { sprites: Array<SpriteFrame>, };
+export type SpriteArtworkReply = { items: Array<SpriteImage>, warnings: Array<string>, };
 export type SpriteFrame = {
 /**
  * The exact sprite key (doctrine mastery's `icon`, for one).
@@ -5848,80 +657,1133 @@ frame: number,
  * selection cannot draw is then the recording's of that name.
  */
 recorded?: string, };
-export type KeyedChoice = { id: string, name: string, };
-export type AirOperationTheatreChoice = { id: string, name: string, regions: Array<string>, };
-export type KeyedWindow = { firstHour: number, lastHour: number, known: Array<HourSpan>,
+export type SpriteImage = { key: string, frame: number,
 /**
- * Sent with each stretch of hours read at their own hour as one `[first, last, null]`.
+ * The asked frame's `recorded` choice, as it was asked.
  */
-reads: Array<[number, number, number | null]>, series: Array<KeyedSeries>, };
-export type KeyedSeries = { name: string, runs: Array<[number, number, string, boolean]>, };
-export type AirStatisticsParams = { branchId: string, tag: string,
+recorded?: string,
 /**
- * Pair index in recorded schema order, not the interface's button order.
+ * An artwork URL, or null with a named, counted refusal.
  */
-channel: number, firstHour?: number, lastHour?: number, };
-export type AirStatisticsReply = { window: KeyedWindow, channels: Array<AirStatisticsChannelChoice>, regions: Array<KeyedChoice>, theatres?: Array<AirOperationTheatreChoice>, warnings: Array<string>, };
-export type AirStatisticsChannelChoice = { id: string, ours: string, enemy: string, divisor: number, };
-export type RegionalWeatherParams = { branchId: string, firstHour: number | null, lastHour: number | null, regions: Array<string> | null, show: RegionalWeatherShow | null, modifier: string | null, daily: boolean | null, view: RegionalWeatherView, region?: string, hour?: number,
+icon: string | null, };
+export type ArmyMeasure = "manpower" | "divisions" | "strength" | "battalions";
+export type ArmyAttribution = "owner" | "host";
+export type ArmySizeParams = { branchId: string, tags: Array<string>, top: number | null, measure: ArmyMeasure, countFor: ArmyAttribution, byType: boolean,
 /**
- * Daily history folded into at most this many columns: the viewport's pixel columns.
+ * None is the window manifest; histories name a window by its index.
  */
-width?: number, };
-export type RegionalWeatherResponse = { "view": "history" } & RegionalWeatherReply | { "view": "provinces" } & RegionalWeatherProvincesReply;
-export type RegionalWeatherReply = { window: KeyedWindow, dayHours: number, regions: Array<RegionalWeatherChoice>, flags: Array<RegionalWeatherChoice>, modifiers: Array<RegionalWeatherChoice>, theatres?: Array<RegionalWeatherTheatre>,
+window: number | null, };
+export type ArmyType = { key: string, name: string, };
+export type ArmyRun = [number, number | null, number | null, string?];
+export type ArmyMixRun = { firstHour: number, lastHour: number, values: Array<number | null>,
 /**
- * `available` when preparation bound the recorded temperature content.
- * Missing/refused hours still have no temperature run.
+ * Decimal counts keep exact labels; values are chart geometry only.
  */
-temperature: string,
+rawValues?: Array<string | null>, };
+export type ArmyIdentityRun = { firstHour: number, lastHour: number, slot: number, countryId: number, };
+export type ArmySpan = { firstHour: number, lastHour: number, };
+export type ArmySeries = { tag: string, identities?: Array<ArmyIdentityRun>, runs: Array<ArmyRun>, segments: Array<ArmySpan>, membership: Array<ArmySpan> | null, mix?: Array<ArmyMixRun>, };
+export type ArmySizeReply = { branchId: string, windows: Array<ArmySpan>, window: number | null, interval: ArmySpan | null, available: boolean, measures: Array<ArmyMeasure>, types: Array<ArmyType>, series: Array<ArmySeries>, warnings: Array<string>, };
+export type CountryIdentityRun = { firstHour: number, lastHour: number, slot: number, countryId: number, };
+export type IdentitySpan = { firstHour: number, lastHour: number, };
+export type TagIdentities = { tag: string, identities: Array<CountryIdentityRun>, unresolved: Array<IdentitySpan>, };
+export type CountryIdentitiesReply = { branchId: string,
 /**
- * With `width`, the days folded into columns; the window then keeps no runs.
+ * By tag.
  */
-columns?: RegionalWeatherColumns, warnings: Array<string>, };
-export type RegionalWeatherProvincesReply = { hour: number, readHour: number | null, region: string, provinces: Array<RegionalWeatherProvince>, warnings: Array<string>, };
-export type RegionalWeatherProvince = { id: string, name: string | null,
+countries: Array<TagIdentities>,
 /**
- * The stored snow word, fixed5; permanent snow is not added.
+ * Hours the identity table was not available: no tag's holder is known there.
  */
-snow: string | null,
+unknown: Array<MissingSpan>, warnings: Array<string>, };
+export type CountryFactRuns = { tag: string,
 /**
- * Whether the game shows mud: the raw mud byte is nonzero (the
- * separate display mud byte never stands in).
+ * `[hour, name, colour, reason, flag]` from `hour` until the next run: the name's index in
+ * `names`, the colour as `0xRRGGBB`, the reason's index in `reasons` and the flag choice's
+ * index in `flags`, each -1 when there is none. A tag that is not a country has a run with
+ * no name, colour or flag and its reason.
  */
-mud: boolean | null,
+runs: Array<[number, number, number, number, number]>, };
+export type CountryFlagChoice = {
 /**
- * Checksum-proven reconstructed fixed5 degrees Celsius.
+ * Each atlas's key; null where no candidate gives it a file it draws.
  */
-temperature: string | null, };
-export type RegionalWeatherView = "history" | "provinces";
+keys: [string | null, string | null, string | null],
+/**
+ * Why each atlas has no key, or what was refused on the way to its key; null when nothing.
+ */
+reasons: [string | null, string | null, string | null], };
+export type CountryFactsReply = { branchId: string,
+/**
+ * The hours the runs answer, as `[first, last]` spans in order.
+ */
+known: Array<[number, number]>,
+/**
+ * Names, each once; a run holds its index.
+ */
+names: Array<string>,
+/**
+ * Why part of a style is missing, each once; a run holds its index.
+ */
+reasons: Array<string>,
+/**
+ * Flag choices, each once; a run holds its index.
+ */
+flags: Array<CountryFlagChoice>, countries: Array<CountryFactRuns>, warnings: Array<string>, };
+export type CountryStyleParams = { branchId: string, hour: number, tags: Array<string>, };
+export type CountryStyle = { tag: string,
+/**
+ * The name the game showed; null when it could not be resolved.
+ */
+name: string | null,
+/**
+ * The recorded map colour as sRGB bytes; null when not recorded this hour.
+ */
+color: [number, number, number] | null, };
+export type CountryStyleReply = { branchId: string, hour: number, styles: Array<CountryStyle>, warnings: Array<string>, };
+export type MembershipRun = { tag: string, firstHour: number, lastHour: number, };
+export type FactionNameRun = { firstHour: number, lastHour: number, name: string | null, reason: string | null, };
+export type FactionGroup = {
+/**
+ * The recorded faction id, as a decimal string.
+ */
+id: string,
+/**
+ * The faction's latest name as the game showed it; null when it cannot be resolved.
+ */
+name: string | null,
+/**
+ * Why the latest name cannot be resolved.
+ */
+nameReason: string | null,
+/**
+ * Display names dated by the Factions row that supplied their operands.
+ */
+names: Array<FactionNameRun>,
+/**
+ * The latest engine literal, copied unchanged; empty when there is none. Stable across
+ * languages and content, so settings can key a faction by it.
+ */
+recordedName: string, firstHour: number, lastHour: number, members: Array<MembershipRun>,
+/**
+ * Who led the faction (its member at order zero), as runs of consecutive recorded hours.
+ */
+leaders: Array<MembershipRun>,
+/**
+ * Hours this faction's roster named a country the links cannot resolve: its roster is not
+ * known then (other factions' rosters are).
+ */
+incomplete: Array<HourSpan>, };
+export type WarPairRun = { first: string, second: string, firstHour: number, lastHour: number, };
+export type WarStart = { hour: number, attacking: string, defending: string, };
+export type Capitulation = { hour: number, tag: string, };
+export type IdentityChange = { hour: number, from: string, to: string, };
+export type CountryIdentityHistory = { tag: string, identities: Array<CountryIdentityRun>, };
+export type HourSpan = { firstHour: number, lastHour: number, };
+export type UnobservedHours = { humans: Array<HourSpan>, factions: Array<HourSpan>, wars: Array<HourSpan>, };
+export type CountryGroupReply = { branchId: string, humans: Array<MembershipRun>, factions: Array<FactionGroup>, wars: Array<WarPairRun>,
+/**
+ * Every war start the recorded war relations name, in hour order.
+ */
+warStarts: Array<WarStart>,
+/**
+ * Every capitulation the recording saw, in hour order.
+ */
+capitulations: Array<Capitulation>,
+/**
+ * Every change of an id's tag between two consecutive recorded hours, in hour order.
+ */
+identityChanges: Array<IdentityChange>,
+/**
+ * Every tag's holders.
+ */
+countryIdentities: Array<CountryIdentityHistory>,
+/**
+ * Hours inside the timeline where each history was not observed: a run that ends or starts
+ * next to one of these is a gap, not a join or a leave.
+ */
+unobserved: UnobservedHours, warnings: Array<string>, };
+export type LandOwnersParams = Record<string, never>;
+export type LandOwners = { countries: Array<CountryMetadata>, warnings: Array<string>, };
+export type FacetFilter = { name: string, values: Array<number>, tags: Array<string>, };
+export type LogPageParams = { branchId: string, log: string, facets: Array<FacetFilter>,
+/**
+ * The timeline's first hour when none.
+ */
+from: number | null, to: number,
+/**
+ * The ordinal the page starts at, counted from the timeline's first hour.
+ */
+cursor: string | null, pageSize: number,
+/**
+ * The columns a row carries, by name; every column when none. A followed page pushes these.
+ */
+columns: Array<string> | null, };
+export type LogCell = { "kind": "number", value: string, } | { "kind": "text", value: string, } | { "kind": "list", bytes: string, } | { "kind": "missing" } | { "kind": "notRecorded" };
+export type LogPageRow = { hour: number,
+/**
+ * The row's key, as a decimal string.
+ */
+key: string,
+/**
+ * Its ordinal among the asked rows from the timeline's first hour.
+ */
+ordinal: string,
+/**
+ * The tag whose filter it matched, when a facet is filtered by tags.
+ */
+tag?: string,
+/**
+ * Its ordinal among its tag's rows from the timeline's first hour, with a tag.
+ */
+ownOrdinal?: string,
+/**
+ * By the reply's `columns`.
+ */
+cells: Array<LogCell>, };
+export type LogPageReply = { branchId: string, log: string, columns: Array<string>, firstOrdinal: string, total: string, cursor: string | null, rows: Array<LogPageRow>,
+/**
+ * Hours of the range the timeline does not hold, with why.
+ */
+missing: Array<MissingSpan>, warnings: Array<string>, };
+export type LogCountsParams = { branchId: string, log: string, facets: Array<FacetFilter>, from: number, to: number,
+/**
+ * 1 to 5, or whole six-hour buckets.
+ */
+binHours: number,
+/**
+ * The countries a row must name, each tag over the hours it counts, for a log whose rows a
+ * scope reads (the feed's); every row when none.
+ */
+scope: Array<MembershipRun> | null, };
+export type LogCountLine = { tag?: string,
+/**
+ * Its rows on the timeline before the range: a mark's ordinals count from it.
+ */
+before: string, total: string,
+/**
+ * Per bin with rows: its index from `firstHour` and its count.
+ */
+bins: Array<[number, number]>, };
+export type LogCountsReply = { branchId: string, log: string,
+/**
+ * The first hour of bin 0.
+ */
+firstHour: number, binHours: number, lines: Array<LogCountLine>, missing: Array<MissingSpan>, warnings: Array<string>, };
+export type MilitaryAirParams = { branchId: string, family: MilitaryAirFamily, regions: Array<number>, causes: Array<number>,
+/**
+ * A range starts at the events' own game hour.
+ */
+fromHour: number | null, window: number, top: MilitaryAirTop | null, };
+export type MilitaryAirFamily = "airLosses" | "bombing";
+export type MilitaryAirMetric = "dealt" | "taken" | "total";
+export type MilitaryAirTop = { count: number, metric: MilitaryAirMetric, };
+export type MilitaryAirCountry = { tag: string,
+/**
+ * Canonical slot and raw country id of the holder; tag changes do not join holders.
+ */
+identity: string, present: Array<HourSpan>,
+/**
+ * Null means no ranking filter. Empty means never in the requested top N within the window.
+ */
+membership: Array<HourSpan> | null, };
+export type MilitaryAirOpening = { identity: string | null, dealt: boolean, cause: number, opponentKnown: boolean | null, total: string, };
+export type MilitaryAirPart = { tag: string | null, identity: string | null, dealt: boolean, cause: number | null,
+/**
+ * Air losses: whether the opposite endpoint was resolved for every loss in it.
+ */
+opponentKnown: boolean | null, buildingToken: string | null, buildingId: number | null, state: number | null,
+/**
+ * Each point is `[hour, readHour, totalRaw]`: the event's game hour, the hour its drain was
+ * read and the exact total through it since the window's first hour, in read order.
+ */
+points: Array<[number, number, string]>, };
+export type MilitaryAirName = { id: string, name: string | null, missing: string | null, };
+export type MilitaryAirNote = { reason: string, events: number, };
+export type MilitaryAirReply = { family: MilitaryAirFamily, window: number, firstHour: number, lastHour: number,
+/**
+ * The hour the totals count from: the range's first, else the timeline's first observed;
+ * none while no hour through the window's last is observed.
+ */
+countedFrom: number | null, available: boolean, observed: Array<HourSpan>,
+/**
+ * Reads holding a caller whose membership in aircraft bombing is unknown.
+ */
+incomplete: Array<HourSpan>, countries: Array<MilitaryAirCountry>, openings: Array<MilitaryAirOpening>, parts: Array<MilitaryAirPart>, regions: Array<MilitaryAirName>, buildings: Array<MilitaryAirName>, notes: Array<MilitaryAirNote>, warnings: Array<string>, };
+export type PoliticsHistoryParams = { branchId: string, mode: PoliticsHistoryMode,
+/**
+ * The country, for [`PoliticsHistoryMode::Country`].
+ */
+tag?: string, };
+export type PoliticsHistoryReply = { branchId: string, mode: PoliticsHistoryMode,
+/**
+ * The branch's last hour: the history reads through it.
+ */
+lastHour: number | null, tag: string | null,
+/**
+ * The hours the mode's table was read; others are unknown.
+ */
+known: Array<HourSpan>, elections: Array<ElectionHistory>,
+/**
+ * Content tokens to their in-game names, where they resolve.
+ */
+names: { [key in string]?: string },
+/**
+ * Every holder that held the country's tag, its balances whole.
+ */
+holderBalances: Array<HolderBalances>, warnings: Array<string>, };
+export type PoliticsHistoryMode = "country" | "elections" | "memberships";
+export type PoliticsRun = { firstHour: number, lastHour: number, value: string, };
+export type HolderTag = { hour: number, tag: string, };
+export type ElectionHistory = { tags: Array<HolderTag>,
+/**
+ * "1" when the game holds elections, "0" when it does not.
+ */
+held: Array<PoliticsRun>,
+/**
+ * "1" while its schedule was read but its eligibility was not: unknown, not denied.
+ */
+refused: Array<PoliticsRun>,
+/**
+ * Signed months.
+ */
+interval: Array<PoliticsRun>,
+/**
+ * The next election's hour.
+ */
+next: Array<PoliticsRun>,
+/**
+ * The term's start: the stored last election's hour, where it is a date.
+ */
+last: Array<PoliticsRun>, };
+export type BalanceHistory = { token: string, name: string | null, left: BalanceSide | null, right: BalanceSide | null,
+/**
+ * The authored ranges in authored order; empty when content refuses.
+ */
+ranges: Array<BalanceRange>,
+/**
+ * Fixed5 values while the holder belonged to it.
+ */
+values: Array<PoliticsRun>,
+/**
+ * The record's stored position: holders sharing it at an hour share that record. Not an
+ * identity across hours.
+ */
+record: Array<PoliticsRun>,
+/**
+ * The authored range the record is in, by token, where it names one.
+ */
+range: Array<PoliticsRun>,
+/**
+ * The side the record is moving toward, by token, where it names one.
+ */
+trending: Array<PoliticsRun>, };
+export type HolderBalances = { holder: string, tags: Array<HolderTag>, balances: Array<BalanceHistory>,
+/**
+ * The balance the game shows the holder, by token.
+ */
+shown: Array<PoliticsRun>, };
+export type CivilWarsParams = { branchId: string, };
+export type CivilWarsReply = { branchId: string,
+/**
+ * The branch's last hour: the reply reads through it.
+ */
+lastHour: number | null,
+/**
+ * The hours the civil-war lists were read; others are unknown.
+ */
+known: Array<HourSpan>, wars: Array<CivilWar>, warnings: Array<string>, };
+export type SideExitKind = "annexedBySide" | "annexedBySideOtherwise" | "annexedByOther";
+export type SideExit = { kind: SideExitKind, hour: number, readHour: number,
+/**
+ * The annexer's tag at the annexation.
+ */
+by: string | null, };
+export type CivilWarSide = {
+/**
+ * The holder's tags from each hour it held them.
+ */
+tags: Array<HolderTag>, firstHour: number, lastHour: number,
+/**
+ * The side it broke from, by index.
+ */
+parent: number | null,
+/**
+ * Whether the holder held a tag before the outbreak.
+ */
+existedBefore: boolean, exit: SideExit | null, };
+export type CivilWarOutcome = { winner: number, hour: number, readHour: number, };
+export type CivilWar = { id: string, firstHour: number, lastHour: number,
+/**
+ * The hours the game's civil-war predicate held for a side, within the listings: the war is
+ * ongoing while it holds.
+ */
+atWar: Array<HourSpan>, sides: Array<CivilWarSide>, outcome: CivilWarOutcome | null, };
+export type FactionLinesParams = { branchId: string, kind: string, measure: string, from: number, to: number, width: number,
+/**
+ * Whose membership a faction sums: `hour` (each member over its own membership; the default), `end` (the
+ * members at the view's last hour, over the whole view) or `ever` (anyone a member within the view, over the
+ * whole view).
+ */
+membership: string | null,
+/**
+ * A group's members summed as one line, `group`, instead of the factions: each by tag over its spans (the
+ * whole view where none), the hours their membership was not read in `unread`.
+ */
+members: Array<GroupMember> | null, unread: Array<[number, number]> | null, };
+export type GroupMember = { tag: string, spans: Array<[number, number]> | null, };
+export type FactionLine = { id: string,
+/**
+ * Its bins: first and last the sums of its members' first and last values; least and greatest the sums of
+ * theirs, so bounds of the faction's own wherever `bounds` says so.
+ */
+summary: ChartSummary, missing: Array<MissingSpan>, };
+export type FactionLinesReply = { branchId: string, measure: string, decimals: number,
+/**
+ * A bin holds more than one hour: its least and greatest are bounds, not the sum's own extremes.
+ */
+bounds: boolean, lines: Array<FactionLine>, warnings: Array<string>, };
+export type ThreatEventsParams = { branchId: string, };
+export type ThreatAdded = { hour: number,
+/**
+ * In contribution units (100,000 a percentage point of tension).
+ */
+addedRaw: string, };
+export type ThreatEvent = {
+/**
+ * The hour the game created it.
+ */
+hour: number,
+/**
+ * The country that caused it, or the tag that last held its slot; null when none is known.
+ */
+tag: string | null, remembered: boolean, reason: string, added: Array<ThreatAdded>, firstRead: number, lastRead: number,
+/**
+ * It is still listed at the timeline's end.
+ */
+open: boolean, };
+export type ThreatEventsReply = { branchId: string,
+/**
+ * By creation hour, then first read.
+ */
+events: Array<ThreatEvent>,
+/**
+ * Hours of the timeline it does not hold, with why.
+ */
+missing: Array<MissingSpan>, warnings: Array<string>, };
+export type FactoryGroupsParams = { branchId: string, };
+export type FactoryGroupBuilding = {
+/**
+ * The content's building type.
+ */
+token: string,
+/**
+ * Its name in the reader's language; null when the content has none.
+ */
+name: string | null, };
+export type FactoryGroupNames = {
+/**
+ * `military`, `naval` or `civilian`, as the factory widgets name the group.
+ */
+key: string,
+/**
+ * The production flag that counts a building type in it.
+ */
+flag: string,
+/**
+ * The building types counted in it, in the content's declaration order.
+ */
+buildings: Array<FactoryGroupBuilding>, };
+export type FactoryGroupsReply = { groups: Array<FactoryGroupNames>,
+/**
+ * Why no group can be named: the content is not configured or cannot be read.
+ */
+missing: string | null, warnings: Array<string>, };
+export type AirForceParams = { branchId: string, tags: Array<string>, top: number | null, measure: AirForceMeasure, ownership: AirForceOwnership,
+/**
+ * None is the window manifest; a window's runs name it by its index.
+ */
+window?: number, };
+export type ForceSizeReply = { branchId: string, windows: Array<ArmySpan>, window: number | null, interval: ArmySpan | null, parts: Array<ForcePart>, series: Array<ForceSeries>, warnings: Array<string>, };
+export type AirForceMeasure = "planes" | "wings";
+export type AirForceOwnership = "roster" | "effective";
+export type ForcePart = { key: string, name: string | null, unresolved: boolean, };
+export type ForceRun = { firstHour: number, lastHour: number, startsSegment: boolean,
+/**
+ * Null where the total is not recorded.
+ */
+total: number | null,
+/**
+ * Parallel to the reply's parts; every one null where the hour's rows do not split the total.
+ */
+values: Array<number | null>,
+/**
+ * The navy's maximum hull HP (fixed5) for the strength measure, null for ships or where not
+ * recorded; absent for the air force.
+ */
+referenceTotal?: number | null, };
+export type ForceSeries = { tag: string, identities: Array<ArmyIdentityRun>, runs: Array<ForceRun>, segments: Array<ArmySpan>, membership: Array<ArmySpan> | null, };
+export type NavyParams = { branchId: string, tags: Array<string>, top: number | null, ownership: NavyOwnership, grouping: NavyGrouping, measure: NavyMeasure, window?: number, };
+export type NavyMeasure = "ships" | "strength";
+export type NavyOwnership = "roster" | "logical";
+export type NavyGrouping = "class" | "type";
+export type VolunteersExpeditionariesParams = { branchId: string, kind: MilitaryAidKind,
+/**
+ * Links touching these tags only; none for every link.
+ */
+tags: Array<string> | null, };
+export type VolunteersExpeditionariesReply = { links: Array<MilitaryAidLink>,
+/**
+ * The game's own tally of each sender's volunteer hosts (kind `land` only).
+ */
+tallies: Array<MilitaryAidLink>,
+/**
+ * Hours whose aid is not known for every sender: the timeline holds none, or a list's sender
+ * resolves through no link.
+ */
+unobserved: Array<HourSpan>, warnings: Array<string>, };
+export type MilitaryAidKind = "land" | "expeditionary";
+export type MilitaryAidRun = { firstHour: number, lastHour: number,
+/**
+ * Null where not known; never zero for that.
+ */
+divisions: number | null, startsSegment: boolean, };
+export type MilitaryAidLink = { key: string, sender: string, senderSlot: number | null, senderCountryId: number | null, host: string, hostSlot: number | null, hostCountryId: number | null, runs: Array<MilitaryAidRun>, };
+export type BranchParams = { branchId: string, };
+export type SubjectLevel = {
+/**
+ * The autonomy state's id, as recorded.
+ */
+token: string,
+/**
+ * The game's name for it; null when the localisation has none or is not read.
+ */
+name: string | null,
+/**
+ * Whether the content defines the state and orders it (by its `min_freedom_level`); a level
+ * it does not is listed after those it does.
+ */
+ordered: boolean, };
+export type LevelStep = { firstHour: number, lastHour: number, level: string | null, };
+export type SubjectRun = { overlord: string, subject: string,
+/**
+ * The hour the relation began, as the engine dates it (may be before the timeline).
+ */
+startHour: number, firstHour: number, lastHour: number,
+/**
+ * The subject's level through the run, in hour order, covering every hour of it.
+ */
+steps: Array<LevelStep>, };
+export type SubjectReply = { branchId: string,
+/**
+ * Every level the runs name, least free first in the content's order.
+ */
+levels: Array<SubjectLevel>,
+/**
+ * Every run, by first hour, then overlord, subject and start hour.
+ */
+runs: Array<SubjectRun>,
+/**
+ * Hours inside the timeline whose relations were not observed: a run that ends or starts
+ * next to one of these is a gap, not an end or a start.
+ */
+unobserved: Array<HourSpan>, warnings: Array<string>, };
+export type DiplomaticPactsParams = { branchId: string, tag: string, };
+export type DiplomacyKind = {
+/**
+ * The relation's id as the game spells it.
+ */
+kind: string, count: number,
+/**
+ * Its name as the game shows it; null when not read, with why.
+ */
+name: string | null, reason: string | null, };
+export type DiplomacyPact = { kind: string,
+/**
+ * Its endpoints as the game orders them; null where no tag names the country then.
+ */
+first: string | null, second: string | null,
+/**
+ * The hours the relation began and ends as the game dates them; null where not written.
+ */
+startHour: number | null, endHour: number | null,
+/**
+ * The first and last hour the chosen country's row held it.
+ */
+firstSeen: number, lastSeen: number,
+/**
+ * The hour its row was gone: a read of the chosen country no longer listed it.
+ */
+goneBy: number | null,
+/**
+ * Held at the timeline's last hour.
+ */
+presentAtEnd: boolean,
+/**
+ * Its row's hours ended at a gap in the recording: whether it ended then is not known.
+ */
+endedBy: boolean, };
+export type DiplomacyPactsReply = { kinds: Array<DiplomacyKind>, pacts: Array<DiplomacyPact>, unobserved: Array<HourSpan>, warnings: Array<string>, };
+export type OperativesDepartedParams = { branchId: string, tags: Array<string>, hour: number, };
+export type DepartedOperative = {
+/**
+ * The first and last hour the census held it on the list.
+ */
+firstHour: number, lastHour: number,
+/**
+ * The first read showing it gone or disbanded or killed: an upper bound of when it left.
+ */
+departedHour: number, departedReason: string,
+/**
+ * The full handle, as a decimal string.
+ */
+id: string,
+/**
+ * The asked country whose agency holds it.
+ */
+roster: string,
+/**
+ * The country it works for.
+ */
+owner: Country, name: string | null,
+/**
+ * The game saved its name empty.
+ */
+unnamed: boolean, nameMissing: string | null,
+/**
+ * Its portrait, an index into the reply's `artwork`.
+ */
+portrait: number | null, portraitMissing: string | null, skill: number | null,
+/**
+ * Fixed5, as recorded.
+ */
+experienceRaw: string,
+/**
+ * The game's skill line and its progress to the next level (1 a whole level, never clamped).
+ */
+experienceText: string | null, experienceRatio: number | null, experienceMissing: string | null,
+/**
+ * As the game numbers it: 0 captured, 1 cooling down, 3 on a mission, 4 in an operation.
+ */
+assignment: number, assignmentName: string | null,
+/**
+ * A captivity's or cooldown's remaining days, and its progress (never clamped).
+ */
+assignmentDuration: string | null, assignmentProgress: number | null, assignmentMissing: string | null,
+/**
+ * The assignment's icon, an index into the reply's `artwork`.
+ */
+assignmentIcon: number | null, assignmentIconMissing: string | null,
+/**
+ * Where it works, when the census records a target.
+ */
+target: Country | null, captured: boolean,
+/**
+ * Who holds it captive, and since when, while captured.
+ */
+capturer: Country | null, capturedHour: number | null, };
+export type OperativesDepartedReply = {
+/**
+ * Operatives the asked lists held in the hour's stretch that left them by the hour, newest
+ * first.
+ */
+departed: Array<DepartedOperative>,
+/**
+ * Artwork URLs the rows name by index.
+ */
+artwork: Array<string>, warnings: Array<string>, };
+export type Tenure = {
+/**
+ * The full handle, as a decimal string.
+ */
+id: string, roster: string,
+/**
+ * The first and last hour the census held it on the list within the stretch.
+ */
+firstHour: number, lastHour: number, };
+export type OperativeTenuresReply = {
+/**
+ * The stretch of continuous history holding the hour asked: what the tenures cover.
+ */
+firstHour: number, lastHour: number,
+/**
+ * Every membership of the asked active lists the stretch held, by roster then handle.
+ */
+tenures: Array<Tenure>, warnings: Array<string>, };
+export type EspionageLogParams = { branchId: string, facets: Array<FacetFilter>, from: number | null, to: number, cursor: string | null, pageSize: number, };
+export type EspionageOperationParams = { branchId: string,
+/**
+ * The full handle, as a decimal string.
+ */
+id: string,
+/**
+ * The hour asked: the operation is read there, or at its last hour before it.
+ */
+hour: number, };
+export type OperativeName = { id: string, name: string | null, unavailable: string | null, };
+export type EspionageOperationReply = { id: string,
+/**
+ * The first and last hours the census held it in the stretch of the hour asked.
+ */
+firstSeen: number, lastSeen: number,
+/**
+ * The hour it was read at.
+ */
+readHour: number, state: OperationState,
+/**
+ * None where its slots or the census of operatives were not read.
+ */
+operatives: Array<OperativeName> | null, warnings: Array<string>, };
+export type EspionageEndedParams = { branchId: string,
+/**
+ * The span's first hour; the timeline's when none.
+ */
+from: number | null, to: number, };
+export type EndedOperation = { id: string, owner: Country, target: Country, operation: string | null, firstSeen: number, lastSeen: number,
+/**
+ * The first read that no longer held it.
+ */
+byHour: number,
+/**
+ * Whether completions were recorded every hour of its life: where not, a completion may have
+ * gone unseen and its end is not known to be a cancellation.
+ */
+completionsRecorded: boolean,
+/**
+ * As last read.
+ */
+state: OperationState, };
+export type EspionageEndedReply = { operations: Array<EndedOperation>, warnings: Array<string>, };
+export type EspionageTypesParams = { branchId: string, };
+export type OperationType = {
+/**
+ * The definition's token, as the content names it.
+ */
+key: string, name: string | null,
+/**
+ * The definition's icon, drawn.
+ */
+icon: string | null,
+/**
+ * Why the name or the icon is not shown.
+ */
+missing: string | null, };
+export type EspionageTypesReply = {
+/**
+ * By key.
+ */
+types: Array<OperationType>,
+/**
+ * Why there are none: the content is not configured or not read.
+ */
+missing: string | null, warnings: Array<string>, };
+export type IntelDetailsParams = { viewer: number | null, branchId: string, hour: number, country: number | null, };
+export type IntelDetailsReply = { viewer: number | null, hour: number, country: number | null, countries: Array<IntelCountry>, entries: Array<IntelDetail>, warnings: Array<string>, };
+export type IntelCountry = { id: number, tag: string, };
+export type IntelDetail = { key: string, group: string, label: string, viewer: number, target: number | null,
+/**
+ * All operands of this entry are evaluated at this supplying hour.
+ */
+supplyingHour: number | null, values: Array<IntelValue>, explanations: Array<IntelValue>, unavailable: string | null, };
+export type IntelValue = { name: string, value: string, };
+export type RaidLogParams = { branchId: string,
+/**
+ * The timeline's first and last hour when none.
+ */
+from: number | null, to: number | null,
+/**
+ * Raids by or against these countries; every raid when empty.
+ */
+tags: Array<string>,
+/**
+ * Only the raid types and whether raids are available: no raid is read.
+ */
+catalogue: boolean, };
+export type RaidTypeInfo = { token: string, name: string | null, missing: string | null, };
+export type RaidArtwork = { key: string, image: string | null, missing: string | null, };
+export type RaidPhaseRun = { firstHour: number, lastHour: number, phase: number, phaseName: string | null, outcome: number, outcomeName: string | null, };
+export type RaidPreparationRun = [number, number, number, number];
+export type RaidEpisode = {
+/**
+ * The raid's row key, as a decimal string.
+ */
+id: string,
+/**
+ * The first and last hour its row lived within the span.
+ */
+firstHour: number, lastHour: number, raider: string | null, victim: string | null,
+/**
+ * Why the victim is not named, when it is not.
+ */
+victimMissing: string | null,
+/**
+ * The raid type's token and its name in the reader's language.
+ */
+raidType: string | null, raidTypeName: string | null,
+/**
+ * The sprite key into the reply's artwork, or why there is none.
+ */
+icon: string | null, iconMissing: string | null, province: number | null, state: number | null,
+/**
+ * Its last phase and outcome.
+ */
+phase: number | null, phaseName: string | null, outcome: number | null, outcomeName: string | null,
+/**
+ * Its phases over the span, in hour order.
+ */
+runs: Array<RaidPhaseRun>, preparation: Array<RaidPreparationRun>, launchedHour: number | null, launched: boolean, endedHour: number | null, succeeded: boolean, };
+export type RaidLogReply = {
+/**
+ * False only when the content proves no raid type exists; true once a raid was recorded; none
+ * when neither is known.
+ */
+available: boolean | null, unavailable: string | null,
+/**
+ * The game's phase and outcome numbers a reader compares with.
+ */
+phasePreparing: number, phaseEnded: number, outcomeNone: number,
+/**
+ * Every raid type the content declares, then each it holds undecided with why.
+ */
+types: Array<RaidTypeInfo>,
+/**
+ * Each icon the episodes name, once.
+ */
+artwork: Array<RaidArtwork>,
+/**
+ * By first hour.
+ */
+episodes: Array<RaidEpisode>, missing: Array<MissingSpan>, warnings: Array<string>, };
+export type ResourceSizesParams = { branchId: string, tag: string,
+/**
+ * The span; the whole timeline when absent.
+ */
+from?: number, to?: number, };
+export type ResourceSizesReply = { tag: string, sizes: Array<ResourceSize>,
+/**
+ * The span's hours no holder of the tag, or no row, is known, with why.
+ */
+missing: Array<MissingSpan>, warnings: Array<string>, };
+export type ResourceSize = {
+/**
+ * The resource's native index.
+ */
+id: number,
+/**
+ * Its longest bar, fixed5; null where no hour of it is recorded.
+ */
+longestRaw: string | null, };
+export type LendLeasePartnersParams = { branchId: string, holder: string, measure: LendLeaseMeasure,
+/**
+ * The hours read; the whole timeline when absent.
+ */
+from?: number, to?: number, };
+export type LendLeasePartnersReply = { holder: string, scale: number, firstHour: number, lastHour: number,
+/**
+ * Hours the histories were read while the tag had a holder: outside them nothing is known.
+ */
+known: Array<HourSpan>,
+/**
+ * The holder's own two totals of the measure over its partners, from its first partner on.
+ */
+totals: Array<Array<[number, number, string]>>, partners: Array<LendLeasePartner>, warnings: Array<string>, };
+export type LendLeaseMeasure = "industry" | "fuel";
+export type LendLeasePartner = { slot: number, tags: Array<LendLeaseTag>, values: Array<Array<[number, number, string]>>, };
+export type LendLeaseTag = { firstHour: number, lastHour: number, tag: string | null, };
+export type LineKind = "military" | "naval" | "shipRefit" | "railwayGun";
+export type OutputPart = { variant: string,
+/**
+ * The organisation's reference; "0" for none.
+ */
+mio: string,
+/**
+ * Units delivered since `sinceHour`, as a decimal string.
+ */
+units: string,
+/**
+ * False when a tick could not be counted: `units` then leave it out.
+ */
+exact: boolean, };
+export type OutputRun = { firstHour: number, lastHour: number,
+/**
+ * Its parts by row ordinal; the total is their sum, exact only when every part is.
+ */
+parts: Array<OutputPart>,
+/**
+ * The hour the branch's observation of the line began.
+ */
+sinceHour: number,
+/**
+ * The line was first seen after the branch's first complete census: the units are its whole life's.
+ */
+wholeLife: boolean, };
+export type VariantName = { id: string,
+/**
+ * The hour its names were read; absent in a reply at an hour, whose hour it is.
+ */
+hour?: number,
+/**
+ * False where the variant had no definition row at that hour; the other fields are then empty.
+ */
+known: boolean,
+/**
+ * The equipment type's script key.
+ */
+token: string, name: string | null, typeName: string | null,
+/**
+ * Why the names are unknown, when they are.
+ */
+nameUnknown: string | null,
+/**
+ * The icon's key in `icons`; null when it shows none or it is unknown.
+ */
+icon: string | null, iconUnknown: string | null, };
+export type OrganisationName = { id: string,
+/**
+ * The hour its names were read; absent in a reply at an hour, whose hour it is.
+ */
+hour?: number,
+/**
+ * The script key; empty where its row was not read.
+ */
+token: string, name: string | null, nameUnknown: string | null, icon: string | null, iconUnknown: string | null, };
+export type EquipmentIcon = { key: string,
+/**
+ * An artwork URL.
+ */
+image: string, };
+export type LineStep = { firstHour: number, lastHour: number,
+/**
+ * It follows hours the line was not recorded as the country's.
+ */
+startsSegment: boolean, variant: string, activeFactories: number, requestedFactories: number, };
+export type LineHistory = {
+/**
+ * Unique in the branch: the handle and which appearance of it this is.
+ */
+key: string, handle: string,
+/**
+ * Its native class; null where not recorded.
+ */
+kind: LineKind | null, steps: Array<LineStep>,
+/**
+ * The output published when it ended, counting every unit it made in the branch.
+ */
+finalOutput: OutputRun | null,
+/**
+ * The first hour it was gone while its country was still recorded: it ended before.
+ */
+endedBy: number | null,
+/**
+ * It ran at the first recorded hour of its country: it began before recording.
+ */
+beforeRecording: boolean, };
+export type ProductionLinesParams = { branchId: string, tag: string, };
+export type ProductionLinesReply = { branchId: string, tag: string, decimals: number,
+/**
+ * Every line of the country in the branch, in the order first seen.
+ */
+lines: Array<LineHistory>,
+/**
+ * Each variant a line made, named at one hour it was made.
+ */
+variants: Array<VariantName>,
+/**
+ * Each organisation a line was assigned to, named at one hour it was.
+ */
+organisations: Array<OrganisationName>, icons: Array<EquipmentIcon>,
+/**
+ * Hours a holder of the tag was recorded, ascending: outside them its lines are not known,
+ * which is not none.
+ */
+lineHours: Array<HourSpan>,
+/**
+ * The hours one `production-line-detail` window covers.
+ */
+detailHours: number, warnings: Array<string>, };
+export type LineRun = { firstHour: number, lastHour: number, startsSegment: boolean, variant: string,
+/**
+ * The organisation's reference; "0" for none.
+ */
+mio: string, activeFactories: number, requestedFactories: number,
+/**
+ * The most factories the line takes (the efficiency average's clamp).
+ */
+maxFactories: number,
+/**
+ * IC per unit, fixed5.
+ */
+costRaw: string,
+/**
+ * IC added at each production tick, fixed5.
+ */
+speedRaw: string,
+/**
+ * Units per week, fixed5; null without a positive cost.
+ */
+weeklyRaw: string | null,
+/**
+ * Efficiency, Q15: 100% is 3276800.
+ */
+efficiencyRaw: string, priority: number,
+/**
+ * Units still ordered; −1 for no limit.
+ */
+amount: number, };
+export type LineDetail = {
+/**
+ * The line's key in `production-lines`.
+ */
+key: string, runs: Array<LineRun>,
+/**
+ * Its output rows over the window, where recorded.
+ */
+output: Array<OutputRun>, };
+export type ProductionDetailParams = { branchId: string, tag: string, window: number, };
+export type ProductionLineDetailReply = { branchId: string, tag: string, decimals: number, window: number,
+/**
+ * The window's hours, both included.
+ */
+firstHour: number, lastHour: number,
+/**
+ * Every line with an hour in the window, in the order first seen.
+ */
+lines: Array<LineDetail>, warnings: Array<string>, };
+export type ProductionBreakdownParams = { branchId: string, tag: string,
+/**
+ * The line's key in `production-lines`.
+ */
+key: string,
+/**
+ * The factor shown in full; the others carry only their totals.
+ */
+group: string, hour: number, };
+export type ProductionLineBreakdownReply = { branchId: string, tag: string, key: string,
+/**
+ * The window's hours, both included.
+ */
+firstHour: number, lastHour: number, groups: Array<ProductionModifierChoice>,
+/**
+ * The factors over the window's hours the line was read, cut where they change.
+ */
+runs: Array<ProductionModifierRun>, warnings: Array<string>, };
+export type ProductionModifierPart = { id: string, label: string | null, raw: string, unknown: string | null, };
+export type ProductionModifierGroup = { id: string, label: string,
+/**
+ * Exact sum of the displayed signed parts; null when an operand failed.
+ */
+totalRaw: string | null, decimals: number, unit: string, parts: Array<ProductionModifierPart>, note: string, };
+export type ProductionModifierRun = { firstHour: number, lastHour: number, groups: Array<ProductionModifierGroup>, warnings: Array<string>, };
+export type ProductionModifierChoice = { id: string, label: string, };
+export type EquipmentDesignsParams = { branchId: string, tag: string, };
+export type EquipmentDesignsReply = { branchId: string, tag: string, designs: Array<DesignHistory>,
+/**
+ * Hours a holder of the tag was recorded: outside them its designs are not known.
+ */
+known: Array<HourSpan>, icons: Array<EquipmentIcon>, warnings: Array<string>, };
+export type DesignHistory = { id: string,
+/**
+ * Hours it was the country's saved design, ascending.
+ */
+lives: Array<HourSpan>,
+/**
+ * Hours of `lives` it was flagged obsolete.
+ */
+obsolete: Array<HourSpan>,
+/**
+ * Its names and picture, read at one hour it was the country's.
+ */
+name: VariantName, };
+export type PlaceNamesParams = { branchId: string,
+/**
+ * Land's ladder: a province in no state stays unnamed rather than taking its region's name.
+ */
+land: boolean, places: Array<PlaceNameRequest>, states: Array<StateNameRequest>, };
+export type PlaceNameRequest = { provinceId: number, hour: number, };
+export type StateNameRequest = { stateId: number, hour: number, };
+export type PlaceName = { provinceId: number, hour: number, name: string | null, missing: string | null, };
+export type PlaceStateName = { stateId: number, hour: number, name: string | null, missing: string | null, };
+export type PlaceNamesReply = { places: Array<PlaceName>, states: Array<PlaceStateName>, warnings: Array<string>, };
+export type MinefieldHistoryParams = { branchId: string, region: number, tags: Array<string>, firstHour: number, lastHour: number, };
+export type MineLine = { tag: string, runs: Array<[number, number, string | null]>, };
+export type MinefieldHistoryReply = { region: number, lines: Array<MineLine>, scale: number, warnings: Array<string>, };
+export type NavalSupremacyParams = { branchId: string, tag: string,
+/**
+ * The window of days asked ([`super::windows`]).
+ */
+window: number, };
+export type SupremacyRun = { firstDay: number, lastDay: number, control: number | null, friendly: string | null, enemy: string | null, share: string | null, own: string | null, };
+export type SupremacyRegion = { id: string, name: string, runs: Array<SupremacyRun>, };
+export type UnknownDays = { firstDay: number, lastDay: number, reason: string, };
+export type SeaRegionChoice = { id: string, name: string, };
+export type NavalSupremacyReply = { firstHour: number, lastHour: number,
+/**
+ * Day 0 starts at this hour (a multiple of `dayHours`); day `n` covers the `n`th day after.
+ */
+firstDayHour: number, dayHours: number, days: number, unknown: Array<UnknownDays>, regions: Array<SupremacyRegion>, scale: number, warnings: Array<string>, };
+export type LeaderPortraitsParams = { branchId: string, hour: number, references: Array<string>, edge: number, };
+export type LeaderPortrait = { reference: string, image: string | null, missing: string | null, };
+export type LeaderPortraitsReply = { portraits: Array<LeaderPortrait>, warnings: Array<string>, };
+export type LeaderCareerParams = { branchId: string, reference: string, };
+export type CareerRun = { firstHour: number, lastHour: number, role: LeaderRole, skill: number | null, components: [number, number, number, number], };
+export type CareerBattle = { start: number, read: number, unknown: boolean, kind: number, won: boolean | null, resultHour: number | null, resultRead: number | null, };
+export type CommandKind = "army" | "armyGroup" | "fleet";
+export type LeaderCommand = { firstHour: number, lastHour: number, formation: string, kind: CommandKind,
+/**
+ * The formation's stored name at its first hour; none where it was not recorded.
+ */
+name: string | null, };
+export type LeaderCareerReply = { reference: string, name: string | null,
+/**
+ * The hour the name and portrait are read at: the leader's last on the timeline.
+ */
+portraitHour: number | null, runs: Array<CareerRun>,
+/**
+ * [hour, place in `traits`, class]: 0 held before, 1 gained, 2 first observed.
+ */
+traitGains: Array<[number, number, number]>, traits: Array<LeaderTrait>, commands: Array<LeaderCommand>, battles: Array<CareerBattle>,
+/**
+ * The timeline's recorded stretches: a battle lane is drawn only over them.
+ */
+observed: Array<[number, number]>, battlesPartialFrom: number | null, resultsMissing: string, missing: string | null, warnings: Array<string>, };
+export type LeaderChoicesParams = { branchId: string, selection: LeaderSelection, };
+export type LeaderChoicesReply = { choices: Array<[string, string | null, string | null, number]>, warnings: Array<string>, };
+export type RegionalWeatherParams = { branchId: string, firstHour: number, lastHour: number,
+/**
+ * The most columns the days fold into: the view's pixel columns.
+ */
+width: number, show: RegionalWeatherShow,
+/**
+ * The modifier shown; the first recorded one without.
+ */
+modifier: string | null,
+/**
+ * Decimal region ids; every region without.
+ */
+regions: Array<string> | null, };
+export type RegionalWeatherReply = { firstHour: number, lastHour: number, dayHours: number, regions: Array<RegionalWeatherChoice>, flags: Array<RegionalWeatherChoice>, modifiers: Array<RegionalWeatherChoice>,
+/**
+ * `available`, or why no temperature is shown.
+ */
+temperature: string, columns: RegionalWeatherColumns, warnings: Array<string>, };
 export type RegionalWeatherShow = "conditions" | "modifier" | "temperature";
 export type RegionalWeatherChoice = { id: string, name: string, };
-export type RegionalWeatherTheatre = { id: string, name: string,
-/**
- * Decimal strategic-region ids, as in the region choices.
- */
-regions: Array<string>, };
 export type RegionalWeatherColumns = {
 /**
  * Days per column, counted from the window's first day.
  */
-days: number, columns: Array<RegionalWeatherColumn>,
-/**
- * Each region with a sampled measure in the window.
- */
-regions: Array<RegionalWeatherColumnRegion>, };
+days: number, columns: Array<RegionalWeatherColumn>, regions: Array<RegionalWeatherColumnRegion>, };
 export type RegionalWeatherColumn = { firstHour: number, lastHour: number,
 /**
- * The latest recorded hour its days were sampled at; none without one.
+ * The latest hour its days were sampled at; none without one.
  */
 sampledHour: number | null,
 /**
- * The latest supplying read of a sampled day, where one is recorded.
+ * The latest read of WeatherRegions at or before a sampled day's hour.
  */
 readHour: number | null,
 /**
- * Its recorded days.
+ * Its sampled days.
  */
 recorded: number, };
 export type RegionalWeatherColumnRegion = { id: string,
@@ -5934,91 +1796,4095 @@ observed?: Array<number>,
  */
 clear?: Array<number>,
 /**
- * A flag set on no recorded day, or a value on none, is left out.
+ * A flag set on no sampled day, or a value on none, is left out.
  */
 measures: Array<RegionalWeatherColumnMeasure>, };
 export type RegionalWeatherColumnMeasure = {
 /**
- * `<flag>`, `mod:<modifier>` or `temp`, as in the window's series names.
+ * `<flag>`, `mod:<modifier>` or `temp`.
  */
 id: string,
 /**
- * Recorded days with the flag set, or with a value, per column.
+ * Sampled days with the flag set, or with a value, per column.
  */
 days: Array<number>,
 /**
- * Values: each column's lowest raw value, the exact sum of its days' raw
- * values and its highest, as decimal text; none without a value.
+ * Values: each column's lowest raw value, the exact sum of its days' and its highest, as
+ * decimal text; none without a value.
  */
 values?: Array<[string, string, string] | null>, };
-export type MinefieldsParams = { branchId: string, tags?: Array<string>, firstHour?: number, lastHour?: number, view: MinefieldsView, region?: number, hour?: number, };
-export type MinefieldsReply = MinefieldsHistoryReply | MinefieldsReportsReply;
-export type MinefieldsView = "history" | "reports";
-export type MinefieldsHistoryReply = { window: KeyedWindow, regions: Array<KeyedChoice>, scale: number, warnings: Array<string>, };
-export type MinefieldsReportsReply = { hour: number, readHour: number | null, region: number, reports: Array<MinefieldReport>, warnings: Array<string>, };
-export type MinefieldReport = { kind: number, ordinal: number, victim: string | null, mineOwner: string | null, ship: string | null, equipment: string | null, damage: string, sunk: boolean, firstSeen: number | null, };
-export type NavalSupremacyParams = { branchId: string, tag: string, firstHour?: number, lastHour?: number, daily: boolean, };
-export type NavalSupremacyReply = { window: KeyedWindow, dayHours: number, regions: Array<KeyedChoice>, scale: number, warnings: Array<string>, };
-export type DoctrineMasteryParams = { branchId: string, tag: string, firstHour: number | null, lastHour: number | null,
+export type FocusHourParams = { branchId: string, tag: string, hour: number, };
+export type FocusHourReply = { focus: FocusHour | null, missing: FocusMissing | null, warnings: Array<string>, };
+export type FocusHour = { slot: number, countryId: number, hour: number, lastHour: number, orderFirstHour: number | null, current: string | null, continuous: string | null, paused: boolean, completed: FocusPages, at: number, progressRaw: string, dailyGainRaw: string | null, };
+export type FocusPages = {
 /**
- * Selected transient description scope. Omit for prepared history; numbers
- * retain the same window and names in either request.
+ * The order's place among the country's orders.
  */
-hour: number | null, };
-export type DoctrineMasteryReply = { window: KeyedWindow, folders: Array<DoctrineMasteryFolder>, tokens: { [key in string]?: string }, warnings: Array<string>, };
-export type DoctrineMasteryFolder = { id: string, name: string | null, icon: string | null, grand: Array<DoctrineMasteryGrand>, tracks: Array<DoctrineMasteryTrack>, };
-export type DoctrineMasteryGrand = { id: string,
+first: string, count: string, rows: string, };
+export type FocusOrderPageParams = { branchId: string, tag: string, hour: number,
 /**
- * Recorded interned identity; absent for unwitnessed authored alternatives.
+ * The pages `focus-hour` gave for the hour.
  */
-tokenId: string | null, name: string | null, icon: string | null, };
-export type DoctrineMasteryTrack = { id: string, name: string | null, subdoctrines: Array<DoctrineMasterySubdoctrine>, };
-export type DoctrineMasterySubdoctrine = { id: string,
+pages: FocusPages, page: string, };
+export type FocusOrderPage = { entries: Array<FocusEntry> | null, warnings: Array<string>, };
+export type FocusCompletions = { completions: Array<FocusEntry>, warnings: Array<string>, };
+export type IdeaHistoryReply = { branchId: string, tag: string, spans: Array<IdeaSpan>, ideas: Array<IdeaInfo>, artwork: Array<Artwork>,
 /**
- * Recorded interned identity; absent for unwitnessed authored alternatives.
+ * Each recorded holder of an advisor idea with that character's own name and portrait.
  */
-tokenId: string | null, name: string | null, icon: string | null, rewards: Array<DoctrineMasteryReward> | null, };
-export type DoctrineMasteryReward = { id: string, name: string | null, description: string | null, threshold: string | null, };
-export type SpriteArtworkParams = { sprites: Array<SpriteFrame>, };
-export type SpriteArtworkReply = { items: Array<SpriteImage>, warnings: Array<string>, };
-export type SpriteImage = { key: string, frame: number,
+holders: Array<HolderArtwork>,
 /**
- * The asked frame's `recorded` choice, as it was asked.
+ * Every category in content order, so widgets list mod categories too.
  */
-recorded?: string,
+categories: Array<CategoryInfo>,
 /**
- * An artwork URL, or null with a named, counted refusal.
+ * Hours the country's ideas were not read: a span ending or starting next to one is a gap,
+ * not a change.
  */
-icon: string | null, };
-export type OccupationReserveParams = { branchId: string, view: OccupationReserveView, tags: Array<string> | null, tag: string | null, firstHour: number | null, lastHour: number | null, top: number | null, };
-export type OccupationReserveReply = { window: KeyedWindow, holders: Array<ReserveHolder>, sources: { [key in string]?: string }, warnings: Array<string>, };
-export type OccupationReserveView = "race" | "holder";
-export type ReserveHolder = { tag: string, slot: number, };
-export type IntelCoverageParams = { branchId: string, view: IntelCoverageView, tags: Array<string> | null, shown: number, touching: boolean, owner: string | null, target: string | null, firstHour: number | null, lastHour: number | null, };
-export type IntelCoverageReply = { window: KeyedWindow, warnings: Array<string>, };
-export type IntelCoverageView = "matrix" | "pair";
-export type NavalYardsAtParams = { branchId: string, tag: string, hour: number, };
-export type YardChoice = { id: string, name: string, };
-export type NavalYardShip = { id: string, measures: { [key in string]?: string }, };
-export type NavalYardQueued = { ordinal: string, ship: string, };
-export type NavalYardHolder = { id: string, measures: { [key in string]?: string }, ships: Array<NavalYardShip>, queue: Array<NavalYardQueued>, };
-export type NavalYardsAtReply = { hour: number,
+unobserved: Array<HourSpan>,
 /**
- * Whether the hour's countries and their links were recorded; nothing is known where not.
+ * Hours the country's recorded identity starts: its first hour read, after an hour not read,
+ * or as another holder. The ideas held then are that identity's initial state, not changes.
+ */
+identityStarts: Array<number>,
+/**
+ * How the game shows each modifier the effects above use; a key missing here is shown as
+ * authored, unformatted.
+ */
+modifiers: Array<ModifierFormat>,
+/**
+ * The texts the tooltips need: custom tooltips, research categories, equipment names, and
+ * `YES` / `NO`.
+ */
+texts: Array<LocalisedText>, warnings: Array<string>, };
+export type IdeaSpan = { token: string, firstHour: number, lastHour: number, slot: string | null, character: IdeaCharacter | null, };
+export type IdeaCharacter = {
+/**
+ * The recorded character id.
+ */
+id: number,
+/**
+ * The script token (resolved through LexicalTokens); empty when unresolved.
+ */
+token: string,
+/**
+ * The saved name as recorded (a localisation key or a literal); a rename changes it, so it
+ * comes before the authored name.
+ */
+name: string, };
+export type EffectLine = {
+/**
+ * The modifier's case-folded key; formats are keyed the same way.
+ */
+key: string,
+/**
+ * The stored fixed5 value as a decimal string.
+ */
+fixed5: string,
+/**
+ * Named in hidden_modifier: applied, never listed.
+ */
+hidden: boolean, };
+export type EffectGroup = { target: string | null,
+/**
+ * An equipment bonus that applies at once to existing equipment.
+ */
+instant: boolean, lines: Array<EffectLine>,
+/**
+ * A targeted modifier's custom tooltip keys in stored order; none for an equipment bonus.
+ */
+tooltips: Array<string>, };
+export type TraitEffects = { token: string,
+/**
+ * Content defines the trait. When it does not, its effects are unknown and the lists below
+ * are empty for that reason, not because it has none.
  */
 known: boolean,
 /**
- * The dating table's last read by the hour.
+ * Why content cannot say whether it defines the trait; None when it can.
  */
-readHour: number | null, holders: Array<NavalYardHolder>, totals: { [key in string]?: string },
+unknown: string | null, name: string | null, lines: Array<EffectLine>, targeted: Array<EffectGroup>, equipment: Array<EffectGroup>, tooltips: Array<string>, };
+export type HolderArtwork = { token: string,
 /**
- * Each source table's dated supplying read at the hour, by table, where it is dated.
+ * The recorded character id, as on the span.
  */
-reads: { [key in string]?: number },
+character: number,
 /**
- * The tokens the hour's rows name, by number.
+ * The script token and saved name, as on the span.
  */
-tokens: { [key in string]?: YardChoice }, warnings: Array<string>, };
+characterToken: string, name: string, artwork: Artwork, };
+export type ModifierFormat = { key: string,
+/**
+ * The engine's key index: the game lists an idea's lines in this order.
+ * None for a definition only content gives (registered after every built-in one).
+ */
+index: number | null,
+/**
+ * The modifier's name in the viewer's language; None when it cannot be localised.
+ */
+label: string | null,
+/**
+ * The localised postfix shown after the value (days, hours, daily), if any.
+ */
+postfix: string | null,
+/**
+ * The postfix's localisation key, when the definition has one: with `postfix`
+ * empty, the unit exists but its text could not be read.
+ */
+postfixKey: string | null,
+/**
+ * Definition flags: 0x1 percent (value ×100), 0x2 good, 0x4 neutral colour,
+ * 0x8 no plus sign, 0x20 yes/no, 0x80 percent as written, 0x100 shown when zero.
+ */
+flags: number,
+/**
+ * Decimal places at most (the caller's precision may lower it).
+ */
+precision: number,
+/**
+ * The game feature the modifier needs (`feature_selector`); zero for none. The
+ * game shows and applies such a modifier only while that feature is on, which
+ * the recording does not say.
+ */
+feature: number,
+/**
+ * `recorded` (the game's own table) or `content` (a scripted definition).
+ */
+source: string, };
+export type LocalisedText = { key: string,
+/**
+ * None when the key has no text, or its text needs runtime scope.
+ */
+text: string | null, };
+export type IdeaInfo = { token: string,
+/**
+ * The idea category; None when neither content nor the recording places it.
+ */
+category: string | null,
+/**
+ * The slot or character seat it fills; None for category-wide ideas such as national spirits.
+ */
+slot: string | null, law: boolean, designer: boolean, effects: Array<EffectLine>, targeted: Array<EffectGroup>, equipment: Array<EffectGroup>, research: Array<EffectLine>, traits: Array<TraitEffects>,
+/**
+ * Custom tooltip localisation keys the idea shows instead of values.
+ */
+tooltips: Array<string>,
+/**
+ * Content defines the idea or its advisor role, so the lists above are its effects.
+ */
+effectsKnown: boolean,
+/**
+ * Why content cannot say what the idea is; None when it can.
+ */
+unknown: string | null,
+/**
+ * Why the idea's artwork has no name (a localisation key missing or refused, or what the
+ * hour cannot say about the naming country); None when it is named.
+ */
+nameMissing: string | null, };
+export type SlotInfo = { token: string, name: string | null,
+/**
+ * A character seat (advisors) rather than an idea slot (laws, designers).
+ */
+character: boolean,
+/**
+ * How many seats of this slot the category has.
+ */
+seats: number,
+/**
+ * For a law slot: its laws in content order, so a law's escalation is its place here.
+ */
+laws: Array<string>, };
+export type CategoryInfo = { token: string, name: string | null,
+/**
+ * `type`, such as `national_spirit`.
+ */
+kind: string | null, hidden: boolean, politicsTab: boolean, slots: Array<SlotInfo>, };
+export type PartyHistoryReply = { branchId: string, tag: string, decimals: number, parties: Array<PartySeries>, ruling: Array<RulingRun>,
+/**
+ * The ruling party's leader; an hour without a run was not read.
+ */
+leaders: Array<LeaderRun>,
+/**
+ * The ruling party's name; an hour without a run was not read.
+ */
+partyNameRuns: Array<PartyNameRun>,
+/**
+ * Each name on `party_name_runs`; null when it cannot be known.
+ */
+partyNames: Array<string | null>,
+/**
+ * Each character on `leaders`, named and pictured.
+ */
+people: Array<LeaderArtwork>,
+/**
+ * The leaders' sub-ideologies, named.
+ */
+ideologyTypes: Array<IdeologyTypeInfo>,
+/**
+ * Hours an election was first seen held.
+ */
+elections: Array<number>,
+/**
+ * Every ideology group in content order, for colours, names and legend order.
+ */
+ideologies: Array<IdeologyInfo>,
+/**
+ * Hours the country's parties were not read: a change of government next to one is a gap,
+ * not a change.
+ */
+unobserved: Array<HourSpan>, warnings: Array<string>, };
+export type PartySeries = { token: string, parts: Array<number>, };
+export type RulingRun = { token: string, firstHour: number, lastHour: number,
+/**
+ * Follows an hour not read or another holder, so the change before it is not a change of
+ * government.
+ */
+startsSegment: boolean, };
+export type LeaderRun = {
+/**
+ * The leader's ideology token; empty when the ruling party had no leader.
+ */
+ideology: string,
+/**
+ * The leader's index in `people`; null when the party had no leader.
+ */
+person: number | null, firstHour: number, lastHour: number, startsSegment: boolean, };
+export type PartyNameRun = {
+/**
+ * Index in `party_names`.
+ */
+name: number, firstHour: number, lastHour: number, };
+export type IdeologyTypeInfo = { token: string, name: string | null, };
+export type LeaderArtwork = { character: IdeaCharacter,
+/**
+ * Null when the saved name needs runtime scope or nothing names the character.
+ */
+name: string | null,
+/**
+ * An artwork URL; null when the portrait is not known.
+ */
+portrait: string | null,
+/**
+ * Why `portrait` is null.
+ */
+portraitMissing: string | null, };
+export type IdeologyInfo = { token: string, name: string | null,
+/**
+ * sRGB bytes; null when the content's colour is refused (the warnings name why).
+ */
+color: [number, number, number] | null, };
+export type CasualtyPairsParams = { branchId: string, tags: Array<string>,
+/**
+ * Otherwise each chosen country's casualties with every enemy.
+ */
+between: boolean,
+/**
+ * None asks for the window manifest.
+ */
+window: number | null, };
+export type CasualtyPairRun = { firstHour: number, lastHour: number, readHour: number, hourly: boolean,
+/**
+ * What the first country took from the second, over every lifetime of the pair.
+ */
+firstTaken: string, secondTaken: string,
+/**
+ * Either country's recorded history lost a lifetime's last hours in a gap.
+ */
+incomplete: boolean, };
+export type CasualtyPairSeries = { identity: string, firstCountry: string, secondCountry: string, runs: Array<CasualtyPairRun>, };
+export type CasualtyPairsReply = { branchId: string, available: boolean, windows: Array<HourSpan>, window: number | null,
+/**
+ * Hours of the window the casualty tables were written.
+ */
+observed: Array<HourSpan>, pairs: Array<CasualtyPairSeries>,
+/**
+ * The window has hours the casualty tables were not written.
+ */
+hasGap: boolean, warnings: Array<string>, };
+export type CasualtyBreakdownParams = { branchId: string, tag: string, window: number | null, };
+export type CasualtyBreakdownRun = { firstHour: number, lastHour: number, readHour: number, hourly: boolean, groupingHour: number, groupingHourly: boolean, enemyHour: number, enemyHourly: boolean,
+/**
+ * What the country took in this lifetime.
+ */
+value: string,
+/**
+ * The war the lifetime belongs to; null with `reason` when not known.
+ */
+warId: string | null, reason: string | null, incomplete: boolean, };
+export type CasualtyBreakdownSeries = { id: string, countryIdentity: string, enemyTag: string, enemyIdentity: string, runs: Array<CasualtyBreakdownRun>, };
+export type CasualtyBreakdownCountryRun = { firstHour: number, lastHour: number, identity: string, incomplete: boolean, };
+export type CasualtyWarName = { text: string, known: boolean, reason: string | null, key: string | null, };
+export type CasualtyWarNameRun = { firstHour: number, lastHour: number, name: CasualtyWarName, };
+export type CasualtyBreakdownWar = { id: string, firstHour: number, lastHour: number, startedBy: boolean, endedBy: boolean, names: Array<CasualtyWarNameRun>, };
+export type CasualtyBreakdownReply = { branchId: string, tag: string, available: boolean, windows: Array<HourSpan>, window: number | null, observed: Array<HourSpan>,
+/**
+ * The identities holding the tag within the observed hours.
+ */
+countries: Array<CasualtyBreakdownCountryRun>, series: Array<CasualtyBreakdownSeries>, wars: Array<CasualtyBreakdownWar>, hasGap: boolean, warnings: Array<string>, };
+export type CasualtyLabelsReply = {
+/**
+ * The game's name for losses no attacker dealt, in the recording's language.
+ */
+unknownLabel: string, warnings: Array<string>, };
+export type PeaceDealsParams = { branchId: string, };
+export type PeaceDealsReply = { branchId: string, derived: boolean,
+/**
+ * Newest card first.
+ */
+deals: Array<PeaceDeal>,
+/**
+ * Counts transfer occurrences, including a state transferred more than once.
+ */
+transfers: PeaceTransferGraph, unobserved: PeaceUnobserved, warnings: Array<string>, };
+export type PeaceDeal = { id: string, derived: boolean, observation: PeaceObservation, conferenceId: string | null,
+/**
+ * No native conference name or unambiguous grouped-war identity is recorded.
+ */
+warName: string | null, firstObservedHour: number, lastObservedHour: number, currentTurn: number | null, finalized: boolean | null, firstFinalizedHour: number | null,
+/**
+ * Last seen when followed by a consecutive absence, else first absent hour.
+ */
+endHour: number | null, endIsBy: boolean, firstAbsentHour: number | null, participantsDerived: boolean, winners: Array<string>, losers: Array<string>, items: Array<PeaceItem>,
+/**
+ * Ordered finalizer operands and outcomes, absent for the derived fallback.
+ */
+captured: PeaceCaptured | null,
+/**
+ * Reason the finalizer capture cannot certify this deal's actions.
+ */
+captureUnavailable: string | null,
+/**
+ * The settlement's hour when no conference span supplied this card.
+ */
+captureObservedHour?: number,
+/**
+ * A failed settlement's hour: its reason is no evidence at an earlier hour.
+ */
+captureUnavailableHour?: number, transfers: PeaceTransferGraph,
+/**
+ * Missing inputs or an attribution limitation, not evidence of no actions.
+ */
+limitations: Array<string>, };
+export type PeaceObservation = "recordedConference" | "conferenceNotRecorded" | "conferenceUnknown";
+export type PeaceDates = { beforeHour: number, afterHour: number, };
+export type PeaceItem = { derived: boolean, dates: PeaceDates,
+/**
+ * The taker/overlord, null where no enforcer or liberator is recorded.
+ */
+winner: string | null, action: PeaceActionLabel, change: PeaceChange, };
+export type PeaceChange = { "kind": "stateTransfer", state: number, from: string, to: string, fromCountry: PeaceTransferCountry, toCountry: PeaceTransferCountry,
+/**
+ * Exact signed sum, null if Provinces cannot supply the state.
+ */
+victoryPoints: string | null, victoryPointsReadHour: number | null, } | { "kind": "newSubject", overlord: string, subject: string, autonomyState: string, startHour: number, } | { "kind": "governmentChange", country: string, before: PeaceGovernment, after: PeaceGovernment, } | { "kind": "countryReleased", country: string,
+/**
+ * Owners of the transferred states at the before read.
+ */
+from: Array<string>, states: Array<number>,
+/**
+ * The released country's holder at the after read.
+ */
+toCountry: PeaceTransferCountry,
+/**
+ * Each state with its own former owner, in state order.
+ */
+transfers: Array<PeaceReleasedState>, };
+export type PeaceGovernment = { rulingParty: number | null, partyToken: string | null, leaderIdeology: string | null, };
+export type PeaceActionKind = "stateTransfer" | "newSubject" | "governmentChange" | "countryReleased";
+export type PeaceActionLabel = { kind: PeaceActionKind, key: string | null, name: string | null, };
+export type PeaceTransferGraph = { nodes: Array<PeaceTransferNode>, links: Array<PeaceTransferLink>, };
+export type PeaceTransferNode = { id: string, country: PeaceTransferCountry,
+/**
+ * Separate source/target nodes even when a country occurs on both sides.
+ */
+side: PeaceTransferSide, };
+export type PeaceTransferCountry = { slot: number, countryId: number, tag: string, hour: number, };
+export type PeaceTransferSide = "source" | "target";
+export type PeaceTransferLink = { id: string, source: string, target: string, stateCount: number,
+/**
+ * Null if any contributing state's VPs are not recorded; never a partial sum.
+ */
+victoryPoints: string | null, states: Array<PeaceTransferredState>, };
+export type PeaceTransferredState = { state: number, fromCountry: PeaceTransferCountry, toCountry: PeaceTransferCountry, dates: PeaceDates, victoryPoints: string | null, victoryPointsReadHour: number | null,
+/**
+ * The same settlement released the taker; the state came from its former owner.
+ */
+released: boolean, };
+export type PeaceReleasedState = { state: number, fromCountry: PeaceTransferCountry, victoryPoints: string | null, victoryPointsReadHour: number | null, };
+export type PeaceUnobserved = { settlements: Array<HourSpan>, conferences: Array<HourSpan>, ownership: Array<HourSpan>, wars: Array<HourSpan>, subjects: Array<HourSpan>, governments: Array<HourSpan>, existence: Array<HourSpan>, victoryPoints: Array<HourSpan>, };
+export type PeaceCaptured = { hour: number, publicationHour: number,
+/**
+ * Raw references and native order, independent of country-tag resolution.
+ */
+winners: Array<number>, losers: Array<number>, actions: Array<PeaceCapturedAction>, transfers: Array<PeaceCapturedTransfer>, subjects: Array<PeaceCapturedSubject>, };
+export type PeaceCapturedAction = { derived: boolean, country: number,
+/**
+ * Event-hour tags; null when that raw reference cannot be resolved then.
+ */
+countryTag: string | null, turn: number, ordinal: number, token: number, tokenName: string | null, nameKey: string | null, name: string | null,
+/**
+ * The country the name's [`NAME_COUNTRY`] stands for, as an event-hour tag: the game names a
+ * puppet demand with the country it puppets.
+ */
+nameCountry: string | null, taker: number, giver: number, negotiator: number, takerTag: string | null, giverTag: string | null, negotiatorTag: string | null, status: number, cost: number, form: number, state: number | null, flags: [number, number, number, number] | null, countryOperand: number | null, countryOperandTag: string | null, puppetAuxiliary: string | null, ship: string | null, ratio: string | null, };
+export type PeaceCapturedTransfer = { derived: boolean, hour: number, state: number, taker: number, to: string | null,
+/**
+ * A matching action's giver, absent for automatic/no-demand outcomes.
+ */
+giver: number | null, from: string | null, fromCountry: PeaceTransferCountry | null, toCountry: PeaceTransferCountry | null, automatic: boolean, };
+export type PeaceCapturedSubject = { derived: boolean, overlord: number, subject: number, overlordTag: string | null, subjectTag: string | null, };
+export type ConvoyHealthParams = { branchId: string, view: ConvoyView,
+/**
+ * The one country shown.
+ */
+tag: string,
+/**
+ * The hours read; the whole timeline when not given.
+ */
+from: number | null, to: number | null, };
+export type ConvoyHealthReply = { branchId: string, view: ConvoyView, tag: string, firstHour: number, lastHour: number,
+/**
+ * Fixed-point denominator of every efficiency.
+ */
+scale: number,
+/**
+ * Hours each table the view reads was read and available (regional efficiency; resource
+ * deals, convoy clients), in the hours asked: outside them a row not shown is not recorded,
+ * not absent; an hour read but refused holds no rows and is not known.
+ */
+known: Array<Array<HourSpan>>,
+/**
+ * Hours the tag had no country, or the recording holds none: nothing is known of it there.
+ */
+unheld: Array<HourSpan>, regions: Array<ConvoyRegion>, deals: Array<ConvoyDeal>, leases: Array<ConvoyLease>, resources: Array<ConvoyResource>, warnings: Array<string>, };
+export type ConvoyView = "regions" | "trade";
+export type ConvoyCountry = { firstHour: number, lastHour: number, tag: string | null, };
+export type ConvoyRegion = { region: number,
+/**
+ * The region's in-game name; null with why where the content does not name it.
+ */
+name: string | null, missing: string | null,
+/**
+ * Fixed5 efficiency: first hour, last hour, value.
+ */
+efficiency: Array<[number, number, number]>, };
+export type ConvoyDeal = {
+/**
+ * The exchange's native handle, hexadecimal.
+ */
+id: string, exporter: Array<ConvoyCountry>,
+/**
+ * The resource's native index.
+ */
+resource: Array<[number, number, number]>,
+/**
+ * The fixed5 efficiency product, truncated toward zero as the game compares it.
+ */
+efficiency: Array<[number, number, number]>,
+/**
+ * Its two fixed5 factors.
+ */
+factors: Array<Array<[number, number, number]>>,
+/**
+ * Convoys assigned and required.
+ */
+convoys: Array<Array<[number, number, number]>>, };
+export type ConvoyLease = {
+/**
+ * The client's native handle.
+ */
+handle: string, giver: Array<ConvoyCountry>,
+/**
+ * 1 while its route draws as bad.
+ */
+bad: Array<[number, number, number]>,
+/**
+ * Convoys assigned and required.
+ */
+convoys: Array<Array<[number, number, number]>>, };
+export type ConvoyResource = { id: number, token: string, name: string | null, };
+export type TradeFlowParams = { branchId: string,
+/**
+ * Every country's trade when none; else the flows any holder of these tags sold or bought.
+ */
+tags: Array<string> | null,
+/**
+ * The window of hours read ([`super::windows`]): never the whole timeline in one reply.
+ */
+window: number,
+/**
+ * The hours of the window read; all of it when not given.
+ */
+from: number | null, to: number | null, };
+export type TradeFlowsReply = { branchId: string, firstHour: number, lastHour: number,
+/**
+ * Fixed-point decimals of every amount.
+ */
+decimals: number,
+/**
+ * Every recorded resource, by native index.
+ */
+resources: Array<ResourceInfo>,
+/**
+ * Every tag a flow names, in byte order.
+ */
+countries: Array<string>,
+/**
+ * Each listed tag's holders over the span.
+ */
+countryIdentities: Array<TradeCountryIdentity>,
+/**
+ * Hours the deals were read: outside them nothing is known, not no trade.
+ */
+known: Array<HourSpan>,
+/**
+ * Hours some deals were left out of the flows.
+ */
+partial: Array<PartialSpan>, flows: Array<TradeFlow>, warnings: Array<string>, };
+export type TradeFlow = {
+/**
+ * Indexes into the reply's countries: the sides' tags at the flow's first run.
+ */
+seller: number, buyer: number,
+/**
+ * The sides' holders, `[slot,id]`.
+ */
+sellerIdentity: string, buyerIdentity: string,
+/**
+ * Each run's sides' tags.
+ */
+sellerTags: Array<number>, buyerTags: Array<number>, resource: number, firstHours: Array<number>, lastHours: Array<number>,
+/**
+ * Fixed-point daily amount delivered, exact.
+ */
+deliveredRaw: Array<string>, factories: Array<number>, convoysAssigned: Array<number>, convoysRequired: Array<number>, deals: Array<number>, };
+export type TradeCountryIdentity = { tag: string, runs: Array<CountryIdentityRun>, };
+export type PartialSpan = { firstHour: number, lastHour: number, deals: number, };
+export type ResourceInfo = {
+/**
+ * The native index (`ResourceDefinitions.id`).
+ */
+id: number, token: string,
+/**
+ * Which declaration of its token this is, from 1, in the game's order.
+ */
+ordinal: number, name: string | null,
+/**
+ * An artwork URL; null when content has no icon for it.
+ */
+icon: string | null, };
+export type ProductionSpendingParams = { branchId: string, tag: string,
+/**
+ * Also read the producer's dockyard repair rates.
+ */
+repairs: boolean,
+/**
+ * The window of hours asked ([`super::windows`]): running totals over its hours alone.
+ */
+window: number, };
+export type ProductionSpendingReply = { branchId: string, tag: string, decimals: number,
+/**
+ * Hours either output was read, ascending.
+ */
+reads: Array<number>,
+/**
+ * The hour each observation began: running totals count from it.
+ */
+observations: Array<number>, equipmentObservations: Array<number>, rocketObservations: Array<number>, equipmentReads: Array<number>, rocketReads: Array<number>, rocketKey: string | null, rocketName: string | null,
+/**
+ * One leaf per design and purpose, and per Rocket design.
+ */
+leaves: Array<ProductionSpendingLeaf>,
+/**
+ * Every purpose and Rocket output.
+ */
+total: Array<ProductionSpendingRun>,
+/**
+ * Every purpose but refits, and Rocket output.
+ */
+totalWithoutRefits: Array<ProductionSpendingRun>,
+/**
+ * Production lines alone, every purpose.
+ */
+equipmentTotal: Array<ProductionSpendingRun>,
+/**
+ * Production lines alone, every purpose but refits.
+ */
+equipmentTotalWithoutRefits: Array<ProductionSpendingRun>, rocketTotal: Array<ProductionSpendingRun>, production: Array<ProductionPresenceRun>,
+/**
+ * Asked with `repairs`: none otherwise.
+ */
+repairs: RepairRates | null, window: number,
+/**
+ * The hours the window holds of the timeline; first past last where it holds none.
+ */
+firstHour: number, lastHour: number, warnings: Array<string>, };
+export type ProductionSpendingUnknown = "notRecorded" | "spendingUnavailable" | "lostOutput" | "missedPublication" | "recordingGap" | "observationRestarted" | "observationMismatch" | "countryChanged" | "rocketTableUnavailable" | "rocketInputInexact" | "rocketOwnerUnreadable" | "rocketDesignUnreadable";
+export type ProductionPurpose = "new" | "refit" | "converted" | "unknown";
+export type Domain = "land" | "air" | "naval";
+export type StockVariantName = {
+/**
+ * The read these names are from; they hold until the next entry.
+ */
+firstHour: number,
+/**
+ * The variant's display name; null when content does not name it, or when
+ * not known.
+ */
+name: string | null,
+/**
+ * False from an hour the variant's names stopped being known (a gap, or a due
+ * read of the variant table that did not land) until the next entry.
+ */
+known: boolean,
+/**
+ * The design's fingerprint as read then (`equipment::design_fingerprint`: its
+ * name, modules and upgrade levels); null where not known. A saved variant
+ * choice carries it, so a later branch's other design under the same handle
+ * is never taken for it.
+ */
+design: string | null, };
+export type ProductionSpendingRun = { firstHour: number, lastHour: number,
+/**
+ * Decimal string of the fixed5 total; null is unknown, never a partial sum.
+ */
+totalRaw: string | null, reason: ProductionSpendingUnknown | null,
+/**
+ * The run starts another holder's or another stretch's totals: nothing is measured across it.
+ */
+breakBefore?: boolean, };
+export type ProductionSpendingLeaf = { variant: string, typeKey: string, name: string | null, domain: Domain | null, rocket: boolean,
+/**
+ * What the input was for; null for Rocket output, which records none.
+ */
+purpose: ProductionPurpose | null,
+/**
+ * For input whose purpose was not recorded: the summed magnitudes of it, dated evidence that
+ * grows and never cancels; empty when there never was any.
+ */
+unproven: Array<ProductionSpendingRun>, names: Array<StockVariantName>, runs: Array<ProductionSpendingRun>, };
+export type ProductionPresenceRun = { firstHour: number, lastHour: number,
+/**
+ * Any line or Rocket output of the producer; null cannot certify emptiness.
+ */
+present: boolean | null,
+/**
+ * The output read that found none, where present is false.
+ */
+emptyCensusHour: number | null, };
+export type RepairRatePart = { variant: string | null,
+/**
+ * The design's equipment type, or its recorded token when content cannot resolve it; empty
+ * for the unattributed part.
+ */
+typeKey: string, name: string | null, domain: Domain | null, names: Array<StockVariantName>, runs: Array<ProductionSpendingRun>, };
+export type RepairRates = { denominator: number, total: Array<ProductionSpendingRun>,
+/**
+ * The repaired designs' rates and the unattributed rest, which sum to the total wherever each
+ * is known.
+ */
+parts: Array<RepairRatePart>, };
+export type ReserveHistoryParams = { branchId: string,
+/**
+ * The holder's raw country id.
+ */
+holder: number, };
+export type ReserveAmount = { source: number, amount: number, };
+export type ReserveSegment = { firstHour: number, lastHour: number,
+/**
+ * Its occupation status was read: no entry is a recorded zero.
+ */
+admitted: boolean,
+/**
+ * Its entries in list order; none where the reserve was not known, with why.
+ */
+entries: Array<ReserveAmount> | null, unknown: string | null, };
+export type SourceTag = { tag: string | null, firstHour: number, lastHour: number, };
+export type ReserveSource = { id: number, tags: Array<SourceTag>, };
+export type ReserveHistoryReply = {
+/**
+ * In hour order; hours the timeline does not hold are not in it.
+ */
+segments: Array<ReserveSegment>,
+/**
+ * Every source the segments name, by raw id.
+ */
+sources: Array<ReserveSource>, warnings: Array<string>, };
+export type BattleWindow = { firstHour: number, lastHour: number, };
+export type ConstructionType = { id: number,
+/**
+ * Its script name; null when the recorded dictionary lacks it.
+ */
+token: string | null, name: string | null,
+/**
+ * The construction queue's picture of it.
+ */
+icon: string | null, };
+export type ConstructionLogManifestReply = {
+/**
+ * Units per factory output point of `cost_raw`.
+ */
+costScale: number,
+/**
+ * The branch's blocks: the log's windows, in hour order.
+ */
+windows: Array<BattleWindow>,
+/**
+ * Either construction queue was read in the branch.
+ */
+recorded: boolean, types: Array<ConstructionType>,
+/**
+ * The construction queue's repair marker.
+ */
+repairIcon: string | null,
+/**
+ * Hours of the branch the recording does not hold.
+ */
+missing: Array<MissingSpan>, warnings: Array<string>, };
+export type ConstructionLogParams = { branchId: string,
+/**
+ * Index into [`ConstructionLogManifestReply::windows`].
+ */
+window: number, };
+export type ConstructionStateName = { id: number, name: string | null, };
+export type ProjectKind = "building" | "railway";
+export type ProjectSource = "census" | "outputAlone";
+export type SpendingGap = "notRecorded" | "linkedOutput" | "inexactOutput" | "observationRestart" | "finalOutputMissing" | "ownerUnknown";
+export type EndKind = "finished" | "removed" | "unknown";
+export type UnknownEnd = "notRecorded" | "sharedTarget" | "nothingLeft" | "completionNotRecorded";
+export type ProjectEnd = { kind: EndKind,
+/**
+ * The native outcome hour, when observed; otherwise only `known_at` bounds it.
+ */
+hour: number | null,
+/**
+ * The read that showed the line gone, or that settled its ending.
+ */
+knownAt: number, unknown: UnknownEnd | null, };
+export type LevelsBuilt = {
+/**
+ * The hour the building rose; null when only the read shows it.
+ */
+hour: number | null,
+/**
+ * The read that established it.
+ */
+knownAt: number, count: number,
+/**
+ * Levels repaired (or repair work), not new levels.
+ */
+repair: boolean,
+/**
+ * The count reached before the window: known by `known_at`, its own reads in earlier windows.
+ */
+carried: boolean, };
+export type ProjectRun = { firstHour: number, lastHour: number, factories: number, remaining: number, repairLevels: number, };
+export type ConstructionOutputRun = { from: number, to: number,
+/**
+ * Fixed5 factory output since observation began; null when not known (`reason`).
+ */
+constructionRaw: string | null, repairRaw: string | null, reason: SpendingGap | null,
+/**
+ * Output before observation began is not recorded.
+ */
+beforeObservation: boolean, };
+export type OutputOrigin = { tag: string, building: number | null, state: number | null, toState: number | null, province: number | null, };
+export type ConstructionProject = {
+/**
+ * The line's native handle, as a decimal string.
+ */
+id: string, kind: ProjectKind, source: ProjectSource, censusRead: number | null, outputOrigin: OutputOrigin | null, queueOrdinal: number | null,
+/**
+ * The queue owner's tag at the line's first read.
+ */
+tag: string,
+/**
+ * The building type's lexer id ([`ConstructionType::id`]).
+ */
+building: number | null,
+/**
+ * It had levels to repair at the first read the window shows of it.
+ */
+repair: boolean | null, state: number | null, toState: number | null, province: number | null, routeProvinces: number | null, baseLevel: number | null, targetLevel: number | null,
+/**
+ * Fixed5 cost per level (railway: the whole route).
+ */
+costRaw: string | null, createdHour: number | null, firstRead: number,
+/**
+ * Work before its first read was not recorded; its counts are lower bounds.
+ */
+earlierUnknown: boolean, runs: Array<ProjectRun>,
+/**
+ * New levels built and levels repaired (`repair`).
+ */
+built: Array<LevelsBuilt>,
+/**
+ * Levels that cannot be told built or dropped.
+ */
+unaccounted: Array<LevelsBuilt>,
+/**
+ * New levels it may have both built and had added.
+ */
+possible: Array<LevelsBuilt>,
+/**
+ * Levels added while under way (more queued, or new damage).
+ */
+added: Array<LevelsBuilt>,
+/**
+ * Null while it is in the queue at the window's last hour.
+ */
+end: ProjectEnd | null,
+/**
+ * The first output read counting a repair advance.
+ */
+firstRepairTick: number | null, outputs: Array<ConstructionOutputRun>, };
+export type ConstructionLogReply = { window: number, interval: BattleWindow,
+/**
+ * Every line whose row was shown in the window, by first read, then handle.
+ */
+projects: Array<ConstructionProject>,
+/**
+ * The names of the states its lines name.
+ */
+states: Array<ConstructionStateName>, warnings: Array<string>, };
+export type ConstructionSpendingParams = { branchId: string, tag: string, };
+export type SpentStep = { knownAt: number,
+/**
+ * Fixed5; null where the total is not recorded (past what the recording holds).
+ */
+totalRaw: string | null, };
+export type SpendingUnknown = { knownAt: number, reason: SpendingGap, project: string, until: number | null, };
+export type LeafProject = { project: string, firstRead: number, until: number | null, };
+export type SpendingLeaf = { repair: boolean, kind: ProjectKind,
+/**
+ * The building type's lexer id ([`ConstructionType::id`]).
+ */
+building: number | null, state: number | null, toState: number | null,
+/**
+ * In hour order.
+ */
+spent: Array<SpentStep>, unknown: Array<SpendingUnknown>,
+/**
+ * By first read.
+ */
+projects: Array<LeafProject>, };
+export type ConstructionSpendingReply = { branchId: string, tag: string,
+/**
+ * Units per factory output point of a total.
+ */
+costScale: number,
+/**
+ * Either construction queue was read in the branch.
+ */
+recorded: boolean, types: Array<ConstructionType>, repairIcon: string | null, states: Array<ConstructionStateName>,
+/**
+ * The tag's lines whose output before observation began is not counted.
+ */
+beforeFirstRead: number, leaves: Array<SpendingLeaf>,
+/**
+ * Output no country can be given: lines named by output alone with no recorded owner.
+ */
+unattributed: Array<SpendingUnknown>,
+/**
+ * Hours of the branch the recording does not hold: output then is not counted.
+ */
+missing: Array<MissingSpan>, warnings: Array<string>, };
+export type DivisionLogParams = { branchId: string, facets: Array<FacetFilter>, from: number | null, to: number, cursor: string | null, pageSize: number, };
+export type DivisionLogTemplate = { id: string, name: string | null, };
+export type DivisionLogGap = { firstHour: number, lastHour: number, reason: string, };
+export type DivisionLogManifestReply = {
+/**
+ * Whether the branch read its divisions at any hour.
+ */
+available: boolean,
+/**
+ * Whether it read their removals at any hour.
+ */
+lossesAvailable: boolean, gaps: Array<DivisionLogGap>, templates: Array<DivisionLogTemplate>, warnings: Array<string>, };
+export type LandBattlesManifestReply = {
+/**
+ * The replay's blocks, cut to the hours the timeline holds.
+ */
+windows: Array<BattleWindow>, available: boolean, unavailable: string | null, contentWarnings: Array<string>, };
+export type BattleWarning = { hour: number, reason: string, count: number, };
+export type BattleBound = "exact" | "by";
+export type BattleMoment = { hour: number, bound: BattleBound, };
+export type BattleEnd = BattleMoment | { unknown: string, };
+export type BattlePlace = { name: string | null, hour: number, namedAt?: number, };
+export type BattleCountry = { tag: string, hour: number, };
+export type BattleValue = { label: string, value: number, atLeast?: boolean, } | { label: string, value: null, unknown: string, };
+export type BattleSide = { label: string, countries: Array<BattleCountry>, countriesUnknown?: string, counts: Array<BattleValue>, losses: Array<BattleValue>, };
+export type BattleWinner = { side: number, } | { unknown: string, };
+export type BattleRow = { id: string, place: BattlePlace, start: BattleMoment | null, end: BattleEnd | null, sides: Array<BattleSide>, winner: BattleWinner, };
+export type LandBattlesParams = { branchId: string, window: number, };
+export type LandBattlePeak = { value: number, hour: number, };
+export type LandBattleRun = { firstHour: number, lastHour: number, counts: [number, number], rosterUnknown: boolean, countries: [Array<string>, Array<string>], countriesUnknown: [boolean, boolean],
+/**
+ * The native counter at `first_hour`.
+ */
+duration: number, };
+export type LandManpower = number | string;
+export type LandLossTotal = { manpower: LandManpower, equipment: string, } | { manpower: LandManpower, unknown: string, };
+export type LandLossTotals = [LandLossTotal, LandLossTotal] | string;
+export type LandBattleLossRead = { hour: number, terminal: boolean, sides: LandLossTotals, };
+export type LandBattleResultRead = { hour: number, duration: number, winner: BattleWinner, countries: [Array<string>, Array<string>], countriesUnknown: [boolean, boolean], };
+export type LandBattleHistory = { id: string, provinceId: number, start: BattleMoment, end: BattleEnd | null, endUnknownHour: number | null, counterBase: number,
+/**
+ * The battle's most divisions at once as of the reply's first hour.
+ */
+priorPeak: LandBattlePeak | null,
+/**
+ * Each side's, attacker then defender.
+ */
+priorSidePeaks: [LandBattlePeak | null, LandBattlePeak | null], runs: Array<LandBattleRun>, losses: Array<LandBattleLossRead>, result: LandBattleResultRead | null, };
+export type LandBattlesReply = { window: number, interval: BattleWindow,
+/**
+ * Hours the combat census was read.
+ */
+observed: Array<[number, number]>,
+/**
+ * Warning reasons, which `warnings` name by index.
+ */
+reasons: Array<string>,
+/**
+ * (first hour, reason, hours).
+ */
+warnings: Array<[number, number, number]>, rows: Array<LandBattleHistory>, contentWarnings: Array<string>, };
+export type BattleCountryFilter = { tags: Array<string> | null, membership: Array<MembershipRun> | null, unobserved: Array<HourSpan>, };
+export type LandBattlesRankingParams = { branchId: string, firstHour: number, lastHour: number, topN: number, measure: string, countries: BattleCountryFilter, };
+export type LandBattlesRankingReply = { rows: Array<LandBattleHistory>,
+/**
+ * The last hour at or before the range's end the combat census was read.
+ */
+censusHour: number | null,
+/**
+ * What it ranked by: casualties fall back to peak size where no battle's were recorded.
+ */
+effectiveMeasure: string, warnings: Array<BattleWarning>, contentWarnings: Array<string>, };
+export type LandBattleCourseParams = { branchId: string,
+/**
+ * A battle id of this branch.
+ */
+id: string, };
+export type LandEquipmentDesign = { name: string | null, variant: string, };
+export type LandLossSide = { manpower: LandManpower, variants: Array<[number, string]>, } | { manpower: LandManpower, changed: Array<[number, string]>, } | { manpower: LandManpower, unknown: string, };
+export type LandLossSides = [LandLossSide, LandLossSide] | string;
+export type LandBattleCourseRead = { hour: number, terminal: boolean, sides: LandLossSides, };
+export type LandBattleCourse = { id: string, provinceId: number, start: BattleMoment, end: BattleEnd | null, endUnknownHour: number | null, counterBase: number, runs: Array<LandBattleRun>, losses: Array<LandBattleCourseRead>, result: LandBattleResultRead | null, };
+export type LandBattleCourseReply = { battle: LandBattleCourse,
+/**
+ * The designs the course's reads name by index.
+ */
+designs: Array<LandEquipmentDesign>, contentWarnings: Array<string>, };
+export type LandBattleTerrainParams = { provinces: Array<number>, };
+export type LandTerrainName = { provinceId: number,
+/**
+ * The terrain title the combat window shows; null when it cannot be resolved.
+ */
+name: string | null, missing: string | null, };
+export type LandBattleTerrainReply = { provinces: Array<LandTerrainName>, warnings: Array<string>, };
+export type NavalBattlesManifestParams = { branchId: string, };
+export type NavalBattlesManifestReply = { windows: Array<BattleWindow>, available: boolean, unavailable: string | null, contentWarnings: Array<string>, };
+export type NavalBattlesParams = { branchId: string, window: number, };
+export type NavalBattlesReply = { window: number, interval: BattleWindow, rows: Array<NavalBattleHistory>,
+/**
+ * The window's hours whose live combats were read.
+ */
+observed: Array<[number, number]>, warnings: Array<BattleWarning>, contentWarnings: Array<string>, };
+export type NavalBattleHistory = { id: string, provinceId: number, runs: Array<NavalBattleRun>, };
+export type NavalBattleRun = { firstHour: number, lastHour: number, row: BattleRow, peakHour: number | null,
+/**
+ * Ships sunk, Peak ships and Length.
+ */
+measures: Array<BattleValue>, };
+export type NavalBattlesRankingParams = { branchId: string, firstHour: number, lastHour: number, topN: number, measure: string, countries: NavalBattleCountryFilter, };
+export type NavalBattlesRankingReply = { rows: Array<NavalBattleHistory>, censusHour: number | null, effectiveMeasure: string, warnings: Array<BattleWarning>, contentWarnings: Array<string>, };
+export type NavalBattleCountryFilter = { tags: Array<string> | null, membership: Array<MembershipRun> | null, unobserved: Array<HourSpan>, };
+export type NavalBattleDetailsParams = { branchId: string, battles: Array<NavalBattleDetailRequest>, };
+export type NavalBattleDetailsReply = { rows: Array<NavalBattleDetail>, warnings: Array<string>, };
+export type NavalBattleDetailRequest = { id: string, hour: number, };
+export type NavalBattleFleetNames = { names: Array<string>, unknown: string | null, };
+export type NavalBattleNamedShip = { sinkHour: number, knownAt: number, name: string | null, className: string | null, };
+export type NavalBattleDetail = { id: string, hour: number,
+/**
+ * The hour its fleets are read at: the hour asked.
+ */
+rosterHour: number | null, fleets: [NavalBattleFleetNames, NavalBattleFleetNames], namedShips: Array<NavalBattleNamedShip>, shipRead: number | null, unavailable: string | null, };
+export type ShipsSunkManifestReply = { branchId: string, windows: Array<ArmySpan>,
+/**
+ * The list was read at some hour of the branch.
+ */
+available: boolean, firstRead: number | null,
+/**
+ * The classes of every sinking the game listed at each run's end, for the class choice.
+ */
+classes: Array<ShipClassInfo>, recordedNames: Array<string>, warnings: Array<string>, };
+export type ShipsSunkParams = { branchId: string, window: number, };
+export type ShipsSunkReply = { branchId: string, window: number,
+/**
+ * The game's list was read at or before the window's end; otherwise nothing is known.
+ */
+available: boolean, firstHour: number, lastHour: number,
+/**
+ * The window's first read of the list.
+ */
+firstRead: number | null,
+/**
+ * The window's hours the timeline does not hold.
+ */
+unread: Array<ArmySpan>, classes: Array<ShipClassInfo>, places: Array<string>, recordedNames: Array<string>,
+/**
+ * Those pruned within the window first, then the game's list order at its end; a row's index
+ * in the window is its place here.
+ */
+rows: Array<ShipsSunkRow>, warnings: Array<string>, };
+export type ShipClassInfo = { token: number,
+/**
+ * The recorded lexical token, resolved to the content's sub-unit spelling.
+ */
+key: string | null, name: string | null,
+/**
+ * PNG sent once per class, never once per sinking.
+ */
+icon: string | null, };
+export type ShipSinkingCause = "hostile" | "assisted" | "cause";
+export type ShipsSunkRow = { sinkHour: number,
+/**
+ * The first read listing it.
+ */
+knownAt: number, name: string | null, classIndex: number, recordedNameIndex: number | null, victim: string | null, attacker: string | null,
+/**
+ * Always null: both countries are named at the sinking hour.
+ */
+victimAsOf: number | null, attackerAsOf: number | null, placeIndex: number | null, cause: ShipSinkingCause, attributionName: string | null, assistedKill: boolean, };
+export type NavalLossesParams = { branchId: string, tags: Array<string>, top: number | null, attribution: NavalAttribution, kind: NavalKind, period: NavalPeriod,
+/**
+ * None is the window manifest; a window's runs name it by its index.
+ */
+window?: number, };
+export type NavalAttribution = "lost" | "sunkBy";
+export type NavalKind = "ships" | "convoys" | "both";
+export type NavalPeriod = "running" | "month";
+export type ResearchReply = { history: ResearchHistory, artwork: Array<Artwork>, folders: Array<ResearchFolder>, technologyFolders: Array<ResearchTechnologyFolder>, warnings: Array<string>, definitions?: Array<ResearchDefinitionText>, };
+export type ResearchHistory = { coverage: Array<ResearchCoverage>, slots: Array<ResearchSlotHistory>, };
+export type ResearchSlotHistory = { index: number, availability: Array<ResearchCoverage>, entries: Array<ResearchEntry>, };
+export type ResearchEntry = { token: string, technologyHandle: number,
+/**
+ * The technology's template occurrence: repeated ids have their own.
+ */
+databaseIndex: number,
+/**
+ * Attribution never joins across missing hours or a changed holder.
+ */
+continuityStartHour: number,
+/**
+ * Completed level when it was first observed.
+ */
+level: number, firstObservedHour: number,
+/**
+ * The read before, which saw something else; none at a first read or after a gap.
+ */
+startedAfterHour: number | null, lastObservedHour: number,
+/**
+ * The read at which it had left the slot; never shown before this hour.
+ */
+endedByHour: number | null,
+/**
+ * The read that proved a completion arriving after the end.
+ */
+outcomeObservedHour: number | null, outcome: ResearchOutcome, };
+export type ResearchOutcome = "active" | "completed" | "switched" | "unknown";
+export type ResearchCoverage = { firstHour: number, lastHour: number, };
+export type ResearchDefinitionText = { token: string, databaseIndex: number, name: string | null, description: string | null, };
+export type ResearchFolder = { key: string, name: string | null, };
+export type ResearchTechnologyFolder = { token: string, databaseIndex?: number | null, folder: string | null, };
+export type ResearchBreakdownParams = { branchId: string, tag: string, parts: Array<ResearchBreakdownPart>, };
+export type ResearchBreakdownReply = { parts: Array<ResearchBreakdownSlot>, warnings: Array<string>, };
+export type ResearchBreakdownPart = { slot: number, firstObservedHour: number, lastHour: number, started: boolean, };
+export type ResearchBreakdownSlot = { slot: number, firstObservedHour: number, states: Array<ResearchSlotState>, progress: Array<ResearchProgress>,
+/**
+ * Why no read of it is known, when none is.
+ */
+missing: string | null, };
+export type FeedPageParams = { branchId: string, facets: Array<FacetFilter>,
+/**
+ * The timeline's first hour when none.
+ */
+from: number | null, to: number,
+/**
+ * The ordinal the page starts at, counted from the timeline's first hour.
+ */
+cursor: string | null, pageSize: number,
+/**
+ * The countries a row must name (actor, target or an ally joining with it), each tag over the
+ * hours it counts; every row when none. Ordinals and totals count the rows it keeps.
+ */
+scope: Array<MembershipRun> | null, };
+export type EventFeedCategory = "warsPeace" | "diplomacy" | "politics" | "milestones";
+export type EventFeedKind = "warStarted" | "warDeclared" | "warJoined" | "civilWarWarTransferred" | "annexed" | "warEnded" | "released" | "stateTransferred" | "peaceConferenceStarted" | "peace" | "capitulated" | "ceasedToExist" | "factionJoined" | "factionLeft" | "becameSubject" | "guaranteeGranted" | "rulingPartyChanged" | "lawChanged" | "advisorHired" | "focusCompleted" | "projectFinished" | "nukesIncreased" | "nuclearStrike" | "scriptEventFired" | "newsEventFired" | "eventOptionSelected" | "decisionSelected" | "decisionRemoved" | "decisionCancelled" | "decisionTimedOut" | "decisionActivated" | "decisionCompleted" | "decisionReenabled" | "decisionRemovalEffect" | "decisionCancellationEffect" | "decisionCompletionEffect" | "decisionTimeoutEffect" | "decisionDurationChanged";
+export type EventFeedOption = { ordinal: number, name: string | null, };
+export type EventFeedItem = { token: string | null, name: string | null, icon: string | null, description: string | null,
+/**
+ * A scripted event's authored options in the game's order; absent for other kinds and when
+ * the event's content does not resolve.
+ */
+options?: Array<EventFeedOption>,
+/**
+ * Why `name` is null, where a script item's is.
+ */
+nameMissing?: string,
+/**
+ * Why the name, description or options hold U+FFFC where scripted text could not be
+ * expanded: the UI shows each as a "not recorded" token.
+ */
+gaps?: string, };
+export type EventFeedCause = {
+/**
+ * The native operation the event happened in.
+ */
+how: string | null,
+/**
+ * The operation that one ran inside.
+ */
+within: string | null,
+/**
+ * The peace conference starting or applying, as its reference in decimal.
+ */
+conference: string | null,
+/**
+ * A state whose owner changed.
+ */
+state: number | null,
+/**
+ * A join's ally.
+ */
+ally: string | null,
+/**
+ * A join's hostility reason.
+ */
+reason: string | null,
+/**
+ * The native operands that change what the event means.
+ */
+notes: Array<string>, };
+export type EventFeedRow = { id: string, hour: number,
+/**
+ * The read supplying this fact; the head never shows it before this hour.
+ */
+readHour: number,
+/**
+ * Country naming and flags use this hour: the event's, or a vanished country's last seen.
+ */
+nameHour: number, exact: boolean, category: EventFeedCategory, kind: EventFeedKind, tags: Array<string>,
+/**
+ * Native action roles, actor then target. Null keeps a role that names no country or that
+ * no link and holder witnessed.
+ */
+participants?: [string | null, string | null], item: EventFeedItem | null, amount: number | null,
+/**
+ * A native event's recorded cause; absent when the recording holds none.
+ */
+cause?: EventFeedCause,
+/**
+ * A nuclear strike's target and outcome; absent for every other kind.
+ */
+strike?: EventFeedStrike, };
+export type EventFeedStrike = { province: number,
+/**
+ * None for a province without a state.
+ */
+state: number | null, buildingLevels: number | null,
+/**
+ * The owner's war support change, in percent.
+ */
+warSupport: number | null, units: number | null, manpowerLost: number | null, equipmentLost: number | null, notRecorded: Array<string>, };
+export type EventFeedUnavailable = { kind: string, label: string, reason: string, count: number | null, };
+export type EventFeedPageRow = { hour: number, key: string, ordinal: string, tag?: string, ownOrdinal?: string, cells: Array<LogCell>, row: EventFeedRow | null, };
+export type EventFeedPage = { branchId: string, log: string, columns: Array<string>, firstOrdinal: string, total: string, cursor: string | null, rows: Array<EventFeedPageRow>, missing: Array<MissingSpan>,
+/**
+ * What the page's rows could not show, each reason once with its count.
+ */
+unavailable: Array<EventFeedUnavailable>, warnings: Array<string>, };
+export type ScriptCurrency = "politicalPower" | "commandPower";
+export type ScriptCost = { currency: ScriptCurrency,
+/**
+ * The exact fixed5 balance change as a decimal string; negative when spent.
+ */
+amount: string, };
+export type ScriptEdge = { row: EventFeedRow,
+/**
+ * The executed option's signed native ordinal.
+ */
+option: number | null,
+/**
+ * The writer's lifecycle result, where its boundary supplies one.
+ */
+lifecycle: number | null,
+/**
+ * The writer's duration result in days.
+ */
+days: number | null,
+/**
+ * The power the execution was proven to charge; null when not proven.
+ */
+costs: Array<ScriptCost> | null, };
+export type ScriptOccurrence = { id: string,
+/**
+ * Whether the first edge opened the card; false for a continuing row whose opening was not
+ * recorded or joined.
+ */
+opened: boolean, edges: Array<ScriptEdge>, };
+export type ScriptPageRow = { hour: number, key: string, ordinal: string, tag?: string, ownOrdinal?: string, cells: Array<LogCell>, occurrence: ScriptOccurrence | null, };
+export type ScriptOccurrencePage = { branchId: string, log: string, columns: Array<string>, firstOrdinal: string, total: string, cursor: string | null, rows: Array<ScriptPageRow>, missing: Array<MissingSpan>, unavailable: Array<EventFeedUnavailable>, warnings: Array<string>, };
+export type EventFeedSpanParams = { branchId: string,
+/**
+ * The timeline's first and last hour when none.
+ */
+from: number | null, to: number | null,
+/**
+ * The categories whose other families' rows are wanted.
+ */
+categories: Array<EventFeedCategory>,
+/**
+ * Only the kinds' codes, which a page's facets need before anything is read: no rows and
+ * no coverage notes, so the pages are never asked after a walk of the span's reads.
+ */
+kindsOnly?: boolean, };
+export type FeedKindCode = { kind: EventFeedKind, code: number, category: EventFeedCategory, };
+export type EventFeedSpanReply = { branchId: string, firstHour: number, lastHour: number, kinds: Array<FeedKindCode>,
+/**
+ * The other families' rows in the span, by hour.
+ */
+rows: Array<EventFeedRow>,
+/**
+ * What the span could not show: reads whose events were not all observed, families not
+ * read, refusals of their rows.
+ */
+unavailable: Array<EventFeedUnavailable>, warnings: Array<string>, };
+export type EndedLease = { terms: LeaseTerms, fuelSentRaw: string, fuelSunkRaw: string,
+/**
+ * The first hour it stood in its run, within the branch.
+ */
+firstHour: number,
+/**
+ * Its last read.
+ */
+lastHour: number, };
+export type LendLeaseHistoryReply = { branchId: string,
+/**
+ * By the hour each ended, then key.
+ */
+agreements: Array<EndedLease>,
+/**
+ * Equipment named at the end of each stretch of the branch.
+ */
+variants: Array<VariantName>, icons: Array<EquipmentIcon>, warnings: Array<string>, };
+export type MarketLedgerParams = { branchId: string, facets: Array<FacetFilter>, from: number | null, to: number, cursor: string | null, pageSize: number, };
+export type FuelAwardsParams = { branchId: string, tag: string,
+/**
+ * Any hour the read holds: the reply names the read.
+ */
+hour: number, };
+export type FuelAwardsReply = { tag: string,
+/**
+ * The read the day is of.
+ */
+readHour: number, country: number, countryInstance: number,
+/**
+ * The consumers' receipts, fixed5: what each consumer's recipients sum to.
+ */
+receivedRaw: [string, string, string], recipients: Array<FuelAwardPart>, warnings: Array<string>, };
+export type FuelAwardPart = { key: string, kind: number, reference: string, owner: number, host: string,
+/**
+ * The first and last update hours that paid it.
+ */
+firstHour: number, lastHour: number,
+/**
+ * Fixed5 country fuel it received over the day.
+ */
+amountRaw: string, recordedName: string | null, nameReason: string | null, };
+export type FuelAwardHistoryParams = { branchId: string, tag: string,
+/**
+ * The hour the recipient was picked at: the country is its holder then.
+ */
+hour: number,
+/**
+ * The window: hours `window * detailHours` through the next window's first less one.
+ */
+window: number, recipientKey: string, };
+export type FuelAwardHistoryReply = { tag: string, country: number, window: number, recipientKey: string, firstHour: number, lastHour: number, runs: Array<FuelAwardRun>, warnings: Array<string>, };
+export type FuelAwardRun = { firstHour: number, lastHour: number, startsSegment: boolean, amountRaw: string | null, reason: string | null, };
+export type FuelDemandParams = { branchId: string, tag: string,
+/**
+ * Any hour the read holds: the reply names the read.
+ */
+hour: number, };
+export type FuelDemandReply = { tag: string,
+/**
+ * The read the pack is of.
+ */
+readHour: number, country: number, countryInstance: number | null,
+/**
+ * The families' sums the read gives, as `country-fuel` shows them.
+ */
+consumption: FuelConsumptionAt, parts: Array<FuelDemandPart>, commands: Array<FuelDemandCommand>, fleets: Array<FuelDemandFleetName>, sites: Array<FuelDemandAirSite>, topologyReason: string | null, warnings: Array<string>, };
+export type FuelDemandLocation = { list: number, siteOrdinal: number, base: string, containerOwner: number | null, poolOrdinal: number, wingOrdinal: number, reason: string | null, };
+export type FuelDemandPart = { key: string,
+/**
+ * 0 army, 1 air, 2 navy: the fuel consumer it counts toward.
+ */
+kind: number, reference: string, parent: string, ordinal: number, owners: [number, number, number] | null, wingOwner: number | null, group: string | null, topologyReason: string | null, site: FuelDemandLocation | null, amountRaw: string | null, reason: string | null, recordedName: string | null, nameReason: string | null, };
+export type FuelDemandCommand = { reference: string, parent: string, country: number, armyGroup: boolean, members: Array<string>, children: Array<string>, recordedName: string | null, nameReason: string | null, };
+export type FuelDemandFleetName = { reference: string, recordedName: string | null, nameReason: string | null, };
+export type FuelDemandAirSite = { list: number, ordinal: number, base: string, containerOwner: number | null, capacityRaw: string | null, demilitarized: number | null, reason: string | null,
+/**
+ * Its wings' consumer keys.
+ */
+wings: Array<string>, };
+export type FuelDemandHistoryParams = { branchId: string, tag: string,
+/**
+ * The hour the consumers were picked at: the country is its holder then.
+ */
+hour: number, window: number,
+/**
+ * The consumers' keys, as `country-fuel-demand` gives them.
+ */
+keys: Array<string>, };
+export type FuelDemandHistoryReply = { tag: string, country: number, window: number, firstHour: number, lastHour: number,
+/**
+ * In the order asked.
+ */
+parts: Array<FuelDemandHistoryPart>, warnings: Array<string>, };
+export type FuelDemandHistoryPart = { key: string, runs: Array<FuelDemandRun>, };
+export type FuelDemandRun = { firstHour: number, lastHour: number, startsSegment: boolean, amountRaw: string | null, reason: string | null, };
+export type StockpileHolder = { tag: string, within?: Array<HourSpan>, };
+export type StockpileCatalogueParams = { branchId: string, holders: Array<StockpileHolder>,
+/**
+ * The types a group counts; empty counts every type.
+ */
+included: Array<string>, };
+export type StockpileChoicePeak = { raw: string, stockDrawable: boolean, shareDrawable: boolean, };
+export type StockpileCatalogueVariant = {
+/**
+ * Its native handle, as a decimal string.
+ */
+id: string,
+/**
+ * Its equipment token; empty where no read spelled it.
+ */
+token: string,
+/**
+ * Its type's archetype key; null where the content does not resolve its type.
+ */
+archetype: string | null, names: Array<StockVariantName>,
+/**
+ * Every design recorded under its handle.
+ */
+designs: Array<string>, };
+export type StockpileCatalogueLogistics = {
+/**
+ * The archetype key, or the unresolved mark and the recorded token's spelling.
+ */
+key: string, nonzero: boolean, };
+export type StockpileCatalogueReply = { branchId: string, tags: Array<string>, campaignKey: string, decimals: number,
+/**
+ * Every archetype a design or logistics type belongs to, in the equipment database's order.
+ */
+types: Array<StockType>, variants: Array<StockpileCatalogueVariant>, logistics: Array<StockpileCatalogueLogistics>,
+/**
+ * The hours the stockpile, the production lines and the logistics record were read for the
+ * holders within their hours, ascending.
+ */
+reads: Array<number>, lineReads: Array<number>, logisticsReads: Array<number>, stockHours: Array<HourSpan>, lineHours: Array<HourSpan>, balanceHours: Array<HourSpan>,
+/**
+ * Hours the holder was AI-controlled, so the game computed no balance.
+ */
+aiHours: Array<HourSpan>, needBoundRaw: string,
+/**
+ * Each group's peak and drawability, by its key (`[kind, key]` as JSON).
+ */
+choices: { [key in string]?: StockpileChoicePeak }, warnings: Array<string>, };
+export type StockpileMeasure = "stock" | "share" | "need";
+export type StockpileLine = {
+/**
+ * The group's key: `[kind, key]` as JSON, a design's key its handle.
+ */
+group: string, measure: StockpileMeasure, };
+export type StockpileChartParams = { branchId: string, holders: Array<StockpileHolder>, included: Array<string>, lines: Array<StockpileLine>, from: number, to: number, width: number, };
+export type StockpileChartLine = { group: string, measure: StockpileMeasure, summary: ChartSummary, };
+export type StockpileChartReply = { branchId: string, lines: Array<StockpileChartLine>, warnings: Array<string>, };
+export type FactionStateParams = { "view": "rules", branchId: string, faction: string, } | { "view": "manpower", branchId: string, faction: string, };
+export type FactionSelectionRun = { firstHour: number, lastHour: number, token: string | null, name: string | null, reason: string | null, startsSegment: boolean, };
+export type FactionSelectionLane = { slot: number, runs: Array<FactionSelectionRun>, };
+export type FactionMinimumLane = {
+/**
+ * The upgrade group's lexer token: `groups` names it.
+ */
+group: number, runs: Array<FactionSelectionRun>, };
+export type FactionMemberUpgradeLane = {
+/**
+ * Unique among the reply's lanes: the account, its holder and the group.
+ */
+key: string,
+/**
+ * The member's tag at its last selection; none when no tag held its slot then.
+ */
+tag: string | null, slot: number, countryId: number, group: number, runs: Array<FactionSelectionRun>, };
+export type FactionUpgradeGroup = { group: number, name: string | null, reason: string | null, };
+export type FactionRulesReply = { rules: Array<FactionSelectionLane>, programmes: Array<FactionSelectionLane>, minimums: Array<FactionMinimumLane>, members: Array<FactionMemberUpgradeLane>, doctrines: Array<FactionSelectionLane>, groups: Array<FactionUpgradeGroup>,
+/**
+ * Hours of the timeline the recording does not hold.
+ */
+unobserved: Array<HourSpan>, warnings: Array<string>, };
+export type FactionManpowerRun = { firstHour: number, lastHour: number, value: number, startsSegment: boolean, };
+export type FactionManpowerMember = { key: string,
+/**
+ * The country's tag at the occurrence's first hour; none when no tag held it then.
+ */
+tag: string | null, slot: number | null, countryId: number, runs: Array<FactionManpowerRun>, };
+export type FactionManpowerReply = { members: Array<FactionManpowerMember>, unobserved: Array<HourSpan>, warnings: Array<string>, };
+export type FactionStateReply = FactionRulesReply | FactionManpowerReply;
+export type WarsParams = { branchId: string,
+/**
+ * None follows the recording client's playing or observer country.
+ */
+viewpointTag: string | null, };
+export type WarName = {
+/**
+ * Exact plain text, or "Not recorded" with a reason.
+ */
+text: string, known: boolean, reason: string | null, key: string | null, };
+export type WarSide = "attacker" | "defender" | "viewpoint" | "opponent";
+export type WarParticipantRun = { tag: string, side: WarSide, firstHour: number, lastHour: number, joinedBy: boolean, leftBy: boolean, };
+export type WarCapitulation = { tag: string, hour: number, };
+export type WarObservation = { firstHour: number, lastHour: number, viewpointTag: string,
+/**
+ * Native order, including any repeated occurrence.
+ */
+viewpointSide: Array<string>, opposingSide: Array<string>,
+/**
+ * Orientation follows the representative's instigator, an app convention. None where the
+ * representative's operands are not recorded.
+ */
+attackersAreViewpoint: boolean | null, representative: [string, string] | null, name: WarName, };
+export type WarTimeline = {
+/**
+ * Timeline-local app identity; never a native war id.
+ */
+id: string, firstHour: number, lastHour: number, startedBy: boolean, endedBy: boolean, observations: Array<WarObservation>, participants: Array<WarParticipantRun>, capitulations: Array<WarCapitulation>, };
+export type WarsReply = { branchId: string,
+/**
+ * The war tables were read at some hour of the timeline.
+ */
+available: boolean,
+/**
+ * The overview's viewpoint over consecutive read hours, including peace.
+ */
+viewpoints: Array<MembershipRun>,
+/**
+ * Names of the countries the wars show, as read where they were named: for measuring labels
+ * only, never for naming a country at an hour.
+ */
+countryNames: Array<string>, wars: Array<WarTimeline>, unobserved: Array<HourSpan>, capitulationsUnobserved: Array<HourSpan>, warnings: Array<string>, };
+export type WarLossesParams = { branchId: string, viewpointTag: string | null, hour: number, };
+export type WarCasualtyRun = [number, number, string, string, string, string];
+export type WarCasualties = {
+/**
+ * The war's id in the `wars` reply.
+ */
+id: string, run: WarCasualtyRun | null, reason: string | null, };
+export type WarLossesReply = { branchId: string, hour: number,
+/**
+ * Each war the viewpoint saw at the hour, in the order of the wars.
+ */
+wars: Array<WarCasualties>, warnings: Array<string>, };
+export type SpecialProjectsParams = { branchId: string, tag: string, };
+export type ProjectDate = { hour: number,
+/**
+ * False: it happened by this hour, not at it.
+ */
+exact: boolean, };
+export type ProjectPerson = {
+/**
+ * None where the recorded reference cannot say whether a scientist is assigned.
+ */
+assigned: boolean | null, id: number | null, name: string | null, portrait: string | null, missing: string | null, };
+export type ProjectPresentation = { name: string, specialization: string | null, specializationName: string | null, icon: string | null, iconMissing: string | null,
+/**
+ * Its index in `people`.
+ */
+scientist: number,
+/**
+ * A completed project loses its program: the last hour its scientist was seen assigned.
+ */
+scientistAsOf: number | null, };
+export type ProjectState = "running" | "paused" | "cancelled" | "completed" | "unknown";
+export type SpecialProjectRun = { firstHour: number, lastHour: number,
+/**
+ * Its index in `presentations`.
+ */
+presentation: number,
+/**
+ * Prototype progress, percent, clamped to -100..=100.
+ */
+progress: number, state: ProjectState, completion: ProjectDate | null, cancellation: ProjectDate | null,
+/**
+ * History entries less the completion's; none where the history was not recorded.
+ */
+iterations: number | null, };
+export type ProjectEpisode = { id: string, start: ProjectDate, runs: Array<SpecialProjectRun>, };
+export type SpecialProjectsReply = { branchId: string, tag: string,
+/**
+ * The tag's holders over the branch.
+ */
+identities: Array<CountryIdentityRun>,
+/**
+ * The hours the holders' projects were recorded.
+ */
+available: Array<HourSpan>, projects: Array<ProjectEpisode>, presentations: Array<ProjectPresentation>, people: Array<ProjectPerson>,
+/**
+ * The game's text for each iteration count shown, none where it cannot be made.
+ */
+iterationTexts: { [key in number]?: string | null },
+/**
+ * Why nothing is shown, apart from a country with no projects.
+ */
+unavailable: string | null, warnings: Array<string>, };
+export type AirChoice = { id: string, name: string, };
+export type AirChoicesReply = {
+/**
+ * Every strategic region of the recorded stack, by id.
+ */
+regions: Array<AirChoice>,
+/**
+ * Every side the timeline assigns, as last assigned.
+ */
+sides: Array<AirSide>,
+/**
+ * The air theatres at the timeline's last hour, by id.
+ */
+theatres: Array<AirChoice>,
+/**
+ * Why the theatres are not listed.
+ */
+theatresMissing: string | null,
+/**
+ * Every tag held on the timeline.
+ */
+countries: Array<string>, warnings: Array<string>, };
+export type CombatLogParams = { branchId: string, hour: number, countries: BattleCountryFilter, };
+export type CombatLogReply = { hour: number, groups: Array<LogGroup>, manpower: Array<LogManpower>, equipment: Array<LogEquipment>, templates: Array<LogTemplate>, battles: Array<LogBattle>, active: Array<LogActiveSide>, availability: CombatLogAvailability, warnings: Array<string>, };
+export type LogGroup = { tag: string, group: string, ordinal: number, };
+export type LogManpower = { tag: string, group: string, ordinal: number, reason: number, date: number, losses: [number, number, number], };
+export type LogEquipment = { tag: string, group: string, month: number, ordinal: number | null, reason: number, date: number, kind: number, allowZero: boolean, name: string | null, variant: string | null, amountRaw: string | null, missingSource: string | null, };
+export type LogTemplate = { tag: string, group: string, ordinal: number, date: number, template: string, name: string | null, wins: number, total: number, };
+export type LogBattle = { tag: string, group: string, ordinal: number, id: number, attacker: boolean, date: number, province: number, flags: [number, number, number, number], manpower: [number, number], references: number, details: Array<LogDetailTable>, };
+export type LogDetailTable = { title: string, columns: Array<string>, rows: Array<Array<string>>, };
+export type LogActiveSide = { combat: string, attacker: boolean, terminal: boolean, progressRaw: string, damageRaw: string, activityGroups: number, leaders: number, lossSource: string | null, details: Array<LogDetailTable>, };
+export type CombatLogAvailability = { groups: string | null, manpower: string | null, months: string | null, ownEquipment: string | null, enemyEquipment: string | null, templates: string | null, battles: string | null, active: string | null, terminal: string | null, };
+export type LandSource = "destruction" | "combatLog";
+export type LossCountry = { slot: number, countryId: number, };
+export type LossesParams = { branchId: string, tag: string, landSource: LandSource,
+/**
+ * The identity; the tag's holder at `to` when none.
+ */
+country?: LossCountry | null, from: number, to: number, width: number,
+/**
+ * Hours whose totals are read exactly.
+ */
+reads: Array<number>, };
+export type EquipmentDestructionCause = "unknown" | "land_combat" | "naval_transport" | "immediate" | "attrition" | "garrison" | "air_nuclear" | "air_accident" | "air_strategic" | "air_mission_aa" | "air_land_combat_cas" | "air_raid" | "air_naval_aa" | "division_destroyed" | "division_overrun" | "division_deleted" | "division_disbanded" | "division_capitulation" | "division_scripted" | "division_template_removed" | "paradrop_disruption" | "division_merged" | "exile_equipment" | "volunteer_return_equipment" | "capitulation_escape_equipment" | "scripted_equipment_fraction" | "scripted_stockpile_fraction";
+export type LossSource = { "kind": "combatLog", "reason": number } | { "kind": "recovered" } | { "kind": "sunkShips" } | { "kind": "sunkConvoys" } | { "kind": "lendLeaseSunk" } | { "kind": "lendLeaseSent" } | { "kind": "destruction", "reason": EquipmentDestructionCause };
+export type LossDomain = "land" | "air" | "naval" | "other";
+export type LossName = { key: string | null, template: string | null, text: string | null, };
+export type UnknownReason = "unread" | "endedAfterLastRead" | "destructionWithheld" | "destructionGap" | "destructionUnresolved" | "destructionDomain";
+export type UnknownSpan = { firstHour: number, lastHour: number, reason: UnknownReason, detail: string | null, };
+export type LossPoint = { hour: number,
+/**
+ * Exact decimal, in [`LossesReply::amount_scale`] units.
+ */
+totalRaw: string, };
+export type LossLeaf = {
+/**
+ * Index into [`LossesReply::designs`]; null when the record names none.
+ */
+design: number | null,
+/**
+ * The totals row's key, the live cell `equipment-loss-head` names it by.
+ */
+key: string,
+/**
+ * The running total at the end of each bin it changed in, and at each exact hour.
+ */
+points: Array<LossPoint>, lowerBoundFrom: number | null, };
+export type LossCause = { source: LossSource, domain: LossDomain, name: LossName,
+/**
+ * The Combat Log's attrition column, for reasons 1 to 3.
+ */
+group: LossName | null,
+/**
+ * False for recovered equipment and lend-lease sent.
+ */
+loss: boolean,
+/**
+ * Why the amounts are unknown throughout; then no leaves.
+ */
+unknown: string | null, unknownSpans: Array<UnknownSpan>,
+/**
+ * Sunk ships' leaves are made from [`LossesReply::ships`] at the hour shown.
+ */
+leaves: Array<LossLeaf>, };
+export type LossDesignName = { firstHour: number, name: string | null, known: boolean, };
+export type LossDesign = { variant: number, names: Array<LossDesignName>, equipment: string | null, archetype: string | null, archetypeName: string | null, };
+export type ShipListing = { signature: string, listedHour: number, sinkHour: number, design: number | null, count: number, };
+export type Coverage = "logged" | "notLogged" | { "partial": { ungrouped: number, } } | "unknown" | "pruneUnobserved";
+export type CoverageSpan = { firstHour: number, lastHour: number, coverage: Coverage, };
+export type DestructionCoverageSpan = { firstHour: number, lastHour: number, reason: string | null, };
+export type LossesReply = { branchId: string, tag: string, landSource: LandSource, landLowerBound: string | null, amountScale: number, causes: Array<LossCause>, designs: Array<LossDesign>, ships: Array<ShipListing>,
+/**
+ * Combat Log land coverage; empty in destruction mode.
+ */
+coverage: Array<CoverageSpan>, destructionCoverage: Array<DestructionCoverageSpan>, destructionCountedFrom: number | null, retainedMonths: number | null,
+/**
+ * The window and bins the points were read on, and the hours read exactly.
+ */
+from: number, to: number, width: number, exactHours: Array<number>,
+/**
+ * The first hour of each stretch after hours the timeline does not hold, where totals restart.
+ */
+restarts: Array<number>, warnings: Array<string>, };
+export type AirStatisticsRegionsParams = { branchId: string, tag: string, };
+export type AirStatisticsRegionsReply = {
+/**
+ * Every region the country held statistics in over the timeline, in region order.
+ */
+regions: Array<AirStatisticsRegion>, warnings: Array<string>, };
+export type ScoreboardColumnsReply = { branchId: string, defaultColumns: Array<ScoreboardColumnKey>, defaultSort: ScoreboardColumnKey, columns: Array<ScoreboardColumn>, warnings: Array<string>, };
+export type ScoreboardColumn = { key: ScoreboardColumnKey, label: string, unit: string,
+/**
+ * Fixed-point decimals of its raw values.
+ */
+decimals: number, available: boolean, reason: string | null, note?: string,
+/**
+ * The declared measure its values are, followed at the head.
+ */
+family: ScoreboardFamily | null,
+/**
+ * The declared measure whose nonzero value marks its value a partial subtotal.
+ */
+partial: ScoreboardFamily | null, };
+export type ScoreboardColumnKey = "factories" | "armySize" | "territory" | "casualties" | "casualtiesDealt" | "casualtiesTaken" | "planes" | "ships" | "factoriesBuilt" | "factoriesTopbar" | "equipmentProduced" | "politicalPower" | "commandPower" | "stability" | "warSupport" | "nukes";
+export type ScoreboardFamily = { kind: string, measure: string, };
+export type ScoreboardParams = { branchId: string, hour: number, columns: Array<ScoreboardColumnKey>,
+/**
+ * The countries shown, in order; ignored with `top`.
+ */
+tags: Array<string>, top?: ScoreboardTop, };
+export type ScoreboardReply = { branchId: string, hour: number,
+/**
+ * Why the hour holds no rows.
+ */
+missing: string | null,
+/**
+ * A top's countries greatest first; chosen countries in their order, each held at the hour.
+ */
+rows: Array<ScoreboardRow>, warnings: Array<string>, };
+export type ScoreboardTop = { count: number,
+/**
+ * The column it ranks by.
+ */
+sort: ScoreboardColumnKey,
+/**
+ * The greatest first; else the least, least first.
+ */
+descending: boolean, };
+export type ScoreboardRow = { tag: string,
+/**
+ * One a column asked, in its order.
+ */
+cells: Array<ScoreboardCell>, };
+export type ScoreboardCell = { valueRaw: string | null,
+/**
+ * Why there is no value: never zero.
+ */
+missing: string | null,
+/**
+ * A subtotal of what was recorded (shown with †).
+ */
+partial: boolean, };
+export type EquipmentProducedParams = { branchId: string,
+/**
+ * Chosen countries; none with a top N.
+ */
+tags: Array<string>, top?: number,
+/**
+ * The hour a top N is ranked at: the view's last hour, or the cursor.
+ */
+rankHour?: number, count: ProducedCount, measure: ProducedMeasure,
+/**
+ * Type keys counted together; none counts every type.
+ */
+types: Array<string>,
+/**
+ * Count what ship refit lines deliver.
+ */
+refits: boolean,
+/**
+ * The window of hours asked ([`super::windows`]).
+ */
+window: number, };
+export type EquipmentProducedReply = { branchId: string, count: ProducedCount, measure: ProducedMeasure,
+/**
+ * Fixed-point decimals of every value: 0 for units, 5 for IC.
+ */
+decimals: number, types: Array<string>,
+/**
+ * For a top N, the hour it was ranked at; its lines are then in rank order, greatest first,
+ * only countries that delivered something.
+ */
+rankHour: number | null, window: number,
+/**
+ * The hours the window holds of the timeline; first past last where it holds none.
+ */
+firstHour: number, lastHour: number, lines: Array<ProducedLine>,
+/**
+ * Hours production lines' output was read in the window, ascending, whichever lines are shown: a value is
+ * as of the latest read.
+ */
+reads: Array<number>,
+/**
+ * The hour each observation counting over the window began, the first maybe before it.
+ */
+observations: Array<number>, warnings: Array<string>, };
+export type ProducedCount = "units" | "ic";
+export type ProducedMeasure = "total" | "day" | "week" | "month";
+export type ProducedUnknown = "notRecorded" | "unitsInexact" | "spendingUnavailable" | "lostOutput" | "missedPublication" | "typeNotRecorded" | "windowIncomplete" | "observationRestarted" | "rocketTableUnavailable" | "rocketInputInexact" | "rocketOwnerUnreadable" | "outOfRange";
+export type ProducedGap = { run: number, reason: ProducedUnknown, };
+export type ProducedSeries = { firstHours: Array<number>, lastHours: Array<number>,
+/**
+ * Raw values (fixed5 for IC); null is not known, never a partial sum.
+ */
+values: Array<number | null>,
+/**
+ * Why each run without a value is not known.
+ */
+unknown: Array<ProducedGap>,
+/**
+ * Runs starting another holder's or stretch's totals: nothing is measured across them.
+ */
+breaks: Array<number>, };
+export type ProducedLine = { tag: string, identities: Array<CountryIdentityRun>, series: ProducedSeries, };
+export type ProducedTypesParams = { branchId: string, refits: boolean, };
+export type ProducedTypesReply = { branchId: string,
+/**
+ * Every type any country produced in the branch, in the equipment database's order, the
+ * ones content does not resolve last.
+ */
+types: Array<ProducedType>,
+/**
+ * The type with the most units delivered, every country together, at each run's end: the
+ * widget's type until one is chosen. Null when nothing was.
+ */
+mostDelivered: string | null, warnings: Array<string>, };
+export type ProducedType = { key: string, name: string | null, domain: Domain | null, };
+export type ProducedCountryParams = { branchId: string, tag: string, count: ProducedCount, measure: ProducedMeasure, refits: boolean, };
+export type ProducedCountryReply = { branchId: string, tag: string, count: ProducedCount, measure: ProducedMeasure, decimals: number, identities: Array<CountryIdentityRun>, models: Array<ProducedModel>,
+/**
+ * Every design together, lines and Rocket output: exact however it splits.
+ */
+total: ProducedSeries, reads: Array<number>, observations: Array<number>, warnings: Array<string>, };
+export type ProducedModel = { variant: string, rocket: boolean, typeKey: string, typeName: string | null, domain: Domain | null,
+/**
+ * False when the design's type was not recorded: it could be of any type.
+ */
+typeRecorded: boolean, names: Array<StockVariantName>, series: ProducedSeries, };
+export type ProducedAtParams = { branchId: string, tag: string, hour: number, measure: ProducedMeasure, refits: boolean, };
+export type ProducedAtReply = { branchId: string, tag: string, hour: number, measure: ProducedMeasure,
+/**
+ * The country's production totals are recorded at the hour: a design it has no row of is zero.
+ */
+recorded: boolean, models: Array<ProducedModelAt>,
+/**
+ * Every design's IC together.
+ */
+icTotal: ProducedAmount,
+/**
+ * When the running totals began counting, as of the hour.
+ */
+observation: number | null,
+/**
+ * The latest read of production lines' output at or before the hour.
+ */
+read: number | null, warnings: Array<string>, };
+export type ProducedAmount = { value: number | null, reason: ProducedUnknown | null, };
+export type ProducedModelAt = { variant: string, rocket: boolean, typeKey: string, typeName: string | null, domain: Domain | null, typeRecorded: boolean,
+/**
+ * The design's name as recorded at the hour; null where not known.
+ */
+name: string | null, units: ProducedAmount, ic: ProducedAmount, };
+export type PowerSpendingParams = { branchId: string, tag: string, currency: SpendCurrency,
+/**
+ * The span's first and last hour: a payment read in it is listed.
+ */
+from: number, to: number, };
+export type PowerSpendingReply = { branchId: string, tag: string, currency: SpendCurrency, from: number, to: number, decimals: number, items: Array<SpendItem>, categories: Array<SpendCategory>,
+/**
+ * In read order.
+ */
+payments: Array<SpendPayment>,
+/**
+ * In read order.
+ */
+days: Array<SpendDay>,
+/**
+ * In read order.
+ */
+gains: Array<SpendGain>,
+/**
+ * The span's hours the tag was held, in order; an hour of the span in none was not recorded.
+ */
+coverage: Array<SpendCoverage>, icons: Array<EquipmentIcon>,
+/**
+ * None where no item is an idea or an advisor.
+ */
+ideaTooltips: SpendIdeaTooltips | null, warnings: Array<string>, };
+export type SpendCurrency = "Political" | "Command";
+export type SpendItem = {
+/**
+ * Unique in the recording: holder, the holder's item ordinal and its first read (ordinals
+ * restart with a run). `power-day` names its parts by it.
+ */
+id: string,
+/**
+ * Items shown as one share it: their category, operands and names are equal.
+ */
+groupId: string, cause: string, category: string,
+/**
+ * Charged every day (daily costs, deficits, upkeep): listed by day, not by payment.
+ */
+recurring: boolean, firstHour: number, firstRead: number, name: string | null,
+/**
+ * Plain text naming the payment by its cause, item and target.
+ */
+action: string,
+/**
+ * The key of its picture in `icons`.
+ */
+icon: string | null, character: number | null, targetTag: string | null, targetName: string | null,
+/**
+ * Why a name, target or picture is not known.
+ */
+unknown: string | null,
+/**
+ * The idea in `ideaTooltips` its tooltip shows.
+ */
+tooltipToken: string | null, };
+export type SpendCategory = { id: string, name: string,
+/**
+ * False for payments whose cause was not recorded.
+ */
+identified: boolean, };
+export type SpendPayment = {
+/**
+ * Its item's index in `items`.
+ */
+item: number,
+/**
+ * The latest payment's own hour.
+ */
+hour: number | null,
+/**
+ * The hour it was read and counted.
+ */
+read: number,
+/**
+ * The latest payment's native order: its sequence, then its cost ordinal.
+ */
+sequence: string | null, ordinal: number | null,
+/**
+ * What the payments whose charge was recorded charged, fixed5; none where the sum was not
+ * recorded.
+ */
+knownRaw: string | null, payments: number,
+/**
+ * Payments whose charge was not recorded.
+ */
+unknown: number,
+/**
+ * A payment read while the capture did not cover the currency.
+ */
+uncovered: boolean, };
+export type SpendDay = { item: number,
+/**
+ * The latest counted day's midnight.
+ */
+day: number | null, read: number, days: number,
+/**
+ * What the days charged, fixed5; none where it was not recorded.
+ */
+chargeRaw: string | null, payments: number, unknown: number,
+/**
+ * Days read while the capture did not cover the currency.
+ */
+uncovered: number,
+/**
+ * The balance moves the days' payments made, fixed5; none where one was not recorded.
+ */
+realizedRaw: string | null,
+/**
+ * Negative daily costs: a credit, not spending.
+ */
+credits: number, };
+export type SpendGain = { read: number,
+/**
+ * What the days gained before daily costs, fixed5; none where not recorded.
+ */
+gainedRaw: string | null,
+/**
+ * What the cap kept off the days' gains.
+ */
+cappedRaw: string | null, days: number,
+/**
+ * Days whose gain was not read.
+ */
+unknownDays: number,
+/**
+ * Daily costs whose day's application was not recorded.
+ */
+unmatched: number, };
+export type SpendCoverage = { firstHour: number, lastHour: number, covered: boolean, reason: string | null, };
+export type SpendIdeaTooltips = { ideas: Array<IdeaInfo>, artwork: Array<Artwork>, modifiers: Array<ModifierFormat>, texts: Array<LocalisedText>, };
+export type StabilityReadsParams = { branchId: string, from: number, to: number, };
+export type StabilityReadsReply = { reads: Array<HourSpan>, warnings: Array<string>, };
+export type AirTimelineParams = { branchId: string, firstHour: number, lastHour: number, mode?: AirMode,
+/**
+ * A side's key, or a country's tag with `viewpointCountry`.
+ */
+viewpoint?: string, viewpointCountry?: boolean,
+/**
+ * The side keys compared; all when none.
+ */
+sides?: Array<string>,
+/**
+ * The regions shown, ranked; the most active when none.
+ */
+regions?: Array<number>,
+/**
+ * The air theatres whose regions are shown; all when none.
+ */
+theatres?: Array<string>,
+/**
+ * How many of the most active regions are shown, without `regions`.
+ */
+top?: number,
+/**
+ * The tile of `TILE_DAYS` game days (on the absolute grid of days) whose cells are asked, of
+ * the regions `regions` names, in their order; the whole view ranked when none.
+ */
+tile?: number, };
+export type AirTimelineReply = {
+/**
+ * The first hour of the view's first day.
+ */
+firstHour: number, lastHour: number, dayHours: number,
+/**
+ * Each day's read hour: its last recorded hour in the view; none where none is recorded.
+ */
+days: Array<number | null>,
+/**
+ * Each day's sides of the comparison left out, without an air object.
+ */
+excluded: Array<number>,
+/**
+ * The sides the cells name, by index.
+ */
+sides: Array<AirSide>,
+/**
+ * The viewpoint side's index, at the last day it is present.
+ */
+viewpoint: number | null, rows: Array<AirTimelineRow>, scale: number, badBelow: number, goodAbove: number, warnings: Array<string>, };
+export type AirTimelineRow = { region: number, name: string | null,
+/**
+ * Why the name is not shown.
+ */
+nameMissing: string | null,
+/**
+ * Runs of days: how many, and their cell; none for days the recording holds no hour of.
+ */
+cells: Array<[number, AirDayCell | null]>, };
+export type AirDayCell = { "kind": "reason", reason: string, } | { "kind": "sides" } & AirDaySides | { "kind": "view", side: number | null, leader: string | null, friendly: string, enemy: string, };
+export type AirDaySides = { parts: Array<AirDayPart>,
+/**
+ * A leaderless side and the country whose read it shows.
+ */
+viewpoints: Array<[number, string]>, unknown: Array<number>, noAirObject: Array<number>,
+/**
+ * Only the chosen sides are compared.
+ */
+filtered: boolean, };
+export type AirDayPart = { side: number, tag: string, friendly: string, };
+export type AirRankingReply = { rows: Array<AirTimelineRow>, warnings: Array<string>, };
+export type OperationTypeTokens = {
+/**
+ * The definition's token, as the content names it.
+ */
+key: string,
+/**
+ * The lexical tokens the recording gave it; empty where it never held one.
+ */
+tokens: Array<number>, };
+export type EspionageTypeTokensReply = {
+/**
+ * By key.
+ */
+types: Array<OperationTypeTokens>,
+/**
+ * Why there are none: the content is not configured or not read.
+ */
+missing: string | null, warnings: Array<string>, };
+export type TemplateRosterParams = { branchId: string, tag: string, };
+export type TemplateRosterReply = { sections: Array<string>, warnings: Array<string>, };
+export type TemplateRosterParamsAtHour = TemplateRosterParams & { hour: number };
+export type AirStatisticsParams = { branchId: string, tag: string,
+/**
+ * Pair index in recorded schema order, not the interface's button order.
+ */
+channel: number, };
+export type AirStatisticsReply = {
+/**
+ * The hour of the read the rows hold; none when not known.
+ */
+readHour: number | null, channels: Array<AirStatisticsChannel>, regions: Array<AirStatisticsRegion>,
+/**
+ * Why the statistics are not shown at the hour, when they are not.
+ */
+missing: string | null,
+/**
+ * The country's air theatres and their member wings' regions at the hour; none where
+ * membership is not known.
+ */
+theatres: Array<AirMissionTheatre> | null,
+/**
+ * Why the theatres are not known at the hour.
+ */
+theatresMissing: string | null, warnings: Array<string>, };
+export type AirStatisticsChannel = { id: string, ours: string, enemy: string, divisor: number, };
+export type AirStatisticsRegion = { region: string, name: string | null,
+/**
+ * Why the name is not shown, without one.
+ */
+missing: string | null, };
+export type AirMissionTheatre = { id: string, name: string, regions: Array<string>, };
+export type AirStatisticsParamsAtHour = AirStatisticsParams & { hour: number };
+export type PoliticsStateParams = { branchId: string, view: PoliticsView, };
+export type PoliticsStateReply = { branchId: string, view: PoliticsView, exiles: Array<StateExile>, balances: Array<BalanceRecord>,
+/**
+ * Null when the membership cannot say which record each country shows.
+ */
+current: Array<CurrentBalance> | null, unavailable: Array<PoliticsUnavailable>, warnings: Array<string>, };
+export type PoliticsView = "exiles" | "balances";
+export type BalanceSide = { token: string, name: string | null, };
+export type BalanceRange = { token: string, name: string | null,
+/**
+ * Fixed5 bounds; null where the recorded content does not establish them.
+ */
+min: string | null, max: string | null, };
+export type BalanceMember = { tag: string | null, daily: string | null, weekly: string | null, };
+export type BalanceSource = { token: string, name: string | null, daily: string, weekly: string, };
+export type BalanceRecord = { ordinal: number, token: string, name: string | null, left: BalanceSide, right: BalanceSide,
+/**
+ * The side it is moving toward, when the record names one.
+ */
+trending: BalanceSide | null, range: BalanceRange | null,
+/**
+ * Every authored range in authored order; empty when content refuses.
+ */
+ranges: Array<BalanceRange>, members: Array<BalanceMember>,
+/**
+ * The drift's sources; null when they cannot be derived.
+ */
+sources: Array<BalanceSource> | null, };
+export type CurrentBalance = { tag: string, record: number, };
+export type PoliticsUnavailable = { label: string, reason: string, count: number, };
+export type StateExile = { id: string, tag: string, host: string | null, };
+export type PoliticsStateParamsAtHour = PoliticsStateParams & { hour: number };
+export type PeopleParams = { branchId: string, tag: string, };
+export type PeopleReply = { branchId: string, tag: string, hour: number, readHour: number | null, manpower: Array<PeopleFact>, politics: Array<PeopleFact>, states: Array<PeopleState>, exiles: Array<PeopleExile>, warnings: Array<string>, };
+export type PeopleFact = { label: string, value: string | null, unit: string, };
+export type PeopleState = { state: number, available: number, locked: number | null, total: number | null, effective: string | null, recruitable: number | null, };
+export type PeopleExile = { tag: string, host: string | null, legitimacy: string | null, manpower: number | null, cap: number | null, leaders: number | null, deployedAir: number | null, readHour: number | null, };
+export type PeopleParamsAtHour = PeopleParams & { hour: number };
+export type TerritoryShareParams = { branchId: string,
+/**
+ * A declared territory measure.
+ */
+measure: string, };
+export type TerritoryShareEntry = { tag: string, slot: number, };
+export type TerritoryShareReply = { measure: string, entries: Array<TerritoryShareEntry>,
+/**
+ * Some is held by slots no tag holds at the hour: in the rest of the world, named by no country.
+ */
+unnamed: boolean,
+/**
+ * Why the whole is not known, never a smaller sum.
+ */
+missing: string | null, warnings: Array<string>, };
+export type TerritoryShareParamsAtHour = TerritoryShareParams & { hour: number };
+export type TerritoryBreakdownParams = { branchId: string,
+/**
+ * `states`, `provinces`, `victoryPoints` or `area`.
+ */
+measure: string,
+/**
+ * `controlled` or `owned`.
+ */
+rule: string, };
+export type TerritoryRegion = { id: number, name: string | null,
+/**
+ * Why it has no name.
+ */
+missing: string | null, };
+export type TerritoryRegionRow = { key: string, tag: string | null, slot: number | null, region: number | null, };
+export type TerritoryBreakdownReply = { measure: string, rule: string, regions: Array<TerritoryRegion>, rows: Array<TerritoryRegionRow>,
+/**
+ * Why the rows are not known at this hour.
+ */
+missing: string | null,
+/**
+ * Why area by region is not known: the recording's facts hold no province areas.
+ */
+areaReason: string | null, warnings: Array<string>, };
+export type TerritoryBreakdownParamsAtHour = TerritoryBreakdownParams & { hour: number };
+export type FactionRostersParams = { branchId: string, };
+export type FactionRoster = {
+/**
+ * The faction's recorded id.
+ */
+id: string,
+/**
+ * Its members at the hour, by tag, ascending.
+ */
+members: Array<string>,
+/**
+ * Why its roster is not known whole at the hour: its total is not known then.
+ */
+missing: string | null, };
+export type FactionRostersReply = { factions: Array<FactionRoster>,
+/**
+ * Why no roster is known at this hour.
+ */
+missing: string | null, warnings: Array<string>, };
+export type FactionRostersParamsAtHour = FactionRostersParams & { hour: number };
+export type GameScoreParams = { branchId: string, };
+export type GameScoreCell = { missing: string | null, };
+export type GameScoreRow = { tag: string, countryId: number, total: GameScoreCell, army: GameScoreCell, navy: GameScoreCell, air: GameScoreCell, industry: GameScoreCell, land: GameScoreCell, };
+export type GameScoreMultiplier = { part: string, raw: string | null, missing: string | null, };
+export type GameScoreReply = {
+/**
+ * Every country scored at the hour that a tag holds, in tag order.
+ */
+rows: Array<GameScoreRow>, multipliers: Array<GameScoreMultiplier>,
+/**
+ * Each column's hint as the game's end screen words its sort control, by column (`country`,
+ * `total`, `army`, `navy`, `air`, `industry`, `land`); a column the content cannot word is
+ * absent, and a warning says why.
+ */
+hints: { [key in string]?: string },
+/**
+ * Why no country's scores are known at the hour.
+ */
+missing: string | null, warnings: Array<string>, };
+export type GameScoreParamsAtHour = GameScoreParams & { hour: number };
+export type NuclearArsenalParams = { branchId: string, };
+export type NukeType = { ordinal: number,
+/**
+ * Its lexical token's spelling; null when the game names no token for it.
+ */
+token: string | null,
+/**
+ * Its name in the reader's language; null when the content has none.
+ */
+name: string | null, };
+export type NukeCount = { ordinal: number,
+/**
+ * Whole bombs, as the top bar shows them.
+ */
+value: number,
+/**
+ * Queued drops whose delay elapsed.
+ */
+ready: number, };
+export type NukeCountry = { tag: string, countryId: number,
+/**
+ * The top bar's stockpile: every type's count added with signed 32-bit wrapping.
+ */
+total: number, counts: Array<NukeCount>, };
+export type NuclearArsenalReply = { hour: number,
+/**
+ * Every type the game names and every other type a country holds at the hour, by ordinal.
+ */
+types: Array<NukeType>,
+/**
+ * Every country a tag holds with a stockpile row, greatest total first, ties by tag.
+ */
+countries: Array<NukeCountry>,
+/**
+ * Why no stockpile is known at the hour.
+ */
+missing: string | null, warnings: Array<string>, };
+export type NuclearArsenalParamsAtHour = NuclearArsenalParams & { hour: number };
+export type WorldTensionParams = { branchId: string, };
+export type TensionContribution = { slot: number,
+/**
+ * The tag holding the slot, or the one that last held it; null when none ever did.
+ */
+tag: string | null,
+/**
+ * The tag no longer holds the slot: it is the last that did.
+ */
+remembered: boolean, };
+export type TensionSource = { ordinal: number,
+/**
+ * The country that caused it, or the tag that last held its slot; null when none is known.
+ */
+tag: string | null, remembered: boolean,
+/**
+ * The game's own text for it, without formatting codes.
+ */
+reason: string,
+/**
+ * What it adds once its ramp ends and each day, in contribution units; what it adds now is the
+ * live cell (`source<ordinal>`, `current`).
+ */
+finalRaw: string, dailyRaw: string,
+/**
+ * The hour the game created it.
+ */
+date: number, };
+export type WorldTensionReply = {
+/**
+ * Tension units a percentage point.
+ */
+tensionScale: number,
+/**
+ * Contribution units a percentage point.
+ */
+contributionScale: number,
+/**
+ * The sum the tension is capped at, in contribution units.
+ */
+ceilingRaw: string,
+/**
+ * Live cells of row `world`: `tension` (the tension the game showed, tension units), `sum`
+ * (every contribution summed before the cap) and, where `unnamed`, `unnamed` (the part of the
+ * sum from slots no tag ever held), both in contribution units.
+ */
+unnamed: boolean,
+/**
+ * Every nonzero contribution, greatest first, ties by slot.
+ */
+contributions: Array<TensionContribution>,
+/**
+ * In the game's list order.
+ */
+sources: Array<TensionSource>,
+/**
+ * Why the tension is not known at this hour.
+ */
+missing: string | null, warnings: Array<string>, };
+export type WorldTensionParamsAtHour = WorldTensionParams & { hour: number };
+export type FactoryPartsParams = { branchId: string, tag: string, };
+export type FactoryPartValue = {
+/**
+ * `military`, `naval` or `civilian`.
+ */
+group: string, part: string, value: number, };
+export type FactoryPartsReply = { hour: number, tag: string, parts: Array<FactoryPartValue>,
+/**
+ * Groups whose recorded `unavailable` is not the sum of what they withhold.
+ */
+unexplained: Array<string>,
+/**
+ * Why the country's factories are not known at the hour.
+ */
+missing: string | null, warnings: Array<string>, };
+export type FactoryPartsParamsAtHour = FactoryPartsParams & { hour: number };
+export type ExperienceParams = { branchId: string, tag: string, };
+export type ExperienceReply = { tag: string,
+/**
+ * Units per experience point for every value.
+ */
+scale: number, dayHours: number,
+/**
+ * The daily read the values are from; none where the recording does not tell it (the journal
+ * door gives CountryExperience no sample hour).
+ */
+readHour: number | null, banked: ExperienceValues | null, bankedMissing: string | null, change: ExperienceValues | null, changeMissing: string | null, gain: ExperienceValues | null, gainMissing: string | null, warnings: Array<string>, };
+export type ExperienceValues = { armyRaw: string, navyRaw: string, airRaw: string, };
+export type ExperienceParamsAtHour = ExperienceParams & { hour: number };
+export type TrainingQueueParams = { branchId: string, tag: string, };
+export type TrainingQueueReply = { tag: string,
+/**
+ * The read the queue is from; none when none falls within a day.
+ */
+readHour: number | null,
+/**
+ * Why the queue is unknown at this hour, when it is.
+ */
+missing: string | null, orders: Array<TrainingOrder>, warnings: Array<string>, };
+export type TrainingOrder = { order: string, ordinal: number, template: string, templateName: string | null, templateMissing: string | null, icon: string | null, iconMissing: string | null, amount: number,
+/**
+ * The stored priority, and the game's text for it.
+ */
+priority: number, priorityName: string | null, priorityMissing: string | null,
+/**
+ * The stored province (zero for none), and the name the game shows for it.
+ */
+location: number, locationName: string | null, locationMissing: string | null, closed: boolean,
+/**
+ * A government in exile's order names that country.
+ */
+exile: string | null, divisions: Array<TrainingDivision>, };
+export type TrainingDivision = { line: string, ordinal: number, name: string | null, nameMissing: string | null,
+/**
+ * Fixed-point training and its maximum, five decimals.
+ */
+trainingRaw: string, maxTrainingRaw: string,
+/**
+ * Signed sums of the available and needed entries, as the game adds them.
+ */
+manpower: number, manpowerNeeded: number, maxManpower: number, contributors: Array<TrainingManpower>, equipment: Array<TrainingEquipment>,
+/**
+ * What the template needs; empty with `need_missing` when unknown.
+ */
+need: Array<TrainingNeed>, needMissing: string | null,
+/**
+ * Why held equipment cannot be measured against the need.
+ */
+comparisonMissing: string | null,
+/**
+ * A halting reason is stored; its meaning is not named.
+ */
+halted: boolean, };
+export type TrainingManpower = { tag: string | null,
+/**
+ * Available (false) or needed (true).
+ */
+needed: boolean, amount: number, };
+export type TrainingEquipment = { variant: string,
+/**
+ * The design's saved name; none where the design keeps the game's generated name.
+ */
+name: string | null, archetype: string | null, archetypeName: string | null,
+/**
+ * Signed fixed-point amount with five decimals.
+ */
+amountRaw: string, };
+export type TrainingNeed = { archetype: string, name: string | null,
+/**
+ * Fixed-point need with five decimals.
+ */
+needRaw: string,
+/**
+ * What the division holds of it, fixed-point with five decimals.
+ */
+heldRaw: string, };
+export type TrainingQueueParamsAtHour = TrainingQueueParams & { hour: number };
+export type DiplomaticRelationsParams = { branchId: string, tags: Array<string>, };
+export type OpinionOwner = { tag: string,
+/**
+ * Its holder's raw id at the hour (the part a pair's `relation-opinions` line names it by);
+ * null where no country holds the tag then.
+ */
+countryId: number | null,
+/**
+ * Whether its opinions were read: a known owner's opinion with no row is exactly zero.
+ */
+known: boolean,
+/**
+ * Why it is not known.
+ */
+reason: string | null, };
+export type DiplomaticRelationsReply = { owners: Array<OpinionOwner>, warnings: Array<string>, };
+export type DiplomaticRelationsParamsAtHour = DiplomaticRelationsParams & { hour: number };
+export type WargoalsParams = { branchId: string, tag: string, };
+export type WargoalEntry = { handle: string, name: string, actor: string, recipient: string, available: boolean, expires: number | null, states: Array<number>, liberate: Array<string>, puppets: Array<string>, };
+export type WargoalJustification = {
+/**
+ * Its row key: the row of its live cell `points`, the stored fixed5 progress.
+ */
+id: string, ordinal: number, name: string, actor: string, recipient: string, states: Array<number>, total: string, daily: string, payUpfront: boolean, start: number | null, completion: number, paused: boolean | null, };
+export type WargoalsReply = { branchId: string, tag: string, standings: Array<WargoalPair>, goals: Array<WargoalEntry>, justifications: Array<WargoalJustification>, warnings: Array<string>, stateNames: Array<WargoalStateName>, };
+export type WargoalPair = { actor: string, recipient: string,
+/**
+ * What the recorded wars and factions prove about the pair; none when neither applies.
+ */
+standing: WargoalStanding | null, };
+export type WargoalStanding = "atWar" | "sameFaction";
+export type WargoalStateName = { id: number, name: string, known: boolean, };
+export type WargoalsParamsAtHour = WargoalsParams & { hour: number };
+export type DecryptionParams = { branchId: string, };
+export type Country = { id: number, tag: string | null, };
+export type Observation = { hour: number, upperBound: boolean, };
+export type CipherPair = { owner: Country, target: Country,
+/**
+ * Fixed5: the amount that breaks the cipher; none where it is not known.
+ */
+thresholdRaw: string | null,
+/**
+ * Why the threshold is not known, where it is not.
+ */
+thresholdUnknown: string | null, bonusActive: number, decrypting: number,
+/**
+ * None where the threshold is not known and no bonus is active.
+ */
+broken: boolean | null,
+/**
+ * When the attempt current at the hour started; none when none is, or it is not known.
+ */
+started: Observation | null,
+/**
+ * When that attempt broke the cipher; none when it has not.
+ */
+brokenAt: Observation | null, };
+export type DecryptionReply = {
+/**
+ * The pairs with an attempt or a broken cipher, in the game's race order: broken first, then
+ * by progress (unknown last), then by decryptor and target.
+ */
+pairs: Array<CipherPair>,
+/**
+ * Why the hour's ciphers are not known, when they are not.
+ */
+missing: string | null,
+/**
+ * Why the attempts' starts and breaks are not known, when they are not: every pair at work
+ * is then listed with neither.
+ */
+attemptsUnknown: string | null, warnings: Array<string>, };
+export type DecryptionParamsAtHour = DecryptionParams & { hour: number };
+export type OperativePlacementParams = { branchId: string, };
+export type Operative = {
+/**
+ * The full handle, as a decimal string.
+ */
+id: string, name: string | null,
+/**
+ * Why the name is not shown, when it is not.
+ */
+nameMissing: string | null, };
+export type Placement = { owner: Country, target: Country, operatives: Array<Operative>, };
+export type OperativePlacementReply = {
+/**
+ * By owner, then target id.
+ */
+placements: Array<Placement>,
+/**
+ * The census's read hour the rows hold (it is taken daily).
+ */
+readHour: number | null, missing: string | null, warnings: Array<string>, };
+export type OperativePlacementParamsAtHour = OperativePlacementParams & { hour: number };
+export type AgencyComparisonParams = { branchId: string,
+/**
+ * Countries whose agency is not created yet are listed too.
+ */
+includeUncreated: boolean, };
+export type UpgradeItem = { ordinal: number,
+/**
+ * The branch's and the definition's recorded tokens: a token alone is ambiguous.
+ */
+branch: string | null, token: string | null,
+/**
+ * Signed, as stored.
+ */
+level: number, name: string | null,
+/**
+ * Why the name is not shown: the identity refused, a token not recorded, or the content.
+ */
+missing: string | null, };
+export type Upgrades = {
+/**
+ * Why the list cannot be summed: an entry not authenticated, or ordinals missing or repeated.
+ */
+unavailable: string | null,
+/**
+ * The sum of each level at or above zero, as a decimal string; none where `unavailable`.
+ */
+nonnegativeLevelSum: string | null, items: Array<UpgradeItem>, };
+export type Agency = { country: Country, created: boolean,
+/**
+ * A created agency's stored name (even empty); the content's default for one not created.
+ */
+name: string | null, nameMissing: string | null,
+/**
+ * Fixed5, as recorded.
+ */
+defenseRaw: string,
+/**
+ * The defence line as the agency screen shows it, and its number alone.
+ */
+defenseText: string | null, defenseValue: string | null, activeCount: number,
+/**
+ * The maximum the agency screen shows, as recorded.
+ */
+maximum: number,
+/**
+ * None where acquired upgrades were not recorded at the hour (the reply says why).
+ */
+upgrades: Upgrades | null, };
+export type AgencyComparisonReply = {
+/**
+ * By country id.
+ */
+agencies: Array<Agency>,
+/**
+ * The defence column's label from the content; none where it cannot be read.
+ */
+defenseLabel: string | null, upgradesMissing: string | null, missing: string | null, warnings: Array<string>, };
+export type AgencyComparisonParamsAtHour = AgencyComparisonParams & { hour: number };
+export type OperativesRosterParams = { branchId: string,
+/**
+ * The countries whose agencies are shown, each once.
+ */
+tags: Array<string>, };
+export type RosterOperative = {
+/**
+ * The full handle, as a decimal string.
+ */
+id: string,
+/**
+ * The asked country whose agency holds it.
+ */
+roster: string,
+/**
+ * The country it works for.
+ */
+owner: Country, name: string | null,
+/**
+ * The game saved its name empty.
+ */
+unnamed: boolean, nameMissing: string | null,
+/**
+ * Its portrait, an index into the reply's `artwork`.
+ */
+portrait: number | null, portraitMissing: string | null, skill: number | null,
+/**
+ * Fixed5, as recorded.
+ */
+experienceRaw: string,
+/**
+ * The game's skill line and its progress to the next level (1 a whole level, never clamped).
+ */
+experienceText: string | null, experienceRatio: number | null, experienceMissing: string | null,
+/**
+ * As the game numbers it: 0 captured, 1 cooling down, 3 on a mission, 4 in an operation.
+ */
+assignment: number, assignmentName: string | null,
+/**
+ * A captivity's or cooldown's remaining days, and its progress (never clamped).
+ */
+assignmentDuration: string | null, assignmentProgress: number | null, assignmentMissing: string | null,
+/**
+ * The assignment's icon, an index into the reply's `artwork`.
+ */
+assignmentIcon: number | null, assignmentIconMissing: string | null,
+/**
+ * Where it works, when the census records a target.
+ */
+target: Country | null, captured: boolean,
+/**
+ * Who holds it captive, and since when, while captured.
+ */
+capturer: Country | null, capturedHour: number | null, };
+export type OperativesRosterReply = {
+/**
+ * The asked agencies' active lists, by asked country, each in roster order where recorded,
+ * else by handle.
+ */
+operatives: Array<RosterOperative>,
+/**
+ * Artwork URLs the rows name by index.
+ */
+artwork: Array<string>,
+/**
+ * Asked countries no country holds at the hour.
+ */
+unheld: Array<string>,
+/**
+ * Whether the game's intelligence agencies exist: false where the DLC is absent, none where
+ * it was not recorded.
+ */
+agencyFeature: boolean | null,
+/**
+ * The census's read hour the rows hold.
+ */
+readHour: number | null, missing: string | null, warnings: Array<string>, };
+export type OperativesRosterParamsAtHour = OperativesRosterParams & { hour: number };
+export type EspionageOperationsParams = { branchId: string,
+/**
+ * Only this country's operations, run by it or against it; every one when none.
+ */
+tag: string | null, };
+export type OperationState = {
+/**
+ * Written by the launch with the duration: none before it.
+ */
+startHour: number | null, durationDays: number,
+/**
+ * Selected phase definitions, not completed phases.
+ */
+phaseCount: number,
+/**
+ * Zero-based, at the read; none where the game's view selects none.
+ */
+currentPhase: number | null,
+/**
+ * Signed days since the start at the read; none before the launch, once terminal, and at the
+ * game's own -1 and full-duration results.
+ */
+elapsedDays: number | null,
+/**
+ * The resource meter, fixed5 from 0 to 100,000; not equipment readiness.
+ */
+preparationRatio: number | null,
+/**
+ * Every assignment slot, assigned or not.
+ */
+assignedSlots: number, autoRepeat: boolean, autoCommence: boolean, terminal: boolean, };
+export type OperationUnderWay = {
+/**
+ * The full handle, as a decimal string.
+ */
+id: string, owner: Country, target: Country,
+/**
+ * The definition's token as the recording names it; none where its literal was not recorded.
+ */
+operation: string | null, state: OperationState, };
+export type EspionageOperationsReply = {
+/**
+ * By handle; an operation that completed and waits for its removal is not one.
+ */
+operations: Array<OperationUnderWay>, missing: string | null, warnings: Array<string>, };
+export type EspionageOperationsParamsAtHour = EspionageOperationsParams & { hour: number };
+export type OccupationReserveParams = { branchId: string, };
+export type ReserveEntry = { ordinal: number, source: Country, };
+export type ReserveHolder = { country: Country,
+/**
+ * Its occupation status was read: no entry is a recorded zero.
+ */
+admitted: boolean,
+/**
+ * Its entries in list order.
+ */
+entries: Array<ReserveEntry>, };
+export type OccupationReserveReply = {
+/**
+ * By country id: the race ranks them by their entries' live amounts.
+ */
+holders: Array<ReserveHolder>,
+/**
+ * The reserve's read hour the rows hold; it moves with the reads, so a widget renders nothing
+ * for it.
+ */
+readHour: number | null, missing: string | null, warnings: Array<string>, };
+export type OccupationReserveParamsAtHour = OccupationReserveParams & { hour: number };
+export type IntelCoverageParams = { branchId: string, };
+export type IntelNetwork = { owner: Country, target: Country, };
+export type IntelCoverageReply = {
+/**
+ * Every country present at the hour (a slot the identity names), by tag: a pair of them
+ * without a network has none, where the summaries are known.
+ */
+countries: Array<Country>,
+/**
+ * By owner, then target id.
+ */
+networks: Array<IntelNetwork>,
+/**
+ * The summaries' read hour the rows hold (they are taken daily); it moves daily, so a widget
+ * renders nothing for it.
+ */
+readHour: number | null, missing: string | null, warnings: Array<string>, };
+export type IntelCoverageParamsAtHour = IntelCoverageParams & { hour: number };
+export type FuelBranchesParams = { branchId: string, tag: string, };
+export type FuelBranchesReply = { tag: string, scale: number,
+/**
+ * Each consumer index's label from the recorded content; null where it names none.
+ */
+consumerNames: Array<string | null>,
+/**
+ * The hour the consumers were last read: they are read once a day.
+ */
+readHour: number | null,
+/**
+ * The country's consumers in index order; none when it requested no fuel.
+ */
+consumers: Array<FuelConsumerRow>,
+/**
+ * Why the consumers are not known at the hour.
+ */
+missing: string | null, warnings: Array<string>, };
+export type FuelConsumerRow = {
+/**
+ * Its native consumer index: the series part.
+ */
+index: number, requested: string, received: string, priority: number, };
+export type FuelBranchesParamsAtHour = FuelBranchesParams & { hour: number };
+export type ResourceBalanceParams = { branchId: string, tag: string,
+/**
+ * The order `shown` lists the resources in; the game's when absent.
+ */
+order?: ResourceOrder,
+/**
+ * Leave out of `shown` the resources with nothing in either bar.
+ */
+hideEmpty?: boolean, };
+export type ResourceBalanceReply = { tag: string, decimals: number,
+/**
+ * Every recorded resource, in the game's order.
+ */
+resources: Array<ResourceInfo>,
+/**
+ * The resources the country has a row of, in `resources` order: each a row of live cells
+ * (`POOL_CELLS`).
+ */
+pools: Array<number>,
+/**
+ * The resources the bars show, in the asked order (those with no row last, in the game's).
+ */
+shown: Array<number>,
+/**
+ * Why the pools are not known at the hour.
+ */
+poolsMissing: string | null,
+/**
+ * Its deals, largest delivery first.
+ */
+deals: Array<ResourceDeal>,
+/**
+ * Why the deals are not known at the hour: unknown, which is not none.
+ */
+dealsMissing: string | null, warnings: Array<string>, };
+export type ResourceOrder = "game" | "shortfall" | "volume";
+export type ResourceDeal = {
+/**
+ * The deal's native handle, as a decimal string.
+ */
+deal: string, resource: number, direction: TradeDirection,
+/**
+ * The other country's tag at the hour.
+ */
+partner: string,
+/**
+ * Civilian factories the importer pays.
+ */
+factories: number, convoysAssigned: number, convoysRequired: number, };
+export type TradeDirection = "import" | "export";
+export type ResourceBalanceParamsAtHour = ResourceBalanceParams & { hour: number };
+export type LendLeaseBalanceParams = { branchId: string,
+/**
+ * One country's partners; every country's totals when absent.
+ */
+holder?: string, };
+export type LendLeaseBalanceReply = { holder: string | null, scale: number,
+/**
+ * Every country with a history or on the rosters, or the holder's partners with a history;
+ * in slot order.
+ */
+rows: Array<LendLeaseRow>,
+/**
+ * Why the histories are not known at the hour.
+ */
+missing: string | null, warnings: Array<string>, };
+export type LendLeaseRow = { slot: number,
+/**
+ * The tag its slot's country holds at the hour; null where the recorded countries name none.
+ */
+tag: string | null, values: [string, string, string, string], };
+export type LendLeaseBalanceParamsAtHour = LendLeaseBalanceParams & { hour: number };
+export type ProductionLinesAtParams = { branchId: string, tag: string,
+/**
+ * The game's queue order when absent.
+ */
+order?: LineOrder, };
+export type ProductionLinesAtReply = { branchId: string, tag: string, decimals: number,
+/**
+ * The country's lines in the asked order; empty with `missing` where they are not known.
+ */
+lines: Array<LineNow>,
+/**
+ * Why the lines are not known at the hour, when they are not: never shown as none.
+ */
+missing: string | null,
+/**
+ * Why the lines' output is not known at the hour, when it is not.
+ */
+outputMissing: string | null, variants: Array<VariantName>, organisations: Array<OrganisationName>, icons: Array<EquipmentIcon>, warnings: Array<string>, };
+export type LineOrder = "game" | "factories" | "output";
+export type OutputPartNow = { variant: string,
+/**
+ * The organisation's reference; "0" for none.
+ */
+mio: string,
+/**
+ * False when a tick could not be counted: the line's total is then not known.
+ */
+exact: boolean, };
+export type OutputNow = { parts: Array<OutputPartNow>, sinceHour: number, wholeLife: boolean, };
+export type LineNow = { handle: string, kind: LineKind | null, variant: string, mio: string, maxFactories: number, priority: number,
+/**
+ * Its output rows; null where they are not recorded at the hour.
+ */
+output: OutputNow | null, };
+export type ProductionLinesAtParamsAtHour = ProductionLinesAtParams & { hour: number };
+export type ProductionLicencesParams = { branchId: string, };
+export type ProductionLicencesReply = { branchId: string, licences: Array<LicenceNow>,
+/**
+ * Why the licences are not known at the hour, when they are not: never shown as none.
+ */
+missing: string | null, warnings: Array<string>, };
+export type LicenceParty = { slot: number | null, tag: string | null, };
+export type LicenceDesign = { variant: string,
+/**
+ * Null where the content does not name it or it has no definition at the hour.
+ */
+name: string | null, };
+export type LicenceNow = {
+/**
+ * Unique at the hour: the licensee's reference and the licence's place in its roster.
+ */
+key: string, licensor: LicenceParty, licensee: LicenceParty,
+/**
+ * Civilian factories the licensee lends.
+ */
+lent: number, required: number,
+/**
+ * The hour the licence started.
+ */
+since: number, designs: Array<LicenceDesign>, };
+export type ProductionLicencesParamsAtHour = ProductionLicencesParams & { hour: number };
+export type IndustrialOrganisationsParams = { branchId: string, tag: string, };
+export type IndustrialOrganisationsReply = { branchId: string, tag: string, organisations: Array<OrganisationNow>,
+/**
+ * Why the organisations are not known at the hour, when they are not.
+ */
+missing: string | null,
+/**
+ * Why their state (size, funds, traits, policy) is not known at the hour, when it is not.
+ */
+detailsMissing: string | null, icons: Array<EquipmentIcon>, warnings: Array<string>, };
+export type OrganisationNow = { id: string, token: string, name: string | null, nameUnknown: string | null,
+/**
+ * The icon's key in `icons`.
+ */
+icon: string | null, iconUnknown: string | null, size: number | null,
+/**
+ * Traits unlocked.
+ */
+traits: number | null,
+/**
+ * The selected policy's script key; null for none or where the state was not read.
+ */
+policyToken: string | null, policyName: string | null,
+/**
+ * Why a selected policy cannot be named, when it cannot.
+ */
+policyUnknown: string | null,
+/**
+ * The hour the policy may change again; null when none is set. The days left are counted
+ * where they are shown, as the game counts them: its day less the shown hour's.
+ */
+cooldownHour: number | null, };
+export type IndustrialOrganisationsParamsAtHour = IndustrialOrganisationsParams & { hour: number };
+export type DoctrineMasteryParams = { branchId: string, tag: string, };
+export type MasteryChoice = { id: string, name: string | null, icon: string | null, };
+export type MasteryReward = { id: string, name: string | null, threshold: string | null, };
+export type MasteryTrack = { ordinal: number, name: string | null, sub: MasteryChoice | null, rewards: Array<MasteryReward>, unlocked: number, };
+export type MasteryFolder = { ordinal: number,
+/**
+ * The folder token's spelling: stable across hours, for settings that choose folders.
+ */
+id: string, name: string | null, icon: string | null,
+/**
+ * None where no grand doctrine is chosen.
+ */
+grand: MasteryChoice | null, completed: Array<MasteryChoice>, tracks: Array<MasteryTrack>, };
+export type DoctrineMasteryReply = { folders: Array<MasteryFolder>, warnings: Array<string>, };
+export type DoctrineMasteryParamsAtHour = DoctrineMasteryParams & { hour: number };
+export type DoctrineRewardsParams = { branchId: string, tag: string,
+/**
+ * The folder's and the track's ordinals, as `doctrine-mastery` lists them.
+ */
+folder: number, track: number, };
+export type DescribedReward = { id: string, name: string | null, threshold: string | null, description: string | null, };
+export type DoctrineRewardsReply = {
+/**
+ * The track's subdoctrine's spelling at the hour; none where none is chosen.
+ */
+sub: string | null, rewards: Array<DescribedReward>, warnings: Array<string>, };
+export type DoctrineRewardsParamsAtHour = DoctrineRewardsParams & { hour: number };
+export type MinefieldsParams = { branchId: string,
+/**
+ * The owners shown; every owner when none.
+ */
+tags: Array<string> | null, };
+export type MineOwner = { tag: string, };
+export type MinedRegion = { region: number, owners: Array<MineOwner>, unknownOwners: number, };
+export type UnknownRegion = { region: number, unknownOwners: number, };
+export type MinefieldsReply = { regions: Array<MinedRegion>, unknown: Array<UnknownRegion>,
+/**
+ * Every sea region the content names and every region mined, for the region setting.
+ */
+choices: Array<SeaRegionChoice>, scale: number, warnings: Array<string>, };
+export type MinefieldsParamsAtHour = MinefieldsParams & { hour: number };
+export type MinefieldReportsParams = { branchId: string, region: number, };
+export type MineReport = { kind: number, ordinal: number, victim: string | null, mineOwner: string | null, ship: string | null, equipment: string | null, damage: string, sunk: boolean, };
+export type MinefieldReportsReply = { region: number,
+/**
+ * The hour the reports were read, where recorded.
+ */
+readHour: number | null, reports: Array<MineReport>, warnings: Array<string>, };
+export type MinefieldReportsParamsAtHour = MinefieldReportsParams & { hour: number };
+export type NavalYardsParams = { branchId: string, tag: string, };
+export type YardShip = { handle: string, name: string | null, nameRebuilt: string | null, design: string | null, class: string | null, hull: string | null, maximum: string | null, taskForce: string | null, policy: string | null, };
+export type RepairPort = { province: number, name: string | null, priority: number | null,
+/**
+ * The game's name of the port's repair priority.
+ */
+policy: string | null, dockyards: number | null,
+/**
+ * The ships queued, in queue order; a ship queued twice is listed twice.
+ */
+queue: Array<YardShip>, };
+export type NavalRepairsReply = { ports: Array<RepairPort>, usedDockyards: number | null, repairLimit: number | null,
+/**
+ * Distinct ships queued, where every one is recorded.
+ */
+queuedShips: number | null,
+/**
+ * Whether every base's holder and the whole queue were read: only then is no port no repair.
+ */
+censusComplete: boolean, warnings: Array<string>, };
+export type NavalYardsParamsAtHour = NavalYardsParams & { hour: number };
+export type RefitLine = { handle: string, target: string | null,
+/**
+ * Work done at the reply's hour, raw fixed5 IC; hourly, so also the live cell `(handle, progress)`.
+ */
+progress: string,
+/**
+ * The line's cost, raw fixed5 IC, from its daily metadata.
+ */
+cost: string | null, dockyards: number | null,
+/**
+ * Cost less work done, where both are finite and the cost positive.
+ */
+remaining: string | null, ships: Array<YardShip>, };
+export type NavalRefitsReply = { lines: Array<RefitLine>, ships: number | null, dockyards: number | null,
+/**
+ * The hour the daily line metadata (cost, target, dockyards) was read.
+ */
+costRead: number | null, censusComplete: boolean,
+/**
+ * Why the refit lines are not known at the hour, when they are not.
+ */
+missing: string | null, warnings: Array<string>, };
+export type UnitLeadersParams = { branchId: string, selection: LeaderSelection, leaders: LeaderKinds, };
+export type LeaderSelection = { "kind": "all" } | { "kind": "countries", tags: Array<string>, };
+export type LeaderKinds = "all" | "land" | "navy";
+export type LeaderTrait = { token: string, name: string | null, icon: string | null,
+/**
+ * Why the icon is not drawn.
+ */
+missing: string | null, };
+export type LeaderRole = { owner: string | null, kind: number, category: number, rank: string | null, attributeNames: [string | null, string | null, string | null, string | null], maximumSkill: number | null, };
+export type LeaderWithheld = { reference: string, owner: string | null, kind: number, name: string | null, reason: string, };
+export type LeaderRow = { reference: string, name: string | null, role: LeaderRole, skill: number | null, components: [number, number, number, number],
+/**
+ * The traits held, by place in the reply's `traits`; none where they were not recorded.
+ */
+traits: Array<number> | null,
+/**
+ * Each held trait's date, aligned with `traits`: [hour, class] (0 held before, 1 gained, 2
+ * first observed); none where the logs hold none.
+ */
+traitDates: Array<[number, number] | null>, firstSeenHour: number | null, fought: number, won: number, lost: number, };
+export type UnitLeadersReply = { leaders: Array<LeaderRow>, traits: Array<LeaderTrait>, withheld: Array<LeaderWithheld>,
+/**
+ * Why the leaders are not shown at this hour, when they are not.
+ */
+missing: string | null,
+/**
+ * The first hour up to this one the battle log was not recorded: counts are then lower bounds.
+ */
+battlesPartialFrom: number | null, resultsMissing: string, warnings: Array<string>, };
+export type UnitLeadersParamsAtHour = UnitLeadersParams & { hour: number };
+export type LeaderHourParams = { branchId: string, reference: string, };
+export type LeaderTraining = { key: string, token: string | null, name: string | null, requiredRaw: string | null, };
+export type LeaderFactor = { token: string | null, name: string | null, factorRaw: string, };
+export type LeaderProgress = { nextRequiredRaw: string | null,
+/**
+ * None where the training rows were not recorded.
+ */
+training: Array<LeaderTraining> | null, factors: Array<LeaderFactor> | null, };
+export type LeaderHourReply = { reference: string,
+/**
+ * Why the leader is not shown at this hour, when it is not.
+ */
+missing: string | null, name: string | null, role: LeaderRole | null, skill: number | null, components: [number, number, number, number], traits: Array<number> | null, traitDates: Array<[number, number] | null>, traitCatalogue: Array<LeaderTrait>, fought: number, won: number, lost: number, battlesPartialFrom: number | null, progress: LeaderProgress | null, warnings: Array<string>, };
+export type LeaderHourParamsAtHour = LeaderHourParams & { hour: number };
+export type NavalManagementParams = { branchId: string, tag: string, };
+export type NavalManagementAmount = { row: string, column: string, raw: string | null, of: string | null, unit: string, };
+export type NavalManagementLine = { text: string, amount: NavalManagementAmount | null, };
+export type NavalManagementSection = { key: string, title: string, lines: Array<NavalManagementLine>, };
+export type NavalManagementReply = { sections: Array<NavalManagementSection>, warnings: Array<string>, };
+export type NavalManagementParamsAtHour = NavalManagementParams & { hour: number };
+export type AirAcesParams = { branchId: string, };
+export type AirAcesReply = {
+/**
+ * The hour of the read the roster holds; none when not known.
+ */
+readHour: number | null,
+/**
+ * Why the roster is not shown at the hour, when it is not.
+ */
+missing: string | null, aces: Array<AirAce>, warnings: Array<string>, };
+export type AirAce = { id: string, tag: string | null, name: string | null, callsign: string | null,
+/**
+ * The assigned wing's handle; null without one.
+ */
+wing: string | null, wingName: string | null,
+/**
+ * The wing's aircraft in its equipment order; null when not recorded.
+ */
+aircraft: Array<AirAceAircraft> | null, alive: boolean,
+/**
+ * The first hour the timeline held its row: an upper bound of when it became an ace.
+ */
+firstSeen: number | null, death: AirAceDeath | null, };
+export type AirAceAircraft = { id: string, name: string | null,
+/**
+ * Why the name is not shown, without one.
+ */
+missing: string | null, };
+export type AirAceDeath = {
+/**
+ * The last read that saw it alive; null when it was first seen dead.
+ */
+lastAlive: number | null,
+/**
+ * The first read that saw it dead after one that saw it alive.
+ */
+byHour: number | null, killerAce: string | null,
+/**
+ * The killer's name when the killer is on the roster at the hour.
+ */
+killerName: string | null, killerTag: string | null, };
+export type AirAcesParamsAtHour = AirAcesParams & { hour: number };
+export type AirAcePortraitParams = { branchId: string, ids: Array<string>, };
+export type AirAcePortraitReply = { portraits: Array<AirAcePortrait>, warnings: Array<string>, };
+export type AirAcePortrait = { id: string, image: string | null, missing: string | null, };
+export type AirAcePortraitParamsAtHour = AirAcePortraitParams & { hour: number };
+export type RegionalWeatherProvincesParams = { branchId: string, region: string, };
+export type RegionalWeatherProvincesReply = { readHour: number | null, region: string, provinces: Array<RegionalWeatherProvince>, warnings: Array<string>, };
+export type RegionalWeatherProvince = { id: string, name: string | null,
+/**
+ * The stored snow word, fixed5; permanent snow is not added.
+ */
+snow: string | null,
+/**
+ * Whether the game shows mud: the raw mud byte is nonzero.
+ */
+mud: boolean | null,
+/**
+ * The replayed temperature, fixed5 degrees Celsius.
+ */
+temperature: string | null, };
+export type RegionalWeatherProvincesParamsAtHour = RegionalWeatherProvincesParams & { hour: number };
+export type FocusUnavailableParams = { branchId: string, };
+export type FocusUnavailable = { hour: number, reasons: Array<FocusTableRefusal>, warnings: Array<string>, };
+export type FocusTableRefusal = { table: string, reason: string | null, missingRows: string | null, };
+export type FocusUnavailableParamsAtHour = FocusUnavailableParams & { hour: number };
+export type StabilityBreakdownParams = { branchId: string, tag: string, };
+export type StabilityBreakdownReply = { tag: string, hour: number,
+/**
+ * None where the hour holds no breakdown; `missing` says why.
+ */
+breakdown: StabilityBreakdown | null, missing: string | null, warnings: Array<string>, };
+export type StabilityBreakdown = { hour: number,
+/**
+ * The hour the inputs were read at.
+ */
+readHour: number,
+/**
+ * The game language of unpaired lines' text.
+ */
+language: string, stability: FormulaBreakdown, warSupport: FormulaBreakdown, maxCommandPower: FormulaBreakdown,
+/**
+ * False when the lines were not recorded by the same read.
+ */
+linesAvailable: boolean, modifiers: Array<ModifierBreakdown>, };
+export type FormulaBreakdown = {
+/**
+ * The displayed value, fixed5.
+ */
+valueRaw: string | null, terms: Array<FormulaTerm>,
+/**
+ * Displayed minus the unclamped sum: the clamp's contribution.
+ */
+clampRaw: string | null, };
+export type FormulaTerm = { term: string, valueRaw: string | null, };
+export type ModifierBreakdown = {
+/**
+ * The modifier's script name.
+ */
+key: string,
+/**
+ * The recorded key index; none when the game registers no such key.
+ */
+index: number | null,
+/**
+ * ModifierDefinitions' `good` flag: only for good keys does every line equal its
+ * contribution to the total.
+ */
+good: boolean | null, totalRaw: string | null, lines: Array<BreakdownLine>,
+/**
+ * Total minus the lines, when it is not zero.
+ */
+remainderRaw: string | null, };
+export type BreakdownLine = {
+/**
+ * The child's position in the modifier tree (the tooltip's order); 0 for a part's line.
+ */
+line: number,
+/**
+ * `unpaired`, `idea`, `countryLeader`, `ideology`, `advisor`, `static`, `staticScaled`,
+ * `dynamicModifier` or `dynamicModifierValues`.
+ */
+kind: string,
+/**
+ * Script identity; empty for a leader or an unpaired line.
+ */
+identity: string,
+/**
+ * Character id or dynamic modifier scope country; zero otherwise.
+ */
+identityId: number,
+/**
+ * Dynamic modifier scope state; zero otherwise.
+ */
+secondaryRaw: string, valueRaw: string,
+/**
+ * An unpaired line's recorded display text, as plain text.
+ */
+text: string | null,
+/**
+ * A paired line's name in the viewer's language; none when content does not name it.
+ */
+label: string | null,
+/**
+ * An idea slot's or advisor role's name in the viewer's language.
+ */
+group: string | null,
+/**
+ * For an idea in a category rather than a slot, the category's content type.
+ */
+groupKind: string | null, };
+export type StabilityBreakdownParamsAtHour = StabilityBreakdownParams & { hour: number };
+export type StabilityPartNamesParams = { branchId: string, tag: string,
+/**
+ * Parts of the `stability-parts` series, as `series-parts` names them: measure and handle.
+ */
+parts: Array<string>, };
+export type StabilityPartNamesReply = { tag: string, hour: number, parts: Array<StabilityPartName>, warnings: Array<string>, };
+export type StabilityPartName = {
+/**
+ * The part as asked.
+ */
+part: string,
+/**
+ * `stability` or `warSupport`.
+ */
+measure: string,
+/**
+ * `term`, `line`, `remainder`, `clamp` or `total` (the displayed value: hours it is recorded
+ * are the hours the parts are known).
+ */
+kind: string,
+/**
+ * Its source, the same for the same source whatever its handle: `term:<term>`,
+ * `line:<kind>:<identity>:<id>:<secondary>[:<script>:<saved>]`, `unpaired:<text>`,
+ * `unpaired-refused:<escaped label>`, `remainder`, `clamp` or `total`.
+ */
+id: string | null,
+/**
+ * The formula term of a term part.
+ */
+term: string | null,
+/**
+ * A line part's line, named; its tree position and value are not a part's.
+ */
+line: BreakdownLine | null,
+/**
+ * Why it is not named.
+ */
+missing: string | null, };
+export type StabilityPartNamesParamsAtHour = StabilityPartNamesParams & { hour: number };
+export type DivisionTemplatesParams = { branchId: string, tag: string, countFor: ArmyAttribution, };
+export type DivisionTemplatesReply = { tag: string, countFor: ArmyAttribution, templates: Array<TemplateEntry>,
+/**
+ * Why fielded counts are unknown, when they all are.
+ */
+fieldedMissing: string | null, warnings: Array<string>, };
+export type TemplateEntry = {
+/**
+ * The template's full native handle.
+ */
+template: string, name: string | null, nameMissing: string | null, icon: string | null, iconMissing: string | null,
+/**
+ * Position in the country's roster.
+ */
+rosterOrdinal: number | null,
+/**
+ * Divisions of the template counted for the country; none when not known.
+ */
+fielded: number | null, units: Array<TemplateUnit>, unitsMissing: string | null,
+/**
+ * Signed fixed-point base combat width with five decimals.
+ */
+baseWidthRaw: string | null,
+/**
+ * The template's stored priority and the game's name for it.
+ */
+priority: number | null, priorityName: string | null, priorityMissing: string | null, locked: boolean | null, obsolete: boolean | null,
+/**
+ * The hour the template was made obsolete, when recorded.
+ */
+obsoleteHour: number | null, designer: DesignerKind | null, forceRecruiting: boolean | null, newEquipment: boolean | null, foreignEquipment: boolean | null, manpower: number | null, trainingDays: number | null, settingsMissing: string | null, };
+export type TemplateUnit = {
+/**
+ * The sub-unit's content key, shown on hover only.
+ */
+key: string | null, name: string | null, nameMissing: string | null, count: number,
+/**
+ * A support company rather than a battalion.
+ */
+support: boolean,
+/**
+ * A country-local copy of the definition.
+ */
+local: boolean, };
+export type DesignerKind = "ordinary" | "headquarters";
+export type DivisionTemplatesParamsAtHour = DivisionTemplatesParams & { hour: number };
+export type DivisionCareersParams = { branchId: string,
+/**
+ * The countries whose divisions rank; none ranks every country's.
+ */
+tags: Array<string> | null, };
+export type DivisionCareersReply = { divisions: Array<CareerRow>, medals: Array<CareerMedal>, templates: Array<CareerTemplate>,
+/**
+ * Why divisions are unknown at this hour, when they are.
+ */
+missing: string | null, warnings: Array<string>, };
+export type CareerRow = { division: string, tag: string | null, template: string, name: string | null, nameMissing: string | null, facts: CareerFacts, };
+export type CareerFacts = {
+/**
+ * The recorded medal total; none when the history was not read.
+ */
+medals: number | null, awards: Array<CareerAward>, historyMissing: string | null,
+/**
+ * Manpower-normalised experience, fixed-point with five decimals.
+ */
+experienceRaw: string | null,
+/**
+ * Zero-based experience level, and the level's in-game name.
+ */
+level: number | null, levelName: string | null,
+/**
+ * The game's career kill counter.
+ */
+kills: number | null, };
+export type CareerAward = {
+/**
+ * Index into the reply's medals.
+ */
+medal: number, count: number, };
+export type CareerMedal = { key: string, name: string | null, };
+export type CareerTemplate = { template: string, name: string | null, icon: string | null, };
+export type DivisionCareersParamsAtHour = DivisionCareersParams & { hour: number };
+export type DivisionRecordParams = { branchId: string,
+/**
+ * The division's full native handle.
+ */
+division: string, };
+export type DivisionRecordReply = { division: string,
+/**
+ * The division is not in service at this hour.
+ */
+absent: boolean, tag: string | null, template: CareerTemplate | null, name: string | null, nameMissing: string | null, facts: CareerFacts | null, medals: Array<CareerMedal>, entries: Array<RecordEntry>, warnings: Array<string>, };
+export type RecordEntry = { award: boolean, ordinal: number,
+/**
+ * The entry's game date.
+ */
+hour: number, description: string | null, descriptionMissing: string | null, provinces: Array<number>,
+/**
+ * The awarded medal, by index into the reply's medals.
+ */
+medal: number | null, };
+export type DivisionRecordParamsAtHour = DivisionRecordParams & { hour: number };
+export type DivisionEquipmentParams = { branchId: string, tag: string, countFor: ArmyAttribution, template: string | null, division: string | null, };
+export type DivisionEquipmentReply = { tag: string, countFor: ArmyAttribution,
+/**
+ * Why the country's division equipment is not known at this hour, when it is not.
+ */
+missing: string | null, poolHour: number | null, divisions: number | null,
+/**
+ * Divisions with a known shortfall of any type.
+ */
+divisionsShort: number | null, unknownDivisions: number | null, types: Array<EquipmentType>, templates: Array<EquipmentTemplate>,
+/**
+ * A template's divisions, when one is asked.
+ */
+divisionRows: Array<EquipmentDivision> | null,
+/**
+ * A division's pool, when one is asked.
+ */
+pool: DivisionPool | null, warnings: Array<string>, };
+export type EquipmentVariant = { variant: string, name: string | null, heldRaw: string | null, };
+export type EquipmentType = {
+/**
+ * None is the unclassified bucket, not a content key.
+ */
+archetype: string | null, name: string | null, nameMissing: string | null,
+/**
+ * What every read pool holds, its comparison known or not; none when not known.
+ */
+heldRaw: string | null, neededRaw: string | null,
+/**
+ * Each known division's holding capped at its own need, summed.
+ */
+filledRaw: string | null, missingRaw: string | null, divisionsShort: number | null, unknownDivisions: number | null,
+/**
+ * National stock, never used in the shortfall.
+ */
+stockpileRaw: string | null, stockpileHour: number | null, variants: Array<EquipmentVariant>, };
+export type EquipmentTemplate = { template: string, name: string | null, nameMissing: string | null, icon: string | null, iconMissing: string | null, divisions: number | null, manpower: string | null, manpowerRequired: string | null, hpRaw: string | null, hpMaxRaw: string | null,
+/**
+ * Known divisions only, `unknown_divisions` naming the rest.
+ */
+neededRaw: string | null,
+/**
+ * Needed archetypes only, each division capped at its own need.
+ */
+heldRaw: string | null, typesShort: number | null, unknownDivisions: number | null, };
+export type EquipmentDivision = { division: string, name: string | null, nameMissing: string | null, manpower: string | null, manpowerRequired: string | null, hpRaw: string | null, hpMaxRaw: string | null, neededRaw: string | null, heldRaw: string | null,
+/**
+ * None when the comparison with the need is not known.
+ */
+typesShort: number | null, poolKnown: boolean,
+/**
+ * The previous template's name during conversion.
+ */
+convertingFrom: string | null, };
+export type DivisionPoolType = { archetype: string | null, name: string | null,
+/**
+ * None when the division's pool was not read.
+ */
+heldRaw: string | null, neededRaw: string | null, missingRaw: string | null, variants: Array<EquipmentVariant>, };
+export type DivisionPool = { division: string, name: string | null, template: string, templateName: string | null, manpower: string | null, manpowerRequired: string | null, hpRaw: string | null, hpMaxRaw: string | null, types: Array<DivisionPoolType>,
+/**
+ * An unread pool lists template needs with unknown holdings, not an empty pool.
+ */
+poolKnown: boolean, };
+export type DivisionEquipmentParamsAtHour = DivisionEquipmentParams & { hour: number };
+export type ResearchSlotsParams = { branchId: string, tag: string, };
+export type ResearchSlotsReply = { tag: string,
+/**
+ * The holder's research read the slots are from.
+ */
+readHour: number | null,
+/**
+ * Why no slot is known at the hour, when none is.
+ */
+missing: string | null, slots: Array<ResearchSlotNow>, grants: GrantInventory, warnings: Array<string>, };
+export type ResearchSlotNow = { index: number,
+/**
+ * As read: `firstHour` and `lastHour` are the read's hour.
+ */
+state: ResearchSlotState,
+/**
+ * The joined assignment's progress at the read; none while idle.
+ */
+progress: ResearchProgress | null, };
+export type ResearchSlotState = { firstHour: number, lastHour: number, token: string | null, entryFirstObservedHour: number | null,
+/**
+ * Native fixed5 operands as decimal text.
+ */
+speedMultiplierRaw: string, bankedDaysRaw: string, appliedDaysRaw: string, aheadReductionYearsRaw: string | null, details: ResearchDetails | null, };
+export type ResearchProgress = { firstHour: number, lastHour: number, entryFirstObservedHour: number | null,
+/**
+ * Base duration in fixed5 days, from the recorded cost operands.
+ */
+baseDaysRaw: string | null, progressRaw: string, };
+export type ResearchDetails = {
+/**
+ * The game's days-left estimate at the read; none where its rate is not known.
+ */
+remainingDays: number | null,
+/**
+ * None where the bonuses were not read with the slot or do not attribute.
+ */
+bonuses: Array<ResearchBonus> | null, modifiers: ResearchModifiers | null, };
+export type ResearchModifiers = { components: Array<ResearchModifier>, totalBonusRaw: string, year: number, aheadFactorRaw: string, minimumSpeedRaw: string, };
+export type ResearchModifier = { kind: string, raw: string, sources: Array<ResearchModifierSource>, };
+export type ResearchModifierSource = { token: string | null, name: string | null, raw: string, };
+export type ResearchBonus = { id: number, token: string | null, name: string | null, speedBonusRaw: string | null, costReductionRaw: string | null, aheadReductionYearsRaw: string | null, };
+export type GrantInventory = { nextId: number | null, grants: Array<ResearchGrant>,
+/**
+ * Why the inventory is not known at the hour, when it is not.
+ */
+unavailable: string | null, };
+export type ResearchGrant = { id: number, ordinal: number, kind: string, token: string, name: string | null, uses: number, activeClaims: number | null, speedBonusRaw: string | null, aheadReductionRaw: string | null, costReductionRaw: string | null, technologies: Array<GrantRestriction>, categories: Array<GrantRestriction>, };
+export type GrantRestriction = { token: string, name: string | null, databaseIndex: number | null, };
+export type ResearchSlotsParamsAtHour = ResearchSlotsParams & { hour: number };
+export type AirMissionsParams = { branchId: string, tag: string, };
+export type AirMissionsReply = {
+/**
+ * The hour of the registrations' read the rows hold; none when not known.
+ */
+readHour: number | null,
+/**
+ * Why the missions are not shown at the hour, when they are not.
+ */
+missing: string | null,
+/**
+ * The missions any region records, in bit order.
+ */
+missions: Array<AirMissionChoice>, regions: Array<AirMissionRegion>,
+/**
+ * The owner's theatres, in the game's order; none where membership is not known.
+ */
+theatres: Array<AirMissionTheatre> | null,
+/**
+ * Why the theatres are not known at the hour.
+ */
+theatresMissing: string | null, warnings: Array<string>, };
+export type AirMissionChoice = { id: string, name: string, icon: SpriteFrame | null, };
+export type AirMissionRegion = { region: string, name: string | null,
+/**
+ * Why the name is not shown, without one.
+ */
+missing: string | null,
+/**
+ * The mission bits the region records: a wing of its registrations flies them.
+ */
+missions: Array<string>, };
+export type AirMissionsParamsAtHour = AirMissionsParams & { hour: number };
+export type AirMissionWingsParams = { branchId: string, tag: string, region: number, };
+export type AirMissionWingsReply = { readHour: number | null, region: number, wings: Array<AirMissionWing>,
+/**
+ * Why the region's wings are not shown at the hour, when they are not.
+ */
+missing: string | null, warnings: Array<string>, };
+export type AirMissionWing = { id: string, name: string | null, type: string | null, missions: Array<string>,
+/**
+ * Raw fixed5 decimal text: 100,000 is one.
+ */
+efficiency: string | null,
+/**
+ * Why a field above is not shown.
+ */
+refusals: Array<string>, };
+export type AirMissionWingsParamsAtHour = AirMissionWingsParams & { hour: number };
+export type OccupiedStatesParams = { branchId: string, };
+export type OccupiedStatesReply = {
+/**
+ * Ascending by state.
+ */
+states: Array<OccupiedState>,
+/**
+ * Every row of StateResistance was read and every occupier and occupied country named.
+ */
+complete: boolean,
+/**
+ * Why no state can be shown at the hour.
+ */
+missing: string | null,
+/**
+ * The laws the states hold.
+ */
+laws: Array<OccupationLawInfo>, strengthMissing: string,
+/**
+ * The displayed strength below which a garrison shows red (fixed5); none where the content
+ * does not say.
+ */
+garrisonRedRaw: string | null, warnings: Array<string>, };
+export type OccupiedState = { state: number, name: string | null, nameMissing: string | null, owner: string | null, occupier: string | null,
+/**
+ * The original occupied country, which can differ from the legal owner.
+ */
+occupied: string | null,
+/**
+ * The sign of the required amount (-1, 0, 1), with a garrison row: none required shows no
+ * bar, below zero the game shows unmet. It flips far more rarely than the amount moves.
+ */
+garrisonRequiredSign: number | null,
+/**
+ * The requirement failed: the game shows no strength.
+ */
+garrisonAlert: boolean,
+/**
+ * The assigned manpower is known: its cell, or zero where the state has no assignment row
+ * and so no cell.
+ */
+assignedKnown: boolean, garrisonMissing: string | null, law: string | null, lawMissing: string | null, };
+export type OccupationLawInfo = { token: string, name: string | null, icon: string | null, missing: string | null, };
+export type OccupiedStatesParamsAtHour = OccupiedStatesParams & { hour: number };
+export type OccupationDetailParams = { branchId: string,
+/**
+ * None asks every occupier with a row at the hour.
+ */
+tags: Array<string>, collaboration: boolean, };
+export type OccupationDetailReply = { occupiers: Array<OccupationDetailRow>,
+/**
+ * Why collaboration is not shown, when asked and not known.
+ */
+collaborationMissing: string | null, warnings: Array<string>, };
+export type OccupationDetailRow = { tag: string,
+/**
+ * Why the tag names no occupier at the hour.
+ */
+missing: string | null,
+/**
+ * By tag; empty unless asked.
+ */
+collaboration: Array<OccupationCollaboration>, };
+export type OccupationCollaboration = { slot: number, tag: string | null, progressRaw: string | null, };
+export type OccupationDetailParamsAtHour = OccupationDetailParams & { hour: number };
+export type MarketLendLeaseParams = { branchId: string,
+/**
+ * Rows these countries take part in (as seller or buyer, giver or receiver); every row when
+ * empty.
+ */
+tags: Array<string>,
+/**
+ * The one section read; every section when absent.
+ */
+only?: MarketSection, };
+export type MarketLendLeaseReply = { branchId: string,
+/**
+ * Null where the section was not asked or not recorded at the hour (`warnings` says which).
+ */
+offers: Array<MarketOffer> | null, contracts: Array<MarketTerms> | null, agreements: Array<LeaseTerms> | null,
+/**
+ * Why purchase progress is not known at the hour, when contracts are shown and it is not.
+ */
+purchasesMissing: string | null,
+/**
+ * Rows whose country in the chosen side has no tag at the hour: a chosen country may be theirs.
+ */
+unattributed: number, variants: Array<VariantName>, icons: Array<EquipmentIcon>, warnings: Array<string>, };
+export type MarketSection = "offers" | "contracts" | "agreements";
+export type MarketItem = { variant: string, name: string | null, amountRaw: string, };
+export type MarketLevel = { variant: string, name: string | null,
+/**
+ * 0 low, 1 normal, 2 high.
+ */
+level: number, };
+export type MarketGrant = { cicRaw: string, archetype: string | null, targets: Array<string>, trigger: string | null, };
+export type MarketOffer = {
+/**
+ * The seller's raw country id.
+ */
+country: number, tag: string | null, inventory: Array<MarketItem>, prices: Array<MarketLevel>, subsidies: Array<MarketGrant>, subsidyTotalRaw: string, autoSendMarketAccess: boolean, };
+export type MarketTerms = { key: string,
+/**
+ * The handle, hexadecimal.
+ */
+id: string, seller: string | null, buyer: string | null, request: boolean, speed: number, equipment: Array<MarketItem>,
+/**
+ * Agreed prices, CIC.
+ */
+prices: Array<MarketItem>, levels: Array<MarketLevel>, subsidies: Array<MarketGrant>,
+/**
+ * Whether a purchase contract stands for it: its progress is in the live cells.
+ */
+purchase: boolean, };
+export type LeaseTerms = { key: string,
+/**
+ * The handle, hexadecimal.
+ */
+id: string, giver: string | null, receiver: string | null, revision: string, activeSince: number, lastDelivery: number, monthly: Array<MarketItem>,
+/**
+ * Production shares, /1000 percent.
+ */
+percentage: Array<MarketItem>, once: Array<MarketItem>, delivered: Array<MarketItem>, sunk: Array<MarketItem>, fuelDailyRaw: string, fuelPercentageRaw: string, lastFuelDeliveredRaw: string, };
+export type MarketLendLeaseParamsAtHour = MarketLendLeaseParams & { hour: number };
+export type CountryFuelParams = { branchId: string, tag: string, };
+export type CountryFuelReply = { tag: string,
+/**
+ * Units per fuel of the level, capacity, burned and transfer values.
+ */
+quantityScale: number,
+/**
+ * Units per fuel of the gains and the consumers' amounts.
+ */
+gainScale: number,
+/**
+ * Hours of fuel updates a day sums.
+ */
+dayHours: number,
+/**
+ * Hours of one window of a detail history.
+ */
+detailHours: number, consumerNames: [string | null, string | null, string | null], gainLabels: [FuelLabel, FuelLabel, FuelLabel, FuelLabel], transferLabels: [FuelLabel, FuelLabel, FuelLabel],
+/**
+ * None with `missing` saying why.
+ */
+read: FuelReadAt | null, missing: string | null,
+/**
+ * None with `consumption_missing` saying why.
+ */
+consumption: FuelConsumptionAt | null, consumptionMissing: string | null, warnings: Array<string>, };
+export type FuelLabel = { key: string, template: string | null, arguments: Array<string>, reason: string | null, };
+export type DayLeftOut = "overlaps" | "notUpdated" | "ownershipNotRecorded" | "notRecorded";
+export type FuelAwardTotals = { gainsRaw: [string, string, string, string], ownGainRaw: string, ownGainQuantityRaw: string, transfersRaw: [string, string, string, string], consumedRaw: string, receivedRaw: [string, string, string], };
+export type FuelDay = {
+/**
+ * Own fuel gain, fixed5.
+ */
+gainedRaw: string,
+/**
+ * Everything taken out, /32768, `other_raw` included.
+ */
+burnedRaw: string,
+/**
+ * The consumers' receipts, fixed5.
+ */
+receivedRaw: [string, string, string],
+/**
+ * Flat cost and lend-lease sent, /32768; already in `burned_raw`.
+ */
+otherRaw: string,
+/**
+ * The applied updates, when known: their sources and transfers.
+ */
+awards: FuelAwardTotals | null, };
+export type FuelReadAt = {
+/**
+ * The hour the status was read; its values hold until the next read.
+ */
+readHour: number | null,
+/**
+ * The raw country id read, and its instance where recorded.
+ */
+country: number, countryInstance: number | null, fuelRaw: string, capacityRaw: string,
+/**
+ * Lend-lease fuel received in the hour before the read: the tank gains it, the day does not.
+ */
+lendLeaseRaw: string,
+/**
+ * The read the day is of: the last day read at or before the hour.
+ */
+dayHour: number | null, day: FuelDay | null, leftOut: DayLeftOut | null,
+/**
+ * Why the applied updates (sources, recipients) are not known for the day.
+ */
+awardsReason: string | null, continuityStartHour: number | null, };
+export type FuelConsumptionAt = { nativeDailyRaw: [string | null, string | null, string | null], knownDailyRaw: [string | null, string | null, string | null], positiveDailyRaw: [string | null, string | null, string | null], reasons: [string | null, string | null, string | null], };
+export type CountryFuelParamsAtHour = CountryFuelParams & { hour: number };
+export type StockpileAtParams = { branchId: string, tag: string, };
+export type StockType = { key: string,
+/**
+ * The localised key; null when the content does not name it.
+ */
+name: string | null, domain: Domain,
+/**
+ * Why a need cannot be derived for this type without the available operand of its balance
+ * write; none for an ordinary type.
+ */
+needNote: string | null, };
+export type StockBalance = "player" | "ai" | "unknown";
+export type StockAtVariant = { id: string,
+/**
+ * Its equipment token; empty where it has no definition at the hour.
+ */
+token: string, archetype: string | null, name: string | null,
+/**
+ * False where it has no definition at the hour.
+ */
+known: boolean, design: string | null,
+/**
+ * It has a stock row (its `stock` cell); a design not held holds none.
+ */
+held: boolean,
+/**
+ * The military lines making it (each its `l<line>` cells).
+ */
+lines: Array<string>,
+/**
+ * Why its output a day is not known whatever its lines' cells say; null where they decide.
+ */
+outputMissing: string | null, };
+export type StockAtLogistics = {
+/**
+ * The archetype key, or the unresolved mark and the recorded token's spelling.
+ */
+key: string, };
+export type StockpileAtReply = { tag: string, campaignKey: string, decimals: number,
+/**
+ * Every archetype a listed design or logistics row belongs to, in the equipment database's order.
+ */
+types: Array<StockType>, variants: Array<StockAtVariant>, logistics: Array<StockAtLogistics>,
+/**
+ * Why the stock is not known at the hour; null where it is.
+ */
+stockMissing: string | null,
+/**
+ * Why the production lines are not known at the hour; null where they are.
+ */
+linesMissing: string | null, balance: StockBalance, balanceMissing: string | null, needBoundRaw: string, warnings: Array<string>, };
+export type StockpileAtParamsAtHour = StockpileAtParams & { hour: number };
+export type StockpileArtworkParams = { branchId: string, tag: string,
+/**
+ * Designs that need their own pictures, instead of a type's best.
+ */
+variants: Array<string>, };
+export type StockpileArt = {
+/**
+ * `type:<archetype>` or `variant:<handle>`.
+ */
+key: string, variant: string, name: string | null,
+/**
+ * The picture; null with `reason` where none is drawn.
+ */
+icon: string | null, reason: string | null, };
+export type StockpileArtworkReply = { tag: string, entries: Array<StockpileArt>, warnings: Array<string>, };
+export type StockpileArtworkParamsAtHour = StockpileArtworkParams & { hour: number };
+export type FactionDetailParams = { branchId: string,
+/**
+ * The recorded faction id, as a decimal string.
+ */
+faction: string, };
+export type FactionProgressBand = { name: string | null, min: number | null, max: number | null, };
+export type FactionGoalDefinition = {
+/**
+ * The goal's token as the content names it; none when the recording names none.
+ */
+token: string | null, name: string | null, description: string | null, icon: string | null,
+/**
+ * The native term token (`short_term`, ...), a group's identity.
+ */
+category: string | null,
+/**
+ * The term's name as the game's interface names it; none when the content does not.
+ */
+categoryName: string | null, bands: Array<FactionProgressBand>,
+/**
+ * Why any of the texts or the artwork is unavailable.
+ */
+reason: string | null, };
+export type FactionHeldGoal = { ordinal: number,
+/**
+ * An index into the reply's `definitions`.
+ */
+definition: number,
+/**
+ * The native state: 0 in progress, 1 completed, 2 cancelled, 3 completing, 4 cancelling.
+ */
+status: number,
+/**
+ * The progress sections the game holds active, by index into the definition's `bands`.
+ */
+activeSections: Array<number>, };
+export type FactionResourceDetail = { ordinal: number, token: string | null, name: string | null, icon: string | null,
+/**
+ * Why its name or icon is unavailable.
+ */
+reason: string | null, };
+export type FactionManpowerDetail = { ordinal: number,
+/**
+ * The contributing country's tag at the hour; none when it is not known.
+ */
+tag: string | null, };
+export type FactionDoctrineDetail = { ordinal: number, token: string | null, name: string | null, reason: string | null, };
+export type FactionRefusalDetail = { fact: string, count: number, reason: string, };
+export type FactionDetailReply = { branchId: string, faction: string,
+/**
+ * The faction's logo as the game draws it; none when it could not be drawn (a refusal says why).
+ */
+logo: string | null,
+/**
+ * Every goal the reply names, once each: the lists below index it.
+ */
+definitions: Array<FactionGoalDefinition>,
+/**
+ * The manifest the faction holds, an index into `definitions`.
+ */
+manifest: number | null, goals: Array<FactionHeldGoal>, completed: Array<number>, cancelled: Array<number>,
+/**
+ * Why the goal lists are not known at the hour; they are then empty.
+ */
+goalReason: string | null,
+/**
+ * None when the pool was not read whole at the hour.
+ */
+resources: Array<FactionResourceDetail> | null,
+/**
+ * None when the contributions were not read whole at the hour; the total is the live cell
+ * `faction` · `manpower`.
+ */
+manpower: Array<FactionManpowerDetail> | null, manpowerUnlocked: boolean | null, researchUnlocked: boolean | null,
+/**
+ * The countries sharing research; none when not read. The scientist base is the live cell
+ * `faction` · `research`.
+ */
+researchCountries: Array<string> | null, doctrineFolders: Array<FactionDoctrineDetail> | null, refusals: Array<FactionRefusalDetail>, warnings: Array<string>, };
+export type FactionDetailParamsAtHour = FactionDetailParams & { hour: number };
+export type WarContributionsParams = { branchId: string,
+/**
+ * None follows the recording client's playing or observer country.
+ */
+viewpointTag: string | null, };
+export type WarContributionCountry = { tag: string, side: WarSide,
+/**
+ * All quantities are exact signed fixed5 words.
+ */
+equipmentDamage: string, occupation: string, airDamage: string, strategicBombing: string, shipDamage: string, convoyDamage: string, casualties: string, unknownCasualties: string, lendLeaseSent: string, lendLeaseReceived: string, score: string, participation: string, };
+export type WarContributionGroup = { viewpointSide: Array<string>, opposingSide: Array<string>, participants: Array<WarContributionCountry>, reason: string | null, };
+export type WarContributionsReply = { branchId: string, hour: number,
+/**
+ * An overview table was recorded at the hour, even in part.
+ */
+available: boolean,
+/**
+ * Each native group the viewpoint sees, in the overview's order.
+ */
+contributions: Array<WarContributionGroup>, warnings: Array<string>, };
+export type WarContributionsParamsAtHour = WarContributionsParams & { hour: number };
+export type SpecialProjectDetailsParams = { branchId: string, tag: string, };
+export type SpecialProjectDetails = { hour: number,
+/**
+ * None where the hour's scientist roster is not known (never an empty one).
+ */
+scientists: Array<ScientistDetails> | null,
+/**
+ * None without a read of the programs in the day up to the hour.
+ */
+programs: Array<ProgramDetails> | null,
+/**
+ * None without a read of the progress in the day up to the hour.
+ */
+breakthroughs: Array<SpecializationProgress> | null,
+/**
+ * None without a read of the country's projects in the day up to the hour.
+ */
+projects: Array<ProjectRuntimeDetails> | null, unavailable: Array<string>, warnings: Array<string>, };
+export type ProjectLabel = { token: string, name: string | null, };
+export type ScientistSkill = { specialization: ProjectLabel, level: number, experienceRaw: string, };
+export type ScientistDetails = { character: number, person: ProjectPerson, active: number | null, injuryDays: number | null,
+/**
+ * The read `injury_days` comes from.
+ */
+injuryHour: number | null, visible: boolean | null, visibilityHour: number | null, stateRefusals: { [key in string]?: number }, skills: Array<ScientistSkill> | null, traits: Array<ProjectLabel> | null, };
+export type ScientistAssignment = { ordinal: number, reference: string, person: ProjectPerson, target: number, current: number, timed: number, };
+export type ProgramDetails = { id: number, province: number, readHour: number, assignments: Array<ScientistAssignment> | null, facility: FacilityDetails | null, };
+export type FacilitySource = { kind: string, unit: string, label: ProjectLabel | null, modifier: ProjectLabel | null, assignment: number, scientistReference: string, valueRaw: string, };
+export type FacilityDetails = { speedRaw: string | null, sources: Array<FacilitySource>, unavailable: string | null, };
+export type ProjectRewardOption = { label: ProjectLabel, };
+export type PendingProjectReward = { label: ProjectLabel, description: string | null, options: Array<ProjectRewardOption>, unavailable: string | null, };
+export type ProjectVariableValue = { name: string, valueRaw: string, };
+export type ProjectChoice = { ordinal: number, date: number, reward: ProjectLabel, option: ProjectLabel, province: number, progress: number, characterReference: string, country: number | null, scientist: number | null, state: number | null, };
+export type SpecializationProgress = { specialization: ProjectLabel, points: number, readHour: number, };
+export type ProjectRuntimeDetails = { owner: number, id: number, label: ProjectLabel, readHour: number, pendingKnown: boolean, pending: PendingProjectReward | null, seed: number | null, variables: Array<ProjectVariableValue> | null, choices: Array<ProjectChoice> | null, };
+export type SpecialProjectDetailsParamsAtHour = SpecialProjectDetailsParams & { hour: number };
+export type SpecialProjectEffectsParams = { branchId: string, tag: string,
+/**
+ * The project's raw owner id and its id within it.
+ */
+owner: number, project: number, };
+export type SpecialProjectEffects = { hour: number,
+/**
+ * None where the project's definition is not in the recorded content.
+ */
+output: ProjectEffects | null,
+/**
+ * The pending reward's options, in its order; empty with none pending.
+ */
+options: Array<ProjectEffects>, unavailable: string | null, warnings: Array<string>, };
+export type ProjectEffects = { text: string, refusals: { [key in string]?: number }, };
+export type SpecialProjectEffectsParamsAtHour = SpecialProjectEffectsParams & { hour: number };
+export type AirSuperiorityParams = { branchId: string, mode?: AirMode,
+/**
+ * A side's key, or a country's tag with `viewpointCountry`.
+ */
+viewpoint?: string, viewpointCountry?: boolean,
+/**
+ * The side keys compared; all when none.
+ */
+sides?: Array<string>,
+/**
+ * The regions shown; all active when none.
+ */
+regions?: Array<number>,
+/**
+ * The air theatres whose regions are shown; all when none.
+ */
+theatres?: Array<string>, };
+export type AirSuperiorityReply = {
+/**
+ * Why no comparison is shown at the hour.
+ */
+missing: string | null,
+/**
+ * The sides the cells name, by index.
+ */
+sides: Array<AirSide>,
+/**
+ * The viewpoint side's index, when a side is the viewpoint and present.
+ */
+viewpoint: number | null, regions: Array<AirRegion>,
+/**
+ * The comparison of a region no country scores in.
+ */
+fallback: AirCell, scale: number, badBelow: number, goodAbove: number, warnings: Array<string>, };
+export type AirMode = "sides" | "viewpoint";
+export type AirAnchor = { tag: string, hour: number, };
+export type AirSide = { key: string,
+/**
+ * Its anchor faction's id.
+ */
+faction: string | null,
+/**
+ * The faction whose colour it shows: one a strict majority of its fighting members belong to.
+ */
+colourFaction: string | null,
+/**
+ * Every faction merged into it, by id.
+ */
+factions: Array<string>,
+/**
+ * Its first member, for a side of no faction.
+ */
+tag: string | null, leader: string | null, coBelligerents: number, anchor: AirAnchor | null, };
+export type AirPart = { side: number, tag: string, live: string, };
+export type AirCell = { "kind": "reason", reason: string, } | { "kind": "sides" } & AirSidesCell | { "kind": "view", side: number | null, leader: string | null, live: string | null, };
+export type AirSidesCell = { parts: Array<AirPart>,
+/**
+ * A leaderless side and the country whose read it shows.
+ */
+viewpoints: Array<[number, string]>, unknown: Array<number>, noAirObject: Array<number>,
+/**
+ * Only the chosen sides are compared.
+ */
+filtered: boolean,
+/**
+ * Sides of the fallback left out: no air object.
+ */
+excluded: number, };
+export type AirWings = "live" | "none" | "unknown";
+export type AirRegion = { id: number, name: string | null,
+/**
+ * Why the name is not shown.
+ */
+nameMissing: string | null,
+/**
+ * Any country scores in it.
+ */
+active: boolean, cell: AirCell, wings: AirWings, };
+export type AirSuperiorityParamsAtHour = AirSuperiorityParams & { hour: number };
+export type LossHeadParams = { branchId: string, tag: string, country?: LossCountry | null, };
+export type LossHeadReply = { leaves: Array<string>, warnings: Array<string>, };
+export type LossHeadParamsAtHour = LossHeadParams & { hour: number };
+export type ArmyLossesParams = { branchId: string, tag: string, view: LossView, };
+export type ArmyLossesReply = { tag: string,
+/**
+ * No country holds the tag at this hour.
+ */
+absent: boolean, armies: Array<LossArmy>, manpower: Array<LossManpower>, equipment: Array<LossEquipment>, designs: Array<ArmyLossDesign>, emptyMonths: Array<LossMonth>, unknownMonths: Array<LossMonth>, availability: ArmyLossesAvailability, warnings: Array<string>, };
+export type LossArmy = {
+/**
+ * The army's full reference, which identifies it in the reply.
+ */
+reference: string, ordinal: number, name: string | null, nameMissing: string | null, parent: string | null, parentName: string | null, parentMissing: string | null, };
+export type LossManpower = { army: string, ordinal: number,
+/**
+ * The game's month: twelve per year plus the zero-based month.
+ */
+month: number, date: number, key: string, };
+export type LossView = { "kind": "manpower" } | { "kind": "equipment", ledgers: Array<number>, } | { "kind": "month", month: number, };
+export type LossEquipment = { army: string, ledger: number, month: number, date: number,
+/**
+ * Its design's place in the reply's `designs`.
+ */
+design: number, key: string, };
+export type ArmyLossDesign = { variant: string, name: string | null, archetype: string | null, archetypeName: string | null, };
+export type LossMonth = { army: string, ledger: number, month: number, date: number, reason: string | null, };
+export type ArmyLossesAvailability = { armies: string | null, manpower: string | null, months: string | null, ownEquipment: string | null, enemyEquipment: string | null, };
+export type ArmyLossesParamsAtHour = ArmyLossesParams & { hour: number };
+export type PowerDayParams = { branchId: string, tag: string, currency: SpendCurrency, };
+export type PowerDayReply = { currency: SpendCurrency,
+/**
+ * The open day's midnight.
+ */
+day: number,
+/**
+ * The day's daily row: its cells (`income`: `gross`, `costs`, `net`, `applied` for political
+ * power, `gain`, `applied` for command power). Why it is missing, when it is.
+ */
+incomeMissing: string | null,
+/**
+ * The day's daily row is the open day's (dated `day`).
+ */
+incomeDay: number | null, parts: Array<PowerDayPart>,
+/**
+ * Why the parts are not the day's whole spending: its currency was not covered since midnight.
+ */
+partsMissing: string | null,
+/**
+ * Command power: the allocations the holder's holds name, and the total its stored counter
+ * holds (`holds`, `total`); what the holds do not name is that less their sum.
+ */
+holds: Array<PowerDayHold>, holdsMissing: string | null, warnings: Array<string>, };
+export type PowerDayPart = {
+/**
+ * The item as `power-spending` names it.
+ */
+item: string, payments: number,
+/**
+ * Every payment read while the capture covered the currency.
+ */
+covered: boolean,
+/**
+ * Its charge was not recorded: the cell is missing.
+ */
+unknown: boolean, };
+export type PowerDayHold = { id: string,
+/**
+ * The recorded cause of the allocation.
+ */
+kind: string, name: string | null, unknown: string | null, };
+export type PowerDayParamsAtHour = PowerDayParams & { hour: number };
+export type FactionGoalRewardsParams = { branchId: string,
+/**
+ * The recorded faction id, as a decimal string.
+ */
+faction: string,
+/**
+ * The goal's token, as `faction-details` names it.
+ */
+goal: string, };
+export type FactionGoalRewardsReply = { goal: string,
+/**
+ * The completion effect's description with the game's markup; none where the goal authors no
+ * completion effect or `reason` says why it cannot be described.
+ */
+text: string | null,
+/**
+ * Why the completion effect cannot be described at the hour.
+ */
+reason: string | null, warnings: Array<string>, };
+export type FactionGoalRewardsParamsAtHour = FactionGoalRewardsParams & { hour: number };
 /** The native command byte budget, including its envelope. */
 export const MAX_MESSAGE_BYTES = 33554432;
 /** Data requests outstanding at once; one past it is refused for want of room. */
@@ -6031,10 +5897,10 @@ export const MAP_CONTROLS_BUSY = "Map controls are busy";
 /** Errors that only say there was no room: the request may be tried again. */
 export const TRANSIENT_ERRORS = [CAPACITY_REACHED, BROWSER_BRIDGE_BUSY, NATIVE_QUEUE_FULL, MAP_CONTROLS_BUSY] as const;
 /** Products whose replies depend on configured game content. */
-export const CONTENT_PRODUCTS = ["diplomacy-state", "national-focus", "focus-artwork", "focus-art", "research", "technology-artwork", "country-flags", "doctrines", "game-window", "army-size", "supply-health", "division-log", "division-log-manifest", "unit-leaders", "unit-leader-portraits", "land-owners", "land-battles", "land-battles-ranking", "land-battle-course", "land-battle-terrain", "combat-log-history", "army-losses", "division-careers", "division-record", "division-templates", "division-equipment", "division-equipment-history", "training-queue", "place-names", "country-styles", "faction-details", "country-groups", "faction-state", "wars", "wargoals", "country-stability", "stability-parts", "country-people", "country-fuel", "country-fuel-awards", "country-fuel-demand", "country-fuel-demand-history", "country-fuel-demand-stack", "war-casualties", "casualty-breakdown", "country-factories", "territory", "territory-breakdown", "faction-totals", "air-aces", "air-ace-portraits", "air-force-size", "navy-size", "naval-management", "game_score", "scoreboard", "country-nukes", "air-superiority", "raids", "occupied-states", "occupied-states-manifest", "occupation-trend", "idea-history", "party-history", "politics-state", "politics-state-history", "politics-ledger", "fuel-branches", "market-history", "market-ledger", "production-catalogue", "convoy-health", "peace-deals", "resource-balance", "decryption", "production-lines", "equipment-design-detail", "production-line-detail", "production-line-breakdown", "equipment-stockpile-at", "equipment-stockpile-catalogue", "equipment-stockpile-chart", "stockpile-artwork", "equipment-produced", "production-spending", "dockyard-spending", "military-factory-spending", "trade-flows", "market-lendlease", "special-projects", "subjects", "event-feed", "event-choices", "decisions", "autonomy", "construction-log-manifest", "equipment-losses", "military-air-ledger", "ships-sunk", "ships-sunk-battle-titles", "naval-battle-details", "naval-losses", "construction-spending", "espionage-log", "intel-details", "operative-placements", "operatives-roster", "agency-comparison", "aircraft-catalogue", "air-missions", "air-statistics", "regional-weather", "minefields", "naval-supremacy", "doctrine-mastery", "sprite-artwork", "naval-repairs", "naval-refits"] as const;
+export const CONTENT_PRODUCTS = ["national-focus", "focus-artwork", "technology-artwork", "country-flags", "doctrines", "aircraft-catalogue", "sprite-artwork", "army-size", "country-facts", "country-styles", "country-groups", "land-owners", "military-air-ledger", "politics-state-history", "factory-groups", "air-force-size", "navy-size", "subjects", "diplomatic-pacts", "operatives-departed", "espionage-types", "intel-details", "raid-log", "production-lines", "production-line-breakdown", "equipment-designs", "place-names", "naval-supremacy", "unit-leader-portraits", "unit-leader-career", "unit-leader-choices", "regional-weather", "idea-history", "party-history", "casualty-breakdown", "casualty-labels", "peace-deals", "convoy-health", "trade-flows", "production-spending", "construction-log-manifest", "construction-log", "construction-spending", "division-log", "division-log-manifest", "land-battle-course", "land-battle-terrain", "naval-battle-details", "ships-sunk-manifest", "ships-sunk", "research", "research-breakdown", "event-feed", "event-choices", "decisions", "event-feed-span", "lend-lease-history", "market-ledger", "country-fuel-awards", "country-fuel-demand", "equipment-stockpile-catalogue", "equipment-stockpile-chart", "faction-state", "wars", "war-losses", "special-projects", "air-superiority-choices", "combat-log-history", "equipment-losses", "air-statistics-regions", "scoreboard-columns", "equipment-produced", "equipment-produced-types", "equipment-produced-country", "equipment-produced-at", "power-spending", "air-superiority-timeline", "air-superiority-ranking", "espionage-type-tokens", "template-roster", "air-statistics", "politics-state", "country-people", "territory-breakdown", "game-score", "nuclear-arsenal", "training-queue", "wargoals", "decryption", "operative-placements", "agency-comparison", "operatives-roster", "fuel-branches", "resource-balance", "production-lines-at", "production-licences", "industrial-organisations", "doctrine-mastery", "doctrine-rewards", "minefields", "minefield-reports", "naval-repairs", "naval-refits", "unit-leaders", "unit-leader-hour", "naval-management", "air-aces", "air-ace-portraits", "regional-weather-provinces", "country-stability-breakdown", "stability-part-names", "division-templates", "division-careers", "division-record", "division-equipment", "research-slots", "air-missions", "air-mission-wings", "occupied-states", "market-lendlease", "country-fuel", "equipment-stockpile-at", "stockpile-artwork", "faction-details", "war-contributions", "special-project-details", "special-project-effects", "air-superiority", "army-losses", "power-day", "faction-goal-rewards"] as const;
 /** Products served separately from whole-branch history reads. */
-export const INTERACTIVE_PRODUCTS = ["campaign-clock", "player-apm", "focus-artwork", "focus-art", "technology-artwork", "country-flags", "doctrines", "game-window", "unit-leader-portraits", "land-battle-terrain", "combat-log-history", "army-losses", "division-careers", "division-record", "division-templates", "division-equipment", "training-queue", "place-names", "country-styles", "faction-details", "wargoals", "country-people", "air-ace-portraits", "naval-management", "politics-state", "equipment-design-detail", "equipment-stockpile-at", "stockpile-artwork", "market-lendlease", "intel-details", "sprite-artwork", "naval-repairs", "naval-refits"] as const;
-/** How a country-colours reply past the product byte budget is refused: ask for fewer hours. */
-export const COUNTRY_COLOURS_OVER_BUDGET = "Country colours exceed the product reply budget";
+export const INTERACTIVE_PRODUCTS = ["campaign-clock", "player-apm", "focus-artwork", "technology-artwork", "country-flags", "doctrines", "sprite-artwork", "country-styles", "operatives-departed", "operative-tenures", "espionage-operation", "espionage-ended", "espionage-types", "intel-details", "production-line-breakdown", "place-names", "unit-leader-portraits", "unit-leader-career", "unit-leader-choices", "occupation-reserve-history", "land-battle-terrain", "country-fuel-awards", "country-fuel-demand", "war-losses", "combat-log-history", "scoreboard", "equipment-produced-at", "template-roster", "air-statistics", "politics-state", "country-people", "territory-share", "territory-breakdown", "faction-rosters", "game-score", "nuclear-arsenal", "world-tension", "factory-parts", "country-experience", "training-queue", "diplomatic-relations", "wargoals", "decryption", "operative-placements", "agency-comparison", "operatives-roster", "espionage-operations", "occupation-reserve-manpower", "intel-network-coverage", "fuel-branches", "resource-balance", "lend-lease-balance", "production-lines-at", "production-licences", "industrial-organisations", "doctrine-mastery", "doctrine-rewards", "minefields", "minefield-reports", "naval-repairs", "naval-refits", "unit-leaders", "unit-leader-hour", "naval-management", "air-aces", "air-ace-portraits", "regional-weather-provinces", "focus-unavailable", "country-stability-breakdown", "stability-part-names", "division-templates", "division-careers", "division-record", "division-equipment", "research-slots", "air-missions", "air-mission-wings", "occupied-states", "occupation-at", "market-lendlease", "country-fuel", "equipment-stockpile-at", "stockpile-artwork", "faction-details", "war-contributions", "special-project-details", "special-project-effects", "air-superiority", "equipment-loss-head", "army-losses", "power-day", "faction-goal-rewards"] as const;
+/** Pages that replay recorded tables to their rows' hours: served apart, so no other request waits behind them. */
+export const REPLAY_PRODUCTS = ["event-feed", "event-choices", "decisions"] as const;
 /** Each map option until the user chooses: the game's own default for those it saves in settings.txt, the app's for the rest. */
 export const MAP_OPTION_DEFAULTS = { dayNight: true, alliedPlans: false, fog: true, countryCounterColours: false, playerCounters: false, radar: false } as const;

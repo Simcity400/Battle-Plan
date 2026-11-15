@@ -1,4 +1,4 @@
-import type { GrantInventory } from '../../generated/dashboard.ts';
+import type { GrantInventory } from '../../generated/dashboard';
 
 export function researchGrants(value: unknown): GrantInventory {
   const data = value as GrantInventory;

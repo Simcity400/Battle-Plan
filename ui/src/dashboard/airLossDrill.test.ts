@@ -6,15 +6,15 @@ import { airLossParts, ledgerCountryAt, ledgerShare, militaryAirIndex, validateM
 import { airLossDrillActor, airLossDrillActors, airLossDrillHistory, pinAirLossDrill } from './airLossDrill.ts';
 import { runAt } from '../charts/series.ts';
 import { definition } from '../widgets/air-kills-losses/definition.ts';
-import type { MilitaryAirReply } from '../generated/dashboard';
 import { partOf } from './militaryAirParts.fixture.ts';
 import type { Leaf } from './militaryAirParts.fixture';
+import type { MilitaryAirLedger } from './militaryAirLedger';
 
 const span = (firstHour: number, lastHour = firstHour) => ({ firstHour, lastHour });
 const leaf = (extra: Partial<Leaf>): Leaf => ({ tag: 'renamed', identity: '7:91', dealt: false, opponent: null,
   region: 40001, buildingId: null, buildingToken: null, state: null, cause: 1,
   points: [[11, 16, '300000'], [12, 18, '200000']], ...extra });
-const reply = (): MilitaryAirReply => ({ family: 'airLosses', firstHour: 10, lastHour: 20, available: true,
+const reply = (): MilitaryAirLedger => ({ family: 'airLosses', firstHour: 10, lastHour: 20, available: true,
   observed: [span(10, 16), span(18, 20)], incomplete: [], countries: [
     { tag: 'old tag', identity: '7:91', present: [span(10, 14)], membership: [span(10, 14)] },
     { tag: 'renamed', identity: '7:91', present: [span(15, 16), span(18, 20)], membership: [] },

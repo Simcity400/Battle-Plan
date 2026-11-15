@@ -1,178 +1,179 @@
-import { pendingAt, preparedPrefix, fieldPreparing } from '../../dashboard/preparedPrefix';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import ArtFallback from '../../components/ArtFallback';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { jumpItem } from '../../charts/jump';
-import ProgressMeter from '../../charts/meter/ProgressMeter';
 import Table, { CountryCell } from '../../charts/table/Table';
 import type { TableColumn } from '../../charts/table/Table';
 import { narrowTableOf, tableSortOf } from '../../charts/table/options';
-import { useTableHour } from '../../charts/table/useTableHour';
-import { runAt } from '../../charts/series';
 import { fitTooltip } from '../../charts/tooltip';
 import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
 import { formatDateTime } from '../../dashboard/calendar';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
-import { countryIdentityIndex } from '../../dashboard/countryIdentity';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { countryMatch, MEMBERSHIP_PREPARING, noMembersAt, resolveCountries } from '../../dashboard/groups';
+import { countryMatch, noMembersAt, resolveCountries } from '../../dashboard/groups';
+import { useHeadProduct } from '../../dashboard/headProduct';
 import NoMembersState from '../../dashboard/NoMembersState';
-import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackMotion } from '../../dashboard/playback';
-import { useParityRows } from '../../dashboard/parityRows';
 import { useProduct } from '../../dashboard/products';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
-import type { OperativeRosterReply } from '../../generated/dashboard';
+import { useShownEachFrame } from '../../dashboard/widgetPerf';
+import type { OperativeTenuresReply, OperativesDepartedReply, OperativesRosterReply } from '../../generated/dashboard';
 import { DEFAULT_SORT, definition, OPTIONS } from './definition';
-import { departureText, operativeLabelHour, operativeMoments, operativeName, operativeTooltip, rosterAt, validateOperativesRosterReply } from './operativesRosterData';
-import type { OperativeRow } from './operativesRosterData';
+import { capturedText, departureText, labelHour, operativeMoments, operativeName, operativeTooltip, paintedOf, paintedRows, paintedText, paintRoster,
+  rosterRows, rosterStructure, validateDeparted, validateRoster, validateTenures } from './rosterData';
+import type { OperativeRow, Painted, PaintedField } from './rosterData';
 import './operativesRoster.css';
+import { useChangedState } from '../../dashboard/changedState';
 
-const EMPTY_ROWS: OperativeRow[] = [];
-const EMPTY_WARNINGS: string[] = [];
+const NO_ROWS: OperativeRow[] = [];
+const NO_WARNINGS: string[] = [];
 const rowKey = (row: OperativeRow) => row.key;
-const muted = (row: OperativeRow) => row.departed;
+const muted = (row: OperativeRow) => row.departed !== null;
+const sameCountries = (a: OperativeRow, b: OperativeRow) => a.key === b.key && a.departed?.lastHour === b.departed?.lastHour
+  && a.operative.roster === b.operative.roster && a.operative.owner.tag === b.operative.owner.tag
+  && a.operative.target?.tag === b.operative.target?.tag && a.operative.capturer?.tag === b.operative.capturer?.tag;
+const sameCountryRows = (held: readonly OperativeRow[], next: readonly OperativeRow[]) => held.length === next.length
+  && held.every((row, index) => sameCountries(row, next[index]));
 
+/** Agencies' operatives at the hour shown: the census's rows, followed at the head as a pushed panel that renders only when an
+ * operative's name, assignment, target or captivity changes; experience and an assignment's days are painted from each push.
+ * Over the whole campaign, the operatives that left are listed too, muted. */
 export default function OperativesRosterWidget({ widget, runtime, active, setOption, onDiagnostics }: WidgetProps) {
-  const playbackHour = useTableHour(runtime.clock, active && widget.time.mode === 'follow');
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const tokens = useChartTokens();
   const viewportHeight = useViewportHeight();
   const options = resolveOptions(OPTIONS, widget.options);
-  const track = runtime.tracks.find(track => track.id === widget.trackIds[0]);
-  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
-  const hour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
+  const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
+  const lastHour = track?.branch.lastHour ?? 0;
   const groups = useCountryGroups(runtime, track, active);
   const fallback = defaultCountryTag(track);
-  const resolved = useMemo(() => resolveCountries(widget.countries, fallback ? [fallback] : [], groups.data,
-    track?.branch.lastHour ?? hour, definition.countries.max), [widget.countries, fallback, groups.data, track, hour]);
-  const first = track ? track.branch.firstHour + Math.floor((hour - track.branch.firstHour) / 24) * 24 : hour;
-  const request = track && resolved.tags.length ? { sourceId: track.source.id, revision: track.source.revision, product: 'operatives-roster',
-    params: runtime.client.preparedQuery
-      ? { branchId: track.branch.id, tags: resolved.tags, firstHour: first, lastHour: Math.min(first + 23, track.branch.lastHour), includeDeparted: widget.time.mode === 'campaign' && options.departed === true }
-      : { branchId: track.branch.id, tags: resolved.tags } } : null;
-  const { data, error, retry } = useProduct<OperativeRosterReply>(runtime.client, request, active, validateOperativesRosterReply, track?.source);
-  const match = useMemo(() => countryMatch(widget.countries, fallback ? [fallback] : [], groups.data,
-    track?.branch.lastHour ?? hour), [widget.countries, fallback, groups.data, track?.branch.lastHour, hour]);
-  const membershipUnknown = resolved.membership !== null && resolved.unobserved.some(span => span.firstHour <= hour && hour <= span.lastHour);
-  const view = useMemo(() => data && match.ready ? rosterAt(data, hour, widget.time.mode === 'campaign' && options.departed === true,
-    match.matches) : null, [data, hour, widget.time.mode, options.departed, match]);
-  const rows = view?.rows ?? EMPTY_ROWS;
-  const preparing = fieldPreparing(data, 'countries') || pendingAt(preparedPrefix(data), hour);
-  const root = useRef<HTMLDivElement>(null);
-  useParityRows(root, () => ({ kind: 'table', label: 'Operative roster values', complete: Boolean(data && view && match.ready && !preparing), total: rows.length,
-    rows: rows.map(row => ({ key: row.key, country: row.country, joinedHour: row.entry.joinedHour, departedHour: row.departed ? row.entry.departedHour : null,
-      value: row.run.value, readHour: row.readHour, assignmentReadHour: row.assignmentReadHour, moments: operativeMoments(row) })),
-  }));
-  const [visibleRows, setVisibleRows] = useState<readonly OperativeRow[]>(EMPTY_ROWS);
-  const onVisibleRows = useCallback((rows: readonly OperativeRow[]) => setVisibleRows(rows), []);
+  const resolved = useMemo(() => resolveCountries(widget.countries, fallback ? [fallback] : [], groups.data, lastHour, definition.countries.max),
+    [widget.countries, fallback, groups.data, lastHour]);
+  const match = useMemo(() => countryMatch(widget.countries, fallback ? [fallback] : [], groups.data, lastHour), [widget.countries, fallback, groups.data, lastHour]);
+  const tagsKey = JSON.stringify(resolved.tags);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const params = useMemo(() => track && resolved.tags.length ? { tags: resolved.tags } : null, [track?.branch.id, tagsKey]);
+  const root = useRef<HTMLDivElement | null>(null);
+  const painted = useRef<Map<string, Painted>>(new Map());
+  const paint = useCallback((reply: OperativesRosterReply) => {
+    painted.current = paintedRows(reply);
+    paintRoster(root.current, painted.current);
+  }, []);
+  const head = useHeadProduct<OperativesRosterReply>(runtime, widget, 'operatives-roster', params, { active, validate: validateRoster, structure: rosterStructure, paint });
+  if (head.data && head.read !== 'followed') painted.current = paintedRows(head.data);
+  useShownEachFrame(runtime.clock, () => head.shownAt(), head.live);
+  const hour = head.at ?? head.hour ?? lastHour;
+  const departedAt = widget.time.mode === 'campaign' && options.departed === true && head.read === 'asked' ? head.hour : null;
+  const departed = useProduct<OperativesDepartedReply>(runtime.client, track && params && departedAt !== null ? { sourceId: track.source.id, revision: track.source.revision,
+    product: 'operatives-departed', params: { branchId: track.branch.id, tags: params.tags, hour: departedAt } } : null, active, validateDeparted, track?.source);
+  // The tenures cover the stretch the hour is in: asked again only when the hour shown leaves it.
+  const tenureHour = useRef<number | null>(null);
+  const tenuresAsked = useProduct<OperativeTenuresReply>(runtime.client, track && params && tenureHour.current !== null ? { sourceId: track.source.id,
+    revision: track.source.revision, product: 'operative-tenures', params: { branchId: track.branch.id, tags: params.tags, hour: tenureHour.current } } : null,
+    active, validateTenures, track?.source);
+  const tenures = tenuresAsked.data;
+  if (head.data && (tenureHour.current === null || (tenures && (hour < tenures.firstHour || hour > tenures.lastHour)))) tenureHour.current = hour;
+  const rows = useMemo(() => match.ready ? rosterRows(head.data, departedAt !== null ? departed.data : undefined, tenures, hour, match.matches) : NO_ROWS,
+    [head.data, departed.data, departedAt, tenures, hour, match]);
+  // A push redraws the rows as new objects: only rows naming other countries are news, so a push is one commit.
+  const [visible, onVisibleRows] = useChangedState<readonly OperativeRow[]>(NO_ROWS, sameCountryRows);
   const wanted = useMemo(() => {
     const unique = new Map<string, { tag: string; hour: number }>();
-    for (const row of visibleRows) {
-      const labelHour = operativeLabelHour(row, hour);
-      for (const tag of [row.country, row.run.value.ownerTag, row.run.value.targetTag, row.run.value.capturerTag]) {
-        if (tag !== null) unique.set(JSON.stringify([labelHour, tag]), { tag, hour: labelHour });
+    for (const row of visible) {
+      const at = labelHour(row, hour);
+      const operative = row.operative;
+      for (const tag of [operative.roster, operative.owner.tag, operative.target?.tag, operative.capturer?.tag]) {
+        if (tag) unique.set(JSON.stringify([at, tag]), { tag, hour: at });
       }
     }
     return [...unique.values()];
-  }, [visibleRows, hour]);
+  }, [visible, hour]);
   const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active);
-  const comparison = useMemo(() => {
-    if (!groups.data) return false;
-    const identities = countryIdentityIndex(groups.data.countryIdentities ?? []);
-    const owners = new Set<string>();
-    for (const row of rows) {
-      const tag = row.run.value.ownerTag;
-      const key = tag === null ? null : identities.keyAt(tag, operativeLabelHour(row, hour));
-      if (key !== null) owners.add(key);
-      if (owners.size > 1) return true;
-    }
-    return false;
-  }, [groups.data, rows, hour]);
-  const columns = useMemo<readonly TableColumn<OperativeRow>[]>(() => [
-    { key: 'name', header: 'Operative', label: 'Operative', renderMissing: true,
-      width: 'minmax(calc(var(--space-6) * 8), 2fr)', value: row => row.run.value.name,
-      render: row => {
-        const value = row.run.value;
-        const owner = value.ownerTag === null ? null : labelAt(operativeLabelHour(row, hour))(value.ownerTag);
-        const departure = departureText(row);
-        return <span className="operative-person">{value.portrait !== null && data ? <img src={data.artwork[value.portrait]} alt="" /> : <ArtFallback icon="helmet" />}
-          <span className="operative-cell-detail"><span>{comparison && owner !== null
-            ? <CountryCell name={operativeName(value)} flag={owner.flag} flagReason={owner.flagReason} flagPending={owner.flagPending} /> : operativeName(value)}</span>
-            {departure && <small>{departure}</small>}
-          </span>
-        </span>;
-      } },
-    { key: 'skill', header: 'Skill', label: 'Skill', numeric: true, bar: 'visible', priority: 2,
-      width: 'minmax(calc(var(--space-6) * 3), 1fr)', value: row => row.run.value.skill },
-    { key: 'experience', header: 'Experience', label: 'Experience', numeric: true, renderMissing: true, priority: 3, text: row => row.run.value.experienceText ?? 'Unknown',
-      width: 'minmax(calc(var(--space-6) * 5), 1fr)', value: row => BigInt(row.run.value.experienceRaw),
-      render: row => <span className="operative-experience"><span>{row.run.value.experienceText ?? 'Unknown'}</span>
-        {options.cellBars === true && row.run.value.experienceRatio !== null && <ProgressMeter value={row.run.value.experienceRatio} state={row.departed ? 'idle' : 'live'} label="Operative experience" />}
-      </span> },
-    { key: 'assignment', header: 'Assignment', label: 'Assignment', renderMissing: true, priority: 1, text: row => row.run.value.assignmentName ?? 'Unknown',
-      width: 'minmax(calc(var(--space-6) * 9), 2fr)', value: row => row.run.value.assignmentName,
-      render: row => {
-        const value = row.run.value;
-        return <span className="operative-assignment">{value.assignmentIcon !== null && data && <img src={data.artwork[value.assignmentIcon]} alt="" />}
-          <span className="operative-cell-detail"><span>{value.assignmentName ?? 'Unknown'}</span>
-            {value.assignmentDuration !== null && <small>{value.assignmentDuration}</small>}
-            {options.cellBars === true && value.assignmentProgress !== null && <ProgressMeter value={value.assignmentProgress} state={row.departed ? 'idle' : 'live'} label="Assignment progress" />}
-            {value.targetTag !== null && <CountryCell {...labelAt(operativeLabelHour(row, hour))(value.targetTag)} />}
-          </span>
-        </span>;
-      } },
-    { key: 'captured', header: 'Captured', label: 'Captured', renderMissing: true, priority: 4,
-      text: row => { const value = row.run.value; return value.captured !== true ? value.captured === null ? 'Unknown' : 'No'
-        : [value.capturerTag === null ? 'Yes · capturer unknown' : labelAt(operativeLabelHour(row, hour))(value.capturerTag).name,
-          value.capturedHour === null ? 'Capture date unknown' : formatDateTime(value.capturedHour)].join(' · '); },
-      width: 'minmax(calc(var(--space-6) * 8), 2fr)', value: row => row.run.value.captured === null ? null : Number(row.run.value.captured),
-      render: row => {
-        const value = row.run.value;
-        if (value.captured !== true) return value.captured === null ? 'Unknown' : 'No';
-        return <span className="operative-cell-detail"><span>{value.capturerTag === null
-          ? 'Yes · capturer unknown' : <CountryCell {...labelAt(operativeLabelHour(row, hour))(value.capturerTag)} />}</span>
-          <small>{value.capturedHour === null ? 'Capture date unknown' : formatDateTime(value.capturedHour)}</small>
-        </span>;
-      } },
-  ], [comparison, data, labelAt, hour, options.cellBars]);
-  const tooltip = useCallback((row: OperativeRow) => fitTooltip(data ? [operativeTooltip(data, row, hour,
-    (tag, at) => labelAt(at)(tag))] : [], viewportHeight), [data, hour, labelAt, viewportHeight]);
+  const comparison = useMemo(() => new Set(rows.map(row => row.operative.owner.tag ?? `#${row.operative.owner.id}`)).size > 1, [rows]);
+  const columns = useMemo<readonly TableColumn<OperativeRow>[]>(() => {
+    const painting = (row: OperativeRow, field: PaintedField) => paintedText(row.departed ? paintedOf(row.operative) : painted.current.get(row.key), field);
+    const meter = (row: OperativeRow, field: PaintedField, label: string) => <div className={`progress-meter operative-meter is-${row.departed ? 'idle' : 'live'}`} role="meter" aria-label={label}
+      data-op-row={row.departed ? undefined : row.key} data-op-field={field}><i style={{ width: painting(row, field) }} /></div>;
+    const live = (row: OperativeRow, field: PaintedField) => row.departed ? {} : { 'data-op-row': row.key, 'data-op-field': field };
+    return [
+      { key: 'name', header: 'Operative', label: 'Operative', renderMissing: true, width: 'minmax(calc(var(--space-6) * 8), 2fr)', value: row => operativeName(row.operative),
+        render: row => {
+          const operative = row.operative;
+          const owner = operative.owner.tag ? labelAt(labelHour(row, hour))(operative.owner.tag) : null;
+          const departure = departureText(row);
+          return <span className="operative-person">{operative.portrait !== null ? <img src={row.artwork[operative.portrait]} alt="" /> : <ArtFallback icon="helmet" />}
+            <span className="operative-cell-detail"><span>{comparison && owner
+              ? <CountryCell name={operativeName(operative)} flag={owner.flag} flagReason={owner.flagReason} flagPending={owner.flagPending} /> : operativeName(operative)}</span>
+              {departure && <small>{departure}</small>}
+            </span>
+          </span>;
+        } },
+      { key: 'skill', header: 'Skill', label: 'Skill', numeric: true, bar: 'visible', priority: 2, width: 'minmax(calc(var(--space-6) * 3), 1fr)', value: row => row.operative.skill },
+      { key: 'experience', header: 'Experience', label: 'Experience', numeric: true, renderMissing: true, priority: 3, width: 'minmax(calc(var(--space-6) * 5), 1fr)',
+        text: row => painting(row, 'experience'), value: row => (row.departed ? paintedOf(row.operative) : painted.current.get(row.key))?.experienceRaw ?? null,
+        render: row => <span className="operative-experience"><span {...live(row, 'experience')}>{painting(row, 'experience')}</span>
+          {options.cellBars === true && row.operative.experienceRatio !== null && meter(row, 'experienceMeter', 'Operative experience')}
+        </span> },
+      { key: 'assignment', header: 'Assignment', label: 'Assignment', renderMissing: true, priority: 1, text: row => row.operative.assignmentName ?? 'Unknown',
+        width: 'minmax(calc(var(--space-6) * 9), 2fr)', value: row => row.operative.assignmentName,
+        render: row => {
+          const operative = row.operative;
+          return <span className="operative-assignment">{operative.assignmentIcon !== null && <img src={row.artwork[operative.assignmentIcon]} alt="" />}
+            <span className="operative-cell-detail"><span>{operative.assignmentName ?? 'Unknown'}</span>
+              {operative.assignmentDuration !== null && <small {...live(row, 'duration')}>{painting(row, 'duration')}</small>}
+              {options.cellBars === true && operative.assignmentProgress !== null && meter(row, 'progress', 'Assignment progress')}
+              {operative.target?.tag && <CountryCell {...labelAt(labelHour(row, hour))(operative.target.tag)} />}
+            </span>
+          </span>;
+        } },
+      { key: 'captured', header: 'Captured', label: 'Captured', renderMissing: true, priority: 4, width: 'minmax(calc(var(--space-6) * 8), 2fr)',
+        text: row => capturedText(row.operative, tag => labelAt(labelHour(row, hour))(tag).name), value: row => Number(row.operative.captured),
+        render: row => {
+          const operative = row.operative;
+          if (!operative.captured) return 'No';
+          return <span className="operative-cell-detail"><span>{operative.capturer?.tag ? <CountryCell {...labelAt(labelHour(row, hour))(operative.capturer.tag)} /> : 'Yes · capturer unknown'}</span>
+            <small>{operative.capturedHour === null ? 'Capture date unknown' : formatDateTime(operative.capturedHour)}</small>
+          </span>;
+        } },
+    ];
+  }, [comparison, labelAt, hour, options.cellBars]);
+  const tooltip = useCallback((row: OperativeRow) => fitTooltip([operativeTooltip(row, row.departed ? undefined : painted.current.get(row.key), hour,
+    (tag, at) => labelAt(at)(tag))], viewportHeight), [hour, labelAt, viewportHeight]);
+  useEffect(() => { paintRoster(root.current, painted.current); });
   useEffect(() => {
-    onDiagnostics(data?.warnings ?? EMPTY_WARNINGS);
-    return () => onDiagnostics(EMPTY_WARNINGS);
-  }, [data, onDiagnostics]);
+    onDiagnostics(head.data ? [...head.data.warnings, ...departedAt !== null ? departed.data?.warnings ?? [] : []] : NO_WARNINGS);
+    return () => onDiagnostics(NO_WARNINGS);
+  }, [head.data, departed.data, departedAt, onDiagnostics]);
+  const ref = useCallback((element: HTMLDivElement | null) => { root.current = element; head.root(element); }, [head.root]);
 
-  const none = noMembersAt(widget.countries, resolved, groups.data, hour, track?.branch.lastHour ?? hour);
+  const none = noMembersAt(widget.countries, resolved, groups.data, hour, lastHour);
+  const data = head.data;
   let body;
-  if (!track) body = <WidgetState kind="empty" message="Load a campaign and choose a country to see its operatives." />;
-  else if (!window) body = <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
-  else if (error) body = <WidgetState kind="error" failure={error} onRetry={retry} />;
+  if (!track) body = <WidgetState kind="empty" icon="shield" message="Load a campaign and choose a country to see its operatives." />;
+  else if (head.read === 'off') body = <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
+  else if (head.error) body = <WidgetState kind="error" failure={head.error} onRetry={head.retry} />;
   else if (groups.error && !groups.data) body = <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;
   else if (!groups.data) body = <WidgetState kind="loading" label="Loading operatives…" />;
   else if (resolved.reason) body = <WidgetState kind="unavailable" message={resolved.reason} />;
   else if (match.reason) body = <WidgetState kind="unavailable" message={match.reason} />;
-  else if (membershipUnknown) body = <WidgetState kind="unavailable" message="This group's members were not recorded at this moment." />;
   // A group with no member found yet asks for nothing, so no reply will come.
   else if (none) body = <NoMembersState reason={none.reason} />;
-  else if (!data || !view) body = <WidgetState kind="loading" label="Loading operatives roster…" />;
-  else if (preparing && !rows.length) body = <WidgetState kind="loading" label="This roster is still being prepared." />;
-  else if (!rows.length && runAt(data.agencyAbsent, hour)) body = <WidgetState kind="unavailable" message="Intelligence agencies unavailable." />;
-  else if (!rows.length && view.unknown.length) body = <WidgetState kind="unavailable" message="Operatives weren’t recorded at this time." />;
-  else if (!rows.length && !match.known(hour)) body = <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
+  else if (!data) body = <WidgetState kind="loading" label="Loading operatives roster…" />;
+  else if (!rows.length && data.agencyFeature === false) body = <WidgetState kind="unavailable" message="Intelligence agencies unavailable." />;
+  else if (!rows.length && data.missing) body = <WidgetState kind="unavailable" message="Operatives weren’t recorded at this time." detail={data.missing} />;
+  else if (!rows.length && data.unheld.length === resolved.tags.length) body = <WidgetState kind="unavailable" message="Operatives weren’t recorded at this time." detail={`No country holds ${data.unheld.join(', ')} at this time.`} />;
   else if (!rows.length) body = <WidgetState kind="empty" message="No operatives in the selected roster." />;
   else body = <Table rowRevision={row => [row, columns]} label="Operatives roster" rows={rows} columns={columns} rowKey={rowKey}
-      sort={tableSortOf(options.tableSort, DEFAULT_SORT)} setOption={setOption}
-      cellBars={options.cellBars === true} rank={options.showRank === true} rankMarkers={options.rankMarkers === true}
-      density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)} rowHeight={2 * (tokens.fontSize.title + tokens.fontSize.small)} muted={muted}
-      menu={row => operativeMoments(row).map(moment => ({ ...jumpItem(runtime, track.id, moment.hour), label: moment.label }))}
-      tooltip={tooltip} onVisibleRows={onVisibleRows} hoursPerSecond={hoursPerSecond} />;
-  return <div ref={root} className="operatives-roster">
-    {preparing && rows.length > 0 && <p className="chart-line-key">This roster is still being prepared.</p>}
-    {!!rows.length && view && view.unknown.length > 0 && <p className="operative-note">{view.unknown.length} country rosters unavailable.</p>}
-    {data?.countries.some(country => country.operatives.some(entry => fieldPreparing(entry, 'joinedHour'))) && <p className="chart-line-key">First presence, departure and earlier departed operatives are still being prepared.</p>}
+    sort={tableSortOf(options.tableSort, DEFAULT_SORT)} setOption={setOption}
+    cellBars={options.cellBars === true} rank={options.showRank === true} rankMarkers={options.rankMarkers === true}
+    density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)} rowHeight={2 * (tokens.fontSize.title + tokens.fontSize.small)} muted={muted}
+    menu={row => operativeMoments(row).map(moment => ({ ...jumpItem(runtime, track.id, moment.hour), label: moment.label }))}
+    tooltip={tooltip} onVisibleRows={onVisibleRows} hoursPerSecond={hoursPerSecond} />;
+  return <div ref={ref} className="operatives-roster">
+    {!!rows.length && data && data.unheld.length > 0 && <p className="operative-note">{data.unheld.length} country rosters unavailable.</p>}
+    {departed.error && departedAt !== null && <WidgetState kind="error" what="departed operatives" failure={departed.error} onRetry={departed.retry} />}
     {groups.error && groups.data ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null}
     {body}
   </div>;

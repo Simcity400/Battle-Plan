@@ -1,8 +1,7 @@
 import { contentTitle } from '../../dashboard/contentTitles.ts';
 import type { CountryFlagLook } from '../../components/CountryFlag';
 import type { BandStep, TimelineLane, TimelineSpan } from '../../charts/timeline/layout';
-import { isOrderedSpans, isSpan } from '../../charts/series.ts';
-import { preparedPrefix } from '../../dashboard/preparedPrefix.ts';
+import { isSpan } from '../../charts/series.ts';
 import { bridgeGaps, coverCounts, runState, stretchesOf, withoutHours } from '../../charts/timeline/runState.ts';
 import { Lineage } from '../../dashboard/identity.ts';
 import type { CountryIdentityIndex } from '../../dashboard/countryIdentity.ts';
@@ -22,9 +21,7 @@ const isText = (value: unknown) => typeof value === 'string';
 
 /** Checks a `subjects` reply's shape: every level, run and step, so a reply from
  * another version is refused rather than read wrongly. A run's steps must cover it
- * in order, and every level a step names must be listed. A reply answered from a
- * prepared prefix also carries its coverage and pending hours, and the hours
- * sampled at keyframes after it (`approximate`), in order. */
+ * in order, and every level a step names must be listed. */
 export function validateSubjectReply(data: unknown): SubjectReply {
   const reply = data as Record<string, unknown>;
   const levels = isObject(reply) && listOf(reply.levels, level => isObject(level) && isText(level.token)
@@ -36,8 +33,7 @@ export function validateSubjectReply(data: unknown): SubjectReply {
       && listOf(run.steps, step => isSpan(step) && isObject(step) && (step.level === null || (isText(step.level) && levels.has(step.level as string))))
       && (run.steps as HourRange[]).every((step, index, steps) => step.firstHour === (index ? steps[index - 1].lastHour + 1 : run.firstHour))
       && (run.steps as HourRange[]).at(-1)?.lastHour === run.lastHour);
-  if (!ok || reply.approximate !== undefined && !isOrderedSpans(reply.approximate)) throw new Error('The subjects reply is malformed.');
-  preparedPrefix(reply);
+  if (!ok) throw new Error('The subjects reply is malformed.');
   return data as SubjectReply;
 }
 
@@ -286,4 +282,17 @@ export function laneCountries(lanes: readonly TimelineLane[], info: ReadonlyMap<
     }
   }
   return [...tags];
+}
+
+/** Every hour from which what the subjects timeline shows may differ: a relation or a level starting, the hour after one
+ * ends, a stretch not recorded starting or ending, a country changing identity. Ascending, distinct. */
+export function changeHours(reply: Pick<SubjectReply, 'runs' | 'unobserved'>, identityChanges: readonly { hour: number }[] = []): number[] {
+  const hours = new Set<number>();
+  for (const run of reply.runs) {
+    hours.add(run.firstHour); hours.add(run.lastHour + 1);
+    for (const step of run.steps) hours.add(step.firstHour);
+  }
+  for (const span of reply.unobserved) { hours.add(span.firstHour); hours.add(span.lastHour + 1); }
+  for (const change of identityChanges) hours.add(change.hour);
+  return [...hours].sort((a, b) => a - b);
 }

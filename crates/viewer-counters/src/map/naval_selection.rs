@@ -36,6 +36,14 @@ impl Selection {
         }
         *before != *self.fleets
     }
+    /// A new branch, country or viewer clears the selection; it reads no rows.
+    pub fn context(&mut self, branch: BranchId, country: &Country, viewer: u32) {
+        let context = (branch, country.clone(), viewer);
+        if self.context.as_ref() != Some(&context) {
+            self.clear();
+            self.context = Some(context);
+        }
+    }
     pub fn observe(
         &mut self,
         branch: BranchId,
@@ -43,11 +51,7 @@ impl Selection {
         viewer: u32,
         frame: &DecodedFrame,
     ) {
-        let context = (branch, country.clone(), viewer);
-        if self.context.as_ref() != Some(&context) {
-            self.clear();
-            self.context = Some(context);
-        }
+        self.context(branch, country, viewer);
         if let Ok(rows) = frame.complete::<tables::Fleets>() {
             Arc::make_mut(&mut self.fleets)
                 .retain(|id| rows.binary_search_by_key(id, |row| row.id).is_ok());

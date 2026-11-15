@@ -106,7 +106,6 @@ pub struct Journal {
     required: Capacity,
     failed: Option<&'static str>,
     sealed: bool,
-    growing: bool,
 }
 impl Journal {
     pub fn vacant() -> Self {
@@ -119,7 +118,6 @@ impl Journal {
             required: Capacity::default(),
             failed: None,
             sealed: false,
-            growing: false,
         }
     }
     pub fn try_new(capacity: Capacity) -> std::io::Result<Self> {
@@ -139,12 +137,6 @@ impl Journal {
             crate::allocation::resize(&mut self.bytes, capacity.bytes, 0)?;
         }
         Ok(())
-    }
-    /// Worker-only acquisitions retain every reached observation and original
-    /// tag and country-link operand before publication. Reset keeps the mode;
-    /// fixed callback journals never opt in.
-    pub fn enable_growth(&mut self) {
-        self.growing = true;
     }
     pub fn reset(&mut self) {
         self.occurrences.clear();
@@ -189,13 +181,8 @@ impl Journal {
     }
     fn occurrence(&mut self, value: Occurrence) -> Option<usize> {
         self.required.occurrences = self.required.occurrences.saturating_add(1);
-        if self.growing && crate::allocation::reserve_push_batch(&mut self.occurrences, 1).is_err()
-        {
+        if crate::allocation::reserve_push_batch(&mut self.occurrences, 1).is_err() {
             self.refuse("raw country observation allocation failed");
-            return None;
-        }
-        if self.occurrences.len() == self.occurrences.capacity() {
-            self.refuse("raw country observation arena exhausted");
             return None;
         }
         self.occurrences.push(value);
@@ -231,18 +218,15 @@ impl Journal {
         self.occurrence(Occurrence::Link { raw, result });
         self.required.links = self.required.links.max((raw as usize).saturating_add(1));
         self.grow_links((raw as usize).saturating_add(1));
-        match self.links.get_mut(raw as usize) {
-            Some(slot) => {
-                if slot.is_none() {
-                    *slot = Some(result);
-                }
-            }
-            None => self.refuse("raw country link observation arena exhausted"),
+        // A refused growth has already refused the journal.
+        if let Some(slot) = self.links.get_mut(raw as usize)
+            && slot.is_none()
+        {
+            *slot = Some(result);
         }
     }
     fn grow_links(&mut self, required: usize) {
-        if self.growing
-            && required > self.links.len()
+        if required > self.links.len()
             && crate::allocation::resize(&mut self.links, required, None).is_err()
         {
             self.refuse("raw country link allocation failed");
@@ -307,8 +291,7 @@ impl Journal {
     }
     fn grow_bytes(&mut self, required: usize) -> Field<()> {
         let capacity = required.max(self.bytes.len().saturating_mul(2));
-        if self.growing
-            && required > self.bytes.len()
+        if required > self.bytes.len()
             && crate::allocation::resize(&mut self.bytes, capacity, 0).is_err()
         {
             self.refuse("raw country byte allocation failed");

@@ -256,6 +256,9 @@ pub struct Scene {
     heightmap: Arc<Bound>,
     terrain_ids: Arc<Bound>,
     snow_mud: Bound,
+    /// The snow texture no pass binds, of the drawn one's size: lent to a writer off the frame,
+    /// which fills it with a grid the frame then swaps in ([`Self::swap_snow_mud`]).
+    snow_back: Option<Bound>,
     /// One texel per snow/mud cell, set where [`crate::map::weather::Presentation::unknown`]
     /// hatches it.
     snow_unknown: Bound,
@@ -721,9 +724,11 @@ impl TextureCache {
             .iter()
             .find_map(|(owner, textures)| (owner == device).then(|| textures.upgrade()).flatten())
         {
+            viewer_foundation::load_record::count("scene textures reused", 1, 0);
             return Ok(shared);
         }
         let shared = SceneTextures::new(device, queue, assets, icon_images)?;
+        viewer_foundation::load_record::count("scene textures uploaded", 1, 0);
         entries.push((device.clone(), Arc::downgrade(&shared)));
         Ok(shared)
     }
@@ -913,7 +918,7 @@ impl Scene {
             &assets.name_shader,
             None,
         )?;
-        let near_name_pass = NamePass::new(
+        let mut near_name_pass = NamePass::new(
             device,
             samples,
             &icon_textures,
@@ -921,6 +926,7 @@ impl Scene {
             &assets.name_shader,
             None,
         )?;
+        near_name_pass.record_as("names near");
         let label_pass = || {
             NamePass::new(
                 device,
@@ -973,6 +979,7 @@ impl Scene {
             heightmap,
             terrain_ids,
             snow_mud,
+            snow_back: None,
             snow_unknown,
             hatch_heights,
             hatch_coverage: None,
@@ -1552,9 +1559,8 @@ impl Scene {
         ));
     }
 
-    /// Starts impacts that arrive without map events, as an offline scene's
-    /// synthetic ones do. A reset clears every province's effect slot first.
-    #[cfg(any(test, feature = "test-support"))]
+    /// Starts impacts that arrive without map events: an offline scene's synthetic ones, and
+    /// the strikes layer's. A reset clears every province's effect slot first.
     pub fn set_nuclear_impacts<'a>(
         &mut self,
         hours: impl IntoIterator<Item = &'a crate::map::strike_effects::Impacts>,
@@ -1719,6 +1725,8 @@ impl Scene {
             plan.carry_presentation(current, continuity, &|mesh, seed| {
                 assets.launch_lifetime(mesh, seed)
             })?;
+            viewer_foundation::view_record::add("flights", "installs", 1);
+            viewer_foundation::view_record::add("flights", "restarts", plan.restarts() as u64);
             if continuity == Continuity::Reset {
                 pass.reset_animation();
             }
@@ -1798,6 +1806,20 @@ impl Scene {
         assets: &OrderAssets,
         field: OrderField,
     ) -> io::Result<()> {
+        self.set_order_parts(device, queue, assets, [Some(&field), None, None, None])
+            .map(drop)
+    }
+
+    /// The order field by its producers' parts ([`crate::map::order_pass::ORDER_PARTS`]): only
+    /// the vertices that changed are written, the draw list made again only when a part's ribbons
+    /// or place moved, and the labels (the plan's) prepared again only when they changed.
+    pub fn set_order_parts(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        assets: &OrderAssets,
+        parts: [Option<&OrderField>; crate::map::order_pass::ORDER_PARTS],
+    ) -> io::Result<crate::map::order_pass::OrderUpload> {
         Self::install_orders(
             OrderParts {
                 orders: &mut self.orders,
@@ -1813,7 +1835,7 @@ impl Scene {
             },
             (device, queue),
             assets,
-            field,
+            parts,
         )
     }
 
@@ -1821,8 +1843,8 @@ impl Scene {
         parts: OrderParts<'_>,
         gpu: (&wgpu::Device, &wgpu::Queue),
         assets: &OrderAssets,
-        mut field: OrderField,
-    ) -> io::Result<()> {
+        fields: [Option<&OrderField>; crate::map::order_pass::ORDER_PARTS],
+    ) -> io::Result<crate::map::order_pass::OrderUpload> {
         let OrderParts {
             orders,
             labels,
@@ -1833,17 +1855,26 @@ impl Scene {
         } = parts;
         let (device, queue) = gpu;
         Self::warm_radar_parts(radar, gpu, (samples, effect), assets);
-        if orders.is_none() {
+        let made = orders.is_none();
+        if made {
             *orders = Some(OrderPass::new(device, samples, queue, assets, effect)?);
         }
-        if let Some(pass) = orders {
-            *labels = std::mem::take(&mut field.labels);
-            pass.upload(device, field)?;
+        let Some(pass) = orders else {
+            return Ok(Default::default());
+        };
+        let done = pass.upload_parts(device, queue, fields)?;
+        let wanted = fields[0].map(|plan| &plan.labels);
+        let same = match wanted {
+            Some(wanted) => wanted == &*labels,
+            None => *labels == Placements::default(),
+        };
+        if made || !same {
+            *labels = wanted.cloned().unwrap_or_default();
             for pass in label_passes {
                 pass.prepare_static(device, labels);
             }
         }
-        Ok(())
+        Ok(done)
     }
 
     // close zoom
@@ -2052,6 +2083,186 @@ impl Scene {
             snow,
             continuity,
         )
+    }
+
+    /// The city sprawl's damaged and burning thresholds: the only reading it makes of a
+    /// province's city damage besides whether it has an entry; none without a sprawl.
+    pub fn city_damage_thresholds(&self) -> Option<(i64, i64)> {
+        self.city_presentation.as_ref().map(crate::map::sprawl::Presentation::thresholds)
+    }
+
+    /// Whether the country names' glyph buffers hold `placements`: a new scene, or another install,
+    /// holds none of the placements given before.
+    pub fn holds_country_names(&self, placements: &viewer_foundation::map::name_draw::Placements) -> bool {
+        self.name_pass.holds_placements(placements)
+    }
+
+    /// The generation of the country names held by key ([`Self::set_country_names`]); none while
+    /// whole placements are held.
+    pub fn country_names_keyed(&self) -> Option<u64> {
+        self.name_pass.keyed_generation()
+    }
+
+    /// Drops the country names held: they are then held by key, none yet, as placements of
+    /// `generation`.
+    pub fn begin_country_names(&mut self, generation: u64) {
+        self.name_pass.begin_keyed(generation);
+    }
+
+    /// `key`'s country names written alone (none: dropped), drawn in key order among the others;
+    /// placements of `generation`, which hold no names of their own, then draw them.
+    pub fn set_country_names(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        generation: u64,
+        key: u64,
+        names: &[&viewer_foundation::map::name_draw::WorldName],
+    ) -> io::Result<()> {
+        self.name_pass.set_keyed(device, queue, generation, key, names)
+    }
+
+    /// Whether `snow` can be taken a rectangle at a time as [`Self::set_snow_mud`] takes it whole.
+    pub fn snow_mud_takes_parts(
+        &self,
+        snow: &crate::map::weather::SnowMud,
+        continuity: Continuity,
+    ) -> bool {
+        let texture = &self.snow_mud.texture;
+        [texture.width(), texture.height()] == [snow.width, snow.height]
+            && self.snow_presentation.takes_parts(snow, continuity)
+    }
+
+    /// Starts taking `snow` a rectangle at a time ([`Self::write_snow_mud_rect`], then
+    /// [`Self::finish_snow_mud_parts`]); only when [`Self::snow_mud_takes_parts`].
+    pub fn begin_snow_mud_parts(
+        &mut self,
+        snow: &crate::map::weather::SnowMud,
+        continuity: Continuity,
+    ) -> io::Result<()> {
+        self.snow_presentation.begin_parts(snow, continuity)
+    }
+
+    /// Writes `snow`'s cells of `rows` and `columns` to the snow texture.
+    pub fn write_snow_mud_rect(
+        &mut self,
+        queue: &wgpu::Queue,
+        snow: &crate::map::weather::SnowMud,
+        rows: std::ops::Range<u32>,
+        columns: std::ops::Range<u32>,
+    ) -> io::Result<()> {
+        if rows.is_empty() || columns.is_empty() {
+            return Ok(());
+        }
+        let bytes = self.snow_presentation.take_rect(snow, rows.clone(), columns.clone())?;
+        shader_pipeline::gpu::stats::write_texture(
+            queue,
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.snow_mud.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d {
+                    x: columns.start,
+                    y: rows.start,
+                    z: 0,
+                },
+                aspect: wgpu::TextureAspect::All,
+            },
+            bytes,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(columns.len() as u32 * 4),
+                rows_per_image: Some(rows.len() as u32),
+            },
+            wgpu::Extent3d {
+                width: columns.len() as u32,
+                height: rows.len() as u32,
+                depth_or_array_layers: 1,
+            },
+        );
+        Ok(())
+    }
+
+    /// Ends taking `snow` in rectangles: the scene then holds it as [`Self::set_snow_mud`] would.
+    pub fn finish_snow_mud_parts(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        snow: &Arc<crate::map::weather::SnowMud>,
+        continuity: Continuity,
+    ) -> io::Result<()> {
+        self.snow_presentation.finish_parts(snow, continuity);
+        Self::update_hatch(
+            device,
+            queue,
+            &mut self.snow_unknown,
+            &mut self.hatch_coverage,
+            &mut self.snow_presentation,
+        )?;
+        if let Some(factors) = &snow.post_factors {
+            self.post.set_snow_factors(factors);
+        } else {
+            self.post.set_snow(snow.province_snow.try_as_slice()?)?;
+        }
+        Ok(())
+    }
+
+    /// The snow texture no pass binds, sized as the drawn one, for a writer off the frame to fill
+    /// ([`write_snow_mud_texels`]) until the frame swaps it in; made on first ask, and again when
+    /// the drawn one was made at another size.
+    pub fn lend_snow_mud_back(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) -> io::Result<wgpu::Texture> {
+        let size = [self.snow_mud.texture.width(), self.snow_mud.texture.height()];
+        let fits = self.snow_back.as_ref().is_some_and(|back| {
+            [back.texture.width(), back.texture.height()] == size
+        });
+        if !fits {
+            self.snow_back = Some(data_texture(
+                device,
+                queue,
+                "SnowMudData (back)",
+                size,
+                wgpu::TextureFormat::Rgba8Unorm,
+                &vec![0u8; (size[0] * size[1] * 4) as usize],
+            )?);
+        }
+        Ok(self.snow_back.as_ref().expect("made above").texture.clone())
+    }
+
+    /// Draws `back`, which a writer filled whole with `snow` (`mismatched`: its pages whose cells
+    /// are shown unlike its bytes), in place of the drawn texture, which becomes the one lent: the
+    /// scene then holds `snow` as taking it in rectangles leaves it, with no texel written on the
+    /// frame. False, changing nothing, when `back` is not the texture lent or `snow` could not be
+    /// taken in rectangles.
+    pub fn swap_snow_mud(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        back: &wgpu::Texture,
+        snow: &Arc<crate::map::weather::SnowMud>,
+        mismatched: Vec<usize>,
+    ) -> io::Result<bool> {
+        let lent = self.snow_back.as_ref().is_some_and(|held| held.texture == *back);
+        if !lent || !self.snow_mud_takes_parts(snow, Continuity::Continue) {
+            return Ok(false);
+        }
+        std::mem::swap(&mut self.snow_mud, self.snow_back.as_mut().expect("lent"));
+        self.snow_presentation.swap_in(snow, mismatched);
+        Self::update_hatch(
+            device,
+            queue,
+            &mut self.snow_unknown,
+            &mut self.hatch_coverage,
+            &mut self.snow_presentation,
+        )?;
+        if let Some(factors) = &snow.post_factors {
+            self.post.set_snow_factors(factors);
+        } else {
+            self.post.set_snow(snow.province_snow.try_as_slice()?)?;
+        }
+        Ok(true)
     }
 
     fn install_snow_mud(
@@ -2314,6 +2525,38 @@ impl Scene {
         Ok(())
     }
 
+    /// The sea regions' naval attributes updated for the regions of `keys` (region id plus one);
+    /// `false` when the scene cannot take it in place: show a whole fill instead.
+    /// The political country fill updated for what changed (see `political_gpu::View::show_changed`);
+    /// `false` when the caller must show the tables whole.
+    pub fn update_political(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        region_of: &[u32],
+        color: &dyn Fn(u32) -> [u8; 3],
+        provinces: &[usize],
+        keys: &[u32],
+    ) -> io::Result<bool> {
+        match &mut self.political {
+            Some(political) => political.show_changed(device, queue, region_of, color, provinces, keys),
+            None => Ok(false),
+        }
+    }
+
+    pub fn update_naval(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        attributes: &dyn Fn(u32) -> crate::map::gradient::Attributes,
+        keys: &[u32],
+    ) -> io::Result<bool> {
+        match &mut self.political {
+            Some(political) => political.show_naval(device, queue, attributes, keys),
+            None => Ok(false),
+        }
+    }
+
     /// Show one hour's political tables; the fill is computed with the next render.
     pub fn set_political(
         &mut self,
@@ -2558,6 +2801,8 @@ impl Scene {
             jobs.push(Box::new(move || {
                 country.prepare_static(device, placements);
                 near.prepare_static(device, placements.near.as_deref().unwrap_or(empty));
+                country.prepared_by_install();
+                near.prepared_by_install();
                 Ok(())
             }));
         }
@@ -2576,12 +2821,8 @@ impl Scene {
             };
             jobs.push(Box::new(move || {
                 let air = air.highlighted(highlighted);
-                let field = viewer_foundation::map::ribbon_mesh::append_kept(
-                    base,
-                    |draw| !draw.air_mode,
-                    &air,
-                );
-                Self::install_orders(parts, gpu, assets, field)
+                Self::install_orders(parts, gpu, assets, [Some(base), None, None, Some(&air)])
+                    .map(drop)
             }));
         }
         if let Some((assets, field, steady)) = unit_models {
@@ -2702,6 +2943,9 @@ impl Scene {
         // Lent to the frame and back on every way out; a frame that fails drops its marks with
         // its encoder.
         let mut timer = self.pass_timer.take();
+        if timer.is_none() && viewer_foundation::view_record::on() {
+            PassTimer::unavailable();
+        }
         let rendered = self.render_frame(device, queue, request, &mut timer);
         if rendered.is_err() {
             if let Some(timer) = &mut timer {
@@ -2774,6 +3018,7 @@ impl Scene {
         let arena = &self.arena;
         let clock = profiling().then(Instant::now);
         self.detail_laps.start(clock);
+        self.detail_laps.record_walls();
         let rail_alpha = self.rail_fade.update(&camera, animation_time);
         let rails_shown = self.rail_fade.trains_visible();
         let trains_visible = rails_shown && self.graphics.supply_trains();
@@ -2850,6 +3095,23 @@ impl Scene {
             ));
         }
         self.cover = crate::map::terrain::cover_for(camera, size);
+        // The game culls every figure by its own test; the casters are the same figures.
+        let cull = Some(crate::map::models::GameCull::of(&camera, size));
+        for pass in [
+            self.unit_models.as_ref(),
+            self.map_buildings.as_ref(),
+            self.sprawl.as_ref(),
+            self.bridges.as_ref(),
+            self.native_map_frame.as_ref(),
+            self.aircraft.as_ref().map(|aircraft| &aircraft.0),
+            self.trains.as_ref().map(|trains| &trains.0),
+            self.player.as_ref().map(|player| &player.pass),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            pass.set_cull(cull);
+        }
         self.grid = self.cover.grid();
         // trees: the same rectangle the wrap offsets come from, which the tree pass culls its
         // buckets against.
@@ -3130,14 +3392,8 @@ impl Scene {
             .set_camera_moving(self.sprite_camera.replace(sprite_camera) != Some(sprite_camera));
         let sprite_cpu = viewer_foundation::profiling::thread_span("sprite_upload");
         let draw_cursor = std::cell::Cell::new(clock.map(|_| shader_pipeline::gpu::stats::draws()));
-        self.sprite_pass.upload(
-            device,
-            queue,
-            arena,
-            overlay.sprites.unwrap_or(&self.empty_batch),
-            size,
-            overlay.ui_scale,
-        );
+        let sprites = overlay.sprites.unwrap_or(&self.empty_batch);
+        self.sprite_pass.upload(device, queue, arena, sprites, size, overlay.ui_scale);
         if let Some(previous) = draw_cursor.get() {
             let now = shader_pipeline::gpu::stats::draws();
             viewer_foundation::profiling::record_count("draws_gui_bake", now - previous);
@@ -3150,8 +3406,21 @@ impl Scene {
         // Both callbacks execute only on the caller. The shared recorder also lets
         // CPU-only boundaries leave the existing GPU query stream unchanged.
         let pass_cpu_laps = RefCell::new(&mut self.pass_cpu_laps);
+        // A measurement's record of each lap's wall time against the frame thread's own CPU in it,
+        // so time the thread spends off its CPU inside the frame is placed by lap.
+        let lap_clock = std::cell::Cell::new(viewer_foundation::view_record::on().then(|| {
+            (std::time::Instant::now(), viewer_foundation::profiling::current_thread_cpu_time())
+        }));
         let cpu_mark = |label: &'static str| {
             pass_cpu_laps.borrow_mut().lap_sum(label);
+            if let Some((wall, cpu)) = lap_clock.get() {
+                let (now, now_cpu) = (std::time::Instant::now(), viewer_foundation::profiling::current_thread_cpu_time());
+                viewer_foundation::view_record::add("render_wall_us", label, (now - wall).as_micros() as u64);
+                if let (Some(cpu), Some(now_cpu)) = (cpu, now_cpu) {
+                    viewer_foundation::view_record::add("render_cpu_us", label, now_cpu.saturating_sub(cpu).as_micros() as u64);
+                }
+                lap_clock.set(Some((now, now_cpu)));
+            }
             if let Some(previous) = draw_cursor.get() {
                 let now = shader_pipeline::gpu::stats::draws();
                 let scope = match label {
@@ -3194,7 +3463,7 @@ impl Scene {
             command_buffers.push(ModelPass::finished_buffer(start));
         }
         let mut mark = |encoder: &mut wgpu::CommandEncoder, label: &'static str| {
-            cpu_mark(if label == "model_layers" {
+            cpu_mark(if matches!(label, "model_opaque" | "model_blended") {
                 "model_recycle"
             } else {
                 label
@@ -3279,13 +3548,8 @@ impl Scene {
         match (shadow_prepared, visible) {
             (Some(shadow_prepared), Some(visible)) => {
                 if shadow_casters {
-                    let casters = crate::map::shadow::receiver_rect(camera, size, Some(visible))
-                        .map(|receivers| {
-                            crate::map::shadow::caster_rect(
-                                receivers,
-                                crate::map::shadow::light_direction(camera, &globals.frame),
-                            )
-                        });
+                    // The game's casters are the figures its main camera culled in: none off screen.
+                    let casters = Some(visible);
                     let caster_frame = |alpha| ModelFrame {
                         camera,
                         offsets: &offsets,
@@ -4179,32 +4443,43 @@ impl Scene {
                             #[cfg(any(test, feature = "test-support"))]
                             faults.begin_native(admitted);
                             let mut model_draws = Vec::new();
-                            for (model, enabled, alpha, label) in mesh_layers {
-                                if let Some(model) = model.filter(|_| enabled) {
-                                    let frame = ModelFrame {
-                                        camera: actor_camera,
-                                        offsets: &actor_offsets[view..view + 1],
-                                        visible: if label == "map_frame_mesh" {
-                                            None
-                                        } else {
-                                            actor_visible
-                                        },
-                                        alpha,
-                                    };
-                                    let draws = model.prepare_native(
-                                        arena,
-                                        frame,
-                                        crate::map::models::NativeInputs {
-                                            frames: &actor_frame_bytes[view..view + 1],
-                                            ..native_mesh_inputs
-                                        },
-                                        native_queue,
-                                        &mut object,
-                                    )?;
-                                    model_draws.push((model, draws));
-                                    #[cfg(any(test, feature = "test-support"))]
-                                    faults.after(failure_tests::Point::Models)?;
+                            let prepared = (|| -> io::Result<()> {
+                                for (model, enabled, alpha, label) in mesh_layers {
+                                    if let Some(model) = model.filter(|_| enabled) {
+                                        let frame = ModelFrame {
+                                            camera: actor_camera,
+                                            offsets: &actor_offsets[view..view + 1],
+                                            visible: if label == "map_frame_mesh" {
+                                                None
+                                            } else {
+                                                actor_visible
+                                            },
+                                            alpha,
+                                        };
+                                        let draws = model.prepare_kept(
+                                            arena,
+                                            frame,
+                                            crate::map::models::NativeInputs {
+                                                frames: &actor_frame_bytes[view..view + 1],
+                                                ..native_mesh_inputs
+                                            },
+                                            native_queue,
+                                            &mut object,
+                                        )?;
+                                        model_draws.push((model, draws));
+                                        #[cfg(any(test, feature = "test-support"))]
+                                        faults.after(failure_tests::Point::Models)?;
+                                    }
                                 }
+                                Ok(())
+                            })();
+                            // A later layer's failure returns the lists the earlier ones borrowed,
+                            // which their retained metadata still names.
+                            if let Err(error) = prepared {
+                                for (model, draws) in model_draws {
+                                    model.recycle_kept(draws);
+                                }
+                                return Err(error);
                             }
                             cpu_mark("model_prepare");
                             let buffers = ModelPass::encode_native(
@@ -4221,9 +4496,17 @@ impl Scene {
                         })?;
                 command_buffers.extend(buffers);
                 for (model, draws) in model_draws {
-                    model.recycle_native(draws);
+                    model.recycle_kept(draws);
                 }
-                mark(&mut encoder, "model_layers");
+                // The lit opaque and blended queues are timed apart.
+                mark(
+                    &mut encoder,
+                    if native_queue == crate::map::models::NativeQueue::Regular {
+                        "model_opaque"
+                    } else {
+                        "model_blended"
+                    },
+                );
                 if native_queue == crate::map::models::NativeQueue::Alternate {
                     // In each admitted view the native order is meshes, then
                     // animated world text, then particles.
@@ -4673,6 +4956,18 @@ fn write_range(
         remaining = &remaining[count..];
         pixel += count / 4;
     }
+}
+
+/// Writes `bytes` (RGBA, a texel four) into a snow texture `width` texels wide from texel `first`
+/// on: a lent texture's writer, off the frame.
+pub fn write_snow_mud_texels(
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    width: u32,
+    first: usize,
+    bytes: &[u8],
+) {
+    write_range(queue, texture, width, first, bytes);
 }
 
 /// Rewrites a data texture in place, or rebuilds it when its size changed.

@@ -31,8 +31,9 @@ fn packet(manpower: usize) -> carmy::StatusPacket {
         },
         manpower,
         thresholds: 3,
+        // A capture's growth floors modifier nodes at the unit count.
         modifiers: crate::modifier_accumulator::SnapshotCapacity {
-            nodes: 1,
+            nodes: 2,
             entries: 1,
         },
         ..carmy::StatusCapacities::new(2)
@@ -85,19 +86,8 @@ fn manpower_batches_keep_every_word_and_failure_prefix() {
 }
 
 #[test]
-fn manpower_admission_wrapping_and_cached_thresholds_stay_lazy() {
+fn manpower_appends_wrapping_and_cached_thresholds_stay_lazy() {
     let source = manpower_fixture(&[1; 65]);
-    let memory = ScalarBatchMemory::new(&source);
-    let mut refused = packet(64);
-    assert_eq!(
-        refused.capture_level(&memory, 0, A1, None),
-        Err("division status manpower packet capacity exceeded")
-    );
-    assert_eq!(*memory.reads.borrow(), [(A1 + carmy::MANPOWER_DATA, 16)]);
-    assert_eq!(memory.batches.get(), 0);
-    assert_eq!(refused.required_capacities().manpower, 65);
-    assert!(refused.manpower.is_empty());
-
     let mut admitted = packet(130);
     let memory = ScalarBatchMemory::new(&source);
     admitted.capture_level(&memory, 0, A1, None).unwrap();
@@ -157,7 +147,7 @@ fn status_capture_preserves_primary_word_faults_and_source_admission() {
         pointer: A1,
         division: presentation_source()[0].division,
         ..Default::default()
-    }; 2];
+    }];
     carmy::capture_division_seeds(&source, &mut seeds);
     let memory = ScalarBatchMemory::new(&source);
     let mut captured = packet(65);
@@ -166,10 +156,7 @@ fn status_capture_preserves_primary_word_faults_and_source_admission() {
         len: 1,
         unread_rows: 1,
     };
-    assert_eq!(
-        captured.capture(&memory, 0, GS, &seeds, Outcome::Rows { len: 2 }, 1),
-        expected
-    );
+    assert_eq!(captured.capture(&memory, 0, GS, &seeds, expected), expected);
     assert_eq!(captured.allocated_bytes(), allocated);
     assert_eq!(captured.manpower, vec![1; 65]);
     let trace = memory.reads.borrow().clone();
@@ -180,7 +167,7 @@ fn status_capture_preserves_primary_word_faults_and_source_admission() {
         memory.fault.set(Some(fault));
         let mut failed = packet(65);
         assert_eq!(
-            failed.capture(&memory, 0, GS, &seeds, Outcome::Rows { len: 2 }, 1),
+            failed.capture(&memory, 0, GS, &seeds, expected),
             Outcome::Unavailable {
                 reason: "division presentation field unreadable"
             }
@@ -192,12 +179,13 @@ fn status_capture_preserves_primary_word_faults_and_source_admission() {
     }
     let memory = ScalarBatchMemory::new(&source);
     let mut omitted = packet(65);
+    let none_admitted = Outcome::Truncated {
+        len: 0,
+        unread_rows: 1,
+    };
     assert_eq!(
-        omitted.capture(&memory, 0, GS, &seeds, Outcome::Rows { len: 2 }, 0),
-        Outcome::Truncated {
-            len: 0,
-            unread_rows: 2
-        }
+        omitted.capture(&memory, 0, GS, &seeds[..0], none_admitted),
+        none_admitted
     );
     assert!(omitted.manpower.is_empty());
     assert!(
@@ -215,7 +203,6 @@ fn status_capture_preserves_primary_word_faults_and_source_admission() {
 #[test]
 fn worker_manpower_and_lazy_thresholds_grow_before_first_and_later_payloads() {
     let mut growing = packet(0);
-    growing.enable_growth();
     for count in [50, 120] {
         growing.clear();
         let mut source = manpower_fixture(&vec![1; count]);
@@ -236,13 +223,13 @@ fn worker_manpower_and_lazy_thresholds_grow_before_first_and_later_payloads() {
         assert!(growing.thresholds.capacity() > count);
         assert!(!actual.reads.borrow().contains(&(0x40000 + count * 8, 8)));
         let expected = ScalarBatchMemory::new(&source);
-        let mut fixed = carmy::StatusPacket::with_capacities(carmy::StatusCapacities {
+        let mut presized = carmy::StatusPacket::with_capacities(carmy::StatusCapacities {
             manpower: count,
             thresholds: count + 1,
             ..carmy::StatusCapacities::new(2)
         })
         .unwrap();
-        let reference = fixed.capture_level(&expected, 0, A1, None).unwrap();
+        let reference = presized.capture_level(&expected, 0, A1, None).unwrap();
         assert_eq!(reference.thresholds_len, result.thresholds_len);
         assert_eq!(*actual.reads.borrow(), *expected.reads.borrow());
         growing.clear();
@@ -271,7 +258,6 @@ fn worker_manpower_and_lazy_thresholds_grow_before_first_and_later_payloads() {
 fn worker_acclimatization_registry_grows_from_original_and_later_headers() {
     use crate::{acclimatization_category as category, acclimatization_data as data};
     let mut growing = packet(0);
-    growing.enable_growth();
     for count in [50, 120] {
         growing.clear();
         let mut source = presentation_fixture();
@@ -327,7 +313,7 @@ fn worker_acclimatization_registry_grows_from_original_and_later_headers() {
             count
         );
         let expected = ScalarBatchMemory::new(&source);
-        let mut fixed = carmy::StatusPacket::with_capacities(carmy::StatusCapacities {
+        let mut presized = carmy::StatusPacket::with_capacities(carmy::StatusCapacities {
             acclimatization_categories: count,
             ..carmy::StatusCapacities::new(2)
         })
@@ -335,7 +321,7 @@ fn worker_acclimatization_registry_grows_from_original_and_later_headers() {
         let (object, winner) =
             carmy::acclimatization_winner(&expected, 0, &seeds[0], None).unwrap();
         assert_eq!(
-            fixed.read_camouflage(&expected, 0, &object, winner),
+            presized.read_camouflage(&expected, 0, &object, winner),
             Ok(last)
         );
         assert_eq!(*actual.reads.borrow(), *expected.reads.borrow());
@@ -352,7 +338,6 @@ fn acquired_status_demand_excludes_allocator_spare_capacity() {
         ..Default::default()
     })
     .unwrap();
-    packet.enable_growth();
     packet.manpower.reserve(30_000);
     packet.thresholds.reserve(30_000);
     for _ in 0..20 {
@@ -375,7 +360,7 @@ fn carried_maxima_replace_the_stat_block_read() {
         pointer: A1,
         division: presentation_source()[0].division,
         ..Default::default()
-    }; 2];
+    }];
     carmy::capture_division_seeds(&source, &mut seeds);
     let stats = seeds[0].stat_block.unwrap();
     let capture = |held: &[Option<DivisionMaxima>]| {
@@ -386,8 +371,7 @@ fn carried_maxima_replace_the_stat_block_read() {
             0,
             GS,
             &seeds,
-            Outcome::Rows { len: 2 },
-            1,
+            Outcome::Rows { len: 1 },
             held,
             &[],
         );
@@ -458,7 +442,6 @@ fn unavailable_air_supply_is_local_to_the_noncore_movement_operand() {
             GS,
             &[seed],
             Outcome::Rows { len: 1 },
-            1,
             &[],
             &[],
         );

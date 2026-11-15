@@ -1,13 +1,13 @@
-import CombatLogDetails from './CombatLogDetails';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { formatDateTime } from '../../dashboard/calendar';
 import BattleLogView from '../battles/BattleLogView';
 import type { BattleViewAdapter } from '../battles/BattleLogView';
-import { battleValueText } from '../battles/battleRows';
+import { battleState, battleValueText } from '../battles/battleRows';
 import type { BattleLabels, BattleMeasure, BattleSideSummary } from '../battles/battleRows';
 import { definition } from './definition';
 import LandBattleList from './LandBattleList';
-import { rankedLandBattleRows, landBattleRows, validateLandBattlesReply, validateLandBattlesManifest, validateLandBattlesRanking,
+import CombatLogDetails from './CombatLogDetails';
+import { rankedLandBattleRows, landBattleChanges, landBattleRow, landBattleRows, landWindowPlaces, validateLandBattlesReply, validateLandBattlesManifest, validateLandBattlesRanking,
   casualtyRankingNote, landCasualtiesMissing, landCasualtyText, landDivisionText, landLossText } from './landBattlesData.ts';
 import type { LandBattleRow, LandBattlesRanking, LandBattlesWindow } from './landBattlesData';
 
@@ -30,7 +30,9 @@ const rankedBy = (measure: string) => `Ranked by ${measure === 'Peak size' ? 'mo
 
 const adapter: BattleViewAdapter<LandBattleRow, LandBattlesWindow, LandBattlesRanking> = {
   definition, product: 'land-battles', landPlaceNames: true, validateManifest: validateLandBattlesManifest, validateWindow: validateLandBattlesReply,
-  validateRanking: validateLandBattlesRanking, rows: landBattleRows, rankedRows: rankedLandBattleRows,
+  validateRanking: validateLandBattlesRanking, rows: landBattleRows, row: landBattleRow, changes: landBattleChanges, windowPlaces: landWindowPlaces, rankedRows: rankedLandBattleRows,
+  // Divisions and manpower lost are painted between changes; only whether they are known is the row's.
+  state: row => battleState(row, true),
   labels: LABELS, measures: MEASURES, compactSides: SIDES, formatLoss: landLossText, view: LandBattleList,
   summary: (rows, ranking, measure, view) => {
     const casualtyNote = view === 'biggest' && measure === 'Casualties' ? casualtyRankingNote(ranking)

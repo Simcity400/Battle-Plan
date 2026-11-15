@@ -10,7 +10,7 @@ use crate::map::{
 use viewer_foundation::map::{native_resources::GuiResources, province_map::HeightField};
 
 /// Unboxed hour products move directly into their setters without another allocation.
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::large_enum_variant, reason = "a product moves into its setter unboxed, with no second allocation")]
 pub enum SceneInput<'a> {
     WarmTrains(&'a Arc<TrainAssets>),
     WarmUnitModels(&'a UnitModelAssets),
@@ -72,9 +72,10 @@ pub enum SceneInput<'a> {
         continuity: Continuity,
     },
     RestartUnitModels(Option<&'a BTreeSet<u32>>),
+    /// The order field by its producers' parts (plan, raid arrows, trade routes, air orders).
     SetOrders {
         assets: &'a OrderAssets,
-        field: OrderField,
+        parts: [Option<&'a OrderField>; crate::map::order_pass::ORDER_PARTS],
     },
     SetPreparedWeatherEffects {
         assets: Arc<crate::map::weather_effects::Assets>,
@@ -113,9 +114,19 @@ pub enum SceneInput<'a> {
         seek: bool,
         reason: String,
     },
-    /// Draws the hour's figures where the view's presentation history moves them this frame.
+    /// Draws the hour's figures where the view's presentation history moves them this frame:
+    /// each figure's unit, hour placement, root rotation and scale.
     SetUnitMovement {
-        prepared: &'a crate::map::unit_models::PreparedModels,
+        positions: Box<
+            dyn Iterator<
+                    Item = (
+                        viewer_foundation::unit_handle::Unit,
+                        &'a viewer_foundation::map::counter_move::Position,
+                        f32,
+                        f32,
+                    ),
+                > + 'a,
+        >,
         history: &'a viewer_foundation::map::counter_move::SharedMovement,
     },
     SetUnitModels {
@@ -230,7 +241,7 @@ impl SceneInput<'_> {
 }
 
 /// What an applied input returns to its host: the replaced product a setter hands back, if any.
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::large_enum_variant, reason = "a product moves into its setter unboxed, with no second allocation")]
 pub enum SceneOutput {
     Applied,
     PreparedRailways(Arc<PreparedRailGeometry>),
@@ -394,8 +405,8 @@ impl Scene {
                 self.restart_unit_models(provinces);
                 applied
             }
-            SceneInput::SetOrders { assets, field } => {
-                self.set_orders(device, queue, assets, field)?;
+            SceneInput::SetOrders { assets, parts } => {
+                self.set_order_parts(device, queue, assets, parts)?;
                 applied
             }
             SceneInput::SetPreparedWeatherEffects {
@@ -441,9 +452,8 @@ impl Scene {
                 self.missing_map_text_events(at, seek, reason);
                 applied
             }
-            SceneInput::SetUnitMovement { prepared, history } => {
-                self.unit_history
-                    .set_movement(prepared.movement_positions(), history);
+            SceneInput::SetUnitMovement { positions, history } => {
+                self.unit_history.set_movement(positions, history);
                 applied
             }
             SceneInput::SetUnitModels {

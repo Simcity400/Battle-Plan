@@ -430,6 +430,7 @@ mod tests {
     use super::*;
     #[test]
     fn clearing_five_thousand_timers_demands_only_three_count_words() {
+        let _globals = crate::event_feed_observer::test_globals();
         struct CountsOnly(std::cell::Cell<usize>);
         impl Memory for CountsOnly {
             fn copy(&self, at: usize, out: &mut [u8]) -> bool {
@@ -446,6 +447,7 @@ mod tests {
     }
     #[test]
     fn explicit_cooldown_clear_records_cooling_taken_and_removal_only_edges() {
+        let _globals = crate::event_feed_observer::test_globals();
         assert_eq!(removal_edges([0, 0, 1], [0, 0, 0]), Ok((0, 1)));
         assert_eq!(removal_edges([1, 1, 0], [0, 0, 0]), Ok((1, 0)));
         assert_eq!(removal_edges([0, 1, 0], [0, 0, 0]), Ok((1, 0)));
@@ -460,6 +462,7 @@ mod tests {
     }
     #[test]
     fn both_ordinary_cooldown_writers_retain_the_selected_one_day_expiry() {
+        let _globals = crate::event_feed_observer::test_globals();
         let mut bytes = [0_u8; 0x18];
         bytes[..8].copy_from_slice(
             &(engine_decisions::cdecision_cooldown::VTABLE_RVA.0 as u64).to_le_bytes(),
@@ -478,6 +481,7 @@ mod tests {
     }
     #[test]
     fn terminal_writer_uses_store_operands_and_never_reports_pre_effect_words_as_results() {
+        let _globals = crate::event_feed_observer::test_globals();
         let bytes = [0xff_u8; 0x40];
         let memory = engine_native::memory::SliceMemory {
             base: 0x1000,
@@ -508,6 +512,7 @@ mod tests {
     }
     #[test]
     fn membership_and_refresh_writers_are_present_independently_of_effect_lists() {
+        let _globals = crate::event_feed_observer::test_globals();
         let names = native::LIFECYCLE_TAPS.map(|site| site.name);
         assert!(names.contains(&"TakenDecisionRemoved"));
         assert!(names.contains(&"RefreshCooldownFinished"));

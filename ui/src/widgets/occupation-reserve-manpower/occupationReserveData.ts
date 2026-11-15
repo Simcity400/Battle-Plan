@@ -1,142 +1,144 @@
-import { countryPart, keyedKnown, keyedRead, runAtHour, validateKeyedWindow } from '../../dashboard/keyedHistory.ts';
-import type { KeyedWindow } from '../../dashboard/keyedHistory';
-import type { HolderAt } from '../../dashboard/holderLooks';
-import type { Run, Span } from '../../charts/series';
+import { liveKey } from '../../charts/live.ts';
+import type { LiveValues } from '../../charts/live';
+import type { Run } from '../../charts/series';
+import type { TooltipContent } from '../../charts/tooltip';
+import type { CountryRaceEntry } from '../../charts/race/countryRace';
+import type { Country, OccupationReserveReply, ReserveHistoryReply, ReserveHolder, ReserveSegment } from '../../generated/dashboard';
 
-export interface OccupationReserveReply {
-  window: KeyedWindow; holders: readonly { tag: string; slot: number }[];
-  /** Source countries by the ids their entries name. */
-  sources: Readonly<Record<string, string>>; warnings: readonly string[];
-}
+
+const object = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
+const country = (value: unknown) => object(value) && Number.isSafeInteger(value.id) && (value.tag === null || typeof value.tag === 'string' && value.tag.length > 0);
+const integer = (value: unknown) => Number.isSafeInteger(value);
+const warnings = (value: Record<string, unknown>) => Array.isArray(value.warnings) && value.warnings.every(item => typeof item === 'string');
 
 export function validateOccupationReserve(value: unknown): OccupationReserveReply {
-  const reply = value as OccupationReserveReply;
-  if (!reply || typeof reply !== 'object' || !Array.isArray(reply.holders) || !reply.sources || typeof reply.sources !== 'object'
-    || !reply.holders.every(holder => holder && typeof holder.tag === 'string' && Number.isSafeInteger(holder.slot))
-    || !Object.values(reply.sources).every(source => typeof source === 'string' && countryPart(source) !== null)
-    || !Array.isArray(reply.warnings) || !reply.warnings.every(warning => typeof warning === 'string'))
-    throw new Error('The occupation reserve reply is malformed.');
-  return { ...reply, window: validateKeyedWindow(reply.window) };
+  const ok = object(value) && (value.missing === null || typeof value.missing === 'string') && (value.readHour === null || integer(value.readHour)) && warnings(value)
+    && Array.isArray(value.holders) && value.holders.every(holder => object(holder) && country(holder.country) && typeof holder.admitted === 'boolean'
+      && Array.isArray(holder.entries) && holder.entries.every(entry => object(entry) && integer(entry.ordinal) && country(entry.source)));
+  if (!ok) throw new Error('The occupation reserve reply is malformed.');
+  return value as unknown as OccupationReserveReply;
 }
 
-/** One recorded entry of a holder's reserve: its place in the holder's list, its source
- * country (null when the reference does not resolve) and its signed amount. */
-export interface ReserveEntry { ordinal: number; source: string | null; amount: bigint }
-/** `admitted`: the holder's occupation status was read with its entries, so a source
- * without an entry holds none. */
-export interface HolderReserve { holder: string; tag: string; admitted: boolean; entries: ReserveEntry[]; positive: bigint; negative: ReserveEntry[] }
-
-/** Each holder's entries at `hour`, in recorded order; null when not recorded then. An
- * admitted holder without entries holds no reserve. */
-export function reservesAt(reply: OccupationReserveReply, hour: number): { holders: HolderReserve[]; readHour: number | undefined } | null {
-  if (!keyedKnown(reply.window, hour)) return null;
-  const holders = new Map<string, Map<number, { source?: string | null; amount?: bigint }>>();
-  const admitted = new Set<string>();
-  for (const series of reply.window.series) {
-    const [holder, ordinal, field] = series.name.split('|');
-    const run = runAtHour(series.runs, hour);
-    if (run && ordinal === 'holder' && field === undefined) { admitted.add(holder); continue; }
-    if (!run || (field !== 'amount' && field !== 'source')) continue;
-    const entries = holders.get(holder) ?? new Map();
-    const entry = entries.get(Number(ordinal)) ?? {};
-    if (field === 'amount') entry.amount = BigInt(run[2]);
-    else entry.source = reply.sources[run[2]] ?? null;
-    entries.set(Number(ordinal), entry);
-    holders.set(holder, entries);
-  }
-  for (const holder of admitted) if (!holders.has(holder)) holders.set(holder, new Map());
-  const out: HolderReserve[] = [];
-  for (const [holder, entries] of holders) {
-    const list = [...entries].filter(([, entry]) => entry.amount !== undefined).sort(([a], [b]) => a - b)
-      .map(([ordinal, entry]) => ({ ordinal, source: entry.source ?? null, amount: entry.amount! }));
-    out.push({ holder, tag: countryPart(holder)?.tag ?? holder, admitted: admitted.has(holder), entries: list,
-      positive: list.reduce((sum, entry) => entry.amount > 0n ? sum + entry.amount : sum, 0n),
-      negative: list.filter(entry => entry.amount < 0n) });
-  }
-  return { holders: out, readHour: keyedRead(reply.window, hour) };
+export function validateReserveHistory(value: unknown): ReserveHistoryReply {
+  const ok = object(value) && warnings(value) && Array.isArray(value.segments) && value.segments.every((segment, index, all) => object(segment)
+      && integer(segment.firstHour) && integer(segment.lastHour) && (segment.firstHour as number) <= (segment.lastHour as number)
+      && (index === 0 || (all[index - 1] as ReserveSegment).lastHour < (segment.firstHour as number)) && typeof segment.admitted === 'boolean'
+      && (segment.entries === null ? typeof segment.unknown === 'string' : segment.unknown === null && Array.isArray(segment.entries)
+        && segment.entries.every(entry => object(entry) && integer(entry.source) && integer(entry.amount))))
+    && Array.isArray(value.sources) && value.sources.every(source => object(source) && integer(source.id) && Array.isArray(source.tags)
+      && source.tags.every(tag => object(tag) && (tag.tag === null || typeof tag.tag === 'string') && integer(tag.firstHour) && integer(tag.lastHour)));
+  if (!ok) throw new Error('The occupation reserve history is malformed.');
+  return value as unknown as ReserveHistoryReply;
 }
 
-/** A holder's positive entries summed by source country, largest first (repeated sources
- * add up on the bar; the tooltip keeps each entry). Unresolved sources stay apart. */
-export function sourceParts(reserve: HolderReserve): { source: string | null; amount: bigint }[] {
-  const by = new Map<string | null, bigint>();
-  for (const entry of reserve.entries) if (entry.amount > 0n) by.set(entry.source, (by.get(entry.source) ?? 0n) + entry.amount);
-  return [...by].map(([source, amount]) => ({ source, amount })).sort((a, b) => a.amount > b.amount ? -1 : a.amount < b.amount ? 1 : (a.source ?? '').localeCompare(b.source ?? ''));
+/** What renders the race: the holders and their entries' sources, never their amounts nor the read hour. */
+export const reserveStructure = (reply: OccupationReserveReply) => JSON.stringify([reply.missing, reply.holders, reply.warnings]);
+
+export const UNRESOLVED = 'unresolved';
+/** A source's part id: its tag, or the reason it has none. */
+export const sourceKey = (source: Country) => source.tag ?? UNRESOLVED;
+
+/** One entry at the values read now: its amount undefined where not read. */
+export interface ReadEntry { ordinal: number; source: Country; amount: number | undefined }
+/** A holder's reserve at the values read now: its positive entries' sum (null while any is not read), its negative ones. */
+export interface HolderReserve { holder: ReserveHolder; tag: string; entries: ReadEntry[]; positive: number | null; negative: ReadEntry[] }
+
+export function reserveOf(holder: ReserveHolder, values: LiveValues<number>): HolderReserve {
+  const entries = holder.entries.map(entry => ({ ...entry, amount: values.get(liveKey(`${holder.country.id}:${entry.ordinal}`, 'amount')) }));
+  const unread = entries.some(entry => entry.amount === undefined);
+  return { holder, tag: holder.country.tag ?? `#${holder.country.id}`, entries,
+    positive: unread ? null : entries.reduce((sum, entry) => sum + Math.max(0, entry.amount!), 0),
+    negative: entries.filter(entry => entry.amount !== undefined && entry.amount < 0) };
 }
 
-/** The holder drill's bands: each resolved source country, then one band for positive amounts
- * whose source does not resolve at their hour, kept only where such amounts occur. Built from
- * the dated segments themselves, so an amount whose source covers only part of its run keeps
- * the rest in the unresolved band. */
-/** A native holder's reserve key at each hour: one key throughout, or its dated TAG@slot aliases. */
-export type HolderKeys = string | readonly { key: string; firstHour: number; lastHour: number }[];
-
-/** The key `keys` hold at `hour`; null outside every alias. */
-export const holderKeyAt = (keys: HolderKeys, hour: number): string | null => typeof keys === 'string' ? keys
-  : keys.find(run => run.firstHour <= hour && hour <= run.lastHour)?.key ?? null;
-
-const keyNames = (keys: HolderKeys) => typeof keys === 'string' ? [keys] : [...new Set(keys.map(run => run.key))];
-
-export function holderSourceBands(reply: OccupationReserveReply, holder: HolderKeys): { sources: (string | null)[]; bands: Run[][] } {
-  const resolved = [...new Set(Object.values(reply.sources))];
-  const bands = holderBands(reply, holder, [...resolved, null]);
-  return bands.at(-1)!.some(run => run.value > 0) ? { sources: [...resolved, null], bands } : { sources: resolved, bands: bands.slice(0, -1) };
+/** A reserve's positive entries summed by source (repeated sources add up on the bar; the tooltip keeps each entry),
+ * largest first. */
+export function sourceParts(reserve: HolderReserve): { source: string; amount: number }[] {
+  const by = new Map<string, number>();
+  for (const entry of reserve.entries) if (entry.amount !== undefined && entry.amount > 0) by.set(sourceKey(entry.source), (by.get(sourceKey(entry.source)) ?? 0) + entry.amount);
+  return [...by].map(([source, amount]) => ({ source, amount })).sort((a, b) => b.amount - a.amount || a.source.localeCompare(b.source));
 }
 
-/** One holder's positive reserve from each source over the window, as stacked chart runs
- * (one per source, in the order of `sources`); 0 where an admitted holder has no entry from it. */
-export function holderBands(reply: OccupationReserveReply, holder: HolderKeys, sources: readonly (string | null)[]): Run[][] {
-  const hours = new Set<number>();
-  const names = keyNames(holder);
-  for (const series of reply.window.series) if (names.some(name => series.name.startsWith(`${name}|`))) for (const run of series.runs) { hours.add(run[0]); hours.add(run[1] + 1); }
-  // Each hour reads the alias held then, so no span crosses from one alias to the next.
-  if (typeof holder !== 'string') for (const run of holder) { hours.add(run.firstHour); hours.add(run.lastHour + 1); }
-  const stops = [...hours].sort((a, b) => a - b);
+/** The holders the race may show: those a tag names, admitted or holding an entry, kept by `candidate`. A holder with no
+ * entry holds a proven zero: a top N does not rank it, every country keeps it reachable, and when no holder has an entry
+ * there is nothing to list, never a column of zeros in tag order. */
+export function raceHolders(reply: OccupationReserveReply, candidate: (tag: string) => boolean, top = false): ReserveHolder[] {
+  const held = reply.holders.filter(holder => holder.country.tag !== null && (holder.admitted || holder.entries.length > 0) && candidate(holder.country.tag));
+  return held.some(holder => holder.entries.length > 0) ? top ? held.filter(holder => holder.entries.length > 0) : held : [];
+}
+
+/** The race at the values read now: most held first, ties by tag; the first `top` when given. A holder with an amount
+ * not read is ranked last and drawn as nothing, never as zero. */
+export function raceEntries(holders: readonly ReserveHolder[], values: LiveValues<number>, top: number | null,
+  colour: (source: string) => string, hour: number): CountryRaceEntry[] {
+  const reserves = holders.map(holder => reserveOf(holder, values)).filter(reserve => top === null || reserve.positive !== 0);
+  reserves.sort((a, b) => (b.positive ?? -1) - (a.positive ?? -1) || a.tag.localeCompare(b.tag));
+  const shown = top === null ? reserves : reserves.slice(0, Math.max(0, top));
+  return shown.map(reserve => ({ tag: reserve.tag, hour, value: reserve.positive ?? 0, label: reserve.positive === null ? 'Not read' : persons(reserve.positive), stretch: null,
+    parts: sourceParts(reserve).map(part => ({ id: part.source, value: part.amount, color: colour(part.source) })) }));
+}
+
+export const persons = (value: number) => value.toLocaleString('en-US');
+
+export function holderTooltip(reserve: HolderReserve, name: string, sourceName: (source: Country) => string, sourceColour: (source: string) => string,
+  read: string | null): TooltipContent {
+  const positive = reserve.entries.filter(entry => entry.amount === undefined || entry.amount >= 0);
+  return {
+    title: name, scrollable: true, scrollId: String(reserve.holder.country.id),
+    rows: [
+      { label: 'Reserve manpower held', value: reserve.positive === null ? 'Not read' : persons(reserve.positive) },
+      ...positive.map(entry => ({ label: sourceName(entry.source), swatch: sourceColour(sourceKey(entry.source)), value: entry.amount === undefined ? 'Not read' : persons(entry.amount), indent: true })),
+      ...reserve.negative.length ? [{ label: 'Negative entries' }, ...reserve.negative.map(entry => ({ label: sourceName(entry.source), value: persons(entry.amount!), indent: true }))] : [],
+      ...read ? [{ label: 'As of', value: read }] : [],
+    ],
+  };
+}
+
+/** A source's tag at `hour` in a history: the tag its raw id held then, else none. */
+export function sourceTagAt(history: ReserveHistoryReply, source: number, hour: number): string | null {
+  const tags = history.sources.find(item => item.id === source)?.tags ?? [];
+  return tags.find(tag => tag.firstHour <= hour && hour <= tag.lastHour)?.tag ?? null;
+}
+
+/** The segment holding `hour`, if the history holds it. */
+export const segmentAt = (history: ReserveHistoryReply, hour: number): ReserveSegment | null =>
+  history.segments.find(segment => segment.firstHour <= hour && hour <= segment.lastHour) ?? null;
+
+/** Each source's positive amount in a segment, by raw id; an admitted holder holds 0 from a source it has no entry from. */
+export function segmentParts(segment: ReserveSegment, sources: readonly number[]): (number | undefined)[] {
+  if (!segment.entries) return sources.map(() => undefined);
+  const by = new Map<number, number>();
+  for (const entry of segment.entries) if (entry.amount > 0) by.set(entry.source, (by.get(entry.source) ?? 0) + entry.amount);
+  return sources.map(source => by.get(source) ?? (segment.admitted ? 0 : undefined));
+}
+
+/** The holder drill's bands: each source's positive reserve over the history, in `sources`' order, a gap where it was
+ * not known; runs of equal value join. */
+export function holderBands(history: ReserveHistoryReply, sources: readonly number[]): Run[][] {
   const bands = sources.map(() => [] as Run[]);
-  for (let index = 0; index + 1 < stops.length; index++) {
-    const first = stops[index], last = stops[index + 1] - 1;
-    const key = holderKeyAt(holder, first);
-    const at = key === null ? undefined : reservesAt(reply, first)?.holders.find(item => item.holder === key);
-    if (!at) continue;
-    const parts = new Map(sourceParts(at).map(part => [part.source, part.amount]));
-    sources.forEach((source, band) => {
-      const amount = parts.get(source) ?? (at.admitted ? 0n : undefined);
-      if (amount === undefined) return;
-      const value = Number(amount), runs = bands[band], previous = runs.at(-1);
-      if (previous && previous.lastHour + 1 === first && previous.value === value) previous.lastHour = last;
-      else runs.push({ firstHour: first, lastHour: last, value, breakBefore: !previous || previous.lastHour + 1 !== first });
+  for (const segment of history.segments) {
+    segmentParts(segment, sources).forEach((value, band) => {
+      if (value === undefined) return;
+      const runs = bands[band], previous = runs.at(-1);
+      if (previous && previous.lastHour + 1 === segment.firstHour && previous.value === value) previous.lastHour = segment.lastHour;
+      else runs.push({ firstHour: segment.firstHour, lastHour: segment.lastHour, value, breakBefore: !previous || previous.lastHour + 1 !== segment.firstHour });
     });
   }
   return bands;
 }
 
-/** Each of `holder`'s source countries at an hour one of its entries names it, so the tag is
- * proven its own then: `sample` (the drill's look hour) while named then, else its latest
- * naming up to `hour`, else its first. A source's one colour and legend name are read there. */
-export function sourceWitnesses(reply: OccupationReserveReply, holder: HolderKeys, hour: number, sample: number): HolderAt[] {
-  const named = new Map<string, Span[]>();
-  for (const series of reply.window.series) {
-    const [owner, , field] = series.name.split('|');
-    if (!keyNames(holder).includes(owner) || field !== 'source') continue;
-    for (const run of series.runs) {
-      const source = reply.sources[run[2]];
-      if (!source) continue;
-      // An alias's entries name its sources only while it is the native holder's.
-      const spans = typeof holder === 'string' ? [{ firstHour: run[0], lastHour: run[1] }]
-        : holder.filter(alias => alias.key === owner).flatMap(alias => {
-          const firstHour = Math.max(run[0], alias.firstHour), lastHour = Math.min(run[1], alias.lastHour);
-          return firstHour <= lastHour ? [{ firstHour, lastHour }] : [];
-        });
-      if (spans.length) named.set(source, [...named.get(source) ?? [], ...spans]);
-    }
-  }
-  return [...named].map(([source, spans]) => {
-    const latest = spans.filter(span => span.firstHour <= hour).sort((a, b) => b.lastHour - a.lastHour)[0];
-    const at = spans.some(span => span.firstHour <= sample && sample <= span.lastHour) ? sample
-      : latest ? latest.lastHour >= hour ? latest.firstHour : latest.lastHour
-      : Math.min(...spans.map(span => span.firstHour));
-    return { key: source, tag: countryPart(source)!.tag, hour: at };
-  });
+/** The sources a history names, those holding the most at any hour first. */
+export function historySources(history: ReserveHistoryReply): number[] {
+  const most = new Map<number, number>();
+  for (const segment of history.segments) for (const entry of segment.entries ?? []) most.set(entry.source, Math.max(most.get(entry.source) ?? 0, entry.amount));
+  return [...most].sort((a, b) => b[1] - a[1] || a[0] - b[0]).map(([source]) => source);
 }
 
-export const persons = (value: bigint) => value.toLocaleString('en-US');
+/** A pinned holder: its tag and raw id (`TAG|id`). */
+export const holderToken = (holder: { tag: string; id: number }) => `${holder.tag}|${holder.id}`;
+export function holderOf(token: unknown): { tag: string; id: number } | null {
+  if (typeof token !== 'string') return null;
+  const [tag, id] = token.split('|');
+  const raw = Number(id);
+  return tag && id !== undefined && Number.isSafeInteger(raw) ? { tag, id: raw } : null;
+}

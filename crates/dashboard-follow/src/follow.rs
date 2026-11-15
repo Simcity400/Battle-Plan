@@ -1,0 +1,1184 @@
+//! Followed queries on the stepper's hook. `follow` and `unfollow` may be called from any thread;
+//! they reach the hook at the next step boundary, and the union of every followed query's columns
+//! is declared to the playhead at once. In the hook a query is evaluated only when the step wrote
+//! one of its columns for one of its rows, inserted or deleted a row it reads, changed or reset its
+//! table, or passed an hour its tags' holders change; an answer equal to the last one sent is not
+//! queued; the queued answers go out at once, in messages within the budget.
+
+use crate::{
+    answer::{self, Message, State, Table},
+    head,
+    evaluate::{self, Find, Reasons, Scratch},
+    live_rows::{self, LiveRows},
+    query::{Query, Rows, TagRow, Tags, identity_until, tags_at},
+    table_name,
+};
+use playhead::{
+    Asked, Declared, Hook, Lanes, LogReads, Ordinal, Step, Wanted,
+    changes::{Changes, Written},
+    lane::Lane,
+};
+use replay_columnar::{manifest::Status, store::Value};
+use replay_data::Hour;
+use std::{
+    collections::{BTreeMap, BTreeSet, HashMap},
+    io, mem,
+    sync::{
+        Arc, Mutex, MutexGuard, PoisonError,
+        atomic::{AtomicU32, Ordering},
+    },
+    time::Instant,
+};
+
+/// Told after every step: what the step cost follow, and its messages, in order.
+pub type Sink = Box<dyn FnMut(&StepStats, Vec<Message>) + Send>;
+
+type Declare = Box<dyn Fn(Vec<Declared>) -> io::Result<()> + Send + Sync>;
+
+/// One step in the hook.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct StepStats {
+    /// The step's epoch: a seek starts a newer one, and the steps of the older are never taken.
+    pub epoch: u64,
+    pub first: Hour,
+    pub last: Hour,
+    pub reset: bool,
+    pub gap: bool,
+    /// Queries the step touched, those evaluated, and those whose answer differs from the last sent.
+    pub touched: u32,
+    pub evaluated: u32,
+    pub changed: u32,
+    /// Cells the evaluations read.
+    pub cells: u32,
+    /// Answers sent, the messages they went in, and answers alone over the budget.
+    pub sent: u32,
+    pub messages: u32,
+    pub oversize: u32,
+    pub bytes: u32,
+    /// The hook's whole time, the message made.
+    pub ns: u64,
+}
+
+/// Counted since the hook started.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Counters {
+    pub steps: u64,
+    pub touched: u64,
+    pub evaluated: u64,
+    pub changed: u64,
+    pub sent: u64,
+    pub oversize: u64,
+    pub messages: u64,
+    pub bytes: u64,
+    pub ns: u64,
+    pub most_ns: u64,
+}
+
+/// What follow holds, in bytes.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Held {
+    pub queries: usize,
+    pub waiting: usize,
+    /// The last answer sent per query, and the answers queued and not sent.
+    pub sent: usize,
+    pub pending: usize,
+    /// The queries themselves (keys, tags) and the index from tables, columns and keys to them.
+    pub queries_bytes: usize,
+    pub index: usize,
+    pub total: usize,
+}
+
+enum Op {
+    Follow(u32, Box<Query>),
+    Unfollow(u32),
+}
+
+/// What one followed query reads of its table.
+struct Reads {
+    table: usize,
+    columns: Vec<usize>,
+    /// The rows appended since the last push (a feed), or those the game lists now.
+    appended: bool,
+    listed: bool,
+}
+
+struct Control {
+    ops: Vec<Op>,
+    followed: BTreeMap<u32, Reads>,
+    declare: Option<Declare>,
+    /// The playhead's file: each table's class (a log or state), and a log's rows by ordinal.
+    logs: Option<LogReads>,
+    classes: BTreeMap<usize, bool>,
+}
+
+struct Shared {
+    budget: usize,
+    route: u32,
+    control: Mutex<Control>,
+    report: Mutex<(Counters, Held)>,
+}
+
+fn lock<T>(held: &Mutex<T>) -> MutexGuard<'_, T> {
+    held.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The followed queries of one playhead.
+#[derive(Clone)]
+pub struct Follow {
+    shared: Arc<Shared>,
+}
+
+impl Follow {
+    /// Messages at most `budget` bytes, unless one answer alone is larger.
+    pub fn new(budget: usize) -> Self {
+        Self {
+            shared: Arc::new(Shared {
+                budget,
+                route: next_route(),
+                control: Mutex::new(Control { ops: Vec::new(), followed: BTreeMap::new(), declare: None, logs: None, classes: BTreeMap::new() }),
+                report: Mutex::default(),
+            }),
+        }
+    }
+
+    /// What its messages carry so the UI hands each to the stores following this playhead, and the
+    /// queue merges it with no other playhead's: unique in this process.
+    pub fn route(&self) -> u32 {
+        self.shared.route
+    }
+
+    /// The stepper's hook, which tells `sink` after every step.
+    pub fn hook(&self, sink: Sink) -> Hook {
+        let mut engine = Engine::new(Arc::clone(&self.shared), sink);
+        Box::new(move |step: &Step, lanes: &Lanes<'_>| engine.step(step, lanes))
+    }
+
+    /// How the union of the followed queries' columns reaches the playhead (its reader's
+    /// `redeclare`), called now and after every follow and unfollow; and the playhead's log reads,
+    /// which say which tables are logs and read a log's listed rows.
+    pub fn bind(&self, declare: impl Fn(Vec<Declared>) -> io::Result<()> + Send + Sync + 'static, logs: LogReads) -> io::Result<()> {
+        let mut control = lock(&self.shared.control);
+        control.logs = Some(logs);
+        control.classes.clear();
+        declare(union(&mut control)?)?;
+        control.declare = Some(Box::new(declare));
+        Ok(())
+    }
+
+    /// Follows `query` as `id` (replacing what `id` followed); its first answer comes in the
+    /// message of the first step whose lanes hold its columns. Refused by name when the query asks
+    /// what its table does not hold.
+    pub fn follow(&self, id: u32, query: Query) -> io::Result<()> {
+        query.check()?;
+        let mut control = lock(&self.shared.control);
+        control.followed.insert(id, Reads { table: query.table(), columns: query.declared(), appended: query.appended(), listed: query.listed() });
+        control.ops.push(Op::Follow(id, Box::new(query)));
+        redeclare(&mut control)
+    }
+
+    /// Nothing more is sent for `id` from the next step boundary.
+    pub fn unfollow(&self, id: u32) -> io::Result<()> {
+        let mut control = lock(&self.shared.control);
+        if control.followed.remove(&id).is_some() {
+            control.ops.push(Op::Unfollow(id));
+            redeclare(&mut control)?;
+        }
+        Ok(())
+    }
+
+    /// The tables and columns the followed queries read.
+    pub fn declared(&self) -> io::Result<Vec<Declared>> {
+        union(&mut lock(&self.shared.control))
+    }
+
+    pub fn counters(&self) -> Counters {
+        lock(&self.shared.report).0
+    }
+
+    pub fn held(&self) -> Held {
+        lock(&self.shared.report).1
+    }
+}
+
+fn next_route() -> u32 {
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+    NEXT.fetch_add(1, Ordering::Relaxed) & answer::ROUTES
+}
+
+fn redeclare(control: &mut Control) -> io::Result<()> {
+    let tables = union(control)?;
+    match &control.declare {
+        Some(declare) => declare(tables),
+        None => Ok(()),
+    }
+}
+
+/// A feed's or a listed set's table is declared keyed. A feed of a table holding state is declared
+/// passing, so its rows born and gone inside a step come too; a log's lane gives every row it
+/// appends in its steps and refuses passing. Which tables are logs the playhead's file says.
+fn union(control: &mut Control) -> io::Result<Vec<Declared>> {
+    let mut tables: BTreeMap<usize, (BTreeSet<usize>, bool, bool)> = BTreeMap::new();
+    for reads in control.followed.values().filter(|reads| reads.table != head::TABLE) {
+        let entry = tables.entry(reads.table).or_default();
+        entry.0.extend(&reads.columns);
+        entry.1 |= reads.appended;
+        entry.2 |= reads.appended || reads.listed;
+    }
+    let mut declared = Vec::with_capacity(tables.len());
+    for (table, (columns, feed, keyed)) in tables {
+        let log = match (&control.logs, control.classes.get(&table)) {
+            (_, Some(&log)) => log,
+            (Some(logs), None) => *control.classes.entry(table).or_insert(logs.is_log(table)?),
+            (None, None) => false,
+        };
+        declared.push(Declared { table, columns: columns.into_iter().collect(), keyed, passing: feed && !log });
+    }
+    Ok(declared)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Phase {
+    /// Its table's lane does not hold its columns yet.
+    Waiting,
+    Active,
+    /// Its table's columns are of kinds it cannot read; its answer says so, once.
+    Refused,
+}
+
+struct Followed {
+    id: u32,
+    query: Query,
+    table: usize,
+    declared: Vec<usize>,
+    phase: Phase,
+    dirty: bool,
+    /// The keys it watches: its own, or its tags' holders at the head.
+    keys: Vec<u128>,
+    /// A series: each tag's holder at the head, until the hour they next change.
+    tags: Tags,
+    until: Hour,
+    sent: Vec<u8>,
+    has_sent: bool,
+    pending: Vec<u8>,
+    has_pending: bool,
+    pending_hour: Hour,
+    queued: bool,
+    /// A live query: its rows, and those a step touched.
+    live: LiveRows,
+    /// A log: the rows appended and not sent.
+    log: Table,
+    /// A log's rows listed now, by ordinal: each one's key and cells once known (from the step
+    /// that appended it, or from the rows asked by ordinal when it was followed or sought).
+    standing: BTreeMap<Ordinal, Option<Listed>>,
+    asked: Option<Asked>,
+    /// Why its listed rows could not be read.
+    unread: Option<String>,
+}
+
+/// A listed row's key and cells.
+type Listed = (u128, Box<[(i64, State)]>);
+
+impl Followed {
+    fn bytes(&self) -> (usize, usize, usize) {
+        let log = self.log.keys.capacity() * 16 + self.log.values.capacity() * 8 + self.log.states.capacity() + (self.log.reasons.capacity() + self.log.names.capacity()) * 4 + self.log.hours.capacity() * 4;
+        // A B-tree entry: its ordinal, its value, and about a node's share.
+        let standing = self.standing.len() * (size_of::<Ordinal>() + size_of::<Option<Listed>>() + 16) + self.standing.values().flatten().map(|(_, cells)| cells.len() * size_of::<(i64, State)>()).sum::<usize>();
+        let query = match &self.query {
+            Query::Cells { columns, rows, .. } => columns.capacity() * 8 + if let Rows::Keys(keys) | Rows::Live(keys) = rows { keys.capacity() * 16 } else { 0 },
+            Query::Series { tags, .. } => tags.iter().map(|tag| tag.capacity() + size_of::<String>()).sum(),
+            Query::Head(_) => 0,
+        };
+        (self.sent.capacity() + self.live.bytes(), self.pending.capacity() + log, size_of::<Self>() + query + standing + self.keys.capacity() * 16 + self.declared.capacity() * 8)
+    }
+}
+
+#[derive(Default)]
+struct Readers {
+    /// Queries of every row (all, top) reading the column.
+    broad: Vec<usize>,
+    /// Queries of some keys reading the column.
+    keyed: Vec<usize>,
+}
+
+struct Watch {
+    slot: Option<u32>,
+    queries: Vec<usize>,
+}
+
+/// One table's followed queries and where their rows are.
+#[derive(Default)]
+struct Index {
+    queries: Vec<usize>,
+    readers: HashMap<usize, Readers>,
+    /// Queries of every row, told of every insert and delete.
+    broad: Vec<usize>,
+    series: Vec<usize>,
+    logs: Vec<usize>,
+    /// Queries of a log's rows listed now.
+    standing: Vec<usize>,
+    watch: HashMap<u128, Watch>,
+    at_slot: HashMap<u32, u128>,
+    /// The slots of watched keys.
+    bits: Vec<u64>,
+    /// Watched keys whose slot is not looked up yet.
+    unresolved: bool,
+    /// Every live row by key, while no row came or went.
+    ordered: Option<Vec<(u128, u32)>>,
+    /// The earliest hour one of its series' holders changes.
+    until: Hour,
+    /// Its table's status at the last step: a sample hour moving changes no answer.
+    status: Option<Status>,
+}
+
+impl Index {
+    fn bit(&self, slot: u32) -> bool {
+        self.bits.get(slot as usize / 64).is_some_and(|word| word & 1 << (slot % 64) != 0)
+    }
+
+    fn set(&mut self, slot: u32, key: u128) {
+        let word = slot as usize / 64;
+        if self.bits.len() <= word {
+            self.bits.resize(word + 1, 0);
+        }
+        self.bits[word] |= 1 << (slot % 64);
+        self.at_slot.insert(slot, key);
+    }
+
+    fn clear(&mut self, slot: u32) {
+        if let Some(word) = self.bits.get_mut(slot as usize / 64) {
+            *word &= !(1 << (slot % 64));
+        }
+        self.at_slot.remove(&slot);
+    }
+
+    fn watch(&mut self, query: usize, key: u128) {
+        let watch = self.watch.entry(key).or_insert_with(|| Watch { slot: None, queries: Vec::new() });
+        if watch.slot.is_none() {
+            self.unresolved = true;
+        }
+        if !watch.queries.contains(&query) {
+            watch.queries.push(query);
+        }
+    }
+
+    fn unwatch(&mut self, query: usize, key: u128) {
+        let Some(watch) = self.watch.get_mut(&key) else { return };
+        watch.queries.retain(|&held| held != query);
+        if watch.queries.is_empty() {
+            let slot = watch.slot;
+            self.watch.remove(&key);
+            if let Some(slot) = slot {
+                self.clear(slot);
+            }
+        }
+    }
+
+    /// Every watched key's slot, from the lane's live rows.
+    fn resolve(&mut self, lane: &Lane) {
+        if !self.unresolved {
+            return;
+        }
+        self.unresolved = false;
+        let cells = lane.cells();
+        let mut found = Vec::new();
+        for slot in cells.rows() {
+            if let Some(key) = cells.key(slot)
+                && let Some(watch) = self.watch.get_mut(&key)
+                && watch.slot.is_none()
+            {
+                watch.slot = Some(slot);
+                found.push((slot, key));
+            }
+        }
+        for (slot, key) in found {
+            self.set(slot, key);
+        }
+    }
+
+    /// The lane's rows are new (a reset, a renumber): every slot is looked up again.
+    fn forget_slots(&mut self) {
+        self.at_slot.clear();
+        self.bits.clear();
+        for watch in self.watch.values_mut() {
+            watch.slot = None;
+        }
+        self.unresolved = !self.watch.is_empty();
+        self.ordered = None;
+    }
+
+    fn ordered(&mut self, lane: &Lane) {
+        if self.ordered.is_none() {
+            let cells = lane.cells();
+            let mut ordered: Vec<(u128, u32)> = cells.rows().filter_map(|slot| Some((cells.key(slot)?, slot))).collect();
+            ordered.sort_unstable();
+            self.ordered = Some(ordered);
+        }
+    }
+
+    fn bytes(&self) -> usize {
+        let lists = |lists: &[&Vec<usize>]| lists.iter().map(|list| list.capacity() * 8).sum::<usize>();
+        lists(&[&self.queries, &self.broad, &self.series, &self.logs, &self.standing])
+            + self.readers.capacity() * (8 + size_of::<Readers>() + 1)
+            + self.readers.values().map(|readers| lists(&[&readers.broad, &readers.keyed])).sum::<usize>()
+            + self.watch.capacity() * (16 + size_of::<Watch>() + 1)
+            + self.watch.values().map(|watch| watch.queries.capacity() * 8).sum::<usize>()
+            + self.at_slot.capacity() * (4 + 16 + 1)
+            + self.bits.capacity() * 8
+            + self.ordered.as_ref().map_or(0, |ordered| ordered.capacity() * 32)
+    }
+}
+
+impl Find for Index {
+    fn slot(&self, key: u128) -> Option<u32> {
+        self.watch.get(&key).and_then(|watch| watch.slot)
+    }
+
+    fn ordered(&self) -> &[(u128, u32)] {
+        self.ordered.as_deref().unwrap_or(&[])
+    }
+}
+
+const GAP: &str = "No game hours are recorded here";
+
+/// Steps between two sums of what follow holds, besides those whose queries changed.
+const HELD_EVERY: u64 = 64;
+
+struct Engine {
+    shared: Arc<Shared>,
+    sink: Sink,
+    slab: Vec<Option<Followed>>,
+    free: Vec<usize>,
+    ids: HashMap<u32, usize>,
+    tables: BTreeMap<usize, Index>,
+    waiting: Vec<usize>,
+    /// Head values, asked every step.
+    heads: Vec<usize>,
+    marked: Vec<usize>,
+    queue: Vec<usize>,
+    scratch: Scratch,
+    reasons: Reasons,
+    listed: Table,
+    /// A live answer's rows changed, made again each time.
+    delta: Table,
+    body: Vec<u8>,
+    message: Vec<u8>,
+    counters: Counters,
+}
+
+/// A listed set starts again from its log's live set at the lane's head; the cells of the rows
+/// listed are asked by ordinal, read on a fetcher, and taken in a later step.
+fn relist(shared: &Shared, followed: &mut Followed, lane: &Lane) {
+    followed.standing.clear();
+    followed.asked = None;
+    followed.unread = None;
+    let Some(log) = lane.log() else { return };
+    let ordinals: Vec<Ordinal> = log.live().ones().collect();
+    if ordinals.is_empty() {
+        return;
+    }
+    followed.standing.extend(ordinals.iter().map(|&ordinal| (ordinal, None)));
+    let logs = lock(&shared.control).logs.clone();
+    match logs {
+        Some(logs) => followed.asked = Some(logs.rows(Wanted { run: lane.run(), table: followed.table, ordinals, columns: followed.declared.clone() })),
+        None => followed.unread = Some("Follow is bound to no playhead, which reads a log's listed rows".to_owned()),
+    }
+}
+
+/// `query` marked, every row of a live query touched (a reset, a renumber, a status change).
+fn mark_all(slab: &mut [Option<Followed>], marked: &mut Vec<usize>, query: usize) {
+    if let Some(followed) = &mut slab[query] {
+        followed.live.touch_all();
+    }
+    mark(slab, marked, query);
+}
+
+/// `query` marked for its row of `key`.
+fn mark_row(slab: &mut [Option<Followed>], marked: &mut Vec<usize>, query: usize, key: u128) {
+    if let Some(followed) = &mut slab[query]
+        && followed.query.live()
+    {
+        followed.live.touch(&followed.keys, key);
+    }
+    mark(slab, marked, query);
+}
+
+fn mark(slab: &mut [Option<Followed>], marked: &mut Vec<usize>, query: usize) {
+    if let Some(followed) = &mut slab[query]
+        && followed.phase == Phase::Active
+        && !followed.dirty
+    {
+        followed.dirty = true;
+        marked.push(query);
+    }
+}
+
+/// `body` (the newest answer of `followed`, at `hour`) queued unless it is the last one sent;
+/// whether it changed.
+fn offer(followed: &mut Followed, query: usize, body: &mut Vec<u8>, hour: Hour, queue: &mut Vec<usize>) -> bool {
+    if followed.has_sent && followed.sent == *body {
+        followed.has_pending = false;
+        return false;
+    }
+    queue_body(followed, query, body, hour, queue);
+    true
+}
+
+/// `body` queued as `followed`'s pending answer at `hour`.
+fn queue_body(followed: &mut Followed, query: usize, body: &mut Vec<u8>, hour: Hour, queue: &mut Vec<usize>) {
+    mem::swap(&mut followed.pending, body);
+    followed.has_pending = true;
+    followed.pending_hour = hour;
+    if !followed.queued {
+        followed.queued = true;
+        queue.push(query);
+    }
+}
+
+/// The cells a whole answer just written read: its rows times its columns, none when it is "not
+/// recorded".
+fn cells_of(table: &Table, body: &[u8]) -> u32 {
+    if body.first() == Some(&answer::NOT_RECORDED) { 0 } else { (table.rows() * table.columns) as u32 }
+}
+
+/// The keys of a series' tags' holders.
+fn holder_keys(tags: &[TagRow]) -> Vec<u128> {
+    let mut keys: Vec<u128> = tags.iter().filter_map(|tag| if let TagRow::Key(key) = tag { Some(*key) } else { None }).collect();
+    keys.sort_unstable();
+    keys.dedup();
+    keys
+}
+
+impl Engine {
+    fn new(shared: Arc<Shared>, sink: Sink) -> Self {
+        Self {
+            shared,
+            sink,
+            slab: Vec::new(),
+            free: Vec::new(),
+            ids: HashMap::new(),
+            tables: BTreeMap::new(),
+            waiting: Vec::new(),
+            heads: Vec::new(),
+            marked: Vec::new(),
+            queue: Vec::new(),
+            scratch: Scratch::default(),
+            reasons: Reasons::default(),
+            listed: Table::default(),
+            delta: Table::default(),
+            body: Vec::new(),
+            message: Vec::new(),
+            counters: Counters::default(),
+        }
+    }
+
+    fn step(&mut self, step: &Step, lanes: &Lanes<'_>) {
+        let start = Instant::now();
+        let mut stats = StepStats { epoch: step.epoch(), first: step.first(), last: step.last(), reset: step.reset(), gap: step.gap(), ..StepStats::default() };
+        let changed = self.apply_ops();
+        if step.reset() {
+            self.resend(step.last());
+        }
+        if step.gap() {
+            self.answer_gap(step, &mut stats);
+        } else {
+            for changes in step.tables() {
+                self.touch(changes, lanes, step.reset());
+            }
+            lanes.iter().for_each(|lane| self.reasons.learn(lane));
+            self.follow_holders(lanes);
+            self.activate(lanes, &mut stats);
+            self.fill();
+            stats.touched += self.marked.len() as u32;
+            self.evaluate(lanes, &mut stats);
+        }
+        self.answer_heads(step, &mut stats);
+        let messages = self.send(step, &mut stats);
+        let held = (changed || step.reset() || self.counters.steps.is_multiple_of(HELD_EVERY)).then(|| self.held());
+        stats.ns = start.elapsed().as_nanos() as u64;
+        let counters = &mut self.counters;
+        counters.steps += 1;
+        counters.touched += u64::from(stats.touched);
+        counters.evaluated += u64::from(stats.evaluated);
+        counters.changed += u64::from(stats.changed);
+        counters.sent += u64::from(stats.sent);
+        counters.oversize += u64::from(stats.oversize);
+        counters.messages += u64::from(stats.messages);
+        counters.bytes += u64::from(stats.bytes);
+        counters.ns += stats.ns;
+        counters.most_ns = counters.most_ns.max(stats.ns);
+        let mut report = lock(&self.shared.report);
+        report.0 = self.counters;
+        if let Some(held) = held {
+            report.1 = held;
+        }
+        drop(report);
+        (self.sink)(&stats, messages);
+    }
+
+    /// Whether any query came or went.
+    fn apply_ops(&mut self) -> bool {
+        let ops = mem::take(&mut lock(&self.shared.control).ops);
+        let changed = !ops.is_empty();
+        for op in ops {
+            match op {
+                Op::Follow(id, query) => {
+                    self.remove(id);
+                    self.add(id, *query);
+                }
+                Op::Unfollow(id) => self.remove(id),
+            }
+        }
+        changed
+    }
+
+    /// At a reset every answer goes again whole, though equal to the last sent: messages wait for the
+    /// head to reach their step ([`crate::due`]), and those of steps a seek abandoned never go. An
+    /// active query is evaluated at the reset; a refused one's refusal is queued again.
+    fn resend(&mut self, hour: Hour) {
+        for (query, held) in self.slab.iter_mut().enumerate() {
+            let Some(followed) = held else { continue };
+            followed.live.resend();
+            if !followed.has_sent || followed.query.appended() {
+                continue;
+            }
+            followed.has_sent = false;
+            if followed.phase == Phase::Refused {
+                let mut body = mem::take(&mut followed.sent);
+                queue_body(followed, query, &mut body, hour, &mut self.queue);
+            }
+        }
+    }
+
+    fn add(&mut self, id: u32, query: Query) {
+        let followed = Followed {
+            id,
+            table: query.table(),
+            declared: query.declared(),
+            query,
+            phase: Phase::Waiting,
+            dirty: false,
+            keys: Vec::new(),
+            tags: Tags::default(),
+            until: Hour::MAX,
+            sent: Vec::new(),
+            has_sent: false,
+            pending: Vec::new(),
+            has_pending: false,
+            pending_hour: 0,
+            queued: false,
+            live: LiveRows::default(),
+            log: Table::default(),
+            standing: BTreeMap::new(),
+            asked: None,
+            unread: None,
+        };
+        let at = match self.free.pop() {
+            Some(at) => {
+                self.slab[at] = Some(followed);
+                at
+            }
+            None => {
+                self.slab.push(Some(followed));
+                self.slab.len() - 1
+            }
+        };
+        self.ids.insert(id, at);
+        match &mut self.slab[at] {
+            Some(followed) if matches!(followed.query, Query::Head(_)) => {
+                followed.phase = Phase::Active;
+                self.heads.push(at);
+            }
+            _ => self.waiting.push(at),
+        }
+    }
+
+    fn remove(&mut self, id: u32) {
+        let Some(at) = self.ids.remove(&id) else { return };
+        let followed = self.slab[at].take().expect("a followed query");
+        self.free.push(at);
+        self.waiting.retain(|&held| held != at);
+        self.heads.retain(|&held| held != at);
+        self.queue.retain(|&held| held != at);
+        if followed.phase != Phase::Active {
+            return;
+        }
+        let Some(index) = self.tables.get_mut(&followed.table) else { return };
+        for key in &followed.keys {
+            index.unwatch(at, *key);
+        }
+        for list in [&mut index.queries, &mut index.broad, &mut index.series, &mut index.logs, &mut index.standing] {
+            list.retain(|&held| held != at);
+        }
+        for readers in index.readers.values_mut() {
+            readers.broad.retain(|&held| held != at);
+            readers.keyed.retain(|&held| held != at);
+        }
+        index.readers.retain(|_, readers| !readers.broad.is_empty() || !readers.keyed.is_empty());
+        if index.queries.is_empty() {
+            self.tables.remove(&followed.table);
+        }
+    }
+
+    /// Waiting queries whose lanes now hold their columns join the index and are evaluated.
+    fn activate(&mut self, lanes: &Lanes<'_>, stats: &mut StepStats) {
+        let mut at = 0;
+        while at < self.waiting.len() {
+            let query = self.waiting[at];
+            let followed = self.slab[query].as_mut().expect("a waiting query");
+            let Some(lane) = lanes.get(followed.table).filter(|lane| evaluate::holds(&followed.query, lane)) else {
+                at += 1;
+                continue;
+            };
+            self.waiting.swap_remove(at);
+            let refused = match followed.query.listed() && lane.log().is_none() {
+                true => Some(format!("{} holds state: what the game lists now is a log's, and a table holding state answers its live rows as all its rows", table_name(followed.table))),
+                false => evaluate::refusal(&followed.query, lane.cells()),
+            };
+            if let Some(refused) = refused {
+                followed.phase = Phase::Refused;
+                self.body.clear();
+                answer::not_recorded(&refused, &mut self.body);
+                stats.evaluated += 1;
+                stats.changed += u32::from(offer(followed, query, &mut self.body, evaluate::head(lane), &mut self.queue));
+                continue;
+            }
+            followed.phase = Phase::Active;
+            let head = evaluate::head(lane);
+            let index = self.tables.entry(followed.table).or_insert_with(|| Index { until: Hour::MAX, status: Some(lane.status().0), ..Index::default() });
+            index.queries.push(query);
+            let keyed = match &followed.query {
+                Query::Cells { rows: Rows::Keys(keys) | Rows::Live(keys), .. } => {
+                    followed.keys = keys.clone();
+                    true
+                }
+                Query::Cells { rows: Rows::Appended, .. } => {
+                    index.logs.push(query);
+                    followed.log.clear(followed.declared.len(), true);
+                    continue;
+                }
+                Query::Cells { rows: Rows::Listed, .. } => {
+                    index.standing.push(query);
+                    relist(&self.shared, followed, lane);
+                    let ready = followed.asked.is_none();
+                    if ready {
+                        mark(&mut self.slab, &mut self.marked, query);
+                    }
+                    continue;
+                }
+                Query::Cells { .. } => {
+                    index.broad.push(query);
+                    false
+                }
+                Query::Head(_) => continue,
+                Query::Series { identity, tags, top, parts, .. } => {
+                    followed.tags = tags_at(&followed.query, head);
+                    followed.until = identity_until(identity, tags, head);
+                    index.until = index.until.min(followed.until);
+                    index.series.push(query);
+                    if top.is_some() || *parts {
+                        index.broad.push(query);
+                        false
+                    } else {
+                        followed.keys = holder_keys(&followed.tags.rows);
+                        true
+                    }
+                }
+            };
+            for key in &followed.keys {
+                index.watch(query, *key);
+            }
+            for &column in &followed.declared {
+                let readers = index.readers.entry(column).or_default();
+                if keyed { readers.keyed.push(query) } else { readers.broad.push(query) }
+            }
+            mark(&mut self.slab, &mut self.marked, query);
+        }
+    }
+
+    /// Marks the queries one table's change set touches.
+    fn touch(&mut self, changes: &Changes, lanes: &Lanes<'_>, seek: bool) {
+        let table = changes.table();
+        let Some(index) = self.tables.get_mut(&table) else { return };
+        let Some(lane) = lanes.get(table) else { return };
+        let (slab, marked) = (&mut self.slab, &mut self.marked);
+        if changes.reset() {
+            index.status = Some(lane.status().0);
+            index.forget_slots();
+            for &query in &index.standing {
+                relist(&self.shared, slab[query].as_mut().expect("a followed list"), lane);
+            }
+            // The lane may be at any hour now, before the holders cached: each series finds its
+            // tags' holders, watched keys and boundary again at the new head.
+            for &query in &index.series {
+                slab[query].as_mut().expect("a followed series").until = Hour::MIN;
+            }
+            index.until = Hour::MIN;
+            if seek {
+                for &query in &index.logs {
+                    let followed = slab[query].as_mut().expect("a followed log");
+                    followed.log.clear(followed.declared.len(), true);
+                }
+            }
+            index.queries.iter().for_each(|&query| mark_all(slab, marked, query));
+            return;
+        }
+        if let Some((status, _)) = changes.status()
+            && index.status != Some(status)
+        {
+            index.status = Some(status);
+            index.queries.iter().for_each(|&query| mark_all(slab, marked, query));
+        }
+        if let Some(log) = changes.log() {
+            let head = evaluate::head(lane);
+            let key = |place: u32| log.keys().map_or(0, |keys| keys[place as usize]);
+            let cell = |written: Option<&Written>, place: u32| evaluate::number(written.map_or(Value::Unrecorded, |written| written.value(place as usize)));
+            if !log.is_empty() {
+                for &query in &index.logs {
+                    let followed = slab[query].as_mut().expect("a followed log");
+                    let columns: Vec<Option<&Written>> = followed.declared.iter().map(|&column| log.column(column)).collect();
+                    for (place, _, hour) in log.rows() {
+                        followed.log.row(key(place));
+                        followed.log.hours.push(hour);
+                        for &written in &columns {
+                            let (value, state) = cell(written, place);
+                            followed.log.cell(value, state);
+                        }
+                    }
+                    followed.pending_hour = head;
+                    if !followed.queued {
+                        followed.queued = true;
+                        self.queue.push(query);
+                    }
+                }
+            }
+            if !log.is_empty() || !log.forgotten().is_empty() {
+                for &query in &index.standing {
+                    let followed = slab[query].as_mut().expect("a followed list");
+                    let columns: Vec<Option<&Written>> = followed.declared.iter().map(|&column| log.column(column)).collect();
+                    for (place, ordinal, _) in log.rows() {
+                        followed.standing.insert(ordinal, Some((key(place), columns.iter().map(|&written| cell(written, place)).collect())));
+                    }
+                    for run in log.forgotten() {
+                        while let Some((&ordinal, _)) = followed.standing.range(run.from..run.to).next() {
+                            followed.standing.remove(&ordinal);
+                        }
+                    }
+                    mark(slab, marked, query);
+                }
+            }
+            return;
+        }
+        let (deleted, inserted) = (changes.deleted(), changes.inserted());
+        if !deleted.is_empty() || !inserted.is_empty() {
+            index.ordered = None;
+            index.broad.iter().for_each(|&query| mark(slab, marked, query));
+        }
+        for &slot in deleted.slots() {
+            if index.bit(slot) {
+                let key = index.at_slot[&slot];
+                index.clear(slot);
+                let watch = index.watch.get_mut(&key).expect("a watched key");
+                watch.slot = None;
+                watch.queries.iter().for_each(|&query| mark_row(slab, marked, query, key));
+            }
+        }
+        if !inserted.is_empty() {
+            let cells = lane.cells();
+            for &slot in inserted.slots() {
+                let Some(key) = cells.key(slot) else { continue };
+                if let Some(watch) = index.watch.get_mut(&key) {
+                    watch.slot = Some(slot);
+                    watch.queries.iter().for_each(|&query| mark_row(slab, marked, query, key));
+                    index.set(slot, key);
+                }
+            }
+        }
+        let passing = changes.passing();
+        if !index.logs.is_empty() && (!inserted.is_empty() || !passing.is_empty()) {
+            let cells = lane.cells();
+            let (mut at, mut gone) = (0, 0);
+            while at < inserted.len() || gone < passing.len() {
+                let passed = at == inserted.len() || (gone < passing.len() && passing.born()[gone] < inserted.hours()[at]);
+                let (key, hour) = if passed {
+                    (passing.keys().map_or(0, |keys| keys[gone]), passing.born()[gone])
+                } else {
+                    let slot = inserted.slots()[at];
+                    let Some(key) = cells.key(slot) else {
+                        at += 1;
+                        continue;
+                    };
+                    (key, inserted.hours()[at])
+                };
+                for &query in &index.logs {
+                    let followed = slab[query].as_mut().expect("a followed log");
+                    followed.log.row(key);
+                    followed.log.hours.push(hour);
+                    for &column in &followed.declared {
+                        let value = if passed {
+                            passing.columns().iter().find(|written| written.column() == column).map_or(Value::Unrecorded, |written| written.value(gone))
+                        } else {
+                            cells.value(column, inserted.slots()[at])
+                        };
+                        let (value, state) = evaluate::number(value);
+                        followed.log.cell(value, state);
+                    }
+                    followed.pending_hour = evaluate::head(lane);
+                    if !followed.queued {
+                        followed.queued = true;
+                        self.queue.push(query);
+                    }
+                }
+                if passed {
+                    gone += 1;
+                } else {
+                    at += 1;
+                }
+            }
+        }
+        for written in changes.columns() {
+            if written.is_empty() {
+                continue;
+            }
+            let column = written.column();
+            let Some(readers) = index.readers.get(&column) else { continue };
+            readers.broad.iter().for_each(|&query| mark(slab, marked, query));
+            if readers.keyed.is_empty() || index.at_slot.is_empty() {
+                continue;
+            }
+            for &slot in written.slots() {
+                if !index.bit(slot) {
+                    continue;
+                }
+                let key = index.at_slot[&slot];
+                for &query in &index.watch[&key].queries {
+                    if slab[query].as_ref().is_some_and(|followed| followed.declared.contains(&column)) {
+                        mark_row(slab, marked, query, key);
+                    }
+                }
+            }
+        }
+        if changes.renumber().is_some() {
+            index.forget_slots();
+            index.queries.iter().for_each(|&query| mark_all(slab, marked, query));
+        }
+    }
+
+    /// Listed sets whose asked rows came take their cells; a read that failed answers why.
+    fn fill(&mut self) {
+        for index in self.tables.values() {
+            for &query in &index.standing {
+                let followed = self.slab[query].as_mut().expect("a followed list");
+                let Some(answer) = followed.asked.as_ref().and_then(Asked::take) else { continue };
+                followed.asked = None;
+                match answer {
+                    Ok(rows) => {
+                        for (place, &ordinal) in rows.ordinals().iter().enumerate() {
+                            if let Some(held @ None) = followed.standing.get_mut(&ordinal) {
+                                *held = Some((rows.keys()[place], rows.columns().iter().map(|written| evaluate::number(written.value(place))).collect()));
+                            }
+                        }
+                    }
+                    Err(error) => followed.unread = Some(error.to_string()),
+                }
+                mark(&mut self.slab, &mut self.marked, query);
+            }
+        }
+    }
+
+    /// Series whose tags' holders changed by their table's head watch the new holders' rows.
+    fn follow_holders(&mut self, lanes: &Lanes<'_>) {
+        for (&table, index) in &mut self.tables {
+            let Some(head) = lanes.get(table).and_then(Lane::head) else { continue };
+            if head < index.until {
+                continue;
+            }
+            let mut until = Hour::MAX;
+            for at in 0..index.series.len() {
+                let query = index.series[at];
+                let followed = self.slab[query].as_mut().expect("a followed series");
+                if head >= followed.until {
+                    let Query::Series { identity, tags, top, parts, .. } = &followed.query else { continue };
+                    followed.until = identity_until(identity, tags, head);
+                    followed.tags = tags_at(&followed.query, head);
+                    let keys = if top.is_some() || *parts { Vec::new() } else { holder_keys(&followed.tags.rows) };
+                    let old = mem::replace(&mut followed.keys, keys);
+                    for key in old.iter().filter(|key| !followed.keys.contains(key)) {
+                        index.unwatch(query, *key);
+                    }
+                    for key in followed.keys.iter().filter(|key| !old.contains(key)) {
+                        index.watch(query, *key);
+                    }
+                    if !followed.dirty {
+                        followed.dirty = true;
+                        self.marked.push(query);
+                    }
+                }
+                until = until.min(followed.until);
+            }
+            index.until = until;
+        }
+    }
+
+    fn evaluate(&mut self, lanes: &Lanes<'_>, stats: &mut StepStats) {
+        for query in mem::take(&mut self.marked) {
+            let followed = self.slab[query].as_mut().expect("a marked query");
+            followed.dirty = false;
+            let Some(lane) = lanes.get(followed.table).filter(|lane| evaluate::holds(&followed.query, lane)) else { continue };
+            if followed.query.listed() {
+                if followed.asked.is_some() {
+                    continue;
+                }
+                self.body.clear();
+                let unread = followed.standing.values().any(Option::is_none).then(|| "The listed rows' cells were not read".to_owned());
+                match followed.unread.clone().or(unread).or_else(|| self.reasons.unrecorded(lane)) {
+                    Some(reason) => answer::not_recorded(&reason, &mut self.body),
+                    None => {
+                        self.listed.clear(followed.declared.len(), false);
+                        for (key, cells) in followed.standing.values().flatten() {
+                            self.listed.row(*key);
+                            cells.iter().for_each(|&(value, state)| self.listed.cell(value, state));
+                        }
+                        self.listed.encode(&mut self.body);
+                    }
+                }
+                stats.evaluated += 1;
+                stats.changed += u32::from(offer(followed, query, &mut self.body, evaluate::head(lane), &mut self.queue));
+                continue;
+            }
+            let index = self.tables.get_mut(&followed.table).expect("an active query's table");
+            index.resolve(lane);
+            if matches!(followed.query, Query::Cells { rows: Rows::All, .. }) || followed.query.parts() {
+                index.ordered(lane);
+            }
+            stats.evaluated += 1;
+            if let Query::Cells { columns, rows: Rows::Live(keys), .. } = &followed.query {
+                if let Some(reason) = self.reasons.unrecorded(lane) {
+                    followed.live.unrecorded();
+                    self.body.clear();
+                    answer::not_recorded(&reason, &mut self.body);
+                    stats.changed += u32::from(offer(followed, query, &mut self.body, evaluate::head(lane), &mut self.queue));
+                    continue;
+                }
+                let (answer, read) = followed.live.evaluate(keys, columns, lane.cells(), &*index, &mut self.delta, &mut self.body);
+                stats.cells += read as u32;
+                match answer {
+                    live_rows::Answer::Same => followed.has_pending = false,
+                    live_rows::Answer::Body => {
+                        stats.changed += 1;
+                        queue_body(followed, query, &mut self.body, evaluate::head(lane), &mut self.queue);
+                    }
+                }
+                continue;
+            }
+            evaluate::write(&followed.query, lane, &*index, &followed.tags, &self.reasons, &mut self.scratch, &mut self.body);
+            stats.cells += cells_of(&self.scratch.table, &self.body);
+            stats.changed += u32::from(offer(followed, query, &mut self.body, evaluate::head(lane), &mut self.queue));
+        }
+    }
+
+    /// In a gap no table holds rows: every query not recorded, a log nothing.
+    fn answer_gap(&mut self, step: &Step, stats: &mut StepStats) {
+        for (query, held) in self.slab.iter_mut().enumerate() {
+            let Some(followed) = held else { continue };
+            if followed.phase != Phase::Active || followed.query.appended() || followed.table == head::TABLE {
+                continue;
+            }
+            self.body.clear();
+            let reason = match &followed.query {
+                Query::Series { identity, .. } if identity.timeline.at(step.last()).is_none() => identity.timeline.reason(step.last()),
+                _ => GAP.to_owned(),
+            };
+            answer::not_recorded(&reason, &mut self.body);
+            followed.live.unrecorded();
+            stats.touched += 1;
+            stats.evaluated += 1;
+            stats.changed += u32::from(offer(followed, query, &mut self.body, step.last(), &mut self.queue));
+        }
+    }
+
+    /// Every head value at the step's hour, offered as any answer: sent only when it differs.
+    fn answer_heads(&mut self, step: &Step, stats: &mut StepStats) {
+        for at in 0..self.heads.len() {
+            let query = self.heads[at];
+            let followed = self.slab[query].as_mut().expect("a head");
+            let Query::Head(value) = &followed.query else { continue };
+            self.body.clear();
+            head::write(value, step.last(), step.reset(), &mut self.listed, &mut self.body);
+            stats.touched += 1;
+            stats.evaluated += 1;
+            stats.changed += u32::from(offer(followed, query, &mut self.body, step.last(), &mut self.queue));
+        }
+    }
+
+    /// Every queued answer, oldest queued first, in messages within the budget (an answer alone
+    /// over it goes alone); a reset's first message settles. None waits for a later step.
+    fn send(&mut self, step: &Step, stats: &mut StepStats) -> Vec<Message> {
+        let budget = self.shared.budget;
+        let mut messages = Vec::new();
+        answer::begin(&mut self.message, self.shared.route, step.last(), step.reset());
+        let (mut size, mut answers) = (answer::empty(), 0);
+        for query in self.queue.drain(..) {
+            let followed = self.slab[query].as_mut().expect("a queued query");
+            let body = if followed.query.appended() {
+                if followed.log.rows() == 0 {
+                    followed.queued = false;
+                    continue;
+                }
+                self.body.clear();
+                followed.log.encode(&mut self.body);
+                &self.body
+            } else {
+                if !followed.has_pending {
+                    followed.queued = false;
+                    continue;
+                }
+                &followed.pending
+            };
+            let need = answer::size(body.len());
+            if answers > 0 && size + need > budget {
+                messages.push(Message { hour: step.last(), reset: messages.is_empty() && step.reset(), answers, bytes: mem::take(&mut self.message) });
+                answer::begin(&mut self.message, self.shared.route, step.last(), false);
+                (size, answers) = (answer::empty(), 0);
+            }
+            stats.oversize += u32::from(size + need > budget);
+            answer::push(&mut self.message, followed.id, followed.pending_hour, body);
+            size += need;
+            answers += 1;
+            stats.sent += 1;
+            followed.queued = false;
+            if followed.query.appended() {
+                followed.log.clear(followed.declared.len(), true);
+            } else {
+                mem::swap(&mut followed.sent, &mut followed.pending);
+                followed.has_sent = true;
+                followed.has_pending = false;
+                if followed.query.live() {
+                    followed.live.sent(followed.sent.first().copied().unwrap_or(answer::NOT_RECORDED));
+                }
+            }
+        }
+        if answers > 0 || (messages.is_empty() && step.reset()) {
+            messages.push(Message { hour: step.last(), reset: messages.is_empty() && step.reset(), answers, bytes: mem::take(&mut self.message) });
+        }
+        stats.messages = messages.len() as u32;
+        stats.bytes = messages.iter().map(|message| message.bytes.len() as u32).sum();
+        messages
+    }
+
+    fn held(&self) -> Held {
+        let mut held = Held { waiting: self.waiting.len(), ..Held::default() };
+        for followed in self.slab.iter().flatten() {
+            let (sent, pending, query) = followed.bytes();
+            held.queries += 1;
+            held.sent += sent;
+            held.pending += pending;
+            held.queries_bytes += query;
+        }
+        held.queries_bytes += self.slab.capacity() * size_of::<Option<Followed>>() + self.ids.capacity() * (4 + 8 + 1);
+        held.index = self.tables.values().map(Index::bytes).sum::<usize>()
+            + self.tables.len() * (8 + size_of::<Index>())
+            + (self.waiting.capacity() + self.marked.capacity() + self.queue.capacity() + self.free.capacity()) * 8;
+        held.total = held.sent + held.pending + held.queries_bytes + held.index + self.body.capacity() + self.message.capacity();
+        held
+    }
+}

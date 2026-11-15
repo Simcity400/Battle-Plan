@@ -92,20 +92,7 @@ fn decision_result(
             ..Default::default()
         };
         let target = if let Some(selector) = selector {
-            let instance = selector
-                .checked_sub(engine_decisions::ctargeted_decision::SELECTOR_VIEW)
-                .ok_or("decision selector instance underflow")?;
-            if engine_sites::at(base, engine_decisions::ctargeted_decision::VTABLE_RVA).is_none_or(
-                |vtable| engine_native::read::<u64>(memory, instance) != Some(vtable as u64),
-            ) || field::<u64>(
-                memory,
-                instance,
-                engine_decisions::ctargeted_decision::DEFINITION,
-            )? as usize
-                != definition
-            {
-                return Err("decision selector instance identity differs");
-            }
+            selected_instance(memory, base, selector, definition)?;
             let country = field::<i32>(
                 memory,
                 selector,
@@ -181,15 +168,7 @@ unsafe extern "system-unwind" fn targeted_execute(
     let mut flight = Flight::enter();
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::EventFeedProvenance);
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
-    // Both native callers pass the instance's selector view. Selection still
-    // has state zero; the timed updater stores its terminal result first.
-    let classification = selector
-        .checked_sub(engine_decisions::ctargeted_decision::SELECTOR_VIEW)
-        .ok_or("targeted execution selector underflow")
-        .and_then(|instance| {
-            targeted_execution(&memory, BASE.load(Ordering::Acquire), instance, definition)
-        });
-    match classification {
+    match targeted_execution(&memory, BASE.load(Ordering::Acquire), selector, definition) {
         Ok(source) => decision(source, definition, country, Some(selector)),
         Err(reason) => feed::refuse(reason),
     }
@@ -200,23 +179,43 @@ unsafe extern "system-unwind" fn targeted_execute(
     flight.returned();
     result
 }
+/// The targeted decision whose selector view `selector` is, or `None` for the
+/// standalone target the select command passes before it marks the instance.
+fn selected_instance(
+    memory: &impl Memory,
+    base: usize,
+    selector: usize,
+    definition: usize,
+) -> Result<Option<usize>, &'static str> {
+    use engine_decisions::ctargeted_decision as targeted;
+    let vtable = |key| engine_sites::at(base, key).ok_or("targeted decision vtable withheld");
+    if let Some(instance) = selector.checked_sub(targeted::SELECTOR_VIEW)
+        && engine_native::read::<u64>(memory, instance)
+            == Some(vtable(targeted::VTABLE_RVA)? as u64)
+    {
+        return if field::<u64>(memory, instance, targeted::DEFINITION)? as usize == definition {
+            Ok(Some(instance))
+        } else {
+            Err("targeted decision selector instance definition differs")
+        };
+    }
+    if engine_native::read::<u64>(memory, selector) == Some(vtable(targeted::TARGET_VTABLE_RVA)? as u64)
+    {
+        Ok(None)
+    } else {
+        Err("targeted decision selector is neither an instance view nor a target")
+    }
+}
 fn targeted_execution(
     memory: &impl Memory,
     base: usize,
-    instance: usize,
+    selector: usize,
     definition: usize,
 ) -> Result<EventFeedSource, &'static str> {
-    if engine_sites::at(base, engine_decisions::ctargeted_decision::VTABLE_RVA)
-        .is_none_or(|vtable| engine_native::read::<u64>(memory, instance) != Some(vtable as u64))
-        || field::<u64>(
-            memory,
-            instance,
-            engine_decisions::ctargeted_decision::DEFINITION,
-        )? as usize
-            != definition
-    {
-        return Err("targeted execution instance identity differs");
-    }
+    // The timed updater stores its terminal result before executing.
+    let Some(instance) = selected_instance(memory, base, selector, definition)? else {
+        return Ok(EventFeedSource::DecisionSelected);
+    };
     match field::<i32>(
         memory,
         instance,
@@ -861,6 +860,7 @@ mod tests {
     use super::*;
     #[test]
     fn adjacent_calls_verify_only_their_owned_prefix_and_name_failures() {
+        let _globals = crate::event_feed_observer::test_globals();
         for len in [decisions::REACTIVATE_DAYS_LEN, decisions::REQUEST_TIMED_LEN] {
             assert!((5..16).contains(&len));
         }
@@ -883,11 +883,12 @@ mod tests {
     }
     #[test]
     fn targeted_execution_classifies_the_selected_instance_result_without_enclosing_provenance() {
+        let _globals = crate::event_feed_observer::test_globals();
+        use engine_decisions::ctargeted_decision::{TARGET_VTABLE_RVA, VTABLE_RVA};
         let mut bytes = [0_u8; 0x38];
-        bytes[..8].copy_from_slice(
-            &(engine_decisions::ctargeted_decision::VTABLE_RVA.0 as u64).to_le_bytes(),
-        );
+        bytes[..8].copy_from_slice(&(VTABLE_RVA.0 as u64).to_le_bytes());
         bytes[0x10..0x18].copy_from_slice(&99_u64.to_le_bytes());
+        bytes[0x18..0x20].copy_from_slice(&(TARGET_VTABLE_RVA.0 as u64).to_le_bytes());
         for (state, expected) in [
             (0_i32, Some(EventFeedSource::DecisionSelected)),
             (1, Some(EventFeedSource::DecisionCompletionEffect)),
@@ -900,8 +901,32 @@ mod tests {
                 base: 0x1000,
                 bytes: &bytes,
             };
-            assert_eq!(targeted_execution(&memory, 0, 0x1000, 99).ok(), expected);
-            assert!(targeted_execution(&memory, 0, 0x1000, 100).is_err());
+            assert_eq!(targeted_execution(&memory, 0, 0x1018, 99).ok(), expected);
+            assert_eq!(
+                targeted_execution(&memory, 0, 0x1018, 100),
+                Err("targeted decision selector instance definition differs")
+            );
         }
+        let mut standalone = [0_u8; 0x28];
+        standalone[0x18..0x20].copy_from_slice(&(TARGET_VTABLE_RVA.0 as u64).to_le_bytes());
+        standalone[0x20..0x24].copy_from_slice(&7_i32.to_le_bytes());
+        let memory = engine_native::memory::SliceMemory {
+            base: 0x1000,
+            bytes: &standalone,
+        };
+        assert_eq!(
+            targeted_execution(&memory, 0, 0x1018, 99),
+            Ok(EventFeedSource::DecisionSelected)
+        );
+        assert_eq!(selected_instance(&memory, 0, 0x1018, 99), Ok(None));
+        standalone[0x18..0x20].fill(0);
+        let memory = engine_native::memory::SliceMemory {
+            base: 0x1000,
+            bytes: &standalone,
+        };
+        assert_eq!(
+            targeted_execution(&memory, 0, 0x1018, 99),
+            Err("targeted decision selector is neither an instance view nor a target")
+        );
     }
 }

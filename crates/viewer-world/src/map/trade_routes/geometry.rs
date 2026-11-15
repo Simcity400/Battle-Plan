@@ -3,13 +3,12 @@
 //! nodes. Naval paths admit the recorded regions plus endpoint regions, with authored port
 //! links. Restricted crossings whose runtime permission cannot be proved are refused.
 
-use super::{LAND_ROUTE, NAVAL_ROUTE, NO_ROUTE};
+use super::{LAND_ROUTE, NAVAL_ROUTE, NO_ROUTE, RouteFields};
 use dashboard_core::protocol::PlanKind;
 use installed_content_core::{
     adjacencies::SEA_CROSSING, province_geometry::ProvinceGeometry, province_graph::ProvinceGraph,
     province_graph::heap_pop, province_graph::heap_push,
 };
-use replay_data::rows::TradeRouteRow;
 use std::collections::{BTreeMap, BTreeSet};
 use viewer_foundation::map::{
     province_map::HeightField,
@@ -67,21 +66,21 @@ pub fn border_province(from: u32, to: u32, content: &RouteContent<'_>) -> Result
     Err(format!("sea regions {from} and {to} share no border"))
 }
 
-pub fn stops(route: &TradeRouteRow, c: &RouteContent<'_>) -> Result<Option<Stops>, String> {
+pub fn stops(route: &impl RouteFields, c: &RouteContent<'_>) -> Result<Option<Stops>, String> {
     directed_stops(route, c, false)
 }
 
-pub(super) fn directed_stops(
-    route: &TradeRouteRow,
+pub fn directed_stops(
+    route: &impl RouteFields,
     c: &RouteContent<'_>,
     reverse: bool,
 ) -> Result<Option<Stops>, String> {
-    if route.kind == NO_ROUTE || route.path.is_empty() {
+    if route.kind() == NO_ROUTE || route.path().is_empty() {
         return Ok(None);
     }
-    let naval = route.kind == NAVAL_ROUTE;
-    if !naval && route.kind != LAND_ROUTE {
-        return Err(format!("trade route kind {}", route.kind));
+    let naval = route.kind() == NAVAL_ROUTE;
+    if !naval && route.kind() != LAND_ROUTE {
+        return Err(format!("trade route kind {}", route.kind()));
     }
     let first = |state: u32| {
         c.state_provinces
@@ -91,16 +90,16 @@ pub(super) fn directed_stops(
             .ok_or_else(|| format!("state {state} has no provinces"))
     };
     let (source, target) = if naval {
-        (route.from, route.to)
+        (route.from(), route.to())
     } else {
-        (first(route.from)?, first(route.to)?)
+        (first(route.from())?, first(route.to())?)
     };
     let (source, target) = if reverse {
         (target, source)
     } else {
         (source, target)
     };
-    let mut path = route.path.clone();
+    let mut path = route.path().to_vec();
     if reverse {
         path.reverse();
     }

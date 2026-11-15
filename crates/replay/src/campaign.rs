@@ -1,12 +1,14 @@
 //! A campaign's recording: one `<Campaign name>.battleplan` file holding every session of it
-//! (`H4COLUMN` version 9, [`replay_columnar::container`]). Its world log's runs hold every
+//! ([`replay_columnar::container`]). Its world log's runs hold every
 //! table's hours as columns ([`crate::columnar_frames`]); its records section holds its sessions,
 //! branches, gaps, control records, recovery notes, where each run came from and where a
 //! capture's writer stopped ([`records`]); its facts section holds the game facts it carries.
 //!
 //! [`Replay`] opens one held on disk or in memory, reads its records and names each run's pages
-//! as [`BlockIndex`] entries; its hours are read through [`hours`]. [`writer`] creates one and
-//! adds each save to it as a revision.
+//! as [`BlockIndex`] entries; its hours are read through [`read`]. It opens the newest saved
+//! revision: hours appended since, which wait to be saved or discarded, are opened only on
+//! purpose ([`Open::Newest`]), by the recorder and by whoever goes on from its last hour.
+//! [`writer`] creates one and adds to it.
 
 use crate::{
     BranchId, Hour, SessionId,
@@ -19,10 +21,7 @@ use crate::{
     scope::CaptureMode,
     spool::ControlRecord,
 };
-use replay_columnar::{
-    container::{SectionKey, schema},
-    envelope::{self, Extent},
-};
+use replay_columnar::envelope::{self, Extent};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fs::File,
@@ -34,19 +33,19 @@ mod changes;
 pub mod collect;
 #[cfg(any(test, feature = "test-support"))]
 pub mod fixtures;
-pub mod hours;
+pub mod live;
+pub mod read;
 pub mod records;
 pub mod timelines;
 pub mod writer;
 
 pub use changes::{BlockChange, QuietHours, TableFields};
 pub use collect::records_of;
-pub use hours::{HourCursor, Parallel};
-pub use records::{CaptureStop, Records, RecoveryNote, RunSource};
-pub use writer::{CampaignWriter, Ingest};
+pub use read::{HourCursor, Parallel};
+pub use records::{CaptureStop, Cursor, Records, RecoveryNote};
 
 /// Starts a session's facts file ([`encode_session_facts`]).
-const SESSION_FACTS_MAGIC: &[u8; 4] = b"H4SF";
+pub const SESSION_FACTS_MAGIC: &[u8; 4] = b"H4SF";
 /// A session folder's facts file, which its recorder writes once the facts are gathered.
 pub const SESSION_FACTS_FILE: &str = "facts.bin";
 
@@ -70,6 +69,31 @@ pub fn session_facts_for<'a>(bytes: &'a [u8], identity: &Identity) -> Option<&'a
     let recorded = Identity::decode(&mut decoder).ok()?;
     let pack = &bytes[bytes.len() - input.remaining()..];
     (recorded.same_content(identity) && !pack.is_empty()).then_some(pack)
+}
+
+/// Where the pack of the session facts file `file` lies, its offset and length, when they are
+/// `identity`'s facts: only the file's head is read, never the pack.
+pub fn session_facts_place(file: &mut std::fs::File, identity: &Identity) -> io::Result<Option<(u64, u64)>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let total = file.metadata()?.len();
+    let mut head = [0; 8];
+    file.seek(SeekFrom::Start(0))?;
+    if total < 8 || file.read_exact(&mut head).is_err() || &head[..4] != SESSION_FACTS_MAGIC {
+        return Ok(None);
+    }
+    let length = u64::from(u32::from_le_bytes(head[4..].try_into().expect("four bytes")));
+    let offset = 8 + length;
+    // An identity is a few hundred bytes; a longer head is not a facts file.
+    if length > 1 << 20 || offset >= total {
+        return Ok(None);
+    }
+    let mut encoded = vec![0; length as usize];
+    file.read_exact(&mut encoded)?;
+    let recorded = match Identity::decode(&mut Decoder::new(&encoded)) {
+        Ok(recorded) => recorded,
+        Err(_) => return Ok(None),
+    };
+    Ok(recorded.same_content(identity).then_some((offset, total - offset)))
 }
 
 /// The magic an older recording's file starts with: rows beside native files, which this build
@@ -121,10 +145,8 @@ fn refuse_older(header: &[u8]) -> io::Result<()> {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 OlderLayout(format!(
-                    "This recording is an H4COLUMN version {version} file, older than this \
-                     build's version {}; this build reads version {} only and has no upgrader \
-                     for it.",
-                    envelope::VERSION,
+                    "This recording is of format {version}; this build reads and writes format {} \
+                     only and has no upgrader for it.",
                     envelope::VERSION
                 )),
             ));
@@ -163,6 +185,7 @@ pub enum SeekResult {
     },
 }
 
+pub use crate::columnar_frames::{NotSaved, Open, is_not_saved};
 pub use replay_columnar::container::Revision;
 
 /// A campaign's recording, opened: its records, its runs' pages and its revision.
@@ -180,7 +203,9 @@ pub struct Replay {
     pub gaps: Vec<Gap>,
     pub controls: Vec<ControlRecord>,
     pub recovery_notes: Vec<RecoveryNote>,
-    pub sources: Vec<RunSource>,
+    /// How much of each capture's records it holds, as each revision noted it: a capture's
+    /// last entry stands ([`Self::cursor`]).
+    pub cursors: Vec<Cursor>,
     pub stops: Vec<CaptureStop>,
     /// Read-time damage diagnostics; never written into the recording.
     pub warnings: Vec<String>,
@@ -193,25 +218,46 @@ pub struct Replay {
     /// Each entry of `index`'s segment in the recording's.
     segments: Vec<u32>,
     revision: Revision,
+    /// The newest saved revision: its own, or the one its root names.
+    saved: Option<Revision>,
     partial_control: Option<usize>,
     /// Its segments, when read as timelines ([`Self::into_timelines`]).
     physical: Option<Box<timelines::Physical>>,
+    /// The threads its frames are built on; rayon's own without one ([`Self::set_pool`]).
+    pool: Option<std::sync::Arc<crate::columnar_frames::Pool>>,
 }
 
 impl Replay {
-    /// The recording held in memory.
+    /// The recording held in memory, at its newest saved revision.
     pub fn open(bytes: Vec<u8>) -> io::Result<Self> {
-        refuse_older(&bytes[..bytes.len().min(envelope::HEADER_BYTES)])?;
-        Self::read(Recording::open(bytes)?, None)
+        Self::open_as(bytes, Open::Saved)
     }
 
-    /// The recording at `path`, read from the file as it is needed.
+    /// The recording held in memory, at the revision `open` names.
+    pub fn open_as(bytes: Vec<u8>, open: Open) -> io::Result<Self> {
+        refuse_older(&bytes[..bytes.len().min(envelope::HEADER_BYTES)])?;
+        Self::read(Recording::open_as(bytes, open)?, None)
+    }
+
+    /// The recording at `path` at its newest saved revision, read from the file as it is
+    /// needed. One with no saved revision is refused ([`is_not_saved`]).
     pub fn open_path(path: &Path) -> io::Result<Self> {
+        Self::open_path_as(path, Open::Saved)
+    }
+
+    /// The recording at `path` at its newest revision, saved or not: what its recorder goes on
+    /// from.
+    pub fn open_newest(path: &Path) -> io::Result<Self> {
+        Self::open_path_as(path, Open::Newest)
+    }
+
+    /// The recording at `path` at the revision `open` names.
+    pub fn open_path_as(path: &Path, open: Open) -> io::Result<Self> {
         let mut header = [0; envelope::HEADER_BYTES];
         let mut file = File::open(path)?;
         let held = read_prefix(&mut file, &mut header)?;
         refuse_older(&header[..held])?;
-        Self::read(Recording::open_path(path)?, Some(path.to_path_buf()))
+        Self::read(Recording::open_path_as(path, open)?, Some(path.to_path_buf()))
     }
 
     fn read(recording: Recording, path: Option<PathBuf>) -> io::Result<Self> {
@@ -231,6 +277,10 @@ impl Replay {
             length: recording.len(),
             root: root_digest(&recording)?,
         };
+        let saved = match root.saved {
+            replay_columnar::container::Saved::Yes => Some(revision),
+            replay_columnar::container::Saved::No(before) => before,
+        };
         let fact_packs = engine_allocation::copy_vec(recording.facts_extents())?;
         let Records {
             sessions,
@@ -238,7 +288,7 @@ impl Replay {
             mut gaps,
             mut controls,
             notes,
-            sources,
+            cursors,
             stops,
         } = records;
         if sessions.iter().any(|session| session.capture_mode != capture_mode) {
@@ -283,9 +333,10 @@ impl Replay {
                 damaged_range = Some((first.min(held.first_hour), end.max(last)));
                 continue;
             }
-            for (at, page) in held.page_extents().iter().enumerate() {
-                let first_hour = i64::from(held.first_hour) + i64::from(page.first);
-                let last_hour = first_hour + i64::from(page.hours) - 1;
+            for at in 0..held.pages() {
+                let (first, hours) = held.block(at);
+                let first_hour = i64::from(held.first_hour) + i64::from(first);
+                let last_hour = first_hour + i64::from(hours) - 1;
                 let first_hour =
                     Hour::try_from(first_hour).map_err(|_| invalid_static("a page passes 2^31 hours"))?;
                 let last_hour =
@@ -293,7 +344,7 @@ impl Replay {
                 let segment = held_segments
                     .iter()
                     .position(|segment| {
-                        segment.run == run && segment.first <= page.first && page.first <= segment.last
+                        segment.run == run && segment.first <= first && first <= segment.last
                     })
                     .ok_or_else(|| invalid_static("a page lies in no segment of its run"))?;
                 engine_allocation::reserve(&mut index, 1)?;
@@ -323,7 +374,7 @@ impl Replay {
             gaps,
             controls,
             recovery_notes: notes,
-            sources,
+            cursors,
             stops,
             warnings,
             damaged_parts,
@@ -332,14 +383,29 @@ impl Replay {
             fact_packs,
             segments,
             revision,
+            saved,
             partial_control,
             physical: None,
+            pool: None,
         })
+    }
+
+    /// Builds its frames on `pool`'s threads from now on, or on rayon's own without one.
+    pub fn set_pool(&mut self, pool: Option<std::sync::Arc<crate::columnar_frames::Pool>>) {
+        self.pool = pool;
     }
 
     /// The columnar recording its hours are read from.
     pub fn recording(&self) -> &Recording {
         &self.recording
+    }
+
+    /// How much of capture `capture` made in `source` it holds; none when it holds none of it.
+    pub fn cursor(&self, source: &str, capture: u32) -> Option<&Cursor> {
+        self.cursors
+            .iter()
+            .rev()
+            .find(|cursor| cursor.source == source && cursor.capture == capture)
     }
 
     /// The file it was opened from; none when held in memory.
@@ -379,8 +445,20 @@ impl Replay {
         matches!((self.segment_of(a), self.segment_of(b)), (Ok(a), Ok(b)) if a == b)
     }
 
+    /// The revision opened.
     pub fn revision(&self) -> Revision {
         self.revision
+    }
+
+    /// The newest saved revision: the one opened, or the one before it that it names. None
+    /// while no revision of the recording is saved.
+    pub fn saved_revision(&self) -> Option<Revision> {
+        self.saved
+    }
+
+    /// Whether the revision opened is not saved: hours wait to be saved or discarded.
+    pub fn unsaved(&self) -> bool {
+        self.saved != Some(self.revision)
     }
 
     /// Whether `other` is this recording at this same revision.
@@ -400,7 +478,7 @@ impl Replay {
         }
     }
 
-    /// The file's length through its last published revision.
+    /// The file's length through the revision opened.
     pub fn saved_length(&self) -> u64 {
         self.revision.length
     }
@@ -550,7 +628,6 @@ impl Replay {
         self.visit_blocks(
             &blocks,
             &[crate::rows::TableId::Clock],
-            None,
             |block, _, frame| {
                 while blocks[at] != block {
                     at += 1;
@@ -577,13 +654,6 @@ impl Replay {
         )
     }
 
-    /// Whether this recording holds the recording at `path` as it is now: its revision, which
-    /// this one is or grew from.
-    pub fn holds(&self, path: &Path) -> io::Result<bool> {
-        let summary = Summary::read(path)?;
-        Ok(summary.campaign_id == self.campaign_id && self.contains_revision(summary.revision)?)
-    }
-
     /// The partial notice of the recording at `path`, without walking it.
     pub fn read_partial(path: &Path) -> io::Result<Option<ControlRecord>> {
         Ok(Summary::read(path)?.partial)
@@ -595,9 +665,10 @@ impl Replay {
         Ok(crate::identity::is_campaign_uuid(&id).then_some(id))
     }
 
-    /// The campaign id the recording at `path` names, of whatever identity.
+    /// The campaign id the recording at `path` names, of whatever identity: every revision's,
+    /// so a recording not saved yet names it too.
     pub fn read_campaign_id(path: &Path) -> io::Result<Vec<u8>> {
-        Ok(Summary::read(path)?.campaign_id)
+        Ok(Summary::read_as(path, Open::Newest)?.campaign_id)
     }
 
     /// The first and last recorded hours across every branch; none for a recording of none.
@@ -605,8 +676,9 @@ impl Replay {
         Ok(Summary::read(path)?.span)
     }
 
+    /// The capture mode of the recording at `path`: every revision's.
     pub fn read_capture_mode(path: &Path) -> io::Result<CaptureMode> {
-        Ok(Summary::read(path)?.capture_mode)
+        Ok(Summary::read_as(path, Open::Newest)?.capture_mode)
     }
 
     /// The ids of the sessions the recording at `path` holds, without walking it.
@@ -630,30 +702,35 @@ pub struct Summary {
 }
 
 impl Summary {
+    /// Of the newest saved revision of the recording at `path`.
     pub fn read(path: &Path) -> io::Result<Self> {
-        Self::read_from(File::open(path)?)
+        Self::read_as(path, Open::Saved)
     }
 
-    pub fn read_from(mut file: File) -> io::Result<Self> {
+    /// Of the revision of the recording at `path` that `open` names.
+    pub fn read_as(path: &Path, open: Open) -> io::Result<Self> {
+        Self::read_from_as(File::open(path)?, open)
+    }
+
+    pub fn read_from(file: File) -> io::Result<Self> {
+        Self::read_from_as(file, Open::Saved)
+    }
+
+    pub fn read_from_as(mut file: File, open: Open) -> io::Result<Self> {
         let mut header = [0; envelope::HEADER_BYTES];
         file.seek(SeekFrom::Start(0))?;
         let held = read_prefix(&mut file, &mut header)?;
         refuse_older(&header[..held])?;
-        let mut root_file = crate::columnar_frames::RootFile::open(file)?;
-        let root = root_file.root().clone();
-        let mut records = Records::default();
-        for extent in &root_file.section_extents(SectionKey::RECORDS, schema::RECORDS)? {
-            records.decode_into(&root_file.raw(extent)?)?;
-        }
+        let recording = Recording::open_file(file, open)?;
+        let root = recording.root().clone();
+        let records = recording.records()?;
         let mut span: Option<(Hour, Hour)> = None;
-        for extent in &root_file.section_extents(SectionKey::WORLD_LOG, schema::WORLD_LOG)? {
-            let directory = envelope::RunDirectory::read(&root_file.raw(extent)?, extent, extent.run)?;
-            if directory.ordinals == 0 {
+        for run in 0..recording.run_count() {
+            let Ok(held) = recording.run(run) else { continue };
+            if held.ordinals == 0 {
                 continue;
             }
-            let first = directory.first_hour;
-            let last = Hour::try_from(i64::from(first) + i64::from(directory.ordinals) - 1)
-                .map_err(|_| invalid_static("a run passes 2^31 hours"))?;
+            let (first, last) = (held.first_hour, held.last_hour());
             span = Some(span.map_or((first, last), |(low, high)| (low.min(first), high.max(last))));
         }
         let capture_mode = CaptureMode::from_byte(root.identity.capture_mode)?;
@@ -672,11 +749,7 @@ impl Summary {
             None
         };
         Ok(Self {
-            revision: Revision {
-                number: root.revision,
-                length: root_file.len(),
-                root: root_file.root_extent().digest,
-            },
+            revision: recording.revision(),
             campaign_id: root.identity.campaign,
             capture_mode,
             sessions: records.sessions,
@@ -698,7 +771,7 @@ fn read_prefix(input: &mut impl Read, header: &mut [u8]) -> io::Result<usize> {
     Ok(held)
 }
 
-fn decode_identity(content: &[u8]) -> io::Result<Identity> {
+pub(crate) fn decode_identity(content: &[u8]) -> io::Result<Identity> {
     let mut decoder = Decoder::new(content);
     let identity = Identity::decode(&mut decoder)?;
     decoder.finish()?;

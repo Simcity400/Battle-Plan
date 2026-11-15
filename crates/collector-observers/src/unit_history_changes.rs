@@ -52,9 +52,14 @@ pub fn sequence(receiver: usize) -> Option<(u64, u64)> {
 pub fn sequence_at(receiver: usize, slot: usize) -> Option<((u64, u64), usize)> {
     WATCHES.observed_sequence_at(receiver, slot)
 }
-/// Provisional lookup only; does not register a receiver or alter admission.
-pub fn observed_sequence(receiver: usize) -> Option<(u64, u64)> {
-    WATCHES.observed_sequence(receiver)
+/// A parallel range's certificate: registers a receiver not yet watched; a full table is
+/// refused and counted by the ordered admission ([`WatchRegistry::range_sequence`]).
+pub fn range_sequence(receiver: usize) -> Option<(u64, u64)> {
+    WATCHES.range_sequence(receiver)
+}
+/// The career and medal registry, for the live status.
+pub fn registry() -> &'static WatchRegistry {
+    &WATCHES
 }
 pub fn boundary(invalidate: bool) {
     WATCHES.boundary(invalidate);

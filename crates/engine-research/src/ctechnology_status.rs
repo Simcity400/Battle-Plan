@@ -347,24 +347,12 @@ pub fn walk_technologies(
     result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
 }
 
-/// Retains active and idle slots, including native saved-day and speed operands.
-pub fn walk_slots(
-    memory: &impl Memory,
-    base: usize,
-    country_pointer: usize,
-    country: u32,
-    output: &mut [cresearch_slot::Row],
-) -> Outcome {
-    walk_slots_buffer(
-        memory,
-        base,
-        country_pointer,
-        country,
-        crate::walk::Buffer::Fixed(output),
-    )
+pub fn count_slots(memory: &impl Memory, base: usize, country_pointer: usize, country: u32) -> Outcome {
+    walk_slots_buffer(memory, base, country_pointer, country, crate::walk::Buffer::Count)
 }
 
-pub fn walk_slots_growing(
+/// Retains active and idle slots, including native saved-day and speed operands.
+pub fn walk_slots(
     memory: &impl Memory,
     base: usize,
     country_pointer: usize,

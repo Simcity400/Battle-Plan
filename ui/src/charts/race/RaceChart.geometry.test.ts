@@ -24,7 +24,7 @@ test('race name columns retain the same unavailable-name room with cold or ready
       transform(source, id) {
         const path = id.replaceAll('\\', '/');
         if (path.endsWith('/charts/tokens.ts')) return `export const readTokens = () => (${JSON.stringify(tokens)}); export const subscribeTokens = () => () => {};`;
-        if (path.endsWith('/charts/surface.ts')) return `export const toLocal = () => ({ x: 0, y: 0 }); export const watchCanvasSize = () => ({ read: () => ({ layoutWidth: 1000, layoutHeight: 300, backing: { width: 1000, height: 300, scaleX: 1, scaleY: 1 } }), disconnect() {} });`;
+        if (path.endsWith('/charts/surface.ts')) return `export const toLocal = () => ({ x: 0, y: 0 }); export const watchCanvasSize = () => ({ read: () => ({ layoutWidth: 1000, layoutHeight: 300, backing: { width: 1000, height: 300, scaleX: 1, scaleY: 1 } }), disconnect() {} }); export const drawingSurface = element => ({ canvas: element, context: element.getContext('2d') }); export const sizeCanvas = (canvas, width, height) => { if (canvas.width === width && canvas.height === height) return false; canvas.width = width; canvas.height = height; return true; };`;
         if (path.endsWith('/charts/scheduler.ts')) return 'export const scheduler = { add(task) { globalThis.__raceGeometry.task = task; return () => {}; }, wake() {}, setVisible() {} };';
         if (path.endsWith('/charts/race/draw.ts')) return `export const FLAG = { x: 8, width: 21, height: 14 }; export const NAME_X = 36; export const VALUE_GAP = 8; export const MIN_LABEL = ${MIN_LABEL}; export const NAME_PAD = ${NAME_PAD}; export const VALUE_PAD = ${VALUE_PAD};
           export const drawDateOverlay = () => {}; export const drawRaceBar = (_ctx, layout) => layout.left;

@@ -18,14 +18,13 @@ Use these words for these things.
 - **game** is the supported strategy game. **mod stack** is the mods and DLC a recording was made with.
 - **collector** is `collector.dll`, loaded into the game; it only reads game memory. **recorder** is the command-line recorder (`recorder.exe`) or the tray app (`battle-plan-recorder.exe`) that attaches the collector and writes the recording.
 - **spool** is the recoverable file written while recording. **recording** (or **replay**) is the published, indexed `.battleplan` file. **branch** is a continuous stretch of history; a load, a new session or a jump in time starts a new one.
-- **prepared data** is disposable history and map checkpoints made from a recording in the background. It is never the source of truth.
 - **viewer** is the map. **dashboard** is the chart, table and timeline overview. **desktop app** is the Tauri shell around both (`replay-desktop.exe`).
 - **Boat** is the remote VM that compiles Rust for us (`tools/boat.py`).
 
 ## Ways to hurt yourself
 
 1. **Killing by pattern.** Never `Stop-Process -Name`, `taskkill /IM`, or kill a PID you found by matching a name, path or worktree string. Your own process has this worktree's path in its arguments, and other agents' builds, Boat runs, dev servers, the game and the recorder run on this machine at the same time. Kill only a PID you captured at spawn.
-2. **Touching real user data.** `%LOCALAPPDATA%\HOI4Replay` (captures, replay library, prepared data), the game install and the Paradox user folder are the user's. Read them or copy from them. Never write to them, clean them up or delete from them, and never point the recorder at them with its default output: pass your own `--out`. Test against a copy in your own capture folder.
+2. **Touching real user data.** `%LOCALAPPDATA%\HOI4Replay` (captures, replay library, caches), the game install and the Paradox user folder are the user's. Read them or copy from them. Never write to them, clean them up or delete from them, and never point the recorder at them with its default output: pass your own `--out`. Test against a copy in your own capture folder.
 3. **Baking in the machine.** Never commit a machine path, user name, port or host name. Take folders from arguments, settings or the environment (`BATTLE_PLAN_CAPTURES` for capture folders). `tools/check-machine-paths.py` fails any path naming this machine; only the runner scripts listed in `tools/machine-paths.allow` are exempt.
 4. **Leaving a mess.** Make worktrees with T3 Code, or `git worktree add` beside the existing ones, never in a temp folder or inside the repo. A new worktree runs `tools/setup_worktree.py` (`npm ci`) in the background: while `.t3/setup-running` names a live process, wait for it; `.t3/setup-failed` holds the error. When you are done, delete the worktree, branch, build folder and captures.
 5. **Shared state.** Never use plain `git stash`; the stash is shared.
@@ -46,7 +45,7 @@ Use these words for these things.
 
 The most common defect here is a change that works on the path you tested and is missing everywhere else. Before calling work done, walk this list and say which entries applied:
 
-- **Format ends.** A recording-format change touches the collector, the recorder, the replay reader and writer, prepared data, the viewer, the dashboard and the UI together, in one PR. No backwards compatibility: recordings keep playing across game updates, but a format change needs no upgrader; it refuses older recordings by name.
+- **Format ends.** A recording-format change touches the collector, the recorder, the replay reader and writer, the query layer, the viewer, the dashboard and the UI together, in one PR. No backwards compatibility: recordings keep playing across game updates, but a format change needs no upgrader; it refuses older recordings by name.
 - **Entry points.** A stat reachable from one dashboard widget is usually also wanted in the map viewer, other widgets, the tray app and the command-line recorder. Fixing one is not fixing the feature.
 - **Missing data.** Every new reading has a "not recorded" state, and every consumer shows it as missing, never as zero or blank.
 - **Mods and versions.** Check vanilla against a mod stack and different DLC sets. Every new read has a named refusal for the unsupported content it cannot handle.
@@ -54,9 +53,9 @@ The most common defect here is a change that works on the path you tested and is
 ## How it works
 
 1. The recorder finds the running game, checks the executable, and loads the collector.
-2. Every game hour the collector reads the game's state; hooks catch events between hours. Readings are copied out at once and encoded in the background into the spool.
-3. When recording stops, the spool is published as an indexed, compressed `.battleplan`. Continuity gaps become new branches, never invented history.
-4. The desktop app opens recordings, and the dashboard and viewer share one playback clock. Prepared data is built in the background, pauses while the game runs, and can be cleared without touching a recording.
+2. Every game hour the collector reads the game's state; hooks catch events between hours. Readings are copied out at once and handed to the recorder.
+3. The recorder writes the `.battleplan` as hours come and commits each block; one that dies takes it up again. Continuity gaps become new branches, never invented history.
+4. The desktop app opens recordings, and the dashboard and viewer share one playback clock. Every reply is read from the recording's own tables at the request.
 
 ## Where code lives
 
@@ -65,7 +64,7 @@ All Rust is in `crates/`; names group by prefix.
 - `engine-*`: pinned game layouts, guarded memory reads and the hourly sampling boundary.
 - `collector-*`: the readers loaded into the game, one crate per domain.
 - `recorder*`: the recorder, the tray app, replay recovery and finalization. `recorder-oracle-*` and `recorder-derived` check recordings offline against text saves and derivations.
-- `core-*`, `replay`, `replay-columnar`, `replay-data`, `store`: the spool, the recording container, the columnar change grammar, shared rows and codecs, and prepared-data packs.
+- `core-*`, `replay`, `replay-columnar`, `replay-data`: the collector's journal, the recording container and store, and shared rows and codecs.
 - `installed-content-*`: readers for the user's game and mod files at run time.
 - `viewer-*`, `map-*`, `shader-pipeline`: the map. `dashboard-*`: dashboard products over the contract in `dashboard-core`, which names no product.
 - `desktop`, `app-update` and `ui/`: the Tauri shell, its updater and the React UI. `tools/`: Boat, smoke, daily tests, the release and leak checks, the acceptance suite (`tools/e2e`) and the repo checks.

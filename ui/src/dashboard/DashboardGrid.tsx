@@ -1,4 +1,4 @@
-import { memo, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import { Responsive, useContainerWidth } from 'react-grid-layout';
 import type { Layout, ResponsiveLayouts } from 'react-grid-layout';
@@ -11,6 +11,7 @@ import WidgetState from '../components/WidgetState';
 import type { MapOptions } from '../shell/api';
 import { createWidget, GRID_COLUMNS, widgetAtDefault } from './model';
 import { resolveWidgetCampaign } from './campaigns';
+import { useFactionStylesKey } from './campaignSettings';
 import { recordingDisplayName } from './recordingNames';
 import type { Breakpoint, DashboardTemplate, GridLayouts, WidgetSpec } from './model';
 import { DEFAULT_MAP_OPTIONS, flipFog } from './mapPicker';
@@ -26,11 +27,18 @@ import { WidgetBody } from './widgets';
 import { HeldFailures, HeldFailuresContext } from './heldFailures';
 import HeldFailureNotices from './HeldFailureNotices';
 import { MeasuredWidget } from './widgetPerf';
+import { WidgetFrames } from './widgetClock';
+import { setPageClock } from './structurePace';
 import { perfLog } from '../shell/perf';
+import { DASHBOARD_SCROLL, NEAR_SCREEN } from './follow/useFollow.ts';
 import { preloadAllWidgetRenderers, preloadWidgetRenderers } from '../widgets/rendererLoaders';
 import { commitZone } from '../shell/commitCount';
+import { engine } from '../engine/frame.ts';
 
 interface Props {
+  /** The prepare lane's hidden copy of a page: every widget mounts in turn and asks what it shows, none is shown, hears
+   * the clock or holds the page's own registrations. */
+  prepared?: boolean;
   template: DashboardTemplate;
   runtime: WidgetRuntime;
   editing: boolean;
@@ -39,12 +47,13 @@ interface Props {
   onRemove: (id: string) => void;
 }
 
-function DashboardGrid({ template, runtime, editing, onLayouts, onApply, onRemove }: Props) {
+function DashboardGrid({ prepared = false, template, runtime, editing, onLayouts, onApply, onRemove }: Props) {
   const { width, containerRef, mounted } = useContainerWidth({ initialWidth: 1200 });
   // The page's widget code is fetched with the layout, before its bodies mount in turn; every
   // other widget's follows while idle, so another page or an added widget needs none fetched.
   const kinds = [...new Set(template.widgets.map(widget => widget.kind))].join(' ');
   useEffect(() => { preloadWidgetRenderers(kinds.split(' ')); preloadAllWidgetRenderers(); }, [kinds]);
+  useLayoutEffect(() => prepared ? undefined : (setPageClock(runtime.clock), () => setPageClock(null)), [runtime.clock, prepared]);
   const changed = useCallback((_layout: Layout, layouts: ResponsiveLayouts<Breakpoint>) => {
     runtime.maps.schedule();
     const next: GridLayouts = {};
@@ -61,7 +70,7 @@ function DashboardGrid({ template, runtime, editing, onLayouts, onApply, onRemov
       resizeConfig={{ enabled: editing, handles: ['se'] }} onLayoutChange={changed}
       onDrag={runtime.maps.schedule} onDragStop={runtime.maps.schedule} onResize={runtime.maps.schedule} onResizeStop={runtime.maps.schedule}>
       {template.widgets.map((widget) => <div key={widget.id} className="dash-grid-cell">
-        <WidgetFrame widget={widget} template={template} runtime={runtime} editing={editing} onApply={onApply} onRemove={onRemove} />
+        <WidgetFrame prepared={prepared} widget={widget} template={template} runtime={runtime} editing={editing} onApply={onApply} onRemove={onRemove} />
       </div>)}
     </Responsive>}
   </div>;
@@ -70,16 +79,18 @@ function DashboardGrid({ template, runtime, editing, onLayouts, onApply, onRemov
 /** Milliseconds of an animation frame spent mounting widget bodies, leaving the rest of a
  * 120 Hz frame to layout and paint. */
 const MOUNT_BUDGET = 4;
+/** Where a waiting body's widget last was. */
+type Place = Pick<IntersectionObserverEntry, 'isIntersecting' | 'boundingClientRect'>;
 /** Bodies waiting to mount, with where their widget last was. */
-const waiting = new Map<() => void, IntersectionObserverEntry>();
-let mountFrame = 0;
+const waiting = new Map<() => void, Place>();
+let mountFrame = false;
 
 /** Queues the body of a widget off screen to mount, or updates its place in the queue. Bodies near
  * the viewport mount first, then in reading order, as many each frame as the budget allows (at
  * least one), so the widgets below the fold are ready before a scroll reaches them. */
-function mountInTurn(mount: () => void, entry: IntersectionObserverEntry): () => void {
+function mountInTurn(mount: () => void, entry: Place): () => void {
   waiting.set(mount, entry);
-  if (!mountFrame) mountFrame = requestAnimationFrame(mountWaiting);
+  if (!mountFrame) { mountFrame = true; engine.next('commit', mountWaiting); }
   return () => { waiting.delete(mount); };
 }
 
@@ -92,8 +103,12 @@ function mountWaiting() {
     waiting.delete(mount);
     flushSync(mount);
   }
-  mountFrame = waiting.size ? requestAnimationFrame(mountWaiting) : 0;
+  mountFrame = waiting.size > 0;
+  if (mountFrame) engine.next('commit', mountWaiting);
 }
+
+/** How many bodies wait for their turn to mount. */
+export const bodiesWaiting = (): number => waiting.size;
 
 const onScreen = (box: DOMRect, viewport: DOMRect) =>
   box.width > 0 && box.height > 0 && box.bottom > viewport.top && box.top < viewport.bottom && box.right > viewport.left && box.left < viewport.right;
@@ -102,7 +117,7 @@ const onScreen = (box: DOMRect, viewport: DOMRect) =>
 const Body = memo(WidgetBody);
 
 /** Common chrome for every widget: header, drag grip, settings and the scaled body. */
-function WidgetFrame({ widget, template, runtime, editing, onApply, onRemove }: Omit<Props, 'onLayouts'> & { widget: WidgetSpec }) {
+function WidgetFrame({ prepared = false, widget, template, runtime, editing, onApply, onRemove }: Omit<Props, 'onLayouts'> & { widget: WidgetSpec }) {
   const element = useRef<HTMLElement>(null);
   // Null until the body mounts in its turn, then whether the widget is near the viewport.
   // Server rendering has no observer and renders the body at once.
@@ -126,7 +141,9 @@ function WidgetFrame({ widget, template, runtime, editing, onApply, onRemove }: 
   useLayoutEffect(() => {
     const target = element.current;
     if (!target) return;
-    const root = target.closest('.dash-grid-scroll');
+    // A prepared copy is never seen: every body mounts in turn, by its place, and asks as if shown.
+    if (prepared) return mountInTurn(() => { slots.show(); setActive(true); }, { isIntersecting: false, boundingClientRect: target.getBoundingClientRect() });
+    const root = target.closest(DASHBOARD_SCROLL);
     let mounted = false, visible = false, cancel = () => {};
     const mount = () => { mounted = true; slots.show(); setActive(visible); };
     // On screen when its page is laid out: the body mounts before that layout is first drawn, so
@@ -135,7 +152,7 @@ function WidgetFrame({ widget, template, runtime, editing, onApply, onRemove }: 
     const near = new IntersectionObserver(([entry]) => {
       visible = entry.isIntersecting;
       if (mounted) setActive(visible); else cancel = mountInTurn(mount, entry);
-    }, { root, rootMargin: '240px 0px' });
+    }, { root, rootMargin: NEAR_SCREEN });
     // A widget the settled layout brings on screen later (the measured width picks another
     // breakpoint, a layout moves) mounts at once, never behind the queue.
     const seen = new IntersectionObserver(([entry]) => {
@@ -147,14 +164,18 @@ function WidgetFrame({ widget, template, runtime, editing, onApply, onRemove }: 
     near.observe(target);
     seen.observe(target);
     return () => { near.disconnect(); seen.disconnect(); cancel(); };
-  }, [slots]);
-  useEffect(() => { perfLog?.widget(widget.id, widget.kind, widget.title); }, [widget.id, widget.kind, widget.title]);
+  }, [slots, prepared]);
+  useEffect(() => { if (!prepared) perfLog?.widget(widget.id, widget.kind, widget.title); }, [widget.id, widget.kind, widget.title, prepared]);
   const [mapOptions, setMapOptions] = useState<MapOptions>(DEFAULT_MAP_OPTIONS);
   // The native picker's fog click flips this widget's switch, as its control does.
-  useEffect(() => runtime.maps.onFog(widget.id, () => setMapOptions(flipFog)), [runtime.maps, widget.id]);
+  useEffect(() => prepared ? undefined : runtime.maps.onFog(widget.id, () => setMapOptions(flipFog)), [runtime.maps, widget.id, prepared]);
   const definition = widgetDefinition(widget.kind);
   const icons = useContext(WidgetIconsContext);
   const icon = icons.style(widget.kind);
+  // The body hears the clock's frames only while the widget is on screen (`WidgetFrames`).
+  const frames = useMemo(() => new WidgetFrames(runtime.clock, widget.id), [runtime.clock, widget.id]);
+  useLayoutEffect(() => { frames.setShown(active === true && !prepared); }, [frames, active, prepared]);
+  const bodyRuntime = useMemo(() => ({ ...runtime, clock: frames.clock }), [runtime, frames]);
   const optionDraft = useRef(new OptionDraft(widget.options));
   optionDraft.current.sync(widget.options);
   // An option set from inside the widget saves at once, as the settings panel does.
@@ -182,7 +203,7 @@ function WidgetFrame({ widget, template, runtime, editing, onApply, onRemove }: 
   // shows another recording.
   const mapRecording = campaignTrack ? `${campaignTrack.source.id}:${campaignTrack.source.revision}` : null;
   useEffect(() => {
-    if (!mapRecording) return;
+    if (!mapRecording || prepared) return;
     const owners = new Map<string, object>();
     const stop = runtime.maps.onToggleFailure(widget.id, mapRecording, (setting, failure) => {
       let owner = owners.get(setting);
@@ -190,8 +211,22 @@ function WidgetFrame({ widget, template, runtime, editing, onApply, onRemove }: 
       failures.put(owner, failure ? [{ error: failure }] : []);
     });
     return () => { stop(); for (const owner of owners.values()) failures.put(owner, []); };
-  }, [runtime.maps, widget.id, failures, mapRecording]);
-  return <article ref={element} className={`dash-widget kind-${widget.kind}`} data-widget={widget.id} aria-label={widget.title}>
+  }, [runtime.maps, widget.id, failures, mapRecording, prepared]);
+  // The settings it renders with, so the acceptance suite tells a setting the widget took from one it never got: its spec,
+  // and the campaign's faction names and colours where its settings offer them.
+  const factionStyles = useFactionStylesKey(definition?.factionColours && campaignTrack ? campaignTrack.source.metadata.campaignKey : null);
+  const settings = useMemo(() => settingsSignature(widget, factionStyles), [widget, factionStyles]);
+  // `data-drawn` is the signature of the settings the body last committed and painted with: once it equals
+  // `data-settings` and the body shows no loading state, a setting has been applied and drawn.
+  useEffect(() => {
+    if (prepared) return;
+    const frame = requestAnimationFrame(() => { if (element.current) element.current.dataset.drawn = settings; });
+    return () => cancelAnimationFrame(frame);
+  }, [settings, prepared]);
+  // A widget only its page can draw (the native map) is left out of a prepared copy.
+  const drawnHere = !prepared || definition?.preview !== false;
+  return <article ref={element} className={`${prepared ? 'dash-widget-prepared' : 'dash-widget'} kind-${widget.kind}`}
+    {...(prepared ? {} : { 'data-widget': widget.id, 'data-settings': settings, 'aria-label': widget.title })}>
     <header className="dash-widget-header">
       {editing && <span className="dash-drag-grip" data-tooltip="Drag to move" aria-hidden="true"><Icon name="grip" /></span>}
       <span className="dash-widget-icon" aria-hidden="true" data-widget-icon={widget.id} style={icon.colour ? { color: icon.colour } : undefined}
@@ -220,9 +255,9 @@ function WidgetFrame({ widget, template, runtime, editing, onApply, onRemove }: 
     {missing.length > 0 && runtime.tracks.some((track) => effective.trackIds.includes(track.id)) && <div className="dash-inline-warning"><Icon name="alert" />{missing.map((id) => template.tracks.find((track) => track.id === id)?.label || 'Campaign').join(', ')} unavailable</div>}
     <HeldFailureNotices failures={failures} />
     <div className="dash-widget-content"><div className="dash-widget-scaled" style={{ zoom: (widget.contentScale ?? 100) / 100 }}>
-      {active === null ? <WidgetState kind="loading" label={`Loading ${widget.title}…`} /> : <HeaderActionsSlot.Provider value={actionsSlot}>
-        <HeldFailuresContext.Provider value={failures}><MeasuredWidget.Provider value={widget.id}>
-          <Body widget={widget} runtime={runtime} active={active} mapOptions={mapOptions} headerSlot={headerSlot} countrySlot={countrySlot} setOption={saveOption} setOptions={saveOptions} />
+      {!drawnHere ? null : active === null ? <WidgetState kind="loading" label={`Loading ${widget.title}…`} /> : <HeaderActionsSlot.Provider value={actionsSlot}>
+        <HeldFailuresContext.Provider value={failures}><MeasuredWidget.Provider value={prepared ? null : widget.id}>
+          <Body widget={widget} runtime={bodyRuntime} active={active} mapOptions={mapOptions} headerSlot={headerSlot} countrySlot={countrySlot} setOption={saveOption} setOptions={saveOptions} />
         </MeasuredWidget.Provider></HeldFailuresContext.Provider>
       </HeaderActionsSlot.Provider>}
     </div></div>
@@ -233,3 +268,11 @@ export default memo(DashboardGrid);
 
 commitZone(DashboardGrid, 'grid');
 commitZone(WidgetFrame, 'widget frame');
+
+/** A short hash of a widget's whole settings and the faction styles it renders with. */
+function settingsSignature(widget: WidgetSpec, factionStyles = ''): string {
+  const text = JSON.stringify(widget) + factionStyles;
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index++) hash = Math.imul(hash ^ text.charCodeAt(index), 16777619);
+  return (hash >>> 0).toString(36);
+}

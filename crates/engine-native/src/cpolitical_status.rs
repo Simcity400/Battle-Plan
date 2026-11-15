@@ -380,18 +380,9 @@ impl<'a, M: Memory> Reader<'a, M> {
         })
     }
 
-    pub fn parties(&self, output: &mut [cpolitical_party::Row], tokens: &mut [u8]) -> TokenWalk {
-        self.parties_into(
-            crate::walk::Buffer::Fixed(output),
-            0,
-            crate::walk::Buffer::Fixed(tokens),
-            0,
-        )
-    }
-
     /// Worker-only continuation from this capture's original party header and
     /// each acquired string length. The preceding countries' rows stay owned.
-    pub fn parties_growing(
+    pub fn parties(
         &self,
         output: &mut Vec<cpolitical_party::Row>,
         row_start: usize,
@@ -408,17 +399,7 @@ impl<'a, M: Memory> Reader<'a, M> {
         )
     }
 
-    fn parties_into(
-        &self,
-        output: crate::walk::Buffer<'_, cpolitical_party::Row>,
-        row_start: usize,
-        tokens: crate::walk::Buffer<'_, u8>,
-        byte_start: usize,
-    ) -> TokenWalk {
-        self.parties_carried(0, output, row_start, tokens, byte_start, &mut FreshParties)
-    }
-
-    /// [`Self::parties_growing`] with `carry` supplying the rows of a party
+    /// [`Self::parties`] with `carry` supplying the rows of a party
     /// array whose held read it proves current: the array header, the ruling
     /// party, every party pointer and each party's popularity are still
     /// read, and a carried party's identity, ideology token, tag, names and
@@ -620,9 +601,9 @@ impl<'a, M: Memory> Reader<'a, M> {
     pub fn party_leaders(
         &self,
         country: u32,
-        output: &mut [cpolitical_party::LeaderRow],
+        output: &mut Vec<cpolitical_party::LeaderRow>,
     ) -> Outcome {
-        self.party_leaders_buffer(country, crate::walk::Buffer::Fixed(output))
+        self.party_leaders_buffer(country, crate::walk::Buffer::Growing(output))
     }
 
     pub fn party_leaders_buffer(
@@ -741,10 +722,10 @@ impl<'a, M: Memory> Reader<'a, M> {
 
     /// Captures exact active CIdea definition tokens. Laws, spirits and advisor
     /// roles are later joins with verified content, not inferred memory fields.
-    pub fn ideas(&self, output: &mut [IdeaRow], tokens: &mut [u8]) -> TokenWalk {
+    pub fn ideas(&self, output: &mut Vec<IdeaRow>, tokens: &mut Vec<u8>) -> TokenWalk {
         self.ideas_buffer(
-            crate::walk::Buffer::Fixed(output),
-            crate::walk::Buffer::Fixed(tokens),
+            crate::walk::Buffer::Growing(output),
+            crate::walk::Buffer::Growing(tokens),
         )
     }
 
@@ -855,13 +836,13 @@ impl<'a, M: Memory> Reader<'a, M> {
     pub fn timed_ideas(
         &self,
         country: u32,
-        output: &mut [TimedIdeaRow],
-        tokens: &mut [u8],
+        output: &mut Vec<TimedIdeaRow>,
+        tokens: &mut Vec<u8>,
     ) -> TokenWalk {
         self.timed_ideas_buffer(
             country,
-            crate::walk::Buffer::Fixed(output),
-            crate::walk::Buffer::Fixed(tokens),
+            crate::walk::Buffer::Growing(output),
+            crate::walk::Buffer::Growing(tokens),
         )
     }
 
@@ -932,24 +913,12 @@ impl<'a, M: Memory> Reader<'a, M> {
     }
 }
 
-/// Exact token lengths are counted even when caller storage is short.
-pub fn walk_timed_ideas(
-    memory: &impl Memory,
-    base: usize,
-    state: usize,
-    output: &mut [TimedIdeaRow],
-    tokens: &mut [u8],
-) -> TokenWalk {
-    walk_timed_ideas_buffer(
-        memory,
-        base,
-        state,
-        crate::walk::Buffer::Fixed(output),
-        crate::walk::Buffer::Fixed(tokens),
-    )
+pub fn count_timed_ideas(memory: &impl Memory, base: usize, state: usize) -> TokenWalk {
+    walk_timed_ideas_buffer(memory, base, state, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
 }
 
-pub fn walk_timed_ideas_growing(
+/// Exact token lengths are counted even when caller storage is short.
+pub fn walk_timed_ideas(
     memory: &impl Memory,
     base: usize,
     state: usize,
@@ -1015,7 +984,7 @@ pub fn timed_idea_demand(
     base: usize,
     state: usize,
 ) -> Result<IdeaDemand, &'static str> {
-    let walk = walk_timed_ideas(memory, base, state, &mut [], &mut []);
+    let walk = count_timed_ideas(memory, base, state);
     match walk.outcome {
         Outcome::Unavailable { reason } => Err(reason),
         Outcome::Rows { len } => Ok(IdeaDemand {
@@ -1090,7 +1059,7 @@ pub fn party_leader_demand(
         let Ok(reader) = Reader::new(memory, base, country.pointer) else {
             continue;
         };
-        if let Outcome::Truncated { unread_rows, .. } = reader.party_leaders(country.id, &mut []) {
+        if let Outcome::Truncated { unread_rows, .. } = reader.party_leaders_buffer(country.id, crate::walk::Buffer::Count) {
             total = total
                 .checked_add(unread_rows as usize)
                 .ok_or("party leader total overflow")?;

@@ -186,7 +186,7 @@ fn maxima_pass(
         let held = held
             .get(start..held.len().min(start + seeds.len()))
             .unwrap_or(&[]);
-        let selected = packet.stage_maxima(memory, base, seeds, held, &mut batch);
+        let selected = packet.stage_maxima(memory, base, seeds, held, |_| false, &mut batch);
         for (index, seed) in seeds.iter().enumerate() {
             checksum ^= packet
                 .maxima(
@@ -195,6 +195,7 @@ fn maxima_pass(
                     seed.stat_block.unwrap(),
                     selected[index],
                     held.get(index).copied().flatten(),
+                    None,
                     &batch,
                 )
                 .unwrap();
@@ -254,7 +255,6 @@ fn bench_division_status_and_maxima() {
                         world.state,
                         &world.seeds,
                         Outcome::Rows { len: divisions },
-                        divisions,
                         held,
                         &[],
                     );

@@ -6,8 +6,17 @@ use super::*;
 pub struct Preparation {
     key: Option<Key>,
     pub(super) columns: land::ColumnPlans,
-    bases: Option<([bool; 3], CachedBases)>,
+    bases: Option<bases::BaseLayout>,
     ports: naval::PortPlans,
+    /// The products of the counter kinds the map's layers draw; the hour's own for the rest.
+    layered: Layered,
+    /// The base counters' newest product, held back while the base icons laid out read none of
+    /// it: the layout and its identity stay as they are until a view could show it.
+    waiting: Option<Arc<BaseValues>>,
+    /// The kinds whose layer draws now and has given a product: the hour's tables leave them out.
+    drawing: Kinds,
+    /// The air mission layer's values laid out with today's hovers for these tables.
+    air: Option<(Arc<AirValues>, Arc<air_missions::Prepared>)>,
 }
 
 impl std::fmt::Debug for Preparation {
@@ -15,6 +24,8 @@ impl std::fmt::Debug for Preparation {
         f.debug_struct("Preparation")
             .field("bases", &self.bases.is_some())
             .field("ports", &self.ports.len())
+            .field("layered", &self.layered.kinds())
+            .field("drawing", &self.drawing)
             .finish_non_exhaustive()
     }
 }
@@ -67,11 +78,6 @@ impl Key {
     }
 }
 
-struct CachedBases {
-    offers: base_windows::PreparedBases,
-    report: CounterReport,
-}
-
 #[cfg(test)]
 fn count(hit: bool) {
     plan_probe::record(|counts| {
@@ -86,6 +92,12 @@ fn add<K: Ord + Clone>(target: &mut BTreeMap<K, usize>, source: &BTreeMap<K, usi
     }
 }
 
+/// Whether base icons laid out under `rules` (the air base, radar and facility cutoffs passed)
+/// read the base counters' product.
+fn rules_read_values(rules: [bool; 3]) -> bool {
+    rules[0] || rules[1]
+}
+
 impl Preparation {
     pub(super) fn bind(&mut self, inputs: &CounterInputs<'_>, tables: &HourTables, resources: u64) {
         if !self
@@ -93,11 +105,84 @@ impl Preparation {
             .as_ref()
             .is_some_and(|key| key.matches(inputs, tables, resources))
         {
+            let mut layered = std::mem::take(&mut self.layered);
+            if let Some(newest) = self.waiting.take() {
+                layered.bases = Some(newest);
+            }
             *self = Self {
                 key: Some(Key::new(inputs, tables, resources)),
+                layered,
+                drawing: self.drawing,
                 ..Self::default()
             };
         }
+    }
+
+    /// The products the layers publish this frame (`published`, a kind only while its layer
+    /// draws) and the kinds whose layer draws (`draws`). A kind's product is kept while its layer
+    /// draws without a new one (composing), and while the hour's tables on screen leave the kind
+    /// out (`left_out`), so that the map never shows neither; the hour's own is drawn once tables
+    /// holding it arrive.
+    pub fn set_layered(&mut self, published: Layered, draws: Kinds, left_out: Kinds) {
+        let mut keep = Kinds::default();
+        for kind in Kinds::ALL {
+            if draws.has(kind) || left_out.has(kind) {
+                keep = keep.with(kind);
+            }
+        }
+        let mut layered = self.layered.merged(published, keep);
+        self.waiting = None;
+        // The base icons laid out read none of the bases' product: a new one changes nothing drawn.
+        if let (Some(new), Some(old)) = (&layered.bases, &self.layered.bases)
+            && !Arc::ptr_eq(new, old)
+            && self.bases.as_ref().is_some_and(|layout| !rules_read_values(layout.rules()))
+        {
+            self.waiting = layered.bases.replace(Arc::clone(old));
+        }
+        // A column plan keys each source by the land product's own allocation of it; the guns
+        // product is read whole.
+        if layered.changed(&self.layered).has(Kinds::GUNS) {
+            self.columns = Default::default();
+        }
+        self.layered = layered;
+        let held = self.layered.kinds();
+        self.drawing = Kinds::ALL.into_iter().filter(|&kind| draws.has(kind) && held.has(kind)).fold(Kinds::default(), Kinds::with);
+    }
+
+    /// The counter layers' products `from` shows, taken as [`Self::set_layered`] would have given
+    /// them here: a memory that laid out an hour off the frame thread, installed as the view's,
+    /// takes the products the view was given meanwhile.
+    pub fn adopt_layered(&mut self, from: &Preparation) {
+        // Exactly `from`'s: a bases product it holds back stays held back here, so the products
+        // this memory lays out with are the ones `from`'s identity names.
+        if from.layered.changed(&self.layered).has(Kinds::GUNS) {
+            self.columns = Default::default();
+        }
+        self.layered = from.layered.clone();
+        self.waiting.clone_from(&from.waiting);
+        self.drawing = from.drawing;
+    }
+
+    /// The air mission part for `values`, made once per values and tables.
+    pub(super) fn air(&mut self, values: &Arc<AirValues>, make: impl FnOnce() -> air_missions::Prepared) -> Arc<air_missions::Prepared> {
+        if let Some((held, prepared)) = &self.air
+            && Arc::ptr_eq(held, values)
+        {
+            return Arc::clone(prepared);
+        }
+        let prepared = Arc::new(make());
+        self.air = Some((Arc::clone(values), Arc::clone(&prepared)));
+        prepared
+    }
+
+    /// The products of the kinds the layers draw.
+    pub fn layered(&self) -> &Layered {
+        &self.layered
+    }
+
+    /// The kinds the hour's tables leave to the layers.
+    pub fn drawing(&self) -> Kinds {
+        self.drawing
     }
 
     pub(super) fn bases(
@@ -111,7 +196,10 @@ impl Preparation {
         if inputs.camera.free().is_some() {
             #[cfg(test)]
             count(false);
-            return bases(inputs, frame, tables, out);
+            if let Some(newest) = self.waiting.take() {
+                self.layered.bases = Some(newest);
+            }
+            return bases(inputs, frame, tables, self.layered.bases.as_deref(), out);
         }
         let defines = &inputs.content.defines;
         let rules = [
@@ -120,21 +208,22 @@ impl Preparation {
             defines.facility_cutoff,
         ]
         .map(|cutoff| inputs.shows(cutoff));
-        let hit = self.bases.as_ref().is_some_and(|(at, _)| *at == rules);
+        if rules_read_values(rules)
+            && let Some(newest) = self.waiting.take()
+        {
+            self.layered.bases = Some(newest);
+        }
+        let hit = self.bases.as_ref().is_some_and(|layout| layout.rules() == rules);
         #[cfg(test)]
         count(hit);
-        if !hit {
-            let mut built = CounterFrame::default();
-            bases(inputs, frame, tables, &mut built)?;
-            self.bases = Some((
-                rules,
-                CachedBases {
-                    offers: built.native_bases,
-                    report: built.report,
-                },
-            ));
+        if let Some(layout) = self.bases.as_mut().filter(|_| hit) {
+            if !layout.laid_from(self.layered.bases.as_ref()) {
+                layout.update(inputs, frame, tables, self.layered.bases.as_ref())?;
+            }
+        } else {
+            self.bases = Some(bases::BaseLayout::new(rules, inputs, frame, tables, self.layered.bases.clone())?);
         }
-        let cached = &self.bases.as_ref().unwrap().1;
+        let cached = self.bases.as_ref().expect("the base icons laid out");
         out.native_bases = cached.offers.for_camera(inputs);
         out.report
             .refused_tokens
@@ -187,6 +276,13 @@ pub(super) mod plan_probe {
         pub semantic_plan_hits: u64,
         pub ordered_groups: u64,
         pub ordered_group_members_equal: u64,
+        /// Air-base, rocket-site and gun-emplacement icons laid out.
+        pub site_icons: u64,
+        /// Land plates drawn into their sprites (not kept from an earlier draw).
+        pub plates_drawn: u64,
+        /// Base window pools presented, and of those the ones that kept their windows.
+        pub pools_presented: u64,
+        pub pools_kept: u64,
     }
 
     thread_local! {
@@ -212,5 +308,56 @@ pub(super) mod plan_probe {
                 change(counts);
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod hand_over {
+    use super::*;
+
+    #[test]
+    fn a_memory_laid_out_elsewhere_takes_the_products_the_view_was_given_meanwhile() {
+        let both = Kinds::LAND.with(Kinds::LAND_MARKERS);
+        let first = Layered { land: Some(Arc::new(LandStacks::new())), land_markers: Some(Arc::default()), ..Layered::default() };
+        let mut view = Preparation::default();
+        view.set_layered(first.clone(), both, Kinds::default());
+        // The worker's memory takes the view's products before it lays out.
+        let mut laid = Preparation::default();
+        laid.adopt_layered(&view);
+        assert!(laid.layered().changed(view.layered()).is_empty());
+        assert_eq!(laid.drawing(), view.drawing());
+        // Meanwhile the view is given a new land product and loses the markers' layer.
+        let next = Layered { land: Some(Arc::new(LandStacks::new())), ..Layered::default() };
+        view.set_layered(next, Kinds::LAND, both);
+        // Installed as the view's, the laid memory shows what the view shows now.
+        std::mem::swap(&mut view, &mut laid);
+        view.adopt_layered(&laid);
+        assert!(view.layered().changed(laid.layered()).is_empty(), "the products given meanwhile");
+        assert_eq!(view.drawing(), Kinds::LAND);
+        assert!(!view.layered().changed(&first).is_empty(), "not the ones it laid out with");
+    }
+
+    #[test]
+    fn a_kind_is_left_to_its_layer_while_it_draws_and_kept_until_tables_holding_today_s_are_on_screen() {
+        let mut view = Preparation::default();
+        let both = Kinds::LAND.with(Kinds::LAND_MARKERS);
+        view.set_layered(Layered::default(), both, Kinds::default());
+        assert!(view.drawing().is_empty(), "a layer that has given nothing yet leaves today's in the hour's tables");
+        let published = Layered { land: Some(Arc::new(LandStacks::new())), land_markers: Some(Arc::default()), ..Layered::default() };
+        view.set_layered(published.clone(), both, Kinds::default());
+        assert_eq!(view.drawing(), both, "drawing with a product, the next hour's tables leave both kinds out");
+        assert!(view.layered().changed(&published).is_empty(), "and the layout takes the layers' products");
+        view.set_layered(Layered::default(), both, both);
+        assert_eq!(view.drawing(), both, "composing, a layer still draws");
+        assert!(view.layered().changed(&published).is_empty(), "and its last product stays");
+        let land_only = Layered { land: published.land.clone(), ..Layered::default() };
+        view.set_layered(land_only.clone(), Kinds::LAND, both);
+        assert_eq!(view.drawing(), Kinds::LAND, "refused or hidden, the markers' next hour is today's again");
+        assert!(view.layered().land_markers.is_some(), "until those tables are on screen the last markers are kept: never neither");
+        view.set_layered(land_only, Kinds::LAND, Kinds::LAND);
+        assert!(view.layered().land_markers.is_none(), "tables holding today's markers draw them");
+        assert!(view.layered().land.is_some(), "while the land stacks stay the layer's");
+        view.set_layered(Layered::default(), Kinds::default(), Kinds::default());
+        assert!(view.layered().kinds().is_empty() && view.drawing().is_empty(), "the playhead off, every kind is today's");
     }
 }

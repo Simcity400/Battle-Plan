@@ -146,6 +146,13 @@ impl NativeReads {
     pub(super) fn incomplete(&mut self) {
         self.complete = false;
     }
+    #[cfg(test)]
+    pub(super) fn staged(&self) -> usize {
+        self.roots_used
+            + self.membership_indices.len()
+            + self.variants_used
+            + self.states.values().filter(|state| state.read.is_some()).count()
+    }
     pub fn begin(&mut self, divisions: usize) -> std::io::Result<()> {
         self.complete = true;
         self.membership_observation = None;
@@ -204,10 +211,10 @@ impl NativeReads {
         if !store.can_settle_owned() {
             self.incomplete();
         }
-        if store.world_epoch != operands::world_epoch() {
+        let Some(store) = store.admitted() else {
             self.incomplete();
             return;
-        }
+        };
         if let Some((_, Ok(country))) = selection.country {
             if let Some(accumulator) = country.pointer.checked_add(ccountry::MODIFIER_ACCUMULATOR) {
                 self.capture_root(

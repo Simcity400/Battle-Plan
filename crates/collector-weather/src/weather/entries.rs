@@ -1,6 +1,5 @@
 //! Every province record's weather modifier accumulator: each province's entries,
-//! keys ascending, packed in one buffer. Growth happens only when the owner grows;
-//! otherwise a province that does not fit is refused.
+//! keys ascending, packed in one buffer, which grows as provinces are read.
 
 use engine_native::{Memory, modifier_accumulator, sweather_per_province};
 
@@ -16,15 +15,6 @@ pub struct ProvinceModifiers {
 }
 
 impl ProvinceModifiers {
-    /// Room for `provinces` provinces holding `entries` entries between them, without
-    /// growth.
-    pub fn with_capacity(provinces: usize, entries: usize) -> Self {
-        Self {
-            spans: Vec::with_capacity(provinces),
-            entries: Vec::with_capacity(entries),
-        }
-    }
-
     pub fn clear(&mut self) {
         self.spans.clear();
         self.entries.clear();
@@ -55,29 +45,22 @@ impl ProvinceModifiers {
         self.spans.iter().all(Option::is_some)
     }
 
-    /// Room for `provinces` more provinces, growing when `grow`.
-    pub fn reserve_provinces(&mut self, provinces: usize, grow: bool) {
-        if grow && self.spans.capacity() - self.spans.len() < provinces {
-            let _ = engine_allocation::reserve_exact(&mut self.spans, provinces);
-        }
+    /// Room for `provinces` more provinces.
+    pub fn reserve_provinces(&mut self, provinces: usize) {
+        let _ = engine_allocation::reserve_exact(&mut self.spans, provinces);
     }
 
-    /// Appends one province: its entries, or its refusal. False when it did not fit, which
-    /// appends a refusal when a slot is left.
-    pub fn push(&mut self, entries: Option<&[Entry]>, grow: bool) -> bool {
-        if self.spans.len() == self.spans.capacity()
-            && !(grow && engine_allocation::reserve(&mut self.spans, 1).is_ok())
-        {
+    /// Appends one province: its entries, or its refusal. False when its storage could
+    /// not be allocated, which appends a refusal when a slot is left.
+    pub fn push(&mut self, entries: Option<&[Entry]>) -> bool {
+        if engine_allocation::reserve(&mut self.spans, 1).is_err() {
             return false;
         }
         let Some(entries) = entries else {
             self.spans.push(None);
             return true;
         };
-        let room = self.entries.capacity() - self.entries.len();
-        if room < entries.len()
-            && !(grow && engine_allocation::reserve(&mut self.entries, entries.len()).is_ok())
-        {
+        if engine_allocation::reserve(&mut self.entries, entries.len()).is_err() {
             self.spans.push(None);
             return false;
         }
@@ -115,13 +98,12 @@ impl ProvinceModifiers {
 }
 
 /// Reads one province record's accumulator into `out`, replacing its contents; false
-/// refuses the province. `out` grows only when `grow`.
+/// refuses the province.
 pub fn read(
     memory: &impl Memory,
     array: engine_native::cpdx_array::Array,
     slot: u32,
     out: &mut Vec<Entry>,
-    grow: bool,
 ) -> bool {
     out.clear();
     let Some(address) = array
@@ -132,7 +114,7 @@ pub fn read(
     };
     let mut overflow = false;
     let read = modifier_accumulator::entries_at(memory, address, &mut |key, value| {
-        if out.len() == out.capacity() && !(grow && engine_allocation::reserve(out, 1).is_ok()) {
+        if engine_allocation::reserve(out, 1).is_err() {
             overflow = true;
             return;
         }

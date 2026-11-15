@@ -519,6 +519,7 @@ mod order_tests {
     /// the search, and an unheld one finds nothing either way.
     #[test]
     fn held_positions_find_their_entries_and_moved_ones_search() {
+        let _globals = crate::extended::characters::test_globals();
         let mut carry = Carry {
             active: true,
             ..Carry::default()

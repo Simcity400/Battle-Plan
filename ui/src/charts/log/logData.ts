@@ -32,6 +32,8 @@ export interface LogRow<T> {
   /** The read that first revealed this row, when its displayed date predates
    * that read. Live entry motion uses this hour; defaults to `hour`. */
   readonly revealedHour?: number;
+  /** Held ahead of a list's reveal clock: the hour its successor replaces it (it fades out then). */
+  readonly leftHour?: number;
   readonly by?: boolean;
   readonly item: T;
 }
@@ -141,7 +143,7 @@ export function monthOf(hour: number): number | null {
 
 /** What a log draws in order: its rows, with a divider before each month's first
  * row when `months` is on. Dividers are keyed by their month, so they hold still. */
-export type LogItem<T> = Readonly<{ kind: 'month'; key: string; label: string; pageKey?: string }>
+export type LogItem<T> = Readonly<{ kind: 'month'; key: string; label: string; pageKey?: string; part?: LogSectionPart; section?: string }>
   | Readonly<{ kind: 'row'; key: string; row: LogRow<T>; pageKey?: string; pageOffset?: number }>
   | Readonly<{ kind: 'page'; key: string; page: LogPage<T> }>;
 
@@ -149,6 +151,43 @@ export type LogEntry<T> = Readonly<{ kind: 'row'; row: LogRow<T>; pageKey?: stri
 
 export function logItems<T>(rows: readonly LogRow<T>[], months: boolean): ReadonlyArray<LogItem<T>> {
   return logEntryItems(rows.map(row => ({ kind: 'row', row })), months);
+}
+
+/** A section's heading, or the note under it shown while none of its rows is (its empty, loading or refused state). */
+export type LogSectionPart = 'heading' | 'note';
+
+/** One headed group of a log of several: its rows (in the order drawn) or its server pages. */
+export interface LogSection<T> {
+  readonly key: string;
+  readonly label: string;
+  readonly rows?: readonly LogRow<T>[];
+  readonly pages?: readonly LogPage<T>[];
+  /** Month dividers in this section, when it differs from the list's. */
+  readonly months?: boolean;
+}
+
+/** `next`, or `previous` when every section holds the same rows or pages under the same heading: a widget building its
+ * sections each render keeps the list's items, and so its layout and motion, unless one changed. */
+export function stableLogSections<S extends LogSection<unknown>>(previous: readonly S[] | undefined, next: readonly S[]): readonly S[] {
+  return previous && previous.length === next.length && previous.every((section, index) => {
+    const other = next[index];
+    return section.key === other.key && section.label === other.label && section.rows === other.rows && section.pages === other.pages && section.months === other.months;
+  }) ? previous : next;
+}
+
+/** Sections one after another in one list, each under its heading. Its note follows the heading while the section
+ * holds nothing to draw, and, `held` ahead of a clock, always: it then shows until the section's first row does. */
+export function logSectionItems<T>(sections: readonly LogSection<T>[], months: boolean, held: boolean,
+  pageEntries: (pages: readonly LogPage<T>[]) => LogEntry<T>[]): ReadonlyArray<LogItem<T>> {
+  const items: LogItem<T>[] = [];
+  for (const section of sections) {
+    const entries = section.pages ? pageEntries(section.pages) : (section.rows ?? []).map<LogEntry<T>>(row => ({ kind: 'row', row }));
+    const inner = logEntryItems(entries, section.months ?? months);
+    items.push({ kind: 'month', key: JSON.stringify(['section', section.key]), label: section.label, part: 'heading', section: section.key });
+    if (held || !inner.length) items.push({ kind: 'month', key: JSON.stringify(['section-note', section.key]), label: '', part: 'note', section: section.key });
+    for (const item of inner) items.push(item.kind === 'month' ? { ...item, key: JSON.stringify([section.key, item.key]) } : item);
+  }
+  return items;
 }
 
 /** Ordinary and paged logs share month sections. An unloaded window interrupts
@@ -186,7 +225,8 @@ export function logEntryItems<T>(entries: readonly LogEntry<T>[], months: boolea
 export function logOffsets<T>(items: readonly LogItem<T>[], density: LogDensity, rowHeight?: (row: LogRow<T>) => number): number[] {
   const offsets = [0];
   for (const item of items) {
-    const requested = item.kind === 'row' ? rowHeight?.(item.row) : item.kind === 'page' ? ROW_HEIGHT[density] * item.page.count : MONTH_HEIGHT;
+    const requested = item.kind === 'row' ? rowHeight?.(item.row) : item.kind === 'page' ? ROW_HEIGHT[density] * item.page.count
+      : item.part === 'note' ? ROW_HEIGHT[density] : MONTH_HEIGHT;
     const height = requested != null && Number.isFinite(requested) && requested > 0 ? requested : ROW_HEIGHT[density];
     offsets.push(offsets[offsets.length - 1] + height);
   }

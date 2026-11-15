@@ -77,10 +77,9 @@ fn walk(
         0,
         STATE,
         &mut output,
-        DirectCombatArenas {
-            handles: &mut handles,
-            kinds: &mut kinds,
-        },
+        &mut handles,
+        &mut kinds,
+        None,
     );
     (result, output, handles, kinds)
 }
@@ -100,16 +99,11 @@ fn every_combat_keeps_its_vector_place_and_class() {
     );
     assert_eq!(handles[..3], [7 << 32 | 4713, 9 << 32 | 62, 8 << 32 | 4713]);
     assert_eq!(kinds[..3], [COMBAT_NAVAL, COMBAT_LAND, COMBAT_NAVAL]);
-    // A short arena truncates the row and still reports the demand.
-    let (short, ..) = walk(&bytes, 2, 2);
-    assert_eq!(
-        short.outcome,
-        Outcome::Truncated {
-            len: 0,
-            unread_rows: 1
-        }
-    );
+    // A short arena grows to the demand.
+    let (short, _, handles, _) = walk(&bytes, 2, 2);
+    assert_eq!(short.outcome, Outcome::Rows { len: 1 });
     assert_eq!(short.required, 3);
+    assert_eq!(handles[..3], [7 << 32 | 4713, 9 << 32 | 62, 8 << 32 | 4713]);
     // A border war keeps its own class.
     let mut border = bytes.clone();
     put(
@@ -163,11 +157,7 @@ fn growing_province_combat_rows_and_parallel_arenas_follow_mod_demand() {
                 &(NAVAL[0] as u64).to_le_bytes(),
             );
         }
-        assert!(matches!(
-            walk(&bytes, 0, 0).0.outcome,
-            Outcome::Truncated { .. }
-        ));
-        let captured = walk_direct_combats_growing(
+        let captured = walk_direct_combats(
             &SliceMemory {
                 base: 0,
                 bytes: &bytes,
@@ -200,7 +190,7 @@ fn growing_province_combat_rows_and_parallel_arenas_follow_mod_demand() {
 
 fn listed(bytes: &[u8], ids: &[u32]) -> (DirectCombatsWalk, Vec<DirectCombatsRow>, Vec<u64>, Vec<u8>) {
     let (mut rows, mut handles, mut kinds) = (Vec::new(), Vec::new(), Vec::new());
-    let result = walk_direct_combats_growing(
+    let result = walk_direct_combats(
         &SliceMemory { base: 0, bytes },
         0,
         STATE,

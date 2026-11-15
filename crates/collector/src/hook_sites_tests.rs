@@ -103,7 +103,7 @@ fn naval_management_integration_registers_every_installed_patch() {
         .iter()
         .filter(|patch| patch.family == "naval_management_changes")
         .collect();
-    assert_eq!(naval.len(), 67);
+    assert_eq!(naval.len(), 68);
     assert!(
         naval
             .iter()

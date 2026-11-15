@@ -106,26 +106,6 @@ pub fn walk_country(
     country_pointer: usize,
     country: u32,
     context: Result<Context, &'static str>,
-    output: &mut [Row],
-    bonuses: &mut [BonusRow],
-) -> (Outcome, Outcome) {
-    walk_country_buffer(
-        memory,
-        base,
-        country_pointer,
-        country,
-        context,
-        crate::walk::Buffer::Fixed(output),
-        crate::walk::Buffer::Fixed(bonuses),
-    )
-}
-
-pub fn walk_country_growing(
-    memory: &impl Memory,
-    base: usize,
-    country_pointer: usize,
-    country: u32,
-    context: Result<Context, &'static str>,
     output: &mut Vec<Row>,
     bonuses: &mut Vec<BonusRow>,
 ) -> (Outcome, Outcome) {
@@ -273,7 +253,6 @@ pub fn walk_country_buffer_with_status(
                         (template.id_len <= 15
                             && u64::from_le_bytes(header[24..32].try_into().unwrap()) == 15)
                             .then_some(&header[..]),
-                        output.is_growing(),
                     )?;
                     row.classifier = instance.row.classifier;
                     row.technology_pointer = technology;
@@ -365,7 +344,6 @@ pub fn walk_country_buffer_with_status(
                 base,
                 status,
                 &mut bonuses[..bonus_len],
-                output.is_growing(),
             )
         {
             bonus_error = Some(reason);
@@ -403,11 +381,10 @@ fn resolve_bonuses(
     base: usize,
     status: usize,
     output: &mut [BonusRow],
-    growing: bool,
 ) -> Result<(), &'static str> {
-    resolve_bonus_roster(memory, base, status, output, false, growing)?;
+    resolve_bonus_roster(memory, base, status, output, false)?;
     if output.iter().any(|r| r.resolved == 0) {
-        resolve_bonus_roster(memory, base, status, output, true, growing)?;
+        resolve_bonus_roster(memory, base, status, output, true)?;
     }
     Ok(())
 }
@@ -418,7 +395,6 @@ fn resolve_bonus_roster(
     status: usize,
     output: &mut [BonusRow],
     cost: bool,
-    growing: bool,
 ) -> Result<(), &'static str> {
     if output.iter().all(|r| r.resolved != 0) {
         return Ok(());
@@ -498,10 +474,10 @@ fn resolve_bonus_roster(
                 .any(|r| r.value.id == id && (!cost || r.resolved == 0))
             {
                 let (value, cost_reduction) = if cost {
-                    let (value, amount) = reduction::value(memory, pointer, id, growing)?;
+                    let (value, amount) = reduction::value(memory, pointer, id)?;
                     (value, Some(amount))
                 } else {
-                    (bonus::value(memory, pointer, id, growing)?, None)
+                    (bonus::value(memory, pointer, id)?, None)
                 };
                 for row in output.iter_mut().filter(|r| r.value.id == id) {
                     if row.resolved != 0 {

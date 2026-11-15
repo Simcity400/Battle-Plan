@@ -1,6 +1,7 @@
 //! Checked heap growth shared by native capture and its replay writer.
 
 pub mod labels;
+mod shared_box;
 pub mod spill;
 #[cfg(feature = "zstd")]
 pub mod zstd;
@@ -12,8 +13,13 @@ use std::io;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicPtr, Ordering};
 
+pub use shared_box::{SharedBox, shared};
+
 thread_local! {
     static ADVISORY_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static CONTAINED_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static CONTAINED_REFUSALS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static FINISHING_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static GROWTHS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     static COLLECTED: std::cell::Cell<Option<std::time::Instant>> =
         const { std::cell::Cell::new(None) };
@@ -71,6 +77,45 @@ pub fn advisory<T>(read: impl FnOnce() -> T) -> T {
     read()
 }
 
+/// Scope work whose refused allocation costs only that work: the refusal does not stop capture,
+/// and the second value says whether one happened. Advisory scopes inside it stay advisory.
+pub fn contained<T>(work: impl FnOnce() -> T) -> (T, bool) {
+    struct Scope;
+    impl Drop for Scope {
+        fn drop(&mut self) {
+            CONTAINED_DEPTH.with(|depth| depth.set(depth.get() - 1));
+        }
+    }
+    let before = CONTAINED_REFUSALS.get();
+    CONTAINED_DEPTH.with(|depth| depth.set(depth.get() + 1));
+    let scope = Scope;
+    let value = work();
+    drop(scope);
+    (value, CONTAINED_REFUSALS.get() != before)
+}
+
+fn contained_active() -> bool {
+    CONTAINED_DEPTH.with(|depth| depth.get() != 0)
+}
+
+/// Scope a writer's work that was handed over before capture became terminal: it may still
+/// grow, so what was captured is written. A refused allocation still fails.
+pub fn finishing<T>(work: impl FnOnce() -> T) -> T {
+    struct Scope;
+    impl Drop for Scope {
+        fn drop(&mut self) {
+            FINISHING_DEPTH.with(|depth| depth.set(depth.get() - 1));
+        }
+    }
+    FINISHING_DEPTH.with(|depth| depth.set(depth.get() + 1));
+    let _scope = Scope;
+    work()
+}
+
+fn finishing_active() -> bool {
+    FINISHING_DEPTH.with(|depth| depth.get() != 0)
+}
+
 static FAILED: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
 static STOPPED: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
 #[cfg(feature = "alloc-fault-injection")]
@@ -109,10 +154,14 @@ pub fn capture_stopped() -> bool {
 }
 
 pub fn oom() -> io::Error {
-    let callback = FAILED.load(Ordering::Acquire);
-    if !callback.is_null() && !advisory_active() {
-        // Only set_hooks stores this allocation-free function pointer.
-        unsafe { std::mem::transmute::<*mut (), fn()>(callback)() };
+    if contained_active() && !advisory_active() {
+        CONTAINED_REFUSALS.set(CONTAINED_REFUSALS.get().wrapping_add(1));
+    } else {
+        let callback = FAILED.load(Ordering::Acquire);
+        if !callback.is_null() && !advisory_active() {
+            // Only set_hooks stores this allocation-free function pointer.
+            unsafe { std::mem::transmute::<*mut (), fn()>(callback)() };
+        }
     }
     io::Error::from(io::ErrorKind::OutOfMemory)
 }
@@ -122,7 +171,7 @@ fn advisory_active() -> bool {
 }
 
 pub fn allocation_attempt() -> io::Result<()> {
-    if capture_stopped() {
+    if capture_stopped() && !finishing_active() {
         return Err(io::Error::from(io::ErrorKind::OutOfMemory));
     }
     #[cfg(feature = "alloc-fault-injection")]
@@ -164,13 +213,13 @@ pub fn allocation_error(error: io::Error) -> io::Error {
 /// Checked capture construction/projections may use this fallback only behind
 /// collector runtime::run's pre-install guard, or the publication
 /// guards in decode::process_owned_job and spooling::Processor::write_prepared.
-/// Advisory constructors may also abandon their optional storage without stopping capture.
-/// Do not grow the returned empty Vec.
+/// Advisory constructors may also abandon their optional storage without stopping capture, and
+/// contained work's caller refuses what the work made. Do not grow the returned empty Vec.
 pub fn owned_vec<T>(result: io::Result<Vec<T>>) -> Vec<T> {
     match result {
         Ok(values) => values,
         Err(error) => {
-            let advisory = advisory_active();
+            let advisory = advisory_active() || contained_active();
             assert!(is_allocation_error(&error) && (advisory || capture_active()));
             let _ = oom();
             assert!(advisory || capture_stopped());
@@ -472,6 +521,30 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn contained_work_reports_its_own_refusals_not_advisory_or_another_threads() {
+        let mut values = vec::<u64>(1).unwrap();
+        let (result, refused) = contained(|| reserve(&mut values, usize::MAX));
+        assert!(result.is_err() && refused);
+        assert!(!contained(|| reserve(&mut values, 1)).1);
+        let ((), refused) = contained(|| {
+            assert!(advisory(|| reserve(&mut values, usize::MAX)).is_err());
+        });
+        assert!(!refused);
+        let (empty, refused) = contained(|| owned_vec(vec::<u64>(usize::MAX)));
+        assert!(empty.is_empty() && refused);
+        assert!(contained(|| contained(|| reserve(&mut values, usize::MAX)).1).1);
+        let ((), refused) = contained(|| {
+            std::thread::spawn(|| {
+                assert!(!contained_active(), "containment does not cross threads");
+                assert!(reserve(&mut vec::<u64>(1).unwrap(), usize::MAX).is_err());
+            })
+            .join()
+            .unwrap();
+        });
+        assert!(!refused);
+    }
+
+    #[test]
     fn checked_box_preserves_alignment_value_and_zero_sized_drop() {
         #[repr(align(256))]
         struct Aligned(u64);
@@ -600,5 +673,42 @@ pub(crate) mod tests {
         assert!(vec::<u8>(usize::MAX).is_err());
         assert_eq!(FAILURES.load(Ordering::SeqCst), 2);
         assert_eq!(vec::<u8>(16).unwrap().capacity(), 16);
+    }
+
+    /// Once capture is terminal every growth is refused, except a writer's finishing work
+    /// handed over before it, which still grows; outside that scope the refusal stands. Its stop
+    /// hook is process-global, so it runs alone in a process of its own.
+    #[test]
+    fn finishing_work_grows_after_capture_stopped() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        const ALONE: &str = "ENGINE_ALLOCATION_FINISHING_ALONE";
+        if std::env::var_os(ALONE).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "tests::finishing_work_grows_after_capture_stopped", "--nocapture"])
+                .env(ALONE, "1")
+                .status()
+                .unwrap();
+            assert!(status.success(), "{status}");
+            return;
+        }
+        static STOP: AtomicBool = AtomicBool::new(false);
+        fn stopped() -> bool {
+            STOP.load(Ordering::SeqCst)
+        }
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                set_stop_hook(None);
+            }
+        }
+        let _reset = Reset;
+        set_stop_hook(Some(stopped));
+        STOP.store(true, Ordering::SeqCst);
+        assert!(vec::<u8>(16).is_err());
+        let finished = finishing(|| finishing(|| vec::<u8>(16)).and_then(|_| vec::<u8>(32)));
+        assert_eq!(finished.unwrap().capacity(), 32);
+        assert!(vec::<u8>(16).is_err());
+        STOP.store(false, Ordering::SeqCst);
+        assert!(vec::<u8>(16).is_ok());
     }
 }

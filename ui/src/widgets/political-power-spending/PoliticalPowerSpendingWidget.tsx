@@ -1,6 +1,6 @@
 import type { WidgetProps } from '../../dashboard/definitions';
-import PoliticsSpendingTable from '../../dashboard/PoliticsSpendingTable';
+import PowerSpendingTable from '../../dashboard/PowerSpendingTable';
 
 export default function PoliticalPowerSpendingWidget(props: WidgetProps) {
-  return <PoliticsSpendingTable {...props} currency="Political" />;
+  return <PowerSpendingTable {...props} currency="Political" />;
 }

@@ -261,7 +261,7 @@ fn modifier_capacity_and_division_growth_keep_independent_failures() {
         images: &mut images,
         scratch: &mut scratch,
         name_groups: &mut engine_native::cname_group_member::GroupKeys::default(),
-        names: engine_native::cname_group_member::NameArena {
+        names: engine_native::cname_group_member::Names {
             bytes: engine_native::walk::Buffer::Growing(&mut Vec::new()),
             len: 0,
             required: 0,
@@ -431,7 +431,7 @@ fn destination(c: &mut Captured) -> Destination<'_> {
         scratch: &mut c.scratch,
         reference: false,
         name_groups: &mut c.name_cache,
-        names: engine_native::cname_group_member::NameArena {
+        names: engine_native::cname_group_member::Names {
             bytes: engine_native::walk::Buffer::Growing(&mut c.division_names.first),
             len: 0,
             required: 0,

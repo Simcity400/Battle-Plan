@@ -66,7 +66,7 @@ fn selected(
     capacity: usize,
 ) -> (
     BuildingOutcomes,
-    [fresh_inputs::RailwayBuildingRow; 2],
+    Vec<fresh_inputs::RailwayBuildingRow>,
     Vec<i32>,
     usize,
     usize,
@@ -77,13 +77,13 @@ fn selected(
         len: 0,
         required: 0,
     };
-    let mut buildings = [fresh_inputs::RailwayBuildingRow::default(); 2];
+    let mut buildings = vec![fresh_inputs::RailwayBuildingRow::default(); 2];
     let outcomes = walk_with_selection(
         memory,
         0,
         MEMORY_BASE,
-        &mut [info::Row::default(); 2],
-        &mut [edge::Row::default(); 3],
+        &mut vec![info::Row::default(); 2],
+        &mut vec![edge::Row::default(); 3],
         &mut buildings,
         &mut levels,
     );
@@ -147,18 +147,8 @@ fn selected_railway_raw_nonzero_count_survives_unreadable_or_invalid_pair_header
 }
 
 #[test]
-fn selected_railway_capacity_and_level_faults_retain_demand_and_independent_building() {
+fn selected_railway_level_faults_retain_demand_and_independent_building() {
     let mut memory = selected_fixture();
-    for capacity in [0, 2] {
-        let (_, rows, _, len, required) = selected(&memory, capacity);
-        assert_eq!((len, required), (0, 3));
-        assert_eq!(
-            rows[0].selection.unwrap().levels,
-            Err("selected railway level capacity insufficient")
-        );
-        assert_eq!(rows[0].selection.unwrap().building_level, Ok(Some(Some(4))));
-        assert_eq!(rows[1].selection.unwrap().levels.unwrap().len, 0);
-    }
     let (_, rows, _, len, required) = selected(&memory, 3);
     assert_eq!((len, required), (3, 3));
     assert!(rows[0].selection.unwrap().levels.is_ok());
@@ -374,12 +364,12 @@ fn growing_railway_rows_edges_buildings_and_levels_follow_mod_sized_headers() {
             base: MEMORY_BASE,
             bytes: &bytes,
         };
-        let mut levels = selected_inputs::GrowingLevels {
+        let mut levels = selected_inputs::Levels {
             values: &mut values,
             len: 0,
             required: 0,
         };
-        let result = walk_with_selection_growing(
+        let result = walk_with_selection(
             &memory,
             0,
             MEMORY_BASE,
@@ -411,42 +401,6 @@ fn growing_railway_rows_edges_buildings_and_levels_follow_mod_sized_headers() {
             &(0..level_count)
                 .map(|ordinal| ordinal as i32 - 2)
                 .collect::<Vec<_>>()
-        );
-        let mut fixed_values = [0; 1];
-        let mut fixed_levels = selected_inputs::Levels {
-            values: &mut fixed_values,
-            len: 0,
-            required: 0,
-        };
-        let fixed = walk_with_selection(
-            &memory,
-            0,
-            MEMORY_BASE,
-            &mut [info::Row::default(); 1],
-            &mut [edge::Row::default(); 1],
-            &mut [fresh_inputs::RailwayBuildingRow::default(); 1],
-            &mut fixed_levels,
-        );
-        assert_eq!(
-            fixed.rows.provinces,
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: COUNT as u32 - 1
-            }
-        );
-        assert_eq!(
-            fixed.rows.edges,
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: (COUNT * pair_count) as u32 - 1
-            }
-        );
-        assert_eq!(
-            fixed.buildings,
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: COUNT as u32 - 1
-            }
         );
     }
 }
@@ -488,12 +442,12 @@ fn growing_selected_railway_storage_keeps_reads_and_independent_faults() {
         let mut edges = Vec::new();
         let mut buildings = Vec::new();
         let mut values = Vec::new();
-        let mut levels = selected_inputs::GrowingLevels {
+        let mut levels = selected_inputs::Levels {
             values: &mut values,
             len: 0,
             required: 0,
         };
-        let actual = walk_with_selection_growing(
+        let actual = walk_with_selection(
             &growing,
             0,
             MEMORY_BASE,

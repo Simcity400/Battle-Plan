@@ -1,10 +1,11 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
+/// The hourly captures' sequence; each frame's own sequence lives in its slot
+/// ([`crate::frame_pool::Slot::fence`]), zero once recycled.
 #[derive(Default)]
 pub(crate) struct Frames {
     started: AtomicU64,
     published: AtomicU64,
-    owned: [AtomicU64; crate::sampling::BUFFERS],
 }
 
 pub(crate) struct Capture<'a> {
@@ -25,22 +26,28 @@ impl Frames {
         self.started.load(Ordering::SeqCst)
     }
 
-    pub(crate) fn pending(&self, fence: u64) -> bool {
+    /// Whether a capture up to `fence` is still under way, or its frame, among `owned`, is
+    /// still unrecycled.
+    pub(crate) fn pending<'a>(
+        &self,
+        fence: u64,
+        owned: impl IntoIterator<Item = &'a AtomicU64>,
+    ) -> bool {
         self.published.load(Ordering::Acquire) < fence
-            || self.owned.iter().any(|owned| {
+            || owned.into_iter().any(|owned| {
                 let sequence = owned.load(Ordering::Acquire);
                 sequence != 0 && sequence <= fence
             })
     }
 
-    pub(crate) fn recycle(&self, index: usize) {
-        self.owned[index].store(0, Ordering::Release);
+    pub(crate) fn recycle(&self, owned: &AtomicU64) {
+        owned.store(0, Ordering::Release);
     }
 }
 
 impl Capture<'_> {
-    pub(crate) fn frame(&self, index: usize) {
-        self.frames.owned[index].store(self.sequence, Ordering::Release);
+    pub(crate) fn frame(&self, owned: &AtomicU64) {
+        owned.store(self.sequence, Ordering::Release);
     }
 }
 
@@ -59,22 +66,23 @@ mod tests {
     #[test]
     fn fence_includes_acquisition_and_decode_but_not_later_captures() {
         let frames = Frames::default();
+        let owned = [AtomicU64::new(0), AtomicU64::new(0)];
         let acquiring = frames.capture();
         let fence = frames.snapshot();
-        assert!(frames.pending(fence));
-        acquiring.frame(0);
+        assert!(frames.pending(fence, &owned));
+        acquiring.frame(&owned[0]);
         drop(acquiring);
-        assert!(frames.pending(fence));
+        assert!(frames.pending(fence, &owned));
         let later = frames.capture();
-        later.frame(1);
-        frames.recycle(0);
-        assert!(!frames.pending(fence));
+        later.frame(&owned[1]);
+        frames.recycle(&owned[0]);
+        assert!(!frames.pending(fence, &owned));
         let next = frames.snapshot();
-        assert!(frames.pending(next));
-        frames.recycle(1);
-        assert!(frames.pending(next));
+        assert!(frames.pending(next, &owned));
+        frames.recycle(&owned[1]);
+        assert!(frames.pending(next, &owned));
         drop(later);
-        assert!(!frames.pending(next));
+        assert!(!frames.pending(next, &owned));
     }
 
     #[test]
@@ -83,6 +91,6 @@ mod tests {
         let capture = frames.capture();
         let fence = frames.snapshot();
         drop(capture);
-        assert!(!frames.pending(fence));
+        assert!(!frames.pending(fence, std::iter::empty()));
     }
 }

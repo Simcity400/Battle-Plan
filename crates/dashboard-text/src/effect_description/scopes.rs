@@ -315,7 +315,7 @@ impl Renderer<'_, '_, '_> {
                             .world()?
                             .unit_leader(id)
                             .map_err(|why| why.to_string())?
-                            .ok_or("UnitLeaders lacks context leader")?
+                            .ok_or("unit leaders lacks context leader")?
                             .character_id
                     }
                     _ => unreachable!(),
@@ -331,7 +331,7 @@ impl Renderer<'_, '_, '_> {
                     .context
                     .world()?
                     .slot(country)
-                    .ok_or("CountryLinks lacks context character country")?;
+                    .ok_or("country links lacks context character country")?;
                 let name = self.character_label(id)?;
                 let flag = format!("\u{12}{}", self.tag(slot)?);
                 self.localised(
@@ -354,7 +354,7 @@ impl Renderer<'_, '_, '_> {
                     .context
                     .world()?
                     .slot(row.owner)
-                    .ok_or("CountryLinks lacks industrial organisation owner")?;
+                    .ok_or("country links lacks industrial organisation owner")?;
                 let name = self.organisation_name(reference)?;
                 let flag = format!("\u{12}{}", self.tag(country)?);
                 self.localised(
@@ -383,7 +383,7 @@ impl Renderer<'_, '_, '_> {
                     .context
                     .world()?
                     .slot(owner)
-                    .ok_or("CountryLinks lacks project owner")?;
+                    .ok_or("country links lacks project owner")?;
                 let name = self.project_name(owner, id)?;
                 let flag = format!("\u{12}{}", self.tag(country)?);
                 self.localised(
@@ -422,7 +422,7 @@ impl Renderer<'_, '_, '_> {
                     .recorded()
                     .slot(state.owner)
                     .map(Some)
-                    .ok_or_else(|| format!("CountryLinks lacks ROOT state owner {}", state.owner))
+                    .ok_or_else(|| format!("country links lacks ROOT state owner {}", state.owner))
             }
             _ => Ok(match scopes.this {
                 Scope::Country(country) | Scope::CountryLeader { country, .. } if country > 0 => {
@@ -528,7 +528,7 @@ impl Renderer<'_, '_, '_> {
             }
             world
                 .slot(raw)
-                .ok_or_else(|| format!("CountryLinks lacks iterator country {raw}"))
+                .ok_or_else(|| format!("country links lacks iterator country {raw}"))
         };
         match source {
             Roster::CountryStates {
@@ -549,15 +549,15 @@ impl Renderer<'_, '_, '_> {
                 // copies these arrays;
                 // random preserves the same order.
                 let (recorded, name) = if owned {
-                    (&inputs.owned_states, "CountryCounterInputs.owned_states")
+                    (&inputs.owned_states, "owned states of country counter inputs")
                 } else if controlled {
                     (
                         &inputs.controlled_states,
-                        "CountryCounterInputs.controlled_states",
+                        "controlled states of country counter inputs",
                     )
                 } else {
                     debug_assert!(core);
-                    (&inputs.core_states, "CountryCounterInputs.core_states")
+                    (&inputs.core_states, "core states of country counter inputs")
                 };
                 let states = recorded
                     .require(name)?
@@ -636,12 +636,12 @@ impl Renderer<'_, '_, '_> {
                             (
                                 army,
                                 &inputs.army_leaders,
-                                "CountryCounterInputs.army_leaders",
+                                "army leaders of country counter inputs",
                             ),
                             (
                                 navy,
                                 &inputs.navy_leaders,
-                                "CountryCounterInputs.navy_leaders",
+                                "navy leaders of country counter inputs",
                             ),
                         ] {
                             if !enabled {
@@ -683,7 +683,7 @@ impl Renderer<'_, '_, '_> {
                 members.sort_by_key(|member| {
                     member
                         .ordinal
-                        .require("OperativeMemberships.ordinal")
+                        .require("ordinal of operative memberships")
                         .ok()
                         .copied()
                 });
@@ -835,7 +835,7 @@ impl Renderer<'_, '_, '_> {
                     .appearance(caller)
                     .map_err(|why| why.to_string())?
                     .subjects
-                    .require("CountryAppearance.subjects")?
+                    .require("subjects of country appearance")?
                 {
                     // diplomacy status.
                     if raw <= 0 {
@@ -893,7 +893,7 @@ impl Renderer<'_, '_, '_> {
                     // politics status.
                     if let Some(first) = party.leaders.iter().min_by_key(|leader| leader.ordinal) {
                         if first.ordinal != 0 {
-                            return Err("PartyLeaders lacks ordinal zero".into());
+                            return Err("party leaders lacks ordinal zero".into());
                         }
                         if let Some(id) = first.character {
                             out.push(Scope::Character(id));
@@ -921,12 +921,12 @@ impl Renderer<'_, '_, '_> {
                         .next()
                         .transpose()
                         .map_err(built)?
-                        .ok_or("CountryCounterInputs lacks neighbor roster")?;
+                        .ok_or("country counter inputs lacks neighbor roster")?;
                     neighbors
                         .neighbors
-                        .require("CountryCounterInputs.neighbors")?
+                        .require("neighbors of country counter inputs")?
                         .as_ref()
-                        .ok_or("CountryCounterInputs.neighbors capture refused")?
+                        .ok_or("neighbors of country counter inputs capture refused")?
                 } else {
                     occupied = frame
                         .complete::<tables::OccupationSettings>(OCCUPIED)
@@ -935,12 +935,12 @@ impl Renderer<'_, '_, '_> {
                         .next()
                         .transpose()
                         .map_err(built)?
-                        .ok_or("OccupationSettings lacks occupied roster")?;
+                        .ok_or("occupation settings lacks occupied roster")?;
                     occupied
                         .occupied
-                        .require("OccupationSettings.occupied")?
+                        .require("occupied of occupation settings")?
                         .as_ref()
-                        .ok_or("OccupationSettings.occupied capture refused")?
+                        .ok_or("occupied of occupation settings capture refused")?
                 };
                 // copy the stored roster in order.
                 refs.iter()
@@ -972,10 +972,10 @@ impl Renderer<'_, '_, '_> {
                         continue;
                     }
                     let ordinal = keyed(&status, u128::from(row.id))?
-                        .ok_or("DivisionStatus lacks country ordinal")?
+                        .ok_or("division status lacks country ordinal")?
                         .country_ordinal
-                        .require("DivisionStatus.country_ordinal")?
-                        .ok_or("DivisionStatus.country_ordinal capture refused")?;
+                        .require("country ordinal of division status")?
+                        .ok_or("country ordinal of division status capture refused")?;
                     rows.push((ordinal, row.id));
                 }
                 rows.sort_by_key(|row| row.0);
@@ -985,7 +985,7 @@ impl Renderer<'_, '_, '_> {
                     .any(|(index, row)| row.0 as usize != index)
                 {
                     return Err(
-                        "DivisionStatus.country_ordinal is not a complete country roster".into(),
+                        "country ordinal of division status is not a complete country roster".into(),
                     );
                 }
                 Ok(rows
@@ -1022,7 +1022,7 @@ impl Renderer<'_, '_, '_> {
                         .u64s(u128::from(province), |row| &row.mixed, MIXED)
                         .map_err(built)?
                         .ok_or_else(|| {
-                            format!("ProvinceUnitOrder lacks state {state} province {province}")
+                            format!("province unit order lacks state {state} province {province}")
                         })?;
                     for &unit in mixed {
                         if armies.contains(u128::from(unit)) {
@@ -1144,8 +1144,8 @@ impl Renderer<'_, '_, '_> {
                         .ok_or("Scientists lacks active iterator target")?;
                         if row
                             .active
-                            .require("Scientists.active")?
-                            .ok_or("Scientists.active capture refused")?
+                            .require("active of scientists")?
+                            .ok_or("active of scientists capture refused")?
                             == 0
                         {
                             continue;
@@ -1190,7 +1190,7 @@ impl Renderer<'_, '_, '_> {
                     .world()?
                     .unit_leader(id)
                     .map_err(|why| why.to_string())?
-                    .ok_or("UnitLeaders lacks iterator target")?;
+                    .ok_or("unit leaders lacks iterator target")?;
                 String::from_utf8_lossy(&leader.inherited_text_a).into_owned()
             }
             _ => return Err("iterator target label kind is unported".into()),
@@ -1226,7 +1226,7 @@ impl Renderer<'_, '_, '_> {
             .context
             .world()?
             .slot(row.owner)
-            .ok_or("CountryLinks lacks industrial organisation owner")?;
+            .ok_or("country links lacks industrial organisation owner")?;
         let at = {
             let mut graph = self.graph.borrow_mut();
             let country = graph.scopes.len();
@@ -1253,7 +1253,7 @@ impl Renderer<'_, '_, '_> {
         let token = world
             .token(row.token)
             .map_err(|why| why.to_string())?
-            .ok_or("LexicalTokens lacks industrial organisation token")?;
+            .ok_or("lexical tokens lacks industrial organisation token")?;
         let database = self
             .context
             .content
@@ -1296,7 +1296,7 @@ impl Renderer<'_, '_, '_> {
             world
                 .token(row.token)
                 .map_err(|why| why.to_string())?
-                .ok_or("LexicalTokens lacks industrial organisation name")?
+                .ok_or("lexical tokens lacks industrial organisation name")?
         } else {
             row.name.as_slice()
         };
@@ -1304,7 +1304,7 @@ impl Renderer<'_, '_, '_> {
             std::str::from_utf8(name).map_err(|_| "industrial organisation name is not UTF-8")?;
         let owner = world
             .slot(row.owner)
-            .ok_or("CountryLinks lacks industrial organisation owner")?;
+            .ok_or("country links lacks industrial organisation owner")?;
         let tagged = format!("{}_{name}", self.tag(owner)?);
         let key = if owner > 0 && self.context.localisation.get(&tagged).is_some() {
             tagged.as_bytes()
@@ -1342,7 +1342,7 @@ impl Renderer<'_, '_, '_> {
                 .keyed(|key| key as u8 == 0 && world.slot((key >> 8) as u32) == Some(caller))
             {
                 let member = member.map_err(built)?;
-                if member.ordinal.require("OperativeMemberships.ordinal").is_err() {
+                if member.ordinal.require("ordinal of operative memberships").is_err() {
                     unordered_operatives.push(Scope::Leader(member.id));
                 }
             }
@@ -1405,7 +1405,7 @@ impl Renderer<'_, '_, '_> {
             {
                 evaluator.restore_variable_session(&session);
                 return Err(
-                    "OperativeMemberships.ordinal not recorded for limit/selection order".into(),
+                    "ordinal of operative memberships not recorded for limit/selection order".into(),
                 );
             }
         }
@@ -1662,7 +1662,7 @@ impl Renderer<'_, '_, '_> {
                                 world
                                     .token(*token)
                                     .map_err(|why| why.to_string())?
-                                    .ok_or("LexicalTokens lacks advisor trait")?,
+                                    .ok_or("lexical tokens lacks advisor trait")?,
                             );
                         }
                     }
@@ -1684,7 +1684,7 @@ impl Renderer<'_, '_, '_> {
                         let name = world
                             .token(*token)
                             .map_err(|why| why.to_string())?
-                            .ok_or("LexicalTokens lacks advisor sort trait")?;
+                            .ok_or("lexical tokens lacks advisor sort trait")?;
                         let suffix = name.rsplit(|byte| *byte == b'_').next().unwrap_or_default();
                         if !suffix.is_empty()
                             && suffix.iter().enumerate().all(|(i, byte)| {

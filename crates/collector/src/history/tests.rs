@@ -244,6 +244,21 @@ fn only_a_campaigns_own_unambiguous_unsaved_recording_stands_in_for_its_saved_on
     fs::write(&unsaved, recording(other).bytes()).unwrap();
     refused(id);
     refused(other);
+    // Another campaign's file short of its first revision fails nothing else: this campaign
+    // prepares from its saved recording, and that one is refused by its file, never taken as
+    // having no history.
+    fs::remove_file(&unsaved).unwrap();
+    let fresh = replay::publication::unsaved_path(&root, other);
+    let bytes = recording(other).bytes().to_vec();
+    fs::write(
+        &fresh,
+        &bytes[..bytes.len() - replay_columnar::envelope::FOOTER_BYTES],
+    )
+    .unwrap();
+    let mut prepared = PreparedCampaigns::load(&root, &session, |_| Ok(())).unwrap();
+    assert!(prepared.take(id, &session).is_ok());
+    let error = prepared.take(other, &session).err().unwrap().to_string();
+    assert!(error.contains(&fresh.display().to_string()), "{error}");
     fs::remove_dir_all(&root).unwrap();
 }
 
@@ -765,4 +780,84 @@ fn resident_history_lease_never_blocks_recorder_append_or_rollback() {
     assert_eq!(fs::read(&path).unwrap(), b"rolled back");
     drop(resident);
     fs::remove_dir_all(root).unwrap();
+}
+
+/// The load reads a campaign's history on threads of its own and joins every one before it
+/// returns, so an unload after it leaves no thread running in the unloaded image.
+#[test]
+fn the_history_load_leaves_no_thread_it_started_running() {
+    use replay_data::{rows::CampaignRow, rows::TableId, rows::TableRows};
+    use replay_frame::{
+        branches::BranchReason, branches::BranchStart, branches::Parentage, frame::DecodedFrame,
+        frame::FrameEncoder, frame::Metrics, frame::TableView,
+    };
+    const CHILD: &str = "BATTLE_PLAN_HISTORY_LOAD_THREADS";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "history::tests::the_history_load_leaves_no_thread_it_started_running", "--nocapture"])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "history load child failed: {}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let module = unsafe { windows_sys::Win32::System::LibraryLoader::GetModuleHandleW(std::ptr::null()) };
+    let census = || crate::module_threads::started_in(module).unwrap();
+    // The census sees a thread of this image while it runs, and not once it is joined.
+    let (started, id) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let thread = std::thread::spawn(move || {
+        started.send(unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() }).unwrap();
+        let _ = released.recv();
+    });
+    let id = id.recv().unwrap();
+    assert!(census().contains(&id));
+    drop(release);
+    thread.join().unwrap();
+    assert!(!census().contains(&id));
+
+    let campaign = "01234567-89ab-cdef-0123-456789abcdef";
+    let root = std::env::temp_dir().join(format!("hoi4_history_threads_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let mut tables = std::array::from_fn(|_| TableView::Unavailable { reason: "fixture".into() });
+    tables[TableId::Campaign.index()] =
+        TableView::Complete(TableRows::Campaign(vec![CampaignRow { id: campaign.into() }]));
+    let frame = DecodedFrame { branch: 1, hour: 100, tables: tables.map(Into::into), metrics: Metrics::default() };
+    let replay = Replay::from_records(
+        campaign.into(),
+        &[vec![
+            Record::SessionStart(session()),
+            Record::BranchStart(BranchStart {
+                id: 1,
+                session: 1,
+                loaded_hour: None,
+                first_hour: 100,
+                parent: Parentage::Unknown,
+                reason: BranchReason::SessionStart,
+            }),
+            Record::Frame(FrameEncoder::new().encode(frame, false).unwrap()),
+        ]],
+    )
+    .unwrap();
+    assert!(!replay.index.is_empty());
+    // An unsaved recording, as the campaign the crash read its history from had.
+    let unsaved = replay::publication::unsaved_path(&root, campaign);
+    fs::create_dir_all(unsaved.parent().unwrap()).unwrap();
+    fs::write(&unsaved, replay.bytes()).unwrap();
+    let session = SessionStart { id: 2, ..session() };
+
+    let before = census();
+    let mut prepared = PreparedCampaigns::load(&root, &session, |_| Ok(())).unwrap();
+    let left: Vec<_> = census().into_iter().filter(|id| !before.contains(id)).collect();
+    assert!(left.is_empty(), "{} threads the load started are still running", left.len());
+    let (_, lease) = prepared.take(campaign, &session).unwrap();
+    assert!(lease.is_some());
+    drop((lease, prepared));
+    fs::remove_dir_all(&root).unwrap();
 }

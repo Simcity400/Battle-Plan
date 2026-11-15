@@ -1,210 +1,93 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
-import type { ScoreboardColumn, ScoreboardReply, ScoreboardSeries } from '../../generated/dashboard';
-import { rankChanges, sortRows } from '../../charts/table/logic.ts';
+import test from 'node:test';
+import { CELL, parseFollowed } from '../../dashboard/follow/message.ts';
+import { message } from '../../dashboard/follow/messages.fixture.ts';
+import type { Spec } from '../../dashboard/follow/messages.fixture.ts';
 import { tableSortOf, tableSortToken } from '../../charts/table/options.ts';
-import { rankingSort, scoreboardModel, scoreboardRequest, scoreboardRows, scoreboardSort, scoreboardTooltip, scoreboardColumnNote, selectedColumns, formatCell, validateScoreboardReply } from './scoreboardData.ts';
 import { DEFAULT_SORT, OPTIONS, definition } from './definition.ts';
+import type { ScoreboardColumn, ScoreboardReply } from '../../generated/dashboard';
+import { followedValues, formatCell, isPartial, rankedTags, rankingColumn, rankingDescending, replyRows, scoreboardParams, scoreboardSort, scoreboardTooltip,
+  selectedColumns, validateColumnsReply, validateScoreboardReply } from './scoreboardData.ts';
 
-const factories: ScoreboardColumn = { key: 'factories', label: 'Content factory label', unit: 'count', decimals: 0, available: true, reason: null };
-const army: ScoreboardColumn = { key: 'armySize', label: 'Army size', unit: 'divisions', decimals: 0, available: false, reason: 'Not available yet: the Army size shared measure is not on main.' };
-const power: ScoreboardColumn = { key: 'politicalPower', label: 'Content political label', unit: 'points', decimals: 5, available: true, reason: null };
-const stability: ScoreboardColumn = { key: 'stability', label: 'Content stability label', unit: 'percent', decimals: 5, available: true, reason: null };
-const registry = [factories, army, power, stability];
-const identity = (firstHour: number, lastHour: number, slot: number, countryId = slot + 1) => ({ firstHour, lastHour, slot, countryId });
-function series(tag: string, slot: number, first: string | null, second = first, firstHour = 10, lastHour = 12): ScoreboardSeries {
-  return { tag, segments: [{ firstHour, lastHour }], identities: [identity(firstHour, lastHour, slot)], membership: null,
-    columns: [{ key: 'factories', runs: [{ firstHour, lastHour: firstHour, amount: first, startsSegment: true },
-      ...(lastHour > firstHour ? [{ firstHour: firstHour + 1, lastHour, amount: second, startsSegment: false }] : [])],
-    readRuns: [{ firstHour, lastHour, readHour: firstHour, hourly: true }] }] };
-}
-const DEFAULT_COLUMNS = ['factories', 'armySize'] as const;
-const TEST_SORT = { column: 'factories', direction: 'descending' } as const;
-const reply = (rows: ScoreboardSeries[]): ScoreboardReply => ({ branchId: 'branch', defaultColumns: [...DEFAULT_COLUMNS], defaultSort: 'factories', columns: registry, series: rows, warnings: [] });
+const family = (kind: string, measure: string) => ({ kind, measure });
+const factories: ScoreboardColumn = { key: 'factories', label: 'Factories', unit: 'factories', decimals: 0, available: true, reason: null,
+  family: family('country-factories', 'free7'), partial: null };
+const casualties: ScoreboardColumn = { key: 'casualties', label: 'Casualties', unit: 'people', decimals: 0, available: false,
+  reason: 'Choose Casualties dealt or Casualties taken in settings.', family: null, partial: null };
+const power: ScoreboardColumn = { key: 'politicalPower', label: 'Content political label', unit: 'points', decimals: 5, available: true, reason: null,
+  family: family('country-measure', 'politicalPower'), partial: null };
+const stability: ScoreboardColumn = { key: 'stability', label: 'Stability', unit: 'percent', decimals: 5, available: true, reason: null,
+  family: family('country-stability', 'stability'), partial: null };
+const taken: ScoreboardColumn = { key: 'casualtiesTaken', label: 'Casualties taken', unit: 'people', decimals: 0, available: true, reason: null,
+  note: 'Losses without a recorded attacker are excluded.', family: family('casualty-totals', 'taken'), partial: family('casualty-totals', 'partial') };
+const registry = [factories, casualties, power, stability, taken];
+const answer = (spec: Spec) => parseFollowed(message(100, [{ id: 1, answer: spec }])).answers[0]!.answer;
 
-test('signed wide casualty subtotals retain exact sorting, known-attacker meaning and their supplying read', () => {
-  const casualty = { ...factories, key: 'casualtiesTaken' as const, label: 'Casualties taken',
-    note: 'Losses with no recorded attacker are excluded.' };
-  const wide = (1n << 80n) + 1n;
-  const entry = series('opaque', 1, (-wide).toString(), (-wide).toString(), 10, 35);
-  entry.columns[0].key = casualty.key;
-  entry.columns[0].runs.forEach(run => { run.atLeast = true; });
-  entry.columns[0].readRuns = [{ firstHour: 10, lastHour: 33, readHour: 10, hourly: false },
-    { firstHour: 35, lastHour: 35, readHour: 35, hourly: false }];
-  const model = scoreboardModel(validateScoreboardReply({ ...reply([entry]), columns: [...registry, casualty] }));
-  const row = scoreboardRows(model, model.tags, 33, casualty.key, 'descending')[0];
-  assert.deepEqual(row.cells.get(casualty.key), { amount: -wide, readHour: 10, atLeast: true });
-  const tooltip = scoreboardTooltip(row, [casualty], 'Dated name');
-  assert.equal(tooltip.rows[0].value, formatCell(casualty, -wide, true));
-  assert.equal(tooltip.rows[0].value, '† −1,208,925,819,614,629,174,706,177');
-  assert.ok(!tooltip.rows.some(note => note.label.startsWith('Read ')));
-  assert.ok(tooltip.rows.some(note => note.label.includes('† Partial total')));
-  assert.ok(tooltip.rows.some(note => note.label.includes('losses or corrections may be missing')));
-  assert.ok(tooltip.rows.some(note => note.label.includes('with a known attacker')));
-  const second = series('adjacent signed amount', 2, (-wide + 1n).toString(), (-wide + 1n).toString(), 10, 35);
-  second.columns[0].key = casualty.key;
-  const compared = scoreboardModel(validateScoreboardReply({ ...reply([entry, second]), columns: [...registry, casualty] }));
-  assert.deepEqual(scoreboardRows(compared, compared.tags, 35, casualty.key, 'descending').map(row => row.tag),
-    ['adjacent signed amount', 'opaque']);
-  assert.equal(formatCell(casualty, wide), '1,208,925,819,614,629,174,706,177');
-  assert.equal(formatCell(casualty, wide, true), '† 1,208,925,819,614,629,174,706,177');
-  const gap = scoreboardRows(model, model.tags, 34, casualty.key, 'descending')[0];
-  assert.equal(gap.cells.get(casualty.key)?.amount, null);
-  assert.equal(gap.cells.get(casualty.key)?.atLeast, false);
-  assert.equal(formatCell(casualty, null, true), '—');
-});
-
-test('Scoreboard accepts the signed 128-bit endpoints and refuses values beyond them', () => {
-  for (const exact of [-(1n << 127n), (1n << 127n) - 1n]) {
-    const data = reply([series('opaque', 1, exact.toString())]);
-    const model = scoreboardModel(validateScoreboardReply(data));
-    assert.equal(scoreboardRows(model, model.tags, 10, 'factories', 'descending')[0].cells.get('factories')?.amount, exact);
-  }
-  for (const invalid of [-(1n << 127n) - 1n, 1n << 127n]) {
-    assert.throws(() => validateScoreboardReply(reply([series('opaque', 1, invalid.toString())])), /values/);
-  }
-  const invalid = reply([series('opaque', 1, '1')]);
-  (invalid.series[0].columns[0].runs[0] as unknown as { atLeast: unknown }).atLeast = 'yes';
-  assert.throws(() => validateScoreboardReply(invalid), /values/);
-});
-
-test('Scoreboard follows playback and uses the registry defaults with top ten', () => {
-  assert.equal(definition.history, false);
+test('the scoreboard follows playback over the registry defaults with the top ten, and its settings keep their meaning', () => {
   assert.equal(definition.defaultTime, 'follow');
   assert.equal(definition.defaultCountries.kind, 'group');
-  assert.equal(definition.countries.max, Number.MAX_SAFE_INTEGER);
-  const columnsOption = OPTIONS.find(option => option.key === 'columns');
-  assert.ok(columnsOption?.kind === 'content-set');
-  assert.equal('max' in columnsOption, false);
+  assert.equal(OPTIONS.find(option => option.key === 'columns')?.kind, 'content-set');
   assert.deepEqual(DEFAULT_SORT, { column: '', direction: 'descending' });
-  assert.deepEqual(selectedColumns(registry, '', DEFAULT_COLUMNS).map(column => column.key), ['factories', 'armySize']);
-  assert.deepEqual(selectedColumns(registry, 'stability factories', DEFAULT_COLUMNS).map(column => column.key), ['stability', 'factories']);
-  assert.deepEqual(scoreboardSort(registry, [army], TEST_SORT, 'factories'), { column: 'country', direction: 'descending' });
-});
-
-test('registry owns labels and only requested measures plus the ranking measure are asked for', () => {
-  const resolved = { tags: [], membership: null, unobserved: [], dropped: 0, reason: null, known: () => true, top: 10 };
-  assert.deepEqual(scoreboardRequest('branch', resolved, [power], 'factories', 'descending'), {
-    branchId: 'branch', columns: ['politicalPower', 'factories'], tags: [], top: { count: 10, sort: 'factories', descending: true },
-  });
-  assert.deepEqual(rankingSort(registry, { column: 'country', direction: 'ascending' }, 'armySize', 'factories'), TEST_SORT);
-  assert.deepEqual(rankingSort(registry, { column: 'country', direction: 'ascending' }, 'politicalPower', 'factories'), { column: 'politicalPower', direction: 'descending' });
+  assert.deepEqual(selectedColumns(registry, '', ['factories', 'casualties']).map(column => column.key), ['factories', 'casualties']);
+  assert.deepEqual(selectedColumns(registry, 'stability factories', ['factories']).map(column => column.key), ['stability', 'factories']);
+  assert.deepEqual(scoreboardSort(registry, [casualties], { column: 'factories', direction: 'descending' }, 'factories'), { column: 'country', direction: 'descending' });
   assert.deepEqual(tableSortOf(tableSortToken({ column: 'politicalPower', direction: 'ascending' }), DEFAULT_SORT), { column: 'politicalPower', direction: 'ascending' });
 });
 
-test('unavailable sorting keeps an available top measure descending instead of alphabetical membership', () => {
-  const model = scoreboardModel(reply([series('a', 0, '1'), series('z', 1, '9')]));
-  for (const direction of ['ascending', 'descending'] as const) {
-    const ranking = rankingSort(registry, { column: 'armySize', direction }, 'armySize', 'factories');
-    assert.deepEqual(ranking, TEST_SORT);
-    assert.equal(scoreboardRows(model, model.tags, 10, ranking.column, ranking.direction, 1)[0].tag, 'z');
-    assert.deepEqual(rankingSort(registry, { column: 'armySize', direction }, 'politicalPower', 'factories'),
-      { column: 'politicalPower', direction: 'descending' });
-  }
-  assert.deepEqual(rankingSort(registry, { column: 'politicalPower', direction: 'ascending' }, '', 'factories'),
-    { column: 'politicalPower', direction: 'ascending' });
+test('a top ranks by the sorted measure, else the measure chosen, never by an unavailable column', () => {
+  assert.equal(rankingColumn(registry, { column: 'stability', direction: 'ascending' }, '', 'factories'), stability);
+  assert.equal(rankingColumn(registry, { column: 'country', direction: 'ascending' }, 'politicalPower', 'factories'), power);
+  assert.equal(rankingColumn(registry, { column: 'casualties', direction: 'descending' }, 'casualties', 'factories'), factories);
+  assert.deepEqual(scoreboardParams('1', 50, [power, casualties], [], 10, factories),
+    { branchId: '1', hour: 50, columns: ['politicalPower', 'casualties'], tags: [], top: { count: 10, sort: 'factories', descending: true } });
+  assert.equal(rankingDescending({ column: 'factories', direction: 'ascending' }, factories), false, 'sorted ascending by the rank column: the least');
+  assert.equal(rankingDescending({ column: 'country', direction: 'ascending' }, factories), true, 'sorted by name: the greatest');
+  assert.deepEqual(scoreboardParams('1', 50, [power], ['GER'], null, factories), { branchId: '1', hour: 50, columns: ['politicalPower'], tags: ['GER'] });
+  assert.equal(scoreboardParams('1', 50, [power], [], null, factories), null, 'no country chosen asks nothing');
+  assert.equal(scoreboardParams('1', 50, [], ['GER'], null, factories), null, 'no column asks nothing');
 });
 
-test('exact bigint values re-rank hourly with current-tag ties and missing last in either direction', () => {
-  const model = scoreboardModel(validateScoreboardReply(reply([
-    series('é', 0, '9007199254740993', '7'), series('z', 1, '9007199254740992', '8'), series('missing', 2, null), series('zero', 3, '0'),
-  ])));
-  const before = scoreboardRows(model, model.tags, 10, 'factories', 'descending');
-  assert.deepEqual(before.map(row => row.tag), ['é', 'z', 'zero', 'missing']);
-  const after = scoreboardRows(model, model.tags, 11, 'factories', 'descending');
-  assert.deepEqual(after.map(row => row.tag), ['z', 'é', 'zero', 'missing']);
-  assert.deepEqual(scoreboardRows(model, model.tags, 10, 'factories', 'ascending').map(row => row.tag), ['zero', 'z', 'é', 'missing']);
-  const previous = rankChanges(new Map(), before.map(row => row.key), 0);
-  const changed = rankChanges(previous, after.map(row => row.key), 100);
-  assert.equal(changed.get(after[0].key)?.delta, 1);
-  assert.equal(changed.get(after[1].key)?.delta, -1);
-  assert.equal(changed.get(after[0].key)?.until, 2600);
-  assert.equal(rankChanges(changed, after.map(row => row.key), 2700).get(after[0].key)?.delta, 0);
-  assert.equal(rankChanges(changed, after.map(row => row.key), 200, 2500, true).get(after[0].key)?.delta, 0);
+test('a reply\'s cells are exact amounts by the columns asked, a missing value keeps its reason and never reads as zero', () => {
+  const wide = (1n << 80n) + 1n;
+  const reply: ScoreboardReply = validateScoreboardReply({ branchId: '1', hour: 40, missing: null, warnings: [], rows: [
+    { tag: 'GER', cells: [{ valueRaw: `-${wide}`, missing: null, partial: true }, { valueRaw: null, missing: 'GER\'s stability was not recorded at this hour', partial: false }] },
+  ] }, 2);
+  const [row] = replyRows(reply, ['casualtiesTaken', 'stability']);
+  assert.deepEqual(row!.cells.get('casualtiesTaken'), { amount: -wide, missing: null, partial: true });
+  assert.equal(row!.cells.get('stability')!.amount, null);
+  assert.equal(formatCell(taken, -wide, true), '† −1,208,925,819,614,629,174,706,177');
+  assert.equal(formatCell(stability, 50_000n), '50%');
+  assert.equal(formatCell(power, 123_456_78n), '123.45678');
+  assert.equal(formatCell(stability, null), '—');
+  const tooltip = scoreboardTooltip(key => row!.cells.get(key)!, [taken, stability], 'Germany', 40);
+  assert.ok(tooltip.rows.some(item => item.label.includes('† Partial total')));
+  assert.ok(tooltip.rows.some(item => item.label === 'GER\'s stability was not recorded at this hour'));
+  assert.ok(tooltip.rows.some(item => item.label.includes('known attacker') || item.label.includes('recorded attacker')));
+  assert.throws(() => validateScoreboardReply({ ...reply, rows: [{ tag: 'GER', cells: [{ valueRaw: null, missing: null, partial: false }] }] }, 1), /row/);
+  assert.throws(() => validateScoreboardReply(reply, 3), /row/, 'a cell for every column asked');
 });
 
-test('renamed native identities keep their row key, recycled tags and disappearing countries do not', () => {
-  const old = series('old opaque', 5, '4', '4', 10, 10);
-  const renamed = series('new opaque', 5, '4', '4', 11, 12);
-  const recycled = series('old opaque', 8, '9', '9', 11, 12);
-  const model = scoreboardModel(reply([old, renamed]));
-  const before = scoreboardRows(model, model.tags, 10, 'factories', 'descending');
-  const after = scoreboardRows(model, model.tags, 11, 'factories', 'descending');
-  assert.equal(before[0].key, after[0].key);
-  assert.equal(after[0].tag, 'new opaque');
-  assert.equal(after[0].hour, 11);
-  assert.deepEqual(scoreboardRows(model, model.tags, 13, 'factories', 'descending'), []);
-  assert.notEqual(before[0].key, scoreboardRows(scoreboardModel(reply([recycled])), ['old opaque'], 11, 'factories', 'descending')[0].key);
+test('followed values are read by tag exactly, a value not recorded is missing for its reason, and a rank names its countries in order', () => {
+  const V = CELL.value, U = CELL.unrecorded;
+  const followed = answer({ keys: [7n, 8n, 0n], columns: 1, names: ['ITA', 'GER', 'SOV'], values: [(1n << 60n) + 3n, 0n, 0n], states: [V, U, CELL.noRow],
+    reasons: [null, null, 'SOV is held by no country'] });
+  const values = followedValues(followed);
+  assert.equal(values.get('ITA'), (1n << 60n) + 3n);
+  assert.equal(values.get('GER'), undefined, 'a value not recorded is never zero');
+  assert.equal(values.missing('GER'), 'Not recorded at this hour');
+  assert.equal(values.missing('SOV'), 'SOV is held by no country');
+  assert.equal(values.missing('ENG'), 'Not in the answer');
+  assert.deepEqual(rankedTags(followed), ['ITA'], 'only countries with a value rank');
+  assert.equal(followedValues(undefined).missing('ITA'), 'Not read yet');
+  assert.equal(followedValues(answer({ notRecorded: 'No territory is recorded' })).missing('ITA'), 'No territory is recorded');
+  assert.equal(isPartial(1n), true);
+  assert.equal(isPartial(0n), false);
+  assert.equal(isPartial(undefined), false, 'an unknown mark is not a subtotal');
 });
 
-test('read gaps never carry a value and held reads stay dated in the tooltip', () => {
-  const entry = series('opaque', 1, '12', '12', 10, 35);
-  entry.columns[0].readRuns = [{ firstHour: 10, lastHour: 33, readHour: 10, hourly: false }, { firstHour: 35, lastHour: 35, readHour: 35, hourly: true }];
-  const model = scoreboardModel(validateScoreboardReply(reply([entry])));
-  const row = scoreboardRows(model, model.tags, 33, 'factories', 'descending')[0];
-  assert.equal(row.cells.get('factories')?.readHour, 10);
-  assert.equal(row.cells.get('factories')?.amount, 12n);
-  const gap = scoreboardRows(model, model.tags, 34, 'factories', 'descending')[0];
-  assert.equal(gap.cells.get('factories')?.amount, null);
-  assert.match(scoreboardTooltip(gap, [factories], 'Name').rows[1].label, /Not available at this time/);
-  const unknownModel = scoreboardModel(reply([series('unknown', 2, null)]));
-  const unknown = scoreboardRows(unknownModel, unknownModel.tags, 10, 'factories', 'descending')[0];
-  assert.match(scoreboardTooltip(unknown, [factories], 'Name').rows[1].label, /Not available at this time/);
-  const tooltip = scoreboardTooltip(row, [factories, army], 'Name at row hour');
-  assert.equal(tooltip.title, 'Name at row hour');
-  assert.ok(!tooltip.rows.some(note => note.label.startsWith('Read ')));
-  assert.match(tooltip.rows.at(-1)!.label, /Unavailable/);
-});
-
-test('formatting retains every recorded decimal and exact source units', () => {
-  assert.equal(formatCell(factories, 9007199254740993n), '9,007,199,254,740,993');
-  assert.equal(formatCell(power, 12345678n), '123.45678');
-  assert.equal(formatCell(stability, 12345n), '12.345%');
-  assert.equal(formatCell(power, -1n), '−0.00001');
-  assert.equal(formatCell(power, null), '—');
-  assert.equal(formatCell(power, 0n), '0');
-});
-
-test('invalid payloads are refused without repairing values or dropping countries', () => {
-  const valid = reply([series('opaque', 1, '5')]);
-  assert.equal(validateScoreboardReply(valid), valid);
-  const invalid = structuredClone(valid);
-  invalid.series[0].columns[0].runs[0].amount = '5.1';
-  assert.throws(() => validateScoreboardReply(invalid), /values/);
-  assert.throws(() => validateScoreboardReply({ ...valid, columns: [...registry, factories] }), /column/);
-  assert.throws(() => validateScoreboardReply({ ...valid, series: [...valid.series, valid.series[0]] }), /country/);
-  const badRead = structuredClone(valid);
-  badRead.series[0].columns[0].readRuns[0].readHour = 11;
-  assert.throws(() => validateScoreboardReply(badRead), /values/);
-});
-
-test('five thousand countries sort, re-rank, and retain missing countries without player gates', () => {
-  const input = Array.from({ length: 5000 }, (_, i) => series(`opaque-${i.toString().padStart(4, '0')}`, i, i % 100 === 0 ? null : String(i), String(5000 - i)));
-  const model = scoreboardModel(validateScoreboardReply(reply(input)));
-  const at = scoreboardRows(model, model.tags, 10, 'factories', 'descending', 10);
-  assert.equal(at.length, 10);
-  assert.equal(at[0].tag, 'opaque-4999');
-  assert.equal(scoreboardRows(model, model.tags, 11, 'factories', 'descending', 10)[0].tag, 'opaque-0000');
-  const all = scoreboardRows(model, model.tags, 10, 'factories', 'ascending');
-  assert.equal(all.length, 5000);
-  assert.equal(all[0].tag, 'opaque-0001');
-  assert.equal(all.at(-1)?.tag, 'opaque-4900');
-  const missing = sortRows(all, () => null, 'descending', row => row.key, row => row.tag);
-  assert.equal(missing[0].tag, 'opaque-0000');
-  const request = scoreboardRequest('branch', { tags: model.tags, membership: null, unobserved: [], dropped: 0, reason: null, known: () => true }, [factories], 'factories', 'descending');
-  assert.deepEqual(request.tags, model.tags);
-  assert.equal(request.top, null);
-  const topRequest = scoreboardRequest('branch', { tags: [], membership: null, unobserved: [], dropped: 0, reason: null, known: () => true, top: 5000 }, [factories], 'factories', 'descending');
-  assert.equal(topRequest.top?.count, 5000);
-});
-
-test('scoreboard column help names the measure and hides product refusal details', () => {
-  assert.equal(scoreboardColumnNote({ ...army, available: true }), 'Manpower in deployed divisions, counted by owner.');
-  assert.equal(scoreboardColumnNote({ ...factories, key: 'casualtiesDealt' }), 'Land, naval and air casualties dealt. † Partial total.');
-  assert.equal(scoreboardColumnNote({ ...factories, key: 'casualtiesTaken' }), 'Casualties taken with a known attacker. † Partial total.');
-  assert.equal(scoreboardColumnNote(army), 'Unavailable');
-  const row = scoreboardRows(scoreboardModel(reply([series('Country', 1, '3')])), ['Country'], 10, 'factories', 'descending')[0];
-  const tooltip = scoreboardTooltip(row, [army], 'Country');
-  assert.equal(tooltip.rows.filter(row => row.label === 'Unavailable').length, 1);
-  assert.ok(!JSON.stringify(tooltip).includes(army.reason!));
+test('the registry names the measure behind every available column', () => {
+  const reply = { branchId: '1', defaultColumns: ['factories'], defaultSort: 'factories', columns: registry, warnings: [] };
+  assert.equal(validateColumnsReply(reply).columns.length, registry.length);
+  assert.throws(() => validateColumnsReply({ ...reply, columns: [{ ...factories, family: null }] }), /column/);
+  assert.throws(() => validateColumnsReply({ ...reply, defaultSort: 'ships' }), /defaults/);
 });

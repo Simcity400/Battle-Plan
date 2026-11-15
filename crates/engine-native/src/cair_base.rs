@@ -20,7 +20,7 @@ use crate::cair_wing_pool::fuel;
 pub use carrier_capture::{
     CarrierAceSlot, CarrierBase, CarrierBuffers, CarrierCapture, CarrierCountryTerms,
     CarrierDemand, CarrierForecastSlot, CarrierIndexedCertificate, CarrierLengths, CarrierPool,
-    CarrierPoolFuel, CarrierRegistration, ContainerFuel, CountryOccurrence, GrowingCarrierBuffers,
+    CarrierPoolFuel, CarrierRegistration, ContainerFuel, CountryOccurrence,
 };
 pub use reuse::{HeldBase, RegistrationReuse, WalkedBase};
 pub use state_summary::{state_country_order, state_country_order_demand};
@@ -48,9 +48,7 @@ pub fn state_pool_inputs<M: Memory>(
             wings_start,
         },
         countries,
-        &mut Resolver {
-            cells: crate::walk::Buffer::Fixed(resolved),
-        },
+        &mut Resolver { cells: resolved },
         &mut None,
     )?;
     Ok(CarrierPool {
@@ -331,16 +329,16 @@ pub struct Row {
     pub kind: i32,
 }
 
+pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
+    walk_buffer(memory, base, game_state, crate::walk::Buffer::Count)
+}
+
 /// Reads all three state-indexed kinds and stateless base membership once. State slots may be
 /// null; the stateless vector is dense and its nulls are failures. Occupancy is
 /// derived from the captured wing roster, and building levels from Buildings,
 /// so neither source is walked again here. Duplicate handles are checked after
 /// capture. Capacity omits whole rows and counts every remaining nonnull slot.
-pub fn walk(memory: &impl Memory, base: usize, game_state: usize, output: &mut [Row]) -> Outcome {
-    walk_buffer(memory, base, game_state, crate::walk::Buffer::Fixed(output))
-}
-
-pub fn walk_growing(
+pub fn walk(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -982,7 +980,7 @@ impl Default for RegistrationScratch {
 /// stable; it cannot detect a later mutation or a newly unreadable field within
 /// this walk. Ids outside the caller's slice run the original validator.
 struct Resolver<'a> {
-    cells: crate::walk::Buffer<'a, ResolvedLink>,
+    cells: &'a mut [ResolvedLink],
 }
 
 impl Resolver<'_> {
@@ -1114,7 +1112,7 @@ fn walk_registrations_inner<M: Memory, O: Memory>(
         let used = links.min(cells.len());
         cells[..used].fill(None);
         let mut resolved = Resolver {
-            cells: crate::walk::Buffer::Fixed(&mut cells[..used]),
+            cells: &mut cells[..used],
         };
         let manager = reader.pointer(game_state, cgame_state::STRATEGIC_AIR_MANAGER)?;
         reader.vtable(manager, cstrategic_air_manager::VTABLE_RVA)?;

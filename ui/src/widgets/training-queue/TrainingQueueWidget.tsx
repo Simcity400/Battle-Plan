@@ -7,18 +7,19 @@ import ProgressMeter from '../../charts/meter/ProgressMeter';
 import Table from '../../charts/table/Table';
 import type { TableColumn, TableTree } from '../../charts/table/Table';
 import { narrowTableOf } from '../../charts/table/options';
-import { useTableHour } from '../../charts/table/useTableHour';
 import { usNumber } from '../../charts/numberFormat';
 import { fitTooltip } from '../../charts/tooltip';
 import { useViewportHeight } from '../../charts/useChartTokens';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
-import { useCountryNameAt, useReachedCountry, useReachedProduct } from '../../dashboard/reachedProduct';
+import { useCountryNameAt, useReachedCountry } from '../../dashboard/reachedProduct';
+import { useHeadProduct } from '../../dashboard/headProduct';
+import { useIdentityHour } from '../../dashboard/atHead';
 import ReachedCountryChoice from '../../dashboard/ReachedCountryChoice';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { OPTIONS } from './definition';
-import { divisionName, divisionTooltip, equipmentFill, lowestFill, orderName, orderTooltip, percent, queueRows, trainingRatio, validateTrainingQueue } from './trainingQueueData';
+import { divisionName, divisionTooltip, orderIcon, equipmentFill, lowestFill, orderName, orderTooltip, percent, queueRows, queueStructure, trainingRatio, validateTrainingQueue } from './trainingQueueData';
 import type { QueueRow } from './trainingQueueData';
 import './trainingQueue.css';
 
@@ -32,8 +33,11 @@ function meterCell({ ratio, label }: { ratio: number | null; label: string }) {
 
 export default function TrainingQueueWidget({ widget, runtime, active, setOption, onDiagnostics, headerSlot }: WidgetProps) {
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
-  const playback = useTableHour(runtime.clock, active && widget.time.mode === 'follow');
-  const window = track && resolveWindow(widget, track, runtime.tracks, playback);
+  const chosen = typeof widget.options?.country === 'string' ? [widget.options.country] : [];
+  // The hour the country is resolved at moves only when its identity does; the queue itself is the followed panel's.
+  const identityHour = useIdentityHour(runtime.client, track, chosen, runtime.clock, active && widget.time.mode === 'follow',
+    clockHour => track ? resolveWindow(widget, track, runtime.tracks, clockHour)?.lastHour ?? null : null);
+  const window = track && resolveWindow(widget, track, runtime.tracks, identityHour ?? runtime.clock.getHour());
   const hour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
   const country = useReachedCountry(widget, runtime, hour, active, widget.options?.country, setOption);
   const tag = country.tag;
@@ -41,9 +45,8 @@ export default function TrainingQueueWidget({ widget, runtime, active, setOption
   const countryName = countryLabel.name;
   const nameDetail = countryLabel.nameFailure ? <span data-detail={countryLabel.nameFailure.message}>{countryName}</span> : undefined;
   const options = resolveOptions(OPTIONS, widget.options);
-  const request = track && window && tag ? { sourceId: track.source.id, revision: track.source.revision, product: 'training-queue',
-    params: { branchId: track.branch.id, hour, tag } } : null;
-  const state = useReachedProduct(runtime.client, track?.source, request, JSON.stringify([track?.branch.id, country.chosen]), active, validateTrainingQueue);
+  const state = useHeadProduct(runtime, widget, 'training-queue', track && window && tag ? { tag } : null,
+    { active, validate: validateTrainingQueue, structure: queueStructure });
   const data = state.data;
   const rows = useMemo(() => data ? queueRows(data) : [], [data]);
   // Orders start open; their open state lives for the session, so a closed one can show its summary.
@@ -59,7 +62,7 @@ export default function TrainingQueueWidget({ widget, runtime, active, setOption
     { key: 'name', header: 'Deployment', label: 'Deployment', width: 'minmax(var(--table-name-min), 2fr)', sortable: false, value: () => null, renderMissing: true,
       text: row => row.kind === 'order' ? `${orderName(row.order)} ×${row.order.amount}` : divisionName(row.division),
       render: row => row.kind === 'order'
-        ? <span className="training-queue-name" data-tooltip={row.order.template}>{row.order.icon ? <img src={row.order.icon} alt="" /> : <ArtFallback icon="helmet" />}
+        ? <span className="training-queue-name" data-tooltip={row.order.template}>{orderIcon(row.order) ? <img src={orderIcon(row.order)!} alt="" /> : <ArtFallback icon="helmet" />}
           <span>{orderName(row.order)}</span><small>×{usNumber.format(row.order.amount)}</small></span>
         : <span className="training-queue-name"><span>{divisionName(row.division)}</span></span> },
     { key: 'training', header: 'Training', label: 'Training', width: 'minmax(calc(var(--space-6) * 3), 1fr)', sortable: false, value: () => null, renderMissing: true,
@@ -88,7 +91,7 @@ export default function TrainingQueueWidget({ widget, runtime, active, setOption
   const tooltip = useCallback((row: QueueRow) => fitTooltip([row.kind === 'order' ? orderTooltip(row.order, data?.readHour ?? hour)
     : divisionTooltip(row.division, data?.readHour ?? hour)], viewportHeight), [data, hour, viewportHeight]);
   const training = data ? data.orders.reduce((sum, order) => sum + order.divisions.length, 0) : 0;
-  const pill = headerSlot && data && !data.absent && data.missing === null && createPortal(<span className="pill">{training} in training</span>, headerSlot);
+  const pill = headerSlot && data && data.missing === null && createPortal(<span className="pill">{training} in training</span>, headerSlot);
   let body;
   if (!track) body = <WidgetState kind="empty" message="Load a campaign to see the training queue." />;
   else if (!window) body = <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
@@ -100,11 +103,10 @@ export default function TrainingQueueWidget({ widget, runtime, active, setOption
   else if (!tag) body = <WidgetState kind="loading" label="Loading the training queue…" />;
   else if (state.error) body = <WidgetState kind="error" failure={state.error} onRetry={state.retry} />;
   else if (!data) body = <WidgetState kind="loading" label="Loading the training queue…" />;
-  else if (data.absent) body = <WidgetState kind="unavailable" message={nameDetail ? 'This country does not exist at this date.' : `${countryName} does not exist at this date.`} detail={nameDetail} />;
   else if (data.missing !== null) body = <WidgetState kind="unavailable" message="The training queue wasn’t recorded at this time." detail={nameDetail} />;
   else if (!rows.length) body = <WidgetState kind="empty" message={nameDetail ? 'No divisions in training.' : `${countryName} is not training any divisions.`} detail={nameDetail} />;
   else body = <Table rowRevision={row => [row, columns]} label="Training queue" rows={rows} columns={columns} rowKey={rowKey} tree={tree} unsorted sort={NO_SORT}
     cellBars={options.cellBars === true} density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)}
     tooltip={tooltip} menu={() => data.readHour === null ? [] : [jumpItem(runtime, track.id, data.readHour)]} />;
-  return <div className="training-queue" data-detail={countryLabel.nameFailure?.message}>{pill}{country.chosen && country.error && country.historyHeld ? <WidgetState kind="error" failure={country.error} onRetry={country.retry} /> : null}{body}</div>;
+  return <div className="training-queue" ref={state.root} data-detail={countryLabel.nameFailure?.message}>{pill}{country.chosen && country.error && country.historyHeld ? <WidgetState kind="error" failure={country.error} onRetry={country.retry} /> : null}{body}</div>;
 }

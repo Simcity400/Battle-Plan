@@ -1,16 +1,10 @@
-use super::{NativeHost, job::Job, line_reader::read_lines};
-use dashboard::protocol::{
-    DashboardMapState, EVENT_PREFIX, NativeCommand, NativeEvent, ViewerState,
-};
-use std::{
-    io::Write,
-    process::{Child, Command, Stdio},
-    thread,
-    time::{Duration, Instant},
-};
+use super::NativeHost;
+use dashboard::protocol::{DashboardMapState, NativeEvent, ViewerState};
+use std::{sync::Arc, thread};
 use tauri::{AppHandle, Emitter, WebviewWindow};
+use viewer::host::{Ending, Launch, Map, Role};
 
-/// The folders a new viewer starts with: the last ones Apply sent, which may be
+/// The folders a new map starts with: the last ones Apply sent, which may be
 /// newer than the preferences read before taking the host lock.
 fn launch_folders(
     applied: Option<&dashboard::Config>,
@@ -19,7 +13,7 @@ fn launch_folders(
     applied.or(saved).map(folder_arguments).unwrap_or_default()
 }
 
-/// The effective folders as the viewer's folder options; the last occurrence
+/// The effective folders as the map's folder options; the last occurrence
 /// of an option wins over one forwarded from the host's own command line.
 fn folder_arguments(config: &dashboard::Config) -> Vec<std::ffi::OsString> {
     [
@@ -32,13 +26,8 @@ fn folder_arguments(config: &dashboard::Config) -> Vec<std::ffi::OsString> {
     .collect()
 }
 
-pub(super) struct Process {
-    child: Child,
-    _job: Job,
-}
-
 impl super::Inner {
-    /// Tells the frontend a viewer stopped or could not start: its status, and each dashboard map
+    /// Tells the frontend a map stopped or could not start: its status, and each dashboard map
     /// its views wait on, with why.
     fn publish_stopped(&self, app: &AppHandle) {
         self.publish(app);
@@ -55,26 +44,114 @@ impl super::Inner {
             let _ = app.emit("dashboard-map-state", states);
         }
     }
+
+    /// The map of this generation ended: whether to start a new one. A lost device is recovered
+    /// by a new map, which makes a new device and surface and is sent what the last one showed,
+    /// unless the device was lost again before the new map was ready. Any other end is shown by
+    /// name; the dashboard's data does not depend on the map and keeps working.
+    pub(super) fn map_ended(&mut self, ending: Ending) -> bool {
+        let was_ready = self.status.ready;
+        self.map = None;
+        self.generation += 1;
+        self.status.running = false;
+        self.status.ready = false;
+        self.status.fly_aircraft = None;
+        if self.shutting_down {
+            return false;
+        }
+        let error = match ending {
+            Ending::DeviceLost(reason) if was_ready => {
+                self.last_diagnostic = Some(reason);
+                self.status.error = None;
+                return true;
+            }
+            Ending::DeviceLost(reason) => {
+                format!("{reason}, again before the map was ready, so it was not started again")
+            }
+            Ending::Closed => "The map closed".to_owned(),
+            Ending::Failed(reason) => reason,
+        };
+        self.status.error = Some(match self.last_diagnostic.as_ref() {
+            Some(detail) if *detail != error => format!("{error}: {detail}"),
+            _ => error,
+        });
+        false
+    }
+}
+
+/// How a launch finished.
+#[derive(Debug, PartialEq, Eq)]
+enum Launched {
+    /// The map it installed ended meanwhile and asked for the next: it launches again.
+    Again,
+    Running,
+    /// It could not start the map, and says why.
+    Stopped,
+}
+
+impl super::Inner {
+    /// Whether to launch a map: not while one runs, and while one is launching only once that
+    /// launch finishes, for its map may already have ended.
+    fn begin_launch(&mut self) -> Result<bool, String> {
+        if self.map.is_some() {
+            return Ok(false);
+        }
+        if self.starting {
+            self.relaunch = !self.shutting_down;
+            return Ok(false);
+        }
+        if self.shutting_down {
+            return Err("The application is closing".into());
+        }
+        self.starting = true;
+        self.status.running = true;
+        self.status.ready = false;
+        self.status.error = None;
+        Ok(true)
+    }
+
+    /// A launch [`begin_launch`](Self::begin_launch) began finished, as `started`.
+    fn launch_finished(&mut self, started: Result<(), String>) -> Launched {
+        if std::mem::take(&mut self.relaunch) && self.map.is_none() && !self.shutting_down {
+            self.status.running = true;
+            self.status.ready = false;
+            self.status.error = None;
+            return Launched::Again;
+        }
+        self.starting = false;
+        match started {
+            Err(error) if self.map.is_none() => {
+                self.status.running = false;
+                self.status.ready = false;
+                if !self.shutting_down {
+                    self.status.error = Some(error);
+                }
+                Launched::Stopped
+            }
+            _ => Launched::Running,
+        }
+    }
+
+    /// What waits for the map to end, once none runs or starts.
+    fn take_ended_waiters(&mut self) -> Vec<Box<dyn FnOnce() + Send>> {
+        if self.map.is_some() || self.starting {
+            return Vec::new();
+        }
+        std::mem::take(&mut self.ended_waiters)
+    }
 }
 
 impl NativeHost {
-    /// Starts a viewer unless one runs or is starting, on a thread of its own: creating its
-    /// process takes a third of a second, which the caller, the main thread for a command, does
-    /// not wait for. Meanwhile it reports running and not ready; a start that fails reports why.
+    /// Starts a map unless one runs or is starting, on a thread of its own: reading the display
+    /// preferences takes the window's getters, which the caller, the main thread for a command,
+    /// must not wait on. Meanwhile it reports running and not ready; a start that fails says why.
     pub(crate) fn ensure_started(&self, window: &WebviewWindow) -> Result<(), String> {
         use tauri::Manager;
         let popout = {
-            let mut inner = self.shared.0.lock().map_err(|e| e.to_string())?;
-            if inner.process.is_some() || inner.starting {
+            let mut inner = self.shared.lock().map_err(|e| e.to_string())?;
+            if !inner.begin_launch()? {
                 return Ok(());
             }
-            if inner.shutting_down {
-                return Err("The application is closing".into());
-            }
-            inner.starting = true;
-            inner.status.running = true;
-            inner.status.ready = false;
-            inner.status.error = None;
             inner.popout.is_some()
         };
         // Read here: off the main thread a window getter waits on it, which may wait on this lock.
@@ -87,24 +164,21 @@ impl NativeHost {
         });
         let host = self.clone();
         let window = window.clone();
-        thread::spawn(move || {
-            let started = host.start(&window, own);
-            let mut inner = host.shared.0.lock().unwrap_or_else(|e| e.into_inner());
-            inner.starting = false;
-            if let Err(error) = started
-                && inner.process.is_none()
-            {
-                inner.status.running = false;
-                inner.status.ready = false;
-                if !inner.shutting_down {
-                    inner.status.error = Some(error);
-                }
-                inner.publish_stopped(window.app_handle());
-            } else {
-                inner.publish(window.app_handle());
+        thread::spawn(move || loop {
+            let started = host.start(&window, own.clone());
+            let mut inner = host.shared.lock().unwrap_or_else(|e| e.into_inner());
+            let launched = inner.launch_finished(started);
+            match launched {
+                Launched::Again => {}
+                Launched::Running => inner.publish(window.app_handle()),
+                Launched::Stopped => inner.publish_stopped(window.app_handle()),
             }
+            let waiting = inner.take_ended_waiters();
             drop(inner);
-            host.shared.1.notify_all();
+            waiting.into_iter().for_each(|after| after());
+            if launched != Launched::Again {
+                break;
+            }
         });
         Ok(())
     }
@@ -114,19 +188,16 @@ impl NativeHost {
         window: &WebviewWindow,
         own: Option<Result<usize, String>>,
     ) -> Result<(), String> {
-        use std::os::windows::process::CommandExt;
         use tauri::Manager;
-        use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 
         // Preference resolution itself reads host status, so no lock is held across it.
         let since = self
             .shared
-            .0
             .lock()
             .map_err(|e| e.to_string())?
             .display_sent;
         let display = crate::video::launch_actions(window)?;
-        // The host owns the content folders; the viewer reads none of its own.
+        // The host owns the content folders; the map reads none of its own.
         // Unreadable preferences start it without folders, and Settings shows why.
         let saved_folders = crate::dashboard_service::host_config()
             .ok()
@@ -135,30 +206,30 @@ impl NativeHost {
             crate::video::current_map_diagnostics(&window.state::<crate::video::VideoState>());
         let saved_muted =
             crate::video::current_map_muted(&window.state::<crate::video::VideoState>());
-        let inner = self.shared.0.lock().map_err(|e| e.to_string())?;
-        // A change saved after the reads above has already reached `set_folders`, which keeps
-        // it under this lock; one saved while the process is created is sent once it runs.
-        let applied = inner.folders.clone();
-        let folders = launch_folders(applied.as_ref(), saved_folders.as_ref());
-        if inner.shutting_down {
-            return Err("The application is closing".into());
-        }
-        let executable = std::env::current_exe()
-            .map_err(|e| e.to_string())?
-            .with_file_name("viewer.exe");
-        if !executable.is_file() {
-            return Err(format!(
-                "Native viewer is missing at {}. Run npm run dev or npm run build:desktop to build both executables.",
-                executable.display()
-            ));
-        }
-        let parent = match &inner.popout {
+        let parent = match &self.shared.lock().map_err(|e| e.to_string())?.popout {
             Some(window) => window.parent,
             None => own.unwrap_or_else(|| Err("The map's window has no handle".into()))?,
         };
+        // The map's own window is a child of the host's, made and pumped by the app's thread; no
+        // lock is held while that thread makes it.
+        let (made, created) = std::sync::mpsc::sync_channel(1);
+        window
+            .run_on_main_thread(move || {
+                let _ = made.send(viewer::host::create_window(parent).map_err(|error| error.to_string()));
+            })
+            .map_err(|error| error.to_string())?;
+        let (map_window, inputs) = created
+            .recv()
+            .map_err(|_| "The app's thread made no map window".to_owned())?
+            .map_err(|error| format!("The map's window: {error}"))?;
+        let mut inner = self.shared.lock().map_err(|e| e.to_string())?;
+        if inner.shutting_down {
+            map_window.destroy();
+            return Err("The application is closing".into());
+        }
         // A pop-out shows only what the app sends it; the app's own command line (a recording,
-        // an hour, a camera) belongs to the main viewer.
-        let forwarded: Vec<std::ffi::OsString> = if inner.popout.is_some() {
+        // an hour, a camera) belongs to the main map.
+        let mut args: Vec<std::ffi::OsString> = if inner.popout.is_some() {
             std::env::args_os()
                 .skip(1)
                 .filter(|argument| argument == "--allow-unverified-content")
@@ -166,61 +237,11 @@ impl NativeHost {
         } else {
             std::env::args_os().skip(1).collect()
         };
-        let mut command = Command::new(&executable);
-        if inner.popout.is_some() {
-            command.env_remove("BATTLE_PLAN_VIEWER_FRAMES");
-        }
-        if let Some(prefix) = crate::perf::map_prefix() {
-            command.env("BATTLE_PLAN_PERF_MAP_LOG", prefix).env(
-                "BATTLE_PLAN_PERF_MAP_ROLE",
-                if inner.popout.is_some() { "popout" } else { "main" },
-            );
-        }
-        drop(inner);
-        let mut child = command
-            .args(forwarded)
-            .args(folders)
-            .env("BATTLE_PLAN_VIEWER_PARENT", parent.to_string())
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .creation_flags(CREATE_NO_WINDOW)
-            .spawn()
-            .map_err(|e| format!("Could not start {}: {e}", executable.display()))?;
-        let job = match Job::attach(&child) {
-            Ok(job) => job,
-            Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(error);
-            }
-        };
-        let input = child
-            .stdin
-            .take()
-            .ok_or("Native viewer input pipe is missing")?;
-        let output = child
-            .stdout
-            .take()
-            .ok_or("Native viewer output pipe is missing")?;
-        let errors = child
-            .stderr
-            .take()
-            .ok_or("Native viewer error pipe is missing")?;
-        let mut inner = self.shared.0.lock().unwrap_or_else(|e| e.into_inner());
-        if inner.shutting_down {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err("The application is closing".into());
-        }
-        // Choices saved while the process was created, which `set_diagnostics`, `set_muted`
-        // and `set_folders` kept without sending.
+        args.extend(launch_folders(inner.folders.as_ref(), saved_folders.as_ref()));
+        // Choices saved while the preferences were read, which `set_diagnostics`, `set_muted`
+        // and `set_folders` kept.
         let diagnostics = inner.diagnostics.unwrap_or(saved_diagnostics);
         let muted = inner.muted.unwrap_or(saved_muted);
-        let moved = inner
-            .folders
-            .clone()
-            .filter(|config| applied.as_ref() != Some(config));
         if inner.generation > 0 {
             inner.restore_commands();
         }
@@ -229,7 +250,7 @@ impl NativeHost {
         inner.status.running = true;
         inner.status.ready = false;
         inner.status.error = None;
-        // A new viewer starts at the game's camera with its overlays hidden, holding no controller
+        // A new map starts at the game's camera with its overlays hidden, holding no controller
         // until the host hands it over; nothing queued for the last one reaches it.
         inner.status.camera_mode = Default::default();
         inner.status.camera_overlays = false;
@@ -256,107 +277,49 @@ impl NativeHost {
             .pending
             .actions
             .push_back(dashboard::protocol::MapAction::Mute { muted });
-        if let Some(config) = moved {
-            inner
-                .pending
-                .actions
-                .push_back(dashboard::protocol::MapAction::Folders {
-                    game: config.game_dir.to_string_lossy().into_owned(),
-                    user: config.user_dir.to_string_lossy().into_owned(),
-                });
-        }
-        inner.process = Some(Process { child, _job: job });
-        drop(inner);
-
-        let writer = self.clone();
-        let writer_app = window.app_handle().clone();
-        thread::spawn(move || writer.write_commands(input, generation, &writer_app));
-        let reader = self.clone();
-        let reader_app = window.app_handle().clone();
-        thread::spawn(move || {
-            read_lines(output, |line| {
-                if let Some(json) = line.strip_prefix(EVENT_PREFIX)
-                    && let Ok(event) = serde_json::from_str::<NativeEvent>(json)
-                {
-                    reader.receive(event, generation, &reader_app);
-                }
-            });
-        });
-        let diagnostics = self.clone();
-        let diagnostics_app = window.app_handle().clone();
-        thread::spawn(move || {
-            read_lines(errors, |line| {
-                // Map acknowledgements arrive here, apart from the data replies on the output pipe.
-                if let Some(json) = line.strip_prefix(EVENT_PREFIX) {
-                    if let Ok(event) = serde_json::from_str::<NativeEvent>(json) {
-                        diagnostics.receive(event, generation, &diagnostics_app);
-                    }
-                    return;
-                }
-                let mut inner = diagnostics
-                    .shared
-                    .0
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner());
-                if inner.generation == generation && !line.trim().is_empty() {
-                    inner.last_diagnostic = Some(line.chars().take(2000).collect());
-                }
-            });
-        });
-        let monitor = self.clone();
-        let monitor_app = window.app_handle().clone();
-        thread::spawn(move || monitor.monitor(generation, &monitor_app));
+        let role = if inner.popout.is_some() { Role::PopOut } else { Role::Main };
+        let receiver = self.clone();
+        let app = window.app_handle().clone();
+        let events: viewer::host::Events = Arc::new(move |event| receiver.receive(event, generation, &app));
+        let ending = self.clone();
+        let ended_window = window.clone();
+        // The map's events wait on this lock until its map is installed.
+        let closing = map_window.clone();
+        let map = Map::start(Launch { args, window: map_window, inputs, events, role }, move |end| {
+            ending.ended(end, generation, &ended_window)
+        })
+        .map_err(|error| {
+            closing.destroy();
+            format!("Could not start the map: {error}")
+        })?;
+        inner.map = Some(map);
+        inner.flush();
         Ok(())
     }
 
-    fn write_commands(&self, mut input: impl Write, generation: u64, app: &AppHandle) {
-        loop {
-            let commands = {
-                let mut inner = self.shared.0.lock().unwrap_or_else(|e| e.into_inner());
-                while !inner.pending.can_send(inner.status.visible)
-                    && inner.generation == generation
-                    && inner.process.is_some()
-                {
-                    inner = self.shared.1.wait(inner).unwrap_or_else(|e| e.into_inner());
-                }
-                if inner.generation != generation || inner.process.is_none() {
-                    return;
-                }
-                let visible = inner.status.visible;
-                inner.pending.take_commands(visible)
-            };
-            for command in commands {
-                let close = matches!(command, NativeCommand::Close);
-                let result = serde_json::to_writer(&mut input, &command)
-                    .map_err(std::io::Error::other)
-                    .and_then(|()| input.write_all(b"\n"))
-                    .and_then(|()| input.flush());
-                if let Err(error) = result {
-                    self.receive(
-                        NativeEvent::Error {
-                            message: format!("Native viewer connection closed: {error}"),
-                        },
-                        generation,
-                        app,
-                    );
-                    if !self.is_popout() {
-                        crate::dashboard_service::disconnected(
-                            app,
-                            "The native data connection closed",
-                        );
-                    }
-                    return;
-                }
-                if close {
-                    return;
-                }
-            }
+    fn ended(&self, ending: Ending, generation: u64, window: &WebviewWindow) {
+        use tauri::Manager;
+        let mut inner = self.shared.lock().unwrap_or_else(|e| e.into_inner());
+        if inner.generation != generation {
+            return;
+        }
+        let restart = inner.map_ended(ending);
+        if !restart {
+            inner.publish_stopped(window.app_handle());
+        }
+        let waiting = inner.take_ended_waiters();
+        drop(inner);
+        waiting.into_iter().for_each(|after| after());
+        if restart && let Err(error) = self.ensure_started(window) {
+            let mut inner = self.shared.lock().unwrap_or_else(|e| e.into_inner());
+            inner.status.error = Some(error);
+            inner.publish_stopped(window.app_handle());
         }
     }
 
     fn receive(&self, event: NativeEvent, generation: u64, app: &AppHandle) {
-        let mut inner = self.shared.0.lock().unwrap_or_else(|e| e.into_inner());
-        if inner.generation != generation || inner.shutting_down || inner.process.is_none() {
+        let mut inner = self.shared.lock().unwrap_or_else(|e| e.into_inner());
+        if inner.generation != generation || inner.shutting_down || inner.map.is_none() {
             return;
         }
         match event {
@@ -371,13 +334,6 @@ impl NativeHost {
                 if let Err(error) = crate::video::change_map_diagnostics(app, None) {
                     let _ = app.emit("map-diagnostics-error", error);
                 }
-                return;
-            }
-            // A pop-out's viewer serves no data requests.
-            NativeEvent::Data { .. } if inner.popout.is_some() => return,
-            NativeEvent::Data { response } => {
-                drop(inner);
-                crate::dashboard_service::receive_data(app, response);
                 return;
             }
             NativeEvent::MapOptions { view_id, options } => {
@@ -439,7 +395,7 @@ impl NativeHost {
             NativeEvent::Ready { sample_counts, .. } => {
                 inner.status.ready = true;
                 // The host's own data service advertises and checks map anti-aliasing against
-                // the renderer that draws it, not a device of this process.
+                // the renderer that draws it.
                 if let Some(counts) = sample_counts {
                     dashboard::map_settings::set_sample_counts(counts);
                 }
@@ -482,115 +438,39 @@ impl NativeHost {
                 inner.status.error = Some(message);
             }
         }
-        // Publish while holding the state lock so reader and exit notifications
-        // reach the frontend in mutation order.
+        // Publish while holding the state lock so events and ends reach the frontend in
+        // mutation order.
         inner.publish(app);
     }
 
-    fn monitor(&self, generation: u64, app: &AppHandle) {
-        loop {
-            thread::sleep(Duration::from_millis(250));
-            {
-                let mut inner = self.shared.0.lock().unwrap_or_else(|e| e.into_inner());
-                if inner.generation != generation {
-                    return;
-                }
-                let Some(process) = inner.process.as_mut() else {
-                    return;
-                };
-                match process.child.try_wait() {
-                    Ok(None) => continue,
-                    result => {
-                        inner.process = None;
-                        inner.generation += 1;
-                        inner.status.running = false;
-                        inner.status.ready = false;
-                        inner.status.fly_aircraft = None;
-                        inner.pending.data.clear();
-                        if !inner.shutting_down {
-                            let reason = match result {
-                                Ok(Some(exit)) => format!("Native viewer exited ({exit})"),
-                                Err(error) => format!("Cannot observe native viewer: {error}"),
-                                Ok(None) => unreachable!(),
-                            };
-                            inner.status.error = Some(match inner.last_diagnostic.as_ref() {
-                                Some(detail) => format!("{reason}: {detail}"),
-                                None => reason,
-                            });
-                        }
-                        inner.publish_stopped(app);
-                    }
-                }
-            };
-            if !self.is_popout() {
-                crate::dashboard_service::disconnected(
-                    app,
-                    "The native data runtime exited. Reopen the recording to restore its sources.",
-                );
-            }
-            self.shared.1.notify_all();
-            return;
-        }
-    }
-
-    fn is_popout(&self) -> bool {
-        self.shared
-            .0
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .popout
-            .is_some()
-    }
-
-    pub fn shutdown(&self) {
-        {
-            let mut inner = self.shared.0.lock().unwrap_or_else(|e| e.into_inner());
-            if inner.shutting_down {
-                return;
-            }
+    /// Closes the map for good. `after` runs once no map runs or starts, so once the map has let
+    /// go of the surface on its window, which its parent window may then take with it: at once
+    /// when none runs, else on the thread that saw the map end. Its last state is kept.
+    pub fn shutdown(&self, after: impl FnOnce() + Send + 'static) {
+        let mut inner = self.shared.lock().unwrap_or_else(|e| e.into_inner());
+        if !inner.shutting_down {
             inner.shutting_down = true;
             inner.pending.close = true;
+            inner.flush();
         }
-        self.shared.1.notify_all();
-        let deadline = Instant::now() + Duration::from_secs(2);
-        loop {
-            let mut inner = self.shared.0.lock().unwrap_or_else(|e| e.into_inner());
-            let Some(process) = inner.process.as_mut() else {
-                // A start under way closes the process it created once it sees the shutdown.
-                if inner.starting && Instant::now() < deadline {
-                    drop(inner);
-                    thread::sleep(Duration::from_millis(20));
-                    continue;
-                }
-                break;
-            };
-            if process.child.try_wait().ok().flatten().is_some() {
-                inner.process = None;
-                break;
-            }
-            if Instant::now() >= deadline {
-                let _ = process.child.kill();
-                let _ = process.child.wait();
-                inner.process = None;
-                break;
-            }
-            drop(inner);
-            thread::sleep(Duration::from_millis(20));
-        }
-        self.shared.1.notify_all();
+        inner.ended_waiters.push(Box::new(after));
+        let waiting = inner.take_ended_waiters();
+        drop(inner);
+        waiting.into_iter().for_each(|after| after());
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{folder_arguments, launch_folders};
+    use super::{Launched, folder_arguments, launch_folders};
+    use crate::native::{HostStatus, Inner};
+    use viewer::host::Ending;
 
     #[test]
     fn the_viewer_receives_only_the_folders_the_host_has() {
         let config = |game: &str, user: &str| dashboard::Config {
             game_dir: game.into(),
             user_dir: user.into(),
-            background_preparation: Some(false),
             older_game_dirs: Vec::new(),
         };
         assert_eq!(
@@ -611,7 +491,6 @@ mod tests {
         let config = |game: &str| dashboard::Config {
             game_dir: game.into(),
             user_dir: r"C:\User".into(),
-            background_preparation: None,
             older_game_dirs: Vec::new(),
         };
         let (applied, saved) = (config(r"C:\New"), config(r"C:\Old"));
@@ -621,5 +500,79 @@ mod tests {
         );
         assert_eq!(launch_folders(None, Some(&saved)), folder_arguments(&saved));
         assert!(launch_folders(None, None).is_empty());
+    }
+
+    fn showing(path: &str) -> Inner {
+        Inner {
+            generation: 3,
+            status: HostStatus {
+                running: true,
+                ready: true,
+                viewer: dashboard::protocol::ViewerState {
+                    path: Some(path.into()),
+                    revision: Some("v1".into()),
+                    branch: Some("1".into()),
+                    hour: Some(12),
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    /// A ready map that lost its device is started again, and the new one is sent the recording
+    /// and hour the last one showed; one that loses it again before it is ready is not.
+    #[test]
+    fn a_lost_device_starts_a_new_map_at_the_hour_the_last_showed() {
+        let mut inner = showing("A");
+        assert!(inner.map_ended(Ending::DeviceLost("The map's GPU device was lost (Unknown: removed)".into())));
+        assert_eq!(inner.generation, 4);
+        assert!(!inner.status.running && !inner.status.ready && inner.status.error.is_none());
+        inner.restore_commands();
+        assert_eq!(inner.pending.open, Some(("A".into(), "v1".into())));
+        assert_eq!(inner.pending.seek.as_ref().map(|seek| seek.hour), Some(12));
+        // The new map lost it again before it was ready.
+        assert!(!inner.map_ended(Ending::DeviceLost("The map's GPU device was lost (Unknown: hung)".into())));
+        assert_eq!(
+            inner.status.error.as_deref(),
+            Some("The map's GPU device was lost (Unknown: hung), again before the map was ready, so it was not started again: The map's GPU device was lost (Unknown: removed)")
+        );
+    }
+
+    /// A map that panicked is not started again: its status names why, and the next start (the
+    /// frontend reopening the map) is sent what it showed.
+    #[test]
+    fn a_map_that_stopped_is_shown_by_name_and_reopens_where_it_was() {
+        let mut inner = showing("A");
+        assert!(!inner.map_ended(Ending::Failed("The map stopped: the picture's layer list is empty".into())));
+        assert_eq!(
+            inner.status.error.as_deref(),
+            Some("The map stopped: the picture's layer list is empty")
+        );
+        assert!(!inner.status.running);
+        inner.restore_commands();
+        assert_eq!(inner.pending.open, Some(("A".into(), "v1".into())));
+        // Closing the app is no failure.
+        let mut closing = showing("A");
+        closing.shutting_down = true;
+        assert!(!closing.map_ended(Ending::Failed("late".into())));
+        assert!(closing.status.error.is_none());
+    }
+
+    /// A map that is ready and loses its device before its launch has finished is started again
+    /// once that launch finishes: the restart it asked for while the launch was finishing is kept.
+    #[test]
+    fn a_map_lost_before_its_launch_finished_is_started_again_once_it_finishes() {
+        let mut inner = Inner::default();
+        assert_eq!(inner.begin_launch(), Ok(true));
+        // The launch installed its map, which became ready and lost its device before the
+        // launch finished.
+        inner.status.ready = true;
+        assert!(inner.map_ended(Ending::DeviceLost("The map's GPU device was lost (Unknown: removed)".into())));
+        assert_eq!(inner.begin_launch(), Ok(false), "a launch is still finishing");
+        assert_eq!(inner.launch_finished(Ok(())), Launched::Again);
+        assert!(inner.starting && inner.status.running && inner.status.error.is_none());
+        assert_eq!(inner.launch_finished(Ok(())), Launched::Running);
+        assert!(!inner.starting);
     }
 }

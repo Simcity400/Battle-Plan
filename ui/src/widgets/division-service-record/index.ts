@@ -5,15 +5,16 @@ import type { WidgetSpec } from '../../dashboard/model';
 import { resolveWindow } from '../../dashboard/model';
 import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt';
 import { useCountriesSelectionAt } from '../../dashboard/useCountriesSelectionAt';
-import { useReachedProduct } from '../../dashboard/reachedProduct';
+import { useProduct } from '../../dashboard/products';
 import { divisionChoices, validateDivisionCareers } from './careersData';
 import ServiceRecordWidget from './ServiceRecordWidget';
-import { usePlaybackHour } from '../../dashboard/playback.ts';
+import { useFallbackHour } from '../../dashboard/follow/useFollow';
 
 /** Divisions of the chosen countries in service at the hour the record shows: the
  * widget's pinned or range end, or the playback hour while it follows. */
 function useDivisionChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {
-  const playbackHour = usePlaybackHour(runtime.clock, widget.time.mode === 'follow');
+  // Asked when the settings open, at the fallback's clock: choices are a list at one hour, not a moving value.
+  const playbackHour = useFallbackHour(runtime.clock, widget.time.mode === 'follow');
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
   const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const hour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
@@ -21,9 +22,9 @@ function useDivisionChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionC
   const tags = countries === undefined ? undefined : countries === null ? null : [...countries].sort();
   const request = track && tags !== undefined && !selectionReason ? { sourceId: track.source.id, revision: track.source.revision,
     product: 'division-careers', params: { branchId: track.branch.id, hour, tags } } : null;
-  const { data } = useReachedProduct(runtime.client, track?.source, request, JSON.stringify([track?.branch.id, tags]), true, validateDivisionCareers);
-  const wanted = useMemo(() => data ? [...new Set(data.divisions.flatMap(row => row.tag ? [row.tag] : []))].map(tag => ({ hour: data.hour, tag })) : [], [data]);
+  const { data } = useProduct(runtime.client, request, true, validateDivisionCareers, track?.source);
+  const wanted = useMemo(() => data ? [...new Set(data.divisions.flatMap(row => row.tag ? [row.tag] : []))].map(tag => ({ hour, tag })) : [], [data, hour]);
   const names = useCountryNamesAt(runtime.client, track, wanted, true);
-  return { division: data ? divisionChoices(data, track!.source.metadata.campaignKey, tag => nameReadMetadata(names.get(nameKey(data.hour, tag)))) : [] };
+  return { division: data ? divisionChoices(data, track!.source.metadata.campaignKey, tag => nameReadMetadata(names.get(nameKey(hour, tag)))) : [] };
 }
 export default { render: ServiceRecordWidget, useOptionChoices: useDivisionChoices } satisfies WidgetRenderer;

@@ -65,22 +65,6 @@ pub fn walk(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    output: &mut [Row],
-    sources: &mut [u8],
-) -> SourceWalk {
-    walk_buffer(
-        memory,
-        base,
-        game_state,
-        crate::walk::Buffer::Fixed(output),
-        crate::walk::Buffer::Fixed(sources),
-    )
-}
-
-pub fn walk_growing(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
     output: &mut Vec<Row>,
     sources: &mut Vec<u8>,
 ) -> SourceWalk {
@@ -158,15 +142,15 @@ pub(crate) fn read_country(
     memory: &impl Memory,
     pointer: usize,
     country: u32,
-    output: &mut [Row],
-    sources: &mut [u8],
+    output: &mut Vec<Row>,
+    sources: &mut Vec<u8>,
 ) -> SourceWalk {
     read_country_buffer(
         memory,
         pointer,
         country,
-        crate::walk::Buffer::Fixed(output),
-        crate::walk::Buffer::Fixed(sources),
+        crate::walk::Buffer::Growing(output),
+        crate::walk::Buffer::Growing(sources),
     )
 }
 
@@ -355,7 +339,7 @@ mod tests {
         bytes
     }
 
-    fn capture(bytes: &[u8], output: &mut [Row], sources: &mut [u8]) -> SourceWalk {
+    fn capture(bytes: &[u8], output: &mut Vec<Row>, sources: &mut Vec<u8>) -> SourceWalk {
         read_country(
             &SliceMemory {
                 base: COUNTRY,
@@ -371,8 +355,8 @@ mod tests {
     #[test]
     fn native_rows_preserve_signed_precision_duplicate_provinces_and_source_bytes() {
         let bytes = memory();
-        let mut rows = [Row::default(); 3];
-        let mut source = [0; 9];
+        let mut rows = vec![Row::default(); 3];
+        let mut source = vec![0; 9];
         assert_eq!(
             capture(&bytes, &mut rows, &mut source),
             SourceWalk {
@@ -403,25 +387,19 @@ mod tests {
     }
 
     #[test]
-    fn string_and_row_capacity_omit_whole_rows_and_report_every_required_byte() {
+    fn the_count_probe_reports_every_row_and_required_byte() {
         let bytes = memory();
-        let mut rows = [Row::default(); 3];
-        let mut source = [0; 2];
         assert_eq!(
-            capture(&bytes, &mut rows, &mut source),
-            SourceWalk {
-                outcome: Outcome::Truncated {
-                    len: 2,
-                    unread_rows: 1
+            read_country_buffer(
+                &SliceMemory {
+                    base: COUNTRY,
+                    bytes: &bytes,
                 },
-                bytes_len: 2,
-                required_bytes: 9,
-            }
-        );
-        assert_eq!((rows[0].ordinal, rows[1].ordinal), (1, 2));
-        assert_eq!(source, [0xff, 0]);
-        assert_eq!(
-            capture(&bytes, &mut [], &mut source),
+                COUNTRY,
+                23,
+                crate::walk::Buffer::Count,
+                crate::walk::Buffer::Count,
+            ),
             SourceWalk {
                 outcome: Outcome::Truncated {
                     len: 0,
@@ -436,8 +414,8 @@ mod tests {
     #[test]
     fn bad_native_identity_string_and_header_never_become_successful_rows() {
         let mut bytes = memory();
-        let mut rows = [Row::default(); 3];
-        let mut source = [0; 9];
+        let mut rows = vec![Row::default(); 3];
+        let mut source = vec![0; 9];
         bytes[RECORDS - COUNTRY + PROVINCE_COPY] = 91;
         assert_eq!(
             capture(&bytes, &mut rows, &mut source).outcome,
@@ -456,7 +434,7 @@ mod tests {
         bytes = memory();
         bytes[RECORDS - COUNTRY + SOURCE + 7] = 1;
         assert_eq!(
-            capture(&bytes, &mut [], &mut []).outcome,
+            capture(&bytes, &mut Vec::new(), &mut Vec::new()).outcome,
             Outcome::Unavailable {
                 reason: "foreign homebase source terminator invalid"
             }
@@ -477,7 +455,7 @@ mod tests {
         let header = ccountry_supply_system::FOREIGN_HOMEBASE_DATA;
         bytes[header..header + 16].fill(0);
         assert_eq!(
-            capture(&bytes[..header + 16], &mut [], &mut []),
+            capture(&bytes[..header + 16], &mut Vec::new(), &mut Vec::new()),
             SourceWalk {
                 outcome: Outcome::Rows { len: 0 },
                 bytes_len: 0,

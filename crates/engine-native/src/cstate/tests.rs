@@ -248,10 +248,10 @@ fn state_rows_and_names_grow_before_first_and_later_publication() {
         }
         let mut sources = 0;
         assert_eq!(name_demand(&memory, 0, 0), Ok(count * 50));
-        let census = walk_with_growing(&memory, 0, 0, &mut rows, |_| sources += 1);
+        let census = walk_with(&memory, 0, 0, &mut rows, |_| sources += 1);
         assert_eq!(census, Outcome::Rows { len: count });
         assert_eq!(sources, count);
-        let names = read_names_growing(&memory, 0, census, &mut rows, &mut text);
+        let names = read_names(&memory, 0, census, &mut rows, &mut text);
         assert_eq!(names.outcome, census);
         assert_eq!(
             (names.bytes_len, names.required_bytes),
@@ -287,18 +287,12 @@ fn both_display_names_are_copied_exactly_with_off_thread_growth() {
     assert_eq!(text(rows[2].owner_name), b"Test Region AAA");
     let total = 11 + long.len() + 4 + 15;
     assert_eq!((walk.bytes_len, walk.required_bytes), (total, total));
-    // Too small an arena keeps the prefix that fits and asks for the rest.
+    // Too small an arena grows to the demand.
     let mut small = vec![0_u8; 20];
     let mut rows = census_rows(3);
     let walk = read_names(&memory, 0, Outcome::Rows { len: 3 }, &mut rows, &mut small);
-    assert_eq!(
-        walk.outcome,
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 2
-        }
-    );
-    assert_eq!(walk.required_bytes, total);
+    assert_eq!(walk.outcome, Outcome::Rows { len: 3 });
+    assert_eq!((walk.bytes_len, walk.required_bytes), (total, total));
     // A census already short of rows keeps its own omitted count.
     let mut rows = census_rows(3);
     let walk = read_names(
@@ -361,7 +355,7 @@ fn scripted_controller_branch_is_carried_without_copying_cached_groups() {
             0,
             outcome,
             &mut rows,
-            walk::Buffer::Fixed(&mut arena),
+            walk::Buffer::Growing(&mut arena),
             |_| None,
             |_| (true, true)
         )
@@ -409,7 +403,7 @@ fn scripted_controller_branch_is_carried_without_copying_cached_groups() {
             0,
             outcome,
             &mut carried,
-            walk::Buffer::Fixed(&mut fresh_arena),
+            walk::Buffer::Growing(&mut fresh_arena),
             |index| Some(held[index]),
             |_| (true, true)
         )
@@ -425,7 +419,7 @@ fn scripted_controller_branch_is_carried_without_copying_cached_groups() {
             0,
             outcome,
             &mut rows,
-            walk::Buffer::Fixed(&mut arena),
+            walk::Buffer::Growing(&mut arena),
             |_| None,
             |_| (true, true)
         )
@@ -630,7 +624,7 @@ fn state_slots_and_native_country_tags_are_preserved() {
         base: 0x1000,
         bytes: &bytes,
     };
-    let mut rows = [Row::default(); 5];
+    let mut rows = vec![Row::default(); 5];
     assert_eq!(
         walk(&memory, 0, 0x1000, &mut rows),
         Outcome::Rows { len: 2 }
@@ -653,14 +647,7 @@ fn state_slots_and_native_country_tags_are_preserved() {
         ]
     );
     assert_eq!(
-        walk(&memory, 0, 0x1000, &mut rows[..1]),
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 1,
-        }
-    );
-    assert_eq!(
-        walk(&memory, 0, 0x1000, &mut []),
+        walk_with_buffer(&memory, 0, 0x1000, crate::walk::Buffer::Count, |_| {}),
         Outcome::Truncated {
             len: 0,
             unread_rows: 2,
@@ -771,7 +758,7 @@ fn invalid_state_rows_never_publish_a_successful_prefix() {
             base: 0x1000,
             bytes: &bytes,
         };
-        let mut rows = [Row::default(); 5];
+        let mut rows = vec![Row::default(); 5];
         assert_eq!(
             walk(&memory, 0, 0x1000, &mut rows),
             Outcome::Unavailable { reason }
@@ -804,7 +791,7 @@ fn invalid_state_rows_never_publish_a_successful_prefix() {
             },
             address: 0x1600 + offset,
         };
-        let mut rows = [Row::default(); 5];
+        let mut rows = vec![Row::default(); 5];
         assert_eq!(
             walk(&memory, 0, 0x1000, &mut rows),
             Outcome::Unavailable { reason }
@@ -817,7 +804,7 @@ fn invalid_state_rows_never_publish_a_successful_prefix() {
         base: 0x1000,
         bytes: &bytes,
     };
-    let mut rows = [Row::default(); 5];
+    let mut rows = vec![Row::default(); 5];
     assert_eq!(
         walk(&memory, 0, 0x1000, &mut rows),
         Outcome::Unavailable {
@@ -850,7 +837,7 @@ fn invalid_or_empty_state_tables_are_unavailable() {
             base: 0x1000,
             bytes: &bytes,
         };
-        let mut rows = [Row::default(); 5];
+        let mut rows = vec![Row::default(); 5];
         assert_eq!(
             walk(&memory, 0, 0x1000, &mut rows),
             Outcome::Unavailable { reason }
@@ -863,7 +850,7 @@ fn invalid_or_empty_state_tables_are_unavailable() {
         bytes: &bytes,
     };
     assert_eq!(
-        walk(&memory, 0, 0x1000, &mut []),
+        walk(&memory, 0, 0x1000, &mut Vec::new()),
         Outcome::Unavailable {
             reason: "state table has no readable states",
         }
@@ -880,7 +867,7 @@ fn shared_state_sources_preserve_sparse_identity_and_native_flag_bytes() {
         base: 0x1000,
         bytes: &bytes,
     };
-    let mut rows = [Row::default(); 2];
+    let mut rows = vec![Row::default(); 2];
     let mut sources = Vec::new();
     let parent = walk_with(&memory, 0, 0x1000, &mut rows, |source| sources.push(source));
     assert_eq!(
@@ -923,25 +910,6 @@ fn shared_state_sources_preserve_sparse_identity_and_native_flag_bytes() {
         Outcome::Truncated {
             len: 1,
             unread_rows: 1
-        }
-    );
-    sources.clear();
-    let parent = walk_with(&memory, 0, 0x1000, &mut rows[..1], |source| {
-        sources.push(source)
-    });
-    assert_eq!(sources.len(), 1);
-    assert_eq!(
-        read_flags(&memory, 0, 0x1000, &sources, parent, &mut flags),
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 1
-        }
-    );
-    assert_eq!(
-        read_flags(&memory, 0, 0x1000, &sources, parent, &mut []),
-        Outcome::Truncated {
-            len: 0,
-            unread_rows: 2
         }
     );
 }
@@ -1055,7 +1023,7 @@ fn state_census_and_flags_keep_primary_read_order_without_terminal_rereads() {
         reads: RefCell::new(Vec::new()),
     };
     let mut sources = Vec::new();
-    let parent = walk_with(&memory, 0, 0x1000, &mut [Row::default(); 2], |source| {
+    let parent = walk_with(&memory, 0, 0x1000, &mut vec![Row::default(); 2], |source| {
         sources.push(source)
     });
     assert_eq!(parent, Outcome::Rows { len: 2 });
@@ -1202,7 +1170,7 @@ fn state_population_is_read_beside_available_manpower() {
         base: 0x1000,
         bytes: &bytes,
     };
-    let mut rows = [Row::default(); 5];
+    let mut rows = vec![Row::default(); 5];
     assert_eq!(
         walk(&memory, 0, 0x1000, &mut rows),
         Outcome::Rows { len: 2 }
@@ -1260,7 +1228,7 @@ fn state_category_is_named_by_its_authenticated_definitions_token() {
         base: 0x1000,
         bytes: &bytes,
     };
-    let mut rows = [Row::default(); 5];
+    let mut rows = vec![Row::default(); 5];
     assert_eq!(
         walk(&memory, 0, 0x1000, &mut rows),
         Outcome::Rows { len: 2 }

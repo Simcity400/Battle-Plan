@@ -368,6 +368,39 @@ fn the_cache_holds_the_hours_in_flight_and_the_latest() {
     assert_eq!(built.get(), 5, "hour 1 should have gone");
 }
 
+/// Each division's route made alone ([`DivisionRoutes::route_of`] with [`estimate_one`]) equals
+/// the hour's whole routes, for a moving division with and without a recorded speed and a standing
+/// one, over two hours so the second takes its kept placement.
+#[test]
+fn a_division_s_route_made_alone_equals_the_whole_hour_s() {
+    use crate::map::counter_move::{DivisionRoutes, RouteMemo};
+    let map = content(two_leg_map());
+    let anchor = |province: u32| Some([province as f32 * 10.0, 0.0, 1.0]);
+    let (whole_memo, alone_memo) = (RouteMemo::default(), RouteMemo::default());
+    let standing = DivisionMovementRow { division: DIVISION + 1, ..Default::default() };
+    for (at, speed) in [Some(SPEED), Some(SPEED), None].into_iter().enumerate() {
+        let mut frame = hour(speed);
+        frame.hour += at as i32;
+        let mut census = rows::<tables::Divisions>(&frame).unwrap().rows().to_vec();
+        census.push(DivisionRow { id: DIVISION + 1, province: 2, ..Default::default() });
+        put(&mut frame, TableRows::Divisions(census));
+        let mut movement = rows::<tables::DivisionMovement>(&frame).unwrap().rows().to_vec();
+        movement.push(standing.clone());
+        put(&mut frame, TableRows::DivisionMovement(movement));
+        let etas = Etas::read(&frame, Some(&map)).unwrap();
+        let whole = DivisionRoutes::read_kept(&frame, &etas, Some(&map.map), &anchor, &whole_memo).unwrap();
+        let terms = HourTerms::new(&frame);
+        let census = rows::<tables::Divisions>(&frame).unwrap().rows();
+        for row in rows::<tables::DivisionMovement>(&frame).unwrap().rows() {
+            let division = census.iter().find(|division| division.id == row.division);
+            let eta = estimate_one(row, division, &terms, Some(&map));
+            assert_eq!(eta, etas.get(row.division), "hour {at}, division {}", row.division);
+            let alone = DivisionRoutes::route_of(row, division.map_or(0, |division| division.province), eta, Some(&map.map), &anchor, &alone_memo);
+            assert_eq!(Some(&alone), whole.by_division.get(&row.division), "hour {at}, division {}", row.division);
+        }
+    }
+}
+
 /// Exercise a large synthetic hour without tying correctness to the speed
 /// or load of the machine running the test.
 #[test]

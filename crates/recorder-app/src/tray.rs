@@ -111,11 +111,11 @@ pub fn tooltip(snapshot: &Snapshot) -> String {
     {
         text = format!("{text} · {name}");
     }
+    if let Some(hours) = snapshot.behind.filter(|_| snapshot.phase == Phase::Recording) {
+        text = format!("{text} · falling behind by {hours} hours");
+    }
     if let Some(problem) = &snapshot.problem {
         text = format!("{text}\n{}", problem.text);
-    }
-    if let Some(preparation) = &snapshot.preparation {
-        text = format!("{text}\n{}", preparation.text);
     }
     if text.encode_utf16().count() <= TOOLTIP_UNITS {
         return text;
@@ -315,6 +315,50 @@ mod tests {
             tooltip(&snapshot),
             "Battle Plan Recorder\nRecording · Germany 1936–1943\n2 hours couldn't be recorded"
         );
+    }
+
+    /// A spool slower than the game: the backlog grows past the frames the collector keeps,
+    /// the status line says by how many hours, and says nothing once the spool catches up.
+    #[test]
+    fn the_status_line_says_how_far_a_slow_spool_falls_behind_and_clears_when_it_catches_up() {
+        let mut snapshot = Snapshot {
+            phase: Phase::Recording,
+            name: Some("Germany 1936–1943".into()),
+            ..Snapshot::default()
+        };
+        let lines: Vec<String> = [2, 4, 6, 9, 13, 7, 4, 1]
+            .into_iter()
+            .map(|in_flight: u64| {
+                let status = serde_json::json!({
+                    "campaign": "00000000-0000-4000-8000-000000000000", "hours": 40,
+                    "last_hour": 9,
+                    "acquisition_work": {"frames": {
+                        "steady": 4, "in_flight": in_flight, "in_flight_bytes": in_flight * 4_096,
+                    }},
+                });
+                snapshot.behind = crate::snapshot::read_live(&status).behind;
+                tooltip(&snapshot)
+            })
+            .collect();
+        let quiet = "Battle Plan Recorder\nRecording · Germany 1936–1943";
+        let behind = |hours: u64| format!("{quiet} · falling behind by {hours} hours");
+        assert_eq!(
+            lines,
+            [
+                quiet.to_owned(),
+                quiet.to_owned(),
+                behind(6),
+                behind(9),
+                behind(13),
+                behind(7),
+                quiet.to_owned(),
+                quiet.to_owned(),
+            ]
+        );
+        // Only while recording.
+        snapshot.behind = Some(9);
+        snapshot.phase = Phase::Saving;
+        assert_eq!(tooltip(&snapshot), "Battle Plan Recorder\nSaving recording · Germany 1936–1943");
     }
 
     #[test]

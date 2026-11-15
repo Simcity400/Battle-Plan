@@ -16,6 +16,7 @@ fn append(library: &mut ModelLibrary) {
         bound: 1.,
         convoy_radius: None,
         attachments: 0,
+        cull_distance_squared: installed_content_core::mesh::DEFAULT_CULL_DISTANCE_SQUARED,
     });
     library.rigs.push(Arc::new(Rig::default()));
 }

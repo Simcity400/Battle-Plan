@@ -19,19 +19,14 @@ impl Capacities {
         };
         raise(
             1,
-            crate::country_scale::table_demand::rows(cair_base::walk(memory, base, state, &mut [])),
+            crate::country_scale::table_demand::rows(cair_base::count(memory, base, state)),
         );
-        let aces = cace::walk(memory, base, state, &mut [], &mut []);
+        let aces = cace::count(memory, base, state);
         raise(3, crate::country_scale::table_demand::rows(aces.outcome));
         self.ace_names = self.ace_names.max(aces.required_bytes);
         raise(
             4,
-            crate::country_scale::table_demand::rows(cloop_history::walk(
-                memory,
-                base,
-                state,
-                &mut [],
-            )),
+            crate::country_scale::table_demand::rows(cloop_history::count(memory, base, state)),
         );
         if let Err(reason) = self.presize_missions(memory, base, state) {
             failure.get_or_insert(reason);
@@ -515,6 +510,24 @@ impl AirBasesMemo {
         ctx: AirBasesMemoContext,
         decode_ticks: &mut [u64; AIR_BASES_N],
     ) -> AirBasesMemoReport {
+        // Storage must be final before comparing or installing the capacity
+        // fingerprint: another pooled frame may still have the old limits.
+        let prepared = fog.prepare_decode(job, &mut air.carrier);
+        self.decode_prepared(air, fog, job, ctx, decode_ticks, prepared)
+    }
+
+    /// A refused `prepared` refuses AirBases and AirBaseRegistrations by name
+    /// for this hour; the aces decode is independent and stands.
+    #[allow(clippy::too_many_arguments, reason = "one decode's borrowed parts")]
+    pub(super) fn decode_prepared(
+        &mut self,
+        air: &mut Captured,
+        fog: &mut super::fog::Captured,
+        job: &AirBasesJob,
+        ctx: AirBasesMemoContext,
+        decode_ticks: &mut [u64; AIR_BASES_N],
+        prepared: Result<(), &'static str>,
+    ) -> AirBasesMemoReport {
         let mut report = AirBasesMemoReport::default();
         air.active[3] = job.aces_active;
         let compared_started = qpc();
@@ -524,10 +537,6 @@ impl AirBasesMemo {
         if ctx.force_full || !adjacent {
             self.key = None;
         }
-        // Storage must be final before comparing or installing the capacity
-        // fingerprint: another pooled frame may still have the old limits.
-        fog.prepare_registrations_payload(job);
-        fog.prepare_carrier_payload(job, &mut air.carrier);
         let capacity = air
             .bases_memo_context()
             .zip(fog.registrations_memo_context());
@@ -542,7 +551,8 @@ impl AirBasesMemo {
             carrier_seed: job.carrier.seed,
             aces_active: job.aces_active,
         });
-        report.eligible = key.is_some()
+        report.eligible = prepared.is_ok()
+            && key.is_some()
             && job.carrier.seed.is_ok()
             && !job.carrier.log.borrow().overflowed
             && !job.log.overflowed
@@ -587,7 +597,9 @@ impl AirBasesMemo {
             let started = qpc();
             fog.restore_registrations_memo(&self.registrations);
             self.carrier.restore(&mut air.carrier, &mut fog.carrier);
-            fog.carrier.install_states(&job.state_fuel);
+            if let Err(reason) = fog.carrier.install_states(&job.state_fuel) {
+                fog.fail_registrations_capture(reason);
+            }
             decode_ticks[1] += elapsed(started);
             report.restore_ticks = decode_ticks
                 .iter()
@@ -603,14 +615,18 @@ impl AirBasesMemo {
         air.decode_air_bases_payload(ctx.base, job, decode_ticks);
         let before = self.decoded.counts();
         let reuse = self.decoded.begin(&job.segments);
-        fog.decode_registrations_with_carrier_payload(
+        let carried = fog.decode_registrations_prepared(
             ctx.base,
             job,
             &air.bases.rows[..air.bases.outcome.len()],
             &mut air.carrier,
             decode_ticks,
             reuse.then_some(&mut self.decoded as &mut dyn cair_base::RegistrationReuse),
+            prepared,
         );
+        if let Err(reason) = carried {
+            air.bases.outcome = Outcome::Unavailable { reason };
+        }
         self.decoded.finish();
         let after = self.decoded.counts();
         crate::air_base_carry_changes::record_decoded(
@@ -848,9 +864,8 @@ fn copy_air_bases_census(
         }
         *required_census = countries.count as usize - 1;
         *required_links = links.count as usize;
-        if log.worker_growth_enabled()
-            && (reserve_to(census, *required_census).is_err()
-                || roster.reserve(authenticated.slots().len()).is_err())
+        if reserve_to(census, *required_census).is_err()
+            || roster.reserve(authenticated.slots().len()).is_err()
         {
             return None;
         }
@@ -898,7 +913,7 @@ fn copy_air_bases_census(
     }
     *required_census = countries.count as usize - 1;
     *required_links = links.count as usize;
-    if log.worker_growth_enabled() && reserve_to(census, *required_census).is_err() {
+    if reserve_to(census, *required_census).is_err() {
         return None;
     }
     let vtable = engine_sites::at(base, ccountry::VTABLE_RVA)? as u64;
@@ -1039,14 +1054,7 @@ pub(super) fn resolve_link(
     if slot >= countries {
         return None;
     }
-    if seen.len() == seen.capacity()
-        && log.worker_growth_enabled()
-        && allocation::reserve(seen, 1).is_err()
-    {
-        return None;
-    }
-    if seen.len() == seen.capacity() {
-        log.overflowed = true;
+    if seen.len() == seen.capacity() && allocation::reserve(seen, 1).is_err() {
         return None;
     }
     let position = seen.len();
@@ -1596,9 +1604,6 @@ fn snapshot_state_countries(
     pointer: usize,
     snapshot: &mut DenseSnapshot,
 ) {
-    if !log.worker_growth_enabled() {
-        return;
-    }
     if snapshot.header.is_none() {
         let Some(start) = bspan(
             log,
@@ -2261,30 +2266,7 @@ pub(super) fn copy_air_bases_pass(
     copy_air_bases_pass_with_context(job, memory, base, game_state, aces_active, ticks);
 }
 
-#[cfg(test)]
 fn copy_air_bases_pass_with_context(
-    job: &mut AirBasesJob,
-    memory: &impl engine_native::Memory,
-    base: usize,
-    game_state: usize,
-    aces_active: bool,
-    ticks: &mut [u64; AIR_BASES_N],
-) {
-    copy_air_bases_pass_mode::<false>(job, memory, base, game_state, aces_active, ticks);
-}
-
-fn copy_air_bases_pass_with_context_growing(
-    job: &mut AirBasesJob,
-    memory: &impl engine_native::Memory,
-    base: usize,
-    game_state: usize,
-    aces_active: bool,
-    ticks: &mut [u64; AIR_BASES_N],
-) {
-    copy_air_bases_pass_mode::<true>(job, memory, base, game_state, aces_active, ticks);
-}
-
-fn copy_air_bases_pass_mode<const GROWING: bool>(
     job: &mut AirBasesJob,
     memory: &impl engine_native::Memory,
     base: usize,
@@ -2294,9 +2276,6 @@ fn copy_air_bases_pass_mode<const GROWING: bool>(
 ) {
     let started = qpc();
     job.clear();
-    if GROWING {
-        job.log.enable_worker_growth();
-    }
     job.game_state = game_state;
     job.aces_active = aces_active;
     let census_mask = if aces_active {
@@ -2410,46 +2389,21 @@ fn copy_air_bases_vectors(
         demand: staged_demand,
         seed,
     } = staged;
-    let growing = log.worker_growth_enabled();
-    if growing {
-        carrier_log.get_mut().enable_worker_growth();
-    }
-    let index = std::cell::RefCell::new(if growing {
-        super::carrier_memory::ExactIndex::new_growing(index)
-    } else {
-        super::carrier_memory::ExactIndex::new(index)
-    });
+    let index = std::cell::RefCell::new(super::carrier_memory::ExactIndex::new(index));
     *seed = super::carrier_memory::seed_census(carrier_log.get_mut(), log, &mut index.borrow_mut());
     *required_index = index.borrow().required_slots();
     let (lengths, demand) = {
         let optional = super::carrier_memory::CaptureMemory::new(carrier_log, memory, &index);
         let countries = seed.and_then(|()| ccountry::Reader::new(&optional, base, *game_state));
-        let mut refusal = countries.as_ref().err().copied();
-        let mut observer = countries.as_ref().ok().and_then(|countries| {
-            let captured = if growing {
-                cair_base::CarrierCapture::new_growing(
-                    &optional,
-                    base,
-                    *game_state,
-                    countries,
-                    carrier::buffers_growing(carrier_bases, carrier_registrations, scratch),
-                )
-            } else {
-                Ok(cair_base::CarrierCapture::new(
-                    &optional,
-                    base,
-                    *game_state,
-                    countries,
-                    carrier::buffers(carrier_bases, carrier_registrations, scratch),
-                ))
-            };
-            match captured {
-                Ok(capture) => Some(capture),
-                Err(reason) => {
-                    refusal = Some(reason);
-                    None
-                }
-            }
+        let refusal = countries.as_ref().err().copied();
+        let mut observer = countries.as_ref().ok().map(|countries| {
+            cair_base::CarrierCapture::new(
+                &optional,
+                base,
+                *game_state,
+                countries,
+                carrier::buffers(carrier_bases, carrier_registrations, scratch),
+            )
         });
         (|| {
             let manager_spans = log.spans.len();
@@ -2794,7 +2748,7 @@ fn copy_air_bases_vectors(
 }
 
 /// Acquire the shared bases, registrations and aces into one owned payload.
-pub(crate) fn copy_air_bases_refresh_growing(
+pub(crate) fn copy_air_bases_refresh(
     memory: &impl Memory,
     ctx: AirBasesCopyContext,
     job: &mut AirBasesJob,
@@ -2806,7 +2760,7 @@ pub(crate) fn copy_air_bases_refresh_growing(
         job.slot_run = crate::air_base_changes::SlotRun::current();
         job.carry = CarryRun::default();
     }
-    copy_air_bases_pass_with_context_growing(
+    copy_air_bases_pass_with_context(
         job,
         memory,
         ctx.base,
@@ -2829,27 +2783,6 @@ pub(crate) fn copy_air_bases_refresh_growing(
             crate::air_base_carry_changes::record_census(&store.census_counts());
         }
     }
-    AirBasesCopyReport {
-        raw_ok: !job.log.overflowed,
-        copy_ticks: ticks,
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn copy_air_bases_refresh(
-    memory: &impl Memory,
-    ctx: AirBasesCopyContext,
-    job: &mut AirBasesJob,
-) -> AirBasesCopyReport {
-    let mut ticks = [0u64; AIR_BASES_N];
-    copy_air_bases_pass_with_context(
-        job,
-        memory,
-        ctx.base,
-        ctx.game_state,
-        replay_data::cadence::should_walk(TableId::AirAces, ctx.hour, ctx.force_full),
-        &mut ticks,
-    );
     AirBasesCopyReport {
         raw_ok: !job.log.overflowed,
         copy_ticks: ticks,
@@ -2879,13 +2812,15 @@ impl Captured {
         decode_ticks: &mut [u64; AIR_BASES_N],
     ) {
         self.active[3] = job.aces_active;
-        let recorded = crate::raw::Recorded::build(&job.log);
-        let started = qpc();
-        let walked = if job.log.worker_growth_enabled() {
-            cair_base::walk_growing(&recorded, base, job.game_state, &mut self.bases.rows)
-        } else {
-            cair_base::walk(&recorded, base, job.game_state, &mut self.bases.rows)
+        let recorded = match crate::raw::Recorded::build(&job.log) {
+            Ok(recorded) => recorded,
+            Err(reason) => {
+                self.fail_air_bases_capture(reason);
+                return;
+            }
         };
+        let started = qpc();
+        let walked = cair_base::walk(&recorded, base, job.game_state, &mut self.bases.rows);
         self.bases.outcome = bounded(walked, self.bases.rows.len());
         decode_ticks[0] += elapsed(started);
         if !job.aces_active {
@@ -2902,23 +2837,13 @@ impl Captured {
             base,
             job.game_state,
         );
-        let walked = if job.log.worker_growth_enabled() {
-            cace::walk_growing(
+        let walked = cace::walk(
                 &recorded,
                 base,
                 job.game_state,
                 &mut self.aces.rows,
                 &mut self.names.first,
-            )
-        } else {
-            cace::walk(
-                &recorded,
-                base,
-                job.game_state,
-                &mut self.aces.rows,
-                &mut self.names.first,
-            )
-        };
+            );
         self.aces.outcome = names_outcome(walked, &self.aces.rows, &self.names.first);
         self.names.len = walked.bytes_len;
         self.names.required = walked.required_bytes;

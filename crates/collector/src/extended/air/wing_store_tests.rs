@@ -159,7 +159,6 @@ fn settle_selected(
         };
         let source = WingSource {
             pointer: wing(index),
-            pool: 0,
             row: &row,
         };
         let start = rows.len();

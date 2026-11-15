@@ -644,9 +644,9 @@ pub fn walk(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    combats: &mut [Row],
-    participants: &mut [cnaval_combatant::Row],
-    groups: &mut [usize],
+    combats: &mut Vec<Row>,
+    participants: &mut Vec<cnaval_combatant::Row>,
+    groups: &mut Vec<usize>,
 ) -> Capture {
     walk_timed(
         memory,
@@ -660,34 +660,9 @@ pub fn walk(
     .capture
 }
 
-/// The caller supplies its monotonic clock. Timing brackets member work once
-/// per combat, not once per member; the remaining work belongs to the combat
-/// table. These ticks include failures and capacity checks.
-/// Clock boundaries name the following phase: shared/combat = 0, participants = 1.
-/// Participant completion and the final boundary restore 0 on every outcome.
-pub fn walk_timed(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    combats: &mut [Row],
-    participants: &mut [cnaval_combatant::Row],
-    groups: &mut [usize],
-    now: impl FnMut(usize) -> u64,
-) -> TimedCapture {
-    walk_timed_buffer(
-        memory,
-        base,
-        game_state,
-        crate::walk::Buffer::Fixed(combats),
-        crate::walk::Buffer::Fixed(participants),
-        crate::walk::Buffer::Fixed(groups),
-        now,
-    )
-}
-
 /// Worker rows and scratch follow original registry/group/member
 /// headers before this capture publishes its first row.
-pub fn walk_timed_growing(
+pub fn walk_timed(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -720,8 +695,8 @@ fn storage_demand_advisory(memory: &impl Memory, base: usize, game_state: usize)
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Fixed(&mut []),
-        crate::walk::Buffer::Fixed(&mut []),
+        crate::walk::Buffer::Count,
+        crate::walk::Buffer::Count,
         crate::walk::Buffer::Growing(&mut groups),
         |_| 0,
     )

@@ -1,7 +1,10 @@
 //! One coalescing hover worker. It retains only the latest request/result;
-//! content and frame Arc identity bind results to their complete inputs.
+//! content and frame Arc identity bind results to their complete inputs. A build that read a
+//! table its frame of rows at the playback head did not declare keeps no text and names the
+//! table ([`Lane::take_missed`]).
 use super::{Content, Key, Tooltip};
 use eframe::egui;
+use replay_data::rows::TableId;
 use replay_frame::frame::DecodedFrame;
 use std::sync::{Arc, Condvar, Mutex};
 
@@ -31,6 +34,8 @@ struct State {
     wanted: Option<Request>,
     pending: bool,
     result: Option<Arc<Tooltip>>,
+    /// Tables a build read that its frame did not declare, until taken.
+    missed: Vec<TableId>,
     stop: bool,
 }
 type Shared = Arc<(Mutex<State>, Condvar)>;
@@ -82,6 +87,14 @@ impl Lane {
         }
         state.result.clone()
     }
+
+    /// The tables builds read that their frames of rows at the head did not declare, since the
+    /// last call.
+    pub fn take_missed(&mut self) -> Vec<TableId> {
+        self.shared.as_ref().map_or_else(Vec::new, |shared| {
+            std::mem::take(&mut shared.0.lock().unwrap_or_else(|e| e.into_inner()).missed)
+        })
+    }
 }
 impl Drop for Lane {
     fn drop(&mut self) {
@@ -106,21 +119,36 @@ fn run(shared: Shared, ctx: egui::Context) {
             state.wanted.clone().expect("pending request")
         };
         let request = held.insert(next);
-        let result = super::build(
-            &request.content,
-            &request.frame,
-            request.ours,
-            request.nato,
-            &request.key,
-        );
+        let built = replay_frame::frame::discovering(|| {
+            super::build(
+                &request.content,
+                &request.frame,
+                request.ours,
+                request.nato,
+                &request.key,
+            )
+        });
         let mut state = shared.0.lock().unwrap_or_else(|e| e.into_inner());
         if state
             .wanted
             .as_ref()
             .is_some_and(|wanted| wanted.same(request))
         {
-            state.result = Some(Arc::new(result));
+            publish(&mut state, built);
             ctx.request_repaint();
+        }
+    }
+}
+
+/// A build's text, or the tables it read undeclared, which void it.
+fn publish(state: &mut State, (text, missed): (Tooltip, Vec<TableId>)) {
+    if missed.is_empty() {
+        state.result = Some(Arc::new(text));
+        return;
+    }
+    for table in missed {
+        if !state.missed.contains(&table) {
+            state.missed.push(table);
         }
     }
 }
@@ -179,6 +207,28 @@ mod tests {
             !old.same_icon(&next),
             "another content object never shares text"
         );
+    }
+
+    #[test]
+    fn a_build_that_read_an_undeclared_table_keeps_no_text_and_names_the_table() {
+        let undeclared = replay_frame::frame::not_declared(TableId::Countries);
+        let mut state = State::default();
+        publish(
+            &mut state,
+            replay_frame::frame::discovering(|| {
+                let _ = &*undeclared;
+                Tooltip::default()
+            }),
+        );
+        assert!(state.result.is_none(), "a build over an undeclared table is void");
+        publish(&mut state, (Tooltip::default(), Vec::new()));
+        assert!(state.result.is_some());
+        let mut lane = Lane {
+            shared: Some(Arc::new((Mutex::new(state), Condvar::new()))),
+            worker: None,
+        };
+        assert_eq!(lane.take_missed(), [TableId::Countries]);
+        assert!(lane.take_missed().is_empty(), "taken once");
     }
 
     #[test]

@@ -283,7 +283,7 @@ fn scoped_ruling_ideology_keeps_unresolved_country_refusal() {
     with_world(&frame, |world| {
         assert_eq!(
             world.scoped_ruling_ideology(1).unwrap_err().to_string(),
-            "a Politics row's country 103 has no CountryLinks row"
+            "politics names a country that no recorded country link holds"
         );
     });
 }
@@ -2334,20 +2334,14 @@ fn character_frame(hour: Hour, required: i32, skill: i32) -> DecodedFrame {
     frame
 }
 
-/// What a character scope's `tag`, `skill` and retirement read.
+/// What a character scope's `tag`, `skill` and retirement read, through the world's queries.
 fn character_reads(world: &World<'_>) -> String {
-    let tables = world.character_tables();
-    let canonical = |raw: u32| {
-        world
-            .slot(raw)
-            .ok_or_else(|| crate::triggers::Failure::from(format!("{raw} unlinked")))
-    };
     format!(
         "{:?}",
         (
-            tables.tag(5, 1, canonical),
-            tables.skill(5),
-            tables.retired(5, canonical),
+            world.character_tag(5, 1),
+            world.character_skill(5),
+            world.character_retired(5),
         )
     )
 }
@@ -2391,16 +2385,17 @@ fn an_hour_changing_only_unread_leader_fields_confirms_its_character_reads() {
     let mut recording = Recording::new();
     let (_, first) = recording.record(character_frame(100, 10, 3));
     let (value, inputs) = with_world(&first, |world| capture(&first, || character_reads(world)));
-    assert!(
-        inputs
-            .keys()
-            .any(|key| matches!(key, Key::Fields(TableId::UnitLeaders, _)))
-    );
-    assert!(
-        !inputs
-            .keys()
-            .any(|key| matches!(key, Key::Table(TableId::UnitLeaders)))
-    );
+    // The queries read the leaders' skill, never the experience it needs.
+    let leaders: Vec<TableRead> = inputs
+        .keys()
+        .filter_map(Key::dependence)
+        .flatten()
+        .filter(|read| read.table == TableId::UnitLeaders)
+        .collect();
+    let skill = TableRead::fields(TableId::UnitLeaders, &["skill_level"]).fields;
+    let needed = TableRead::fields(TableId::UnitLeaders, &["skill_required_experience"]).fields;
+    assert!(leaders.iter().any(|read| read.fields & skill != 0), "{leaders:?}");
+    assert!(leaders.iter().all(|read| read.fields & needed == 0), "{leaders:?}");
     let (wire, second) = recording.record(character_frame(101, 11, 3));
     assert!(matches!(
         wire.tables[TableId::UnitLeaders.index()],
@@ -2408,14 +2403,12 @@ fn an_hour_changing_only_unread_leader_fields_confirms_its_character_reads() {
     ));
     let updates = Updates(&wire);
     let since = Since::hour_before(&second, &updates).unwrap();
-    // A whole-table read would be read again, at a new allocation.
-    let mut whole = inputs.clone();
-    assert!(!confirm(&mut whole, &second, None).0);
     let mut confirmed = inputs;
     assert!(confirmed.unchanged(&since));
-    assert!(confirm(&mut confirmed, &second, Some(&since)).0);
-    // Confirmed at this hour's views.
-    assert!(confirm(&mut confirmed.clone(), &second, None).0);
+    assert_eq!(
+        reusing(|| confirm(&mut confirmed, &second, Some(&since))),
+        (true, 0)
+    );
     assert_eq!(with_world(&second, character_reads), value);
     let (wire, third) = recording.record(character_frame(102, 11, 4));
     let updates = Updates(&wire);

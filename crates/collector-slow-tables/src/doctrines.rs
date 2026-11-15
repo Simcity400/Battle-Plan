@@ -183,8 +183,8 @@ impl<R: RowCodec> Rows<R> {
         Ok(())
     }
     fn prepare_baseline(&mut self) -> Result<()> {
-        // Baseline or structural insertion only. Prepare replacement journals for
-        // every in-flight frame, so subsequent scalar events never grow storage.
+        // Baseline or structural insertion only. One spare per steady frame keeps
+        // ordinary hand-offs allocation-free; a frame past them takes a new one.
         self.prepare_capacity(self.rows.len())
     }
     fn prepare_capacity(&mut self, count: usize) -> Result<()> {
@@ -203,12 +203,12 @@ impl<R: RowCodec> Rows<R> {
         if !output.is_empty() {
             return Err("doctrine event buffer was not consumed");
         }
-        if output.capacity() < self.prepared.unwrap_or(0) {
-            let mut spare = self
-                .spares
-                .pop()
-                .ok_or("doctrine prepared journals exhausted")?;
-            std::mem::swap(output, &mut spare);
+        let prepared = self.prepared.unwrap_or(0);
+        if output.capacity() < prepared {
+            *output = match self.spares.pop() {
+                Some(spare) => spare,
+                None => alloc(a::vec(prepared))?,
+            };
         }
         std::mem::swap(output, &mut self.actions);
         self.action_heap = 0;
@@ -326,7 +326,7 @@ pub struct Frame {
     pub store_bytes: usize,
     pending_heap: usize,
     pending: Pending,
-    projection: Option<Arc<SharedProjection>>,
+    projection: Option<a::SharedBox<SharedProjection>>,
     pub counts: [usize; N],
     rows: Option<[Arc<TableRows>; N]>,
     pub refusal: &'static str,
@@ -500,7 +500,8 @@ pub struct Store {
     registrations_dirty: bool,
     nested_bytes: usize,
     text: Vec<u8>,
-    projection: Arc<SharedProjection>,
+    /// Made by the first capture after each baseline, so a new store allocates nothing.
+    projection: Option<a::SharedBox<SharedProjection>>,
     country_rows: Rows<DoctrineCountryRow>,
     folder_rows: Rows<DoctrineFolderRow>,
     track_rows: Rows<DoctrineTrackRow>,
@@ -527,7 +528,10 @@ impl Store {
             + self.costs.bytes()
             + self.grants.bytes()
             + self.equipment.bytes()
-            + self.projection.bytes.load(Ordering::Relaxed)
+            + self
+                .projection
+                .as_ref()
+                .map_or(0, |projection| projection.bytes.load(Ordering::Relaxed))
     }
     pub fn capture(
         &mut self,
@@ -558,7 +562,12 @@ impl Store {
         // Lost observation or a failed conversion rebuilds the baseline at the
         // next capture instead of refusing every hour until a forced refresh.
         let marked_loss = changes::take_lost();
-        let lost = self.failed || self.projection.failed.load(Ordering::Acquire) || marked_loss;
+        let lost = self.failed
+            || self
+                .projection
+                .as_ref()
+                .is_some_and(|projection| projection.failed.load(Ordering::Acquire))
+            || marked_loss;
         if full || lost || !self.ready || root != self.root {
             // Baseline/relocation only. The root is the same header already
             // read and authenticated by CountryTacticUnlocks, including empty slots.
@@ -619,6 +628,10 @@ impl Store {
                 return Err("doctrine writer overlapped capture");
             }
         }
+        // Made on the first capture and on each baseline; a refusal is the allocation failure.
+        if self.projection.is_none() {
+            self.projection = Some(alloc(a::shared(SharedProjection::default()))?);
+        }
         frame.pending_heap = self.country_rows.action_heap
             + self.folder_rows.action_heap
             + self.track_rows.action_heap
@@ -633,7 +646,7 @@ impl Store {
         self.costs.handoff(&mut frame.pending.costs)?;
         self.grants.handoff(&mut frame.pending.grants)?;
         self.equipment.handoff(&mut frame.pending.equipment)?;
-        frame.projection = Some(Arc::clone(&self.projection));
+        frame.projection = self.projection.clone();
         frame.counts = [
             self.country_rows.rows.len(),
             self.folder_rows.rows.len(),
@@ -1242,7 +1255,9 @@ mod tests {
 
     #[test]
     fn doctrine_scalar_events_and_hourly_handoff_allocate_nothing() {
-        let _guard = DENY_LOCK.lock().unwrap();
+        let _guard = DENY_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let count = 8;
         let mut rows = Rows::<DoctrineTrackRow>::default();
         for slot in 0..count {
@@ -1278,9 +1293,48 @@ mod tests {
     }
 
     #[test]
+    fn a_frame_past_the_steady_count_takes_a_new_journal_and_every_hour_lands() {
+        let count: u32 = 8;
+        let frames = collector_extended_support::hourly::BUFFERS + 1;
+        let row = |slot: u32, mastery: i64| DoctrineTrackRow {
+            slot,
+            mastery,
+            ..Default::default()
+        };
+        let mut live = Rows::<DoctrineTrackRow>::default();
+        let mut projected = Rows {
+            record: false,
+            ..Rows::<DoctrineTrackRow>::default()
+        };
+        for slot in 0..count {
+            live.set(row(slot, 0)).unwrap();
+        }
+        live.prepare_baseline().unwrap();
+        let mut batches: Vec<Vec<Action<DoctrineTrackRow>>> =
+            (0..frames).map(|_| Vec::new()).collect();
+        for (hour, batch) in (0u32..).zip(&mut batches) {
+            if hour > 0 {
+                live.set(row(hour, i64::from(hour))).unwrap();
+            }
+            live.handoff(batch).unwrap();
+            assert!(batch.capacity() >= count as usize, "hour {hour}");
+        }
+        assert!(live.spares.is_empty());
+        for (hour, batch) in (0u32..).zip(&mut batches) {
+            projected.apply(batch).unwrap();
+            let mut rows = projected.rows.clone();
+            rows.sort_unstable_by_key(RowCodec::key);
+            let expected: Vec<_> = (0..count)
+                .map(|slot| row(slot, if (1..=hour).contains(&slot) { i64::from(slot) } else { 0 }))
+                .collect();
+            assert_eq!(rows, expected, "hour {hour}");
+        }
+    }
+
+    #[test]
     fn doctrine_cost_snapshot_count_certifies_projection() {
         let mut frame = Frame {
-            projection: Some(Arc::new(SharedProjection::default())),
+            projection: Some(a::shared(SharedProjection::default()).unwrap()),
             counts: [0, 0, 0, 0, 1, 0, 0],
             ..Default::default()
         };
@@ -1301,7 +1355,9 @@ mod tests {
 
     #[test]
     fn doctrine_lost_observation_rebuilds_at_the_next_capture() {
-        let _guard = DENY_LOCK.lock().unwrap();
+        let _guard = DENY_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         struct NoReads;
         impl Memory for NoReads {
             fn copy(&self, _: usize, _: &mut [u8]) -> bool {
@@ -1319,23 +1375,23 @@ mod tests {
             .capture(&NoReads, 0, (0, 0), false, &mut frame)
             .unwrap();
         assert!(frame.complete() && !store.failed);
-        let failed = Arc::clone(&store.projection);
+        let failed = store.projection.clone().unwrap();
         failed.failed.store(true, Ordering::Release);
         frame.reset();
         store
             .capture(&NoReads, 0, (0, 0), false, &mut frame)
             .unwrap();
         assert!(frame.complete());
-        assert!(!Arc::ptr_eq(&failed, &store.projection));
-        let previous = Arc::clone(&store.projection);
+        assert!(!a::SharedBox::ptr_eq(&failed, store.projection.as_ref().unwrap()));
+        let previous = store.projection.clone().unwrap();
         assert!(changes::mark(Domain::Bank, usize::MAX));
         frame.reset();
         store
             .capture(&NoReads, 0, (0, 0), false, &mut frame)
             .unwrap();
-        assert!(!Arc::ptr_eq(&previous, &store.projection));
+        assert!(!a::SharedBox::ptr_eq(&previous, store.projection.as_ref().unwrap()));
         for gain in [true, false] {
-            let previous = Arc::clone(&store.projection);
+            let previous = store.projection.clone().unwrap();
             if gain {
                 changes::defer_gain(usize::MAX, -1);
             } else {
@@ -1345,14 +1401,16 @@ mod tests {
             store
                 .capture(&NoReads, 0, (0, 0), false, &mut frame)
                 .unwrap();
-            assert!(!Arc::ptr_eq(&previous, &store.projection));
+            assert!(!a::SharedBox::ptr_eq(&previous, store.projection.as_ref().unwrap()));
         }
         changes::enabled(false);
     }
 
     #[test]
     fn doctrine_marked_bank_and_progress_keep_their_narrow_read_surface() {
-        let _guard = DENY_LOCK.lock().unwrap();
+        let _guard = DENY_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         struct Scalars(bool);
         impl Memory for Scalars {
             fn copy(&self, address: usize, bytes: &mut [u8]) -> bool {
@@ -1413,7 +1471,9 @@ mod tests {
 
     #[test]
     fn doctrine_ordinary_hour_does_not_read_native_memory() {
-        let _guard = DENY_LOCK.lock().unwrap();
+        let _guard = DENY_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         struct NoReads;
         impl Memory for NoReads {
             fn copy(&self, _: usize, _: &mut [u8]) -> bool {
@@ -1421,9 +1481,11 @@ mod tests {
             }
         }
         changes::enabled(true);
+        // A ready store's first capture made its projection.
         let mut store = Store {
             ready: true,
             root: (0, 0),
+            projection: Some(a::shared(SharedProjection::default()).unwrap()),
             ..Default::default()
         };
         for (i, domain) in DOMAINS.iter().enumerate() {
@@ -1529,7 +1591,9 @@ mod tests {
 
     #[test]
     fn doctrine_native_baseline_and_marked_worker_reads_preserve_occurrence_journals() {
-        let _guard = DENY_LOCK.lock().unwrap();
+        let _guard = DENY_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         struct Memory(Vec<u8>);
         impl engine_native::Memory for Memory {
             fn copy(&self, address: usize, output: &mut [u8]) -> bool {

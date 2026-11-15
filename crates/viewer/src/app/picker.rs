@@ -95,8 +95,8 @@ impl PickerState {
         time: f32,
         advance: bool,
         input: Option<Input>,
+        four: bool,
     ) -> Result<picker::PickerDrawn, String> {
-        let four = four_buttons(document);
         if !self
             .labels
             .as_ref()
@@ -172,6 +172,7 @@ pub(crate) fn dump(
         options.presentation_time,
         true,
         None,
+        four_buttons(document),
     )
 }
 
@@ -275,8 +276,7 @@ pub fn all_modes(document: &Document, four_buttons: bool) -> Vec<MapMode> {
 
 /// Every mode a user can choose: the fixed buttons' (the fourth with its feature), then those the
 /// configurable slots offer, each once.
-fn choosable_modes(document: &Document) -> Vec<MapMode> {
-    let four = four_buttons(document);
+fn choosable_modes(document: &Document, four: bool) -> Vec<MapMode> {
     let mut modes: Vec<MapMode> = DEFAULT_SLOTS[..*configurable(document).start()]
         .iter()
         .filter(|stock| four || **stock != Stock::Operatives)
@@ -347,15 +347,15 @@ pub fn mode_hover(
 
 /// Whether the recording owns the feature of the fourth large button.
 pub fn four_buttons(document: &Document) -> bool {
-    document
-        .frame()
+    document.frame().map_or(true, four_buttons_at)
+}
+
+/// [`four_buttons`] from `frame`'s features.
+pub fn four_buttons_at(frame: &replay_frame::frame::DecodedFrame) -> bool {
+    frame
+        .complete::<replay_data::rows::tables::SimulationFeatures>()
         .ok()
-        .and_then(|frame| {
-            frame
-                .complete::<replay_data::rows::tables::SimulationFeatures>()
-                .ok()
-                .and_then(|rows| rows.first().map(|row| row.dlc_mask))
-        })
+        .and_then(|rows| rows.first().map(|row| row.dlc_mask))
         .is_none_or(|mask| mask & FOURTH_BUTTON_DLC != 0)
 }
 
@@ -578,7 +578,8 @@ impl Viewer {
                 .is_some_and(|known| std::ptr::eq(known.as_ptr(), Arc::as_ptr(&document.content)))
         {
             self.picker.modes_for = Some(Arc::downgrade(&document.content));
-            let modes = choosable_modes(document)
+            let four = self.head_rows.four_buttons(super::head_rows::head(super::live_of(&self.playhead_map), document), document);
+            let modes = choosable_modes(document, four)
                 .iter()
                 .map(|mode| {
                     let button = mode_button(document, mode);
@@ -653,6 +654,7 @@ impl Viewer {
         } else {
             self.picker_toggles()
         };
+        let four = self.head_rows.four_buttons(super::head_rows::head(super::live_of(&self.playhead_map), document), document);
         Some(self.picker.draw(
             document,
             &self.map_mode,
@@ -662,6 +664,7 @@ impl Viewer {
             time,
             advance,
             input,
+            four,
         ))
     }
 
@@ -722,7 +725,7 @@ impl Viewer {
 
     /// The picker's authored keys pressed this frame, as clicks.
     pub(crate) fn picker_keys(&mut self, ui: &egui::Ui, document: &Document, extent: [f32; 2]) {
-        let four = four_buttons(document);
+        let four = self.head_rows.four_buttons(super::head_rows::head(super::live_of(&self.playhead_map), document), document);
         let Ok(shortcuts) = picker::shortcuts(&document.combat, extent, four, DEFAULT_SLOTS.len())
         else {
             return;

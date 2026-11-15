@@ -36,3 +36,33 @@ pub mod division_history;
 pub mod panel_sources;
 
 mod panel_operand_hooks;
+
+#[cfg(test)]
+mod allocation_denial_tests {
+    #[test]
+    fn a_denied_interval_belongs_to_its_thread() {
+        use std::sync::{Arc, Barrier};
+        let entered = Arc::new(Barrier::new(2));
+        let left = Arc::new(Barrier::new(2));
+        let other = {
+            let (entered, left) = (Arc::clone(&entered), Arc::clone(&left));
+            std::thread::spawn(move || {
+                entered.wait();
+                // Another test's interval begins and ends inside this one.
+                drop(collector_test_support::NullGuard::new(usize::MAX));
+                left.wait();
+            })
+        };
+        let denied = collector_test_support::with_allocations_denied(|| {
+            entered.wait();
+            left.wait();
+            Vec::<u8>::new().try_reserve(64).is_err()
+        });
+        other.join().unwrap();
+        assert!(denied, "another thread's guard ended this thread's denial");
+        assert_eq!(
+            collector_test_support::DENIALS.load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+    }
+}

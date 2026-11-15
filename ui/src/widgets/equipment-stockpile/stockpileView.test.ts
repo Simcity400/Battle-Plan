@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { AmountRun, EquipmentStockpileReply, StockVariant } from '../../generated/dashboard';
+import type { AmountRun, EquipmentStockpileReply, StockVariant } from './types';
 import { stockGroups, validateStockpileReply } from './stockpileData.ts';
 import { stockRows } from './stockpileView.ts';
 

@@ -240,6 +240,7 @@ pub(crate) struct Capture {
 pub(crate) fn direct(memory: &impl Memory, len: usize) -> Capture {
     let mut owned = vec![cwar_relation::Row::default(); len];
     let owned_outcome = cwar_relation::walk(memory, BASE, GAME_STATE, &mut owned);
+    owned.truncate(owned_outcome.len());
     Capture {
         owned_outcome,
         owned,

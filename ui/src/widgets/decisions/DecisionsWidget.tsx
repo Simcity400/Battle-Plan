@@ -6,54 +6,47 @@ import { ChipSet } from '../../components/ChipSet';
 import ArtFallback from '../../components/ArtFallback';
 import { CountryFlagUrl } from '../../components/CountryFlag';
 import WidgetState from '../../components/WidgetState';
-import { useHeldFailure } from '../../dashboard/heldFailures';
 import LogList from '../../charts/log/LogList';
+import LogGaps from '../../charts/log/LogGaps';
 import type { LogRow } from '../../charts/log/logData';
 import { logSettings } from '../../charts/log/logOptions';
 import { jumpItem } from '../../charts/jump';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { selectedTags } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { countryMatch, MEMBERSHIP_PREPARING } from '../../dashboard/groups';
-import { resolveWindow } from '../../dashboard/model';
+import { countryMatch, countryScope } from '../../dashboard/groups';
 import { resolveOptions } from '../../dashboard/options';
-import { usePlaybackHour } from '../../dashboard/playback';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { eventCountryName } from '../event-feed/eventFeedData';
-import { occurrenceCountryRequests, recordingBreaks, scriptNotRecorded } from '../event-feed/scriptOccurrences';
-import type { RecordingBreak } from '../event-feed/scriptOccurrences';
-import { useScriptOccurrences } from '../event-feed/useScriptOccurrences';
+import { occurrenceCountryRequests } from '../event-feed/scriptOccurrences';
+import { useCards } from '../event-feed/useCards';
+import ScriptedText from '../event-feed/ScriptedText';
+import { reasonsOf } from '../event-feed/scriptedGaps.ts';
+import type { CardList } from '../event-feed/useCards';
 import { OPTIONS } from './definition';
-import { activeCount, costText, decisionAt, decisionPlaybackBounds, decisionDescription, decisionDiagnostics, decisionJumps, decisionName, decisionTooltip,
-  lifecycleLine, prepareDecisions, STATUS_CHOICES, statusLabel, statusTone } from './decisionsData.ts';
-import type { DecisionAt, DecisionFilter } from './decisionsData';
+import { activeCount, CONTINUING, costText, decisionAt, decisionDescription, decisionDiagnostics, decisionJumps, decisionName, decisionRow, decisionTooltip,
+  lifecycleLine, OPENERS, STATUS_CHOICES, statusLabel, statusTone } from './decisionsData.ts';
+import type { DecisionAt, DecisionCard } from './decisionsData';
 import '../event-feed/eventFeed.css';
-import '../construction-log/constructionLog.css';
 import './decisions.css';
+import { useShownEachFrame } from '../../dashboard/widgetPerf';
+import { trackHourOf } from '../../dashboard/settledHour';
 
 const NO_ROWS: readonly LogRow<DecisionAt>[] = [];
-const NO_KINDS: readonly never[] = [];
 
-/** Every decision and mission the chosen countries took, as Construction log's
- * rows: newest first by the date selected, each with its art, name over how it
- * ran or ended, the country, a status pill and what it is proven to have cost.
- * A row keeps its place while its status changes with playback. */
+/** Every decision and mission the chosen countries took, as the construction log's rows: newest first by the date
+ * selected, each with its art, name over how it ran or ended, the country, a status pill and what it is proven to have
+ * cost. A row keeps its place while its status changes with the hour shown. */
 export default function DecisionsWidget({ widget, runtime, active, onDiagnostics, setOption, headerSlot }: WidgetProps) {
-  const live = widget.time.mode === 'follow';
-  const playbackHour = usePlaybackHour(runtime.clock, active && live);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
+useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtime.tracks, runtime.clock.getHour()) : null);
   const options = resolveOptions(OPTIONS, widget.options);
   const log = logSettings(options);
   const filtered = widget.countries.kind !== 'all';
   // One country is named by the header chip, so its rows leave the country out.
   const oneCountry = widget.countries.kind === 'selected' || (widget.countries.kind === 'tags' && widget.countries.tags.length === 1);
-  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
-  const inBranch = !!track && !!window && window.lastHour >= track.branch.firstHour
-    && (widget.time.mode === 'range' ? window.firstHour <= track.branch.lastHour : window.lastHour <= track.branch.lastHour);
-  const hour = track && window && inBranch ? Math.min(window.lastHour, track.branch.lastHour) : null;
-  const groups = useCountryGroups(runtime, track, active && filtered && inBranch);
-  const from = widget.time.mode === 'range' ? window?.firstHour ?? null : null;
+  const groups = useCountryGroups(runtime, track, active && filtered);
   const tagsKey = JSON.stringify(selectedTags(widget.countries, track));
   const fallback = useMemo<string[]>(() => JSON.parse(tagsKey), [tagsKey]);
   const match = useMemo(() => countryMatch(widget.countries, fallback, groups.data, track?.branch.lastHour ?? 0),
@@ -61,35 +54,33 @@ export default function DecisionsWidget({ widget, runtime, active, onDiagnostics
   const statusesKey = JSON.stringify(STATUS_CHOICES.filter(status => options[status.value] !== false).map(status => status.value));
   const statuses = useMemo<ReadonlySet<string>>(() => new Set(JSON.parse(statusesKey)), [statusesKey]);
   const artwork = options.artwork !== false;
-  const filter = useMemo<DecisionFilter>(() => ({ country: match.matches, allCountries: !filtered, firstHour: from }), [match, filtered, from]);
-  const prepare = useCallback((reply: Parameters<typeof prepareDecisions>[0]) => prepareDecisions(reply, filter), [filter]);
-  const breaksKey = track ? JSON.stringify(recordingBreaks(track.branch)) : '[]';
-  const breaks = useMemo<RecordingBreak[]>(() => JSON.parse(breaksKey), [breaksKey]);
-  const at = useCallback((row: LogRow<DecisionAt>, at: number) => decisionAt(row, at, breaks, statuses), [breaks, statuses]);
-  const filterKey = JSON.stringify([widget.countries, fallback, from]);
-  const feed = useScriptOccurrences(runtime, track, active && match.ready && inBranch, hour, 'decisions', NO_KINDS, from, filterKey,
-    prepare, at, activeCount, breaks, decisionPlaybackBounds);
+  const country = filtered ? match.matches : null;
+  // The chosen countries are kept by the server, so a sparse group pages through its own cards only.
+  const scope = useMemo(() => filtered && match.ready ? countryScope(widget.countries, fallback, groups.data, track?.branch.lastHour ?? 0) ?? undefined : undefined,
+    [filtered, match.ready, widget.countries, fallback, groups.data, track?.branch.lastHour]);
+  const list = useMemo<CardList<DecisionCard, DecisionAt>>(() => ({ product: 'decisions', scope, openers: OPENERS, continuing: CONTINUING, row: decisionRow,
+    edges: card => card.occurrence.edges, days: card => card.occurrence.edges.some(edge => edge.days !== null),
+    at: (row, hour, breaks) => decisionAt(row, hour, breaks, statuses, country) }), [statuses, country, scope]);
+  const cards = useCards(runtime, widget, track, active && match.ready, list);
   const [visible, setVisible] = useState<readonly LogRow<DecisionAt>[]>(NO_ROWS);
   const wanted = useMemo(() => occurrenceCountryRequests(visible.map(row => row.item.card.occurrence)), [visible]);
-  const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active && inBranch);
+  const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active);
   const nameHour = (row: LogRow<DecisionAt>) => row.item.card.occurrence.edges[0].row.nameHour;
   const label = useCallback((hour: number, tag: string) => {
     const found = labelAt(hour)(tag);
     return { ...found, name: eventCountryName(tag, found) };
   }, [labelAt]);
   const name = (row: LogRow<DecisionAt>) => (tag: string) => label(nameHour(row), tag).name;
-  const warnings = useMemo(() => [...feed.warnings, ...(feed.data ? scriptNotRecorded(feed.data) : []), ...decisionDiagnostics(feed.replies)],
-    [feed.warnings, feed.data, feed.replies]);
+  const warnings = useMemo(() => [...cards.notes, ...decisionDiagnostics(cards.pages.flatMap(page => (page.rows ?? []).map(row => row.item.card)))],
+    [cards.notes, cards.pages]);
   useDiagnostics(onDiagnostics, warnings);
 
-  const feedError = useHeldFailure(feed.error, feed.data !== undefined, feed.retry);
   if (!track) return <WidgetState kind="empty" icon="ballot" message="Load a campaign to see decisions." />;
-  if (!inBranch) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
   const groupFailure = filtered && groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (groupFailure && !groups.data) return groupFailure;
-  if (feedError) return <>{groupFailure}<WidgetState kind="error" failure={feedError} onRetry={feed.retry} /></>;
+  if (cards.error) return <>{groupFailure}<WidgetState kind="error" failure={cards.error} onRetry={cards.retry} /></>;
   if (match.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={match.reason} /></>;
-  if (!feed.data || !match.ready) return <>{groupFailure}<WidgetState kind="loading" label="Loading decisions…" /></>;
+  if (cards.loading || !match.ready) return <>{groupFailure}<WidgetState kind="loading" label="Loading decisions…" /></>;
 
   const renderRow = (row: LogRow<DecisionAt>) => {
     const decision = row.item;
@@ -103,7 +94,8 @@ export default function DecisionsWidget({ widget, runtime, active, onDiagnostics
     return <>
       {artwork && <span className="log-art" aria-hidden="true">{card.item?.icon ? <img src={card.item.icon} alt="" /> : <ArtFallback icon="ballot" />}</span>}
       <span className="construction-title">
-        <span className="construction-building"><span className={`construction-name${card.item?.name ? '' : ' is-muted'}`}>{decisionName(card)}</span></span>
+        <span className="construction-building"><span className={`construction-name${card.item?.name ? '' : ' is-muted'}`} data-tooltip={card.item?.name ? undefined : reasonsOf(card.item).nameMissing}>
+          <ScriptedText text={decisionName(card)} reason={reasonsOf(card.item).gaps} /></span></span>
         <span className="construction-place">
           {!oneCountry && <span className="construction-place-country">{flag}{named('construction-name-pending is-short')}<span aria-hidden="true">·</span></span>}
           <span className="construction-ellipsis">{lifecycleLine(decision)}</span>
@@ -111,24 +103,26 @@ export default function DecisionsWidget({ widget, runtime, active, onDiagnostics
       </span>
       {!oneCountry && <span className="construction-country">{flag}{named('construction-name-pending')}</span>}
       <span className="construction-status">
-        <span className={`pill${tone === 'neutral' ? '' : ` ${tone}`}`}>{live && decision.status === 'active' && <i className="live-dot" aria-hidden="true" />}<span>{statusLabel(decision)}</span></span>
+        <span className={`pill${tone === 'neutral' ? '' : ` ${tone}`}`}>{cards.follow && decision.status === 'active' && <i className="live-dot" aria-hidden="true" />}<span>{statusLabel(decision)}</span></span>
       </span>
       {cost === null ? <span className="log-value is-muted" data-tooltip="Not recorded">—</span>
         : <span className={`log-value${cost === 'None' ? ' is-muted' : ''}`}>{cost}</span>}
     </>;
   };
-  const header = headerSlot && feed.total !== null && statuses.has('active') && createPortal(<span className="pill">{feed.total.toLocaleString()} active</span>, headerSlot);
-  return <div className={`log-widget construction-log decisions-log${oneCountry ? ' is-one-country' : ''}${artwork ? '' : ' is-no-art'}`}>{groupFailure}
+  // Running decisions are counted once every page is held: an unread page could hold more.
+  const held = cards.pages.length > 0 && cards.pages.every(page => page.rows);
+  const total = held && statuses.has('active') ? cards.pages.reduce((sum, page) => sum + activeCount(page.rows ?? []), 0) : null;
+  const header = headerSlot && total !== null && createPortal(<span className="pill">{total.toLocaleString()} active{cards.feed.missing.length ? ' (recorded hours)' : ''}</span>, headerSlot);
+  return <div className={`log-widget decisions-log${oneCountry ? ' is-one-country' : ''}${artwork ? '' : ' is-no-art'}`}>{groupFailure}
     {header}
     {log.chips && <div className="log-chips"><ChipSet label="Decision status" chips={STATUS_CHOICES} selected={[...statuses]} max={STATUS_CHOICES.length}
       onToggle={key => setOption?.(key, !statuses.has(key))} /></div>}
-    <LogList key={feed.identity} pages={feed.pages} label="Decisions" density={log.density} months={log.months} preparedCoverage={feed.prefix?.coverage}
-      {...import.meta.env.MODE === 'parity' ? { paritySemantic: { complete: true, reads: undefined,
-        item: (row: LogRow<DecisionAt>) => ({ ...row.item, hour: feed.shownHour }) } } : {}}
-      animate={log.animate && live} playhead={live ? hour : null} onVisible={setVisible} onWantedPages={feed.onWantedPages}
+    <LogGaps missing={cards.feed.missing} until={cards.hour} />
+    <LogList pages={cards.pages} label="Decisions" density={log.density} months={log.months}
+      animate={log.animate && cards.follow} playhead={cards.follow ? cards.hour : null} onVisible={setVisible} onWantedPages={cards.feed.onWantedPages}
       renderRow={renderRow} describe={row => decisionDescription(row.item, name(row))} tooltip={row => decisionTooltip(row.item, name(row)).map(form => ({ ...form,
         ...countryNameDetails(...[row.item.card.country, row.item.card.target].map(tag => tag === null ? null : label(nameHour(row), tag))) }))}
-      menu={row => decisionJumps(row.item).map(hour => jumpItem(runtime, track.id, hour))} empty={match.known(from ?? track.branch.firstHour, hour!) ? "No recorded decisions match these settings." : MEMBERSHIP_PREPARING} />
-    {feed.errors.size > 0 && <div className="event-feed-load">Some decisions couldn’t load. <button type="button" onClick={feed.retryPages}>Retry</button></div>}
+      menu={row => decisionJumps(row.item).map(hour => jumpItem(runtime, track.id, hour))}
+      empty="No recorded decisions match these settings." />
   </div>;
 }

@@ -20,11 +20,15 @@ layout on builds whose layouts were not checked.
 Known builds (BUILDS) are read from the RE tool's pinned executables. A non-reference build is
 checked against the addresses recorded for it in HOI4RE_DATA/sites/<build>.json
 ({"<reference rva>": rva}); `relocate` writes that file for a new build from what the locator finds.
+Builds in engine_sites::LAYOUT_CHECKED are checked with their layouts checked as well. To change the
+reference: relocate the old one while it is still the reference, put the new one first in BUILDS,
+move each key to its position there (its sites/<build>.json), and generate.
 Needs Python 3.11, capstone and numpy.
 """
 import argparse
 import bisect
 import collections
+import hashlib
 import json
 import os
 import re
@@ -39,6 +43,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA = os.environ.get("HOI4RE_DATA", r"C:\Tools\hoi4_mcp\hoi4re\data")
 INDEX = os.path.join(DATA, "builds", "{build}", "index.sqlite3")
 OUTPUT = os.path.join(ROOT, "crates", "engine-sites", "src", "generated.rs")
+LIB = os.path.join(ROOT, "crates", "engine-sites", "src", "lib.rs")
 U64 = (1 << 64) - 1
 IMAGE_BASE = 0x140000000
 M1, M2, M3 = 0x9E3779B97F4A7C15, 0xBF58476D1CE4E5B9, 0x94D049BB133111EB
@@ -921,7 +926,7 @@ def emit(spec, version):
 # ---- builds --------------------------------------------------------------------------------------
 
 # Builds the generator verifies against: id -> release. The reference build comes first.
-BUILDS = {"0bdb": "1.19.4.2", "f584": "1.19.4.1"}
+BUILDS = {"c184": "1.19.5.0", "0bdb": "1.19.4.2", "f584": "1.19.4.1"}
 # Keys each non-reference build is known to withhold, and why; any other outcome fails `check`.
 EXPECTED_WITHHELD = {
     "f584": {
@@ -941,6 +946,13 @@ def exe(build):
         if d.endswith("." + build):
             return os.path.join(PINNED, d, "hoi4.exe")
     raise SystemExit("no pinned executable for build %s under %s" % (build, PINNED))
+
+
+def layout_checked():
+    """The SHA-256s in engine_sites::LAYOUT_CHECKED: builds that resolve keys with checked layouts."""
+    with open(LIB, encoding="utf-8") as f:
+        block = re.search(r"const LAYOUT_CHECKED: &\[\[u8; 32\]\] = &\[(.*?)\n\];", f.read(), re.S).group(1)
+    return {bytes(int(x, 16) for x in re.findall(r"0x([0-9a-f]{2})", row)) for row in re.findall(r"\[([^\]]*)\]", block)}
 
 
 def addresses(build):
@@ -1024,9 +1036,13 @@ def main(argv):
         for rva in sorted(source - spec_keys):
             print("FAIL key %#x is not generated; run tools/sites.py generate" % rva)
             failed = True
+        checked_builds = {b for b in BUILDS if hashlib.sha256(open(exe(b), "rb").read()).digest() in layout_checked()}
+        if reference not in checked_builds:
+            print("FAIL the reference build %s is not in engine_sites::LAYOUT_CHECKED" % BUILDS[reference])
+            failed = True
         for b in BUILDS:
             recorded = None if b == reference else addresses(b)
-            for checked in ((True, False) if b == reference else (False,)):
+            for checked in ((True, False) if b in checked_builds else (False,)):
                 expected = set() if checked else set(EXPECTED_WITHHELD.get(b, ())) | unwitnessed
                 reasons, wrong, withheld = report(images[b], spec, recorded, checked)
                 print("%s (%s), layouts %s:" % (BUILDS[b], b, "checked" if checked else "by witnesses"))

@@ -124,7 +124,7 @@ pub fn configuration() -> eframe::egui_wgpu::WgpuConfiguration {
 /// before loading the document.
 pub fn probe_dump_device() -> io::Result<()> {
     pollster::block_on(async {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let instance = shader_pipeline::gpu::instance();
         let adapters = instance.enumerate_adapters(wgpu::Backends::all()).await;
         let adapter = select_adapter(&adapters, None)?;
         map_device_descriptor(&adapter);
@@ -305,7 +305,8 @@ pub fn dump_png(
 ) -> io::Result<DumpReport> {
     request.camera.validate()?;
     pollster::block_on(async {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let lifecycle = shader_pipeline::gpu::device_lifecycle();
+        let instance = shader_pipeline::gpu::instance();
         let adapters = instance.enumerate_adapters(wgpu::Backends::all()).await;
         let adapter = select_adapter(&adapters, None)?;
         let info = adapter.get_info();
@@ -313,6 +314,7 @@ pub fn dump_png(
             .request_device(&map_device_descriptor(&adapter))
             .await
             .map_err(io::Error::other)?;
+        drop(lifecycle);
         let mut scene = Scene::new(
             &device,
             &queue,

@@ -59,12 +59,10 @@ fn run(
     seeds: &[super::super::DivisionSeed],
     packet: &mut super::super::MovementPacket,
     hour: Option<i32>,
-    rows: usize,
 ) -> (super::super::MovementWalk, [super::super::MovementRow; 3]) {
     let mut geometry = crate::cprovince::GeometryPacket::with_capacities(
         crate::cprovince::GeometryCapacities::default(),
     );
-    geometry.enable_growth();
     geometry.begin(memory, 0, GS).unwrap();
     let result = super::super::capture_movement_inputs_with_combat_references(
         memory,
@@ -72,8 +70,6 @@ fn run(
         GS,
         seeds,
         Outcome::Rows { len: seeds.len() },
-        rows,
-        0,
         &mut geometry,
         packet,
         hour,
@@ -92,13 +88,16 @@ fn movement_reference_growth_preserves_prefixes_order_repeats_and_read_once() {
     let memory = ScalarBatchMemory::new(&source);
     let mut packet = super::super::MovementPacket::new(3, 0);
     packet.reserve_combat_references(4).unwrap();
-    let (legacy, expected) = run(&memory, &seeds, &mut packet, None, 3);
+    let (legacy, expected) = run(&memory, &seeds, &mut packet, None);
     memory.reads.borrow_mut().clear();
     let allocated = packet.allocated_bytes();
-    let (walk, rows) = run(&memory, &seeds, &mut packet, Some(7), 3);
+    let (walk, rows) = run(&memory, &seeds, &mut packet, Some(7));
     assert_eq!(walk, legacy);
     assert_eq!(walk.outcome, Outcome::Rows { len: 3 });
-    assert_eq!(packet.allocated_bytes(), allocated);
+    assert!(
+        packet.allocated_bytes() > allocated,
+        "a reference arena short of the hour's demand grows"
+    );
     assert_eq!(
         (
             packet.combat_references_required(),
@@ -108,9 +107,9 @@ fn movement_reference_growth_preserves_prefixes_order_repeats_and_read_once() {
     );
     assert_eq!(
         rows.map(|row| row.combat_references),
-        [Some((0, 2)), Some((2, 2)), None]
+        [Some((0, 2)), Some((2, 2)), Some((4, 2))]
     );
-    assert!(rows[2].combat_references_failure.is_some());
+    assert!(rows.iter().all(|row| row.combat_references_failure.is_none()));
     for (mut actual, expected) in rows.into_iter().zip(expected) {
         actual.combat_references = None;
         actual.combat_references_failure = None;
@@ -139,14 +138,14 @@ fn movement_reference_growth_preserves_prefixes_order_repeats_and_read_once() {
                 .iter()
                 .filter(|&&(address, len)| address == vector + 8 && len == 8)
                 .count(),
-            usize::from(index < 2)
+            1
         );
     }
     drop(reads);
     packet
         .reserve_combat_references(packet.combat_references_required())
         .unwrap();
-    let (_, grown) = run(&memory, &seeds, &mut packet, Some(8), 3);
+    let (_, grown) = run(&memory, &seeds, &mut packet, Some(8));
     for row in grown {
         assert_eq!(
             packet.combat_references(&row).unwrap(),
@@ -178,9 +177,9 @@ fn movement_optional_registry_failure_preserves_every_established_field() {
     let memory = ScalarBatchMemory::new(&source);
     let mut packet = super::super::MovementPacket::new(3, 0);
     packet.reserve_combat_references(6).unwrap();
-    let (legacy, expected) = run(&memory, &seeds, &mut packet, None, 3);
+    let (legacy, expected) = run(&memory, &seeds, &mut packet, None);
     memory.fault.set(Some(registry::HIGH_ROOT_RVA.0));
-    let (walk, rows) = run(&memory, &seeds, &mut packet, Some(9), 3);
+    let (walk, rows) = run(&memory, &seeds, &mut packet, Some(9));
     assert_eq!(walk, legacy);
     for (mut actual, expected) in rows.into_iter().zip(expected) {
         assert_eq!(actual.combat_references, None);
@@ -188,29 +187,6 @@ fn movement_optional_registry_failure_preserves_every_established_field() {
         assert_eq!(actual, expected);
     }
     assert_eq!(packet.combat_references_required(), 6);
-}
-
-#[test]
-fn movement_capacity_omissions_keep_owned_header_pressure_without_vector_walk() {
-    let (source, seeds) = reference_fixture();
-    let memory = ScalarBatchMemory::new(&source);
-    let mut packet = super::super::MovementPacket::new(0, 0);
-    let (walk, _) = run(&memory, &seeds, &mut packet, Some(10), 0);
-    assert_eq!(
-        walk.outcome,
-        Outcome::Truncated {
-            len: 0,
-            unread_rows: 3
-        }
-    );
-    assert_eq!(packet.combat_references_required(), 6);
-    assert!(
-        !memory
-            .reads
-            .borrow()
-            .iter()
-            .any(|&(address, _)| (0x19000..0x19030).contains(&address))
-    );
 }
 
 #[test]
@@ -230,13 +206,13 @@ fn movement_empty_vector_has_own_hour_and_legacy_does_not_acquire_references() {
     super::super::capture_division_seeds(&source, &mut seeds);
     let memory = ScalarBatchMemory::new(&source);
     let mut packet = super::super::MovementPacket::new(1, 0);
-    let (walk, rows) = run(&memory, &seeds, &mut packet, Some(i32::MIN), 1);
+    let (walk, rows) = run(&memory, &seeds, &mut packet, Some(i32::MIN));
     assert_eq!(walk.outcome, Outcome::Rows { len: 1 });
     assert_eq!(rows[0].combat_references, Some((0, 0)));
     assert_eq!(packet.combat_references(&rows[0]), Some(&[][..]));
     assert_eq!(packet.combat_references_hour(), Some(i32::MIN));
     memory.reads.borrow_mut().clear();
-    let (_, legacy) = run(&memory, &seeds, &mut packet, None, 1);
+    let (_, legacy) = run(&memory, &seeds, &mut packet, None);
     assert_eq!(legacy[0].combat_references, None);
     assert!(
         !memory.reads.borrow().iter().any(|&(address, len)| address

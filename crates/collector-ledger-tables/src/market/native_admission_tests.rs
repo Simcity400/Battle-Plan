@@ -226,7 +226,7 @@ fn record(
     decoder: &mut FrameDecoder,
 ) -> DecodedFrame {
     let mut pack = Captured::vacant();
-    pack.capture_growing(memory, 0, GAME, hour, false);
+    pack.capture(memory, 0, GAME, hour, false);
     assert!(
         pack.outcomes()[..3]
             .iter()
@@ -458,7 +458,7 @@ fn unobserved_birth_and_unreadable_selected_variable_holder_still_refuse() {
             }
         }
         let mut pack = Captured::vacant();
-        pack.capture_growing(&Failure(&memory), 0, GAME, 101, false);
+        pack.capture(&Failure(&memory), 0, GAME, 101, false);
         let expected = if missing_birth {
             "market new contract has no observed birth"
         } else {
@@ -501,6 +501,38 @@ fn daily_discovery_then_observed_birth_and_removal_needs_no_surviving_definition
         [producer::CONTRACT_CREATED, producer::CONTRACT_REMOVED]
     );
     assert!(events.iter().all(|r| r.agreement == id(20)));
+}
+
+/// A C++ exception anywhere in the game (a save load raises them) may end a
+/// seed-changing context with no writer notification. The next hour reads
+/// every held contract's variables again; later hours carry without reads.
+#[test]
+fn an_unobserved_variable_change_rereads_every_contract_and_keeps_its_terms() {
+    let _session = producer::test_support::Session::default();
+    let mut memory = Native::new();
+    let mut encoder = FrameEncoder::new();
+    let mut decoder = FrameDecoder::for_tables(&TABLES);
+    memory.clock(100);
+    boundary(100);
+    memory.start();
+    let frame = record(&memory, 100, &mut encoder, &mut decoder);
+    let rows = frame.complete::<tables::MarketContractTerms>().unwrap();
+    assert_eq!(rows[0].variable_state, 17);
+    for (hour, seed) in [(101, 23_u32), (103, 29)] {
+        memory.clock(hour);
+        producer::variables_uncertified();
+        memory.variables(CONTRACT, seed);
+        boundary(hour);
+        let frame = record(&memory, hour, &mut encoder, &mut decoder);
+        let rows = frame.complete::<tables::MarketContractTerms>().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].variable_state, u64::from(seed));
+        assert_eq!(rows[0].variables[0].amount_raw, i64::from(seed) * 100_000);
+        memory.clock(hour + 1);
+        boundary(hour + 1);
+        assert!(!held::full_publication_required());
+        record(&NoReads, hour + 1, &mut encoder, &mut decoder);
+    }
 }
 
 #[test]
@@ -629,9 +661,9 @@ fn each_country_read_refusal_recovers_first_exact_hour_and_keeps_contract_totals
                 range: 0x3000..0x3008,
             };
             if hour < 103 {
-                pack.capture_growing(&fault, 0, GAME, hour, false);
+                pack.capture(&fault, 0, GAME, hour, false);
             } else {
-                pack.capture_growing(&memory, 0, GAME, hour, false);
+                pack.capture(&memory, 0, GAME, hour, false);
             }
             assert_eq!(
                 matches!(pack.outcomes()[0], Outcome::Unavailable { .. }),
@@ -680,7 +712,7 @@ fn unreadable_reset_holder_is_retained_for_first_exact_rebind() {
     session.reset_country(&memory, 5000);
     boundary(101);
     let mut pack = Captured::vacant();
-    pack.capture_growing(
+    pack.capture(
         &Missing {
             native: &memory,
             range: 0x4800..0x4808,
@@ -730,7 +762,7 @@ fn country_identity_validation_stays_strict_and_recovers_after_each_bad_holder()
         session.inventory(&memory, 5000);
         boundary(101);
         let mut pack = Captured::vacant();
-        pack.capture_growing(&memory, 0, GAME, 101, false);
+        pack.capture(&memory, 0, GAME, 101, false);
         assert!(matches!(pack.outcomes()[0], Outcome::Unavailable { .. }));
         encode_capture(pack, 101, &mut encoder, &mut decoder);
         memory.bytes[field..field + 8].copy_from_slice(&previous);
@@ -764,7 +796,7 @@ fn country_recovery_rebinds_a_fresh_market_manager_from_the_existing_census() {
     session.automation(5000);
     boundary(101);
     let mut pack = Captured::vacant();
-    pack.capture_growing(&memory, 0, GAME, 101, false);
+    pack.capture(&memory, 0, GAME, 101, false);
     assert!(matches!(pack.outcomes()[0], Outcome::Unavailable { .. }));
     encode_capture(pack, 101, &mut encoder, &mut decoder);
     for hour in 102..=104 {
@@ -774,7 +806,7 @@ fn country_recovery_rebinds_a_fresh_market_manager_from_the_existing_census() {
         memory.start();
         let mut pack = Captured::vacant();
         if hour < 104 {
-            pack.capture_growing(
+            pack.capture(
                 &Missing {
                     native: &memory,
                     range: 0x4900 + market::STOCKPILE_EQUIPMENT
@@ -786,7 +818,7 @@ fn country_recovery_rebinds_a_fresh_market_manager_from_the_existing_census() {
                 false,
             );
         } else {
-            pack.capture_growing(&memory, 0, GAME, hour, false);
+            pack.capture(&memory, 0, GAME, hour, false);
         }
         assert_eq!(
             matches!(pack.outcomes()[0], Outcome::Unavailable { .. }),
@@ -891,7 +923,7 @@ fn failed_initial_country_seed_recovers_without_publishing_a_default_row() {
     held::finish_seed(true);
     held::recover_contracts(&memory, 0, GAME);
     let mut pack = Captured::vacant();
-    pack.capture_growing(&fault, 0, GAME, 100, false);
+    pack.capture(&fault, 0, GAME, 100, false);
     assert!(matches!(pack.outcomes()[0], Outcome::Unavailable { .. }));
     encode_capture(pack, 100, &mut encoder, &mut decoder);
     memory.clock(101);
@@ -994,7 +1026,7 @@ fn persistent_country_failure_retries_only_its_holder_and_preserves_healthy_writ
         held::finish_seed(true);
         let mut pack = Captured::vacant();
         if hour < 105 {
-            pack.capture_growing(
+            pack.capture(
                 &Missing {
                     native: &memory,
                     range: 0x2900 + market::STOCKPILE_EQUIPMENT
@@ -1006,7 +1038,7 @@ fn persistent_country_failure_retries_only_its_holder_and_preserves_healthy_writ
                 false,
             );
         } else {
-            pack.capture_growing(&memory, 0, GAME, hour, false);
+            pack.capture(&memory, 0, GAME, hour, false);
         }
         assert_eq!(
             matches!(pack.outcomes()[0], Outcome::Unavailable { .. }),
@@ -1138,7 +1170,7 @@ fn country_witness_recovery_recertifies_once_and_keeps_recovered_holders() {
         memory.reads.borrow_mut().clear();
         let mut pack = Captured::vacant();
         if hour < 104 {
-            pack.capture_growing(
+            pack.capture(
                 &Missing {
                     native: &memory,
                     range: 0x2900 + market::STOCKPILE_EQUIPMENT
@@ -1150,7 +1182,7 @@ fn country_witness_recovery_recertifies_once_and_keeps_recovered_holders() {
                 false,
             );
         } else {
-            pack.capture_growing(&memory, 0, GAME, hour, false);
+            pack.capture(&memory, 0, GAME, hour, false);
         }
         drop(running);
         assert_eq!(
@@ -1206,7 +1238,7 @@ fn refused_country_registration_renews_only_once_without_reacquiring_recovered_h
         held::finish_seed(true);
         let mut pack = Captured::vacant();
         if hour < 104 {
-            pack.capture_growing(
+            pack.capture(
                 &Missing {
                     native: &memory,
                     range: 0x2900 + market::STOCKPILE_EQUIPMENT
@@ -1218,7 +1250,7 @@ fn refused_country_registration_renews_only_once_without_reacquiring_recovered_h
                 false,
             );
         } else {
-            pack.capture_growing(&memory, 0, GAME, hour, false);
+            pack.capture(&memory, 0, GAME, hour, false);
         }
         assert_eq!(
             matches!(pack.outcomes()[0], Outcome::Unavailable { .. }),
@@ -1288,7 +1320,7 @@ fn exhausted_country_registration_retries_a_deferred_renewal_at_the_first_quiet_
         held::discover_country(&memory, 0, GAME, country, 0);
         held::finish_seed(true);
         let mut pack = Captured::vacant();
-        pack.capture_growing(&memory, 0, GAME, hour, false);
+        pack.capture(&memory, 0, GAME, hour, false);
         assert_eq!(
             matches!(pack.outcomes()[0], Outcome::Unavailable { .. }),
             hour < 103,
@@ -1411,7 +1443,7 @@ fn offered_country_growth_survives_a_draining_predecessor_and_recovers_after_col
             }
             held::finish_seed(true);
             let mut pack = Captured::vacant();
-            pack.capture_growing(&memory, 0, GAME, hour, false);
+            pack.capture(&memory, 0, GAME, hour, false);
             assert_eq!(
                 matches!(pack.outcomes()[0], Outcome::Unavailable { .. }),
                 hour < recovered_hour,

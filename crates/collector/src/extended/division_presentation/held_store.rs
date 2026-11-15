@@ -1,56 +1,58 @@
-//! One hourly store loan spans acquisition and FIFO owned settlement.
+//! One hourly store loan spans acquisition and FIFO owned settlement. An hour never waits for
+//! the store the hour before still settles: it takes a store of its own, which holds nothing
+//! and so reads every division, as the attach hour does. Only the store of the latest take
+//! carries into the next hour; an older one returns late, forgets what it held and is kept for
+//! the next backlog, and once the latest returns the kept ones are freed.
 use crate::acquisition::lock_unpoisoned;
 use crate::extended::attack_stats::ArmyStatStore;
 use std::{
     ops::{Deref, DerefMut},
     sync::{
-        Arc, Condvar, Mutex,
-        atomic::{AtomicBool, Ordering},
+        Mutex,
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
-pub(crate) struct Slot {
-    store: Mutex<Option<Box<ArmyStatStore>>>,
-    returned: Condvar,
-    daily_refresh: AtomicBool,
-    loaned: AtomicBool,
-    priority: std::sync::OnceLock<Arc<crate::frame_priority::Pipeline>>,
-    #[cfg(test)]
-    before_wait: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>>,
-    #[cfg(test)]
-    after_return: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>>,
+struct State {
+    /// The latest take's store, once it returned.
+    store: Option<Box<ArmyStatStore>>,
+    /// The latest take.
+    latest: u64,
+    /// Stores that returned after a later take, forgotten, for the next take that finds the
+    /// latest one still out.
+    spares: Vec<Box<ArmyStatStore>>,
 }
+
+struct Shared {
+    state: Mutex<State>,
+    daily_refresh: AtomicBool,
+    /// The spares' bytes, which the pool's total counts.
+    spare_bytes: AtomicU64,
+}
+
+/// A handle on the one store slot; its clones share it.
+#[derive(Clone)]
+pub(crate) struct Slot(engine_allocation::SharedBox<Shared>);
+
 impl Slot {
-    pub(crate) fn new(store: Box<ArmyStatStore>) -> Arc<Self> {
-        Arc::new(Self {
-            store: Mutex::new(Some(store)),
-            returned: Condvar::new(),
+    /// A refused allocation is the collector's allocation failure.
+    pub(crate) fn new(store: Box<ArmyStatStore>) -> std::io::Result<Self> {
+        engine_allocation::shared(Shared {
+            state: Mutex::new(State {
+                store: Some(store),
+                latest: 0,
+                spares: Vec::new(),
+            }),
             daily_refresh: AtomicBool::new(true),
-            loaned: AtomicBool::new(false),
-            priority: std::sync::OnceLock::new(),
-            #[cfg(test)]
-            before_wait: std::sync::OnceLock::new(),
-            #[cfg(test)]
-            after_return: std::sync::OnceLock::new(),
+            spare_bytes: AtomicU64::new(0),
         })
-    }
-    pub(crate) fn set_priority(&self, priority: Arc<crate::frame_priority::Pipeline>) {
-        assert!(self.priority.set(priority).is_ok());
+        .map(Self)
     }
     #[cfg(test)]
-    pub(crate) fn set_wait_hook(&self, hook: impl Fn() + Send + Sync + 'static) {
-        assert!(self.before_wait.set(Box::new(hook)).is_ok());
-    }
-    #[cfg(test)]
-    fn set_return_hook(&self, hook: impl Fn() + Send + Sync + 'static) {
-        assert!(self.after_return.set(Box::new(hook)).is_ok());
+    pub(crate) fn owners(&self) -> usize {
+        engine_allocation::SharedBox::strong_count(&self.0)
     }
     pub(crate) fn prepare_hour(&self, hour: i32, force_full: bool) {
-        if self.loaned.load(Ordering::Acquire) {
-            if let Some(priority) = self.priority.get() {
-                priority.expect_store(&self.loaned);
-            }
-        }
         if force_full
             || replay_data::cadence::Cadence::Daily(
                 replay_data::cadence::DIVISION_STATUS_DAILY_SLOT,
@@ -59,57 +61,65 @@ impl Slot {
         {
             // The preceding FIFO decode may still own the store. Only the
             // next take consumes this revocation, even if dispatch is skipped.
-            self.daily_refresh.store(true, Ordering::Release);
+            self.0.daily_refresh.store(true, Ordering::Release);
         }
     }
-    pub(crate) fn take(self: &Arc<Self>) -> Option<Loan> {
-        let mut store = lock_unpoisoned(&self.store);
-        let waiting = store
-            .is_none()
-            .then(|| {
-                self.priority
-                    .get()
-                    .map(|priority| priority.wait_for_store())
-            })
-            .flatten();
-        while store.is_none() {
-            if let Some(waiting) = &waiting {
-                waiting.retry();
-            }
-            if crate::allocation::failed() || crate::decode::panic_failure().is_some() {
-                return None;
-            }
-            #[cfg(test)]
-            if let Some(hook) = self.before_wait.get() {
-                hook();
-            }
-            store = self
-                .returned
-                .wait_timeout(store, std::time::Duration::from_millis(10))
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .0;
+    /// The hour's store, at once: the latest take's when it has returned, else one of its
+    /// own, which samples the daily operands again. None only when a new store cannot be
+    /// allocated, which is the collector's allocation failure.
+    pub(crate) fn take(&self) -> Option<Loan> {
+        let mut state = lock_unpoisoned(&self.0.state);
+        state.latest += 1;
+        let id = state.latest;
+        let returned = state.store.take();
+        let fresh = returned.is_none();
+        let spare = if fresh { state.spares.pop() } else { None };
+        drop(state);
+        if let Some(spare) = &spare {
+            self.0.spare_bytes
+                .fetch_sub(spare.allocated_bytes() as u64, Ordering::Relaxed);
         }
-        let mut held = store.take();
-        self.loaned.store(true, Ordering::SeqCst);
-        held.as_deref_mut()
-            .unwrap()
-            .daily_progress(self.daily_refresh.swap(false, Ordering::AcqRel));
-        drop(store);
-        if let Some(priority) = self.priority.get() {
-            priority.store_returned();
-        }
-        drop(waiting);
+        let mut held = match returned.or(spare) {
+            Some(store) => store,
+            None => engine_allocation::boxed(ArmyStatStore::new()).ok()?,
+        };
+        held.daily_progress(self.0.daily_refresh.swap(false, Ordering::AcqRel) || fresh);
         Some(Loan {
-            store: held,
-            owner: Arc::clone(self),
+            store: Some(held),
+            owner: self.clone(),
             complete: false,
+            id,
         })
+    }
+    pub(crate) fn spare_bytes(&self) -> u64 {
+        self.0.spare_bytes.load(Ordering::Relaxed)
+    }
+    /// Takes back a loan's store: the latest take's carries into the next hour and frees the
+    /// spares; an older one forgets what it held and becomes a spare.
+    fn give_back(&self, id: u64, mut store: Box<ArmyStatStore>) {
+        let mut state = lock_unpoisoned(&self.0.state);
+        if id == state.latest {
+            debug_assert!(state.store.is_none(), "one latest presentation store");
+            state.store = Some(store);
+            let spares = std::mem::take(&mut state.spares);
+            drop(state);
+            self.0.spare_bytes.store(0, Ordering::Relaxed);
+            drop(spares);
+            return;
+        }
+        store.forget();
+        if engine_allocation::advisory(|| engine_allocation::reserve(&mut state.spares, 1)).is_ok() {
+            self.0.spare_bytes
+                .fetch_add(store.allocated_bytes() as u64, Ordering::Relaxed);
+            state.spares.push(store);
+        }
     }
 }
 pub(crate) struct Loan {
     store: Option<Box<ArmyStatStore>>,
-    owner: Arc<Slot>,
+    owner: Slot,
     complete: bool,
+    id: u64,
 }
 impl Loan {
     pub(crate) fn complete(&mut self) {
@@ -123,7 +133,7 @@ impl Loan {
     }
     #[cfg(test)]
     pub(crate) fn fixture(store: Box<ArmyStatStore>) -> Self {
-        Slot::new(store).take().unwrap()
+        Slot::new(store).unwrap().take().unwrap()
     }
 }
 impl Deref for Loan {
@@ -141,23 +151,8 @@ impl Drop for Loan {
     fn drop(&mut self) {
         // Aborted acquisition, dropped frames and decode unwind cannot carry a partial baseline.
         self.prepare_return();
-        let mut slot = lock_unpoisoned(&self.owner.store);
-        assert!(slot.is_none(), "one presentation store loan");
-        *slot = self.store.take();
-        self.owner.loaned.store(false, Ordering::SeqCst);
-        // Cleared while this loan still owns the slot, so a later loan's hint survives a delayed return.
-        let priority = self.owner.priority.get();
-        if let Some(priority) = priority {
-            priority.clear_store_expected();
-        }
-        self.owner.returned.notify_one();
-        drop(slot);
-        #[cfg(test)]
-        if let Some(hook) = self.owner.after_return.get() {
-            hook();
-        }
-        if let Some(priority) = priority {
-            priority.refresh();
+        if let Some(store) = self.store.take() {
+            self.owner.give_back(self.id, store);
         }
     }
 }
@@ -166,66 +161,38 @@ impl Drop for Loan {
 mod tests {
     use super::*;
     #[test]
-    fn outstanding_store_promotes_before_dispatch_and_return_clears_the_expectation() {
-        let priority = Arc::new(crate::frame_priority::Pipeline::new());
-        for index in 0..crate::sampling::BUFFERS {
-            priority.publish(index);
-        }
-        let _callback = priority.callback();
-        let slot = Slot::new(held());
-        slot.set_priority(Arc::clone(&priority));
-        let loan = slot.take().unwrap();
-        slot.prepare_hour(12, false);
-        assert_eq!(priority.store_state(), (true, 2, 0));
-        drop(loan);
-        assert_eq!(priority.store_state(), (false, 0, 0));
-        let _next = slot.take().unwrap();
-        assert_eq!(priority.store_state().2, 0);
-    }
-    #[test]
-    fn a_loan_returned_between_the_check_and_the_hint_leaves_no_expectation() {
-        let priority = Arc::new(crate::frame_priority::Pipeline::new());
-        for index in 0..crate::sampling::BUFFERS {
-            priority.publish(index);
-        }
-        let _callback = priority.callback();
-        let slot = Slot::new(held());
-        slot.set_priority(Arc::clone(&priority));
-        let loan = slot.take().unwrap();
-        assert!(slot.loaned.load(Ordering::SeqCst));
-        // prepare_hour saw the loan outstanding; decode returns it before the hint is published.
-        drop(loan);
-        priority.expect_store(&slot.loaned);
-        assert_eq!(priority.store_state(), (false, 0, 0));
-    }
-    #[test]
-    fn a_delayed_return_tail_keeps_the_next_loans_hint() {
-        let priority = Arc::new(crate::frame_priority::Pipeline::new());
-        for index in 0..crate::sampling::BUFFERS {
-            priority.publish(index);
-        }
-        let _callback = priority.callback();
-        let slot = Slot::new(held());
-        slot.set_priority(Arc::clone(&priority));
-        let next = Arc::new(Mutex::new(None));
-        let hook_next = Arc::clone(&next);
-        let weak = Arc::downgrade(&slot);
-        let fired = AtomicBool::new(false);
-        // Runs inside the first loan's drop, after it unlocks and before its refresh.
-        slot.set_return_hook(move || {
-            if fired.swap(true, Ordering::SeqCst) {
-                return;
-            }
-            let slot = weak.upgrade().unwrap();
-            let loan = slot.take().unwrap();
-            slot.prepare_hour(13, false);
-            *hook_next.lock().unwrap() = Some(loan);
-        });
-        drop(slot.take().unwrap());
-        // Taken out before asserting, so a failure still drops it and breaks the hook's cycle.
-        let next = next.lock().unwrap().take();
-        assert!(next.is_some());
-        assert_eq!(priority.store_state(), (true, 2, 0));
+    fn a_take_while_the_latest_store_is_out_gets_its_own_and_only_the_latest_carries() {
+        let slot = Slot::new(held()).unwrap();
+        let first = slot.take().unwrap();
+        let first_address = &*first as *const ArmyStatStore;
+        // The decode worker still holds the first hour's store: the next take does not wait.
+        let mut second = slot.take().unwrap();
+        assert_ne!(&*second as *const ArmyStatStore, first_address);
+        assert!(second.held_name(0, 7).is_none());
+        second.complete();
+        let second_address = &*second as *const ArmyStatStore;
+        // A third take, while both are out, gets another of its own.
+        let third = slot.take().unwrap();
+        drop(first);
+        assert_eq!(slot.0.state.lock().unwrap().spares.len(), 1);
+        drop(second);
+        // An older store returning after a later take carries nothing on.
+        assert!(slot.0.state.lock().unwrap().store.is_none());
+        let third_address = &*third as *const ArmyStatStore;
+        drop(third);
+        assert_eq!(slot.spare_bytes(), 0);
+        let state = slot.0.state.lock().unwrap();
+        assert!(state.spares.is_empty());
+        assert_eq!(state.store.as_deref().unwrap() as *const ArmyStatStore, third_address);
+        drop(state);
+        assert_ne!(third_address, second_address);
+        // A spare is reused, forgotten, by the next take that finds the latest one out.
+        let out = slot.take().unwrap();
+        let older = slot.take().unwrap();
+        drop(out);
+        let mut reused = slot.take().unwrap();
+        assert!(reused.held_name(0, 7).is_none());
+        drop((older, reused));
     }
     #[test]
     fn daily_and_full_revocation_survive_an_older_decode_and_skipped_dispatch() {
@@ -242,7 +209,7 @@ mod tests {
         };
         let daily = replay_data::cadence::DIVISION_STATUS_DAILY_SLOT as i32;
         for (hour, full) in [(daily, false), (daily + 1, true)] {
-            let slot = Slot::new(Box::new(ArmyStatStore::new()));
+            let slot = Slot::new(Box::new(ArmyStatStore::new())).unwrap();
             let mut older = slot.take().unwrap();
             let sample = Sample::owned(None, None, None).unwrap();
             older.remember_supply(0, &[seed], &[Some(sample)], true);
@@ -279,9 +246,9 @@ mod tests {
     #[test]
     fn complete_loan_returns_held_state_but_lost_or_unwound_loan_forgets_it() {
         for complete in [false, true] {
-            let slot = Slot::new(held());
+            let slot = Slot::new(held()).unwrap();
             let mut loan = slot.take().unwrap();
-            assert!(slot.store.lock().unwrap().is_none());
+            assert!(slot.0.state.lock().unwrap().store.is_none());
             assert!(loan.held_name(0, 7).is_some());
             if complete {
                 loan.complete();
@@ -290,7 +257,7 @@ mod tests {
             let mut next = slot.take().unwrap();
             assert_eq!(next.held_name(0, 7).is_some(), complete);
         }
-        let slot = Slot::new(held());
+        let slot = Slot::new(held()).unwrap();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _loan = slot.take().unwrap();
             panic!("synthetic owned settlement unwind");

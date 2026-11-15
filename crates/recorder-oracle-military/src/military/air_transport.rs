@@ -146,6 +146,10 @@ fn pool(
     Ok(Some(mask & transport != 0))
 }
 
+/// The game always holds a raid reference, so a `None` the map flags do not certify is the
+/// collector's refusal: no registry certificate or quiet token, or no verified raid identity.
+const RAID_NOT_RECORDED: &str = "air wing raid reference not recorded at this hour: the wing writers were not observed or one ran across the read, or the reference failed its guarded read or raid identity check";
+
 fn raid(
     actual: &AirWingRow,
     expected: &save::air::Wing,
@@ -176,16 +180,21 @@ fn raid(
                             );
                         }
                     }
-                    _ => report.difference(
-                        format!("{label}.raid_reference: guarded read or registry/memo refusal"),
-                        "unavailable",
-                        expected.raid,
-                    ),
+                    // The walk exports the reference of every raid the flags certify.
+                    Some(true) => {
+                        report.compared("AirWings.raid_reference", 1);
+                        report.difference(
+                            format!("{label}.raid_reference: certified as resolving, recorded without its reference"),
+                            "none",
+                            expected.raid,
+                        );
+                    }
+                    None => report.limitation(RAID_NOT_RECORDED, format!("{label}.raid_reference")),
                 }
                 return;
             }
             match admitted {
-                Some(true) => report.difference(format!("{label}.raid_reference: guarded read or registry/memo refusal"), "unavailable", expected.raid),
+                Some(true) => report.limitation(RAID_NOT_RECORDED, format!("{label}.raid_reference")),
                 Some(false) => report.limitation("raid-reference capture is limited to transport wings with zero mission mask/veto and counter <= limit; this saved raid link is outside that capture demand", format!("{label}.raid_reference: saved {:?}", expected.raid)),
                 None => report.limitation("raid-reference capture demand cannot be certified without the independently compared pool sub-unit index", format!("{label}.raid_reference")),
             }

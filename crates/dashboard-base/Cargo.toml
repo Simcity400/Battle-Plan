@@ -42,14 +42,11 @@ replay-frame.workspace = true
 job-priority.workspace = true
 blake3.workspace = true
 dashboard-core.workspace = true
-dashboard-series.workspace = true
 dashboard-text.workspace = true
-dashboard-world.workspace = true
 replay-spool.workspace = true
 serde = { workspace = true, features = ["derive", "rc"] }
 serde_json = { workspace = true, features = ["float_roundtrip", "raw_value"] }
 rmp-serde.workspace = true
-store = { path = "../store" }
 ts-rs = "11.1"
 uuid = { workspace = true, features = ["v4"] }
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Threading"] }
@@ -78,7 +75,6 @@ dashboard-text = { workspace = true, features = ["test-support"] }
 png.workspace = true
 # Grouped-table decode counts, so tests can see which tables a read decodes.
 # Prepared files publish without disk flushes, which no test can observe.
-store = { path = "../store", features = ["test-support"] }
 
 # Parse production map readers for the prepared-table coverage guard only.
 syn = { version = "2", features = ["full", "visit"] }
@@ -90,14 +86,20 @@ proc-macro2 = "1"
 [target.'cfg(all())'.dev-dependencies]
 dashboard-base = { workspace = true, features = ["test-support"] }
 engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
+recorder-derive = { workspace = true, features = ["test-support"] }
 replay-derive = { workspace = true, features = ["test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 shader-pipeline = { path = "../shader-pipeline", features = ["test-support"] }
 test-unify = { workspace = true }
+unify-bitflags-2 = { workspace = true }
+unify-either = { workspace = true }
 unify-indexmap = { workspace = true }
 unify-log = { workspace = true }
+unify-num-traits = { workspace = true }
 unify-once_cell = { workspace = true }
+unify-smallvec = { workspace = true }
 unify-wgpu = { workspace = true }
 unify-winapi-util = { workspace = true }
 unify-windows = { workspace = true }
 unify-windows-core = { workspace = true }
+uuid = { version = "1.26.0", default-features = false, features = ["default", "rng", "serde", "std", "v4"] }

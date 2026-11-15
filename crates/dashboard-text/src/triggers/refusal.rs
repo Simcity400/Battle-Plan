@@ -95,7 +95,7 @@ pub(crate) fn missing_reference(table: TableId, scope: Option<Store>) -> Failure
         table,
         "",
         scope,
-        format!("{table:?}: referenced object is not recorded"),
+        format!("{}: the object it refers to is not recorded", table.words()),
     )
 }
 
@@ -185,23 +185,47 @@ impl Failure {
                 table,
                 field,
                 scope,
-            } => {
-                let field = if field.is_empty() {
-                    String::new()
-                } else {
-                    format!(".{field}")
-                };
-                let scope = scope
-                    .map(|scope| format!(" ({scope:?})"))
-                    .unwrap_or_default();
-                format!("{table:?}{field}{scope}: input unavailable or refused")
-            }
+            } => format!("{}: not available or refused", subject(*table, field, *scope)),
             Identity::Unsupported(why) => why.clone(),
         };
         Self {
             message,
             identities: BTreeSet::from([identity]),
         }
+    }
+}
+
+#[cfg(test)]
+impl Failure {
+    /// Whether a source of this failure is the input `name` spells by its identifiers, as
+    /// `Table`, `Table.field`, either followed by ` (Store)`; a shorter spelling names every
+    /// longer one. Messages are in plain words, so tests name an input by its identity.
+    pub(crate) fn names(&self, name: &str) -> bool {
+        self.identities.iter().any(|identity| {
+            let Identity::Input {
+                table,
+                field,
+                scope,
+            } = identity
+            else {
+                return false;
+            };
+            let field = if field.is_empty() {
+                String::new()
+            } else {
+                format!(".{field}")
+            };
+            let scope = scope
+                .map(|scope| format!(" ({scope:?})"))
+                .unwrap_or_default();
+            format!("{table:?}{field}{scope}")
+                .strip_prefix(name)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with(['.', ' ']))
+        })
+    }
+
+    pub(crate) fn identities(&self) -> &BTreeSet<Identity> {
+        &self.identities
     }
 }
 
@@ -350,12 +374,35 @@ pub(crate) fn optional<'a, T>(
     field: &str,
     scope: Option<Store>,
 ) -> Result<&'a T, Failure> {
-    let name = format!("{table:?}.{field}");
+    let name = subject(table, field, scope);
     value
         .require(&name)
         .map_err(|why| Failure::input(table, field, scope, why))?
         .as_ref()
-        .ok_or_else(|| Failure::input(table, field, scope, format!("{name} capture unavailable")))
+        .ok_or_else(|| Failure::input(table, field, scope, format!("{name}: not captured")))
+}
+
+/// An input in plain words for a reason a user reads: what its table holds, the field read and
+/// whose store, never their identifiers.
+fn subject(table: TableId, field: &str, scope: Option<Store>) -> String {
+    let mut out = table.words();
+    if !field.is_empty() {
+        out.push_str(", ");
+        out.push_str(&field.replace('_', " "));
+    }
+    let whose = match scope {
+        None | Some(Store::Global) => None,
+        Some(Store::Country(id)) => Some(format!("country {id}")),
+        Some(Store::State(id)) => Some(format!("state {id}")),
+        Some(Store::Character(id)) => Some(format!("character {id}")),
+        Some(Store::Project { id, .. }) => Some(format!("project {id}")),
+        Some(Store::IndustrialOrganisation(id)) => Some(format!("industrial organisation {id}")),
+    };
+    if let Some(whose) = whose {
+        out.push_str(" of ");
+        out.push_str(&whose);
+    }
+    out
 }
 
 /// Build a lazy cached value without claiming errors in unused entries. The
@@ -403,7 +450,7 @@ mod tests {
             let (value, failures) = capture(|| *outer.value());
             assert_eq!(value, 42);
             assert_eq!(failures.len(), 1);
-            assert!(failures.first().unwrap().contains("CountryLinks"));
+            assert!(failures.first().unwrap().names("CountryLinks.canonical_slot"));
         }
     }
 

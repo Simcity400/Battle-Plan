@@ -81,7 +81,7 @@ fn deferred_stitch_failure(naval_panics: bool) {
             &shared,
             &mut batch,
             acquisition::Job::Naval(acquisition::NavalRequest {
-                countries: Arc::new(Cache::try_with_capacity(0).unwrap()),
+                countries: engine_allocation::shared(Cache::try_with_capacity(0).unwrap()).unwrap(),
                 context: extended::naval_history::NavalCopyContext {
                     base: 0,
                     game_state: 0,

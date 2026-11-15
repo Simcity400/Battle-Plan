@@ -99,6 +99,31 @@ export function rowOffsets(count: number, rowHeight: number, headerHeight = 0): 
   return Array.from({ length: count + 1 }, (_, slot) => headerHeight + slot * rowHeight);
 }
 
+/** Wrapped rows' measured heights, for one scope of widths and typography: the lowest height measured (`floor`, 0 before
+ * any), which every row is taken to have, and each row measured taller than it. */
+export interface RowMeasurements { scope: string; heights: ReadonlyMap<string, number>; floor: number }
+
+/** `before` with `readings` (row key, height) at `rowHeight` (the stylesheet's minimum) in `scope`: `before` itself when
+ * nothing that places a row moved, so a row mounting at the height every row has, or re-observed at its own, renders
+ * nothing. A row within half a pixel of the floor is at it; heights from another scope stand until measured again. */
+export function withRowHeights(before: RowMeasurements, readings: readonly (readonly [string, number])[], rowHeight: number, scope: string): RowMeasurements {
+  if (!readings.length) return before;
+  const same = before.scope === scope;
+  const lowest = Math.min(...readings.map(([, height]) => height));
+  const held = same ? before.floor : 0;
+  const floor = !held || lowest < held - 0.5 ? lowest : held;
+  const base = Math.max(rowHeight, floor) + 0.5;
+  const taller = (height: number | undefined) => height !== undefined && height > base ? height : 0;
+  let heights: Map<string, number> | undefined;
+  for (const [key, height] of readings) {
+    const next = taller(height);
+    if (taller(before.heights.get(key)) === next) continue;
+    heights ??= new Map(before.heights);
+    if (next) heights.set(key, next); else heights.delete(key);
+  }
+  return heights || !same || floor !== before.floor ? { scope, heights: heights ?? before.heights, floor } : before;
+}
+
 /** Prefix offsets for measured wrapped rows, with a minimum for rows not mounted yet. */
 export function measuredRowOffsets(keys: readonly string[], heights: ReadonlyMap<string, number>, minimum: number, headerHeight = 0): number[] {
   const offsets = [headerHeight];

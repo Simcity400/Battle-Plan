@@ -159,12 +159,12 @@ pub fn copy_growing(
     unreadable: &'static str,
     allocation: &'static str,
 ) -> Result<(), &'static str> {
-    copy_growing_with_policy::<true>(memory, source, len, output, start, unreadable, allocation)
+    copy_with_policy::<true>(memory, source, len, output, start, unreadable, allocation)
 }
 
 /// Identical payload acquisition for capture and advisory sizing. Hint growth
 /// uses fallible reservations without the capture's terminal allocation hook.
-pub(crate) fn copy_growing_with_policy<const TERMINAL: bool>(
+pub(crate) fn copy_with_policy<const TERMINAL: bool>(
     memory: &impl Memory,
     source: usize,
     len: usize,
@@ -220,7 +220,7 @@ fn grow_to<const TERMINAL: bool>(
 /// [`copy_growing`] of bytes already acquired (a held read's): the same
 /// validation, chunks and growth steps, so the arena's initialized length
 /// and failures are those of the fresh copy.
-pub(crate) fn place_growing(
+pub(crate) fn place(
     bytes: &[u8],
     output: &mut Vec<u8>,
     start: usize,
@@ -241,26 +241,26 @@ pub(crate) fn place_growing(
 
 /// Appends one validated string's bytes to a growing arena at `*used` and
 /// returns its span. Only acquisition workers that may grow payloads call it.
-pub fn append_growing(
+pub fn append(
     memory: &impl Memory,
     address: usize,
     arena: &mut Vec<u8>,
     used: &mut usize,
 ) -> Result<(usize, usize), &'static str> {
     let header = read::<[u8; STRIDE]>(memory, address).ok_or("string header unreadable")?;
-    append_growing_with_header(memory, &header, arena, used)
+    append_with_header(memory, &header, arena, used)
 }
 
 /// Heap texts shorter than this take their payload and terminator in one
 /// guarded copy through a stack buffer.
 const JOINED_PAYLOAD: usize = 256;
 
-/// [`append_growing`] for a header the caller already copied in a gathered
+/// [`append`] for a header the caller already copied in a gathered
 /// record. Validation, failures and bytes are the same. A heap
 /// text under [`JOINED_PAYLOAD`] bytes reads its payload and terminator in one
 /// copy; if that copy fails, the terminator and payload are read separately
 /// in the original order, so the reported failure is unchanged.
-pub(crate) fn append_growing_with_header(
+pub(crate) fn append_with_header(
     memory: &impl Memory,
     header: &[u8; STRIDE],
     arena: &mut Vec<u8>,
@@ -468,7 +468,7 @@ impl Descriptor {
         start: usize,
     ) -> Result<(), &'static str> {
         let growing = match output {
-            crate::walk::Buffer::Fixed(_) => None,
+            crate::walk::Buffer::Count | crate::walk::Buffer::Exact(_) => None,
             crate::walk::Buffer::Growing(values) => Some((values, 0)),
             crate::walk::Buffer::GrowingFrom(values, offset) => Some((values, *offset)),
         };

@@ -2,11 +2,11 @@
 use super::{LoadContext, Product, artwork, validate_tag};
 use crate::{
     Artwork, FocusDatabase, Source,
-    metadata::{check_cancel, validate_campaign},
+    metadata::check_cancel,
 };
 use replay::campaign::{Replay, SeekResult};
 use replay_data::rows::TableId;
-use replay_frame::{frame::DecodedFrame, frame::TableView};
+use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeSet, VecDeque},
@@ -66,65 +66,6 @@ struct State {
     national: Contexts,
     continuous: Contexts,
     frame: Arc<SharedFrames>,
-}
-
-/// A new focus history scan seeds the frames from now on: the last scan's go.
-pub(crate) fn begin_seeding(source: &Source) {
-    let state = source.state::<State>();
-    let frames = Arc::clone(
-        &state
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .frame,
-    );
-    frames
-        .cache
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .frames
-        .retain(|entry| !entry.seeded);
-}
-
-/// The history scan has checked the campaign and the complete block checksum.
-/// Keep only the inputs a basic presentation read would reconstruct at that hour.
-pub(crate) fn retain_basic(
-    source: &Source,
-    decoded: &DecodedFrame,
-    cancelled: &AtomicBool,
-) -> io::Result<()> {
-    check_cancel(cancelled)?;
-    let state = source.state::<State>();
-    let frames = Arc::clone(
-        &state
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .frame,
-    );
-    frames
-        .cache
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .retain_basic(decoded, cancelled)
-}
-
-/// One recorded hour's frame of the tables focus presentation reads (the
-/// focus tables, scripted-text inputs and Clock), from the frames this
-/// product keeps, so `focus-art` and the event feed share its reads.
-pub(crate) fn scoped_frame(
-    source: &Source,
-    branch: u64,
-    hour: i32,
-    cancelled: &AtomicBool,
-) -> io::Result<DecodedFrame> {
-    check_cancel(cancelled)?;
-    let frames = Arc::clone(
-        &source
-            .state::<State>()
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .frame,
-    );
-    frames.at(&source.replay(), branch, hour, true, cancelled)
 }
 
 const BASIC_TABLES: [TableId; 3] = [TableId::Campaign, TableId::Countries, TableId::CountryLinks];
@@ -190,8 +131,7 @@ impl SharedFrames {
     }
 }
 
-/// The frames focus presentation reads: those the current focus history scan seeded at the
-/// hours its selected country's focuses changed, and each branch's latest one read.
+/// The frames focus presentation reads: each branch's latest one read.
 #[derive(Default)]
 struct FrameCache {
     frames: VecDeque<CachedFrame>,
@@ -202,45 +142,9 @@ struct FrameCache {
 struct CachedFrame {
     frame: DecodedFrame,
     scoped: bool,
-    /// Seeded by the history scan rather than read for a request.
-    seeded: bool,
 }
 
 impl FrameCache {
-    fn retain_basic(&mut self, decoded: &DecodedFrame, cancelled: &AtomicBool) -> io::Result<()> {
-        check_cancel(cancelled)?;
-        if let Some(index) = self.frames.iter().position(|entry| {
-            entry.frame.branch == decoded.branch && entry.frame.hour == decoded.hour
-        }) {
-            // A previously scoped read is more capable; history never downgrades it.
-            let entry = self.frames.remove(index).expect("cached frame index");
-            self.frames.push_back(entry);
-            return Ok(());
-        }
-        let omitted = replay_frame::frame::SharedView::from(TableView::Unavailable {
-            reason: "Table not selected for reconstruction".into(),
-        });
-        let basic = DecodedFrame {
-            branch: decoded.branch,
-            hour: decoded.hour,
-            tables: std::array::from_fn(|index| {
-                if BASIC_TABLES.contains(&TableId::ALL[index]) {
-                    decoded.tables[index].clone()
-                } else {
-                    omitted.clone()
-                }
-            }),
-            metrics: decoded.metrics.clone(),
-        };
-        check_cancel(cancelled)?;
-        self.frames.push_back(CachedFrame {
-            frame: basic,
-            scoped: false,
-            seeded: true,
-        });
-        Ok(())
-    }
-
     /// Keeps `frame`, read for a request, as its branch's latest.
     fn retain(
         &mut self,
@@ -249,15 +153,8 @@ impl FrameCache {
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
         check_cancel(cancelled)?;
-        self.frames.retain(|entry| {
-            entry.frame.branch != frame.branch
-                || (entry.seeded && entry.frame.hour != frame.hour)
-        });
-        self.frames.push_back(CachedFrame {
-            frame,
-            scoped,
-            seeded: false,
-        });
+        self.frames.retain(|entry| entry.frame.branch != frame.branch);
+        self.frames.push_back(CachedFrame { frame, scoped });
         Ok(())
     }
 
@@ -326,15 +223,43 @@ fn read_frame(
         SeekResult::Frame(decoded) => decoded,
         // The seek names a frame of another campaign, or a block it cannot read, as a gap.
         SeekResult::Gap { reason, .. } => {
-            return Err(dashboard_base::prepared::query::frames::gap_error(
+            return Err(dashboard_base::gap_error(
                 &reason,
                 "Focus artwork hour was not recorded",
             ));
         }
     };
-    validate_campaign(&decoded, replay)?;
+    held_campaign(replay, branch, hour)?;
     check_cancel(cancelled)?;
     Ok(*decoded)
+}
+
+/// Refuses an hour whose run holds Campaign rows naming another campaign than the replay's: the
+/// rows it read last at or before the hour, which an hour saying the table is unavailable keeps.
+fn held_campaign(replay: &Replay, branch: u64, hour: i32) -> io::Result<()> {
+    let Some(block) = replay.block_at(branch, hour) else {
+        return Ok(());
+    };
+    let recording = replay.recording();
+    let ordinal = recording
+        .run(block.run)?
+        .ordinal(hour)
+        .ok_or_else(|| crate::invalid("A block's hour lies outside its run"))?;
+    let mut campaign = replay::cells::TableReader::new(recording, block.run, TableId::Campaign, None)?;
+    campaign.seek(recording, ordinal)?;
+    let held = campaign.view();
+    let mut rows = held.rows();
+    let named = match (rows.next(), rows.next()) {
+        (None, _) => return Ok(()),
+        (Some(slot), None) => held.text(0, slot).and_then(|id| held.string(id)),
+        _ => None,
+    };
+    if named != Some(replay.campaign_id.as_slice()) {
+        return Err(crate::invalid(
+            "the run's campaign identity at this hour differs from the replay header",
+        ));
+    }
+    Ok(())
 }
 
 impl Product for FocusArtwork {
@@ -506,78 +431,14 @@ fn reply_within(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::metadata::validate_campaign;
     use crate::test_fixtures::{CAMPAIGN, records, scale_frame, scale_tag, source};
     use replay_data::{rows::TableRows, rows::tables};
     use replay_frame::{frame::SharedView, frame::TableView};
     use std::cell::Cell;
 
-    #[test]
-    fn prepared_completion_art_is_the_event_art_of_its_hours_frame() {
-        let replay = Replay::from_records(
-            CAMPAIGN.into(),
-            &[records(
-                1,
-                (10..=15)
-                    .map(|hour| source(1, hour, Some(i64::from(hour))))
-                    .collect(),
-            )],
-        )
-        .unwrap();
-        let (source, context, _folder) = product_source(replay);
-        let cancelled = AtomicBool::new(false);
-        let catalogue = crate::catalogue::catalogue(&source, context.content().unwrap()).unwrap();
-        let mut presenter = crate::prepared_focus::art::Presenter::default();
-        let mut art = artwork::Context::load(
-            Arc::clone(&catalogue),
-            artwork::Kind::Focus(FocusDatabase::National),
-        )
-        .unwrap();
-        for hour in [10, 12, 14] {
-            let asked = [("focus_scoped", "GER")];
-            let shown = presenter
-                .present_sought(&source, &catalogue, (1, hour), &asked)
-                .unwrap();
-            let [crate::prepared_focus::art::CompletionArt::Shown { .. }] = &shown[..] else {
-                panic!("{hour}: {shown:?}");
-            };
-            let (replied, _) = crate::prepared_focus::art::event_art(
-                &source,
-                context.content().unwrap(),
-                &[(hour, shown.into_iter().next())],
-            )
-            .unwrap()
-            .unwrap();
-            let frame = read_frame(source.replay_ref(), 1, hour, true, &cancelled).unwrap();
-            let expected = art.focuses_at(&asked, &frame).remove(0);
-            assert_eq!(
-                serde_json::to_value(&replied[0]).unwrap(),
-                serde_json::to_value(expected).unwrap(),
-                "{hour}"
-            );
-        }
-    }
-
     fn shared_frames(source: &Source) -> Arc<Mutex<FrameCache>> {
         Arc::clone(&source.state::<State>().lock().unwrap().frame.cache)
-    }
-
-    fn product_source(replay: Replay) -> (Source, LoadContext, crate::catalogue::tests::Folder) {
-        let (catalogue, folder) = crate::catalogue::tests::folder_catalogue(&[
-            (
-                "common/national_focus/synthetic.txt",
-                "focus_tree={focus={id=focus_a text=title_a icon=GFX_missing_a} focus={id=focus_b text=title_b icon=GFX_missing_b} focus={id=focus_scoped text=title_scoped}}",
-            ),
-            (
-                "common/defines/synthetic.lua",
-                "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30},NFocus={FOCUS_POINT_DAYS=7}}",
-            ),
-            (
-                "localisation/synthetic_l_english.yml",
-                "\u{feff}l_english:\n title_a:0 \"First title\"\n title_b:0 \"Second title\"\n title_scoped:0 \"[ROOT.GetTag] scoped\"\n",
-            ),
-        ]);
-        let (source, context) = product_source_with_catalogue(replay, catalogue, &folder.0);
-        (source, context, folder)
     }
 
     fn product_source_with_catalogue(
@@ -752,7 +613,7 @@ mod tests {
         let (source, context, _folders) = icon_product_source(replay);
         let cancelled = AtomicBool::new(false);
         let basic = read_frame(source.replay_ref(), 1, 100, false, &cancelled).unwrap();
-        retain_basic(&source, &basic, &cancelled).unwrap();
+        shared_frames(&source).lock().unwrap().retain(basic, false, &cancelled).unwrap();
         let params = FocusArtworkParams {
             branch_id: "1".into(),
             hour: 100,
@@ -993,7 +854,10 @@ mod tests {
             {
                 rows[2].continuous = Some(b"shared".to_vec());
             }
-            let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame])]).unwrap();
+            let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame])])
+                .unwrap()
+                .into_timelines(&Default::default())
+                .unwrap();
             let (source, context) = product_source_with_catalogue(replay, catalogue, &folder.0);
             let params = CountryParams {
                 branch_id: "1".into(),
@@ -1080,7 +944,7 @@ mod tests {
         let shared = shared_frames(&source);
         for hour in 100..103 {
             let basic = read_frame(source.replay_ref(), 1, hour, false, &cancelled).unwrap();
-            retain_basic(&source, &basic, &cancelled).unwrap();
+            shared.lock().unwrap().retain(basic, false, &cancelled).unwrap();
         }
         assert!(
             shared
@@ -1139,102 +1003,6 @@ mod tests {
             );
         }
         assert_eq!(shared.lock().unwrap().reads, 3);
-    }
-
-    #[test]
-    fn seeded_focus_images_finish_while_an_unrelated_scoped_frame_is_reconstructed() {
-        use crate::products::{CountryParams, national_focus::NationalFocus};
-        use std::{sync::mpsc, thread, time::Duration};
-        let replay = Replay::from_records(
-            CAMPAIGN.into(),
-            &[records(
-                1,
-                vec![
-                    focus_scale_frame(100, 24, 12, &["focus_a"]),
-                    focus_scale_frame(102, 24, 12, &["focus_a", "focus_b"]),
-                ],
-            )],
-        )
-        .unwrap();
-        let (source, context, _folder) = product_source(replay);
-        let cancelled = AtomicBool::new(false);
-        let tag = String::from_utf8(scale_tag(12)).unwrap();
-        NationalFocus::load(
-            &source,
-            &CountryParams {
-                branch_id: "1".into(),
-                tag: tag.clone(),
-            },
-            &context,
-            &cancelled,
-        )
-        .unwrap();
-        let frames = Arc::clone(&source.state::<State>().lock().unwrap().frame);
-        let (admitted_tx, admitted_rx) = mpsc::channel();
-        let (release_tx, release_rx) = mpsc::channel();
-        let (image_tx, image_rx) = mpsc::channel();
-        let image_params = FocusArtworkParams {
-            branch_id: "1".into(),
-            hour: 100,
-            tag,
-            database: FocusDatabase::National,
-            tokens: vec!["focus_a".into()],
-            text_only: Some(false),
-            include_descriptions: Some(false),
-            icons_only: None,
-        };
-        thread::scope(|scope| {
-            let reader_frames = &frames;
-            let reader_source = &source;
-            let reader_cancelled = &cancelled;
-            let reader = scope.spawn(move || {
-                reader_frames.at_with(1, 102, true, reader_cancelled, || {
-                    admitted_tx.send(()).unwrap();
-                    release_rx
-                        .recv_timeout(Duration::from_secs(10))
-                        .map_err(io::Error::other)?;
-                    read_frame(reader_source.replay_ref(), 1, 102, true, reader_cancelled)
-                })
-            });
-            admitted_rx.recv_timeout(Duration::from_secs(5)).unwrap();
-            let images = scope.spawn(|| {
-                image_tx
-                    .send(FocusArtwork::load(
-                        &source,
-                        &image_params,
-                        &context,
-                        &cancelled,
-                    ))
-                    .unwrap()
-            });
-            // The scoped reconstruction cannot finish before this reply. The
-            // timeout only prevents a deadlock from hanging a failing regression.
-            let early_image = image_rx.recv_timeout(Duration::from_secs(5));
-            release_tx.send(()).unwrap();
-            let scoped = reader.join().unwrap().unwrap();
-            images.join().unwrap();
-            let image = early_image
-                .expect("a verified cached image hour must not wait for another scoped read")
-                .unwrap();
-            assert_eq!(image.items[0].artwork.name.as_deref(), Some("First title"));
-            assert!(
-                image.items[0]
-                    .reason
-                    .as_deref()
-                    .unwrap()
-                    .contains("selected sprite")
-            );
-            assert_eq!(scoped.hour, 102);
-            assert!(matches!(
-                &*scoped.tables[TableId::ActiveIdeas.index()],
-                TableView::Complete(_)
-            ));
-        });
-        let cache = frames.cache.lock().unwrap();
-        assert_eq!(
-            cache.reads, 1,
-            "the static image reply uses its verified history frame"
-        );
     }
 
     #[test]
@@ -1358,244 +1126,6 @@ mod tests {
             invalid.cache.lock().unwrap().frames.is_empty(),
             "unverified blocks never enter the cache"
         );
-    }
-
-    #[test]
-    fn national_focus_product_seeds_verified_completion_frames() {
-        use crate::products::{CountryParams, national_focus::NationalFocus};
-        const COUNTRIES: u32 = 24;
-        let selected = COUNTRIES / 2;
-        let tag = String::from_utf8(scale_tag(selected)).unwrap();
-        let frames = vec![
-            focus_scale_frame(100, COUNTRIES, selected, &["focus_a"]),
-            focus_scale_frame(101, COUNTRIES, selected, &["focus_a"]),
-            focus_scale_frame(102, COUNTRIES, selected, &["focus_a", "focus_b"]),
-            focus_scale_frame(103, COUNTRIES, selected, &["focus_a", "focus_b"]),
-        ];
-        let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
-        let (source, context, _folder) = product_source(replay);
-        let cancelled = AtomicBool::new(false);
-        let params = CountryParams {
-            branch_id: "1".into(),
-            tag: tag.clone(),
-        };
-        let reply = NationalFocus::load(&source, &params, &context, &cancelled).unwrap();
-        assert_eq!(
-            reply
-                .history
-                .segments
-                .iter()
-                .map(|segment| (segment.first_hour, segment.last_hour))
-                .collect::<Vec<_>>(),
-            [(100, 101), (102, 103)]
-        );
-        assert_eq!(
-            reply.history.segments[1].order.completed[0].completed_by_hour,
-            None
-        );
-        assert_eq!(
-            reply.history.segments[1].order.completed[1].completed_by_hour,
-            Some(102)
-        );
-        let shared = shared_frames(&source);
-        {
-            let mut cache = shared.lock().unwrap();
-            assert_eq!(
-                cache
-                    .frames
-                    .iter()
-                    .map(|entry| entry.frame.hour)
-                    .collect::<Vec<_>>(),
-                [100, 102]
-            );
-            assert_eq!(cache.reads, 0);
-            for hour in [100, 102] {
-                let cached = cache
-                    .at(source.replay_ref(), 1, hour, false, &cancelled)
-                    .unwrap();
-                let replay::campaign::SeekResult::Frame(direct) = source
-                    .replay_ref()
-                    .seek_selected(1, hour, Some(&BASIC_TABLES))
-                    .unwrap()
-                else {
-                    panic!("synthetic completion hour must be recorded");
-                };
-                assert_eq!(cached, *direct);
-                assert_eq!(
-                    cached.complete::<tables::Countries>().unwrap().len(),
-                    COUNTRIES as usize
-                );
-                for table in BASIC_TABLES {
-                    assert_eq!(cached.tables[table.index()].sampled_at(), Some(hour));
-                }
-                for table in [
-                    TableId::Focus,
-                    TableId::CompletedFocuses,
-                    TableId::ActiveIdeas,
-                ] {
-                    assert!(
-                        matches!(&*cached.tables[table.index()], TableView::Unavailable { reason } if reason == "Table not selected for reconstruction")
-                    );
-                }
-            }
-            assert_eq!(
-                cache.reads, 0,
-                "seeded basic hours must avoid another block read"
-            );
-        }
-        for (hour, token, title) in [
-            (100, "focus_a", "First title"),
-            (102, "focus_b", "Second title"),
-        ] {
-            let params = FocusArtworkParams {
-                branch_id: "1".into(),
-                hour,
-                tag: tag.clone(),
-                database: FocusDatabase::National,
-                tokens: vec![token.into()],
-                text_only: Some(false),
-                include_descriptions: Some(false),
-                icons_only: None,
-            };
-            let displayed = FocusArtwork::load(&source, &params, &context, &cancelled).unwrap();
-            assert_eq!(displayed.items[0].artwork.name.as_deref(), Some(title));
-            assert!(
-                displayed.items[0]
-                    .reason
-                    .as_deref()
-                    .unwrap()
-                    .contains("selected sprite")
-            );
-        }
-        assert_eq!(
-            shared.lock().unwrap().reads,
-            0,
-            "actual static image requests must reuse history frames"
-        );
-        let scoped = FocusArtwork::load(
-            &source,
-            &FocusArtworkParams {
-                branch_id: "1".into(),
-                hour: 102,
-                tag: tag.clone(),
-                database: FocusDatabase::National,
-                tokens: vec!["focus_scoped".into()],
-                text_only: Some(true),
-                include_descriptions: Some(false),
-                icons_only: None,
-            },
-            &context,
-            &cancelled,
-        )
-        .unwrap();
-        assert_eq!(
-            scoped.items[0].artwork.name.as_deref(),
-            Some(format!("{tag} scoped").as_str())
-        );
-        assert!(scoped.items[0].reason.is_none());
-        assert_eq!(
-            shared.lock().unwrap().reads,
-            1,
-            "scoped operands still require a broad read"
-        );
-        let broad = shared
-            .lock()
-            .unwrap()
-            .at(source.replay_ref(), 1, 102, true, &cancelled)
-            .unwrap();
-        assert!(matches!(
-            &*broad.tables[TableId::ActiveIdeas.index()],
-            TableView::Complete(_)
-        ));
-        retain_basic(&source, &broad, &cancelled).unwrap();
-        let retained = shared
-            .lock()
-            .unwrap()
-            .at(source.replay_ref(), 1, 102, true, &cancelled)
-            .unwrap();
-        assert!(SharedView::ptr_eq(
-            &broad.tables[TableId::ActiveIdeas.index()],
-            &retained.tables[TableId::ActiveIdeas.index()]
-        ));
-        assert_eq!(
-            shared.lock().unwrap().reads,
-            1,
-            "history must not downgrade a scoped frame"
-        );
-    }
-
-    #[test]
-    fn focus_history_never_seeds_corrupt_or_cancelled_product_reads() {
-        use crate::products::{CountryParams, national_focus::NationalFocus};
-        let valid = Replay::from_records(
-            CAMPAIGN.into(),
-            &[records(1, vec![focus_scale_frame(100, 1, 0, &["focus_a"])])],
-        )
-        .unwrap();
-        let corrupt = Replay::open(valid.damaged_block(&valid.index[0]).unwrap()).unwrap();
-        let (source, context, _folder) = product_source(corrupt);
-        let params = CountryParams {
-            branch_id: "1".into(),
-            tag: String::from_utf8(scale_tag(0)).unwrap(),
-        };
-        assert!(NationalFocus::load(&source, &params, &context, &AtomicBool::new(false)).is_err());
-        assert!(shared_frames(&source).lock().unwrap().frames.is_empty());
-        let valid = Replay::from_records(
-            CAMPAIGN.into(),
-            &[records(1, vec![focus_scale_frame(100, 1, 0, &["focus_a"])])],
-        )
-        .unwrap();
-        let (source, context, _folder) = product_source(valid);
-        assert_eq!(
-            NationalFocus::load(&source, &params, &context, &AtomicBool::new(true))
-                .unwrap_err()
-                .kind(),
-            io::ErrorKind::Interrupted
-        );
-        assert!(shared_frames(&source).lock().unwrap().frames.is_empty());
-        let cancelled = AtomicBool::new(true);
-        assert_eq!(
-            retain_basic(
-                &source,
-                &focus_scale_frame(100, 1, 0, &["focus_a"]),
-                &cancelled
-            )
-            .unwrap_err()
-            .kind(),
-            io::ErrorKind::Interrupted
-        );
-        assert!(shared_frames(&source).lock().unwrap().frames.is_empty());
-    }
-
-    #[test]
-    fn a_scan_seeds_its_basic_frames_and_keeps_scoped_entries() {
-        let frames = [
-            source(1, 10, Some(100)),
-            source(1, 12, Some(120)),
-            source(1, 14, Some(140)),
-        ];
-        let cancelled = AtomicBool::new(false);
-        let mut cache = FrameCache::default();
-        for frame in &frames {
-            cache.retain_basic(frame, &cancelled).unwrap();
-        }
-        assert_eq!(
-            cache
-                .frames
-                .iter()
-                .map(|entry| entry.frame.hour)
-                .collect::<Vec<_>>(),
-            [10, 12, 14]
-        );
-        let broad = frames[2].clone();
-        cache.retain(broad.clone(), true, &cancelled).unwrap();
-        cache.retain_basic(&broad, &cancelled).unwrap();
-        assert!(cache.frames.back().unwrap().scoped);
-        assert!(SharedView::ptr_eq(
-            &cache.frames.back().unwrap().frame.tables[TableId::Countries.index()],
-            &broad.tables[TableId::Countries.index()]
-        ));
-        assert_eq!(cache.frames.len(), 3, "the scoped read replaced the seeded hour");
     }
 
     #[test]

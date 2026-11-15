@@ -14,7 +14,6 @@ pub fn walk_country_buffer<M: Memory>(
     if !inputs.iter().any(|r| r.slot.technology_present != 0) {
         return Outcome::Rows { len: 0 };
     }
-    let growing = output.is_growing();
     let mut out = Output {
         rows: output,
         len: 0,
@@ -45,7 +44,7 @@ pub fn walk_country_buffer<M: Memory>(
             .find(|r| r.slot.technology_present != 0)
             .unwrap()
             .status_pointer;
-        let sharing = sharing::Country::read(memory, base, countries, country, status, growing)?;
+        let sharing = sharing::Country::read(memory, base, countries, country, status)?;
         let (raw, metadata) = if sharing.is_empty() {
             (0, None)
         } else {
@@ -150,7 +149,7 @@ pub fn walk_country_buffer<M: Memory>(
                         0,
                         0,
                         0,
-                        text(memory, at(idea, crate::cidea::TOKEN)?, growing)?,
+                        text(memory, at(idea, crate::cidea::TOKEN)?)?,
                     )?;
                 }
                 Ok(())
@@ -171,7 +170,7 @@ pub fn walk_country_buffer<M: Memory>(
                         0,
                         0,
                         0,
-                        text(memory, at(entry, 8)?, growing)?,
+                        text(memory, at(entry, 8)?)?,
                     )?;
                 }
             }

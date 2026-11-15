@@ -3,7 +3,8 @@
 use super::*;
 use crate::format::FormatVersion;
 use crate::rows::compatibility::LAND_MODIFIER_ROWS_FORMAT;
-use crate::value::{Value, value_struct};
+use crate::test_support::OldDivision;
+use crate::value::Value;
 
 fn member(ordinal: u32, entries: Vec<CombatModifierValue>) -> LandCombatDivisionModifierRow {
     LandCombatDivisionModifierRow {
@@ -23,15 +24,6 @@ fn entry(id: u32, value_a: i64, value_b: i64) -> CombatModifierValue {
     }
 }
 
-/// One element of the side list LandCombatModifiers held before
-/// [`LAND_MODIFIER_ROWS_FORMAT`], as its writers encoded it.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-struct OldDivision {
-    division: u64,
-    ordinal: u32,
-    entries: Vec<CombatModifierValue>,
-}
-value_struct!(OldDivision { division: u64, ordinal: u32, entries: Vec<CombatModifierValue> });
 
 /// An Opaque field: its payload's length, then the payload.
 fn opaque(value: &impl Value, output: &mut Vec<u8>) {

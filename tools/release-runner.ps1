@@ -1,7 +1,7 @@
 # The self-hosted GitHub Actions runner on the maintainer's machine: the only place Rust compiles
 # here (release builds). It runs as the user, from a logon task, never as a
 # service, at below-normal CPU and low I/O priority, which every job it starts inherits.
-#   Install: release-runner.ps1 -Install -TokenFile <file holding a registration token>
+#   Install: release-runner.ps1 -Install -TokenFile <file holding a registration token> -SmokeRecording <a .battleplan>
 #   Start:   what the logon task runs; also starts it by hand.
 [CmdletBinding(DefaultParameterSetName = 'Start')]
 param(
@@ -11,7 +11,11 @@ param(
     [string]$Repository = $env:GITHUB_REPOSITORY,
     [string]$PrepLock = $(if (Test-Path Env:BATTLE_PLAN_PREP_LOCK) { $env:BATTLE_PLAN_PREP_LOCK } else { $env:HOI4_PREP_LOCK }),
     [string]$GameLock = ((Join-Path $env:TEMP 'claude\hoi4_game.lock') -replace '\\', '/'),
-    [int]$TargetCapGB = 40
+    [int]$TargetCapGB = 40,
+    # The release smoke (tools/release_smoke.py) draws this recording's map from each installer's layout.
+    [string]$SmokeRecording = '',
+    [string]$GameDir = $(if (Test-Path Env:BATTLE_PLAN_GAME_DIR) { $env:BATTLE_PLAN_GAME_DIR } else { $env:HOI4_GAME_DIR }),
+    [string]$UserDir = (Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'Paradox Interactive\Hearts of Iron IV')
 )
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -69,7 +73,8 @@ if (-not (Test-Path -LiteralPath (Join-Path $runner 'config.cmd'))) {
 $environment = @(
     "CARGO_TARGET_DIR=$($at.target)", "CARGO_HOME=$($at.cargo)", "RUSTUP_HOME=$($at.rustup)",
     "npm_config_cache=$($at.npm)", "TEMP=$($at.temp)", "TMP=$($at.temp)",
-    "BATTLE_PLAN_PREP_LOCK=$PrepLock", "BATTLE_PLAN_GAME_LOCK=$GameLock", "BATTLE_PLAN_TARGET_CAP_GB=$TargetCapGB")
+    "BATTLE_PLAN_PREP_LOCK=$PrepLock", "BATTLE_PLAN_GAME_LOCK=$GameLock", "BATTLE_PLAN_TARGET_CAP_GB=$TargetCapGB",
+    "BATTLE_PLAN_RELEASE_SMOKE_RECORDING=$SmokeRecording", "BATTLE_PLAN_GAME_DIR=$GameDir", "BATTLE_PLAN_USER_DIR=$UserDir")
 [IO.File]::WriteAllText((Join-Path $runner '.env'), ($environment -join "`n") + "`n")
 $token = (Get-Content -LiteralPath $TokenFile -Raw).Trim()
 if (-not $token) { throw "$TokenFile holds no token." }

@@ -1236,14 +1236,25 @@ impl SpritePass {
             .uploads
             .take()
             .expect("sprite uploads belong to the pass");
-        let same = self.retained_valid
-            && !self.waited
+        let current = self.retained_valid && !self.waited;
+        let same = current
             && self
                 .retained
                 .as_ref()
                 .is_some_and(|retained| retained.matches(batch, size, ui_scale, self.synced));
-        if same {
+        // A batch whose windows only changed their places among others draws the same.
+        let reordered = current && !same && self.retained.is_some() && {
+            let _order = crate::profiling::span("sprite_order");
+            sort_order(batch, &mut self.scratch.order);
+            self.retained.as_ref().is_some_and(|retained| {
+                retained.matches_in_order(batch, &self.scratch.order, size, ui_scale, self.synced)
+            })
+        };
+        if same || reordered {
             self.retained_diagnostics.credit();
+            if reordered && let Some(retained) = self.retained.as_mut() {
+                retained.update(batch, &self.scratch.order, size, ui_scale, self.synced);
+            }
         } else {
             self.waited = false;
             self.logged.clear();
@@ -1258,10 +1269,17 @@ impl SpritePass {
             }
             record_join(joined);
             uploads.flush(queue);
+            let order = &self.scratch.order;
             match self.retained.as_mut() {
-                Some(retained) => retained.update(batch, size, ui_scale, self.synced),
+                Some(retained) => retained.update(batch, order, size, ui_scale, self.synced),
                 None => {
-                    self.retained = Some(retained::Upload::new(batch, size, ui_scale, self.synced));
+                    self.retained = Some(retained::Upload::new(
+                        batch,
+                        order,
+                        size,
+                        ui_scale,
+                        self.synced,
+                    ));
                 }
             }
         }
@@ -1298,7 +1316,7 @@ impl SpritePass {
         }
         self.native_refusals.clear();
         self.native.refused.clear();
-        self.native.invalidate_bindings();
+        self.reset_stream();
         self.take_waiting();
         self.count = 0;
         if batch.is_empty() || size[0] == 0 || size[1] == 0 {
@@ -1315,26 +1333,11 @@ impl SpritePass {
             mut composites,
             mut icons,
         } = std::mem::take(&mut self.scratch);
-        order.clear();
-        order.extend(0..batch.quads.len());
-        // counters: `(layer, texture)`, so a page batch never overtakes an
-        // icon child that has to draw under or over another. An exact quad keeps its push
-        // order in its layer: the game's GUI draws in attach order, whatever the texture.
-        // A free eye's icons come first, farthest first, each in that order among its own quads;
-        // the screen interface follows them.
-        order.sort_by_key(|&index| {
-            let quad = &batch.quads[index];
-            (
-                quad.present.map_or(1u8, |_| 0),
-                quad.present.map_or(0, |present| present.rank),
-                quad.layer,
-                if quad.exact.is_some() {
-                    0
-                } else {
-                    quad.texture
-                },
-            )
-        });
+        {
+            let _order = crate::profiling::span("sprite_order");
+            sort_order(batch, &mut order);
+        }
+        let emit = crate::profiling::span("sprite_emit");
         frame.clear();
         pages.clear();
         composites.clear();
@@ -1464,6 +1467,8 @@ impl SpritePass {
             );
         }
 
+        drop(emit);
+        let batching = crate::profiling::span("sprite_batch");
         self.runs = batch_runs(
             std::mem::take(&mut self.runs),
             &mut self.native_packets,
@@ -1487,6 +1492,8 @@ impl SpritePass {
         self.array_views.finish();
         self.bakes.retain(|bake| bake.used);
         self.packets.finish();
+        drop(batching);
+        let _write = crate::profiling::span("sprite_write");
         self.count = frame.len() as u32;
         write_vertices(
             device,
@@ -1543,7 +1550,7 @@ impl SpritePass {
         };
         if let Some(exact) = &quad.exact {
             let Some(native) = &exact.native else {
-                self.native.invalidate_bindings();
+                self.reset_stream();
                 *self
                     .native_refusals
                     .entry("GUI quad has no compiled effect payload".into())
@@ -1552,26 +1559,13 @@ impl SpritePass {
                 return;
             };
             let clip = (!placement.is_identity()).then(|| placement.clip());
-            let prepared = match target {
-                Target::Frame => {
-                    self.prepare_native(device, queue, arena, native, size, ui_scale, clip, None)
-                }
-                Target::Page { .. } => {
-                    self.fade_stream.inherit_bindings(&self.native);
-                    let prepared = self.prepare_native(
-                        device,
-                        queue,
-                        arena,
-                        native,
-                        size,
-                        ui_scale,
-                        clip,
-                        Some(self.native_format),
-                    );
-                    self.native.inherit_bindings(&self.fade_stream);
-                    prepared
-                }
-            };
+            use shader_pipeline::gpu::stats::{Count, add};
+            add(Count::GuiHanded, 1);
+            let prepared = self.prepare_target((device, queue, arena), native, (size, ui_scale, clip), target);
+            add(Count::GuiPrepared, 1);
+            if matches!(prepared, Ok(shader_pipeline::gpu::batch::Packet::Native { .. })) {
+                add(Count::GuiNative, 1);
+            }
             match prepared {
                 Ok(submission) => {
                     let scissor = match exact.scissor {
@@ -1619,7 +1613,7 @@ impl SpritePass {
             }
             return;
         }
-        self.native.invalidate_bindings();
+        self.reset_stream();
         if self.group(quad.texture).is_none() {
             return;
         }
@@ -1694,6 +1688,40 @@ impl SpritePass {
                 }
             }
         }
+    }
+
+    /// Prepares a compiled draw onto the frame, or onto a fade page with the frame stream's
+    /// binds, leaving the page's on the frame stream after, as drawing it on the frame would.
+    fn prepare_target(
+        &mut self,
+        (device, queue, arena): (&wgpu::Device, &wgpu::Queue, &shader_pipeline::gpu::Arena),
+        native: &super::native_shader::draw::Quad,
+        (size, ui_scale, clip): ([u32; 2], f32, Option<fade::ClipAffine>),
+        target: Target,
+    ) -> Result<shader_pipeline::gpu::batch::Packet, String> {
+        match target {
+            Target::Frame => {
+                self.prepare_native(device, queue, arena, native, (size, ui_scale, clip), None)
+            }
+            Target::Page { .. } => {
+                self.fade_stream.inherit_bindings(&self.native);
+                let prepared = self.prepare_native(
+                    device,
+                    queue,
+                    arena,
+                    native,
+                    (size, ui_scale, clip),
+                    Some(self.native_format),
+                );
+                self.native.inherit_bindings(&self.fade_stream);
+                prepared
+            }
+        }
+    }
+
+    /// Resets the frame stream's binds.
+    fn reset_stream(&mut self) {
+        self.native.invalidate_bindings();
     }
 
     /// Fade page `page`'s runs this frame.
@@ -1908,9 +1936,7 @@ impl SpritePass {
         queue: &wgpu::Queue,
         arena: &shader_pipeline::gpu::Arena,
         draw: &super::native_shader::draw::Quad,
-        size: [u32; 2],
-        scale: f32,
-        clip: Option<fade::ClipAffine>,
+        (size, scale, clip): ([u32; 2], f32, Option<fade::ClipAffine>),
         page: Option<wgpu::TextureFormat>,
     ) -> Result<shader_pipeline::gpu::batch::Packet, String> {
         let _span = crate::profiling::span("sprite_native");
@@ -2169,6 +2195,29 @@ impl SpritePass {
     }
 }
 
+/// The order an upload draws `batch`'s quads in, into `order`: by `(layer, texture)`, so a page
+/// batch never overtakes an icon child that has to draw under or over another. An exact quad
+/// keeps its push order in its layer: the game's GUI draws in attach order, whatever the
+/// texture. A free eye's icons come first, farthest first, each in that order among its own
+/// quads; the screen interface follows them. A quad's layer is read here and nowhere else.
+fn sort_order(batch: &Batch, order: &mut Vec<usize>) {
+    order.clear();
+    order.extend(0..batch.quads.len());
+    order.sort_by_key(|&index| {
+        let quad = &batch.quads[index];
+        (
+            quad.present.map_or(1u8, |_| 0),
+            quad.present.map_or(0, |present| present.rank),
+            quad.layer,
+            if quad.exact.is_some() {
+                0
+            } else {
+                quad.texture
+            },
+        )
+    });
+}
+
 fn batch_runs(
     runs: Vec<Run>,
     packets: &mut [Option<shader_pipeline::gpu::batch::Packet>],
@@ -2336,22 +2385,20 @@ fn unflattenable(blend: Option<wgpu::BlendState>, mask: wgpu::ColorWrites) -> Op
 /// draws cannot accidentally use resources from an earlier successful draw. Missing techniques
 /// retain the program; a declared technique that fails compilation makes it unavailable.
 #[allow(clippy::too_many_arguments)]
-fn prepare_draw(
+fn bind_draw(
     native: &mut super::native_shader::stream::Stream,
     packets: &mut packets::Cache,
-    arena: &shader_pipeline::gpu::Arena,
     draw: &super::native_shader::draw::Quad,
     views: &[(u32, View)],
     baked: Option<Result<shader_pipeline::gpu::TextureBinding, String>>,
-    Output {
+    &Output {
         viewport,
-        format,
-        samples,
         clip,
         premultiply,
         layer,
-    }: Output,
-) -> Result<shader_pipeline::gpu::batch::Packet, String> {
+        ..
+    }: &Output,
+) -> (packets::Text, Option<String>) {
     use installed_content_core::pdxshader::program::Stage;
     let packets::Metadata { label, selection } = packets.metadata(draw);
     let mut refused = baked
@@ -2390,18 +2437,7 @@ fn prepare_draw(
     if premultiply {
         native.accumulate_alpha();
     }
-    let mut constants = draw.projected_constants(viewport);
-    if let Some(clip) = clip {
-        fade::apply(clip, &mut constants);
-    }
-    // Line charts multiply a row vector; the other GUI effects multiply a column.
-    if draw.declaration == shader_pipeline::vertices::Declaration::LineChart {
-        for row in 0..4 {
-            for column in row + 1..4 {
-                constants.swap(row * 4 + column, column * 4 + row);
-            }
-        }
-    }
+    let constants = buffer_zero(draw, viewport, clip);
     let known = [std::ops::Range {
         start: 0,
         end: draw.known,
@@ -2440,6 +2476,42 @@ fn prepare_draw(
             Err(_) => native.forget_texture(slot, Stage::Pixel, sampler),
         }
     }
+    (label, refused)
+}
+
+/// A compiled draw's buffer zero as it binds it: its world matrix projected over `viewport`, then
+/// placed by `clip`, then laid out as its effect multiplies it.
+fn buffer_zero(
+    draw: &super::native_shader::draw::Quad,
+    viewport: [u32; 2],
+    clip: Option<fade::ClipAffine>,
+) -> Vec<f32> {
+    let mut constants = draw.projected_constants(viewport);
+    if let Some(clip) = clip {
+        fade::apply(clip, &mut constants);
+    }
+    // Line charts multiply a row vector; the other GUI effects multiply a column.
+    if draw.declaration == shader_pipeline::vertices::Declaration::LineChart {
+        for row in 0..4 {
+            for column in row + 1..4 {
+                constants.swap(row * 4 + column, column * 4 + row);
+            }
+        }
+    }
+    constants
+}
+
+/// Prepares `draw` on `native` for `output`: its binds ([`bind_draw`]), then its packet.
+fn prepare_draw(
+    native: &mut super::native_shader::stream::Stream,
+    packets: &mut packets::Cache,
+    arena: &shader_pipeline::gpu::Arena,
+    draw: &super::native_shader::draw::Quad,
+    views: &[(u32, View)],
+    baked: Option<Result<shader_pipeline::gpu::TextureBinding, String>>,
+    output: Output,
+) -> Result<shader_pipeline::gpu::batch::Packet, String> {
+    let (label, refused) = bind_draw(native, packets, draw, views, baked, &output);
     if let Some(reason) = refused {
         return Err(reason);
     }
@@ -2451,8 +2523,8 @@ fn prepare_draw(
             draw.stride,
             draw.vertices.len() / draw.stride,
             draw.topology,
-            format,
-            samples,
+            output.format,
+            output.samples,
         )
         .map(|mut packet| {
             packet.source_draws(draw.source_draws);
@@ -3014,6 +3086,30 @@ mod tests {
         assert_eq!(window, [0.5, 0.375, 0.5, 0.625]);
         // Flipped rectangles keep their bounds ordered.
         assert_eq!(sample_window([0.75, 0.0, 0.25, 1.0], [4, 1])[0], 0.375);
+    }
+
+    #[test]
+    fn a_batch_drawn_in_the_same_order_keeps_its_upload_whatever_its_layers() {
+        let batch = |layers: [u64; 2], textures: [usize; 2]| Batch {
+            quads: vec![
+                shown(textures[0], [0., 0., 4., 4.], layers[0], None),
+                shown(textures[1], [4., 0., 4., 4.], layers[1], None),
+            ],
+            ..Batch::default()
+        };
+        let mut order = Vec::new();
+        let first = batch([3, 5], [1, 2]);
+        sort_order(&first, &mut order);
+        let kept = retained::Upload::new(&first, &order, [8, 8], 1.0, None);
+        let drawn = |next: &Batch| {
+            let mut order = Vec::new();
+            sort_order(next, &mut order);
+            kept.matches_in_order(next, &order, [8, 8], 1.0, None)
+        };
+        assert!(drawn(&batch([7, 9], [1, 2])), "other places among other windows, same order");
+        assert!(!kept.matches(&batch([7, 9], [1, 2]), [8, 8], 1.0, None), "not the same batch");
+        assert!(!drawn(&batch([9, 7], [1, 2])), "the same quads in another order");
+        assert!(!drawn(&batch([7, 9], [1, 3])), "another quad");
     }
 
     /// A one-colour quad over `rect` on image page `texture`, shown as `present`.

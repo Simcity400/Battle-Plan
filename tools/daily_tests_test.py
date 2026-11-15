@@ -150,6 +150,30 @@ class Continuation(unittest.TestCase):
         completed = json.loads((Path(args.continue_run[3]) / "result.json").read_text())
         self.assertEqual(completed["result"], "passed")
 
+    def test_recorded_replies_reach_the_checked_out_runner_the_task_and_every_step_alone(self):
+        replies = str(self.worktree / "replies.jsonl.gz")
+        with mock.patch.dict(os.environ, {"BATTLE_PLAN_RECORDED_REPLIES": ""}):
+            args = dt.parse(["run", "--game-dir", self.args.game_dir, "--recorded-replies", replies])
+            self.assertIsNone(dt.parse(["install", "--game-dir", self.args.game_dir]).recorded_replies)
+        self.assertEqual(dt.fixtures(args), ["--recorded-replies", replies])
+        self.assertEqual(dt.run(args), 0)
+        self.assertEqual(dt.parse(self.step.call_args.args[0][2:]).recorded_replies, replies)
+
+        environments = []
+        self.step.side_effect = lambda command, log, environment, seconds: environments.append(environment) or 0
+        for name, given in (("named", replies), ("unnamed", None)):
+            folder = self.reports / name
+            folder.mkdir()
+            child = dt.parse([
+                "run", "--game-dir", self.args.game_dir, *(["--recorded-replies", given] if given else []),
+                "--continue-run", self.commit, "2026-11-03T03:00:00", "200.0", str(folder),
+            ])
+            with mock.patch.object(dt, "steps", return_value=[("UI", "ui", ["npm"], None)]), \
+                    mock.patch.dict(os.environ, {"BATTLE_PLAN_RECORDED_REPLIES": "inherited"}):
+                dt.run(child)
+        self.assertEqual(environments[0]["BATTLE_PLAN_RECORDED_REPLIES"], replies)
+        self.assertNotIn("BATTLE_PLAN_RECORDED_REPLIES", environments[1])
+
     def test_the_guarded_child_refuses_a_different_head(self):
         args = self.child_args()
         self.git.side_effect = lambda *args: "b" * 40

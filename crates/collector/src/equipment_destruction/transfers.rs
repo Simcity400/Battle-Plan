@@ -1,7 +1,8 @@
 //! Deferred native reserve credits, keyed by complete source division handle.
-//! Only construction/growth allocates; per-source lists recycle on deletion.
+//! Only the drain grows them; per-source lists recycle on deletion.
 use super::queue_index::FixedIndex;
 const NONE: usize = usize::MAX;
+const STORAGE_FAILED: &str = "equipment return credit storage allocation failed";
 
 #[derive(Clone, Copy, Default)]
 pub(super) struct Net {
@@ -34,33 +35,25 @@ pub(super) enum PoolState {
 pub(super) struct Credits {
     heads: FixedIndex<u64, Head>,
     nodes: Vec<Node>,
-    unused: usize,
     free: usize,
+    /// Advances when a native mutation goes unobserved; a head keeps the one it began with.
+    revision: u64,
 }
 impl Credits {
     pub(super) fn new() -> Self {
         Self {
             heads: FixedIndex::new(),
             nodes: Vec::new(),
-            unused: 0,
             free: NONE,
+            revision: 0,
         }
     }
+    #[cfg(test)]
     pub(super) fn try_new(divisions: usize, entries: usize) -> std::io::Result<Self> {
-        let heads = FixedIndex::try_new(divisions)?;
-        let mut nodes = engine_allocation::vec(entries)?;
-        nodes.resize(
-            entries,
-            Node {
-                value: Net::default(),
-                next: NONE,
-            },
-        );
         Ok(Self {
-            heads,
-            nodes,
-            unused: 0,
-            free: NONE,
+            heads: FixedIndex::try_new(divisions)?,
+            nodes: engine_allocation::vec(entries)?,
+            ..Self::new()
         })
     }
     pub(super) fn allocated_bytes(&self) -> usize {
@@ -68,26 +61,8 @@ impl Credits {
     }
     pub(super) fn clear(&mut self) -> Result<(), &'static str> {
         self.heads.clear()?;
-        self.unused = 0;
+        self.nodes.clear();
         self.free = NONE;
-        Ok(())
-    }
-    pub(super) fn copy_to(&self, target: &mut Self) -> Result<(), &'static str> {
-        for (&handle, &head) in self.heads.iter() {
-            target
-                .heads
-                .insert(
-                    handle,
-                    Head {
-                        first: NONE,
-                        ..head
-                    },
-                )
-                .map_err(|_| "equipment return credit source capacity too short")?;
-            self.visit(handle, head.army, head.country, |value| {
-                target.push(handle, value)
-            })?;
-        }
         Ok(())
     }
     pub(super) fn begin(
@@ -101,6 +76,16 @@ impl Credits {
             return Err("equipment return continuity sequence exhausted");
         }
         self.remove(handle);
+        if self.heads.len() == self.heads.capacity() {
+            let capacity = self
+                .heads
+                .capacity()
+                .checked_mul(2)
+                .ok_or(STORAGE_FAILED)?
+                .max(1);
+            self.heads = engine_allocation::advisory(|| self.heads.grown(capacity))
+                .map_err(|_| STORAGE_FAILED)?;
+        }
         self.heads
             .insert(
                 handle,
@@ -119,22 +104,23 @@ impl Credits {
             .heads
             .get_mut(&handle)
             .ok_or("equipment return credit source absent")?;
-        let node = if self.free != NONE {
-            let node = self.free;
-            self.free = self.nodes[node].next;
-            node
-        } else if self.unused < self.nodes.len() {
-            let node = self.unused;
-            self.unused += 1;
-            node
-        } else {
-            return Err("equipment return credit entries capacity too short");
-        };
-        self.nodes[node] = Node {
+        let node = Node {
             value,
             next: head.first,
         };
-        head.first = node;
+        let index = if self.free != NONE {
+            let index = self.free;
+            self.free = self.nodes[index].next;
+            self.nodes[index] = node;
+            index
+        } else {
+            let nodes = &mut self.nodes;
+            engine_allocation::advisory(|| engine_allocation::reserve(nodes, 1))
+                .map_err(|_| STORAGE_FAILED)?;
+            nodes.push(node);
+            nodes.len() - 1
+        };
+        head.first = index;
         Ok(())
     }
     pub(super) fn is_empty(&self) -> bool {
@@ -143,11 +129,16 @@ impl Credits {
     pub(super) fn has_unsettled(&self) -> bool {
         self.heads
             .iter()
-            .any(|(_, head)| head.state == PoolState::Unsettled || !Self::continuous(head))
+            .any(|(_, head)| head.state == PoolState::Unsettled || !self.continuous(head))
     }
-    fn continuous(head: &Head) -> bool {
-        head.revision != u64::MAX
-            && head.revision == super::CREDIT_REVISION.load(std::sync::atomic::Ordering::SeqCst)
+    pub(super) fn revision(&self) -> u64 {
+        self.revision
+    }
+    pub(super) fn advance(&mut self) {
+        self.revision = self.revision.saturating_add(1);
+    }
+    fn continuous(&self, head: &Head) -> bool {
+        head.revision != u64::MAX && head.revision == self.revision
     }
     pub(super) fn skip(&mut self, handle: u64, army: usize) -> bool {
         let Some(head) = self.heads.get_mut(&handle).filter(|head| head.army == army) else {
@@ -158,7 +149,7 @@ impl Credits {
         true
     }
     pub(super) fn check_continuity(&self, handle: u64) -> Result<(), &'static str> {
-        if self.heads.get(&handle).is_some_and(Self::continuous) {
+        if self.heads.get(&handle).is_some_and(|head| self.continuous(head)) {
             Ok(())
         } else {
             Err("equipment returned source skipped native mutation")
@@ -178,7 +169,7 @@ impl Credits {
         if head.country != country {
             return Err("equipment returned source changed owner");
         }
-        if !Self::continuous(head) {
+        if !self.continuous(head) {
             return Err("equipment returned source skipped native mutation");
         }
         if head.state == PoolState::Unsettled {
@@ -198,6 +189,7 @@ impl Credits {
         country: u32,
         state: PoolState,
     ) -> Result<(), &'static str> {
+        let revision = self.revision;
         let head = self
             .heads
             .get_mut(&handle)
@@ -206,7 +198,7 @@ impl Credits {
         if head.country != country {
             return Err("equipment returned source changed owner");
         }
-        if !Self::continuous(head) {
+        if head.revision == u64::MAX || head.revision != revision {
             return Err("equipment returned source skipped native mutation");
         }
         head.state = state;
@@ -250,11 +242,10 @@ impl Credits {
     }
 }
 
-pub(super) fn push(output: &mut [Net], len: &mut usize, value: Net) -> Result<(), &'static str> {
-    *output
-        .get_mut(*len)
-        .ok_or("equipment conservation scratch too short")? = value;
-    *len += 1;
+pub(super) fn push(output: &mut Vec<Net>, value: Net) -> Result<(), &'static str> {
+    engine_allocation::advisory(|| engine_allocation::reserve(output, 1))
+        .map_err(|_| "equipment conservation scratch allocation failed")?;
+    output.push(value);
     Ok(())
 }
 /// Wide sums preserve signed duplicate entries even when their partial sum

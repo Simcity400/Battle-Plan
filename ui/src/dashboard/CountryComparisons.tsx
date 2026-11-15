@@ -1,13 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ComponentType } from 'react';
 import WidgetState from '../components/WidgetState';
 import { CountryFlagUrl } from '../components/CountryFlag';
 import { useCountryLabelsAt } from './countryFlagsAt';
 import { useComparisonCountries } from './comparisonCountries';
-import { MEMBERSHIP_PREPARING } from './groups';
 import type { WidgetProps } from './definitions';
 import { resolveWindow } from './model';
-import { usePlaybackHour } from './playback';
+import { useIdentityHour } from './atHead.ts';
 import { useDiagnostics } from './useDiagnostics';
 import type { HourSpan } from '../generated/dashboard';
 import './countryComparisons.css';
@@ -19,9 +18,7 @@ const NO_WARNINGS: string[] = [];
 
 export default function CountryComparisons({ component: Component, ...props }: WidgetProps & { component: ComponentType<ComparisonProps> }) {
   const { widget, runtime, active, onDiagnostics } = props;
-  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const { track, countries, error, refreshError, retry, pending, contentPending } = useComparisonCountries(widget, runtime, active);
-  const hour = track ? resolveWindow(widget, track, runtime.tracks, playbackHour)?.lastHour ?? track.branch.lastHour : 0;
   const [notes, setNotes] = useState<ReadonlyMap<string, readonly string[]>>(new Map());
   const body = useRef<HTMLDivElement>(null);
   const [view, setView] = useState({ left: 0, width: 320 });
@@ -39,6 +36,10 @@ export default function CountryComparisons({ component: Component, ...props }: W
   const first = multiple ? Math.min(Math.max(0, countries.tags.length - 1), Math.max(0, Math.floor(view.left / panelWidth) - 1)) : 0;
   const last = multiple ? Math.min(countries.tags.length, Math.ceil((view.left + view.width) / panelWidth) + 1) : countries.tags.length;
   const shown = useMemo(() => countries.tags.slice(first, Math.max(first + 1, last)), [countries.tags, first, last]);
+  // Following, the panels' names and flags are read at the hour one of them last changed, so playing renders nothing.
+  const trackHour = useCallback((clockHour: number) => track ? resolveWindow(widget, track, runtime.tracks, clockHour)?.lastHour ?? track.branch.lastHour : null,
+    [widget, track, runtime.tracks]);
+  const hour = useIdentityHour(runtime.client, track, shown, runtime.clock, active && widget.time.mode === 'follow' && !!track, trackHour) ?? 0;
   const wanted = useMemo(() => shown.map(tag => ({ hour, tag })), [shown, hour]);
   const labels = useCountryLabelsAt(runtime.client, track, wanted, active);
   useEffect(() => {
@@ -61,8 +62,6 @@ export default function CountryComparisons({ component: Component, ...props }: W
   const refreshNotice = refreshError && <WidgetState kind="error" failure={refreshError} onRetry={retry} />;
   if (pending) return <WidgetState kind="loading" label="Loading countries…" />;
   if (countries.reason) return <>{refreshNotice}<WidgetState kind="empty" message={countries.reason} /></>;
-  // A group's members at hours still being prepared are not known yet: no country is not proof of none.
-  if (!countries.tags.length && track && !countries.known(track.branch.firstHour, track.branch.lastHour)) return <>{refreshNotice}<WidgetState kind="loading" label={MEMBERSHIP_PREPARING} /></>;
   return <>{refreshNotice}<div ref={body} className="country-comparisons" data-multiple={multiple || undefined}
     onScroll={event => setView({ left: event.currentTarget.scrollLeft, width: event.currentTarget.clientWidth })}>
     {first > 0 && <div aria-hidden="true" style={{ flex: `0 0 ${first * panelWidth}px` }} />}

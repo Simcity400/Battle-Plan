@@ -612,7 +612,6 @@ fn a_certified_navy_republishes_its_held_ledgers_and_reads_only_presence() {
             hour,
             force_full,
             None,
-            false,
             LedgerSkip { enabled: true },
         );
         let views = captured.tables();
@@ -779,6 +778,20 @@ fn a_full_hour_records_every_raiding_and_escort_task_force_ledger_and_country() 
     );
 }
 
+/// The game finds a country's navy by the country's slot, so a navy storing
+/// another owner keeps its ledgers under its slot's country.
+#[test]
+fn foreign_navy_keeps_its_ledgers_under_its_slots_country() {
+    let mut world = build(3);
+    let owner = navy_of(&world, 1) + cstrategic_navy::OWNER;
+    world.bytes[owner..owner + 4].copy_from_slice(&2_u32.to_le_bytes());
+    let mut captured = Captured::with_capacities(&fixture_capacities(&world));
+    let views = capture(&mut captured, &world, 0, true, &mut SliceFingerprints::new());
+    let ledgers = rows::<tables::NavalMissionLedgers>(&views[1]);
+    assert_eq!(ledgers.len(), 9);
+    assert_eq!(ledgers.iter().filter(|row| row.owner == 1).count(), 3);
+}
+
 #[test]
 fn an_unlisted_escort_still_has_its_region_presence_input() {
     let mut world = build(1);
@@ -828,9 +841,20 @@ fn a_ledger_naming_a_task_force_outside_the_census_is_refused_alone() {
     assert_eq!(rows::<tables::NavalMissionCountries>(&views[2]).len(), 2);
 }
 
+/// Every escort mission names an owner no country resolves: no country demands an escort tree,
+/// which this fixture cannot hold, so none is refused and read again each hour.
+fn without_escort_demand(world: &mut World) {
+    let owner = ctask_force::NAVAL_MISSION + native::MISSION_OWNER;
+    for tasks in world.tasks.iter().skip(1) {
+        let at = tasks[ESCORTING] + owner;
+        world.bytes[at..at + 4].copy_from_slice(&999_999_u32.to_le_bytes());
+    }
+}
+
 #[test]
 fn a_quiet_hour_reads_only_countries_whose_commanders_changed() {
     let mut world = build(30);
+    without_escort_demand(&mut world);
     let mut captured = Captured::with_capacities(&fixture_capacities(&world));
     let mut fingerprints = SliceFingerprints::new();
     capture(&mut captured, &world, 0, true, &mut fingerprints);
@@ -874,7 +898,6 @@ fn a_refused_escort_tree_is_read_again_at_the_next_hour() {
     };
     assert_eq!(read(&mut fingerprints, 1), [1, 2, 3]);
     assert!(read(&mut fingerprints, 2).is_empty());
-    captured.growing = true;
     captured.retry_escort_tree(2).unwrap();
     captured.retry_refused_escort_trees(&mut fingerprints);
     assert_eq!(read(&mut fingerprints, 3), [2]);
@@ -886,14 +909,6 @@ fn a_refused_escort_tree_is_read_again_at_the_next_hour() {
     }
     assert_eq!(captured.escort_retries.len(), 100);
     assert!(captured.escort_retries.capacity() < 1_000);
-    assert!(!captured.escort_retries_full);
-    // Fixed storage never allocates: a refusal that does not fit reads every country.
-    captured.growing = false;
-    captured.escort_retries = Vec::new();
-    captured.retry_escort_tree(2).unwrap();
-    assert!(captured.escort_retries.is_empty() && captured.escort_retries_full);
-    captured.retry_refused_escort_trees(&mut fingerprints);
-    assert_eq!(read(&mut fingerprints, 5), [1, 2, 3]);
 }
 
 /// A modifier rebuild the naval tree family observed (its certificate moved)
@@ -902,7 +917,8 @@ fn a_refused_escort_tree_is_read_again_at_the_next_hour() {
 #[test]
 fn a_moved_certificate_is_read_within_the_hour() {
     static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let world = build(30);
+    let mut world = build(30);
+    without_escort_demand(&mut world);
     let mut captured = Captured::with_capacities(&fixture_capacities(&world));
     captured.sequence = |_| Some((1, SEQUENCE.load(std::sync::atomic::Ordering::Relaxed)));
     let mut fingerprints = SliceFingerprints::new();
@@ -943,29 +959,17 @@ fn without_a_store_the_hour_reads_every_country() {
 }
 
 #[test]
-fn a_short_buffer_truncates_with_its_demand_and_never_publishes_the_family() {
+fn a_short_task_force_buffer_grows_to_the_whole_census_in_the_pass() {
     let world = build(5);
-    let mut capacity = Capacities {
+    let capacity = Capacities {
         task_forces: 3,
         ..fixture_capacities(&world)
     };
     let mut captured = Captured::with_capacities(&capacity);
     let mut fingerprints = SliceFingerprints::new();
     let views = capture(&mut captured, &world, 0, true, &mut fingerprints);
-    assert_eq!(
-        captured.outcomes()[0],
-        Outcome::Truncated {
-            len: 3,
-            unread_rows: 17
-        }
-    );
-    // The ledgers need the census, not the task-force rows.
+    assert_eq!(captured.outcomes()[0], Outcome::Rows { len: 20 });
     assert_eq!(rows::<tables::NavalMissionLedgers>(&views[1]).len(), 15);
-    for index in [2, 3] {
-        assert!(matches!(views[index], TableView::Unavailable { .. }));
-    }
-    captured.grow(&mut capacity);
-    let views = capture(&mut captured, &world, 1, true, &mut fingerprints);
     assert_eq!(rows::<tables::NavalMissionTaskForces>(&views[0]).len(), 20);
     assert_eq!(rows::<tables::NavalMissionCountries>(&views[2]).len(), 5);
 }
@@ -1103,19 +1107,16 @@ fn ledger_discovery_does_not_depend_on_any_accessible_region_list() {
 }
 
 #[test]
-fn hubs_keep_order_and_repeats_and_grow_from_the_live_demand() {
+fn hubs_keep_order_and_repeats_and_grow_to_the_live_demand() {
     let world = build_world(1, true);
-    let mut capacity = Capacities {
+    let capacity = Capacities {
         hubs: 1,
         ..fixture_capacities(&world)
     };
     let mut captured = Captured::with_capacities(&capacity);
     let mut fingerprints = SliceFingerprints::new();
     let views = capture(&mut captured, &world, 0, true, &mut fingerprints);
-    assert!(matches!(views[2], TableView::Truncated { .. }));
     assert_eq!(captured.hubs.required, 3);
-    captured.grow(&mut capacity);
-    let views = capture(&mut captured, &world, 1, true, &mut fingerprints);
     assert_eq!(
         rows::<tables::NavalMissionCountries>(&views[2])[0].hubs,
         [3, 1, 3]
@@ -1236,8 +1237,10 @@ fn ordinary_strict_missions_grow_on_first_and_later_publications() {
 
     // The navy part alone: the physical pass and the ledgers that borrow it.
     let mut owner = Captured::with_capacities(&Capacities::default());
-    let countries =
-        std::sync::Arc::new(engine_native::country_memory::Cache::try_with_capacity(0).unwrap());
+    let countries = engine_allocation::shared(
+        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+    )
+    .unwrap();
     let mut loan = NavalMissionLoan {
         force_full: true,
         fingerprints: Some(Box::new(SliceFingerprints::new())),
@@ -1316,7 +1319,7 @@ fn growing_strict_missions_preserve_fixed_original_reads_and_first_faults() {
         let mut fixed = Captured::with_capacities(&capacity);
         let mut growing = Captured::vacant();
         fixed.capture(&fixed_memory, world.base, world.game_state, 0, true, None);
-        growing.capture_growing(&growing_memory, world.base, world.game_state, 0, true, None);
+        growing.capture(&growing_memory, world.base, world.game_state, 0, true, None);
         assert_eq!(
             &growing.outcomes()[..4],
             &fixed.outcomes()[..4],
@@ -1378,7 +1381,7 @@ fn dominance_ranges_read_only_omitted_siblings_of_registered_strike_fleets() {
         failed: Default::default(),
     };
     let mut captured = Captured::vacant();
-    captured.capture_growing(&memory, world.base, world.game_state, 0, true, None);
+    captured.capture(&memory, world.base, world.game_state, 0, true, None);
     let views = captured.tables();
     let ranges = rows::<tables::NavalDominanceTaskForceRanges>(&views[6]);
     assert_eq!(ranges.len(), 2);
@@ -1394,7 +1397,7 @@ fn dominance_ranges_read_only_omitted_siblings_of_registered_strike_fleets() {
         failed: Default::default(),
     };
     let mut captured = Captured::vacant();
-    captured.capture_growing(&memory, world.base, world.game_state, 0, true, None);
+    captured.capture(&memory, world.base, world.game_state, 0, true, None);
     let views = captured.tables();
     let ranges = rows::<tables::NavalDominanceTaskForceRanges>(&views[6]);
     assert_eq!(ranges.len(), 1);
@@ -1419,7 +1422,7 @@ fn failed_optional_sibling_does_not_refuse_existing_mission_tables() {
         failed: Default::default(),
     };
     let mut captured = Captured::vacant();
-    captured.capture_growing(&memory, world.base, world.game_state, 0, true, None);
+    captured.capture(&memory, world.base, world.game_state, 0, true, None);
     assert!(memory.failed.get());
     let views = captured.tables();
     assert_eq!(rows::<tables::NavalMissionTaskForces>(&views[0]).len(), 8);
@@ -1519,7 +1522,7 @@ fn patrol_members_reuse_original_stats_and_do_not_duplicate_mission_context() {
         failed: Default::default(),
     };
     let mut captured = Captured::vacant();
-    captured.capture_growing(&memory, world.base, world.game_state, 0, true, None);
+    captured.capture(&memory, world.base, world.game_state, 0, true, None);
     let views = captured.tables();
     let sources = rows::<tables::NavalPatrolMissionInputs>(&views[7]);
     assert_eq!(
@@ -1557,7 +1560,7 @@ fn patrol_members_reuse_original_stats_and_do_not_duplicate_mission_context() {
         .unwrap()
         .headquarters
         .clone();
-    captured.capture_growing(&memory, world.base, world.game_state, 1, true, None);
+    captured.capture(&memory, world.base, world.game_state, 1, true, None);
     let after = captured.tables();
     let second = &rows::<tables::NavalMissionTaskForces>(&after[0])
         .iter()
@@ -1580,7 +1583,7 @@ fn omitted_patrol_context_shares_headquarters_until_references_change() {
         world.bytes[at..at + 4].copy_from_slice(&1_u32.to_le_bytes());
     }
     let mut captured = Captured::vacant();
-    captured.capture_growing(&world.slice(), world.base, world.game_state, 0, true, None);
+    captured.capture(&world.slice(), world.base, world.game_state, 0, true, None);
     let id = task_handle(1, ESCORTING);
     let source = |captured: &Captured| {
         let views = captured.tables();
@@ -1595,7 +1598,7 @@ fn omitted_patrol_context_shares_headquarters_until_references_change() {
         first.headquarters_known && first.local_detection_known && first.weather_detection_known
     );
     assert_eq!(first.headquarters.as_slice(), &[character(1)]);
-    captured.capture_growing(&world.slice(), world.base, world.game_state, 1, true, None);
+    captured.capture(&world.slice(), world.base, world.game_state, 1, true, None);
     let second = source(&captured);
     assert!(
         Arc::ptr_eq(&first.headquarters, &second.headquarters),
@@ -1606,7 +1609,7 @@ fn omitted_patrol_context_shares_headquarters_until_references_change() {
     let headquarters = world.pointer(references) - world.base;
     let commander = world.pointer(headquarters + native::HEADQUARTERS_COMMANDER) - world.base;
     world.put(commander + native::COMMANDER_CHARACTER, 0);
-    captured.capture_growing(&world.slice(), world.base, world.game_state, 2, true, None);
+    captured.capture(&world.slice(), world.base, world.game_state, 2, true, None);
     let third = source(&captured);
     assert_eq!(third.headquarters.as_slice(), &[0]);
     assert!(!Arc::ptr_eq(&second.headquarters, &third.headquarters));
@@ -1621,7 +1624,7 @@ fn omitted_patrol_context_shares_headquarters_until_references_change() {
 fn patrol_leaf_failure_preserves_existing_missions_ranges_and_map_outcomes() {
     let world = build(1);
     let mut baseline = Captured::vacant();
-    baseline.capture_growing(&world.slice(), world.base, world.game_state, 0, true, None);
+    baseline.capture(&world.slice(), world.base, world.game_state, 0, true, None);
     let task = world.tasks[1][ESCORTING];
     let stats = world.pointer(task + cunit::STAT_BLOCK);
     let memory = TransportMemory {
@@ -1631,7 +1634,7 @@ fn patrol_leaf_failure_preserves_existing_missions_ranges_and_map_outcomes() {
         failed: Default::default(),
     };
     let mut failed = Captured::vacant();
-    failed.capture_growing(&memory, world.base, world.game_state, 0, true, None);
+    failed.capture(&memory, world.base, world.game_state, 0, true, None);
     assert!(memory.failed.get());
     let before = baseline.tables();
     let after = failed.tables();
@@ -1661,7 +1664,7 @@ fn patrol_leaf_failure_preserves_existing_missions_ranges_and_map_outcomes() {
 fn incomplete_patrol_witness_refuses_only_its_optional_table() {
     let world = build(1);
     let mut captured = Captured::vacant();
-    captured.capture_growing(&world.slice(), world.base, world.game_state, 0, true, None);
+    captured.capture(&world.slice(), world.base, world.game_state, 0, true, None);
     let before = captured.tables();
     let outcomes = captured.outcomes();
     let member = captured.census.first[..captured.census.len]
@@ -1703,7 +1706,7 @@ fn patrol_never_retries_an_optional_range_source_failed_selector() {
         failed: Default::default(),
     };
     let mut captured = Captured::vacant();
-    captured.capture_growing(&memory, world.base, world.game_state, 0, true, None);
+    captured.capture(&memory, world.base, world.game_state, 0, true, None);
     assert!(memory.failed.get());
     assert!(matches!(
         captured.ranges_outcome,

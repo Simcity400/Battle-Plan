@@ -1,144 +1,141 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { perfLog } from '../../shell/perf.ts';
 import WidgetState from '../../components/WidgetState';
+import MeasureRace from '../../charts/race/MeasureRace';
+import { formatRaw } from '../../charts/race/measureRaceData.ts';
 import Table, { CountryCell } from '../../charts/table/Table';
 import type { TableColumn } from '../../charts/table/Table';
 import { narrowTableOf, tableSortOf, tableSortToken } from '../../charts/table/options';
-import { useTableHour } from '../../charts/table/useTableHour';
-import CountryRaceView from '../../charts/race/CountryRaceView';
-import { useCountryColours } from '../../charts/race/countryColours';
+import { dayLabel } from '../../charts/draw';
 import { jumpItem } from '../../charts/jump';
 import { fitTooltip } from '../../charts/tooltip';
-import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
-import { formatAxisValue } from '../../charts/valueAxis';
-import { useCountryFlagsRead } from '../../dashboard/countryFlags';
-import { nameKey } from '../../dashboard/countryNamesAt';
+import { useViewportHeight } from '../../charts/useChartTokens';
+import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { selectedTags } from '../../dashboard/countrySelection';
-import { countryAliasesAt } from '../../dashboard/countryIdentity';
-import { groupsKnownAt, MEMBERSHIP_PREPARING, noMembersAt, rankedCandidates, resolveCountries } from '../../dashboard/groups';
-import NoMembersState from '../../dashboard/NoMembersState';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { resolveWindow } from '../../dashboard/model';
-import { contentKey, resolveOptions } from '../../dashboard/options';
-import { answerHold, usePlaybackMotion, type HourHold } from '../../dashboard/playback';
-import { useParityRows } from '../../dashboard/parityRows';
-import { usePreparedScore } from './usePreparedScore';
+import { isMember } from '../../dashboard/groups';
+import { useHeadProduct } from '../../dashboard/headProduct';
+import { usePushedLooksHour } from '../../dashboard/pushedLooks.ts';
+import { resolveOptions } from '../../dashboard/options';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { DEFAULT_SORT, OPTIONS } from './definition';
-import { BAR_PARTS, SCORE_LABELS, SCORE_PARTS, formatScore, gameScoreCountryCell, gameScoreCountryKnown, gameScoreFaction, gameScoreLooks, gameScoreModel, gameScoreRace, gameScoreRow, gameScoreRows, gameScoreTooltips, scoreValue } from './gameScoreData';
-import type { ScoreRow } from './gameScoreData';
+import { SCORE_LABELS, SCORE_PARTS, factionGroup, formatScore, scoreCountries, scoreHint, scoreParts, scorePart, scoreRows, scoreTooltip, validateGameScore } from './gameScoreData.ts';
+import type { ScoreOf } from './gameScoreData';
+import { liveKey } from '../../charts/live';
+import { useHeadHour } from '../army-size/headHour';
+import { reporting } from '../../dashboard/follow/liveCells.ts';
+import { useShownHour, useWhyCommit } from '../../dashboard/widgetPerf.ts';
+import type { GameScoreRow } from '../../generated/dashboard';
+import type { GameScoreReply } from './gameScoreData';
 
 const NO_WARNINGS: string[] = [];
-const NO_ROWS: readonly ScoreRow[] = [];
-const NO_TAGS: readonly string[] = [];
-const rowKey = (row: ScoreRow) => row.key;
-const tieKey = (row: ScoreRow) => row.tag;
-const PARTS = BAR_PARTS.map(id => ({ id, label: SCORE_LABELS[id] }));
+const NO_ROWS: readonly GameScoreRow[] = [];
+const PARAMS = {};
+const rowKey = (row: GameScoreRow) => row.tag;
+/** What renders the table: its rows and why a score is not known, never a score. */
+const scoreStructure = (reply: GameScoreReply) => reply.rows.map(row => [row.tag, ...SCORE_PARTS.map(part => row[part].missing ?? '')].join('|')).join('\n');
+const format = (raw: string, decimals: number) => formatRaw(raw, decimals);
+const formatValue = (value: number) => Math.round(value).toLocaleString('en-US');
+/** Total score split into its army, navy and air parts, in proportion: the game multiplies after adding them. */
+const SCORE_SPLIT = scoreParts();
 
-export default function GameScoreWidget({ widget, runtime, active, onDiagnostics, setOption }: WidgetProps) {
-  const hold = useRef<HourHold | null>(null);
-  const playbackHour = useTableHour(runtime.clock, active && widget.time.mode === 'follow', hold);
-  const hoursPerSecond = usePlaybackMotion(runtime.clock);
+/** The game's end-screen scores: a table of every country at an hour (a rows-at-an-hour product, followed as a panel
+ * at the head), or a race and lines of one score (the declared, ranked `country-game-scores` series). */
+export default function GameScoreWidget(props: WidgetProps) {
+  const options = resolveOptions(OPTIONS, props.widget.options);
+  const by = scorePart(options.topMeasure);
+  const view = options.view === 'race' ? 'race' : options.view === 'lines' ? 'lines' : 'table';
+  const measure = useMemo(() => ({ kind: 'country-game-scores', measure: by }), [by]);
+  const onWarnings = useCallback((warnings: readonly string[]) => props.onDiagnostics(warnings.length ? [...warnings] : NO_WARNINGS), [props.onDiagnostics]); // eslint-disable-line react-hooks/exhaustive-deps
+  if (view === 'table') return <ScoreTable {...props} />;
+  return <MeasureRace widget={props.widget} runtime={props.runtime} active={props.active} measure={measure} decimals={5} view={view} options={options}
+    label={SCORE_LABELS[by]} icon="grid" format={format} formatValue={formatValue} onWarnings={onWarnings}
+    parts={by === 'total' ? SCORE_SPLIT : undefined} split={view === 'race' && options.split !== false} breakdown={false} />;
+}
+
+function ScoreTable({ widget, runtime, active, onDiagnostics, setOption }: WidgetProps) {
   const viewport = useViewportHeight();
-  const tokens = useChartTokens();
-  const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const options = resolveOptions(OPTIONS, widget.options);
-  const view = options.view === 'race' ? 'race' : 'table';
+  const by = scorePart(options.topMeasure);
   const sort = tableSortOf(options.tableSort, DEFAULT_SORT);
-  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
-  const requestedHour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
-  const prepared = usePreparedScore(runtime, track, requestedHour, active);
-  const { error, retry, hour } = prepared;
-  // Held only where everything shown at the hour comes from this reply: every country.
+  const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
+  const lastHour = track?.branch.lastHour ?? 0;
+  const all = widget.countries.kind === 'all';
+  const needsGroups = options.factions === true || (widget.countries.kind === 'group' && widget.countries.group.type !== 'top');
+  const groups = useCountryGroups(runtime, track, active && needsGroups);
+  const resolved = useMemo(() => scoreCountries(widget.countries, [...selectedTags(widget.countries, track)], groups.data, lastHour),
+    [widget.countries, track, groups.data, lastHour]);
+  const head = useHeadProduct<GameScoreReply>(runtime, widget, 'game-score', track ? PARAMS : null, { active, validate: validateGameScore, structure: scoreStructure });
+  const reply = head.data;
+  const live = head.live;
+  const shown = useShownHour();
+  const shownAt = useRef(head.shownAt);
+  shownAt.current = head.shownAt;
+  const score = useCallback<ScoreOf>((tag, part) => live.read().get(liveKey(tag, part)), [live]);
+  const hour = head.at ?? lastHour;
+  const membership = resolved.membership;
+  const member = useMemo(() => membership ? (tag: string, hour: number) => isMember(membership.get(tag), hour) : null, [membership]);
+  const top = resolved.top ?? null;
+  // A top N's members are its structure: it renders when they change, at most four times a second while playing, and
+  // as scores land (paused, the scores of a push land after it). The table orders them by the painted scores.
+  const woken = useMemo(() => new Set<() => void>(), []);
+  useEffect(() => live.subscribe(() => { for (const wake of [...woken]) wake(); }), [live, woken]);
+  const ranked = useHeadHour(runtime.clock, active && top != null && !!reply, () => reply && top != null
+    ? scoreRows(reply, { all, tags: resolved.tags, top, hour }, member, by, score).map(row => row.tag).sort().join(',') : '', woken);
+  // The scores are painted from the live cells, each frame they move; the table renders only for its rows. A new source
+  // for each set of a top's members: the table sorts the rows it is given by the scores now, in the commit that shows
+  // them, never by the last order it took (which lacks a new member) and again a slot later.
+  const tableLive = useMemo(() => reporting(live, () => shown(shownAt.current())), [live, shown, ranked]); // eslint-disable-line react-hooks/exhaustive-deps
+  // A top's rows are its members as this render reads them (paused, `ranked`'s hour holds while they change).
+  const members = reply && top != null ? scoreRows(reply, { all, tags: resolved.tags, top, hour }, member, by, score) : null;
+  const membersKey = members?.map(row => row.tag).sort().join(',') ?? '';
+  const rows = useMemo(() => members ?? (reply ? scoreRows(reply, { all, tags: resolved.tags, top, hour }, member, by, score) : NO_ROWS),
+    [reply, all, resolved, top, member, by, score, membersKey, hour]); // eslint-disable-line react-hooks/exhaustive-deps
+  const [visible, setVisible] = useState<readonly GameScoreRow[]>(NO_ROWS);
+  // Pushed at the head, every row is named, so the table re-sorting as scores move renders nothing more.
+  const pushed = head.read === 'followed';
+  // Pushed, the rows are named at the last hour one of them changed, never at each push's hour (a request and a commit
+  // a push).
+  // Rows are made again at each push's hour: the countries they name are the same list while their order and set hold.
+  const rowTagsKey = (pushed ? rows : visible).map(row => row.tag).sort().join(',');
+  const rowTags = useMemo(() => rowTagsKey ? rowTagsKey.split(',') : [], [rowTagsKey]);
+  const nameHour = usePushedLooksHour(runtime, widget, track, rowTags, active && pushed, hour).hour;
+  const labels = useCountryLabelsAt(runtime.client, track, useMemo(() => rowTags.map(tag => ({ tag, hour: nameHour })), [rowTags, nameHour]), active);
+  const label = labels.labelAt(nameHour);
+  useWhyCommit('ScoreTable', { reply, at: head.at, read: head.read, live, ranked, groups: groups.data, visible, nameHour, labels: labels.labelAt });
+  // The columns change with their hints, never with a push that carries the same ones.
+  const hints = reply?.hints;
+  const hintsKey = JSON.stringify(hints ?? null);
+  const columns = useMemo<readonly TableColumn<GameScoreRow>[]>(() => [
+    { key: 'country', header: SCORE_LABELS.country, label: SCORE_LABELS.country, width: 'minmax(var(--table-country-min), 2fr)', hint: scoreHint(hints && { hints }, 'country'),
+      value: row => label(row.tag).name, render: row => { const look = label(row.tag); return <CountryCell name={look.name} flag={look.flag}
+        flagReason={look.flagReason} flagDetail={look.flagDetail} flagPending={look.flagPending} />; } },
+    ...SCORE_PARTS.map((part, index) => ({ key: part, header: SCORE_LABELS[part], label: SCORE_LABELS[part], numeric: true, width: 'max-content',
+      bar: 'visible' as const, priority: index + 1, inTooltip: true, hint: scoreHint(hints && { hints }, part),
+      value: () => null, paint: (value: unknown) => formatScore(value as number) })),
+  ], [label, hintsKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const tooltip = useCallback((row: GameScoreRow) => fitTooltip([scoreTooltip(reply!, row, label(row.tag).name, dayLabel(hour), factionGroup(groups.data, row.tag, hour).label, score)],
+    viewport, { keep: SCORE_PARTS.length }), [reply, label, hour, groups.data, viewport, score]);
   useEffect(() => {
-    hold.current = widget.countries.kind === 'all'
-      ? answerHold(playbackHour, requestedHour, prepared.data ? hour : undefined, prepared.data?.stableThrough) : null;
-  });
-  const data = prepared.data?.reply;
-  const shownHour = data ? hour : null;
-  useEffect(() => { perfLog?.shown(widget.id, shownHour); }, [widget.id, shownHour]);
-  const model = useMemo(() => data ? gameScoreModel(data) : null, [data]);
-  const grouped = widget.countries.kind !== 'all' && !(widget.countries.kind === 'group' && widget.countries.group.type === 'top');
-  const groups = useCountryGroups(runtime, track, active && grouped);
-  const fallback = widget.countries.kind === 'all' ? model?.tags ?? NO_TAGS : selectedTags(widget.countries, track);
-  const fallbackKey = JSON.stringify(fallback);
-  const resolved = useMemo(() => resolveCountries(widget.countries, [...fallback], groups.data, track?.branch.lastHour ?? 0, Number.MAX_SAFE_INTEGER),
-    [widget.countries, fallbackKey, groups.data, track?.branch.lastHour]);
-  const ranking = useMemo(() => ({ column: view === 'race' ? 'total' : SCORE_PARTS.includes(contentKey(String(options.topMeasure)) as typeof SCORE_PARTS[number])
-    ? contentKey(String(options.topMeasure)) : DEFAULT_SORT.column, direction: 'descending' as const }), [view, options.topMeasure]);
-  const rows = useMemo(() => {
-    if (!model || (grouped && !groups.data)) return NO_ROWS;
-    const candidates = widget.countries.kind === 'all' ? model.tags : resolved.top == null && resolved.membership === null
-      ? countryAliasesAt(groups.data?.countryIdentities ?? model.identities, resolved.tags, hour) : rankedCandidates(resolved, hour, model.tags);
-    return gameScoreRows(model, candidates, hour, ranking, resolved.top).map(row => ({ ...row,
-      stretch: prepared.data?.stretches[row.tag] ?? row.stretch }));
-  }, [model, grouped, groups.data, widget.countries.kind, resolved, hour, ranking, prepared.data]);
-  // The countries at an hour still being prepared are not known yet: a chosen tag's holder
-  // there, or a group's member, is read with that hour.
-  const known = resolved.known(hour) && (widget.countries.kind === 'all' || resolved.top != null || groupsKnownAt(groups.data, hour));
-  const raceRows = view === 'race' ? rows : NO_ROWS;
-  const [visible, setVisible] = useState<readonly ScoreRow[]>(NO_ROWS);
-  const onVisible = useCallback((rows: readonly ScoreRow[]) => setVisible(rows), []);
-  const wanted = useMemo(() => (view === 'race' ? raceRows : visible).filter(row => gameScoreCountryKnown(row.identity))
-    .map(row => ({ hour: row.hour, tag: row.tag })), [view, raceRows, visible]);
-  const flagReads = useCountryFlagsRead(runtime.client, track, wanted, active);
-  const columns = useMemo<readonly TableColumn<ScoreRow>[]>(() => data ? [
-    { key: 'country', header: SCORE_LABELS.country, label: SCORE_LABELS.country, width: 'minmax(var(--table-country-min), 2fr)',
-      hint: data.hints.country,
-      value: row => row.identity.name, renderMissing: true,
-      render: row => {
-        const cell = gameScoreCountryCell(row, (tag, at) => flagReads.get(nameKey(at, tag)));
-        return cell ? <CountryCell {...cell} /> : row.identity.name ?? 'Country name unavailable';
-      } },
-    ...SCORE_PARTS.map((part, index) => ({ key: part, header: SCORE_LABELS[part], label: SCORE_LABELS[part], numeric: true, width: 'max-content', bar: 'visible' as const,
-      priority: index + 1, inTooltip: true,
-      hint: data.hints[part],
-      value: (row: ScoreRow) => scoreValue(row, part), render: (row: ScoreRow) => formatScore(row.cells[part].raw) })),
-  ] : [], [data, flagReads]);
-  const tooltip = useCallback((row: ScoreRow) => fitTooltip(gameScoreTooltips(row), viewport, { keep: SCORE_PARTS.length }), [viewport]);
-  const split = options.split === true;
-  const entries = useMemo(() => gameScoreRace(raceRows, split), [raceRows, split]);
-  const looks = useMemo(() => gameScoreLooks(model, hour, (tag, at) => flagReads.get(nameKey(at, tag))), [model, hour, flagReads]);
-  const raceTags = useMemo(() => entries.map(entry => entry.tag), [entries]);
-  const countryColour = useCountryColours(raceTags, looks.color, tokens, looks);
-  const entityLooks = useMemo(() => ({ name: looks.name, flag: looks.flag, countryFlag: looks.countryFlag, color: countryColour }), [looks, countryColour]);
-  useEffect(() => {
-    const warnings = [...(data?.warnings ?? []),
-      ...(data?.scoreWarnings.map(warning => `${warning.kind}: ${warning.reason} (${warning.observations} observations)`) ?? []), ...(groups.data?.warnings ?? [])];
+    const warnings = [...(reply?.warnings ?? []), ...(groups.data?.warnings ?? [])];
     onDiagnostics(warnings.length ? warnings : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);
-  }, [data, groups.data, onDiagnostics]);
-  const parityRoot = useRef<HTMLDivElement>(null);
-  useParityRows(parityRoot, () => ({ kind: 'table', label: 'Game score values', complete: !!data && !prepared.pending && !prepared.data?.approximate,
-    total: rows.length, hour, rows: [...rows] }), { ready: () => !!data && !prepared.pending && !prepared.data?.approximate, error: () => error ?? null });
+  }, [reply, groups.data, onDiagnostics]);
   const state = (() => {
     if (!track) return <WidgetState kind="empty" icon="grid" message="Load a campaign to see its game scores." />;
-    if (!window) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-    // Never show a failed seek with scores from another hour.
-    if (error && (!data || hour !== requestedHour)) return <WidgetState kind="error" failure={error} onRetry={retry} />;
-    if (grouped && groups.error && !groups.data) return <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;
-    if (!data || (grouped && !groups.data)) return <WidgetState kind="loading" label="Loading game scores…" />;
+    if (head.error) return <WidgetState kind="error" failure={head.error} onRetry={head.retry} />;
+    if (needsGroups && groups.error && !groups.data) return <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;
+    if (head.read === 'off') return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+    if (!reply || (needsGroups && !groups.data)) return <WidgetState kind="loading" label="Loading game scores…" />;
+    if (reply.missing) return <WidgetState kind="unavailable" message={reply.missing} />;
     if (resolved.reason) return <WidgetState kind="empty" message={resolved.reason} />;
-    // A group with no member found yet has no row: the hour says why once it is read.
-    const none = noMembersAt(widget.countries, resolved, groups.data, hour, track.branch.lastHour);
-    if (none) return <NoMembersState reason={none.reason} icon="grid" />;
-    if (!rows.length) return known ? <WidgetState kind="unavailable" message="No country data at this time." /> : <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
+    if (!rows.length) return <WidgetState kind="unavailable" message={`No country’s scores recorded on ${dayLabel(hour)}.`} />;
     return undefined;
   })();
-  // A same-hour failure must stay visible even when its published reply renders an empty state.
-  const failure = error && data && hour === requestedHour ? <WidgetState kind="error" failure={error} onRetry={retry} /> : null;
-  const groupNotice = grouped && groups.error && groups.data ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
-  if (view === 'race') return <div ref={parityRoot} style={{ display: 'contents' }}>{failure}{groupNotice}<CountryRaceView runtime={runtime} track={track} active={active} state={state} options={options} view="race"
-    extent={[track?.branch.firstHour ?? 0, track?.branch.lastHour ?? 1]} playhead={hour} moment={hour} slots={entries.length}
-    ranked={entries} lines={[]} parts={PARTS} raceLegendParts={split ? PARTS : []} partsLabel="Score parts" entityLooks={entityLooks}
-    presentation={{ exact: false, held: false, countryLooks: false, tooltipKeep: SCORE_PARTS.length }}
-    label="Game score" empty={known ? 'Total scores unavailable at this time.' : MEMBERSHIP_PREPARING}
-    formatValue={formatAxisValue}
-    tooltip={(tag, atHour) => { const row = model && gameScoreRow(model, tag, Math.floor(atHour)); return row ? gameScoreTooltips(row) : null; }} /></div>;
-  if (state) return <div ref={parityRoot} style={{ display: 'contents' }}>{failure}{groupNotice}{state}</div>;
-  return <div ref={parityRoot} style={{ display: 'contents' }}>{failure}{groupNotice}<Table rowRevision={row => [row.identity, flagReads.get(nameKey(row.hour, row.tag)), ...SCORE_PARTS.map(part => row.cells[part].raw)]} key={JSON.stringify([track!.source.id, track!.source.revision, track!.branch.id])} label="Game score" rows={rows} columns={columns}
-    rowKey={rowKey} tieKey={tieKey} sort={sort} setOption={setOption} sortOptionValue={tableSortToken} groupBy={options.factions === true ? gameScoreFaction : undefined}
+  return <div ref={head.root} style={{ display: 'contents' }}>{state ?? <Table key={JSON.stringify([track!.source.id, track!.source.revision, track!.branch.id])}
+    label="Game score" rows={rows} columns={columns} rowKey={rowKey} tieKey={rowKey} sort={sort} setOption={setOption} sortOptionValue={tableSortToken}
+    rowRevision={row => [label(row.tag), ...SCORE_PARTS.map(part => row[part].missing)]}
+    groupBy={options.factions === true ? row => factionGroup(groups.data, row.tag, hour) : undefined}
     cellBars={options.cellBars === true} rank rankMarkers={options.rankMarkers === true}
-    density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)} tooltip={tooltip} onVisibleRows={onVisible} hoursPerSecond={hoursPerSecond}
-    menu={row => [jumpItem(runtime, track!.id, row.hour)]} /></div>;
+    density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)} tooltip={tooltip} onVisibleRows={pushed ? undefined : setVisible}
+    menu={() => [jumpItem(runtime, track!.id, hour)]} live={tableLive} />}</div>;
 }

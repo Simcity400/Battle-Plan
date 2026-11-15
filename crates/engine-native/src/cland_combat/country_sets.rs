@@ -30,29 +30,6 @@ impl From<&'static str> for CountrySetError {
     }
 }
 
-/// Read primary and secondary country sets in stored order, keeping raw tags and aliases. Primary
-/// sets select shared vision and secondary sets the viewer; defender markers check both for shared
-/// vision. Insertion keeps at most one node per country plus tag zero, so `max_len` is the live
-/// country count plus one. Check capacity before following nodes.
-///
-/// Read marker operands independently of other window context: the combat's indicator byte and the
-/// sides' flag words. Each side's flags and both set headers use one read.
-pub fn read_country_sets(
-    memory: &impl Memory,
-    base: usize,
-    source: Source,
-    max_len: usize,
-    tags: &mut [u32],
-) -> Result<(CountrySetsRow, usize), CountrySetError> {
-    read_country_sets_buffer(
-        memory,
-        base,
-        source,
-        max_len,
-        crate::walk::Buffer::Fixed(tags),
-    )
-}
-
 /// The four original list counts reserve the complete worker arena before nodes.
 pub fn read_country_sets_buffer(
     memory: &impl Memory,

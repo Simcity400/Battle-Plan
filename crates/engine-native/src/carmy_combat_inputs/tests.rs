@@ -22,7 +22,7 @@ impl NameArena {
         handle: u64,
     ) -> Result<Row, &'static str> {
         let mut names = crate::cname_group_member::Names {
-            bytes: &mut self.bytes,
+            bytes: crate::walk::Buffer::Growing(&mut self.bytes),
             len: 0,
             required: 0,
         };
@@ -50,7 +50,7 @@ fn capture_context_at(
     sources: &mut crate::combat_sources::Sources,
     pointer: usize,
     expected_handle: u64,
-    terms: &mut [WidthTerm],
+    terms: &mut Vec<WidthTerm>,
 ) -> Result<ContextRow, &'static str> {
     let countries = crate::ccountry::Reader::new(memory, base, state)?;
     capture_context(
@@ -176,8 +176,8 @@ fn scalar_stats(
             base,
             member,
             &mut crate::cname_group_member::GroupKeys::with_capacity(64, 64),
-            &mut crate::cname_group_member::NameArena {
-                bytes: crate::walk::Buffer::Fixed(&mut [0; 4096]),
+            &mut crate::cname_group_member::Names {
+                bytes: crate::walk::Buffer::Growing(&mut vec![0; 4096]),
                 len: 0,
                 required: 0,
             },
@@ -371,7 +371,7 @@ fn context_groups_keep_first_bytes_and_fault_prefixes() {
     use crate::modifier_definition as md;
     let source = context_fixture();
     let baseline = Observed::new(&source);
-    let mut terms = [WidthTerm::default(); 2];
+    let mut terms = vec![WidthTerm::default(); 2];
     let row = capture_context_at(
         &baseline,
         0,
@@ -398,7 +398,7 @@ fn context_groups_keep_first_bytes_and_fault_prefixes() {
         for ordinal in start..start + group.len() {
             let mut memory = Observed::new(&source);
             memory.fault = Some(ordinal);
-            let mut out = [WidthTerm::default(); 2];
+            let mut out = vec![WidthTerm::default(); 2];
             assert_eq!(
                 capture_context_at(
                     &memory,
@@ -452,7 +452,7 @@ fn context_metadata_address_errors_follow_readable_prefix_and_earlier_fault() {
                 &mut crate::combat_sources::Sources::new(),
                 0x1000,
                 0x1234_0000_0033,
-                &mut []
+                &mut Vec::new()
             ),
             Err(reason)
         );
@@ -468,7 +468,7 @@ fn context_metadata_address_errors_follow_readable_prefix_and_earlier_fault() {
                 &mut crate::combat_sources::Sources::new(),
                 0x1000,
                 0x1234_0000_0033,
-                &mut []
+                &mut Vec::new()
             ),
             Err("land combat division inputs unreadable")
         );
@@ -528,11 +528,11 @@ fn preserves_signed_values_order_and_raw_maximum_with_bounded_copy_cost() {
         copies: Cell::new(0),
         bytes: Cell::new(0),
     };
-    let mut modifiers = [Modifier::default(); 2];
+    let mut modifiers = vec![Modifier::default(); 2];
     let mut arena = NameArena::new();
     let row = arena.stats(&memory, 0, 0x1000, 0x1234_0000_0033).unwrap();
     assert_eq!(
-        capture_modifiers(&memory, 0, 0x1000, 0x1234_0000_0033, &mut modifiers).unwrap(),
+        capture_modifiers_buffer(&memory, 0, 0x1000, 0x1234_0000_0033, crate::walk::Buffer::Growing(&mut modifiers)).unwrap(),
         2
     );
     let naming = row.naming.unwrap();
@@ -561,11 +561,11 @@ fn refuses_modifier_pressure_and_wrong_identity() {
         bytes: &image,
     };
     assert_eq!(
-        capture_modifiers(&memory, 0, 0x1000, 1, &mut []),
+        capture_modifiers_buffer(&memory, 0, 0x1000, 1, crate::walk::Buffer::Count),
         Err("land combat division identity mismatch")
     );
     assert_eq!(
-        capture_modifiers(&memory, 0, 0x1000, 0x1234_0000_0033, &mut []),
+        capture_modifiers_buffer(&memory, 0, 0x1000, 0x1234_0000_0033, crate::walk::Buffer::Count),
         Err("land combat division modifier arena full")
     );
     let image = fixture(257);
@@ -574,7 +574,7 @@ fn refuses_modifier_pressure_and_wrong_identity() {
         bytes: &image,
     };
     assert_eq!(
-        capture_modifiers(&memory, 0, 0x1000, 0x1234_0000_0033, &mut []),
+        capture_modifiers_buffer(&memory, 0, 0x1000, 0x1234_0000_0033, crate::walk::Buffer::Count),
         Err("land combat division modifier arena full")
     );
 }
@@ -669,9 +669,9 @@ fn bad_stat_identity_does_not_hide_independent_modifiers() {
         NameArena::new().stats(&memory, 0, 0x1000, 0x1234_0000_0033),
         Err("land combat division stat identity mismatch")
     );
-    let mut modifiers = [Modifier::default(); 2];
+    let mut modifiers = vec![Modifier::default(); 2];
     assert_eq!(
-        capture_modifiers(&memory, 0, 0x1000, 0x1234_0000_0033, &mut modifiers),
+        capture_modifiers_buffer(&memory, 0, 0x1000, 0x1234_0000_0033, crate::walk::Buffer::Growing(&mut modifiers)),
         Ok(2)
     );
 }
@@ -763,7 +763,7 @@ fn context_fixture() -> ContextMemory {
 #[test]
 fn width_context_preserves_order_signed_counts_and_raw_modifiers() {
     let memory = context_fixture();
-    let mut terms = [WidthTerm::default(); 2];
+    let mut terms = vec![WidthTerm::default(); 2];
     let row = capture_context_at(
         &memory,
         0,
@@ -801,7 +801,7 @@ fn width_context_preserves_order_signed_counts_and_raw_modifiers() {
 fn context_modifier_reuse_is_shared_only_within_the_current_pass() {
     let mut memory = context_fixture();
     let mut sources = crate::combat_sources::Sources::new();
-    let mut terms = [WidthTerm::default(); 2];
+    let mut terms = vec![WidthTerm::default(); 2];
     let first = capture_context_at(
         &memory,
         0,
@@ -812,7 +812,7 @@ fn context_modifier_reuse_is_shared_only_within_the_current_pass() {
         &mut terms,
     )
     .unwrap();
-    let first_terms = terms;
+    let first_terms = terms.clone();
     let before = (memory.copies.get(), memory.copied.get());
     let second = capture_context_at(
         &memory,
@@ -916,7 +916,7 @@ fn exile_lists_are_bounded_by_the_live_country_count_and_never_sized_from_it() {
     memory.put(0xec00, &2_u32.to_le_bytes());
     let countries = crate::ccountry::Reader::new(&memory, 0, 0x5000).unwrap();
     assert_eq!(countries.count(), 2);
-    let mut tags = [0; 3];
+    let mut tags = vec![0; 3];
     assert_eq!(
         capture_exile(&memory, &countries, 0x1000, &mut tags),
         Ok(Exile::Row(ExileRow {
@@ -928,13 +928,6 @@ fn exile_lists_are_bounded_by_the_live_country_count_and_never_sized_from_it() {
         }))
     );
     assert_eq!(tags, [1, 2, 2]);
-    // A short destination copies nothing and reports its demand.
-    let mut short = [0; 2];
-    assert_eq!(
-        capture_exile(&memory, &countries, 0x1000, &mut short),
-        Ok(Exile::DoesNotFit { required: 3 })
-    );
-    assert_eq!(short, [0; 2]);
     // Longer than the country table, up to a count that would have
     // reserved gigabytes: refused before any entry is read.
     for count in [3, i32::MAX as u32] {
@@ -942,7 +935,7 @@ fn exile_lists_are_bounded_by_the_live_country_count_and_never_sized_from_it() {
         let countries = crate::ccountry::Reader::new(&memory, 0, 0x5000).unwrap();
         let before = memory.copies.get();
         assert_eq!(
-            capture_exile(&memory, &countries, 0x1000, &mut [0; 8]),
+            capture_exile(&memory, &countries, 0x1000, &mut vec![0; 8]),
             Err("exile country list exceeds the live country count")
         );
         // Template, operands, location, state and the list header only.
@@ -955,7 +948,7 @@ fn exile_lists_are_bounded_by_the_live_country_count_and_never_sized_from_it() {
         let countries = crate::ccountry::Reader::new(&memory, 0, 0x5000).unwrap();
         let before = memory.copies.get();
         assert_eq!(
-            capture_exile(&memory, &countries, 0x1000, &mut []),
+            capture_exile(&memory, &countries, 0x1000, &mut Vec::new()),
             Ok(Exile::Absent),
             "origin {origin}"
         );
@@ -1028,13 +1021,13 @@ fn exile_country_faults_fail_the_division_with_their_reason() {
     memory.u64(0x9000 + crate::ccountry::DIPLOMACY_STATUS, 0xe800);
     let countries = crate::ccountry::Reader::new(&memory, 0, 0x5000).unwrap();
     assert!(matches!(
-        capture_exile(&memory, &countries, 0x1000, &mut [0; 4]),
+        capture_exile(&memory, &countries, 0x1000, &mut vec![0; 4]),
         Ok(Exile::Row(_))
     ));
     // A tag outside the link table.
     memory.put(0xb000 + TEMPLATE_COUNTRY, &5_i32.to_le_bytes());
     let countries = crate::ccountry::Reader::new(&memory, 0, 0x5000).unwrap();
-    let unlinked = capture_exile(&memory, &countries, 0x1000, &mut [0; 4]);
+    let unlinked = capture_exile(&memory, &countries, 0x1000, &mut vec![0; 4]);
     assert_eq!(unlinked, countries.resolve(5).map(|_| Exile::Absent));
     assert!(unlinked.is_err());
     // The exile country's diplomacy status unreadable, then null.
@@ -1042,14 +1035,14 @@ fn exile_country_faults_fail_the_division_with_their_reason() {
     memory.u64(0x9000 + crate::ccountry::DIPLOMACY_STATUS, 0);
     let countries = crate::ccountry::Reader::new(&memory, 0, 0x5000).unwrap();
     assert_eq!(
-        capture_exile(&memory, &countries, 0x1000, &mut [0; 4]),
+        capture_exile(&memory, &countries, 0x1000, &mut vec![0; 4]),
         Err("exile country diplomacy status missing")
     );
     let status = 0x9000 + crate::ccountry::DIPLOMACY_STATUS;
     memory.u64(status, 0xe800);
     let mut observed = Observed::new(&memory);
     let countries = crate::ccountry::Reader::new(&memory, 0, 0x5000).unwrap();
-    let _ = capture_exile(&observed, &countries, 0x1000, &mut [0; 4]);
+    let _ = capture_exile(&observed, &countries, 0x1000, &mut vec![0; 4]);
     let ordinal = observed
         .reads
         .borrow()
@@ -1059,26 +1052,14 @@ fn exile_country_faults_fail_the_division_with_their_reason() {
     observed = Observed::new(&memory);
     observed.fault = Some(ordinal);
     assert_eq!(
-        capture_exile(&observed, &countries, 0x1000, &mut [0; 4]),
+        capture_exile(&observed, &countries, 0x1000, &mut vec![0; 4]),
         Err("land combat division inputs unreadable")
     );
 }
 
 #[test]
-fn width_context_reports_short_arena_and_malformed_accumulator() {
+fn width_context_reports_a_malformed_accumulator() {
     let mut memory = context_fixture();
-    assert_eq!(
-        capture_context_at(
-            &memory,
-            0,
-            0x5000,
-            &mut crate::combat_sources::Sources::new(),
-            0x1000,
-            0x1234_0000_0033,
-            &mut []
-        ),
-        Err("land combat width term arena full")
-    );
     memory.array(0x9000 + crate::ccountry::MODIFIER_ACCUMULATOR, 0xa000, 4097);
     assert_eq!(
         capture_context_at(
@@ -1088,7 +1069,7 @@ fn width_context_reports_short_arena_and_malformed_accumulator() {
             &mut crate::combat_sources::Sources::new(),
             0x1000,
             0x1234_0000_0033,
-            &mut []
+            &mut Vec::new()
         ),
         Err("land combat context modifier keys not increasing")
     );
@@ -1113,7 +1094,7 @@ fn width_context_selects_authenticated_leader_raw_modifiers() {
         &mut crate::combat_sources::Sources::new(),
         0x1000,
         0x1234_0000_0033,
-        &mut [WidthTerm::default(); 2],
+        &mut vec![WidthTerm::default(); 2],
     )
     .unwrap();
     assert_eq!(row.leader_modifier_kind, 1);
@@ -1484,7 +1465,7 @@ mod scale {
     fn pass(memory: &impl Memory, world: &World, context: &mut Pass) -> usize {
         context.groups.reset();
         let mut names = name::Names {
-            bytes: &mut context.bytes,
+            bytes: crate::walk::Buffer::Growing(&mut context.bytes),
             len: 0,
             required: 0,
         };
@@ -1515,7 +1496,7 @@ mod scale {
             context.groups.reset();
             rows.clear();
             let mut names = name::Names {
-                bytes: &mut context.bytes,
+                bytes: crate::walk::Buffer::Growing(&mut context.bytes),
                 len: 0,
                 required: 0,
             };
@@ -1592,7 +1573,7 @@ mod scale {
         for pass in 0..2 {
             groups.reset();
             let mut names = name::Names {
-                bytes: &mut [0; 2],
+                bytes: crate::walk::Buffer::Count,
                 len: 0,
                 required: 0,
             };
@@ -1620,7 +1601,7 @@ mod scale {
         };
         let mut context = Pass::new(&world);
         let mut names = name::Names {
-            bytes: &mut context.bytes,
+            bytes: crate::walk::Buffer::Growing(&mut context.bytes),
             len: 0,
             required: 0,
         };
@@ -1676,7 +1657,7 @@ mod scale {
                     let context = &mut *context;
                     context.groups.reset();
                     let mut names = name::Names {
-                        bytes: &mut context.bytes,
+                        bytes: crate::walk::Buffer::Growing(&mut context.bytes),
                         len: 0,
                         required: 0,
                     };

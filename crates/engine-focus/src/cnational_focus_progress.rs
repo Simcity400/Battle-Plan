@@ -140,32 +140,16 @@ const COMPLETED_FIELDS: [crate::memory::RecordField; 1] =
 const COMPLETED_LAYOUT: crate::memory::RecordLayout<'static> =
     crate::memory::RecordLayout::new(&COMPLETED_FIELDS, 32).unwrap();
 
+pub fn count(memory: &impl Memory, base: usize, country: usize, country_id: u32) -> FocusWalk {
+    walk_buffer(memory, base, country, country_id, crate::walk::Buffer::Count, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
+}
+
 /// Reads one authenticated country's current focus state and completed roster
 /// into caller-owned storage. Country enumeration/authentication belongs to the
 /// caller. Exact-field batches use advisory worker storage; a failed batch
 /// permits one original serial pass, without engine calls or event hooks. Summary and completion failures remain independent after the common
 /// focus-status root is authenticated; arena exhaustion never shortens a token.
 pub fn walk(
-    memory: &impl Memory,
-    base: usize,
-    country: usize,
-    country_id: u32,
-    rows: &mut [Row],
-    completed: &mut [CompletedRow],
-    tokens: &mut [u8],
-) -> FocusWalk {
-    walk_buffer(
-        memory,
-        base,
-        country,
-        country_id,
-        crate::walk::Buffer::Fixed(rows),
-        crate::walk::Buffer::Fixed(completed),
-        crate::walk::Buffer::Fixed(tokens),
-    )
-}
-
-pub fn walk_growing(
     memory: &impl Memory,
     base: usize,
     country: usize,
@@ -516,7 +500,7 @@ mod tests {
         let mut rows = Vec::new();
         let mut completed = Vec::new();
         let mut tokens = Vec::new();
-        let first = walk_growing(
+        let first = walk(
             &fixture.memory(),
             BASE,
             COUNTRY,
@@ -536,23 +520,7 @@ mod tests {
         for ordinal in 0..5_000 {
             fixture.u64(data + ordinal * 8, [0x4300, 0x4400][ordinal % 2]);
         }
-        let fixed = walk(
-            &fixture.memory(),
-            BASE,
-            COUNTRY,
-            37,
-            &mut rows[..1],
-            &mut completed[..2],
-            &mut tokens[..42],
-        );
-        assert_eq!(
-            fixed.completed_outcome,
-            Outcome::Truncated {
-                len: 2,
-                unread_rows: 4_998
-            }
-        );
-        let later = walk_growing(
+        let later = walk(
             &fixture.memory(),
             BASE,
             COUNTRY,
@@ -577,9 +545,9 @@ mod tests {
     #[test]
     fn native_summary_and_completed_order_preserve_exact_values() {
         let fixture = Fixture::new();
-        let mut rows = [Row::default(); 1];
-        let mut completed = [CompletedRow::default(); 2];
-        let mut tokens = [0; 64];
+        let mut rows = vec![Row::default(); 1];
+        let mut completed = vec![CompletedRow::default(); 2];
+        let mut tokens = vec![0; 64];
         let result = walk(
             &fixture.memory(),
             BASE,
@@ -624,15 +592,15 @@ mod tests {
         fixture.u64(ROOT + PROGRESS, (-123_456_789_i64) as u64);
         fixture.u64(ROOT + COMPLETED_DATA, 0);
         fixture.u32(ROOT + COMPLETED_COUNT, 0);
-        let mut rows = [Row::default(); 1];
+        let mut rows = vec![Row::default(); 1];
         let result = walk(
             &fixture.memory(),
             BASE,
             COUNTRY,
             1,
             &mut rows,
-            &mut [],
-            &mut [],
+            &mut Vec::new(),
+            &mut Vec::new(),
         );
         assert_eq!(result.outcome, Outcome::Rows { len: 1 });
         assert_eq!(result.completed_outcome, Outcome::Rows { len: 0 });
@@ -644,69 +612,12 @@ mod tests {
     }
 
     #[test]
-    fn row_and_arena_capacity_stop_without_inspecting_the_omitted_suffix() {
-        let mut fixture = Fixture::new();
-        fixture.u64(0x3808, u64::MAX);
-        let mut rows = [Row::default(); 1];
-        let mut completed = [CompletedRow::default(); 1];
-        let mut tokens = [0xaa; 41];
-        let result = walk(
-            &fixture.memory(),
-            BASE,
-            COUNTRY,
-            1,
-            &mut rows,
-            &mut completed,
-            &mut tokens,
-        );
-        assert_eq!(result.outcome, Outcome::Rows { len: 1 });
-        assert_eq!(
-            result.completed_outcome,
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            }
-        );
-        assert_eq!(result.required_bytes, 31);
-        assert_eq!(result.bytes_len, 31);
-        assert!(tokens[31..].iter().all(|&byte| byte == 0xaa));
-
-        let mut tiny = [0xaa; 10];
-        let result = walk(
-            &fixture.memory(),
-            BASE,
-            COUNTRY,
-            1,
-            &mut rows,
-            &mut completed,
-            &mut tiny,
-        );
-        assert_eq!(
-            result.outcome,
-            Outcome::Truncated {
-                len: 0,
-                unread_rows: 1
-            }
-        );
-        assert_eq!(
-            result.completed_outcome,
-            Outcome::Truncated {
-                len: 0,
-                unread_rows: 2
-            }
-        );
-        assert_eq!(result.required_bytes, 31);
-        assert_eq!(result.bytes_len, 0);
-        assert_eq!(tiny, [0xaa; 10]);
-    }
-
-    #[test]
     fn summary_and_completion_read_failures_remain_independent() {
         let mut fixture = Fixture::new();
         fixture.u64(ROOT + CURRENT, u64::MAX);
-        let mut rows = [Row::default(); 1];
-        let mut completed = [CompletedRow::default(); 2];
-        let mut tokens = [0; 64];
+        let mut rows = vec![Row::default(); 1];
+        let mut completed = vec![CompletedRow::default(); 2];
+        let mut tokens = vec![0; 64];
         let result = walk(
             &fixture.memory(),
             BASE,
@@ -744,9 +655,9 @@ mod tests {
     fn token_headers_and_root_identity_fail_closed_without_lossy_conversion() {
         let mut fixture = Fixture::new();
         fixture.text(0x4100 + cnational_focus::TOKEN, &[0xff, 0, b'A']);
-        let mut rows = [Row::default(); 1];
-        let mut completed = [CompletedRow::default(); 2];
-        let mut tokens = [0; 64];
+        let mut rows = vec![Row::default(); 1];
+        let mut completed = vec![CompletedRow::default(); 2];
+        let mut tokens = vec![0; 64];
         let result = walk(
             &fixture.memory(),
             BASE,
@@ -804,9 +715,9 @@ mod tests {
         fixture.u64(string + msvc_string::LENGTH, token.len() as u64);
         fixture.u64(string + msvc_string::CAPACITY, 31);
         fixture.0[0x4800 - COUNTRY..0x4800 - COUNTRY + token.len()].copy_from_slice(token);
-        let mut rows = [Row::default(); 1];
-        let mut completed = [CompletedRow::default(); 2];
-        let mut tokens = [0; 96];
+        let mut rows = vec![Row::default(); 1];
+        let mut completed = vec![CompletedRow::default(); 2];
+        let mut tokens = vec![0; 96];
         let result = walk(
             &fixture.memory(),
             BASE,

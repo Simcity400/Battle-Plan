@@ -24,10 +24,6 @@ pub struct Arena<'a> {
 }
 
 impl<'a> Arena<'a> {
-    #[cfg(test)]
-    pub fn new(rows: &'a mut [Row]) -> Self {
-        Self::new_buffer(crate::walk::Buffer::Fixed(rows))
-    }
     pub fn new_buffer(rows: crate::walk::Buffer<'a, Row>) -> Self {
         Self {
             rows,
@@ -250,7 +246,7 @@ mod tests {
     }
 
     #[test]
-    fn initial_growing_equipment_arena_keeps_all_mod_sized_requirements() {
+    fn initial_equipment_arena_keeps_all_mod_sized_requirements() {
         let (bytes, _, _) = fixture(5000);
         let memory = SliceMemory {
             base: START,
@@ -262,15 +258,15 @@ mod tests {
         assert_eq!(arena.len, 5000);
         assert_eq!(arena.required, 5000);
         assert_eq!(arena.rows[4999].required_raw, 104999);
-        assert_eq!(Arena::new(&mut []).capture(&memory, 0, START), Ok(None));
+        assert_eq!(Arena::new_buffer(crate::walk::Buffer::Count).capture(&memory, 0, START), Ok(None));
     }
 
     #[test]
     fn empty_inactive_and_partial_reads_never_fabricate_operands() {
         let (mut bytes, _, equipment) = fixture(1);
         put(&mut bytes, equipment + ty::ACTIVE, &[0]);
-        let mut output = [Row::default(); 1];
-        let mut arena = Arena::new(&mut output);
+        let mut output = vec![Row::default(); 1];
+        let mut arena = Arena::new_buffer(crate::walk::Buffer::Growing(&mut output));
         assert_eq!(
             arena.capture(
                 &SliceMemory {
@@ -284,7 +280,7 @@ mod tests {
         );
         assert_eq!(arena.rows[0].required_lookup_raw, 0);
         assert_eq!(arena.rows[0].required_raw, 100_000);
-        let mut arena = Arena::new(&mut output);
+        let mut arena = Arena::new_buffer(crate::walk::Buffer::Growing(&mut output));
         assert!(
             arena
                 .capture(
@@ -300,7 +296,7 @@ mod tests {
         assert_eq!(arena.len, 0);
         let (bytes, _, _) = fixture(0);
         assert_eq!(
-            Arena::new(&mut []).capture(
+            Arena::new_buffer(crate::walk::Buffer::Count).capture(
                 &SliceMemory {
                     base: START,
                     bytes: &bytes[..super::super::REQUIRED_EQUIPMENT + 24]
@@ -343,8 +339,8 @@ mod tests {
             &300_007_i64.to_le_bytes(),
         );
         put(&mut bytes, required + 16, &(clone as u64).to_le_bytes());
-        let mut output = [Row::default(); 2];
-        let mut arena = Arena::new(&mut output);
+        let mut output = vec![Row::default(); 2];
+        let mut arena = Arena::new_buffer(crate::walk::Buffer::Growing(&mut output));
         assert_eq!(
             arena.capture(
                 &SliceMemory {
@@ -364,7 +360,7 @@ mod tests {
             clone + ty::ARCHETYPE,
             &(equipment as u64).to_le_bytes(),
         );
-        let mut arena = Arena::new(&mut output);
+        let mut arena = Arena::new_buffer(crate::walk::Buffer::Growing(&mut output));
         assert_eq!(
             arena.capture(
                 &SliceMemory {

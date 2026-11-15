@@ -756,6 +756,15 @@ pub const BASE_QUEUE_REMOVE: Method = Method {
     base: true,
     retire: false,
 };
+/// One ship leaving a base's queue: the ship leaving its task force, the queue command's removal.
+pub const BASE_QUEUE_ERASE: Method = Method {
+    name: "base queue erase",
+    rva: Rva(0x00f1eab0),
+    argument: 0,
+    adjustment: 0,
+    base: true,
+    retire: false,
+};
 pub const METHODS: &[Method] = &[
     COMPOSITION_ENTRY,
     COMPOSITION_MERGE,
@@ -776,4 +785,5 @@ pub const METHODS: &[Method] = &[
     REFIT_RECALCULATE,
     BASE_QUEUE_REORDER,
     BASE_QUEUE_REMOVE,
+    BASE_QUEUE_ERASE,
 ];

@@ -509,7 +509,7 @@ impl Evaluator<'_, '_> {
             super::super::refusal::input_error(replay_data::rows::TableId::TrainInventory, why)
         })?
         .ok_or_else(|| -> Failure {
-                format!("TrainInventory lacks supply-temp country {raw}").into()
+                format!("train inventory lacks supply-temp country {raw}").into()
             })?;
         let value = match (kind.as_deref(), need) {
             (Some("truck"), false) => i64::from(*super::super::refusal::optional(

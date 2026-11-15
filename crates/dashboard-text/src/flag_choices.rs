@@ -94,7 +94,7 @@ impl<'a> Operands<'a> {
         ruling: Option<Option<u32>>,
         token: Option<&'a [u8]>,
     ) -> Self {
-        let missing = || format!("country {owner} flag needs its CountryAppearance row");
+        let missing = || format!("country {owner} flag needs its country appearance row");
         Self {
             cosmetic: appearance.ok_or_else(missing).and_then(|appearance| {
                 std::str::from_utf8(appearance.cosmetic)
@@ -134,13 +134,13 @@ impl<'a> Operands<'a> {
 fn original<'a>(own: &'a [u8], appearance: Appearance<'a>) -> Result<&'a str, String> {
     let reference = (*appearance
         .reference
-        .require("CountryAppearance.original_tag_reference")?)
-    .ok_or("CountryAppearance.original_tag_reference capture refused")?;
+        .require("original tag reference of country appearance")?)
+    .ok_or("original tag reference of country appearance capture refused")?;
     let bytes = if reference > 0 {
         (*appearance
             .original
-            .require("CountryAppearance.original_tag")?)
-        .ok_or("CountryAppearance.original_tag capture refused")?
+            .require("original tag of country appearance")?)
+        .ok_or("original tag of country appearance capture refused")?
     } else {
         own
     };
@@ -160,7 +160,7 @@ fn group(
     let ruling =
         ruling.ok_or_else(|| format!("country {owner} flag has a null ruling-party pointer"))?;
     let token = token.ok_or_else(|| {
-        format!("country {owner} flag needs PoliticalParties ruling group {ruling}")
+        format!("country {owner} flag needs political parties ruling group {ruling}")
     })?;
     std::str::from_utf8(token)
         .map(Some)

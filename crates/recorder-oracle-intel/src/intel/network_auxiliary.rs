@@ -354,21 +354,7 @@ mod tests {
             )])),
             ..Default::default()
         };
-        let check = |rows: Vec<IntelNetworkAuxiliaryRow>| {
-            let mut frame = DecodedFrame {
-                branch: 1,
-                hour: 1,
-                tables: std::array::from_fn(|index| {
-                    TableView::Complete(TableRows::empty(TableId::ALL[index])).into()
-                }),
-                metrics: Default::default(),
-            };
-            *frame.tables[TableId::IntelNetworkAuxiliaries.index()] =
-                TableView::Complete(TableRows::IntelNetworkAuxiliaries(rows));
-            let mut report = Report::default();
-            compare(&frame, &pack, &countries, &tokens, &mut report).unwrap();
-            report
-        };
+        let check = |rows| compared(rows, &pack, &countries, &tokens);
         assert!(check(rows.clone()).differences.is_empty());
         assert!(!check(Vec::new()).differences.is_empty());
         for index in 0..rows.len() {
@@ -376,5 +362,120 @@ mod tests {
             changed[index].first = changed[index].first.wrapping_add(1);
             assert!(!check(changed).differences.is_empty());
         }
+
+        // Session 9's YUG network as the game writes it: each occupied-country
+        // record an anonymous `{ "TAG" { ... } }` pair.
+        let save = br#"countries={OWN={} YUG={} ROM={}}
+            strategic_operatives={ strategic_operative={ 7={ intel_network={ target="YUG"
+                intel_network={ vertices=1 state_id={ 107 } gain={ 0.4 }
+                    gain_breakdown={ { operatives=0.4 adjacencies=0 } } strength={ 38.4 }
+                    depth={ 0 } sub_network_id={ 0 } sub_network_count=1
+                    sub_network_is_quiet={ no } prev_max_depth=0 prev_gain_sources={ 107 } }
+                sub_intel_networks={ {
+                    modifiers={ intel_network_gain_factor=1 own_operative_detection_chance=0 own_operative_detection_chance_factor=1 }
+                    strength=38.4 strength_sum=38.4 strength_sum_over_cores=38.4 national_coverage=0
+                    sub_network_strength_target=57.5 sub_network_strength_target_from_operatives=15
+                    sub_network_strength_target_from_counterintelligence=-47.5 sub_network_is_quiet=no
+                    coverage_stats={ core_states=1 controlled_states=1 owned_worth=1 }
+                    total_coverable={ core_states=1 controlled_states=1 owned_worth=1 }
+                    coverage_per_occupied={
+                      { "ROM"
+ {
+                          owned_worth=0
+                          states=1
+                        }
+}
+                     }
+                    states={ { 107 38.4 } } core_states={ 107 } } }
+                max_coverage_by_occupied_tag={
+                  { "ROM"
+ {
+                      owned_worth=54
+                      states=2
+                      intel_network_gain_factor=0
+                      enemy_operative_detection_chance=0
+                      enemy_operative_detection_chance_factor=0
+                    }
+}
+                 }
+            } } } }"#;
+        let pack = saved::parse(&installed_content_core::parser::parse(save).unwrap().items).unwrap();
+        let network = &pack.strategic_operatives.as_ref().unwrap()[&7].networks[0];
+        let tokens = TokenNames::from([
+            (0x4bfe, b"owned_worth".as_slice()),
+            (0x2e3b, b"states"),
+            (0x3d2b, b"intel_network_gain_factor"),
+            (0x4b56, b"enemy_operative_detection_chance"),
+            (0x4b58, b"enemy_operative_detection_chance_factor"),
+        ]);
+        let occupied = CountryRow {
+            id: 103,
+            canonical_slot: 9,
+            tag: b"ROM".to_vec(),
+            ..Default::default()
+        };
+        let target = CountryRow {
+            tag: b"YUG".to_vec(),
+            ..target
+        };
+        let countries = BTreeMap::from([(101, &owner), (102, &target), (103, &occupied)]);
+        let mut rows: Vec<_> = expected(network, &tokens)
+            .unwrap()
+            .into_iter()
+            .filter(|(row, _)| row.kind != kind::RECORD)
+            .map(|(row, _)| IntelNetworkAuxiliaryRow {
+                owner: 101,
+                target: 102,
+                kind: row.kind,
+                subnetwork: row.subnetwork,
+                ordinal: row.ordinal,
+                country: row.country,
+                count_a: row.count_a,
+                count_b: row.count_b,
+                count_c: row.count_c,
+                first: row.first,
+                second: row.second,
+                third: row.third,
+                ..Default::default()
+            })
+            .collect();
+        for (subnetwork, count_a, count_b) in [(NATIONAL, 54, 2), (0, 0, 1)] {
+            rows.push(IntelNetworkAuxiliaryRow {
+                owner: 101,
+                target: 102,
+                kind: kind::RECORD,
+                subnetwork,
+                country: 103,
+                count_a,
+                count_b,
+                ..Default::default()
+            });
+        }
+        for (index, row) in rows.iter_mut().enumerate() {
+            row.id = index as u64 + 1;
+        }
+        let report = compared(rows, &pack, &countries, &tokens);
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+    }
+
+    fn compared(
+        rows: Vec<IntelNetworkAuxiliaryRow>,
+        pack: &saved::Pack,
+        countries: &BTreeMap<u32, &CountryRow>,
+        tokens: &TokenNames<'_>,
+    ) -> Report {
+        let mut frame = DecodedFrame {
+            branch: 1,
+            hour: 1,
+            tables: std::array::from_fn(|index| {
+                TableView::Complete(TableRows::empty(TableId::ALL[index])).into()
+            }),
+            metrics: Default::default(),
+        };
+        *frame.tables[TableId::IntelNetworkAuxiliaries.index()] =
+            TableView::Complete(TableRows::IntelNetworkAuxiliaries(rows));
+        let mut report = Report::default();
+        compare(&frame, pack, countries, tokens, &mut report).unwrap();
+        report
     }
 }

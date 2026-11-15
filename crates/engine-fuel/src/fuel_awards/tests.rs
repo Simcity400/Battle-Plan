@@ -122,8 +122,8 @@ fn start_and_settle_read_the_payload_and_receipts_in_one_copy_each() {
     memory.reads.set(0);
     let started = start(&memory, 0, status).unwrap();
     // Status identity, singleton, two roster headers, owner, the owner's
-    // nine identity reads, backlink, instance and the payload.
-    assert_eq!(memory.reads.get(), 17);
+    // eight identity reads, backlink, instance and the payload.
+    assert_eq!(memory.reads.get(), 16);
     assert_eq!(
         (
             started.base,
@@ -137,7 +137,7 @@ fn start_and_settle_read_the_payload_and_receipts_in_one_copy_each() {
     memory.reads.set(0);
     let settled = settle(&memory, 0, started, status).unwrap();
     // Outgoing lend-lease, the consumer header, the receipts and the tank.
-    assert_eq!(memory.reads.get(), 17 + 4);
+    assert_eq!(memory.reads.get(), 16 + 4);
     assert_eq!(settled.received, [3, 0, 0]);
 }
 
@@ -343,7 +343,7 @@ fn a_held_settle_reads_only_the_payload_and_settles_as_a_fresh_read() {
     memory.reads.set(0);
     let (begun, located, taken) = start_held(&memory, 0, status, None).unwrap();
     assert!(!taken);
-    assert_eq!(memory.reads.get(), 17);
+    assert_eq!(memory.reads.get(), 16);
     assert_eq!(begun, start(&memory, 0, status).unwrap());
     memory.put(status + 0x68, &1_i64.to_le_bytes());
     memory.log.borrow_mut().clear();
@@ -355,7 +355,7 @@ fn a_held_settle_reads_only_the_payload_and_settles_as_a_fresh_read() {
     assert_eq!(held, fresh.map(|settled| (settled, true)));
     assert!(held.is_ok());
     // The payload, then the settle's own reads.
-    assert_eq!(memory.log.take(), every[16..].to_vec());
+    assert_eq!(memory.log.take(), every[15..].to_vec());
     // A status other than the start's is read whole and refuses as a fresh
     // read does.
     memory.log.borrow_mut().clear();

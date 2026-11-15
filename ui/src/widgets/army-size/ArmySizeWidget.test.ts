@@ -11,16 +11,16 @@ import type { reducePartsRaceDrill } from '../../charts/race/partsRaceDrill';
 
 test('actual Army breakdown renders a country template roster when its deployed count is zero', async () => {
   const span = { firstHour: 0, lastHour: 100 };
-  const reply = { branchId: '1', available: true, measures: ['divisions'], unknownMeasures: [], types: [], warnings: [],
+  const reply = { branchId: '1', available: true, measures: ['divisions'], types: [], warnings: [],
     windows: [], window: 0, interval: span, series: [{ tag: 'AAA', membership: null, segments: [span],
       identities: [{ ...span, slot: 1, countryId: 11 }], runs: [[0, 0, 100, '0']] }] };
   const manifest = { ...reply, windows: [span], window: null, interval: null, series: [] };
-  const roster = { ...manifest, windows: [], templateSections: ['Unused template with holes', 'Staff and garrison priority: -3', 'Queued HQ without deployed units'] };
-  const host = globalThis as typeof globalThis & { __armyTemplateRequest?: { params: { templateAt: [string, number] } } };
+  const roster = { sections: ['Unused template with holes', 'Staff and garrison priority: -3', 'Queued HQ without deployed units'], warnings: [] };
+  const host = globalThis as typeof globalThis & { __armyTemplateRequest?: { product: string; params: unknown } };
   const replacements: Record<string, string> = {
     '/dashboard/products.ts': `export const useProduct = (_client, request) => { globalThis.__armyTemplateRequest = request; return { data: ${JSON.stringify(roster)}, retry() {} }; };
 export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
-    '/dashboard/productWindows.ts': `export const useProductWindows = () => ({ data: new Map([[0, ${JSON.stringify(reply)}]]), errors: new Map(), retry() {} });`,
+    '/army-size/frameWindows.ts': `export const useFrameWindows = () => ({ data: new Map([[0, ${JSON.stringify(reply)}]]), errors: new Map(), retry() {}, holds: () => true, check() {} });`,
     '/dashboard/contentRevision.ts': 'export const useContentRevision = () => 0;',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => () => null });',
     '/charts/useChartTokens.ts': "export const useChartTokens = () => ({ categories: ['blue'] });",
@@ -33,13 +33,15 @@ export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...us
     }] });
   try {
     const { default: Breakdown } = await vite.ssrLoadModule('/ui/src/widgets/army-size/ArmyBreakdown.tsx') as typeof import('./ArmyBreakdown.tsx');
-    const props = { runtime: { client: {} }, track: { source: { id: 'synthetic', revision: '1' }, branch: { id: '1' } },
+    const clock = { getHour: () => 50, getSnapshot: () => ({ hoursPerSecond: 24, playing: false }), subscribeFrame: () => () => {}, subscribe: () => () => {} };
+    const props = { runtime: { client: {}, clock }, track: { source: { id: 'synthetic', revision: '1' }, branch: { id: '1' } },
       active: true, options: {}, countrySlot: null, headerSelection: null, extent: [0, 100], playhead: 50,
       tag: 'AAA', hour: 50, measure: 'divisions', countFor: 'owner', manifest, following: false, pinned: false,
       originHour: 0, onPick() {}, onFollow() {}, onWarnings() {} } as unknown as Parameters<typeof Breakdown>[0];
     const html = renderToStaticMarkup(createElement(Breakdown, props));
-    assert.deepEqual(host.__armyTemplateRequest?.params.templateAt, ['AAA', 50]);
-    for (const text of ['Division templates', ...roster.templateSections]) assert.ok(html.includes(text), html);
+    assert.equal(host.__armyTemplateRequest?.product, 'template-roster');
+    assert.deepEqual(host.__armyTemplateRequest?.params, { branchId: '1', tag: 'AAA', hour: 50 });
+    for (const text of ['Division templates', ...roster.sections]) assert.ok(html.includes(text), html);
   } finally { delete host.__armyTemplateRequest; await vite.close(); }
 });
 
@@ -49,7 +51,7 @@ test('actual Army keeps dated flags, full inventories and focusable chart return
   const portals: { label: unknown; hour: number | null; reason: string | null }[] = [];
   const window = { firstHour: 0, lastHour: 100 };
   const types = Array.from({ length: 5000 }, (_, index) => ({ key: `mod group ${index}`, name: `Mod group ${index}` }));
-  const reply = { branchId: '1', available: true, measures: ['divisions', 'battalions'], unknownMeasures: [], types, warnings: [],
+  const reply = { branchId: '1', available: true, measures: ['divisions', 'battalions'], types, warnings: [],
     windows: [], window: 0, interval: window, series: [{ tag: 'opaque actor', membership: null, segments: [window], runs: [[0, 3, 100]],
       mix: [{ ...window, values: types.map((_, index) => index === 0 ? 3 : 0) }] }] };
   const manifest = { ...reply, windows: [window], window: null, interval: null, series: [] };
@@ -62,7 +64,7 @@ test('actual Army keeps dated flags, full inventories and focusable chart return
     '/dashboard/products.ts': `export const useProduct = () => ({ data: ${JSON.stringify(manifest)}, retry() {} });
       export const loadProduct = () => { throw new Error('Unexpected country request'); };
 export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
-    '/dashboard/productWindows.ts': `export const useProductWindows = () => ({ data: new Map([[0, ${JSON.stringify(reply)}]]), errors: new Map(), retry() {} });`,
+    '/army-size/frameWindows.ts': `export const useFrameWindows = () => ({ data: new Map([[0, ${JSON.stringify(reply)}]]), errors: new Map(), retry() {}, holds: () => true, check() {} });`,
     '/dashboard/contentRevision.ts': 'export const useContentRevision = () => 0;',
     '/dashboard/useCountryGroups.ts': `export const useCountryGroups = (_runtime, _track, active) => { globalThis.__armyMarkerDemand = active; return { data: ${JSON.stringify(groups)} }; };`,
     '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour(); export const usePlaybackMotion = () => 0;',
@@ -93,7 +95,7 @@ export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...us
     const props = { widget: { id: 'army', kind: 'army-size', trackIds: ['main'], countries: { kind: 'tags', tags: ['opaque actor'] },
       time: { mode: 'campaign' }, options: { view: 'lines' } }, runtime: { tracks: [{ id: 'main', axisOffset: 0,
         source: { id: 'synthetic', revision: '1', metadata: { countries: [] } }, branch: { id: '1', ...window } }],
-      clock: { getHour: () => 100 }, client: {} }, active: true, onDiagnostics() {} } as unknown as WidgetProps;
+      clock: { getHour: () => 100, getSnapshot: () => ({ playing: false, hoursPerSecond: 0, position: 100, seekSequence: 0 }), subscribe: () => () => {}, subscribeFrame: () => () => {} }, client: {} }, active: true, onDiagnostics() {} } as unknown as WidgetProps;
     renderToStaticMarkup(createElement(Widget, props));
     const view = host.__armyFlagView!;
     assert.equal(host.__armyMarkerDemand, true, 'manual time views request the existing capitulation history');

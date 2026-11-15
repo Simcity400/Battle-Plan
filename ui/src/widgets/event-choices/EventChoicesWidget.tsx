@@ -6,97 +6,99 @@ import ArtFallback from '../../components/ArtFallback';
 import { CountryFlagUrl } from '../../components/CountryFlag';
 import { Icon } from '../../components/Icons';
 import WidgetState from '../../components/WidgetState';
-import { useHeldFailure } from '../../dashboard/heldFailures';
+import LiveText, { liveTexts } from '../../charts/LiveText';
 import LogList from '../../charts/log/LogList';
+import { countsAhead } from '../../charts/log/logSource';
+import LogGaps from '../../charts/log/LogGaps';
 import type { LogRow } from '../../charts/log/logData';
 import { logSettings } from '../../charts/log/logOptions';
 import { jumpItem } from '../../charts/jump';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { selectedTags } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { countryMatch, MEMBERSHIP_PREPARING } from '../../dashboard/groups';
-import { resolveWindow } from '../../dashboard/model';
+import { countryMatch, countryScope } from '../../dashboard/groups';
 import { resolveOptions } from '../../dashboard/options';
-import { usePlaybackHour } from '../../dashboard/playback';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
-import type { EventFeedKind } from '../../generated/dashboard';
 import { eventCountryName } from '../event-feed/eventFeedData';
-import { occurrenceCountryRequests, recordingBreaks, scriptNotRecorded } from '../event-feed/scriptOccurrences';
-import type { RecordingBreak } from '../event-feed/scriptOccurrences';
-import { useScriptOccurrences } from '../event-feed/useScriptOccurrences';
+import { occurrenceCountryRequests } from '../event-feed/scriptOccurrences';
+import { useCards } from '../event-feed/useCards';
+import type { CardList } from '../event-feed/useCards';
 import { AWAITING, EVENT_KINDS, OPTIONS } from './definition';
-import { awaitingText, choiceAt, choicePlaybackBounds, choiceDates, choiceDescription, choiceDiagnostics, choiceJumps, choiceTitle, choiceTooltip, isOpen,
-  noChoiceText, optionLines, prepareChoices } from './eventChoicesData.ts';
-import type { ChoiceAt, ChoiceFilter } from './eventChoicesData';
+import { awaitingText, choiceAt, choiceDates, choiceDescription, choiceDiagnostics, choiceJumps, choiceRow, choiceTitle, choiceTooltip, isOpen,
+  noChoiceText, optionLines } from './eventChoicesData.ts';
+import type { ChoiceAt, ChoiceCard } from './eventChoicesData';
+import ScriptedText from '../event-feed/ScriptedText';
+import { reasonsOf } from '../event-feed/scriptedGaps.ts';
 import '../event-feed/eventFeed.css';
-import '../peace-deals/peaceDeals.css';
 import './eventChoices.css';
+import { useShownEachFrame } from '../../dashboard/widgetPerf';
+import { trackHourOf } from '../../dashboard/settledHour';
+import type { EventFeedKind } from '../../generated/dashboard';
 
 const NO_ROWS: readonly LogRow<ChoiceAt>[] = [];
-const NO_PAGES: readonly never[] = [];
-const count = (rows: readonly LogRow<ChoiceAt>[]) => rows.length;
+const CONTINUING: readonly EventFeedKind[] = ['eventOptionSelected'];
 const cardHeight = (row: LogRow<ChoiceAt>) => 78 + 18 * Math.max(1, row.item.card.item?.options?.length ?? 1);
 
-/** Each recorded delivery of a scripted or news event to a country as a card:
- * its picture and title, the country and its sender, when it fired and was
- * chosen, and every authored option with the chosen one marked. */
+/** Each recorded delivery of a scripted or news event to a country as a card: its picture and title, the country and its
+ * sender, when it fired and was chosen, and every authored option with the chosen one marked. */
 export default function EventChoicesWidget({ widget, runtime, active, onDiagnostics, setOption, headerSlot }: WidgetProps) {
-  const live = widget.time.mode === 'follow';
-  const playbackHour = usePlaybackHour(runtime.clock, active && live);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
+useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtime.tracks, runtime.clock.getHour()) : null);
   const options = resolveOptions(OPTIONS, widget.options);
   const log = logSettings(options);
   const filtered = widget.countries.kind !== 'all';
-  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
-  const inBranch = !!track && !!window && window.lastHour >= track.branch.firstHour
-    && (widget.time.mode === 'range' ? window.firstHour <= track.branch.lastHour : window.lastHour <= track.branch.lastHour);
-  const hour = track && window && inBranch ? Math.min(window.lastHour, track.branch.lastHour) : null;
-  const groups = useCountryGroups(runtime, track, active && filtered && inBranch);
-  const from = widget.time.mode === 'range' ? window?.firstHour ?? null : null;
+  const groups = useCountryGroups(runtime, track, active && filtered);
   const tagsKey = JSON.stringify(selectedTags(widget.countries, track));
   const fallback = useMemo<string[]>(() => JSON.parse(tagsKey), [tagsKey]);
   const match = useMemo(() => countryMatch(widget.countries, fallback, groups.data, track?.branch.lastHour ?? 0),
     [widget.countries, fallback, groups.data, track?.branch.lastHour]);
   const kindsKey = JSON.stringify(EVENT_KINDS.filter(kind => options[kind.value] !== false).map(kind => kind.kind));
-  const kinds = useMemo<EventFeedKind[]>(() => JSON.parse(kindsKey), [kindsKey]);
   const awaiting = options[AWAITING.value] === true;
   const artwork = options.artwork !== false;
-  const filter = useMemo<ChoiceFilter>(() => ({ kinds: new Set(kinds), country: match.matches, allCountries: !filtered, firstHour: from }),
-    [kinds, match, filtered, from]);
-  const prepare = useCallback((reply: Parameters<typeof prepareChoices>[0]) => prepareChoices(reply, filter), [filter]);
-  const breaksKey = track ? JSON.stringify(recordingBreaks(track.branch)) : '[]';
-  const breaks = useMemo<RecordingBreak[]>(() => JSON.parse(breaksKey), [breaksKey]);
-  const at = useCallback((row: LogRow<ChoiceAt>, at: number) => choiceAt(row, at, breaks, awaiting), [breaks, awaiting]);
-  const filterKey = JSON.stringify([kindsKey, widget.countries, fallback, from]);
-  const feed = useScriptOccurrences(runtime, track, active && match.ready && inBranch && kinds.length > 0, hour, 'event-choices',
-    kinds, from, filterKey, prepare, at, count, breaks, choicePlaybackBounds);
+  const country = filtered ? match.matches : null;
+  // The chosen countries are kept by the server, so a sparse group pages through its own cards only.
+  const scope = useMemo(() => filtered && match.ready ? countryScope(widget.countries, fallback, groups.data, track?.branch.lastHour ?? 0) ?? undefined : undefined,
+    [filtered, match.ready, widget.countries, fallback, groups.data, track?.branch.lastHour]);
+  const list = useMemo<CardList<ChoiceCard, ChoiceAt>>(() => ({ product: 'event-choices', scope, openers: JSON.parse(kindsKey), continuing: CONTINUING, row: choiceRow,
+    edges: card => card.occurrence.edges, days: () => true, at: (row, hour, breaks) => choiceAt(row, hour, breaks, awaiting, country) }),
+  [kindsKey, awaiting, country, scope]);
+  const cards = useCards(runtime, widget, track, active && match.ready, list);
   const [visible, setVisible] = useState<readonly LogRow<ChoiceAt>[]>(NO_ROWS);
   const wanted = useMemo(() => occurrenceCountryRequests(visible.map(row => row.item.card.occurrence)), [visible]);
-  const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active && inBranch);
+  const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active);
   const nameHour = (row: LogRow<ChoiceAt>) => row.item.card.first.row.nameHour;
   const label = useCallback((hour: number, tag: string) => {
     const found = labelAt(hour)(tag);
     return { ...found, name: eventCountryName(tag, found) };
   }, [labelAt]);
   const name = useCallback((tag: string, hour: number) => label(hour, tag).name, [label]);
-  const warnings = useMemo(() => [...feed.warnings, ...(feed.data ? scriptNotRecorded(feed.data) : []), ...choiceDiagnostics(feed.replies)],
-    [feed.warnings, feed.data, feed.replies]);
+  // Every card the head has read, while no filter of the cards' own hides some: the log counts them, painted each frame
+  // from the count at the block's hour and the rows drawn ahead of it as the clock reaches them.
+  const counted = !filtered && !awaiting && list.openers.length === EVENT_KINDS.length;
+  const offset = track?.axisOffset ?? 0;
+  const recorded = cards.feed.missing.length ? ' (recorded hours)' : '';
+  const shownCount = cards.feed.shown;
+  const liveCount = useMemo(() => countsAhead(new Map([[0, shownCount]]), cards.follow ? cards.feed.ahead : [], () => 0), [shownCount, cards.follow, cards.feed.ahead]);
+  const totalText = useMemo(() => liveTexts(runtime.clock, () => cards.follow ? Math.floor(runtime.clock.getHour()) + offset : 0, hour => {
+    const total = liveCount(hour).get(0)!;
+    return new Map([['total', `${total.toLocaleString()} ${total === 1 ? 'event' : 'events'}${recorded}`]]);
+  }), [runtime.clock, cards.follow, offset, liveCount, recorded]);
+  const warnings = useMemo(() => [...cards.notes, ...choiceDiagnostics(cards.pages.flatMap(page => (page.rows ?? []).map(row => row.item.card)))],
+    [cards.notes, cards.pages]);
   useDiagnostics(onDiagnostics, warnings);
 
-  const feedError = useHeldFailure(feed.error, feed.data !== undefined, feed.retry);
   if (!track) return <WidgetState kind="empty" icon="ballot" message="Load a campaign to see event choices." />;
-  if (!inBranch) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
   const groupFailure = filtered && groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (groupFailure && !groups.data) return groupFailure;
-  if (feedError) return <>{groupFailure}<WidgetState kind="error" failure={feedError} onRetry={feed.retry} /></>;
+  if (cards.error) return <>{groupFailure}<WidgetState kind="error" failure={cards.error} onRetry={cards.retry} /></>;
   if (match.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={match.reason} /></>;
-  if (kinds.length > 0 && (!feed.data || !match.ready)) return <>{groupFailure}<WidgetState kind="loading" label="Loading event choices…" /></>;
+  if (list.openers.length > 0 && (cards.loading || !match.ready)) return <>{groupFailure}<WidgetState kind="loading" label="Loading event choices…" /></>;
 
   const chips = [...EVENT_KINDS.map(kind => ({ value: kind.value, label: kind.label })), { value: AWAITING.value, label: AWAITING.label, hint: AWAITING.hint }];
   const selected = chips.filter(chip => chip.value === AWAITING.value ? awaiting : options[chip.value] !== false).map(chip => chip.value);
-  const country = (hour: number, tag: string | null) => {
-    if (tag === null) return <span className="peace-muted">A country not identified</span>;
+  const countryLine = (hour: number, tag: string | null) => {
+    if (tag === null) return <span className="event-choice-muted">A country not identified</span>;
     const found = label(hour, tag);
     return <span><CountryFlagUrl className="log-flag" url={found.flag} detail={found.flagDetail} reason={found.flagReason} pending={found.flagPending} /><b>{found.name}</b></span>;
   };
@@ -104,38 +106,37 @@ export default function EventChoicesWidget({ widget, runtime, active, onDiagnost
     const choice = row.item;
     const { card } = choice;
     const lines = optionLines(choice);
-    return <article className="peace-deal event-choice">
+    return <article className="event-choice">
       <div className="event-choice-heading">
         {artwork && <span className="log-art" aria-hidden="true">{card.item?.icon ? <img src={card.item.icon} alt="" /> : <ArtFallback icon="ballot" />}</span>}
-        <b className={card.item?.name ? undefined : 'peace-muted'}>{choiceTitle(card)}</b>
+        <b className={card.item?.name ? undefined : 'event-choice-muted'} data-tooltip={card.item?.name ? undefined : reasonsOf(card.item).nameMissing}>
+          <ScriptedText text={choiceTitle(card)} reason={reasonsOf(card.item).gaps} /></b>
         <small>{choiceDates(choice)}</small>
       </div>
-      <div className="event-choice-countries">{country(nameHour(row), card.country)}
-        {card.sender && <><span>from</span>{country(nameHour(row), card.sender)}</>}
-        {isOpen(choice) && <span className="pill accent">{live && <i className="live-dot" aria-hidden="true" />}<span>{awaitingText(choice)}</span></span>}</div>
+      <div className="event-choice-countries">{countryLine(nameHour(row), card.country)}
+        {card.sender && <><span>from</span>{countryLine(nameHour(row), card.sender)}</>}
+        {isOpen(choice) && <span className="pill accent">{cards.follow && <i className="live-dot" aria-hidden="true" />}<span>{awaitingText(choice)}</span></span>}</div>
       <ol className="event-choice-options">
         {lines.map(line => <li key={line.key} className={`event-choice-option${line.chosen ? ' is-chosen' : ''}${line.missing ? ' is-missing' : ''}`}>
-          {line.chosen ? <Icon name="check" /> : <i aria-hidden="true" />}<span>{line.letter && `${line.letter}. `}{line.text}</span></li>)}
+          {line.chosen ? <Icon name="check" /> : <i aria-hidden="true" />}<span>{line.letter && `${line.letter}. `}<ScriptedText text={line.text} reason={reasonsOf(card.item).gaps} /></span></li>)}
         {!choice.choice && <li className="event-choice-option is-missing"><i aria-hidden="true" /><span>{noChoiceText(choice)}</span></li>}
       </ol>
     </article>;
   };
-  const header = headerSlot && feed.total !== null && createPortal(<span className="pill">{feed.total.toLocaleString()} {feed.total === 1 ? 'event' : 'events'}</span>, headerSlot);
-  return <div className="log-widget peace-deals event-choices">{groupFailure}
+  const header = headerSlot && counted && createPortal(<span className="pill"><LiveText live={totalText} at="total" /></span>, headerSlot);
+  return <div className="log-widget event-choices">{groupFailure}
     {header}
     {log.chips && <div className="log-chips"><ChipSet label="Event choices filters" chips={chips} selected={selected} max={chips.length}
       onToggle={key => setOption?.(key, !selected.includes(key))} /></div>}
-    <LogList key={feed.identity} pages={kinds.length > 0 ? feed.pages : NO_PAGES} label="Event choices" layout="card" density={log.density} months={log.months}
-      {...import.meta.env.MODE === 'parity' ? { paritySemantic: { complete: true, reads: undefined,
-        item: (row: LogRow<ChoiceAt>) => ({ ...row.item, hour: feed.shownHour }) } } : {}}
-      preparedCoverage={feed.prefix?.coverage} rowHeight={cardHeight} anchorRows
-      animate={log.animate && live} playhead={live ? hour : null} onVisible={setVisible} onWantedPages={feed.onWantedPages}
-      renderRow={renderRow} describe={row => choiceDescription(row.item, name)} tooltip={row => {
+    <LogGaps missing={cards.feed.missing} until={cards.hour} />
+    <LogList pages={list.openers.length > 0 ? cards.pages : []} label="Event choices" layout="card" density={log.density} months={log.months}
+      rowHeight={cardHeight} anchorRows animate={log.animate && cards.follow} playhead={cards.follow ? cards.hour : null} onVisible={setVisible}
+      onWantedPages={cards.feed.onWantedPages} renderRow={renderRow} describe={row => choiceDescription(row.item, name)} tooltip={row => {
         const countries: ReturnType<typeof label>[] = [];
-        const forms = choiceTooltip(row.item, (tag, hour) => { const country = label(hour, tag); countries.push(country); return country.name; });
+        const forms = choiceTooltip(row.item, (tag, hour) => { const found = label(hour, tag); countries.push(found); return found.name; });
         return forms.map(form => ({ ...form, ...countryNameDetails({ nameDetail: form.detail }, ...countries) }));
       }}
-      menu={row => choiceJumps(row.item).map(hour => jumpItem(runtime, track.id, hour))} empty={!kinds.length || match.known(from ?? track.branch.firstHour, hour!) ? "No recorded events match these settings." : MEMBERSHIP_PREPARING} />
-    {feed.errors.size > 0 && <div className="event-feed-load">Some events couldn’t load. <button type="button" onClick={feed.retryPages}>Retry</button></div>}
+      menu={row => choiceJumps(row.item).map(hour => jumpItem(runtime, track.id, hour))}
+      empty="No recorded events match these settings." />
   </div>;
 }

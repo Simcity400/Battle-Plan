@@ -1,67 +1,78 @@
-import { failureDetails } from '../../dashboard/queryError.ts';
 import { useEffect, useMemo, useRef } from 'react';
-import { useParityRows } from '../../dashboard/parityRows';
 import WidgetState from '../../components/WidgetState';
 import Sunburst from '../../charts/sunburst/Sunburst';
-import type { SunburstText } from '../../charts/sunburst/Sunburst';
+import type { SunburstText, SunburstValues } from '../../charts/sunburst/Sunburst';
 import { levelsShown, sunburstSettings } from '../../charts/sunburst/sunburstOptions';
+import { liveAt } from '../../charts/live';
+import { motionOf } from '../../charts/easing.ts';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
-import { stateNameRequests } from '../../dashboard/construction';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
-import { dayLabel } from '../../charts/draw';
-import { approximateAt, preparedPrefix, preparedThrough } from '../../dashboard/preparedPrefix';
 import { resolveOptions } from '../../dashboard/options';
-import { usePlaybackHour } from '../../dashboard/playback';
 import { useProduct } from '../../dashboard/products';
 import { icDecimals } from '../../dashboard/icDecimals';
-import { useStateNamesAt } from '../../dashboard/useStateNamesAt';
-import type { ConstructionSpendingReply } from '../../generated/dashboard';
+import { useShownHour } from '../../dashboard/widgetPerf';
+import { useHeadHour } from '../army-size/headHour';
 import { OPTIONS } from './definition';
-import { LEVELS, footnote, formatSpent, hasConstruction, scaleDigits, spendingItems, validateSpendingReply } from './spendingData';
-import { motionOf } from '../../charts/easing.ts';
+import { LEVELS, footnote, formatSpent, hasConstruction, presentKey, scaleDigits, spendingItems, validateSpendingReply } from './spendingData';
+import type { SpendingWindow } from './spendingData';
 
 const NO_WARNINGS: string[] = [];
 const ROOT = { id: 'all', label: 'All construction' };
 
-/** Where one country's civilian-factory output went, as a sunburst:
- * new buildings or repairs, then building type, then state. With Live on it
- * grows at recorded factory-output reads; off, the whole campaign. */
+/** Where one country's civilian-factory output went, as a sunburst: new buildings or repairs, then building type,
+ * then state. The branch's spending is asked once; following the playhead, the amounts are painted at each frame from
+ * it, and the widget renders only when a leaf enters (at most four times a second while playing). Off, the whole
+ * campaign or the range chosen. */
 export default function ConstructionSpendingWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
-  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const options = resolveOptions(OPTIONS, widget.options);
   const settings = sunburstSettings(options);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryTag(track) ?? undefined;
-  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
-  const hour = window?.lastHour;
-  const range = widget.time.mode === 'range';
-  const from = range ? window?.firstHour ?? null : null;
-  const end = range ? hour : track?.branch.lastHour;
-  const prepared = !!runtime.client.preparedQuery;
-  const hours = [...new Set([from == null ? null : from - 1, hour, end].filter((value): value is number => value != null))].sort((a, b) => a - b);
   const request = track && tag ? { sourceId: track.source.id, revision: track.source.revision, product: 'construction-spending',
-    params: { branchId: track.branch.id, tag, ...(prepared ? { hours } : {}) } } : null;
-  const { data, error, retry } = useProduct<ConstructionSpendingReply>(runtime.client, request, active, validateSpendingReply, prepared ? track?.source : undefined);
-  const namingActive = active && data != null && hour != null && track != null && hour >= track.branch.firstHour && hour <= track.branch.lastHour;
-  const wantedStates = useMemo(() => stateNameRequests(data?.leaves ?? [], namingActive ? hour ?? null : null), [data, hour, namingActive]);
-  const stateAt = useStateNamesAt(runtime.client, track, wantedStates, namingActive);
-  const items = useMemo(() => data && hour != null && end != null ? spendingItems(data, { from, hour, end }, stateAt) : [], [data, from, hour, end, stateAt]);
-  const parityRoot = useRef<HTMLDivElement>(null);
-  useParityRows(parityRoot, () => ({ kind: 'chart', label: 'Construction spending values', complete: data != null, total: items.length,
-    rows: items.map(item => ({ path: item.path, exact: item.exact?.toString() ?? null, final: item.final, present: item.present, unknown: item.unknown, counted: item.counted })),
-  }));
+    params: { branchId: track.branch.id, tag } } : null;
+  const { data, error, retry } = useProduct(runtime.client, request, active, validateSpendingReply, track?.source);
+  const following = active && widget.time.mode === 'follow' && !!track && !!data;
+  const range = widget.time.mode === 'range';
+  // The window of hours shown at a clock position: from the range's start (or the branch's), to the hour, and the end
+  // Fill grows toward.
+  const windowAt = (position: number): SpendingWindow | null => {
+    const window = track ? resolveWindow(widget, track, runtime.tracks, position) : null;
+    if (!track || !window) return null;
+    return { from: range ? window.firstHour : null, hour: window.lastHour, end: range ? window.lastHour : track.branch.lastHour };
+  };
+  const windowRef = useRef(windowAt);
+  windowRef.current = windowAt;
+  const position = useHeadHour(runtime.clock, following, at => {
+    const shown = windowRef.current(at);
+    return data && shown ? presentKey(spendingItems(data, shown)) : '';
+  });
+  const shownWindow = windowAt(position);
+  const hour = shownWindow?.hour;
+  const inBranch = track != null && hour != null && hour >= track.branch.firstHour && hour <= track.branch.lastHour;
+  const items = useMemo(() => data && shownWindow ? spendingItems(data, shownWindow) : [],
+    // The window is rebuilt each render; its hours name it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [data, shownWindow?.from, shownWindow?.hour, shownWindow?.end]);
+  // The amounts at the head, read as each frame draws: the widget does not render for them.
+  const live = useMemo(() => following ? liveAt(runtime.clock, at => windowRef.current(at)?.hour ?? hour ?? 0, () => {
+    const shown = windowRef.current(runtime.clock.getSnapshot().position);
+    return { items: data && shown ? spendingItems(data, shown) : [] } satisfies SunburstValues;
+  }) : undefined,
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  [following, runtime.clock, data]);
+  const report = useShownHour();
+  useEffect(() => {
+    if (!live) { report(data && inBranch ? hour ?? null : null); return; }
+    report(live.hour());
+    return live.subscribe(() => report(live.hour()));
+  }, [live, report, data, inBranch, hour]);
   const levelKey = LEVELS.map(level => options[level] !== false).join();
   const levels = useMemo(() => levelsShown(options, LEVELS), [levelKey]); // eslint-disable-line react-hooks/exhaustive-deps
-  // Before preparation reaches the hour shown, the reply's totals are those of
-  // its prepared prefix; later output is still being prepared.
-  const through = data && hour != null ? preparedThrough([data], hour) : hour;
-  const preparedNote = [through != null && hour != null && through < hour ? `Spent through ${dayLabel(through)}; the rest is still being prepared.` : null,
-    through != null && approximateAt(preparedPrefix(data), through) ? 'Approximate work intervals and building names while preparation continues.' : null].filter(Boolean).join(' ') || undefined;
   const scale = data?.costScale ?? 1;
   const digits = icDecimals(options, scaleDigits(scale));
   const text = useMemo<SunburstText>(() => ({
-    format: (value, exact) => formatSpent(value, exact, scale, digits), unit: 'IC', valueLabel: 'Spent', countLabel: 'Projects',
+    format: (value, exact) => exact == null ? 'Not recorded' : formatSpent(value, exact, scale, digits), unit: 'IC', valueLabel: 'Spent', countLabel: 'Projects',
   }), [scale, digits]);
   useEffect(() => {
     onDiagnostics(data?.warnings.length ? data.warnings : NO_WARNINGS);
@@ -71,11 +82,11 @@ export default function ConstructionSpendingWidget({ widget, runtime, active, on
   if (!track || !tag) return <WidgetState kind="empty" icon="sunburst" message="Load a campaign and choose a country to see its construction spending." />;
   if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading construction spending…" />;
-  if (!data.reads.length && !data.railwayReads.length && preparedPrefix(data)?.pending.length) return <WidgetState kind="loading" label="This range is still being prepared." />;
-  if (!data.reads.length && !data.railwayReads.length) return <WidgetState kind="unavailable" message="Construction was not recorded." />;
-  if (hour == null || hour < track.branch.firstHour || hour > track.branch.lastHour) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  if (from != null && through != null && from > through) return <WidgetState kind="loading" label="This range is still being prepared." />;
-  if (!hasConstruction(items)) return <WidgetState kind="empty" icon="sunburst" message="No construction recorded" detail={footnote(data, items, preparedNote)} />;
-  return <div ref={parityRoot} data-detail={failureDetails(wantedStates.map(read => stateAt(read.hour, read.state).failure))} style={{ height: '100%' }}><Sunburst label="Construction spending" items={items} root={ROOT} levels={levels} text={text} settings={settings}
-    hoursPerSecond={motionOf(runtime.clock.getSnapshot())} active={active} footnote={footnote(data, items, preparedNote)} /></div>;
+  if (!data.recorded) return <WidgetState kind="unavailable" message="Construction was not recorded." />;
+  if (!shownWindow || !inBranch) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  const note = footnote(data, items, shownWindow);
+  // A leaf entering changes the render's key, so following renders the chart the moment one is present.
+  if (!hasConstruction(items)) return <WidgetState kind="empty" icon="sunburst" message="No construction recorded" detail={note} />;
+  return <div style={{ height: '100%' }}><Sunburst label="Construction spending" items={items} root={ROOT} levels={levels} text={text} settings={settings}
+    live={live} hoursPerSecond={motionOf(runtime.clock.getSnapshot())} active={active} footnote={note} /></div>;
 }

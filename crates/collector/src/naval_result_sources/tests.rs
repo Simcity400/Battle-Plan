@@ -2,7 +2,7 @@ use super::*;
 use engine_native::{cgame_state, cnaval_combat, creference_registry};
 use engine_naval_history::cnaval_combat_results;
 
-pub(crate) static SERIAL: Mutex<()> = Mutex::new(());
+static SERIAL: Mutex<()> = Mutex::new(());
 static FORWARDED: AtomicUsize = AtomicUsize::new(0);
 static PROBE_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
 thread_local! {
@@ -16,7 +16,9 @@ pub(crate) struct Observation {
 }
 impl Observation {
     pub(crate) fn new() -> Self {
-        let serial = SERIAL.lock().unwrap();
+        let serial = SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         OWNER.set(true);
         Self { _serial: serial }
     }
@@ -86,6 +88,14 @@ unsafe extern "system-unwind" fn original_constructor(pointer: usize) -> usize {
     FORWARDED.fetch_add(1, Ordering::Relaxed);
     pointer
 }
+static GATE: std::sync::LazyLock<std::sync::Barrier> =
+    std::sync::LazyLock::new(|| std::sync::Barrier::new(2));
+/// Holds its caller inside the original until the test has met it twice.
+unsafe extern "system-unwind" fn gated_result(result: usize, combat: usize) -> usize {
+    GATE.wait();
+    GATE.wait();
+    unsafe { original_result(result, combat) }
+}
 unsafe extern "system-unwind" fn original_result(result: usize, _combat: usize) -> usize {
     assert!(active() > 0);
     assert!(crate::runtime::observers_active());
@@ -98,6 +108,7 @@ unsafe extern "system-unwind" fn original_result(result: usize, _combat: usize) 
     0xabc
 }
 pub(crate) fn setup(capacity: usize, base: usize) {
+    drop(LOG.take());
     *store().lock().unwrap() = Store {
         entries: Vec::with_capacity(capacity),
         births: HashMap::with_capacity(capacity),
@@ -105,14 +116,6 @@ pub(crate) fn setup(capacity: usize, base: usize) {
     };
     *CLOCK.lock().unwrap() = None;
     BASE.store(base, Ordering::Relaxed);
-    CAPACITY.store(capacity, Ordering::Release);
-    BIRTH_CAPACITY.store(capacity, Ordering::Release);
-    OFFERED_CAPACITY.store(0, Ordering::Release);
-    RETIRED.store(false, Ordering::Release);
-    *STORAGE_SWAP.lock().unwrap() = StorageSwap {
-        next: None,
-        retired: None,
-    };
     EVENT_ATTEMPTS.store(0, Ordering::Relaxed);
     BIRTH_ATTEMPTS.store(0, Ordering::Relaxed);
     EVENT_DEMAND.store(0, Ordering::Relaxed);
@@ -125,9 +128,6 @@ pub(crate) fn setup(capacity: usize, base: usize) {
     }
     THREAD_MISMATCHES.store(0, Ordering::Relaxed);
     ENABLED.store(true, Ordering::SeqCst);
-    POISONED.store(false, Ordering::SeqCst);
-    RECOVERY_PENDING.store(false, Ordering::SeqCst);
-    UNWOUND.store(false, Ordering::SeqCst);
     for original in &ORIGINAL[..2] {
         original.store(original_result as *const () as usize, Ordering::Release);
     }
@@ -135,6 +135,12 @@ pub(crate) fn setup(capacity: usize, base: usize) {
         original_constructor as *const () as usize,
         Ordering::Release,
     );
+}
+/// The drain's store with every pushed event folded.
+fn folded() -> std::sync::MutexGuard<'static, Store> {
+    let mut current = store().lock().unwrap();
+    current.fold();
+    current
 }
 fn clock(hour: i32, session: i64) -> Option<Clock> {
     Some(Clock {
@@ -157,8 +163,7 @@ fn release_keeps_storage_until_every_site_and_callback_is_quiet() {
         id: 7,
         ..Entry::default()
     });
-    presize(4);
-    assert_eq!(OFFERED_CAPACITY.load(Ordering::Acquire), 4);
+    lost_drain();
     assert!(release().is_err());
     ENABLED.store(false, Ordering::SeqCst);
     ACTIVE[1].store(1, Ordering::SeqCst);
@@ -167,16 +172,12 @@ fn release_keeps_storage_until_every_site_and_callback_is_quiet() {
     SITE_ENABLED[2].store(true, Ordering::SeqCst);
     assert!(release().is_err());
     assert_eq!(store().lock().unwrap().entries[0].id, 7);
-    assert_eq!(OFFERED_CAPACITY.load(Ordering::Acquire), 4);
+    assert!(!LOG.is_empty());
     SITE_ENABLED[2].store(false, Ordering::SeqCst);
     release().unwrap();
-    assert_eq!(capacity(), 0);
-    assert_eq!(BIRTH_CAPACITY.load(Ordering::Acquire), 0);
-    assert_eq!(OFFERED_CAPACITY.load(Ordering::Acquire), 0);
+    assert!(LOG.is_empty());
     assert_eq!(store().lock().unwrap().entries.capacity(), 0);
     assert_eq!(store().lock().unwrap().births.capacity(), 0);
-    let swap = STORAGE_SWAP.lock().unwrap();
-    assert!(swap.next.is_none() && swap.retired.is_none());
 }
 
 #[test]
@@ -199,7 +200,7 @@ fn reattached_source_ids_continue_retained_history_and_survive_branch_boundaries
     unsafe {
         fill(world.result(), world.combat());
     }
-    let mut output = [Entry::default(); 2];
+    let mut output = vec![Entry::default(); 2];
     assert_eq!(drain(&mut output).unwrap(), 1);
     assert_eq!(output[0].id, 41);
     // A load/campaign clock transition still drops interval witnesses/events,
@@ -300,7 +301,7 @@ fn worker_drain_grows_empty_and_recycled_storage_for_every_owned_source() {
     for count in [5000, 10003] {
         setup(count, 0);
         boundary(clock(10, 1));
-        assert!(drain_growing(&mut output).is_err());
+        assert!(drain(&mut output).is_err());
         boundary(clock(11, 1));
         {
             let mut store = store().lock().unwrap();
@@ -317,21 +318,20 @@ fn worker_drain_grows_empty_and_recycled_storage_for_every_owned_source() {
                 }
             });
         }
-        assert_eq!(drain_growing(&mut output), Ok(count));
+        assert_eq!(drain(&mut output), Ok(count));
         assert_eq!(output[count - 1].id, count as u64);
         assert_eq!(output[count - 1].result, (count as u64) << 32 | 0x46);
     }
 }
 
 #[test]
-fn overlap_loss_overflow_and_detach_never_publish_empty_success() {
+fn a_held_drain_never_blocks_or_loses_a_callback_and_detach_publishes_nothing() {
     let _observation = Observation::new();
     let world = World::new();
     setup(1, world.base());
     boundary(clock(10, 1));
     boundary(clock(11, 1));
     let before = FORWARDED.load(Ordering::Relaxed);
-    let overlaps = OVERLAPS.load(Ordering::Relaxed);
     {
         let _held = store().lock().unwrap();
         unsafe {
@@ -339,19 +339,19 @@ fn overlap_loss_overflow_and_detach_never_publish_empty_success() {
         }
     }
     assert_eq!(FORWARDED.load(Ordering::Relaxed), before + 1);
-    assert_eq!(OVERLAPS.load(Ordering::Relaxed), overlaps + 1);
-    assert!(drain(&mut [Entry::default(); 1]).is_err());
+    assert_eq!(drain(&mut vec![Entry::default(); 1]), Ok(1));
     boundary(clock(12, 2));
     boundary(clock(13, 2));
     lost_drain();
-    assert!(drain(&mut [Entry::default(); 1]).is_err());
+    assert!(drain(&mut vec![Entry::default(); 1]).is_err());
     boundary(clock(14, 3));
     boundary(clock(15, 3));
     unsafe {
         fill(world.result(), world.combat());
         fill(world.result(), world.combat());
     }
-    assert!(drain(&mut [Entry::default(); 1]).is_err());
+    // Short storage grows to the whole interval.
+    assert_eq!(drain(&mut vec![Entry::default(); 1]), Ok(2));
     assert!(EVENT_DEMAND.load(Ordering::Relaxed) >= 2);
     let call = Call::enter(0);
     assert!(crate::runtime::observers_active());
@@ -364,7 +364,69 @@ fn overlap_loss_overflow_and_detach_never_publish_empty_success() {
     }
     assert_eq!(FORWARDED.load(Ordering::Relaxed), before + 1);
     assert_eq!(active(), 0);
-    assert!(drain(&mut [Entry::default(); 1]).is_err());
+    assert!(drain(&mut vec![Entry::default(); 1]).is_err());
+}
+
+#[test]
+fn two_threads_in_the_family_at_once_keep_every_source_in_the_order_they_finish() {
+    let _observation = Observation::new();
+    let world = World::new();
+    setup(2, world.base());
+    boundary(clock(10, 1));
+    boundary(clock(11, 1));
+    ORIGINAL[0].store(gated_result as *const () as usize, Ordering::Release);
+    let (result, combat) = (world.result(), world.combat());
+    let writer = std::thread::spawn(move || unsafe { fill(result, combat) });
+    GATE.wait();
+    let merged = unsafe { merge(result, combat) };
+    GATE.wait();
+    let filled = writer.join().unwrap();
+    let mut output = Vec::new();
+    let drained = drain(&mut output);
+    assert_eq!((filled, merged), (0xabc, 0xabc));
+    assert_eq!(drained, Ok(2));
+    let row = |id, merged| Entry {
+        id,
+        game_hour: 11,
+        result: world.result[cnaval_combat_results::HANDLE / 8],
+        combat: world.combat[cnaval_combat::HANDLE / 8],
+        merged,
+        transient: false,
+        combat_created_hour: None,
+    };
+    assert_eq!(output, [row(1, true), row(2, false)]);
+    assert_eq!(active(), 0);
+}
+
+#[test]
+fn a_callback_across_the_hour_boundary_is_kept_in_the_interval_it_completes() {
+    let _observation = Observation::new();
+    let mut world = World::new();
+    setup(2, world.base());
+    boundary(clock(10, 1));
+    boundary(clock(11, 1));
+    unsafe { fill(world.result(), world.combat()) };
+    ORIGINAL[0].store(gated_result as *const () as usize, Ordering::Release);
+    let (result, combat) = (world.result(), world.combat());
+    let writer = std::thread::spawn(move || unsafe { fill(result, combat) });
+    GATE.wait();
+    boundary(clock(12, 1));
+    let mut first = Vec::new();
+    let first_drain = drain(&mut first);
+    world.hour(12);
+    GATE.wait();
+    writer.join().unwrap();
+    boundary(clock(13, 1));
+    let mut second = Vec::new();
+    let second_drain = drain(&mut second);
+    assert_eq!(first_drain, Ok(1));
+    assert_eq!((first[0].id, first[0].game_hour), (1, 11));
+    assert_eq!(second_drain, Ok(1));
+    assert_eq!(
+        (second[0].id, second[0].game_hour, second[0].merged),
+        (2, 12, false)
+    );
+    assert_eq!(active(), 0);
 }
 
 unsafe extern "system-unwind" fn unlocked_constructor(pointer: usize) -> usize {
@@ -377,7 +439,6 @@ fn loaded_constructor_bypasses_storage_and_unknown_runs_before_refusal() {
     let _observation = Observation::new();
     let world = World::new();
     setup(1, world.base());
-    let overlaps = OVERLAPS.load(Ordering::Relaxed);
     {
         let _held = store().lock().unwrap();
         assert_eq!(
@@ -385,8 +446,7 @@ fn loaded_constructor_bypasses_storage_and_unknown_runs_before_refusal() {
             world.combat()
         );
     }
-    assert_eq!(OVERLAPS.load(Ordering::Relaxed), overlaps);
-    assert!(!POISONED.load(Ordering::SeqCst));
+    assert!(LOG.is_empty());
     ORIGINAL[2].store(
         unlocked_constructor as *const () as usize,
         Ordering::Release,
@@ -398,55 +458,10 @@ fn loaded_constructor_bypasses_storage_and_unknown_runs_before_refusal() {
     );
     assert_eq!(UNKNOWN_CONSTRUCTORS.load(Ordering::Relaxed), unknown + 1);
     assert_eq!(
-        store().lock().unwrap().refusal,
+        folded().refusal,
         Some("naval result sources unknown constructor caller")
     );
     assert_eq!(active(), 0);
-}
-
-#[test]
-fn cached_sizing_never_locks_writers_and_growth_retires_off_thread() {
-    let _observation = Observation::new();
-    setup(100, 0);
-    let overlaps = OVERLAPS.load(Ordering::Relaxed);
-    {
-        let mut current = store().lock().unwrap();
-        // A changing live hash capacity must not change the reservation witness.
-        current.births.shrink_to_fit();
-        assert_eq!(current.births.capacity(), 0);
-        presize(100);
-        assert_eq!(OFFERED_CAPACITY.load(Ordering::Acquire), 0);
-        presize(5000);
-        assert_eq!(OFFERED_CAPACITY.load(Ordering::Acquire), 5000);
-    }
-    assert_eq!(OVERLAPS.load(Ordering::Relaxed), overlaps);
-    assert!(!POISONED.load(Ordering::SeqCst));
-    assert_eq!(BIRTH_CAPACITY.load(Ordering::Acquire), 100);
-    let call = Call::enter(0);
-    install_offered();
-    assert_eq!(capacity(), 100);
-    call.returned(0);
-    {
-        let mut current = store().lock().unwrap();
-        current.entries.push(Entry::default());
-    }
-    install_offered();
-    assert_eq!(capacity(), 100);
-    store().lock().unwrap().entries.clear();
-    install_offered();
-    assert_eq!(capacity(), 5000);
-    assert_eq!(BIRTH_CAPACITY.load(Ordering::Acquire), 5000);
-    assert_eq!(OFFERED_CAPACITY.load(Ordering::Acquire), 0);
-    assert!(STORAGE_SWAP.lock().unwrap().retired.is_some());
-    assert!(RETIRED.load(Ordering::Acquire));
-    {
-        let _held = STORAGE_SWAP.lock().unwrap();
-        collect_retired();
-        assert!(RETIRED.load(Ordering::Acquire));
-    }
-    collect_retired();
-    assert!(STORAGE_SWAP.lock().unwrap().retired.is_none());
-    assert!(!RETIRED.load(Ordering::Acquire));
 }
 
 #[test]
@@ -457,7 +472,7 @@ fn lost_interval_recovers_partial_then_complete_without_resetting_ids() {
     boundary(clock(10, 1));
     boundary(clock(11, 1));
     unsafe { fill(world.result(), world.combat()) };
-    let mut output = [Entry::default(); 1];
+    let mut output = vec![Entry::default(); 1];
     assert_eq!(drain(&mut output).unwrap(), 1);
     assert_eq!(output[0].id, 1);
     lost_drain();
@@ -475,16 +490,13 @@ fn lost_interval_recovers_partial_then_complete_without_resetting_ids() {
     unsafe { fill(world.result(), world.combat()) };
     assert_eq!(drain(&mut output).unwrap(), 1);
     assert_eq!(output[0].id, 2);
-    // A writer overflow is discovered at the next hourly boundary.
-    unsafe {
-        fill(world.result(), world.combat());
-        fill(world.result(), world.combat());
-    }
+    // Storage that cannot grow is discovered at the next hourly boundary.
+    unsafe { fill(world.result(), world.combat()) };
+    crate::test_support::with_allocations_denied(|| unsafe {
+        fill(world.result(), world.combat())
+    });
     boundary(clock(14, 1));
-    assert_eq!(
-        drain(&mut output).unwrap_err(),
-        "naval result sources event storage overflow"
-    );
+    assert_eq!(drain(&mut output).unwrap_err(), STORAGE_FAILED);
     boundary(clock(15, 1));
     assert_eq!(
         drain(&mut output).unwrap_err(),
@@ -505,19 +517,19 @@ fn foreign_capture_and_decode_calls_cannot_mutate_observation_test_globals() {
         lost_drain();
         boundary(clock(20, 2));
         assert_eq!(
-            drain(&mut [Entry::default(); 1]).unwrap_err(),
+            drain(&mut vec![Entry::default(); 1]).unwrap_err(),
             "naval result sources hooks unavailable (see status unhooked)"
         );
     })
     .join()
     .unwrap();
     assert_eq!(LOST.load(Ordering::Relaxed), lost);
-    assert!(!POISONED.load(Ordering::SeqCst));
+    assert!(LOG.is_empty());
     assert!(CLOCK.lock().unwrap().is_none());
     assert_eq!(store().lock().unwrap().entries.len(), 1);
     lost_drain();
     assert_eq!(LOST.load(Ordering::Relaxed), lost + 1);
-    assert!(POISONED.load(Ordering::SeqCst));
+    assert!(folded().poisoned);
 }
 
 #[test]
@@ -534,18 +546,10 @@ fn callback_thread_counters_exclude_loaded_and_unobserved_calls() {
     })
     .join()
     .unwrap();
-    ENABLED.store(true, Ordering::SeqCst);
-    POISONED.store(true, Ordering::SeqCst);
-    std::thread::spawn(|| unsafe {
-        constructor(0x1234, 0xc0dc19);
-        constructor(0x1234, 0);
-    })
-    .join()
-    .unwrap();
     assert_eq!(THREAD_MISMATCHES.load(Ordering::Relaxed), 0);
     assert_eq!(CALL_THREADS[2].load(Ordering::Relaxed), 0);
-    assert_eq!(UNKNOWN_CONSTRUCTORS.load(Ordering::Relaxed), unknown + 2);
-    POISONED.store(false, Ordering::SeqCst);
+    assert_eq!(UNKNOWN_CONSTRUCTORS.load(Ordering::Relaxed), unknown + 1);
+    ENABLED.store(true, Ordering::SeqCst);
     std::thread::spawn(|| unsafe {
         constructor(0x1234, 0xc0dc19);
         assert_eq!(THREAD_MISMATCHES.load(Ordering::Relaxed), 0);
@@ -555,12 +559,12 @@ fn callback_thread_counters_exclude_loaded_and_unobserved_calls() {
     .unwrap();
     assert_ne!(CALL_THREADS[2].load(Ordering::Relaxed), expected);
     assert_eq!(THREAD_MISMATCHES.load(Ordering::Relaxed), 1);
-    assert_eq!(UNKNOWN_CONSTRUCTORS.load(Ordering::Relaxed), unknown + 3);
+    assert_eq!(UNKNOWN_CONSTRUCTORS.load(Ordering::Relaxed), unknown + 2);
     assert_eq!(active(), 0);
 }
 
 #[test]
-fn an_overflow_grows_enough_to_capture_the_repeated_event_burst() {
+fn an_event_burst_is_kept_whole_and_raises_the_frame_demand() {
     let _observation = Observation::new();
     let mut world = World::new();
     setup(2, world.base());
@@ -572,68 +576,29 @@ fn an_overflow_grows_enough_to_capture_the_repeated_event_burst() {
         unsafe { fill(world.result(), world.combat()) };
     }
     assert_eq!(EVENT_DEMAND.load(Ordering::Relaxed), 4);
-    presize(2);
-    boundary(clock(12, 1));
-    let mut output = [Entry::default(); 4];
-    assert_eq!(
-        drain(&mut output).unwrap_err(),
-        "naval result sources event storage overflow"
-    );
-    boundary(clock(13, 1));
-    assert_eq!(
-        drain(&mut output).unwrap_err(),
-        "naval result sources recovery interval is partial"
-    );
-    boundary(clock(14, 1));
-    world.hour(14);
-    assert_eq!(capacity(), 4);
-    for _ in 0..4 {
-        world.combat[cnaval_combat::HANDLE / 8] += 1 << 32;
-        world.result[cnaval_combat_results::HANDLE / 8] += 1 << 32;
-        unsafe { fill(world.result(), world.combat()) };
-    }
-    assert_eq!(drain(&mut output).unwrap(), 4);
-    assert_eq!(EVENT_DEMAND.load(Ordering::Relaxed), 4);
-    assert_eq!(output.map(|row| row.id), [3, 4, 5, 6]);
+    let mut output = vec![Entry::default(); 4];
+    assert_eq!(drain(&mut output), Ok(4));
+    assert_eq!(output.iter().map(|row| row.id).collect::<Vec<_>>(), [1, 2, 3, 4]);
+    assert_eq!(demand(), 4);
 }
 
 #[test]
-fn birth_overflow_grows_from_the_complete_attempted_burst() {
+fn a_birth_burst_is_kept_whole_and_raises_the_frame_demand() {
     let _observation = Observation::new();
-    let mut world = World::new();
-    setup(3, world.base());
+    let world = World::new();
+    setup(1, world.base());
     boundary(clock(10, 1));
     boundary(clock(11, 1));
-    let reserved = store().lock().unwrap().births.capacity();
-    BIRTH_CAPACITY.store(reserved, Ordering::Release);
-    for pointer in 1..=reserved + 1 {
+    for pointer in 1..=4 {
         unsafe { constructor(pointer, world.base() + 0xc0b22d) };
     }
-    assert_eq!(BIRTH_DEMAND.load(Ordering::Relaxed), reserved + 1);
-    presize(3);
-    boundary(clock(12, 1));
-    assert_eq!(
-        drain(&mut []).unwrap_err(),
-        "naval result sources birth storage overflow"
-    );
-    boundary(clock(13, 1));
-    assert_eq!(
-        drain(&mut []).unwrap_err(),
-        "naval result sources recovery interval is partial"
-    );
-    boundary(clock(14, 1));
-    world.hour(14);
-    assert_eq!(BIRTH_CAPACITY.load(Ordering::Acquire), reserved + 1);
-    for pointer in 1..=reserved + 1 {
-        unsafe { constructor(pointer, world.base() + 0xc0b22d) };
-    }
-    assert_eq!(store().lock().unwrap().births.len(), reserved + 1);
-    assert_eq!(BIRTH_DEMAND.load(Ordering::Relaxed), reserved + 1);
-    assert_eq!(drain(&mut []).unwrap(), 0);
+    assert_eq!(folded().births.len(), 4);
+    assert_eq!(BIRTH_DEMAND.load(Ordering::Relaxed), 4);
+    assert_eq!(drain(&mut Vec::new()), Ok(0));
 }
 
 #[test]
-fn null_population_is_skipped_and_failed_reads_preserve_capacity() {
+fn null_population_is_skipped_and_failed_reads_keep_the_demand() {
     struct Missing;
     impl Memory for Missing {
         fn copy(&self, _: usize, _: &mut [u8]) -> bool {
@@ -645,7 +610,6 @@ fn null_population_is_skipped_and_failed_reads_preserve_capacity() {
     setup(3, world.base());
     world.globals[0] = 0;
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
-    let prepare_failures = PREPARE_FAILURES.load(Ordering::Relaxed);
     let population_failures = POPULATION_READ_FAILURES.load(Ordering::Relaxed);
     prepare(&memory, world.base());
     assert_eq!(
@@ -657,11 +621,8 @@ fn null_population_is_skipped_and_failed_reads_preserve_capacity() {
         POPULATION_READ_FAILURES.load(Ordering::Relaxed),
         population_failures + 1
     );
-    assert_eq!(PREPARE_FAILURES.load(Ordering::Relaxed), prepare_failures);
-    assert_eq!(capacity(), 3);
-    assert_eq!(BIRTH_CAPACITY.load(Ordering::Acquire), 3);
-    assert_eq!(OFFERED_CAPACITY.load(Ordering::Acquire), 0);
-    assert!(!POISONED.load(Ordering::SeqCst));
+    assert_eq!(demand(), 0);
+    assert!(LOG.is_empty());
 }
 
 core::arch::global_asm!(
@@ -854,7 +815,7 @@ fn native_foreign_unwind_probe() {
         assert_eq!(active(), 0);
         assert!(store().try_lock().is_ok());
         assert_eq!(
-            drain(&mut [Entry::default(); 1]).unwrap_err(),
+            drain(&mut vec![Entry::default(); 1]).unwrap_err(),
             "naval result sources native writer unwound"
         );
         assert!(hook.set_enabled(false).unwrap());
@@ -875,8 +836,8 @@ fn constructor_shim_return_pc_and_callback_unwind_metadata() {
     let base = naval_constructor_test_return as *const () as usize - 0xc0dc19;
     setup(1, base);
     assert_eq!(unsafe { naval_constructor_test_caller(0x1234) }, 0x1234);
-    assert!(!POISONED.load(Ordering::SeqCst));
-    assert!(store().lock().unwrap().births.is_empty());
+    assert!(LOG.is_empty());
+    assert!(folded().births.is_empty());
     assert_eq!(active(), 0);
     use windows_sys::Win32::System::Diagnostics::Debug::RtlLookupFunctionEntry;
     for function in [

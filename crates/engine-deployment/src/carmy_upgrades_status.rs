@@ -42,36 +42,14 @@ impl Outcomes {
     }
 }
 
-/// Follows the same army-owned upgrade graph as CArmy's save serializer.
-/// The supplied division census must be complete; the caller rejects a failed
-/// or truncated parent census. Country active-request registries omit groups
-/// whose requests finished while deliveries remain and are never used here.
-/// Tables and capacity outcomes are independent; one invalid parent invalidates
-/// its dependent graph, while leaf read faults remain scoped to that table.
-pub fn walk(
-    memory: &impl Memory,
-    base: usize,
-    sources: &[crate::cequipment_variant_pool::DivisionSource],
-    groups: &mut [carmy_upgrades_requests::Row],
-    requests: &mut [army_upgrade_request_row::Row],
-    deliveries: &mut [cupgrade_delivery::Row],
-    produced: &mut [cupgrade_delivery::ProducedRow],
-) -> Outcomes {
-    walk_buffer(
-        memory,
-        base,
-        sources,
-        Buffer::Fixed(groups),
-        Buffer::Fixed(requests),
-        Buffer::Fixed(deliveries),
-        Buffer::Fixed(produced),
-    )
+pub fn count(memory: &impl Memory, base: usize, sources: &[crate::cequipment_variant_pool::DivisionSource]) -> Outcomes {
+    walk_buffer(memory, base, sources, Buffer::Count, Buffer::Count, Buffer::Count, Buffer::Count)
 }
 
 /// Worker graph capture follows request rows and delivery pointers; each
 /// delivery owns its produced pool. Grow each lane from the same acquired
 /// headers without retrying.
-pub fn walk_growing(
+pub fn walk(
     memory: &impl Memory,
     base: usize,
     sources: &[crate::cequipment_variant_pool::DivisionSource],
@@ -490,10 +468,10 @@ mod tests {
             base: 0,
             bytes: &bytes,
         };
-        let mut groups = [carmy_upgrades_requests::Row::default(); 4];
-        let mut requests = [army_upgrade_request_row::Row::default(); 4];
-        let mut deliveries = [cupgrade_delivery::Row::default(); 4];
-        let mut produced = [cupgrade_delivery::ProducedRow::default(); 4];
+        let mut groups = vec![carmy_upgrades_requests::Row::default(); 4];
+        let mut requests = vec![army_upgrade_request_row::Row::default(); 4];
+        let mut deliveries = vec![cupgrade_delivery::Row::default(); 4];
+        let mut produced = vec![cupgrade_delivery::ProducedRow::default(); 4];
         assert_eq!(
             walk(
                 &memory,
@@ -571,10 +549,10 @@ mod tests {
     #[test]
     fn nonprogress_status_never_reads_inactive_progress_and_field_faults_are_scoped() {
         let bytes = fixture();
-        let mut groups = [carmy_upgrades_requests::Row::default(); 1];
-        let mut requests = [army_upgrade_request_row::Row::default(); 2];
-        let mut deliveries = [cupgrade_delivery::Row::default(); 2];
-        let mut produced = [cupgrade_delivery::ProducedRow::default(); 2];
+        let mut groups = vec![carmy_upgrades_requests::Row::default(); 1];
+        let mut requests = vec![army_upgrade_request_row::Row::default(); 2];
+        let mut deliveries = vec![cupgrade_delivery::Row::default(); 2];
+        let mut produced = vec![cupgrade_delivery::ProducedRow::default(); 2];
         for (first, width, expected) in [
             (
                 EMPTY_DELIVERY + cupgrade_delivery::PROGRESS,
@@ -618,47 +596,17 @@ mod tests {
     }
 
     #[test]
-    fn each_capacity_counts_exact_omissions_without_reading_omitted_leaf_values() {
+    fn an_unreadable_request_fails_its_table() {
         let bytes = fixture();
         let memory = FaultMemory {
             bytes: &bytes,
             first: REQUESTS + army_upgrade_request_row::STRIDE,
             end: REQUESTS + 2 * army_upgrade_request_row::STRIDE,
         };
-        let mut groups = [];
-        let mut requests = [army_upgrade_request_row::Row::default(); 1];
-        let mut deliveries = [cupgrade_delivery::Row::default(); 1];
-        let mut produced = [cupgrade_delivery::ProducedRow::default(); 1];
-        assert_eq!(
-            walk(
-                &memory,
-                0,
-                &sources(),
-                &mut groups,
-                &mut requests,
-                &mut deliveries,
-                &mut produced
-            ),
-            Outcomes {
-                groups: Outcome::Truncated {
-                    len: 0,
-                    unread_rows: 1
-                },
-                requests: Outcome::Truncated {
-                    len: 1,
-                    unread_rows: 1
-                },
-                deliveries: Outcome::Truncated {
-                    len: 1,
-                    unread_rows: 1
-                },
-                produced: Outcome::Truncated {
-                    len: 1,
-                    unread_rows: 1
-                }
-            }
-        );
-        let mut requests = [army_upgrade_request_row::Row::default(); 2];
+        let mut groups = vec![];
+        let mut deliveries = vec![cupgrade_delivery::Row::default(); 1];
+        let mut produced = vec![cupgrade_delivery::ProducedRow::default(); 1];
+        let mut requests = vec![army_upgrade_request_row::Row::default(); 1];
         assert_eq!(
             walk(
                 &memory,
@@ -679,10 +627,10 @@ mod tests {
     #[test]
     fn bad_child_vector_is_scoped_but_invalid_parent_never_becomes_empty() {
         let mut bytes = fixture();
-        let mut groups = [carmy_upgrades_requests::Row::default(); 1];
-        let mut requests = [army_upgrade_request_row::Row::default(); 2];
-        let mut deliveries = [cupgrade_delivery::Row::default(); 2];
-        let mut produced = [cupgrade_delivery::ProducedRow::default(); 2];
+        let mut groups = vec![carmy_upgrades_requests::Row::default(); 1];
+        let mut requests = vec![army_upgrade_request_row::Row::default(); 2];
+        let mut deliveries = vec![cupgrade_delivery::Row::default(); 2];
+        let mut produced = vec![cupgrade_delivery::ProducedRow::default(); 2];
         put32(
             &mut bytes,
             GROUP + carmy_upgrades_requests::REQUESTS_CAPACITY,
@@ -740,10 +688,10 @@ mod tests {
             0,
             0,
         );
-        let mut groups = [carmy_upgrades_requests::Row::default(); 1];
-        let mut requests = [];
-        let mut deliveries = [cupgrade_delivery::Row::default(); 2];
-        let mut produced = [cupgrade_delivery::ProducedRow::default(); 2];
+        let mut groups = vec![carmy_upgrades_requests::Row::default(); 1];
+        let mut requests = vec![];
+        let mut deliveries = vec![cupgrade_delivery::Row::default(); 2];
+        let mut produced = vec![cupgrade_delivery::ProducedRow::default(); 2];
         let memory = FaultMemory {
             bytes: &bytes,
             first: STATUS,
@@ -827,10 +775,10 @@ mod tests {
     #[test]
     fn unreadable_or_null_owning_requests_pointer_is_not_an_empty_group() {
         let mut bytes = fixture();
-        let mut groups = [carmy_upgrades_requests::Row::default(); 1];
-        let mut requests = [];
-        let mut deliveries = [];
-        let mut produced = [];
+        let mut groups = vec![carmy_upgrades_requests::Row::default(); 1];
+        let mut requests = vec![];
+        let mut deliveries = vec![];
+        let mut produced = vec![];
         let memory = FaultMemory {
             bytes: &bytes,
             first: ARMY + carmy::REQUESTS,

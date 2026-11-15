@@ -192,6 +192,19 @@ fn alias_frame(hour: i32) -> DecodedFrame {
     replay_frame::frame::retire_absent(frame)
 }
 
+/// The frame a reader reads back of `frame`: each derived table and its read time as the
+/// recorder's writers held them at its hour (`held`), every other table the frame's own.
+fn read_back(mut frame: DecodedFrame, held: &DecodedFrame) -> DecodedFrame {
+    assert_eq!((frame.branch, frame.hour), (held.branch, held.hour));
+    for (index, view) in held.tables.iter().enumerate() {
+        if !view.is_not_selected() {
+            frame.tables[index] = view.clone();
+            frame.metrics.table_ns[index] = held.metrics.table_ns[index];
+        }
+    }
+    frame
+}
+
 fn canonical(frame: &DecodedFrame) -> Vec<u8> {
     let mut bytes = Vec::new();
     frame.encode_checkpoint(&mut bytes).unwrap();
@@ -204,14 +217,16 @@ fn endpoint_accepted_stream_matches_plain_frames_across_aliases_and_keyframes() 
     records.truncate(2);
     let mut encoder = FrameEncoder::new();
     let mut plain = FrameDecoder::new();
-    let mut expected = Vec::new();
+    let mut decoded = Vec::new();
     for frame in frames {
         let mut raw = encoder.encode(frame, records.len() % 24 == 2).unwrap();
         raw.metrics = raw.metrics.stored();
-        expected.push(canonical(plain.advance(&raw).unwrap()));
+        decoded.push(plain.advance(&raw).unwrap().clone());
         records.push(replay::spool::Record::Frame(raw));
     }
-    let replay = Replay::from_records(crate::test_fixtures::CAMPAIGN.into(), &[records]).unwrap();
+    let (replay, derived) = Replay::from_records_derived(crate::test_fixtures::CAMPAIGN.into(), &[records]).unwrap();
+    assert_eq!(derived.len(), decoded.len());
+    let expected: Vec<_> = decoded.into_iter().zip(&derived).map(|(frame, held)| canonical(&read_back(frame, held))).collect();
     let mut writer = EndpointWriter::for_tables(&TableId::ALL);
     let mut coarse = EndpointWriter::for_tables(&TableId::ALL);
     let mut previous = None;
@@ -223,7 +238,6 @@ fn endpoint_accepted_stream_matches_plain_frames_across_aliases_and_keyframes() 
         .visit_blocks(
             &blocks,
             &TableId::ALL,
-            None,
             |_, raw, frame| {
                 assert_eq!(canonical(frame), expected[count]);
                 writer.observe(raw, frame)?;

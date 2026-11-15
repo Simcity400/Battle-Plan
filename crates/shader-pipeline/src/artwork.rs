@@ -339,8 +339,8 @@ fn texture_key(image: &dds::Texture) -> [u8; 32] {
 
 impl Renderer {
     fn new() -> Result<Self, String> {
-        let instance =
-            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+        let lifecycle = crate::gpu::device_lifecycle();
+        let instance = crate::gpu::instance();
         let adapter = pollster::block_on(instance.request_adapter(&Default::default()))
             .map_err(|e| e.to_string())?;
         let limits = wgpu::Limits {
@@ -360,6 +360,7 @@ impl Renderer {
             ..Default::default()
         }))
         .map_err(|e| e.to_string())?;
+        drop(lifecycle);
         Ok(Self {
             arena: gpu::Arena::new(&device),
             device,

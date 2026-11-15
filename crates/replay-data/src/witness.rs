@@ -24,6 +24,13 @@ pub enum FailurePhase {
     Map,
     Status,
     Teardown,
+    Journal,
+    SpoolHelper,
+    History,
+    /// A thread that entered no collector phase.
+    Unphased,
+    /// A game thread running a collector event hook.
+    Hook,
 }
 
 impl FailurePhase {
@@ -40,12 +47,16 @@ impl FailurePhase {
             "map" => Self::Map,
             "status" => Self::Status,
             "teardown" => Self::Teardown,
+            "journal" => Self::Journal,
+            "spool-helper" => Self::SpoolHelper,
+            "history" => Self::History,
+            "hook" => Self::Hook,
             _ => return None,
         })
     }
 
     fn valid_byte(byte: u8) -> bool {
-        (Self::Bootstrap as u8..=Self::Teardown as u8).contains(&byte)
+        (Self::Bootstrap as u8..=Self::Hook as u8).contains(&byte)
     }
 }
 
@@ -720,7 +731,7 @@ mod tests {
     #[test]
     fn terminal_witness_rejects_unknown_failure_codes_even_with_valid_crc() {
         for (byte, unknown) in [
-            (11, FailurePhase::Teardown as u8 + 1),
+            (11, FailurePhase::Hook as u8 + 1),
             (12, FailureCode::Native as u8 + 1),
             (11, u8::MAX),
             (12, u8::MAX),
@@ -731,7 +742,7 @@ mod tests {
             unsupported[CHECKSUM_OFFSET..].copy_from_slice(&crc.to_le_bytes());
             assert!(TerminalWitness::decode(&unsupported).is_err());
         }
-        for phase in FailurePhase::Bootstrap as u8..=FailurePhase::Teardown as u8 {
+        for phase in FailurePhase::Bootstrap as u8..=FailurePhase::Hook as u8 {
             for code in FailureCode::Reserve as u8..=FailureCode::Native as u8 {
                 let witness = TerminalWitness {
                     phase,

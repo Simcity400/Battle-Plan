@@ -58,7 +58,7 @@ fn unit_scale_moving() {
         let mut census = Census::new();
         for _ in 0..3 {
             census.clear();
-            census.capture(&memory, world.base, world.state, shape.divisions);
+            census.capture(&memory, world.base, world.state);
             if census.overflowed {
                 census.grow();
             } else {
@@ -74,13 +74,7 @@ fn unit_scale_moving() {
             std::mem::size_of_val(intel.as_slice()),
             || {
                 assert_eq!(
-                    engine_visibility::unit_viewer_entry::walk_with_divisions(
-                        &memory,
-                        world.base,
-                        world.state,
-                        &mut intel,
-                        Some(census.intel_sources())
-                    ),
+                    engine_visibility::unit_viewer_entry::walk_with_divisions_buffer(&memory, world.base, world.state, engine_native::walk::Buffer::Growing(&mut intel), Some(census.intel_sources())),
                     Outcome::Rows {
                         len: shape.divisions * 3
                     }
@@ -106,8 +100,6 @@ fn unit_scale_moving() {
                     world.state,
                     inputs.seeds(),
                     inputs.outcome(),
-                    shape.divisions,
-                    shape.divisions,
                     &mut geometry,
                     &mut packet,
                 );
@@ -216,7 +208,7 @@ fn unit_scale_capture() {
         let mut census = Census::new();
         for _ in 0..3 {
             census.clear();
-            census.capture(&memory, world.base, world.state, shape.divisions);
+            census.capture(&memory, world.base, world.state);
             if census.overflowed {
                 census.grow();
             } else {
@@ -224,7 +216,7 @@ fn unit_scale_capture() {
             }
         }
         assert_eq!(
-            census.outcome(shape.divisions),
+            census.outcome(),
             Outcome::Rows {
                 len: shape.divisions
             }
@@ -250,9 +242,9 @@ fn unit_scale_capture() {
             census.allocated_bytes() as usize,
             || {
                 census.clear();
-                census.capture(&memory, world.base, world.state, shape.divisions);
+                census.capture(&memory, world.base, world.state);
                 assert_eq!(
-                    census.outcome(shape.divisions),
+                    census.outcome(),
                     Outcome::Rows {
                         len: shape.divisions
                     }
@@ -279,8 +271,6 @@ fn unit_scale_capture() {
                     world.state,
                     inputs.seeds(),
                     inputs.outcome(),
-                    shape.divisions,
-                    0,
                     &mut geometry,
                     &mut movement,
                 );
@@ -305,7 +295,6 @@ fn unit_scale_capture() {
                         world.state,
                         inputs.seeds(),
                         inputs.outcome(),
-                        shape.divisions
                     ),
                     Outcome::Rows {
                         len: shape.divisions
@@ -317,7 +306,7 @@ fn unit_scale_capture() {
         let limits = [shape.divisions * 3, shape.divisions, 0, 0, 0];
         details.ready_for(limits);
         details.grow(shape.divisions);
-        let (sources, outcome) = census.sources(shape.divisions);
+        let (sources, outcome) = census.sources();
         measure(
             "DivisionEquipmentAndUpgradeGroups",
             shape,
@@ -354,7 +343,6 @@ fn unit_scale_capture() {
             hour: 0,
             force_full: true,
             limits: [shape.wings, shape.wings, shape.wings],
-            naval_limit: shape.wings,
             game_score: false,
         };
         for _ in 0..4 {
@@ -439,7 +427,7 @@ fn division_input_parts_scale() {
         });
         let mut serial = Census::new_worker();
         let serial_memory = world.live();
-        serial.capture_inputs_growing(&serial_memory, world.base, world.state);
+        serial.capture_inputs(&serial_memory, world.base, world.state);
         let mut starts = [0; MAX_PARTS - 1];
         let split = serial.part_starts(&mut starts);
         let parts = split + 1;
@@ -463,7 +451,7 @@ fn division_input_parts_scale() {
             samples[samples.len() / 2]
         };
         let serial_ms = time(&mut || {
-            serial.capture_inputs_growing(&serial_memory, world.base, world.state);
+            serial.capture_inputs(&serial_memory, world.base, world.state);
         });
         let (base, state) = (world.base, world.state);
         let parted_ms = time(&mut || {

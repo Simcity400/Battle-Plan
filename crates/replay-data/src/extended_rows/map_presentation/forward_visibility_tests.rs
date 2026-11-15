@@ -263,8 +263,8 @@ fn forward_visibility_distinguishes_historical_missing_refused_and_present_skips
     assert_eq!(
         historical
             .forward_visibility
-            .require("CountryCounterInputs.forward_visibility"),
-        Err("CountryCounterInputs.forward_visibility not recorded".to_owned())
+            .require("forward visibility of country counter inputs"),
+        Err("forward visibility of country counter inputs not recorded".to_owned())
     );
     assert!(historical.encode_fields(&mut Vec::new()).is_err());
     assert!(historical.delta(None).is_err());

@@ -1,561 +1,380 @@
-import { type Failure, asFailure } from '../../dashboard/queryError.ts';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
 import type { ComponentType } from 'react';
-import FollowControl from '../drill/FollowControl';
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
-import DatedCountryChip from '../../dashboard/DatedCountryChip';
-import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
-import { countryIdentityIndex, overlayCountryIdentities } from '../../dashboard/countryIdentity';
-import WidgetState from '../../components/WidgetState';
 import CountryPicker from '../../components/CountryPicker';
+import DrillHost from '../drill/DrillHost';
+import { drillHour } from '../drill/drillState';
+import LiveText, { liveTexts } from '../LiveText';
+import ForcePartsBreakdown from './ForcePartsBreakdown';
+import type { PartsRaceDetailProps } from './ForcePartsBreakdown';
+import { CLOSED_PARTS_RACE, partsRaceDrillActors, reducePartsRaceDrill } from './partsRaceDrill';
+import { countryPartsSelection, pinCountryParts, pinNativeCountryParts, savedCountryPartsSelection } from './countryPartsDrillData';
+import WidgetState from '../../components/WidgetState';
 import type { IconName } from '../../components/Icons';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { partsRaceAt, partsRaceLineRuns, partsRaceMixBands, partsRaceModel, partsRacePartName, partsRaceEntries, partsRaceSegmentAt,
-  partsRaceTooltips, formatPartsRaceValue, hasPartsRaceValues, rankPartsRace } from '../../dashboard/partsRace.ts';
-import { countryMatchFilter, isMember, MEMBERSHIP_PREPARING, projectResolvedCountries, noMembersAt, rankedCandidates, resolveCountries } from '../../dashboard/groups';
-import NoMembersState from '../../dashboard/NoMembersState';
-import { groupNumbers } from '../../dashboard/groupsReply';
-import { NumericReply } from '../../dashboard/numericReply';
-import type { CountryGroupReply } from '../../generated/dashboard';
+import { isMember, rankedCandidates, resolveCountries } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import type { OptionField, OptionValue } from '../../dashboard/options';
-import { usePlaybackHour } from '../../dashboard/playback';
-import { loadProduct, useFollowedProduct, useProduct } from '../../dashboard/products';
-import { countryPageJoin, registerPageJoin } from '../../dashboard/pageJoins';
-import { useHeldFailure } from '../../dashboard/heldFailures';
-import { useContentRevision } from '../../dashboard/contentRevision';
-import { useViewRead } from '../../dashboard/viewRead';
+import { useProduct } from '../../dashboard/products';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
+import { followStore } from '../../dashboard/follow/connection.ts';
+import { CELL, cellState, rowName } from '../../dashboard/follow/message.ts';
+import type { FollowedAnswer } from '../../dashboard/follow/message';
+import { followsHead, useFollow } from '../../dashboard/follow/useFollow.ts';
+import { canonical } from '../../dashboard/follow/store.ts';
+import { stickyLimit, stickyMembers } from '../../dashboard/follow/stickyMembers.ts';
+import type { StickyMembers } from '../../dashboard/follow/stickyMembers';
+import { useTiles } from '../../dashboard/tiles/useTiles';
+import { unrecordedReason } from '../../dashboard/tiles/view.ts';
+import { loadProduct } from '../../dashboard/products';
+import { chartSummaryLines, scaleSummary } from '../chartSummary';
+import type { ChartSummary } from '../chartSummary';
+import { partsRaceAt, partsRaceEntries, partsRaceLineRuns, partsRaceMixBands, partsRaceModel, partsRacePartName,
+  partsRaceSegmentAt, partsRaceTooltips, formatPartsRaceValue, partsRaceAllZero, rankPartsRace } from '../../dashboard/partsRace.ts';
+import { useFrameWindows } from '../../widgets/army-size/frameWindows.ts';
+import { pausedKey, useHeadHour } from '../../widgets/army-size/headHour.ts';
+import { liveArmy } from '../../widgets/army-size/liveArmy.ts';
+import type { LiveArmy } from '../../widgets/army-size/liveArmy';
 import { dayLabel } from '../draw';
-import DrillHost from '../drill/DrillHost';
-import DrillParts from '../drill/DrillParts';
 import type { Span } from '../series';
-import { clipToSpans, runIndexAt } from '../series';
 import { CHART_LAYOUT } from '../tokens';
 import CountryRaceView from './CountryRaceView';
-import type { CountryRaceViewProps } from './CountryRaceView';
-import { partColours } from './countryRace';
 import { linesTooltip } from './lines';
 import { mixCountry } from './options';
 import type { RaceView } from './options';
-import { CLOSED_PARTS_RACE, nativePartsRaceNumbers, partsRaceDrillActors, partsRaceDrillData, reducePartsRaceDrill, UNATTRIBUTED_PART } from './partsRaceDrill';
-import type { NativePartsRaceReply } from './partsRaceDrill';
-import { bindCountryParts, countryPartsSelection, pinNativeCountryParts, savedCountryPartsSelection } from './countryPartsDrillData';
-import { useChartTokens } from '../useChartTokens';
-import { preparedSeriesQuery } from '../../dashboard/preparedSeries';
-import { useParityRows } from '../../dashboard/parityRows';
-import { useParityPreparation } from '../../dashboard/parityPreparation';
-import { summaryShareRuns } from '../share';
-import { chartSummaryLines, summaryStack } from '../chartSummary';
-import type { ChartSummary } from '../chartSummary';
+import { followedForceEntries, forceRaceEmpty, forceWindows, joinForceWindows, validateForceReply } from './forceRace.ts';
+import type { ForceParams } from './forceRace';
 import type { TimeChartProps } from '../TimeChart';
-import type { DashboardClient, ProductRequest } from '../../dashboard/client';
-import type { BoundTrack } from '../../dashboard/model';
+import type { ForceSizeReply, MissingSpan } from '../../generated/dashboard';
+import { useShownEachFrame } from '../../dashboard/widgetPerf';
+import { trackHourOf } from '../../dashboard/settledHour';
 
-export interface PartsRaceDetailProps { client: DashboardClient; track: BoundTrack; tag: string; hour: number; active: boolean }
-
+/** What one force race supplies: its product and request, its declared totals for lines, and its words. */
 export interface PartsRaceViewConfig {
-  details?: ComponentType<PartsRaceDetailProps>;
   product: string; title: string; subject: string; icon: IconName;
+  /** Shown under one country's breakdown (the navy's standing orders). */
+  details?: ComponentType<PartsRaceDetailProps>;
   options: readonly OptionField[];
-  request: (branchId: string, countries: { tags: readonly string[]; top?: number }, options: Readonly<Record<string, OptionValue>>) => unknown;
-  validate: (data: unknown) => NativePartsRaceReply;
+  request: (branchId: string, countries: { tags: readonly string[]; top?: number }, options: Readonly<Record<string, OptionValue>>) => ForceParams;
+  /** The declared totals series a line of chosen countries is drawn from, and its raw decimals; without one, lines
+   * are drawn from the windows the view covers. */
+  totals?: (options: Readonly<Record<string, OptionValue>>) => { kind: string; measure: string; decimals: number };
+  /** Every run carries a reference total (the navy's maximum hull HP). */
+  referenced?: boolean;
   measure: (options: Readonly<Record<string, OptionValue>>) => string;
   ownership: (options: Readonly<Record<string, OptionValue>>) => string;
   partsLabel: (options: Readonly<Record<string, OptionValue>>) => string;
-  resetKey: (options: Readonly<Record<string, OptionValue>>) => readonly OptionValue[];
   chartOptions?: (options: Readonly<Record<string, OptionValue>>) => Readonly<Record<string, OptionValue>>;
   zeroMix: (options: Readonly<Record<string, OptionValue>>) => string;
+  /** A tally (losses): its top N ranks only countries above zero, and says so when every known one holds none. */
+  positiveTop?: boolean;
   formatValue?: (value: number, options: Readonly<Record<string, OptionValue>>) => string;
   formatTick?: (options: Readonly<Record<string, OptionValue>>) => ((value: number, ticks: readonly number[]) => string) | undefined;
   referenceLabel?: (options: Readonly<Record<string, OptionValue>>) => string | undefined;
   note?: (options: Readonly<Record<string, OptionValue>>) => string;
 }
+
 const NO_WARNINGS: string[] = [];
 
-/** Shared parts-race playback and group handling; CountryRaceView owns presentation. */
+/** The rows of a followed answer holding a value, by name, whatever their order: a row came or went. */
+function followedRows(answer: FollowedAnswer | undefined): string {
+  if (!answer || answer.kind === 'notRecorded') return answer?.kind ?? '';
+  const names: string[] = [];
+  for (let row = 0; row < answer.rows; row++) if (cellState(answer, row * answer.columns) === CELL.value) names.push(rowName(answer, row) ?? String(row));
+  return names.sort().join(',');
+}
+
+/** The lines of a force race over the chart's view: a chosen set of countries from its declared totals' tiles, a
+ * ranked view from the race's ranked summary, one read at a time as the view moves. Values are raw, as the window
+ * replies hold them. */
+function useRaceLines(config: PartsRaceViewConfig, options: Readonly<Record<string, OptionValue>>, runtime: WidgetProps['runtime'],
+  track: ReturnType<WidgetProps['runtime']['tracks']['find']>, params: ForceParams | null, active: boolean) {
+  const totals = config.totals?.(options) ?? null;
+  const ranked = params?.top != null;
+  const tiles = useTiles(runtime.client, track && params && totals && !ranked ? { source: track.source, branchId: params.branchId,
+    family: { kind: totals.kind, measure: totals.measure }, tags: params.tags, lastHour: track.branch.lastHour } : null, active);
+  const [view, setView] = useState<{ key: string; from: number; to: number; width: number }>();
+  const [ranking, setRanking] = useState<{ key: string; lines: Map<string, ChartSummary>; unrecorded: string | null }>();
+  const key = JSON.stringify([track?.source.id, track?.source.revision, params, totals]);
+  const factor = 10 ** (totals?.decimals ?? 0);
+  const onSummaryView = useCallback<NonNullable<TimeChartProps['onSummaryView']>>(next => {
+    if (next.to < next.from || !totals) return;
+    if (!ranked) { tiles.onView(next); return; }
+    setView(before => before?.key === key && before.from === next.from && before.to === next.to && before.width === next.width ? before
+      : { key, from: next.from, to: next.to, width: next.width });
+  }, [key, ranked, tiles.onView]); // eslint-disable-line react-hooks/exhaustive-deps
+  const viewKey = view?.key === key ? JSON.stringify([view.from, view.to, view.width]) : null;
+  const latest = useRef({ view, params, track }); latest.current = { view, params, track };
+  useEffect(() => {
+    const { view: shown, params: asked, track: bound } = latest.current;
+    if (!active || !ranked || !totals || !bound || !asked || !shown || !viewKey) return;
+    const controller = new AbortController();
+    const { branchId, top } = asked;
+    void loadProduct(runtime.client, { sourceId: bound.source.id, revision: bound.source.revision, product: 'series-summary',
+      params: { branchId, family: { kind: totals.kind, measure: totals.measure }, top, from: shown.from, to: shown.to, width: shown.width } },
+    controller.signal, value => {
+      const lines = chartSummaryLines<{ tag: string; summary: ChartSummary; missing: MissingSpan[] }>((value as { lines?: unknown } | null)?.lines,
+        line => typeof line.tag === 'string' && Array.isArray(line.missing));
+      if (!lines) throw Error('The force summary is malformed.');
+      return lines;
+    }, bound.source).then(found => { if (!controller.signal.aborted) setRanking({ key, lines: new Map(found.map(line => [line.tag, scaleSummary(line.summary, factor)])), unrecorded: unrecordedReason(found) }); }, () => {});
+    return () => controller.abort();
+  }, [active, ranked, key, viewKey, factor, runtime.client, totals?.kind, totals?.measure]);
+  const summaries = useMemo(() => ranked ? ranking?.key === key ? ranking.lines : new Map<string, ChartSummary>()
+    : new Map([...(tiles.lines?.values() ?? [])].map(line => [line.tag, scaleSummary(line.summary, factor)])), [ranked, ranking, key, tiles.lines, factor]);
+  const unrecorded = ranked ? ranking?.key === key ? ranking.unrecorded : null : tiles.unrecorded;
+  return { summaries, onSummaryView, error: ranked ? null : tiles.error, unrecorded };
+}
+
+/** One force race (air force, navy): the race at the moment, lines over time and one country's parts as a mix. Every
+ * number comes from the race's windows (a block of a run each, asked from the frame as the moment moves), or at the
+ * head from the followed totals; a total not recorded is a gap and a split not known is drawn hatched. */
 export default function PartsRaceView({ widget, runtime, active, countrySlot = null, onDiagnostics, config }: WidgetProps & { config: PartsRaceViewConfig }) {
-  const Details = config.details;
   const options = useMemo(() => resolveOptions(config.options, widget.options), [config.options, widget.options]);
-  const chartOptions = useMemo(() => config.chartOptions?.(options) ?? options, [config.chartOptions, options]);
-  const view = options.view as RaceView;
+  const chartOptions = useMemo(() => config.chartOptions?.(options) ?? options, [config, options]);
+  const pinned = options.show === 'breakdown';
+  const view = (pinned ? 'mix' : options.view ?? 'race') as RaceView;
+  const split = options.split === true;
+  const formatValue = useCallback((value: number) => config.formatValue?.(value, options) ?? formatPartsRaceValue(value), [config, options]);
+  const liveRef = useRef<LiveArmy | null>(null);
+  const missingKey = useRef<(hour: number) => string>(() => '');
+  // A followed race renders for the countries it has ranked since it was asked (`rowsShape`), never as a country enters or
+  // leaves its top among them (run 13: Naval losses 36 commits at 1,440 h/s, one a slot as its top churned).
+  const followedAnswer = useRef<(() => string) | null>(null);
+  const playbackHour = useHeadHour(runtime.clock, active && widget.time.mode === 'follow', hour =>
+    pausedKey(view === 'race' ? followedAnswer.current?.() ?? liveRef.current?.structure() ?? missingKey.current(hour) : missingKey.current(hour), hour,
+      runtime.clock.getSnapshot().playing));
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtime.tracks, runtime.clock.getHour()) : null);
   const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const following = widget.time.mode === 'follow' || widget.time.mode === 'pin';
   const playhead = window && following ? window.lastHour : null;
+  const axisOffset = track?.axisOffset ?? 0;
   const extent: [number, number] = track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour]
     : [track.branch.firstHour, track.branch.lastHour]) : [0, 1];
-  const [firstHour, lastExtentHour] = extent;
   const moment = Math.floor(playhead ?? extent[1]);
+  const headAt = (hour: number) => {
+    const at = track && resolveWindow(widget, track, runtime.tracks, hour);
+    return at && following ? at.lastHour : null;
+  };
+  const momentAt = (hour: number) => Math.floor(headAt(hour) ?? extent[1]);
   const lastHour = track?.branch.lastHour ?? 0;
   const grouped = widget.countries.kind === 'group' && widget.countries.group.type !== 'top';
-  const stores = useMemo(() => ({ main: new NumericReply<NativePartsRaceReply>(), drill: new NumericReply<NativePartsRaceReply>(),
-    mainLabels: new NumericReply<Pick<NativePartsRaceReply, 'parts' | 'warnings'>>(), drillLabels: new NumericReply<Pick<NativePartsRaceReply, 'parts' | 'warnings'>>(),
-    groups: new NumericReply<CountryGroupReply>(), groupWarnings: new NumericReply<string[]>() }), [runtime.client]);
-  const sourceScope = JSON.stringify([track?.source.id, track?.branch.id]);
-  const incomingGroups = useCountryGroups(runtime, track, active && grouped);
-  const groupData = stores.groups.update(sourceScope, incomingGroups.data, groupNumbers);
-  const groupWarnings = stores.groupWarnings.update(sourceScope, incomingGroups.data?.warnings, reply => reply);
-  const groupReply = { ...incomingGroups, data: groupData };
+  const groups = useCountryGroups(runtime, track, active && grouped);
   const fallback = defaultCountryTag(track);
-  const resolved = useMemo(() => resolveCountries(widget.countries, fallback ? [fallback] : [], groupReply.data, lastHour, Number.MAX_SAFE_INTEGER),
-    [widget.countries, fallback, groupReply.data, lastHour]);
-  const request = track && (resolved.top || resolved.tags.length) ? { sourceId: track.source.id, revision: track.source.revision,
-    product: config.product, params: config.request(track.branch.id, resolved, options) } : null;
-  const prepared = usePreparedRace(runtime.client, track, request, moment, active, config.validate, mergePreparedParts, preparedPartsGeometry, view !== 'race', resolved.membership ?? undefined, view === 'mix');
-  const incoming = prepared;
-  const requestScope = JSON.stringify([sourceScope, config.product, request?.params]);
-  const numbers = stores.main.update(requestScope, incoming.data, nativePartsRaceNumbers);
-  const decorations = useMemo(() => incoming.data ? { parts: incoming.data.parts, warnings: incoming.data.warnings } : undefined, [incoming.data]);
-  const labels = stores.mainLabels.update(requestScope, decorations, reply => reply);
-  const data = useMemo(() => numbers ? { ...numbers, ...labels } : undefined, [numbers, labels]);
-  const { error, retry } = incoming;
-  const numericModel = useMemo(() => numbers ? partsRaceModel(numbers) : null, [numbers]);
-  const model = useMemo(() => numericModel && data ? { ...numericModel, reply: data } : null, [numericModel, data]);
-  const identities = useMemo(() => numbers ? countryIdentityIndex(numbers.series) : null, [numbers]);
-  const drawing = useMemo(() => resolved.top != null ? resolved : projectResolvedCountries(resolved,
-    countryMatchFilter(widget.countries, fallback ? [fallback] : [], groupData, lastHour, identities, track?.branch.firstHour)),
-    [resolved, widget.countries, fallback, groupData, lastHour, identities, track?.branch.firstHour]);
-  const [storedDrill, dispatchDrill] = useReducer(reducePartsRaceDrill, CLOSED_PARTS_RACE);
-  const pinned = options.show === 'breakdown';
-  const resetKey = JSON.stringify([track?.source.id, track?.branch.id, config.product, config.resetKey(options), widget.countries,
-    track?.source.metadata.campaignKey, widget.options?.holder, widget.options?.drillOriginHour]);
-  const contextOwner = useMemo(() => ({ client: runtime.client, resetKey, pinned }), [runtime.client, resetKey, pinned]);
-  const drill = storedDrill.owner === contextOwner ? storedDrill : CLOSED_PARTS_RACE;
-  const drillPlaybackHour = usePlaybackHour(runtime.clock, active && (widget.time.mode === 'follow' || drill.breakdown != null && drill.follow));
-  const clockHour = track ? Math.floor(drillPlaybackHour) + track.axisOffset : null;
-  const liveHour = clockHour != null && track && clockHour >= track.branch.firstHour && clockHour <= track.branch.lastHour ? clockHour : null;
-  const drillAnchor = useRef<HTMLDivElement>(null);
-  const tokens = useChartTokens();
-  useEffect(() => dispatchDrill({ type: 'close' }), [resetKey, options.show, runtime.client]);
-  const available = useMemo(() => numericModel ? hasPartsRaceValues(numericModel) : false, [numericModel]);
-  const slots = drawing.top ?? Math.max(1, drawing.tags.length);
-  const membershipOf = useCallback((tag: string): readonly Span[] | null =>
-    numericModel?.series.get(tag)?.series.membership ?? drawing.membership?.get(tag) ?? null, [numericModel, drawing.membership]);
-  const cutTo = useCallback((tag: string): readonly Span[] | null => drawing.membership?.get(tag) ?? null, [drawing.membership]);
-  const ranked = useMemo(() => numericModel ? rankPartsRace(numericModel, rankedCandidates(drawing, moment, numericModel.tags), moment, slots) : [],
-    [numericModel, drawing, moment, slots]);
-  const lineTags = useMemo(() => prepared.dense && !grouped ? [...new Set([...(numericModel?.tags ?? []), ...prepared.summaries.keys()])]
-    : drawing.top != null ? numericModel?.tags ?? [] : drawing.tags, [drawing, numericModel, prepared.dense, prepared.summaries]);
-  const mixTag = mixCountry(widget.countries, fallback, ranked);
-  const candidateOriginTag = pinned ? widget.countries.kind === 'tags' ? widget.countries.tags[0] ?? null : mixTag : drill.breakdown;
-  const restored = useMemo(() => savedCountryPartsSelection(widget, track),
-    [contextOwner, track?.branch.firstHour, track?.branch.lastHour]); // eslint-disable-line react-hooks/exhaustive-deps
-  const initialOrigin = useMemo(() => ({ hour: typeof widget.options?.drillOriginHour === 'number' ? widget.options.drillOriginHour : moment,
-    selection: undefined as ReturnType<typeof countryPartsSelection> | undefined }), [contextOwner]); // eslint-disable-line react-hooks/exhaustive-deps
-  const originTag = pinned ? restored?.tag ?? initialOrigin.selection?.tag ?? candidateOriginTag : candidateOriginTag;
-  const drillFollowing = drill.breakdown != null ? drill.follow : pinned && widget.time.mode === 'follow';
-  const missingPinnedDate = pinned && drill.breakdown == null && (widget.time.mode === 'pin' || widget.time.mode === 'range') && !window;
-  const drillAt = Math.floor(drill.choices ? drill.hour ?? moment : drillFollowing ? liveHour ?? clockHour ?? moment : drill.hour ?? moment);
-  // A country's drill follows its census even after it leaves the race's top N.
-  const drillRequest = track && originTag ? { sourceId: track.source.id, revision: track.source.revision,
-    product: config.product, params: config.request(track.branch.id, { tags: [originTag] }, options) } : null;
-  const preparedDrill = usePreparedRace(runtime.client, track, drillRequest, drillAt, active, config.validate, mergePreparedParts, preparedPartsGeometry, true, undefined, true);
-  const incomingDrill = preparedDrill;
-  const drillScope = JSON.stringify([sourceScope, config.product, drillRequest?.params]);
-  const independentNumbers = stores.drill.update(drillScope, incomingDrill.data, nativePartsRaceNumbers);
-  const drillDecorations = useMemo(() => incomingDrill.data ? { parts: incomingDrill.data.parts, warnings: incomingDrill.data.warnings } : undefined, [incomingDrill.data]);
-  const drillLabels = stores.drillLabels.update(drillScope, drillDecorations, reply => reply);
-  const independentData = useMemo(() => independentNumbers ? { ...independentNumbers, ...drillLabels } : undefined, [independentNumbers, drillLabels]);
-  const drillNumbers = independentNumbers;
-  const drillData = independentData;
-  const drillReply = { ...incomingDrill, data: independentData };
-  const drillNumericModel = useMemo(() => drillNumbers ? partsRaceModel(drillNumbers) : null, [drillNumbers]);
-  const drillModel = useMemo(() => drillNumericModel && drillData ? { ...drillNumericModel, reply: drillData } : null, [drillNumericModel, drillData]);
-  if (pinned && !missingPinnedDate && initialOrigin.selection === undefined && drillNumbers && originTag) {
-    initialOrigin.selection = countryPartsSelection(drillNumbers.series, originTag, initialOrigin.hour);
-  }
-  const selection = pinned ? restored === undefined ? initialOrigin.selection : restored : drill.selection;
-  const shownTags = view === 'race' ? ranked.map(entry => entry.tag) : view === 'lines' ? lineTags : mixTag ? [mixTag] : [];
-  useParityRows(drillAnchor, () => {
-    const rows = (prepared.parity?.data?.series ?? []).flatMap(series => series.runs.map(run => ({ tag: series.tag, run,
-      identities: series.identities, membership: series.membership })));
-    return { kind: 'chart', label: `${config.title} exact values`, complete: !!prepared.parity?.complete,
-      total: rows.length, rows, parts: prepared.parity?.data?.parts, warnings: prepared.parity?.data?.warnings };
-  }, { prepare: prepared.parity?.prepare, ready: () => !!prepared.parity?.complete, error: () => prepared.error ?? null });
-  useEffect(() => {
-    const warnings = [...(data?.warnings ?? []), ...(groupWarnings ?? []), ...(drillReply.data?.warnings ?? [])];
-    onDiagnostics(warnings.length ? warnings : NO_WARNINGS);
-    return () => onDiagnostics(NO_WARNINGS);
-  }, [data, groupWarnings, drillReply.data, onDiagnostics]);
-
-  const split = options.split === true;
-  const range = useMemo(() => ({ firstHour, lastHour: lastExtentHour }), [firstHour, lastExtentHour]);
-  const lines = useMemo(() => !numericModel || view !== 'lines' ? [] : lineTags.flatMap(tag => {
-    const runs = partsRaceLineRuns(numericModel, tag, cutTo(tag), range);
-    return runs.length || prepared.summaries.has(tag) ? [{ tag, runs }] : [];
-  }), [numericModel, view, lineTags, cutTo, range, prepared.summaries]);
-  const segmentAt = useCallback((tag: string, hour: number) => partsRaceSegmentAt(numericModel, tag, hour), [numericModel]);
-  const parts = useMemo(() => (model?.reply.parts ?? []).map(part => ({ id: part.key, label: partsRacePartName(part) })), [model]);
-  const formatValue = useCallback((value: number) => config.formatValue?.(value, options) ?? formatPartsRaceValue(value), [config.formatValue, options]);
-  const entries = useMemo(() => model ? partsRaceEntries(model, ranked, split, formatValue).map(entry => ({ ...entry,
-    entityKey: identities?.keyAt(entry.tag, moment) ?? JSON.stringify(['unknown', entry.tag]), hour: moment })) : [],
-    [model, ranked, split, formatValue, identities, moment]);
-  const mixCut = mixTag ? cutTo(mixTag) : null;
-  const mixMembership = mixTag ? membershipOf(mixTag) : null;
-  const geometry = useMemo(() => prepared.geometry ? partsRaceModel(prepared.geometry) : numericModel, [prepared.geometry, numericModel]);
-  const bands = useMemo(() => geometry && view === 'mix' && mixTag ? partsRaceMixBands(geometry, mixTag, mixCut, range) : null,
-    [geometry, view, mixTag, mixCut, range]);
-  const drillParts = useMemo(() => [...(drillModel?.reply.parts ?? []).map(part => ({ id: part.key, label: partsRacePartName(part) })),
-    UNATTRIBUTED_PART], [drillModel]);
-  const detailExtent = useMemo<[number, number]>(() => track ? [track.branch.firstHour, track.branch.lastHour] : [0, 1],
-    [track?.branch.firstHour, track?.branch.lastHour]); // eslint-disable-line react-hooks/exhaustive-deps
-  const detailRange = useMemo(() => ({ firstHour: detailExtent[0], lastHour: detailExtent[1] }), [detailExtent]);
-  const nativeDetail = useMemo(() => drillModel && drillNumbers ? partsRaceDrillData(drillModel, drillNumbers.series, () => null) : null,
-    [drillModel, drillNumbers]);
-  const binding = useMemo(() => nativeDetail && originTag ? bindCountryParts(nativeDetail, originTag,
-    selection?.hour ?? initialOrigin.hour, selection?.key ?? null) : null, [nativeDetail, originTag, selection, initialOrigin]);
-  const drillTag = missingPinnedDate ? null : binding?.tagAt(drillAt) ?? null;
-  const drillGeometry = useMemo(() => preparedDrill.geometry ? partsRaceModel(preparedDrill.geometry) : null, [preparedDrill.geometry]);
-  // The drawn history keeps the exact path's Other band and its native holder's aliases.
-  const geometryBinding = useMemo(() => drillGeometry && drillNumbers && originTag ? bindCountryParts(partsRaceDrillData(drillGeometry, drillNumbers.series, () => null),
-    originTag, selection?.hour ?? initialOrigin.hour, selection?.key ?? null) : null, [drillGeometry, drillNumbers, originTag, selection, initialOrigin]);
-  const drillBands = useMemo(() => originTag ? (geometryBinding ?? binding)?.data.bands(originTag, detailRange) ?? null : null,
-    [geometryBinding, binding, originTag, detailRange]);
-  const colours = useMemo(() => partColours(drillParts, tokens.categories), [drillParts, tokens.categories]);
-  const drillValue = drillModel && drillTag ? partsRaceAt(drillModel, drillTag, drillAt) : null;
-  const remainder = drillValue?.total == null ? null : drillValue.total - drillValue.values.reduce<number>((sum, value) => sum + (value ?? 0), 0);
-  const headerReason = !active ? 'The breakdown is inactive.' : missingPinnedDate ? 'The chosen moment is unavailable.' : pinned && restored === undefined
-    && (Object.hasOwn(widget.options ?? {}, 'drillOriginHour') || widget.time.mode !== 'campaign')
-    ? 'Saved country unavailable.' : !selection ? 'Saved country unavailable.'
-      : !drillTag ? 'Country unavailable at this time.' : null;
-  const headerWanted = useMemo(() => pinned && countrySlot && headerReason === null && drillTag ? [{ tag: drillTag, hour: drillAt }] : [],
-    [pinned, countrySlot, headerReason, drillTag, drillAt]);
-  const headerLabels = useCountryLabelsAt(runtime.client, track, headerWanted, active && pinned && !!countrySlot);
-  const header = pinned && countrySlot && createPortal(<DatedCountryChip label={headerReason === null && drillTag
-    ? headerLabels.labelAt(drillAt)(drillTag) : null} hour={missingPinnedDate ? null : drillAt} reason={headerReason} />, countrySlot);
+  const resolved = useMemo(() => resolveCountries(widget.countries, fallback ? [fallback] : [], groups.data, lastHour, Number.MAX_SAFE_INTEGER),
+    [widget.countries, fallback, groups.data, lastHour]);
+  const params = track && (resolved.top || resolved.tags.length) ? config.request(track.branch.id, resolved, options) : null;
+  const validate = useCallback((value: unknown) => validateForceReply(value, config.referenced), [config.referenced]);
+  const manifest = useProduct<ForceSizeReply>(runtime.client, track && params ? { sourceId: track.source.id, revision: track.source.revision,
+    product: config.product, params: { ...params, window: null } } : null, active, validate, track?.source);
+  const identity = track && params && manifest.data ? JSON.stringify([track.source.id, track.source.revision, config.product, params]) : null;
+  const viewport = useRef<{ key: string; range: Span } | null>(null);
+  const viewportKey = JSON.stringify([identity, view, extent, options.playback, options.windowDays, options.afterPlayhead]);
+  // A followed race paints its pushed totals: its windows feed only a tooltip's parts, so they are asked for the hour a
+  // tooltip points at, never as the head moves.
+  const followedRace = useRef(false);
+  const tipHour = useRef<number | null>(null);
+  const windowsAt = (hour: number) => {
+    if (followedRace.current) {
+      const tip = tipHour.current;
+      return tip === null ? [] : forceWindows(manifest.data?.windows ?? [], { firstHour: tip, lastHour: tip }, tip, false);
+    }
+    const at = momentAt(hour);
+    const seen = view !== 'race' && viewport.current?.key === viewportKey ? viewport.current.range : { firstHour: at, lastHour: at };
+    return forceWindows(manifest.data?.windows ?? [], seen, at, following && view === 'race');
+  };
+  const subscribeClock = useMemo(() => (changed: () => void) => {
+    const stops = [runtime.clock.subscribeFrame(changed), runtime.clock.subscribe(changed)];
+    return () => { for (const stop of stops) stop(); };
+  }, [runtime.clock]);
+  const history = useFrameWindows<ForceSizeReply>(runtime.client, identity, index => ({ sourceId: track!.source.id, revision: track!.source.revision,
+    product: config.product, params: { ...params!, window: index } }), () => windowsAt(runtime.clock.getHour()), subscribeClock, active && identity !== null,
+  validate, track?.source);
+  missingKey.current = hour => windowsAt(hour).filter(index => !history.holds(index)).join(',');
+  const onViewChange = useCallback((x: readonly [number, number]) => {
+    viewport.current = { key: viewportKey, range: { firstHour: Math.floor(x[0]), lastHour: Math.ceil(x[1]) } };
+    history.check();
+  }, [viewportKey, history]);
+  const reply = useMemo(() => manifest.data ? joinForceWindows(manifest.data, history.data) : undefined, [manifest.data, history.data]);
+  const model = useMemo(() => reply ? partsRaceModel(reply) : null, [reply]);
+  const slots = resolved.top ?? Math.max(1, resolved.tags.length);
+  const chosen = widget.countries.kind === 'tags' || widget.countries.kind === 'selected';
+  const candidates = (hour: number) => model ? chosen ? model.tags : rankedCandidates(resolved, hour, model.tags) : [];
+  const positive = config.positiveTop === true && resolved.top != null;
+  const rank = (hour: number) => model ? rankPartsRace(model, candidates(hour), hour, slots, positive) : [];
+  const ranked = useMemo(() => rank(moment), [model, resolved, moment, slots, positive]); // eslint-disable-line react-hooks/exhaustive-deps
+  const entries = useMemo(() => model ? partsRaceEntries(model, ranked, split, formatValue) : [], [model, ranked, split, formatValue]);
+  // The race at the head is followed (totals only): pushed each step and painted, never asked because the hour moved.
+  const liveRaceView = active && widget.time.mode === 'follow' && view === 'race';
+  const [rootElement, setRoot] = useState<HTMLDivElement | null>(null);
+  const anchor = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => { if (anchor.current !== rootElement) setRoot(anchor.current); });
+  const root = useMemo(() => ({ current: rootElement }), [rootElement]);
+  const store = useMemo(() => track ? followStore(runtime.client, track.source, runtime.clock, track.axisOffset) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]); // eslint-disable-line react-hooks/exhaustive-deps
+  const followQuery = useMemo(() => liveRaceView && params && !split ? { product: config.product, params } : null,
+    [liveRaceView, JSON.stringify(params), split, config.product]); // eslint-disable-line react-hooks/exhaustive-deps
+  // A followed top renders for every country it has ranked since it was asked, never as it reorders or a country it
+  // held comes back: the race paints its entries from the answer each frame.
+  const sticky = useRef<StickyMembers | null>(null);
+  const followKey = followQuery ? canonical(followQuery) : '';
+  const top = resolved.top ?? null;
+  const rowsShape = useCallback((answer: FollowedAnswer | undefined) => {
+    if (top == null || !answer || answer.kind === 'notRecorded') return followedRows(answer);
+    const names: string[] = [];
+    for (let row = 0; row < answer.rows; row++) if (cellState(answer, row * answer.columns) === CELL.value) names.push(rowName(answer, row) ?? String(row));
+    sticky.current = stickyMembers(sticky.current, followKey, names, stickyLimit(top));
+    return sticky.current.tags.join(',');
+  }, [top, followKey]);
+  const followed = useFollow(store, followQuery, root, () => liveRef.current?.wake(), rowsShape);
+  const followedHead = followsHead(followed) && followed.entry !== null;
+  followedRace.current = followedHead && view === 'race';
+  const followedNow = followedRace.current ? followed.entry : null;
+  followedAnswer.current = followedNow ? () => rowsShape(followedNow.answer) : null;
+  const live = useMemo(() => {
+    if (!liveRaceView) return null;
+    if (followedHead && followed.entry) {
+      const entry = followed.entry;
+      return liveArmy(runtime.clock, axisOffset, hour => followedForceEntries(entry.answer, resolved.top != null ? null : resolved.tags, resolved, hour, slots, formatValue),
+        () => entry.version, undefined, resolved.membership != null);
+    }
+    return model ? liveArmy(runtime.clock, axisOffset, hour => partsRaceEntries(model, rank(hour), split, formatValue)
+      .map(entry => ({ ...entry, hour })), () => 0, hour => missingKey.current(hour)) : null;
+  }, [liveRaceView, followedHead, followed.entry, runtime.clock, axisOffset, resolved, slots, model, split, formatValue]); // eslint-disable-line react-hooks/exhaustive-deps
+  liveRef.current = live;
+  const lines = useRaceLines(config, options, runtime, track, params, active && view === 'lines');
+  const range = useMemo(() => ({ firstHour: extent[0], lastHour: extent[1] }), [extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
+  const cutTo = (tag: string): readonly Span[] | null => resolved.membership?.get(tag) ?? null;
+  const lineTags = useMemo(() => [...new Set([...(model?.tags ?? []), ...lines.summaries.keys()])], [model, lines.summaries]);
+  const drawnLines = useMemo(() => !model || view !== 'lines' ? [] : lineTags.flatMap(tag => {
+    const runs = partsRaceLineRuns(model, tag, cutTo(tag), range);
+    return runs.length || lines.summaries.has(tag) ? [{ tag, runs }] : [];
+  }), [model, view, lineTags, range, lines.summaries, resolved.membership]); // eslint-disable-line react-hooks/exhaustive-deps
+  const parts = useMemo(() => (reply?.parts ?? []).map(part => ({ id: part.key, label: partsRacePartName(part) })), [reply]);
+  const mixTag = mixCountry(widget.countries, fallback, ranked) ?? ranked[0]?.tag ?? null;
+  const bands = useMemo(() => model && view === 'mix' && mixTag ? partsRaceMixBands(model, mixTag, cutTo(mixTag), range) : null,
+    [model, view, mixTag, range, resolved.membership]); // eslint-disable-line react-hooks/exhaustive-deps
   const mix = useMemo(() => {
     if (!model || !mixTag || !bands) return null;
-    const at = isMember(mixMembership ?? undefined, moment) ? partsRaceAt(model, mixTag, moment) : null;
-    return { tag: mixTag, bands, compactStack: true, approximate: prepared.approximate.get(mixTag), parts: parts.map((part, index) => ({ ...part,
+    const at = isMember(cutTo(mixTag) ?? undefined, moment) || !resolved.membership ? partsRaceAt(model, mixTag, moment) : null;
+    return { tag: mixTag, bands, compactStack: true, parts: parts.map((part, index) => ({ ...part,
       value: at?.values[index] == null ? 'Not known' : formatValue(at.values[index]!) })) };
-  }, [model, mixTag, bands, mixMembership, moment, parts, formatValue, prepared.approximate]);
-  const none = noMembersAt(widget.countries, resolved, groupReply.data, moment, lastHour);
+  }, [model, mixTag, bands, moment, parts, formatValue]); // eslint-disable-line react-hooks/exhaustive-deps
+  const warnings = reply?.warnings ?? manifest.data?.warnings;
+  useLayoutEffect(() => {
+    onDiagnostics(warnings?.length ? warnings : NO_WARNINGS);
+    return () => onDiagnostics(NO_WARNINGS);
+  }, [warnings, onDiagnostics]);
+  // A followed race draws its pushed totals: the windows asked beside it are not what it waits for.
+  const pending = !(followedHead && view === 'race') && windowsAt(playbackHour).some(index => !history.data.has(index));
+  const failure = manifest.error ?? windowsAt(playbackHour).map(index => history.errors.get(index)).find(Boolean) ?? null;
+  const measure = config.measure(options), ownership = config.ownership(options), partsLabel = config.partsLabel(options);
+  const referenceLabel = config.referenceLabel?.(options);
   const state = (() => {
     if (!track) return <WidgetState kind="empty" icon={config.icon} message={`Load a campaign to see its ${config.subject}.`} />;
-    if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable"
-      message="Choose another time in widget settings." />;
-    if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
-    if (grouped && groupReply.error && !groupReply.data) return <WidgetState kind="error" what="country groups" failure={groupReply.error} onRetry={groupReply.retry} />;
+    if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
+    if (failure) return <WidgetState kind="error" failure={failure} onRetry={() => { manifest.retry(); history.retry(); }} />;
+    if (grouped && groups.error && !groups.data) return <WidgetState kind="error" what="country groups" failure={groups.error} onRetry={groups.retry} />;
     if (resolved.reason) return <WidgetState kind="empty" icon={config.icon} message={resolved.reason} />;
-    // A group with no member found yet asks for nothing, so no reply will come.
-    if (none) return <NoMembersState reason={none.reason} icon={config.icon} />;
-    if (!data || !model || (grouped && !groupReply.data)) return <WidgetState kind="loading" label={`Loading ${config.subject}…`} />;
-    // A group's members at hours still being prepared are not known yet: no value is not proof of none.
-    if (!available) return drawing.known(track.branch.firstHour, track.branch.lastHour)
-      ? <WidgetState kind="unavailable" message={`${config.subject} were not recorded for these countries.`} /> : <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
-    if (!pinned && view === 'mix' && mixTag && !parts.length && model.series.get(mixTag)?.series.runs.some(run =>
-      run.total === 0 && run.lastHour >= extent[0] && run.firstHour <= extent[1])) {
+    if (followedHead) return followed.entry?.answer === undefined ? <WidgetState kind="loading" label={`Loading ${config.subject}…`} /> : undefined;
+    if (!model || (grouped && !groups.data)) return <WidgetState kind="loading" label={`Loading ${config.subject}…`} />;
+    if (view === 'race' && positive && !ranked.length && !pending && partsRaceAllZero(model, candidates(moment), moment)) {
+      return <WidgetState kind="empty" icon={config.icon} message={config.zeroMix(options)} />;
+    }
+    if (view === 'mix' && mixTag && !parts.length && model.series.get(mixTag)?.series.runs.some(run => run.total === 0)) {
       return <WidgetState kind="empty" icon={config.icon} message={config.zeroMix(options)} />;
     }
     return undefined;
   })();
-  const measure = config.measure(options);
-  const ownership = config.ownership(options);
-  const partsLabel = config.partsLabel(options);
-  const referenceLabel = config.referenceLabel?.(options);
-  const membershipKey = useMemo(() => JSON.stringify([...(drawing.membership ?? [])]), [drawing.membership]);
-  const geometryKey = JSON.stringify([extent, chartOptions.playback, chartOptions.windowDays, chartOptions.afterPlayhead,
-    chartOptions.log, chartOptions.yMin, chartOptions.yMax]);
-  const mainScope = JSON.stringify([sourceScope, config.product, config.resetKey(options), request?.params,
-    widget.countries, membershipKey, view, view === 'mix' ? mixTag : null, geometryKey]);
-  const mainPickOwner = useMemo(() => ({ client: runtime.client, scope: mainScope, numbers }), [runtime.client, mainScope, numbers]);
-  const choices = track && !pinned && drill.choices?.key === resetKey && drill.pickOwner === mainPickOwner ? drill.choices : null;
-  const detailScope = JSON.stringify([sourceScope, config.product, config.resetKey(options),
-    drillRequest?.params, 'mix', originTag, selection, detailExtent, chartOptions.playback, chartOptions.afterPlayhead]);
-  const detailPickOwner = useMemo(() => ({ client: runtime.client, scope: detailScope, numbers: drillNumbers }),
-    [runtime.client, detailScope, drillNumbers]);
-  const mainPending = !!numbers && (!incoming.data || grouped && !incomingGroups.data);
-  const drillPending = !!independentNumbers && !incomingDrill.data;
-  const controls = useRef({ active, contextOwner, mainPickOwner, detailPickOwner });
-  controls.current = { active, contextOwner, mainPickOwner, detailPickOwner };
-  useEffect(() => () => { controls.current.active = false; }, []);
-  const currentMain = () => controls.current.active && controls.current.contextOwner === contextOwner && controls.current.mainPickOwner === mainPickOwner;
-  const currentDetail = () => controls.current.active && controls.current.contextOwner === contextOwner && controls.current.detailPickOwner === detailPickOwner;
-  const [pickedPart, setPickedPart] = useState<{ owner: unknown; id: string } | null>(null);
-  const selectedPart = pickedPart?.owner === detailPickOwner ? drillParts.find(part => part.id === pickedPart.id) : undefined;
-  const selectedIndex = selectedPart ? drillParts.indexOf(selectedPart) : -1;
-  const historyParts = selectedPart ? [selectedPart] : drillParts;
-  const historyBands = selectedIndex >= 0 && drillBands ? [drillBands[selectedIndex]] : drillBands;
-  const common: CountryRaceViewProps = { runtime, track, active, options: chartOptions, view, extent, playhead, moment, slots,
-    pickOwner: mainPickOwner,
-    beforeChart: mainPending ? <WidgetState kind="loading" label={`Updating ${config.subject}…`} /> : undefined,
-    ranked: entries, lines, parts, mix, segmentAt, countryTags: shownTags, label: config.title,
-    lineSummaries: new Map(lineTags.flatMap(tag => prepared.summaries.has(tag) ? [[tag, prepared.summaries.get(tag)!] as const] : [])),
-    onSummaryView: prepared.onSummaryView, onReachHour: prepared.onReachHour, exactLineTags: prepared.exactLineTags,
-    navigation: prepared.navigation,
-    empty: drawing.known(moment) ? `No ${config.subject} recorded on ${dayLabel(moment)}.` : MEMBERSHIP_PREPARING, formatValue, formatTick: config.formatTick?.(options),
-    partsLabel, raceLegendParts: split ? parts : [],
-    labels: { race: `${config.title}, ${measure}, ${dayLabel(moment)}`, lines: `${config.title} over time, ${measure}`,
-      mix: name => `${config.title} of ${name}, ${partsLabel.toLowerCase()}`, actions: `${config.title} actions` },
-    presentation: { exact: false, held: false, lineColourHours: 'labels',
-      tooltipKeep: 1, linePadding: CHART_LAYOUT.countryEndLabels, strongMixName: true, windowedLegend: true, mixKeyHours: 'starts',
-      raceEmptyState: false, resetTimeView: true },
-    lineEmpty: { icon: config.icon, message: drawing.known(extent[0], extent[1]) ? 'No countries to draw. Choose countries in the widget settings.' : MEMBERSHIP_PREPARING },
-    mixEmpty: { icon: config.icon, message: !drawing.known(moment) ? MEMBERSHIP_PREPARING : widget.countries.kind === 'group'
-      ? `No country of this group was recorded on ${dayLabel(moment)}.` : 'Choose a country in the widget settings.',
-      unavailable: name => `Breakdown unavailable for ${name}.` },
-    tooltip: (tag, hour, name, colours) => {
-      if (!model) return null;
-      const at = isMember(membershipOf(tag) ?? undefined, hour) ? partsRaceAt(model, tag, hour) : null;
-      return at ? partsRaceTooltips({ model, name, at, date: dayLabel(hour), measure, ownership, colours,
-        note: config.note?.(options), formatValue, referenceLabel: config.referenceLabel?.(options) }) : null;
-    },
-    lineTooltip: (hour, _tags, labelAt, country) => [linesTooltip(hour, lines, labelAt, country, dayLabel(hour), `${measure} · ${ownership}`, formatValue)],
-    resetKey,
+  const shownEntries = live?.entries();
+  const shownTags = view === 'race' ? [...new Set([...(shownEntries ?? ranked).map(entry => entry.tag), ...(followedNow && top != null ? sticky.current?.tags ?? [] : [])])]
+    : view === 'lines' ? lineTags : mixTag ? [mixTag] : [];
+  // One country's breakdown: opened from the chart (inline or in a popout), or the widget's own view once pinned.
+  const [drill, dispatchDrill] = useReducer(reducePartsRaceDrill, CLOSED_PARTS_RACE);
+  const [origin, setOrigin] = useState<{ tag: string; hour: number } | null>(null);
+  const resetKey = JSON.stringify([track?.source.id, track?.branch.id, config.product, params, options.show, widget.options?.holder, widget.options?.drillOriginHour]);
+  useEffect(() => { dispatchDrill({ type: 'close' }); setOrigin(null); }, [resetKey]);
+  const restored = pinned ? savedCountryPartsSelection(widget, track) : undefined;
+  const clockHour = track ? Math.floor(runtime.clock.getHour()) + axisOffset : null;
+  const choices = drill.choices?.key === resetKey ? drill.choices : null;
+  const drillOpen = choices !== null || drill.breakdown !== null;
+  const pinnedTag = restored?.tag ?? (widget.countries.kind === 'tags' ? widget.countries.tags[0] ?? null : mixTag);
+  const breakdownTag = pinned ? restored === null ? null : pinnedTag : drill.breakdown;
+  const savedOrigin = typeof widget.options?.drillOriginHour === 'number' ? widget.options.drillOriginHour : null;
+  const drillAt = Math.floor((pinned || (drill.breakdown === null && choices === null) ? moment : drillHour(drill, clockHour)) ?? moment);
+  const originHour = pinned ? restored?.hour ?? savedOrigin ?? moment : origin?.tag === breakdownTag ? origin.hour : drillAt;
+  const breakdownFollows = pinned ? widget.time.mode === 'follow' : drill.breakdown !== null && drill.follow;
+  const selection = breakdownTag && reply ? countryPartsSelection(reply.series, breakdownTag, originHour) : null;
+  const openAt = (tag: string, hour: number) => {
+    setOrigin({ tag, hour: Math.floor(hour) });
+    dispatchDrill({ type: 'open', breakdown: tag, hour, playing: runtime.clock.getSnapshot().playing, playhead: widget.time.mode === 'follow' ? playhead : null });
   };
-  const open = (hour: number, tag?: string, candidates?: readonly string[]) => {
-    if (!currentMain()) return;
-    const actors = partsRaceDrillActors(tag, candidates, () => model ? mixCountry(widget.countries, fallback,
-      rankPartsRace(model, rankedCandidates(drawing, hour, model.tags), hour, slots)) : null);
-    if (actors.length > 1) dispatchDrill({ type: 'actors', key: resetKey, tags: actors, hour, owner: contextOwner, pickOwner: mainPickOwner });
-    else if (actors.length) {
-      const selected = numbers && countryPartsSelection(numbers.series, actors[0], hour);
-      dispatchDrill({ type: 'open', breakdown: actors[0], hour, selection: selected ?? undefined, owner: contextOwner,
-        playing: runtime.clock.getSnapshot().playing, playhead: liveHour });
-    }
-    else if (candidates !== undefined) dispatchDrill({ type: 'close' });
+  const open = (hour: number, tag?: string, choices?: readonly string[]) => {
+    if (!active) return;
+    const actors = partsRaceDrillActors(tag, choices, () => model ? mixCountry(widget.countries, fallback, rank(hour)) : null);
+    if (actors.length > 1) dispatchDrill({ type: 'actors', key: resetKey, tags: actors, hour });
+    else if (actors.length) openAt(actors[0], hour);
+    else if (choices !== undefined) dispatchDrill({ type: 'close' });
   };
-  const follow = () => {
-    if (currentDetail() && originTag && liveHour != null) dispatchDrill({ type: 'open', breakdown: originTag,
-      hour: drillAt, playing: true, playhead: liveHour, selection: selection ?? undefined, owner: contextOwner });
-  };
-  const breakdown = <CountryRaceView {...common} pickOwner={detailPickOwner} view="mix" moment={drillAt} extent={detailExtent}
-    lineSummaries={undefined} onSummaryView={preparedDrill.onSummaryView} onReachHour={preparedDrill.onReachHour}
-    navigation={preparedDrill.navigation}
-    playhead={drillAt} countryTags={drillTag ? [drillTag] : []}
-    state={!track || missingPinnedDate ? state : drillReply.error ? <WidgetState kind="error" what="the breakdown" failure={drillReply.error} onRetry={drillReply.retry} />
-      : originTag && !drillModel ? <WidgetState kind="loading" label={`Loading ${partsLabel.toLowerCase()}…`} /> : undefined}
-    parts={historyParts} selectedHour={drillAt} segmentAt={(_, hour) => binding?.data.segmentAt(originTag ?? '', hour) ?? null}
-    countryLookHour={(tag, hour) => tag && binding?.tagAt(hour) === tag ? binding.data.readHour(tag, hour) : null}
-    mix={originTag && historyBands ? { tag: drillTag ?? originTag, tagAt: hour => binding?.tagAt(hour) ?? null, bands: historyBands, compactStack: true,
-      approximate: preparedDrill.approximate.get(drillTag ?? originTag),
-      parts: historyParts.map(part => ({ ...part, value: part.id === ''
-        ? remainder == null ? 'Not known' : formatValue(remainder)
-        : drillValue?.values[drillParts.indexOf(part)] == null ? 'Not known' : formatValue(drillValue.values[drillParts.indexOf(part)]!) })) } : null}
-    tooltip={(_tag, hour, name, colours) => {
-      const alias = binding?.tagAt(hour);
-      const at = drillModel && alias ? partsRaceAt(drillModel, alias, hour) : null;
-      if (!drillModel || !at) return null;
-      const remainder = at.total == null ? null : at.total - at.values.reduce<number>((sum, value) => sum + (value ?? 0), 0);
-      return [...partsRaceTooltips({ model: drillModel, name, at, date: dayLabel(hour), measure, ownership, colours,
-        note: config.note?.(options), formatValue, referenceLabel })].map(form => ({ ...form,
-        rows: [...form.rows, ...(remainder ? [{ label: UNATTRIBUTED_PART.label, value: formatValue(remainder), swatch: colours.get('') }] : [])] }));
-    }}
-    beforeChart={<div className="parts-race-details">
-      {drillPending && <WidgetState kind="loading" label={`Updating ${partsLabel.toLowerCase()}…`} />}
-      {!drillTag && <p className="drill-empty">Selected country unavailable at this date.</p>}
-      {pinned && <p className="drill-empty">{dayLabel(drillAt)} {liveHour != null && <FollowControl following={drillFollowing} onFollow={follow}
-        onPause={() => { if (currentDetail() && originTag) dispatchDrill({ type: 'open', breakdown: originTag, hour: drillAt,
-          playing: false, playhead: null, selection: selection ?? undefined, owner: contextOwner }); }} />}</p>}
-      {!pinned && track && model && model.tags.length > 1 && <div className="parts-race-country">Country
-        <CountryPicker countries={track.source.metadata.countries} allowedTags={model.tags} selectedTag={drillTag} playerCountryId={track.source.metadata.playerCountryId}
-          source={track.source} client={runtime.client} field flagAt={{ branchId: track.branch.id, hour: drillAt }} onChange={tag => {
-            const selected = tag != null && numbers ? countryPartsSelection(numbers.series, tag, drillAt) : undefined;
-            if (currentDetail() && selected) dispatchDrill({ type: 'open', breakdown: selected.tag, hour: drillAt,
-              playing: drillFollowing, playhead: drillFollowing ? liveHour : null, selection: selected, owner: contextOwner });
-          }} />
-      </div>}
-      <DrillParts virtual active={active} parts={drillParts.slice(0, -1).map((part, index) => ({ ...part,
-        value: drillValue?.values[index] ?? null, color: colours.get(part.id), muted: drillModel?.reply.parts[index].unresolved }))}
-        onPick={id => { if (currentDetail()) setPickedPart({ owner: detailPickOwner, id }); }}
-        format={formatValue} total={drillValue?.total ?? null}
-        unattributed={remainder == null ? undefined : { ...UNATTRIBUTED_PART, value: remainder, color: colours.get('') }}
-        totalRow={{ label: measure, value: drillValue?.total == null ? 'Not recorded' : formatValue(drillValue.total) }} />
-      {selectedPart && <p className="drill-empty">History: {selectedPart.label} <button type="button" className="button small"
-        onClick={() => { if (currentDetail()) setPickedPart(null); }}>All parts</button></p>}
-      {referenceLabel && <p className="drill-empty">{referenceLabel}: {drillValue?.run.referenceTotal == null
-        ? 'Not known' : formatValue(drillValue.run.referenceTotal)}.</p>}
-      {Details && track && drillTag && <Details client={runtime.client} track={track} tag={drillTag} hour={drillAt} active={active} />}
-    </div>}
-    onPick={originTag ? hour => { if (currentDetail()) dispatchDrill({ type: 'open', breakdown: originTag, hour, playing: false,
-      playhead: null, selection: selection ?? undefined, owner: contextOwner }); } : undefined} />;
-  const groupNotice = grouped && groupReply.error && groupReply.data ? <WidgetState kind="error" what="country groups" failure={groupReply.error} onRetry={groupReply.retry} /> : null;
-  if (pinned) return <div className="parts-race-drill">{header}{groupNotice}{breakdown}</div>;
-  const drillOpen = choices != null || drill.breakdown != null;
-  return <div className="parts-race" ref={drillAnchor}>{groupNotice}
-    <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drillOpen} anchor={drillAnchor}
-      title={partsLabel} day={dayLabel(drillAt)} following={drillFollowing} canFollow={choices == null && liveHour != null}
-      returnFocus=".country-race-chart canvas" onClose={() => { if (currentDetail()) dispatchDrill({ type: 'close' }); }}
-      onFollow={follow}
-      onPause={() => { if (currentDetail() && originTag) dispatchDrill({ type: 'open', breakdown: originTag, hour: drillAt,
-        playing: false, playhead: null, selection: selection ?? undefined, owner: contextOwner }); }}
-      onPin={track && selection ? () => { if (currentDetail()) runtime.addWidgetBelow(widget.id,
-        pinNativeCountryParts(widget, track, selection, drillAt, drillFollowing, partsLabel)); } : undefined}
-      main={<CountryRaceView {...common} state={state} active={active && (!drillOpen || options.drill === 'popout')} onPick={open} />}>
-      {choices && track ? <div className="parts-race-details">
-        <p className="drill-empty">Choose a country for this moment.</p>
-        <CountryPicker countries={track.source.metadata.countries} allowedTags={choices.tags} selectedTag={null} playerCountryId={null}
-          source={track.source} client={runtime.client} field flagAt={{ branchId: track.branch.id, hour: drillAt }}
-          onChange={tag => {
-            const selected = tag != null && numbers ? countryPartsSelection(numbers.series, tag, drillAt) : undefined;
-            if (currentMain() && currentDetail() && tag != null) dispatchDrill({ type: 'choose', key: choices.key, hour: drillAt,
-              tag, selection: selected ?? undefined, owner: contextOwner });
-          }} />
-      </div> : breakdown}
+  const dayLive = useMemo(() => liveTexts(runtime.clock, () => Math.floor(runtime.clock.getHour()) + axisOffset, hour => new Map([['day', dayLabel(hour)]])),
+    [runtime.clock, axisOffset]);
+  const breakdown = <ForcePartsBreakdown runtime={runtime} widget={widget} track={track} active={active} options={chartOptions} product={config.product}
+    request={track && breakdownTag ? config.request(track.branch.id, { tags: [breakdownTag] }, options) : null} manifest={manifest.data} validate={validate}
+    extent={pinned ? extent : track ? [track.branch.firstHour, track.branch.lastHour] : extent}
+    playhead={breakdownFollows ? clockHour : playhead} tag={breakdownTag} originHour={originHour}
+    holder={pinned ? restored?.key ?? undefined : selection?.key ?? undefined} hour={drillAt} following={breakdownFollows} pinned={pinned}
+    countrySlot={pinned ? countrySlot : null} saved={!pinned || restored !== null}
+    onPick={hour => { if (active) dispatchDrill({ type: 'pick', hour }); }} onFollow={() => { if (active) dispatchDrill({ type: 'follow' }); }}
+    picker={!pinned && model ? { tags: model.tags, onChange: (tag, hour) => openAt(tag, hour) } : null} details={config.details}
+    measure={measure} ownership={ownership} partsLabel={partsLabel} referenceLabel={referenceLabel} note={config.note?.(options)} formatValue={formatValue} />;
+  if (pinned) return <div className="parts-race-drill" ref={anchor}>{restored === null
+    ? <WidgetState kind="unavailable" message="Saved country unavailable." /> : state && !model ? state : breakdown}</div>;
+  const choice = choices && track ? <div className="parts-race-details">
+    <p className="drill-empty">Choose a country for {dayLabel(drillAt)}.</p>
+    <CountryPicker countries={track.source.metadata.countries} allowedTags={choices.tags} selectedTag={null} playerCountryId={null}
+      source={track.source} client={runtime.client} field flagAt={{ branchId: track.branch.id, hour: drillAt }}
+      onChange={tag => {
+        if (!active || tag === null || !choices.tags.includes(tag)) return;
+        setOrigin({ tag, hour: drillAt });
+        dispatchDrill({ type: 'choose', key: choices.key, tag, hour: drillAt });
+      }} />
+  </div> : breakdown;
+  return <div className="parts-race" ref={anchor}>
+    <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drillOpen} anchor={anchor}
+      title={partsLabel} day={drill.breakdown !== null && drill.follow && track ? <LiveText live={dayLive} at="day" /> : dayLabel(drillAt)}
+      following={drill.follow} canFollow={choices === null && track !== undefined}
+      returnFocus=".race-chart canvas, .time-chart canvas" onClose={() => dispatchDrill({ type: 'close' })}
+      onFollow={() => { if (active && track) dispatchDrill({ type: 'follow' }); }}
+      onPin={track && breakdownTag ? () => runtime.addWidgetBelow(widget.id, selection
+        ? pinNativeCountryParts(widget, track, selection, drillAt, drill.follow, partsLabel)
+        : pinCountryParts(widget, track, breakdownTag, drillAt, originHour, drill.follow, partsLabel)) : undefined}
+      main={<CountryRaceView runtime={runtime} track={track} state={state} active={active && (!drillOpen || options.drill === 'popout')} onPick={open}
+      options={chartOptions} view={view} extent={extent}
+      playhead={playhead} moment={moment} slots={slots} ranked={shownEntries ?? entries} liveRanked={live ?? undefined} lines={drawnLines}
+      parts={parts} mix={mix} countryTags={shownTags} label={config.title} formatValue={formatValue} formatTick={config.formatTick?.(options)}
+      segmentAt={(tag, hour) => partsRaceSegmentAt(model, tag, hour)}
+      empty={forceRaceEmpty(config.subject, dayLabel(moment), followedHead ? followed.entry?.answer : undefined)}
+      onViewChange={view === 'race' ? undefined : onViewChange}
+      lineSummaries={lines.summaries.size ? lines.summaries : undefined} onSummaryView={view === 'lines' ? lines.onSummaryView : undefined}
+      notRecorded={view === 'lines' && drawnLines.every(line => !line.runs.length) ? lines.unrecorded : null}
+      beforeChart={pending ? <WidgetState kind="loading" label={`Updating ${config.subject}…`} /> : undefined}
+      raceLegendParts={split ? parts : []} partsLabel={partsLabel}
+      labels={{ race: hour => `${config.title}, ${measure}, ${dayLabel(hour)}`, lines: `${config.title} over time, ${measure}`,
+        mix: name => `${config.title} of ${name}, ${partsLabel.toLowerCase()}`, actions: `${config.title} actions` }}
+      resetKey={JSON.stringify([track?.source.id, track?.branch.id, config.product, params])}
+      presentation={{ exact: false, held: false, lineColourHours: 'labels', tooltipKeep: 1, linePadding: CHART_LAYOUT.countryEndLabels,
+        strongMixName: true, windowedLegend: true, mixKeyHours: 'starts', raceEmptyState: false, resetTimeView: true }}
+      lineEmpty={{ icon: config.icon, message: 'No countries to draw. Choose countries in the widget settings.' }}
+      mixEmpty={{ icon: config.icon, message: 'Choose a country in the widget settings.', unavailable: name => `Breakdown unavailable for ${name}.` }}
+      tooltip={(tag, hour, name, colours) => {
+        if (followedRace.current && tipHour.current !== Math.floor(hour)) { tipHour.current = Math.floor(hour); history.check(); }
+        if (!model) return null;
+        const at = isMember(cutTo(tag) ?? undefined, hour) || !resolved.membership ? partsRaceAt(model, tag, hour) : null;
+        return at ? partsRaceTooltips({ model, name, at, date: dayLabel(hour), measure, ownership, colours, note: config.note?.(options), formatValue, referenceLabel }) : null;
+      }}
+      lineTooltip={(hour, _tags, labelAt, country) => [linesTooltip(hour, drawnLines, labelAt, country, dayLabel(hour), `${measure} · ${ownership}`, formatValue)]} />}>
+      {choice}
     </DrillHost>
   </div>;
-}
-
-type PreparedPartsReply = NativePartsRaceReply & { summaries?: { tag: string; summary: ChartSummary;
-  parts: { key: string; summary: ChartSummary }[] }[] };
-
-// Nukes and factories join their own replies' shapes (`preparedNukes`, `preparedFactories`).
-registerPageJoin(['air-force-size', 'navy-size'], countryPageJoin<PreparedPartsReply>(mergePreparedParts));
-
-/** The common part schema is aligned once when independently reached pages join. */
-function mergePreparedParts(replies: readonly (NativePartsRaceReply | undefined)[]): NativePartsRaceReply | undefined {
-  const available = replies.filter((reply): reply is NativePartsRaceReply => !!reply);
-  if (!available.length) return undefined;
-  const parts = [...new Map(available.flatMap(reply => reply.parts.map(part => [part.key, part] as const))).values()]
-    .sort((a, b) => a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
-  const countries = new Map<string, NativePartsRaceReply['series'][number]>();
-  for (const reply of available) for (const country of reply.series) {
-    const before = countries.get(country.tag);
-    const runs = [...(before?.runs ?? [])];
-    for (const run of country.runs) {
-      if (runs.some(previous => previous.firstHour <= run.firstHour && previous.lastHour >= run.lastHour)) continue;
-      const values = new Map(reply.parts.map((part, index) => [part.key, run.values[index]]));
-      const aligned = { ...run, values: parts.map(part => values.has(part.key) ? values.get(part.key)! : run.total === null ? null : 0) };
-      const previous = runs.find(previous => previous.firstHour <= aligned.lastHour && previous.lastHour >= aligned.firstHour
-        && previous.total === aligned.total && previous.referenceTotal === aligned.referenceTotal
-        && previous.values.every((value, index) => value === aligned.values[index]));
-      if (previous) {
-        if (aligned.firstHour < previous.firstHour) previous.startsSegment = aligned.startsSegment;
-        previous.firstHour = Math.min(previous.firstHour, aligned.firstHour);
-        previous.lastHour = Math.max(previous.lastHour, aligned.lastHour);
-      }
-      else runs.push(aligned);
-    }
-    countries.set(country.tag, { ...country, ...before, runs: runs.sort((a, b) => a.firstHour - b.firstHour),
-      membership: before?.membership === null || country.membership === null ? null
-        : clipToSpans([{ firstHour: -2147483648, lastHour: 2147483647 }], [...(before?.membership ?? []), ...(country.membership ?? [])]) });
-  }
-  let identities: { tag: string; identities: NativePartsRaceReply['series'][number]['identities'] }[] = [];
-  for (const reply of available) identities = overlayCountryIdentities(identities, reply.series.map(series => ({ tag: series.tag, identities: series.identities })));
-  for (const identity of identities) {
-    const country = countries.get(identity.tag);
-    if (country) countries.set(identity.tag, { ...country, identities: identity.identities });
-  }
-  return { ...available[0], parts, series: [...countries.values()], warnings: [...new Set(available.flatMap(reply => reply.warnings))] };
-}
-
-/** Display geometry stays separate from exact race, hover and drill amounts. */
-function preparedPartsGeometry(reply: PreparedPartsReply | undefined): NativePartsRaceReply | undefined {
-  if (!reply) return undefined;
-  return { ...reply, series: reply.series.map(series => {
-    const summary = reply.summaries?.find(line => line.tag === series.tag)?.summary;
-    if (!summary || summary.runs !== undefined || series.runs.some(run => run.values.some(value => value === null))) return series;
-    const runs = summaryShareRuns(series.runs.map(run => ({ ...run, counts: run.values as number[] })), [summary]);
-    return { ...series, runs: runs.map(run => ({ ...series.runs[runIndexAt(series.runs, run.firstHour)],
-      firstHour: run.firstHour, lastHour: run.lastHour, startsSegment: run.startsSegment === true, values: [...run.counts] })) };
-  }) };
-}
-
-export function usePreparedRace<T extends { series: { tag: string; runs: { firstHour: number; lastHour: number; total?: number | null }[] }[]; warnings: string[] }>(
-  client: DashboardClient, track: BoundTrack | undefined, request: ProductRequest | null, hour: number, active: boolean,
-  validate: (value: unknown) => T, merge: (replies: readonly (T | undefined)[]) => T | undefined,
-  geometry: (reply: (T & Pick<PreparedPartsReply, 'summaries'>) | undefined) => T | undefined,
-  history = true, within?: ReadonlyMap<string, readonly Span[]>, requireParts = false) {
-  const enabled = !!client.preparedQuery && ['air-force-size', 'navy-size', 'country-nukes', 'country-factories'].includes(request?.product ?? '');
-  const key = JSON.stringify([track?.source.id, track?.source.revision, request?.product, request?.params, within && [...within], requireParts]);
-  const owner = useMemo(() => ({ client, key }), [client, key]);
-  const alive = useRef(owner); alive.current = owner;
-  const pending = useRef(new Set<AbortController>());
-  // Only the latest key's request may answer the chart's pending navigation.
-  const navigation = useRef<AbortController | null>(null);
-  useEffect(() => () => { for (const controller of pending.current) controller.abort(); pending.current.clear(); }, [owner, active]);
-  const [view, setView] = useState<{ key: string; from: number; to: number; width: number }>();
-  const [hover, setHover] = useState<{ key: string; hour: number | null }>();
-  const [keyboard, setKeyboard] = useState<{ owner: typeof owner; hour: number | null; revision: number }>();
-  const [navigationError, setNavigationError] = useState<{ owner: typeof owner; error: Failure }>();
-  const parity = import.meta.env.MODE === 'parity' ? useParityPreparation() : null;
-  const base = (request?.params ?? {}) as Record<string, unknown>;
-  const { branchId, tags, ...fields } = base;
-  const family = { kind: request?.product, ...fields };
-  const bounds = history && view?.key === key ? view : { from: hour, to: hour, width: 1 };
-  const dense = enabled && Math.ceil(bounds.to) - Math.floor(bounds.from) + 1 > bounds.width;
-  const page = (from: number, to: number, width: number): ProductRequest | null => !request ? null : enabled
-    ? { ...request, product: 'series-summary', params: { branchId, tags, family, from, to, width, requireParts, within: within && Object.fromEntries(within) } } : request;
-  // One summary read at a time while the chart's view moves (`useViewRead`).
-  const content = useContentRevision(client);
-  // Kept while the family's validator is, so each page asked here is validated, summaries and all, once.
-  const decodedPage = useMemo(() => (value: unknown): T & Pick<PreparedPartsReply, 'summaries'> => {
-    const reply = validate(value) as T & Pick<PreparedPartsReply, 'summaries'>;
-    if (reply.summaries === undefined) return reply;
-    type Line = NonNullable<PreparedPartsReply['summaries']>[number];
-    const summaries = chartSummaryLines<Line>(reply.summaries, line => typeof line.tag === 'string')?.map(line => line.parts === undefined ? line
-      : { ...line, parts: chartSummaryLines<Line['parts'][number]>(line.parts, part => typeof part.key === 'string') });
-    if (!summaries || summaries.some(line => line.parts === null)) throw Error('The prepared force summary is malformed.');
-    return { ...reply, summaries: summaries as Line[] };
-  }, [validate]);
-  const read = useViewRead<{ from: number; to: number; width: number }, T & Pick<PreparedPartsReply, 'summaries'>>(
-    request ? JSON.stringify([key, enabled, content]) : null, bounds, enabled ? JSON.stringify([bounds.from, bounds.to, bounds.width]) : '', active,
-    (at, signal, publish, restart) => loadProduct(client, page(at.from, at.to, at.width)!, signal, decodedPage,
-      enabled ? track?.source : undefined, restart, publish), client);
-  const display = { ...read, error: useHeldFailure(read.error, read.data !== undefined, read.retry) };
-  // The last reached hour stays merged in while playback's newest is read.
-  const reached = useFollowedProduct(client, enabled ? page(hour, hour, 1) : null, ['from', 'to'], active, decodedPage, track?.source);
-  const pointedHour = hover?.key === key ? hover.hour : null;
-  const pointed = useProduct(client, enabled && pointedHour != null ? page(pointedHour, pointedHour, 1) : null, active, decodedPage, track?.source);
-  const full = useProduct(client, enabled && parity?.requested && track ? page(track.branch.firstHour, track.branch.lastHour,
-    track.branch.lastHour - track.branch.firstHour + 1) : null, active, decodedPage, track?.source);
-  const ends = display.data?.summaries?.flatMap(line => {
-    const bucket = [...line.summary.buckets].reverse().find(bucket => bucket !== null);
-    return bucket ? [{ tag: line.tag, hour: bucket.lastHour }] : [];
-  }) ?? [];
-  const endpoints = useProduct<T & { approximate?: readonly Span[] }>(client, enabled && history && request && ends.length ? { ...request, product: 'series-state',
-    params: { branchId, family: { ...family, top: null, originHour: null }, tags: ends.map(read => read.tag), reads: ends } } : null, active, value => validate(value) as T & { approximate?: readonly Span[] }, track?.source);
-  const summarized = dense || display.data?.summaries?.some(line => line.summary.approximate?.length) === true;
-  const exactEndpoints = endpoints.data?.approximate?.length ? undefined : endpoints.data;
-  const data = useMemo(() => merge(summarized
-    ? [display.data && { ...display.data, series: display.data.series.map(series => ({ ...series, runs: [] })) }, reached.data, pointed.data, exactEndpoints]
-    : [display.data, reached.data, pointed.data, exactEndpoints]),
-    [summarized, display.data, reached.data, pointed.data, exactEndpoints]);
-  const approximate = useMemo(() => new Map(display.data?.summaries?.map(line => [line.tag,
-    summaryStack(line.parts?.map(part => part.summary) ?? [], line.summary).approximate])), [display.data]);
-  const summaries = useMemo(() => new Map(display.data?.summaries?.map(line => [line.tag, line.summary])), [display.data]);
-  const onSummaryView = useCallback<NonNullable<TimeChartProps['onSummaryView']>>(next => {
-    if (next.to < next.from) return;
-    setView(before => before?.key === key && before.from === next.from && before.to === next.to && before.width === next.width ? before : { key, ...next });
-  }, [key]);
-  const onReachHour = useCallback((hour: number | null) => setHover({ key, hour }), [key]);
-  const exactLineTags = useCallback(async (hour: number) => {
-    if (!enabled || !track || !request || !active) return null;
-    const controller = new AbortController(); pending.current.add(controller);
-    try {
-      // Every page: a later one holds lines the first does not.
-      const reply = await loadProduct(client, { ...request, product: 'series-summary', params: { branchId, tags, family,
-        from: Math.floor(hour), to: Math.floor(hour), width: 1, within: within && Object.fromEntries(within) } },
-      controller.signal, validate, track.source, false, undefined, undefined, true);
-      if (controller.signal.aborted || alive.current !== owner) return null;
-      return reply.series.filter(series => series.runs.some(run => run.firstHour <= hour && run.lastHour >= hour && run.total !== null)).map(series => series.tag);
-    } finally { pending.current.delete(controller); }
-  }, [owner, active, enabled]);
-  const onNavigateHour = useCallback<NonNullable<TimeChartProps['onNavigateHour']>>((action, from, x, until) => {
-    if (!enabled || !track || !request || !active) return;
-    setNavigationError(undefined);
-    navigation.current?.abort();
-    const controller = new AbortController(); pending.current.add(controller); navigation.current = controller;
-    void preparedSeriesQuery(client, track.source, 'series-next-change', { branchId, tags, family, key: action, from,
-      firstHour: x[0], lastHour: Math.min(x[1], until ?? x[1]), within: within && Object.fromEntries(within) }, controller.signal).then(reply => {
-      if (controller.signal.aborted || alive.current !== owner) return;
-      const hour = (reply as { hour: number | null }).hour;
-      setHover({ key, hour }); setKeyboard(previous => ({ owner, hour, revision: (previous?.revision ?? 0) + 1 }));
-    }).catch(error => { if (!controller.signal.aborted && alive.current === owner) setNavigationError({ owner, error: asFailure(error) }); })
-      .finally(() => pending.current.delete(controller));
-  }, [owner, active, enabled]);
-  const navigationFailure = useHeldFailure(navigationError?.owner === owner ? navigationError.error : undefined,
-    display.data != null, () => setNavigationError(undefined));
-  return { data, dense, summaries, approximate, geometry: useMemo(() => dense ? geometry(display.data) : display.data,
-    [dense, display.data]), error: display.error ?? reached.error ?? pointed.error ?? endpoints.error ?? navigationFailure,
-    retry: () => { setNavigationError(undefined); display.retry(); reached.retry(); pointed.retry(); endpoints.retry(); full.retry(); },
-    onSummaryView: enabled ? onSummaryView : undefined, onReachHour: enabled ? onReachHour : undefined,
-    exactLineTags: enabled ? exactLineTags : undefined,
-    navigation: enabled ? { onNavigateHour, keyboardHour: keyboard?.owner === owner ? keyboard.hour : undefined,
-      keyboardRevision: keyboard?.owner === owner ? keyboard.revision : undefined } : undefined,
-    parity: parity ? { data: full.data, prepare: parity.prepare, complete: !!parity.requested && !!full.data } : undefined };
 }

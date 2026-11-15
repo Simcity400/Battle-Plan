@@ -265,6 +265,10 @@ const EXCHANGE_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&EXCHANGE_FIELDS, EXCHANGE_BYTES).expect("valid record layout");
 const BATCH: usize = 16;
 
+pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
+    walk_buffer(memory, base, game_state, Buffer::Count)
+}
+
 /// Reads every country's outgoing exchanges in country slot and list order:
 /// the delivered pool, then the sunk pool, each in pool order. Every exchange
 /// and pool is authenticated by vtable and every variant by vtable and
@@ -272,11 +276,7 @@ const BATCH: usize = 16;
 /// failed read makes the table unavailable. From the first exchange whose
 /// rows do not fit, its and every later exchange's pool entries are counted
 /// unread.
-pub fn walk(memory: &impl Memory, base: usize, game_state: usize, rows: &mut [Row]) -> Outcome {
-    walk_buffer(memory, base, game_state, Buffer::Fixed(rows))
-}
-
-pub fn walk_growing(
+pub fn walk(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -291,7 +291,7 @@ pub fn row_demand(
     base: usize,
     game_state: usize,
 ) -> Result<usize, &'static str> {
-    match walk(memory, base, game_state, &mut []) {
+    match count(memory, base, game_state) {
         Outcome::Rows { len } => Ok(len),
         Outcome::Truncated { len, unread_rows } => len
             .checked_add(unread_rows as usize)

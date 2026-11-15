@@ -1,7 +1,6 @@
 import { countryNameDetails } from '../../charts/tooltip.ts';
 import { contentTitle } from '../../dashboard/contentTitles.ts';
-import { artworkUrlValue as png } from '../../dashboard/payload.ts';
-import { clipToSpans, runAt } from '../../charts/series.ts';
+import { clipToSpans } from '../../charts/series.ts';
 import { sortRows } from '../../charts/table/logic.ts';
 import type { TooltipContent } from '../../charts/tooltip';
 import { stackedSpans } from '../../charts/timeline/layout.ts';
@@ -13,331 +12,72 @@ import { resolveOptions } from '../../dashboard/options.ts';
 import { subjectToken } from '../../dashboard/chosen.ts';
 import { GROW_WITH_PLAYBACK_OPTION } from '../general-career/definition.ts';
 import { DEFAULT_SORT } from './definition.ts';
-import type { NameAt } from '../../dashboard/countryFacts';
-import { nameKey } from '../../dashboard/countryFacts.ts';
-import type { LeaderSelection, LeaderChangeDate } from '../../generated/dashboard';
-import type { LeaderCareer as WireLeaderCareer, LeaderPerson, LeaderRole as WireLeaderRole, LeaderValues, UnitLeaderPortraitsReply, UnitLeadersHourReply, UnitLeadersReply } from '../../generated/dashboard';
+import type { TraitDate } from './types';
+import type { LeaderRow as WireRow, CareerBattle, LeaderCareerReply, LeaderHourReply, LeaderKinds, LeaderRole, LeaderSelection, LeaderTrait, LeaderWithheld, UnitLeadersReply } from '../../generated/dashboard';
 
-import { object, opaqueTag, signed32 as integer, unsigned32 as u32, unsigned64 as handle } from '../../dashboard/validation.ts';
-import { isSpan as span, isOrderedSpans as ordered } from '../../charts/series.ts';
+const KIND_ARMY = 1;
+const KIND_NAVY = 2;
+const DATES = ['Held before', 'Gained', 'Held by'] as const;
 
-export interface LeaderRun { firstHour: number; lastHour: number; value: LeaderValues }
-export interface TraitGain { hour: number; token: number; date: LeaderChangeDate }
-export type LeaderCareer = Omit<WireLeaderCareer, 'runs' | 'traitGains'> & { runs: LeaderRun[]; traitGains: TraitGain[] };
-export type LeaderRole = WireLeaderRole & { attributeNames: [string | null, string | null, string | null, string | null] };
-export type LeaderObservation = UnitLeadersReply['observed'][number] & { landCommands: boolean; navalCommands: boolean };
-export type UnitLeadersData = Omit<UnitLeadersReply, 'leaders' | 'roles' | 'observed'> & { leaders: LeaderCareer[]; roles: LeaderRole[]; observed: LeaderObservation[]; preparing?: string[] };
-const text = (v: unknown) => v === null || typeof v === 'string';
-const ascending = (a: number, b: number) => a - b;
-/** Hours coded first absolute, then as deltas. */
-const decode = (deltas: readonly number[]) => { let hour = 0; return deltas.map(delta => hour += delta); };
-
-export function validateLeaderPortraitsReply(input: unknown): UnitLeaderPortraitsReply {
-  if (!object(input) || !Array.isArray(input.portraits)
-    || !Array.isArray(input.warnings) || !input.warnings.every(warning => typeof warning === 'string')
-    || !input.portraits.every(p => object(p) && handle(p.reference) && (p.image === null || png(p.image)) && text(p.missing))
-    || new Set(input.portraits.map(p => p.reference)).size !== input.portraits.length) {
-    throw new Error('The unit leader portraits reply is malformed.');
-  }
-  return input as unknown as UnitLeaderPortraitsReply;
+/** Throws where a reply is not the shape its product exports. */
+function shaped(input: unknown, keys: readonly string[], what: string): void {
+  if (typeof input !== 'object' || input === null || !keys.every(key => key in input)) throw new Error(`The ${what} reply is malformed.`);
+}
+export function validateLeaders(input: unknown): UnitLeadersReply {
+  shaped(input, ['leaders', 'traits', 'withheld', 'missing', 'battlesPartialFrom', 'warnings'], 'unit leaders');
+  return input as UnitLeadersReply;
+}
+export function validateCareer(input: unknown): LeaderCareerReply {
+  shaped(input, ['reference', 'runs', 'traitGains', 'traits', 'commands', 'battles', 'observed', 'warnings'], 'leader career');
+  return input as LeaderCareerReply;
+}
+export function validateLeaderHour(input: unknown): LeaderHourReply {
+  shaped(input, ['reference', 'missing', 'traitCatalogue', 'fought', 'progress', 'warnings'], 'leader');
+  return input as LeaderHourReply;
 }
 
-const validPerson = (p: unknown) => object(p) && text(p.name) && integer(p.portraitHour) && handle(p.portraitReference);
-const validTrait = (t: unknown) => object(t) && typeof t.token === 'string' && text(t.name) && (t.icon === null || png(t.icon));
-const validRole = (r: unknown) => object(r) && (r.owner === null || opaqueTag(r.owner)) && integer(r.category) && text(r.rank)
-  && Array.isArray(r.attributeNames) && r.attributeNames.length === 4 && r.attributeNames.every(text)
-  && (r.kind === 1 || r.kind === 2) && (r.maximumSkill === null || integer(r.maximumSkill) && r.maximumSkill >= 0);
-
-/** What a reply's leaders may name: its first hour, and the people, roles and traits by number. */
-interface Named { firstHour: number; person: (index: number) => boolean; role: (index: number) => boolean; trait: (index: number) => boolean }
-
-/** A wire leader checked against what it may name, its runs and gains made ordinary; null when malformed. */
-function wireLeader(l: unknown, named: Named): LeaderCareer | null {
-  const firstHour = named.firstHour;
-  /** Sorted delta-coded hours, none before the first read. */
-  const visibleHours = (deltas: unknown) => {
-    let hour = 0;
-    return Array.isArray(deltas) && deltas.every((delta, i) => Number.isSafeInteger(delta) && (!i || delta >= 0) && integer(hour += delta) && hour >= firstHour) ? decode(deltas) : null;
-  };
-  if (!object(l) || !handle(l.reference) || !Array.isArray(l.runs)
-    || !Array.isArray(l.traitGains) || !Array.isArray(l.commands) || !(l.partialFrom === null || integer(l.partialFrom))) return null;
-  // Careers list every participation, leaderboards only when counts change, choices neither.
-  const battleStarts = l.battleStarts ?? []; const startReads = l.battleStartReadHours ?? []; const unknownStarts = l.unknownBattleStarts ?? [];
-  if (!Array.isArray(battleStarts) || !Array.isArray(startReads) || startReads.length !== battleStarts.length || !Array.isArray(unknownStarts)) return null;
-  const runs: LeaderRun[] = [];
-  for (const r of l.runs) {
-    if (!Array.isArray(r) || r.length !== 8 || !integer(r[0]) || !integer(r[1]) || r[0] > r[1]
-      || !u32(r[2]) || !named.person(r[2]) || !u32(r[3]) || !named.role(r[3]) || !(r[4] === null || integer(r[4]))
-      || !Array.isArray(r[5]) || r[5].length !== 4 || !r[5].every(integer)
-      || !(r[6] === null || Array.isArray(r[6]) && r[6].every(t => u32(t) && named.trait(t)))) return null;
-    runs.push({ firstHour: r[0], lastHour: r[1], value: { person: r[2], role: r[3], skill: r[4], components: r[5] as [number, number, number, number], traits: r[6], progress: r[7] } });
-  }
-  for (const run of runs) {
-    const progress = run.value.progress;
-    const fixed = (value: unknown) => typeof value === 'string' && /^-?(0|[1-9][0-9]*)$/.test(value) && BigInt(value) >= -(1n << 63n) && BigInt(value) < 1n << 63n;
-    if (progress !== null && (!object(progress) || !fixed(progress.experienceRaw)
-      || !(progress.nextRequiredRaw === null || fixed(progress.nextRequiredRaw))
-      || !(progress.training === null || Array.isArray(progress.training) && progress.training.every(t => object(t)
-        && (t.token === null || text(t.token)) && (t.name === null || text(t.name)) && fixed(t.experienceRaw)
-        && (t.requiredRaw === null || fixed(t.requiredRaw))))
-      || !(progress.factors === null || Array.isArray(progress.factors) && progress.factors.every(t => object(t)
-        && (t.token === null || text(t.token)) && (t.name === null || text(t.name)) && fixed(t.factorRaw))))) return null;
-  }
-  const traitGains: TraitGain[] = [];
-  for (const g of l.traitGains) {
-    if (!Array.isArray(g) || g.length !== 3 || !integer(g[0]) || !u32(g[1]) || !named.trait(g[1]) || !(g[2] === 0 || g[2] === 1 || g[2] === 2)) return null;
-    traitGains.push({ hour: g[0], token: g[1], date: g[2] === 0 ? 'heldBefore' : g[2] === 1 ? 'gained' : 'firstObserved' });
-  }
-  const at = l.atHour;
-  // A leader read at one hour carries its counts there, never its battle hours.
-  if (at !== undefined && (!object(at) || !integer(at.hour) || !integer(at.firstSeenHour) || !u32(at.fought)
-    || ['foughtHours', 'wonHours', 'lostHours', 'battleStarts'].some(field => l[field] !== undefined)
-    || !(at.won === null || u32(at.won)) || !(at.lost === null || u32(at.lost)) || (at.won === null) !== (at.lost === null)
-    || runs.length !== 1 || !(at.firstSeenHour <= runs[0].firstHour && runs[0].firstHour <= at.hour && at.hour <= runs[0].lastHour)
-    || at.won !== null && at.won + at.lost! > at.fought || traitGains.some(gain => gain.hour > (at.hour as number)))) return null;
-  if (!ordered(runs)
-    || !l.commands.every(c => span(c) && handle(c.formation) && (c.kind === 'army' || c.kind === 'armyGroup' || c.kind === 'fleet') && text(c.name)
-      && (c.nameReadHour === null || integer(c.nameReadHour) && c.firstHour <= c.nameReadHour && c.nameReadHour <= c.lastHour) && ordered(c.nameUnknown))) return null;
-  let hour = 0;
-  for (const [i, delta] of battleStarts.entries()) {
-    if (typeof delta !== 'number' || !Number.isSafeInteger(delta) || i > 0 && delta < 0 || !integer(hour + delta)) return null;
-    hour += delta; const read = startReads[i];
-    if (!integer(read) || read < hour || read < firstHour || hour < firstHour && !unknownStarts.includes(i)) return null;
-  }
-  const battleCount = battleStarts.length;
-  if (!unknownStarts.every((n, i, all) => u32(n) && n < battleCount && (!i || all[i - 1] < n))) return null;
-  const won = l.battleWon; const resultHours = l.battleResultHours; const resultReads = l.battleResultReadHours;
-  if ((won === undefined) !== (resultHours === undefined) || (won === undefined) !== (resultReads === undefined)) return null;
-  if (won !== undefined && (!Array.isArray(won) || !Array.isArray(resultHours) || !Array.isArray(resultReads) || resultReads.length !== won.length || won.length !== battleCount || resultHours.length !== won.length
-    || !won.every((w, i) => (w === null || typeof w === 'boolean') && (resultHours[i] === null || integer(resultHours[i])) && (w === null) === (resultHours[i] === null) && (w === null) === (resultReads[i] === null) && (resultReads[i] === null || integer(resultReads[i]) && resultReads[i] >= resultHours[i] && resultReads[i] >= firstHour)))) return null;
-  hour = 0;
-  if (Array.isArray(resultHours) && resultHours.some((result, i) => {
-    hour += battleStarts[i]; return result !== null && result < hour;
-  })) return null;
-  // Every decided result needs an earlier or same-hour participation of its own.
-  const foughtAt = l.foughtHours === undefined ? [] : visibleHours(l.foughtHours);
-  const wonAt = l.wonHours === undefined ? [] : visibleHours(l.wonHours);
-  const lostAt = l.lostHours === undefined ? [] : visibleHours(l.lostHours);
-  if (!foughtAt || !wonAt || !lostAt || (l.wonHours === undefined) !== (l.lostHours === undefined)
-    || (l.foughtHours === undefined ? l.wonHours !== undefined : l.battleStarts !== undefined)
-    || [...wonAt, ...lostAt].sort(ascending).some((at, i) => !(foughtAt[i] <= at))) return null;
-  return { ...l, runs, traitGains } as unknown as LeaderCareer;
+/** A leaderboard row as the table shows it: the wire row, its counts and its win rate among decided battles. */
+export interface LeaderRow {
+  key: string; hour: number; row: WireRow; name: string; role: LeaderRole; traits: readonly LeaderTrait[];
+  fought: number; won: number | null; lost: number | null; unresolved: number; winRate: number | null; foughtPartial: boolean;
 }
 
-/** Validate the compact wire format once, then expose ordinary runs to the kits. */
-export function validateUnitLeadersReply(input: unknown): UnitLeadersData {
-  const bad = () => { throw new Error('The unit leaders reply is malformed.'); };
-  if (!object(input) || !handle(input.branchId) || !integer(input.firstHour) || !Array.isArray(input.leaders) || !Array.isArray(input.people)
-    || !Array.isArray(input.roles) || !Array.isArray(input.traits)
-    || !Array.isArray(input.withheld)
-    || !ordered(input.observed) || !input.observed.every(s => ['leaders', 'landBattles', 'navalBattles', 'landCommands', 'navalCommands'].every(k => typeof s[k] === 'boolean'))
-    || !(input.selectionTags === undefined || Array.isArray(input.selectionTags) && input.selectionTags.every(opaqueTag))
-    || typeof input.resultsMissing !== 'string' || typeof input.navyCommandsMissing !== 'string'
-    || !Array.isArray(input.warnings) || !input.warnings.every(w => typeof w === 'string')) return bad();
-  if (input.preparing !== undefined && (!Array.isArray(input.preparing) || !input.preparing.every(field => typeof field === 'string'))) return bad();
-  if (!validWithheld(input.withheld, input.firstHour)) return bad();
-  if (!input.people.every(validPerson) || !input.traits.every(validTrait) || !input.roles.every(validRole)) return bad();
-  const people = input.people.length, roles = input.roles.length, traits = input.traits.length;
-  const named: Named = { firstHour: input.firstHour, person: i => i < people, role: i => i < roles, trait: i => i < traits };
-  const keys = new Set<string>(); const leaders: LeaderCareer[] = [];
-  for (const l of input.leaders) {
-    const leader = wireLeader(l, named);
-    if (!leader || keys.has(String(leader.reference))) return bad();
-    keys.add(String(leader.reference));
-    leaders.push(leader);
-  }
-  if (new Set(input.traits.map(t => (t as Record<string, unknown>).token)).size !== input.traits.length) return bad();
-  const reply = { ...input, leaders } as unknown as UnitLeadersData;
-  for (const leader of reply.leaders) battleHours(leader);
-  return reply;
+/** The counts a leader's battles give: won and lost not recorded where the battle log was not, unresolved the rest. */
+export function battleTotals(fought: number, won: number, lost: number, partial: boolean) {
+  const decided = won + lost;
+  return { fought, won, lost, unresolved: Math.max(0, fought - decided), winRate: decided ? won * 100 / decided : null, foughtPartial: partial };
 }
 
-/** Withheld leaders whose spans start at or after the first hour, each named once, each leader's spans apart. */
-function validWithheld(withheld: unknown[], firstHour: number): boolean {
-  const withheldKeys = new Set<string>(); const withheldSpans = new Map<string, { firstHour: number; lastHour: number }[]>();
-  for (const w of withheld) {
-    if (!object(w) || !handle(w.reference) || !(w.owner === null || opaqueTag(w.owner)) || !(w.kind === 1 || w.kind === 2) || !text(w.name) || !text(w.detail)
-      || typeof w.reason !== 'string' || !w.reason.length || !ordered(w.spans) || !w.spans.length
-      || !w.spans.every(s => integer(s.firstHour) && integer(s.lastHour) && s.firstHour >= firstHour)) return false;
-    const key = JSON.stringify([w.reference, w.owner, w.kind, w.name, w.reason, w.detail]);
-    if (withheldKeys.has(key)) return false;
-    withheldKeys.add(key);
-    const spans = withheldSpans.get(w.reference) ?? []; for (const span of w.spans) spans.push(span); withheldSpans.set(w.reference, spans);
-  }
-  for (const spans of withheldSpans.values()) if (!ordered(spans.sort((a, b) => a.firstHour - b.firstHour))) return false;
-  return true;
+export const leaderName = (row: { name: string | null }) => row.name ?? 'Character name unavailable';
+export const attributeNames = (role: Pick<LeaderRole, 'attributeNames'>) => role.attributeNames.map(name => name ?? 'Name not recorded');
+
+/** The leaderboard's rows at `hour`, of the kinds asked and the countries shown (`null` every country). */
+export function leaderRows(reply: UnitLeadersReply, hour: number, countries: ReadonlySet<string> | null, kind: LeaderKinds): LeaderRow[] {
+  const partial = reply.battlesPartialFrom !== null && reply.battlesPartialFrom <= hour;
+  return reply.leaders.flatMap(row => {
+    if (kind !== 'all' && row.role.kind !== (kind === 'navy' ? KIND_NAVY : KIND_ARMY)) return [];
+    if (countries && !(row.role.owner !== null && countries.has(row.role.owner))) return [];
+    return [{ key: row.reference, hour, row, name: leaderName(row), role: row.role, traits: (row.traits ?? []).map(at => reply.traits[at]),
+      ...battleTotals(row.fought, row.won, row.lost, partial) }];
+  });
 }
 
-const numbered = <T,>(entries: unknown, valid: (entry: unknown) => boolean): entries is [number, T][] => Array.isArray(entries)
-  && entries.every((entry, i) => Array.isArray(entry) && entry.length === 2 && u32(entry[0]) && (!i || (entries[i - 1] as [number])[0] < entry[0]) && valid(entry[1]));
-
-/** Checks a leaderboard's rows at an hour ([`UnitLeadersHourReply`]): its envelope and the numbered people, roles and
- * traits it adds. Rows are checked as they are joined, against what the reply and the rows held name. */
-export function validateLeaderHourReply(input: unknown): UnitLeadersHourReply {
-  const bad = () => { throw new Error('The unit leaders reply is malformed.'); };
-  if (!object(input) || !handle(input.branchId) || !integer(input.firstHour) || !integer(input.hour)
-    || !(input.index === null || typeof input.index === 'string') || !(input.since === null || integer(input.since))
-    || input.since !== null && input.index === null
-    || !Array.isArray(input.leaders) || !Array.isArray(input.ended) || !input.ended.every(handle)
-    || !numbered(input.people, validPerson) || !numbered(input.roles, validRole) || !numbered(input.traits, validTrait)
-    || !Array.isArray(input.withheld) || !validWithheld(input.withheld, input.firstHour)
-    || !ordered(input.observed) || !input.observed.every(s => ['leaders', 'landBattles', 'navalBattles', 'landCommands', 'navalCommands'].every(k => typeof s[k] === 'boolean'))
-    || !(input.selectionTags === undefined || Array.isArray(input.selectionTags) && input.selectionTags.every(opaqueTag))
-    || typeof input.resultsMissing !== 'string' || typeof input.navyCommandsMissing !== 'string'
-    || !Array.isArray(input.warnings) || !input.warnings.every(w => typeof w === 'string')) return bad();
-  if (input.preparing !== undefined && (!Array.isArray(input.preparing) || !input.preparing.every(field => typeof field === 'string'))) return bad();
-  if (new Set(input.traits.map(([, trait]) => (trait as { token: string }).token)).size !== input.traits.length) return bad();
-  return input as unknown as UnitLeadersHourReply;
+export function withheldLeaders(reply: UnitLeadersReply, countries: ReadonlySet<string> | null, kind: LeaderKinds): LeaderWithheld[] {
+  return reply.withheld.filter(leader => (kind === 'all' || leader.kind === (kind === 'navy' ? KIND_NAVY : KIND_ARMY))
+    && (leader.owner === null || countries === null || countries.has(leader.owner)));
 }
 
-/** The rows a leaderboard holds at an hour as playback joined them: each leader's row, and every person, role and
- * trait by the index's number, never dropped while the index stands. */
-export interface HeldLeaders { reply: UnitLeadersHourReply; leaders: Map<string, LeaderCareer>; people: Map<number, LeaderPerson>;
-  roles: Map<number, LeaderRole>; traits: Map<number, UnitLeadersData['traits'][number]>; selectionTags?: string[]; data: UnitLeadersData }
-
-/** `reply` joined to `held`, the rows held at the hour it was read against (none for a whole reply), as the leaderboard
- * a whole reply at its hour gives: people, roles and traits numbered as the rows first name them. Null when the reply
- * was read against rows other than those held. */
-export function joinLeaderHour(held: HeldLeaders | null, reply: UnitLeadersHourReply): HeldLeaders | null {
-  const against = reply.since === null ? null : held;
-  if (reply.since !== null && (!against || against.reply.hour !== reply.since || against.reply.index !== reply.index)) return null;
-  const bad = () => { throw new Error('The unit leaders reply is malformed.'); };
-  const people = new Map(against?.people), roles = new Map(against?.roles), traits = new Map(against?.traits);
-  for (const [at, person] of reply.people) people.set(at, person);
-  for (const [at, role] of reply.roles) roles.set(at, role as LeaderRole);
-  for (const [at, trait] of reply.traits) traits.set(at, trait);
-  const leaders = new Map(against?.leaders);
-  for (const reference of reply.ended) if (!leaders.delete(reference)) return bad();
-  const named: Named = { firstHour: reply.firstHour, person: i => people.has(i), role: i => roles.has(i), trait: i => traits.has(i) };
-  const changed = new Set<string>();
-  for (const l of reply.leaders) {
-    const leader = wireLeader(l, named);
-    if (!leader || changed.has(leader.reference) || reply.ended.includes(leader.reference)) return bad();
-    changed.add(leader.reference);
-    leaders.set(leader.reference, leader);
-  }
-  // A held row read at another hour is that row at this hour: its counts and gains hold until it changes.
-  for (const [reference, leader] of leaders) if (!changed.has(reference) && leader.atHour && leader.atHour.hour !== reply.hour) {
-    const run = leader.runs[0];
-    if (!run || run.firstHour > reply.hour || reply.hour > run.lastHour) return bad();
-    leaders.set(reference, { ...leader, atHour: { ...leader.atHour, hour: reply.hour } });
-  }
-  const selectionTags = reply.since === null ? reply.selectionTags : against!.selectionTags;
-  const data = compactLeaders(reply, [...leaders.values()], people, roles, traits, selectionTags);
-  return { reply, leaders, people, roles, traits, selectionTags, data };
-}
-
-/** The leaderboard a whole reply gives of `leaders`: only the people, roles and traits they name, numbered in the
- * index's order, as the native reply numbers them. */
-function compactLeaders(reply: UnitLeadersHourReply, leaders: LeaderCareer[], people: Map<number, LeaderPerson>, roles: Map<number, LeaderRole>,
-  traits: Map<number, UnitLeadersData['traits'][number]>, selectionTags: string[] | undefined): UnitLeadersData {
-  const usedPeople = new Set<number>(), usedRoles = new Set<number>(), usedTraits = new Set<number>();
-  for (const leader of leaders) {
-    for (const run of leader.runs) {
-      usedPeople.add(run.value.person); usedRoles.add(run.value.role);
-      for (const token of run.value.traits ?? []) usedTraits.add(token);
-    }
-    for (const gain of leader.traitGains) usedTraits.add(gain.token);
-  }
-  const renumber = (used: Set<number>) => new Map([...used].sort(ascending).map((old, index) => [old, index]));
-  const person = renumber(usedPeople), role = renumber(usedRoles), trait = renumber(usedTraits);
-  const shown = leaders.map(leader => ({ ...leader,
-    runs: leader.runs.map(run => ({ ...run, value: { ...run.value, person: person.get(run.value.person)!, role: role.get(run.value.role)!,
-      traits: run.value.traits && run.value.traits.map(token => trait.get(token)!) } })),
-    traitGains: leader.traitGains.map(gain => ({ ...gain, token: trait.get(gain.token)! })) }));
-  const { hour: _hour, index: _index, since: _since, leaders: _leaders, ended: _ended, people: _people, roles: _roles, traits: _traits,
-    selectionTags: _selectionTags, ...rest } = reply as UnitLeadersHourReply & Record<string, unknown>;
-  return { ...rest, leaders: shown,
-    people: [...person.keys()].map(at => people.get(at)!), roles: [...role.keys()].map(at => roles.get(at)!), traits: [...trait.keys()].map(at => traits.get(at)!),
-    ...(selectionTags === undefined ? {} : { selectionTags }) } as unknown as UnitLeadersData;
-}
-export interface LeaderRow { key: string; hour: number; career: LeaderCareer; value: LeaderValues & LeaderRole; person: LeaderPerson; traitCatalogue: UnitLeadersData['traits']; fought: number | null; preparing: boolean; foughtPartial: boolean; won: number | null; lost: number | null; winRate: number | null; unresolved: number | null }
-
-export function withheldLeadersAt(reply: UnitLeadersData, hour: number, countries: ReadonlySet<string> | null, kind: string) {
-  return reply.withheld.filter(leader => (kind === 'all' || leader.kind === (kind === 'navy' ? 2 : 1))
-    && (leader.owner === null || countries === null || countries.has(leader.owner)) && runAt(leader.spans, hour));
-}
-
-export function withheldLeaderState(leaders: UnitLeadersData['withheld'], country?: string) {
+export function withheldLeaderState(leaders: readonly LeaderWithheld[], country?: string) {
   const count = new Set(leaders.map(leader => leader.reference)).size;
   const owners = country ? `of ${country}’s` : 'of these countries’';
   return {
     message: `${count} ${owners} ${count === 1 ? 'leader' : 'leaders'} can’t be shown: ${[...new Set(leaders.map(leader => leader.reason))].join('; ')}`,
-    detail: leaders.map(leader => `${leader.name ?? `Leader ${leader.reference}`}: ${leader.reason}${leader.detail ? `; ${leader.detail}` : ''}`).join('\n'),
+    detail: leaders.map(leader => `${leader.name ?? `Leader ${leader.reference}`}: ${leader.reason}`).join('\n'),
   };
 }
 
-/** Current battle-table coverage, shared by every row of the same kind/hour. */
-export function battleHistoryComplete(reply: UnitLeadersData, kind: number, hour: number): boolean {
-  const read = runAt(reply.observed, hour);
-  return !!read && (kind === 1 ? read.landBattles : read.navalBattles);
-}
-const startsCache = new WeakMap<LeaderCareer, { encoded: LeaderCareer['battleStarts']; starts: readonly number[] }>();
-export function battleStarts(leader: LeaderCareer): readonly number[] {
-  let cached = startsCache.get(leader);
-  if (!cached || cached.encoded !== leader.battleStarts) {
-    cached = { encoded: leader.battleStarts, starts: decode(leader.battleStarts ?? []) };
-    startsCache.set(leader, cached);
-  }
-  return cached.starts;
-}
-const BATTLE_FIELDS = ['foughtHours', 'wonHours', 'lostHours', 'battleStarts', 'battleStartReadHours', 'battleWon', 'battleResultHours', 'battleResultReadHours'] as const;
-interface BattleHours { from: LeaderCareer; fought: readonly number[]; won: readonly number[] | null; lost: readonly number[] | null }
-const hoursCache = new WeakMap<LeaderCareer, BattleHours>();
-/** Sorted hours each participation and known win or loss became visible: leaderboards list them; careers derive them from their records. */
-function battleHours(leader: LeaderCareer): BattleHours {
-  const cached = hoursCache.get(leader);
-  if (cached && BATTLE_FIELDS.every(field => cached.from[field] === leader[field])) return cached;
-  let hours: BattleHours;
-  if (leader.foughtHours) {
-    hours = { from: { ...leader }, fought: decode(leader.foughtHours), won: leader.wonHours ? decode(leader.wonHours) : null, lost: leader.lostHours ? decode(leader.lostHours) : null };
-  } else {
-    // A participation shows from its date and first read; a result also waits for its own date and read.
-    const reads = leader.battleStartReadHours ?? []; const outcomes = leader.battleWon; const resultHours = leader.battleResultHours; const resultReads = leader.battleResultReadHours;
-    const shown = battleStarts(leader).map((hour, i) => Math.max(hour, reads[i]));
-    const results = (outcome: boolean) => outcomes && resultHours && resultReads
-      ? shown.flatMap((hour, i) => outcomes[i] === outcome ? [Math.max(hour, resultHours[i]!, resultReads[i]!)] : []).sort(ascending) : null;
-    const won = results(true); const lost = results(false);
-    hours = { from: { ...leader }, fought: shown.sort(ascending), won, lost };
-  }
-  hoursCache.set(leader, hours);
-  return hours;
-}
-/** How many sorted hours are at or before `hour`. */
-const through = (hours: readonly number[], hour: number) => {
-  let lo = 0; let hi = hours.length;
-  while (lo < hi) { const mid = (lo + hi) >>> 1; if (hours[mid] <= hour) lo = mid + 1; else hi = mid; }
-  return lo;
-};
-export function battleTotals(leader: LeaderCareer, hour: number) {
-  const at = leader.atHour;
-  // A leader read at one hour has no totals at another.
-  if (at && at.hour !== hour) return { fought: null, won: null, lost: null, winRate: null, unresolved: null };
-  const hours = at ? null : battleHours(leader); const fought = at ? at.fought : through(hours!.fought, hour);
-  const known = at ? at.won !== null && at.lost !== null : !!hours!.won && !!hours!.lost;
-  if (!known) return { fought, won: null, lost: null, winRate: null, unresolved: fought };
-  const won = at ? at.won! : through(hours!.won!, hour); const lost = at ? at.lost! : through(hours!.lost!, hour);
-  const decided = won + lost;
-  return { fought, won, lost, winRate: decided ? won * 100 / decided : null, unresolved: fought - decided };
-}
-export function leaderAt(reply: UnitLeadersData, leader: LeaderCareer, hour: number, coverage?: ReadonlyMap<number, boolean>): LeaderRow | null {
-  // A leaderboard read at one hour answers only that hour.
-  if (leader.atHour && leader.atHour.hour !== hour) return null;
-  const run = runAt(leader.runs, hour); if (!run) return null;
-  const role = reply.roles[run.value.role]; const totals = battleTotals(leader, hour);
-  const preparing = reply.preparing?.includes('battles') === true;
-  const foughtPartial = leader.partialFrom != null && leader.partialFrom <= hour || !(coverage?.get(role.kind) ?? battleHistoryComplete(reply, role.kind, hour));
-  return { key: leader.reference, hour, career: leader, value: { ...run.value, ...role }, person: reply.people[run.value.person], traitCatalogue: reply.traits, ...totals,
-    foughtPartial, preparing, ...(preparing ? { fought: null, won: null, lost: null, unresolved: null, winRate: null } : { fought: totals.fought }) };
-}
-export function leadersAt(reply: UnitLeadersData, hour: number, countries: ReadonlySet<string> | null, kind: string): LeaderRow[] {
-  const coverage = new Map([1, 2].map(k => [k, battleHistoryComplete(reply, k, hour)]));
-  return reply.leaders.flatMap(l => { const row = leaderAt(reply, l, hour, coverage); return row && (!countries || row.value.owner != null && countries.has(row.value.owner))
-    && (kind === 'all' || row.value.kind === (kind === 'navy' ? 2 : 1)) ? [row] : []; });
-}
 export const leaderKey = (row: LeaderRow) => row.key;
-export const leaderSkill = (row: LeaderRow) => row.value.skill;
-// Keyed by column, so a different default sort column fails to compile here.
+export const leaderSkill = (row: LeaderRow) => row.row.skill;
 const defaultSortValue = { skill: leaderSkill }[DEFAULT_SORT.column];
 /** The leaderboard's first row at its default sort, when that row's sort value is recorded. */
 export function topLeader(rows: readonly LeaderRow[]): LeaderRow | null {
@@ -345,122 +85,124 @@ export function topLeader(rows: readonly LeaderRow[]): LeaderRow | null {
   return first && defaultSortValue(first) != null ? first : null;
 }
 
-/** Warm owner changes, then read header and hover identities at their exact hours. */
-export function careerCountryFacts(reply: UnitLeadersData, leader: LeaderCareer, hour: number, hoveredHour: number | null): NameAt[] {
-  const wanted = new Map<string, NameAt>();
-  const add = (hour: number, owner: string | null) => { if (owner) wanted.set(nameKey(hour, owner), { hour, tag: owner }); };
-  let previous: LeaderRun | undefined;
-  for (const run of leader.runs) {
-    const owner = reply.roles[run.value.role].owner;
-    if (!previous || previous.lastHour + 1 !== run.firstHour || reply.roles[previous.value.role].owner !== owner) add(run.firstHour, owner);
-    previous = run;
-  }
-  for (const at of hoveredHour == null ? [hour] : [hour, hoveredHour]) {
-    const run = runAt(leader.runs, at);
-    if (run) add(at, reply.roles[run.value.role].owner);
-  }
-  return [...wanted.values()];
-}
-export const leaderName = (row: { person: Pick<LeaderPerson, 'name'> }) => row.person.name ?? 'Character name unavailable';
-export const attributeNames = (role: Pick<LeaderRole, 'attributeNames'>) => role.attributeNames.map(name => name ?? 'Name not recorded');
-/** The first hour the leader was seen, whether the reply carries its whole career or one hour of it. */
-export const firstSeenHour = (leader: LeaderCareer): number | undefined => leader.atHour?.firstSeenHour ?? leader.runs[0]?.firstHour;
-export const recordedSince = (leader: LeaderCareer, recordingStart: number) => `Battles since ${formatDateTime(firstSeenHour(leader) ?? recordingStart)}`;
-
-export function careerEmptyEntry(reply: UnitLeadersData, leader: LeaderCareer, laneId: string, hour: number): string {
-  const run = runAt(leader.runs, hour);
-  if (!run) return 'Leader unavailable.';
-  const kind = reply.roles[run.value.role].kind;
-  const observed = runAt(reply.observed, hour);
-  if (laneId === 'commands') return observed && (kind === 1 ? observed.landCommands : observed.navalCommands)
-    ? 'No command.' : 'Command data unavailable.';
-  if (laneId === 'battles') return battleHistoryComplete(reply, kind, hour)
-    ? 'No recorded participation at this hour' : 'Battle data unavailable.';
-  return 'No recorded entry at this hour';
-}
+export const recordedSince = (firstSeen: number | null, recordingStart: number) => `Battles since ${formatDateTime(firstSeen ?? recordingStart)}`;
 
 /** A count from an incomplete battle history is a lower bound. */
-const atLeast = (row: LeaderRow, count: number | null) => count == null ? '—' : row.foughtPartial ? `at least ${count}` : String(count);
+const atLeast = (partial: boolean, count: number | null) => count == null ? '—' : partial ? `at least ${count}` : String(count);
+
+export function traitDateText(date: TraitDate | null): string {
+  return date ? `${DATES[date[1]] ?? 'Held by'} ${formatDateTime(date[0])}` : 'Date not recorded';
+}
 
 export function leaderTooltip(row: LeaderRow, country: { name: string; flag?: string; nameFailure?: Error; nameDetail?: string }): TooltipContent {
-  const dates = new Map(row.career.traitGains.filter(g => g.hour <= row.hour).map(g => [g.token, g]));
-  const names = attributeNames(row.value);
-  return { ...countryNameDetails(country), title: leaderName(row), subtitle: `${country.name} · ${row.value.rank ?? `Rank ${row.value.category}`} · ${formatDateTime(row.hour)}`,
-    rows: [{ label: 'Skill', value: row.value.skill == null ? 'Not recorded' : `${row.value.skill}${row.value.maximumSkill == null ? '' : ` / ${row.value.maximumSkill}`}` },
-      { label: `${names[0]} · ${names[1]}`, value: `${row.value.components[0]} · ${row.value.components[1]}` },
-      { label: `${names[2]} · ${names[3]}`, value: `${row.value.components[2]} · ${row.value.components[3]}` },
-      { label: 'Battles won / fought', value: row.preparing ? 'Still being prepared' : `${row.won == null ? 'Result not recorded' : atLeast(row, row.won)} / ${atLeast(row, row.fought)}`, divider: true },
-      { label: 'Battles lost', value: row.preparing ? 'Still being prepared' : row.lost == null ? 'Result not recorded' : atLeast(row, row.lost) },
-      { label: 'Unresolved battles', value: row.preparing ? 'Still being prepared' : atLeast(row, row.unresolved) },
-      ...row.foughtPartial && !row.preparing ? [{ label: 'Battle counts are incomplete: some battles were not recorded.', tone: 'muted' as const }] : [],
-      { label: 'Win rate', value: row.preparing ? 'Still being prepared' : row.winRate == null ? row.won == null ? 'Result not recorded' : 'No battles with known results.' : `${Math.round(row.winRate)}%` },
-      ...(row.value.traits?.length === 0 ? [{ label: 'Traits', value: 'None recorded', divider: true }] : row.value.traits?.map((token, i) => {
-        const gain = dates.get(token); const trait = row.traitCatalogue[token];
-        return { label: contentTitle(trait.name, trait.token, 'Trait name unavailable'), icon: trait.icon ?? undefined, divider: i === 0,
-          value: row.preparing ? 'Still being prepared' : gain ? `${gain.date === 'heldBefore' ? 'Held before' : gain.date === 'gained' ? 'Gained' : 'Held by'} ${formatDateTime(gain.hour)}` : 'Date not recorded' };
-      }) ?? [{ label: 'Traits not recorded', divider: true }])],
+  const names = attributeNames(row.role);
+  const { components } = row.row;
+  return { ...countryNameDetails(country), title: row.name, subtitle: `${country.name} · ${row.role.rank ?? `Rank ${row.role.category}`} · ${formatDateTime(row.hour)}`,
+    rows: [{ label: 'Skill', value: row.row.skill == null ? 'Not recorded' : `${row.row.skill}${row.role.maximumSkill == null ? '' : ` / ${row.role.maximumSkill}`}` },
+      { label: `${names[0]} · ${names[1]}`, value: `${components[0]} · ${components[1]}` },
+      { label: `${names[2]} · ${names[3]}`, value: `${components[2]} · ${components[3]}` },
+      { label: 'Battles won / fought', value: `${atLeast(row.foughtPartial, row.won)} / ${atLeast(row.foughtPartial, row.fought)}`, divider: true },
+      { label: 'Battles lost', value: atLeast(row.foughtPartial, row.lost) },
+      { label: 'Unresolved battles', value: atLeast(row.foughtPartial, row.unresolved) },
+      ...row.foughtPartial ? [{ label: 'Battle counts are incomplete: some battles were not recorded.', tone: 'muted' as const }] : [],
+      { label: 'Win rate', value: row.winRate == null ? 'No battles with known results.' : `${Math.round(row.winRate)}%` },
+      ...(row.row.traits === null ? [{ label: 'Traits not recorded', divider: true }] : row.traits.length === 0 ? [{ label: 'Traits', value: 'None recorded', divider: true }]
+        : row.traits.map((trait, i) => ({ label: contentTitle(trait.name, trait.token, 'Trait name unavailable'), icon: trait.icon ?? undefined, divider: i === 0,
+          value: traitDateText(row.row.traitDates[i] ?? null) })))],
   };
 }
 
-export function careerLanes(reply: UnitLeadersData, leader: LeaderCareer, firstHour: number, lastHour: number, readHour = lastHour): TimelineLane[] {
-  const traits = new Map(reply.traits.map((t, i) => [i, t]));
-  const skill: TimelineSpan[] = leader.runs.flatMap((run, i) => {
-    if (run.value.skill == null || run.firstHour > lastHour || run.lastHour < firstHour) return [];
-    const previous = leader.runs[i - 1];
-    const consecutive = previous && previous.lastHour + 1 === run.firstHour && previous.value.skill != null;
-    const gain = consecutive && run.value.skill > previous.value.skill!;
-    const date = run.firstHour === reply.firstHour ? 'Held before' : gain ? 'Level up' : consecutive ? null : 'First seen';
-    return [{ id: `skill:${run.firstHour}`, firstHour: Math.max(firstHour, run.firstHour), lastHour: Math.min(lastHour, run.lastHour), value: run.value.skill, dot: !!gain && run.firstHour >= firstHour,
-      label: `Skill ${run.value.skill}${date ? ` · ${date} ${formatDateTime(run.firstHour)}` : ''}` }];
-  });
-  const held = runAt(leader.runs, firstHour)?.value.traits ?? [];
-  const earlier = leader.traitGains.filter(g => g.hour < firstHour && held.includes(g.token)).filter((g, i, all) => !all.slice(i + 1).some(other => other.token === g.token));
-  const dates = new Map<number, TimelineSpan>();
-  for (const g of [...earlier.map(g => ({ ...g, hour: firstHour, date: 'heldBefore' as const })), ...leader.traitGains.filter(g => g.hour >= firstHour && g.hour <= lastHour)]) {
-    const label = `${contentTitle(traits.get(g.token)?.name, g.token, 'Trait name unavailable')} · ${g.date === 'heldBefore' ? 'Held before' : g.date === 'gained' ? 'Gained' : 'First seen'} ${formatDateTime(g.hour)}`;
-    const previous = dates.get(g.hour);
-    dates.set(g.hour, { id: `trait:${g.hour}`, firstHour: g.hour, lastHour: g.hour, marker: true,
-      label: previous ? `${previous.label}; ${label}` : label, icons: [...(previous?.icons ?? []), traits.get(g.token)?.icon ?? undefined] });
+/** A career's counts at `hour`: each participation shown from its read, a result from its own read. */
+export function careerTotals(career: LeaderCareerReply, hour: number) {
+  let fought = 0; let won = 0; let lost = 0;
+  for (const battle of career.battles) {
+    if (Math.max(battle.start, battle.read) > hour) continue;
+    fought++;
+    if (battle.won !== null && battle.resultRead !== null && battle.resultRead <= hour && (battle.resultHour ?? battle.resultRead) <= hour) {
+      if (battle.won) won++; else lost++;
+    }
   }
-  const gains = [...dates.values()];
-  const commands = stackedSpans(leader.commands.filter(c => c.firstHour <= lastHour && c.lastHour >= firstHour).map(c => ({ id: `command:${c.formation}:${c.firstHour}`, firstHour: Math.max(firstHour, c.firstHour), lastHour: Math.min(lastHour, c.lastHour), label: c.nameReadHour != null && c.nameReadHour <= lastHour && c.name !== null ? c.name : `${c.kind === 'fleet' ? 'Fleet' : 'Formation'} ${c.formation}` })));
-  // Separate neutral fought counts from the result series, so joined outcomes can
-  // replace them with won above and lost below the shared monthly axis.
+  return battleTotals(fought, won, lost, career.battlesPartialFrom !== null && career.battlesPartialFrom <= hour);
+}
+
+/** The run of `career` holding `hour`. */
+export function runAt(career: LeaderCareerReply, hour: number) {
+  return career.runs.find(run => run.firstHour <= hour && hour <= run.lastHour);
+}
+
+export function careerEmptyEntry(career: LeaderCareerReply, laneId: string, hour: number): string {
+  const run = runAt(career, hour);
+  if (!run) return 'Leader unavailable.';
+  if (laneId === 'commands') return 'No command.';
+  if (laneId === 'battles') return career.battlesPartialFrom !== null && career.battlesPartialFrom <= hour ? 'Battle data unavailable.' : 'No recorded participation at this hour';
+  return 'No recorded entry at this hour';
+}
+
+function battleMonths(battles: readonly CareerBattle[], firstHour: number, lastHour: number, readHour: number) {
   const months = new Map<number, { first: number; last: number; count: number; unknown: number; won: number; lost: number }>();
-  const unknown = new Set(leader.unknownBattleStarts); const startReads = leader.battleStartReadHours ?? [];
-  for (const [i, first] of battleStarts(leader).entries()) {
-    if (first > lastHour || startReads[i] > readHour) continue;
-    const date = gameDate(first); const index = date ? monthIndex(date) : first;
-    const start = date ? firstHourOfMonth(index) : first; const end = date ? firstHourOfMonth(index + 1) - 1 : first;
+  for (const battle of battles) {
+    if (battle.start > lastHour || battle.read > readHour) continue;
+    const date = gameDate(battle.start); const index = date ? monthIndex(date) : battle.start;
+    const start = date ? firstHourOfMonth(index) : battle.start; const end = date ? firstHourOfMonth(index + 1) - 1 : battle.start;
     // A combat already under way when recording began keeps its month, drawn from the first hour.
     if (end < firstHour) continue;
     const month = months.get(index) ?? { first: Math.max(firstHour, start), last: Math.min(lastHour, end), count: 0, unknown: 0, won: 0, lost: 0 };
-    if (unknown.has(i)) month.unknown++;
-    const won = leader.battleWon?.[i]; const resultHour = leader.battleResultHours?.[i]; const resultRead = leader.battleResultReadHours?.[i];
-    if (won != null && resultHour != null && resultHour <= lastHour && resultRead != null && resultRead <= readHour) { if (won) month.won++; else month.lost++; }
+    if (battle.unknown) month.unknown++;
+    if (battle.won !== null && battle.resultHour !== null && battle.resultHour <= lastHour && battle.resultRead !== null && battle.resultRead <= readHour) {
+      if (battle.won) month.won++; else month.lost++;
+    }
     month.count++; months.set(index, month);
   }
-  const kind = reply.roles[leader.runs[0]?.value.role]?.kind;
-  const battles = [...months].flatMap(([key, m]) => reply.observed.filter(o => (kind === 1 ? o.landBattles : o.navalBattles) && o.firstHour <= m.last && o.lastHour >= m.first).map(o => ({
-    id: `battle:${key}:${o.firstHour}`, firstHour: Math.max(o.firstHour, m.first), lastHour: Math.min(o.lastHour, m.last), value: m.count,
-    positiveCount: leader.battleWon ? m.won : undefined, negativeCount: leader.battleWon ? m.lost : undefined,
-    label: `Fought ${m.count} this month${m.unknown ? ` · ${m.unknown} unknown combat start` : ''}${leader.battleWon ? ` · ${m.won} won · ${m.lost} lost · ${m.count - m.won - m.lost} unresolved` : ' · Battle results are not in this recording'}` })));
-  const visibleBattles = clipToSpans(battles, leader.runs).reduce<TimelineSpan[]>((spans, span) => {
+  return months;
+}
+
+/** The career's lanes from `firstHour` through `lastHour`, as read by `readHour`: skill runs, trait dates, commands, battles a month. */
+export function careerLanes(career: LeaderCareerReply, firstHour: number, lastHour: number, readHour = lastHour): TimelineLane[] {
+  const runs = career.runs;
+  const skill: TimelineSpan[] = runs.flatMap((run, i) => {
+    if (run.skill == null || run.firstHour > lastHour || run.lastHour < firstHour) return [];
+    const previous = runs[i - 1];
+    const consecutive = previous && previous.lastHour + 1 === run.firstHour && previous.skill != null;
+    const gain = consecutive && run.skill > previous.skill!;
+    const first = career.observed[0]?.[0];
+    const date = run.firstHour === first ? 'Held before' : gain ? 'Level up' : consecutive ? null : 'First seen';
+    return [{ id: `skill:${run.firstHour}`, firstHour: Math.max(firstHour, run.firstHour), lastHour: Math.min(lastHour, run.lastHour), value: run.skill,
+      dot: !!gain && run.firstHour >= firstHour, label: `Skill ${run.skill}${date ? ` · ${date} ${formatDateTime(run.firstHour)}` : ''}` }];
+  });
+  const earlier = new Map<number, [number, number, number]>();
+  for (const gain of career.traitGains) if (gain[0] < firstHour) earlier.set(gain[1], gain);
+  const dates = new Map<number, TimelineSpan>();
+  for (const [hour, at, date] of [...[...earlier.values()].map(([, at]) => [firstHour, at, 0] as [number, number, number]),
+    ...career.traitGains.filter(([hour]) => hour >= firstHour && hour <= lastHour)]) {
+    const trait = career.traits[at];
+    const label = `${contentTitle(trait?.name, trait?.token ?? String(at), 'Trait name unavailable')} · ${date === 0 ? 'Held before' : date === 1 ? 'Gained' : 'First seen'} ${formatDateTime(hour)}`;
+    const previous = dates.get(hour);
+    dates.set(hour, { id: `trait:${hour}`, firstHour: hour, lastHour: hour, marker: true,
+      label: previous ? `${previous.label}; ${label}` : label, icons: [...(previous?.icons ?? []), trait?.icon ?? undefined] });
+  }
+  const commands = stackedSpans(career.commands.filter(c => c.firstHour <= lastHour && c.lastHour >= firstHour).map(c => ({ id: `command:${c.formation}:${c.firstHour}`,
+    firstHour: Math.max(firstHour, c.firstHour), lastHour: Math.min(lastHour, c.lastHour), label: c.name ?? `${c.kind === 'fleet' ? 'Fleet' : 'Formation'} ${c.formation}` })));
+  const months = battleMonths(career.battles, firstHour, lastHour, readHour);
+  const kind = runs[0]?.role.kind;
+  const recorded = (from: number, to: number) => career.observed.filter(([a, b]) => a <= to && b >= from && !(kind !== undefined && career.battlesPartialFrom !== null && career.battlesPartialFrom <= a));
+  const battles = [...months].flatMap(([key, m]) => recorded(m.first, m.last).map(([a, b]) => ({
+    id: `battle:${key}:${a}`, firstHour: Math.max(a, m.first), lastHour: Math.min(b, m.last), value: m.count, positiveCount: m.won, negativeCount: m.lost,
+    label: `Fought ${m.count} this month${m.unknown ? ` · ${m.unknown} unknown combat start` : ''} · ${m.won} won · ${m.lost} lost · ${m.count - m.won - m.lost} unresolved` })));
+  const visibleBattles = clipToSpans(battles, runs).reduce<TimelineSpan[]>((spans, span) => {
     const last = spans.at(-1);
     if (last && last.lastHour + 1 === span.firstHour && last.label === span.label) last.lastHour = span.lastHour;
     else spans.push({ ...span, id: `${span.id}:${span.firstHour}` });
     return spans;
   }, []);
   return [
-    { id: 'skill', label: 'Skill', compact: true, stepMax: leader.runs.filter(r => r.firstHour <= lastHour && r.lastHour >= firstHour).reduce((max, r) => Math.max(max, reply.roles[r.value.role].maximumSkill ?? r.value.skill ?? 1), 1), spans: skill },
-    { id: 'traits', label: 'Traits', compact: true, spans: gains },
+    { id: 'skill', label: 'Skill', compact: true, stepMax: runs.filter(r => r.firstHour <= lastHour && r.lastHour >= firstHour).reduce((max, r) => Math.max(max, r.role.maximumSkill ?? r.skill ?? 1), 1), spans: skill },
+    { id: 'traits', label: 'Traits', compact: true, spans: [...dates.values()] },
     { id: 'commands', label: 'Commands', compact: true, spans: commands },
     { id: 'battles', label: 'Battles', compact: true, barMax: [...months.values()].reduce((max, month) => Math.max(max, month.count), 1), spans: visibleBattles },
   ];
 }
 
-export function pinnedCareer(source: WidgetSpec, reference: string, track: Pick<BoundTrack, 'id' | 'branch' | 'source'>,
-  hour: number, follow: boolean): WidgetSpec {
+export function pinnedCareer(source: WidgetSpec, reference: string, track: Pick<BoundTrack, 'id' | 'branch' | 'source'>, hour: number, follow: boolean): WidgetSpec {
   const base = createWidget('general-career', track.id);
   const time: WidgetSpec['time'] = follow ? { mode: 'follow' } : { mode: 'pin', windows: {
     [track.id]: { firstOffset: 0, lastOffset: Math.floor(hour) - track.branch.firstHour },
@@ -470,6 +212,12 @@ export function pinnedCareer(source: WidgetSpec, reference: string, track: Pick<
     contentScale: source.contentScale, options: { leader: subjectToken(track.source.metadata.campaignKey, reference), growWithPlayback: options.growWithPlayback } };
 }
 
-export function leaderRequestSelection(tags: readonly string[] | null | undefined): LeaderSelection | undefined {
-  return tags === undefined ? undefined : tags === null ? { kind: 'all' } : { kind: 'countries', tags: [...tags] };
+/** The request's selection: every country, or the tags shown; group memberships filter the rows at their hour. */
+export function leaderRequestSelection(tags: readonly string[] | null): LeaderSelection {
+  return tags === null ? { kind: 'all' } : { kind: 'countries', tags: [...tags] };
+}
+
+/** What a leaderboard renders: which rows and every number they show, so a push that changes none renders nothing. */
+export function leadersStructure(reply: UnitLeadersReply): string {
+  return JSON.stringify([reply.leaders, reply.withheld, reply.missing, reply.battlesPartialFrom, reply.traits.length]);
 }

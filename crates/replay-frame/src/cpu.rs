@@ -36,6 +36,11 @@ static COPIES: Mutex<Option<Vec<[u64; 3]>>> = Mutex::new(None);
 static REUSES: Mutex<Option<Vec<[u64; 3]>>> = Mutex::new(None);
 type LogKey = (&'static str, &'static str);
 static LOGGED: Mutex<Option<HashMap<LogKey, [u64; 2]>>> = Mutex::new(None);
+static CYCLE_READ_NS: OnceLock<f64> = OnceLock::new();
+
+thread_local! {
+    static CYCLE_READS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
 
 #[cfg(any(test, feature = "test-support"))]
 thread_local! {
@@ -137,6 +142,14 @@ pub fn enabled() -> bool {
 /// counter's rate first.
 pub fn enable() {
     TSC_HZ.get_or_init(calibrate);
+    CYCLE_READ_NS.get_or_init(|| {
+        const READS: u32 = 4096;
+        let started = Instant::now();
+        for _ in 0..READS {
+            std::hint::black_box(current_cycles());
+        }
+        started.elapsed().as_nanos() as f64 / f64::from(READS)
+    });
     replay_data::measurement::enable();
     ENABLED.store(true, Ordering::Release);
     job_priority::accounting::install(|| {
@@ -426,6 +439,17 @@ pub fn family() -> Option<&'static str> {
     with_local(|acc| acc.stack.last().map(|label| label.1)).flatten()
 }
 
+/// How many times this thread has read its cycle time: the accounting's own cost, each read
+/// taking about [`cycle_read_ns`].
+pub fn cycle_reads() -> u64 {
+    CYCLE_READS.with(std::cell::Cell::get)
+}
+
+/// One read of a thread's cycle time, in wall nanoseconds, measured when accounting was turned on.
+pub fn cycle_read_ns() -> Option<f64> {
+    CYCLE_READ_NS.get().copied()
+}
+
 /// This thread's cycle time, 0 when accounting is off.
 #[inline]
 pub fn thread_cycles() -> u64 {
@@ -536,12 +560,59 @@ pub fn reconstructed(hour: i32, tables: &[(usize, u64)]) {
     });
 }
 
+/// One label of the calling thread as [`snapshot`] gives it: its category and family, CPU and wall
+/// nanoseconds (the open label's span so far included) and how many times it was entered.
+pub struct OwnLabel {
+    pub category: &'static str,
+    pub family: &'static str,
+    pub ns: u64,
+    pub wall_ns: Option<u64>,
+    pub calls: u64,
+}
+
+/// The calling thread's labels, as [`snapshot`] gives that thread's: what a harness reads of its own
+/// thread every frame without the whole snapshot (every thread's accounts locked, read and written
+/// out).
+pub fn own_labels() -> Vec<OwnLabel> {
+    if !enabled() {
+        return Vec::new();
+    }
+    let hz = *TSC_HZ.get_or_init(calibrate);
+    let ns = |cycles: u64| (cycles as f64 / hz * 1e9).round() as u64;
+    with_local(|acc| {
+        let pending = current_cycles().saturating_sub(acc.last);
+        let open_wall = Instant::now().saturating_duration_since(acc.last_wall).as_nanos() as u64;
+        let top = acc.stack.last().copied();
+        acc.totals
+            .iter()
+            .map(|(&label, &[cycles, calls])| {
+                let open = top == Some(label);
+                let wall = acc.walls.get(&label).copied().map_or(open.then_some(open_wall), |wall| Some(wall + if open { open_wall } else { 0 }));
+                OwnLabel { category: label.0, family: label.1, ns: ns(cycles + if open { pending } else { 0 }), wall_ns: wall, calls }
+            })
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
+/// Every note so far ([`note`]): category, family, nanoseconds and how many.
+pub fn notes() -> Vec<(&'static str, &'static str, u64, u64)> {
+    let hz = *TSC_HZ.get_or_init(calibrate);
+    NOTES
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_ref()
+        .map(|notes| notes.iter().map(|(&(category, family), &[cycles, calls])| (category, family, (cycles as f64 / hz * 1e9).round() as u64, calls)).collect())
+        .unwrap_or_default()
+}
+
 /// Every thread's charged time so far, by label, with the per-table
 /// decode and reconstruct breakdowns.
 pub fn snapshot() -> Value {
     let hz = *TSC_HZ.get_or_init(calibrate);
     let ns = |cycles: u64| (cycles as f64 / hz * 1e9).round() as u64;
     let mut labels: HashMap<(String, &'static str, &'static str), [u64; 2]> = HashMap::new();
+    let mut walls: HashMap<(String, &'static str, &'static str), u64> = HashMap::new();
     let mut tables = vec![[0u64; 6]; TABLE_COUNT];
     let mut reader_phases: HashMap<Label, [u64; 2]> = HashMap::new();
     let mut threads = Vec::new();
@@ -564,6 +635,11 @@ pub fn snapshot() -> Value {
             labels
                 .entry((acc.role.to_owned(), top.0, top.1))
                 .or_default()[0] += pending;
+            *walls.entry((acc.role.to_owned(), top.0, top.1)).or_default() +=
+                Instant::now().saturating_duration_since(acc.last_wall).as_nanos() as u64;
+        }
+        for (label, wall) in &acc.walls {
+            *walls.entry((acc.role.to_owned(), label.0, label.1)).or_default() += wall;
         }
         for (label, value) in &acc.reader_phases {
             let entry = reader_phases.entry(*label).or_default();
@@ -615,8 +691,9 @@ pub fn snapshot() -> Value {
     let labels: Vec<Value> = labels
         .into_iter()
         .map(|((role, category, family), value)| {
+            let wall = walls.get(&(role.clone(), category, family)).copied();
             json!({"role": role, "category": category, "family": family,
-                   "ns": ns(value[0]), "calls": value[1]})
+                   "ns": ns(value[0]), "calls": value[1], "wallNs": wall})
         })
         .collect();
     let reconstruct: Vec<Value> = tables
@@ -736,6 +813,7 @@ pub fn snapshot() -> Value {
         "frameLog": frame_log,
         "scope": "Thread cycle time (QueryThreadCycleTime, which a blocked thread does not accrue) charged to the (category, family) label on top of each thread's stack, converted at the calibrated counter rate. A thread's time before its first label is its base label from its thread name. Live threads include their current label's open span. readerPhases are exclusive among reader phases by table (nested generic inflate/wire/shadow scopes remain within the active reader phase); alias_group_inclusive notes overlap phases and source decoding and must not be added to them. readerOperations are operation counts, copy bytes are source-level element traffic, not allocator or hardware measurements. relevantSourceMasks OR the propagated source-field masks. decodeTables: each non-group table section decode of a block, first, by another family after one had, or by the same family again. reconstructTables: each reconstructed table-hour, first or repeated (by any decoder) by hour, ignoring branch.",
         "tscHz": hz,
+        "cycleReadNs": cycle_read_ns(),
         "processCpuNs": process_ns(),
         "labels": labels,
         "threads": threads,
@@ -786,13 +864,21 @@ struct ThreadAcc {
     /// Reconstruct cycles and counts: first, repeated, untracked.
     tables: Vec<[u64; 6]>,
     reader_phases: HashMap<Label, [u64; 2]>,
+    /// Wall nanoseconds each label was on top, beside its CPU cycles: the difference is the
+    /// thread off its CPU inside the label (a lock, the driver, descheduled).
+    walls: HashMap<Label, u64>,
+    last_wall: Instant,
 }
 
 impl ThreadAcc {
     fn charge(&mut self, now: u64) {
         let spent = now.saturating_sub(self.last);
         self.last = now;
+        let wall = Instant::now();
+        let waited = wall.saturating_duration_since(self.last_wall).as_nanos() as u64;
+        self.last_wall = wall;
         if let Some(top) = self.stack.last() {
+            *self.walls.entry(*top).or_default() += waited;
             self.totals.entry(*top).or_default()[0] += spent;
             if BLOCKS.load(Ordering::Relaxed) {
                 self.blocks
@@ -931,6 +1017,8 @@ fn register() -> Local {
         blocks: HashMap::new(),
         tables: vec![[0; 6]; TABLE_COUNT],
         reader_phases: HashMap::new(),
+        walls: HashMap::new(),
+        last_wall: Instant::now(),
     }));
     REGISTRY
         .lock()
@@ -1031,6 +1119,7 @@ fn filetime(time: windows_sys::Win32::Foundation::FILETIME) -> u64 {
 #[cfg(windows)]
 fn current_cycles() -> u64 {
     use windows_sys::Win32::System::Threading::GetCurrentThread;
+    CYCLE_READS.with(|reads| reads.set(reads.get() + 1));
     let mut cycles = 0u64;
     unsafe { QueryThreadCycleTime(GetCurrentThread(), &mut cycles) };
     cycles
@@ -1106,8 +1195,11 @@ mod reader_tests {
             blocks: HashMap::new(),
             tables: Vec::new(),
             reader_phases: HashMap::new(),
+            walls: HashMap::new(),
+            last_wall: Instant::now(),
         };
         acc.charge(10);
+        assert!(acc.walls.contains_key(&family), "wall time is charged to the label on top, beside its cycles");
         acc.reader_stack.push(grammar);
         acc.stack.push(("reader_raw_grammar", "observer"));
         acc.charge(30);

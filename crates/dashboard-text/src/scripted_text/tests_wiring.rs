@@ -185,7 +185,7 @@ fn province_names_use_recorded_owner_original_tag_and_capture_failures() {
         ScriptedText::new(f, &catalogue.localisation, content, 1).province_display_name_primary(id)
     };
     assert_eq!(name(&f, 5).unwrap().as_deref(), Some("Owner"));
-    assert!(name(&f, 6).unwrap_err().contains("ReservedCountryNaming"));
+    assert!(name(&f, 6).unwrap_err().contains("reserved country naming"));
     set::<tables::ReservedCountryNaming>(
         &mut f,
         vec![ReservedCountryNamingRow {
@@ -242,7 +242,7 @@ fn province_names_use_recorded_owner_original_tag_and_capture_failures() {
     for (original_tag, reason) in [
         (
             Recorded::NotRecorded,
-            "CountryAppearance.original_tag not recorded",
+            "original tag of country appearance not recorded",
         ),
         (Recorded::Value(None), "capture refused"),
     ] {
@@ -256,7 +256,7 @@ fn province_names_use_recorded_owner_original_tag_and_capture_failures() {
     *f.tables[TableId::ProvinceNames.index()] = TableView::Unavailable {
         reason: "test gap".into(),
     };
-    assert!(name(&f, 5).unwrap_err().contains("ProvinceNames"));
+    assert!(name(&f, 5).unwrap_err().contains("province names"));
 }
 
 #[test]
@@ -455,7 +455,7 @@ fn recorded_factory_counts_wrap_convert_and_drive_a_seeded_pick() {
     assert!(
         text.expand("[Pick]")
             .unwrap_err()
-            .contains("country 200 has no CountryFactories row")
+            .contains("country 200 has no country factories row")
     );
     drop(text);
     *f.tables[TableId::CountryFactories.index()] = TableView::Unavailable {
@@ -465,7 +465,7 @@ fn recorded_factory_counts_wrap_convert_and_drive_a_seeded_pick() {
     assert!(
         text.expand("[Pick]")
             .unwrap_err()
-            .contains("CountryFactories is unavailable")
+            .contains("CountryFactories is unavailable: capture failed")
     );
 }
 
@@ -510,7 +510,7 @@ fn scriptable_random_weights_use_the_unified_operands_and_ignore_modifier_condit
             scopes,
         )
         .unwrap_err();
-    assert!(why.contains("CountryFactories row"), "{why}");
+    assert!(why.contains("country factories row"), "{why}");
 }
 
 #[test]
@@ -676,7 +676,7 @@ fn first_party_leaders_and_custom_party_names_use_the_real_localiser() {
     assert!(
         rendered(&catalogue, &f, "TEST")
             .unwrap_err()
-            .contains("PartyLeaders")
+            .contains("party leaders")
     );
 }
 
@@ -763,7 +763,7 @@ fn genders_manpower_and_agency_preserve_empty_and_wrapping_rules() {
     assert!(
         rendered(&catalogue, &f, "TEST")
             .unwrap_err()
-            .contains("no IntelligenceAgencies row")
+            .contains("no intelligence agencies row")
     );
     let agency = |name: &[u8], created| IntelligenceAgencyRow {
         country: 100,

@@ -1,24 +1,18 @@
-//! Control pipe and a per-window Win32 adapter for the desktop host.
+//! The map's link to the desktop host in the same process, and the geometry of its window.
 //!
-//! eframe 0.36 calls `App::logic` when a hidden window requests a repaint. The
-//! pipe wakes that hook only for work; the map's UI and GPU path can stay idle.
-//! SetParent alone is insufficient: winit still caches top-level window flags
-//! and eframe calls set_visible after its first paint. The subclass below keeps
-//! only this process's creation-context HWND a child, with host-owned geometry.
+//! A command wakes the map's thread only for work; the map's UI and GPU path can stay idle.
+//! The map's window belongs to the host's thread, so its geometry changes are posted to it.
 
 use job_priority::SpawnCarried as _;
 use dashboard::protocol::{
-    CameraMode, DashboardMapState, DashboardMapView, EVENT_PREFIX, GamepadMessage,
-    MAX_MESSAGE_BYTES, NativeCommand, NativeEvent, ViewBounds, ViewerState, validate_map_views,
+    CameraMode, DashboardMapState, DashboardMapView, GamepadMessage, NativeCommand, NativeEvent,
+    ViewBounds, ViewerState, validate_map_views,
 };
-use dashboard::transport::DataEvent;
 use eframe::egui;
-use raw_window_handle::{HasWindowHandle as _, RawWindowHandle};
 use std::{
     cell::{Cell, RefCell},
     collections::{BTreeMap, BTreeSet, VecDeque},
-    io::{self, BufRead, Read as _, Write as _},
-    os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle},
+    io,
     path::{Path, PathBuf},
     ptr,
     sync::{
@@ -30,24 +24,12 @@ use std::{
     time::{Duration, Instant},
 };
 use windows_sys::Win32::{
-    Foundation::{GetLastError, HWND, LPARAM, LRESULT, RECT, SetLastError, WAIT_TIMEOUT, WPARAM},
+    Foundation::{HWND, RECT},
     Graphics::Gdi::*,
-    System::Threading::{
-        GetCurrentThreadId, OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject,
-    },
-    UI::{
-        HiDpi::{
-            AreDpiAwarenessContextsEqual, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
-            GetDpiForWindow, GetWindowDpiAwarenessContext, SetThreadDpiAwarenessContext,
-        },
-        Input::KeyboardAndMouse::SetFocus,
-        Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
-        WindowsAndMessaging::*,
-    },
+    UI::WindowsAndMessaging::*,
 };
 
 const STATE_INTERVAL: Duration = Duration::from_millis(250);
-const SUBCLASS_ID: usize = 0x484f4934;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Seek {
@@ -89,7 +71,7 @@ fn validate_snapshot(path: &str, revision: &str) -> Result<(), String> {
 }
 
 /// One slot per command kind. A new open invalidates seeks for the old replay;
-/// a close is terminal, including if more input has already reached the pipe.
+/// a close is terminal, including if more commands were sent after it.
 #[derive(Default)]
 pub struct Pending {
     pub actions: VecDeque<dashboard::protocol::MapAction>,
@@ -128,9 +110,6 @@ impl Pending {
         match command {
             NativeCommand::MapAction { action } => {
                 action.validate().map_err(str::to_owned)?;
-                if self.actions.len() >= 16 {
-                    return Err("Map controls queue is full".into());
-                }
                 if let dashboard::protocol::MapAction::Unload { path } = &action {
                     let path = Path::new(path);
                     if self
@@ -161,9 +140,6 @@ impl Pending {
                 self.open = None;
                 self.seek = None;
                 self.error = None;
-            }
-            NativeCommand::Data { .. } => {
-                return Err("Data requests must be dispatched by the control reader".into());
             }
             NativeCommand::Visibility { visible } => self.visibility = Some(visible),
             NativeCommand::Bounds {
@@ -231,27 +207,6 @@ impl Pending {
     }
 }
 
-/// Read at most one bounded line, even if the peer never supplies a newline.
-fn read_command(
-    reader: &mut impl BufRead,
-    bytes: &mut Vec<u8>,
-) -> io::Result<Option<NativeCommand>> {
-    bytes.clear();
-    let count = reader
-        .take(MAX_MESSAGE_BYTES as u64 + 1)
-        .read_until(b'\n', bytes)?;
-    if count == 0 {
-        return Ok(None);
-    }
-    if count > MAX_MESSAGE_BYTES || bytes.last() != Some(&b'\n') {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Viewer command is oversized or lacks a newline",
-        ));
-    }
-    serde_json::from_slice(bytes).map(Some).map_err(Into::into)
-}
-
 #[derive(Clone, Debug, PartialEq)]
 struct ReportedState {
     viewer: ViewerState,
@@ -279,7 +234,6 @@ struct Outgoing {
     error: Option<String>,
     maps: BTreeMap<String, DashboardMapState>,
     map_order: VecDeque<String>,
-    data: VecDeque<DataEvent>,
     /// An odd number of diagnostics-shortcut presses not yet sent; two presses
     /// between sends cancel out.
     toggle_diagnostics: bool,
@@ -320,7 +274,7 @@ impl Outgoing {
             .map(|(mode, overlays)| NativeEvent::CameraMode { mode, overlays })
     }
 
-    /// Whether the event pipe has nothing to write; map states have a pipe of their own.
+    /// Whether the event queue has nothing to send; map states have a queue of their own.
     fn is_empty(&self) -> bool {
         !self.toggle_diagnostics
             && self.camera_mode.is_none()
@@ -332,7 +286,6 @@ impl Outgoing {
             && self.details.is_none()
             && self.state.is_none()
             && self.error.is_none()
-            && self.data.is_empty()
     }
 
     /// Every pending map state, oldest first, as one event.
@@ -351,35 +304,12 @@ struct Shared {
     outgoing: Mutex<Outgoing>,
     output_ready: Condvar,
     maps_ready: Condvar,
-    output_space: Condvar,
     stopped: AtomicBool,
     terminal_error: AtomicBool,
     ctx: egui::Context,
 }
 
 impl Shared {
-    /// Only the service's response pump calls this. Rendering and command
-    /// intake never wait behind serialized analytics results.
-    fn data(&self, response: DataEvent) -> bool {
-        let mut outgoing = self
-            .outgoing
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        while outgoing.data.len() >= 8 && !self.stopped.load(Ordering::Acquire) {
-            outgoing = self
-                .output_space
-                .wait(outgoing)
-                .unwrap_or_else(|error| error.into_inner());
-        }
-        if self.stopped.load(Ordering::Acquire) {
-            return false;
-        }
-        outgoing.data.push_back(response);
-        drop(outgoing);
-        self.output_ready.notify_one();
-        true
-    }
-
     fn input(&self, command: NativeCommand) {
         let mut pending = self
             .pending
@@ -396,16 +326,58 @@ impl Shared {
     }
 
     fn error(&self, message: impl Into<String>) {
-        let message = bounded_message(&message.into());
         self.terminal_error.store(true, Ordering::Release);
         let mut outgoing = self
             .outgoing
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         outgoing.state = None;
-        outgoing.error = Some(message);
+        outgoing.error = Some(message.into());
         drop(outgoing);
         self.output_ready.notify_one();
+    }
+
+    /// Queues the map's detail report whole.
+    fn details(&self, details: dashboard::protocol::MapDetails) {
+        self.outgoing
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .details = Some(details);
+        self.output_ready.notify_one();
+    }
+
+    /// Queues each map whose acknowledgement changed since `last`, which becomes `states`.
+    fn maps(&self, last: &mut Option<Vec<DashboardMapState>>, states: Vec<DashboardMapState>) {
+        if last.as_ref().is_some_and(|previous| {
+            previous.len() == states.len()
+                && previous.iter().zip(&states).all(|(old, new)| same_ack(old, new))
+        }) {
+            return;
+        }
+        let mut outgoing = self
+            .outgoing
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let ids: BTreeSet<_> = states.iter().map(|state| state.id.clone()).collect();
+        outgoing.maps.retain(|id, _| ids.contains(id));
+        outgoing.map_order.retain(|id| ids.contains(id));
+        for state in &states {
+            if last
+                .as_ref()
+                .is_some_and(|previous| previous.iter().any(|old| same_ack(old, state)))
+            {
+                continue;
+            }
+            // Updating a pending view preserves its FIFO position, so a fast
+            // clock cannot starve another map's first ready/error response.
+            if !outgoing.maps.contains_key(&state.id) {
+                outgoing.map_order.push_back(state.id.clone());
+            }
+            outgoing.maps.insert(state.id.clone(), state.clone());
+        }
+        *last = Some(states);
+        drop(outgoing);
+        self.maps_ready.notify_one();
     }
 }
 
@@ -422,120 +394,144 @@ fn same_ack(old: &DashboardMapState, new: &DashboardMapState) -> bool {
     bare(old) == bare(new)
 }
 
-fn bounded_message(message: &str) -> String {
-    // Errors may include paths or peer input. Leave space for the other
-    // fields and JSON escapes without splitting a UTF-8 character.
-    let mut end = message.len().min(4096);
-    while !message.is_char_boundary(end) {
-        end -= 1;
+/// Followed answers go to `send` from a thread of their own, so the stepper only queues: the
+/// desktop installs the playheads once for its process. Until a playhead exists every follow is
+/// "not available" by name and the widgets keep asking.
+pub fn install_follow(send: impl Fn(u8, Vec<u8>) + Send + 'static) -> io::Result<bool> {
+    let push = Arc::new(dashboard_follow::push::Push::default());
+    let drained = Arc::clone(&push);
+    thread::Builder::new().name("follow push".into()).spawn(move || {
+        while let Some((kind, bytes, _, _)) = drained.take_kind() {
+            send(kind, bytes);
+        }
+    })?;
+    Ok(dashboard_follow::registry::install(Arc::new(FollowPlayheads { push, hosts: Mutex::default(), building: Mutex::default() })))
+}
+
+type FollowHost = dashboard_follow::host::PlayheadHost<crate::playhead_host::Entry>;
+
+/// A follow host's recording, timeline and clock mapping.
+type FollowKey = (String, u64, i32);
+
+/// Follow on the map's playheads: one `Follow` a playhead, its hook in the host's slot, its reader
+/// bound to `redeclare`, and its driver stepping the playhead when no map is drawn.
+struct FollowPlayheads {
+    push: Arc<dashboard_follow::push::Push>,
+    hosts: Mutex<BTreeMap<FollowKey, Arc<FollowHost>>>,
+    /// Hosts being built, by key: a caller of the same key waits for that build, one of another
+    /// key or recording never does.
+    building: Mutex<BTreeMap<FollowKey, std::sync::Weak<Mutex<()>>>>,
+}
+
+impl FollowPlayheads {
+    fn hosted(&self, key: &FollowKey) -> Option<Arc<FollowHost>> {
+        self.hosts.lock().unwrap_or_else(|error| error.into_inner()).get(key).cloned()
     }
-    message[..end].to_owned()
-}
 
-fn write_event(event: NativeEvent) -> io::Result<()> {
-    write_event_to(&mut io::stdout().lock(), event)
-}
-
-/// One whole line per write, so another writer to the same pipe cannot split it.
-fn write_event_to(out: &mut impl io::Write, event: NativeEvent) -> io::Result<()> {
-    let json = serde_json::to_string(&event)?;
-    if json.len() + EVENT_PREFIX.len() + 1 > MAX_MESSAGE_BYTES {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Viewer event exceeds the pipe's line budget",
-        ));
-    }
-    let mut line = String::with_capacity(EVENT_PREFIX.len() + json.len() + 1);
-    line.push_str(EVENT_PREFIX);
-    line.push_str(&json);
-    line.push('\n');
-    out.write_all(line.as_bytes())?;
-    out.flush()
-}
-
-/// Startup failures happen before the asynchronous writer exists.
-pub fn startup_error(message: String) {
-    if std::env::var_os("BATTLE_PLAN_VIEWER_PARENT").or_else(|| std::env::var_os("HOI4_VIEWER_PARENT")).is_some() {
-        let _ = write_event(NativeEvent::Error {
-            message: bounded_message(&message),
-        });
+    fn gate(&self, key: &FollowKey) -> Arc<Mutex<()>> {
+        let mut building = self.building.lock().unwrap_or_else(|error| error.into_inner());
+        building.retain(|_, gate| gate.strong_count() > 0);
+        if let Some(gate) = building.get(key).and_then(std::sync::Weak::upgrade) {
+            return gate;
+        }
+        let gate = Arc::new(Mutex::new(()));
+        building.insert(key.clone(), Arc::downgrade(&gate));
+        gate
     }
 }
 
+impl dashboard_follow::registry::Playheads for FollowPlayheads {
+    fn open(&self, path: &Path, branch: u64, clock: i32) -> Result<Arc<dyn dashboard_follow::registry::Hosted>, String> {
+        let push = &self.push;
+        if let Some(failed) = push.failed() {
+            return Err(failed);
+        }
+        let recording = replay::columnar_frames::Recording::open_path_as(path, replay::columnar_frames::Open::Saved).map_err(|error| error.to_string())?;
+        let capture = replay_data::scope::CaptureMode::from_byte(recording.root().identity.capture_mode).map_err(|error| error.to_string())?;
+        let key = (crate::playhead_host::units::name(&recording), branch, clock);
+        if let Some(host) = self.hosted(&key) {
+            return Ok(host as Arc<dyn dashboard_follow::registry::Hosted>);
+        }
+        let gate = self.gate(&key);
+        let _building = gate.lock().unwrap_or_else(|error| error.into_inner());
+        if let Some(host) = self.hosted(&key) {
+            return Ok(host as Arc<dyn dashboard_follow::registry::Hosted>);
+        }
+        // The map's read of the same recording is shared, never repeated ([`units::shared`]).
+        let (units, _) = crate::playhead_host::units::at_path(path, Some(branch)).map_err(|error| error.to_string())?;
+        // A mapping other than the map's (game hours, 0) runs a playhead of its own.
+        let entry = crate::playhead_host::open_clocked(units, crate::playhead_host::settings(), clock).map_err(|error| error.to_string())?;
+        entry.set_capture(capture);
+        let follow = dashboard_follow::Follow::new(64 << 10);
+        let due = dashboard_follow::due::Due::new(Arc::clone(push));
+        entry.hooks().add(follow.hook(due.sink()));
+        let held = dashboard_follow::host::held_tables(&**entry.pages(), entry.kinds().len());
+        let rows = Arc::new(FollowRows { entry: Arc::clone(&entry), branch });
+        let host = dashboard_follow::host::PlayheadHost::new(entry, crate::playhead_host::Entry::playhead, |entry, anchor| entry.anchor(anchor.hour, anchor.playing, anchor.speed, anchor.sought), crate::playhead_host::Entry::drawn, follow, due, held).map_err(|error| error.to_string())?;
+        host.show_panels(rows, Arc::clone(push));
+        self.hosts.lock().unwrap_or_else(|error| error.into_inner()).insert(key, Arc::clone(&host));
+        Ok(host as Arc<dyn dashboard_follow::registry::Hosted>)
+    }
+}
+
+/// Rows at the head of a follow host's playhead for its panels, at a panel's cadence.
+struct FollowRows {
+    entry: Arc<crate::playhead_host::Entry>,
+    branch: u64,
+}
+
+impl dashboard_follow::panel::PanelRows for FollowRows {
+    fn reader(&self, tables: &[replay_data::rows::TableId]) -> io::Result<Box<dyn dashboard_follow::panel::PanelReader>> {
+        use crate::playhead_host::rows::{Cadence, Recording, Rows};
+        let rows = Rows::of(&self.entry, Recording { branch: self.branch })?;
+        Ok(Box::new(FollowRowReader(rows.reader(tables, Cadence::PerSecond(4)))))
+    }
+}
+
+struct FollowRowReader(crate::playhead_host::rows::RowReader);
+
+impl dashboard_follow::panel::PanelReader for FollowRowReader {
+    fn frame(&self) -> Option<Arc<replay_frame::frame::DecodedFrame>> {
+        self.0.frame()
+    }
+
+    fn stopped(&self) -> Option<(replay_data::Hour, String)> {
+        self.0.stopped()
+    }
+}
+
+/// The map's window, a child of the host's, and the map's link to its host: the commands it sends
+/// and where the map's events go.
 pub struct Parent {
-    hwnd: usize,
-    pid: u32,
-    process: OwnedHandle,
-    previous_dpi: usize,
+    window: crate::host::Window,
+    commands: mpsc::Receiver<NativeCommand>,
+    events: crate::host::Events,
 }
 
 impl Parent {
-    pub fn from_environment() -> io::Result<Option<Self>> {
-        let Some(value) = std::env::var_os("BATTLE_PLAN_VIEWER_PARENT").or_else(|| std::env::var_os("HOI4_VIEWER_PARENT")) else {
-            return Ok(None);
-        };
-        let hwnd = value
-            .to_str()
-            .filter(|value| !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()))
-            .and_then(|value| value.parse::<usize>().ok())
-            .filter(|hwnd| *hwnd != 0)
-            .ok_or_else(|| io::Error::other("BATTLE_PLAN_VIEWER_PARENT must be a nonzero decimal HWND"))?;
-        let mut pid = 0;
-        // SAFETY: query APIs validate this untrusted handle; no pointer is read.
-        unsafe {
-            if IsWindow(hwnd as HWND) == 0
-                || GetWindowThreadProcessId(hwnd as HWND, &mut pid) == 0
-                || pid == std::process::id()
-            {
-                return Err(io::Error::other(
-                    "The desktop parent is not a live external window",
-                ));
-            }
-            let dpi = GetWindowDpiAwarenessContext(hwnd as HWND);
-            if AreDpiAwarenessContextsEqual(dpi, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) == 0 {
-                return Err(io::Error::other(
-                    "The desktop host must use per-monitor-v2 DPI awareness",
-                ));
-            }
-            let process = OpenProcess(PROCESS_SYNCHRONIZE, 0, pid);
-            if process.is_null() {
-                return Err(io::Error::last_os_error());
-            }
-            let process = OwnedHandle::from_raw_handle(process);
-            let previous_dpi = SetThreadDpiAwarenessContext(dpi);
-            if previous_dpi.is_null() {
-                return Err(io::Error::last_os_error());
-            }
-            Ok(Some(Self {
-                hwnd,
-                pid,
-                process,
-                previous_dpi: previous_dpi as usize,
-            }))
-        }
+    pub fn new(
+        window: crate::host::Window,
+        commands: mpsc::Receiver<NativeCommand>,
+        events: crate::host::Events,
+    ) -> Self {
+        Self { window, commands, events }
     }
 
-    pub fn attach(self, cc: &eframe::CreationContext<'_>) -> io::Result<Controller> {
-        let process = self.process.try_clone()?;
-        let parent_hwnd = self.hwnd;
-        let parent_pid = self.pid;
-        let window = NativeWindow::attach(self, cc)?;
+    pub fn attach(self, ctx: &egui::Context) -> io::Result<Controller> {
+        let Self { window, commands, events } = self;
+        let window = NativeWindow::new(window)?;
         let shared = Arc::new(Shared {
             pending: Mutex::new(Pending::default()),
             outgoing: Mutex::new(Outgoing::default()),
             output_ready: Condvar::new(),
             maps_ready: Condvar::new(),
-            output_space: Condvar::new(),
             stopped: AtomicBool::new(false),
             terminal_error: AtomicBool::new(false),
-            ctx: cc.egui_ctx.clone(),
+            ctx: ctx.clone(),
         });
-        let output_target = Arc::downgrade(&shared);
-        let service = dashboard::Service::new(Arc::new(move |event| {
-            output_target
-                .upgrade()
-                .is_some_and(|shared| shared.data(event))
-        }))?;
+        // The map's own service, which its loads read sources and preferences from; the host's
+        // dashboard queries go to the host's own.
+        let service = dashboard::Service::new(Arc::new(|_: dashboard::transport::DataEvent| false))?;
         let (output_finished, output_done) = mpsc::sync_channel::<()>(0);
         let controller = Controller {
             window,
@@ -544,43 +540,31 @@ impl Parent {
             last_report: None,
             closing: false,
             output_done,
-            service: Arc::clone(&service),
+            service,
             last_maps: None,
         };
         let input = Arc::clone(&shared);
         thread::Builder::new()
             .name("viewer-commands".into())
             .spawn_carried(move || {
-                let mut stdin = io::stdin().lock();
-                let mut bytes = Vec::new();
                 while !input.stopped.load(Ordering::Acquire) {
-                    match read_command(&mut stdin, &mut bytes) {
-                        Ok(Some(command)) => {
-                            if let NativeCommand::Data { request } = command {
-                                service.dispatch(request);
-                                continue;
-                            }
-                            let close = matches!(command, NativeCommand::Close);
-                            input.input(command);
-                            if close {
-                                return;
-                            }
-                        }
-                        Ok(None) => break,
-                        Err(error) => {
-                            input.error(format!("Viewer control pipe: {error}"));
-                            break;
-                        }
+                    // The host dropping its end closes the map.
+                    let Ok(command) = commands.recv() else { break };
+                    let close = matches!(command, NativeCommand::Close);
+                    input.input(command);
+                    if close {
+                        return;
                     }
                 }
                 input.input(NativeCommand::Close);
             })?;
         let output = Arc::clone(&shared);
+        let output_events = Arc::clone(&events);
         thread::Builder::new()
             .name("viewer-events".into())
             .spawn_carried(move || {
                 // Disconnecting this zero-capacity channel signals that all
-                // queued output was written, without blocking the writer.
+                // queued events were sent, without blocking the sender.
                 let _finished = output_finished;
                 loop {
                     let mut outgoing = output
@@ -614,10 +598,6 @@ impl Parent {
                                 .error
                                 .take()
                                 .map(|message| NativeEvent::Error { message }),
-                            outgoing
-                                .data
-                                .pop_front()
-                                .map(|response| NativeEvent::Data { response }),
                             outgoing.take_toggle_diagnostics(),
                             outgoing.take_camera_mode(),
                             outgoing
@@ -639,17 +619,13 @@ impl Parent {
                                 .map(|(view_id, modes)| NativeEvent::MapModes { view_id, modes }),
                         ];
                     drop(outgoing);
-                    output.output_space.notify_all();
                     for event in events.into_iter().flatten() {
-                        if write_event(event).is_err() {
-                            output.input(NativeCommand::Close);
-                            return;
-                        }
+                        output_events(event);
                     }
                 }
             })?;
-        // Map acknowledgements go on the error pipe, which the host reads on a
-        // thread of its own, so megabyte data replies never queue ahead of them.
+        // Map acknowledgements go on a thread of their own, so a burst of events never queues
+        // ahead of them.
         let maps = Arc::clone(&shared);
         thread::Builder::new()
             .name("viewer-map-states".into())
@@ -669,35 +645,7 @@ impl Parent {
                         return;
                     };
                     drop(outgoing);
-                    if write_event_to(&mut io::stderr().lock(), event).is_err() {
-                        maps.input(NativeCommand::Close);
-                        return;
-                    }
-                }
-            })?;
-        let watch = Arc::clone(&shared);
-        thread::Builder::new()
-            .name("viewer-parent".into())
-            .spawn_carried(move || {
-                let mut visible = false;
-                while !watch.stopped.load(Ordering::Acquire) {
-                    // SAFETY: the owned process handle stays open throughout the
-                    // wait. HWND ownership is rechecked to catch handle reuse.
-                    let alive = unsafe {
-                        WaitForSingleObject(process.as_raw_handle(), 250) == WAIT_TIMEOUT
-                    } && parent_alive(parent_hwnd, parent_pid);
-                    if !alive {
-                        watch.input(NativeCommand::Close);
-                        break;
-                    }
-                    let shown = unsafe {
-                        IsWindowVisible(parent_hwnd as HWND) != 0
-                            && IsIconic(parent_hwnd as HWND) == 0
-                    };
-                    if shown != visible {
-                        visible = shown;
-                        watch.ctx.request_repaint();
-                    }
+                    events(event);
                 }
             })?;
         shared
@@ -705,22 +653,13 @@ impl Parent {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .ready = Some((
-            controller.window.hwnd.to_string(),
-            // Recorded as eframe opened the map device ([`crate::render::configuration`]).
+            controller.window.window.hwnd().to_string(),
+            // Recorded as the map opened its device ([`crate::render::configuration`]).
             dashboard::map_settings::sample_counts(),
         ));
         shared.output_ready.notify_one();
-        cc.egui_ctx.request_repaint();
+        ctx.request_repaint();
         Ok(controller)
-    }
-}
-
-impl Drop for Parent {
-    fn drop(&mut self) {
-        // Parent is created, attached and dropped on eframe's UI thread.
-        unsafe {
-            SetThreadDpiAwarenessContext(self.previous_dpi as _);
-        }
     }
 }
 
@@ -783,10 +722,10 @@ impl Controller {
     }
 
     pub fn frame_size(&self) -> Option<[u32; 2]> {
-        self.window.hook.bounds.get().map(|bounds| [bounds.width, bounds.height])
+        self.window.placement.get().bounds.map(|bounds| [bounds.width, bounds.height])
     }
 
-    pub fn report_details(&self, mut details: dashboard::protocol::MapDetails) {
+    pub fn report_details(&self, details: dashboard::protocol::MapDetails) {
         if let Some(path) = std::env::var_os("BATTLE_PLAN_MAP_DETAILS_FILE").or_else(|| std::env::var_os("HOI4_MAP_DETAILS_FILE"))
             && let Ok(bytes) = serde_json::to_vec(&serde_json::json!({
                 "at": crate::perf_log::epoch_ms(), "details": &details,
@@ -794,46 +733,11 @@ impl Controller {
         {
             let _ = std::fs::write(path, bytes);
         }
-        // Keep diagnostic responses below the control pipe's frame budget.
-        // Budget escaped JSON bytes, not characters (which can expand sixfold).
-        let mut bytes = 0;
-        details.messages.retain(|message| {
-            bytes += serde_json::to_vec(message).map_or(MAX_MESSAGE_BYTES, |text| text.len());
-            bytes < 16_000
-        });
-        // Actual folder paths are short in practice. Refuse an oversized report
-        // rather than passing a truncated folder back to an editable form.
-        if serde_json::to_vec(&details).map_or(true, |text| text.len() > MAX_MESSAGE_BYTES - 256) {
-            self.error("Map diagnostic report exceeds its control budget");
-            return;
-        }
-        self.shared
-            .outgoing
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .details = Some(details);
-        self.shared.output_ready.notify_one();
+        self.shared.details(details);
     }
 
     /// Sends the chosen aircraft's status; one not yet sent is replaced.
-    pub fn report_fly_aircraft(&self, mut status: dashboard::protocol::FlyAircraftStatus) {
-        if let dashboard::protocol::FlyAircraftState::Refused { reason } = &mut status.state {
-            *reason = bounded_message(reason);
-        }
-        if status
-            .aircraft
-            .as_ref()
-            .is_some_and(|name| name.len() > MAX_MESSAGE_BYTES / 2)
-        {
-            // An event past the line budget would close the pipe, so a name too
-            // long to echo is reported without it.
-            status = dashboard::protocol::FlyAircraftStatus {
-                aircraft: None,
-                state: dashboard::protocol::FlyAircraftState::Refused {
-                    reason: "The chosen aircraft's name is too long to report".into(),
-                },
-            };
-        }
+    pub fn report_fly_aircraft(&self, status: dashboard::protocol::FlyAircraftStatus) {
         self.shared
             .outgoing
             .lock()
@@ -906,48 +810,8 @@ impl Controller {
         self.shared.output_ready.notify_one();
     }
 
-    pub fn report_maps(&mut self, mut states: Vec<DashboardMapState>) {
-        for state in &mut states {
-            if let Some(error) = &mut state.error {
-                let mut end = error.len().min(256);
-                while !error.is_char_boundary(end) {
-                    end -= 1;
-                }
-                error.truncate(end);
-            }
-        }
-        if self.last_maps.as_ref().is_some_and(|previous| {
-            previous.len() == states.len()
-                && previous.iter().zip(&states).all(|(old, new)| same_ack(old, new))
-        }) {
-            return;
-        }
-        let mut outgoing = self
-            .shared
-            .outgoing
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        let ids: BTreeSet<_> = states.iter().map(|state| state.id.clone()).collect();
-        outgoing.maps.retain(|id, _| ids.contains(id));
-        outgoing.map_order.retain(|id| ids.contains(id));
-        for state in &states {
-            if self
-                .last_maps
-                .as_ref()
-                .is_some_and(|previous| previous.iter().any(|old| same_ack(old, state)))
-            {
-                continue;
-            }
-            // Updating a pending view preserves its FIFO position, so a fast
-            // clock cannot starve another map's first ready/error response.
-            if !outgoing.maps.contains_key(&state.id) {
-                outgoing.map_order.push_back(state.id.clone());
-            }
-            outgoing.maps.insert(state.id.clone(), state.clone());
-        }
-        self.last_maps = Some(states);
-        drop(outgoing);
-        self.shared.maps_ready.notify_one();
+    pub fn report_maps(&mut self, states: Vec<DashboardMapState>) {
+        self.shared.maps(&mut self.last_maps, states);
     }
 
     fn error(&self, message: impl Into<String>) {
@@ -957,7 +821,7 @@ impl Controller {
     pub fn report(&mut self, state: ViewerState, error: Option<&str>, ctx: &egui::Context) {
         let state = ReportedState {
             viewer: state,
-            error: error.map(bounded_message),
+            error: error.map(str::to_owned),
         };
         if self.last_state.as_ref() == Some(&state) {
             return;
@@ -998,208 +862,88 @@ impl Drop for Controller {
         }
         self.shared.output_ready.notify_one();
         self.shared.maps_ready.notify_one();
-        self.shared.output_space.notify_all();
         let service = Arc::clone(&self.service);
         // Runtime/file joins must not stall eframe's window destruction.
         let _ = thread::Builder::new()
             .name("dashboard shutdown".into())
             .spawn_carried(move || service.shutdown());
-        // Let a healthy host receive the final error/state before exit, but
-        // never hang shutdown on a peer that stopped draining stdout.
+        // Let the host receive the final error/state before the map ends, but never hang the
+        // map's thread on a host that stopped taking events.
         let _ = self.output_done.recv_timeout(Duration::from_millis(100));
-        // Close/EOF ends the reader; local window-close may leave it blocked
-        // until process exit. Never join a pipe reader or writer on the UI
-        // thread. The host owns and reaps this process as a final backstop.
+        // Close ends the command thread; a close from the window itself leaves it waiting until
+        // the host drops its end. Never join it on the map's thread.
     }
 }
 
-fn parent_alive(hwnd: usize, expected_pid: u32) -> bool {
-    let mut pid = 0;
-    unsafe {
-        IsWindow(hwnd as HWND) != 0
-            && GetWindowThreadProcessId(hwnd as HWND, &mut pid) != 0
-            && pid == expected_pid
+/// Where the host placed the map's window: shown only once it is both visible and placed.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Placement {
+    visible: bool,
+    bounds: Option<ViewBounds>,
+}
+
+impl Placement {
+    fn show(self) -> bool {
+        self.visible && self.bounds.is_some()
     }
 }
 
-struct Hook {
-    visible: Cell<bool>,
-    bounds: Cell<Option<ViewBounds>>,
-    dpi: Cell<u32>,
-    installed: Cell<bool>,
-}
-
-impl Hook {
-    fn show(&self) -> bool {
-        self.visible.get() && self.bounds.get().is_some()
-    }
-
-    fn style(&self, style: u32) -> u32 {
-        let style = (style & !(WS_POPUP | WS_OVERLAPPEDWINDOW | WS_VISIBLE))
-            | WS_CHILD
-            | WS_CLIPCHILDREN
-            | WS_CLIPSIBLINGS;
-        style | if self.show() { WS_VISIBLE } else { 0 }
-    }
-
-    fn ex_style(style: u32) -> u32 {
-        style & !(WS_EX_APPWINDOW | WS_EX_WINDOWEDGE | WS_EX_CLIENTEDGE | WS_EX_DLGMODALFRAME)
-    }
-}
-
+/// The map's window as its host places it.
 struct NativeWindow {
-    parent: Parent,
-    hwnd: usize,
-    hook: Box<Hook>,
+    window: crate::host::Window,
+    placement: Cell<Placement>,
     region: RefCell<Option<Vec<ViewBounds>>>,
 }
 
 impl NativeWindow {
-    fn attach(parent: Parent, cc: &eframe::CreationContext<'_>) -> io::Result<Self> {
-        let RawWindowHandle::Win32(handle) = cc.window_handle().map_err(io::Error::other)?.as_raw()
-        else {
-            return Err(io::Error::other(
-                "The native viewer did not create a Win32 window",
-            ));
-        };
-        let hwnd = handle.hwnd.get() as HWND;
-        let mut pid = 0;
-        // SAFETY: this HWND comes directly from the creation context and all
-        // following mutations are limited to that process's UI-thread window.
-        unsafe {
-            if GetWindowThreadProcessId(hwnd, &mut pid) != GetCurrentThreadId()
-                || pid != std::process::id()
-                || !parent_alive(parent.hwnd, parent.pid)
-            {
-                return Err(io::Error::other(
-                    "Viewer or parent window ownership changed during startup",
-                ));
-            }
-            if AreDpiAwarenessContextsEqual(
-                GetWindowDpiAwarenessContext(hwnd),
-                GetWindowDpiAwarenessContext(parent.hwnd as HWND),
-            ) == 0
-            {
-                return Err(io::Error::other(
-                    "Host and viewer DPI awareness differ; refusing cross-process SetParent",
-                ));
-            }
-            let window = Self {
-                parent,
-                hwnd: hwnd as usize,
-                region: RefCell::new(None),
-                hook: Box::new(Hook {
-                    visible: Cell::new(false),
-                    bounds: Cell::new(None),
-                    dpi: Cell::new(GetDpiForWindow(hwnd)),
-                    installed: Cell::new(false),
-                }),
-            };
-            if SetWindowSubclass(
-                hwnd,
-                Some(window_proc),
-                SUBCLASS_ID,
-                (&*window.hook as *const Hook) as usize,
-            ) == 0
-            {
-                return Err(io::Error::other(
-                    "Cannot install the viewer's child-window adapter",
-                ));
-            }
-            window.hook.installed.set(true);
-            ShowWindow(hwnd, SW_HIDE);
-            set_style(
-                hwnd,
-                GWL_STYLE,
-                window.hook.style(GetWindowLongPtrW(hwnd, GWL_STYLE) as u32),
-            )?;
-            set_style(
-                hwnd,
-                GWL_EXSTYLE,
-                Hook::ex_style(GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32),
-            )?;
-            SetLastError(0);
-            let previous = SetParent(hwnd, window.parent.hwnd as HWND);
-            if previous.is_null() && GetLastError() != 0 {
-                return Err(io::Error::last_os_error());
-            }
-            if GetParent(hwnd) != window.parent.hwnd as HWND {
-                return Err(io::Error::other(
-                    "SetParent did not attach the viewer to its host",
-                ));
-            }
-            if SetWindowPos(
-                hwnd,
-                ptr::null_mut(),
-                0,
-                0,
-                1,
-                1,
-                SWP_NOACTIVATE | SWP_NOZORDER | SWP_FRAMECHANGED,
-            ) == 0
-            {
-                return Err(io::Error::last_os_error());
-            }
-            window.sync_dpi();
-            Ok(window)
+    fn new(window: crate::host::Window) -> io::Result<Self> {
+        // SAFETY: a query on the map's window handle.
+        if unsafe { GetParent(window.hwnd() as HWND) }.is_null() {
+            return Err(io::Error::other("The map's window has no host window"));
         }
+        Ok(Self { window, placement: Cell::new(Placement::default()), region: RefCell::new(None) })
+    }
+
+    fn hwnd(&self) -> HWND {
+        self.window.hwnd() as HWND
     }
 
     fn bounds(&self, bounds: ViewBounds) -> io::Result<()> {
         let bounds = bounds.validate().map_err(io::Error::other)?;
-        if !self.hook.installed.get() || !parent_alive(self.parent.hwnd, self.parent.pid) {
-            return Err(io::Error::other("The embedded viewer's parent closed"));
-        }
-        self.hook.bounds.set(Some(bounds));
-        self.sync_dpi();
-        let visibility = if self.hook.show() {
-            SWP_SHOWWINDOW
-        } else {
-            SWP_HIDEWINDOW
-        };
+        let placement = Placement { bounds: Some(bounds), ..self.placement.get() };
+        self.placement.set(placement);
+        let visibility = if placement.show() { SWP_SHOWWINDOW } else { SWP_HIDEWINDOW };
+        // SAFETY: an asynchronous call on the map's window; its own thread applies it.
         let success = unsafe {
             SetWindowPos(
-                self.hwnd as HWND,
+                self.hwnd(),
                 HWND_TOP,
                 bounds.x,
                 bounds.y,
                 bounds.width as i32,
                 bounds.height as i32,
-                SWP_NOACTIVATE | visibility,
+                SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS | visibility,
             )
         };
-        if success == 0 {
-            Err(io::Error::last_os_error())
-        } else {
-            Ok(())
-        }
+        if success == 0 { Err(io::Error::last_os_error()) } else { Ok(()) }
     }
 
     fn visibility(&self, visible: bool) {
-        self.hook.visible.set(visible);
-        if self.hook.installed.get() {
-            unsafe {
-                ShowWindow(
-                    self.hwnd as HWND,
-                    if self.hook.show() {
-                        SW_SHOWNOACTIVATE
-                    } else {
-                        SW_HIDE
-                    },
-                );
-                if self.visible()
-                    && GetForegroundWindow() == GetAncestor(self.parent.hwnd as HWND, GA_ROOT)
-                {
-                    SetFocus(self.hwnd as HWND);
-                }
+        let placement = Placement { visible, ..self.placement.get() };
+        self.placement.set(placement);
+        // SAFETY: asynchronous calls on the map's window; its own thread applies them.
+        unsafe {
+            ShowWindowAsync(self.hwnd(), if placement.show() { SW_SHOWNOACTIVATE } else { SW_HIDE });
+            if placement.show() && GetForegroundWindow() == GetAncestor(self.hwnd(), GA_ROOT) {
+                self.window.focus();
             }
         }
     }
 
     fn map_views(&self, views: &[DashboardMapView]) -> io::Result<()> {
         let mut client = RECT::default();
-        // SAFETY: this adapter owns the child HWND and has validated its parent.
-        if unsafe { GetClientRect(self.parent.hwnd as HWND, &mut client) } == 0 {
+        // SAFETY: a query on the host's window, the map window's parent.
+        if unsafe { GetClientRect(GetParent(self.hwnd()), &mut client) } == 0 {
             return Err(io::Error::last_os_error());
         }
         let root = ViewBounds {
@@ -1214,7 +958,7 @@ impl NativeWindow {
             .filter_map(|view| intersect_bounds(view.bounds, view.clip))
             .filter_map(|clip| intersect_bounds(clip, root))
             .collect();
-        if self.hook.bounds.get() != Some(root) {
+        if self.placement.get().bounds != Some(root) {
             self.bounds(root)?;
         }
         if self.region.borrow().as_ref() != Some(&regions) {
@@ -1245,7 +989,7 @@ impl NativeWindow {
                         ));
                     }
                 }
-                if SetWindowRgn(self.hwnd as HWND, region, 1) == 0 {
+                if SetWindowRgn(self.hwnd(), region, 1) == 0 {
                     DeleteObject(region);
                     return Err(io::Error::last_os_error());
                 }
@@ -1253,7 +997,7 @@ impl NativeWindow {
             *self.region.borrow_mut() = Some(regions.clone());
         }
         let visible = !regions.is_empty();
-        if self.hook.visible.get() != visible {
+        if self.placement.get().visible != visible {
             self.visibility(visible);
         }
         Ok(())
@@ -1261,7 +1005,7 @@ impl NativeWindow {
 
     fn clear_region(&self) -> io::Result<()> {
         if self.region.borrow().is_some() {
-            if unsafe { SetWindowRgn(self.hwnd as HWND, ptr::null_mut(), 1) } == 0 {
+            if unsafe { SetWindowRgn(self.hwnd(), ptr::null_mut(), 1) } == 0 {
                 return Err(io::Error::last_os_error());
             }
             *self.region.borrow_mut() = None;
@@ -1270,41 +1014,13 @@ impl NativeWindow {
     }
 
     fn visible(&self) -> bool {
-        self.hook.show()
-            && self.hook.installed.get()
-            && unsafe {
-                IsWindowVisible(self.hwnd as HWND) != 0 && IsIconic(self.parent.hwnd as HWND) == 0
-            }
-    }
-
-    fn sync_dpi(&self) {
-        unsafe {
-            let dpi = GetDpiForWindow(self.hwnd as HWND);
-            if dpi != 0 && dpi != self.hook.dpi.get() {
-                let mut rect = RECT::default();
-                if GetWindowRect(self.hwnd as HWND, &mut rect) != 0 {
-                    SendMessageW(
-                        self.hwnd as HWND,
-                        WM_DPICHANGED,
-                        (dpi | (dpi << 16)) as usize,
-                        (&rect as *const RECT) as LPARAM,
-                    );
-                }
-            }
-        }
+        self.placement.get().show() && self.window.shown()
     }
 }
 
 impl Drop for NativeWindow {
     fn drop(&mut self) {
         self.visibility(false);
-        if self.hook.installed.replace(false) {
-            // Remove before freeing reference data, even when app creation
-            // failed. WM_NCDESTROY removes it itself if eframe closed first.
-            unsafe {
-                RemoveWindowSubclass(self.hwnd as HWND, Some(window_proc), SUBCLASS_ID);
-            }
-        }
     }
 }
 
@@ -1323,98 +1039,90 @@ fn intersect_bounds(left: ViewBounds, right: ViewBounds) -> Option<ViewBounds> {
     })
 }
 
-unsafe fn set_style(hwnd: HWND, index: i32, style: u32) -> io::Result<()> {
-    unsafe {
-        SetLastError(0);
-        let previous = SetWindowLongPtrW(hwnd, index, style as isize);
-        if previous == 0 && GetLastError() != 0 {
-            Err(io::Error::last_os_error())
-        } else {
-            Ok(())
-        }
-    }
-}
-
-unsafe extern "system" fn window_proc(
-    hwnd: HWND,
-    message: u32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-    _id: usize,
-    data: usize,
-) -> LRESULT {
-    // SAFETY: SetWindowSubclass supplies this stable Box pointer only on the
-    // owning UI thread. Drop removes the subclass before freeing the Box. The
-    // OS supplies each message's documented struct pointer synchronously.
-    unsafe {
-        let hook = &*(data as *const Hook);
-        match message {
-            WM_LBUTTONDOWN | WM_MBUTTONDOWN | WM_RBUTTONDOWN | WM_XBUTTONDOWN => {
-                SetFocus(hwnd);
-            }
-            WM_SETFOCUS | WM_KILLFOCUS => {
-                // winit gates Focused on both keyboard focus and nonclient
-                // activation. A child has no independently activated frame;
-                // mirror its real focus into that cached activation flag.
-                // -1 prevents nonclient repaint during this notification.
-                DefSubclassProc(hwnd, WM_NCACTIVATE, usize::from(message == WM_SETFOCUS), -1);
-            }
-            WM_STYLECHANGING => {
-                let styles = &mut *(lparam as *mut STYLESTRUCT);
-                if wparam as i32 == GWL_STYLE {
-                    styles.styleNew = hook.style(styles.styleNew);
-                } else if wparam as i32 == GWL_EXSTYLE {
-                    styles.styleNew = Hook::ex_style(styles.styleNew);
-                }
-            }
-            WM_WINDOWPOSCHANGING => {
-                let position = &mut *(lparam as *mut WINDOWPOS);
-                if !hook.show() {
-                    position.flags = (position.flags & !SWP_SHOWWINDOW) | SWP_HIDEWINDOW;
-                }
-                if let Some(bounds) = hook.bounds.get() {
-                    if position.flags & SWP_NOMOVE == 0 {
-                        position.x = bounds.x;
-                        position.y = bounds.y;
-                    }
-                    if position.flags & SWP_NOSIZE == 0 {
-                        position.cx = bounds.width as i32;
-                        position.cy = bounds.height as i32;
-                    }
-                }
-            }
-            WM_DPICHANGED => {
-                hook.dpi.set((wparam & 0xffff) as u32);
-            }
-            WM_DPICHANGED_AFTERPARENT => {
-                // Per-monitor-v2 child windows receive this notification, but
-                // winit 0.30 only updates its cached scale for WM_DPICHANGED.
-                // Host geometry remains authoritative through WINDOWPOS above.
-                let dpi = GetDpiForWindow(hwnd);
-                let mut rect = RECT::default();
-                if dpi != 0 && dpi != hook.dpi.get() && GetWindowRect(hwnd, &mut rect) != 0 {
-                    hook.dpi.set(dpi);
-                    DefSubclassProc(
-                        hwnd,
-                        WM_DPICHANGED,
-                        (dpi | (dpi << 16)) as usize,
-                        (&rect as *const RECT) as LPARAM,
-                    );
-                }
-            }
-            WM_NCDESTROY => {
-                hook.installed.set(false);
-                RemoveWindowSubclass(hwnd, Some(window_proc), SUBCLASS_ID);
-            }
-            _ => {}
-        }
-        DefSubclassProc(hwnd, message, wparam, lparam)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn shared() -> Shared {
+        Shared {
+            pending: Mutex::default(),
+            outgoing: Mutex::default(),
+            output_ready: Condvar::new(),
+            maps_ready: Condvar::new(),
+            stopped: AtomicBool::new(false),
+            terminal_error: AtomicBool::new(false),
+            ctx: egui::Context::default(),
+        }
+    }
+
+    #[test]
+    fn a_detail_report_past_sixteen_thousand_bytes_arrives_with_every_line() {
+        let mut messages: Vec<String> = (0..436)
+            .map(|table| format!("Table{table:03}: unavailable ({})", "not in this recording ".repeat(4)))
+            .collect();
+        messages.push("Capture 1.250 ms".into());
+        assert!(serde_json::to_vec(&messages).unwrap().len() > 16_000);
+        let shared = shared();
+        shared.details(dashboard::protocol::MapDetails {
+            messages: messages.clone(),
+            ..Default::default()
+        });
+        let mut outgoing = shared.outgoing.into_inner().unwrap();
+        assert!(outgoing.error.is_none());
+        let details = outgoing.details.take().expect("the report is queued");
+        assert_eq!(details.messages, messages);
+    }
+
+    #[test]
+    fn a_long_map_error_and_a_long_message_arrive_whole() {
+        let shared = shared();
+        let map_error = "é".repeat(500);
+        assert_eq!(map_error.len(), 1_000);
+        let mut last = None;
+        shared.maps(
+            &mut last,
+            vec![DashboardMapState {
+                id: "m".into(),
+                error: Some(map_error.clone()),
+                ..Default::default()
+            }],
+        );
+        let message = "x".repeat(10_000);
+        shared.error(message.clone());
+        let mut outgoing = shared.outgoing.into_inner().unwrap();
+        let Some(NativeEvent::MapStates { states }) = outgoing.take_maps() else {
+            panic!("pending map states")
+        };
+        assert_eq!(states[0].error.as_deref(), Some(map_error.as_str()));
+        assert_eq!(outgoing.error, Some(message));
+    }
+
+    #[test]
+    fn twenty_map_actions_queued_before_a_frame_are_all_taken_in_order() {
+        use dashboard::protocol::MapAction;
+        let names: Vec<String> = (0..20).map(|n| format!("plane {n}")).collect();
+        let mut pending = Pending::default();
+        for name in &names {
+            pending
+                .push(NativeCommand::MapAction {
+                    action: MapAction::FlyAircraft {
+                        aircraft: Some(name.clone()),
+                    },
+                })
+                .unwrap();
+        }
+        let taken: Vec<String> = std::mem::take(&mut pending)
+            .actions
+            .into_iter()
+            .map(|action| match action {
+                MapAction::FlyAircraft {
+                    aircraft: Some(name),
+                } => name,
+                other => panic!("unexpected action {other:?}"),
+            })
+            .collect();
+        assert_eq!(taken, names);
+    }
 
     #[test]
     fn two_diagnostics_presses_before_a_send_cancel_out() {
@@ -1450,7 +1158,7 @@ mod tests {
     }
 
     #[test]
-    fn a_views_latest_mode_list_replaces_an_unsent_one_and_leaves_on_the_event_pipe() {
+    fn a_views_latest_mode_list_replaces_an_unsent_one_and_leaves_on_the_event_queue() {
         let mut outgoing = Outgoing::default();
         let choice = |token: &str| dashboard::protocol::MapModeChoice {
             token: token.into(),
@@ -1465,7 +1173,7 @@ mod tests {
     }
 
     #[test]
-    fn map_states_leave_together_in_order_and_off_the_event_pipe() {
+    fn map_states_leave_together_in_order_and_off_the_event_queue() {
         let mut outgoing = Outgoing::default();
         for id in ["b", "a"] {
             outgoing.map_order.push_back(id.into());
@@ -1795,14 +1503,6 @@ mod tests {
             );
             assert_eq!(pending.seek, retained);
         }
-        let mut bytes = Vec::new();
-        assert!(
-            read_command(
-                &mut &b"{\"command\":\"seek\",\"branch\":\"1\",\"hour\":12}\n"[..],
-                &mut bytes,
-            )
-            .is_err()
-        );
     }
 
     #[test]
@@ -1833,79 +1533,14 @@ mod tests {
     }
 
     #[test]
-    fn command_reader_keeps_a_long_data_command_and_refuses_past_the_byte_budget() {
-        let command = NativeCommand::Data {
-            request: dashboard::transport::DataCommand::Product {
-                id: "request-1".into(),
-                request: dashboard::transport::ProductRequest {
-                    source_id: "source-1".into(),
-                    revision: "1".into(),
-                    product: "agency-comparison".into(),
-                    params: serde_json::json!({
-                        "branchId": "1",
-                        "top": null,
-                        "tags": ["AAA", "B".repeat(64 * 1024)]
-                    }),
-                },
-            },
-        };
-        let mut line = serde_json::to_vec(&command).unwrap();
-        line.push(b'\n');
-        assert!(line.len() > 64 * 1024);
-        let mut bytes = Vec::new();
-        let restored = read_command(&mut line.as_slice(), &mut bytes)
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            serde_json::to_value(restored).unwrap(),
-            serde_json::to_value(command).unwrap()
-        );
-        line.pop();
-        line.resize(MAX_MESSAGE_BYTES - 1, b' ');
-        line.push(b'\n');
-        assert!(
-            read_command(&mut line.as_slice(), &mut bytes)
-                .unwrap()
-                .is_some()
-        );
-        line.insert(line.len() - 1, b' ');
-        assert!(read_command(&mut line.as_slice(), &mut bytes).is_err());
-        assert_eq!(bytes.len(), MAX_MESSAGE_BYTES + 1);
-    }
-
-    #[test]
-    fn command_reader_bounds_partial_lines_and_accepts_crlf() {
-        let mut bytes = Vec::new();
-        assert!(matches!(
-            read_command(&mut &b"{\"command\":\"close\"}\r\n"[..], &mut bytes).unwrap(),
-            Some(NativeCommand::Close)
-        ));
-        let oversized = vec![b'x'; MAX_MESSAGE_BYTES + 500];
-        assert!(read_command(&mut oversized.as_slice(), &mut bytes).is_err());
-        assert!(bytes.len() <= MAX_MESSAGE_BYTES + 1);
-        assert!(read_command(&mut &b"{\"command\":\"close\"}"[..], &mut bytes).is_err());
-        assert!(read_command(&mut &b""[..], &mut bytes).unwrap().is_none());
-    }
-
-    #[test]
-    fn child_styles_require_bounds_before_visibility() {
-        let hook = Hook {
-            visible: Cell::new(false),
-            bounds: Cell::new(None),
-            dpi: Cell::new(96),
-            installed: Cell::new(true),
-        };
-        let style = hook.style(WS_OVERLAPPEDWINDOW | WS_POPUP | WS_VISIBLE);
-        assert_eq!(style & (WS_OVERLAPPEDWINDOW | WS_POPUP | WS_VISIBLE), 0);
-        assert_ne!(style & WS_CHILD, 0);
-        hook.visible.set(true);
-        assert_eq!(hook.style(0) & WS_VISIBLE, 0);
-        hook.bounds.set(Some(ViewBounds {
-            x: 70,
-            y: 0,
-            width: 800,
-            height: 600,
-        }));
-        assert_ne!(hook.style(0) & WS_VISIBLE, 0);
+    fn the_map_shows_only_once_it_is_both_visible_and_placed() {
+        let mut placement = Placement::default();
+        assert!(!placement.show());
+        placement.visible = true;
+        assert!(!placement.show(), "visible before the host placed it");
+        placement.bounds = Some(ViewBounds { x: 70, y: 0, width: 800, height: 600 });
+        assert!(placement.show());
+        placement.visible = false;
+        assert!(!placement.show());
     }
 }

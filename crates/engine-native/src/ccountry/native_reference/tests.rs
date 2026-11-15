@@ -123,7 +123,6 @@ fn population(countries: usize, aliases: usize) -> (Source, usize, usize, usize)
 #[test]
 fn growing_worker_cold_and_later_alias_populations_keep_the_original_headers() {
     let mut memo = memo(0, 0);
-    memo.enable_worker_growth();
     for aliases in [1, 2] {
         let (source, _, link_words, objects) = population(50, aliases);
         memo.reset(0, GS);
@@ -155,13 +154,6 @@ fn growing_worker_cold_and_later_alias_populations_keep_the_original_headers() {
         assert!(context.resolve((50 * aliases) as u32).is_ok());
         assert_eq!(*source.copies.borrow(), observations);
     }
-    let (source, _, _, _) = population(50, 1);
-    let fixed = super::tests::memo(0, 0);
-    assert_eq!(
-        fixed.view(&source, 0, GS).resolve(1),
-        Err("native country raw results do not fit arena")
-    );
-    assert!(source.copies.borrow().is_empty());
 }
 
 #[test]
@@ -169,8 +161,7 @@ fn worker_rehash_retains_first_failed_and_absent_canonical_results() {
     let (mut source, country_words, link_words, objects) = population(50, 2);
     source.fail_once = Some(objects);
     source.u64(country_words + 2 * 8, 0);
-    let mut memo = memo(0, 0);
-    memo.enable_worker_growth();
+    let memo = memo(0, 0);
     let failed = memo.view(&source, 0, GS).resolve(1);
     let absent = memo.view(&source, 0, GS).resolve(2);
     assert!(failed.is_err());
@@ -197,11 +188,10 @@ fn worker_rehash_retains_first_failed_and_absent_canonical_results() {
 }
 
 #[test]
-fn worker_growth_retains_header_fault_and_reserved_zero_law() {
+fn growth_retains_header_fault_and_reserved_zero_law() {
     let mut source = Source::positive();
     source.fail_once = Some(GS + cgame_state::COUNTRY_LINKS);
-    let mut memo = memo(0, 0);
-    memo.enable_worker_growth();
+    let memo = memo(0, 0);
     let context = memo.view(&source, 0, GS);
     assert_eq!(context.resolve(0), Ok(RESERVED));
     assert!(source.copies.borrow().is_empty());
@@ -338,25 +328,19 @@ fn shared_reserved_fault_or_missing_source_never_falls_back() {
 }
 
 #[test]
-fn capacity_refusals_and_wrong_context_do_not_read_or_invent_zero() {
+fn short_storage_grows_in_the_pass_and_wrong_context_does_not_read_or_invent_zero() {
     let source = Source::positive();
     let mut raw_short = memo(0, 9);
-    assert_eq!(
-        raw_short.view(&source, 0, GS).resolve(7),
-        Err("native country raw results do not fit arena")
-    );
+    let expected = raw_short.view(&source, 0, GS).resolve(7);
+    assert!(expected.is_ok());
     assert_eq!(raw_short.raw_required(), 1);
-    assert!(raw_short.raw_required_is_lower_bound());
-    assert!(source.copies.borrow().is_empty());
+    assert!(!raw_short.raw_required_is_lower_bound());
     assert_eq!(raw_short.view(&source, 0, GS).resolve(0), Ok(RESERVED));
     assert!(raw_short.view(&source, 0, GS + 1).resolve(0).is_err());
     let link_short = memo(4, 2);
-    assert_eq!(
-        link_short.view(&source, 0, GS).resolve(7),
-        Err("native country link observations do not fit arena")
-    );
+    assert_eq!(link_short.view(&source, 0, GS).resolve(7), expected);
     assert_eq!(link_short.link_required(), 9);
-    assert_eq!(source.attempts(LINKS + 7 * 4), 0);
+    assert!(link_short.link_capacity() >= 9);
     assert_eq!(link_short.view(&source, 0, GS).resolve(0), Ok(RESERVED));
     raw_short.reserve(4, 9).unwrap();
     assert!(raw_short.view(&source, 0, GS).resolve(0).is_err());

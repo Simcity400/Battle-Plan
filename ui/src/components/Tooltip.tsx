@@ -12,7 +12,7 @@ export default function Tooltip() {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const close = () => {
       clearTimeout(timer); timer = undefined;
-      observer.disconnect();
+      observer.disconnect(); shown.disconnect(); sized.disconnect();
       if (target) {
         const description = (target.getAttribute('aria-describedby') ?? '').split(/\s+/).filter(value => value && value !== id).join(' ');
         if (description) target.setAttribute('aria-describedby', description); else target.removeAttribute('aria-describedby');
@@ -37,10 +37,22 @@ export default function Tooltip() {
       const top = !above && anchor.bottom + bounds.height <= viewport.clientHeight - 8 ? anchor.bottom : anchor.top - bounds.height;
       tip.style.top = `${Math.max(header ? header.top + 4 : 8, Math.min(top, (header?.bottom ?? viewport.clientHeight) - bounds.height - (header ? 4 : 8)))}px`;
     };
+    // While a tooltip is open the page keeps painting under it, so nothing here reads layout:
+    // its anchor's removal and text are watched as mutations, its hiding by the intersection
+    // pass and its new size after layout.
     const observer = new MutationObserver(() => {
-      if (!target?.isConnected || !target.getAttribute('data-tooltip') || !target.getClientRects().length) { close(); return; }
+      if (!target?.isConnected || !target.getAttribute('data-tooltip')) { close(); return; }
       const text = target.getAttribute('data-tooltip')!;
-      if (tip.textContent !== text) { tip.textContent = text; position(); }
+      if (tip.textContent !== text) tip.textContent = text;
+    });
+    const shown = new IntersectionObserver(entries => {
+      const last = entries[entries.length - 1];
+      if (last && (!last.isIntersecting && last.boundingClientRect.width === 0 && last.boundingClientRect.height === 0)) close();
+    });
+    let measured = false;
+    const sized = new ResizeObserver(() => {
+      if (measured) position();
+      measured = true;
     });
     const schedule = (next: Element | null) => {
       if (next === target) return;
@@ -53,7 +65,11 @@ export default function Tooltip() {
         tip.textContent = next.getAttribute('data-tooltip');
         next.setAttribute('aria-describedby', [next.getAttribute('aria-describedby'), id].filter(Boolean).join(' '));
         tip.showPopover(); position();
-        observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-tooltip'] });
+        observer.observe(document.body, { childList: true, subtree: true });
+        observer.observe(next, { attributes: true, attributeFilter: ['data-tooltip'] });
+        shown.observe(next);
+        measured = false;
+        sized.observe(tip);
       }, 500);
     };
     const element = (value: EventTarget | null) => value instanceof Element ? value : null;

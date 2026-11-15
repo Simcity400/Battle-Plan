@@ -93,6 +93,8 @@ pub(crate) struct Store {
     tables: Tables,
     before: Option<(u64, u64)>,
     quiet: Option<(u64, u64)>,
+    /// An owner was carried on the family token alone, which must then hold to the walk's end.
+    quiet_carried: bool,
     failure: Option<&'static str>,
     changed: bool,
     unpublished: bool,
@@ -111,9 +113,10 @@ impl Store {
         self.failure = self
             .before
             .is_none()
-            .then_some("faction goal writer observation unavailable");
+            .then_some("faction goals could not be followed in the game");
         self.force = force || std::mem::take(&mut self.invalidated);
         self.changed = self.force;
+        self.quiet_carried = false;
         self.read = 0;
         self.read_ticks = 0;
         self.carried = 0;
@@ -183,6 +186,7 @@ impl Store {
             && held.certificate.is_some()
             && (self.before == self.quiet || held.certificate == changes.sequence(status));
         if unchanged && self.before == self.quiet {
+            self.quiet_carried = true;
             self.carried += 1;
             return;
         }
@@ -262,6 +266,10 @@ impl Store {
                         self.failure.get_or_insert(reason);
                     }
                 }
+                if changes.sequence(status) != held.certificate {
+                    self.failure
+                        .get_or_insert("faction goal writer changed during acquisition");
+                }
             }
         }
         if read {
@@ -283,9 +291,9 @@ impl Store {
             self.failure
                 .get_or_insert("faction goal identity roster incomplete");
         }
-        if self.before.is_none() || self.before != changes.quiet() {
+        if self.before.is_none() || (self.quiet_carried && self.before != changes.quiet()) {
             self.failure
-                .get_or_insert("faction goal writer observation changed during acquisition");
+                .get_or_insert("faction goals changed in the game while they were read");
         }
         if let Some(reason) = self.failure {
             self.quiet = None;
@@ -490,6 +498,7 @@ mod tests {
     use crate::watch_registry::WatchRegistry;
     use engine_native::memory::SliceMemory;
     use std::cell::Cell;
+    use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
     const FIRST: usize = 0x1000;
     const STRIDE: usize = 0x2000;
     struct ChangesTest(WatchRegistry);
@@ -917,6 +926,111 @@ mod tests {
                 .progress_raw,
             789
         );
+    }
+    /// A forced hour reads each owner and goal under its own certificate; another goal
+    /// writer during the walk left those exact rows refused. An owner carried on the family
+    /// token still refuses.
+    #[test]
+    fn faction_goal_owners_read_under_their_own_certificates_survive_other_writers_during_the_walk()
+    {
+        let (mut bytes, goals, sections) = goal_fixture(2);
+        let goal = goals + native::GOAL_STRIDE;
+        bytes[goal + native::GOAL_PROGRESS..goal + native::GOAL_PROGRESS + 8]
+            .copy_from_slice(&123_i64.to_le_bytes());
+        bytes[sections + 4..sections + 8].copy_from_slice(&7_u32.to_le_bytes());
+        let memory = Counted {
+            bytes: &bytes,
+            calls: Cell::new(0),
+        };
+        let changes = changes(3);
+        let unrelated = 0x10_0000;
+        let mut store = Store::default();
+        let mut output = Captured::default();
+        store.begin(&changes, true);
+        store.visit(&memory, 0, FIRST, 1, &changes);
+        drop(changes.0.notify(unrelated));
+        store.finish(true, &changes, &mut output);
+        assert_eq!(output.failure, None);
+        let headers = output
+            .headers
+            .as_ref()
+            .unwrap()
+            .rows::<tables::FactionGoalStatus>()
+            .unwrap();
+        assert_eq!(headers.len(), 1);
+        assert_eq!(headers[0].faction, 1);
+        let entries = output
+            .entries
+            .as_ref()
+            .unwrap()
+            .rows::<tables::FactionGoalEntries>()
+            .unwrap();
+        assert_eq!(entries.len(), 2);
+        assert!(entries.iter().all(|row| row.faction == 1 && row.kind == 0));
+        assert_eq!(entries[0].progress_raw, 0);
+        assert_eq!(entries[1].progress_raw, 123);
+        assert_eq!(entries[1].active_sections, [7]);
+
+        acquire(&mut store, &mut output, &memory, &changes, 1);
+        assert_eq!(output.failure, None);
+        let calls = memory.calls.get();
+        store.begin(&changes, false);
+        store.visit(&memory, 0, FIRST, 1, &changes);
+        assert_eq!(memory.calls.get(), calls);
+        assert_eq!(store.carried, 1, "a quiet family carries the owner");
+        drop(changes.0.notify(unrelated));
+        store.finish(true, &changes, &mut output);
+        assert_eq!(
+            output.failure,
+            Some("faction goals changed in the game while they were read")
+        );
+    }
+    struct Interrupting<'a> {
+        changes: &'a ChangesTest,
+        at: usize,
+        writer: usize,
+        fired: AtomicBool,
+    }
+    impl Changes for Interrupting<'_> {
+        fn quiet(&self) -> Option<(u64, u64)> {
+            self.changes.quiet()
+        }
+        fn sequence(&self, receiver: usize) -> Option<(u64, u64)> {
+            if receiver == self.at && !self.fired.swap(true, SeqCst) {
+                drop(self.changes.0.notify(self.writer));
+            }
+            self.changes.sequence(receiver)
+        }
+    }
+    /// The owner's structure certifies the goal addresses its progress is read through, so a
+    /// structure writer before those reads refuses even an hour that carried nothing.
+    #[test]
+    fn faction_goal_structure_writer_before_progress_reads_refuses_a_forced_hour() {
+        let (bytes, goals, _) = goal_fixture(2);
+        let memory = SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        };
+        let changes = changes(3);
+        let interrupting = Interrupting {
+            changes: &changes,
+            at: goals + native::GOAL_PROGRESS_STATUS,
+            writer: FIRST + native::STATUS,
+            fired: AtomicBool::new(false),
+        };
+        let mut store = Store::default();
+        let mut output = Captured::default();
+        store.begin(&interrupting, true);
+        store.visit(&memory, 0, FIRST, 1, &interrupting);
+        store.finish(true, &interrupting, &mut output);
+        assert!(interrupting.fired.load(SeqCst));
+        assert!(output.entries.is_none());
+        assert_eq!(
+            output.failure,
+            Some("faction goal writer changed during acquisition")
+        );
+        acquire(&mut store, &mut output, &memory, &changes, 1);
+        assert_eq!(output.failure, None);
     }
 }
 

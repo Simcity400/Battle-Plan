@@ -1,184 +1,81 @@
-import { countryNameDetails } from '../../charts/tooltip.ts';
-import type { CountryGroupReply, OperativePlacementReply, PlacementPeriod } from '../../generated/dashboard';
-import type { CountrySelection } from '../../dashboard/model';
-import { countryMatch, worldFilter } from '../../dashboard/groups.ts';
-import { readAt } from '../../dashboard/reads.ts';
-import { compareTags } from '../../dashboard/tagOrder.ts';
-import type { CountryLabel } from '../../dashboard/countryFlagsAt';
-import type { CountryFlagLook } from '../../components/CountryFlag';
-import { runAt } from '../../charts/series.ts';
 import { foldChord } from '../../charts/chord/fold.ts';
-import { chordTotals } from '../../charts/chord/totals.ts';
 import type { FoldedChord } from '../../charts/chord/fold';
 import type { ChordHit } from '../../charts/chord/layout';
+import { chordTotals } from '../../charts/chord/totals.ts';
+import { countryNameDetails } from '../../charts/tooltip.ts';
 import type { TooltipContent } from '../../charts/tooltip';
+import type { CountryFlagLook } from '../../components/CountryFlag';
+import { compareCountries, countryKey } from '../../dashboard/intelligence.ts';
+import { compareTags } from '../../dashboard/tagOrder.ts';
+import type { Country, Placement } from '../../generated/dashboard';
 
-const tag = (v: unknown): v is string => typeof v === 'string' && v.length > 0 && !v.includes('\0');
-const span = (v: { firstHour: number; lastHour: number }) => Number.isSafeInteger(v?.firstHour) && Number.isSafeInteger(v?.lastHour) && v.firstHour <= v.lastHour;
-const ordered = (runs: readonly { firstHour: number; lastHour: number }[]) => runs.every((r, i) => span(r) && (i === 0 || runs[i - 1].lastHour < r.firstHour));
-const statuses = new Set(['recorded', 'featureAbsent', 'tablesNotRecorded']);
+export const placementKey = (placement: Placement) => `${placement.owner.id}:${placement.target.id}`;
 
-/** Reject inconsistent coverage too: a value/read cannot live inside a gap or
- * unavailable period, and equal pair identities must not be counted twice. */
-export function validatePlacementsReply(value: unknown): OperativePlacementReply {
-  const r = value as OperativePlacementReply;
-  const fail = () => { throw new Error('The operative placements reply is malformed.'); };
-  if (!r || typeof r !== 'object' || typeof r.branchId !== 'string' || !/^\d+$/.test(r.branchId)
-    || !Array.isArray(r.pairs) || !Array.isArray(r.periods) || !Array.isArray(r.readHours)
-    || !Array.isArray(r.warnings) || !r.warnings.every(w => typeof w === 'string')) return fail();
-  if (!r.periods.every(p => p && statuses.has(p.availability)) || !ordered(r.periods)
-    || !r.readHours.every((h, i) => Number.isSafeInteger(h) && (i === 0 || r.readHours[i - 1] < h))) return fail();
-  const ids = new Set<string>();
-  const endpoints = new Map<string, OperativePlacementReply['pairs'][number]['runs']>();
-  const reads = new Set(r.readHours);
-  const memberships = new Map<string, { firstHour: number; lastHour: number; name: string | null; unnamed: boolean }[]>();
-  for (const pair of r.pairs) {
-    if (!pair || !tag(pair.id) || !tag(pair.owner) || !tag(pair.target) || ids.has(pair.id) || !Array.isArray(pair.runs)
-      || !pair.runs.every(run => run && Number.isSafeInteger(run.count) && run.count > 0 && run.count <= 4294967295
-        && Array.isArray(run.operatives) && run.operatives.length === run.count
-        && run.operatives.every(o => o && typeof o.id === 'string' && /^(0|[1-9]\d{0,19})$/.test(o.id) && BigInt(o.id) <= 18446744073709551615n
-          && (o.name === null || typeof o.name === 'string' && o.name.length > 0)
-          && typeof o.unnamed === 'boolean' && (!o.unnamed || o.name === null))
-        && new Set(run.operatives.map(o => o.id)).size === run.count) || !ordered(pair.runs)) return fail();
-    ids.add(pair.id);
-    const endpointKey = JSON.stringify([pair.owner, pair.target]);
-    const previous = endpoints.get(endpointKey) ?? [];
-    endpoints.set(endpointKey, [...previous, ...pair.runs]);
-    for (const run of pair.runs) {
-      for (const o of run.operatives) { const runs = memberships.get(o.id) ?? []; runs.push({ ...o, firstHour: run.firstHour, lastHour: run.lastHour }); memberships.set(o.id, runs); }
-      const period = runAt(r.periods, run.firstHour);
-      // Hourly identity presentation may split held daily memberships.
-      if (period?.availability !== 'recorded' || run.lastHour > period.lastHour) return fail();
-    }
-  }
-  // An opaque tag may name successive identities, but never two pairs at once.
-  for (const runs of endpoints.values()) if (!ordered(runs.sort((a, b) => a.firstHour - b.firstHour))) return fail();
-  for (const runs of memberships.values()) {
-    runs.sort((a, b) => a.firstHour - b.firstHour);
-    if (!ordered(runs)) return fail();
-    for (let i = 0; i < runs.length; i++) {
-      const run = runs[i], previous = runs[i - 1], next = runs[i + 1];
-      const same = (other: typeof run | undefined) => other?.name === run.name && other?.unnamed === run.unnamed;
-      if (!reads.has(run.firstHour) && (previous?.lastHour !== run.firstHour - 1 || !same(previous))) return fail();
-      const period = runAt(r.periods, run.lastHour)!;
-      if (run.lastHour < period.lastHour && !reads.has(run.lastHour + 1)
-        && (next?.firstHour !== run.lastHour + 1 || !same(next))) return fail();
-    }
-  }
-  for (const period of r.periods) if (period.availability === 'recorded') {
-    if (!reads.has(period.firstHour)) return fail();
-  }
-  if (r.readHours.some(h => runAt(r.periods, h)?.availability !== 'recorded')) return fail();
-  return r;
+/** The placements shown: every pair when `tags` is null, else those touching a chosen country; most operatives first. */
+export function placementRows(placements: readonly Placement[], tags: ReadonlySet<string> | null): Placement[] {
+  const shown = tags ? placements.filter(placement => [placement.owner.tag, placement.target.tag].some(tag => tag !== null && tags.has(tag))) : [...placements];
+  return shown.sort((a, b) => b.operatives.length - a.operatives.length || compareCountries(a.owner, b.owner) || compareCountries(a.target, b.target));
 }
 
-export interface PlacementAt { id: string; owner: string; target: string; count: number; operatives: OperativePlacementReply['pairs'][number]['runs'][number]['operatives'] }
-export interface PlacementsAt { period: PlacementPeriod | null; read: number | null; placements: PlacementAt[] }
-export function placementsAt(reply: OperativePlacementReply, hour: number): PlacementsAt {
-  const period = runAt(reply.periods, hour);
-  if (period?.availability !== 'recorded') return { period, read: null, placements: [] };
-  return { period, read: readAt(reply.readHours, hour), placements: reply.pairs.flatMap(pair => {
-    const run = runAt(pair.runs, hour);
-    return run ? [{ id: pair.id, owner: pair.owner, target: pair.target, count: run.count, operatives: run.operatives }] : [];
-  }) };
+export const operativeNames = (placement: Placement) => placement.operatives.map(operative => operative.name ?? 'Unnamed operative').join(', ');
+
+/** What the chord's structure is made of: the countries it may draw and why nothing is known, never the counts. */
+export function placementStructure(reply: { placements: readonly Placement[]; missing: string | null }): string {
+  const countries = new Set<string>();
+  for (const placement of reply.placements) for (const side of [placement.owner, placement.target]) countries.add(countryKey(side));
+  return `${reply.missing ?? ''}|${[...countries].sort(compareTags).join(',')}`;
 }
-export const countryNodeId = (country: string) => JSON.stringify(['country', country]);
+
+export const countryNodeId = (country: Country) => JSON.stringify(['country', countryKey(country)]);
 export const OTHER_ID = JSON.stringify(['other']);
 
-export function placementTotals(placements: readonly PlacementAt[]): Map<string, bigint> {
-  return new Map([...chordTotals(placements, n => n.owner, n => n.target, n => BigInt(n.count))]
-    .map(([id, total]) => [id, total.incoming + total.outgoing]));
-}
-export function rankedCountries(totals: ReadonlyMap<string, bigint>): string[] {
-  return [...totals.keys()].sort((a, b) => totals.get(a)! === totals.get(b)! ? compareTags(a, b) : totals.get(a)! > totals.get(b)! ? -1 : 1);
-}
-
-/** All means every placement. A chosen country/group narrows either
- * endpoint; human membership is only an explicit view choice, never capture. */
-export function selectPlacements(placements: readonly PlacementAt[], selection: CountrySelection, groups: CountryGroupReply | undefined, hour: number, end: number, selectedTag?: string | null): { placements: PlacementAt[]; reason: string | null; known: boolean } {
-  if (selection.kind === 'group' && selection.group.type === 'top') {
-    const tags = new Set(rankedCountries(placementTotals(placements)).slice(0, selection.group.count));
-    return { placements: placements.filter(n => tags.has(n.owner) || tags.has(n.target)), reason: null, known: true };
-  }
-  const fallback = selectedTag ? [selectedTag] : [];
-  const match = countryMatch(selection, fallback, groups, end);
-  if (!match.ready) return { placements: [], reason: 'Loading countries…', known: false };
-  const filter = worldFilter(selection, fallback, groups, hour, end);
-  if (filter.reason) return { placements: [], reason: filter.reason, known: true };
-  // Countries at an hour still being prepared are not known yet: no placement is not proof of none.
-  return { placements: placements.filter(n => match.matches(n.owner, hour) || match.matches(n.target, hour)), reason: null, known: match.known(hour) };
-}
+export type PlacementLook = CountryFlagLook & { name: string };
 
 export interface PlacementChord extends FoldedChord {
-  placements: Map<string, PlacementAt>;
-  countries: Map<string, string>;
-  read: number;
-  labels: CountryLabel;
+  placements: Map<string, Placement>;
+  countries: Map<string, Country>;
   totals: Map<string, { incoming: bigint; outgoing: bigint }>;
-}
-/** Integer counts stay exact; totals use BigInt even for folded groups. */
-export function placementChord(placements: readonly PlacementAt[], most: number, read: number, labels: CountryLabel, color: (tag: string) => string, muted: string): PlacementChord {
-  const totals = placementTotals(placements), ranked = rankedCountries(totals);
-  const keep = new Set(ranked.slice(0, most).map(countryNodeId));
-  const countries = new Map([...totals.keys()].sort(compareTags).map(tag => [countryNodeId(tag), tag]));
-  const data = { nodes: [...countries].map(([id, tag]) => {
-      const label = labels(tag);
-      return { id, label: label.name, flag: label.flag, color: color(tag),
-        countryFlag: { ...(label.nameFailure ? { nameFailure: label.nameFailure } : {}), ...(label.flagDetail !== undefined ? { flagDetail: label.flagDetail } : {}), flag: label.flag, flagPending: label.flagPending, flagReason: label.flagReason } };
-    }),
-    flows: placements.map(n => ({ id: n.id, source: countryNodeId(n.owner), target: countryNodeId(n.target), value: n.count })) };
-  const folded = foldChord(data, keep, { id: OTHER_ID, label: 'Other countries', color: muted });
-  return { ...folded, placements: new Map(placements.map(n => [n.id, n])), countries, read, labels,
-    totals: chordTotals(placements, n => n.owner, n => n.target, n => BigInt(n.count)) };
+  look: (country: Country) => PlacementLook;
 }
 
-type PlacementFact = CountryFlagLook & { name: string; color: string };
-
-/** Reuse the exact data object until values, the read, membership or recorded
- * presentation change. Hour ticks alone never rebuild or refold the graph. */
-export function placementChordMemo() {
-  let previous: { placements: readonly PlacementAt[]; most: number; read: number; muted: string;
-    facts: Map<string, PlacementFact>; chord: PlacementChord } | null = null;
-  return (placements: readonly PlacementAt[], most: number, read: number, labels: CountryLabel,
-    color: (tag: string) => string, muted: string): PlacementChord => {
-    const facts = new Map<string, PlacementFact>();
-    for (const n of placements) for (const tag of [n.owner, n.target]) if (!facts.has(tag)) {
-      const label = labels(tag);
-      facts.set(tag, { ...(label.nameFailure ? { nameFailure: label.nameFailure } : {}), name: label.name, flag: label.flag, flagPending: label.flagPending, flagReason: label.flagReason, ...(label.flagDetail !== undefined ? { flagDetail: label.flagDetail } : {}), color: color(tag) });
-    }
-    if (previous && previous.most === most && previous.read === read && previous.muted === muted
-      && previous.placements.length === placements.length && placements.every((n, i) => {
-        const old = previous!.placements[i];
-        return n.id === old.id && n.owner === old.owner && n.target === old.target && n.count === old.count && n.operatives.length === old.operatives.length && n.operatives.every((o, j) => o.id === old.operatives[j].id && o.name === old.operatives[j].name && o.unnamed === old.operatives[j].unnamed);
-      }) && facts.size === previous.facts.size && [...facts].every(([tag, fact]) => {
-        const old = previous!.facts.get(tag);
-        return old?.name === fact.name && old.nameFailure === fact.nameFailure && old.flagDetail === fact.flagDetail && old.flag === fact.flag && old.flagPending === fact.flagPending
-          && old.flagReason === fact.flagReason && old.color === fact.color;
-      })) return previous.chord;
-    const chord = placementChord(placements, most, read, tag => facts.get(tag)!, tag => facts.get(tag)!.color, muted);
-    previous = { placements, most, read, muted, facts, chord };
-    return chord;
-  };
+/** The chord of `placements`: a ribbon per pair, coloured by the country spying, the `most` countries with the most
+ * operatives sent and received drawn, the rest folded into "Other countries". Counts are exact. */
+export function placementChord(placements: readonly Placement[], most: number, look: (country: Country) => PlacementLook,
+  color: (country: Country) => string, muted: string): PlacementChord {
+  const totals = chordTotals(placements, n => countryNodeId(n.owner), n => countryNodeId(n.target), n => BigInt(n.operatives.length));
+  const countries = new Map<string, Country>();
+  for (const placement of placements) for (const side of [placement.owner, placement.target]) countries.set(countryNodeId(side), side);
+  const sum = (id: string) => { const total = totals.get(id)!; return total.incoming + total.outgoing; };
+  const ranked = [...countries.keys()].sort((a, b) => sum(a) === sum(b) ? compareCountries(countries.get(a)!, countries.get(b)!) : sum(a) > sum(b) ? -1 : 1);
+  const keep = new Set(ranked.slice(0, Math.max(1, most)));
+  const nodes = [...countries].sort((a, b) => compareCountries(a[1], b[1])).map(([id, country]) => {
+    const shown = look(country);
+    return { id, label: shown.name, flag: shown.flag, color: color(country), countryFlag: shown };
+  });
+  const flows = placements.map(n => ({ id: placementKey(n), source: countryNodeId(n.owner), target: countryNodeId(n.target), value: n.operatives.length }));
+  const folded = foldChord({ nodes, flows }, keep, { id: OTHER_ID, label: 'Other countries', color: muted });
+  return { ...folded, placements: new Map(placements.map(n => [placementKey(n), n])), countries, totals, look };
 }
 
 export function placementTooltip(hit: ChordHit, chord: PlacementChord): TooltipContent | null {
-  const title = (n: PlacementAt) => `${chord.labels(n.owner).name} has ${n.count} ${n.count === 1 ? 'operative' : 'operatives'} in ${chord.labels(n.target).name}`;
-  const names = (n: PlacementAt) => n.operatives.map(o => ({ label: o.unnamed ? 'Unnamed operative' : o.name ?? 'Unknown operative' }));
+  const named = (country: Country) => chord.look(country);
+  const title = (n: Placement) => `${named(n.owner).name} has ${n.operatives.length} ${n.operatives.length === 1 ? 'operative' : 'operatives'} in ${named(n.target).name}`;
+  const names = (n: Placement) => n.operatives.map(o => ({ label: o.name ?? 'Unnamed operative' }));
   if (hit.kind === 'flow') {
     const members = chord.flows.get(hit.id)?.map(id => chord.placements.get(id)!);
     if (!members?.length) return null;
-    if (members.length === 1) return { ...countryNameDetails(chord.labels(members[0].owner), chord.labels(members[0].target)), title: title(members[0]), rows: names(members[0]) };
+    if (members.length === 1) return { ...countryNameDetails(named(members[0].owner), named(members[0].target)), title: title(members[0]), rows: names(members[0]) };
     return { title: 'Operative placements', rows: [
-      ...members.flatMap(n => [{ ...countryNameDetails(chord.labels(n.owner), chord.labels(n.target)), label: title(n), strong: true }, ...names(n)]),
-      { label: 'Total operatives', value: members.reduce((sum, n) => sum + BigInt(n.count), 0n).toString(), strong: true },
+      ...members.flatMap(n => [{ ...countryNameDetails(named(n.owner), named(n.target)), label: title(n), strong: true }, ...names(n)]),
+      { label: 'Total operatives', value: members.reduce((sum, n) => sum + BigInt(n.operatives.length), 0n).toString(), strong: true },
     ] };
   }
   const memberIds = chord.nodes.get(hit.id);
   if (!memberIds) return null;
-  const tags = memberIds.map(id => chord.countries.get(id)!);
+  const countries = memberIds.map(id => chord.countries.get(id)!);
   let incoming = 0n, outgoing = 0n;
-  for (const tag of tags) { const total = chord.totals.get(tag)!; outgoing += total.outgoing; incoming += total.incoming; }
-  return { ...countryNameDetails(...tags.map(tag => chord.labels(tag))), title: hit.id === OTHER_ID ? 'Other countries' : chord.labels(tags[0]).name,
+  for (const id of memberIds) { const total = chord.totals.get(id)!; outgoing += total.outgoing; incoming += total.incoming; }
+  return { ...countryNameDetails(...countries.map(named)), title: hit.id === OTHER_ID ? 'Other countries' : named(countries[0]).name,
     rows: [{ label: 'Operatives sent', value: outgoing.toString() }, { label: 'Operatives received', value: incoming.toString() },
-      ...(hit.id === OTHER_ID ? tags.map(tag => ({ label: chord.labels(tag).name, countryFlag: chord.labels(tag), tone: 'muted' as const })) : [])] };
+      ...(hit.id === OTHER_ID ? countries.map(country => ({ label: named(country).name, countryFlag: named(country), tone: 'muted' as const })) : [])] };
 }

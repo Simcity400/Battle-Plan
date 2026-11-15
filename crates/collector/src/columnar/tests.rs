@@ -1,12 +1,17 @@
 use super::*;
-use replay::columnar_capture::{CaptureWriter, Progress};
+use std::fs;
+use replay::campaign::{
+    Replay,
+    live::{Admit, Asked, Host, LiveWriter, Progress},
+};
 use replay::columnar_file::Settings;
+use replay::columnar_journal::{Journal, Record as Journaled, Source};
 use replay::columnar_frames::{Recording, Segment};
 use replay::native_frame::{OneThread, RowFrame};
 
-/// A session's segment durability, as the spool's processor starts it.
-fn durability() -> Arc<Durability> {
-    Durability::start().unwrap()
+/// A session's journal thread, as the spool's processor starts it.
+fn journal_thread() -> Arc<JournalThread> {
+    JournalThread::start().unwrap()
 }
 
 /// A row encoder's view of an hour that is no keyframe, lending no baselines.
@@ -24,18 +29,66 @@ use replay_data::{
 };
 use replay_frame::frame::{Metrics, TableInput, TableView};
 
-/// The first capture's file in its campaign's directory while the recorder writes it.
-const PARTIAL: &str = "columnar.0.h4col.partial";
+/// Writes every branch, saving each revision.
+struct Every;
 
-/// Capture `capture`'s journal in `folder` written into its file as the recorder writes it,
-/// once its collector finished it.
-fn recorded_capture(folder: &Path, capture: u32) -> Recording {
-    let mut writer = CaptureWriter::open(folder, capture, Settings::LOW).unwrap();
-    assert_eq!(writer.advance(&|| false).unwrap(), Progress::Finished);
-    Recording::open(fs::read(writer.finished_path()).unwrap()).unwrap()
+impl Host for Every {
+    fn admit(&mut self, _: &Asked) -> Admit {
+        Admit::Write
+    }
+
+    fn saves(&mut self) -> bool {
+        true
+    }
 }
 
-fn recorded(folder: &Path) -> Recording {
+/// A capture's journal read as the recorder reads it: the control records it holds, in
+/// order, and the recording the recorder writes of it.
+struct Recorded {
+    controls: Vec<Vec<u8>>,
+    replay: Replay,
+}
+
+impl std::ops::Deref for Recorded {
+    type Target = Recording;
+
+    fn deref(&self) -> &Recording {
+        self.replay.recording()
+    }
+}
+
+/// The control records capture `capture`'s journal in `folder` holds.
+fn journaled_controls(folder: &Path, capture: u32) -> Vec<Vec<u8>> {
+    let mut journal = Journal::open(folder, capture);
+    journal.start(0).unwrap();
+    let mut controls = Vec::new();
+    while let Some(record) = journal.record().unwrap() {
+        if let Journaled::Controls(given) = record {
+            controls.extend(given.into_iter().map(<[u8]>::to_vec));
+        }
+        journal.advance();
+    }
+    controls
+}
+
+/// Capture `capture`'s journal in `folder` written into a recording as the recorder writes
+/// it, once its collector finished it.
+fn recorded_capture(folder: &Path, capture: u32) -> Recorded {
+    let controls = journaled_controls(folder, capture);
+    let path = folder.join(format!("recorded.{capture}.battleplan"));
+    let state = folder.join(format!("recorded.{capture}.state"));
+    let mut writer = LiveWriter::open(&path, &state, "session", capture, Settings::LOW, Vec::new()).unwrap();
+    let mut journal = Journal::open(folder, capture);
+    journal.start(writer.segments()).unwrap();
+    assert_eq!(writer.advance(&mut journal, &mut Every, &|| false).unwrap(), Progress::Finished);
+    drop(writer);
+    Recorded {
+        controls,
+        replay: Replay::open_path(&path).unwrap(),
+    }
+}
+
+fn recorded(folder: &Path) -> Recorded {
     recorded_capture(folder, 0)
 }
 
@@ -120,6 +173,28 @@ fn frame(branch: u64, hour: i32) -> FrameInput {
     }
 }
 
+/// Gives the capture its session and `branch`'s start at `first_hour`, as the rows give them
+/// before the branch's first hour.
+fn start(columnar: &mut Columnar, branch: u64, first_hour: i32) {
+    use replay::spool::Record;
+    use replay_frame::branches::{BranchReason, BranchStart, Parentage};
+    let reason = match branch {
+        1 => BranchReason::SessionStart,
+        _ => BranchReason::LoadSignal,
+    };
+    columnar.note(&[
+        Record::SessionStart(session()),
+        Record::BranchStart(BranchStart {
+            id: branch,
+            session: 1,
+            loaded_hour: Some(first_hour - 1),
+            first_hour,
+            parent: Parentage::Unknown,
+            reason,
+        }),
+    ]);
+}
+
 fn write(columnar: &mut Columnar, branch: u64, hours: std::ops::RangeInclusive<i32>) {
     for hour in hours {
         let prepared = columnar.prepare(&frame(branch, hour), row(), &OneThread).unwrap().expect("prepared");
@@ -134,24 +209,21 @@ fn write(columnar: &mut Columnar, branch: u64, hours: std::ops::RangeInclusive<i
 fn hours_across_a_gap_and_a_branch_change_finish_as_runs_of_one_file() {
     let root = Folder::new("runs");
     let folder = Folder(root.0.join("campaign"));
-    let mut columnar = Columnar::open(&folder.0, "campaign", &session(), &durability());
+    let mut columnar = Columnar::open(&folder.0, "campaign", &session(), &journal_thread());
     let first = envelope::UNIT_ORDINALS as i32 + 3;
+    start(&mut columnar, 1, 1);
     write(&mut columnar, 1, 1..=first);
     write(&mut columnar, 1, first + 5..=first + 6);
+    start(&mut columnar, 2, first + 7);
     write(&mut columnar, 2, first + 7..=first + 7);
     columnar.finish();
     assert_eq!(columnar.status().unwrap()["stopped"], Value::Null);
     let recording = recorded(&folder.0);
-    assert!(!folder.0.join(PARTIAL).exists());
     assert!(recording.damage().is_empty(), "{:?}", recording.damage());
     assert_eq!(recording.hours(), first as u64 + 3);
-    let capture = recording.capture().unwrap().expect("a capture in the root");
-    let mut encoded = Vec::new();
-    session().encode(&mut encoded).unwrap();
-    assert_eq!(capture.campaign_id, b"campaign");
-    assert_eq!(capture.sessions, [encoded]);
-    assert_eq!(capture.run_sessions, [0, 0, 0]);
-    assert_eq!(capture.stop, None);
+    assert_eq!(recording.replay.campaign_id, b"campaign");
+    assert_eq!(recording.replay.sessions, [session()]);
+    assert!(recording.replay.stops.is_empty());
     let branch = |run: u32| recording.run(run).unwrap().branch;
     assert_eq!(
         recording.segments(),
@@ -166,15 +238,16 @@ fn hours_across_a_gap_and_a_branch_change_finish_as_runs_of_one_file() {
         epochs,
         [envelope::epoch::START, envelope::epoch::GAP, envelope::epoch::BRANCH]
     );
-    let mut state = replay_columnar::walk::State::new(schema().unwrap()).unwrap();
-    let mut walked = 0;
-    recording
-        .walk(&mut state, |_, _, _| {
-            walked += 1;
-            Ok(true)
-        })
-        .unwrap();
-    assert_eq!(walked, first as usize + 3);
+    let mut frames = replay::columnar_frames::Frames::new(&*recording, &[TableId::Countries]).unwrap();
+    let mut read = 0;
+    for run in 0..recording.run_count() {
+        for ordinal in 0..recording.run(run).unwrap().ordinals {
+            frames.go_to(run, ordinal).unwrap();
+            frames.frame(branch(run)).unwrap();
+            read += 1;
+        }
+    }
+    assert_eq!(read, first as usize + 3);
 }
 
 /// A row write failure, or an hour the recording could not take, starts the next hour's run
@@ -182,7 +255,8 @@ fn hours_across_a_gap_and_a_branch_change_finish_as_runs_of_one_file() {
 #[test]
 fn a_failed_hour_starts_a_run_and_the_file_goes_on() {
     let folder = Folder::new("interrupt");
-    let mut columnar = Columnar::open(&folder.0, "campaign", &session(), &durability());
+    let mut columnar = Columnar::open(&folder.0, "campaign", &session(), &journal_thread());
+    start(&mut columnar, 1, 1);
     write(&mut columnar, 1, 1..=2);
     columnar.interrupt();
     write(&mut columnar, 1, 3..=3);
@@ -192,7 +266,8 @@ fn a_failed_hour_starts_a_run_and_the_file_goes_on() {
     assert_eq!(recording.run(1).unwrap().epoch, envelope::epoch::WRITE_FAILURE);
 
     let failed = Folder::new("failed");
-    let mut columnar = Columnar::open(&failed.0, "campaign", &session(), &durability());
+    let mut columnar = Columnar::open(&failed.0, "campaign", &session(), &journal_thread());
+    start(&mut columnar, 1, 1);
     write(&mut columnar, 1, 1..=2);
     let _uncommitted = columnar.prepare(&frame(1, 3), row(), &OneThread).unwrap().expect("prepared");
     // Preparing the hour again before its commit would lose the first preparation's strings.
@@ -202,26 +277,28 @@ fn a_failed_hour_starts_a_run_and_the_file_goes_on() {
     write(&mut columnar, 1, 4..=4);
     columnar.finish();
     let recording = recorded(&failed.0);
-    assert!(!failed.0.join(PARTIAL).exists());
     assert_eq!(recording.hours(), 3);
     assert_eq!(recording.run(1).unwrap().first_hour, 4);
     assert_eq!(recording.run(1).unwrap().epoch, envelope::epoch::WRITE_FAILURE);
-    assert_eq!(recording.capture().unwrap().unwrap().stop, None);
+    assert!(recording.replay.stops.is_empty());
 }
 
-/// A file that fails stops the recording with its reason, every later hour fails, and a
-/// recording that stopped before holding an hour leaves no file.
+/// A file that fails stops the recording with its reason once the journal thread reports it,
+/// every later hour fails, and a recording that stopped before holding an hour leaves no file.
 #[test]
 fn a_failed_file_stops_the_recording_and_fails_every_later_hour() {
     let folder = Folder::new("blocked");
     // The campaign's directory cannot be made under a file, so the first hour's file fails.
     let blocker = folder.0.join("blocker");
     fs::write(&blocker, b"").unwrap();
-    let mut columnar = Columnar::open(&blocker.join("campaign"), "campaign", &session(), &durability());
+    let mut columnar = Columnar::open(&blocker.join("campaign"), "campaign", &session(), &journal_thread());
     let prepared = columnar.prepare(&frame(1, 1), row(), &OneThread).unwrap().expect("prepared");
-    assert!(columnar.commit(prepared, false, &OneThread).is_err());
-    assert!(columnar.status().unwrap()["stopped"].is_string());
+    assert!(columnar.commit(prepared, false, &OneThread).is_ok());
+    columnar.settle();
     assert!(columnar.prepare(&frame(1, 2), row(), &OneThread).is_err());
+    let status = columnar.status().unwrap();
+    assert!(status["stopped"].is_string());
+    assert_eq!(status["lost_hours"], 1);
     columnar.finish();
     assert_eq!(fs::read_dir(&folder.0).unwrap().count(), 1);
 }
@@ -232,7 +309,8 @@ fn a_failed_file_stops_the_recording_and_fails_every_later_hour() {
 #[test]
 fn queued_hours_wait_for_their_rows_and_a_failure_drops_them() {
     let folder = Folder::new("queued");
-    let mut columnar = Columnar::open(&folder.0, "campaign", &session(), &durability());
+    let mut columnar = Columnar::open(&folder.0, "campaign", &session(), &journal_thread());
+    start(&mut columnar, 1, 1);
     for hour in 1..=4 {
         let prepared = columnar.prepare(&frame(1, hour), row(), &OneThread).unwrap().expect("prepared");
         columnar.commit(prepared, true, &OneThread).unwrap();
@@ -262,7 +340,7 @@ fn the_capture_keeps_a_context_given_again_once_and_every_gap_summary() {
     use replay::spool::{ControlRecord, Record};
     use replay_frame::branches::{BranchReason, BranchStart, Parentage};
     let folder = Folder::new("controls");
-    let mut columnar = Columnar::open(&folder.0, "campaign", &session(), &durability());
+    let mut columnar = Columnar::open(&folder.0, "campaign", &session(), &journal_thread());
     let start = Record::BranchStart(BranchStart {
         id: 1,
         session: 1,
@@ -292,9 +370,95 @@ fn the_capture_keeps_a_context_given_again_once_and_every_gap_summary() {
     let recording = recorded(&folder.0);
     let encoded = |record: &Record| replay::spool::encode_record(record).unwrap();
     assert_eq!(
-        recording.capture().unwrap().unwrap().controls,
+        recording.controls,
         [encoded(&start), encoded(&summary), encoded(&summary)]
     );
+}
+
+/// Each hour's journal record carries the clock witness the rows were given with it, with its
+/// load signal or without; a witness given for another hour is no hour's.
+#[test]
+fn an_hour_s_journal_record_carries_the_clock_witness_given_with_it() {
+    use replay::columnar_journal::{self, Witness};
+    use replay::spool::{ControlRecord, Record};
+    let folder = Folder::new("witness");
+    let mut columnar = Columnar::open(&folder.0, "campaign", &session(), &journal_thread());
+    let mut hour = |hour: i32, witnessed: i32, load_signal: Option<i64>| {
+        let prepared = columnar.prepare(&frame(1, hour), row(), &OneThread).unwrap().expect("prepared");
+        columnar.stage(&[Record::Control(ControlRecord::ClockWitness {
+            session: 1,
+            qpc: 100 + witnessed as u64,
+            hour: witnessed,
+            load_signal,
+        })]);
+        columnar.commit(prepared, true, &OneThread).unwrap();
+        columnar.queued(1, hour);
+        columnar.complete(1, hour);
+    };
+    hour(1, 1, Some(-7));
+    hour(2, 2, None);
+    hour(3, 9, Some(1));
+    columnar.finish();
+    let mut witnesses = Vec::new();
+    for (_, _, path) in columnar_journal::segments(&folder.0).unwrap() {
+        for record in columnar_journal::Segment::read(&path).unwrap().records(0) {
+            if let columnar_journal::Record::Hour { witness, .. } = record.unwrap().0 {
+                witnesses.push(witness);
+            }
+        }
+    }
+    assert_eq!(
+        witnesses,
+        [
+            Some(Witness {
+                qpc: 101,
+                load_signal: Some(-7)
+            }),
+            Some(Witness {
+                qpc: 102,
+                load_signal: None
+            }),
+            None,
+        ]
+    );
+}
+
+/// Records given with no hour or command after them reach the recorder in a journal the
+/// recording's finish opens for them; a recording given nothing has none.
+#[test]
+fn records_no_hour_followed_reach_a_journal_when_the_recording_finishes() {
+    use replay::spool::Record;
+    use replay_frame::branches::{BranchReason, BranchStart, Gap, Parentage};
+    let folder = Folder::new("records-alone");
+    let mut columnar = Columnar::open(&folder.0, "campaign", &session(), &journal_thread());
+    let start = Record::BranchStart(BranchStart {
+        id: 1,
+        session: 1,
+        loaded_hour: Some(0),
+        first_hour: 1,
+        parent: Parentage::Unknown,
+        reason: BranchReason::SessionStart,
+    });
+    let gap = Record::Gap(Gap {
+        branch: 1,
+        first_hour: 1,
+        last_hour: 3,
+        reason: "synthetic loss".into(),
+    });
+    columnar.note(&[Record::SessionStart(session()), start.clone(), gap.clone()]);
+    assert!(replay::columnar_journal::segments(&folder.0).unwrap().is_empty());
+    columnar.finish();
+    let recording = recorded(&folder.0);
+    let encoded = |record: &Record| replay::spool::encode_record(record).unwrap();
+    assert_eq!(
+        recording.controls,
+        [encoded(&start), encoded(&gap)]
+    );
+    assert_eq!(recording.run_count(), 0);
+    let empty = Folder::new("nothing-given");
+    let mut columnar = Columnar::open(&empty.0, "campaign", &session(), &journal_thread());
+    columnar.finish();
+    assert!(replay::columnar_journal::segments(&empty.0).unwrap().is_empty());
 }
 
 /// A queued frame's records reach the capture once its write completes, before records given
@@ -305,7 +469,7 @@ fn a_queued_frame_s_records_wait_for_its_write_and_a_failed_one_s_are_dropped() 
     use replay::spool::{ControlRecord, Record};
     use replay_frame::branches::{BranchReason, BranchStart, Parentage};
     let folder = Folder::new("queued-controls");
-    let mut columnar = Columnar::open(&folder.0, "campaign", &session(), &durability());
+    let mut columnar = Columnar::open(&folder.0, "campaign", &session(), &journal_thread());
     let start = Record::BranchStart(BranchStart {
         id: 1,
         session: 1,
@@ -336,7 +500,7 @@ fn a_queued_frame_s_records_wait_for_its_write_and_a_failed_one_s_are_dropped() 
     let recording = recorded(&folder.0);
     let encoded = |record: &Record| replay::spool::encode_record(record).unwrap();
     assert_eq!(
-        recording.capture().unwrap().unwrap().controls,
+        recording.controls,
         [encoded(&start), encoded(&summary), encoded(&detach)]
     );
 }
@@ -347,7 +511,8 @@ fn a_queued_frame_s_records_wait_for_its_write_and_a_failed_one_s_are_dropped() 
 fn each_capture_takes_the_next_number_and_keeps_the_earlier_files() {
     let folder = Folder::new("captures");
     for hours in [1..=2, 3..=5] {
-        let mut columnar = Columnar::open(&folder.0, "campaign", &session(), &durability());
+        let mut columnar = Columnar::open(&folder.0, "campaign", &session(), &journal_thread());
+        start(&mut columnar, 1, 1);
         write(&mut columnar, 1, hours);
         columnar.finish();
     }
@@ -379,7 +544,9 @@ fn an_unopened_recording_fails_every_hour() {
 #[test]
 fn a_run_starts_in_the_file_after_the_hours_queued_before_it() {
     let folder = Folder::new("queued-runs");
-    let mut columnar = Columnar::open(&folder.0, "campaign", &session(), &durability());
+    let mut columnar = Columnar::open(&folder.0, "campaign", &session(), &journal_thread());
+    start(&mut columnar, 1, 1);
+    start(&mut columnar, 2, 3);
     for (branch, hour) in [(1, 1), (1, 2), (2, 3), (2, 4)] {
         let prepared = columnar.prepare(&frame(branch, hour), row(), &OneThread).unwrap().expect("prepared");
         columnar.commit(prepared, true, &OneThread).unwrap();
@@ -398,7 +565,6 @@ fn a_run_starts_in_the_file_after_the_hours_queued_before_it() {
         })
         .collect();
     assert_eq!(runs, [(1, envelope::epoch::START, 1), (2, envelope::epoch::BRANCH, 3)]);
-    assert_eq!(recording.capture().unwrap().unwrap().run_sessions, [0, 0]);
 }
 
 /// Paused commands, with no hour to hold them, still reach the journal at once, so a capture
@@ -410,17 +576,110 @@ fn commands_without_an_hour_reach_the_journal_at_once() {
         spool::{ControlRecord, Record, encode_record},
     };
     let folder = Folder::new("commands");
-    let mut columnar = Columnar::open(&folder.0, "campaign", &session(), &durability());
+    let mut columnar = Columnar::open(&folder.0, "campaign", &session(), &journal_thread());
     let packet = Packet::pack(4, 1, 1, 0, 10, 20, 0, &Batch::default()).unwrap();
     let record = Record::Control(ControlRecord::PlayerCommands { session: 1, packet });
     columnar.note(std::slice::from_ref(&record));
-    let mut writer = CaptureWriter::open(&folder.0, 0, Settings::LOW).unwrap();
-    assert_eq!(writer.advance(&|| false).unwrap(), Progress::Waiting);
-    let path = writer.finish_stopped("stopped in this test").unwrap().expect("a file of the commands");
-    let recording = Recording::open(fs::read(path).unwrap()).unwrap();
-    assert_eq!(recording.hours(), 0);
-    let capture = recording.capture().unwrap().expect("a capture in the root");
-    assert_eq!(capture.controls, [encode_record(&record).unwrap()]);
-    assert_eq!(capture.stop.expect("a stop").reason, "stopped in this test");
+    columnar.settle();
+    assert_eq!(journaled_controls(&folder.0, 0), [encode_record(&record).unwrap()]);
     drop(columnar);
+}
+
+/// The hours capture `capture`'s journal in `folder` holds now, in order.
+fn journaled_hours(folder: &Path, capture: u32) -> Vec<i32> {
+    let mut journal = Journal::open(folder, capture);
+    journal.start(0).unwrap();
+    let (mut hours, mut next) = (Vec::new(), None);
+    while let Some(record) = journal.record().unwrap() {
+        match record {
+            Journaled::Run { first_hour, .. } => next = Some(first_hour),
+            Journaled::Hour { .. } => {
+                let hour = next.expect("an hour within its run");
+                hours.push(hour);
+                next = Some(hour + 1);
+            }
+            _ => {}
+        }
+        journal.advance();
+    }
+    hours
+}
+
+/// A journal held by a slow disk never holds the spool thread: its hours are queued and the
+/// spool goes on. Whatever is on disk is a whole-record prefix of what was queued, so a
+/// collector killed while hours wait leaves a journal the recorder takes as before, holding
+/// every hour written; once the disk is free every queued hour is written in order.
+#[test]
+fn a_held_journal_never_holds_the_spool_and_stays_a_whole_record_prefix() {
+    let folder = Folder::new("held");
+    let thread = journal_thread();
+    let mut columnar = Columnar::open(&folder.0, "campaign", &session(), &thread);
+    start(&mut columnar, 1, 1);
+    write(&mut columnar, 1, 1..=3);
+    columnar.settle();
+    let Columnar::Live(live) = &columnar else {
+        panic!("a live recording")
+    };
+    let lane = Arc::clone(&live.lane);
+    let last = envelope::UNIT_ORDINALS as i32 + 5;
+    // A slow disk: the journal thread's next write waits until released, or the deadline.
+    let (held, holding) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let holder = {
+        let lane = Arc::clone(&lane);
+        std::thread::spawn(move || {
+            let guard = lane.hold_writer();
+            held.send(()).unwrap();
+            let in_time = released.recv_timeout(crate::TEST_HANG_GUARD).is_ok();
+            drop(guard);
+            in_time
+        })
+    };
+    holding.recv().unwrap();
+    write(&mut columnar, 1, 4..=last);
+    let queued = lane.counters()[0];
+    let written = journaled_hours(&folder.0, 0);
+    let _ = release.send(());
+    assert!(holder.join().unwrap(), "the spool waited on the journal's write");
+    assert_eq!(written, [1, 2, 3]);
+    assert_eq!(queued, (last - 3) as u64);
+    columnar.settle();
+    assert_eq!(journaled_hours(&folder.0, 0), (1..=last).collect::<Vec<_>>());
+    columnar.finish();
+    assert_eq!(columnar.status().unwrap()["stopped"], Value::Null);
+    let recording = recorded(&folder.0);
+    assert!(recording.damage().is_empty(), "{:?}", recording.damage());
+    assert_eq!(recording.hours(), last as u64);
+}
+
+/// A journal whose stop the full queue could not take still ends once the work queued before
+/// it settles: the capture opened after the failure's wait journals every hour it is given,
+/// instead of refusing each one without a failure to restart from.
+#[test]
+fn a_stop_the_journal_queue_refused_still_ends_the_capture_and_the_next_one_records() {
+    let folder = Folder::new("refused-end");
+    let thread = journal_thread();
+    let mut columnar = Columnar::open(&folder.0, "campaign", &session(), &thread);
+    start(&mut columnar, 1, 1);
+    write(&mut columnar, 1, 1..=3);
+    columnar.settle();
+    // The queue cannot grow for hour 4, then for the stop its failure queues.
+    thread.refuse_queues(2);
+    write(&mut columnar, 1, 4..=4);
+    assert!(columnar.prepare(&frame(1, 5), row(), &OneThread).is_err());
+    assert_eq!(columnar.status().unwrap()["lost_hours"], 1);
+    let mut given = Vec::new();
+    for hour in 6..=12 {
+        if columnar.halted().is_none() {
+            let prepared = columnar.prepare(&frame(1, hour), row(), &OneThread).unwrap().expect("prepared");
+            columnar.commit(prepared, false, &OneThread).unwrap();
+            given.push(hour);
+        }
+    }
+    assert!(!given.is_empty(), "the capture after the failure takes hours");
+    columnar.settle();
+    assert_eq!(columnar.status().unwrap()["lost_hours"], 1, "no later hour is refused");
+    assert_eq!(journaled_hours(&folder.0, 0), [1, 2, 3]);
+    assert_eq!(journaled_hours(&folder.0, 1), given);
+    columnar.finish();
 }

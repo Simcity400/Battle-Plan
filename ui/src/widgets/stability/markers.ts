@@ -1,13 +1,12 @@
 import type { Failure } from '../../dashboard/queryError';
 import { contentTitle } from '../../dashboard/contentTitles.ts';
+import { ideaName } from '../../dashboard/ideaHistoryReply.ts';
 import type { EventBadge } from '../../charts/badges';
 import type { Artwork, CountryGroupReply, FactionGroup, FocusEntry, FocusReply, HourSpan, IdeaHistoryReply, PartyHistoryReply } from '../../generated/dashboard';
 import { factionNameAt, UNNAMED_FACTION } from '../../dashboard/factionNames.ts';
 import type { FactionName } from '../../dashboard/factionNames';
 import { provisionalGroupEvent } from '../../dashboard/countryCapitulations.ts';
-import { preparedPending } from '../../dashboard/preparedPrefix.ts';
 import { partyBadges } from '../ruling-party/partyData.ts';
-import type { IdeaHistoryFirstView } from '../../dashboard/ideaHistoryReply.ts';
 
 /** The event markers along the top of Stability & War support:
  * ⚔ wars and capitulations, ⚑ faction changes, ⚙
@@ -32,20 +31,25 @@ export interface MarkerSources {
   groups?: CountryGroupReply;
   /** Campaign display names can replace the game's dated faction name. */
   factionName?: (faction: FactionGroup, hour: number) => FactionName;
-  ideas?: IdeaHistoryFirstView;
+  ideas?: IdeaHistoryReply;
   parties?: PartyHistoryReply;
   focus?: FocusMarks;
   /** Scoped titles at each completion's observation hour: null when none, undefined while reading. */
   focusName?: (token: string, hour: number) => string | null | undefined | Failure;
 }
 
-/** A country's completed focuses, each as an order listed it, and their static text: the focus
- * history's (`historyMarks`) or preparation's (`useFocusMarks`). */
+/** A country's completed focuses, and the static text of those it names. */
 export interface FocusMarks { completed: readonly FocusEntry[]; staticText?: readonly Artwork[] }
 
-/** Every order the focus history holds, as its completions. */
-export const historyMarks = (reply: FocusReply): FocusMarks =>
-  ({ completed: reply.history.segments.flatMap(segment => segment.order.completed), staticText: reply.staticText });
+/** The focus history's completions, each occurrence once, with its static text: a scoped title alone is read dated. */
+export function historyMarks(reply: FocusReply): FocusMarks {
+  const seen = new Set<string>(), completed: FocusEntry[] = [];
+  for (const segment of reply.history.segments) for (const entry of segment.order.completed) {
+    const occurrence = `${entry.token}#${entry.ordinal}#${entry.completedByHour}`;
+    if (!seen.has(occurrence)) { seen.add(occurrence); completed.push(entry); }
+  }
+  return { completed, staticText: reply.staticText };
+}
 
 const inSpans = (spans: readonly HourSpan[], hour: number) => spans.some(span => span.firstHour <= hour && hour <= span.lastHour);
 
@@ -99,8 +103,8 @@ export function stabilityMarkers(sources: MarkerSources, kinds: ReadonlySet<Mark
     }
   }
   if (groups && kinds.has('factions')) {
-    // Hours no faction was read, or still being prepared: beside them a run's edge is a gap.
-    const gaps = [...groups.unobserved.factions, ...preparedPending(groups)];
+    // Hours no faction was read: beside them a run's edge is a gap.
+    const gaps = groups.unobserved.factions;
     // A run by tag that starts or ends where the country's id changed tag, with
     // the other tag's run in the same faction meeting it there, is the same
     // country under another tag: not a join or a leave.
@@ -161,15 +165,13 @@ export function stabilityMarkers(sources: MarkerSources, kinds: ReadonlySet<Mark
       // identity, of a holder's details or of its role) is no change: a law kept,
       // the same character in the same seat.
       if (endings.has(holding(span, span.firstHour))) continue;
-      // Beyond prepared coverage, lanes are sampled from keyframes, so the hour is only an estimate.
-      const estimated = inSpans(ideas.approximate ?? [], span.firstHour);
       // Ideas are read at intervals, so the hour is the first read that saw the change: a bound.
-      if (infos.get(span.token)?.law === true || laws.has(span.token)) push('government', span.firstHour, `Law: ${contentTitle(names.get(span.token)?.name, span.token, 'Idea name unavailable')} (taken on by then)`, estimated);
+      if (infos.get(span.token)?.law === true || laws.has(span.token)) push('government', span.firstHour, `Law: ${ideaName(names.get(span.token), infos.get(span.token), 'Idea name unavailable')} (taken on by then)`);
       else if (slot && seats.has(slot)) {
         // A holder the recording could not identify stays unidentified.
         const name = span.character ? holders.get(holder(span.token, span.character.id, span.character.token, span.character.name)) ?? 'holder not recorded'
-          : contentTitle(names.get(span.token)?.name, span.token, 'Idea name unavailable');
-        push('government', span.firstHour, `Advisor: ${name} (appointed by then)`, estimated);
+          : ideaName(names.get(span.token), infos.get(span.token), 'Idea name unavailable');
+        push('government', span.firstHour, `Advisor: ${name} (appointed by then)`);
       }
     }
   }

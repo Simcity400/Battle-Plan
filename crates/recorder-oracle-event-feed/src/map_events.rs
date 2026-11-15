@@ -29,7 +29,6 @@ pub fn compare(replay: &Replay, frame: &DecodedFrame, report: &mut Report) -> io
         replay.visit_blocks(
             &[block],
             &selected,
-            None,
             |_, _, hour_frame| {
             if hour_frame.hour > frame.hour {
                 return Ok(false);

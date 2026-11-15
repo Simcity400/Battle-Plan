@@ -330,7 +330,7 @@ impl Tally {
         usize::from(self.flags & flag != 0)
     }
 
-    fn reads(self, flag: u16) -> bool {
+    pub(super) fn reads(self, flag: u16) -> bool {
         self.flags & flag != 0
     }
 }
@@ -726,7 +726,21 @@ impl Sites {
             .map(|(_, id)| *id)
     }
 
-    fn at_location(&self, location: u32) -> impl Iterator<Item = u32> + '_ {
+    pub(super) fn slots_of(&self, key: (bool, u32, usize)) -> impl Iterator<Item = u32> + '_ {
+        Self::reached(&self.by_key, key)
+    }
+
+    /// Each province with an ordinary slot over it, once, ascending.
+    pub(super) fn provinces(&self) -> impl Iterator<Item = u32> + '_ {
+        let mut last = None;
+        self.by_province.iter().filter_map(move |&(province, _)| (last.replace(province) != Some(province)).then_some(province))
+    }
+
+    pub(super) fn slots_in(&self, province: u32) -> impl Iterator<Item = u32> + '_ {
+        Self::reached(&self.by_province, province)
+    }
+
+    pub(super) fn at_location(&self, location: u32) -> impl Iterator<Item = u32> + '_ {
         Self::reached(&self.by_location, (false, location))
             .chain(Self::reached(&self.by_location, (true, location)))
     }
@@ -846,21 +860,6 @@ fn slot_read(row: &BuildingRow, defines: &Defines) -> SlotRead {
         row.status_flags,
         row.country,
     )
-}
-
-#[cfg(test)]
-fn same_slot_read(
-    old: &[BuildingRow],
-    new: &[BuildingRow],
-    key: (u32, u32),
-    defines: &Defines,
-) -> bool {
-    let read = |rows: &[BuildingRow]| {
-        rows.binary_search_by_key(&key, row_key)
-            .ok()
-            .map(|at| slot_read(&rows[at], defines))
-    };
-    read(old) == read(new)
 }
 
 // Unchanged row operands preserve the base's gate dependencies.
@@ -1230,6 +1229,7 @@ impl Observation {
     pub(super) fn port_membership(&self) -> CopyIndex<u32, ()> {
         self.ports.values.clone()
     }
+    #[cfg(test)]
     pub(super) fn read(
         frame: &DecodedFrame,
         defines: &Defines,
@@ -1471,6 +1471,7 @@ impl MapBuildingAssets {
         self.sites.get_or_init(|| Sites::read(self))
     }
 
+    #[cfg(test)]
     pub(super) fn token_map(&self, frame: &DecodedFrame) -> io::Result<Retained<TokenTypes>> {
         self.token_map_input(replay_frame::frame::HourInput::new(frame))
     }

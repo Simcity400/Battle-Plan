@@ -3,7 +3,7 @@
 //! produced). The product ranks here, so a reply carries only the countries ever
 //! among the top N, each with the hours it was.
 
-use crate::products::country_groups::HourSpan;
+use crate::span::HourSpan;
 use std::{
     cmp::Reverse,
     collections::{BTreeMap, BTreeSet},

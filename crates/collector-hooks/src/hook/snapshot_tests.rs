@@ -39,6 +39,7 @@ fn thread(id: u32, handle: usize) -> Thread {
         suspended: false,
         ip: None,
         exited: false,
+        priority: None,
     }
 }
 // Synthetic handles never reach Windows, including on an assertion failure.
@@ -374,7 +375,7 @@ fn hold_measurement_excludes_off_hold_work_and_publishes_only_after_resolution()
                     Ok(())
                 };
                 threads.discover_with(
-                    |threads| threads.synchronize_with(context, |_| false),
+                    |threads| threads.synchronize_with(context, |_| false, |_| (0, None)),
                     |_| Ok(false),
                 )
             };
@@ -449,7 +450,10 @@ fn hold_measurement_excludes_off_hold_work_and_publishes_only_after_resolution()
             summary["slowest_context_thread_id"],
             if held_stall == 0 { 1 } else { 2 }
         );
-        assert_eq!(summary.as_object().unwrap().len(), 6);
+        // Synthetic threads are never raised, so none needs its priority back.
+        assert_eq!(summary["slowest_context_priority"], 0);
+        assert_eq!(summary["priority_restore_failures"], 0);
+        assert_eq!(summary.as_object().unwrap().len(), 8);
         assert_eq!(json.as_object().unwrap().len(), 2);
     }
 }

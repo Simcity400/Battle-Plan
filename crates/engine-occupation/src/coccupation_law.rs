@@ -83,10 +83,6 @@ pub(crate) struct Names<'a> {
 }
 
 impl<'a> Names<'a> {
-    #[cfg(test)]
-    pub fn new(bytes: &'a mut [u8]) -> Self {
-        Self::new_buffer(crate::walk::Buffer::Fixed(bytes))
-    }
     pub fn new_buffer(bytes: crate::walk::Buffer<'a, u8>) -> Self {
         Self {
             bytes,
@@ -139,12 +135,11 @@ mod tests {
             bytes: &bytes,
         };
         let token = literal(&memory, 0, 0x1000).unwrap();
-        let mut arena = [0; 4];
-        let mut names = Names::new(&mut arena);
+        let mut arena = Vec::new();
+        let mut names = Names::new_buffer(crate::walk::Buffer::Growing(&mut arena));
         assert_eq!(names.copy(&memory, token, true), Ok(Some(0)));
-        assert_eq!(names.copy(&memory, token, true), Ok(None));
-        assert_eq!((names.len, names.required), (4, 8));
-        assert_eq!(arena, [b'l', 0, 255, b'w']);
+        assert_eq!((names.len, names.required), (4, 4));
+        assert_eq!(arena[..4], [b'l', 0, 255, b'w']);
         bytes[NAME + 4] = 1;
         assert!(
             literal(

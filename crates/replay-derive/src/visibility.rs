@@ -386,23 +386,49 @@ pub fn forward_zero_shared(
     if rows.next().is_some() {
         return Err("CountryCounterInputs visibility owner duplicated");
     }
-    if !matches!(row.forward_visibility, Recorded::NotRecorded) {
-        return forward_visibility_shared(frame, links, owner, &row.forward_visibility, false);
+    forward_zero_shared_of(
+        links,
+        &row.forward_visibility,
+        &row.zero_war,
+        &row.zero_subject,
+        || map_intel_faction(frame, links, owner),
+        || reserved_faction(reserved(frame)?),
+    )
+}
+
+/// [`forward_zero_shared`] from the owner's `CountryCounterInputs` packets, its faction
+/// ([`map_intel_faction`]) and the reserved country's ([`reserved_faction`]), each read only
+/// when the decision reaches it.
+pub fn forward_zero_shared_of(
+    links: &BTreeMap<u32, u32>,
+    forward: &Recorded<Option<crate::rows::ReverseZeroVisibilityInputs>>,
+    zero_war: &Recorded<Option<[u8; 2]>>,
+    zero_subject: &Recorded<Option<ZeroSubjectInputs>>,
+    faction: impl Fn() -> Result<Option<u64>, &'static str>,
+    reserved: impl Fn() -> Result<u64, &'static str>,
+) -> Result<bool, &'static str> {
+    if !matches!(forward, Recorded::NotRecorded) {
+        return forward_visibility_shared_of(links, forward, false, || {
+            let Some(faction) = faction()? else {
+                return Ok(false);
+            };
+            Ok(reserved()? == faction)
+        });
     }
-    let war = match row.zero_war {
+    let war = match zero_war {
         Recorded::NotRecorded => return Err("CountryCounterInputs.zero_war not recorded"),
         Recorded::Value(None) => return Err("CountryCounterInputs.zero_war capture refused"),
-        Recorded::Value(Some(war)) => war,
+        Recorded::Value(Some(war)) => *war,
     };
     if active_war(war)? {
         return Ok(false);
     }
-    if let Some(faction) = map_intel_faction(frame, links, owner)?
-        && reserved_faction(reserved(frame)?)? == faction
+    if let Some(faction) = faction()?
+        && reserved()? == faction
     {
         return Ok(true);
     }
-    let subject = match &row.zero_subject {
+    let subject = match zero_subject {
         Recorded::NotRecorded => return Err("CountryCounterInputs.zero_subject not recorded"),
         Recorded::Value(None) => return Err("CountryCounterInputs.zero_subject capture refused"),
         Recorded::Value(Some(subject)) => subject,
@@ -419,6 +445,22 @@ pub fn forward_visibility_shared(
     owner: u32,
     inputs: &Recorded<Option<crate::rows::ReverseZeroVisibilityInputs>>,
     military: bool,
+) -> Result<bool, &'static str> {
+    forward_visibility_shared_of(links, inputs, military, || {
+        let Some(faction) = map_intel_faction(frame, links, owner)? else {
+            return Ok(false);
+        };
+        Ok(reserved_faction(reserved(frame)?)? == faction)
+    })
+}
+
+/// [`forward_visibility_shared`] with `same_faction` answering whether the owner shares the
+/// reserved country's faction, asked only when the decision reaches it.
+pub fn forward_visibility_shared_of(
+    links: &BTreeMap<u32, u32>,
+    inputs: &Recorded<Option<crate::rows::ReverseZeroVisibilityInputs>>,
+    military: bool,
+    same_faction: impl FnOnce() -> Result<bool, &'static str>,
 ) -> Result<bool, &'static str> {
     let cell = match inputs {
         Recorded::NotRecorded => {
@@ -448,13 +490,7 @@ pub fn forward_visibility_shared(
         Ok(false)
     };
     event_or(access, || {
-        let faction = (|| {
-            let Some(faction) = map_intel_faction(frame, links, owner)? else {
-                return Ok(false);
-            };
-            Ok(reserved_faction(reserved(frame)?)? == faction)
-        })();
-        event_or(faction, || {
+        event_or(same_faction(), || {
             let target = cell
                 .target
                 .ok_or("CountryCounterInputs.forward_visibility target capture refused");
@@ -625,6 +661,15 @@ pub struct Families {
 }
 
 impl Families {
+    /// From each country slot's faction and each (overlord, subject) slot pair.
+    pub fn from_parts(factions: BTreeMap<u32, u64>, subjects: impl IntoIterator<Item = (u32, u32)>) -> Self {
+        let mut out = Self { factions, ..Self::default() };
+        for (a, b) in subjects {
+            out.subjects.extend([(a, b), (b, a)]);
+        }
+        out
+    }
+
     /// Faction and subject inputs for full-country visibility.
     pub fn read(
         frame: &dyn DecodedSource,
@@ -676,14 +721,37 @@ impl Families {
         links: &BTreeMap<u32, u32>,
     ) -> Result<(), &'static str> {
         each::<tables::FactionMembers, F>(frame, "FactionMembers", |row| {
-            let country = if row.country == 0 {
-                0
-            } else {
-                link(links, row.country, "FactionMembers country")?
-            };
-            self.factions.insert(country, row.faction);
-            Ok(())
+            self.add_faction(row.country, row.faction, links)
         })
+    }
+
+    fn add_faction(
+        &mut self,
+        country: u32,
+        faction: u64,
+        links: &BTreeMap<u32, u32>,
+    ) -> Result<(), &'static str> {
+        let country = if country == 0 {
+            0
+        } else {
+            link(links, country, "FactionMembers country")?
+        };
+        self.factions.insert(country, faction);
+        Ok(())
+    }
+
+    fn add_subject(
+        &mut self,
+        overlord: u32,
+        subject: u32,
+        links: &BTreeMap<u32, u32>,
+    ) -> Result<(), &'static str> {
+        let (a, b) = (
+            link(links, overlord, "Subjects country")?,
+            link(links, subject, "Subjects country")?,
+        );
+        self.subjects.extend([(a, b), (b, a)]);
+        Ok(())
     }
 
     /// [`Self::read_subjects`] of any frame's tables, a walk's views among them.
@@ -693,12 +761,7 @@ impl Families {
         links: &BTreeMap<u32, u32>,
     ) -> Result<(), &'static str> {
         each::<tables::Subjects, F>(frame, "Subjects", |row| {
-            let (a, b) = (
-                link(links, row.overlord, "Subjects country")?,
-                link(links, row.subject, "Subjects country")?,
-            );
-            self.subjects.extend([(a, b), (b, a)]);
-            Ok(())
+            self.add_subject(row.overlord, row.subject, links)
         })
     }
 
@@ -725,6 +788,21 @@ impl Families {
             }
         }
         Ok(self)
+    }
+
+    /// The faction `slot` is a member of.
+    pub fn faction(&self, slot: u32) -> Option<u64> {
+        self.factions.get(&slot).copied()
+    }
+
+    /// Every faction member and its faction.
+    pub fn members(&self) -> impl Iterator<Item = (u32, u64)> + '_ {
+        self.factions.iter().map(|(&slot, &faction)| (slot, faction))
+    }
+
+    /// Every overlord and subject of `slot`.
+    pub fn partners(&self, slot: u32) -> impl Iterator<Item = u32> + '_ {
+        self.subjects.range((slot, 0)..=(slot, u32::MAX)).map(|&(_, other)| other)
     }
 
     /// The same country, a faction partner, an overlord or a subject, before the live-war veto.
@@ -812,15 +890,45 @@ impl Relations {
         let mut out = Self::default();
         out.families.read_factions_tables(frame, links)?;
         each::<tables::WarRelations, F>(frame, "WarRelations", |row| {
-            let (a, b) = (
-                link(links, row.first_country, "WarRelations country")?,
-                link(links, row.second_country, "WarRelations country")?,
-            );
-            out.wars.extend([(a, b), (b, a)]);
-            Ok(())
+            out.add_war(row.first_country, row.second_country, links)
         })?;
         out.families.read_subjects_tables(frame, links)?;
         Ok(out)
+    }
+
+    /// [`Self::read_tables`] of the relation tables' rows held elsewhere, as raw country
+    /// references: faction members (country, faction), war pairs and (overlord, subject) pairs.
+    pub fn from_pairs(
+        factions: impl IntoIterator<Item = (u32, u64)>,
+        wars: impl IntoIterator<Item = (u32, u32)>,
+        subjects: impl IntoIterator<Item = (u32, u32)>,
+        links: &BTreeMap<u32, u32>,
+    ) -> Result<Self, &'static str> {
+        let mut out = Self::default();
+        for (country, faction) in factions {
+            out.families.add_faction(country, faction, links)?;
+        }
+        for (first, second) in wars {
+            out.add_war(first, second, links)?;
+        }
+        for (overlord, subject) in subjects {
+            out.families.add_subject(overlord, subject, links)?;
+        }
+        Ok(out)
+    }
+
+    fn add_war(
+        &mut self,
+        first: u32,
+        second: u32,
+        links: &BTreeMap<u32, u32>,
+    ) -> Result<(), &'static str> {
+        let (a, b) = (
+            link(links, first, "WarRelations country")?,
+            link(links, second, "WarRelations country")?,
+        );
+        self.wars.extend([(a, b), (b, a)]);
+        Ok(())
     }
 
     /// Distinct countries with an active war relation.
@@ -866,16 +974,39 @@ impl AccessLinks {
     ) -> Result<Self, &'static str> {
         let mut out = Self::default();
         each::<tables::RelationLinks, F>(frame, "RelationLinks", |row| {
-            let holder = *links.get(&row.country).ok_or("RelationLinks country")?;
-            if row.links & RelationLinkRow::MILITARY_ACCESS != 0 {
-                out.military.insert((holder, row.target_index));
-            }
-            if row.links & RelationLinkRow::DOCKING_RIGHTS != 0 {
-                out.docking.insert((holder, row.target_index));
-            }
-            Ok(())
+            out.add(row.country, row.target_index, row.links, links)
         })?;
         Ok(out)
+    }
+
+    /// [`Self::read_tables`] of RelationLinks rows held elsewhere: (raw country, target index,
+    /// links).
+    pub fn from_rows(
+        rows: impl IntoIterator<Item = (u32, u32, u8)>,
+        links: &BTreeMap<u32, u32>,
+    ) -> Result<Self, &'static str> {
+        let mut out = Self::default();
+        for (country, target, held) in rows {
+            out.add(country, target, held, links)?;
+        }
+        Ok(out)
+    }
+
+    fn add(
+        &mut self,
+        country: u32,
+        target: u32,
+        held: u8,
+        links: &BTreeMap<u32, u32>,
+    ) -> Result<(), &'static str> {
+        let holder = *links.get(&country).ok_or("RelationLinks country")?;
+        if held & RelationLinkRow::MILITARY_ACCESS != 0 {
+            self.military.insert((holder, target));
+        }
+        if held & RelationLinkRow::DOCKING_RIGHTS != 0 {
+            self.docking.insert((holder, target));
+        }
+        Ok(())
     }
 
     pub fn read(

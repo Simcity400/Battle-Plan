@@ -94,7 +94,6 @@ impl Jobs {
             hour: config.hour,
             force_full: config.force_full,
             limits: [0; 3],
-            naval_limit: 0,
             game_score: config.game_score,
         };
         let end = |index: usize| starts.get(index).copied().unwrap_or(u32::MAX);
@@ -108,7 +107,7 @@ impl Jobs {
         std::thread::scope(|scope| {
             for job in std::iter::once(&mut self.census).chain(active.iter_mut()) {
                 scope.spawn(move || {
-                    assert!(copy_air_refresh_growing(&world.live(), ctx, job).raw_ok);
+                    assert!(copy_air_refresh(&world.live(), ctx, job).raw_ok);
                 });
             }
         });

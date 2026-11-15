@@ -72,7 +72,11 @@ pub fn allocation_records() -> Vec<replay::spool::Record> {
     records
 }
 
-/// One complete keyframe of the synthetic campaign on `branch`, loaded at `load_signal`.
+/// The collector's reason for a table it does not acquire, as every derived table is.
+const NOT_ACQUIRED: &str = "table was not acquired";
+
+/// One complete keyframe of the synthetic campaign on `branch`, loaded at `load_signal`, holding
+/// no derived table, as the collector writes it.
 pub fn allocation_frame(branch: u64, hour: i32, load_signal: i64) -> replay_frame::frame::Frame {
     use replay_data::{rows::CampaignRow, rows::ClockRow};
     use replay_frame::{frame::Frame, frame::TableUpdate};
@@ -82,7 +86,21 @@ pub fn allocation_frame(branch: u64, hour: i32, load_signal: i64) -> replay_fram
         keyframe: true,
         metrics: Metrics::default(),
         tables: std::array::from_fn(|index| {
-            let rows = match TableId::ALL[index] {
+            let table = TableId::ALL[index];
+            match replay_frame::frame::current_absence(table) {
+                Some(replay_frame::frame::TableView::NotRecorded { mode }) => {
+                    return TableUpdate::NotRecorded { mode };
+                }
+                Some(replay_frame::frame::TableView::Unavailable { reason }) => {
+                    return TableUpdate::Unavailable { reason };
+                }
+                None if table.is_derived() => {
+                    return TableUpdate::Unavailable { reason: NOT_ACQUIRED.into() };
+                }
+                None => {}
+                _ => unreachable!("absence is an omission or a named refusal"),
+            }
+            let rows = match table {
                 TableId::Clock => TableRows::Clock(vec![ClockRow {
                     hour,
                     play_session_started_at: load_signal,
@@ -122,16 +140,7 @@ pub fn allocation_frame(branch: u64, hour: i32, load_signal: i64) -> replay_fram
                 table if table.key_bits() == 0 => TableRows::one_default(table),
                 table => TableRows::empty(table),
             };
-            match replay_frame::frame::current_absence(rows.table()) {
-                Some(replay_frame::frame::TableView::NotRecorded { mode }) => {
-                    TableUpdate::NotRecorded { mode }
-                }
-                Some(replay_frame::frame::TableView::Unavailable { reason }) => {
-                    TableUpdate::Unavailable { reason }
-                }
-                None => TableUpdate::Snapshot(rows),
-                _ => unreachable!("absence is an omission or a named refusal"),
-            }
+            TableUpdate::Snapshot(rows)
         }),
     }
 }
@@ -288,36 +297,32 @@ pub fn three_load_records() -> Vec<replay::spool::Record> {
     records
 }
 
-/// Write `records` as one spool segment of the synthetic campaign in `session`.
-pub fn write_campaign_spool(
+/// Write `records` as the finished journal of the synthetic campaign's first capture in
+/// `session`, as a collector that detached leaves it.
+pub fn write_campaign_journal(
     session: &std::path::Path,
     records: &[replay::spool::Record],
 ) -> std::path::PathBuf {
     let campaign = session.join(std::str::from_utf8(ALLOCATION_CAMPAIGN).unwrap());
-    std::fs::create_dir_all(&campaign).unwrap();
-    let spool: Vec<u8> = records
-        .iter()
-        .flat_map(|record| replay::spool::encode_record(record).unwrap())
-        .collect();
-    std::fs::write(campaign.join("spool.0000.h4s"), spool).unwrap();
-    write_capture(&campaign, 0, records);
+    write_capture(&campaign, 0, records, true);
     campaign
 }
 
-/// The finished capture `number` of `records`' frames in the campaign folder `campaign`, named
-/// for its campaign, as the recorder's capture writer leaves it. Frameless records leave none.
-pub fn write_capture(campaign: &std::path::Path, number: u32, records: &[replay::spool::Record]) {
-    if !records.iter().any(|record| matches!(record, replay::spool::Record::Frame(_))) {
-        return;
-    }
+/// The journal of capture `number` of `records` in the campaign folder `campaign`, named for
+/// its campaign, as the collector writes it: ended when `finish`, left as a collector that
+/// stopped leaves it otherwise.
+pub fn write_capture(
+    campaign: &std::path::Path,
+    number: u32,
+    records: &[replay::spool::Record],
+    finish: bool,
+) {
     let id = campaign.file_name().and_then(|name| name.to_str()).unwrap();
-    let bytes =
-        replay::campaign::fixtures::capture_bytes(id.as_bytes(), &[records.to_vec()]).unwrap();
-    std::fs::create_dir_all(campaign).unwrap();
-    std::fs::write(campaign.join(format!("columnar.{number}.h4col")), bytes).unwrap();
+    replay::campaign::fixtures::write_journal(campaign, number, id.as_bytes(), &[records.to_vec()], finish)
+        .unwrap();
 }
 
-/// The records of a closed spool segment of the synthetic campaign: `branch`'s hours at `load`.
+/// The records of one capture of the synthetic campaign: `branch`'s hours at `load`.
 pub fn load_segment_records(
     branch: u64,
     hours: std::ops::RangeInclusive<i32>,
@@ -346,28 +351,15 @@ pub fn load_segment_records(
     records
 }
 
-/// A closed spool segment of the synthetic campaign, [`load_segment_records`], and its finished
-/// capture of the same number.
-pub fn write_load_segment(
+/// The finished journal of capture `number` of the synthetic campaign: [`load_segment_records`].
+pub fn write_load_capture(
     campaign: &std::path::Path,
     number: u32,
     branch: u64,
     hours: std::ops::RangeInclusive<i32>,
     load: i64,
-) -> std::path::PathBuf {
-    let records = load_segment_records(branch, hours, load);
-    let path = campaign.join(format!("spool.{number:04}.h4s"));
-    std::fs::create_dir_all(campaign).unwrap();
-    std::fs::write(
-        &path,
-        records
-            .iter()
-            .flat_map(|record| replay::spool::encode_record(record).unwrap())
-            .collect::<Vec<_>>(),
-    )
-    .unwrap();
-    write_capture(campaign, number, &records);
-    path
+) {
+    write_capture(campaign, number, &load_segment_records(branch, hours, load), true);
 }
 
 /// Each recorded frame of a recording, as (branch, hour).
@@ -435,24 +427,38 @@ mod tests {
     use super::*;
     use replay_frame::frame::TableUpdate;
 
-    /// Every singleton table in the registry is complete with one row (or names
-    /// its retirement), so a newly registered singleton cannot leave the shared
-    /// fixture's frames unencodable.
+    /// Every recorded singleton table in the registry is complete with one row (or
+    /// names its retirement), and every derived table is left to the recorder as
+    /// the collector leaves it, so a newly registered table cannot leave the
+    /// shared fixture's frames unencodable or its journal refused.
     #[test]
-    fn allocation_frames_complete_every_singleton_table() {
+    fn allocation_frames_complete_every_recorded_singleton_and_hold_no_derived_table() {
         let frame = allocation_frame(9, 2, FIRST_LOAD);
-        for table in TableId::ALL
-            .into_iter()
-            .filter(|table| table.key_bits() == 0)
-        {
-            match &frame.tables[table.index()] {
-                TableUpdate::Snapshot(rows) => assert_eq!(rows.len(), 1, "{table:?}"),
-                TableUpdate::Unavailable { .. } => {}
-                other => panic!("{table:?} is {other:?}"),
+        for table in TableId::ALL {
+            match (&frame.tables[table.index()], table.is_derived()) {
+                (TableUpdate::Unavailable { reason }, true) => {
+                    assert_eq!(reason, NOT_ACQUIRED, "{table:?}");
+                }
+                (TableUpdate::Snapshot(rows), false) if table.key_bits() == 0 => {
+                    assert_eq!(rows.len(), 1, "{table:?}");
+                }
+                (TableUpdate::Unavailable { .. }, false) => {}
+                (other, _) if table.is_derived() || table.key_bits() == 0 => {
+                    panic!("{table:?} is {other:?}")
+                }
+                _ => {}
             }
         }
         for record in allocation_records() {
             replay::spool::encode_record(&record).unwrap();
         }
+        let recording = replay(allocation_records());
+        let hours: Vec<i32> = recording
+            .index
+            .iter()
+            .flat_map(|block| recording.read_block(block).unwrap())
+            .map(|frame| frame.hour)
+            .collect();
+        assert_eq!(hours, [2, 3, 4]);
     }
 }

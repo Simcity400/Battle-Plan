@@ -41,15 +41,15 @@ pub struct Row {
     pub last_command_hour: i32,
 }
 
+pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
+    walk_buffer(memory, base, game_state, crate::walk::Buffer::Count)
+}
+
 /// Walks every canonical country's incoming queue once. A null queue pointer is
 /// the engine's own absence and contributes no rows; a null slot inside a
 /// readable queue contributes no row but still consumes its native index, which
 /// is exactly what the save writer does.
-pub fn walk(memory: &impl Memory, base: usize, game_state: usize, output: &mut [Row]) -> Outcome {
-    walk_buffer(memory, base, game_state, crate::walk::Buffer::Fixed(output))
-}
-
-pub fn walk_growing(
+pub fn walk(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -303,7 +303,7 @@ mod tests {
         let mut rows = Vec::new();
         let expected = run(&bytes, 3);
         assert_eq!(
-            walk_growing(
+            walk(
                 &SliceMemory {
                     base: 0,
                     bytes: &bytes
@@ -329,7 +329,7 @@ mod tests {
         let expected = run(&bytes, COUNT);
         assert_eq!(expected.0, Outcome::Rows { len: 6 });
         assert_eq!(
-            walk_growing(
+            walk(
                 &SliceMemory {
                     base: 0,
                     bytes: &bytes
@@ -425,17 +425,15 @@ mod tests {
     }
 
     #[test]
-    fn truncation_counts_every_remaining_action() {
+    fn the_count_probe_counts_every_action() {
         let bytes = fixture();
-        let (outcome, rows) = run(&bytes, 1);
         assert_eq!(
-            outcome,
+            count(&SliceMemory { base: 0, bytes: &bytes }, 0, GS),
             Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
+                len: 0,
+                unread_rows: 2
             }
         );
-        assert_eq!(rows[0].ordinal, 0);
     }
 
     #[test]
@@ -446,7 +444,7 @@ mod tests {
                 false
             }
         }
-        let mut rows = [Row::default(); 2];
+        let mut rows = vec![Row::default(); 2];
         assert!(matches!(
             walk(&Unreadable, 0, GS, &mut rows),
             Outcome::Unavailable { .. }

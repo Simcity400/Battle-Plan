@@ -46,8 +46,11 @@ impl MeshSetting {
     }
 }
 
+/// The engine's squared cull distance of a 3D type that sets none: 430 map units.
+pub const DEFAULT_CULL_DISTANCE_SQUARED: f32 = 430.0 * 430.0;
+
 /// One `pdxmesh` block of a `gfx/entities/*.gfx` file.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct MeshDefinition {
     pub name: String,
     /// The `.mesh` path, relative to the content root.
@@ -58,6 +61,22 @@ pub struct MeshDefinition {
     /// `animation = { id = … type = … }`: the animation **name** this mesh
     /// plays for each state animation id, in file order.
     pub animations: Vec<(String, String)>,
+    /// `cull_distance`, squared after every assignment, a failed conversion squaring the value
+    /// it keeps, as the engine reads it; [`DEFAULT_CULL_DISTANCE_SQUARED`] when none is set.
+    pub cull_distance_squared: f32,
+}
+
+impl Default for MeshDefinition {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            file: String::new(),
+            scale: 0.0,
+            settings: Vec::new(),
+            animations: Vec::new(),
+            cull_distance_squared: DEFAULT_CULL_DISTANCE_SQUARED,
+        }
+    }
 }
 
 impl MeshDefinition {
@@ -1416,6 +1435,17 @@ fn mesh_definition(value: &parser::Value) -> Option<MeshDefinition> {
             Some((unquote(text(block, b"id")?), unquote(text(block, b"type")?)))
         })
         .collect();
+    let cull_distance_squared = items
+        .iter()
+        .filter(|item| item.key.as_deref() == Some(b"cull_distance"))
+        .fold(DEFAULT_CULL_DISTANCE_SQUARED, |squared, item| {
+            let distance = item
+                .value
+                .scalar_str()
+                .and_then(|value| crt::scan_f32(value.as_bytes()))
+                .unwrap_or(squared);
+            distance * distance
+        });
     Some(MeshDefinition {
         name,
         file,
@@ -1424,6 +1454,7 @@ fn mesh_definition(value: &parser::Value) -> Option<MeshDefinition> {
             .unwrap_or(1.0),
         settings,
         animations,
+        cull_distance_squared,
     })
 }
 

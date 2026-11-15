@@ -11,7 +11,7 @@ use crate::{
     clock::qpc,
     raw::RawLog,
     read_accounting,
-    table_capture::{CaptureRows, bounded},
+    table_capture::CaptureRows,
     table_conversion::{table, table_iter},
 };
 use engine_allocation::{filled, owned_vec, resize};
@@ -97,7 +97,7 @@ pub struct Captured {
     daylight_feather: Option<[i64; 2]>,
     /// Each province record's temperature words at the pass's anchor, by slot, and the pass
     /// ([`temperature::Tracker`]); `None` when the hour's temperature inputs were not read whole.
-    temperature_anchor: std::sync::Arc<Vec<replay_data::temperature::State>>,
+    temperature_anchor: Option<engine_allocation::SharedBox<Vec<replay_data::temperature::State>>>,
     temperature_pass: Option<rows::TemperaturePass>,
     /// The hour's read words handed to the tracker, which returns the hour before's buffer.
     temperature_read: Vec<replay_data::temperature::State>,
@@ -124,7 +124,7 @@ impl Captured {
             clocks_updated: false,
             daylight_direction: None,
             daylight_feather: None,
-            temperature_anchor: Default::default(),
+            temperature_anchor: None,
             temperature_pass: None,
             temperature_read: Vec::new(),
             combat: Vec::new(),
@@ -202,8 +202,10 @@ impl Captured {
             ($index:literal, $field:ident) => {{
                 let _reads = read_accounting::table(TABLES[$index]);
                 let begin = qpc();
-                self.$field.outcome =
-                    bounded(reader.$field(&mut self.$field.rows), self.$field.rows.len());
+                self.$field.outcome = crate::table_capture::bounded(
+                    reader.$field(&mut self.$field.rows),
+                    self.$field.rows.len(),
+                );
                 ticks[$index] = ticks[$index].saturating_add(elapsed(begin));
             }};
         }
@@ -419,7 +421,8 @@ impl Captured {
         rows::ProvinceTemperature::anchored(match &self.temperature_pass {
             Some(_) => self
                 .temperature_anchor
-                .get(row.id as usize)
+                .as_deref()
+                .and_then(|anchor| anchor.get(row.id as usize))
                 .copied()
                 .unwrap_or_else(|| words_of(row)),
             None => words_of(row),
@@ -507,7 +510,7 @@ impl Captured {
         match tracker.observe(hour, read).map_err(|_| ALLOCATION)? {
             Some((anchor, pass)) => {
                 let hours = engine_allocation::copy_vec(&pass.hours).map_err(|_| ALLOCATION)?;
-                self.temperature_anchor = anchor;
+                self.temperature_anchor = Some(anchor);
                 self.temperature_pass = Some(rows::TemperaturePass {
                     anchor: pass.anchor,
                     cursor: pass.cursor,
@@ -550,13 +553,11 @@ const M_W_ALL: u32 = 0x03;
 const M_REGIONS: u32 = 0x01;
 const M_PROVINCES: u32 = 0x02;
 
-/// One hour of raw weather payload. Worker acquisition grows from original
+/// One hour of raw weather payload. Acquisition grows from the original
 /// headers and owned decoding grows the rows before publication.
 #[derive(Debug, Default)]
 pub struct WeatherJob {
     pub log: RawLog<N>,
-    // Fixed mode exists for callback-capacity/fault fixtures only.
-    worker_growth: bool,
     pub game_state: usize,
     regions: DensePayload,
     provinces: DensePayload,
@@ -587,14 +588,9 @@ impl WeatherJob {
         self.staging_failure.is_some()
     }
 
-    pub fn is_provisioned(&self) -> bool {
-        self.worker_growth || self.log.spans.capacity() != 0
-    }
-
     pub fn new() -> Self {
         let mut job = Self {
             log: RawLog::new(0, 0),
-            worker_growth: true,
             game_state: 0,
             regions: DensePayload::new(0),
             provinces: DensePayload::new(0),
@@ -631,20 +627,12 @@ impl WeatherJob {
     }
 
     pub fn grow_for_next(&self) -> bool {
-        self.log.grow_for_next()
-            || self.regions.needs_growth()
-            || self.provinces.needs_growth()
-            || self.clocks.needs_growth()
-            || self.display.needs_growth()
+        self.log.grow_for_next() || self.display.needs_growth()
     }
 
-    /// Recycled fixed fixtures retain their observed demand. Production workers
-    /// grow these pools from the original headers before gathering fields.
+    /// The dense payloads grow in the pass from the original headers.
     pub fn grow(&mut self) {
         self.log.grow();
-        self.regions.grow();
-        self.provinces.grow();
-        self.clocks.grow();
         let mut display_capacity = display::bytes_hint();
         self.display.grow(&mut display_capacity);
         self.update_capacity_charge();
@@ -686,9 +674,6 @@ impl DensePayload {
         self.copied_fields = 0;
         self.copied_bytes = 0;
     }
-    fn needs_growth(&self) -> bool {
-        self.required > self.bytes.len()
-    }
     fn prepare(&mut self, array: Option<engine_native::cpdx_array::Array>, record_bytes: usize) {
         self.array = array;
         self.required = array.map_or(0, |array| {
@@ -696,7 +681,7 @@ impl DensePayload {
         });
     }
     fn grow(&mut self) {
-        if self.needs_growth() {
+        if self.required > self.bytes.len() {
             let required = self.required.max(self.bytes.len().saturating_mul(2));
             let _ = resize(&mut self.bytes, required, 0).map_err(crate::allocation::io);
         }
@@ -733,12 +718,12 @@ impl DensePayload {
         self.array
             .is_some_and(|array| self.copied_fields < array.count as usize * fields)
     }
-    fn decode<R>(
+    fn decode<R: Default>(
         &self,
         vtable: Option<usize>,
         fields: usize,
         record_bytes: usize,
-        output: &mut [R],
+        output: &mut Vec<R>,
         invalid_array: &'static str,
         decode: impl Fn(u32, &[u8], usize, usize) -> Result<R, &'static str>,
     ) -> Outcome {
@@ -752,7 +737,10 @@ impl DensePayload {
                 reason: "weather record vtable withheld",
             };
         };
-        let count = (array.count as usize).min(output.len());
+        let count = array.count as usize;
+        if let Err(reason) = engine_native::walk::Buffer::Growing(output).ensure(count) {
+            return Outcome::Unavailable { reason };
+        }
         for (index, row) in output[..count].iter_mut().enumerate() {
             let Some(record) = self
                 .bytes
@@ -771,15 +759,7 @@ impl DensePayload {
                 Err(reason) => return Outcome::Unavailable { reason },
             }
         }
-        let unread_rows = array.count - count as u32;
-        if unread_rows == 0 {
-            Outcome::Rows { len: count }
-        } else {
-            Outcome::Truncated {
-                len: count,
-                unread_rows,
-            }
-        }
+        Outcome::Rows { len: count }
     }
 
     /// Apply owned exact clock records; never follow the retained native source.
@@ -815,8 +795,8 @@ impl DensePayload {
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct WeatherCopyReport {
-    /// Fixed fixtures can report preflight shortages. A source-fault/capacity
-    /// pair retains an explicit terminal-unavailable payload without retry.
+    /// False when the log could not hold the hour; with a failed source read the
+    /// payload is instead terminally unavailable, never retried.
     pub raw_ok: bool,
     pub copy_ticks: [u64; N],
     pub raw_bytes: [u64; N],
@@ -994,9 +974,8 @@ fn copy_weather_dense(
     carry::capture_provinces(memory, job, &PROVINCES_LAYOUT);
     let provinces_complete = !job.provinces.faulted(sweather_per_province::FIELDS.len());
     let log = &mut job.log;
-    // Raw copying sees the full census, but typed output can admit a shorter
-    // healthy prefix. Keep its display/clock inputs even if a later row failed;
-    // the worker still decodes ordinary fields first and preserves that error.
+    // Display and clock inputs are kept even if a province row failed; the
+    // worker decodes ordinary fields first and preserves that error.
     let mut display_complete = false;
     if let Some(arrays) = display {
         display_complete = true;
@@ -1044,15 +1023,6 @@ const COMBAT_KEYS: [u32; 8] = [
 pub use entries::ProvinceModifiers;
 
 /// Acquire one refresh into its owned payload.
-pub fn copy_weather_refresh_growing(
-    memory: &impl Memory,
-    ctx: WeatherCopyContext,
-    job: &mut WeatherJob,
-) -> WeatherCopyReport {
-    job.worker_growth = true;
-    copy_weather_refresh(memory, ctx, job)
-}
-
 pub fn copy_weather_refresh(
     memory: &impl Memory,
     ctx: WeatherCopyContext,
@@ -1060,33 +1030,26 @@ pub fn copy_weather_refresh(
 ) -> WeatherCopyReport {
     let started = qpc();
     job.clear();
-    if job.worker_growth {
-        job.log.enable_worker_growth();
-    }
     job.game_state = ctx.game_state;
     let display = prepare_weather_pass(memory, ctx.game_state, ctx.base, job);
     let display_bytes = display.map_or(0, |arrays| {
         arrays.iter().map(|array| array.count as usize).sum()
     });
-    if job.worker_growth {
-        // Walk every live province/region. Continue
-        // from the headers already acquired; no source read is repeated.
-        job.regions.grow();
-        job.provinces.grow();
-        job.clocks.grow();
-        if crate::allocation::failed() {
-            job.staging_failure = Some("weather capture allocation failed");
-            return WeatherCopyReport {
-                raw_ok: true,
-                copy_ticks: [elapsed(started), 0],
-                raw_bytes: job.log.raw_bytes,
-            };
-        }
-        job.update_capacity_charge();
+    // Walk every live province/region. Continue
+    // from the headers already acquired; no source read is repeated.
+    job.regions.grow();
+    job.provinces.grow();
+    job.clocks.grow();
+    if crate::allocation::failed() {
+        job.staging_failure = Some("weather capture allocation failed");
+        return WeatherCopyReport {
+            raw_ok: true,
+            copy_ticks: [elapsed(started), 0],
+            raw_bytes: job.log.raw_bytes,
+        };
     }
+    job.update_capacity_charge();
     job.log.reserve(display_bytes);
-    job.log.overflowed |=
-        job.regions.needs_growth() || job.provinces.needs_growth() || job.clocks.needs_growth();
     let overflow = job.log.overflowed;
     let root_fault = job.log.fault.iter().any(|&fault| fault);
     // Keep a failed source terminal when storage is also exhausted; retrying
@@ -1110,11 +1073,7 @@ pub fn copy_weather_refresh(
         let _reads = read_accounting::table(TABLES[1]);
         if job.manager_authenticated {
             let grid = cweather_manager::read_display_grid(memory, ctx.base, job.manager);
-            if job.worker_growth {
-                job.display.capture_growing(memory, grid);
-            } else {
-                job.display.capture(memory, grid);
-            }
+            job.display.capture(memory, grid);
             if job.display.header.is_ok() {
                 job.log.raw_bytes[1] += job.display.required as u64;
             }
@@ -1160,27 +1119,20 @@ impl Captured {
         decode_ticks: &mut [u64; N],
     ) -> Option<temperature::Words> {
         self.raw_mode = false;
-        if job.worker_growth {
-            let rows = job.regions.array.map_or(0, |array| array.count as usize);
-            let provinces = job.provinces.array.map_or(0, |array| array.count as usize);
-            let grown = (|| {
-                engine_native::walk::Buffer::Growing(&mut self.regions.rows).ensure(rows)?;
-                engine_native::walk::Buffer::Growing(&mut self.provinces.rows).ensure(provinces)?;
-                let mut display_bytes = job.display.required;
-                self.display.grow(&mut display_bytes);
-                Ok::<(), &'static str>(())
-            })();
-            if let Err(reason) = grown {
-                self.fail(reason);
-                return None;
-            }
-        }
+        let mut display_bytes = job.display.required;
+        self.display.grow(&mut display_bytes);
         self.display.copy_from(&job.display);
         if let Some(reason) = job.staging_failure {
             self.fail(reason);
             return None;
         }
-        let recorded = crate::raw::Recorded::build(&job.log);
+        let recorded = match crate::raw::Recorded::build(&job.log) {
+            Ok(recorded) => recorded,
+            Err(reason) => {
+                self.fail(reason);
+                return None;
+            }
+        };
         let started = qpc();
         let reader = match cweather_manager::Reader::new(&recorded, base, job.game_state) {
             Ok(reader) => reader,
@@ -1254,7 +1206,7 @@ impl Captured {
                     job.clocks
                         .fill_clocks(array.count, &mut self.provinces.rows[..len])
                 }) {
-                    Ok(()) => bounded(outcome, self.provinces.rows.len()),
+                    Ok(()) => outcome,
                     Err(reason) => Outcome::Unavailable { reason },
                 }
             }
@@ -1266,7 +1218,6 @@ impl Captured {
         self.daylight_feather = (!self.clocks_updated)
             .then(|| reader.daylight_feather().ok())
             .flatten();
-        self.regions.outcome = bounded(self.regions.outcome, self.regions.rows.len());
         decode_ticks[1] += elapsed(started);
         reader
             .temperature_words()

@@ -69,7 +69,7 @@ unsafe extern "system" fn record_original(first: usize, second: usize, rsp: usiz
     if call.hooked {
         assert_eq!(active(), 1);
         assert!(crate::runtime::observers_active());
-        assert_eq!(store().try_lock().is_err(), call.site < 2 && observing());
+        assert!(store().try_lock().is_ok());
         // Isolate ACTIVE's release veto, then restore the test-owned installed
         // site/admission flags before returning to the native original.
         let enabled = ENABLED.swap(false, Ordering::SeqCst);
@@ -95,33 +95,18 @@ struct Retained {
     entries_capacity: usize,
     births_capacity: usize,
     next_id: u64,
-    offered: Option<[usize; 3]>,
-    retired: Option<[usize; 3]>,
-    capacities: [usize; 3],
+    poisoned: bool,
 }
 fn retained() -> Retained {
-    let current = store().try_lock().expect("foreign cleanup released STORE");
-    let swap = STORAGE_SWAP.try_lock().unwrap();
-    let allocation = |storage: &Storage| {
-        [
-            storage.entries.as_ptr() as usize,
-            storage.entries.capacity(),
-            storage.births.capacity(),
-        ]
-    };
+    let mut current = store().try_lock().expect("foreign cleanup released STORE");
+    current.fold();
     Retained {
         entries: current.entries.clone(),
         entries_pointer: current.entries.as_ptr() as usize,
         entries_capacity: current.entries.capacity(),
         births_capacity: current.births.capacity(),
         next_id: current.next_id,
-        offered: swap.next.as_ref().map(allocation),
-        retired: swap.retired.as_ref().map(allocation),
-        capacities: [
-            capacity(),
-            BIRTH_CAPACITY.load(Ordering::Acquire),
-            OFFERED_CAPACITY.load(Ordering::Acquire),
-        ],
+        poisoned: current.poisoned,
     }
 }
 fn registered(pc: usize) {
@@ -149,7 +134,7 @@ fn normal_return(call: &NativeCall, count: usize) {
 #[test]
 #[ignore = "parent-only native C++/SEH dispatch; requires BATTLE_PLAN_TAP_UNWIND_PROBE"]
 fn naval_original_cpp_seh_preserves_cleanup_storage_and_restores_hooks() {
-    let _serial = probe::SERIAL.lock().unwrap();
+    let _serial = probe::SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let _observation = Observation::new();
     let driver = probe::Probe::load();
     let [normal, cpp, seh] = driver.cases();
@@ -235,7 +220,7 @@ fn naval_original_cpp_seh_preserves_cleanup_storage_and_restores_hooks() {
             let calls = CALLS[site_index].load(Ordering::Relaxed);
             unsafe { driver.run(normal, naval_foreign_caller, argument) };
             normal_return(&call, 1);
-            assert!(!POISONED.load(Ordering::SeqCst));
+            assert!(!retained().poisoned);
             assert!(call.rsp < call.caller_rsp);
             assert_ne!(call.return_pc, caller_site + 5);
             registered(call.return_pc);
@@ -262,9 +247,7 @@ fn naval_original_cpp_seh_preserves_cleanup_storage_and_restores_hooks() {
             }
             unsafe { driver.run(normal, naval_foreign_caller, argument) };
             normal_return(&call, 2);
-            presize(4);
             let storage = retained();
-            assert!(storage.offered.is_some());
             assert_eq!(storage.entries.len(), usize::from(site_index < 2));
             let before = UNWINDS.load(Ordering::Relaxed);
             call.raise = case.raise;
@@ -291,11 +274,14 @@ fn naval_original_cpp_seh_preserves_cleanup_storage_and_restores_hooks() {
                 0,
                 "foreign cleanup must retire the actual Call guard"
             );
-            assert!(UNWOUND.load(Ordering::SeqCst) && POISONED.load(Ordering::SeqCst));
             assert_eq!(
                 drain(&mut rows).unwrap_err(),
                 "naval result sources native writer unwound"
             );
+            let storage = Retained {
+                poisoned: true,
+                ..storage
+            };
             assert_eq!(retained(), storage);
             ENABLED.store(false, Ordering::SeqCst);
             assert_eq!(
@@ -311,7 +297,6 @@ fn naval_original_cpp_seh_preserves_cleanup_storage_and_restores_hooks() {
             assert_eq!(active(), 0);
             assert_eq!(CALLS[site_index].load(Ordering::Relaxed), calls + 4);
             assert_eq!(UNWINDS.load(Ordering::Relaxed), before + 1);
-            assert!(POISONED.load(Ordering::SeqCst));
             assert_eq!(
                 retained(),
                 storage,
@@ -341,8 +326,8 @@ fn naval_original_cpp_seh_preserves_cleanup_storage_and_restores_hooks() {
             assert_eq!(CALLS[site_index].load(Ordering::Relaxed), calls + 4);
             assert_eq!(retained(), storage);
             release().unwrap();
-            assert_eq!(capacity(), 0);
-            assert!(STORAGE_SWAP.lock().unwrap().next.is_none());
+            assert_eq!(store().lock().unwrap().entries.capacity(), 0);
+            assert!(LOG.is_empty());
             drop(hook);
             CURRENT.store(0, Ordering::Release);
             eprintln!("Naval {site_index} {} PASS", case.name);

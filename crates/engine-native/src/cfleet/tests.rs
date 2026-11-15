@@ -55,9 +55,9 @@ fn original_counter_borrower_receives_same_prefix_without_an_extra_native_read()
         failed: std::cell::Cell::new(false),
         reads: Default::default(),
     };
-    let mut expected_fleets = [CounterRow::default(); 1];
-    let mut expected_tasks = [ctask_force::CounterRow::default(); 1];
-    let mut expected_rosters = [0; 1];
+    let mut expected_fleets = vec![CounterRow::default(); 1];
+    let mut expected_tasks = vec![ctask_force::CounterRow::default(); 1];
+    let mut expected_rosters = vec![0; 1];
     let expected = walk_counter_inputs(
         &legacy,
         0,
@@ -67,9 +67,9 @@ fn original_counter_borrower_receives_same_prefix_without_an_extra_native_read()
         &mut expected_tasks,
         |_, _| {},
     );
-    let mut fleets = [CounterRow::default(); 1];
-    let mut tasks = [ctask_force::CounterRow::default(); 1];
-    let mut rosters = [0; 1];
+    let mut fleets = vec![CounterRow::default(); 1];
+    let mut tasks = vec![ctask_force::CounterRow::default(); 1];
+    let mut rosters = vec![0; 1];
     let mut observed = Vec::new();
     let actual = walk_counter_inputs_with_port_observed(
         &borrowed,
@@ -138,7 +138,7 @@ fn fleet_observer_token_precedes_the_original_region_header_without_extra_reads(
     let mut old_fleets = vec![];
     let mut old_rosters = vec![];
     let mut old_tasks = vec![];
-    let expected = walk_counter_inputs_with_port_observed_growing(
+    let expected = walk_counter_inputs_with_port_observed(
         &legacy,
         0,
         GS,
@@ -156,7 +156,7 @@ fn fleet_observer_token_precedes_the_original_region_header_without_extra_reads(
     let mut rosters = vec![];
     let mut tasks = vec![];
     let mut observed = vec![];
-    let actual = walk_counter_inputs_with_port_and_fleet_observed_growing(
+    let actual = walk_counter_inputs_with_port_and_fleet_observed(
         &memory,
         0,
         GS,
@@ -199,7 +199,7 @@ fn growing_counters_follow_a_native_roster_larger_than_the_old_chosen_limit() {
     let mut fleets = Vec::new();
     let mut tasks = Vec::new();
     let mut rosters = Vec::new();
-    let actual = walk_counter_inputs_with_port_observed_growing(
+    let actual = walk_counter_inputs_with_port_observed(
         &memory,
         0,
         GS,
@@ -253,12 +253,12 @@ fn growing_counter_names_follow_original_headers_on_first_and_later_publications
             failed: std::cell::Cell::new(false),
             reads: Default::default(),
         };
-        let mut names = crate::cname_group_member::NameArena {
+        let mut names = crate::cname_group_member::Names {
             bytes: crate::walk::Buffer::Growing(&mut text),
             len: 0,
             required: 0,
         };
-        let capture = walk_counter_inputs_with_port_observed_growing(
+        let capture = walk_counter_inputs_with_port_observed(
             &memory,
             0,
             GS,
@@ -291,67 +291,57 @@ fn growing_counter_names_follow_original_headers_on_first_and_later_publications
 }
 
 #[test]
-fn original_counter_borrower_distinguishes_unattempted_capacity_from_failed_prefix() {
+fn original_counter_borrower_reports_a_failed_prefix() {
     let bytes = original_counter_fixture();
     let root = TASK + ctask_force::NAVAL_MISSION;
-    for capacity in [0, 1] {
-        let memory = OriginalCounterMemory {
-            bytes: &bytes,
-            fail_once_at: Some(root),
-            failed: std::cell::Cell::new(false),
-            reads: Default::default(),
-        };
-        let mut tasks = [ctask_force::CounterRow::default(); 1];
-        let mut observed = Vec::new();
-        let actual = walk_counter_inputs_with_port_observed(
-            &memory,
-            0,
-            GS,
-            &mut [],
-            &mut [],
-            (&mut tasks[..capacity], None, None, None),
-            |_, _| {},
-            |pointer, id, original| observed.push((pointer, id, original)),
-        );
-        let original = if capacity == 0 {
-            None
-        } else {
+    let memory = OriginalCounterMemory {
+        bytes: &bytes,
+        fail_once_at: Some(root),
+        failed: std::cell::Cell::new(false),
+        reads: Default::default(),
+    };
+    let mut tasks = Vec::new();
+    let mut observed = Vec::new();
+    let actual = walk_counter_inputs_with_port_observed(
+        &memory,
+        0,
+        GS,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        (&mut tasks, None, None, None),
+        |_, _| {},
+        |pointer, id, original| observed.push((pointer, id, original)),
+    );
+    assert_eq!(
+        observed,
+        vec![(
+            TASK,
+            (11_u64 << 32) | 51,
             Some(Err("naval mission identity unreadable"))
-        };
-        assert_eq!(observed, vec![(TASK, (11_u64 << 32) | 51, original)]);
-        assert_eq!(
-            memory
-                .reads
-                .borrow()
-                .iter()
-                .filter(|(at, _)| *at == root)
-                .count(),
-            capacity
-        );
-        assert!(
-            !memory
-                .reads
-                .borrow()
-                .iter()
-                .any(|(at, _)| *at == TASK + cunit::RECEIVED_SUPPLY_RATIO)
-        );
-        if capacity == 0 {
-            assert_eq!(
-                actual.task_forces,
-                Outcome::Truncated {
-                    len: 0,
-                    unread_rows: 1
-                }
-            );
-        } else {
-            assert_eq!(
-                actual.task_forces,
-                Outcome::Unavailable {
-                    reason: "naval mission identity unreadable"
-                }
-            );
+        )]
+    );
+    assert_eq!(
+        memory
+            .reads
+            .borrow()
+            .iter()
+            .filter(|(at, _)| *at == root)
+            .count(),
+        1
+    );
+    assert!(
+        !memory
+            .reads
+            .borrow()
+            .iter()
+            .any(|(at, _)| *at == TASK + cunit::RECEIVED_SUPPLY_RATIO)
+    );
+    assert_eq!(
+        actual.task_forces,
+        Outcome::Unavailable {
+            reason: "naval mission identity unreadable"
         }
-    }
+    );
 }
 
 #[test]
@@ -382,9 +372,9 @@ fn healthy_read_accounting_partitions_fleet_graph_without_changing_its_read_trac
             },
             reads: RefCell::default(),
         };
-        let mut expected_fleets = [Row::default(); 1];
-        let mut expected_tasks = [ctask_force::Row::default(); 1];
-        let mut expected_ships = [cship::Row::default(); 2];
+        let mut expected_fleets = vec![Row::default(); 1];
+        let mut expected_tasks = vec![ctask_force::Row::default(); 1];
+        let mut expected_ships = vec![cship::Row::default(); 2];
         let expected = walk(
             &original,
             0,
@@ -400,9 +390,9 @@ fn healthy_read_accounting_partitions_fleet_graph_without_changing_its_read_trac
             },
             reads: RefCell::default(),
         });
-        let mut fleets = [Row::default(); 1];
-        let mut tasks = [ctask_force::Row::default(); 1];
-        let mut ships = [cship::Row::default(); 2];
+        let mut fleets = vec![Row::default(); 1];
+        let mut tasks = vec![ctask_force::Row::default(); 1];
+        let mut ships = vec![cship::Row::default(); 2];
         let mut by_table = [ReadCounts::ZERO; 3];
         let mut active = 0;
         ReadCounts::take_current();
@@ -457,14 +447,14 @@ fn healthy_read_accounting_partitions_fleet_graph_without_changing_its_read_trac
 
 #[test]
 fn ship_visitors_receive_only_authenticated_emitted_rows_and_never_hide_incomplete_censuses() {
-    for (capacity, corrupt_second) in [(0, false), (1, true), (2, true), (2, false)] {
+    for corrupt_second in [true, false] {
         let mut bytes = fixture();
         if corrupt_second {
             put64(&mut bytes, SHIP2, 0);
         }
-        let mut fleets = [Row::default(); 1];
-        let mut tasks = [ctask_force::Row::default(); 1];
-        let mut ships = [cship::Row::default(); 2];
+        let mut fleets = Vec::new();
+        let mut tasks = Vec::new();
+        let mut ships = Vec::new();
         let mut visited = Vec::new();
         let captured = walk_timed_with(
             &SliceMemory {
@@ -475,44 +465,21 @@ fn ship_visitors_receive_only_authenticated_emitted_rows_and_never_hide_incomple
             GS,
             &mut fleets,
             &mut tasks,
-            &mut ships[..capacity],
+            &mut ships,
             |_| 0,
             |pointer, row| visited.push((pointer, *row)),
         );
         assert_eq!(captured.capture.fleets, Outcome::Rows { len: 1 });
         assert_eq!(captured.capture.task_forces, Outcome::Rows { len: 1 });
-        match capacity {
-            0 => {
-                assert!(visited.is_empty());
-                assert_eq!(
-                    captured.capture.ships,
-                    Outcome::Truncated {
-                        len: 0,
-                        unread_rows: 2
-                    }
-                );
-            }
-            1 => {
-                assert_eq!(visited, vec![(SHIP, ships[0])]);
-                assert_eq!(
-                    captured.capture.ships,
-                    Outcome::Truncated {
-                        len: 1,
-                        unread_rows: 1
-                    }
-                );
-            }
-            _ if corrupt_second => {
-                assert_eq!(visited, vec![(SHIP, ships[0])]);
-                assert!(matches!(
-                    captured.capture.ships,
-                    Outcome::Unavailable { .. }
-                ));
-            }
-            _ => {
-                assert_eq!(visited, vec![(SHIP, ships[0]), (SHIP2, ships[1])]);
-                assert_eq!(captured.capture.ships, Outcome::Rows { len: 2 });
-            }
+        if corrupt_second {
+            assert_eq!(visited, vec![(SHIP, ships[0])]);
+            assert!(matches!(
+                captured.capture.ships,
+                Outcome::Unavailable { .. }
+            ));
+        } else {
+            assert_eq!(visited, vec![(SHIP, ships[0]), (SHIP2, ships[1])]);
+            assert_eq!(captured.capture.ships, Outcome::Rows { len: 2 });
         }
     }
 }
@@ -657,9 +624,9 @@ fn cached_fuel_traversal_keeps_all_missions_without_reading_leader_or_mission_bo
 
 fn capture(
     bytes: &[u8],
-    fleets: &mut [Row],
-    tasks: &mut [ctask_force::Row],
-    ships: &mut [cship::Row],
+    fleets: &mut Vec<Row>,
+    tasks: &mut Vec<ctask_force::Row>,
+    ships: &mut Vec<cship::Row>,
 ) -> Capture {
     walk(&SliceMemory { base: 0, bytes }, 0, GS, fleets, tasks, ships)
 }
@@ -667,9 +634,9 @@ fn capture(
 #[test]
 fn naval_graph_preserves_handles_aliases_and_full_signed_scalars() {
     let bytes = fixture();
-    let mut fleets = [Row::default(); 2];
-    let mut tasks = [ctask_force::Row::default(); 2];
-    let mut ships = [cship::Row::default(); 3];
+    let mut fleets = vec![Row::default(); 2];
+    let mut tasks = vec![ctask_force::Row::default(); 2];
+    let mut ships = vec![cship::Row::default(); 3];
     let result = capture(&bytes, &mut fleets, &mut tasks, &mut ships);
     assert_eq!(
         result,
@@ -725,32 +692,84 @@ fn naval_graph_preserves_handles_aliases_and_full_signed_scalars() {
     );
 }
 
+/// A task force whose roster owner is another country than its fleet's is
+/// recorded with its own owners, and its ships with it.
+#[test]
+fn foreign_task_force_is_recorded_with_its_own_owners() {
+    const FOREIGN: usize = 0x5000;
+    let mut bytes = fixture();
+    put64(&mut bytes, COUNTRIES + 16, FOREIGN as u64);
+    put32(&mut bytes, LINKS + 8, 2);
+    put64(&mut bytes, FOREIGN, ccountry::VTABLE_RVA.0 as u64);
+    put32(&mut bytes, FOREIGN + ccountry::ID, 2);
+    put32(&mut bytes, TASK + cunit::ROSTER_OWNER, 2);
+    put32(&mut bytes, TASK + cunit::LOGICAL_OWNER, 2);
+    put32(&mut bytes, TASK + cunit::EXPEDITIONARY_OWNER, 3);
+    let mut fleets = vec![Row::default(); 1];
+    let mut tasks = vec![ctask_force::Row::default(); 1];
+    let mut ships = vec![cship::Row::default(); 2];
+    let result = capture(&bytes, &mut fleets, &mut tasks, &mut ships);
+    assert_eq!(
+        result,
+        Capture {
+            fleets: Outcome::Rows { len: 1 },
+            task_forces: Outcome::Rows { len: 1 },
+            ships: Outcome::Rows { len: 2 }
+        }
+    );
+    assert_eq!(fleets[0].owner, 3);
+    assert_eq!(
+        (
+            tasks[0].fleet,
+            tasks[0].roster_owner,
+            tasks[0].logical_owner,
+            tasks[0].expeditionary_owner
+        ),
+        (fleets[0].id, 2, 2, 3)
+    );
+    assert_eq!(
+        ships.iter().map(|ship| ship.task_force).collect::<Vec<_>>(),
+        [tasks[0].id; 2]
+    );
+}
+
 /// The census reads each ship, its vtable included, in one guarded call and
 /// its task force's ship roster a page of pointers per call, where it read
 /// each pointer, vtable and field block in a call of its own.
 #[test]
 fn ship_census_reads_a_run_of_ships_in_one_guarded_call_and_its_roster_a_page_per_call() {
-    let calls = |bytes: &[u8], ships: &mut [cship::Row]| {
+    let calls = |bytes: &[u8], ships: crate::walk::Buffer<'_, cship::Row>| {
         let memory = crate::memory::CountingMemory::new(bytes);
-        let mut fleets = [Row::default(); 1];
-        let mut tasks = [ctask_force::Row::default(); 1];
-        let capture = walk(&memory, 0, GS, &mut fleets, &mut tasks, ships);
-        (capture.ships, memory.calls.get())
+        let mut fleets = vec![Row::default(); 1];
+        let mut tasks = vec![ctask_force::Row::default(); 1];
+        let capture = walk_named(
+            &memory,
+            0,
+            GS,
+            crate::walk::Buffer::Growing(&mut fleets),
+            crate::walk::Buffer::Growing(&mut tasks),
+            ships,
+            |_| 0,
+            |_, _| {},
+            None,
+            true,
+        );
+        (capture.capture.ships, memory.calls.get())
     };
     let bytes = fixture();
-    let mut ships = [cship::Row::default(); 2];
-    let (read, with_bodies) = calls(&bytes, &mut ships);
+    let mut ships = Vec::new();
+    let (read, with_bodies) = calls(&bytes, crate::walk::Buffer::Growing(&mut ships));
     assert_eq!(read, Outcome::Rows { len: 2 });
     assert_eq!(
-        ships.map(|ship| ship.roster_ordinal),
+        ships.iter().map(|ship| ship.roster_ordinal).collect::<Vec<_>>(),
         [0, 1],
         "roster order is kept"
     );
-    let (_, roster_only) = calls(&bytes, &mut []);
+    let (_, roster_only) = calls(&bytes, crate::walk::Buffer::Count);
     assert_eq!(with_bodies - roster_only, 1, "one call per run of ships");
     let mut empty = fixture();
     array(&mut empty, TASK + ctask_force::SHIPS, 0, 0);
-    let (_, no_roster) = calls(&empty, &mut []);
+    let (_, no_roster) = calls(&empty, crate::walk::Buffer::Count);
     assert_eq!(roster_only - no_roster, 1, "one call per roster page");
 
     // The vtable still decides before the fields: a wrong or unreadable
@@ -771,9 +790,9 @@ fn ship_census_reads_a_run_of_ships_in_one_guarded_call_and_its_roster_a_page_pe
         }
     }
     let census = |bytes: &[u8], fault| {
-        let mut fleets = [Row::default(); 1];
-        let mut tasks = [ctask_force::Row::default(); 1];
-        let mut ships = [cship::Row::default(); 2];
+        let mut fleets = vec![Row::default(); 1];
+        let mut tasks = vec![ctask_force::Row::default(); 1];
+        let mut ships = vec![cship::Row::default(); 2];
         let memory = Faulting { bytes, fault };
         walk(&memory, 0, GS, &mut fleets, &mut tasks, &mut ships).ships
     };
@@ -790,14 +809,12 @@ fn ship_census_reads_a_run_of_ships_in_one_guarded_call_and_its_roster_a_page_pe
 }
 
 #[test]
-fn naval_capacity_is_independent_and_does_not_hide_descendants() {
+fn the_naval_count_probe_counts_each_table_and_reads_no_omitted_ship_body() {
     let mut bytes = fixture();
     // Body fields of an omitted ship must not be read.
     put64(&mut bytes, SHIP2, 0);
-    let mut ships = [cship::Row::default(); 1];
-    let result = capture(&bytes, &mut [], &mut [], &mut ships);
     assert_eq!(
-        result,
+        count(&SliceMemory { base: 0, bytes: &bytes }, 0, GS),
         Capture {
             fleets: Outcome::Truncated {
                 len: 0,
@@ -808,8 +825,8 @@ fn naval_capacity_is_independent_and_does_not_hide_descendants() {
                 unread_rows: 1
             },
             ships: Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
+                len: 0,
+                unread_rows: 2
             },
         }
     );
@@ -821,15 +838,15 @@ fn naval_empty_rosters_and_null_locations_are_valid() {
     put64(&mut bytes, FLEET + HOME_BASE, 0);
     put64(&mut bytes, TASK + cunit::LOCATION, 0);
     array(&mut bytes, TASK + ctask_force::SHIPS, 0, 0);
-    let mut fleets = [Row::default(); 1];
-    let mut tasks = [ctask_force::Row::default(); 1];
-    let result = capture(&bytes, &mut fleets, &mut tasks, &mut []);
+    let mut fleets = vec![Row::default(); 1];
+    let mut tasks = vec![ctask_force::Row::default(); 1];
+    let result = capture(&bytes, &mut fleets, &mut tasks, &mut Vec::new());
     assert_eq!(result.ships, Outcome::Rows { len: 0 });
     assert_eq!(fleets[0].home_base, 0);
     assert_eq!(tasks[0].province, 0);
     array(&mut bytes, COUNTRY + ccountry::FLEETS, 0, 0);
     assert_eq!(
-        capture(&bytes, &mut [], &mut [], &mut []),
+        capture(&bytes, &mut Vec::new(), &mut Vec::new(), &mut Vec::new()),
         Capture {
             fleets: Outcome::Rows { len: 0 },
             task_forces: Outcome::Rows { len: 0 },
@@ -841,9 +858,9 @@ fn naval_empty_rosters_and_null_locations_are_valid() {
 #[test]
 fn naval_body_failures_are_scoped_but_broken_parent_links_are_not_silenced() {
     let mut bytes = fixture();
-    let mut fleets = [Row::default(); 1];
-    let mut tasks = [ctask_force::Row::default(); 1];
-    let mut ships = [cship::Row::default(); 2];
+    let mut fleets = vec![Row::default(); 1];
+    let mut tasks = vec![ctask_force::Row::default(); 1];
+    let mut ships = vec![cship::Row::default(); 2];
     put64(&mut bytes, FLEET + HOME_BASE, 1);
     let result = capture(&bytes, &mut fleets, &mut tasks, &mut ships);
     assert!(matches!(result.fleets, Outcome::Unavailable { .. }));
@@ -869,9 +886,9 @@ fn naval_body_failures_are_scoped_but_broken_parent_links_are_not_silenced() {
 #[test]
 fn naval_broken_headers_and_location_registry_are_not_empty_data() {
     let mut bytes = fixture();
-    let mut fleets = [Row::default(); 1];
-    let mut tasks = [ctask_force::Row::default(); 1];
-    let mut ships = [cship::Row::default(); 2];
+    let mut fleets = vec![Row::default(); 1];
+    let mut tasks = vec![ctask_force::Row::default(); 1];
+    let mut ships = vec![cship::Row::default(); 2];
     put64(&mut bytes, PROVINCES + 8, 0);
     let result = capture(&bytes, &mut fleets, &mut tasks, &mut ships);
     assert!(matches!(result.fleets, Outcome::Unavailable { .. }));
@@ -940,9 +957,9 @@ fn counter_inputs_read_mission_links_colour_and_ordered_roster_with_bounds() {
         base: 0,
         bytes: &bytes,
     };
-    let mut fleets = [CounterRow::default(); 1];
-    let mut rosters = [0_u64; 1];
-    let mut tasks = [ctask_force::CounterRow::default(); 1];
+    let mut fleets = vec![CounterRow::default(); 1];
+    let mut rosters = vec![0_u64; 1];
+    let mut tasks = vec![ctask_force::CounterRow::default(); 1];
     let census = crate::read_census::ReadCensus::new(&memory);
     let walk = walk_counter_inputs(
         &census,
@@ -953,7 +970,6 @@ fn counter_inputs_read_mission_links_colour_and_ordered_roster_with_bounds() {
         &mut tasks,
         |_, _| {},
     );
-    let complete_cost = (census.calls(), census.bytes());
     assert_eq!(walk.fleets, Outcome::Rows { len: 1 });
     assert_eq!(walk.task_forces, Outcome::Rows { len: 1 });
     assert_eq!((walk.roster_len, walk.roster_required), (1, 1));
@@ -998,26 +1014,7 @@ fn counter_inputs_read_mission_links_colour_and_ordered_roster_with_bounds() {
         (census.calls(), census.spans(), census.bytes()),
         (7, 12, 116)
     );
-    // A roster that does not fit omits the fleet whole; task forces are independent.
-    census.reset();
-    let walk = walk_counter_inputs(&census, 0, GS, &mut fleets, &mut [], &mut tasks, |_, _| {});
-    assert_eq!(
-        walk.fleets,
-        Outcome::Truncated {
-            len: 0,
-            unread_rows: 1
-        }
-    );
-    assert_eq!(walk.task_forces, Outcome::Rows { len: 1 });
-    assert_eq!(walk.roster_required, 1);
-    assert_eq!(
-        (
-            complete_cost.0 - census.calls(),
-            complete_cost.1 - census.bytes()
-        ),
-        (2, 32),
-        "an emitted fleet adds only colour and mission-region fields"
-    );
+
     // A region outside its registered slot and a foreign mission vtable both fail.
     put64(&mut bytes, REGIONS + 16, 0);
     let memory = SliceMemory {
@@ -1093,13 +1090,13 @@ fn task_force_cached_name_failure_preserves_counter_prefix_and_admission_order()
         handle,
     )
     .unwrap();
-    let mut fleets = [CounterRow::default(); 1];
-    let mut tasks = [ctask_force::CounterRow::default(); 1];
-    let mut rosters = [0; 1];
+    let mut fleets = vec![CounterRow::default(); 1];
+    let mut tasks = vec![ctask_force::CounterRow::default(); 1];
+    let mut rosters = vec![0; 1];
     for capacity in [0, 6] {
         let mut owned = vec![0; capacity];
         let mut names = Names {
-            bytes: &mut owned,
+            bytes: crate::walk::Buffer::Growing(&mut owned),
             len: 0,
             required: 0,
         };
@@ -1120,19 +1117,17 @@ fn task_force_cached_name_failure_preserves_counter_prefix_and_admission_order()
         assert_eq!(visited, [(TASK, handle)]);
         assert_eq!(rosters, [handle]);
         assert_eq!(names.required, 6);
-        assert_eq!(names.len, capacity);
-        assert_eq!(tasks[0].name, (capacity == 6).then_some((0, 6)));
+        assert_eq!(names.len, 6, "capacity {capacity}");
+        assert_eq!(tasks[0].name, Some((0, 6)));
         let mut actual = tasks[0];
         actual.name = None;
         assert_eq!(actual, prefix);
-        if capacity == 6 {
-            assert_eq!(owned, b"Guard\0");
-        }
+        assert_eq!(&owned[..6], b"Guard\0");
     }
     // A corrupt header is local to this suffix and counts no growth demand.
     put64(&mut bytes, name + 24, 1);
     let mut names = Names {
-        bytes: &mut [],
+        bytes: crate::walk::Buffer::Count,
         len: 0,
         required: 0,
     };
@@ -1191,7 +1186,7 @@ fn task_force_cached_name_failure_preserves_counter_prefix_and_admission_order()
 /// mission too; with the counter buffer exhausted the mission collector still authenticates
 /// every mission it observes.
 #[test]
-fn missions_are_authenticated_when_the_counter_buffer_is_exhausted() {
+fn missions_are_authenticated_by_the_counter_walk_and_the_mission_collector() {
     use crate::cnaval_mission as mission;
     const REGIONS: usize = 0xb300;
     const REGION: usize = 0xb400;
@@ -1212,32 +1207,26 @@ fn missions_are_authenticated_when_the_counter_buffer_is_exhausted() {
     put64(&mut bytes, ACCESSIBLE, REGION as u64);
     let run = |bytes: &[u8]| {
         let memory = SliceMemory { base: 0, bytes };
-        let (mut missions, mut arena) = ([ctask_force::MissionRow::default(); 1], [0; 1]);
+        let (mut missions, mut arena) = (Vec::new(), Vec::new());
         let mut collector =
             ctask_force::MissionCollector::new(&memory, 0, GS, &mut missions, &mut arena);
-        let walk = walk_counter_inputs(&memory, 0, GS, &mut [], &mut [], &mut [], |pointer, id| {
+        let walk = walk_counter_inputs(&memory, 0, GS, &mut Vec::new(), &mut Vec::new(), &mut Vec::new(), |pointer, id| {
             collector.visit(pointer, id)
         });
-        assert_eq!(
-            walk.task_forces,
-            Outcome::Truncated {
-                len: 0,
-                unread_rows: 1
-            }
-        );
-        collector.finish(None).outcome
+        (walk.task_forces, collector.finish(None).outcome)
     };
-    assert_eq!(run(&bytes), Outcome::Rows { len: 1 });
+    assert_eq!(
+        run(&bytes),
+        (Outcome::Rows { len: 1 }, Outcome::Rows { len: 1 })
+    );
+    // The counter walk and the mission collector each authenticate the mission.
+    let mismatch = Outcome::Unavailable {
+        reason: "naval mission identity mismatch",
+    };
     for (at, value) in [(root, 1), (root + mission::TASK_FORCE, 0)] {
         let mut forged = bytes.clone();
         put64(&mut forged, at, value);
-        assert_eq!(
-            run(&forged),
-            Outcome::Unavailable {
-                reason: "naval mission identity mismatch"
-            },
-            "{at:#x}"
-        );
+        assert_eq!(run(&forged), (mismatch, mismatch), "{at:#x}");
     }
 }
 
@@ -1292,24 +1281,20 @@ fn task_force_supply_uses_the_admitted_primary_root_and_preserves_name_and_scala
     .unwrap();
     for bad_name in [false, true] {
         put64(&mut bytes, name + 24, if bad_name { 1 } else { 15 });
-        for capacity in [0, 2] {
-            let mut name_bytes = [0; 4];
+        {
+            let mut name_bytes = vec![0; 4];
             let mut names = Names {
-                bytes: &mut name_bytes,
+                bytes: crate::walk::Buffer::Growing(&mut name_bytes),
                 len: 0,
                 required: 0,
             };
-            let mut origin_bytes = [supply::Origin::default(); 2];
+            let mut origin_bytes = Vec::new();
             let mut origins = ctask_force::SupplyOrigins {
-                origins: crate::walk::Buffer::Fixed(&mut origin_bytes[..capacity]),
+                origins: crate::walk::Buffer::Growing(&mut origin_bytes),
                 len: 0,
                 required: 0,
             };
-            let (mut fleets, mut tasks, mut rosters) = (
-                [CounterRow::default(); 1],
-                [ctask_force::CounterRow::default(); 1],
-                [0; 1],
-            );
+            let (mut fleets, mut tasks, mut rosters) = (Vec::new(), Vec::new(), Vec::new());
             let walk = walk_counter_inputs_with_tooltips(
                 &SliceMemory {
                     base: 0,
@@ -1333,24 +1318,17 @@ fn task_force_supply_uses_the_admitted_primary_root_and_preserves_name_and_scala
                 (2, 200_000)
             );
             assert_eq!(origins.required, 2);
-            assert_eq!(origins.len, capacity);
+            assert_eq!(origins.len, 2);
             assert_eq!(tasks[0].name, (!bad_name).then_some((0, 4)));
-            if capacity == 2 {
-                assert_eq!(input.origins_len, Ok(2));
-                assert_eq!(
-                    origins.origins[1],
-                    supply::Origin {
-                        province: 13,
-                        requested: -7,
-                        received: -11
-                    }
-                );
-            } else {
-                assert_eq!(
-                    input.origins_len,
-                    Err(supply::Failure::OriginsCapacity { required: 2 })
-                );
-            }
+            assert_eq!(input.origins_len, Ok(2));
+            assert_eq!(
+                origins.origins[1],
+                supply::Origin {
+                    province: 13,
+                    requested: -7,
+                    received: -11
+                }
+            );
             let mut actual = tasks[0];
             actual.name = None;
             actual.supply = None;
@@ -1404,9 +1382,9 @@ fn optional_supply_preserves_legacy_trace_and_never_reads_an_unadmitted_prefix()
     put64(&mut bytes, name + 16, 4);
     put64(&mut bytes, name + 24, 15);
     let (mut fleets, mut tasks, mut rosters) = (
-        [CounterRow::default(); 1],
-        [ctask_force::CounterRow::default(); 1],
-        [0; 1],
+        vec![CounterRow::default(); 1],
+        vec![ctask_force::CounterRow::default(); 1],
+        vec![0; 1],
     );
     let old = Traced {
         bytes: &bytes,
@@ -1444,15 +1422,15 @@ fn optional_supply_preserves_legacy_trace_and_never_reads_an_unadmitted_prefix()
             .iter()
             .any(|&(at, _)| at == TASK + supply::ASKED)
     );
-    let mut origin_bytes = [];
+    let mut origin_bytes = vec![];
     let mut origins = ctask_force::SupplyOrigins {
-        origins: crate::walk::Buffer::Fixed(&mut origin_bytes),
+        origins: crate::walk::Buffer::Growing(&mut origin_bytes),
         len: 0,
         required: 0,
     };
-    let mut name_bytes = [0; 4];
+    let mut name_bytes = vec![0; 4];
     let mut names = Names {
-        bytes: &mut name_bytes,
+        bytes: crate::walk::Buffer::Growing(&mut name_bytes),
         len: 0,
         required: 0,
     };
@@ -1530,7 +1508,7 @@ fn worker_naval_population_jump_grows_without_repeating_native_reads() {
         &mut Vec::new(),
     );
     let (mut fleets, mut tasks, mut ships) = (Vec::new(), Vec::new(), Vec::new());
-    let actual = walk_timed_growing_with_names(
+    let actual = walk_timed_with_names(
         &grown,
         0,
         GS,
@@ -1674,7 +1652,7 @@ fn growing_task_force_supply_and_port_arenas_capture_every_owner_before_publicat
             len: 0,
             required: 0,
         };
-        let mut port = Collector::new_growing(
+        let mut port = Collector::new(
             &memory,
             0,
             hour,
@@ -1683,7 +1661,7 @@ fn growing_task_force_supply_and_port_arenas_capture_every_owner_before_publicat
             &mut text,
             &mut answers,
         );
-        let actual = walk_counter_inputs_with_port_observed_growing(
+        let actual = walk_counter_inputs_with_port_observed(
             &memory,
             0,
             GS,
@@ -1904,25 +1882,23 @@ struct Walked {
 }
 
 fn census_walk(memory: &impl Memory, batched: bool) -> Walked {
-    census_walk_in(memory, batched, None)
+    census_walk_in(memory, batched, false)
 }
 
-/// [`census_walk`] into fixed buffers of `capacity` fleet, task-force and
-/// ship rows when given, growing ones otherwise.
-fn census_walk_in(memory: &impl Memory, batched: bool, capacity: Option<[usize; 3]>) -> Walked {
-    let [fleet_rows, task_rows, ship_rows] = capacity.unwrap_or([0; 3]);
-    let mut fleets = vec![Row::default(); fleet_rows];
-    let mut tasks = vec![ctask_force::Row::default(); task_rows];
-    let mut ships = vec![cship::Row::default(); ship_rows];
+/// [`census_walk`] as the count-only probe when `count`, growing otherwise.
+fn census_walk_in(memory: &impl Memory, batched: bool, count: bool) -> Walked {
+    let mut fleets = Vec::new();
+    let mut tasks = Vec::new();
+    let mut ships = Vec::new();
     let mut names = Vec::new();
     let mut visits = Vec::new();
     let walked = walk_named(
         memory,
         0,
         GS,
-        buffer_of(&mut fleets, capacity.is_some()),
-        buffer_of(&mut tasks, capacity.is_some()),
-        buffer_of(&mut ships, capacity.is_some()),
+        buffer_of(&mut fleets, count),
+        buffer_of(&mut tasks, count),
+        buffer_of(&mut ships, count),
         |_| 0,
         |pointer, row| visits.push((pointer, *row)),
         Some(&mut names),
@@ -1945,9 +1921,9 @@ fn census_walk_in(memory: &impl Memory, batched: bool, capacity: Option<[usize; 
     }
 }
 
-fn buffer_of<T>(rows: &mut Vec<T>, fixed: bool) -> crate::walk::Buffer<'_, T> {
-    if fixed {
-        crate::walk::Buffer::Fixed(rows.as_mut_slice())
+fn buffer_of<T>(rows: &mut Vec<T>, count: bool) -> crate::walk::Buffer<'_, T> {
+    if count {
+        crate::walk::Buffer::Count
     } else {
         crate::walk::Buffer::Growing(rows)
     }
@@ -2077,12 +2053,10 @@ fn ships_queued_before_a_walk_ending_failure_are_visited_as_the_per_ship_walk_vi
     }
 }
 
-/// Fixed row buffers of any size, including none, part of a run, one short
-/// of a run, a run, one past it, a cut inside a task force and the whole
-/// census, give the per-ship walk's outcomes (with their unread rows), rows,
-/// names and visits.
+/// The count-only probe gives the per-ship walk's outcomes, with their unread
+/// rows, and stores nothing.
 #[test]
-fn batched_census_into_fixed_buffers_equals_the_per_ship_walk() {
+fn batched_count_census_equals_the_per_ship_count() {
     let (bytes, _) = census_world(40);
     let memory = CensusMemory {
         bytes: &bytes,
@@ -2091,29 +2065,17 @@ fn batched_census_into_fixed_buffers_equals_the_per_ship_walk() {
         failures: Default::default(),
     };
     let whole = census_walk(&memory, false);
-    let (fleets, tasks, ships) = (whole.fleets.len(), whole.tasks.len(), whole.ships.len());
-    assert!(ships > 3 * SHIP_RUN);
-    for ship_rows in [
-        0,
-        1,
-        17,
-        SHIP_RUN - 1,
-        SHIP_RUN,
-        SHIP_RUN + 1,
-        150,
-        ships - 1,
-        ships,
-    ] {
-        for (fleet_rows, task_rows) in [(fleets, tasks), (0, 0), (3, 7), (fleets - 1, tasks - 1)] {
-            let capacity = Some([fleet_rows, task_rows, ship_rows]);
-            let serial = census_walk_in(&memory, false, capacity);
-            assert_eq!(
-                census_walk_in(&memory, true, capacity),
-                serial,
-                "{fleet_rows} fleets, {task_rows} task forces, {ship_rows} ships"
-            );
+    assert!(whole.ships.len() > 3 * SHIP_RUN);
+    let serial = census_walk_in(&memory, false, true);
+    assert_eq!(census_walk_in(&memory, true, true), serial);
+    assert_eq!(
+        serial.capture.ships,
+        Outcome::Truncated {
+            len: 0,
+            unread_rows: whole.ships.len() as u32
         }
-    }
+    );
+    assert!(serial.ships.is_empty());
 }
 
 /// The census's memory, recording the first address of every scattered

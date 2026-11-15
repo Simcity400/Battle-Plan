@@ -12,7 +12,6 @@ fn zero_limit_split_parts_prepare_all_wing_field_certificates_on_their_first_cen
         hour: 0,
         force_full: true,
         limits: [0; 3],
-        naval_limit: 0,
         game_score: false,
     };
     let mut census = AirWingJob::part();
@@ -22,7 +21,7 @@ fn zero_limit_split_parts_prepare_all_wing_field_certificates_on_their_first_cen
     parts[0].slots = 1..u32::MAX;
     parts[0].split = true;
     for job in std::iter::once(&mut census).chain(&mut parts) {
-        assert!(copy_air_refresh_growing(&memory, ctx, job).raw_ok);
+        assert!(copy_air_refresh(&memory, ctx, job).raw_ok);
     }
     assert_eq!(census.census.shared.map.len(), 0);
     assert_eq!(parts[0].census.shared.map.len(), 2);

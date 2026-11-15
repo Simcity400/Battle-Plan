@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { CountryGroupReply, FactionGroup, FactionNameRun } from '../generated/dashboard';
-import { factionNameAt, factionNameLabel, latestFactionSummaries } from './factionNames.ts';
+import { factionChoiceLabel, factionNameAt, factionNameLabel, latestFactionSummaries } from './factionNames.ts';
 
 const faction: FactionGroup = {
   id: '9001', name: 'Later pact', nameReason: null, recordedName: '', firstHour: 10, lastHour: 40,
@@ -21,6 +21,13 @@ test('faction names follow the template read at an hour and never cross a gap', 
     assert.deepEqual(factionNameAt(faction, hour), { name: null, reason: 'Not recorded' });
     assert.equal(factionNameLabel(faction, hour), 'Unnamed faction');
   }
+});
+
+test('a faction as a choice is named at the hour, else by its latest read, else unnamed', () => {
+  assert.equal(factionChoiceLabel(faction, 10), 'Opening pact');
+  for (const hour of [9, 25, 41, undefined]) assert.equal(factionChoiceLabel(faction, hour), 'Later pact');
+  assert.equal(factionChoiceLabel(faction, 9, 'My pact'), 'My pact');
+  assert.equal(factionChoiceLabel({ ...faction, name: null, nameReason: 'Template missing' }, 9), 'Unnamed faction');
 });
 
 test('missing or refused content keeps its exact reason and a display name wins', () => {

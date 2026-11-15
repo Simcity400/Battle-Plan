@@ -10,6 +10,12 @@ import type { TooltipContent } from './tooltip';
 
 type Effect = { deps?: readonly unknown[]; run: () => void | (() => void); cleanup?: () => void };
 
+/** An element's style as the chart reads and writes it. */
+function styleOf() {
+  const values = new Map<string, string>();
+  return { getPropertyValue: (name: string) => values.get(name) ?? '', setProperty: (name: string, value: string) => { values.set(name, value); } };
+}
+
 test('actual TimeChart observes pointer/keyboard hours, visible badges and the owning consumer', async () => {
   const slots = new Map<number, unknown>(), effects = new Map<number, Effect>(), pending = new Map<number, Effect>();
   const listeners = new Map<string, (event: unknown) => void>();
@@ -51,7 +57,7 @@ test('actual TimeChart observes pointer/keyboard hours, visible badges and the o
   const context = { setTransform() {}, clearRect() {}, save() {}, restore() {}, beginPath() {}, moveTo() {}, lineTo() {},
     closePath() {}, fill() {}, stroke() {}, arc() {}, fillText() {}, setLineDash() {}, drawImage() {} };
   let layoutReads = 0;
-  const element = { get clientWidth() { layoutReads++; return 500; }, clientHeight: 240, width: 500, height: 240, style: {}, focus() {}, setPointerCapture() {},
+  const element = { get clientWidth() { layoutReads++; return 500; }, clientHeight: 240, width: 500, height: 240, style: styleOf(), focus() {}, setPointerCapture() {},
     getContext: () => context, getBoundingClientRect: () => ({ left: 0, top: 0, width: 500, height: 240 }),
     addEventListener: (type: string, callback: (event: unknown) => void) => listeners.set(type, callback),
     removeEventListener: (type: string) => listeners.delete(type) };

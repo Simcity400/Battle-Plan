@@ -1,11 +1,11 @@
 //! The pop-out map: the campaign map alone in its own window, driven by the desktop app.
 //!
-//! Each pop-out window has its own managed viewer process and pipe ([`NativeHost::popout`]),
-//! contained in its own job object like the main viewer. The frontend sends it the same open,
-//! seek and configure commands as the campaign map, from the same clock; host-wide display
-//! choices reach it as they reach the main viewer, queued while it starts. Closing the window,
-//! unloading its recording and closing the app retire its viewer; the main viewer's restarts
-//! leave it alone. A viewer that exits reports why, and the app offers to restart it.
+//! Each pop-out window has its own map ([`NativeHost::popout`]) on a thread of its own in this
+//! process, like the main map. The frontend sends it the same open, seek and configure commands
+//! as the campaign map, from the same clock; host-wide display choices reach it as they reach the
+//! main map, queued while it starts. Closing the window, unloading its recording and closing the
+//! app retire its map; the main map's restarts leave it alone. A map that stops reports why, and
+//! the app offers to restart it.
 //!
 //! One owner thread runs the window's [`lifecycle`]: the app's requests, the window's own
 //! reports and the results of its work reach it in order, so a close while opening, a reopen
@@ -407,6 +407,9 @@ impl Owner {
                                 width,
                                 height,
                             },
+                            shell::Event::CloseRequested => Input::Close {
+                                generation: Some(generation),
+                            },
                             shell::Event::Closed => Input::Destroyed(generation),
                         };
                         let _ = sender.send(Message::Input(input));
@@ -526,9 +529,11 @@ impl Owner {
                     }
                 };
                 let opening = self.opening.take_if(|(at, _)| *at == generation);
-                for (_, popout) in current.into_iter().chain(opening) {
-                    popout.host.shutdown();
-                    drop(popout.shell);
+                for (_, PopOut { shell, host }) in current.into_iter().chain(opening) {
+                    // The window takes the viewer's child window with it, so it goes only once the
+                    // viewer has let go of the surface it made there.
+                    shell.hide();
+                    host.shutdown(move || drop(shell));
                 }
                 self.feed(Input::Released(generation));
             }

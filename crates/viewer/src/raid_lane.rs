@@ -61,6 +61,8 @@ struct State {
     /// ([`crate::parallel::Workers`]): the hour builders'.
     workers: Workers,
     stop: bool,
+    /// The offers come from the playback head ([`crate::layers::scripts`]): frames are not kept.
+    standing_by: bool,
 }
 
 /// Whose a published result is: the reset (generation) it belongs to and
@@ -431,7 +433,12 @@ impl RaidLane {
         viewing: Option<&Arc<crate::hours::ViewingCountry>>,
     ) {
         let frame = input(current, viewing);
-        lock(&self.shared).frames.insert((branch, hour), frame);
+        let mut state = lock(&self.shared);
+        if state.standing_by {
+            return;
+        }
+        state.frames.insert((branch, hour), frame);
+        drop(state);
         self.shared.1.notify_all();
     }
 
@@ -443,6 +450,9 @@ impl RaidLane {
     pub(crate) fn present(&self, presented: Presented<'_>, reset: bool) {
         let frame = input(presented.current, presented.viewing);
         let mut state = lock(&self.shared);
+        if state.standing_by {
+            return;
+        }
         let new_content = presented.content.is_some_and(|content| {
             state
                 .content
@@ -480,7 +490,10 @@ impl RaidLane {
             // the icons are still being built.
             self.started = std::thread::Builder::new()
                 .name("raid offers".into())
-                .spawn_carried(move || serve(&shared))
+                .spawn_carried(move || {
+                    viewer_foundation::worker_priority::background_priority();
+                    serve(&shared);
+                })
                 .is_ok();
         }
         let mut state = lock(&self.shared);
@@ -494,6 +507,23 @@ impl RaidLane {
         state.view(new_content, perspective, (branch, hour), playing);
         if state.wake.is_none() {
             state.wake = Some(Arc::new(wake));
+        }
+        drop(state);
+        self.shared.1.notify_all();
+    }
+
+    /// While `on`, the offers come from the playback head: the lane keeps no frame and builds
+    /// nothing, and what it held is let go.
+    pub(crate) fn stand_by(&self, on: bool) {
+        let mut state = lock(&self.shared);
+        if state.standing_by == on {
+            return;
+        }
+        state.standing_by = on;
+        if on {
+            state.frames.clear();
+            let branch = state.branch.unwrap_or_default();
+            state.restart(branch);
         }
         drop(state);
         self.shared.1.notify_all();

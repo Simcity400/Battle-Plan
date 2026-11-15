@@ -1,6 +1,7 @@
-import type { ResearchEntry, ResearchHistory, ResearchSlotHistory, ResearchSlotState } from '../../generated/dashboard';
+import type { ResearchHistory, ResearchSlotHistory } from './types';
 import { researchBreakdown, researchModifierParts, researchSplit, researchWork, type ResearchPeriod } from './researchBreakdown.ts';
 import { researchAt, researchRateAt } from './researchData.ts';
+import type { ResearchEntry, ResearchSlotState } from '../../generated/dashboard';
 
 export interface ResearchCredit {
   hour: number;

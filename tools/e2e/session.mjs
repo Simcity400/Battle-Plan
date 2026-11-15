@@ -3,11 +3,20 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { log, sleep } from './cdp.mjs';
+import { everFailed } from './coverage.mjs';
+import { DRAWN_GRACE_MS, mapDrew, noVisibleChange, pageShown, settingDrawn, stepOver, stillInFlight } from './verdicts.mjs';
 
 /** The owner's rule: nothing a user waits on takes longer. */
 export const BUDGET_MS = 100;
 /** The app's tooltips wait this long on purpose before showing (components/Tooltip.tsx). */
 export const TOOLTIP_DELAY_MS = 500;
+
+/** The page expression that waits for a step to settle (`__e2e.settle`), over at `stepOver`; `only` names the one widget
+ * it waits on, null for every visible one. */
+export const settleCall = (timeout, quiet, only = null) => `__e2e.settle(${timeout}, ${quiet}, ${JSON.stringify(only)}, ${stepOver.toString()})`;
+
+/** Whether a recorded result saves a screenshot: one asked for (`screenshot: true`), or a failure not told otherwise. */
+export const takesShot = entry => entry.screenshot === true || (!entry.pass && entry.screenshot !== false);
 
 export class Session {
   constructor(app, out, session) {
@@ -18,21 +27,29 @@ export class Session {
     this.results = [];
     this.shots = 0;
     this.epoch = null;
+    /** Every step that failed in an earlier run (`coverage.mjs`): such a case is never left out as a repeat. */
+    this.history = null;
+    /** 'full', or 'quick': one setting per widget kind. */
+    this.tier = 'full';
+    /** Which earlier failures keep a case from being left out as a repeat: 'all', or only the product's. */
+    this.pin = 'all';
   }
+
+  /** Whether any step of a case ever failed in an earlier run, among the failures `pin` counts. With no history every case
+   * may have: none is left out. */
+  everFailed(area, item, prefix) { return this.history === null || everFailed(this.history, area, item, prefix, this.pin); }
 
   async init() {
     this.epoch = await this.app.evaluate('performance.timeOrigin');
     await mkdir(path.join(this.out, 'screenshots'), { recursive: true });
   }
 
-  /** Records a check or a step's result; a failure gets a screenshot. */
+  /** Records a check or a step's result; a failure, or a step asking for one (`screenshot: true`), gets a screenshot. */
   async record(result) {
     const entry = { at: Date.now(), during: this.app.case, ...result, pass: result.pass && !(result.reasons?.length) };
     this.results.push(entry);
-    if (!entry.pass) {
-      log(`FAIL ${entry.area} ${entry.item} ${entry.label ?? ''}: ${(entry.reasons ?? []).join('; ')}${entry.ms == null ? '' : ` (${Math.round(entry.ms)} ms)`}`);
-      if (entry.screenshot !== false) entry.screenshot = await this.shot(`${entry.area}-${entry.item}-${entry.label ?? ''}`);
-    }
+    if (!entry.pass) log(`FAIL ${entry.area} ${entry.item} ${entry.label ?? ''}: ${(entry.reasons ?? []).join('; ')}${entry.ms == null ? '' : ` (${Math.round(entry.ms)} ms)`}`);
+    if (takesShot(entry)) entry.screenshot = await this.shot(`${entry.area}-${entry.item}-${entry.label ?? ''}`);
     return entry;
   }
 
@@ -52,32 +69,40 @@ export class Session {
    * visible widget it touched shown content again, and `done` (a page expression) held.
    * `widget` names the one widget it touches, when it touches one; `budget` overrides the 100 ms rule where the app waits
    * on purpose (and says why in the report). `changes` names the widget, by its layout id, a setting must visibly
-   * change ({ key }), or the map view whose new request its viewer must draw ({ key, view, since? }). `unobservable` is the
+   * change ({ key }), or the map view whose new request its viewer must draw ({ key, view, since? }). `drew` names a map view
+   * and the settings its menu saved ({ view, expected }: `MAP_EXPECTED` rows), which that view must report drawing with. `unobservable` is the
    * reason a step's effect cannot be seen, which fails it by name. `from: 'last'` times from the gesture's last
    * input (a drag's release, a typed field's Enter), not its first. `check: false` reports a revisit beside the cold
    * step without judging its time; `control` names what cold and warm steps of one control share.
+   * `shot` saves the step's screenshot whatever its verdict, for a pass whose pictures are audited.
    * Returns the result, with the probe's report as `probe`.
    */
-  async step(area, item, label, action, { done = null, changes = null, from = 'first', timeout = 6000, quiet = 200, widget = null, awaits = true, budget = BUDGET_MS, check = true, control = label, unobservable = null, extra = {} } = {}) {
+  async step(area, item, label, action, { done = null, changes = null, drew = null, from = 'first', timeout = 6000, quiet = 200, widget = null, awaits = true, budget = BUDGET_MS, check = true, control = label, unobservable = null, shot = false, extra = {} } = {}) {
     this.app.setCase(`${area}/${item}/${label}`);
-    let changed = null, sentBefore = null;
+    let changed = null, sentBefore = null, settingsBefore = null, drawnSame = null;
+    const article = key => `document.querySelector(${JSON.stringify(`article.dash-widget[data-widget="${key}"]`)})`;
+    const settingsOf = key => `${article(key)}?.dataset.settings ?? null`;
     // `since`: what the app had sent before an earlier step made the change this one shows.
     if (changes?.view) sentBefore = changes.since !== undefined ? changes.since : this.app.lastSent('set_dashboard_maps');
     else if (changes) {
       const before = await this.app.evaluate(`__e2e.signature(${JSON.stringify(changes.key)})`);
       if (before === null) return this.fail(area, item, label, 'its widget is not on the page');
       changed = `(now => now !== null && now !== ${JSON.stringify(before)})(__e2e.signature(${JSON.stringify(changes.key)}))`;
+      settingsBefore = await this.app.evaluate(settingsOf(changes.key));
+      // The widget's own word that it painted the new setting: a setting that changed nothing is then known at once.
+      drawnSame = `(a => !!a && (${settingDrawn.toString()})({ settings: a.dataset.settings ?? null, drawn: a.dataset.drawn ?? null, state: __e2e.stateOf(a).state }, ${JSON.stringify(settingsBefore)}))(${article(changes.key)})`;
     }
     const until = changed === null ? done : done === null ? changed : `(${done}) && ${changed}`;
+    const alt = drawnSame === null ? null : done === null ? drawnSame : `(${done}) && ${drawnSame}`;
     // A widget the step hides on purpose (a map behind its own open menu) is not judged on its placeholder.
-    await this.app.evaluate(`__e2e.mark(${until === null ? 'null' : JSON.stringify(until)}, ${JSON.stringify(awaits ? null : widget)})`);
+    await this.app.evaluate(`__e2e.mark(${until === null ? 'null' : JSON.stringify(until)}, ${JSON.stringify(awaits ? null : widget)}, ${alt === null ? 'null' : JSON.stringify(alt)}, ${DRAWN_GRACE_MS})`);
     let acted;
     try { acted = await action(); } catch (error) {
       await this.app.evaluate('__e2e.tracking = false');
       return this.fail(area, item, label, `could not act: ${error.message}`);
     }
     // `awaits: false` waits on no widget: the step finishes on `done` and its paint alone.
-    const probe = await this.app.evaluate(`__e2e.settle(${timeout}, ${quiet}, ${JSON.stringify(awaits ? widget : '\u0000')})`, timeout + 30_000);
+    const probe = await this.app.evaluate(settleCall(timeout, quiet, awaits ? widget : '\u0000'), timeout + 30_000);
     const reasons = [];
     const touched = awaits ? probe.widgets.filter(w => w.visible && (widget === null || w.title === widget || w.key === widget)) : [];
     if (awaits && widget !== null && !touched.length) reasons.push('its widget is not in view');
@@ -90,6 +115,11 @@ export class Session {
       if (drawn.reason) reasons.push(drawn.reason);
       else { drawnEpoch = drawn.drawnAt; drawnAt = drawn.drawnAt - this.epoch; }
     }
+    if (drew && start !== null) {
+      const drawn = await this.mapApplied(drew.view, drew.expected, this.epoch + start, timeout);
+      if (drawn.reason) reasons.push(drawn.reason);
+      else if (drawn.drawnAt !== undefined) { drawnEpoch = drawn.drawnAt; drawnAt = drawn.drawnAt - this.epoch; }
+    }
     let ms = null;
     if (start === null) reasons.push('no trusted input reached the page');
     else {
@@ -101,18 +131,22 @@ export class Session {
       ms = ends.length ? Math.max(0, ...ends.map(end => end - start)) : null;
     }
     if (probe.placeholderMs > 0) reasons.push(`showed a loading placeholder for ${Math.round(probe.placeholderMs)} ms (${probe.placeholderAt.join(', ')})`);
-    if (until !== null && probe.doneAt === null)
-      reasons.push(changed !== null && !await this.holds(changed) ? 'no visible change after the setting (completion unobservable)' : `never finished: ${until}`);
+    if (until !== null && probe.doneAt === null) {
+      // Whether the widget was given the setting at all: its article carries a signature of the settings it renders with.
+      if (changed !== null && !await this.holds(changed)) reasons.push(noVisibleChange(settingsBefore, await this.app.evaluate(settingsOf(changes.key))));
+      else reasons.push(`never finished: ${until}`);
+    }
     for (const w of touched) {
       if (w.end === 'loading') reasons.push(`${w.title}: still loading after ${Math.round(timeout / 1000)} s`);
       for (const error of new Set(w.errors)) reasons.push(`${w.title}: ${error}`);
       if (w.end === 'unavailable') reasons.push(`${w.title}: ${w.notice?.text ?? 'unavailable'}`);
       if (w.end === 'blank') reasons.push(`${w.title}: shows nothing`);
     }
+    if (probe.inFlight) reasons.push(stillInFlight(probe.inFlight, timeout));
     if (probe.timedOut && !reasons.length) reasons.push(`not settled within ${timeout} ms`);
     if (check && ms !== null && ms > budget) reasons.push(`${Math.round(ms)} ms, over ${budget} ms`);
     // Timing alone: the screenshot would show nothing wrong.
-    const screenshot = reasons.every(reason => /ms, over/.test(reason)) ? false : undefined;
+    const screenshot = shot ? true : reasons.every(reason => /ms, over/.test(reason)) ? false : undefined;
     const result = await this.record({ area, item, label, control, check, ms, budget, pass: true, reasons, screenshot, input: start === null ? null : this.epoch + start,
       gestureMs: from === 'last' && probe.input !== null && probe.last !== null ? probe.last - probe.input : null, drawnAt: drawnEpoch,
       widgets: touched.map(({ id, kind, title, first, ready, loadingMax, end, errors, notice }) => ({ id, kind, title,
@@ -149,6 +183,23 @@ export class Session {
     return { reason: `the map never drew its new options within ${Math.round(timeout / 1000)} s` };
   }
 
+  /** Waits for map view `view` to report a frame drawn after `after` with every setting of `expected` (`mapDrew`). With no
+   * frame after it, one drawn before that already shows them all passes unchanged: the setting left what it draws as it was. */
+  async mapApplied(view, expected, after, timeout) {
+    const end = Date.now() + timeout;
+    const states = since => this.app.evaluate(`__e2e.mapStates.filter(x => x.id === ${JSON.stringify(view)} && (x.drawnAt ?? 0) > ${since} && !x.loading && !x.error)`);
+    let last = null;
+    while (Date.now() < end) {
+      for (const state of await states(after)) { last = state; if (mapDrew(state, expected) === null) return { drawnAt: state.drawnAt }; }
+      await sleep(50);
+    }
+    if (last) return { reason: `the map never drew the saved settings within ${Math.round(timeout / 1000)} s: ${mapDrew(last, expected)}` };
+    const latest = (await states(0)).at(-1) ?? null;
+    if (latest && mapDrew(latest, expected) === null) return {};
+    return { reason: latest ? `the map drew no frame after the setting within ${Math.round(timeout / 1000)} s, and its last frame ${mapDrew(latest, expected)}`
+      : 'the map reported no frame it drew' };
+  }
+
   // Helpers for cases: every one acts through trusted input at an element's centre.
 
   /** The centre of the `index`th visible element matching `selector` (and `text`, by content or label), scrolled into view. */
@@ -176,7 +227,14 @@ export class Session {
   async hover(x, y) { await this.app.mouse('mouseMoved', x, y); }
   key(name, modifiers) { return this.app.key(name, modifiers); }
   type(text) { return this.app.type(text); }
-  async escape() { await this.app.key('Escape'); await sleep(80); }
+  async escape() { await this.app.key('Escape'); await this.frames(2); }
+  /** Resolves once the page has rendered `count` more frames: what the last input changed is on screen. */
+  frames(count = 2) { return this.app.evaluate(`new Promise(resolve => { let left = ${count}; const next = () => (--left < 0 ? resolve(true) : requestAnimationFrame(next)); next(); })`); }
+  /** Resolves, checked each frame in the page, once `expression` holds (true), or after `timeout` ms (false). */
+  until(expression, timeout = 2000) {
+    return this.app.evaluate(`new Promise(resolve => { const end = performance.now() + ${timeout};
+      const test = () => { let ok = false; try { ok = !!(${expression}); } catch { /* not yet */ } if (ok || performance.now() > end) resolve(ok); else requestAnimationFrame(test); }; test(); })`, timeout + 30_000);
+  }
   /** Watches for loading placeholders over a window; `unwatch` gives the reason to fail it with, if any showed. */
   watch() { return this.app.evaluate('__e2e.watch()'); }
   async unwatch() {
@@ -213,11 +271,12 @@ export class Session {
   pages() { return this.app.evaluate(`[...document.querySelectorAll('.sidebar-page-list button.sidebar-subrow')].map(b => b.textContent.trim())`); }
   currentPage() { return this.app.evaluate(`document.querySelector('.sidebar-page-list button[aria-current=page]')?.textContent.trim() ?? null`); }
 
-  /** Switches to a page without measuring it, waiting until its visible widgets settle. */
-  async openPage(label) {
-    if (await this.currentPage() === label) return;
+  /** Switches to a page without measuring it, waiting until it is the page shown and its visible widgets settle; `force`
+   * clicks it even when its row is current already. */
+  async openPage(label, { force = false } = {}) {
+    if (!force && await this.holds(pageShown(label))) return;
     await this.click('.sidebar-page-list button.sidebar-subrow', { text: label });
-    await this.app.evaluate(`(__e2e.mark(null), __e2e.settle(15000, 300))`, 60_000);
+    await this.app.evaluate(`(__e2e.mark(${JSON.stringify(pageShown(label))}), ${settleCall(15000, 300)})`, 60_000);
     await this.app.evaluate(`document.querySelector('.dash-grid-scroll')?.scrollTo({ top: 0 })`);
   }
 

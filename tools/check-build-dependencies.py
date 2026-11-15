@@ -65,6 +65,13 @@ def check(normal, all_targets):
             failures.append(f"{name} -> {dependency}: depend on the owning libraries")
     layers = {
         "replay-data": {"replay-frame", "replay-derive", "replay"},
+        "replay-rows": {"replay-frame", "replay-derive", "replay"},
+        "replay-rows-derived": {"replay-frame", "replay-derive", "replay"},
+        "replay-tables-a": {"replay-frame", "replay-derive", "replay"},
+        "replay-tables-b": {"replay-frame", "replay-derive", "replay"},
+        "replay-tables-c": {"replay-frame", "replay-derive", "replay"},
+        "replay-tables-d": {"replay-frame", "replay-derive", "replay"},
+        "replay-tables-e": {"replay-frame", "replay-derive", "replay"},
         "replay-frame": {"replay-derive", "replay"},
         "replay-derive": {"replay"},
     }

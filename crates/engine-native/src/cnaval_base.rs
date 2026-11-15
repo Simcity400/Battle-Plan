@@ -59,7 +59,7 @@ pub fn country_text(
         .element(country, crate::msvc_string::STRIDE)
         .ok_or("naval base raw country tag is outside its string array")?;
     let mut bytes = Vec::new();
-    crate::msvc_string::append_growing(memory, address, &mut bytes, &mut 0)?;
+    crate::msvc_string::append(memory, address, &mut bytes, &mut 0)?;
     Ok(bytes)
 }
 
@@ -106,6 +106,10 @@ pub struct Walk {
     pub required_countries: usize,
 }
 
+pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Walk {
+    walk_buffer(memory, base, game_state, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
+}
+
 /// Walk the province-to-naval-base hash held by the strategic navy manager
 /// (`cgame_state::STRATEGIC_NAVY_MANAGER`). The hash holds its buckets, mask and maximum probe
 /// distance, with 0x18-byte entries selected by set probe bytes. Authenticate each base vtable and
@@ -116,22 +120,6 @@ pub struct Walk {
 /// Read its final entry before requesting growth, so an unreadable list fails
 /// the table instead of supplying demand.
 pub fn walk(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    rows: &mut [Row],
-    countries: &mut [u32],
-) -> Walk {
-    walk_buffer(
-        memory,
-        base,
-        game_state,
-        crate::walk::Buffer::Fixed(rows),
-        crate::walk::Buffer::Fixed(countries),
-    )
-}
-
-pub fn walk_growing(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -158,7 +146,7 @@ pub fn walk_buffer(
 }
 
 /// Shares each already-authenticated base with an independent worker observer.
-pub fn walk_growing_observed(
+pub fn walk_observed(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -490,14 +478,14 @@ mod naval_base_tests {
         bytes
     }
 
-    fn run(bytes: &[u8], rows: &mut [Row]) -> Outcome {
-        walk(&SliceMemory { base: 0, bytes }, 0, GS, rows, &mut [0; 64]).outcome
+    fn run(bytes: &[u8], rows: &mut Vec<Row>) -> Outcome {
+        walk(&SliceMemory { base: 0, bytes }, 0, GS, rows, &mut vec![0; 64]).outcome
     }
 
     #[test]
     fn a_live_entry_yields_its_base_levels_and_country_list() {
-        let mut rows = [Row::default(); 4];
-        let mut countries = [0; 4];
+        let mut rows = vec![Row::default(); 4];
+        let mut countries = vec![0; 4];
         let bytes = fixture();
         let walked = walk(
             &SliceMemory {
@@ -524,7 +512,7 @@ mod naval_base_tests {
         // A torn header: two entries claimed in a one-entry allocation.
         put(&mut bytes, BASE + COUNTRY_LIST + 0x08, &1_u32.to_le_bytes());
         assert_eq!(
-            run(&bytes, &mut [Row::default(); 2]),
+            run(&bytes, &mut vec![Row::default(); 2]),
             Outcome::Unavailable {
                 reason: "naval base country list header is inconsistent"
             }
@@ -535,7 +523,7 @@ mod naval_base_tests {
     fn a_null_list_with_a_positive_count_marks_only_that_base() {
         let mut bytes = fixture();
         put(&mut bytes, BASE + COUNTRY_LIST, &0_u64.to_le_bytes());
-        let mut rows = [Row::default(); 2];
+        let mut rows = vec![Row::default(); 2];
         assert_eq!(run(&bytes, &mut rows), Outcome::Rows { len: 1 });
         assert_eq!((rows[0].level, rows[0].healthy_level), (10, 9));
         assert_eq!(rows[0].countries_len, 0);
@@ -548,21 +536,14 @@ mod naval_base_tests {
         // Clearing the probe byte makes the cell empty, as the native lookup reads it.
         put(&mut bytes, BUCKETS + ENTRY_STRIDE + ENTRY_DISTANCE, &[0]);
         assert_eq!(
-            run(&bytes, &mut [Row::default(); 2]),
+            run(&bytes, &mut vec![Row::default(); 2]),
             Outcome::Rows { len: 0 }
-        );
-        assert_eq!(
-            run(&fixture(), &mut []),
-            Outcome::Truncated {
-                len: 0,
-                unread_rows: 1
-            }
         );
     }
 
     #[test]
     fn a_wrong_object_or_a_key_disagreement_is_refused() {
-        let mut rows = [Row::default(); 2];
+        let mut rows = vec![Row::default(); 2];
         let mut bytes = fixture();
         put(&mut bytes, BASE, &7_u64.to_le_bytes());
         assert!(matches!(
@@ -586,7 +567,7 @@ mod naval_base_tests {
             &0_u64.to_le_bytes(),
         );
         assert_eq!(
-            run(&bytes, &mut [Row::default(); 2]),
+            run(&bytes, &mut vec![Row::default(); 2]),
             Outcome::Rows { len: 0 }
         );
     }
@@ -626,7 +607,7 @@ mod naval_base_tests {
             base: 0,
             bytes: &bytes,
         };
-        let mut rows = [Row::default(); 2];
+        let mut rows = vec![Row::default(); 2];
         let mut countries = vec![0; LONG];
         let walked = walk(&memory, 0, GS, &mut rows, &mut countries);
         assert_eq!(walked.outcome, Outcome::Rows { len: 1 });
@@ -639,23 +620,14 @@ mod naval_base_tests {
                 .all(|(index, raw)| *raw == index as u32 * 3 + 1)
         );
 
-        let walked = walk(&memory, 0, GS, &mut rows, &mut countries[..LONG - 1]);
-        assert_eq!(
-            walked.outcome,
-            Outcome::Truncated {
-                len: 0,
-                unread_rows: 1
-            }
-        );
-        assert_eq!((walked.countries, walked.required_countries), (0, LONG));
 
         let short = &bytes[..bytes.len() - 4];
         let memory = SliceMemory {
             base: 0,
             bytes: short,
         };
-        for arena in [LONG, 0] {
-            let walked = walk(&memory, 0, GS, &mut rows, &mut countries[..arena]);
+        {
+            let walked = walk(&memory, 0, GS, &mut rows, &mut countries);
             assert_eq!(
                 walked.outcome,
                 Outcome::Unavailable {
@@ -677,7 +649,7 @@ mod naval_base_tests {
             0,
             GS,
             &mut rows,
-            &mut [],
+            &mut Vec::new(),
         );
         assert_eq!(walked.outcome, Outcome::Rows { len: 1 });
         assert_eq!(rows[0].countries_len, 0);
@@ -751,13 +723,13 @@ mod naval_base_tests {
                 bytes: &bytes,
             };
             assert_eq!(
-                walk(&memory, 0, GS, &mut [], &mut []).outcome,
+                super::count(&memory, 0, GS).outcome,
                 Outcome::Truncated {
                     len: 0,
                     unread_rows: count as u32
                 }
             );
-            let captured = walk_growing(&memory, 0, GS, &mut rows, &mut countries);
+            let captured = walk(&memory, 0, GS, &mut rows, &mut countries);
             assert_eq!(captured.outcome, Outcome::Rows { len: count });
             assert_eq!(captured.countries, count * list_len);
             assert!(

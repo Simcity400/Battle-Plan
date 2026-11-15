@@ -37,7 +37,7 @@ fn fixture(countries: u32) -> (World, Vec<usize>) {
     (world, goals)
 }
 
-fn capture(world: &World, rows: &mut [Row], states: &mut [u32]) -> Walk {
+fn capture(world: &World, rows: &mut Vec<Row>, states: &mut Vec<u32>) -> Walk {
     walk(
         &world.memory(),
         world.module,
@@ -72,22 +72,19 @@ fn owned_rosters_preserve_order_raw_targets_tokens_nulls_and_demand() {
             &[country, 0, country + 10_000, country]
         );
     }
-    let demand = capture(&world, &mut [], &mut []);
+    let demand = walk_buffer(
+        &world.memory(),
+        world.module,
+        world.game_state(),
+        crate::walk::Buffer::Count,
+        crate::walk::Buffer::Count,
+    );
     assert_eq!(demand.required, captured.required);
     assert_eq!(
         demand.outcome,
         Outcome::Truncated {
             len: 0,
             unread_rows: 4,
-        }
-    );
-    let short = capture(&world, &mut rows, &mut states[..15]);
-    assert_eq!(short.required, captured.required);
-    assert_eq!(
-        short.outcome,
-        Outcome::Truncated {
-            len: 3,
-            unread_rows: 1,
         }
     );
 }
@@ -100,12 +97,12 @@ fn an_observed_empty_roster_is_complete_and_missing_or_null_inputs_are_unavailab
         read::<u64>(&world.memory(), owner + ccountry::DIPLOMACY_STATUS).unwrap() as usize;
     world.array(diplomacy + cdiplomacy_status::OWNED_WARGOALS, 0, 0);
     assert_eq!(
-        capture(&world, &mut [], &mut []).outcome,
+        capture(&world, &mut Vec::new(), &mut Vec::new()).outcome,
         Outcome::Rows { len: 0 }
     );
     world.u64(owner + ccountry::DIPLOMACY_STATUS, 0);
     assert_eq!(
-        capture(&world, &mut [], &mut []).outcome,
+        capture(&world, &mut Vec::new(), &mut Vec::new()).outcome,
         Outcome::Unavailable {
             reason: "owned wargoal diplomacy root is null",
         }
@@ -116,14 +113,14 @@ fn an_observed_empty_roster_is_complete_and_missing_or_null_inputs_are_unavailab
     world.u64(list, goals[0] as u64);
     world.u64(goals[0] + GOAL_TYPE, 0);
     assert_eq!(
-        capture(&world, &mut [Row::default()], &mut [0; 4]).outcome,
+        capture(&world, &mut vec![Row::default()], &mut vec![0; 4]).outcome,
         Outcome::Unavailable {
             reason: "owned wargoal type pointer is null or invalid",
         }
     );
     world.u64(list, 0);
     assert_eq!(
-        capture(&world, &mut [], &mut []).outcome,
+        capture(&world, &mut Vec::new(), &mut Vec::new()).outcome,
         Outcome::Unavailable {
             reason: "owned wargoal pointer is null",
         }
@@ -157,9 +154,9 @@ fn native_goal_ordinal_and_first_guarded_failure_survive_reordered_members() {
     world.array(second + cdiplomacy_status::OWNED_WARGOALS, 0, 0);
     world.u64(list, goals[1] as u64);
     world.u64(list + 8, goals[0] as u64);
-    let mut rows = [Row::default(); 2];
+    let mut rows = vec![Row::default(); 2];
     assert_eq!(
-        capture(&world, &mut rows, &mut [0; 8]).outcome,
+        capture(&world, &mut rows, &mut vec![0; 8]).outcome,
         Outcome::Rows { len: 2 }
     );
     assert_eq!(
@@ -180,7 +177,7 @@ fn native_goal_ordinal_and_first_guarded_failure_survive_reordered_members() {
             world.module,
             world.game_state(),
             &mut rows,
-            &mut [0; 8],
+            &mut vec![0; 8],
         )
         .outcome,
         Outcome::Unavailable {
@@ -192,9 +189,16 @@ fn native_goal_ordinal_and_first_guarded_failure_survive_reordered_members() {
         memory: world.memory(),
         address: state_list + 8,
     };
-    // Demand reads claimed-state headers, never the state member pointers.
+    // The count probe reads claimed-state headers, never the state member pointers.
     assert_eq!(
-        walk(&memory, world.module, world.game_state(), &mut [], &mut []).required,
+        walk_buffer(
+            &memory,
+            world.module,
+            world.game_state(),
+            crate::walk::Buffer::Count,
+            crate::walk::Buffer::Count,
+        )
+        .required,
         Demand { rows: 2, states: 8 }
     );
     assert_eq!(
@@ -203,7 +207,7 @@ fn native_goal_ordinal_and_first_guarded_failure_survive_reordered_members() {
             world.module,
             world.game_state(),
             &mut rows,
-            &mut [0; 8],
+            &mut vec![0; 8],
         )
         .outcome,
         Outcome::Unavailable {
@@ -216,7 +220,7 @@ fn native_goal_ordinal_and_first_guarded_failure_survive_reordered_members() {
 fn growing_goals_capture_every_country_and_expand_claims_in_the_same_hour() {
     let (mut world, goals) = fixture(12);
     let (mut rows, mut states) = (Vec::new(), Vec::new());
-    let first = walk_growing(
+    let first = walk(
         &world.memory(),
         world.module,
         world.game_state(),
@@ -227,7 +231,7 @@ fn growing_goals_capture_every_country_and_expand_claims_in_the_same_hour() {
     assert_eq!(first.state_len, 48);
     let expanded = world.alloc(40 * 8);
     world.array(goals[0] + STATES, expanded, 40);
-    let second = walk_growing(
+    let second = walk(
         &world.memory(),
         world.module,
         world.game_state(),

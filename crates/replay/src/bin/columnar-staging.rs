@@ -331,7 +331,6 @@ fn main() -> io::Result<()> {
     replay.visit_blocks(
             &blocks,
             &TableId::ALL,
-            None,
             |_, recorded, decoded| {
                 if hours >= limit {
                     return Ok(false);
@@ -531,7 +530,6 @@ fn per_table(input: &Path, limit: u64, cold: usize) -> io::Result<()> {
     replay.visit_blocks(
             &blocks,
             &TableId::ALL,
-            None,
             |_, recorded, decoded| {
                 if hours >= limit {
                     return Ok(false);

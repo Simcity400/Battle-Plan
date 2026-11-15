@@ -19,6 +19,12 @@ export function factionNameLabel(faction: Pick<FactionGroup, 'name' | 'nameReaso
   return factionNameAt(faction, hour, override).name ?? UNNAMED_FACTION;
 }
 
+/** A faction as a choice of group: its name at `hour`, else, where it did not exist or was not read then, the name of its
+ * latest read, so a faction founded later is never offered as an unnamed one. */
+export function factionChoiceLabel(faction: Pick<FactionGroup, 'name' | 'nameReason' | 'names'>, hour?: number, override?: string): string {
+  return factionNameAt(faction, hour, override).name ?? faction.name ?? UNNAMED_FACTION;
+}
+
 /** Campaign editors use each faction's latest branch read, including an unavailable
  * name. Keep the recorded identity's first known spelling for saved colours. */
 export function latestFactionSummaries(replies: readonly CountryGroupReply[]): FactionGroup[] {

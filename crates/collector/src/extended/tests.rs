@@ -31,7 +31,10 @@ fn final_worker_unrun_continuation_restores_storage_and_raw_verdicts_without_cap
     let source_storage = captured.divisions.first.as_ptr();
     let bytes = captured.allocated_bytes();
     let outcomes = captured.outcomes();
-    let countries = Arc::new(engine_native::country_memory::Cache::try_with_capacity(0).unwrap());
+    let countries = engine_allocation::shared(
+        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+    )
+    .unwrap();
     crate::test_support::with_allocations_denied(|| {
         let request = captured.take_final_inputs_request(&countries, 0, 0, 41, true);
         captured.return_final_inputs_request(request);
@@ -50,7 +53,10 @@ fn final_worker_loan_preserves_mod_sized_storage_without_callback_allocation() {
     let mut captured = Captured::with_capacities(&Capacities::default());
     captured.divisions = Divisions::new(5_000);
     let source_storage = captured.divisions.first.as_ptr();
-    let countries = Arc::new(engine_native::country_memory::Cache::try_with_capacity(0).unwrap());
+    let countries = engine_allocation::shared(
+        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+    )
+    .unwrap();
     crate::test_support::with_allocations_denied(|| {
         let request = captured.take_final_inputs_request(&countries, 0, 0, 41, true);
         assert_eq!(captured.divisions.first.capacity(), 0);
@@ -74,7 +80,10 @@ fn final_worker_loan_preserves_mod_sized_storage_without_callback_allocation() {
 #[test]
 fn vacant_spares_restore_storage_and_verdicts_after_success_and_failure() {
     let mut captured = Captured::with_capacities(&Capacities::default());
-    let countries = Arc::new(engine_native::country_memory::Cache::try_with_capacity(0).unwrap());
+    let countries = engine_allocation::shared(
+        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+    )
+    .unwrap();
     let mut orders = Orders::vacant();
     orders.geometry = vec![11, 13, 17];
     orders.geometry_len = 3;
@@ -343,7 +352,6 @@ fn vacant_spares_restore_storage_and_verdicts_after_success_and_failure() {
         assert_vacant(&captured);
 
         captured.naval_history.raw_mode = true;
-        captured.air_root = Some(Outcome::Rows { len: 7 });
         let order_bytes = orders.allocated_bytes();
         let late_box = std::ptr::from_ref(&**captured.late_spare.as_ref().unwrap());
         let request =
@@ -362,13 +370,11 @@ fn vacant_spares_restore_storage_and_verdicts_after_success_and_failure() {
             request.packs.allocated_bytes() - box_bytes[2] - request.packs.orders.allocated_bytes();
         assert!(request.packs.air.stats_raw_mode);
         assert!(request.packs.naval_history.raw_mode);
-        assert_eq!(request.packs.air_root, Some(Outcome::Rows { len: 7 }));
         assert_eq!(request.packs.orders.geometry.as_ptr(), order_storage);
         // The division sources stay in the frame for the final borrowers.
         assert_eq!(captured.divisions.first.as_ptr(), division_storage);
         assert!(!captured.air.stats_raw_mode);
         assert!(!captured.naval_history.raw_mode);
-        assert_eq!(captured.air_root, None);
         captured.restore_late_request(request, completed, &mut orders);
         assert_eq!(
             std::ptr::from_ref(&**captured.late_spare.as_ref().unwrap()),
@@ -376,7 +382,6 @@ fn vacant_spares_restore_storage_and_verdicts_after_success_and_failure() {
         );
         assert!(captured.air.stats_raw_mode);
         assert!(captured.naval_history.raw_mode);
-        assert_eq!(captured.air_root, Some(Outcome::Rows { len: 7 }));
         assert_eq!(orders.geometry.as_ptr(), order_storage);
         assert_eq!(orders.geometry, [11, 13, 17]);
         assert_eq!(orders.root_outcome, Outcome::Rows { len: 3 });
@@ -396,26 +401,29 @@ fn vacant_spares_restore_storage_and_verdicts_after_success_and_failure() {
 #[test]
 fn late_handoff_retains_only_the_current_input_lease() {
     let mut captured = Captured::with_capacities(&Capacities::default());
-    let countries = Arc::new(engine_native::country_memory::Cache::try_with_capacity(0).unwrap());
+    let countries = engine_allocation::shared(
+        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+    )
+    .unwrap();
     let mut orders = Orders::vacant();
     for pointer in [0x1234, 0x5678] {
-        let inputs = Arc::new(UnitInputs::fixture(
+        let inputs = engine_allocation::shared(UnitInputs::fixture(
             vec![carmy::DivisionSeed {
                 pointer,
                 ..Default::default()
             }],
             Outcome::Rows { len: 1 },
-        ));
-        captured.install_unit_inputs(Some(Arc::clone(&inputs)));
+        )).unwrap();
+        captured.install_unit_inputs(Some(engine_allocation::SharedBox::clone(&inputs)));
         let request =
             captured.take_late_request(&countries, &mut orders, true, 11, 0x1000, 9, false);
-        assert!(Arc::ptr_eq(request.inputs.as_ref().unwrap(), &inputs));
+        assert!(engine_allocation::SharedBox::ptr_eq(request.inputs.as_ref().unwrap(), &inputs));
         assert_eq!(request.inputs.as_ref().unwrap().seeds()[0].pointer, pointer);
-        assert_eq!(Arc::strong_count(&inputs), 3);
+        assert_eq!(engine_allocation::SharedBox::strong_count(&inputs), 3);
         captured.restore_late_request(request, true, &mut orders);
-        assert_eq!(Arc::strong_count(&inputs), 2);
+        assert_eq!(engine_allocation::SharedBox::strong_count(&inputs), 2);
         captured.release_unit_inputs();
-        assert_eq!(Arc::strong_count(&inputs), 1);
+        assert_eq!(engine_allocation::SharedBox::strong_count(&inputs), 1);
     }
 }
 
@@ -429,22 +437,25 @@ fn presentation_handoff_restores_storage_and_exact_source_leases() {
             ..Default::default()
         });
     let mut captured = Captured::with_capacities(&capacity);
-    let countries = Arc::new(engine_native::country_memory::Cache::try_with_capacity(0).unwrap());
-    let inputs = Arc::new(UnitInputs::fixture(
+    let countries = engine_allocation::shared(
+        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+    )
+    .unwrap();
+    let inputs = engine_allocation::shared(UnitInputs::fixture(
         vec![carmy::DivisionSeed {
             pointer: 0x1234,
             handle: Some(7),
             ..Default::default()
         }],
         Outcome::Rows { len: 1 },
-    ));
+    )).unwrap();
     let bytes = captured.allocated_bytes();
     let presentation_bytes = captured.division_presentation.allocated_bytes();
     assert!(presentation_bytes > 0);
     let report = division_presentation::CaptureReport {
         ticks: [89, 97, 5, 103, 0, 0, 0, 7, 11, 13, 17, 19],
     };
-    captured.install_unit_inputs(Some(Arc::clone(&inputs)));
+    captured.install_unit_inputs(Some(engine_allocation::SharedBox::clone(&inputs)));
     captured.presentation_report = Some(report);
     let request = captured.take_presentation_request(&countries, 11, 0x1000, 0, None);
     assert!(captured.presentation_report.is_none());
@@ -455,27 +466,27 @@ fn presentation_handoff_restores_storage_and_exact_source_leases() {
         (request.context.base, request.context.game_state),
         (11, 0x1000)
     );
-    assert!(Arc::ptr_eq(&request.countries, &countries));
-    assert!(Arc::ptr_eq(request.inputs.as_ref().unwrap(), &inputs));
+    assert!(engine_allocation::SharedBox::ptr_eq(&request.countries, &countries));
+    assert!(engine_allocation::SharedBox::ptr_eq(request.inputs.as_ref().unwrap(), &inputs));
     assert_eq!(request.inputs.as_ref().unwrap().seeds(), inputs.seeds());
-    assert_eq!(Arc::strong_count(&countries), 2);
-    assert_eq!(Arc::strong_count(&inputs), 3);
+    assert_eq!(engine_allocation::SharedBox::strong_count(&countries), 2);
+    assert_eq!(engine_allocation::SharedBox::strong_count(&inputs), 3);
     captured.restore_presentation_request(request, Ok(report));
     assert_eq!(captured.allocated_bytes(), bytes);
     assert_eq!(
         captured.division_presentation.allocated_bytes(),
         presentation_bytes
     );
-    assert_eq!(Arc::strong_count(&countries), 1);
-    assert_eq!(Arc::strong_count(&inputs), 2);
-    assert!(Arc::ptr_eq(captured.unit_inputs.as_ref().unwrap(), &inputs));
+    assert_eq!(engine_allocation::SharedBox::strong_count(&countries), 1);
+    assert_eq!(engine_allocation::SharedBox::strong_count(&inputs), 2);
+    assert!(engine_allocation::SharedBox::ptr_eq(captured.unit_inputs.as_ref().unwrap(), &inputs));
     let pending = captured.presentation_report.as_ref().unwrap();
     assert_eq!(pending.ticks, report.ticks);
     // Reset discards a pending report and releases the frame's source lease.
     captured.drop_and_reset();
     assert!(captured.presentation_report.is_none());
     assert_eq!(captured.allocated_bytes(), bytes);
-    assert_eq!(Arc::strong_count(&inputs), 1);
+    assert_eq!(engine_allocation::SharedBox::strong_count(&inputs), 1);
 }
 
 /// The retired division ETA inputs and attrition breakdowns are neither
@@ -516,8 +527,11 @@ fn presentation_terminal_reports_scatter_once_without_live_retry() {
         }
     }
     let mut captured = Captured::with_capacities(&Capacities::default());
-    let countries = Arc::new(engine_native::country_memory::Cache::try_with_capacity(0).unwrap());
-    let inputs = Arc::new(UnitInputs::empty_rows());
+    let countries = engine_allocation::shared(
+        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+    )
+    .unwrap();
+    let inputs = engine_allocation::shared(UnitInputs::empty_rows()).unwrap();
     let presentation_bytes = captured.division_presentation.allocated_bytes();
     let report = division_presentation::CaptureReport {
         ticks: [113, 227, 5, 449, 0, 0, 0, 3, 23, 29, 31, 37],
@@ -528,7 +542,7 @@ fn presentation_terminal_reports_scatter_once_without_live_retry() {
         Some(crate::acquisition::Failure::Stopped),
     ] {
         captured.drop_and_reset();
-        captured.install_unit_inputs(Some(Arc::clone(&inputs)));
+        captured.install_unit_inputs(Some(engine_allocation::SharedBox::clone(&inputs)));
         let request = captured.take_presentation_request(&countries, 11, 0x1000, 0, None);
         let context = request.context;
         captured.restore_presentation_request(request, failure.map_or(Ok(report), Err));
@@ -629,7 +643,10 @@ fn failed_pack_jobs_are_terminal_without_live_retry_or_partial_publication() {
         army_icon_inputs::TABLES.as_slice(),
     ]
     .concat();
-    let countries = Arc::new(engine_native::country_memory::Cache::try_with_capacity(0).unwrap());
+    let countries = engine_allocation::shared(
+        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+    )
+    .unwrap();
     let memory = CountedMemory::new(SliceMemory {
         base: 0,
         bytes: &[],
@@ -722,6 +739,7 @@ fn failed_pack_jobs_are_terminal_without_live_retry_or_partial_publication() {
             let mut tables = std::array::from_fn(|_| {
                 TableInput::Sampled(crate::spooling::unavailable("fixture"))
             });
+            let mut costs = crate::pack_conversion::HourCosts::EMPTY;
             captured.insert_tables(
                 hour,
                 &mut tables,
@@ -735,6 +753,7 @@ fn failed_pack_jobs_are_terminal_without_live_retry_or_partial_publication() {
                     helper: None,
                 },
                 false,
+                &mut costs,
             );
             for (ids, reason) in [
                 (&slow, "slow acquisition failed"),
@@ -801,7 +820,10 @@ fn failed_pack_jobs_are_terminal_without_live_retry_or_partial_publication() {
 #[test]
 fn failed_pack_jobs_preserve_separately_acquired_tables_and_raw_gates() {
     let mut captured = Captured::with_capacities(&Capacities::default());
-    let countries = Arc::new(engine_native::country_memory::Cache::try_with_capacity(0).unwrap());
+    let countries = engine_allocation::shared(
+        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+    )
+    .unwrap();
     captured.prepare_hour(1, true);
     let mut orders = Orders::vacant();
     let raw_failure = "independent raw result";
@@ -898,7 +920,10 @@ fn failed_pack_jobs_preserve_separately_acquired_tables_and_raw_gates() {
 
 #[test]
 fn a_refused_air_missions_job_fails_its_tables_without_allocating() {
-    let countries = Arc::new(engine_native::country_memory::Cache::try_with_capacity(0).unwrap());
+    let countries = engine_allocation::shared(
+        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+    )
+    .unwrap();
     let mut captured = Captured::with_capacities(&Capacities::default());
     captured.prepare_hour(0, true);
     let before = captured.allocated_bytes();
@@ -923,7 +948,10 @@ fn a_refused_air_missions_job_fails_its_tables_without_allocating() {
 /// without a failure keeps them.
 #[test]
 fn ordinary_terminal_failures_forget_the_counter_censuses() {
-    let countries = Arc::new(engine_native::country_memory::Cache::try_with_capacity(0).unwrap());
+    let countries = engine_allocation::shared(
+        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+    )
+    .unwrap();
     for (family, task_forces, other) in [
         (None, None, None),
         (None, Some("acquisition worker panicked"), None),
@@ -935,8 +963,11 @@ fn ordinary_terminal_failures_forget_the_counter_censuses() {
         (Some("ordinary worker admission failed"), None, None),
     ] {
         let mut captured = Captured::with_capacities(&Capacities::default());
-        let units = Arc::new(UnitInputs::fixture(Vec::new(), Outcome::Rows { len: 0 }));
-        captured.install_unit_inputs(Some(Arc::clone(&units)));
+        let units = engine_allocation::shared(
+            UnitInputs::fixture(Vec::new(), Outcome::Rows { len: 0 }),
+        )
+        .unwrap();
+        captured.install_unit_inputs(Some(engine_allocation::SharedBox::clone(&units)));
         captured
             .naval_counters
             .hold_census(engine_native::ctask_force::HeldCensus::default());
@@ -989,10 +1020,16 @@ fn ordinary_terminal_missing_marker_forgets_the_counter_censuses() {
             false
         }
     }
-    let countries = Arc::new(engine_native::country_memory::Cache::try_with_capacity(0).unwrap());
+    let countries = engine_allocation::shared(
+        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+    )
+    .unwrap();
     let mut captured = Captured::with_capacities(&Capacities::default());
-    let units = Arc::new(UnitInputs::fixture(Vec::new(), Outcome::Rows { len: 0 }));
-    captured.install_unit_inputs(Some(Arc::clone(&units)));
+    let units = engine_allocation::shared(
+        UnitInputs::fixture(Vec::new(), Outcome::Rows { len: 0 }),
+    )
+    .unwrap();
+    captured.install_unit_inputs(Some(engine_allocation::SharedBox::clone(&units)));
     captured
         .naval_counters
         .hold_census(engine_native::ctask_force::HeldCensus::default());
@@ -1058,15 +1095,21 @@ fn ordinary_terminal_results_cannot_retry_or_publish_partial_tables() {
             false
         }
     }
-    let countries = Arc::new(engine_native::country_memory::Cache::try_with_capacity(0).unwrap());
+    let countries = engine_allocation::shared(
+        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+    )
+    .unwrap();
     for reason in [
         "ordinary worker admission failed",
         "acquisition worker panicked",
         "acquisition worker stopped before completion",
     ] {
         let mut captured = Captured::with_capacities(&Capacities::default());
-        let units = Arc::new(UnitInputs::fixture(Vec::new(), Outcome::Rows { len: 0 }));
-        captured.install_unit_inputs(Some(Arc::clone(&units)));
+        let units = engine_allocation::shared(
+            UnitInputs::fixture(Vec::new(), Outcome::Rows { len: 0 }),
+        )
+        .unwrap();
+        captured.install_unit_inputs(Some(engine_allocation::SharedBox::clone(&units)));
         let before = captured.allocated_bytes();
         let mut parts = captured.take_ordinary_parts(
             &countries,
@@ -1125,7 +1168,7 @@ fn ordinary_terminal_results_cannot_retry_or_publish_partial_tables() {
         );
         captured.drop_and_reset();
         assert!(captured.ordinary_failure.is_none());
-        assert_eq!(Arc::strong_count(&units), 1);
+        assert_eq!(engine_allocation::SharedBox::strong_count(&units), 1);
         let mut parts = captured.take_ordinary_parts(
             &countries,
             11,
@@ -1153,14 +1196,17 @@ fn ordinary_terminal_results_cannot_retry_or_publish_partial_tables() {
             "control must exercise the native reader"
         );
         captured.restore_ordinary_request(request, None, parts.map(|part| (part, None)));
-        assert_eq!(Arc::strong_count(&countries), 1);
+        assert_eq!(engine_allocation::SharedBox::strong_count(&countries), 1);
     }
 }
 
 #[test]
 fn unpublished_raid_slices_are_read_again_at_the_next_hour() {
     use crate::slicing::{SliceFingerprints, SliceSelection};
-    let countries = Arc::new(engine_native::country_memory::Cache::try_with_capacity(0).unwrap());
+    let countries = engine_allocation::shared(
+        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+    )
+    .unwrap();
     let memory = engine_native::memory::SliceMemory {
         base: 0,
         bytes: &[],
@@ -1220,7 +1266,10 @@ fn unpublished_raid_slices_are_read_again_at_the_next_hour() {
 
 #[test]
 fn research_handoff_maps_failures_scatters_ticks_and_survives_a_governance_failure() {
-    let countries = Arc::new(engine_native::country_memory::Cache::try_with_capacity(0).unwrap());
+    let countries = engine_allocation::shared(
+        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+    )
+    .unwrap();
     let (hour, force_full) = (7, false);
     let capacity = Capacities {
         governance: governance::Capacities::for_test_research(1),
@@ -1457,8 +1506,10 @@ fn governance_handoff_restores_owned_storage_and_never_retries_terminal_results(
         captured.governance_report = Some(governance::CaptureReport::default());
         let bytes = captured.allocated_bytes();
         let governance_bytes = captured.governance.allocated_bytes();
-        let countries =
-            Arc::new(engine_native::country_memory::Cache::try_with_capacity(0).unwrap());
+        let countries = engine_allocation::shared(
+            engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+        )
+        .unwrap();
         let request = captured.take_governance_request(
             &countries,
             11,
@@ -1479,8 +1530,8 @@ fn governance_handoff_restores_owned_storage_and_never_retries_terminal_results(
         );
         assert_eq!(request.captured.allocated_bytes(), governance_bytes);
         assert!(request.allocated_bytes() > governance_bytes);
-        assert!(Arc::ptr_eq(&request.countries, &countries));
-        assert_eq!(Arc::strong_count(&countries), 2);
+        assert!(engine_allocation::SharedBox::ptr_eq(&request.countries, &countries));
+        assert_eq!(engine_allocation::SharedBox::strong_count(&countries), 2);
         assert_eq!(
             (
                 request.context.base,
@@ -1528,7 +1579,7 @@ fn governance_handoff_restores_owned_storage_and_never_retries_terminal_results(
                 [0; production::N]
             }),
         );
-        assert_eq!(Arc::strong_count(&countries), 1);
+        assert_eq!(engine_allocation::SharedBox::strong_count(&countries), 1);
         assert_eq!(captured.allocated_bytes(), bytes);
         let expected_outcomes = captured.governance.outcomes();
         let memory = Reads {
@@ -1637,19 +1688,26 @@ fn intel_residual_handoff_preserves_terminal_results_without_repeating_live_read
         captured.intel.relations_raw_mode = true;
         let bytes = captured.allocated_bytes();
         let family_bytes = captured.intel.allocated_bytes();
-        let countries =
-            Arc::new(engine_native::country_memory::Cache::try_with_capacity(0).unwrap());
+        let countries = engine_allocation::shared(
+            engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+        )
+        .unwrap();
         let context = intel::CaptureContext {
             base: 11,
             game_state: 0x1000,
             hour: 1,
             force_full: true,
         };
-        let request = captured.take_intel_residual_request(&countries, context, None, None);
+        let (request, variables) =
+            captured.take_intel_residual_request(&countries, context, None, None);
         assert_eq!(captured.intel.allocated_bytes(), 0);
         assert_eq!(captured.allocated_bytes() + family_bytes, bytes);
-        assert_eq!(request.captured.allocated_bytes(), family_bytes);
-        assert!(Arc::ptr_eq(&request.countries, &countries));
+        assert_eq!(
+            request.captured.allocated_bytes() + variables.part.allocated_bytes(),
+            family_bytes
+        );
+        assert!(engine_allocation::SharedBox::ptr_eq(&request.countries, &countries));
+        assert!(engine_allocation::SharedBox::ptr_eq(&variables.countries, &countries));
         let original = intel::CaptureReport {
             ticks: std::array::from_fn(|index| {
                 if [0, 13, 14].contains(&index) {
@@ -1659,10 +1717,11 @@ fn intel_residual_handoff_preserves_terminal_results_without_repeating_live_read
                 }
             }),
         };
-        let (flags, variables) =
+        let flags =
             captured.restore_intel_residual_request(request, failure.map_or(Ok(original), Err));
-        assert!(flags.is_none() && variables.is_none());
-        assert_eq!(Arc::strong_count(&countries), 1);
+        let store = captured.restore_script_variables(variables, failure.map_or(Ok(0), Err));
+        assert!(flags.is_none() && store.is_none());
+        assert_eq!(engine_allocation::SharedBox::strong_count(&countries), 1);
         assert_eq!(captured.allocated_bytes(), bytes);
         let outcomes = captured.intel.outcomes();
         let report = captured.acquire_intel(&NoReads, context);
@@ -1694,12 +1753,15 @@ fn ship_model_parts_restore_part_zero_first_sum_ticks_and_match_the_unsplit_walk
             false
         }
     }
-    let countries = Arc::new(engine_native::country_memory::Cache::try_with_capacity(0).unwrap());
+    let countries = engine_allocation::shared(
+        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+    )
+    .unwrap();
     let walked = |ships: u64| {
         let mut captured = Captured::with_capacities(&Capacities::default());
         captured.ship_models.begin_sources();
         for id in 1..=ships {
-            captured.ship_models.visit_source_growing(
+            captured.ship_models.visit_source(
                 0x1000 * id as usize,
                 &engine_native::cship::Row {
                     id,
@@ -1782,7 +1844,10 @@ fn ship_models_late_terminal_handoff_is_unavailable_until_new_sources() {
         }
     }
     let mut captured = Captured::with_capacities(&Capacities::default());
-    let countries = Arc::new(engine_native::country_memory::Cache::try_with_capacity(0).unwrap());
+    let countries = engine_allocation::shared(
+        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+    )
+    .unwrap();
     captured.ship_models.begin_sources();
     captured
         .ship_models
@@ -1833,7 +1898,7 @@ fn ship_models_late_terminal_handoff_is_unavailable_until_new_sources() {
         "a new complete source epoch clears the stale terminal failure"
     );
     assert_eq!(captured.ship_models.outcomes(), [Outcome::Rows { len: 0 }]);
-    assert_eq!(Arc::strong_count(&countries), 1);
+    assert_eq!(engine_allocation::SharedBox::strong_count(&countries), 1);
 }
 
 #[test]
@@ -1856,7 +1921,10 @@ fn hourly_family_handoffs_restore_independently_and_consume_terminal_reports_onc
     let mut capacity = Capacities::default();
     capacity.supply_trains.raise_for_countries(1);
     let mut captured = Captured::with_capacities(&capacity);
-    let countries = Arc::new(engine_native::country_memory::Cache::try_with_capacity(0).unwrap());
+    let countries = engine_allocation::shared(
+        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+    )
+    .unwrap();
     let supply_bytes = captured.supply_trains.allocated_bytes();
     let portrait_bytes = captured.character_portraits.allocated_bytes();
     let province_order_bytes = captured.province_unit_order.allocated_bytes();
@@ -1911,14 +1979,17 @@ fn hourly_family_handoffs_restore_independently_and_consume_terminal_reports_onc
             captured.allocated_bytes() + supply_bytes + portrait_bytes,
             bytes
         );
-        let census = Arc::new(crate::division_census::UnitInputs::empty_rows());
+        let census = engine_allocation::shared(
+            crate::division_census::UnitInputs::empty_rows(),
+        )
+        .unwrap();
         let province_order = captured.take_province_unit_order_request(
             11,
             0x1000,
-            Some(Arc::clone(&census)),
+            Some(engine_allocation::SharedBox::clone(&census)),
             Some(province_unit_order::owned_tests::held_store()),
         );
-        assert_eq!(Arc::strong_count(&census), 2);
+        assert_eq!(engine_allocation::SharedBox::strong_count(&census), 2);
         assert!(captured.province_unit_order_report.is_none());
         assert_eq!(captured.province_unit_order.allocated_bytes(), 0);
         assert_eq!(
@@ -1929,8 +2000,15 @@ fn hourly_family_handoffs_restore_independently_and_consume_terminal_reports_onc
             captured.allocated_bytes() + supply_bytes + portrait_bytes + province_order_bytes,
             bytes
         );
-        assert!(supply.iter().all(|r| Arc::ptr_eq(&r.countries, &countries)));
-        assert_eq!(Arc::strong_count(&countries), 1 + supply_trains::PARTS);
+        assert!(
+            supply
+                .iter()
+                .all(|r| engine_allocation::SharedBox::ptr_eq(&r.countries, &countries))
+        );
+        assert_eq!(
+            engine_allocation::SharedBox::strong_count(&countries),
+            1 + supply_trains::PARTS
+        );
         let supply_context = supply[0].context;
         let portrait_context = portraits[0].context;
         let province_order_context = province_order.context;
@@ -1962,7 +2040,7 @@ fn hourly_family_handoffs_restore_independently_and_consume_terminal_reports_onc
             };
             captured.restore_supply_trains_request(request, supply_failure.map_or(Ok(part), Err));
         }
-        assert_eq!(Arc::strong_count(&countries), 1);
+        assert_eq!(engine_allocation::SharedBox::strong_count(&countries), 1);
         assert!(captured.supply_trains_report.is_some());
         assert!(captured.character_portraits_report.is_none());
         for request in portraits {
@@ -1972,7 +2050,7 @@ fn hourly_family_handoffs_restore_independently_and_consume_terminal_reports_onc
                     .map_or(Ok(character_portraits::CaptureReport { ticks: [107] }), Err),
             );
         }
-        assert_eq!(Arc::strong_count(&countries), 1);
+        assert_eq!(engine_allocation::SharedBox::strong_count(&countries), 1);
         // A failed job forgets the held walk its take consumed marks for.
         let store = captured
             .restore_province_unit_order_request(
@@ -1982,7 +2060,7 @@ fn hourly_family_handoffs_restore_independently_and_consume_terminal_reports_onc
             .unwrap();
         assert_eq!(store.holds(), province_order_failure.is_none());
         // The join releases the census lease, so the next hour can reuse it.
-        assert_eq!(Arc::strong_count(&census), 1);
+        assert_eq!(engine_allocation::SharedBox::strong_count(&census), 1);
         assert_eq!(captured.allocated_bytes(), bytes);
         let outcomes = captured.outcomes();
         for (index, outcome) in outcomes.into_iter().enumerate() {
@@ -2129,7 +2207,7 @@ fn shared_unit_sources_keep_census_faults_and_release_on_reset() {
     let mut captured = Captured::with_capacities(&Capacities::default());
     assert_eq!(unit_sources(&captured.unit_inputs).outcome, MISSING);
     assert!(unit_sources(&captured.unit_inputs).rows.is_empty());
-    let inputs = Arc::new(UnitInputs::fixture(
+    let inputs = engine_allocation::shared(UnitInputs::fixture(
         vec![carmy::DivisionSeed {
             pointer: 0x1234,
             ..Default::default()
@@ -2138,8 +2216,8 @@ fn shared_unit_sources_keep_census_faults_and_release_on_reset() {
             len: 1,
             unread_rows: 7,
         },
-    ));
-    captured.install_unit_inputs(Some(Arc::clone(&inputs)));
+    )).unwrap();
+    captured.install_unit_inputs(Some(engine_allocation::SharedBox::clone(&inputs)));
     let sources = unit_sources(&captured.unit_inputs);
     assert_eq!(sources.rows, inputs.seeds());
     assert_eq!(sources.rows[0].pointer, 0x1234);
@@ -2150,14 +2228,14 @@ fn shared_unit_sources_keep_census_faults_and_release_on_reset() {
             unread_rows: 7
         }
     );
-    let failed = Arc::new(UnitInputs::fixture(
+    let failed = engine_allocation::shared(UnitInputs::fixture(
         Vec::new(),
         Outcome::Unavailable {
             reason: "current census failed",
         },
-    ));
-    captured.install_unit_inputs(Some(Arc::clone(&failed)));
-    assert_eq!(Arc::strong_count(&inputs), 1);
+    )).unwrap();
+    captured.install_unit_inputs(Some(engine_allocation::SharedBox::clone(&failed)));
+    assert_eq!(engine_allocation::SharedBox::strong_count(&inputs), 1);
     assert!(unit_sources(&captured.unit_inputs).rows.is_empty());
     assert_eq!(
         unit_sources(&captured.unit_inputs).outcome,
@@ -2166,7 +2244,7 @@ fn shared_unit_sources_keep_census_faults_and_release_on_reset() {
         },
     );
     captured.drop_and_reset();
-    assert_eq!(Arc::strong_count(&failed), 1);
+    assert_eq!(engine_allocation::SharedBox::strong_count(&failed), 1);
     assert_eq!(unit_sources(&captured.unit_inputs).outcome, MISSING);
     assert!(unit_sources(&captured.unit_inputs).rows.is_empty());
 }
@@ -2203,57 +2281,12 @@ fn faction_provider_inventory_matches_spooling() {
     }
 }
 #[test]
-fn division_sources_preserve_census_identity_and_reject_an_incomplete_parent() {
-    let mut sources = Divisions::new(1);
-    let source = DivisionSource {
-        pointer: 0x1234,
-        division: (1_u64 << 48) | 14,
-        country: 17,
-        template: u64::MAX,
-    };
-    sources.visit_source(source);
-    sources.finish(Outcome::Rows { len: 1 });
-    assert_eq!(sources.sources().outcome, Outcome::Rows { len: 1 });
-    assert_eq!(
-        sources.sources().rows[0],
-        DivisionSource {
-            pointer: 0x1234,
-            division: (1_u64 << 48) | 14,
-            template: u64::MAX,
-            country: 17
-        }
-    );
-    sources.visit_source(DivisionSource {
-        pointer: 0x5678,
-        ..source
-    });
-    sources.finish(Outcome::Truncated {
-        len: 2,
-        unread_rows: 7,
-    });
-    assert_eq!(
-        sources.sources().outcome,
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 8
-        }
-    );
-    assert_eq!(sources.required, 9);
-    let mut capacity = 1;
-    sources.grow(&mut capacity);
-    assert!(capacity >= 9);
-    assert_eq!(sources.sources().rows[0], source);
-    sources.reset();
-    sources.finish(Outcome::Rows { len: 1 });
-    assert!(matches!(
-        sources.sources().outcome,
-        Outcome::Unavailable { .. }
-    ));
-}
-#[test]
 fn the_slow_job_stores_travel_with_it_and_always_return() {
     let mut captured = Captured::with_capacities(&Capacities::default());
-    let countries = Arc::new(engine_native::country_memory::Cache::try_with_capacity(0).unwrap());
+    let countries = engine_allocation::shared(
+        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+    )
+    .unwrap();
     for completed in [true, false] {
         // Owner 9 (in hour 9's slice) and owner 7 were seen, unchanged,
         // before this hour.
@@ -2298,7 +2331,10 @@ fn the_slow_job_stores_travel_with_it_and_always_return() {
 #[test]
 fn the_stability_tables_are_their_own_job_and_its_store_always_returns() {
     let mut captured = Captured::with_capacities(&Capacities::default());
-    let countries = Arc::new(engine_native::country_memory::Cache::try_with_capacity(0).unwrap());
+    let countries = engine_allocation::shared(
+        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+    )
+    .unwrap();
     let (hour, force_full) = (9, false);
     for completed in [true, false] {
         // Owner 9 (in hour 9's slice) and owner 7 were seen, unchanged,
@@ -2364,7 +2400,10 @@ fn the_stability_tables_are_their_own_job_and_its_store_always_returns() {
 #[test]
 fn the_war_overview_is_its_own_job_and_fails_apart_from_slow() {
     let mut captured = Captured::with_capacities(&Capacities::default());
-    let countries = Arc::new(engine_native::country_memory::Cache::try_with_capacity(0).unwrap());
+    let countries = engine_allocation::shared(
+        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+    )
+    .unwrap();
     let (hour, force_full) = (9, false);
     for completed in [true, false] {
         captured.prepare_hour(hour, force_full);
@@ -2404,7 +2443,10 @@ fn the_war_overview_is_its_own_job_and_fails_apart_from_slow() {
 #[test]
 fn modifier_header_verdict_travels_with_the_slow_pack_and_returns() {
     let mut captured = Captured::with_capacities(&Capacities::default());
-    let countries = Arc::new(engine_native::country_memory::Cache::try_with_capacity(0).unwrap());
+    let countries = engine_allocation::shared(
+        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+    )
+    .unwrap();
     captured.set_modifier_definitions_moved(true);
     let request =
         captured.take_slow_request(&countries, 11, 0x1000, 9, false, SlowStores::default());
@@ -2519,87 +2561,6 @@ impl Memory for SourceReads {
 }
 
 #[test]
-fn source_adapter_routes_each_staged_consumer_without_replacing_faults() {
-    let mut capacity = Capacities::default();
-    capacity.air.rows[0] = 2;
-    capacity.air.rows[2] = 1;
-    capacity.air.wings = 1;
-    capacity.naval_history.rows[9] = 1;
-    capacity.naval_history.wing_sources = 1;
-    let mut actual = Captured::with_capacities(&capacity);
-    let mut expected = Captured::with_capacities(&capacity);
-    let row = cair_wing::Row {
-        id: 0x1234_5678_0000_0009,
-        ..Default::default()
-    };
-    // All four raw-admission combinations retain the direct consumers'
-    // read order, faults and nonempty rows from the existing typed fixture.
-    for readable in [false, true] {
-        for air_raw in [false, true] {
-            for naval_raw in [false, true] {
-                actual.drop_and_reset();
-                expected.drop_and_reset();
-                let memory = SourceReads {
-                    bytes: readable.then(air::wing_test_kit::fixture),
-                    ..Default::default()
-                };
-                let reference_memory = SourceReads {
-                    bytes: readable.then(air::wing_test_kit::fixture),
-                    ..Default::default()
-                };
-                {
-                    let mut sources = actual.sources(&memory, 0, air_raw, naval_raw);
-                    sources.begin_air();
-                    sources.air(air::wing_test_kit::WING, 0, &row);
-                    sources.finish_air(Outcome::Rows { len: 1 });
-                }
-
-                // Independent direct consumers define the reference rows
-                // and ordered native reads for this source admission.
-                if !air_raw {
-                    expected.air.begin_wings();
-                    expected.air.visit_wing(
-                        &reference_memory,
-                        0,
-                        air::WingSource {
-                            pointer: air::wing_test_kit::WING,
-                            pool: air::wing_test_kit::POOL,
-                            row: &row,
-                        },
-                    );
-                    expected.air_root = Some(Outcome::Rows { len: 1 });
-                }
-                if !naval_raw {
-                    expected.naval_history.visit_wing(
-                        &reference_memory,
-                        air::wing_test_kit::WING,
-                        &row,
-                    );
-                    expected
-                        .naval_history
-                        .finish_wings(Outcome::Rows { len: 1 });
-                }
-                assert_eq!(*memory.reads.borrow(), *reference_memory.reads.borrow());
-                assert_eq!(actual.air_root, expected.air_root);
-                assert_eq!(actual.air.tables(), expected.air.tables());
-                assert_eq!(
-                    actual.naval_history.tables(),
-                    expected.naval_history.tables()
-                );
-                if readable && !air_raw {
-                    assert_eq!(actual.air.outcomes()[0], Outcome::Rows { len: 2 });
-                    assert_eq!(actual.air.outcomes()[2], Outcome::Rows { len: 1 });
-                }
-                if air_raw && naval_raw {
-                    assert!(memory.reads.borrow().is_empty());
-                    assert_eq!(actual.air_root, None);
-                }
-            }
-        }
-    }
-}
-
-#[test]
 fn country_naming_terminal_loan_restores_original_buffers_and_never_retries_native_sources() {
     struct RefusedReads(std::cell::Cell<usize>);
     impl Memory for RefusedReads {
@@ -2609,7 +2570,10 @@ fn country_naming_terminal_loan_restores_original_buffers_and_never_retries_nati
         }
     }
     let (base, state, hour) = (11, 0x1000, 9);
-    let countries = Arc::new(engine_native::country_memory::Cache::try_with_capacity(0).unwrap());
+    let countries = engine_allocation::shared(
+        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+    )
+    .unwrap();
     for rejected in [true, false] {
         let mut captured = Captured::with_capacities(&Capacities::default());
         let mut rows = Vec::<engine_native::ccountry::Row>::with_capacity(1);
@@ -2726,7 +2690,10 @@ fn ordinary_terminal_outcomes_return_original_naval_store_and_forget_unpublished
     let owner = (1..=32)
         .find(|&owner| !replay_data::cadence::slice_active(owner, hour, false))
         .unwrap();
-    let countries = Arc::new(engine_native::country_memory::Cache::try_with_capacity(0).unwrap());
+    let countries = engine_allocation::shared(
+        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+    )
+    .unwrap();
     for refused_before_completion in [false, true] {
         let mut captured = Captured::with_capacities(&Capacities::default());
         let mut fingerprints = Box::new(SliceFingerprints::new());
@@ -2785,24 +2752,29 @@ fn ordinary_terminal_outcomes_return_original_naval_store_and_forget_unpublished
     }
 }
 
-/// Characters, intel and character portraits convert on the helpers, the
-/// first two with the spool caches lent to their lane; the ETA pair shares a
-/// lane, and packs needing other spool caches stay on the spool thread.
+/// Characters, intel, character portraits, division presentation and country
+/// appearance are helper packs any one thread may convert, the first two with
+/// the spool caches lent to it; packs needing other spool caches stay on the
+/// spool thread.
 #[test]
-fn cached_and_unsynchronised_packs_convert_on_their_helper_lanes() {
-    let lane = |name: &str| {
-        super::HELPER_LANES[super::PACK_NAMES
+fn cached_and_unsynchronised_packs_are_helper_packs() {
+    let movable = |name: &str| {
+        super::HELPER_PACKS[super::PACK_NAMES
             .iter()
             .position(|pack| *pack == name)
             .unwrap()]
     };
-    assert_eq!(lane("characters"), Some(1));
-    assert_eq!(lane("character_portraits"), Some(1));
-    assert_eq!(lane("intel"), Some(0));
-    assert_eq!(lane("division_presentation"), Some(0));
-    assert_eq!(lane("country_appearance"), Some(1));
-    assert_eq!(lane("lexical"), None);
-    assert_eq!(lane("division_templates"), None);
+    for name in [
+        "characters",
+        "character_portraits",
+        "intel",
+        "division_presentation",
+        "country_appearance",
+    ] {
+        assert!(movable(name), "{name}");
+    }
+    assert!(!movable("lexical"));
+    assert!(!movable("division_templates"));
 }
 
 /// RaidAirScores and the shared rail tables come from their own first-burst
@@ -2818,8 +2790,10 @@ fn scores_and_rails_keep_their_own_job_outcome_through_a_late_failure() {
     ];
     for completed in [true, false] {
         let mut captured = Captured::with_capacities(&Capacities::default());
-        let countries =
-            Arc::new(engine_native::country_memory::Cache::try_with_capacity(0).unwrap());
+        let countries = engine_allocation::shared(
+            engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+        )
+        .unwrap();
         captured.prepare_hour(1, true);
         let mut orders = Orders::vacant();
         let mut request = captured.take_scores_rails_request(
@@ -2887,8 +2861,10 @@ fn army_icons_keep_their_own_job_outcome_through_a_late_failure() {
     use engine_native::memory::SliceMemory;
     for completed in [true, false] {
         let mut captured = Captured::with_capacities(&Capacities::default());
-        let countries =
-            Arc::new(engine_native::country_memory::Cache::try_with_capacity(0).unwrap());
+        let countries = engine_allocation::shared(
+            engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+        )
+        .unwrap();
         captured.prepare_hour(1, true);
         let mut orders = Orders::vacant();
         let mut request = captured.take_army_icons_request(0);
@@ -2932,7 +2908,10 @@ fn the_daily_production_tables_keep_slows_refusals_and_skip_off_their_slot() {
             false
         }
     }
-    let countries = Arc::new(engine_native::country_memory::Cache::try_with_capacity(0).unwrap());
+    let countries = engine_allocation::shared(
+        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+    )
+    .unwrap();
     let outcomes = |captured: &Captured| -> Vec<Outcome> {
         captured
             .industrial_organisations
@@ -3012,7 +2991,10 @@ fn the_daily_production_tables_follow_slow_and_their_own_job_through_assembly() 
             false
         }
     }
-    let countries = Arc::new(engine_native::country_memory::Cache::try_with_capacity(0).unwrap());
+    let countries = engine_allocation::shared(
+        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+    )
+    .unwrap();
     let outcomes = |captured: &Captured| -> Vec<Outcome> {
         captured
             .industrial_organisations
@@ -3176,7 +3158,10 @@ fn a_split_production_modifier_capture_follows_its_loans_through_assembly() {
         Failed,
         Missing,
     }
-    let countries = Arc::new(engine_native::country_memory::Cache::try_with_capacity(0).unwrap());
+    let countries = engine_allocation::shared(
+        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+    )
+    .unwrap();
     let context = engine_production::production_modifiers::Context {
         start: 17,
         cap: 93,
@@ -3602,7 +3587,10 @@ fn map_assembly_refuses_the_packs_it_leaves_out_and_keeps_the_rest() {
 #[test]
 fn only_force_full_governance_and_recorded_projects_promote_the_long_join_tail() {
     use crate::acquisition_jobs::{Job, Role};
-    let countries = Arc::new(engine_native::country_memory::Cache::try_with_capacity(0).unwrap());
+    let countries = engine_allocation::shared(
+        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+    )
+    .unwrap();
     for force_full in [false, true] {
         let mut captured = Captured::with_capacities(&Capacities::default());
         let governance = Job::Governance(captured.take_governance_request(
@@ -3631,7 +3619,7 @@ fn only_force_full_governance_and_recorded_projects_promote_the_long_join_tail()
             1,
             force_full,
             Box::new(crate::slicing::SliceFingerprints::new()),
-            Some(Arc::clone(&countries)),
+            Some(engine_allocation::SharedBox::clone(&countries)),
         );
         let mut projects = gated.take_projects();
         projects.recorded = true;
@@ -3674,8 +3662,10 @@ fn independent_variant_family_survives_every_final_input_return_order_without_al
                 .fail("original changes verdict");
             variant.as_mut().unwrap().changes_finished = true;
             let bytes = captured.allocated_bytes() + variant.as_ref().unwrap().allocated_bytes();
-            let countries =
-                Arc::new(engine_native::country_memory::Cache::try_with_capacity(0).unwrap());
+            let countries = engine_allocation::shared(
+                engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+            )
+            .unwrap();
             crate::test_support::with_allocations_denied(|| {
                 if variant_order == 0 {
                     captured
@@ -3715,4 +3705,37 @@ fn independent_variant_family_survives_every_final_input_return_order_without_al
             assert_eq!(captured.production.lines.rows.capacity(), 1500);
         }
     }
+}
+
+/// The Variants job's lanes are claimed behind every job of the DivisionStatus chain, and behind
+/// the Variants job itself: at the hour after attach its 60 lane walks held the workers the
+/// chain's ranges waited for. Only the claim order moves; the job reads and publishes as before.
+#[test]
+fn variant_lanes_are_claimed_behind_the_division_status_chain() {
+    use crate::acquisition_jobs::{Batch, Job, Pool, Report, Role};
+    let pool = Pool::with_test_runner(2, |job| match job {
+        Job::Variants(_) => Report::Variants([0; production::N]),
+        _ => panic!("only Variants was submitted"),
+    });
+    let mut captured = Captured::with_capacities(&Capacities::default());
+    let mut request = Some(Job::Variants(captured.take_variants_request(0, 0x1000, 1, true)));
+    let mut batch = Batch::new(&pool);
+    // SAFETY: the synthetic world lives until the batch drains.
+    let ticket = unsafe { batch.submit(&mut request) }.unwrap();
+    let completed = batch.finish(ticket).unwrap();
+    let Job::Variants(request) = completed.request else {
+        panic!("the variants request must be returned");
+    };
+    let lanes = request.workers.priority();
+    for role in [
+        Role::Variants,
+        Role::PresentationPrepare,
+        Role::PresentationPreparation,
+        Role::PresentationSettle,
+        Role::PresentationStatus,
+        Role::Presentation,
+    ] {
+        assert!(role.priority() < lanes);
+    }
+    captured.restore_variants_request(request, Ok([0; production::N]));
 }

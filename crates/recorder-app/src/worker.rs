@@ -401,7 +401,6 @@ fn omitted_loads(omitted: &[Omission]) -> Option<OmittedLoads> {
             Some(Refusal::Off) => OmissionReason::Off,
             Some(Refusal::Elsewhere) => OmissionReason::Elsewhere,
             Some(Refusal::Settings) => OmissionReason::Settings,
-            Some(Refusal::Waiting) => OmissionReason::Waiting,
             None => OmissionReason::NotAdmitted,
         });
     Some(OmittedLoads {
@@ -448,11 +447,6 @@ impl Recorder {
             let mut inner = self.lock();
             let before = inner.snapshot.clone();
             change(&mut inner);
-            inner.snapshot.preparation =
-                recorder::preparation::summary().map(|summary| snapshot::Preparation {
-                    text: summary.text,
-                    failed: summary.failed,
-                });
             if inner.panel_open && (inner.result || inner.sticky.is_some()) {
                 inner.seen = true;
             }
@@ -878,7 +872,7 @@ impl Recorder {
     }
 
     /// Ends the sessions a crashed or closed recorder left in any save folder, once their game has
-    /// exited: their hours then wait in Recordings.
+    /// exited or their collector left it: their hours then wait in Recordings.
     /// Returns whether any session was left busy or failed, for a later pass.
     fn end_abandoned(&self, app: &AppHandle, settings: &RecorderSettings) -> bool {
         let mut retry = false;
@@ -1095,14 +1089,29 @@ impl Recorder {
         };
         let started = Cell::new(false);
         let finished = RefCell::new(None);
+        // A session taken over goes on writing into its own folder.
+        let writes_into = RefCell::new(target.clone());
         let stage = |stage: Stage<'_>| match stage {
             Stage::Preparing => {}
+            Stage::TakingOver { session, target } => {
+                println!(
+                    "Recording: taking over the recording left by a recorder that stopped ({}).",
+                    session.display()
+                );
+                writes_into.replace(target.to_path_buf());
+            }
+            Stage::Restarting { reason } => {
+                println!(
+                    "Recording: ending the recording left by a recorder that stopped, then recording afresh: {reason}."
+                );
+            }
             Stage::Recording {
                 session,
                 status,
                 names,
             } => {
                 started.set(true);
+                let target = writes_into.borrow();
                 if session_dir.borrow().is_none() {
                     session_dir.replace(Some(session.to_path_buf()));
                     self.lock().session = Some((session.to_path_buf(), target.clone()));
@@ -1159,6 +1168,12 @@ impl Recorder {
         });
         if let Some(error) = &failure {
             eprintln!("Recording: {error}");
+        }
+        let jobs = app.state::<Arc<crate::compress::Jobs>>();
+        for done in done {
+            if let SetAside::Saved(_, Some(path)) = done {
+                jobs.saved(path);
+            }
         }
         self.update(app, |inner| {
             if let Some(waiting) = waiting {
@@ -1268,10 +1283,17 @@ impl Recorder {
                 snapshot.phase = Phase::Discarded;
                 snapshot.stopping = false;
                 snapshot.progress = None;
-                snapshot.problem = None;
+                snapshot.problem = outcome.failure_report.as_deref().map(discarded_failure);
                 snapshot.spool_bytes = None;
             });
             return ended;
+        }
+        // Saved and finalized; hours left unsaved wait in `.unsaved`, which is not compressed.
+        let jobs = app.state::<Arc<crate::compress::Jobs>>();
+        for path in &outcome.replays {
+            if path.parent().and_then(Path::file_name).is_none_or(|folder| folder != ".unsaved") {
+                jobs.saved(path);
+            }
         }
         let campaign = self.lock().snapshot.campaign.clone();
         let campaign_of = |path: &Path| {
@@ -1396,6 +1418,20 @@ impl Recorder {
     }
 }
 
+/// What the panel says of a discarded session whose capture had failed.
+fn discarded_failure(report: &Path) -> Problem {
+    Problem {
+        text: format!(
+            "Session discarded. The capture had failed, so a failure report was kept in {}.",
+            report.display()
+        ),
+        detail: format!(
+            "Nothing of the session was kept. The failure report holds only its diagnostics: {}",
+            report.display()
+        ),
+    }
+}
+
 /// Stop for the capture running now, decided under the lock its end takes: a capture that has
 /// already ended keeps what it ended with, and no stop is left for the next one.
 fn accept_stop(inner: &mut Inner, control: &Control, discard: bool) -> bool {
@@ -1464,6 +1500,7 @@ fn fold_live(
     if live.build_warning.is_some() {
         snapshot.build_warning = live.build_warning;
     }
+    snapshot.behind = live.behind;
     // A failed save of a set-aside campaign stays shown.
     snapshot.problem = live.problem.or_else(|| inner.sticky.clone());
 }

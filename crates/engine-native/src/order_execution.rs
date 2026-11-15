@@ -14,8 +14,8 @@
 //! lookup reach. A disabled key with an unreadable snapshot remains unavailable;
 //! only metadata errors enter the separate three-key failure latch.
 //!
-//! Pointers, observations and indices belong to one held capture pass. Opted-in
-//! workers may grow from that pass. Capacity refusal preserves existing core plans.
+//! Pointers, observations and indices belong to one held capture pass, which
+//! grows their storage.
 
 use crate::{
     Memory, carmy, carmy_leader, ccountry, cdiplomacy_status,
@@ -148,7 +148,6 @@ pub struct Work {
     /// native calls. The collector's CountedMemory owns actual calls/bytes.
     pub scalar_reads: usize,
     pub scalar_failed: usize,
-    pub scalar_capacity: usize,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct UnitRow {
@@ -206,13 +205,11 @@ struct ScalarState {
     index: Vec<usize>,
     required: usize,
     failed: usize,
-    refused: usize,
     limit: usize,
-    worker_growth: bool,
 }
 /// Only small execution scalar/header reads use this local exact-span memo.
 /// SnapshotArena owns modifier arrays separately; no modifier payload is copied
-/// here. Failed sources are retained and no capacity miss falls through live.
+/// here. Failed sources are retained; a refused growth never reads live.
 #[derive(Default)]
 struct Scalars(RefCell<ScalarState>);
 impl Scalars {
@@ -272,7 +269,6 @@ impl Scalars {
         state.index.fill(0);
         state.required = 0;
         state.failed = 0;
-        state.refused = 0;
     }
     fn copy(&self, memory: &impl Memory, address: usize, destination: &mut [u8]) -> bool {
         if destination.is_empty() {
@@ -305,15 +301,11 @@ impl Scalars {
         state.required = state
             .required
             .max(state.observations.len().saturating_add(1));
-        if state.observations.len() == state.limit && state.worker_growth {
+        if state.observations.len() == state.limit {
             if Self::grow(&mut state).is_err() {
                 return false;
             }
             slot = Self::index_slot(&state, address, destination.len());
-        }
-        if state.observations.len() == state.limit {
-            state.refused = state.refused.saturating_add(1);
-            return false;
         }
         let mut value = ScalarObservation {
             address,
@@ -352,12 +344,11 @@ type RootResult = Option<Result<usize, &'static str>>;
 type CommanderResult = Option<Result<Option<usize>, &'static str>>;
 type ProvinceResult = Option<Result<u32, &'static str>>;
 
-/// Owned observations for Orders -> Late in ONE held capture pass. Opted-in
-/// workers retain their original reads while growing; reset clears identities.
+/// Owned observations for Orders -> Late in ONE held capture pass. Growth
+/// retains the original reads; reset clears identities.
 pub struct Prepared {
     capacity: Capacity,
     required: Capacity,
-    enabled: bool,
     base: usize,
     state: usize,
     bound: bool,
@@ -385,7 +376,6 @@ impl Prepared {
         Self {
             capacity: Capacity::default(),
             required: Capacity::default(),
-            enabled: false,
             base: 0,
             state: 0,
             bound: false,
@@ -414,7 +404,6 @@ impl Prepared {
         units.try_reserve(capacity.units)?;
         Ok(Self {
             capacity,
-            enabled: true,
             groups: crate::allocation::vec(capacity.groups)?,
             visits: crate::allocation::vec(capacity.orders)?,
             pointers: crate::allocation::vec(capacity.units)?,
@@ -438,14 +427,6 @@ impl Prepared {
             modifiers: self.snapshots.borrow().capacity(),
             ..self.capacity
         }
-    }
-    /// Only Orders/Late acquisition workers may enable growth. The execution
-    /// graph retains exact-span success and failure observations while its memo grows;
-    /// no input is read twice.
-    pub fn enable_worker_growth(&mut self) {
-        self.enabled = true;
-        self.scalars.0.get_mut().worker_growth = true;
-        self.snapshots.get_mut().enable_worker_growth();
     }
     pub fn required_capacity(&self) -> Capacity {
         let mut required = self.required;
@@ -476,7 +457,6 @@ impl Prepared {
         self.work.set(Work::default());
     }
     pub fn try_grow(&mut self, mut capacity: Capacity) -> std::io::Result<()> {
-        let worker_growth = self.scalars.0.get_mut().worker_growth;
         capacity.units = capacity.units.max(self.capacity.units);
         capacity.groups = capacity.groups.max(self.capacity.groups);
         capacity.orders = capacity.orders.max(self.capacity.orders);
@@ -489,14 +469,11 @@ impl Prepared {
             .modifiers
             .entries
             .max(self.capacity.modifiers.entries);
-        if capacity != self.capacity || !self.enabled {
+        if capacity != self.capacity {
             *self = Self::try_new(capacity)?;
         } else {
             self.reset();
             self.units.try_reserve(capacity.units)?;
-        }
-        if worker_growth {
-            self.enable_worker_growth();
         }
         Ok(())
     }
@@ -520,7 +497,6 @@ impl Prepared {
         let scalars = self.scalars.0.borrow();
         work.scalar_reads = scalars.observations.len();
         work.scalar_failed = scalars.failed;
-        work.scalar_capacity = scalars.refused;
         work
     }
     fn count(&self, update: impl FnOnce(&mut Work)) {
@@ -548,9 +524,6 @@ impl Prepared {
             modifier_keys::PARATROOPER_WEIGHT_FACTOR => 2,
             _ => return Err("unexpected execution modifier key"),
         };
-        if !self.enabled {
-            return Err("execution modifier storage unavailable");
-        }
         // Whole-array acquisition superset: raw/header/arena errors stay scoped
         // to their accumulator and never poison the metadata key's failure lane.
         let value = {
@@ -656,19 +629,12 @@ impl Prepared {
         let result = (|| {
             complete(orders.root_source, orders.roots.len())?;
             complete(orders.source, orders.rows.len())?;
-            if self.scalars.0.get_mut().worker_growth {
-                crate::allocation::reserve_exact(&mut self.groups, orders.roots.len())
-                    .map_err(|_| "execution order index allocation failed")?;
-                crate::allocation::reserve_exact(&mut self.visits, orders.rows.len())
-                    .map_err(|_| "execution order index allocation failed")?;
-                self.capacity.groups = self.capacity.groups.max(orders.roots.len());
-                self.capacity.orders = self.capacity.orders.max(orders.rows.len());
-            }
-            if orders.roots.len() > self.capacity.groups
-                || orders.source.len() > self.capacity.orders
-            {
-                return Err("execution order index capacity exceeded");
-            }
+            crate::allocation::reserve_exact(&mut self.groups, orders.roots.len())
+                .map_err(|_| "execution order index allocation failed")?;
+            crate::allocation::reserve_exact(&mut self.visits, orders.rows.len())
+                .map_err(|_| "execution order index allocation failed")?;
+            self.capacity.groups = self.capacity.groups.max(orders.roots.len());
+            self.capacity.orders = self.capacity.orders.max(orders.rows.len());
             self.groups.extend(
                 orders
                     .roots
@@ -853,35 +819,27 @@ impl Prepared {
             {
                 return Err("execution plan/assigned source identity mismatch");
             }
-            if self.scalars.0.get_mut().worker_growth {
-                let units = seeds.len();
-                packet
-                    .try_reserve(units)
-                    .map_err(|_| "execution unit allocation failed")?;
-                crate::allocation::resize_default(&mut attempted, units)
-                    .map_err(|_| "execution unit allocation failed")?;
-                let additional = units.saturating_sub(self.pointers.len());
-                crate::allocation::reserve_exact(&mut self.pointers, additional)
-                    .map_err(|_| "execution unit allocation failed")?;
-                let additional = units.saturating_sub(self.handles.len());
-                crate::allocation::reserve_exact(&mut self.handles, additional)
-                    .map_err(|_| "execution unit allocation failed")?;
-                crate::allocation::resize_default(&mut self.invalid, units)
-                    .map_err(|_| "execution unit allocation failed")?;
-                crate::allocation::resize_default(self.roots.get_mut(), units)
-                    .map_err(|_| "execution unit allocation failed")?;
-                crate::allocation::resize_default(self.commanders.get_mut(), units)
-                    .map_err(|_| "execution unit allocation failed")?;
-                crate::allocation::resize_default(self.provinces.get_mut(), units)
-                    .map_err(|_| "execution unit allocation failed")?;
-                self.capacity.units = self.capacity.units.max(units);
-            }
-            if seeds.len() > self.capacity.units
-                || packet.rows.capacity() < seeds.len()
-                || attempted.len() < seeds.len()
-            {
-                return Err("execution unit storage capacity exceeded");
-            }
+            let units = seeds.len();
+            packet
+                .try_reserve(units)
+                .map_err(|_| "execution unit allocation failed")?;
+            crate::allocation::resize_default(&mut attempted, units)
+                .map_err(|_| "execution unit allocation failed")?;
+            let additional = units.saturating_sub(self.pointers.len());
+            crate::allocation::reserve_exact(&mut self.pointers, additional)
+                .map_err(|_| "execution unit allocation failed")?;
+            let additional = units.saturating_sub(self.handles.len());
+            crate::allocation::reserve_exact(&mut self.handles, additional)
+                .map_err(|_| "execution unit allocation failed")?;
+            crate::allocation::resize_default(&mut self.invalid, units)
+                .map_err(|_| "execution unit allocation failed")?;
+            crate::allocation::resize_default(self.roots.get_mut(), units)
+                .map_err(|_| "execution unit allocation failed")?;
+            crate::allocation::resize_default(self.commanders.get_mut(), units)
+                .map_err(|_| "execution unit allocation failed")?;
+            crate::allocation::resize_default(self.provinces.get_mut(), units)
+                .map_err(|_| "execution unit allocation failed")?;
+            self.capacity.units = self.capacity.units.max(units);
             self.index_units(seeds);
             let primary_demand = |row: &order::Row, plan: &PlanRow| {
                 row.order_type == order::TYPE_PARADROP
@@ -1218,15 +1176,10 @@ impl Prepared {
                         .ok_or("execution membership count overflow")?;
                 }
             }
-            if self.scalars.0.get_mut().worker_growth
-                && self.required.memberships > self.capacity.memberships
-            {
+            if self.required.memberships > self.capacity.memberships {
                 crate::allocation::reserve_exact(&mut self.memberships, self.required.memberships)
                     .map_err(|_| "execution membership allocation failed")?;
                 self.capacity.memberships = self.required.memberships;
-            }
-            if self.required.memberships > self.capacity.memberships {
-                return Err("execution membership index capacity exceeded");
             }
             for group in plans.groups {
                 let end = group.primary_start + group.primary_len;

@@ -13,10 +13,10 @@ struct EventFrame {
     uint64_t generation;
     uintptr_t target;
 };
-static_assert(sizeof(EventFrame) == 224);
-static_assert(offsetof(EventFrame, xmm) == 80);
-static_assert(offsetof(EventFrame, ticket) == 192);
-static_assert(offsetof(EventFrame, target) == 216);
+static_assert(sizeof(EventFrame) == 224, "EventFrame is 224 bytes");
+static_assert(offsetof(EventFrame, xmm) == 80, "xmm is at 80");
+static_assert(offsetof(EventFrame, ticket) == 192, "ticket is at 192");
+static_assert(offsetof(EventFrame, target) == 216, "target is at 216");
 
 extern "C" uint32_t hoi4_event_before(EventFrame*);
 extern "C" void hoi4_event_returned(EventFrame*);

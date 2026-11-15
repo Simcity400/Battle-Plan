@@ -531,11 +531,18 @@ impl RealDriver {
                 Default::default()
             },
             show_allied_plans: false,
+            units_by_layers: false,
+            plans_by_layers: false,
+            routes_by_layers: false,
+            by_layers: Default::default(),
+            parts: Default::default(),
             counters: Default::default(),
+            counter_kinds: Default::default(),
             view: super::super::tests::test_view(),
             have: Vec::new(),
             received: 0,
             grid: None,
+            layered: Default::default(),
         };
         *self.driver.core.requested.lock().unwrap() = Some((epoch, want, None));
         assert!(self.driver.event(Event::Want));

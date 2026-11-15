@@ -45,7 +45,6 @@ job-priority.workspace = true
 base64 = "0.22.1"
 blake3.workspace = true
 dashboard-core.workspace = true
-dashboard-world.workspace = true
 installed-content-save.workspace = true
 png.workspace = true
 replay-spool.workspace = true
@@ -84,15 +83,21 @@ dashboard-core = { workspace = true, features = ["test-support"] }
 [target.'cfg(all())'.dev-dependencies]
 dashboard-text = { workspace = true, features = ["test-support"] }
 engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
+installed-content-province-area = { workspace = true, features = ["test-support"] }
+recorder-derive = { workspace = true, features = ["test-support"] }
 replay = { workspace = true, features = ["test-support"] }
 replay-data = { workspace = true, features = ["test-support"] }
 replay-derive = { workspace = true, features = ["test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 shader-pipeline = { path = "../shader-pipeline", features = ["test-support"] }
 test-unify = { workspace = true }
+unify-bitflags-2 = { workspace = true }
+unify-either = { workspace = true }
 unify-indexmap = { workspace = true }
 unify-log = { workspace = true }
+unify-num-traits = { workspace = true }
 unify-once_cell = { workspace = true }
+unify-smallvec = { workspace = true }
 unify-uuid = { workspace = true }
 unify-wgpu = { workspace = true }
 unify-winapi-util = { workspace = true }

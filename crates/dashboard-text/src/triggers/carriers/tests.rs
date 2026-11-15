@@ -27,6 +27,8 @@ fn fixture() -> DecodedFrame {
             definition_id: 10,
             ..Default::default()
         }]));
+    // Keyed by the organisation, as a recording holds the rows: the first row is not the
+    // least ordinal.
     *f.tables[TableId::IndustrialOrganisations.index()] =
         TableView::Complete(TableRows::IndustrialOrganisations(vec![
             IndustrialOrganisationRow {
@@ -34,7 +36,7 @@ fn fixture() -> DecodedFrame {
                 owner: 103,
                 ordinal: 1,
                 token: 11,
-                organisation: MIO + (1 << 32),
+                organisation: OTHER,
                 ..Default::default()
             },
             IndustrialOrganisationRow {
@@ -392,24 +394,25 @@ fn tagged_variables_decode_recorded_carriers_without_reading_object_stores() {
     with_world(&f, "", Err("none"), |world| {
         let evaluator = Evaluator::new(world, None);
         let caller = Scopes::of(Scope::Country(1));
-        for (name, scope, raw, store) in [
+        // A project's or raid's store is refused in words; an organisation's names its details.
+        for (name, scope, raw, details) in [
             (
                 b"p".as_slice(),
                 Scope::Project { owner: 101, id: 9 },
                 0x1000_0009,
-                "variable store",
+                false,
             ),
             (
                 b"m".as_slice(),
                 Scope::IndustrialOrganisation(MIO),
                 0x6000_0006,
-                "IndustrialOrganisationDetails",
+                true,
             ),
             (
                 b"r".as_slice(),
                 Scope::Raid(RAID),
                 (0xffff_ffff_e000_0007_u64) as i64,
-                "variable store",
+                false,
             ),
         ] {
             let name = [b"var:".as_slice(), name].concat();
@@ -418,7 +421,11 @@ fn tagged_variables_decode_recorded_carriers_without_reading_object_stores() {
             let refused = evaluator
                 .scoped_value(b"THIS.progress", Scopes::of(scope))
                 .unwrap_err();
-            assert!(refused.contains(store), "{refused:?}");
+            if details {
+                assert!(refused.names("IndustrialOrganisationDetails"), "{refused:?}");
+            } else {
+                assert!(refused.contains("variable store"), "{refused:?}");
+            }
         }
         assert_eq!(
             evaluator.scoped_scope(b"sp:synthetic_project", caller),
@@ -573,12 +580,13 @@ pub(super) fn sized(hour: i32, sizes: Option<&[(u64, i32)]>) -> DecodedFrame {
     f
 }
 
-/// The fixture's second organisation, of the same holder and definition as [`MIO`].
-pub(super) const OTHER: u64 = MIO + (1 << 32);
+/// The fixture's second organisation, of the same holder and definition as [`MIO`], keyed
+/// before it.
+pub(super) const OTHER: u64 = MIO - (1 << 32);
 /// An organisation of the same definition held by another country.
 pub(super) const HELD: u64 = MIO + (3 << 32);
-/// The sizes the size tests start from.
-pub(super) const SIZES: &[(u64, i32)] = &[(MIO, 6), (OTHER, 5), (HELD, 8)];
+/// The sizes the size tests start from, in key order.
+pub(super) const SIZES: &[(u64, i32)] = &[(OTHER, 5), (MIO, 6), (HELD, 8)];
 
 pub(super) fn in_organisation(world: &World, organisation: u64, trigger: &str) -> Eval {
     world.evaluate(
@@ -825,14 +833,14 @@ fn organisation_size_inputs_follow_that_organisation_s_size() {
         values: Vec::new(),
     };
     // Another organisation's size changed: reused, the size not read again.
-    let other = sized(2, Some(&[(MIO, 6), (OTHER, 7), (HELD, 8)]));
+    let other = sized(2, Some(&[(OTHER, 7), (MIO, 6), (HELD, 8)]));
     let rows = [changed(OTHER)];
     assert_eq!(
         confirm(&inputs, &other, TableChange::Rows(&rows, &[])),
         (true, true, 0)
     );
     // Its own size changed 6 to 5: read again, and the result flips.
-    let shrunk = sized(2, Some(&[(MIO, 5), (OTHER, 5), (HELD, 8)]));
+    let shrunk = sized(2, Some(&[(OTHER, 5), (MIO, 5), (HELD, 8)]));
     let rows = [changed(MIO)];
     assert_eq!(
         confirm(&inputs, &shrunk, TableChange::Rows(&rows, &[])),

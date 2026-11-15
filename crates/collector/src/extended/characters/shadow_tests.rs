@@ -37,6 +37,7 @@ fn assert_canonical(current: &Captured, input: &[TableInput; N]) {
 
 #[test]
 fn character_shadow_exact_hits_keep_current_arcs_and_ignore_unused_pool_tails() {
+    let _globals = crate::extended::characters::test_globals();
     let mut shadow = CharacterShadow::default();
     let first = character_shadow_fixture(9);
     let cached = shared(&inputs(&first, &mut shadow, None, 1));
@@ -80,6 +81,7 @@ fn character_shadow_exact_hits_keep_current_arcs_and_ignore_unused_pool_tails() 
 
 #[test]
 fn character_shadow_every_consumed_field_and_byte_change_misses_independently() {
+    let _globals = crate::extended::characters::test_globals();
     type Change = (usize, fn(&mut Captured));
     let changes: &[Change] = &[
         (0, |c| c.characters.rows.rows[0].id += 20),
@@ -169,6 +171,7 @@ fn fault<R: Clone>(buffer: &mut Buffer<R>, fault: usize) {
 
 #[test]
 fn character_shadow_faults_clear_only_current_table_and_recover_via_conversion() {
+    let _globals = crate::extended::characters::test_globals();
     for selected in 0..4 {
         for failure in [0, 1, 2, 3, 5, 6] {
             let first = character_shadow_fixture(9);
@@ -219,6 +222,7 @@ fn character_shadow_faults_clear_only_current_table_and_recover_via_conversion()
 
 #[test]
 fn character_shadow_offhours_branch_and_allocation_identity_are_not_inferred_from_values() {
+    let _globals = crate::extended::characters::test_globals();
     let first = character_shadow_fixture(9);
     let mut shadow = CharacterShadow::default();
     let cached = shared(&inputs(&first, &mut shadow, None, 1));
@@ -252,6 +256,7 @@ fn character_shadow_offhours_branch_and_allocation_identity_are_not_inferred_fro
 
 #[test]
 fn character_shadow_empty_rows_strings_and_unselected_dynamic_rows_remain_exact() {
+    let _globals = crate::extended::characters::test_globals();
     let mut first = character_shadow_fixture(9);
     for row in &mut first.characters.rows.rows {
         row.name_len = 0;

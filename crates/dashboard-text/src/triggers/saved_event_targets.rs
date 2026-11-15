@@ -29,7 +29,7 @@ impl Reader {
         };
         if let Some(reference) = reference {
             return format!(
-                "saved event target {}: {kind} {use_} needs the full {reference} reference; GlobalSavedEventTargets records liveness only",
+                "saved event target {}: {kind} {use_} needs the full {reference} reference; global saved event targets records liveness only",
                 String::from_utf8_lossy(name)
             );
         }

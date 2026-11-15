@@ -250,6 +250,7 @@ fn expected_add(
         bound: 0.,
         convoy_radius: None,
         attachments: usize::from(name == "cavalry"),
+        cull_distance_squared: installed_content_core::mesh::DEFAULT_CULL_DISTANCE_SQUARED,
     });
     if name == "fallen" {
         *library

@@ -49,11 +49,7 @@ pub struct Row {
 
 /// Reads one row per authenticated canonical country. Capacity limits storage;
 /// unreadable status objects never become an invented zero-experience row.
-pub fn walk(memory: &impl Memory, base: usize, game_state: usize, output: &mut [Row]) -> Outcome {
-    walk_buffer(memory, base, game_state, crate::walk::Buffer::Fixed(output))
-}
-
-pub fn walk_growing(
+pub fn walk(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -204,7 +200,7 @@ mod tests {
         bytes
     }
 
-    fn capture(bytes: &[u8], output: &mut [Row]) -> Outcome {
+    fn capture(bytes: &[u8], output: &mut Vec<Row>) -> Outcome {
         walk(
             &SliceMemory {
                 base: MEMORY_BASE,
@@ -216,10 +212,22 @@ mod tests {
         )
     }
 
+    fn count(bytes: &[u8]) -> Outcome {
+        walk_buffer(
+            &SliceMemory {
+                base: MEMORY_BASE,
+                bytes,
+            },
+            0,
+            MEMORY_BASE,
+            crate::walk::Buffer::Count,
+        )
+    }
+
     #[test]
     fn preserves_every_bit_and_native_country_alias_without_duplicate_rows() {
         let bytes = fixture();
-        let mut output = [Row::default(); 3];
+        let mut output = vec![Row::default(); 3];
         assert_eq!(capture(&bytes, &mut output), Outcome::Rows { len: 2 });
         assert_eq!(
             output[0],
@@ -246,24 +254,16 @@ mod tests {
     }
 
     #[test]
-    fn capacity_counts_canonical_rows_and_a_full_read_recovers() {
+    fn the_count_probe_counts_canonical_rows_and_a_full_read_recovers() {
         let bytes = fixture();
-        let mut output = [Row::default(); 1];
         assert_eq!(
-            capture(&bytes, &mut output),
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            }
-        );
-        assert_eq!(
-            capture(&bytes, &mut []),
+            count(&bytes),
             Outcome::Truncated {
                 len: 0,
                 unread_rows: 2
             }
         );
-        let mut output = [Row::default(); 2];
+        let mut output = vec![Row::default(); 2];
         assert_eq!(capture(&bytes, &mut output), Outcome::Rows { len: 2 });
     }
 
@@ -285,7 +285,7 @@ mod tests {
             let mut bytes = fixture();
             put(&mut bytes, address, &u64::to_le_bytes(value));
             assert_eq!(
-                capture(&bytes, &mut [Row::default(); 2]),
+                capture(&bytes, &mut vec![Row::default(); 2]),
                 Outcome::Unavailable { reason }
             );
         }
@@ -296,7 +296,7 @@ mod tests {
         let bytes = fixture();
         let end = 0x7000 + ARMIES_FOR_TRAINING + 7 - MEMORY_BASE;
         assert_eq!(
-            capture(&bytes[..end], &mut [Row::default(); 2]),
+            capture(&bytes[..end], &mut vec![Row::default(); 2]),
             Outcome::Unavailable {
                 reason: "experience status scalar block unreadable",
             }
@@ -308,7 +308,7 @@ mod tests {
         let mut bytes = fixture();
         put(&mut bytes, 0x5000, &1_u64.to_le_bytes());
         assert_eq!(
-            capture(&bytes, &mut [Row::default(); 1]),
+            capture(&bytes, &mut vec![Row::default(); 1]),
             Outcome::Unavailable {
                 reason: "country vtable mismatch",
             }
@@ -321,6 +321,6 @@ mod tests {
         for slot in 1..4 {
             put(&mut bytes, 0x1800 + slot * 8, &0_u64.to_le_bytes());
         }
-        assert_eq!(capture(&bytes, &mut []), Outcome::Rows { len: 0 });
+        assert_eq!(count(&bytes), Outcome::Rows { len: 0 });
     }
 }

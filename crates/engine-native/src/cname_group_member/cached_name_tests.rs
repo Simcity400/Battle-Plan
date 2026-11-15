@@ -22,7 +22,7 @@ fn read_name(
 ) -> (Result<Option<Span>, &'static str>, Vec<u8>, usize) {
     let mut owned = vec![0; capacity];
     let mut names = Names {
-        bytes: &mut owned,
+        bytes: crate::walk::Buffer::Growing(&mut owned),
         len: 0,
         required: 0,
     };
@@ -37,6 +37,25 @@ fn read_name(
     );
     let required = names.required;
     (result, owned, required)
+}
+
+/// The census count probe: no bytes stored, the validated demand counted.
+fn count_name(bytes: &[u8]) -> (Result<Option<Span>, &'static str>, usize) {
+    let mut names = Names {
+        bytes: crate::walk::Buffer::Count,
+        len: 0,
+        required: 0,
+    };
+    let result = cached_name(
+        &SliceMemory {
+            base: 0x1000,
+            bytes,
+        },
+        0,
+        0x1000,
+        &mut names,
+    );
+    (result, names.required)
 }
 
 #[test]
@@ -75,13 +94,15 @@ fn cached_army_name_keeps_empty_inline_heap_and_embedded_nul_bytes() {
 fn cached_army_name_counts_only_validated_demand_without_truncating() {
     let text = b"A heap name longer than the admitted byte arena";
     let bytes = member(text);
+    assert_eq!(count_name(&bytes), (Ok(None), text.len()));
     let (result, owned, required) = read_name(&bytes, 4);
-    assert_eq!(result, Ok(None));
+    assert_eq!(result, Ok(Some((0, text.len()))));
     assert_eq!(required, text.len());
-    assert_eq!(owned, [0; 4]);
+    assert_eq!(&owned[..text.len()], text);
     assert_eq!(read_name(&member(b""), 0).0, Ok(Some((0, 0))));
     let mut bad = bytes.clone();
     bad[0x100 + text.len()] = 1;
+    assert_eq!(count_name(&bad).1, 0);
     assert_eq!(read_name(&bad, 4).2, 0);
     assert_eq!(read_name(&bad, 4).0, Err(CACHED[3]));
 }
@@ -131,7 +152,7 @@ fn member_span_cache_matches_separate_reads_with_one_heap_copy() {
         );
         let (mut arena, mut len, mut required) = (vec![0; capacity], 0, 0);
         let result =
-            cached_name_from_member_growing(&memory, 0, &span, &mut arena, &mut len, &mut required);
+            cached_name_from_member(&memory, 0, &span, &mut arena, &mut len, &mut required);
         let reads = memory.1.take();
         (result, arena, required, reads)
     };

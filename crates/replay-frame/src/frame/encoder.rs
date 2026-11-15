@@ -242,6 +242,25 @@ impl FrameEncoder {
             && self.state.tables[table.index()].is_some()
     }
 
+    /// A staggered table's complete baseline at a keyframe of its branch, where
+    /// [`Self::can_carry`] refuses the marker: the rows a skipped slot supplies instead.
+    pub fn keyframe_carry(
+        &self,
+        table: TableId,
+        branch: BranchId,
+        hour: Hour,
+        force: bool,
+    ) -> Option<&TableRows> {
+        if !crate::cadence::is_staggered(table)
+            || !self.needs_keyframe(branch, hour, force)
+            || self.state.branch != Some(branch)
+            || !self.state.last_hour.is_some_and(|previous| hour > previous)
+        {
+            return None;
+        }
+        self.committed_rows(table)
+    }
+
     /// The token a comparison at `hour` names and the baseline it compares
     /// with, when the hour follows the baseline's and needs no keyframe.
     fn token(

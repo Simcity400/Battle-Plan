@@ -94,19 +94,17 @@ pub struct Walk {
 
 /// Off-thread sizing from the live counts.
 pub fn demand(memory: &impl Memory, base: usize) -> Option<Demand> {
-    let walk = walk(memory, base, &mut [], &mut []);
+    let walk = count(memory, base);
     (!matches!(walk.outcome, Outcome::Unavailable { .. })).then_some(walk.required)
 }
 
-/// The list into fixed storage. Battles past the storage are counted, not
-/// read, and the walk is truncated after the last battle that fit.
-pub fn walk(memory: &impl Memory, base: usize, rows: &mut [Row], provinces: &mut [u32]) -> Walk {
-    walk_buffer(memory, base, Buffer::Fixed(rows), Buffer::Fixed(provinces))
+pub fn count(memory: &impl Memory, base: usize) -> Walk {
+    walk_buffer(memory, base, Buffer::Count, Buffer::Count)
 }
 
 /// The list into worker storage, grown from the acquired counts before each
 /// battle is copied.
-pub fn walk_growing(
+pub fn walk(
     memory: &impl Memory,
     base: usize,
     rows: &mut Vec<Row>,

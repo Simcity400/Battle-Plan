@@ -1,129 +1,125 @@
-import { useCallback, useMemo } from 'react';
+import { useCallback, useMemo, useRef } from 'react';
+import type { LiveValues } from '../../charts/live';
 import WidgetState from '../../components/WidgetState';
 import Table from '../../charts/table/Table';
 import type { TableColumn } from '../../charts/table/Table';
 import { narrowTableOf } from '../../charts/table/options';
-import { useTableHour } from '../../charts/table/useTableHour';
 import ProgressMeter from '../../charts/meter/ProgressMeter';
-import { PreparedKey } from '../../charts/PreparedKey';
 import { dayLabel } from '../../charts/draw';
 import { jumpItem } from '../../charts/jump';
 import type { TooltipContent } from '../../charts/tooltip';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { resolveWindow } from '../../dashboard/model';
+import { resolveOptions } from '../../dashboard/options';
+import { selectedTags } from '../../dashboard/countrySelection';
+import { useHeadProduct } from '../../dashboard/headProduct';
 import { usePlaybackMotion } from '../../dashboard/playback';
-import { pendingReplyAt, preparedPrefix } from '../../dashboard/preparedPrefix';
+import { useShownHour } from '../../dashboard/widgetPerf';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
-import { censusComplete, costRead, countText, derivedIcText, fixedText, hullShare, nativeIcText, percentText, refitShare, tokenName, yardsAt } from '../../dashboard/navalYards';
-import type { YardsAt, YardsReply } from '../../dashboard/navalYards';
-import { shipLabel, shipName, shipNameRow } from './shipNames';
-import { useYards } from './useYards';
-import '../division-log/divisionLog.css';
-import './refits.css';
+import { countText, fixedText, hullShare, icText, percentText, refitShare, refitsMissing, refitsStructure, refitsTexts, shipLabel, shipNameRow, validateRefits } from './yardsData';
+import { useLivePaint } from './livePaint';
+import { YARD_OPTIONS } from './yardOptions';
+import './yards.css';
+import type { RefitLine } from '../../generated/dashboard';
+import type { RefitsReply } from './yardsData';
 
-/** A refit line with its ships, or one ship on it. */
-interface RefitRow { key: string; kind: 'line' | 'ship'; line: string; ship?: string }
+/** A refit line, or one ship on it. */
+interface RefitRow { key: string; line: RefitLine; ship?: number }
 
 const rowKey = (row: RefitRow) => row.key;
+const lineName = (line: RefitLine) => line.target ?? 'Design name unavailable';
 
-/** The refit line's progress as a share of its cost, for the meter it fills. */
-export const lineProgress = (at: YardsAt, line: string): number | null => refitShare(at, line);
-
-/** One country's refit work at the hour shown: each live refit line with its target design,
- * its progress and the ships on it, in the game's order, under one totals line. */
+/** One country's refit work at the hour shown: each live refit line with its target design, its
+ * progress and the ships on it, under one totals line. Following playback it is a pushed panel;
+ * progress and hulls are painted between the renders its rows cause. */
 export default function RefitsWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
-  const playback = useTableHour(runtime.clock, active && widget.time.mode === 'follow');
+  const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
+  const options = resolveOptions(YARD_OPTIONS, widget.options);
+  const tag = selectedTags(widget.countries, track)[0] ?? null;
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
-  const shown = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const window = shown && resolveWindow(widget, shown, runtime.tracks, playback);
-  const hour = Math.floor(window?.lastHour ?? shown?.branch.lastHour ?? 0);
-  const { track, tag, options, data, error, retry } = useYards(widget, runtime, active, hour);
-  const at = useMemo(() => data && tag ? yardsAt(data) : null, [data, tag]);
-  const { rows, children } = useMemo(() => refitRows(at), [at]);
-  const readDate = at?.readHour === undefined ? null : dayLabel(at.readHour);
-  const columns = useMemo<readonly TableColumn<RefitRow>[]>(() => !data || !at ? [] : [
+  const root = useRef<HTMLDivElement | null>(null);
+  const head = useHeadProduct(runtime, widget, 'naval-refits', tag ? { tag } : null, { active, validate: validateRefits, structure: refitsStructure });
+  const { data, error, retry } = head;
+  // Hourly numbers are painted from the product's live cells each frame they move, reporting the hour they are of.
+  const shown = useShownHour();
+  const painted = useCallback(() => shown(head.shownAt()), [shown, head.shownAt]);
+  const texts = useMemo(() => data ? (values: LiveValues<number>) => refitsTexts(data, values) : null, [data]);
+  useLivePaint(root, head.live, texts, painted);
+  const attach = useCallback((element: HTMLDivElement | null) => { root.current = element; head.root(element); }, [head.root]);
+  const shownHour = () => head.hour ?? Math.floor(runtime.clock.getHour());
+  const { rows, children } = useMemo(() => {
+    const lines = data?.lines ?? [];
+    const ships = new Map(lines.map(line => [line.handle, line.ships.map((item, index): RefitRow => ({ key: `${line.handle}|${item.handle}`, line, ship: index }))]));
+    return { rows: lines.map((line): RefitRow => ({ key: line.handle, line })), children: (row: RefitRow) => row.ship === undefined ? ships.get(row.line.handle) ?? [] : undefined };
+  }, [data]);
+  const columns = useMemo<readonly TableColumn<RefitRow>[]>(() => !data ? [] : [
     { key: 'name', header: 'Refit or ship', label: 'Refit or ship', width: 'minmax(var(--table-name-min), 2fr)', sortable: false,
-      value: row => row.kind === 'line' ? lineName(data, at, row.line) : shipName(data, at.groups.get(row.line)?.ships.get(row.ship!)),
+      value: row => row.ship === undefined ? lineName(row.line) : shipLabel(row.line.ships[row.ship]).name,
       render: row => {
-        if (row.kind === 'line') return lineName(data, at, row.line);
-        const label = shipLabel(data, at.groups.get(row.line)?.ships.get(row.ship!));
+        if (row.ship === undefined) return lineName(row.line);
+        const label = shipLabel(row.line.ships[row.ship]);
         return label.source === 'design' ? <span className="yard-unnamed">{label.name}</span> : label.name;
       } },
     { key: 'progress', header: 'Progress', label: 'Progress', width: 'minmax(90px, 1fr)', sortable: false, renderMissing: true,
-      value: row => row.kind === 'line' ? lineProgress(at, row.line) : null,
-      render: row => row.kind === 'line' ? <span className="refits-progress"><ProgressMeter value={lineProgress(at, row.line)} state="live" label="Refit progress" />
-        <span>{percentText(lineProgress(at, row.line))}</span></span> : '',
-      text: row => row.kind === 'line' ? percentText(lineProgress(at, row.line)) : null },
+      value: row => row.ship === undefined ? refitShare(data, row.line) : null,
+      render: row => row.ship === undefined ? <span className="refits-progress"><ProgressMeter value={refitShare(data, row.line)} state="live" label="Refit progress" />
+        <span data-paint={`progress|${row.line.handle}`}>{percentText(refitShare(data, row.line))}</span></span> : '' },
     { key: 'hull', header: 'Hull', label: 'Hull', numeric: true, width: 'max-content', priority: 2, sortable: false, renderMissing: true,
-      value: row => row.kind === 'ship' ? hullShare(at.groups.get(row.line)?.ships.get(row.ship!)) : null,
-      render: row => row.kind === 'ship' ? percentText(hullShare(at.groups.get(row.line)?.ships.get(row.ship!))) : '' },
+      value: row => row.ship === undefined ? null : hullShare(row.line.ships[row.ship]),
+      render: row => row.ship === undefined ? '' : <span data-paint={`hull|${row.line.handle}|${row.line.ships[row.ship].handle}`}>{percentText(hullShare(row.line.ships[row.ship]))}</span> },
     { key: 'dockyards', header: 'Dockyards', label: 'Dockyards', numeric: true, width: 'max-content', priority: 1, sortable: false, renderMissing: true,
-      value: row => row.kind === 'line' ? Number(at.groups.get(row.line)?.measures.get('dockyards') ?? 0n) : null,
-      render: row => row.kind === 'line' ? countText(at.groups.get(row.line)?.measures.get('dockyards')) : '' },
-  ], [data, at]);
-  const tooltip = useCallback((row: RefitRow): TooltipContent => data && at ? refitTooltip(data, at, row, readDate) : { title: '', rows: [] }, [data, at, readDate]);
-  const menu = useCallback(() => track && at?.readHour !== undefined ? [jumpItem(runtime, track.id, at.readHour)] : [], [track, at, runtime]);
+      value: row => row.ship === undefined ? row.line.dockyards : null, render: row => row.ship === undefined ? countText(row.line.dockyards) : '' },
+  ], [data]);
+  const tooltip = useCallback((row: RefitRow): TooltipContent => data ? refitTooltip(data, row, dayLabel(shownHour())) : { title: '', rows: [] },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [data, head.hour]);
+  const menu = useCallback(() => track ? [jumpItem(runtime, track.id, shownHour())] : [],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [track, runtime, head.hour]);
   useDiagnostics(onDiagnostics, data?.warnings ?? null);
   if (!track) return <WidgetState kind="empty" icon="anchor" message="Load a campaign to see refits." />;
   if (!tag) return <WidgetState kind="empty" icon="anchor" message="Choose a country in the widget's header." />;
-  if (!window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
+  if (head.read === 'off' && !data) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
-  if (!data) return <WidgetState kind="loading" label="Loading refits…" />;
-  if (pendingReplyAt(data, hour)) return <WidgetState kind="loading" label="This range is still being prepared." />;
-  if (!at) return <WidgetState kind="unavailable" message="Refits were not recorded at this time." />;
-  const prefix = preparedPrefix(data);
-  const total = (key: string) => at.totals.get(key);
-  return <div className="refits">
-    <PreparedKey pending={prefix?.pending} approximate={prefix?.approximate} />
-    <div className="division-log-summary" aria-live="polite">
-      <span><b>{total('ships')?.toLocaleString('en-US') ?? 'Not recorded'}</b> ships refitting</span>
-      <span><b>{total('lines')?.toLocaleString('en-US') ?? 'Not recorded'}</b> refit lines</span>
-      <span><b>{total('dockyards') === undefined ? 'Not recorded' : countText(total('dockyards'))}</b> dockyards</span>
+  if (!data) return <div ref={attach} className="yards"><WidgetState kind="loading" label="Loading refits…" /></div>;
+  const missing = refitsMissing(data);
+  if (missing) return <div ref={attach} className="yards"><WidgetState kind="unavailable" message={missing.message} reason={missing.reason} /></div>;
+  return <div ref={attach} className="yards">
+    <div className="yards-summary" aria-live="polite">
+      <span><b>{data.ships?.toLocaleString('en-US') ?? 'Not recorded'}</b> ships refitting</span>
+      <span><b>{data.censusComplete ? data.lines.length.toLocaleString('en-US') : 'Not recorded'}</b> refit lines</span>
+      <span><b>{countText(data.dockyards)}</b> dockyards</span>
     </div>
-    {!rows.length ? censusComplete(at, 'censusComplete') ? <WidgetState kind="empty" message="No refits at this date." />
+    {!rows.length ? data.censusComplete ? <WidgetState kind="empty" message="No refits at this date." />
       : <WidgetState kind="unavailable" message="Refits were not fully recorded at this date." />
-      : <Table rowRevision={row => {
-        const group = at.groups.get(row.line), ship = group?.ships.get(row.ship!);
-        const label = shipLabel(data, ship);
-        return row.kind === 'line' ? [lineName(data, at, row.line), lineProgress(at, row.line), group?.measures.get('dockyards')]
-          : [label.name, label.source, hullShare(ship)];
-      }} key={JSON.stringify([track.source.id, track.source.revision, track.branch.id, tag])} label="Refit lines" rows={rows} columns={columns}
-        rowKey={rowKey} sort={{ column: 'name', direction: 'ascending' }} unsorted tree={{ children }}
-        density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)} tooltip={tooltip} menu={menu}
-        hoursPerSecond={hoursPerSecond} parity={{ complete: true, item: row => row }} />}
+      : <Table rowRevision={row => row.ship === undefined ? [lineName(row.line), Math.floor((refitShare(data, row.line) ?? -1) * 100), row.line.dockyards]
+        : [shipLabel(row.line.ships[row.ship]).name, Math.floor((hullShare(row.line.ships[row.ship]) ?? -1) * 100)]}
+      key={JSON.stringify([track.source.id, track.source.revision, track.branch.id, tag])} label="Refit lines" rows={rows} columns={columns}
+      rowKey={rowKey} sort={{ column: 'name', direction: 'ascending' }} unsorted tree={{ children }}
+      density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)} tooltip={tooltip} menu={menu} hoursPerSecond={hoursPerSecond} />}
   </div>;
 }
 
-
-function lineName(data: YardsReply, at: YardsAt, line: string): string {
-  return tokenName(data, at.groups.get(line)?.measures.get('targetName'), 'Design name unavailable');
-}
-
-/** Live lines in their recorded order, each with the ships whose membership the hour dates. */
-function refitRows(at: YardsAt | null): { rows: RefitRow[]; children: (row: RefitRow) => RefitRow[] | undefined } {
-  if (!at) return { rows: [], children: () => undefined };
-  const lines = [...at.groups.values()].filter(group => group.measures.get('live') === 1n);
-  const ships = new Map(lines.map(line => [line.id, [...line.ships.values()].filter(ship => ship.measures.get('present') === 1n)
-    .map(ship => ({ key: `${line.id}|${ship.id}`, kind: 'ship' as const, line: line.id, ship: ship.id }))]));
-  return { rows: lines.map(line => ({ key: line.id, kind: 'line', line: line.id })), children: row => row.kind === 'line' ? ships.get(row.line) ?? [] : undefined };
-}
-
-function refitTooltip(data: YardsReply, at: YardsAt, row: RefitRow, readDate: string | null): TooltipContent {
-  const group = at.groups.get(row.line);
-  if (row.kind === 'line') return { title: lineName(data, at, row.line), rows: [
-    { label: 'Progress', value: lineProgress(at, row.line) === null ? 'Not recorded' : percentText(lineProgress(at, row.line)) },
-    { label: 'Work done', value: nativeIcText(group?.measures.get('progress')) },
-    { label: 'Cost', value: nativeIcText(group?.measures.get('cost')) },
-    ...costRead(at) === undefined ? [] : [{ label: 'Cost as of', value: dayLabel(costRead(at)!) }],
-    { label: 'Remaining cost', value: derivedIcText(group?.measures.get('remainingCostRaw')) },
-    { label: 'Dockyards', value: countText(group?.measures.get('dockyards')) },
-    ...readDate ? [{ label: 'As of', value: readDate }] : [] ] };
-  const ship = group?.ships.get(row.ship!);
-  const label = shipLabel(data, ship);
+function refitTooltip(reply: RefitsReply, row: RefitRow, date: string): TooltipContent {
+  if (row.ship === undefined) {
+    const share = refitShare(reply, row.line);
+    return { title: lineName(row.line), rows: [
+      { label: 'Progress', value: share === null ? 'Not recorded' : percentText(share) },
+      { label: 'Work done', value: icText(row.line.progress) },
+      { label: 'Cost', value: icText(row.line.cost) },
+      ...reply.costRead === null ? [] : [{ label: 'Cost as of', value: dayLabel(reply.costRead) }],
+      { label: 'Remaining cost', value: icText(row.line.remaining) },
+      { label: 'Dockyards', value: countText(row.line.dockyards) },
+      { label: 'As of', value: date }] };
+  }
+  const item = row.line.ships[row.ship];
+  const label = shipLabel(item);
   return { title: label.name, rows: [
     shipNameRow(label.source),
-    { label: 'Ship', lookupKey: row.ship, value: row.ship },
-    { label: 'Hull', value: `${fixedText(ship?.measures.get('hull'))} of ${fixedText(ship?.measures.get('maximum'))}` },
-    { label: 'Design', value: tokenName(data, ship?.measures.get('designName'), 'Design name unavailable') },
-    ...readDate ? [{ label: 'As of', value: readDate }] : [] ] };
+    { label: 'Ship', lookupKey: item?.handle, value: item?.handle },
+    { label: 'Hull', value: `${fixedText(item?.hull)} of ${fixedText(item?.maximum)}` },
+    { label: 'Design', value: item?.design ?? 'Design name unavailable' },
+    { label: 'Class', value: item?.class ?? 'Not recorded' },
+    { label: 'Task force', value: item?.taskForce ?? 'Not recorded' },
+    { label: 'Repair policy', value: item?.policy ?? 'Not recorded' },
+    { label: 'As of', value: date }] };
 }

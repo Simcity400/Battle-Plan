@@ -1,69 +1,55 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { efficiencyText, missionRowsAt, missionTooltip, openWings, regionRows, shownMissions, theatreRegions, validateAirMissions, validateAirWings } from './airMissionsData.ts';
+import { liveKey } from '../../charts/live.ts';
 import { CLOSED, reduceDrill } from '../../charts/drill/drillState.ts';
+import { NOT_FLOWN, choicesAt, flownBy, efficiencyText, missionRows, missionTooltip, missionValues, openWings, regionRows, shownMissions, theatreRegions, validateAirMissions, validateAirWings } from './airMissionsData.ts';
 
 const reply = validateAirMissions({
-  window: { firstHour: 0, lastHour: 10, known: [{ firstHour: 0, lastHour: 8 }], reads: [[0, 8, 0]], series: [
-    { name: 'GER@7|10|m0', runs: [[0, 8, '24', true]] },
-    { name: 'GER@7|10|m2', runs: [[0, 4, '24', true], [5, 8, '0', false]] },
-    { name: 'GER@7|10|wings', runs: [[0, 8, '1', true]] },
-    { name: 'GER@7|11|m1', runs: [[5, 8, '50', true]] },
-    { name: 'GER@7|11|wings', runs: [[5, 8, '2', true]] },
-    { name: 'ITA@8|10|m0', runs: [[0, 8, '9', true]] },
-  ] },
+  readHour: 6, missing: null, theatresMissing: null, warnings: [],
   missions: [{ id: '0', name: 'Air superiority', icon: { key: 'GFX_strip', frame: 0 } }, { id: '1', name: 'Close air support', icon: { key: 'GFX_strip', frame: 1 } },
-    { id: '2', name: 'Interception', icon: null }, { id: '3', name: 'Port strike', icon: { key: 'GFX_strip', frame: 8 } }],
-  regions: [{ id: '10', name: 'North Sea' }, { id: '11', name: 'Rhineland' }],
+    { id: '2', name: 'Interception', icon: null }],
+  regions: [{ region: '10', name: 'North Sea', missing: null, missions: ['0', '2'] }, { region: '11', name: null, missing: 'Region 11 name unsupported', missions: ['1'] }],
   theatres: [{ id: 't', name: 'West', regions: ['11'] }],
-  warnings: [],
+});
+const counts = new Map([[liveKey('10', 'm0'), 24], [liveKey('10', 'm2'), 0], [liveKey('10', 'wings'), 1], [liveKey('11', 'm1'), 50], [liveKey('11', 'wings'), 2]]);
+const values = { get: (key: string) => counts.get(key), missing: () => 'Not in the answer' };
+
+test('a region shows the missions it records; a zero stays known and an unflown mission says so', () => {
+  const rows = missionRows(reply);
+  assert.deepEqual(rows.map(row => [row.key, row.name, [...row.missions]]), [['10', 'North Sea', ['0', '2']], ['11', 'Region 11', ['1']]]);
+  assert.deepEqual(shownMissions(reply.missions, rows, []).map(mission => mission.id), ['0', '1', '2']);
+  assert.deepEqual(shownMissions(reply.missions, rows.slice(0, 1), ['1', '2']).map(mission => mission.id), ['2']);
+  const shown = missionValues(values, rows);
+  assert.equal(shown.get(liveKey('10', 'm2')), 0);
+  assert.equal(shown.missing(liveKey('10', 'm1')), NOT_FLOWN);
+  assert.equal(shown.missing(liveKey('12', 'wings')), 'Not in the answer');
+  assert.deepEqual([liveKey('10', 'm1'), liveKey('10', 'm0'), liveKey('10', 'wings')].map(flownBy(rows)), [true, false, false], 'only a mission a region does not fly is empty');
+  const tip = missionTooltip(rows[0], reply.missions, shown, '1 Jan').rows.map(row => `${row.label} ${row.value}`).join('|');
+  assert.match(tip, /Air superiority 24 planes\|Interception 0 planes\|Wings 1\|As of 1 Jan/);
+  assert.match(missionTooltip(rows[1], reply.missions, shown, null).rows.map(row => `${row.label} ${row.value}`).join('|'), /Name Region 11 name unsupported/);
 });
 
-test('a wing on two missions counts in each mission but once in wings, and a zero stays known', () => {
-  const late = missionRowsAt(reply, 'GER', 6)!;
-  const north = late.rows.find(row => row.region === '10')!;
-  assert.deepEqual([...north.planes], [['0', 24n], ['2', 0n]]);
-  assert.equal(north.wings, 1n);
-  assert.deepEqual(shownMissions(reply.missions, late.rows, []).map(mission => mission.id), ['0', '1', '2']);
-  assert.deepEqual(shownMissions(reply.missions, late.rows, ['1']).map(mission => mission.id), ['1']);
-  assert.match(missionTooltip(north, reply.missions, '1 Jan').rows.map(row => `${row.label} ${row.value}`).join('|'), /Air superiority 24 planes\|Interception 0 planes\|Wings 1/);
-});
-
-test('rows follow the country and hour; unrecorded hours are unknown', () => {
-  assert.deepEqual(missionRowsAt(reply, 'GER', 2)!.rows.map(row => row.region), ['10']);
-  assert.deepEqual(missionRowsAt(reply, 'ITA', 2)!.rows.map(row => row.wings), [null]);
-  assert.equal(missionRowsAt(reply, 'GER', 9), null);
-});
-
-test('theatres narrow the regions', () => {
-  const rows = missionRowsAt(reply, 'GER', 6)!.rows;
+test('theatres narrow the regions, and a chosen choice absent at the hour stays selectable', () => {
+  const rows = missionRows(reply);
   assert.deepEqual(regionRows(rows, theatreRegions(reply.theatres, ['t'])).map(row => row.region), ['11']);
   assert.equal(theatreRegions(reply.theatres, []), null);
+  assert.deepEqual(regionRows(rows, theatreRegions(null, ['t'])), []);
+  assert.deepEqual(choicesAt([{ id: 't', name: 'West' }], ['t', 'u']).map(choice => choice.label), ['West', 'u · not at this date']);
 });
 
-test('wing details validate and efficiency keeps the game percent scale', () => {
-  const wings = validateAirWings({ hour: 5, readHour: 5, region: 10, warnings: [], wings: [
-    { id: '1', name: null, type: 'Fighter', planes: 24, missions: ['0', '2'], efficiency: '87500', refusals: [] }] });
-  assert.equal(wings.wings[0].planes, 24);
+test('replies validate, and anything else refuses them', () => {
+  assert.throws(() => validateAirMissions({ ...reply, regions: [{ region: 10, name: null, missing: null, missions: [] }] }), /malformed/u);
+  assert.throws(() => validateAirMissions({ ...reply, missions: [{ id: '0', name: 'A', icon: { key: 'GFX_strip', frame: -1 } }] }), /malformed/u);
+  assert.throws(() => validateAirMissions({ ...reply, theatres: undefined }), /malformed/u);
+  const wings = validateAirWings({ readHour: 5, region: 10, missing: null, warnings: [], wings: [
+    { id: '1', name: null, type: 'Fighter', missions: ['0', '2'], efficiency: '87500', refusals: [] }] });
+  assert.equal(wings.wings[0].type, 'Fighter');
+  assert.throws(() => validateAirWings({ readHour: 5, region: '10', missing: null, warnings: [], wings: [] }), /malformed/u);
   assert.equal(efficiencyText('87500'), '87.5%');
   assert.equal(efficiencyText(null), '—');
-  assert.throws(() => validateAirWings({ hour: 5, readHour: 5, region: 10, warnings: [], wings: [{ id: 1 }] }));
-  // The backend serializes the drill's region as its u32.
-  assert.throws(() => validateAirWings({ hour: 5, readHour: 5, region: '10', warnings: [], wings: [] }), /malformed/u);
 });
 
-test('a mission icon is a strip frame or none, and anything else refuses the reply', () => {
-  const base = { window: { firstHour: 0, lastHour: 0, known: [], reads: [], series: [] }, regions: [], warnings: [] };
-  assert.equal(validateAirMissions({ ...base, missions: [{ id: '0', name: 'A', icon: null }] }).missions[0].icon, null);
-  const recorded = { key: 'GFX_strip', frame: 2, recorded: 'GFX_x' };
-  assert.deepEqual(validateAirMissions({ ...base, missions: [{ id: '0', name: 'A', icon: recorded }] }).missions[0].icon, recorded);
-  for (const icon of [undefined, 'GFX_strip', { key: 'GFX_strip', frame: -1 }, { key: 'GFX_strip', frame: 0.5 },
-    { key: 'GFX_strip', frame: 0, recorded: 5 }, { key: 'GFX_strip', frame: 0, recorded: '' }])
-    assert.throws(() => validateAirMissions({ ...base, missions: [{ id: '0', name: 'A', icon }] }), /malformed/u);
-});
-
-test('rows held from another hour open their wings pinned there, however near the playhead', () => {
-  // Held rows at 100 while paused or playing at 101: never the playhead's wings.
-  for (const following of [true, false]) assert.deepEqual(reduceDrill(CLOSED, openWings(100, 101, following)), { breakdown: 'wings', follow: false, hour: 100 });
-  assert.equal(reduceDrill(CLOSED, openWings(101, 101, true)).follow, true, "the playhead's own rows follow it");
+test('wings open following playback only when the widget follows it', () => {
+  assert.deepEqual(reduceDrill(CLOSED, openWings(100, true)), { breakdown: 'wings', follow: true, hour: null });
+  assert.deepEqual(reduceDrill(CLOSED, openWings(100, false)), { breakdown: 'wings', follow: false, hour: 100 });
 });

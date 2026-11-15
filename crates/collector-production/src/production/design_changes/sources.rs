@@ -22,7 +22,7 @@ impl Interests {
     }
     pub fn insert(&mut self, key: Key, owner: u32) -> Result<(), &'static str> {
         if !self.entries.contains_key(&key) && self.entries.len() == self.entries.capacity() {
-            return Err("design source watch capacity exhausted");
+            grow_map(&mut self.entries)?;
         }
         self.entries.entry(key).or_insert((owner, false)).0 = owner;
         Ok(())
@@ -44,7 +44,7 @@ impl Interests {
         if !self.organisations.contains_key(&handle)
             && self.organisations.len() == self.organisations.capacity()
         {
-            return Err("design liveness watch capacity exhausted");
+            grow_map(&mut self.organisations)?;
         }
         if let Some(old) = self.organisations.get(&handle).copied()
             && old != pointer.unwrap_or(0)
@@ -56,7 +56,7 @@ impl Interests {
             if !self.organisation_pointers.contains_key(&pointer)
                 && self.organisation_pointers.len() == self.organisation_pointers.capacity()
             {
-                return Err("design liveness pointer capacity exhausted");
+                grow_map(&mut self.organisation_pointers)?;
             }
             if self
                 .organisation_pointers
@@ -79,12 +79,22 @@ impl Interests {
     pub(super) fn author_changed(&mut self, handle: u64) {
         if !self.dirty_authors.contains(&handle)
             && self.dirty_authors.len() == self.dirty_authors.capacity()
+            && engine_allocation::advisory(|| {
+                engine_allocation::reserve_set(&mut self.dirty_authors, 1)
+            })
+            .is_err()
         {
             unobserved!();
             return;
         }
         self.dirty_authors.insert(handle);
     }
+}
+
+/// Callback path: a full watch map grows where it is written.
+fn grow_map<K: Eq + std::hash::Hash, V>(map: &mut HashMap<K, V>) -> Result<(), &'static str> {
+    engine_allocation::advisory(|| engine_allocation::reserve_map(map, 1))
+        .map_err(|_| STORAGE_FAILED)
 }
 
 #[derive(Clone, Default)]

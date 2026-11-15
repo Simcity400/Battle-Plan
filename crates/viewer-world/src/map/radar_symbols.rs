@@ -88,25 +88,53 @@ impl Field {
             let groups = frame
                 .complete::<tables::RadarCoverage>()
                 .map_err(|e| e.to_string())?;
+            out.groups(
+                groups.iter().map(|group| {
+                    let country = links.get(&group.country).copied();
+                    Group {
+                        country,
+                        ordinal: group.ordinal,
+                        admitted: match (country, &families) {
+                            (Some(country), _) if country == ours => Ok(true),
+                            (Some(country), Ok(families)) => Ok(families.family(country, ours)),
+                            (_, Err(reason)) => Err(reason.to_string()),
+                            (None, Ok(_)) => Ok(false),
+                        },
+                        state: group.state,
+                        radius: group.radius,
+                    }
+                }),
+                ours,
+                heights,
+                centers,
+            );
+            Ok(())
+        };
+        if let Err(reason) = read() {
+            *out.refused.entry(reason).or_default() += 1;
+        }
+        out
+    }
+
+    /// The symbols of the recorded groups in table order, as [`Self::read`] makes them.
+    pub fn groups(&mut self, groups: impl IntoIterator<Item = Group>, ours: u32, heights: HeightField<'_>, centers: &Centers) {
+        let out = self;
+        {
             let mut ordered = Vec::new();
             for group in groups {
-                let Some(&country) = links.get(&group.country) else {
+                let Some(country) = group.country else {
                     *out.refused
                         .entry("RadarCoverage country is unresolved".into())
                         .or_default() += 1;
                     continue;
                 };
-                let admitted = if country == ours {
-                    true
-                } else {
-                    match &families {
-                        Ok(families) => families.family(country, ours),
-                        Err(reason) => {
-                            *out.refused
-                                .entry(format!("allied radar admission: {reason}"))
-                                .or_default() += 1;
-                            false
-                        }
+                let admitted = match &group.admitted {
+                    Ok(admitted) => *admitted,
+                    Err(reason) => {
+                        *out.refused
+                            .entry(format!("allied radar admission: {reason}"))
+                            .or_default() += 1;
+                        false
                     }
                 };
                 ordered.push((country != ours, country, group.ordinal, admitted, group));
@@ -145,13 +173,19 @@ impl Field {
                     angle: None,
                 });
             }
-            Ok(())
-        };
-        if let Err(reason) = read() {
-            *out.refused.entry(reason).or_default() += 1;
         }
-        out
     }
+}
+
+/// One recorded radar group: its country's canonical slot (none when unresolved), whether the
+/// viewer's family admits it to the roster or why that is unknown, its host state and range.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Group {
+    pub country: Option<u32>,
+    pub ordinal: u32,
+    pub admitted: Result<bool, String>,
+    pub state: Option<u32>,
+    pub radius: Option<i64>,
 }
 
 /// The host template combines ordinary and seam-shifted province boxes,

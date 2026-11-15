@@ -1,109 +1,92 @@
-import { countryNameDetails } from '../../charts/tooltip.ts';
-import type { CountryLabel } from '../../dashboard/countryFlagsAt';
-import type { TooltipRow } from '../../charts/tooltip';
-import type { ConvoyHealthReply, EconomyRun } from '../../generated/dashboard';
 import type { HeatPeriod, HeatRow } from '../../charts/heat/layout';
-import { object } from '../../dashboard/validation.ts';
-import { fixedText, isEconomyRuns, isHolderMap, runAt, tagAt, validateEconomyReply } from '../../dashboard/economyHistory.ts';
-import { MAX_NAME_HOURS } from '../../dashboard/countryFacts.ts';
 import type { NameAt } from '../../dashboard/countryFacts';
+import { object } from '../../dashboard/validation.ts';
+import type { ConvoyCountry, ConvoyHealthReply, ConvoyView, HourSpan } from '../../generated/dashboard';
+import type { ConvoyRun } from './types';
 
 export const CONVOY_HEALTH = 'convoy-health';
-export type ConvoyView = 'regions' | 'trade';
 const DAY = 24;
 
+const isRuns = (value: unknown): value is ConvoyRun[] => Array.isArray(value)
+  && value.every(run => Array.isArray(run) && run.length === 3 && run.every(Number.isSafeInteger) && run[0] <= run[1]);
+const isRunLists = (value: unknown) => Array.isArray(value) && value.every(isRuns);
+const isSpans = (value: unknown): value is HourSpan[] => Array.isArray(value)
+  && value.every(span => object(span) && Number.isSafeInteger(span.firstHour) && Number.isSafeInteger(span.lastHour));
+const isCountries = (value: unknown): value is ConvoyCountry[] => Array.isArray(value)
+  && value.every(run => object(run) && Number.isSafeInteger(run.firstHour) && Number.isSafeInteger(run.lastHour) && (run.tag === null || typeof run.tag === 'string'));
+const isText = (value: unknown) => value === null || typeof value === 'string';
+
 export function validateConvoys(view: ConvoyView) {
-  return (value: unknown): ConvoyHealthReply => validateEconomyReply<ConvoyHealthReply>(value, reply => reply.view === view
-    && Number.isSafeInteger(reply.scale) && isHolderMap(reply.holders)
-    && Array.isArray(reply.known) && reply.known.length === 3 && reply.known.every(runs => isEconomyRuns(runs))
-    && Array.isArray(reply.regions) && reply.regions.every(row => object(row) && Number.isSafeInteger(row.region)
-      && (row.name === null || typeof row.name === 'string') && isEconomyRuns(row.efficiency))
-    && Array.isArray(reply.deals) && reply.deals.every(row => object(row) && typeof row.id === 'string'
-      && ['exporter', 'resource', 'efficiency'].every(key => isEconomyRuns(row[key])) && Array.isArray(row.factors) && row.factors.every(runs => isEconomyRuns(runs))
-      && Array.isArray(row.convoys) && row.convoys.every(runs => isEconomyRuns(runs)))
-    && Array.isArray(reply.leases) && reply.leases.every(row => object(row) && typeof row.handle === 'string' && isEconomyRuns(row.giver)
-      && isEconomyRuns(row.bad) && Array.isArray(row.convoys) && row.convoys.every(runs => isEconomyRuns(runs)))
-    && Array.isArray(reply.resources), 'convoy health');
+  return (value: unknown): ConvoyHealthReply => {
+    const reply = value as Record<string, unknown>;
+    if (!object(value) || reply.view !== view || typeof reply.branchId !== 'string' || typeof reply.tag !== 'string'
+      || !Number.isSafeInteger(reply.scale) || (reply.scale as number) <= 0 || !Number.isSafeInteger(reply.firstHour) || !Number.isSafeInteger(reply.lastHour)
+      || !Array.isArray(reply.known) || reply.known.length !== 3 || !reply.known.every(isSpans) || !isSpans(reply.unheld)
+      || !Array.isArray(reply.regions) || !reply.regions.every(row => object(row) && Number.isSafeInteger(row.region) && isText(row.name) && isText(row.missing) && isRuns(row.efficiency))
+      || !Array.isArray(reply.deals) || !reply.deals.every(row => object(row) && typeof row.id === 'string' && isCountries(row.exporter)
+        && isRuns(row.resource) && isRuns(row.efficiency) && isRunLists(row.factors) && isRunLists(row.convoys))
+      || !Array.isArray(reply.leases) || !reply.leases.every(row => object(row) && typeof row.handle === 'string' && isCountries(row.giver)
+        && isRuns(row.bad) && isRunLists(row.convoys))
+      || !Array.isArray(reply.resources) || !reply.resources.every(row => object(row) && Number.isSafeInteger(row.id) && typeof row.token === 'string' && isText(row.name))
+      || !Array.isArray(reply.warnings) || !reply.warnings.every(warning => typeof warning === 'string')) throw new Error('Invalid convoy health reply');
+    return value as unknown as ConvoyHealthReply;
+  };
 }
 
-/** Calendar days over `extent`, each read at its last recorded hour; a day the
- * recording missed whole is a gap (null read). */
-type Gaps = readonly { firstHour: number; lastHour: number }[];
+type Spans = readonly { firstHour: number; lastHour: number }[];
 
-export function dayPeriods(extent: readonly [number, number], gaps: Gaps): HeatPeriod[] {
+const within = (spans: Spans, hour: number) => {
+  let low = 0, high = spans.length;
+  while (low < high) { const middle = (low + high) >> 1; if (spans[middle].lastHour < hour) low = middle + 1; else high = middle; }
+  return low < spans.length && spans[low].firstHour <= hour;
+};
+
+/** Calendar days over `extent`, each read at its last recorded hour; a day the
+ * recording missed whole has no read (a gap). */
+export function dayPeriods(extent: readonly [number, number], gaps: Spans): HeatPeriod[] {
   const periods: HeatPeriod[] = [];
   for (let start = Math.floor(extent[0] / DAY) * DAY; start <= extent[1]; start += DAY) {
     const first = Math.max(start, extent[0]), last = Math.min(start + DAY - 1, extent[1]);
-    periods.push({ firstHour: first, lastHour: last, readHour: lastRead(first, last, gaps) });
+    let read: number | null = last;
+    while (read !== null && read >= first) {
+      const hour: number = read;
+      const gap = gaps.find(span => span.firstHour <= hour && hour <= span.lastHour);
+      if (!gap) break;
+      read = gap.firstHour - 1 >= first ? gap.firstHour - 1 : null;
+    }
+    periods.push({ firstHour: first, lastHour: last, readHour: read !== null && read >= first ? read : null });
   }
   return periods;
 }
 
-/** The latest recorded hour from `first` through `last`; null when the recording
- * missed them all. */
-function lastRead(first: number, last: number, gaps: Gaps): number | null {
-  let read: number | null = last;
-  while (read !== null && read >= first) {
-    const gap = gaps.find(span => span.firstHour <= read! && read! <= span.lastHour);
-    if (!gap) break;
-    read = gap.firstHour - 1 >= first ? gap.firstHour - 1 : null;
-  }
-  return read !== null && read >= first ? read : null;
+/** The run holding `hour`. */
+export function runAt(runs: readonly ConvoyRun[], hour: number): ConvoyRun | null {
+  let low = 0, high = runs.length;
+  while (low < high) { const middle = (low + high) >> 1; if (runs[middle][1] < hour) low = middle + 1; else high = middle; }
+  return low < runs.length && runs[low][0] <= hour ? runs[low] : null;
 }
 
-const within = (spans: Gaps, hour: number) => spans.some(span => span.firstHour <= hour && hour <= span.lastHour);
-
-/** The periods as shown at `reached` with what preparation has accepted. The day
- * under way reads the latest recorded hour reached, and a read preparation has not
- * accepted yet (`pending`) moves back to the period's latest prepared hour, so a
- * partly prepared day shows its prepared part. A period with nothing prepared has no
- * read: the chart draws the pending band there, never a gap or a cell, and keys skip
- * it. Cells, tooltips, picks and the drill all use these reads. Only the periods
- * whose read changes are copied; the rest are shared. */
-export function shownPeriods(periods: readonly HeatPeriod[], gaps: Gaps, reached: number | null, pending: Gaps): readonly HeatPeriod[] {
-  let shown: HeatPeriod[] | null = null;
-  const set = (index: number, readHour: number | null) => {
-    const current = (shown ?? periods)[index];
-    if (current.readHour !== readHour) (shown ??= periods.slice())[index] = { ...current, readHour };
-  };
-  if (reached !== null) {
-    const index = periodIndex(periods, reached);
-    const read = index === null ? null : periods[index].readHour;
-    if (index !== null && read !== null && read > reached) set(index, lastRead(periods[index].firstHour, reached, gaps));
-  }
-  if (pending.length) {
-    const excluded = [...gaps, ...pending];
-    const first = Math.min(...pending.map(span => span.firstHour));
-    for (let index = periodIndex(periods, first, true) ?? periods.length; index < periods.length; index++) {
-      const { firstHour, readHour } = (shown ?? periods)[index];
-      if (readHour !== null && within(pending, readHour)) set(index, lastRead(firstHour, readHour, excluded));
-    }
-  }
-  return shown ?? periods;
+/** The country run holding `hour`. */
+function countryRunAt(runs: readonly ConvoyCountry[], hour: number): ConvoyCountry | null {
+  let low = 0, high = runs.length;
+  while (low < high) { const middle = (low + high) >> 1; if (runs[middle].lastHour < hour) low = middle + 1; else high = middle; }
+  return low < runs.length && runs[low].firstHour <= hour ? runs[low] : null;
 }
 
-/** The period holding `hour`; with `after`, else the first period after it. */
-function periodIndex(periods: readonly HeatPeriod[], hour: number, after = false): number | null {
-  let low = 0, high = periods.length;
-  while (low < high) {
-    const middle = (low + high) >> 1;
-    if (periods[middle].lastHour < hour) low = middle + 1; else high = middle;
-  }
-  return low < periods.length && (after || periods[low].firstHour <= hour) ? low : null;
-}
+const valueAt = (runs: readonly ConvoyRun[] | undefined, hour: number) => runs ? runAt(runs, hour)?.[2] ?? null : null;
 
-/** The hours still being prepared over `extent`: the reply's pending spans and the
- * tail after its last prepared hour, in order. */
-export function convoyPending(reply: { lastHour: number | null }, pending: Gaps, extent: readonly [number, number]): { firstHour: number; lastHour: number }[] {
-  const spans = pending.map(span => ({ firstHour: span.firstHour, lastHour: span.lastHour }));
-  const from = Math.max(reply.lastHour === null ? extent[0] : reply.lastHour + 1, (spans.at(-1)?.lastHour ?? -Infinity) + 1);
-  if (from <= extent[1]) spans.push({ firstHour: from, lastHour: extent[1] });
-  return spans;
-}
+/** Whether table `index` (regional, deals, clients) was read at `hour`. */
+export const tableKnown = (reply: ConvoyHealthReply, index: number, hour: number) => within(reply.known[index] ?? [], hour);
 
-/** Whether a period without a read is still being prepared rather than missed. */
-export const periodPending = (period: HeatPeriod, pending: Gaps) =>
-  pending.some(span => span.firstHour <= period.lastHour && period.firstHour <= span.lastHour);
+/** The tag a country cell names at `hour`; null where none is recorded or no tag holds it. */
+export const countryAt = (runs: readonly ConvoyCountry[], hour: number) => countryRunAt(runs, hour)?.tag ?? null;
+
+/** A fixed-point share as a percent with two decimals, truncated as the game shows it. */
+export const percent = (raw: number, scale: number) => `${(Math.trunc(raw * 10000 / scale) / 100).toFixed(2)}%`;
+
+export interface ConvoyFact { label: string; value: string; detail?: string }
+export interface CountryName { name: string; nameFailure?: Error; nameDetail?: string }
+export type CountryNameAt = (tag: string | null, hour: number) => CountryName;
 
 /** One heat row: what it shows, and its value at each period's read. */
 export interface ConvoyRow {
@@ -112,118 +95,114 @@ export interface ConvoyRow {
   nameDetail?: string;
   kind: 'region' | 'deal' | 'lease';
   /** Fixed5 efficiency at a read; null where none was read. */
-  valueAt: (hour: number) => bigint | null;
-  /** Unknown at a read: the row's table was not read complete then, or (for
-   * lend-lease receipts) no numeric efficiency is recorded. */
+  valueAt: (hour: number) => number | null;
+  /** Unknown at a read: the row's table was not read then, or (for lend-lease receipts) no
+   * numeric efficiency is recorded. */
   unknownAt: (hour: number) => boolean;
-  detail: (hour: number) => TooltipRow[];
+  /** The facts at a read, in a fixed order of labels; empty when nothing was read. */
+  facts: (hour: number) => ConvoyFact[];
+  /** Every label `facts` can give, in order. */
+  labels: readonly string[];
   /** The row's own history for its drill: percentages, or convoy counts. */
-  lines: { label: string; runs: readonly EconomyRun[] }[];
+  lines: { label: string; runs: readonly ConvoyRun[] }[];
   unit: 'percent' | 'count';
 }
 
-const percent = (raw: bigint, scale: number) => `${fixedText(raw * 100n, BigInt(scale), 2)}%`;
-const big = (runs: readonly EconomyRun[], hour: number) => { const run = runAt(runs, hour); return run ? BigInt(run[2]) : null; };
-const convoysText = (convoys: readonly (readonly EconomyRun[])[], hour: number) => {
-  const assigned = big(convoys[0] ?? [], hour), required = big(convoys[1] ?? [], hour);
+const convoysFact = (convoys: readonly (readonly ConvoyRun[])[], hour: number): ConvoyFact[] => {
+  const assigned = valueAt(convoys[0], hour), required = valueAt(convoys[1], hour);
   return assigned === null && required === null ? [] : [{ label: 'Convoys assigned', value: `${assigned ?? '—'} of ${required ?? '—'}` }];
 };
 
-/** Each country label a row shows, with the dated read it names it at: the
- * hour the widget asks names for, so no other date is ever looked up. Every
- * date is kept, however many rows there are. */
-export function labelDates(reply: ConvoyHealthReply): { wanted: NameAt[]; maxHours: number } {
+/** The latest country a row names, at the last hour of its run: the date its name is read at. */
+const latest = (runs: readonly ConvoyCountry[]) => { const run = runs.at(-1); return run ? { tag: run.tag, hour: run.lastHour } : { tag: null, hour: 0 }; };
+
+/** Each country a row names, dated to the last hour of each run naming it: the dates the widget
+ * asks names for, so no other date is looked up. */
+export function labelDates(reply: ConvoyHealthReply): NameAt[] {
   const wanted: NameAt[] = [];
-  for (const runs of [...reply.deals.map(deal => deal.exporter), ...reply.leases.map(lease => lease.giver)]) {
-    const latest = runs.at(-1);
-    const tag = latest ? tagAt(reply.holders[latest[2]], latest[1]) : null;
-    if (latest && tag) wanted.push({ hour: latest[1], tag });
-  }
-  return { wanted, maxHours: Math.max(MAX_NAME_HOURS, new Set(wanted.map(item => item.hour)).size) };
+  for (const runs of [...reply.deals.map(deal => deal.exporter), ...reply.leases.map(lease => lease.giver)])
+    for (const run of runs) if (run.tag !== null) wanted.push({ hour: run.lastHour, tag: run.tag });
+  return wanted;
 }
 
-/** The tag the holder of a deal's exporter run had at `hour`, or null without one. */
-export function exporterAt(reply: ConvoyHealthReply, exporter: readonly EconomyRun[], hour: number): string | null {
-  const run = runAt(exporter, hour);
-  return run ? tagAt(reply.holders[run[2]], hour) : null;
-}
+/** The country a row names at `hour`, named as it was at the end of its run there. */
+const datedCountry = (runs: readonly ConvoyCountry[], hour: number, names: CountryNameAt) => {
+  const run = countryRunAt(runs, hour);
+  return run ? names(run.tag, run.lastHour) : null;
+};
 
-/** The dated names a deal's facts at `hour` show: each exporter as it was then. */
-export function exportersAt(reply: ConvoyHealthReply, hour: number): { hour: number; tag: string }[] {
-  return reply.deals.flatMap(deal => { const tag = exporterAt(reply, deal.exporter, hour); return tag ? [{ hour, tag }] : []; });
-}
-
-/** Whether table `index` (regional, deals, clients) was read complete at `hour`. */
-export const tableKnown = (reply: ConvoyHealthReply, index: number, hour: number) => runAt(reply.known[index] ?? [], hour) !== null;
-
-export function convoyRows(reply: ConvoyHealthReply, names: { country: (tag: string | null, hour: number) => ReturnType<CountryLabel> }): ConvoyRow[] {
-  const resources = new Map(reply.resources.map(resource => [String(resource.id), resource.name ?? 'Resource name unavailable']));
+export function convoyRows(reply: ConvoyHealthReply, names: CountryNameAt): ConvoyRow[] {
+  const resources = new Map(reply.resources.map(resource => [resource.id, resource.name ?? 'Resource name unavailable']));
   if (reply.view === 'regions') return reply.regions.map(region => ({ id: `region:${region.region}`, kind: 'region' as const,
-    label: region.name ?? `Sea region ${region.region}`, valueAt: hour => big(region.efficiency, hour),
-    unknownAt: hour => !tableKnown(reply, 0, hour),
-    lines: [{ label: 'Convoy efficiency', runs: region.efficiency }], unit: 'percent' as const,
-    detail: hour => { const value = big(region.efficiency, hour); return value === null ? [] : [{ label: 'Convoy efficiency', value: percent(value, reply.scale) }]; } }));
+    label: region.name ?? `Sea region ${region.region}`, ...(region.missing ? { nameDetail: region.missing } : {}),
+    valueAt: hour => valueAt(region.efficiency, hour), unknownAt: hour => !tableKnown(reply, 0, hour),
+    lines: [{ label: 'Convoy efficiency', runs: region.efficiency }], unit: 'percent' as const, labels: ['Convoy efficiency'],
+    facts: hour => { const value = valueAt(region.efficiency, hour); return value === null ? [] : [{ label: 'Convoy efficiency', value: percent(value, reply.scale) }]; } }));
   const deals: ConvoyRow[] = reply.deals.map(deal => {
-    const latest = deal.exporter.at(-1), resource = deal.resource.at(-1);
-    const exporter = latest ? tagAt(reply.holders[latest[2]], latest[1]) : null;
-    // The exporter is named at its latest read, the date the widget asks for.
-    const exporterName = names.country(exporter, latest?.[1] ?? 0);
+    const exporter = latest(deal.exporter), resource = deal.resource.at(-1);
+    const exporterName = names(exporter.tag, exporter.hour);
     return { id: `deal:${deal.id}`, kind: 'deal' as const,
-      nameDetail: exporterName.nameFailure?.message, label: `${exporterName.name} · ${resource ? resources.get(resource[2]) ?? 'Resource name unavailable' : 'Resource name unavailable'}`,
-      valueAt: hour => big(deal.efficiency, hour), unknownAt: hour => !tableKnown(reply, 1, hour),
+      ...(exporterName.nameFailure ? { nameDetail: exporterName.nameFailure.message } : {}),
+      label: `${exporterName.name} · ${resource ? resources.get(resource[2]) ?? 'Resource name unavailable' : 'Resource name unavailable'}`,
+      valueAt: hour => valueAt(deal.efficiency, hour), unknownAt: hour => !tableKnown(reply, 1, hour),
       lines: [{ label: 'Trade efficiency', runs: deal.efficiency }, { label: 'First factor', runs: deal.factors[0] ?? [] }, { label: 'Second factor', runs: deal.factors[1] ?? [] }],
-      unit: 'percent' as const,
-      detail: hour => {
-        const value = big(deal.efficiency, hour);
+      unit: 'percent' as const, labels: ['Exporter', 'Trade efficiency', 'Factors', 'Convoys assigned'],
+      facts: hour => {
+        const value = valueAt(deal.efficiency, hour);
         if (value === null) return [];
-        const [a, b] = deal.factors.map(runs => big(runs, hour));
-        // The exporter as it was at this read, not as it was last read.
-        const dated = exporterAt(reply, deal.exporter, hour);
-        const country = names.country(dated, hour);
-        return [{ ...countryNameDetails(country), label: 'Exporter', value: country.name },
+        const [a, b] = [valueAt(deal.factors[0], hour), valueAt(deal.factors[1], hour)];
+        const country = datedCountry(deal.exporter, hour, names);
+        return [{ label: 'Exporter', value: country?.name ?? 'Country name unavailable', ...(country?.nameDetail ? { detail: country.nameDetail } : {}) },
           { label: 'Trade efficiency', value: percent(value, reply.scale) },
           ...a !== null && b !== null ? [{ label: 'Factors', value: `${percent(a, reply.scale)} × ${percent(b, reply.scale)}` }] : [],
-          ...convoysText(deal.convoys, hour)];
+          ...convoysFact(deal.convoys, hour)];
       } };
   });
   const leases: ConvoyRow[] = reply.leases.map(lease => {
-    const latest = lease.giver.at(-1);
-    const country = names.country(latest ? tagAt(reply.holders[latest[2]], latest[1]) : null, latest?.[1] ?? 0);
+    const giver = latest(lease.giver);
+    const country = names(giver.tag, giver.hour);
     return { id: `lease:${lease.handle}`, kind: 'lease' as const,
-      nameDetail: country.nameFailure?.message, label: `Lend-lease from ${country.name}`,
-      // Every recorded client has a route flag, even while its giver is unidentified.
+      ...(country.nameFailure ? { nameDetail: country.nameFailure.message } : {}), label: `Lend-lease from ${country.name}`,
+      // Every recorded client has a route flag, even while its giver is not named.
       valueAt: () => null, unknownAt: hour => runAt(lease.bad, hour) !== null || !tableKnown(reply, 2, hour),
       lines: [{ label: 'Convoys assigned', runs: lease.convoys[0] ?? [] }, { label: 'Convoys required', runs: lease.convoys[1] ?? [] }], unit: 'count' as const,
-      detail: hour => runAt(lease.bad, hour) === null ? [] : [{ label: 'Efficiency', value: 'Not recorded' },
-        { label: 'Route', value: big(lease.bad, hour) === 1n ? 'Drawn as a bad route' : 'Not drawn as a bad route' },
-        ...convoysText(lease.convoys, hour)] };
+      labels: ['Efficiency', 'Route', 'Convoys assigned'],
+      facts: hour => runAt(lease.bad, hour) === null ? [] : [{ label: 'Efficiency', value: 'Not recorded' },
+        { label: 'Route', value: valueAt(lease.bad, hour) === 1 ? 'Drawn as a bad route' : 'Not drawn as a bad route' },
+        ...convoysFact(lease.convoys, hour)] };
   });
   return [...deals, ...leases];
 }
 
-/** The heat rows over [reachedPeriods]: each period's cell is its read's share,
- * blank where nothing was read, hatched where it is not recorded (lend-lease). The
- * most active rows (most days read through `through`) come first, at most `count`. */
-export function heatRows(rows: readonly ConvoyRow[], periods: readonly HeatPeriod[], color: string, count: number, through: number | null = null): HeatRow[] {
-  const cells = rows.map(row => ({ row, cells: periods.map(period => {
-    const read = period.readHour;
-    if (read === null) return { parts: [] };
-    if (row.unknownAt(read)) return { parts: [], unknown: true };
-    const value = row.valueAt(read);
-    if (value === null) return { parts: [] };
-    const share = Math.max(0, Math.min(1, Number(value) / 100000));
-    return { parts: [{ id: row.id, label: row.label, color, share }] };
-  }) }));
-  // Ranks by the reads reached (the day under way at its reached read), so later
-  // days never pick the rows.
-  const ranked = cells.map(entry => {
+/** The heat rows over `periods`: each period's cell is its read's share, blank where nothing was
+ * read, hatched where it is not recorded (lend-lease, or the table not read). The most active rows
+ * over the whole span (most days with a cell) come first, at most `count`; the order never moves
+ * with the playhead. */
+export function heatRows(rows: readonly ConvoyRow[], periods: readonly HeatPeriod[], color: string, count: number, scale: number): HeatRow[] {
+  const cells = rows.map(row => {
     let active = 0;
-    for (let index = 0; index < periods.length && index < entry.cells.length; index++) {
-      const read = periods[index].readHour, cell = entry.cells[index];
-      if (read !== null && (through === null || read <= through) && (cell.parts.length || cell.unknown)) active++;
-    }
-    return { ...entry, active };
+    const made = periods.map(period => {
+      const read = period.readHour;
+      if (read === null) return { parts: [] };
+      if (row.unknownAt(read)) { active++; return { parts: [], unknown: true }; }
+      const value = row.valueAt(read);
+      if (value === null) return { parts: [] };
+      active++;
+      return { parts: [{ id: row.id, label: row.label, color, share: Math.max(0, Math.min(1, value / scale)) }] };
+    });
+    return { row, cells: made, active };
   });
-  return ranked.sort((a, b) => b.active - a.active || a.row.label.localeCompare(b.row.label)).slice(0, count)
+  return cells.sort((a, b) => b.active - a.active || a.row.label.localeCompare(b.row.label)).slice(0, count)
     .filter(entry => entry.active > 0).map(entry => ({ id: entry.row.id, label: entry.row.label, cells: entry.cells }));
+}
+
+/** What a hovered day's tooltip says of a row: its facts, or why there are none. */
+export function factsOrReason(row: ConvoyRow | undefined, period: HeatPeriod | null, reply: ConvoyHealthReply): { facts: ConvoyFact[]; reason: string | null } {
+  const read = period?.readHour ?? null;
+  if (read === null) return { facts: [], reason: 'Not recorded' };
+  if (within(reply.unheld, read)) return { facts: [], reason: 'The country was not held then' };
+  const facts = row ? row.facts(read) : [];
+  if (facts.length) return { facts, reason: null };
+  if (!row || row.unknownAt(read)) return { facts: [], reason: 'Not recorded' };
+  return { facts: [], reason: row.kind === 'region' ? 'No bad convoy route here' : 'No deal this day' };
 }

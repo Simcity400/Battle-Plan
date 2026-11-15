@@ -4,10 +4,17 @@ import { useContentRevision } from '../../dashboard/contentRevision';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import type { BoundTrack } from '../../dashboard/model';
 import { loadTransientProduct } from '../../dashboard/products';
-import type { PoliticsStateReply } from '../../generated/dashboard';
-import { validateBalanceDetails } from './balanceOfPowerData';
+import { validateBalanceList } from './balanceOfPowerData';
+import type { PoliticsStateAt } from '../../dashboard/politicsHistory';
+import { repliedCells } from '../../dashboard/follow/liveCells.ts';
+import { noValues } from '../../charts/live.ts';
+import type { LiveValues } from '../../charts/live';
+import { busyWait } from '../../shell/busy.ts';
 
-export interface BalanceDetails { hour: number | null; data?: PoliticsStateReply; error?: Failure; retry: () => void }
+/** The hour's records, and their values (the reply's live cells at that hour). */
+export interface BalanceDetails { hour: number | null; data?: PoliticsStateAt; values: LiveValues<number>; error?: Failure; retry: () => void }
+
+const NOT_READ = noValues('Not read yet');
 
 /** Every stored balance record at one hour (members, contributions and drift sources):
  * one uncached request per hour asked, only while one is asked. */
@@ -17,13 +24,13 @@ export function useBalanceDetails(runtime: WidgetRuntime, track: BoundTrack | un
   const request = track && hour !== null && active ? { sourceId: track.source.id, revision: track.source.revision, product: 'politics-state',
     params: { branchId: track.branch.id, hour, view: 'balances' } } : null;
   const key = JSON.stringify([request, revision, attempt]);
-  const [state, setState] = useState<{ client: WidgetRuntime['client']; key: string; data?: PoliticsStateReply; error?: Failure }>();
+  const [state, setState] = useState<{ client: WidgetRuntime['client']; key: string; data?: PoliticsStateAt; values?: LiveValues<number>; error?: Failure }>();
   useEffect(() => {
     if (!request || hour === null) return;
     const controller = new AbortController();
     void loadTransientProduct<unknown>(runtime.client, request, controller.signal).then(reply => {
-      const data = validateBalanceDetails(reply, hour);
-      if (!controller.signal.aborted) setState({ client: runtime.client, key, data });
+      const data = { ...validateBalanceList(reply), hour };
+      if (!controller.signal.aborted) setState({ client: runtime.client, key, data, values: repliedCells(reply).read() });
     }).catch(error => {
       if (!controller.signal.aborted) setState({ client: runtime.client, key, error: asFailure(error) });
     });
@@ -32,7 +39,7 @@ export function useBalanceDetails(runtime: WidgetRuntime, track: BoundTrack | un
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runtime.client, key]);
   const current = state?.client === runtime.client && state.key === key ? state : undefined;
-  return { hour, data: current?.data, error: current?.error, retry: () => setAttempt(value => value + 1) };
+  return { hour, data: current?.data, values: current?.values ?? NOT_READ, error: current?.error, retry: () => setAttempt(value => value + 1) };
 }
 
 /** `hour` once it has rested for `delay` ms (at once when `now`), so playback asks
@@ -41,8 +48,7 @@ export function useSettledHour(hour: number | null, delay: number, now: boolean)
   const [settled, setSettled] = useState(hour);
   useEffect(() => {
     if (now || hour === null) { setSettled(hour); return; }
-    const timer = setTimeout(() => setSettled(hour), delay);
-    return () => clearTimeout(timer);
+    return busyWait(() => setSettled(hour), delay);
   }, [hour, delay, now]);
   return now ? hour : settled;
 }

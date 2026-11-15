@@ -422,7 +422,7 @@ impl Captured {
             supply_origins_len: 0,
             required_supply_origins: 0,
         };
-        let walk = railway_gun_counter_inputs::walk_with_tooltip_and_combat_references_growing(
+        let walk = railway_gun_counter_inputs::walk_with_tooltip_and_combat_references(
             memory,
             base,
             game_state,

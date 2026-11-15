@@ -95,7 +95,7 @@ fn game_score_country_counts_preserve_signed_values_and_fleet_occurrences() {
     );
     let mut growing_countries = Vec::new();
     let mut growing_fleets = Vec::new();
-    let first = walk_country_inputs_growing(
+    let first = walk_country_inputs(
         &SliceMemory {
             base: 0,
             bytes: &bytes,
@@ -106,9 +106,9 @@ fn game_score_country_counts_preserve_signed_values_and_fleet_occurrences() {
         &mut growing_fleets,
     );
     assert_eq!(first, result);
-    assert_eq!(&growing_countries[..N], countries.as_slice());
-    assert_eq!(&growing_fleets[..N * 3], fleets.as_slice());
-    for (index, row) in countries.iter().enumerate() {
+    assert_eq!(growing_countries[..N], countries[..N]);
+    assert_eq!(growing_fleets[..N * 3], fleets[..N * 3]);
+    for (index, row) in countries[..N].iter().enumerate() {
         assert_eq!(
             (row.country, row.army_count, row.navy_count, row.land_count),
             (
@@ -181,14 +181,11 @@ fn game_score_country_counts_preserve_signed_values_and_fleet_occurrences() {
         0,
         GS,
         &mut countries,
-        &mut [],
+        &mut Vec::new(),
     );
     assert_eq!(result.fleet_required, N * 3);
-    assert!(
-        countries
-            .iter()
-            .all(|row| row.navy_count == Err("game score fleet witness arena exhausted"))
-    );
+    assert_eq!(result.outcome, Outcome::Rows { len: N });
+    assert!(countries[..N].iter().all(|row| row.navy_count.is_ok()));
 }
 
 #[test]
@@ -206,8 +203,8 @@ fn game_score_country_prefix_diagnostics_survive_later_identity_failure() {
         i32_at(&mut bytes, pointer + ccountry::ID, slot as i32);
     }
     u64_at(&mut bytes, FIRST + 0x500, 0);
-    let mut rows = [CountryRow::default(); 2];
-    let read = |bytes: &[u8], rows: &mut [CountryRow]| {
+    let mut rows = vec![CountryRow::default(); 2];
+    let read = |bytes: &[u8], rows: &mut Vec<CountryRow>| {
         walk_country_inputs(
             &Fault {
                 bytes,
@@ -216,7 +213,7 @@ fn game_score_country_prefix_diagnostics_survive_later_identity_failure() {
             0,
             GS,
             rows,
-            &mut [],
+            &mut Vec::new(),
         )
     };
     let capture = read(&bytes, &mut rows);
@@ -253,7 +250,7 @@ fn game_score_slot_zero_object_is_included_and_refusals_are_named() {
     let mut bytes = vec![0; 0x3000];
     array(&mut bytes, GS + cgame_state::COUNTRIES, 0x1800, 2);
     array(&mut bytes, GS + cgame_state::COUNTRY_LINKS, 0x1900, 2);
-    let mut rows = [CountryRow::default(); 2];
+    let mut rows = vec![CountryRow::default(); 2];
     let capture = walk_country_inputs(
         &SliceMemory {
             base: 0,
@@ -262,7 +259,7 @@ fn game_score_slot_zero_object_is_included_and_refusals_are_named() {
         0,
         GS,
         &mut rows,
-        &mut [],
+        &mut Vec::new(),
     );
     assert!(capture.slot_zero_null);
     assert_eq!(capture.slot_zero_refusal, None);
@@ -278,7 +275,7 @@ fn game_score_slot_zero_object_is_included_and_refusals_are_named() {
         0,
         GS,
         &mut rows,
-        &mut [],
+        &mut Vec::new(),
     );
     assert_eq!(
         (
@@ -306,7 +303,7 @@ fn game_score_slot_zero_object_is_included_and_refusals_are_named() {
         0,
         GS,
         &mut rows,
-        &mut [],
+        &mut Vec::new(),
     );
     assert_eq!(
         (capture.outcome, capture.slot_zero_refusal),
@@ -323,7 +320,7 @@ fn game_score_slot_zero_object_is_included_and_refusals_are_named() {
         0,
         GS,
         &mut rows,
-        &mut [],
+        &mut Vec::new(),
     );
     assert_eq!(
         capture.slot_zero_refusal,
@@ -529,13 +526,13 @@ fn game_score_first_sites_keep_repeats_access_false_and_read_failures_distinct()
     u64_at(&mut bytes, 0x3008, 0xdead);
     // The native bounds rejection does not need a data pointer or capacity.
     i32_at(&mut bytes, 0x2000 + cair_base::COUNTRY_CONTAINERS_COUNT, 1);
-    let mut rows = [AirSite::default(); 3];
+    let mut rows = vec![AirSite::default(); 3];
     let memory = SliceMemory {
         base: 0,
         bytes: &bytes,
     };
     assert_eq!(
-        read_first_sites(&memory, 0, 1, Some(0x100), &mut rows),
+        read_first_sites_buffer(&memory, 0, 1, Some(0x100), crate::walk::Buffer::Growing(&mut rows)),
         AirRead {
             state: AirState::Present,
             error: "",
@@ -561,11 +558,11 @@ fn game_score_first_sites_keep_repeats_access_false_and_read_failures_distinct()
         ]
     );
     assert_eq!(
-        read_first_sites(&memory, 0, 1, None, &mut rows).state,
+        read_first_sites_buffer(&memory, 0, 1, None, crate::walk::Buffer::Growing(&mut rows)).state,
         AirState::Absent
     );
     assert_eq!(
-        read_first_sites(&memory, 0, 1, Some(0x100), &mut []),
+        read_first_sites_buffer(&memory, 0, 1, Some(0x100), crate::walk::Buffer::Count),
         AirRead {
             state: AirState::Unknown,
             error: "game score first air-site arena exhausted",
@@ -574,16 +571,10 @@ fn game_score_first_sites_keep_repeats_access_false_and_read_failures_distinct()
         }
     );
     assert_eq!(
-        read_first_sites(
-            &Fault {
+        read_first_sites_buffer(&Fault {
                 bytes: &bytes,
                 address: 0x3008
-            },
-            0,
-            1,
-            Some(0x100),
-            &mut rows
-        )
+            }, 0, 1, Some(0x100), crate::walk::Buffer::Growing(&mut rows))
         .state,
         AirState::Present
     );
@@ -733,7 +724,7 @@ fn first_score_air_sites_grow_from_original_headers_for_mod_sized_lists() {
             bytes: &bytes,
         };
         assert_eq!(
-            read_first_sites(&memory, 0, 1, Some(0x100), &mut []).state,
+            read_first_sites_buffer(&memory, 0, 1, Some(0x100), crate::walk::Buffer::Count).state,
             AirState::Unknown
         );
         let captured = read_first_sites_buffer(
@@ -863,7 +854,7 @@ fn game_score_first_sites_gather_by_batch_with_each_site_failing_alone() {
         };
         let mut rows = vec![AirSite::default(); SITES];
         assert_eq!(
-            read_first_sites(&memory, 0, 1, Some(0x100), &mut rows).state,
+            read_first_sites_buffer(&memory, 0, 1, Some(0x100), crate::walk::Buffer::Growing(&mut rows)).state,
             AirState::Present
         );
         let batched = memory.rounds.get();
@@ -878,16 +869,10 @@ fn game_score_first_sites_gather_by_batch_with_each_site_failing_alone() {
         assert!(batched < 40, "{batched} guarded rounds");
     }
     let mut rows = vec![AirSite::default(); SITES];
-    read_first_sites(
-        &SliceMemory {
+    read_first_sites_buffer(&SliceMemory {
             base: 0,
             bytes: &bytes,
-        },
-        0,
-        1,
-        Some(0x100),
-        &mut rows,
-    );
+        }, 0, 1, Some(0x100), crate::walk::Buffer::Growing(&mut rows));
     assert_eq!(rows[5].access, Err("game score air-site pointer is null"));
     assert_eq!(rows[9].access, Err("game score air-site vtable mismatch"));
     assert_eq!(rows[20].access, Err("game score air-site handle is null"));
@@ -1084,7 +1069,7 @@ fn bench_first_site_batches() {
             let started = std::time::Instant::now();
             for &(slot, entry) in &owners {
                 if batched {
-                    read_first_sites(&memory, base, slot, Some(entry), &mut rows);
+                    read_first_sites_buffer(&memory, base, slot, Some(entry), crate::walk::Buffer::Growing(&mut rows));
                 } else {
                     let sites =
                         Array::read(&memory, entry + cstrategic_air::FIRST_AIR_SITES, 8).unwrap();

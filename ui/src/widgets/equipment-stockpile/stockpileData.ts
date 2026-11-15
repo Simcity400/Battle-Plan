@@ -9,10 +9,11 @@ import { campaignToken } from '../../dashboard/chosen.ts';
 import type { ChoiceSource } from '../../dashboard/chosen';
 import { contentKey, setToken } from '../../dashboard/options.ts';
 import { DOMAINS, UNRESOLVED_ARM, UNRESOLVED_MARK, domainName, unresolvedTypeName, variantNameAt } from '../../dashboard/equipment.ts';
-import type { AmountRun, Domain, EquipmentStockpileReply, HourSpan, StockpileCatalogueReply, StockType, StockVariant, StockVariantName } from '../../generated/dashboard';
+import type { AmountRun, Domain, EquipmentStockpileReply, HourSpan, StockpileCatalogueReply, StockVariant, StockVariantName } from './types';
 import { chartSummaryFrom } from '../../charts/chartSummary.ts';
 import type { ChartSummary } from '../../charts/chartSummary';
 import type { PreparedStockpileReply } from './stockpileCatalogue';
+import type { StockType } from '../../generated/dashboard';
 
 /** A country's equipment stockpile, from the recorded `Stockpiles` and production
  * lines, and its logistics record: the game's own surplus or shortage per equipment

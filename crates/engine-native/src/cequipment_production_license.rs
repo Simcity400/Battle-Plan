@@ -70,7 +70,7 @@ pub(crate) fn read_row(
     owner: u32,
     ordinal: u32,
     pointer: usize,
-    handles: &mut [u64],
+    handles: &mut Vec<u64>,
     used: usize,
 ) -> Result<(Option<Row>, usize, usize), &'static str> {
     read_row_buffer(
@@ -79,7 +79,7 @@ pub(crate) fn read_row(
         owner,
         ordinal,
         pointer,
-        &mut crate::walk::Buffer::Fixed(handles),
+        &mut crate::walk::Buffer::Growing(handles),
         used,
     )
 }
@@ -219,7 +219,7 @@ mod tests {
             base: BASE,
             bytes: &bytes,
         };
-        let mut handles = [0; 4];
+        let mut handles = vec![0; 4];
         let (row, used, wanted) = read_row(&memory, 0, 7, 3, LICENSE, &mut handles, 1).unwrap();
         assert_eq!(
             row.unwrap(),
@@ -241,16 +241,7 @@ mod tests {
     }
 
     #[test]
-    fn a_full_arena_omits_the_row_and_broken_variants_fail_explicitly() {
-        let bytes = fixture();
-        let memory = SliceMemory {
-            base: BASE,
-            bytes: &bytes,
-        };
-        assert_eq!(
-            read_row(&memory, 0, 7, 0, LICENSE, &mut [0; 1], 0),
-            Ok((None, 0, 2))
-        );
+    fn broken_licence_fields_fail_explicitly() {
         for (address, reason) in [
             (LICENSE, "production licence vtable mismatch"),
             (
@@ -278,7 +269,7 @@ mod tests {
                     7,
                     0,
                     LICENSE,
-                    &mut [0; 4],
+                    &mut vec![0; 4],
                     0
                 ),
                 Err(reason),
@@ -297,7 +288,7 @@ mod tests {
                 7,
                 0,
                 LICENSE,
-                &mut [0; 16],
+                &mut vec![0; 16],
                 0
             ),
             Err("production licence equipment array invalid")
@@ -312,7 +303,7 @@ mod tests {
                 7,
                 0,
                 LICENSE,
-                &mut [0; 4],
+                &mut vec![0; 4],
                 0
             ),
             Err("production licence record fields unreadable")

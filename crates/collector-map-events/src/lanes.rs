@@ -5,8 +5,10 @@
 //! every ring is taken. A callback copies its event into a frame in bounded
 //! synchronous steps, without allocating, locking or calling the game, then
 //! takes the next number of the one global sequence and publishes the frame
-//! with a release store. An event that does not fit is refused, counted and
-//! remembered as demand; nothing is overwritten.
+//! with a release store. An event that does not fit goes whole to storage of
+//! its own on its generation's lock-free spill, so no callback waits for the
+//! spool, and its demand sizes the next generation; nothing is overwritten, and
+//! only a refused allocation refuses an event.
 //!
 //! The hourly cut ([`seal`]) reads two counters: when every sequence number
 //! taken has been published, the interval is exactly the events numbered up
@@ -14,6 +16,7 @@
 //! The sizing thread offers a larger generation ([`grow`]); callbacks move to
 //! it, the older one is drained until empty and kept until [`release`].
 use crate::shared_lane::SharedLane;
+use collector_primitives::spill_stack::SpillStack;
 use std::{
     cell::{Cell, UnsafeCell},
     sync::{
@@ -33,8 +36,8 @@ pub const MINIMUM_LANE_BYTES: usize = 64 * 1024;
 pub enum Refusal {
     /// No generation is installed.
     Staging,
-    /// The event did not fit its lane.
-    Capacity,
+    /// The allocator refused the spill an event that did not fit needed.
+    Allocation,
     /// The writer could not read the event's operands.
     Read(&'static str),
 }
@@ -105,10 +108,26 @@ struct SharedRecord {
     len: u32,
 }
 
+/// An event no lane or shared slot had room for, with its payload.
+struct Spilled {
+    sequence: u64,
+    hour: i32,
+    family: u8,
+    world: u64,
+    payload: Vec<u8>,
+    /// A queued interval holds it.
+    admitted: bool,
+}
+
 struct Log {
     serial: u64,
     lanes: Box<[Lane]>,
     shared: SharedLane<SharedRecord>,
+    /// Spilled events callbacks pushed and the spool has not taken.
+    pushed: SpillStack<Spilled>,
+    /// Taken from `pushed`, sorted by sequence and held until the interval that
+    /// copied it is written; callbacks never lock it.
+    spill: Mutex<Vec<Spilled>>,
     /// Per shared slot: its index + 1 while a queued interval holds it.
     admitted: Box<[AtomicU64]>,
     registered: AtomicUsize,
@@ -136,6 +155,8 @@ impl Log {
             lanes: engine_allocation::boxed_slice(storage)
                 .map_err(|_| "map event lane allocation failed")?,
             shared,
+            pushed: SpillStack::new(),
+            spill: Mutex::new(Vec::new()),
             admitted: engine_allocation::boxed_slice(admitted)
                 .map_err(|_| "map event lane allocation failed")?,
             registered: AtomicUsize::new(0),
@@ -152,9 +173,33 @@ impl Log {
                 .sum::<usize>()
             + self.shared.allocated_bytes()
             + self.admitted.len() * size_of::<AtomicU64>()
+            + {
+                let spill = self.spill();
+                spill.capacity() * size_of::<Spilled>()
+                    + spill
+                        .iter()
+                        .map(|spilled| spilled.payload.capacity())
+                        .sum::<usize>()
+            }
     }
     fn admission(&self, slot: u64) -> &AtomicU64 {
         &self.admitted[slot as usize & (self.admitted.len() - 1)]
+    }
+    /// Spool side: every spilled event, sorted by sequence, the pushed ones taken
+    /// in. A refused allocation loses the taken events, and the next interval
+    /// reports lost output.
+    fn spill(&self) -> std::sync::MutexGuard<'_, Vec<Spilled>> {
+        let mut spill = self
+            .spill
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !self.pushed.is_empty() {
+            match self.pushed.take_into(&mut spill) {
+                Ok(()) => spill.sort_unstable_by_key(|spilled| spilled.sequence),
+                Err(_) => crate::interval::lost_output(),
+            }
+        }
+        spill
     }
 }
 
@@ -172,6 +217,8 @@ static SHARED_DEMAND: AtomicUsize = AtomicUsize::new(0);
 static REQUIRED_LANES: AtomicUsize = AtomicUsize::new(0);
 /// Intervals admitted to the writer queue and not yet written.
 static ADMITTED: AtomicUsize = AtomicUsize::new(0);
+/// Events that went to a spill since attach.
+static SPILLED: AtomicU64 = AtomicU64::new(0);
 
 std::thread_local! {
     /// (generation address, its serial, this thread's lane index).
@@ -289,13 +336,13 @@ pub fn publish(
         bytes
     };
     let Some(lane) = log.lanes.get(lane_index(log)) else {
-        let Some(mut slot) = log.shared.reserve() else {
-            return Err(Refusal::Capacity);
-        };
-        if len > slot.stride() {
+        if len > log.shared.stride() {
             SHARED_DEMAND.fetch_max(len, Ordering::Relaxed);
-            return Err(Refusal::Capacity);
+            return spill(log, family, hour, world, len, write);
         }
+        let Some(mut slot) = log.shared.try_reserve() else {
+            return spill(log, family, hour, world, len, write);
+        };
         let mut writer = Writer {
             target: Target::Slot(slot.bytes()),
             written: 0,
@@ -320,7 +367,7 @@ pub fn publish(
     let pending = start.wrapping_sub(lane.consumed.load(Ordering::Acquire)) as usize;
     if pending + total > lane.capacity() {
         lane.demand.fetch_max(pending + total, Ordering::Relaxed);
-        return Err(Refusal::Capacity);
+        return spill(log, family, hour, world, len, write);
     }
     let mut writer = Writer {
         target: Target::Lane(lane, start + HEADER as u64),
@@ -342,6 +389,50 @@ pub fn publish(
     let end = start + total as u64;
     unsafe { *lane.write.get() = end };
     lane.published.store(end, Ordering::Release);
+    PUBLISHED.fetch_add(1, Ordering::SeqCst);
+    Ok(sequence)
+}
+
+/// An event its lane or the shared lane has no room for: its payload is copied into storage
+/// of its own, numbered only once that storage is held, and pushed before it counts as
+/// published, so a sealed interval's spilled events are all on the spill.
+#[cold]
+fn spill(
+    log: &Log,
+    family: u8,
+    hour: i32,
+    world: u64,
+    len: usize,
+    write: impl FnOnce(&mut Writer<'_>) -> Result<(), &'static str>,
+) -> Result<u64, Refusal> {
+    let mut payload = Vec::new();
+    engine_allocation::advisory(|| engine_allocation::reserve_exact(&mut payload, len))
+        .map_err(|_| Refusal::Allocation)?;
+    payload.resize(len, 0);
+    let mut writer = Writer {
+        target: Target::Slot(payload.as_mut_ptr()),
+        written: 0,
+        len,
+    };
+    write(&mut writer).map_err(Refusal::Read)?;
+    if writer.written != len {
+        return Err(Refusal::Read("map event writer left its frame short"));
+    }
+    let mut spilled = log
+        .pushed
+        .reserve(Spilled {
+            sequence: 0,
+            hour,
+            family,
+            world,
+            payload,
+            admitted: false,
+        })
+        .map_err(|_| Refusal::Allocation)?;
+    let sequence = SEQUENCE.fetch_add(1, Ordering::SeqCst) + 1;
+    spilled.sequence = sequence;
+    spilled.push();
+    SPILLED.fetch_add(1, Ordering::Relaxed);
     PUBLISHED.fetch_add(1, Ordering::SeqCst);
     Ok(sequence)
 }
@@ -407,6 +498,8 @@ pub struct Assembled {
     lanes: Vec<(usize, usize, u64)>,
     shared: Vec<(usize, u64)>,
     rejected: Vec<(usize, u64)>,
+    /// (generation, sequence) of each spilled event copied, ascending per generation.
+    spilled: Vec<(usize, u64)>,
     admitted: AtomicBool,
 }
 
@@ -430,6 +523,7 @@ pub fn assemble(seal: Seal, output: &mut Assembled) -> Result<(), &'static str> 
     output.lanes.clear();
     output.shared.clear();
     output.rejected.clear();
+    output.spilled.clear();
     output.admitted.store(false, Ordering::Relaxed);
     let mut header = [0_u8; HEADER];
     for log in generations() {
@@ -497,9 +591,58 @@ pub fn assemble(seal: Seal, output: &mut Assembled) -> Result<(), &'static str> 
         engine_allocation::reserve(&mut output.rejected, 1)
             .map_err(|_| "map event assembly allocation failed")?;
         output.rejected.push((generation, rejected));
+        copy_spilled(seal, generation, &log.spill(), output)?;
     }
     output.frames.sort_unstable_by_key(|frame| frame.sequence);
     Ok(())
+}
+
+fn copy_spilled(
+    seal: Seal,
+    generation: usize,
+    spilled: &[Spilled],
+    output: &mut Assembled,
+) -> Result<(), &'static str> {
+    for spilled in spilled
+        .iter()
+        .take_while(|spilled| spilled.sequence <= seal.last)
+        .filter(|spilled| !spilled.admitted)
+    {
+        let start = output.bytes.len();
+        engine_allocation::reserve(&mut output.bytes, spilled.payload.len())
+            .map_err(|_| "map event assembly allocation failed")?;
+        output.bytes.extend_from_slice(&spilled.payload);
+        engine_allocation::reserve(&mut output.frames, 1)
+            .map_err(|_| "map event assembly allocation failed")?;
+        output.frames.push(Frame {
+            sequence: spilled.sequence,
+            hour: spilled.hour,
+            family: spilled.family,
+            world: spilled.world,
+            start,
+            len: spilled.payload.len(),
+        });
+        engine_allocation::reserve(&mut output.spilled, 1)
+            .map_err(|_| "map event assembly allocation failed")?;
+        output.spilled.push((generation, spilled.sequence));
+    }
+    Ok(())
+}
+
+/// The positions in a generation's spill of the events `copied` lists for it.
+fn spilled_in<'a>(
+    spill: &'a mut [Spilled],
+    generation: usize,
+    copied: &'a [(usize, u64)],
+) -> impl Iterator<Item = &'a mut Spilled> {
+    let mut spill = spill.iter_mut().peekable();
+    copied
+        .iter()
+        .filter(move |&&(address, _)| address == generation)
+        .filter_map(move |&(_, sequence)| {
+            while spill.next_if(|spilled| spilled.sequence < sequence).is_some() {}
+            spill.next_if(|spilled| spilled.sequence == sequence)
+        })
 }
 
 /// Generations stay allocated until `release`, including after replacement.
@@ -512,7 +655,19 @@ impl Assembled {
         self.frames.capacity() * size_of::<Frame>()
             + self.bytes.capacity()
             + self.lanes.capacity() * size_of::<(usize, usize, u64)>()
-            + (self.shared.capacity() + self.rejected.capacity()) * size_of::<(usize, u64)>()
+            + (self.shared.capacity() + self.rejected.capacity() + self.spilled.capacity())
+                * size_of::<(usize, u64)>()
+    }
+
+    /// The generations this interval copied spilled events from.
+    fn spilled_generations(&self) -> impl Iterator<Item = usize> + '_ {
+        self.spilled
+            .iter()
+            .enumerate()
+            .filter(|&(index, &(address, _))| {
+                index == 0 || self.spilled[index - 1].0 != address
+            })
+            .map(|(_, &(address, _))| address)
     }
 
     /// Allocation-free admission skips these events without freeing their space.
@@ -530,6 +685,12 @@ impl Assembled {
             generation(address)
                 .admission(slot)
                 .store(slot + 1, Ordering::Release);
+        }
+        for address in self.spilled_generations() {
+            let mut spill = generation(address).spill();
+            for spilled in spilled_in(&mut spill, address, &self.spilled) {
+                spilled.admitted = true;
+            }
         }
     }
 
@@ -554,6 +715,19 @@ impl Assembled {
         for &(address, rejected) in &self.rejected {
             generation(address).shared.advance(rejected);
         }
+        for address in self.spilled_generations() {
+            let mut spill = generation(address).spill();
+            let mut written = self
+                .spilled
+                .iter()
+                .filter(|&&(log, _)| log == address)
+                .map(|&(_, sequence)| sequence)
+                .peekable();
+            spill.retain(|spilled| {
+                while written.next_if(|&sequence| sequence < spilled.sequence).is_some() {}
+                written.next_if_eq(&spilled.sequence).is_none()
+            });
+        }
         let mut newer: Option<&Log> = None;
         for log in generations() {
             let empty = log.publishers.load(Ordering::SeqCst) == 0
@@ -563,7 +737,8 @@ impl Assembled {
                 && log
                     .shared
                     .published(|record| record.sequence)
-                    .is_ok_and(|published| published.is_empty());
+                    .is_ok_and(|published| published.is_empty())
+                && log.spill().is_empty();
             match newer {
                 Some(newer) if empty => newer
                     .previous
@@ -583,6 +758,9 @@ pub fn reset_admitted() {
         }
         for admission in log.admitted.iter() {
             admission.store(0, Ordering::Release);
+        }
+        for spilled in log.spill().iter_mut() {
+            spilled.admitted = false;
         }
     }
     if ADMITTED.swap(0, Ordering::AcqRel) != 0 {
@@ -662,6 +840,9 @@ pub struct Capacity {
     pub shared_rejected: u64,
     pub sequence: u64,
     pub published: u64,
+    /// Events that went to a spill since attach, and those every generation's spill holds.
+    pub spilled: u64,
+    pub spill_pending: usize,
 }
 
 pub fn capacity() -> Capacity {
@@ -670,6 +851,8 @@ pub fn capacity() -> Capacity {
         required_lanes: REQUIRED_LANES.load(Ordering::Relaxed),
         sequence: SEQUENCE.load(Ordering::Relaxed),
         published: PUBLISHED.load(Ordering::Relaxed),
+        spilled: SPILLED.load(Ordering::Relaxed),
+        spill_pending: generations().map(|log| log.spill().len()).sum(),
         ..Default::default()
     };
     if let Some(log) = unsafe { CURRENT.load(Ordering::SeqCst).as_ref() } {
@@ -703,6 +886,7 @@ pub(crate) fn reset_for_tests() {
     PUBLISHED.store(0, Ordering::SeqCst);
     SHARED_DEMAND.store(0, Ordering::SeqCst);
     REQUIRED_LANES.store(0, Ordering::SeqCst);
+    SPILLED.store(0, Ordering::SeqCst);
 }
 
 #[cfg(test)]

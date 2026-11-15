@@ -140,6 +140,7 @@ fn copy_input_spans<const N: usize>(
     }
 }
 
+
 /// The caller supplies the authenticated combat/side/role membership.
 /// CArmy, stat-block and formation leader identities are authenticated on entry.
 /// Strength, organisation and their maxima are the Divisions and DivisionStatus
@@ -156,36 +157,6 @@ pub fn capture_stats(
     expected_handle: u64,
     groups: &mut crate::cname_group_member::GroupKeys,
     names: &mut crate::cname_group_member::Names<'_>,
-) -> Result<Row, &'static str> {
-    let mut arena = crate::cname_group_member::NameArena {
-        bytes: crate::walk::Buffer::Fixed(names.bytes),
-        len: names.len,
-        required: names.required,
-    };
-    let result = capture_stats_buffer(
-        memory,
-        base,
-        sources,
-        pointer,
-        expected_handle,
-        groups,
-        &mut arena,
-    );
-    names.len = arena.len;
-    names.required = arena.required;
-    result
-}
-
-/// Original division operands; workers grow name storage without another
-/// name-header observation.
-pub fn capture_stats_buffer(
-    memory: &impl Memory,
-    base: usize,
-    sources: &mut crate::combat_sources::Sources,
-    pointer: usize,
-    expected_handle: u64,
-    groups: &mut crate::cname_group_member::GroupKeys,
-    names: &mut crate::cname_group_member::NameArena<'_>,
 ) -> Result<Row, &'static str> {
     let identity = bytes::<8>(memory, pointer, 0)?;
     let expected_vtable = engine_sites::at(base, carmy::VTABLE_RVA)
@@ -287,7 +258,7 @@ fn naming(
     base: usize,
     member: u64,
     groups: &mut crate::cname_group_member::GroupKeys,
-    names: &mut crate::cname_group_member::NameArena<'_>,
+    names: &mut crate::cname_group_member::Names<'_>,
 ) -> Result<Option<crate::cname_group_member::Inputs>, &'static str> {
     use crate::cname_group_member::Naming;
     let member = usize::try_from(member)
@@ -373,22 +344,13 @@ fn copy_tags(memory: &impl Memory, list: Array, tags: &mut [u32]) -> Result<(), 
     Ok(())
 }
 
-/// Reads one committed division's exile operands into `tags`, which the caller
-/// preallocated; nothing here allocates. `countries` is the pass's country
-/// reader: it resolves the exile country and bounds both lists by the live
-/// country count.
-#[cfg(test)]
-pub fn capture_exile(
-    memory: &impl Memory,
-    countries: &crate::ccountry::Reader<'_, impl Memory>,
-    pointer: usize,
-    tags: &mut [u32],
-) -> Result<Exile, &'static str> {
-    capture_exile_buffer(memory, countries, pointer, crate::walk::Buffer::Fixed(tags))
-}
-
 /// Consumers use the full occupier lists. Workers reserve from original
 /// headers before copying either payload.
+#[cfg(test)]
+pub(crate) fn capture_exile(memory: &impl Memory, countries: &crate::ccountry::Reader<'_, impl Memory>, pointer: usize, tags: &mut Vec<u32>) -> Result<Exile, &'static str> {
+    capture_exile_buffer(memory, countries, pointer, crate::walk::Buffer::Growing(tags))
+}
+
 pub fn capture_exile_buffer(
     memory: &impl Memory,
     countries: &crate::ccountry::Reader<'_, impl Memory>,
@@ -468,25 +430,6 @@ pub fn capture_exile_buffer(
     Ok(Exile::Row(row))
 }
 
-/// Independent modifier acquisition: no stat-block or commander dependency.
-/// Arena pressure fails before copying any modifier; publication is all or none.
-#[cfg(test)]
-pub fn capture_modifiers(
-    memory: &impl Memory,
-    base: usize,
-    pointer: usize,
-    expected_handle: u64,
-    modifiers: &mut [Modifier],
-) -> Result<usize, &'static str> {
-    capture_modifiers_buffer(
-        memory,
-        base,
-        pointer,
-        expected_handle,
-        crate::walk::Buffer::Fixed(modifiers),
-    )
-}
-
 /// Traverse the complete modifier vector. Its acquired signed count sizes
 /// worker storage without a chosen modifier limit.
 pub fn capture_modifiers_buffer(
@@ -533,34 +476,11 @@ pub fn capture_modifiers_buffer(
 
     Ok(count)
 }
-
-/// Width composition and contextual reinforcement operands. Terms preserve
-/// native order, signed multiplicities and unscaled definition widths. No
-/// width, chance, modifier clamp or speed bonus is calculated here. The caller
-/// supplies the pass's country reader rather than rebuilding one per division.
-///
-/// Per-source reads are shared through `sources` for the pass
-/// ([`crate::combat_sources`]): every read a division still makes, and every
-/// failure, comes at the unshared reader's point with its reason.
-pub fn capture_context(
-    memory: &impl Memory,
-    base: usize,
-    countries: &crate::ccountry::Reader<'_, impl Memory>,
-    sources: &mut crate::combat_sources::Sources,
-    pointer: usize,
-    expected_handle: u64,
-    terms: &mut [WidthTerm],
-) -> Result<ContextRow, &'static str> {
-    capture_context_buffer(
-        memory,
-        base,
-        countries,
-        sources,
-        pointer,
-        expected_handle,
-        crate::walk::Buffer::Fixed(terms),
-    )
+#[cfg(test)]
+pub(crate) fn capture_context(memory: &impl Memory, base: usize, countries: &crate::ccountry::Reader<'_, impl Memory>, sources: &mut crate::combat_sources::Sources, pointer: usize, expected_handle: u64, terms: &mut Vec<WidthTerm>) -> Result<ContextRow, &'static str> {
+    capture_context_buffer(memory, base, countries, sources, pointer, expected_handle, crate::walk::Buffer::Growing(terms))
 }
+
 
 pub fn capture_context_buffer(
     memory: &impl Memory,

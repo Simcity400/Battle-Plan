@@ -38,7 +38,7 @@ test('actual remote race keeps global scrolling, keys, scale and owned asynchron
       if (path.endsWith('/charts/tokens.ts')) return `export const readTokens = () => (${JSON.stringify(tokens)}); export const subscribeTokens = () => () => {};`;
       if (path.endsWith('/charts/scheduler.ts')) return 'export const scheduler = globalThis.__remoteRace.scheduler;';
       if (path.endsWith('/charts/liveMotion.ts')) return 'export const useMotionNow = () => given => given;';
-      if (path.endsWith('/charts/surface.ts')) return `export const toLocal = (x,y) => ({x,y}); export const watchCanvasSize = () => ({read:()=>({layoutWidth:1000,layoutHeight:300,backing:{width:1000,height:300,scaleX:1,scaleY:1}}),disconnect(){}});`;
+      if (path.endsWith('/charts/surface.ts')) return `export const toLocal = (x,y) => ({x,y}); export const watchCanvasSize = () => ({read:()=>({layoutWidth:1000,layoutHeight:300,backing:{width:1000,height:300,scaleX:1,scaleY:1}}),disconnect(){}}); export const drawingSurface = element => ({ canvas: element, context: element.getContext('2d') }); export const sizeCanvas = (canvas, width, height) => { if (canvas.width === width && canvas.height === height) return false; canvas.width = width; canvas.height = height; return true; };`;
       if (path.endsWith('/charts/race/draw.ts')) return `export const FLAG={x:8,width:21,height:14},NAME_X=36,VALUE_GAP=8,MIN_LABEL=100,NAME_PAD=8,VALUE_PAD=8;
         export const drawDateOverlay=()=>{}; export const drawRaceBar=(_ctx,layout)=>layout.left;
         export const drawRaceGrid=(_ctx,_layout,_tokens,min,max)=>globalThis.__remoteRace.scales.push([min,max]);`;

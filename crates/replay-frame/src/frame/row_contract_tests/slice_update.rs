@@ -356,3 +356,93 @@ fn exact_key_updates_match_full_frames_for_changes_additions_and_removals() {
     let foreign = SliceUpdate::keyed(vec![key], TableRows::ResearchInputs(vec![row(5000, 19, 9)]));
     assert!(!foreign.fits(&baseline));
 }
+
+/// ScriptVariables' conversion edits its shared baseline by scope key: a
+/// scope whose entries grew, an added scope and a removed one, alone and
+/// together, write the complete table's bytes and leave its rows.
+#[test]
+fn script_variable_key_updates_match_full_frames() {
+    use crate::rows::{Recorded, ScriptVariableEntry, ScriptVariablesRow};
+    let scope = |id: u32, names: &[&str]| ScriptVariablesRow {
+        scope_kind: 1,
+        scope_id: id,
+        entries: names
+            .iter()
+            .map(|name| ScriptVariableEntry {
+                name: name.as_bytes().to_vec(),
+                value_raw: i64::from(id),
+            })
+            .collect(),
+        seed: Recorded::Value(Some(id)),
+    };
+    let frame = |hour: i32, input: TableInput| {
+        let unread = TableView::Unavailable {
+            reason: "fixture table".into(),
+        };
+        let mut frame = frame(hour, unread.into());
+        frame.tables[TableId::ScriptVariables.index()] = input;
+        frame
+    };
+    let mut baseline =
+        TableRows::ScriptVariables((1..=4).map(|id| scope(id, &["a", "b"])).collect());
+    let mut full = FrameEncoder::new();
+    let mut keyed = FrameEncoder::new();
+    assert_eq!(
+        full.encode_bytes(
+            frame(0, TableView::Complete(baseline.clone()).into()),
+            false
+        )
+        .unwrap()
+        .bytes,
+        keyed
+            .encode_bytes(
+                frame(0, TableInput::SharedComplete(Arc::new(baseline.clone()))),
+                false
+            )
+            .unwrap()
+            .bytes
+    );
+    let key = |id: u32| scope(id, &[]).key();
+    let hours = [
+        (vec![key(2)], vec![scope(2, &["a", "b", "c"])]),
+        (vec![key(9)], vec![scope(9, &["z"])]),
+        (vec![key(3)], vec![]),
+        (
+            vec![key(1), key(3), key(4), key(7)],
+            vec![scope(1, &[]), scope(3, &["c"]), scope(7, &["a"])],
+        ),
+    ];
+    for (hour, (keys, rows)) in hours.into_iter().enumerate() {
+        let hour = hour as i32 + 1;
+        let update = SliceUpdate::keyed(keys, TableRows::ScriptVariables(rows));
+        assert!(update.fits(&baseline));
+        update.clone().apply(&mut baseline).unwrap();
+        let expected = full
+            .encode_bytes(
+                frame(hour, TableView::Complete(baseline.clone()).into()),
+                false,
+            )
+            .unwrap();
+        let (token, _) = keyed
+            .slice_baseline(TableId::ScriptVariables, 1, hour, false)
+            .expect("keyed updates keep the shared baseline");
+        let actual = keyed
+            .encode_bytes(
+                frame(
+                    hour,
+                    TableInput::SliceUpdate {
+                        token,
+                        update: Arc::new(update),
+                    },
+                ),
+                false,
+            )
+            .unwrap();
+        assert_eq!(actual.bytes, expected.bytes, "hour {hour}");
+        assert_eq!(
+            **keyed.shared_baseline(TableId::ScriptVariables).unwrap(),
+            baseline,
+            "hour {hour}"
+        );
+    }
+}

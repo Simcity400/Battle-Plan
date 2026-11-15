@@ -258,7 +258,7 @@ fn intel_nonowning_target_requires_its_original_tag_bucket() {
         assert!(
             out.refusals
                 .keys()
-                .any(|why| why.contains("ReservedCountryNaming.original_tag_buckets")),
+                .any(|why| why.contains("original tag buckets of reserved country naming")),
             "{:?}",
             out.refusals
         );

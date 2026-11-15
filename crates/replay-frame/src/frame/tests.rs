@@ -1848,10 +1848,13 @@ fn source(branch: BranchId, hour: Hour) -> DecodedFrame {
             ];
             let mut tables = std::array::from_fn(|index| {
                 let table = TableId::ALL[index];
-                TableView::Complete(
-                    rows::sample_extended_table(table, 0)
-                        .unwrap_or_else(|| TableRows::empty(table)),
-                )
+                TableView::Complete(rows::sample_extended_table(table, 0).unwrap_or_else(|| {
+                    if table.key_bits() == 0 {
+                        TableRows::one_default(table)
+                    } else {
+                        TableRows::empty(table)
+                    }
+                }))
             });
             for (target, source) in tables.iter_mut().zip(initial) {
                 *target = source;
@@ -4161,4 +4164,284 @@ fn historical_delta_facts_keep_recorded_field_masks_and_missing_suffixes() {
     assert_eq!(facts.row(7).unwrap().fields, 1 << 3);
     assert!(original.fields_unchanged(view, 1));
     assert!(!original.fields_unchanged(view, 1 << 3));
+}
+
+/// A table's view of the store's cells holds an unrecorded cell where its row can say so, and
+/// otherwise is refused by the table's and the field's names; the row of its slot built alone
+/// ([`cells_rows`]) is the view's row, or the same refusal.
+#[test]
+fn a_cells_view_names_the_table_and_field_its_row_cannot_leave_unrecorded() {
+    use crate::rows::{ArmyTotalRow, Recorded, TABLE_COUNT};
+    use crate::scope::CaptureMode;
+    use replay_columnar::{
+        manifest::Status,
+        state::{Cell, Kind},
+        store::Store,
+    };
+    let format = crate::format::FormatVersion::CURRENT.version();
+    let (army, drops) = (TableId::ArmyTotals, TableId::BalanceDrops);
+    let mut kinds = vec![Vec::new(); TABLE_COUNT];
+    kinds[army.index()] = vec![Kind::I64; army.field_count()];
+    kinds[drops.index()] = vec![Kind::I64; drops.field_count()];
+    let mut store = Store::new(kinds, vec![false; TABLE_COUNT]);
+    store.begin_run(0);
+    store.begin_hour(0, &[]).unwrap();
+    let mut slots = Vec::new();
+    for (table, key) in [(army, 3_u128), (drops, 9 << 32)] {
+        store
+            .status(table.index(), Status::Complete, true, Some(0), true)
+            .unwrap();
+        let mut changes = store.table(table.index()).unwrap();
+        let slot = changes.insert(key).unwrap();
+        for column in 0..table.field_count() {
+            changes.write(slot, column, Cell::I64(7)).unwrap();
+        }
+        changes.unrecord(slot, 1).unwrap();
+        slots.push((key, slot));
+    }
+    store.settle();
+    let alone = |table: TableId, at: usize| {
+        cells_rows(table, &store.view(table.index()), &slots[at..=at], format)
+    };
+    let view = |table: TableId| {
+        cells_view(
+            table,
+            &store.view(table.index()),
+            Status::Complete,
+            None,
+            CaptureMode::Full,
+            format,
+        )
+    };
+    let seven = Recorded::Value(7);
+    let expected = ArmyTotalRow {
+        slot: 3,
+        owner_divisions: seven,
+        owner_strength_raw: Recorded::NotRecorded,
+        host_divisions: seven,
+        host_strength_raw: seven,
+        owner_battalions: seven,
+        host_battalions: seven,
+        owner_manpower: seven,
+        host_manpower: seven,
+    };
+    assert_eq!(
+        alone(army, 0).unwrap(),
+        TableRows::ArmyTotals(vec![expected.clone()])
+    );
+    assert_eq!(
+        view(army).unwrap(),
+        TableView::Complete(TableRows::ArmyTotals(vec![expected]))
+    );
+    let refused = "BalanceDrops.after is not recorded and its row cannot say so";
+    assert_eq!(view(drops).unwrap_err().to_string(), refused);
+    let error = alone(drops, 1).unwrap_err();
+    assert!(Unsayable::of(&error).is_some(), "{error}");
+    assert_eq!(error.to_string(), refused);
+}
+
+/// A row of the store's cells built alone at its slot ([`cells_rows`]) is the row the table's
+/// view builds there, for tables holding between them every column kind, three rows each whose
+/// text differs; the rows of every slot built together are the view's rows.
+#[test]
+fn rows_built_at_their_slots_are_the_view_s_rows_for_every_column_kind() {
+    use crate::rows::{Field, Kind as Wire, List, Opaque, TABLE_COUNT};
+    use crate::scope::CaptureMode;
+    use replay_columnar::{
+        manifest::Status,
+        state::{Cell, Kind},
+        store::Store,
+    };
+    const KINDS: [Kind; 17] = [
+        Kind::U8,
+        Kind::I8,
+        Kind::U16,
+        Kind::I16,
+        Kind::U32,
+        Kind::I32,
+        Kind::U64,
+        Kind::I64,
+        Kind::Bool,
+        Kind::OptionalI32,
+        Kind::OptionalU32,
+        Kind::OptionalI64,
+        Kind::OptionalU64,
+        Kind::Bytes,
+        Kind::U32List,
+        Kind::U64List,
+        Kind::Opaque,
+    ];
+    fn kind_at(wire: Wire) -> usize {
+        match wire {
+            Wire::U8 => 0,
+            Wire::I8 => 1,
+            Wire::U16 => 2,
+            Wire::I16 => 3,
+            Wire::U32 => 4,
+            Wire::I32 => 5,
+            Wire::U64 => 6,
+            Wire::I64 => 7,
+            Wire::Bool => 8,
+            Wire::OptionalI32 => 9,
+            Wire::OptionalU32 => 10,
+            Wire::OptionalI64 => 11,
+            Wire::OptionalU64 => 12,
+            Wire::Bytes => 13,
+            Wire::U32List => 14,
+            Wire::U64List => 15,
+            Wire::Opaque => 16,
+        }
+    }
+    enum Owned {
+        Cell(Cell<'static>),
+        Text(Vec<u8>),
+        U32s(Vec<u32>),
+        U64s(Vec<u64>),
+        Opaque(Vec<u8>),
+        Unrecorded,
+    }
+    fn owned(field: Field<'_>) -> Option<Owned> {
+        Some(match field {
+            Field::Empty => return None,
+            Field::NotRecorded => Owned::Unrecorded,
+            Field::U8(value) => Owned::Cell(Cell::U8(value)),
+            Field::I8(value) => Owned::Cell(Cell::I8(value)),
+            Field::U16(value) => Owned::Cell(Cell::U16(value)),
+            Field::I16(value) => Owned::Cell(Cell::I16(value)),
+            Field::U32(value) => Owned::Cell(Cell::U32(value)),
+            Field::I32(value) => Owned::Cell(Cell::I32(value)),
+            Field::U64(value) => Owned::Cell(Cell::U64(value)),
+            Field::I64(value) => Owned::Cell(Cell::I64(value)),
+            Field::Bool(value) => Owned::Cell(Cell::Bool(value)),
+            Field::OptionalI32(value) => Owned::Cell(Cell::OptionalI32(value)),
+            Field::OptionalU32(value) => Owned::Cell(Cell::OptionalU32(value)),
+            Field::OptionalI64(value) => Owned::Cell(Cell::OptionalI64(value)),
+            Field::OptionalU64(value) => Owned::Cell(Cell::OptionalU64(value)),
+            Field::Bytes(bytes) => Owned::Text(bytes.to_vec()),
+            Field::U32List(List::Native(values)) => Owned::U32s(values.to_vec()),
+            Field::U32List(List::Encoded(bytes)) => Owned::U32s(
+                bytes
+                    .chunks_exact(4)
+                    .map(|item| u32::from_le_bytes(item.try_into().unwrap()))
+                    .collect(),
+            ),
+            Field::U64List(List::Native(values)) => Owned::U64s(values.to_vec()),
+            Field::U64List(List::Encoded(bytes)) => Owned::U64s(
+                bytes
+                    .chunks_exact(8)
+                    .map(|item| u64::from_le_bytes(item.try_into().unwrap()))
+                    .collect(),
+            ),
+            Field::Opaque(Opaque::Native(value)) => {
+                let mut bytes = Vec::new();
+                value.encode_value(&mut bytes).ok()?;
+                Owned::Opaque(bytes)
+            }
+            Field::Opaque(Opaque::Encoded(bytes, _)) => Owned::Opaque(bytes.to_vec()),
+        })
+    }
+    let format = crate::format::FormatVersion::CURRENT.version();
+    // Each table's keys and the default row's cells; each row's first text cell its own.
+    let mut tables = Vec::new();
+    for table in TableId::ALL {
+        let template = TableRows::one_default(table);
+        let mut fields = Vec::new();
+        let visited = template.first().unwrap().visit_wire(&mut |_, field| {
+            fields.push(owned(field));
+            Ok(())
+        });
+        let Some(fields) = visited
+            .ok()
+            .and_then(|()| fields.into_iter().collect::<Option<Vec<_>>>())
+        else {
+            continue;
+        };
+        if fields.len() != table.field_count() {
+            continue;
+        }
+        let keys: Vec<u128> = if table.key_bits() == 0 {
+            vec![0]
+        } else {
+            (1..=3).filter(|&key| table.check_key(key).is_ok()).collect()
+        };
+        let text = fields.iter().position(|field| matches!(field, Owned::Text(_)));
+        tables.push((table, keys, fields, text));
+    }
+    let mut kinds = vec![Vec::new(); TABLE_COUNT];
+    for (table, ..) in &tables {
+        kinds[table.index()] = table
+            .schema()
+            .iter()
+            .map(|&wire| KINDS[kind_at(wire)])
+            .collect();
+    }
+    let mut store = Store::new(kinds, vec![false; TABLE_COUNT]);
+    store.begin_run(0);
+    store.begin_hour(0, &[]).unwrap();
+    let mut slots = vec![Vec::new(); TABLE_COUNT];
+    for (table, keys, fields, text) in &tables {
+        let own: Vec<Option<u32>> = (0..keys.len())
+            .map(|at| text.map(|_| store.intern(format!("row {at}").as_bytes()).unwrap()))
+            .collect();
+        let held: Vec<Option<u32>> = fields
+            .iter()
+            .map(|field| match field {
+                Owned::Text(bytes) => Some(store.intern(bytes).unwrap()),
+                _ => None,
+            })
+            .collect();
+        store
+            .status(table.index(), Status::Complete, true, Some(0), true)
+            .unwrap();
+        let mut changes = store.table(table.index()).unwrap();
+        for (at, &key) in keys.iter().enumerate() {
+            let slot = changes.insert(key).unwrap();
+            for (column, field) in fields.iter().enumerate() {
+                let cell = match field {
+                    Owned::Unrecorded => {
+                        changes.unrecord(slot, column).unwrap();
+                        continue;
+                    }
+                    Owned::Cell(cell) => *cell,
+                    Owned::Text(_) if *text == Some(column) => Cell::Bytes(own[at].unwrap()),
+                    Owned::Text(_) => Cell::Bytes(held[column].unwrap()),
+                    Owned::U32s(values) => Cell::U32List(values),
+                    Owned::U64s(values) => Cell::U64List(values),
+                    Owned::Opaque(bytes) => Cell::Opaque(bytes),
+                };
+                changes.write(slot, column, cell).unwrap();
+            }
+            slots[table.index()].push((key, slot));
+        }
+    }
+    store.settle();
+    let mut covered = [false; KINDS.len()];
+    for (table, _, _, text) in &tables {
+        let view = store.view(table.index());
+        let Ok(TableView::Complete(rows)) =
+            cells_view(*table, &view, Status::Complete, None, CaptureMode::Full, format)
+        else {
+            continue;
+        };
+        let keyed = &slots[table.index()];
+        assert_eq!(rows.len(), keyed.len(), "{table:?}");
+        assert_eq!(cells_rows(*table, &view, keyed, format).unwrap(), rows, "{table:?}");
+        for (at, one) in keyed.iter().enumerate() {
+            let alone = cells_rows(*table, &view, std::slice::from_ref(one), format).unwrap();
+            assert_eq!(alone.first(), rows.get(at), "{table:?} slot {}", one.1);
+        }
+        if text.is_some() && rows.len() > 1 {
+            assert_ne!(rows.get(0), rows.get(1), "{table:?}: each slot's row is its own");
+        }
+        for &wire in table.schema() {
+            covered[kind_at(wire)] = true;
+        }
+    }
+    let missing: Vec<Kind> = KINDS
+        .into_iter()
+        .zip(covered)
+        .filter(|(_, covered)| !covered)
+        .map(|(kind, _)| kind)
+        .collect();
+    assert!(missing.is_empty(), "no table built holds a column of {missing:?}");
 }

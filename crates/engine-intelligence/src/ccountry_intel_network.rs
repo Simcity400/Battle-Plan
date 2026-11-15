@@ -139,14 +139,14 @@ impl SummaryCache {
 /// Worker acquisition shares the established roster and network authentication.
 /// Summary read failures withhold only summaries, never the existing state rows.
 #[cfg(test)]
-pub fn walk_with_summaries_growing(
+pub fn walk_with_summaries(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
     states: &mut Vec<Row>,
     summaries: &mut Vec<Summary>,
 ) -> NetworkWalk {
-    walk_with_cached_summaries_growing(
+    walk_with_cached_summaries(
         memory,
         base,
         game_state,
@@ -157,7 +157,7 @@ pub fn walk_with_summaries_growing(
     )
 }
 
-pub fn walk_with_cached_summaries_growing(
+pub fn walk_with_cached_summaries(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -282,14 +282,14 @@ impl SummaryCapture<'_> {
     }
 }
 
+pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
+    walk_buffer(memory, base, game_state, crate::walk::Buffer::Count)
+}
+
 /// Reads the country-rooted network roster and its state-to-subnetwork mapping.
 /// A network has no single stored national strength; each row retains the native
 /// strength of the subnetwork selected by that state's graph vertex.
-pub fn walk(memory: &impl Memory, base: usize, game_state: usize, output: &mut [Row]) -> Outcome {
-    walk_buffer(memory, base, game_state, crate::walk::Buffer::Fixed(output))
-}
-
-pub fn walk_growing(
+pub fn walk(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -705,7 +705,7 @@ mod tests {
         let mut states = Vec::new();
         let mut summaries = Vec::new();
         let mut cache = SummaryCache::new();
-        let read = walk_with_cached_summaries_growing(
+        let read = walk_with_cached_summaries(
             &SliceMemory {
                 base: 0,
                 bytes: &bytes,
@@ -754,7 +754,7 @@ mod tests {
         // The already-authenticated object's values carry without touching its
         // aggregate payload. A failed forced read cannot turn into a carry.
         let denied = DenyPayload(&bytes);
-        let read = walk_with_cached_summaries_growing(
+        let read = walk_with_cached_summaries(
             &denied,
             0,
             GS,
@@ -765,7 +765,7 @@ mod tests {
         );
         assert_eq!(read.summaries, Outcome::Rows { len: 1 });
         assert_eq!(summaries[0], expected);
-        let read = walk_with_cached_summaries_growing(
+        let read = walk_with_cached_summaries(
             &denied,
             0,
             GS,
@@ -788,7 +788,7 @@ mod tests {
         header(&mut bytes, NETWORK + SUBNETWORKS_DATA, 0, 0);
         let mut states = Vec::new();
         let mut summaries = Vec::new();
-        let read = walk_with_summaries_growing(
+        let read = walk_with_summaries(
             &SliceMemory {
                 base: 0,
                 bytes: &bytes,
@@ -821,10 +821,10 @@ mod tests {
     fn growing_intel_network_rows_follow_new_native_vertices_without_new_countries() {
         let mut bytes = fixture();
         let mut rows = Vec::new();
-        let mut expected = [Row::default(); 2];
+        let mut expected = vec![Row::default(); 2];
         assert_eq!(capture(&bytes, &mut expected), Outcome::Rows { len: 2 });
         assert_eq!(
-            walk_growing(
+            walk(
                 &SliceMemory {
                     base: 0,
                     bytes: &bytes
@@ -881,7 +881,7 @@ mod tests {
         let outcome = capture(&bytes, &mut expected);
         assert_eq!(outcome, Outcome::Rows { len: COUNT });
         assert_eq!(
-            walk_growing(
+            walk(
                 &SliceMemory {
                     base: 0,
                     bytes: &bytes
@@ -944,12 +944,12 @@ mod tests {
                 graph as u64,
             );
         }
-        let run = |world: &World| walk(&world.memory(), 0, gs, &mut []);
+        let run = |world: &World| walk(&world.memory(), 0, gs, &mut Vec::new());
         assert_eq!(run(&world), Outcome::Rows { len: 0 });
         let mut states = Vec::new();
         let mut summaries = Vec::new();
         let captured =
-            walk_with_summaries_growing(&world.memory(), 0, gs, &mut states, &mut summaries);
+            walk_with_summaries(&world.memory(), 0, gs, &mut states, &mut summaries);
         assert_eq!(captured.states, Outcome::Rows { len: 0 });
         assert_eq!(
             captured.summaries,
@@ -1021,7 +1021,7 @@ mod tests {
         let mut states = Vec::new();
         let mut summaries = Vec::new();
         let captured =
-            walk_with_summaries_growing(&world.memory(), 0, gs, &mut states, &mut summaries);
+            walk_with_summaries(&world.memory(), 0, gs, &mut states, &mut summaries);
         assert_eq!(captured.states, Outcome::Rows { len: 0 });
         assert_eq!(
             captured.summaries,
@@ -1044,9 +1044,9 @@ mod tests {
             manager + cstrategic_operative_manager::OPERATIVES_DATA + 12,
             COUNT,
         );
-        assert_eq!(walk(&world.memory(), 0, gs, &mut []), unavailable);
+        assert_eq!(walk(&world.memory(), 0, gs, &mut Vec::new()), unavailable);
         let captured =
-            walk_with_summaries_growing(&world.memory(), 0, gs, &mut states, &mut summaries);
+            walk_with_summaries(&world.memory(), 0, gs, &mut states, &mut summaries);
         assert_eq!(captured.states, unavailable);
         assert!(matches!(captured.summaries, Outcome::Unavailable { .. }));
         // Nor is a slot that cannot be read.
@@ -1055,7 +1055,7 @@ mod tests {
             0x4000_0000,
             COUNT + 1,
         );
-        assert_eq!(walk(&world.memory(), 0, gs, &mut []), unavailable);
+        assert_eq!(walk(&world.memory(), 0, gs, &mut Vec::new()), unavailable);
     }
 
     fn fixture() -> Vec<u8> {
@@ -1210,14 +1210,14 @@ mod tests {
         bytes[QUIET + 1] = 1;
         bytes
     }
-    fn capture(bytes: &[u8], output: &mut [Row]) -> Outcome {
+    fn capture(bytes: &[u8], output: &mut Vec<Row>) -> Outcome {
         walk(&SliceMemory { base: 0, bytes }, 0, GS, output)
     }
 
     #[test]
     fn state_strengths_preserve_native_aliases_and_all_i64_bits() {
         let bytes = fixture();
-        let mut output = [Row::default(); 2];
+        let mut output = vec![Row::default(); 2];
         assert_eq!(capture(&bytes, &mut output), Outcome::Rows { len: 2 });
         assert_eq!(
             output[0],
@@ -1262,14 +1262,7 @@ mod tests {
             }
         );
         assert_eq!(
-            capture(&bytes, &mut output[..1]),
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            }
-        );
-        assert_eq!(
-            capture(&bytes, &mut []),
+            count(&SliceMemory { base: 0, bytes: &bytes }, 0, GS),
             Outcome::Truncated {
                 len: 0,
                 unread_rows: 2
@@ -1286,7 +1279,7 @@ mod tests {
             QUIET,
             1,
         );
-        let mut output = [Row::default(); 2];
+        let mut output = vec![Row::default(); 2];
         assert_eq!(capture(&bytes, &mut output), Outcome::Rows { len: 2 });
         assert_eq!(output[1].local_quiet, 0);
         assert_eq!(output[1].subnetwork_quiet, 1);
@@ -1309,7 +1302,7 @@ mod tests {
             GRAPH_ROWS + intel_network_graph_row::STRIDE + intel_network_graph_row::STATE_ID,
             7,
         );
-        let mut output = [Row::default(); 2];
+        let mut output = vec![Row::default(); 2];
         assert_eq!(
             capture(&bytes, &mut output),
             Outcome::Unavailable {
@@ -1322,7 +1315,7 @@ mod tests {
     fn every_negative_selector_preserves_vertex_without_reading_a_subnetwork() {
         let mut bytes = fixture();
         header(&mut bytes, NETWORK + SUBNETWORKS_DATA, 0, 0);
-        let mut output = [Row::default(); 2];
+        let mut output = vec![Row::default(); 2];
         for first in [-1_i32, -2, i32::MIN] {
             for index in 0..2 {
                 p32(
@@ -1391,26 +1384,18 @@ mod tests {
                 index as u32 + 1,
             );
         }
-        let mut rows = [Row::default(); 65];
+        let mut rows = vec![Row::default(); 65];
         assert_eq!(capture(&bytes, &mut rows), Outcome::Rows { len: 65 });
         for (index, row) in rows.iter().enumerate() {
             assert_eq!(row.state_id, index as i32 + 1);
             assert_eq!(row.strength_raw, (index % 2 == 0).then_some(i64::MAX));
             assert_eq!(row.subnetwork_selector, if index % 2 == 0 { 1 } else { -2 });
         }
-        // A bad row outside retained capacity does not turn truncation into a
-        // guessed failure; reading that row with enough capacity must fail.
+        // Reading a bad row fails the table.
         p32(
             &mut bytes,
             begin + intel_network_graph_row::SUBNETWORK_SELECTOR,
             2,
-        );
-        assert_eq!(
-            capture(&bytes, &mut rows[..64]),
-            Outcome::Truncated {
-                len: 64,
-                unread_rows: 1
-            }
         );
         assert!(matches!(
             capture(&bytes, &mut rows),
@@ -1423,7 +1408,7 @@ mod tests {
     #[test]
     fn network_absence_and_empty_graph_are_valid_but_corrupt_headers_are_not() {
         let mut bytes = fixture();
-        let mut output = [Row::default(); 2];
+        let mut output = vec![Row::default(); 2];
         p64(&mut bytes, GS + cgame_state::STRATEGIC_OPERATIVE_MANAGER, 0);
         assert_eq!(capture(&bytes, &mut output), Outcome::Rows { len: 0 });
         p64(
@@ -1446,7 +1431,7 @@ mod tests {
     #[test]
     fn invalid_roots_graph_indices_selectors_and_partial_strength_reads_fail() {
         let fixture = fixture();
-        let mut output = [Row::default(); 2];
+        let mut output = vec![Row::default(); 2];
         for (offset, value) in [
             (STRATEGIC + cstrategic_operative::OWNER, 2),
             (NETWORK + TARGET, 3),

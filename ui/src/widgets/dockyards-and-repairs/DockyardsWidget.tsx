@@ -1,128 +1,118 @@
-import { useCallback, useMemo } from 'react';
+import { useCallback, useMemo, useRef } from 'react';
+import type { LiveValues } from '../../charts/live';
 import WidgetState from '../../components/WidgetState';
 import Table, { CellBar } from '../../charts/table/Table';
 import type { TableColumn } from '../../charts/table/Table';
 import { narrowTableOf } from '../../charts/table/options';
-import { useTableHour } from '../../charts/table/useTableHour';
-import { PreparedKey } from '../../charts/PreparedKey';
 import { dayLabel } from '../../charts/draw';
 import { jumpItem } from '../../charts/jump';
 import type { TooltipContent } from '../../charts/tooltip';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { resolveWindow } from '../../dashboard/model';
+import { resolveOptions } from '../../dashboard/options';
+import { selectedTags } from '../../dashboard/countrySelection';
+import { useHeadProduct } from '../../dashboard/headProduct';
 import { usePlaybackMotion } from '../../dashboard/playback';
-import { pendingReplyAt, preparedPrefix } from '../../dashboard/preparedPrefix';
+import { useShownHour } from '../../dashboard/widgetPerf';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
-import { censusComplete, countText, fixedText, hullShare, percentText, tokenName, yardsAt } from '../../dashboard/navalYards';
-import type { YardsAt, YardsReply } from '../../dashboard/navalYards';
-import { shipLabel, shipName, shipNameRow } from '../refits/shipNames';
-import { useYards } from '../refits/useYards';
-import '../division-log/divisionLog.css';
-import './dockyards.css';
+import { countText, fixedText, hullShare, percentText, repairsStructure, repairsTexts, shipLabel, shipNameRow, validateRepairs } from '../refits/yardsData';
+import { useLivePaint } from '../refits/livePaint';
+import { YARD_OPTIONS } from '../refits/yardOptions';
+import '../refits/yards.css';
+import type { RepairPort } from '../../generated/dashboard';
 
-/** A port with its repair queue, or one queued ship. */
-interface RepairRow { key: string; kind: 'port' | 'ship'; port: string; ship?: string; ordinal?: number }
+/** A port with its repair queue, or one queued ship at its place in the queue. */
+interface RepairRow { key: string; port: RepairPort; index?: number }
 
 const rowKey = (row: RepairRow) => row.key;
+const portName = (port: RepairPort) => port.name ?? 'Port name unavailable';
 
 /** One country's ports and their repair queues at the hour shown: each port's dockyards and
- * priority, and the ships queued there in the game's order with their hull. */
+ * priority, and the ships queued there in the game's order with their hull. Following playback it
+ * is a pushed panel; hulls are painted between the renders its rows cause. */
 export default function DockyardsWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
-  const playback = useTableHour(runtime.clock, active && widget.time.mode === 'follow');
+  const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
+  const options = resolveOptions(YARD_OPTIONS, widget.options);
+  const tag = selectedTags(widget.countries, track)[0] ?? null;
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
-  const shown = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const window = shown && resolveWindow(widget, shown, runtime.tracks, playback);
-  const hour = Math.floor(window?.lastHour ?? shown?.branch.lastHour ?? 0);
-  const { track, tag, options, data, error, retry } = useYards(widget, runtime, active, hour);
-  const at = useMemo(() => data && tag ? yardsAt(data) : null, [data, tag]);
-  const { rows, children } = useMemo(() => repairRows(at), [at]);
-  const readDate = at?.readHour === undefined ? null : dayLabel(at.readHour);
+  const root = useRef<HTMLDivElement | null>(null);
+  const head = useHeadProduct(runtime, widget, 'naval-repairs', tag ? { tag } : null, { active, validate: validateRepairs, structure: repairsStructure });
+  const { data, error, retry } = head;
+  // Hourly numbers are painted from the product's live cells each frame they move, reporting the hour they are of.
+  const shown = useShownHour();
+  const painted = useCallback(() => shown(head.shownAt()), [shown, head.shownAt]);
+  const texts = useMemo(() => data ? (values: LiveValues<number>) => repairsTexts(data, values) : null, [data]);
+  useLivePaint(root, head.live, texts, painted);
+  const attach = useCallback((element: HTMLDivElement | null) => { root.current = element; head.root(element); }, [head.root]);
+  const shownHour = () => head.hour ?? Math.floor(runtime.clock.getHour());
+  const { rows, children } = useMemo(() => {
+    const ports = data?.ports ?? [];
+    const queues = new Map(ports.map(port => [port.province, port.queue.map((_, index): RepairRow => ({ key: `${port.province}|${index}`, port, index }))]));
+    return { rows: ports.map((port): RepairRow => ({ key: String(port.province), port })), children: (row: RepairRow) => row.index === undefined ? queues.get(row.port.province) ?? [] : undefined };
+  }, [data]);
   const bars = options.cellBars !== false;
-  const columns = useMemo<readonly TableColumn<RepairRow>[]>(() => !data || !at ? [] : [
+  const columns = useMemo<readonly TableColumn<RepairRow>[]>(() => [
     { key: 'name', header: 'Port or ship', label: 'Port or ship', width: 'minmax(var(--table-name-min), 2fr)', sortable: false,
-      value: row => row.kind === 'port' ? portName(data, at, row.port) : shipName(data, at.groups.get(row.port)?.ships.get(row.ship!)),
+      value: row => row.index === undefined ? portName(row.port) : shipLabel(row.port.queue[row.index]).name,
       render: row => {
-        if (row.kind === 'port') return portName(data, at, row.port);
-        const label = shipLabel(data, at.groups.get(row.port)?.ships.get(row.ship!));
+        if (row.index === undefined) return portName(row.port);
+        const label = shipLabel(row.port.queue[row.index]);
         return label.source === 'design' ? <span className="yard-unnamed">{label.name}</span> : label.name;
       } },
     { key: 'hull', header: 'Hull', label: 'Hull', numeric: true, width: 'minmax(90px, 1fr)', sortable: false, renderMissing: true,
-      value: row => row.kind === 'ship' ? hullShare(at.groups.get(row.port)?.ships.get(row.ship!)) : null,
+      value: row => row.index === undefined ? null : hullShare(row.port.queue[row.index]),
       render: row => {
-        if (row.kind === 'port') return '';
-        const share = hullShare(at.groups.get(row.port)?.ships.get(row.ship!));
-        return <CellBar value={bars ? share : null} maximum={1}>{percentText(share)}</CellBar>;
-      }, text: row => row.kind === 'ship' ? percentText(hullShare(at.groups.get(row.port)?.ships.get(row.ship!))) : null },
+        if (row.index === undefined) return '';
+        const share = hullShare(row.port.queue[row.index]);
+        return <CellBar value={bars ? share : null} maximum={1}><span data-paint={`hull|${row.port.province}|${row.index}`}>{percentText(share)}</span></CellBar>;
+      } },
     { key: 'dockyards', header: 'Dockyards', label: 'Dockyards', numeric: true, width: 'max-content', priority: 2, sortable: false, renderMissing: true,
-      value: row => row.kind === 'port' ? numberOf(at.groups.get(row.port)?.measures.get('dockyards')) : null,
-      render: row => row.kind === 'port' ? countText(at.groups.get(row.port)?.measures.get('dockyards')) : '' },
+      value: row => row.index === undefined ? row.port.dockyards : null, render: row => row.index === undefined ? countText(row.port.dockyards) : '' },
     { key: 'priority', header: 'Priority', label: 'Priority', numeric: true, width: 'max-content', priority: 1, sortable: false, renderMissing: true,
-      value: row => row.kind === 'port' ? numberOf(at.groups.get(row.port)?.measures.get('priority')) : null,
-      render: row => row.kind === 'port' ? (at.groups.get(row.port)?.measures.get('priority')?.toString() ?? '—') : '' },
-  ], [data, at, bars]);
-  const tooltip = useCallback((row: RepairRow): TooltipContent => data && at ? repairTooltip(data, at, row, readDate) : { title: '', rows: [] }, [data, at, readDate]);
-  const menu = useCallback(() => track && at?.readHour !== undefined ? [jumpItem(runtime, track.id, at.readHour)] : [], [track, at, runtime]);
+      value: row => row.index === undefined ? row.port.priority : null, render: row => row.index === undefined ? countText(row.port.priority) : '' },
+  ], [bars]);
+  const tooltip = useCallback((row: RepairRow): TooltipContent => repairTooltip(row, dayLabel(shownHour())),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [head.hour]);
+  const menu = useCallback(() => track ? [jumpItem(runtime, track.id, shownHour())] : [],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [track, runtime, head.hour]);
   useDiagnostics(onDiagnostics, data?.warnings ?? null);
   if (!track) return <WidgetState kind="empty" icon="anchor" message="Load a campaign to see dockyards and repairs." />;
   if (!tag) return <WidgetState kind="empty" icon="anchor" message="Choose a country in the widget's header." />;
-  if (!window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
+  if (head.read === 'off' && !data) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
-  if (!data) return <WidgetState kind="loading" label="Loading dockyards…" />;
-  if (pendingReplyAt(data, hour)) return <WidgetState kind="loading" label="This range is still being prepared." />;
-  if (!at) return <WidgetState kind="unavailable" message="Repairs were not recorded at this time." />;
-  const prefix = preparedPrefix(data);
-  const used = at.totals.get('usedDockyards'), limit = at.totals.get('repairLimit'), queued = at.totals.get('distinctQueuedShips');
-  return <div className="dockyards">
-    <PreparedKey pending={prefix?.pending} approximate={prefix?.approximate} />
-    <div className="division-log-summary" aria-live="polite">
-      <span><b>{queued?.toLocaleString('en-US') ?? 'Not recorded'}</b> ships queued for repair</span>
-      <span><b>{used === undefined ? 'Not recorded' : used.toLocaleString('en-US')}</b> repair dockyards used{limit === undefined ? '' : <small> of {limit.toLocaleString('en-US')}</small>}</span>
+  if (!data) return <div ref={attach} className="yards"><WidgetState kind="loading" label="Loading dockyards…" /></div>;
+  return <div ref={attach} className="yards">
+    <div className="yards-summary" aria-live="polite">
+      <span><b>{data.queuedShips?.toLocaleString('en-US') ?? 'Not recorded'}</b> ships queued for repair</span>
+      <span><b>{data.usedDockyards === null ? 'Not recorded' : data.usedDockyards.toLocaleString('en-US')}</b> repair dockyards used{data.repairLimit === null ? '' : <small> of {data.repairLimit.toLocaleString('en-US')}</small>}</span>
     </div>
-    {!rows.length ? censusComplete(at, 'queueCensusComplete') ? <WidgetState kind="empty" message="No ports with repairs at this date." />
+    {!rows.length ? data.censusComplete ? <WidgetState kind="empty" message="No ports with repairs at this date." />
       : <WidgetState kind="unavailable" message="Repairs were not fully recorded at this date." />
-      : <Table rowRevision={row => {
-        const group = at.groups.get(row.port), ship = group?.ships.get(row.ship!);
-        const label = shipLabel(data, ship);
-        return row.kind === 'port' ? [portName(data, at, row.port), group?.measures.get('dockyards'), group?.measures.get('priority')]
-          : [label.name, label.source, hullShare(ship)];
-      }} key={JSON.stringify([track.source.id, track.source.revision, track.branch.id, tag])} label="Repair queues by port" rows={rows} columns={columns}
-        rowKey={rowKey} sort={{ column: 'name', direction: 'ascending' }} unsorted tree={{ children }} cellBars={bars}
-        density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)} tooltip={tooltip} menu={menu}
-        hoursPerSecond={hoursPerSecond} parity={{ complete: true, item: row => row }} />}
+      : <Table rowRevision={row => row.index === undefined ? [portName(row.port), row.port.dockyards, row.port.priority]
+        : [shipLabel(row.port.queue[row.index]).name, Math.floor((hullShare(row.port.queue[row.index]) ?? -1) * 100)]}
+      key={JSON.stringify([track.source.id, track.source.revision, track.branch.id, tag])} label="Repair queues by port" rows={rows} columns={columns}
+      rowKey={rowKey} sort={{ column: 'name', direction: 'ascending' }} unsorted tree={{ children }} cellBars={bars}
+      density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)} tooltip={tooltip} menu={menu} hoursPerSecond={hoursPerSecond} />}
   </div>;
 }
 
-const numberOf = (value: bigint | undefined) => value === undefined ? null : Number(value);
-
-function portName(data: YardsReply, at: YardsAt, port: string): string {
-  return tokenName(data, at.groups.get(port)?.measures.get('name'), 'Port name unavailable');
-}
-
-/** Ports in recorded order (largest priority first, then province), each with its queue. */
-function repairRows(at: YardsAt | null): { rows: RepairRow[]; children: (row: RepairRow) => RepairRow[] | undefined } {
-  if (!at) return { rows: [], children: () => undefined };
-  const ports = [...at.groups.values()].filter(group => group.measures.get('present') === 1n)
-    .sort((a, b) => Number((b.measures.get('priority') ?? 0n) - (a.measures.get('priority') ?? 0n)) || Number(a.id) - Number(b.id));
-  const queues = new Map(ports.map(port => [port.id, port.queue.map(entry => ({ key: `${port.id}|${entry.ordinal}`, kind: 'ship' as const, port: port.id, ship: entry.ship, ordinal: entry.ordinal }))]));
-  return { rows: ports.map(port => ({ key: port.id, kind: 'port', port: port.id })), children: row => row.kind === 'port' ? queues.get(row.port) ?? [] : undefined };
-}
-
-function repairTooltip(data: YardsReply, at: YardsAt, row: RepairRow, readDate: string | null): TooltipContent {
-  const group = at.groups.get(row.port);
-  if (row.kind === 'port') return { title: portName(data, at, row.port), rows: [
-    { label: 'Repair dockyards', value: countText(group?.measures.get('dockyards')) },
-    { label: 'Priority', value: group?.measures.get('priority')?.toString() ?? '—' },
-    { label: 'Repair policy', value: tokenName(data, group?.measures.get('policy'), 'Not recorded') },
-    { label: 'Ships queued', value: group?.measures.get('queueCount')?.toString() ?? '—' },
-    ...readDate ? [{ label: 'As of', value: readDate }] : [] ] };
-  const ship = group?.ships.get(row.ship!);
-  const label = shipLabel(data, ship);
+function repairTooltip(row: RepairRow, date: string): TooltipContent {
+  if (row.index === undefined) return { title: portName(row.port), rows: [
+    { label: 'Repair dockyards', value: countText(row.port.dockyards) },
+    { label: 'Priority', value: countText(row.port.priority) },
+    { label: 'Repair policy', value: row.port.policy ?? 'Not recorded' },
+    { label: 'Ships queued', value: String(row.port.queue.length) },
+    { label: 'As of', value: date }] };
+  const item = row.port.queue[row.index];
+  const label = shipLabel(item);
   return { title: label.name, rows: [
     shipNameRow(label.source),
-    { label: 'Ship', lookupKey: row.ship, value: row.ship },
-    { label: 'Hull', value: `${fixedText(ship?.measures.get('hull'))} of ${fixedText(ship?.measures.get('maximum'))}` },
-    { label: 'Place in queue', value: String((row.ordinal ?? 0) + 1) },
-    { label: 'Task force', value: tokenName(data, ship?.measures.get('taskName'), 'Not recorded') },
-    { label: 'Repair policy', value: tokenName(data, ship?.measures.get('policy'), 'Not recorded') },
-    ...readDate ? [{ label: 'As of', value: readDate }] : [] ] };
+    { label: 'Ship', lookupKey: item?.handle, value: item?.handle },
+    { label: 'Hull', value: `${fixedText(item?.hull)} of ${fixedText(item?.maximum)}` },
+    { label: 'Place in queue', value: String(row.index + 1) },
+    { label: 'Class', value: item?.class ?? 'Not recorded' },
+    { label: 'Task force', value: item?.taskForce ?? 'Not recorded' },
+    { label: 'Repair policy', value: item?.policy ?? 'Not recorded' },
+    { label: 'As of', value: date }] };
 }

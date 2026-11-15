@@ -21,7 +21,7 @@ use crate::{
 pub(crate) use acquisition::{Completion, Failure, SubmitError, Ticket};
 mod presentation;
 pub(crate) mod ship_details;
-mod variant_workers;
+pub(crate) mod variant_workers;
 #[cfg(any(test, feature = "acquisition_profile"))]
 use engine_native::memory::CountedMemory;
 use engine_native::memory::LiveMemory;
@@ -40,7 +40,7 @@ use std::{
 };
 
 pub(crate) struct RawRequest<J, C> {
-    pub countries: Arc<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
     pub context: C,
     pub payload: J,
 }
@@ -58,7 +58,7 @@ pub(crate) struct WorldPart<J, C> {
 /// The production and construction rests; each part owns a payload only in
 /// its scheduled hour. The economy rest is its own [`EconomyRequest`].
 pub(crate) struct WorldRequest {
-    pub countries: Arc<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
     pub construction: Option<
         WorldPart<construction::ConstructionRestJob, construction::ConstructionRestCopyContext>,
     >,
@@ -78,7 +78,7 @@ pub(crate) type EconomyRequest =
     RawRequest<economy::EconomyRestJob, economy::EconomyRestCopyContext>;
 pub(crate) struct GovernanceRequest {
     pub workers: variant_workers::Dispatch,
-    pub countries: Arc<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
     pub context: governance::CaptureContext,
     pub captured: governance::Captured,
     pub buildings: construction::Buildings,
@@ -96,6 +96,27 @@ pub(crate) struct GovernanceRequest {
     pub technology_fingerprints: Box<crate::slicing::SliceFingerprints>,
     /// The focus family's only fingerprint store, loaned for this hour.
     pub focus_fingerprints: Box<crate::slicing::SliceFingerprints>,
+}
+/// The governance job's buildings, walked on a worker beside its technology lanes.
+pub(crate) struct BuildingsPart {
+    countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    context: governance::CaptureContext,
+    buildings: construction::Buildings,
+    store: Option<Box<construction::BuildingStore>>,
+    ticks: u64,
+}
+impl BuildingsPart {
+    fn capture(&mut self, memory: &impl engine_native::Memory) {
+        let cached = self.countries.roster_view(memory);
+        self.ticks = self.buildings.capture_carried(
+            &cached,
+            self.context.base,
+            self.context.game_state,
+            self.context.hour,
+            self.context.force_full,
+            self.store.as_deref_mut(),
+        );
+    }
 }
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct GovernanceReport {
@@ -160,7 +181,7 @@ fn variant_read_plan(hour: i32, force_full: bool, recovery: bool) -> (bool, bool
 /// The governance family's hourly research tables, walked beside the rest
 /// of the family (see `governance::ResearchPart`).
 pub(crate) struct ResearchRequest {
-    pub countries: Arc<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
     pub context: governance::CaptureContext,
     pub part: governance::ResearchPart,
     /// The attachment's only fingerprint store, loaned for this hour.
@@ -171,21 +192,28 @@ pub(crate) struct ResearchReport {
     pub ticks: [u64; 3],
 }
 pub(crate) struct IntelResidualRequest {
-    pub countries: Arc<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
     pub context: intel::CaptureContext,
     pub captured: intel::Captured,
     /// Held ScriptFlags rows ([`intel::FlagStore`]); absent reads every
     /// manager afresh.
     pub flags: Option<Box<intel::FlagStore>>,
+}
+/// ScriptVariables, walked beside the residual Intel job and joined only when
+/// the Intel pack is published, so the final borrowers never wait for it.
+pub(crate) struct ScriptVariablesRequest {
+    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub context: intel::CaptureContext,
+    pub part: intel::VariablePart,
     /// Held ScriptVariables rows ([`intel::VariableStore`]); absent reads
     /// every store afresh.
-    pub variables: Option<Box<intel::VariableStore>>,
+    pub store: Option<Box<intel::VariableStore>>,
 }
 /// One country-slot share of the supply node census; part 0 also walks the
 /// train inventory and carries the hour's owner selection with the family's
 /// fingerprint store.
 pub(crate) struct SupplyTrainsRequest {
-    pub countries: Arc<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
     pub context: supply_trains::CaptureContext,
     pub part: usize,
     pub nodes: supply_trains::Part,
@@ -197,12 +225,13 @@ pub(crate) struct CharacterPortraitsRequest {
     pub context: character_portraits::CaptureContext,
     pub part: usize,
     pub captured: character_portraits::Part,
-    pub census: Option<Arc<engine_native::ccharacter_manager::PortraitCensus>>,
+    pub census:
+        Option<engine_allocation::SharedBox<engine_native::ccharacter_manager::PortraitCensus>>,
 }
 /// The Ordinary family's counter part, dispatched once the Countries job has
 /// restored the naming buffers its reserved visibility reads.
 pub(crate) struct OrdinaryRequest {
-    pub countries: Arc<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub hour: i32,
@@ -226,7 +255,7 @@ impl OrdinaryRequest {
 /// One independent part of the Ordinary family, dispatched with the first
 /// burst (`extended::OrdinaryPart`).
 pub(crate) struct OrdinaryPartRequest {
-    pub countries: Arc<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub hour: i32,
@@ -245,7 +274,7 @@ impl OrdinaryPartRequest {
     }
 }
 pub(crate) struct SlowRequest {
-    pub countries: Arc<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub hour: i32,
@@ -257,7 +286,7 @@ pub(crate) struct SlowRequest {
 /// One part of the hour's AirCountryRelations copies
 /// (`air_relations::PARTS`).
 pub(crate) struct AirRelationsRequest {
-    pub countries: Arc<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub part: usize,
@@ -271,7 +300,7 @@ pub(crate) struct AirRelationsReport;
 /// It needs only the wing census, never an Ordinary part's packs; the air
 /// statistics and base verdicts are installed in its pack when it returns.
 pub(crate) struct AirMissionsRequest {
-    pub countries: Arc<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     /// The map census the typed visitor supplied the wing identities in.
@@ -296,7 +325,7 @@ pub(crate) struct AirMissionsReport;
 /// One part of the hour's naval-patrol history copies
 /// (`air_histories::PARTS`).
 pub(crate) struct AirHistoriesRequest {
-    pub countries: Arc<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub part: usize,
@@ -307,7 +336,7 @@ pub(crate) struct AirHistoriesReport;
 #[derive(Clone, Copy, Default)]
 pub(crate) struct SlowReport;
 pub(crate) struct StabilityRequest {
-    pub countries: Arc<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub hour: i32,
@@ -320,7 +349,7 @@ pub(crate) struct StabilityRequest {
 #[derive(Clone, Copy, Default)]
 pub(crate) struct StabilityReport;
 pub(crate) struct ProductionDailyRequest {
-    pub countries: Arc<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub hour: i32,
@@ -330,7 +359,7 @@ pub(crate) struct ProductionDailyRequest {
 #[derive(Clone, Copy, Default)]
 pub(crate) struct ProductionDailyReport;
 pub(crate) struct IndustrialOrganisationsRequest {
-    pub countries: Arc<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub hour: i32,
@@ -344,7 +373,7 @@ pub(crate) struct IndustrialOrganisationsReport {
 /// One slot range of a split production modifier capture, beside the
 /// ProductionDaily job, which captures the first.
 pub(crate) struct ProductionModifierPartRequest {
-    pub countries: Arc<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub hour: i32,
@@ -359,7 +388,7 @@ pub(crate) struct ProductionModifierPartReport {
     pub ticks: u64,
 }
 pub(crate) struct WarOverviewRequest {
-    pub countries: Arc<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub hour: i32,
@@ -369,7 +398,7 @@ pub(crate) struct WarOverviewRequest {
 #[derive(Clone, Copy, Default)]
 pub(crate) struct WarOverviewReport;
 pub(crate) struct RaidStateRequest {
-    pub countries: Arc<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub hour: i32,
@@ -381,7 +410,7 @@ pub(crate) struct RaidStateRequest {
 #[derive(Clone, Copy, Default)]
 pub(crate) struct RaidStateReport;
 pub(crate) struct RaidLaunchRequest {
-    pub countries: Arc<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub hour: i32,
@@ -393,7 +422,7 @@ pub(crate) struct RaidLaunchRequest {
 #[derive(Clone, Copy, Default)]
 pub(crate) struct RaidLaunchReport;
 pub(crate) struct RaidTargetsRequest {
-    pub countries: Arc<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub hour: i32,
@@ -406,8 +435,8 @@ pub(crate) struct RaidTargetsReport;
 pub(crate) struct OrdinaryReport;
 pub(crate) struct LateRequest {
     /// The same held country snapshot used by the Orders phase.
-    pub countries: Arc<engine_native::country_memory::Cache>,
-    pub inputs: Option<Arc<crate::division_census::UnitInputs>>,
+    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub inputs: Option<engine_allocation::SharedBox<crate::division_census::UnitInputs>>,
     pub base: usize,
     pub game_state: usize,
     pub hour: i32,
@@ -425,7 +454,7 @@ pub(crate) struct ScoresRailsReport;
 /// burst; its capture joins the air pack at the missions join, and the Late
 /// job merges it into Ground Crews.
 pub(crate) struct AirSupplyRequest {
-    pub countries: Arc<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub capture: Box<engine_map_air::map_air_supply::Capture>,
@@ -470,7 +499,7 @@ pub(crate) struct FrontsReport;
 /// carries both icon fields, so the pass reads only alternate templates.
 pub(crate) struct ArmyIconsRequest {
     pub base: usize,
-    pub inputs: Option<Arc<crate::division_census::UnitInputs>>,
+    pub inputs: Option<engine_allocation::SharedBox<crate::division_census::UnitInputs>>,
     pub divisions: crate::extended::Divisions,
     pub icons: crate::extended::army_icon_inputs::Captured,
     pub ticks: [u64; 1],
@@ -480,7 +509,7 @@ pub(crate) struct ArmyIconsRequest {
 pub(crate) struct DivisionModelInputsRequest {
     pub base: usize,
     pub game_state: usize,
-    pub inputs: Option<Arc<crate::division_census::UnitInputs>>,
+    pub inputs: Option<engine_allocation::SharedBox<crate::division_census::UnitInputs>>,
     pub captured: crate::extended::division_model_inputs::Captured,
 }
 #[derive(Clone, Copy, Default)]
@@ -490,7 +519,7 @@ pub(crate) struct DivisionModelInputsReport;
 /// resolving countries from the hour's snapshot bytes. The Late job keeps the
 /// tables they leave in the frame's packs.
 pub(crate) struct ScoresRailsRequest {
-    pub countries: Arc<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub hour: i32,
@@ -509,7 +538,7 @@ pub(crate) struct ScoresRailsRequest {
 /// completed OOB copy, to the ChildFronts job, which completes the child
 /// fronts' owner operands. The Late job reads the roots and plans they leave.
 pub(crate) struct OrdersRequest {
-    pub countries: Arc<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
     pub base: usize,
     /// This pass's game state, for the invasion preparations' countries and
     /// provinces.
@@ -602,7 +631,7 @@ pub(crate) struct GatedRequest {
     pub project_fingerprints: Option<Box<crate::slicing::SliceFingerprints>>,
     /// The hour's authenticated country census, which the projects family's
     /// per-slot census reads instead of each country object.
-    pub countries: Option<Arc<engine_native::country_memory::Cache>>,
+    pub countries: Option<engine_allocation::SharedBox<engine_native::country_memory::Cache>>,
 }
 pub(crate) struct GatedProjectsRequest {
     pub workers: variant_workers::Dispatch,
@@ -612,7 +641,7 @@ pub(crate) struct GatedProjectsRequest {
     pub force_full: bool,
     pub captured: projects::Captured,
     pub fingerprints: Box<crate::slicing::SliceFingerprints>,
-    pub countries: Option<Arc<engine_native::country_memory::Cache>>,
+    pub countries: Option<engine_allocation::SharedBox<engine_native::country_memory::Cache>>,
     pub recorded: bool,
     pub ticks: [u64; projects::N],
 }
@@ -651,22 +680,48 @@ impl GatedProjectsRequest {
     ) {
         let _phase = crate::allocation::enter(crate::allocation::Phase::Extended);
         if self.recorded {
+            let (base, game_state, hour, force_full) =
+                (self.base, self.game_state, self.hour, self.force_full);
+            // The walks after the projects share nothing with them, so a worker walks them beside.
+            self.captured.reset();
+            let rest = self.captured.take_rest(game_state, hour, force_full);
             let workers = &self.workers;
-            let mut acquire = |parts| workers.projects(parts, roster, self.base, self.game_state);
-            self.ticks = self.captured.acquire_selected_partitioned(
+            let (captured, fingerprints, ticks) =
+                (&mut self.captured, &mut self.fingerprints, &mut self.ticks);
+            let returned = workers.beside(
+                variant_workers::Work::ProjectsRest(Box::new(rest)),
                 memory,
-                roster,
-                self.base,
-                self.game_state,
-                self.hour,
-                self.force_full,
-                &mut self.fingerprints,
-                changes,
-                projects::ProjectDispatch {
-                    lanes: workers.lanes(),
-                    acquire: &mut acquire,
+                base,
+                crate::hour_stages::Part::ProjectsRestWait,
+                &mut || {
+                    let mut acquire = |parts| workers.projects(parts, roster, base, game_state);
+                    *ticks = captured.acquire_selected_partitioned(
+                        memory,
+                        roster,
+                        base,
+                        game_state,
+                        hour,
+                        force_full,
+                        fingerprints,
+                        changes,
+                        projects::ProjectDispatch {
+                            lanes: workers.lanes(),
+                            acquire: &mut acquire,
+                        },
+                    );
                 },
             );
+            match returned {
+                Some(variant_workers::Work::ProjectsRest(rest)) => {
+                    let rest = self.captured.restore_rest(*rest);
+                    for (ticks, rest) in self.ticks.iter_mut().zip(rest) {
+                        *ticks += rest;
+                    }
+                }
+                _ => self
+                    .captured
+                    .fail_rest("project family rest acquisition stopped before reading"),
+            }
         } else {
             self.captured.fail_gated_capture(
                 self.hour,
@@ -683,7 +738,7 @@ pub(crate) struct ProvinceUnitOrderRequest {
     pub captured: province_unit_order::Captured,
     /// The hour's division census lease, when its acquisition completed;
     /// released at the join, before the census is reused.
-    pub inputs: Option<Arc<crate::division_census::UnitInputs>>,
+    pub inputs: Option<engine_allocation::SharedBox<crate::division_census::UnitInputs>>,
     /// The held walk ([`crate::province_unit_changes`]), lent for the hour.
     pub store: Option<Box<province_unit_order::ProvinceUnitStore>>,
 }
@@ -692,7 +747,7 @@ pub(crate) struct ProvinceUnitOrderRequest {
 pub(crate) type ProvincesRequest = GatherRequest<engine_native::cprovince::Capture>;
 pub(crate) type ProvincesReport = GatherReport;
 pub(crate) struct ShipModelsRequest {
-    pub countries: Arc<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
     pub context: ship_models::CaptureContext,
     pub game_state: usize,
     pub captured: ship_models::Captured,
@@ -703,17 +758,17 @@ pub(crate) struct ShipModelsRequest {
 /// One contiguous census range of the ShipModels details (part 0 is the
 /// family's own capture).
 pub(crate) struct ShipModelDetailsRequest {
-    pub countries: Arc<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
     pub context: ship_models::CaptureContext,
     pub part: usize,
     pub captured: ship_models::Captured,
 }
 pub(crate) struct PresentationRequest {
-    pub countries: Arc<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
     pub context: division_presentation::CaptureContext,
     pub captured: division_presentation::Captured,
     pub dispatch: PresentationDispatch,
-    pub inputs: Option<Arc<crate::division_census::UnitInputs>>,
+    pub inputs: Option<engine_allocation::SharedBox<crate::division_census::UnitInputs>>,
     /// The `army_stat` family's held DivisionStatus attack operands, loaned
     /// for the hour.
     pub army_stats: Option<division_presentation::held_store::Loan>,
@@ -722,7 +777,7 @@ impl PresentationRequest {
     /// Lend the movement pass to its own job, which runs beside this one.
     pub(crate) fn take_movement(&mut self) -> PresentationMovementRequest {
         PresentationMovementRequest {
-            countries: Arc::clone(&self.countries),
+            countries: engine_allocation::SharedBox::clone(&self.countries),
             context: self.context,
             inputs: self.inputs.clone(),
             pass: self.captured.take_movement(),
@@ -731,7 +786,7 @@ impl PresentationRequest {
 
     pub(crate) fn take_speed_terms(&mut self) -> PresentationSpeedTermsRequest {
         PresentationSpeedTermsRequest {
-            countries: Arc::clone(&self.countries),
+            countries: engine_allocation::SharedBox::clone(&self.countries),
             context: self.context,
             inputs: self.inputs.clone(),
             pass: self.captured.take_speed_terms(),
@@ -773,9 +828,9 @@ impl PresentationRequest {
 }
 /// One final-status range over immutable ordered preparation.
 pub(crate) struct PresentationStatusRequest {
-    pub countries: Arc<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
     pub context: division_presentation::CaptureContext,
-    pub inputs: Option<Arc<crate::division_census::UnitInputs>>,
+    pub inputs: Option<engine_allocation::SharedBox<crate::division_census::UnitInputs>>,
     pub part: Option<division_presentation::StatusWork>,
     pub preparation: bool,
     pub stitch: Option<(Arc<PresentationFanIn>, usize)>,
@@ -783,9 +838,9 @@ pub(crate) struct PresentationStatusRequest {
 
 /// The unchanged whole-census speed pass beside status and movement.
 pub(crate) struct PresentationSpeedTermsRequest {
-    pub countries: Arc<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
     pub context: division_presentation::CaptureContext,
-    pub inputs: Option<Arc<crate::division_census::UnitInputs>>,
+    pub inputs: Option<engine_allocation::SharedBox<crate::division_census::UnitInputs>>,
     pub pass: division_presentation::SpeedTermsPass,
 }
 impl PresentationSpeedTermsRequest {
@@ -797,16 +852,16 @@ impl PresentationSpeedTermsRequest {
 
 /// Movement, land and dig-in beside the Presentation job.
 pub(crate) struct PresentationMovementRequest {
-    pub countries: Arc<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
     pub context: division_presentation::CaptureContext,
-    pub inputs: Option<Arc<crate::division_census::UnitInputs>>,
+    pub inputs: Option<engine_allocation::SharedBox<crate::division_census::UnitInputs>>,
     pub pass: division_presentation::MovementPass,
 }
 pub(crate) struct IntelRequest {
-    pub countries: Arc<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
     pub context: fog::IntelCopyContext,
     pub payload: fog::IntelJob,
-    pub inputs: Option<Arc<crate::division_census::UnitInputs>>,
+    pub inputs: Option<engine_allocation::SharedBox<crate::division_census::UnitInputs>>,
     pub input_failure: Option<&'static str>,
 }
 pub(crate) struct CharactersRequest {
@@ -814,7 +869,7 @@ pub(crate) struct CharactersRequest {
     pub context: characters::CharactersCopyContext,
     pub payload: characters::CharactersJob,
     /// A role job's census loan returns with the request at its join.
-    pub roles: characters::Roles<Arc<characters::census::RoleCensus>>,
+    pub roles: characters::Roles<engine_allocation::SharedBox<characters::census::RoleCensus>>,
 }
 pub(crate) type RelationsRequest = RawRequest<intel::RelationsJob, intel::RelationsCopyContext>;
 pub(crate) type AirWingRequest = RawRequest<air::AirWingJob, air::AirWingCopyContext>;
@@ -840,7 +895,7 @@ pub(crate) type DivisionsRequest =
 /// census the DivisionInputs job walks the first part of
 /// ([`crate::division_census::Census::absorb`]).
 pub(crate) struct DivisionPartRequest {
-    pub countries: Arc<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub slots: (u32, u32),
@@ -891,6 +946,7 @@ pub(crate) enum Job {
     PresentationMovement(PresentationMovementRequest),
     PresentationSpeedTerms(PresentationSpeedTermsRequest),
     IntelResidual(IntelResidualRequest),
+    ScriptVariables(ScriptVariablesRequest),
     SupplyTrains(SupplyTrainsRequest),
     CharacterPortraits(CharacterPortraitsRequest),
     ProvinceUnitOrder(ProvinceUnitOrderRequest),
@@ -978,6 +1034,8 @@ pub(crate) enum Report {
     /// Shared speed ticks in presentation table order.
     PresentationSpeedTerms(division_presentation::CaptureReport),
     IntelResidual(intel::CaptureReport),
+    /// The walk's ticks.
+    ScriptVariables(u64),
     SupplyTrains(supply_trains::CaptureReport),
     CharacterPortraits(character_portraits::CaptureReport),
     ProvinceUnitOrder(province_unit_order::CaptureReport),
@@ -1108,6 +1166,7 @@ pub(crate) enum Role {
     DivisionModelInputs,
     GatedProjects,
     AirSupply,
+    ScriptVariables,
 }
 
 impl Role {
@@ -1115,6 +1174,7 @@ impl Role {
         true
     }
     // Only admitted leaf captures; coordinators can wait for children or retain loans.
+    // The callback alone advances dependency edges: no walk that grows with the world.
     const fn callback_help(self) -> bool {
         matches!(
             self,
@@ -1129,7 +1189,6 @@ impl Role {
                 | Role::Capitulation
                 | Role::Players
                 | Role::Projects
-                | Role::Lexical
                 | Role::Session
                 | Role::Weather
                 | Role::Radar
@@ -1141,7 +1200,6 @@ impl Role {
                 | Role::PresentationStatus
                 | Role::World
                 | Role::Economy
-                | Role::Research
                 | Role::CharacterPortraits
                 | Role::ProvinceUnitOrder
                 | Role::AirRelations
@@ -1198,6 +1256,7 @@ impl Role {
             | Self::PresentationPreparation
             | Self::FinalInputs => T::DivisionStatus,
             Self::IntelResidual => intel::TABLES[0],
+            Self::ScriptVariables => intel::TABLES[8],
             Self::SupplyTrains => supply_trains::TABLES[0],
             Self::CharacterPortraits => character_portraits::TABLES[0],
             Self::ProvinceUnitOrder => province_unit_order::TABLES[0],
@@ -1257,7 +1316,7 @@ impl Role {
     /// and missions (Late), the character roster (portraits, roles and
     /// character inputs), the unit-input copy (Presentation, Divisions,
     /// Intel), the ShipModels census (its detail parts), the raw-copy verdicts
-    /// the Gated job reads (radar, intel, registrations, projects) and the
+    /// the Gated job reads (radar, intel, registrations) and the
     /// joins before the map sample, which the Late job follows (players,
     /// combats, the air statistics, naval supremacy and sunk ships), and the
     /// World and Economy jobs, which the game thread joins right after the
@@ -1301,7 +1360,6 @@ impl Role {
             | Self::ShipModels
             | Self::AirBases
             | Self::Radar
-            | Self::Projects
             | Self::Intel
             | Self::Players
             | Self::MapCombats
@@ -1320,6 +1378,8 @@ impl Role {
             // FinalInputs' sources: at priority 2 the residual started 7 ms in, after its
             // queueing at 0.8 ms, and ended 9 ms in.
             | Self::IntelResidual
+            // The forced hour's longest single walk (58 ms in 7l), off every barrier.
+            | Self::ScriptVariables
             // The hourly template census is a long independent join tail.
             | Self::Templates
             // The longest first-burst job, 2.55 ms at 1943 with the war
@@ -1337,6 +1397,8 @@ impl Role {
             Self::Governance
             | Self::Gated
             | Self::GatedProjects
+            // Joined at its first reader, after every barrier.
+            | Self::Projects
             | Self::CharacterInputs
             // A FinalInputs producer, without delaying queued Presentation work.
             | Self::AdvisorRoles
@@ -1378,7 +1440,7 @@ impl Role {
     }
 }
 
-pub(crate) const ROLE_COUNT: usize = 81;
+pub(crate) const ROLE_COUNT: usize = 82;
 /// The last Variants drain's wall, for naming a slow hour.
 pub(crate) static VARIANT_DRAIN_TICKS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
@@ -1465,6 +1527,7 @@ pub(crate) const ROLES: [Role; ROLE_COUNT] = [
     Role::DivisionModelInputs,
     Role::GatedProjects,
     Role::AirSupply,
+    Role::ScriptVariables,
 ];
 impl Job {
     fn callback_help(&self) -> bool {
@@ -1535,6 +1598,7 @@ impl Job {
             Self::PresentationMovement(..) => Role::PresentationMovement,
             Self::PresentationSpeedTerms(..) => Role::PresentationSpeedTerms,
             Self::IntelResidual(..) => Role::IntelResidual,
+            Self::ScriptVariables(..) => Role::ScriptVariables,
             Self::SupplyTrains(..) => Role::SupplyTrains,
             Self::CharacterPortraits(..) => Role::CharacterPortraits,
             Self::ProvinceUnitOrder(..) => Role::ProvinceUnitOrder,
@@ -1717,7 +1781,7 @@ pub(crate) fn run_world(
         .production
         .as_mut()
         .map_or_else(Default::default, |part| {
-            production::copy_production_rest_refresh_growing(
+            production::copy_production_rest_refresh(
                 production_memory,
                 part.context,
                 &mut part.payload,
@@ -1727,7 +1791,7 @@ pub(crate) fn run_world(
         .construction
         .as_mut()
         .map_or_else(Default::default, |part| {
-            construction::copy_construction_rest_refresh_growing(
+            construction::copy_construction_rest_refresh(
                 memory,
                 part.context,
                 &mut part.payload,
@@ -1742,7 +1806,7 @@ pub(crate) fn run_world(
 
 fn run_world_shared(request: &mut WorldRequest, memory: &impl engine_native::Memory) -> WorldReport {
     let started = crate::sampling::qpc();
-    let snapshot = Arc::clone(&request.countries);
+    let snapshot = engine_allocation::SharedBox::clone(&request.countries);
     let cached = snapshot.view(memory);
     let mut report = run_world(request, &cached, memory);
     // The callback owns preparation and retains the country lease through all jobs.
@@ -1756,13 +1820,13 @@ fn run_economy_shared(
     memory: &impl engine_native::Memory,
 ) -> economy::EconomyRestCopyReport {
     let cached = request.countries.view(memory);
-    economy::copy_economy_rest_refresh_growing(&cached, request.context, &mut request.payload)
+    economy::copy_economy_rest_refresh(&cached, request.context, &mut request.payload)
 }
 
 #[cfg(test)]
 pub(crate) fn run_for_test(job: &mut Job, memory: &impl engine_native::Memory) -> Report {
     if let Job::ObserverBoundary(request) = job {
-        return Report::ObserverBoundary(request.capture_with_memory(memory));
+        return Report::ObserverBoundary(request.capture());
     }
     run_with_memory(job, memory, &SharedCalibration::default())
 }
@@ -1776,7 +1840,7 @@ fn run_with_memory(
     let role = job.role();
     let _reads = crate::read_accounting::table(role.read_anchor());
     let report = match job {
-        Job::Characters(request) => Report::Characters(characters::copy_characters_growing(
+        Job::Characters(request) => Report::Characters(characters::copy_characters(
             memory,
             request.context,
             &mut request.payload,
@@ -1792,13 +1856,13 @@ fn run_with_memory(
         }
         Job::AirWing(request) => {
             let cached = request.countries.roster_view(memory);
-            Report::AirWing(air::copy_air_refresh_growing(
+            Report::AirWing(air::copy_air_refresh(
                 &cached,
                 request.context,
                 &mut request.payload,
             ))
         }
-        Job::AirStats(request) => Report::AirStats(air::copy_air_stats_refresh_growing(
+        Job::AirStats(request) => Report::AirStats(air::copy_air_stats_refresh(
             memory,
             request.context,
             &mut request.payload,
@@ -1808,7 +1872,7 @@ fn run_with_memory(
             // spans, and the snapshot serves any country bytes a walk reads.
             // Every other span stays native.
             let cached = request.countries.view(memory);
-            Report::AirBases(air::copy_air_bases_refresh_growing(
+            Report::AirBases(air::copy_air_bases_refresh(
                 &cached,
                 request.context,
                 &mut request.payload,
@@ -1818,20 +1882,20 @@ fn run_with_memory(
             // The land theatre copy resolves countries through this
             // callback's authenticated roster; ordinary reads stay native.
             let cached = request.countries.roster_view(memory);
-            Report::Naval(naval_history::copy_naval_refresh_growing(
+            Report::Naval(naval_history::copy_naval_refresh(
                 &cached,
                 request.context,
                 &mut request.payload,
             ))
         }
         Job::Supremacy(request) => {
-            Report::Supremacy(naval_history::copy_supremacy_refresh_growing(
+            Report::Supremacy(naval_history::copy_supremacy_refresh(
                 memory,
                 request.context,
                 &mut request.payload,
             ))
         }
-        Job::Sunk(request) => Report::Sunk(naval_history::copy_sunk_refresh_growing(
+        Job::Sunk(request) => Report::Sunk(naval_history::copy_sunk_refresh(
             memory,
             request.context,
             &mut request.payload,
@@ -1851,24 +1915,24 @@ fn run_with_memory(
             request.context,
             &mut request.payload,
         )),
-        Job::Lexical(request) => Report::Lexical(lexical::copy_lexical_refresh_growing(
+        Job::Lexical(request) => Report::Lexical(lexical::copy_lexical_refresh(
             memory,
             request.context,
             &mut request.payload,
         )),
-        Job::Session(request) => Report::Session(session::copy_session_refresh_growing(
+        Job::Session(request) => Report::Session(session::copy_session_refresh(
             memory,
             request.context,
             &mut request.payload,
         )),
-        Job::Weather(request) => Report::Weather(weather::copy_weather_refresh_growing(
+        Job::Weather(request) => Report::Weather(weather::copy_weather_refresh(
             memory,
             request.context,
             &mut request.payload,
         )),
         Job::Radar(request) => {
             let cached = request.countries.view(memory);
-            Report::Radar(fog::copy_radar_refresh_growing(
+            Report::Radar(fog::copy_radar_refresh(
                 &cached,
                 request.context,
                 &mut request.payload,
@@ -1877,26 +1941,26 @@ fn run_with_memory(
         Job::MapCombats(request) => Report::MapCombats(request.capture(memory)),
         Job::ObserverBoundary(request) => Report::ObserverBoundary(request.capture()),
         Job::EventFeedSeal(feed) => {
-            feed.seal_growing();
+            feed.seal();
             Report::EventFeedSeal
         }
         Job::FinalInputs(request) => {
-            let countries = Arc::clone(&request.countries);
+            let countries = engine_allocation::SharedBox::clone(&request.countries);
             let cached = countries.roster_view(memory);
             Report::FinalInputs(request.capture(&cached))
         }
         Job::OrderRoots(request) => {
-            request.orders.walk_roots_growing(memory, request.base);
+            request.orders.walk_roots(memory, request.base);
             let report = request
                 .naval
-                .capture_roots_growing(request.orders.roots(), request.orders.root_outcome);
+                .capture_roots(request.orders.roots(), request.orders.root_outcome);
             // This pass's census and plan parts, with the roots they walk.
             request.orders.prepare_parts();
             Report::OrderRoots(report)
         }
         Job::DivisionInputs(request) => {
             let cached = request.countries.view(memory);
-            Report::DivisionInputs(sampling::copy_divisions_inputs_refresh_growing(
+            Report::DivisionInputs(sampling::copy_divisions_inputs_refresh(
                 &cached,
                 request.context,
                 &mut request.payload,
@@ -1928,30 +1992,65 @@ fn run_with_memory(
             Report::Economy(run_economy_shared(request, memory))
         }
         Job::Governance(request) => {
-            let cached = request.countries.roster_view(memory);
             let context = request.context;
-            let workers = &request.workers;
-            let mut acquire = |parts| workers.technologies(parts, &cached, context.base);
-            let governance = request.captured.acquire_owned_partitioned(
-                &cached,
+            // Buildings share nothing with the technologies, so a worker walks them beside.
+            let part = BuildingsPart {
+                countries: engine_allocation::SharedBox::clone(&request.countries),
                 context,
-                &mut request.technology_fingerprints,
-                &mut request.focus_fingerprints,
-                request.leader_store.as_deref_mut(),
-                request.party_store.as_deref_mut(),
-                governance::TechnologyDispatch {
-                    lanes: workers.lanes(),
-                    acquire: &mut acquire,
+                buildings: std::mem::replace(
+                    &mut request.buildings,
+                    construction::Buildings::vacant(),
+                ),
+                store: request.building_store.take(),
+                ticks: 0,
+            };
+            let mut governance = governance::CaptureReport::default();
+            let GovernanceRequest {
+                workers,
+                countries,
+                captured,
+                technology_fingerprints,
+                focus_fingerprints,
+                leader_store,
+                party_store,
+                ..
+            } = &mut *request;
+            let workers = &*workers;
+            let countries = &*countries;
+            let returned = workers.beside(
+                variant_workers::Work::Buildings(Box::new(part)),
+                memory,
+                context.base,
+                crate::hour_stages::Part::GovernanceBuildingsWait,
+                &mut || {
+                    let cached = countries.roster_view(memory);
+                    let mut acquire = |parts| workers.technologies(parts, &cached, context.base);
+                    governance = captured.acquire_owned_partitioned(
+                        &cached,
+                        context,
+                        technology_fingerprints,
+                        focus_fingerprints,
+                        leader_store.as_deref_mut(),
+                        party_store.as_deref_mut(),
+                        governance::TechnologyDispatch {
+                            lanes: workers.lanes(),
+                            acquire: &mut acquire,
+                        },
+                    );
                 },
             );
-            let buildings = request.buildings.capture_carried(
-                &cached,
-                context.base,
-                context.game_state,
-                context.hour,
-                context.force_full,
-                request.building_store.as_deref_mut(),
-            );
+            let buildings = match returned {
+                Some(variant_workers::Work::Buildings(part)) => {
+                    let part = *part;
+                    request.buildings = part.buildings;
+                    request.building_store = part.store;
+                    part.ticks
+                }
+                _ => {
+                    request.buildings.fail("building acquisition stopped before reading");
+                    0
+                }
+            };
             Report::Governance(GovernanceReport {
                 governance,
                 buildings,
@@ -2006,6 +2105,18 @@ fn run_with_memory(
                 Some(|part, run: &mut dyn FnMut()| {
                     workers.storage_during(part, memory, context.base, run)
                 }),
+                &mut |phase, begin, end| {
+                    use crate::hour_stages::Part;
+                    use production::VariantPhase;
+                    let part = match phase {
+                        VariantPhase::Lanes => Part::VariantsLanes,
+                        VariantPhase::Join => Part::VariantsJoin,
+                        VariantPhase::Snapshot => Part::VariantsSnapshot,
+                        VariantPhase::Context => Part::VariantsContext,
+                        VariantPhase::Setup => Part::VariantsSetup,
+                    };
+                    crate::hour_stages::record_part(part, begin, end);
+                },
             );
             variants[3] = variants[3].saturating_add(registry_ticks);
             Report::Variants(variants)
@@ -2028,7 +2139,15 @@ fn run_with_memory(
                 &cached,
                 request.context,
                 request.flags.as_deref_mut(),
-                request.variables.as_deref_mut(),
+                None,
+            ))
+        }
+        Job::ScriptVariables(request) => {
+            let cached = request.countries.view(memory);
+            Report::ScriptVariables(request.part.capture(
+                &cached,
+                request.context,
+                request.store.as_deref_mut(),
             ))
         }
         Job::SupplyTrains(request) => {
@@ -2345,7 +2464,7 @@ fn run_with_memory(
                     panic!("synthetic stitch panic");
                 }
                 // The stitch fills the request it reads its countries from.
-                let countries = Arc::clone(&request.countries);
+                let countries = engine_allocation::SharedBox::clone(&request.countries);
                 let cached = countries.roster_view(memory);
                 request.stitch(&cached);
             }));
@@ -2414,12 +2533,12 @@ fn run_with_memory(
             )
         }
         Job::Factions(request) => {
-            Report::Factions(acquisition_factions::run_growing(request, memory))
+            Report::Factions(acquisition_factions::run(request, memory))
         }
         Job::Countries(request) => Report::Countries(request.run(memory)),
         Job::Templates(request) => Report::Templates(request.run(memory)),
-        Job::Wars(request) => Report::Wars(request.run_growing(memory)),
-        Job::States(request) => Report::States(request.run_growing(memory)),
+        Job::Wars(request) => Report::Wars(request.run(memory)),
+        Job::States(request) => Report::States(request.run(memory)),
         Job::PresentationPrepare(request) | Job::PresentationSettle(request) => {
             let cached = request.countries.roster_view(memory);
             let inputs = request.inputs.as_deref();
@@ -2547,7 +2666,7 @@ fn run_with_memory(
                         },
                     })
             });
-            Report::Intel(fog::copy_intel_refresh_with_divisions_growing(
+            Report::Intel(fog::copy_intel_refresh_with_divisions(
                 &cached,
                 request.context,
                 &mut request.payload,
@@ -2555,10 +2674,11 @@ fn run_with_memory(
             ))
         }
     };
-    calibration.roles[role as usize].ticks.fetch_add(
-        sampling::qpc().saturating_sub(started).max(0) as u64,
-        Ordering::Relaxed,
-    );
+    let ended = sampling::qpc();
+    calibration.roles[role as usize]
+        .ticks
+        .fetch_add(ended.saturating_sub(started).max(0) as u64, Ordering::Relaxed);
+    crate::hour_stages::record(role as usize, started, ended);
     report
 }
 
@@ -2567,7 +2687,7 @@ impl Role {
     const fn jobs_per_hour(self) -> usize {
         match self {
             Self::Variants => 2 * acquisition::MAX_WORKERS,
-            Self::Governance | Self::GatedProjects => acquisition::MAX_WORKERS,
+            Self::Governance | Self::GatedProjects | Self::Templates => acquisition::MAX_WORKERS,
             Self::AirWing => air::WING_PARTS,
             Self::AirRelations => crate::extended::air_relations::PARTS,
             Self::AirHistories => crate::extended::air_histories::PARTS,
@@ -2617,6 +2737,11 @@ pub(crate) struct Pool {
     final_inputs: Arc<FinalInputsDispatch>,
     ship_details: Arc<ShipDetailsDispatch>,
 }
+/// The Variants job's lanes are claimed behind the DivisionStatus chain's priority-0 jobs: at the
+/// hour after attach its 60 lane walks held the workers the chain's ranges waited for. The job
+/// drains its own unclaimed lanes, so they still run as soon as it or a worker is free.
+const VARIANT_LANES: u8 = 1;
+
 impl Pool {
     #[cfg(test)]
     pub(crate) fn with_test_runner(
@@ -2682,9 +2807,12 @@ impl Pool {
         wake: bool,
     ) -> Result<Ticket, acquisition::SubmitError> {
         match request.as_mut() {
-            Some(Job::Variants(request)) => request.workers.arm(self),
+            Some(Job::Variants(request)) => request.workers.arm_at(self, VARIANT_LANES),
             Some(Job::Governance(request)) => request.workers.arm(self),
             Some(Job::GatedProjects(request)) => request.workers.arm(self),
+            Some(Job::Templates(request)) => request
+                .workers
+                .arm_at(self, Role::Templates.priority()),
             _ => {}
         }
         let role = request.as_ref().map(Job::role);
@@ -2877,7 +3005,7 @@ impl<'a> Batch<'a> {
         &mut self,
         request: PresentationRequest,
         parts: usize,
-        store: Option<Arc<division_presentation::held_store::Slot>>,
+        store: Option<division_presentation::held_store::Slot>,
         omit_status: bool,
     ) -> Arc<PresentationInputs> {
         let dispatch = Arc::clone(&self.pool.presentation_inputs);
@@ -3158,14 +3286,17 @@ mod tests {
     fn country_snapshot(
         memory: &impl engine_native::Memory,
         cells: usize,
-    ) -> Arc<engine_native::country_memory::Cache> {
-        let mut storage =
-            Arc::new(engine_native::country_memory::Cache::try_with_capacity(cells).unwrap());
+    ) -> engine_allocation::SharedBox<engine_native::country_memory::Cache> {
+        let mut storage = engine_allocation::shared(
+            engine_native::country_memory::Cache::try_with_capacity(cells).unwrap(),
+        )
+        .unwrap();
         engine_native::country_memory::Cache::prepare_shared(&mut storage, memory, 0, 0x1000)
             .unwrap()
     }
 
-    fn empty_country_snapshot() -> Arc<engine_native::country_memory::Cache> {
+    fn empty_country_snapshot()
+    -> engine_allocation::SharedBox<engine_native::country_memory::Cache> {
         country_snapshot(
             &engine_native::memory::SliceMemory {
                 base: 0,
@@ -3267,15 +3398,17 @@ mod tests {
 
     #[test]
     fn presentation_stages_have_distinct_roles_and_complete_chain_slots() {
-        let countries =
-            Arc::new(engine_native::country_memory::Cache::try_with_capacity(0).unwrap());
+        let countries = engine_allocation::shared(
+            engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+        )
+        .unwrap();
         let context = division_presentation::CaptureContext {
             base: 0,
             game_state: 0,
             hour: 0,
         };
         let request = || PresentationRequest {
-            countries: Arc::clone(&countries),
+            countries: engine_allocation::SharedBox::clone(&countries),
             context,
             captured: division_presentation::Captured::vacant(),
             dispatch: Default::default(),
@@ -3292,7 +3425,7 @@ mod tests {
         );
         assert_eq!(Job::Presentation(request()).role(), Role::Presentation);
         let status = Job::PresentationStatus(PresentationStatusRequest {
-            countries: Arc::clone(&countries),
+            countries: engine_allocation::SharedBox::clone(&countries),
             context,
             inputs: None,
             preparation: false,
@@ -3301,11 +3434,15 @@ mod tests {
                 prepared: Arc::new(engine_native::carmy::StatusPacket::vacant()),
                 part: engine_native::carmy::StatusPart::vacant(),
                 attack: Default::default(),
+                naming: Default::default(),
+                carry: engine_allocation::shared(division_presentation::NamingCarry::default())
+                    .unwrap(),
+                store: None,
             }),
         });
         assert_eq!(status.role(), Role::PresentationStatus);
         let mut preparation = Job::PresentationStatus(PresentationStatusRequest {
-            countries: Arc::clone(&countries),
+            countries: engine_allocation::SharedBox::clone(&countries),
             context,
             inputs: None,
             preparation: true,
@@ -3630,9 +3767,11 @@ mod tests {
         cells: usize,
         base: usize,
         game_state: usize,
-    ) -> Arc<engine_native::country_memory::Cache> {
-        let mut storage =
-            Arc::new(engine_native::country_memory::Cache::try_with_capacity(cells).unwrap());
+    ) -> engine_allocation::SharedBox<engine_native::country_memory::Cache> {
+        let mut storage = engine_allocation::shared(
+            engine_native::country_memory::Cache::try_with_capacity(cells).unwrap(),
+        )
+        .unwrap();
         engine_native::country_memory::Cache::prepare_shared(&mut storage, memory, base, game_state)
             .unwrap()
     }
@@ -3892,8 +4031,10 @@ mod tests {
                 reads: &reads,
                 faults: &[],
             };
-            let mut storage =
-                Arc::new(engine_native::country_memory::Cache::try_with_capacity(cells).unwrap());
+            let mut storage = engine_allocation::shared(
+                engine_native::country_memory::Cache::try_with_capacity(cells).unwrap(),
+            )
+            .unwrap();
             let countries = engine_native::country_memory::Cache::prepare_shared(
                 &mut storage,
                 &seed,
@@ -3916,14 +4057,14 @@ mod tests {
 
             for shared in [false, true] {
                 let inputs = shared.then(|| {
-                    Arc::new(crate::division_census::UnitInputs::fixture(
+                    engine_allocation::shared(crate::division_census::UnitInputs::fixture(
                         vec![engine_native::carmy::DivisionSeed {
                             pointer: kit::DIVISION,
                             roster_owner: Some(1),
                             ..Default::default()
                         }],
                         Outcome::Rows { len: 1 },
-                    ))
+                    )).unwrap()
                 });
                 for faults in [
                     &[][..],
@@ -3937,7 +4078,7 @@ mod tests {
                     });
                     let mut previous = fog::IntelJob::new();
                     let capture = Capture::new();
-                    let expected = fog::copy_intel_refresh_with_divisions_growing(
+                    let expected = fog::copy_intel_refresh_with_divisions(
                         &countries.view(&source),
                         context,
                         &mut previous,
@@ -3956,7 +4097,7 @@ mod tests {
                     let expected_counts = capture.finish();
                     let expected_reads = reads.take();
                     let mut job = Job::Intel(IntelRequest {
-                        countries: Arc::clone(&countries),
+                        countries: engine_allocation::SharedBox::clone(&countries),
                         context,
                         payload: fog::IntelJob::new(),
                         inputs: inputs.clone(),
@@ -3979,7 +4120,7 @@ mod tests {
                     assert_eq!(decoded(&request.payload), decoded(&previous));
                     match (&request.inputs, &inputs) {
                         (Some(retained), Some(original)) => {
-                            assert!(Arc::ptr_eq(retained, original));
+                            assert!(engine_allocation::SharedBox::ptr_eq(retained, original));
                         }
                         (None, None) => {}
                         _ => panic!("original division inputs must be retained"),
@@ -4213,8 +4354,6 @@ mod tests {
                 force_full: false,
                 base: 0,
                 game_state: 0x1000,
-                trait_rows: 0,
-                trait_bytes: 0,
                 active: [true; crate::extended::characters::N],
             },
             payload: Default::default(),
@@ -4466,7 +4605,7 @@ mod tests {
             let _release = release;
             for _ in 0..3 {
                 let mut request = world_request();
-                request.countries = Arc::clone(&countries);
+                request.countries = engine_allocation::SharedBox::clone(&countries);
                 let mut pending = Some(Job::World(request));
                 // SAFETY: every accepted synthetic request is drained by Batch on unwind.
                 unsafe { batch.submit(&mut pending) }.unwrap();
@@ -4475,7 +4614,7 @@ mod tests {
         }));
         assert!(outcome.is_err());
         assert_eq!(calls.load(Ordering::Relaxed), 1);
-        assert_eq!(Arc::strong_count(&countries), 1);
+        assert_eq!(engine_allocation::SharedBox::strong_count(&countries), 1);
         let stats = pool.calibration();
         assert_eq!(stats.executor.active, 0);
         assert_eq!(stats.executor.uncollected, 0);
@@ -4514,10 +4653,10 @@ mod tests {
         let table = TableId::DivisionModelInputs.index();
         let mut captured =
             crate::extended::Captured::with_capacities(&crate::extended::Capacities::default());
-        let empty = Arc::new(crate::division_census::UnitInputs::fixture(
+        let empty = engine_allocation::shared(crate::division_census::UnitInputs::fixture(
             Vec::new(),
             Outcome::Rows { len: 0 },
-        ));
+        )).unwrap();
         for (inputs, completed, outcome, training) in [
             (Some(&empty), true, Outcome::Rows { len: 0 }, Some(0)),
             (
@@ -4556,6 +4695,6 @@ mod tests {
             );
             assert_eq!(captured.outcomes()[table], outcome);
         }
-        assert_eq!(Arc::strong_count(&empty), 1);
+        assert_eq!(engine_allocation::SharedBox::strong_count(&empty), 1);
     }
 }

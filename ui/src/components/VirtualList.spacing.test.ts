@@ -6,7 +6,14 @@ import { transformSync } from 'rolldown/utils';
 
 test('VirtualList consumes authored CSS row spacing for collapsed, expanded and changed styles', async () => {
   let cursor = 0, gap = 1, zoom = 1, viewportHeight = 400, padding = 0;
-  const cells: { value?: any; deps?: readonly unknown[] }[] = [], effects: (() => unknown)[] = [], frames: (() => unknown)[] = [];
+  const cells: { value?: any; deps?: readonly unknown[]; cleanup?: () => unknown }[] = [], effects: (() => unknown)[] = [], frames: (() => unknown)[] = [];
+  // As React: an effect runs after a render whose dependencies changed (every render without any), its cleanup first.
+  const effect = (run: () => unknown, deps?: readonly unknown[]) => {
+    const cell = cells[cursor++] ??= {};
+    if (deps && cell.deps && deps.length === cell.deps.length && deps.every((value, index) => Object.is(value, cell.deps![index]))) return;
+    cell.deps = deps;
+    effects.push(() => { cell.cleanup?.(); const cleanup = run(); cell.cleanup = typeof cleanup === 'function' ? cleanup as () => unknown : undefined; });
+  };
   const fixture = {
     createElement,
     useRef(value: unknown) { const cell = cells[cursor++] ??= {}; return cell.value ??= { current: value }; },
@@ -22,8 +29,8 @@ test('VirtualList consumes authored CSS row spacing for collapsed, expanded and 
       }
       return cell.value;
     },
-    useLayoutEffect(run: () => unknown) { effects.push(run); },
-    useEffect(run: () => unknown) { effects.push(run); },
+    useLayoutEffect: effect,
+    useEffect: effect,
   };
   const host = globalThis as typeof globalThis & { __virtualSpacing?: typeof fixture };
   host.__virtualSpacing = fixture;
@@ -46,12 +53,13 @@ test('VirtualList consumes authored CSS row spacing for collapsed, expanded and 
     const input = await readFile(new URL('./VirtualList.tsx', import.meta.url), 'utf8');
     const source = input.replace(/import \{ ([^}]+) \} from 'react';/, 'const { $1 } = globalThis.__virtualSpacing;')
       .replace("'react-dom'", JSON.stringify(import.meta.resolve('react-dom')))
-      .replace("'./virtualListIndex'", JSON.stringify(new URL('./virtualListIndex.ts', import.meta.url).href));
+      .replace("'./virtualListIndex'", JSON.stringify(new URL('./virtualListIndex.ts', import.meta.url).href))
+      .replace("'../dashboard/structurePace.ts'", JSON.stringify(new URL('../dashboard/structurePace.ts', import.meta.url).href));
     const compiled = transformSync('VirtualList.tsx', source, { lang: 'tsx', jsx: { runtime: 'classic', pragma: 'globalThis.__virtualSpacing.createElement' } }).code;
     const { VirtualList } = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`);
     const scroller = { clientHeight: 400, clientWidth: 400, offsetHeight: 400, scrollTop: 0,
       getBoundingClientRect: () => ({ top: 0, height: viewportHeight * zoom }), addEventListener() {}, removeEventListener() {} };
-    const root = { getBoundingClientRect: () => ({ top: -scroller.scrollTop * zoom }), addEventListener() {}, removeEventListener() {}, ownerDocument: { addEventListener() {}, removeEventListener() {} } };
+    const root = { className: '', style: {}, getBoundingClientRect: () => ({ top: -scroller.scrollTop * zoom }), addEventListener() {}, removeEventListener() {}, ownerDocument: { addEventListener() {}, removeEventListener() {} } };
     const items = [0, 1, 2, 3, 4], rows = items.map(at => ({ dataset: { virtualIndex: String(at), virtualKey: String(at) }, offsetHeight: 52, querySelectorAll: () => [] }));
     const props = { items, itemKey: String, estimate: 52, retainExpansion: false, flowWhenFits: false,
       scrollRef: { current: scroller }, children: () => null };
@@ -91,22 +99,24 @@ test('VirtualList consumes authored CSS row spacing for collapsed, expanded and 
     list = render();
     list.props.children[0].props.onKeyDown({ key: 'End', defaultPrevented: false, target: {}, preventDefault() {} });
     assert.equal(scroller.scrollTop, fractional + 3 * 52 + 4 * 2.5, 'zoomed keyboard seeking uses the unrounded scroller box as its coordinate scale');
+    // The scroller's observer reports each resize, as the browser does once it has laid the page out.
+    const resized = () => sizes.find(size => size.observed.has(scroller))!.changed([{ target: scroller, borderBoxSize: [{ blockSize: viewportHeight, inlineSize: 400 }] }]);
     zoom = 1; padding = 3; props.flowWhenFits = true;
     viewportHeight = scroller.clientHeight = scroller.offsetHeight = 100; scroller.scrollTop = 0;
-    render(); list = render();
+    resized(); render(); list = render();
     assert.equal(list.props.style.height, 4 * 52 + 4 * 2.5 + fractional + 7, 'authored padding contributes once to the full extent');
     assert.deepEqual(list.props.children[0].props.style, { position: 'absolute', top: 3, left: 2, right: 2 });
     list.props.children[0].props.onKeyDown({ key: 'End', defaultPrevented: false, target: {}, preventDefault() {} });
     assert.equal(scroller.scrollTop, fractional + 3 * 52 + 4 * 2.5 + 3, 'keyboard reveal includes the leading padding');
     const keysBefore = list.props.children.map((row: any) => row.key);
     viewportHeight = scroller.clientHeight = scroller.offsetHeight = 400; scroller.scrollTop = 0;
-    render(); list = render();
+    resized(); render(); list = render();
     assert.equal(list.props.style.height, undefined, 'fitting rows retain native grid stretching');
     assert.equal(list.props.style.position, undefined);
     assert.ok(list.props.children.every((row: any) => row.props.style === undefined));
     assert.deepEqual(list.props.children.map((row: any) => row.key), keysBefore, 'layout changes retain keyed row controls');
     viewportHeight = scroller.clientHeight = scroller.offsetHeight = 100;
-    render(); list = render();
+    resized(); render(); list = render();
     assert.equal(list.props.style.position, 'relative', 'overflow restores windowing without changing owners');
     assert.deepEqual(list.props.children.map((row: any) => row.key), keysBefore);
   } finally {

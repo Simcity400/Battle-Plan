@@ -1,32 +1,33 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { ResearchEntry, ResearchHistory, ResearchSlotHistory, ResearchSlotState } from '../../generated/dashboard';
+import type { ResearchHistory, ResearchSlotHistory } from './types';
 import { HOUR_EPOCH } from '../../dashboard/calendar.ts';
-import { researchAt, researchFolderList, researchFolderLooks, researchHeldRuns, researchLatestProgress } from './researchData.ts';
+import { researchAt, researchFolderList, researchFolderLooks } from './researchData.ts';
 import { completedTooltip, coverageAt, researchDateRange, researchItemDate, researchLanes, researchLanesAt, researchRows } from './researchLayout.ts';
+import type { ResearchEntry, ResearchSlotState } from '../../generated/dashboard';
 
 // Noon on 1 Jan 1944, so day arithmetic never crosses the calendar's 24:00 display hour.
 const base = HOUR_EPOCH + 1944 * 8760 + 12;
 const day = (n: number) => base + n * 24;
 const entry = (token: string, first: number, end: number | null, outcome: ResearchEntry['outcome'] = 'completed', startedAfter: number | null = first - 24): ResearchEntry => ({
   token, technologyHandle: token.charCodeAt(0), databaseIndex: token.charCodeAt(0), continuityStartHour: day(0), level: 0, firstObservedHour: first, startedAfterHour: startedAfter,
-  lastObservedHour: end === null ? first : end - 24, endedByHour: end, outcome,
+  lastObservedHour: end === null ? first : end - 24, endedByHour: end, outcomeObservedHour: null, outcome,
 });
 const slot = (index: number, availability: { firstHour: number; lastHour: number }[], entries: ResearchEntry[], states: ResearchSlotState[] = []): ResearchSlotHistory => ({
   index, availability, entries, states, progress: [],
 });
-const held = (token: string, firstHour: number, lastHour: number): ResearchSlotState => ({ firstHour, lastHour, token, entryFirstObservedHour: null,
-  speedMultiplierRaw: '100000', bankedDaysRaw: '0', appliedDaysRaw: '0', aheadReductionYearsRaw: '0' });
+const read = (token: string, firstHour: number, lastHour: number, entryFirstObservedHour: number): ResearchSlotState => ({ firstHour, lastHour, token,
+  entryFirstObservedHour, speedMultiplierRaw: '100000', bankedDaysRaw: '0', appliedDaysRaw: '0', aheadReductionYearsRaw: '0', details: null });
 const lanesAt = (history: ResearchHistory, hour: number) => researchLanes(researchAt(history, hour), coverageAt(history.coverage, hour), hour);
 const kinds = (history: ResearchHistory, hour: number) => lanesAt(history, hour).map(lane => lane.items.map(item => item.kind));
 
-test('indexed lanes match clipped histories through gaps, late confirmations, held runs and slot changes in either playback direction', () => {
+test('indexed lanes match clipped histories through gaps, late confirmations and slot changes in either playback direction', () => {
   const history: ResearchHistory = { coverage: [{ firstHour: 0, lastHour: 40 }, { firstHour: 60, lastHour: 100 }], slots: [
     slot(0, [{ firstHour: 0, lastHour: 40 }, { firstHour: 60, lastHour: 100 }], [
       { ...entry('A', 0, 10), outcomeObservedHour: 30 }, entry('B', 10, 25, 'switched'), entry('C', 25, 35),
       entry('D', 60, 70), entry('E', 70, null, 'active'),
     ]),
-    slot(1, [{ firstHour: 20, lastHour: 40 }, { firstHour: 60, lastHour: 80 }], [], [held('old_a', 20, 29), held('old_b', 30, 40), held('old_c', 60, 80)]),
+    slot(1, [{ firstHour: 20, lastHour: 40 }, { firstHour: 60, lastHour: 80 }], [entry('G', 20, 30), entry('H', 30, 38, 'switched')]),
     slot(2, [{ firstHour: 60, lastHour: 100 }], [entry('F', 65, 80)]),
   ] };
   const project = (lanes: ReturnType<typeof researchLanes>) => lanes.map(lane => ({ index: lane.slot.index, appeared: lane.appeared,
@@ -82,32 +83,10 @@ test('a recording gap appears only in the slots whose sequence spans it, and clo
     ['completed', 'completed', 'gap', 'completed']);
 });
 
-test('an older recording lists what each slot held, dated by when it left, and never the one still held', () => {
-  const states = [held('a', day(0), day(24) - 1), held('a', day(24), day(48) - 1), held('b', day(48), day(72) - 1), held('c', day(72), day(100))];
-  const history: ResearchHistory = { coverage: [{ firstHour: day(0), lastHour: day(100) }], slots: [
-    { ...slot(0, [{ firstHour: day(0), lastHour: day(100) }], [], states), progress: [
-      { firstHour: day(10), lastHour: day(10), entryFirstObservedHour: null, baseDaysRaw: '10000000', progressRaw: '2500000' },
-      { firstHour: day(60), lastHour: day(60), entryFirstObservedHour: null, baseDaysRaw: '10000000', progressRaw: '9000000' },
-    ] },
-  ] };
-  assert.deepEqual(researchHeldRuns(history.slots[0]).map(run => [run.token, run.firstHour, run.lastHour, run.endedByHour]),
-    [['a', day(0), day(48) - 1, day(48)], ['b', day(48), day(72) - 1, day(72)], ['c', day(72), day(100), null]]);
-  const lanes = lanesAt(history, day(100));
-  assert.deepEqual(lanes[0].items.map(item => item.kind === 'held' ? item.run.token : item.kind), ['a', 'b']);
-  assert.equal(researchItemDate(lanes[0].items[0] as Extract<typeof lanes[0]['items'][number], { kind: 'held' }>), 'until 18 Feb 1944');
-  const rows = researchRows(lanes, researchAt(history, day(100)), history.coverage);
-  assert.deepEqual(rows.map(row => row.kind === 'held' && [row.token, row.startKnown, row.heldHours]), [['a', false, null], ['b', true, 24 * 24]]);
-  // Progress is the latest read of the technology held now, never another's.
-  const slot0 = researchAt(history, day(100))[0];
-  assert.equal(researchLatestProgress(slot0, slot0.states[3], day(100)), null, 'c has no read progress of its own');
-  assert.deepEqual(researchLatestProgress(slot0, slot0.states[2], day(70)), { fraction: 0.9, hour: day(60) });
-  assert.deepEqual(researchLatestProgress(slot0, slot0.states[1], day(30)), { fraction: 0.25, hour: day(10) });
-});
-
 /** A completion of `T` that started in slot 1 with `progress` already read at its
  * first assignment, which credited no saved days, and finished in slot 2. */
 function movedHistory(progress: string): ResearchHistory {
-  const opening: ResearchSlotState = { ...held('T', day(10), day(40) - 1), entryFirstObservedHour: day(10) };
+  const opening = read('T', day(10), day(40) - 1, day(10));
   return { coverage: [{ firstHour: day(0), lastHour: day(200) }], slots: [
     { ...slot(0, [{ firstHour: day(0), lastHour: day(200) }], [entry('U', day(0), day(5), 'completed', null), entry('T', day(10), day(40), 'switched')], [opening]),
       progress: [{ firstHour: day(10), lastHour: day(11) - 1, entryFirstObservedHour: day(10), baseDaysRaw: '10000000', progressRaw: progress }] },

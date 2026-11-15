@@ -919,7 +919,8 @@ fn selected_block_history_retains_transfer_across_keyframes_and_gap_then_retires
         frames.push((source, matches!(hour, 2 | 4 | 6)));
     }
     let replay = history_replay(vec![frames]);
-    assert!(replay.index.len() >= 3);
+    // A block per run: the gap starts the second, which the history crosses.
+    assert_eq!(replay.index.len(), 2);
     let SeekResult::Frame(held) = replay.seek(1, 5).unwrap() else {
         panic!("missing held hour")
     };

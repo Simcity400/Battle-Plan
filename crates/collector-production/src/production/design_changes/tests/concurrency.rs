@@ -137,6 +137,9 @@ fn spawn<const SITE: usize>(
 }
 #[test]
 fn different_saved_designs_overlap_and_publish_exact_terminal_snapshots() {
+    if !isolated() {
+        return;
+    }
     let (space, registry, baseline) = setup(2);
     let pauses = [Barrier::new(2), Barrier::new(2)];
     let first = spawn::<0>(registry[0].pointer(), &pauses[0], 11);
@@ -211,10 +214,16 @@ fn same_saved_design_overlap<const SITE: usize>() {
 }
 #[test]
 fn same_saved_design_overlap_repairs_only_that_receiver_even_when_original_stores_are_ordered() {
+    if !isolated() {
+        return;
+    }
     same_saved_design_overlap::<0>();
 }
 #[test]
 fn overlapping_self_owned_derived_writers_repair_only_that_design() {
+    if !isolated() {
+        return;
+    }
     same_saved_design_overlap::<1>();
 }
 unsafe extern "system-unwind" fn nested(
@@ -236,6 +245,9 @@ unsafe extern "system-unwind" fn nested(
 }
 #[test]
 fn same_thread_nesting_keeps_outer_snapshot_and_independent_nested_receiver() {
+    if !isolated() {
+        return;
+    }
     let (space, registry, baseline) = setup(3);
     let pauses = [Barrier::new(2), Barrier::new(2)];
     let args = [
@@ -275,6 +287,9 @@ fn same_thread_nesting_keeps_outer_snapshot_and_independent_nested_receiver() {
 }
 #[test]
 fn contended_marks_keep_every_receiver_for_one_terminal_snapshot_each() {
+    if !isolated() {
+        return;
+    }
     static WAIT: OnceLock<Barrier> = OnceLock::new();
     fn waiting() {
         WAIT.get().unwrap().wait();
@@ -341,6 +356,9 @@ fn contended_marks_keep_every_receiver_for_one_terminal_snapshot_each() {
 }
 #[test]
 fn a_contended_self_owned_derived_writer_marks_only_its_receiver() {
+    if !isolated() {
+        return;
+    }
     let (space, registry, baseline) = setup(2);
     assert_eq!(
         with_store_contended(|| unsafe { around::<1>([registry[0].pointer(), 0, 17, 0], edited) }),
@@ -356,6 +374,9 @@ fn a_contended_self_owned_derived_writer_marks_only_its_receiver() {
 }
 #[test]
 fn a_contended_scalar_and_flag_mark_reads_the_design_once_and_refreshes_cached_flags() {
+    if !isolated() {
+        return;
+    }
     let (space, registry, baseline) = setup(2);
     let pointer = registry[0].pointer();
     unsafe {
@@ -381,6 +402,9 @@ fn a_contended_scalar_and_flag_mark_reads_the_design_once_and_refreshes_cached_f
 }
 #[test]
 fn a_parent_content_conflict_does_not_poison_an_independent_child_identity_snapshot() {
+    if !isolated() {
+        return;
+    }
     let (space, registry, _) = setup(3);
     let parent = registry[0].pointer();
     let child = registry[2].pointer();
@@ -418,6 +442,9 @@ fn a_parent_content_conflict_does_not_poison_an_independent_child_identity_snaps
 }
 #[test]
 fn unknown_receiver_loss_still_requests_a_full_census() {
+    if !isolated() {
+        return;
+    }
     let (space, _, _) = setup(2);
     unsafe extern "system-unwind" fn unknown(_: usize, _: usize, _: usize, _: usize) -> usize {
         19
@@ -433,6 +460,9 @@ fn unknown_receiver_loss_still_requests_a_full_census() {
 }
 #[test]
 fn a_repair_rechecks_the_revision_after_its_live_reads() {
+    if !isolated() {
+        return;
+    }
     let (space, registry, _) = setup(2);
     struct Changed<'a>(&'a Space, std::cell::Cell<bool>);
     impl Memory for Changed<'_> {
@@ -452,6 +482,9 @@ fn a_repair_rechecks_the_revision_after_its_live_reads() {
 
 #[test]
 fn a_new_saved_binding_keeps_its_publication_and_contended_edit() {
+    if !isolated() {
+        return;
+    }
     let space = space(1, 3);
     let mut registry = Vec::new();
     native::walk_registry(&space.memory(), space.base, space.game_state, &mut registry);
@@ -474,6 +507,9 @@ fn a_new_saved_binding_keeps_its_publication_and_contended_edit() {
 }
 #[test]
 fn a_dirty_receiver_retired_before_capture_is_never_reread() {
+    if !isolated() {
+        return;
+    }
     let (space, registry, baseline) = setup(2);
     dirty_receiver(registry[0].pointer());
     assert!(retire(&space.memory(), space.base, registry[0].pointer()));
@@ -491,6 +527,9 @@ fn a_dirty_receiver_retired_before_capture_is_never_reread() {
 }
 #[test]
 fn consuming_a_saved_parent_forces_its_carried_child_to_rederive_identity() {
+    if !isolated() {
+        return;
+    }
     let (space, registry, _) = setup(3);
     unsafe {
         std::ptr::write_unaligned(
@@ -522,6 +561,9 @@ fn consuming_a_saved_parent_forces_its_carried_child_to_rederive_identity() {
 
 #[test]
 fn unwind_releases_receiver_claims_and_restores_same_thread_nesting() {
+    if !isolated() {
+        return;
+    }
     unsafe extern "system-unwind" fn unwind(_: usize, _: usize, _: usize, _: usize) -> usize {
         panic!("synthetic design original unwinds");
     }
@@ -540,6 +582,9 @@ fn unwind_releases_receiver_claims_and_restores_same_thread_nesting() {
 
 #[test]
 fn different_derived_refreshes_can_overlap_when_their_version_owners_are_independent() {
+    if !isolated() {
+        return;
+    }
     let (space, registry, baseline) = setup(2);
     let pauses = [Barrier::new(2), Barrier::new(2)];
     let first = spawn::<1>(registry[0].pointer(), &pauses[0], 11);
@@ -559,6 +604,9 @@ fn different_derived_refreshes_can_overlap_when_their_version_owners_are_indepen
 }
 #[test]
 fn derived_refreshes_of_different_designs_still_refuse_a_shared_version_owner() {
+    if !isolated() {
+        return;
+    }
     let (space, registry, _) = setup(3);
     let owner = registry[2].pointer();
     for row in &registry[..2] {
@@ -583,6 +631,15 @@ fn derived_refreshes_of_different_designs_still_refuse_a_shared_version_owner() 
     // alone is not poisoned by ordinary content contention on that owner.
     assert_eq!(COMPETING_WRITER_REJECTIONS.load(Ordering::Relaxed), 1);
     assert_eq!(LOCK_CONTENTIONS.load(Ordering::Relaxed), 0);
+    // The owner's mark outlives the refusal; the next boundary takes it dirty.
+    assert!(repair::pending());
+    let repairs = repair::take(&mut Batch::empty()).unwrap();
+    assert!(
+        repairs
+            .watches
+            .iter()
+            .any(|watch| watch.pointer == owner && watch.dirty)
+    );
     assert!(STORE.get().unwrap().lock().unwrap().watched[&owner].dirty);
 }
 unsafe extern "system-unwind" fn wait_only(_: usize, pause: usize, _: usize, _: usize) -> usize {
@@ -593,6 +650,9 @@ unsafe extern "system-unwind" fn wait_only(_: usize, pause: usize, _: usize, _: 
 }
 #[test]
 fn unknown_create_scope_conflicts_with_a_foreign_saved_writer() {
+    if !isolated() {
+        return;
+    }
     let (space, registry, _) = setup(1);
     let pause = Barrier::new(2);
     let args = [0, &pause as *const Barrier as usize, 0, 0];
@@ -610,6 +670,9 @@ fn unknown_create_scope_conflicts_with_a_foreign_saved_writer() {
 }
 #[test]
 fn foreign_destruction_conflicts_with_an_active_ancestry_traversal() {
+    if !isolated() {
+        return;
+    }
     let (space, registry, _) = setup(2);
     let pause = Barrier::new(2);
     let refresh = spawn::<1>(registry[0].pointer(), &pause, 11);
@@ -642,6 +705,9 @@ unsafe extern "system-unwind" fn moved(
 }
 #[test]
 fn a_contended_move_of_two_unwatched_drafts_preserves_saved_rows_without_native_repair() {
+    if !isolated() {
+        return;
+    }
     let (space, registry, _) = setup(3);
     let baseline = acquire(&space, &registry[2..]);
     begin_read();
@@ -667,6 +733,9 @@ fn a_contended_move_of_two_unwatched_drafts_preserves_saved_rows_without_native_
 }
 #[test]
 fn a_contended_move_with_a_saved_operand_retains_the_consumed_bindings() {
+    if !isolated() {
+        return;
+    }
     let (space, registry, baseline) = setup(2);
     with_store_contended(|| unsafe {
         around::<9>([registry[0].pointer(), registry[1].pointer(), 0, 0], moved)
@@ -696,6 +765,9 @@ fn a_contended_move_with_a_saved_operand_retains_the_consumed_bindings() {
 }
 #[test]
 fn a_contended_move_of_a_new_unprepared_saved_operand_retains_every_binding_occurrence() {
+    if !isolated() {
+        return;
+    }
     let (space, registry, _) = setup(3);
     let baseline = acquire(&space, &registry[2..]);
     begin_read();
@@ -725,6 +797,9 @@ fn a_contended_move_of_a_new_unprepared_saved_operand_retains_every_binding_occu
 }
 #[test]
 fn a_consuming_move_and_an_unrelated_saved_edit_keep_binding_events_and_exact_rows() {
+    if !isolated() {
+        return;
+    }
     let (space, registry, baseline) = setup(3);
     let pauses = [Barrier::new(2), Barrier::new(2)];
     let args = [
@@ -773,6 +848,9 @@ fn a_consuming_move_and_an_unrelated_saved_edit_keep_binding_events_and_exact_ro
 }
 #[test]
 fn a_move_source_claim_survives_saved_binding_retirement() {
+    if !isolated() {
+        return;
+    }
     let (space, registry, _) = setup(2);
     let pause = Barrier::new(2);
     let args = [
@@ -798,6 +876,9 @@ fn a_move_source_claim_survives_saved_binding_retirement() {
 }
 #[test]
 fn a_saved_destruction_conflict_is_not_mistaken_for_two_unwatched_drafts() {
+    if !isolated() {
+        return;
+    }
     let (space, registry, _) = setup(1);
     let pointer = registry[0].pointer();
     let pause = Barrier::new(2);
@@ -858,14 +939,23 @@ fn parent_snapshot_refuses_a_consuming_move(operand: usize) {
 
 #[test]
 fn a_full_snapshot_refuses_a_parent_binding_while_a_foreign_move_consumes_it() {
+    if !isolated() {
+        return;
+    }
     parent_snapshot_refuses_a_consuming_move(0);
 }
 #[test]
 fn a_full_snapshot_refuses_a_parent_binding_in_the_foreign_moves_source_operand() {
+    if !isolated() {
+        return;
+    }
     parent_snapshot_refuses_a_consuming_move(1);
 }
 #[test]
 fn different_saved_designs_with_a_parent_link_still_admit_concurrent_ordinary_edits() {
+    if !isolated() {
+        return;
+    }
     let (space, registry, _) = setup(2);
     unsafe {
         std::ptr::write_unaligned(
@@ -926,6 +1016,9 @@ static MOVE_FORWARDER: Forwarder = Forwarder {
 };
 #[test]
 fn a_rejected_move_still_forwards_both_original_receivers_through_terminal_phases() {
+    if !isolated() {
+        return;
+    }
     unsafe extern "system-unwind" fn move_now(
         destination: usize,
         source: usize,
@@ -961,6 +1054,9 @@ fn a_rejected_move_still_forwards_both_original_receivers_through_terminal_phase
 
 #[test]
 fn a_contended_saved_destruction_logs_its_tombstone_before_the_original() {
+    if !isolated() {
+        return;
+    }
     let (space, registry, baseline) = setup(2);
     let pointer = registry[0].pointer();
     with_store_contended(|| assert!(retire(&space.memory(), space.base, pointer)));
@@ -980,6 +1076,9 @@ fn a_contended_saved_destruction_logs_its_tombstone_before_the_original() {
 }
 #[test]
 fn contended_draft_destruction_needs_neither_a_native_read_nor_a_full_census() {
+    if !isolated() {
+        return;
+    }
     let (space, registry, baseline) = setup(1);
     with_store_contended(|| {
         assert!(!retire(&space.memory(), space.base, usize::MAX));
@@ -997,6 +1096,9 @@ fn contended_draft_destruction_needs_neither_a_native_read_nor_a_full_census() {
 }
 #[test]
 fn publication_after_a_contended_retirement_retains_both_occurrences() {
+    if !isolated() {
+        return;
+    }
     let (space, registry, baseline) = setup(1);
     with_store_contended(|| retire(&space.memory(), space.base, registry[0].pointer()));
     mark_design(&space.memory(), space.base, registry[0].pointer(), true);
@@ -1009,6 +1111,9 @@ fn publication_after_a_contended_retirement_retains_both_occurrences() {
 }
 #[test]
 fn a_new_saved_binding_logs_retirement_after_its_first_boundary() {
+    if !isolated() {
+        return;
+    }
     let (space, registry, _) = setup(2);
     // Remove only this synthetic binding from the first prepared census.
     let baseline = acquire(&space, &registry[..1]);
@@ -1064,6 +1169,9 @@ fn saved_source() -> (Space, Vec<native::RegistryRow>, Variants, usize) {
 }
 #[test]
 fn a_contended_source_keeps_every_dependant_occurrence_without_terminal_rereads() {
+    if !isolated() {
+        return;
+    }
     let (space, registry, baseline, source) = saved_source();
     unsafe { std::ptr::write_unaligned((source + 0x88) as *mut i64, 23) };
     with_store_contended(|| {
@@ -1074,14 +1182,37 @@ fn a_contended_source_keeps_every_dependant_occurrence_without_terminal_rereads(
             false,
         )
     });
-    let memory = OnlyDesign {
+    struct SourceOnly<'a> {
+        space: &'a Space,
+        registry: &'a [native::RegistryRow],
+        source: usize,
+        reads: std::cell::Cell<usize>,
+    }
+    impl Memory for SourceOnly<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            assert!(
+                self.registry
+                    .iter()
+                    .all(|row| address + output.len() <= row.pointer()
+                        || address >= row.pointer() + ROOT_BYTES),
+                "the boundary must not reread a dependant design"
+            );
+            if (self.source..self.source + 0x100).contains(&address) {
+                self.reads.set(self.reads.get() + 1);
+            }
+            self.space.memory().copy(address, output)
+        }
+    }
+    let memory = SourceOnly {
         space: &space,
-        forbidden: registry[2].pointer(),
+        registry: &registry,
+        source,
         reads: std::cell::Cell::new(0),
     };
     let mut changes = Vec::new();
     assert_eq!(drain_with(&memory, space.base, 7, &mut changes), Ok(0));
-    assert_eq!(memory.reads.get(), 0);
+    // The noted source is copied once, at the boundary.
+    assert!(memory.reads.get() > 0);
     assert_eq!(changes.len(), 2);
     assert_eq!(REPAIRED_RECEIVERS.load(Ordering::Relaxed), 0);
     assert_eq!(LOCK_CONTENTIONS.load(Ordering::Relaxed), 1);
@@ -1090,6 +1221,9 @@ fn a_contended_source_keeps_every_dependant_occurrence_without_terminal_rereads(
 }
 #[test]
 fn a_contended_demanded_source_retirement_keeps_its_observation_without_reading_dead_storage() {
+    if !isolated() {
+        return;
+    }
     let (space, _, _, source) = saved_source();
     with_store_contended(|| {
         source_hooks::observe(
@@ -1115,6 +1249,9 @@ fn a_contended_demanded_source_retirement_keeps_its_observation_without_reading_
 }
 #[test]
 fn a_contended_author_retirement_keeps_liveness_without_rewriting_frozen_designs() {
+    if !isolated() {
+        return;
+    }
     let (space, registry, baseline) = setup(2);
     let pointer = usize::MAX;
     STORE
@@ -1153,6 +1290,9 @@ fn a_contended_author_retirement_keeps_liveness_without_rewriting_frozen_designs
 
 #[test]
 fn contended_author_roster_keeps_its_occurrence_and_frozen_designs() {
+    if !isolated() {
+        return;
+    }
     use engine_production::nindustrial_organisation_corganisation as organisation;
     let (space, registry, baseline) = setup(1);
     let mut bytes = [0u8; organisation::REFERENCE + 8];
@@ -1182,6 +1322,9 @@ fn contended_author_roster_keeps_its_occurrence_and_frozen_designs() {
 
 #[test]
 fn contended_draft_destruction_does_not_poison_an_unrelated_saved_publication() {
+    if !isolated() {
+        return;
+    }
     let (space, registry, _) = setup(2);
     let baseline = acquire(&space, &registry[..1]);
     begin_read();
@@ -1199,6 +1342,9 @@ fn contended_draft_destruction_does_not_poison_an_unrelated_saved_publication() 
 
 #[test]
 fn a_rejected_saved_destruction_still_refuses_unobservable_lifetime_history() {
+    if !isolated() {
+        return;
+    }
     let (space, registry, _) = setup(2);
     with_store_contended(|| unrecorded_writer(Receiver::Removed, registry[0].pointer(), None));
     let memory = OnlyDesign {
@@ -1213,6 +1359,9 @@ fn a_rejected_saved_destruction_still_refuses_unobservable_lifetime_history() {
 }
 #[test]
 fn a_source_without_a_receiver_still_refuses_the_whole_interval() {
+    if !isolated() {
+        return;
+    }
     let (space, _, _) = setup(1);
     source_hooks::observe(&space.memory(), space.base, sources::Key::Direct(0), false);
     assert!(drain(space.base, 7, &mut Vec::new()).is_err());
@@ -1222,6 +1371,9 @@ fn a_source_without_a_receiver_still_refuses_the_whole_interval() {
 
 #[test]
 fn a_contended_new_saved_retirement_logs_without_reading_dead_storage() {
+    if !isolated() {
+        return;
+    }
     let (space, registry, _) = setup(2);
     let baseline = acquire(&space, &registry[..1]);
     begin_read();
@@ -1244,6 +1396,9 @@ fn a_contended_new_saved_retirement_logs_without_reading_dead_storage() {
 }
 #[test]
 fn a_contended_saved_parent_retirement_still_revokes_carried_child_identities() {
+    if !isolated() {
+        return;
+    }
     let (space, registry, _) = setup(2);
     unsafe {
         std::ptr::write_unaligned(
@@ -1271,6 +1426,9 @@ fn a_contended_saved_parent_retirement_still_revokes_carried_child_identities() 
 
 #[test]
 fn a_repaired_child_never_follows_a_new_parent_with_a_consumed_receiver() {
+    if !isolated() {
+        return;
+    }
     let (space, registry, _) = setup(2);
     // The preceding held child has no parent; only the lost edit reaches this
     // receiver, so the held-state lifetime preflight alone cannot reject it.
@@ -1297,6 +1455,9 @@ fn a_repaired_child_never_follows_a_new_parent_with_a_consumed_receiver() {
 
 #[test]
 fn a_native_overlap_repair_and_an_unrelated_retirement_preserve_exact_surviving_rows() {
+    if !isolated() {
+        return;
+    }
     let (space, registry, baseline) = setup(3);
     unsafe {
         around::<0>([registry[1].pointer(), 0, 77, 0], edited);
@@ -1319,6 +1480,9 @@ fn a_native_overlap_repair_and_an_unrelated_retirement_preserve_exact_surviving_
 
 #[test]
 fn a_rebound_move_destination_can_be_repaired_without_reading_the_consumed_source() {
+    if !isolated() {
+        return;
+    }
     let (space, registry, baseline) = setup(2);
     let destination = registry[0].pointer();
     let source = registry[1].pointer();
@@ -1345,6 +1509,9 @@ fn a_rebound_move_destination_can_be_repaired_without_reading_the_consumed_sourc
 
 #[test]
 fn a_delayed_variant_job_keeps_carry_closed_until_its_terminal_repair_finishes() {
+    if !isolated() {
+        return;
+    }
     let (space, registry, baseline) = setup(2);
     let pause = Barrier::new(2);
     let writer = spawn::<0>(registry[0].pointer(), &pause, 77);
@@ -1382,6 +1549,9 @@ fn a_delayed_variant_job_keeps_carry_closed_until_its_terminal_repair_finishes()
 
 #[test]
 fn a_delayed_variant_capture_settles_its_refusal_before_the_census_decision() {
+    if !isolated() {
+        return;
+    }
     let (space, _, _) = setup(1);
     boundary(false);
     unknown_receiver!();

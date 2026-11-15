@@ -223,7 +223,7 @@ impl Memory for MemoryTrace<'_> {
         Fields(self).copy_records(sources, layout, out)
     }
 }
-fn capture(memory: &impl Memory, rows: &mut [Row], bonuses: &mut [BonusRow]) -> (Outcome, Outcome) {
+fn capture(memory: &impl Memory, rows: &mut Vec<Row>, bonuses: &mut Vec<BonusRow>) -> (Outcome, Outcome) {
     walk_country(
         memory,
         0,
@@ -269,7 +269,7 @@ fn growing_research_slots_and_bonus_rows_follow_later_original_headers() {
             );
         }
         let memory = MemoryTrace::new(&bytes);
-        let result = walk_country_growing(
+        let result = walk_country(
             &memory,
             0,
             COUNTRY,
@@ -308,15 +308,10 @@ fn growing_research_slots_and_bonus_rows_follow_later_original_headers() {
             1
         );
     }
-    let mut short = [Row::default()];
-    assert!(matches!(
-        capture(&MemoryTrace::new(&bytes), &mut short, &mut []),
-        (Outcome::Truncated { .. }, _)
-    ));
 }
 
 #[test]
-fn growing_research_names_and_applied_bonus_populations_have_no_inline_limit() {
+fn research_names_and_applied_bonus_populations_have_no_inline_limit() {
     const IDS_LIVE: usize = 0x20000;
     const PROVIDERS: usize = 0x26000;
     const TECH_TEXT: usize = 0x28000;
@@ -363,7 +358,7 @@ fn growing_research_names_and_applied_bonus_populations_have_no_inline_limit() {
     let mut rows = Vec::new();
     let mut bonuses = Vec::new();
     assert_eq!(
-        walk_country_growing(
+        walk_country(
             &memory,
             0,
             COUNTRY,
@@ -383,17 +378,25 @@ fn growing_research_names_and_applied_bonus_populations_have_no_inline_limit() {
             .iter()
             .all(|row| row.value.name.as_bytes() == vec![b'b'; 4_097])
     );
+    let mut exact_rows = vec![Row::default()];
+    let mut exact_bonuses = vec![BonusRow::default(); 5_000];
     assert_eq!(
-        capture(&MemoryTrace::new(&bytes), &mut [Row::default()], &mut []),
-        (
-            Outcome::Unavailable {
-                reason: "technology token too long"
-            },
-            Outcome::Unavailable {
-                reason: "technology token too long"
-            }
-        )
+        walk_country_buffer(
+            &memory,
+            0,
+            COUNTRY,
+            11,
+            Ok(Context {
+                cost_scale_raw: 100_000,
+                cost_debug: 0
+            }),
+            crate::walk::Buffer::Exact(&mut exact_rows),
+            crate::walk::Buffer::Exact(&mut exact_bonuses),
+        ),
+        (Outcome::Rows { len: 1 }, Outcome::Rows { len: 5_000 })
     );
+    assert_eq!(exact_rows[..], rows[..1]);
+    assert_eq!(exact_bonuses[..], bonuses[..5_000]);
 }
 
 #[test]
@@ -401,9 +404,9 @@ fn idle_and_unbonused_slots_skip_bonus_roster_and_catalogue() {
     for (active, expected_calls) in [(false, 5), (true, 7)] {
         let b = fixture(active, false);
         let m = MemoryTrace::new(&b);
-        let mut rows = [Row::default()];
+        let mut rows = vec![Row::default()];
         assert_eq!(
-            capture(&m, &mut rows, &mut []),
+            capture(&m, &mut rows, &mut Vec::new()),
             (Outcome::Rows { len: 1 }, Outcome::Rows { len: 0 })
         );
         assert_eq!(m.calls.get(), expected_calls);
@@ -424,8 +427,8 @@ fn idle_and_unbonused_slots_skip_bonus_roster_and_catalogue() {
 fn applied_ids_join_exact_names_and_raw_values() {
     let b = fixture(true, true);
     let m = MemoryTrace::new(&b);
-    let mut rows = [Row::default()];
-    let mut bonuses = [BonusRow::default()];
+    let mut rows = vec![Row::default()];
+    let mut bonuses = vec![BonusRow::default()];
     assert_eq!(
         capture(&m, &mut rows, &mut bonuses),
         (Outcome::Rows { len: 1 }, Outcome::Rows { len: 1 })
@@ -485,12 +488,24 @@ fn native_slot_indices_survive_permutation_and_shared_bonuses_are_read_once() {
 }
 
 #[test]
-fn truncation_is_exact_and_bonus_faults_do_not_discard_progress() {
+fn count_probes_are_exact_and_bonus_faults_do_not_discard_progress() {
     let b = fixture(true, true);
     let m = MemoryTrace::new(&b);
-    let mut rows = [Row::default()];
+    let mut rows = vec![Row::default()];
+    let context = Ok(Context {
+        cost_scale_raw: 100_000,
+        cost_debug: 0,
+    });
     assert_eq!(
-        capture(&m, &mut rows, &mut []),
+        walk_country_buffer(
+            &m,
+            0,
+            COUNTRY,
+            11,
+            context,
+            crate::walk::Buffer::Growing(&mut rows),
+            crate::walk::Buffer::Count,
+        ),
         (
             Outcome::Rows { len: 1 },
             Outcome::Truncated {
@@ -500,7 +515,15 @@ fn truncation_is_exact_and_bonus_faults_do_not_discard_progress() {
         )
     );
     assert!(!m.reads.borrow().iter().any(|&(at, _)| at == BONUSES));
-    let result = capture(&m, &mut [], &mut []);
+    let result = walk_country_buffer(
+        &m,
+        0,
+        COUNTRY,
+        11,
+        context,
+        crate::walk::Buffer::Count,
+        crate::walk::Buffer::Count,
+    );
     assert_eq!(
         result.0,
         Outcome::Truncated {
@@ -509,7 +532,7 @@ fn truncation_is_exact_and_bonus_faults_do_not_discard_progress() {
         }
     );
     assert!(matches!(result.1, Outcome::Unavailable { .. }));
-    let mut bonuses = [BonusRow::default()];
+    let mut bonuses = vec![BonusRow::default()];
     for fault in [
         IDS,
         BONUSES,
@@ -545,8 +568,8 @@ fn truncation_is_exact_and_bonus_faults_do_not_discard_progress() {
 fn unresolved_ids_are_retained_and_wrong_owners_are_rejected() {
     let mut b = fixture(true, true);
     put(&mut b, IDS, 99_i32.to_le_bytes());
-    let mut rows = [Row::default()];
-    let mut bonuses = [BonusRow::default()];
+    let mut rows = vec![Row::default()];
+    let mut bonuses = vec![BonusRow::default()];
     assert_eq!(
         capture(&MemoryTrace::new(&b), &mut rows, &mut bonuses).1,
         Outcome::Rows { len: 1 }
@@ -578,8 +601,8 @@ fn cost_reduction_ids_use_their_own_layout_and_only_unresolved_ids_need_that_ros
     put(&mut b, pointer + cost::ID, 99_i32.to_le_bytes());
     text(&mut b, pointer + cost::NAME, b"doctrine_bonus");
     put(&mut b, pointer + cost::REDUCTION, 25_000_i64.to_le_bytes());
-    let mut rows = [Row::default()];
-    let mut bonuses = [BonusRow::default()];
+    let mut rows = vec![Row::default()];
+    let mut bonuses = vec![BonusRow::default()];
     assert_eq!(
         capture(&MemoryTrace::new(&b), &mut rows, &mut bonuses).1,
         Outcome::Rows { len: 1 }
@@ -616,7 +639,7 @@ fn bonus_rosters_follow_native_population_and_stop_after_resolution() {
     let mut requested = BonusRow::default();
     requested.value.id = -7;
     assert_eq!(
-        resolve_bonuses(&memory, 0, STATUS, &mut [requested.clone()], false),
+        resolve_bonuses(&memory, 0, STATUS, &mut [requested.clone()]),
         Err("research bonus pointer invalid")
     );
     assert_eq!(memory.calls.get(), 2);
@@ -638,7 +661,7 @@ fn bonus_rosters_follow_native_population_and_stop_after_resolution() {
     let memory = MemoryTrace::new(&bytes);
     let mut requested = [requested];
     assert_eq!(
-        resolve_bonuses(&memory, 0, STATUS, &mut requested, false),
+        resolve_bonuses(&memory, 0, STATUS, &mut requested),
         Ok(())
     );
     assert_eq!(requested[0].resolved, 1);
@@ -670,8 +693,8 @@ fn governance_batch_research_inputs_serial_and_batched_equality() {
             World::country(id),
             id,
             context,
-            crate::walk::Buffer::Fixed(&mut before),
-            crate::walk::Buffer::Fixed(&mut old_bonuses),
+            crate::walk::Buffer::Growing(&mut before),
+            crate::walk::Buffer::Growing(&mut old_bonuses),
         );
         let new = walk_country(
             &memory,
@@ -710,8 +733,8 @@ fn governance_batch_research_inputs_persistent_and_one_shot_every_serial_operand
                 World::country(1),
                 1,
                 context,
-                crate::walk::Buffer::Fixed(&mut rows),
-                crate::walk::Buffer::Fixed(&mut bonuses),
+                crate::walk::Buffer::Growing(&mut rows),
+                crate::walk::Buffer::Growing(&mut bonuses),
             )
         } else {
             walk_country(

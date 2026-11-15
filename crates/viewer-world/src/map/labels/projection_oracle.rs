@@ -229,18 +229,6 @@ fn province_overrides(frame: &DecodedFrame) -> io::Result<BTreeMap<u32, &[u8]>> 
         .collect())
 }
 
-/// The provinces whose recorded override this port cannot lay out, for the
-/// `Field ProvinceNames.name` limitation line.
-pub fn unreadable_overrides(frame: &DecodedFrame) -> io::Result<Vec<u32>> {
-    let mut out: Vec<u32> = province_overrides(frame)?
-        .into_iter()
-        .filter(|(_, bytes)| unreadable(bytes))
-        .map(|(province, _)| province)
-        .collect();
-    out.sort_unstable();
-    Ok(out)
-}
-
 impl LabelTables {
     pub(super) fn closed(
         &self,

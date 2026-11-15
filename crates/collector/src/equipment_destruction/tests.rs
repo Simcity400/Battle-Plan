@@ -13,10 +13,10 @@ pub(super) fn owns_observation() -> bool {
 }
 /// Serialises the fixtures that share this module's statics and makes this
 /// thread the observation's owner. As with the naval, air-loss and bombing
-/// observers, another test's hourly path (`lost_observer_interval`) then
-/// cannot poison a fixture mid-test. A failing test releases SERIAL poisoned;
-/// the next fixture's `setup` resets every static it reads, so one failure
-/// stays one failure instead of failing every later test.
+/// observers, another test's hourly path (`boundary`, `lost_observer_interval`,
+/// a capture's `drain`) then cannot move a fixture mid-test. A failing test
+/// releases SERIAL poisoned; the next fixture's `setup` resets every static it
+/// reads, so one failure stays one failure instead of failing every later test.
 struct Serial {
     _serial: std::sync::MutexGuard<'static, ()>,
 }
@@ -32,8 +32,89 @@ impl Drop for Serial {
         OWNER.set(false);
     }
 }
+/// Holds the fixtures' lock with a fresh attachment's event demand, for a test elsewhere that
+/// sizes from [`demand`].
+pub(crate) fn fresh_demand() -> std::sync::MutexGuard<'static, ()> {
+    let serial = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    HOURLY_PEAK_EVENTS.store(0, Ordering::Relaxed);
+    EVENT_REQUIRED.store(0, Ordering::Relaxed);
+    serial
+}
 static FORWARDED: Mutex<[usize; 8]> = Mutex::new([0; 8]);
 static OBSERVED_DELETION: Mutex<Option<Deletion>> = Mutex::new(None);
+
+/// The drain's store with every pushed event folded.
+fn folded() -> std::sync::MutexGuard<'static, Store> {
+    let mut store = STORE.lock().unwrap();
+    store.fold();
+    store
+}
+/// A refused interval, as a refusal the drain folded would leave it.
+fn poison() {
+    folded().poisoned = true;
+}
+/// Opens `context` as this thread's deletion scope, already resolved.
+fn scoped(context: Deletion) -> DeletionScope {
+    let id = next_id();
+    folded().scopes.insert(id, context);
+    DeletionScope::enter(Some(Scope {
+        id,
+        army: context.army,
+        handle: context.handle,
+        country: context.country,
+        ignored: context.ignored,
+        merge_source: context.merge_source,
+        observed: false,
+    }))
+}
+/// The scope a deletion would open, resolved by the drain as its writer's event.
+fn deletion_context(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+    army: usize,
+    caller: usize,
+) -> Result<Option<Deletion>, &'static str> {
+    let Some((scope, expeditionary_owner, classified)) =
+        deletion_scope(memory, base, state, army, caller)?
+    else {
+        return Ok(None);
+    };
+    let mut store = folded();
+    store.delete(scope, expeditionary_owner, classified);
+    Ok(store.scopes.get(&scope.id).copied())
+}
+/// From a writer's native original: this thread's scope as the drain resolved it.
+fn resolved_scope() -> Option<Deletion> {
+    let scope = DELETION.get()?;
+    let mut store = STORE
+        .try_lock()
+        .expect("writer callbacks never hold the drain's store");
+    store.fold();
+    store.scopes.get(&scope.id).copied()
+}
+static GATE: std::sync::LazyLock<std::sync::Barrier> =
+    std::sync::LazyLock::new(|| std::sync::Barrier::new(2));
+/// Holds its writer inside the native original until the test has met it twice.
+unsafe extern "system-unwind" fn gated_subtract(pool: usize, design: usize, amount: usize) {
+    GATE.wait();
+    GATE.wait();
+    unsafe { subtract(pool, design, amount) };
+}
+/// The site, plus one, whose next writer holds between its pool read and its next event.
+static HELD_AFTER_READ: AtomicUsize = AtomicUsize::new(0);
+/// From a writer: holds it after its pool read until the test has met it twice.
+pub(super) fn after_pool_read(site: SiteId) {
+    if HELD_AFTER_READ
+        .compare_exchange(site as usize + 1, 0, Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok()
+    {
+        GATE.wait();
+        GATE.wait();
+    }
+}
 
 // Real allocated addresses exercise the production SEH-guarded reads. The
 // fake objects carry the native layout and arbitrary, non-content identities.
@@ -183,7 +264,6 @@ struct StateMemory {
     links: Vec<u32>,
     roster: Vec<u64>,
     armies: Vec<u64>,
-    reserve: Vec<u64>,
 }
 impl StateMemory {
     fn new(designs: u32) -> Self {
@@ -194,7 +274,6 @@ impl StateMemory {
             links: Vec::new(),
             roster: Vec::new(),
             armies: Vec::new(),
-            reserve: Vec::new(),
         };
         memory.state[engine_native::cgame_state::EQUIPMENT_VARIANTS / 8] =
             memory.state.as_ptr() as u64;
@@ -236,14 +315,6 @@ impl StateMemory {
         self.state[engine_native::cgame_state::COUNTRIES_CAPACITY / 8] = slots | (slots << 32);
         self.state[engine_native::cgame_state::COUNTRY_LINKS / 8] = self.links.as_ptr() as u64;
         self.state[engine_native::cgame_state::COUNTRY_LINKS_CAPACITY / 8] = slots | (slots << 32);
-    }
-    fn stockpile(&mut self, count: u32) {
-        self.reserve.resize(0x300 / 8, 0);
-        let pool = &mut self.reserve[engine_native::cproduction_status::STOCKPILE_POOL / 8..];
-        pool[0] = pool::VTABLE_RVA.0 as u64;
-        pool[pool::ITEMS / 8] = pool.as_ptr() as u64;
-        pool[pool::CAPACITY / 8] = u64::from(count) | (u64::from(count) << 32);
-        self.country[engine_native::ccountry::PRODUCTION_STATUS / 8] = self.reserve.as_ptr() as u64;
     }
     fn resetting(&mut self, value: bool) {
         let index = native::RESETTING / 8;
@@ -306,7 +377,7 @@ unsafe extern "system-unwind" fn forwarding_delete(
     behavior: usize,
 ) {
     *FORWARDED.lock().unwrap() = [state, army, return_equipment, behavior, 0, 0, 0, 0];
-    *OBSERVED_DELETION.lock().unwrap() = DELETION.get();
+    *OBSERVED_DELETION.lock().unwrap() = resolved_scope();
     assert_eq!(ACTIVE[SiteId::Delete as usize].load(Ordering::SeqCst), 1);
     assert!(crate::runtime::observers_active());
 }
@@ -331,7 +402,7 @@ unsafe extern "system-unwind" fn cleanup_delete(
     _behavior: usize,
 ) {
     *FORWARDED.lock().unwrap() = [state, army, return_equipment, _behavior, 0, 0, 0, 0];
-    *OBSERVED_DELETION.lock().unwrap() = DELETION.get();
+    *OBSERVED_DELETION.lock().unwrap() = resolved_scope();
     assert!(crate::runtime::observers_active());
     assert_eq!(state, unsafe {
         *((BASE.load(Ordering::Relaxed) + engine_native::cgame_state::SINGLETON_RVA.0)
@@ -385,7 +456,7 @@ unsafe extern "system-unwind" fn queue_metadata_during_delete(
     _behavior: usize,
 ) {
     record_queue(
-        &mut STORE.lock().unwrap(),
+        &mut folded(),
         army,
         unsafe { *((army + engine_native::cunit::HANDLE) as *const u64) },
         native::QueuedContext::Transfer(native::Disposition::HqTransferred),
@@ -539,15 +610,25 @@ fn assert_signed_row(amount_raw: i64, cause: native::Cause, variant: u64) {
     assert_eq!(rows[0].cause, cause.into());
     assert_eq!(rows[0].variant, variant);
     assert!(deleted.is_empty());
-    assert!(!POISONED.load(Ordering::SeqCst));
-    assert!(STORE.lock().unwrap().refusal.is_none());
+    assert!(!folded().poisoned);
+    assert!(folded().refusal.is_none());
 }
 
 fn refusal_diagnostics() -> (u64, [u64; native::SITES.len()], serde_json::Value) {
+    // Writers' refusals reach the counters as the drain folds them.
+    drop(folded());
     (
         REFUSALS.load(Ordering::Relaxed),
         std::array::from_fn(|site| SITE_REFUSALS[site].load(Ordering::Relaxed)),
         serde_json::to_value(FIRST_REFUSAL.get()).unwrap(),
+    )
+}
+
+fn contested() -> (u64, serde_json::Value) {
+    let status = serde_json::to_value(status()).unwrap();
+    (
+        status["contested_pools"].as_u64().unwrap_or(u64::MAX),
+        status["contested_pool"].clone(),
     )
 }
 
@@ -714,20 +795,17 @@ fn record_queue(
     if disposition == native::Disposition::HqTransferred && !store.credits.contains(handle) {
         let memory = unsafe { engine_native::memory::LiveMemory::new() };
         if native::army_identity(&memory, BASE.load(Ordering::Relaxed), army) == Ok(handle)
-            && let Ok(len) = native::snapshot(
+            && let Ok(rows) = pool_rows(
                 &memory,
                 BASE.load(Ordering::Relaxed),
                 army + carmy::EQUIPMENT_POOL,
-                &mut store.before,
             )
         {
-            store.credits.begin(
-                handle,
-                army,
-                native::army_owner(&memory, army)?,
-                CREDIT_REVISION.load(Ordering::SeqCst),
-            )?;
-            for row in &store.before[..len] {
+            let revision = store.credits.revision();
+            store
+                .credits
+                .begin(handle, army, native::army_owner(&memory, army)?, revision)?;
+            for row in &rows {
                 store.credits.push(
                     handle,
                     Net {
@@ -740,76 +818,59 @@ fn record_queue(
             }
         }
     }
-    super::record_queue(store, army, handle, cause, disposition)
+    store.record_queue(army, handle, cause, disposition)
 }
 
 fn setup(capacity: usize, designs: usize) {
+    install(
+        Store {
+            entries: Vec::with_capacity(capacity),
+            queued: FixedIndex::with_capacity(capacity),
+            queued_by_army: FixedIndex::with_capacity(capacity),
+            queued_limit: capacity,
+            credits: Credits::try_new(capacity, capacity * designs).unwrap(),
+            ..Store::new()
+        },
+    );
+}
+
+fn install(store: Store) {
     // Fixtures call setup only after their handlers and worker threads returned.
     for active in &ACTIVE {
         active.store(0, Ordering::SeqCst);
     }
-    // Source, existing reserves and newly credited rows share the pool arenas.
-    let pool_bound = designs * 3;
-    // A previous fixture that failed while holding one of these locks leaves it
+    OPEN.store(0, Ordering::SeqCst);
+    HELD_AFTER_READ.store(0, Ordering::SeqCst);
+    drop(LOG.take());
+    let queued = store.queued_limit;
+    // A previous fixture that failed while holding this lock leaves it
     // poisoned; its contents are replaced below, so recover and clear it.
-    *STORAGE_SWAP
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = StorageSwap::default();
-    STORAGE_SWAP.clear_poison();
     *STORE
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = Store {
-        entries: Vec::with_capacity(capacity),
-        queued: FixedIndex::with_capacity(capacity),
-        queued_by_army: FixedIndex::with_capacity(capacity),
-        queued_limit: capacity,
-        before: vec![Default::default(); pool_bound],
-        after: vec![Default::default(); pool_bound],
-        raw: vec![0; pool_bound * engine_native::equipment_entry::STRIDE],
-        net: vec![Net::default(); pool_bound * 3],
-        armies: vec![0; capacity + 1],
-        held: vec![HeldRow::default(); pool_bound],
-        reserves: vec![MergeReserve::default(); capacity + 1],
-        credits: Credits::try_new(capacity, capacity * designs).unwrap(),
-        ..Store::new()
-    };
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = store;
     STORE.clear_poison();
-    {
-        let mut store = STORE.lock().unwrap();
-        let capacity = store.owned_capacity();
-        store._charge.set(capacity);
-    }
+    drop(folded());
     *CLOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     CLOCK.clear_poison();
     DELETION.set(None);
     WHOLE_MERGE.set(false);
+    OBSERVING.set(false);
+    FREEING.set(0);
     BASE.store(0, Ordering::Relaxed);
-    // The event hint only rises within an attachment (a DLL load starts at 0).
-    // Each fixture is a fresh attachment: an earlier fixture's 5,000-country
-    // hint must not size this one's storage.
-    EVENT_HINT.store(0, Ordering::Release);
-    CAPACITY.store(capacity, Ordering::Release);
-    OFFERED_CAPACITY.store(0, Ordering::Release);
-    QUEUED_CAPACITY.store(capacity, Ordering::Release);
-    DESIGNS.store(designs, Ordering::Release);
-    POOL_CAPACITY.store(pool_bound, Ordering::Release);
+    // Each fixture is a fresh attachment: an earlier fixture's peak must not
+    // size this one's frames.
+    QUEUED_CAPACITY.store(queued, Ordering::Release);
     HOURLY_PEAK_EVENTS.store(0, Ordering::Relaxed);
     HOURLY_PEAK_CAPACITY.store(0, Ordering::Relaxed);
     EVENT_ATTEMPTS.store(0, Ordering::Relaxed);
     CALL_ATTEMPTS.store(0, Ordering::Relaxed);
     EVENT_REQUIRED.store(0, Ordering::Relaxed);
-    POOL_REQUIRED.store(0, Ordering::Relaxed);
     ENABLED.store(true, Ordering::SeqCst);
     SUPPLEMENTAL_ENABLED.store(true, Ordering::SeqCst);
-    POISONED.store(false, Ordering::SeqCst);
-    OBSERVING.store(false, Ordering::SeqCst);
-    BOUNDARY_ADMISSION.store(0, Ordering::SeqCst);
-    PENDING_BOUNDARY.store(false, Ordering::SeqCst);
-    PENDING_LOAD.store(false, Ordering::SeqCst);
+    UNAVAILABLE.store(false, Ordering::Relaxed);
     SKIPPED_QUEUE.store(false, Ordering::SeqCst);
-    CREDIT_REVISION.store(0, Ordering::SeqCst);
     ORIGINAL[SiteId::Attrition as usize].store(subtract as *const () as usize, Ordering::Release);
     ORIGINAL[SiteId::Delete as usize]
         .store(forwarding_delete as *const () as usize, Ordering::Release);
@@ -856,11 +917,9 @@ fn refusals_identify_each_writer_and_recover_at_clean_boundary() {
         boundary(clock(1, site as i64 + 1));
         boundary(clock(2, site as i64 + 1));
         let count = SITE_REFUSALS[site].load(Ordering::Relaxed);
-        STORE
-            .lock()
-            .unwrap()
+        folded()
             .refuse(Some(site), "synthetic destruction refusal");
-        let held = STORE.lock().unwrap();
+        let held = folded();
         let refusal = serde_json::to_value(held.refusal).unwrap();
         assert_eq!(refusal["site_index"], site);
         assert_eq!(refusal["reason"], "synthetic destruction refusal");
@@ -876,10 +935,10 @@ fn refusals_identify_each_writer_and_recover_at_clean_boundary() {
         assert_eq!(status["hooks"][site]["refusals"], count + 1);
         assert!(status["branch_unavailable"].as_bool().unwrap());
         boundary(clock(3, site as i64 + 1));
-        assert_eq!(drain(&mut []), Err("synthetic destruction refusal"));
-        assert!(!POISONED.load(Ordering::SeqCst));
+        assert_eq!(drain(&mut Vec::new()), Err("synthetic destruction refusal"));
+        assert!(!folded().poisoned);
         boundary(clock(4, site as i64 + 1));
-        assert_eq!(drain(&mut []), Ok(0));
+        assert_eq!(drain(&mut Vec::new()), Ok(0));
         assert_eq!(
             serde_json::to_value(super::status()).unwrap()["refusal"],
             status["refusal"]
@@ -888,22 +947,19 @@ fn refusals_identify_each_writer_and_recover_at_clean_boundary() {
     let first = serde_json::to_value(status()).unwrap()["refusal"].clone();
     boundary(clock(1, 10));
     assert_eq!(serde_json::to_value(status()).unwrap()["refusal"], first);
-    assert!(!POISONED.load(Ordering::SeqCst));
+    assert!(!folded().poisoned);
 }
 
 #[test]
 fn supplemental_snapshot_refusals_identify_writer_and_preserve_first_diagnostic() {
     let _serial = serial();
     let site = SiteId::ScriptedEquipmentFraction;
-    for (designs, bad_vtable, quantity, reason) in [
-        (
-            0,
-            false,
-            900000,
-            "destruction pool exceeds live design capacity",
-        ),
-        (1, true, 900000, "variant vtable or reference type mismatch"),
-    ] {
+    for (designs, bad_vtable, quantity, reason) in [(
+        1,
+        true,
+        900000,
+        "variant vtable or reference type mismatch",
+    )] {
         setup(8, designs);
         boundary(clock(1, 1));
         boundary(clock(2, 1));
@@ -929,13 +985,13 @@ fn supplemental_snapshot_refusals_identify_writer_and_preserve_first_diagnostic(
                 before.2
             }
         );
-        let store = STORE.lock().unwrap();
+        let store = folded();
         assert_eq!(serde_json::to_value(store.refusal).unwrap(), diagnostic);
         assert!(store.entries.is_empty());
         drop(store);
         assert_eq!(*FORWARDED.lock().unwrap(), [bank, 100000, 0, 0, 0, 0, 0, 0]);
-        assert!(POISONED.load(Ordering::SeqCst));
-        assert_eq!(drain(&mut [Entry::default(); 8]), Err(reason));
+        assert!(folded().poisoned);
+        assert_eq!(drain(&mut vec![Entry::default(); 8]), Err(reason));
     }
     // Quantity scaling stores signed values beyond quantity addition saturation.
     for quantity in [0x53e2d620fb41, -0x53e2d620fb41] {
@@ -948,8 +1004,8 @@ fn supplemental_snapshot_refusals_identify_writer_and_preserve_first_diagnostic(
         let bank = world.army() + carmy::EQUIPMENT_POOL;
         unsafe { scripted_equipment_fraction(bank, 200000) };
         assert_eq!(refusal_diagnostics(), before);
-        assert!(!POISONED.load(Ordering::SeqCst));
-        let mut entries = [Entry::default(); 8];
+        assert!(!folded().poisoned);
+        let mut entries = vec![Entry::default(); 8];
         assert_eq!(drain(&mut entries).unwrap(), 1);
         assert_eq!(entries[0].amount_raw, -quantity);
         assert_eq!(entries[0].cause, native::Cause::ScriptedEquipmentFraction);
@@ -960,54 +1016,7 @@ fn supplemental_snapshot_refusals_identify_writer_and_preserve_first_diagnostic(
 }
 
 #[test]
-fn locked_writer_refusal_counts_hook_and_keeps_first_slot_visible() {
-    let _serial = serial();
-    setup(8, 1);
-    boundary(clock(1, 1));
-    boundary(clock(2, 1));
-    let world = World::new(1);
-    let bank = world.army() + carmy::EQUIPMENT_POOL;
-    let before = refusal_diagnostics();
-    let store = STORE.lock().unwrap();
-    unsafe { attrition(bank, world.design(0), 1) };
-    let first = serde_json::to_value(FIRST_REFUSAL.get()).unwrap();
-    assert_eq!(
-        first,
-        if before.2.is_null() {
-            serde_json::json!({
-                "site_index": SiteId::Attrition as usize,
-                "reason": "equipment destruction pre-observation overlaps writer",
-            })
-        } else {
-            before.2.clone()
-        }
-    );
-    for expected in [1, 2] {
-        let after = refusal_diagnostics();
-        assert_eq!(after.0, before.0 + expected);
-        let mut counts = before.1;
-        counts[SiteId::Attrition as usize] += expected;
-        assert_eq!(after.1, counts);
-        assert_eq!(after.2, first);
-        assert_eq!(serde_json::to_value(status()).unwrap()["refusal"], first);
-        assert!(store.refusal.is_none());
-        assert!(POISONED.load(Ordering::SeqCst));
-        if expected == 1 {
-            POISONED.store(false, Ordering::SeqCst);
-            unsafe { attrition(bank, world.design(0), 1) };
-        }
-    }
-    drop(store);
-    assert_eq!(
-        drain(&mut [Entry::default(); 8]),
-        Err("equipment destruction lost observation; interval unavailable")
-    );
-    ENABLED.store(false, Ordering::SeqCst);
-    SUPPLEMENTAL_ENABLED.store(false, Ordering::SeqCst);
-}
-
-#[test]
-fn live_attrition_store_overlap_refuses_one_interval_then_records_again() {
+fn a_held_drain_store_never_refuses_or_delays_a_writer() {
     let _serial = serial();
     setup(8, 1);
     boundary(clock(1, 1));
@@ -1015,113 +1024,237 @@ fn live_attrition_store_overlap_refuses_one_interval_then_records_again() {
     let mut world = World::new(1);
     world.owner(4999);
     let bank = world.army() + carmy::EQUIPMENT_POOL;
-    let diagnostics = refusal_diagnostics();
-    let held = STORE.lock().unwrap();
-    unsafe { attrition(bank, world.design(0), 100000) };
-    drop(held);
-    assert_eq!(world.storage[(0x600 + 8) / 8] as i64, 800000);
-    assert_eq!(REFUSALS.load(Ordering::Relaxed), diagnostics.0 + 1);
-    assert_eq!(
-        SITE_REFUSALS[SiteId::Attrition as usize].load(Ordering::Relaxed),
-        diagnostics.1[SiteId::Attrition as usize] + 1
-    );
-    boundary(clock(3, 1));
-    assert!(!POISONED.load(Ordering::SeqCst));
-    assert_eq!(
-        drain(&mut [Entry::default(); 8]),
-        Err("equipment destruction lost observation; interval unavailable")
-    );
-    let first = refusal_diagnostics().2;
-    unsafe { attrition(bank, world.design(0), 100000) };
-    boundary(clock(4, 1));
-    assert_signed_row(100000, native::Cause::Attrition, 0xf00000000046);
-    assert_eq!(refusal_diagnostics().2, first);
-    assert_eq!(REFUSALS.load(Ordering::Relaxed), diagnostics.0 + 1);
+    let before = refusal_diagnostics();
+    let store = STORE.lock().unwrap();
+    for _ in 0..2 {
+        unsafe { attrition(bank, world.design(0), 100000) };
+    }
+    drop(store);
+    assert_eq!(world.storage[(0x600 + 8) / 8] as i64, 700000);
+    let mut out = vec![Entry::default(); 8];
+    assert_eq!(drain(&mut out), Ok(2));
+    assert!(out[..2].iter().all(|row| row.amount_raw == 100000
+        && row.country == 4999
+        && row.cause == native::Cause::Attrition));
+    assert_eq!(refusal_diagnostics(), before);
     ENABLED.store(false, Ordering::SeqCst);
     SUPPLEMENTAL_ENABLED.store(false, Ordering::SeqCst);
 }
 
 #[test]
-fn prepared_growth_never_locks_writers_and_retires_storage_off_thread() {
+fn two_threads_in_the_family_at_once_keep_every_pool_change() {
     let _serial = serial();
     setup(8, 1);
     boundary(clock(1, 1));
     boundary(clock(2, 1));
-    let world = World::new(1);
-    let mut memory = StateMemory::new(2);
-    memory.population(&[3]);
-    let mut held = STORE.lock().unwrap();
-    let old_entries = held.entries.as_ptr();
-    super::record_queue(
-        &mut held,
-        world.army(),
-        0xe00100004b01,
-        native::Cause::DivisionDeleted,
-        native::Disposition::Loss,
-    )
-    .unwrap();
-    held.credits.begin(0xe00200004b01, 0x1200, 4999, 0).unwrap();
-    held.credits
-        .push(
-            0xe00200004b01,
-            Net {
-                country: 4999,
-                variant: 0xf00000000046,
-                amount: -7,
-                credited: 12,
-            },
+    let mut attrited = World::new(1);
+    attrited.owner(4998);
+    let mut damaged = World::new(1);
+    damaged.owner(4999);
+    ORIGINAL[SiteId::Attrition as usize]
+        .store(gated_subtract as *const () as usize, Ordering::Release);
+    ORIGINAL[SiteId::Land as usize].store(land_removal as *const () as usize, Ordering::Release);
+    let (bank, design) = (
+        attrited.army() + carmy::EQUIPMENT_POOL,
+        attrited.design(0),
+    );
+    let contests = contested();
+    let writer = std::thread::spawn(move || unsafe { attrition(bank, design, 100000) });
+    GATE.wait();
+    unsafe {
+        land(
+            damaged.army(),
+            damaged.design(0),
+            200000,
+            0,
+            0,
+            0,
+            0,
+            0,
+            native::LAND_COMBAT_RETURN.0,
+        );
+    }
+    GATE.wait();
+    writer.join().unwrap();
+    let mut out = vec![Entry::default(); 8];
+    let drained = drain(&mut out);
+    assert_eq!(drained, Ok(2));
+    // Each pool change closes in the order its writer returned.
+    assert_eq!(
+        (out[0].country, out[0].cause, out[0].amount_raw),
+        (4999, native::Cause::LandCombat, 200000)
+    );
+    assert_eq!(
+        (out[1].country, out[1].cause, out[1].amount_raw),
+        (4998, native::Cause::Attrition, 100000)
+    );
+    assert_eq!(damaged.storage[(0x600 + 8) / 8] as i64, 700000);
+    assert_eq!(attrited.storage[(0x600 + 8) / 8] as i64, 800000);
+    assert_eq!(active(), 0);
+    assert_eq!(contested(), contests);
+    ENABLED.store(false, Ordering::SeqCst);
+    SUPPLEMENTAL_ENABLED.store(false, Ordering::SeqCst);
+}
+
+#[test]
+fn two_threads_writing_one_pool_at_once_refuse_their_interval_by_name_and_name_the_pool() {
+    let _serial = serial();
+    setup(8, 1);
+    boundary(clock(1, 1));
+    boundary(clock(2, 1));
+    let mut world = World::new(1);
+    world.owner(4997);
+    let (count, _) = contested();
+    ORIGINAL[SiteId::Attrition as usize]
+        .store(gated_subtract as *const () as usize, Ordering::Release);
+    ORIGINAL[SiteId::Land as usize].store(land_removal as *const () as usize, Ordering::Release);
+    let (bank, design) = (world.army() + carmy::EQUIPMENT_POOL, world.design(0));
+    let writer = std::thread::spawn(move || unsafe { attrition(bank, design, 100000) });
+    GATE.wait();
+    unsafe {
+        land(
+            world.army(),
+            world.design(0),
+            200000,
+            0,
+            0,
+            0,
+            0,
+            0,
+            native::LAND_COMBAT_RETURN.0,
+        );
+    }
+    GATE.wait();
+    writer.join().unwrap();
+    assert_eq!(drain(&mut vec![Entry::default(); 8]), Err(SHARED_POOL));
+    // The status names the pool, the observation that found it held and its holder.
+    assert_eq!(
+        contested(),
+        (
+            count + 1,
+            serde_json::json!({
+                "reason": SHARED_POOL,
+                "site_index": SiteId::Land as usize,
+                "other_site_index": SiteId::Attrition as usize,
+                "pool": bank,
+                "country": 4997,
+            })
         )
-        .unwrap();
-    // The former growth path lost STORE here. A spare must still be offered.
-    prepare(&memory, 0, 4);
-    assert!(capacity() > held.entries.capacity());
-    assert_eq!(held.entries.as_ptr(), old_entries);
-    drop(held);
-    let diagnostics = refusal_diagnostics();
-    let slot = STORAGE_SWAP.lock().unwrap();
-    crate::test_support::with_allocations_denied(|| {
-        unsafe {
-            attrition(
-                world.army() + carmy::EQUIPMENT_POOL,
-                world.design(0),
-                100000,
-            )
-        };
-        let mut out = [Entry::default(); 8];
-        assert_eq!(drain(&mut out), Ok(1));
-        assert_eq!(out[0].amount_raw, 100000);
+    );
+    boundary(clock(3, 1));
+    assert!(drain(&mut vec![Entry::default(); 8]).is_err());
+    boundary(clock(4, 1));
+    assert_eq!(drain(&mut vec![Entry::default(); 8]), Ok(0));
+    ENABLED.store(false, Ordering::SeqCst);
+    SUPPLEMENTAL_ENABLED.store(false, Ordering::SeqCst);
+}
+
+#[test]
+fn a_writer_held_after_its_pool_read_overlaps_every_window_another_thread_opens_meanwhile() {
+    let _serial = serial();
+    setup(8, 1);
+    boundary(clock(1, 1));
+    boundary(clock(2, 1));
+    let mut world = World::new(1);
+    world.owner(4996);
+    ORIGINAL[SiteId::Land as usize].store(land_removal as *const () as usize, Ordering::Release);
+    let (bank, design) = (world.army() + carmy::EQUIPMENT_POOL, world.design(0));
+    let (count, _) = contested();
+    HELD_AFTER_READ.store(SiteId::Attrition as usize + 1, Ordering::SeqCst);
+    let writer = std::thread::spawn(move || unsafe { attrition(bank, design, 100000) });
+    GATE.wait();
+    unsafe {
+        land(
+            world.army(),
+            world.design(0),
+            200000,
+            0,
+            0,
+            0,
+            0,
+            0,
+            native::LAND_COMBAT_RETURN.0,
+        );
+    }
+    GATE.wait();
+    writer.join().unwrap();
+    assert_eq!(world.storage[(0x600 + 8) / 8] as i64, 600000);
+    // The attrition copy predates the land removal: never 200000 plus 300000.
+    assert_eq!(drain(&mut vec![Entry::default(); 8]), Err(SHARED_POOL));
+    assert_eq!(
+        contested(),
+        (
+            count + 1,
+            serde_json::json!({
+                "reason": SHARED_POOL,
+                "site_index": SiteId::Attrition as usize,
+                "other_site_index": SiteId::Land as usize,
+                "pool": bank,
+                "country": 4996,
+            })
+        )
+    );
+
+    // A destructor's residual copy is held the same way.
+    setup(8, 1);
+    boundary(clock(1, 1));
+    boundary(clock(2, 1));
+    let mut doomed = World::new(1);
+    doomed.owner(4995);
+    let ctx = context(&doomed, native::Cause::DivisionDestroyed);
+    let (army, bank, design) = (
+        doomed.army(),
+        doomed.army() + carmy::EQUIPMENT_POOL,
+        doomed.design(0),
+    );
+    HELD_AFTER_READ.store(SiteId::DivisionFree as usize + 1, Ordering::SeqCst);
+    let destructor = std::thread::spawn(move || {
+        let _scope = scoped(ctx);
+        unsafe { division_free(army, 1) }
     });
+    GATE.wait();
+    unsafe { attrition(bank, design, 100000) };
+    GATE.wait();
+    assert_eq!(destructor.join().unwrap(), army);
+    // The residual copy holds the attrited 100000 too: never counted twice.
+    assert_eq!(drain(&mut vec![Entry::default(); 8]), Err(DESTRUCTOR_OVERLAP));
+    assert_eq!(
+        contested(),
+        (
+            count + 2,
+            serde_json::json!({
+                "reason": DESTRUCTOR_OVERLAP,
+                "site_index": SiteId::Attrition as usize,
+                "other_site_index": SiteId::DivisionFree as usize,
+                "pool": bank,
+                "country": 4995,
+            })
+        )
+    );
+    ENABLED.store(false, Ordering::SeqCst);
+    SUPPLEMENTAL_ENABLED.store(false, Ordering::SeqCst);
+}
+
+
+#[test]
+fn a_store_grown_to_the_hours_need_folds_the_next_such_hour_without_allocating() {
+    let _serial = serial();
+    install(Store::new());
+    boundary(clock(1, 1));
+    boundary(clock(2, 1));
+    let world = World::new(1);
+    let bank = world.army() + carmy::EQUIPMENT_POOL;
+    let mut out = Vec::new();
+    unsafe { attrition(bank, world.design(0), 100000) };
+    assert_eq!(drain(&mut out), Ok(1));
+    let entries = folded().entries.as_ptr();
+    let diagnostics = refusal_diagnostics();
+    unsafe { attrition(bank, world.design(0), 100000) };
+    let drained = crate::test_support::with_allocations_denied(|| drain(&mut out));
+    assert_eq!(drained, Ok(1));
+    assert_eq!(out[0].amount_raw, 100000);
     assert_eq!(refusal_diagnostics(), diagnostics);
-    assert_eq!(STORE.lock().unwrap().entries.as_ptr(), old_entries);
-    drop(slot);
-    crate::test_support::with_allocations_denied(|| boundary(clock(3, 1)));
-    let held = STORE.lock().unwrap();
-    assert_ne!(held.entries.as_ptr(), old_entries);
-    assert_eq!(held.queued_count, 1);
-    assert_eq!(
-        held.queued[&0xe00100004b01].cause,
-        native::Cause::DivisionDeleted
-    );
-    held.credits
-        .visit(0xe00200004b01, 0x1200, 4999, |value| {
-            assert_eq!((value.amount, value.credited), (-7, 12));
-            Ok(())
-        })
-        .unwrap();
-    drop(held);
-    assert_eq!(
-        STORAGE_SWAP
-            .lock()
-            .unwrap()
-            .retired
-            .as_ref()
-            .unwrap()
-            .entries
-            .as_ptr(),
-        old_entries
-    );
-    prepare(&memory, 0, 4);
-    assert!(STORAGE_SWAP.lock().unwrap().retired.is_none());
+    assert_eq!(folded().entries.as_ptr(), entries);
     ENABLED.store(false, Ordering::SeqCst);
     SUPPLEMENTAL_ENABLED.store(false, Ordering::SeqCst);
 }
@@ -1146,9 +1279,7 @@ fn interval_recovery_preserves_skipped_source_refusal_and_admits_other_sources()
                 source.army() + carmy::EQUIPMENT_POOL,
             );
         }
-        STORE
-            .lock()
-            .unwrap()
+        folded()
             .credits
             .set_state(handle, source.army(), 1, PoolState::Live)
             .unwrap();
@@ -1162,13 +1293,11 @@ fn interval_recovery_preserves_skipped_source_refusal_and_admits_other_sources()
             }
         }
         boundary(clock(3, 1));
-        assert!(drain(&mut [Entry::default(); 8]).is_err());
+        assert!(drain(&mut vec![Entry::default(); 8]).is_err());
         boundary(clock(4, 1));
-        assert!(!POISONED.load(Ordering::SeqCst));
+        assert!(!folded().poisoned);
         assert_eq!(
-            STORE
-                .lock()
-                .unwrap()
+            folded()
                 .credits
                 .state(handle, source.army(), 1),
             Err("equipment returned source skipped native mutation")
@@ -1186,8 +1315,8 @@ fn interval_recovery_preserves_skipped_source_refusal_and_admits_other_sources()
         };
         assert_signed_row(100000, native::Cause::Attrition, 0xf00000000046);
         unsafe { division_free(source.army(), 1) };
-        assert!(POISONED.load(Ordering::SeqCst));
-        assert!(drain(&mut [Entry::default(); 8]).is_err());
+        assert!(folded().poisoned);
+        assert!(drain(&mut vec![Entry::default(); 8]).is_err());
     }
     ENABLED.store(false, Ordering::SeqCst);
     SUPPLEMENTAL_ENABLED.store(false, Ordering::SeqCst);
@@ -1196,12 +1325,11 @@ fn interval_recovery_preserves_skipped_source_refusal_and_admits_other_sources()
 #[test]
 fn actual_events_every_country_fail_closed_and_detach() {
     let _serial = serial();
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let mut world = World::new(3);
     setup(50, 3);
     boundary(clock(1, 1));
     assert!(
-        drain(&mut [Entry::default(); 1])
+        drain(&mut vec![Entry::default(); 1])
             .unwrap_err()
             .contains("partial")
     );
@@ -1249,58 +1377,41 @@ fn actual_events_every_country_fail_closed_and_detach() {
     world.amount(0, 450001);
     world.amount(1, 300000);
     world.amount(2, 100000);
-    {
-        let mut s = STORE.lock().unwrap();
-        observe_pool(
-            &mut s,
-            SiteId::Land,
-            world.army(),
-            native::Cause::LandCombat,
-            &memory,
-            0,
-            || {
-                world.amount(0, 370000);
-                world.amount(1, 300000);
-                world.amount(2, 0);
-            },
-        )
-        .unwrap();
-    }
+    let army = world.army();
+    measure_pool(SiteId::Land, army, native::Cause::LandCombat, false, || {
+        world.amount(0, 370000);
+        world.amount(1, 300000);
+        world.amount(2, 0);
+    });
     assert_eq!(drain(&mut out).unwrap(), 2);
     assert_eq!((out[0].amount_raw, out[1].amount_raw), (80001, 100000));
-    // A short output refuses through the next clean recovery boundary.
+    // An empty output grows to the interval's entries.
     world.amount(1, 900000);
     unsafe {
         attrition(p, v, 100000);
     }
-    assert!(drain(&mut []).is_err());
-    boundary(clock(3, 1));
-    assert!(drain(&mut out).is_err());
-    boundary(clock(3, 2)); // actual load signal starts a new partial interval
-    assert!(drain(&mut out).unwrap_err().contains("partial"));
-    boundary(clock(4, 2));
-    assert_eq!(drain(&mut out).unwrap(), 0);
-    STORE.lock().unwrap().entries = Vec::new();
+    assert_eq!(drain(&mut Vec::new()), Ok(1));
+    // A log with no room grows as the drain folds.
+    folded().entries = Vec::new();
     world.amount(1, 900000);
     unsafe {
         attrition(p, v, 100000);
     }
-    assert!(drain(&mut out).unwrap_err().contains("overflow"));
-    boundary(clock(5, 2));
-    assert!(drain(&mut out).is_err());
-    // A writer overlapping the drain also breaks completeness.
+    assert_eq!(drain(&mut out), Ok(1));
+    // A writer while the drain holds its store is kept whole.
     boundary(clock(1, 3));
     boundary(clock(2, 3));
+    world.amount(1, 900000);
     let held = STORE.lock().unwrap();
     unsafe {
         attrition(p, v, 100000);
     }
     drop(held);
-    assert!(drain(&mut out).is_err());
+    assert_eq!(drain(&mut out), Ok(1));
     assert_eq!(active(), 0);
     boundary(clock(1, 4));
     boundary(clock(2, 4));
-    STORE.lock().unwrap().entries = Vec::with_capacity(2);
+    folded().entries = Vec::with_capacity(2);
     world.amount(1, 50);
     unsafe {
         attrition(p, v, 100);
@@ -1311,7 +1422,7 @@ fn actual_events_every_country_fail_closed_and_detach() {
         unsafe { *((world.army() + 0x600 + 16 + 8) as *const i64) },
         -50
     );
-    assert!(!POISONED.load(Ordering::SeqCst));
+    assert!(!folded().poisoned);
     for site in native::SITES.iter().map(|site| site.id) {
         let held = Call::enter(site);
         assert!(crate::runtime::observers_active());
@@ -1332,62 +1443,6 @@ fn actual_events_every_country_fail_closed_and_detach() {
     }
     assert_eq!(*FORWARDED.lock().unwrap(), slots);
     assert_eq!(active(), 0);
-}
-
-#[test]
-fn failed_prepare_observations_skip_growth_without_losing_the_branch() {
-    let _serial = serial();
-    setup(8, 1);
-    boundary(clock(1, 1));
-    boundary(clock(2, 1));
-    let entry = Entry {
-        country: 4999,
-        cause: native::Cause::Attrition,
-        division_handle: 0,
-        variant: 0xf00000000046,
-        amount_raw: 100000,
-        ..Default::default()
-    };
-    STORE
-        .lock()
-        .unwrap()
-        .append(SiteId::Attrition, entry)
-        .unwrap();
-    let failures = PREPARE_FAILURES.load(Ordering::Relaxed);
-    let lost = LOST.load(Ordering::Relaxed);
-    let initial_capacity = capacity();
-    let initial_designs = DESIGNS.load(Ordering::Acquire);
-
-    // The design census is unreadable: retain the existing buffers and event.
-    prepare(
-        &engine_native::memory::SliceMemory {
-            base: 0,
-            bytes: &[],
-        },
-        0,
-        5000,
-    );
-    // Even a readable census cannot represent an overflowing live product.
-    prepare(&StateMemory::new(1), 0, usize::MAX);
-    assert_eq!(PREPARE_FAILURES.load(Ordering::Relaxed), failures + 2);
-    assert_eq!(
-        serde_json::to_value(status()).unwrap()["prepare_failures"].as_u64(),
-        Some(failures + 2)
-    );
-    assert_eq!(LOST.load(Ordering::Relaxed), lost);
-    assert_eq!(capacity(), initial_capacity);
-    assert_eq!(DESIGNS.load(Ordering::Acquire), initial_designs);
-    assert!(!POISONED.load(Ordering::SeqCst));
-    assert_eq!(HOURLY_PEAK_EVENTS.load(Ordering::Relaxed), 1);
-    assert_eq!(
-        HOURLY_PEAK_CAPACITY.load(Ordering::Relaxed),
-        initial_capacity
-    );
-    let mut out = [Entry::default(); 1];
-    assert_eq!(drain(&mut out).unwrap(), 1);
-    assert_eq!(out[0], entry);
-    ENABLED.store(false, Ordering::SeqCst);
-    SUPPLEMENTAL_ENABLED.store(false, Ordering::SeqCst);
 }
 
 #[test]
@@ -1448,7 +1503,7 @@ fn enabled_land_shim_passes_caller_pc_and_records_stable_causes() {
         }
         assert_eq!(*FORWARDED.lock().unwrap(), slots);
         assert_eq!(active(), 0);
-        assert!(!POISONED.load(Ordering::SeqCst));
+        assert!(!folded().poisoned);
         assert_eq!(
             UNKNOWN_CALLERS.load(Ordering::Relaxed),
             unknown + u64::from(cause == native::Cause::Unknown)
@@ -1511,7 +1566,7 @@ fn real_delete_entry_preserves_four_slots_and_classifies_its_stack_return_pc() {
         [slots[0], slots[1], slots[2], slots[3], 0, 0, 0, 0]
     );
     assert!(OBSERVED_DELETION.lock().unwrap().unwrap().ignored);
-    assert_eq!(drain(&mut [Entry::default(); 1]).unwrap(), 0);
+    assert_eq!(drain(&mut vec![Entry::default(); 1]).unwrap(), 0);
     assert!(DELETION.get().is_none());
     assert_eq!(active(), 0);
     ENABLED.store(false, Ordering::SeqCst);
@@ -1537,7 +1592,7 @@ fn real_division_free_entry_preserves_flags_result_and_pending_cause_before_free
         let handle = context_rebased(&world, base, cause).handle;
         if cause != native::Cause::Unknown {
             record_queue(
-                &mut STORE.lock().unwrap(),
+                &mut folded(),
                 world.army(),
                 handle,
                 native::QueuedContext::Loss(cause),
@@ -1552,14 +1607,14 @@ fn real_division_free_entry_preserves_flags_result_and_pending_cause_before_free
             *FORWARDED.lock().unwrap(),
             [world.army(), flags, 0, 0, 0, 0, 0, 0]
         );
-        let mut out = [Entry::default(); 4];
+        let mut out = vec![Entry::default(); 4];
         assert_eq!(drain(&mut out).unwrap(), 2);
         assert_eq!(out[0].division_handle, handle);
         assert_eq!(out[0].cause, cause);
         assert_eq!(out[0].disposition, native::Disposition::Loss);
         assert_eq!(out[1].amount_raw, 900000);
         assert_eq!(world.storage[carmy::EQUIPMENT_POOL / 8], 0);
-        assert!(STORE.lock().unwrap().queued.is_empty());
+        assert!(folded().queued.is_empty());
         assert_eq!(active(), 0);
     }
     ENABLED.store(false, Ordering::SeqCst);
@@ -1603,10 +1658,10 @@ fn real_queue_entry_preserves_slots_and_replaces_r8_with_the_stack_return_pc() {
             0
         ]
     );
-    let pending = STORE.lock().unwrap().queued[&handle];
+    let pending = folded().queued[&handle];
     assert_eq!(pending.cause, native::Cause::Unknown);
     assert_eq!(pending.disposition, native::Disposition::Loss);
-    assert!(!POISONED.load(Ordering::SeqCst));
+    assert!(!folded().poisoned);
     assert_eq!(active(), 0);
     ENABLED.store(false, Ordering::SeqCst);
     SUPPLEMENTAL_ENABLED.store(false, Ordering::SeqCst);
@@ -1628,7 +1683,6 @@ fn context_rebased(world: &World, base: usize, cause: native::Cause) -> Deletion
             >> ((engine_native::cunit::EXPEDITIONARY_OWNER % 8) * 8))
             as u32,
         returned: false,
-        observed: false,
         ignored: false,
         merge_source: false,
     }
@@ -1658,7 +1712,7 @@ fn deletion_paths_snapshot_before_free_and_ignore_actual_returns_and_cleanup() {
         world.amount(2, 100000);
         let unknown = UNKNOWN_CALLERS.load(Ordering::Relaxed);
         let ctx = context(&world, cause);
-        let _scope = DeletionScope::enter(Some(ctx));
+        let _scope = scoped(ctx);
         assert_eq!(unsafe { division_free(world.army(), 1) }, world.army());
         let mut out = vec![Entry::default(); 100];
         assert_eq!(drain(&mut out).unwrap(), 3);
@@ -1674,7 +1728,7 @@ fn deletion_paths_snapshot_before_free_and_ignore_actual_returns_and_cleanup() {
             UNKNOWN_CALLERS.load(Ordering::Relaxed),
             unknown + u64::from(cause == native::Cause::Unknown)
         );
-        assert!(!POISONED.load(Ordering::SeqCst));
+        assert!(!folded().poisoned);
     }
     // The actual native reserve-credit call, rather than the request flag,
     // proves the actual credit; a zero deficit retains the transfer witness.
@@ -1691,7 +1745,7 @@ fn deletion_paths_snapshot_before_free_and_ignore_actual_returns_and_cleanup() {
         let mut world = World::new(3);
         world.rebase(base);
         let reserve = ReserveWorld::for_source(&world, base, 1, 0);
-        let _scope = DeletionScope::enter(Some(context_rebased(&world, base, cause)));
+        let _scope = scoped(context_rebased(&world, base, cause));
         unsafe {
             returned(
                 reserve.manager.as_ptr() as usize,
@@ -1699,7 +1753,7 @@ fn deletion_paths_snapshot_before_free_and_ignore_actual_returns_and_cleanup() {
             );
             division_free(world.army(), 1);
         }
-        let mut out = [Entry::default(); 1];
+        let mut out = vec![Entry::default(); 1];
         assert_eq!(drain(&mut out).unwrap(), 1);
         assert_eq!(out[0].disposition, native::Disposition::Returned);
         assert_eq!(out[0].amount_raw, 0);
@@ -1728,10 +1782,10 @@ fn deletion_paths_snapshot_before_free_and_ignore_actual_returns_and_cleanup() {
         .unwrap()
         .unwrap();
         assert!(ctx.ignored);
-        let _scope = DeletionScope::enter(Some(ctx));
+        let _scope = scoped(ctx);
         unsafe { division_free(world.army(), 1) };
-        assert_eq!(drain(&mut [Entry::default(); 1]).unwrap(), 0);
-        assert!(!POISONED.load(Ordering::SeqCst));
+        assert_eq!(drain(&mut vec![Entry::default(); 1]).unwrap(), 0);
+        assert!(!folded().poisoned);
     }
     ENABLED.store(false, Ordering::SeqCst);
     SUPPLEMENTAL_ENABLED.store(false, Ordering::SeqCst);
@@ -1747,7 +1801,7 @@ fn merge_transfers_suppress_source_flush_and_record_signed_uncredited_equipment(
     let mut ctx = context(&world, native::Cause::Unknown);
     ctx.disposition = native::Disposition::Merged;
     {
-        let _scope = DeletionScope::enter(Some(ctx));
+        let _scope = scoped(ctx);
         ORIGINAL[SiteId::Land as usize]
             .store(land_removal as *const () as usize, Ordering::Release);
         unsafe {
@@ -1765,7 +1819,7 @@ fn merge_transfers_suppress_source_flush_and_record_signed_uncredited_equipment(
             division_free(world.army(), 1);
         }
     }
-    let mut out = [Entry::default(); 1];
+    let mut out = vec![Entry::default(); 1];
     assert_eq!(drain(&mut out).unwrap(), 1);
     assert_eq!(out[0].disposition, native::Disposition::Merged);
     assert_eq!(out[0].amount_raw, 0);
@@ -1788,7 +1842,7 @@ fn queued_deletion_provenance_is_bounded_exact_and_unknown_on_conflict() {
     ] {
         let world = World::new(1);
         let handle = context(&world, native::Cause::Unknown).handle;
-        record_queue(&mut STORE.lock().unwrap(), world.army(), handle, classified).unwrap();
+        record_queue(&mut folded(), world.army(), handle, classified).unwrap();
         let ctx = deletion_context(
             &memory,
             0,
@@ -1798,7 +1852,7 @@ fn queued_deletion_provenance_is_bounded_exact_and_unknown_on_conflict() {
         )
         .unwrap()
         .unwrap();
-        assert!(STORE.lock().unwrap().queued.is_empty());
+        assert!(folded().queued.is_empty());
         match classified {
             native::QueuedContext::Loss(cause) => assert_eq!(ctx.cause, cause),
             native::QueuedContext::Transfer(disposition) => {
@@ -1811,7 +1865,7 @@ fn queued_deletion_provenance_is_bounded_exact_and_unknown_on_conflict() {
     let world = World::new(1);
     let handle = context(&world, native::Cause::Unknown).handle;
     {
-        let mut store = STORE.lock().unwrap();
+        let mut store = folded();
         for cause in [
             native::Cause::DivisionDeleted,
             native::Cause::DivisionOverrun,
@@ -1832,16 +1886,15 @@ fn queued_deletion_provenance_is_bounded_exact_and_unknown_on_conflict() {
         store.queued_by_army = FixedIndex::new();
         store.queued_count = 0;
         store.queued_limit = 0;
-        assert!(
+        let refused = crate::test_support::with_allocations_denied(|| {
             record_queue(
                 &mut store,
                 world.army(),
                 handle,
-                native::QueuedContext::Loss(native::Cause::DivisionDeleted)
+                native::QueuedContext::Loss(native::Cause::DivisionDeleted),
             )
-            .unwrap_err()
-            .contains("overflow")
-        );
+        });
+        assert_eq!(refused, Err(QUEUE_STORAGE_FAILED));
     }
     ENABLED.store(false, Ordering::SeqCst);
     SUPPLEMENTAL_ENABLED.store(false, Ordering::SeqCst);
@@ -1871,7 +1924,7 @@ fn transferred_provenance_survives_conflicting_requests_and_direct_deletion() {
             let world = World::new(1);
             let handle = context(&world, native::Cause::Unknown).handle;
             {
-                let mut store = STORE.lock().unwrap();
+                let mut store = folded();
                 for classified in requests {
                     record_queue(&mut store, world.army(), handle, classified).unwrap();
                 }
@@ -1896,8 +1949,8 @@ fn transferred_provenance_survives_conflicting_requests_and_direct_deletion() {
             .unwrap();
             assert!(!ctx.ignored);
             assert_eq!(ctx.disposition, native::Disposition::HqTransferred);
-            assert!(STORE.lock().unwrap().queued.is_empty());
-            let _scope = DeletionScope::enter(Some(ctx));
+            assert!(folded().queued.is_empty());
+            let _scope = scoped(ctx);
             ORIGINAL[SiteId::Land as usize]
                 .store(land_removal as *const () as usize, Ordering::Release);
             unsafe {
@@ -1914,7 +1967,7 @@ fn transferred_provenance_survives_conflicting_requests_and_direct_deletion() {
                 );
                 division_free(world.army(), 1);
             }
-            let mut out = [Entry::default(); 4];
+            let mut out = vec![Entry::default(); 4];
             assert_eq!(drain(&mut out).unwrap(), 1);
             assert_eq!(out[0].division_handle, handle);
             assert_eq!(out[0].disposition, native::Disposition::HqTransferred);
@@ -1928,7 +1981,7 @@ fn transferred_provenance_survives_conflicting_requests_and_direct_deletion() {
     let mut world = World::new(1);
     let old_handle = context(&world, native::Cause::Unknown).handle;
     record_queue(
-        &mut STORE.lock().unwrap(),
+        &mut folded(),
         world.army(),
         old_handle,
         native::QueuedContext::Transfer(native::Disposition::HqTransferred),
@@ -1937,14 +1990,14 @@ fn transferred_provenance_survives_conflicting_requests_and_direct_deletion() {
     let new_handle = old_handle + (1 << 32);
     world.word(engine_native::cunit::HANDLE, new_handle);
     record_queue(
-        &mut STORE.lock().unwrap(),
+        &mut folded(),
         world.army(),
         new_handle,
         native::QueuedContext::Loss(native::Cause::DivisionDeleted),
     )
     .unwrap();
     {
-        let store = STORE.lock().unwrap();
+        let store = folded();
         assert_eq!(store.queued.values().next().unwrap().handle, new_handle);
         assert_eq!(
             store.queued.values().next().unwrap().cause,
@@ -1966,9 +2019,9 @@ fn transferred_provenance_survives_conflicting_requests_and_direct_deletion() {
     .unwrap();
     assert!(!ctx.ignored);
     assert_eq!(ctx.cause, native::Cause::DivisionDeleted);
-    let _scope = DeletionScope::enter(Some(ctx));
+    let _scope = scoped(ctx);
     unsafe { division_free(world.army(), 1) };
-    let mut out = [Entry::default(); 4];
+    let mut out = vec![Entry::default(); 4];
     assert_eq!(drain(&mut out).unwrap(), 2);
     assert_eq!(out[0].division_handle, new_handle);
     assert_eq!(out[1].amount_raw, 900000);
@@ -1993,7 +2046,7 @@ fn pending_transfers_exclude_each_army_writer_and_direct_free_but_not_reused_han
             native::QueuedContext::Transfer(native::Disposition::HqTransferred),
             native::QueuedContext::Loss(native::Cause::DivisionOverrun),
         ] {
-            record_queue(&mut STORE.lock().unwrap(), world.army(), handle, classified).unwrap();
+            record_queue(&mut folded(), world.army(), handle, classified).unwrap();
         }
         ORIGINAL[SiteId::Land as usize]
             .store(land_removal as *const () as usize, Ordering::Release);
@@ -2024,7 +2077,7 @@ fn pending_transfers_exclude_each_army_writer_and_direct_free_but_not_reused_han
             }
             // Each original ran despite observation suppression.
             assert!(world.storage[(0x600 + 8) / 8] < 900001);
-            assert_eq!(drain(&mut [Entry::default(); 8]).unwrap(), 0);
+            assert_eq!(drain(&mut vec![Entry::default(); 8]).unwrap(), 0);
         }
         if disposal == "delete" {
             ORIGINAL[SiteId::Delete as usize]
@@ -2041,12 +2094,12 @@ fn pending_transfers_exclude_each_army_writer_and_direct_free_but_not_reused_han
         } else {
             unsafe { division_free(world.army(), 1) };
         }
-        let mut out = [Entry::default(); 8];
+        let mut out = vec![Entry::default(); 8];
         assert_eq!(drain(&mut out).unwrap(), 1);
         assert_eq!(out[0].division_handle, handle);
         assert_eq!(out[0].disposition, native::Disposition::HqTransferred);
         assert_eq!(out[0].amount_raw, 0);
-        assert!(STORE.lock().unwrap().queued.is_empty());
+        assert!(folded().queued.is_empty());
         assert!(DELETION.get().is_none());
 
         // An ignored entry for the recycled address has another full handle.
@@ -2054,7 +2107,7 @@ fn pending_transfers_exclude_each_army_writer_and_direct_free_but_not_reused_han
         let new_handle = handle + (1 << 32);
         world.word(engine_native::cunit::HANDLE, new_handle);
         record_queue(
-            &mut STORE.lock().unwrap(),
+            &mut folded(),
             world.army(),
             handle,
             native::QueuedContext::Transfer(native::Disposition::HqTransferred),
@@ -2085,7 +2138,7 @@ fn pending_transfers_exclude_each_army_writer_and_direct_free_but_not_reused_han
                     _ => unreachable!(),
                 }
             }
-            let mut out = [Entry::default(); 8];
+            let mut out = vec![Entry::default(); 8];
             assert_eq!(drain(&mut out).unwrap(), 1);
             assert!(out[0].amount_raw > 0);
         }
@@ -2114,12 +2167,12 @@ fn completed_disposal_retires_owned_metadata_without_reading_a_freed_unit() {
     // A request observed inside an active deletion can be rejected by the
     // native queue. Its retained metadata must not outlive that deletion.
     unsafe { delete(state.state.as_ptr() as usize, world.army(), 0, 0, base + 1) };
-    assert!(STORE.lock().unwrap().queued.is_empty());
+    assert!(folded().queued.is_empty());
     // Proved cleanup scopes retire by address without authenticating a
     // partially read handle. The same applies to a direct cleanup destructor.
     for disposal in ["delete", "free"] {
         record_queue(
-            &mut STORE.lock().unwrap(),
+            &mut folded(),
             world.army(),
             handle,
             native::QueuedContext::Transfer(native::Disposition::HqTransferred),
@@ -2140,31 +2193,31 @@ fn completed_disposal_retires_owned_metadata_without_reading_a_freed_unit() {
             unsafe { division_free(world.army(), 1) };
             state.resetting(false);
         }
-        assert!(STORE.lock().unwrap().queued.is_empty());
+        assert!(folded().queued.is_empty());
     }
     // All comparisons below use owned identities; the address can already be
     // invalid. A new handle at the same address retains its own provenance.
     let old = 0x1234usize;
     record_queue(
-        &mut STORE.lock().unwrap(),
+        &mut folded(),
         old,
         handle,
         native::QueuedContext::Transfer(native::Disposition::HqTransferred),
     )
     .unwrap();
-    retire_queued(SiteId::Delete, old, Some(handle));
-    assert!(STORE.lock().unwrap().queued.is_empty());
+    folded().retire(old, Some(handle));
+    assert!(folded().queued.is_empty());
     record_queue(
-        &mut STORE.lock().unwrap(),
+        &mut folded(),
         old,
         handle + (1 << 32),
         native::QueuedContext::Loss(native::Cause::DivisionDeleted),
     )
     .unwrap();
-    retire_queued(SiteId::Delete, old, Some(handle));
-    assert_eq!(STORE.lock().unwrap().queued.len(), 1);
-    retire_queued(SiteId::Delete, old, None);
-    assert!(STORE.lock().unwrap().queued.is_empty());
+    folded().retire(old, Some(handle));
+    assert_eq!(folded().queued.len(), 1);
+    folded().retire(old, None);
+    assert!(folded().queued.is_empty());
     ENABLED.store(false, Ordering::SeqCst);
     SUPPLEMENTAL_ENABLED.store(false, Ordering::SeqCst);
     BASE.store(0, Ordering::Relaxed);
@@ -2189,7 +2242,7 @@ fn residual_follows_damage_flush_attrition_and_owner_cleanup_without_double_coun
         // Unit deletion clears expeditionary ownership before its nested combat
         // flush; every observation retains the scope's entry owner instead.
         world.dword(engine_native::cunit::EXPEDITIONARY_OWNER, 0);
-        let _scope = DeletionScope::enter(Some(ctx));
+        let _scope = scoped(ctx);
         if residual == native::Cause::DivisionDeleted {
             unsafe {
                 attrition(
@@ -2216,7 +2269,7 @@ fn residual_follows_damage_flush_attrition_and_owner_cleanup_without_double_coun
             };
         }
         unsafe { division_free(world.army(), 1) };
-        let mut out = [Entry::default(); 4];
+        let mut out = vec![Entry::default(); 4];
         let len = drain(&mut out).unwrap();
         assert_eq!(len, 3);
         assert_eq!(out[0].country, 1500);
@@ -2240,13 +2293,13 @@ fn recovered_deletion_scope_retains_owner_and_allows_native_nested_flushes() {
         setup(100, 1);
         boundary(clock(1, 1));
         boundary(clock(2, 1));
-        STORE.lock().unwrap().refuse(
+        folded().refuse(
             Some(SiteId::Attrition as usize),
             "synthetic pre-observation overlap",
         );
         boundary(clock(3, 1));
         assert_eq!(
-            drain(&mut [Entry::default(); 4]),
+            drain(&mut vec![Entry::default(); 4]),
             Err("synthetic pre-observation overlap")
         );
         boundary(clock(4, 1));
@@ -2273,7 +2326,7 @@ fn recovered_deletion_scope_retains_owner_and_allows_native_nested_flushes() {
             )
         };
         assert_eq!(OBSERVED_DELETION.lock().unwrap().unwrap().country, 1500);
-        let mut out = [Entry::default(); 4];
+        let mut out = vec![Entry::default(); 4];
         let len = drain(&mut out).unwrap();
         if return_equipment != 0 {
             assert_eq!(len, 1);
@@ -2296,7 +2349,7 @@ fn recovered_deletion_scope_retains_owner_and_allows_native_nested_flushes() {
         outer.rebase(base);
         let mut ctx = context_rebased(&outer, base, native::Cause::Unknown);
         ctx.ignored = true;
-        let _scope = DeletionScope::enter(Some(ctx));
+        let _scope = scoped(ctx);
         let mut inner = World::new(1);
         inner.rebase(base);
         inner.word(engine_native::cunit::HANDLE, 0xe00200004b01);
@@ -2344,7 +2397,7 @@ fn paradrop_records_exact_division_and_flooring_and_preserves_five_abi_slots() {
             0
         ]
     );
-    let mut out = [Entry::default(); 4];
+    let mut out = vec![Entry::default(); 4];
     assert_eq!(drain(&mut out).unwrap(), 3);
     assert_eq!(
         out[..3]
@@ -2373,7 +2426,7 @@ fn expeditionary_scope_owns_each_nested_army_writer_but_not_a_reused_handle() {
         world.dword(engine_native::cunit::EXPEDITIONARY_OWNER, 1500);
         let ctx = context(&world, native::Cause::DivisionDestroyed);
         world.dword(engine_native::cunit::EXPEDITIONARY_OWNER, 0);
-        let _scope = DeletionScope::enter(Some(ctx));
+        let _scope = scoped(ctx);
         ORIGINAL[SiteId::Land as usize]
             .store(land_removal as *const () as usize, Ordering::Release);
         for (handle, expected_country) in [(ctx.handle, 1500), (ctx.handle + (1 << 32), 4999)] {
@@ -2401,7 +2454,7 @@ fn expeditionary_scope_owns_each_nested_army_writer_but_not_a_reused_handle() {
                     _ => unreachable!(),
                 }
             }
-            let mut out = [Entry::default(); 2];
+            let mut out = vec![Entry::default(); 2];
             assert_eq!(drain(&mut out).unwrap(), 1);
             assert_eq!(
                 out[0].country, expected_country,
@@ -2423,16 +2476,16 @@ fn hq_transfer_provenance_survives_same_session_gap_and_clears_on_load() {
     let world = World::new(1);
     let handle = context(&world, native::Cause::Unknown).handle;
     record_queue(
-        &mut STORE.lock().unwrap(),
+        &mut folded(),
         world.army(),
         handle,
         native::QueuedContext::Transfer(native::Disposition::HqTransferred),
     )
     .unwrap();
     boundary(clock(4, 1));
-    assert_eq!(STORE.lock().unwrap().queued.len(), 1);
+    assert_eq!(folded().queued.len(), 1);
     assert!(
-        drain(&mut [Entry::default(); 1])
+        drain(&mut vec![Entry::default(); 1])
             .unwrap_err()
             .contains("partial")
     );
@@ -2447,29 +2500,27 @@ fn hq_transfer_provenance_survives_same_session_gap_and_clears_on_load() {
     .unwrap()
     .unwrap();
     assert_eq!(ctx.disposition, native::Disposition::HqTransferred);
-    let _scope = DeletionScope::enter(Some(ctx));
+    let _scope = scoped(ctx);
     unsafe { division_free(world.army(), 1) };
-    let mut out = [Entry::default(); 1];
+    let mut out = vec![Entry::default(); 1];
     assert_eq!(drain(&mut out).unwrap(), 1);
     assert_eq!(out[0].division_handle, handle);
     assert_eq!(out[0].disposition, native::Disposition::HqTransferred);
     assert_eq!(out[0].amount_raw, 0);
     assert_eq!(out[0].variant, 0);
     record_queue(
-        &mut STORE.lock().unwrap(),
+        &mut folded(),
         world.army(),
         handle,
         native::QueuedContext::Transfer(native::Disposition::HqTransferred),
     )
     .unwrap();
     boundary(clock(5, 2));
-    assert!(STORE.lock().unwrap().queued.is_empty());
-    assert!(STORE.lock().unwrap().queued_by_army.is_empty());
-    assert!(STORE.lock().unwrap().queued.get(&handle).is_none());
+    assert!(folded().queued.is_empty());
+    assert!(folded().queued_by_army.is_empty());
+    assert!(folded().queued.get(&handle).is_none());
     assert!(
-        STORE
-            .lock()
-            .unwrap()
+        folded()
             .queued_by_army
             .get(&world.army())
             .is_none()
@@ -2479,176 +2530,72 @@ fn hq_transfer_provenance_survives_same_session_gap_and_clears_on_load() {
 }
 
 #[test]
-fn live_division_counts_size_both_queue_indexes_and_deletion_allowances() {
-    let _serial = serial();
-    for countries in [15, 50] {
-        setup(0, 0);
-        let mut memory = StateMemory::new(2);
-        let slots = countries + 1;
-        for per_country in [1, 3] {
-            memory.population(&vec![per_country; countries]);
-            memory.stockpile(7);
-            let divisions = countries * per_country as usize;
-            assert_eq!(
-                native::population(&memory, 0).map(|p| p.divisions),
-                Some(divisions)
-            );
-            assert_eq!(
-                native::population(&memory, 0)
-                    .unwrap()
-                    .division_pool_entries,
-                divisions * 2
-            );
-            assert_eq!(native::population(&memory, 0).unwrap().stockpile_entries, 7);
-            let prior_capacity = capacity();
-            prepare(&memory, 0, slots);
-            boundary(clock(per_country as i32, 1));
-            assert_eq!(
-                capacity(),
-                log_capacity(slots, native::population(&memory, 0).unwrap(), 2).unwrap()
-            );
-            assert!(capacity() > prior_capacity);
-            assert_eq!(QUEUED_CAPACITY.load(Ordering::Acquire), divisions);
-            let store = STORE.lock().unwrap();
-            assert_eq!(store.queued_limit, divisions);
-            assert_eq!(store.queued.capacity(), divisions);
-            assert_eq!(store.queued_by_army.capacity(), divisions);
-        }
-        // An alias country slot must not count its canonical roster twice.
-        memory.countries.push(memory.countries[1]);
-        memory.links.push(1);
-        let slots = memory.countries.len() as u64;
-        memory.state[engine_native::cgame_state::COUNTRIES / 8] = memory.countries.as_ptr() as u64;
-        memory.state[engine_native::cgame_state::COUNTRIES_CAPACITY / 8] = slots | (slots << 32);
-        memory.state[engine_native::cgame_state::COUNTRY_LINKS / 8] = memory.links.as_ptr() as u64;
-        memory.state[engine_native::cgame_state::COUNTRY_LINKS_CAPACITY / 8] =
-            slots | (slots << 32);
-        assert_eq!(
-            native::population(&memory, 0).map(|p| p.divisions),
-            Some(countries * 3)
-        );
-    }
-    assert_eq!(log_capacity(0, native::Population::default(), 0), Some(0));
-    assert_eq!(
-        log_capacity(
-            1,
-            native::Population {
-                divisions: usize::MAX,
-                ..Default::default()
-            },
-            1
-        ),
-        None
-    );
-    let mut sparse = StateMemory::new(1000);
-    sparse.population(&[2, 1]);
-    for army in sparse.armies.chunks_exact_mut(0x500 / 8) {
-        army[(carmy::EQUIPMENT_POOL + pool::CAPACITY) / 8] = 1 | (1 << 32);
-    }
-    sparse.stockpile(7);
-    let demand = native::population(&sparse, 0).unwrap();
-    assert_eq!(
-        demand,
-        native::Population {
-            divisions: 3,
-            division_pool_entries: 3,
-            stockpile_entries: 7,
-            delivery_pool_entries: 0
-        }
-    );
-    assert_eq!(log_capacity(3, demand, 1000), Some(2049));
-    ENABLED.store(false, Ordering::SeqCst);
-    SUPPLEMENTAL_ENABLED.store(false, Ordering::SeqCst);
-}
-
-#[test]
-fn event_and_live_division_queue_overflow_are_named_counted_and_refused() {
+fn an_event_burst_past_the_log_is_kept_whole_and_counted_as_growth() {
     let _serial = serial();
     setup(1, 1);
     boundary(clock(1, 1));
     boundary(clock(2, 1));
     let world = World::new(1);
-    let diagnostics = refusal_diagnostics();
     let overflow = OVERFLOW.load(Ordering::Relaxed);
     let site_overflow = SITE_OVERFLOW[SiteId::Attrition as usize].load(Ordering::Relaxed);
-    for _ in 0..2 {
+    for _ in 0..3 {
         unsafe { attrition(world.army() + carmy::EQUIPMENT_POOL, world.design(0), 1) };
     }
-    assert_eq!(OVERFLOW.load(Ordering::Relaxed), overflow + 1);
-    assert_eq!(
-        SITE_OVERFLOW[SiteId::Attrition as usize].load(Ordering::Relaxed),
-        site_overflow + 1
-    );
-    assert!(POISONED.load(Ordering::SeqCst));
-    assert_eq!(
-        drain(&mut [Entry::default(); 1]),
-        Err("attrition event log overflow")
-    );
+    drop(folded());
+    assert!(OVERFLOW.load(Ordering::Relaxed) > overflow);
+    assert!(SITE_OVERFLOW[SiteId::Attrition as usize].load(Ordering::Relaxed) > site_overflow);
+    assert!(!folded().poisoned);
+    let mut out = vec![Entry::default(); 3];
+    assert_eq!(drain(&mut out), Ok(3));
+    assert!(out[0].amount_raw != 0 && out.iter().all(|row| *row == out[0]));
     let snapshot = serde_json::to_value(status()).unwrap();
     assert_eq!(
         snapshot["hooks"][SiteId::Attrition as usize]["overflow"].as_u64(),
-        Some(site_overflow + 1)
+        Some(SITE_OVERFLOW[SiteId::Attrition as usize].load(Ordering::Relaxed))
     );
-    assert_eq!(
-        snapshot["hooks"][SiteId::Attrition as usize]["refusals"].as_u64(),
-        Some(diagnostics.1[SiteId::Attrition as usize] + 1)
-    );
-    assert_eq!(REFUSALS.load(Ordering::Relaxed), diagnostics.0 + 1);
-    let refusal = serde_json::to_value(STORE.lock().unwrap().refusal).unwrap();
-    assert_eq!(refusal["site_index"], SiteId::Attrition as usize);
-    assert_eq!(refusal["reason"], "attrition event log overflow");
-    assert_eq!(
-        serde_json::to_value(FIRST_REFUSAL.get()).unwrap(),
-        if diagnostics.2.is_null() {
-            refusal
-        } else {
-            diagnostics.2
-        }
-    );
+    ENABLED.store(false, Ordering::SeqCst);
+    SUPPLEMENTAL_ENABLED.store(false, Ordering::SeqCst);
+}
 
-    setup(0, 0);
-    let mut memory = StateMemory::new(0);
-    memory.population(&[1]);
-    prepare(&memory, 0, 2);
+#[test]
+fn queued_divisions_grow_the_provenance_index_from_empty() {
+    let _serial = serial();
+    install(Store::new());
     boundary(clock(1, 1));
-    assert_eq!(QUEUED_CAPACITY.load(Ordering::Acquire), 1);
-    let overflow = OVERFLOW.load(Ordering::Relaxed);
+    drop(folded());
+    assert_eq!(QUEUED_CAPACITY.load(Ordering::Acquire), 0);
     let queue_overflow = SITE_OVERFLOW[SiteId::Queue as usize].load(Ordering::Relaxed);
-    let queue_refusals = SITE_REFUSALS[SiteId::Queue as usize].load(Ordering::Relaxed);
-    let mut store = STORE.lock().unwrap();
-    super::record_queue(
-        &mut store,
-        0x1000,
-        0x100004b01,
-        native::Cause::DivisionDeleted,
-        native::Disposition::Loss,
-    )
-    .unwrap();
-    let reason = super::record_queue(
-        &mut store,
-        0x2000,
-        0x200004b01,
-        native::Cause::DivisionDeleted,
-        native::Disposition::Loss,
-    )
-    .unwrap_err();
-    assert_eq!(reason, "equipment deletion provenance log overflow");
-    store.refuse(Some(SiteId::Queue as usize), reason);
-    assert_eq!(store.queued_count, 1);
-    assert_eq!(OVERFLOW.load(Ordering::Relaxed), overflow + 1);
-    assert_eq!(
-        SITE_OVERFLOW[SiteId::Queue as usize].load(Ordering::Relaxed),
-        queue_overflow + 1
-    );
-    assert!(POISONED.load(Ordering::SeqCst));
-    assert_eq!(
-        SITE_REFUSALS[SiteId::Queue as usize].load(Ordering::Relaxed),
-        queue_refusals + 1
-    );
-    assert_eq!(
-        serde_json::to_value(store.refusal).unwrap()["site_index"],
-        SiteId::Queue as usize
-    );
+    let mut store = folded();
+    for army in 1..=5usize {
+        store.record_queue(
+            army << 12,
+            (army as u64) << 32 | 0x4b01,
+            native::Cause::DivisionDeleted,
+            native::Disposition::Loss,
+        )
+        .unwrap();
+    }
+    assert_eq!(store.queued_count, 5);
+    assert!(store.queued_limit >= 5);
+    assert!(QUEUED_CAPACITY.load(Ordering::Acquire) >= 5);
+    for army in 1..=5usize {
+        let queued = store.queued.get(&((army as u64) << 32 | 0x4b01)).unwrap();
+        assert_eq!(queued.army, army << 12);
+        assert_eq!(store.queued_by_army.get(&(army << 12)), Some(&queued.handle));
+    }
+    assert!(SITE_OVERFLOW[SiteId::Queue as usize].load(Ordering::Relaxed) > queue_overflow);
+    let refused = crate::test_support::with_allocations_denied(|| {
+        store.queued_limit = store.queued_count;
+        store.record_queue(
+            6 << 12,
+            6 << 32 | 0x4b01,
+            native::Cause::DivisionDeleted,
+            native::Disposition::Loss,
+        )
+    });
+    assert_eq!(refused, Err(QUEUE_STORAGE_FAILED));
+    assert_eq!(store.queued_count, 5);
+    drop(store);
     ENABLED.store(false, Ordering::SeqCst);
     SUPPLEMENTAL_ENABLED.store(false, Ordering::SeqCst);
 }
@@ -2657,8 +2604,6 @@ fn event_and_live_division_queue_overflow_are_named_counted_and_refused() {
 fn hundred_division_burst_and_log_growth_preserve_pending_events_and_provenance() {
     let _serial = serial();
     for countries in [150, 500] {
-        let mut memory = StateMemory::new(64);
-        memory.population(&[100]);
         setup(1, 1);
         boundary(clock(1, 1));
         boundary(clock(2, 1));
@@ -2670,29 +2615,22 @@ fn hundred_division_burst_and_log_growth_preserve_pending_events_and_provenance(
             amount_raw: 7,
             ..Default::default()
         };
-        STORE
-            .lock()
-            .unwrap()
+        folded()
             .append(SiteId::Attrition, pending)
             .unwrap();
         let world = World::new(1);
         let ctx = context(&world, native::Cause::DivisionDeleted);
         record_queue(
-            &mut STORE.lock().unwrap(),
+            &mut folded(),
             world.army(),
             ctx.handle,
             native::QueuedContext::Loss(ctx.cause),
         )
         .unwrap();
-        prepare(&memory, 0, countries);
-        let mut first = [Entry::default(); 1];
+        let mut first = vec![Entry::default(); 1];
         assert_eq!(drain(&mut first).unwrap(), 1);
         assert_eq!(first[0], pending);
-        assert!(
-            capacity()
-                >= log_capacity(countries, native::population(&memory, 0).unwrap(), 64).unwrap()
-        );
-        assert_eq!(STORE.lock().unwrap().queued.len(), 1);
+        assert_eq!(folded().queued.len(), 1);
         for division in 0..100 {
             let mut world = World::new(64);
             world.owner((division * (countries - 1) / 99) as u32);
@@ -2701,10 +2639,10 @@ fn hundred_division_burst_and_log_growth_preserve_pending_events_and_provenance(
                 ((division as u64 + 1) << 32) | 0x4b01,
             );
             let _scope =
-                DeletionScope::enter(Some(context(&world, native::Cause::DivisionDestroyed)));
+                scoped(context(&world, native::Cause::DivisionDestroyed));
             unsafe { division_free(world.army(), 1) };
         }
-        let mut out = vec![Entry::default(); capacity()];
+        let mut out = Vec::new();
         let len = drain(&mut out).unwrap();
         assert_eq!(len, 100 * 65);
         assert_eq!(
@@ -2735,9 +2673,9 @@ fn fake_intel_queue_entry_and_direct_free_record_no_witness_or_loss() {
         unsafe { std::mem::transmute(destruction_queue_test_caller as *const ()) };
     // The excluded native PC applies even before a handle was attached.
     unsafe { invoke(usize::MAX, usize::MAX - 1) };
-    assert!(STORE.lock().unwrap().queued.is_empty());
-    assert!(!POISONED.load(Ordering::SeqCst));
-    assert_eq!(drain(&mut [Entry::default(); 1]).unwrap(), 0);
+    assert!(folded().queued.is_empty());
+    assert!(!folded().poisoned);
+    assert_eq!(drain(&mut vec![Entry::default(); 1]).unwrap(), 0);
 
     let mut state = StateMemory::new(1);
     let base = state.live_base();
@@ -2750,8 +2688,8 @@ fn fake_intel_queue_entry_and_direct_free_record_no_witness_or_loss() {
     world.word(carmy::STANDARD_TEMPLATE, template.as_ptr() as u64);
     // Fake pools can be nonempty; disposal still has no real force loss.
     unsafe { division_free(world.army(), 1) };
-    assert_eq!(drain(&mut [Entry::default(); 1]).unwrap(), 0);
-    assert!(!POISONED.load(Ordering::SeqCst));
+    assert_eq!(drain(&mut vec![Entry::default(); 1]).unwrap(), 0);
+    assert!(!folded().poisoned);
     assert_eq!(active(), 0);
     ENABLED.store(false, Ordering::SeqCst);
     SUPPLEMENTAL_ENABLED.store(false, Ordering::SeqCst);
@@ -2776,6 +2714,7 @@ fn withheld_site_install_refusal_withholds_both_tables() {
         assert!(status.success());
         return;
     }
+    let _serial = serial();
     setup(100, 1);
     boundary(clock(1, 1));
     boundary(clock(2, 1));
@@ -2836,10 +2775,10 @@ fn destruction_scale_bench() {
                 })
                 .collect();
             let events = countries * 2;
-            let capacity = setup_scale(countries, designs);
+            install(Store::new());
             boundary(clock(1, 1));
             boundary(clock(2, 1));
-            let mut out = vec![Entry::default(); capacity];
+            let mut out = Vec::new();
             let mut event_ns = Vec::new();
             let mut drain_ns = Vec::new();
             for _ in 0..21 {
@@ -2861,8 +2800,9 @@ fn destruction_scale_bench() {
             }
             event_ns.sort_unstable();
             drain_ns.sort_unstable();
+            let capacity = CAPACITY.load(Ordering::Acquire);
             println!(
-                "destruction_bench countries={countries} pool_designs={designs} events_per_hour={events} capacity={} event_median_ns={} event_p95_ns={} drain_median_ns={} drain_p95_ns={} total_median_ms={:.3} producer_payload_bytes={} payload_excludes_allocation_overhead=true drain_bytes={} fixture_bytes={}",
+                "destruction_bench countries={countries} pool_designs={designs} events_per_hour={events} capacity={} event_median_ns={} event_p95_ns={} drain_median_ns={} drain_p95_ns={} total_median_ms={:.3} producer_payload_bytes={} bytes_per_pool_entry={} payload_excludes_allocation_overhead=true drain_bytes={} fixture_bytes={}",
                 capacity,
                 event_ns[10],
                 event_ns[19],
@@ -2870,6 +2810,7 @@ fn destruction_scale_bench() {
                 drain_ns[19],
                 (event_ns[10] * events as u64 + drain_ns[10]) as f64 / 1e6,
                 producer_payload_bytes(),
+                bytes_per_pool_entry(countries, designs),
                 out.len() * std::mem::size_of::<Entry>(),
                 worlds.iter().map(|w| w.storage.len() * 8).sum::<usize>()
             );
@@ -2885,10 +2826,10 @@ fn destruction_scale_bench() {
                 "exile_transfer",
             ] {
                 for divisions in [1usize, 100] {
-                    let capacity = setup_scale(countries, designs);
+                    install(Store::new());
                     boundary(clock(1, 1));
                     boundary(clock(2, 1));
-                    let mut out = vec![Entry::default(); capacity];
+                    let mut out = Vec::new();
                     let mut record_ns = Vec::new();
                     let mut drain_ns = Vec::new();
                     let transfer = matches!(path, "volunteer_transfer" | "exile_transfer");
@@ -2928,7 +2869,7 @@ fn destruction_scale_bench() {
                             .enumerate()
                         {
                             if path == "deleted" {
-                                let _scope = DeletionScope::enter(Some(ctx));
+                                let _scope = scoped(ctx);
                                 unsafe { division_free(black_box(world.army()), 1) };
                             } else {
                                 let bank = world.army() + carmy::EQUIPMENT_POOL;
@@ -2988,14 +2929,16 @@ fn destruction_scale_bench() {
                     }
                     record_ns.sort_unstable();
                     drain_ns.sort_unstable();
+                    let capacity = CAPACITY.load(Ordering::Acquire);
                     println!(
-                        "division_destruction_bench countries={countries} pool_designs={designs} path={path} divisions_per_hour={divisions} capacity={capacity} record_median_ns={} record_p95_ns={} drain_median_ns={} drain_p95_ns={} total_median_ms={:.3} producer_payload_bytes={} payload_excludes_allocation_overhead=true drain_bytes={}",
+                        "division_destruction_bench countries={countries} pool_designs={designs} path={path} divisions_per_hour={divisions} capacity={capacity} record_median_ns={} record_p95_ns={} drain_median_ns={} drain_p95_ns={} total_median_ms={:.3} producer_payload_bytes={} bytes_per_pool_entry={} payload_excludes_allocation_overhead=true drain_bytes={}",
                         record_ns[10],
                         record_ns[19],
                         drain_ns[10],
                         drain_ns[19],
                         (record_ns[10] * divisions as u64 + drain_ns[10]) as f64 / 1e6,
                         producer_payload_bytes(),
+                        bytes_per_pool_entry(countries, designs),
                         out.len() * std::mem::size_of::<Entry>(),
                     );
                 }
@@ -3014,10 +2957,10 @@ fn worker_drain_grows_empty_and_recycled_frames_for_every_owned_entry() {
     for count in [5000, 10003] {
         setup(count, 1);
         boundary(clock(1, 1));
-        assert!(drain_growing(&mut output).is_err());
+        assert!(drain(&mut output).is_err());
         boundary(clock(2, 1));
         {
-            let mut store = STORE.lock().unwrap();
+            let mut store = folded();
             crate::test_support::with_allocations_denied(|| {
                 for index in 0..count {
                     store
@@ -3035,7 +2978,7 @@ fn worker_drain_grows_empty_and_recycled_frames_for_every_owned_entry() {
                 }
             });
         }
-        assert_eq!(drain_growing(&mut output), Ok(count));
+        assert_eq!(drain(&mut output), Ok(count));
         assert_eq!(output[count - 1].amount_raw, count as i64);
         assert_eq!(output[count - 1].variant, (count as u64) << 32 | 0x46);
     }
@@ -3044,7 +2987,7 @@ fn worker_drain_grows_empty_and_recycled_frames_for_every_owned_entry() {
 }
 
 #[test]
-fn rejected_rows_and_calls_prepare_the_full_burst_without_country_growth() {
+fn rejected_rows_and_calls_size_the_receiving_frames_to_the_full_burst() {
     let _serial = serial();
     setup(1, 1);
     boundary(clock(1, 1));
@@ -3057,17 +3000,14 @@ fn rejected_rows_and_calls_prepare_the_full_burst_without_country_growth() {
         ..Default::default()
     };
     {
-        let mut store = STORE.lock().unwrap();
+        let mut store = folded();
         crate::test_support::with_allocations_denied(|| {
             for index in 0..10003 {
                 assert_eq!(store.append(SiteId::Attrition, entry).is_ok(), index == 0);
             }
         });
         assert_eq!(EVENT_REQUIRED.load(Ordering::Relaxed), 10003);
-        store.refuse(
-            Some(SiteId::Attrition as usize),
-            event_overflow(SiteId::Attrition),
-        );
+        store.refuse(Some(SiteId::Attrition as usize), EVENT_STORAGE_FAILED);
     }
     crate::test_support::with_allocations_denied(|| {
         for _ in 0..12007 {
@@ -3076,102 +3016,177 @@ fn rejected_rows_and_calls_prepare_the_full_burst_without_country_growth() {
         }
     });
     assert_eq!(EVENT_REQUIRED.load(Ordering::Relaxed), 12007);
-    let mut memory = StateMemory::new(1);
-    memory.population(&[1]);
-    prepare(&memory, 0, 1);
-    assert!(capacity() >= 12007);
+    assert_eq!(demand(), 12007);
     boundary(clock(3, 1));
-    assert!(drain_growing(&mut Vec::new()).is_err());
-    assert!(STORE.lock().unwrap().entries.capacity() >= 12007);
+    assert!(drain(&mut Vec::new()).is_err());
     assert_eq!(EVENT_ATTEMPTS.load(Ordering::Relaxed), 0);
     assert_eq!(CALL_ATTEMPTS.load(Ordering::Relaxed), 0);
     assert_eq!(EVENT_REQUIRED.load(Ordering::Relaxed), 12007);
     boundary(clock(4, 1));
     {
-        let mut store = STORE.lock().unwrap();
-        crate::test_support::with_allocations_denied(|| {
-            for _ in 0..12007 {
-                store.append(SiteId::Attrition, entry).unwrap();
-            }
-        });
+        let mut store = folded();
+        for _ in 0..12007 {
+            store.append(SiteId::Attrition, entry).unwrap();
+        }
     }
-    assert_eq!(drain_growing(&mut Vec::new()), Ok(12007));
+    assert_eq!(drain(&mut Vec::new()), Ok(12007));
     ENABLED.store(false, Ordering::SeqCst);
     SUPPLEMENTAL_ENABLED.store(false, Ordering::SeqCst);
 }
 
 #[test]
-fn rejected_original_pool_headers_prepare_every_scratch_arena_without_country_growth() {
+fn refused_pool_copies_name_their_storage() {
     let _serial = serial();
     setup(1, 1);
     boundary(clock(1, 1));
     boundary(clock(2, 1));
-    let mut memory = StateMemory::new(1);
-    memory.population(&[1]);
-    for (hour, count) in [(3, 5000), (4, 10003)] {
+    for count in [5000, 10003] {
         let world = World::new(count);
         let live = unsafe { engine_native::memory::LiveMemory::new() };
-        let mut short = [equipment_entry::Row::default(); 1];
+        let bank = world.army() + carmy::EQUIPMENT_POOL;
         crate::test_support::with_allocations_denied(|| {
+            assert_eq!(pool_rows(&live, 0, bank), Err(EVENT_STORAGE_FAILED));
             assert_eq!(
-                snapshot(
-                    &live,
-                    0,
-                    world.army() + carmy::EQUIPMENT_POOL,
-                    &mut short,
-                    7
-                ),
-                Err("destruction pool exceeds live design capacity")
-            );
-            assert_eq!(
-                variant_amount(
-                    &live,
-                    0,
-                    world.army() + carmy::EQUIPMENT_POOL,
-                    world.design(0),
-                    &mut [0; 16]
-                ),
-                Err("destruction pool exceeds live design capacity")
+                variant_amount(&live, 0, bank, world.design(0)),
+                Err(EVENT_STORAGE_FAILED)
             );
         });
-        assert_eq!(POOL_REQUIRED.load(Ordering::Relaxed), count + 7);
-        prepare(&memory, 0, 1);
-        boundary(clock(hour, 1));
-        let store = STORE.lock().unwrap();
-        assert!(store.before.len() >= count + 7);
-        assert!(store.after.len() >= count + 7);
-        assert!(store.held.len() >= count + 7);
-        assert!(store.raw.len() >= (count + 7) * equipment_entry::STRIDE);
-        assert!(store.net.len() >= (count + 7) * 3);
     }
     ENABLED.store(false, Ordering::SeqCst);
     SUPPLEMENTAL_ENABLED.store(false, Ordering::SeqCst);
 }
 
-fn setup_scale(countries: usize, designs: usize) -> usize {
-    let capacity = log_capacity(
-        countries,
-        native::Population {
-            divisions: countries,
-            division_pool_entries: countries * designs,
-            stockpile_entries: countries * designs,
-            delivery_pool_entries: 0,
-        },
-        designs,
-    )
-    .unwrap();
-    setup(capacity, designs);
-    let queue = countries;
-    let mut store = STORE.lock().unwrap();
-    store.queued = FixedIndex::with_capacity(queue);
-    store.queued_by_army = FixedIndex::with_capacity(queue);
-    store.queued_limit = queue;
-    QUEUED_CAPACITY.store(queue, Ordering::Release);
-    capacity
+#[test]
+fn a_burst_past_the_starting_store_keeps_every_row_identical_to_a_presized_store() {
+    let _serial = serial();
+    const DIVISIONS: usize = 300;
+    const DESIGNS: usize = 8;
+    let hour = |store: Store| {
+        install(store);
+        boundary(clock(1, 1));
+        boundary(clock(2, 1));
+        let mut worlds: Vec<_> = (0..DIVISIONS)
+            .map(|division| {
+                let mut world = World::new(DESIGNS);
+                world.owner(division as u32 + 1);
+                world
+            })
+            .collect();
+        for world in &mut worlds {
+            let pool = world.army() + carmy::EQUIPMENT_POOL;
+            for design in 0..DESIGNS {
+                world.amount(design, 900000);
+                unsafe { attrition(pool, world.design(design), 100000) };
+            }
+        }
+        let mut store = folded();
+        let mut credits = Vec::new();
+        for division in 0..DIVISIONS {
+            let handle = ((division as u64 + 1) << 32) | 0x4b01;
+            let army = 0x1000 + division * 8;
+            let country = division as u32 + 1;
+            record_queue(
+                &mut store,
+                army,
+                handle,
+                native::QueuedContext::Loss(native::Cause::DivisionDeleted),
+            )
+            .unwrap();
+            let revision = store.credits.revision();
+            store.credits.begin(handle, army, country, revision).unwrap();
+            for design in 0..DESIGNS {
+                let value = Net {
+                    country,
+                    variant: ((design as u64 + 1) << 32) | 0x46,
+                    amount: -(design as i128) - 1,
+                    credited: division as i128,
+                };
+                store.credits.push(handle, value).unwrap();
+            }
+        }
+        for division in 0..DIVISIONS {
+            let handle = ((division as u64 + 1) << 32) | 0x4b01;
+            let army = 0x1000 + division * 8;
+            assert_eq!(store.queued.get(&handle).map(|queued| queued.army), Some(army));
+            assert_eq!(store.queued_by_army.get(&army), Some(&handle));
+            store
+                .credits
+                .visit(handle, army, division as u32 + 1, |value| {
+                    credits.push((value.country, value.variant, value.amount, value.credited));
+                    Ok(())
+                })
+                .unwrap();
+        }
+        drop(store);
+        let mut out = Vec::new();
+        let len = drain(&mut out).unwrap();
+        out.truncate(len);
+        (out, credits)
+    };
+    let grown = hour(Store::new());
+    let presized = hour(Store {
+        entries: Vec::with_capacity(DIVISIONS * DESIGNS),
+        queued: FixedIndex::with_capacity(DIVISIONS),
+        queued_by_army: FixedIndex::with_capacity(DIVISIONS),
+        queued_limit: DIVISIONS,
+        credits: Credits::try_new(DIVISIONS, DIVISIONS * DESIGNS).unwrap(),
+        ..Store::new()
+    });
+    assert_eq!(grown.0.len(), DIVISIONS * DESIGNS);
+    assert_eq!(grown.1.len(), DIVISIONS * DESIGNS);
+    assert!(grown == presized, "rows or credits differ from the presized store");
+    ENABLED.store(false, Ordering::SeqCst);
+    SUPPLEMENTAL_ENABLED.store(false, Ordering::SeqCst);
+}
+
+#[test]
+fn the_drain_store_starts_empty_and_holds_what_the_hours_need_not_the_census() {
+    let _serial = serial();
+    let (countries, designs) = (40, 16);
+    install(Store::new());
+    assert_eq!(folded().owned_capacity(), Default::default());
+    assert_eq!(demand(), 0);
+    boundary(clock(1, 1));
+    boundary(clock(2, 1));
+    let mut worlds: Vec<_> = (0..countries)
+        .map(|country| {
+            let mut world = World::new(designs);
+            world.owner(country as u32);
+            world
+        })
+        .collect();
+    let mut out = Vec::new();
+    for hour in 3..6 {
+        boundary(clock(hour, 1));
+        for world in &mut worlds {
+            let pool = world.army() + carmy::EQUIPMENT_POOL;
+            for design in 0..designs {
+                world.amount(design, 900000);
+                unsafe { attrition(pool, world.design(design), 100000) };
+            }
+        }
+        assert_eq!(drain(&mut out), Ok(countries * designs));
+    }
+    let peak = HOURLY_PEAK_EVENTS.load(Ordering::Relaxed);
+    assert_eq!(peak, countries * designs);
+    assert_eq!(demand(), peak);
+    let held = folded().owned_capacity();
+    // Doubling holds at most twice the largest hour; this hour queued and credited nothing.
+    assert!(
+        held.payload_vectors as usize <= 2 * peak * std::mem::size_of::<Entry>(),
+        "{held:?} for a peak of {peak} rows"
+    );
+    assert_eq!(held.index_vectors, 0);
+    assert_eq!(
+        serde_json::to_value(status()).unwrap()["store_bytes"].as_u64(),
+        Some(held.payload_vectors)
+    );
+    ENABLED.store(false, Ordering::SeqCst);
+    SUPPLEMENTAL_ENABLED.store(false, Ordering::SeqCst);
 }
 
 fn queue_churn_bench(countries: usize, designs: usize) {
-    setup_scale(countries, designs);
+    install(Store::new());
     boundary(clock(1, 1));
     boundary(clock(2, 1));
     let bound = countries;
@@ -3179,7 +3194,7 @@ fn queue_churn_bench(countries: usize, designs: usize) {
         .map(|index| ((index as u64 + 1) << 32) | 0x4b01)
         .collect();
     let mut sequence = bound as u64;
-    let mut store = STORE.lock().unwrap();
+    let mut store = folded();
     for (index, &handle) in handles.iter().enumerate() {
         record_queue(
             &mut store,
@@ -3204,7 +3219,7 @@ fn queue_churn_bench(countries: usize, designs: usize) {
             sequence += 1;
             let handle = (sequence << 32) | 0x4b01;
             let operation = Instant::now();
-            assert!(take_queued(&mut store, army, handles[slot]).is_some());
+            assert!(store.take_queued(army, handles[slot]).is_some());
             record_queue(
                 &mut store,
                 army,
@@ -3228,24 +3243,24 @@ fn queue_churn_bench(countries: usize, designs: usize) {
     drop(store);
     averages.sort_unstable();
     println!(
-        "queue_churn_bench countries={countries} pool_designs={designs} queue_capacity={bound} full_table_passes_per_repetition=4 retire_record_pairs={pairs} pair_median_ns={} pair_p95_ns={} largest_pair_ns={maximum} repetitions=21 rehashes=0 producer_payload_bytes={} payload_excludes_allocation_overhead=true individual_timer_overhead_included=true",
+        "queue_churn_bench countries={countries} pool_designs={designs} queue_capacity={bound} full_table_passes_per_repetition=4 retire_record_pairs={pairs} pair_median_ns={} pair_p95_ns={} largest_pair_ns={maximum} repetitions=21 rehashes=0 producer_payload_bytes={} bytes_per_pool_entry={} payload_excludes_allocation_overhead=true individual_timer_overhead_included=true",
         averages[10],
         averages[19],
-        producer_payload_bytes()
+        producer_payload_bytes(),
+        bytes_per_pool_entry(countries, designs)
     );
 }
 
+/// Per division-pool and stockpile entry of the bench's world, one each per country and design.
+fn bytes_per_pool_entry(countries: usize, designs: usize) -> usize {
+    producer_payload_bytes() / (2 * countries * designs)
+}
+
 fn producer_payload_bytes() -> usize {
-    let store = STORE.lock().unwrap();
+    let store = folded();
     store.entries.capacity() * std::mem::size_of::<Entry>()
         + store.queued.allocated_bytes()
         + store.queued_by_army.allocated_bytes()
-        + (store.before.len() + store.after.len()) * std::mem::size_of::<equipment_entry::Row>()
-        + store.raw.len()
-        + store.net.capacity() * std::mem::size_of::<Net>()
-        + store.armies.capacity() * std::mem::size_of::<usize>()
-        + store.held.capacity() * std::mem::size_of::<HeldRow>()
-        + store.reserves.capacity() * std::mem::size_of::<MergeReserve>()
         + store.credits.allocated_bytes()
 }
 
@@ -3325,7 +3340,7 @@ fn roster_transfers_witness_only_actual_removal_and_keep_owned_pre_call_identity
                 *FORWARDED.lock().unwrap(),
                 [result, world.army(), 0, 0, 0, 0, 0, 0]
             );
-            let mut out = [Entry::default(); 8];
+            let mut out = vec![Entry::default(); 8];
             let len = drain(&mut out).unwrap();
             assert_eq!(len, usize::from(result as u8 != 0));
             if len != 0 {
@@ -3379,7 +3394,7 @@ fn new_live_pool_writers_capture_exact_signed_net_removals() {
         let callback: unsafe extern "system-unwind" fn(usize, usize) =
             unsafe { std::mem::transmute(callback(site)) };
         unsafe { callback(receiver, factor) };
-        let mut out = [Entry::default(); 16];
+        let mut out = vec![Entry::default(); 16];
         assert_eq!(drain(&mut out).unwrap(), 2);
         assert!(
             out[..2]
@@ -3400,7 +3415,7 @@ fn new_live_pool_writers_capture_exact_signed_net_removals() {
             assert_eq!(drain(&mut out).unwrap(), 2);
             assert_eq!([out[0].amount_raw, out[1].amount_raw], [-450000, -150000]);
             assert!(out[..2].iter().all(|entry| entry.cause == cause));
-            assert!(!POISONED.load(Ordering::SeqCst));
+            assert!(!folded().poisoned);
             assert_eq!(refusal_diagnostics(), diagnostics);
         }
     }
@@ -3413,34 +3428,26 @@ fn signed_pool_difference_is_shared_by_every_writer_independently_of_cause() {
     let _serial = serial();
     setup(8, 1);
     let mut world = World::new(1);
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let diagnostics = refusal_diagnostics();
-    let mut store = STORE.lock().unwrap();
-    observe_pool(
-        &mut store,
+    let army = world.army();
+    measure_pool(
         SiteId::ScriptedEquipmentFraction,
-        world.army() + carmy::EQUIPMENT_POOL,
+        army + carmy::EQUIPMENT_POOL,
         native::Cause::Unknown,
-        &memory,
-        0,
+        false,
         || world.amount(0, 900002),
-    )
-    .unwrap();
-    assert_eq!(store.entries[0].amount_raw, -2);
-    observe_pool(
-        &mut store,
+    );
+    assert_eq!(folded().entries[0].amount_raw, -2);
+    measure_pool(
         SiteId::Land,
-        world.army(),
+        army,
         native::Cause::ScriptedEquipmentFraction,
-        &memory,
-        0,
+        false,
         || world.amount(0, 900003),
-    )
-    .unwrap();
-    assert_eq!(store.entries[1].amount_raw, -1);
-    assert!(!POISONED.load(Ordering::SeqCst));
+    );
+    assert_eq!(folded().entries[1].amount_raw, -1);
+    assert!(!folded().poisoned);
     assert_eq!(refusal_diagnostics(), diagnostics);
-    drop(store);
     ENABLED.store(false, Ordering::SeqCst);
     SUPPLEMENTAL_ENABLED.store(false, Ordering::SeqCst);
 }
@@ -3457,7 +3464,7 @@ fn scripted_reserve_fraction_captures_authentic_owner_and_all_designs() {
     ORIGINAL[SiteId::ScriptedReserveEquipmentFraction as usize]
         .store(fraction_scale as *const () as usize, Ordering::Release);
     unsafe { scripted_reserve_equipment_fraction(reserve.pool(), 50000) };
-    let mut out = [Entry::default(); 16];
+    let mut out = vec![Entry::default(); 16];
     assert_eq!(drain(&mut out).unwrap(), 2);
     assert_eq!([out[0].amount_raw, out[1].amount_raw], [450001, 150001]);
     assert!(
@@ -3472,7 +3479,7 @@ fn scripted_reserve_fraction_captures_authentic_owner_and_all_designs() {
         out[..2].iter().all(|entry| entry.country == 1500
             && entry.cause == native::Cause::ScriptedStockpileFraction)
     );
-    assert!(!POISONED.load(Ordering::SeqCst));
+    assert!(!folded().poisoned);
     assert_eq!(refusal_diagnostics(), diagnostics);
     reserve._country[engine_native::ccountry::PRODUCTION_STATUS / 8] = 0;
     unsafe { scripted_reserve_equipment_fraction(reserve.pool(), 50000) };
@@ -3499,6 +3506,7 @@ fn nested_pool_writer_runs_original_and_refuses_observation_without_holding_nati
         SiteId::Land,
         world.army(),
         native::Cause::LandCombat,
+        false,
         || {
             assert!(STORE.try_lock().is_ok());
             unsafe { attrition(bank, world.design(0), 100000) };
@@ -3506,11 +3514,11 @@ fn nested_pool_writer_runs_original_and_refuses_observation_without_holding_nati
     );
     assert_eq!(world.storage[(0x600 + 8) / 8] as i64, before - 100000);
     assert!(
-        drain(&mut [Entry::default(); 16])
+        drain(&mut vec![Entry::default(); 16])
             .unwrap_err()
             .contains("observations overlap")
     );
-    assert!(!OBSERVING.load(Ordering::SeqCst));
+    assert!(!OBSERVING.get());
     ENABLED.store(false, Ordering::SeqCst);
     SUPPLEMENTAL_ENABLED.store(false, Ordering::SeqCst);
 }
@@ -3527,9 +3535,9 @@ fn queued_provenance_survives_attach_and_unproven_attach_deletion_is_one_partial
         setup(8, 1);
         let world = World::new(1);
         let handle = context(&world, native::Cause::Unknown).handle;
-        record_queue(&mut STORE.lock().unwrap(), world.army(), handle, classified).unwrap();
+        record_queue(&mut folded(), world.army(), handle, classified).unwrap();
         boundary(clock(1, 1));
-        assert_eq!(STORE.lock().unwrap().queued_count, 1);
+        assert_eq!(folded().queued_count, 1);
         let deletion = deletion_context(
             &memory,
             0,
@@ -3547,7 +3555,7 @@ fn queued_provenance_survives_attach_and_unproven_attach_deletion_is_one_partial
                 _ => native::Disposition::Loss,
             }
         );
-        assert_eq!(STORE.lock().unwrap().queued_count, 0);
+        assert_eq!(folded().queued_count, 0);
     }
     for timing in ["before_first_boundary", "after_first_boundary"] {
         setup(8, 1);
@@ -3555,7 +3563,7 @@ fn queued_provenance_survives_attach_and_unproven_attach_deletion_is_one_partial
         if timing == "after_first_boundary" {
             boundary(clock(1, 1));
             assert!(
-                drain(&mut [Entry::default(); 8])
+                drain(&mut vec![Entry::default(); 8])
                     .unwrap_err()
                     .contains("first/branch interval")
             );
@@ -3570,11 +3578,11 @@ fn queued_provenance_survives_attach_and_unproven_attach_deletion_is_one_partial
         .unwrap()
         .unwrap();
         assert!(deletion.ignored);
-        assert!(STORE.lock().unwrap().entries.is_empty());
+        assert!(folded().entries.is_empty());
         if timing == "before_first_boundary" {
             boundary(clock(1, 1));
             assert!(
-                drain(&mut [Entry::default(); 8])
+                drain(&mut vec![Entry::default(); 8])
                     .unwrap_err()
                     .contains("first/branch interval")
             );
@@ -3588,17 +3596,17 @@ fn queued_provenance_survives_attach_and_unproven_attach_deletion_is_one_partial
             .unwrap()
             .unwrap();
             assert!(later.ignored);
-            assert!(STORE.lock().unwrap().attach_interval);
+            assert!(folded().attach_interval);
         }
         boundary(clock(2, 1));
         assert!(
-            drain(&mut [Entry::default(); 8])
+            drain(&mut vec![Entry::default(); 8])
                 .unwrap_err()
                 .contains("queued division provenance")
         );
-        assert!(!POISONED.load(Ordering::SeqCst));
+        assert!(!folded().poisoned);
         boundary(clock(3, 1));
-        assert_eq!(drain(&mut [Entry::default(); 8]).unwrap(), 0);
+        assert_eq!(drain(&mut vec![Entry::default(); 8]).unwrap(), 0);
     }
     ENABLED.store(false, Ordering::SeqCst);
     SUPPLEMENTAL_ENABLED.store(false, Ordering::SeqCst);
@@ -3610,19 +3618,18 @@ fn poison_skipped_queue_opens_unproven_window_on_same_session_transition() {
     setup(8, 1);
     boundary(clock(1, 1));
     boundary(clock(2, 1));
-    assert_eq!(drain(&mut [Entry::default(); 8]).unwrap(), 0);
-    assert!(!STORE.lock().unwrap().attach_interval);
+    assert_eq!(drain(&mut vec![Entry::default(); 8]).unwrap(), 0);
+    assert!(!folded().attach_interval);
     let memory = StateMemory::new(1);
     let world = World::new(1);
     poison();
     unsafe { queue(0, world.army(), native::HQ_PROVIDER_RETURN.0) };
-    assert!(SKIPPED_QUEUE.load(Ordering::SeqCst));
-    assert!(STORE.lock().unwrap().queued.is_empty());
+    assert!(folded().queued.is_empty());
     boundary(clock(4, 1));
-    assert!(!POISONED.load(Ordering::SeqCst));
-    assert!(STORE.lock().unwrap().attach_interval);
+    assert!(!folded().poisoned);
+    assert!(folded().attach_interval);
     assert!(
-        drain(&mut [Entry::default(); 8])
+        drain(&mut vec![Entry::default(); 8])
             .unwrap_err()
             .contains("partial")
     );
@@ -3637,14 +3644,14 @@ fn poison_skipped_queue_opens_unproven_window_on_same_session_transition() {
     .unwrap()
     .unwrap();
     assert!(deletion.ignored);
-    assert!(STORE.lock().unwrap().entries.is_empty());
+    assert!(folded().entries.is_empty());
     assert!(
-        drain(&mut [Entry::default(); 8])
+        drain(&mut vec![Entry::default(); 8])
             .unwrap_err()
             .contains("queued division provenance")
     );
     boundary(clock(6, 1));
-    assert_eq!(drain(&mut [Entry::default(); 8]).unwrap(), 0);
+    assert_eq!(drain(&mut vec![Entry::default(); 8]).unwrap(), 0);
     ENABLED.store(false, Ordering::SeqCst);
     SUPPLEMENTAL_ENABLED.store(false, Ordering::SeqCst);
 }
@@ -3669,138 +3676,91 @@ fn initial_partial_drain_clears_only_its_unproven_deletion() {
         .unwrap()
         .unwrap();
         assert!(deletion.ignored);
-        assert!(STORE.lock().unwrap().unproven_queue);
+        assert!(folded().unproven_queue);
         if before_boundary {
             boundary(clock(1, 1));
         }
         assert!(
-            drain(&mut [Entry::default(); 8])
+            drain(&mut vec![Entry::default(); 8])
                 .unwrap_err()
                 .contains("first/branch interval")
         );
-        assert!(!STORE.lock().unwrap().unproven_queue);
-        assert!(STORE.lock().unwrap().attach_interval);
+        assert!(!folded().unproven_queue);
+        assert!(folded().attach_interval);
         boundary(clock(2, 1));
-        assert_eq!(drain(&mut [Entry::default(); 8]).unwrap(), 0);
-        assert!(!STORE.lock().unwrap().attach_interval);
+        assert_eq!(drain(&mut vec![Entry::default(); 8]).unwrap(), 0);
+        assert!(!folded().attach_interval);
     }
     ENABLED.store(false, Ordering::SeqCst);
     SUPPLEMENTAL_ENABLED.store(false, Ordering::SeqCst);
 }
 
 #[test]
-fn boundary_refuses_straddling_observations_and_native_originals_without_clearing_provenance() {
+fn a_writer_across_the_hour_boundary_is_kept_in_the_interval_it_completes() {
     let _serial = serial();
-    for (observation, load) in [(true, false), (true, true), (false, true)] {
+    for load in [false, true] {
         setup(8, 1);
         boundary(clock(1, 1));
         boundary(clock(2, 1));
-        assert_eq!(drain(&mut [Entry::default(); 8]).unwrap(), 0);
-        let old = Entry {
-            country: 1,
-            cause: native::Cause::Attrition,
-            variant: 0xf00100000046,
-            amount_raw: 1,
-            ..Default::default()
+        assert_eq!(drain(&mut vec![Entry::default(); 8]).unwrap(), 0);
+        let mut before = World::new(1);
+        before.owner(4998);
+        unsafe {
+            attrition(
+                before.army() + carmy::EQUIPMENT_POOL,
+                before.design(0),
+                100000,
+            )
         };
-        STORE
-            .lock()
-            .unwrap()
-            .append(SiteId::Attrition, old)
-            .unwrap();
         record_queue(
-            &mut STORE.lock().unwrap(),
+            &mut folded(),
             0x1000,
             0x123400004b01,
             native::QueuedContext::Transfer(native::Disposition::HqTransferred),
         )
         .unwrap();
+        let mut across = World::new(1);
+        across.owner(4999);
+        ORIGINAL[SiteId::Attrition as usize]
+            .store(gated_subtract as *const () as usize, Ordering::Release);
+        let (bank, design) = (across.army() + carmy::EQUIPMENT_POOL, across.design(0));
+        let writer = std::thread::spawn(move || unsafe { attrition(bank, design, 200000) });
+        GATE.wait();
+        assert_ne!(active(), 0);
+        assert!(STORE.try_lock().is_ok());
         let session = if load { 2 } else { 1 };
-        let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(0);
-        let (resume_tx, resume_rx) = std::sync::mpsc::sync_channel(0);
-        std::thread::scope(|scope| {
-            let worker = scope.spawn(move || {
-                let _call = Call::enter(SiteId::SetExiled);
-                let original = || {
-                    entered_tx.send(()).unwrap();
-                    resume_rx.recv().unwrap();
-                };
-                if observation {
-                    observe_native(
-                        SiteId::SetExiled,
-                        |_| Ok(Some(())),
-                        original,
-                        |store, ()| store.append(SiteId::Attrition, old),
-                    );
-                } else {
-                    original();
-                }
-                _call.run(|| ());
-            });
-            entered_rx.recv().unwrap();
-            assert_eq!(OBSERVING.load(Ordering::SeqCst), observation);
-            assert_ne!(active(), 0);
-            assert!(STORE.try_lock().is_ok());
-            boundary(clock(4, session));
-            assert!(POISONED.load(Ordering::SeqCst));
-            assert_eq!(STORE.lock().unwrap().queued_count, 1);
-            assert_eq!(STORE.lock().unwrap().entries, [old]);
-            assert!(
-                drain(&mut [Entry::default(); 8])
-                    .unwrap_err()
-                    .contains("partial")
-            );
-            resume_tx.send(()).unwrap();
-            worker.join().unwrap();
-        });
-        assert_eq!(active(), 0);
-        boundary(clock(5, session));
-        assert!(STORE.lock().unwrap().entries.is_empty());
-        assert_eq!(STORE.lock().unwrap().queued_count, usize::from(!load));
-        assert!(
-            drain(&mut [Entry::default(); 8])
-                .unwrap_err()
-                .contains("first/branch interval")
+        boundary(clock(3, session));
+        let mut first = vec![Entry::default(); 8];
+        let first_drain = drain(&mut first);
+        let provenance = folded().queued_count;
+        GATE.wait();
+        writer.join().unwrap();
+        boundary(clock(4, session));
+        let mut second = vec![Entry::default(); 8];
+        let second_drain = drain(&mut second);
+        if load {
+            // A load discards the hour that straddles it, then the writer's own.
+            assert!(first_drain.unwrap_err().contains("first/branch interval"));
+            assert_eq!(provenance, 0);
+        } else {
+            assert_eq!(first_drain, Ok(1));
+            assert_eq!((first[0].country, first[0].amount_raw), (4998, 100000));
+            assert_eq!(provenance, 1);
+        }
+        assert_eq!(second_drain, Ok(1));
+        assert_eq!(
+            (second[0].country, second[0].cause, second[0].amount_raw),
+            (4999, native::Cause::Attrition, 200000)
         );
-        boundary(clock(6, session));
-        assert_eq!(drain(&mut [Entry::default(); 8]).unwrap(), 0);
+        assert_eq!(active(), 0);
     }
     ENABLED.store(false, Ordering::SeqCst);
     SUPPLEMENTAL_ENABLED.store(false, Ordering::SeqCst);
 }
 
-#[test]
-fn callback_entering_claimed_boundary_marks_conflict_and_skips_provenance() {
-    let _serial = serial();
-    setup(8, 1);
-    boundary(clock(1, 1));
-    boundary(clock(2, 1));
-    assert_eq!(drain(&mut [Entry::default(); 8]).unwrap(), 0);
-    let claim = BoundaryClaim::try_enter().unwrap();
-    unsafe { queue(0, 0x1000, native::HQ_PROVIDER_RETURN.0) };
-    assert!(SKIPPED_QUEUE.load(Ordering::SeqCst));
-    assert!(STORE.lock().unwrap().queued.is_empty());
-    // Even if the boundary cleared a producer's poison, its atomic claim
-    // remembers the callback after that callback's entire original returned.
-    POISONED.store(false, Ordering::SeqCst);
-    assert!(claim.finish());
-    refuse_boundary(true, false);
-    assert!(POISONED.load(Ordering::SeqCst));
-    boundary(clock(3, 1));
-    assert!(
-        drain(&mut [Entry::default(); 8])
-            .unwrap_err()
-            .contains("partial")
-    );
-    boundary(clock(4, 1));
-    assert_eq!(drain(&mut [Entry::default(); 8]).unwrap(), 0);
-    assert_eq!(BOUNDARY_ADMISSION.load(Ordering::SeqCst), 0);
-    ENABLED.store(false, Ordering::SeqCst);
-    SUPPLEMENTAL_ENABLED.store(false, Ordering::SeqCst);
-}
 
 #[test]
-fn ordinary_hour_overlap_recovers_after_writer_returns_without_transition() {
+fn a_writer_active_across_a_boundary_refuses_nothing() {
     let _serial = serial();
     setup(8, 1);
     boundary(clock(1, 1));
@@ -3809,13 +3769,8 @@ fn ordinary_hour_overlap_recovers_after_writer_returns_without_transition() {
     boundary(clock(3, 1));
     writer.run(|| ());
     drop(writer);
-    assert!(POISONED.load(Ordering::SeqCst));
-    assert!(!PENDING_BOUNDARY.load(Ordering::SeqCst));
-    boundary(clock(4, 1));
-    assert!(!POISONED.load(Ordering::SeqCst));
-    assert!(drain(&mut [Entry::default(); 8]).is_err());
-    boundary(clock(5, 1));
-    assert_eq!(drain(&mut [Entry::default(); 8]).unwrap(), 0);
+    assert!(!folded().poisoned);
+    assert_eq!(drain(&mut vec![Entry::default(); 8]), Ok(0));
     ENABLED.store(false, Ordering::SeqCst);
     SUPPLEMENTAL_ENABLED.store(false, Ordering::SeqCst);
 }
@@ -3828,7 +3783,7 @@ fn provenance_fixed_indexes_survive_full_churn_and_retirement_while_poisoned() {
     boundary(clock(1, 1));
     boundary(clock(2, 1));
     let mut world = World::new(1);
-    let mut store = STORE.lock().unwrap();
+    let mut store = folded();
     let initial_capacity = (store.queued.capacity(), store.queued_by_army.capacity());
     let mut pending =
         std::array::from_fn::<_, BOUND, _>(|index| ((index as u64 + 1) << 32) | 0x4b01);
@@ -3844,7 +3799,7 @@ fn provenance_fixed_indexes_survive_full_churn_and_retirement_while_poisoned() {
     for sequence in BOUND as u64 + 1..20000u64 {
         let index = sequence as usize % BOUND;
         let army = world.army() + index * 8;
-        assert!(take_queued(&mut store, army, pending[index]).is_some());
+        assert!(store.take_queued(army, pending[index]).is_some());
         pending[index] = (sequence << 32) | 0x4b01;
         record_queue(
             &mut store,
@@ -3858,7 +3813,7 @@ fn provenance_fixed_indexes_survive_full_churn_and_retirement_while_poisoned() {
         assert_eq!(store.queued_by_army.capacity(), initial_capacity.1);
     }
     for (index, handle) in pending.iter().copied().enumerate() {
-        assert!(take_queued(&mut store, world.army() + index * 8, handle).is_some());
+        assert!(store.take_queued(world.army() + index * 8, handle).is_some());
     }
     assert_eq!(store.queued_count, 0);
     let handle = context(&world, native::Cause::Unknown).handle;
@@ -3872,18 +3827,18 @@ fn provenance_fixed_indexes_survive_full_churn_and_retirement_while_poisoned() {
     drop(store);
     poison();
     unsafe { division_free(world.army(), 1) };
-    assert!(STORE.lock().unwrap().queued.is_empty());
-    assert_eq!(STORE.lock().unwrap().queued_count, 0);
+    assert!(folded().queued.is_empty());
+    assert_eq!(folded().queued_count, 0);
     world.restore_pool();
     record_queue(
-        &mut STORE.lock().unwrap(),
+        &mut folded(),
         world.army(),
         handle,
         native::QueuedContext::Loss(native::Cause::DivisionDeleted),
     )
     .unwrap();
     unsafe { delete(0, world.army(), 0, 0, 0) };
-    assert_eq!(STORE.lock().unwrap().queued_count, 0);
+    assert_eq!(folded().queued_count, 0);
     ENABLED.store(false, Ordering::SeqCst);
     SUPPLEMENTAL_ENABLED.store(false, Ordering::SeqCst);
 }
@@ -3898,17 +3853,13 @@ fn owned_event_and_provenance_capacity_releases_only_when_quiet() {
     setup(8, 3);
     static TRACKER: crate::raw_memory::Tracker = crate::raw_memory::Tracker::new();
     let expected = {
-        let mut store = STORE.lock().unwrap();
+        let mut store = folded();
         let capacity = store.owned_capacity();
         store._charge = crate::raw_memory::Charge::empty_on(&TRACKER);
         store._charge.set(capacity);
         capacity
     };
-    assert!(
-        expected.payload_vectors > 0
-            && expected.auxiliary_vectors > 0
-            && expected.index_vectors > 0
-    );
+    assert!(expected.payload_vectors > 0 && expected.index_vectors > 0);
     assert!(release().is_err());
     assert_eq!(TRACKER.snapshot().current, expected);
     ENABLED.store(false, Ordering::SeqCst);
@@ -3919,7 +3870,7 @@ fn owned_event_and_provenance_capacity_releases_only_when_quiet() {
     ACTIVE[0].store(0, Ordering::SeqCst);
     release().unwrap();
     assert_eq!(TRACKER.snapshot().current, Default::default());
-    assert_eq!(capacity(), 0);
+    assert_eq!(CAPACITY.load(Ordering::Acquire), 0);
     setup(2, 1);
     ENABLED.store(false, Ordering::SeqCst);
     SUPPLEMENTAL_ENABLED.store(false, Ordering::SeqCst);
@@ -3928,7 +3879,7 @@ fn owned_event_and_provenance_capacity_releases_only_when_quiet() {
         supplemental: vec![],
         publication_attempted: false,
     });
-    assert_eq!(capacity(), 0);
+    assert_eq!(CAPACITY.load(Ordering::Acquire), 0);
 }
 
 #[test]
@@ -3953,25 +3904,28 @@ fn disabled_queue_unwind_still_blocks_detach() {
 }
 
 #[test]
-fn observed_unwind_releases_scratch_but_retains_callback_for_detach() {
+fn observed_unwind_closes_its_window_but_retains_callback_for_detach() {
     let _serial = serial();
     setup(4, 1);
+    let world = World::new(1);
     let refusals = SITE_REFUSALS[SiteId::Land as usize].load(Ordering::Relaxed);
-    let result = std::panic::catch_unwind(|| {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let _call = Call::enter(SiteId::Land);
-        observe_native(
+        measure_pool(
             SiteId::Land,
-            |_| Ok(Some(())),
+            world.army(),
+            native::Cause::LandCombat,
+            false,
             || panic!("synthetic native unwind"),
-            |_, ()| Ok(()),
         );
-    });
+    }));
     assert!(result.is_err());
-    assert!(!OBSERVING.load(Ordering::SeqCst));
+    assert!(!OBSERVING.get());
+    assert_eq!(OPEN.load(Ordering::SeqCst), 0);
     assert_eq!(ACTIVE[SiteId::Land as usize].load(Ordering::SeqCst), 1);
     assert!(crate::runtime::observers_active());
-    assert_eq!(BOUNDARY_ADMISSION.load(Ordering::SeqCst), 0);
-    assert!(POISONED.load(Ordering::SeqCst));
+    assert!(folded().poisoned);
+    assert!(folded().open.is_empty());
     assert_eq!(
         SITE_REFUSALS[SiteId::Land as usize].load(Ordering::Relaxed),
         refusals + 1
@@ -3982,16 +3936,21 @@ fn observed_unwind_releases_scratch_but_retains_callback_for_detach() {
     boundary(clock(10, 2));
     assert_eq!(active(), 1);
     setup(4, 1);
-    let result = std::panic::catch_unwind(|| {
-        observe_native(
+    // An excluded transferred source has no basis an unwind could break.
+    let mut ctx = context(&world, native::Cause::Unknown);
+    ctx.disposition = native::Disposition::Merged;
+    let _scope = scoped(ctx);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        measure_pool(
             SiteId::Land,
-            |_| Ok(None::<()>),
-            || panic!("excluded reset unwind"),
-            |_, ()| Ok(()),
+            world.army(),
+            native::Cause::LandCombat,
+            false,
+            || panic!("excluded transfer unwind"),
         );
-    });
+    }));
     assert!(result.is_err());
-    assert!(!POISONED.load(Ordering::SeqCst));
+    assert!(!folded().poisoned);
 }
 
 #[test]
@@ -4013,7 +3972,7 @@ fn returned_callback_unwind_refuses_accepted_credit_but_preserves_ignored_exclus
         let reserve = ReserveWorld::for_source(&world, base, 1, 0);
         let mut ctx = context_rebased(&world, base, native::Cause::Unknown);
         ctx.ignored = ignored;
-        let _scope = DeletionScope::enter(Some(ctx));
+        let _scope = scoped(ctx);
         let result = std::panic::catch_unwind(|| unsafe {
             returned(
                 reserve.manager.as_ptr() as usize,
@@ -4021,30 +3980,28 @@ fn returned_callback_unwind_refuses_accepted_credit_but_preserves_ignored_exclus
             )
         });
         assert!(result.is_err());
-        assert_eq!(POISONED.load(Ordering::SeqCst), !ignored);
-        assert_eq!(BOUNDARY_ADMISSION.load(Ordering::SeqCst), 0);
+        assert_eq!(folded().poisoned, !ignored);
         assert_eq!(ACTIVE[SiteId::Return as usize].load(Ordering::SeqCst), 1);
-        assert!(!OBSERVING.load(Ordering::SeqCst));
-        assert!(!DELETION.get().unwrap().returned);
+        assert!(!OBSERVING.get());
+        assert!(!folded().scopes[&DELETION.get().unwrap().id].returned);
         if ignored {
-            assert!(!STORE.lock().unwrap().credits.contains(ctx.handle));
+            assert!(!folded().credits.contains(ctx.handle));
         } else {
             assert!(
-                STORE
-                    .lock()
-                    .unwrap()
+                folded()
                     .credits
                     .state(ctx.handle, ctx.army, ctx.country)
                     .unwrap_err()
                     .contains("lifetime incomplete")
             );
+            // The gap refuses the source whose lifetime the unwind left open.
             boundary(clock(20, 1));
+            assert!(folded().poisoned);
             boundary(clock(21, 1));
-            assert!(POISONED.load(Ordering::SeqCst));
             unsafe {
                 division_free(world.army(), 1);
             }
-            assert!(!STORE.lock().unwrap().credits.contains(ctx.handle));
+            assert!(!folded().credits.contains(ctx.handle));
         }
     }
     ORIGINAL[SiteId::Return as usize].store(original, Ordering::SeqCst);
@@ -4072,7 +4029,7 @@ fn returned_and_hq_credit_deficits_use_source_time_and_publish_only_at_deletion(
             let reserve = ReserveWorld::for_source(&world, base, 4999, initial);
             ORIGINAL[site as usize].store(transfer as *const () as usize, Ordering::SeqCst);
             let ctx = context_rebased(&world, base, native::Cause::DivisionDisbanded);
-            let scope = (site == SiteId::Return).then(|| DeletionScope::enter(Some(ctx)));
+            let scope = (site == SiteId::Return).then(|| scoped(ctx));
             unsafe {
                 returned_at(
                     site,
@@ -4080,15 +4037,13 @@ fn returned_and_hq_credit_deficits_use_source_time_and_publish_only_at_deletion(
                     world.army() + carmy::EQUIPMENT_POOL,
                 );
             }
-            assert!(!POISONED.load(Ordering::SeqCst));
+            assert!(!folded().poisoned);
             assert!(
-                STORE.lock().unwrap().entries.is_empty(),
+                folded().entries.is_empty(),
                 "credit does not publish a deletion"
             );
             let mut proof = Vec::new();
-            STORE
-                .lock()
-                .unwrap()
+            folded()
                 .credits
                 .visit(ctx.handle, world.army(), ctx.country, |value| {
                     proof.push((value.amount, value.credited));
@@ -4101,8 +4056,7 @@ fn returned_and_hq_credit_deficits_use_source_time_and_publish_only_at_deletion(
             );
             drop(scope);
             if site == SiteId::HqReturn {
-                super::record_queue(
-                    &mut STORE.lock().unwrap(),
+                folded().record_queue(
                     world.army(),
                     ctx.handle,
                     native::Cause::Unknown,
@@ -4121,11 +4075,11 @@ fn returned_and_hq_credit_deficits_use_source_time_and_publish_only_at_deletion(
             } else {
                 deletion.disposition = native::Disposition::HqTransferred;
             }
-            let _scope = DeletionScope::enter(Some(deletion));
+            let _scope = scoped(deletion);
             unsafe {
                 division_free(world.army(), 1);
             }
-            let mut out = [Entry::default(); 8];
+            let mut out = vec![Entry::default(); 8];
             let len = drain(&mut out).unwrap();
             assert_eq!(len, 1 + usize::from(deficit != 0));
             assert_eq!(out[0].division_handle, ctx.handle);
@@ -4140,7 +4094,7 @@ fn returned_and_hq_credit_deficits_use_source_time_and_publish_only_at_deletion(
             if deficit != 0 {
                 assert_eq!((out[1].country, out[1].amount_raw), (4999, deficit));
             }
-            assert!(!STORE.lock().unwrap().credits.contains(ctx.handle));
+            assert!(!folded().credits.contains(ctx.handle));
         }
     }
     ENABLED.store(false, Ordering::SeqCst);
@@ -4165,19 +4119,19 @@ fn return_credits_require_actual_witness_and_do_not_cross_full_handle_or_load() 
         );
     }
     let old = context_rebased(&world, base, native::Cause::Unknown).handle;
-    assert!(STORE.lock().unwrap().credits.contains(old));
+    assert!(folded().credits.contains(old));
     world.word(engine_native::cunit::HANDLE, old + (1 << 32));
     let mut ctx = context_rebased(&world, base, native::Cause::Unknown);
     ctx.disposition = native::Disposition::HqTransferred;
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
     assert!(
-        observe_deleted(&mut STORE.lock().unwrap(), &memory, base, ctx)
+        folded()
+            .observe_deleted(ctx, Err("no residual read"), false)
             .unwrap_err()
             .contains("no actual credit witness")
     );
     boundary(clock(1, 1));
     boundary(clock(1, 2));
-    assert!(!STORE.lock().unwrap().credits.contains(old));
+    assert!(!folded().credits.contains(old));
     ENABLED.store(false, Ordering::SeqCst);
     SUPPLEMENTAL_ENABLED.store(false, Ordering::SeqCst);
 }
@@ -4211,14 +4165,14 @@ fn native_country_return_proofs_remain_deferred_and_recycle_without_growth() {
             );
         }
     }
-    assert!(STORE.lock().unwrap().entries.is_empty());
+    assert!(folded().entries.is_empty());
     assert_eq!(producer_payload_bytes(), bytes);
     boundary(clock(3, 1));
     for world in &mut worlds {
         let mut ctx = context_rebased(world, base, native::Cause::Unknown);
         ctx.disposition = native::Disposition::HqTransferred;
         world.amount(0, 0);
-        let _scope = DeletionScope::enter(Some(ctx));
+        let _scope = scoped(ctx);
         unsafe {
             division_free(world.army(), 1);
         }
@@ -4251,9 +4205,9 @@ fn native_country_return_proofs_remain_deferred_and_recycle_without_growth() {
             );
         }
     }
-    assert!(!POISONED.load(Ordering::SeqCst));
+    assert!(!folded().poisoned);
     assert_eq!(producer_payload_bytes(), bytes);
-    let revision = CREDIT_REVISION.load(Ordering::SeqCst);
+    let revision = folded().credits.revision();
     poison();
     // A refused full census uses existing handle lookups, with no head scans,
     // storage growth or global invalidation when each source is authenticated.
@@ -4267,18 +4221,16 @@ fn native_country_return_proofs_remain_deferred_and_recycle_without_growth() {
         }
         let handle = context_rebased(world, base, native::Cause::Unknown).handle;
         assert!(
-            STORE
-                .lock()
-                .unwrap()
+            folded()
                 .credits
                 .state(handle, world.army(), index as u32 + 1)
                 .is_err()
         );
     }
-    assert_eq!(CREDIT_REVISION.load(Ordering::SeqCst), revision);
+    assert_eq!(folded().credits.revision(), revision);
     assert_eq!(producer_payload_bytes(), bytes);
     boundary(clock(3, 2));
-    assert!(STORE.lock().unwrap().credits.is_empty());
+    assert!(folded().credits.is_empty());
     ENABLED.store(false, Ordering::SeqCst);
     SUPPLEMENTAL_ENABLED.store(false, Ordering::SeqCst);
 }
@@ -4382,7 +4334,7 @@ struct MergePlan {
 static MERGE_PLAN: Mutex<Option<MergePlan>> = Mutex::new(None);
 unsafe extern "system-unwind" fn merge_native_fixture(argument: usize) {
     assert!(STORE.try_lock().is_ok());
-    assert!(WHOLE_MERGE.get() && OBSERVING.load(Ordering::SeqCst));
+    assert!(WHOLE_MERGE.get() && OBSERVING.get());
     let plan = MERGE_PLAN.lock().unwrap().unwrap();
     let survivor = unsafe { *(argument as *const usize) };
     let items = unsafe { *((survivor + carmy::EQUIPMENT_POOL + pool::ITEMS) as *const usize) };
@@ -4508,9 +4460,9 @@ fn whole_native_merge_captures_retained_saturation_signed_discard_and_rounding_o
             CALLS[SiteId::Attrition as usize].load(Ordering::Relaxed),
             attrition_calls + 1
         );
-        assert!(!POISONED.load(Ordering::SeqCst));
-        assert!(!WHOLE_MERGE.get() && !OBSERVING.load(Ordering::SeqCst));
-        let mut out = [Entry::default(); 16];
+        assert!(!folded().poisoned);
+        assert!(!WHOLE_MERGE.get() && !OBSERVING.get());
+        let mut out = vec![Entry::default(); 16];
         let len = drain(&mut out).unwrap();
         assert_eq!(len, 2);
         assert_eq!(out[0].disposition, native::Disposition::Merged);
@@ -4576,16 +4528,6 @@ fn whole_merge_includes_only_canceled_held_pools_and_all_bulk_designs() {
         reserve._country[engine_native::ccountry::DIVISIONS / 8] = state.roster.as_ptr() as u64;
         reserve._country[engine_native::ccountry::DIVISIONS_CAPACITY / 8] = 2 | (2 << 32);
         state.countries[1] = reserve._country.as_ptr() as u64;
-        let memory = unsafe { engine_native::memory::LiveMemory::new() };
-        assert_eq!(
-            native::population(&memory, base).unwrap(),
-            native::Population {
-                divisions: 2,
-                division_pool_entries: 4,
-                stockpile_entries: 2,
-                delivery_pool_entries: 4
-            }
-        );
         let inputs = [source.army()];
         let argument = [
             survivor.army() as u64,
@@ -4614,8 +4556,8 @@ fn whole_merge_includes_only_canceled_held_pools_and_all_bulk_designs() {
         unsafe {
             merge(argument.as_ptr() as usize);
         }
-        assert!(!POISONED.load(Ordering::SeqCst));
-        let mut out = [Entry::default(); 32];
+        assert!(!folded().poisoned);
+        let mut out = vec![Entry::default(); 32];
         let len = drain(&mut out).unwrap();
         assert_eq!(
             out[..len]
@@ -4698,47 +4640,18 @@ fn canceled_deliveries_conserve_their_own_native_country_destination() {
                 reserve._country[engine_native::ccountry::DIVISIONS_CAPACITY / 8] = 1 | (1 << 32);
                 state.countries[index + 1] = reserve._country.as_ptr() as u64;
             }
-            let mut requests: Vec<_> = armies
-                .iter_mut()
-                .map(|army| RequestsWorld::new(army, base, &[200000], &[]))
-                .collect();
-            let memory = unsafe { engine_native::memory::LiveMemory::new() };
-            let demand = native::population(&memory, base).unwrap();
-            assert_eq!(requests.len(), countries);
-            assert_eq!(
-                demand,
-                native::Population {
-                    divisions: countries,
-                    division_pool_entries: countries * 2,
-                    stockpile_entries: countries * 2,
-                    delivery_pool_entries: countries
-                }
-            );
-            prepare(&memory, base, countries + 1);
-            boundary(clock(3, 1));
-            let old_pool = POOL_CAPACITY.load(Ordering::Acquire);
-            // A live rise in held deliveries must grow the actual observer's
-            // arenas; both families return to each source's distinct country.
-            requests = armies
+            // Both families return to each source's distinct country.
+            let requests: Vec<_> = armies
                 .iter_mut()
                 .map(|army| RequestsWorld::new(army, base, &[200000, 200000], &[200000]))
                 .collect();
-            let demand = native::population(&memory, base).unwrap();
-            assert_eq!(demand.delivery_pool_entries, countries * 3);
-            prepare(&memory, base, countries + 1);
-            boundary(clock(4, 1));
-            assert!(POOL_CAPACITY.load(Ordering::Acquire) > old_pool);
-            let expected_charge = {
-                let mut store = STORE.lock().unwrap();
-                assert!(store.held.len() >= demand.delivery_pool_entries);
-                assert!(store.reserves.len() >= countries);
-                assert_eq!(store.queued_limit, countries);
+            assert_eq!(requests.len(), countries);
+            {
+                let mut store = folded();
                 let capacity = store.owned_capacity();
                 store._charge = crate::raw_memory::Charge::empty_on(&TRACKER);
                 store._charge.set(capacity);
-                capacity
-            };
-            let bytes = producer_payload_bytes();
+            }
             ORIGINAL[SiteId::Merge as usize]
                 .store(merge_native_fixture as *const () as usize, Ordering::SeqCst);
             ORIGINAL[SiteId::Delete as usize].store(
@@ -4771,9 +4684,9 @@ fn canceled_deliveries_conserve_their_own_native_country_destination() {
                 unsafe {
                     merge(argument.as_ptr() as usize);
                 }
-                assert!(!POISONED.load(Ordering::SeqCst));
+                assert!(!folded().poisoned);
             }
-            let mut out = vec![Entry::default(); capacity()];
+            let mut out = Vec::new();
             let len = drain(&mut out).unwrap();
             let mut losses = vec![0i64; countries];
             for row in out[..len].iter().filter(|row| row.division_handle == 0) {
@@ -4793,8 +4706,7 @@ fn canceled_deliveries_conserve_their_own_native_country_destination() {
                     u64::from(index % 2 == 0)
                 );
             }
-            assert_eq!(producer_payload_bytes(), bytes);
-            assert_eq!(TRACKER.snapshot().current, expected_charge);
+            assert_eq!(TRACKER.snapshot().current, folded().owned_capacity());
             assert!(release().is_err());
             ENABLED.store(false, Ordering::SeqCst);
             SUPPLEMENTAL_ENABLED.store(false, Ordering::SeqCst);
@@ -4838,8 +4750,7 @@ fn pending_hq_source_settles_saved_deficit_during_whole_merge_without_scratch_re
     }
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let handle = native::army_identity(&memory, base, source.army()).unwrap();
-    super::record_queue(
-        &mut STORE.lock().unwrap(),
+    folded().record_queue(
         source.army(),
         handle,
         native::Cause::Unknown,
@@ -4870,9 +4781,9 @@ fn pending_hq_source_settles_saved_deficit_during_whole_merge_without_scratch_re
     unsafe {
         merge(argument.as_ptr() as usize);
     }
-    assert!(!POISONED.load(Ordering::SeqCst));
-    assert!(!STORE.lock().unwrap().credits.contains(handle));
-    let mut out = [Entry::default(); 32];
+    assert!(!folded().poisoned);
+    assert!(!folded().credits.contains(handle));
+    let mut out = vec![Entry::default(); 32];
     let len = drain(&mut out).unwrap();
     assert_eq!(
         out[..len]
@@ -4907,7 +4818,7 @@ fn credited_survivor_reallocation_restores_live_damage_and_return_accounting() {
             credit_pool(manager, source);
         }
     }
-    for action in 0..8 {
+    for action in [0, 1, 2, 3, 4, 6, 7] {
         let second_return = action == 1;
         setup(32, 16);
         boundary(clock(1, 1));
@@ -4940,8 +4851,7 @@ fn credited_survivor_reallocation_restores_live_damage_and_return_accounting() {
                 survivor.army() + carmy::EQUIPMENT_POOL,
             );
         }
-        super::record_queue(
-            &mut STORE.lock().unwrap(),
+        folded().record_queue(
             survivor.army(),
             handle,
             native::Cause::Unknown,
@@ -4973,9 +4883,7 @@ fn credited_survivor_reallocation_restores_live_damage_and_return_accounting() {
             merge(argument.as_ptr() as usize);
         }
         assert_eq!(
-            STORE
-                .lock()
-                .unwrap()
+            folded()
                 .credits
                 .state(handle, survivor.army(), 1)
                 .unwrap(),
@@ -4988,10 +4896,7 @@ fn credited_survivor_reallocation_restores_live_damage_and_return_accounting() {
                 poison();
             }
             if action == 3 {
-                OBSERVING.store(true, Ordering::SeqCst);
-            }
-            if action == 5 {
-                BOUNDARY_ADMISSION.store(1, Ordering::SeqCst);
+                OBSERVING.set(true);
             }
             let old_identity = reserve.manager[0];
             if action == 6 {
@@ -5007,7 +4912,7 @@ fn credited_survivor_reallocation_restores_live_damage_and_return_accounting() {
                 ORIGINAL[SiteId::HqReturn as usize]
                     .store(credit_pool as *const () as usize, Ordering::SeqCst);
             }
-            let guard = (action == 4).then(|| STORE.lock().unwrap());
+            let guard = (action == 4).then(|| folded());
             unsafe {
                 hq_returned(
                     reserve.manager.as_ptr() as usize,
@@ -5018,19 +4923,15 @@ fn credited_survivor_reallocation_restores_live_damage_and_return_accounting() {
             unsafe {
                 *(reserve.manager.as_ptr() as *mut u64) = old_identity;
             }
-            OBSERVING.store(false, Ordering::SeqCst);
-            BOUNDARY_ADMISSION.store(0, Ordering::SeqCst);
+            OBSERVING.set(false);
             boundary(clock(20, 1));
             boundary(clock(21, 1));
-            assert!(
-                STORE
-                    .lock()
-                    .unwrap()
-                    .credits
-                    .state(handle, survivor.army(), 1)
-                    .is_err()
+            // A drain holding its store delays nothing: that credit is proved.
+            assert_eq!(
+                folded().credits.state(handle, survivor.army(), 1).is_ok(),
+                action == 4
             );
-            assert!(!POISONED.load(Ordering::SeqCst));
+            assert!(!folded().poisoned);
             assert_eq!(
                 reserve.world.storage[(0x600 + 8) / 8] as i64,
                 if action == 7 { 400000 } else { 250000 }
@@ -5038,7 +4939,7 @@ fn credited_survivor_reallocation_restores_live_damage_and_return_accounting() {
             unsafe {
                 division_free(survivor.army(), 1);
             }
-            assert!(!STORE.lock().unwrap().credits.contains(handle));
+            assert!(!folded().credits.contains(handle));
             assert_eq!(active(), 0);
             continue;
         }
@@ -5050,9 +4951,7 @@ fn credited_survivor_reallocation_restores_live_damage_and_return_accounting() {
                 );
             }
             assert_eq!(
-                STORE
-                    .lock()
-                    .unwrap()
+                folded()
                     .credits
                     .state(handle, survivor.army(), 1)
                     .unwrap(),
@@ -5072,9 +4971,9 @@ fn credited_survivor_reallocation_restores_live_damage_and_return_accounting() {
                 base + native::QUEUED_DELETE_RETURN.0,
             );
         }
-        assert!(!POISONED.load(Ordering::SeqCst));
-        assert!(!STORE.lock().unwrap().credits.contains(handle));
-        let mut out = [Entry::default(); 32];
+        assert!(!folded().poisoned);
+        assert!(!folded().credits.contains(handle));
+        let mut out = vec![Entry::default(); 32];
         let len = drain(&mut out).unwrap();
         assert_eq!(
             out[..len]
@@ -5226,9 +5125,7 @@ fn refused_pool_writers_and_unrelated_destructor_keep_outer_basis_unavailable() 
             }
         );
         assert!(
-            STORE
-                .lock()
-                .unwrap()
+            folded()
                 .credits
                 .state(outer_handle, outer.army(), 1)
                 .is_err()
@@ -5242,76 +5139,60 @@ fn refused_pool_writers_and_unrelated_destructor_keep_outer_basis_unavailable() 
         } else {
             assert_eq!(requests.root[(0x10 + 0x28 + 8) / 8] >> 32, 0);
         }
-        assert!(!STORE.lock().unwrap().credits.contains(other_handle));
+        assert!(!folded().credits.contains(other_handle));
         boundary(clock(20, 1));
         boundary(clock(21, 1));
         assert!(
-            STORE
-                .lock()
-                .unwrap()
+            folded()
                 .credits
                 .state(outer_handle, outer.army(), 1)
                 .is_err()
         );
-        assert!(!POISONED.load(Ordering::SeqCst));
+        assert!(!folded().poisoned);
         assert_eq!(active(), 0);
     }
     ENABLED.store(false, Ordering::SeqCst);
     SUPPLEMENTAL_ENABLED.store(false, Ordering::SeqCst);
 }
 
-static RETURN_REVISION_OVERLAP: AtomicUsize = AtomicUsize::new(0);
-// Inject the real refused callback while the production pre/post owns STORE.
-pub(super) fn return_revision_overlap(moment: usize, manager: usize, pool: usize) {
-    if RETURN_REVISION_OVERLAP
-        .compare_exchange(moment, 0, Ordering::SeqCst, Ordering::SeqCst)
-        .is_ok()
-    {
-        unsafe {
-            hq_returned(manager, pool);
-        }
-    }
-}
-
 #[test]
-fn first_return_and_post_rebuild_keep_the_admitted_revision() {
+fn a_refused_writer_inside_a_return_window_keeps_its_credit_unproven() {
     let _serial = serial();
-    for moment in [1, 2] {
-        setup(8, 4);
-        boundary(clock(1, 1));
-        boundary(clock(2, 1));
-        let mut state = StateMemory::new(1);
-        let base = state.live_base();
-        BASE.store(base, Ordering::Relaxed);
-        let mut world = World::new(1);
-        world.rebase(base);
-        world.amount(0, 100000);
-        let reserve = ReserveWorld::for_source(&world, base, 1, 0);
-        ORIGINAL[SiteId::HqReturn as usize]
-            .store(credit_pool as *const () as usize, Ordering::SeqCst);
-        RETURN_REVISION_OVERLAP.store(moment, Ordering::SeqCst);
-        unsafe {
-            hq_returned(
-                reserve.manager.as_ptr() as usize,
-                world.army() + carmy::EQUIPMENT_POOL,
-            );
-        }
-        assert_eq!(RETURN_REVISION_OVERLAP.load(Ordering::SeqCst), 0);
-        assert_eq!(reserve.world.storage[(0x600 + 8) / 8], 200000);
-        let handle = context_rebased(&world, base, native::Cause::Unknown).handle;
-        boundary(clock(20, 1));
-        boundary(clock(21, 1));
-        assert!(
-            STORE
-                .lock()
-                .unwrap()
-                .credits
-                .state(handle, world.army(), 1)
-                .is_err()
-        );
-        assert!(!POISONED.load(Ordering::SeqCst));
-        assert_eq!(active(), 0);
+    unsafe extern "system-unwind" fn gated_credit(manager: usize, source: usize) {
+        GATE.wait();
+        GATE.wait();
+        unsafe { credit_pool(manager, source) };
     }
+    setup(8, 4);
+    boundary(clock(1, 1));
+    boundary(clock(2, 1));
+    let mut state = StateMemory::new(1);
+    let base = state.live_base();
+    BASE.store(base, Ordering::Relaxed);
+    let mut world = World::new(1);
+    world.rebase(base);
+    world.amount(0, 100000);
+    let reserve = ReserveWorld::for_source(&world, base, 1, 0);
+    ORIGINAL[SiteId::HqReturn as usize].store(gated_credit as *const () as usize, Ordering::SeqCst);
+    let (manager, pool) = (
+        reserve.manager.as_ptr() as usize,
+        world.army() + carmy::EQUIPMENT_POOL,
+    );
+    let writer = std::thread::spawn(move || unsafe { hq_returned(manager, pool) });
+    GATE.wait();
+    // Another thread's refused writer inside the window can touch its pools.
+    revoke_active_observation();
+    GATE.wait();
+    writer.join().unwrap();
+    assert_eq!(reserve.world.storage[(0x600 + 8) / 8], 100000);
+    let handle = context_rebased(&world, base, native::Cause::Unknown).handle;
+    assert!(folded().credits.state(handle, world.army(), 1).is_err());
+    assert!(folded().poisoned);
+    boundary(clock(20, 1));
+    boundary(clock(21, 1));
+    assert!(folded().credits.state(handle, world.army(), 1).is_err());
+    assert!(!folded().poisoned);
+    assert_eq!(active(), 0);
     ENABLED.store(false, Ordering::SeqCst);
     SUPPLEMENTAL_ENABLED.store(false, Ordering::SeqCst);
 }
@@ -5344,7 +5225,7 @@ fn missed_destructor_invalidation_survives_contention_unwind_and_gap() {
         }
         let handle = context_rebased(&world, base, native::Cause::Unknown).handle;
         poison(); // The original still runs without a snapshot.
-        let guard = STORE.lock().unwrap();
+        let guard = folded();
         if unwind {
             ORIGINAL[SiteId::DivisionFree as usize]
                 .store(incomplete_free as *const () as usize, Ordering::SeqCst);
@@ -5355,21 +5236,19 @@ fn missed_destructor_invalidation_survives_contention_unwind_and_gap() {
         assert_eq!(result.is_err(), unwind);
         drop(guard);
         assert!(
-            STORE
-                .lock()
-                .unwrap()
+            folded()
                 .credits
                 .state(handle, world.army(), 1)
                 .is_err()
         );
+        // Only the source an unwound destructor left in place refuses the gap.
         boundary(clock(20, 1));
+        assert_eq!(folded().poisoned, unwind);
         boundary(clock(21, 1));
-        assert_eq!(POISONED.load(Ordering::SeqCst), unwind);
         assert_eq!(active(), usize::from(unwind));
-        // A successful native destructor already freed its source. Failed
-        // retirement can clear on load only when the callback returned normally.
+        // A load clears every retained source, freed or not.
         boundary(clock(21, 2));
-        assert_eq!(STORE.lock().unwrap().credits.contains(handle), unwind);
+        assert!(!folded().credits.contains(handle));
     }
     ENABLED.store(false, Ordering::SeqCst);
     SUPPLEMENTAL_ENABLED.store(false, Ordering::SeqCst);
@@ -5418,8 +5297,7 @@ fn live_credited_survivor_can_later_merge_as_a_queued_hq_source() {
             survivor.army() + carmy::EQUIPMENT_POOL,
         );
     }
-    super::record_queue(
-        &mut STORE.lock().unwrap(),
+    folded().record_queue(
         survivor.army(),
         handle,
         native::Cause::Unknown,
@@ -5449,9 +5327,9 @@ fn live_credited_survivor_can_later_merge_as_a_queued_hq_source() {
         unsafe {
             merge(argument.as_ptr() as usize);
         }
-        assert!(!POISONED.load(Ordering::SeqCst));
+        assert!(!folded().poisoned);
     }
-    assert!(!STORE.lock().unwrap().credits.contains(handle));
+    assert!(!folded().credits.contains(handle));
     ORIGINAL[SiteId::Delete as usize].store(cleanup_delete as *const () as usize, Ordering::SeqCst);
     unsafe {
         delete(
@@ -5462,8 +5340,8 @@ fn live_credited_survivor_can_later_merge_as_a_queued_hq_source() {
             base + native::COMBAT_DELETION_RETURN.0,
         );
     }
-    assert!(!POISONED.load(Ordering::SeqCst));
-    let mut out = [Entry::default(); 32];
+    assert!(!folded().poisoned);
+    let mut out = vec![Entry::default(); 32];
     let len = drain(&mut out).unwrap();
     assert_eq!(
         out[..len]
@@ -5537,6 +5415,10 @@ fn native_merge_selection_and_reserve_reads_stay_with_reached_designs() {
         (3u64 << 32) | 3,
         0,
     ];
+    assert_eq!(
+        native::merge_input_count(&memory, argument.as_ptr() as usize),
+        Ok(3)
+    );
     let mut armies = [0; 4];
     let (native_survivor, len) =
         native::merge_armies(&memory, 0, argument.as_ptr() as usize, &mut armies).unwrap();
@@ -5667,15 +5549,13 @@ fn skipped_whole_merge_revokes_survivor_and_donor_proofs_before_unwind() {
         (donor_handle, donor.army()),
     ] {
         assert!(
-            STORE
-                .lock()
-                .unwrap()
+            folded()
                 .credits
                 .state(handle, army, 1)
                 .is_err()
         );
     }
-    assert!(POISONED.load(Ordering::SeqCst));
+    assert!(!folded().poisoned);
     assert_eq!(active(), 1);
     ENABLED.store(false, Ordering::SeqCst);
     SUPPLEMENTAL_ENABLED.store(false, Ordering::SeqCst);
@@ -5717,29 +5597,26 @@ fn native_merge_unwind_keeps_original_once_and_poisoned_observation_quiet() {
     let result = std::panic::catch_unwind(|| unsafe { merge(argument.as_ptr() as usize) });
     assert!(result.is_err());
     assert_eq!(ORIGINAL_CALLS.load(Ordering::Relaxed), calls + 1);
-    assert!(!WHOLE_MERGE.get() && !OBSERVING.load(Ordering::SeqCst));
+    assert!(!WHOLE_MERGE.get() && !OBSERVING.get());
     assert_eq!(active(), 1);
-    assert_eq!(BOUNDARY_ADMISSION.load(Ordering::SeqCst), 0);
-    assert!(POISONED.load(Ordering::SeqCst));
+    assert!(folded().poisoned);
     assert!(
-        drain(&mut [Entry::default(); 8])
+        drain(&mut vec![Entry::default(); 8])
             .unwrap_err()
             .contains("did not settle")
     );
     boundary(clock(20, 1));
     boundary(clock(21, 1));
     assert!(
-        STORE
-            .lock()
-            .unwrap()
+        folded()
             .credits
             .state(handle, world.army(), 1)
             .unwrap_err()
             .contains("lifetime incomplete")
     );
-    assert!(POISONED.load(Ordering::SeqCst));
+    assert!(!folded().poisoned);
     boundary(clock(22, 2));
-    assert!(STORE.lock().unwrap().credits.contains(handle));
+    assert!(!folded().credits.contains(handle));
     ENABLED.store(false, Ordering::SeqCst);
     SUPPLEMENTAL_ENABLED.store(false, Ordering::SeqCst);
 }

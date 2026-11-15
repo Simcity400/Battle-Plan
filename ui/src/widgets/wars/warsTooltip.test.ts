@@ -12,7 +12,7 @@ const day = (hour: number) => `date ${hour}`;
 const observation: WarObservation = { firstHour: 10, lastHour: 20, viewpointTag: 'opaque-player', viewpointSide: ['opaque-player'], opposingSide: ['other'],
   attackersAreViewpoint: true, representative: null, name: { text: 'Recorded title', known: true, reason: null, key: null } };
 const war: WarTimeline = { id: 'opaque', firstHour: 10, lastHour: 20, startedBy: true, endedBy: true,
-  observations: [observation], casualties: [], participants: [], capitulations: [] };
+  observations: [observation], participants: [], capitulations: [] };
 const input = { war, observation, losses: null, hour: 15, until: 40, branchLast: 40, unobserved: [], capitulationsUnobserved: [], country, day };
 
 test('participant contribution hovers preserve exact fixed-point credit and negative lend-lease', () => {
@@ -212,7 +212,7 @@ test('participant holding keeps renamed country capitulations and filters other 
 
 
 test('exact casualty reads show loading while known war geometry stays available', () => {
-  const war = {id:'1',firstHour:0,lastHour:10,startedBy:true,endedBy:true,observations:[],casualties:[],participants:[],capitulations:[]};
+  const war = {id:'1',firstHour:0,lastHour:10,startedBy:true,endedBy:true,observations:[],participants:[],capitulations:[]};
   const observation = {firstHour:0,lastHour:10,viewpointTag:'A',viewpointSide:['A'],opposingSide:['B'],attackersAreViewpoint:true,
     representative:['A','B'] as [string,string],name:{text:'Recorded war',known:true,reason:null,key:null}};
   const base={war,observation,losses:null,lossesPending:true,hour:5,until:10,branchLast:10,unobserved:[],capitulationsUnobserved:[],
@@ -224,11 +224,11 @@ test('exact casualty reads show loading while known war geometry stays available
   assert.ok(gap.rows.filter(row=>row.label?.endsWith('casualties')).every(row=>row.value==='Not recorded'));
 });
 
-test('a war reaching the prepared prefix has no end yet, and hours after the prefix are still being prepared', () => {
-  const open = warTooltip({ ...input, hour: 15, preparedThrough: 20 });
-  assert.equal(open.rows.find(row => row.label === 'Ended')?.value, 'Still being prepared');
-  const after = warTooltip({ ...input, hour: 25, preparedThrough: 20 });
-  assert.equal(after.rows.find(row => row.label === 'Participants')?.value, 'Still being prepared');
-  // Without a prefix the last observation is the end bound, as before.
+test('casualties not recorded at the hour say why, and a read of one hour dates no range', () => {
+  const missing = warTooltip({ ...input, hour: 15, losses: null, lossesReason: 'Not recorded: a relation was not read' });
+  assert.ok(missing.rows.filter(row => row.label.endsWith('casualties')).every(row => row.value === 'Not recorded'));
+  assert.match(missing.note ?? '', /a relation was not read/);
+  const read = warTooltip({ ...input, hour: 15, losses: [15, 15, '7', '0', '9', '0'] });
+  assert.doesNotMatch(read.note ?? '', /Casualties as recorded/);
   assert.equal(warTooltip({ ...input, hour: 25 }).rows.find(row => row.label === 'Participants')?.value, 'Ended');
 });

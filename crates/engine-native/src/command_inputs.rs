@@ -60,7 +60,13 @@ pub const IDLER_RVA: Rva = Rva(0x033d_db08);
 pub const IN_GAME_IDLER_VTABLE_RVA: Rva = Rva(0x029e_58d8);
 pub const IDLER_PAUSED: usize = 0x6c1;
 
-pub fn paused(memory: &impl Memory, base: usize) -> Result<Option<bool>, &'static str> {
+/// The idler's sites resolve, or the first withheld one's reason.
+pub fn idler_sites(base: usize) -> Result<(), &'static str> {
+    engine_sites::require(base, &[IDLER_RVA, IN_GAME_IDLER_VTABLE_RVA])
+}
+
+/// The active idler when it is the in-game one; `None` at the menu or while another idler runs.
+pub fn in_game_idler(memory: &impl Memory, base: usize) -> Result<Option<usize>, &'static str> {
     let slot = engine_sites::at(base, IDLER_RVA).ok_or("command pause state unreadable")?;
     let in_game = engine_sites::at(base, IN_GAME_IDLER_VTABLE_RVA)
         .ok_or("command pause state unreadable")? as u64;
@@ -68,13 +74,25 @@ pub fn paused(memory: &impl Memory, base: usize) -> Result<Option<bool>, &'stati
         return Ok(None);
     };
     let idler = idler as usize;
-    if read::<u64>(memory, idler) != Some(in_game) {
-        return Ok(None);
-    }
-    match read::<u8>(memory, idler + IDLER_PAUSED) {
-        Some(0) => Ok(Some(false)),
-        Some(1) => Ok(Some(true)),
+    Ok((read::<u64>(memory, idler) == Some(in_game)).then_some(idler))
+}
+
+/// The pause byte of the in-game idler at `idler`.
+pub fn idler_paused(memory: &impl Memory, idler: usize) -> Result<bool, &'static str> {
+    let at = idler
+        .checked_add(IDLER_PAUSED)
+        .ok_or("command pause state unreadable")?;
+    match read::<u8>(memory, at) {
+        Some(0) => Ok(false),
+        Some(1) => Ok(true),
         _ => Err("command pause state unreadable"),
+    }
+}
+
+pub fn paused(memory: &impl Memory, base: usize) -> Result<Option<bool>, &'static str> {
+    match in_game_idler(memory, base)? {
+        Some(idler) => idler_paused(memory, idler).map(Some),
+        None => Ok(None),
     }
 }
 

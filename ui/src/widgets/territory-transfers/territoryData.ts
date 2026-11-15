@@ -1,9 +1,10 @@
-import type { HourSpan, PeaceDeal, PeaceDealsReply, PeaceTransferCountry } from '../../generated/dashboard';
+import type { HourSpan } from '../../generated/dashboard';
 import { peaceDealHour, peaceDealIsBy, peaceDealKnownAt, peaceWarName } from '../../dashboard/peaceDealsData.ts';
 import { formatDate, formatDateTime, gameDate } from '../../dashboard/calendar.ts';
 import { campaignToken } from '../../dashboard/chosen.ts';
 import { contentKey, setToken } from '../../dashboard/options.ts';
 import { countryIdentityKey } from '../../dashboard/countryIdentity.ts';
+import type { PeaceDeal, PeaceDealsReply, PeaceTransferCountry } from '../../generated/dashboard';
 
 /** Conference handles hold only within their campaign and branch. */
 export const conferenceToken = (campaign: string, branch: string, id: string) => setToken(campaignToken(campaign, JSON.stringify([branch, id])));
@@ -210,9 +211,9 @@ export function transferHow(occurrence: TransferOccurrence, deal: PeaceDeal | un
   for (const item of deal.items) if (item.change.kind === 'newSubject' && item.change.subject === to) subjectOf = item.change.overlord;
   subjectOf ??= deal.captured?.subjects.find(subject => subject.subjectTag === to)?.overlordTag ?? null;
   const actions = deal.captured?.actions ?? [];
-  // The content's own action name, never a guessed one.
+  // The content's own action name, never a guessed one; a demand naming its country (a puppet's) releases none.
   const action = actions.find(action => action.name != null && action.state === occurrence.state && (action.takerTag == null || action.takerTag === to))
-    ?? (occurrence.released ? actions.find(action => action.name != null && action.countryOperandTag === to) : undefined);
+    ?? (occurrence.released ? actions.find(action => action.name != null && action.nameCountry == null && action.countryOperandTag === to) : undefined);
   return { released: occurrence.released, subjectOf, action: action?.name ?? null };
 }
 

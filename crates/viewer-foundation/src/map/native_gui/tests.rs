@@ -3576,9 +3576,7 @@ fn compiled_gui_past_the_dynamic_offset_limit_is_refused_and_counted() {
     use crate::map::native_shader::{self as shader, library};
     use std::sync::Arc;
     let _serial = serial();
-    let instance = eframe::wgpu::Instance::new(
-        eframe::wgpu::InstanceDescriptor::new_without_display_handle_from_env(),
-    );
+    let instance = shader_pipeline::gpu::instance();
     let adapter = pollster::block_on(
         instance.request_adapter(&eframe::wgpu::RequestAdapterOptions::default()),
     )

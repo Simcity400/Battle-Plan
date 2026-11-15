@@ -1,0 +1,470 @@
+//! Each country's name, map colour and flag as the game showed them, from the recorder's look
+//! history ([`recorder_derive::looks`]): its lifetimes give each tag's looks with their hours, a
+//! small table at each run's end what each look holds. `country-facts` gives every tag's over a
+//! whole timeline as runs, `country-styles` some tags' at one hour. Names are built at the reply
+//! in the reader's language from the recorded naming operands; flags are chosen in the recorded
+//! mod stack. Neither comes from a tag list, so mods and dynamic countries work, and a missing
+//! value stays missing rather than guessed. A reply's cost follows the looks' changes, not the
+//! campaign's hours.
+
+use super::{BranchParams, ContentOptions, LoadContext, Product, validate_tag};
+use crate::{
+    Source,
+    catalogue::plain_text,
+    content, invalid,
+    flag_choices,
+    products::country_flags::{CountryFlagChoice, FlagFolders},
+};
+use dashboard_query::{Query, read};
+use installed_content_country_names::country_names::CountryNames;
+use installed_content_localisation::localisation::Localisation;
+use recorder_derive::looks::Look;
+use replay::columnar_frames::Recording;
+use replay_data::rows::{Recorded, TableId, TagHolderRow};
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::HashMap,
+    io,
+    sync::{Arc, atomic::AtomicBool},
+};
+use ts_rs::TS;
+
+const NO_COLOUR: &str = "no recorded map colour";
+const NOT_A_COUNTRY: &str = "not a country at this hour";
+const UNKNOWN: &str = "the country tables are not complete at this hour";
+
+/// The chart's plain country name.
+pub fn country_name(names: &CountryNames<'_>, slot: u32) -> Result<String, String> {
+    names
+        .name(slot)
+        .and_then(|name| plain_text(&name).map_err(|reason| format!("its name holds {reason}")))
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CountryStyleParams {
+    pub branch_id: String,
+    pub hour: i32,
+    pub tags: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CountryStyle {
+    pub tag: String,
+    /// The name the game showed; null when it could not be resolved.
+    pub name: Option<String>,
+    /// The recorded map colour as sRGB bytes; null when not recorded this hour.
+    pub color: Option<[u8; 3]>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CountryStyleReply {
+    pub branch_id: String,
+    pub hour: i32,
+    pub styles: Vec<CountryStyle>,
+    pub warnings: Vec<String>,
+}
+
+/// Every country's style ([`CountryStyle`]) and flag at every hour the timeline's country tables
+/// were complete, as runs, so an hour is looked up rather than asked for.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CountryFactsReply {
+    pub branch_id: String,
+    /// The hours the runs answer, as `[first, last]` spans in order.
+    pub known: Vec<[i32; 2]>,
+    /// Names, each once; a run holds its index.
+    pub names: Vec<String>,
+    /// Why part of a style is missing, each once; a run holds its index.
+    pub reasons: Vec<String>,
+    /// Flag choices, each once; a run holds its index.
+    pub flags: Vec<CountryFlagChoice>,
+    pub countries: Vec<CountryFactRuns>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CountryFactRuns {
+    pub tag: String,
+    /// `[hour, name, colour, reason, flag]` from `hour` until the next run: the name's index in
+    /// `names`, the colour as `0xRRGGBB`, the reason's index in `reasons` and the flag choice's
+    /// index in `flags`, each -1 when there is none. A tag that is not a country has a run with
+    /// no name, colour or flag and its reason.
+    pub runs: Vec<[i32; 5]>,
+}
+
+dashboard_base::reply_warnings!(CountryStyleReply, CountryFactsReply);
+
+/// A tag's style from its look, and why part of it is missing.
+pub(crate) fn style(tag: &str, look: &Look, localisation: Option<&Localisation>) -> (CountryStyle, Option<String>) {
+    let (name, unnamed) = match localisation {
+        None => (None, None),
+        Some(localisation) => {
+            let names = CountryNames::recorded(localisation, look.chain.iter().cloned().collect(), look.built);
+            match country_name(&names, look.slot) {
+                Ok(name) => (Some(name), None),
+                Err(reason) => (None, Some(reason)),
+            }
+        }
+    };
+    let problem = match (unnamed, look.colour) {
+        (Some(reason), None) => Some(format!("{reason}; {NO_COLOUR}")),
+        (Some(reason), Some(_)) => Some(reason),
+        (None, None) => Some(NO_COLOUR.to_owned()),
+        (None, Some(_)) => None,
+    };
+    (CountryStyle { tag: tag.to_owned(), name, color: look.colour }, problem)
+}
+
+/// The chain of flag candidates a look's inputs give.
+fn flag_chain(tag: &str, look: &Look) -> flag_choices::Chain {
+    if (look.id as i32) <= 0 {
+        // Atlas population tests the object's own country reference.
+        return flag_choices::Chain { candidates: Vec::new(), refusal: Some(format!("country {} names no country object", look.id)) };
+    }
+    let appearance = look.flag.appearance.as_ref().map(|(cosmetic, reference, original)| flag_choices::Appearance {
+        cosmetic,
+        reference: *reference,
+        original: match original {
+            Recorded::NotRecorded => Recorded::NotRecorded,
+            Recorded::Value(original) => Recorded::Value(original.as_deref()),
+        },
+    });
+    flag_choices::Operands::of(look.id, tag.as_bytes(), appearance, look.flag.ruling, look.flag.group.as_deref()).chain()
+}
+
+/// One run's looks: each tag number's spans (its look's number, first and last hour), the hours
+/// no look is known, what each look number holds, and each tag number's tag.
+pub struct RunLooks {
+    pub spans: Vec<(u32, u32, i32, i32)>,
+    pub unknown: Vec<(i32, i32)>,
+    pub looks: HashMap<u32, Look>,
+    pub tags: HashMap<u32, Arc<str>>,
+}
+
+pub fn run_looks(recording: &Recording, run: u32) -> io::Result<RunLooks> {
+    let held = recording.run(run)?;
+    let end = held.first_hour + held.ordinals as i32 - 1;
+    let (mut looks, mut tags) = (HashMap::new(), HashMap::new());
+    let mut failed = None;
+    let held = read::at(recording, run, &[read::Read::all(TableId::LookFacts), read::Read::all(TableId::TagNames)], end)?;
+    let rows = held[0].view();
+    for slot in rows.rows() {
+        let (Some(key), Some(bytes)) = (rows.key(slot), read::text(&rows, 0, slot)) else { continue };
+        match Look::decode(bytes) {
+            Ok(look) => {
+                looks.insert(key as u32, look);
+            }
+            Err(error) => failed = Some(error),
+        }
+    }
+    let rows = held[1].view();
+    for slot in rows.rows() {
+        let (Some(key), Some(bytes)) = (rows.key(slot), read::text(&rows, 0, slot)) else { continue };
+        tags.insert(key as u32, Arc::from(String::from_utf8_lossy(bytes).as_ref()));
+    }
+    if let Some(error) = failed {
+        return Err(error);
+    }
+    let (mut spans, mut unknown) = (Vec::new(), Vec::new());
+    for (key, first, last) in dashboard_query::cost::lifetimes(recording, run, TableId::LookSpans)? {
+        let (number, look) = ((key >> 64) as u32, (key >> 32) as u32);
+        if number == TagHolderRow::UNKNOWN {
+            unknown.push((first as i32, last as i32));
+        } else {
+            spans.push((number, look, first as i32, last as i32));
+        }
+    }
+    Ok(RunLooks { spans, unknown, looks, tags })
+}
+
+/// The names' localisation, or why there is none, with the warnings names read in it carry.
+pub(crate) fn localisation(source: &Source, content: Option<&ContentOptions>, warnings: &mut Vec<String>) -> io::Result<Option<Arc<Localisation>>> {
+    let localisation = content::name_localisation(source, content);
+    match (&localisation, content) {
+        (Err(reason), _) => warnings.push(reason.clone()),
+        (Ok(_), Some(content)) => content::check_replay(source.replay_ref(), content.allow_unverified, warnings)?,
+        (Ok(_), None) => {}
+    }
+    Ok(localisation.ok())
+}
+
+/// The recorded mod stack's flag folders, or why flags cannot be chosen there.
+fn flag_folders(source: &Source, content: Option<&ContentOptions>) -> io::Result<Result<FlagFolders, String>> {
+    let Some(content) = content else {
+        return Ok(Err("flags cannot be chosen: Game content is not configured".to_owned()));
+    };
+    let folders = content::check_replay(source.replay_ref(), content.allow_unverified, &mut Vec::new())
+        .and_then(|()| source.content(&content.options))
+        .and_then(|resolved| FlagFolders::read(&resolved));
+    match folders {
+        Ok(folders) => Ok(Ok(folders)),
+        Err(error) if error.kind() == io::ErrorKind::Interrupted => Err(error),
+        Err(error) => Ok(Err(format!("flags cannot be chosen: {error}"))),
+    }
+}
+
+/// Numbers texts by first use, as a reply's dictionary.
+#[derive(Default)]
+struct Dictionary {
+    numbered: HashMap<String, i32>,
+    texts: Vec<String>,
+}
+
+impl Dictionary {
+    fn number(&mut self, text: &str) -> i32 {
+        if let Some(&number) = self.numbered.get(text) {
+            return number;
+        }
+        let number = self.texts.len() as i32;
+        self.numbered.insert(text.to_owned(), number);
+        self.texts.push(text.to_owned());
+        number
+    }
+}
+
+/// Every tag's styles over `query`'s timeline ([`CountryFactsReply`]). A tag's facts are given
+/// at the first known hour, and again at every known hour they change.
+fn facts(source: &Source, query: &Query<'_>, branch_id: &str, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<CountryFactsReply> {
+    let mut warnings = Vec::new();
+    let localisation = localisation(source, context.content.as_ref(), &mut warnings)?;
+    // Without folders, every country's flag is the one choice naming why on each atlas.
+    let folders = flag_folders(source, context.content.as_ref())?.map_err(|reason| CountryFlagChoice {
+        keys: [None, None, None],
+        reasons: [Some(reason.clone()), Some(reason.clone()), Some(reason)],
+    });
+    let (mut names, mut reasons) = (Dictionary::default(), Dictionary::default());
+    let mut flags: Vec<CountryFlagChoice> = Vec::new();
+    let mut flag_numbers: HashMap<CountryFlagChoice, i32> = HashMap::new();
+    let mut known: Vec<[i32; 2]> = Vec::new();
+    // Each tag's segments: (first, last, its fact as given), none where it is no country.
+    let mut segments: HashMap<Arc<str>, Vec<(i32, i32, Option<[i32; 4]>)>> = HashMap::new();
+    let mut runs_read: HashMap<u32, Arc<RunLooks>> = HashMap::new();
+    let mut given: HashMap<(u32, u32, Arc<str>), [i32; 4]> = HashMap::new();
+    for stretch in &query.timeline.stretches {
+        crate::metadata::check_cancel(cancelled)?;
+        if !runs_read.contains_key(&stretch.run) {
+            runs_read.insert(stretch.run, crate::answer::looks(source, stretch.run)?);
+        }
+        let run = &runs_read[&stretch.run];
+        // The stretch's known hours: all but the unknown spans.
+        let mut cursor = stretch.first;
+        let mut unknown: Vec<(i32, i32)> = run.unknown.iter().map(|&(a, b)| (a.max(stretch.first), b.min(stretch.last))).filter(|(a, b)| a <= b).collect();
+        unknown.sort_unstable();
+        for (a, b) in unknown {
+            if a > cursor {
+                known.push([cursor, a - 1]);
+            }
+            cursor = cursor.max(b + 1);
+        }
+        if cursor <= stretch.last {
+            known.push([cursor, stretch.last]);
+        }
+        for &(number, look_number, first, last) in &run.spans {
+            let (first, last) = (first.max(stretch.first), last.min(stretch.last));
+            if first > last {
+                continue;
+            }
+            let Some(tag) = run.tags.get(&number) else { continue };
+            let Some(look) = run.looks.get(&look_number) else {
+                return Err(invalid("A look span names no look"));
+            };
+            let key = (stretch.run, look_number, Arc::clone(tag));
+            let fact = match given.get(&key) {
+                Some(&fact) => fact,
+                None => {
+                    let (style, problem) = style(tag, look, localisation.as_deref());
+                    let choice = match &folders {
+                        Ok(folders) => folders.choose(&flag_chain(tag, look))?,
+                        Err(none) => none.clone(),
+                    };
+                    let flag = *flag_numbers.entry(choice).or_insert_with_key(|choice| {
+                        flags.push(choice.clone());
+                        flags.len() as i32 - 1
+                    });
+                    let fact = [
+                        style.name.as_deref().map_or(-1, |name| names.number(name)),
+                        style.color.map_or(-1, |[red, green, blue]| (i32::from(red) << 16) | (i32::from(green) << 8) | i32::from(blue)),
+                        problem.map_or(-1, |problem| reasons.number(&problem)),
+                        flag,
+                    ];
+                    given.insert(key, fact);
+                    fact
+                }
+            };
+            segments.entry(Arc::clone(tag)).or_default().push((first, last, Some(fact)));
+        }
+    }
+    known.sort_unstable();
+    let mut joined: Vec<[i32; 2]> = Vec::with_capacity(known.len());
+    for span in known {
+        match joined.last_mut() {
+            Some(held) if i64::from(held[1]) + 1 >= i64::from(span[0]) => held[1] = held[1].max(span[1]),
+            _ => joined.push(span),
+        }
+    }
+    let known = joined;
+    // Numbered only when a run gives it.
+    let not_a_country = [-1, -1, -2, -1];
+    let mut countries: Vec<CountryFactRuns> = segments
+        .into_iter()
+        .map(|(tag, mut held)| {
+            held.sort_unstable_by_key(|segment| segment.0);
+            let mut runs: Vec<[i32; 5]> = Vec::new();
+            let mut last: Option<[i32; 4]> = None;
+            let mut give = |hour: i32, fact: [i32; 4], runs: &mut Vec<[i32; 5]>| {
+                if last != Some(fact) {
+                    runs.push([hour, fact[0], fact[1], fact[2], fact[3]]);
+                    last = Some(fact);
+                }
+            };
+            let mut next = 0;
+            for &[first, end] in &known {
+                let mut cursor = first;
+                while next < held.len() && held[next].0 <= end {
+                    let (a, b, fact) = held[next];
+                    if a > cursor {
+                        give(cursor, not_a_country, &mut runs);
+                    }
+                    give(a.max(cursor), fact.unwrap_or(not_a_country), &mut runs);
+                    cursor = b + 1;
+                    next += 1;
+                }
+                if cursor <= end {
+                    give(cursor, not_a_country, &mut runs);
+                }
+            }
+            // A tag given nothing before it was first held starts as no country, not as nothing.
+            CountryFactRuns { tag: tag.to_string(), runs }
+        })
+        .filter(|country| !country.runs.is_empty())
+        .collect();
+    countries.sort_unstable_by(|a, b| a.tag.cmp(&b.tag));
+    if countries.iter().flat_map(|country| &country.runs).any(|run| run[3] == -2) {
+        let reason = reasons.number(NOT_A_COUNTRY);
+        for run in countries.iter_mut().flat_map(|country| country.runs.iter_mut()) {
+            if run[3] == -2 {
+                run[3] = reason;
+            }
+        }
+    }
+    Ok(CountryFactsReply {
+        branch_id: branch_id.to_owned(),
+        known,
+        names: names.texts,
+        reasons: reasons.texts,
+        flags,
+        countries,
+        warnings,
+    })
+}
+
+pub struct CountryFacts;
+
+impl Product for CountryFacts {
+    const KEY: &'static str = "country-facts";
+    const CONTENT_DEPENDENT: bool = true;
+    type Params = BranchParams;
+    type Reply = CountryFactsReply;
+
+    fn types() -> Vec<String> {
+        vec![CountryFactRuns::decl(), CountryFlagChoice::decl(), CountryFactsReply::decl()]
+    }
+
+    fn validate(params: &Self::Params) -> Result<(), &'static str> {
+        params.branch_id.parse::<u64>().map(|_| ()).map_err(|_| "Invalid country facts branch")
+    }
+
+    fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
+        let branch = params.branch_id.parse::<u64>().map_err(|_| invalid("Invalid country facts branch"))?;
+        let query = crate::answer::query(source, branch)?;
+        facts(source, &query, &params.branch_id, context, cancelled)
+    }
+}
+
+pub struct CountryStyles;
+
+impl Product for CountryStyles {
+    const KEY: &'static str = "country-styles";
+    const CONTENT_DEPENDENT: bool = true;
+    const INTERACTIVE: bool = true;
+    type Params = CountryStyleParams;
+    type Reply = CountryStyleReply;
+
+    fn types() -> Vec<String> {
+        vec![CountryStyleParams::decl(), CountryStyle::decl(), CountryStyleReply::decl()]
+    }
+
+    fn validate(params: &Self::Params) -> Result<(), &'static str> {
+        if params.tags.is_empty() {
+            return Err("Invalid country style selection");
+        }
+        for tag in &params.tags {
+            validate_tag(tag)?;
+        }
+        params.branch_id.parse::<u64>().map(|_| ()).map_err(|_| "Invalid country style branch")
+    }
+
+    fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
+        crate::metadata::check_cancel(cancelled)?;
+        let branch = params.branch_id.parse::<u64>().map_err(|_| invalid("Invalid country style branch"))?;
+        let query = crate::answer::query(source, branch)?;
+        if query.timeline.at(params.hour).is_none() {
+            let reason = query.timeline.reason(params.hour);
+            return Err(dashboard_base::gap_error(&reason, format!("Country styles unavailable at this hour: {reason}")));
+        }
+        let mut warnings = Vec::new();
+        let localisation = localisation(source, context.content.as_ref(), &mut warnings)?;
+        let stretch = query.timeline.at(params.hour).copied().ok_or_else(|| invalid("The timeline holds no such hour"))?;
+        let run = crate::answer::looks(source, stretch.run)?;
+        let known = !run.unknown.iter().any(|&(a, b)| a <= params.hour && params.hour <= b);
+        let mut at: HashMap<&str, &Look> = HashMap::new();
+        for &(number, look, first, last) in &run.spans {
+            if first <= params.hour && params.hour <= last
+                && let (Some(tag), Some(look)) = (run.tags.get(&number), run.looks.get(&look))
+            {
+                at.insert(tag, look);
+            }
+        }
+        let styles = params
+            .tags
+            .iter()
+            .map(|tag| {
+                let missing = |reason: &str, warnings: &mut Vec<String>| {
+                    warnings.push(format!("{tag}: {reason}"));
+                    CountryStyle { tag: tag.clone(), name: None, color: None }
+                };
+                match at.get(tag.as_str()) {
+                    Some(look) => {
+                        let (style, problem) = style(tag, look, localisation.as_deref());
+                        warnings.extend(problem.map(|problem| format!("{tag}: {problem}")));
+                        style
+                    }
+                    _ if !known => missing(UNKNOWN, &mut warnings),
+                    _ => missing(NOT_A_COUNTRY, &mut warnings),
+                }
+            })
+            .collect();
+        Ok(CountryStyleReply {
+            branch_id: params.branch_id.clone(),
+            hour: params.hour,
+            styles,
+            warnings,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A selection of 1,500 countries, as a campaign with that many may make, is one valid request.
+    #[test]
+    fn a_style_request_naming_1500_countries_is_valid() {
+        let params = CountryStyleParams { branch_id: "1".into(), hour: 0, tags: (0..1_500).map(|at| format!("X{at:04}")).collect() };
+        assert_eq!(CountryStyles::validate(&params), Ok(()));
+    }
+}

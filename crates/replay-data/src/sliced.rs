@@ -37,7 +37,6 @@ use crate::{codec::invalid_static as invalid, rows::RowCodec};
 use engine_allocation as allocation;
 use std::io;
 
-pub(crate) mod ranges;
 #[macro_use]
 mod update;
 pub use update::{SliceUpdate, takes_keyed_updates};

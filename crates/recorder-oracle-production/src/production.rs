@@ -37,7 +37,7 @@ pub fn compare(
     let mut complete = report.attempt("ProductionLines", |report| {
         compare_lines(frame, saved, links, report)
     });
-    if daily_read(frame.hour, &frame.metrics, TableId::ProductionLineModifiers) {
+    if daily_read(&frame.metrics, TableId::ProductionLineModifiers) {
         complete &= report.attempt("ProductionLineModifiers", |report| {
             compare_modifiers(frame, &saved.production, links, report)
         });

@@ -17,6 +17,8 @@ struct Held {
     store: usize,
     medals: Option<(u64, u64)>,
     counts: [usize; 2],
+    /// The latest career entry and its province count, which the game grows in place unobserved.
+    latest: Option<(usize, u32)>,
     available: bool,
     edit_epoch: Option<u64>,
 }
@@ -91,6 +93,13 @@ fn quiet(held: &Held, seed: &DivisionSeed, taken: &crate::observations::Taken) -
             || held
                 .medals
                 .is_some_and(|medals| taken.quiet(held.store, medals.0)))
+}
+/// Whether `held`'s latest career entry still holds the provinces it was read with.
+fn latest_unchanged(memory: &impl Memory, held: &Held) -> bool {
+    !held.available
+        || held.latest.is_none_or(|(address, provinces)| {
+            unit_history::province_count(memory, address) == Ok(provinces)
+        })
 }
 fn key(division: u64, list: u8, ordinal: u32) -> u128 {
     ((division as u128) << 34) | ((list as u128) << 32) | ordinal as u128
@@ -347,6 +356,7 @@ impl Store {
                     })
                 })
                 && (identity.is_ok() || !held.available)
+                && latest_unchanged(memory, held)
         }) {
             self.next.push(held.clone());
             changes::carried();
@@ -361,6 +371,7 @@ impl Store {
             store: 0,
             medals: None,
             counts: [0; 2],
+            latest: None,
             available: false,
             edit_epoch: self.edit_epoch,
         };
@@ -389,15 +400,16 @@ impl Store {
                     && held.edit_epoch == self.edit_epoch
                     && !lifetime
             });
-            let starts = [0, 1].map(|list| {
+            let kept = [0, 1].map(|list| {
                 prefix
                     .filter(|held| {
                         !(list == 1 && store_edit) && held.counts[list] <= next.counts[list]
                     })
-                    .map_or(0, |held| held.counts[list] as u32)
+                    .map(|held| held.counts[list].saturating_sub(usize::from(list == 0)) as u32)
             });
-            for (index, &first) in starts.iter().enumerate() {
-                if first == 0 {
+            let starts = kept.map(|first| first.unwrap_or(0));
+            for (index, first) in kept.iter().enumerate() {
+                if first.is_none() {
                     let list = index as u8 + 1;
                     remove(
                         &mut self.rows,
@@ -434,8 +446,7 @@ impl Store {
                     };
                     for (&(_, entry_key), _) in bindings.range((address, 0)..=(address, u128::MAX))
                     {
-                        // A fully refreshed list's old bindings have already
-                        // been cleared in the serial pass, before edited reads.
+                        // A list read from its start is read whole below.
                         let list = ((entry_key >> 32) & 3) as usize;
                         if starts[list - 1] == 0 {
                             continue;
@@ -464,6 +475,9 @@ impl Store {
                     // An uncertified individual entry cannot certify an immutable prefix.
                     if changes::edit_sequence(address).is_none() {
                         next.edit_epoch = None;
+                    }
+                    if !awards {
+                        next.latest = Some((address, entry.provinces.len() as u32));
                     }
                     let row = project(
                         memory,
@@ -583,7 +597,7 @@ fn project(
         .sunk_ship
         .map(|pointer| {
             let (record, len) =
-                csunk_ship_info::read_one_growing(memory, base, pointer, ship_text)?;
+                csunk_ship_info::read_one(memory, base, pointer, ship_text)?;
             let text = |range: csunk_ship_info::TextRange| {
                 allocation::copy_vec(&ship_text[..len][range.start..range.start + range.len])
                     .map_err(|_| "division history sunk-ship text allocation failed")
@@ -639,23 +653,21 @@ fn project(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::army_stat_changes::{HISTORY_TEST, serial};
     use engine_native::{carmy, cgame_date, unit_history as native};
     use replay_data::rows::{TableRows, tables};
     use std::cell::Cell;
     struct World {
         bytes: Vec<u8>,
         reads: Cell<usize>,
-        deny: Cell<bool>,
         blocked: Cell<Option<(usize, usize)>>,
     }
     impl Memory for World {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             self.reads.set(self.reads.get() + 1);
-            if self.deny.get()
-                || self.blocked.get().is_some_and(|(start, end)| {
-                    address < end && address.saturating_add(output.len()) > start
-                })
-            {
+            if self.blocked.get().is_some_and(|(start, end)| {
+                address < end && address.saturating_add(output.len()) > start
+            }) {
                 return false;
             }
             let Some(bytes) = address
@@ -725,8 +737,8 @@ mod tests {
         put(bytes, entries + 8, 0x7000_u64.to_le_bytes());
     }
     #[test]
-    fn experience_history_carries_without_reads_and_refreshes_only_the_writer_dirty_division() {
-        let _serial = crate::army_stat_changes::HISTORY_TEST.lock().unwrap();
+    fn experience_history_carries_on_one_read_each_and_refreshes_only_the_writer_dirty_division() {
+        let _serial = serial(&HISTORY_TEST);
         for owned in [false, true] {
             let begin = |store: &mut Store| {
                 if owned {
@@ -744,7 +756,6 @@ mod tests {
             let mut world = World {
                 bytes: vec![0; 0x9000],
                 reads: Cell::new(0),
-                deny: Cell::new(false),
                 blocked: Cell::new(None),
             };
             root(&mut world.bytes, 0x1000, 0x4000, 0x6000);
@@ -788,7 +799,6 @@ mod tests {
             assert_eq!(rows[2].ordinal, 1);
             assert_eq!(rows[0].available, 1);
             world.reads.set(0);
-            world.deny.set(true);
             begin(&mut store);
             for (index, seed) in seeds.iter().enumerate() {
                 let prepared = owned
@@ -798,7 +808,8 @@ mod tests {
             }
             let quiet = store.finish().unwrap();
             assert!(Arc::ptr_eq(&first, &quiet));
-            assert_eq!(world.reads.get(), 0);
+            // Each carried history reads only its latest career entry's province count.
+            assert_eq!(world.reads.get(), 2);
             assert!(
                 store.order.is_empty(),
                 "stable unsorted census needs no locator rebuild"
@@ -811,7 +822,6 @@ mod tests {
                     .collect::<Vec<_>>(),
                 [2, 1]
             );
-            world.deny.set(false);
             put(
                 &mut world.bytes,
                 0x4000 + native::AWARD_AMOUNT,
@@ -833,10 +843,13 @@ mod tests {
             assert_eq!(next[0].amount, 8);
             assert!(Arc::ptr_eq(&rows[1], &next[1]));
             assert!(Arc::ptr_eq(&rows[3], &next[3]));
-            // A new career occurrence must not reacquire any existing entry,
-            // even when the campaign already holds repeats of that entry.
+            // A new career occurrence rereads the latest held entry and no earlier one, even
+            // when the campaign already holds repeats of that entry: the first occurrence is
+            // moved to an unreadable copy here, so reading it would refuse the history.
             let appended = world.bytes[entry..entry + 0x148].to_vec();
             put(&mut world.bytes, 0x7200, &appended);
+            put(&mut world.bytes, 0x7400, &appended);
+            put(&mut world.bytes, 0x6000, 0x7400u64.to_le_bytes());
             put(&mut world.bytes, 0x6010, 0x7200u64.to_le_bytes());
             put(
                 &mut world.bytes,
@@ -848,7 +861,7 @@ mod tests {
                 0x1000 + native::DIVISION_HISTORY + native::HISTORY_ENTRIES + 12,
                 3u32.to_le_bytes(),
             );
-            world.blocked.set(Some((entry, entry + 0x148)));
+            world.blocked.set(Some((0x7400, 0x7400 + 0x148)));
             drop(changes::notify(0x1000 + native::DIVISION_HISTORY));
             begin(&mut store);
             for (index, seed) in seeds.iter().enumerate() {
@@ -868,10 +881,10 @@ mod tests {
             assert_eq!(appended_rows[0].available, 1);
             assert_eq!(appended_rows[3].ordinal, 2);
             assert!(Arc::ptr_eq(&rows[1], &appended_rows[1]));
-            world.blocked.set(None);
             // Refusal replaces only the affected root and is carried without rereading it.
-            drop(changes::notify(0x1000 + native::DIVISION_HISTORY));
-            world.deny.set(true);
+            let history = 0x1000 + native::DIVISION_HISTORY;
+            world.blocked.set(Some((history, history + 8)));
+            drop(changes::notify(history));
             begin(&mut store);
             for (index, seed) in seeds.iter().enumerate() {
                 let prepared = owned
@@ -896,7 +909,151 @@ mod tests {
                 store.observe_prepared(&world, 0, seed, prepared, None).unwrap();
             }
             assert!(Arc::ptr_eq(&refused, &store.finish().unwrap()));
-            assert_eq!(world.reads.get(), 0);
+            // Only the available division checks its latest career entry.
+            assert_eq!(world.reads.get(), 1);
+            changes::patched(false);
+            changes::forwarder(false);
+        }
+    }
+    /// The game adds the province of a second event of the latest entry's kind to that entry in
+    /// place, with no writer the hooks see: the next hour records the grown entry, alone and
+    /// beside an append, and rereads no earlier entry.
+    #[test]
+    fn a_latest_career_entry_grown_in_place_is_recorded_alone_and_beside_an_append() {
+        let _serial = serial(&HISTORY_TEST);
+        for owned in [false, true] {
+            changes::patched(true);
+            changes::forwarder(true);
+            changes::demand(1);
+            changes::presize();
+            changes::boundary(false);
+            let mut world = World {
+                bytes: vec![0; 0x9000],
+                reads: Cell::new(0),
+                blocked: Cell::new(None),
+            };
+            let army = 0x1000;
+            let history = army + native::DIVISION_HISTORY;
+            root(&mut world.bytes, army, 0x4000, 0x6000);
+            put(
+                &mut world.bytes,
+                history + native::HISTORY_ENTRIES + 8,
+                4_u32.to_le_bytes(),
+            );
+            let (earlier, latest, appended) = (0x7000, 0x7200, 0x7400);
+            for at in [earlier, latest, appended] {
+                put(
+                    &mut world.bytes,
+                    at,
+                    (native::ENTRY_VTABLE_RVA.0 as u64).to_le_bytes(),
+                );
+                for text in [8, 0x28] {
+                    put(&mut world.bytes, at + text + 24, 15_u64.to_le_bytes());
+                }
+                put(
+                    &mut world.bytes,
+                    at + 0x50,
+                    (cgame_date::VTABLE_RVA.0 as u64).to_le_bytes(),
+                );
+                put(
+                    &mut world.bytes,
+                    at + 0x60,
+                    (cgame_date::PERSISTENT_VTABLE_RVA.0 as u64).to_le_bytes(),
+                );
+                put(&mut world.bytes, at + 0x138, 100_000_i64.to_le_bytes());
+            }
+            put(&mut world.bytes, 0x6008, (latest as u64).to_le_bytes());
+            let provinces = 0x7800;
+            for (index, (province, id)) in [(0x8000, 9263_u32), (0x8100, 362), (0x8200, 7)]
+                .into_iter()
+                .enumerate()
+            {
+                put(
+                    &mut world.bytes,
+                    province + engine_native::cprovince::ID,
+                    id.to_le_bytes(),
+                );
+                put(
+                    &mut world.bytes,
+                    provinces + index * 8,
+                    (province as u64).to_le_bytes(),
+                );
+            }
+            put(
+                &mut world.bytes,
+                latest + 0x120,
+                (provinces as u64).to_le_bytes(),
+            );
+            put(&mut world.bytes, latest + 0x128, 4_u32.to_le_bytes());
+            let grow = |world: &mut World, count: u32| {
+                put(&mut world.bytes, latest + 0x12c, count.to_le_bytes());
+            };
+            grow(&mut world, 1);
+            let division = seed(army, 1);
+            let mut store = Store::default();
+            let mut order = crate::division_experience::Order::default();
+            let mut hour = |store: &mut Store, world: &World| {
+                if owned {
+                    store.begin_owned(1).unwrap();
+                } else {
+                    store.begin(1).unwrap();
+                }
+                let prepared = owned
+                    .then(|| store.prefetch_certificates(0, &division, &mut order))
+                    .flatten();
+                store
+                    .observe_prepared(world, 0, &division, prepared, None)
+                    .unwrap();
+                let snapshot = store.finish().unwrap();
+                let TableRows::DivisionHistory(rows) =
+                    snapshot.complete::<tables::DivisionHistory>().unwrap()
+                else {
+                    panic!()
+                };
+                let careers: Vec<_> = rows
+                    .iter()
+                    .filter(|row| row.list == DivisionHistoryRow::CAREER)
+                    .cloned()
+                    .collect();
+                (snapshot, careers)
+            };
+            let (_, first) = hour(&mut store, &world);
+            assert_eq!(
+                first
+                    .iter()
+                    .map(|row| row.provinces.clone())
+                    .collect::<Vec<_>>(),
+                [vec![], vec![9263]]
+            );
+            grow(&mut world, 2);
+            world.blocked.set(Some((earlier, earlier + 0x148)));
+            let (grown, careers) = hour(&mut store, &world);
+            assert_eq!(careers[1].provinces, [9263, 362]);
+            assert!(Arc::ptr_eq(&first[0], &careers[0]));
+            assert_eq!(grown.changed.len(), 1);
+            world.reads.set(0);
+            let (quiet, _) = hour(&mut store, &world);
+            assert!(Arc::ptr_eq(&grown, &quiet));
+            assert_eq!(world.reads.get(), 1);
+            // The entry grows again in the hour an observed append adds the next one.
+            grow(&mut world, 3);
+            put(&mut world.bytes, 0x6010, (appended as u64).to_le_bytes());
+            put(
+                &mut world.bytes,
+                history + native::HISTORY_ENTRIES + 12,
+                3_u32.to_le_bytes(),
+            );
+            drop(changes::notify(history));
+            let (both, careers) = hour(&mut store, &world);
+            assert_eq!(
+                careers
+                    .iter()
+                    .map(|row| (row.ordinal, row.provinces.clone()))
+                    .collect::<Vec<_>>(),
+                [(0, vec![]), (1, vec![9263, 362, 7]), (2, vec![])]
+            );
+            assert!(Arc::ptr_eq(&first[0], &careers[0]));
+            assert_eq!(both.changed.len(), 2);
             changes::patched(false);
             changes::forwarder(false);
         }
@@ -915,6 +1072,7 @@ mod tests {
             store: 0,
             medals: None,
             counts: [0; 2],
+            latest: None,
             available: false,
             edit_epoch: None,
         };
@@ -955,7 +1113,7 @@ mod tests {
     }
     #[test]
     fn an_uncertified_entry_edit_rereads_every_history_holding_the_entry() {
-        let _serial = crate::army_stat_changes::HISTORY_TEST.lock().unwrap();
+        let _serial = serial(&HISTORY_TEST);
         changes::patched(true);
         changes::forwarder(true);
         changes::demand(2);
@@ -964,7 +1122,6 @@ mod tests {
         let mut world = World {
             bytes: vec![0; 0x9000],
             reads: Cell::new(0),
-            deny: Cell::new(false),
             blocked: Cell::new(None),
         };
         root(&mut world.bytes, 0x1000, 0x4000, 0x6000);

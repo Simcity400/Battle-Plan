@@ -268,7 +268,7 @@ fn format99_unlock_decision_reads_instant_flag_only_for_positive_delay() {
             output
                 .refusals
                 .keys()
-                .any(|why| why.contains("SimulationFeatures.instant_decisions"))
+                .any(|why| why.contains("instant decisions of simulation features"))
         );
     }
     let definition = database
@@ -1087,7 +1087,7 @@ fn unlock_mio_policy_block_refuses_only_unrecorded_roster() {
             .keys()
             .next()
             .unwrap()
-            .contains("CountryCounterInputs.mio_policies")
+            .contains("mio policies of country counter inputs")
     );
 }
 
@@ -1149,7 +1149,7 @@ fn format99_mio_policy_uses_cached_membership_content_and_modifiers() {
             output
                 .refusals
                 .keys()
-                .any(|why| why.contains("CountryCounterInputs.mio_policies"))
+                .any(|why| why.contains("mio policies of country counter inputs"))
         );
     }
     for (policies, expected) in [
@@ -1684,7 +1684,7 @@ fn removal_refuses_unread_seed_but_fixed_seed_bypasses_it_and_missing_instance_i
         historical
             .refusals
             .keys()
-            .any(|why| why.contains("Decisions.description_seed not recorded"))
+            .any(|why| why.contains("description seed of decisions not recorded"))
     );
     database
         .entries

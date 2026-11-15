@@ -44,7 +44,7 @@ pub(super) fn collect(
     state: usize,
     capacity: &mut Capacity,
 ) -> Result<(), &'static str> {
-    let count = rows(corders_group::walk_roots(memory, base, &mut []))?;
+    let count = rows(corders_group::count_roots(memory, base))?;
     capacity.groups = count;
     let mut roots =
         crate::allocation::default_vec(count).map_err(|_| "execution sizing allocation failed")?;
@@ -70,7 +70,6 @@ pub(super) fn collect(
         (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     let mut plan_order = order::PlanOrder::default();
     let mut hosts = AssignedSources::default();
-    hosts.enable_worker_growth();
     let report = order::walk_plans_ordered_with_sources(
         memory,
         base,
@@ -135,7 +134,6 @@ pub(super) fn collect(
         ..Default::default()
     })
     .map_err(|_| "execution sizing allocation failed")?;
-    prepared.enable_worker_growth();
     let orders = Orders {
         roots: &roots,
         root_source,

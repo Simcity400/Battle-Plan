@@ -7,21 +7,9 @@ export const log = (...args) => console.log(new Date().toISOString().slice(11, 2
 const PROBE = new URL('./probe.js', import.meta.url);
 const APP_PAGE = /^http:\/\/tauri\.localhost\//;
 
-export async function connect(port, { timeoutMs = 120_000 } = {}) {
-  const deadline = Date.now() + timeoutMs;
-  let target = null;
-  while (!target) {
-    try {
-      const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(5000) })).json();
-      // The main window, never a pop-out's page.
-      target = targets.find(t => t.type === 'page' && APP_PAGE.test(t.url) && t.title === 'Battle Plan') ?? null;
-    } catch { /* not listening yet */ }
-    if (!target) {
-      if (Date.now() > deadline) throw new Error(`no desktop app page on port ${port} within ${timeoutMs / 1000} s`);
-      await sleep(500);
-    }
-  }
-  const socket = new WebSocket(target.webSocketDebuggerUrl);
+/** A DevTools protocol session on one target's socket: `send` a command, `on` an event (it returns the unsubscribe). */
+export async function cdpSession(url) {
+  const socket = new WebSocket(url);
   await new Promise((resolve, reject) => { socket.onopen = resolve; socket.onerror = () => reject(new Error('CDP connection failed')); });
   let sequence = 0;
   const pending = new Map(), listeners = new Map();
@@ -37,14 +25,39 @@ export async function connect(port, { timeoutMs = 120_000 } = {}) {
     }
     for (const listener of listeners.get(message.method) ?? []) listener(message.params);
   };
-  socket.onclose = () => { for (const item of pending.values()) item.reject(new Error('CDP connection closed')); pending.clear(); };
-  const on = (method, listener) => { if (!listeners.has(method)) listeners.set(method, []); listeners.get(method).push(listener); };
+  socket.onclose = ({ code, reason }) => {
+    for (const item of pending.values()) item.reject(new Error(`CDP connection closed (${code}${reason ? ` ${reason}` : ''}) during ${item.method}`));
+    pending.clear();
+  };
+  const on = (method, listener) => {
+    if (!listeners.has(method)) listeners.set(method, new Set());
+    listeners.get(method).add(listener);
+    return () => { listeners.get(method)?.delete(listener); };
+  };
   const send = (method, params = {}, timeout = 60_000) => new Promise((resolve, reject) => {
     const id = ++sequence;
     const timer = setTimeout(() => { pending.delete(id); reject(new Error(`CDP ${method} timed out`)); }, timeout);
     pending.set(id, { resolve, reject, timer, method });
     socket.send(JSON.stringify({ id, method, params }));
   });
+  return { send, on, close: () => socket.close() };
+}
+
+export async function connect(port, { timeoutMs = 120_000 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  let target = null;
+  while (!target) {
+    try {
+      const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(5000) })).json();
+      // The main window, never a pop-out's page.
+      target = targets.find(t => t.type === 'page' && APP_PAGE.test(t.url) && t.title === 'Battle Plan') ?? null;
+    } catch { /* not listening yet */ }
+    if (!target) {
+      if (Date.now() > deadline) throw new Error(`no desktop app page on port ${port} within ${timeoutMs / 1000} s`);
+      await sleep(500);
+    }
+  }
+  const { send, on, close } = await cdpSession(target.webSocketDebuggerUrl);
   const evaluate = async (expression, timeout = 60_000) => {
     const result = await send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }, timeout);
     if (result.exceptionDetails) throw new Error(`page: ${(result.exceptionDetails.exception?.description ?? result.exceptionDetails.text).slice(0, 1500)}`);
@@ -102,6 +115,6 @@ export async function connect(port, { timeoutMs = 120_000 } = {}) {
     },
     type: text => send('Input.insertText', { text }),
     async screenshot() { return Buffer.from((await send('Page.captureScreenshot', { format: 'png' })).data, 'base64'); },
-    close: () => socket.close(),
+    close,
   };
 }

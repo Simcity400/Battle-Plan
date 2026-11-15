@@ -685,13 +685,13 @@ impl<'a> Formatter<'_, '_, 'a> {
                     .world
                     .token_of(operand)
                     .map_err(|why| why.to_string())?
-                    .ok_or("tactic operand is absent from LexicalTokens")?;
+                    .ok_or("tactic operand is absent from lexical tokens")?;
                 let stored = self
                     .evaluator
                     .world
                     .token(token)
                     .map_err(|why| why.to_string())?
-                    .ok_or("tactic token has no LexicalTokens literal")?;
+                    .ok_or("tactic token has no lexical tokens literal")?;
                 let resolved = (self.tactic_name)(stored)?; // Resolve a named tactic or the null tactic.
                 let label = self.localised(&resolved, &[])?;
                 self.localised(

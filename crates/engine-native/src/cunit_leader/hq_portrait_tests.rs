@@ -57,19 +57,19 @@ impl Fixture {
 #[test]
 fn hq_scope_is_camera_independent_deduplicated_and_fresh() {
     let mut f = Fixture::new();
-    let mut sources = [(0, 0); 4];
-    let mut rows = [PortraitRow::default(); 4];
+    let mut sources = vec![(0, 0); 4];
+    let mut rows = vec![PortraitRow::default(); 4];
     let result = walk_hq_portraits(&f.memory(), 0, &f.roots, &mut sources, &mut rows);
     assert_eq!(result.outcome, Outcome::Rows { len: 1 });
     assert_eq!(result.sources, Outcome::Rows { len: 1 });
     assert_eq!(sources[0], ((1 << 32) | u64::from(REFERENCE_TYPE), 0x1000));
     assert_eq!(rows[0].character, (99 << 32) | 73);
-    assert_eq!(rows[0].strings.map(|s| s.as_bytes()[0]), [b'a', b'b', b'c']);
+    assert_eq!(rows[0].strings.iter().map(|s| s.as_bytes()[0]).collect::<Vec<_>>(), [b'a', b'b', b'c']);
     f.put(0x6300 + group::LEADER, 0x3000);
     let result = walk_hq_portraits(&f.memory(), 0, &f.roots, &mut sources, &mut rows);
     assert_eq!(result.outcome, Outcome::Rows { len: 2 });
     assert_eq!(rows[1].character, 0);
-    assert_eq!(rows[1].strings.map(|s| s.as_bytes()[0]), [b'b', b'c', b'd']);
+    assert_eq!(rows[1].strings.iter().map(|s| s.as_bytes()[0]).collect::<Vec<_>>(), [b'b', b'c', b'd']);
     for index in 0..4 {
         f.put(0x6000 + index * 0x100 + group::HQ_PROVIDER, 0);
     }
@@ -85,7 +85,7 @@ fn hq_scope_is_camera_independent_deduplicated_and_fresh() {
             0,
             0,
             &[],
-            &mut [],
+            &mut Vec::new(),
             &mut PortraitTagMemo::default()
         ),
         Outcome::Rows { len: 0 }
@@ -93,29 +93,11 @@ fn hq_scope_is_camera_independent_deduplicated_and_fresh() {
 }
 
 #[test]
-fn hq_capacity_demand_and_conflicting_identity_are_explicit() {
+fn hq_conflicting_identity_is_explicit() {
     let mut f = Fixture::new();
-    let mut sources = [(0, 0); 4];
-    let mut rows = [PortraitRow::default(); 2];
-    let result = walk_hq_portraits(&f.memory(), 0, &f.roots, &mut sources[..1], &mut rows);
-    assert_eq!(
-        result.sources,
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 1
-        }
-    );
-    assert!(matches!(result.outcome, Outcome::Unavailable { .. }));
+    let mut sources = vec![(0, 0); 4];
+    let mut rows = vec![PortraitRow::default(); 2];
     f.put(0x6300 + group::LEADER, 0x3000);
-    let result = walk_hq_portraits(&f.memory(), 0, &f.roots, &mut sources, &mut rows[..1]);
-    assert_eq!(result.sources, Outcome::Rows { len: 2 });
-    assert_eq!(
-        result.outcome,
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 1
-        }
-    );
     f.put(0x3000 + TYPE, (1 << 32) | u64::from(REFERENCE_TYPE));
     let result = walk_hq_portraits(&f.memory(), 0, &f.roots, &mut sources, &mut rows);
     assert_eq!(
@@ -142,8 +124,8 @@ impl Memory for FaultMemory<'_> {
 #[test]
 fn hq_every_required_read_failure_withholds_the_table() {
     let f = Fixture::new();
-    let mut sources = [(0, 0); 4];
-    let mut rows = [PortraitRow::default(); 2];
+    let mut sources = vec![(0, 0); 4];
+    let mut rows = vec![PortraitRow::default(); 2];
     let memory = FaultMemory {
         memory: f.memory(),
         calls: Cell::new(0),
@@ -236,7 +218,7 @@ fn worker_portrait_paths_grow_source_rows_country_slot_memo_and_long_tag_bytes()
             })
             .collect();
         assert_eq!(
-            walk_portrait_paths_memo_growing(&bytes, 0, GS, &sources, &mut rows, &mut memo),
+            walk_portrait_paths_memo(&bytes, 0, GS, &sources, &mut rows, &mut memo),
             Outcome::Rows { len: 5_000 }
         );
         assert!(memo.cells.len() > countries as usize);
@@ -287,26 +269,19 @@ fn portrait_paths_resolve_original_tag_strings_and_keep_unlinked_countries_empty
     f.put(TAGS + 0x20, b"GER");
     f.put(TAGS + 0x20 + 16, &3u64.to_le_bytes());
     f.put(TAGS + 0x20 + 24, &15u64.to_le_bytes());
-    let mut rows = [PortraitPathRow::default(); 2];
+    let mut rows = vec![PortraitPathRow::default(); 2];
     let census = ReadCensus::new(&f);
     assert_eq!(
         walk_portrait_paths(&census, 0, GS, &sources, &mut rows),
         Outcome::Rows { len: 2 }
     );
-    assert_eq!((census.calls(), census.bytes()), (21, 160));
+    assert_eq!((census.calls(), census.bytes()), (20, 160));
     assert_eq!((rows[0].country, rows[0].tag_reference), (2, 1));
     assert_eq!(rows[0].tag.as_bytes(), b"GER");
     // Link 3 is a readable zero entry: no country, so no tag is invented.
     assert_eq!((rows[1].country, rows[1].tag_reference), (3, 0));
     assert!(rows[1].tag.as_bytes().is_empty());
-    let expected = rows;
-    assert_eq!(
-        walk_portrait_paths(&f, 0, GS, &sources, &mut rows[..1]),
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 1
-        }
-    );
+    let expected = rows.clone();
 
     // Each source is authenticated again, even within the capture that selected it.
     f.put(0x6008, &(ids[0] + (1 << 32)).to_le_bytes());
@@ -335,12 +310,12 @@ fn portrait_paths_resolve_original_tag_strings_and_keep_unlinked_countries_empty
         Outcome::Rows { len: 2 }
     );
     assert_eq!(
-        rows.map(|row| (row.country, row.tag_reference)),
+        rows.iter().map(|row| (row.country, row.tag_reference)).collect::<Vec<_>>(),
         [(2, 1), (3, 1)]
     );
     assert!(rows.iter().all(|row| row.tag.as_bytes() == b"GER"));
-    // Without tag reuse these same two linked leaders need 33 calls / 224 bytes.
-    assert_eq!((census.calls(), census.bytes()), (28, 200));
+    // Without tag reuse these same two linked leaders need 31 calls / 224 bytes.
+    assert_eq!((census.calls(), census.bytes()), (26, 200));
 
     struct Observed<'a> {
         source: &'a Bytes,
@@ -365,19 +340,19 @@ fn portrait_paths_resolve_original_tag_strings_and_keep_unlinked_countries_empty
         ),
         (
             TAGS + 0x20 + 16,
-            "leader portrait tag string invalid or exceeds 64 bytes",
+            "leader portrait tag string invalid",
         ),
         (
             TAGS + 0x20 + 24,
-            "leader portrait tag string invalid or exceeds 64 bytes",
+            "leader portrait tag string invalid",
         ),
         (
             TAGS + 0x20 + 3,
-            "leader portrait tag string invalid or exceeds 64 bytes",
+            "leader portrait tag string invalid",
         ),
         (
             TAGS + 0x20,
-            "leader portrait tag string invalid or exceeds 64 bytes",
+            "leader portrait tag string invalid",
         ),
         (0x7000, "unit leader identity unreadable"),
         (
@@ -422,7 +397,7 @@ fn portrait_paths_resolve_original_tag_strings_and_keep_unlinked_countries_empty
     );
     assert!(rows.iter().all(|row| row.tag.as_bytes() == &heap_tag[..20]));
     // A heap tag adds its pointer read and preserves every non-UTF-8 byte.
-    assert_eq!((census.calls(), census.bytes()), (29, 225));
+    assert_eq!((census.calls(), census.bytes()), (27, 225));
     f.put(TAGS + 0x20, &[0; 32]);
     f.put(TAGS + 0x20, b"GER");
     f.put(TAGS + 0x20 + 16, &3u64.to_le_bytes());
@@ -474,21 +449,21 @@ fn portrait_paths_resolve_original_tag_strings_and_keep_unlinked_countries_empty
     f.put(0x8008, &third.to_le_bytes());
     f.put(0x8000 + super::COUNTRY, &3u32.to_le_bytes());
     let sources = [sources[0], sources[1], (third, 0x8000)];
-    let mut rows = [PortraitPathRow::default(); 3];
+    let mut rows = vec![PortraitPathRow::default(); 3];
     let census = ReadCensus::new(&f);
     assert_eq!(
         walk_portrait_paths(&census, 0, GS, &sources, &mut rows),
         Outcome::Rows { len: 3 }
     );
     assert_eq!(
-        rows.map(|row| (row.country, row.tag_reference)),
+        rows.iter().map(|row| (row.country, row.tag_reference)).collect::<Vec<_>>(),
         [(2, 1), (65, 2), (3, 1)]
     );
     assert_eq!(
-        rows.each_ref().map(|row| row.tag.as_bytes()),
+        rows.iter().map(|row| row.tag.as_bytes()).collect::<Vec<_>>(),
         [b"GER".as_slice(), b"FRA", b"GER"]
     );
-    assert_eq!((census.calls(), census.bytes()), (43, 288));
+    assert_eq!((census.calls(), census.bytes()), (40, 288));
 
     // A changed original-tag reference is reacquired on the next walk too.
     f.put(COUNTRY + ccountry::ORIGINAL_TAG, &0i32.to_le_bytes());

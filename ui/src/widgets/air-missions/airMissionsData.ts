@@ -1,72 +1,49 @@
-import { countryPart, keyedKnown, keyedRead, runAtHour, validateKeyedWindow } from '../../dashboard/keyedHistory.ts';
-import type { KeyedWindow } from '../../dashboard/keyedHistory';
 import type { TooltipContent } from '../../charts/tooltip';
 import type { DrillAction } from '../../charts/drill/drillState';
-import { optionalKey } from '../../dashboard/spriteArtwork.ts';
-import type { SpriteFrame } from '../../dashboard/spriteArtwork';
+import { liveKey } from '../../charts/live.ts';
+import type { LiveValues } from '../../charts/live';
+import { setToken } from '../../dashboard/options.ts';
+import type { AirMissionChoice, AirMissionsReply, AirMissionTheatre, AirMissionWingsReply } from '../../generated/dashboard';
 
-export interface Choice { id: string; name: string }
-/** A mission column: its bit, its name and the mission strip frame the game draws for it. */
-export interface MissionChoice extends Choice { icon: SpriteFrame | null }
-export interface AirTheatre extends Choice { regions: readonly string[] }
-export interface AirMissionsReply { window: KeyedWindow; missions: readonly MissionChoice[]; regions: readonly Choice[]; theatres?: readonly AirTheatre[]; warnings: readonly string[] }
-export interface AirWing { id: string; name: string | null; type: string | null; planes: number; missions: readonly string[]; efficiency: string | null; refusals: readonly string[] }
-export interface AirWingsReply { hour: number; readHour: number | null; region: number; wings: readonly AirWing[]; warnings: readonly string[] }
+/** Why a region's cell for a mission it records no wing on is empty: not unknown, nothing flies it there. */
+export const NOT_FLOWN = 'No wing in this region flies this mission';
 
-const isChoice = (value: unknown): value is Choice => !!value && typeof value === 'object'
-  && typeof (value as Choice).id === 'string' && typeof (value as Choice).name === 'string';
-const isSprite = (value: unknown) => value === null || !!value && typeof value === 'object'
-  && typeof (value as SpriteFrame).key === 'string' && Number.isSafeInteger((value as SpriteFrame).frame) && (value as SpriteFrame).frame >= 0
-  && optionalKey((value as SpriteFrame).recorded);
-const strings = (value: unknown): value is string[] => Array.isArray(value) && value.every(item => typeof item === 'string');
+const text = (value: unknown): value is string => typeof value === 'string';
+const optionalText = (value: unknown) => value === null || text(value);
+const strings = (value: unknown): value is string[] => Array.isArray(value) && value.every(text);
+const hour = (value: unknown) => value === null || Number.isSafeInteger(value);
+const sprite = (value: unknown) => value === null || !!value && typeof value === 'object'
+  && text((value as { key: unknown }).key) && Number.isSafeInteger((value as { frame: unknown }).frame) && (value as { frame: number }).frame >= 0
+  && ((value as { recorded?: unknown }).recorded === undefined || text((value as { recorded: unknown }).recorded) && (value as { recorded: string }).recorded !== '');
 
 export function validateAirMissions(value: unknown): AirMissionsReply {
   const reply = value as AirMissionsReply;
-  if (!reply || typeof reply !== 'object' || !Array.isArray(reply.missions) || !reply.missions.every(mission => isChoice(mission) && isSprite((mission as MissionChoice).icon))
-    || !Array.isArray(reply.regions) || !reply.regions.every(isChoice) || !strings(reply.warnings)
-    || reply.theatres !== undefined && !(Array.isArray(reply.theatres) && reply.theatres.every(theatre => isChoice(theatre) && strings((theatre as AirTheatre).regions))))
+  if (!reply || typeof reply !== 'object' || !hour(reply.readHour) || !optionalText(reply.missing) || !optionalText(reply.theatresMissing) || !strings(reply.warnings)
+    || !Array.isArray(reply.missions) || !reply.missions.every(mission => mission && text(mission.id) && text(mission.name) && sprite(mission.icon))
+    || !Array.isArray(reply.regions) || !reply.regions.every(region => region && text(region.region) && optionalText(region.name) && optionalText(region.missing) && strings(region.missions))
+    || !(reply.theatres === null || Array.isArray(reply.theatres) && reply.theatres.every(theatre => theatre && text(theatre.id) && text(theatre.name) && strings(theatre.regions))))
     throw new Error('The air missions reply is malformed.');
-  return { ...reply, window: validateKeyedWindow(reply.window) };
+  return reply;
 }
 
-export function validateAirWings(value: unknown): AirWingsReply {
-  const reply = value as AirWingsReply;
-  if (!reply || typeof reply !== 'object' || !Number.isSafeInteger(reply.hour) || !(reply.readHour === null || Number.isSafeInteger(reply.readHour))
-    || !Number.isSafeInteger(reply.region) || !strings(reply.warnings) || !Array.isArray(reply.wings)
-    || !reply.wings.every(wing => wing && typeof wing.id === 'string' && (wing.name === null || typeof wing.name === 'string')
-      && (wing.type === null || typeof wing.type === 'string') && Number.isSafeInteger(wing.planes) && strings(wing.missions)
-      && (wing.efficiency === null || typeof wing.efficiency === 'string') && strings(wing.refusals)))
+export function validateAirWings(value: unknown): AirMissionWingsReply {
+  const reply = value as AirMissionWingsReply;
+  if (!reply || typeof reply !== 'object' || !hour(reply.readHour) || !Number.isSafeInteger(reply.region) || !optionalText(reply.missing) || !strings(reply.warnings)
+    || !Array.isArray(reply.wings) || !reply.wings.every(wing => wing && text(wing.id) && optionalText(wing.name) && optionalText(wing.type)
+      && strings(wing.missions) && optionalText(wing.efficiency) && strings(wing.refusals)))
     throw new Error('The air wings reply is malformed.');
   return reply;
 }
 
-/** One region's assignments at an hour: planes per mission (a wing on several missions
- * counts in each) and its wings counted once. */
-export interface MissionRow { key: string; region: string; name: string; planes: ReadonlyMap<string, bigint>; wings: bigint | null }
+/** A region's row: its name and the missions it records. Its counts are live cells, `liveKey(key, 'wings')` and
+ * `liveKey(key, 'm<bit>')`, never in the row. */
+export interface MissionRow { key: string; region: string; name: string; nameMissing: string | null; missions: ReadonlySet<string> }
 
-/** The country's regions with wings assigned at `hour`; null when not recorded then. */
-export function missionRowsAt(reply: AirMissionsReply, tag: string, hour: number): { rows: MissionRow[]; readHour: number | undefined } | null {
-  if (!keyedKnown(reply.window, hour)) return null;
-  const names = new Map(reply.regions.map(region => [region.id, region.name]));
-  const rows = new Map<string, { region: string; name: string; planes: Map<string, bigint>; wings: bigint | null }>();
-  for (const series of reply.window.series) {
-    const [country, region, field] = series.name.split('|');
-    if (countryPart(country)?.tag !== tag || !field) continue;
-    const run = runAtHour(series.runs, hour);
-    if (!run) continue;
-    const row = rows.get(region) ?? { region, name: names.get(region) ?? 'Region name unavailable', planes: new Map(), wings: null };
-    if (field === 'wings') row.wings = BigInt(run[2]);
-    else if (field.startsWith('m')) row.planes.set(field.slice(1), BigInt(run[2]));
-    else continue;
-    rows.set(region, row);
-  }
-  return { rows: [...rows.values()].map(row => ({ key: row.region, ...row })), readHour: keyedRead(reply.window, hour) };
-}
+export const regionLabel = (id: string, name: string | null) => name ?? `Region ${id}`;
 
-/** Missions any shown row has an entry for, in the recording's mission order. */
-export function shownMissions(missions: readonly MissionChoice[], rows: readonly MissionRow[], chosen: readonly string[]): MissionChoice[] {
-  const present = new Set(rows.flatMap(row => [...row.planes.keys()]));
-  return missions.filter(mission => present.has(mission.id) && (!chosen.length || chosen.includes(mission.id)));
+export function missionRows(reply: AirMissionsReply): MissionRow[] {
+  return reply.regions.map(region => ({ key: region.region, region: region.region, name: regionLabel(region.region, region.name),
+    nameMissing: region.missing, missions: new Set(region.missions) }));
 }
 
 /** Rows in the chosen regions (null keeps all). */
@@ -75,20 +52,47 @@ export function regionRows(rows: readonly MissionRow[], regions: ReadonlySet<str
 }
 
 /** The regions of the chosen theatres; null keeps every region. */
-export function theatreRegions(theatres: readonly AirTheatre[] | undefined, chosen: readonly string[]): Set<string> | null {
+export function theatreRegions(theatres: readonly AirMissionTheatre[] | null | undefined, chosen: readonly string[]): Set<string> | null {
   if (!chosen.length) return null;
   return new Set((theatres ?? []).filter(theatre => chosen.includes(theatre.id)).flatMap(theatre => theatre.regions));
 }
 
-const count = (value: bigint) => value.toLocaleString('en-US');
+/** Missions any shown row records, in the recording's mission order, narrowed to the chosen ones. */
+export function shownMissions(missions: readonly AirMissionChoice[], rows: readonly MissionRow[], chosen: readonly string[]): AirMissionChoice[] {
+  const present = new Set(rows.flatMap(row => [...row.missions]));
+  return missions.filter(mission => present.has(mission.id) && (!chosen.length || chosen.includes(mission.id)));
+}
 
-export function missionTooltip(row: MissionRow, missions: readonly Choice[], readDate: string | null): TooltipContent {
+/** The live counts as the table reads them: a mission a region records no wing on says so instead of "not in the
+ * answer". */
+export function missionValues(values: LiveValues<number>, rows: readonly MissionRow[]): LiveValues<number> {
+  const notFlown = flownBy(rows);
+  return { get: key => values.get(key), missing: key => notFlown(key) ? NOT_FLOWN : values.missing(key) };
+}
+
+/** Whether a live key is a mission cell of a region that records no wing on it. */
+export function flownBy(rows: readonly MissionRow[]): (key: string) => boolean {
+  const flown = new Map(rows.map(row => [row.key, row.missions]));
+  return key => {
+    const cut = key.lastIndexOf('\u0000'), column = key.slice(cut + 1);
+    return column.startsWith('m') && !flown.get(key.slice(0, cut))?.has(column.slice(1));
+  };
+}
+
+const count = (value: number) => value.toLocaleString('en-US');
+
+export function missionTooltip(row: MissionRow, missions: readonly AirMissionChoice[], values: LiveValues<number>, readDate: string | null): TooltipContent {
+  const wings = values.get(liveKey(row.key, 'wings'));
   return {
     title: row.name,
     rows: [
-      ...missions.filter(mission => row.planes.has(mission.id)).map(mission => ({ label: mission.name, lookupKey: mission.id,
-        value: `${count(row.planes.get(mission.id)!)} ${row.planes.get(mission.id) === 1n ? 'plane' : 'planes'}` })),
-      { label: 'Wings', value: row.wings === null ? 'Wings unknown' : count(row.wings) },
+      ...missions.filter(mission => row.missions.has(mission.id)).map(mission => {
+        const planes = values.get(liveKey(row.key, `m${mission.id}`));
+        return { label: mission.name, lookupKey: mission.id,
+          value: planes === undefined ? values.missing(liveKey(row.key, `m${mission.id}`)) : `${count(planes)} ${planes === 1 ? 'plane' : 'planes'}` };
+      }),
+      { label: 'Wings', value: wings === undefined ? values.missing(liveKey(row.key, 'wings')) : count(wings) },
+      ...row.nameMissing ? [{ label: 'Name', value: row.nameMissing }] : [],
       ...readDate ? [{ label: 'As of', value: readDate }] : [],
     ],
   };
@@ -101,7 +105,12 @@ export function efficiencyText(raw: string | null): string {
   return `${value.toLocaleString('en-US', { maximumFractionDigits: 1 })}%`;
 }
 
-/** A region's wings at the rows' hour: they follow playback only when the rows are the
- * playhead's own; rows held from another hour open pinned at their hour. */
-export const openWings = (rowsHour: number, playhead: number, following: boolean): DrillAction =>
-  ({ type: 'open', breakdown: 'wings', hour: rowsHour, playing: following && rowsHour === playhead, playhead: rowsHour === playhead ? playhead : null });
+/** A region's wings at the hour its rows show: following playback when the widget follows it, else pinned there. */
+export const openWings = (hour: number, following: boolean): DrillAction =>
+  ({ type: 'open', breakdown: 'wings', hour, playing: following, playhead: following ? hour : null });
+
+/** Choices at the hour shown, keeping a chosen one absent then selectable under its id. */
+export function choicesAt(listed: readonly { id: string; name: string }[], chosen: readonly string[]) {
+  return [...listed.map(item => ({ value: setToken(item.id), label: item.name })),
+    ...chosen.filter(id => !listed.some(item => item.id === id)).map(id => ({ value: setToken(id), label: `${id} · not at this date` }))];
+}

@@ -16,7 +16,7 @@
 //! times the movement scale, and land edges past a landing at the invasion speed
 //! ([`EdgeTerm`]).
 
-use crate::rows::{DivisionMovementRow, RailwayGunCounterInputRow};
+use crate::rows::{DivisionMovementRow, RailwayGunCounterInputRow, RailwayGunEtaOperands};
 use engine_native::{carmy::NormalEdgeOperands, carmy::PreparedNormalSpeed};
 use engine_native::{cunit::EtaInputs, cunit::EtaLeg, cunit::EtaSpeed, cunit::eta_remaining};
 
@@ -561,32 +561,50 @@ pub fn railway_gun_first_edge(
     distance: impl Fn(u32, u32) -> Option<i64>,
     defines: &Defines,
 ) -> Option<i64> {
-    let Some(&first) = gun.ordinary_path.first() else {
+    railway_gun_first_edge_of(
+        gun.gun,
+        gun.province,
+        gun.ordinary_path.first().copied(),
+        || gun.eta.require("RailwayGunCounterInputs.eta").ok().copied().flatten(),
+        province,
+        distance,
+        defines,
+    )
+}
+
+/// [`railway_gun_first_edge`] from values: the gun, where it stands, its ordinary route's first
+/// province and its recorded first-edge operands.
+pub fn railway_gun_first_edge_of(
+    gun: u64,
+    at: u32,
+    first: Option<u32>,
+    eta: impl FnOnce() -> Option<RailwayGunEtaOperands>,
+    province: impl Fn(u32) -> Option<ProvinceOperands>,
+    distance: impl Fn(u32, u32) -> Option<i64>,
+    defines: &Defines,
+) -> Option<i64> {
+    let Some(first) = first else {
         return Some(0);
     };
-    if gun.province == 0 || first == 0 {
+    if at == 0 || first == 0 {
         return None;
     }
-    let operands = gun
-        .eta
-        .require("RailwayGunCounterInputs.eta")
-        .ok()?
-        .as_ref()?;
+    let operands = eta()?;
     let leg = EtaLeg {
-        distance: if first == gun.province {
+        distance: if first == at {
             0
         } else {
-            edge_distance(13, gun.province, first, &province, &distance, defines)?
+            edge_distance(13, at, first, &province, &distance, defines)?
         },
         speed: EtaSpeed::Fixed(operands.current_speed),
     };
-    let legs = if first == gun.province {
+    let legs = if first == at {
         &[][..]
     } else {
         std::slice::from_ref(&leg)
     };
     let input = EtaInputs {
-        division: gun.gun,
+        division: gun,
         next: first,
         destination: first,
         path_total: 1,

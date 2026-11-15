@@ -86,7 +86,7 @@ fn registry_and_counter_rows_grow_on_first_and_later_unchanged_country_populatio
     let mut counters = Vec::new();
     for count in [50, 75] {
         let world = World::new(count);
-        let source = walk_roots_growing(&world, 0, &mut roots);
+        let source = walk_roots(&world, 0, &mut roots);
         assert_eq!(source, Outcome::Rows { len: count });
         assert_eq!(*world.header_reads.borrow(), 1);
         assert_eq!(roots[count - 1].country, count as u32);
@@ -95,14 +95,6 @@ fn registry_and_counter_rows_grow_on_first_and_later_unchanged_country_populatio
         assert_eq!(outcome, Outcome::Rows { len: count });
         assert_eq!(counters[count - 1].group, roots[count - 1].handle);
     }
-    let world = World::new(50);
-    assert_eq!(
-        walk_roots(&world, 0, &mut vec![Root::default(); 40]),
-        Outcome::Truncated {
-            len: 40,
-            unread_rows: 10
-        }
-    );
 }
 
 #[test]
@@ -110,7 +102,7 @@ fn worker_growth_does_not_retry_a_failed_original_group_identity() {
     let mut world = World::new(50);
     world.fault = Some(GROUPS + 2 * 0x1000);
     assert_eq!(
-        walk_roots_growing(&world, 0, &mut Vec::new()),
+        walk_roots(&world, 0, &mut Vec::new()),
         Outcome::Unavailable {
             reason: "orders group identity unreadable"
         }
@@ -145,7 +137,7 @@ fn the_census_gathers_each_group_identity_and_country_once() {
     let calls = Calls(&world, RefCell::default());
     let mut roots = Vec::new();
     assert_eq!(
-        walk_roots_growing(&calls, 0, &mut roots),
+        walk_roots(&calls, 0, &mut roots),
         Outcome::Rows { len: 3 }
     );
     for (index, root) in roots.iter().take(3).enumerate() {
@@ -203,7 +195,7 @@ fn a_chunks_groups_are_gathered_in_one_copy_in_bucket_order() {
     let world = World::new(3);
     let memory = Gathers(&world, RefCell::default());
     assert_eq!(
-        walk_roots_growing(&memory, 0, &mut Vec::new()),
+        walk_roots(&memory, 0, &mut Vec::new()),
         Outcome::Rows { len: 3 }
     );
     let groups: Vec<usize> = (0..3).map(|index| GROUPS + index * 0x1000).collect();
@@ -220,7 +212,7 @@ fn a_gather_fault_falls_back_to_the_single_reads_once() {
     let mut world = World::new(200);
     world.fault = Some(at);
     assert_eq!(
-        walk_roots_growing(&world, 0, &mut Vec::new()),
+        walk_roots(&world, 0, &mut Vec::new()),
         Outcome::Unavailable {
             reason: "orders group country unreadable"
         }
@@ -235,7 +227,7 @@ fn a_gather_fault_falls_back_to_the_single_reads_once() {
     let before = crate::batch_fallback::count(crate::batch_fallback::Batch::OrderRoots);
     let mut roots = Vec::new();
     assert_eq!(
-        walk_roots_growing(&memory, 0, &mut roots),
+        walk_roots(&memory, 0, &mut roots),
         Outcome::Rows { len: 200 }
     );
     assert_eq!(

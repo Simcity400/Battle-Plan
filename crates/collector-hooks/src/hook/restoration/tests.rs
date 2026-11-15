@@ -49,8 +49,8 @@ fn prepared_restore_and_final_quiet_need_no_allocations_after_capture_stop() {
     let results = with_allocations_denied(|| {
         let a = hooks[0].set_enabled(false);
         let b = Hook::set_enabled_iter(hooks[1..2].iter_mut(), false);
-        let c = Hook::set_enabled_iter_attach(hooks[2..3].iter_mut(), false);
-        let d = Hook::set_enabled_iter_attach_tracking_busy(hooks[3..].iter_mut(), false);
+        let c = Hook::set_enabled_iter(hooks[2..3].iter_mut(), false);
+        let d = Hook::set_enabled_iter_tracking_busy(hooks[3..].iter_mut(), false);
         let quiet = quiet(&[code.0 as usize..code.0 as usize + 4096], &[], || false);
         drop(scratch);
         (a, b, c, d, quiet)
@@ -64,6 +64,67 @@ fn prepared_restore_and_final_quiet_need_no_allocations_after_capture_stop() {
     assert!(
         hooks
             .iter()
+            .all(|hook| !hook.is_enabled() && hook.bytes_match(false))
+    );
+}
+
+/// Two families restore under one suspension; a family's later publication
+/// waits for the next batch, so each batch restores one publication of every
+/// family that has one left.
+#[test]
+fn a_batch_restores_every_family_under_one_suspension_without_allocating() {
+    if !child("a_batch_restores_every_family_under_one_suspension_without_allocating") {
+        return;
+    }
+    let code = TestCode::new();
+    let mut first: Vec<_> = (0..2).map(|index| hook(&code, index * 64)).collect();
+    let mut later = hook(&code, 128);
+    let mut other = hook(&code, 192);
+    assert_eq!(Hook::set_family_enabled(&mut first, true), Ok(true));
+    assert_eq!(later.set_enabled(true), Ok(true));
+    assert_eq!(other.set_enabled(true), Ok(true));
+    let _scratch = Scratch::prepare(4).unwrap().enter();
+    engine_allocation::set_stop_hook(Some(|| true));
+    let family = |first: &mut Vec<Hook>, later: &mut Hook| -> Result<bool, String> {
+        if !Hook::set_family_enabled(first, false)? {
+            return Ok(false);
+        }
+        later.set_enabled(false)
+    };
+    let suspensions = || SUSPENSIONS.with(std::cell::Cell::get);
+    let before = suspensions();
+    let results = with_allocations_denied(|| {
+        let mut batch = Batch::collect().unwrap();
+        let collected = (family(&mut first, &mut later), other.set_enabled(false));
+        let restored = batch.publish();
+        let reported = (
+            attempt(|| family(&mut first, &mut later)).0,
+            other.set_enabled(false),
+        );
+        drop(batch);
+        let mut batch = Batch::collect().unwrap();
+        let again = family(&mut first, &mut later);
+        let next = batch.publish();
+        let finished = family(&mut first, &mut later);
+        (collected, restored, reported, again, next, finished)
+    });
+    assert_eq!(
+        results,
+        (
+            (Ok(false), Ok(false)),
+            2,
+            (Ok(false), Ok(true)),
+            Ok(false),
+            1,
+            Ok(true)
+        )
+    );
+    assert_eq!(suspensions() - before, 2, "one suspension per batch");
+    assert_eq!(ATTEMPTS.load(Ordering::Relaxed), 0);
+    assert!(
+        first
+            .iter()
+            .chain([&later, &other])
             .all(|hook| !hook.is_enabled() && hook.bytes_match(false))
     );
 }

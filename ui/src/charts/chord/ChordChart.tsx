@@ -7,9 +7,10 @@ import type { HoverState } from '../hover';
 import { canvasImage } from '../images';
 import { ellipsise, layoutEndLabels } from '../labels';
 import { countryTooltipContent, drawCountryFlag } from '../countryFlag';
+import type { Live } from '../live';
 import { scheduler } from '../scheduler';
 import type { FrameTask } from '../scheduler';
-import { backingSize, toLocal } from '../surface';
+import { drawingSurface, sizeCanvas, toLocal, watchCanvasSize } from '../surface';
 import { hideTooltip, scrollTooltip, showTooltip, tooltipStore, tooltipText } from '../tooltip';
 import type { TooltipContent } from '../tooltip';
 import { useChartTokens, useViewportHeight } from '../useChartTokens';
@@ -18,6 +19,7 @@ import type { ChordArc, ChordData, ChordHit, ChordLayout, ChordSurface } from '.
 import { ChordFrames } from './frame';
 import type { ChordFrame } from './frame';
 import '../charts.css';
+import { textWidth } from '../textWidth.ts';
 
 export type { ChordFrame } from './frame';
 export interface ChordChartProps {
@@ -26,6 +28,9 @@ export interface ChordChartProps {
   frame: ChordFrame;
   /** Local playback lookup; reuse data identity until exact data changes. */
   frameAt?: (now: number) => ChordFrame;
+  /** The playhead's frame, read as each frame draws in place of `frame` and `frameAt`: the ribbons move with no
+   * render. Its data null is a frame the source does not hold, drawn as unavailable, never as empty ribbons. */
+  live?: Live<ChordFrame>;
   hoursPerSecond?: number;
   active: boolean;
   /** Always describes the resolved data, never the eased geometry. */
@@ -47,7 +52,7 @@ export default function ChordChart(props: ChordChartProps) {
   const [spoken, setSpoken] = useState('');
 
   useEffect(() => {
-    const element = canvas.current!, context = element.getContext('2d');
+    const element = canvas.current!, paper = drawingSurface(element), context = paper.context;
     if (!context) return;
     const frames = new ChordFrames(), motion = frames.motion;
     let disposed = false, refusal: string | null | undefined;
@@ -57,8 +62,8 @@ export default function ChordChart(props: ChordChartProps) {
     let hot: ChordHit | null = null, keyText = '';
     let descriptionKey = 0;
     let described: { data: ChordData; revision: unknown; hit: ChordHit; tooltip: ChordChartProps['tooltip']; height: number; content: TooltipContent | null; fitted: TooltipContent | null; spoken: string; key: string } | null = null;
-    let device: { width: number; height: number } | undefined;
     const wake = () => { described = null; if (!disposed && task.current) scheduler.wake(task.current); };
+    const sized = watchCanvasSize(element, wake);
     let indexed: ChordData | null = null;
     let flowIds = new Set<string>(), nodeIds = new Set<string>();
     const current = (hit: ChordHit | null): ChordHit | null => {
@@ -114,7 +119,7 @@ export default function ChordChart(props: ChordChartProps) {
       let frame = p.frame;
       let error: string | null = null;
       try {
-        frame = p.frameAt?.(now) ?? frame;
+        frame = p.live ? p.live.read() : p.frameAt?.(now) ?? frame;
         frames.accept(frame);
       } catch (cause) {
         error = cause instanceof Error ? cause.message : String(cause);
@@ -125,16 +130,14 @@ export default function ChordChart(props: ChordChartProps) {
     };
     const drawing: FrameTask = { frame({ now, dt }) {
       const { props: p, tokens: t } = latest.current, frame = resolve(now);
-      const rect = element.getBoundingClientRect(), width = element.clientWidth, height = element.clientHeight;
-      const size = backingSize({ layoutWidth: width, layoutHeight: height, rectWidth: rect.width, rectHeight: rect.height,
-        devicePixelRatio: window.devicePixelRatio || 1, devicePixelWidth: device?.width, devicePixelHeight: device?.height });
-      if (element.width !== size.width || element.height !== size.height) { element.width = size.width; element.height = size.height; }
+      const { layoutWidth: width, layoutHeight: height, backing: size } = sized.read();
+      sizeCanvas(paper.canvas, size.width, size.height);
       context.setTransform(size.scaleX, 0, 0, size.scaleY, 0, 0); context.clearRect(0, 0, width, height);
       surface = chordSurface(width, height);
       const eased = motion.advance(dt, easeTau(t.motion, motionNow(p.hoursPerSecond), t.reducedMotion));
       if (placed !== eased.data) { placed = eased.data; layout = layoutChord(eased.data, motion.presence, eased.ringPresence); }
       if (hover.pointer) {
-        const local = toLocal(hover.pointer.clientX, hover.pointer.clientY, rect, width, height);
+        const local = toLocal(hover.pointer.clientX, hover.pointer.clientY, element.getBoundingClientRect(), width, height);
         hover.pointer.x = local.x; hover.pointer.y = local.y;
       }
       hot = current(hover.pointer ? hitChord(layout, surface, hover.pointer.x, hover.pointer.y) : hover.keyed);
@@ -158,7 +161,7 @@ export default function ChordChart(props: ChordChartProps) {
         const angle = (arc.start + arc.end) / 2;
         labels.push({ arc, id: arc.node.id, y: y + Math.sin(angle) * (radius + 12), height: t.fontSize.small + 3, right: Math.cos(angle) >= 0 });
       }
-      const measure = (text: string) => context.measureText(text).width;
+      const measure = (text: string) => textWidth(context, text);
       for (const right of [true, false]) {
         const side = labels.filter(label => label.right === right);
         // Small neighbouring arcs would stack their names: spread each side apart, along the ring and clear of the caption.
@@ -185,13 +188,6 @@ export default function ChordChart(props: ChordChartProps) {
     } };
     task.current = drawing;
     const remove = scheduler.add(drawing, element); scheduler.setVisible(drawing, latest.current.props.active);
-    const resize = (entries: ResizeObserverEntry[]) => {
-      const box = entries[0]?.devicePixelContentBoxSize?.[0];
-      device = box ? { width: box.inlineSize, height: box.blockSize } : undefined; wake();
-    };
-    let observer: ResizeObserver;
-    try { observer = new ResizeObserver(resize); observer.observe(element, { box: 'device-pixel-content-box' }); }
-    catch { observer = new ResizeObserver(resize); observer.observe(element); }
     const move = (event: PointerEvent) => {
       const local = toLocal(event.clientX, event.clientY, element.getBoundingClientRect(), element.clientWidth, element.clientHeight);
       hover = reduceHover(hover, { type: 'pointer', point: { ...local, clientX: event.clientX, clientY: event.clientY } }); wake();
@@ -249,7 +245,7 @@ export default function ChordChart(props: ChordChartProps) {
     element.addEventListener('click', pick);
     element.addEventListener('wheel', wheel, { passive: false });
     return () => {
-      disposed = true; remove(); observer.disconnect(); hideTooltip(owner); task.current = null;
+      disposed = true; remove(); sized.disconnect(); hideTooltip(owner); task.current = null;
       element.removeEventListener('pointermove', move); element.removeEventListener('pointerleave', leave); element.removeEventListener('pointerdown', press);
       element.removeEventListener('contextmenu', contextMenu); element.removeEventListener('keydown', key); element.removeEventListener('blur', blur);
       element.removeEventListener('click', pick);
@@ -261,6 +257,7 @@ export default function ChordChart(props: ChordChartProps) {
     if (task.current) { scheduler.setVisible(task.current, props.active); scheduler.wake(task.current); }
     if (!props.active) hideTooltip(owner);
   }, [props, tokens, viewportHeight, owner]);
+  useEffect(() => props.live?.subscribe(() => { if (task.current) scheduler.wake(task.current); }), [props.live]);
 
   return <div className="chord-chart">
     <canvas ref={canvas} role="img" aria-label={props.label} tabIndex={0} aria-describedby={`${owner}-keys`}

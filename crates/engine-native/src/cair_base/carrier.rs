@@ -298,37 +298,19 @@ fn definition_header(
     }
 }
 
+
 /// Resolve this base's full host reference and read its retained ship name.
 /// Null and known-stale references are known empty text. Resolution or cache
 /// failures stay independent errors. Copy raw bytes uncommitted as in
 /// cship::cached_name; advance the cursor only when admitting the base packet.
 /// `source` is this observation's authenticated base row; `resolver` must use
 /// `image` from that observation. Neither can cross callbacks or off-hour hints.
-#[cfg(test)]
 pub(crate) fn host_name(
     memory: &impl Memory,
     image: usize,
     source: &super::Row,
     resolver: &mut creference_registry::ScopedResolver,
     names: &mut cname_group_member::Names<'_>,
-) -> Result<Option<cname_group_member::Span>, &'static str> {
-    let mut arena = cname_group_member::NameArena {
-        bytes: Buffer::Fixed(names.bytes),
-        len: names.len,
-        required: names.required,
-    };
-    let result = host_name_buffer(memory, image, source, resolver, &mut arena);
-    names.len = arena.len;
-    names.required = arena.required;
-    result
-}
-
-pub(crate) fn host_name_buffer(
-    memory: &impl Memory,
-    image: usize,
-    source: &super::Row,
-    resolver: &mut creference_registry::ScopedResolver,
-    names: &mut cname_group_member::NameArena<'_>,
 ) -> Result<Option<cname_group_member::Span>, &'static str> {
     if source.state.is_some() {
         return Err("carrier host-name query reached a state base");
@@ -339,7 +321,7 @@ pub(crate) fn host_name_buffer(
     let Some(ship) = resolver.resolve(memory, source.host)? else {
         return Ok(Some((names.len, 0)));
     };
-    cship::cached_name_buffer(memory, image, ship, source.host, names)
+    cship::cached_name(memory, image, ship, source.host, names)
 }
 
 /// Sparse off-hour sizing hint with the same selected full host reference.

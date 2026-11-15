@@ -18,7 +18,6 @@
 //! cannot identify this client's perspective.
 
 use super::engaged::{self, Engaged, Side};
-use crate::map::tables::rows;
 use replay_data::{BranchId, Hour, rows::tables};
 use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, io};
@@ -35,8 +34,8 @@ pub fn recording_player(
 }
 
 /// Each recorded naval combat's two stored bytes.
-pub fn recorded_bytes(frame: &DecodedFrame) -> io::Result<BTreeMap<u64, [u8; 2]>> {
-    Ok(rows::<tables::NavalCombatDetails>(frame)?
+pub fn recorded_bytes<F: replay_frame::frame::Tables + ?Sized>(frame: &F) -> io::Result<BTreeMap<u64, [u8; 2]>> {
+    Ok(crate::fold_tables::available::<tables::NavalCombatDetails, F>(frame)?
         .rows()
         .iter()
         .map(|row| (row.combat, row.sides.each_ref().map(|side| side.engaged)))
@@ -193,11 +192,11 @@ pub struct ByteCheck {
 impl ByteCheck {
     /// Compares one hour's naval sides, as the recording player's `history`
     /// holds them after the hour, with the recorded bytes.
-    pub fn compare(
+    pub fn compare<F: replay_frame::frame::Tables + ?Sized>(
         &mut self,
         branch: BranchId,
         hour: Hour,
-        frame: &DecodedFrame,
+        frame: &F,
         sides: &BTreeMap<(u64, u8), Side>,
         history: &engaged::History,
     ) -> io::Result<()> {

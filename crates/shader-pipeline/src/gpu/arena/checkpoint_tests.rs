@@ -149,7 +149,7 @@ fn checkpoints_match_flush_bytes_offsets_refusals_prefix_and_carry_over_multiple
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     let instance =
-        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+        crate::gpu::instance();
     let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
     let mut descriptor = wgpu::DeviceDescriptor::default();
     descriptor.required_limits.max_buffer_size = CHUNK;

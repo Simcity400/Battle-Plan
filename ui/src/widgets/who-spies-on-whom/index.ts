@@ -1,3 +1,3 @@
 import type { WidgetRenderer } from '../../dashboard/definitions';
-import WhoSpiesOnWhomWidget from './WhoSpiesOnWhomWidget';
-export default { render: WhoSpiesOnWhomWidget } satisfies WidgetRenderer;
+import render from './WhoSpiesOnWhomWidget';
+export default { render } satisfies WidgetRenderer;

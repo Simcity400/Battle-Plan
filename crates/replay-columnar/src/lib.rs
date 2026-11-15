@@ -5,12 +5,16 @@
 pub mod block;
 pub mod container;
 pub mod envelope;
+pub mod lane;
 pub mod leaf;
 pub mod manifest;
-pub mod records;
+pub mod pages;
 pub mod restart;
 pub mod section;
 pub mod state;
+pub mod store;
+pub mod summary;
+pub mod unit;
 pub mod walk;
 pub mod writer;
 

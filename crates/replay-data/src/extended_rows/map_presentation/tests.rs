@@ -202,7 +202,7 @@ fn counter_supply_prefix_and_current_pride_delta_preserve_independent_operands()
     assert!(
         decoded
             .supply
-            .require("TaskForceCounterInputs.supply")
+            .require("supply of task force counter inputs")
             .is_err()
     );
     assert_eq!(decoded.repair_last_mission, row.repair_last_mission);
@@ -262,8 +262,8 @@ fn older_ship_model_snapshots_and_deltas_preserve_nonempty_counter_prefix() {
     let decoded = older_counter_prefix(TableId::ShipModels, 6, &row);
     assert_eq!(decoded.subunit_index, Recorded::NotRecorded);
     assert_eq!(
-        decoded.subunit_index.require("ShipModels.subunit_index"),
-        Err("ShipModels.subunit_index not recorded".to_owned()),
+        decoded.subunit_index.require("subunit index of ship models"),
+        Err("subunit index of ship models not recorded".to_owned()),
     );
     assert_eq!(decoded.ship, row.ship);
     assert_eq!(decoded.variant, row.variant);

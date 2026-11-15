@@ -425,7 +425,6 @@ impl Captured {
         state: usize,
         mut carry: Option<Carry<'_>>,
     ) -> [u64; N] {
-        self.raw.enable_growth();
         self.land_theatre_count = None;
         self.reserved.visibility = None;
         self.reverse_visibility.reset();
@@ -445,7 +444,7 @@ impl Captured {
                 self.rows.outcome = match carry.as_mut() {
                     Some(carry) => {
                         let store = &mut *carry.store;
-                        ccountry::walk_appearance_carrying_growing(
+                        ccountry::walk_appearance_carrying(
                             memory,
                             base,
                             state,
@@ -455,7 +454,7 @@ impl Captured {
                             &mut |globals, country, row| store.select(globals, country, row),
                         )
                     }
-                    None => ccountry::walk_appearance_observed_growing(
+                    None => ccountry::walk_appearance_observed(
                         memory,
                         base,
                         state,
@@ -485,7 +484,7 @@ impl Captured {
             engine_native::raw_country_observations::Source::AppearanceOriginal,
             self.rows.outcome,
         );
-        self.reserved = ccountry::read_reserved_naming_observed_growing(
+        self.reserved = ccountry::read_reserved_naming_observed(
             memory,
             base,
             state,
@@ -499,7 +498,7 @@ impl Captured {
         // This control exists even when mandatory naming failed. Consume its
         // one attempted count and clear its root before leaving the callback.
         if let Some(control) = self.reserved.launch_states.take() {
-            let result = control.capture_growing(
+            let result = control.capture(
                 memory,
                 base,
                 state,
@@ -559,7 +558,7 @@ impl Captured {
         drop(_reads);
         let _reads = crate::read_accounting::table(TABLES[1]);
         let begin = qpc();
-        let buckets = engine_stability::original_tag_lists::capture_growing(
+        let buckets = engine_stability::original_tag_lists::capture(
             memory,
             state,
             &mut self.original_tag_buckets.first,
@@ -577,7 +576,7 @@ impl Captured {
         if buckets.len.is_err() {
             ORIGINAL_TAG_BUCKET_REFUSALS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
-        let array = engine_stability::country_roster::capture_growing(
+        let array = engine_stability::country_roster::capture(
             memory,
             base,
             state,
@@ -640,7 +639,7 @@ impl Captured {
             }
             // The fresh rows before this carried row (or the end).
             if start < index {
-                ccountry::capture_appearance_original_tags_observed_growing(
+                ccountry::capture_appearance_original_tags_observed(
                     memory,
                     state,
                     &mut self.rows.rows[start..index],
@@ -653,7 +652,7 @@ impl Captured {
             if let Some(bytes) = held
                 && !self.place_held_tag(index, bytes)
             {
-                ccountry::capture_appearance_original_tags_observed_growing(
+                ccountry::capture_appearance_original_tags_observed(
                     memory,
                     state,
                     &mut self.rows.rows[index..index + 1],

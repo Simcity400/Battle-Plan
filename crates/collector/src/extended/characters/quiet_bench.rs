@@ -117,9 +117,9 @@ fn hour(job: &mut CharactersJob, memory: &Flat<'_>, captured: &mut Captured, tim
     let ticks_before = ticks();
     let started = Instant::now();
     let report = if timed {
-        copy_characters_growing(&counted, context(PART_MASKS[0]), job, Roles::Gather)
+        copy_characters(&counted, context(PART_MASKS[0]), job, Roles::Gather)
     } else {
-        copy_characters_growing(memory, context(PART_MASKS[0]), job, Roles::Gather)
+        copy_characters(memory, context(PART_MASKS[0]), job, Roles::Gather)
     };
     let copy = started.elapsed();
     let total = (ticks() - ticks_before).max(1);
@@ -152,6 +152,7 @@ fn median(mut values: Vec<Duration>) -> Duration {
 #[test]
 #[ignore = "bench: run in release with --ignored --nocapture"]
 fn quiet_roster_hour_costs_at_late_war_scale() {
+    let _globals = crate::extended::characters::test_globals();
     static WATCHES: Watches = Watches::new();
     static DOMAIN: Isolated = Isolated::new();
     static LEADERS: crate::unit_leader_changes::Watches =
@@ -256,7 +257,7 @@ fn trait_hour(
     captured: &mut Captured,
 ) -> (Duration, Duration) {
     let started = Instant::now();
-    let report = copy_characters_growing(memory, context(PART_MASKS[3]), job, Roles::Borrow(loan));
+    let report = copy_characters(memory, context(PART_MASKS[3]), job, Roles::Borrow(loan));
     let copy = started.elapsed();
     assert!(report.raw_ok && !report.plan_failed);
     let started = Instant::now();
@@ -274,6 +275,7 @@ fn trait_hour(
 #[test]
 #[ignore = "bench: run in release with --ignored --nocapture"]
 fn trait_hour_costs_at_late_war_scale() {
+    let _globals = crate::extended::characters::test_globals();
     use super::leader_carry::{TRAITS as FAMILY, TraitCarry};
     static TRAITS: crate::unit_leader_changes::Watches = crate::unit_leader_changes::Watches::new();
     // Never enabled: every leader is read.
@@ -309,6 +311,7 @@ fn trait_hour_costs_at_late_war_scale() {
 #[test]
 #[ignore = "bench: run in release with --ignored --nocapture"]
 fn advisor_hour_costs_at_late_war_scale() {
+    let _globals = crate::extended::characters::test_globals();
     use super::census_tests::Advisors;
     static DOMAIN: crate::character_changes::Counting = crate::character_changes::Counting::new();
     const HOURS: usize = 15;
@@ -328,7 +331,7 @@ fn advisor_hour_costs_at_late_war_scale() {
     let mut held = Captured::with_capacities(&capacities());
     let hour = |cache: &mut advisors::Cache, frame: &mut Captured| {
         let started = Instant::now();
-        cache.capture_growing(
+        cache.capture(
             &memory,
             ctx,
             &observer,
@@ -365,6 +368,7 @@ fn advisor_hour_costs_at_late_war_scale() {
 #[test]
 #[ignore = "bench: run in release with --ignored --nocapture"]
 fn portrait_hour_costs_at_late_war_scale() {
+    let _globals = crate::extended::characters::test_globals();
     use crate::extended::character_portraits::{self as portraits, CaptureContext, PARTS};
     struct Quiet;
     impl engine_native::portrait_cache::Changes for Quiet {

@@ -703,13 +703,13 @@ mod tests {
             ..Baseline::default()
         };
         let mut counters = Counters::default();
-        let mut output = [OpinionRow::default(); 4];
+        let mut output = vec![OpinionRow::default(); 4];
         baseline
             .replay(
                 1,
                 100,
                 &mut counters,
-                &mut crate::walk::Buffer::Fixed(&mut output),
+                &mut crate::walk::Buffer::Growing(&mut output),
             )
             .unwrap();
         baseline
@@ -717,7 +717,7 @@ mod tests {
                 2,
                 200,
                 &mut counters,
-                &mut crate::walk::Buffer::Fixed(&mut output),
+                &mut crate::walk::Buffer::Growing(&mut output),
             )
             .unwrap();
         let emitted = |owner_country, target_country, opinion| OpinionRow {

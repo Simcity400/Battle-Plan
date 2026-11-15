@@ -392,11 +392,11 @@ pub fn walk_entry<'k>(
     base: usize,
     entry: ccharacter_manager::Entry,
     known: impl FnOnce(usize) -> Option<ccharacter_template::Known<'k>>,
-    output: &mut [Row],
-    bytes: &mut [u8],
+    mut output: crate::walk::Buffer<'_, Row>,
+    mut bytes: crate::walk::Buffer<'_, u8>,
 ) -> NameWalk {
     let result = (|| {
-        let Some(row) = output.first_mut() else {
+        if !output.ensure(1)? {
             return Ok(NameWalk {
                 outcome: Outcome::Truncated {
                     len: 0,
@@ -415,7 +415,7 @@ pub fn walk_entry<'k>(
             .len
             .checked_add(token.len)
             .ok_or("character text size overflow")?;
-        if required_bytes > bytes.len() {
+        if !bytes.ensure(required_bytes)? {
             return Ok(NameWalk {
                 outcome: Outcome::Truncated {
                     len: 0,
@@ -433,11 +433,11 @@ pub fn walk_entry<'k>(
         let mut identity = ccharacter_template::Identity::default();
         let mut file_len = 0;
         if template != 0 {
-            let fits = |len: usize| {
-                names
+            let mut fits = |len: usize| {
+                let required = names
                     .checked_add(len)
-                    .ok_or("character text size overflow")
-                    .map(|required| (required, required <= bytes.len()))
+                    .ok_or("character text size overflow")?;
+                Ok::<_, &'static str>((required, bytes.ensure(required)?))
             };
             let (required, fit) = if let Some(known) = known(template) {
                 identity = known.identity;
@@ -470,7 +470,7 @@ pub fn walk_entry<'k>(
             }
         }
         let required_bytes = names + file_len;
-        *row = Row {
+        output[0] = Row {
             id: entry.id,
             country: entry.country,
             name_token_id,
@@ -490,74 +490,6 @@ pub fn walk_entry<'k>(
         Ok(NameWalk {
             outcome: Outcome::Rows { len: 1 },
             bytes_len: required_bytes,
-            required_bytes,
-        })
-    })();
-    result.unwrap_or_else(|reason| NameWalk {
-        outcome: Outcome::Unavailable { reason },
-        bytes_len: 0,
-        required_bytes: 0,
-    })
-}
-
-/// Reads all manager-owned characters, including inactive/unrecruited entries.
-/// The two native strings and lexer token remain separate, exact values. A row
-/// whose strings do not fit is wholly omitted and the remaining capacity is
-/// reported for pool growth. A fault never publishes a successful prefix.
-/// Rows retain native roster order; the spool thread sorts and checks row keys.
-pub fn walk(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut [Row],
-    bytes: &mut [u8],
-) -> NameWalk {
-    let result = (|| {
-        let mut len = 0;
-        let mut bytes_len = 0;
-        let mut required_bytes = 0_usize;
-        let mut unread_rows = 0_u32;
-        let source = ccharacter_manager::Roster::read(memory, base, game_state)?;
-        for index in 0..source.count() {
-            if len == output.len() {
-                unread_rows = source.count() - index;
-                break;
-            }
-            let entry = source.at(memory, index)?;
-            let result = walk_entry(
-                memory,
-                base,
-                entry,
-                |_| None,
-                &mut output[len..],
-                &mut bytes[bytes_len..],
-            );
-            required_bytes = required_bytes
-                .checked_add(result.required_bytes)
-                .ok_or("character text size overflow")?;
-            match result.outcome {
-                Outcome::Rows { len: 1 } => {
-                    output[len].name_start += bytes_len;
-                    output[len].token_start += bytes_len;
-                    output[len].template_file_start += bytes_len;
-                    bytes_len += result.bytes_len;
-                    len += 1;
-                }
-                Outcome::Truncated { .. } => {
-                    unread_rows = source.count() - index;
-                    break;
-                }
-                Outcome::Unavailable { reason } => return Err(reason),
-                _ => return Err("character entry returned an invalid row count"),
-            }
-        }
-        Ok(NameWalk {
-            outcome: if unread_rows == 0 {
-                Outcome::Rows { len }
-            } else {
-                Outcome::Truncated { len, unread_rows }
-            },
-            bytes_len,
             required_bytes,
         })
     })();
@@ -797,7 +729,7 @@ impl Literal {
 mod tests;
 
 mod portraits;
-pub use portraits::{PortraitRow, PortraitWalk, walk_portraits, walk_portraits_growing};
+pub use portraits::{PortraitRow, PortraitWalk, count_portraits, walk_portraits};
 
 fn portrait_header(memory: &impl Memory, pointer: usize) -> Result<[u8; 16], &'static str> {
     let country_at = at(pointer, COUNTRY)?;

@@ -1,5 +1,6 @@
-//! Executable PdxShader effects. Source assembly belongs to installed-content; DXC compiles HLSL
-//! to SPIR-V, naga validates it and emits WGSL for the same wgpu device as the map.
+//! Executable PdxShader effects. Source assembly belongs to installed-content; DXC (`dxcompiler.dll`
+//! beside the executable) compiles HLSL to SPIR-V, naga validates it and emits WGSL for the
+//! same wgpu device as the map.
 //! No effect filename selects a substitute program.
 
 /// Tests run on the allocator the viewer ships with.
@@ -7,11 +8,7 @@
 #[global_allocator]
 static TEST_ALLOCATOR: engine_heap::Heap = engine_heap::Heap;
 
-use std::{
-    collections::BTreeMap,
-    path::{Path, PathBuf},
-    process::Command,
-};
+use std::{collections::BTreeMap, path::Path};
 
 use installed_content_core::pdxshader::program::{Program, Stage, Technique};
 
@@ -20,6 +17,7 @@ pub mod atlas;
 mod batching;
 pub mod cache;
 pub mod clock;
+mod dxc;
 pub mod gpu;
 pub mod library;
 mod numeric;
@@ -119,64 +117,35 @@ impl Compiled {
     }
 }
 
-/// `dxc --version` of the official v1.9.2607 release that tools/install-shader-compiler.ps1
-/// pins. The persistent cache ABI names it, so only this compiler may produce entries.
+/// The product version of the official v1.9.2607 release's `dxcompiler.dll`, which
+/// tools/install-shader-compiler.ps1 pins and `dxc --version` prints. The persistent cache ABI
+/// names it, so only this compiler may produce entries.
 pub const DXC_VERSION: &str = "1.9.0.5402 (0d3ee6b55-dirty)";
 
-/// The compiler path is configuration, never taken from shader content. The Windows SDK and
-/// RenderDoc builds tested here omit SPIR-V; tools/install-shader-compiler.ps1 installs DXC.
+/// The pinned DXC, `dxcompiler.dll` beside the executable, never a path from shader content.
+/// The Windows SDK and RenderDoc builds tested here omit SPIR-V.
 pub struct Compiler {
-    executable: PathBuf,
-    source: &'static str,
+    library: dxc::Library,
 }
 
 impl Compiler {
-    /// Environment override, bundled compiler, then the current user's installed compiler.
+    /// The compiler beside the running executable.
     pub fn discover() -> Result<Self, String> {
-        let (source, path) = compiler_location(
-            std::env::var_os("BATTLE_PLAN_SHADER_COMPILER").or_else(|| std::env::var_os("HOI4_SHADER_COMPILER")).map(PathBuf::from),
-            std::env::current_exe()
-                .ok()
-                .map(|exe| exe.with_file_name("shader-tools").join("dxc/dxc.exe")),
-            std::env::var_os("LOCALAPPDATA")
-                .map(|root| PathBuf::from(root).join("HOI4Replay/shader-tools/dxc/dxc.exe")),
-            Path::is_file,
-        )
-        .ok_or_else(|| MISSING_COMPILER.to_owned())?;
-        let mut compiler = Self::at(path)?;
-        compiler.source = source;
-        Ok(compiler)
+        let exe = std::env::current_exe().map_err(|_| MISSING_COMPILER.to_owned())?;
+        Self::at(&exe.with_file_name("dxcompiler.dll"))
     }
 
-    pub fn executable(&self) -> &Path {
-        &self.executable
-    }
-
-    pub fn source(&self) -> &'static str {
-        self.source
-    }
-
-    /// Refuses a missing executable and any build other than the pinned [`DXC_VERSION`].
-    pub fn at(executable: PathBuf) -> Result<Self, String> {
-        if !executable.is_file() {
+    /// Refuses a missing DLL and any build other than the pinned [`DXC_VERSION`].
+    pub fn at(library: &Path) -> Result<Self, String> {
+        if !library.is_file() {
             // Installation paths must not enter persisted presentation refusals.
             return Err(MISSING_COMPILER.into());
         }
-        let mut command = Command::new(&executable);
-        command.arg("--version");
-        no_window(&mut command);
-        let output = command.output().map_err(|e| format!("launch DXC: {e}"))?;
-        let version = String::from_utf8_lossy(&output.stdout);
-        if !output.status.success() || !version.contains(DXC_VERSION) {
-            return Err(format!(
-                "DXC reports {:?}, not the pinned {DXC_VERSION}",
-                version.trim()
-            ));
+        let version = dxc::product_version(library)?;
+        if version != DXC_VERSION {
+            return Err(format!("dxcompiler.dll is {version:?}, not the pinned {DXC_VERSION}"));
         }
-        Ok(Self {
-            executable,
-            source: "explicit",
-        })
+        Ok(Self { library: dxc::Library::load(library)? })
     }
 
     pub fn compile(
@@ -208,33 +177,26 @@ impl Compiler {
         defines: &[String],
     ) -> Result<(Shader, BTreeMap<u32, String>), String> {
         let source = source::without_host_files(&program.hlsl(technique, stage, defines)?)?;
-        let scratch = Scratch::new()?;
-        let input = scratch.0.join("effect.hlsl");
-        let output = scratch.0.join("effect.spv");
-        std::fs::write(&input, &source).map_err(|e| e.to_string())?;
-        let mut command = Command::new(&self.executable);
-        // No shell, include search path or source-controlled executable. HLSL 2016 matches
-        // the legacy D3DCompile syntax more closely than DXC's 2021 short-circuit semantics.
-        command
-            .args([
-                "-spirv",
-                "-fspv-target-env=vulkan1.0",
-                "-fvk-use-dx-layout",
-                "-HV",
-                "2016",
-                "-E",
-                "main",
-                "-T",
-                if stage == Stage::Vertex {
-                    "vs_6_0"
-                } else {
-                    "ps_6_0"
-                },
-                "-Fo",
-            ])
-            .arg(&output)
-            .arg(&input)
-            .current_dir(&scratch.0);
+        // No include search path. HLSL 2016 matches the legacy D3DCompile syntax more closely
+        // than DXC's 2021 short-circuit semantics.
+        let mut arguments: Vec<String> = [
+            "-spirv",
+            "-fspv-target-env=vulkan1.0",
+            "-fvk-use-dx-layout",
+            "-HV",
+            "2016",
+            "-E",
+            "main",
+            "-T",
+            if stage == Stage::Vertex {
+                "vs_6_0"
+            } else {
+                "ps_6_0"
+            },
+            "effect.hlsl",
+        ]
+        .map(str::to_owned)
+        .into();
         // The engine binds only declared registers.
         let buffers: Vec<u32> = program
             .common
@@ -260,35 +222,29 @@ impl Compiler {
             ));
         }
         for &index in &buffers {
-            command.args([
-                "-fvk-bind-register",
-                &format!("b{index}"),
-                "0",
-                &binding(index, stage).to_string(),
-                "0",
+            arguments.extend([
+                "-fvk-bind-register".to_owned(),
+                format!("b{index}"),
+                "0".to_owned(),
+                binding(index, stage).to_string(),
+                "0".to_owned(),
             ]);
         }
         for &index in &samplers {
             for (register, group) in [("t", "1"), ("s", "2")] {
-                command.args([
-                    "-fvk-bind-register",
-                    &format!("{register}{index}"),
-                    "0",
-                    &binding(index, stage).to_string(),
-                    group,
+                arguments.extend([
+                    "-fvk-bind-register".to_owned(),
+                    format!("{register}{index}"),
+                    "0".to_owned(),
+                    binding(index, stage).to_string(),
+                    group.to_owned(),
                 ]);
             }
         }
-        no_window(&mut command);
-        let result = command.output().map_err(|e| format!("launch DXC: {e}"))?;
-        if !result.status.success() {
-            return Err(format!(
-                "{stage:?} DXC: {}{}",
-                scrubbed(&result.stdout, &scratch.0),
-                scrubbed(&result.stderr, &scratch.0)
-            ));
-        }
-        let bytes = std::fs::read(output).map_err(|e| format!("DXC output: {e}"))?;
+        let bytes = self
+            .library
+            .compile(&source, &arguments)
+            .map_err(|messages| format!("{stage:?} DXC: {messages}"))?;
         let declared = |indices: &[u32]| -> Vec<u32> {
             indices.iter().map(|&index| binding(index, stage)).collect()
         };
@@ -298,25 +254,7 @@ impl Compiler {
     }
 }
 
-const MISSING_COMPILER: &str =
-    "DXC not found; install shader-tools/dxc/dxc.exe or set BATTLE_PLAN_SHADER_COMPILER";
-
-fn compiler_location(
-    environment: Option<PathBuf>,
-    beside: Option<PathBuf>,
-    user: Option<PathBuf>,
-    mut is_file: impl FnMut(&Path) -> bool,
-) -> Option<(&'static str, PathBuf)> {
-    if let Some(path) = environment {
-        return Some(("env", path));
-    }
-    [("beside", beside), ("user install", user)]
-        .into_iter()
-        .find_map(|(source, path)| {
-            let path = path?;
-            is_file(&path).then_some((source, path))
-        })
-}
+const MISSING_COMPILER: &str = "DXC not found: dxcompiler.dll is not beside the application";
 
 /// D3D11 links a vertex output to a pixel input by register, that is by declaration order, not
 /// by semantic. The same order compiles to the same SPIR-V locations; any other signature
@@ -380,17 +318,9 @@ fn interface(bytes: &[u8], storage: u32) -> Result<BTreeMap<u32, String>, String
     Ok(out)
 }
 
-fn no_window(command: &mut Command) {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-    }
-    #[cfg(not(windows))]
-    let _ = command;
-}
-
-struct Scratch(PathBuf);
+#[cfg(test)]
+struct Scratch(std::path::PathBuf);
+#[cfg(test)]
 impl Scratch {
     fn new() -> Result<Self, String> {
         let path = std::env::temp_dir().join(format!("hoi4-shader-{}", uuid::Uuid::new_v4()));
@@ -398,6 +328,7 @@ impl Scratch {
         Ok(Self(path))
     }
 }
+#[cfg(test)]
 impl Drop for Scratch {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
@@ -579,17 +510,6 @@ fn reflect_input(
         }
     }
     Ok(())
-}
-
-/// Compiler output with the scratch folder it ran in, which differs every run, named as
-/// `.`: the same refusal reads the same on every load, so a map compares it across loads.
-fn scrubbed(text: &[u8], scratch: &std::path::Path) -> String {
-    let shown = scratch.display().to_string();
-    let mut text = String::from_utf8_lossy(text).into_owned();
-    for form in [shown.clone(), shown.replace('\\', "/")] {
-        text = text.replace(&form, ".");
-    }
-    text
 }
 
 #[cfg(test)]

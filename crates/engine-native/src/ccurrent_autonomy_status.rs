@@ -45,27 +45,15 @@ pub struct Row {
     pub next: Option<Name>,
 }
 
+pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> NameWalk {
+    walk_buffer(memory, base, game_state, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
+}
+
 /// Independent country-rooted census of current autonomy statuses. A null root
 /// is absence; a bad non-null root makes the table unavailable. Values and exact
 /// definition-name bytes remain native, including nullable previous/next states.
 /// Capacity omits whole rows and counts all required name bytes without allocating.
 pub fn walk(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut [Row],
-    names: &mut [u8],
-) -> NameWalk {
-    walk_buffer(
-        memory,
-        base,
-        game_state,
-        crate::walk::Buffer::Fixed(output),
-        crate::walk::Buffer::Fixed(names),
-    )
-}
-
-pub fn walk_growing(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -246,15 +234,15 @@ mod tests {
         }
         bytes
     }
-    fn capture(bytes: &[u8], output: &mut [Row], names: &mut [u8]) -> NameWalk {
+    fn capture(bytes: &[u8], output: &mut Vec<Row>, names: &mut Vec<u8>) -> NameWalk {
         walk(&SliceMemory { base: 0, bytes }, 0, GS, output, names)
     }
 
     #[test]
     fn native_scores_nullable_identities_and_alias_are_preserved_without_ratio_projection() {
         let mut bytes = fixture();
-        let mut rows = [Row::default(); 2];
-        let mut names = [0; 3];
+        let mut rows = vec![Row::default(); 2];
+        let mut names = vec![0; 3];
         assert_eq!(
             capture(&bytes, &mut rows, &mut names),
             NameWalk {
@@ -292,28 +280,19 @@ mod tests {
     }
 
     #[test]
-    fn capacities_count_complete_rows_and_all_three_native_names() {
+    fn the_count_probe_counts_complete_rows_and_all_three_native_names() {
         let bytes = fixture();
-        for (row_capacity, name_capacity) in [(0, 3), (1, 2)] {
-            let mut rows = [Row::default(); 1];
-            let mut names = [77; 3];
-            assert_eq!(
-                capture(
-                    &bytes,
-                    &mut rows[..row_capacity],
-                    &mut names[..name_capacity]
-                ),
-                NameWalk {
-                    outcome: Outcome::Truncated {
-                        len: 0,
-                        unread_rows: 1
-                    },
-                    bytes_len: 0,
-                    required_bytes: 3
-                }
-            );
-            assert_eq!(names, [77; 3]);
-        }
+        assert_eq!(
+            count(&SliceMemory { base: 0, bytes: &bytes }, 0, GS),
+            NameWalk {
+                outcome: Outcome::Truncated {
+                    len: 0,
+                    unread_rows: 1
+                },
+                bytes_len: 0,
+                required_bytes: 3
+            }
+        );
     }
 
     #[test]
@@ -325,7 +304,7 @@ mod tests {
             0,
         );
         assert_eq!(
-            capture(&bytes, &mut [], &mut []).outcome,
+            capture(&bytes, &mut Vec::new(), &mut Vec::new()).outcome,
             Outcome::Rows { len: 0 }
         );
         for corruption in 0..4 {
@@ -337,7 +316,7 @@ mod tests {
                 _ => p64(&mut bytes, STATUS + NEXT_STATE, 0x12345678),
             }
             assert!(matches!(
-                capture(&bytes, &mut [Row::default(); 1], &mut [0; 50]).outcome,
+                capture(&bytes, &mut vec![Row::default(); 1], &mut vec![0; 50]).outcome,
                 Outcome::Unavailable { .. }
             ));
         }

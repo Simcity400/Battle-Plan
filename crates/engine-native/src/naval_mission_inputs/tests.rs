@@ -114,7 +114,7 @@ fn visit(kind: u32) -> cfleet::TaskForceVisit {
     }
 }
 
-fn read_row(bytes: &[u8], headquarters: &mut [u64]) -> Result<Operands, &'static str> {
+fn read_row(bytes: &[u8], headquarters: &mut Vec<u64>) -> Result<Operands, &'static str> {
     let memory = SliceMemory { base: 0, bytes };
     read_task_force(&memory, 0, visit(ESCORT), headquarters)
 }
@@ -122,7 +122,7 @@ fn read_row(bytes: &[u8], headquarters: &mut [u64]) -> Result<Operands, &'static
 #[test]
 fn task_force_row_keeps_every_efficiency_operand() {
     let bytes = task_force();
-    let mut headquarters = [u64::MAX; 2];
+    let mut headquarters = vec![u64::MAX; 2];
     let row = read_row(&bytes, &mut headquarters).unwrap();
     let value = |raw| Value { raw, present: true };
     assert_eq!(
@@ -156,20 +156,16 @@ fn task_force_row_keeps_every_efficiency_operand() {
     );
     // Each entry keeps its place; the second has no commander.
     assert_eq!(headquarters, [(5 << 32) | 73, 0]);
-    // Too little room reports the demand and writes nothing, never a partial list.
-    let mut short = [u64::MAX; 1];
-    let row = read_row(&bytes, &mut short).unwrap();
-    assert_eq!((row.headquarters, short), (2, [u64::MAX]));
     // Without a location neither the local accumulator nor a region is read.
     let mut docked = bytes.clone();
     put_u64(&mut docked, TASK + cunit::LOCATION, 0_u64);
     put_u32(&mut docked, TASK + LOCAL_MODIFIERS + 8, u32::MAX);
-    let row = read_row(&docked, &mut [0; 2]).unwrap();
+    let row = read_row(&docked, &mut vec![0; 2]).unwrap();
     assert_eq!((row.region, row.local), (0, [Value::default(); 9]));
     // A location that is no province is refused.
     let mut stray = bytes;
     put_u64(&mut stray, PROVINCE, 1_u64);
-    assert!(read_row(&stray, &mut [0; 2]).is_err());
+    assert!(read_row(&stray, &mut vec![0; 2]).is_err());
 }
 
 #[test]
@@ -180,10 +176,10 @@ fn mission_operands_authenticate_without_reading_accessible_regions() {
         TASK + MISSION + cnaval_mission::ACCESSIBLE_REGIONS,
         u64::MAX,
     );
-    assert_eq!(read_row(&bytes, &mut [0; 2]).unwrap().mission_owner, 9);
+    assert_eq!(read_row(&bytes, &mut vec![0; 2]).unwrap().mission_owner, 9);
     put_u64(&mut bytes, TASK + MISSION + 8, 1);
     assert_eq!(
-        read_row(&bytes, &mut [0; 2]),
+        read_row(&bytes, &mut vec![0; 2]),
         Err("naval mission identity mismatch")
     );
 }
@@ -306,17 +302,13 @@ fn ledger_region_census_crosses_batches_and_refuses_short_headers() {
 }
 
 #[test]
-fn navy_hubs_allow_empty_lists_and_preserve_demand_order_and_short_reads() {
+fn navy_hubs_allow_empty_lists_and_preserve_demand_order_and_grow_short_storage() {
     let mut bytes = vec![0; 0x3000];
     assert_eq!(
-        navy_hubs(
-            &SliceMemory {
+        navy_hubs_buffer(&SliceMemory {
                 base: 0,
                 bytes: &bytes
-            },
-            0x100,
-            &mut []
-        ),
+            }, 0x100, crate::walk::Buffer::Count),
         Ok(0)
     );
     array(&mut bytes, 0x100 + HUBS, 0x1000, 300);
@@ -327,21 +319,18 @@ fn navy_hubs_allow_empty_lists_and_preserve_demand_order_and_short_reads() {
         base: 0,
         bytes: &bytes,
     };
-    let mut short = [u32::MAX; 2];
-    assert_eq!(navy_hubs(&memory, 0x100, &mut short), Ok(300));
-    assert_eq!(short, [u32::MAX; 2]);
+    let mut short = vec![u32::MAX; 2];
+    assert_eq!(navy_hubs_buffer(&memory, 0x100, crate::walk::Buffer::Growing(&mut short)), Ok(300));
+    assert_eq!(short[..300], (0..300).map(|index| index % 7).collect::<Vec<_>>()[..]);
+    assert_eq!(navy_hubs_buffer(&memory, 0x100, crate::walk::Buffer::Count), Ok(300));
     let mut out = vec![0; 300];
-    assert_eq!(navy_hubs(&memory, 0x100, &mut out), Ok(300));
+    assert_eq!(navy_hubs_buffer(&memory, 0x100, crate::walk::Buffer::Growing(&mut out)), Ok(300));
     assert_eq!(out, (0..300).map(|index| index % 7).collect::<Vec<_>>());
     assert_eq!(
-        navy_hubs(
-            &SliceMemory {
+        navy_hubs_buffer(&SliceMemory {
                 base: 0,
                 bytes: &bytes[..0x1000 + 300 * 4 - 1]
-            },
-            0x100,
-            &mut out
-        ),
+            }, 0x100, crate::walk::Buffer::Growing(&mut out)),
         Err("navy supply hub unreadable")
     );
 }
@@ -753,7 +742,7 @@ fn original_selector_observations_keep_first_fault_and_successful_prefix() {
             &memory,
             0,
             visit(2),
-            crate::walk::Buffer::Fixed(&mut []),
+            crate::walk::Buffer::Count,
             &mut None,
             &mut None,
             &mut selectors,

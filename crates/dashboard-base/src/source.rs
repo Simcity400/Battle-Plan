@@ -18,7 +18,7 @@ use replay::campaign::Replay;
 
 use crate::{
     ReplayMetadata,
-    content::{ContentKey, content_key, language, name_localisation},
+    content::{ContentKey, content_key, name_localisation},
     metadata::{self, MetadataRefusals, ResidentMetadata, Warnings},
     presentation::{Admitted, Binding, Cancel, Presentation, Presented},
     products::ContentOptions,
@@ -26,7 +26,6 @@ use crate::{
 use installed_content_country_names::country_names::CountryNames;
 use installed_content_localisation::localisation::Localisation;
 use replay::campaign::SeekResult;
-pub mod metadata_cache;
 
 /// Identity of an opened recording revision inside the running service.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -169,13 +168,13 @@ fn refuse_older(error: io::Error) -> io::Error {
     }
 }
 
-fn block_windows(replay: &Replay) -> HashMap<u64, Vec<crate::products::country_groups::HourSpan>> {
+fn block_windows(replay: &Replay) -> HashMap<u64, Vec<crate::span::HourSpan>> {
     let mut windows: HashMap<_, Vec<_>> = HashMap::new();
     for block in &replay.index {
         windows
             .entry(block.branch)
             .or_default()
-            .push(crate::products::country_groups::HourSpan {
+            .push(crate::span::HourSpan {
                 first_hour: block.first_hour,
                 last_hour: block.last_hour,
             });
@@ -189,10 +188,8 @@ pub struct Source {
     key: SourceKey,
     path: PathBuf,
     replay: Arc<Replay>,
-    block_windows: HashMap<u64, Vec<crate::products::country_groups::HourSpan>>,
+    block_windows: HashMap<u64, Vec<crate::span::HourSpan>>,
     metadata: ResidentMetadata,
-    cached_named: Option<metadata_cache::CachedNames>,
-    pub(crate) cached_inputs: Option<store::SourceKey>,
     /// The metadata with country names resolved for the last folders it was asked for.
     named: Mutex<Option<(NamesKey, ResidentMetadata, Diagnostics)>>,
     content: Mutex<ContentCache>,
@@ -205,16 +202,8 @@ pub struct Source {
     state: Mutex<HashMap<TypeId, StateEntry>>,
 }
 
-/// What country names are resolved for: the folders, and the user's game language they are in
-/// (or why it cannot be read).
-pub(crate) type NamesKey = (Option<ContentKey>, Option<Result<Option<String>, String>>);
-
-fn names_key(content: Option<&ContentOptions>) -> NamesKey {
-    (
-        content_key(content),
-        content.map(|content| language(&content.options).map_err(|error| error.to_string())),
-    )
-}
+/// What country names are resolved for: the folders. Their language is the recording's.
+pub(crate) type NamesKey = Option<ContentKey>;
 
 fn country_observation(country: &crate::CountryMetadata) -> (&str, &str, &str, i32) {
     (
@@ -247,24 +236,6 @@ impl Source {
         let (facts, tables) = recorded(&replay);
         // The catalogue is read with the recording's own executable tables.
         engine_executable::executable_tables::scope(tables, || {
-            if let Ok(Some(restored)) = metadata_cache::read(&path, &replay, cancelled) {
-                metadata::check_cancel(cancelled)?;
-                return Ok(Self {
-                    key,
-                    path,
-                    block_windows: block_windows(&replay),
-                    replay,
-                    metadata: restored.metadata,
-                    cached_named: restored.named,
-                    cached_inputs: Some(restored.inputs),
-                    named: Mutex::new(None),
-                    content: Mutex::default(),
-                    facts: facts.into(),
-                    tables: tables.into(),
-                    binding: Mutex::new(None),
-                    state: Mutex::new(HashMap::new()),
-                });
-            }
             Self::read(key, path, replay, (facts, tables), cancelled)
         })
     }
@@ -295,8 +266,6 @@ impl Source {
             block_windows: block_windows(&replay),
             replay,
             metadata,
-            cached_named: None,
-            cached_inputs: None,
             named: Mutex::new(None),
             content: Mutex::default(),
             facts: facts.into(),
@@ -351,7 +320,7 @@ impl Source {
     fn play(&self, options: &ResolveOptions) -> io::Result<ResolvedContent> {
         installed_content_core::playback(&self.replay.identity, self.facts(), options)
     }
-    pub fn block_windows(&self, branch: u64) -> &[crate::products::country_groups::HourSpan] {
+    pub fn block_windows(&self, branch: u64) -> &[crate::span::HourSpan] {
         self.block_windows.get(&branch).map_or(&[], Vec::as_slice)
     }
 
@@ -449,43 +418,16 @@ impl Source {
         }
     }
 
-    /// Resolves the catalogue's names in the user's game language at each
+    /// Resolves the catalogue's names in the recording's language at each
     /// country's observed hour; without content they stay tags, with a warning.
     pub fn name_countries(&self, content: Option<&ContentOptions>) -> io::Result<()> {
-        let key = names_key(content);
+        let key = content_key(content);
         let mut named = self.named.lock().unwrap_or_else(|error| error.into_inner());
         if let Some((cached, _, diagnostics)) = named.as_ref()
             && *cached == key
         {
             diagnostics.credit();
             return Ok(());
-        }
-        if let Some((inputs, saved, metadata, previous)) = &self.cached_named
-            && saved == &key
-        {
-            // Resolve today's complete stack/file list before accepting cached
-            // labels, including newly added files and a changed language setting.
-            if crate::prepared::files(self, content).is_ok_and(|(_, current)| &current == inputs) {
-                let cached: std::collections::HashSet<_> =
-                    metadata.countries.iter().map(country_observation).collect();
-                let all_cached = self
-                    .metadata
-                    .countries
-                    .iter()
-                    .all(|country| cached.contains(&country_observation(country)));
-                let (metadata, mut diagnostics) = diagnostics::capture(|| {
-                    let localisation = if all_cached {
-                        Err(String::new())
-                    } else {
-                        name_localisation(self, content)
-                    };
-                    self.named_metadata_from(localisation, Some(metadata))
-                });
-                diagnostics.merge(previous);
-                diagnostics.credit();
-                *named = Some((key, metadata?, diagnostics));
-                return Ok(());
-            }
         }
         let (metadata, diagnostics) =
             diagnostics::capture(|| self.named_metadata(name_localisation(self, content)));

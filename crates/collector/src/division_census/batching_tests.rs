@@ -164,12 +164,12 @@ fn batched_core_province_one_shot_refuses_no_more_and_counts_fallback() {
 
 /// Row-at-a-time reference: never calls capture_core or stage_provinces.
 /// Fresh child identities force every original source gate for each row.
-fn serial_core(census: &mut Census, memory: &impl Memory, capacity: usize) {
+fn serial_core(census: &mut Census, memory: &impl Memory, limit: usize) {
     let roots = census.core_roots.take().unwrap();
     let result = (|| {
         let provinces = Array::read(memory, roots.state + cgame_state::PROVINCES, 8)
             .ok_or("province array unreadable or invalid")?;
-        for index in 0..census.entries.len().min(capacity) {
+        for index in 0..census.entries.len().min(limit) {
             let row = project(
                 memory,
                 &roots.countries,
@@ -198,7 +198,7 @@ fn serial_core(census: &mut Census, memory: &impl Memory, capacity: usize) {
 }
 
 #[test]
-fn batched_core_projection_capacity_alias_duplicates_and_faults_equal_serial() {
+fn batched_core_projection_alias_duplicates_and_faults_equal_serial() {
     use crate::sampling::divisions_test_kit as kit;
     let mut bytes = kit::fixture();
     // The fixture already contains a country alias and a null province.
@@ -224,73 +224,71 @@ fn batched_core_projection_capacity_alias_duplicates_and_faults_equal_serial() {
         if invalid == 1 {
             bytes[kit::P1..kit::P1 + 8].copy_from_slice(&0_u64.to_le_bytes());
         }
-        for capacity in [0, 1, 2, 63, 64, 65, 66, 80] {
-            for once in [false, true] {
-                for fault in [
-                    None,
-                    Some(kit::LTAB + 12),
-                    Some(kit::P1),
-                    Some(kit::P1 + cprovince::ID),
-                    Some(kit::PTAB + 8),
-                ] {
-                    let make_census = || {
-                        let mut census = Census::new();
-                        census.capture_inputs(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE);
-                        assert_eq!(census.entries.len(), 66);
-                        let seeds = &mut Arc::get_mut(census.unit_inputs.as_mut().unwrap())
-                            .unwrap()
-                            .seeds;
-                        // The original identity/owner gates precede province
-                        // projection even when lookahead has read it already.
-                        if invalid == 2 {
-                            seeds[0].primary_vtable = Some(0);
-                        } else if invalid == 3 {
-                            seeds[0].roster_owner = Some(0);
-                        }
-                        census
-                    };
-                    let memory = || Source {
-                        bytes: &bytes,
-                        fault,
-                        once,
-                        spent: Cell::new(false),
-                    };
-                    let mut actual = make_census();
-                    let mut serial = make_census();
-                    let allocated = actual.allocated_bytes();
-                    actual.capture_core(&memory(), capacity);
-                    serial_core(&mut serial, &memory(), capacity);
-                    // Relaxed read order may consume a one-shot province
-                    // fault before projection; it must never shorten the
-                    // serial prefix or alter any row it did publish.
-                    if once && fault.is_some() {
-                        assert!(actual.rows.len() >= serial.rows.len());
-                        assert_eq!(&actual.rows[..serial.rows.len()], serial.rows);
-                        assert_eq!(&actual.sources[..serial.sources.len()], serial.sources);
-                        if actual.rows.len() == serial.rows.len() {
-                            assert_eq!(actual.outcome(capacity), serial.outcome(capacity));
-                        }
-                        let mut healthy_prefix = make_census();
-                        serial_core(&mut healthy_prefix, &kit::memory(&bytes), actual.rows.len());
-                        assert_eq!(actual.rows, healthy_prefix.rows);
-                        assert_eq!(actual.sources, healthy_prefix.sources);
-                        assert_eq!(actual.counts, healthy_prefix.counts);
-                        assert_eq!(actual.counts_error, healthy_prefix.counts_error);
-                    } else {
-                        assert_eq!(actual.rows, serial.rows);
-                        assert_eq!(actual.sources, serial.sources);
-                        assert_eq!(actual.counts, serial.counts);
-                        assert_eq!(actual.counts_error, serial.counts_error);
-                        assert_eq!(actual.outcome(capacity), serial.outcome(capacity));
+        for once in [false, true] {
+            for fault in [
+                None,
+                Some(kit::LTAB + 12),
+                Some(kit::P1),
+                Some(kit::P1 + cprovince::ID),
+                Some(kit::PTAB + 8),
+            ] {
+                let make_census = || {
+                    let mut census = Census::new();
+                    census.capture_inputs(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE);
+                    assert_eq!(census.entries.len(), 66);
+                    let inputs = census.unit_inputs.as_mut().unwrap();
+                    let seeds =
+                        &mut engine_allocation::SharedBox::get_mut(inputs).unwrap().seeds;
+                    // The original identity/owner gates precede province
+                    // projection even when lookahead has read it already.
+                    if invalid == 2 {
+                        seeds[0].primary_vtable = Some(0);
+                    } else if invalid == 3 {
+                        seeds[0].roster_owner = Some(0);
                     }
-                    assert_eq!(
-                        actual.unit_inputs().unwrap().seeds(),
-                        serial.unit_inputs().unwrap().seeds()
-                    );
-                    assert_eq!(actual.source_requirement(), serial.source_requirement());
-                    assert_eq!(actual.required_counts, serial.required_counts);
-                    assert_eq!(actual.allocated_bytes(), allocated);
+                    census
+                };
+                let memory = || Source {
+                    bytes: &bytes,
+                    fault,
+                    once,
+                    spent: Cell::new(false),
+                };
+                let mut actual = make_census();
+                let mut serial = make_census();
+                let allocated = actual.allocated_bytes();
+                actual.capture_core(&memory());
+                serial_core(&mut serial, &memory(), usize::MAX);
+                // Relaxed read order may consume a one-shot province
+                // fault before projection; it must never shorten the
+                // serial prefix or alter any row it did publish.
+                if once && fault.is_some() {
+                    assert!(actual.rows.len() >= serial.rows.len());
+                    assert_eq!(&actual.rows[..serial.rows.len()], serial.rows);
+                    assert_eq!(&actual.sources[..serial.sources.len()], serial.sources);
+                    if actual.rows.len() == serial.rows.len() {
+                        assert_eq!(actual.outcome(), serial.outcome());
+                    }
+                    let mut healthy_prefix = make_census();
+                    serial_core(&mut healthy_prefix, &kit::memory(&bytes), actual.rows.len());
+                    assert_eq!(actual.rows, healthy_prefix.rows);
+                    assert_eq!(actual.sources, healthy_prefix.sources);
+                    assert_eq!(actual.counts, healthy_prefix.counts);
+                    assert_eq!(actual.counts_error, healthy_prefix.counts_error);
+                } else {
+                    assert_eq!(actual.rows, serial.rows);
+                    assert_eq!(actual.sources, serial.sources);
+                    assert_eq!(actual.counts, serial.counts);
+                    assert_eq!(actual.counts_error, serial.counts_error);
+                    assert_eq!(actual.outcome(), serial.outcome());
                 }
+                assert_eq!(
+                    actual.unit_inputs().unwrap().seeds(),
+                    serial.unit_inputs().unwrap().seeds()
+                );
+                assert_eq!(actual.source_requirement(), serial.source_requirement());
+                assert_eq!(actual.required_counts, serial.required_counts);
+                assert_eq!(actual.allocated_bytes(), allocated);
             }
         }
     }

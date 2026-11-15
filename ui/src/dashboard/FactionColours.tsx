@@ -145,14 +145,16 @@ export function FactionColoursEditor({ client, source }: { client: DashboardClie
     <ul className="faction-colours-list">{factions.map(faction => {
       const style = chosen[faction.id];
       const named = factionNameAt(faction, undefined, style?.name);
+      // Named as recorded, so the row keeps its name while the user renames it.
+      const recorded = factionNameAt(faction).name ?? unnamed(faction.id);
       const shared = identity(faction.id) != null ? settings.shared[identity(faction.id)!] : undefined;
       const set = scope === 'campaign' ? style?.colour : shared?.colour;
-      return <li key={faction.id}>
+      return <li key={faction.id} data-faction={faction.id} data-faction-name={recorded}>
         <label className="faction-swatch" data-tooltip="Change colour" style={{ background: colours.get(faction.id) }}>
-          <input type="color" value={colours.get(faction.id) ?? '#888888'} aria-label={`Colour for ${named.name ?? unnamed(faction.id)}`}
+          <input type="color" value={colours.get(faction.id) ?? '#888888'} aria-label={`Colour for ${recorded}`}
             onChange={event => setMessage(setColour(faction.id, event.currentTarget.value, scope))} /></label>
         {/* Keyed on the stored name, so a reset replaces any old text. */}
-        <input key={style?.name ?? ''} className="faction-name" defaultValue={style?.name ?? ''} placeholder={named.name ?? unnamed(faction.id)} maxLength={160} aria-label="Display name"
+        <input key={style?.name ?? ''} className="faction-name" defaultValue={style?.name ?? ''} placeholder={named.name ?? unnamed(faction.id)} maxLength={160} aria-label={`Display name of ${recorded}`}
           onBlur={event => {
             const name = event.currentTarget.value.trim();
             if (name !== (style?.name ?? '')) save(setFactionStyle(settings, campaign, faction.id, name ? { name } : { name: undefined }));

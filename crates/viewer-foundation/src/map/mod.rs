@@ -34,6 +34,7 @@ pub mod province_geometry;
 pub mod province_map;
 pub mod province_pick;
 pub mod province_schedule;
+pub mod redraws;
 pub mod request_order;
 pub mod sprites;
 pub mod tables;

@@ -56,7 +56,6 @@ pub fn compare_output(
         replay.visit_blocks(
             &[block],
             &OUTPUT_TABLES,
-            None,
             |_, _, hour_frame| {
             if hour_frame.hour > frame.hour {
                 return Ok(false);
@@ -89,7 +88,6 @@ fn observation_start(replay: &Replay, frame: &DecodedFrame) -> io::Result<Option
         replay.visit_blocks(
             &[block],
             &OUTPUT_TABLES,
-            None,
             |_, _, hour_frame| {
             if hour_frame.hour > frame.hour {
                 return Ok(false);
@@ -111,6 +109,8 @@ fn observation_start(replay: &Replay, frame: &DecodedFrame) -> io::Result<Option
     }
     Ok(None)
 }
+
+pub(super) const ENDED_ADDITION: &str = "a line with a completion beside an unwitnessed count addition ended before the compared hour; the save keeps no deleted line to certify its count";
 
 #[derive(Clone)]
 struct Published {
@@ -144,6 +144,8 @@ pub(super) struct OutputCheck {
     /// nothing witnesses the addition, so the line's count must be
     /// certified by the save at the compared hour.
     uncertified_additions: BTreeMap<u64, (Hour, Hour)>,
+    /// Lines published as ended.
+    ended: BTreeSet<u64>,
     shared_railways: usize,
     seen: BTreeSet<u64>,
     output_handles: BTreeSet<u64>,
@@ -153,7 +155,7 @@ pub(super) struct OutputCheck {
 
 impl OutputCheck {
     pub(super) fn observe(&mut self, frame: &DecodedFrame, report: &mut Report) -> io::Result<()> {
-        if !super::daily_read(frame.hour, &frame.metrics, TableId::ConstructionLineOutput) {
+        if !super::daily_read(&frame.metrics, TableId::ConstructionLineOutput) {
             return Ok(());
         }
         let (Ok(rows), Ok(buildings), Ok(railways)) = (
@@ -171,6 +173,8 @@ impl OutputCheck {
                 .chain(railways.iter().map(|r| r.id)),
         );
         self.output_handles.extend(rows.iter().map(|r| r.line));
+        self.ended
+            .extend(rows.iter().filter(|r| r.ended).map(|r| r.line));
         for row in rows {
             if let replay_data::rows::Recorded::Value(Some(event)) = row.completion {
                 let absent = !buildings.iter().any(|r| r.id == row.line)
@@ -567,13 +571,20 @@ impl OutputCheck {
             _ => None,
         };
         for (&handle, &(from, to)) in &self.uncertified_additions {
-            if !live.is_some_and(|published| published.contains_key(&handle)) {
-                report.difference(
-                    format!("ConstructionLineOutput {handle} completion beside an unwitnessed count addition {from}..{to}"),
-                    "line not published by a read at the compared hour",
-                    "the line live at the compared hour, its remaining count compared with the save",
-                );
+            let subject = format!("ConstructionLineOutput {handle} completion beside an unwitnessed count addition {from}..{to}");
+            if live.is_some_and(|published| published.contains_key(&handle)) {
+                continue;
             }
+            // The compared hour's queue, held to the save, holds it no more.
+            if self.ended.contains(&handle) {
+                report.limitation(ENDED_ADDITION, subject);
+                continue;
+            }
+            report.difference(
+                subject,
+                "line not published by a read at the compared hour",
+                "the line live at the compared hour, its remaining count compared with the save",
+            );
         }
         report.compared(
             "ConstructionLineOutput native completion consistency",

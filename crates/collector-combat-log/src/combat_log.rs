@@ -301,7 +301,7 @@ impl Captured {
             viewing: Err(VIEWING_UNREAD),
             prune_observed: false,
             selection: SliceSelection::new(false),
-            memo: native::VariantMemo::vacant(),
+            memo: native::VariantMemo::default(),
             signal: 0,
             drained: Vec::new(),
             visited: Vec::new(),
@@ -315,9 +315,7 @@ impl Captured {
             viewing: Err(VIEWING_UNREAD),
             prune_observed: false,
             selection: SliceSelection::new(true),
-            memo: native::VariantMemo::try_new()
-                .map_err(crate::allocation::io)
-                .unwrap_or_default(),
+            memo: native::VariantMemo::default(),
             signal: 0,
             drained: Vec::new(),
             visited: Vec::new(),
@@ -392,7 +390,7 @@ impl Captured {
             let _reads = crate::read_accounting::table(TABLES[2]);
             let started = qpc();
             self.lend_lease.outcome =
-                lend_lease::walk_growing(memory, base, game_state, &mut self.lend_lease.rows);
+                lend_lease::walk(memory, base, game_state, &mut self.lend_lease.rows);
             qpc().saturating_sub(started).max(0) as u64
         } else {
             self.lend_lease.outcome = Outcome::Unavailable {
@@ -485,7 +483,7 @@ impl Captured {
         let read_hour = &store.read_hour;
         let visited = &mut self.visited;
         visited.clear();
-        let outcome = native::walk_prepared_growing_observed(
+        let outcome = native::walk_prepared_observed(
             memory,
             base,
             game_state,
@@ -796,7 +794,7 @@ mod tests {
         });
         let before = captured.allocated_bytes();
         let mut original_visited = Vec::new();
-        let mut memo = native::VariantMemo::try_new().unwrap();
+        let mut memo = native::VariantMemo::default();
         for (hour, force_full) in [(5, false), (6, false), (7, true), (8, false)] {
             captured.set_signal(SIGNAL);
             captured.capture(&memory, 0, 0x1000, hour, force_full);
@@ -812,7 +810,7 @@ mod tests {
                     original_visited.push(country);
                     Some(native::Months::All)
                 },
-                &mut [],
+                &mut Vec::new(),
                 &mut memo,
             );
             assert_eq!(outcome, Outcome::Rows { len: 0 });

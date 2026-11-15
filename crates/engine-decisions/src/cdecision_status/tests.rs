@@ -34,7 +34,7 @@ fn decision_random_items_preserve_full_store_and_signed_words() {
     );
     let mut rows = vec![RandomItemRow::default(); 1];
     let mut tokens = vec![0; 1];
-    let walk = walk_random_items_growing(
+    let walk = walk_random_items(
         &world.memory(),
         IMAGE,
         world.game_state(),
@@ -56,21 +56,6 @@ fn decision_random_items_preserve_full_store_and_signed_words() {
             b"test\xff"
         );
     }
-    let short = walk_random_items(
-        &world.memory(),
-        IMAGE,
-        world.game_state(),
-        &mut rows[..1],
-        &mut tokens[..5],
-    );
-    assert_eq!(
-        short.outcome,
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 5
-        }
-    );
-    assert_eq!(short.required_bytes, 30);
     let status = crate::read::<u64>(&world.memory(), world.object(1) + ccountry::DECISION_STATUS)
         .unwrap() as usize;
     let items = crate::read::<u64>(&world.memory(), status + RANDOM_ITEMS).unwrap() as usize;
@@ -139,7 +124,7 @@ fn vector(bytes: &mut [u8], offset: usize, count: i32) {
     qword(bytes, VECTOR_ADDRESS, RECORD_ADDRESS);
 }
 
-fn run(bytes: &[u8], output: &mut [Row], tokens: &mut [u8]) -> Walk {
+fn run(bytes: &[u8], output: &mut Vec<Row>, tokens: &mut Vec<u8>) -> Walk {
     walk(
         &SliceMemory {
             base: COUNTRY_ADDRESS,
@@ -206,7 +191,7 @@ fn every_decision_container_and_token_arena_grows_from_original_mod_sized_header
     install(&mut bytes, 2);
     let mut rows = Vec::new();
     let mut tokens = Vec::new();
-    let first = walk_growing(
+    let first = walk(
         &SliceMemory {
             base: COUNTRY_ADDRESS,
             bytes: &bytes,
@@ -219,16 +204,7 @@ fn every_decision_container_and_token_arena_grows_from_original_mod_sized_header
     assert_eq!(first.outcome, Outcome::Rows { len: 10 });
     assert_eq!((first.bytes_len, first.required_bytes), (50, 50));
     install(&mut bytes, 5_000);
-    let fixed = run(&bytes, &mut rows[..10], &mut tokens[..50]);
-    assert_eq!(
-        fixed.outcome,
-        Outcome::Truncated {
-            len: 10,
-            unread_rows: 24_990
-        }
-    );
-    assert_eq!(fixed.required_bytes, 125_000);
-    let later = walk_growing(
+    let later = walk(
         &SliceMemory {
             base: COUNTRY_ADDRESS,
             bytes: &bytes,
@@ -266,12 +242,12 @@ fn every_decision_container_and_token_arena_grows_from_original_mod_sized_header
 #[test]
 fn authenticated_empty_state_differs_from_missing_or_corrupt_containers() {
     let mut bytes = empty();
-    let result = run(&bytes, &mut [], &mut []);
+    let result = run(&bytes, &mut Vec::new(), &mut Vec::new());
     assert_eq!(result.outcome, Outcome::Rows { len: 0 });
     assert_eq!(result.counts, Some(Counts::default()));
     qword(&mut bytes, COUNTRY_ADDRESS + ccountry::DECISION_STATUS, 0);
     assert!(matches!(
-        run(&bytes, &mut [], &mut []).outcome,
+        run(&bytes, &mut Vec::new(), &mut Vec::new()).outcome,
         Outcome::Unavailable { .. }
     ));
     qword(
@@ -280,7 +256,7 @@ fn authenticated_empty_state_differs_from_missing_or_corrupt_containers() {
         STATUS_ADDRESS,
     );
     word(&mut bytes, STATUS_ADDRESS + TARGETED + 12, 1);
-    let invalid = run(&bytes, &mut [], &mut []);
+    let invalid = run(&bytes, &mut Vec::new(), &mut Vec::new());
     assert!(matches!(invalid.outcome, Outcome::Unavailable { .. }));
     assert_eq!(invalid.counts, None);
 }
@@ -305,8 +281,8 @@ fn timed_rows_keep_nonactive_states_and_full_signed_fields() {
         RECORD_ADDRESS + ctimed_decision::STATE,
         i32::MAX,
     );
-    let mut output = [Row::default(); 1];
-    let mut tokens = [0; 5];
+    let mut output = vec![Row::default(); 1];
+    let mut tokens = vec![0; 5];
     let result = run(&bytes, &mut output, &mut tokens);
     assert_eq!(result.outcome, Outcome::Rows { len: 1 });
     assert_eq!(output[0].container, Container::Timed);
@@ -333,8 +309,8 @@ fn targeted_container_labels_match_native_serializer_sources() {
         RECORD_ADDRESS + ctargeted_decision::DEFINITION,
         DEFINITION_ADDRESS,
     );
-    let mut output = [Row::default(); 2];
-    let result = run(&bytes, &mut output, &mut [0; 10]);
+    let mut output = vec![Row::default(); 2];
+    let result = run(&bytes, &mut output, &mut vec![0; 10]);
     assert_eq!(result.outcome, Outcome::Rows { len: 2 });
     assert_eq!(output[0].container, Container::Targeted);
     assert_eq!(output[0].container as u8, 3);
@@ -375,9 +351,9 @@ fn targeted_rows_retain_both_native_slots_and_validate_the_bool_only() {
         RECORD_ADDRESS + ctargeted_decision::IGNORE,
         &[1],
     );
-    let mut output = [Row::default(); 1];
+    let mut output = vec![Row::default(); 1];
     assert_eq!(
-        run(&bytes, &mut output, &mut [0; 5]).outcome,
+        run(&bytes, &mut output, &mut vec![0; 5]).outcome,
         Outcome::Rows { len: 1 }
     );
     assert_eq!(output[0].target_kind, TargetKind::Numeric);
@@ -402,7 +378,7 @@ fn targeted_rows_retain_both_native_slots_and_validate_the_bool_only() {
             numeric,
         );
         assert_eq!(
-            run(&bytes, &mut output, &mut [0; 5]).outcome,
+            run(&bytes, &mut output, &mut vec![0; 5]).outcome,
             Outcome::Rows { len: 1 }
         );
         assert_eq!(output[0].target_kind, kind);
@@ -413,7 +389,7 @@ fn targeted_rows_retain_both_native_slots_and_validate_the_bool_only() {
         &[2],
     );
     assert_eq!(
-        run(&bytes, &mut output, &mut [0; 5]).outcome,
+        run(&bytes, &mut output, &mut vec![0; 5]).outcome,
         Outcome::Unavailable {
             reason: "targeted decision ignore flag invalid"
         }
@@ -421,7 +397,7 @@ fn targeted_rows_retain_both_native_slots_and_validate_the_bool_only() {
 }
 
 #[test]
-fn cooldown_capacity_omits_whole_rows_and_requests_full_token_storage() {
+fn cooldown_rows_and_token_storage_grow_to_the_full_demand() {
     let mut bytes = empty();
     vector(&mut bytes, RE_ENABLE, 2);
     qword(&mut bytes, VECTOR_ADDRESS + 8, RECORD_ADDRESS);
@@ -440,29 +416,11 @@ fn cooldown_capacity_omits_whole_rows_and_requests_full_token_storage() {
         RECORD_ADDRESS + cdecision_cooldown::DAYS,
         i32::MIN,
     );
-    let mut output = [Row::default(); 2];
-    let result = run(&bytes, &mut output, &mut [0; 9]);
-    assert_eq!(
-        result.outcome,
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 1
-        }
-    );
-    assert_eq!(result.required_bytes, 10);
-    assert_eq!(result.bytes_len, 5);
-    assert_eq!(output[0].days, i32::MIN);
-    let result = run(&bytes, &mut [], &mut [0; 10]);
-    assert_eq!(
-        result.outcome,
-        Outcome::Truncated {
-            len: 0,
-            unread_rows: 2
-        }
-    );
-    assert_eq!(result.required_bytes, 10);
-    let result = run(&bytes, &mut output, &mut [0; 10]);
+    let mut output = vec![Row::default(); 1];
+    let result = run(&bytes, &mut output, &mut vec![0; 9]);
     assert_eq!(result.outcome, Outcome::Rows { len: 2 });
+    assert_eq!((result.bytes_len, result.required_bytes), (10, 10));
+    assert_eq!(output[0].days, i32::MIN);
     assert_eq!(output[1].ordinal, 1);
 }
 
@@ -485,8 +443,8 @@ fn wrong_owners_definitions_and_heap_strings_never_become_empty_rows() {
     qword(&mut bytes, token + 16, 17);
     qword(&mut bytes, token + 24, 31);
     put(&mut bytes, 0x4000, b"a_long_definition");
-    let mut output = [Row::default(); 1];
-    let mut tokens = [0; 17];
+    let mut output = vec![Row::default(); 1];
+    let mut tokens = vec![0; 17];
     assert_eq!(
         run(&bytes, &mut output, &mut tokens).outcome,
         Outcome::Rows { len: 1 }
@@ -549,22 +507,14 @@ fn description_seed_reads_only_demanded_targeted_rows_and_preserves_first_match(
     }
     let demand = [crate::border_effect_demand::Name { start: 0, len: 5 }];
     let run = |bytes: &[u8], demand: &[crate::border_effect_demand::Name]| {
-        let mut output = [Row::default()];
-        let result = walk_with_description_demand(
-            &SliceMemory {
+        let mut output = vec![Row::default()];
+        let result = walk_with_description_demand_buffer(&SliceMemory {
                 base: COUNTRY_ADDRESS,
                 bytes,
-            },
-            IMAGE,
-            0,
-            COUNTRY_ADDRESS,
-            &mut output,
-            &mut [0; 5],
-            crate::border_effect_demand::Demand {
+            }, IMAGE, 0, COUNTRY_ADDRESS, crate::walk::Buffer::Growing(&mut output), crate::walk::Buffer::Growing(&mut vec![0; 5]), crate::border_effect_demand::Demand {
                 names: demand,
                 bytes: b"testx",
-            },
-        );
+            });
         (result.outcome, output[0].description_seed)
     };
     assert_eq!(
@@ -673,20 +623,12 @@ fn country_description_seed_resolves_alias_and_matches_first_definition_key_in_b
         },
         reads: RefCell::new(Vec::new()),
     };
-    let mut output = [Row::default(); 2];
+    let mut output = vec![Row::default(); 2];
     let demand = [Name { start: 0, len: 5 }];
-    let result = walk_with_description_demand(
-        &memory,
-        IMAGE,
-        GS,
-        COUNTRY_ADDRESS,
-        &mut output,
-        &mut [0; 10],
-        crate::border_effect_demand::Demand {
+    let result = walk_with_description_demand_buffer(&memory, IMAGE, GS, COUNTRY_ADDRESS, crate::walk::Buffer::Growing(&mut output), crate::walk::Buffer::Growing(&mut vec![0; 10]), crate::border_effect_demand::Demand {
             names: &demand,
             bytes: b"testx",
-        },
-    );
+        });
     assert_eq!(result.outcome, Outcome::Rows { len: 2 });
     assert!(
         output

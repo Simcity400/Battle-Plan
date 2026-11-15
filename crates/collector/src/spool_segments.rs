@@ -166,8 +166,10 @@ mod tests {
     /// thread encodes, and the helpers took tables with enough rows.
     #[test]
     fn segments_encoded_on_the_helpers_assemble_the_frame_one_thread_encodes() {
-        let first = crate::spool_helper::SpoolHelper::start(None).unwrap();
-        let second = crate::spool_helper::SpoolHelper::start(None).unwrap();
+        let pool = [
+            crate::spool_helper::SpoolHelper::start(None).unwrap(),
+            crate::spool_helper::SpoolHelper::start(None).unwrap(),
+        ];
         let mut whole = FrameEncoder::new();
         let mut split = FrameEncoder::new();
         let helper_encodes = || HELPER.phase(Phase::Encode).0;
@@ -177,8 +179,7 @@ mod tests {
             let force = hour == 4;
             let expected = whole.encode_bytes(input.clone(), force).unwrap();
             let helpers = crate::spool_helper::Helpers {
-                first: &first,
-                second: (hour % 2 == 0).then_some(&second),
+                pool: &pool[..if hour % 2 == 0 { 2 } else { 1 }],
                 backlogged: false,
             };
             let mut segments = encode(&split, &input, (1, hour, force), helpers);

@@ -421,14 +421,14 @@ fn reserved_reverse_historical_prefix_keeps_named_gaps_and_original_mask_width()
     assert_eq!(
         historical
             .reverse_visibility
-            .require("ReservedCountryNaming.reverse_visibility"),
-        Err("ReservedCountryNaming.reverse_visibility not recorded".to_owned())
+            .require("reverse visibility of reserved country naming"),
+        Err("reverse visibility of reserved country naming not recorded".to_owned())
     );
     assert_eq!(
         historical
             .country_intel_sample
-            .require("ReservedCountryNaming.country_intel_sample"),
-        Err("ReservedCountryNaming.country_intel_sample not recorded".to_owned())
+            .require("country intel sample of reserved country naming"),
+        Err("country intel sample of reserved country naming not recorded".to_owned())
     );
 
     let insert = row.delta(None).unwrap().unwrap();

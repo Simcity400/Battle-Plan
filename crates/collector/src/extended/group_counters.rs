@@ -36,7 +36,7 @@ impl Capacities {
         base: usize,
         _state: usize,
     ) -> Result<(), &'static str> {
-        let count = match corders_group::walk_roots(memory, base, &mut []) {
+        let count = match corders_group::count_roots(memory, base) {
             Outcome::Rows { len } => len,
             Outcome::Truncated { len, unread_rows } => len
                 .checked_add(unread_rows as usize)
@@ -148,7 +148,7 @@ impl Captured {
         grow_vec(&mut self.roots, capacity.rows);
     }
     fn read(&mut self, memory: &impl Memory, base: usize, state: usize) -> Outcome {
-        let source = corders_group::walk_roots_growing(memory, base, &mut self.roots);
+        let source = corders_group::walk_roots(memory, base, &mut self.roots);
         if !matches!(source, Outcome::Unavailable { .. })
             && let Err(reason) =
                 engine_native::walk::Buffer::Growing(&mut self.rows.rows).ensure(source.len())

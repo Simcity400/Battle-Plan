@@ -439,7 +439,7 @@ test('mounted virtual histories preserve scrolling, expansion and native column 
           }
           assert.deepEqual(divergences, []);
         });
-        await context.test('native differential dense deletion resumes within the preceding row at middle and end keys', async () => {
+        await context.test('native differential dense deletion resumes where the row was, at middle and end keys', async () => {
           await mountCase({ count: 5000, shape: 'all', controls: 'nested', viewport: 'start' });
           const divergences: unknown[] = [];
           for (const id of ['2500', '4999']) for (const backwards of [false, true]) {

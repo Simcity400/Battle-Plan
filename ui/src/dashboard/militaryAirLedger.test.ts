@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { MilitaryAirPart, MilitaryAirReply } from '../generated/dashboard';
-import { militaryAirPreparing, airLossParts, partAmount, ledgerComplete, ledgerCountries, ledgerCountryAt, ledgerPinnedIdentity, ledgerRuns, ledgerTotals, militaryAirAt, militaryAirIndex, militaryAirLineTooltip, validateMilitaryAirReply } from './militaryAirLedger.ts';
+import { BOMBING_SUNBURST_TEXT, airLossParts, partAmount, ledgerComplete, ledgerCountries, ledgerCountryAt, ledgerHeaderTag, ledgerPinnedIdentity, ledgerRuns, ledgerTotals, militaryAirAt, militaryAirIndex, militaryAirLineTooltip, validateMilitaryAirReply } from './militaryAirLedger.ts';
+import type { MilitaryAirPart } from '../generated/dashboard';
+import type { MilitaryAirLedger } from './militaryAirLedger';
 
 const span = (firstHour: number, lastHour = firstHour) => ({ firstHour, lastHour });
 type Point = [number, number, string];
@@ -11,7 +12,7 @@ const leaf = (extra: Partial<Leaf> = {}): Leaf => ({ tag: 'mod country', identit
 /** An air-loss leaf as the reply's part of it. */
 const part = (item: Leaf): MilitaryAirPart => ({ tag: item.tag, identity: item.identity, dealt: item.dealt, cause: item.cause,
   opponentKnown: item.opponent !== null, buildingToken: null, buildingId: null, state: null, points: item.points });
-const reply = ({ leaves = [leaf()], ...extra }: Partial<MilitaryAirReply> & { leaves?: Leaf[] } = {}): MilitaryAirReply => ({ family: 'airLosses', firstHour: 10, lastHour: 14,
+const reply = ({ leaves = [leaf()], ...extra }: Partial<MilitaryAirLedger> & { leaves?: Leaf[] } = {}): MilitaryAirLedger => ({ family: 'airLosses', firstHour: 10, lastHour: 14,
   available: true, observed: [span(10, 11), span(13, 14)], incomplete: [],
   countries: [{ tag: 'mod country', identity: '3:9', present: [span(10, 11), span(13, 14)], membership: null }],
   parts: leaves.map(part), regions: [{ id: '40001', name: null, missing: 'The recorded mod did not define this region.' }], buildings: [], warnings: [], ...extra });
@@ -111,6 +112,13 @@ test('country aliases share their holder total and top memberships clip only the
   assert.equal(ledgerPinnedIdentity('malformed', 'campaign', '1', 'mod country'), undefined);
   assert.deepEqual(ledgerCountries(rows, { kind: 'group', group: { type: 'top', count: 1 }, membership: 'hour', aggregate: false }, [], undefined, 13, 14, 'taken', data.countries).rows.map(row => row.tag), ['renamed']);
   assert.deepEqual(ledgerRuns(index.series[1], 10, 14, false, 100000, index.series[1].country.membership).map(run => [run.firstHour, run.lastHour, run.value]), [[13, 13, 3]]);
+  // Before counting starts the header still names the country chosen; only its damage is not recorded.
+  assert.equal(ledgerCountryAt(index, 'mod country', 10, 9), null);
+  assert.equal(ledgerHeaderTag(index, null, 'mod country', 9, undefined, null), 'mod country');
+  assert.equal(ledgerHeaderTag(index, null, 'mod country', 9, '8:99', { tag: 'mod country', identity: '8:99' }), null, 'a pinned holder without a row is not named by its tag');
+  assert.equal(ledgerHeaderTag(index, ledgerCountryAt(index, 'mod country', 10, 10), 'mod country', 10, undefined, null), 'mod country');
+  assert.equal(ledgerHeaderTag(index, ledgerCountryAt(index, 'mod country', 10, 13), 'mod country', 13, undefined, null), 'renamed', 'the holder shown, under its tag at the hour');
+  assert.equal(ledgerHeaderTag(index, ledgerCountryAt(index, 'mod country', 10, 13, pin), 'mod country', 13, pin, { tag: 'mod country', identity: '8:99' }), 'mod country');
 });
 
 test('manual ledger roots include all their native holders without recursively selecting alias holders', () => {
@@ -180,10 +188,9 @@ test('line hover uses exact wide signed values, native/read dates, dated labels 
   }
 });
 
-test('prefix totals beyond coverage stay preparing instead of becoming known zero', () => {
-  const data = { ...reply(), coverage: { schema: 24, firstHour: 10, lastHour: 11, complete: false }, pending: [span(12, 14)] };
-  assert.equal(validateMilitaryAirReply(data), data);
-  assert.equal(militaryAirPreparing(data, 14), true);
-  assert.equal(militaryAirPreparing(data, 11), false);
-  assert.throws(() => validateMilitaryAirReply({ ...data, pending: [span(14, 12)] }), /malformed/);
+test('the bombing breakdown writes building levels to two decimals, and a sliver of damage never as none', () => {
+  assert.equal(BOMBING_SUNBURST_TEXT.format(77.2204602, 772204602n), '77.22');
+  assert.equal(BOMBING_SUNBURST_TEXT.format(108.3804602, 1083804602n), '108.38');
+  assert.equal(BOMBING_SUNBURST_TEXT.format(0.0001, 1000n), '0.0001');
+  assert.equal(BOMBING_SUNBURST_TEXT.format(0, null), 'Not recorded');
 });

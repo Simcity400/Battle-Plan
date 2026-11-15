@@ -1,0 +1,80 @@
+import { useCallback, useMemo, useRef } from 'react';
+import type { DashboardClient, DashboardSource } from '../../dashboard/client';
+import type { PlaybackController } from '../../dashboard/playback';
+import type { HourSpan } from '../../generated/dashboard';
+import type { ChartSummary } from '../../charts/chartSummary';
+import type { LiveDrillParts } from '../../charts/drill/DrillParts';
+import { useKeyedSeries, useSeriesParts } from '../../dashboard/keyedSeries';
+import { keyId } from '../../dashboard/keyedSeriesData.ts';
+import { useProducts } from '../../dashboard/products';
+import { liveFollowed } from '../../dashboard/follow/liveFollowed.ts';
+import { rowAmount } from '../../dashboard/follow/painters.ts';
+import { measureOf, namesAt, partsAtStates, partsFromLines, validateStabilityPartNames } from './partsData';
+import type { Measure } from './stabilityData';
+import type { MeasureParts, StabilityPartName, StabilityPartNamesReply } from './types';
+
+export const PARTS_FAMILY = { kind: 'stability-parts', measure: 'value' } as const;
+
+
+/** A country's parts of `measure` from the declared `stability-parts` series: the parts it held over `extent`
+ * (`series-parts`), named by `stability-part-names` at the view's end; their lines over the chart's view, from
+ * tiles; their values at the hours a reader reaches (the day shown, a hover); and, while `following`, the head's
+ * values followed, as a live source the breakdown paints. */
+export function useStabilityParts(client: DashboardClient, clock: PlaybackController, source: DashboardSource | undefined, branchId: string | undefined,
+  tag: string | null, within: readonly HourSpan[] | null, extent: readonly [number, number], lastHour: number, measure: Measure,
+  hour: number | null, hover: number | null, following: boolean, active: boolean, root: { readonly current: Element | null }) {
+  const span = useMemo(() => ({ firstHour: Math.floor(extent[0]), lastHour: Math.floor(extent[1]) }), [extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
+  const listed = useSeriesParts(client, source, branchId, PARTS_FAMILY, tag, span, active);
+  const all = useMemo(() => [...new Set((listed.data?.parts ?? []).map(part => part.part))], [listed.data]);
+  // Each part is named at the last hour it was held in the view, where the parts dictionary still holds it: one
+  // read an hour some part last held.
+  const namesRequests = useMemo(() => source && branchId && tag ? namesAt(listed.data?.parts ?? [], span.lastHour)
+    .map(([hour, parts]) => ({ sourceId: source.id, revision: source.revision, product: 'stability-part-names', params: { branchId, tag, parts, hour } })) : [],
+  [source, branchId, tag, listed.data, span.lastHour]);
+  const namedAll = useProducts<StabilityPartNamesReply>(client, namesRequests, active, validateStabilityPartNames, source);
+  const named = useMemo(() => ({ ...namedAll, data: namedAll.data && { tag: tag ?? '', hour: span.lastHour, parts: namedAll.data.flatMap(reply => reply.parts),
+    warnings: [...new Set(namedAll.data.flatMap(reply => reply.warnings))] } }), [namedAll, tag, span.lastHour]);
+  const names = useMemo(() => new Map<string, StabilityPartName>((named.data?.parts ?? []).map(part => [part.part, part])), [named.data]);
+  const parts = useMemo(() => all.filter(part => measureOf(part) === measure), [all, measure]);
+  const keys = useMemo(() => tag ? parts.map(part => ({ tag, part })) : [], [tag, parts]);
+  const spec = useMemo(() => source && branchId && listed.data && keys.length ? { source, branchId, family: PARTS_FAMILY, keys,
+    partBits: listed.data.partBits, lastHour, within: within ? new Map(keys.map(key => [keyId(key), within])) : undefined } : null,
+  [source, branchId, listed.data, keys, lastHour, within]);
+  const series = useKeyedSeries(client, clock, spec, following ? null : hour, hover, following, active, root);
+  // The structure (which parts, their colours) from the lines as rendered; following, a tile landing renders nothing:
+  // the chart reads the newest lines as it draws (`geometryAt`) and is woken by `subscribe`.
+  const lines = useMemo(() => new Map<string, ChartSummary | undefined>(keys.map(key => [key.part, series.summaryByKey.get(keyId(key))?.summary])),
+    [keys, series.summaryByKey]);
+  const geometry = useMemo<MeasureParts>(() => partsFromLines(parts, lines, names), [parts, lines, names]);
+  const drawn = useRef<{ lines: unknown; head: number | null; parts: typeof parts; names: typeof names; made: MeasureParts } | null>(null);
+  const geometryAt = useCallback((head: number | null): MeasureParts => {
+    const newest = series.revision();
+    const held = drawn.current;
+    if (held && held.lines === newest && held.head === head && held.parts === parts && held.names === names) return held.made;
+    const made = partsFromLines(parts, new Map(keys.map(key => [key.part, series.summaryOf(keyId(key))])), names, head);
+    drawn.current = { lines: newest, head, parts, names, made };
+    return made;
+  }, [series.revision, series.summaryOf, keys, parts, names]);
+  const states = series.states?.states;
+  const at = useCallback((at: number): MeasureParts => partsAtStates(parts, (states ?? []).filter(state => state.tag === tag), Math.floor(at), names),
+    [parts, states, tag, names]);
+  const loadedAt = useCallback((at: number) => tag !== null && parts.length > 0
+    && parts.every(part => (states ?? []).some(state => state.tag === tag && state.part === part && state.hour === Math.floor(at))), [parts, states, tag]);
+  const followed = series.followed;
+  // The head's parts, painted by the breakdown: rows only where a part's value is recorded.
+  const live = useMemo(() => followed && tag ? (render: (values: MeasureParts) => ReturnType<LiveDrillParts['read']>): LiveDrillParts =>
+    liveFollowed(followed.store, followed.entry, entry => {
+      const states = parts.flatMap(part => {
+        const row = followed.row({ tag, part });
+        const value = row < 0 ? null : rowAmount(entry.answer, row, 0);
+        return value === null || value === undefined ? [] : [{ tag, part, hour: 0, drop: null, missing: null,
+          run: { firstHour: 0, lastHour: 0, valueRaw: String(value), slot: 0, countryId: 0, startsSegment: false, segmentFirstHour: 0, firstExact: true, lastExact: true } }];
+      });
+      return render(partsAtStates(parts, states, 0, names));
+    }) : undefined, [followed, tag, parts, names]);
+  return { enabled: !!spec, listed, named, names, parts, geometry, geometryAt, revision: series.revision, subscribe: series.subscribe,
+    at, loadedAt, live, decimals: series.decimals, unrecorded: series.unrecorded,
+    onSummaryView: series.onSummaryView, onNavigateHour: series.onNavigateHour, keyboardHour: series.keyboardHour, keyboardRevision: series.keyboardRevision,
+    ready: !!named.data || all.length === 0, error: listed.error ?? named.error ?? series.error,
+    retry: () => { listed.retry(); named.retry(); series.retry(); } };
+}

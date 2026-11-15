@@ -124,14 +124,14 @@ fn worker_grows_mod_sized_advisor_records_and_both_character_arrays() {
             bytes: &bytes,
         };
         assert_eq!(
-            walk_growing(&memory, 0, GS, &mut rows, &mut text).outcome,
+            walk(&memory, 0, GS, &mut rows, &mut text).outcome,
             Outcome::Rows {
                 len: 2 * count as usize
             }
         );
         assert_eq!(rows[2 * count as usize - 1].ordinal, count - 1);
         assert_eq!(
-            walk_available_growing(&memory, 0, GS, &mut rows, &mut text).outcome,
+            walk_available(&memory, 0, GS, &mut rows, &mut text).outcome,
             Outcome::Rows {
                 len: 2 * count as usize
             }
@@ -156,7 +156,7 @@ fn worker_grows_mod_sized_advisor_records_and_both_character_arrays() {
             }
         }
         assert_eq!(
-            walk_records_growing(
+            walk_records(
                 &SliceMemory {
                     base: 0,
                     bytes: &bytes
@@ -192,24 +192,17 @@ fn available_advisors_keep_their_own_order_without_reading_slot_bytes() {
         base: 0,
         bytes: &bytes,
     };
-    let mut rows = [Row::default(); 3];
-    let mut arena = [0; 128];
+    let mut rows = vec![Row::default(); 3];
+    let mut arena = vec![0; 128];
     let result = walk_available(&memory, 0, GS, &mut rows, &mut arena);
     assert_eq!(result.outcome, Outcome::Rows { len: 3 });
     assert_eq!(
-        rows.map(|row| (row.country, row.ordinal, row.character)),
+        rows.iter().map(|row| (row.country, row.ordinal, row.character)).collect::<Vec<_>>(),
         [(1, 0, 1451), (1, 1, 1482), (2, 0, 4365)]
     );
     assert!(rows.iter().all(|row| row.slot_len == 0));
     let demand = demand_available(&memory, 0, GS).unwrap();
     assert_eq!(demand, (3, result.bytes_len));
-    assert_eq!(
-        walk_available(&memory, 0, GS, &mut rows[..1], &mut arena).outcome,
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 2,
-        }
-    );
     p64(&mut bytes, ARRAY1, 0);
     assert!(matches!(
         walk_available(
@@ -412,34 +405,6 @@ fn unauthenticated_objects_and_short_reads_fail_the_table() {
 }
 
 #[test]
-fn rows_and_bytes_truncate_to_a_prefix_and_count_later_advisors() {
-    let bytes = fixture();
-    let (result, rows, _) = run(&bytes, 1, 256);
-    assert_eq!(
-        result.outcome,
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 2
-        }
-    );
-    assert_eq!(rows[0].character, 1482);
-    // The first advisor's strings do not fit: nothing is published, and
-    // the required size includes that advisor.
-    let (result, ..) = run(&bytes, 4, 8);
-    assert_eq!(
-        result.outcome,
-        Outcome::Truncated {
-            len: 0,
-            unread_rows: 3
-        }
-    );
-    assert_eq!(
-        result.required_bytes,
-        LONG_IDEA.len() + b"political_advisor".len()
-    );
-}
-
-#[test]
 fn a_declared_string_length_alone_never_sizes_growth() {
     struct FaultMemory<'a> {
         memory: SliceMemory<'a>,
@@ -484,16 +449,6 @@ fn a_declared_string_length_alone_never_sizes_growth() {
         matches!(result.outcome, Outcome::Unavailable { .. }),
         "{result:?}"
     );
-    // Readable payload: only the next bounded step is certified.
-    let result = run(0..0);
-    assert!(
-        matches!(result.outcome, Outcome::Truncated { len: 0, .. }),
-        "{result:?}"
-    );
-    assert!(
-        result.required_bytes > 8 && result.required_bytes < declared,
-        "{result:?}"
-    );
 }
 
 /// Country 1 holds three active records (one null) and country 2 none.
@@ -515,7 +470,7 @@ fn active_fixture() -> Vec<u8> {
 
 fn run_active(bytes: &[u8], rows: usize) -> (Outcome, Vec<ActiveRow>) {
     let mut output = vec![ActiveRow::default(); rows];
-    let [outcome, _] = walk_records(&SliceMemory { base: 0, bytes }, 0, GS, &mut output, &mut []);
+    let [outcome, _] = walk_records(&SliceMemory { base: 0, bytes }, 0, GS, &mut output, &mut Vec::new());
     (outcome, output)
 }
 
@@ -555,16 +510,14 @@ fn retired_records_walk_beside_the_active_ones() {
             character: Some(1482)
         }
     );
-    // Each table truncates and counts on its own.
-    let outcomes = walk_records(
+    // The count probe counts each table on its own.
+    let outcomes = count_records(
         &SliceMemory {
             base: 0,
             bytes: &bytes,
         },
         0,
         GS,
-        &mut [],
-        &mut [],
     );
     assert_eq!(
         outcomes,
@@ -594,7 +547,7 @@ fn an_unreadable_retired_array_fails_only_its_table() {
         0,
         GS,
         &mut active,
-        &mut [ActiveRow::default(); 4],
+        &mut vec![ActiveRow::default(); 4],
     );
     assert_eq!(active_outcome, Outcome::Rows { len: 3 });
     assert!(matches!(retired_outcome, Outcome::Unavailable { .. }));
@@ -609,7 +562,7 @@ fn an_unreadable_retired_array_fails_only_its_table() {
         0,
         GS,
         &mut active,
-        &mut [ActiveRow::default(); 4],
+        &mut vec![ActiveRow::default(); 4],
     );
     assert!(
         outcomes
@@ -634,8 +587,8 @@ fn a_table_keeps_its_own_first_failure_before_a_shared_one() {
         },
         0,
         GS,
-        &mut [ActiveRow::default(); 4],
-        &mut [ActiveRow::default(); 4],
+        &mut vec![ActiveRow::default(); 4],
+        &mut vec![ActiveRow::default(); 4],
     );
     assert_eq!(
         outcomes,
@@ -687,21 +640,18 @@ fn a_missing_object_or_empty_active_array_has_no_rows() {
 }
 
 #[test]
-fn active_rows_truncate_to_a_prefix_and_count_the_rest_from_headers() {
-    let (outcome, rows) = run_active(&active_fixture(), 1);
-    assert_eq!(
-        outcome,
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 2
-        }
-    );
-    assert_eq!(rows[0].character, Some(1451));
-    // No storage: the live total, read from the headers alone.
+fn active_rows_count_the_live_total_from_the_headers_alone() {
     let mut bytes = active_fixture();
     vector(&mut bytes, OBJ2 + ACTIVE_CHARACTERS, 0x9_0000, 4);
     assert_eq!(
-        run_active(&bytes, 0).0,
+        count_records(
+            &SliceMemory {
+                base: 0,
+                bytes: &bytes,
+            },
+            0,
+            GS,
+        )[0],
         Outcome::Truncated {
             len: 0,
             unread_rows: 7
@@ -794,7 +744,7 @@ fn a_page_of_active_records_reads_its_characters_in_one_guarded_batch() {
         guards: Default::default(),
     };
     let mut output = vec![ActiveRow::default(); 30];
-    let [outcome, _] = walk_records(&memory, 0, GS, &mut output, &mut []);
+    let [outcome, _] = walk_records(&memory, 0, GS, &mut output, &mut Vec::new());
     assert_eq!(outcome, Outcome::Rows { len: 30 });
     for (ordinal, row) in output.iter().enumerate() {
         assert_eq!(

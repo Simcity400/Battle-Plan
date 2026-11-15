@@ -11,8 +11,8 @@ const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery
     name: 'drill-row-hooks', enforce: 'pre',
     transform(code, id) {
       if (id.replaceAll('\\', '/').endsWith('/drill/DrillParts.tsx')) return code.replace(
-        "import { useCallback, useEffect, useMemo, useRef } from 'react';",
-        'const useMemo = fn => fn(); const useCallback = fn => fn; const useRef = current => ({ current }); const useEffect = effect => globalThis.__drillPartEffects?.push(effect);');
+        "import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';",
+        'const useMemo = fn => fn(); const useCallback = fn => fn; const useRef = current => ({ current }); const useState = initial => [initial, () => {}]; const useEffect = effect => globalThis.__drillPartEffects?.push(effect); const useLayoutEffect = () => {};');
     },
   }] });
 const { default: DrillParts } = await vite.ssrLoadModule('/ui/src/charts/drill/DrillParts.tsx').finally(() => vite.close()) as typeof import('./DrillParts.tsx');

@@ -53,9 +53,27 @@ export function lookPlan(branch: RecordedBranch | undefined, tags: readonly stri
   return { samples, wanted, maxHours: Math.max(MAX_NAME_HOURS, new Set(wanted.map(item => item.hour)).size) };
 }
 
-/** Styles from `country-styles`, which names at most 64 countries per request. */
+/** `hour` as a recorded hour of `branch`, or null outside it. */
+export function branchHour(branch: Pick<RecordedBranch, 'firstHour' | 'lastHour'>, hour: number): number | null {
+  const at = Math.floor(hour);
+  return at < branch.firstHour || at > branch.lastHour ? null : at;
+}
+
+/** What a view reads its countries' looks at (`useCountryLooks`'s hour, bound, hours and exactness). Following the
+ * head with `identityHour` known (`useIdentityHour`: the last hour at or before the head at which one of them
+ * changed), exactly there: each reads there as at the head, so it is named as at the hour shown, and the
+ * recording's stretch alone bounds it, as a caller's bound may be read from windows that do not hold that hour.
+ * Otherwise the caller's own plan at `moment`. */
+export function looksRead(following: boolean, identityHour: number | null, moment: number,
+  segmentAt?: (tag: string, hour: number) => number | null, hours?: ReadonlyMap<string, number>, exact = false) {
+  return following && identityHour !== null
+    ? { hour: identityHour, segmentAt: undefined, hours: undefined, exact: true }
+    : { hour: moment, segmentAt, hours, exact };
+}
+
+/** Styles from `country-styles`, every country in one request. */
 const STYLES: FactSpec<CountryStyle & { warnings?: readonly string[] }> = {
-  product: 'country-styles', perRequest: 64,
+  product: 'country-styles', perRequest: Infinity,
   params: (branchId, hour, tags) => ({ branchId, hour, tags }),
   extract: data => {
     const reply = data as CountryStyleReply;

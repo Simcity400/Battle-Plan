@@ -4,8 +4,8 @@ use super::*;
 use crate::template_changes::Changes;
 use std::sync::Arc;
 
-#[derive(Default)]
-struct Entry {
+#[derive(Default, Clone)]
+pub(super) struct Entry {
     country: u32,
     pointer: usize,
     row: Option<CountryRow>,
@@ -15,20 +15,25 @@ struct Entry {
     config_valid: bool,
     occupation: Option<usize>,
     garrison: Option<[(u64, u64); 2]>,
-    garrison_scratch: Vec<GarrisonTemplateSelection>,
 }
 
 impl Entry {
     fn allocated_bytes(&self) -> usize {
-        self.garrison_scratch.capacity() * size_of::<GarrisonTemplateSelection>()
-            + self
-                .row
-                .as_ref()
-                .and_then(|row| row.garrisons.as_ref())
-                .map_or(0, |rows| {
-                    rows.capacity() * size_of::<GarrisonTemplateSelection>()
-                })
+        self.row
+            .as_ref()
+            .and_then(|row| row.garrisons.as_ref())
+            .map_or(0, |rows| {
+                rows.capacity() * size_of::<GarrisonTemplateSelection>()
+            })
     }
+}
+
+/// One country's read, made on a copy of its entry; [`Store::commit`] keeps it in roster order.
+pub(super) struct Visit {
+    country: engine_native::ccountry::Country,
+    entry: Entry,
+    /// The row, and whether it differs from the held one.
+    result: Result<(CountryRow, bool), &'static str>,
 }
 
 #[derive(Default)]
@@ -39,6 +44,8 @@ pub(super) struct Store {
     cursor: usize,
     payload_bytes: usize,
     pub changed: bool,
+    /// The serial walk's garrison selections, before they are compared with the held row's.
+    scratch: Vec<GarrisonTemplateSelection>,
 }
 
 fn config(changes: &dyn Changes, country: u32, manager: usize) -> Option<[(u64, u64); 3]> {
@@ -87,6 +94,7 @@ impl Store {
         self.entries.capacity() * size_of::<Entry>()
             + self.order.capacity() * size_of::<u32>()
             + self.live.capacity() * size_of::<u32>()
+            + self.scratch.capacity() * size_of::<GarrisonTemplateSelection>()
             + self.payload_bytes
     }
 
@@ -117,20 +125,59 @@ impl Store {
         country: engine_native::ccountry::Country,
         changes: &dyn Changes,
     ) -> Result<CountryRow, &'static str> {
-        if self.order.get(self.cursor) != Some(&country.id) {
+        let mut scratch = std::mem::take(&mut self.scratch);
+        let visit = self.observe(memory, base, state, country, changes, &mut scratch);
+        self.scratch = scratch;
+        self.commit(visit)
+    }
+
+    /// The country's read on a copy of its entry, changing nothing here; a range of a split walk
+    /// observes its countries on the store the walk began with.
+    pub fn observe(
+        &self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+        country: engine_native::ccountry::Country,
+        changes: &dyn Changes,
+        scratch: &mut Vec<GarrisonTemplateSelection>,
+    ) -> Visit {
+        let mut entry = match self
+            .entries
+            .binary_search_by_key(&country.id, |entry| entry.country)
+        {
+            Ok(at) => self.entries[at].clone(),
+            Err(_) => Entry {
+                country: country.id,
+                ..Default::default()
+            },
+        };
+        let result = read_entry(&mut entry, scratch, memory, base, state, country, changes);
+        Visit {
+            country,
+            entry,
+            result,
+        }
+    }
+
+    /// Keeps the next country's observation in roster order; a membership or cache entry that
+    /// cannot be allocated keeps nothing of it, as a read refused before its reads.
+    pub fn commit(&mut self, visit: Visit) -> Result<CountryRow, &'static str> {
+        let id = visit.country.id;
+        if self.order.get(self.cursor) != Some(&id) {
             self.changed = true;
             if self.cursor == self.order.len() {
                 engine_allocation::reserve(&mut self.order, 1)
                     .map_err(|_| "country template membership allocation failed")?;
-                self.order.push(country.id);
+                self.order.push(id);
             } else {
-                self.order[self.cursor] = country.id;
+                self.order[self.cursor] = id;
             }
         }
         self.cursor += 1;
         let index = match self
             .entries
-            .binary_search_by_key(&country.id, |entry| entry.country)
+            .binary_search_by_key(&id, |entry| entry.country)
         {
             Ok(at) => at,
             Err(at) => {
@@ -139,23 +186,51 @@ impl Store {
                 self.entries.insert(
                     at,
                     Entry {
-                        country: country.id,
+                        country: id,
                         ..Default::default()
                     },
                 );
                 at
             }
         };
-        let entry = &mut self.entries[index];
+        let previous = self.entries[index].allocated_bytes();
+        self.entries[index] = visit.entry;
+        self.payload_bytes = self.payload_bytes - previous + self.entries[index].allocated_bytes();
+        let (row, changed) = visit.result?;
+        self.changed |= changed;
+        Ok(row)
+    }
+}
+
+impl Visit {
+    /// Why the country's garrison selections were refused, for the hour's model failures.
+    pub fn garrison_failure(&self) -> Option<&'static str> {
+        self.result
+            .as_ref()
+            .ok()
+            .and_then(|(row, _)| row.garrison_failure)
+    }
+}
+
+/// One country's configuration and garrison selections, read into `entry` as the held
+/// certificates require; the row, and whether it differs from the held one.
+fn read_entry(
+    entry: &mut Entry,
+    scratch: &mut Vec<GarrisonTemplateSelection>,
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+    country: engine_native::ccountry::Country,
+    changes: &dyn Changes,
+) -> Result<(CountryRow, bool), &'static str> {
+    {
         if entry.pointer != country.pointer {
-            self.payload_bytes -= entry.allocated_bytes();
             *entry = Entry {
                 country: country.id,
                 pointer: country.pointer,
                 ..Default::default()
             };
         }
-        let previous_bytes = entry.allocated_bytes();
         let mut row = entry.row.clone().unwrap_or_default();
         let fresh = changes.fresh_only();
         let current = config(changes, country.id, entry.manager);
@@ -224,16 +299,16 @@ impl Store {
                     country.pointer,
                 )?;
                 let countries = engine_native::ccountry::Reader::new(memory, base, state)?;
-                entry.garrison_scratch.clear();
+                scratch.clear();
                 engine_occupation::ccountry_occupation_status::visit_template_selections(
                     memory,
                     base,
                     country,
                     &countries,
                     |selection| {
-                        engine_allocation::reserve(&mut entry.garrison_scratch, 1)
+                        engine_allocation::reserve(&mut *scratch, 1)
                             .map_err(|_| "garrison template cache allocation failed")?;
-                        entry.garrison_scratch.push(GarrisonTemplateSelection {
+                        scratch.push(GarrisonTemplateSelection {
                             occupied: selection.occupied,
                             state: selection.state,
                             template: selection.template,
@@ -247,11 +322,11 @@ impl Store {
                 if let Some(held) = row
                     .garrisons
                     .as_ref()
-                    .filter(|held| held.as_slice() == entry.garrison_scratch.as_slice())
+                    .filter(|held| held.as_slice() == scratch.as_slice())
                 {
                     return Ok((Arc::clone(held), priority));
                 }
-                let rows = engine_allocation::copy_vec(&entry.garrison_scratch)
+                let rows = engine_allocation::copy_vec(scratch.as_slice())
                     .map_err(|_| "garrison template projection allocation failed")?;
                 Ok::<_, &'static str>((Arc::new(rows), priority))
             })();
@@ -281,10 +356,9 @@ impl Store {
             row.garrison_failure = Some("garrison template writer certificate unavailable");
         }
         // A re-read under moved stamps that found the held row changes nothing.
-        self.changed |= entry.row.as_ref() != Some(&row);
+        let changed = entry.row.as_ref() != Some(&row);
         entry.row = Some(row.clone());
-        self.payload_bytes = self.payload_bytes - previous_bytes + entry.allocated_bytes();
-        Ok(row)
+        Ok((row, changed))
     }
 }
 

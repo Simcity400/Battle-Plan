@@ -1786,6 +1786,7 @@ fn worker_loop<J: Send + 'static, R: Copy + Send + 'static>(
         }
     }
     shared.thread_ids[index].store(unsafe { GetCurrentThreadId() }, Ordering::Release);
+    crate::hour_stages::enter_worker(index);
     let mut state = shared.lock();
     state.started += 1;
     shared.started_ready.notify_all();
@@ -1833,10 +1834,21 @@ pub(crate) fn recommended_worker_count() -> usize {
     worker_count_for_cpus(machine, allowed_cpus())
 }
 
-/// Workers for `machine` logical CPUs of which the process may use `allowed`
-/// (None: affinity unreadable, use the machine count).
+/// The logical CPUs the game process may run on.
+pub(crate) fn usable_cpus() -> usize {
+    let machine = std::thread::available_parallelism().map_or(1, usize::from);
+    cpus(machine, allowed_cpus())
+}
+
+/// Workers for `machine` logical CPUs of which the process may use `allowed`.
 fn worker_count_for_cpus(machine: usize, allowed: Option<usize>) -> usize {
-    worker_count_for_topology(allowed.map_or(machine, |allowed| allowed.min(machine)))
+    worker_count_for_topology(cpus(machine, allowed))
+}
+
+/// The CPUs of `machine` the process may use (`allowed`; None: affinity
+/// unreadable, use the machine count).
+fn cpus(machine: usize, allowed: Option<usize>) -> usize {
+    allowed.map_or(machine, |allowed| allowed.min(machine))
 }
 
 /// Logical CPUs in the game process's affinity mask (current processor group).

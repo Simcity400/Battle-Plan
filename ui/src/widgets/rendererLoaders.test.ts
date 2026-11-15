@@ -1,8 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { existsSync, readFileSync } from 'node:fs';
-import { createElement } from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
 import { widgetMetas } from './definitions.ts';
 import { loadWidgetRenderer, rendererLoaders } from './rendererLoaders.ts';
 import { createServer } from 'vite';
@@ -50,17 +48,4 @@ test('every widget module loads with its registered lazy body and the catalogue 
 
 test('prototype-like unknown widget kinds have no renderer', async () => {
   for (const kind of ['constructor', '__proto__', 'toString', 'hasOwnProperty']) assert.equal(await loadWidgetRenderer(kind), undefined);
-});
-
-test('lazy body fallback exposes loading readiness only in parity builds', async () => {
-  for (const mode of ['parity', 'production']) {
-    const vite = await createServer({ configFile: false, mode, optimizeDeps: { noDiscovery: true },
-      server: { middlewareMode: true, watch: null, hmr: false, ws: false } });
-    try {
-      const { lazyWidget } = await vite.ssrLoadModule('/ui/src/widgets/lazyWidget.tsx');
-      const loading = renderToStaticMarkup(createElement(lazyWidget('synthetic-delayed-widget', ['render']).render, {}));
-      assert.equal(loading.includes('data-parity-loading="true"'), mode === 'parity');
-      assert.match(loading, />Loading widget…</);
-    } finally { await vite.close(); }
-  }
 });

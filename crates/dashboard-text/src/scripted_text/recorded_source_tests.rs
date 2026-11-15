@@ -60,6 +60,6 @@ fn decoded_source_keeps_missing_character_refusal_bytes() {
     let text = ScriptedText::new(source, &catalogue.localisation, content, 1);
     assert_eq!(
         text.expand("[ROOT.GER_erwin_rommel.GetName]").unwrap_err(),
-        "[ROOT.GER_erwin_rommel.GetName]: GER_erwin_rommel: whether it names a character of country slot 1 is unknown: Characters the table is truncated (3 rows missing)"
+        "[ROOT.GER_erwin_rommel.GetName]: GER_erwin_rommel: whether it names a character of country slot 1 is unknown: characters: the table is truncated (3 rows missing)"
     );
 }

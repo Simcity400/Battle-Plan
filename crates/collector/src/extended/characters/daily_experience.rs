@@ -212,7 +212,7 @@ mod tests {
         active[5] = daily || full;
         let mut ctx = context(active);
         ctx.force_full = full;
-        let report = copy_characters_growing(memory, ctx, job, Roles::Gather);
+        let report = copy_characters(memory, ctx, job, Roles::Gather);
         assert!(report.raw_ok && !report.plan_failed);
         let mut frame = Captured::with_capacities(&capacities());
         frame.set_character_activity(active);
@@ -232,6 +232,7 @@ mod tests {
 
     #[test]
     fn daily_xp_skips_native_words_across_jobs_and_reads_births_reuse_and_refresh() {
+        let _globals = crate::extended::characters::test_globals();
         let mut world = World::new(8);
         let army = World::unit(5).unwrap();
         let mut first = CharactersJob::new_part(0);
@@ -287,6 +288,7 @@ mod tests {
 
     #[test]
     fn daily_xp_repeated_unwind_cannot_restore_an_old_shared_sample() {
+        let _globals = crate::extended::characters::test_globals();
         struct Unwind;
         impl Memory for Unwind {
             fn copy(&self, _: usize, _: &mut [u8]) -> bool {
@@ -315,6 +317,7 @@ mod tests {
 
     #[test]
     fn daily_xp_refresh_revokes_samples_even_when_the_worker_does_not_start() {
+        let _globals = crate::extended::characters::test_globals();
         let mut world = World::new(8);
         let pointer = World::unit(5).unwrap();
         let mut job = CharactersJob::new_part(0);
@@ -330,6 +333,7 @@ mod tests {
 
     #[test]
     fn puts_out_of_key_order_are_found_and_settle_to_the_last_value_put() {
+        let _globals = crate::extended::characters::test_globals();
         let mut store = Store::default();
         store.begin((1, 2), true, false);
         for (key, value) in [((30, 1, 1), 3), ((10, 1, 1), 1), ((20, 1, 1), 2), ((10, 1, 1), 11)] {
@@ -351,6 +355,7 @@ mod tests {
 
     #[test]
     fn daily_xp_removal_and_failed_capture_forget_old_occurrences() {
+        let _globals = crate::extended::characters::test_globals();
         let mut store = Store::default();
         let key = (100, 200, 300);
         store.begin((1, 2), true, true);

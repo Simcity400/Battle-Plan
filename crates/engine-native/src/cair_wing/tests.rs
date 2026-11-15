@@ -82,7 +82,25 @@ fn name_header(bytes: &[u8], wing: usize) -> Option<[u8; crate::msvc_string::STR
             .unwrap(),
     )
 }
-fn capture(bytes: &[u8], rows: &mut [Row]) -> Outcome {
+/// A shared-walk lane: the count probe for `capacity` 0, growing otherwise.
+fn rows_or_count<T>(rows: &mut Vec<T>, capacity: usize) -> crate::walk::Buffer<'_, T> {
+    if capacity == 0 {
+        crate::walk::Buffer::Count
+    } else {
+        crate::walk::Buffer::Growing(rows)
+    }
+}
+
+/// The independent walk a lane of `capacity` equals: the count probe for 0.
+fn independent(memory: &impl Memory, capacity: usize) -> Outcome {
+    if capacity == 0 {
+        count(memory, 0, GS)
+    } else {
+        walk(memory, 0, GS, &mut Vec::new())
+    }
+}
+
+fn capture(bytes: &[u8], rows: &mut Vec<Row>) -> Outcome {
     walk(&SliceMemory { base: 0, bytes }, 0, GS, rows)
 }
 
@@ -146,7 +164,7 @@ fn strategic_bombing_optional_fault_preserves_the_wing_and_observed_zero() {
     let mut bytes = fixture();
     p32(&mut bytes, WING_A + MISSION + air_mission::ENABLED_MASK, 8);
     bytes[WING_A + 0x968 + 0x18 + 3] = u8::MAX;
-    let mut rows = [Row::default(); 2];
+    let mut rows = vec![Row::default(); 2];
     assert_eq!(capture(&bytes, &mut rows), Outcome::Rows { len: 2 });
     assert_eq!(rows[0].strategic_bombing_raw, Some(0));
     assert_eq!(rows[1].strategic_bombing_raw, None);
@@ -200,7 +218,7 @@ fn stored_wing_names_keep_sso_heap_empty_bytes_and_field_local_failures() {
             required: 0,
             failures: 0,
         };
-        let mut rows = [Row::default(); 2];
+        let mut rows = vec![Row::default(); 2];
         assert_eq!(
             walk_with_names(&memory, 0, GS, &mut rows, &mut arena, |_, _, _| {}),
             Outcome::Rows { len: 2 }
@@ -212,22 +230,6 @@ fn stored_wing_names_keep_sso_heap_empty_bytes_and_field_local_failures() {
         assert_eq!(rows[0].name, Some((0, text.len())));
         assert_eq!(rows[1].name, Some((text.len(), 0)));
         assert_eq!(storage, text);
-        if !text.is_empty() {
-            let mut arena = NameArena {
-                bytes: &mut [],
-                used: 0,
-                required: 0,
-                failures: 0,
-            };
-            assert_eq!(
-                walk_with_names(&memory, 0, GS, &mut rows, &mut arena, |_, _, _| {}),
-                Outcome::Rows { len: 2 }
-            );
-            assert_eq!((arena.required, arena.failures), (text.len(), 1));
-            assert_eq!(rows[0].name, None);
-            assert_eq!(rows[1].name, Some((0, 0)));
-            assert_eq!(rows[0].planes, i32::MIN);
-        }
         let fault = Traced {
             bytes: &bytes,
             reads: Default::default(),
@@ -378,8 +380,8 @@ fn game_score_shared_walk_preserves_stored_names_in_map_and_source_rows() {
             required: 0,
             failures: 0,
         };
-        let mut map = [Row::default(); 2];
-        let mut sources = [Source::default(); 2];
+        let mut map = vec![Row::default(); 2];
+        let mut sources = vec![Source::default(); 2];
         let mut leaves = Vec::new();
         let result = walk_shared_game_score_with_owners(
             &memory,
@@ -387,9 +389,8 @@ fn game_score_shared_walk_preserves_stored_names_in_map_and_source_rows() {
             GS,
             &mut map,
             &mut sources,
-            2,
             Some(&mut arena),
-            Some(2),
+            true,
             |_, _, _, _| {},
             |_, row| leaves.push(*row),
             |_, _| {},
@@ -397,7 +398,7 @@ fn game_score_shared_walk_preserves_stored_names_in_map_and_source_rows() {
         assert_eq!(result.shared.map, Outcome::Rows { len: 2 });
         assert_eq!(result.shared.sources, Outcome::Rows { len: 2 });
         assert_eq!(result.score, Outcome::Rows { len: 2 });
-        assert_eq!(sources.map(|source| source.row), map);
+        assert_eq!(sources.iter().map(|source| source.row).collect::<Vec<_>>(), map);
         assert_eq!(map[0].name, fault.is_none().then_some((0, text.len())));
         assert_eq!(map[1].name, Some((arena.used, 0)));
         assert_eq!(
@@ -417,7 +418,7 @@ fn game_score_shared_walk_preserves_stored_names_in_map_and_source_rows() {
 #[test]
 fn game_score_owner_observations_share_reads_and_survive_a_later_pool_failure() {
     let mut bytes = fixture();
-    let mut expected = [Row::default(); 2];
+    let mut expected = vec![Row::default(); 2];
     let legacy = Traced {
         bytes: &bytes,
         reads: Default::default(),
@@ -429,7 +430,7 @@ fn game_score_owner_observations_share_reads_and_survive_a_later_pool_failure() 
         reads: Default::default(),
         fault: None,
     };
-    let mut rows = [Row::default(); 2];
+    let mut rows = vec![Row::default(); 2];
     let mut owners = Vec::new();
     assert_eq!(
         walk_game_score_with_owners(
@@ -438,7 +439,7 @@ fn game_score_owner_observations_share_reads_and_survive_a_later_pool_failure() 
             GS,
             &mut rows,
             None,
-            None,
+            false,
             |_, _, _| {},
             |_, _| {},
             |slot, pointer| owners.push((slot, pointer))
@@ -462,7 +463,7 @@ fn game_score_owner_observations_share_reads_and_survive_a_later_pool_failure() 
             GS,
             &mut rows,
             None,
-            None,
+            false,
             |_, _, _| {},
             |_, _| {},
             |slot, pointer| owners.push((slot, pointer))
@@ -484,7 +485,7 @@ fn game_score_owner_observations_share_reads_and_survive_a_later_pool_failure() 
             GS,
             &mut rows,
             None,
-            None,
+            false,
             |_, _, _| {},
             |_, _| {},
             |slot, pointer| owners.push((slot, pointer))
@@ -516,7 +517,7 @@ fn game_score_owner_observations_share_reads_and_survive_a_later_pool_failure() 
             GS,
             &mut rows,
             None,
-            None,
+            false,
             |_, _, _| {},
             |_, _| {},
             |slot, pointer| owners.push((slot, pointer))
@@ -544,7 +545,7 @@ fn game_score_owner_observations_share_reads_and_survive_a_later_pool_failure() 
             GS,
             &mut rows,
             None,
-            None,
+            false,
             |_, _, _| {},
             |_, _| {},
             |slot, pointer| owners.push((slot, pointer))
@@ -568,7 +569,7 @@ fn game_score_slot_zero_air_owner_uses_the_catalogue_object() {
     p64(&mut bytes, OWNERS, OWNER as u64);
     p64(&mut bytes, OWNERS + 8, 0);
     p32(&mut bytes, OWNER + cstrategic_air::COUNTRY, 0);
-    let mut rows = [Row::default(); 2];
+    let mut rows = vec![Row::default(); 2];
     let disabled = Traced {
         bytes: &bytes,
         reads: Default::default(),
@@ -580,7 +581,7 @@ fn game_score_slot_zero_air_owner_uses_the_catalogue_object() {
         GS,
         &mut rows,
         None,
-        None,
+        false,
         |_, _, _| {},
         |_, _| panic!("disabled score visitor"),
         |_, _| {},
@@ -609,13 +610,13 @@ fn game_score_slot_zero_air_owner_uses_the_catalogue_object() {
         GS,
         &mut rows,
         None,
-        Some(2),
+        true,
         |_, _, _| {},
         |_, _| {},
         |slot, pointer| owners.push((slot, pointer)),
     );
     assert_eq!(result.score, Outcome::Rows { len: 2 });
-    assert_eq!(rows.map(|row| row.owner), [0, 0]);
+    assert_eq!(rows.iter().map(|row| row.owner).collect::<Vec<_>>(), [0, 0]);
     assert_eq!(owners[0], (0, Some(OWNER)));
     p64(&mut bytes, COUNTRIES, 0);
     let result = walk_game_score_with_owners(
@@ -627,7 +628,7 @@ fn game_score_slot_zero_air_owner_uses_the_catalogue_object() {
         GS,
         &mut rows,
         None,
-        Some(2),
+        true,
         |_, _, _| {},
         |_, _| {},
         |_, _| {},
@@ -658,7 +659,7 @@ fn game_score_leaf_census_survives_unrelated_details_and_keeps_plane_fault_indep
             reads: Default::default(),
             fault: Some(fault),
         };
-        let mut rows = [Row::default(); 2];
+        let mut rows = vec![Row::default(); 2];
         let mut scores = Vec::new();
         let result = walk_game_score_with_owners(
             &memory,
@@ -666,7 +667,7 @@ fn game_score_leaf_census_survives_unrelated_details_and_keeps_plane_fault_indep
             GS,
             &mut rows,
             None,
-            Some(2),
+            true,
             |_, _, _| {},
             |pointer, leaf| {
                 scores.push(crate::game_score_inputs::read_wing(&memory, pointer, leaf))
@@ -704,57 +705,27 @@ fn game_score_leaf_census_survives_unrelated_details_and_keeps_plane_fault_indep
         reads: Default::default(),
         fault: None,
     };
-    let mut expected = [Row::default(); 2];
+    let mut expected = vec![Row::default(); 2];
     let expected_outcome = walk(&legacy, 0, GS, &mut expected);
     let disabled = Traced {
         bytes: &bytes,
         reads: Default::default(),
         fault: None,
     };
-    let mut rows = [Row::default(); 2];
+    let mut rows = vec![Row::default(); 2];
     let result = walk_game_score_with_owners(
         &disabled,
         0,
         GS,
         &mut rows,
         None,
-        None,
+        false,
         |_, _, _| {},
         |_, _| panic!("disabled score visitor"),
         |_, _| {},
     );
     assert_eq!((result.shared.map, rows), (expected_outcome, expected));
     assert_eq!(*disabled.reads.borrow(), *legacy.reads.borrow());
-    let omitted = Traced {
-        bytes: &bytes,
-        reads: Default::default(),
-        fault: None,
-    };
-    let result = walk_game_score_with_owners(
-        &omitted,
-        0,
-        GS,
-        &mut [],
-        None,
-        Some(0),
-        |_, _, _| {},
-        |_, _| panic!("full score visitor"),
-        |_, _| {},
-    );
-    assert_eq!(
-        result.score,
-        Outcome::Truncated {
-            len: 0,
-            unread_rows: 2
-        }
-    );
-    assert!(
-        !omitted
-            .reads
-            .borrow()
-            .iter()
-            .any(|&(at, _)| at == WING_A || at == WING_B)
-    );
 }
 
 struct Traced<'a> {
@@ -771,9 +742,9 @@ fn optional_transport_reads_follow_map_admission_and_do_not_withhold_core_rows()
         reads: Default::default(),
         fault: None,
     };
-    let mut map = [Row::default(); 2];
-    let mut sources = [Source::default(); 2];
-    let mut name_bytes = [0; 16];
+    let mut map = vec![Row::default(); 2];
+    let mut sources = vec![Source::default(); 2];
+    let mut name_bytes = vec![0; 16];
     let mut names = NameArena {
         bytes: &mut name_bytes,
         used: 0,
@@ -789,7 +760,6 @@ fn optional_transport_reads_follow_map_admission_and_do_not_withhold_core_rows()
             GS,
             &mut map,
             &mut sources,
-            2,
             &mut names,
             |pointer, pool, row, admitted| {
                 if admitted.map {
@@ -811,30 +781,6 @@ fn optional_transport_reads_follow_map_admission_and_do_not_withhold_core_rows()
             "failed pool identity is not retried by a second wing"
         );
     }
-    memory.reads.borrow_mut().clear();
-    let mut optional = transport_operands::Pass::new(0, 0, &mut scratch);
-    let result = walk_shared_names_with_operands(
-        &memory,
-        0,
-        GS,
-        &mut [],
-        &mut sources,
-        2,
-        &mut names,
-        |pointer, pool, row, admitted| {
-            if admitted.map {
-                optional.capture(&memory, pointer, pool, row);
-            }
-        },
-    );
-    assert_eq!(result.sources, Outcome::Rows { len: 2 });
-    assert!(
-        !memory
-            .reads
-            .borrow()
-            .iter()
-            .any(|(address, _)| *address == POOL_OBJECT + cair_wing_pool::DEFINITION)
-    );
 }
 
 impl Memory for Traced<'_> {
@@ -853,33 +799,41 @@ impl Memory for Traced<'_> {
     }
 }
 
+/// The map and source tables as the count probe (0) or growing (3), beside
+/// the naval projection that admits every wing, against independent walks,
+/// with one read sequence.
 #[test]
 fn shared_walk_three_capacities_match_independent_walks_with_one_read_sequence() {
     let bytes = fixture();
-    for map_capacity in 0..=3 {
-        for source_capacity in 0..=3 {
-            for naval_capacity in 0..=3 {
-                let mut expected_map = [Row::default(); 3];
-                let map = capture(&bytes, &mut expected_map[..map_capacity]);
-                let mut expected_sources = [Row::default(); 3];
-                let sources = capture(&bytes, &mut expected_sources[..source_capacity]);
-                let mut expected_naval = [Row::default(); 3];
-                let naval = capture(&bytes, &mut expected_naval[..naval_capacity]);
+    let mut full = Vec::new();
+    assert_eq!(capture(&bytes, &mut full), Outcome::Rows { len: 2 });
+    let independent = |capacity: usize| {
+        if capacity == 0 {
+            count(&SliceMemory { base: 0, bytes: &bytes }, 0, GS)
+        } else {
+            Outcome::Rows { len: 2 }
+        }
+    };
+    for map_capacity in [0, 3] {
+        for source_capacity in [0, 3] {
+            {
+                let map = independent(map_capacity);
+                let sources = independent(source_capacity);
+                let naval = Outcome::Rows { len: 2 };
                 let traced = Traced {
                     bytes: &bytes,
                     reads: Default::default(),
                     fault: None,
                 };
-                let mut map_rows = [Row::default(); 3];
-                let mut source_rows = [Source::default(); 3];
+                let mut map_rows = Vec::new();
+                let mut source_rows = Vec::new();
                 let mut visited = Vec::new();
                 let result = walk_shared(
                     &traced,
                     0,
                     GS,
-                    &mut map_rows[..map_capacity],
-                    &mut source_rows[..source_capacity],
-                    naval_capacity,
+                    rows_or_count(&mut map_rows, map_capacity),
+                    rows_or_count(&mut source_rows, source_capacity),
                     |pointer, pool, row, admitted| {
                         visited.push((
                             Source {
@@ -899,14 +853,13 @@ fn shared_walk_three_capacities_match_independent_walks_with_one_read_sequence()
                         naval
                     }
                 );
-                assert_eq!(map_rows[..map.len()], expected_map[..map.len()]);
+                assert_eq!(map_rows[..map.len()], full[..map.len()]);
                 for (index, source) in source_rows[..sources.len()].iter().enumerate() {
-                    assert_eq!(source.row, expected_sources[index]);
+                    assert_eq!(source.row, full[index]);
                     assert_eq!(source.pool, POOL_OBJECT);
                     assert_eq!(source.pointer, [WING_A, WING_B][index]);
                 }
-                let maximum = map_capacity.max(source_capacity).max(naval_capacity);
-                assert_eq!(visited.len(), maximum.min(2));
+                assert_eq!(visited.len(), 2);
                 for (index, (source, admitted)) in visited.iter().enumerate() {
                     assert_eq!(source.pointer, [WING_A, WING_B][index]);
                     assert_eq!(
@@ -914,13 +867,11 @@ fn shared_walk_three_capacities_match_independent_walks_with_one_read_sequence()
                         Admitted {
                             map: index < map_capacity,
                             sources: index < source_capacity,
-                            naval: index < naval_capacity,
+                            naval: true,
                             name_header: name_header(&bytes, [WING_A, WING_B][index]),
                         }
                     );
-                    if admitted.naval {
-                        assert_eq!(source.row, expected_naval[index]);
-                    }
+                    assert_eq!(source.row, full[index]);
                     if admitted.sources {
                         assert_eq!(*source, source_rows[index]);
                     }
@@ -930,11 +881,11 @@ fn shared_walk_three_capacities_match_independent_walks_with_one_read_sequence()
                     reads: Default::default(),
                     fault: None,
                 };
-                walk(&reference, 0, GS, &mut [Row::default(); 3][..maximum]);
+                walk(&reference, 0, GS, &mut Vec::new());
                 assert_eq!(
                     traced.reads.borrow().as_slice(),
                     reference.reads.borrow().as_slice(),
-                    "capacities map {map_capacity}, source {source_capacity}, naval {naval_capacity}"
+                    "capacities map {map_capacity}, source {source_capacity}"
                 );
             }
         }
@@ -954,9 +905,8 @@ fn growing_naval_projection_uses_the_original_pool_range_without_rereads() {
             &reference,
             0,
             GS,
-            &mut [Row::default(); 2],
-            &mut [Source::default(); 2],
-            2,
+            crate::walk::Buffer::Growing(&mut vec![Row::default(); 2]),
+            crate::walk::Buffer::Growing(&mut vec![Source::default(); 2]),
             |_, _, _, _| {},
         );
         let memory = Traced {
@@ -974,9 +924,8 @@ fn growing_naval_projection_uses_the_original_pool_range_without_rereads() {
             EVERY_OWNER,
             Buffer::Growing(&mut map),
             Buffer::Growing(&mut sources),
-            0,
             None,
-            None,
+            false,
             |pointer, _, _, admitted| visited.push((pointer, admitted)),
             |_, _| {},
             |_, _| {},
@@ -1013,9 +962,8 @@ fn part(bytes: &[u8], slots: std::ops::Range<u32>) -> Part {
         slots,
         Buffer::Growing(&mut rows),
         Buffer::Growing(&mut Vec::new()),
-        0,
         None,
-        Some(usize::MAX),
+        true,
         |_, _, _, _| {},
         |_, leaf| scores.push(leaf.id),
         |slot, entry| owners.push((slot, entry)),
@@ -1093,9 +1041,9 @@ fn shared_walk_leaf_faults_preserve_each_independently_capped_consumer() {
         WING_B + COUNTRY_OVERRIDE,
     ] {
         let bytes = fixture();
-        for map_capacity in 0..=2 {
-            for source_capacity in 0..=2 {
-                for naval_capacity in 0..=2 {
+        for map_capacity in [0, 2] {
+            for source_capacity in [0, 2] {
+                {
                     let memory = Traced {
                         bytes: &bytes,
                         reads: Default::default(),
@@ -1106,9 +1054,8 @@ fn shared_walk_leaf_faults_preserve_each_independently_capped_consumer() {
                         &memory,
                         0,
                         GS,
-                        &mut [Row::default(); 2][..map_capacity],
-                        &mut [Source::default(); 2][..source_capacity],
-                        naval_capacity,
+                        rows_or_count(&mut Vec::new(), map_capacity),
+                        rows_or_count(&mut Vec::new(), source_capacity),
                         |pointer, _, row, admitted| visits.push((pointer, *row, admitted)),
                     );
                     let reference = Traced {
@@ -1116,19 +1063,9 @@ fn shared_walk_leaf_faults_preserve_each_independently_capped_consumer() {
                         reads: Default::default(),
                         fault: Some(faulty_field),
                     };
-                    let map = walk(&reference, 0, GS, &mut [Row::default(); 2][..map_capacity]);
-                    let sources = walk(
-                        &reference,
-                        0,
-                        GS,
-                        &mut [Row::default(); 2][..source_capacity],
-                    );
-                    let naval = walk(
-                        &reference,
-                        0,
-                        GS,
-                        &mut [Row::default(); 2][..naval_capacity],
-                    );
+                    let map = independent(&reference, map_capacity);
+                    let sources = independent(&reference, source_capacity);
+                    let naval = independent(&reference, 2);
                     assert_eq!(
                         shared,
                         SharedWalk {
@@ -1137,10 +1074,7 @@ fn shared_walk_leaf_faults_preserve_each_independently_capped_consumer() {
                             naval
                         }
                     );
-                    assert_eq!(
-                        visits.len(),
-                        usize::from(map_capacity.max(source_capacity).max(naval_capacity) != 0)
-                    );
+                    assert_eq!(visits.len(), 1);
                     if let Some((pointer, _, admitted)) = visits.first() {
                         assert_eq!(*pointer, WING_A);
                         assert_eq!(
@@ -1148,7 +1082,7 @@ fn shared_walk_leaf_faults_preserve_each_independently_capped_consumer() {
                             Admitted {
                                 map: map_capacity != 0,
                                 sources: source_capacity != 0,
-                                naval: naval_capacity != 0,
+                                naval: true,
                                 name_header: name_header(&bytes, WING_A),
                             }
                         );
@@ -1160,81 +1094,9 @@ fn shared_walk_leaf_faults_preserve_each_independently_capped_consumer() {
 }
 
 #[test]
-fn shared_walk_naval_only_survivor_keeps_later_mandatory_roster_failure_precedence() {
-    for later_fault in 0..3 {
-        let mut bytes = fixture();
-        p64(&mut bytes, WING_B, 0);
-        match later_fault {
-            1 => {
-                array(&mut bytes, POOL_OBJECT + cair_wing_pool::WINGS, WINGS, 3);
-                p64(&mut bytes, WINGS + 16, 0);
-            }
-            2 => {
-                // A second pool exists only after the bad wing. Its null
-                // identity is a mandatory header failure for capped naval.
-                array(&mut bytes, OWNER + cstrategic_air::POOLS, POOLS, 2);
-                p64(&mut bytes, POOLS + 8, 0);
-            }
-            _ => {}
-        }
-        let memory = Traced {
-            bytes: &bytes,
-            reads: Default::default(),
-            fault: None,
-        };
-        let mut visits = Vec::new();
-        let result = walk_shared(
-            &memory,
-            0,
-            GS,
-            &mut [Row::default(); 2],
-            &mut [Source::default(); 3],
-            1,
-            |pointer, _, _, admitted| visits.push((pointer, admitted)),
-        );
-        let leaf_failure = Outcome::Unavailable {
-            reason: "air wing primary vtable mismatch",
-        };
-        assert_eq!(result.map, leaf_failure);
-        assert_eq!(result.sources, leaf_failure);
-        let naval = match later_fault {
-            1 => Outcome::Unavailable {
-                reason: "air wing roster contains null wing",
-            },
-            2 => Outcome::Unavailable {
-                reason: "air wing pool vtable mismatch",
-            },
-            _ => Outcome::Truncated {
-                len: 1,
-                unread_rows: 1,
-            },
-        };
-        assert_eq!(result.naval, naval);
-        assert_eq!(
-            visits,
-            [(
-                WING_A,
-                Admitted {
-                    map: true,
-                    sources: true,
-                    naval: true,
-                    name_header: name_header(&bytes, WING_A),
-                }
-            )]
-        );
-        // The pool's wing pointers, read as one run, reach past the bad wing.
-        let run = if later_fault == 1 { 24 } else { 16 };
-        assert!(memory.reads.borrow().contains(&(WINGS, run)));
-        if later_fault == 2 {
-            assert!(memory.reads.borrow().contains(&(POOLS + 8, 8)));
-        }
-    }
-}
-
-#[test]
-fn shared_walk_full_naval_lane_does_not_hide_map_or_source_only_admissions() {
+fn shared_walk_counting_lanes_do_not_hide_map_source_or_naval_admissions() {
     let bytes = fixture();
-    for (map_capacity, source_capacity, naval_capacity) in [(2, 1, 1), (1, 2, 1), (1, 1, 2)] {
+    for (map_capacity, source_capacity) in [(2, 0), (0, 2), (0, 0)] {
         let mut visited = Vec::new();
         let result = walk_shared(
             &SliceMemory {
@@ -1243,9 +1105,8 @@ fn shared_walk_full_naval_lane_does_not_hide_map_or_source_only_admissions() {
             },
             0,
             GS,
-            &mut [Row::default(); 2][..map_capacity],
-            &mut [Source::default(); 2][..source_capacity],
-            naval_capacity,
+            rows_or_count(&mut Vec::new(), map_capacity),
+            rows_or_count(&mut Vec::new(), source_capacity),
             |pointer, _, row, admitted| visited.push((pointer, row.id, admitted)),
         );
         assert_eq!(visited.len(), 2);
@@ -1257,12 +1118,12 @@ fn shared_walk_full_naval_lane_does_not_hide_map_or_source_only_admissions() {
                 Admitted {
                     map: map_capacity == 2,
                     sources: source_capacity == 2,
-                    naval: naval_capacity == 2,
+                    naval: true,
                     name_header: name_header(&bytes, WING_B),
                 }
             )
         );
-        assert_eq!(result.naval.len(), naval_capacity);
+        assert_eq!(result.naval, Outcome::Rows { len: 2 });
     }
 }
 
@@ -1280,26 +1141,24 @@ fn shared_walk_mandatory_roster_and_header_faults_affect_all_capped_consumers() 
             reads: Default::default(),
             fault: Some(fault),
         };
-        let result = walk_shared(&memory, 0, GS, &mut [], &mut [], 0, |_, _, _, _| {
-            panic!("no capacity")
-        });
+        let result = walk_shared(
+            &memory,
+            0,
+            GS,
+            crate::walk::Buffer::Count,
+            crate::walk::Buffer::Count,
+            |_, _, _, _| {},
+        );
         assert!(matches!(result.map, Outcome::Unavailable { .. }));
         assert_eq!(result.map, result.sources);
         assert_eq!(result.map, result.naval);
-        assert!(
-            !memory
-                .reads
-                .borrow()
-                .iter()
-                .any(|(address, _)| *address == WING_A || *address == WING_B)
-        );
     }
 }
 
 #[test]
 fn shared_walk_each_pass_is_fresh_and_source_visits_do_not_depend_on_map_capacity() {
     let mut bytes = fixture();
-    let mut first = [Source::default(); 2];
+    let mut first = vec![Source::default(); 2];
     let a = walk_shared(
         &SliceMemory {
             base: 0,
@@ -1307,9 +1166,8 @@ fn shared_walk_each_pass_is_fresh_and_source_visits_do_not_depend_on_map_capacit
         },
         0,
         GS,
-        &mut [],
-        &mut first,
-        1,
+        crate::walk::Buffer::Count,
+        crate::walk::Buffer::Growing(&mut first),
         |_, _, _, _| {},
     );
     assert_eq!(a.sources, Outcome::Rows { len: 2 });
@@ -1321,7 +1179,7 @@ fn shared_walk_each_pass_is_fresh_and_source_visits_do_not_depend_on_map_capacit
         }
     );
     p32(&mut bytes, WING_B + PLANE_COUNT, 17);
-    let mut second = [Source::default(); 2];
+    let mut second = vec![Source::default(); 2];
     let mut visited = Vec::new();
     let b = walk_shared(
         &SliceMemory {
@@ -1330,9 +1188,8 @@ fn shared_walk_each_pass_is_fresh_and_source_visits_do_not_depend_on_map_capacit
         },
         0,
         GS,
-        &mut [],
-        &mut second,
-        1,
+        crate::walk::Buffer::Count,
+        crate::walk::Buffer::Growing(&mut second),
         |pointer, pool, row, admitted| {
             if admitted.sources {
                 visited.push(Source {
@@ -1389,20 +1246,18 @@ fn pool_ordinals_follow_pools_then_wings() {
     p64(&mut bytes, WING_C + 0x10, SECONDARY_VTABLE_RVA.0 as u64);
     p64(&mut bytes, WING_C + 0x18, 5);
     p64(&mut bytes, WING_C + 0x38, POOL_B as u64);
-    let mut rows = [Row::default(); 3];
+    let mut rows = vec![Row::default(); 3];
     assert_eq!(capture(&bytes, &mut rows), Outcome::Rows { len: 3 });
     assert_eq!(
-        rows.map(|row| (row.id, row.air_base, row.pool_ordinal)),
+        rows.iter().map(|row| (row.id, row.air_base, row.pool_ordinal)).collect::<Vec<_>>(),
         [
             (5, 0xfeed_beef_0000_0042, 0),
             (u64::MAX, 0xfeed_beef_0000_0041, 1),
             (69, 0xfeed_beef_0000_0041, 2),
         ]
     );
-    // A map with room for one row: the source census still numbers the
-    // wings after it by the roster.
-    let mut map = [Row::default(); 1];
-    let mut sources = [Source::default(); 3];
+    // A counted map: the source census still numbers the wings by the roster.
+    let mut sources = vec![Source::default(); 3];
     let walked = walk_shared(
         &SliceMemory {
             base: 0,
@@ -1410,19 +1265,18 @@ fn pool_ordinals_follow_pools_then_wings() {
         },
         0,
         GS,
-        &mut map,
-        &mut sources,
-        0,
+        crate::walk::Buffer::Count,
+        crate::walk::Buffer::Growing(&mut sources),
         |_, _, _, _| {},
     );
     assert_eq!(
         walked.map,
         Outcome::Truncated {
-            len: 1,
-            unread_rows: 2
+            len: 0,
+            unread_rows: 3
         }
     );
-    assert_eq!(sources.map(|source| source.row.pool_ordinal), [0, 1, 2]);
+    assert_eq!(sources.iter().map(|source| source.row.pool_ordinal).collect::<Vec<_>>(), [0, 1, 2]);
 }
 
 #[test]
@@ -1432,7 +1286,7 @@ fn raw_handles_signed_counts_alias_owner_and_nullable_region_survive() {
     p32(&mut bytes, WING_A + ELIGIBILITY_LIMIT, i32::MAX as u32);
     bytes[WING_A + MISSION + air_mission::ACTIVE] = 1;
     bytes[WING_B + ELIGIBILITY_VETO] = 1;
-    let mut rows = [Row::default(); 2];
+    let mut rows = vec![Row::default(); 2];
     assert_eq!(capture(&bytes, &mut rows), Outcome::Rows { len: 2 });
     assert_eq!(
         rows[0],
@@ -1490,18 +1344,11 @@ fn raw_handles_signed_counts_alias_owner_and_nullable_region_survive() {
 }
 
 #[test]
-fn capacity_counts_omitted_wings_but_does_not_hide_a_broken_roster() {
+fn a_broken_roster_or_wing_refuses_the_census() {
     let mut bytes = fixture();
-    let mut rows = [Row::default(); 1];
+    let mut rows = Vec::new();
     p64(&mut bytes, WING_B + 0xc0, u64::MAX);
-    assert_eq!(
-        capture(&bytes, &mut rows),
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 1
-        }
-    );
-    let mut all = [Row::default(); 2];
+    let mut all = Vec::new();
     assert!(matches!(
         capture(&bytes, &mut all),
         Outcome::Unavailable { .. }
@@ -1528,7 +1375,7 @@ fn strategic_air_manager_absence_and_foreign_identity_refuse() {
     let mut bytes = fixture();
     p64(&mut bytes, GS + cgame_state::STRATEGIC_AIR_MANAGER, 0);
     assert_eq!(
-        capture(&bytes, &mut [Row::default(); 2]),
+        capture(&bytes, &mut Vec::new()),
         Outcome::Unavailable {
             reason: "strategic air manager absent"
         }
@@ -1541,7 +1388,7 @@ fn strategic_air_manager_absence_and_foreign_identity_refuse() {
         unreadable,
     );
     assert_eq!(
-        capture(&bytes, &mut [Row::default(); 2]),
+        capture(&bytes, &mut Vec::new()),
         Outcome::Unavailable {
             reason: "strategic air manager vtable unreadable"
         }
@@ -1558,7 +1405,7 @@ fn strategic_air_manager_absence_and_foreign_identity_refuse() {
         (cstrategic_air_manager::VTABLE_RVA.0 + 0x20) as u64,
     );
     assert_eq!(
-        capture(&bytes, &mut [Row::default(); 2]),
+        capture(&bytes, &mut Vec::new()),
         Outcome::Unavailable {
             reason: "strategic air manager vtable mismatch"
         }
@@ -1586,7 +1433,7 @@ fn bad_identity_links_and_missing_roots_never_become_empty_air() {
         let mut bytes = fixture();
         p64(&mut bytes, at, value);
         assert_eq!(
-            capture(&bytes, &mut [Row::default(); 2]),
+            capture(&bytes, &mut Vec::new()),
             Outcome::Unavailable { reason }
         );
     }
@@ -1594,19 +1441,19 @@ fn bad_identity_links_and_missing_roots_never_become_empty_air() {
     p64(&mut bytes, OWNERS + 8, 0);
     p64(&mut bytes, OWNERS + 24, OWNER as u64);
     assert_eq!(
-        capture(&bytes, &mut [Row::default(); 2]),
+        capture(&bytes, &mut Vec::new()),
         Outcome::Unavailable {
             reason: "strategic air owner differs from canonical country slot"
         }
     );
     p64(&mut bytes, OWNERS + 24, 0);
     assert_eq!(
-        capture(&bytes, &mut [Row::default(); 2]),
+        capture(&bytes, &mut Vec::new()),
         Outcome::Rows { len: 0 }
     );
     p32(&mut bytes, MANAGER + 0x3c, 0);
     assert_eq!(
-        capture(&bytes, &mut [Row::default(); 2]),
+        capture(&bytes, &mut Vec::new()),
         Outcome::Unavailable {
             reason: "strategic air manager has no country slots"
         }
@@ -1616,7 +1463,7 @@ fn bad_identity_links_and_missing_roots_never_become_empty_air() {
 #[test]
 fn shared_extensions_visit_only_authenticated_emitted_rows() {
     let bytes = fixture();
-    let mut count = 0;
+    let mut visits = Vec::new();
     let outcome = walk_with(
         &SliceMemory {
             base: 0,
@@ -1624,20 +1471,14 @@ fn shared_extensions_visit_only_authenticated_emitted_rows() {
         },
         0,
         GS,
-        &mut [Row::default(); 1],
-        |wing, pool, row| {
-            count += 1;
-            assert_eq!((wing, pool, row.id), (WING_A, POOL_OBJECT, u64::MAX));
-        },
+        &mut vec![Row::default(); 1],
+        |wing, pool, row| visits.push((wing, pool, row.id)),
     );
-    assert_eq!(count, 1);
     assert_eq!(
-        outcome,
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 1
-        }
+        visits,
+        [(WING_A, POOL_OBJECT, u64::MAX), (WING_B, POOL_OBJECT, 69)]
     );
+    assert_eq!(outcome, Outcome::Rows { len: 2 });
     let mut corrupt = bytes;
     p64(&mut corrupt, WING_A + 0x38, 0);
     let outcome = walk_with(
@@ -1647,7 +1488,7 @@ fn shared_extensions_visit_only_authenticated_emitted_rows() {
         },
         0,
         GS,
-        &mut [Row::default(); 2],
+        &mut vec![Row::default(); 2],
         |_, _, _| panic!("invalid wing must not reach an extension"),
     );
     assert!(matches!(outcome, Outcome::Unavailable { .. }));
@@ -1762,10 +1603,10 @@ fn a_pass_authenticates_a_shared_mission_region_once_and_reads_eligibility_in_on
         reads: Default::default(),
         fault: None,
     };
-    let mut rows = [Row::default(); 2];
+    let mut rows = vec![Row::default(); 2];
     assert_eq!(walk(&memory, 0, GS, &mut rows), Outcome::Rows { len: 2 });
     assert_eq!(
-        rows.map(|row| row.mission_region),
+        rows.iter().map(|row| row.mission_region).collect::<Vec<_>>(),
         [Some(u32::MAX), Some(u32::MAX)]
     );
     assert_eq!(
@@ -1786,7 +1627,7 @@ fn a_pass_authenticates_a_shared_mission_region_once_and_reads_eligibility_in_on
     // Each walk is a fresh pass: a region rewritten between walks is read.
     p32(&mut bytes, REGION + 0x58, 5);
     assert_eq!(capture(&bytes, &mut rows), Outcome::Rows { len: 2 });
-    assert_eq!(rows.map(|row| row.mission_region), [Some(5), Some(5)]);
+    assert_eq!(rows.iter().map(|row| row.mission_region).collect::<Vec<_>>(), [Some(5), Some(5)]);
     for fault in [WING_A + ELIGIBILITY_COUNTER, WING_A + ELIGIBILITY_LIMIT] {
         let memory = Traced {
             bytes: &bytes,
@@ -1834,14 +1675,14 @@ fn census_hints_the_pointer_array_and_each_serially_read_wing() {
         }
     }
     let bytes = fixture();
-    let mut plain = [Row::default(); 2];
+    let mut plain = vec![Row::default(); 2];
     assert_eq!(capture(&bytes, &mut plain), Outcome::Rows { len: 2 });
     for serial in [false, true] {
         let memory = Logged {
             bytes: &bytes,
             events: Default::default(),
         };
-        let mut rows = [Row::default(); 2];
+        let mut rows = vec![Row::default(); 2];
         SERIAL.set(serial);
         assert_eq!(walk(&memory, 0, GS, &mut rows), Outcome::Rows { len: 2 });
         SERIAL.set(false);
@@ -2086,14 +1927,14 @@ struct Census {
     owners: Vec<(u32, Option<usize>)>,
 }
 
-/// Growing projections, or fixed map, source and naval capacities.
-type Capacities = Option<[usize; 3]>;
+/// The map and source storage a census starts from; none is empty.
+type Capacities = Option<[usize; 2]>;
 
 /// The census through the gathered path, or the per-object reference
 /// ([`serial_reference`]); with the gathered walk's fallbacks, which it
 /// also counted for status.
 fn census(memory: &impl Memory, serial: bool, capacities: Capacities) -> (Census, u32) {
-    let [map, source, naval] = capacities.unwrap_or([0; 3]);
+    let [map, source] = capacities.unwrap_or([0; 2]);
     let mut rows = vec![Row::default(); map];
     let mut sources = vec![Source::default(); source];
     let (mut name_bytes, mut used, mut name_required) = (Vec::new(), 0, 0);
@@ -2108,19 +1949,10 @@ fn census(memory: &impl Memory, serial: bool, capacities: Capacities) -> (Census
         0,
         GS,
         EVERY_OWNER,
-        if capacities.is_some() {
-            Buffer::Fixed(&mut rows)
-        } else {
-            Buffer::Growing(&mut rows)
-        },
-        if capacities.is_some() {
-            Buffer::Fixed(&mut sources)
-        } else {
-            Buffer::Growing(&mut sources)
-        },
-        naval,
+        Buffer::Growing(&mut rows),
+        Buffer::Growing(&mut sources),
         None,
-        Some(usize::MAX),
+        true,
         |pointer, _, _, admitted| {
             if admitted.map {
                 names.push(capture_name_growing(
@@ -2200,8 +2032,8 @@ impl Memory for Faulted<'_> {
     }
 }
 
-/// Fixed capacities below, at and beyond the census, and growing storage.
-const CAPACITIES: [Capacities; 4] = [None, Some([1, 2, 1]), Some([70, 0, 3]), Some([0, 0, 0])];
+/// Starting storage below, at and beyond the census, and none.
+const CAPACITIES: [Capacities; 4] = [None, Some([1, 2]), Some([70, 0]), Some([0, 0])];
 
 /// A fault at any census read gives the parent walk's result when it
 /// persists, and when it clears after its first touch either the healthy
@@ -2452,7 +2284,7 @@ fn a_slot_zero_owner_and_catalogue_faults_refuse_no_more_than_the_parent() {
     let (faulted, _) = census(
         &Faulted::new(&scale.bytes, &[planes], false),
         false,
-        Some([0; 3]),
+        Some([0; 2]),
     );
     assert_eq!(
         faulted.scores[1].2,

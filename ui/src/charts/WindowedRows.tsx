@@ -3,7 +3,7 @@ import type { ReactNode } from 'react';
 import { moveIndex, revealRow, visibleRange } from '../components/countryList';
 import { movingRowClass, useRowMotion } from './useRowMotion';
 import type { MovingRow } from './rowMotion';
-import { useParityRows } from '../dashboard/parityRows';
+import { untakenRows } from './rowMotion.ts';
 
 /** An unchanged viewport keeps its state, so measuring and scrolling never re-render for nothing. */
 const viewAt = (top: number, height: number) => (before: { top: number; height: number }) =>
@@ -22,14 +22,10 @@ export default function WindowedRows<T>({ items, rowHeight: preferredHeight, fit
   const rowHeight = fit ? Math.min(preferredHeight, Math.max(minRowHeight, view.height / Math.max(1, items.length))) : preferredHeight;
   const [focus, setFocus] = useState<{ at: number; backwards: boolean } | null>(null);
   const [focusedKey, setFocusedKey] = useState<string | null>(null);
-  const moving = useRowMotion(items);
-  if (import.meta.env.MODE === 'parity') {
-  useParityRows(root, () => ({ kind: 'windowed', label, complete: true, total: items.length,
-    rows: items.map(({ key, item }, index) => ({ key, index, item })) }));
-  }
+  const moving = useRowMotion(items, true);
   const count = moving.reduce((count, row) => Math.max(count, row.slot + 1), items.length);
   const range = visibleRange(count, Math.max(0, view.top - padding), view.height, rowHeight);
-  const visible = moving.filter(row => row.slot >= range.start && row.slot < range.end);
+  const visible = untakenRows(moving).filter(row => row.slot >= range.start && row.slot < range.end);
   const focused = moving.find(row => row.key === focusedKey && row.phase !== 'leaving');
   if (focused && !visible.includes(focused)) { visible.push(focused); visible.sort((a, b) => a.slot - b.slot); }
   const focusables = (node: HTMLElement) => [...node.querySelectorAll<HTMLElement>('summary, button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex="0"]')]

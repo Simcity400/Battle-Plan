@@ -1,7 +1,8 @@
 //! Per-song reuse certified by the trigger input observer.
 use dashboard_text::triggers::{Evaluator, Scope, Scopes, World, inputs};
 use installed_content_core::parser::Item;
-use replay_frame::frame::DecodedFrame;
+use replay_data::rows::TableId;
+use replay_frame::frame::{DecodedFrame, ViewIdentity};
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
@@ -44,10 +45,32 @@ struct Evaluation {
     value: Outcome,
     inputs: inputs::Inputs,
 }
+/// What the evaluations last read their inputs at.
+enum Then {
+    /// The frame itself: its tables' field stamps say which fields changed.
+    Frame(Arc<DecodedFrame>),
+    /// Each table's identity alone: rows at the playback head keep a table's allocation while it
+    /// does not change, so no previous rows are held.
+    Identities(Box<[ViewIdentity]>),
+}
+
+/// The changes between a frame's identities and a later frame's tables: a table whose allocation
+/// is not the same may have changed anywhere.
+struct Identities<'a> {
+    then: &'a [ViewIdentity],
+    now: &'a DecodedFrame,
+}
+
+impl inputs::TableChanges for Identities<'_> {
+    fn table(&self, table: TableId) -> inputs::TableChange<'_> {
+        if self.then[table.index()].is(&self.now.tables[table.index()]) { inputs::TableChange::Same } else { inputs::TableChange::Any }
+    }
+}
+
 struct Entry {
     content: Arc<viewer_audio::Content>,
-    /// The frame every evaluation last read its inputs at.
-    frame: Arc<DecodedFrame>,
+    then: Then,
+    hour: replay_data::Hour,
     branch: replay_data::BranchId,
     country: u32,
     songs: Vec<Option<Arc<Evaluation>>>,
@@ -58,10 +81,18 @@ struct Entry {
 #[derive(Clone)]
 pub struct Kept(Arc<Entry>);
 
+impl Kept {
+    /// The hour of the rows the evaluations were made over.
+    pub fn hour(&self) -> replay_data::Hour {
+        self.0.hour
+    }
+}
+
 /// Each country's latest evaluations while an hour holding them ([`Kept`]) lives, and no others.
 #[derive(Default)]
 pub struct Memo {
     entries: Mutex<Vec<std::sync::Weak<Entry>>>,
+    by_identity: bool,
     #[cfg(test)]
     evaluations: std::sync::atomic::AtomicUsize,
 }
@@ -69,6 +100,11 @@ pub struct Memo {
 impl Memo {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A memo for rows at the playback head, which keeps each table's identity, never its rows.
+    pub fn by_identity() -> Self {
+        Self { by_identity: true, ..Self::default() }
     }
 
     /// The chances alone; nothing keeps their evaluations for the next hour.
@@ -103,15 +139,29 @@ impl Memo {
         });
         // Reread answers belong to this call only, never another hour.
         let mut rereads = HashMap::new();
-        let now = Arc::new(frame.clone());
+        let now = if self.by_identity {
+            Then::Identities(frame.tables.iter().map(|view| view.identity()).collect())
+        } else {
+            Then::Frame(Arc::new(frame.clone()))
+        };
         // Only the reads whose tables changed since the kept hour are read again. A step back
         // in time moves relations' start and end hours the other way, so it reads all again.
-        let between = previous
-            .as_ref()
-            .filter(|entry| entry.frame.hour <= frame.hour)
-            .map(|entry| (entry.frame.hour, inputs::Between::new(&entry.frame, frame)));
-        let since = between.as_ref().map(|(from, between)| {
-            inputs::Since::span(frame.branch, *from, frame.hour, Some(frame), between)
+        let held = previous.as_ref().filter(|entry| entry.hour <= frame.hour);
+        let by_frame = held.and_then(|entry| match &entry.then {
+            Then::Frame(then) => Some(inputs::Between::new(then, frame)),
+            Then::Identities(_) => None,
+        });
+        let by_identity = held.and_then(|entry| match &entry.then {
+            Then::Identities(then) => Some(Identities { then, now: frame }),
+            Then::Frame(_) => None,
+        });
+        let changes: Option<&dyn inputs::TableChanges> = match (&by_frame, &by_identity) {
+            (Some(between), _) => Some(between as &dyn inputs::TableChanges),
+            (None, Some(identities)) => Some(identities as &dyn inputs::TableChanges),
+            (None, None) => None,
+        };
+        let since = held.zip(changes).map(|(entry, changes)| {
+            inputs::Since::span(frame.branch, entry.hour, frame.hour, Some(frame), changes)
         });
         let evaluator = Evaluator::new(world, None);
         let scopes = Scopes::of(Scope::Country(country));
@@ -191,10 +241,11 @@ impl Memo {
             songs.push(Some(value));
         }
         drop(since);
-        drop(between);
+        drop(by_frame);
         let entry = Arc::new(Entry {
             content: Arc::clone(content),
-            frame: now,
+            then: now,
+            hour: frame.hour,
             branch: frame.branch,
             country,
             songs,

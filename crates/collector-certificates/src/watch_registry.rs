@@ -113,6 +113,10 @@ struct Hot(AtomicU64);
 
 /// Slots probed from a receiver's hash before its registration is refused.
 const PROBES: usize = 16;
+/// Every registry's refusals, since the collector loaded.
+static REFUSED_TOTAL: AtomicU64 = AtomicU64::new(0);
+/// The highest load a status read saw, as `f64` bits plus one; zero before any.
+static PEAK_LOAD: AtomicU64 = AtomicU64::new(0);
 /// Table slots per expected watch: probing stays short, and receivers that
 /// died since the last clear have room to accumulate.
 const SLOTS_PER_WATCH: usize = 4;
@@ -543,6 +547,26 @@ impl WatchRegistry {
         (self.epoch.load(SeqCst) == epoch && self.quiet_now()).then_some((epoch, sequence))
     }
 
+    /// [`Self::sequence`] for a capture's parallel ranges: a receiver not yet watched is
+    /// registered here, so a fresh epoch's receivers register across the ranges. A full table
+    /// is left to the ordered admission, which refuses and counts the receiver once.
+    pub fn range_sequence(&self, receiver: usize) -> Option<(u64, u64)> {
+        if !self.observing() {
+            return None;
+        }
+        let epoch = self.epoch.load(SeqCst);
+        let sequence = match self.table()?.find(receiver, true) {
+            Lookup::Watched(_, sequence) => sequence,
+            Lookup::Registered(_, sequence) => {
+                self.registered.fetch_add(1, Relaxed);
+                sequence
+            }
+            Lookup::Unwatched | Lookup::Full => return None,
+        };
+        let sequence = sequence.load(SeqCst);
+        (self.epoch.load(SeqCst) == epoch && self.quiet_now()).then_some((epoch, sequence))
+    }
+
     /// Passive slot-hinted lookup. A cleared/replaced table never admits a new
     /// receiver here, so parallel warm acquisition preserves ordered cold/full
     /// admission and its refusal counts.
@@ -593,7 +617,7 @@ impl WatchRegistry {
             }
             Lookup::Unwatched => return None,
             Lookup::Full => {
-                self.refused.fetch_add(1, Relaxed);
+                self.refuse();
                 return None;
             }
         };
@@ -617,7 +641,7 @@ impl WatchRegistry {
             }
             Lookup::Unwatched => return None,
             Lookup::Full => {
-                self.refused.fetch_add(1, Relaxed);
+                self.refuse();
                 return None;
             }
         };
@@ -796,10 +820,19 @@ impl WatchRegistry {
         self.requested.load(SeqCst) > self.capacity.load(Relaxed)
     }
 
-    /// Slots of the installed table, for tests.
-    #[cfg(any(test, feature = "test-support"))]
+    /// Slots of the installed table.
     pub fn capacity(&self) -> usize {
         self.capacity.load(Relaxed)
+    }
+
+    /// Registrations refused because every probed slot was taken.
+    pub fn refused(&self) -> u64 {
+        self.refused.load(Relaxed)
+    }
+
+    fn refuse(&self) {
+        self.refused.fetch_add(1, Relaxed);
+        REFUSED_TOTAL.fetch_add(1, Relaxed);
     }
 
     /// Model a notification crossing the last install, for tests.
@@ -966,6 +999,36 @@ impl Drop for Notification<'_> {
         }
         self.registry.leave(self.counted);
     }
+}
+
+/// Every registry's refusals since the collector loaded.
+pub fn refused_total() -> u64 {
+    REFUSED_TOTAL.load(Relaxed)
+}
+
+/// The live status's certificate registries: every registry's refusals, and each named
+/// registry's load at this read, which also raises the peak.
+pub fn status<const N: usize>(named: [(&'static str, &WatchRegistry); N]) -> impl serde::Serialize {
+    use collector_status::status::{map, status};
+    let registries = named.map(|(name, registry)| {
+        let (registered, capacity) = (registry.registered(), registry.capacity());
+        if capacity != 0 {
+            PEAK_LOAD.fetch_max((registered as f64 / capacity as f64).to_bits() + 1, Relaxed);
+        }
+        let counts = status!({
+            "registered": registered,
+            "capacity": capacity,
+            "refused": registry.refused(),
+        });
+        (name, counts)
+    });
+    status!({
+        "refused_total": refused_total(),
+        "peak_load": PEAK_LOAD.load(Relaxed).checked_sub(1).map(f64::from_bits),
+        "longest_probe": None::<u64>,
+        "note": "refusals since the collector loaded; peak_load is the highest registered/capacity of these registries at any status read; the longest probe is not tracked, as that would add work to registration",
+        "registries": map(registries.into_iter()),
+    })
 }
 
 #[cfg(test)]

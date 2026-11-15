@@ -5,8 +5,6 @@ import { createPortal } from 'react-dom';
 import DatedCountryChip from '../../dashboard/DatedCountryChip';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { signed32 } from '../../dashboard/validation';
-import { countryDrillSpans } from '../../dashboard/countryIdentity';
-import { clipToSpans } from '../series';
 import WidgetState from '../../components/WidgetState';
 import CountryPicker from '../../components/CountryPicker';
 import type { WidgetProps } from '../../dashboard/definitions';
@@ -14,11 +12,8 @@ import { resolveWindow } from '../../dashboard/model';
 import type { BoundTrack } from '../../dashboard/model';
 import type { OptionValue } from '../../dashboard/options';
 import { useProduct } from '../../dashboard/products';
-import { usePreparedRace } from './PartsRaceView';
-import { mergeFactories, factoriesGeometry } from '../../widgets/factories/preparedFactories';
-import { validateFactoriesReply } from '../../widgets/factories/factoriesData';
-import { usePlaybackHour } from '../../dashboard/playback';
 import { NumericReply } from '../../dashboard/numericReply';
+import { pacedKey, useHeadHour } from '../../widgets/army-size/headHour.ts';
 import { dayLabel } from '../draw';
 import DrillHost from '../drill/DrillHost';
 import DrillParts from '../drill/DrillParts';
@@ -29,7 +24,9 @@ import { bindCountryParts, countryPartsRemainder, countryPartsSelection, exactPa
 import type { CountryPartsData } from './countryPartsDrillData';
 import { CLOSED_PARTS_RACE, partsRaceDrillActors, reducePartsRaceDrill, UNATTRIBUTED_PART } from './partsRaceDrill';
 
-/** Factory and delivered-equipment drills share controls; their native models own the amounts. */
+/** A country's parts over time beside a race: one reply of the country's whole branch (`params(tag)`), decoded by the
+ * widget into the parts drill's model. Opened from a bar or a line, or pinned as its own widget. Following the head,
+ * it renders at most four times a second of playback (the hour it shows moves with the clock between). */
 export default function CountryPartsDrill<T>({ widget, runtime, active, countrySlot = null, onDiagnostics, track, options, extent, playhead, moment,
   product, params, validate, decode, numbers, defaultTag, pickTag, title, measure, virtual = false, positiveGeometry = false, warnings,
   resetKey, state, main, details }: Pick<WidgetProps, 'widget' | 'runtime' | 'active' | 'countrySlot' | 'onDiagnostics'> & {
@@ -39,9 +36,8 @@ export default function CountryPartsDrill<T>({ widget, runtime, active, countryS
   defaultTag: string | null; pickTag: (hour: number) => string | null; title: string; measure: string;
   virtual?: boolean; positiveGeometry?: boolean; warnings: readonly string[]; resetKey: string; state?: ReactNode;
   main: (onPick: (hour: number, tag?: string, choices?: readonly string[]) => void, visible: boolean) => ReactNode;
-  /** Replaces the parts list and the chart's key with the widget's own: the country's
-   * holder at each hour (`tagAt`), the hour shown, and the chart's parts with their
-   * colours and exact values then (the residual only when it holds something). */
+  /** Replaces the parts list and the chart's key with the widget's own: the country's holder at each hour (`tagAt`),
+   * the hour shown, and the chart's parts with their colours and exact values then. */
   details?: (view: { tag: string; hour: number; tagAt: (hour: number) => string | null;
     key: readonly { id: string; label: string; color?: string; value: number | null }[] }) => ReactNode;
 }) {
@@ -54,28 +50,26 @@ export default function CountryPartsDrill<T>({ widget, runtime, active, countryS
   const origin = storedOrigin?.owner === contextOwner ? storedOrigin.hour : null;
   const originTag = storedOrigin?.owner === contextOwner ? storedOrigin.tag : null;
   const setOrigin = (hour: number, tag: string) => setStoredOrigin({ owner: contextOwner, hour, tag });
-  const playbackHour = usePlaybackHour(runtime.clock, active && drill.breakdown != null && drill.follow);
+  const offset = track?.axisOffset ?? 0;
+  const paced = useMemo(() => pacedKey(runtime.clock), [runtime.clock]);
+  const playbackHour = useHeadHour(runtime.clock, active && drill.breakdown != null && drill.follow, paced);
   const anchor = useRef<HTMLDivElement>(null);
   const pinned = options.show === 'breakdown';
   useEffect(() => { dispatch({ type: 'close' }); setStoredOrigin(null); }, [contextOwner]);
   const tag = drill.breakdown ?? (pinned ? originTag ?? (widget.countries.kind === 'tags' ? widget.countries.tags[0] ?? null : defaultTag) : null);
   const originHour = origin ?? (typeof widget.options?.drillOriginHour === 'number' ? widget.options.drillOriginHour : moment);
   const missingPinnedDate = pinned && drill.breakdown == null && (widget.time.mode === 'pin' || widget.time.mode === 'range')
-    && (!track || !resolveWindow(widget, track, runtime.tracks, playbackHour));
+    && (!track || !resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour()));
   useEffect(() => { if (pinned && !missingPinnedDate && tag && origin == null) setStoredOrigin({ owner: contextOwner, hour: originHour, tag }); },
     [pinned, missingPinnedDate, tag, origin, originHour, contextOwner]);
-  const clockHour = track ? Math.floor(playbackHour) + track.axisOffset : null;
+  const clockHour = track ? Math.floor(playbackHour) + offset : null;
   const liveHour = clockHour != null && track && clockHour >= track.branch.firstHour && clockHour <= track.branch.lastHour ? clockHour : null;
   const following = drill.breakdown == null ? widget.time.mode === 'follow' : drill.follow;
   const hour = Math.floor(drill.choices ? drill.hour ?? moment : drill.breakdown == null ? moment
     : following ? clockHour ?? moment : drill.hour ?? moment);
   const chartPlayhead = drill.breakdown != null && drill.follow ? hour : playhead;
   const request = track && tag ? { sourceId: track.source.id, revision: track.source.revision, product, params: params(tag) } : null;
-  const prepared = usePreparedRace(runtime.client, track, product === 'country-factories' ? request : null, hour, active,
-    validateFactoriesReply, mergeFactories, factoriesGeometry);
-  // A prepared recording's drill reads prepared data, as its widget does: never a scan of the recording.
-  const oracle = useProduct(runtime.client, product === 'country-factories' && runtime.client.preparedQuery ? null : request, active, validate, track?.source);
-  const reply = product === 'country-factories' && runtime.client.preparedQuery ? { ...prepared, data: prepared.data as unknown as T | undefined } : oracle;
+  const reply = useProduct(runtime.client, request, active, validate, track?.source);
   const numeric = useMemo(() => new NumericReply<T>(), [runtime.client]);
   const pickScope = JSON.stringify([contextKey, product, 'mix', tag, originHour]);
   const pickNumbers = numeric.update(pickScope, reply.data, numbers);
@@ -98,13 +92,11 @@ export default function CountryPartsDrill<T>({ widget, runtime, active, countryS
   const binding = useMemo(() => nativeModel && tag ? bindCountryParts(nativeModel, tag, originHour, holder) : null,
     [nativeModel, tag, originHour, holder]);
   const model = binding?.data;
-  const identitySpans = useMemo(() => nativeModel && tag && holder !== null ? countryDrillSpans(nativeModel.histories,tag,originHour) : undefined,
-    [nativeModel,tag,originHour,holder]);
   const shownTag = binding?.tagAt(hour) ?? null;
   const headerReason = !active ? 'The breakdown is inactive.' : missingPinnedDate ? 'The chosen moment is unavailable.'
     : invalidSaved ? 'Saved country unavailable.'
-    : saved === undefined && (hasSavedOrigin || widget.time.mode !== 'campaign') ? 'Saved country unavailable.'
-      : !shownTag ? 'Country unavailable at this time.' : null;
+      : saved === undefined && (hasSavedOrigin || widget.time.mode !== 'campaign') ? 'Saved country unavailable.'
+        : !shownTag ? 'Country unavailable at this time.' : null;
   const headerWanted = useMemo(() => pinned && countrySlot && headerReason === null && shownTag ? [{ tag: shownTag, hour }] : [],
     [pinned, countrySlot, headerReason, shownTag, hour]);
   const headerLabels = useCountryLabelsAt(runtime.client, track, headerWanted, active && pinned && !!countrySlot);
@@ -123,10 +115,7 @@ export default function CountryPartsDrill<T>({ widget, runtime, active, countryS
   const parts = useMemo(() => model ? [...model.parts(read ?? hour), UNATTRIBUTED_PART] : [], [model, read, read == null ? hour : null]); // eslint-disable-line react-hooks/exhaustive-deps
   const colours = useMemo(() => partColours(parts, tokens.categories), [parts, tokens.categories]);
   const range = useMemo(() => ({ firstHour: extent[0], lastHour: extent[1] }), [extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
-  const geometry = useMemo(() => product === 'country-factories' && prepared.dense && prepared.geometry
-    ? bindCountryParts(decode(prepared.geometry as unknown as T), tag ?? '', originHour, holder)?.data : model,
-    [product, prepared.dense, prepared.geometry, decode, tag, originHour, holder, model]);
-  const bands = useMemo(() => geometry && tag ? geometry.bands(tag, range) : null, [geometry, tag, range]);
+  const bands = useMemo(() => model && tag ? model.bands(tag, range) : null, [model, tag, range]);
   const shownBands = useMemo(() => positiveGeometry ? bands?.map(runs => runs.map(run => ({ ...run, value: Math.max(0, run.value) }))) : bands,
     [bands, positiveGeometry]);
   const at = useMemo(() => model && tag ? model.at(tag, hour) : null, [model, tag, hour]);
@@ -138,9 +127,9 @@ export default function CountryPartsDrill<T>({ widget, runtime, active, countryS
   }), [parts, at, colours]);
   const unavailable = missingPinnedDate ? <WidgetState kind="unavailable" message="The chosen moment is unavailable." />
     : invalidSaved ? <WidgetState kind="unavailable" message="Saved country unavailable." />
-    : state ?? (reply.error ? <WidgetState kind="error" failure={reply.error} onRetry={reply.retry} />
-    : tag && !model ? <WidgetState kind="loading" label={`Loading ${title.toLowerCase()}…`} />
-      : !tag ? <WidgetState kind="empty" message="Choose a country in the widget settings." /> : undefined);
+      : state ?? (reply.error ? <WidgetState kind="error" failure={reply.error} onRetry={reply.retry} />
+        : tag && !model ? <WidgetState kind="loading" label={`Loading ${title.toLowerCase()}…`} />
+          : !tag ? <WidgetState kind="empty" message="Choose a country in the widget settings." /> : undefined);
   const follow = () => {
     if (current() && tag && liveHour != null) dispatch({ type: 'open', breakdown: tag, hour, playing: true, playhead: liveHour, owner: contextOwner });
   };
@@ -159,13 +148,8 @@ export default function CountryPartsDrill<T>({ widget, runtime, active, countryS
     state={unavailable} selectedHour={hour} pickOwner={pickOwner} label={title} empty="No recorded parts at this moment." formatValue={exactPartAmount}
     countryLookHour={(country, shownHour) => country && model ? model.readHour(country, shownHour) : null}
     segmentAt={(country, shownHour) => model?.segmentAt(country, shownHour) ?? null}
-    onSummaryView={product === 'country-factories' ? prepared.onSummaryView : undefined}
-    onReachHour={product === 'country-factories' ? prepared.onReachHour : undefined}
-    navigation={product === 'country-factories' ? prepared.navigation : undefined}
     keyHours={model?.keyHours} resetKey={resetKey} partsLabel={title}
-    mix={tag && shownBands ? { tag: shownTag ?? tag, tagAt: binding?.tagAt, bands: shownBands,
-      approximate: [...prepared.summaries].flatMap(([alias,summary]) => clipToSpans(summary.approximate ?? [], identitySpans?.get(alias) ?? [])),
-      compactStack: true, parts: parts.map((part, index) => ({ ...part,
+    mix={tag && shownBands ? { tag: shownTag ?? tag, tagAt: binding?.tagAt, bands: shownBands, compactStack: true, parts: parts.map((part, index) => ({ ...part,
       value: index === parts.length - 1 ? remainder == null ? 'Not known' : exactPartAmount(remainder)
         : at?.values[index] == null ? 'Not known' : exactPartAmount(at.values[index]!) })) } : null}
     tooltip={(country, shownHour, name, chartColours) => model?.tooltip(country, shownHour, name, chartColours) ?? null}
@@ -177,11 +161,11 @@ export default function CountryPartsDrill<T>({ widget, runtime, active, countryS
         ...parts.slice(0, -1).map((part, index) => ({ id: part.id, label: part.label, color: colours.get(part.id), value: at?.values[index] ?? null })),
         ...(remainder ? [{ id: UNATTRIBUTED_PART.id, label: UNATTRIBUTED_PART.label, color: colours.get(UNATTRIBUTED_PART.id), value: Number(remainder) }] : [])] })
         : <><DrillParts parts={rows} format={exactPartAmount} total={at?.total ?? null} showShares={at?.total != null}
-        virtual={virtual} active={active} positiveBars={positiveGeometry} signedShares
-        unattributed={remainder == null ? undefined : { ...UNATTRIBUTED_PART, value: Number(remainder), raw: remainder,
-          shareText: exactPartShare(remainder, at?.total ?? null), text: exactPartAmount(remainder), color: colours.get('') }}
-        totalRow={{ label: measure, value: at == null ? 'Not recorded' : at.total == null ? 'Not known' : exactPartAmount(at.total) }} />
-      {at?.note && <p className="drill-empty">{at.note}</p>}</>}
+          virtual={virtual} active={active} positiveBars={positiveGeometry} signedShares
+          unattributed={remainder == null ? undefined : { ...UNATTRIBUTED_PART, value: Number(remainder), raw: remainder,
+            shareText: exactPartShare(remainder, at?.total ?? null), text: exactPartAmount(remainder), color: colours.get('') }}
+          totalRow={{ label: measure, value: at == null ? 'Not recorded' : at.total == null ? 'Not known' : exactPartAmount(at.total) }} />
+        {at?.note && <p className="drill-empty">{at.note}</p>}</>}
     </div>}
     onPick={tag ? picked => { if (current()) dispatch({ type: 'open', breakdown: tag, hour: picked, playing: false,
       playhead: null, owner: contextOwner }); } : undefined} />;

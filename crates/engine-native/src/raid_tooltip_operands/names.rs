@@ -405,7 +405,7 @@ mod tests {
             };
             let mut rows = vec![Row::default(); 5 + text.len().div_ceil(8)];
             let mut sink = Sink {
-                rows: crate::walk::Buffer::Fixed(&mut rows),
+                rows: crate::walk::Buffer::Growing(&mut rows),
                 required: 0,
                 raid: 1,
                 ordinal: 0,
@@ -434,7 +434,7 @@ mod tests {
                 assert_eq!(row.key, index as u32);
             }
             let mut sink = Sink {
-                rows: crate::walk::Buffer::Fixed(&mut []),
+                rows: crate::walk::Buffer::Count,
                 required: 0,
                 raid: 1,
                 ordinal: 0,
@@ -460,9 +460,9 @@ mod tests {
             bytes[name + 16..name + 24].copy_from_slice(&len.to_le_bytes());
             bytes[name + 24..name + 32].copy_from_slice(&capacity.to_le_bytes());
             bytes[4099] = u8::from(!terminated);
-            let mut rows = [Row::default(); 9];
+            let mut rows = vec![Row::default(); 9];
             let mut sink = Sink {
-                rows: crate::walk::Buffer::Fixed(&mut rows),
+                rows: crate::walk::Buffer::Growing(&mut rows),
                 required: 0,
                 raid: 1,
                 ordinal: 0,
@@ -508,9 +508,9 @@ mod tests {
                 false
             }
         }
-        let mut rows = [Row::default(); 9];
+        let mut rows = vec![Row::default(); 9];
         let mut sink = Sink {
-            rows: crate::walk::Buffer::Fixed(&mut rows),
+            rows: crate::walk::Buffer::Growing(&mut rows),
             required: 0,
             raid: 1,
             ordinal: 0,
@@ -533,9 +533,9 @@ mod tests {
             base: 0,
             bytes: &bytes,
         };
-        let mut rows = [Row::default(); 3];
+        let mut rows = vec![Row::default(); 3];
         let mut sink = Sink {
-            rows: crate::walk::Buffer::Fixed(&mut rows),
+            rows: crate::walk::Buffer::Growing(&mut rows),
             required: 0,
             raid: 1,
             ordinal: 0,
@@ -545,7 +545,7 @@ mod tests {
         assert_eq!(rows[0].raw, text.len() as i64);
         assert_eq!(&rows[1].raw.to_le_bytes(), &text[..8]);
         let mut sink = Sink {
-            rows: crate::walk::Buffer::Fixed(&mut []),
+            rows: crate::walk::Buffer::Count,
             required: 0,
             raid: 1,
             ordinal: 0,
@@ -603,7 +603,7 @@ mod tests {
             let memory = crate::memory::SliceMemory { base: 0, bytes };
             let mut rows = vec![Row::default(); 16];
             let mut sink = Sink {
-                rows: crate::walk::Buffer::Fixed(&mut rows),
+                rows: crate::walk::Buffer::Growing(&mut rows),
                 required: 0,
                 raid: 7,
                 ordinal: 0,

@@ -167,24 +167,6 @@ pub fn walk(
     base: usize,
     game_state: usize,
     descriptors: &[cstrategic_resource::Row],
-    output: &mut [Row],
-    scratch: &mut [Membership],
-) -> Outcome {
-    walk_buffer(
-        memory,
-        base,
-        game_state,
-        descriptors,
-        crate::walk::Buffer::Fixed(output),
-        crate::walk::Buffer::Fixed(scratch),
-    )
-}
-
-pub fn walk_growing(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    descriptors: &[cstrategic_resource::Row],
     output: &mut Vec<Row>,
     scratch: &mut Vec<Membership>,
 ) -> Outcome {
@@ -436,8 +418,8 @@ mod tests {
         fixture.u64(0xa000 + EFFICIENCY_B, i64::MAX as u64);
         fixture.put(0xa000 + NO_TRADE_INFLUENCE, &[0xff, 0x80]);
         let resources = fixture.descriptors();
-        let mut rows = [Row::default(); 1];
-        let mut scratch = [Membership::default(); 1];
+        let mut rows = vec![Row::default(); 1];
+        let mut scratch = vec![Membership::default(); 1];
         assert_eq!(
             walk(&fixture, 0, 0x1000, &resources, &mut rows, &mut scratch),
             Outcome::Rows { len: 1 }
@@ -462,21 +444,14 @@ mod tests {
                 no_resources: 0x80,
             }]
         );
-        assert_eq!(
-            walk(&fixture, 0, 0x1000, &resources, &mut [], &mut scratch),
-            Outcome::Truncated {
-                len: 0,
-                unread_rows: 1
-            }
-        );
     }
 
     #[test]
     fn missing_or_duplicated_reciprocal_trade_links_are_unavailable() {
         let mut fixture = Fixture::new();
         let resources = fixture.descriptors();
-        let mut rows = [Row::default(); 2];
-        let mut scratch = [Membership::default(); 2];
+        let mut rows = vec![Row::default(); 2];
+        let mut scratch = vec![Membership::default(); 2];
         fixture.array(0xc000 + ccountry_resources::EXPORT_BUCKET_STRIDE, 0, 0);
         assert_eq!(
             walk(&fixture, 0, 0x1000, &resources, &mut rows, &mut scratch),
@@ -560,8 +535,8 @@ mod tests {
             directional_reads: RefCell::new(Vec::new()),
             fault: None,
         };
-        let mut rows = [Row::default(); COUNT];
-        let mut scratch = [Membership::default(); COUNT];
+        let mut rows = vec![Row::default(); COUNT];
+        let mut scratch = vec![Membership::default(); COUNT];
         assert_eq!(
             walk(&memory, 0, 0x1000, &resources, &mut rows, &mut scratch),
             Outcome::Rows { len: COUNT }
@@ -617,8 +592,8 @@ mod tests {
             memory: &fixture,
             counts: RefCell::new(Default::default()),
         };
-        let mut rows = [Row::default(); COUNT];
-        let mut scratch = [Membership::default(); COUNT];
+        let mut rows = vec![Row::default(); COUNT];
+        let mut scratch = vec![Membership::default(); COUNT];
         assert_eq!(
             walk(&memory, 0, 0x1000, &resources, &mut rows, &mut scratch),
             Outcome::Rows { len: COUNT }
@@ -666,8 +641,8 @@ mod tests {
             memory: &fixture,
             replaced: std::cell::Cell::new(false),
         };
-        let mut rows = [Row::default(); COUNT];
-        let mut scratch = [Membership::default(); COUNT];
+        let mut rows = vec![Row::default(); COUNT];
+        let mut scratch = vec![Membership::default(); COUNT];
         assert_eq!(
             walk(&memory, 0, 0x1000, &resources, &mut rows, &mut scratch),
             Outcome::Unavailable {
@@ -679,8 +654,8 @@ mod tests {
 
     #[test]
     fn high_degree_trade_rejects_wrong_missing_duplicate_and_unreadable_memberships() {
-        let mut rows = [Row::default(); COUNT];
-        let mut scratch = [Membership::default(); COUNT];
+        let mut rows = vec![Row::default(); COUNT];
+        let mut scratch = vec![Membership::default(); COUNT];
         for (address, replacement, reason) in [
             (
                 EXPORTS,
@@ -747,72 +722,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn trade_scratch_truncation_retains_source_prefix_and_checks_all_pointer_slots() {
-        let mut fixture = high_degree_fixture();
-        let resources = fixture.descriptors();
-        let mut rows = [Row::default(); COUNT];
-        let mut scratch = [Membership::default(); 2];
-        let memory = Counted {
-            memory: &fixture,
-            directional_reads: RefCell::new(Vec::new()),
-            fault: None,
-        };
-        assert_eq!(
-            walk(&memory, 0, 0x1000, &resources, &mut rows, &mut scratch),
-            Outcome::Truncated {
-                len: 2,
-                unread_rows: (COUNT - 2) as u32
-            }
-        );
-        assert_eq!((rows[0].id >> 32, rows[1].id >> 32), (1, 2));
-        assert_eq!((rows[0].export_ordinal, rows[1].export_ordinal), (63, 62));
-        assert_eq!(rows[2..], [Row::default(); COUNT - 2]);
-        assert_eq!(memory.directional_reads.borrow().len(), COUNT * 2);
-        let memory = Counted {
-            memory: &fixture,
-            directional_reads: RefCell::new(Vec::new()),
-            fault: Some(EXPORTS),
-        };
-        assert_eq!(
-            walk(&memory, 0, 0x1000, &resources, &mut rows, &mut scratch),
-            Outcome::Unavailable {
-                reason: "trade pointer unreadable"
-            }
-        );
-        assert_eq!(memory.directional_reads.borrow().len(), COUNT + 1);
-        fixture.u64(OBJECTS + 2 * 0x100, 0);
-        assert_eq!(
-            walk(&fixture, 0, 0x1000, &resources, &mut rows, &mut scratch),
-            Outcome::Truncated {
-                len: 2,
-                unread_rows: (COUNT - 2) as u32
-            }
-        );
-        let memory = Counted {
-            memory: &fixture,
-            directional_reads: RefCell::new(Vec::new()),
-            fault: None,
-        };
-        assert_eq!(
-            walk(&memory, 0, 0x1000, &resources, &mut rows, &mut []),
-            Outcome::Truncated {
-                len: 0,
-                unread_rows: COUNT as u32
-            }
-        );
-        assert_eq!(memory.directional_reads.borrow().len(), COUNT);
-        let memory = Counted {
-            memory: &fixture,
-            directional_reads: RefCell::new(Vec::new()),
-            fault: Some(IMPORTS + (COUNT - 1) * 8),
-        };
-        assert_eq!(
-            walk(&memory, 0, 0x1000, &resources, &mut rows, &mut []),
-            Outcome::Unavailable {
-                reason: "trade pointer unreadable"
-            }
-        );
-        assert_eq!(memory.directional_reads.borrow().len(), COUNT);
-    }
 }

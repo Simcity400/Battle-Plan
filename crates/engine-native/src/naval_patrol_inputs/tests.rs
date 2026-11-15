@@ -170,7 +170,7 @@ fn null_location_has_no_local_modifier_demand_and_empty_hq_is_known() {
         reads: Default::default(),
         deny: None,
     };
-    let context = read_context(&memory, 0, visit(), crate::walk::Buffer::Fixed(&mut []));
+    let context = read_context(&memory, 0, visit(), crate::walk::Buffer::Count);
     assert_eq!(context.region, Some(0));
     assert_eq!(context.headquarters, Ok(0));
     assert_eq!(context.local_detection, Some(Default::default()));
@@ -206,7 +206,7 @@ fn original_failed_stat_and_location_selectors_are_never_retried() {
         0,
         visit(),
         Some(Err("first location refused")),
-        crate::walk::Buffer::Fixed(&mut []),
+        crate::walk::Buffer::Count,
     );
     assert_eq!(context.region, None);
     assert_eq!(context.local_detection, None);

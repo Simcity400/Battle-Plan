@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useCallback, useLayoutEffect, useMemo, useRef } from 'react';
 import type { ReactNode } from 'react';
 import { CountryFlagUrl } from '../../components/CountryFlag';
 import { Icon } from '../../components/Icons';
@@ -9,29 +9,73 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import { selectedTags } from '../../dashboard/countrySelection';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { resolveWindow } from '../../dashboard/model';
-import { usePlaybackHour } from '../../dashboard/playback';
-import { useFollowedProduct } from '../../dashboard/products';
+import { useHeadProduct } from '../../dashboard/headProduct';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
-import type { WargoalStanding, WargoalsReply } from '../../generated/dashboard';
-import { fixed5, validateWargoalsReply } from './warGoalsData';
+import { expiryText, fixed5, progressText, validateWargoalsReply, wargoalStructure } from './warGoalsData';
+import type { WargoalsReply } from '../../generated/dashboard';
+import LiveText, { liveTexts } from '../../charts/LiveText';
+import { liveKey } from '../../charts/live';
+import { useShownEachFrame } from '../../dashboard/widgetPerf';
 import './warGoals.css';
+import type { WargoalStanding } from '../../generated/dashboard';
 
 const EMPTY: string[] = [];
 const STANDING: Record<WargoalStanding, string> = { atWar: 'At war', sameFaction: 'Same faction' };
 
 export default function WarGoalsWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
-  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const clock = runtime.clock;
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
+  const window = track && resolveWindow(widget, track, runtime.tracks, clock.getHour());
   const hour = window ? Math.floor(window.lastHour) : null;
   const tag = track ? selectedTags(widget.countries, track)[0] ?? null : null;
-  // The last hour's goals stay shown, labelled with their own hour, while playback's newest is read.
-  const product = useFollowedProduct<WargoalsReply>(runtime.client, track && tag && hour != null ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'wargoals', params: { branchId: track.branch.id, hour, tag } } : null, ['hour'], active, validateWargoalsReply, track?.source);
+  const root = useRef<HTMLDivElement | null>(null);
+  // Each push writes the completion dates, which move with the hour, into the page: never a render.
+  const paintCompletions = useCallback((reply: WargoalsReply) => {
+    for (const entry of reply.justifications) {
+      const node = root.current?.querySelector<HTMLElement>(`[data-completion="${entry.id}"]`);
+      const text = `completes ${dayLabel(entry.completion)}`;
+      if (node && node.textContent !== text) node.textContent = text;
+    }
+  }, []);
+  // Pushed at the head while following, rendering only when the goals or their terms change; the last goals stay shown,
+  // labelled with their own hour, until the next.
+  const product = useHeadProduct(runtime, widget, 'wargoals', tag ? { tag } : null,
+    { active, validate: validateWargoalsReply, structure: wargoalStructure, paint: paintCompletions });
   const data = product.data?.tag === tag && product.data.branchId === track?.branch.id ? product.data : null;
+  const at = product.at ?? hour ?? 0;
+  const following = widget.time.mode === 'follow' && product.read === 'followed';
+  const axisOffset = track?.axisOffset ?? 0;
+  useShownEachFrame(clock, () => data ? product.shownAt() : null, product.live);
+  // Progress is the live cell: painted each frame from the followed value, with its share and bar.
+  const live = product.live;
+  useLayoutEffect(() => {
+    const paint = () => {
+      const values = live.read();
+      for (const node of root.current?.querySelectorAll<HTMLElement>('[data-points]') ?? []) {
+        const key = liveKey(node.dataset.points!, 'points');
+        const { share, shareText, text } = progressText(values.get(key), node.dataset.total!, values.missing(key));
+        const [bold, rest] = [node.firstElementChild, node.lastElementChild];
+        if (bold && bold.textContent !== shareText) bold.textContent = shareText;
+        if (rest && rest.textContent !== text) rest.textContent = text;
+        const bar = root.current?.querySelector<HTMLElement>(`[data-bar="${node.dataset.points}"]`);
+        if (bar) {
+          bar.hidden = share === null;
+          const width = `${share ?? 0}%`;
+          if (bar.firstElementChild instanceof HTMLElement && bar.firstElementChild.style.width !== width) bar.firstElementChild.style.width = width;
+          bar.setAttribute('aria-label', share === null ? text : `${shareText} justified`);
+        }
+      }
+    };
+    paint();
+    return live.subscribe(paint);
+  });
+  // The days left to each goal's expiry move with the head: painted from the clock while following.
+  const expiries = useMemo(() => liveTexts(clock, () => following ? Math.floor(clock.getSnapshot().position + axisOffset) : at,
+    now => new Map((data?.goals ?? []).flatMap(goal => goal.expires == null ? [] : [[goal.handle, expiryText(goal.expires, now)] as const]))),
+  [clock, following, axisOffset, at, data]);
   useDiagnostics(onDiagnostics, active ? product.error ? [`War-goal inventory refused (1): ${product.error.message}`] : data?.warnings ?? EMPTY : EMPTY);
   const wanted = useMemo(() => data ? [...new Set([data.tag, ...data.goals.flatMap(goal => [goal.actor, goal.recipient, ...goal.liberate, ...goal.puppets]),
-    ...data.justifications.map(entry => entry.recipient)])].map(country => ({ hour: data.hour, tag: country })) : [], [data]);
+    ...data.justifications.map(entry => entry.recipient)])].map(country => ({ hour: at, tag: country })) : [], [data, at]);
   const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active && !!data);
   const standings = useMemo(() => new Map(data?.standings.map(pair => [JSON.stringify([pair.actor, pair.recipient]), pair.standing]) ?? []), [data]);
 
@@ -41,7 +85,7 @@ export default function WarGoalsWidget({ widget, runtime, active, onDiagnostics 
   if (product.error && !data) return <WidgetState kind="error" failure={product.error} onRetry={product.retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading war goals…" />;
 
-  const label = labelAt(data.hour);
+  const label = labelAt(at);
   const country = (code: string) => {
     const { name, flag, flagReason, flagPending } = label(code);
     return <span className="war-goal-country"><CountryFlagUrl className="war-goal-flag" url={flag} reason={flagReason} pending={flagPending} /><b>{name}</b></span>;
@@ -52,18 +96,17 @@ export default function WarGoalsWidget({ widget, runtime, active, onDiagnostics 
   };
   const states = (ids: readonly number[]) => ids.map((id, index) => <span key={`state:${index}`} className="war-goal-chip">{stateName(id)}</span>);
   const atWar = data.goals.filter(goal => standings.get(JSON.stringify([goal.actor, goal.recipient])) === 'atWar').length;
-  return <div className="war-goals">
+  return <div ref={element => { root.current = element; product.root(element); }} className="war-goals">
     <div className="war-goals-summary">
       <span><b>{usNumber.format(data.goals.length)}</b> {data.goals.length === 1 ? 'war goal' : 'war goals'}</span>
       {atWar > 0 && <span><b>{usNumber.format(atWar)}</b> against countries at war</span>}
       <span><b>{usNumber.format(data.justifications.length)}</b> being justified</span>
       {/* A held snapshot says which day it shows while the newer one loads. */}
-      {data.hour !== hour && <span className="war-goals-asof">As of {dayLabel(data.hour)}; {dayLabel(hour)} still loading</span>}
+      {product.read !== 'followed' && product.at !== null && product.at !== hour && <span className="war-goals-asof">As of {dayLabel(product.at)}; {dayLabel(hour)} still loading</span>}
     </div>
     <Section title="Owned goals" count={data.goals.length} empty="No owned war goals.">
       {data.goals.map((goal, index) => {
         const standing = standings.get(JSON.stringify([goal.actor, goal.recipient])) ?? null;
-        const remaining = goal.expires == null ? null : goal.expires - data.hour;
         const targets = goal.states.length || goal.liberate.length || goal.puppets.length;
         return <div key={`${goal.handle}:${index}`} className="war-goal">
           <div className="war-goal-head">
@@ -71,13 +114,11 @@ export default function WarGoalsWidget({ widget, runtime, active, onDiagnostics 
             {goal.available && <span className="war-goal-pill is-unused">Unused</span>}
             {standing && <span className={`war-goal-pill is-${standing}`}>{standing === 'atWar' && <Icon name="swords" />}{STANDING[standing]}</span>}
           </div>
-          {(targets || remaining != null || goal.actor !== data.tag) ? <div className="war-goal-sub">
+          {(targets || goal.expires != null || goal.actor !== data.tag) ? <div className="war-goal-sub">
             {states(goal.states)}
             {goal.liberate.map(code => <span key={`liberate:${code}`} className="war-goal-chip">Liberate {label(code).name}</span>)}
             {goal.puppets.map(code => <span key={`puppet:${code}`} className="war-goal-chip">Puppet {label(code).name}</span>)}
-            {remaining != null && <span className="war-goal-when">{remaining > 0
-              ? `Expires ${dayLabel(goal.expires!)} · ${usNumber.format(Math.ceil(remaining / 24))} ${Math.ceil(remaining / 24) === 1 ? 'day' : 'days'}`
-              : `Expiry date passed ${dayLabel(goal.expires!)}`}</span>}
+            {goal.expires != null && <span className="war-goal-when"><LiveText live={expiries} at={goal.handle} /></span>}
             {goal.actor !== data.tag && <span className="war-goal-when">Held by {label(goal.actor).name}</span>}
           </div> : null}
         </div>;
@@ -85,18 +126,16 @@ export default function WarGoalsWidget({ widget, runtime, active, onDiagnostics 
     </Section>
     <Section title="Being justified" count={data.justifications.length} empty="No justifications in progress.">
       {data.justifications.map(entry => {
-        const total = BigInt(entry.total), points = BigInt(entry.points);
-        const share = total > 0n ? Number(((points < 0n ? 0n : points > total ? total : points) * 1000n) / total) / 10 : null;
-        return <div key={entry.ordinal} className="war-goal">
+        return <div key={entry.id} className="war-goal">
           <div className="war-goal-head">
             {country(entry.recipient)}<span className="war-goal-kind">{entry.name}</span><span className="war-goal-spacer" />
             {entry.paused === true && <span className="war-goal-pill is-paused">Paused: not enough political power</span>}
             {entry.paused === null && <span className="war-goal-when">Payment status not recorded</span>}
           </div>
-          {share != null && <div className="war-goal-bar" role="img" aria-label={`${share}% justified`}><i style={{ width: `${share}%` }} /></div>}
+          <div className="war-goal-bar" role="img" data-bar={entry.id} hidden><i /></div>
           <div className="war-goal-sub">
-            <span className="war-goal-when">{share != null && <><b>{share}%</b> · </>}{fixed5(entry.points)} / {fixed5(entry.total)}</span>
-            <span className="war-goal-when">completes {dayLabel(entry.completion)}</span>
+            <span className="war-goal-when" data-points={entry.id} data-total={entry.total}><b /><span /></span>
+            <span className="war-goal-when" data-completion={entry.id}>completes {dayLabel(entry.completion)}</span>
             <span className="war-goal-when">{entry.payUpfront ? `paid upfront · ${fixed5(entry.daily)} progress a day` : `${fixed5(entry.daily)} political power a day`}</span>
           </div>
           {entry.states.length > 0 && <div className="war-goal-sub">{states(entry.states)}</div>}

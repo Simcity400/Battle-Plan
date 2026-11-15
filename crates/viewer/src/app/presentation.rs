@@ -18,6 +18,7 @@ use viewer_foundation::profiling::BuilderSpan;
 use viewer_foundation::retirement::Dropper;
 use viewer_foundation::retirement::Retired;
 use viewer_world::map::scene::SceneInput;
+use viewer_world::map::unit_models::PreparedModels;
 use crate::{document::Document, hours};
 
 /// CPU-side presentation point of a successfully submitted map frame, not a
@@ -125,6 +126,64 @@ fn same_snow_content(
 }
 
 impl Viewer {
+    /// The map's layer of type `T`, while the layers are on the frame side.
+    fn map_layer<T: 'static>(&self) -> Option<&T> {
+        self.playhead_map.as_ref()?.parts()?.1.iter().find_map(|layer| layer.any().downcast_ref::<T>())
+    }
+
+    /// Whether the ships layer stands in for today's ships and the aircraft layer draws its plan:
+    /// what today's movers part leaves out. Kept as last seen while the layers compose.
+    fn movers_layered(&mut self) -> (bool, bool) {
+        let Some(side) = self.playhead_map.as_ref() else {
+            self.movers_layered = (false, false);
+            return self.movers_layered;
+        };
+        if side.parts().is_some() {
+            let ships = side.draws("ships") && self.map_layer::<crate::layers::ships::Ships>().is_some_and(crate::layers::ships::Ships::stands_in);
+            let aircraft = side.draws("aircraft") && self.map_layer::<crate::layers::aircraft::Aircraft>().is_some_and(crate::layers::aircraft::Aircraft::shows);
+            self.movers_layered = (ships, aircraft);
+        }
+        self.movers_layered
+    }
+
+    /// An hour's unit models made without ships, with the ships layer's joined, while the units
+    /// layer does not draw (it joins them itself); the ships are joined again as they change
+    /// ([`Self::rejoin_ships`]).
+    fn join_hour_ships(&mut self, units: Arc<PreparedModels>, layered_units: bool) -> Arc<PreparedModels> {
+        (self.ships_shipless, self.ships_joined) = (None, None);
+        if units.naval() || layered_units {
+            return units;
+        }
+        self.ships_shipless = Some(Arc::clone(&units));
+        let Some(ships) = self.map_layer::<crate::layers::ships::Ships>() else { return units };
+        let ((sources, report), seq) = (ships.handover(), ships.seq());
+        self.ships_joined = Some(seq);
+        Arc::new(units.with_ships(sources, &report))
+    }
+
+    /// The ships layer's newer ships joined to the hour's unit models made without them, the field
+    /// installed again by the frame.
+    pub(super) fn rejoin_ships(&mut self) {
+        let Some(shipless) = self.ships_shipless.clone() else { return };
+        if self.playhead_map.as_ref().is_some_and(|side| side.draws("units")) {
+            return;
+        }
+        let Some(ships) = self.map_layer::<crate::layers::ships::Ships>() else { return };
+        if self.ships_joined == Some(ships.seq()) {
+            return;
+        }
+        let ((sources, report), seq) = (ships.handover(), ships.seq());
+        let joined = shipless.with_ships(sources, &report);
+        if let Some(previous) = &self.unit_models {
+            joined.inherit_convoys(previous);
+        }
+        let old = self.unit_models.replace(Arc::new(joined));
+        if let Some(dropper) = &self.dropper {
+            dropper.drop_later(old);
+        }
+        (self.ships_joined, self.unit_field_uploaded) = (Some(seq), false);
+    }
+
     // hours
     /// Whether the map can show `hour` of `branch` on the next frame: it is on
     /// screen or built and waiting.
@@ -144,7 +203,8 @@ impl Viewer {
     /// (`crate::hours`), and the frame that shows an hour only uploads it, all
     /// of its layers at once so no frame mixes two hours. Until the playhead's
     /// hour is built the scene keeps the hour it has; during playback it takes
-    /// the newest built hour on the way. A capture waits for the hour it names.
+    /// the newest built hour on the way. A capture waits for the hour it names
+    /// unless it is paced.
     pub(super) fn refresh_hour(
         &mut self,
         state: &eframe::egui_wgpu::RenderState,
@@ -167,6 +227,7 @@ impl Viewer {
             .as_ref()
             .is_none_or(|hours| !hours.serves(&document.content, &replay))
         {
+            let pool = self.worker_pool()?;
             self.hours = Some(match &self.shared_resources {
                 Some(resources) if self.dashboard_map => {
                     hours::Pipeline::shared(Arc::clone(&document.content), replay, resources)?
@@ -180,6 +241,7 @@ impl Viewer {
                 None => hours::Pipeline::with_map_binding(
                     Arc::clone(&document.content),
                     replay,
+                    &pool,
                     document.playback.map_binding(),
                 )?,
             });
@@ -217,10 +279,12 @@ impl Viewer {
             .options
             .playback_cost_end
             .map_or(ahead, |end| ahead.min(end.saturating_sub(playhead.hour)));
-        let wait = exact_capture_wait(
-            self.capture.as_ref().map(|capture| capture.remaining),
-            profiling(),
-        );
+        let paced = self.capture.as_ref().is_some_and(|capture| capture.paced);
+        let wait = !paced
+            && exact_capture_wait(
+                self.capture.as_ref().map(|capture| capture.remaining),
+                profiling(),
+            );
         let activation = grid_activation(
             hours::page_grid(),
             self.playing,
@@ -231,7 +295,7 @@ impl Viewer {
             ),
             self.capture.is_some(),
             wait,
-            self.profile_playback.wall_active(),
+            self.profile_playback.wall_active() || paced,
             self.speed,
         );
         let count = u32::try_from(ahead.saturating_add(1)).unwrap_or(0);
@@ -267,6 +331,7 @@ impl Viewer {
                 usable,
             }
         });
+        let movers = self.movers_layered();
         let want = hours::Want {
             branch: playhead.branch,
             hour: playhead.hour,
@@ -277,11 +342,28 @@ impl Viewer {
             map_mode: self.map_mode.clone(),
             diplomatic_selected: self.diplomatic_selected,
             show_allied_plans: self.graphics.show_allied_plans,
+            parts: self.playhead_map.as_ref().map(|side| hours::DrawnParts::of(side.drawn_parts())).unwrap_or_default(),
+            units_by_layers: self.playhead_map.as_ref().is_some_and(|side| side.draws("units")),
+            plans_by_layers: self.playhead_map.as_ref().is_some_and(|side| side.draws("orders")),
+            // The convoys' ships ride today's unit models while the units layer does not draw.
+            routes_by_layers: self.playhead_map.as_ref().is_some_and(|side| side.draws("convoys") && side.draws("units")),
+            by_layers: self.playhead_map.as_ref().map_or_else(Default::default, |side| hours::ByLayers { names: side.draws("names"), rails: side.draws("rails"), labels: side.draws("labels"), trains: side.draws("trains") }),
             counters: self.counter_view.clone(),
+            counter_kinds: self.counter_view.layered(),
             view,
             have: held_hours(self.ready.keys().copied(), shown, playhead.branch),
             received: 0,
             grid,
+            layered: self.playhead_map.as_ref().map_or_else(hours::Layered::default, |side| hours::Layered {
+                snow: side.draws("snow"),
+                intel: side.draws("intel"),
+                weather: side.draws("weather"),
+                radar: side.draws("radar"),
+                resource_icons: crate::layers::resource_icons::drawn(side).is_some(),
+                occupation_marks: crate::layers::occupation_marks::drawn(side).is_some(),
+                ships: movers.0,
+                aircraft: movers.1,
+            }),
         };
         // Everything this frame lets go of, freed off the frame path at its end.
         let mut retired = Retired::default();
@@ -391,7 +473,8 @@ impl Viewer {
         let layers = match layers {
             Ok(layers) => layers,
             Err(error) => {
-                if let Some(scene) = self.scene.as_mut() {
+                let layered_text = self.playhead_map.as_ref().is_some_and(|side| side.draws("map_text"));
+                if let Some(scene) = self.scene.as_mut().filter(|_| !layered_text) {
                     scene.apply(
                         &state.device,
                         &state.queue,
@@ -447,7 +530,9 @@ impl Viewer {
         );
         let unit_restart = presentation_unit_restart(previous, next, self.animation_seek);
         // Presentation history starts again with the trains and the weather.
-        if continuity == Continuity::Reset {
+        // With the playhead's map open its pictures reset the window's histories, not today's hours.
+        let histories = self.live_map().is_none();
+        if histories && continuity == Continuity::Reset {
             self.day_night = Default::default();
             self.counter_view
                 .presentation
@@ -458,7 +543,7 @@ impl Viewer {
         }
         // Audio follows the same continuity: a reset, or recreated units,
         // ends what sounds and does not count present events as fired.
-        if continuity == Continuity::Reset || unit_restart != UnitRestart::Keep {
+        if histories && (continuity == Continuity::Reset || unit_restart != UnitRestart::Keep) {
             self.audio_reset = true;
         }
         let hours::Layers {
@@ -486,8 +571,17 @@ impl Viewer {
             held,
         } = layers;
         retired.push(std::mem::replace(&mut self.uploaded.products, held));
+        // The units layer installs its own field while it draws the unit models.
+        let layered_units = self.playhead_map.as_ref().is_some_and(|side| side.draws("units"));
+        let units = self.join_hour_ships(units, layered_units);
+        // The aircraft layer hands its own plan to the scene while it draws it; an hour built while it
+        // did carries none, and the scene keeps the layer's last plan until one built without it.
+        let layered_aircraft = self.movers_layered.1;
+        let aircraft_refused = self.map_layer::<crate::layers::aircraft::Aircraft>().filter(|_| layered_aircraft).and_then(crate::layers::aircraft::Aircraft::refusal).map(|why| format!("aircraft: {why}"));
         self.music = music;
-        self.battles = battles;
+        if !self.playhead_map.as_ref().is_some_and(|side| side.draws("sounds")) {
+            self.battles = battles;
+        }
         let scene = self
             .scene
             .as_mut()
@@ -514,7 +608,8 @@ impl Viewer {
             .is_some_and(|previous| Arc::ptr_eq(previous, &units));
         let keep_movers =
             same_units && continuity == Continuity::Continue && unit_restart == UnitRestart::Keep;
-        if keep_movers {
+        // The trains layer hands its own plan to the scene while it draws them.
+        if keep_movers || self.playhead_map.as_ref().is_some_and(|side| side.draws("trains")) {
             retired.push(trains);
         } else {
             let replaced = scene
@@ -531,21 +626,22 @@ impl Viewer {
             retired.push(replaced);
         }
         laps.lap("trains_upload");
-        if keep_movers {
-            retired.push(aircraft);
-        } else {
-            let replaced = scene
-                .apply(
-                    &state.device,
-                    &state.queue,
-                    SceneInput::SetAircraft {
-                        assets: document.aircraft.clone(),
-                        plan: aircraft,
-                        continuity,
-                    },
-                )?
-                .into_aircraft();
-            retired.push(replaced);
+        match aircraft {
+            Some(plan) if !keep_movers && !layered_aircraft => {
+                let replaced = scene
+                    .apply(
+                        &state.device,
+                        &state.queue,
+                        SceneInput::SetAircraft {
+                            assets: document.aircraft.clone(),
+                            plan,
+                            continuity,
+                        },
+                    )?
+                    .into_aircraft();
+                retired.push(replaced);
+            }
+            unused => retired.push(unused),
         }
         laps.lap("aircraft_upload");
         if !keep_movers {
@@ -575,8 +671,9 @@ impl Viewer {
             }
         }
         // The unit field installs with the hour's other layers rather than on a later frame.
-        let unit_field = (!keep_movers).then(|| units.field(&document.unit_models));
-        let model_warnings = units.report.warnings();
+        let unit_field = (!keep_movers && !layered_units).then(|| units.field(&document.unit_models));
+        let mut model_warnings = units.report.warnings();
+        model_warnings.extend(aircraft_refused);
         retired.push(self.unit_models.replace(units));
         // The frame uploads the plan once, with this hour's air orders appended.
         if uploaded
@@ -589,7 +686,9 @@ impl Viewer {
         let plan_warnings = orders.report.warnings();
         retired.push(orders);
         laps.lap("orders_upload");
-        if keep_movers {
+        // With the playhead on, the weather layer installs the weather effects' field.
+        let weather_layered = self.playhead_map.as_ref().is_some_and(|side| side.draws("weather"));
+        if keep_movers || weather_layered {
             retired.push(effects);
         } else {
             let replaced = scene
@@ -624,30 +723,43 @@ impl Viewer {
                 .collect::<Vec<_>>()
         });
         let installs_units = unit_field.is_some();
-        let rails_changed = uploaded.rails != Some(rails.id);
+        // The rails layer uploads its own strips and bridges while it draws them.
+        let rails_changed = uploaded.rails != Some(rails.id) && !self.playhead_map.as_ref().is_some_and(|side| side.draws("rails"));
+        // The names layer prepares its own glyphs; the hour's empty part must not replace them.
+        let names_layered = self.playhead_map.as_ref().is_some_and(|side| side.draws("names"));
         // The plan installs with the hour's air orders as no hover highlights them; a hover the
         // frame finds uploads them again.
         let highlighted = overlay.air_ranges.shown(None).highlighted_bases.clone();
         let plan = uploaded.orders.clone();
+        // With the playhead on, the political layer draws the fill and borders; today's part
+        // gives it only the sea regions' naval attributes.
+        let layered = self.playhead_map.as_mut().is_some_and(|side| {
+            side.set_naval(&political.layers.regions.strategic_attributes);
+            side.draws("political")
+        });
+        // ... and the snow and mud and the fog of war's texture from their layers.
+        let (snow_layered, intel_layered) = self.playhead_map.as_ref().map_or((false, false), |side| (side.draws("snow"), side.draws("intel")));
+        // With the playhead on, the buildings layer installs the buildings and city damage.
+        let layered_buildings = self.playhead_map.as_ref().is_some_and(|side| side.draws("buildings"));
         // borders: the window has no demilitarised-zone override, so the zone is the
         // recorded one.
         scene.apply(
             &state.device,
             &state.queue,
             SceneInput::SetHourLayers(viewer_world::map::scene::HourLayers {
-                buildings: (uploaded.buildings != Some(buildings.id)).then(|| {
+                buildings: (!layered_buildings && uploaded.buildings != Some(buildings.id)).then(|| {
                     (
                         &document.map_buildings,
                         buildings.value.clone(),
                         passed.as_deref(),
                     )
                 }),
-                political: (uploaded.political != Some(political.id))
+                political: (!layered && uploaded.political != Some(political.id))
                     .then_some(&political.layers.regions),
-                border_plans: (uploaded.borders != Some(borders.id))
+                border_plans: (!layered && uploaded.borders != Some(borders.id))
                     .then_some((&borders.classes, &borders.highlighted)),
-                snow_mud: snow_changed.then_some((&snow_mud, continuity)),
-                fog: fog_changed.then_some((&intel.texels, intel.fog)),
+                snow_mud: (!snow_layered && snow_changed).then_some((&snow_mud, continuity)),
+                fog: (!intel_layered && fog_changed).then_some((&intel.texels, intel.fog)),
                 unit_models: unit_field
                     .map(|field| (&document.unit_models, field, self.options.window_dump)),
                 rails: rails_changed.then(|| {
@@ -661,7 +773,7 @@ impl Viewer {
                         bridges.clone(),
                     )
                 }),
-                names: Some(&names),
+                names: (!names_layered).then_some(&*names),
                 orders: plan.as_deref().map(|plan| {
                     (
                         &document.orders,
@@ -673,7 +785,7 @@ impl Viewer {
             }),
         )?;
         if let Some(plan) = plan {
-            uploaded.air_order_sources = Some((plan, Arc::clone(&overlay.air_orders), highlighted));
+            uploaded.order_key = Some(super::OrderKey { plan: super::order_at(Some(&plan)), raids: 0, routes: None, air: Some((super::order_at(Some(&overlay.air_orders)), highlighted)) });
         }
         uploaded.rails = Some(rails.id);
         uploaded.buildings = Some(buildings.id);
@@ -691,10 +803,15 @@ impl Viewer {
             self.raid_tick = Some(0.0);
         }
         laps.lap("hour_layers");
-        retired.push(self.placements.replace(names));
+        retired.push(hand_names(&mut self.placements, names, names_layered));
         self.placements_at = Some((branch, hour, self.map_mode.clone()));
         let counter_view = overlay.counter_view().clone();
-        retired.push(self.prepared_overlay.replace(overlay));
+        // With the playhead's map open the overlay and its tables are the ones made at the head.
+        if histories {
+            retired.push(self.prepared_overlay.replace(overlay));
+        } else {
+            retired.push(overlay);
+        }
         // The hours' nuclear impacts start their effects and their map events,
         // interpreted on the hour builders, become floating text and
         // explosions for the viewing country.
@@ -703,8 +820,20 @@ impl Viewer {
             height: document.assets.heightmap.height,
             values: document.assets.heightmap_texels(),
         };
+        let layered_strikes = self.playhead_map.as_ref().is_some_and(|side| side.draws("strikes"));
+        let layered_text = self.playhead_map.as_ref().is_some_and(|side| side.draws("map_text"));
+        let no_impacts = viewer_world::map::strike_effects::Impacts::default();
         match &raid_frame {
             _ if keep_movers => retired.push((impacts, map_text)),
+            // The map text layer presents the text; the scene's map event consumer is its alone.
+            crate::playback::Current::Frame(_) if layered_text => {
+                let presented = (impacts, map_text);
+                if !layered_strikes {
+                    let hours = presented_events(skipped.iter().flatten().map(|(_, events)| events), &presented, continuity);
+                    scene.set_nuclear_impacts(hours.into_iter().map(|(impacts, _)| &**impacts), continuity);
+                }
+            }
+            _ if layered_text => {}
             crate::playback::Current::Frame(_) => {
                 let presented = (impacts, map_text);
                 scene.apply(
@@ -719,7 +848,7 @@ impl Viewer {
                             continuity,
                         )
                         .into_iter()
-                        .map(|(impacts, map_text)| (&**impacts, &**map_text))
+                        .map(|(impacts, map_text)| (if layered_strikes { &no_impacts } else { &**impacts }, &**map_text))
                         .collect(),
                         continuity,
                         anchor: &|province: u32| document.content.counters.anchor(province, 0),
@@ -751,30 +880,37 @@ impl Viewer {
                 )?;
             }
         }
-        retired.push(self.overlay_tables.replace((
-            branch,
-            hour,
-            self.perspective.clone(),
-            overlay_tables,
-        )));
-        self.overlay_at = Some(OverlayKey {
-            occupation: counter_view.occupation,
-            branch,
-            hour,
-            camera: view.camera,
-            pixels: view.viewport,
-            ui_scale: view.ui_scale,
-            perspective: self.perspective.clone(),
-            counter_settings: counter_view.settings,
-            selected: counter_view.selected,
-            air_selected: counter_view.air_selected,
-            air_bases: counter_view.air_bases,
-            fleets_selected: counter_view.fleets_selected,
-            hovered: counter_view.hovered,
-            visibility: counter_view.visibility,
-            operatives: counter_view.operatives,
-        });
-        self.overlay_fraction = None;
+        if histories {
+            retired.push(self.overlay_tables.replace((
+                branch,
+                hour,
+                self.perspective.clone(),
+                overlay_tables,
+            )));
+            self.overlay_at = Some(OverlayKey {
+                occupation: counter_view.occupation,
+                branch,
+                hour,
+                camera: view.camera,
+                pixels: view.viewport,
+                ui_scale: view.ui_scale,
+                perspective: self.perspective.clone(),
+                counter_settings: counter_view.settings,
+                selected: counter_view.selected,
+                air_selected: counter_view.air_selected,
+                air_bases: counter_view.air_bases,
+                fleets_selected: counter_view.fleets_selected,
+                hovered: counter_view.hovered,
+                visibility: counter_view.visibility,
+                operatives: counter_view.operatives,
+                // The builder read the hour's frame; it stands for the rows at the head until they change.
+                rows: self.head_rows.shown().map(|rows| (rows.hour, Arc::as_ptr(&rows) as usize)),
+                layered: Default::default(),
+            });
+            self.overlay_fraction = None;
+        } else {
+            retired.push(overlay_tables);
+        }
         let shown = ShownHour {
             epoch,
             branch,
@@ -1163,9 +1299,37 @@ fn grid_feedback<T>(
     (installed, usable)
 }
 
+/// The names the window draws after an hour's install, and the names it lets go: the hour's,
+/// unless the names layer draws them (it prepares its own, and the scene was not given the hour's).
+fn hand_names(held: &mut Option<Arc<viewer_foundation::map::name_draw::Placements>>, hour: Arc<viewer_foundation::map::name_draw::Placements>, layered: bool) -> Option<Arc<viewer_foundation::map::name_draw::Placements>> {
+    if layered {
+        return Some(hour);
+    }
+    viewer_foundation::view_record::add("names window", "taken_from_hour", 1);
+    held.replace(hour)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// While the names layer draws the names, an hour's install leaves the window the layer's: the
+    /// hour's part is empty and was not given to the scene, and drawn it would be prepared over the
+    /// layer's, which the next frame then hands back unprepared (the factions flight's refusal).
+    /// Without the layer, the hour's names are drawn as before.
+    #[test]
+    fn an_hours_install_leaves_the_window_the_names_layers_names_while_it_draws_them() {
+        use viewer_foundation::map::name_draw::Placements;
+        let layer = Arc::new(Placements { generation: 7, ..Placements::default() });
+        let hour = Arc::new(Placements { generation: 8, ..Placements::default() });
+        let mut held = Some(Arc::clone(&layer));
+        let retired = hand_names(&mut held, Arc::clone(&hour), true);
+        assert!(held.as_ref().is_some_and(|held| Arc::ptr_eq(held, &layer)), "the layer's names stay the window's");
+        assert!(retired.is_some_and(|retired| Arc::ptr_eq(&retired, &hour)), "the hour's names are let go");
+        let retired = hand_names(&mut held, Arc::clone(&hour), false);
+        assert!(held.as_ref().is_some_and(|held| Arc::ptr_eq(held, &hour)), "without the layer the hour's names are drawn");
+        assert!(retired.is_some_and(|retired| Arc::ptr_eq(&retired, &layer)));
+    }
     use viewer_world::map::strike_effects::{Impact, Impacts};
 
     fn check_poll_cleanup(poll: impl FnOnce() -> std::io::Result<()>) -> std::io::Result<()> {

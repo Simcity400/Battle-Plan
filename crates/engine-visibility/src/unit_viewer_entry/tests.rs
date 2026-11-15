@@ -317,26 +317,13 @@ fn railway_gun_viewer_entries_follow_country_and_unit_roster_order() {
     }];
     let mut shared = vec![Row::default(); 7];
     assert_eq!(
-        walk_with_divisions(
-            &memory,
-            0,
-            BASE,
-            &mut shared,
-            Some(DivisionSources {
+        walk_with_divisions_buffer(&memory, 0, BASE, crate::walk::Buffer::Growing(&mut shared), Some(DivisionSources {
                 entries: &sources,
                 outcome: Outcome::Rows { len: 1 }
-            })
-        ),
+            })),
         outcome
     );
     assert_eq!(shared, rows);
-    assert_eq!(
-        walked(&bytes, 3).0,
-        Outcome::Truncated {
-            len: 3,
-            unread_rows: 4
-        }
-    );
 }
 
 #[test]
@@ -413,19 +400,16 @@ fn native_order_nonpositive_levels_and_full_handles_survive() {
 }
 
 #[test]
-fn capacity_truncates_without_reading_fewer_units() {
-    let (outcome, rows) = walked(&fixture(), 1);
+fn the_count_probe_counts_every_unit() {
     assert_eq!(
-        outcome,
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 1
-        }
-    );
-    assert_eq!(rows[0].ordinal, 0);
-    let (outcome, _) = walked(&fixture(), 0);
-    assert_eq!(
-        outcome,
+        count(
+            &SliceMemory {
+                base: BASE,
+                bytes: &fixture()
+            },
+            0,
+            BASE
+        ),
         Outcome::Truncated {
             len: 0,
             unread_rows: 2
@@ -532,16 +516,10 @@ fn shared_division_census_avoids_roster_reads_and_keeps_bounds_and_faults() {
         let mut expected = vec![Row::default(); capacity];
         let expected_outcome = walk(&direct, 0, BASE, &mut expected);
         let mut output = vec![Row::default(); capacity];
-        let result = walk_with_divisions(
-            &memory,
-            0,
-            BASE,
-            &mut output,
-            Some(DivisionSources {
+        let result = walk_with_divisions_buffer(&memory, 0, BASE, crate::walk::Buffer::Growing(&mut output), Some(DivisionSources {
                 entries: &entries,
                 outcome: Outcome::Rows { len: 1 },
-            }),
-        );
+            }));
         assert_eq!(result, expected_outcome);
         assert_eq!(output, expected);
     }
@@ -562,33 +540,21 @@ fn shared_division_census_avoids_roster_reads_and_keeps_bounds_and_faults() {
         ),
     ] {
         assert_eq!(
-            walk_with_divisions(
-                &memory,
-                0,
-                BASE,
-                &mut [Row::default(); 4],
-                Some(DivisionSources {
+            walk_with_divisions_buffer(&memory, 0, BASE, crate::walk::Buffer::Growing(&mut vec![Row::default(); 4]), Some(DivisionSources {
                     entries: &[entry],
                     outcome: Outcome::Rows { len: 1 }
-                })
-            ),
+                })),
             Outcome::Unavailable { reason }
         );
     }
     assert_eq!(
-        walk_with_divisions(
-            &memory,
-            0,
-            BASE,
-            &mut [],
-            Some(DivisionSources {
+        walk_with_divisions_buffer(&memory, 0, BASE, crate::walk::Buffer::Count, Some(DivisionSources {
                 entries: &entries,
                 outcome: Outcome::Truncated {
                     len: 1,
                     unread_rows: 1
                 }
-            })
-        ),
+            })),
         Outcome::Unavailable {
             reason: "shared division census incomplete"
         }
@@ -642,19 +608,13 @@ fn shared_division_viewer_entries_are_hinted_before_their_reads() {
             hints,
         };
         let mut output = vec![Row::default(); 8];
-        let outcome = walk_with_divisions(
-            &memory,
-            0,
-            BASE,
-            &mut output,
-            Some(DivisionSources {
+        let outcome = walk_with_divisions_buffer(&memory, 0, BASE, crate::walk::Buffer::Growing(&mut output), Some(DivisionSources {
                 entries: &[DivisionSource {
                     pointer: DIVISION,
                     canonical: 1,
                 }],
                 outcome: Outcome::Rows { len: 1 },
-            }),
-        );
+            }));
         (outcome, output, memory.log.into_inner())
     };
     let (outcome, rows, log) = run(true);
@@ -678,7 +638,7 @@ fn shared_division_viewer_entries_are_hinted_before_their_reads() {
 }
 
 #[test]
-fn shared_division_batches_preserve_entry_fault_after_capacity_and_partial_headers() {
+fn shared_division_batches_preserve_entry_fault_after_growth_and_partial_headers() {
     struct Fault<'a> {
         bytes: &'a [u8],
         address: usize,
@@ -704,22 +664,13 @@ fn shared_division_batches_preserve_entry_fault_after_capacity_and_partial_heade
         entries: &entries,
         outcome: Outcome::Rows { len: entries.len() },
     };
-    let mut output = [Row::default(); 1];
+    let mut output = vec![Row::default(); 1];
     assert_eq!(
-        walk_with_divisions(
-            &SliceMemory {
+        walk_with_divisions_buffer(&SliceMemory {
                 base: BASE,
                 bytes: &bytes
-            },
-            0,
-            BASE,
-            &mut output,
-            Some(sources)
-        ),
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 129
-        }
+            }, 0, BASE, crate::walk::Buffer::Growing(&mut output), Some(sources)),
+        Outcome::Rows { len: 130 }
     );
     for (address, reason) in [
         (DIVISION, "unit vtable mismatch or identity unreadable"),
@@ -734,16 +685,10 @@ fn shared_division_batches_preserve_entry_fault_after_capacity_and_partial_heade
         (ENTRIES + STRIDE, "unit viewer entry block unreadable"),
     ] {
         assert_eq!(
-            walk_with_divisions(
-                &Fault {
+            walk_with_divisions_buffer(&Fault {
                     bytes: &bytes,
                     address
-                },
-                0,
-                BASE,
-                &mut [],
-                Some(sources)
-            ),
+                }, 0, BASE, crate::walk::Buffer::Count, Some(sources)),
             Outcome::Unavailable { reason }
         );
     }
@@ -815,16 +760,10 @@ fn batched_and_serial(
     rows: usize,
 ) -> [(Outcome, Vec<Row>); 2] {
     let mut batched = vec![Row::default(); rows];
-    let new = walk_with_divisions(
-        memory,
-        0,
-        BASE,
-        &mut batched,
-        Some(DivisionSources {
+    let new = walk_with_divisions_buffer(memory, 0, BASE, crate::walk::Buffer::Growing(&mut batched), Some(DivisionSources {
             entries: sources,
             outcome: Outcome::Rows { len: sources.len() },
-        }),
-    );
+        }));
     let mut serial = vec![Row::default(); rows];
     let reader = Reader {
         memory: serial_memory,
@@ -840,7 +779,7 @@ fn batched_and_serial(
             reader.unit(
                 source.pointer,
                 carmy::VTABLE_RVA,
-                &mut Buffer::Fixed(&mut serial),
+                &mut Buffer::Growing(&mut serial),
                 &mut counter,
             )
         })
@@ -868,28 +807,13 @@ fn batched_first_blocks_match_the_serial_walk() {
     let [batched, serial] = batched_and_serial(&memory, &memory, &sources, rows);
     assert_eq!(batched.0, Outcome::Rows { len: rows });
     assert_eq!(batched, serial);
-    let [batched, serial] = batched_and_serial(&memory, &memory, &sources, rows - 50);
-    assert_eq!(batched, serial);
-    assert!(matches!(
-        batched.0,
-        Outcome::Truncated {
-            unread_rows: 50,
-            ..
-        }
-    ));
     let counted = CountedMemory::new(memory);
     let prior = ReadCounts::take_current();
     let mut output = vec![Row::default(); rows];
-    walk_with_divisions(
-        &counted,
-        0,
-        BASE,
-        &mut output,
-        Some(DivisionSources {
+    walk_with_divisions_buffer(&counted, 0, BASE, crate::walk::Buffer::Growing(&mut output), Some(DivisionSources {
             entries: &sources,
             outcome: Outcome::Rows { len: COUNT },
-        }),
-    );
+        }));
     let reads = ReadCounts::take_current();
     prior.add_current();
     let later_blocks = (0..COUNT).filter(|i| i % 40 > ENTRY_BATCH).count() as u64;

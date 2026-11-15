@@ -1,7 +1,8 @@
 import { contentTitle } from '../../dashboard/contentTitles.ts';
-import type { ResearchEntry, ResearchSlotHistory, ResearchSlotState } from '../../generated/dashboard';
+import type { ResearchSlotHistory } from './types';
 import { researchRateAt } from './researchData.ts';
 import { HOUR_EPOCH } from '../../dashboard/calendar.ts';
+import type { ResearchEntry, ResearchSlotState } from '../../generated/dashboard';
 
 export interface ResearchPeriod {
   firstHour: number;

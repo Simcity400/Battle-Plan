@@ -1,7 +1,7 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
-import type { EventFeedKind } from '../../generated/dashboard';
 import type { OptionField } from '../../dashboard/options';
 import { LOG_OPTIONS } from '../../charts/log/logOptions.ts';
+import type { EventFeedKind } from '../../generated/dashboard';
 
 /** The event kinds a card can open with: each a toggle and a filter chip. */
 export const EVENT_KINDS: readonly { value: string; label: string; kind: EventFeedKind }[] = [

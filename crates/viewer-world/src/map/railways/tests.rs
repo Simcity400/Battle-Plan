@@ -391,6 +391,8 @@ fn height_is_bilinear_at_the_center_with_the_native_half_pixel_offset() {
 #[test]
 fn rail_geometry_install_without_prepared_bank_preserves_bytes_and_runs_across_hours() {
     use viewer_foundation::map::test_support::gpu;
+    let strip_count = |geometry: &PreparedRailGeometry| geometry.strips.as_ref().map(|(_, count)| *count);
+    let joined = |runs: &[std::ops::Range<u32>]| (!runs.is_empty()).then(|| strip_indices(runs).len() as u32);
     let (_serial, device, queue) = gpu::device();
     fn bytes(
         device: &wgpu::Device,
@@ -398,7 +400,7 @@ fn rail_geometry_install_without_prepared_bank_preserves_bytes_and_runs_across_h
         geometry: &PreparedRailGeometry,
     ) -> Vec<u8> {
         let Some(vertices) = &geometry.native_vertices else {
-            assert!(geometry.native_runs.is_empty());
+            assert!(geometry.strips.is_none());
             return Vec::new();
         };
         let read = device.create_buffer(&wgpu::BufferDescriptor {
@@ -456,7 +458,7 @@ fn rail_geometry_install_without_prepared_bank_preserves_bytes_and_runs_across_h
             previous,
             "retired hour {hour}"
         );
-        assert_eq!(retired.native_runs, previous_runs, "retired runs {hour}");
+        assert_eq!(strip_count(&retired), joined(&previous_runs), "retired runs {hour}");
         let expected: &[u8] = bytemuck::cast_slice(&mesh.native_vertices);
         let actual = bytes(&device, &queue, &adopted);
         assert_eq!(actual, expected, "prepared bytes hour {hour}");
@@ -465,14 +467,8 @@ fn rail_geometry_install_without_prepared_bank_preserves_bytes_and_runs_across_h
             expected,
             "unprepared-hour install bytes hour {hour}"
         );
-        assert_eq!(
-            adopted.native_runs, mesh.native_runs,
-            "run order hour {hour}"
-        );
-        assert_eq!(
-            fallback.native_runs, mesh.native_runs,
-            "unprepared-hour install run order {hour}"
-        );
+        assert_eq!(strip_count(&adopted), joined(&mesh.native_runs), "runs hour {hour}");
+        assert_eq!(strip_count(&fallback), joined(&mesh.native_runs), "unprepared-hour install runs {hour}");
         previous = actual;
         previous_runs = mesh.native_runs;
     }
@@ -723,4 +719,15 @@ fn construction_keeps_immutable_heights_and_rejects_a_different_height_owner() {
             .zip(&next.runs)
             .all(|(new, old)| Arc::ptr_eq(&new.vertices, &old.vertices))
     );
+}
+
+#[test]
+fn every_strip_is_joined_in_order_and_closed_by_the_restart_index() {
+    let runs = [0..3, 5..9, 9..10];
+    assert_eq!(
+        strip_indices(&runs),
+        [0, 1, 2, u32::MAX, 5, 6, 7, 8, u32::MAX, 9, u32::MAX],
+        "each run's vertices in order, so each draws as the strip one call of it drew"
+    );
+    assert!(strip_indices(&[]).is_empty());
 }

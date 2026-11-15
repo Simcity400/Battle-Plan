@@ -347,7 +347,7 @@ pub struct RouteWorld<'a> {
 /// One division's movement this hour, as every map layer that places it reads it: the counter
 /// (the host counter renderer) and the close-zoom figure (the host unit figures) take the same stack
 /// kind and route so a counter and its figure never disagree.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct DivisionRoute {
     /// The animator's display route (`DivisionMovement.alternate_path` when nonempty, else
     /// `path`); `path[0]` is the next hop. Empty when content cannot place the route.
@@ -431,11 +431,102 @@ struct Placed {
     path: Vec<u32>,
     alternate_total: u32,
     alternate_path: Vec<u32>,
-    stack_kind: u32,
-    display: Vec<u32>,
-    kind_resolved: bool,
-    skipped: usize,
-    unresolved: bool,
+    placement: Placement,
+}
+
+/// A division's route placed on the content from `province`: its stack kind, the display route the
+/// content can place (empty when it cannot), whether the kind is the native one, the hops the
+/// polyline skips, and whether a moving route could not be placed.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Placement {
+    pub stack_kind: u32,
+    pub display: Vec<u32>,
+    pub kind_resolved: bool,
+    pub skipped: usize,
+    pub unresolved: bool,
+}
+
+impl UnitRoute<'_> {
+    /// Where this route stands from `province` on `map`; `anchor` is a province's standstill
+    /// anchor.
+    pub fn place(
+        &self,
+        province: u32,
+        map: Option<&MovementMap>,
+        anchor: &dyn Fn(u32) -> Option<[f32; 3]>,
+    ) -> Placement {
+        let mut placement = self.resolve(province, map, anchor);
+        if let Some(map) = map.filter(|_| !placement.display.is_empty()) {
+            placement.skipped = walk_route(map, province, &placement.display, anchor).skipped;
+        }
+        placement
+    }
+
+    /// [`Self::place`] without walking the route: the hops its polyline skips are not counted.
+    pub fn resolve(
+        &self,
+        province: u32,
+        map: Option<&MovementMap>,
+        anchor: &dyn Fn(u32) -> Option<[f32; 3]>,
+    ) -> Placement {
+        let resolved = map.and_then(|map| self.stack_kind(province, map, anchor));
+        match (map, resolved) {
+            (Some(_), Some(kind)) => Placement {
+                stack_kind: kind,
+                display: self.display_path().to_vec(),
+                kind_resolved: true,
+                skipped: 0,
+                unresolved: false,
+            },
+            _ => Placement {
+                // An unplaceable route stands still on its province; the
+                // stand-off kinds need no geometry.
+                stack_kind: stack_kind(StackKindInputs {
+                    combat_role: self.combat_role,
+                    ..Default::default()
+                }),
+                display: Vec::new(),
+                // Defending in its first combat is kind 10 whatever the
+                // route, so only that fallback is native.
+                kind_resolved: self.combat_role == 2,
+                skipped: 0,
+                unresolved: !self.display_path().is_empty(),
+            },
+        }
+    }
+}
+
+impl DivisionRoute {
+    /// The route a division with movement `route`, retreating when `retreat`, takes once
+    /// `placement` placed it.
+    pub fn placed(
+        route: &UnitRoute<'_>,
+        retreat: bool,
+        eta: Option<(i64, i64)>,
+        placement: &Placement,
+    ) -> Self {
+        Self::of_placement(route, retreat, eta, placement.clone())
+    }
+
+    /// [`Self::placed`], taking the placement's display route.
+    pub fn of_placement(
+        route: &UnitRoute<'_>,
+        retreat: bool,
+        eta: Option<(i64, i64)>,
+        placement: Placement,
+    ) -> Self {
+        Self {
+            path: placement.display,
+            eta,
+            naval_transfer: route.naval_transfer,
+            retreat,
+            combat_role: route.combat_role,
+            combat_count: route.combat_count,
+            stack_kind: placement.stack_kind,
+            kind_resolved: placement.kind_resolved,
+            idle: crate::map::unit_rules::idle(route.path_total, route.combat_count),
+        }
+    }
 }
 
 impl Placed {
@@ -445,27 +536,7 @@ impl Placed {
         map: Option<&MovementMap>,
         anchor: &dyn Fn(u32) -> Option<[f32; 3]>,
     ) -> Self {
-        let route = UnitRoute::division(row);
-        let resolved = map.and_then(|map| route.stack_kind(province, map, anchor));
-        let (stack_kind, display, kind_resolved, skipped, unresolved) = match (map, resolved) {
-            (Some(map), Some(kind)) => {
-                let path = route.display_path();
-                let skipped = walk_route(map, province, path, anchor).skipped;
-                (kind, path.to_vec(), true, skipped, false)
-            }
-            _ => {
-                // An unplaceable route stands still on its province; the
-                // stand-off kinds need no geometry.
-                let kind = stack_kind(StackKindInputs {
-                    combat_role: row.combat_role,
-                    ..Default::default()
-                });
-                // Defending in its first combat is kind 10 whatever the
-                // route, so only that fallback is native.
-                let unresolved = !route.display_path().is_empty();
-                (kind, Vec::new(), row.combat_role == 2, 0, unresolved)
-            }
-        };
+        let placement = UnitRoute::division(row).place(province, map, anchor);
         Self {
             province,
             combat_role: row.combat_role,
@@ -477,11 +548,7 @@ impl Placed {
             path: row.path.clone(),
             alternate_total: row.alternate_total,
             alternate_path: row.alternate_path.clone(),
-            stack_kind,
-            display,
-            kind_resolved,
-            skipped,
-            unresolved,
+            placement,
         }
     }
 
@@ -523,7 +590,45 @@ impl std::fmt::Debug for RouteMemo {
     }
 }
 
+impl RouteMemo {
+    /// Drops the kept placements of divisions `live` no longer names (no movement row this hour),
+    /// once they number more than twice the hour's movement rows (`rows`): a sweep by what the
+    /// hour holds, never a bound on how many are kept.
+    pub fn sweep(&self, rows: usize, live: impl Fn(&u64) -> bool) {
+        let mut placed = self.placed.lock().unwrap_or_else(|error| error.into_inner());
+        if placed.len() > rows.saturating_mul(2) {
+            placed.retain(|division, _| live(division));
+        }
+    }
+}
+
 impl DivisionRoutes {
+    /// One division's route as [`Self::read_kept`] places it: its kept placement while
+    /// [`Placed::reads`] holds, else placed anew and kept, with its estimate `eta`. For a caller
+    /// that reads a few divisions; the memo is locked only to look and to keep.
+    pub fn route_of(
+        row: &replay_data::rows::DivisionMovementRow,
+        province: u32,
+        eta: Option<(i64, i64)>,
+        map: Option<&MovementMap>,
+        anchor: &dyn Fn(u32) -> Option<[f32; 3]>,
+        memo: &RouteMemo,
+    ) -> DivisionRoute {
+        let kept = memo
+            .placed
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(&row.division)
+            .filter(|kept| kept.reads(row, province))
+            .cloned();
+        let route = kept.unwrap_or_else(|| {
+            let placed = Arc::new(Placed::new(row, province, map, anchor));
+            memo.placed.lock().unwrap_or_else(|error| error.into_inner()).insert(row.division, Arc::clone(&placed));
+            placed
+        });
+        DivisionRoute::placed(&UnitRoute::division(row), row.retreat != 0, eta, &route.placement)
+    }
+
     /// `anchor` is a province's `Standstill` anchor: a route through a province
     /// without one is not placed.
     pub fn read(
@@ -603,21 +708,16 @@ impl DivisionRoutes {
                 Some(kept) => Arc::clone(kept),
                 None => Arc::new(Placed::new(row, province, map, anchor)),
             };
-            out.skipped_hops += route.skipped;
-            out.unresolved += usize::from(route.unresolved);
+            out.skipped_hops += route.placement.skipped;
+            out.unresolved += usize::from(route.placement.unresolved);
             by_division.insert(
                 row.division,
-                DivisionRoute {
-                    path: route.display.clone(),
-                    eta: etas.get(row.division),
-                    naval_transfer: row.naval_transfer != 0,
-                    retreat: row.retreat != 0,
-                    combat_role: row.combat_role,
-                    combat_count: row.combat_count,
-                    stack_kind: route.stack_kind,
-                    kind_resolved: route.kind_resolved,
-                    idle: crate::map::unit_rules::idle(row.path_total, row.combat_count),
-                },
+                DivisionRoute::placed(
+                    &UnitRoute::division(row),
+                    row.retreat != 0,
+                    etas.get(row.division),
+                    &route.placement,
+                ),
             );
             if memo.is_some() {
                 placed.insert(row.division, route);
@@ -1331,6 +1431,8 @@ pub struct MovementHistory {
     /// The provinces this frame updates in view, one bit per province id.
     in_view: Vec<u64>,
     units: BTreeMap<Unit, Moving>,
+    /// The largest glide of a unit this frame, while the flight record is kept ([`note_glide`]).
+    largest_glide: f32,
 }
 
 #[derive(Debug)]
@@ -1347,6 +1449,11 @@ struct Moving {
     advanced: u64,
     /// The hour a layer last placed it.
     hour: i32,
+    /// Where it was drawn at the last frame the flight record checked it, and that frame.
+    drawn_at: Option<[f32; 3]>,
+    checked: u64,
+    /// The game rebuilt it onto its route since that frame: a snap of the game's own.
+    rebuilt: bool,
 }
 
 impl Moving {
@@ -1360,6 +1467,9 @@ impl Moving {
             deadline: None,
             advanced: 0,
             hour,
+            drawn_at: None,
+            checked: 0,
+            rebuilt: false,
         }
     }
 
@@ -1368,6 +1478,7 @@ impl Moving {
         self.arc = 0.0;
         self.arriving = false;
         self.deadline = None;
+        self.rebuilt = true;
     }
 
     /// This hour's route: it continues the drawn route, glides along it into the next province,
@@ -1410,6 +1521,33 @@ impl Moving {
     }
 }
 
+/// The flight record's check of one drawn unit against the frame before: how far it moved on the
+/// map, and whether that is more than its animator's free arc advanced this frame (`step`, its
+/// speed times the render delta). A chord is never longer than its arc, so a glide moves at most
+/// `step`; a rebuild is the game's own snap onto a new route and is counted apart.
+fn note_glide(state: &mut Moving, now: [f32; 3], step: f32, largest: &mut f32) {
+    use crate::view_record::{add, set};
+    let rebuilt = std::mem::take(&mut state.rebuilt);
+    let Some(was) = state.drawn_at.replace(now) else {
+        return;
+    };
+    let moved = (now[0] - was[0]).hypot(now[2] - was[2]);
+    if moved > 0.0 {
+        add("overlay", "counters_moved", 1);
+    }
+    *largest = largest.max(moved);
+    set("overlay", "largest_glide_milli", (*largest * 1000.0) as u64);
+    if rebuilt {
+        add("overlay", "counter_rebuilds", 1);
+    } else if moved > step + GLIDE_SLACK {
+        add("overlay", "jumps", 1);
+        add("overlay", "counter_jumps", 1);
+    }
+}
+
+/// Float rounding of a drawn point, in world units.
+const GLIDE_SLACK: f32 = 1e-3;
+
 /// The game's zero-based day of a replay hour.
 fn game_day(hour: i32) -> i64 {
     (i64::from(hour) - 43_800_000) / 24
@@ -1432,6 +1570,7 @@ impl MovementHistory {
             }
             self.in_view[word] |= 1 << (province % 64);
         }
+        self.largest_glide = 0.0;
         let frame_time = previous.map_or(0.0, |previous| (frame.time - previous.time).max(0.0));
         self.delta = self.render.step(frame_time);
         if frame.steady
@@ -1476,9 +1615,18 @@ impl MovementHistory {
             return None;
         }
         if input.snapped {
+            if crate::view_record::on() {
+                state.drawn_at = None;
+                crate::view_record::add("overlay", "counter_snaps", 1);
+            }
             return None;
         }
         let drawn = state.shown.drawn(state.arc)?;
+        if crate::view_record::on() && state.checked != self.frames {
+            state.checked = self.frames;
+            let step = self.delta * state.current.speed(frame.speeds);
+            note_glide(state, drawn.motion.position(), step, &mut self.largest_glide);
+        }
         let settled = position.motion.map(|motion| Drawn {
             motion,
             scale: input.scale(SETTLED_ARC),

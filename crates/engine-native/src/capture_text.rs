@@ -165,7 +165,7 @@ impl Owned {
         let mut value = Self::default();
         // String consumers use exact stored lengths. Grow only after successful
         // payload chunks, preserving the original terminator gate.
-        msvc_string::copy_growing_with_policy::<TERMINAL>(
+        msvc_string::copy_with_policy::<TERMINAL>(
             memory,
             source,
             len,

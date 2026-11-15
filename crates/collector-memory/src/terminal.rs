@@ -322,7 +322,8 @@ fn freeze_outstanding(head: *mut OutstandingSlot) {
 }
 
 thread_local! {
-    static PHASE: Cell<Phase> = const { Cell::new(Phase::Bootstrap) };
+    // None until the thread enters a phase: it reports Unphased, and no injection counts it.
+    static PHASE: Cell<Option<Phase>> = const { Cell::new(None) };
     static CONTEXT: Cell<Context> = const { Cell::new(Context {
         campaign_id: None, branch: None, load_signal: None, failed_hour: None,
     }) };
@@ -414,18 +415,20 @@ fn write_details(record: &TerminalWitness) {
     }
 }
 
-pub struct Scope(Phase);
+pub struct Scope(Option<Phase>);
 impl Drop for Scope {
+    #[inline]
     fn drop(&mut self) {
         PHASE.set(self.0);
         #[cfg(any(test, feature = "test-support"))]
-        crate::test_support::phase_enter(self.0 as u8);
+        crate::test_support::phase_enter(self.0.unwrap_or(Phase::Unphased) as u8);
     }
 }
+#[inline]
 pub fn enter(phase: Phase) -> Scope {
     #[cfg(any(test, feature = "test-support"))]
     crate::test_support::phase_enter(phase as u8);
-    Scope(PHASE.replace(phase))
+    Scope(PHASE.replace(Some(phase)))
 }
 pub fn set_context(context: Context) {
     CONTEXT.set(context);
@@ -1017,22 +1020,39 @@ pub fn io(error: io::Error) -> io::Error {
 #[cfg(feature = "alloc-fault-injection")]
 mod injection {
     use super::*;
-    static PHASE: AtomicU32 = AtomicU32::new(0);
+    static PHASES: AtomicU32 = AtomicU32::new(0);
     static ORDINAL: AtomicU64 = AtomicU64::new(0);
     static COUNT: AtomicU64 = AtomicU64::new(0);
     static HOURS: AtomicU64 = AtomicU64::new(0);
     static AFTER_HOURS: AtomicU64 = AtomicU64::new(0);
-    pub(super) fn configure(phase: super::Phase, ordinal: u64, after_hours: u64) {
-        PHASE.store(phase as u32, Ordering::Relaxed);
+    #[cfg(any(test, feature = "test-support"))]
+    static OBSERVER: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
+    pub(super) fn configure(phases: &[super::Phase], ordinal: u64, after_hours: u64) {
+        let mask = phases.iter().fold(0, |mask, phase| mask | (1 << *phase as u32));
+        PHASES.store(mask, Ordering::Relaxed);
         ORDINAL.store(ordinal, Ordering::Relaxed);
         COUNT.store(0, Ordering::Relaxed);
         HOURS.store(0, Ordering::Relaxed);
         AFTER_HOURS.store(after_hours, Ordering::Relaxed);
     }
     pub(super) fn should_fail() -> bool {
-        HOURS.load(Ordering::Relaxed) >= AFTER_HOURS.load(Ordering::Relaxed)
-            && PHASE.load(Ordering::Relaxed) == super::PHASE.get() as u32
-            && COUNT.fetch_add(1, Ordering::Relaxed) + 1 == ORDINAL.load(Ordering::Relaxed)
+        if HOURS.load(Ordering::Relaxed) < AFTER_HOURS.load(Ordering::Relaxed)
+            || !super::PHASE
+                .get()
+                .is_some_and(|phase| PHASES.load(Ordering::Relaxed) & (1 << phase as u32) != 0)
+        {
+            return false;
+        }
+        let ordinal = COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            let observer = OBSERVER.load(Ordering::Acquire);
+            if !observer.is_null() {
+                // Only observe_counted stores this function pointer.
+                unsafe { std::mem::transmute::<*mut (), fn()>(observer)() };
+            }
+        }
+        ordinal == ORDINAL.load(Ordering::Relaxed)
     }
     pub(super) fn committed_hour() {
         HOURS.fetch_add(1, Ordering::Relaxed);
@@ -1040,6 +1060,13 @@ mod injection {
     #[cfg(any(test, feature = "test-support"))]
     pub(super) fn count() -> u64 {
         COUNT.load(Ordering::Relaxed)
+    }
+    #[cfg(any(test, feature = "test-support"))]
+    pub(super) fn observe(observer: Option<fn()>) {
+        OBSERVER.store(
+            observer.map_or(std::ptr::null_mut(), |observer| observer as *mut ()),
+            Ordering::Release,
+        );
     }
 }
 #[inline]
@@ -1055,11 +1082,16 @@ pub fn should_fail() -> bool {
 }
 #[cfg(all(any(test, feature = "test-support"), feature = "alloc-fault-injection"))]
 pub fn inject(phase: Phase, ordinal: u64) {
-    injection::configure(phase, ordinal, 0);
+    injection::configure(&[phase], ordinal, 0);
+}
+/// Counts and refuses the allocations of every phase in `phases` as one sequence.
+#[cfg(all(any(test, feature = "test-support"), feature = "alloc-fault-injection"))]
+pub fn inject_any(phases: &[Phase], ordinal: u64) {
+    injection::configure(phases, ordinal, 0);
 }
 #[cfg(feature = "alloc-fault-injection")]
 pub fn inject_after(phase: Phase, ordinal: u64, after_hours: u64) {
-    injection::configure(phase, ordinal, after_hours);
+    injection::configure(&[phase], ordinal, after_hours);
 }
 #[cfg(feature = "alloc-fault-injection")]
 pub fn committed_hour() {
@@ -1068,6 +1100,11 @@ pub fn committed_hour() {
 #[cfg(all(any(test, feature = "test-support"), feature = "alloc-fault-injection"))]
 pub fn allocation_count() -> u64 {
     injection::count()
+}
+/// Calls `observer` on the counting thread at every attempt the injected phases count.
+#[cfg(all(any(test, feature = "test-support"), feature = "alloc-fault-injection"))]
+pub fn observe_counted(observer: Option<fn()>) {
+    injection::observe(observer);
 }
 #[cfg(any(test, feature = "test-support"))]
 pub fn reset() {
@@ -1096,7 +1133,7 @@ pub fn reset() {
 }
 
 pub fn phase() -> Phase {
-    PHASE.get()
+    PHASE.get().unwrap_or(Phase::Unphased)
 }
 
 #[cfg(test)]
@@ -1491,5 +1528,31 @@ mod tests {
 
         reset();
         engine_allocation::set_hooks(None, None);
+    }
+
+    /// A thread that never entered a phase reports Unphased, never Bootstrap, and a Bootstrap
+    /// sweep counts, observes and refuses only the allocations of threads inside Bootstrap.
+    #[cfg(feature = "alloc-fault-injection")]
+    #[test]
+    fn an_injected_phase_counts_only_threads_that_entered_it() {
+        static OBSERVED: AtomicUsize = AtomicUsize::new(0);
+        inject(Phase::Bootstrap, 1);
+        observe_counted(Some(|| {
+            OBSERVED.fetch_add(1, Ordering::Relaxed);
+        }));
+        std::thread::spawn(|| {
+            assert_eq!(phase(), Phase::Unphased);
+            assert!(!should_fail(), "an unphased thread is refused");
+        })
+        .join()
+        .unwrap();
+        assert_eq!(allocation_count(), 0);
+        assert_eq!(OBSERVED.load(Ordering::Relaxed), 0);
+        let _bootstrap = enter(Phase::Bootstrap);
+        assert!(should_fail());
+        assert!(!should_fail());
+        observe_counted(None);
+        assert_eq!(allocation_count(), 2);
+        assert_eq!(OBSERVED.load(Ordering::Relaxed), 2);
     }
 }

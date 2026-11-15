@@ -311,42 +311,6 @@ impl HourStore {
     }
 }
 
-/// The builders' in-flight width over one pool. Each view with hours to build takes an even
-/// share, at least one hour, so N views keep one pool's worth in flight, not N.
-pub(crate) struct Width {
-    total: usize,
-    busy: AtomicU64,
-}
-
-impl Width {
-    pub(super) fn new(total: usize) -> Arc<Self> {
-        Arc::new(Self {
-            total: total.max(1),
-            busy: AtomicU64::new(0),
-        })
-    }
-
-    /// This view's share while it has hours to build.
-    pub(super) fn share(&self) -> usize {
-        let busy = usize::try_from(self.busy.load(Ordering::Relaxed))
-            .unwrap_or(usize::MAX)
-            .max(1);
-        self.total.div_ceil(busy).max(1)
-    }
-
-    pub(super) fn set_busy(&self, was: bool, now: bool) {
-        match (was, now) {
-            (false, true) => {
-                self.busy.fetch_add(1, Ordering::Relaxed);
-            }
-            (true, false) => {
-                self.busy.fetch_sub(1, Ordering::Relaxed);
-            }
-            _ => {}
-        }
-    }
-}
-
 /// Where a part arriving later goes: the target that asked for it.
 #[derive(Clone)]
 pub(super) struct Deliver {

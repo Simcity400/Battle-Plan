@@ -13,7 +13,7 @@ pub struct NamingOperands {
 
 /// Authenticate the ship before following its member, then retain all saved
 /// operands, even an override hidden by programmatic group selection.
-pub fn naming_growing(
+pub fn naming(
     memory: &impl Memory,
     base: usize,
     pointer: usize,
@@ -47,7 +47,7 @@ pub fn naming_growing(
         }
     };
     let Some(override_name) =
-        member::raw_override_from_member_growing(memory, &header, bytes, len, required)?
+        member::raw_override_from_member(memory, &header, bytes, len, required)?
     else {
         return Ok(None);
     };

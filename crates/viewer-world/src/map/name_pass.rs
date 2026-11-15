@@ -562,44 +562,81 @@ fn place_in(
         strategic,
     } in &areas.countries
     {
-        // A faction whose name does not resolve shows none.
-        if *faction && let Err(reason) = text {
-            unnamed_factions.push(format!("{tag}: {reason}"));
-            continue;
-        }
-        // An unresolvable name shows the tag.
-        let text = match text {
-            Ok(text) => match text::unsupported_control(text) {
-                None => text,
-                Some(control) => {
-                    unnamed.push(format!(
-                        "{tag}: its name holds {control}, which map text does not draw"
-                    ));
-                    tag
-                }
-            },
-            Err(reason) => {
-                unnamed.push(format!("{tag}: {reason}"));
+        let text = match area_text(tag, text, *faction) {
+            AreaText::Shown(text) => text,
+            AreaText::Tag(tag, why) => {
+                unnamed.push(why);
                 tag
+            }
+            AreaText::Withheld(why) => {
+                unnamed_factions.push(why);
+                continue;
             }
         };
         for component in inputs.content.graph.components(members) {
             let name = match (placed, generation) {
                 (Some(placed), Some(generation)) => placed.place(
                     generation,
-                    (tag.clone(), text.clone(), component.clone(), *strategic),
+                    (tag.clone(), text.to_owned(), component.clone(), *strategic),
                     || world_name(inputs, tag, text, &component, *strategic),
                 ),
                 _ => world_name(inputs, tag, text, &component, *strategic),
             };
             match name {
                 Some(name) => result.country.push(name),
-                None => unplaced.push(format!("{tag} ({} provinces)", component.len())),
+                None => unplaced.push(unplaced_line(tag, &component)),
             }
         }
     }
+    result
+        .warnings
+        .extend(placement_warnings(&unnamed, &unnamed_factions, unplaced));
+    if let Some(near) = &areas.near {
+        let near = place_in(inputs, near, placed, generation);
+        result.warnings.extend(near.warnings.iter().cloned());
+        result.near = Some(std::sync::Arc::new(near));
+    }
+    result
+}
+
+/// What one area shows: its name, its tag in place of a name it cannot draw, or nothing.
+pub enum AreaText<'a> {
+    Shown(&'a str),
+    /// The tag, with the line saying why.
+    Tag(&'a str, String),
+    /// A group whose name does not resolve shows none, with the line saying why.
+    Withheld(String),
+}
+
+/// What the area of `tag` named `text` shows; `faction` for a group's area.
+pub fn area_text<'a>(tag: &'a str, text: &'a Result<String, String>, faction: bool) -> AreaText<'a> {
+    match text {
+        Err(reason) if faction => AreaText::Withheld(format!("{tag}: {reason}")),
+        Err(reason) => AreaText::Tag(tag, format!("{tag}: {reason}")),
+        Ok(text) => match text::unsupported_control(text) {
+            None => AreaText::Shown(text),
+            Some(control) => AreaText::Tag(
+                tag,
+                format!("{tag}: its name holds {control}, which map text does not draw"),
+            ),
+        },
+    }
+}
+
+/// The line naming a connected area that carries no name.
+pub fn unplaced_line(tag: &str, component: &[u32]) -> String {
+    format!("{tag} ({} provinces)", component.len())
+}
+
+/// The lines a placement adds after its areas' own warnings, in their order.
+pub fn placement_warnings(
+    unnamed: &[String],
+    unnamed_factions: &[String],
+    mut unplaced: Vec<String>,
+) -> Vec<String> {
+    let mut warnings = Vec::new();
     if !unnamed.is_empty() {
-        result.warnings.push(format!(
+        warnings.push(format!(
             "{} country names show their tag ({}{})",
             unnamed.len(),
             unnamed
@@ -612,7 +649,7 @@ fn place_in(
         ));
     }
     if !unnamed_factions.is_empty() {
-        result.warnings.push(format!(
+        warnings.push(format!(
             "{} group names are not drawn ({})",
             unnamed_factions.len(),
             unnamed_factions.join("; ")
@@ -620,19 +657,25 @@ fn place_in(
     }
     if !unplaced.is_empty() {
         unplaced.sort();
-        result.warnings.push(format!(
+        warnings.push(format!(
             "{} country areas carry no name because the engine's placement has no line to fit ({}{})",
             unplaced.len(),
             unplaced.iter().take(8).cloned().collect::<Vec<_>>().join(", "),
             if unplaced.len() > 8 { ", …" } else { "" }
         ));
     }
-    if let Some(near) = &areas.near {
-        let near = place_in(inputs, near, placed, generation);
-        result.warnings.extend(near.warnings.iter().cloned());
-        result.near = Some(std::sync::Arc::new(near));
-    }
-    result
+    warnings
+}
+
+/// One connected area's name in world space, or none where no line fits.
+pub fn place_component(
+    inputs: &PlacementInputs<'_>,
+    key: &str,
+    text: &str,
+    area: &[u32],
+    strategic: bool,
+) -> Option<WorldName> {
+    world_name(inputs, key, text, area, strategic)
 }
 
 /// Places one area and converts the result to world space.
@@ -759,47 +802,90 @@ fn static_names(
         }
         let chunk = chunks.len() - 1;
         let out = chunks.last_mut().expect("one chunk");
-        let mut glyph = 0;
-        while glyph < name.uvs.len() {
-            let page = name.pages[glyph];
-            let start = out.len() as u32;
-            let mut bounds = [[f32::MAX; 3], [f32::MIN; 3]];
-            while glyph < name.uvs.len() && name.pages[glyph] == page {
-                let uv = name.uvs[glyph];
-                let corner = |slot: usize, u: f32, v: f32| NameVertex {
-                    position: name.corners[glyph * 4 + slot],
-                    uv: [u, v],
-                };
-                let (u0, v0, u1, v1) = (uv[0], uv[1], uv[2], uv[3]);
-                out.extend([
-                    corner(0, u0, v0),
-                    corner(1, u1, v0),
-                    corner(2, u1, v1),
-                    corner(0, u0, v0),
-                    corner(2, u1, v1),
-                    corner(3, u0, v1),
-                ]);
-                for position in &name.corners[glyph * 4..glyph * 4 + 4] {
-                    for axis in 0..3 {
-                        bounds[0][axis] = bounds[0][axis].min(position[axis]);
-                        bounds[1][axis] = bounds[1][axis].max(position[axis]);
-                    }
-                }
-                glyph += 1;
-            }
-            names.push(StaticName {
-                strategic_provinces: name.strategic_provinces.clone(),
-                source,
-                page,
-                chunk,
-                vertices: start..out.len() as u32,
-                wrapped: name.wrapped,
-                bounds,
-                alpha: name.alpha,
-            });
-        }
+        name_glyphs(name, source, chunk, out, &mut names);
     }
     (chunks, names)
+}
+
+/// One name's six vertices a glyph appended to `out`, and an entry a run of equal font pages.
+fn name_glyphs(
+    name: &WorldName,
+    source: usize,
+    chunk: usize,
+    out: &mut Vec<NameVertex>,
+    names: &mut Vec<StaticName>,
+) {
+    let mut glyph = 0;
+    while glyph < name.uvs.len() {
+        let page = name.pages[glyph];
+        let start = out.len() as u32;
+        let mut bounds = [[f32::MAX; 3], [f32::MIN; 3]];
+        while glyph < name.uvs.len() && name.pages[glyph] == page {
+            let uv = name.uvs[glyph];
+            let corner = |slot: usize, u: f32, v: f32| NameVertex {
+                position: name.corners[glyph * 4 + slot],
+                uv: [u, v],
+            };
+            let (u0, v0, u1, v1) = (uv[0], uv[1], uv[2], uv[3]);
+            out.extend([
+                corner(0, u0, v0),
+                corner(1, u1, v0),
+                corner(2, u1, v1),
+                corner(0, u0, v0),
+                corner(2, u1, v1),
+                corner(3, u0, v1),
+            ]);
+            for position in &name.corners[glyph * 4..glyph * 4 + 4] {
+                for axis in 0..3 {
+                    bounds[0][axis] = bounds[0][axis].min(position[axis]);
+                    bounds[1][axis] = bounds[1][axis].max(position[axis]);
+                }
+            }
+            glyph += 1;
+        }
+        names.push(StaticName {
+            strategic_provinces: name.strategic_provinces.clone(),
+            source,
+            page,
+            chunk,
+            vertices: start..out.len() as u32,
+            wrapped: name.wrapped,
+            bounds,
+            alpha: name.alpha,
+        });
+    }
+}
+
+/// The glyph order a pass draws: BL, BR, TL, TR, BR, TL, vertices 3 and 4 exchanged while bending
+/// country glyphs.
+fn drawn_order(vertices: &[NameVertex], country_layer: bool) -> Vec<NameVertex> {
+    let order = if country_layer {
+        [5, 2, 0, 2, 1, 0]
+    } else {
+        [5, 2, 0, 1, 2, 0]
+    };
+    vertices
+        .chunks_exact(6)
+        .flat_map(|glyph| order.map(|index| glyph[index]))
+        .collect()
+}
+
+/// A key's names in the draw order of the names of every key below it, and per key its glyph
+/// buffer: names kept by the caller's key, each key written alone.
+#[derive(Default)]
+struct Keyed {
+    /// The generation the keyed names began at, and the newest written.
+    begun: u64,
+    generation: u64,
+    /// Per key held, its buffer's index in `buffers`.
+    keys: std::collections::BTreeMap<u64, usize>,
+    buffers: Vec<Option<wgpu::Buffer>>,
+    free: Vec<usize>,
+}
+
+/// The first [`StaticName::source`] a keyed name of `key` takes; its names follow in order.
+fn keyed_source(key: u64) -> usize {
+    (key as usize) << 24
 }
 
 /// Native camera-view order, with one admitted view owning the whole name.
@@ -931,6 +1017,8 @@ pub struct NamePass {
     compiled: Result<super::name_shader::Names, String>,
     pages: Vec<shader_pipeline::gpu::TextureBinding>,
     chunks: Vec<wgpu::Buffer>,
+    /// The names held by key instead of [`Self::chunks`]' whole placements.
+    keyed: Option<Keyed>,
     draws: Vec<NativeDraw>,
     names: Vec<StaticName>,
     /// [`Placements::generation`] the chunks were built from.
@@ -943,6 +1031,10 @@ pub struct NamePass {
     builds_in_upload: bool,
     /// Why the frame's names are refused: placements nothing prepared before it.
     unprepared: Option<String>,
+    /// The flight record's section for this pass, and what last prepared its glyph buffers: an
+    /// install, a draw (placements with no names, or a render that builds in upload), or keys.
+    section: &'static str,
+    prepared_by: &'static str,
 }
 
 impl NamePass {
@@ -974,6 +1066,7 @@ impl NamePass {
             compiled,
             pages: textures.views(),
             chunks: Vec::new(),
+            keyed: None,
             draws: Vec::new(),
             names: Vec::new(),
             generation: None,
@@ -981,6 +1074,8 @@ impl NamePass {
             count: 0,
             builds_in_upload: false,
             unprepared: None,
+            section: if country_layer { "names far" } else { "plan labels" },
+            prepared_by: "nothing",
         })
     }
 
@@ -991,9 +1086,23 @@ impl NamePass {
         self.builds_in_upload = builds;
     }
 
+    /// The flight record's section for this pass (the near country names').
+    pub fn record_as(&mut self, section: &'static str) {
+        self.section = section;
+    }
+
+    /// What prepared the glyph buffers last was an hour's install.
+    pub fn prepared_by_install(&mut self) {
+        self.prepared_by = "install";
+    }
+
     /// Whether the glyph buffers hold `placements`' names.
     fn holds(&self, placements: &Placements) -> bool {
         self.generation == Some(placements.generation)
+            || self.keyed.as_ref().is_some_and(|keyed| {
+                placements.country.is_empty()
+                    && (keyed.begun..=keyed.generation).contains(&placements.generation)
+            })
             || self.built.as_ref() == Some(&placements.country)
     }
 
@@ -1014,17 +1123,38 @@ impl NamePass {
     ) {
         self.draws.clear();
         self.unprepared = None;
-        // Placements without names need no buffers.
-        if self.holds(placements) || self.builds_in_upload || placements.country.is_empty() {
+        let held = self.holds(placements);
+        if viewer_foundation::view_record::on() {
+            let section = self.section;
+            viewer_foundation::view_record::set(section, "handed_generation", placements.generation);
+            viewer_foundation::view_record::set(section, "handed_names", placements.country.len() as u64);
+            viewer_foundation::view_record::set(section, "held_generation", self.generation.unwrap_or(0));
+            viewer_foundation::view_record::add(section, if held { "frames_held" } else { "frames_not_held" }, 1);
+        }
+        if held || self.builds_in_upload {
+            if !held {
+                self.prepared_by = "draw";
+            }
             self.prepare_static(device, placements);
+        } else if placements.country.is_empty() {
+            // No names to draw, and the buffers keep what an install prepared: a frame handed none
+            // (the names layer away composing) must not unprepare the names handed again after it.
+            self.update_count();
+            return;
         } else {
             let reason = format!(
-                "{} reached their frame without their glyph buffers prepared",
+                "{} reached their frame without their glyph buffers prepared (handed generation {} of {} names; the buffers hold generation {:?}, keyed {:?}, {} names built, prepared last by {})",
                 if self.country_layer {
                     "country names"
                 } else {
                     "plan labels"
-                }
+                },
+                placements.generation,
+                placements.country.len(),
+                self.generation,
+                self.keyed.as_ref().map(|keyed| keyed.begun..=keyed.generation),
+                self.built.as_ref().map_or(0, Vec::len),
+                self.prepared_by,
             );
             #[cfg(any(test, feature = "test-support"))]
             panic!("{reason}");
@@ -1050,9 +1180,13 @@ impl NamePass {
 
     /// Builds the glyph buffers of `placements`, which no camera changes, unless they hold them.
     pub fn prepare_static(&mut self, device: &wgpu::Device, placements: &Placements) {
+        if self.keyed.is_some() && self.holds(placements) {
+            return;
+        }
         if self.generation != Some(placements.generation)
             && self.built.as_ref() != Some(&placements.country)
         {
+            self.keyed = None;
             let limit = device.limits().max_buffer_size;
             let max_vertices = (limit / std::mem::size_of::<NameVertex>() as u64).max(6);
             let (chunks, names) = static_names(placements, max_vertices);
@@ -1060,18 +1194,7 @@ impl NamePass {
                 .iter()
                 .filter(|chunk| !chunk.is_empty())
                 .map(|chunk| {
-                    // Build BL, BR, TL, TR, BR, TL vertices; exchange vertices 3 and 4 while bending country glyphs.
-                    let vertices: Vec<_> = chunk
-                        .chunks_exact(6)
-                        .flat_map(|glyph| {
-                            let order = if self.country_layer {
-                                [5, 2, 0, 2, 1, 0]
-                            } else {
-                                [5, 2, 0, 1, 2, 0]
-                            };
-                            order.map(|index| glyph[index])
-                        })
-                        .collect();
+                    let vertices = drawn_order(chunk, self.country_layer);
                     shader_pipeline::gpu::stats::create_buffer_init(
                         &device,
                         &wgpu::util::BufferInitDescriptor {
@@ -1086,6 +1209,108 @@ impl NamePass {
             self.built = Some(placements.country.clone());
         }
         self.generation = Some(placements.generation);
+    }
+
+    /// Whether its glyph buffers hold `placements`' names: what [`Self::upload`] asks before it
+    /// draws them.
+    pub fn holds_placements(&self, placements: &Placements) -> bool {
+        placements.country.is_empty() || self.holds(placements)
+    }
+
+    /// The generation of the names the pass holds by key ([`Self::set_keyed`]); none while it
+    /// holds whole placements.
+    pub fn keyed_generation(&self) -> Option<u64> {
+        self.keyed.as_ref().map(|keyed| keyed.generation)
+    }
+
+    /// Drops every name held, whole or by key: the pass then holds keyed names, none yet, as
+    /// placements of `generation`.
+    pub fn begin_keyed(&mut self, generation: u64) {
+        self.chunks.clear();
+        self.names.clear();
+        self.draws.clear();
+        self.built = None;
+        self.keyed = Some(Keyed { begun: generation, generation, ..Keyed::default() });
+        self.generation = Some(generation);
+        self.prepared_by = "keys";
+        self.update_count();
+    }
+
+    /// `key`'s names (none: it is dropped) written alone, drawn after every lower key's and before
+    /// every higher's, as a whole [`Self::prepare_static`] of placements listing them in key order
+    /// draws them; the pass then holds placements of `generation`. Only after
+    /// [`Self::begin_keyed`]; a key below 2^39 holds fewer than 2^24 names.
+    pub fn set_keyed(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        generation: u64,
+        key: u64,
+        names: &[&WorldName],
+    ) -> io::Result<()> {
+        let Some(keyed) = self.keyed.as_mut() else {
+            return Err(invalid("country names set by key before they were begun by key"));
+        };
+        if names.len() >= 1 << 24 || key >= 1 << 39 {
+            return Err(invalid(format!("country names of key {key} beyond what a key holds")));
+        }
+        let first = keyed_source(key);
+        let start = self.names.partition_point(|name| name.source < first);
+        let end = self.names.partition_point(|name| name.source < keyed_source(key + 1));
+        self.names.drain(start..end);
+        // A key's buffer is kept when it lets go of it, and written again by the next key that fits.
+        if let Some(buffer) = keyed.keys.remove(&key) {
+            keyed.free.push(buffer);
+        }
+        if !names.is_empty() {
+            let buffer = keyed.free.pop().unwrap_or_else(|| {
+                keyed.buffers.push(None);
+                keyed.buffers.len() - 1
+            });
+            let (mut vertices, mut placed) = (Vec::new(), Vec::new());
+            for (at, name) in names.iter().enumerate() {
+                name_glyphs(name, first + at, buffer, &mut vertices, &mut placed);
+            }
+            if !vertices.is_empty() {
+                let limit = device.limits().max_buffer_size;
+                if (vertices.len() * std::mem::size_of::<NameVertex>()) as u64 > limit {
+                    keyed.free.push(buffer);
+                    return Err(invalid(format!("country names of key {key} overflow one glyph buffer")));
+                }
+                let vertices = drawn_order(&vertices, self.country_layer);
+                let bytes: &[u8] = bytemuck::cast_slice(&vertices);
+                let held = &mut keyed.buffers[buffer];
+                if held.as_ref().is_none_or(|held| held.size() < bytes.len() as u64) {
+                    *held = Some(device.create_buffer(
+                        &wgpu::BufferDescriptor {
+                            label: Some("native mapname vertices of one key"),
+                            size: (bytes.len() as u64).next_power_of_two().min(limit).max(bytes.len() as u64),
+                            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                            mapped_at_creation: false,
+                        },
+                    ));
+                }
+                if let Some(held) = held.as_ref() {
+                    shader_pipeline::gpu::stats::write_buffer(queue, held, 0, bytes);
+                }
+                keyed.keys.insert(key, buffer);
+                self.names.splice(start..start, placed);
+            } else {
+                keyed.free.push(buffer);
+            }
+        }
+        keyed.generation = generation;
+        self.generation = Some(generation);
+        Ok(())
+    }
+
+    /// The vertex buffer a draw reads.
+    fn chunk(&self, chunk: usize) -> io::Result<&wgpu::Buffer> {
+        match &self.keyed {
+            Some(keyed) => keyed.buffers.get(chunk).and_then(Option::as_ref),
+            None => self.chunks.get(chunk),
+        }
+        .ok_or_else(|| invalid(format!("map name glyph buffer {chunk} unavailable")))
     }
 
     pub fn select_arrows(&mut self, admitted: &[(usize, usize)]) {
@@ -1172,12 +1397,16 @@ impl NamePass {
             multiview_mask: None,
         });
         compiled.begin(&mut pass);
+        let buffers = draws
+            .iter()
+            .map(|draw| self.chunk(draw.chunk))
+            .collect::<io::Result<Vec<_>>>()?;
         let mut previous = None;
-        for (draw, binding) in draws.iter().zip(&bindings) {
+        for ((draw, binding), buffer) in draws.iter().zip(&bindings).zip(buffers) {
             binding.bind_after(&mut pass, previous);
             previous = Some(binding);
             shader_pipeline::gpu::stats::state();
-            pass.set_vertex_buffer(0, self.chunks[draw.chunk].slice(..));
+            pass.set_vertex_buffer(0, buffer.slice(..));
             shader_pipeline::gpu::stats::draw();
             pass.draw(draw.vertices.clone(), 0..1);
         }

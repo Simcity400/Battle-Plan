@@ -238,7 +238,7 @@ fn full_census_preserves_native_widths_holes_and_independent_inventory() {
         definitions.entry(1).unwrap().row.research_cost_raw,
         7_654_321_234
     );
-    let mut slots = [cresearch_slot::Row::default(); 2];
+    let mut slots = vec![cresearch_slot::Row::default(); 2];
     assert_eq!(
         walk_slots(&memory, MODULE, COUNTRY_POINTER, 7, &mut slots),
         Outcome::Rows { len: 2 }
@@ -284,13 +284,10 @@ fn first_roster_grows_rows_and_names_without_repeating_native_reads() {
     assert_eq!(rows[0].researched, 1);
     assert_eq!(definitions.outcome(), Outcome::Rows { len: 2 });
     assert_eq!((definitions.required_bytes, definitions.bytes_len), (8, 8));
-    let mut slots = [cresearch_slot::Row::default(); 1];
+    let mut slots = vec![cresearch_slot::Row::default(); 1];
     assert_eq!(
         walk_slots(&memory, MODULE, COUNTRY_POINTER, 7, &mut slots),
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 1
-        }
+        Outcome::Rows { len: 2 }
     );
 }
 
@@ -1260,7 +1257,7 @@ fn slots_refuse_contradictory_idle_identity_and_duplicate_ordinals() {
             base: COUNTRY_POINTER,
             bytes: &bytes,
         };
-        let mut slots = [cresearch_slot::Row::default(); 2];
+        let mut slots = vec![cresearch_slot::Row::default(); 2];
         assert!(matches!(
             walk_slots(&memory, MODULE, COUNTRY_POINTER, 7, &mut slots),
             Outcome::Unavailable { .. }
@@ -1439,14 +1436,14 @@ fn governance_batch_slots_serial_and_batched_equality() {
     let before = Trace::new(&world, "ResearchSlots serial");
     let after = Trace::new(&world, "ResearchSlots batch");
     for id in 1..=3 {
-        let mut old = [cresearch_slot::Row::default(); 3];
-        let mut new = old;
+        let mut old = vec![cresearch_slot::Row::default(); 3];
+        let mut new = old.clone();
         let serial = super::serial_slots::walk_slots_buffer(
             &before,
             0,
             World::country(id),
             id,
-            crate::walk::Buffer::Fixed(&mut old),
+            crate::walk::Buffer::Growing(&mut old),
         );
         let batched = walk_slots(&after, 0, World::country(id), id, &mut new);
         assert_eq!(serial, Outcome::Rows { len: 3 });
@@ -1466,14 +1463,14 @@ fn governance_batch_slots_persistent_and_one_shot_every_serial_operand() {
     };
     let world = World::new(1);
     let capture = |memory: &Trace<'_, World>, serial: bool| {
-        let mut rows = [cresearch_slot::Row::default(); 3];
+        let mut rows = vec![cresearch_slot::Row::default(); 3];
         let outcome = if serial {
             super::serial_slots::walk_slots_buffer(
                 memory,
                 0,
                 World::country(1),
                 1,
-                crate::walk::Buffer::Fixed(&mut rows),
+                crate::walk::Buffer::Growing(&mut rows),
             )
         } else {
             walk_slots(memory, 0, World::country(1), 1, &mut rows)

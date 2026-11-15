@@ -1,0 +1,153 @@
+//! Politics (family 22): elections, governments in exile, balances of power and civil wars,
+//! read from the recording's own tables. At an hour ([`state`]) a reply is the hour's rows; over
+//! the branch ([`history`], [`civil_wars`]) it is runs of recorded columns, read from their
+//! tracks per stretch and joined to holders through the one identity rule: no hour is walked.
+
+pub mod civil_wars;
+pub mod history;
+pub mod state;
+
+use dashboard_query::{
+    Query,
+    identity::{Holder, Holders},
+    read::Runs,
+    timeline::Stretch,
+};
+use replay_columnar::summary::Source;
+use replay_data::rows::TableId;
+use serde::Serialize;
+use std::{
+    collections::{BTreeMap, HashMap},
+    io,
+};
+use ts_rs::TS;
+
+/// Consecutive hours holding one value, as an exact decimal string.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct PoliticsRun {
+    pub first_hour: i32,
+    pub last_hour: i32,
+    pub value: String,
+}
+
+/// A holder's tag from `hour` until its next entry.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct HolderTag {
+    pub hour: i32,
+    pub tag: String,
+}
+
+/// One stretch of hours a holder (canonical slot, raw id) held a tag.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Holding {
+    pub first: i32,
+    pub last: i32,
+    pub slot: u32,
+    pub id: u32,
+    pub tag: String,
+}
+
+/// Every resolved holding of the timeline, by slot, in hour order.
+pub(crate) fn holdings(holders: &Holders) -> BTreeMap<u32, Vec<Holding>> {
+    let mut out: BTreeMap<u32, Vec<Holding>> = BTreeMap::new();
+    for (tag, runs) in &holders.tags {
+        for run in runs {
+            if let Holder::Found { slot, id } = run.holder {
+                out.entry(slot).or_default().push(Holding { first: run.first, last: run.last, slot, id, tag: tag.clone() });
+            }
+        }
+    }
+    for held in out.values_mut() {
+        held.sort_by(|a, b| (a.first, &a.tag).cmp(&(b.first, &b.tag)));
+    }
+    out
+}
+
+/// A holder's tags in hour order, each from the first hour it held it after another.
+pub(crate) fn tags_of(held: &[Holding]) -> Vec<HolderTag> {
+    let mut out: Vec<HolderTag> = Vec::new();
+    for holding in held {
+        if out.last().is_none_or(|last| last.tag != holding.tag) {
+            out.push(HolderTag { hour: holding.first, tag: holding.tag.clone() });
+        }
+    }
+    out
+}
+
+/// The tag `tags` names at `hour`.
+pub(crate) fn tag_at(tags: &[HolderTag], hour: i32) -> Option<&str> {
+    let at = tags.partition_point(|entry| entry.hour <= hour);
+    at.checked_sub(1).map(|at| tags[at].tag.as_str())
+}
+
+/// Each raw id's holdings, for tables keyed by raw country.
+pub(crate) fn by_id(held: &BTreeMap<u32, Vec<Holding>>) -> HashMap<u32, Vec<&Holding>> {
+    let mut out: HashMap<u32, Vec<&Holding>> = HashMap::new();
+    for holding in held.values().flatten() {
+        out.entry(holding.id).or_default().push(holding);
+    }
+    out
+}
+
+/// Column `column` of `table` over `stretch`, every key's runs, from its tracks.
+pub(crate) fn stretch_runs(query: &Query<'_>, stretch: &Stretch, table: TableId, column: &str) -> io::Result<HashMap<u128, Runs>> {
+    let column = dashboard_declare::field(table, column)?;
+    dashboard_query::read::runs(query.replay.recording(), stretch.run, table, Source::Cell(column), None, stretch.first, stretch.last)
+}
+
+/// The runs of `runs` within `first..=last` holding a value, cut to it.
+pub(crate) fn within(runs: Option<&Runs>, first: i32, last: i32) -> Vec<(i32, i32, i64)> {
+    runs.into_iter()
+        .flatten()
+        .filter_map(|&(from, to, value)| {
+            let (from, to) = (from.max(first), to.min(last));
+            Some((from, to, value?)).filter(|_| from <= to)
+        })
+        .collect()
+}
+
+/// `runs` as decimal runs, adjacent runs of one value joined.
+pub(crate) fn decimal(runs: impl IntoIterator<Item = (i32, i32, i128)>) -> Vec<PoliticsRun> {
+    let mut out: Vec<PoliticsRun> = Vec::new();
+    for (first, last, value) in runs {
+        let value = value.to_string();
+        match out.last_mut() {
+            Some(held) if held.value == value && i64::from(held.last_hour) + 1 == i64::from(first) => held.last_hour = last,
+            _ => out.push(PoliticsRun { first_hour: first, last_hour: last, value }),
+        }
+    }
+    out
+}
+
+/// The elementary spans `first..=last` falls into where any of `lists` starts or ends a run.
+pub(crate) fn pieces(first: i32, last: i32, lists: &[&[(i32, i32, i64)]]) -> Vec<(i32, i32)> {
+    let mut cuts: Vec<i32> = vec![first];
+    for list in lists {
+        for &(from, to, _) in *list {
+            cuts.push(from);
+            if to < last {
+                cuts.push(to + 1);
+            }
+        }
+    }
+    cuts.retain(|&cut| first <= cut && cut <= last);
+    cuts.sort_unstable();
+    cuts.dedup();
+    cuts.iter().enumerate().map(|(at, &from)| (from, cuts.get(at + 1).map_or(last, |next| next - 1))).collect()
+}
+
+/// The value `list` holds at `hour`.
+pub(crate) fn value_at(list: &[(i32, i32, i64)], hour: i32) -> Option<i64> {
+    let at = list.partition_point(|&(_, to, _)| to < hour);
+    list.get(at).filter(|&&(from, ..)| from <= hour).map(|&(.., value)| value)
+}
+
+/// A token as the recording spells it, up to its terminator.
+pub(crate) fn token(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(installed_content_core::parser::c_string(bytes)).into_owned()
+}
+
+#[cfg(test)]
+mod tests;

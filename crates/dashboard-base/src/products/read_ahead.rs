@@ -1,6 +1,6 @@
 //! The content many pages' first replies wait for, read ahead once a source opens.
 use job_priority::SpawnCarried as _;
-use super::{ContentOptions, LoadContext, politics_content, production_lines};
+use super::{ContentOptions, politics_content};
 use crate::{
     catalogue::{self, Catalogue},
     source::Source,
@@ -32,10 +32,8 @@ pub fn warm_in_background(source: &Arc<Source>, options: ContentOptions) {
 /// Reads the native GUI registry every country flag's shield is drawn with ([`warm_guis`]), then
 /// the politics content (the event feed, politics and special projects), then the effect description
 /// content (doctrine mastery, special projects and politics), each through the cache its products
-/// read, then the rest the catalogue reads lazily, which prepared answers kept on
-/// disk wait for ([`Catalogue::read_readers`]), then production lines' icon content where the
-/// store key stamps its inputs ([`production_lines::warm_icons`]), over the catalogue already
-/// bound for `options`: a product asking meanwhile waits for the same read, and a cache a request
+/// read, then the rest the catalogue reads lazily ([`Catalogue::read_readers`]), over the
+/// catalogue already bound for `options`: a product asking meanwhile waits for the same read, and a cache a request
 /// kept for another catalogue is left as it is.
 /// It holds the source only while a step runs, and no step starts once the source is dropped or
 /// `options`' binding is retired or replaced. A failure is left for the products to report.
@@ -47,7 +45,7 @@ fn read(source: &Weak<Source>, mut options: ContentOptions) {
     if let Some(source) = source.upgrade() {
         source.resolve_bound(&mut options);
     }
-    let steps: [fn(&Source, &ContentOptions, Arc<Catalogue>); 5] = [
+    let steps: [fn(&Source, &ContentOptions, Arc<Catalogue>); 4] = [
         |_, _, catalogue| warm_guis(&catalogue),
         |source, _, catalogue| drop(politics_content::warm(source, catalogue)),
         |_, _, catalogue| {
@@ -56,14 +54,6 @@ fn read(source: &Weak<Source>, mut options: ContentOptions) {
             }
         },
         |_, _, catalogue| catalogue.read_readers(),
-        |source, options, _| {
-            production_lines::warm_icons(
-                source,
-                &LoadContext {
-                    content: Some(options.clone()),
-                },
-            );
-        },
     ];
     for step in steps {
         let Some(source) = source.upgrade() else {
@@ -146,35 +136,6 @@ mod tests {
         assert!(catalogue.guis_loaded());
         assert!(catalogue.scripted_content().unwrap().effects_read());
         assert!(catalogue.readers_read());
-    }
-
-    /// Icon content that reads a file outside the recorded coverage is left for a product to ask
-    /// for: every reply reports such a read.
-    #[test]
-    fn icon_content_reading_outside_coverage_is_not_read_ahead() {
-        let (source, options, _folder) = opened_with(&[
-            (
-                "map/default.map",
-                "definitions=definition.csv provinces=provinces.bmp terrain=terrain.bmp rivers=rivers.bmp heightmap=heightmap.bmp tree_definition=trees.bmp continent=music/continent.txt",
-            ),
-            ("map/definition.csv", "0;0;0;0;land;false;unknown;0\n"),
-            (
-                "map/music/continent.txt",
-                "continents={synthetic_continent}",
-            ),
-        ]);
-        read(&Arc::downgrade(&source), options.clone());
-        assert!(!installed_content_core::content::diagnostics::current().has_uncovered());
-        let (_, diagnostics) = installed_content_core::content::diagnostics::capture(|| {
-            drop(production_lines::preparation_icons(
-            &source,
-            &LoadContext {
-                content: Some(options),
-            },
-        ))
-        });
-        assert!(diagnostics.has_uncovered());
-        assert!(!installed_content_core::content::diagnostics::current().has_uncovered());
     }
 
     #[test]

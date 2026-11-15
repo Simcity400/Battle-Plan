@@ -97,7 +97,6 @@ pub fn walk_country_with_applied_certified<M: Memory>(
     let Outcome::Rows { len } = modifiers else {
         return modifiers;
     };
-    let growing = output.is_growing();
     let mut out = Output {
         rows: output.suffix(len),
         len: 0,
@@ -169,9 +168,9 @@ pub fn walk_country_with_applied_certified<M: Memory>(
                     )
                     .ok_or("research grant ID unreadable")?;
                     let (value, reduction) = if is_cost {
-                        cost::value(memory, pointer, id, growing)?
+                        cost::value(memory, pointer, id)?
                     } else {
-                        (bonus::value(memory, pointer, id, growing)?, 0)
+                        (bonus::value(memory, pointer, id)?, 0)
                     };
                     (id, value, reduction)
                 };

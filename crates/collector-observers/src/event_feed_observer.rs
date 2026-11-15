@@ -285,7 +285,6 @@ pub fn scheduled_delayed(country: usize) {
                 world.hour()?,
                 identity,
                 row,
-                false,
             )
         })();
         if let Err(reason) = result {
@@ -538,7 +537,9 @@ impl Owner {
     /// Failure to enter acquires no store entry or ticket. The native call
     /// still runs and releases its own flight on normal return. Only the
     /// missed interval is lost; settlement and escape faults stay terminal.
-    /// These callbacks never wait or allocate here.
+    /// These callbacks never wait. A burst past the storage the boundary
+    /// grew ahead grows it in place through the thread's own heap cache;
+    /// only a failed allocation refuses an occurrence, by name.
     fn observe<T>(
         &self,
         role: Role,
@@ -781,6 +782,8 @@ impl Owner {
         let mut found: Option<u64> = None;
         let mut owed = false;
         loop {
+            // Read before the claim: a release clears busy before it counts itself.
+            let releases = self.releases.load(Ordering::SeqCst);
             // This worker's claim is spent on entering.
             let word = match self
                 .busy
@@ -790,15 +793,21 @@ impl Owner {
                 Ok(_) => return Ok(()),
                 Err(word) => word,
             };
+            #[cfg(test)]
+            AFTER_FAILED_CLAIM.with(|hook| {
+                if let Some(hook) = hook.take() {
+                    hook();
+                }
+            });
             match found {
                 None => {
                     WORKER_WAITS[role as usize][Role::holder(word)].fetch_add(1, Ordering::Relaxed);
-                    found = Some(self.releases.load(Ordering::SeqCst));
+                    found = Some(releases);
                 }
-                Some(releases) if !owed => {
-                    // Held although the holder it found released: another
-                    // entry won the race for that release.
-                    if self.releases.load(Ordering::SeqCst) != releases {
+                Some(seen) if !owed => {
+                    // Held although a release came since it found the store held:
+                    // another entry won the race for that release.
+                    if releases != seen {
                         owed = true;
                         self.busy.fetch_or(WORKER_WAITING, Ordering::SeqCst);
                         WORKER_LOST_RACES[role as usize].fetch_add(1, Ordering::Relaxed);
@@ -935,6 +944,8 @@ thread_local! {
     // Initial release sampling and any lost-race accounting are complete;
     // the next worker iteration has not re-read busy yet.
     static BEFORE_WORKER_RETRY: std::cell::Cell<Option<fn()>> = const { std::cell::Cell::new(None) };
+    // A worker's claim failed; it has not yet counted a wait or a lost race for it.
+    static AFTER_FAILED_CLAIM: std::cell::Cell<Option<fn()>> = const { std::cell::Cell::new(None) };
 }
 
 /// Declines recorded in the current interval that no entry has taken: a
@@ -1410,7 +1421,7 @@ impl Hooks {
             held.owner.revoke_world();
         }
         let Held { hooks, taps, .. } = &mut **held;
-        let ready = Hook::set_enabled_iter_attach(
+        let ready = Hook::set_enabled_iter(
             hooks
                 .iter_mut()
                 .chain(taps.iter_mut().map(Tap::publication_hook)),
@@ -1572,7 +1583,7 @@ fn input_failure(owner: &Owner) -> Option<&'static str> {
 /// The observer boundary job's half on a collector worker: take receipts
 /// and missed observations, install offered capacity and acquire the
 /// registry baseline. The same hour's census may then recover owners before
-/// [`seal_growing`] publishes it. An error invalidates and is returned.
+/// [`seal`] publishes it. An error invalidates and is returned.
 pub fn prepare_growing(hour: i32, partial: bool) -> Result<(), &'static str> {
     let generation = crate::world_lifetime::generation();
     let owner =
@@ -1631,8 +1642,9 @@ pub(crate) fn presize_owner_for_test(
 }
 
 /// The prepared hour's publication on a collector worker, after its census.
-/// Grow output and receipts off-lease; one owner never seals concurrently.
-pub fn seal_growing(output: &mut Snapshot, hour: i32, partial: bool) {
+/// Grow output and receipts off-lease from the measured demand; one owner
+/// never seals concurrently.
+pub fn seal(output: &mut Snapshot, hour: i32, partial: bool) {
     seal_hour(output, hour, partial, || {});
 }
 
@@ -1675,7 +1687,7 @@ fn seal_hour(output: &mut Snapshot, hour: i32, partial: bool, during: impl FnOnc
         // Callbacks may have added facts since the measure: a shortfall
         // refuses the hour with its storage reason.
         let result = if cell {
-            store.seal(output, boundary, false)
+            store.seal(output, boundary)
         } else {
             Err(crate::event_feed_history::RECEIPT_STORAGE)
         };
@@ -1743,7 +1755,8 @@ fn resolve(publication: u64, accepted: bool) {
     }
 }
 
-/// Spool-only growth and retirement; native callbacks never allocate or free.
+/// Growth ahead of the next interval from measured demand, off the callbacks,
+/// so growth inside a callback is rare and small.
 pub fn presize(slots: usize) {
     engine_allocation::advisory(|| presize_storage(slots));
 }
@@ -1820,35 +1833,99 @@ fn presize_storage(slots: usize) {
     }
 }
 
-/// Test only: install a fresh SHARED owner whose store has a prepared
-/// staging arena, holding the family lock, and restore the globals on drop.
-/// Lets other modules' detour tests drive staging through the real store.
+/// Test only: the event feed's process-wide state for one test at a time,
+/// from its initial values. The owner, target, fault and flight are restored
+/// on drop; a failed test never poisons the lock.
 #[cfg(test)]
-pub(crate) struct StagingTest {
+pub(crate) struct TestGlobals {
     shared: *mut Owner,
+    target: usize,
     faults: u32,
     flights: usize,
-    _owner: Arc<Owner>,
     _guard: std::sync::MutexGuard<'static, ()>,
+    /// The owner refusal reserve is sized from the live country census hint.
+    _slots: std::sync::MutexGuard<'static, ()>,
 }
 #[cfg(test)]
-pub(crate) fn staging_test(capacity: usize) -> StagingTest {
+pub(crate) fn test_globals() -> TestGlobals {
+    use crate::event_feed_history as history;
     let guard = crate::hook::FAMILY_TEST
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let globals = TestGlobals {
+        shared: SHARED.swap(ptr::null_mut(), Ordering::SeqCst),
+        target: TARGETS[0].swap(0, Ordering::SeqCst),
+        faults: FAULT.swap(0, Ordering::SeqCst),
+        flights: FLIGHT.swap(0, Ordering::SeqCst),
+        _guard: guard,
+        _slots: collector_primitives::country_slots::hint_guard(),
+    };
+    for value in [
+        &DEMAND,
+        &CAPACITY,
+        &WITNESS_CAPACITY,
+        &SCRIPT_TOKEN_DEMAND,
+        &SCRIPT_SCOPE_DEMAND,
+        &SCRIPT_GRAPH_DEMAND,
+    ]
+    .into_iter()
+    .chain(&SCRIPT_CAPACITY)
+    {
+        value.store(0, Ordering::SeqCst);
+    }
+    for store in [&SPARE, &RETIRED] {
+        *store
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    }
+    TEST_UNTAKEN_DECLINES.store(0, Ordering::SeqCst);
+    history::RECOVERY.store(1, Ordering::SeqCst);
+    history::RECOVERED.store(0, Ordering::SeqCst);
+    for count in history::REPEATED_OWNER_REFUSALS
+        .iter()
+        .chain(&history::CROSSED_SAMPLES)
+    {
+        count.store(0, Ordering::SeqCst);
+    }
+    globals
+}
+#[cfg(test)]
+impl TestGlobals {
+    fn restore(&self) {
+        SHARED.store(self.shared, Ordering::SeqCst);
+        TARGETS[0].store(self.target, Ordering::SeqCst);
+        FAULT.store(self.faults, Ordering::SeqCst);
+        FLIGHT.store(self.flights, Ordering::SeqCst);
+    }
+}
+#[cfg(test)]
+impl Drop for TestGlobals {
+    fn drop(&mut self) {
+        // Test fixture isolation only. Production never resets a terminal
+        // fault or a retained flight, including after an observation gap.
+        self.restore();
+    }
+}
+
+/// Test only: install a fresh SHARED owner whose store has a prepared
+/// staging arena, under [`test_globals`].
+/// Lets other modules' detour tests drive staging through the real store.
+#[cfg(test)]
+pub(crate) struct StagingTest {
+    _owner: Arc<Owner>,
+    globals: TestGlobals,
+}
+#[cfg(test)]
+pub(crate) fn staging_test(capacity: usize) -> StagingTest {
+    let globals = test_globals();
     let test = StagingTest {
-        shared: SHARED.load(Ordering::SeqCst),
-        faults: FAULT.load(Ordering::SeqCst),
-        flights: FLIGHT.load(Ordering::SeqCst),
         _owner: {
             let mut store = Store::new(None).unwrap();
             store.prepare_decisions(capacity).unwrap();
             Owner::new(0, store)
         },
-        _guard: guard,
+        globals,
     };
-    FAULT.store(0, Ordering::SeqCst);
-    FLIGHT.store(0, Ordering::SeqCst);
     test._owner.armed.store(true, Ordering::SeqCst);
     SHARED.store(Arc::as_ptr(&test._owner).cast_mut(), Ordering::SeqCst);
     test
@@ -1885,9 +1962,8 @@ impl StagingTest {
 #[cfg(test)]
 impl Drop for StagingTest {
     fn drop(&mut self) {
-        SHARED.store(self.shared, Ordering::SeqCst);
-        FAULT.store(self.faults, Ordering::SeqCst);
-        FLIGHT.store(self.flights, Ordering::SeqCst);
+        // No callback may reach the owner once it is dropped.
+        self.globals.restore();
     }
 }
 
@@ -1937,33 +2013,6 @@ mod tests {
         assert_eq!(hooks.set_enabled(false), Ok(true));
     }
 
-    struct RestoreTestGlobals {
-        shared: *mut Owner,
-        target: usize,
-        faults: u32,
-        flights: usize,
-    }
-    impl RestoreTestGlobals {
-        fn new() -> Self {
-            Self {
-                shared: SHARED.load(Ordering::SeqCst),
-                target: TARGETS[0].load(Ordering::SeqCst),
-                faults: FAULT.load(Ordering::SeqCst),
-                flights: FLIGHT.load(Ordering::SeqCst),
-            }
-        }
-    }
-    impl Drop for RestoreTestGlobals {
-        fn drop(&mut self) {
-            // Test fixture isolation only. Production never resets a terminal
-            // fault or a retained flight, including after an observation gap.
-            SHARED.store(self.shared, Ordering::SeqCst);
-            TARGETS[0].store(self.target, Ordering::SeqCst);
-            FAULT.store(self.faults, Ordering::SeqCst);
-            FLIGHT.store(self.flights, Ordering::SeqCst);
-        }
-    }
-
     /// Declines counted that no store entry has taken.
     fn untaken(owner: &Owner) -> u64 {
         (0..2)
@@ -1988,8 +2037,7 @@ mod tests {
         extern "system" fn original() {
             ORIGINAL_CALLS.fetch_add(1, Ordering::SeqCst);
         }
-        let _guard = crate::hook::FAMILY_TEST.lock().unwrap();
-        let _restore = RestoreTestGlobals::new();
+        let _globals = test_globals();
         assert_eq!(FAULT.load(Ordering::SeqCst), 0);
         assert_eq!(FLIGHT.load(Ordering::SeqCst), 0);
         assert!(SHARED.load(Ordering::SeqCst).is_null());
@@ -2015,7 +2063,7 @@ mod tests {
         owner
             .observe(Role::BoundarySeal, |store| {
                 assert_eq!(store.outstanding(), 0);
-                store.snapshot_growing(
+                store.snapshot(
                     &mut snapshot,
                     crate::event_feed_history::OwnerBoundary {
                         generation: 7,
@@ -2043,8 +2091,7 @@ mod tests {
 
     #[test]
     fn observation_gap_does_not_clear_concurrent_terminal_ownership_retention() {
-        let _guard = crate::hook::FAMILY_TEST.lock().unwrap();
-        let _restore = RestoreTestGlobals::new();
+        let _globals = test_globals();
         assert_eq!(FAULT.load(Ordering::SeqCst), 0);
         assert_eq!(FLIGHT.load(Ordering::SeqCst), 0);
         let owner = Owner::new(0, Store::new(None).unwrap());
@@ -2116,8 +2163,7 @@ mod tests {
             REGISTERED.wait();
             RESUME.wait();
         }
-        let _guard = crate::hook::FAMILY_TEST.lock().unwrap();
-        let _restore = RestoreTestGlobals::new();
+        let _globals = test_globals();
         let owner = sealing_owner();
         owner
             .worker(Role::Census, |store| store.prepare_scripts(64, 0, 0))
@@ -2215,8 +2261,7 @@ mod tests {
 
     #[test]
     fn a_candidate_still_declines_immediately_while_a_worker_holds_the_store() {
-        let _guard = crate::hook::FAMILY_TEST.lock().unwrap();
-        let _restore = RestoreTestGlobals::new();
+        let _globals = test_globals();
         let owner = Owner::new(0, Store::new(None).unwrap());
         let declined = &DECLINED[Role::DecisionWriter as usize][Role::Census as usize];
         let before = declined.load(Ordering::SeqCst);
@@ -2241,8 +2286,7 @@ mod tests {
 
     #[test]
     fn candidate_waiting_does_not_extend_to_other_decision_sites_or_an_owed_worker() {
-        let _guard = crate::hook::FAMILY_TEST.lock().unwrap();
-        let _restore = RestoreTestGlobals::new();
+        let _globals = test_globals();
         let owner = Owner::new(0, Store::new(None).unwrap());
         owner
             .observe(Role::DecisionWriter, |_| {
@@ -2272,8 +2316,7 @@ mod tests {
         fn before_wait() {
             REGISTERED.wait();
         }
-        let _guard = crate::hook::FAMILY_TEST.lock().unwrap();
-        let _restore = RestoreTestGlobals::new();
+        let _globals = test_globals();
         let owner = Owner::new(0, Store::new(None).unwrap());
         let holder = u64::from(Role::DecisionWriter.held()) | CANDIDATE;
         owner.busy.store(holder, Ordering::SeqCst);
@@ -2299,9 +2342,8 @@ mod tests {
 
     #[test]
     fn witness_pressure_replaces_an_entries_large_witnesses_small_spare() {
-        use crate::event_feed_history::{WITNESS_STORAGE, Witness};
-        let _guard = crate::hook::FAMILY_TEST.lock().unwrap();
-        let _restore = RestoreTestGlobals::new();
+        use crate::event_feed_history::{WITNESS_ALLOCATION, Witness};
+        let _globals = test_globals();
         let prepared = || {
             let mut store = Store::new(None).unwrap();
             store.prepare_capacity(8192).unwrap();
@@ -2330,7 +2372,7 @@ mod tests {
         crate::test_support::with_allocations_denied(|| {
             assert_eq!(
                 store.stage_witness(1, Witness::Selected { instance: 4096 }),
-                Err(WITNESS_STORAGE)
+                Err(WITNESS_ALLOCATION)
             );
         });
         assert_eq!(store.capacity_demand(), 4097);
@@ -2351,8 +2393,20 @@ mod tests {
 
     #[test]
     fn a_worker_that_wins_the_first_race_waits_for_a_live_holder_without_any_decline() {
-        let _guard = crate::hook::FAMILY_TEST.lock().unwrap();
-        let _restore = RestoreTestGlobals::new();
+        static SECOND_CLAIM_FAILED: Barrier = Barrier::new(2);
+        static RELEASED: AtomicBool = AtomicBool::new(false);
+        // The holder releases between the worker's failed second claim and its accounting.
+        fn release_after_the_claim() {
+            SECOND_CLAIM_FAILED.wait();
+            while !RELEASED.load(Ordering::SeqCst) {
+                std::thread::yield_now();
+            }
+        }
+        fn on_the_second_failure() {
+            AFTER_FAILED_CLAIM.with(|hook| hook.set(Some(release_after_the_claim)));
+        }
+        let _globals = test_globals();
+        RELEASED.store(false, Ordering::SeqCst);
         assert_eq!(FAULT.load(Ordering::SeqCst), 0);
         assert_eq!(FLIGHT.load(Ordering::SeqCst), 0);
         let owner = Owner::new(0, Store::new(None).unwrap());
@@ -2373,20 +2427,17 @@ mod tests {
                 owner
                     .observe(Role::DelayedPass, |_| {
                         entered.store(true, Ordering::SeqCst);
-                        // Release only once the worker has had to wait.
-                        while WORKER_WAITS[Role::Census as usize][Role::DelayedPass as usize]
-                            .load(Ordering::SeqCst)
-                            == waited
-                        {
-                            std::thread::yield_now();
-                        }
+                        // Release only once the worker has had to wait twice.
+                        SECOND_CLAIM_FAILED.wait();
                     })
                     .unwrap();
+                RELEASED.store(true, Ordering::SeqCst);
             })
         };
         while !entered.load(Ordering::SeqCst) {
             std::thread::yield_now();
         }
+        AFTER_FAILED_CLAIM.with(|hook| hook.set(Some(on_the_second_failure)));
         assert_eq!(owner.worker(Role::Census, |_| 7), Ok(7));
         holder.join().unwrap();
         assert_eq!(waits.load(Ordering::SeqCst), waited + 1);
@@ -2420,8 +2471,7 @@ mod tests {
             BEFORE_WORKER_RETRY.with(|hook| hook.set(Some(pause_retry)));
             pause_retry();
         }
-        let _guard = crate::hook::FAMILY_TEST.lock().unwrap();
-        let _restore = RestoreTestGlobals::new();
+        let _globals = test_globals();
         assert_eq!(FAULT.load(Ordering::SeqCst), 0);
         assert_eq!(FLIGHT.load(Ordering::SeqCst), 0);
         let owner = Owner::new(0, Store::new(None).unwrap());
@@ -2493,8 +2543,7 @@ mod tests {
 
     #[test]
     fn a_callback_declines_for_an_owed_worker_and_counts_it_apart_from_holders() {
-        let _guard = crate::hook::FAMILY_TEST.lock().unwrap();
-        let _restore = RestoreTestGlobals::new();
+        let _globals = test_globals();
         let owner = Owner::new(0, Store::new(None).unwrap());
         owner.armed.store(true, Ordering::SeqCst);
         let waiting = &DECLINED_FOR_WAITING_WORKER[Role::Script as usize];
@@ -2521,8 +2570,7 @@ mod tests {
 
     #[test]
     fn a_declined_callback_entry_attempt_breaks_a_baseline_cut() {
-        let _guard = crate::hook::FAMILY_TEST.lock().unwrap();
-        let _restore = RestoreTestGlobals::new();
+        let _globals = test_globals();
         assert_eq!(FLIGHT.load(Ordering::SeqCst), 0);
         let owner = Owner::new(0, Store::new(None).unwrap());
         owner.armed.store(true, Ordering::SeqCst);
@@ -2616,8 +2664,7 @@ mod tests {
     #[test]
     fn a_write_behind_backlog_seals_every_hour_and_counts_each_receipt_once() {
         use replay_data::event_feed_rows::EventFeedCoverage;
-        let _guard = crate::hook::FAMILY_TEST.lock().unwrap();
-        let _restore = RestoreTestGlobals::new();
+        let _globals = test_globals();
         let owner = sealing_owner();
         let mut output = Snapshot::new(0);
         // Far more hours than any frame pool, none written yet.
@@ -2655,8 +2702,7 @@ mod tests {
     #[test]
     fn a_decline_during_the_seals_hold_refuses_only_the_sealed_row() {
         use replay_data::event_feed_rows::EventFeedCoverage;
-        let _guard = crate::hook::FAMILY_TEST.lock().unwrap();
-        let _restore = RestoreTestGlobals::new();
+        let _globals = test_globals();
         assert_eq!(FAULT.load(Ordering::SeqCst), 0);
         assert_eq!(FLIGHT.load(Ordering::SeqCst), 0);
         let owner = sealing_owner();
@@ -2708,8 +2754,7 @@ mod tests {
     #[test]
     fn declines_spammed_while_the_seal_releases_cannot_hold_it_and_each_is_taken_once() {
         use replay_data::event_feed_rows::EventFeedCoverage;
-        let _guard = crate::hook::FAMILY_TEST.lock().unwrap();
-        let _restore = RestoreTestGlobals::new();
+        let _globals = test_globals();
         assert_eq!(FAULT.load(Ordering::SeqCst), 0);
         assert_eq!(FLIGHT.load(Ordering::SeqCst), 0);
         let owner = sealing_owner();
@@ -2750,8 +2795,7 @@ mod tests {
 
     #[test]
     fn a_worker_enters_while_declines_are_being_counted() {
-        let _guard = crate::hook::FAMILY_TEST.lock().unwrap();
-        let _restore = RestoreTestGlobals::new();
+        let _globals = test_globals();
         assert_eq!(FAULT.load(Ordering::SeqCst), 0);
         let owner = Owner::new(0, Store::new(None).unwrap());
         owner.armed.store(true, Ordering::SeqCst);
@@ -2796,8 +2840,7 @@ mod tests {
     #[test]
     fn a_decline_recorded_after_the_seals_release_still_counts_in_the_sealed_row() {
         use replay_data::event_feed_rows::EventFeedCoverage;
-        let _guard = crate::hook::FAMILY_TEST.lock().unwrap();
-        let _restore = RestoreTestGlobals::new();
+        let _globals = test_globals();
         assert_eq!(FAULT.load(Ordering::SeqCst), 0);
         let owner = sealing_owner();
         let mut output = Snapshot::new(0);
@@ -2837,8 +2880,7 @@ mod tests {
     #[test]
     fn a_callback_admitted_after_the_seals_release_takes_nothing_from_the_closing_phase() {
         use replay_data::event_feed_rows::EventFeedCoverage;
-        let _guard = crate::hook::FAMILY_TEST.lock().unwrap();
-        let _restore = RestoreTestGlobals::new();
+        let _globals = test_globals();
         let owner = sealing_owner();
         let mut output = Snapshot::new(0);
         publish_hour(&owner, &mut output, 1, &|| {});
@@ -2902,8 +2944,7 @@ mod tests {
     #[test]
     fn a_callback_declined_after_the_flip_counts_in_the_next_row() {
         use replay_data::event_feed_rows::EventFeedCoverage;
-        let _guard = crate::hook::FAMILY_TEST.lock().unwrap();
-        let _restore = RestoreTestGlobals::new();
+        let _globals = test_globals();
         let owner = sealing_owner();
         let mut output = Snapshot::new(0);
         publish_hour(&owner, &mut output, 1, &|| {});
@@ -2929,8 +2970,7 @@ mod tests {
     #[test]
     fn a_callback_paused_before_joining_a_settled_phase_revalidates_onto_the_next() {
         use replay_data::event_feed_rows::EventFeedCoverage;
-        let _guard = crate::hook::FAMILY_TEST.lock().unwrap();
-        let _restore = RestoreTestGlobals::new();
+        let _globals = test_globals();
         let owner = sealing_owner();
         let mut output = Snapshot::new(0);
         publish_hour(&owner, &mut output, 1, &|| {});
@@ -2958,8 +2998,7 @@ mod tests {
     #[test]
     fn attempts_in_the_new_phase_cannot_hold_the_seals_drain() {
         use replay_data::event_feed_rows::EventFeedCoverage;
-        let _guard = crate::hook::FAMILY_TEST.lock().unwrap();
-        let _restore = RestoreTestGlobals::new();
+        let _globals = test_globals();
         let owner = sealing_owner();
         let mut output = Snapshot::new(0);
         publish_hour(&owner, &mut output, 1, &|| {});
@@ -3005,8 +3044,7 @@ mod tests {
 
     #[test]
     fn a_decline_recorded_in_this_interval_is_seen_by_certification() {
-        let _guard = crate::hook::FAMILY_TEST.lock().unwrap();
-        let _restore = RestoreTestGlobals::new();
+        let _globals = test_globals();
         let owner = Owner::new(0, Store::new(None).unwrap());
         owner.armed.store(true, Ordering::SeqCst);
         SHARED.store(Arc::as_ptr(&owner).cast_mut(), Ordering::SeqCst);
@@ -3030,8 +3068,7 @@ mod tests {
 
     #[test]
     fn a_retained_owner_refuses_waiting_workers_and_skips_the_census() {
-        let _guard = crate::hook::FAMILY_TEST.lock().unwrap();
-        let _restore = RestoreTestGlobals::new();
+        let _globals = test_globals();
         assert_eq!(FAULT.load(Ordering::SeqCst), 0);
         let owner = Owner::new(0, Store::new(None).unwrap());
         owner.armed.store(true, Ordering::SeqCst);
@@ -3056,7 +3093,7 @@ mod tests {
         );
         assert_eq!(total_declines(&owner), 0);
         let mut snapshot = Snapshot::new(0);
-        seal_growing(&mut snapshot, 1, false);
+        seal(&mut snapshot, 1, false);
         assert_eq!(snapshot.boundary.failure, Some(WORKER_RETAINED));
         assert_eq!(
             snapshot.boundary.coverage,
@@ -3070,9 +3107,7 @@ mod tests {
     #[test]
     fn escaped_native_flight_retains_the_event_feed_owner_without_a_ticket() {
         extern "system" fn original() {}
-        let _guard = crate::hook::FAMILY_TEST
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _globals = test_globals();
         let code = crate::hook::TestCode::new();
         let target = original as *const () as usize;
         let (first, first_bytes) = code.stub(0, target);
@@ -3101,7 +3136,7 @@ mod tests {
     #[test]
     fn a_disabled_forwarder_leaves_the_interval_partial() {
         use replay_data::event_feed_rows::EventFeedCoverage;
-        let _guard = crate::hook::FAMILY_TEST.lock().unwrap();
+        let _globals = test_globals();
         forwarder(Forwarder::Politics, true);
         forwarder(Forwarder::Territory, true);
         forwarder(Forwarder::DelayedPass, true);

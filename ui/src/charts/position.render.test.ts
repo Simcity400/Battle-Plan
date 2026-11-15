@@ -24,7 +24,7 @@ for (const kind of ['chord', 'butterfly'] as const) test(`${kind} interaction fo
     addEventListener: (name: string, handler: (event: any) => void) => handlers.set(name, handler),
     removeEventListener: (name: string) => handlers.delete(name),
   };
-  const fixture = { canvas, container: { clientHeight: 300, scrollTop: 0 }, effects: [] as (() => unknown)[],
+  const fixture = { canvas, container: { clientHeight: 300, scrollTop: 0, addEventListener() {}, removeEventListener() {} }, effects: [] as (() => unknown)[],
     task: undefined as FrameTask | undefined, key: undefined as ((event: any) => void) | undefined,
     move: undefined as ((event: any) => void) | undefined, click: undefined as ((event: any) => void) | undefined };
   const host = globalThis as typeof globalThis & { __positionFixture?: typeof fixture; __positionEffect?: (effect: () => unknown) => void };

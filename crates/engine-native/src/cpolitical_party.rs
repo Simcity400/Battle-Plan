@@ -80,7 +80,14 @@ pub struct Demand {
 /// without copying text bytes.
 pub fn demand(memory: &impl Memory, base: usize, country: usize) -> Result<Demand, &'static str> {
     let walked =
-        crate::cpolitical_status::Reader::new(memory, base, country)?.parties(&mut [], &mut []);
+        crate::cpolitical_status::Reader::new(memory, base, country)?.parties_carried(
+            0,
+            crate::walk::Buffer::Count,
+            0,
+            crate::walk::Buffer::Count,
+            0,
+            &mut crate::cpolitical_status::FreshParties,
+        );
     let rows = match walked.outcome {
         crate::walk::Outcome::Rows { len } => len,
         crate::walk::Outcome::Truncated { len, unread_rows } => len

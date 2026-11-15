@@ -428,8 +428,8 @@ fn state_summary_countries_use_the_held_order_without_quiet_native_reads() {
     let source = kit::direct(&kit::memory(&bytes)).bases;
     let decode = |job: &AirBasesJob| {
         let mut output = carrier::Bases::new(8);
-        output.prepare_states(job);
-        output.decode_states(job, kit::BASE, &source, &mut [None; 16]);
+        output.prepare_states(job).unwrap();
+        output.decode_states(job, kit::BASE, &source, &mut [None; 16]).unwrap();
         output.packet(B0_HANDLE)
     };
     let acquire = |job: &mut AirBasesJob| {
@@ -437,7 +437,7 @@ fn state_summary_countries_use_the_held_order_without_quiet_native_reads() {
             inner: kit::memory(&bytes),
             reads: RefCell::default(),
         };
-        let report = copy_air_bases_refresh_growing(
+        let report = copy_air_bases_refresh(
             &memory,
             AirBasesCopyContext {
                 hour: 0,
@@ -509,7 +509,7 @@ fn failed_optional_state_order_stays_unknown_under_the_registration_certificate(
         game_state: kit::GAME_STATE,
     };
     assert!(
-        copy_air_bases_refresh_growing(
+        copy_air_bases_refresh(
             &Failed {
                 memory: kit::memory(&bytes)
             },
@@ -527,13 +527,13 @@ fn failed_optional_state_order_stays_unknown_under_the_registration_certificate(
         inner: kit::memory(&bytes),
         reads: RefCell::default(),
     };
-    assert!(copy_air_bases_refresh_growing(&memory, ctx(), &mut job).raw_ok);
+    assert!(copy_air_bases_refresh(&memory, ctx(), &mut job).raw_ok);
     assert_eq!(job.registration_store.as_ref().unwrap().counts().carried, 2);
     assert!(!memory.reads.borrow().contains(&DENSE));
     let source = kit::direct(&kit::memory(&bytes)).bases;
     let mut output = carrier::Bases::new(8);
-    output.prepare_states(&job);
-    output.decode_states(&job, kit::BASE, &source, &mut [None; 16]);
+    output.prepare_states(&job).unwrap();
+    output.decode_states(&job, kit::BASE, &source, &mut [None; 16]).unwrap();
     assert!(
         output
             .packet(B0_HANDLE)

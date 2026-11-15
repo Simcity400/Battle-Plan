@@ -1,44 +1,20 @@
-import type { FactionGoalDefinition, FactionGoalsReply, FactionRefusalDetail } from '../../generated/dashboard';
-import { runAt } from '../../charts/series.ts';
-import { pendingAt } from '../../dashboard/preparedPrefix.ts';
+import { FIXED5_MAX, goalProgress } from '../../dashboard/factionDetails.ts';
+import type { GoalProgress } from '../../dashboard/factionDetails';
+import type { LiveValues } from '../../charts/live';
+import type { SortValue } from '../../charts/table/logic';
+import type { FactionDetailReply, FactionGoalDefinition } from '../../generated/dashboard';
 
 export type GoalFilter = 'all' | 'inProgress' | 'completed';
 export type GoalState = 'inProgress' | 'completed' | 'cancelled' | 'other';
 
-/** A runtime goal as the table reads it; a faction-details goal is one. */
-export interface HeldGoal {
-  ordinal: number; definition: FactionGoalDefinition; status: number;
-  progressPercent: number | null; progressRaw: string | null;
-}
-
-/** One hour's goal lists, from the goal history or that hour's faction details. */
-export interface GoalView {
-  goals: readonly HeldGoal[]; completed: readonly FactionGoalDefinition[]; cancelled: readonly FactionGoalDefinition[];
-  goalReason: string | null; warnings: readonly string[]; refusals: readonly FactionRefusalDetail[];
-}
-
-/** What the goal history holds at an hour: a view, or why it holds none. */
-export type GoalLookup =
-  | { kind: 'held'; view: GoalView }
-  /** Not prepared yet: the hour's own details answer it. */
-  | { kind: 'pending' }
-  /** Not held, or not readable: the hour's own details answer it too. */
-  | { kind: 'unrecorded' }
-  | { kind: 'absent' };
-
-export const ABSENT_FACTION = 'Faction is absent at this hour';
-
-/** Whether the hour's own faction details answer it: the history cannot, or its proven absence was retried. */
-export const asksDetails = (lookup: GoalLookup | null, failed: boolean, retried: boolean) =>
-  failed || lookup?.kind === 'pending' || lookup?.kind === 'unrecorded' || (lookup?.kind === 'absent' && retried);
-
 export interface GoalRow {
+  /** `goal:<ordinal>` for a held goal (its progress is the live cell of that row), else `completed:` or `cancelled:`. */
   key: string; name: string; definition: FactionGoalDefinition;
   /** The native term token, the group's identity, and its interface name when content has one. */
   category: string | null; categoryName: string | null;
   state: GoalState; statusText: string;
-  /** Held progress as a fraction, from the game's cached percentage; null when not reported. */
-  progress: number | null; progressRaw: string | null;
+  /** The held goal's ordinal, whose progress the live cells give; null for a goal known only from a history list. */
+  ordinal: number | null;
   /** True for goals only known from the faction's completed or cancelled lists, which carry no dates. */
   history: boolean;
 }
@@ -50,58 +26,43 @@ const STATES: readonly [GoalState, string][] = [['inProgress', 'In progress'], [
 /** A goal's name: the resolved in-game name, or why it is not shown. */
 export const goalName = (definition: FactionGoalDefinition) => definition.name || (definition.reason || !definition.token ? 'Goal name unavailable' : 'Unnamed goal');
 
-const byText = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
-
-/** The goal history's lists at `hour`: a local lookup, with the hour's goal-text refusals counted as faction details count them. */
-export function goalsAt(reply: FactionGoalsReply, hour: number): GoalLookup {
-  if (pendingAt(reply, hour)) return { kind: 'pending' };
-  const run = runAt(reply.runs, hour);
-  const list = run && reply.lists[run.list];
-  if (!list) return { kind: 'unrecorded' };
-  if (list.absent) return { kind: 'absent' };
-  const named = [...list.goals.map(goal => goal.definition), ...list.completed, ...list.cancelled];
-  if (named.some(index => !reply.definitions[index])) return { kind: 'unrecorded' };
-  const definition = (index: number) => reply.definitions[index];
-  const goals = list.goals.map(goal => {
-    const progress = runAt(reply.progress.find(lane => lane.ordinal === goal.ordinal)?.runs ?? [], hour);
-    return { ordinal: goal.ordinal, definition: definition(goal.definition), status: goal.status,
-      progressPercent: progress?.progressPercent ?? null, progressRaw: progress?.progressRaw ?? null };
-  });
-  const completed = list.completed.map(definition), cancelled = list.cancelled.map(definition);
-  const reasons = new Map<string, number>();
-  for (const shown of [...goals.map(goal => goal.definition), ...completed, ...cancelled])
-    if (shown.reason) reasons.set(shown.reason, (reasons.get(shown.reason) ?? 0) + 1);
-  const counted = [...reasons].sort(([a], [b]) => byText(a, b));
-  return { kind: 'held', view: { goals, completed, cancelled, goalReason: list.reason,
-    warnings: [...(list.reason ? [`Faction goals: ${list.reason}`] : []), ...counted.map(([reason, count]) => `${count} faction goal texts: ${reason}`),
-      ...reply.warnings],
-    refusals: counted.filter(([reason]) => reason.startsWith('Faction goal artwork')).map(([reason, count]) => ({ fact: 'goal artwork', count, reason })) } };
-}
-
 /** Every goal the faction holds at the hour, then its completed and cancelled lists, in native order. */
-export function goalRows(data: GoalView): GoalRow[] {
-  const base = (definition: FactionGoalDefinition) => ({ name: goalName(definition), definition, category: definition.category, categoryName: definition.categoryName });
+export function goalRows(data: FactionDetailReply): GoalRow[] {
+  const base = (index: number) => {
+    const definition = data.definitions[index];
+    return { name: goalName(definition), definition, category: definition.category, categoryName: definition.categoryName };
+  };
   return [
     ...data.goals.map(goal => {
       const [state, statusText] = STATES[goal.status] ?? ['other', `State ${goal.status}`];
-      return { key: `goal:${goal.ordinal}`, ...base(goal.definition), state, statusText,
-        progress: goal.progressPercent == null || !Number.isFinite(goal.progressPercent) ? null : goal.progressPercent / 100,
-        progressRaw: goal.progressRaw, history: false };
+      return { key: `goal:${goal.ordinal}`, ...base(goal.definition), state, statusText, ordinal: goal.ordinal, history: false };
     }),
-    ...data.completed.map((definition, index) => ({ key: `completed:${index}`, ...base(definition), state: 'completed' as const,
-      statusText: 'Completed', progress: null, progressRaw: null, history: true })),
-    ...data.cancelled.map((definition, index) => ({ key: `cancelled:${index}`, ...base(definition), state: 'cancelled' as const,
-      statusText: 'Cancelled', progress: null, progressRaw: null, history: true })),
+    ...data.completed.map((index, at) => ({ key: `completed:${at}`, ...base(index), state: 'completed' as const, statusText: 'Completed', ordinal: null, history: true })),
+    ...data.cancelled.map((index, at) => ({ key: `cancelled:${at}`, ...base(index), state: 'cancelled' as const, statusText: 'Cancelled', ordinal: null, history: true })),
   ];
 }
 
-/** The game's saturated fixed5 value, which stays in the progress cache of goals without ratio progress. */
-const FIXED5_MAX = '92233720124192';
-/** A goal the game measures no progress for; any other cache without a percentage is unrecorded. */
-export const unmeasured = (row: GoalRow) => row.progress == null && row.progressRaw === FIXED5_MAX;
+/** A goal's progress as the table and its tooltip read it: a held goal's from the live cells; a history entry has none. */
+export function rowProgress(values: LiveValues<number>, row: Pick<GoalRow, 'ordinal'>): GoalProgress {
+  return row.ordinal === null ? { kind: 'missing', reason: 'Not recorded' } : goalProgress(values, row.ordinal);
+}
 
-/** Why a goal shows no percentage. */
-export const missingProgress = (row: GoalRow) => unmeasured(row) ? 'No progress measure' : 'Not recorded';
+/** Why a goal shows no percentage, or its percentage to `digits` places. */
+export function progressText(progress: GoalProgress, digits: number): string {
+  return progress.kind === 'percent' ? `${progress.percent.toFixed(digits)}%` : progress.kind === 'unmeasured' ? 'No progress measure' : progress.reason;
+}
+
+/** The table's live source: a held goal's `progress` column as a share of the goal (0 to 1), from its row's cache;
+ * a goal the game measures no progress for is missing for that reason, never a full bar. */
+export function goalTableValues(values: LiveValues<number>): LiveValues<SortValue> {
+  return {
+    get: key => {
+      const raw = values.get(key);
+      return raw === undefined || raw === FIXED5_MAX || !Number.isFinite(raw) ? undefined : raw / 100_000;
+    },
+    missing: key => values.get(key) === FIXED5_MAX ? 'No progress measure' : values.missing(key) || 'Not recorded',
+  };
+}
 
 /** In progress hides finished goals; Completed shows only completed ones; cancelled goals show under All. */
 export function filterGoals(rows: readonly GoalRow[], filter: GoalFilter): GoalRow[] {
@@ -116,3 +77,13 @@ export function termOrder(rows: readonly GoalRow[]): Map<string, number> {
 }
 
 export const completedCount = (rows: readonly GoalRow[]) => rows.filter(row => row.state === 'completed').length;
+
+/** What the widget says it cannot show: the reply's warnings and refusals, and the goals and terms it cannot name. */
+export function goalDiagnostics(data: FactionDetailReply, rows: readonly GoalRow[]): string[] {
+  const unnamed = rows.filter(row => row.definition.reason).length;
+  const unnamedTerms = rows.filter(row => row.category && !row.categoryName).length;
+  return [...data.warnings, ...data.refusals.map(refusal => `${refusal.fact} (${refusal.count}): ${refusal.reason}`),
+    ...(data.goalReason ? [`Goals unavailable: ${data.goalReason}`] : []),
+    ...(unnamed ? [`${unnamed} goal ${unnamed === 1 ? 'name is' : 'names are'} unavailable.`] : []),
+    ...(unnamedTerms ? [`${unnamedTerms} goal ${unnamedTerms === 1 ? 'term has' : 'terms have'} no name in the recorded content.`] : [])];
+}

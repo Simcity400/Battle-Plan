@@ -252,9 +252,7 @@ fn copy_production_census(
     let Some(mut slots) = CountrySlots::new(countries, links, base) else {
         return false;
     };
-    if log.worker_growth_enabled()
-        && engine_allocation::reserve(census, countries.count.saturating_sub(1) as usize).is_err()
-    {
+    if engine_allocation::reserve(census, countries.count.saturating_sub(1) as usize).is_err() {
         log.overflowed = true;
         return false;
     }
@@ -1114,34 +1112,21 @@ fn copy_deployment_object(
 }
 
 /// Acquire one owned payload and report its per-table costs.
-#[cfg(any(test, feature = "test-support"))]
 pub fn copy_production_rest_refresh(
     memory: &impl Memory,
     ctx: ProductionRestCopyContext,
     job: &mut ProductionRestJob,
 ) -> ProductionRestCopyReport {
-    copy_production_rest(memory, ctx, job, false)
-}
-
-pub fn copy_production_rest_refresh_growing(
-    memory: &impl Memory,
-    ctx: ProductionRestCopyContext,
-    job: &mut ProductionRestJob,
-) -> ProductionRestCopyReport {
-    copy_production_rest(memory, ctx, job, true)
+    copy_production_rest(memory, ctx, job)
 }
 
 fn copy_production_rest(
     memory: &impl Memory,
     ctx: ProductionRestCopyContext,
     job: &mut ProductionRestJob,
-    growing: bool,
 ) -> ProductionRestCopyReport {
     let started = qpc();
     job.clear();
-    if growing {
-        job.log.enable_worker_growth();
-    }
     job.game_state = ctx.game_state;
     acquire_production_rest_pass(memory, ctx.base, ctx.game_state, job);
     let mut ticks = [0; 8];

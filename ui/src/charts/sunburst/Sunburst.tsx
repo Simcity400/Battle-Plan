@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useLayoutEffect } from 'react';
 import type { FocusEvent as ReactFocusEvent, KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, ReactNode } from 'react';
 import { CountryFlagUrl } from '../../components/CountryFlag';
 import { mix, parseColor, readableText, toHex } from '../../shell/appearance/color';
@@ -6,9 +7,12 @@ import type { Rgb } from '../../shell/appearance/color';
 import { font } from '../draw';
 import { approach, easeTau } from '../easing';
 import { useMotionNow } from '../liveMotion.ts';
+import { setStyle } from '../domText.ts';
+import { atNextSlot, structureOpen } from '../../dashboard/structurePace.ts';
+import type { Live } from '../live';
 import { scheduler } from '../scheduler';
 import type { FrameInfo, FrameTask } from '../scheduler';
-import { backingSize, toLocal } from '../surface';
+import { drawingSurface, sizeCanvas, toLocal, watchCanvasSize } from '../surface';
 import { readTokens, subscribeTokens } from '../tokens';
 import { useChartTokens } from '../useChartTokens';
 import WindowedRows from '../WindowedRows';
@@ -23,6 +27,7 @@ import { pickSunburst } from './pick';
 import type { SunburstPick } from './pick';
 import '../charts.css';
 import './sunburst.css';
+import { textWidth } from '../textWidth.ts';
 
 export type { SunburstItem, SunburstKey, SunburstNode, SunburstText, SunburstTotal } from './layout';
 
@@ -61,10 +66,40 @@ export interface SunburstProps {
   /** Playback speed, so slices keep up at high speeds. */
   hoursPerSecond?: number;
   active: boolean;
-  /** A line under the chart, such as what the amounts leave out. */
-  footnote?: string;
+  /** A line under the chart, such as what the amounts leave out; a painted text where it moves with the playhead. */
+  footnote?: ReactNode;
   /** Content below the slice legend, retained when its rows are switched off. */
   legendExtra?: ReactNode;
+  /** The playhead's values, read as each frame draws in place of the same props: the slices, the centre and the
+   * legend's amounts move with no render, and the legend's rows follow them at most four times a second. The props
+   * stay what a render shows until then. Items it lacks are not drawn; a whole it cannot tell is `unavailableReason`. */
+  live?: Live<SunburstValues>;
+}
+
+/** What moves at the playhead: the items' amounts, the independently known whole, and a whole missing at the hour. */
+export type SunburstValues = Pick<SunburstProps, 'items' | 'authoritativeTotal' | 'unavailableReason'>;
+
+/** A legend row's amount and share, the same at a render and at a frame's paint. */
+const legendAmount = (part: SunburstNode, text: SunburstText) => part.valueUnknown ? 'Not known' : notMeasured(part) ? text.missingLabel ?? 'Not measured' : amountText(part, text);
+const legendShare = (part: SunburstNode, focus: SunburstNode, text: SunburstText) => text.shares === false || part.valueUnknown || focus.valueUnknown || part.unmeasured
+  || !(part.value > 0 || part.value === 0 && part.keepZero) || hasCorrections(focus) ? '' : shareText(part.value, focus.value);
+/** The legend's rows, as the ids a render lists. */
+const legendIds = (focus: SunburstNode) => focus.children.filter(listed).map(child => child.id).join('\u0000');
+
+/** Writes the legend's amounts and shares from `focus` into the rows mounted under `host`. */
+function paintLegend(host: HTMLElement | null, focus: SunburstNode, text: SunburstText) {
+  if (!host) return;
+  const byId = new Map(focus.children.map(child => [child.id, child]));
+  for (const element of host.querySelectorAll<HTMLElement>('[data-sunburst-amount]')) {
+    const part = byId.get(element.dataset.sunburstAmount!);
+    const next = part ? legendAmount(part, text) : 'Not known';
+    if (element.textContent !== next) element.textContent = next;
+  }
+  for (const element of host.querySelectorAll<HTMLElement>('[data-sunburst-share]')) {
+    const part = byId.get(element.dataset.sunburstShare!);
+    const next = part ? legendShare(part, focus, text) : '';
+    if (element.textContent !== next) element.textContent = next;
+  }
 }
 
 /** The surface gap between slices, in pixels. */
@@ -118,12 +153,21 @@ export default function Sunburst(props: SunburstProps) {
   const motionNow = useMotionNow();
   const canvas = useRef<HTMLCanvasElement>(null);
   const [focusPath, setFocusPath] = useState<readonly string[]>([]);
+  // The live values a render last took its legend from: kept while the live source and the structure given hold.
+  const [adopted, setAdopted] = useState<{ live: Live<SunburstValues>; items: readonly SunburstItem[]; values: SunburstValues } | null>(null);
+  const structure: SunburstValues = props.live && adopted?.live === props.live && adopted.items === props.items ? adopted.values : props;
   const { tree, focus } = useMemo(() => {
-    const tree = sunburstTree(props.items, props.root, props.levels, { fold: props.fold, unavailableReason: props.unavailableReason, authoritativeTotal: props.authoritativeTotal });
+    const tree = sunburstTree(structure.items, props.root, props.levels, { fold: props.fold, unavailableReason: structure.unavailableReason, authoritativeTotal: structure.authoritativeTotal });
     return { tree, focus: foldView(tree, focusPath) };
-  }, [props.items, props.root, props.levels, props.fold, props.unavailableReason, props.authoritativeTotal, focusPath]);
-  const latest = useRef({ props, tree, focus });
-  latest.current = { props, tree, focus };
+  }, [structure.items, props.root, props.levels, props.fold, structure.unavailableReason, structure.authoritativeTotal, focusPath]);
+  // The tree the frame last made from the live values, for the shape (root, levels, fold, zoom) it was made in.
+  const shape = JSON.stringify([props.root, props.levels ?? null, props.fold ?? null, focusPath]);
+  const liveTree = useRef<{ values: SunburstValues; shape: string; tree: SunburstNode; focus: SunburstNode } | null>(null);
+  const live = props.live && liveTree.current?.shape === shape ? liveTree.current : null;
+  const latest = useRef({ props, tree, focus, shape, focusPath, listed: legendIds(focus) });
+  latest.current = { props, tree: live?.tree ?? tree, focus: live?.focus ?? focus, shape, focusPath, listed: legendIds(focus) };
+  const legendHost = useRef<HTMLDivElement>(null);
+  const legendShow = useRef<(focus: SunburstNode, fresh: boolean, speak: boolean) => void>(() => {});
   const [legendHover, setLegendHover] = useState<string | null>(null);
   // The legend row whose tooltip shows (pointer or keyboard), and where.
   const [legendTip, setLegendTip] = useState<{ id: string; x: number; y: number; row?: HTMLElement } | null>(null);
@@ -149,7 +193,8 @@ export default function Sunburst(props: SunburstProps) {
 
   useEffect(() => {
     const element = canvas.current!;
-    const context = element.getContext('2d')!;
+    const paper = drawingSurface(element), context = paper.context!;
+    const sized = watchCanvasSize(element, () => { if (task.current) scheduler.wake(task.current); });
     let tokens = readTokens();
     let pointer: { x: number; y: number; clientX: number; clientY: number } | null = null;
     // The pointer moved since its tooltip was last shown.
@@ -159,16 +204,37 @@ export default function Sunburst(props: SunburstProps) {
       colours: Map<string, string>; nodes: SunburstNode[]; byId: Map<string, SunburstNode> } | null = null;
     let previousStretch = latest.current.props.stretch;
     let wasUnavailable = false;
+    let legendHeld: (() => void) | null = null;
+    // Slice names measured once per name and font: a frame of playback measures no text it measured before.
+    const labelWidths = new Map<string, number>();
+    let labelFont = '';
+    // The live values as a tree in the shape shown: made again only when they or the shape move.
+    const livePaint = () => {
+      const held = latest.current, p = held.props;
+      if (!p.live) return null;
+      const values = p.live.read();
+      const made = liveTree.current;
+      if (made && made.values === values && made.shape === held.shape) return made;
+      const tree = sunburstTree(values.items, p.root, p.levels, { fold: p.fold, unavailableReason: values.unavailableReason, authoritativeTotal: values.authoritativeTotal });
+      const next = { values, shape: held.shape, tree, focus: foldView(tree, held.focusPath) };
+      liveTree.current = next;
+      held.tree = next.tree; held.focus = next.focus;
+      paintLegend(legendHost.current, next.focus, p.text);
+      legendShow.current(next.focus, false, false);
+      // The legend's rows are structure: taken in the slot's task, made again there from the newest values.
+      if (legendIds(next.focus) !== held.listed) {
+        if (structureOpen()) setAdopted({ live: p.live, items: p.items, values });
+        else legendHeld ??= atNextSlot(() => { legendHeld = null; liveTree.current = null; livePaint(); if (task.current) scheduler.wake(task.current); });
+      }
+      return next;
+    };
 
     const draw = (info: FrameInfo): boolean => {
+      livePaint();
       const { props: p, tree: root, focus: zoomed } = latest.current;
-      const layoutWidth = element.clientWidth;
-      const layoutHeight = element.clientHeight;
+      const { layoutWidth, layoutHeight, backing: size } = sized.read();
       if (!layoutWidth || !layoutHeight) return false;
-      const rect = element.getBoundingClientRect();
-      const size = backingSize({ layoutWidth, layoutHeight, rectWidth: rect.width, rectHeight: rect.height, devicePixelRatio: window.devicePixelRatio || 1 });
-      if (element.width !== size.width) element.width = size.width;
-      if (element.height !== size.height) element.height = size.height;
+      sizeCanvas(paper.canvas, size.width, size.height);
       context.setTransform(size.scaleX, 0, 0, size.scaleY, 0, 0);
       context.clearRect(0, 0, layoutWidth, layoutHeight);
 
@@ -180,7 +246,7 @@ export default function Sunburst(props: SunburstProps) {
       }
       const { targets, colours, nodes, byId } = cached;
       const g = sunGeometry(layoutWidth, layoutHeight, rings);
-      const unavailable = p.unavailableReason != null;
+      const unavailable = (p.live ? liveTree.current?.values.unavailableReason : p.unavailableReason) != null;
       const snap = unavailable || wasUnavailable || p.stretch === null || previousStretch !== p.stretch;
       previousStretch = p.stretch;
       wasUnavailable = unavailable;
@@ -256,8 +322,11 @@ export default function Sunburst(props: SunburstProps) {
         context.stroke();
         // A name only where it fits, written along the ring and upright on the lower half.
         if (p.settings.labels && slice.alpha > 0.6) {
-          context.font = font(tokens, tokens.fontSize.small, 600);
-          const width = context.measureText(node.label).width;
+          const labelling = font(tokens, tokens.fontSize.small, 600);
+          if (labelling !== labelFont) { labelFont = labelling; labelWidths.clear(); }
+          context.font = labelling;
+          let width = labelWidths.get(node.label);
+          if (width === undefined) { width = textWidth(context, node.label); labelWidths.set(node.label, width); }
           if (labelFits(slice, width, tokens.fontSize.small)) {
             const middle = top + (slice.a0 + slice.a1) / 2;
             const radius = (slice.inner + slice.outer) / 2;
@@ -299,10 +368,10 @@ export default function Sunburst(props: SunburstProps) {
         context.fillStyle = line.colour;
         // The amount is never cut: it shrinks to fit. Other lines end in an ellipsis.
         if (line.rank === 0) {
-          const width = context.measureText(line.text).width;
+          const width = textWidth(context, line.text);
           if (width > room) context.font = font(tokens, Math.max(tokens.fontSize.small * 0.8, line.size * room / width), line.weight);
           context.fillText(line.text, g.cx, y + line.size * LINE / 2);
-        } else context.fillText(fitText(line.text, room, text => context.measureText(text).width), g.cx, y + line.size * LINE / 2);
+        } else context.fillText(fitText(line.text, room, text => textWidth(context, text)), g.cx, y + line.size * LINE / 2);
         y += line.size * LINE;
       }
 
@@ -320,8 +389,8 @@ export default function Sunburst(props: SunburstProps) {
         } else hideTooltip(owner);
         moved = false;
       }
-      element.style.cursor = pointed === 'centre' ? (zoomedIn ? 'pointer' : 'default')
-        : pointed && zoomable(byId.get(pointed)!) ? 'zoom-in' : 'default';
+      setStyle(element, 'cursor', pointed === 'centre' ? (zoomedIn ? 'pointer' : 'default')
+        : pointed && zoomable(byId.get(pointed)!) ? 'zoom-in' : 'default');
       return moving;
     };
 
@@ -330,8 +399,6 @@ export default function Sunburst(props: SunburstProps) {
     const wake = () => scheduler.wake(current);
     const remove = scheduler.add(current, element);
     const unsubscribe = subscribeTokens(next => { tokens = next; cached = null; wake(); });
-    const observer = new ResizeObserver(() => wake());
-    observer.observe(element);
     const local = (event: PointerEvent | MouseEvent) => ({
       ...toLocal(event.clientX, event.clientY, element.getBoundingClientRect(), element.clientWidth, element.clientHeight),
       clientX: event.clientX, clientY: event.clientY,
@@ -373,7 +440,7 @@ export default function Sunburst(props: SunburstProps) {
     element.addEventListener('click', click);
     element.addEventListener('contextmenu', contextMenu);
     return () => {
-      remove(); unsubscribe(); observer.disconnect(); hideTooltip(owner);
+      remove(); unsubscribe(); sized.disconnect(); hideTooltip(owner); legendHeld?.();
       element.removeEventListener('pointermove', move);
       element.removeEventListener('pointerleave', leave);
       element.removeEventListener('click', click);
@@ -387,6 +454,20 @@ export default function Sunburst(props: SunburstProps) {
     if (!props.active) hideTooltip(owner);
   }, [props.active, owner]);
   useEffect(() => { if (task.current) scheduler.wake(task.current); });
+  // A frame of playback wakes the chart only when the live values moved; slices still easing keep their own frames.
+  useEffect(() => {
+    const live = props.live;
+    if (!live) return undefined;
+    let seen: SunburstValues | undefined;
+    return live.subscribe(() => {
+      const values = live.read();
+      if (values === seen) return;
+      seen = values;
+      if (task.current) scheduler.wake(task.current);
+    });
+  }, [props.live]);
+  // A render writes its structure's amounts; the live ones are written over them before the browser paints.
+  useLayoutEffect(() => { if (live) paintLegend(legendHost.current, live.focus, props.text); });
 
   // The keys' slice: its tooltip beside it, read out in full.
   const showKeyed = () => {
@@ -455,19 +536,23 @@ export default function Sunburst(props: SunburstProps) {
   // as playback changes it unless another chart has taken the tooltip since; a row
   // gone from the legend takes its tooltip with it.
   const shownTip = useRef(legendTip);
+  // Shown from a render, or from a frame as the live values move (which reads nothing out: what is spoken is the structure's).
+  legendShow.current = (shownFocus, fresh, speak) => {
+    const part = legendTip && props.active && props.settings.legend ? shownFocus.children.find(child => child.id === legendTip.id) : null;
+    if (part && legendTip) {
+      if (speak) props.onHover?.(part);
+      if (fresh || free(legendOwner)) {
+        const content = props.tooltip?.(part, shownFocus, props.text) ?? sliceTooltip(part, shownFocus, props.text);
+        if (legendTip.row && speak) setSpoken(tooltipText(content[0]));
+        showTooltip(legendOwner, fitTooltip(content, globalThis.innerHeight), legendTip.x, legendTip.y,
+          `legend:${part.id}:${part.value}:${JSON.stringify(part.unknown)}:${shownFocus.id}`);
+      }
+    } else if (speak) hideTooltip(legendOwner);
+  };
   useEffect(() => {
     const fresh = shownTip.current !== legendTip;
     shownTip.current = legendTip;
-    const part = legendTip && props.active && props.settings.legend ? focus.children.find(child => child.id === legendTip.id) : null;
-    if (part && legendTip) {
-      props.onHover?.(part);
-      if (fresh || free(legendOwner)) {
-        const content = props.tooltip?.(part, focus, props.text) ?? sliceTooltip(part, focus, props.text);
-        if (legendTip.row) setSpoken(tooltipText(content[0]));
-        showTooltip(legendOwner, fitTooltip(content, globalThis.innerHeight), legendTip.x, legendTip.y,
-          `legend:${part.id}:${part.value}:${JSON.stringify(part.unknown)}:${focus.id}`);
-      }
-    } else hideTooltip(legendOwner);
+    legendShow.current(latest.current.focus, fresh, true);
   }, [legendTip, focus, props.text, props.tooltip, props.active, props.settings.legend, legendOwner]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => () => hideTooltip(legendOwner), [legendOwner]);
   // A resize refits the open legend tooltip, below its row again when the keys opened it.
@@ -508,7 +593,7 @@ export default function Sunburst(props: SunburstProps) {
       <p id={`${owner}-summary`} className="sr-only">{sunburstSummary(focus, text, props.summaryNotes)}</p>
       <p className="sr-only" aria-live="polite">{spoken}</p>
     </div>
-    {showLegend && <div className="sunburst-legend">
+    {showLegend && <div ref={legendHost} className="sunburst-legend">
       {settings.legend && <>
       <h3>{focus.label}</h3>
       {parts.length ? <WindowedRows key={focus.id} items={legendRows} rowHeight={tokens.fontSize.body * 2.5}
@@ -523,8 +608,8 @@ export default function Sunburst(props: SunburstProps) {
             : part.icon ? <img className="sunburst-icon" src={part.icon} alt="" />
             : null)}
           <span className="sunburst-name" data-detail={part.countryFlag?.nameFailure?.message} data-tooltip={part.label.length > 18 ? part.label : undefined}>{part.label}</span>
-          <b>{part.valueUnknown ? 'Not known' : notMeasured(part) ? text.missingLabel ?? 'Not measured' : amountText(part, text)}{unknownTotal(part) ? <small className="sunburst-partial"> partial</small> : null}</b>
-          <small>{text.shares === false || part.valueUnknown || focus.valueUnknown || part.unmeasured || !(part.value > 0 || part.value === 0 && part.keepZero) || hasCorrections(focus) ? '' : shareText(part.value, focus.value)}</small>
+          <b>{props.live ? <span data-sunburst-amount={part.id}>{legendAmount(part, text)}</span> : legendAmount(part, text)}{unknownTotal(part) ? <small className="sunburst-partial"> partial</small> : null}</b>
+          <small data-sunburst-share={props.live ? part.id : undefined}>{legendShare(part, focus, text)}</small>
         </>;
         // Pointer and keyboard both show the slice's own tooltip, and the row reads
         // it out in full: amount, shares, count and uncertainty.
@@ -554,7 +639,7 @@ export default function Sunburst(props: SunburstProps) {
           }} aria-label={`${said}. ${pick ? 'Show breakdown' : 'Zoom in'}`}>{body}</button>
             : <div {...events} tabIndex={0} role="group" aria-label={said}>{body}</div>}
         </div>;
-      }}</WindowedRows> : <p className="sunburst-empty">{props.unavailableReason ?? text.emptyLabel ?? 'Nothing yet.'}</p>}
+      }}</WindowedRows> : <p className="sunburst-empty">{structure.unavailableReason ?? text.emptyLabel ?? 'Nothing yet.'}</p>}
       </>}
       {props.legendExtra != null && <div className="sunburst-legend-extra">{props.legendExtra}</div>}
       {props.footnote && <p className="sunburst-footnote">{props.footnote}</p>}

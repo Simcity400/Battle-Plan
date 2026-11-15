@@ -21,7 +21,6 @@ pub use fresh_eta::{
     MissionRiskInputs, OriginalRiskShips,
 };
 mod cached_name;
-pub(crate) use cached_name::cached_name_buffer;
 pub use cached_name::{cached_name, cached_name_demand};
 pub mod port_mission;
 
@@ -80,7 +79,6 @@ pub struct Row {
 pub(crate) struct Reader<'a, M: Memory> {
     pub memory: &'a M,
     pub base: usize,
-    pub countries: &'a ccountry::Reader<'a, M>,
     pub provinces: Array,
 }
 
@@ -114,13 +112,8 @@ impl<M: Memory> Reader<'_, M> {
         Ok(id)
     }
 
-    pub(crate) fn row(
-        &self,
-        pointer: usize,
-        id: u64,
-        fleet: u64,
-        owner: u32,
-    ) -> Result<Row, &'static str> {
+    /// No owner check: the game never refuses a roster owner unlike its fleet's country.
+    pub(crate) fn row(&self, pointer: usize, id: u64, fleet: u64) -> Result<Row, &'static str> {
         let at = |offset| {
             pointer
                 .checked_add(offset)
@@ -150,10 +143,6 @@ impl<M: Memory> Reader<'_, M> {
         {
             return Err("task force fields unreadable");
         }
-        let roster_owner = u32::from_le_bytes(owners[0..4].try_into().expect("fixed span"));
-        if self.countries.resolve(roster_owner)?.canonical_slot != owner {
-            return Err("task force owner differs from fleet country");
-        }
         let province = cfleet::province(
             self.memory,
             self.base,
@@ -164,7 +153,7 @@ impl<M: Memory> Reader<'_, M> {
         Ok(Row {
             id,
             fleet,
-            roster_owner,
+            roster_owner: u32::from_le_bytes(owners[0..4].try_into().expect("fixed span")),
             expeditionary_owner: u32::from_le_bytes(owners[4..8].try_into().expect("fixed span")),
             logical_owner: u32::from_le_bytes(owners[8..12].try_into().expect("fixed span")),
             province,
@@ -488,29 +477,9 @@ pub struct MapMotionCollector<'a, M: Memory> {
 }
 
 impl<'a, M: Memory> MapMotionCollector<'a, M> {
-    /// `combats` is the capture's first-combat memo, cleared by the caller for
-    /// each capture and reserved off the game thread.
-    pub fn new(
-        memory: &'a M,
-        base: usize,
-        game_state: usize,
-        rows: &'a mut [MapMotionRow],
-        paths: &'a mut [u32],
-        combats: &'a mut cunit::FirstCombatMemo,
-    ) -> Self {
-        Self::with_buffers(
-            memory,
-            base,
-            game_state,
-            Buffer::Fixed(rows),
-            Buffer::Fixed(paths),
-            combats,
-        )
-    }
-
     /// Worker motion capture retains serialized unit routes. Each original
     /// header grows its arena before copying.
-    pub fn new_growing(
+    pub fn new(
         memory: &'a M,
         base: usize,
         game_state: usize,
@@ -1100,25 +1069,9 @@ pub struct MissionCollector<'a, M: Memory> {
 }
 
 impl<'a, M: Memory> MissionCollector<'a, M> {
-    pub fn new(
-        memory: &'a M,
-        base: usize,
-        game_state: usize,
-        rows: &'a mut [MissionRow],
-        arena: &'a mut [u32],
-    ) -> Self {
-        Self::with_buffers(
-            memory,
-            base,
-            game_state,
-            Buffer::Fixed(rows),
-            Buffer::Fixed(arena),
-        )
-    }
-
     /// Worker mission capture grows regions from the original mission header
     /// before following its pointers.
-    pub fn new_growing(
+    pub fn new(
         memory: &'a M,
         base: usize,
         game_state: usize,

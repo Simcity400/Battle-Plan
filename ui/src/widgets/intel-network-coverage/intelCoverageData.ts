@@ -1,63 +1,66 @@
-import { countryPart, keyedKnown, keyedRead, runAtHour, validateKeyedWindow } from '../../dashboard/keyedHistory.ts';
-import type { KeyedWindow } from '../../dashboard/keyedHistory';
+import { liveKey } from '../../charts/live.ts';
+import type { LiveValues } from '../../charts/live';
+import type { MatrixCell } from '../../charts/heat/matrix';
 import type { TooltipContent } from '../../charts/tooltip';
+import type { Country, IntelCoverageReply } from '../../generated/dashboard';
 
-/** The window holds each directed pair's summary fields (`OWNER|TARGET|field`), each country's
- * dated presence (`member|COUNTRY`) and its dated network count (`rank|COUNTRY`), so playback
- * picks the most active countries at its own hour. */
-export interface IntelCoverageReply { window: KeyedWindow; warnings: readonly string[] }
 
 export type Measure = 'covered' | 'strength' | 'strongest';
 export type Basis = 'controlled' | 'core';
-/** The recorded summary fields the widget draws, by the names the backend gives them. */
+/** The recorded summary fields the widget draws, by the names the product and the `intel-networks` series give them. */
 export const FIELDS = ['coveredControlled', 'coveredCore', 'controlledStrength', 'coreStrength', 'maxStrength'] as const;
 export type Field = typeof FIELDS[number];
 
 const FIXED = 100000n;
+const object = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
+const country = (value: unknown) => object(value) && Number.isSafeInteger(value.id) && (value.tag === null || typeof value.tag === 'string' && value.tag.length > 0);
 
 export function validateIntelCoverage(value: unknown): IntelCoverageReply {
-  const reply = value as IntelCoverageReply;
-  if (!reply || typeof reply !== 'object' || !Array.isArray(reply.warnings) || !reply.warnings.every(item => typeof item === 'string'))
-    throw new Error('The intel network coverage reply is malformed.');
-  const window = validateKeyedWindow(reply.window);
-  for (const series of window.series) {
-    const [kind, part] = series.name.split('|');
-    if ((kind === 'member' || kind === 'rank') && countryPart(part) === null) throw new Error('The intel network coverage reply is malformed.');
-  }
-  return { ...reply, window };
+  const ok = object(value) && (value.missing === null || typeof value.missing === 'string') && (value.readHour === null || Number.isSafeInteger(value.readHour))
+    && Array.isArray(value.countries) && value.countries.every(item => country(item) && (item as Country).tag !== null)
+    && Array.isArray(value.warnings) && value.warnings.every(item => typeof item === 'string')
+    && Array.isArray(value.networks) && value.networks.every(item => object(item) && country(item.owner) && country(item.target));
+  if (!ok) throw new Error('The intel network coverage reply is malformed.');
+  return value as unknown as IntelCoverageReply;
 }
 
-export interface ShownCountry { id: string; tag: string; slot: number }
+/** What renders: the countries and which pairs hold a network, not their values nor the daily read hour. */
+export const coverageStructure = (reply: IntelCoverageReply) => JSON.stringify([reply.missing, reply.countries, reply.networks, reply.warnings]);
 
-/** The countries present at `hour`: those the explicit tags name (bare tag or TAG@slot), or
- * else the `shown` most active by their network count then, ties by identity; with `touching`,
- * after them every country with a network in or from one of them then. Null when the
- * ranking is not recorded at that hour and no tags choose the countries. */
-export function countriesAt(reply: IntelCoverageReply, hour: number, shown: number, tags?: readonly string[], touching = false): ShownCountry[] | null {
-  const present: string[] = [];
-  const ranks = new Map<string, bigint>();
-  const pairs: [string, string][] = [];
-  for (const series of reply.window.series) {
-    const [kind, part, field] = series.name.split('|');
-    if (kind === 'member' && runAtHour(series.runs, hour)) present.push(part);
-    else if (kind === 'rank') { const run = runAtHour(series.runs, hour); if (run) ranks.set(part, BigInt(run[2])); }
-    else if (touching && field !== undefined && runAtHour(series.runs, hour)) pairs.push([kind, part]);
+/** The hour's networks by their countries' tags (`OWNER|TARGET`), each its live cells' row; a side no tag names is not
+ * on the matrix. */
+export interface PairsAt { rows: ReadonlyMap<string, string>; present: ReadonlySet<string>; ids: ReadonlyMap<string, number>; known: boolean }
+
+export function pairsAt(reply: IntelCoverageReply): PairsAt {
+  const rows = new Map<string, string>();
+  for (const network of reply.networks) {
+    if (network.owner.tag !== null && network.target.tag !== null) rows.set(`${network.owner.tag}|${network.target.tag}`, `${network.owner.id}:${network.target.id}`);
   }
-  const country = (id: string): ShownCountry => ({ id, ...countryPart(id)! });
-  if (!tags && !ranks.size) return null;
-  const own = tags ? present.filter(id => tags.some(tag => tag === id || tag === countryPart(id)!.tag)).sort()
-    : present.filter(id => ranks.has(id))
-      .sort((a, b) => { const left = ranks.get(a)!, right = ranks.get(b)!; return left > right ? -1 : left < right ? 1 : a < b ? -1 : a > b ? 1 : 0; })
-      .slice(0, Math.max(0, shown));
-  if (!touching) return own.map(country);
-  const shownSet = new Set(own);
-  const linked = new Set(pairs.flatMap(([owner, target]) => [...shownSet.has(owner) ? [target] : [], ...shownSet.has(target) ? [owner] : []]));
-  return own.length ? [...own, ...present.filter(id => !shownSet.has(id) && linked.has(id)).sort()].map(country) : [];
+  const tags = reply.countries.map(item => item.tag!);
+  return { rows, present: new Set(tags), ids: new Map(reply.countries.map(item => [item.tag!, item.id])), known: reply.missing === null };
 }
 
-/** The tags chosen native holders held at `hour`, from their dated aliases. */
-export const aliasTagsAt = (aliases: readonly { tag: string; firstHour: number; lastHour: number }[], hour: number): string[] =>
-  [...new Set(aliases.filter(run => run.firstHour <= hour && hour <= run.lastHour).map(run => run.tag))].sort();
+/** The countries on the matrix: those `matches` keeps (in tag order), else the `shown` most active by their count of
+ * networks in or from them, ties by tag; with `touching`, after them every country with a network in or from one of
+ * them, in tag order. */
+export function countriesAt(reply: IntelCoverageReply, shown: number, matches?: (tag: string) => boolean, touching = false): string[] {
+  const tags = reply.countries.map(item => item.tag!);
+  const counts = new Map<string, number>(tags.map(tag => [tag, 0]));
+  for (const network of reply.networks) for (const side of [network.owner.tag, network.target.tag]) {
+    if (side !== null && counts.has(side)) counts.set(side, counts.get(side)! + 1);
+  }
+  const own = matches ? tags.filter(matches)
+    : [...counts].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)).slice(0, Math.max(0, shown)).map(([tag]) => tag);
+  if (!touching || !own.length) return own;
+  const kept = new Set(own);
+  const linked = new Set<string>();
+  for (const { owner, target } of reply.networks) {
+    if (owner.tag === null || target.tag === null) continue;
+    if (kept.has(owner.tag)) linked.add(target.tag);
+    if (kept.has(target.tag)) linked.add(owner.tag);
+  }
+  return [...own, ...tags.filter(tag => !kept.has(tag) && linked.has(tag))];
+}
 
 /** The field a measure shows on a basis. */
 export function measureField(measure: Measure, basis: Basis): Field {
@@ -66,53 +69,54 @@ export function measureField(measure: Measure, basis: Basis): Field {
   return basis === 'core' ? 'coveredCore' : 'coveredControlled';
 }
 
-/** Every recorded summary of each directed pair at an hour, read whether or not the hour can
- * prove absence (`known`), with the countries present then. A pair with a summary of zeros is an
- * empty network; see `cellState` for what a pair without one means. */
-export interface PairsAt { pairs: Map<string, Map<Field, bigint>>; known: boolean; members: ReadonlySet<string>; readHour: number | undefined }
-
-export function pairsAt(reply: IntelCoverageReply, hour: number): PairsAt {
-  const pairs = new Map<string, Map<Field, bigint>>();
-  const members = new Set<string>();
-  for (const series of reply.window.series) {
-    const [owner, target, field] = series.name.split('|');
-    if (owner === 'member') { if (runAtHour(series.runs, hour)) members.add(target); continue; }
-    if (!(FIELDS as readonly string[]).includes(field)) continue;
-    const run = runAtHour(series.runs, hour);
-    if (!run) continue;
-    const key = `${owner}|${target}`;
-    const fields = pairs.get(key) ?? new Map<Field, bigint>();
-    fields.set(field as Field, BigInt(run[2]));
-    pairs.set(key, fields);
-  }
-  const known = keyedKnown(reply.window, hour);
-  return { pairs, known, members, readHour: known ? keyedRead(reply.window, hour) : undefined };
-}
-
-/** One cell: a recorded summary; certified absence (no network) only where the hour proves
- * absence and both countries are present then; otherwise unknown. */
-export type CellState = { kind: 'present'; fields: ReadonlyMap<Field, bigint> } | { kind: 'absent' } | { kind: 'unknown' };
-
-export function cellState(at: PairsAt, owner: string, target: string): CellState {
-  const fields = at.pairs.get(`${owner}|${target}`);
-  if (fields) return { kind: 'present', fields };
-  return at.known && at.members.has(owner) && at.members.has(target) ? { kind: 'absent' } : { kind: 'unknown' };
-}
+export const isStrength = (field: Field) => field.endsWith('Strength');
 
 /** A field's value for display: strengths are the game's fixed-point values. */
-export function fieldText(field: Field, value: bigint): string {
-  if (field === 'coveredControlled' || field === 'coveredCore') return value.toLocaleString('en-US');
-  const negative = value < 0n, magnitude = negative ? -value : value;
+export function fieldText(field: Field, value: number): string {
+  if (!isStrength(field)) return value.toLocaleString('en-US');
+  const raw = BigInt(value);
+  const negative = raw < 0n, magnitude = negative ? -raw : raw;
   const fraction = (magnitude % FIXED).toString().padStart(5, '0').slice(0, 2).replace(/0+$/u, '');
   return `${negative ? '−' : ''}${(magnitude / FIXED).toLocaleString('en-US')}${fraction ? `.${fraction}` : ''}`;
 }
 
 /** The chart operand of a value: its display magnitude, for colour only. */
-export const fieldNumber = (field: Field, value: bigint) => field.endsWith('Strength') ? Number(value) / Number(FIXED) : Number(value);
+export const fieldNumber = (field: Field, value: number) => isStrength(field) ? value / Number(FIXED) : value;
 
-/** The shown countries on the axes the matrix draws (both axes list the same countries). */
-export function visibleCountries<C extends { id: string }>(countries: readonly C[], visible: ReadonlySet<string>): C[] {
-  return countries.filter(country => visible.has(country.id));
+/** One cell: a network and its values as read (each undefined where not read, with why), no network (proven only where
+ * the hour is known and both countries present), or unknown. */
+export type CellState = { kind: 'present'; values: ReadonlyMap<Field, number | string> } | { kind: 'absent' } | { kind: 'unknown' };
+
+export function cellState(at: PairsAt, values: LiveValues<number>, owner: string, target: string): CellState {
+  const row = at.rows.get(`${owner}|${target}`);
+  if (row !== undefined) {
+    return { kind: 'present', values: new Map(FIELDS.map(field => {
+      const value = values.get(liveKey(row, field));
+      return [field, value ?? values.missing(liveKey(row, field))];
+    })) };
+  }
+  return at.known && at.present.has(owner) && at.present.has(target) ? { kind: 'absent' } : { kind: 'unknown' };
+}
+
+/** The matrix's cells at the values read now, keyed `liveKey(owner, target)`: each network coloured by the chosen
+ * field against the largest shown, none on the diagonal or where no network is proven, the unknown hatch otherwise. */
+export function matrixCells(at: PairsAt, values: LiveValues<number>, field: Field, colour: (value: number, highest: number) => string): LiveValues<MatrixCell> {
+  let highest = 0;
+  for (const row of at.rows.values()) {
+    const value = values.get(liveKey(row, field));
+    if (value !== undefined) highest = Math.max(highest, fieldNumber(field, value));
+  }
+  return {
+    get: key => {
+      const [owner, target] = key.split('\u0000');
+      if (owner === target) return null;
+      const row = at.rows.get(`${owner}|${target}`);
+      if (row === undefined) return at.known && at.present.has(owner) && at.present.has(target) ? null : undefined;
+      const value = values.get(liveKey(row, field));
+      return value === undefined ? undefined : { color: colour(fieldNumber(field, value), highest) };
+    },
+    missing: () => 'Not recorded',
+  };
 }
 
 export const LABELS: Record<Field, string> = {
@@ -121,12 +125,27 @@ export const LABELS: Record<Field, string> = {
 };
 
 export function pairTooltip(owner: string, target: string, cell: CellState, readDate: string | null): TooltipContent {
-  const fields = cell.kind === 'present' ? cell.fields : undefined;
+  const values = cell.kind === 'present' ? cell.values : undefined;
   return {
     title: `${owner} → ${target}`,
     rows: cell.kind === 'unknown' ? [{ label: 'Network', value: 'Not recorded' }]
-      : !fields ? [{ label: 'Network', value: 'No network' }]
-      : [...FIELDS.map(field => ({ label: LABELS[field], value: fields.has(field) ? fieldText(field, fields.get(field)!) : 'Not recorded' })),
-        ...readDate ? [{ label: 'As of', value: readDate }] : []],
+      : !values ? [{ label: 'Network', value: 'No network' }]
+      : [...FIELDS.map(field => {
+        const value = values.get(field);
+        return { label: LABELS[field], value: typeof value === 'number' ? fieldText(field, value) : `Not recorded${value ? ` (${value})` : ''}` };
+      }), ...readDate ? [{ label: 'As of', value: readDate }] : []],
   };
 }
+
+/** A pinned pair's saved owner and target: `TAG|id` each, the target's raw id being its line's part. */
+export interface ChosenPair { owner: string; target: string; targetId: number; hour: number }
+export const pairToken = (pair: ChosenPair) => `${pair.owner}|${pair.target}|${pair.targetId}|${pair.hour}`;
+export function pairOf(owner: unknown, target: unknown): ChosenPair | null {
+  if (typeof owner !== 'string' || typeof target !== 'string' || !owner || !target) return null;
+  const [ownerTag, hour] = owner.split('|');
+  const [targetTag, id] = target.split('|');
+  const targetId = Number(id), at = Number(hour);
+  return ownerTag && targetTag && Number.isSafeInteger(targetId) && Number.isSafeInteger(at) ? { owner: ownerTag, target: targetTag, targetId, hour: at } : null;
+}
+/** The pinned options of `pair`: the owner with the hour it was chosen at, the target with its raw id. */
+export const pairOptions = (pair: ChosenPair) => ({ owner: `${pair.owner}|${pair.hour}`, target: `${pair.target}|${pair.targetId}` });

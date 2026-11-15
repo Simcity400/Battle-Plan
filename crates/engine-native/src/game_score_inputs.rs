@@ -98,28 +98,8 @@ fn vtable(
     Ok(())
 }
 
-/// Shares country authentication, and reads no division, task-force or ship payload.
-/// Visits every authenticated canonical object and inspects the catalogue's
-/// slot zero independently of the positive-reference lookup.
-#[cfg(test)]
-pub fn walk_country_inputs(
-    memory: &impl Memory,
-    base: usize,
-    state: usize,
-    output: &mut [CountryRow],
-    fleets: &mut [FleetCount],
-) -> CountryCapture {
-    walk_country_inputs_buffer(
-        memory,
-        base,
-        state,
-        crate::walk::Buffer::Fixed(output),
-        crate::walk::Buffer::Fixed(fleets),
-    )
-}
-
 /// Ordinary's worker grows from the original country and fleet headers.
-pub fn walk_country_inputs_growing(
+pub fn walk_country_inputs(
     memory: &impl Memory,
     base: usize,
     state: usize,
@@ -667,23 +647,6 @@ pub struct AirRead {
     pub error: &'static str,
     pub len: usize,
     pub required: usize,
-}
-
-/// `entry` is the authenticated observation from cair_wing's owner visitor.
-pub fn read_first_sites(
-    memory: &impl Memory,
-    base: usize,
-    canonical_slot: u32,
-    entry: Option<usize>,
-    output: &mut [AirSite],
-) -> AirRead {
-    read_first_sites_buffer(
-        memory,
-        base,
-        canonical_slot,
-        entry,
-        crate::walk::Buffer::Fixed(output),
-    )
 }
 
 pub fn read_first_sites_buffer(

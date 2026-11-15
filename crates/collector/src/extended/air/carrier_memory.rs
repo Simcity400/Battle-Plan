@@ -22,16 +22,8 @@ pub(super) struct ExactIndex<'a> {
 }
 
 impl<'a> ExactIndex<'a> {
-    pub(super) fn new(slots: &'a mut [usize]) -> Self {
-        slots.fill(usize::MAX);
-        Self {
-            slots: Buffer::Fixed(slots),
-            used: 0,
-            required_slots: 0,
-        }
-    }
 
-    pub(super) fn new_growing(slots: &'a mut Vec<usize>) -> Self {
+    pub(super) fn new(slots: &'a mut Vec<usize>) -> Self {
         slots.fill(usize::MAX);
         Self {
             slots: Buffer::Growing(slots),
@@ -131,11 +123,7 @@ pub(super) fn seed_census(
     source: &RawLog<3>,
     index: &mut ExactIndex<'_>,
 ) -> Result<(), &'static str> {
-    let growing = log.worker_growth_enabled();
     log.clear();
-    if growing {
-        log.enable_worker_growth();
-    }
     index.reset();
     if source.overflowed {
         return Err("carrier original census overflowed");

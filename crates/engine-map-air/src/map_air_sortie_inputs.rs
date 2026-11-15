@@ -829,18 +829,14 @@ pub fn detection_overrides(
     Ok(())
 }
 
+pub fn count_volunteer_hosts(memory: &impl Memory, country: usize) -> Result<usize, &'static str> {
+    volunteer_hosts_buffer(memory, country, Buffer::Count)
+}
+
 /// Raw references in a country's outgoing volunteer-host vector. Only these
 /// references admit a base controller. Returns the vector count and fills
 /// `output` only when it fits.
 pub fn volunteer_hosts(
-    memory: &impl Memory,
-    country: usize,
-    output: &mut [u32],
-) -> Result<usize, &'static str> {
-    volunteer_hosts_buffer(memory, country, Buffer::Fixed(output))
-}
-
-pub fn volunteer_hosts_growing(
     memory: &impl Memory,
     country: usize,
     output: &mut Vec<u32>,
@@ -875,7 +871,7 @@ pub fn storage_demand(
     let mut hosts = 0;
     for slot in 1..countries.arrays()[0].count {
         if let Some(country) = countries.at(slot)? {
-            hosts = hosts.max(volunteer_hosts(memory, country.pointer, &mut [])?);
+            hosts = hosts.max(count_volunteer_hosts(memory, country.pointer)?);
         }
     }
     let mut missions = 0usize;

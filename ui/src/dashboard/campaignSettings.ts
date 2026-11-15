@@ -206,3 +206,18 @@ export function currentCampaignSettings(storage?: Storage): CampaignSettings {
 export function useCampaignSettings(): CampaignSettings {
   return useSyncExternalStore(subscribe, snapshot, snapshot);
 }
+
+/** The faction names and colours that apply in campaign `campaign`, as a string that changes exactly when they do: its own
+ * styles and the colours set for every campaign. Empty for none, or no campaign. */
+export function factionStylesKey(settings: CampaignSettings, campaign: string | null): string {
+  if (campaign === null) return '';
+  const own = settings.campaigns[campaign]?.factions;
+  const shared = Object.keys(settings.shared).length ? settings.shared : undefined;
+  return own || shared ? JSON.stringify([own ?? null, shared ?? null]) : '';
+}
+
+/** `factionStylesKey` of the settings in effect, rendering again only when it changes. */
+export function useFactionStylesKey(campaign: string | null): string {
+  const read = () => factionStylesKey(snapshot(), campaign);
+  return useSyncExternalStore(subscribe, read, read);
+}

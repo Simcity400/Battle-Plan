@@ -145,6 +145,16 @@ struct State {
         Arc<installed_content_core::doctrines::Database>,
     )>,
 }
+/// The doctrine content of `resolved`, read once per resolved content.
+pub(crate) fn database(source: &Source, resolved: &Arc<installed_content_core::content::ResolvedContent>) -> io::Result<Arc<installed_content_core::doctrines::Database>> {
+    let shared = source.state::<State>();
+    let mut state = shared.lock().map_err(|_| invalid("Doctrine content cache poisoned"))?;
+    if state.database.as_ref().is_none_or(|(old, _)| !Arc::ptr_eq(old, resolved)) {
+        state.database = Some((Arc::clone(resolved), Arc::new(installed_content_core::doctrines::read(&resolved.layers)?)));
+    }
+    Ok(Arc::clone(&state.database.as_ref().expect("doctrine content").1))
+}
+
 impl Product for Doctrines {
     const KEY: &'static str = "doctrines";
     const CONTENT_DEPENDENT: bool = true;
@@ -179,22 +189,7 @@ impl Product for Doctrines {
         check_cancel(cancelled)?;
         let options = context.content()?;
         let resolved = source.content(&options.options)?;
-        let shared = source.state::<State>();
-        let mut state = shared
-            .lock()
-            .map_err(|_| invalid("Doctrine content cache poisoned"))?;
-        if state
-            .database
-            .as_ref()
-            .is_none_or(|(old, _)| !Arc::ptr_eq(old, &resolved))
-        {
-            state.database = Some((
-                Arc::clone(&resolved),
-                Arc::new(installed_content_core::doctrines::read(&resolved.layers)?),
-            ));
-        }
-        let database = Arc::clone(&state.database.as_ref().expect("doctrine content").1);
-        drop(state);
+        let database = database(source, &resolved)?;
         let localisation = content::localisation(source, options)?;
         let frame = match source.replay_ref().seek_selected(
             params
@@ -206,7 +201,7 @@ impl Product for Doctrines {
         )? {
             SeekResult::Frame(frame) => frame,
             SeekResult::Gap { reason, .. } => {
-                return Err(dashboard_base::prepared::query::frames::gap_error(
+                return Err(dashboard_base::gap_error(
                     &reason,
                     format!("Doctrine state unavailable at this hour: {reason}"),
                 ));

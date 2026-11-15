@@ -19,11 +19,13 @@
 //! Effective snow is the weather record's
 //! `min(permanent + current, snow_gain_max)`, all three recorded.
 
-use std::{collections::BTreeMap, io};
+use std::{collections::BTreeMap, io, sync::OnceLock};
 
 use installed_content_core::{ResolvedLayers, defines::Defines, parser};
-use replay_data::{rows::Recorded, rows::tables};
-use replay_frame::frame::DecodedFrame;
+use replay_data::{
+    rows::ProvinceRow, rows::Recorded, rows::TableId, rows::WeatherProvinceRow, rows::tables,
+};
+use replay_frame::frame::{DecodedFrame, kept};
 
 use crate::map::unit_models::ModelStatus;
 
@@ -218,15 +220,80 @@ pub fn entity(base: &str, suffix: Option<&str>, exists: impl Fn(&str) -> bool) -
     base.to_owned()
 }
 
-/// One hour's camouflage operands. The division's own status row comes from
-/// the caller, which already keys the hour's statuses.
+/// The fields a kept camouflage reads of each table it reads ([`kept`]).
+pub(crate) struct Fields {
+    /// A province's state, and which provinces there are.
+    pub state: u64,
+    /// A province's current and permanent snow.
+    pub snow: u64,
+    /// The snow ceiling of the first weather region.
+    pub ceiling: u64,
+    /// What a status row says of the division's camouflage.
+    pub status: u64,
+    /// What a witness row says of it.
+    pub witness: u64,
+}
+
+/// [`Fields`], by the recording's own column names.
+pub(crate) fn fields() -> &'static Fields {
+    fn mask(table: TableId, names: &[&str]) -> u64 {
+        let mask = (0..table.schema().len())
+            .filter(|&field| {
+                table
+                    .field_name(field)
+                    .is_some_and(|name| names.contains(&name))
+            })
+            .fold(0, |mask, field| mask | (1_u64 << field));
+        assert_eq!(
+            mask.count_ones() as usize,
+            names.len(),
+            "missing camouflage operand column of {table:?}"
+        );
+        mask
+    }
+    static FIELDS: OnceLock<Fields> = OnceLock::new();
+    FIELDS.get_or_init(|| Fields {
+        state: mask(TableId::Provinces, &["state"]),
+        snow: mask(TableId::WeatherProvinces, &["snow", "permanent_snow"]),
+        ceiling: mask(TableId::WeatherRegions, &["max_snow"]),
+        status: mask(
+            TableId::DivisionStatus,
+            &["camouflage", "acclimatization", "acclimatization_maximum"],
+        ),
+        witness: mask(TableId::DivisionModelInputs, &["camouflage"]),
+    })
+}
+
+/// Each state's provinces, in Provinces' order: what a condition the province does not meet is
+/// tested on. Made from a whole Provinces, so it is kept while no province changes state.
+#[derive(Debug, Default)]
+pub struct StateMembers(BTreeMap<u32, Vec<u32>>);
+
+impl StateMembers {
+    /// Notes its read for a kept answer: every province's state, and which provinces there are.
+    pub fn read(provinces: &[ProvinceRow]) -> Self {
+        kept::note_table(TableId::Provinces, fields().state);
+        let mut members: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
+        for row in provinces.iter().filter(|row| row.state != 0) {
+            members.entry(row.state).or_default().push(row.id);
+        }
+        Self(members)
+    }
+
+    fn of(&self, state: u32) -> &[u32] {
+        self.0.get(&state).map_or(&[], Vec::as_slice)
+    }
+}
+
+/// One hour's camouflage operands, each looked up alone in the frame's rows (ascending by
+/// province, the weather a dense array by province). The division's own status row and its
+/// state's members come from the caller. Every row a camouflage reads is noted for a kept
+/// answer ([`kept`]).
 pub struct Context<'a> {
-    provinces: BTreeMap<u32, u32>,
-    state_members: BTreeMap<u32, Vec<u32>>,
+    provinces: &'a [ProvinceRow],
     /// The dense prefix of the native weather array and the native count,
     /// which bounds the getter even when the capture was truncated.
-    /// Province id to (current, permanent) snow words.
-    weather_snow: BTreeMap<u32, (i64, i64)>,
+    weather: &'a [WeatherProvinceRow],
     /// `snow_gain_max`; `None` without a weather region row.
     ceiling: Option<i64>,
     weather_count: Option<usize>,
@@ -234,17 +301,15 @@ pub struct Context<'a> {
 }
 
 impl<'a> Context<'a> {
+    /// No operands, for a reader that never asks for camouflage (the ships).
+    pub fn none(terrain: &'a BTreeMap<u32, String>) -> Self {
+        Self { provinces: &[], weather: &[], ceiling: None, weather_count: None, terrain }
+    }
+
     /// `terrain` is each province's authored terrain, column seven of the
     /// matching province definitions.
     pub fn read(frame: &'a DecodedFrame, terrain: &'a BTreeMap<u32, String>) -> io::Result<Self> {
-        let mut provinces = BTreeMap::new();
-        let mut state_members: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
-        for row in core::<tables::Provinces>(frame)? {
-            provinces.insert(row.id, row.state);
-            if row.state != 0 {
-                state_members.entry(row.state).or_default().push(row.id);
-            }
-        }
+        let provinces = core::<tables::Provinces>(frame)?;
         let weather = rows::<tables::WeatherProvinces>(frame)?;
         let weather_count = match &weather {
             Available::Complete(rows) => Some(rows.len()),
@@ -255,19 +320,19 @@ impl<'a> Context<'a> {
             ),
             Available::Unavailable { .. } | Available::NotRecorded { .. } => None,
         };
-        let mut weather_snow = BTreeMap::new();
-        for (slot, row) in weather.rows().iter().enumerate() {
-            if usize::try_from(row.id).ok() != Some(slot) {
-                return Err(invalid(format!(
-                    "weather province {slot} differs from its dense native array slot"
-                )));
-            }
-            weather_snow.insert(row.id, (row.snow, row.permanent_snow));
+        let weather = weather.rows();
+        if let Some(slot) = weather
+            .iter()
+            .enumerate()
+            .position(|(slot, row)| usize::try_from(row.id).ok() != Some(slot))
+        {
+            return Err(invalid(format!(
+                "weather province {slot} differs from its dense native array slot"
+            )));
         }
         Ok(Self {
             provinces,
-            state_members,
-            weather_snow,
+            weather,
             ceiling: rows::<tables::WeatherRegions>(frame)?
                 .rows()
                 .first()
@@ -277,38 +342,50 @@ impl<'a> Context<'a> {
         })
     }
 
-    /// The suffix for one division at its drawn province. A missing operand
-    /// is an error, never a false test.
+    /// The hour's provinces, which [`StateMembers::read`] groups.
+    pub fn provinces(&self) -> &'a [ProvinceRow] {
+        self.provinces
+    }
+
+    fn province(&self, province: u32) -> Option<&'a ProvinceRow> {
+        self.provinces
+            .binary_search_by_key(&province, |row| row.id)
+            .ok()
+            .map(|at| &self.provinces[at])
+    }
+
+    /// The suffix for one division at its drawn province, `members` its state's provinces. A
+    /// missing operand is an error, never a false test.
     pub fn suffix<'b>(
         &self,
         content: &'b Content,
         tokens: TokenNames<'_>,
         status: ModelStatus<'_>,
         province: u32,
+        members: &StateMembers,
     ) -> io::Result<Option<&'b str>> {
-        let state = *self.provinces.get(&province).ok_or_else(|| {
+        kept::note_table(TableId::Provinces, fields().state);
+        let state = self.province(province).map(|row| row.state).ok_or_else(|| {
             invalid(format!(
                 "division {} has unknown province {province}",
                 status.division()
             ))
         })?;
-        let members = self
-            .state_members
-            .get(&state)
-            .map_or(&[][..], Vec::as_slice);
-        content.suffix(status, tokens, province, members, |id, condition| {
+        content.suffix(status, tokens, province, members.of(state), |id, condition| {
             self.matches(id, condition)
         })
     }
 
     fn matches(&self, province: u32, condition: &str) -> io::Result<bool> {
-        if !self.provinces.contains_key(&province) {
+        if self.province(province).is_none() {
             return Err(invalid(format!(
                 "camouflage references unknown province {province}"
             )));
         }
         if condition == SNOW {
-            let Some((current, permanent)) = self.weather_snow.get(&province).copied() else {
+            let Some(row) = self.weather.get(province as usize) else {
+                // Which rows there are decides this.
+                kept::note_table(TableId::WeatherProvinces, u64::MAX);
                 // An ID outside the weather province census returns no snow
                 // before either snow operand is read.
                 if self
@@ -321,10 +398,12 @@ impl<'a> Context<'a> {
                     "province {province} has no captured weather snow operand"
                 )));
             };
+            kept::note_row(TableId::WeatherProvinces, u128::from(province), fields().snow);
+            kept::note_table(TableId::WeatherRegions, fields().ceiling);
             let ceiling = self
                 .ceiling
                 .ok_or_else(|| invalid("the snow ceiling is not recorded this hour"))?;
-            return Ok(permanent.wrapping_add(current).min(ceiling) > 0);
+            return Ok(row.permanent_snow.wrapping_add(row.snow).min(ceiling) > 0);
         }
         let terrain = self.terrain.get(&province).ok_or_else(|| {
             invalid(format!(

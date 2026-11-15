@@ -3,7 +3,7 @@ import type { CountryFactsReply, CountryFlagChoice, CountryStyle } from '../gene
 import type { DashboardClient, DashboardSource } from './client';
 import type { FactSource } from './countryFacts';
 import { loadTransientProduct } from './products.ts';
-import { finalPreparedReply } from './preparedPrefix.ts';
+import { PerClient } from './prepare.ts';
 
 /** A country's style at an hour, with the warnings that concern it: the recording's and its own. */
 export type HeldStyle = CountryStyle & { warnings: readonly string[] };
@@ -26,9 +26,9 @@ const RETRY_MS = 8000;
 const GROWING_MS = 2000;
 
 /** Each recording and branch's timeline for the content it was read under, per client. */
-const held = new WeakMap<DashboardClient, Map<string, Entry>>();
+const held = new PerClient<Map<string, Entry>>();
 /** Who is told when a recording and branch's timeline changes, per client. */
-const watchers = new WeakMap<DashboardClient, Map<string, Set<() => void>>>();
+const watchers = new PerClient<Map<string, Set<() => void>>>();
 
 const timelineKey = (source: Pick<FactSource, 'sourceId' | 'revision' | 'branchId'>) => JSON.stringify([source.sourceId, source.revision, source.branchId]);
 
@@ -101,7 +101,7 @@ export function askTimeline(client: DashboardClient, source: FactSource, recordi
     params: { branchId: source.branchId } }, controller.signal, recording).then(data => {
     const reply = validateCountryFacts(data);
     if (entries.get(key)?.controller === controller) setEntry(client, entries, key, { content, askAt: Date.now() + GROWING_MS,
-      timeline: { reply, runs: new Map(reply.countries.map(country => [country.tag, country.runs as Run[]])), final: finalPreparedReply(data),
+      timeline: { reply, runs: new Map(reply.countries.map(country => [country.tag, country.runs as Run[]])), final: true,
         colours: current?.colours ?? new Map() } });
   }).catch(error => {
     if (entries.get(key)?.controller === controller) setEntry(client, entries, key, { content, timeline: current, error: asFailure(error), askAt: Date.now() + RETRY_MS });
@@ -131,11 +131,27 @@ export function retryTimelines(client: DashboardClient, sourceId: string): void 
   }
 }
 
-/** Whether the timeline holds `hour`. */
-function holds(known: readonly (readonly number[])[], hour: number): boolean {
+/** The span of `known` holding `hour`, or undefined. */
+function spanAt(known: readonly (readonly number[])[], hour: number): readonly number[] | undefined {
   let low = 0, high = known.length;
   while (low < high) { const middle = (low + high) >> 1; if (known[middle][1] < hour) low = middle + 1; else high = middle; }
-  return low < known.length && known[low][0] <= hour;
+  return low < known.length && known[low][0] <= hour ? known[low] : undefined;
+}
+
+/** Whether the timeline holds `hour`. */
+const holds = (known: readonly (readonly number[])[], hour: number) => spanAt(known, hour) !== undefined;
+
+/** The last hour at or before `hour` at which one of `tags`' name, colour, reason or flag in `facts`
+ * changed, so each reads the same there as at `hour`; undefined when `facts` does not hold `hour`. */
+export function identitySince(facts: CountryTimeline, hour: number, tags: readonly string[]): number | undefined {
+  const span = spanAt(facts.reply.known, hour);
+  if (!span) return undefined;
+  let since = span[0];
+  for (const tag of tags) {
+    const run = runAt(facts.runs.get(tag) ?? [], hour);
+    if (run && run[0] > since) since = run[0];
+  }
+  return since;
 }
 
 /** The run of `runs` in force at `hour`, or undefined before the first. */

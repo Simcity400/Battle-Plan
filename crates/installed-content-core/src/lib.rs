@@ -39,6 +39,7 @@ pub mod ideologies;
 pub use installed_content_image as image;
 pub mod industrial_organisations;
 pub mod intelligence;
+pub mod kept;
 pub mod key_names;
 pub mod leader_traits;
 pub mod map;

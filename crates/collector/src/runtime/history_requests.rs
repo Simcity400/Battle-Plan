@@ -65,8 +65,16 @@ struct Mailbox {
 }
 pub(super) struct SpoolHistory(Arc<Mutex<Mailbox>>);
 impl SpoolHistory {
-    pub(super) fn poll(&self, processor: &mut Processor, frames: &crate::frame_fence::Frames) {
-        self.poll_fenced_with(Some(frames), |text| processor.try_history_request(text));
+    /// `owned` holds every frame's capture sequence ([`crate::frame_fence`]).
+    pub(super) fn poll<'a>(
+        &self,
+        processor: &mut Processor,
+        frames: &crate::frame_fence::Frames,
+        owned: impl IntoIterator<Item = &'a std::sync::atomic::AtomicU64>,
+    ) {
+        self.poll_fenced_with(Some((frames, owned)), |text| {
+            processor.try_history_request(text)
+        });
         self.restore_with(|campaign, file| processor.exchange_history_lease(campaign, file));
     }
 
@@ -82,12 +90,15 @@ impl SpoolHistory {
         &self,
         begin: impl FnMut(&str) -> io::Result<Option<(HistoryReply, Option<File>)>>,
     ) {
-        self.poll_fenced_with(None, begin);
+        self.poll_fenced_with(None::<(&crate::frame_fence::Frames, [&std::sync::atomic::AtomicU64; 0])>, begin);
     }
 
-    fn poll_fenced_with(
+    fn poll_fenced_with<'a>(
         &self,
-        frames: Option<&crate::frame_fence::Frames>,
+        frames: Option<(
+            &crate::frame_fence::Frames,
+            impl IntoIterator<Item = &'a std::sync::atomic::AtomicU64>,
+        )>,
         mut begin: impl FnMut(&str) -> io::Result<Option<(HistoryReply, Option<File>)>>,
     ) {
         let Ok(mut mailbox) = self.0.try_lock() else {
@@ -97,9 +108,9 @@ impl SpoolHistory {
         let Some(Command::Begin(text)) = command.as_ref() else {
             return;
         };
-        if let Some(frames) = frames
+        if let Some((frames, owned)) = frames
             && matches!(text.split_whitespace().nth(1), Some("close" | "release"))
-            && frames.pending(*fence.get_or_insert_with(|| frames.snapshot()))
+            && frames.pending(*fence.get_or_insert_with(|| frames.snapshot()), owned)
         {
             return;
         }
@@ -188,7 +199,7 @@ impl HistoryWorker {
     pub(super) fn start(
         session: PathBuf,
         replay_directory: PathBuf,
-        refresh: Option<Arc<crate::sampling::Shared>>,
+        refresh: Option<engine_allocation::SharedBox<crate::sampling::Shared>>,
     ) -> io::Result<(Self, SpoolHistory)> {
         let mailbox = Arc::new(Mutex::new(Mailbox::default()));
         let stop = Arc::new(AtomicBool::new(false));
@@ -204,6 +215,8 @@ impl HistoryWorker {
         let thread = std::thread::Builder::new()
             .name("hoi4-history".into())
             .spawn(move || {
+                crate::private_heap::off_hold_path();
+                let _phase = crate::allocation::enter(crate::allocation::Phase::History);
                 crate::runtime::OwnPriority::new().follow(false);
                 worker_id.store(
                     unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() },
@@ -819,9 +832,9 @@ mod tests {
             assert!(!path.with_extension("ack").exists());
             let shared = crate::sampling::Shared::new(0, 0, 1);
             let held: Vec<_> = (0..crate::sampling::BUFFERS)
-                .map(|_| shared.free.pop().unwrap())
+                .map(|_| shared.frames.pop().unwrap())
                 .collect();
-            assert!(shared.free.is_empty());
+            assert_eq!(shared.frames.len(), 0);
             for &index in &held {
                 spool.poll_with(|_| panic!("worker is blocked outside the handoff"));
                 shared.recycle_frame(index);
@@ -832,7 +845,7 @@ mod tests {
             for index in held {
                 shared.recycle_frame(index);
             }
-            assert_eq!(shared.free.len(), crate::sampling::BUFFERS);
+            assert_eq!(shared.frames.len(), crate::sampling::BUFFERS);
             release.send(()).unwrap();
             worker.join().unwrap();
         });
@@ -1037,7 +1050,9 @@ mod tests {
         }
         let frames = crate::frame_fence::Frames::default();
         let acquiring = frames.capture();
-        handoff.poll_fenced_with(Some(&frames), |_| panic!("capture has not drained"));
+        handoff.poll_fenced_with(Some((&frames, std::iter::empty())), |_| {
+            panic!("capture has not drained")
+        });
         assert!(handoff.0.lock().unwrap().fence.is_some());
         worker.finish().unwrap();
         assert!(root.join("history-requests/detached").exists());
@@ -1084,9 +1099,9 @@ mod tests {
         let requests = root.join(REFRESH_REQUESTS);
         // Requests the worker cannot read reach the spool's status warning.
         fs::write(&requests, "not a folder").unwrap();
-        let shared = Arc::new(crate::sampling::Shared::new(0, 0, 1));
+        let shared = engine_allocation::shared(crate::sampling::Shared::new(0, 0, 1)).unwrap();
         let (mut worker, handoff) =
-            HistoryWorker::start(root.clone(), root.clone(), Some(Arc::clone(&shared))).unwrap();
+            HistoryWorker::start(root.clone(), root.clone(), Some(shared.clone())).unwrap();
         let started = Instant::now();
         while !handoff.take_refresh_failure() {
             assert!(started.elapsed() < crate::TEST_HANG_GUARD);
@@ -1166,27 +1181,28 @@ mod tests {
         let root = root();
         let live = root.join("sessions/1");
         let frames = crate::frame_fence::Frames::default();
+        let owned = [const { std::sync::atomic::AtomicU64::new(0) }; 3];
         let mailbox = Arc::new(Mutex::new(Mailbox::default()));
         let spool = SpoolHistory(Arc::clone(&mailbox));
         let mut processor =
             Processor::new(&live, PreparedCampaigns::default(), session(1)).unwrap();
         for index in 0..2 {
             let capture = frames.capture();
-            capture.frame(index);
+            capture.frame(&owned[index]);
         }
         processor
             .frame(&campaign_frame(CAMPAIGN.as_bytes(), 1234, 10))
             .unwrap();
-        frames.recycle(0);
+        frames.recycle(&owned[0]);
         mailbox.lock().unwrap().command =
             Some(Command::Begin(format!("0001 close {CAMPAIGN} 1234")));
-        spool.poll(&mut processor, &frames);
+        spool.poll(&mut processor, &frames, &owned);
         assert!(mailbox.lock().unwrap().response.is_none());
         processor
             .frame(&campaign_frame(CAMPAIGN.as_bytes(), 1234, 11))
             .unwrap();
-        frames.recycle(1);
-        spool.poll(&mut processor, &frames);
+        frames.recycle(&owned[1]);
+        spool.poll(&mut processor, &frames, &owned);
         let Some(Response::Began(Ok((HistoryReply::Closing { receipt, .. }, None)))) =
             mailbox.lock().unwrap().response.take()
         else {
@@ -1197,24 +1213,28 @@ mod tests {
         }
         assert_eq!(receipt.result(), Some(Ok(())));
         mailbox.lock().unwrap().command = Some(Command::Begin(format!("0002 release {CAMPAIGN}")));
-        spool.poll(&mut processor, &frames);
+        spool.poll(&mut processor, &frames, &owned);
         assert!(matches!(mailbox.lock().unwrap().response.take(),
             Some(Response::Began(Ok((HistoryReply::Ready(ack), None)))) if ack == "0002 ok"));
-        let (saved, _) = recorder_replay::replay_io::save_campaign(
+        let settings = root.join("settings.json");
+        let naming = recorder_replay::replay_io::Naming {
+            localisation: None,
+            settings: &settings,
+            report: None,
+        };
+        // Both frames are in the campaign's journal, which the session's end writes and saves.
+        processor.detach().unwrap();
+        let ended = recorder_replay::replay_io::finalize_session_ahead(
             &live,
             &root.join("recordings"),
-            CAMPAIGN,
-            false,
             &|| Ok(()),
-            &mut recorder_replay::replay_io::Ahead::default(),
-            recorder_replay::replay_io::Naming {
-                localisation: None,
-                settings: &root.join("settings.json"),
-                report: None,
-            },
+            recorder_replay::replay_io::Live::default(),
+            naming,
+            &|_| recorder_replay::replay_io::Destination::Recording,
         )
         .unwrap();
-        let replay = replay::campaign::Replay::open_path(&saved.unwrap()).unwrap();
+        assert!(ended.errors.is_empty(), "{:?}", ended.errors);
+        let replay = replay::campaign::Replay::open_path(&ended.replays[0]).unwrap();
         let hours: Vec<_> = replay
             .index
             .iter()
@@ -1231,39 +1251,40 @@ mod tests {
         use crate::{history::PreparedCampaigns, spooling::campaign_frame};
         let root = root();
         let frames = crate::frame_fence::Frames::default();
+        let owned = [const { std::sync::atomic::AtomicU64::new(0) }; 3];
         let mailbox = Arc::new(Mutex::new(Mailbox::default()));
         let spool = SpoolHistory(Arc::clone(&mailbox));
         let mut processor =
             Processor::new(&root, PreparedCampaigns::default(), session(1)).unwrap();
         let capture = frames.capture();
-        capture.frame(0);
+        capture.frame(&owned[0]);
         mailbox.lock().unwrap().command = Some(Command::Begin(format!("0001 release {CAMPAIGN}")));
-        spool.poll(&mut processor, &frames);
+        spool.poll(&mut processor, &frames, &owned);
         assert!(mailbox.lock().unwrap().response.is_none());
         drop(capture);
-        spool.poll(&mut processor, &frames);
+        spool.poll(&mut processor, &frames, &owned);
         assert!(mailbox.lock().unwrap().response.is_none());
         processor
             .frame(&campaign_frame(CAMPAIGN.as_bytes(), 1234, 10))
             .unwrap();
-        frames.recycle(0);
-        spool.poll(&mut processor, &frames);
+        frames.recycle(&owned[0]);
+        spool.poll(&mut processor, &frames, &owned);
         assert!(matches!(mailbox.lock().unwrap().response.take(),
             Some(Response::Began(Ok((HistoryReply::Ready(ack), None)))) if ack == "0001 refused the campaign is recording"));
         let capture = frames.capture();
-        capture.frame(1);
+        capture.frame(&owned[1]);
         drop(capture);
         mailbox.lock().unwrap().command =
             Some(Command::Begin(format!("0002 close {CAMPAIGN} 1234")));
-        spool.poll(&mut processor, &frames);
+        spool.poll(&mut processor, &frames, &owned);
         assert!(mailbox.lock().unwrap().response.is_none());
         processor
             .frame(&campaign_frame(CAMPAIGN.as_bytes(), 5678, 20))
             .unwrap();
-        frames.recycle(1);
+        frames.recycle(&owned[1]);
         let later_b = frames.capture();
-        later_b.frame(2);
-        spool.poll(&mut processor, &frames);
+        later_b.frame(&owned[2]);
+        spool.poll(&mut processor, &frames, &owned);
         assert!(matches!(mailbox.lock().unwrap().response.take(),
             Some(Response::Began(Ok((HistoryReply::Ready(ack), None)))) if ack == "0002 refused the campaign was loaded again"));
         drop(later_b);
@@ -1280,23 +1301,24 @@ mod tests {
         let settings = root.join("settings.json");
         let earlier = root.join("sessions/1");
         let live = root.join("sessions/2");
+        // An ended session's journal is written to its end and its recording saved.
         let save = |folder: &Path| {
-            replay_io::save_campaign(
+            let naming = replay_io::Naming {
+                localisation: None,
+                settings: &settings,
+                report: None,
+            };
+            let ended = replay_io::finalize_session_ahead(
                 folder,
                 &output,
-                CAMPAIGN,
-                false,
                 &|| Ok(()),
-                &mut replay_io::Ahead::default(),
-                replay_io::Naming {
-                    localisation: None,
-                    settings: &settings,
-                    report: None,
-                },
+                replay_io::Live::default(),
+                naming,
+                &|_| replay_io::Destination::Recording,
             )
-            .unwrap()
-            .0
-            .unwrap()
+            .unwrap();
+            assert!(ended.errors.is_empty(), "{:?}", ended.errors);
+            ended.replays[0].clone()
         };
         let mut processor =
             Processor::new(&earlier, PreparedCampaigns::default(), session(1)).unwrap();

@@ -198,6 +198,7 @@ fn fixture() -> (TestDir, ModelLibrary, usize) {
             bound: 1.,
             convoy_radius: None,
             attachments: 0,
+            cull_distance_squared: installed_content_core::mesh::DEFAULT_CULL_DISTANCE_SQUARED,
         });
         library.rigs.push(Arc::new(Rig {
             nodes: vec![entity_animation::Node {
@@ -1297,4 +1298,271 @@ fn native_plan_tail_keeps_independent_late_fatal_prefix_and_recovery() {
             for arena in &arenas { arena.reset(); }
         }
     }
+}
+
+/// A kept list's draws equal a fresh walk's draw for draw: the same pipeline, groups and ranges,
+/// and the bytes the fresh walk staged where each kept draw reads them in the list now.
+fn same_draws(kept: &DrawList, bytes: &[u8], fresh: &DrawList) {
+    assert_eq!(kept.draws.len(), fresh.draws.len());
+    assert!(!kept.draws.is_empty());
+    for (kept, fresh) in kept.draws.iter().zip(&fresh.draws) {
+        let (staged, _) = fresh.bindings.preparation_proof();
+        let (reads, offsets) = kept.bindings.preparation_proof();
+        assert_eq!(staged.len(), offsets.len());
+        for (((binding, staged), (read, _)), offset) in staged.iter().zip(reads).zip(offsets) {
+            assert_eq!(binding, read);
+            let at = *offset as usize;
+            assert_eq!(&bytes[at..at + staged.len()], &staged[..], "binding {binding}");
+        }
+        assert!(kept.bindings.same_resources(&fresh.bindings));
+        let draw = |draw: &RecordedDraw| {
+            (draw.reference, draw.vertices, draw.indices, draw.first, draw.count, draw.base)
+        };
+        assert_eq!(draw(kept), draw(fresh));
+    }
+}
+
+/// The retained casters equal a fresh caster walk draw for draw, byte for byte: after the walk
+/// that makes them, in a kept frame (no walk), after an instance moved (its own nodes rewritten)
+/// and after the camera moved (walked again); a figure leaving and another joining are walked
+/// alone into the list.
+#[test]
+#[ignore = "requires the pinned shader compiler and a GPU"]
+fn retained_casters_equal_a_fresh_walk_and_a_kept_frame_walks_nothing() {
+    let (_directory, library, blank) = fixture();
+    let (_serial, device, queue) = tests::device();
+    let placed = |x: f32| -> Vec<(usize, ModelInstance)> {
+        (0..library.meshes.len())
+            .map(|mesh| {
+                (
+                    mesh,
+                    ModelInstance {
+                        position: [x + mesh as f32, 0., 0.],
+                        scale: 1.,
+                        animation_identity: mesh as u32 + 1,
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect()
+    };
+    let mut model = ModelPass::new(&library, "map buildings");
+    model
+        .upload(&device, &queue, &library, ModelField::build(&library, placed(0.), 128.))
+        .unwrap();
+    model.settle_builds(true);
+    let globals = model.textures[blank].as_ref().unwrap().view.clone();
+    let arena = shader_pipeline::gpu::Arena::new(&device);
+    let mut camera = Camera {
+        center: [0., 0.],
+        height: 100.,
+        map: MapSize {
+            width: 100,
+            height: 100,
+        },
+        defines: MapDefines::test(),
+        pose: viewer_foundation::map::camera::Pose::Map,
+    };
+    let compare = |model: &ModelPass, frame: ModelFrame<'_>, inputs: Inputs<'_>| {
+        let fresh = model
+            .prepare_native(&arena, frame, inputs, Queue::Caster, &mut ObjectConstants::default())
+            .unwrap();
+        let renderer = model.native.borrow();
+        let list = &renderer.as_ref().unwrap().casters;
+        same_draws(&list.draws, list.bytes(), &fresh);
+        let counts = list.counts();
+        drop(renderer);
+        model.recycle_native(fresh);
+        counts
+    };
+    let step = |model: &mut ModelPass, camera: Camera, scene: u8| {
+        arena.reset();
+        let scene = [scene; 416];
+        let frames = [scene.as_slice()];
+        let inputs = Inputs {
+            samples: 1,
+            frames: &frames,
+            grid: &[0; 16],
+            textures: [&globals; 10],
+        };
+        let frame = ModelFrame {
+            camera,
+            offsets: &[0.],
+            visible: None,
+            alpha: 1.,
+        };
+        model.prepare_casters(&arena, frame, inputs).unwrap();
+        compare(model, frame, inputs)
+    };
+    let walks = |counts: kept::Counts| (counts.walks, counts.kept);
+    assert_eq!(walks(step(&mut model, camera, 1)), (1, 0), "the first frame walks");
+    assert_eq!(walks(step(&mut model, camera, 2)), (1, 1), "the same inputs walk nothing");
+    assert_eq!(walks(step(&mut model, camera, 3)), (1, 2));
+    model.update_placed(placed(0.), 128.);
+    assert_eq!(walks(step(&mut model, camera, 4)), (1, 3), "placements made again unchanged");
+    model.update_placed(placed(0.5), 128.);
+    assert_eq!(walks(step(&mut model, camera, 5)), (1, 4), "a move rewrites its nodes in place");
+    camera.center[0] += 1.;
+    assert_eq!(walks(step(&mut model, camera, 6)), (2, 4), "the camera walks again");
+    assert_eq!(walks(step(&mut model, camera, 7)), (2, 5));
+    // The first entity's figure leaves and the second's is another actor: that one is walked
+    // alone and the list equals a fresh walk, draw for draw.
+    let mut other = placed(0.5);
+    other.remove(0);
+    other[0].1.animation_identity = 100;
+    model.update_placed(other.clone(), 128.);
+    let counts = step(&mut model, camera, 8);
+    assert_eq!((counts.walks, counts.spliced, counts.figures), (2, 1, 1));
+    // The first entity's figure comes back: walked alone again, the others kept.
+    model.update_placed(placed(0.5).into_iter().take(1).chain(other).collect(), 128.);
+    let counts = step(&mut model, camera, 9);
+    assert_eq!((counts.walks, counts.spliced, counts.figures), (2, 2, 2));
+    assert_eq!(walks(step(&mut model, camera, 10)), (2, 8));
+    queue.submit([]);
+}
+
+/// A lit queue's kept list equals a fresh lit walk draw for draw, and leaves the same object
+/// block and pixel snapshot for the next pass: after the walk that makes it, in kept frames,
+/// after an instance moved and after a figure left and another joined.
+#[test]
+#[ignore = "requires the pinned shader compiler and a GPU"]
+fn a_kept_lit_list_equals_a_fresh_lit_walk_and_leaves_the_same_constant_state() {
+    let (_directory, library, blank) = fixture();
+    let (_serial, device, queue) = tests::device();
+    let placed = |x: f32| -> Vec<(usize, ModelInstance)> {
+        (0..library.meshes.len())
+            .map(|mesh| {
+                (
+                    mesh,
+                    ModelInstance {
+                        position: [x + mesh as f32, 0., 0.],
+                        scale: 1.,
+                        animation_identity: mesh as u32 + 1,
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect()
+    };
+    let mut model = ModelPass::new(&library, "map buildings");
+    model
+        .upload(&device, &queue, &library, ModelField::build(&library, placed(0.), 128.))
+        .unwrap();
+    model.settle_builds(true);
+    let globals = model.textures[blank].as_ref().unwrap().view.clone();
+    let arena = shader_pipeline::gpu::Arena::new(&device);
+    let camera = Camera {
+        center: [0., 0.],
+        height: 100.,
+        map: MapSize {
+            width: 100,
+            height: 100,
+        },
+        defines: MapDefines::test(),
+        pose: viewer_foundation::map::camera::Pose::Map,
+    };
+    let step = |model: &mut ModelPass, scene: u8| {
+        arena.reset();
+        let scene = [scene; 416];
+        let frames = [scene.as_slice()];
+        let inputs = Inputs {
+            samples: 1,
+            frames: &frames,
+            grid: &[0; 16],
+            textures: [&globals; 10],
+        };
+        let frame = ModelFrame {
+            camera,
+            offsets: &[0.],
+            visible: None,
+            alpha: 1.,
+        };
+        let (mut kept_state, mut fresh_state) = (ObjectConstants::default(), ObjectConstants::default());
+        let kept = model.prepare_kept(&arena, frame, inputs, Queue::Regular, &mut kept_state).unwrap();
+        let fresh = model.prepare_native(&arena, frame, inputs, Queue::Regular, &mut fresh_state).unwrap();
+        let counts = {
+            let renderer = model.native.borrow();
+            let list = &renderer.as_ref().unwrap().lit[0][0];
+            same_draws(&kept, list.bytes(), &fresh);
+            list.counts()
+        };
+        assert_eq!(kept_state.bytes, fresh_state.bytes, "the next pass starts from the same block");
+        assert_eq!(kept_state.pixel, fresh_state.pixel, "and the same pixel snapshot");
+        model.recycle_kept(kept);
+        model.recycle_native(fresh);
+        counts
+    };
+    let walks = |counts: kept::Counts| (counts.walks, counts.kept, counts.spliced);
+    assert_eq!(walks(step(&mut model, 1)), (1, 0, 0), "the first frame walks");
+    assert_eq!(walks(step(&mut model, 2)), (1, 1, 0), "the same inputs walk nothing");
+    model.update_placed(placed(0.5), 128.);
+    assert_eq!(walks(step(&mut model, 3)), (1, 2, 0), "a move rewrites its nodes in place");
+    let mut other = placed(0.5);
+    other.remove(0);
+    other[0].1.animation_identity = 100;
+    model.update_placed(other, 128.);
+    assert_eq!(walks(step(&mut model, 4)), (1, 3, 1), "a figure left and another joined");
+    assert_eq!(walks(step(&mut model, 5)), (1, 4, 1));
+    queue.submit([]);
+}
+
+/// A pass with no content stack (its library built empty) that places nothing, at a camera that
+/// draws no figure, gives empty kept lit lists and casters and asks for no renderer: it needs
+/// none, as the walks it replaced never did.
+#[test]
+#[ignore = "requires a GPU"]
+fn a_pass_with_no_content_stack_and_nothing_placed_draws_nothing_and_needs_no_renderer() {
+    let (_serial, device, _queue) = tests::device();
+    let arena = shader_pipeline::gpu::Arena::new(&device);
+    let pass = ModelPass::with_rigs_for_tests(Vec::new(), "unit models");
+    assert!(pass.layers.is_none());
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size: wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&Default::default());
+    let scene = [0u8; 416];
+    let frames = [scene.as_slice()];
+    let inputs = Inputs {
+        samples: 1,
+        frames: &frames,
+        grid: &[0; 16],
+        textures: [&view; 10],
+    };
+    let frame = ModelFrame {
+        camera: Camera {
+            center: [0., 0.],
+            height: 2000.,
+            map: MapSize {
+                width: 100,
+                height: 100,
+            },
+            defines: MapDefines::test(),
+            pose: viewer_foundation::map::camera::Pose::Map,
+        },
+        offsets: &[0.],
+        visible: Some([0., 0., 100., 100.]),
+        alpha: 1.,
+    };
+    let mut object = ObjectConstants::default();
+    for queue in [Queue::Regular, Queue::Alternate] {
+        let draws = pass
+            .prepare_kept(&arena, frame, inputs, queue, &mut object)
+            .expect("a pass that draws nothing is no refusal");
+        assert!(draws.draws.is_empty());
+        pass.recycle_kept(draws);
+    }
+    pass.prepare_casters(&arena, frame, inputs)
+        .expect("nor are its casters");
+    assert!(pass.native.borrow().is_none(), "no renderer, so no content stack, was asked for");
 }

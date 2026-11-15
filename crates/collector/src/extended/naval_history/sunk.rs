@@ -301,7 +301,6 @@ fn copy_sunk_record(
 /// One structural copy pass: history vector plus every record with class,
 /// text and province takes. The job is cleared on entry so pooled refreshes
 /// never accumulate spans across hours.
-#[cfg(test)]
 fn copy_sunk_pass(
     job: &mut SunkJob,
     memory: &impl engine_native::Memory,
@@ -310,18 +309,7 @@ fn copy_sunk_pass(
     current_hour: i32,
     ticks: &mut [u64; SUNK_N],
 ) {
-    copy_sunk_pass_mode(job, memory, base, game_state, current_hour, ticks, false);
-}
-
-fn copy_sunk_pass_growing(
-    job: &mut SunkJob,
-    memory: &impl engine_native::Memory,
-    base: usize,
-    game_state: usize,
-    current_hour: i32,
-    ticks: &mut [u64; SUNK_N],
-) {
-    copy_sunk_pass_mode(job, memory, base, game_state, current_hour, ticks, true);
+    copy_sunk_pass_mode(job, memory, base, game_state, current_hour, ticks);
 }
 
 fn copy_sunk_pass_mode(
@@ -331,13 +319,9 @@ fn copy_sunk_pass_mode(
     game_state: usize,
     current_hour: i32,
     ticks: &mut [u64; SUNK_N],
-    growing: bool,
 ) {
     let _reads = read_accounting::table(TableId::SunkShips);
     job.clear();
-    if growing {
-        job.log.enable_worker_growth();
-    }
     job.active = true;
     job.game_state = game_state;
     job.hour = current_hour;
@@ -398,24 +382,6 @@ fn copy_sunk_tables(
 }
 
 /// Acquire one owned hourly sunk-ships payload.
-pub(crate) fn copy_sunk_refresh_growing(
-    memory: &impl Memory,
-    ctx: SunkCopyContext,
-    job: &mut SunkJob,
-) -> SunkCopyReport {
-    if !replay_data::cadence::should_walk(TableId::SunkShips, ctx.hour, ctx.force_full) {
-        job.clear();
-        return SunkCopyReport::default();
-    }
-    let mut ticks = [0u64; SUNK_N];
-    copy_sunk_pass_growing(job, memory, ctx.base, ctx.game_state, ctx.hour, &mut ticks);
-    SunkCopyReport {
-        raw_ok: !job.log.overflowed,
-        copy_ticks: ticks,
-    }
-}
-
-#[cfg(test)]
 pub(crate) fn copy_sunk_refresh(
     memory: &impl Memory,
     ctx: SunkCopyContext,
@@ -456,27 +422,22 @@ impl Captured {
             self.fail_sunk_capture(replay_data::cadence::SKIPPED_REASON);
             return;
         }
-        let recorded = crate::raw::Recorded::build(&job.log);
-        let started = qpc();
-        let first = if job.log.worker_growth_enabled() {
-            csunk_ship_info::walk_growing(
-                &recorded,
-                base,
-                job.game_state,
-                job.hour,
-                &mut self.sunk.rows,
-                &mut self.sunk_names.first,
-            )
-        } else {
-            csunk_ship_info::walk(
-                &recorded,
-                base,
-                job.game_state,
-                job.hour,
-                &mut self.sunk.rows,
-                &mut self.sunk_names.first,
-            )
+        let recorded = match crate::raw::Recorded::build(&job.log) {
+            Ok(recorded) => recorded,
+            Err(reason) => {
+                self.fail_sunk_capture(reason);
+                return;
+            }
         };
+        let started = qpc();
+        let first = csunk_ship_info::walk(
+            &recorded,
+            base,
+            job.game_state,
+            job.hour,
+            &mut self.sunk.rows,
+            &mut self.sunk_names.first,
+        );
         self.sunk.outcome = bounded(first.outcome, self.sunk.rows.len());
         self.sunk_names.len = first.bytes_len;
         self.sunk_names.required = first.required_bytes;

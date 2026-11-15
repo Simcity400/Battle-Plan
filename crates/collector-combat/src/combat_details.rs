@@ -284,7 +284,7 @@ type DivisionRead = (
 /// naming memo and name arena, and the exile tags past the arena's length.
 struct DivisionOutputs<'r, 'n> {
     name_groups: &'r mut engine_native::cname_group_member::GroupKeys,
-    names: &'r mut engine_native::cname_group_member::NameArena<'n>,
+    names: &'r mut engine_native::cname_group_member::Names<'n>,
     exile_tags: engine_native::walk::Buffer<'r, u32>,
 }
 
@@ -304,7 +304,7 @@ fn read_division<M: Memory, C: Memory>(
     pointer: usize,
     handle: u64,
 ) -> Result<DivisionRead, &'static str> {
-    let stats = carmy_combat_inputs::capture_stats_buffer(
+    let stats = carmy_combat_inputs::capture_stats(
         memory,
         base,
         sources,
@@ -383,7 +383,7 @@ struct Destination<'a> {
     images: &'a mut Images,
     scratch: &'a mut Scratch,
     name_groups: &'a mut engine_native::cname_group_member::GroupKeys,
-    names: engine_native::cname_group_member::NameArena<'a>,
+    names: engine_native::cname_group_member::Names<'a>,
     /// Tests only: read as main's readers read, sharing nothing between
     /// readers (no census members, selections, pass shares or division
     /// image) nor between divisions (no shared sources).
@@ -1040,7 +1040,7 @@ impl HeldReserveTrees {
 fn leader_name(memory: &impl Memory, leader: usize) -> Result<Vec<u8>, &'static str> {
     let mut name = Vec::new();
     let mut used = 0;
-    engine_native::msvc_string::append_growing(
+    engine_native::msvc_string::append(
         memory,
         leader
             .checked_add(engine_native::cunit_leader::NAME)
@@ -1290,7 +1290,7 @@ impl Captured {
             images: &mut self.images,
             scratch: &mut self.scratch,
             name_groups: &mut self.name_cache,
-            names: engine_native::cname_group_member::NameArena {
+            names: engine_native::cname_group_member::Names {
                 bytes: engine_native::walk::Buffer::Growing(&mut self.division_names.first),
                 len: 0,
                 required: 0,
@@ -1324,7 +1324,7 @@ impl Captured {
             arenas: [Progress::default(); N],
             ticks: [0; N],
         };
-        let census = cland_combat::walk_members_growing(
+        let census = cland_combat::walk_members(
             memory,
             base,
             state,

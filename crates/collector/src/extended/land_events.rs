@@ -54,17 +54,9 @@ impl Captured {
         }
         grow_vec(&mut self.words, c.words);
     }
-    #[cfg(test)]
-    pub fn drain(&mut self, hour: i32, invalidating: bool) -> u64 {
+    pub(crate) fn drain(&mut self, hour: i32, invalidating: bool) -> u64 {
         let start = crate::sampling::qpc();
-        let d = crate::land_events::drain(&mut self.words, hour, invalidating);
-        self.drained = Some(d);
-        crate::land_events::install_offered();
-        crate::sampling::qpc().saturating_sub(start).max(0) as u64
-    }
-    pub(crate) fn drain_growing(&mut self, hour: i32, invalidating: bool) -> u64 {
-        let start = crate::sampling::qpc();
-        self.drained = Some(crate::land_events::drain_growing(
+        self.drained = Some(crate::land_events::drain(
             &mut self.words,
             hour,
             invalidating,
@@ -611,26 +603,21 @@ mod tests {
         &rows[0]
     }
     #[test]
-    fn land_event_buffers_grow_past_the_former_cap_and_publish_the_overflow_gap() {
+    fn land_event_buffers_grow_past_the_former_cap_in_the_drain() {
         let _guard = test_support::own();
         test_support::reset_with_words(0);
-        let mut capacities = Capacities::default();
-        let mut captured = Captured::with_capacities(&capacities);
+        let mut captured = Captured::with_capacities(&Capacities::default());
         captured.drain(10, true);
-        let payload = vec![0; (1 << 20) + 17]; // Regression fixture, no production cap.
-        test_support::append_record(&payload);
         captured.drain(11, false);
-        let failed = captured.tables();
-        assert!(!complete_coverage(&failed).complete);
-        assert!(complete_coverage(&failed).lost_events > 0);
-        assert!(matches!(failed[0], TableView::Unavailable { .. }));
-        assert!(matches!(failed[1], TableView::Unavailable { .. }));
-        captured.grow(&mut capacities);
-        assert!(capacities.words > 1 << 20);
+        let payload = vec![0; (1 << 20) + 17]; // Regression fixture, no production cap.
+        let lost = test_support::thread_lost();
+        test_support::append_record(&payload);
+        captured.drain(12, false);
+        let drained = captured.drained.unwrap();
+        assert!(drained.complete, "{}", drained.reason);
+        assert_eq!(drained.words, payload.len() + 1);
         assert!(captured.words.len() > payload.len());
-        captured.drain(12, false); // Installs the offered log at this empty boundary.
-        captured.drain(13, false);
-        assert!(complete_coverage(&captured.tables()).complete);
+        assert_eq!(test_support::thread_lost(), lost);
         test_support::disable();
     }
     fn encode_land(
@@ -844,14 +831,14 @@ mod tests {
         assert!(decode(&terminal, 0).is_err(), "orphan terminal payload");
     }
     #[test]
-    fn terminal_loss_log_overflow_counts_a_gap_without_partial_casualties() {
+    fn terminal_losses_past_the_log_are_kept_and_only_failed_storage_counts_a_gap() {
         let _guard = test_support::own();
         test_support::reset_with_words(8);
         let mut c = Captured::with_capacities(&Capacities { words: 32 });
         c.drain(10, true);
         c.drain(11, false);
         // Complete terminal side pair, larger than this synthetic log.
-        test_support::append_record(&[
+        let terminal = [
             8,
             41,
             73,
@@ -862,14 +849,30 @@ mod tests {
             1,
             2 << 32 | 70,
             987_654,
-        ]);
+        ];
+        let lost = test_support::thread_lost();
+        test_support::append_record(&terminal);
         c.drain(12, false);
+        let drained = c.drained.unwrap();
+        assert!(drained.complete, "{}", drained.reason);
+        assert_eq!(drained.words, terminal.len() + 1);
+        assert_eq!(c.words[0], terminal.len() as u64 + 1);
+        assert_eq!(c.words[1..drained.words], terminal);
+        assert_eq!(test_support::thread_lost(), lost);
+        // Only storage that cannot be allocated loses the interval, by name,
+        // and never publishes partial casualties.
+        crate::test_support::with_allocations_denied(|| test_support::append_record(&terminal));
+        c.drain(13, false);
+        assert_eq!(
+            c.drained.unwrap().reason,
+            "land event storage allocation failed"
+        );
         let tables = c.tables();
         let coverage = complete_coverage(&tables);
         assert!(!coverage.complete);
         assert!(coverage.lost_events > 0);
         assert!(matches!(tables[0], TableView::Unavailable { .. }));
-        c.drain(13, false);
+        c.drain(14, false);
         assert!(complete_coverage(&c.tables()).complete);
         test_support::disable();
     }

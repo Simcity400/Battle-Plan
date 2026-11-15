@@ -170,22 +170,6 @@ pub fn walk(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    output: &mut [Row],
-    names: &mut [u8],
-) -> Walk {
-    walk_buffer(
-        memory,
-        base,
-        game_state,
-        crate::walk::Buffer::Fixed(output),
-        crate::walk::Buffer::Fixed(names),
-    )
-}
-
-pub fn walk_growing(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
     output: &mut Vec<Row>,
     names: &mut Vec<u8>,
 ) -> Walk {
@@ -195,6 +179,16 @@ pub fn walk_growing(
         game_state,
         crate::walk::Buffer::Growing(output),
         crate::walk::Buffer::Growing(names),
+    )
+}
+
+pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Walk {
+    walk_buffer(
+        memory,
+        base,
+        game_state,
+        crate::walk::Buffer::Count,
+        crate::walk::Buffer::Count,
     )
 }
 
@@ -489,8 +483,18 @@ fn field<T: Raw>(memory: &impl Memory, pointer: usize, offset: usize) -> Result<
 mod tests {
     use super::*;
     use crate::{cgame_state, memory::SliceMemory};
-    fn walk(memory: &impl Memory, base: usize, state: usize, rows: &mut [Row]) -> Outcome {
-        super::walk(memory, base, state, rows, &mut []).outcome
+    fn walk(memory: &impl Memory, base: usize, state: usize, rows: &mut Vec<Row>) -> Outcome {
+        super::walk(memory, base, state, rows, &mut Vec::new()).outcome
+    }
+    fn count(memory: &impl Memory, base: usize, state: usize) -> Outcome {
+        walk_buffer(
+            memory,
+            base,
+            state,
+            crate::walk::Buffer::Count,
+            crate::walk::Buffer::Count,
+        )
+        .outcome
     }
     fn put<const N: usize>(bytes: &mut [u8], offset: usize, value: [u8; N]) {
         bytes[offset..offset + N].copy_from_slice(&value);
@@ -572,15 +576,15 @@ mod tests {
         put(&mut bytes, name + 16, 3_u64.to_le_bytes());
         let mut rows = Vec::new();
         let mut names = Vec::new();
-        let mut expected_rows = [Row::default(); 2];
-        let mut expected_names = [0; 6];
+        let mut expected_rows = vec![Row::default(); 2];
+        let mut expected_names = vec![0; 6];
         let memory = SliceMemory {
             base: 0,
             bytes: &bytes,
         };
         let expected = super::walk(&memory, 0, 0x100, &mut expected_rows, &mut expected_names);
         assert_eq!(expected.outcome, Outcome::Rows { len: 2 });
-        let actual = walk_growing(&memory, 0, 0x100, &mut rows, &mut names);
+        let actual = super::walk(&memory, 0, 0x100, &mut rows, &mut names);
         assert_eq!(
             (
                 actual.outcome,
@@ -629,7 +633,7 @@ mod tests {
             base: 0,
             bytes: &bytes,
         };
-        let actual = walk_growing(&memory, 0, 0x100, &mut rows, &mut names);
+        let actual = super::walk(&memory, 0, 0x100, &mut rows, &mut names);
         assert_eq!(actual.outcome, Outcome::Rows { len: COUNT + 1 });
         assert_eq!(
             (actual.bytes_len, actual.required_bytes),
@@ -656,23 +660,19 @@ mod tests {
             base: 0,
             bytes: &bytes,
         };
-        let mut rows = [Row::default(); 2];
+        let mut rows = vec![Row::default(); 2];
         assert_eq!(walk(&memory, 0, 0x100, &mut rows), Outcome::Rows { len: 2 });
         assert_eq!(rows[0].id, 0xffff_ffff_8000_1269);
         assert_eq!(rows[0].experience_raw, i64::MAX - 2);
         assert_eq!(rows[0].captured_hour, i32::MIN);
         assert_eq!(rows[0].roster_kind, 0);
         assert_eq!(rows[1].roster_kind, 2);
-        assert_eq!(rows.map(|row| row.ordinal), [0, 0]);
         assert_eq!(
-            walk(&memory, 0, 0x100, &mut rows[..1]),
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            }
+            rows.iter().map(|row| row.ordinal).collect::<Vec<_>>(),
+            [0, 0]
         );
         assert_eq!(
-            walk(&memory, 0, 0x100, &mut []),
+            count(&memory, 0, 0x100),
             Outcome::Truncated {
                 len: 0,
                 unread_rows: 2
@@ -697,7 +697,7 @@ mod tests {
             }
         }
         let bytes = fixture();
-        let mut rows = [Row::default(); 2];
+        let mut rows = vec![Row::default(); 2];
         assert_eq!(
             walk(&Fault(&bytes), 0, 0x100, &mut rows),
             Outcome::Rows { len: 2 }
@@ -727,7 +727,7 @@ mod tests {
             2_u32.to_le_bytes(),
         );
         put(&mut bytes, 0x6008, (other as u64).to_le_bytes());
-        let mut rows = [Row::default(); 3];
+        let mut rows = vec![Row::default(); 3];
         assert_eq!(
             walk(
                 &SliceMemory {
@@ -741,7 +741,9 @@ mod tests {
             Outcome::Rows { len: 3 }
         );
         assert_eq!(
-            rows.map(|row| (row.roster_kind, row.ordinal)),
+            rows.iter()
+                .map(|row| (row.roster_kind, row.ordinal))
+                .collect::<Vec<_>>(),
             [(0, 0), (0, 1), (2, 0)]
         );
         // Stable removal compacts the remaining element to native slot zero.
@@ -791,7 +793,7 @@ mod tests {
             0x8200 + cunit_leader_skill::LEVEL,
             i32::MIN.to_le_bytes(),
         );
-        let mut rows = [Row::default(); 2];
+        let mut rows = vec![Row::default(); 2];
         assert_eq!(
             walk(
                 &SliceMemory {
@@ -866,7 +868,7 @@ mod tests {
         );
         // This is a state pointer, never an alternative source of country.
         put(&mut bytes, 0x8518, u64::MAX.to_le_bytes());
-        let mut rows = [Row::default(); 2];
+        let mut rows = vec![Row::default(); 2];
         for (index, rva) in operative_action_implementation::VTABLE_RVAS
             .into_iter()
             .enumerate()
@@ -982,7 +984,7 @@ mod tests {
             0x7000 + OPERATION_REFERENCE,
             handle.to_le_bytes(),
         );
-        let mut rows = [Row::default(); 2];
+        let mut rows = vec![Row::default(); 2];
         assert_eq!(
             walk(
                 &SliceMemory {
@@ -1155,8 +1157,8 @@ mod tests {
             base: 0,
             bytes: &bytes,
         };
-        let mut rows = [Row::default(); 2];
-        let read = super::walk(&memory, 0, 0x100, &mut rows, &mut []);
+        let mut rows = vec![Row::default(); 2];
+        let read = super::walk(&memory, 0, 0x100, &mut rows, &mut Vec::new());
         assert_eq!(
             read.outcome,
             Outcome::Truncated {
@@ -1176,7 +1178,7 @@ mod tests {
             })
         );
         assert_eq!(read.required_bytes, 0);
-        let sizing = super::walk(&memory, 0, 0x100, &mut [], &mut []);
+        let sizing = super::count(&memory, 0, 0x100);
         assert_eq!(
             sizing.outcome,
             Outcome::Truncated {
@@ -1208,8 +1210,8 @@ mod tests {
             },
             0,
             0x100,
-            &mut [Row::default(); 2],
-            &mut [],
+            &mut vec![Row::default(); 2],
+            &mut Vec::new(),
         );
         assert_eq!(
             read.outcome,
@@ -1242,7 +1244,7 @@ mod tests {
             0x7000 + NAME_DUPLICATE + 24,
             u64::MAX.to_le_bytes(),
         );
-        let mut rows = [Row::default(); 2];
+        let mut rows = vec![Row::default(); 2];
         let mut names = vec![0; 2 * name.len()];
         let read = super::walk(
             &SliceMemory {
@@ -1264,24 +1266,6 @@ mod tests {
                 len: 40_000
             }
         );
-        let short = super::walk(
-            &SliceMemory {
-                base: 0,
-                bytes: &bytes,
-            },
-            0,
-            0x100,
-            &mut rows,
-            &mut names[..79_999],
-        );
-        assert_eq!(
-            short.outcome,
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            }
-        );
-        assert_eq!(short.required_bytes, 80_000);
         bytes[0x9000 + name.len()] = 1;
         assert!(matches!(
             super::walk(
@@ -1302,7 +1286,7 @@ mod tests {
     #[test]
     fn invalid_headers_and_read_faults_never_publish_a_complete_prefix() {
         let mut bytes = fixture();
-        let mut rows = [Row::default(); 2];
+        let mut rows = vec![Row::default(); 2];
         put(
             &mut bytes,
             0x5000 + cintelligence_agency::OPERATIVE_COUNT,
@@ -1372,7 +1356,7 @@ mod tests {
             0x7000 + COOLDOWN_END_HOUR,
             i32::MAX.to_le_bytes(),
         );
-        let mut rows = [Row::default(); 2];
+        let mut rows = vec![Row::default(); 2];
         assert_eq!(
             walk(
                 &SliceMemory {
@@ -1385,7 +1369,7 @@ mod tests {
             ),
             Outcome::Rows { len: 2 }
         );
-        for row in rows {
+        for row in &rows {
             assert_eq!(row.cooldown_kind, Some(3));
             assert_eq!(row.cooldown_start_hour, Some(-24));
             assert_eq!(row.cooldown_end_hour, Some(i32::MAX));

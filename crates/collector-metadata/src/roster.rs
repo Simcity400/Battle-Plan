@@ -1,7 +1,7 @@
 //! The callback copies prepared, exact native roster bytes; the spool worker verifies IDs.
 
 use engine_allocation as allocation;
-use engine_dlc::{cdlc_manager, cdlc_manager::mounts_match};
+use engine_dlc::cdlc_manager::{self, Folders, MountDifference, mount_difference};
 use engine_native::{Memory, capture_text::Owned, walk::Outcome};
 use replay_data::{identity::Identity, identity::Roster as IdentityRoster, identity::Verification};
 use serde::{
@@ -224,6 +224,7 @@ impl Roster {
                 }
             }
         }
+        let excluded = &pass.dlc_filter_strings[..pass.observation.dlc_filter_strings.len()];
         let mut memory = IdentityRoster {
             dlc: observed_ids(
                 &pass.dlcs,
@@ -231,6 +232,13 @@ impl Roster {
                 dlc_id,
                 "DLC",
                 true,
+                // The game's rules count a DLC only while its descriptor is not excluded.
+                |row| {
+                    row.reported_active
+                        && !excluded
+                            .iter()
+                            .any(|filter| filter.as_bytes() == row.descriptor.as_bytes())
+                },
                 &mut reasons,
             )?,
             mods: observed_ids(
@@ -239,6 +247,7 @@ impl Roster {
                 mod_id,
                 "mod",
                 false,
+                |row| row.reported_active,
                 &mut reasons,
             )?,
         };
@@ -253,21 +262,18 @@ impl Roster {
                 ),
             )?;
         }
-        if !same_membership(&memory.dlc, &launcher.dlc)
-            || !same_membership(&memory.mods, mod_descriptors)
+        membership("DLC", &launcher.dlc, &memory.dlc, &mut reasons)?;
+        membership("mod", mod_descriptors, &memory.mods, &mut reasons)?;
+        if let Some(difference) =
+            mount_difference(&pass.mounts[..pass.mount_outcome.len()], expected_mounts)
         {
             add_reason(
                 &mut reasons,
-                format_args!("launcher and in-memory content membership differ"),
-            )?;
-        }
-        if !mounts_match(&pass.mounts[..pass.mount_outcome.len()], expected_mounts) {
-            add_reason(
-                &mut reasons,
                 format_args!(
-                    "successful content mounts differ in membership or priority order (observed {}, expected {})",
+                    "successful content mounts differ in membership or priority order (observed {}, expected {}): {}",
                     pass.mount_outcome.len(),
                     expected_mounts.len(),
+                    Unlike(difference),
                 ),
             )?;
         }
@@ -313,8 +319,104 @@ fn qpc() -> i64 {
     ticks
 }
 
-fn same_membership(a: &[String], b: &[String]) -> bool {
-    a.len() == b.len() && a.iter().all(|id| b.contains(id)) && b.iter().all(|id| a.contains(id))
+/// The first differing mount without its paths, which stay in the local `content.json`.
+struct Unlike<'a>(MountDifference<'a>);
+impl fmt::Display for Unlike<'_> {
+    fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (position, what) = match self.0 {
+            MountDifference::NoneExpected => return out.write_str("no mounts were expected"),
+            MountDifference::Missing { position, .. } => (position, "was not mounted"),
+            MountDifference::Extra { position, .. } => (position, "was not expected"),
+            MountDifference::Differs {
+                position, folders, ..
+            } => (position, differs(folders)),
+        };
+        write!(
+            out,
+            "mount {}, highest priority first, {what} (paths in content.json)",
+            position + 1
+        )
+    }
+}
+
+fn differs(folders: Folders) -> &'static str {
+    match folders {
+        Folders::Unreadable => "differs as written and one of the two is no path",
+        Folders::Unopened {
+            observed: false,
+            expected: false,
+        } => "differs as written and neither path opens as a folder",
+        Folders::Unopened {
+            observed: false, ..
+        } => "differs as written and the game's path does not open as a folder",
+        Folders::Unopened { .. } => {
+            "differs as written and the expected path does not open as a folder"
+        }
+        Folders::Different => "differs as written and names a different folder",
+    }
+}
+
+/// Names each ID only one side lists; `game` holds no repeats.
+fn membership(
+    kind: &str,
+    launcher: &[String],
+    game: &[String],
+    reasons: &mut String,
+) -> io::Result<()> {
+    if let Some(id) = launcher
+        .iter()
+        .enumerate()
+        .find_map(|(index, id)| launcher[..index].contains(id).then_some(id))
+    {
+        add_reason(
+            reasons,
+            format_args!("launcher lists {kind} {id} more than once"),
+        )?;
+    }
+    let launcher_only = Only {
+        ids: launcher,
+        absent_from: game,
+    };
+    let game_only = Only {
+        ids: game,
+        absent_from: launcher,
+    };
+    if launcher_only.is_empty() && game_only.is_empty() {
+        return Ok(());
+    }
+    add_reason(
+        reasons,
+        format_args!(
+            "launcher and in-memory {kind} membership differ (launcher only: {launcher_only}; game only: {game_only})"
+        ),
+    )
+}
+
+struct Only<'a> {
+    ids: &'a [String],
+    absent_from: &'a [String],
+}
+impl Only<'_> {
+    fn iter(&self) -> impl Iterator<Item = &String> {
+        self.ids.iter().filter(|id| !self.absent_from.contains(id))
+    }
+    fn is_empty(&self) -> bool {
+        self.iter().next().is_none()
+    }
+}
+impl fmt::Display for Only<'_> {
+    fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.is_empty() {
+            return out.write_str("none");
+        }
+        for (index, id) in self.iter().enumerate() {
+            if index > 0 {
+                out.write_str(", ")?;
+            }
+            out.write_str(id)?;
+        }
+        Ok(())
+    }
 }
 
 struct CheckedText<'a>(&'a mut String);
@@ -350,23 +452,25 @@ fn observed_ids(
     normalize: fn(&[u8]) -> Result<&str, &'static str>,
     kind: &str,
     check_inactive: bool,
+    runs: impl Fn(&cdlc_manager::Entry<Owned, Owned>) -> bool,
     reasons: &mut String,
 ) -> io::Result<Vec<String>> {
     let rows = &rows[..outcome.len()];
     let mut ids = allocation::vec(rows.len())?;
     for (index, row) in rows.iter().enumerate() {
-        if !row.reported_active && !check_inactive {
+        let running = runs(row);
+        if !running && !check_inactive {
             continue;
         }
         match normalize(row.descriptor.as_bytes()) {
             Ok(id) => {
                 if rows[..index].iter().any(|earlier| {
-                    (earlier.reported_active || check_inactive)
+                    (check_inactive || runs(earlier))
                         && normalize(earlier.descriptor.as_bytes()) == Ok(id)
                 }) {
                     add_reason(reasons, format_args!("duplicate in-memory {kind} ID: {id}"))?;
                 }
-                if row.reported_active && !ids.iter().any(|known| known == id) {
+                if running && !ids.iter().any(|known| known == id) {
                     ids.push(allocation::string(id)?);
                 }
             }
@@ -423,13 +527,22 @@ struct Diagnostics<'a> {
 }
 impl Serialize for Diagnostics<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut map = serializer.serialize_map(Some(6))?;
+        let mut map = serializer.serialize_map(Some(7))?;
         map.serialize_entry("sampled", &self.roster.sampled)?;
         map.serialize_entry("hour", &self.roster.hour)?;
         map.serialize_entry("callback_ticks", &self.roster.ticks)?;
         map.serialize_entry("expected_mounts", self.expected_mounts)?;
         map.serialize_entry("sample", &Sample(&self.roster.pass))?;
         map.serialize_entry("verification", &Verified(self.verification))?;
+        let pass = &self.roster.pass;
+        map.serialize_entry(
+            "mount_difference",
+            &mount_difference(
+                &pass.mounts[..pass.mount_outcome.len()],
+                self.expected_mounts,
+            )
+            .map(Difference),
+        )?;
         map.end()
     }
 }
@@ -453,9 +566,13 @@ struct Sample<'a>(&'a Pass);
 impl Serialize for Sample<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let pass = self.0;
-        let mut map = serializer.serialize_map(Some(6))?;
+        let mut map = serializer.serialize_map(Some(7))?;
         map.serialize_entry("outcomes", &NamedOutcomes(pass.outcomes()))?;
         map.serialize_entry("capacities", &NamedCapacities(pass.capacities()))?;
+        map.serialize_entry(
+            "dlc_filter_strings",
+            &Descriptors(&pass.dlc_filter_strings[..pass.observation.dlc_filter_strings.len()]),
+        )?;
         map.serialize_entry(
             "mount_paths",
             &Descriptors(&pass.mounts[..pass.mount_outcome.len()]),
@@ -508,6 +625,36 @@ impl Serialize for Read {
                 map.serialize_entry("reason", reason)?;
             }
         }
+        map.end()
+    }
+}
+/// The first differing mount with both paths, positions counted from 1.
+struct Difference<'a>(MountDifference<'a>);
+impl Serialize for Difference<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(None)?;
+        let (position, observed, expected, what) = match self.0 {
+            MountDifference::NoneExpected => {
+                map.serialize_entry("differs", "no mounts were expected")?;
+                return map.end();
+            }
+            MountDifference::Missing { position, expected } => {
+                (position, None, Some(expected), "was not mounted")
+            }
+            MountDifference::Extra { position, observed } => {
+                (position, Some(observed), None, "was not expected")
+            }
+            MountDifference::Differs {
+                position,
+                observed,
+                expected,
+                folders,
+            } => (position, Some(observed), Some(expected), differs(folders)),
+        };
+        map.serialize_entry("mount", &(position + 1))?;
+        map.serialize_entry("observed", &observed.map(Bytes))?;
+        map.serialize_entry("expected", &expected)?;
+        map.serialize_entry("differs", what)?;
         map.end()
     }
 }
@@ -700,6 +847,86 @@ mod tests {
         value.validate().unwrap();
     }
 
+    /// The game's filter strings after startup: the launcher's disabled descriptors, then the
+    /// eligible DLC's display names.
+    fn excluded(roster: &mut Roster, filters: &[&[u8]]) {
+        let pass = &mut roster.pass;
+        pass.dlc_filter_strings = filters.iter().map(|filter| text(filter)).collect();
+        pass.observation.dlc_filter_strings = Outcome::Rows { len: filters.len() };
+    }
+
+    fn mounted(roster: &mut Roster, ids: &[&str]) {
+        let paths: Vec<_> = ids
+            .iter()
+            .rev()
+            .map(|id| format!("F:/game/dlc/{id}"))
+            .chain(std::iter::once("F:/game".to_owned()))
+            .collect();
+        roster.pass.mount_outcome = Outcome::Rows { len: paths.len() };
+        roster.pass.mounts = paths.iter().map(|path| text(path.as_bytes())).collect();
+    }
+
+    #[test]
+    fn a_launcher_disabled_dlc_the_map_reports_active_is_not_run_and_verifies() {
+        let mut roster = captured(&[b"dlc/dlc_a/a.dlc", b"dlc/dlc_b/b.dlc", b"dlc/dlc_c/c.dlc"]);
+        excluded(&mut roster, &[b"dlc/dlc_b/b.dlc", b"DLC_A", b"DLC_C"]);
+        mounted(&mut roster, &["dlc_a", "dlc_c"]);
+        let mut value = identity(&["dlc_a", "dlc_c"]);
+        check(&roster, &mut value, None).unwrap();
+        value.validate().unwrap();
+        let Verification::Verified { memory, .. } = &value.verification else {
+            panic!("a reduced DLC set the game honoured must verify")
+        };
+        assert_eq!(memory.dlc, ["dlc_a", "dlc_c"]);
+        let diagnostics =
+            serde_json::to_value(roster.diagnostics(&[], &value.verification)).unwrap();
+        assert_eq!(
+            diagnostics["sample"]["dlc_filter_strings"][0],
+            "dlc/dlc_b/b.dlc"
+        );
+    }
+
+    #[test]
+    fn a_membership_refusal_names_each_differing_dlc_and_its_side() {
+        let mut roster = captured(&[b"dlc/dlc_a/a.dlc", b"dlc/dlc_b/b.dlc"]);
+        roster.pass.dlcs[1].reported_active = false;
+        mounted(&mut roster, &["dlc_a"]);
+        let mut value = identity(&["dlc_a", "dlc_b"]);
+        let reason = check(&roster, &mut value, None).unwrap_err();
+        assert!(
+            reason.contains(
+                "launcher and in-memory DLC membership differ (launcher only: dlc_b; game only: none)"
+            ),
+            "{reason}"
+        );
+        value.validate().unwrap();
+
+        let mut roster = captured(&[b"dlc/dlc_a/a.dlc", b"dlc/dlc_c/c.dlc"]);
+        excluded(&mut roster, &[b"dlc/dlc_b/b.dlc"]);
+        let mut value = identity(&["dlc_a"]);
+        let reason = check(&roster, &mut value, None).unwrap_err();
+        assert!(
+            reason.contains(
+                "launcher and in-memory DLC membership differ (launcher only: none; game only: dlc_c)"
+            ),
+            "{reason}"
+        );
+        value.validate().unwrap();
+
+        let mut roster = captured(&[b"dlc/dlc_a/a.dlc", b"dlc/dlc_b/b.dlc"]);
+        excluded(&mut roster, &[b"dlc/dlc_b/b.dlc", b"DLC_A"]);
+        mounted(&mut roster, &["dlc_a", "dlc_b"]);
+        let mut value = identity(&["dlc_a", "dlc_b"]);
+        let reason = check(&roster, &mut value, None).unwrap_err();
+        assert!(
+            reason.contains(
+                "launcher and in-memory DLC membership differ (launcher only: dlc_b; game only: none)"
+            ),
+            "{reason}"
+        );
+        value.validate().unwrap();
+    }
+
     #[test]
     fn partial_observations_cannot_verify() {
         let mut roster = captured(&[b"dlc/dlc_a/a.dlc"]);
@@ -818,6 +1045,13 @@ mod tests {
         assert_eq!(memory.mods, ["base.mod", "42"]);
 
         let other = ["base.mod".to_owned(), "ugc_43.mod".to_owned()];
+        let swapped = [
+            "C:/mods/base",
+            "C:/mods/top",
+            "F:/game/dlc/dlc_a",
+            "F:/game",
+        ]
+        .map(str::to_owned);
         for (files, mounts, reason) in [
             (&other[..], &expected, "membership differ"),
             (
@@ -827,14 +1061,8 @@ mod tests {
             ),
             (
                 &files[..],
-                &[
-                    "C:/mods/base",
-                    "C:/mods/top",
-                    "F:/game/dlc/dlc_a",
-                    "F:/game",
-                ]
-                .map(str::to_owned),
-                "priority order",
+                &swapped,
+                "priority order (observed 4, expected 4): mount 1, highest priority first, differs as written and ",
             ),
         ] {
             roster.verify(&mut value, mounts, files, None).unwrap_err();
@@ -842,8 +1070,24 @@ mod tests {
                 panic!()
             };
             assert!(error.contains(reason), "{error}");
+            assert!(!error.contains("C:/mods"), "{error}");
             value.validate().unwrap();
         }
+        roster
+            .verify(&mut value, &swapped, &files, None)
+            .unwrap_err();
+        let diagnostics =
+            serde_json::to_value(roster.diagnostics(&swapped, &value.verification)).unwrap();
+        let difference = &diagnostics["mount_difference"];
+        assert_eq!(difference["mount"], 1);
+        assert_eq!(difference["observed"], "C:/mods/top");
+        assert_eq!(difference["expected"], "C:/mods/base");
+        let differs = difference["differs"].as_str().unwrap();
+        assert!(differs.starts_with("differs as written and "), "{differs}");
+        assert_eq!(
+            serde_json::to_value(roster.diagnostics(&expected, &value.verification)).unwrap()["mount_difference"],
+            serde_json::Value::Null
+        );
     }
 
     #[test]
@@ -856,7 +1100,12 @@ mod tests {
         roster.pass.mount_outcome = Outcome::Rows { len: 2 };
         let mut value = identity(&[]);
         let reason = check(&roster, &mut value, None).unwrap_err();
-        assert!(reason.contains("observed 2, expected 1"));
+        assert!(
+            reason.contains(
+                "observed 2, expected 1): mount 2, highest priority first, was not expected"
+            ),
+            "{reason}"
+        );
         assert!(!reason.contains("private"));
         value.validate().unwrap();
         let diagnostics =
@@ -866,6 +1115,11 @@ mod tests {
             diagnostics["sample"]["mount_paths"][1],
             "C:/private/user/interface-override"
         );
+        let difference = &diagnostics["mount_difference"];
+        assert_eq!(difference["mount"], 2);
+        assert_eq!(difference["observed"], "C:/private/user/interface-override");
+        assert_eq!(difference["expected"], serde_json::Value::Null);
+        assert_eq!(difference["differs"], "was not expected");
         assert_eq!(diagnostics["verification"]["state"], "unverified");
         roster.pass.mount_outcome = Outcome::Truncated {
             len: 2,

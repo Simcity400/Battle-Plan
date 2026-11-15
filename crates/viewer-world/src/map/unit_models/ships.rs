@@ -374,263 +374,26 @@ impl UnitModelAssets {
         };
         let mut placed = Sources::default();
         spans.measure("units.naval.formations", |_| -> io::Result<()> {
+            let ground = ShipGround { movement: places.movement, world, anchor, land: places.land, scale: places.scale };
+            let link = |raw: u32| links.get(&raw).copied();
+            let day = (frame.hour - 43_800_000) / 24;
             for force in forces.rows() {
                 if force.province == 0 {
                     continue;
                 }
-                let placement =
-                    match places
-                        .motions
-                        .visual(force, places.movement, world, anchor, places.land, places.scale)
-                    {
-                        Ok(placement) => placement,
-                        Err(reason) => {
-                            report.error(format!("naval_formation_motion: {reason}"));
-                            continue;
-                        }
-                    };
-                if !self.bounds.contains_key(&force.province) {
-                    report.error(format!(
-                        "province {} has no content bounds for model admission",
-                        force.province
-                    ));
-                    continue;
-                }
-                let Some(&owner) = links.get(&force.logical_owner) else {
-                    continue;
+                let values = Force { id: force.id, province: force.province, logical_owner: force.logical_owner, roster_owner: force.roster_owner, expeditionary_owner: force.expeditionary_owner };
+                let route = places.motions.row(force.id).map(counter_move::UnitRoute::task_force);
+                let skip = |kind| places.missions.skip(force, kind, (places.region)(force.province));
+                let ordinal = order.as_ref().and_then(|order| order.mixed(force.id, force.province));
+                let tag_of = |owner: u32| -> Result<String, String> {
+                    let country = links.get(&owner).and_then(|slot| countries.get(slot)).ok_or("naval_formation_model_country: native model owner is unavailable")?;
+                    installed_content_core::parser::text(installed_content_core::parser::c_string(&country.tag)).map(str::to_owned).map_err(|error| format!("naval_formation_model_country: {error}"))
                 };
-                if vision.sees_navy(force.id, owner) == Sight::None {
-                    continue;
-                }
-                if placement.kind == SHIP_IN_PORT {
-                    continue;
-                }
-                // A task force on its mission here is left to the mission icon: no counter and no
-                // formation. Unrecorded skip operands leave the formation undrawn and counted.
-                match places
-                    .missions
-                    .skip(force, placement.kind, (places.region)(force.province))
-                {
-                    Some(false) => {}
-                    Some(true) => continue,
-                    None => {
-                        report.undecided_mission_formations += 1;
-                        continue;
-                    }
-                }
-                if let Some(reason) = placement.unplaced_route {
-                    report.error(format!("naval_animator_route: {reason}"));
-                    continue;
-                }
-                let Some(ordinal) = order
-                    .as_ref()
-                    .and_then(|order| order.mixed(force.id, force.province))
-                else {
-                    report.error("naval_representative_order: no complete ProvinceUnitOrder entry");
-                    continue;
-                };
-                let Some(&roster_owner) = links.get(&force.roster_owner) else {
-                    report.error("naval_representative_owner: roster owner has no CountryLinks row");
-                    continue;
-                };
-                // The frame history applies viewer selection to this base priority.
-                let row = places.motions.row(force.id).map_err(invalid)?;
-                let route = counter_move::UnitRoute::task_force(row);
-                let path = route.display_path();
-                let Some((ours, priority)) = representative_priority(vision, roster_owner, row.target)
-                else {
-                    report.error(
-                        "naval_representative_relations: country sharing/war operands are unavailable",
-                    );
-                    continue;
-                };
-                let Some(min_arc) = animator_min_arc(path, clock, report) else {
-                    continue;
-                };
-                placed.candidates.push(Candidate {
-                    province: force.province,
-                    identity: force.id,
-                    ordinal,
-                    slot: placement.kind,
-                    priority,
-                    ours,
-                    class: route.class,
-                    land_eligible: false,
-                    sample_count: placement.animator.map_or(0, |sample| sample.sample_count),
-                    next_arc: placement.animator.map_or(0.0, |sample| sample.next_arc),
-                    route: path.to_vec(),
-                    speed: self.gates.naval_movement_speed,
-                    min_arc,
-                    arrival_allowed: clock.is_some_and(|clock| clock.speed < 4)
-                        && route.combat_count == 0,
-                    // Convert the current hour to its zero-based day.
-                    day: (frame.hour - 43_800_000) / 24,
+                let part = self.naval_force(&values, route, &ground, &link, vision, &skip, ordinal, clock.map(|clock| clock.speed), day, || {
+                    let models = roster.get(&force.id)?;
+                    Some(self.resolve_roster(&values, models, &|variant| variant_names.get(&variant).copied(), &|ship| classes.get(&ship).copied(), &tag_of, names, hour))
                 });
-                let position = placement.position;
-                let (root, turn) = match &position.motion {
-                    Some(motion) => {
-                        let (at, heading) = motion.position_heading();
-                        (at, heading + MESH_FORWARD_OFFSET)
-                    }
-                    None => (position.standing, 0.0),
-                };
-                // Reuse visual's viewer-owned route sample
-                // for scale as well as admission and position; never sample twice.
-                let standing_scale = |province| {
-                    (places.scale)(
-                        province,
-                        viewer_foundation::unit_class::CounterClass::TaskForce
-                            .standstill((places.land)(province)),
-                    )
-                };
-                let from_scale = standing_scale(force.province);
-                let to_scale = path.first().map_or(1.0, |&next| standing_scale(next));
-                let animator_scale = placement.animator.map_or(from_scale, |sample| {
-                    sample.interpolate_scale(from_scale, to_scale)
-                });
-                // Every candidate keeps its animator, a combat's included.
-                placed.positions.push(FormationPlacement {
-                    force: force.id,
-                    position,
-                    rotation: turn,
-                    scale: animator_scale,
-                });
-                // Native slots 9/10 still offer a representative, but create the
-                // province's two-sided combat actor rather than an ordinary root.
-                if matches!(placement.kind, 9 | 10) {
-                    continue;
-                }
-                let Some(roster) = roster.get(&force.id) else {
-                    continue;
-                };
-                if roster.iter().any(|model| model.counter.is_none()) {
-                    report.error("naval_formation_roster: ShipModels lacks roster ordinals");
-                    continue;
-                }
-                let mut ordered = roster.clone();
-                ordered.sort_by_key(|model| model.counter.as_ref().unwrap().roster_ordinal);
-                let mut hulls = Vec::new();
-                for model in &ordered {
-                    // Use the selected variant's explicit entity name, or an empty
-                    // string for an invalid reference. That exact string controls reuse.
-                    let graphics = if model.variant == 0 {
-                        Vec::new()
-                    } else if let Some(name) = variant_names.get(&model.variant) {
-                        (*name).clone()
-                    } else {
-                        report.error("naval_formation_graphics: selected variant has no recorded explicit entity");
-                        continue;
-                    };
-                    let definition = classes
-                        .get(&model.ship)
-                        .map(|&class| (force.roster_owner, class));
-                    let selected = names.name(
-                        || {
-                            // The game reads this country only after the primary
-                            // model missed. The logical owner remains the visibility key above.
-                            let owner =
-                                model_owner(force.roster_owner, force.expeditionary_owner, true);
-                            let country = links
-                                .get(&owner)
-                                .and_then(|slot| countries.get(slot))
-                                .ok_or(
-                                    "naval_formation_model_country: native model owner is unavailable",
-                                )?;
-                            installed_content_core::parser::text(installed_content_core::parser::c_string(&country.tag))
-                                .map_err(|error| format!("naval_formation_model_country: {error}"))
-                        },
-                        model,
-                        &graphics,
-                        definition,
-                    );
-                    let model_slot = match selected
-                        .and_then(|name| self.ship_slot_selected(name, hour))
-                    {
-                        Ok(Some(slot)) => Some(slot),
-                        Ok(None) => {
-                            report.error("naval_formation_entity: no hull candidate or placeholder is registered");
-                            None
-                        }
-                        Err(reason) => {
-                            report.error(&reason);
-                            None
-                        }
-                    };
-                    let targets = std::array::from_fn(|index| {
-                        let (slot, _) = model_slot.as_ref()?;
-                        let node = if index == 0 {
-                            self.ships.root.as_ref()?
-                        } else {
-                            self.ships.nodes.get(
-                                ((force.id >> 32) as usize + index) % self.ships.nodes.len().max(1),
-                            )?
-                        };
-                        // Animator scale multiplies both
-                        // locator offsets and hull size, before the shared popup scale.
-                        let scale = self.ships.scale * animator_scale;
-                        let [x, y, z] = node.translation.map(|v| v * scale);
-                        let (sin, cos) = turn.sin_cos();
-                        Some(Target {
-                            province: force.province,
-                            identity: force.id,
-                            order: placement.kind,
-                            occupant: model.ship,
-                            part: index as u32,
-                            kind: Kind::Ship,
-                            mesh: *slot,
-                            origin: root,
-                            instance: ModelInstance {
-                                position: [
-                                    root[0] + x * cos - z * sin,
-                                    root[1] + y,
-                                    root[2] + x * sin + z * cos,
-                                ],
-                                rotation: turn + node.basis[2][0].atan2(node.basis[2][2]),
-                                scale: scale * node.uniform_scale(),
-                                pitch: 0.0,
-                                train_clip: [0.0; 4],
-                                // A hull plays its entity's idle; the task force's handle keeps one
-                                // formation on one phase across frames.
-                                animation: crate::map::entity_animation::IDLE,
-                                animation_seed: force.id as u32 ^ (force.id >> 32) as u32,
-                                ..ModelInstance::default()
-                            },
-                        })
-                    });
-                    hulls.push(Hull {
-                        flags: model.formation_flags,
-                        graphics,
-                        targets,
-                    });
-                    if let Some((_, name)) = model_slot {
-                        *report.by_entity.entry(name).or_default() += 1;
-                    }
-                }
-                if self.ships.root.is_none()
-                    && ordered.first().is_some_and(|model| {
-                        model.formation_flags
-                            & viewer_foundation::map::counter_order::FORMATION_CAPITAL_MASK
-                            != 0
-                    })
-                {
-                    report.error(
-                        "naval_formation_capital_root: authored formation has no root attach point",
-                    );
-                }
-                let slots = formation_slots(&ordered);
-                report.ship_hulls += slots
-                    .iter()
-                    .filter(|(index, _)| *index != 0 || self.ships.root.is_some())
-                    .count();
-                if slots.iter().any(|(index, _)| *index != 0) {
-                    report.support_locator_rng += 1;
-                }
-                placed.formations.push(Formation {
-                    identity: force.id,
-                    province: force.province,
-                    slot: placement.kind,
-                    roster: hulls,
-                });
+                part.into(&mut placed, report);
             }
             Ok(())
         })?;
@@ -798,7 +561,7 @@ impl UnitModelAssets {
                     refused.insert(order.province);
                     continue;
                 };
-                let Some(min_arc) = animator_min_arc(path, clock, report) else {
+                let Some(min_arc) = animator_min_arc(path, clock.map(|clock| clock.speed), report) else {
                     refused.insert(order.province);
                     continue;
                 };
@@ -850,21 +613,344 @@ impl UnitModelAssets {
     }
 }
 
+/// What places a task force's formation: the content's route geometry and stack scale.
+pub struct ShipGround<'a> {
+    pub movement: Option<&'a MovementContent>,
+    pub world: Option<&'a counter_move::RouteWorld<'a>>,
+    pub anchor: &'a dyn Fn(u32, u32) -> Option<[f32; 3]>,
+    pub land: &'a dyn Fn(u32) -> bool,
+    pub scale: &'a dyn Fn(u32, u32) -> f32,
+}
+
+/// One task force's own values the ships read (its owners raw, as recorded).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Force {
+    pub id: u64,
+    pub province: u32,
+    pub logical_owner: u32,
+    pub roster_owner: u32,
+    pub expeditionary_owner: u32,
+}
+
+/// One task force's part of the hour's ships, and what it counted.
+#[derive(Clone, Default)]
+pub struct ForcePart {
+    pub candidate: Option<Candidate>,
+    pub position: Option<FormationPlacement>,
+    pub formation: Option<Formation>,
+    pub report: ModelReport,
+}
+
+impl ForcePart {
+    /// Into the hour's ships, its counts into `report`.
+    pub fn into(self, sources: &mut Sources, report: &mut ModelReport) {
+        sources.candidates.extend(self.candidate);
+        sources.positions.extend(self.position);
+        sources.formations.extend(self.formation);
+        report.absorb(&self.report);
+    }
+}
+
+/// One roster ship's hull as the scripts chose it: skipped with an error, or its ship, flags,
+/// explicit entity and baked model slot (none registered, or why it has none).
+#[derive(Clone, Debug, PartialEq)]
+pub enum ResolvedHull {
+    Skipped(String),
+    Hull { ship: u64, flags: u64, graphics: Vec<u8>, slot: Result<Option<(usize, String)>, String> },
+}
+
+/// A task force's roster as the scripts chose it, in roster order: the first ship's flags, the
+/// locator slots its hulls take, and each hull.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResolvedRoster {
+    pub first_flags: Option<u64>,
+    pub slots: Vec<usize>,
+    pub hulls: Vec<ResolvedHull>,
+}
+
+impl UnitModelAssets {
+    /// One task force's candidate, placement and formation from its values: the core of the hour's
+    /// formation pass. `route` is its motion route (or why it has none), `link` a raw country's
+    /// canonical slot, `skip` the mission skip at a stack kind, `ordinal` its place in its
+    /// province's occupants, `clock_speed` the game speed index, and `roster` its hulls as the
+    /// scripts chose them, asked only once the formation stands.
+    #[expect(clippy::too_many_arguments, reason = "one formation's every input, each named at the call")]
+    pub fn naval_force(
+        &self,
+        force: &Force,
+        route: Result<counter_move::UnitRoute<'_>, &'static str>,
+        ground: &ShipGround<'_>,
+        link: &dyn Fn(u32) -> Option<u32>,
+        vision: &Vision,
+        skip: &dyn Fn(u32) -> Option<bool>,
+        ordinal: Option<u32>,
+        clock_speed: Option<i32>,
+        day: i32,
+        roster: impl FnOnce() -> Option<Result<ResolvedRoster, String>>,
+    ) -> ForcePart {
+        let mut part = ForcePart::default();
+        let report = &mut part.report;
+        let placement = match route.and_then(|route| viewer_foundation::map::task_force_visual::visual_of(force.province, &route, ground.movement, ground.world, ground.anchor, ground.land, ground.scale)) {
+            Ok(placement) => placement,
+            Err(reason) => {
+                report.error(format!("naval_formation_motion: {reason}"));
+                return part;
+            }
+        };
+        let route = route.expect("a placed task force has its route");
+        if !self.bounds.contains_key(&force.province) {
+            report.error(format!("province {} has no content bounds for model admission", force.province));
+            return part;
+        }
+        let Some(owner) = link(force.logical_owner) else { return part };
+        if vision.sees_navy(force.id, owner) == Sight::None || placement.kind == SHIP_IN_PORT {
+            return part;
+        }
+        // A task force on its mission here is left to the mission icon: no counter and no
+        // formation. Unrecorded skip operands leave the formation undrawn and counted.
+        match skip(placement.kind) {
+            Some(false) => {}
+            Some(true) => return part,
+            None => {
+                report.undecided_mission_formations += 1;
+                return part;
+            }
+        }
+        if let Some(reason) = placement.unplaced_route {
+            report.error(format!("naval_animator_route: {reason}"));
+            return part;
+        }
+        let Some(ordinal) = ordinal else {
+            report.error("naval_representative_order: no complete ProvinceUnitOrder entry");
+            return part;
+        };
+        let Some(roster_owner) = link(force.roster_owner) else {
+            report.error("naval_representative_owner: roster owner has no CountryLinks row");
+            return part;
+        };
+        let path = route.display_path();
+        let Some((ours, priority)) = representative_priority(vision, roster_owner, route.target) else {
+            report.error("naval_representative_relations: country sharing/war operands are unavailable");
+            return part;
+        };
+        let Some(min_arc) = animator_min_arc(path, clock_speed, report) else { return part };
+        part.candidate = Some(Candidate {
+            province: force.province,
+            identity: force.id,
+            ordinal,
+            slot: placement.kind,
+            priority,
+            ours,
+            class: route.class,
+            land_eligible: false,
+            sample_count: placement.animator.map_or(0, |sample| sample.sample_count),
+            next_arc: placement.animator.map_or(0.0, |sample| sample.next_arc),
+            route: path.to_vec(),
+            speed: self.gates.naval_movement_speed,
+            min_arc,
+            arrival_allowed: clock_speed.is_some_and(|speed| speed < 4) && route.combat_count == 0,
+            day,
+        });
+        let position = placement.position;
+        let (root, turn) = match &position.motion {
+            Some(motion) => {
+                let (at, heading) = motion.position_heading();
+                (at, heading + MESH_FORWARD_OFFSET)
+            }
+            None => (position.standing, 0.0),
+        };
+        // Reuse visual's viewer-owned route sample
+        // for scale as well as admission and position; never sample twice.
+        let standing_scale = |province| (ground.scale)(province, viewer_foundation::unit_class::CounterClass::TaskForce.standstill((ground.land)(province)));
+        let from_scale = standing_scale(force.province);
+        let to_scale = path.first().map_or(1.0, |&next| standing_scale(next));
+        let animator_scale = placement.animator.map_or(from_scale, |sample| sample.interpolate_scale(from_scale, to_scale));
+        // Every candidate keeps its animator, a combat's included.
+        part.position = Some(FormationPlacement { force: force.id, position, rotation: turn, scale: animator_scale });
+        // Native slots 9/10 still offer a representative, but create the
+        // province's two-sided combat actor rather than an ordinary root.
+        if matches!(placement.kind, 9 | 10) {
+            return part;
+        }
+        let roster = match roster() {
+            None => return part,
+            Some(Err(reason)) => {
+                part.report.error(reason);
+                return part;
+            }
+            Some(Ok(roster)) => roster,
+        };
+        let report = &mut part.report;
+        let mut hulls = Vec::with_capacity(roster.hulls.len());
+        for hull in &roster.hulls {
+            let (ship, flags, graphics, slot) = match hull {
+                ResolvedHull::Skipped(reason) => {
+                    report.error(reason.clone());
+                    continue;
+                }
+                ResolvedHull::Hull { ship, flags, graphics, slot } => (*ship, *flags, graphics, slot),
+            };
+            let model_slot = match slot {
+                Ok(Some(slot)) => Some(slot),
+                Ok(None) => {
+                    report.error("naval_formation_entity: no hull candidate or placeholder is registered");
+                    None
+                }
+                Err(reason) => {
+                    report.error(reason);
+                    None
+                }
+            };
+            let targets = std::array::from_fn(|index| {
+                let (slot, _) = model_slot?;
+                let node = if index == 0 { self.ships.root.as_ref()? } else { self.ships.nodes.get(((force.id >> 32) as usize + index) % self.ships.nodes.len().max(1))? };
+                // Animator scale multiplies both
+                // locator offsets and hull size, before the shared popup scale.
+                let scale = self.ships.scale * animator_scale;
+                let [x, y, z] = node.translation.map(|v| v * scale);
+                let (sin, cos) = turn.sin_cos();
+                Some(Target {
+                    province: force.province,
+                    identity: force.id,
+                    order: placement.kind,
+                    occupant: ship,
+                    part: index as u32,
+                    kind: Kind::Ship,
+                    mesh: *slot,
+                    origin: root,
+                    instance: ModelInstance {
+                        position: [root[0] + x * cos - z * sin, root[1] + y, root[2] + x * sin + z * cos],
+                        rotation: turn + node.basis[2][0].atan2(node.basis[2][2]),
+                        scale: scale * node.uniform_scale(),
+                        pitch: 0.0,
+                        train_clip: [0.0; 4],
+                        // A hull plays its entity's idle; the task force's handle keeps one
+                        // formation on one phase across frames.
+                        animation: crate::map::entity_animation::IDLE,
+                        animation_seed: force.id as u32 ^ (force.id >> 32) as u32,
+                        ..ModelInstance::default()
+                    },
+                })
+            });
+            hulls.push(Hull { flags, graphics: graphics.clone(), targets });
+            if let Some((_, name)) = model_slot {
+                *report.by_entity.entry(name.clone()).or_default() += 1;
+            }
+        }
+        if self.ships.root.is_none() && roster.first_flags.is_some_and(|flags| flags & viewer_foundation::map::counter_order::FORMATION_CAPITAL_MASK != 0) {
+            report.error("naval_formation_capital_root: authored formation has no root attach point");
+        }
+        report.ship_hulls += roster.slots.iter().filter(|&&index| index != 0 || self.ships.root.is_some()).count();
+        if roster.slots.iter().any(|&index| index != 0) {
+            report.support_locator_rng += 1;
+        }
+        part.formation = Some(Formation { identity: force.id, province: force.province, slot: placement.kind, roster: hulls });
+        part
+    }
+
+    /// A task force's roster ships as the scripts choose their hulls: the selection part of the
+    /// formation pass, over rows (`graphics` a variant's explicit entity, `class` a ship's class,
+    /// `tag` a raw country's tag, read once the primary model missed).
+    fn resolve_roster<'rows>(
+        &self,
+        force: &Force,
+        roster: &[&'rows replay_data::rows::ShipModelRow],
+        graphics: &dyn Fn(u64) -> Option<&'rows Vec<u8>>,
+        class: &dyn Fn(u64) -> Option<u32>,
+        tag: &dyn Fn(u32) -> Result<String, String>,
+        names: &mut impl selection::Names<'rows>,
+        hour: Option<&Hour<'_>>,
+    ) -> Result<ResolvedRoster, String> {
+        if roster.iter().any(|model| model.counter.is_none()) {
+            return Err("naval_formation_roster: ShipModels lacks roster ordinals".into());
+        }
+        let mut ordered = roster.to_vec();
+        ordered.sort_by_key(|model| model.counter.as_ref().map_or(0, |counter| counter.roster_ordinal));
+        let owner = model_owner(force.roster_owner, force.expeditionary_owner, true);
+        let told = std::cell::OnceCell::new();
+        let mut hulls = Vec::with_capacity(ordered.len());
+        for model in &ordered {
+            // Use the selected variant's explicit entity name, or an empty
+            // string for an invalid reference. That exact string controls reuse.
+            let explicit = if model.variant == 0 {
+                Vec::new()
+            } else if let Some(name) = graphics(model.variant) {
+                name.clone()
+            } else {
+                hulls.push(ResolvedHull::Skipped("naval_formation_graphics: selected variant has no recorded explicit entity".into()));
+                continue;
+            };
+            let definition = class(model.ship).map(|class| (force.roster_owner, class));
+            let selected = names.name(|| told.get_or_init(|| tag(owner)).as_deref().map_err(Clone::clone), model, &explicit, definition);
+            let slot = selected.and_then(|name| self.ship_slot_selected(name, hour));
+            hulls.push(ResolvedHull::Hull { ship: model.ship, flags: model.formation_flags, graphics: explicit, slot });
+        }
+        Ok(ResolvedRoster { first_flags: ordered.first().map(|model| model.formation_flags), slots: formation_slots(&ordered).iter().map(|(index, _)| *index).collect(), hulls })
+    }
+}
+
+impl UnitModelAssets {
+    /// The rosters of `forces` as the scripts choose their hulls, over a frame of rows: none for a
+    /// task force the frame does not hold or with no roster ship. The part of the ships a layer
+    /// cannot make from columns: a hull's entity may be generated by the content's graphics rules,
+    /// which read any table.
+    pub fn resolve_rosters(
+        &self,
+        frame: &DecodedFrame,
+        limits: equipment_graphics::Limits<'_>,
+        terrain: &BTreeMap<u32, String>,
+        localisation: &Localisation,
+        forces: &[u64],
+    ) -> io::Result<Vec<(u64, Option<Result<ResolvedRoster, String>>)>> {
+        let hour = Hour::read_naval(self, frame, terrain, limits, localisation)?;
+        let variants = rows::<tables::VariantDefinitions>(frame)?;
+        let variant_names: BTreeMap<_, _> = variants.rows().iter().map(|row| (row.id, &row.explicit_entity)).collect();
+        let links: BTreeMap<_, _> = core::<tables::CountryLinks>(frame)?.iter().map(|row| (row.id, row.canonical_slot)).collect();
+        let countries: BTreeMap<_, _> = core::<tables::Countries>(frame)?.iter().map(|row| (row.canonical_slot, row)).collect();
+        let ships = rows::<tables::Ships>(frame)?;
+        let classes: BTreeMap<_, _> = ships.rows().iter().map(|ship| (ship.id, ship.class_id as u32)).collect();
+        let models: BTreeMap<_, _> = rows::<tables::ShipModels>(frame)?.rows().iter().map(|row| (row.ship, row)).collect();
+        let mut roster: BTreeMap<u64, Vec<&replay_data::rows::ShipModelRow>> = BTreeMap::new();
+        for ship in ships.rows() {
+            if let Some(model) = models.get(&ship.id) {
+                roster.entry(ship.task_force).or_default().push(*model);
+            }
+        }
+        let task_forces = rows::<tables::TaskForces>(frame)?;
+        let by_id: BTreeMap<_, _> = task_forces.rows().iter().map(|force| (force.id, force)).collect();
+        let mut names = selection::Pass::new(self, frame, Some(&hour));
+        let tag_of = |owner: u32| -> Result<String, String> {
+            let country = links.get(&owner).and_then(|slot| countries.get(slot)).ok_or("naval_formation_model_country: native model owner is unavailable")?;
+            installed_content_core::parser::text(installed_content_core::parser::c_string(&country.tag)).map(str::to_owned).map_err(|error| format!("naval_formation_model_country: {error}"))
+        };
+        let mut out = Vec::with_capacity(forces.len());
+        for &id in forces {
+            let resolved = by_id.get(&id).and_then(|force| {
+                let values = Force { id, province: force.province, logical_owner: force.logical_owner, roster_owner: force.roster_owner, expeditionary_owner: force.expeditionary_owner };
+                let models = roster.get(&id)?;
+                Some(self.resolve_roster(&values, models, &|variant| variant_names.get(&variant).copied(), &|ship| classes.get(&ship).copied(), &tag_of, &mut names, Some(&hour)))
+            });
+            out.push((id, resolved));
+        }
+        Ok(out)
+    }
+}
+
 /// Nonempty routes clamp the arc to one at speed index >=4.
 /// An empty route initializes at zero without reading the game clock.
 fn animator_min_arc(
     path: &[u32],
-    clock: Option<&replay_data::rows::ClockRow>,
+    clock_speed: Option<i32>,
     report: &mut ModelReport,
 ) -> Option<f32> {
     if path.is_empty() {
         return Some(0.0);
     }
-    let Some(clock) = clock else {
+    let Some(speed) = clock_speed else {
         report.error("naval_animator_clock: Clock speed is unavailable");
         return None;
     };
-    Some(if clock.speed >= 4 {
+    Some(if speed >= 4 {
         counter_move::SETTLED_ARC
     } else {
         0.0
@@ -941,6 +1027,55 @@ fn support_ships<'a>(
         }
     }
     selected
+}
+
+/// Entries of two hours' ships compared, entries differing, and the first described: every
+/// candidate, placement and formation in order, and every naval combat's drawn parts.
+pub fn naval_differ(mine: &Sources, theirs: &Sources) -> (u64, u64, Option<String>) {
+    fn candidate(c: &Candidate) -> String {
+        format!(
+            "candidate {} at {} ordinal {} slot {} priority {} ours {} class {:?} land {} samples {} arc {:?} route {:?} speed {:?} min {:?} arrival {} day {}",
+            c.identity, c.province, c.ordinal, c.slot, c.priority, c.ours, c.class, c.land_eligible, c.sample_count, c.next_arc, c.route, c.speed, c.min_arc, c.arrival_allowed, c.day
+        )
+    }
+    fn placement(p: &FormationPlacement) -> String {
+        format!("placement {} {:?} rotation {:?} scale {:?}", p.force, p.position, p.rotation, p.scale)
+    }
+    fn formation(f: &Formation) -> String {
+        let hulls: Vec<String> = f.roster.iter().map(|hull| format!("{:#x} {:?} {:?}", hull.flags, hull.graphics, hull.targets)).collect();
+        format!("formation {} at {} slot {}: {hulls:?}", f.identity, f.province, f.slot)
+    }
+    fn battle(b: &crate::map::unit_history::naval_combat::Battle) -> String {
+        let health: Vec<_> = b.health.iter().map(|h| (h.capital, h.screens, h.sunk_fraction)).collect();
+        let impacts: Vec<bool> = b.impacts.iter().map(Option::is_some).collect();
+        format!(
+            "battle {} stamp {} root {:?} locators {:?} hulls {:?} offered {:?} impacts {impacts:?} effects {:?} health {health:?} death {:?}",
+            b.id, b.stamp, b.root, b.locators, b.hulls, b.offered, b.effects, b.death_time
+        )
+    }
+    let lines = |sources: &Sources| -> Vec<String> {
+        let combats = &sources.combats;
+        sources
+            .candidates
+            .iter()
+            .map(candidate)
+            .chain(sources.positions.iter().map(placement))
+            .chain(sources.formations.iter().map(formation))
+            .chain(combats.battles.values().map(battle))
+            .chain(combats.links.iter().map(|(id, links)| format!("link {id} {links:?}")))
+            .chain(combats.roots.iter().map(|(province, root)| format!("root {province} {root:?}")))
+            .collect()
+    };
+    let (mine, theirs) = (lines(mine), lines(theirs));
+    let mut differing = mine.len().abs_diff(theirs.len()) as u64;
+    let mut first = (mine.len() != theirs.len()).then(|| format!("{} entries against {}", mine.len(), theirs.len()));
+    for (a, b) in mine.iter().zip(&theirs) {
+        if a != b {
+            differing += 1;
+            first.get_or_insert_with(|| format!("{a} against {b}"));
+        }
+    }
+    (mine.len().max(theirs.len()) as u64, differing, first)
 }
 
 #[cfg(test)]

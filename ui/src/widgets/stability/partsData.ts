@@ -1,7 +1,9 @@
-import { divergingStack, isSpan, runAt } from '../../charts/series.ts';
+import { divergingStack, runAt } from '../../charts/series.ts';
 import type { Band } from '../../charts/series';
-import type { HourSpan, MeasureParts, StabilityPart, StabilityPartsReply } from '../../generated/dashboard';
-import { orderedRuns } from '../country-measure/measureData.ts';
+import type { HourSpan } from '../../generated/dashboard';
+import type { ChartSummary } from '../../charts/chartSummary';
+import type { KeyedState, SeriesPart } from '../../dashboard/keyedSeriesData';
+import type { FixedRun, MeasureParts, StabilityPart, StabilityPartName, StabilityPartNamesReply } from './types';
 import { lineName, rawAt, termLabel } from './stabilityData.ts';
 import type { Measure } from './stabilityData';
 
@@ -13,23 +15,6 @@ import type { Measure } from './stabilityData';
 export const REMAINDER_LABEL = 'Other';
 /** Parts past the palette are shown together under this name. */
 export const SMALLER_LABEL = 'Smaller parts';
-
-/** Checks a `stability-parts` reply's shape: every part's runs, and the known
- * hours, in hour order and never overlapping. */
-export function validateStabilityPartsReply(data: unknown): StabilityPartsReply {
-  const reply = data as StabilityPartsReply;
-  const measure = (value: MeasureParts) => typeof value === 'object' && value != null
-    && Array.isArray(value.observed) && value.observed.every(isSpan)
-    && value.observed.every((span, index) => index === 0 || value.observed[index - 1].lastHour < span.firstHour)
-    && Array.isArray(value.parts) && value.parts.every(part => typeof part.id === 'string' && orderedRuns(part.runs)
-      && (part.term === null || typeof part.term === 'string') && (part.line === null || typeof part.line === 'object'));
-  const ok = typeof reply === 'object' && reply != null && typeof reply.branchId === 'string' && typeof reply.tag === 'string'
-    && Number.isInteger(reply.decimals) && reply.decimals >= 0 && reply.decimals <= 12
-    && Array.isArray(reply.warnings) && reply.warnings.every(warning => typeof warning === 'string')
-    && measure(reply.stability) && measure(reply.warSupport);
-  if (!ok) throw new Error('The stability parts reply is malformed.');
-  return reply;
-}
 
 /** Parts added as the engine adds them: in wrapping signed 64-bit arithmetic,
  * so the total is the value the game shows even at the extremes. */
@@ -206,4 +191,107 @@ export function partsStack(parts: MeasureParts, layers: readonly PartLayer[], de
     segments.push({ hours, bands: divergingStack(rows.map(([, values]) => values)), layers: rows.map(([layer]) => layer) });
   }
   return segments;
+}
+
+/** A part of the `stability-parts` series names its measure in the bits above its handle. */
+export function measureOf(part: string): Measure {
+  return BigInt(part) >> 32n === 1n ? 'warSupport' : 'stability';
+}
+
+const DECIMALS = 5;
+const rawOf = (value: number) => String(Math.round(value * 10 ** DECIMALS));
+const nameOf = (part: string, names: ReadonlyMap<string, StabilityPartName>) => names.get(part);
+const partOf = (part: string, names: ReadonlyMap<string, StabilityPartName>): StabilityPart => {
+  const name = nameOf(part, names);
+  return { id: name?.id ?? `part:${part}`, term: name?.term ?? null, line: name?.line ?? null, runs: [] };
+};
+const isTotal = (part: string, names: ReadonlyMap<string, StabilityPartName>) => nameOf(part, names)?.kind === 'total';
+
+function addRun(runs: FixedRun[], run: FixedRun) {
+  const previous = runs.at(-1);
+  if (previous && !run.startsSegment && previous.lastHour + 1 === run.firstHour && previous.valueRaw === run.valueRaw) previous.lastHour = run.lastHour;
+  else runs.push(run);
+}
+
+/** One measure's parts over a chart's view from its parts' lines (`parts` in key order, `lines` by part): a bin is
+ * drawn at its first hour's value, so the bin holding the head never shows an hour after it; the parts are known
+ * where the displayed value's line holds a bin. With `head`, a tiled line's bins stop at the head's bin, which holds
+ * the line's value at the head (`valueAt`: the followed value while following) from its first hour to the head.
+ * One source under several handles is one part. */
+export function partsFromLines(parts: readonly string[], lines: ReadonlyMap<string, ChartSummary | undefined>,
+  names: ReadonlyMap<string, StabilityPartName>, head: number | null = null): MeasureParts {
+  const observed: HourSpan[] = [];
+  const byId = new Map<string, StabilityPart>();
+  // A line's runs: its bins before the head's, then the head's own at the value there.
+  const runsOf = (line: ChartSummary): FixedRun[] => {
+    const cut = head !== null && line.tiles ? Math.floor(head / line.tiles.binHours) * line.tiles.binHours : Infinity;
+    const runs: FixedRun[] = [];
+    for (const bucket of line.buckets) {
+      if (bucket && bucket.firstHour < cut) runs.push({ firstHour: bucket.firstHour, lastHour: Math.min(bucket.lastHour, cut - 1), valueRaw: rawOf(bucket.firstValue), startsSegment: bucket.firstBreak });
+    }
+    const value = cut === Infinity || head === null ? null : line.tiles!.valueAt(head);
+    if (value !== null && Number.isFinite(value) && cut <= head!) {
+      const before = runs.at(-1);
+      runs.push({ firstHour: cut, lastHour: Math.floor(head!), valueRaw: rawOf(value), startsSegment: !before || before.lastHour + 1 !== cut });
+    }
+    return runs;
+  };
+  for (const part of parts) {
+    const line = lines.get(part);
+    if (!line) continue;
+    if (isTotal(part, names)) {
+      for (const run of runsOf(line)) {
+        const last = observed.at(-1);
+        if (last && !run.startsSegment && last.lastHour + 1 === run.firstHour) last.lastHour = run.lastHour;
+        else observed.push({ firstHour: run.firstHour, lastHour: run.lastHour });
+      }
+      continue;
+    }
+    const made = partOf(part, names);
+    const held = byId.get(made.id) ?? made;
+    byId.set(made.id, held);
+    for (const run of runsOf(line)) addRun(held.runs, run);
+  }
+  for (const part of byId.values()) part.runs.sort((a, b) => a.firstHour - b.firstHour);
+  return { parts: [...byId.values()], observed: observed.sort((a, b) => a.firstHour - b.firstHour) };
+}
+
+/** One measure's parts at `hour` from the states read there: known only where the displayed value was recorded. */
+export function partsAtStates(parts: readonly string[], states: readonly KeyedState[], hour: number,
+  names: ReadonlyMap<string, StabilityPartName>): MeasureParts {
+  const at = new Map(states.filter(state => state.hour === hour).map(state => [state.part, state]));
+  const known = parts.some(part => isTotal(part, names) && at.get(part)?.run);
+  if (!known) return { parts: [], observed: [] };
+  const byId = new Map<string, StabilityPart>();
+  for (const part of parts) {
+    const run = at.get(part)?.run;
+    if (!run || isTotal(part, names)) continue;
+    const made = partOf(part, names);
+    const held = byId.get(made.id);
+    if (held) held.runs[0].valueRaw = String(BigInt.asIntN(64, BigInt(held.runs[0].valueRaw) + BigInt(run.valueRaw)));
+    else byId.set(made.id, { ...made, runs: [{ firstHour: hour, lastHour: hour, valueRaw: run.valueRaw, startsSegment: false }] });
+  }
+  return { parts: [...byId.values()], observed: [{ firstHour: hour, lastHour: hour }] };
+}
+
+const text = (value: unknown) => value === null || typeof value === 'string';
+export function validateStabilityPartNames(value: unknown): StabilityPartNamesReply {
+  const reply = value as StabilityPartNamesReply;
+  const ok = typeof reply === 'object' && reply !== null && typeof reply.tag === 'string' && Number.isSafeInteger(reply.hour)
+    && Array.isArray(reply.warnings) && reply.warnings.every(warning => typeof warning === 'string') && Array.isArray(reply.parts)
+    && reply.parts.every(part => typeof part === 'object' && part !== null && typeof part.part === 'string' && /^\d+$/.test(part.part)
+      && (part.measure === 'stability' || part.measure === 'warSupport') && typeof part.kind === 'string' && text(part.id) && text(part.term)
+      && text(part.missing) && (part.line === null || typeof part.line === 'object'));
+  if (!ok) throw new Error('The stability part names reply is malformed.');
+  return reply;
+}
+
+/** The parts to name at each hour, ascending: each part at the last hour it was held up to `end`, where the parts
+ * dictionary still holds it. */
+export function namesAt(listed: readonly SeriesPart[], end: number): [number, string[]][] {
+  const last = new Map<string, number>();
+  for (const part of listed) last.set(part.part, Math.max(last.get(part.part) ?? -Infinity, Math.min(part.lastHour, end)));
+  const byHour = new Map<number, string[]>();
+  for (const [part, hour] of last) byHour.set(hour, [...(byHour.get(hour) ?? []), part]);
+  return [...byHour].sort(([a], [b]) => a - b);
 }

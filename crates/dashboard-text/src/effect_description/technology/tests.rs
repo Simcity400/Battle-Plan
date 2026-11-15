@@ -700,7 +700,7 @@ fn bound_technology_effect_missing_identity_is_empty_but_missing_recording_refus
         content.view(None),
     );
     assert_eq!(output.text, "");
-    assert!(output.refusals.keys().any(|why| why.contains("ResearchTechnologies lacks bound country's technology status")), "{:?}", output.refusals);
+    assert!(output.refusals.keys().any(|why| why.contains("research technologies lacks bound country's technology status")), "{:?}", output.refusals);
 }
 
 #[test]

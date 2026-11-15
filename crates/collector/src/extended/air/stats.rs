@@ -315,7 +315,6 @@ pub(super) fn copy_stats_channels(
     true
 }
 
-#[cfg(test)]
 fn copy_stats_pass(
     job: &mut AirStatsJob,
     memory: &impl engine_native::Memory,
@@ -323,17 +322,7 @@ fn copy_stats_pass(
     game_state: usize,
     ticks: &mut [u64; AIR_STATS_N],
 ) {
-    copy_stats_pass_mode(job, memory, base, game_state, ticks, false);
-}
-
-fn copy_stats_pass_growing(
-    job: &mut AirStatsJob,
-    memory: &impl engine_native::Memory,
-    base: usize,
-    game_state: usize,
-    ticks: &mut [u64; AIR_STATS_N],
-) {
-    copy_stats_pass_mode(job, memory, base, game_state, ticks, true);
+    copy_stats_pass_mode(job, memory, base, game_state, ticks);
 }
 
 fn copy_stats_pass_mode(
@@ -342,13 +331,9 @@ fn copy_stats_pass_mode(
     base: usize,
     game_state: usize,
     ticks: &mut [u64; AIR_STATS_N],
-    growing: bool,
 ) {
     let _reads = read_accounting::table(TableId::AirStatistics);
     job.clear();
-    if growing {
-        job.log.enable_worker_growth();
-    }
     job.active = true;
     job.game_state = game_state;
     let started = qpc();
@@ -578,24 +563,6 @@ fn copy_stats_owners(
 /// each slot word, then each nonnull history via `copy_stats_history`.
 /// Stops at the first typed abort point (failed take), mirroring the walk's
 /// fail-fast on unreadable slots.
-pub(crate) fn copy_air_stats_refresh_growing(
-    memory: &impl Memory,
-    ctx: AirStatsCopyContext,
-    job: &mut AirStatsJob,
-) -> AirStatsCopyReport {
-    if !replay_data::cadence::should_walk(TableId::AirStatistics, ctx.hour, ctx.force_full) {
-        job.clear();
-        return AirStatsCopyReport::default();
-    }
-    let mut ticks = [0u64; AIR_STATS_N];
-    copy_stats_pass_growing(job, memory, ctx.base, ctx.game_state, &mut ticks);
-    AirStatsCopyReport {
-        raw_ok: !job.log.overflowed,
-        copy_ticks: ticks,
-    }
-}
-
-#[cfg(test)]
 pub(crate) fn copy_air_stats_refresh(
     memory: &impl Memory,
     ctx: AirStatsCopyContext,
@@ -624,26 +591,23 @@ pub(crate) fn decode_air_stats_payload(
         captured.fail_air_stats_capture(replay_data::cadence::SKIPPED_REASON);
         return;
     }
-    let recorded = crate::raw::Recorded::build(&job.log);
+    let recorded = match crate::raw::Recorded::build(&job.log) {
+        Ok(recorded) => recorded,
+        Err(reason) => {
+            captured.fail_air_stats_capture(reason);
+            return;
+        }
+    };
     let started = qpc();
     // Replay the existing statistics walk against the recorded spans into
     // the pooled buffers, with the identical bounded/capacity handling the
     // game thread applies.
-    let walked = if job.log.worker_growth_enabled() {
-        cloop_history::walk_growing(
-            &recorded,
-            base,
-            job.game_state,
-            &mut captured.statistics.rows,
-        )
-    } else {
-        cloop_history::walk(
-            &recorded,
-            base,
-            job.game_state,
-            &mut captured.statistics.rows,
-        )
-    };
+    let walked = cloop_history::walk(
+        &recorded,
+        base,
+        job.game_state,
+        &mut captured.statistics.rows,
+    );
     captured.statistics.outcome = bounded(walked, captured.statistics.rows.len());
     decode_ticks[0] += qpc().saturating_sub(started).max(0) as u64;
     captured.stats_raw_mode = false;

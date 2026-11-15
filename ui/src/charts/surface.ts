@@ -2,6 +2,43 @@
  * CSS layout size; its backing store follows the size it really covers on screen
  * (which includes zoom and display scaling), and drawing uses layout pixels. */
 
+/** The canvas a chart draws into and sizes: the element's offscreen canvas where the browser can hand it one. */
+export type DrawingCanvas = HTMLCanvasElement | OffscreenCanvas;
+export interface DrawingSurface { canvas: DrawingCanvas; context: CanvasRenderingContext2D | null }
+
+const surfaces = new WeakMap<HTMLCanvasElement, DrawingSurface>();
+const elements = new WeakMap<OffscreenCanvas, HTMLCanvasElement>();
+
+/** A chart canvas's drawing, detached from the page's style. On a canvas in the document, setting a
+ * font, drawing text or measuring it first brings the whole page's style up to date: a forced style
+ * pass for every chart drawn after another painter wrote to the page in the same frame. Handed to an
+ * offscreen canvas, the drawing never waits on the page, and the page shows each frame it draws.
+ * Size `canvas`, never the element, which can no longer be resized once handed over. */
+export function drawingSurface(element: HTMLCanvasElement): DrawingSurface {
+  let held = surfaces.get(element);
+  if (held) return held;
+  let canvas: DrawingCanvas = element;
+  if (typeof element.transferControlToOffscreen === 'function') {
+    try { canvas = element.transferControlToOffscreen(); elements.set(canvas, element); } catch { canvas = element; }
+  }
+  held = { canvas, context: canvas.getContext('2d') as CanvasRenderingContext2D | null };
+  surfaces.set(element, held);
+  return held;
+}
+
+/** The page's canvas a drawing canvas shows on. */
+export function canvasElement(canvas: DrawingCanvas): HTMLCanvasElement | null {
+  return typeof HTMLCanvasElement !== 'undefined' && canvas instanceof HTMLCanvasElement ? canvas : elements.get(canvas as OffscreenCanvas) ?? null;
+}
+
+/** Sizes a drawing canvas's backing store; true when it changed (which clears it). */
+export function sizeCanvas(canvas: DrawingCanvas, width: number, height: number): boolean {
+  if (canvas.width === width && canvas.height === height) return false;
+  if (canvas.width !== width) canvas.width = width;
+  if (canvas.height !== height) canvas.height = height;
+  return true;
+}
+
 export interface SurfaceMeasure {
   /** The canvas element's layout size in CSS pixels (clientWidth/Height). */
   layoutWidth: number; layoutHeight: number;

@@ -13,14 +13,28 @@ license = "MIT"
 [workspace.dependencies]
 # Begin generated declarations (tools/check-feature-unification.py --fix; do not edit).
 test-unify = { path = "crates/test-unify" }
-unify-bitflags = { package = "bitflags", version = "1.3.2", default-features = false, features = ["default"] }
+unify-adler2 = { package = "adler2", version = "2.0.1", default-features = false, features = [] }
+unify-bitflags-1 = { package = "bitflags", version = "1.3.2", default-features = false, features = ["default"] }
+unify-bitflags-2 = { package = "bitflags", version = "2.13.1", default-features = false, features = ["serde", "serde_core"] }
 unify-bytemuck = { package = "bytemuck", version = "1.25.2", default-features = false, features = ["bytemuck_derive", "derive", "extern_crate_alloc", "min_const_generics"] }
+unify-crossbeam-utils = { package = "crossbeam-utils", version = "0.8.23", default-features = false, features = ["default", "std"] }
 unify-dpi = { package = "dpi", version = "0.1.2", default-features = false, features = ["default", "serde", "std"] }
+unify-either = { package = "either", version = "1.18.0", default-features = false, features = ["default", "std", "use_std"] }
+unify-fdeflate = { package = "fdeflate", version = "0.3.7", default-features = false, features = [] }
+unify-flate2 = { package = "flate2", version = "1.1.10", default-features = false, features = ["any_impl", "default", "miniz_oxide", "runtime_detection", "rust_backend"] }
 unify-hashbrown = { package = "hashbrown", version = "0.17.1", default-features = false, features = ["default-hasher", "inline-more"] }
 unify-indexmap = { package = "indexmap", version = "2.14.2", default-features = false, features = ["default", "std"] }
+unify-lock_api = { package = "lock_api", version = "0.4.14", default-features = false, features = ["arc_lock", "atomic_usize", "default"] }
 unify-log = { package = "log", version = "0.4.34", default-features = false, features = ["alloc", "std"] }
+unify-miniz_oxide-0-8 = { package = "miniz_oxide", version = "0.8.9", default-features = false, features = ["default", "simd", "simd-adler32", "with-alloc"] }
+unify-miniz_oxide-0-9 = { package = "miniz_oxide", version = "0.9.1", default-features = false, features = ["default", "simd", "simd-adler32", "with-alloc"] }
+unify-num-traits = { package = "num-traits", version = "0.2.19", default-features = false, features = ["default", "i128", "libm", "std"] }
 unify-once_cell = { package = "once_cell", version = "1.21.4", default-features = false, features = ["alloc", "default", "race", "std"] }
+unify-parking_lot = { package = "parking_lot", version = "0.12.5", default-features = false, features = ["arc_lock", "default"] }
 unify-proc-macro2 = { package = "proc-macro2", version = "1.0.107", default-features = false, features = ["default", "proc-macro"] }
+unify-rustc-hash = { package = "rustc-hash", version = "2.1.3", default-features = false, features = ["default", "std"] }
+unify-simd-adler32 = { package = "simd-adler32", version = "0.3.10", default-features = false, features = ["const-generics", "default", "std"] }
+unify-smallvec = { package = "smallvec", version = "1.16.0", default-features = false, features = ["const_generics", "const_new", "union"] }
 unify-tauri = { package = "tauri", version = "2.11.5", default-features = false, features = ["common-controls-v6", "compression", "dbus", "default", "dynamic-acl", "tauri-runtime-wry", "tray-icon", "webkit2gtk", "webview2-com", "wry", "x11"] }
 unify-thiserror = { package = "thiserror", version = "2.0.20", default-features = false, features = ["default", "std"] }
 unify-tracing = { package = "tracing", version = "0.1.44", default-features = false, features = ["std"] }
@@ -32,6 +46,7 @@ unify-windows-core = { package = "windows-core", version = "0.62.2", default-fea
 unify-windows-sys-0-52 = { package = "windows-sys", version = "0.52.0", default-features = false, features = ["Win32", "Win32_Devices", "Win32_Devices_HumanInterfaceDevice", "Win32_Foundation", "Win32_Globalization", "Win32_Graphics", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_Media", "Win32_Security", "Win32_System", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Diagnostics", "Win32_System_Diagnostics_Debug", "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_System_Ole", "Win32_System_SystemInformation", "Win32_System_SystemServices", "Win32_System_Threading", "Win32_System_WindowsProgramming", "Win32_UI", "Win32_UI_Accessibility", "Win32_UI_Controls", "Win32_UI_HiDpi", "Win32_UI_Input", "Win32_UI_Input_Ime", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Input_Pointer", "Win32_UI_Input_Touch", "Win32_UI_Shell", "Win32_UI_TextServices", "Win32_UI_WindowsAndMessaging", "default"] }
 unify-windows-sys-0-59 = { package = "windows-sys", version = "0.59.0", default-features = false, features = ["Win32", "Win32_Foundation", "Win32_Graphics", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_Storage", "Win32_Storage_FileSystem", "Win32_System", "Win32_System_DataExchange", "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_System_Ole", "Win32_System_SystemInformation", "Win32_UI", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "default"] }
 # End generated declarations.
+dashboard-base = { path = "crates/dashboard-base" }
 rayon = "1.11"
 engine-sites = { path = "crates/engine-sites" }
 product-codec = { path = "crates/product-codec" }
@@ -163,51 +178,9 @@ collector-test-support = { path = "crates/collector-test-support" }
 blake3 = "1"
 bytemuck = "1"
 dashboard = { path = "crates/dashboard" }
-dashboard-base = { path = "crates/dashboard-base" }
-dashboard-series = { path = "crates/dashboard-series" }
-dashboard-factions = { path = "crates/dashboard-factions" }
-dashboard-air-aces = { path = "crates/dashboard-air-aces" }
-dashboard-air-superiority = { path = "crates/dashboard-air-superiority" }
-dashboard-construction = { path = "crates/dashboard-construction" }
-dashboard-equipment-losses = { path = "crates/dashboard-equipment-losses" }
-dashboard-equipment-stockpile = { path = "crates/dashboard-equipment-stockpile" }
-dashboard-military-air-ledger = { path = "crates/dashboard-military-air-ledger" }
-dashboard-stability = { path = "crates/dashboard-stability" }
-dashboard-place-names = { path = "crates/dashboard-place-names" }
-dashboard-manpower = { path = "crates/dashboard-manpower" }
-dashboard-measure = { path = "crates/dashboard-measure" }
-dashboard-world = { path = "crates/dashboard-world" }
-dashboard-world-tension = { path = "crates/dashboard-world-tension" }
-dashboard-keyed = { path = "crates/dashboard-keyed" }
-dashboard-air-operations = { path = "crates/dashboard-air-operations" }
-dashboard-doctrine-mastery = { path = "crates/dashboard-doctrine-mastery" }
-dashboard-naval-regions = { path = "crates/dashboard-naval-regions" }
-dashboard-naval-yards = { path = "crates/dashboard-naval-yards" }
-dashboard-weather = { path = "crates/dashboard-weather" }
-dashboard-politics = { path = "crates/dashboard-politics" }
-dashboard-country-nukes = { path = "crates/dashboard-country-nukes" }
-dashboard-ideas = { path = "crates/dashboard-ideas" }
-dashboard-subjects = { path = "crates/dashboard-subjects" }
-dashboard-party-history = { path = "crates/dashboard-party-history" }
-dashboard-occupation = { path = "crates/dashboard-occupation" }
-dashboard-peace-deals = { path = "crates/dashboard-peace-deals" }
-dashboard-game-score = { path = "crates/dashboard-game-score" }
-dashboard-wars = { path = "crates/dashboard-wars" }
-dashboard-country-fuel = { path = "crates/dashboard-country-fuel" }
-dashboard-special-projects = { path = "crates/dashboard-special-projects" }
-dashboard-diplomacy = { path = "crates/dashboard-diplomacy" }
-dashboard-politics-ledger = { path = "crates/dashboard-politics-ledger" }
-dashboard-economy = { path = "crates/dashboard-economy" }
-dashboard-raids = { path = "crates/dashboard-raids" }
-dashboard-resource-balance = { path = "crates/dashboard-resource-balance" }
-dashboard-unit-leaders = { path = "crates/dashboard-unit-leaders" }
 dashboard-core = { path = "crates/dashboard-core" }
-dashboard-army = { path = "crates/dashboard-army" }
-dashboard-forces = { path = "crates/dashboard-forces" }
-dashboard-game-window = { path = "crates/dashboard-game-window" }
-dashboard-intelligence = { path = "crates/dashboard-intelligence" }
-dashboard-land-battles = { path = "crates/dashboard-land-battles" }
-dashboard-naval = { path = "crates/dashboard-naval" }
+dashboard-declare = { path = "crates/dashboard-declare" }
+dashboard-query = { path = "crates/dashboard-query" }
 dashboard-text = { path = "crates/dashboard-text" }
 engine = { path = "crates/engine" }
 engine-mutations = { path = "crates/engine-mutations" }
@@ -273,8 +246,16 @@ png = "0.18"
 pollster = "0.4"
 job-priority = { path = "crates/job-priority" }
 replay = { path = "crates/replay" }
+recorder-derive = { path = "crates/recorder-derive" }
 app-update = { path = "crates/app-update" }
 replay-data = { path = "crates/replay-data" }
+replay-rows = { path = "crates/replay-rows" }
+replay-rows-derived = { path = "crates/replay-rows-derived" }
+replay-tables-a = { path = "crates/replay-tables-a" }
+replay-tables-b = { path = "crates/replay-tables-b" }
+replay-tables-c = { path = "crates/replay-tables-c" }
+replay-tables-d = { path = "crates/replay-tables-d" }
+replay-tables-e = { path = "crates/replay-tables-e" }
 core-events = { path = "crates/core-events" }
 core-shared-owners = { path = "crates/core-shared-owners" }
 replay-identity = { path = "crates/replay-identity" }

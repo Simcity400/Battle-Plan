@@ -121,18 +121,20 @@ pub fn retained_through(
     pass: Option<Hour>,
     timeout: i32,
 ) -> Retained<'_> {
+    retained_of(Retained { own: &row.own, foreign: &row.foreign }, pass, timeout)
+}
+
+/// [`retained_through`] from a holder's two record vectors as read.
+pub fn retained_of(read: Retained<'_>, pass: Option<Hour>, timeout: i32) -> Retained<'_> {
     match pass {
         Some(pass) => {
             let cutoff = pruning_cutoff(pass, timeout);
             Retained {
-                own: pruned(&row.own, cutoff),
-                foreign: pruned(&row.foreign, cutoff),
+                own: pruned(read.own, cutoff),
+                foreign: pruned(read.foreign, cutoff),
             }
         }
-        None => Retained {
-            own: &row.own,
-            foreign: &row.foreign,
-        },
+        None => read,
     }
 }
 

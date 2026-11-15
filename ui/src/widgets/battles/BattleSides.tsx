@@ -1,38 +1,60 @@
-import { useLayoutEffect, useRef, useState } from 'react';
+import { useLayoutEffect, useRef } from 'react';
 import { CountryFlagUrl } from '../../components/CountryFlag';
-import type { BattleSide } from '../../generated/dashboard';
 import { battleFlagCount } from './battleRows';
 import type { BattleCountryLabel, BattleRow, BattleSideSummary } from './battleRows';
+import type { BattleSide } from '../../generated/dashboard';
+
+/** Whether `element` is laid out: a row's state not shown, or a row held ahead, has no box and is not measured. */
+const laidOut = (element: HTMLElement) => element.getClientRects().length > 0;
+
+/** Measures `element` as it is laid out and as it resizes (a state shown, a row revealed, the widget resized), painting
+ * what fits without a render: a state held hidden in a log is measured when it shows, never committing as it does. */
+function useFitPainter(element: React.RefObject<HTMLElement | null>, paint: () => void, inputs: readonly unknown[]) {
+  const latest = useRef(paint);
+  latest.current = paint;
+  useLayoutEffect(() => {
+    const host = element.current!;
+    const measure = () => { if (laidOut(host)) latest.current(); };
+    const observer = new ResizeObserver(measure);
+    observer.observe(host);
+    return () => observer.disconnect();
+  }, [element]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- what is drawn changed: paint it again
+  useLayoutEffect(() => { if (element.current && laidOut(element.current)) latest.current(); }, inputs);
+}
 
 function Flags({ side, country }: { side: BattleSide; country: BattleCountryLabel }) {
   const host = useRef<HTMLSpanElement>(null);
   const probe = useRef<HTMLElement>(null);
+  const probeMore = useRef<HTMLSpanElement>(null);
   const more = useRef<HTMLSpanElement>(null);
-  const [shown, setShown] = useState(0);
   const count = side.countries.length;
-  useLayoutEffect(() => {
+  useFitPainter(host, () => {
     const element = host.current!;
-    const measure = () => {
-      const gap = parseFloat(getComputedStyle(element).columnGap) || 0;
-      const width = element.clientWidth;
-      setShown(battleFlagCount(count, width, probe.current!.offsetWidth, gap, more.current!.offsetWidth));
-    };
-    measure();
-    const observer = new ResizeObserver(measure);
-    [element, probe.current!, more.current!].forEach(item => observer.observe(item));
-    return () => observer.disconnect();
-  }, [count]);
+    const gap = parseFloat(getComputedStyle(element).columnGap) || 0;
+    const shown = battleFlagCount(count, element.clientWidth, probe.current!.offsetWidth, gap, probeMore.current!.offsetWidth);
+    let index = 0;
+    for (const flag of element.children as HTMLCollectionOf<HTMLElement>) {
+      if (!flag.classList.contains('battle-country')) continue;
+      const display = index++ < shown ? '' : 'none';
+      if (flag.style.display !== display) flag.style.display = display;
+    }
+    const tail = more.current!, rest = `+${count - shown}`;
+    if (tail.hidden !== shown >= count) tail.hidden = shown >= count;
+    if (tail.textContent !== rest) tail.textContent = rest;
+  }, [count, side, country]);
   const names = side.countries.map(part => country(part.tag, part.hour).name);
   const title = [side.label, ...names, side.countriesUnknown ? 'Countries unknown' : null].filter(Boolean).join(' · ');
+  // Every flag is drawn and those that do not fit are painted out (`useFitPainter`), so a measure is never a render.
   return <span ref={host} className="battle-flags" title={title} aria-label={title}>
-    <span className="battle-probe" aria-hidden="true"><i ref={probe} className="battle-flag-missing" /><span ref={more}>+{count}</span></span>
-    {side.countries.slice(0, shown).map(part => {
+    <span className="battle-probe" aria-hidden="true"><i ref={probe} className="battle-flag-missing" /><span ref={probeMore}>+{count}</span></span>
+    {side.countries.map(part => {
       const named = country(part.tag, part.hour);
-      return <span className="battle-country" key={JSON.stringify([part.tag, part.hour])} title={named.name}>
+      return <span className="battle-country" key={part.tag} title={named.name}>
         <CountryFlagUrl className="log-flag" url={named.flag} detail={named.flagDetail} reason={named.flagReason} pending={named.flagPending} fixedSize />
       </span>;
     })}
-    {shown < count && <span className="battle-flags-more">+{count - shown}</span>}
+    <span ref={more} className="battle-flags-more" hidden />
   </span>;
 }
 
@@ -43,26 +65,25 @@ export default function BattleSides({ row, country, summary, compact }: {
   const host = useRef<HTMLSpanElement>(null);
   const probe = useRef<HTMLSpanElement>(null);
   const flag = useRef<HTMLElement>(null);
-  const [full, setFull] = useState(false);
+  const fullCount = useRef<HTMLSpanElement>(null);
+  const compactCount = useRef<HTMLSpanElement>(null);
   const counts = row.sides.map(side => side.counts.find(value => value.label === summary.countLabel)
     ?? { label: summary.countLabel, value: null, unknown: summary.unknown });
   const fullText = counts.map(value => summary.formatCount(value, false)).join(` ${summary.separator} `);
-  useLayoutEffect(() => {
-    if (compact) return;
+  const compactText = counts.map(value => summary.formatCount(value, true)).join(` ${summary.separator} `);
+  useFitPainter(host, () => {
+    if (compact) { compactCount.current!.hidden = false; return; }
     const element = host.current!;
-    const measure = () => {
-      const gap = parseFloat(getComputedStyle(element).columnGap) || 0;
-      setFull(probe.current!.offsetWidth + flag.current!.offsetWidth * 2 + gap * 4 <= element.clientWidth);
-    };
-    measure();
-    const observer = new ResizeObserver(measure);
-    [element, probe.current!, flag.current!].forEach(item => observer.observe(item));
-    return () => observer.disconnect();
+    const gap = parseFloat(getComputedStyle(element).columnGap) || 0;
+    const full = probe.current!.offsetWidth + flag.current!.offsetWidth * 2 + gap * 4 <= element.clientWidth;
+    if (fullCount.current!.hidden !== !full) fullCount.current!.hidden = !full;
+    if (compactCount.current!.hidden !== full) compactCount.current!.hidden = full;
   }, [compact, fullText]);
   return <span ref={host} className="battle-sides-summary" title={fullText}>
     <span className="battle-probe" aria-hidden="true"><span ref={probe}>{fullText}</span><i ref={flag} className="battle-flag-missing" /></span>
     {row.sides[0] && <Flags side={row.sides[0]} country={country} />}
-    <span className="battle-count">{!compact && full ? fullText : counts.map(value => summary.formatCount(value, true)).join(` ${summary.separator} `)}</span>
+    {!compact && <span ref={fullCount} className="battle-count" hidden>{fullText}</span>}
+    <span ref={compactCount} className="battle-count">{compactText}</span>
     {row.sides.slice(1).map((side, index) => <Flags key={index} side={side} country={country} />)}
   </span>;
 }

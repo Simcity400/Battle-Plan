@@ -11,6 +11,35 @@ use crate::map::terrain::MARGIN;
 use std::{collections::BTreeSet, sync::Arc};
 use viewer_foundation::map::camera::Camera;
 
+/// One part of the presentation step in the flight record, on whatever thread runs it: its wall
+/// time (`presentation_wall_us`) and that thread's own CPU (`presentation_cpu_us`). The frame
+/// thread's wait on the parts lent to workers is the `join` part's wall less its CPU.
+struct Part {
+    name: &'static str,
+    began: Option<(std::time::Instant, Option<std::time::Duration>)>,
+}
+
+impl Part {
+    fn new(name: &'static str) -> Self {
+        let began = viewer_foundation::view_record::on()
+            .then(|| (std::time::Instant::now(), viewer_foundation::profiling::current_thread_cpu_time()));
+        Self { name, began }
+    }
+}
+
+impl Drop for Part {
+    fn drop(&mut self) {
+        let Some((wall, cpu)) = self.began else {
+            return;
+        };
+        use viewer_foundation::view_record::add;
+        add("presentation_wall_us", self.name, wall.elapsed().as_micros() as u64);
+        if let (Some(cpu), Some(now)) = (cpu, viewer_foundation::profiling::current_thread_cpu_time()) {
+            add("presentation_cpu_us", self.name, now.saturating_sub(cpu).as_micros() as u64);
+        }
+    }
+}
+
 /// Every part of a scene that a frame advances, borrowed for one step.
 pub(super) struct Presentation<'a> {
     pub graphics: &'a dashboard_core::protocol::MapGraphics,
@@ -89,6 +118,7 @@ impl Presentation<'_> {
         drop(view_span);
         // The aircraft share no state with the rest of the walk, so they step beside it.
         let fly = || {
+            let _part = Part::new("aircraft");
             // Every mission is placed; one the display hides stays placed and only stops drawing.
             let Some((pass, assets, plan)) = aircraft.as_deref_mut() else {
                 return None;
@@ -115,10 +145,12 @@ impl Presentation<'_> {
             viewer_foundation::profiling::take_thread_records()
         };
         let walk = || {
+            let _walk = Part::new("walk");
             // Trains run below the railway fade, whether or not the display shows them.
             if let Some((pass, assets, plan)) = trains
                 && rails_shown
             {
+                let _part = Part::new("trains");
                 let _trains_span = viewer_foundation::profiling::span("step_trains");
                 let field_span = viewer_foundation::profiling::span("train_field");
                 pass.replace_field(&assets.library, plan.field(assets, animation_time));
@@ -129,6 +161,7 @@ impl Presentation<'_> {
             // City actors are precreated outside the dynamic mesh creation budget. Each province's
             // damage inputs select their states.
             if let (Some(pass), Some(presentation)) = (sprawl, city_presentation) {
+                let _part = Part::new("cities");
                 let _cities_span = viewer_foundation::profiling::span("step_cities");
                 let update_span = viewer_foundation::profiling::span("city_update");
                 if let Some(placed) = presentation.update(
@@ -155,6 +188,7 @@ impl Presentation<'_> {
             // The raids map mode draws no land unit models (ships stay), and it and the operatives
             // mode no unit arrows, as the game's camera cutoffs would.
             let gates = gates.for_mode(&visibility);
+            let history_part = Part::new("history");
             let history_profile = viewer_foundation::profiling::thread_span("history_update");
             let models = unit_history.update_models_with_frame(
                 camera,
@@ -167,7 +201,9 @@ impl Presentation<'_> {
                 province_frame,
             );
             drop(history_profile);
+            drop(history_part);
             if let Some(arrows) = movement_arrows {
+                let _part = Part::new("arrows");
                 let _arrows_span = viewer_foundation::profiling::span("step_arrows");
                 arrows.advance(
                     last_animation_time.map_or(0.0, |last| (animation_time - last).max(0.0)),
@@ -177,10 +213,12 @@ impl Presentation<'_> {
                 );
             }
             if let Some(text) = animated_text {
+                let _part = Part::new("text");
                 let _text_span = viewer_foundation::profiling::span("step_text");
                 text.advance(camera, animation_time, province_frame);
             }
             if let Some(pass) = map_buildings {
+                let _part = Part::new("buildings");
                 let _buildings_span = viewer_foundation::profiling::span("step_buildings");
                 if viewer_foundation::profile_writer::profiling() {
                     // Observe the existing result only; no new reuse decision or input walk.
@@ -203,6 +241,7 @@ impl Presentation<'_> {
                 pass.animate_with_workers(animation_time, visible, &animation_offsets, workers);
             }
             if let Some(pass) = unit_models {
+                let _part = Part::new("units");
                 let _units_span = viewer_foundation::profiling::span("step_units");
                 let place_span = viewer_foundation::profiling::span("unit_place");
                 let place_profile = viewer_foundation::profiling::thread_span("unit_place");
@@ -219,7 +258,9 @@ impl Presentation<'_> {
                 pass.animate_with_workers(animation_time, None, &[0.0], workers);
             }
         };
+        let joined = Part::new("join");
         let (flown, ()) = workers.join(fly, walk);
+        drop(joined);
         viewer_foundation::profiling::adopt_thread_records(flown);
         // Missile scenarios finished since the last frame start their explosions on the clock
         // the flying aircraft share. Their own clock mark moves with the start, so a frame that
@@ -233,6 +274,7 @@ impl Presentation<'_> {
         *missile_clock = Some(animation_time);
         let mut struck = BTreeSet::new();
         if let (Some(pass), Some(ambient)) = (map_frame, ambient) {
+            let _part = Part::new("map_frame");
             let _map_frame_span = viewer_foundation::profiling::span("step_map_frame");
             let ambient_span = viewer_foundation::profiling::span("ambient_update");
             let mut placed = ambient.update(camera, size, animation_time);

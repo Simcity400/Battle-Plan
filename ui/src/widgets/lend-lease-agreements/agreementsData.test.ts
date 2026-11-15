@@ -1,80 +1,68 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import type { MarketHistoryReply } from '../../generated/dashboard';
-import { validateMarketHistory } from '../../dashboard/marketHistory.ts';
-import { agreementRows, amountOf, openAgreement } from './agreementsData.ts';
-import { CLOSED, reduceDrill } from '../../charts/drill/drillState.ts';
+import { liveKey } from '../../charts/live.ts';
+import { validateLeaseHistory, validateMarketReply } from '../../dashboard/market.ts';
+import type { MarketAt } from '../../dashboard/market';
+import { agreementRows, agreementValues, amountOf, openAgreement } from './agreementsData.ts';
+import type { CountryGroupReply, LeaseTerms } from '../../generated/dashboard';
+import { countryMatch, membershipUnrecordedAt } from '../../dashboard/groups.ts';
 
-const item = (pool: number, variant: string, amount: string, from = 10, to = 30) => ({ pool, ordinal: 0, variant, amounts: [[from, to, amount]] });
-const reply = (): MarketHistoryReply => ({
-  branchId: '1', view: 'agreements', lastHour: 50, known: [[0, 50, '1']], contracts: [], offers: [], warnings: [],
-  holders: { '1': [{ hour: 0, tag: 'GIV' }], '2': [{ hour: 0, tag: 'REC' }] },
-  variants: { a1: [{ firstHour: 0, name: 'Synthetic rifle', known: true, design: null }] },
-  agreements: [{
-    giver: '1', id: '0000000000000004', receiver: [[10, 30, '2']], revision: [[10, 30, '0']], since: [[10, 30, '9000']], last: [[10, 30, '9100']],
-    items: [item(0, 'a1', '6000000'), item(3, 'a1', '12000000'), item(4, 'a1', '0'), item(1, 'b2', '20000')],
-    fuel: [[[10, 30, '32768']], [], [[10, 30, '65536']], [], []],
-  }],
-  coverage: { firstHour: 0, lastHour: 50, complete: true }, pending: [],
-} as unknown as MarketHistoryReply);
+const lease = (key: string, giver: string | null, receiver: string | null, extra: Partial<LeaseTerms> = {}): LeaseTerms => ({
+  key, id: key.padStart(16, '0'), giver, receiver, revision: '0', activeSince: 10, lastDelivery: 0, monthly: [], percentage: [], once: [], delivered: [], sunk: [],
+  fuelDailyRaw: '0', fuelPercentageRaw: '0', lastFuelDeliveredRaw: '0', ...extra });
+const reply: MarketAt = { ...validateMarketReply({ branchId: '1', offers: null, contracts: null, purchasesMissing: null, unattributed: 0, warnings: [], icons: [],
+  variants: [{ id: '6', hour: 50, known: true, token: 'tank', name: 'Tank', typeName: null, nameUnknown: null, icon: null, iconUnknown: null }],
+  agreements: [
+    lease('1', 'GER', 'FRA', { monthly: [{ variant: '6', name: null, amountRaw: '500000' }], delivered: [{ variant: '6', name: null, amountRaw: '1500000' }], fuelDailyRaw: '32768' }),
+    lease('2', null, 'GER'),
+  ] }), hour: 50 };
+const history = validateLeaseHistory({ branchId: '1', warnings: [], icons: [], variants: [], agreements: [
+  { terms: lease('3', 'GER', 'ITA', { once: [{ variant: '7', name: null, amountRaw: '100000' }] }), fuelSentRaw: '0', fuelSunkRaw: '0', firstHour: 1, lastHour: 30 },
+  { terms: lease('4', 'GER', 'ENG', { fuelDailyRaw: '1' }), fuelSentRaw: '65536', fuelSunkRaw: '0', firstHour: 1, lastHour: 70 },
+  { terms: lease('1', 'GER', 'FRA'), fuelSentRaw: '0', fuelSunkRaw: '0', firstHour: 1, lastHour: 20 },
+] });
+const ger = (tag: string) => tag === 'GER';
 
-test('agreements show schedules, retained totals and fuel in their own units, by direction', () => {
-  const data = validateMarketHistory('agreements')(reply());
-  const sent = agreementRows(data, 'sent', tag => tag === 'GIV', 20, true).rows;
-  assert.equal(sent.length, 2);
-  const [equipment, fuel] = sent;
-  assert.equal(equipment.partner, 'REC');
-  assert.deepEqual(equipment.items.map(entry => [entry.name, entry.schedule]), [['Synthetic rifle', 'Monthly 60'], [null, 'Production share 20%']]);
-  assert.equal(amountOf(equipment, equipment.items[0].delivered), '120');
-  // A recorded zero loss is 0, an item with no loss pool entry is unknown.
-  assert.equal(amountOf(equipment, equipment.items[0].lost), '0');
-  assert.equal(amountOf(equipment, equipment.items[1].lost), '—');
-  assert.equal(fuel.items[0].schedule, 'Daily 1');
-  assert.equal(amountOf(fuel, fuel.items[0].delivered), '2');
-  assert.deepEqual(agreementRows(data, 'received', tag => tag === 'GIV', 20, true), { rows: [], unattributed: 0 });
-  const received = agreementRows(data, 'received', tag => tag === 'REC', 20, true).rows[0];
-  assert.deepEqual([received.from, received.partner, received.giver, received.receiver], ['REC', 'GIV', 'GIV', 'REC']);
-  assert.deepEqual([equipment.giver, equipment.receiver], ['GIV', 'REC']);
+test('sent agreements at the hour, with their fuel as a row of its own, and ended ones from the history before the hour', () => {
+  const { rows, unattributed } = agreementRows(reply, history, 'sent', ger, true);
+  assert.deepEqual(rows.map(row => [row.key, row.ended, row.at, row.partner]), [['1', false, 50, 'FRA'], ['1:fuel', false, 50, 'FRA'], ['3', true, 30, 'ITA']],
+    'one ending after the hour is not ended yet, and a key standing now is not listed again as ended');
+  assert.equal(unattributed, 1, 'a giver with no tag may be GER');
+  assert.deepEqual(rows[0].items.map(item => [item.name, item.schedule, item.delivered]), [['Tank', 'Monthly 5', 1500000n]]);
+  assert.equal(rows[1].items[0].schedule, 'Daily 1');
+  assert.deepEqual(agreementRows(reply, history, 'sent', ger, false).rows.map(row => row.key), ['1', '1:fuel']);
+  assert.deepEqual(agreementRows(reply, history, 'received', ger, true).rows.map(row => row.key), [], 'the agreement GER receives has a giver with no tag');
 });
 
-test('fuel already sent keeps its row after the fuel terms stop', () => {
-  const stopped = reply();
-  stopped.agreements[0].fuel = [[[10, 19, '32768'], [20, 30, '0']], [[10, 30, '0']], [[10, 30, '65536']], [[10, 30, '0']], []];
-  const { rows } = agreementRows(validateMarketHistory('agreements')(stopped), 'sent', tag => tag === 'GIV', 25, true);
-  assert.equal(rows.length, 2);
-  const fuel = rows[1];
-  assert.equal(fuel.fuel, true);
-  assert.equal(fuel.items[0].schedule, '');
-  assert.equal(amountOf(fuel, fuel.items[0].delivered), '2');
+test('Delivered and Lost paint an active agreement\'s fuel from its live cells and every other row as read', () => {
+  const { rows } = agreementRows(reply, history, 'sent', ger, true);
+  const live = { read: () => ({ get: (key: string) => key === liveKey('1', 'fuelSent') ? 98304 : undefined, missing: () => 'Not read yet' }), subscribe: () => () => {} };
+  const values = agreementValues(rows, live).read();
+  assert.equal(values.get(liveKey('1:fuel', 'delivered')), 98304);
+  assert.equal(values.get(liveKey('1:fuel', 'lost')), undefined, 'a fuel loss not read is missing, never zero');
+  assert.equal(values.missing(liveKey('1:fuel', 'lost')), 'Not read yet');
+  assert.equal(values.get(liveKey('1', 'delivered')), 1500000);
+  assert.equal(amountOf(rows[1], 98304n), '3');
+  assert.deepEqual(openAgreement(rows[2], 'agreement', true, 50), { type: 'open', breakdown: 'agreement', hour: 30, playing: true, playhead: null });
 });
 
-test('ended agreements keep their last read and can be hidden; later ones are not shown early', () => {
-  const data = validateMarketHistory('agreements')(reply());
-  const ended = agreementRows(data, 'sent', () => true, 40, true).rows;
-  assert.ok(ended.length && ended.every(row => row.ended && row.at === 30));
-  assert.equal(agreementRows(data, 'sent', () => true, 40, false).rows.length, 0);
-  assert.equal(agreementRows(data, 'sent', () => true, 5, true).rows.length, 0);
-});
+const humans = { kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false } as const;
+/** Humans holding `tags` every hour of 0..200, their group's history not recorded over `gap`. */
+const gapGroups = (tags: readonly string[], gap = { firstHour: 110, lastHour: 120 }): CountryGroupReply => ({ branchId: '1', warnings: [],
+  humans: tags.map(tag => ({ tag, firstHour: 0, lastHour: 200 })), factions: [], wars: [], warStarts: [], capitulations: [], identityChanges: [],
+  countryIdentities: tags.map((tag, slot) => ({ tag, identities: [{ firstHour: 0, lastHour: 200, slot, countryId: slot + 1 }] })),
+  unobserved: { humans: [gap], factions: [], wars: [] } });
+const GAP = 'Group membership is unavailable at this time.';
 
-test('an agreement whose receiver has no identity stands, sent by its giver and unattributed when received', () => {
-  const unnamed = reply();
-  // The receiver is identified until 19; the agreement stands, with its revision read, through 30.
-  unnamed.agreements[0].receiver = [[10, 19, '2']];
-  const data = validateMarketHistory('agreements')(unnamed);
-  const sent = agreementRows(data, 'sent', tag => tag === 'GIV', 25, true);
-  assert.deepEqual([sent.rows.length, sent.rows[0].partner, sent.rows[0].receiver, sent.rows[0].ended, sent.unattributed], [2, null, null, false, 0]);
-  // Any country may be its receiver: no row lists it, and none proves there is none.
-  assert.deepEqual(agreementRows(data, 'received', tag => tag === 'REC', 25, true), { rows: [], unattributed: 1 });
-  assert.equal(agreementRows(data, 'received', tag => tag === 'REC', 15, true).rows.length, 2);
-  // Ended after 30, its last read still names no receiver.
-  assert.equal(agreementRows(data, 'received', () => true, 40, true).unattributed, 1);
-});
-
-test('an ended agreement opens at its last read, never following the playhead past it', () => {
-  const [ended] = agreementRows(validateMarketHistory('agreements')(reply()), 'sent', () => true, 40, true).rows;
-  assert.ok(ended.ended);
-  for (const playing of [true, false]) assert.deepEqual(reduceDrill(CLOSED, openAgreement(ended, 'agreement', playing, 40)),
-    { breakdown: 'agreement', follow: false, hour: 30 });
-  const [active] = agreementRows(validateMarketHistory('agreements')(reply()), 'sent', () => true, 20, true).rows;
-  assert.equal(reduceDrill(CLOSED, openAgreement(active, 'agreement', true, 20)).follow, true, 'an active one follows playback as before');
+test('an agreement left out where the chosen group’s membership was not recorded at its hour is said, never no lend-lease', () => {
+  const read = (gap: { firstHour: number; lastHour: number }, hour: number) => {
+    const groups = gapGroups(['GER', 'FRA', 'ITA', 'ENG'], gap);
+    return agreementRows({ ...reply, hour }, history, 'sent', countryMatch(humans, [], groups, 200).matches, true, at => membershipUnrecordedAt(humans, groups, at));
+  };
+  const unknown = read({ firstHour: 110, lastHour: 120 }, 115);
+  assert.deepEqual([unknown.rows.filter(row => !row.ended).length, unknown.membership], [0, GAP], 'the standing agreements at an hour not recorded');
+  const ended = read({ firstHour: 25, lastHour: 35 }, 50);
+  assert.deepEqual([ended.rows.map(row => row.key), ended.membership], [['1', '1:fuel'], GAP], 'one ended at an hour not recorded');
+  const recorded = read({ firstHour: 110, lastHour: 120 }, 50);
+  assert.deepEqual([recorded.rows.map(row => row.key), recorded.membership], [['1', '1:fuel', '3'], null]);
 });

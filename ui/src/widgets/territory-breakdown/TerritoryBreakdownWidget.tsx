@@ -2,108 +2,120 @@ import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useContextMenu } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
 import Sunburst from '../../charts/sunburst/Sunburst';
-import type { SunburstText } from '../../charts/sunburst/Sunburst';
+import type { SunburstItem, SunburstText, SunburstValues } from '../../charts/sunburst/Sunburst';
 import { levelsShown, sunburstSettings } from '../../charts/sunburst/sunburstOptions';
+import type { Live, LiveValues } from '../../charts/live';
 import { jumpItem } from '../../charts/jump';
-import { runAt, stretchAt, stretchStarts } from '../../charts/series';
 import { usNumber } from '../../charts/numberFormat';
+import { motionOf } from '../../charts/easing.ts';
 import { useCountryLooks } from '../../dashboard/countryLooks';
+import { usePushedLooksHour } from '../../dashboard/pushedLooks.ts';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import { useFactionColours } from '../../dashboard/FactionColours';
-import { MEMBERSHIP_PREPARING, worldFilter } from '../../dashboard/groups';
+import { factionNameLabel } from '../../dashboard/factionNames';
+import { resolveCountries } from '../../dashboard/groups';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { resolveWindow } from '../../dashboard/model';
+import { useHeadProduct } from '../../dashboard/headProduct';
+import { repliedCells } from '../../dashboard/follow/liveCells.ts';
 import { resolveOptions } from '../../dashboard/options';
-import { usePlaybackHour } from '../../dashboard/playback';
-import { useFollowedProduct, useProduct } from '../../dashboard/products';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
-import type { TerritoryBreakdownReply } from '../../generated/dashboard';
-import { measureOf, ruleOf, territoryColumn, territoryNote } from '../territory/territoryData';
-import { breakdownItems, breakdownModel, breakdownSelectedWhole, breakdownWhole, mergeBreakdownReplies, validateBreakdownReply } from './breakdownData';
+import { AREA_UNIT, measureOf, territoryNote } from '../../dashboard/territoryMeasure.ts';
+import { affiliation, affiliationEpochs, breakdownItems, epochOf, validateBreakdownReply, withFinals } from './breakdownData.ts';
+import { useProduct } from '../../dashboard/products';
+import { resolveWindow } from '../../dashboard/model';
+import { useShownEachFrame } from '../../dashboard/widgetPerf';
+import type { RegionalRule } from './breakdownData';
 import { LEVELS, OPTIONS } from './definition';
-import { useParityRows } from '../../dashboard/parityRows';
-import { motionOf } from '../../charts/easing.ts';
+import type { TerritoryBreakdownReply } from './types';
 
 const NO_WARNINGS: string[] = [];
+
+/** Territory by faction, country and strategic region: the followed `territory-breakdown` panel, which carries the rows
+ * and is pushed only when they change; the amounts are its live cells, painted each frame with no render. */
 export default function TerritoryBreakdownWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
-  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
-  const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const options = resolveOptions(OPTIONS, widget.options);
-  const measure = measureOf(options.measure), rule = ruleOf(options.rule);
-  const hour = window?.lastHour ?? 0, branchEnd = track?.branch.lastHour ?? 0;
-  const end = widget.time.mode === 'range' ? hour : branchEnd;
-  const request = (at:number) => track ? {sourceId:track.source.id,revision:track.source.revision,product:'series-state',params:{branchId:track.branch.id,
-    family:{kind:'territory',measure,rule,breakdown:true},tags:[],reads:[{hour:Math.floor(at)}]}} : null;
-  // The last hour stays shown while playback's newest hour is read.
-  const current = useFollowedProduct<TerritoryBreakdownReply>(runtime.client,request(hour),['reads'],active,validateBreakdownReply,track?.source);
-  const ending = useProduct<TerritoryBreakdownReply>(runtime.client,request(end),active,validateBreakdownReply,track?.source);
-  // The hour the shown reply answers, which a retained one keeps while the next loads.
-  const shown = current.data && current.moment ? (JSON.parse(current.moment) as [{ hour: number }[]])[0][0].hour : hour;
-  const data = useMemo(()=>current.data && ending.data ? mergeBreakdownReplies(current.data,ending.data) : undefined,[current.data,ending.data]);
-  const product={data,error:current.error ?? ending.error,retry:()=>{current.retry();ending.retry();}};
-  const parityRoot=useRef<HTMLDivElement>(null);
-  useParityRows(parityRoot,()=>({kind:'chart',label:'Territory regional values',complete:!!data,total:data?.series.length ?? 0,hour,
-    rows:data?.series.map(series=>({tag:series.tag,region:series.region,run:runAt(series.runs,hour) ?? null})) ?? []}));
+  const measure = measureOf(options.measure);
+  const rule: RegionalRule = options.rule === 'owned' ? 'owned' : 'controlled';
+  const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
+  const params = useMemo(() => ({ measure, rule }), [measure, rule]);
+  const breakdown = useHeadProduct<TerritoryBreakdownReply>(runtime, widget, 'territory-breakdown', track ? params : null,
+    { active, validate: validateBreakdownReply });
+  const hour = breakdown.at ?? breakdown.hour ?? (track ? Math.floor(runtime.clock.getHour()) + track.axisOffset : 0);
+  const shownAt = useRef(breakdown.shownAt);
+  shownAt.current = breakdown.shownAt;
+  useShownEachFrame(runtime.clock, () => breakdown.data ? breakdown.shownAt() : null, breakdown.live);
+  // Fill grows each slice toward its amount at the view's end: the breakdown asked once at that hour.
+  const fill = options.growth === 'fill';
+  const end = track ? (widget.time.mode === 'range' ? resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour())?.lastHour ?? track.branch.lastHour : track.branch.lastHour) : 0;
+  const ending = useProduct<TerritoryBreakdownReply>(runtime.client, track && fill ? { sourceId: track.source.id, revision: track.source.revision,
+    product: 'territory-breakdown', params: { branchId: track.branch.id, hour: Math.floor(end), measure, rule } } : null, active, validateBreakdownReply, track?.source);
   const groups = useCountryGroups(runtime, track, active);
   const colours = useFactionColours(runtime.client, track?.source);
-  const model = useMemo(() => product.data ? breakdownModel(product.data, measure, rule) : null, [product.data, measure, rule]);
-  const identities = model?.identities ?? null;
   const fallback = defaultCountryTag(track);
-  const filter = useMemo(() => worldFilter(widget.countries, fallback ? [fallback] : [], groups.data, shown, branchEnd, identities),
-    [widget.countries, fallback, groups.data, shown, branchEnd, identities]);
-  const endFilter = useMemo(() => worldFilter(widget.countries, fallback ? [fallback] : [], groups.data, end, branchEnd, identities),
-    [widget.countries, fallback, groups.data, end, branchEnd, identities]);
-  const countries = useMemo(() => new Map(product.data?.countries.map(country => [country.tag, country]) ?? []), [product.data]);
-  const tags = useMemo(() => [...countries.keys()], [countries]);
-  const segmentAt = useCallback((tag: string, at: number) => runAt(countries.get(tag)?.segments ?? [], at)?.firstHour ?? null, [countries]);
-  const looks = useCountryLooks(runtime.client, track, tags, shown, active, segmentAt);
-  const endLooks = useCountryLooks(runtime.client, track, tags, end, active, segmentAt);
-  const includes = useCallback((tag: string | null, at: number) => { const chosen = at === end ? endFilter : filter;
-    const key = tag === null ? null : identities?.keyAt(tag, at);
-    return chosen.countryIds == null || key != null && chosen.countryIds.has(key); }, [end, filter, endFilter, identities]);
-  const shape = useMemo(() => model && groups.data ? breakdownItems(model, groups.data, shown, end, {
-    country: (tag, at) => {
-      const atLooks = at === end ? endLooks : looks;
-      return { name: atLooks.name(tag, at), flag: atLooks.flag(tag, at),
-        flagPending: atLooks.flagPending(tag, at), flagReason: atLooks.flagReason(tag, at) };
-    }, faction: colours.names,
-    colour: id => colours.colours.get(id), selected: includes,
-  }) : { items: [] }, [model, groups.data, shown, end, looks, endLooks, colours.names, colours.colours, includes]);
-  const whole = model ? widget.countries.kind === 'all' ? breakdownWhole(model.data, shown, end, measure, rule)
-    : breakdownSelectedWhole(model.data, shown, end, measure, rule, includes, model.identities) : undefined;
-  const worldRuns = useMemo(() => product.data?.worldTotals.filter(run => run.values[territoryColumn(measure, rule)] !== null) ?? [], [product.data, measure, rule]);
-  const worldStarts = useMemo(() => stretchStarts(worldRuns), [worldRuns]);
-  const stretch = shape.items.some(item => item.present && (item.unknownValue || item.unknownLevels?.some(Boolean)))
-    ? null : stretchAt(worldRuns, worldStarts, shown);
+  const lastHour = track?.branch.lastHour ?? 0;
+  const resolved = useMemo(() => widget.countries.kind === 'all' ? null
+    : resolveCountries(widget.countries, fallback ? [fallback] : [], groups.data, lastHour, Number.MAX_SAFE_INTEGER), [widget.countries, fallback, groups.data, lastHour]);
+  const tags = useMemo(() => [...new Set([...(breakdown.data?.rows ?? []), ...(fill ? ending.data?.rows ?? [] : [])].flatMap(row => row.tag === null ? [] : [row.tag]))], [breakdown.data, fill, ending.data]);
+  // Pushed, countries are named where one of them last changed, never at each push's hour.
+  const named = usePushedLooksHour(runtime, widget, track, tags, active && breakdown.read === 'followed', hour);
+  const looks = useCountryLooks(runtime.client, track, tags, named.hour, active, undefined, undefined, named.exact);
+  const itemsAt = useCallback((reply: TerritoryBreakdownReply, values: LiveValues<number>, at: number, nameAt = at) => groups.data
+    ? breakdownItems(reply, values, measure, affiliation(groups.data, at), {
+      country: tag => ({ name: looks.name(tag, nameAt), flag: looks.flag(tag, nameAt), flagPending: looks.flagPending(tag, nameAt), flagReason: looks.flagReason(tag, nameAt) }),
+      faction: faction => factionNameLabel(faction, at, colours.displayNames.get(faction.id)),
+      colour: id => colours.colours.get(id),
+      selected: tag => resolved === null || (tag !== null && resolved.tags.includes(tag)),
+    }) : [], [groups.data, measure, looks, colours.colours, colours.displayNames, resolved]);
+  const endingItems = useMemo(() => fill && ending.data ? itemsAt(ending.data, repliedCells(ending.data).read(), end) : null, [fill, ending.data, itemsAt, end]);
+  const epochs = useMemo(() => groups.data ? affiliationEpochs(groups.data) : [], [groups.data]);
+  // The amounts as the cells hold them, made again only when the cells move or a faction's membership does: the
+  // chart reads this each frame, and nothing here renders.
+  const live = useMemo<Live<SunburstValues> | undefined>(() => {
+    const reply = breakdown.data;
+    if (!reply) return undefined;
+    const cells = breakdown.live;
+    let made: { values: LiveValues<number>; epoch: number; out: SunburstValues } | null = null;
+    return {
+      read: () => {
+        const values = cells.read();
+        const at = Math.floor(shownAt.current() ?? hour);
+        const epoch = epochOf(epochs, at);
+        if (made?.values !== values || made.epoch !== epoch) {
+          const now = itemsAt(reply, values, at, named.hour);
+          made = { values, epoch, out: { items: endingItems ? withFinals(now, endingItems) : now } };
+        }
+        return made.out;
+      },
+      subscribe: changed => cells.subscribe(changed),
+    };
+  }, [breakdown.data, breakdown.live, hour, epochs, itemsAt, named.hour, endingItems]);
+  const items: readonly SunburstItem[] = useMemo(() => live?.read().items ?? [], [live]);
   const text = useMemo<SunburstText>(() => ({ format: (value, exact, denominator = 1n) => {
-    // At most three decimals: the en-US default.
     if (exact == null) return usNumber.format(value);
     const whole = exact / denominator, remainder = exact % denominator;
-    return remainder === 0n ? usNumber.format(whole)
-      : `${whole === 0n ? '' : `${usNumber.format(whole)} `}${remainder}/${denominator}`;
-  },
-    unit: measure === 'area' ? product.data?.areaUnit ?? 'map cells' : measure === 'victoryPoints' ? 'victory points' : measure,
-    valueLabel: rule === 'owned' ? 'Owned' : 'Controlled', missingLabel: 'Not recorded', emptyLabel: 'No territory at this hour.' }), [measure, rule, product.data?.areaUnit]);
+    return remainder === 0n ? usNumber.format(whole) : `${whole === 0n ? '' : `${usNumber.format(whole)} `}${remainder}/${denominator}`;
+  }, unit: measure === 'area' ? AREA_UNIT : measure === 'victoryPoints' ? 'victory points' : measure,
+  valueLabel: rule === 'owned' ? 'Owned' : 'Controlled', missingLabel: 'Not recorded', emptyLabel: 'No territory at this hour.' }), [measure, rule]);
   const menu = useContextMenu('Territory breakdown actions');
-  useEffect(() => { const warnings = [...(product.data?.warnings ?? []), ...(groups.data?.warnings ?? []), ...colours.warnings];
-    onDiagnostics(warnings.length ? warnings : NO_WARNINGS); return () => onDiagnostics(NO_WARNINGS);
-  }, [product.data, groups.data, colours.warnings, onDiagnostics]);
-  if (!track) return <WidgetState kind="empty" icon="sunburst" message="Load a campaign to see its territory breakdown." />;
-  if (!window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
-  if (product.error) return <WidgetState kind="error" failure={product.error} onRetry={product.retry} />;
-  const groupFailure = groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
-  if (groupFailure && !groups.data) return groupFailure;
-  if (!product.data || !groups.data || colours.loading) return <>{groupFailure}<WidgetState kind="loading" label="Loading territory breakdown..." /></>;
-  if (colours.error) return <>{groupFailure}<WidgetState kind="error" what="faction colours" failure={colours.error} /></>;
-  if (options.growth === 'fill' && endFilter.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={endFilter.reason} /></>;
-  if (filter.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={filter.reason} /></>;
-  if (measure === 'area' && product.data.areaReason) return <>{groupFailure}<WidgetState kind="unavailable" message="Map area is unavailable." /></>;
-  if (!filter.known && !shape.items.some(item => item.present)) return groupFailure ?? <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
-  return <div ref={parityRoot}>{groupFailure}<Sunburst key={`${track.source.id}:${track.source.revision}:${track.branch.id}`} label="Territory breakdown" items={shape.items}
-    root={{ id: 'territory', label: widget.countries.kind === 'all' ? 'World territory' : 'Selected territory' }} authoritativeTotal={whole}
-    stretch={stretch} unavailableReason={whole?.unknownValue ? 'Territory not recorded at this hour.' : undefined}
+  const diagnosticKey = JSON.stringify([...(breakdown.data?.warnings ?? []), ...(groups.data?.warnings ?? []), ...colours.warnings,
+    ...(breakdown.reason ? [`Territory breakdown is asked by the fallback clock: ${breakdown.reason}`] : [])]);
+  useEffect(() => {
+    const warnings = JSON.parse(diagnosticKey) as string[];
+    onDiagnostics(warnings.length ? warnings : NO_WARNINGS);
+    return () => onDiagnostics(NO_WARNINGS);
+  }, [diagnosticKey, onDiagnostics]);
+  const state = !track ? <WidgetState kind="empty" icon="sunburst" message="Load a campaign to see its territory breakdown." />
+    : breakdown.error ? <WidgetState kind="error" failure={breakdown.error} onRetry={breakdown.retry} />
+      : fill && ending.error ? <WidgetState kind="error" what="the territory at the view's end" failure={ending.error} onRetry={ending.retry} />
+      : groups.error && !groups.data ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />
+        : colours.error ? <WidgetState kind="error" what="faction colours" failure={colours.error} />
+          : !breakdown.data || !groups.data || colours.loading || (fill && !ending.data) ? <WidgetState kind="loading" label="Loading territory breakdown..." />
+            : breakdown.data.missing ? <WidgetState kind="unavailable" message={breakdown.data.missing} />
+              : measure === 'area' && breakdown.data.areaReason ? <WidgetState kind="unavailable" message={breakdown.data.areaReason} />
+              : resolved?.reason ? <WidgetState kind="unavailable" message={resolved.reason} /> : null;
+  return <div ref={breakdown.root}>{state ?? <Sunburst key={`${track!.source.id}:${track!.source.revision}:${track!.branch.id}`} label="Territory breakdown"
+    items={items} live={live} root={{ id: 'territory', label: widget.countries.kind === 'all' ? 'World territory' : 'Selected territory' }}
     levels={levelsShown(options, LEVELS)} text={text} settings={sunburstSettings(options)} active={active}
     hoursPerSecond={motionOf(runtime.clock.getSnapshot())} footnote={territoryNote(measure)}
-    onContextMenu={(_node, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, shown)])} />{menu.menu}</div>;
+    onContextMenu={(_node, x, y) => menu.open(x, y, [jumpItem(runtime, track!.id, Math.floor(shownAt.current() ?? hour))])} />}{menu.menu}</div>;
 }

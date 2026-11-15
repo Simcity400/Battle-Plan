@@ -28,10 +28,11 @@
 //!   `notify_every`.
 //!
 //! The hook path never allocates or frees. A bitmap is allocated off-thread
-//! ([`DirtySet::offer`]), installed at a boundary only while no writer runs
-//! (the first at once, a larger one at the next invalidating hour), and a
-//! replaced one is freed off-thread ([`DirtySet::collect`]) once no writer
-//! can still hold it.
+//! ([`DirtySet::offer`]) for the larger of the census and every id a writer
+//! marked past the installed one, installed at a boundary only while no writer
+//! runs (the first at once, a larger one at the next invalidating hour or the
+//! next hour after an id past the installed one), and a replaced one is freed
+//! off-thread ([`DirtySet::collect`]) once no writer can still hold it.
 
 use std::{
     ptr,
@@ -94,6 +95,10 @@ pub struct DirtySet {
     failed_offers: AtomicU64,
     /// Notifications of an id beyond the installed capacity.
     overflows: AtomicU64,
+    /// Ids the largest id marked beyond the installed capacity needs.
+    demand: AtomicUsize,
+    /// An id beyond the installed capacity was marked since the last install.
+    outgrown: AtomicBool,
     /// Notifications that named no id.
     everies: AtomicU64,
     /// Ids the takes visited.
@@ -126,6 +131,8 @@ impl DirtySet {
             held: AtomicU64::new(0),
             failed_offers: AtomicU64::new(0),
             overflows: AtomicU64::new(0),
+            demand: AtomicUsize::new(0),
+            outgrown: AtomicBool::new(false),
             everies: AtomicU64::new(0),
             taken: AtomicU64::new(0),
             refused: AtomicU64::new(0),
@@ -149,8 +156,8 @@ impl DirtySet {
         self.enabled.load(SeqCst) && !self.poisoned.load(SeqCst)
     }
 
-    /// Sets `id`'s bit, or moves the epoch when the installed bitmap cannot
-    /// hold it.
+    /// Sets `id`'s bit, or moves the epoch and asks for a bitmap that holds it
+    /// when the installed one cannot.
     #[inline]
     fn mark(&self, id: usize) {
         match self.installed().and_then(|bits| bits.words.get(id / BITS)) {
@@ -166,6 +173,8 @@ impl DirtySet {
             }
             None => {
                 self.overflows.fetch_add(1, Relaxed);
+                self.demand.fetch_max(id.saturating_add(1), SeqCst);
+                self.outgrown.store(true, SeqCst);
                 self.new_epoch();
             }
         }
@@ -235,14 +244,15 @@ impl DirtySet {
     /// Game thread, in the hourly callback before any capture: start an
     /// epoch when `invalidate`, then install an offered bitmap while no
     /// writer is running. Outside an invalidation an offered bitmap waits,
-    /// counted as held, unless none is installed yet; so does one a running
-    /// writer blocks. Returns whether it installed a bitmap.
+    /// counted as held, unless none is installed yet or an id past the
+    /// installed one already moved the epoch; so does one a running writer
+    /// blocks. Returns whether it installed a bitmap.
     pub fn boundary(&self, invalidate: bool) -> bool {
         if invalidate {
             self.new_epoch();
         }
         let first = self.bits.load(SeqCst).is_null();
-        if !invalidate && !first {
+        if !invalidate && !first && !self.outgrown.load(SeqCst) {
             if !self.offered.load(SeqCst).is_null() {
                 self.held.fetch_add(1, Relaxed);
             }
@@ -273,6 +283,9 @@ impl DirtySet {
         let previous = self.bits.swap(next, SeqCst);
         self.new_epoch();
         self.capacity.store(ids, Relaxed);
+        if ids >= self.demand.load(SeqCst) {
+            self.outgrown.store(false, SeqCst);
+        }
         self.installs.fetch_add(1, Relaxed);
         // A writer begun since the check above may hold it.
         self.draining.store(previous, SeqCst);
@@ -296,9 +309,11 @@ impl DirtySet {
         }
     }
 
-    /// Off the game thread: allocate a bitmap for ids `0..ids` when the
-    /// installed and offered ones are smaller. A boundary installs it.
+    /// Off the game thread: allocate a bitmap for ids `0..ids`, or for every
+    /// id a writer marked past the installed bitmap, when the installed and
+    /// offered ones are smaller. A boundary installs it.
     pub fn offer(&self, ids: usize) {
+        let ids = ids.max(self.demand.load(SeqCst));
         let Some(words) = ids.checked_add(BITS - 1).map(|bits| bits / BITS) else {
             let _ = engine_allocation::oom();
             self.failed_offers.fetch_add(1, Relaxed);
@@ -336,6 +351,8 @@ impl DirtySet {
         }
         self.capacity.store(0, Relaxed);
         self.requested.store(0, SeqCst);
+        self.demand.store(0, SeqCst);
+        self.outgrown.store(false, SeqCst);
         self.new_epoch();
     }
 
@@ -536,6 +553,26 @@ mod tests {
         drop(empty.notify(0));
         assert_eq!(empty.overflows.load(Relaxed), 2);
         assert_eq!(take(&empty).0, None);
+    }
+
+    #[test]
+    fn an_id_beyond_capacity_grows_the_bitmap_at_the_next_hour() {
+        let set = set(64);
+        drop(set.notify(200));
+        assert_eq!(set.demand.load(SeqCst), 201);
+        // The census alone would not grow it: the marked id does.
+        set.offer(10);
+        assert!(set.boundary(false));
+        assert!(set.capacity.load(Relaxed) > 200);
+        let (Some(epoch), _) = take(&set) else {
+            unreachable!("observing")
+        };
+        drop(set.notify(200));
+        assert_eq!(take(&set), (Some(epoch), vec![200]));
+        // Grown, an ordinary hour holds the next offer again.
+        set.offer(1_000);
+        assert!(!set.boundary(false));
+        assert_eq!(set.held.load(Relaxed), 1);
     }
 
     #[test]

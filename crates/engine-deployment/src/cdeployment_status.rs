@@ -175,36 +175,11 @@ pub(crate) fn manager(
 /// number of rows that were not read, so the traversal always visits every
 /// conveyor and line even when their rows cannot be stored: a child count is
 /// only knowable from its parent's array header.
-#[allow(clippy::too_many_arguments)]
-pub fn walk(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    conveyors: &mut [ConveyorRow],
-    lines: &mut [LineRow],
-    manpower: &mut [ManpowerRow],
-    equipment: &mut [EquipmentRow],
-    names: &mut [u8],
-    custom_names: &mut [u8],
-) -> Outcomes {
-    walk_buffer(
-        memory,
-        base,
-        game_state,
-        crate::walk::Buffer::Fixed(conveyors),
-        crate::walk::Buffer::Fixed(lines),
-        crate::walk::Buffer::Fixed(manpower),
-        crate::walk::Buffer::Fixed(equipment),
-        crate::walk::Buffer::Fixed(names),
-        crate::walk::Buffer::Fixed(custom_names),
-    )
-}
-
 #[allow(
     clippy::too_many_arguments,
     reason = "the independent deployment rows and literal arenas share one original graph"
 )]
-pub fn walk_growing(
+pub fn walk(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -528,6 +503,10 @@ fn archetype_token(
     Ok(token)
 }
 
+pub fn count_local_subunits(memory: &impl Memory, base: usize, game_state: usize) -> LocalSubunitWalk {
+    walk_local_subunits_buffer(memory, base, game_state, crate::walk::Buffer::Count, crate::walk::Buffer::Count, |_| LocalSelection::Read, |_| {})
+}
+
 /// Every country's clones whose ordered (archetype, amount) requirements differ
 /// from the global definition. A clone equal to its global definition, which is
 /// what nearly every clone is, needs no row: its absence from a complete table
@@ -539,28 +518,10 @@ pub fn walk_local_subunits(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    rows: &mut [LocalSubunitRow],
-    requirements: &mut [LocalRequirement],
-) -> LocalSubunitWalk {
-    walk_local_subunits_buffer(
-        memory,
-        base,
-        game_state,
-        crate::walk::Buffer::Fixed(rows),
-        crate::walk::Buffer::Fixed(requirements),
-        |_| LocalSelection::Read,
-        |_| {},
-    )
-}
-
-pub fn walk_local_subunits_growing(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
     rows: &mut Vec<LocalSubunitRow>,
     requirements: &mut Vec<LocalRequirement>,
 ) -> LocalSubunitWalk {
-    walk_local_subunits_selected_growing(
+    walk_local_subunits_selected(
         memory,
         base,
         game_state,
@@ -579,7 +540,7 @@ pub struct HeldLocalSubunits<'a> {
     pub requirements: &'a [LocalRequirement],
 }
 
-/// What [`walk_local_subunits_selected_growing`] does with one country.
+/// What [`walk_local_subunits_selected`] does with one country.
 #[derive(Clone, Copy, Debug)]
 pub enum LocalSelection<'a> {
     /// Read the country's clones.
@@ -614,11 +575,11 @@ pub struct LocalVisit {
     pub read: bool,
 }
 
-/// [`walk_local_subunits_growing`] over the countries `select` lets it read:
+/// [`walk_local_subunits`] over the countries `select` lets it read:
 /// a carried or confirmed country's held rows are copied in its place, so the
 /// walk publishes what a fresh one would whenever every held row is current.
 /// `visit` sees each country once, after its rows.
-pub fn walk_local_subunits_selected_growing<'a>(
+pub fn walk_local_subunits_selected<'a>(
     memory: &impl Memory,
     base: usize,
     game_state: usize,

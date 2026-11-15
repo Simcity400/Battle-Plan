@@ -236,7 +236,7 @@ impl List for Variables {
         let store = faction
             .checked_add(Self::OFFSET)
             .ok_or("faction variable store address overflow")?;
-        let walk = engine_scripts::cvariables::walk_growing(
+        let walk = engine_scripts::cvariables::walk(
             memory,
             base,
             store,
@@ -435,6 +435,8 @@ struct ListStore<S: List> {
     spares: Vec<Arc<TableRows>>,
     before: Option<(u64, u64, u64)>,
     quiet: Option<(u64, u64, u64)>,
+    /// A store was carried on the family token alone, which must then hold to the walk's end.
+    quiet_carried: bool,
     failure: Option<&'static str>,
     changed: bool,
     unpublished: bool,
@@ -451,8 +453,9 @@ impl<S: List> ListStore<S> {
         self.failure = self
             .before
             .is_none()
-            .then_some("faction companion writer observation unavailable");
+            .then_some("faction companions could not be followed in the game");
         self.force = force;
+        self.quiet_carried = false;
         self.changed = force || self.unpublished;
         self.ticks = 0;
         self.seen = 0;
@@ -504,12 +507,13 @@ impl<S: List> ListStore<S> {
                 .get_or_insert("faction companion receiver overflow");
             return;
         };
+        let family_quiet = self.before == self.quiet;
         if !self.force
             && held.pointer == pointer
             && held.certificate.is_some()
-            && (self.before == self.quiet
-                || held.certificate == changes.sequence(S::KIND, receiver))
+            && (family_quiet || held.certificate == changes.sequence(S::KIND, receiver))
         {
+            self.quiet_carried |= family_quiet;
             if let Some(reason) = held.failure {
                 self.failure.get_or_insert(reason);
             }
@@ -547,7 +551,7 @@ impl<S: List> ListStore<S> {
             self.failure
                 .get_or_insert("faction companion identity roster incomplete");
         }
-        if self.before.is_none() || self.before != changes.quiet(S::KIND) {
+        if self.before.is_none() || (self.quiet_carried && self.before != changes.quiet(S::KIND)) {
             self.failure
                 .get_or_insert("faction companion observation changed during acquisition");
         }
@@ -958,8 +962,52 @@ mod tests {
         assert_eq!(rows[1].seed, Some(u32::MAX));
         assert!(rows[1].name.is_empty());
     }
+    /// A session's first hour reads every faction under its own store certificate; another
+    /// store's writer during the walk (the variable family's token is every script store's) left
+    /// those exact rows refused. An hour that carried stores on the family token still refuses.
+    #[test]
+    fn faction_stores_read_under_their_own_certificates_survive_other_writers_during_the_walk() {
+        let _lock = crate::faction_companion_changes::TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let bytes = fixture(2);
+        let memory = Counted {
+            bytes: &bytes,
+            reads: Cell::new(0),
+        };
+        let changes = changes(2);
+        let unrelated = 0x10_0000;
+        let mut store = Store::default();
+        let mut output = Captured::default();
+        store.begin(&changes, true);
+        store.visit(&memory, 0, FIRST, 1, &changes);
+        drop(changes.0[5].notify(unrelated));
+        store.visit(&memory, 0, FIRST + STRIDE, 2, &changes);
+        store.finish(true, &changes, &mut output);
+        assert_eq!(output.failure[5], None);
+        let rows = output.rows[5].as_ref().unwrap();
+        assert_eq!(rows.rows::<tables::FactionVariables>().unwrap().len(), 2);
+
+        acquire(&mut store, &mut output, &memory, &changes, 2);
+        assert_eq!(output.failure[5], None);
+        let reads = memory.reads.get();
+        store.begin(&changes, false);
+        store.visit(&memory, 0, FIRST, 1, &changes);
+        store.visit(&memory, 0, FIRST + STRIDE, 2, &changes);
+        assert_eq!(memory.reads.get(), reads, "a quiet family carries both stores");
+        drop(changes.0[5].notify(unrelated));
+        store.finish(true, &changes, &mut output);
+        assert_eq!(
+            output.failure[5],
+            Some("faction companion observation changed during acquisition")
+        );
+    }
+
     #[test]
     fn companion_lists_retain_unpublished_changes_across_a_refused_hour() {
+        let _lock = crate::faction_companion_changes::TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let changes = changes(1);
         let bytes = fixture(1);
         let memory = Counted {

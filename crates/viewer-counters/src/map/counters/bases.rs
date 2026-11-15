@@ -5,6 +5,7 @@ use installed_content_core::{buildings::BuildingType, buildings::Buildings, buil
 use replay_data::{rows::BuildingRow, rows::ProvinceRow};
 use viewer_foundation::map::province_map::ProvinceMap;
 use viewer_foundation::table_access::TokenNames;
+use std::collections::HashMap;
 
 use viewer_foundation::map::visibility::{AccessLinks, ProvinceAccess, Relations};
 use viewer_foundation::table_access::TokenKeys;
@@ -73,6 +74,8 @@ pub struct BuildingIconContent {
     /// source order.
     records: BTreeMap<(u32, String), [f32; 3]>,
     tokens: TokenMemo,
+    /// The tokens carried from one copy of LexicalTokens to the next ([`TokenCarry`]).
+    carried: TokenCarry,
 }
 
 type BuildingTokens = (BTreeMap<String, u32>, BTreeSet<String>);
@@ -87,6 +90,131 @@ impl Default for TokenMemo {
         Self(Arc::new(viewer_foundation::map::memo::Keyed::new(
             TOKEN_TABLES,
         )))
+    }
+}
+
+/// The building tokens carried across copies of LexicalTokens: compared,
+/// never assumed to grow. A new branch makes them whole. A new copy within the branch is walked
+/// against the copy held, token by token: the same rows carry; tokens only in the new copy add
+/// what they name; a rewritten text or a token gone makes them whole again. Walked and made with no
+/// lock held: a second caller meanwhile makes its own rather than waiting.
+#[derive(Clone, Default)]
+struct TokenCarry(Arc<std::sync::Mutex<Option<CarriedTokens>>>);
+
+struct CarriedTokens {
+    branch: replay_data::BranchId,
+    view: replay_frame::frame::SharedView,
+    /// Each needed building key's tokens, in token order, and each token naming several types.
+    found: BTreeMap<String, Vec<u32>>,
+    several: BTreeMap<u32, String>,
+    value: Arc<BuildingTokens>,
+}
+
+impl std::fmt::Debug for TokenCarry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("TokenCarry")
+    }
+}
+
+/// What the tokens of `names` contribute to the keys they fold to, as [`building_tokens`] reads each.
+fn add_tokens(names: TokenNames<'_>, keys: &TokenKeys, needed: &BTreeSet<&str>, found: &mut BTreeMap<String, Vec<u32>>, several: &mut BTreeMap<u32, String>) {
+    for (token, spelling) in names.iter() {
+        let group = keys.keys(spelling);
+        let named: Vec<&str> = group.iter().map(String::as_str).filter(|key| needed.contains(key)).collect();
+        if named.is_empty() {
+            continue;
+        }
+        if group.len() > 1 {
+            several.insert(token, format!("building token {token} ({spelling}) names several building types: {}", group.join(", ")));
+        }
+        for key in named {
+            let tokens = found.entry(key.to_owned()).or_default();
+            if let Err(at) = tokens.binary_search(&token) {
+                tokens.insert(at, token);
+            }
+        }
+    }
+}
+
+/// [`building_tokens`]' answer from what the tokens contributed.
+fn tokens_of(found: &BTreeMap<String, Vec<u32>>, several: &BTreeMap<u32, String>) -> BuildingTokens {
+    let mut refused: BTreeSet<String> = several.values().cloned().collect();
+    let mut out = BTreeMap::new();
+    for (key, tokens) in found {
+        match tokens.as_slice() {
+            [token] => {
+                out.insert(key.clone(), *token);
+            }
+            _ => {
+                refused.insert(format!("building {key} folds to several tokens: {tokens:?}"));
+            }
+        }
+    }
+    (out, refused)
+}
+
+fn lexical_rows(view: &replay_frame::frame::SharedView) -> Option<&[replay_data::rows::LexicalTokenRow]> {
+    match view.held() {
+        replay_frame::frame::TableView::Complete(replay_data::rows::TableRows::LexicalTokens(rows))
+        | replay_frame::frame::TableView::Truncated { rows: replay_data::rows::TableRows::LexicalTokens(rows), .. } => Some(rows),
+        _ => None,
+    }
+}
+
+impl TokenCarry {
+    fn tokens(&self, frame: &DecodedFrame, keys: &TokenKeys, needed: &BTreeSet<&str>) -> io::Result<Arc<BuildingTokens>> {
+        let names = TokenNames::new(frame)?;
+        let view = frame.tables[replay_data::rows::TableId::LexicalTokens.index()].clone();
+        let carried = {
+            let held = self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            match held.as_ref().filter(|carried| carried.branch == frame.branch) {
+                Some(carried) if replay_frame::frame::SharedView::ptr_eq(&carried.view, &view) => {
+                    return Ok(Arc::clone(&carried.value));
+                }
+                Some(carried) => Some((carried.view.clone(), carried.found.clone(), carried.several.clone())),
+                None => None,
+            }
+        };
+        let store = |found, several, value: &Arc<BuildingTokens>, view| {
+            *self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                Some(CarriedTokens { branch: frame.branch, view, found, several, value: Arc::clone(value) });
+        };
+        if let Some((carried_view, mut found, mut several)) = carried {
+            if let (Some(old), Some(new)) = (lexical_rows(&carried_view), lexical_rows(&view)) {
+                let mut added = Vec::new();
+                let (mut at, mut kept) = (0, true);
+                for row in new {
+                    while at < old.len() && old[at].token < row.token {
+                        kept = false;
+                        at += 1;
+                    }
+                    if !kept {
+                        break;
+                    }
+                    match old.get(at) {
+                        Some(previous) if previous.token == row.token => {
+                            if previous.literal != row.literal {
+                                kept = false;
+                                break;
+                            }
+                            at += 1;
+                        }
+                        _ => added.push(row.clone()),
+                    }
+                }
+                if kept && at == old.len() {
+                    add_tokens(TokenNames::from_rows(&added, true), keys, needed, &mut found, &mut several);
+                    let value = Arc::new(tokens_of(&found, &several));
+                    store(found, several, &value, view);
+                    return Ok(value);
+                }
+            }
+        }
+        let (mut found, mut several) = (BTreeMap::new(), BTreeMap::new());
+        add_tokens(names, keys, needed, &mut found, &mut several);
+        let value = Arc::new(tokens_of(&found, &several));
+        store(found, several, &value, view);
+        Ok(value)
     }
 }
 
@@ -216,6 +344,7 @@ impl BuildingIconContent {
             keys,
             records,
             tokens: TokenMemo::default(),
+            carried: TokenCarry::default(),
         }
     }
 
@@ -244,9 +373,14 @@ impl BuildingIconContent {
             .collect()
     }
 
+    /// The tokens carried across copies of LexicalTokens ([`TokenCarry`]).
+    fn carried_tokens(&self, frame: &DecodedFrame) -> io::Result<Arc<BuildingTokens>> {
+        self.carried.tokens(frame, &self.keys, &self.names())
+    }
+
     // Refusals are not cached: each hour keeps its own error context.
     fn tokens(&self, frame: &DecodedFrame) -> io::Result<Arc<BuildingTokens>> {
-        self.tokens.0.get_or_build(frame, (), |projected| {
+        self.tokens.0.get_or_build_without_waiting(frame, (), |projected| {
             building_tokens(projected, &self.keys, &self.names()).map(Arc::new)
         })
     }
@@ -516,6 +650,8 @@ pub(super) struct BaseContext<'a> {
     pub(super) country_ids: &'a BTreeMap<u32, u32>,
     pub(super) relations: Result<&'a Relations, &'static str>,
     pub(super) order: Option<&'a counter_order::RecordedOrder>,
+    /// The building tokens carried across copies of their table ([`TokenCarry`]).
+    pub(super) carry_tokens: bool,
 }
 
 /// Reconstructed province rows have unique ascending `id` keys. Snapshot,
@@ -592,6 +728,7 @@ impl BaseIcons {
             country_ids,
             relations,
             order,
+            ..
         } = context;
         let access = AccessLinks::read(frame, links);
         let forces: BTreeMap<u64, u32> = rows::<tables::TaskForces>(frame)?
@@ -712,7 +849,7 @@ impl BaseIcons {
             ..
         } = context;
         let icons = &content.building_icons;
-        let built = icons.tokens(frame)?;
+        let built = if context.carry_tokens { icons.carried_tokens(frame)? } else { icons.tokens(frame)? };
         let (tokens, refused) = &*built;
         self.refused = refused.clone();
         let names: BTreeMap<u32, &str> = icons
@@ -880,7 +1017,7 @@ pub(super) fn province_at(map: &MapData, world: [f32; 3]) -> Option<u32> {
 
 /// The base kind an `AirBases.kind` names: the game treats any kind other
 /// than a rocket site or gun emplacement as an ordinary air base.
-pub(super) fn site_kind(kind: i32) -> usize {
+pub fn site_kind(kind: i32) -> usize {
     match kind {
         1 => building_facts::ROCKET_SITE,
         2 => building_facts::GUN_EMPLACEMENT,
@@ -895,13 +1032,18 @@ pub(super) fn site_kind(kind: i32) -> usize {
 /// the recorded bases rather than a type name.
 pub(super) fn site_icon_states(frame: &DecodedFrame) -> io::Result<([BTreeSet<u32>; 3], bool)> {
     let bases = rows::<tables::AirBases>(frame)?;
+    Ok((site_states_of(bases.rows().iter().map(|base| (base.state, base.kind))), bases.is_complete()))
+}
+
+/// [`site_icon_states`]'s states from values: each air base's state and kind.
+pub fn site_states_of(bases: impl IntoIterator<Item = (Option<u32>, i32)>) -> [BTreeSet<u32>; 3] {
     let mut states: [BTreeSet<u32>; 3] = Default::default();
-    for base in bases.rows() {
-        if let Some(state) = base.state {
-            states[site_kind(base.kind)].insert(state);
+    for (state, kind) in bases {
+        if let Some(state) = state {
+            states[site_kind(kind)].insert(state);
         }
     }
-    Ok((states, bases.is_complete()))
+    states
 }
 
 /// The prefix of a strategic location's sprite: the game names it after the
@@ -975,9 +1117,9 @@ pub(super) fn strategic_locations(frame: &DecodedFrame) -> io::Result<StrategicL
 /// The states whose radar icons the hour shows, and why some may be
 /// missing.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub(super) struct RadarStates {
-    pub(super) shown: BTreeSet<u32>,
-    pub(super) notes: Vec<String>,
+pub struct RadarStates {
+    pub shown: BTreeSet<u32>,
+    pub notes: Vec<String>,
 }
 
 /// The game admits a province's radar icon when the viewing country, else
@@ -987,128 +1129,186 @@ pub(super) struct RadarStates {
 /// Groups count whatever they cover. An icon only an unrecorded relation
 /// could admit is withheld and named in the notes.
 pub(super) fn radar_states(frame: &DecodedFrame, ours: u32) -> io::Result<RadarStates> {
-    let mut out = RadarStates::default();
     let coverage = rows::<tables::RadarCoverage>(frame)?;
-    if let Available::Unavailable { reason } = coverage {
-        out.notes.push(format!(
-            "radar icons are not drawn: RadarCoverage is unavailable ({reason})"
-        ));
-        return Ok(out);
-    }
-    if !coverage.is_complete() {
-        out.notes
-            .push("radar icons may be missing: the radar groups are not all recorded".into());
-    }
+    let held = match &coverage {
+        Available::Unavailable { reason } => return Ok(radar_of(&RadarInputs { coverage: Err(reason), ..RadarInputs::empty(ours) })),
+        other => other.is_complete(),
+    };
     let links: BTreeMap<u32, u32> = rows::<tables::CountryLinks>(frame)?
         .rows()
         .iter()
         .map(|link| (link.id, link.canonical_slot))
         .collect();
+    let groups: Vec<(u32, Option<u32>)> = coverage.rows().iter().map(|group| (group.country, group.state)).collect();
+    let members = rows::<tables::FactionMembers>(frame)?;
+    let faction_rows: Vec<(u32, u64)> = members.rows().iter().map(|member| (member.country, member.faction)).collect();
+    let appearance = rows::<tables::CountryAppearance>(frame)?;
     let slot = |raw: u32| links.get(&raw).copied();
+    let ours_row = appearance.rows().iter().find(|row| slot(row.country) == Some(ours)).map(|row| (row.subjects.clone(), row.overlord));
+    let controllers: Vec<(u32, u32)> = rows::<tables::States>(frame)?.rows().iter().map(|row| (row.id, row.controller)).collect();
+    Ok(radar_of(&RadarInputs {
+        coverage: Ok((&groups, held)),
+        link: &slot,
+        members: &faction_rows,
+        members_complete: members.is_complete(),
+        appearance: ours_row,
+        controllers: &controllers,
+        ours,
+    }))
+}
+
+/// What [`radar_states`] reads, as values.
+pub struct RadarInputs<'a> {
+    /// `RadarCoverage`'s groups (country, state) and whether it is whole, or why it is unavailable.
+    pub coverage: Result<(&'a [(u32, Option<u32>)], bool), &'a str>,
+    pub link: &'a dyn Fn(u32) -> Option<u32>,
+    /// `FactionMembers`: (country, faction).
+    pub members: &'a [(u32, u64)],
+    pub members_complete: bool,
+    /// The viewing country's `CountryAppearance` subjects and overlord, when it has a row.
+    pub appearance: Option<(replay_data::rows::Recorded<Vec<i32>>, i32)>,
+    /// `States`: (state, raw controller).
+    pub controllers: &'a [(u32, u32)],
+    pub ours: u32,
+}
+
+impl RadarInputs<'_> {
+    fn empty(ours: u32) -> Self {
+        Self { coverage: Ok((&[], true)), link: &|_| None, members: &[], members_complete: true, appearance: None, controllers: &[], ours }
+    }
+}
+
+/// [`radar_states`] from values.
+pub fn radar_of(inputs: &RadarInputs<'_>) -> RadarStates {
+    let (groups, complete) = match inputs.coverage {
+        Err(reason) => return RadarStates { shown: BTreeSet::new(), notes: radar_notes_of(Err(reason), 0, 0, &[]) },
+        Ok(coverage) => coverage,
+    };
+    let slot = inputs.link;
     let mut hosts: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::new();
-    for group in coverage.rows() {
-        if let (Some(country), Some(state)) = (slot(group.country), group.state) {
-            hosts.entry(country).or_default().insert(state);
+    for &(country, state) in groups {
+        if let (Some(country), Some(state)) = (slot(country), state) {
+            hosts.entry(state).or_default().insert(country);
         }
     }
-    let hosted = |country: u32, state: u32| {
-        hosts
-            .get(&country)
-            .is_some_and(|states| states.contains(&state))
-    };
-    // The countries the viewer's search reaches; which one answers first does
-    // not change whether one does.
-    let mut circle = BTreeSet::from([ours]);
-    // The relation inputs whose absence could hide an admitting country.
-    let mut undecided: Vec<&str> = Vec::new();
-    let members = rows::<tables::FactionMembers>(frame)?;
-    if !members.is_complete() {
-        undecided.push("FactionMembers");
-    }
-    let faction = members
-        .rows()
+    let circle = RadarCircle::of(slot, inputs.members, inputs.members_complete, inputs.appearance.as_ref(), inputs.ours);
+    let controllers: BTreeMap<u32, u32> = inputs
+        .controllers
         .iter()
-        .find(|member| slot(member.country) == Some(ours))
-        .map(|member| member.faction);
-    if let Some(faction) = faction {
-        circle.extend(
-            members
-                .rows()
-                .iter()
-                .filter(|member| member.faction == faction)
-                .filter_map(|member| slot(member.country)),
-        );
+        .filter_map(|&(id, controller)| Some((id, slot(controller)?)))
+        .collect();
+    let mut out = RadarStates::default();
+    let (mut uncontrolled, mut withheld) = (0, 0);
+    for (&state, hosting) in &hosts {
+        match circle.outcome(hosting.iter().copied(), controllers.get(&state).copied()) {
+            RadarOutcome::Shown => {
+                out.shown.insert(state);
+            }
+            RadarOutcome::Withheld => withheld += 1,
+            RadarOutcome::Uncontrolled => uncontrolled += 1,
+            RadarOutcome::Hidden => {}
+        }
     }
-    let appearance = rows::<tables::CountryAppearance>(frame)?;
-    match appearance
-        .rows()
-        .iter()
-        .find(|row| slot(row.country) == Some(ours))
-    {
-        Some(row) => {
-            match &row.subjects {
-                replay_data::rows::Recorded::Value(subjects) => circle.extend(
-                    subjects
-                        .iter()
-                        .filter_map(|&raw| u32::try_from(raw).ok().and_then(slot)),
-                ),
-                replay_data::rows::Recorded::NotRecorded => {
-                    undecided.push("CountryAppearance subjects");
+    out.notes = radar_notes_of(Ok(complete), withheld, uncontrolled, &circle.undecided);
+    out
+}
+
+/// The countries whose radar groups admit the viewer's icons: the viewing country, the members
+/// of its faction, its direct subjects and its direct overlord, by country slot; and the
+/// relation inputs whose absence could hide an admitting country.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RadarCircle {
+    pub countries: BTreeSet<u32>,
+    pub undecided: Vec<&'static str>,
+}
+
+impl RadarCircle {
+    /// `members` is `FactionMembers` (country, faction) in key order; `appearance` the viewing
+    /// country's `CountryAppearance` subjects and overlord, when it has a row.
+    pub fn of(slot: &dyn Fn(u32) -> Option<u32>, members: &[(u32, u64)], members_complete: bool, appearance: Option<&(replay_data::rows::Recorded<Vec<i32>>, i32)>, ours: u32) -> Self {
+        // Which country of the circle answers first does not change whether one does.
+        let mut circle = Self { countries: BTreeSet::from([ours]), undecided: Vec::new() };
+        if !members_complete {
+            circle.undecided.push("FactionMembers");
+        }
+        let faction = members.iter().find(|(country, _)| slot(*country) == Some(ours)).map(|(_, faction)| *faction);
+        if let Some(faction) = faction {
+            circle.countries.extend(members.iter().filter(|(_, member)| *member == faction).filter_map(|(country, _)| slot(*country)));
+        }
+        match appearance {
+            Some((subjects, overlord)) => {
+                match subjects {
+                    replay_data::rows::Recorded::Value(subjects) => circle.countries.extend(subjects.iter().filter_map(|&raw| u32::try_from(raw).ok().and_then(slot))),
+                    replay_data::rows::Recorded::NotRecorded => circle.undecided.push("CountryAppearance subjects"),
+                }
+                if let Some(overlord) = u32::try_from(*overlord).ok().filter(|&raw| raw > 0) {
+                    circle.countries.extend(slot(overlord));
                 }
             }
-            if let Some(overlord) = u32::try_from(row.overlord).ok().filter(|&raw| raw > 0) {
-                circle.extend(slot(overlord));
-            }
+            None => circle.undecided.push("CountryAppearance"),
         }
-        None => undecided.push("CountryAppearance"),
+        circle
     }
-    let controllers: BTreeMap<u32, u32> = rows::<tables::States>(frame)?
-        .rows()
-        .iter()
-        .filter_map(|row| Some((row.id, slot(row.controller)?)))
-        .collect();
-    let mut uncontrolled = 0;
-    let mut withheld = 0;
-    for state in hosts.values().flatten().copied().collect::<BTreeSet<_>>() {
-        let Some(&controller) = controllers.get(&state) else {
-            uncontrolled += 1;
-            continue;
-        };
-        if !hosted(controller, state) {
-            continue;
+
+    /// A state hosting radar groups of `hosting` (country slots), controlled by `controller`'s
+    /// slot: the icon stays while its controller keeps a group there, and shows when a country of
+    /// the circle keeps one.
+    pub fn outcome(&self, hosting: impl Iterator<Item = u32> + Clone, controller: Option<u32>) -> RadarOutcome {
+        let Some(controller) = controller else { return RadarOutcome::Uncontrolled };
+        if !hosting.clone().any(|country| country == controller) {
+            RadarOutcome::Hidden
+        } else if hosting.into_iter().any(|country| self.countries.contains(&country)) {
+            RadarOutcome::Shown
+        } else if !self.undecided.is_empty() {
+            RadarOutcome::Withheld
+        } else {
+            RadarOutcome::Hidden
         }
-        if circle.iter().any(|&country| hosted(country, state)) {
-            out.shown.insert(state);
-        } else if !undecided.is_empty() {
-            withheld += 1;
-        }
+    }
+}
+
+/// What a radar host state's icon is ([`RadarCircle::outcome`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RadarOutcome {
+    Shown,
+    Hidden,
+    /// Only an unrecorded relation could admit it.
+    Withheld,
+    /// Its controller is not recorded.
+    Uncontrolled,
+}
+
+/// The radar icons' notes: `coverage` is whether `RadarCoverage` is whole, or why it is
+/// unavailable; the counts of withheld and uncontrolled host states.
+pub fn radar_notes_of(coverage: Result<bool, &str>, withheld: usize, uncontrolled: usize, undecided: &[&str]) -> Vec<String> {
+    let complete = match coverage {
+        Err(reason) => return vec![format!("radar icons are not drawn: RadarCoverage is unavailable ({reason})")],
+        Ok(complete) => complete,
+    };
+    let mut notes = Vec::new();
+    if !complete {
+        notes.push("radar icons may be missing: the radar groups are not all recorded".into());
     }
     if withheld > 0 {
-        out.notes.push(format!(
+        notes.push(format!(
             "{withheld} radar host states are not drawn: the viewer's relations are not all recorded ({})",
             undecided.join(", ")
         ));
     }
     if uncontrolled > 0 {
-        out.notes.push(format!(
+        notes.push(format!(
             "{uncontrolled} radar host states have no recorded controller, so their icons are not drawn"
         ));
     }
-    Ok(out)
+    notes
 }
 
 /// The base joins shared by every camera of this hour and viewing country.
 #[derive(Clone)]
 pub(super) struct BaseTables {
-    wings: BTreeMap<(u32, usize), AirBaseCount>,
-    states: [BTreeSet<u32>; 3],
-    complete: bool,
-    aircraft_complete: bool,
-    controlled: BTreeMap<u32, bool>,
+    values: BaseValues,
     locations: BTreeMap<u32, Option<String>>,
     location_notes: Vec<String>,
-    radar: RadarStates,
-    site_bases: BTreeMap<(u32, i32), Vec<u64>>,
     volunteers: Arc<Result<air_volunteers::Allowances, String>>,
 }
 
@@ -1118,33 +1318,65 @@ impl BaseTables {
         vision: &Vision,
         content: &CounterContent,
     ) -> io::Result<Self> {
-        let (states, complete) = site_icon_states(frame)?;
-        let (locations, location_notes) = location_icons(frame)?;
-        let mut site_bases = BTreeMap::<_, Vec<_>>::new();
-        for base in rows::<tables::AirBases>(frame)?.rows() {
-            if let Some(state) = base.state {
-                site_bases
-                    .entry((state, base.kind))
-                    .or_default()
-                    .push(base.id);
-            }
-        }
-        Ok(Self {
-            volunteers: Arc::new(air_volunteers::Allowances::read(
-                frame,
-                vision.ours(),
-                &content.volunteer_air_defines,
-            )),
-            wings: wings_per_site(frame, vision)?,
-            states,
+        let complete = site_icon_states(frame)?.1;
+        let site_bases = site_bases_of(rows::<tables::AirBases>(frame)?.rows().iter().map(|base| (base.id, base.state, base.kind)));
+        let radar = radar_states(frame, vision.ours())?;
+        let values = BaseValues {
+            wings: wings_per_site(frame, vision)?.into_iter().collect(),
             complete,
             aircraft_complete: rows::<tables::AirWings>(frame)?.is_complete(),
-            controlled: controlled_provinces(frame)?,
+            controlled: controlled_provinces(frame)?.into_iter().collect(),
+            radar: radar.shown.iter().map(|&state| (state, ())).collect(),
+            radar_notes: Arc::new(radar.notes),
+            site_bases: site_bases.into_iter().collect(),
+        };
+        Ok(Self { values, ..Self::rest(frame, vision, content)? })
+    }
+
+    /// The parts the base counters layer does not keep: the strategic-location icons and the air
+    /// volunteer allowances. Its site parts are empty: the layer's are drawn.
+    pub(super) fn rest(frame: &DecodedFrame, vision: &Vision, content: &CounterContent) -> io::Result<Self> {
+        let (locations, location_notes) = location_icons(frame)?;
+        Ok(Self {
+            values: BaseValues::default(),
             locations,
             location_notes,
-            radar: radar_states(frame, vision.ours())?,
-            site_bases,
+            volunteers: Arc::new(air_volunteers::Allowances::read(frame, vision.ours(), &content.volunteer_air_defines)),
         })
+    }
+}
+
+/// The base tables' parts the base counters layer keeps, as values. Each part is shared between
+/// versions by shard (64 states or provinces), so a version that changes one state copies one
+/// shard. A site (state, base kind) has a count exactly while its state holds a base of that kind.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct BaseValues {
+    pub wings: Shards<(u32, usize), AirBaseCount>,
+    pub complete: bool,
+    pub aircraft_complete: bool,
+    pub controlled: Shards<u32, bool>,
+    /// The states whose radar icon shows, and why some may not.
+    pub radar: Shards<u32, ()>,
+    pub radar_notes: Arc<Vec<String>>,
+    /// Each (state, `AirBases.kind`)'s bases, in id order.
+    pub site_bases: Shards<(u32, i32), Vec<u64>>,
+}
+
+/// Each `(state, kind)`'s air bases, from (id, state, kind) in key order.
+pub fn site_bases_of(bases: impl IntoIterator<Item = (u64, Option<u32>, i32)>) -> BTreeMap<(u32, i32), Vec<u64>> {
+    let mut out = BTreeMap::<_, Vec<_>>::new();
+    for (id, state, kind) in bases {
+        if let Some(state) = state {
+            out.entry((state, kind)).or_default().push(id);
+        }
+    }
+    out
+}
+
+impl HourTables {
+    /// The hour's base tables' parts the base counters layer keeps.
+    pub fn base_values(&self) -> BaseValues {
+        self.bases.values.clone()
     }
 }
 
@@ -1154,8 +1386,13 @@ pub(super) fn controlled_provinces(frame: &DecodedFrame) -> io::Result<BTreeMap<
     Ok(rows::<tables::Provinces>(frame)?
         .rows()
         .iter()
-        .map(|row| (row.id, row.controller > 0))
+        .map(|row| (row.id, controlled_of(row.controller)))
         .collect())
+}
+
+/// Whether a province with raw controller `controller` has one, from its value.
+pub fn controlled_of(controller: u32) -> bool {
+    controller > 0
 }
 
 type LocationIcons = (BTreeMap<u32, Option<String>>, Vec<String>);
@@ -1181,184 +1418,118 @@ fn location_icons(frame: &DecodedFrame) -> io::Result<LocationIcons> {
 }
 
 /// Plans the base icons from the hour's shared joins, applying the camera,
-/// map mode and local selection to their retained windows.
+/// map mode and local selection to their retained windows; the site parts are `layered`'s when
+/// the base counters layer draws them.
 pub(super) fn bases(
     inputs: &CounterInputs<'_>,
     frame: &DecodedFrame,
     tables: &HourTables,
+    layered: Option<&BaseValues>,
     out: &mut CounterFrame,
 ) -> io::Result<()> {
-    let vision = &*tables.vision;
-    let defines = &inputs.content.defines;
-    out.report
-        .refused_tokens
-        .clone_from(&tables.base_icons.refused);
+    let sites = layered.unwrap_or(&tables.bases.values);
+    lay_out_bases(inputs, frame, tables, sites, &mut out.native_bases, &mut out.report, &mut Marks::default())
+}
 
-    // The raids map mode clears these base icons with the other province icons; naval
-    // headquarters and facilities stay.
-    if inputs.visibility.province_icons && inputs.shows(defines.air_base_cutoff) {
-        let cached = &tables.bases;
-        let wings = &cached.wings;
-        let grid_census = (inputs.visibility.priorities
-            == viewer_foundation::map::mode_visibility::PriorityTable::StrategicAir)
-            .then(|| air_grid::Census::new(frame));
-        let base_rows = rows::<tables::AirBases>(frame)?;
-        let selected_sites: BTreeSet<_> = inputs
-            .selected_air_bases
-            .iter()
-            .filter_map(|handle| {
-                let at = base_rows
-                    .rows()
-                    .binary_search_by_key(handle, |row| row.id)
-                    .ok()?;
-                let base = &base_rows.rows()[at];
-                Some((base.state?, site_kind(base.kind)))
-            })
-            .collect();
-        let aircraft_complete = cached.aircraft_complete;
-        let volunteers = &*cached.volunteers;
-        let states = &cached.states;
-        let complete = cached.complete;
-        let families = [
-            (base_windows::Family::AirBase, AIR_BASE_WINDOW),
-            (base_windows::Family::RocketSite, ROCKET_SITE_WINDOW),
-            (base_windows::Family::GunEmplacement, GUN_EMPLACEMENT_WINDOW),
-        ];
-        let controlled = |province| cached.controlled.get(&province).copied();
-        for (kind, (family, window)) in families.into_iter().enumerate() {
-            if !complete {
-                *out.report
+/// The icons laid out one a province from the site parts, by kind (the `building_facts` kinds):
+/// the air base, rocket site and gun emplacement, and the radar. Each one's family and window.
+const ICON_FAMILIES: [(base_windows::Family, &str); 4] = [
+    (base_windows::Family::AirBase, AIR_BASE_WINDOW),
+    (base_windows::Family::RocketSite, ROCKET_SITE_WINDOW),
+    (base_windows::Family::GunEmplacement, GUN_EMPLACEMENT_WINDOW),
+    (base_windows::Family::Radar, RADAR_WINDOW),
+];
+const RADAR_KIND: usize = building_facts::RADAR;
+
+/// Whether this view lays out the icons of `kind`: the raids map mode clears them with the other
+/// province icons; each kind has its camera cutoff.
+fn kind_shown(inputs: &CounterInputs<'_>, kind: usize) -> bool {
+    let defines = &inputs.content.defines;
+    inputs.visibility.province_icons && inputs.shows(if kind == RADAR_KIND { defines.radar_cutoff } else { defines.air_base_cutoff })
+}
+
+/// The radar icons' notes, each added once while they are laid out.
+fn radar_notes(sites: &BaseValues) -> Vec<String> {
+    sites.radar_notes.iter().map(|note| format!("{RADAR_WINDOW}: {note}")).collect()
+}
+
+/// What a layout keeps to lay one icon out again alone.
+#[derive(Default)]
+struct Marks {
+    /// What each kind's icons added to the report, by province.
+    icons: [HashMap<u32, SiteMarks>; 4],
+    /// The radar icons' notes, as added.
+    radar: Vec<String>,
+}
+
+/// Lays every base icon out into `offers` and `report`: the site and radar icons (keeping in
+/// `marks` what each added to the report), the strategic locations, the headquarters and the
+/// facilities.
+fn lay_out_bases(
+    inputs: &CounterInputs<'_>,
+    frame: &DecodedFrame,
+    tables: &HourTables,
+    sites: &BaseValues,
+    offers: &mut base_windows::PreparedBases,
+    report: &mut CounterReport,
+    marks: &mut Marks,
+) -> io::Result<()> {
+    report.refused_tokens.clone_from(&tables.base_icons.refused);
+    if (0..ICON_FAMILIES.len()).any(|kind| kind_shown(inputs, kind)) {
+        let context = SiteContext::new(inputs, frame, tables, sites)?;
+        for kind in (0..ICON_FAMILIES.len()).filter(|&kind| kind_shown(inputs, kind)) {
+            if kind == RADAR_KIND {
+                marks.radar = radar_notes(sites);
+                add_notes(&mut report.icon_gui_notes, &marks.radar, 1);
+            } else if !sites.complete {
+                *report
                     .icon_gui_notes
-                    .entry(format!(
-                        "{window} icons may be missing: the air bases are not all recorded"
-                    ))
+                    .entry(format!("{} icons may be missing: the air bases are not all recorded", ICON_FAMILIES[kind].1))
                     .or_default() += 1;
             }
             for (province, state, anchor) in inputs.content.site_icons(kind) {
-                if !states[kind].contains(&state) {
-                    continue;
+                let laid = context.lay_out(kind, province, state, anchor).add(inputs, kind, province, offers, report);
+                if !laid.is_empty() {
+                    marks.icons[kind].insert(province, laid);
                 }
-                let anchor = match anchor {
-                    Ok(anchor) => anchor,
-                    Err(reason) => {
-                        *out.report
-                            .icon_gui_notes
-                            .entry(format!("{window} is not placed: {reason}"))
-                            .or_default() += 1;
-                        continue;
-                    }
-                };
-                // The game shows the three icons only in a province with a
-                // controller; a province whose controller is not recorded is
-                // withheld and named.
-                match controlled(province) {
-                    Some(true) => {}
-                    Some(false) => continue,
-                    None => {
-                        *out.report
-                            .icon_gui_notes
-                            .entry(format!(
-                                "{window} is not drawn: its province's controller is not recorded (Provinces)"
-                            ))
-                            .or_default() += 1;
-                        continue;
-                    }
-                }
-                // The three icons share the air base's sight gate.
-                if air_base_hidden(inputs.map, anchor, vision) {
-                    out.report.hidden_air_bases += 1;
-                    continue;
-                }
-                let mut count = wings.get(&(state, kind)).copied().unwrap_or_default();
-                count.selected = selected_sites.contains(&(state, kind));
-                let (frame, enabled) = if kind == building_facts::AIR_BASE {
-                    let detail = vision
-                        .province_controller(province)
-                        .and_then(|c| vision.sees_air_port_detail(c));
-                    (
-                        air_base_frame(&count, detail).wrapping_add(1) as i32,
-                        count.shown,
-                    )
-                } else {
-                    (site_frame(&count), count.shown)
-                };
-                let air = if inputs.visibility.priorities
-                    == viewer_foundation::map::mode_visibility::PriorityTable::StrategicAir
-                {
-                    let mut display = count;
-                    display.shown &=
-                        kind == building_facts::AIR_BASE && !inputs.selected_air.is_empty();
-                    if kind == building_facts::AIR_BASE && (!aircraft_complete || !complete) {
-                        display.shown = false;
-                        *out.report.icon_gui_notes.entry("air_base_mapicon wings_count is withheld: the AirWings or AirBases census is incomplete".into()).or_default() += 1;
-                    }
-                    if display.shown {
-                        let allowance = (|| {
-                            let controller = vision
-                                .province_controller(province)
-                                .ok_or("Air volunteer base controller unavailable")?;
-                            volunteers.as_ref().map_err(Clone::clone)?.host(controller)
-                        })();
-                        match allowance {
-                            Ok(value) => display.volunteers = value,
-                            Err(reason) => {
-                                *out.report.icon_gui_notes.entry(format!(
-                                    "air_base_mapicon permission_wings_count is withheld: {reason}"
-                                )).or_default() += 1;
-                            }
-                        }
-                    }
-                    if count.shown
-                        && let Some((grid_index, _)) = family.wing_grid()
-                    {
-                        let matching = cached
-                            .site_bases
-                            .get(&(state, kind as i32))
-                            .map_or(&[][..], Vec::as_slice);
-                        let grid = match (matching, grid_census.as_ref()) {
-                            ([base], Some(Ok(census))) => census.base(inputs, *base, vision.ours()),
-                            (_, Some(Err(reason))) => Err(reason.clone()),
-                            _ => Err("state's air-base identity is not unique".into()),
-                        };
-                        out.native_bases
-                            .air_grids
-                            .insert((grid_index, province), grid);
-                    }
-                    Some(display)
-                } else {
-                    None
-                };
-                out.native_bases.offer(
-                    inputs,
-                    family,
-                    province,
-                    province,
-                    anchor,
-                    base_windows::State {
-                        air,
-                        frame,
-                        enabled,
-                        sprite: None,
-                    },
-                );
             }
         }
     }
+    let mut out = CounterFrame::default();
+    strategic_location_icons_cached(inputs, &tables.bases.locations, &tables.bases.location_notes, &mut out)?;
+    facilities(inputs, tables, &mut out);
+    offers.take_others(out.native_bases);
+    for (note, count) in &out.report.icon_gui_notes {
+        *report.icon_gui_notes.entry(note.clone()).or_default() += count;
+    }
+    report.unknown_bases.clone_from(&out.report.unknown_bases);
+    Ok(())
+}
 
-    strategic_location_icons_cached(
-        inputs,
-        &tables.bases.locations,
-        &tables.bases.location_notes,
-        out,
-    )?;
+fn add_notes(target: &mut BTreeMap<String, usize>, notes: &[String], each: usize) {
+    for note in notes {
+        *target.entry(note.clone()).or_default() += each;
+    }
+}
 
-    radars_cached(inputs, &tables.bases.radar, out)?;
+fn take_back_notes(target: &mut BTreeMap<String, usize>, notes: &[String]) {
+    for note in notes {
+        if let Some(held) = target.get_mut(note) {
+            *held = held.saturating_sub(1);
+            if *held == 0 {
+                target.remove(note);
+            }
+        }
+    }
+}
 
+/// The naval headquarters and facility icons.
+fn facilities(inputs: &CounterInputs<'_>, tables: &HourTables, out: &mut CounterFrame) {
     let icons = &tables.base_icons;
     out.report.unknown_bases.clone_from(&icons.unknown);
     // Both icons draw strictly below `FACILITY_DISTANCE_CUTOFF`, in frame 0.
-    if !inputs.shows(defines.facility_cutoff) {
-        return Ok(());
+    if !inputs.shows(inputs.content.defines.facility_cutoff) {
+        return;
     }
     for &(province, anchor) in &icons.headquarters {
         out.native_bases.offer(
@@ -1390,7 +1561,263 @@ pub(super) fn bases(
             },
         );
     }
-    Ok(())
+}
+
+/// One radar icon in `state`: drawn while the state's radar shows.
+fn radar_entry(sites: &BaseValues, state: u32, anchor: Result<[f32; 3], String>) -> SiteEntry {
+    let mut entry = SiteEntry::default();
+    if !sites.radar.contains_key(&state) {
+        return entry;
+    }
+    match anchor {
+        Ok(anchor) => entry.offer = Some((anchor, base_windows::State { air: None, frame: 0, enabled: true, sprite: None })),
+        Err(reason) => entry.notes.push(format!("{RADAR_WINDOW} is not placed: {reason}")),
+    }
+    entry
+}
+
+/// What laying out one icon reads besides the icon: the view, the hour and the site parts.
+struct SiteContext<'a, 'b> {
+    inputs: &'a CounterInputs<'b>,
+    frame: &'a DecodedFrame,
+    sites: &'a BaseValues,
+    vision: &'a Vision,
+    volunteers: &'a Result<air_volunteers::Allowances, String>,
+    /// The sites of the view's selected air bases.
+    selected: BTreeSet<(u32, usize)>,
+    /// The wing grids' census, made at the first grid the strategic air map mode lays out.
+    census: std::cell::OnceCell<Result<air_grid::Census<'a>, String>>,
+}
+
+impl<'a, 'b> SiteContext<'a, 'b> {
+    fn new(inputs: &'a CounterInputs<'b>, frame: &'a DecodedFrame, tables: &'a HourTables, sites: &'a BaseValues) -> io::Result<Self> {
+        let base_rows = rows::<tables::AirBases>(frame)?;
+        let selected = inputs
+            .selected_air_bases
+            .iter()
+            .filter_map(|handle| {
+                let at = base_rows.rows().binary_search_by_key(handle, |row| row.id).ok()?;
+                let base = &base_rows.rows()[at];
+                Some((base.state?, site_kind(base.kind)))
+            })
+            .collect();
+        Ok(Self { inputs, frame, sites, vision: &tables.vision, volunteers: &tables.bases.volunteers, selected, census: Default::default() })
+    }
+
+    /// One icon of kind `kind` at `province` in `state`.
+    fn lay_out(&self, kind: usize, province: u32, state: u32, anchor: Result<[f32; 3], String>) -> SiteEntry {
+        #[cfg(test)]
+        super::preparation::plan_probe::record(|counts| counts.site_icons += 1);
+        if kind == RADAR_KIND {
+            return radar_entry(self.sites, state, anchor);
+        }
+        let (family, window) = ICON_FAMILIES[kind];
+        let (inputs, vision) = (self.inputs, self.vision);
+        let mut entry = SiteEntry::default();
+        if !self.sites.wings.contains_key(&(state, kind)) {
+            return entry;
+        }
+        let anchor = match anchor {
+            Ok(anchor) => anchor,
+            Err(reason) => {
+                entry.notes.push(format!("{window} is not placed: {reason}"));
+                return entry;
+            }
+        };
+        // The game shows the three icons only in a province with a controller; a province whose
+        // controller is not recorded is withheld and named.
+        match self.sites.controlled.get(&province) {
+            Some(true) => {}
+            Some(false) => return entry,
+            None => {
+                entry.notes.push(format!("{window} is not drawn: its province's controller is not recorded (Provinces)"));
+                return entry;
+            }
+        }
+        // The three icons share the air base's sight gate.
+        if air_base_hidden(inputs.map, anchor, vision) {
+            entry.hidden = true;
+            return entry;
+        }
+        let mut count = self.sites.wings.get(&(state, kind)).copied().unwrap_or_default();
+        count.selected = self.selected.contains(&(state, kind));
+        let (frame, enabled) = if kind == building_facts::AIR_BASE {
+            let detail = vision.province_controller(province).and_then(|c| vision.sees_air_port_detail(c));
+            (air_base_frame(&count, detail).wrapping_add(1) as i32, count.shown)
+        } else {
+            (site_frame(&count), count.shown)
+        };
+        let air = if inputs.visibility.priorities == viewer_foundation::map::mode_visibility::PriorityTable::StrategicAir {
+            let mut display = count;
+            display.shown &= kind == building_facts::AIR_BASE && !inputs.selected_air.is_empty();
+            if kind == building_facts::AIR_BASE && (!self.sites.aircraft_complete || !self.sites.complete) {
+                display.shown = false;
+                entry.notes.push("air_base_mapicon wings_count is withheld: the AirWings or AirBases census is incomplete".into());
+            }
+            if display.shown {
+                let allowance = (|| {
+                    let controller = vision.province_controller(province).ok_or("Air volunteer base controller unavailable")?;
+                    self.volunteers.as_ref().map_err(Clone::clone)?.host(controller)
+                })();
+                match allowance {
+                    Ok(value) => display.volunteers = value,
+                    Err(reason) => entry.notes.push(format!("air_base_mapicon permission_wings_count is withheld: {reason}")),
+                }
+            }
+            if count.shown
+                && let Some((grid_index, _)) = family.wing_grid()
+            {
+                let matching = self.sites.site_bases.get(&(state, kind as i32)).map_or(&[][..], Vec::as_slice);
+                let grid = match (matching, self.census.get_or_init(|| air_grid::Census::new(self.frame))) {
+                    ([base], Ok(census)) => census.base(inputs, *base, vision.ours()),
+                    (_, Err(reason)) => Err(reason.clone()),
+                    _ => Err("state's air-base identity is not unique".into()),
+                };
+                entry.grid = Some((grid_index, grid));
+            }
+            Some(display)
+        } else {
+            None
+        };
+        entry.offer = Some((anchor, base_windows::State { air, frame, enabled, sprite: None }));
+        entry
+    }
+}
+
+/// What one icon lays out: its window's offer, its wing grid, and what it adds to the report.
+#[derive(Default)]
+struct SiteEntry {
+    offer: Option<([f32; 3], base_windows::State)>,
+    grid: Option<(usize, Result<Vec<air_grid::PreparedItem>, String>)>,
+    notes: Vec<String>,
+    hidden: bool,
+}
+
+impl SiteEntry {
+    /// Adds it to `offers` and `report`; what a later layout of the icon takes back.
+    fn add(self, inputs: &CounterInputs<'_>, kind: usize, province: u32, offers: &mut base_windows::PreparedBases, report: &mut CounterReport) -> SiteMarks {
+        add_notes(&mut report.icon_gui_notes, &self.notes, 1);
+        report.hidden_air_bases += usize::from(self.hidden);
+        if let Some((grid_index, grid)) = self.grid {
+            offers.air_grids.insert((grid_index, province), grid);
+        }
+        if let Some((anchor, state)) = self.offer {
+            offers.offer(inputs, ICON_FAMILIES[kind].0, province, province, anchor, state);
+        }
+        SiteMarks { notes: self.notes, hidden: self.hidden }
+    }
+}
+
+/// What one icon added to the report.
+#[derive(Default)]
+struct SiteMarks {
+    notes: Vec<String>,
+    hidden: bool,
+}
+
+impl SiteMarks {
+    fn is_empty(&self) -> bool {
+        self.notes.is_empty() && !self.hidden
+    }
+
+    fn take_back(&self, report: &mut CounterReport) {
+        take_back_notes(&mut report.icon_gui_notes, &self.notes);
+        report.hidden_air_bases -= usize::from(self.hidden);
+    }
+}
+
+/// The base icons laid out for one hour's tables, view and camera rules ([`Preparation`]); a new
+/// product of the base counters layer lays out again only the icons of the states, sites and
+/// provinces it changed.
+pub(super) struct BaseLayout {
+    rules: [bool; 3],
+    /// The layer's product it is laid out from; none for the hour's own parts.
+    values: Option<Arc<BaseValues>>,
+    pub(super) offers: base_windows::PreparedBases,
+    pub(super) report: CounterReport,
+    marks: Marks,
+    /// Each kind's icon provinces by state, made at the first change it lays out.
+    by_state: Option<[HashMap<u32, Vec<u32>>; 4]>,
+}
+
+impl BaseLayout {
+    pub(super) fn new(rules: [bool; 3], inputs: &CounterInputs<'_>, frame: &DecodedFrame, tables: &HourTables, values: Option<Arc<BaseValues>>) -> io::Result<Self> {
+        let mut layout = Self { rules, values, offers: Default::default(), report: Default::default(), marks: Marks::default(), by_state: None };
+        let sites = layout.values.as_deref().unwrap_or(&tables.bases.values);
+        lay_out_bases(inputs, frame, tables, sites, &mut layout.offers, &mut layout.report, &mut layout.marks)?;
+        Ok(layout)
+    }
+
+    pub(super) fn rules(&self) -> [bool; 3] {
+        self.rules
+    }
+
+    pub(super) fn laid_from(&self, values: Option<&Arc<BaseValues>>) -> bool {
+        match (&self.values, values) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        }
+    }
+
+    /// Becomes the layout of `values`: the icons of the sites, states and provinces it changed are
+    /// laid out again; a change of a census' completeness lays everything out anew.
+    pub(super) fn update(&mut self, inputs: &CounterInputs<'_>, frame: &DecodedFrame, tables: &HourTables, values: Option<&Arc<BaseValues>>) -> io::Result<()> {
+        let (Some(old), Some(new)) = (self.values.clone(), values) else {
+            *self = Self::new(self.rules, inputs, frame, tables, values.cloned())?;
+            return Ok(());
+        };
+        if old.complete != new.complete || old.aircraft_complete != new.aircraft_complete {
+            *self = Self::new(self.rules, inputs, frame, tables, values.cloned())?;
+            return Ok(());
+        }
+        self.values = Some(Arc::clone(new));
+        let shown: [bool; 4] = std::array::from_fn(|kind| kind_shown(inputs, kind));
+        if shown[RADAR_KIND] && old.radar_notes != new.radar_notes {
+            take_back_notes(&mut self.report.icon_gui_notes, &self.marks.radar);
+            self.marks.radar = radar_notes(new);
+            add_notes(&mut self.report.icon_gui_notes, &self.marks.radar, 1);
+        }
+        let by_state = self.by_state.get_or_insert_with(|| {
+            std::array::from_fn(|kind| {
+                let mut by_state: HashMap<u32, Vec<u32>> = HashMap::new();
+                for (province, state, _) in inputs.content.site_icons(kind) {
+                    by_state.entry(state).or_default().push(province);
+                }
+                by_state
+            })
+        });
+        let mut states: BTreeSet<(usize, u32)> = new.wings.differing(&old.wings).map(|(state, kind)| (kind, state)).collect();
+        states.extend(new.site_bases.differing(&old.site_bases).map(|(state, kind)| (site_kind(kind), state)));
+        states.extend(new.radar.differing(&old.radar).map(|state| (RADAR_KIND, state)));
+        let mut icons: BTreeSet<(usize, u32)> = BTreeSet::new();
+        for (kind, state) in states {
+            icons.extend(by_state[kind].get(&state).into_iter().flatten().map(|&province| (kind, province)));
+        }
+        for province in new.controlled.differing(&old.controlled) {
+            icons.extend((0..RADAR_KIND).filter(|&kind| inputs.content.site_icons[kind].contains_key(&province)).map(|kind| (kind, province)));
+        }
+        icons.retain(|&(kind, _)| shown[kind]);
+        if icons.is_empty() {
+            return Ok(());
+        }
+        let context = SiteContext::new(inputs, frame, tables, new)?;
+        for (kind, province) in icons {
+            if let Some(marks) = self.marks.icons[kind].remove(&province) {
+                marks.take_back(&mut self.report);
+            }
+            self.offers.remove_site(ICON_FAMILIES[kind].0, province);
+            if let Some((grid_index, _)) = ICON_FAMILIES[kind].0.wing_grid() {
+                self.offers.air_grids.remove(&(grid_index, province));
+            }
+            let Some((state, anchor)) = inputs.content.site_icon(kind, province) else { continue };
+            let laid = context.lay_out(kind, province, state, anchor).add(inputs, kind, province, &mut self.offers, &mut self.report);
+            if !laid.is_empty() {
+                self.marks.icons[kind].insert(province, laid);
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Prepare strategic-location icons, deferring free-view cutoffs to each anchor.
@@ -1465,50 +1892,14 @@ pub(super) fn radars(
     vision: &Vision,
     out: &mut CounterFrame,
 ) -> io::Result<()> {
-    radars_cached(inputs, &radar_states(frame, vision.ours())?, out)
-}
-
-fn radars_cached(
-    inputs: &CounterInputs<'_>,
-    radar: &RadarStates,
-    out: &mut CounterFrame,
-) -> io::Result<()> {
-    let defines = &inputs.content.defines;
-    if inputs.visibility.province_icons && inputs.shows(defines.radar_cutoff) {
-        for note in &radar.notes {
-            *out.report
-                .icon_gui_notes
-                .entry(format!("{RADAR_WINDOW}: {note}"))
-                .or_default() += 1;
-        }
-        for (province, state, anchor) in inputs.content.site_icons(building_facts::RADAR) {
-            if !radar.shown.contains(&state) {
-                continue;
-            }
-            let anchor = match anchor {
-                Ok(anchor) => anchor,
-                Err(reason) => {
-                    *out.report
-                        .icon_gui_notes
-                        .entry(format!("{RADAR_WINDOW} is not placed: {reason}"))
-                        .or_default() += 1;
-                    continue;
-                }
-            };
-            out.native_bases.offer(
-                inputs,
-                base_windows::Family::Radar,
-                province,
-                province,
-                anchor,
-                base_windows::State {
-                    air: None,
-                    frame: 0,
-                    enabled: true,
-                    sprite: None,
-                },
-            );
-        }
+    if !kind_shown(inputs, RADAR_KIND) {
+        return Ok(());
+    }
+    let radar = radar_states(frame, vision.ours())?;
+    let sites = BaseValues { radar: radar.shown.iter().map(|&state| (state, ())).collect(), radar_notes: Arc::new(radar.notes), ..BaseValues::default() };
+    add_notes(&mut out.report.icon_gui_notes, &radar_notes(&sites), 1);
+    for (province, state, anchor) in inputs.content.site_icons(RADAR_KIND) {
+        radar_entry(&sites, state, anchor).add(inputs, RADAR_KIND, province, &mut out.native_bases, &mut out.report);
     }
     Ok(())
 }
@@ -1569,25 +1960,25 @@ pub(super) fn building_tokens(
 
 /// What one state base's icon shows: its `wings_count` box, and its frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(super) struct AirBaseCount {
+pub struct AirBaseCount {
     /// Used/allowed air volunteer wings for the base controller.
-    pub(super) volunteers: Option<(i32, i32)>,
-    pub(super) selected: bool,
+    pub volunteers: Option<(i32, i32)>,
+    pub selected: bool,
     /// Planes based here, summed over every wing at the base.
-    pub(super) planes: i64,
+    pub planes: i64,
     /// `AirBases.capacity`, the denominator.
-    pub(super) capacity: i32,
+    pub capacity: i32,
     /// Whether this perspective is shown the box at all; see [`wings_per_site`].
-    pub(super) shown: bool,
+    pub shown: bool,
     /// Registered air-base country containers. `None` means the registration
     /// census is incomplete.
-    pub(super) stationed: Option<bool>,
+    pub stationed: Option<bool>,
     /// Whether any container at the base holds a wing;
     /// `None` when `AirBaseRegistrations` is not complete.
-    pub(super) occupied: Option<bool>,
+    pub occupied: Option<bool>,
     /// Whether some *other* registered country has wings here;
     /// `None` when `AirBaseRegistrations` is not complete.
-    pub(super) foreign: Option<bool>,
+    pub foreign: Option<bool>,
 }
 
 /// The zero-based frame of `GFX_mapicon_air_base`; each one-based game frame is
@@ -1642,163 +2033,256 @@ pub(super) fn wings_per_site(
     vision: &Vision,
 ) -> io::Result<BTreeMap<(u32, usize), AirBaseCount>> {
     let flags = rows::<tables::StateFlags>(frame)?;
+    let links: BTreeMap<u32, u32> = core::<tables::CountryLinks>(frame)?
+        .iter()
+        .map(|link| (link.id, link.canonical_slot))
+        .collect();
+    let air_wings = rows::<tables::AirWings>(frame)?;
+    let registrations = rows::<tables::AirBaseRegistrations>(frame)?;
+    let flag_rows: Vec<(u32, u8)> = flags.rows().iter().map(|row| (row.state, row.demilitarized)).collect();
+    let wings: Vec<WingFields> = air_wings
+        .rows()
+        .iter()
+        .map(|wing| WingFields { id: wing.id, owner: wing.owner, country_override: wing.country_override, air_base: wing.air_base, base_override: wing.base_override, planes: wing.planes })
+        .collect();
+    let registered: Vec<RegistrationFields> = registrations
+        .rows()
+        .iter()
+        .map(|row| RegistrationFields { base: row.base, slot: row.slot, capacity_raw: row.capacity_raw, wings: row.wings.clone() })
+        .collect();
+    let bases: Vec<AirBaseFields> = rows::<tables::AirBases>(frame)?
+        .rows()
+        .iter()
+        .map(|base| AirBaseFields { id: base.id, state: base.state, kind: base.kind, capacity: base.capacity })
+        .collect();
+    Ok(wings_of(&WingInputs {
+        flags: &flag_rows,
+        flags_complete: flags.is_complete(),
+        link: &|raw| links.get(&raw).copied(),
+        wings: &wings,
+        wings_complete: air_wings.is_complete(),
+        registrations: &registered,
+        registrations_complete: registrations.is_complete(),
+        registrations_truncated: matches!(registrations, Available::Truncated { .. }),
+        bases: &bases,
+        ours: vision.ours(),
+    }))
+}
+
+/// One `AirWings` row's values that the base counts read.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WingFields {
+    pub id: u64,
+    pub owner: u32,
+    pub country_override: i32,
+    pub air_base: u64,
+    pub base_override: u64,
+    pub planes: i32,
+}
+
+/// One `AirBaseRegistrations` row's values.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RegistrationFields {
+    pub base: u64,
+    pub slot: u32,
+    pub capacity_raw: i64,
+    pub wings: Vec<u64>,
+}
+
+/// One `AirBases` row's values.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AirBaseFields {
+    pub id: u64,
+    pub state: Option<u32>,
+    pub kind: i32,
+    pub capacity: i32,
+}
+
+/// What [`wings_per_site`] reads, as values: each table's rows in key order and whether whole.
+pub struct WingInputs<'a> {
+    /// `StateFlags`: (state, demilitarized).
+    pub flags: &'a [(u32, u8)],
+    pub flags_complete: bool,
+    pub link: &'a dyn Fn(u32) -> Option<u32>,
+    pub wings: &'a [WingFields],
+    pub wings_complete: bool,
+    pub registrations: &'a [RegistrationFields],
+    pub registrations_complete: bool,
+    pub registrations_truncated: bool,
+    pub bases: &'a [AirBaseFields],
+    pub ours: u32,
+}
+
+/// [`wings_per_site`] from values.
+pub fn wings_of(inputs: &WingInputs<'_>) -> BTreeMap<(u32, usize), AirBaseCount> {
     // A truncated flag table proves nothing about its missing states — but a
     // state whose row survived IS decided. Hiding every box because one
     // unrelated row is missing would push recorded, non-demilitarised bases
     // onto the detail badge branch, where decided intel can show a badge the
     // engine's stationed branch keeps plain. So the unknown is per-state: a
     // recorded state reads its row, and a missing or unavailable one hides.
-    let flags_complete = flags.is_complete();
-    let demilitarized: BTreeSet<u32> = flags
-        .rows()
-        .iter()
-        .filter(|row| row.demilitarized != 0)
-        .map(|row| row.state)
-        .collect();
-    let flagged: BTreeSet<u32> = flags.rows().iter().map(|row| row.state).collect();
+    let mut flags: BTreeMap<u32, u8> = BTreeMap::new();
+    for &(state, demilitarized) in inputs.flags {
+        let flag = flags.entry(state).or_default();
+        if demilitarized != 0 {
+            *flag = demilitarized;
+        }
+    }
+    let planes: BTreeMap<u64, i32> = inputs.wings.iter().map(|wing| (wing.id, wing.planes)).collect();
     // A country's wings at a base are counted two ways: its own container's pools
     // hold one, or a wing standing at the base has that effective country tag
     // (its positive expeditionary owner, else its pool's owner). The second term
     // is the `AirWings` rows whose location handle is this base.
-    let links: BTreeMap<u32, u32> = core::<tables::CountryLinks>(frame)?
-        .iter()
-        .map(|link| (link.id, link.canonical_slot))
-        .collect();
     let mut located: BTreeSet<(u64, u32)> = BTreeSet::new();
-    let air_wings = rows::<tables::AirWings>(frame)?;
-    // A base is occupied while a registered wing holds a plane: the game
-    // counts no wing whose planes are not positive.
-    let planes: BTreeMap<u64, i64> = air_wings
-        .rows()
-        .iter()
-        .map(|wing| (wing.id, i64::from(wing.planes)))
-        .collect();
-    let wings_complete = air_wings.is_complete();
-    for wing in air_wings.rows() {
-        let country = if wing.country_override > 0 {
-            wing.country_override as u32
-        } else {
-            wing.owner
-        };
-        if let Some(&slot) = links.get(&country) {
-            located.insert((wing_base(wing), slot));
+    let mut standing: BTreeMap<u64, i64> = BTreeMap::new();
+    for wing in inputs.wings {
+        let base = wing_base_of(wing.air_base, wing.base_override);
+        if let Some(slot) = (inputs.link)(wing_country(wing.owner, wing.country_override)) {
+            located.insert((base, slot));
         }
+        *standing.entry(base).or_default() += i64::from(wing.planes.max(0));
     }
-    let registrations = rows::<tables::AirBaseRegistrations>(frame)?;
-    // One pass over the registrations feeds all four base sets; four
-    // filtered passes cost the same rows four times per overlay prepare.
-    let mut access: BTreeSet<u64> = BTreeSet::new();
-    let mut stationed: BTreeSet<u64> = BTreeSet::new();
-    let mut occupied: BTreeSet<u64> = BTreeSet::new();
-    // Bases a registered wing missing from a partial AirWings could occupy.
-    let mut unweighed: BTreeSet<u64> = BTreeSet::new();
-    let mut foreign: BTreeSet<u64> = BTreeSet::new();
-    // Bases with a surviving row of ours on a truncated hour: access and
-    // stationed are decided for these even though the table is partial, since
-    // both live on that one row. A base with surviving rows but none of ours
-    // decides occupancy only when a wing shows.
-    let mut ours_rows: BTreeSet<u64> = BTreeSet::new();
-    for row in registrations.rows() {
-        let wings = !row.wings.is_empty() || located.contains(&(row.base, row.slot));
-        if row.slot == vision.ours() {
-            if row.capacity_raw > 0 {
-                access.insert(row.base);
-            }
-            ours_rows.insert(row.base);
-            if wings {
-                stationed.insert(row.base);
-            }
-        } else if wings {
-            // Walk the base's registered containers, so only a
-            // country with a container of its own counts as another country's
-            // wings here.
-            foreign.insert(row.base);
-        }
-        if row
-            .wings
-            .iter()
-            .any(|wing| planes.get(wing).is_some_and(|&n| n > 0))
-        {
-            occupied.insert(row.base);
-        } else if !wings_complete && row.wings.iter().any(|wing| !planes.contains_key(wing)) {
-            unweighed.insert(row.base);
-        }
+    let mut registered: BTreeMap<u64, Vec<RegistrationFacts>> = BTreeMap::new();
+    for row in inputs.registrations {
+        registered.entry(row.base).or_default().push(RegistrationFacts {
+            slot: row.slot,
+            capacity_raw: row.capacity_raw,
+            listed: !row.wings.is_empty(),
+            occupied: row.wings.iter().any(|wing| planes.get(wing).is_some_and(|&planes| planes > 0)),
+            missing: row.wings.iter().any(|wing| !planes.contains_key(wing)),
+        });
     }
-    let complete = registrations.is_complete();
-    let truncated = matches!(registrations, Available::Truncated { .. });
-    // Stationed and occupied follow the registrations table alone: a truncated
-    // *flags* table hides the box through `shown` below but says nothing about
-    // wings, so it must not unknown the recorded containers.
-    let base_stationed = |base: &u64| {
-        if complete || (truncated && ours_rows.contains(base)) {
-            Some(stationed.contains(base))
-        } else {
-            None
-        }
+    let census = WingCensus {
+        flags_complete: inputs.flags_complete,
+        wings_complete: inputs.wings_complete,
+        registrations_complete: inputs.registrations_complete,
+        registrations_truncated: inputs.registrations_truncated,
+        ours: inputs.ours,
     };
-    let base_occupied = |base: &u64| {
-        if occupied.contains(base) {
-            Some(true)
-        } else if unweighed.contains(base) {
-            None
-        } else if complete {
-            Some(false)
-        } else {
-            None
-        }
-    };
-    let mut states: BTreeMap<u64, ((u32, usize), AirBaseCount)> = BTreeMap::new();
-    for base in rows::<tables::AirBases>(frame)?.rows() {
-        let Some(state) = base.state else {
-            continue;
-        };
-        states.insert(
-            base.id,
-            (
-                (state, site_kind(base.kind)),
-                AirBaseCount {
-                    volunteers: None,
-                    selected: false,
-                    planes: 0,
-                    capacity: base.capacity,
-                    shown: (flags_complete || flagged.contains(&state))
-                        && access.contains(&base.id)
-                        && !demilitarized.contains(&state),
-                    stationed: base_stationed(&base.id),
-                    occupied: base_occupied(&base.id),
-                    foreign: complete.then(|| foreign.contains(&base.id)),
-                },
-            ),
-        );
-    }
-    for wing in rows::<tables::AirWings>(frame)?.rows() {
-        if let Some((_, count)) = states.get_mut(&wing_base(wing)) {
-            count.planes += i64::from(wing.planes.max(0));
-        }
-    }
     // Each icon reads its state's base of its own kind; a carrier's host base
-    // has no state and is already skipped. Bases of one kind and state that
-    // the recording lists apart are merged: `shown` ORs and planes/capacity
-    // sum here.
+    // has no state and is skipped.
+    let bases: BTreeMap<u64, (u32, &AirBaseFields)> = inputs.bases.iter().filter_map(|base| Some((base.id, (base.state?, base)))).collect();
     let mut out: BTreeMap<(u32, usize), AirBaseCount> = BTreeMap::new();
-    for (key, count) in states.into_values() {
-        let entry = out.entry(key).or_default();
-        entry.planes += count.planes;
-        entry.capacity += count.capacity;
-        entry.shown |= count.shown;
-        entry.stationed = merge(entry.stationed, count.stationed);
-        entry.occupied = merge(entry.occupied, count.occupied);
-        entry.foreign = merge(entry.foreign, count.foreign);
+    for (state, base) in bases.into_values() {
+        let facts = BaseFacts {
+            capacity: base.capacity,
+            flag: flags.get(&state).copied(),
+            registrations: registered.get(&base.id).map_or(&[], Vec::as_slice),
+            located: &|slot| located.contains(&(base.id, slot)),
+            standing: standing.get(&base.id).copied().unwrap_or(0),
+        };
+        merge_count(out.entry((state, site_kind(base.kind))).or_default(), base_count(&facts, &census));
     }
-    Ok(out)
+    out
+}
+
+/// The country a wing counts for: its positive expeditionary owner, else its pool's owner.
+pub fn wing_country(owner: u32, country_override: i32) -> u32 {
+    if country_override > 0 {
+        country_override as u32
+    } else {
+        owner
+    }
+}
+
+/// What the whole census decides for every base: which tables are whole, and the viewer.
+#[derive(Clone, Copy, Debug)]
+pub struct WingCensus {
+    pub flags_complete: bool,
+    pub wings_complete: bool,
+    pub registrations_complete: bool,
+    pub registrations_truncated: bool,
+    pub ours: u32,
+}
+
+/// One air base's facts its count reads.
+pub struct BaseFacts<'a> {
+    /// `AirBases.capacity`.
+    pub capacity: i32,
+    /// Its state's `StateFlags.demilitarized`; `None` without a row.
+    pub flag: Option<u8>,
+    /// Its `AirBaseRegistrations` rows.
+    pub registrations: &'a [RegistrationFacts],
+    /// Whether a wing standing at the base counts for a country slot.
+    pub located: &'a dyn Fn(u32) -> bool,
+    /// The positive planes of the wings standing at the base.
+    pub standing: i64,
+}
+
+/// One `AirBaseRegistrations` row's facts a base's count reads.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RegistrationFacts {
+    pub slot: u32,
+    pub capacity_raw: i64,
+    /// Its wings list is not empty.
+    pub listed: bool,
+    /// A listed wing holds a plane: the game counts no wing whose planes are not positive.
+    pub occupied: bool,
+    /// A listed wing has no `AirWings` row.
+    pub missing: bool,
+}
+
+/// One state base's count, before the bases of its state and kind are merged ([`merge_count`]).
+pub fn base_count(facts: &BaseFacts<'_>, census: &WingCensus) -> AirBaseCount {
+    let (mut access, mut ours_row, mut stationed, mut foreign, mut occupied, mut unweighed) = (false, false, false, false, false, false);
+    for row in facts.registrations {
+        let wings = row.listed || (facts.located)(row.slot);
+        if row.slot == census.ours {
+            access |= row.capacity_raw > 0;
+            ours_row = true;
+            stationed |= wings;
+        } else {
+            // Walk the base's registered containers, so only a country with a container of its
+            // own counts as another country's wings here.
+            foreign |= wings;
+        }
+        // A base is occupied while a registered wing holds a plane. A registered wing missing
+        // from a partial AirWings could.
+        if row.occupied {
+            occupied = true;
+        } else if !census.wings_complete && row.missing {
+            unweighed = true;
+        }
+    }
+    let complete = census.registrations_complete;
+    // Stationed and occupied follow the registrations table alone: a truncated *flags* table
+    // hides the box through `shown` but says nothing about wings. A surviving row of ours on a
+    // truncated hour decides access and stationed, since both live on that one row.
+    AirBaseCount {
+        volunteers: None,
+        selected: false,
+        planes: facts.standing,
+        capacity: facts.capacity,
+        shown: (census.flags_complete || facts.flag.is_some()) && access && facts.flag.is_none_or(|flag| flag == 0),
+        stationed: (complete || (census.registrations_truncated && ours_row)).then_some(stationed),
+        occupied: if occupied {
+            Some(true)
+        } else if unweighed {
+            None
+        } else {
+            complete.then_some(false)
+        },
+        foreign: complete.then_some(foreign),
+    }
+}
+
+/// Merges one base's count into its state's of the same kind: bases the recording lists apart
+/// are one icon, `shown` ORs and planes and capacity sum.
+pub fn merge_count(into: &mut AirBaseCount, count: AirBaseCount) {
+    into.planes += count.planes;
+    into.capacity += count.capacity;
+    into.shown |= count.shown;
+    into.stationed = merge(into.stationed, count.stationed);
+    into.occupied = merge(into.occupied, count.occupied);
+    into.foreign = merge(into.foreign, count.foreign);
 }
 
 /// The air base a wing stands at: its recorded location when lent out, else its pool's own base.
-pub(super) fn wing_base(wing: &replay_data::rows::AirWingRow) -> u64 {
-    if wing.base_override != 0 {
-        wing.base_override
+pub fn wing_base_of(air_base: u64, base_override: u64) -> u64 {
+    if base_override != 0 {
+        base_override
     } else {
-        wing.air_base
+        air_base
     }
 }
 

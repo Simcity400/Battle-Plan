@@ -14,6 +14,8 @@ export interface MarkCluster {
   badge?: EventBadge;
   /** The consumer attaches its actor identity; it is never part of an ordinal. */
   tag?: string;
+  /** Made of tiles: its bins with drops, each (last hour, drops), so the head inside it shows those it has passed. */
+  bins?: readonly (readonly [number, number])[];
 }
 export interface MarkSummary {
   from: number;
@@ -22,6 +24,32 @@ export interface MarkSummary {
   clusters: readonly MarkCluster[];
   placement?: 'ticks' | 'badges';
   color?: string;
+  /** Made of tiles: its clusters run past the hours shown, and only those whose bin the head has passed are shown. */
+  tiles?: true;
+}
+
+/** Whether `cluster` of `summary` is shown whole with the head at `until`: a tiled cluster once the head has passed
+ * its last bin with drops. */
+export const clusterShown = (summary: MarkSummary, cluster: MarkCluster, until: number | null) => !summary.tiles || until === null || cluster.lastHour <= until;
+
+const shown = new WeakMap<MarkSummary, { whole: number; part: number; clusters: readonly MarkCluster[] }>();
+
+/** The clusters of `summary` drawn with the head at `until`: of a tiled summary, those the head has passed, and the one
+ * it is inside cut to the bins it has passed (its drops theirs, its last hour their last). Made again only when the
+ * head passes a bin with drops. */
+export function shownClusters(summary: MarkSummary, until: number | null): readonly MarkCluster[] {
+  if (!summary.tiles || until === null) return summary.clusters;
+  const clusters = summary.clusters;
+  let low = 0, high = clusters.length;
+  while (low < high) { const middle = (low + high) >> 1; if (clusters[middle].lastHour <= until) low = middle + 1; else high = middle; }
+  const inside = clusters[low], passed = inside?.bins ? inside.bins.filter(([last]) => last <= until) : [];
+  const held = shown.get(summary);
+  if (held && held.whole === low && held.part === passed.length) return held.clusters;
+  const out = clusters.slice(0, low);
+  if (passed.length) out.push({ ...inside, lastHour: passed[passed.length - 1][0], bins: passed,
+    count: String(passed.reduce((sum, [, count]) => sum + count, 0)) });
+  shown.set(summary, { whole: low, part: passed.length, clusters: out });
+  return out;
 }
 
 export function markSummaryMatches(summary: MarkSummary, frame: PlotFrame, until: number | null): boolean {
@@ -30,31 +58,31 @@ export function markSummaryMatches(summary: MarkSummary, frame: PlotFrame, until
 
 export function clusterHour(cluster: MarkCluster): number { return (cluster.firstHour + cluster.lastHour) / 2; }
 
-export function drawMarkSummary(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, summary: MarkSummary): void {
+export function drawMarkSummary(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, summary: MarkSummary, until: number | null = null): void {
   if (summary.placement === 'ticks') {
     ctx.save(); ctx.strokeStyle = summary.color ?? tokens.muted;
     const bottom = frame.plotTop + frame.plotHeight;
-    for (const cluster of summary.clusters) {
+    for (const cluster of shownClusters(summary, until)) {
       ctx.lineWidth = cluster.count === '1' ? 1.5 : 3;
       const x = Math.round(frame.toX(clusterHour(cluster))) + 0.5;
       ctx.beginPath(); ctx.moveTo(x, bottom); ctx.lineTo(x, bottom - 6); ctx.stroke();
     }
     ctx.restore(); return;
   }
-  drawBadges(ctx, frame, tokens, summary.clusters.map(cluster => cluster.badge ?? {
+  drawBadges(ctx, frame, tokens, shownClusters(summary, until).map(cluster => cluster.badge ?? {
     hour: clusterHour(cluster), glyph: String(cluster.count), label: eventCount(cluster.count),
   }), null);
 }
 
 /** Hit the geometry drawn, returning the stable range for exact paged members.
  * A cluster has a date range, never an invented common event date. */
-export function markClusterAt(point: { x: number; y: number }, frame: PlotFrame, summary: MarkSummary): MarkCluster | null {
+export function markClusterAt(point: { x: number; y: number }, frame: PlotFrame, summary: MarkSummary, until: number | null = null): MarkCluster | null {
   if (summary.placement === 'ticks') {
     const bottom = frame.plotTop + frame.plotHeight;
     if (point.y < bottom - 10 || point.y > bottom + 2) return null;
   } else if (point.y < frame.plotTop - BADGE_STRIP || point.y > frame.plotTop + 8) return null;
   let found: MarkCluster | null = null, distance = 9;
-  for (const cluster of summary.clusters) {
+  for (const cluster of shownClusters(summary, until)) {
     const next = Math.abs(frame.toX(clusterHour(cluster)) - point.x);
     if (next <= distance && (next < distance || !found || BigInt(cluster.firstOrdinal) < BigInt(found.firstOrdinal))) { found = cluster; distance = next; }
   }

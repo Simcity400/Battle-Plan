@@ -115,45 +115,82 @@ impl Impacts {
         frame: &DecodedFrame,
         province: impl Fn(u32) -> Option<([f32; 3], [f32; 4])>,
     ) -> io::Result<Self> {
-        let mut out = Self::default();
         let available = rows::<tables::NuclearStrikes>(frame)?;
-        match &available {
-            Available::Complete(_) => {}
-            Available::Truncated { missing, .. } => out.refused.push(format!(
-                "NuclearStrikes truncated: {missing} impacts have no effect"
-            )),
-            Available::Unavailable { reason } => out.refused.push(format!(
-                "NuclearStrikes unavailable ({reason}): impacts have no effect"
-            )),
-            Available::NotRecorded { mode } => out.refused.push(format!(
+        let refused = match &available {
+            Available::Complete(_) => None,
+            Available::Truncated { missing, .. } => Some(truncated(*missing)),
+            Available::Unavailable { reason } => Some(unavailable(reason)),
+            Available::NotRecorded { mode } => Some(format!(
                 "NuclearStrikes not recorded in a {mode} recording: impacts have no effect"
             )),
-        }
-        let mut unplaced = 0usize;
-        for row in available.rows() {
-            let Some((position, bounds)) = province(row.province) else {
-                unplaced += 1;
-                continue;
-            };
-            out.impacts.push(Impact {
-                id: row.id,
-                province: row.province,
-                effect: if row.nuke_type == THERMONUCLEAR_TYPE {
-                    Effect::Thermonuclear
-                } else {
-                    Effect::Nuclear
-                },
-                position,
-                bounds,
-            });
-        }
-        if unplaced > 0 {
-            out.refused.push(format!(
-                "{unplaced} nuclear impacts have no effect: their province has no standstill anchor or painted box"
-            ));
-        }
+        };
+        let mut out = Self {
+            impacts: Vec::new(),
+            refused: refused.into_iter().collect(),
+        };
+        let unplaced = available
+            .rows()
+            .iter()
+            .filter(|row| !out.locate(row.id, row.province, row.nuke_type, &province))
+            .count();
+        out.refused.extend(unplaced_refusal(unplaced));
         Ok(out)
     }
+
+    /// Adds impact `id` of type `nuke_type` at its province's place; false when the province has
+    /// none, which [`unplaced_refusal`] counts.
+    pub fn locate(
+        &mut self,
+        id: u64,
+        province: u32,
+        nuke_type: u32,
+        place: impl Fn(u32) -> Option<([f32; 3], [f32; 4])>,
+    ) -> bool {
+        let Some(impact) = impact(id, province, nuke_type, place) else {
+            return false;
+        };
+        self.impacts.push(impact);
+        true
+    }
+}
+
+/// Impact `id` of type `nuke_type` at its province's standstill anchor and admission box; none
+/// when the province has no place.
+pub fn impact(
+    id: u64,
+    province: u32,
+    nuke_type: u32,
+    place: impl Fn(u32) -> Option<([f32; 3], [f32; 4])>,
+) -> Option<Impact> {
+    let (position, bounds) = place(province)?;
+    Some(Impact {
+        id,
+        province,
+        effect: if nuke_type == THERMONUCLEAR_TYPE {
+            Effect::Thermonuclear
+        } else {
+            Effect::Nuclear
+        },
+        position,
+        bounds,
+    })
+}
+
+/// Why a truncated NuclearStrikes table plays only some impacts.
+pub fn truncated(missing: u32) -> String {
+    format!("NuclearStrikes truncated: {missing} impacts have no effect")
+}
+
+/// Why an unavailable NuclearStrikes table plays no impact.
+pub fn unavailable(reason: impl std::fmt::Display) -> String {
+    format!("NuclearStrikes unavailable ({reason}): impacts have no effect")
+}
+
+/// The refusal for impacts whose province has no place, when there are any.
+pub fn unplaced_refusal(unplaced: usize) -> Option<String> {
+    (unplaced > 0).then(|| format!(
+        "{unplaced} nuclear impacts have no effect: their province has no standstill anchor or painted box"
+    ))
 }
 
 /// The effect entities' slots in the frame library, by [`Effect`].
